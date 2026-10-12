@@ -8612,15 +8612,16 @@ int desugar_kernel_recv(Compiler *c) {
    a puts / print while $stdout can hold an object with a write but not that
    method (std_stream_foreign_writer). The shapes left over (pp, putc,
    a splatted p) are refused by the emitter (refuse_unredirected_output). */
-static int sbo_stdout_read(Compiler *c, int at) {
+static int sbo_gvar_read(Compiler *c, int at, const char *name) {
   NodeTable *nt = (NodeTable *)c->nt;
   int gv = nt_new_node(nt, "GlobalVariableReadNode");
   if (gv < 0) return -1;
-  nt_node_set_str(nt, gv, "name", "$stdout");
+  nt_node_set_str(nt, gv, "name", name);
   nt_node_set_int(nt, gv, "node_line", nt_int(nt, at, "node_line", 0));
   nt_node_set_int(nt, gv, "node_file", nt_int(nt, at, "node_file", 0));
   return gv;
 }
+static int sbo_stdout_read(Compiler *c, int at) { return sbo_gvar_read(c, at, "$stdout"); }
 static int sbo_call(NodeTable *nt, int recv, const char *name, const int *argv, int argc, int at) {
   int cl = nt_new_node(nt, "CallNode");
   if (cl < 0) return -1;
@@ -8793,6 +8794,95 @@ static int desugar_std_stream_bare_output(Compiler *c) {
       nt_node_set_int(nt, id, "node_col", col);
       nt_node_set_ref(nt, id, "body", stmts);
     }
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = first; j < nt->count; j++) {
+      c->nscope[j] = encl;
+      if (c->node_cbody) c->node_cbody[j] = c->node_cbody[id];
+    }
+    changed = 1;
+  }
+  return changed;
+}
+
+/* A bare warn while the program assigns $stderr and it can hold a program
+   object with its own write (std_stream_foreign_writer): Kernel#warn renders its messages as puts
+   would, into one String, and hands it to `$stderr.write`, so the object's
+   own write receives it. The emitter writes only to a stream or a
+   StringIO, and refused the call; it becomes that write:
+     warn a, b   ->  (t = <a, b rendered>; $stderr.write(t) if t; nil)
+   The rendered text is the warn call itself, marked warn_text: typed a
+   String, emitted as its messages' lines joined, and nil while $VERBOSE
+   is nil. The `if t` is there only when the program assigns $VERBOSE. A warn with keywords
+   (uplevel:, category:), a splat or a block argument is left to the
+   emitter, which still refuses it here; so is one the program defines
+   for itself. */
+static int desugar_std_stream_bare_warn(Compiler *c) {
+  if (!gvar_has_write(c, "stderr") || !std_stream_foreign_writer(c, NULL)) return 0;
+  NodeTable *nt = (NodeTable *)c->nt;
+  int verb_nil = gvar_has_write(c, "VERBOSE");
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "receiver") >= 0) continue;
+    if (nt_ref(nt, id, "block") >= 0 || nt_int(nt, id, "warn_text", 0)) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "warn")) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int argc = 0;
+    const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    /* no message writes nothing, which the emitter already does */
+    if (argc == 0) continue;
+    int plain = 1;
+    for (int k = 0; k < argc && plain; k++) {
+      NodeKind ak = nt_kind(nt, argv[k]);
+      plain = ak != NK_SplatNode && ak != NK_BlockArgumentNode && ak != NK_KeywordHashNode;
+    }
+    if (!plain || id >= c->node_cap) continue;
+    if (std_stream_bare_call_own(c, id, nm)) continue;
+    int first = nt->count;
+    long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0),
+              col = nt_int(nt, id, "node_col", 0);
+    Scope *sc = comp_scope_of(c, id);
+    if (!sc) continue;
+    /* the messages are rendered, and so evaluated, before $stderr is read
+       and before $VERBOSE is tested, as Kernel#warn's arguments are; a nil
+       $VERBOSE makes the rendering answer nil (warn_text 2), tested by
+       truth, which dispatches nothing */
+    int text = sbo_call(nt, -1, "warn", argv, argc, id);
+    if (text < 0) continue;
+    nt_node_set_int(nt, text, "warn_text", verb_nil ? 2 : 1);
+    char tn[64];
+    snprintf(tn, sizeof tn, "__sbw_%s", comp_node_tag(c, id));
+    int w = nt_new_node(nt, "LocalVariableWriteNode");
+    int r1 = nt_new_node(nt, "LocalVariableReadNode"), r2 = nt_new_node(nt, "LocalVariableReadNode");
+    if (w < 0 || r1 < 0 || r2 < 0) continue;
+    nt_node_set_str(nt, w, "name", tn);
+    nt_node_set_ref(nt, w, "value", text);
+    nt_node_set_int(nt, w, "depth", 0);
+    nt_node_set_str(nt, r1, "name", tn); nt_node_set_int(nt, r1, "depth", 0);
+    nt_node_set_str(nt, r2, "name", tn); nt_node_set_int(nt, r2, "depth", 0);
+    scope_local_intern(sc, tn);
+    int wr = sbo_call(nt, sbo_gvar_read(c, id, "$stderr"), "write", &r1, 1, id);
+    if (wr < 0) continue;
+    if (verb_nil) {
+      int ws = nt_new_node(nt, "StatementsNode"), ifn = nt_new_node(nt, "IfNode");
+      if (ws < 0 || ifn < 0) continue;
+      nt_node_set_arr(nt, ws, "body", &wr, 1);
+      nt_node_set_ref(nt, ifn, "predicate", r2);
+      nt_node_set_ref(nt, ifn, "statements", ws);
+      wr = ifn;
+    }
+    int nil = nt_new_node(nt, "NilNode"), stmts = nt_new_node(nt, "StatementsNode");
+    if (nil < 0 || stmts < 0) continue;
+    int stm[3] = { w, wr, nil };
+    nt_node_set_arr(nt, stmts, "body", stm, 3);
+    /* the node keeps its id, line and file: the parentheses */
+    nt_node_reset(nt, id, "ParenthesesNode");
+    nt_node_set_int(nt, id, "node_line", line);
+    nt_node_set_int(nt, id, "node_file", file);
+    nt_node_set_int(nt, id, "node_col", col);
+    nt_node_set_ref(nt, id, "body", stmts);
     comp_grow_node_arrays(c);
     int encl = c->nscope[id];
     for (int j = first; j < nt->count; j++) {
@@ -41556,6 +41646,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= AN_PASS("desugar_bare_spawn", desugar_bare_spawn(c));               /* spawn(...) -> Process.spawn(...) */
     ch |= AN_PASS("desugar_kernel_recv", desugar_kernel_recv(c));              /* Kernel.puts x -> puts x */
     ch |= AN_PASS("desugar_std_stream_bare_output", desugar_std_stream_bare_output(c));  /* puts x -> $stdout.puts x, once $stdout can hold a StringIO */
+    ch |= AN_PASS("desugar_std_stream_bare_warn", desugar_std_stream_bare_warn(c));  /* warn x -> $stderr.write(<x as warn renders it>), once $stderr can hold a program object with its own write */
     ch |= AN_PASS("desugar_class_literal_ctors", desugar_class_literal_ctors(c));      /* Array[a,b] -> [a,b]; Range.new -> (a..b) */
     ch |= AN_PASS("desugar_enum_iter_splat_args", desugar_enum_iter_splat_args(c));     /* enum.map(*a, &b) -> enum.map(&b) */
     ch |= AN_PASS("desugar_enum_pair_lone_param", desugar_enum_pair_lone_param(c));     /* a.each_with_index.map { |x| } -> { |x, i| } */

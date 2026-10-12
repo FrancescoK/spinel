@@ -8070,6 +8070,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv < 0 && !an_bare_call_class_owned(c, id) && (is_text_print(name)) &&
       nt_ref(nt, id, "block") < 0)
     return TY_NIL;
+  /* a warn's messages rendered as one String, for $stderr's own write
+     (desugar_std_stream_bare_warn) */
+  if (recv < 0 && sp_streq(name, "warn") && nt_int(nt, id, "warn_text", 0)) return TY_STRING;
   /* Kernel#warn / #printf / p() (no args) return nil in value position. */
   if (recv < 0 && !an_bare_call_class_owned(c, id) && (sp_streq(name, "warn") || sp_streq(name, "printf") ||
                    ((is_inspect_print(name)) && argc == 0)) &&
@@ -9024,7 +9027,7 @@ TyKind infer_builtin_self(Compiler *c, int self_cls) {
 
 /* Is global `name` (resolved, without the `$`) assigned anywhere -- a write,
    an op-write, a multiple-assignment target, an alias of it? */
-static int gvar_has_write(Compiler *c, const char *name) {
+int gvar_has_write(Compiler *c, const char *name) {
   static const NodeTable *cnt = NULL; static int ccount = -1;
   static char **names = NULL; static int nnames = 0;
   const NodeTable *nt = c->nt;

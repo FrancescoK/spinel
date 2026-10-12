@@ -916,6 +916,24 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     buf_puts(b, "; })");
     return 1;
   }
+  /* a warn's messages rendered as one String, each as puts writes it, for
+     the write desugar_std_stream_bare_warn sends it to */
+  if (recv < 0 && sp_streq(name, "warn") && nt_int(nt, id, "warn_text", 0)) {
+    int ta = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = sp_str_empty; SP_GC_ROOT_STR(_t%d); ", ta, ta);
+    for (int k = 0; k < argc; k++) {
+      buf_printf(b, "_t%d = sp_str_concat(_t%d, sp_poly_warn_text(", ta, ta);
+      emit_boxed(c, argv[k], b);
+      buf_puts(b, ")); ");
+    }
+    /* nil while $VERBOSE is nil (warn_text 2: the program assigns it),
+       once the messages have run */
+    LocalVar *verb = nt_int(nt, id, "warn_text", 0) == 2 ? comp_gvar(c, "VERBOSE") : NULL;
+    if (verb && verb->type == TY_POLY) buf_printf(b, "if (sp_poly_nil_p(gv_VERBOSE)) _t%d = NULL; ", ta);
+    else if (verb && verb->type == TY_NIL) buf_printf(b, "_t%d = NULL; ", ta);
+    buf_printf(b, "_t%d; })", ta);
+    return 1;
+  }
   /* Kernel#warn / #printf / #putc / p() as an expression: run the statement
      emitter inside a statement-expression and yield the Ruby value (nil for
      warn/printf/p(), the argument for putc). */
