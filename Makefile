@@ -4710,9 +4710,9 @@ share-check-test: $(SPINEL)
 # by line with test/share_check/ratchet.txt (tools/share_check_ratchet.sh has
 # the line format and how to update the list). A site the list lacks fails,
 # and so does a listed line no site matches, so the list only shrinks. It is
-# report-only (Matz, #8328): the compiler refuses at no flagged site yet, and
-# the target is not part of `make test` or `make gate`. It is proposed for
-# `make gate` once the list is empty.
+# report-only (Matz, #8328): the compiler refuses at no flagged site yet. It
+# is a `make gate` leg (gate-props), so a pull request that adds a site or
+# leaves a stale line fails its gate rather than master's ratchet.
 .PHONY: share-check-ratchet
 share-check-ratchet: $(SPINEL)
 	@tools/share_check_ratchet.sh
@@ -4791,7 +4791,7 @@ test-corpus-shared-summary: test-corpus-results
 # under the gate's job server (they took 181 s one after another, the
 # longest of the gate's legs; spin-check alone is 72 s).
 gate-props:
-	+@$(MAKE) --no-print-directory alloc-report-test infer-test collect-errors-test spin-check diff-test scale-test traits-check-test bop-arity-check-test bop-share-check-test poly-cold-test share-strings-test wrap-test
+	+@$(MAKE) --no-print-directory alloc-report-test infer-test collect-errors-test spin-check diff-test scale-test traits-check-test bop-arity-check-test bop-share-check-test poly-cold-test share-strings-test share-check-ratchet wrap-test
 
 # The ty_traits table (types.c) against the functions each column names,
 # for every builtin kind, in both integer-overflow modes.
