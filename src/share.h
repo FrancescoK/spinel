@@ -254,6 +254,11 @@ int share_node_mutated(Compiler *c, int v);
    query, answered from the final facts. */
 enum { SHN_NO, SHN_YES, SHN_FRESH };
 int share_value_needs_handle(Compiler *c, int v);
+/* ... asked for the target of a multiple write that stores v, an element
+   of an Array literal it splits into its targets (also through a splat):
+   the literal is no container that keeps v (its own need says bytes where
+   no name sees the literal), the target is one. */
+int share_store_needs_handle(Compiler *c, int v);
 /* Does node n hand over the shared handle (or a box holding it), not a
    copy of its bytes? The carry a deferred route is checked against
    (share_route_defer), and the String plan's supply for a value held as
@@ -268,6 +273,10 @@ int share_node_carries_handle(const Compiler *c, int n);
 enum { SPN_BYTES, SPN_NEW, SPN_OBJECT };              /* need */
 enum { SPS_BYTES, SPS_HANDLE };                       /* supply */
 enum { SPF_BYTES, SPF_HANDLE, SPF_WRAP, SPF_REFUSE }; /* form */
+/* the role of a value's consumer: it takes the value (keeps, changes,
+   compares or hands it on), reads its bytes, tests it for nil or false, or
+   stores it into a multiple write's target */
+enum { SPR_TAKE, SPR_READ, SPR_TEST, SPR_STORE };
 typedef struct {
   unsigned char need, supply, form;
 } SharePlan;
@@ -277,16 +286,25 @@ int share_plan_form(int need, int supply);
    the Compiler. */
 void share_plan_build(Compiler *c);
 void share_plan_free(Compiler *c);
-/* The plan of node v where codegen is: the need from the memo where the
-   node is read as itself, else asked live (*memo, which may be NULL, says
-   which); the supply always asked live, as it reads repr_of. */
-SharePlan share_plan_of(Compiler *c, int v, int *memo);
+/* The plan of node v for a consumer in `role` (SPR_*) where codegen is:
+   the value's need from the memo where the node is read as itself, else
+   asked live (*memo, which may be NULL, says which); the supply always
+   asked live, as it reads repr_of. */
+SharePlan share_plan_of(Compiler *c, int v, int role, int *memo);
 /* The memo's need of node v where codegen is, or -1 where it cannot answer. */
 int share_plan_memo_need(Compiler *c, int v);
-/* The plan with the need asked live too (--share-check compares the memo
-   with it). */
-SharePlan share_plan_live(Compiler *c, int v);
+/* The value's need (what a taker needs), asked live (--share-check
+   compares the memo with it), and the plan for a consumer in `role` with
+   that need given. */
+int share_plan_need(Compiler *c, int v);
+SharePlan share_plan_with_need(Compiler *c, int v, int role, int need);
+/* The role of the consumer node v sits in, as the program has it (a taker
+   for a node made after seal), and the role of its second consumer, or -1:
+   a call answering its receiver's String has its own answer tested. */
+int share_plan_role(Compiler *c, int v);
+int share_plan_second_role(Compiler *c, int v);
 const char *share_plan_form_name(int form);
+const char *share_plan_role_name(int role);
 /* Is node n an explicit writer's attribute assignment whose value the facts
    keep apart from its right-hand side's String (nothing observes them as one
    object)? */
