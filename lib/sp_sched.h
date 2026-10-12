@@ -40,6 +40,7 @@ typedef struct sp_thread {
   sp_RbVal          arg;         /* Thread.new(arg) -> the block's first param, on first run */
   sp_RbVal          retval;      /* block result (copied from fiber->yielded_value at death) */
   sp_RbVal          name;        /* #name / #name= (a string or nil) */
+  int               priority;    /* #priority: -3..3, a hint as in CRuby; inherited at spawn */
   const char       *birth_file;  /* creation site for #inspect (#3126); rodata */
   sp_int           birth_line;
   sp_thread_state   state;
@@ -162,6 +163,8 @@ sp_int    sp_Thread_list_count(void);     /* Thread.list (built by the TU) */
 sp_thread *sp_Thread_list_at(sp_int i);
 sp_RbVal   sp_Thread_get_name(sp_thread *t);                       /* #name */
 sp_RbVal   sp_Thread_set_name(sp_thread *t, sp_RbVal v);           /* #name= */
+sp_int     sp_Thread_get_priority(sp_thread *t);                   /* #priority */
+void       sp_Thread_set_priority(sp_thread *t, sp_int p);         /* #priority= */
 sp_RbVal   sp_Thread_status(sp_thread *t); /* #status: "run"/"sleep"/false/nil */
 const char *sp_Thread_inspect(sp_thread *t); /* #inspect / #to_s */
 sp_RbVal   sp_Thread_tls_get(sp_thread *t, sp_sym k);              /* Thread#[] */
