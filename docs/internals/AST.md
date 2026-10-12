@@ -1,25 +1,25 @@
 # Spinel AST format
 
-The parser front-end consumes a Ruby source file and produces a
-text-based AST that the rest of the compiler reads. This file documents
-that text format -- the record types, the flattening conventions, and
-the per-node fields the consumers rely on.
+The parser front-end consumes a Ruby source file and fills the node
+table the rest of the compiler reads. This file documents the table's
+text form (`spinel --dump-ast` prints it) -- the record types, the
+flattening conventions, and the per-node fields the consumers rely on.
 
 ## Pipeline position
 
 ```
-.rb  ──[sp_parse_file_to_text]──▶  text AST  ──[nt_load_text]──▶  NodeTable
-        ──[analyze_program + codegen_program]──▶  .c
+.rb  ──[sp_parse_file]──▶  NodeTable  ──[analyze_program + codegen_program]──▶  .c
 ```
 
-Spinel is a single binary (`spinel`). `sp_parse_file_to_text`
-(`src/spinel_parse.c`) is the only stage that talks to libprism; it
-returns the flattened text AST as an in-memory string -- there is no
-on-disk `.ast` intermediate (though `spinel --dump-ast` prints it).
-`nt_load_text` (`src/node_table.c`) parses that text into a `NodeTable`,
-and the analyzer and code generator both read the table through the
-`nt_*` accessor API. The text format is the stable contract between
-Prism (a moving upstream) and Spinel's fixed-shape backend.
+Spinel is a single binary (`spinel`). `sp_parse_file`
+(`src/spinel_parse.c`) is the only stage that talks to libprism; its walk
+over Prism's tree fills a `NodeTable` (`src/node_table.c`) directly, node
+by node, through the `nt_put_*` calls, and the analyzer and code
+generator both read the table through the `nt_*` accessor API. There is
+no text intermediate; `nt_dump` prints the finished table in the text
+form below for `spinel --dump-ast`. The node shapes are the stable
+contract between Prism (a moving upstream) and Spinel's fixed-shape
+backend.
 
 There is one parser implementation: **`src/spinel_parse.c`**, which links
 libprism directly (no Ruby is needed at build time once `make deps` has
@@ -31,10 +31,8 @@ fallback; the C compiler does not.
 Plain UTF-8 text, line-oriented (`\n`-terminated). Every line is one
 record. Fields are space-separated.
 
-Records are not length-limited by the format. Large source constructs
-can produce `A` records longer than 4096 bytes, so parser emitters must
-size output records dynamically instead of formatting through a fixed
-line buffer.
+Records are not length-limited by the format: large source constructs
+produce `A` records longer than 4096 bytes.
 
 The first record is always:
 
@@ -47,7 +45,7 @@ in practice, since `flatten()` walks the tree top-down and assigns ids
 in DFS order). It is followed by the source-file header records:
 
 ```
-SOURCE_FILE <path>        # the primary source path (unescaped)
+SOURCE_FILE <path>        # the primary source path
 FILE <fid> <path>         # file-id -> path map, one per distinct source file
 ```
 
@@ -75,11 +73,11 @@ also carries `node_end_line` / `node_end_col` (Prism's exclusive end),
 which the JSON reports as the node's span; the ordinary compile has no
 use for them and does not pay for them.
 
-A node is defined by its `N` line followed by zero or more attribute
-lines (`S`/`I`/`F`/`R`/`A`) that share the same `<id>`. Attribute lines
-appear in source order -- but downstream code addresses attributes by
-*field name*, not position, so the order is informational rather than
-load-bearing.
+A node is printed as its `N` line followed by its attribute lines,
+`S`, `I`, `F`, `R` and `A` in that order, each kind in the order the
+parser set them. Downstream code addresses attributes by *field name*,
+not position; when a node carries a field twice, the first one is the
+one the accessors answer.
 
 ### Example
 
@@ -87,51 +85,48 @@ load-bearing.
 puts "hi"
 ```
 
-flattens to:
+prints as (without the source and file records, the position attributes
+and the `fzl` flag):
 
 ```
 ROOT 0
 N 0 ProgramNode
+R 0 statements 1
 N 1 StatementsNode
+A 1 body 2
 N 2 CallNode
 S 2 name puts
+S 2 call_operator .
 R 2 receiver -1
-N 3 ArgumentsNode
-N 4 StringNode
-S 4 content hi
-A 3 arguments 4
 R 2 arguments 3
 R 2 block -1
-A 1 body 2
-R 0 statements 1
+N 3 ArgumentsNode
+A 3 arguments 4
+N 4 StringNode
+S 4 content hi
 ```
 
 Node ids are assigned in DFS pre-order during parse, so a child's id is
-always greater than its parent's `N` line id. The attribute lines for a
-parent may interleave with the child subtree -- the consumer matches by
-id, not by position.
+greater than its parent's id, except for the StatementsNode made for an
+embedded instance variable (`"#@iv"`), which follows the variable it holds.
 
 ### Encoding rules
 
-String values (`S` records) are produced by `escape_str()` in
-`spinel_parse.c`:
+The table holds string values as their bytes (with their length, so a
+NUL byte survives). `nt_dump` prints the bytes that would end a record
+or a field, and the escape character itself, as `%XX`:
 
-| Char           | Encoded as |
+| Byte           | Printed as |
 |----------------|------------|
-| `\n`           | `\\n`      |
-| `\t`           | `\\t`      |
-| `\r`           | `\\r`      |
-| `\\`           | `\\\\`     |
-| `"`            | `\\"`      |
-| `\0`           | `\\0`      |
-| byte ≥ `0x80`  | passed through verbatim (UTF-8) |
-| other          | passed through |
+| `%`            | `%25`      |
+| `\n`           | `%0A`      |
+| `\r`           | `%0D`      |
+| `\t`           | `%09`      |
+| space          | `%20`      |
+| `\0`           | `%00`      |
+| other          | passed through (bytes ≥ `0x80` verbatim, UTF-8) |
 
-The encoding is reversible by the consumer's `unescape_str` helper.
-
-The space between fields is a single ASCII space; any spaces inside the
-string payload survive (they are not separators after the third field).
-Newlines do not appear in string payloads -- they are encoded as `\n`.
+The same escaping applies to the `SOURCE_FILE` and `FILE` paths.
 
 ## Node-type taxonomy
 
@@ -289,12 +284,12 @@ whose size isn't fixed at parse time: statement bodies, argument lists,
 WhenNode condition lists, hash element lists, etc.
 
 The order is the source order. Consumers walk left-to-right via
-`get_args(args_id)` (or `parse_id_list` for raw lists), so reordering
+`nt_arr`, so reordering
 within an `A` record changes program semantics.
 
 ### `S <id> <field> <string>`
 
-The string is escape_str-encoded (see "Encoding rules" above). Common
+The string is printed escaped (see "Encoding rules" above). Common
 fields:
 
 - `name` -- the method name on CallNode, the variable name on
@@ -339,7 +334,7 @@ Float literal in `printf("%.17g")` form, always with a decimal point.
 
 ## How consumers read the AST
 
-`nt_load_text` parses the text into a `NodeTable`: an array of `SpNode`
+The parser fills a `NodeTable`: an array of `SpNode`
 records indexed by node id (`src/node_table.h`). Unlike the retired Ruby
 self-host -- which built one flat `@nd_<field>` array per attribute --
 each `SpNode` stores its own small field lists (string / int / ref /
@@ -356,12 +351,11 @@ through the accessor API:
 | `nt_kind(nt, id)`                     | The cached `NodeKind` enum (a fast switch key vs. `strcmp` on the type string). |
 
 A reference field absent from a node reads back as `-1` and an absent
-array as empty, so consumers check before indexing. The loader skips
-records it does not recognise; an attribute the parser emits but no
-accessor ever reads is simply inert. New parser fields are picked up
-automatically by `nt_str` / `nt_int` / `nt_ref` / `nt_arr` once a
-consumer asks for them by name -- there is no separate per-field loader
-arm to keep in sync.
+array as empty, so consumers check before indexing. An attribute the
+parser sets but no accessor ever reads is simply inert. New parser
+fields are picked up automatically by `nt_str` / `nt_int` / `nt_ref` /
+`nt_arr` once a consumer asks for them by name -- there is no separate
+per-field arm to keep in sync.
 
 The analyzer's results do **not** live in the `NodeTable`; they live in
 the `Compiler` struct (the per-node type cache plus the class / method /
@@ -396,7 +390,8 @@ scope tables). The `NodeTable` is the immutable parsed program; the
 - [docs/analyze-ir.md](analyze-ir.md) -- the in-memory analyze ↔ codegen
   contract (the `Compiler` struct that replaced the old `.ir` file).
 - [docs/FFI.md](../FFI.md) -- direct C-call declarations.
-- `src/spinel_parse.c` -- the C front-end that produces this format.
-- `src/node_table.[ch]` -- `nt_load_text` and the `nt_*` accessor API.
+- `src/spinel_parse.c` -- the C front-end that fills the table.
+- `src/node_table.[ch]` -- the `nt_put_*` fill calls, `nt_dump` and the
+  `nt_*` accessor API.
 - `src/analyze*.c` -- type inference; fills the `Compiler` node type cache.
 - `src/codegen*.c` -- C emission; reads the `NodeTable` + `Compiler`.

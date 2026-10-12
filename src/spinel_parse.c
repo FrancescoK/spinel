@@ -2,125 +2,37 @@
  * spinel_parse.c - Prism AST Serializer (C version)
  *
  * Equivalent to spinel_parse.rb but links with libprism directly.
- * Parses Ruby source and outputs line-based text AST for spinel_codegen.
+ * Parses Ruby source and fills the compiler's NodeTable (node_table.h) as
+ * it walks Prism's tree: each node gets the next id, its type and its named
+ * string / int / float / ref / array fields. nt_dump prints the table in the
+ * text form docs/internals/AST.md describes (--dump-ast).
  *
- * Build: cc -O2 -I$(PRISM)/include spinel_parse.c -L$(PRISM)/build -lprism -o spinel_parse
- *
- * Output format:
- *   ROOT <id>
- *   N <id> <type>           - node declaration
- *   S <id> <field> <escaped> - string field
- *   I <id> <field> <integer> - integer field
- *   F <id> <field> <float>   - float field
- *   R <id> <field> <ref_id>  - reference (-1 for nil)
- *   A <id> <field> <ids>     - array of references
+ * Build: linked into the compiler binary (build/csrc/sp_parse_lib.o).
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
-#include <stdarg.h>
 #include <limits.h>
 #include <unistd.h>      /* readlink: resolve the executable for gem lookup */
 #if defined(__APPLE__)
 #include <mach-o/dyld.h> /* _NSGetExecutablePath */
 #endif
 #include <prism.h>
+#include "node_table.h"
 #if defined(_WIN32)
 char *sp_w32_overlay(char *content, const char *path);   /* lib/win32/sp_win32_driver.c */
 #endif
 
-/* ---- In-memory output buffer ----
-   The final text AST is assembled into a growable byte buffer rather than a
-   FILE*, so the in-process entry point needs no open_memstream (POSIX.1-2008,
-   absent on Solaris/AIX/HP-UX/MinGW and pre-10.13 macOS) nor a temp-file
-   round-trip. One code path on every platform. */
-typedef struct { char *data; size_t len; size_t cap; } SpStrBuf;
-
-static void sb_ensure(SpStrBuf *sb, size_t extra) {
-  if (sb->len + extra + 1 <= sb->cap) return;
-  size_t nc = sb->cap ? sb->cap : 4096;
-  while (nc < sb->len + extra + 1) {
-    if (nc > (((size_t)-1) / 2)) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-    nc *= 2;
-  }
-  char *nd = realloc(sb->data, nc);
-  if (!nd) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-  sb->data = nd;
-  sb->cap = nc;
-}
-
-static void sb_puts(SpStrBuf *sb, const char *s) {
-  size_t n = strlen(s);
-  sb_ensure(sb, n);
-  memcpy(sb->data + sb->len, s, n);
-  sb->len += n;
-  sb->data[sb->len] = '\0';
-}
-
-static void sb_printf(SpStrBuf *sb, const char *fmt, ...) {
-  va_list ap;
-  va_start(ap, fmt);
-  va_list ap2;
-  va_copy(ap2, ap);
-  int needed = vsnprintf(NULL, 0, fmt, ap);
-  va_end(ap);
-  if (needed < 0) {
-    va_end(ap2);
-    fprintf(stderr, "spinel_parse: vsnprintf failed\n");
-    exit(1);
-  }
-  sb_ensure(sb, (size_t)needed);
-  vsnprintf(sb->data + sb->len, (size_t)needed + 1, fmt, ap2);
-  va_end(ap2);
-  sb->len += (size_t)needed;
-}
-
-/* ---- Output buffer ---- */
-static char **lines;
-static size_t line_count;
-static size_t line_cap;
+/* ---- Output ----
+   The table the walk fills, and the id the next node it reaches gets. */
+static NodeTable *out_nt;
 static int node_counter;
-
-static void out_add(const char *fmt, ...) {
-  va_list ap;
-  va_start(ap, fmt);
-  va_list ap2;
-  va_copy(ap2, ap);
-  int needed = vsnprintf(NULL, 0, fmt, ap);
-  va_end(ap);
-  if (needed < 0) {
-    va_end(ap2);
-    fprintf(stderr, "spinel_parse: vsnprintf failed\n");
-    exit(1);
-  }
-  char *buf = malloc((size_t)needed + 1);
-  if (!buf) {
-    va_end(ap2);
-    fprintf(stderr, "spinel_parse: out of memory\n");
-    exit(1);
-  }
-  vsnprintf(buf, (size_t)needed + 1, fmt, ap2);
-  va_end(ap2);
-  if (line_count >= line_cap) {
-    if (line_cap > (((size_t)-1) - 256) / 2) {
-      fprintf(stderr, "spinel_parse: out of memory\n");
-      exit(1);
-    }
-    size_t new_cap = (line_cap * 2) + 256;
-    char **new_lines = realloc(lines, sizeof(char *) * new_cap);
-    if (!new_lines) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-    lines = new_lines;
-    line_cap = new_cap;
-  }
-  lines[line_count++] = buf;
-}
 
 /* ---- Name from constant pool ---- */
 static const pm_parser_t *g_parser;
 static const char *g_source_file = "";
-static char *g_source_file_escaped = NULL;  /* escape_str(g_source_file), set once at init */
 /* When SPINEL_DEBUG, SPINEL_LINE_MAP or SPINEL_POSITIONS is 1, flatten()
    emits a per-node `node_line` field, which codegen places C `#line`
    directives by and the analysis reads. The compiler driver sets
@@ -137,7 +49,7 @@ static int g_src_map = 1;
 /* --emit-types (SPINEL_EMIT_TYPES) also gets each node's END position, so a
    consumer can pick the tightest span under a cursor: `pts`, `pts.map { }`
    and `.inspect` all start at one column. Only then: two more attributes on
-   every node is text AST the ordinary compile has no use for (#4522). */
+   every node are node-table fields the ordinary compile has no use for (#4522). */
 static int g_emit_end = 0;
 /* Set from the ENTRY file's `# frozen_string_literal: true` magic comment.
    The pragma is per-file in Ruby: the require resolvers build g_fsl_lines
@@ -282,29 +194,6 @@ static int sp_in_builtin(const uint8_t *at);
 #include "sp_macro.c"
 #include "sp_const_loop.c"
 
-/* ---- String escaping ---- */
-static char *escape_str(const uint8_t *src, size_t len) {
-  /* Worst case: every char becomes %XX = 3x */
-  char *out = malloc((len * 3) + 1);
-  size_t j = 0;
-  for (size_t i = 0; i < len; i++) {
-    uint8_t c = src[i];
-    if (c == '%')       { out[j++]='%'; out[j++]='2'; out[j++]='5'; }
-    else if (c == '\n') { out[j++]='%'; out[j++]='0'; out[j++]='A'; }
-    else if (c == '\r') { out[j++]='%'; out[j++]='0'; out[j++]='D'; }
-    else if (c == '\t') { out[j++]='%'; out[j++]='0'; out[j++]='9'; }
-    else if (c == ' ')  { out[j++]='%'; out[j++]='2'; out[j++]='0'; }
-    /* Issue #722: NUL byte inside a string literal would truncate
-       the field at the AST text-serialization layer (lines split
-       on '\n' and the loader uses strlen on fields). Encode as %00
-       so the byte survives the round-trip. */
-    else if (c == 0)    { out[j++]='%'; out[j++]='0'; out[j++]='0'; }
-    else out[j++] = c;
-  }
-  out[j] = '\0';
-  return out;
-}
-
 /* `s` as the body of a JSON string: the two escapes JSON requires and the
    control characters, for the parse-error diagnostics --emit-types writes
    before codegen (whose own writer) exists. */
@@ -314,10 +203,6 @@ static void json_fputs(const char *s, FILE *f) {
     else if (*p < 0x20) fprintf(f, "\\u%04x", *p);
     else fputc(*p, f);
   }
-}
-
-static char *escape_pm_string(const pm_string_t *s) {
-  return escape_str(pm_string_source(s), pm_string_length(s));
 }
 
 /* Convert "PM_FOO_BAR_NODE" -> "FooBarNode" into `out`, truncated to
@@ -348,15 +233,23 @@ int sp_inline_rbs_failed = 0;
 static int sp_in_builtin(const uint8_t *at);   /* a builtins/ splice (below) */
 
 /* ---- Emit helpers ---- */
+static void emit_bytes(int id, const char *field, const char *val, size_t len) {
+  nt_put_str(out_nt, id, field, val, len);
+}
+
 static void emit_str(int id, const char *field, const char *val) {
-  out_add("S %d %s %s", id, field, val);
+  nt_put_str(out_nt, id, field, val, strlen(val));
+}
+
+static void emit_pm_string(int id, const char *field, const pm_string_t *s) {
+  nt_put_str(out_nt, id, field, (const char *)pm_string_source(s), pm_string_length(s));
 }
 
 static void emit_int(int id, const char *field, long long val) {
-  out_add("I %d %s %lld", id, field, val);
+  nt_put_int(out_nt, id, field, val);
 }
 
-static void emit_float(int id, const char *field, double val) {
+static void emit_float(int id, double val) {
   /* Issue #766: 64-byte buf; "%.17g" produces at most 24 chars, plus
      ".0" trailer = 26. Safe by margin.
      Issue #767: snprintf is locale-sensitive (de_DE produces "3,14"
@@ -368,20 +261,20 @@ static void emit_float(int id, const char *field, double val) {
   char buf[64];
   /* an out-of-range literal (1e400) parses to +/-inf, which "%.17g" prints
      as "inf" -- not a C token. Emit the C99 macros instead. */
-  if (isinf(val)) { out_add("F %d %s %s", id, field, val > 0 ? "INFINITY" : "-INFINITY"); return; }
-  if (isnan(val)) { out_add("F %d %s %s", id, field, "NAN"); return; }
+  if (isinf(val)) { nt_put_content(out_nt, id, val > 0 ? "INFINITY" : "-INFINITY"); return; }
+  if (isnan(val)) { nt_put_content(out_nt, id, "NAN"); return; }
   snprintf(buf, sizeof(buf), "%.17g", val);
   for (char *p = buf; *p; p++) if (*p == ',') *p = '.';
   if (!strchr(buf, '.') && !strchr(buf, 'e') && !strchr(buf, 'E')) {
     size_t l = strlen(buf);
     if (l + 3 < sizeof(buf)) strcat(buf, ".0");
   }
-  out_add("F %d %s %s", id, field, buf);
+  nt_put_content(out_nt, id, buf);
 }
 
 static void emit_ref(int id, const char *field, pm_node_t *child) {
   int cid = child ? flatten(child) : -1;
-  out_add("R %d %s %d", id, field, cid);
+  nt_put_ref(out_nt, id, field, cid);
 }
 
 /* A block's or lambda's own locals (params + first-assigned-inside), joined
@@ -407,7 +300,7 @@ static void out_block_locals(int id, const pm_constant_id_list_t *locals) {
       memcpy(w, nms[li], nl2); w += nl2;
     }
     *w = '\0';
-    out_add("S %d locals %s", id, joined);
+    emit_str(id, "locals", joined);
     free(joined);
   }
   for (size_t li = 0; li < locals->size; li++) free(nms[li]);
@@ -416,36 +309,14 @@ static void out_block_locals(int id, const pm_constant_id_list_t *locals) {
 
 static void emit_node_array(int id, const char *field, pm_node_list_t *list) {
   if (!list || list->size == 0) {
-    out_add("A %d %s ", id, field);
+    nt_put_arr(out_nt, id, field, NULL, 0);
     return;
   }
   int *ids = malloc(sizeof(int) * list->size);
+  if (!ids) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
   for (size_t i = 0; i < list->size; i++)
     ids[i] = flatten(list->nodes[i]);
-  /* Issue #744: build comma-separated string into a growable buffer.
-     Previously a fixed 65536-byte stack buffer overflowed on
-     20k+-element arrays -- snprintf returns the bytes it WOULD have
-     written, advancing pos past the end and corrupting the stack. */
-  size_t cap = 1024;
-  char *buf = malloc(cap);
-  size_t pos = 0;
-  for (size_t i = 0; i < list->size; i++) {
-    /* worst case per iter: ", -2147483648\0" -> 14 bytes; reserve 16 to be safe */
-    if (pos + 16 >= cap) {
-      size_t new_cap = (cap * 2) + 16;
-      char *nb = realloc(buf, new_cap);
-      if (!nb) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-      buf = nb;
-      cap = new_cap;
-    }
-    if (i > 0) buf[pos++] = ',';
-    int n = snprintf(buf + pos, cap - pos, "%d", ids[i]);
-    if (n > 0) pos += (size_t)n;
-  }
-  buf[pos] = '\0';
-  out_add("A %d %s %s", id, field, buf);
-  free(buf);
-  free(ids);
+  nt_put_arr(out_nt, id, field, ids, (int)list->size);
 }
 
 /* ---- Integer value extraction ---- */
@@ -943,13 +814,12 @@ static int flatten_node(pm_node_t *node) {
     }
   }
 
-#define N(type_name) out_add("N %d " type_name, id)
-#define S(field, val) do { char *_e = (val); emit_str(id, field, _e); free(_e); } while(0)
+#define N(type_name) nt_put_type(out_nt, id, type_name)
+#define S(field, val) emit_str(id, field, val)
 #define I(field, val) emit_int(id, field, val)
-#define F(field, val) emit_float(id, field, val)
 #define R(field, child) emit_ref(id, field, (pm_node_t *)(child))
 #define A(field, list) emit_node_array(id, field, list)
-#define NAME(field, cid) do { char *_n = cstr(cid); char *_e = escape_str((const uint8_t *)_n, strlen(_n)); emit_str(id, field, _e); free(_e); free(_n); } while(0)
+#define NAME(field, cid) do { char *_n = cstr(cid); emit_str(id, field, _n); free(_n); } while(0)
 
   switch (t) {
   case PM_PROGRAM_NODE: {
@@ -1033,11 +903,10 @@ static int flatten_node(pm_node_t *node) {
         const char *rf = sp_node_required_file(node);
         if (rf) {
           char *ap = sp_required_file_path(rf);
-          char *esc = escape_str((const uint8_t *)ap, strlen(ap));
-          emit_str(id, "warn_path", esc);
-          free(esc); free(ap);
+          emit_str(id, "warn_path", ap);
+          free(ap);
         }
-        else emit_str(id, "warn_path", g_source_file_escaped);
+        else emit_str(id, "warn_path", g_source_file);
       }
       free(wn);
     }
@@ -1047,10 +916,10 @@ static int flatten_node(pm_node_t *node) {
     /* Issue #793: emit explicit call_operator for non-safe-nav calls
        too, so codegen reads "." instead of an unset field. */
     if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) {
-      S("call_operator", escape_str((const uint8_t *)"&.", 2));
+      S("call_operator", "&.");
     }
     else {
-      S("call_operator", escape_str((const uint8_t *)".", 1));
+      S("call_operator", ".");
     }
     /* A bare identifier (no receiver/parens/args) is a variable-or-method
        read: an unresolved one is CRuby's NameError, not NoMethodError. */
@@ -1062,9 +931,8 @@ static int flatten_node(pm_node_t *node) {
       const char *rf = strcmp(cn, "__dir__") == 0 ? sp_node_required_file(node) : NULL;
       if (rf) {
         char *ap = sp_required_file_path(rf);
-        char *esc = escape_str((const uint8_t *)ap, strlen(ap));
-        emit_str(id, "src_file", esc);
-        free(esc); free(ap);
+        emit_str(id, "src_file", ap);
+        free(ap);
       }
       free(cn);
     }
@@ -1330,7 +1198,7 @@ static int flatten_node(pm_node_t *node) {
     NAME("binary_operator", n->binary_operator);
     R("value", n->value);
     if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) {
-      S("call_operator", escape_str((const uint8_t *)"&.", 2));
+      S("call_operator", "&.");
     }
     break;
   }
@@ -1341,7 +1209,7 @@ static int flatten_node(pm_node_t *node) {
     NAME("name", n->read_name);
     R("value", n->value);
     if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) {
-      S("call_operator", escape_str((const uint8_t *)"&.", 2));
+      S("call_operator", "&.");
     }
     break;
   }
@@ -1352,7 +1220,7 @@ static int flatten_node(pm_node_t *node) {
     NAME("name", n->read_name);
     R("value", n->value);
     if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) {
-      S("call_operator", escape_str((const uint8_t *)"&.", 2));
+      S("call_operator", "&.");
     }
     break;
   }
@@ -1420,7 +1288,7 @@ static int flatten_node(pm_node_t *node) {
   case PM_FLOAT_NODE: {
     pm_float_node_t *n = (pm_float_node_t *)node;
     N("FloatNode");
-    F("value", n->value);
+    emit_float(id, n->value);
     break;
   }
   case PM_IMAGINARY_NODE: {
@@ -1452,7 +1320,7 @@ static int flatten_node(pm_node_t *node) {
   case PM_STRING_NODE: {
     pm_string_node_t *n = (pm_string_node_t *)node;
     N("StringNode");
-    S("content", escape_pm_string(&n->unescaped));
+    emit_pm_string(id, "content", &n->unescaped);
     /* `fzl` only when the literal's file has the frozen pragma, so the AST
        text is byte-identical for programs without one. */
     if (sp_node_fsl(node)) I("fzl", 1);
@@ -1474,7 +1342,7 @@ static int flatten_node(pm_node_t *node) {
   case PM_SYMBOL_NODE: {
     pm_symbol_node_t *n = (pm_symbol_node_t *)node;
     N("SymbolNode");
-    S("value", escape_pm_string(&n->unescaped));
+    emit_pm_string(id, "value", &n->unescaped);
     break;
   }
   case PM_TRUE_NODE:
@@ -1678,20 +1546,20 @@ static int flatten_node(pm_node_t *node) {
       if (PM_NODE_TYPE(n->parameters) == PM_BLOCK_PARAMETERS_NODE) {
         pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)n->parameters;
         int bpid = node_counter++;
-        out_add("N %d BlockParametersNode", bpid);
+        nt_put_type(out_nt, bpid, "BlockParametersNode");
         if (in_bi) emit_int(bpid, "node_bi", g_bi_base + 1);
         if (bp->parameters) {
           emit_ref(bpid, "parameters", (pm_node_t *)bp->parameters);
         }
-        out_add("R %d %s %d", id, "parameters", bpid);
+        nt_put_ref(out_nt, id, "parameters", bpid);
       }
 else if (PM_NODE_TYPE(n->parameters) == PM_NUMBERED_PARAMETERS_NODE) {
         pm_numbered_parameters_node_t *np = (pm_numbered_parameters_node_t *)n->parameters;
         int npid = node_counter++;
-        out_add("N %d NumberedParametersNode", npid);
+        nt_put_type(out_nt, npid, "NumberedParametersNode");
         if (in_bi) emit_int(npid, "node_bi", g_bi_base + 1);
         emit_int(npid, "maximum", np->maximum);
-        out_add("R %d %s %d", id, "parameters", npid);
+        nt_put_ref(out_nt, id, "parameters", npid);
       }
 else {
         R("parameters", n->parameters);
@@ -1813,19 +1681,18 @@ else {
     break;
   }
   case PM_SOURCE_FILE_NODE: {
-    /* `__FILE__`. The entry script answers the path spinel was given
-       (escaped once, in g_source_file_escaped); a required file answers
+    /* `__FILE__`. The entry script answers the path spinel was given; a
+       required file answers
        its own absolute path, which the source map attributes the node to
        (#4839). */
     N("SourceFileNode");
     { const char *rf = sp_node_required_file(node);
       if (rf) {
         char *ap = sp_required_file_path(rf);
-        char *esc = escape_str((const uint8_t *)ap, strlen(ap));
-        emit_str(id, "content", esc);
-        free(esc); free(ap);
+        emit_str(id, "content", ap);
+        free(ap);
       }
-      else emit_str(id, "content", g_source_file_escaped); }
+      else emit_str(id, "content", g_source_file); }
     if (sp_node_fsl(node)) I("fzl", 1);  /* __FILE__ is a literal of its file */
     break;
   }
@@ -1939,7 +1806,7 @@ else if (PM_NODE_TYPE(n->parameters) != PM_NUMBERED_PARAMETERS_NODE) {
   case PM_X_STRING_NODE: {
     pm_x_string_node_t *n = (pm_x_string_node_t *)node;
     N("XStringNode");
-    S("content", escape_pm_string(&n->unescaped));
+    emit_pm_string(id, "content", &n->unescaped);
     break;
   }
   case PM_INTERPOLATED_X_STRING_NODE: {
@@ -1951,7 +1818,7 @@ else if (PM_NODE_TYPE(n->parameters) != PM_NUMBERED_PARAMETERS_NODE) {
   case PM_REGULAR_EXPRESSION_NODE: {
     pm_regular_expression_node_t *n = (pm_regular_expression_node_t *)node;
     N("RegularExpressionNode");
-    S("unescaped", escape_pm_string(&n->unescaped));
+    emit_pm_string(id, "unescaped", &n->unescaped);
     /* Emit Prism's regex flags so the codegen can pass /i, /x, /m
        through to the engine. PM_REGULAR_EXPRESSION_FLAGS_IGNORE_CASE=4,
        _EXTENDED=8, _MULTI_LINE=16. */
@@ -2123,7 +1990,7 @@ else {
        LocalVariableReadNode named "_1" so it pairs with the
        lowered NumberedParametersNode { maximum: 1 } above. */
     N("LocalVariableReadNode");
-    S("name", escape_str((const uint8_t *)"_1", 2));
+    S("name", "_1");
     break;
   case PM_INTERPOLATED_SYMBOL_NODE: {
     /* `:"foo_#{x}"`. Carries `parts` like InterpolatedStringNode;
@@ -2179,10 +2046,13 @@ else {
     N("EmbeddedStatementsNode");
     int var_id = flatten(n->variable);
     int stmts_id = node_counter++;
-    out_add("N %d StatementsNode", stmts_id);
+    nt_put_type(out_nt, stmts_id, "StatementsNode");
     if (in_bi) emit_int(stmts_id, "node_bi", g_bi_base + 1);
-    out_add("A %d body %d", stmts_id, var_id);
-    out_add("R %d statements %d", id, stmts_id);
+    int *body = malloc(sizeof(int));
+    if (!body) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+    body[0] = var_id;
+    nt_put_arr(out_nt, stmts_id, "body", body, 1);
+    nt_put_ref(out_nt, id, "statements", stmts_id);
     break;
   }
   case PM_ALIAS_METHOD_NODE: {
@@ -2253,9 +2123,7 @@ else {
     int32_t line = pm_newline_list_line(&g_parser->newline_list, node->location.start, g_parser->start_line);
 
     N("UnsupportedNode");
-    char *kind_e = escape_str((const uint8_t *)pretty, plen);
-    emit_str(id, "kind", kind_e);
-    free(kind_e);
+    emit_bytes(id, "kind", pretty, plen);
     emit_int(id, "source_line", (long long)line);
     break;
   }
@@ -5068,10 +4936,6 @@ static int sp_const_symbol_list(const char *src, size_t len, size_t before, cons
 }
 
 /* ---- Main ---- */
-/* Parse `source_file` and append the text AST to `out`. `argv0` is the
-   invoking program path (used to locate the stdlib for plain `require`s).
-   Returns 0 on success, 1 on read/parse error. This is the library copy
-   (the in-process lib API; no standalone CLI main). */
 /* ---- recognising an inline RBS comment (docs/inline-rbs.md) ---- */
 
 /* RDoc's directives are spelled `:name:` and none of them is a valid RBS
@@ -5155,11 +5019,15 @@ static void sp_inline_rbs_done(void) {}
 static void sp_inline_rbs_free(void) {}
 #endif
 
-static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *out) {
+/* Parse `source_file` into a new node table. `argv0` is the invoking
+   program path (used to locate the stdlib for plain `require`s). Returns
+   the table, or NULL on a read or parse error. This is the library copy
+   (the in-process lib API; no standalone CLI main). */
+static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
   char *source = read_file(source_file);
   if (!source) {
     fprintf(stderr, "spinel_parse: cannot open '%s'\n", source_file);
-    return 1;
+    return NULL;
   }
 
   /* `# frozen_string_literal: true` magic comment, per file: the entry file's
@@ -5318,12 +5186,11 @@ else {
     free(source);
     free(g_fsl_lines); g_fsl_lines = NULL; g_fsl_nlines = 0;
     sp_includes_free();
-    return 1;
+    return NULL;
   }
 
   g_parser = &parser;
   g_source_file = source_file;
-  g_source_file_escaped = escape_str((const uint8_t *)g_source_file, strlen(g_source_file));
 
   /* Inline RBS: the comment list and the tree are alive together only here. */
   if (sp_inline_rbs_run(&parser, root, source, source_len) > 0) {
@@ -5333,40 +5200,22 @@ else {
     pm_parser_free(&parser);
     free(source);
     free(g_fsl_lines); g_fsl_lines = NULL; g_fsl_nlines = 0;
-    free(g_source_file_escaped);
-    g_source_file_escaped = NULL;
     sp_includes_free();
-    return 2;
+    return NULL;
   }
 
-  /* Flatten AST to text */
-  lines = NULL;
-  line_count = 0;
-  line_cap = 0;
+  /* Flatten Prism's tree into the node table */
+  out_nt = nt_new_table();
   node_counter = 0;
-
-  int root_id = flatten(root);
-
-  /* Output */
-  sb_printf(out, "ROOT %d\n", root_id);
-  /* Issue #878: emit the source file path as a top-level fact so
-     `__dir__` and similar compile-time helpers can recover it
-     even when the source contains no `__FILE__` reference. The
-     loader stashes it in @source_file_path. */
-  sb_printf(out, "SOURCE_FILE %s\n", g_source_file_escaped);
-  /* Debug multi-file map: emit the id -> path table so codegen can resolve
-     each node's `node_file` id to a path for its `#line` directive. */
-  for (int i = 0; i < sp_file_count; i++) {
-    char *esc = escape_str((const uint8_t *)sp_file_table[i], strlen(sp_file_table[i]));
-    sb_printf(out, "FILE %d %s\n", i, esc);
-    free(esc);
-  }
-  for (size_t i = 0; i < line_count; i++) {
-    sb_puts(out, lines[i]);
-    sb_puts(out, "\n");
-    free(lines[i]);
-  }
-  free(lines);
+  out_nt->root_id = flatten(root);
+  /* Issue #878: the source file path is a fact of the table, so `__dir__`
+     and similar compile-time helpers can recover it even when the source
+     contains no `__FILE__` reference. The id -> path table resolves each
+     node's `node_file` id for its `#line` directive. */
+  nt_put_source_file(out_nt, g_source_file);
+  for (int i = 0; i < sp_file_count; i++) nt_put_file(out_nt, i, sp_file_table[i]);
+  NodeTable *nt = out_nt;
+  out_nt = NULL;
 
   sp_inline_rbs_done();
   sp_inline_rbs_free();
@@ -5374,37 +5223,23 @@ else {
   pm_parser_free(&parser);
   free(source);
   free(g_fsl_lines); g_fsl_lines = NULL; g_fsl_nlines = 0;
-  free(g_source_file_escaped);  /* paired with the escape_str() in init */
-  g_source_file_escaped = NULL;
   sp_includes_free();
-  return 0;
+  return nt;
 }
 
 /* The library copy of the Prism front-end, linked into the C compiler
    (build/spinel): only the in-process lib API, no standalone CLI main. */
 
 /* In-process entry for the single-binary C compiler: parse `source_file`
-   and return the text AST as a malloc'd NUL-terminated buffer (caller
-   frees), or NULL on error. `argv0` locates the stdlib for plain requires.
-   Avoids any on-disk intermediate by writing to an in-memory stream. */
-char *sp_parse_file_to_text(const char *source_file, const char *argv0) {
-  SpStrBuf out = {0};
-  int rc = sp_parse_emit(source_file, argv0, &out);
-  if (rc != 0) {
-    free(out.data);
-    return NULL;
-  }
-  if (!out.data) {
-    /* Success with no bytes emitted: hand back a valid empty string. */
-    out.data = (char *)malloc(1);
-    if (out.data) out.data[0] = '\0';
-  }
-  return out.data;
+   into a node table (the caller frees it with nt_free), or NULL on error.
+   `argv0` locates the stdlib for plain requires. */
+NodeTable *sp_parse_file(const char *source_file, const char *argv0) {
+  return sp_parse_emit(source_file, argv0);
 }
 
 /* Parse a Ruby snippet -- a class_eval string a desugar can read at compile
-   time -- into the text AST the entry program is loaded from: "ROOT n" and
-   the node lines, no file map. NULL when it does not parse. The flattener's
+   time -- into a node table of its own, as the entry program is: no source
+   path, no file map. NULL when it does not parse. The flattener's
    globals belong to the entry parse, which is over by the time this runs;
    they are saved around the call and reset the way that parse resets them.
    The entry's source map and per-line frozen_string_literal table describe
@@ -5412,38 +5247,34 @@ char *sp_parse_file_to_text(const char *source_file, const char *argv0) {
    its line in the text (when the entry has lines at all), which the desugar
    moves to the eval site's. NULL as well for text that does not read the
    same spliced into the body (sp_snippet_graftable). */
-char *sp_parse_snippet_to_text(const char *src) {
+NodeTable *sp_parse_snippet(const char *src) {
   if (!src || !sp_snippet_graftable(src)) return NULL;
   /* the entry buffer's state the flattener reads: its source map, per-line
      frozen_string_literal table, the statement cursor and owner */
   const pm_parser_t *saved_parser = g_parser;
   int saved_emit_line = g_emit_line, saved_emit_end = g_emit_end;
-  char **saved_lines = lines; size_t saved_count = line_count, saved_cap = line_cap; int saved_counter = node_counter;
+  NodeTable *saved_nt = out_nt; int saved_counter = node_counter;
   int saved_map_n = sp_line_map_n; unsigned char *saved_fsl = g_fsl_lines; size_t saved_fsl_n = g_fsl_nlines;
   pm_node_t **saved_next = g_stmt_next, **saved_end = g_stmt_end; const uint8_t *saved_owner = g_owner;
   sp_line_map_n = 0; g_fsl_lines = NULL; g_fsl_nlines = 0;
   g_stmt_next = g_stmt_end = NULL; g_owner = NULL; g_emit_end = 0;
   char *buf = strdup(src);
-  char *res = NULL;
+  NodeTable *res = NULL;
   if (buf) {
     pm_parser_t parser;
     pm_parser_init(&parser, (const uint8_t *)buf, strlen(buf), NULL);
     pm_node_t *root = pm_parse(&parser);
     if (parser.error_list.size == 0) {
       g_parser = &parser;
-      lines = NULL; line_count = 0; line_cap = 0; node_counter = 0;
-      int root_id = flatten(root);
-      SpStrBuf out = {0};
-      sb_printf(&out, "ROOT %d\n", root_id);
-      for (size_t i = 0; i < line_count; i++) { sb_puts(&out, lines[i]); sb_puts(&out, "\n"); free(lines[i]); }
-      free(lines);
-      res = out.data;
+      out_nt = nt_new_table(); node_counter = 0;
+      out_nt->root_id = flatten(root);
+      res = out_nt;
     }
     pm_node_destroy(&parser, root);
     pm_parser_free(&parser);
     free(buf);
   }
-  lines = saved_lines; line_count = saved_count; line_cap = saved_cap; node_counter = saved_counter;
+  out_nt = saved_nt; node_counter = saved_counter;
   g_parser = saved_parser; g_emit_line = saved_emit_line; g_emit_end = saved_emit_end;
   sp_line_map_n = saved_map_n; g_fsl_lines = saved_fsl; g_fsl_nlines = saved_fsl_n;
   g_stmt_next = saved_next; g_stmt_end = saved_end; g_owner = saved_owner;

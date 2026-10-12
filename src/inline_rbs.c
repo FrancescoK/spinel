@@ -1313,11 +1313,7 @@ static void sp_inline_rbs_emit(const pm_node_t *node, int id) {
     if (fa->params) emit_str(id, "rbs_params", fa->params[0] ? fa->params : "-");
     if (fa->ivar) emit_str(id, "rbs_ivar", fa->ivar);
     if (fa->ivars.len) emit_str(id, "rbs_ivars", fa->ivars.buf);
-    if (fa->names.len) {
-        char *e = escape_str((const uint8_t *) fa->names.buf, fa->names.len);
-        emit_str(id, "rbs_names", e);
-        free(e);
-    }
+    if (fa->names.len) emit_bytes(id, "rbs_names", fa->names.buf, fa->names.len);
     if (fa->ret || fa->params || fa->ivar) {
         const char *file;
         int line;

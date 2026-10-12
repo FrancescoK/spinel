@@ -1,46 +1,9 @@
 #include "node_table.h"
 
+#include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* ---- string unescape (mirrors node_table_loader.rb#unescape_str) ---- */
-
-static char *unescape_dup(const char *s, size_t len, size_t *out_len) {
-  char *out = malloc(len + 1);
-  if (!out) { if (out_len) *out_len = 0; return NULL; }
-  size_t o = 0;
-  size_t i = 0;
-  while (i < len) {
-    char ch = s[i];
-    if (ch == '%' && i + 2 < len) {
-      char a = s[i + 1], b = s[i + 2];
-      char dec = 0;
-      int known = 1;
-      if (a == '0' && b == 'A') dec = '\n';
-      else if (a == '0' && b == 'D') dec = '\r';
-      else if (a == '0' && b == '9') dec = '\t';
-      else if (a == '2' && b == '0') dec = ' ';
-      else if (a == '2' && b == '5') dec = '%';
-      else if (a == '0' && b == '0') dec = '\0';
-      else known = 0;
-      if (known) {
-        out[o++] = dec;
-        i += 3;
-        continue;
-      }
-      /* unknown escape: keep '%' literally and advance one */
-      out[o++] = ch;
-      i++;
-    }
-    else {
-      out[o++] = ch;
-      i++;
-    }
-  }
-  out[o] = '\0';
-  if (out_len) *out_len = o;
-  return out;
-}
 
 /* ---- field append helpers ---- */
 
@@ -101,189 +64,132 @@ static void node_add_arr(SpNode *nd, const char *key, size_t klen, int *ids, int
   nd->na++;
 }
 
-/* ---- line splitting ----
- * Splits a line (sans newline) into tag/id/field/value where value is
- * everything after the third space (possibly empty). Returns the number
- * of leading single-token parts found (1..3) and sets *val_off to the
- * byte offset of the value remainder (or len if none). Token boundaries
- * are reported via the parts[] offset/len pairs. */
-typedef struct { const char *p; size_t len; } Tok;
+/* ---- filling the table (the parser's walk) ---- */
 
-static int split_line(const char *line, size_t len, Tok parts[3], const char **val, size_t *val_len) {
-  int np = 0;
-  size_t i = 0;
-  *val = NULL;
-  *val_len = 0;
-  while (np < 3 && i < len) {
-    size_t start = i;
-    while (i < len && line[i] != ' ') i++;
-    parts[np].p = line + start;
-    parts[np].len = i - start;
-    np++;
-    if (i < len) i++; /* skip the space */
-    if (np == 3) {
-      /* remainder (after the 3rd space) is the value */
-      *val = line + i;
-      *val_len = len - i;
-      break;
-    }
-  }
-  return np;
+static void put_oom(void) {
+  fprintf(stderr, "spinel: out of memory\n");
+  exit(1);
 }
 
-/* The digits gather unsigned: the smallest Integer's are one past what a
-   long long holds until its sign is applied. */
-static long long parse_ll(const char *s, size_t len) {
-  int neg = 0;
-  unsigned long long v = 0;
-  size_t i = 0;
-  if (i < len && (s[i] == '-' || s[i] == '+')) { neg = s[i] == '-'; i++; }
-  for (; i < len; i++) {
-    if (s[i] < '0' || s[i] > '9') break;
-    v = (v * 10) + (unsigned long long)(s[i] - '0');
-  }
-  return (long long)(neg ? 0ULL - v : v);
+/* A copy of the n bytes at s, NUL-terminated. */
+static char *put_dup(const char *s, size_t n) {
+  char *p = dup_n(s, n);
+  if (!p) put_oom();
+  return p;
 }
 
-/* Parse a comma-separated id list into a malloc'd int array. */
-static int *parse_id_list(const char *s, size_t len, int *out_n) {
-  if (len == 0) { *out_n = 0; return NULL; }
-  int cap = 8, n = 0;
-  int *ids = malloc(sizeof(int) * cap);
-  size_t i = 0;
-  while (i < len) {
-    size_t start = i;
-    while (i < len && s[i] != ',') i++;
-    if (n >= cap) { cap *= 2; ids = realloc(ids, sizeof(int) * cap); }
-    ids[n++] = (int)parse_ll(s + start, i - start);
-    if (i < len) i++; /* skip comma */
-  }
-  *out_n = n;
-  return ids;
-}
-
-static int tok_eq(Tok t, const char *lit) {
-  size_t l = strlen(lit);
-  return t.len == l && memcmp(t.p, lit, l) == 0;
-}
-
-NodeTable *nt_load_text(const char *text) {
+NodeTable *nt_new_table(void) {
   NodeTable *nt = calloc(1, sizeof(NodeTable));
-  if (!nt) return NULL;
-  nt->root_id = 0;
-
-  size_t tlen = strlen(text);
-
-  /* Pass 1: find max node id, ROOT, SOURCE_FILE. */
-  int max_id = 0;
-  {
-    size_t i = 0;
-    while (i < tlen) {
-      size_t ls = i;
-      while (i < tlen && text[i] != '\n') i++;
-      size_t llen = i - ls;
-      if (i < tlen) i++;
-      if (llen == 0) continue;
-      const char *line = text + ls;
-      Tok parts[3];
-      const char *val; size_t vlen;
-      int np = split_line(line, llen, parts, &val, &vlen);
-      if (np >= 2) {
-        if (tok_eq(parts[0], "ROOT")) {
-          nt->root_id = (int)parse_ll(parts[1].p, parts[1].len);
-        }
-        else if (tok_eq(parts[0], "SOURCE_FILE")) {
-          /* path is parts[1] plus possibly value; emitted as one token */
-          nt->source_file = unescape_dup(parts[1].p, parts[1].len, NULL);
-        }
-        else if (tok_eq(parts[0], "FILE") && np >= 3) {
-          /* FILE <id> <escaped-path>: the multi-file source map for #line.
-             Take the path as everything after "FILE <id> " so embedded
-             spaces (if any survive escaping) are preserved. */
-          int fid = (int)parse_ll(parts[1].p, parts[1].len);
-          if (fid >= 0) {
-            if (fid >= nt->nfiles) {
-              int newn = fid + 1;
-              nt->files = realloc(nt->files, sizeof(char *) * (size_t)newn);
-              for (int k = nt->nfiles; k < newn; k++) nt->files[k] = NULL;
-              nt->nfiles = newn;
-            }
-            const char *pstart = parts[2].p;
-            size_t plen = (size_t)((line + llen) - pstart);
-            free(nt->files[fid]);
-            nt->files[fid] = unescape_dup(pstart, plen, NULL);
-          }
-        }
-        else {
-          /* N/S/I/F/R/A all carry a node id in parts[1] */
-          char c = parts[0].p[0];
-          if (parts[0].len == 1 && (c == 'N' || c == 'S' || c == 'I' ||
-                                    c == 'F' || c == 'R' || c == 'A')) {
-            int nid = (int)parse_ll(parts[1].p, parts[1].len);
-            if (nid > max_id) max_id = nid;
-          }
-        }
-      }
-    }
-  }
-
-  nt->count = max_id + 1;
-  nt->node_cap = nt->count;
-  nt->nodes = calloc((size_t)nt->count, sizeof(SpNode));
-  if (!nt->nodes) { free(nt); return NULL; }
-
-  /* Pass 2: populate fields. */
-  {
-    size_t i = 0;
-    while (i < tlen) {
-      size_t ls = i;
-      while (i < tlen && text[i] != '\n') i++;
-      size_t llen = i - ls;
-      if (i < tlen) i++;
-      if (llen == 0) continue;
-      const char *line = text + ls;
-      Tok parts[3];
-      const char *val; size_t vlen;
-      int np = split_line(line, llen, parts, &val, &vlen);
-      if (np < 2 || parts[0].len != 1) continue;
-      char tag = parts[0].p[0];
-      int nid = (int)parse_ll(parts[1].p, parts[1].len);
-      if (nid < 0 || nid >= nt->count) continue;
-      SpNode *nd = &nt->nodes[nid];
-
-      if (tag == 'N') {
-        /* type is parts[2] */
-        if (np >= 3) node_set_type(nd, parts[2].p, parts[2].len);
-      }
-      else if (np >= 3) {
-        Tok field = parts[2];
-        if (tag == 'S') {
-          size_t uvlen = 0;
-          char *uv = unescape_dup(val ? val : "", val ? vlen : 0, &uvlen);
-          node_add_str(nd, field.p, field.len, uv, uvlen);
-        }
-        else if (tag == 'I') {
-          node_add_int(nd, field.p, field.len, parse_ll(val ? val : "", val ? vlen : 0));
-        }
-        else if (tag == 'R') {
-          int ref = val ? (int)parse_ll(val, vlen) : -1;
-          node_add_ref(nd, field.p, field.len, ref);
-        }
-        else if (tag == 'A') {
-          int n = 0;
-          int *ids = parse_id_list(val ? val : "", val ? vlen : 0, &n);
-          node_add_arr(nd, field.p, field.len, ids, n);
-        }
-        else if (tag == 'F') {
-          /* content = the value token (float string); field name ignored */
-          free(nd->content);
-          nd->content = dup_n(val ? val : "", val ? vlen : 0);
-        }
-      }
-    }
-  }
-
+  if (!nt) put_oom();
   return nt;
+}
+
+/* The node at `id`, the table first extended to it; the slots it grows by
+   start empty. */
+static SpNode *node_put(NodeTable *nt, int id) {
+  if (id < 0) return NULL;
+  if (id >= nt->node_cap) {
+    int nc = nt->node_cap ? nt->node_cap : 256;
+    while (nc <= id) {
+      if (nc > INT_MAX / 2) put_oom();
+      nc *= 2;
+    }
+    SpNode *grown = realloc(nt->nodes, sizeof(SpNode) * (size_t)nc);
+    if (!grown) put_oom();
+    memset(grown + nt->node_cap, 0, sizeof(SpNode) * (size_t)(nc - nt->node_cap));
+    nt->nodes = grown;
+    nt->node_cap = nc;
+  }
+  if (id >= nt->count) nt->count = id + 1;
+  return &nt->nodes[id];
+}
+
+void nt_put_type(NodeTable *nt, int id, const char *type) {
+  SpNode *nd = node_put(nt, id);
+  if (nd) node_set_type(nd, type, strlen(type));
+}
+void nt_put_str(NodeTable *nt, int id, const char *key, const char *val, size_t len) {
+  SpNode *nd = node_put(nt, id);
+  if (nd) node_add_str(nd, key, strlen(key), put_dup(val, len), len);
+}
+void nt_put_int(NodeTable *nt, int id, const char *key, long long val) {
+  SpNode *nd = node_put(nt, id);
+  if (nd) node_add_int(nd, key, strlen(key), val);
+}
+void nt_put_ref(NodeTable *nt, int id, const char *key, int child) {
+  SpNode *nd = node_put(nt, id);
+  if (nd) node_add_ref(nd, key, strlen(key), child);
+}
+void nt_put_arr(NodeTable *nt, int id, const char *key, int *ids, int n) {
+  SpNode *nd = node_put(nt, id);
+  if (nd) node_add_arr(nd, key, strlen(key), ids, n);
+  else free(ids);
+}
+void nt_put_content(NodeTable *nt, int id, const char *content) {
+  SpNode *nd = node_put(nt, id);
+  if (!nd) return;
+  free(nd->content);
+  nd->content = put_dup(content, strlen(content));
+}
+void nt_put_source_file(NodeTable *nt, const char *path) {
+  free(nt->source_file);
+  nt->source_file = put_dup(path, strlen(path));
+}
+void nt_put_file(NodeTable *nt, int fid, const char *path) {
+  if (fid < 0) return;
+  if (fid >= nt->nfiles) {
+    char **grown = realloc(nt->files, sizeof(char *) * (size_t)(fid + 1));
+    if (!grown) put_oom();
+    for (int k = nt->nfiles; k <= fid; k++) grown[k] = NULL;
+    nt->files = grown;
+    nt->nfiles = fid + 1;
+  }
+  free(nt->files[fid]);
+  nt->files[fid] = put_dup(path, strlen(path));
+}
+
+/* ---- the text form (--dump-ast) ---- */
+
+/* A string value on one line: the bytes that would end the record or the
+   field (newline, space, NUL) and the escape character itself as %XX. */
+static void dump_escaped(FILE *out, const char *s, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    unsigned char c = (unsigned char)s[i];
+    if (c == '%' || c == '\n' || c == '\r' || c == '\t' || c == ' ' || c == 0) fprintf(out, "%%%02X", c);
+    else fputc(c, out);
+  }
+}
+
+void nt_dump(const NodeTable *nt, FILE *out) {
+  fprintf(out, "ROOT %d\n", nt->root_id);
+  if (nt->source_file) {
+    fputs("SOURCE_FILE ", out);
+    dump_escaped(out, nt->source_file, strlen(nt->source_file));
+    fputc('\n', out);
+  }
+  for (int f = 0; f < nt->nfiles; f++) {
+    if (!nt->files[f]) continue;
+    fprintf(out, "FILE %d ", f);
+    dump_escaped(out, nt->files[f], strlen(nt->files[f]));
+    fputc('\n', out);
+  }
+  for (int id = 0; id < nt->count; id++) {
+    const SpNode *nd = &nt->nodes[id];
+    if (nd->type) fprintf(out, "N %d %s\n", id, nd->type);
+    for (int j = 0; j < nd->ns; j++) {
+      fprintf(out, "S %d %s ", id, nd->s[j].key);
+      dump_escaped(out, nd->s[j].val, nd->s[j].val_len);
+      fputc('\n', out);
+    }
+    for (int j = 0; j < nd->ni; j++) fprintf(out, "I %d %s %lld\n", id, nd->i[j].key, nd->i[j].val);
+    if (nd->content) fprintf(out, "F %d value %s\n", id, nd->content);
+    for (int j = 0; j < nd->nr; j++) fprintf(out, "R %d %s %d\n", id, nd->r[j].key, nd->r[j].ref);
+    for (int j = 0; j < nd->na; j++) {
+      fprintf(out, "A %d %s ", id, nd->a[j].key);
+      for (int k = 0; k < nd->a[j].n; k++) fprintf(out, k ? ",%d" : "%d", nd->a[j].ids[k]);
+      fputc('\n', out);
+    }
+  }
 }
 
 /* Collect the subtree node ids reachable from `id` via ref + array fields. */

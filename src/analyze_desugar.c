@@ -16931,7 +16931,7 @@ int desugar_def_unless_method_defined(Compiler *c) {
    place of the statement. The __FILE__ / __LINE__ arguments are ignored;
    the grafted nodes carry the site's line and file. Anything else stays a
    runtime eval, which is refused as before. */
-char *sp_parse_snippet_to_text(const char *src);
+NodeTable *sp_parse_snippet(const char *src);
 static int sce_is_eval_name(const char *nm) {
   return nm && (sp_streq(nm, "class_eval") || sp_streq(nm, "module_eval"));
 }
@@ -17047,10 +17047,7 @@ static long long sce_base_line(const NodeTable *nt, int site) {
    sp_snippet_graftable) */
 static int sce_graft(Compiler *c, const char *text, int site, int **out, int *n) {
   NodeTable *nt = (NodeTable *)c->nt;
-  char *ast = sp_parse_snippet_to_text(text);
-  if (!ast) return -1;
-  NodeTable *tmp = nt_load_text(ast);
-  free(ast);
+  NodeTable *tmp = sp_parse_snippet(text);
   if (!tmp) return -1;
   int prog = tmp->root_id;
   int stmts = prog >= 0 ? nt_ref(tmp, prog, "statements") : -1;
