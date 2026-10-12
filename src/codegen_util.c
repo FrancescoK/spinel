@@ -2693,14 +2693,85 @@ const char *ivar_set_mark(Compiler *c, int cid, const char *ivn, const char *obj
   else snprintf(buf, cap, "%s%s_sp_set_%s = TRUE;", obj, acc, iv);
   return buf;
 }
+/* Does the program ask `defined?(@x)` of ivar `nm` ("@x") anywhere? Only
+   such a name's class-level slots (civ_<C>_<x>) carry a civ_<C>_<x>__set
+   flag: a class-level slot starts nil and can be stored nil, so set or not
+   is not in its value. The names are gathered once per node table. */
+int civ_defined_probed(Compiler *c, const char *nm) {
+  static const NodeTable *seen_nt;
+  static int seen_count = -1;
+  static char **names;
+  static int nnames;
+  const NodeTable *nt = c->nt;
+  if (!nm) return 0;
+  if (seen_nt != nt || seen_count != nt->count) {
+    for (int i = 0; i < nnames; i++) free(names[i]);
+    free(names);
+    names = NULL; nnames = 0;
+    int cap = 0;
+    NT_FOREACH_KIND(nt, NK_DefinedNode, d) {
+      int v = nt_ref(nt, d, "value");
+      const char *vn = v >= 0 && nt_kind(nt, v) == NK_InstanceVariableReadNode ? nt_str(nt, v, "name") : NULL;
+      if (!vn) continue;
+      int dup = 0;
+      for (int i = 0; i < nnames && !dup; i++) dup = sp_streq(names[i], vn);
+      if (dup) continue;
+      if (nnames == cap) {
+        cap = cap ? cap * 2 : 8;
+        char **nn = realloc(names, sizeof(char *) * (size_t)cap);
+        if (!nn) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        names = nn;
+      }
+      names[nnames++] = strdup(vn);
+    }
+    seen_nt = nt; seen_count = nt->count;
+  }
+  for (int i = 0; i < nnames; i++) if (sp_streq(names[i], nm)) return 1;
+  return 0;
+}
+/* The C statement that marks class `cid`'s class-level ivar `nm` assigned
+   (`civ_C_x__set = 1;`), for after a store into its civ_ slot; NULL when
+   nothing asks (civ_defined_probed). */
+const char *civ_set_mark(Compiler *c, int cid, const char *nm, char *buf, size_t cap) {
+  if (cid < 0 || cid >= c->nclasses || !nm || nm[0] != '@' || nm[1] == '@') return NULL;
+  if (comp_ivar_index(&c->classes[cid], nm) < 0 || !civ_defined_probed(c, nm)) return NULL;
+  snprintf(buf, cap, "civ_%s_%s__set = 1;", c->classes[cid].name, iv_c(nm + 1));
+  return buf;
+}
+/* The declaration of class `cid`'s civ_ slot for `nm` (C type `ctype`, or
+   kind t's when NULL, starting as `init`), and beside it that flag, when
+   the program asks defined? of the name */
+void emit_civ_slot_decl(Compiler *c, int cid, const char *nm, const char *ctype, TyKind t,
+                        const char *init, Buf *b) {
+  buf_puts(b, "static ");
+  if (ctype) buf_puts(b, ctype); else emit_ctype(c, t, b);
+  buf_printf(b, " civ_%s_%s = %s;\n", c->classes[cid].name, iv_c(nm + 1), init);
+  if (civ_defined_probed(c, nm))
+    buf_printf(b, "static int civ_%s_%s__set = 0;\n", c->classes[cid].name, iv_c(nm + 1));
+}
+/* The class whose civ_ slot ivar node `node` (scope s) stores into or reads,
+   by the write emitters' rule: a class method's ivar is its class's, a
+   class body's (outside an instance_eval) the body class's, any other one
+   outside a class the Toplevel pseudo-class's; -1 for an instance's field. */
+int civ_class_of(Compiler *c, int node, Scope *s) {
+  if (!s) return -1;
+  if (s->is_cmethod) return s->class_id;
+  if (s->class_id >= 0 || g_ie_class_id >= 0 || ie_class_of(c, node) >= 0) return -1;
+  if (g_class_body_id >= 0) return g_class_body_id;
+  return comp_class_index(c, "Toplevel");
+}
 /* The same for ivar write node `w`, which stores into self: an instance
    method's, or an instance_eval body's, whose self is the rebound receiver
-   (the class the write emitters take, ie_class_of first); NULL for a
-   class-level ivar's write. */
+   (the class the write emitters take, ie_class_of first); for a
+   class-level ivar's write, its civ_ slot's set flag (civ_set_mark). */
 const char *ivar_write_mark(Compiler *c, int w, char *buf, size_t cap) {
   Scope *s = comp_scope_of(c, w);
   const char *nm = nt_str(c->nt, w, "name");
   int iec = ie_class_of(c, w);
+  if (s && nm && iec < 0) {
+    int gc = civ_class_of(c, w, s);
+    if (gc >= 0) return civ_set_mark(c, gc, nm, buf, cap);
+  }
   int cid = iec >= 0 ? iec : s && !s->is_cmethod && s->class_id >= 0 ? s->class_id : g_ie_class_id;
   if (!s || cid < 0 || !nm || !g_self) return NULL;
   return ivar_set_mark(c, cid, nm, g_self, g_self_deref, buf, cap);

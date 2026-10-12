@@ -27007,11 +27007,14 @@ int emit_sg_accessor(Compiler *c, int ci, const char *cn, const char *name,
       /* an oint static takes the value with its nil, and the write answers
          the static's form where the value can be nil (node_is_oint of the
          setter is the value's), its value otherwise */
+      /* and the slot's assigned flag, where the program asks defined? */
+      char setf[300]; setf[0] = 0;
+      if (civ_defined_probed(c, ivn)) snprintf(setf, sizeof setf, ", civ_%s_%s__set = 1", cn, iv_c(base));
       if (ivi >= 0 && oint_kind(ivt) && civ_is_oint(c, ci, ivi)) {
         buf_printf(b, "((civ_%s_%s = ", cn, iv_c(base));
         if (argc < 1) buf_puts(b, oint_nil(ivt)); else emit_oint_expr(c, argv[0], ivt, b);
-        if (argc >= 1 && !nullable_int_value(c, argv[0])) buf_printf(b, "), civ_%s_%s.v)", cn, iv_c(base));
-        else buf_printf(b, "), civ_%s_%s)", cn, iv_c(base));
+        if (argc >= 1 && !nullable_int_value(c, argv[0])) buf_printf(b, ")%s, civ_%s_%s.v)", setf, cn, iv_c(base));
+        else buf_printf(b, ")%s, civ_%s_%s)", setf, cn, iv_c(base));
         return 1;
       }
       buf_printf(b, "(civ_%s_%s = ", cn, iv_c(base));
@@ -27024,6 +27027,7 @@ int emit_sg_accessor(Compiler *c, int ci, const char *cn, const char *name,
         emit_unbox_text(c, ivt, ab2.p ? ab2.p : "sp_box_nil()", b);
         free(ab2.p);
       }
+      if (setf[0]) buf_printf(b, "%s, civ_%s_%s", setf, cn, iv_c(base));
       buf_puts(b, ")");
       return 1;
     }

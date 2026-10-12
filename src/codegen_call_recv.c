@@ -15094,6 +15094,10 @@ static void emit_class_ivar_arm(Compiler *c, int tv, const char *sym, char op, c
       /* and the name in the map, holding nothing, for instance_variables'
          order and defined? */
       buf_printf(b, "; sp_bivar_set(_t%d, sp_sym_intern(\"%s\"), sp_box_nil());", tv, sym);
+      /* and a civ_ slot's assigned flag (civ_set_mark) */
+      char mk[300];
+      const char *cm = strncmp(slot, "civ_", 4) == 0 ? civ_set_mark(c, k, sym, mk, sizeof mk) : NULL;
+      if (cm) buf_printf(b, " %s", cm);
     }
     else {
       buf_printf(b, "%s%d = ", op == 'g' ? "_ivg" : "_ivd", tv);

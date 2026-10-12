@@ -1209,8 +1209,14 @@ int emit_strbuf_ivar_write_handle(Compiler *c, int v, Buf *b) {
   else snprintf(ref, sizeof ref, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
   buf_puts(b, "({ ");
   if (nt_kind(nt, w) == NK_InstanceVariableWriteNode) emit_stmt_inner(c, w, b, 0);
-  else emit_strbuf_orw_guard(c, ref, nt_ref(nt, w, "value"),
-                             nt_kind(nt, w) == NK_InstanceVariableOrWriteNode, b);
+  else {
+    int is_or = nt_kind(nt, w) == NK_InstanceVariableOrWriteNode;
+    emit_strbuf_orw_guard(c, ref, nt_ref(nt, w, "value"), is_or, b);
+    /* `||=` leaves the ivar assigned (ivar_write_mark), `&&=` as it was */
+    char mk[300];
+    const char *m = is_or ? ivar_write_mark(c, w, mk, sizeof mk) : NULL;
+    if (m) buf_printf(b, " %s", m);
+  }
   buf_printf(b, " %s; })", ref);
   return 1;
 }
@@ -3318,9 +3324,17 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
           if (sn && sp_streq(sn, inm)) res = "instance-variable";
         }
       }
+      /* a class-level ivar (a class method's, a class body's, the top
+         level's) is its civ_ slot, which starts nil and can be stored nil:
+         assigned or not is its set flag, asked at run time */
+      Scope *ds = comp_scope_of(c, v);
+      int gcid = ds ? civ_class_of(c, v, ds) : -1;
+      if (gcid >= 0 && inm && comp_ivar_index(&c->classes[gcid], inm) >= 0 && civ_defined_probed(c, inm)) {
+        buf_printf(b, "(civ_%s_%s__set ? SPL(\"instance-variable\") : NULL)", c->classes[gcid].name, iv_c(inm + 1));
+        return 1;
+      }
       /* in an instance method, a slot nothing has set yet is not defined
          (ivar_set_kind): asked of self at run time */
-      Scope *ds = comp_scope_of(c, v);
       int dcid = ds && !ds->is_cmethod && ds->class_id >= 0 && g_ie_class_id < 0 ? ds->class_id : -1;
       if (res && dcid >= 0 && comp_ivar_index(&c->classes[dcid], inm) >= 0 &&
           ((ivar_set_kind(c, dcid, inm) & 1) ||

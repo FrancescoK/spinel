@@ -139,6 +139,11 @@ const char *ivar_set_test(Compiler *c, int cid, const char *ivn, const char *exp
 const char *ivar_set_mark(Compiler *c, int cid, const char *ivn, const char *obj, const char *acc,
                           char *buf, size_t cap);
 const char *ivar_write_mark(Compiler *c, int w, char *buf, size_t cap);
+int civ_defined_probed(Compiler *c, const char *nm);
+const char *civ_set_mark(Compiler *c, int cid, const char *nm, char *buf, size_t cap);
+int civ_class_of(Compiler *c, int node, Scope *s);
+void emit_civ_slot_decl(Compiler *c, int cid, const char *nm, const char *ctype, TyKind t,
+                        const char *init, Buf *b);
 int ie_class_of(Compiler *c, int node);
 /* The shared-mutable shim (codegen_stmt.c) re-runs a value-semantics mutator
    arm against a plain shadow copy, then swaps the handle's bytes for it. A
