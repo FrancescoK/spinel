@@ -9794,7 +9794,7 @@ void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b) {
       if (ivar_set_kind(c, cid, ci->ivars[i]) == 3)
         buf_printf(b, "  sp_bool _sp_set_%s;\n", iv_c(ci->ivars[i] + 1));
     }
-    buf_puts(b, "};\n");
+    buf_puts(b, "} SP_MAY_ALIAS;\n");
     return;
   }
   /* the typedef is forward-declared for every class first (see codegen_program)
@@ -9831,7 +9831,12 @@ void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b) {
       buf_printf(b, "  %s _sp_set_%s;\n", ranked ? "sp_ivrank" : "sp_bool", iv_c(ci->ivars[i] + 1));
     if (ranked && i + 1 == ordk) buf_puts(b, "  sp_ivrank _sp_ord;\n");
   }
-  buf_puts(b, "};\n");
+  /* A class's struct repeats its parent's fields as a prefix, and an
+     inherited method reads a subclass object through the parent's type: with
+     strict aliasing the C compiler took the two for different objects and
+     kept a stale field across a write through the other (#8673). Every class
+     struct may alias any other. */
+  buf_puts(b, "} SP_MAY_ALIAS;\n");
   /* ... the indexes of the ivars assigned, in the order they were first, and
      the renumbering of their ranks 1..n for a rank counter that ran out */
   if (ranked) {

@@ -102,6 +102,14 @@
 # define SP_UNUSED
 #endif
 
+/* A program class's struct (codegen.c emit_class_struct): read through a
+   parent's or a child's type, which shares its prefix (#8673) */
+#if SP_HAS_ATTRIBUTE(may_alias) || (!defined(SP_PORTABLE) && SP_GNUC_PREREQ(3, 3))
+# define SP_MAY_ALIAS __attribute__((may_alias))
+#else
+# define SP_MAY_ALIAS
+#endif
+
 #if SP_HAS_ATTRIBUTE(format) || (!defined(SP_PORTABLE) && SP_GNUC_PREREQ(3, 0))
 # define SP_PRINTF_FORMAT(fmt, first) __attribute__((format(printf, fmt, first)))
 #else
