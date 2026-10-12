@@ -3748,7 +3748,43 @@ static void dsend_add_name(char ***names, int *n, int *cap, ANameHash *seen, con
 static const char *const object_methods[] = { "to_s", "inspect", "class", "hash", "frozen?", "nil?",
   "==", "!=", "equal?", "eql?", "respond_to?", "is_a?", "kind_of?", "instance_of?", "freeze", "dup",
   "itself", "object_id", NULL };
+/* While desugar_dynamic_send runs, each class's names are computed once:
+   an untyped receiver's send asks every class, and every such send asked
+   again (dsend_receiver_names_uncached walks every method per class). The
+   memo is dropped when the pass ends, or if the class or scope table grows
+   meanwhile. Callers own what they get back, as before. */
+static struct { int on, ncls, nscp; char ***names; int *n; } g_dsn;
+static void dsn_memo_free(void) {
+  if (g_dsn.names) {
+    for (int i = 0; i < g_dsn.ncls * 2 + 2; i++) {
+      if (g_dsn.n[i] < 0) continue;
+      for (int j = 0; j < g_dsn.n[i]; j++) free(g_dsn.names[i][j]);
+      free(g_dsn.names[i]);
+    }
+  }
+  free(g_dsn.names); free(g_dsn.n);
+  g_dsn.names = NULL; g_dsn.n = NULL; g_dsn.ncls = g_dsn.nscp = 0;
+}
+static int dsend_receiver_names_uncached(Compiler *c, int cls, int subclasses, char ***out);
 static int dsend_receiver_names(Compiler *c, int cls, int subclasses, char ***out) {
+  if (!g_dsn.on) return dsend_receiver_names_uncached(c, cls, subclasses, out);
+  if (g_dsn.ncls != c->nclasses || g_dsn.nscp != c->nscopes || !g_dsn.names) {
+    dsn_memo_free();
+    g_dsn.ncls = c->nclasses; g_dsn.nscp = c->nscopes;
+    g_dsn.names = calloc((size_t)(g_dsn.ncls * 2 + 2), sizeof *g_dsn.names);
+    g_dsn.n = malloc(sizeof *g_dsn.n * (size_t)(g_dsn.ncls * 2 + 2));
+    if (!g_dsn.names || !g_dsn.n) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < g_dsn.ncls * 2 + 2; i++) g_dsn.n[i] = -1;
+  }
+  int slot = (cls < 0 ? g_dsn.ncls : cls) * 2 + (subclasses ? 1 : 0);
+  if (g_dsn.n[slot] < 0) g_dsn.n[slot] = dsend_receiver_names_uncached(c, cls, subclasses, &g_dsn.names[slot]);
+  int n = g_dsn.n[slot];
+  char **copy = (char **)malloc(sizeof(char *) * (size_t)(n > 0 ? n : 1));
+  for (int j = 0; j < n; j++) copy[j] = strdup(g_dsn.names[slot][j]);
+  *out = copy;
+  return n;
+}
+static int dsend_receiver_names_uncached(Compiler *c, int cls, int subclasses, char ***out) {
   char **names = NULL; int n = 0, cap = 0;
   ANameHash seen; memset(&seen, 0, sizeof seen);
   for (int d = 0; d < c->nclasses; d++) {
@@ -4084,7 +4120,15 @@ static void dsend_param_literals(Compiler *c, int name, ANameHash *out) {
   }
 }
 
+static int desugar_dynamic_send_inner(Compiler *c);
 int desugar_dynamic_send(Compiler *c) {
+  g_dsn.on = 1;
+  int changed = desugar_dynamic_send_inner(c);
+  g_dsn.on = 0;
+  dsn_memo_free();
+  return changed;
+}
+static int desugar_dynamic_send_inner(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
   int changed = 0;
