@@ -184,7 +184,16 @@ int emit_strbuf_io_read(Compiler *c, int id, Buf *b);
 void emit_str_concat_handle(Compiler *c, const char *sref, int argc, const int *argv, Buf *b, int indent);
 int emit_bang_self_handle(Compiler *c, int v, Buf *b);
 int face_str_bang_call(Compiler *c, int id);
+int face_str_bang_sn_call(Compiler *c, int id);
 int sb_block_hoists(Compiler *c, int id);
+int strbuf_held_chain(const Compiler *c, int r);
+int sb_held_shadow(int node);
+int strbuf_held_self_answer(Compiler *c, int r);
+int emit_call_on_held_self_answer(Compiler *c, int id, Buf *b);
+int emit_freeze_self_answer(Compiler *c, int id, int recv, Buf *b);
+int emit_equal_self_answer(Compiler *c, int recv, int arg, Buf *b);
+int emit_boxed_self_answer_cond(Compiler *c, int node, Buf *b);
+int strbuf_mutator_on_held_self_answer(Compiler *c, int id);
 int strbuf_chain_over_handle(Compiler *c, int v);
 /* The handle a String mutator's receiver hands on, emitted once into b
    whatever its length (codegen_stmt.c) */

@@ -1,9 +1,8 @@
 # A String bang called on an element of a boxed Array or Hash answers nil when it
 # changes nothing, and a String mutator called on that nil is NoMethodError
 # naming the mutator (it was FrozenError). The bang goes through the boxed
-# receiver's dispatch there, not the typed String bang's. Not marked `share`:
-# --share-strings refuses these routes (a String handed on in place and shared
-# with the container), as it does on master.
+# receiver's dispatch there, not the typed String bang's. --share-strings
+# answers the same, the bang's answer held as the element's handle.
 def try(label)
   yield
 rescue NoMethodError, FrozenError, IndexError => e

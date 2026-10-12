@@ -3963,6 +3963,9 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
     int is_and = sp_streq(ty, "AndNode");
     int left = nt_ref(nt, id, "left"), right = nt_ref(nt, id, "right");
     TyKind lt = comp_ntype(c, left), res = repr_of(c, id).as_ty;
+    /* --share-strings: a bang's held answer on an arm is boxed as its handle
+       (emit_boxed_self_answer_cond), not wrapped in a new String below */
+    if (res == TY_POLY && emit_boxed_self_answer_cond(c, id, b)) return 1;
     /* `v = lookup or return`: the right operand diverges, so it has no value
        for an arm to assign. Run it as a statement inside the short-circuit and
        answer the left, which is the only value the chain can produce (#3777). */

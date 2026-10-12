@@ -1455,8 +1455,10 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
   char srefB[1024];
   int slot = strbuf_slot_ref(c, r, srefB, sizeof srefB);
   /* (a bang over a route keeps its own arms below: a narrowed box's
-     mutator changes the box's String in place) */
-  if (!slot && !strbuf_plain_self_call(c, node)) return 0;
+     mutator changes the box's String in place; a receiver that is such a
+     call itself, `id(s).upcase!.downcase!`, is held as its handle,
+     strbuf_held_self_answer) */
+  if (!slot && !strbuf_plain_self_call(c, node) && !strbuf_held_self_answer(c, r)) return 0;
   if (!slot || nt_kind(c->nt, r) == NK_CallNode) {
     /* a reader call: read once (emit_bang_self_handle); so is a route
        over a handle (`(s << x).freeze`), whose handle it takes once */
@@ -1706,6 +1708,10 @@ static int emit_boxed_cond_arms(Compiler *c, int node, Buf *b) {
     RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
     return 1;
   }
+  /* a `||` or `&&` of another type with a bang's held answer on an arm
+     boxes each arm as its own box (emit_boxed_self_answer_cond) */
+  if ((k == NK_OrNode || k == NK_AndNode) && t != TY_STRING && t != TY_STRBUF && emit_boxed_self_answer_cond(c, node, b))
+    return 1;
   if ((k != NK_IfNode && k != NK_UnlessNode) || (t != TY_STRING && t != TY_STRBUF) ||
       !strbuf_cond_has_handle_leaf(c, node, 0))
     return 0;
@@ -2193,6 +2199,12 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     if (g_repr_check) repr_channel_boxed(c, node, frame);
     return;
   }
+  /* --share-strings: a held chain's value (`id(x[0]).upcase!.itself`,
+     strbuf_held_chain) is boxed as the handle it holds */
+  if (repr_share_rule(c) && node >= 0 && strbuf_held_chain(c, node) && emit_boxed_bang_self(c, unwrap_parens(c, node), b)) {
+    if (g_repr_check) repr_channel_boxed(c, node, frame);
+    return;
+  }
   int lift = repr_share_rule(c) && node >= 0 && c->poly_strbuf_lift[node] && comp_ntype(c, node) == TY_STRING;
   /* a route that hands on a handle (`q ||= s.then { |v| v }`,
      emit_strbuf_route): that handle's box, not a new handle around a copy */
@@ -2213,6 +2225,12 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
       return;
     }
   }
+  /* --share-strings: a boxed call's answer a container store lifts into a
+     handle (strbuf_demand_store_leaf), so a mutation through the element
+     changes the String the container keeps */
+  if (!lift && repr_share_rule(c) && node >= 0 && c->poly_strbuf_lift[node] == STRBUF_LIFT_FRESH_CALL &&
+      repr_of(c, node).kind == RK_BOXED)
+    lift = 1;
   if (lift) buf_puts(b, "sp_poly_strbuf_lift(");
   rc_depth++;
   emit_boxed_impl(c, node, b);

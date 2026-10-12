@@ -316,6 +316,9 @@ typedef struct {
 } LocalVar;
 #define POLY_LIFT_APPENDED 1
 #define POLY_LIFT_ZSUPER   2
+/* Compiler.poly_strbuf_lift's mark for a boxed call's new String a
+   container store lifts (any other mark is 1) */
+#define STRBUF_LIFT_FRESH_CALL 2
 
 typedef struct {
   char *name;       /* method name; NULL for the top-level scope */
@@ -857,7 +860,9 @@ typedef struct {
                           stored back before it is passed, so the callee's
                           append and the caller's variable are one String
                           (sp_poly_strbuf_lift). The node's TYPE is
-                          unchanged. */
+                          unchanged. STRBUF_LIFT_FRESH_CALL: a boxed call's
+                          new String that a container store lifts into a
+                          handle (strbuf_demand_store_leaf). */
   unsigned char *nil_tested; /* [node_cap] a builtin call's receiver whose nil
                           its nil arm has already tested (cplan_nil, #7444),
                           or an object's under its kind query's nil arm

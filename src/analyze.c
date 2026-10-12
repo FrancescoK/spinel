@@ -16881,6 +16881,28 @@ static int block_param_user_yield_only(Compiler *c, const char *vn, Scope *vs) {
   }
   return any;
 }
+/* Is n a call on a boxed receiver whose answer is a new String whatever
+   class the receiver is (`v.upcase`): a builtin of a name no method of the
+   program defines, which String's own share row and every other builtin
+   family's that has it answer with a value they were not handed
+   (BSH_PURE)? One that can answer its receiver, an element or an argument
+   (`itself`, `first`, `max`), or a name String has no row for (`value`,
+   `resume`, `deq`, which answer what another object holds), is no new
+   String. */
+static int strbuf_poly_call_fresh(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (n < 0 || nt_kind(nt, n) != NK_CallNode || nt_ref(nt, n, "receiver") < 0 || nt_ref(nt, n, "block") >= 0 ||
+      container_elem_read_p(nt, n) || infer_type(c, n) != TY_POLY ||
+      infer_type(c, nt_ref(nt, n, "receiver")) != TY_POLY) return 0;
+  const char *nm = nt_str(nt, n, "name");
+  if (!nm || an_any_scope_by_name(c, nm) >= 0 || bop_share_named(TY_STRING, nm) != BSH_PURE) return 0;
+  static const TyKind fams[] = { BOP_ANY_ARRAY, BOP_ANY_HASH, BOP_ANY_RECV };
+  for (size_t i = 0; i < sizeof fams / sizeof fams[0]; i++) {
+    int sh = bop_share_named(fams[i], nm);
+    if (sh && sh != BSH_PURE) return 0;
+  }
+  return 1;
+}
 static int lift_poly_read_store(Compiler *c, int a);
 /* The demanded stores of a String's own conversion strbuf_demand_store_leaf
    took, checked once the types settle (sa_check_conversion_stores) */
@@ -16912,9 +16934,31 @@ int an_str_conversion_local(Compiler *c, int v) {
   int ms[CPT_MAX];
   return (rt == TY_STRING || rt == TY_STRBUF) && cplan_targets(c, v, ms, CPT_MAX) == 0 ? r : -1;
 }
+static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth);
+/* --share-strings: the Strings of nested literal lit (an Array's elements,
+   a Hash's values) are demanded as the outer literal's are, but for a
+   String literal: it is frozen, so no mutation needs its handle (its plain
+   box raises the FrozenError). */
+static int strbuf_demand_nested_literal(Compiler *c, int lit, int depth) {
+  const NodeTable *nt = c->nt;
+  if (depth > 8) return 0;
+  int en = 0, changed = 0, hash = nt_kind(nt, lit) == NK_HashNode;
+  const int *el = nt_arr(nt, lit, "elements", &en);
+  for (int e = 0; e < en; e++) {
+    int v = hash ? (nt_kind(nt, el[e]) == NK_AssocNode ? nt_ref(nt, el[e], "value") : -1) : el[e];
+    if (v < 0 || nt_kind(nt, an_unparen(nt, v)) == NK_StringNode) continue;
+    changed |= strbuf_demand_store_leaf(c, v, depth);
+  }
+  return changed;
+}
 static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
   const NodeTable *nt = c->nt;
   if (sn < 0 || c->strbuf_box[sn]) return 0;
+  /* --share-strings: a nested Array or Hash literal whose own elements the
+     rule shares (`[[+"ab", 1], 2]` with `id(x[0][0]).upcase!`) */
+  NodeKind snk = nt_kind(nt, an_unparen(nt, sn));
+  if (c->share_strings && (snk == NK_ArrayNode || snk == NK_HashNode) && share_node_elems_share(c, an_unparen(nt, sn)))
+    return strbuf_demand_nested_literal(c, an_unparen(nt, sn), depth + 1);
   /* `a << (s << "y")`, `a << +s`, `a << sb` with `def sb = @s`: the
      element would be a fresh handle over a copy of s's or @s's String
      (sa_refuse); `+s` is s itself unless s is frozen. So would `a << id(s)`
@@ -17063,7 +17107,20 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
     }
   }
   TyKind st2 = infer_type(c, sn);
-  if (st2 == TY_POLY) return strbuf_demand_value_leaves(c, sn, 0);
+  if (st2 == TY_POLY) {
+    int ch = strbuf_demand_value_leaves(c, sn, 0);
+    /* --share-strings: a boxed call's new String (`k << v.upcase` over a
+       boxed v, strbuf_poly_call_fresh) is a plain box, which a mutation
+       through the element cannot change: `k[0] << "!"` appended to a copy
+       and the element kept its old text. The store lifts it into a handle
+       (sp_poly_strbuf_lift), so the element is the String the mutation
+       reaches; no other name holds that String. */
+    if (c->share_strings && strbuf_poly_call_fresh(c, snu) && !c->poly_strbuf_lift[snu]) {
+      c->poly_strbuf_lift[snu] = STRBUF_LIFT_FRESH_CALL;
+      ch = 1;
+    }
+    return ch;
+  }
   if (st2 != TY_STRING && st2 != TY_STRBUF) return 0;
   c->strbuf_box[sn] = 1;
   return 1;

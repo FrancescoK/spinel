@@ -4446,7 +4446,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
         buf_printf(b, " sp_String_cstr(_t%d); })", tm2);
         { *out = 1; return 1; }
       } }
-    int lvw9 = str_mut_var_recv(c, recv);
+    int lvw9 = str_mut_var_recv(c, recv) || sb_held_shadow(recv);
     int tn9 = ++g_tmp;
     /* append_as_bytes accepts String AND Integer arguments; an Integer is the
        raw byte value (100 -> "d"), materialized via sp_int_chr (#2463). A
@@ -4765,7 +4765,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         (sp_streq(nt_type(ntC, rcore), "CallNode") ||
          sp_streq(nt_type(ntC, rcore), "StringNode") ||
          sp_streq(nt_type(ntC, rcore), "InterpolatedStringNode")) &&
-        !strbuf_local_name(c, rcore)) {
+        !strbuf_local_name(c, rcore) && !sb_held_shadow(rcore)) {
       int aC = nt_ref(ntC, id, "arguments"); int anC = 0;
       if (aC >= 0) nt_arr(ntC, aC, "arguments", &anC);
       if (anC == 0 && nt_ref(ntC, id, "block") < 0) {
@@ -13862,7 +13862,9 @@ int sb_block_hoists(Compiler *c, int id) {
    first. */
 int face_str_bang_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
-  if (id < 0 || nt_kind(nt, id) != NK_CallNode || call_is_safe_nav(nt, id)) return 0;
+  /* (one whose nil guard an enclosing emitter stands for, g_sn_skip, is
+     the plain one) */
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode || (call_is_safe_nav(nt, id) && g_sn_skip != id)) return 0;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver"), argc;
   if (!name || recv < 0 || !ty_str_bang_flags(name) || comp_recv_type(c, recv) != TY_POLY ||
@@ -13870,6 +13872,16 @@ int face_str_bang_call(Compiler *c, int id) {
   call_args(nt, id, &argc);
   return !an_zero_arg_builtin_shadowed(c, name, argc) &&
          (ty_poly_face_owners(name, argc, nt_ref(nt, id, "block") >= 0, nt_call_args_plain(nt, id), 0) & PF_STR_BANG);
+}
+/* Is id such a bang under safe navigation (`bid(x)&.upcase!`), taken as
+   the plain one inside the nil guard its emitter holds (emit_held_handle)? */
+int face_str_bang_sn_call(Compiler *c, int id) {
+  if (id < 0 || nt_kind(c->nt, id) != NK_CallNode || !call_is_safe_nav(c->nt, id) || g_sn_skip == id) return 0;
+  int sv = g_sn_skip, f;
+  g_sn_skip = id;
+  f = face_str_bang_call(c, id);
+  g_sn_skip = sv;
+  return f;
 }
 
 /* A String value-form mutator on a boxed receiver: compute the non-bang
