@@ -35403,16 +35403,22 @@ static void mark_nullable_int_locals(Compiler *c) {
       }
     }
     /* `ks.each { |k| h[k] = ... }`: the block parameter IS the element
-       (elem_block_params) */
+       (elem_block_params). A poly parameter is marked too: the typed
+       emitters (map, select, reject, inject, ...) shadow it with the
+       element's type, which then holds the nil. A comparator's pair is
+       left alone. */
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
       int blk = nt_ref(nt, id, "block"), recv = -1;
       int np = elem_block_params(c, id, &recv);
       if (!np || !nullable_int_elem_expr(c, recv, 0)) continue;
+      const char *cnm = nt_str(nt, id, "name");
+      int cmp = is_sort_family(cnm) || is_extrema_family(cnm);
       Scope *bsc = comp_scope_of(c, blk);
       for (int pk = 0; pk < np; pk++) {
         const char *pnm = block_param_name(c, blk, pk);
         LocalVar *plv = pnm && bsc ? scope_local(bsc, pnm) : NULL;
-        if (!plv || (plv->type != TY_INT && plv->type != TY_FLOAT) || plv->nullable_int) continue;
+        if (!plv || (plv->type != TY_INT && plv->type != TY_FLOAT && (plv->type != TY_POLY || cmp)) ||
+            plv->nullable_int) continue;
         plv->nullable_int = 1; changed = 1;
       }
     }

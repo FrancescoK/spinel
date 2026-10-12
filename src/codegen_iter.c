@@ -4166,7 +4166,7 @@ int emit_inline_expr(Compiler *c, int id, Buf *b) {
 /* Box `src`, a value of type `et`, into a poly value. A whole Integer or
    Float array element read (`sp_IntArray_get(a, i)`) reads with its nil bit
    (`_oget`), so a nil element boxes as nil rather than 0. */
-static void emit_boxed_elem_read(Compiler *c, TyKind et, const char *src, Buf *b) {
+void emit_boxed_elem_read(Compiler *c, TyKind et, const char *src, Buf *b) {
   const char *get = et == TY_INT ? "sp_IntArray_get(" : et == TY_FLOAT ? "sp_FloatArray_get(" : NULL;
   size_t gl = get ? strlen(get) : 0, n = strlen(src);
   int depth = 1, whole = get && !strncmp(src, get, gl);

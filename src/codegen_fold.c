@@ -1471,8 +1471,17 @@ static int bp_slot_oint(Compiler *c, int block, const char *orig, const char *k)
   LocalVar *lv = sc ? scope_local(sc, orig) : NULL;
   return lv && slot_is_oint(lv);
 }
-static const char *bp_getter(Compiler *c, int block, const char *orig, const char *k) {
-  return bp_slot_oint(c, block, orig, k) ? "oget" : "get";
+/* The read of element _t<ti> of sp_<k>Array _t<ta> that binds block
+   parameter `orig`: with its nil (oget) into a slot that holds it, and
+   boxed through the element's oint into a poly slot, so a nil element
+   stays nil. */
+static void bp_elem_read(Compiler *c, int block, const char *orig, const char *k, int ta, int ti, Buf *b) {
+  int num = k && (sp_streq(k, "Int") || sp_streq(k, "Float"));
+  Scope *sc = num && orig ? comp_scope_of(c, block) : NULL;
+  LocalVar *lv = sc ? scope_local(sc, orig) : NULL;
+  if (lv && lv->type == TY_POLY)
+    buf_printf(b, "%s(sp_%sArray_oget(_t%d, _t%d))", oint_box(sp_streq(k, "Int") ? TY_INT : TY_FLOAT), k, ta, ti);
+  else buf_printf(b, "sp_%sArray_%s(_t%d, _t%d)", k, bp_slot_oint(c, block, orig, k) ? "oget" : "get", ta, ti);
 }
 #define BP0(c, block) block_param_name((c), (block), 0)
 
@@ -1554,7 +1563,8 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
       else if (bare) snprintf(es, sizeof es, "%s", sel);
       else if (!splat || !emit_iter_autosplat(c, block, rt, sel, din)) {
         splat = 0;
-        emit_indent(g_pre, din); buf_printf(g_pre, "lv_%s = %s;\n", p0, es);
+        emit_indent(g_pre, din); buf_printf(g_pre, "lv_%s = ", p0);
+        bp_elem_read(c, block, BP0(c, block), rk, trecv, ti, g_pre); buf_puts(g_pre, ";\n");
       }
       else snprintf(es, sizeof es, "%s", sel);
     }
@@ -1568,7 +1578,8 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
                tdup, tj, tj, tseen, tj, tseen, tj, tkey, tdup);
     emit_indent(g_pre, din);
     if (splat) buf_printf(g_pre, "if (!_t%d) { sp_PolyArray_push(_t%d, _t%d); sp_%sArray_push(_t%d, %s); }\n", tdup, tseen, tkey, rk, tres, es);
-    else buf_printf(g_pre, "if (!_t%d) { sp_PolyArray_push(_t%d, _t%d); sp_%sArray_push(_t%d, lv_%s); }\n", tdup, tseen, tkey, rk, tres, p0);
+    else buf_printf(g_pre, "if (!_t%d) { sp_PolyArray_push(_t%d, _t%d); sp_%sArray_push%s(_t%d, lv_%s); }\n", tdup, tseen, tkey, rk,
+                    bp_slot_oint(c, block, BP0(c, block), rk) ? "_o" : "", tres, p0);
     if (use_shadow) { din--; emit_indent(g_pre, din); buf_puts(g_pre, "}\n"); }
     if (clv0) clv0->type = csaved0;
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
@@ -2011,7 +2022,7 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
           if (plv) buf_printf(b, "lv_%s = sp_poly_massign_get(_t%d, %d); ", rename_local(pn), te, pj);
         }
       }
-      else if (p0) buf_printf(b, "lv_%s = sp_%sArray_%s(_t%d, _t%d); ", p0, k, bp_getter(c, block, BP0(c, block), k), ta, ti);
+      else if (p0) { buf_printf(b, "lv_%s = ", p0); bp_elem_read(c, block, BP0(c, block), k, ta, ti, b); buf_puts(b, "; "); }
     }
     {
       Buf inner; memset(&inner, 0, sizeof inner);
@@ -2113,7 +2124,7 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
         buf_puts(b, "; ");
       }
     }
-    else if (p0) buf_printf(b, "lv_%s = sp_%sArray_%s(_t%d, _t%d); ", p0, k, bp_getter(c, block, BP0(c, block), k), ta, ti);
+    else if (p0) { buf_printf(b, "lv_%s = ", p0); bp_elem_read(c, block, BP0(c, block), k, ta, ti, b); buf_puts(b, "; "); }
   }
   /* The block's value expression may spill setup statements to g_pre (e.g.
      a nested count loop). Those must run per iteration: redirect g_pre into
@@ -2240,7 +2251,9 @@ int emit_slice_when_chunk_inspect_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_IntArray_length(_t%d); _t%d++) {\n", ti, ti, ta, ti);
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "lv_%s = sp_IntArray_%s(_t%d, _t%d);\n", p0, bp_getter(c, block, BP0(c, block), "Int"), ta, ti);
+    buf_printf(g_pre, "lv_%s = ", p0);
+    bp_elem_read(c, block, BP0(c, block), "Int", ta, ti, g_pre);
+    buf_puts(g_pre, ";\n");
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "sp_IntArray_push_o(_t%d, sp_IntArray_oget(_t%d, _t%d));\n", tcur, ta, ti);   /* the element with its nil */
     emit_indent(g_pre, g_indent + 1);
@@ -2295,7 +2308,9 @@ int emit_slice_when_chunk_inspect_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_IntArray_length(_t%d); _t%d++) {\n", ti, ti, ta, ti);
   emit_indent(g_pre, g_indent + 1);
-  buf_printf(g_pre, "lv_%s = sp_IntArray_%s(_t%d, _t%d);\n", p0, bp_getter(c, block, BP0(c, block), "Int"), ta, ti);
+  buf_printf(g_pre, "lv_%s = ", p0);
+  bp_elem_read(c, block, BP0(c, block), "Int", ta, ti, g_pre);
+  buf_puts(g_pre, ";\n");
   /* emit key expression */
   Scope *bsc = comp_scope_of(c, block);
   LocalVar *lv0 = bsc ? scope_local(bsc, p0n) : NULL;
@@ -2513,7 +2528,9 @@ int emit_chunk_first_class_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_IntArray_length(_t%d); _t%d++) {\n", ti, ti, ta, ti);
   emit_indent(g_pre, g_indent + 1);
-  buf_printf(g_pre, "lv_%s = sp_IntArray_%s(_t%d, _t%d);\n", p0, bp_getter(c, block, BP0(c, block), "Int"), ta, ti);
+  buf_printf(g_pre, "lv_%s = ", p0);
+  bp_elem_read(c, block, BP0(c, block), "Int", ta, ti, g_pre);
+  buf_puts(g_pre, ";\n");
   Scope *bsc = comp_scope_of(c, block);
   LocalVar *lv0 = bsc ? scope_local(bsc, p0n) : NULL;
   TyKind pt0 = lv0 ? lv0->type : TY_UNKNOWN;
@@ -2650,7 +2667,9 @@ int emit_chunk_while_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_IntArray_length(_t%d); _t%d++) {\n", ti, ti, ta, ti);
   emit_indent(g_pre, g_indent + 1);
-  buf_printf(g_pre, "lv_%s = sp_IntArray_%s(_t%d, _t%d);\n", p0, bp_getter(c, block, BP0(c, block), "Int"), ta, ti);
+  buf_printf(g_pre, "lv_%s = ", p0);
+  bp_elem_read(c, block, BP0(c, block), "Int", ta, ti, g_pre);
+  buf_puts(g_pre, ";\n");
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "sp_IntArray_push_o(_t%d, sp_IntArray_oget(_t%d, _t%d));\n", tcur, ta, ti);   /* the element with its nil */
   emit_indent(g_pre, g_indent + 1);
@@ -4173,7 +4192,7 @@ int emit_each_with_index_chain(Compiler *c, int id, Buf *b) {
     else {
       buf_printf(b, "sp_PolyArray_push(lv_%s, ", rename_local(pairo));
       char src[96]; snprintf(src, sizeof src, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
-      Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, elem_t, src, &bx); buf_puts(b, bx.p ? bx.p : ""); free(bx.p);
+      Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_elem_read(c, elem_t, src, &bx); buf_puts(b, bx.p ? bx.p : ""); free(bx.p);
       buf_printf(b, "); sp_PolyArray_push(lv_%s, sp_box_int(_t%d)); ", rename_local(pairo), tidx);
     }
   }
@@ -4343,7 +4362,7 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
     else {
       emit_indent(g_pre, din); buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", tpair);
       char src[96]; snprintf(src, sizeof src, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
-      Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, elem_t, src, &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p);
+      Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_elem_read(c, elem_t, src, &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p);
       buf_printf(g_pre, "); sp_PolyArray_push(_t%d, sp_box_int(_t%d));\n", tpair, tidx);
     }
   }
@@ -4566,10 +4585,12 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
     Scope *sbs = comp_scope_of(c, block);
     LocalVar *plv = sbs ? scope_local(sbs, p0_orig) : NULL;
     TyKind pt = plv ? plv->type : TY_UNKNOWN;
-    char src[96]; snprintf(src, sizeof src, "sp_%sArray_%s(_t%d, _t%d)", k, bp_getter(c, block, p0_orig, k), trv, ti);
+    Buf src; memset(&src, 0, sizeof src);
+    bp_elem_read(c, block, p0_orig, k, trv, ti, &src);
     emit_indent(g_pre, g_indent + 1);
-    if (rr.elem == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) emit_block_param_from_boxed(c, p0, pt, src, g_pre);
-    else buf_printf(g_pre, "lv_%s = %s;\n", p0, src);
+    if (rr.elem == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) emit_block_param_from_boxed(c, p0, pt, src.p, g_pre);
+    else buf_printf(g_pre, "lv_%s = %s;\n", p0, src.p);
+    free(src.p);
   }
   IterStep st; emit_iter_step_open(c, block, 0, g_indent + 1, &st);
   int save = g_indent; g_indent += 1;
@@ -5386,7 +5407,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
                   if (lv_ty_wi == TY_POLY && elem_ty_wi != TY_POLY && elem_ty_wi != TY_UNKNOWN) {
                     char esw[64];
                     snprintf(esw, sizeof esw, "sp_%sArray_get(_t%d, _t%d + %d)", kwi, ta_wi, ti_wi, li);
-                    Buf bxw; memset(&bxw, 0, sizeof bxw); emit_boxed_text(c, elem_ty_wi, esw, &bxw);
+                    Buf bxw; memset(&bxw, 0, sizeof bxw); emit_boxed_elem_read(c, elem_ty_wi, esw, &bxw);
                     buf_printf(g_pre, "lv_%s = %s;\n", lnr, bxw.p ? bxw.p : esw); free(bxw.p);
                   }
                   else {
@@ -5988,9 +6009,9 @@ int emit_with_index_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, innerIndent);
     if (clv0 && clv0->type == TY_POLY && elem_t != TY_POLY && elem_t != TY_UNKNOWN) {
       char src[256]; snprintf(src, sizeof src, "sp_%sArray_get(_t%d, _t%d)", k, trecv, ti);
-      buf_printf(g_pre, "lv_%s = ", p0); emit_boxed_text(c, elem_t, src, g_pre); buf_puts(g_pre, ";\n");
+      buf_printf(g_pre, "lv_%s = ", p0); emit_boxed_elem_read(c, elem_t, src, g_pre); buf_puts(g_pre, ";\n");
     }
-    else buf_printf(g_pre, "lv_%s = sp_%sArray_%s(_t%d, _t%d);\n", p0, k, bp_getter(c, block, BP0(c, block), k), trecv, ti);
+    else { buf_printf(g_pre, "lv_%s = ", p0); bp_elem_read(c, block, BP0(c, block), k, trecv, ti, g_pre); buf_puts(g_pre, ";\n"); }
   }
   if (p1) {
     emit_indent(g_pre, innerIndent);
