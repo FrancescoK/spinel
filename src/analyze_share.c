@@ -1420,6 +1420,7 @@ static void sh_settle_peeks(ShareFacts *F, Compiler *c) {
   }
 }
 
+static int sh_answers_elems_run(int share, int argc);
 /* container: 1 an Array's (or a poly receiver's) row, 2 a Hash's */
 static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int blk, int container) {
   const NodeTable *nt = c->nt;
@@ -1437,6 +1438,16 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     F->fresh_cont[n] = 1;
     return sh_new(F, SHK_VALUE);
   }
+  /* ...and so is an Array builtin's run of such an Array's own elements
+     without a block (`s.split.sort`, `.uniq`, `.drop(1)`, sh_answers_elems_run):
+     the same new Strings, in the receiver's class, which an iterator over
+     it walks as handles as it walks the receiver's (share_node_fresh_elems).
+     Not where a reopening or a module may answer the name instead. */
+  int rcv = an_unparen(nt, nt_ref(nt, n, "receiver"));
+  if (container == 1 && blk < 0 && rcv >= 0 && rcv < F->nnodes && F->fresh_cont[rcv] &&
+      c->ntype[n] == TY_STR_ARRAY && sh_answers_elems_run(share, argc) &&
+      !share_builtin_overridden(c, "Array", nt_str(nt, n, "name")))
+    F->fresh_cont[n] = 1;
   if (share == BSH_FILL) share = lit_blk ? BSH_ITER_MAP_BANG : BSH_STORE_ALL;
   switch (share) {
   case BSH_PACK:
