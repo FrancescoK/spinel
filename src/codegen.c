@@ -1068,7 +1068,8 @@ const char *past_open_parens(const char *s) {
 }
 
 /* Does an emitted expression diverge: lead with one of the SP_NORETURN
-   sp_raise_ helpers, bare or as the voided first operand of a comma (the
+   sp_raise_ helpers, or Kernel#abort / #exit's (sp_abort_raise,
+   sp_exit_raise), bare or as the voided first operand of a comma (the
    shape a call on a raising receiver takes, `((void)(<raise>), nil)`)? The
    voided form nests when such a chain is itself the receiver or left operand
    of another (`a.b && a.b.c`). */
@@ -1081,7 +1082,8 @@ int text_diverges(const char *txt) {
     if (*p == '{') { p++; while (*p == ' ') p++; p = past_open_parens(p); continue; }
     break;
   }
-  return strncmp(p, "sp_raise_", 9) == 0;
+  return strncmp(p, "sp_raise_", 9) == 0 || strncmp(p, "sp_abort_raise(", 15) == 0 ||
+         strncmp(p, "sp_exit_raise(", 14) == 0;
 }
 
 static void emit_str_expr_ex(Compiler *c, int node, int strict, Buf *b) {
