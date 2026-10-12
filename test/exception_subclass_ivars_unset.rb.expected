@@ -1,0 +1,19 @@
+[nil, nil, nil, nil, nil, nil]
+[5, "dflt"]
+40
+"label-7label-7"
+["t7", "u7"]
+8
+"odd9"
+2.25
+"d39"
+["boom", nil, nil]
+["App::Deeper", nil]
+["label-3label-3", ["t3", "u3"], 3]
+60
+"deep59"
+App::Deeper
+["t3", "u3"]
+"label-5label-5"
+["one", nil]
+["two", nil]

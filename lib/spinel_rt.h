@@ -15270,8 +15270,12 @@ static void sp_mark_in_flight_exceptions(void) {
 /* Registered by the generated program to provide user exception hierarchy. */
 #ifdef SPINEL_EXT_HOST
 extern const char *(*sp_user_exc_parent_fn)(const char *);
+extern size_t (*sp_user_exc_layout_fn)(const char *, void (**)(void *));
+extern void (*sp_user_exc_ivinit_fn)(void *);
 #else
 const char *(*sp_user_exc_parent_fn)(const char *) = NULL;
+size_t (*sp_user_exc_layout_fn)(const char *, void (**)(void *)) = NULL;
+void (*sp_user_exc_ivinit_fn)(void *) = NULL;
 #endif
 /* Build the carried NameError/NoMethodError with #name recovered from the
    message's first quoted token (see sp_raise_cls, #2758). */

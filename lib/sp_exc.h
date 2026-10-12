@@ -58,6 +58,12 @@ typedef struct sp_Exception_s {
 static inline int sp_exc_msg_absent(const sp_Exception *e) { return !e->msg; }
 
 extern const char *(*sp_user_exc_parent_fn)(const char *);   /* set by the generated main() */
+/* A program's exception class with ivars of its own, for an instance the
+   runtime allocates by the class's name (sp_exc_new, sp_exc_new_sub_sized):
+   its struct's size and the scan that marks its ivars (0 for any other
+   name), and the seeding of their unset state. */
+extern size_t (*sp_user_exc_layout_fn)(const char *, void (**)(void *));
+extern void (*sp_user_exc_ivinit_fn)(void *);
 /* The modules a class includes, NULL-terminated, or NULL for none. Ruby's type
    hierarchy is not a chain -- `rescue IO::WaitReadable` and `e.is_a?(Retryable)`
    both ask about a MODULE, which a single-parent walk cannot answer. Same shape
