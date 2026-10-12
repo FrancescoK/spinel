@@ -1,7 +1,5 @@
 # After require "ostruct", CRuby makes a new class App::OpenStruct, and the
-# top-level OpenStruct stays the builtin one. Spinel cannot keep the two
-# apart, so it refuses.
-# spinel: reject-builtin-class: unsupported class name 'OpenStruct': collides with the builtin class of that name
+# top-level OpenStruct stays the builtin one.
 require "ostruct"
 
 module App
