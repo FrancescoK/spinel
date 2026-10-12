@@ -12133,6 +12133,11 @@ static void sp_bivar_copy(sp_RbVal from, sp_RbVal to) {
   for (sp_int i = 0; i < t->len; i++) sp_SymPolyHash_set(d, t->order[i], sp_SymPolyHash_get(t, t->order[i]));
   sp_ivtbl_put(to.v.p, d);
 }
+/* Exception#exception(msg)'s copy (sp_exc_exception), through
+   sp_exc_bivar_copy_fn once the program can write a builtin value's ivar */
+SP_UNUSED static void sp_exc_bivar_copy(void *from, void *to) {
+  sp_bivar_copy(sp_box_obj(from, SP_BUILTIN_EXCEPTION), sp_box_obj(to, SP_BUILTIN_EXCEPTION));
+}
 /* eql? for a poly value: like == but without cross-kind numeric coercion, so
    1.eql?(1.0) is false while 1 == 1.0 is true. Every other type answers as ==.
    Backs the universal `x.should.eql?(y)` matcher on a poly receiver. */
@@ -15344,10 +15349,12 @@ static void sp_mark_in_flight_exceptions(void) {
 extern const char *(*sp_user_exc_parent_fn)(const char *);
 extern size_t (*sp_user_exc_layout_fn)(const char *, void (**)(void *));
 extern void (*sp_user_exc_ivinit_fn)(void *);
+extern void (*sp_exc_bivar_copy_fn)(void *, void *);
 #else
 const char *(*sp_user_exc_parent_fn)(const char *) = NULL;
 size_t (*sp_user_exc_layout_fn)(const char *, void (**)(void *)) = NULL;
 void (*sp_user_exc_ivinit_fn)(void *) = NULL;
+void (*sp_exc_bivar_copy_fn)(void *, void *) = NULL;
 #endif
 /* Build the carried NameError/NoMethodError with #name recovered from the
    message's first quoted token (see sp_raise_cls, #2758). */

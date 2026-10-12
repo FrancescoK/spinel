@@ -5416,6 +5416,14 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
      type -> that type; mixed or none -> poly). Without this the call fell
      through to an unrelated rule and inferred a bogus type, so the whole
      chain was silently dropped. Codegen dispatches on cls_id per class. */
+  /* the same reflection on an exception: one of the program's exception
+     classes answers from its layout, a builtin one from the runtime's map,
+     which holds any value, so a read is boxed */
+  if (recv >= 0 && rt == TY_EXCEPTION && sp_streq(name, "instance_variable_get") && argc == 1 &&
+      !exc_class_defines(c, name)) {
+    const char *a0ty = nt_type(nt, argv[0]);
+    if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) { *out = TY_POLY; return 1; }
+  }
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_get") && argc >= 1) {
     const char *a0ty = nt_type(nt, argv[0]);
     if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) {
@@ -5445,11 +5453,13 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
   }
   /* instance_variable_defined? and instance_variables on a POLY receiver:
      answered per class, a bare Object from its own table */
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_defined?") && argc == 1) {
+  if (recv >= 0 && (rt == TY_POLY || (rt == TY_EXCEPTION && !exc_class_defines(c, name))) &&
+      sp_streq(name, "instance_variable_defined?") && argc == 1) {
     const char *a0ty = nt_type(nt, argv[0]);
     if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) { *out = TY_BOOL; return 1; }
   }
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variables") && argc == 0 &&
+  if (recv >= 0 && (rt == TY_POLY || (rt == TY_EXCEPTION && !exc_class_defines(c, name))) &&
+      sp_streq(name, "instance_variables") && argc == 0 &&
       nt_ref(nt, id, "block") < 0)
     { *out = TY_POLY_ARRAY; return 1; }
 
@@ -5466,7 +5476,8 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
 
   /* instance_variable_set(:@x, v) on a POLY receiver answers v, boxed (the
      codegen twin stores it per class) */
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_set") && argc == 2) {
+  if (recv >= 0 && (rt == TY_POLY || (rt == TY_EXCEPTION && !exc_class_defines(c, name))) &&
+      sp_streq(name, "instance_variable_set") && argc == 2) {
     const char *a0ty = nt_type(nt, argv[0]);
     if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) { *out = TY_POLY; return 1; }
   }

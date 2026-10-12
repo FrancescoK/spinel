@@ -9133,6 +9133,14 @@ int class_is_exc_subclass(Compiler *c, int ci) {
   return 0;
 }
 
+/* True when one of the program's exception classes defines `name` itself:
+   reflection on an exception then has to call it, not answer for it. */
+int exc_class_defines(Compiler *c, const char *name) {
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_method_in_class(c, k, name) >= 0 && class_is_exc_subclass(c, k)) return 1;
+  return 0;
+}
+
 /* Does the program have an exception class with ivars of its own? */
 static int exc_ivar_classes(Compiler *c) {
   for (int i = 0; i < c->nclasses; i++)
@@ -14002,6 +14010,8 @@ void emit_regex_section(Compiler *c, Buf *b) {
     buf_puts(b, "  SP_INSTALL_HOOK(sp_obj_eq_hook, sp_obj_eq_dispatch);\n");
   if (exc_has_user_msg_override(c))
     buf_puts(b, "  sp_user_exc_to_s_fn = sp_user_exc_to_s;\n");
+  if (c->bivar_table)
+    buf_puts(b, "  sp_exc_bivar_copy_fn = sp_exc_bivar_copy;\n");
   if (exc_ivar_classes(c))
     buf_puts(b, "  sp_user_exc_layout_fn = sp_user_exc_layout;\n  sp_user_exc_ivinit_fn = sp_user_exc_ivinit;\n");
   if (g_needs_class_machinery)

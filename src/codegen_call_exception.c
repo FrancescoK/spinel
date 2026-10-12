@@ -103,7 +103,8 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     if ((is_copy_alias(name)) && argc == 0 &&
         comp_method_in_chain(c, ty_object_class(comp_ntype(c, recv)), name, NULL) < 0) {
       int xc2 = ty_object_class(repr_of(c, recv).as_ty);
-      buf_printf(b, "((sp_%s *)sp_exc_dup((sp_Exception *)(", c->classes[xc2].c_name);
+      buf_printf(b, "((sp_%s *)sp_exc_%s((sp_Exception *)(", c->classes[xc2].c_name,
+                 sp_streq(name, "clone") ? "clone" : "dup");
       emit_expr(c, recv, b);
       buf_puts(b, ")))");
       return 1;
@@ -509,7 +510,7 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     /* dup/clone copy the whole (subclass-sized) struct so mutating the copy
        leaves the original alone (#2772) */
     if ((is_copy_alias(name)) && argc == 0) {
-      buf_puts(b, "sp_exc_dup((sp_Exception *)(");
+      buf_printf(b, "sp_exc_%s((sp_Exception *)(", sp_streq(name, "clone") ? "clone" : "dup");
       emit_expr(c, recv, b); buf_puts(b, "))");
       return 1;
     }

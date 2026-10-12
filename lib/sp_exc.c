@@ -423,6 +423,13 @@ sp_Exception *sp_exc_dup(sp_Exception *e) {
   memcpy(n, e, payload);
   return n;
 }
+/* Exception#clone: a dup that keeps the receiver frozen when it is */
+sp_Exception *sp_exc_clone(sp_Exception *e) {
+  sp_Exception *n = sp_exc_dup(e);
+  if (n && ((sp_gc_hdr *)((char *)e - sizeof(sp_gc_hdr)))->frozen)
+    ((sp_gc_hdr *)((char *)n - sizeof(sp_gc_hdr)))->frozen = 1;
+  return n;
+}
 /* Write the staged introspection values (receiver/key/value) into the carried
    exception, creating one when the raise had none (see sp_raise_cls). */
 void *sp_exc_apply_staged(const char *cls, const char *msg, void *obj) {if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
@@ -454,6 +461,7 @@ sp_Exception *sp_exc_exception(sp_Exception *e, const char *msg) {SP_GC_ROOT(e);
     if (msg == sp_exc_no_msg_frozen) ((unsigned char *)n->msg)[-1] = 0xfa;
   }
   n->msg_h = NULL;   /* the new message, not the receiver's handle */
+  if (sp_exc_bivar_copy_fn) sp_exc_bivar_copy_fn(e, n);   /* a copy takes the receiver's ivars */
   sp_gc_wb((void *)n);   /* same reason as sp_exc_new_sub_sized */
   return n;
 }
