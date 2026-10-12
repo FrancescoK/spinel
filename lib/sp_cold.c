@@ -1988,8 +1988,9 @@ else {                                        /* macOS: "<idx> <image> <addr> <s
 static void sp_bt_lines(void **buf, int n, int *lines) {
   char exe[1024];
   ssize_t el = readlink("/proc/self/exe", exe, sizeof exe - 1);
-  if (el <= 0 || strchr(exe, '\'')) return;
-  exe[el] = 0;
+  if (el <= 0) return;
+  exe[el] = 0;   /* readlink writes no NUL: end the path before searching it */
+  if (strchr(exe, '\'')) return;
   Dl_info di;
   if (!dladdr(buf[0], &di) || !di.dli_fbase) return;
   const ElfW(Ehdr) *eh = (const ElfW(Ehdr) *)di.dli_fbase;
