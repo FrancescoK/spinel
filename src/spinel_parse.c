@@ -119,7 +119,6 @@ static void out_add(const char *fmt, ...) {
 
 /* ---- Name from constant pool ---- */
 static const pm_parser_t *g_parser;
-static int sym_proc_block_starts_at(size_t off);
 static const char *g_source_file = "";
 static char *g_source_file_escaped = NULL;  /* escape_str(g_source_file), set once at init */
 /* When SPINEL_DEBUG, SPINEL_LINE_MAP or SPINEL_POSITIONS is 1, flatten()
@@ -145,7 +144,7 @@ static int g_emit_end = 0;
    (one flag byte per line of the final spliced buffer, from each spliced
    file's own head), and flatten() stamps an `fzl` field on string-literal
    nodes from it. This global is the fallback -- used when the per-line
-   table is unavailable (syntax-sugar changed the line count) -- and the
+   table is unavailable (an expansion changed the line count) -- and the
    whole-program gate read by the analyzer's mutable-string-buffer pass. */
 int g_frozen_string_literal = 0;
 /* Files with NO frozen_string_literal pragma default to 1: Spinel declares
@@ -580,6 +579,272 @@ static int sp_program_guard(pm_node_t *node) {
   return entry == eq ? 1 : 2;
 }
 
+/* ---- Sugar lowered on the tree ----
+   Two shapes are flattened as the plain Ruby they stand for, which is what
+   the analysis reads: an `&:name` block argument, and Forwardable's
+   def_delegator(s) over literal Symbols. The plain Ruby is Prism nodes built
+   here, each at the position of the source it stands for and owned by
+   nothing in the tree: flatten writes them as it writes the parsed ones, and
+   destroys them once written. They used to be text written over the source
+   before Prism read it, by a lexer of their own, which misread a `&:name` in
+   a regexp literal and the block argument of a command call nested in
+   parentheses, and moved the column of everything after it on the line. */
+static void *sp_made(pm_node_type_t type, size_t size, const pm_node_t *at) {
+  pm_node_t *n = calloc(1, size);
+  if (!n) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  n->type = type;
+  n->location = at->location;
+  return n;
+}
+static void sp_append(pm_node_list_t *list, pm_node_t *n) {
+  size_t was = list->size;
+  pm_node_list_append(list, n);
+  if (list->size == was) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+}
+/* The constant id of a name a made node carries. */
+static pm_constant_id_t sp_made_id(const char *s, size_t len) {
+  uint8_t *copy = malloc(len + 1);
+  if (!copy) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  memcpy(copy, s, len);
+  pm_constant_id_t id = pm_constant_pool_insert_owned(&((pm_parser_t *)g_parser)->constant_pool, copy, len);
+  if (!id) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  return id;
+}
+static pm_node_t *sp_made_lvar(const char *name, const pm_node_t *at) {
+  pm_local_variable_read_node_t *v = sp_made(PM_LOCAL_VARIABLE_READ_NODE, sizeof *v, at);
+  v->name = sp_made_id(name, strlen(name));
+  return &v->base;
+}
+/* `recv.name` (a vcall when recv is NULL and `vcall`), with `arg` its one
+   argument when there is one. */
+static pm_node_t *sp_made_call(pm_node_t *recv, pm_constant_id_t name, pm_node_t *arg, int vcall,
+                               const pm_node_t *at) {
+  pm_call_node_t *c = sp_made(PM_CALL_NODE, sizeof *c, at);
+  c->receiver = recv;
+  c->name = name;
+  if (vcall) c->base.flags |= PM_CALL_NODE_FLAGS_VARIABLE_CALL;
+  if (arg) {
+    c->arguments = sp_made(PM_ARGUMENTS_NODE, sizeof *c->arguments, at);
+    sp_append(&c->arguments->arguments, arg);
+  }
+  return &c->base;
+}
+static pm_statements_node_t *sp_made_stmts(pm_node_t *n, const pm_node_t *at) {
+  pm_statements_node_t *s = sp_made(PM_STATEMENTS_NODE, sizeof *s, at);
+  sp_append(&s->body, n);
+  return s;
+}
+/* The text of a plain Symbol literal (`:name`, `:@ivar`, `:<<`), a slice of
+   the source; 0 for any other node (`:"name"`, `%s(name)`, a variable). */
+static size_t sp_plain_sym(const pm_node_t *n, const char **s) {
+  if (!n || PM_NODE_TYPE(n) != PM_SYMBOL_NODE) return 0;
+  const pm_symbol_node_t *y = (const pm_symbol_node_t *)n;
+  if (!y->opening_loc.start || y->opening_loc.end - y->opening_loc.start != 1 ||
+      *y->opening_loc.start != ':' || !y->value_loc.start || y->closing_loc.start) return 0;
+  *s = (const char *)y->value_loc.start;
+  return (size_t)(y->value_loc.end - y->value_loc.start);
+}
+static int sp_word_char(char ch) {
+  return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_';
+}
+
+/* `&:name` as a block argument: the block `{ |_spx| _spx.name }` (marked
+   sym_proc_block, which a user's own `{ |_spx| _spx.m }` is not). Spinel
+   lowers the native shape only for a few methods (inject / reduce /
+   sort_by); every other block taker reads the block. A unary operator
+   (`&:-@`, `&:+@`, `&:~`) is the same call, `-_spx` (#4300). NULL for any
+   other block argument: a binary operator (`&:+`) is left to the
+   arithmetic reduce/inject lowering, the rest to the analysis. */
+static pm_node_t *sp_sym_proc_block(pm_node_t *node) {
+  if (PM_NODE_TYPE(node) != PM_BLOCK_ARGUMENT_NODE) return NULL;
+  const char *s;
+  size_t n = sp_plain_sym(((pm_block_argument_node_t *)node)->expression, &s);
+  int word = n > 0;
+  for (size_t i = 0; i < n; i++)
+    if (!sp_word_char(s[i]) && s[i] != '?' && s[i] != '!') word = 0;
+  if (!word && !(n == 2 && (s[0] == '-' || s[0] == '+') && s[1] == '@') && !(n == 1 && s[0] == '~'))
+    return NULL;
+  pm_block_node_t *b = sp_made(PM_BLOCK_NODE, sizeof *b, node);
+  pm_block_parameters_node_t *bp = sp_made(PM_BLOCK_PARAMETERS_NODE, sizeof *bp, node);
+  pm_required_parameter_node_t *x = sp_made(PM_REQUIRED_PARAMETER_NODE, sizeof *x, node);
+  x->name = sp_made_id("_spx", 4);
+  if (!pm_constant_id_list_append(&b->locals, x->name)) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  bp->parameters = sp_made(PM_PARAMETERS_NODE, sizeof *bp->parameters, node);
+  sp_append(&bp->parameters->requireds, &x->base);
+  b->parameters = &bp->base;
+  pm_node_t *call = sp_made_call(sp_made_lvar("_spx", node), sp_made_id(s, n), NULL, 0, node);
+  b->body = &sp_made_stmts(call, node)->base;
+  return &b->base;
+}
+
+/* The receiver `def_delegators :recv` names, as Ruby reads `recv.m`: an
+   ivar (`:@io`), a constant, self, nil, true, false, or a method of the
+   object (a vcall unless it ends in `?` or `!`). A new node per read; NULL
+   for any other spelling. */
+static pm_node_t *sp_fw_recv(const char *s, size_t n, const pm_node_t *at) {
+  size_t i = s[0] == '@' ? 1 : 0, e = n;
+  if (i == 0 && n > 1 && (s[n - 1] == '?' || s[n - 1] == '!')) e = n - 1;
+  if (i >= e || (s[i] >= '0' && s[i] <= '9')) return NULL;
+  for (size_t k = i; k < e; k++) if (!sp_word_char(s[k])) return NULL;
+  pm_node_type_t lit = n == 4 && !memcmp(s, "self", 4) ? PM_SELF_NODE : n == 3 && !memcmp(s, "nil", 3) ? PM_NIL_NODE
+                     : n == 4 && !memcmp(s, "true", 4) ? PM_TRUE_NODE : n == 5 && !memcmp(s, "false", 5) ? PM_FALSE_NODE : 0;
+  if (lit) return sp_made(lit, sizeof(pm_node_t), at);
+  if (i == 1) {
+    pm_instance_variable_read_node_t *v = sp_made(PM_INSTANCE_VARIABLE_READ_NODE, sizeof *v, at);
+    v->name = sp_made_id(s, n);
+    return &v->base;
+  }
+  if (s[0] >= 'A' && s[0] <= 'Z' && e == n) {
+    pm_constant_read_node_t *k = sp_made(PM_CONSTANT_READ_NODE, sizeof *k, at);
+    k->name = sp_made_id(s, n);
+    return &k->base;
+  }
+  return sp_made_call(NULL, sp_made_id(s, n), NULL, e == n, at);
+}
+
+/* One forwarding def, `als` delegating to `meth` of the receiver:
+   `def als(*_fw_a) = _fw_a.length == 0 ? R.meth : R.meth(*_fw_a)`. The arity
+   split keeps a zero-argument delegation off the splat path (a builtin
+   target's optional-argument arm would otherwise see the empty rest array
+   as an argument). A setter alias (`:timer_a=`) is
+   `def als(_fw_v); R.target = _fw_v; end`, the target written as the
+   assignment the delegate would make, whether or not `meth` is itself a
+   setter (#4518). `def self.als` under def_single_delegator(s). Block
+   forwarding is not written (a known forwarding gap). */
+static pm_node_t *sp_fw_def(const char *r, size_t rl, const char *meth, size_t ml, const char *als, size_t al,
+                            int single, const pm_node_t *at) {
+  pm_def_node_t *d = sp_made(PM_DEF_NODE, sizeof *d, at);
+  d->name = sp_made_id(als, al);
+  if (single) d->receiver = sp_made(PM_SELF_NODE, sizeof(pm_self_node_t), at);
+  d->parameters = sp_made(PM_PARAMETERS_NODE, sizeof *d->parameters, at);
+  pm_node_t *body;
+  if (al > 1 && als[al - 1] == '=' && sp_word_char(als[al - 2])) {
+    pm_required_parameter_node_t *v = sp_made(PM_REQUIRED_PARAMETER_NODE, sizeof *v, at);
+    v->name = sp_made_id("_fw_v", 5);
+    sp_append(&d->parameters->requireds, &v->base);
+    size_t tl = ml > 1 && meth[ml - 1] == '=' ? ml - 1 : ml;
+    char *tn = malloc(tl + 1);
+    if (!tn) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+    memcpy(tn, meth, tl);
+    tn[tl] = '=';
+    body = sp_made_call(sp_fw_recv(r, rl, at), sp_made_id(tn, tl + 1), sp_made_lvar("_fw_v", at), 0, at);
+    free(tn);
+  }
+  else {
+    pm_rest_parameter_node_t *rest = sp_made(PM_REST_PARAMETER_NODE, sizeof *rest, at);
+    rest->name = sp_made_id("_fw_a", 5);
+    d->parameters->rest = &rest->base;
+    pm_integer_node_t *zero = sp_made(PM_INTEGER_NODE, sizeof *zero, at);
+    pm_node_t *len = sp_made_call(sp_made_lvar("_fw_a", at), sp_made_id("length", 6), NULL, 0, at);
+    pm_if_node_t *f = sp_made(PM_IF_NODE, sizeof *f, at);
+    f->predicate = sp_made_call(len, sp_made_id("==", 2), &zero->base, 0, at);
+    f->statements = sp_made_stmts(sp_made_call(sp_fw_recv(r, rl, at), sp_made_id(meth, ml), NULL, 0, at), at);
+    pm_splat_node_t *all = sp_made(PM_SPLAT_NODE, sizeof *all, at);
+    all->expression = sp_made_lvar("_fw_a", at);
+    pm_else_node_t *e = sp_made(PM_ELSE_NODE, sizeof *e, at);
+    e->statements = sp_made_stmts(sp_made_call(sp_fw_recv(r, rl, at), sp_made_id(meth, ml), &all->base, 0, at), at);
+    f->subsequent = &e->base;
+    body = &f->base;
+  }
+  d->body = &sp_made_stmts(body, at)->base;
+  return &d->base;
+}
+
+static int sp_const_symbol_list(const char *src, size_t len, size_t before, const char *name,
+                                char (**out)[160], int *nout);
+/* Forwardable's `def_delegator :recv, :meth[, :alias]` and
+   `def_delegators :recv, :m1, :m2, ...` (and def_instance_delegator(s),
+   their aliases, and SingleForwardable's def_single_delegator(s), which
+   delegate at the class level) over literal Symbols, or the names a
+   constant holds (`*NAMES`, sp_const_symbol_list, as Rack::Lint writes it),
+   as a statement on lines of its own: the forwarding defs it stands for,
+   appended to `out`. 0 for any other statement; a def_delegators left as a
+   call is refused where it is written (check_unrewritten_delegators). */
+static int sp_lower_delegators(pm_node_t *stmt, pm_node_list_t *out) {
+  if (PM_NODE_TYPE(stmt) != PM_CALL_NODE) return 0;
+  pm_call_node_t *c = (pm_call_node_t *)stmt;
+  if (c->receiver || c->block || !c->arguments || c->arguments->arguments.size < 2) return 0;
+  const pm_constant_t *k = &g_parser->constant_pool.constants[c->name - 1];
+  const char *nm = (const char *)k->start;
+  size_t bl = k->length > 0 && nm[k->length - 1] == 's' ? k->length - 1 : k->length;
+  int plural = bl < k->length, single = bl == 20 && !memcmp(nm, "def_single_delegator", 20);
+  if (!single && !(bl == 13 && !memcmp(nm, "def_delegator", 13)) &&
+      !(bl == 22 && !memcmp(nm, "def_instance_delegator", 22))) return 0;
+  const uint8_t *src = g_parser->start, *p = stmt->location.start, *q = stmt->location.end;
+  while (p > src && (p[-1] == ' ' || p[-1] == '\t')) p--;
+  if (p > src && p[-1] != '\n' && p[-1] != ';') return 0;
+  while (q < g_parser->end && (*q == ' ' || *q == '\t' || *q == '\r')) q++;
+  if (q < g_parser->end && *q != '\n' && *q != '#') return 0;
+  pm_node_list_t *args = &c->arguments->arguments;
+  const char *r;
+  size_t rl = sp_plain_sym(args->nodes[0], &r);
+  pm_node_t *probe = rl ? sp_fw_recv(r, rl, stmt) : NULL;
+  if (!probe) return 0;
+  pm_node_destroy((pm_parser_t *)g_parser, probe);
+  /* the names, each a copy */
+  size_t n = 0, cap = args->size + 8;
+  char **names = malloc(cap * sizeof *names);
+  if (!names) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  int ok = 1;
+  for (size_t i = 1; i < args->size && ok; i++) {
+    pm_node_t *a = args->nodes[i];
+    const char *s;
+    size_t sl = sp_plain_sym(a, &s);
+    char (*cs)[160] = NULL;
+    int ncs = 0;
+    if (sl && s[0] != '@' && s[0] != '$') ncs = 1;
+    else if (PM_NODE_TYPE(a) == PM_SPLAT_NODE && ((pm_splat_node_t *)a)->expression &&
+             PM_NODE_TYPE(((pm_splat_node_t *)a)->expression) == PM_CONSTANT_READ_NODE) {
+      char *cn = cstr(((pm_constant_read_node_t *)((pm_splat_node_t *)a)->expression)->name);
+      if (!sp_const_symbol_list((const char *)src, (size_t)(g_parser->end - src),
+                                (size_t)(stmt->location.start - src), cn, &cs, &ncs)) ok = 0;
+      free(cn);
+    }
+    else ok = 0;
+    for (int j = 0; j < ncs && ok; j++) {
+      if (n == cap) {
+        cap *= 2;
+        char **nn = realloc(names, cap * sizeof *names);
+        if (!nn) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+        names = nn;
+      }
+      size_t l = cs ? strlen(cs[j]) : sl;
+      char *nm1 = malloc(l + 1);
+      if (!nm1) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+      memcpy(nm1, cs ? cs[j] : s, l);
+      nm1[l] = '\0';
+      names[n++] = nm1;
+    }
+    free(cs);
+  }
+  if (ok && (n == 0 || (!plural && n > 2))) ok = 0;
+  if (ok && !plural)
+    sp_append(out, sp_fw_def(r, rl, names[0], strlen(names[0]), names[n - 1], strlen(names[n - 1]),
+                             single, stmt));
+  for (size_t i = 0; ok && plural && i < n; i++)
+    sp_append(out, sp_fw_def(r, rl, names[i], strlen(names[i]), names[i], strlen(names[i]), single, stmt));
+  for (size_t i = 0; i < n; i++) free(names[i]);
+  free(names);
+  return ok;
+}
+
+/* `body` with each def_delegators statement written as its defs, into `out`
+   (the defs also into `made`, destroyed once flattened); 0 when no
+   statement is one, and `out` is left empty. */
+static int sp_lower_body(const pm_node_list_t *body, pm_node_list_t *out, pm_node_list_t *made) {
+  int any = 0;
+  for (size_t i = 0; i < body->size; i++) {
+    size_t from = made->size;
+    if (sp_lower_delegators(body->nodes[i], made)) {
+      for (size_t j = 0; !any && j < i; j++) sp_append(out, body->nodes[j]);
+      any = 1;
+      for (size_t j = from; j < made->size; j++) sp_append(out, made->nodes[j]);
+    }
+    else if (any) sp_append(out, body->nodes[i]);
+  }
+  return any;
+}
+
 /* ---- Main flattening ---- */
 /* The builtin node the names invented from the node being flattened count
    from (`node_bi`, comp_node_ord): its enclosing def, or, outside every def,
@@ -588,11 +853,29 @@ static int g_bi_base = -1;
 static int flatten_node(pm_node_t *node);
 static int flatten(pm_node_t *node) {
   int saved = g_bi_base;
+  /* `&:name` is flattened as the block it stands for */
+  pm_node_t *made = node ? sp_sym_proc_block(node) : NULL;
+  if (made) node = made;
   /* the node's inline RBS facts, under the id flatten_node gives it next */
   if (node) sp_inline_rbs_emit(node, node_counter);
   int id = flatten_node(node);
+  if (made) pm_node_destroy((pm_parser_t *)g_parser, made);
   g_bi_base = saved;
   return id;
+}
+
+/* A StatementsNode's body, each statement under the statement cursor; a
+   def_delegators statement is flattened as the defs it stands for. */
+static void flatten_statements(int id, pm_node_list_t *list) {
+  pm_node_t **next = g_stmt_next, **end = g_stmt_end;
+  pm_node_list_t low = { 0 }, made = { 0 };
+  pm_node_list_t *body = sp_lower_body(list, &low, &made) ? &low : list;
+  g_stmt_next = body->nodes; g_stmt_end = g_stmt_next + body->size;
+  emit_node_array(id, "body", body);
+  g_stmt_next = next; g_stmt_end = end;
+  for (size_t i = 0; i < made.size; i++) pm_node_destroy((pm_parser_t *)g_parser, made.nodes[i]);
+  pm_node_list_free(&made);
+  pm_node_list_free(&low);
 }
 
 static int flatten_node(pm_node_t *node) {
@@ -674,15 +957,10 @@ static int flatten_node(pm_node_t *node) {
     R("statements", n->statements);
     break;
   }
-  case PM_STATEMENTS_NODE: {
-    pm_statements_node_t *n = (pm_statements_node_t *)node;
-    pm_node_t **next = g_stmt_next, **end = g_stmt_end;
+  case PM_STATEMENTS_NODE:
     N("StatementsNode");
-    g_stmt_next = n->body.nodes; g_stmt_end = g_stmt_next + n->body.size;
-    A("body", &n->body);
-    g_stmt_next = next; g_stmt_end = end;
+    flatten_statements(id, &((pm_statements_node_t *)node)->body);
     break;
-  }
   case PM_CLASS_NODE: {
     pm_class_node_t *n = (pm_class_node_t *)node;
     N("ClassNode");
@@ -1389,8 +1667,7 @@ static int flatten_node(pm_node_t *node) {
   case PM_BLOCK_NODE: {
     pm_block_node_t *n = (pm_block_node_t *)node;
     N("BlockNode");
-    if (sym_proc_block_starts_at((size_t)(node->location.start - g_parser->start)))
-      I("sym_proc_block", 1);
+    if (!n->opening_loc.start) I("sym_proc_block", 1);  /* an &:name block (sp_sym_proc_block) has no `{` */
     /* Block-local variables (params + first-assigned-inside): Ruby scoping
        makes non-param locals FRESH on every block invocation; codegen needs
        the list to reset them per iteration in fused loops. */
@@ -4669,19 +4946,7 @@ else {
   return result;
 }
 
-/* ---- Syntax sugar rewriting ---- */
-
-/* Ruby method-name char class: idents, digits, `?` / `!` / `=` suffixes,
-   operator-method chars (`+`, `-`, `*`, etc.), and `[` / `]` for the
-   index operators `[]` and `[]=`. Digits are allowed in the body but
-   the macro rejects digit-leading names (invalid Ruby method syntax). */
-static int sp_is_method_name_char(char c) {
-  return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-         (c >= '0' && c <= '9') || c == '?' || c == '!' || c == '+' ||
-         c == '-' || c == '*' || c == '/' || c == '<' || c == '>' ||
-         c == '=' || c == '&' || c == '|' || c == '^' || c == '~' ||
-         c == '%' || c == '[' || c == ']';
-}
+/* ---- The names a constant holds, for def_delegators ---- */
 
 /* The names of the constant NAME that the `def_delegators ... *NAME` at
    `before` splats, read from the source text. Its one definition in the
@@ -4799,607 +5064,6 @@ static int sp_const_symbol_list(const char *src, size_t len, size_t before, cons
   if (n == 0) { free(names); return 0; }
   *out = names; *nout = n;
   return 1;
-}
-
-/* Where rewrite_syntax_sugar wrote the `{` / `do` of each block it made
-   from `&:sym`, in the buffer Prism parses: flatten marks those BlockNodes
-   (sym_proc_block), which a user's own `{ |_spx| _spx.m }` is not. The
-   offsets are recorded in increasing order. */
-static size_t *g_sym_proc_offs;
-static size_t g_sym_proc_n, g_sym_proc_cap;
-static void sym_proc_block_at(size_t off) {
-  if (g_sym_proc_n == g_sym_proc_cap) {
-    size_t nc = g_sym_proc_cap ? g_sym_proc_cap * 2 : 16;
-    size_t *no = realloc(g_sym_proc_offs, nc * sizeof(size_t));
-    if (!no) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-    g_sym_proc_offs = no; g_sym_proc_cap = nc;
-  }
-  g_sym_proc_offs[g_sym_proc_n++] = off;
-}
-static int sym_proc_block_starts_at(size_t off) {
-  size_t lo = 0, hi = g_sym_proc_n;
-  while (lo < hi) {
-    size_t mid = (lo + hi) / 2;
-    if (g_sym_proc_offs[mid] == off) return 1;
-    if (g_sym_proc_offs[mid] < off) lo = mid + 1; else hi = mid;
-  }
-  return 0;
-}
-
-static char *rewrite_syntax_sugar(char *source) {
-  /* Rewrite .send(:foo, args) / .send("foo", args) → .foo(args) */
-  /* Rewrite &:symbol → { |_spx| _spx.symbol } */
-  size_t len = strlen(source);
-  size_t cap = (len * 2) + 256;
-  char *out = malloc(cap);
-  size_t oi = 0;
-  size_t i = 0;
-
-  #define OUT_CHAR(c) do { if (oi >= cap - 1) { size_t _nc = cap * 2; char *_no = realloc(out, _nc); if (!_no) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); } out = _no; cap = _nc; } out[oi++] = (c); } while(0)
-  #define OUT_STR(s) do { const char *_s = (s); while (*_s) { OUT_CHAR(*_s); _s++; } } while(0)
-
-  /* Rewrite one .send(:foo / .send("foo dispatch. `string_form` is 1
-     for the double-quoted variant (requires a closing `"`) and 0 for
-     the colon-symbol variant. On mismatch (empty / digit-leading
-     name, unclosed quote), emits the prefix verbatim and advances
-     past it so the outer loop resumes scanning. The args copy tracks
-     `"..."` and `'...'` state with `\` escape skipping so parens
-     inside string literals do not prematurely close the call. */
-  #define REWRITE_SEND_CALL(prefix_str, prefix_len, string_form) do {     \
-    size_t _save_i = i;                                                   \
-    i += (prefix_len);                                                    \
-    size_t _ns = i;                                                       \
-    while (i < len && sp_is_method_name_char(source[i])) i++;             \
-    size_t _name_len = i - _ns;                                           \
-    int _ok = (_name_len > 0);                                            \
- /* Reject digit-leading names: `.123foo()` is not valid Ruby. */         \
-    if (_ok && source[_ns] >= '0' && source[_ns] <= '9') { _ok = 0; }     \
-    if (_ok && (string_form)) {                                           \
-      if (i >= len || source[i] != '"') { _ok = 0; }                      \
-      else { i++; /* skip closing quote */ }                              \
-    }                                                                     \
-    if (!_ok) { i = _save_i; OUT_STR(prefix_str); i += (prefix_len); }    \
-    else {                                                                \
-      OUT_CHAR('.');                                                      \
-      { size_t _k; for (_k = 0; _k < _name_len; _k++) OUT_CHAR(source[_ns + _k]); } \
-      if (i < len && source[i] == ')') {                                  \
-        i++; /* no args */                                                \
-      } \
-      else if (i < len && source[i] == ',') {                           \
-        i++;                                                              \
-        while (i < len && source[i] == ' ') i++;                          \
-        OUT_CHAR('(');                                                    \
-        { int _depth = 1; char _qc = 0;                                   \
-          while (i < len && _depth > 0) {                                 \
-            char _ac = source[i];                                         \
-            if (_qc != 0) {                                               \
- /* Inside string: `\` escapes next char, skip it as a pair. */           \
-              if (_ac == '\\' && i + 1 < len) {                           \
-                OUT_CHAR(_ac); OUT_CHAR(source[i + 1]); i += 2; continue; \
-              }                                                            \
-              if (_ac == _qc) _qc = 0;                                    \
-              OUT_CHAR(_ac); i++; continue;                                \
-            }                                                              \
-            if (_ac == '"' || _ac == '\'') { _qc = _ac; OUT_CHAR(_ac); i++; continue; } \
-            if (_ac == '(') _depth++;                                     \
-            else if (_ac == ')') { _depth--; if (_depth == 0) { i++; break; } } \
-            OUT_CHAR(_ac); i++;                                           \
-          } }                                                             \
-        OUT_CHAR(')');                                                    \
-      }                                                                   \
-    }                                                                     \
-  } while(0)
-
-  /* ---- Lexical state: the rewrites below must never fire inside string
-     literals, heredoc bodies, or comments (#2181: `&:word` inside a string
-     was rewritten, silently changing the string's value). A small state
-     machine tracks '...' / "..." / %-literals / heredocs / comments and
-     copies their contents verbatim; `#{...}` interpolation re-enters code
-     (rewrites stay active there, as in CRuby). Regex literals are not
-     modeled (slash/division disambiguation needs full parsing); a `&:word`
-     inside a regex literal remains a known residual. */
-  enum { LX_SQ, LX_DQ, LX_PV, LX_CODE };
-  struct { unsigned char st; char open; char close; int depth; } lstk[64];
-  int lsp = 0;   /* 0 = top-level code; frames 1.. are literals/interp */
-  struct { char tag[64]; int squig; int interp; } hds[8];
-  int nhd = 0, in_hd = 0;
-
-  while (i < len) {
-    /* --- heredoc body: verbatim until the terminator line --- */
-    if (lsp == 0 && in_hd) {
-      if (i == 0 || source[i - 1] == '\n') {
-        size_t j = i;
-        if (hds[0].squig) while (j < len && (source[j] == ' ' || source[j] == '\t')) j++;
-        size_t tl = strlen(hds[0].tag);
-        if (j + tl <= len && strncmp(source + j, hds[0].tag, tl) == 0) {
-          size_t k2 = j + tl;
-          while (k2 < len && (source[k2] == ' ' || source[k2] == '\t' || source[k2] == '\r')) k2++;
-          if (k2 >= len || source[k2] == '\n') {
-            while (i < len && source[i] != '\n') { OUT_CHAR(source[i]); i++; }
-            if (i < len) { OUT_CHAR('\n'); i++; }
-            memmove(&hds[0], &hds[1], sizeof(hds[0]) * (size_t)(nhd - 1));
-            nhd--;
-            if (nhd == 0) in_hd = 0;
-            continue;
-          }
-        }
-      }
-      if (hds[0].interp && source[i] == '\\' && i + 1 < len) {
-        OUT_CHAR(source[i]); OUT_CHAR(source[i + 1]); i += 2; continue;
-      }
-      if (hds[0].interp && source[i] == '#' && i + 1 < len && source[i + 1] == '{' &&
-          lsp < 63) {
-        lsp++; lstk[lsp].st = LX_CODE; lstk[lsp].open = 0; lstk[lsp].close = 0; lstk[lsp].depth = 1;
-        OUT_CHAR('#'); OUT_CHAR('{'); i += 2; continue;
-      }
-      OUT_CHAR(source[i]); i++; continue;
-    }
-    /* --- inside a literal frame --- */
-    if (lsp > 0 && lstk[lsp].st != LX_CODE) {
-      char cch = source[i];
-      if (cch == '\\' && i + 1 < len) { OUT_CHAR(cch); OUT_CHAR(source[i + 1]); i += 2; continue; }
-      if (lstk[lsp].st == LX_DQ && cch == '#' && i + 1 < len && source[i + 1] == '{' &&
-          lsp < 63) {
-        lsp++; lstk[lsp].st = LX_CODE; lstk[lsp].open = 0; lstk[lsp].close = 0; lstk[lsp].depth = 1;
-        OUT_CHAR('#'); OUT_CHAR('{'); i += 2; continue;
-      }
-      if (lstk[lsp].open && cch == lstk[lsp].open) { lstk[lsp].depth++; OUT_CHAR(cch); i++; continue; }
-      if (cch == lstk[lsp].close) {
-        lstk[lsp].depth--;
-        if (lstk[lsp].depth == 0) lsp--;
-        OUT_CHAR(cch); i++; continue;
-      }
-      OUT_CHAR(cch); i++; continue;
-    }
-    /* --- code (top level or interpolation): interp braces close first --- */
-    if (lsp > 0 && lstk[lsp].st == LX_CODE) {
-      if (source[i] == '{') lstk[lsp].depth++;
-      else if (source[i] == '}') {
-        lstk[lsp].depth--;
-        if (lstk[lsp].depth == 0) { OUT_CHAR('}'); i++; lsp--; continue; }
-      }
-    }
-    /* line comment (also terminates inside interpolation, as in Ruby) */
-    if (source[i] == '#') {
-      while (i < len && source[i] != '\n') { OUT_CHAR(source[i]); i++; }
-      continue;
-    }
-    /* =begin/=end block comment at line start */
-    if ((i == 0 || source[i - 1] == '\n') && i + 6 <= len &&
-        strncmp(source + i, "=begin", 6) == 0) {
-      while (i < len) {
-        if ((i == 0 || source[i - 1] == '\n') && i + 4 <= len &&
-            strncmp(source + i, "=end", 4) == 0) {
-          while (i < len && source[i] != '\n') { OUT_CHAR(source[i]); i++; }
-          if (i < len) { OUT_CHAR('\n'); i++; }
-          break;
-        }
-        OUT_CHAR(source[i]); i++;
-      }
-      continue;
-    }
-    /* `?"` / `?'` / `?#` character literal: copy the pair so the quote or
-       hash is not misread as an opener */
-    if (source[i] == '?' && i + 1 < len &&
-        (source[i + 1] == '"' || source[i + 1] == '\'' ||
-         source[i + 1] == '`' || source[i + 1] == '#') &&
-        (i + 2 >= len || !sp_is_method_name_char(source[i + 2]))) {
-      OUT_CHAR('?'); OUT_CHAR(source[i + 1]); i += 2; continue;
-    }
-    /* string openers */
-    if (source[i] == '\'' && lsp < 63) {
-      lsp++; lstk[lsp].st = LX_SQ; lstk[lsp].open = 0; lstk[lsp].close = '\''; lstk[lsp].depth = 1;
-      OUT_CHAR(source[i]); i++; continue;
-    }
-    if ((source[i] == '"' || source[i] == '`') && lsp < 63) {
-      lsp++; lstk[lsp].st = LX_DQ; lstk[lsp].open = 0; lstk[lsp].close = source[i]; lstk[lsp].depth = 1;
-      OUT_CHAR(source[i]); i++; continue;
-    }
-    /* Regex literal in expression position: open a frame so its escaped
-       quotes (`/\"(.*?)\"/`) do not toggle the string state and poison the
-       rest of the scan. Heuristic mirrors Ruby's lexer: a `/` is a regex
-       when the previous non-space char can END no value (operator, opener,
-       separator, or line start); after an identifier/closing token it is
-       division. Interpolation inside the regex rides the LX_DQ frame. */
-    if (source[i] == '/' && lsp < 63) {
-      size_t backR = oi;
-      while (backR > 0 && (out[backR - 1] == ' ' || out[backR - 1] == '\t')) backR--;
-      char pvR = backR > 0 ? out[backR - 1] : '\n';
-      if (strchr("=(,[{;\n!&|~^+-*%<>?:", pvR)) {
-        lsp++; lstk[lsp].st = LX_DQ; lstk[lsp].open = 0; lstk[lsp].close = '/'; lstk[lsp].depth = 1;
-        OUT_CHAR(source[i]); i++; continue;
-      }
-    }
-    /* %-literals: %w %W %i %I %q %Q with any delimiter always; a bare
-       %<delim> only in operator position (else it is modulo) */
-    if (source[i] == '%' && i + 1 < len && lsp < 63) {
-      char pm = source[i + 1];
-      size_t di = i + 1;
-      int interp = 1, mode = 0;
-      if (pm == 'w' || pm == 'i' || pm == 'q') { interp = 0; mode = 1; di = i + 2; }
-      else if (pm == 'W' || pm == 'I' || pm == 'Q') { interp = 1; mode = 1; di = i + 2; }
-      char d = di < len ? source[di] : 0;
-      int is_delim = d && !((d >= 'a' && d <= 'z') || (d >= 'A' && d <= 'Z') ||
-                            (d >= '0' && d <= '9') || d == '_' || d == ' ' ||
-                            d == '\t' || d == '\n' || d == '\r' || d == '=');
-      int valid = 0;
-      if (mode) valid = is_delim;
-      else if (is_delim) {
-        size_t back2 = oi;
-        while (back2 > 0 && (out[back2 - 1] == ' ' || out[back2 - 1] == '\t')) back2--;
-        char pv = back2 > 0 ? out[back2 - 1] : '\n';
-        valid = strchr("=,([{+-*/%|&<>?:;!^\n", pv) != NULL;
-        /* ...or a command argument: a name, a blank, then `%` directly
-           followed by its delimiter (`puts %(...)`), as CRuby's lexer reads
-           it after a method name. A local read as such (`x %(y)`) costs only
-           the rewrites inside the parentheses; the modulo reading of a real
-           literal let a `<<WORD` in its text open a heredoc that ran to the
-           end of the file (#7194). */
-        if (!valid && back2 < oi && back2 > 0) {
-          size_t ws = back2;
-          while (ws > 0 && ((out[ws - 1] >= 'a' && out[ws - 1] <= 'z') || (out[ws - 1] >= 'A' && out[ws - 1] <= 'Z') ||
-                            (out[ws - 1] >= '0' && out[ws - 1] <= '9') || out[ws - 1] == '_' ||
-                            ((out[ws - 1] == '?' || out[ws - 1] == '!') && ws == back2))) ws--;
-          char w0 = ws < back2 ? out[ws] : 0;
-          valid = (w0 >= 'a' && w0 <= 'z') || (w0 >= 'A' && w0 <= 'Z') || w0 == '_';
-        }
-      }
-      if (valid) {
-        char close2 = d == '(' ? ')' : d == '[' ? ']' : d == '{' ? '}' : d == '<' ? '>' : d;
-        lsp++;
-        lstk[lsp].st = interp ? LX_DQ : LX_PV;
-        lstk[lsp].open = (close2 != d) ? d : 0;
-        lstk[lsp].close = close2;
-        lstk[lsp].depth = 1;
-        while (i <= di) { OUT_CHAR(source[i]); i++; }
-        continue;
-      }
-    }
-    /* heredoc opener: <<~TAG / <<-TAG / <<'TAG' / <<"TAG" / <<TAG. Tags are
-       required to start [A-Z_] in the unquoted forms (lowercase unquoted
-       tags stay unmodeled rather than risk misreading a shift). */
-    if (source[i] == '<' && i + 1 < len && source[i + 1] == '<' && nhd < 8) {
-      size_t j = i + 2;
-      int squig = 0;
-      if (j < len && (source[j] == '~' || source[j] == '-')) { squig = 1; j++; }
-      char q = 0;
-      if (j < len && (source[j] == '\'' || source[j] == '"')) { q = source[j]; j++; }
-      size_t ts = j;
-      while (j < len && ((source[j] >= 'A' && source[j] <= 'Z') ||
-                         (source[j] >= 'a' && source[j] <= 'z') ||
-                         (source[j] >= '0' && source[j] <= '9') || source[j] == '_')) j++;
-      size_t tl2 = j - ts;
-      int hd_ok = tl2 > 0 && tl2 < sizeof(hds[0].tag) &&
-                  (q || (source[ts] >= 'A' && source[ts] <= 'Z') || source[ts] == '_');
-      if (hd_ok && q) {
-        if (j < len && source[j] == q) j++;
-        else hd_ok = 0;
-      }
-      if (hd_ok) {
-        memcpy(hds[nhd].tag, source + ts, tl2);
-        hds[nhd].tag[tl2] = '\0';
-        hds[nhd].squig = squig;
-        hds[nhd].interp = (q != '\'');
-        nhd++;
-        while (i < j) { OUT_CHAR(source[i]); i++; }
-        continue;
-      }
-    }
-    /* body newline at top level starts any pending heredoc bodies */
-    if (source[i] == '\n' && lsp == 0 && nhd > 0) {
-      OUT_CHAR('\n'); i++; in_hd = 1; continue;
-    }
-    /* `.send(...)` is NOT rewritten here (it used to be): the textual pass
-       has no types, so it also erased sends on BasicObject subclasses, which
-       lack #send and must raise (#2725). The analyze-side send desugar
-       retargets it with the receiver's class in hand. */
-    /* Forwardable: `def_delegator :@recv, :meth[, :alias]` and
-       `def_delegators :@recv, :m1, :m2, ...` rewrite in place (single line,
-       preserving line count) to plain forwarding defs:
-       `def alias(*a) = a.length == 0 ? @recv.meth : @recv.meth(*a)`.
-       The runtime arity split keeps zero-arg delegation off the splat path
-       (a builtin target's optional-arg arm would otherwise see the empty
-       rest array as an argument). Block forwarding is not emitted (known
-       forwarding gap). The receiver symbol may be an ivar (:@foo) or a
-       method (:foo). Only fires at a statement start (preceded by
-       newline/semicolon + indentation). def_instance_delegator(s) are
-       Forwardable's aliases of the same; SingleForwardable's
-       def_single_delegator(s) delegate at the class level (`def self.x`).
-       Operator names (:[], :<<, :==) delegate like any other. */
-    size_t fwkw = 0; int fwsingle = 0;
-    if (strncmp(source + i, "def_delegator", 13) == 0) fwkw = 13;
-    else if (strncmp(source + i, "def_instance_delegator", 22) == 0) fwkw = 22;
-    else if (strncmp(source + i, "def_single_delegator", 20) == 0) { fwkw = 20; fwsingle = 1; }
-    if (fwkw && (i == 0 || !sp_is_method_name_char(source[i - 1]))) {
-      size_t back3 = oi;
-      while (back3 > 0 && (out[back3 - 1] == ' ' || out[back3 - 1] == '\t')) back3--;
-      char pv3 = back3 > 0 ? out[back3 - 1] : '\n';
-      int plural = (i + fwkw + 1 <= len && source[i + fwkw] == 's');
-      size_t j3 = i + fwkw + (plural ? 1 : 0);
-      while (j3 < len && (source[j3] == ' ' || source[j3] == '(')) j3++;
-      if ((pv3 == '\n' || pv3 == ';') && j3 < len && source[j3] == ':') {
-        /* parse the symbol list. It may continue onto following lines --
-           after a trailing comma, inside the call's parentheses, or after a
-           backslash -- as CRuby reads it; those newlines are counted and
-           re-emitted after the rewrite so the line count is preserved. Only
-           the methods on the first line were defined before, and the rest
-           were dropped silently or left as a stray expression (#4822). */
-        int paren3 = 0;
-        { size_t pj = i + fwkw + (plural ? 1 : 0);
-          while (pj < j3) { if (source[pj] == '(') paren3++; pj++; } }
-        size_t symcap = 16; int nsym = 0;
-        char (*syms)[160] = malloc(sizeof(*syms) * symcap);
-        if (!syms) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-        int nl3 = 0, bad3 = 0;
-        size_t k3 = j3;
-        int after_comma = 0;
-        while (k3 < len) {
-          /* separators, and a line break where the list continues */
-          while (k3 < len) {
-            char ch = source[k3];
-            if (ch == ' ' || ch == '\t' || ch == '\r') { k3++; continue; }
-            if (ch == ',') { after_comma = 1; k3++; continue; }
-            if (ch == '(') { paren3++; k3++; continue; }
-            /* the call's `)` closes the list: a comma before it is a
-               trailing comma, not a continuation (rack-test's
-               `def_delegators(:current_session,\n :get,\n)`) */
-            if (ch == ')') { if (paren3 > 0) paren3--; after_comma = 0; k3++; continue; }
-            if (ch == '\\' && k3 + 1 < len && source[k3 + 1] == '\n') { nl3++; k3 += 2; continue; }
-            if (ch == '\n' && (after_comma || paren3 > 0)) { nl3++; k3++; continue; }
-            break;
-          }
-          /* `*NAMES`, a constant holding a literal Symbol Array (Rack::Lint's
-             `def_delegators :@stream, *REQUIRED_METHODS`): its names */
-          if (k3 + 1 < len && source[k3] == '*' && source[k3 + 1] >= 'A' && source[k3 + 1] <= 'Z' &&
-              nsym > 0) {
-            size_t c0 = k3 + 1, c1 = c0;
-            while (c1 < len && sp_is_method_name_char(source[c1])) c1++;
-            char cname[128];
-            if (c1 - c0 >= sizeof cname) { bad3 = 1; break; }
-            memcpy(cname, source + c0, c1 - c0); cname[c1 - c0] = 0;
-            char (*csyms)[160] = NULL; int ncs = 0;
-            if (!sp_const_symbol_list(source, len, i, cname, &csyms, &ncs)) { bad3 = 1; break; }
-            for (int q = 0; q < ncs; q++) {
-              if ((size_t)nsym == symcap) {
-                symcap *= 2;
-                char (*ns)[160] = realloc(syms, sizeof(*syms) * symcap);
-                if (!ns) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-                syms = ns;
-              }
-              memcpy(syms[nsym++], csyms[q], sizeof csyms[q]);
-            }
-            free(csyms);
-            after_comma = 0;
-            k3 = c1;
-            continue;
-          }
-          if (k3 >= len || source[k3] != ':') break;
-          after_comma = 0;
-          k3++;
-          size_t s3 = k3;
-          if (k3 < len && source[k3] == '@') k3++;
-          while (k3 < len && sp_is_method_name_char(source[k3])) k3++;
-          if (k3 == s3) {
-            /* operator method symbols: :[] :[]= :<< :== :<=> :+ ... */
-            static const char *const fwops[] = { "[]=", "[]", "<=>", "===", "==", "=~",
-              "<<", ">>", "<=", ">=", "**", "+@", "-@", "!", "~", "+", "-",
-              "*", "/", "%", "<", ">", "&", "|", "^", NULL };
-            for (int oq = 0; fwops[oq]; oq++) {
-              size_t ol = strlen(fwops[oq]);
-              if (k3 + ol <= len && strncmp(source + k3, fwops[oq], ol) == 0) { k3 += ol; break; }
-            }
-          }
-          size_t l3 = k3 - s3;
-          if (l3 == 0 || l3 >= sizeof(syms[0])) { bad3 = 1; break; }
-          if ((size_t)nsym == symcap) {
-            symcap *= 2;
-            char (*ns)[160] = realloc(syms, sizeof(*syms) * symcap);
-            if (!ns) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-            syms = ns;
-          }
-          memcpy(syms[nsym], source + s3, l3);
-          syms[nsym][l3] = 0;
-          nsym++;
-        }
-        if (bad3) nsym = 0;
-        /* trailing junk after the list (a real expression) -> leave alone */
-        size_t t3 = k3;
-        while (t3 < len && (source[t3] == ' ' || source[t3] == ')' ||
-                            source[t3] == '\r')) t3++;
-        int clean = paren3 == 0 && !after_comma &&
-                    (t3 >= len || source[t3] == '\n' || source[t3] == '#');
-        int min_syms = 2;
-        int max_syms = plural ? nsym : 3;
-        char *line3 = NULL;
-        if (nsym >= min_syms && nsym <= max_syms && clean) {
-          const char *recvtxt = syms[0];
-          size_t cap3 = 64 + (size_t)nsym * 512;
-          line3 = malloc(cap3);
-          if (!line3) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-          line3[0] = 0;
-          /* One forwarding def. A setter alias (`:timer_a=`) cannot be an
-             endless def (the grammar forbids `def x=(v) = ...`), so it is a
-             one-line classic def whose body is the assignment: the same
-             line count, and the target is written as the assignment the
-             delegate would make (`@ta.counter = v`), whether or not the
-             delegated name is itself a setter (#4518). */
-          #define FW_DEF(dst, cap, als, meth) do { \
-            size_t _al = strlen(als), _ml = strlen(meth); \
-            if (_al > 1 && (als)[_al - 1] == '=' && sp_is_method_name_char((als)[_al - 2])) \
-              snprintf(dst, cap, "def %s%s(_fw_v); %s.%.*s = _fw_v; end", fwsingle ? "self." : "", als, recvtxt, \
-                       (int)(_ml > 1 && (meth)[_ml - 1] == '=' ? _ml - 1 : _ml), meth); \
-            else \
-              snprintf(dst, cap, "def %s%s(*_fw_a) = _fw_a.length == 0 ? %s.%s : %s.%s(*_fw_a)", \
-                       fwsingle ? "self." : "", als, recvtxt, meth, recvtxt, meth); \
-          } while (0)
-          if (!plural) {
-            const char *meth3 = syms[1];
-            const char *als3 = nsym == 3 ? syms[2] : syms[1];
-            FW_DEF(line3, cap3, als3, meth3);
-          }
-          else {
-            size_t off3 = 0;
-            for (int q3 = 1; q3 < nsym; q3++) {
-              if (q3 > 1) { off3 += (size_t)snprintf(line3 + off3, cap3 - off3, "; "); }
-              FW_DEF(line3 + off3, cap3 - off3, syms[q3], syms[q3]);
-              off3 += strlen(line3 + off3);
-            }
-          }
-          #undef FW_DEF
-        }
-        free(syms);
-        if (line3 && line3[0]) {
-          OUT_STR(line3);
-          free(line3);
-          /* the continuation lines the list spanned, as blank lines */
-          for (int q3 = 0; q3 < nl3; q3++) OUT_STR("\n");
-          i = t3;   /* resume at end-of-line remainder (newline/comment) */
-          continue;
-        }
-        free(line3);
-      }
-    }
-    /* `.__send__(...)` is not rewritten here either. It used to be, on the
-       grounds that __send__ IS a BasicObject method so the blind rewrite is
-       always right -- which is true about the RECEIVER and says nothing about
-       what the rewrite costs: the textual pass produces a plain `.foo(args)`
-       with nothing to mark, and send's whole point is that it ignores
-       visibility. The analyze-side desugar retargets it with the receiver's
-       class in hand and stamps the permission (see desugar_public_send_recv);
-       its blank-slate guard already exempts __send__. */
-    /* `&:symbol` symbol-to-proc. Prism parses `&:sym` natively, but
-       Spinel only lowers the native BlockArgumentNode+SymbolNode shape
-       for a few methods (inject / reduce / sort_by); general block
-       takers rely on this textual rewrite to an explicit block. The
-       block has to land where Ruby reads it as a block, not a hash:
-         - sole parenthesized arg `m(&:s)`   -> `m { |_spx| _spx.s }`
-         - after a positional, paren call
-           `m(a, &:s)`                       -> `m(a) { |_spx| _spx.s }`
-         - after a positional, command call
-           `m a, &:s`                        -> `m a do |_spx| _spx.s end`
-         - command-position sole arg `m &:s` -> `m  { |_spx| _spx.s }`
-       The bare `{ |_spx| ... }` was only correct in block position; a
-       `,`-prefixed brace parses as a hash literal, which was the bundler
-       (`File.open(f, "r:UTF-8", &:read)`) / minitest
-       (`define_method :mu_pp, &:pretty_inspect`) parse failure.
-
-       Operator symbols (`&:+`) have name_len 0 here and are left for
-       Prism's native path (the arith reduce/inject lowering handles
-       them). Known limitation: a paren-less command carrying a
-       symbol-proc that is itself nested as an argument inside a paren
-       call -- `p(foo :a, &:s)` -- mis-binds the block to the outer
-       call, because textually its args sit at the same paren depth as
-       the enclosing call (indistinguishable without re-implementing
-       Ruby's command/arg disambiguation). Neither target gem hits
-       this; a robust fix is an AST-level lowering, deferred. */
-    if (i + 2 < len && source[i] == '&' && source[i + 1] == ':') {
-      /* Last emitted non-space char. Skip newlines too so a multi-line
-         `m(a,\n  &:s)` still sees the comma. */
-      size_t back = oi;
-      while (back > 0 && (out[back - 1] == ' ' || out[back - 1] == '\t' ||
-                          out[back - 1] == '\n' || out[back - 1] == '\r')) back--;
-      char prev = (back > 0) ? out[back - 1] : '\0';
-      i += 2;
-      size_t ns = i;
-      while (i < len && (source[i] == '_' || (source[i] >= 'a' && source[i] <= 'z') ||
-             (source[i] >= 'A' && source[i] <= 'Z') || (source[i] >= '0' && source[i] <= '9') ||
-             source[i] == '?' || source[i] == '!')) i++;
-      size_t name_len = i - ns;
-      /* The UNARY operator symbols name real methods -- `:-@`, `:+@`, `:~`
-         -- but `_spx.-@` is not something Ruby can parse, so they take the
-         prefix spelling instead: `{ |_spx| -_spx }`. Without this they fell
-         through to Prism, where nothing lowers them, and `[1,2].map(&:-@)`
-         reported `map` itself as undefined (#4300). The BINARY operator
-         symbols still go to Prism, where the arithmetic reduce/inject
-         lowering handles them with two operands. */
-      const char *unary_pfx = NULL;
-      if (name_len == 0) {
-        static const char *const uo_sym[] = { "-@", "+@", "~", NULL };
-        static const char *const uo_pfx[] = { "-",  "+",  "~", NULL };
-        for (int uo = 0; uo_sym[uo]; uo++) {
-          size_t ul = strlen(uo_sym[uo]);
-          if (i + ul <= len && strncmp(source + i, uo_sym[uo], ul) == 0 &&
-              !(i + ul < len && sp_is_method_name_char(source[i + ul]))) {
-            unary_pfx = uo_pfx[uo]; i += ul; name_len = ul; break;
-          }
-        }
-      }
-      if (name_len == 0) {
-        /* Operator / empty symbol: leave `&:` for Prism's native path. */
-        OUT_STR("&:");
-        continue;
-      }
-      if (i < len && source[i] == '.') {
-        /* `&:sym.to_proc` (a call ON the symbol): not the shorthand. Leave
-           it for Prism -- the explicit to_proc desugars to a lambda later. */
-        OUT_STR("&:");
-        i = ns;   /* re-emit the symbol name through the normal path */
-        continue;
-      }
-      if (prev == '(') {
-        /* Sole parenthesized arg: drop the `(` (and any trailing ws)
-           and the matching `)` so the block binds paren-less. #792:
-           tolerate whitespace before the `)`. Restore `i` if no `)`
-           follows so trailing content isn't swallowed. */
-        oi = back - 1;
-        size_t after_sym = i;
-        while (i < len && (source[i] == ' ' || source[i] == '\t' ||
-                           source[i] == '\n' || source[i] == '\r')) i++;
-        if (i < len && source[i] == ')') i++;
-        else i = after_sym;
-        sym_proc_block_at(oi + 1);
-        if (unary_pfx) { OUT_STR(" { |_spx| "); OUT_STR(unary_pfx); OUT_STR("_spx"); }
-        else { OUT_STR(" { |_spx| _spx.");
-          { size_t k; for (k = 0; k < name_len; k++) OUT_CHAR(source[ns + k]); } }
-        OUT_STR(" }");
-        continue;
-      }
-      if (prev == ',') {
-        /* After a positional arg. Drop the separating comma and
-           relocate the block: a parenthesized call closes first then
-           takes a brace block; a command call takes a trailing do..end
-           (a brace would still read as a hash). Only consume up to the
-           `)`; otherwise restore `i` so the newline/`end` that follows
-           a paren-less command is preserved. */
-        oi = back - 1;
-        size_t after_sym = i;
-        while (i < len && (source[i] == ' ' || source[i] == '\t' ||
-                           source[i] == '\n' || source[i] == '\r')) i++;
-        if (i < len && source[i] == ')') {
-          i++;
-          OUT_CHAR(')');
-          sym_proc_block_at(oi + 1);
-          if (unary_pfx) { OUT_STR(" { |_spx| "); OUT_STR(unary_pfx); OUT_STR("_spx"); }
-          else { OUT_STR(" { |_spx| _spx.");
-            { size_t k; for (k = 0; k < name_len; k++) OUT_CHAR(source[ns + k]); } }
-          OUT_STR(" }");
-        }
-else {
-          i = after_sym;
-          sym_proc_block_at(oi + 1);
-          if (unary_pfx) { OUT_STR(" do |_spx| "); OUT_STR(unary_pfx); OUT_STR("_spx"); }
-          else { OUT_STR(" do |_spx| _spx.");
-            { size_t k; for (k = 0; k < name_len; k++) OUT_CHAR(source[ns + k]); } }
-          OUT_STR(" end");
-        }
-        continue;
-      }
-      /* Command-position sole arg (`m &:s`): the brace binds as a
-         block (no comma precedes it). */
-      sym_proc_block_at(oi + 1);
-      OUT_STR(" { |_spx| _spx.");
-      { size_t k; for (k = 0; k < name_len; k++) OUT_CHAR(source[ns + k]); }
-      OUT_STR(" }");
-      continue;
-    }
-    OUT_CHAR(source[i]);
-    i++;
-  }
-  out[oi] = '\0';
-  free(source);
-  return out;
-  #undef OUT_CHAR
-  #undef OUT_STR
 }
 
 /* ---- Main ---- */
@@ -5578,20 +5242,9 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
       free(source); source = mx;
     } }
 
-  /* Debug: build the buffer-line -> (file, original line) map from the
-     marker-annotated buffer *before* syntax-sugar rewriting (which could
-     touch a marker line's text). Sugar preserves line count, so the map
-     stays aligned with the parsed node lines; if that ever fails to hold,
-     disable the map rather than emit wrong attributions. */
-  char *premap = NULL;
-  if (g_src_map) {
-    premap = strdup(source);
-    if (!premap) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-  }
-  source = rewrite_syntax_sugar(source);
   /* Adopt the per-line pragma table only while it provably still lines up
-     with the buffer (sugar preserves line count); on mismatch fall back to
-     the entry file's flag rather than misattribute. */
+     with the buffer (the expansions above keep the line count); on mismatch
+     fall back to the entry file's flag rather than misattribute. */
   if (sp_count_lines(source) == fsl_n) {
     g_fsl_lines = fsl;
     g_fsl_nlines = fsl_n;
@@ -5601,26 +5254,9 @@ else {
     g_fsl_lines = NULL;
     g_fsl_nlines = 0;
   }
-  if (g_src_map) {
-    size_t la = 1, lb = 1;
-    for (const char *p = premap; *p; p++) if (*p == '\n') la++;
-    for (const char *p = source; *p; p++) if (*p == '\n') lb++;
-    sp_build_line_map(la == lb ? premap : source, source_file);
-    if (la != lb) {
-      memset(sp_line_orig, 0, sizeof(int) * ((size_t)sp_line_map_n + 2));
-      memset(sp_disp_line, 0, sizeof(int) * ((size_t)sp_line_map_n + 2));
-      /* Multi-file line attribution unavailable for this program; #line
-         falls back to buffer lines. Only worth a word under an explicit
-         --debug build (faithful stepping matters there); stay silent for
-         the default line-map so normal builds aren't noisy. */
-      const char *dbg = getenv("SPINEL_DEBUG");
-      if (dbg != NULL && dbg[0] == '1' && dbg[1] == '\0') {
-        fprintf(stderr, "spinel_parse: multi-file line map disabled "
-                        "(syntax-sugar changed line count)\n");
-      }
-    }
-    free(premap);
-  }
+  /* the buffer-line -> (file, original line) map, from the buffer Prism
+     parses: its marker lines are comments */
+  if (g_src_map) sp_build_line_map(source, source_file);
 
   size_t source_len = strlen(source);
   sp_find_builtin_ranges(source);
@@ -5776,20 +5412,15 @@ char *sp_parse_file_to_text(const char *source_file, const char *argv0) {
 char *sp_parse_snippet_to_text(const char *src) {
   if (!src || !sp_snippet_graftable(src)) return NULL;
   /* the entry buffer's state the flattener reads: its source map, per-line
-     frozen_string_literal table, the `&:sym` block offsets (rewritten
-     below for this text), the statement cursor and owner */
+     frozen_string_literal table, the statement cursor and owner */
   const pm_parser_t *saved_parser = g_parser;
   int saved_emit_line = g_emit_line, saved_emit_end = g_emit_end;
   char **saved_lines = lines; size_t saved_count = line_count, saved_cap = line_cap; int saved_counter = node_counter;
   int saved_map_n = sp_line_map_n; unsigned char *saved_fsl = g_fsl_lines; size_t saved_fsl_n = g_fsl_nlines;
-  size_t saved_symp_n = g_sym_proc_n;
   pm_node_t **saved_next = g_stmt_next, **saved_end = g_stmt_end; const uint8_t *saved_owner = g_owner;
-  sp_line_map_n = 0; g_fsl_lines = NULL; g_fsl_nlines = 0; g_sym_proc_n = 0;
+  sp_line_map_n = 0; g_fsl_lines = NULL; g_fsl_nlines = 0;
   g_stmt_next = g_stmt_end = NULL; g_owner = NULL; g_emit_end = 0;
-  /* the sugar the entry source went through (`&:sym`, `.send(:m)`), which
-     line count it keeps */
   char *buf = strdup(src);
-  if (buf) buf = rewrite_syntax_sugar(buf);
   char *res = NULL;
   if (buf) {
     pm_parser_t parser;
@@ -5811,7 +5442,7 @@ char *sp_parse_snippet_to_text(const char *src) {
   }
   lines = saved_lines; line_count = saved_count; line_cap = saved_cap; node_counter = saved_counter;
   g_parser = saved_parser; g_emit_line = saved_emit_line; g_emit_end = saved_emit_end;
-  sp_line_map_n = saved_map_n; g_fsl_lines = saved_fsl; g_fsl_nlines = saved_fsl_n; g_sym_proc_n = saved_symp_n;
+  sp_line_map_n = saved_map_n; g_fsl_lines = saved_fsl; g_fsl_nlines = saved_fsl_n;
   g_stmt_next = saved_next; g_stmt_end = saved_end; g_owner = saved_owner;
   return res;
 }

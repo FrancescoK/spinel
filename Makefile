@@ -4357,6 +4357,12 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	(cd "$$tmp" && $(CURDIR)/$(SPINEL) pe.rb --emit-types -o pe.json 2> pe.err; test $$? -eq 1) || { echo "infer-test: FAIL (a parse error still exits 1)"; ok=0; }; \
 	grep -q '^  pe_lib.rb:3:1: unexpected' "$$tmp/pe.err" || { echo "infer-test: FAIL (a parse error is placed, file:line:col, through the require map)"; cat "$$tmp/pe.err"; ok=0; }; \
 	grep -q '"types": \[' "$$tmp/pe.json" && grep -q '{"file":"pe_lib.rb","line":3,"col":0,"end_line":3,"end_col":3,"severity":"error","message":"unexpected' "$$tmp/pe.json" || { echo "infer-test: FAIL (--emit-types on a parse error writes the errors as diagnostics)"; ok=0; }; \
+	$(SPINEL) test/infer/emit_types_sym_proc_columns.rb --emit-types -o "$$tmp/spc.json" >/dev/null 2>&1 || { echo "infer-test: FAIL (--emit-types on emit_types_sym_proc_columns)"; ok=0; }; \
+	grep -q '"line":4,"col":34,"end_line":4,"end_col":35,"kind":"RequiredParameterNode","name":"s"' "$$tmp/spc.json" && \
+	grep -q '"line":4,"col":19,"end_line":4,"end_col":25,"kind":"BlockNode"' "$$tmp/spc.json" || { echo "infer-test: FAIL (--emit-types: the nodes on a line with &:to_s keep their columns)"; ok=0; }; \
+	printf 'p [1, 2].map(&:to_s).join(",") }\n' > "$$tmp/pe2.rb"; \
+	$(SPINEL) "$$tmp/pe2.rb" -S >/dev/null 2> "$$tmp/pe2.err"; \
+	grep -q 'pe2.rb:1:32: unexpected' "$$tmp/pe2.err" || { echo "infer-test: FAIL (a parse error after &:to_s is placed at its own column)"; cat "$$tmp/pe2.err"; ok=0; }; \
 	$(SPINEL) test/infer/emit_types_fields.rb --warn-widen -c -o "$$tmp/ww.c" 2> "$$tmp/ww.err" >/dev/null || { echo "infer-test: FAIL (--warn-widen compiles)"; ok=0; }; \
 	test "$$(grep -c ': warning: ' "$$tmp/ww.err")" = 3 && grep -q '^spinel: test/infer/emit_types_fields.rb:6:13: warning: parameter `o` of `dist2` widened to untyped' "$$tmp/ww.err" && grep -q '^spinel: test/infer/emit_types_fields.rb:11:1: warning: the return of `widen` widened' "$$tmp/ww.err" || { echo "infer-test: FAIL (--warn-widen: one warning per widened slot, at the slot, 1-based column)"; cat "$$tmp/ww.err"; ok=0; }; \
 	$(SPINEL) test/infer/emit_types_fields.rb -c -o "$$tmp/nw.c" 2>&1 >/dev/null | grep -q ': warning: ' && { echo "infer-test: FAIL (a plain compile stays quiet about widening)"; ok=0; }; \
