@@ -310,10 +310,21 @@ void view_unwind(int mark) {
 
 /* ---- per-arm facts (#7483) ---- */
 
+/* the sites that read the recorded fact instead of typing the body again */
+static int arm_site_reads(int site) {
+  return site == ARM_SITE_TAP || site == ARM_SITE_EACH_SLICE || site == ARM_SITE_SPLIT ||
+         site == ARM_SITE_SCAN || site == ARM_SITE_STR_UPTO || site == ARM_SITE_COMB_CONS;
+}
+
 void arm_body_infer(Compiler *c, int site, int block, TyKind kind, const int *body, int n) {
   static int trace = -1;
   if (trace < 0) { const char *e = getenv("SP_ARM_TRACE"); trace = e && *e ? 1 : 0; }
-  for (int j = 0; j < n; j++) infer_type(c, body[j]);
+  const ArmFact *rf = !g_arm_check && arm_site_reads(site) ? arm_fact_find(c, block, kind) : NULL;
+  if (rf) {
+    /* the body's types under this arm, as the analysis recorded them */
+    for (int i = 0; i < rf->n; i++) if (rf->nodes[i] < c->node_cap) c->ntype[rf->nodes[i]] = rf->types[i];
+  }
+  else for (int j = 0; j < n; j++) infer_type(c, body[j]);
   if (g_arm_check) {
     const ArmFact *f = arm_fact_find(c, block, kind);
     if (!f) fprintf(stderr, "arm-check: MISSING site %d block %d line %lld kind %s\n", site, block,
