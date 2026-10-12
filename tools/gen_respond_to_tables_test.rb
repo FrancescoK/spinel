@@ -76,4 +76,56 @@ rescue GenRespondToTables::GenError => e
   checks += 1
 end
 
+# The Range self-check fires for a name under any of the three Range
+# bop_rows families (Range, Range(Float), Range(String) -- all three
+# dispatch to the same cn=="Range" arm at runtime, so all three must be
+# covered by rngm[]/enumm[]/uni[]).
+module BuiltinRowGen
+  class << self
+    def method_list
+      real_method_list + [["Range(Float)", "__bogus_range_method__"]]
+    end
+  end
+end
+begin
+  GenRespondToTables.generate(RT_HEADER)
+  abort "the Range self-check did not fire for an uncovered name"
+rescue GenRespondToTables::GenError => e
+  abort "wrong error message: #{e.message}" unless e.message.include?("__bogus_range_method__")
+  checks += 1
+end
+
+# The Symbol self-check fires for a name not in symm[]/uni[].
+module BuiltinRowGen
+  class << self
+    def method_list
+      real_method_list + [["Symbol", "__bogus_symbol_method__"]]
+    end
+  end
+end
+begin
+  GenRespondToTables.generate(RT_HEADER)
+  abort "the Symbol self-check did not fire for an uncovered name"
+rescue GenRespondToTables::GenError => e
+  abort "wrong error message: #{e.message}" unless e.message.include?("__bogus_symbol_method__")
+  checks += 1
+end
+
+# The Exception self-check fires for a name not in excm[], nor one of the
+# subclass-gating if-chain's literal strcmp(m, "...") names, nor uni[].
+module BuiltinRowGen
+  class << self
+    def method_list
+      real_method_list + [["Exception", "__bogus_exception_method__"]]
+    end
+  end
+end
+begin
+  GenRespondToTables.generate(RT_HEADER)
+  abort "the Exception self-check did not fire for an uncovered name"
+rescue GenRespondToTables::GenError => e
+  abort "wrong error message: #{e.message}" unless e.message.include?("__bogus_exception_method__")
+  checks += 1
+end
+
 puts "gen_respond_to_tables_test: #{checks} checks passed"

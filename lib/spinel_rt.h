@@ -2185,10 +2185,9 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
     "rect", "rectangular", "remainder", NULL };
   /* bop_rows has no TY_INT row at all for these seven -- confirmed by
      direct grep across src/builtin_ops.c and src/builtin_zero_ops.inc,
-     and by CRuby agreeing all seven are real Integer methods (2026-10-12,
-     see docs/superpowers/specs/2026-10-12-generate-respond-to-tables-
-     design.md's Scope amendment). Same shape as numm[]'s arithmetic-
-     operator gap, a different operator subset. */
+     and by CRuby agreeing all seven are real Integer methods (2026-10-12).
+     Same shape as numm[]'s arithmetic-operator gap, a different operator
+     subset. */
   static const char *const intm[] = {
     "&", "<<", ">>", "^", "pow", "|", "~", NULL };
   static const char *const rngm[] = {
@@ -2198,15 +2197,27 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
        bop_rows row, so verified by direct execution (same gap as arrm) */
     "collect_concat", "drop_while", "each_entry", "filter_map",
     "find_all", "find_index", "max_by", "min_by", "reverse_each",
-    "take_while", "to_h", NULL };
+    "take_while", "to_h",
+    /* found 2026-10-12 by tools/gen_respond_to_tables.rb's Range
+       self-check: bop_rows registers these under TY_FLOAT_RANGE/
+       TY_STR_RANGE (so every Range answers true for them too, same as
+       the Enumerable names above), but they were missing here --
+       confirmed real against CRuby for Integer/Float/String ranges
+       alike. "reverse"/"join"/"index" are a false positive this same
+       check found (bop_rows registers raise-stubs for them so an
+       Array-shaped call gets a sensible error instead of falling
+       through; CRuby's own Range does not define them) and are
+       deliberately excluded here. */
+    "minmax", "overlap?", "bsearch", "member?", "%", "entries", "tally",
+    "grep", "grep_v", "uniq", "lazy", "chunk", "chunk_while", "cycle",
+    NULL };
   static const char *const symm[] = {
     "to_proc", "to_sym", "id2name", "name", "length", "size", "succ", "next",
     "upcase", "downcase", "capitalize", "swapcase", "empty?", "start_with?",
     "end_with?", "<=>", "[]",
     "casecmp", "casecmp?", "clamp", "intern", "match?", "slice", NULL };
-  /* Verified against src/builtin_ops.c's bop_rows on 2026-10-12 (see
-     docs/superpowers/specs/2026-10-12-generate-respond-to-tables-design.md):
-     every TY_PROC row bop_rows registers, beyond what uni[] above already
+  /* Verified against src/builtin_ops.c's bop_rows on 2026-10-12: every
+     TY_PROC row bop_rows registers, beyond what uni[] above already
      covers, is already a literal in this array -- there is nothing bop_rows
      knows about Proc that this array doesn't. tools/gen_respond_to_tables.rb
      re-checks this fact on every build and fails loudly if it ever stops
