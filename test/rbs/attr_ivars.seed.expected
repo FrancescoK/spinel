@@ -1,0 +1,4 @@
+class AttrIvars
+ivar @raw string
+ivar plain int
+ivar @explicit float

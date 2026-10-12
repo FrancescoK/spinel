@@ -291,6 +291,29 @@ static void emit_attr(rbs_parser_t *p, rbs_ast_symbol_t *name, rbs_node_t *type,
     sbuf_free(&t);
 }
 
+/* An attribute's seed is for the instance variable it declares: none for
+ * `attr_reader self.x` (the class object's, which the seed format cannot
+ * name) or `attr_reader x (): T` (no variable), @y for `x (@y): T`, and
+ * @x otherwise. */
+static void emit_attr_member(rbs_parser_t *p, rbs_ast_symbol_t *name, rbs_node_t *type,
+                             enum rbs_attribute_kind kind, rbs_attr_ivar_name_t ivar,
+                             const char *enclosing_scope, FILE *out) {
+    if (kind != RBS_ATTRIBUTE_KIND_INSTANCE) return;
+    if (ivar.tag == RBS_ATTR_IVAR_NAME_TAG_EMPTY) return;
+    if (ivar.tag == RBS_ATTR_IVAR_NAME_TAG_NAME) {
+        rbs_constant_t *cn = rbs_constant_pool_id_to_constant(&p->constant_pool, ivar.name);
+        if (cn == NULL) return;
+        sbuf_t t;
+        sbuf_init(&t);
+        if (!map_type(p, type, enclosing_scope, &t)) { sbuf_free(&t); return; }
+        emit_position(out, name ? name->base.location.start_byte : 0);
+        fprintf(out, "ivar %.*s %s\n", (int) cn->length, (const char *) cn->start, t.buf);
+        sbuf_free(&t);
+        return;
+    }
+    emit_attr(p, name, type, enclosing_scope, out);
+}
+
 /* ---- traverse class/module body ---------------------------- */
 
 /* `qualified_scope` is this declaration's full path (used as the
@@ -320,17 +343,17 @@ static void traverse_members(rbs_parser_t *p, rbs_node_list_t *members,
                 break;
             case RBS_AST_MEMBERS_ATTR_ACCESSOR: {
                 rbs_ast_members_attr_accessor_t *a = (rbs_ast_members_attr_accessor_t *) n;
-                emit_attr(p, a->name, a->type, lookup_scope, out);
+                emit_attr_member(p, a->name, a->type, a->kind, a->ivar_name, lookup_scope, out);
                 break;
             }
             case RBS_AST_MEMBERS_ATTR_READER: {
                 rbs_ast_members_attr_reader_t *a = (rbs_ast_members_attr_reader_t *) n;
-                emit_attr(p, a->name, a->type, lookup_scope, out);
+                emit_attr_member(p, a->name, a->type, a->kind, a->ivar_name, lookup_scope, out);
                 break;
             }
             case RBS_AST_MEMBERS_ATTR_WRITER: {
                 rbs_ast_members_attr_writer_t *a = (rbs_ast_members_attr_writer_t *) n;
-                emit_attr(p, a->name, a->type, lookup_scope, out);
+                emit_attr_member(p, a->name, a->type, a->kind, a->ivar_name, lookup_scope, out);
                 break;
             }
             case RBS_AST_MEMBERS_INSTANCE_VARIABLE: {
