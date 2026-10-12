@@ -9638,6 +9638,13 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (lv && repr_slot_kind(c, lv) == RK_STRBUF) return TY_STRING;   /* a handle slot reads as a String */
     return ct != TY_UNKNOWN ? ct : infer_type(c, nt_ref(nt, id, "value"));
   }
+  if (nk == NK_ConstantWriteNode) {
+    /* `A = v` as a value: the constant, read back after the write. Not for a
+       constant the value form leaves out (comp_const_write_valued) */
+    const char *nm = nt_str(nt, id, "name");
+    LocalVar *lv = nm ? comp_const(c, nm) : NULL;
+    if (comp_const_write_valued(c, lv)) return lv->type;
+  }
   if (nk == NK_ConstantReadNode) {
     const char *nm = nt_str(nt, id, "name");
     LocalVar *lv = nm ? comp_const(c, nm) : NULL;
