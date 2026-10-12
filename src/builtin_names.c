@@ -330,6 +330,8 @@ int is_minmax_query(const char *n) {
   return sp_streq(n, "min") || sp_streq(n, "max");
 }
 
+int is_minmax_pair(const char *n) { return n && sp_streq(n, "minmax"); }
+
 int is_endpoint_query(const char *n) {
   return sp_streq(n, "first") || sp_streq(n, "last");
 }

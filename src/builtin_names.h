@@ -81,6 +81,7 @@ int is_each_window(const char *n); /* each_cons each_slice: consecutive or disjo
 int is_sum_name(const char *n);
 int is_reduce_alias(const char *n); /* inject reduce: Enumerable reduction aliases */
 int is_minmax_query(const char *n); /* min max: extrema queries */
+int is_minmax_pair(const char *n); /* minmax: both extrema in one answer */
 int is_endpoint_query(const char *n); /* first last: collection or Range endpoints */
 int is_map_alias(const char *n); /* map collect: Enumerable transformation aliases */
 int is_instance_eval_family(const char *n); /* instance_eval instance_exec */

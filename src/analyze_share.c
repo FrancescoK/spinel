@@ -2834,6 +2834,14 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     int fs = bop_share_named(BOP_FILE_CLASS, name);
     if (fs) return sh_builtin(F, c, n, fs, rv, blk, 0);
   }
+  /* A String Range's members are new Strings its walk makes (CRuby's
+     String#upto hands on a copy of each), so a builtin answering a String
+     Array of them without a block (first(n), last(n), take, to_a, entries,
+     min(n), max(n)) holds no endpoint: a new container of new Strings, as
+     `s.split`'s (sh_builtin). minmax answers the endpoints themselves, and
+     keeps the Array rows' answer. */
+  if (rt == TY_STR_RANGE && blk < 0 && c->ntype[n] == TY_STR_ARRAY && !is_minmax_pair(name))
+    return sh_builtin(F, c, n, BSH_PURE, rv, blk, 0);
   TyKind fam = sh_family(rt);
   /* an iterator that keeps none of its block's values drops the block's
      own: a call there hands its method's value to no caller. (An
