@@ -7,9 +7,11 @@
 #
 # This exists because sp_poly_responds_builtin's per-class tables are a
 # second, hand-maintained copy of what bop_rows already says is
-# implemented (lib/spinel_rt.h's "uni"/"enumm"/"arrm"/"hashm"/"strm"/
-# "numm"/"intm"/"fltm"/"rngm"/"symm"/"procm"/"excm"/"regm"/"mdm" arrays), and nothing
-# enforces the two stay in sync. They drifted once already: Array's table
+# implemented (lib/spinel_rt.h's "uni"/"enumm"/"numm"/"intm"/"rngm"/"symm"/
+# "procm"/"excm"/"regm"/"mdm" arrays, plus the generated
+# "sp_gen_responds_array"/"hash"/"string"/"float" tables -- see
+# tools/gen_respond_to_tables.rb), and nothing enforces the two stay in
+# sync. They drifted once already: Array's table
 # alone was missing 67 real methods, including every bang mutator (uniq!,
 # sort!, compact!, ...), which is exactly the shape of bug gem "jaccard"
 # hit for real (Jaccard.coefficient's `union.uniq! if
@@ -44,11 +46,16 @@
 # This is NOT a generator: a mismatch here means a human edits
 # lib/spinel_rt.h's tables by hand, the same way the fix that prompted
 # this script did. Generating the tables from bop_rows outright hits real
-# obstacles (bop_rows is not complete for Range/Symbol -- their surface is
-# desugared through Enumerable rather than a row per name -- and Exception
-# registers subclass-specific accessors like `errno` with no "owning
-# subclass" field to gate them); see RENCANA_GENERATE_RESPOND_TO_TABLE.md
-# for that larger, separately-scoped plan.
+# obstacles for Range/Symbol/Exception (bop_rows is not complete for
+# Range/Symbol -- their surface is desugared through Enumerable rather
+# than a row per name -- and Exception registers subclass-specific
+# accessors like `errno` with no "owning subclass" field to gate them);
+# tools/gen_respond_to_tables.rb's check_range_coverage/check_symbol_
+# coverage/check_exception_coverage self-checks instead re-verify, on
+# every build, that whatever slice of each surface bop_rows *does*
+# register stays covered by rngm[]/symm[]/excm[] -- this script remains
+# the only thing that also covers the Enumerable-desugared and
+# subclass-gated slices those self-checks structurally cannot reach.
 #
 # Exit status: 0 everyone agrees, 1 a mismatch, 4 the tool's own error.
 
@@ -67,7 +74,7 @@ ARGV.each_with_index { |a, i| ref_ruby = ARGV[i + 1] if a == "--ref" }
 # does not care which instance, so one representative is enough).
 SCOPE = %w[Array Hash String Integer Float Range Symbol Proc Exception Regexp MatchData].freeze
 
-INTERNAL_NAME = /\A__(?!.*__\z)/.freeze  # __bivar_get, not __id__/__send__
+INTERNAL_NAME = BuiltinRowGen::INTERNAL_NAME
 
 # Names bop_rows has for a typed Regexp / MatchData that a boxed one cannot
 # be called with yet (the call raises NoMethodError, or for ~ does integer

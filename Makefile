@@ -192,7 +192,7 @@ endif
 BUNDLED_NATIVE_MT_OBJS = $(BUNDLED_NATIVE_OBJS:.o=_mt.o)
 PKG_MT_FLAGS = -DSP_THREADS -ftls-model=initial-exec
 
-all: regexp $(SPINEL) $(RBS_EXTRACT_TARGET) tools $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS)
+all: regexp $(SPINEL) $(RBS_EXTRACT_TARGET) tools $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS) lib/spinel_rt_responds_generated.h
 
 # ---- Dependencies ----
 deps: vendor/prism/include/prism/diagnostic.h vendor/rbs/include/rbs/parser.h
@@ -348,11 +348,29 @@ build/csrc/main.o: build/csrc/spinel_rev.h
 # spinel_rev.h, so only a real change recompiles.
 SP_RT_NAME_SRC = $(wildcard lib/*.h lib/*.c packages/*/*.h packages/*/*.c)
 
-build/csrc/sp_rt_names.h: $(SP_RT_NAME_SRC) | build/csrc
+# sp_poly_responds_builtin's Array/Hash/String/Integer/Float reflection
+# tables, from src/builtin_ops.c's bop_rows (tools/gen_respond_to_tables.rb
+# has the full story). cmp-guarded like sp_rt_names.h, so a
+# content-identical regeneration does not touch the .h's mtime and does
+# not force a PCH rebuild it doesn't need.
+lib/spinel_rt_responds_generated.h: src/builtin_ops.c tools/gen_respond_to_tables.rb tools/builtin_row_gen.rb lib/spinel_rt.h
 	@t=$@.tmp.$$$$; \
+	ruby tools/gen_respond_to_tables.rb > $$t; \
+	if cmp -s $$t $@; then rm -f $$t; else mv $$t $@; fi
+
+# lib/spinel_rt_responds_generated.h is an explicit prerequisite (not just
+# part of $(SP_RT_NAME_SRC)'s wildcard) because make caches a directory's
+# wildcard() listing for the life of this invocation: on a from-clean build
+# this header does not exist yet when $(SP_RT_NAME_SRC) is first expanded, and
+# that stale listing would persist even after the header is generated. The
+# recipe below re-globs with the shell instead of reusing $(SP_RT_NAME_SRC),
+# so it always sees the header once this prerequisite has built it.
+build/csrc/sp_rt_names.h: lib/spinel_rt_responds_generated.h $(SP_RT_NAME_SRC) | build/csrc
+	@t=$@.tmp.$$$$; \
+	src="$$(echo lib/*.h lib/*.c packages/*/*.h packages/*/*.c)"; \
 	{ echo "/* generated from the runtime sources; see the Makefile rule */"; \
 	  echo "static const char *const SP_RT_PREFIXES[] = {"; \
-	  { grep -hoE '\bsp_[a-z][a-z0-9_]*' $(SP_RT_NAME_SRC) 2>/dev/null \
+	  { grep -hoE '\bsp_[a-z][a-z0-9_]*' $$src 2>/dev/null \
     | sed 's/^sp_//' | cut -d_ -f1 | grep -v '^cext$$'; echo rb; } \
 	    | sort -u | sed 's/.*/  "&",/'; \
 	  echo "  NULL"; echo "};"; } > $$t; \
@@ -490,7 +508,20 @@ build/regexp/%.o: lib/regexp/%.c $(RE_HDRS)
 	@mkdir -p build/regexp
 	$(CC) -c $(COPT) $(SEC_FLAGS) $(RE_CASE_FLAGS) -Ilib/regexp -Ilib/regexp/shim $< -o $@
 
-RT_HDRS = $(wildcard lib/*.h lib/regexp/*.h lib/regexp/*.inc lib/regexp/shim/*.h lib/regexp/shim/mruby/*.h) $(PLATFORM_HDRS)
+# lib/spinel_rt_responds_generated.h is a plain filename here, not part of
+# the $(wildcard ...) above: on a from-clean build it does not exist yet
+# when $(RT_HDRS) is first expanded, and make caches that directory
+# listing for the rest of this invocation, so the wildcard would never
+# pick it up even after its own rule generates it later in the same run.
+# Every rule below that lists $(RT_HDRS) compiles a .c file that
+# transitively includes lib/spinel_rt.h, which #includes this header, so
+# without this every one of them races the generator under -j$(nproc) on
+# a fresh checkout (observed in CI: build/sp_poly_cold.o losing that race
+# with "fatal error: spinel_rt_responds_generated.h: No such file or
+# directory"). A plain filename here is looked up as a real prerequisite
+# with its own rule, not a wildcard scan, so it is immune to the caching
+# above and make schedules its generation before any of these rules runs.
+RT_HDRS = $(wildcard lib/*.h lib/regexp/*.h lib/regexp/*.inc lib/regexp/shim/*.h lib/regexp/shim/mruby/*.h) $(PLATFORM_HDRS) lib/spinel_rt_responds_generated.h
 
 # One rule for every lib/*.c object. The per-object header lists here used to be
 # written by hand and had drifted: build/sp_array.o never named lib/sp_str.h,
@@ -1090,12 +1121,12 @@ SP_LIB_HDRS := $(wildcard lib/*.h) $(PLATFORM_HDRS)
 .PHONY: test-pch
 test-pch: $(PCH_PLAIN) $(PCH_NOPOLY)
 
-$(PCH_PLAIN): $(SP_LIB_HDRS)
+$(PCH_PLAIN): $(SP_LIB_HDRS) lib/spinel_rt_responds_generated.h
 	@mkdir -p $(@D)
 	@cp lib/spinel_rt.h $(@D)/spinel_rt.h
 	@$(CC) $(PCH_FLAGS) -Ilib -x c-header $(@D)/spinel_rt.h -o $@
 
-$(PCH_NOPOLY): $(SP_LIB_HDRS)
+$(PCH_NOPOLY): $(SP_LIB_HDRS) lib/spinel_rt_responds_generated.h
 	@mkdir -p $(@D)
 	@cp lib/spinel_rt.h $(@D)/spinel_rt.h
 	@$(CC) $(PCH_FLAGS) -DSP_TU_NO_POLY_RENDER=1 -Ilib -x c-header $(@D)/spinel_rt.h -o $@
@@ -1264,7 +1295,7 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 # `make test` always runs fresh: it wipes the prior `.ok` stamps first,
 # then runs the suite. (The old incremental `test` + `retest` split is
 # gone -- a stale `.ok` reading PASS was a recurring foot-gun.)
-test: $(SPINEL_TIMEOUT) cext-header-test cext-gc-test cext-exceptions-test cext-recorder-test
+test: lib/spinel_rt_responds_generated.h $(SPINEL_TIMEOUT) cext-header-test cext-gc-test cext-exceptions-test cext-recorder-test
 	@if [ -z "$(TIMEOUT_BIN)" ]; then \
 	  echo "WARNING: no 'timeout'/'gtimeout' on PATH -- tests run with NO time limit."; \
 	  echo "         A hanging test will hang this run until the CI job's own limit."; \
@@ -1281,7 +1312,7 @@ test-run: int-min-test timing-test signal-default-test source-marker-test rbs-te
 # C-side legs: what a 32-bit target runs (`make test-corpus CC='cc -m32'`),
 # whose CRuby extension leg and rbs tooling have no 32-bit toolchain to
 # build against.
-test-corpus: $(SPINEL_TIMEOUT)
+test-corpus: lib/spinel_rt_responds_generated.h $(SPINEL_TIMEOUT)
 	+@$(MAKE) --no-print-directory clean-test-results
 	+@$(MAKE) $(TEST_JOBS) --no-print-directory test-corpus-summary
 .PHONY: test-corpus-results test-corpus-shared-summary

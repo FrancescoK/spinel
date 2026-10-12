@@ -1,0 +1,13 @@
+[Array, "uniq!", true]
+[Array, "transpose", true]
+[Array, "to_set", true]
+[Hash, "transform_keys!", true]
+[Hash, "to_set", true]
+[String, "delete_prefix!", true]
+[String, "unicode_normalize", true]
+[Integer, "digits", true]
+[Integer, "ceildiv", true]
+[Float, "next_float", true]
+[Float, "prev_float", true]
+false
+false

@@ -9,6 +9,7 @@
 /bin/
 /vendor/
 /lib/regexp/libspre.a
+lib/spinel_rt_responds_generated.h
 lib/libspinel_rt.a
 lib/libspinel_cext_rt.a
 lib/libspinel_cext_rec.a
