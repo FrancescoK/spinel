@@ -37,3 +37,15 @@ module E
   class Foo < Foo; end
 end
 p E::Foo.superclass, E::Foo.new.base
+
+# a later reopening of the class does not change what the first header read
+module G
+  class Foo < Foo; end
+end
+module G
+  class Foo
+    def extra = 1
+  end
+  class Foo; end
+end
+p G::Foo.superclass, G::Foo.new.base, G::Foo.new.extra

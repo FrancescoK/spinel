@@ -3625,13 +3625,27 @@ static int qc_resolve_chain(char (*chain)[64], int cl, int abs_anchor, char (*sc
   }
   return 0;
 }
-/* The header a superclass read is resolved for (`class Foo < Foo`): its own
-   write is not there yet when CRuby reads the superclass, so lookups skip it. */
-static int qc_skip_write = -1;
+/* Is write `a` later in the source than write `b`? Only told apart within
+   one file, by position; a write in another file counts as earlier (the
+   walk order is not source order once passes have moved bodies). */
+static int qc_write_after(const NodeTable *nt, int a, int b) {
+  if (nt_int(nt, a, "node_file", -1) != nt_int(nt, b, "node_file", -1)) return 0;
+  long long la = nt_int(nt, a, "node_line", 0), lb = nt_int(nt, b, "node_line", 0);
+  if (la != lb) return la > lb;
+  return nt_int(nt, a, "node_col", 0) > nt_int(nt, b, "node_col", 0);
+}
+/* The header a superclass read is resolved for (`class Foo < Foo`): the
+   class it defines does not exist yet when CRuby reads the superclass, so
+   lookups skip its write and any later reopening of it. */
+static const QCWrite *qc_skip_write = NULL;
+static int qc_skipped(const QCWrite *w) {
+  return qc_skip_write && sp_streq(w->name, qc_skip_write->name) &&
+         qc_path_eq((char (*)[64])w->path, w->depth, (char (*)[64])qc_skip_write->path, qc_skip_write->depth);
+}
 /* The colliding write of `nm` made directly in the body at `path`, or -1. */
 static int qc_write_in(char (*path)[64], int n, const char *nm, QCWrite *ws, int wn) {
   for (int i = 0; i < wn; i++)
-    if (ws[i].node != qc_skip_write && sp_streq(ws[i].name, nm) && qc_path_eq(ws[i].path, ws[i].depth, path, n)) return i;
+    if (!qc_skipped(&ws[i]) && sp_streq(ws[i].name, nm) && qc_path_eq(ws[i].path, ws[i].depth, path, n)) return i;
   return -1;
 }
 /* A read of `nm` that no enclosing body defines is looked up in the
@@ -3744,8 +3758,8 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
     /* `class Foo < Foo` in A: CRuby reads the superclass in the scope
        around the header, before the constant A::Foo exists, so it names the
        Foo found from there, not the class being defined. Resolved here with
-       the header's own write skipped, and left alone by the walk below. A
-       reopen (A::Foo written before) keeps the old reading. */
+       the class's writes skipped, and left alone by the walk below. A
+       reopen (A::Foo written earlier) keeps the old reading. */
     int sup = sp_streq(ty, "ClassNode") ? nt_ref(nt, node, "superclass") : -1;
     int hcp = nt_ref(nt, node, "constant_path");
     const char *hn = hcp >= 0 ? nt_str(nt, hcp, "name") : NULL;
@@ -3754,10 +3768,15 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
       int h = -1, reopen = 0;
       for (int i = 0; i < wn; i++) if (ws[i].node == hcp) { h = i; break; }
       for (int i = 0; h >= 0 && i < wn && !reopen; i++)
-        if (i != h && sp_streq(ws[i].name, ws[h].name) && qc_path_eq(ws[i].path, ws[i].depth, ws[h].path, ws[h].depth))
+        if (i != h && sp_streq(ws[i].name, ws[h].name) && qc_path_eq(ws[i].path, ws[i].depth, ws[h].path, ws[h].depth) &&
+            !qc_write_after(nt, ws[i].node, hcp))
           reopen = 1;
       if (!reopen) {
-        int sv = qc_skip_write; qc_skip_write = hcp;
+        const QCWrite *sv = qc_skip_write;
+        QCWrite self_w; memset(&self_w, 0, sizeof self_w);
+        if (h >= 0) self_w = ws[h];
+        else { snprintf(self_w.name, sizeof self_w.name, "%s", hn); self_w.depth = -1; }
+        qc_skip_write = &self_w;
         qc_rewrite_reads(c, sup, mods, mdepth, ws, wn);
         qc_skip_write = sv;
         nt_node_set_int((NodeTable *)nt, sup, "qc_outer_super", 1);
@@ -3790,7 +3809,7 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
           int pref = sc[q].n;
           if (pref == 0) break;
           for (int i = 0; i < wn && matched < 0; i++) {
-            if (ws[i].node == qc_skip_write || !sp_streq(ws[i].name, nm) || ws[i].depth != pref) continue;
+            if (qc_skipped(&ws[i]) || !sp_streq(ws[i].name, nm) || ws[i].depth != pref) continue;
             int ok = 1;
             for (int j = 0; j < pref && ok; j++) if (!sp_streq(ws[i].path[j], sc[q].path[j])) ok = 0;
             if (ok) matched = i;
@@ -3798,7 +3817,7 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
         }
         if (matched < 0 && depth > 0) matched = qc_ancestor_write(c, path, depth, nm, ws, wn);
         for (int i = 0; i < wn && matched < 0; i++)
-          if (ws[i].node != qc_skip_write && sp_streq(ws[i].name, nm) && ws[i].depth == 0) matched = i;
+          if (!qc_skipped(&ws[i]) && sp_streq(ws[i].name, nm) && ws[i].depth == 0) matched = i;
         if (matched >= 0 && ws[matched].depth > 0) {
           char qn[512]; qc_qualified_name(qn, sizeof qn, &ws[matched]);
           qc_keep_orig_name(nt, node);

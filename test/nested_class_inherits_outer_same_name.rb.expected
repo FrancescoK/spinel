@@ -10,3 +10,6 @@ B::Foo
 :b
 M::Foo
 :m
+Foo
+:top
+1
