@@ -4412,27 +4412,106 @@ static int sh_native_placeholder(Compiler *c, const PolyCand *p, const char *nam
   if (comp_reader_in_chain(c, p->cls, name, NULL)) return 0;
   return !comp_poly_arm_defines(c, p->cls, name);
 }
+/* Does class k answer `name` itself: a method or a reader in its chain,
+   or a native binding? */
+static int sh_class_answers(Compiler *c, int k, const char *name) {
+  return comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL) ||
+         comp_poly_arm_defines(c, k, name);
+}
+/* Does class j's chain hold class or module k: j itself, a superclass, or
+   a module one of them includes or prepends (directly or through another
+   module)? Every chain holds Object, BasicObject and Kernel, and k < 0
+   stands for them. */
+static int sh_chain_holds(Compiler *c, int j, int k) {
+  if (k < 0 || (c->classes[k].name && is_object_root(c->classes[k].name))) return 1;
+  for (int a = j, d = 0; a >= 0 && a < c->nclasses && d <= c->nclasses; a = c->classes[a].parent, d++) {
+    if (a == k) return 1;
+    for (int m = 0; m < c->classes[a].nincluded_mods; m++)
+      if (comp_module_includes(c, c->classes[a].included_mods[m], k, 0)) return 1;
+  }
+  return 0;
+}
+/* Can a hook in class or module k whose instances the boxed-receiver walk
+   does not list as a class of its own (Object, a reopened builtin, a
+   builtin module; k < 0 for every object) answer call `call` of `name`?
+   Where the receiver can be a builtin value (nil, a literal, a builtin
+   class's instance: poly_recv_builtin) or the walk cannot bound it, it
+   can; otherwise only through a class the walk lists (*ks, *nk, asked once
+   for the call) whose chain holds k and lacks the name. */
+static int sh_unlisted_hook_reaches(Compiler *c, int call, const char *name, int k,
+                                    const int **ks, int *nk) {
+  if (*nk < 0) *ks = poly_recv_classes(c, call, nk);
+  if (!*ks || poly_recv_builtin(c, call)) return 1;
+  for (int x = 0; x < *nk; x++)
+    if (sh_chain_holds(c, (*ks)[x], k) && !sh_class_answers(c, (*ks)[x], name)) return 1;
+  return 0;
+}
+/* Can module mod's method_missing hook answer call `call` of `name`? The
+   hook is in the chain of each class that includes or prepends the module
+   (an object's extend makes such a class), and of its subclasses: one that
+   lacks the name reaches the hook where the receiver can be of it, by the
+   boxed-receiver walk, a singleton's always. A module included at the top
+   level, by a builtin module (Kernel, Comparable) or by a class the walk
+   does not bound (a builtin's) is in the chain of values the walk does not
+   list (sh_unlisted_hook_reaches), and one a class extends answers on the
+   class itself, which always counts. */
+static int sh_module_hook_reaches(Compiler *c, int call, const char *name, int mod,
+                                  const int **ks, int *nk) {
+  for (int t = 0; t < c->ntoplevel_includes; t++)
+    if (comp_module_includes(c, c->toplevel_includes[t], mod, 0))
+      return sh_unlisted_hook_reaches(c, call, name, -1, ks, nk);
+  for (int j = 0; j < c->nclasses; j++) {
+    ClassInfo *cj = &c->classes[j];
+    for (int e = 0; e < cj->nextended_mods; e++)
+      if (comp_module_includes(c, cj->extended_mods[e], mod, 0)) return 1;
+    if (comp_class_is_module(c, cj)) {
+      if (cj->name && is_builtin_module_name(cj->name) && comp_module_includes(c, j, mod, 0) &&
+          sh_unlisted_hook_reaches(c, call, name, j, ks, nk)) return 1;
+      continue;
+    }
+    if (!sh_chain_holds(c, j, mod) || sh_class_answers(c, j, name)) continue;
+    if (cj->is_singleton_of) return 1;
+    if ((cj->name && is_builtin_class_name(cj->name)) || !cls_fact_bounded(c, j)) {
+      if (sh_unlisted_hook_reaches(c, call, name, j, ks, nk)) return 1;
+      continue;
+    }
+    if (*nk < 0) *ks = poly_recv_classes(c, call, nk);
+    if (!*ks) return 1;
+    for (int x = 0; x < *nk; x++)
+      if ((*ks)[x] == j) return 1;
+  }
+  return 0;
+}
 /* Can a method_missing hook answer call `call` of `name`, as CRuby routes
    a call no method of the receiver's class answers: a class whose chain
    holds a hook (a Ruby method, a reader, a native binding) and not the
    name, that the receiver can be? The boxed-receiver walk lists the
    program's classes and the native classes the receiver can be
-   (poly_recv_classes, asked only once such a class turns up); a hook in a
-   class it cannot list (a reopened builtin's, a module's, an exception's,
-   an object's singleton class) or for a receiver it cannot bound counts.
-   A hook that only classes answering the name themselves reach, or only
-   classes the receiver never is, answers nothing here. (Spinel never
-   routes a call to the hook; this keeps CRuby's answer in view.) */
+   (poly_recv_classes, asked only once such a class turns up); a hook in
+   an object's singleton class, or for a receiver the walk cannot bound,
+   counts. A hook in a class the walk does not bound (Object, a reopened
+   builtin, an exception's) counts where the receiver can be a builtin
+   value, nil included (an element read past the end, a missing else), or
+   of a listed class below it that lacks the name
+   (sh_unlisted_hook_reaches). A module's hook counts through the classes
+   that include it (sh_module_hook_reaches). A hook that only classes
+   answering the name themselves reach, or only classes the receiver never
+   is, answers nothing here. (Spinel never routes a call to the hook; this
+   keeps CRuby's answer in view.) */
 static int sh_method_missing_reaches(Compiler *c, int call, const char *name) {
   int n = 0, nk = -1;
   const int *ks = NULL;
   const PolyCand *p = comp_poly_candidates(c, "method_missing", &n);
   for (int i = 0; i < n; i++) {
     int k = p[i].cls;
-    if (sh_native_placeholder(c, &p[i], "method_missing")) continue;
-    if (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL) ||
-        (p[i].native && comp_poly_arm_defines(c, k, name))) continue;
-    if (c->classes[k].is_singleton_of || (!p[i].native && !cls_fact_bounded(c, k))) return 1;
+    if (sh_native_placeholder(c, &p[i], "method_missing") || sh_class_answers(c, k, name)) continue;
+    if (c->classes[k].is_singleton_of) return 1;
+    if (!p[i].native && !cls_fact_bounded(c, k)) {
+      if (comp_class_is_module(c, &c->classes[k]) ? sh_module_hook_reaches(c, call, name, k, &ks, &nk)
+                                                   : sh_unlisted_hook_reaches(c, call, name, k, &ks, &nk))
+        return 1;
+      continue;
+    }
     if (nk < 0) ks = poly_recv_classes(c, call, &nk);
     if (!ks) return 1;
     for (int j = 0; j < nk; j++)

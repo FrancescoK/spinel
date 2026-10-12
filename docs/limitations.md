@@ -909,9 +909,17 @@ Real native bindings and readers remain conservative, and the existing
 user-target and dynamic-hook checks still apply. A `method_missing` hook (a
 method, a reader or a native binding) counts only where the receiver can
 be an object of a class that has the hook and not the called name. A
-top-level `method_missing` counts for every call, and one in a reopened
-builtin class, a module or an object's singleton class whatever the
-receiver can be.
+module's hook is in the chain of each class that includes or prepends the
+module, and of its subclasses (an object it extends among them), so it
+counts only where such a class lacks the name and the receiver can be of
+it. A hook in a reopened builtin class (`Object` among them), or in a
+module included at the top level or by a builtin class or module, counts
+where the receiver can be a builtin value (nil included: an element read
+past the end, a conditional without an else) or an object of a class below
+it that lacks the name; a receiver read from a method's answer or an
+instance variable counts as one that can. A top-level `method_missing`
+counts for every call, and one in an object's singleton class or a module
+a class extends whatever the receiver can be.
 
 With `--share-strings`, a method that returns a fresh empty Hash directly
 (`{}` or a blockless `Hash.new` with no default or a String/nil default) can
