@@ -209,6 +209,12 @@ int share_method_blocks(const Compiler *c, int mi, const int **blocks);
    The settled return-tail fact also admits fresh returns and a returned
    parameter bound to a fresh argument or omitted fresh default. */
 int share_call_fresh(Compiler *c, int call);
+/* Can block node blk hand control back to the call that yields to it: does
+   its body fall off its end, or hold a `next` of its own (not a nested
+   block's, lambda's, method's or loop's)? A body whose last statement is a
+   `break` and that holds no such `next` leaves only by jumping out of the
+   call (break, raise, throw). */
+int share_block_returns(const Compiler *c, int blk);
 /* The builtin arms of a boxed call, before checking its user targets. */
 int share_builtin_fresh(Compiler *c, int call);
 /* Is node n's String a new one no name holds yet, by where it comes from: a
