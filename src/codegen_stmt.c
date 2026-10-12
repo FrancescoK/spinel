@@ -12497,15 +12497,34 @@ int g_debug = 0;  /* --debug build: emit user methods with external linkage so
    is the sentinel for "none yet" since real source lines are 1-based. */
 static int g_lm_last_line = 0;
 static int g_lm_last_fid = -1;
+static int g_lm_last_depth = 0;
+
+/* --debug: how many blocks (and lambdas) the node sits in, inside its def,
+   class or module body. The directive carries it as a comment, and
+   bt_block_table reads it back with the function the code ended up in, so a
+   backtrace frame in a block's code reads `block in X` as CRuby's does. */
+static int line_block_depth(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const int *par = codegen_node_parents(c, id);
+  int d = 0;
+  for (int p = par ? par[id] : -1, hops = 0; p >= 0 && hops < 100000; p = par[p], hops++) {
+    NodeKind k = nt_kind(nt, p);
+    if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) break;
+    if (k == NK_BlockNode || k == NK_LambdaNode) d++;
+  }
+  return d;
+}
 
 void emit_line_directive(Compiler *c, int id, Buf *b) {
   if (!g_line_map) return;
   int ln = (int)nt_int(c->nt, id, "node_line", 0);
   if (ln <= 0) return;
   int fid = (int)nt_int(c->nt, id, "node_file", 0);
-  if (ln == g_lm_last_line && fid == g_lm_last_fid) return;
+  int depth = g_debug ? line_block_depth(c, id) : 0;
+  if (ln == g_lm_last_line && fid == g_lm_last_fid && depth == g_lm_last_depth) return;
   g_lm_last_line = ln;
   g_lm_last_fid = fid;
+  g_lm_last_depth = depth;
   const char *path = nt_file_path(c->nt, fid);
   if (!path) path = c->nt->source_file;
   if (!path || !*path) path = "source.rb";
@@ -12516,7 +12535,8 @@ void emit_line_directive(Compiler *c, int id, Buf *b) {
      its consumer is -- a case arm splices it after `case 1LL: { `, mid-line
      (#4830) -- so it gets the break too; a blank line costs nothing. */
   if (b->len == 0 || b->p[b->len - 1] != '\n') buf_puts(b, "\n");
-  buf_printf(b, "#line %d \"%s\"\n", ln, path);
+  if (depth > 0) buf_printf(b, "#line %d \"%s\" /* block %d */\n", ln, path, depth);
+  else buf_printf(b, "#line %d \"%s\"\n", ln, path);
 }
 
 /* Write the position in effect (the last #line emitted) again, for code
@@ -12528,7 +12548,9 @@ void emit_current_line_directive(Compiler *c, Buf *b) {
   const char *path = g_lm_last_line > 0 ? nt_file_path(c->nt, g_lm_last_fid) : NULL;
   if (g_lm_last_line > 0 && !path) path = c->nt->source_file;
   if (b->len > 0 && b->p[b->len - 1] != '\n') buf_puts(b, "\n");
-  if (g_lm_last_line > 0 && path && *path) buf_printf(b, "#line %d \"%s\"\n", g_lm_last_line, path);
+  if (g_lm_last_line > 0 && path && *path && g_lm_last_depth > 0)
+    buf_printf(b, "#line %d \"%s\" /* block %d */\n", g_lm_last_line, path, g_lm_last_depth);
+  else if (g_lm_last_line > 0 && path && *path) buf_printf(b, "#line %d \"%s\"\n", g_lm_last_line, path);
   else buf_puts(b, "#line 1 \"<spinel-synthesized>\"\n");
 }
 
@@ -12546,6 +12568,7 @@ void emit_synth_line_marker(Buf *b) {
   buf_puts(b, "#line 1 \"<spinel-synthesized>\"\n");
   g_lm_last_line = 0;
   g_lm_last_fid = -1;
+  g_lm_last_depth = 0;
 }
 
 void emit_stmt(Compiler *c, int id, Buf *b, int indent) {

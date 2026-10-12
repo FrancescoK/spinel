@@ -4067,6 +4067,89 @@ static void note_method_file(Compiler *c, Scope *s) {
   g_bt_files[g_bt_files_n++] = strdup(path);
 }
 
+/* --debug: the table a backtrace names a frame inside a block by. Each
+   `#line N "file"` that emit_line_directive marked with a `block D` comment
+   is read back with the C function it ended up in (a block's code goes
+   wherever its splice or inlined loop put it, out-of-line pieces included),
+   and each
+   function, file and line keeps its deepest D: a line that holds both a call
+   and the one-line block it takes (`show { raise }`) is the block's.
+   Appended to the C text as _sp_bt_block_tab, which the debug main() hands
+   to the runtime. */
+typedef struct { char *fn; char *file; int line, depth; } BtLine;
+static int wb_is_fn_header(const Buf *b, size_t bol);
+static size_t frame_skip_noncode(const char *p, size_t i, size_t end);
+static int bt_line_cmp(const void *a, const void *b) {
+  const BtLine *x = (const BtLine *)a, *y = (const BtLine *)b;
+  int r = strcmp(x->fn, y->fn);
+  if (!r) r = strcmp(x->file, y->file);
+  if (!r) r = (x->line > y->line) - (x->line < y->line);
+  return r;
+}
+static void bt_block_table(Buf *b) {
+  BtLine *v = NULL; int n = 0, cap = 0;
+  char fn[256]; fn[0] = 0;
+  int depth = 0;   /* braces open in fn's body */
+  const char *p = b->p ? b->p : "";
+  size_t end = b->len, i = 0;
+  while (i < end) {
+    if (i == 0 || p[i - 1] == '\n') {
+      const char *nl = memchr(p + i, '\n', end - i);
+      size_t len = nl ? (size_t)(nl - (p + i)) : end - i;
+      const char *l = p + i;
+      if (len > 6 && strncmp(l, "#line ", 6) == 0) {
+        const char *q1 = memchr(l, '"', len);
+        const char *q2 = q1 ? memchr(q1 + 1, '"', (size_t)(l + len - q1 - 1)) : NULL;
+        const char *bk = NULL;
+        for (const char *q = q2; q && q + 9 <= l + len; q++)
+          if (strncmp(q, "/* block ", 9) == 0) { bk = q; break; }
+        if (fn[0] && bk) {
+          if (n == cap) { cap = cap ? cap * 2 : 64; v = (BtLine *)realloc(v, sizeof(BtLine) * (size_t)cap); }
+          v[n].fn = strdup(fn);
+          v[n].file = strndup(q1 + 1, (size_t)(q2 - q1 - 1));
+          v[n].line = atoi(l + 6);
+          v[n].depth = atoi(bk + 9);
+          n++;
+        }
+        i += len;
+        continue;
+      }
+      if (!fn[0] && wb_is_fn_header(b, i) && strncmp(l, "typedef", 7) != 0) {
+        /* a function definition: `T name(args) {` */
+        const char *lp = memchr(l, '(', len), *eq = memchr(l, '=', len);
+        const char *ib = lp;
+        while (ib > l && (isalnum((unsigned char)ib[-1]) || ib[-1] == '_')) ib--;
+        size_t il = (size_t)(lp - ib);
+        if ((!eq || eq > lp) && ib > l && il > 0 && il < sizeof fn) { memcpy(fn, ib, il); fn[il] = 0; depth = 0; }
+      }
+    }
+    size_t j = frame_skip_noncode(p, i, end);
+    if (j != i) { i = j; continue; }
+    if (fn[0] && p[i] == '{') depth++;
+    else if (fn[0] && p[i] == '}' && --depth <= 0) fn[0] = 0;   /* the function ends */
+    i++;
+  }
+  if (n) qsort(v, (size_t)n, sizeof *v, bt_line_cmp);
+  int m = 0;
+  for (int i = 0; i < n; i++) {
+    if (m > 0 && !bt_line_cmp(&v[m - 1], &v[i])) {
+      if (v[i].depth > v[m - 1].depth) v[m - 1].depth = v[i].depth;
+      free(v[i].fn); free(v[i].file);
+    }
+    else v[m++] = v[i];
+  }
+  buf_puts(b, "\nconst sp_bt_block _sp_bt_block_tab[] = {");
+  for (int i = 0; i < m; i++) {
+    buf_printf(b, "%s{\"%s\", ", i ? ", " : "", v[i].fn);
+    emit_str_literal(b, v[i].file);
+    buf_printf(b, ", %d, %d}", v[i].line, v[i].depth);
+    free(v[i].fn); free(v[i].file);
+  }
+  if (!m) buf_puts(b, "{0, 0, 0, 0}");
+  buf_printf(b, "};\nconst int _sp_bt_block_n = %d;\n", m);
+  free(v);
+}
+
 /* The C call `call` of method s, boxed as its return is: an oint return
    through sp_box_oint / sp_box_ofloat, the rest through emit_boxed_text. */
 void emit_boxed_ret_call(Compiler *c, const Scope *s, const char *call, Buf *b) {
@@ -18743,6 +18826,9 @@ char *codegen_program(const NodeTable *nt) {
       }
       buf_puts(body, ", 0}; sp_bt_files = _bt_files; }\n");
     }
+    /* the lines of block code, by function (bt_block_table, at the end) */
+    buf_puts(body, "    { extern const sp_bt_block _sp_bt_block_tab[]; extern const int _sp_bt_block_n;\n"
+                   "      sp_bt_blocks = _sp_bt_block_tab; sp_bt_nblocks = _sp_bt_block_n; }\n");
   }
   }
   /* No PRNG seeding here: the shared Kernel stream (lib/sp_random.c)
@@ -18859,6 +18945,7 @@ char *codegen_program(const NodeTable *nt) {
     fzl_emit_defs(b.p ? b.p : "", &fz, repr_share_rule(c));
     if (fz.len) buf_splice(&b, fzl_at, fz.p);
     free(fz.p); }
+  if (g_debug) bt_block_table(&b);
   if (g_line_map) line_map_reanchor(&b);
   free(g_procs.p); free(g_proc_protos.p);
   free(g_pd_protos.p); free(g_pd_defs.p);

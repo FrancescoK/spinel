@@ -1872,9 +1872,12 @@ sp_PolyArray *sp_str_chars_poly(const char *s) {SP_GC_ROOT_STR(s);
    treats as "nothing to format" -- the backtrace is simply empty. */
 #define backtrace_symbols(buf, n) ((char **)0)
 #endif
+#include "sp_exc.h"     /* sp_bt_block */
 int sp_bt_enabled = 0;          /* set to 1 by debug-build main() */
 const char *sp_bt_srcfile = ""; /* toplevel .rb path, set by debug main() */
 const char *const *sp_bt_files = 0;
+const sp_bt_block *sp_bt_blocks = 0;
+int sp_bt_nblocks = 0;
 static int sp_bt_is_runtime(const char *n) {
   static const char *pfx[] = {
     "int_", "str_", "float_", "sym_", "gc_", "bigint", "sprintf", "raise",
@@ -1984,8 +1987,9 @@ else {                                        /* macOS: "<idx> <image> <addr> <s
    directives make the line one of the .rb source. Run once per backtrace, for
    every frame, only under --debug; a build without addr2line, or an address
    without a line, leaves the frame without one (lines[i] stays 0). A return
-   address is one past the call, so the call's own line is asked at addr - 1. */
-static void sp_bt_lines(void **buf, int n, int *lines) {
+   address is one past the call, so the call's own line is asked at addr - 1.
+   The file of the line goes to files[i] (malloc'd), for sp_bt_block_depth. */
+static void sp_bt_lines(void **buf, int n, int *lines, char **files) {
   char exe[1024];
   ssize_t el = readlink("/proc/self/exe", exe, sizeof exe - 1);
   if (el <= 0) return;
@@ -2004,7 +2008,10 @@ static void sp_bt_lines(void **buf, int n, int *lines) {
   char line[2048];
   for (int i = 0; i < n && fgets(line, sizeof line, p); i++) {
     char *c = strrchr(line, ':');
-    if (c && c[1] >= '1' && c[1] <= '9') lines[i] = atoi(c + 1);
+    if (c && c[1] >= '1' && c[1] <= '9') {
+      lines[i] = atoi(c + 1);
+      if (files) files[i] = strndup(line, (size_t)(c - line));
+    }
   }
   pclose(p);
 }
@@ -2015,7 +2022,7 @@ static void sp_bt_lines(void **buf, int n, int *lines) {
    step). The main image's load address is handed over with -l, so the
    run-time addresses are asked as they are; each answer line ends in
    "(file:line)". */
-static void sp_bt_lines(void **buf, int n, int *lines) {
+static void sp_bt_lines(void **buf, int n, int *lines, char **files) {
   char exe[1024];
   uint32_t el = sizeof exe;
   if (_NSGetExecutablePath(exe, &el) != 0 || strchr(exe, '\'')) return;
@@ -2033,13 +2040,37 @@ static void sp_bt_lines(void **buf, int n, int *lines) {
     char *close = strrchr(line, ')');
     char *open = close ? strrchr(line, '(') : NULL;
     char *c = open ? strrchr(open, ':') : NULL;
-    if (c && c < close && c[1] >= '1' && c[1] <= '9') lines[i] = atoi(c + 1);
+    if (c && c < close && c[1] >= '1' && c[1] <= '9') {
+      lines[i] = atoi(c + 1);
+      if (files) files[i] = strndup(open + 1, (size_t)(c - open - 1));
+    }
   }
   pclose(p);
 }
 #else
-static void sp_bt_lines(void **buf, int n, int *lines) { (void)buf; (void)n; (void)lines; }
+static void sp_bt_lines(void **buf, int n, int *lines, char **files) { (void)buf; (void)n; (void)lines; (void)files; }
 #endif
+
+/* Do two spellings name one source file? addr2line answers the path the
+   #line directive gave, atos only its base name: equal, or the longer ends
+   in "/" + the shorter. */
+static int sp_bt_same_file(const char *a, const char *b) {
+  size_t la = strlen(a), lb = strlen(b);
+  if (la < lb) { const char *t = a; a = b; b = t; size_t tl = la; la = lb; lb = tl; }
+  if (strcmp(a + (la - lb), b) != 0) return 0;
+  return la == lb || a[la - lb - 1] == '/';
+}
+
+/* How many blocks deep the frame of C symbol sym is at file:line, from the
+   table codegen emits (bt_block_table); 0 for a line not in it. */
+static int sp_bt_block_depth(const char *sym, const char *file, int line) {
+  if (!file || line <= 0) return 0;
+  for (int i = 0; i < sp_bt_nblocks; i++) {
+    const sp_bt_block *b = &sp_bt_blocks[i];
+    if (b->line == line && strcmp(b->sym, sym) == 0 && sp_bt_same_file(b->file, file)) return b->depth;
+  }
+  return 0;
+}
 
 sp_StrArray *sp_bt_format(void **buf, int n) {
   sp_StrArray *a = sp_StrArray_new();
@@ -2049,7 +2080,8 @@ sp_StrArray *sp_bt_format(void **buf, int n) {
   if (!syms) return a;
   const char *src = (sp_bt_srcfile && sp_bt_srcfile[0]) ? sp_bt_srcfile : "(spinel)";
   int *lines = (int *)calloc((size_t)n, sizeof *lines);
-  if (lines) sp_bt_lines(buf, n, lines);
+  char **lfiles = (char **)calloc((size_t)n, sizeof *lfiles);
+  if (lines) sp_bt_lines(buf, n, lines, lfiles);
   for (int i = 0; i < n; i++) {
     char raw[256]; raw[0] = 0;
     char *name = (char *)sp_bt_symbol(syms[i], raw, sizeof raw);  /* always strdup'd; free after use */
@@ -2059,10 +2091,22 @@ sp_StrArray *sp_bt_format(void **buf, int n) {
     if (sp_bt_files)
       for (const char *const *f = sp_bt_files; f[0]; f += 2)
         if (strcmp(f[0], raw) == 0) { file = f[1]; break; }
+    /* a line inside a block run in the method's own function: CRuby's
+       `block in X`, `block (2 levels) in X` */
+    int depth = (lines && lfiles) ? sp_bt_block_depth(raw, lfiles[i], lines[i]) : 0;
+    if (depth > 0) {
+      char bn[320];
+      if (depth == 1) snprintf(bn, sizeof bn, "block in %s", name);
+      else snprintf(bn, sizeof bn, "block (%d levels) in %s", depth, name);
+      free(name);
+      name = strdup(bn);
+    }
     if (lines && lines[i] > 0) sp_StrArray_push(a, sp_sprintf("%s:%d:in `%s'", file, lines[i], name));
     else sp_StrArray_push(a, sp_sprintf("%s:in `%s'", file, name));
     free(name);
   }
+  if (lfiles) for (int i = 0; i < n; i++) free(lfiles[i]);
+  free(lfiles);
   free(lines);
   free(syms);
   return a;

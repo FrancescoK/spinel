@@ -129,6 +129,13 @@ sp_bool sp_exc_eq(sp_Exception *a, sp_Exception *b);
  * and is updated in place. Returns the boxed value so chained assignments
  * (`e = e.set_backtrace(bt)`) work. */
 sp_RbVal sp_Exception_set_backtrace(sp_Exception *e, sp_StrArray *bt);
+
+/* --debug: each line of block code, by the C function it was compiled into,
+   with how many blocks deep it is, so a backtrace frame there reads
+   `block in X` (set by the debug-build main(); defined in lib/sp_cold.c). */
+typedef struct { const char *sym, *file; int line, depth; } sp_bt_block;
+extern const sp_bt_block *sp_bt_blocks;
+extern int sp_bt_nblocks;
 sp_Exception *sp_exc_new_sub(const char *cls_name, const char *parent_cls, const char *msg);
 sp_Exception *sp_exc_dup(sp_Exception *e);
 sp_Exception *sp_exc_clone(sp_Exception *e);

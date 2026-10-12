@@ -4974,6 +4974,9 @@ void emit_block_value_into(Compiler *c, int block, const char *dest,
       /* Emit the value into its own buffer so the tail's own preludes (e.g. a
          nested map's loop) flow to g_pre ahead of the assignment line rather
          than splicing into it. */
+      /* --debug: the tail's own line, so a frame in it is the block's
+         (`block in X`) */
+      if (g_debug) emit_line_directive(c, tail, g_pre);
       Repr tr = repr_of(c, tail);
       TyKind tt = tr.as_ty;
       Buf vb; memset(&vb, 0, sizeof vb);
