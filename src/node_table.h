@@ -9,13 +9,15 @@
  *   A  array field    (a list of child node ids)
  * plus an F "content" string (floats, raw literals).
  *
- * The single-binary compiler loads this directly from the parser's text
- * output (sp_parse_file_to_text) -- no on-disk intermediate.
+ * The parser (sp_parse_file, src/spinel_parse.c) fills the table as it
+ * walks Prism's tree, through the nt_put_* calls below; nt_dump prints it
+ * in the text form for --dump-ast.
  */
 #ifndef SPINEL_NODE_TABLE_H
 #define SPINEL_NODE_TABLE_H
 
 #include <stddef.h>
+#include <stdio.h>
 #include "types.h"   /* sp_streq -- used by the node-table accessors below */
 
 /* Field lookups are by NAME and are the compiler's hottest operation
@@ -263,10 +265,27 @@ static inline int nt_kind_iter_next(NtKindIter *it) {
   for (NtKindIter _it_##IDV __attribute__((cleanup(nt_kind_iter_close))) = nt_kind_iter_begin((NT), (KIND)); nt_kind_iter_next(&_it_##IDV); ) \
     for (int IDV = _it_##IDV.id, _once_##IDV = 1; _once_##IDV; _once_##IDV = 0)
 
-/* Build a node table from the parser's text AST (NUL-terminated). The
-   buffer is consumed read-only; the table owns its own copies. Returns
-   NULL on allocation failure. */
-NodeTable *nt_load_text(const char *text);
+/* ---- filling a table from the parser ----
+   The parser's walk numbers the nodes as it reaches them and hands each
+   node's type and fields over in the order it finds them. A put to an id
+   past the end extends the table to it; a node's fields keep their arrival
+   order, a second field of the same key is appended after the first (which
+   the accessors answer), and a second type or content replaces the first. */
+NodeTable *nt_new_table(void);
+void nt_put_type(NodeTable *nt, int id, const char *type);
+void nt_put_str(NodeTable *nt, int id, const char *key, const char *val, size_t len);  /* copied */
+void nt_put_int(NodeTable *nt, int id, const char *key, long long val);
+void nt_put_ref(NodeTable *nt, int id, const char *key, int child);
+void nt_put_arr(NodeTable *nt, int id, const char *key, int *ids /*owned*/, int n);
+void nt_put_content(NodeTable *nt, int id, const char *content);  /* copied */
+/* Record the source path, or the path of file id `fid` (copied). */
+void nt_put_source_file(NodeTable *nt, const char *path);
+void nt_put_file(NodeTable *nt, int fid, const char *path);
+
+/* Print the table in its text form (docs/internals/AST.md): the ROOT,
+   SOURCE_FILE and FILE header lines, then each node's N line followed by
+   its S, I, F, R and A lines, in id order. --dump-ast writes it. */
+void nt_dump(const NodeTable *nt, FILE *out);
 
 void nt_free(NodeTable *nt);
 

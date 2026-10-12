@@ -73,7 +73,7 @@ extern char *g_ext_shim_text;
 #define EXE_SUFFIX SPINEL_EXE_SUFFIX
 
 /* Defined in spinel_parse.c (compiled with -DSPINEL_PARSE_AS_LIB). */
-char *sp_parse_file_to_text(const char *source_file, const char *argv0);
+NodeTable *sp_parse_file(const char *source_file, const char *argv0);
 
 /* ---------- tiny growable string ---------- */
 typedef struct { char *p; size_t len, cap; } Str;
@@ -957,21 +957,17 @@ int main(int argc, char **argv) {
   else target_i386 = 1;
 #endif
   double tm_front = sp_timing_now();
-  char *text = sp_parse_file_to_text(source, argv[0]);
+  NodeTable *nt = sp_parse_file(source, argv[0]);
   if (eval_path[0]) remove(eval_path);
-  if (!text) {
+  if (!nt) {
     /* an inline RBS error has been reported at the annotation */
     if (!sp_inline_rbs_failed) fprintf(stderr, "spinel: parse failed for '%s'\n", source);
     if (seed_path[0]) remove(seed_path);
     return 1;
   }
 
-  if (dump_ast) { fputs(text, stdout); free(text); if (seed_path[0]) remove(seed_path); return 0; }
-
-  NodeTable *nt = nt_load_text(text);
-  free(text);
+  if (dump_ast) { nt_dump(nt, stdout); nt_free(nt); if (seed_path[0]) remove(seed_path); return 0; }
   sp_timing_end(tm_front, "frontend", "");
-  if (!nt) { fprintf(stderr, "spinel: failed to load AST\n"); if (seed_path[0]) remove(seed_path); return 1; }
 
   /* the CRuby shim's feature name (Init_<feature>, the require name) derives
      from the output basename; codegen needs it while generating the shim */
