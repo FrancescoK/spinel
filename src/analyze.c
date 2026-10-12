@@ -33356,6 +33356,50 @@ int nullable_int_value(Compiler *c, int v) {
       }
     }
     if (mi >= 0 && c->scopes[mi].ret_nullable_int) return 1;
+    /* A bare (receiverless) call to an attr_reader resolves `mi` through
+       comp_self_call_mi straight to the synthesized `def x = @x` scope, but
+       that scope's own ret_nullable_int is never marked by the tail-
+       nullability fixpoint above when a sibling write (`self.x = <non-nil>`
+       in the same or another method) settles the ivar's inferred TYPE to a
+       concrete Integer/Float only after this scope's own tail was already
+       checked -- the fixpoint revisits a scope's return type, but nothing
+       re-walks a trivial reader's already-resolved tail once the ivar
+       backing it turns out nullable. The explicit-receiver arm above
+       (`rcv >= 0`) already re-derives an attr reader's nullability straight
+       from ivar_nullable_int instead of trusting ret_nullable_int; apply
+       the same re-derivation for the receiverless form (found 2026-10-12,
+       kilau K-017: `if id.nil? ... else ... self.id = <int> ... end` kept
+       answering id.nil? as a compile-time false, running the elsif branch
+       unconditionally, while `if self.id.nil?` -- same method, explicit
+       receiver -- answered correctly). */
+    if (rcv < 0 && cn) {
+      Scope *cs = comp_scope_of(c, v);
+      int scid = cs ? cs->class_id : -1;
+      int rdc = -1;
+      if (scid >= 0 && comp_reader_in_chain(c, scid, cn, &rdc)) {
+        int k = rdc >= 0 ? rdc : scid;
+        char ivb[300];
+        snprintf(ivb, sizeof ivb, "@%s", comp_resolve_alias(c, scid, cn));
+        int iv = comp_ivar_index(&c->classes[k], ivb);
+        TyKind ivt = iv >= 0 ? c->classes[k].ivar_types[iv] : TY_UNKNOWN;
+        if ((ivt == TY_FLOAT || ivt == TY_INT) && c->classes[k].ivar_nullable_int[iv]) return 1;
+        /* `ivar_assigned_in_initialize` means "a literal `def initialize`
+           assigns it": a Struct.new/Data.define member is always populated
+           through its auto-generated constructor instead, so this answers
+           false for EVERY member regardless of whether it can really hold
+           nil -- wrongly flagging `Struct.new(:amt) { def cost = amt }`'s
+           bare `cost` call nullable (sp_ofloat) when codegen's own struct-
+           member reader returns a plain sp_float, a C type mismatch (found
+           2026-10-12 testing this fix: kilau/test's issue_2872,
+           struct_block_overrides_bracket). The explicit-receiver arm above
+           never asks this question for a struct member at all -- its own
+           `else if` branch answers the struct case purely from
+           ivar_nullable_int, already checked above. Mirror that boundary
+           here instead of trusting the initialize-based heuristic for a
+           class ivar_nullable_int already said no about. */
+        if (ivt == TY_FLOAT && !c->classes[k].is_struct && !ivar_assigned_in_initialize(c, k, ivb)) return 1;
+      }
+    }
     /* the methods the call dispatches over, by the receiver's class: self's
        for a receiverless call, an object's, or a class constant's class
        methods */
