@@ -19990,8 +19990,14 @@ static int share_lift_poly_ivar_stores(Compiler *c, int cid, const char *name) {
       continue;
     changed |= share_lift_value(c, v);
   }
+  /* the calls of the two names that can write it, not every call: this ran
+     once per boxed ivar holder each round */
   size_t ln = strlen(name);
-  NT_FOREACH_KIND(nt, NK_CallNode, w) {
+  char wname[256];
+  snprintf(wname, sizeof wname, "%s=", name + 1);
+  const char *writers[2] = { wname, "instance_variable_set" };
+  for (int q = 0; q < 2; q++)
+  for (int w = an_calls_named_first(c, writers[q]); w >= 0; w = an_calls_named_next(w)) {
     const char *cn = nt_str(nt, w, "name");
     int a = nt_ref(nt, w, "arguments"), an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
