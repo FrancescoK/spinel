@@ -755,6 +755,71 @@ $(SP_RT_MT_TSAN_LIB): $(RE_MT_TSAN_OBJ) $(addprefix build/mt-tsan/,$(addsuffix .
 
 tsan-archive: $(SP_RT_MT_TSAN_LIB)
 
+# ---- The runtime under AddressSanitizer and UndefinedBehaviorSanitizer ----
+# For `make rt-san-check` (tools/rt_san_check.sh), which runs the corpus
+# against it as san-check compiles the corpus with the instrumented
+# compiler: the runtime archives, the regexp engine and the bundled
+# packages' objects built with the sanitizers into build/rt-san. A
+# program's own translation unit carries most of the runtime as
+# spinel_rt.h's inline code, so it is compiled with them too, at -O0: the
+# instrumented -O1 compile of a test took three times as long, and the
+# precompiled header saved nothing of it. COPT's defines are kept and its
+# -O and -g replaced. Not built by default and not a gate leg: the pass
+# compiles and runs every program twice and the --share-strings binary
+# once more.
+RT_SAN_DIR = build/rt-san
+# -fsanitize-recover=address: a run goes on past a report (halt_on_error=0
+# in the script), so one report does not hide the ones after it
+RT_SAN_FLAGS = -O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fsanitize-recover=address
+RT_SAN_COPT = $(filter-out -O% -g%,$(COPT)) $(RT_SAN_FLAGS)
+SP_RT_SAN_LIB = $(RT_SAN_DIR)/libspinel_rt.a
+SP_RT_MT_SAN_LIB = $(RT_SAN_DIR)/libspinel_rt_mt.a
+RT_SAN_PKG_OBJS = $(patsubst packages/%.o,$(RT_SAN_DIR)/packages/%.o,$(BUNDLED_NATIVE_OBJS))
+RT_SAN_PKG_MT_OBJS = $(patsubst packages/%.o,$(RT_SAN_DIR)/packages-mt/%.o,$(BUNDLED_NATIVE_OBJS))
+# what a program's C is compiled with: the test harness's CFLAGS and
+# SEC_FLAGS, with the sanitizers and -O0 -g
+RT_SAN_CFLAGS = $(filter-out -O% -g%,$(CFLAGS)) $(filter-out -O%,$(RT_SAN_FLAGS)) -O0 $(SEC_FLAGS)
+
+# Specific before generic, as in the mt pair above.
+$(RT_SAN_DIR)/regexp/%.o: lib/regexp/%.c $(RE_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c $(RT_SAN_COPT) $(SEC_FLAGS) $(RE_CASE_FLAGS) -Ilib/regexp -Ilib/regexp/shim $< -o $@
+$(RT_SAN_DIR)/mt/regexp/%.o: lib/regexp/%.c $(RE_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c $(RT_SAN_COPT) $(SEC_FLAGS) $(RE_CASE_FLAGS) $(MT_DEF) -Ilib/regexp -Ilib/regexp/shim $< -o $@
+$(RT_SAN_DIR)/mt/%.o: lib/%.c $(RT_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c $(RT_SAN_COPT) -Wno-all $(SEC_FLAGS) $(MT_DEF) -Ilib -Ilib/regexp -Ilib/regexp/shim $< -o $@
+# a package's C beside its own headers, with the system headers openssl and
+# ffi are glue over (the flags of each package's rule above, together)
+$(RT_SAN_DIR)/packages/%.o: packages/%.c $(RT_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c $(RT_SAN_COPT) -Wno-all $(SEC_FLAGS) $(OPENSSL_CPPFLAGS) $(LIBFFI_CPPFLAGS) -Ilib -I$(<D) $< -o $@
+$(RT_SAN_DIR)/packages-mt/%.o: packages/%.c $(RT_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c $(RT_SAN_COPT) -Wno-all $(SEC_FLAGS) $(PKG_MT_FLAGS) $(OPENSSL_CPPFLAGS) $(LIBFFI_CPPFLAGS) -Ilib -I$(<D) $< -o $@
+$(RT_SAN_DIR)/%.o: lib/%.c $(RT_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c $(RT_SAN_COPT) -Wno-all $(SEC_FLAGS) -Ilib -Ilib/regexp -Ilib/regexp/shim $< -o $@
+
+$(SP_RT_SAN_LIB): $(patsubst lib/regexp/%.c,$(RT_SAN_DIR)/regexp/%.o,$(RE_SRC)) $(addprefix $(RT_SAN_DIR)/,$(addsuffix .o,$(RT_MEMBERS)))
+	ar rcs $@ $^
+$(SP_RT_MT_SAN_LIB): $(patsubst lib/regexp/%.c,$(RT_SAN_DIR)/mt/regexp/%.o,$(RE_SRC)) $(addprefix $(RT_SAN_DIR)/mt/,$(addsuffix .o,$(RT_MEMBERS)))
+	ar rcs $@ $^
+
+# The programs `make test` leaves out on this host and in this mode (the
+# complement of its TESTS and PKG_TESTS, a short list) go to the script by
+# name, so it runs the same selection and says what it skipped.
+.PHONY: rt-san-check
+rt-san-check: $(SPINEL) $(SPINEL_TIMEOUT) $(SP_RT_SAN_LIB) $(SP_RT_MT_SAN_LIB) $(RT_SAN_PKG_OBJS) $(RT_SAN_PKG_MT_OBJS)
+	@RT_SAN_SPINEL="$(CURDIR)/$(SPINEL)" RT_SAN_TIMEOUT_BIN="$(CURDIR)/$(SPINEL_TIMEOUT)" \
+	  RT_SAN_LIB="$(SP_RT_SAN_LIB)" RT_SAN_MT_LIB="$(SP_RT_MT_SAN_LIB)" \
+	  RT_SAN_PKG_OBJS="$(RT_SAN_PKG_OBJS)" RT_SAN_PKG_MT_OBJS="$(RT_SAN_PKG_MT_OBJS)" \
+	  RT_SAN_CC="$(CC)" RT_SAN_CFLAGS="$(RT_SAN_CFLAGS)" RT_SAN_MT_DEF="$(MT_DEF)" \
+	  RT_SAN_LDFLAGS="$(LDFLAGS) $(GC_FLAGS)" \
+	  RT_SAN_SKIP="$(filter-out $(TESTS) $(PKG_TESTS),$(wildcard test/*.rb packages/*/test/*.rb))" \
+	  tools/rt_san_check.sh $(RT_SAN_FILES)
+
 # ---- wasm32-wasi runtime archive ----
 # `spinel --target=wasm32-wasi` links lib/wasm32-wasi/libspinel_rt.a, the
 # same sources compiled by the wasi-sdk's clang (WASI_SDK, or the sdk's own
