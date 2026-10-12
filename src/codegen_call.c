@@ -21304,6 +21304,16 @@ static int operand_binds_self_handle(Compiler *c, int v) {
   return r >= 0 && nt_kind(c->nt, r) == NK_CallNode && strbuf_bang_emits(c, v);
 }
 
+/* --share-strings: is operand v a String bang on a boxed receiver
+   (face_str_bang_call: `($a[0] << x).upcase!`), whose answer as a box is
+   the receiver's own box, or nil? Bound as its bytes, a reader that wants
+   that box -- `p`'s -- took the bytes for one. Such an operand is bound as
+   that box, read as a box while the call is emitted. */
+static int operand_binds_face_box(Compiler *c, int v) {
+  return repr_share_rule(c) && nt_kind(c->nt, v) == NK_CallNode && comp_ntype(c, v) == TY_STRING &&
+         !arg_ran_first(v, 0) && face_str_bang_call(c, v);
+}
+
 static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   /* The buffer arm holds its operands, including the handle a keyword
      may replace, before it checks or converts any of them. */
@@ -21357,7 +21367,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   int nmax = 1 + argc;
   for (int i = 0; i < argc; i++)
     if (nt_kind(nt, argv[i]) == NK_KeywordHashNode) { int nk = 0; nt_arr(nt, argv[i], "elements", &nk); nmax += nk; }
-  int node[nmax], fresh[nmax], oo[nmax], copy[nmax], sh[nmax], nb = 0;
+  int node[nmax], fresh[nmax], oo[nmax], copy[nmax], sh[nmax], fb[nmax], nb = 0;
   TyKind ty[nmax];
   int operand[nmax], nop = 0;
   if (recv >= 0) operand[nop++] = recv;
@@ -21462,14 +21472,15 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (!bindable && unb < 0) unb = i;
     int fr = operand[i] != harg && operand[i] != recv && operand_fresh_str(c, operand[i]);
     int bsh = operand[i] != harg && operand_binds_self_handle(c, operand[i]);
-    TyKind t = operand[i] == harg || bsh ? TY_STRBUF : fr ? TY_STRING : repr_of(c, operand[i]).as_ty;
+    int bfb = !bsh && operand[i] != harg && operand_binds_face_box(c, operand[i]);
+    TyKind t = operand[i] == harg || bsh ? TY_STRBUF : bfb ? TY_POLY : fr ? TY_STRING : repr_of(c, operand[i]).as_ty;
     if (t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL) {
       if (unb < 0) return 0;
       unb_lit = 1;
       obs[i] = 2;
       continue;
     }
-    node[nb] = operand[i]; ty[nb] = t; fresh[nb] = fr; copy[nb] = 0; sh[nb] = bsh;
+    node[nb] = operand[i]; ty[nb] = t; fresh[nb] = fr; copy[nb] = 0; sh[nb] = bsh; fb[nb] = bfb;
     /* an Integer / Float producer whose nil rides beside the value */
     oo[nb] = !fr && operand[i] != harg && oint_kind(t) &&
              (node_is_oint(c, operand[i]) || poly_index_key_oint(c, id, operand[i]));
@@ -21497,17 +21508,17 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   for (int i = 0; i < nop && ncand; i++)
     if (obs[i]) { Repr hr = repr_of(c, operand[i]); if (hr.handle || hr.demand) ncand = 0; }
   if (ncand) {
-    int n2[nmax], f2[nmax], o2[nmax], s2[nmax], k = 0, m = 0, obs0 = observable;
+    int n2[nmax], f2[nmax], o2[nmax], s2[nmax], b2[nmax], k = 0, m = 0, obs0 = observable;
     TyKind t2[nmax];
     for (int i = 0; i < nop; i++) {
-      if (obs[i] == 1) { n2[m] = node[k]; t2[m] = ty[k]; f2[m] = fresh[k]; o2[m] = oo[k]; s2[m] = sh[k]; copy[m] = 0; k++; m++; }
+      if (obs[i] == 1) { n2[m] = node[k]; t2[m] = ty[k]; f2[m] = fresh[k]; o2[m] = oo[k]; s2[m] = sh[k]; b2[m] = fb[k]; copy[m] = 0; k++; m++; }
       else if (cand[i] && operand_copy_at_risk(c, operand, nop, i, cand, obs, obs0)) {
-        n2[m] = operand[i]; t2[m] = TY_STRING; f2[m] = 0; o2[m] = 0; s2[m] = 0; copy[m] = 1;
+        n2[m] = operand[i]; t2[m] = TY_STRING; f2[m] = 0; o2[m] = 0; s2[m] = 0; b2[m] = 0; copy[m] = 1;
         m++;
         observable++;
       }
     }
-    for (int i = 0; i < m; i++) { node[i] = n2[i]; ty[i] = t2[i]; fresh[i] = f2[i]; oo[i] = o2[i]; sh[i] = s2[i]; }
+    for (int i = 0; i < m; i++) { node[i] = n2[i]; ty[i] = t2[i]; fresh[i] = f2[i]; oo[i] = o2[i]; sh[i] = s2[i]; fb[i] = b2[i]; }
     nb = m;
   }
   /* An operand no binding takes keeps the order it had: the operands
@@ -21559,9 +21570,11 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (copy[i]) { memset(&opb[i], 0, sizeof opb[i]); memset(&opp[i], 0, sizeof opp[i]); }
   for (; !operands_last && rendered < nb && ok; rendered++) {
     if (copy[rendered]) continue;
+    int fv = fb[rendered] ? view_push(c, node[rendered], TY_POLY) : -1;
     render_operand(c, node[rendered], fresh[rendered],
                    operand_binds_handle(c, node[rendered], harg) || late[rendered] || sh[rendered],
                    oo[rendered], &opb[rendered], &opp[rendered]);
+    if (fv >= 0) view_pop(c, fv);
     if (text_is_raise_token(opb[rendered].p)) ok = 0;
   }
   Buf ob; memset(&ob, 0, sizeof ob);
@@ -21581,6 +21594,11 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
       tmp[i] = ++g_tmp;
       if (sh[i]) {
         ran_first_bind_read(node[i], tmp[i]);
+        continue;
+      }
+      if (fb[i]) {
+        view_bind(node[i], "_t%d", tmp[i]);
+        held[nh++] = view_push(c, node[i], TY_POLY);
         continue;
       }
       if (operand_binds_handle(c, node[i], harg)) ran_first_bind(node[i], tmp[i], tmp[i]);
@@ -21623,9 +21641,11 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (observable < 2 && g_conv_emitted == conv_mark) ok = 0;
     for (; operands_last && rendered < nb && ok; rendered++) {
       if (copy[rendered]) continue;
+      int fv = fb[rendered] ? view_push(c, node[rendered], TY_POLY) : -1;
       render_operand(c, node[rendered], fresh[rendered],
                      operand_binds_handle(c, node[rendered], harg) || late[rendered] || sh[rendered],
                      oo[rendered], &opb[rendered], &opp[rendered]);
+      if (fv >= 0) view_pop(c, fv);
       if (text_is_raise_token(opb[rendered].p)) ok = 0;
     }
   }
