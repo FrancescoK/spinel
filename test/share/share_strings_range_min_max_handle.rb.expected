@@ -14,3 +14,13 @@ nil
 nil
 true
 true
+[nil, "9", false, false]
+[nil, nil, false, false]
+["10x", "9y", true, true]
+["1x", "9", true, false]
+[nil, nil, false, false]
+["cx", "cy", true, true]
+["yx", "zy", true, false]
+["ax", "z", true, false]
+"p!"
+true

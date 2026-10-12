@@ -62,3 +62,28 @@ z = (+"z")..(+"a")
 p z.min, z.max
 lit = "k".."m"
 p lit.min.frozen?, lit.max.equal?(lit.end)
+
+# #min walks nothing: nil where the begin is past the end by <=>, or at an
+# excluded end; else the begin itself, an endless Range's too
+def ends(b, e, excl)
+  s = String.new(b)
+  f = String.new(e)
+  r = excl ? (s...f) : (s..f)
+  lo = r.min
+  hi = r.max
+  s << "x"
+  f << "y"
+  p [lo, hi, lo.equal?(s), hi.equal?(f)]
+end
+ends("9", "11", true)
+ends("9", "11", false)
+ends("10", "9", false)
+ends("1", "10", true)
+ends("c", "c", true)
+ends("c", "c", false)
+ends("y", "zz", true)
+ends("a", "ab", true)
+u = String.new("p")
+m = (u..).min
+u << "!"
+p m, m.equal?(u)

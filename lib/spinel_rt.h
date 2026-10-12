@@ -2830,19 +2830,29 @@ static inline const void *sp_srange_end_id(sp_StrRange r, int last) {
   void *h = last ? r.hl : r.hf;
   return h ? sp_String_identity((sp_String *)h) : (const void *)(last ? r.last : r.first);
 }
-/* ...and #min (greatest 0) / #max (1) with no block as a String: CRuby's
-   range_min answers the begin object itself and range_max an inclusive
-   Range's end object, so an endpoint the Range keeps is its handle; the
-   walk an excluded end takes for #max answers a new String
-   (sp_srange_min_v / sp_srange_max_v, which raise for an open side), any
-   other endpoint is a new handle over the bytes it holds, and an empty
-   Range is nil (NULL) */
+/* ...and #min (greatest 0) / #max (1) with no block as a String, as
+   CRuby's range_min / range_max answer them. #min walks nothing: a
+   beginless Range raises, one empty by <=> (the begin past the end, or at
+   an excluded end) is nil (NULL), and any other answers its begin object,
+   an endless one's too. #max is an inclusive Range's end object, nil where
+   the begin is past it, and an excluded end's walk answers a new String
+   (sp_srange_max_v, which raises for an open side). An endpoint the Range
+   keeps is its handle; any other is a new handle over the bytes it holds. */
 static inline sp_String *sp_srange_extreme_h(sp_StrRange r, int greatest) {
   SP_GC_ROOT(r.hf); SP_GC_ROOT(r.hl);
-  const char *v = greatest ? sp_srange_max_v(r) : sp_srange_min_v(r);
+  if (!greatest) {
+    sp_StrRange l = sp_srange_live(r);
+    if (!l.first) sp_raise_cls("RangeError", "cannot get the minimum of beginless range");
+    int c = l.last ? strcmp(l.first, l.last) : -1;
+    if (c > 0 || (c == 0 && r.excl)) return NULL;
+    if (r.hf) return (sp_String *)r.hf;
+    const char *b = r.first;
+    SP_GC_ROOT_STR(b);
+    return sp_String_new_shared(b);
+  }
+  const char *v = sp_srange_max_v(r);
   if (!v) return NULL;
-  void *h = greatest ? r.hl : r.hf;
-  if (h && (!greatest || !r.excl)) return (sp_String *)h;
+  if (r.hl && !r.excl) return (sp_String *)r.hl;
   SP_GC_ROOT_STR(v);
   return sp_String_new_shared(v);
 }
