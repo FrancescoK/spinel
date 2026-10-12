@@ -725,6 +725,11 @@ sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen)
     }
     return v;
   }
+  /* IO#dup/#clone on a boxed IO: a handle on its own descriptor */
+  if (v.tag == SP_TAG_OBJ && v.v.p && v.cls_id == SP_BUILTIN_IO) {
+    v.v.p = sp_File_dup((sp_File *)v.v.p, keep_frozen);
+    return v;
+  }
   /* OpenStruct#dup/#clone on a boxed OpenStruct: a copy over its own member
      table. Its cls_id is a builtin's, so the user-object copy below skips it
      and the original came back. */

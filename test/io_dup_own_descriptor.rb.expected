@@ -1,0 +1,17 @@
+false
+false
+back on stdout
+"captured\n"
+File
+true
+false
+true
+"abc\ndef\n"
+[IOError, "closed stream"]
+"via the copy"
+4
+false
+through the boxed copy
+stdout still open
+true
+true

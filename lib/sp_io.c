@@ -1698,6 +1698,60 @@ sp_File *sp_File_reopen_io(sp_File *f, sp_File *other) {SP_GC_ROOT(f);SP_GC_ROOT
   f->lineno = 0;
   return f;
 }
+/* The fopen mode a descriptor's own access mode answers ("r", "w", "a" or
+   "r+"), as CRuby derives it. A marked literal: the handle keeps the pointer
+   as f->mode, and the collector reads its marker byte. */
+const char *sp_io_fd_mode(int fd) {
+  int fl = fcntl(fd, F_GETFL);
+  int acc = fl >= 0 ? (fl & O_ACCMODE) : O_RDONLY;
+  if (acc == O_WRONLY) return (fl & O_APPEND) ? SPL("a") : SPL("w");
+  if (acc == O_RDWR) return SPL("r+");
+  return SPL("r");
+}
+
+/* IO#dup / #clone: a new handle on a dup(2) of the descriptor, as CRuby makes
+   it. The two share the open file (its offset and status flags) but not the
+   descriptor, so closing or reopening one leaves the other as it was:
+   `orig = $stdout.dup; $stdout.reopen(f); ...; $stdout.reopen(orig)` puts
+   stdout back. The original's stream is first brought to its logical
+   position -- buffered output written, read-ahead given back to the
+   descriptor -- so the copy starts where the original stands. glibc's and
+   musl's fflush do both; BSD's only writes. A descriptor with no offset (a
+   pipe) keeps its read-ahead with the original, as CRuby's does. The copy is close-on-exec, and sync where the
+   original is ($stderr always is). A File::Stat shares the handle type and
+   has no descriptor: it is answered as itself, as before. */
+sp_File *sp_File_dup(sp_File *f, int keep_frozen) {SP_GC_ROOT(f);
+  if (f && f->mode && (strcmp(f->mode, "stat") == 0 || strcmp(f->mode, "lstat") == 0)) return f;
+  SP_IO_OPEN(f);
+  off_t pos = ftello(f->fp);
+  fflush(f->fp);
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+  /* BSD stdio's fflush leaves a read stream's read-ahead in place: give it
+     back to the descriptor by hand */
+  if (pos >= 0 && lseek(fileno(f->fp), 0, SEEK_CUR) != pos) {
+    fpurge(f->fp);
+    lseek(fileno(f->fp), pos, SEEK_SET);
+  }
+#else
+  (void)pos;
+#endif
+  int d = dup(fileno(f->fp));
+  if (d < 0) sp_file_raise_errno("dup", f->path ? f->path : "");
+  { int fdf = fcntl(d, F_GETFD); if (fdf >= 0) fcntl(d, F_SETFD, fdf | FD_CLOEXEC); }
+  sp_File *g = sp_io_fdopen_ex(d, sp_io_fd_mode(d), 1); SP_GC_ROOT(g);
+  sp_gc_wb((void *)g);
+  g->path = f->path;
+  g->mode = f->mode;
+  g->lineno = f->lineno;
+  g->bin_flag = f->bin_flag;
+  g->ext_enc = f->ext_enc;
+  g->is_sock = f->is_sock;
+  g->rev_lookup = f->rev_lookup;
+  g->is_file = f->is_file;
+  g->frozen = keep_frozen ? f->frozen : 0;
+  if (f->sync_on || f->fp == stderr) sp_File_set_sync(g, 1);
+  return g;
+}
 /* IO#close_on_exec? / #close_on_exec= via the FD_CLOEXEC descriptor flag. */
 sp_bool sp_File_close_on_exec_p(sp_File *f) {
   SP_IO_OPEN(f);
