@@ -1,0 +1,15 @@
+"GET / HTTP/1.1\r\n"
+"Host"
+""
+": x"
+"ab"
+"def\n"
+"last\n"
+nil
+:eof
+[:reader, ["\n", 2083]]
+[:reader, []]
+"ab\ncd"
+""
+"ef\n"
+nil
