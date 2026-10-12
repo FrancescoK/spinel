@@ -1578,12 +1578,17 @@ void an_cls_facts(Compiler *c) {
   memset(&f, 0, sizeof f);
   f.c = c; f.nt = nt; f.nnodes = nt->count;
   f.par = du_parent_map(nt);
-  /* the pool: every class, no class */
-  { ClsSet s; memset(&s, 0, sizeof s); s.all = 1; int i = cf_pool(&f, &s); (void)i; }
-  /* CF_EMPTY is a sentinel index: nothing is pooled at it */
+  /* The pool: CF_ALL and CF_EMPTY are sentinel indices that cf_pool answers
+     without a lookup, so their entries are written here, as the sets they
+     stand for. The hash table's rebuild hashes every entry below npool;
+     left unwritten, CF_ALL's entry was heap garbage, with a member count
+     that read past the struct and a hash that could alias a real set. */
+  f.cpool = 256;
+  f.pool = malloc(sizeof *f.pool * (size_t)f.cpool);
+  if (!f.pool) cf_oom();
+  memset(&f.pool[0], 0, sizeof f.pool[0] * 2);
+  f.pool[CF_ALL].all = 1;
   f.npool = 2;
-  if (f.cpool < 2) { f.cpool = 256; f.pool = realloc(f.pool, sizeof *f.pool * (size_t)f.cpool); if (!f.pool) cf_oom(); }
-  memset(&f.pool[1], 0, sizeof f.pool[1]);
   /* the elements: the nodes first */
   f.cel = nt->count + 1024;
   f.uf = malloc(sizeof *f.uf * (size_t)f.cel);
