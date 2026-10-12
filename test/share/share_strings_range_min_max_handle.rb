@@ -87,3 +87,14 @@ u = String.new("p")
 m = (u..).min
 u << "!"
 p m, m.equal?(u)
+
+# minmax answers the endpoints too, and min / max are those objects
+q = String.new("g")
+q2 = String.new("i")
+rq = q..q2
+mm = rq.minmax
+mm[0] << "1"
+mm[1] << "2"
+p rq, mm
+p rq.min.equal?(rq.begin), rq.max.equal?(rq.end), rq.min.equal?(q)
+p rq.min.object_id == q.object_id, (q...q2).max.equal?(q2)

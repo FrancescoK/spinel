@@ -1214,7 +1214,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       const char *h = se == 1 ? "hf" : "hl", *e = se == 1 ? "first" : "last";
       int t = ++g_tmp;
       buf_printf(b, "({ sp_StrRange _t%d = ", t);
-      emit_expr(c, nt_ref(nt, unwrap_parens(c, recv), "receiver"), b);
+      emit_srange_end_recv(c, recv, b);
       buf_printf(b, "; SP_GC_ROOT(_t%d.%s); _t%d.%s ? (sp_String_freeze((sp_String *)_t%d.%s), sp_strbuf_read((sp_String *)_t%d.%s))"
                     " : sp_str_freeze_val(_t%d.%s); })", t, h, t, h, t, h, t, h, t, e);
       return 1;

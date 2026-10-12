@@ -2830,6 +2830,14 @@ static inline const void *sp_srange_end_id(sp_StrRange r, int last) {
   void *h = last ? r.hl : r.hf;
   return h ? sp_String_identity((sp_String *)h) : (const void *)(last ? r.last : r.first);
 }
+/* ...a Range whose #first (last 0) / #last (1) with no count has that
+   endpoint, else CRuby's RangeError for a beginless / endless one */
+static inline sp_StrRange sp_srange_need_end(sp_StrRange r, int last) {
+  if (last ? !r.last && !r.hl : !r.first && !r.hf)
+    sp_raise_cls("RangeError", last ? "cannot get the last element of endless range"
+                                    : "cannot get the first element of beginless range");
+  return r;
+}
 /* ...and #min (greatest 0) / #max (1) with no block as a String, as
    CRuby's range_min / range_max answer them. #min walks nothing: a
    beginless Range raises, one empty by <=> (the begin past the end, or at
@@ -2855,6 +2863,14 @@ static inline sp_String *sp_srange_extreme_h(sp_StrRange r, int greatest) {
   if (r.hl && !r.excl) return (sp_String *)r.hl;
   SP_GC_ROOT_STR(v);
   return sp_String_new_shared(v);
+}
+/* ...and the identity of h, that answer, for #equal? and #object_id: the
+   endpoint's (sp_srange_end_id) where it is one, a new String's own (the
+   caller keeps h while it compares), NULL for nil */
+static inline const void *sp_srange_extreme_id(sp_StrRange r, int greatest, sp_String *h) {
+  if (!h) return NULL;
+  if (!greatest || !r.excl) return sp_srange_end_id(r, greatest);
+  return sp_String_identity(h);
 }
 static inline sp_bool sp_poly_is_strbuf(sp_RbVal v) {
   return v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF;

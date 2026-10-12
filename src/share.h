@@ -156,6 +156,10 @@ int share_node_elems_share(const Compiler *c, int n);
    the rule shares? Its one evaluation is the only source of those Strings,
    so where it is consumed each can be wrapped as a handle of its own. */
 int share_node_fresh_elems(const Compiler *c, int n);
+/* Can a method of the program's own (a reopening of builtin class cls, or
+   a module a prepend can put ahead of it) stand in for cls's method name
+   where the call plan does not see it? */
+int share_builtin_overridden(Compiler *c, const char *cls, const char *name);
 /* Is call node `call` a retaining iterator (select, reject, find_all, the
    in-place filters, partition) with a literal block over a fresh Array of
    new Strings (as share_node_fresh_elems has it, before the rule is asked

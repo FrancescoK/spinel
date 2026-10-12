@@ -24,3 +24,10 @@ true
 ["ax", "z", true, false]
 "p!"
 true
+"g1".."i2"
+["g1", "i2"]
+true
+true
+true
+true
+false
