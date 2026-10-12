@@ -161,6 +161,10 @@ int is_retaining_filter(const char *n) {
          sp_streq(n, "find_all") || sp_streq(n, "reject");
 }
 
+int is_reorder_iter(const char *n) {
+  return sp_streq(n, "sort") || sp_streq(n, "sort_by");
+}
+
 int is_enum_partition_def(const char *n) {
   return strncmp(n, "__enum_partition__", 18) == 0;
 }

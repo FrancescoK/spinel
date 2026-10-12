@@ -1,0 +1,26 @@
+"a!"
+true
+"a!"
+true
+"b!"
+true
+"b!"
+true
+"a!"
+true
+"bb!"
+true
+["p?", "q"]
+"q"
+true
+["n#", "m#"]
+false
+["x", "y"]
+"s1"
+"t"
+["s1", "t"]
+"s12"
+["k2", "s12"]
+{k: ["u", "v3"]}
+["E", "D"]
+"i4"
