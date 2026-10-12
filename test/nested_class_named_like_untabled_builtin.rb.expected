@@ -1,0 +1,12 @@
+3
+:traced
+:inner_sync
+[7, 5]
+#<struct A::Monitor x=1>
+5
+"A::OpenStruct"
+2.0
+2.718
+1
+42
+:reopened

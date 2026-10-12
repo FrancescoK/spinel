@@ -1,0 +1,12 @@
+:top
+:own
+Foo
+[A::Foo, Foo]
+A::Foo
+:top
+B::Foo
+:b
+B::Foo
+:b
+M::Foo
+:m

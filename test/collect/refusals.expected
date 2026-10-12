@@ -222,18 +222,10 @@ spinel: test/reject/class_named_like_builtin_module.rb:6: unsupported class name
 spinel: test/reject/class_named_like_builtin_module_path.rb:8: unsupported class name 'Comparable': collides with the builtin module of that name
 == test/reject/class_named_like_builtin_module_path.rb [promote] rc=1
 spinel: test/reject/class_named_like_builtin_module_path.rb:8: unsupported class name 'Comparable': collides with the builtin module of that name
-== test/reject/class_named_like_monitor.rb [default] rc=1
-spinel: test/reject/class_named_like_monitor.rb:5: unsupported class name 'Monitor': collides with the builtin class of that name
-== test/reject/class_named_like_monitor.rb [promote] rc=1
-spinel: test/reject/class_named_like_monitor.rb:5: unsupported class name 'Monitor': collides with the builtin class of that name
 == test/reject/class_named_like_monitor_path.rb [default] rc=1
 spinel: test/reject/class_named_like_monitor_path.rb:4: unsupported class name 'Monitor': collides with the builtin class of that name
 == test/reject/class_named_like_monitor_path.rb [promote] rc=1
 spinel: test/reject/class_named_like_monitor_path.rb:4: unsupported class name 'Monitor': collides with the builtin class of that name
-== test/reject/class_named_like_open_struct.rb [default] rc=1
-spinel: test/reject/class_named_like_open_struct.rb:8: unsupported class name 'OpenStruct': collides with the builtin class of that name
-== test/reject/class_named_like_open_struct.rb [promote] rc=1
-spinel: test/reject/class_named_like_open_struct.rb:8: unsupported class name 'OpenStruct': collides with the builtin class of that name
 == test/reject/class_new_captured_attr_reader.rb [default] rc=1
 spinel: test/reject/class_new_captured_attr_reader.rb:6: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
 spinel: 1 refusal, nothing written
@@ -414,6 +406,10 @@ spinel: test/reject/class_reopens_queue_in_object.rb:5: reopening the builtin cl
 spinel: test/reject/class_reopens_sized_queue.rb:3: reopening the builtin class SizedQueue is not supported
 == test/reject/class_reopens_sized_queue.rb [promote] rc=1
 spinel: test/reject/class_reopens_sized_queue.rb:3: reopening the builtin class SizedQueue is not supported
+== test/reject/class_subclasses_monitor.rb [default] rc=1
+spinel: test/reject/class_subclasses_monitor.rb:5: class A::Monitor < Monitor: subclassing Monitor is not supported yet (a subclass would answer differently from CRuby); wrap a Monitor in an instance variable instead
+== test/reject/class_subclasses_monitor.rb [promote] rc=1
+spinel: test/reject/class_subclasses_monitor.rb:5: class A::Monitor < Monitor: subclassing Monitor is not supported yet (a subclass would answer differently from CRuby); wrap a Monitor in an instance variable instead
 == test/reject/class_superclass_method_call.rb [default] rc=1
 spinel: test/reject/class_superclass_method_call.rb:10: unsupported superclass expression (a call other than Struct.new, Data.define or a blockless Class.new(Constant)): write the superclass as a constant
 == test/reject/class_superclass_method_call.rb [promote] rc=1

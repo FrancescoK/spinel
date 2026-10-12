@@ -3625,10 +3625,13 @@ static int qc_resolve_chain(char (*chain)[64], int cl, int abs_anchor, char (*sc
   }
   return 0;
 }
+/* The header a superclass read is resolved for (`class Foo < Foo`): its own
+   write is not there yet when CRuby reads the superclass, so lookups skip it. */
+static int qc_skip_write = -1;
 /* The colliding write of `nm` made directly in the body at `path`, or -1. */
 static int qc_write_in(char (*path)[64], int n, const char *nm, QCWrite *ws, int wn) {
   for (int i = 0; i < wn; i++)
-    if (sp_streq(ws[i].name, nm) && qc_path_eq(ws[i].path, ws[i].depth, path, n)) return i;
+    if (ws[i].node != qc_skip_write && sp_streq(ws[i].name, nm) && qc_path_eq(ws[i].path, ws[i].depth, path, n)) return i;
   return -1;
 }
 /* A read of `nm` that no enclosing body defines is looked up in the
@@ -3738,6 +3741,28 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
   QCRebase *own = NULL;
   int outer = 0;
   if ((sp_streq(ty, "ModuleNode") || sp_streq(ty, "ClassNode")) && depth < QC_MAXDEPTH) {
+    /* `class Foo < Foo` in A: CRuby reads the superclass in the scope
+       around the header, before the constant A::Foo exists, so it names the
+       Foo found from there, not the class being defined. Resolved here with
+       the header's own write skipped, and left alone by the walk below. A
+       reopen (A::Foo written before) keeps the old reading. */
+    int sup = sp_streq(ty, "ClassNode") ? nt_ref(nt, node, "superclass") : -1;
+    int hcp = nt_ref(nt, node, "constant_path");
+    const char *hn = hcp >= 0 ? nt_str(nt, hcp, "name") : NULL;
+    if (sup >= 0 && hn && nt_kind(nt, sup) == NK_ConstantReadNode && nt_str(nt, sup, "name") &&
+        sp_streq(nt_str(nt, sup, "name"), hn)) {
+      int h = -1, reopen = 0;
+      for (int i = 0; i < wn; i++) if (ws[i].node == hcp) { h = i; break; }
+      for (int i = 0; h >= 0 && i < wn && !reopen; i++)
+        if (i != h && sp_streq(ws[i].name, ws[h].name) && qc_path_eq(ws[i].path, ws[i].depth, ws[h].path, ws[h].depth))
+          reopen = 1;
+      if (!reopen) {
+        int sv = qc_skip_write; qc_skip_write = hcp;
+        qc_rewrite_reads(c, sup, mods, mdepth, ws, wn);
+        qc_skip_write = sv;
+        nt_node_set_int((NodeTable *)nt, sup, "qc_outer_super", 1);
+      }
+    }
     depth = qc_push_header(nt, node, &path, depth, qc_lex, &own);
     if (own && qc_nouter < QC_MAXDEPTH) {
       qc_outer[qc_nouter].path = mods; qc_outer[qc_nouter].depth = mdepth;
@@ -3751,7 +3776,7 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
        (handled via the chain) or a class/module definition name. */
     const char *nm = nt_str(nt, node, "name");
     int part_of_other = (qc_cpath_parent && qc_cpath_parent[node]) ||
-                        (qc_def_cpath && qc_def_cpath[node]);
+                        (qc_def_cpath && qc_def_cpath[node]) || nt_int(nt, node, "qc_outer_super", 0);
     if (nm && !part_of_other) {
       int involved = 0;
       for (int i = 0; i < wn; i++) if (sp_streq(ws[i].name, nm)) { involved = 1; break; }
@@ -3765,7 +3790,7 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
           int pref = sc[q].n;
           if (pref == 0) break;
           for (int i = 0; i < wn && matched < 0; i++) {
-            if (!sp_streq(ws[i].name, nm) || ws[i].depth != pref) continue;
+            if (ws[i].node == qc_skip_write || !sp_streq(ws[i].name, nm) || ws[i].depth != pref) continue;
             int ok = 1;
             for (int j = 0; j < pref && ok; j++) if (!sp_streq(ws[i].path[j], sc[q].path[j])) ok = 0;
             if (ok) matched = i;
@@ -3773,7 +3798,7 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
         }
         if (matched < 0 && depth > 0) matched = qc_ancestor_write(c, path, depth, nm, ws, wn);
         for (int i = 0; i < wn && matched < 0; i++)
-          if (sp_streq(ws[i].name, nm) && ws[i].depth == 0) matched = i;
+          if (ws[i].node != qc_skip_write && sp_streq(ws[i].name, nm) && ws[i].depth == 0) matched = i;
         if (matched >= 0 && ws[matched].depth > 0) {
           char qn[512]; qc_qualified_name(qn, sizeof qn, &ws[matched]);
           qc_keep_orig_name(nt, node);
@@ -4101,6 +4126,11 @@ void qualify_colliding_classes(Compiler *c) {
        refusal is never reached. A builtin MODULE's name (Comparable, Math)
        reopens at any depth and is left alone. */
     if (!collide && ws[i].depth > 0 && is_builtin_class_name(ws[i].name) && !is_builtin_module_name(ws[i].name)) collide = 1;
+    /* ... and the builtins with no row in that table at all (Monitor, and
+       OpenStruct once required), whose leaf the builtin's own checks match
+       as well: graphql's `class MonitorTrace::Monitor` took over a top-level
+       `Monitor.new`. */
+    if (!collide && ws[i].depth > 0 && is_untabled_native_class_name(ws[i].name)) collide = 1;
     /* ... and the builtin exceptions the id table carries without a class
        id (LoadError, SystemCallError): builtins/gem.rb's
        `module Gem; class LoadError < ::LoadError` took the builtin's name, so

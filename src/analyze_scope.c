@@ -1115,17 +1115,22 @@ static const char *reopened_native_class(Compiler *c, int cp, int class_id, cons
   return only_thread && !is_thread_class_name(leaf) ? NULL : leaf;
 }
 
-/* Builtin classes that the builtin class table lacks, so a nested class of
-   that name cannot be kept apart from the C-built one. Refused at any depth.
-   OpenStruct is builtin only with require "ostruct". */
-static int is_untabled_native_name(const char *n) {
-  return sp_streq(n, "Monitor") || (sp_streq(n, "OpenStruct") && sp_feature_required("ostruct"));
+
+/* Did qualify_colliding_classes rename this class or module header to its
+   `Outer__Leaf` key, so that its C name is its own, not the builtin's? Not
+   when the enclosing class or module is a `Class.new do ... end` or
+   `Module.new do ... end` (rewritten to a header): a block opens no constant
+   scope, so the name is the builtin's there, as CRuby reads it. */
+static int header_qualified(Compiler *c, int cp, int class_id) {
+  if (cp < 0 || !nt_str(c->nt, cp, "qc_ruby_name")) return 0;
+  int encl = class_id >= 0 && class_id < c->nclasses ? c->classes[class_id].def_node : -1;
+  return !(encl >= 0 && nt_int(c->nt, encl, "block_made_body", 0));
 }
 
 /* Class bodies and direct singleton definitions obey the same reopen limits. */
 static void refuse_native_class_reopen(Compiler *c, int id, int cp, int class_id, const char *leaf) {
   const char *nat = reopened_native_class(c, cp, class_id, leaf);
-  if (!nat && is_untabled_native_name(leaf)) {
+  if (!nat && is_untabled_native_class_name(leaf) && !header_qualified(c, cp, class_id)) {
     int ln = (int)nt_int(c->nt, id, "node_line", 0);
     const char *file = c->nt->source_file ? c->nt->source_file : "source.rb";
     fprintf(stderr, "spinel: %s:%d: unsupported class name '%s': "
@@ -1147,7 +1152,7 @@ static int singleton_const_class(Compiler *c, int recv, int class_id) {
   NodeKind k = nt_kind(c->nt, recv);
   if (k != NK_ConstantReadNode && k != NK_ConstantPathNode) return -1;
   const char *name = nt_str(c->nt, recv, "name");
-  if (reopened_native_class(c, recv, class_id, name) || is_untabled_native_name(name)) return -2;
+  if (reopened_native_class(c, recv, class_id, name) || is_untabled_native_class_name(name)) return -2;
   int ci = comp_class_index(c, name);
   if (ci < 0 && (is_builtin_class_name(name) || is_builtin_module_const_name(name))) {
     comp_class_new(c, name, -1);
@@ -1295,7 +1300,7 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
        too, as unsupported rather than TypeError. */
     if (sp_streq(ty, "ModuleNode") && cname &&
         ((is_builtin_class_name(cname) && !is_builtin_module_name(cname)) ||
-         is_untabled_native_name(cls_leaf))) {
+         (is_untabled_native_class_name(cls_leaf) && !header_qualified(c, cp, class_id)))) {
       int ln = (int)nt_int(c->nt, id, "node_line", 0);
       const char *file = c->nt->source_file ? c->nt->source_file : "source.rb";
       if (cls_toplevel)
@@ -5297,7 +5302,8 @@ static void check_unrewritten_delegators(Compiler *c) {
    lexical lookup may well find that class instead. Object, BasicObject, the
    exceptions, Struct / Data, Numeric, and package classes written in Ruby
    (Set, Date, ...) are absent: a subclass of those works. OpenStruct is a
-   type of the runtime's own here, so it is listed with the builtins. Array,
+   type of the runtime's own here, so it is listed with the builtins, and so
+   is Monitor, a Mutex underneath. Array,
    Hash and String are listed too, but a subclass of one is no longer
    refused: its instances are real Arrays, Hashes or Strings (#7449,
    mark_array_subclasses). */
@@ -5307,7 +5313,7 @@ static const char *builtin_value_superclass(Compiler *c, int sc) {
     "Integer", "Float", "Symbol", "Rational", "Complex",
     "NilClass", "TrueClass", "FalseClass", "Regexp", "MatchData", "Time",
     "Random", "Enumerator", "IO", "File", "Dir", "Thread", "Fiber", "Mutex",
-    "Queue", "SizedQueue", "ConditionVariable", "OpenStruct", NULL };
+    "Queue", "SizedQueue", "ConditionVariable", "OpenStruct", "Monitor", NULL };
   const NodeTable *nt = c->nt;
   if (sc < 0) return NULL;
   NodeKind k = nt_kind(nt, sc);
@@ -5364,7 +5370,8 @@ static void check_builtin_subclasses(Compiler *c) {
     int sc = nt_ref(nt, id, "superclass");
     if (sc < 0) continue;
     int cp = nt_ref(nt, id, "constant_path");
-    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    const char *cn = cp >= 0 ? nt_str(nt, cp, "qc_ruby_name") : NULL;  /* `A::OpenStruct`, not its key */
+    if (!cn && cp >= 0) cn = nt_str(nt, cp, "name");
     const char *par = refused_builtin_superclass(c, sc);
     /* an Array or Hash subclass is supported (mark_array_subclasses), beside
        a reopen of its builtin too: the reopen's methods are the builtin's

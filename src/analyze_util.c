@@ -3323,6 +3323,12 @@ int io_reopen_leaves_builtin(Compiler *c, const char *name) {
   return n > 0;
 }
 
+/* Builtin classes that the builtin class table lacks: Monitor, and
+   OpenStruct once `require "ostruct"` makes it one. */
+int is_untabled_native_class_name(const char *n) {
+  return n && (sp_streq(n, "Monitor") || (sp_streq(n, "OpenStruct") && sp_feature_required("ostruct")));
+}
+
 int is_builtin_module_const_name(const char *n) {
   if (!n) return 0;
   static const char *const names[] = {

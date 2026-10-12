@@ -1,6 +1,8 @@
 # CRuby makes a new class App::Monitor, and the top-level Monitor stays
-# the builtin one. Spinel cannot keep the two apart, so it refuses.
-# spinel: reject-builtin-class: unsupported class name 'Monitor': collides with the builtin class of that name
+# the builtin one. The nested class takes the internal name App__Monitor,
+# so the two stay apart.
+require "monitor"
+
 module App
   class Monitor
     def hi = "mine"
