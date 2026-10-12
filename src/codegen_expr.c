@@ -4408,12 +4408,15 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
        still produces a value, so it must be assigned rather than emitted for
        effect and discarded (#3495). */
     int e_diverges = (er.untyped || et == TY_VOID) && !node_is_empty_container(nt, e);
+    /* --share-strings: under a handle demand (strbuf_route_begin) the
+       result slot is the handle, and each value is taken as one */
+    int hdem = rt == TY_STRBUF && repr_share_rule(c) && repr_of(c, id).demand;
     /* A call spinel folds into an unconditional raise carries whatever C type
        that raise helper returns, which need not match the merged slot (the
        constant-folded `nil.clone(freeze: false)` yields an int against an
        sp_Class slot). Control never reaches the assignment, so treat it as
        diverging and emit it for effect alone. (#3021) */
-    if (!e_diverges && e >= 0 && rt != TY_POLY && et != rt &&
+    if (!e_diverges && e >= 0 && rt != TY_POLY && et != rt && !(hdem && et == TY_STRING) &&
         !ty_is_numeric(rt) && nt_type(nt, e) && sp_streq(nt_type(nt, e), "CallNode"))
       e_diverges = 1;
     buf_puts(b, "  ");
@@ -4435,6 +4438,7 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
       else if (res_o) emit_oint_expr(c, e, rt, &ev);
       else if (rt == TY_STRING && (comp_scope_of(c, id)->ret_pub_fresh || comp_scope_of(c, id)->ret_pub_bang))
         emit_tail_value(c, e, &ev);
+      else if (hdem) emit_strbuf_handle_of(c, e, &ev);
       else emit_expr_slot(c, e, rt, &ev);
       g_pre = sv_pre0; g_indent = sv_ind0;
       if (epre.p) buf_puts(b, epre.p);
@@ -4496,6 +4500,7 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
       else if (res_o) emit_oint_expr(c, r, rt, &rv);
       else if (rt == TY_STRING && (comp_scope_of(c, id)->ret_pub_fresh || comp_scope_of(c, id)->ret_pub_bang))
         emit_tail_value(c, r, &rv);
+      else if (hdem) emit_strbuf_handle_of(c, r, &rv);
       else emit_expr_slot(c, r, rt, &rv);
       g_rescue_save_depth--;
       g_pre = sv_pre; g_indent = sv_ind;

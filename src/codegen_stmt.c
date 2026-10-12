@@ -1635,46 +1635,56 @@ static int strbuf_freeze_leaf_d(Compiler *c, int v, int depth) {
 }
 int strbuf_freeze_leaf(Compiler *c, int v) { return strbuf_freeze_leaf_d(c, v, 0); }
 int strbuf_assign_route(Compiler *c, int v) { return strbuf_assign_route_d(c, v, 0); }
-/* Is the last statement of statement list st a holder's read, nil, a
-   conditional with a handle arm, or a `raise` (which leaves no value)? */
-static int strbuf_stmts_tail_plain(Compiler *c, int st) {
-  int n = 0;
-  const int *b = st >= 0 && nt_kind(c->nt, st) == NK_StatementsNode ? nt_arr(c->nt, st, "body", &n) : NULL;
-  if (n == 0) return 0;
+/* Is value v a holder's read, nil, a conditional with a handle arm, or a
+   `raise` (which leaves no value)? */
+static int strbuf_tail_plain(Compiler *c, int v) {
+  if (v < 0) return 0;
   /* A fresh arm needs no incoming handle; the demanded tail wraps its
      own String, beside borrowed arms that keep their existing handle. */
-  TyKind t = comp_ntype(c, b[n - 1]);
-  if ((t == TY_STRING || t == TY_STRBUF) && share_value_fresh(c, b[n - 1], 0)) return 1;
-  if (strbuf_native_answer(c, b[n - 1])) return 1;
+  TyKind t = comp_ntype(c, v);
+  if ((t == TY_STRING || t == TY_STRBUF) && share_value_fresh(c, v, 0)) return 1;
+  if (strbuf_native_answer(c, v)) return 1;
   /* A shared reader's demanded value is its slot's handle too. */
-  if (strbuf_route_reader(c, b[n - 1])) return 1;
-  if (strbuf_hash_default_arg(c, b[n - 1]) >= 0) return 1;
+  if (strbuf_route_reader(c, v)) return 1;
+  if (strbuf_hash_default_arg(c, v) >= 0) return 1;
   /* So is a call answering its receiver over a handle (`s.freeze`). */
-  if (strbuf_bang_self_local(c, b[n - 1])) return 1;
+  if (strbuf_bang_self_local(c, v)) return 1;
   /* A receiver conversion's demanded value keeps its operand's handle. */
-  if (repr_string_conversion_operand(c, b[n - 1]) >= 0 || repr_boxed_to_s_operand(c, b[n - 1]) >= 0) return 1;
-  NodeKind k = nt_kind(c->nt, b[n - 1]);
-  const char *nm = k == NK_CallNode ? nt_str(c->nt, b[n - 1], "name") : NULL;
-  if (nm && is_raise_alias(nm) && nt_ref(c->nt, b[n - 1], "receiver") < 0 &&
-      !bare_call_class_owned(c, b[n - 1]) && comp_method_index(c, nm) < 0)
+  if (repr_string_conversion_operand(c, v) >= 0 || repr_boxed_to_s_operand(c, v) >= 0) return 1;
+  NodeKind k = nt_kind(c->nt, v);
+  const char *nm = k == NK_CallNode ? nt_str(c->nt, v, "name") : NULL;
+  if (nm && is_raise_alias(nm) && nt_ref(c->nt, v, "receiver") < 0 &&
+      !bare_call_class_owned(c, v) && comp_method_index(c, nm) < 0)
     return 1;
   /* a String mutator that answers its receiver hands on that receiver's
      handle (strbuf_tail_self_mutator) */
-  if (strbuf_tail_self_mutator(c, b[n - 1])) return 1;
+  if (strbuf_tail_self_mutator(c, v)) return 1;
   /* an exception's #message hands on the handle it holds too
      (strbuf_route_exc_message): `begin; raise s; rescue => e; e.message; end` */
   return k == NK_NilNode || k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
-         repr_static_read_kind(k) || strbuf_cond_has_handle_leaf(c, b[n - 1], 0) ||
-         repr_call_returns_handle(c, b[n - 1]) || strbuf_route_exc_message(c, b[n - 1]) ||
-         strbuf_assign_leaf(c, b[n - 1]);
+         repr_static_read_kind(k) || strbuf_cond_has_handle_leaf(c, v, 0) ||
+         repr_call_returns_handle(c, v) || strbuf_route_exc_message(c, v) ||
+         strbuf_assign_leaf(c, v);
+}
+/* ...and is the last statement of statement list st? */
+static int strbuf_stmts_tail_plain(Compiler *c, int st) {
+  int n = 0;
+  const int *b = st >= 0 && nt_kind(c->nt, st) == NK_StatementsNode ? nt_arr(c->nt, st, "body", &n) : NULL;
+  return n > 0 && strbuf_tail_plain(c, b[n - 1]);
 }
 /* --share-strings: a begin whose value is a variable's String or nil in
    each of its arms (its body's, each rescue's, its else's; an ensure's is
    dropped): the arms keep the handle in its result slot
-   (emit_stmt_tail_inner). */
+   (emit_stmt_tail_inner). So does a rescue modifier (`s.upcase! rescue
+   nil`) whose expression and fallback are such values, not both new
+   Strings (a new String's copy is unseen): the rvalue form takes each as
+   the handle into its result slot. */
 static int strbuf_route_begin(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   v = unwrap_parens(c, v);
+  if (repr_share_rule(c) && v >= 0 && nt_kind(nt, v) == NK_RescueModifierNode)
+    return !share_value_fresh(c, v, 0) && strbuf_tail_plain(c, nt_ref(nt, v, "expression")) &&
+           strbuf_tail_plain(c, nt_ref(nt, v, "rescue_expression"));
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_BeginNode) return 0;
   /* the body's value is the begin's only when no else follows it */
   int el = nt_ref(nt, v, "else_clause");
@@ -21304,6 +21314,11 @@ static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
       strbuf_route_srange_end(c, v))
     return 1;
   if (nt_kind(nt, v) == NK_BeginNode) return strbuf_flow_begin(c, fm, v, depth);
+  /* a rescue modifier the route takes (emit_strbuf_route, not a box):
+     its expression's and its fallback's values */
+  if (nt_kind(nt, v) == NK_RescueModifierNode)
+    return ctx != SFC_ELEM && strbuf_route_begin(c, v) && strbuf_flow_value(c, fm, SFC_TAIL, nt_ref(nt, v, "expression"), depth + 1) &&
+           strbuf_flow_value(c, fm, SFC_TAIL, nt_ref(nt, v, "rescue_expression"), depth + 1);
   if (strbuf_route_inline_call(c, v)) {
     int mi = strbuf_inline_mi(c, v);
     int last = mi > 0 ? scope_body_last(c, mi) : -1;
