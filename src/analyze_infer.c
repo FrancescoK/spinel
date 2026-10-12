@@ -5424,11 +5424,12 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
      which holds any value, so a read is boxed */
   if (recv >= 0 && rt == TY_EXCEPTION && sp_streq(name, "instance_variable_get") && argc == 1 &&
       !exc_class_defines(c, name)) {
-    const char *a0ty = nt_type(nt, argv[0]);
-    if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) { *out = TY_POLY; return 1; }
+    *out = TY_POLY; return 1;   /* a literal name, or a computed one (#8219) */
   }
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_get") && argc >= 1) {
     const char *a0ty = nt_type(nt, argv[0]);
+    /* a computed name: whichever field it names when it runs, boxed (#8219) */
+    if (argc == 1 && !(a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode")))) { *out = TY_POLY; return 1; }
     if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) {
       const char *sym = sp_streq(a0ty, "SymbolNode")
                           ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");

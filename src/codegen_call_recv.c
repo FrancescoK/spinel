@@ -15135,9 +15135,178 @@ static void emit_ivar_switch_key(Compiler *c, int tv, Buf *b) {
   buf_printf(b, "_ik%d; })", tv);
 }
 
+/* ---- instance_variable_get with a computed name (#8219) ----
+   A name built at run time selects no field at compile time. The read is
+   dispatched twice: by the receiver's class, as the literal forms are, and
+   within the class by the name, over the ivars the class declares, each
+   boxed as its literal read boxes it. An undeclared name reads nil, as
+   CRuby answers for an ivar never set. */
+
+/* the name argument as an sp_sym: a Symbol value as itself, a String
+   interned, a boxed value by its tag (as a computed send's name is) */
+void emit_ivar_name_sym(Compiler *c, int arg, Buf *b) {
+  TyKind st = comp_ntype(c, arg);
+  if (st == TY_SYMBOL) emit_expr(c, arg, b);
+  else if (st == TY_STRING) { buf_puts(b, "sp_sym_intern("); emit_expr(c, arg, b); buf_puts(b, ")"); }
+  else {
+    int tn = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tn); emit_boxed(c, arg, b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_SYM ? (sp_sym)_t%d.v.i : sp_sym_intern(sp_poly_to_s(_t%d)); })",
+               tn, tn, tn);
+  }
+}
+
+/* NameError for a name without its leading `@`, as CRuby raises before it
+   looks anything up */
+void emit_ivar_name_check(const char *syv, Buf *b) {
+  buf_printf(b, "if (sp_sym_to_s(%s)[0] != '@') sp_raise_cls(\"NameError\", "
+                "sp_sprintf(\"'%%s' is not allowed as an instance variable name\", sp_sym_to_s(%s))); ", syv, syv);
+}
+
+/* The read of the ivar the sp_sym `syv` names on an instance of class k at
+   `objp` (a pointer's text with its `->`, or a value's with `.`), into the
+   sp_RbVal `out`: each declared ivar by its name, boxed as the literal read
+   on a boxed receiver boxes the field (a nil bit boxes as nil); a Struct
+   member is no ivar (#2849), and a name the class does not declare leaves
+   `out` as it was. */
+void emit_ivar_get_by_name(Compiler *c, int k, const char *objp, const char *syv, const char *out, Buf *b) {
+  ClassInfo *ci = &c->classes[k];
+  int any = 0;
+  buf_printf(b, "{ const char *_n = sp_sym_to_s(%s); (void)_n; ", syv);
+  for (int iv = ci->is_struct ? ci->nmembers : 0; iv < ci->nivars; iv++) {
+    const char *sym = ci->ivars[iv];
+    if (!sym || sym[0] != '@') continue;
+    TyKind t = ci->ivar_types[iv];
+    char fld[400];
+    snprintf(fld, sizeof fld, "%siv_%s", objp, iv_c(sym + 1));
+    buf_printf(b, "%sif (strcmp(_n, \"%s\") == 0) %s = ", any ? "else " : "", sym, out);
+    if (oint_kind(t) && ivar_has_nilbit(c, k, iv)) {
+      char bit[400]; ivar_nilbit_test(c, k, iv, objp, bit, sizeof bit);
+      buf_printf(b, "(%s ? sp_box_nil() : %s(%s))", bit, t == TY_FLOAT ? "sp_box_float" : "sp_box_int", fld);
+    }
+    else emit_boxed_text(c, t, fld, b);
+    buf_puts(b, "; ");
+    any = 1;
+  }
+  buf_puts(b, "}");
+}
+
+/* the same for main's ivars, which live in the top-level statics */
+static void emit_toplevel_ivar_get_by_name(Compiler *c, const char *syv, const char *out, Buf *b) {
+  int main_ci = comp_class_index(c, "Toplevel");
+  if (main_ci < 0) return;
+  ClassInfo *ci = &c->classes[main_ci];
+  int any = 0;
+  buf_printf(b, "{ const char *_n = sp_sym_to_s(%s); (void)_n; ", syv);
+  for (int iv = 0; iv < ci->nivars; iv++) {
+    const char *sym = ci->ivars[iv];
+    if (!sym || sym[0] != '@') continue;
+    char slot[300]; snprintf(slot, sizeof slot, "civ_Toplevel_%s", iv_c(sym + 1));
+    TyKind mt = ci->ivar_types[iv];
+    buf_printf(b, "%sif (strcmp(_n, \"%s\") == 0) %s = ", any ? "else " : "", sym, out);
+    if (civ_is_oint(c, main_ci, iv)) buf_printf(b, "%s(%s)", oint_box(mt), slot);
+    else emit_boxed_text(c, mt, slot, b);
+    buf_puts(b, "; ");
+    any = 1;
+  }
+  buf_puts(b, "}");
+}
+
+/* the call's answer from the boxed read `_ivg<tv>`, unboxed where the
+   consumer takes a plain value (an Integer or Float with its nil) */
+static void emit_ivar_get_answer(Compiler *c, int id, int tv, Buf *b) {
+  Repr rp = repr_of(c, id);
+  char ivn[24]; snprintf(ivn, sizeof ivn, "_ivg%d", tv);
+  if (rp.kind != RK_BOXED && rp.kind != RK_NONE) {
+    if (rp.as_ty == TY_INT || rp.as_ty == TY_FLOAT) emit_unbox_nilable_text(c, rp.as_ty, ivn, b);
+    else emit_unbox_text(c, rp.as_ty, ivn, b);
+    buf_puts(b, "; })");
+  }
+  else buf_printf(b, "%s; })", ivn);
+}
+
+/* does an instantiated class of the program define its own
+   instance_variable_get? Its instances take the program's method, which
+   the by-name read cannot call: a boxed receiver that may be one keeps the
+   plan's refusal (cplan_computed_ivar_get). */
+static int poly_class_defines_ivar_get(Compiler *c) {
+  for (int k = 0; k < c->nclasses; k++)
+    if (c->classes[k].instantiated && !is_builtin_reopen(c->classes[k].name) &&
+        comp_method_in_chain(c, k, "instance_variable_get", NULL) >= 0) return 1;
+  return 0;
+}
+
+/* `o.instance_variable_get(name)` on a receiver whose class is known
+   (`objp` the object's text with its `->` or `.`), or with `objp` NULL the
+   receiver node `recv` of class cid, held in a temp. `arg` is the name. */
+int emit_object_ivar_get_computed(Compiler *c, int id, const char *objp, int recv, int cid, int arg, Buf *b) {
+  int tv = ++g_tmp;
+  char op[80], syv[24], out[24];
+  snprintf(syv, sizeof syv, "_sy%d", tv);
+  snprintf(out, sizeof out, "_ivg%d", tv);
+  buf_puts(b, "({ ");
+  if (objp) snprintf(op, sizeof op, "%s", objp);
+  else {
+    int is_val = repr_of(c, recv).kind == RK_VOBJ;
+    buf_printf(b, "sp_%s %s_t%d = ", c->classes[cid].c_name, is_val ? "" : "*", tv);
+    emit_expr(c, recv, b);
+    buf_puts(b, "; ");
+    if (!is_val) buf_printf(b, "SP_GC_ROOT(_t%d); ", tv);
+    snprintf(op, sizeof op, "_t%d%s", tv, is_val ? "." : "->");
+  }
+  buf_printf(b, "sp_sym %s = ", syv); emit_ivar_name_sym(c, arg, b); buf_puts(b, "; ");
+  emit_ivar_name_check(syv, b);
+  buf_printf(b, "sp_RbVal %s = sp_box_nil(); ", out);
+  emit_ivar_get_by_name(c, cid, op, syv, out, b);
+  buf_puts(b, " ");
+  emit_ivar_get_answer(c, id, tv, b);
+  return 1;
+}
+
 static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int *out) {
   /* an exception class of the program's that defines the method answers it */
   if (rt == TY_EXCEPTION && exc_class_defines(c, name)) return 0;
+  /* instance_variable_get with a computed name on a POLY receiver: the
+     class dispatch of the literal form below, each arm reading by name */
+  if (recv >= 0 && (rt == TY_POLY || rt == TY_EXCEPTION) && sp_streq(name, "instance_variable_get") &&
+      argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      nt_kind(nt, argv[0]) != NK_SymbolNode && nt_kind(nt, argv[0]) != NK_StringNode &&
+      !poly_class_defines_ivar_get(c)) {
+    int tv = ++g_tmp;
+    char syv[24], ivn[24];
+    buf_puts(b, "({ "); tv = hold_operand(c, recv, TY_POLY, rt == TY_EXCEPTION, tv, 1, " ", b);
+    snprintf(syv, sizeof syv, "_sy%d", tv);
+    snprintf(ivn, sizeof ivn, "_ivg%d", tv);
+    buf_printf(b, "sp_sym %s = ", syv); emit_ivar_name_sym(c, argv[0], b); buf_puts(b, "; ");
+    emit_ivar_name_check(syv, b);
+    buf_printf(b, "sp_RbVal %s = sp_box_nil(); if (_t%d.tag == SP_TAG_OBJ) switch (", ivn, tv);
+    emit_ivar_switch_key(c, tv, b);
+    buf_puts(b, ") {");
+    for (int k = 0; k < c->nclasses; k++) {
+      if (!c->classes[k].instantiated) continue;
+      char objp[200]; snprintf(objp, sizeof objp, "((sp_%s *)_t%d.v.p)->", c->classes[k].c_name, tv);
+      buf_printf(b, " case %d: ", k);
+      emit_ivar_get_by_name(c, k, objp, syv, ivn, b);
+      buf_puts(b, " break;");
+    }
+    buf_puts(b, " case SP_BUILTIN_OBJECT: ");
+    /* main's ordinary ivars live in the same statics its top-level reads use */
+    if (comp_class_index(c, "Toplevel") >= 0) {
+      buf_printf(b, "if (_t%d.v.p == sp_main_obj) ", tv);
+      emit_toplevel_ivar_get_by_name(c, syv, ivn, b);
+      buf_puts(b, " else ");
+    }
+    buf_printf(b, "%s = sp_Object_ivar_get((sp_Object *)_t%d.v.p, %s); break;", ivn, tv, syv);
+    char bst[200];
+    snprintf(bst, sizeof bst, "%s = sp_bivar_get(_t%d, %s)", ivn, tv, syv);
+    emit_bivar_arm(c, tv, bst, b);
+    buf_puts(b, " } ");
+    /* a class value: the names a reflective write recorded in the map (its
+       static slots are reached by a literal name alone) */
+    if (c->bivar_table) buf_printf(b, "else if (_t%d.tag == SP_TAG_CLASS) %s; ", tv, bst);
+    emit_ivar_get_answer(c, id, tv, b);
+    *out = 1; return 1;
+  }
   /* A class value reads the same static ivar slots as the boxed class arm. */
   if (recv >= 0 && rt == TY_CLASS && is_ivar_access(name) && !is_ivar_set(name) &&
       argc == 1 && nt_ref(nt, id, "block") < 0 &&

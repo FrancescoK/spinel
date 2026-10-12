@@ -3255,5 +3255,10 @@ int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKin
     else buf_puts(b, "sp_box_nil()");
     return 1;
   }
+  /* a computed name: the read by name over the class's ivars (#8219) */
+  if (sp_streq(name, "instance_variable_get") && argc == 1 && recv >= 0 && nt_ref(nt, id, "block") < 0 &&
+      nt_kind(nt, argv[0]) != NK_SymbolNode && nt_kind(nt, argv[0]) != NK_StringNode &&
+      comp_method_in_chain(c, cid, name, NULL) < 0)
+    return emit_object_ivar_get_computed(c, id, NULL, recv, cid, argv[0], b);
   return 0;
 }

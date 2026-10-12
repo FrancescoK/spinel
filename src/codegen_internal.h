@@ -2095,6 +2095,13 @@ int diag_user_defines(Compiler *c, const char *name);
 int recv_user_defines(Compiler *c, const char *name);
 int emit_object_ivar_list(Compiler *c, int recv, int cid, Buf *b);
 void emit_object_ivar_remove(Compiler *c, int id, int recv, TyKind rt, int cid, const char *sym, Buf *b);
+/* instance_variable_get with a computed name (#8219, codegen_call_recv.c):
+   the name as an sp_sym, its NameError check, the read by name over a
+   class's ivars, and the whole call on a receiver of a known class */
+void emit_ivar_name_sym(Compiler *c, int arg, Buf *b);
+void emit_ivar_name_check(const char *syv, Buf *b);
+void emit_ivar_get_by_name(Compiler *c, int k, const char *objp, const char *syv, const char *out, Buf *b);
+int  emit_object_ivar_get_computed(Compiler *c, int id, const char *objp, int recv, int cid, int arg, Buf *b);
 int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKind rt,
                           int cid, int argc, const int *argv, Buf *b);
 const char *case_map_suffix(Compiler *c, int argc, const int *argv);

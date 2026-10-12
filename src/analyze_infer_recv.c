@@ -1407,6 +1407,9 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         if (iv >= 0) { *out = ivar_value_ty(cls, iv); return 1; }
         { *out = TY_POLY; return 1; }
       }
+      /* a computed name selects any of the class's fields when it runs: the
+         read is boxed (#8219) */
+      if (sp_streq(name, "instance_variable_get") && argc == 1 && comp_method_in_chain(c, cid, name, NULL) < 0) { *out = TY_POLY; return 1; }
     }
     /* attr reader (resolve alias so `alias v access_token` returns @access_token type) */
     if (attr_reader_ty(c, cid, name, out)) {
