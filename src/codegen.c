@@ -4026,6 +4026,150 @@ static int ctor_cls_id(Compiler *c, int cid) {
   return c->classes[cid].is_singleton_of ? c->classes[cid].is_singleton_of - 1 : cid;
 }
 
+/* The class id Ruby sees for user class `k`: a synthesized singleton class
+   answers as the class it hides behind, and the stand-in an Object.new's
+   singleton class stands on answers as the builtin Object. */
+int visible_cls_id(Compiler *c, int k) {
+  int v = singleton_visible_ci(c, k);
+  if (c->object_standin && v == c->object_standin - 1) return builtin_class_id("Object");
+  return v;
+}
+
+/* Whether a slot of user class `cid` can hold an object whose cls_id is not
+   the class Ruby sees: `cid` is a singleton class or the Object stand-in, or
+   one of its subclasses is a singleton class. */
+int cls_id_masquerades(Compiler *c, int cid) {
+  if (cid < 0 || cid >= c->nclasses) return 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (visible_cls_id(c, k) == k) continue;
+    for (int p = k; p >= 0; p = c->classes[p].parent)
+      if (p == cid) return 1;
+  }
+  return 0;
+}
+
+/* Is class k's instance an instance_of? user class `target`? Its singleton
+   class answers as its parent, and the Object stand-in as a program's own
+   reopening of Object. */
+int visible_as_target(Compiler *c, int k, int target) {
+  int v = singleton_visible_ci(c, k);
+  if (v == target) return 1;
+  return c->object_standin && v == c->object_standin - 1 &&
+         c->classes[target].name && sp_streq(c->classes[target].name, "Object");
+}
+
+/* The C name parameter i of s has at the top of its function, as
+   emit_method_signature writes it: a volatile one is `lv_x__in` there. */
+static void sg_param_cname(Compiler *c, Scope *s, int i, char *out, size_t n) {
+  int si = (int)(s - c->scopes), pv = 0;
+  LocalVar *p = scope_local(s, s->pnames[i]);
+  if (si >= 0 && si < c->nscopes && p && !p->is_cell && scope_has_begin(c, si)) {
+    char **pvol = NULL; int npvol = 0, pall = 0;
+    begin_volatile_names(c, si, &pvol, &npvol, &pall);
+    pv = pall || name_list_has(pvol, npvol, s->pnames[i]);
+    free(pvol);
+  }
+  snprintf(out, n, pv ? "lv_%s__in" : "lv_%s", s->pnames[i]);
+}
+
+/* Does an instance of par answer `n` as Object does: no class in its chain
+   defines it or gets it elsewhere (Comparable's ==, a Struct's own, an
+   exception's message), and none stands on a builtin class but Object (a
+   String subclass compares as a String)? `!=` and `===` also need its `==`
+   to be Object's. */
+static int sg_parent_answers_as_object(Compiler *c, int par, const char *n) {
+  /* `!=` and `===` answer by the class's `==` */
+  int eqs = sp_streq(n, "==") || sp_streq(n, "!=") || sp_streq(n, "===");
+  if (eqs && !sp_streq(n, "==") && !sg_parent_answers_as_object(c, par, "==")) return 0;
+  if (comp_method_in_chain(c, par, n, NULL) >= 0 || comp_reader_in_chain(c, par, n, NULL) ||
+      class_implicit_responds(c, par, n) || (eqs && class_mixes_in(c, par, "Comparable", 0)))
+    return 0;
+  for (int p = par, d = 0; p >= 0 && d <= c->nclasses; d++) {
+    ClassInfo *k = &c->classes[p];
+    if (k->is_struct || k->is_data || k->ary_root > 0 || k->c_struct || k->is_native_class ||
+        class_is_exc_subclass(c, p))
+      return 0;
+    if (k->parent < 0 && k->def_node >= 0 && nt_kind(c->nt, k->def_node) == NK_ClassNode) {
+      int sc = nt_ref(c->nt, k->def_node, "superclass");
+      const char *sn = sc >= 0 ? nt_str(c->nt, sc, "name") : NULL;
+      if (sc >= 0 && (!sn || !sp_streq(sn, "Object"))) return 0;
+    }
+    if (k->parent == p) break;
+    p = k->parent;
+  }
+  return 1;
+}
+
+/* Object's own answer to the method s overrides on a singleton class whose
+   parent is par, as a C expression over self and s's parameters, into out;
+   0 when it is not one this can answer (then the override answers from the
+   object's creation). */
+static int sg_object_default(Compiler *c, Scope *s, int par, Buf *out) {
+  const char *n = s->name;
+  if (s->nparams == 0 && s->ret == TY_STRING && (sp_streq(n, "inspect") || sp_streq(n, "to_s"))) {
+    /* the boxed dispatch on the parent's id renders it as the parent does */
+    buf_printf(out, "sp_poly_%s(sp_box_obj((void *)self, %d))", n, par);
+    return 1;
+  }
+  if (s->nparams == 0 && s->ret == TY_INT && !method_ret_is_oint(s) && sp_streq(n, "hash")) {
+    buf_printf(out, "sp_rbval_hash_key(sp_box_obj((void *)self, %d))", par);
+    return 1;
+  }
+  if (s->nparams == 0 && s->ret == TY_BOOL && sp_streq(n, "frozen?")) {
+    buf_puts(out, "sp_gc_is_frozen(self)");
+    return 1;
+  }
+  /* any object but nil and false is truthy */
+  if (s->nparams == 0 && s->ret == TY_BOOL && (sp_streq(n, "nil?") || sp_streq(n, "!"))) {
+    buf_puts(out, "0");
+    return 1;
+  }
+  if (s->nparams == 1 && s->ret == TY_BOOL && s->pnames[0] && s->rest_idx != 0 &&
+      (sp_streq(n, "==") || sp_streq(n, "!=") || sp_streq(n, "eql?") || sp_streq(n, "equal?") ||
+       sp_streq(n, "==="))) {
+    /* identity, as Object compares */
+    LocalVar *a = scope_local(s, s->pnames[0]);
+    const char *neg = sp_streq(n, "!=") ? "!" : "";
+    if (!a || a->byref_out) return 0;
+    char an[160]; sg_param_cname(c, s, 0, an, sizeof an);
+    if (comp_ty_value_obj(c, a->type)) buf_printf(out, "%s0", neg);
+    else if (ty_is_object(a->type)) buf_printf(out, "%s((void *)self == (void *)%s)", neg, an);
+    else if (a->type == TY_POLY)
+      buf_printf(out, "%s(%s.tag == SP_TAG_OBJ && %s.v.p == (void *)self)", neg, an, an);
+    else buf_printf(out, "%s0", neg);
+    return 1;
+  }
+  return 0;
+}
+
+/* Does some class's runtime id differ from the class Ruby sees for it? */
+static int program_has_masquerade(Compiler *c) {
+  for (int k = 0; k < c->nclasses; k++) if (visible_cls_id(c, k) != k) return 1;
+  return 0;
+}
+
+/* sp_cls_visible_fn: visible_cls_id at run time, for a class read off a
+   boxed value (sp_poly_class_val) */
+static void emit_cls_visible_fn(Compiler *c, Buf *b) {
+  if (!program_has_masquerade(c)) return;
+  buf_puts(b, "static int sp_cls_visible(int k){\n  switch(k){\n");
+  for (int k = 0; k < c->nclasses; k++) {
+    int v = visible_cls_id(c, k);
+    if (v != k) buf_printf(b, "  case %d: return %d;\n", k, v);
+  }
+  buf_puts(b, "  default: return k;\n  }\n}\n");
+}
+
+/* `var` (a C name holding a runtime cls_id) mapped through visible_cls_id. */
+void emit_visible_cls_id(Compiler *c, const char *var, Buf *b) {
+  buf_puts(b, "(");
+  for (int k = 0; k < c->nclasses; k++) {
+    int v = visible_cls_id(c, k);
+    if (v != k) buf_printf(b, "%s == %d ? %d : ", var, k, v);
+  }
+  buf_printf(b, "%s)", var);
+}
+
 /* Two C slots the delegation can move a value between: identical, or one side
    boxed. emit_boxed_text / emit_unbox_text do the conversion. */
 static int sg_slot_convertible(TyKind from, TyKind to) {
@@ -5896,12 +6040,27 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
       !c->classes[s->class_id].is_value_type) {
     int pm = sg_delegate_scope(c, s);
     int sg_par = c->classes[s->class_id].parent;
-    if (pm < 0 && s->name && comp_method_in_chain(c, sg_par, s->name, NULL) < 0 &&
+    int sg_builtin = s->name && builtin_object_method_known(s->name);
+    /* a parent whose chain gets the name elsewhere (Comparable's ==, a
+       String superclass's hash) has an answer this cannot call: before the
+       def runs, the call raises NoMethodError, as one to a new name does */
+    int sg_as_obj = !sg_builtin || sg_parent_answers_as_object(c, sg_par, s->name);
+    Buf db; memset(&db, 0, sizeof db);
+    if (pm < 0 && sg_builtin && sg_as_obj && sg_object_default(c, s, sg_par, &db)) {
+      /* an override of one of Object's own: before its statement runs (and
+         in a #dup) the object answers as Object does */
+      buf_printf(b, "  if (!sp_class_le((sp_Class){self->cls_id}, (sp_Class){%d})) return %s;\n",
+                 s->class_id, db.p);
+      free(db.p);
+    }
+    else if (pm < 0 && s->name && (!sg_builtin || !sg_as_obj) && comp_method_in_chain(c, sg_par, s->name, NULL) < 0 &&
         !comp_reader_in_chain(c, sg_par, s->name, NULL) &&
         !comp_writer_in_chain(c, sg_par, s->name, NULL)) {
       /* the singleton ADDS a name the parent does not have: before its
          statement runs there is nothing to delegate to, and CRuby answers a
-         NoMethodError there (#4084) */
+         NoMethodError there (#4084). One every object has answers as Object
+         above, or as the override from the start where nothing here can
+         give Object's answer (`instance_of?`). */
       buf_printf(b, "  if (!sp_class_le((sp_Class){self->cls_id}, (sp_Class){%d})) { sp_raise_nomethod(sp_nomethod_msg(", s->class_id);
       emit_str_literal(b, s->name);
       buf_printf(b, ", sp_box_obj((void *)self, %d)));", sg_par);
@@ -5912,11 +6071,14 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
       Scope *ps = &c->scopes[pm];
       Buf cb; memset(&cb, 0, sizeof cb);
       emit_method_cname(c, ps, &cb);
-      buf_printf(&cb, "((sp_%s *)self", c->classes[c->classes[s->class_id].parent].c_name);
+      /* the class that defines it, which may be above the parent */
+      int dcls = ps->class_id >= 0 && !comp_class_is_module(c, &c->classes[ps->class_id])
+                 ? ps->class_id : c->classes[s->class_id].parent;
+      buf_printf(&cb, "((sp_%s *)self", c->classes[dcls].c_name);
       for (int i = 0; i < s->nparams; i++) {
         LocalVar *a = scope_local(s, s->pnames[i]);
         LocalVar *bp = scope_local(ps, ps->pnames[i]);
-        char an[128]; snprintf(an, sizeof an, "lv_%s", s->pnames[i]);
+        char an[160]; sg_param_cname(c, s, i, an, sizeof an);
         buf_puts(&cb, ", ");
         if (!a || !bp || a->type == bp->type) buf_puts(&cb, an);
         else if (bp->type == TY_POLY) emit_boxed_text(c, a->type, an, &cb);
@@ -11729,10 +11891,32 @@ static void anon_name_expr(char *out, size_t cap, int ci) {
   else snprintf(out, cap, "sp_class_assigned_name_%d", ci);
 }
 
+/* Does singleton class `i`, or a link of the binding's before it, hold a
+   method of its own (a `def obj.m`), not just modules `obj.extend` brought
+   in? */
+static int sg_has_own_method(Compiler *c, int i) {
+  for (int s = 0; s < c->nscopes; s++) {
+    int k = c->scopes[s].class_id;
+    if (k < 0 || c->scopes[s].origin_module_ci) continue;
+    for (int p = i; p >= 0 && c->classes[p].is_singleton_of; p = c->classes[p].parent)
+      if (p == k) return 1;
+  }
+  return 0;
+}
+
 static void emit_marshal_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "static int sp_marshal_obj_dump(sp_mar_buf *b, int cls_id, void *p) {\n");
   buf_puts(b, "  switch (cls_id) {\n");
   for (int i = 0; i < c->nclasses; i++) {
+    /* an object with singleton methods has nothing to load them back from;
+       a box carries the binding's class from before its first `def obj.m`
+       ran, so the object's own id says whether it has them yet */
+    if (c->classes[i].is_singleton_of && sg_has_own_method(c, i)) {
+      buf_printf(b, "    case %d: { int _k = ((sp_%s *)p)->cls_id;\n"
+                    "      if (_k == %d) sp_raise_cls(\"TypeError\", \"singleton can't be dumped\");\n"
+                    "      return sp_marshal_obj_dump(b, _k, p); }\n", i, c->classes[i].c_name, i);
+      continue;
+    }
     if (!class_marshalable(c, i)) continue;
     ClassInfo *ci = &c->classes[i];
     /* the class's Ruby name, qualified as CRuby writes it (`M::Page`) */
@@ -14320,6 +14504,8 @@ void emit_regex_section(Compiler *c, Buf *b) {
     buf_puts(b, "  sp_obj_cls_name_fn = sp_obj_cls_name_rt;\n");
   }
   if (program_has_arysub(c)) buf_puts(b, "  sp_bsub_cls_fn = sp_bsub_cls_of;\n");   /* #7449 */
+  if (g_needs_class_machinery && program_has_masquerade(c))
+    buf_puts(b, "  sp_cls_visible_fn = sp_cls_visible;\n");
   if (g_uses_marshal) {
     buf_puts(b,
       "  sp_marshal_v.sym_intern = sp_sym_intern;\n"
@@ -15389,7 +15575,10 @@ static int program_needs_class_machinery(Compiler *c) {
      Module#include? / < walk the chain with the module (sp_class_le_mod) */
   if (c->ntoplevel_includes > 0) return 1;
   for (int k = 0; k < c->nclasses; k++)
-    if (class_is_exc_subclass(c, k) || class_is_exc_reopen(c, k) ||
+    /* a singleton class's methods check the object's class on entry
+       (sp_class_le): the object carries its parent's id until `def obj.m` */
+    if (c->classes[k].is_singleton_of ||
+        class_is_exc_subclass(c, k) || class_is_exc_reopen(c, k) ||
         c->classes[k].nincluded_mods > 0 || c->classes[k].nextended_mods > 0 ||
         c->classes[k].nincluded_mod_names > 0) return 1;
   /* a boxed value unboxed into a class's slot is checked against the class
@@ -16766,6 +16955,7 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
                "  sp_raise_cls(\"TypeError\", sp_sprintf(\"wrong argument type %s (expected %s)\", sp_poly_class_name(v), want));\n"
                "  return NULL;\n}\n");
   emit_arysub_machinery(c, b);
+  emit_cls_visible_fn(c, b);
   /* Tri-state class ordering: CRuby's Class#< / <= / > / >= / <=> answer nil
      for two classes with no subclass relationship (not false / not raising).
      Macros so `sp_class_le` resolves at the call site to whichever version is

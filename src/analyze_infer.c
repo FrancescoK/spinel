@@ -5666,6 +5666,13 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
     if (op) { *out = op->result == TY_UNKNOWN ? infer_type(c, argv[1]) : bop_result(op, rt); return 1; }
   }
 
+  /* define_singleton_method(:m) { } that register_singleton_defs resolved
+     answers the method's name, as CRuby's does */
+  if (recv >= 0 && argc == 1 && sp_streq(name, "define_singleton_method") &&
+      nt_str(nt, id, "sg_resolved") &&
+      (nt_kind(nt, argv[0]) == NK_SymbolNode || nt_kind(nt, argv[0]) == NK_StringNode))
+    { *out = TY_SYMBOL; return 1; }
+
   /* instance_variable_set(:@x, v) on a POLY receiver answers v, boxed (the
      codegen twin stores it per class) */
   if (recv >= 0 && (rt == TY_POLY || (rt == TY_EXCEPTION && !exc_class_defines(c, name))) &&
@@ -7554,18 +7561,6 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "cause")) return TY_EXCEPTION;
     if (sp_streq(name, "backtrace")) return TY_STR_ARRAY;
     if (is_exception_full_message(name)) return TY_STRING;
-  }
-
-  /* #dup drops the receiver's singleton methods, so the copy is an instance of
-     the class Ruby sees rather than the synthesized singleton one (#3739) */
-  if (recv >= 0 && sp_streq(name, "dup") && argc == 0) {
-    TyKind drt0 = infer_type(c, recv);
-    if (ty_is_object(drt0) &&
-        comp_resolve_member(c, ty_object_class(drt0), "dup", 0, NULL, NULL) == SP_MEMBER_NONE) {
-      int dci0 = ty_object_class(drt0);
-      int vis = singleton_visible_ci(c, dci0);
-      if (vis != dci0) return ty_object(vis);
-    }
   }
 
   /* A copy of a value whose type is only known at run time is itself only known
