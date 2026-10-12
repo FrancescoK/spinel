@@ -10674,6 +10674,16 @@ static int desugar_to_enum(Compiler *c) {
         es->ret = TY_ENUMERATOR;
         es->ret_specialized = 1;
         changed = 1;
+        /* The pin is the blockless call's value. A call with a block runs
+           the body, and a `self` tail answers the receiver there, as in
+           CRuby; pinned, it answered nil. Only when the guard's is the
+           method's one `return`. */
+        int si = (int)(es - c->scopes), nret = 0;
+        NT_FOREACH_KIND(nt, NK_ReturnNode, rid)
+          if (c->nscope[rid] == si) nret++;
+        int tail = scope_body_last(c, si);
+        if (nret == 1 && tail >= 0 && nt_kind(nt, tail) == NK_SelfNode && es->class_id >= 0 && !es->is_cmethod)
+          es->ret_withblock = ty_object(es->class_id);
       }
       nt_node_set_str(nt, id, "name", hname);
       int empty = nt_new_node(nt, "ArgumentsNode");
@@ -42293,6 +42303,7 @@ static void an_phase_procs(Compiler *c) {
        method was inlined (Scope.ret_noblock); as one emitted function both
        arms are live at run time, so its value is the two joined */
     if (m->ret_noblock != TY_UNKNOWN) { m->ret = ty_unify(m->ret, m->ret_noblock); m->ret_noblock = TY_UNKNOWN; }
+    m->ret_withblock = TY_UNKNOWN;   /* one function answers both: its own ret */
     /* The return the fixpoint derived stands. This forced TY_INT, which was
        right only by coincidence: the body's own tail already types the method,
        and overwriting it made `walk` answer Integer where it answers nil, and
@@ -42348,6 +42359,7 @@ static void an_phase_procs(Compiler *c) {
       if (!bl || !bl->is_cell || scope_has_yield_node(c, m)) continue;
       m->yields = 0;
       if (m->ret_noblock != TY_UNKNOWN) { m->ret = ty_unify(m->ret, m->ret_noblock); m->ret_noblock = TY_UNKNOWN; }
+      m->ret_withblock = TY_UNKNOWN;
       again = 1;
     }
     if (again) mark_proc_captures(c);
