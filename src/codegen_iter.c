@@ -4159,6 +4159,22 @@ int emit_inline_expr(Compiler *c, int id, Buf *b) {
   return emit_inline_call_x(c, id, b, g_indent + 1, 1);
 }
 
+/* Box `src`, a value of type `et`, into a poly value. A whole Integer or
+   Float array element read (`sp_IntArray_get(a, i)`) reads with its nil bit
+   (`_oget`), so a nil element boxes as nil rather than 0. */
+static void emit_boxed_elem_read(Compiler *c, TyKind et, const char *src, Buf *b) {
+  const char *get = et == TY_INT ? "sp_IntArray_get(" : et == TY_FLOAT ? "sp_FloatArray_get(" : NULL;
+  size_t gl = get ? strlen(get) : 0, n = strlen(src);
+  int depth = 1, whole = get && !strncmp(src, get, gl);
+  for (size_t i = gl; whole && i < n; i++) {
+    if (src[i] == '(') depth++;
+    else if (src[i] == ')' && --depth == 0 && i != n - 1) whole = 0;
+  }
+  if (whole && depth == 0)
+    buf_printf(b, "%s(%.*soget(%s)", oint_box(et), (int)(gl - 4), src, src + gl);
+  else emit_boxed_text(c, et, src, b);
+}
+
 /* Block iteration lowered to an inline C for-loop. Handles n.times,
    array.each, range.each, n.upto/downto. Returns 1 if handled. */
 /* Emit `lv_<p0> = <expr_src>` boxing if p0 is poly and src is concrete. */
@@ -4177,7 +4193,7 @@ void emit_iter_param_assign(Compiler *c, int block, const char *p0_orig,
   emit_indent(b, indent);
   if (pt == TY_POLY && src_type != TY_POLY) {
     Buf bx; memset(&bx, 0, sizeof bx);
-    emit_boxed_text(c, src_type, src_expr, &bx);
+    emit_boxed_elem_read(c, src_type, src_expr, &bx);
     buf_printf(b, "lv_%s = %s;\n", p0_ren, bx.p ? bx.p : src_expr);
     free(bx.p);
   }
@@ -4222,7 +4238,7 @@ int emit_iter_bind_rest(Compiler *c, int block, int np, TyKind elem_t,
     emit_indent(b, indent);
     Buf bx; memset(&bx, 0, sizeof bx);
     if (elem_t == TY_POLY) buf_printf(&bx, "%s", elem_src);
-    else emit_boxed_text(c, elem_t, elem_src, &bx);
+    else emit_boxed_elem_read(c, elem_t, elem_src, &bx);
     buf_printf(b, "sp_PolyArray_push(lv_%s, %s);\n", rren, bx.p ? bx.p : elem_src);
     free(bx.p);
   }
@@ -4742,7 +4758,7 @@ int emit_takewhile_with_index(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "lv_%s = ", rename_local(p0));
     /* coerce the typed element to the param's declared type: box when the
        param widened to poly, else assign the typed value directly. */
-    if (p0lv->type == TY_POLY && et != TY_POLY) { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, et, es, &bx); buf_puts(g_pre, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
+    if (p0lv->type == TY_POLY && et != TY_POLY) { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_elem_read(c, et, es, &bx); buf_puts(g_pre, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
     else buf_puts(g_pre, es);
     buf_puts(g_pre, ";\n");
   }
@@ -5403,7 +5419,7 @@ int emit_array_filter_loop_handles(Compiler *c, int recv, int block, const char 
    slot's own nil so a shorter operand still yields nil. */
 static void emit_zip_block_param(Compiler *c, TyKind slot, TyKind src_ty,
                                  const char *src, Buf *b) {
-  if (slot == TY_POLY && src_ty != TY_POLY) emit_boxed_text(c, src_ty, src, b);
+  if (slot == TY_POLY && src_ty != TY_POLY) emit_boxed_elem_read(c, src_ty, src, b);
   else if (src_ty == TY_POLY && slot != TY_POLY && slot != TY_UNKNOWN)
     emit_unbox_nilable_text(c, slot, src, b);
   else buf_puts(b, src);
@@ -6490,7 +6506,7 @@ static int iter_enum_poly_walk_arms(Compiler *c, int id, Buf *b, int indent, con
         buf_puts(&src, rb.p ? rb.p : "NULL");
         buf_printf(&src, ", _t%d)", t);
         buf_printf(b, "lv_%s = ", p0);
-        emit_boxed_text(c, et, src.p ? src.p : "", b);
+        emit_boxed_elem_read(c, et, src.p ? src.p : "", b);
         free(src.p);
         buf_puts(b, ";\n");
       }
@@ -6636,7 +6652,7 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
       emit_indent(b, indent + 1);
       if (p0_box_poly) {
         char src[512]; snprintf(src, sizeof src, "sp_%sArray_get(%s, _t%d)", k, rb.p ? rb.p : "NULL", t);
-        buf_printf(b, "lv_%s = ", p0); emit_boxed_text(c, ewi_et, src, b); buf_puts(b, ";\n");
+        buf_printf(b, "lv_%s = ", p0); emit_boxed_elem_read(c, ewi_et, src, b); buf_puts(b, ";\n");
       }
       else {
         int o0 = (sp_streq(k, "Int") || sp_streq(k, "Float")) && block_param_slot_is_oint(c, block, 0);
@@ -6660,7 +6676,7 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
       char rsrc[512]; snprintf(rsrc, sizeof rsrc, "sp_%sArray_get(%s, _t%d)", k, rb.p ? rb.p : "NULL", t);
       emit_indent(b, indent + 1);
       buf_printf(b, "sp_PolyArray_push(lv_%s, ", rr);
-      emit_boxed_text(c, ewi_et, rsrc, b);
+      emit_boxed_elem_read(c, ewi_et, rsrc, b);
       buf_puts(b, ");\n");
       emit_indent(b, indent + 1);
       buf_printf(b, "sp_PolyArray_push(lv_%s, sp_box_int(_t%d));\n", rr, t);
@@ -6749,7 +6765,7 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
         emit_indent(b, indent + 1);
         buf_printf(b, "lv_%s = ({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", p0, tpz, tpz);
         Buf bx; memset(&bx, 0, sizeof bx);
-        emit_boxed_text(c, et, s1, &bx);
+        emit_boxed_elem_read(c, et, s1, &bx);
         buf_printf(b, "sp_PolyArray_push(_t%d, %s); ", tpz, bx.p ? bx.p : ""); free(bx.p);
         memset(&bx, 0, sizeof bx);
         /* a number argument shorter than the receiver pads with nil */
