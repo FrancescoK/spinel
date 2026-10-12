@@ -1,0 +1,67 @@
+cat            cat            TTTTTTTT
+cat            category       ........
+c{at,ub}s      cats           ......TT
+c?t            cat            TTTTTTTT
+c??t           cat            ........
+c*             cats           TTTTTTTT
+c*t            c/a/b/t        T.T.TTT.
+ca[a-z]        cat            TTTTTTTT
+ca[^t]         cat            ........
+ca[!t]         cab            TTTTTTTT
+*              .profile       ..TT....
+.*             .profile       TTTTTTTT
+*              dave/.profile  T.T.TTT.
+**/*           a/.b           T.TTTTT.
+*              a/b            T.T.TTT.
+**/foo         a/b/c/foo      TTTTTTTT
+**/foo         /a/b/c/foo     TTTTTTTT
+**/foo         c:/a/b/c/foo   TTTTTTTT
+**/foo         a/.b/c/foo     T.TTTTT.
+*/*            a/b            TTTTTTTT
+a/*            a/.b           T.TTTTT.
+\*             *              TTTT.TTT
+\*             a              ........
+\a             a              TTTT.TTT
+\a             \a             ....T...
+[\]]           ]              TTTT.TTT
+[a-c]x         Bx             .....T..
+CAT            cat            .....T..
+é?             éa             TTTTTTTT
+?              é              TTTTTTTT
+[à-ü]          é              TTTTTTTT
+a*b*c          aXbYc          TTTTTTTT
+a*b*c          aXbY           ........
+*.rb           lib/x.rb       T.T.TTT.
+lib/*.rb       lib/x.rb       TTTTTTTT
+/abs/*         /abs/x         TTTTTTTT
+**/            a/             TTTTTTTT
+{a,b}          a              ......TT
+{a,b}          {a,b}          TTTTTT..
+x{a,{b,c}}y    xcy            ......TT
+**/*.rb        x.rb           .T.T...T
+**/*.rb        a/b/x.rb       TTTTTTTT
+a/**/b         a/b            .T.T...T
+a/**/b         a/x/y/b        TTTTTTTT
+a/**/b         a/.x/b         T.TTTTT.
+[]             ]              ........
+[              [              ........
+a[             a[             ........
+[1, 2, 4, 8, 16, 0, 0]
+true
+false
+true
+true
+true
+true
+false
+true
+false
+[false, false, true, true, true, true]
+true
+false
+ArgumentError
+[1, 1, 2]
+[2]
+5
+ArgumentError
+4

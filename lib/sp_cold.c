@@ -386,6 +386,12 @@ sp_Complex sp_str_to_c_strict(const char *s) { return sp_str_to_c_impl(s, 1); }
 /* FNM_DOTMATCH mode for the walk below: hidden entries (and ".") match a
    non-dot pattern; ".." never does, as CRuby's glob. Set by the _dot wrapper. */
 static int sp_glob_dotmatch = 0;
+/* A glob walk holds open directories and brace buffers (as File.fnmatch's
+   FNM_EXTGLOB holds the latter), so the matcher's ArgumentError waits until
+   they are let go: under sp_glob_defer
+   it sets sp_glob_bad and fails the match, the walk stops, and
+   sp_glob_finish raises. */
+static int sp_glob_defer = 0, sp_glob_bad = 0;
 
 int sp_fnmatch1(const char *pat, const char *str) {
   while (*pat) {
@@ -407,16 +413,165 @@ else {
   return *str == 0;
 }
 
-/* One pattern COMPONENT against one directory entry name. The system matcher,
-   which is what File.fnmatch already answers with, so a character class or an
-   escape means the same thing in both -- the hand-rolled matcher this replaces
-   knew only * and ?, which is why `a/[bx]/mid.rs` found nothing while
-   File.fnmatch called it a match (#4252). No FNM_PATHNAME: the component holds
-   no separator by construction. FNM_PERIOD hides a leading dot unless the
-   pattern asks for one, which is CRuby's rule and the flag's own. */
+/* File.fnmatch, by CRuby's rules rather than the system fnmatch's. The flags
+   are CRuby's values (File::FNM_NOESCAPE 1, FNM_PATHNAME 2, FNM_DOTMATCH 4,
+   FNM_CASEFOLD 8, FNM_EXTGLOB 16). With no flags a wildcard crosses "/", and
+   only a period that starts the whole string has to be matched by one in
+   the pattern; FNM_PATHNAME keeps wildcards inside one component, holds
+   every component's leading period to that rule, and lets "**" + "/" match
+   any number of directories. Case folding is ASCII only, as CRuby's
+   rb_enc_toupper is. A character is one valid UTF-8 sequence, so "?" takes
+   "é" whole; an invalid byte is a character of its own, which a range
+   refuses with ArgumentError, as CRuby's does. */
+/* The length of the character at s: a valid UTF-8 sequence whole, any
+   other byte (a stray continuation, an overlong or surrogate form, a lead
+   byte past U+10FFFF) alone, as CRuby's precise length counts it. Answers a
+   negative length for such a byte, which never matches literally. */
+static int sp_fnm_clen_v(const char *s, int *valid) {
+  const unsigned char *u = (const unsigned char *)s;
+  int n = u[0] < 0x80 ? 1 : (u[0] >= 0xc2 && u[0] <= 0xdf) ? 2 : (u[0] >= 0xe0 && u[0] <= 0xef) ? 3 :
+          (u[0] >= 0xf0 && u[0] <= 0xf4) ? 4 : 0;
+  int ok = n > 0;
+  for (int i = 1; ok && i < n; i++) if ((u[i] & 0xc0) != 0x80) ok = 0;
+  if (ok && n == 3 && ((u[0] == 0xe0 && u[1] < 0xa0) || (u[0] == 0xed && u[1] >= 0xa0))) ok = 0;
+  if (ok && n == 4 && ((u[0] == 0xf0 && u[1] < 0x90) || (u[0] == 0xf4 && u[1] >= 0x90))) ok = 0;
+  if (valid) *valid = ok;
+  return ok ? n : 1;
+}
+static int sp_fnm_clen(const char *s) { return sp_fnm_clen_v(s, NULL); }
+static unsigned int sp_fnm_code(const char *s, int nocase) {
+  unsigned char c = (unsigned char)*s;
+  int n = sp_fnm_clen(s);
+  unsigned int cp = n == 1 ? c : n == 2 ? (c & 0x1f) : n == 3 ? (c & 0x0f) : (c & 0x07);
+  for (int i = 1; i < n; i++) cp = (cp << 6) | ((unsigned char)s[i] & 0x3f);
+  if (nocase && cp >= 'a' && cp <= 'z') cp -= 'a' - 'A';
+  return cp;
+}
+/* "[...]" against the character at s; p is past the "[". Answers the pattern
+   past the "]" on a match, NULL otherwise or when the class never closes. */
+static const char *sp_fnm_bracket(const char *p, const char *s, int flags) {
+  const int nocase = flags & SP_FNM_CASEFOLD, escape = !(flags & SP_FNM_NOESCAPE);
+  int ok = 0, neg = 0;
+  if (*p == '!' || *p == '^') { neg = 1; p++; }
+  int sv = 0;
+  (void)sp_fnm_clen_v(s, &sv);
+  unsigned int c = sp_fnm_code(s, nocase);
+  while (*p != ']') {
+    const char *t1 = p;
+    if (escape && *t1 == '\\') t1++;
+    if (!*t1) return NULL;
+    p = t1 + sp_fnm_clen(t1);
+    if (!*p) return NULL;
+    if (p[0] == '-' && p[1] != ']') {
+      const char *t2 = p + 1;
+      if (escape && *t2 == '\\') t2++;
+      if (!*t2) return NULL;
+      p = t2 + sp_fnm_clen(t2);
+      if (ok) continue;
+      /* an endpoint is a match whatever the order, as CRuby's byte compare
+         makes it: "[z-a]" takes "z" */
+      int l1 = sp_fnm_clen(t1), l2 = sp_fnm_clen(t2);
+      if (strncmp(t1, s, (size_t)l1) == 0 || strncmp(t2, s, (size_t)l2) == 0) { ok = 1; continue; }
+      /* a range reads the character as a code point, which an invalid
+         byte has none of: CRuby's ArgumentError */
+      if (!sv) {
+        if (sp_glob_defer) { sp_glob_bad = 1; return NULL; }
+        sp_raise_cls("ArgumentError", (&("\xff" "invalid byte sequence in UTF-8")[1]));
+      }
+      if (c >= sp_fnm_code(t1, nocase) && c <= sp_fnm_code(t2, nocase)) ok = 1;
+    }
+    else if (!ok) {
+      int l1 = sp_fnm_clen(t1);
+      if (strncmp(t1, s, (size_t)l1) == 0) ok = 1;
+      /* CRuby folds a lone member against the character AFTER it (p, not
+         t1), so under FNM_CASEFOLD "[ab]" takes "B" and not "A", and "[a]"
+         takes neither; kept as CRuby answers it */
+      else if (nocase && sv && c == sp_fnm_code(p, 1)) ok = 1;
+    }
+  }
+  return ok == neg ? NULL : p + 1;
+}
+/* One component (or, without FNM_PATHNAME, the whole string): CRuby's
+   fnmatch_helper. Leaves *pcur/*scur where the match stopped. */
+static int sp_fnm_helper(const char **pcur, const char **scur, int flags) {
+  const int period = !(flags & SP_FNM_DOTMATCH), pathname = flags & SP_FNM_PATHNAME;
+  const int escape = !(flags & SP_FNM_NOESCAPE), nocase = flags & SP_FNM_CASEFOLD;
+  const char *ptmp = NULL, *stmp = NULL;
+  const char *p = *pcur, *s = *scur;
+#define SP_FNM_UNESC(q) ((escape && *(q) == '\\') ? (q) + 1 : (q))
+#define SP_FNM_END(q) (!*(q) || (pathname && *(q) == '/'))
+#define SP_FNM_RET(v) do { *pcur = p; *scur = s; return (v); } while (0)
+  if (period && *s == '.' && *SP_FNM_UNESC(p) != '.') SP_FNM_RET(0);
+  for (;;) {
+    if (*p == '*') {
+      do { p++; } while (*p == '*');
+      if (SP_FNM_END(SP_FNM_UNESC(p))) { p = SP_FNM_UNESC(p); SP_FNM_RET(1); }
+      if (SP_FNM_END(s)) SP_FNM_RET(0);
+      ptmp = p; stmp = s;
+      continue;
+    }
+    if (*p == '?') {
+      if (SP_FNM_END(s)) SP_FNM_RET(0);
+      p++; s += sp_fnm_clen(s);
+      continue;
+    }
+    if (*p == '[') {
+      if (SP_FNM_END(s)) SP_FNM_RET(0);
+      const char *t = sp_fnm_bracket(p + 1, s, flags);
+      if (t) { p = t; s += sp_fnm_clen(s); continue; }
+      goto failed;
+    }
+    p = SP_FNM_UNESC(p);
+    if (SP_FNM_END(s)) SP_FNM_RET(SP_FNM_END(p));
+    if (SP_FNM_END(p)) goto failed;
+    {
+      int pv = 0, pl = sp_fnm_clen_v(p, &pv), sl = sp_fnm_clen(s);
+      if (pv && pl == sl && (memcmp(p, s, (size_t)pl) == 0 ||
+                       (nocase && sp_fnm_code(p, 1) == sp_fnm_code(s, 1)))) {
+        p += pl; s += sl;
+        continue;
+      }
+    }
+  failed:
+    if (ptmp && stmp) { p = ptmp; stmp += sp_fnm_clen(stmp); s = stmp; continue; }
+    SP_FNM_RET(0);
+  }
+#undef SP_FNM_UNESC
+#undef SP_FNM_END
+#undef SP_FNM_RET
+}
+/* CRuby's fnmatch: component by component under FNM_PATHNAME, where a run
+   of "**" + "/" retries the rest of the pattern at each later directory,
+   never descending into a hidden one unless FNM_DOTMATCH. */
+static int sp_fnm_match(const char *p, const char *s, int flags) {
+  const int period = !(flags & SP_FNM_DOTMATCH);
+  const char *ptmp = NULL, *stmp = NULL;
+  if (!(flags & SP_FNM_PATHNAME)) return sp_fnm_helper(&p, &s, flags);
+  for (;;) {
+    if (p[0] == '*' && p[1] == '*' && p[2] == '/') {
+      do { p += 3; } while (p[0] == '*' && p[1] == '*' && p[2] == '/');
+      ptmp = p; stmp = s;
+    }
+    if (sp_fnm_helper(&p, &s, flags)) {
+      while (*s && *s != '/') s += sp_fnm_clen(s);
+      if (*p && *s) { p++; s++; continue; }
+      if (!*p && !*s) return 1;
+    }
+    if (ptmp && stmp && !(period && *stmp == '.')) {
+      while (*stmp && *stmp != '/') stmp += sp_fnm_clen(stmp);
+      if (*stmp) { p = ptmp; stmp++; s = stmp; continue; }
+    }
+    return 0;
+  }
+}
+/* One pattern COMPONENT against one directory entry name, by the matcher
+   File.fnmatch answers with, so a character class, an escape or a
+   multibyte character means the same thing in both (#4252). No
+   FNM_PATHNAME: the component holds no separator by construction. A
+   leading dot is hidden unless the pattern asks for one or the glob runs
+   under FNM_DOTMATCH, which is CRuby's rule. */
 static int sp_glob_comp_match(const char *comp, const char *name) {
-  if (name[0] == '.' && !sp_glob_dotmatch && comp[0] != '.') return 0;
-  return fnmatch(comp, name, sp_glob_dotmatch ? 0 : FNM_PERIOD) == 0;
+  return sp_fnm_match(comp, name, sp_glob_dotmatch ? SP_FNM_DOTMATCH : 0);
 }
 
 static int sp_glob_has_meta(const char *comp) {
@@ -485,7 +640,7 @@ static void sp_glob_walk(const char *fsdir, const char *outprefix,
     DIR *d = opendir(fsdir[0] ? fsdir : ".");
     if (!d) return;
     struct dirent *e;
-    while ((e = readdir(d)) != NULL) {
+    while (!sp_glob_bad && (e = readdir(d)) != NULL) {
       const char *name = e->d_name;
       if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0))) continue;
       if (name[0] == '.' && !sp_glob_dotmatch) continue;
@@ -525,13 +680,14 @@ static void sp_glob_walk(const char *fsdir, const char *outprefix,
   DIR *d = opendir(fsdir[0] ? fsdir : ".");
   if (!d) return;
   struct dirent *e;
-  while ((e = readdir(d)) != NULL) {
+  while (!sp_glob_bad && (e = readdir(d)) != NULL) {
     const char *name = e->d_name;
     /* "." is an answer under FNM_DOTMATCH -- CRuby lists it for `*` there --
        while ".." never is. Both stay hidden without the flag. */
     if (name[0] == '.' && name[1] == '.' && name[2] == 0) continue;
     if (name[0] == '.' && name[1] == 0 && !sp_glob_dotmatch) continue;
     if (!sp_glob_comp_match(comp, name)) continue;
+    if (sp_glob_bad) break;
     snprintf(fspath, sizeof fspath, "%s%s%s", fsdir, SP_GLOB_SEP(fsdir), name);
     snprintf(outpath, sizeof outpath, "%s%s", outprefix, name);
     if (last) { sp_glob_push(a, outpath); continue; }
@@ -544,6 +700,17 @@ static void sp_glob_walk(const char *fsdir, const char *outprefix,
   closedir(d);
 }
 
+static void sp_glob_start(void) { sp_glob_defer = 1; sp_glob_bad = 0; }
+/* The walk is over and has closed what it opened: raise the matcher's
+   deferred error, with FNM_DOTMATCH off again as a finished glob leaves it */
+static void sp_glob_finish(void) {
+  sp_glob_defer = 0;
+  if (!sp_glob_bad) return;
+  sp_glob_bad = 0;
+  sp_glob_dotmatch = 0;
+  sp_raise_cls("ArgumentError", (&("\xff" "invalid byte sequence in UTF-8")[1]));
+}
+
 /* The old entry point, kept for its callers: everything under `fsdir` whose
    basename matches `tail`. */
 void sp_dir_glob_rec(const char *fsdir, const char *outprefix,
@@ -553,7 +720,9 @@ void sp_dir_glob_rec(const char *fsdir, const char *outprefix,
   char tbuf[1024];
   snprintf(tbuf, sizeof tbuf, "%s", tail && tail[0] ? tail : "*");
   comps[0] = sstar; comps[1] = tbuf;
+  sp_glob_start();
   sp_glob_walk(fsdir && fsdir[0] && strcmp(fsdir, ".") ? fsdir : "", outprefix, comps, 2, 0, a);
+  sp_glob_finish();
 }
 
 sp_StrArray *sp_dir_glob(const char *pattern);
@@ -636,41 +805,62 @@ static void sp_dir_glob_one(const char *pattern, const char *base, sp_StrArray *
 
 /* CRuby expands `{a,b}` before matching, and the system matcher does not do it
    at all, so it is expanded here: one alternative at a time, recursively, so
-   nested and multiple braces both work. */
-static void sp_dir_glob_braces(const char *pattern, const char *base, sp_StrArray *a, int depth) {
+   nested and multiple braces both work, to any depth. `each` takes every brace-free pattern
+   in turn; a nonzero answer from it stops the expansion and is the answer.
+   Dir.glob collects from every alternative, File.fnmatch with FNM_EXTGLOB
+   stops at the first that matches. */
+typedef int (*sp_brace_fn)(const char *pattern, void *ctx);
+/* `escape` is whether a backslash escapes (FNM_NOESCAPE turns it off for
+   File.fnmatch). A "{" that never closes: Dir.glob matches the pattern as
+   it is, File.fnmatch (`unclosed_fails`) answers no match, as CRuby's
+   brace expansion never reaches its matcher then. */
+static int sp_brace_expand(const char *pattern, int escape, int unclosed_fails, sp_brace_fn each, void *ctx) {
   const char *open = NULL;
   int nest = 0;
   for (const char *q = pattern; *q; q++) {
-    if (*q == '\\' && q[1]) { q++; continue; }
+    if (escape && *q == '\\' && q[1]) { q++; continue; }
     if (*q == '{') { open = q; break; }
   }
-  if (!open || depth > 8) { sp_dir_glob_one(pattern, base, a); return; }
+  if (!open) return each(pattern, ctx);
   const char *close = NULL;
   for (const char *q = open; *q; q++) {
-    if (*q == '\\' && q[1]) { q++; continue; }
+    if (escape && *q == '\\' && q[1]) { q++; continue; }
     if (*q == '{') nest++;
     else if (*q == '}') { nest--; if (nest == 0) { close = q; break; } }
   }
-  if (!close) { sp_dir_glob_one(pattern, base, a); return; }
-  size_t prelen = (size_t)(open - pattern);
+  if (!close) return unclosed_fails ? 0 : each(pattern, ctx);
+  size_t prelen = (size_t)(open - pattern), postlen = strlen(close + 1);
   const char *alt = open + 1;
   nest = 0;
   for (const char *q = open + 1; q <= close; q++) {
-    if (*q == '\\' && q[1]) { q++; continue; }
+    if (escape && *q == '\\' && q[1]) { q++; continue; }
     if (*q == '{') nest++;
     else if (*q == '}' && nest > 0) nest--;
     if ((*q == ',' && nest == 0) || q == close) {
-      char expanded[2048];
       size_t altlen = (size_t)(q - alt);
-      if (prelen + altlen + strlen(close + 1) + 1 < sizeof expanded) {
-        memcpy(expanded, pattern, prelen);
-        memcpy(expanded + prelen, alt, altlen);
-        strcpy(expanded + prelen + altlen, close + 1);
-        sp_dir_glob_braces(expanded, base, a, depth + 1);
-      }
+      char *expanded = (char *)malloc(prelen + altlen + postlen + 1);
+      if (!expanded) sp_oom_die();
+      memcpy(expanded, pattern, prelen);
+      memcpy(expanded + prelen, alt, altlen);
+      memcpy(expanded + prelen + altlen, close + 1, postlen + 1);
+      int r = sp_brace_expand(expanded, escape, unclosed_fails, each, ctx);
+      free(expanded);
+      if (r) return r;
       alt = q + 1;
     }
   }
+  return 0;
+}
+
+typedef struct { const char *base; sp_StrArray *a; } sp_glob_ctx;
+static int sp_dir_glob_each(const char *pattern, void *ctx) {
+  sp_glob_ctx *g = (sp_glob_ctx *)ctx;
+  sp_dir_glob_one(pattern, g->base, g->a);
+  return sp_glob_bad;
+}
+static void sp_dir_glob_braces(const char *pattern, const char *base, sp_StrArray *a) {
+  sp_glob_ctx g = { base, a };
+  (void)sp_brace_expand(pattern, 1, 0, sp_dir_glob_each, &g);
 }
 
 /* Dir.glob(pattern, base: dir) */
@@ -685,7 +875,9 @@ sp_StrArray *sp_dir_glob_base(const char *pattern, const char *base) {
      sp_dir_entries_impl or it (and its pushed names) get swept under us */
   SP_GC_ROOT(a);
   if (!pattern) return a;
-  sp_dir_glob_braces(pattern, base, a, 0);
+  sp_glob_start();
+  sp_dir_glob_braces(pattern, base, a);
+  sp_glob_finish();
   sp_StrArray_sort_bang(a);
   /* Two or more recursive components can reach the same path by different
      splits -- "a" + SEP + "**" + SEP + "**" + SEP + "*.rs" found each file
@@ -1929,7 +2121,7 @@ sp_File *sp_File_open_flags_perm(const char *path, sp_int fl, sp_oint perm);
 void sp_file_stat_scan(void *p);
 sp_File *sp_file_stat_handle(const char *path);
 sp_int sp_file_stat_mode(const char *path);
-sp_bool sp_file_fnmatch(const char *pat, const char *path);
+sp_bool sp_file_fnmatch(const char *pat, const char *path, sp_int flags);
 sp_StrArray *sp_file_split(const char *path);
 sp_bool sp_file_zero(const char *path);
 const char *sp_file_dirname(const char *path);
@@ -2676,8 +2868,25 @@ sp_int sp_file_stat_mode(const char *path) {
   if (stat(path ? path : "", &st) != 0) return 0;
   return (sp_int)st.st_mode;
 }
-sp_bool sp_file_fnmatch(const char *pat, const char *path) {
-  return fnmatch(pat ? pat : "", path ? path : "", FNM_PATHNAME | FNM_PERIOD) == 0;
+/* File.fnmatch: the matcher is sp_fnm_match, above Dir.glob, which shares it. */
+typedef struct { const char *path; int flags; } sp_fnm_ctx;
+static int sp_fnm_each(const char *pattern, void *ctx) {
+  sp_fnm_ctx *f = (sp_fnm_ctx *)ctx;
+  return sp_fnm_match(pattern, f->path, f->flags) || sp_glob_bad;
+}
+sp_bool sp_file_fnmatch(const char *pat, const char *path, sp_int flags) {
+  int fl = (int)flags;
+  if (!pat) pat = "";
+  if (!path) path = "";
+  if (fl & SP_FNM_EXTGLOB) {
+    sp_fnm_ctx f = { path, fl };
+    /* the expansion's buffers are freed before the matcher's error is raised */
+    sp_glob_start();
+    int r = sp_brace_expand(pat, !(fl & SP_FNM_NOESCAPE), 1, sp_fnm_each, &f);
+    sp_glob_finish();
+    return r != 0;
+  }
+  return sp_fnm_match(pat, path, fl) != 0;
 }
 sp_StrArray *sp_file_split(const char *path) {SP_GC_ROOT_STR(path);
   sp_StrArray *a = sp_StrArray_new();

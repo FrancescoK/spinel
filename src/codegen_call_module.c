@@ -155,7 +155,9 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     }
     if ((sp_streq(name, "fnmatch") || sp_streq(name, "fnmatch?")) && argc >= 2) {
       buf_puts(b, "sp_file_fnmatch("); emit_str_expr(c, argv[0], b); buf_puts(b, ", ");
-      emit_path_expr(c, argv[1], b); buf_puts(b, ")"); return 1;
+      emit_path_expr(c, argv[1], b); buf_puts(b, ", ");
+      if (argc >= 3) emit_int_expr(c, argv[2], b); else buf_puts(b, "0");
+      buf_puts(b, ")"); return 1;
     }
     if (sp_streq(name, "dirname") && argc == 2) {
       /* File.dirname(path, level): apply dirname `level` times (#2787) */

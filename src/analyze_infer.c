@@ -8615,6 +8615,10 @@ static int infer_constant_path(Compiler *c, int id, const NodeTable *nt, NodeKin
                sp_streq(nm, "LOCK_SH") || sp_streq(nm, "LOCK_EX") || sp_streq(nm, "LOCK_UN") ||
                sp_streq(nm, "LOCK_NB")))
       { *out = TY_INT; return 1; }   /* the open(2)/flock(2) flag constants (#2788, #2808) */
+    if (nm && (sp_streq(nm, "FNM_NOESCAPE") || sp_streq(nm, "FNM_PATHNAME") || sp_streq(nm, "FNM_DOTMATCH") ||
+               sp_streq(nm, "FNM_CASEFOLD") || sp_streq(nm, "FNM_EXTGLOB") || sp_streq(nm, "FNM_SYSCASE") ||
+               sp_streq(nm, "FNM_SHORTNAME")))
+      { *out = TY_INT; return 1; }   /* File.fnmatch's flags */
   }
   if (par_nm && (is_io_class_name(par_nm))) {
     /* IO#seek whence constants (File inherits them from IO) */
