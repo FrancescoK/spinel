@@ -4155,7 +4155,9 @@ static void infer_write_reads_widened(Compiler *c, const NodeTable *nt) {
    recompute frame, the type the round's reset stashed in gc_root; for a late
    re-join of settled slots, the slot's own type. */
 static TyKind lv_prior(const LocalVar *lv, int stashed) {
-  return stashed ? (TyKind)lv->gc_root : lv->type;
+  /* only a slot the round reset has its prior type stashed */
+  int reset = !lv->is_param && !lv->is_block_param && !lv->rbs_seeded;
+  return stashed && reset ? (TyKind)lv->gc_root : lv->type;
 }
 
 /* The type local write `id` (a plain, operator, `||=` or `&&=` write) hands
