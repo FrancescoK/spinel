@@ -149,10 +149,12 @@ static int cf_union(CF *f, int a, int b) {
     }
     if (n > CLS_SET_MAX) return CF_ALL;
   }
-  for (int i = 0; i < x->n; i++) s.cls[s.n++] = x->cls[i];
-  for (int j = 0; j < y->n; j++) {
-    if (s.n >= CLS_SET_MAX) { s.all = 1; break; }
-    s.cls[s.n++] = y->cls[j];
+  /* a member of both is taken once: the count above found the merge fits */
+  int i = 0, j = 0;
+  while (i < x->n || j < y->n) {
+    if (j >= y->n || (i < x->n && x->cls[i] < y->cls[j])) s.cls[s.n++] = x->cls[i++];
+    else if (i >= x->n || y->cls[j] < x->cls[i]) s.cls[s.n++] = y->cls[j++];
+    else { s.cls[s.n++] = x->cls[i]; i++; j++; }
   }
   return cf_pool(f, &s);
 }
