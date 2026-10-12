@@ -148,10 +148,22 @@ class PeerKid < Peer
   def poke2(h); h.s ||= 3; h.instance_variable_get(:@s); end
 end
 
+# a class method's self is the class: an instance of a module it extends
+class Extender
+  extend Shared
+  def self.poke(h); h.s ||= 4; h.instance_variable_get(:@s); end
+end
+
+class Includer
+  include Shared
+  def self.poke(h); h.s ||= 5; rescue NoMethodError; :raised; end
+end
+
 filled = Holder.new
 filled.instance_variable_set(:@s, 1)
 p Peer.new.poke(Holder.new), OwnPeer.new.poke(filled)
 p WrapPeer.new.poke(Holder.new), PeerKid.new.poke2(Holder.new)
+p Extender.poke(Holder.new), Includer.poke(Holder.new)
 
 # a nil number reader under a writer that stores something else: `&&=`
 # answers the reader's nil, boxed

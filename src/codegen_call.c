@@ -18493,6 +18493,10 @@ int method_vis_for_caller(Compiler *c, int id, int vcid, const char *vnm) {
        when its class or an ancestor includes it, whatever the caller's own
        method of that name is, or when its class took the method from it (a
        prepend, which records no include) */
+    /* a class method's self is the class, an instance of a module its
+       class (or a superclass) extends */
+    if (cs && cs->is_cmethod && cs->class_id >= 0 && owner >= 0 &&
+        comp_class_singleton_has_module(c, cs->class_id, owner)) vis = SP_VIS_PUBLIC;
     if (vis == SP_VIS_PROTECTED && caller >= 0 && owner >= 0) {
       int cmi = comp_method_in_chain(c, caller, vnm, NULL);
       if (caller_includes_module(c, caller, owner) ||
