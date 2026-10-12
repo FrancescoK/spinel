@@ -18468,7 +18468,15 @@ static int emit_object_reopen_vis_refusal(Compiler *c, int id, int vrecv, TyKind
   }
   return 1;
 }
-/* --plan-check: a call refused for its visibility binds no method */
+/* Does class k or an ancestor include module mod (directly or through an
+   included module)? */
+static int caller_includes_module(Compiler *c, int k, int mod) {
+  for (int g = 0; k >= 0 && k < c->nclasses && g <= c->nclasses; k = c->classes[k].parent, g++)
+    for (int m = 0; m < c->classes[k].nincluded_mods; m++)
+      if (comp_module_includes(c, c->classes[k].included_mods[m], mod, 0)) return 1;
+  return 0;
+}
+
 /* The visibility vcid's method vnm has for an explicit-receiver call at
    node id: the declared one, except that a protected method is public to a
    caller whose self is an instance of the declaring class. */
@@ -18482,15 +18490,19 @@ int method_vis_for_caller(Compiler *c, int id, int vcid, const char *vnm) {
     int caller = (cs && !cs->is_cmethod) ? cs->class_id : -1;
     if (caller >= 0 && owner >= 0 && is_descendant(c, caller, owner)) vis = SP_VIS_PUBLIC;
     /* a module's protected method: the caller is an instance of the module
-       when its class took the method from it */
+       when its class or an ancestor includes it, whatever the caller's own
+       method of that name is, or when its class took the method from it (a
+       prepend, which records no include) */
     if (vis == SP_VIS_PROTECTED && caller >= 0 && owner >= 0) {
       int cmi = comp_method_in_chain(c, caller, vnm, NULL);
-      if (cmi >= 0 && cmi < c->nscopes && c->scopes[cmi].origin_module_ci == owner + 1) vis = SP_VIS_PUBLIC;
+      if (caller_includes_module(c, caller, owner) ||
+          (cmi >= 0 && cmi < c->nscopes && c->scopes[cmi].origin_module_ci == owner + 1)) vis = SP_VIS_PUBLIC;
     }
   }
   return vis;
 }
 
+/* --plan-check: a call refused for its visibility binds no method */
 int emit_vis_refusal(Compiler *c, int id, Buf *b) {
   int r = emit_vis_refusal_x(c, id, b);
   if (r && g_plan_check) ucall_refused(id);

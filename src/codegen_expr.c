@@ -1471,7 +1471,9 @@ int emit_call_or_write_via_methods(Compiler *c, int id, int is_or, Buf *b) {
     /* a plain reader under a node that answers the oint: lifted */
     else if (!ro && wo && rdt == want) snprintf(sv, sizeof sv, "%s(_t%d)", oint_of(want), tv);
     else snprintf(sv, sizeof sv, "_t%d", tv);
-    if (rdt == want) buf_puts(b, sv);
+    /* a boxed answer takes the reader's oint whole: its nil boxes as nil, not 0 */
+    if (ro && !wo && want == TY_POLY && rdt != TY_POLY) buf_printf(b, "%s(_t%d)", oint_box(rdt), tv);
+    else if (rdt == want) buf_puts(b, sv);
     else if (want == TY_POLY) emit_boxed_text(c, rdt, sv, b);
     /* nil-preserving: the reader can answer nil, and this arm is exactly the
        one taken when it did (`&&=` on a nil attribute). Plain unboxing lands

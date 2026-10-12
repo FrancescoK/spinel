@@ -110,3 +110,63 @@ begin
 rescue NoMethodError => e
   p e.receiver.equal?(guarded), e.name
 end
+
+# a module's protected attr, called from another class that includes the
+# module (directly, through a module, or through a superclass), whatever
+# that class's own method of the name is
+module Shared
+  protected
+  attr_accessor :s
+end
+
+class Holder
+  include Shared
+  def initialize; @s = nil; end
+end
+
+class Peer
+  include Shared
+  def poke(h); h.s ||= 6; h.instance_variable_get(:@s); end
+end
+
+class OwnPeer
+  include Shared
+  def s; :own; end
+  def poke(h); h.s &&= 8; h.instance_variable_get(:@s); end
+end
+
+module Wrap
+  include Shared
+end
+
+class WrapPeer
+  include Wrap
+  def poke(h); h.s ||= 9; h.instance_variable_get(:@s); end
+end
+
+class PeerKid < Peer
+  def poke2(h); h.s ||= 3; h.instance_variable_get(:@s); end
+end
+
+filled = Holder.new
+filled.instance_variable_set(:@s, 1)
+p Peer.new.poke(Holder.new), OwnPeer.new.poke(filled)
+p WrapPeer.new.poke(Holder.new), PeerKid.new.poke2(Holder.new)
+
+# a nil number reader under a writer that stores something else: `&&=`
+# answers the reader's nil, boxed
+class Sized
+  attr_reader :n
+  def initialize; @n = 1; end
+  def n=(v); @n = v.size; end
+  def clear; @n = nil; end
+end
+
+sz = Sized.new
+sz.clear
+r = (sz.n &&= "abc")
+p r, sz.n
+sz2 = Sized.new
+sz2.clear
+r = (sz2.n ||= "xy")
+p r, sz2.n

@@ -3300,10 +3300,8 @@ int class_recv_is_dynamic(Compiler *c, int recv) {
 }
 
 
-/* Does module `mod` -- or a module including it -- take part in class `ci`'s
-   singleton ancestors, through an `extend` of `ci` or of a superclass? Then
-   `ci.is_a?(mod)` is true. */
-static int comp_module_includes(Compiler *c, int m, int mod, int depth) {
+/* Is module m module mod, or does it include mod (through its own includes)? */
+int comp_module_includes(Compiler *c, int m, int mod, int depth) {
   if (m == mod) return 1;
   if (m < 0 || m >= c->nclasses || depth > 16) return 0;
   ClassInfo *mi = &c->classes[m];
@@ -3311,6 +3309,9 @@ static int comp_module_includes(Compiler *c, int m, int mod, int depth) {
     if (comp_module_includes(c, mi->included_mods[k], mod, depth + 1)) return 1;
   return 0;
 }
+/* Does module `mod` -- or a module including it -- take part in class `ci`'s
+   singleton ancestors, through an `extend` of `ci` or of a superclass? Then
+   `ci.is_a?(mod)` is true. */
 int comp_class_singleton_has_module(Compiler *c, int ci, int mod) {
   for (int k = ci, d = 0; k >= 0 && k < c->nclasses && d < 64; k = c->classes[k].parent, d++)
     for (int e = 0; e < c->classes[k].nextended_mods; e++)
