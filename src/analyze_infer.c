@@ -10060,8 +10060,13 @@ TyKind infer_uncached(Compiler *c, int id) {
                      sp_streq(uname, "instance_of?"));
     /* (`super` in an exception subclass's #message / #to_s that reaches
        Exception's is the message String, super_reaches_exc_text: untyped,
-       `def message = super` answered nil) */
-    TyKind none = super_reaches_exc_text(c, id, 0) ? TY_STRING : rto_super ? TY_BOOL : TY_UNKNOWN;
+       `def message = super` answered nil), and `super` in a freeze override
+       no ancestor defines is Object#freeze, which answers the object
+       (codegen's twin in emit_super) */
+    int freeze_super = !s->is_cmethod && uname && sp_streq(uname, "freeze");
+    TyKind none = super_reaches_exc_text(c, id, 0) ? TY_STRING
+                : rto_super ? TY_BOOL
+                : freeze_super ? ty_object(s->class_id) : TY_UNKNOWN;
     if (p < 0) return none;
     /* super inside a class method resolves through the parent's CLASS-method
        chain (the instance chain would miss `def self.x` entirely). */
