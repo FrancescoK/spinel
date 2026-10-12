@@ -14,5 +14,8 @@ extern int sp_last_status;
    for, when `$?` is nil */
 extern int sp_last_pid;
 int sp_system_args(int argc, const char *const *argv);
+/* the same with envp (NULL-terminated "NAME=value" entries) as the child's
+   whole environment, or this process's when envp is NULL */
+int sp_system_envp(int argc, const char *const *argv, char **envp);
 
 #endif

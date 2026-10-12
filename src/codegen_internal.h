@@ -2140,7 +2140,7 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent);
 void emit_p_one(Compiler *c, int arg, Buf *b, int indent);
 int emit_output_call(Compiler *c, int id, Buf *b, int indent);
 void system_refuse_unsupported(Compiler *c, int id, const int *argv, int argc);
-int emit_system_splat(Compiler *c, const int *argv, int argc, Buf *b);
+int emit_system_splat(Compiler *c, int id, const int *argv, int argc, Buf *b);
 int int_value_plain(Compiler *c, int node);   /* an Integer that can never be nil */
 int int_value_plain_promote(Compiler *c, int node);
 int int_local_plain(Compiler *c, LocalVar *lv, const char *name);

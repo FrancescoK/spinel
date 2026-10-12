@@ -1897,6 +1897,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (#6179: a global's String copied into an appending initialize compiled)"; ok=0; \
 	else grep -q "which the method appends to" "$$tmp/sn.out" || \
 	  { echo "reject-test: FAIL (#6179: rejected without saying why)"; sed -n 1,5p "$$tmp/sn.out"; ok=0; }; fi; \
+	t=test/reject/system_env_options_hash.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/se.c" >"$$tmp/se.out" 2>&1; then \
+	  echo "reject-test: FAIL (system with an environment Hash and an options Hash compiled)"; ok=0; \
+	else grep -q "system with an options Hash" "$$tmp/se.out" || \
+	  { echo "reject-test: FAIL (system with an environment and an options Hash refused without saying why)"; sed -n 1,5p "$$tmp/se.out"; ok=0; }; fi; \
 	t=test/reject/string_append_through_proc_keyword.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sk.c" >"$$tmp/sk.out" 2>&1; then \
 	  echo "reject-test: FAIL (#6179: a block parameter's String copied into a proc's appending keyword compiled)"; ok=0; \

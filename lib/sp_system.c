@@ -27,7 +27,17 @@ int sp_last_status = 0;
 int sp_last_pid = 0;
 
 
+#if !defined(_WIN32)
+extern char **environ;
+#endif
+
 int sp_system_args(int argc, const char *const *argv) {
+  return sp_system_envp(argc, argv, NULL);
+}
+
+/* envp, when not NULL, is the child's whole environment in place of this
+   process's (system with an environment Hash, lib/sp_process.c). */
+int sp_system_envp(int argc, const char *const *argv, char **envp) {
   if (argc <= 0 || argv == NULL || argv[0] == NULL) {
     sp_last_status = -1;
     return FALSE;
@@ -41,9 +51,9 @@ int sp_system_args(int argc, const char *const *argv) {
     int rc;
     if (argc == 1) {
       char *av[] = { (char *)"sh", (char *)"-c", (char *)argv[0], NULL };
-      rc = posix_spawn(&pid, "/bin/sh", NULL, NULL, av, environ);
+      rc = posix_spawn(&pid, "/bin/sh", NULL, NULL, av, envp ? envp : environ);
     }
-    else rc = posix_spawnp(&pid, argv[0], NULL, NULL, (char *const *)argv, environ);
+    else rc = posix_spawnp(&pid, argv[0], NULL, NULL, (char *const *)argv, envp ? envp : environ);
     if (rc != 0) { sp_last_status = 127 << 8; return FALSE; }
   }
 #else
@@ -53,6 +63,10 @@ int sp_system_args(int argc, const char *const *argv) {
     return FALSE;
   }
   if (pid == 0) {
+    /* the child's own copy of the pointer: execl and execvp pass it on, and
+       execvp searches the PATH it holds, as CRuby looks the command up in
+       the child's environment */
+    if (envp) environ = envp;
     if (argc == 1) {
       execl("/bin/sh", "sh", "-c", argv[0], (char *)NULL);
     }

@@ -1,0 +1,22 @@
+one
+true
+one-two
+true
+[]
+[child]
+[parent]
+nil
+false
+1
+e
+true
+f
+true
+"environment name contains a equal : A=B"
+"wrong number of arguments (given 0, expected 1+)"
+[h]
+true
+empty-hash
+true
+arg1
+true

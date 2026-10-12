@@ -1642,6 +1642,12 @@ spinel: test/reject/super_init_value_if.rb:13: unsupported value of `super` in i
 spinel: test/reject/superclass_mismatch.rb:13: superclass mismatch for class Thing (B here, A at line 10)
 == test/reject/superclass_mismatch.rb [promote] rc=1
 spinel: test/reject/superclass_mismatch.rb:13: superclass mismatch for class Thing (B here, A at line 10)
+== test/reject/system_env_options_hash.rb [default] rc=1
+spinel: test/reject/system_env_options_hash.rb:4: system with an options Hash (use Process.spawn, which takes in:/out:/err:)
+spinel: 1 refusal, nothing written
+== test/reject/system_env_options_hash.rb [promote] rc=1
+spinel: test/reject/system_env_options_hash.rb:4: system with an options Hash (use Process.spawn, which takes in:/out:/err:)
+spinel: 1 refusal, nothing written
 == test/reject/systemcallerror_subclass_errno_const.rb [default] rc=1
 spinel: test/reject/systemcallerror_subclass_errno_const.rb:5: an Errno constant defined in a subclass of SystemCallError (its errno is read from the Errno class above it)
 == test/reject/systemcallerror_subclass_errno_const.rb [promote] rc=1
