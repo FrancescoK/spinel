@@ -21307,8 +21307,13 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
         emit_indent(&lp, indent + 1);
         buf_printf(&lp, "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push%s(_t%d, ",
                    ti, ti, tn, ti, k, nilable, tr);
+        /* the _nilable store takes the element whole, its nil included, as
+           the value-form concat does; the plain unbox raised on nil and
+           handed the store an sp_int */
         { char el[64]; snprintf(el, sizeof el, "sp_poly_each_elem(_t%d, _t%d)", tv, ti);
-          emit_unbox_text(c, et, el, &lp); }
+          if (et == TY_INT) buf_printf(&lp, "sp_poly_elem_i(%s)", el);
+          else if (et == TY_FLOAT) buf_printf(&lp, "sp_poly_elem_f(%s)", el);
+          else emit_unbox_text(c, et, el, &lp); }
         buf_puts(&lp, ");\n");
         continue;
       }
