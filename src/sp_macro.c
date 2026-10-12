@@ -2549,6 +2549,7 @@ typedef struct { MxEdit *e; int n, cap; } MxEdits;
 /* per class (by its lexical path), across every body of it in the program */
 typedef struct {
   char *path;
+  const char *super;            /* its superclass's path, when one is written and known */
   const char **ext; int next;   /* the modules it extends at its top level, by path */
   int vis;                      /* a bare private/protected/public/module_function came */
   int unknown;                  /* a call was left as written that may define methods or write state */
@@ -2566,6 +2567,30 @@ static MxClass *mx_class_state(const char *path) {
   memset(k, 0, sizeof *k);
   k->path = strdup(path);
   return k;
+}
+
+static MxClass *mx_class_find(const char *path) {
+  for (int i = 0; path && i < g_mx_nclasses; i++) if (strcmp(g_mx_classes[i].path, path) == 0) return &g_mx_classes[i];
+  return NULL;
+}
+
+/* Does the class-body call `name` of class k reach the macro m: a
+   `def self.m` its body gave before the call, or a method of a module it
+   extended, in the class itself or in a superclass. An ancestor whose body
+   left a call that may define methods stops the walk (#8757). */
+static int mx_class_reaches(MxClass *k, const MxMacro *m, const char *name) {
+  int depth = 0;
+  for (MxClass *a = k; a && depth < 32; a = mx_class_find(a->super), depth++) {
+    if (a != k && (a->unknown || a->noiv)) return 0;
+    if (m->self_def) {
+      char *key = mx_self_key(a->path);
+      int hit = strcmp(key, m->module) == 0 && mx_names_has(&a->selfdefs, name);
+      free(key);
+      if (hit) return 1;
+    }
+    else for (int q = 0; q < a->next; q++) if (strcmp(a->ext[q], m->module) == 0) return 1;
+  }
+  return 0;
 }
 
 /* a constant as written, found as Ruby would from inside `from`: the
@@ -2617,6 +2642,14 @@ static bool mx_class_visit(const pm_node_t *n, void *data) {
   if (body && PM_NODE_TYPE(body) == PM_STATEMENTS_NODE) {
     MxClass scratch; memset(&scratch, 0, sizeof scratch);
     MxClass *k = w->mark ? &scratch : mx_class_state(path);
+    /* the superclass as written, found from the enclosing scope */
+    pm_node_t *sup = is_mod ? NULL : ((pm_class_node_t *)n)->superclass;
+    if (!w->mark && !k->super && sup &&
+        (PM_NODE_TYPE(sup) == PM_CONSTANT_READ_NODE || PM_NODE_TYPE(sup) == PM_CONSTANT_PATH_NODE)) {
+      char *text = strndup((const char *)sup->location.start, (size_t)(sup->location.end - sup->location.start));
+      k->super = mx_resolve_const(w->path, text);
+      free(text);
+    }
     int sv = k->noiv;
     if (odd) k->noiv = 1;
     /* an extend that may not run (or not now) is not recorded */
@@ -2839,14 +2872,7 @@ static void mx_class_body(pm_statements_node_t *st, MxEdits *ed, MxClass *k, int
     }
     int dyn = mx_macro_dynamic(m, 0);
     if (!dyn && !m->writer) { free(name); continue; }   /* neither defines nor writes: stays as it is */
-    int extended = 0;
-    if (m->self_def) {
-      /* a class method of this class, defined before the call */
-      char *key = mx_self_key(k->path);
-      extended = strcmp(key, m->module) == 0 && mx_names_has(&k->selfdefs, name);
-      free(key);
-    }
-    else for (int q = 0; q < k->next; q++) if (strcmp(k->ext[q], m->module) == 0) extended = 1;
+    int extended = mx_class_reaches(k, m, name);
     free(name);
     /* a heredoc argument's body lies outside the call's range */
     int hd = 0;
