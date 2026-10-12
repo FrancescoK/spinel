@@ -1,0 +1,39 @@
+"ab,cd\n"
+"ef\n"
+"gh\n"
+12
+878
+"ab,cd\n"
+"ef\n"
+"ab"
+",cd\nef\ngh\n"
+""
+nil
+"ab,"
+"cd\nef\ngh\n"
+""
+"wrong number of arguments (given 3, expected 0..2)"
+"ab,cd\n"
+"ef"
+"g"
+""
+"h\n"
+"ab,"
+"c"
+"d"
+["ab,cd\n", "ef\n", "gh\n"]
+["ab,", "cd\n", "ef\n", "gh\n"]
+["ab,cd", "ef", "gh"]
+"invalid limit: 0 for readlines"
+EOFError
+["ab,cd\n", "ef\n", "gh\n", "ab,", "cd\nef\ngh\n"]
+AB,CD
+EF
+GH
+"e"
+"f"
+"\n"
+"g"
+"h"
+"\n"
+12

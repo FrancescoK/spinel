@@ -3766,7 +3766,13 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
         const char *bp0 = block_param_name(c, blk, 0);
         Scope *bs = bp0 ? comp_scope_of(c, blk) : NULL;
         LocalVar *blv = (bs && bp0) ? scope_local(bs, bp0) : NULL;
-        if (blv) blv->type = (is_byte_codepoint_each(name)) ? TY_INT : TY_STRING;
+        /* a line the --share-strings rule made the handle (a forward that
+           yields it on to a block appending to it) stays the handle: reset
+           to String here each round, the rule set it back the next and the
+           storage fixpoint never settled */
+        int handle = blv && blv->type == TY_STRBUF && blv->str_shared && c->share_strings &&
+                     !is_byte_codepoint_each(name);
+        if (blv && !handle) blv->type = (is_byte_codepoint_each(name)) ? TY_INT : TY_STRING;
       }
       { *out = TY_IO; return 1; }
     }
