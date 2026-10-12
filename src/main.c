@@ -130,6 +130,25 @@ static void bi_put_toks(Str *bi, const char *kind, const char *toks) {
   free(d);
 }
 
+/* The host libraries a native program needs beyond libc and libm.
+   OpenBSD's backtrace(3), which the runtime archive calls, is
+   libexecinfo's rather than libc's. String#crypt is libc crypt(3), linked
+   only when the program calls it: Darwin's and OpenBSD's libc have it,
+   with no libcrypt, and elsewhere a linker without a default --as-needed
+   (Fedora's) otherwise made libcrypt a dependency of every binary (#6674). */
+static void add_host_libs(Str *cmd, Str *bi, int uses_crypt) {
+#if defined(__OpenBSD__)
+  s_add(cmd, "-lexecinfo ");
+  bi_put(bi, "lib", "-lexecinfo");
+#elif !defined(__APPLE__)
+  if (uses_crypt) {
+    s_add(cmd, "-lcrypt ");
+    bi_put(bi, "lib", "-lcrypt");
+  }
+#endif
+  (void)uses_crypt;
+}
+
 #if defined(_WIN32)
 /* The platform's own flags (SPINEL_PLATFORM_CFLAGS / _LIBS) onto the command
    line, "@LIB@" spelled as the runtime's lib directory (quoted: it may hold a
@@ -1348,30 +1367,13 @@ int main(int argc, char **argv) {
      sp_format.o pulls in sqrt/sin/cos, so libm must follow libspinel_rt.a. */
   s_add(&cmd, "-lm ");
   bi_put(&bi, "lib", "-lm");
-#if defined(__OpenBSD__)
-  /* OpenBSD's backtrace(3), which the runtime archive calls, is
-     libexecinfo's rather than libc's */
-  if (!target_wasi) {
-    s_add(&cmd, "-lexecinfo ");
-    bi_put(&bi, "lib", "-lexecinfo");
-  }
-#endif
   if (target_wasi) {
     /* the emulations the defines above asked for, and sjlj's runtime */
     static const char *const wlibs[] = { "-lsetjmp", "-lwasi-emulated-signal", "-lwasi-emulated-process-clocks", "-lwasi-emulated-getpid", "-lwasi-emulated-mman" };
     /* --exceptions=abort leaves out the first, -lsetjmp */
     for (size_t wi = exc_abort ? 1 : 0; wi < sizeof wlibs / sizeof wlibs[0]; wi++) { s_add(&cmd, wlibs[wi]); s_add(&cmd, " "); bi_put(&bi, "lib", wlibs[wi]); }
   }
-#if !defined(__APPLE__) && !defined(__OpenBSD__)
-  /* String#crypt = libc crypt(3), linked only when the program calls it
-     (Darwin's and OpenBSD's libc have it, with no libcrypt):
-     a linker without a default --as-needed (Fedora's) otherwise made
-     libcrypt a dependency of every binary (#6674) */
-  else if (uses_crypt) {
-    s_add(&cmd, "-lcrypt ");
-    bi_put(&bi, "lib", "-lcrypt");
-  }
-#endif
+  else add_host_libs(&cmd, &bi, uses_crypt);
   for (int li = 0; li < n_link_extra; li++)
     if (strncmp(link_extra[li], "-l", 2) == 0) {
       s_add(&cmd, link_extra[li]); s_add(&cmd, " ");
