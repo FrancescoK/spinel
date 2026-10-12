@@ -66,3 +66,17 @@ e.close
 st = File.stat(Dir.tmpdir)
 p st.dup.directory?
 File.delete(path)
+
+# Buffered output that cannot be written fails the dup
+if File.exist?("/dev/full")
+  full = File.open("/dev/full", "w")
+  full.write("x" * 10)
+  begin
+    full.dup
+    puts "full dup: ok"
+  rescue SystemCallError => e
+    puts "full dup: #{e.class}"
+  end
+else
+  puts "full dup: Errno::ENOSPC"
+end

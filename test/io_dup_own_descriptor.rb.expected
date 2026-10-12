@@ -15,3 +15,4 @@ through the boxed copy
 stdout still open
 true
 true
+full dup: Errno::ENOSPC
