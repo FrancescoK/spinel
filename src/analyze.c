@@ -34413,10 +34413,14 @@ static int named_method_first(const NamedMethod *v, int n, const char *name) {
    to, with that local's reads) widens here; a typed key or value slot has no
    nil (nil out of band). */
 void infer_subtree(Compiler *c, int id);   /* analyze_infer.c */
-static int wnh_bodies[4096], wnh_n;
+static int *wnh_bodies, wnh_n, wnh_cap;
 static void wnh_note(int body) {
   for (int i = 0; i < wnh_n; i++) if (wnh_bodies[i] == body) return;
-  if (wnh_n < 4096) wnh_bodies[wnh_n++] = body;
+  if (wnh_n == wnh_cap) {
+    wnh_cap = wnh_cap ? wnh_cap * 2 : 256;
+    wnh_bodies = realloc(wnh_bodies, sizeof(int) * (size_t)wnh_cap);
+  }
+  wnh_bodies[wnh_n++] = body;
 }
 /* Does a read of local `name` in scope sc hand the hash on whole -- a
    statement list's last value (a method's or block's answer), a `return`,
