@@ -16041,10 +16041,14 @@ static int emit_poly_numeric_call(Compiler *c, int id, Buf *b, const NodeTable *
          a receiver that is never assigned, #8634): the bare sp_int went into
          that poly slot and the C did not compile */
       int bx = repr_of(c, id).kind == RK_BOXED;
+      /* ...and as the oint where it took the Integer with its nil (a user
+         `count` answering a nilable Integer, #8716) */
+      int ob = !bx && node_is_oint(c, id);
       if (bx) buf_puts(b, "sp_box_int(");
+      else if (ob) buf_puts(b, "sp_oint_of(");
       buf_puts(b, "sp_poly_count_val("); emit_expr(c, recv, b);
       buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
-      if (bx) buf_puts(b, ")");
+      if (bx || ob) buf_puts(b, ")");
       { *out = 1; return 1; }
     }
   }
