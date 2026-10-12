@@ -48,3 +48,18 @@ p plain_readline(plain[0], chomp: true)
 p plain_gets(plain[0])
 p plain_gets(plain[0])
 r2.close
+
+# a limit of 0 answers "" only on an open stream
+r3, w3 = IO.pipe
+w3.close
+r3.close
+begin
+  p read_data([r3, Reader.new][0], :gets, 0)
+rescue IOError => e
+  p [e.class, e.message]
+end
+begin
+  p plain_gets([r3, 1][0], 0)
+rescue IOError => e
+  p [e.class, e.message]
+end

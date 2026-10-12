@@ -224,11 +224,13 @@ static void emit_io_line_args_spread(Compiler *c, const int *argv, int argc, int
 
 /* gets / readline on the handle in _t<rf>, rooted across its arguments,
    which a splat or a `**` carries (emit_io_line_args_spread). A limit of 0
-   answers "" without reading, as CRuby's does. */
+   answers "" without reading, as CRuby's does, once the stream is known to
+   be open: a closed one raises IOError first. */
 static void emit_io_line_read_spread(Compiler *c, const char *name, int rf, const int *argv, int argc, Buf *b) {
   int ls = ++g_tmp, ll = ++g_tmp, lc = ++g_tmp;
   buf_printf(b, "SP_GC_ROOT(_t%d); ", rf);
   emit_io_line_args_spread(c, argv, argc, ls, ll, lc, NULL, b);
+  buf_printf(b, "if (_t%dz) SP_IO_OPEN(_t%d); ", ll, rf);
   buf_printf(b, "_t%dz ? sp_str_empty : sp_File_%s(_t%d, _t%d, _t%d, _t%d)",
              ll, sp_streq(name, "readline") ? "readline_sep" : "gets_sep", rf, ls, ll, lc);
 }
