@@ -710,7 +710,7 @@ int emit_output_spilled(Compiler *c, const char *name, int argc, const int *argv
       buf_puts(&abody, "));\n");
     }
     else {
-      buf_printf(&abody, "sp_PolyArray_push(_t%d, ", t); emit_boxed(c, a, &abody); buf_puts(&abody, ");\n");
+      buf_printf(&abody, "sp_PolyArray_push(_t%d, ", t); emit_boxed_operand(c, argv, argc, k, &abody); buf_puts(&abody, ");\n");
     }
     g_pre = sv_pre; g_indent = sv_ind;
     if (apre.p) buf_puts(b, apre.p);
@@ -921,7 +921,7 @@ else {
         buf_printf(b, "{ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tpa, tpa);
         for (int k = 1; k < argc; k++) {
           Buf ab; memset(&ab, 0, sizeof ab);
-          emit_boxed(c, argv[k], &ab);
+          emit_boxed_operand(c, argv, argc, k, &ab);
           emit_indent(b, indent);
           /* a splat contributes its ELEMENTS, not one array argument (#3957) */
           if (nt_kind(nt, argv[k]) == NK_SplatNode)
@@ -1584,6 +1584,12 @@ int strbuf_bang_chain(Compiler *c, int v) {
 /* --share-strings: v (through parentheses) is an attribute assignment on a
    handle, whose value is the one String it was handed (repr_write_share):
    a leaf a handle route reads as that handle (emit_strbuf_write_handle). */
+/* ...on a receiver whose class is known only at run time? */
+static int strbuf_assign_boxed_recv(Compiler *c, int v) {
+  int r = nt_ref(c->nt, unwrap_parens(c, v), "receiver");
+  TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+  return r >= 0 && (rt == TY_POLY || rt == TY_UNKNOWN);
+}
 int strbuf_assign_leaf(Compiler *c, int v) {
   v = unwrap_parens(c, v);
   return v >= 0 && nt_kind(c->nt, v) == NK_CallNode && repr_write_share(c, v);
@@ -1894,6 +1900,17 @@ static int exc_text_call_on(Compiler *c, int v, int boxed) {
   const int *ks = poly_recv_classes(c, v, &nk);
   for (int i = 0; ks && i < nk; i++)
     if (class_is_exc_subclass(c, ks[i])) return 1;
+  /* (the walk lists no builtin value, and an exception of a class of the
+     program's own is boxed as the builtin's: an exception class's arm of
+     the dispatch plan says one can reach the call) */
+  const PolyPlan *pp = cplan_poly_arms(c, v);
+  for (int i = 0; ks && i < pp->n; i++)
+    if (pp->arm[i].key >= 0 && pp->arm[i].key < c->nclasses && class_is_exc_subclass(c, pp->arm[i].key)) return 1;
+  /* (a box the walk cannot follow, an Array's element an exception was
+     pushed into, can hold an exception of any of the program's classes:
+     the route tests the box at run time) */
+  for (int k = 0; !ks && k < c->nclasses; k++)
+    if (class_is_exc_subclass(c, k)) return 1;
   return 0;
 }
 /* --share-strings: a String Range's begin / first (1) or end / last (2),
@@ -1912,6 +1929,39 @@ int strbuf_route_srange_end(Compiler *c, int v) {
   return 0;
 }
 static int exc_text_call(Compiler *c, int v) { return exc_text_call_on(c, v, 0); }
+/* --share-strings: an exception's #message read off a boxed receiver every
+   class of which (the boxed-receiver walk) is an exception class or answers
+   #message through a reader, where no class of the program's own that is
+   not one defines a #message method: the exception in the box answers as a
+   typed receiver does
+   (emit_exc_message_boxed). #to_s is left out: a boxed String's is the
+   String itself. */
+/* Can every class the boxed receiver of call v holds (the boxed-receiver
+   walk) be an exception class? */
+static int exc_boxed_all_exceptions(Compiler *c, int v) {
+  int nk = 0;
+  const int *ks = poly_recv_classes(c, unwrap_parens(c, v), &nk);
+  if (!ks || nk <= 0) return 0;
+  for (int i = 0; i < nk; i++)
+    if (!class_is_exc_subclass(c, ks[i])) return 0;
+  return 1;
+}
+int exc_message_boxed_call(Compiler *c, int v) {
+  v = unwrap_parens(c, v);
+  if (!exc_text_call_on(c, v, 1) || is_to_s_name(nt_str(c->nt, v, "name"))) return 0;
+  int nk = 0;
+  const int *ks = poly_recv_classes(c, v, &nk);
+  if (ks && nk <= 0) return 0;
+  /* (a class that answers #message through a reader, a Struct member
+     included, takes the call's boxed read, which keeps the field's handle;
+     where the walk cannot tell the classes, any of the program's can be in
+     the box, which the loop below judges) */
+  for (int i = 0; ks && i < nk; i++)
+    if (!class_is_exc_subclass(c, ks[i]) && !comp_reader_in_chain(c, ks[i], "message", NULL)) return 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (!class_is_exc_subclass(c, k) && comp_method_in_class(c, k, "message") >= 0) return 0;
+  return 1;
+}
 /* --share-strings: an exception's #message or #to_s with no override of
    the program's own: the String the exception was raised with, which it
    holds as a handle when the String is shared (sp_exc_kept_message_handle,
@@ -1922,7 +1972,67 @@ static int exc_text_call(Compiler *c, int v) { return exc_text_call_on(c, v, 0);
    shared or changed in place (share_node_shares); anywhere else it is the
    plain read, which every other read of the same message agrees with. */
 int strbuf_route_exc_message(Compiler *c, int v) {
-  return exc_text_call(c, v) && !exc_text_override_calls_super(c) && share_node_shares(c, unwrap_parens(c, v));
+  /* (a boxed read whose every target publishes its handle takes the return
+     pickup already, where the box holds only exceptions: a class answering
+     through a reader is no target, and its arm is this route's fallback) */
+  return (exc_text_call(c, v) ||
+          (exc_message_boxed_call(c, v) &&
+           (!repr_call_returns_handle(c, unwrap_parens(c, v)) || !exc_boxed_all_exceptions(c, v)))) &&
+         !exc_text_override_calls_super(c) && share_node_shares(c, unwrap_parens(c, v));
+}
+/* An override's answer to exception text call v off exception `e` (C
+   text), into _v<t>, and the handle it published or a new one: the value
+   of the statement expression the caller opened. */
+static void emit_exc_override_pickup(Compiler *c, int v, const char *e, int t, Buf *b) {
+  int message = !is_to_s_name(nt_str(c->nt, v, "name"));
+  c->uses_exc_text_handle |= 1 << message;
+  /* (rooted: a fresh String an override answers is wrapped below, which
+     allocates) */
+  buf_printf(b, "const char *_v%d = sp_user_exc_%s_shared(%s); SP_GC_ROOT_STR(_v%d); ", t, message ? "message" : "to_s", e, t);
+  buf_printf(b, "!_v%d ? NULL : _sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : sp_String_new_shared(_v%d);", t, t);
+}
+/* The handle exception text call v answers off exception `e` (C text):
+   an override's published answer, else the kept message's handle. */
+void emit_exc_text_handle(Compiler *c, int v, const char *e, Buf *b) {
+  if (exc_has_user_msg_override(c)) {
+    buf_puts(b, "({ ");
+    emit_exc_override_pickup(c, v, e, ++g_tmp, b);
+    buf_puts(b, " })");
+    return;
+  }
+  buf_printf(b, "sp_exc_kept_message_handle((sp_Exception *)(%s))", e);
+}
+/* exc_message_boxed_call's read: the exception in the box answers its
+   handle; any other value the call's own boxed read, which raises
+   NoMethodError for a builtin one. */
+static void emit_exc_message_boxed(Compiler *c, int v, Buf *b) {
+  int t = ++g_tmp, recv = nt_ref(c->nt, v, "receiver");
+  char e[48];
+  snprintf(e, sizeof e, "_b%d.v.p", t);
+  buf_printf(b, "({ sp_RbVal _b%d = ", t);
+  emit_expr(c, recv, b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_b%d); (_b%d.tag == SP_TAG_OBJ && _b%d.v.p && "
+                "(_b%d.cls_id == SP_BUILTIN_EXCEPTION || sp_is_exc_subclass_cls(_b%d.cls_id))) ? ", t, t, t, t, t);
+  emit_exc_text_handle(c, v, e, b);
+  /* a box of no exception: where every class the box can hold is an
+     exception class, only a builtin value reaches here, which has no
+     #message */
+  if (exc_boxed_all_exceptions(c, v)) {
+    buf_printf(b, " : (sp_raise_nomethod(sp_nomethod_msg(\"message\", _b%d)), (sp_String *)NULL); })", t);
+    return;
+  }
+  buf_puts(b, " : sp_poly_as_strbuf(");
+  /* (the call read as a box, its handle marks lifted: read as the String
+     it is typed, or under the demand, it is this route again) */
+  int mark = view_bind(recv, "_b%d", t);
+  int sb = view_push_repr(c, v, VR_STRBUF_BOX, 0), sd = view_push_repr(c, v, VR_HANDLE_DEMAND, 0);
+  int sv = view_push(c, v, TY_POLY);
+  emit_expr(c, v, b);
+  view_pop(c, sv);
+  view_pop(c, sd);
+  view_pop(c, sb);
+  view_unbind(mark);
+  buf_puts(b, "); })");
 }
 /* --share-strings: `x.message` on a box, with no `message` of the program's
    own and no override of an exception's text: an exception in the box
@@ -1979,7 +2089,18 @@ void emit_exc_message_idbox(Compiler *c, int v, Buf *b) {
        of the call, where it would run beside the identity ask */
     ConvHold *hold = g_conv_hold;
     g_conv_hold = NULL;
-    emit_boxed(c, v, b);
+    /* (#message's other classes answer through their readers, whose boxes
+       keep the fields' handles: the call read as a box, as
+       emit_exc_message_boxed's fallback reads it) */
+    if (message && exc_message_boxed_call(c, v)) {
+      int sb = view_push_repr(c, v, VR_STRBUF_BOX, 0), sd = view_push_repr(c, v, VR_HANDLE_DEMAND, 0);
+      int sv = view_push(c, v, TY_POLY);
+      emit_expr(c, v, b);
+      view_pop(c, sv);
+      view_pop(c, sd);
+      view_pop(c, sb);
+    }
+    else emit_boxed(c, v, b);
     g_conv_hold = hold;
     view_unbind(mark);
     buf_puts(b, "; })");
@@ -2184,19 +2305,22 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   }
   if (strbuf_route_exc_message(c, v)) {
     v = unwrap_parens(c, v);
+    if (!exc_text_call(c, v)) {
+      emit_exc_message_boxed(c, v, b);
+      return 1;
+    }
     if (exc_has_user_msg_override(c)) {
       int t = ++g_tmp, recv = nt_ref(nt, v, "receiver");
-      int message = !is_to_s_name(nt_str(nt, v, "name"));
-      c->uses_exc_text_handle |= 1 << message;
       buf_printf(b, "({ sp_Exception *_e%d = (sp_Exception *)(", t);
       emit_expr(c, recv, b);
       buf_printf(b, "); SP_GC_ROOT(_e%d); ", t);
       int mark = view_bind(recv, "_e%d", t);
       if (cplan_nil(c, v) == CN_RAISE) emit_nil_cold_test(c, v, recv, b);
       view_unbind(mark);
-      buf_printf(b, "const char *_v%d = sp_user_exc_%s_shared(_e%d); ",
-                 t, message ? "message" : "to_s", t);
-      buf_printf(b, "!_v%d ? NULL : _sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : sp_String_new_shared(_v%d); })", t, t);
+      char e[32];
+      snprintf(e, sizeof e, "_e%d", t);
+      emit_exc_override_pickup(c, v, e, t, b);
+      buf_puts(b, " })");
       return 1;
     }
     buf_puts(b, "sp_exc_kept_message_handle((sp_Exception *)(");
@@ -9041,6 +9165,7 @@ static void emit_string_tail_into(Compiler *c, int node, const char *dst, Buf *b
 
 /* Emit `_crN = <branch's last value>` (boxed to the case's result type when
    that is poly), after the branch's leading statements. */
+static int emit_paren_tail_pub(Compiler *c, int v, Buf *b);
 /* the case expression being emitted answers an oint (cond_res_oint) */
 static int g_case_res_oint = 0;
 void emit_case_branch_value(Compiler *c, int stmts, TyKind rt, int cr, Buf *b) {
@@ -9124,6 +9249,11 @@ void emit_case_branch_value(Compiler *c, int stmts, TyKind rt, int cr, Buf *b) {
      temp, which is an integer reinterpreted as a pointer */
   if (n > 0 && rt == TY_BIGINT && comp_ntype(c, bb[n - 1]) != TY_BIGINT)
     emit_bigint_operand_ext(c, bb[n - 1], &val);
+  /* --share-strings: an arm ending in a sequence whose tail carries a
+     handle, in a method that answers one, publishes it (emit_paren_tail_pub),
+     as the method's own tail does */
+  else if (n > 0 && rt == TY_STRING && sc && sc->ret_handle && nt_kind(nt, bb[n - 1]) == NK_ParenthesesNode &&
+           emit_paren_tail_pub(c, bb[n - 1], &val)) { }
   else if (n > 0) { if (rt == TY_POLY) emit_boxed(c, bb[n - 1], &val); else if (res_o) emit_oint_expr(c, bb[n - 1], rt, &val); else emit_expr(c, bb[n - 1], &val); }
   else buf_puts(&val, rt == TY_POLY ? "sp_box_nil()" : res_zero(c, rt, res_o));
   g_pre = sv_pre;
@@ -10705,6 +10835,41 @@ int call_names_only_void_methods(Compiler *c, int node) {
   return any;
 }
 static void emit_tail_value_1(Compiler *c, int node, Buf *b);
+/* --share-strings: parenthesized sequence v of two or more statements whose
+   tail carries a handle (strbuf_builtin_tail), as a method's tail: the
+   leading statements, then that handle published. 0 for any other. */
+static int emit_paren_tail_pub(Compiler *c, int v, Buf *b) {
+  int body = nt_ref(c->nt, v, "body"), n = 0;
+  const int *bd = body >= 0 && nt_kind(c->nt, body) == NK_StatementsNode ? nt_arr(c->nt, body, "body", &n) : NULL;
+  /* (a source paren around the sequence: `f ? ((@a = s) << x) : s`) */
+  while (n == 1 && nt_kind(c->nt, bd[0]) == NK_ParenthesesNode) {
+    body = nt_ref(c->nt, bd[0], "body");
+    bd = body >= 0 && nt_kind(c->nt, body) == NK_StatementsNode ? nt_arr(c->nt, body, "body", &n) : NULL;
+    if (!bd) n = 0;
+  }
+  if (n < 2 || !strbuf_builtin_tail(c, bd[n - 1])) return 0;
+  Buf cap; memset(&cap, 0, sizeof cap);
+  Buf vb; memset(&vb, 0, sizeof vb);
+  Buf *sv_pre = g_pre;
+  g_pre = &cap;
+  buf_puts(&vb, "sp_strbuf_read_pub(");
+  emit_strbuf_handle_of(c, bd[n - 1], &vb);
+  buf_puts(&vb, ")");
+  g_pre = sv_pre;
+  if (cap.p && cap.p[0]) {
+    for (int j = 0; j < n - 1; j++) emit_stmt(c, bd[j], g_pre, g_indent);
+    buf_puts(g_pre, cap.p);
+    buf_puts(b, vb.p);
+  }
+  else {
+    buf_puts(b, "({ ");
+    for (int j = 0; j < n - 1; j++) emit_stmt(c, bd[j], b, 0);
+    buf_printf(b, "%s; })", vb.p);
+  }
+  free(cap.p);
+  free(vb.p);
+  return 1;
+}
 static void emit_fresh_tail_value(Compiler *c, int node, Buf *b) {
   int t = ++g_tmp;
   buf_printf(b, "({ const char *_t%d = ", t);
@@ -10728,6 +10893,23 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
     buf_puts(b, "sp_strbuf_read_pub(");
     emit_strbuf_handle_of(c, node, b);
     buf_puts(b, ")");
+    return;
+  }
+  /* ...and so does an attribute assignment on a boxed receiver, whose
+     value is the handle its writers are handed (repr_write_share): the
+     dispatch answers that handle's bytes, which publish nothing */
+  if (ts && ts->ret_handle && strbuf_assign_leaf(c, node) && strbuf_assign_boxed_recv(c, node)) {
+    buf_puts(b, "sp_strbuf_read_pub(");
+    emit_strbuf_write_handle(c, node, b);
+    buf_puts(b, ")");
+    if (g_repr_check) repr_channel_end(c, frame);
+    return;
+  }
+  /* ...and so does the tail of a parenthesized sequence, after its leading
+     statements (`(@a = s) << x` is desugared into one), in the order
+     emit_expr's sequence keeps when the tail hoists */
+  if (ts && ts->ret_handle && k == NK_ParenthesesNode && emit_paren_tail_pub(c, node, b)) {
+    if (g_repr_check) repr_channel_end(c, frame);
     return;
   }
   if (ts && ts->ret_pub_fresh && share_return_owned(c, an_unparen(c->nt, node), (int)(ts - c->scopes))) {
@@ -12462,6 +12644,15 @@ int boxed_writer_holds_handle(Compiler *c, const char *base, int v) {
   return held;
 }
 
+/* Root a writer arm's value `src` (a temp the caller holds unrooted) for an
+   arm that allocates beside it: a String wrapped in a new handle, a handle
+   read into a new String, a String lifted to its handle. Collected there,
+   the value's bytes were freed while the field kept them. */
+static void emit_writer_arm_src_root(TyKind at, const char *src, Buf *b) {
+  if (at == TY_POLY) buf_printf(b, "SP_GC_ROOT_RBVAL(%s); ", src);
+  else if (at == TY_STRING || at == TY_STRBUF) buf_printf(b, "SP_GC_ROOT(%s); ", src);
+}
+
 void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
                             const char *objp, const char *src, TyKind at, int vnode,
                             int box_tv, int src_tv, int native_answer, Buf *b) {
@@ -12499,9 +12690,9 @@ void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
       kind = comp_writer_in_chain(c, k, base, &wmdc) ? SP_MEMBER_ATTR : SP_MEMBER_NONE;
     if (kind == SP_MEMBER_NONE) continue;
     int writer_wins = (kind == SP_MEMBER_ATTR);
-    /* inside a dispatch's builtin arm, an explicit writer's class took the
-       dispatch's own arm: its arm here is never run */
-    if (!writer_wins && g_poly_builtin_arm && repr_share_rule(c) && at == TY_STRBUF) continue;
+    /* --share-strings: inside a dispatch's builtin arm, an explicit writer's
+       class was the dispatch's own arm (no user class owns the name here) */
+    if (!writer_wins && repr_share_rule(c) && g_poly_builtin_arm) continue;
     if (!writer_wins) {
       Scope *arm = &c->scopes[kmi];
       TyKind pt = TY_POLY;
@@ -12520,12 +12711,24 @@ void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
       /* (a String held as its handle, boxed_writer_holds_handle, is read
          for a String parameter) */
       int hread = at == TY_STRBUF && pt == TY_STRING && repr_share_rule(c);
+      /* (a String into a parameter the writer changes in place, a handle:
+         wrapped, as a call's argument is) */
+      int wrap = at == TY_STRING && pt == TY_STRBUF;
       if (at != pt && at != TY_POLY && at != TY_UNKNOWN &&
           pt != TY_POLY && pt != TY_UNKNOWN &&
-          !(ty_is_numeric(at) && ty_is_numeric(pt)) && !hread)
+          !(ty_is_numeric(at) && ty_is_numeric(pt)) && !hread && !wrap)
         continue;
       Buf vb; memset(&vb, 0, sizeof vb);
       if (hread) buf_printf(&vb, "sp_strbuf_read_pub(%s)", src);
+      else if (wrap) buf_printf(&vb, "sp_String_new_shared(%s)", src);
+      /* (--share-strings: a String into a boxed parameter as its handle's
+         box, which a change through the parameter reaches, the field it is
+         stored in included) */
+      else if (pt == TY_POLY && at == TY_STRING && repr_share_rule(c)) {
+        buf_puts(&vb, "sp_poly_strbuf_lift(");
+        emit_boxed_text(c, at, src, &vb);
+        buf_puts(&vb, ")");
+      }
       else if (pt == TY_POLY && at != TY_POLY && at != TY_UNKNOWN) emit_boxed_text(c, at, src, &vb);
       else if (at == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) emit_unbox_text(c, pt, src, &vb);
       else buf_puts(&vb, src);
@@ -12535,9 +12738,12 @@ void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
       Buf pre; memset(&pre, 0, sizeof pre);
       Buf args; memset(&args, 0, sizeof args);
       char raise[640];
-      if (emit_arm_args_text(c, kmi, selfp, &val, 1, &pre, &args, NULL, raise, sizeof raise))
-        buf_printf(b, " case %d: { %ssp_%s_%s(%s%s); break; }", k, pre.p ? pre.p : "",
+      if (emit_arm_args_text(c, kmi, selfp, &val, 1, &pre, &args, NULL, raise, sizeof raise)) {
+        buf_printf(b, " case %d: { ", k);
+        if (hread || wrap || (pt == TY_POLY && at == TY_STRING && repr_share_rule(c))) emit_writer_arm_src_root(at, src, b);
+        buf_printf(b, "%ssp_%s_%s(%s%s); break; }", pre.p ? pre.p : "",
                    c->classes[wmdc].c_name, mc(arm->name), selfp, args.p ? args.p : "");
+      }
       else
         buf_printf(b, " case %d: { %s break; }", k, raise);
       free(vb.p); free(pre.p); free(args.p);
@@ -12552,9 +12758,24 @@ void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
        hold it, through the upcast: with `@left` settled as Node, a Column
        stored through `obj.left = col` lost every arm and raised
        NoMethodError for a writer the receiver has. */
-    int hread = at == TY_STRBUF && ivt == TY_STRING && repr_share_rule(c);
-    if (at != ivt && at != TY_POLY && ivt != TY_POLY && !slot_takes_subclass(c, ivt, at) && !hread) continue;
-    buf_printf(b, " case %d: ", k);
+    /* (a String's handle goes into a field of the String's bytes, which
+       the rule does not share, as its read) */
+    int hread = at == TY_STRBUF && ivt == TY_STRING;
+    /* (and a String into a field that holds a handle, wrapped as a new one) */
+    int hwrap = at == TY_STRING && ivt == TY_STRBUF;
+    /* (a shared handle held for another class's field, into one the rule
+       does not share: a copy, as the typed store makes) */
+    int hcopy = at == TY_STRBUF && ivt == TY_STRBUF && iv >= 0 && !c->classes[k].ivar_str_shared[iv] &&
+                boxed_writer_holds_handle(c, base, vnode) == 1;
+    if (at != ivt && at != TY_POLY && ivt != TY_POLY && !hread && !hwrap && !slot_takes_subclass(c, ivt, at)) continue;
+    /* (a value that allocates is stored as a statement of its own, which
+       the write barrier follows: wrapped beside the store, the barrier ran
+       before the allocation, whose collection dropped its record; a boxed
+       String unboxed into a handle field is wrapped in a new handle) */
+    int alloc_store = hread || hwrap || hcopy || (lift && ivt == TY_POLY && at != TY_POLY) ||
+                      (at == TY_POLY && ivt == TY_STRBUF);
+    buf_printf(b, " case %d: %s", k, alloc_store ? "{ " : "");
+    if (alloc_store) emit_writer_arm_src_root(at, src, b);
     size_t on = strlen(c->classes[k].c_name) + strlen(objp) + 16;
     char *opn = (char *)malloc(on), mk[300];
     snprintf(opn, on, "((sp_%s *)%s)", c->classes[k].c_name, objp);
@@ -12576,17 +12797,15 @@ void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
       if (lift) buf_puts(b, ")");
     }
     else if (at == TY_POLY && ivt != TY_POLY) emit_unbox_text(c, ivt, src, b);
-    else if (hread) buf_printf(b, "sp_strbuf_read_pub(%s)", src);
-    /* (a shared handle held for another class's field, into one the rule
-       does not share: a copy, as the typed store makes) */
-    else if (at == TY_STRBUF && ivt == TY_STRBUF && iv >= 0 && !c->classes[k].ivar_str_shared[iv] &&
-             boxed_writer_holds_handle(c, base, vnode) == 1)
-      buf_printf(b, "(%s ? sp_String_new_shared(sp_String_cstr(%s)) : (sp_String *)NULL)", src, src);
+    else if (hread) buf_printf(b, "%s(%s)", repr_share_rule(c) ? "sp_strbuf_read_pub" : "sp_strbuf_read", src);
+    else if (hcopy) buf_printf(b, "(%s ? sp_String_new_shared(sp_String_cstr(%s)) : (sp_String *)NULL)", src, src);
+    else if (hwrap) buf_printf(b, "sp_String_new_shared(%s)", src);
     else { emit_obj_upcast_prefix(c, ivt, at, b); buf_puts(b, src); }
     /* and its assigned mark (ivar_set_mark) */
     const char *m = iv >= 0 ? ivar_set_mark(c, k, ivn, opn, "->", mk, sizeof mk) : NULL;
     if (m) buf_printf(b, "; %s break;", m);
     else buf_puts(b, "; break;");
+    if (alloc_store) buf_puts(b, " }");
     free(opn);
   }
   /* a real IO in the slot keeps its own writer beside the program's: a Log
@@ -15226,6 +15445,11 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
             /* A value of no type -- a call proven to raise NoMethodError --
                is the raise's sp_RbVal; `void _t` did not compile (#6213). */
             int unk_rhs = at == TY_UNKNOWN;
+            /* --share-strings: a String argument that is a handle is held as
+               it, and each arm stores it (the value form's rule,
+               emit_poly_index_call) */
+            int hs = repr_share_rule(c) && at == TY_STRING && repr_of(c, argv[0]).strbuf_src == RS_HANDLE;
+            if (hs) at = TY_STRBUF;
             TyKind at_eff = (nil_rhs || unk_rhs) ? TY_POLY : at;
             int tv = ++g_tmp, tval = ++g_tmp, hold;
             emit_indent(b, indent);
@@ -15243,6 +15467,14 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
               NodeKind vk = nt_kind(nt, argv[0]);
               if (vk != NK_LocalVariableReadNode && vk != NK_InstanceVariableReadNode && !repr_static_read_kind(vk))
                 buf_printf(b, " SP_GC_ROOT(_t%d);", tval);
+              }
+            else if (hs) {
+              buf_printf(b, "sp_String *_t%d = ", tval); emit_strbuf_handle_of(c, argv[0], b); buf_puts(b, ";");
+            }
+            /* (and a boxed value the rule shares is lifted to its handle
+               once, as the value form's is) */
+            else if (at == TY_POLY && repr_share_rule(c) && share_node_shares(c, argv[0])) {
+              buf_printf(b, "sp_RbVal _t%d = sp_poly_strbuf_lift(", tval); emit_expr(c, argv[0], b); buf_puts(b, ");");
             }
             else {
               emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval); emit_expr(c, argv[0], b); buf_puts(b, ";");
@@ -20947,6 +21179,56 @@ static int strbuf_flow_begin(Compiler *c, StrbufFlowMemo *fm, int v, int depth) 
   return el < 0 || strbuf_flow_body(c, fm, SFC_TAIL, nt_ref(nt, el, "statements"), NK_NONE, depth);
 }
 
+/* --share-strings: is v a call on a boxed receiver, of a name no builtin
+   answers, whose dispatch has a method arm for each class the receiver can
+   hold, each answering a String that is either a handle it publishes
+   (Scope.ret_handle) or a new String (ret_fresh), and one of them
+   publishing?
+   Boxed, the dispatch boxes each arm's own answer (emit_poly_user_box): the
+   published handle, or a new handle around a fresh String, which reads no
+   earlier publication. */
+int strbuf_poly_user_boxes(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0) return 0;
+  int recv = nt_ref(nt, v, "receiver");
+  const char *nm = nt_str(nt, v, "name");
+  if (recv < 0 || repr_of(c, recv).kind != RK_BOXED || !nm || builtin_object_method_known(nm) || builtin_instance_name_known(nm) ||
+      ty_poly_face_owners(nm, call_plain_argc(c, v), 0, 1, 1)) return 0;
+  /* the dispatch's own arms (an alias's target among them), one for each
+     class the receiver can hold: a class with none answers through
+     method_missing or raises */
+  const PolyPlan *p = cplan_poly_arms(c, v);
+  int nk = 0;
+  const int *ks = poly_recv_classes(c, v, &nk);
+  if (p->n <= 0 || !ks || nk <= 0) return 0;
+  int pub = 0;
+  for (int i = 0; i < p->n; i++) {
+    /* (an arm of a class the receiver never holds is never taken) */
+    int held = 0;
+    for (int j = 0; j < nk && !held; j++) held = p->arm[i].key == ks[j];
+    if (!held) continue;
+    const Scope *m = p->arm[i].mi >= 0 ? &c->scopes[p->arm[i].mi] : NULL;
+    if (p->arm[i].kind != PA_USER || !m || m->ret != TY_STRING || (!m->ret_handle && !m->ret_fresh)) return 0;
+    pub |= m->ret_handle;
+  }
+  /* (with no arm publishing, the call's String is a new one, which the
+     dispatch's plain value boxes alike) */
+  if (!pub) return 0;
+  /* (a class with no arm and no method_missing raises NoMethodError, which
+     answers no String: a local the walk follows into a later Array of other
+     classes) */
+  for (int j = 0; j < nk; j++) {
+    int hit = 0;
+    for (int i = 0; i < p->n && !hit; i++) hit = p->arm[i].key == ks[j];
+    if (!hit && (ks[j] < 0 || ks[j] >= c->nclasses || name_is_plain_setter(nm) ||
+                 comp_method_in_chain(c, ks[j], "method_missing", NULL) >= 0 ||
+                 comp_resolve_member(c, ks[j], nm, 0, NULL, NULL) != SP_MEMBER_NONE))
+      return 0;
+  }
+  return 1;
+}
+
 /* A route emit_strbuf_route hands the handle on through (strbuf_route_*),
    whose own tail carries it in turn: 1, else 0. */
 static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int depth) {
@@ -21208,6 +21490,10 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   /* a String bang on a boxed receiver, boxed as that receiver's own box
      (emit_boxed_bang_self) */
   if (ctx == SFC_ELEM && face_str_bang_call(c, v)) return 1;
+  /* a boxed receiver's call of methods that each answer a String, the
+     handle they publish or a new one: boxed, each arm boxes its own
+     (strbuf_poly_user_boxes) */
+  if (ctx == SFC_ELEM && strbuf_poly_user_boxes(c, v)) return 1;
   if (strbuf_flow_route(c, fm, ctx, v, depth)) return 1;
   /* a yield spliced with each literal block its method is given answers
      the block's value read as the handle (strbuf_route_yield) */
@@ -21301,7 +21587,9 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
     /* a `next`'s value and map!'s block value are stored as they are: a box
        or the handle itself */
     /* A String conditional goes through emit_boxed_cond_arms, including
-       when map! or next stores it. Other values retain their raw route. */
+       when map! or next stores it, and a String bang on a boxed receiver
+       through emit_boxed_bang_self, as an element does. Other values retain
+       their raw route. */
     if (kind == SHFL_BLOCK && ctx == SFC_ELEM &&
         (sk == NK_NextNode || (sk == NK_CallNode && nt_str(nt, site, "name") && is_map_bang_alias(nt_str(nt, site, "name"))))) {
       NodeKind vk = nt_kind(nt, unwrap_parens(c, v));
@@ -21310,7 +21598,8 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
          handle, emit_boxed_bang_self) */
       if ((vt != TY_STRING && vt != TY_STRBUF) ||
           (vk != NK_IfNode && vk != NK_UnlessNode && vk != NK_OrNode && vk != NK_AndNode && vk != NK_CaseNode &&
-           !(vk == NK_CallNode && strbuf_bang_self_local(c, unwrap_parens(c, v)))))
+           !(vk == NK_CallNode && strbuf_bang_self_local(c, unwrap_parens(c, v))) &&
+           !face_str_bang_call(c, unwrap_parens(c, v))))
         ctx = SFC_BOX;
     }
     break;

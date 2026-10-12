@@ -6956,8 +6956,19 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
      any other value the answer the program would give without the override */
   if (bt == TY_UNKNOWN && argc >= 1 && argc <= 2 && sp_streq(name, "respond_to?")) bt = TY_BOOL;
   if (bt == TY_UNKNOWN) bt = an_builtin_answer(c, id);
+  /* a writer's arm run for its effect (tr < 0), whose value is its
+     argument's temp: the synthesized writers take the argument as it is,
+     whatever the analysis recorded for an answer nothing reads */
+  if (bt == TY_UNKNOWN && tr < 0 && argc == 1 && call_is_setter_assign(nt, id)) bt = atmp_ty[0];
   if (bt == TY_UNKNOWN) return 0;
-  if (ret != TY_POLY && bt != ret) return 0;
+  /* (--share-strings: an arm run for its effect, a setter's whose value is
+     its argument's temp (tr < 0), answers into no slot of the call's type:
+     a setter read as the handle (TY_STRBUF) keeps its synthesized writers'
+     default arm) */
+  /* (and a String answer where the dispatch answers a handle is wrapped
+     below, an exception's #message as the handle it keeps) */
+  int wrap_h = ret == TY_STRBUF && bt == TY_STRING && tr >= 0;
+  if (ret != TY_POLY && bt != ret && !(tr < 0 && repr_share_rule(c)) && !wrap_h) return 0;
   /* the result slot's form, as the dispatch seeded it: an Integer / Float
      answer that can be nil is held as the oint */
   int slot_o = oint_kind(ret) && node_is_oint(c, id);
@@ -6971,6 +6982,9 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
       continue;
     }
     if (!subtree_has_side_effect(c, argv[a])) continue;
+    /* --share-strings: one the dispatch bound with its handle keeps that
+       binding (ran_first_handle), the same temp */
+    if (repr_share_rule(c) && ran_first_handle(argv[a]) >= 0) continue;
     int as = view_bind(argv[a], "_t%d", atmp[a]);
   }
   int va = view_push_arm(id, g_prbd_skip, 1);
@@ -6994,7 +7008,30 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
     /* a raise token is no value to box: the test below reads it bare */
     int is_raise = strncmp(nb->p, "sp_raise_", 9) == 0;
     if (box_o && !is_raise) buf_printf(&ib, "%s(%s)", bt == TY_FLOAT ? "sp_box_ofloat" : "sp_box_oint", nb->p);
+    /* --share-strings: a boxed #message of a String the rule shares boxes
+       an exception's handle (the override's published one, else the kept
+       message's), as a reader's arm beside it boxes its field's */
+    else if (ret == TY_POLY && bt == TY_STRING && !is_raise && argc == 0 && is_message_name(name) &&
+             repr_share_rule(c) && !exc_has_nonstring_msg_override(c) && share_node_shares(c, id)) {
+      char e[48];
+      snprintf(e, sizeof e, "_t%d.v.p", tv);
+      buf_printf(&ib, "((_t%d.tag == SP_TAG_OBJ && _t%d.v.p && (_t%d.cls_id == SP_BUILTIN_EXCEPTION || "
+                      "sp_is_exc_subclass_cls(_t%d.cls_id))) ? sp_box_nullable_obj(", tv, tv, tv, tv);
+      emit_exc_text_handle(c, id, e, &ib);
+      /* (any other builtin value has no #message: the accessor raises) */
+      buf_printf(&ib, ", SP_BUILTIN_STRBUF) : sp_poly_exc_acc(_t%d, \"message\"))", tv);
+    }
     else if (ret == TY_POLY && bt != TY_POLY && !is_raise) emit_boxed_text(c, bt, nb->p, &ib);
+    else if (wrap_h && !is_raise && argc == 0 && is_message_name(name) && repr_share_rule(c) &&
+             !exc_has_nonstring_msg_override(c)) {
+      char e[48];
+      snprintf(e, sizeof e, "_t%d.v.p", tv);
+      buf_printf(&ib, "((_t%d.tag == SP_TAG_OBJ && _t%d.v.p && (_t%d.cls_id == SP_BUILTIN_EXCEPTION || "
+                      "sp_is_exc_subclass_cls(_t%d.cls_id))) ? ", tv, tv, tv, tv);
+      emit_exc_text_handle(c, id, e, &ib);
+      buf_printf(&ib, " : sp_String_new_shared(%s))", nb->p);
+    }
+    else if (wrap_h && !is_raise) buf_printf(&ib, "sp_String_new_shared(%s)", nb->p);
     else buf_puts(&ib, nb->p);
   }
   free(nb->p); free(nb);
@@ -8531,6 +8568,11 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       int ran = subtree_has_side_effect(c, recv);
       Repr svr0 = repr_of(c, id);
       int setter_handle = is_setter_val && repr_share_rule(c) && (svr0.demand || (svr0.handle && repr_write_share(c, id)));
+      /* --share-strings: a setter read as a String, where a writer changes
+         the String it is handed (`(o.a = +"ef").size`): the argument's
+         handle too, in its htmp, read once the arm ran */
+      int setter_late = is_setter_val && !setter_handle && repr_share_rule(c) && ret == TY_STRING &&
+                        user_assign_handle(c, id) && writers_change_param(c, id);
       for (int a = 0; a < pos_argc; a++) {
         atmp[a] = ++g_tmp;
         if (nt_kind(nt, argv[a]) == NK_SplatNode) {
@@ -8596,13 +8638,20 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           /* --share-strings: a value that hands on a shared String's handle
              (a route, `s << x`) runs as that handle, which a handle arm
              takes; the temp is its read, for an arm that takes the value */
-          else if (at == TY_STRING && ak != NK_LocalVariableReadNode &&
+          else if (at == TY_STRING && (setter_late || (ak != NK_LocalVariableReadNode &&
                    ak != NK_InstanceVariableReadNode && strbuf_value_carries(c, argv[a]) &&
-                   (takes_handle >= 0 ? takes_handle : (takes_handle = poly_name_takes_handle(c, name)))) {
+                   (takes_handle >= 0 ? takes_handle : (takes_handle = poly_name_takes_handle(c, name)))))) {
             htmp[a] = ++g_tmp;
             emit_poly_route_arg(c, argv[a], at, htmp[a], atmp[a], ran, b);
           }
-          else atmp[a] = emit_poly_arg_temp(c, argv[a], at, repr_share_rule(c) && ar.narrowed == TY_STRBUF, atmp[a], ran, b);
+          else {
+            atmp[a] = emit_poly_arg_temp(c, argv[a], at, repr_share_rule(c) && ar.narrowed == TY_STRBUF, atmp[a], ran, b);
+            /* --share-strings: a setter's boxed value the rule shares is
+               lifted to its handle once, so each arm stores and the call
+               answers that one String (emit_poly_index_call's rule) */
+            if (is_setter_val && a == 0 && at == TY_POLY && repr_share_rule(c) && share_node_shares(c, argv[0]))
+              buf_printf(b, "_t%d = sp_poly_strbuf_lift(_t%d); ", atmp[a], atmp[a]);
+          }
         }
         ran |= subtree_has_side_effect(c, argv[a]);
         /* The temp holds the argument until an arm hands it on: past the
@@ -8735,6 +8784,10 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       PolyTemps ptemps = { argc, pos_argc, argv, atmp, atmp_ty, kwall, kwn, kwels, kwtmp, kwty, ret, tv, tr,
                            idxref, id };
       int pa_frame = g_plan_check ? pa_begin(id) : -1;
+      /* the argument read as the setter's value temp, its handle with it
+         (ran_first_handle): an arm that re-emits it, the synthesized
+         writers' default, stores that handle (unbound with kwmark) */
+      if (setter_late && htmp[0]) ran_first_bind(argv[0], atmp[0], htmp[0]);
       emit_poly_prearms_n(c, name, &ps, &ptemps, b);
       int blk_tmp2 = emit_poly_prearms_n_blk(c, id, name, &ps, &ptemps, atmp, atmp_ty, &kw, htmp,
                                              is_setter_val, splat_a, splat_last, stk, b);
@@ -8812,7 +8865,8 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
          static receiver's setter does: the handle itself put an sp_String *
          where a const char * is read (a safe-navigation nil arm's NULL). */
       Repr svr = repr_of(c, id);
-      if (!pd_done && is_setter_val && atmp_ty[0] == TY_STRBUF && ret == TY_STRING &&
+      if (!pd_done && setter_late && htmp[0]) buf_printf(b, " sp_strbuf_read(_t%d); })", htmp[0]);
+      else if (!pd_done && is_setter_val && atmp_ty[0] == TY_STRBUF && ret == TY_STRING &&
           !(repr_share_rule(c) && (svr.demand || (svr.handle && repr_write_share(c, id))))) {
         char sref[32]; snprintf(sref, sizeof sref, "_t%d", atmp[0]);
         buf_puts(b, " ");
@@ -10894,7 +10948,10 @@ void emit_raise_class_value(Compiler *c, int kn, int mn, Buf *b) {
   ctor_arity_emit(&aerr, b);
   buf_printf(b, "default: break; } if (_t%d.tag == SP_TAG_OBJ) sp_raise_exc((sp_Exception *)_t%d.v.p); ",
              rt, rt);
-  if (mn >= 0) buf_printf(b, "sp_raise_poly_msg(_t%d, _t%d); })", kt, mt);
+  /* (--share-strings: a message that is a shared String's handle is kept as
+     that handle, sp_raise_poly_msg_h) */
+  if (mn >= 0) buf_printf(b, "%s(_t%d, _t%d); })",
+                         repr_share_rule(c) && share_node_shares(c, mn) ? "sp_raise_poly_msg_h" : "sp_raise_poly_msg", kt, mt);
   else buf_printf(b, "sp_raise_poly(_t%d); })", kt);
 }
 
@@ -20915,6 +20972,21 @@ static int operand_binds_handle(Compiler *c, int v, int harg) {
   return strbuf_poly_to_s(c, v) || repr_string_conversion_operand(c, v) >= 0;
 }
 
+/* --share-strings: is bound String operand v, among operand[0..nop), a
+   call publishing the handle of a String the rule shares
+   (call_publishes_shared_handle) before an operand that can change a
+   String in place (operand_may_change_string)? CRuby hands the call the
+   String object, so its bytes are read once every operand ran
+   (`ch(w) + ch(w)`): bound as its handle, it is read last, as a copy is. */
+static int operand_reads_handle_late(Compiler *c, int v, const int *operand, int nop) {
+  if (!call_publishes_shared_handle(c, v)) return 0;
+  int i = 0;
+  while (i < nop && operand[i] != v) i++;
+  for (int j = i + 1; j < nop; j++)
+    if (operand_may_change_string(c, operand[j])) return 1;
+  return 0;
+}
+
 static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   /* The buffer arm holds its operands, including the handle a keyword
      may replace, before it checks or converts any of them. */
@@ -21153,7 +21225,10 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   size_t pre_mark = g_pre->len;
   int saved_tmp = g_tmp;
   Buf opb[MAX_ARG_OVERRIDE], opp[MAX_ARG_OVERRIDE];
-  int th[MAX_ARG_OVERRIDE], used[MAX_ARG_OVERRIDE];
+  int th[MAX_ARG_OVERRIDE], used[MAX_ARG_OVERRIDE], late[MAX_ARG_OVERRIDE];
+  for (int i = 0; i < nb; i++)
+    late[i] = !copy[i] && !fresh[i] && !oo[i] && node[i] != harg && ty[i] == TY_STRING &&
+              operand_reads_handle_late(c, node[i], operand, nop);
   int rendered = 0, ok = 1;
   /* A lone observable operand is kept only when the call converts, which the
      call's own emission tells; render the operand after that, so a declined
@@ -21166,7 +21241,8 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (copy[i]) { memset(&opb[i], 0, sizeof opb[i]); memset(&opp[i], 0, sizeof opp[i]); }
   for (; !operands_last && rendered < nb && ok; rendered++) {
     if (copy[rendered]) continue;
-    render_operand(c, node[rendered], fresh[rendered], operand_binds_handle(c, node[rendered], harg), oo[rendered], &opb[rendered], &opp[rendered]);
+    render_operand(c, node[rendered], fresh[rendered], operand_binds_handle(c, node[rendered], harg) || late[rendered],
+                   oo[rendered], &opb[rendered], &opp[rendered]);
     if (text_is_raise_token(opb[rendered].p)) ok = 0;
   }
   Buf ob; memset(&ob, 0, sizeof ob);
@@ -21224,7 +21300,8 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (observable < 2 && g_conv_emitted == conv_mark) ok = 0;
     for (; operands_last && rendered < nb && ok; rendered++) {
       if (copy[rendered]) continue;
-      render_operand(c, node[rendered], fresh[rendered], operand_binds_handle(c, node[rendered], harg), oo[rendered], &opb[rendered], &opp[rendered]);
+      render_operand(c, node[rendered], fresh[rendered], operand_binds_handle(c, node[rendered], harg) || late[rendered],
+                     oo[rendered], &opb[rendered], &opp[rendered]);
       if (text_is_raise_token(opb[rendered].p)) ok = 0;
     }
   }
@@ -21247,9 +21324,22 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (!inl) { buf_puts(g_pre, opp[i].p); free(opp[i].p); opp[i].p = NULL; }
   }
   buf_puts(b, "({ ");
-  /* the operands in their order, then the copies, last before the call */
+  /* the operands in their order, then the copies, last before the call;
+     an operand read late is its handle in its place and its bytes with
+     the copies */
   for (int pass = 0; pass < 2; pass++)
   for (int i = 0; i < nb; i++) {
+    if (late[i]) {
+      int lh = pass ? th[i] : (th[i] = ++g_tmp);
+      if (pass) buf_printf(b, "const char * _t%d = sp_strbuf_read(_t%d); SP_GC_ROOT(_t%d); ", tmp[i], lh, tmp[i]);
+      else {
+        if (opp[i].p) buf_puts(b, opp[i].p);
+        free(opp[i].p);
+        buf_printf(b, "sp_String * _t%d = %s; SP_GC_ROOT(_t%d); ", lh, opb[i].p ? opb[i].p : "NULL", lh);
+        free(opb[i].p);
+      }
+      continue;
+    }
     if (copy[i] != pass) continue;
     if (copy[i]) {
       char sref[192];
@@ -24959,8 +25049,11 @@ int strbuf_self_reader_slot(Compiler *c, int id) {
   int ivi = comp_ivar_index(&c->classes[cid], ivn);
   if (ivi < 0 || repr_of_ivar(c, cid, ivi).as_ty != TY_STRBUF) return 0;
   /* A descendant's method result is not this slot's handle, even when
-     inference gives it the same String type as the reader. */
-  return !cplan_overridden(c, cid, nt_str(c->nt, id, "name"), 0);
+     inference gives it the same String type as the reader: the read
+     dispatches on the runtime class, each override's arm answering its own
+     handle (emit_reader_override_handle). */
+  const char *name = nt_str(c->nt, id, "name");
+  return !cplan_overridden(c, cid, name, 0) || reader_override_handle_arms(c, id, cid, name, 0);
 }
 /* Does receiverless call id read an attr reader's slot that holds a String
    handle and hand that handle out (emit_implicit_self_member's slot read,
@@ -24992,6 +25085,13 @@ int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
     Buf rb; memset(&rb, 0, sizeof rb);
     TyKind rty = ivi >= 0 ? c->classes[dispatch_cid].ivar_types[ivi] : TY_UNKNOWN;
     Repr rp = repr_of(c, id);
+    /* --share-strings: the read as a box, where a subclass overrides the
+       reader: each arm boxes its own String (emit_reader_override_handle) */
+    if (repr_share_rule(c) && rty == TY_STRBUF && rp.as_ty == TY_POLY && sp_streq(g_self_deref, "->")) {
+      char hb[400];
+      snprintf(hb, sizeof hb, "%s%siv_%s", g_self, g_self_deref, iv_c(rn));
+      if (emit_reader_override_handle(c, id, dispatch_cid, name, g_self, hb, 1, b)) return 1;
+    }
     if (rty == TY_STRBUF && !rp.handle && !rp.demand) {
       int tv = ++g_tmp;
       buf_printf(&rb, "({ sp_String *_t%d = %s%siv_%s; sp_strbuf_read(_t%d); })",
@@ -25008,6 +25108,13 @@ int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
       buf_printf(&rb, "((%s){ %s%siv_%s, %s != 0 })", oint_ctype(rty), g_self, g_self_deref, iv_c(rn), bt);
     }
     else buf_printf(&rb, "%s%siv_%s", g_self, g_self_deref, iv_c(rn));
+    /* --share-strings: the handle read, where a subclass overrides the
+       reader, answers each arm's handle */
+    if (repr_share_rule(c) && rty == TY_STRBUF && sp_streq(g_self_deref, "->") &&
+        emit_reader_override_handle(c, id, dispatch_cid, name, g_self, rb.p, 0, b)) {
+      free(rb.p);
+      return 1;
+    }
     /* a def in a subclass overrides the reader for that subclass */
     if (!(rty != TY_UNKNOWN && sp_streq(g_self_deref, "->") &&
           emit_reader_override_dispatch(c, id, dispatch_cid, name, g_self, rb.p, rty, b)))

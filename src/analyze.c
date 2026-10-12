@@ -21146,6 +21146,16 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   if (R->fresh && k == NK_CallNode && share_node_fresh(c, n)) { tc->fresh++; return 1; }
   if (k == NK_CallNode && c->ntype[n] == TY_NIL) { tc->nils++; return 1; }
   if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
+    /* Exception's text publishes the message's handle (the super emitter's
+       exception arm) */
+    int tos[16];
+    if (!R->fresh && super_reaches_exc_text(c, n, 1) &&
+        (!is_message_name(c->scopes[tc->mi].name) ||
+         exc_message_super_to_s(c, n, tos, 16) >= 0)) {
+      if (g_repr_check) repr_channel_predict(c, n, tc->mi, RCH_PUBLISH);
+      tc->reads++;
+      return 1;
+    }
     const CallPlan *p = cplan_user_fresh(c, n);
     int mi = p->mi;
     if (p->dispatch != CP_DIRECT || mi <= 0 || !an_ret_handle(c, R, mi)) return 0;
@@ -24094,6 +24104,14 @@ static int mark_reader_identity_operands(Compiler *c) {
       if (!ivn || defc < 0) continue;
       int iv = comp_ivar_index(&c->classes[defc], ivn);
       if (iv < 0 || !c->classes[defc].ivar_str_shared[iv]) continue;
+      /* (not where the receiver's class answers the name with a def of a
+         class other than the reader's, a subclass's over the reader) */
+      { int orv = nt_ref(nt, opnd, "receiver"), mdc = -1;
+        TyKind ort = orv >= 0 ? comp_ntype(c, orv) : TY_UNKNOWN;
+        int ocid = ty_is_object(ort) ? ty_object_class(ort) : -1;
+        if (ocid >= 0 && ocid < c->nclasses &&
+            comp_resolve_member(c, ocid, nt_str(nt, opnd, "name"), 0, &mdc, NULL) == SP_MEMBER_METHOD && mdc != defc)
+          continue; }
       c->strbuf_handle_demand[opnd] = 1;
       changed = 1;
     }
@@ -39620,15 +39638,36 @@ static int rd_read_dropped_for_copy(Compiler *c, int w, const char *wn) {
    reaches the subject cannot be proved from the block (an alias, a helper, a
    constant, an implicit call, a buffer a builtin writes), so the refusal is
    lifted only for a subject nothing can name: a fresh literal (a string
-   literal, an interpolation, `+"lit"`), or a plain local that the block does
-   not mention and whose String has no other name (the route's `sole`, asked of
-   the final facts). Every other subject keeps the refusal. */
+   literal, an interpolation, `+"lit"`, an element read off an Array literal of
+   them), or a plain local that the block does not mention and whose String has
+   no other name the block can reach it by (the route's `sole`, asked of the
+   final facts: sh_sole_unreached). Every other subject keeps the refusal. */
 static int scan_fresh_string(const NodeTable *nt, int r) {
   r = an_unparen(nt, r);
   if (r < 0) return 0;
   if (nt_kind(nt, r) == NK_StringNode || nt_kind(nt, r) == NK_InterpolatedStringNode) return 1;
-  return nt_kind(nt, r) == NK_CallNode && nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), "+@") &&
-         nt_ref(nt, r, "receiver") >= 0 && nt_kind(nt, nt_ref(nt, r, "receiver")) == NK_StringNode;
+  if (nt_kind(nt, r) != NK_CallNode || !nt_str(nt, r, "name")) return 0;
+  const char *nm = nt_str(nt, r, "name");
+  int rv = an_unparen(nt, nt_ref(nt, r, "receiver"));
+  if (is_unary_plus(nm)) return rv >= 0 && nt_kind(nt, rv) == NK_StringNode;
+  /* an element of an Array literal of such literals and values that are
+     no String, read off it (`[+"abc", 1].first`, which the desugaring makes
+     `[](0)`): one of its own */
+  int args = nt_ref(nt, r, "arguments"), argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  if (rv < 0 || nt_kind(nt, rv) != NK_ArrayNode || nt_ref(nt, r, "block") >= 0 ||
+      !((is_endpoint_query(nm) && argc == 0) ||
+        (is_aref_name(nm) && argc == 1 && nt_kind(nt, argv[0]) == NK_IntegerNode)))
+    return 0;
+  int n = 0;
+  const int *el = nt_arr(nt, rv, "elements", &n);
+  for (int i = 0; i < n; i++) {
+    NodeKind ek = nt_kind(nt, el[i]);
+    if (!scan_fresh_string(nt, el[i]) && ek != NK_IntegerNode && ek != NK_FloatNode && ek != NK_SymbolNode &&
+        ek != NK_NilNode && ek != NK_TrueNode && ek != NK_FalseNode)
+      return 0;
+  }
+  return n > 0;
 }
 /* Is every write of local `name` under `node` a fresh literal form? A call's
    answer can be a String another name holds in CRuby (an exception's `to_s`
@@ -39705,8 +39744,10 @@ static void refuse_string_read_copies(Compiler *c) {
     ShareRoute q = share_route(w, v, 0);
     q.to = w;
     q.carry = SHARE_CARRY_COPY;
-    /* A reader whose settled plan carries shared fields uses that route. */
-    if (repr_boxed_reader_handle(c, v)) q.carry = v;
+    /* A reader whose settled plan carries shared fields uses that route, and
+       so does an exception's #message beside such readers
+       (exc_message_boxed_call). */
+    if (repr_boxed_reader_handle(c, v) || (c->share_strings && exc_message_boxed_call(c, v))) q.carry = v;
     /* A boxed to_s has a builtin face, so the reader plan declines it. The
        seal asks repr_boxed_to_s_operand once the targets' returns settle:
        every arm's own answer (a field's handle, a fresh String, the handle

@@ -3353,6 +3353,22 @@ int strbuf_bang_self_local(const Compiler *c, int v) {
 }
 /* Is recv a demand-marked reader call typed as the handle, whose emitted
    read is the sp_String * itself (strbuf_slot_ref's call arm)? */
+/* --share-strings: is call n an attr reader whose field is a box (an ivar
+   that also holds nil or another class), so its read is an sp_RbVal that
+   holds the handle? */
+static int strbuf_reader_field_boxed(Compiler *c, int n) {
+  int recv = nt_ref(c->nt, n, "receiver"), cid, defc = -1;
+  const char *name = nt_str(c->nt, n, "name");
+  if (!repr_share_rule(c) || recv < 0 || !name || nt_ref(c->nt, n, "arguments") >= 0) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (!ty_is_object(rt) || !comp_reader_in_chain(c, (cid = ty_object_class(rt)), name, &defc)) return 0;
+  if (comp_method_in_chain(c, cid, name, NULL) >= 0) return 0;
+  char ivn[300];
+  snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, cid, name));
+  ClassInfo *ci = &c->classes[defc >= 0 ? defc : cid];
+  int iv = comp_ivar_index(ci, ivn);
+  return iv >= 0 && ci->ivar_types[iv] == TY_POLY;
+}
 int strbuf_call_reads_handle(Compiler *c, int recv) {
   return recv >= 0 && nt_kind(c->nt, recv) == NK_CallNode &&
          ((repr_of(c, recv).handle && repr_of(c, recv).as_ty == TY_STRBUF && strbuf_marked_yields_handle(c, recv)) ||
@@ -3427,8 +3443,9 @@ int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
     int erecv = nt_ref(c->nt, recv, "receiver");
     const char *cnm = nt_str(c->nt, recv, "name");
     Repr er = repr_of(c, erecv);
-    int boxed = cnm && sp_streq(cnm, "[]") &&
-                (er.kind == RK_BOXED || er.elem == TY_POLY || er.key != TY_UNKNOWN);
+    int boxed = (is_aref_name(cnm) &&
+                 (er.kind == RK_BOXED || er.elem == TY_POLY || er.key != TY_UNKNOWN)) ||
+                strbuf_reader_field_boxed(c, recv);
     int fit = rb2.p && strlen(rb2.p) + 24 <= cap;
     if (fit) snprintf(out, cap, boxed ? "sp_poly_as_strbuf(%s)" : "(%s)", rb2.p);
     else if (repr_share_rule(c) && pre && g_pre == pre && pre->len > pre_mark) {
@@ -5526,9 +5543,11 @@ int exc_has_user_msg_override(Compiler *c) {
 }
 
 /* Does an exception's #message or #to_s override of the program's own call
-   `super`? That reaches Exception's, the stored message, which a body cannot
-   hand on as the stored handle yet (its answer is the stored bytes' copy), so
-   a shared route over such a class stays refused. Asked once. */
+   `super` and can answer what super answers? That reaches Exception's, the
+   stored message, which a body cannot hand on as the stored handle yet (its
+   answer is the stored bytes' copy), so a shared route over such a class
+   stays refused. One that answers a new String (Scope.ret_fresh) does not
+   block it. Asked once, after the return facts settle. */
 int exc_text_override_calls_super(Compiler *c) {
   if (c->exc_text_super) return c->exc_text_super == 2;
   c->exc_text_super = 1;
@@ -5536,7 +5555,15 @@ int exc_text_override_calls_super(Compiler *c) {
     if (!class_is_exc_subclass(c, i) && !class_is_exc_reopen(c, i)) continue;
     for (int k = 0; k < 2; k++) {
       int mi = comp_method_in_class(c, i, k ? "to_s" : "message");
-      if (mi >= 0 && scope_calls_super(c, mi)) { c->exc_text_super = 2; break; }
+      /* (--share-strings: one that answers a new String of its own,
+         `"B:" + super`, never hands on super's answer, and one that
+         publishes the handle it answers, `def message = super`, hands on
+         that String) */
+      if (mi >= 0 && scope_calls_super(c, mi) &&
+          !(c->share_strings && (c->scopes[mi].ret_fresh || c->scopes[mi].ret_handle))) {
+        c->exc_text_super = 2;
+        break;
+      }
     }
   }
   return c->exc_text_super == 2;

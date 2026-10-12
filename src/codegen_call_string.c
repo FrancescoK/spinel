@@ -1353,7 +1353,10 @@ int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int
        form sp_String_cstr(lv) is not an lvalue, so the generic write-back
        below would emit an invalid assignment (#2020). prepend replaces the
        buffer with args-then-contents, keeping the handle stable (#3227). */
-    { char sref0[1024];
+    /* (room for a route whose text is long: a boxed #message's override
+       pickup beside its fallback read; cut short, the route was dropped and
+       the append went to a copy) */
+    { char sref0[16384];
       int sr = unwrap_parens(c, recv);
       const char *sn = nt_kind(nt, sr) == NK_CallNode ? nt_str(nt, sr, "name") : NULL;
       Repr rp = repr_of(c, sr);

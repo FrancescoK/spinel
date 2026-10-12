@@ -9255,6 +9255,31 @@ int infer_ivar_types(Compiler *c) {
           if (only >= 0 && only != family) { only = -2; break; } /* ambiguous */
           only = family;
         }
+        /* ...but a value no family's slot can hold as it is typed (a String
+           into a member set to Integers elsewhere) widens each, which ty_unify
+           only boxes: its dispatch arm was dropped, and the write raised
+           NoMethodError */
+        if (only == -2) {
+          for (int ci2 = 0; ci2 < c->nclasses; ci2++) {
+            ClassInfo *candidate = &c->classes[ci2];
+            if (comp_class_is_module(c, candidate) ||
+                comp_resolve_member(c, ci2, base, 1, NULL, NULL) != SP_MEMBER_ATTR)
+              continue;
+            int iv = comp_ivar_index(candidate, ivname);
+            if (iv < 0 || class_ivar_pinned(candidate, ivname) || candidate->ivar_types[iv] == TY_UNKNOWN) continue;
+            TyKind cur = candidate->ivar_types[iv];
+            TyKind merged = ty_unify(cur, empty_container_write(c, argv[0], vt, cur));
+            int str_v = vt == TY_STRING || vt == TY_STRBUF, str_c = cur == TY_STRING || cur == TY_STRBUF;
+            int scal_v = ty_is_numeric(vt) || vt == TY_BOOL || vt == TY_SYMBOL;
+            int scal_c = ty_is_numeric(cur) || cur == TY_BOOL || cur == TY_SYMBOL;
+            /* (only a String against a scalar: other kinds keep their slots,
+               as the distinct families do) */
+            if (merged == TY_POLY && ((str_v && scal_c) || (scal_v && str_c))) {
+              candidate->ivar_types[iv] = merged; changed = 1;
+            }
+          }
+          continue;
+        }
         if (only < 0) continue;
         ClassInfo *ci = &c->classes[only];
         int iv = comp_ivar_index(ci, ivname);

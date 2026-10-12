@@ -15690,6 +15690,32 @@ SP_NORETURN SP_COLD static void sp_raise_poly_msg(sp_RbVal v, sp_RbVal m) {
   }
   sp_raise_cls("TypeError", "exception class/object expected");
 }
+/* --share-strings: `raise k, m` with k a class known only at run time and m
+   the box of a shared String's handle: the exception keeps the handle, as a
+   typed raise does (sp_exc_attach_msg); anything else raises as
+   sp_raise_poly_msg does. */
+SP_NORETURN SP_COLD static void sp_raise_poly_msg_h(sp_RbVal v, sp_RbVal m) {
+  /* an exception object: the copy exception(m) makes keeps the handle too */
+  if (m.tag == SP_TAG_OBJ && m.cls_id == SP_BUILTIN_STRBUF && m.v.p && v.tag == SP_TAG_OBJ && v.v.p &&
+      (v.cls_id == SP_BUILTIN_EXCEPTION || sp_is_exc_subclass_cls(v.cls_id))) {
+    sp_String *h = (sp_String *)m.v.p;
+    SP_GC_ROOT(h);
+    sp_raise_exc((sp_Exception *)sp_exc_attach_msg(
+      sp_exc_exception((sp_Exception *)v.v.p, sp_exc_msg_given(sp_strbuf_read_pub(h))), h));
+  }
+  if (m.tag == SP_TAG_OBJ && m.cls_id == SP_BUILTIN_STRBUF && m.v.p && v.tag == SP_TAG_CLASS) {
+    const char *cn = sp_class_val_name(v);
+    if (cn && *cn && strcmp(cn, "SignalException") != 0 && sp_syserr_kind(cn, NULL) == SP_SYSERR_NONE &&
+        (!strcmp(cn, "Exception") || (sp_user_exc_parent_fn && sp_user_exc_parent_fn(cn)) ||
+         sp_exc_parent_of_name(cn))) {
+      sp_String *h = (sp_String *)m.v.p;
+      SP_GC_ROOT(h);
+      sp_raise_exc((sp_Exception *)sp_exc_attach_msg(
+        sp_exc_new_for_catch(cn, sp_exc_msg_given(sp_strbuf_read_pub(h))), h));
+    }
+  }
+  sp_raise_poly_msg(v, m);
+}
 /* Raise StopIteration carrying the iteration's return value as #result. Built as
    a carried object so a `rescue StopIteration => e` binding reads e.result; a
    generator supplies the value, a plain past-the-end #next raises with nil. */

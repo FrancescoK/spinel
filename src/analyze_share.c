@@ -1317,7 +1317,35 @@ static int sh_attr_ivars(ShareFacts *F, Compiler *c, const char *name, int node,
   return r;
 }
 
+/* --share-strings: the answers of the defs that override an attr reader of
+   the name in a class below it (a subclass's alias over the reader's name
+   included), joined; -1 when none does. A read of the reader dispatches on
+   the runtime class (emit_reader_override_handle) and answers theirs. */
+static int sh_reader_overrides(ShareFacts *F, Compiler *c, const char *name) {
+  int n = 0, r = -1;
+  const PolyCand *pc = comp_poly_candidates(c, name, &n);
+  for (int i = 0; i < n; i++)
+    if (pc[i].mi >= 0 && comp_reader_in_chain(c, pc[i].cls, name, NULL)) {
+      r = sh_join(F, r, sh_scope_holder(F, SHK_RET, pc[i].mi));
+      /* the read reads the override's value: its returns join its answer
+         (sh_settle_rets), though no call lists it as a target */
+      if (F->mread) F->mread[pc[i].mi] = 1;
+    }
+  return r;
+}
+
 static int sh_unknown_call(ShareFacts *F, Compiler *c, int n, int blk);
+
+/* Can call n's boxed receiver hold only instances of exception classes, as
+   the boxed-receiver walk bounds it? */
+static int sh_recv_only_exceptions(Compiler *c, int n) {
+  int nk = 0;
+  const int *ks = poly_recv_classes(c, n, &nk);
+  if (!ks || nk <= 0) return 0;
+  for (int i = 0; i < nk; i++)
+    if (!class_is_exc_subclass(c, ks[i])) return 0;
+  return 1;
+}
 
 /* The share-row semantics of builtin call n. Answers its value. */
 /* An iterator's block over a container's elements. Over a Hash (`hash`), a
@@ -1972,6 +2000,21 @@ static int sh_exc(ShareFacts *F) {
     F->nhold[F->exc] = 1;   /* the exceptions keep their messages: a name */
   }
   return F->exc;
+}
+/* --share-strings: what an exception's #message answers, the kept messages
+   and the answers of the #to_s methods of the program's exception classes
+   (Exception#message calls #to_s), each such method marked read, as no call
+   lists it as a target */
+static int sh_exc_text(ShareFacts *F, Compiler *c) {
+  int r = sh_exc(F);
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!class_is_exc_subclass(c, k)) continue;
+    int mi = comp_method_in_class(c, k, "to_s");
+    if (mi < 0) continue;
+    r = sh_join(F, r, sh_scope_holder(F, SHK_RET, mi));
+    if (F->mread) F->mread[mi] = 1;
+  }
+  return r;
 }
 /* Call n's arguments are handed to an exception: its message may be any
    of them. */
@@ -2659,10 +2702,20 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     }
     /* a poly receiver may be a builtin as well */
     if (c->share_strings && rt == TY_EXCEPTION && is_exception_message(name))
-      return sh_join(F, r, sh_exc(F));
+      return sh_join(F, r, is_message_name(name) ? sh_exc_text(F, c) : sh_exc(F));
+    /* ...and so may a boxed one beside user returns: an exception in the
+       box answers its stored message (strbuf_route_exc_message) */
+    if (c->share_strings && (rt == TY_POLY || rt == TY_UNKNOWN) && ntg > 0 && is_exception_message(name) &&
+        argc == 0 && blk < 0)
+      r = sh_join(F, r, is_message_name(name) ? sh_exc_text(F, c) : sh_exc(F));
     if ((rt != TY_POLY && rt != TY_UNKNOWN) || sh_builtin_fresh(c, n, F->ostruct)) return r;
     /* Exception#to_s hands on its stored message beside user returns. */
-    if (is_to_s_name(name) && argc == 0 && blk < 0) r = sh_join(F, r, sh_exc(F));
+    if (is_to_s_name(name) && argc == 0 && blk < 0) {
+      r = sh_join(F, r, sh_exc(F));
+      /* --share-strings: a receiver that can hold only exceptions (the
+         boxed-receiver walk) is no String, whose to_s would answer it */
+      if (c->share_strings && sh_recv_only_exceptions(c, n)) return r;
+    }
     if (argc == 2 && nt_kind(nt, argv[1]) == NK_KeywordHashNode &&
         bop_share_named(BOP_ANY_ARRAY, name) == BSH_PACK)
       r = sh_join(F, r, sh_builtin(F, c, n, BSH_PACK, rv, blk, 1));
@@ -2697,6 +2750,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
         /* the value is the String the slot holds now, a new one included */
         if (sh_assign_call(c, n)) r = iv;
       }
+      else if (c->share_strings) r = sh_join(F, r, sh_reader_overrides(F, c, name));
       if (rt != TY_POLY && rt != TY_UNKNOWN) return r;
       return sh_join(F, r, sh_container_default(F, c, n, rv, blk));
     }
@@ -2723,7 +2777,11 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
        User targets above retain their own return facts. */
     if (c->share_strings && argc == 0 && blk < 0 && bop_share_named(TY_EXCEPTION, name) == BSH_PURE &&
         (rt == TY_EXCEPTION || (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt))))) return -1;
-    return sh_exc(F);
+    /* (the renderings are no other value's method: off a boxed receiver
+       too, each is a new String) */
+    if (c->share_strings && argc == 0 && blk < 0 && is_exception_full_message(name) &&
+        (rt == TY_POLY || rt == TY_UNKNOWN)) return -1;
+    return c->share_strings && is_message_name(name) ? sh_exc_text(F, c) : sh_exc(F);
   }
   if (recv < 0 && is_raise_alias(name) && !sh_has_targets(c, n)) {
     sh_exc_args(F, c, n);
@@ -2851,6 +2909,15 @@ static int sh_super(ShareFacts *F, Compiler *c, int n) {
           sh_union(F, cs->pnames[j] ? sh_local_of(F, c, cs, cs->pnames[j], n) : -1, sh_exc(F));
       else sh_exc_args(F, c, n);
       if (c->share_strings && is_initialize_family(cs->name)) return -1;
+      /* ...and #message / #to_s answer it (super_reaches_exc_text) */
+      if (c->share_strings && super_reaches_exc_text(c, n, 1)) {
+        /* (#message's through the #to_s methods it answers, too) */
+        int tos[16], r = sh_exc(F);
+        int nts = is_message_name(cs->name) ? exc_message_super_to_s(c, n, tos, 16) : 0;
+        if (nts < 0) return sh_unknown_call(F, c, n, blk);
+        for (int q = 0; q < nts; q++) r = sh_join(F, r, sh_scope_holder(F, SHK_RET, tos[q]));
+        return r;
+      }
     }
     return sh_unknown_call(F, c, n, blk);
   }
@@ -4906,6 +4973,64 @@ int share_assign_unjoined(const Compiler *c, int n) {
   return sh_find((ShareFacts *)F, F->nval[n]) != sh_find((ShareFacts *)F, F->nval[argv[0]]);
 }
 
+/* Does no holder name class r, and no fact mark it? */
+static int sh_class_unnamed(const ShareFacts *F, int r) {
+  if (F->flags[r]) return 0;
+  for (int h = 0; h < F->nh; h++)
+    if (sh_root(F, F->helem[h]) == r) return 0;
+  return 1;
+}
+/* Does subtree n mention local `name` (read or written, in a nested block
+   too; a def's locals are its own)? */
+static int sh_mentions_local(const NodeTable *nt, int n, const char *name) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode) return 0;
+  if ((k == NK_LocalVariableReadNode || k == NK_LocalVariableWriteNode || k == NK_LocalVariableTargetNode ||
+       k == NK_LocalVariableOperatorWriteNode || k == NK_LocalVariableOrWriteNode ||
+       k == NK_LocalVariableAndWriteNode) && sp_streq(nt_str(nt, n, "name"), name))
+    return 1;
+  for (int i = 0; i < nt_num_refs(nt, n); i++)
+    if (sh_mentions_local(nt, nt_ref_at(nt, n, i), name)) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) if (sh_mentions_local(nt, ids[j], name)) return 1;
+  }
+  return 0;
+}
+/* A scan route's subject (sole) whose class has more names than it: are
+   they all names the block cannot reach the subject through while the scan
+   runs? The block's own parameter (each match, a new String, which `break
+   m` joins to where the scan's value goes), and plain locals the block does
+   not mention (`x = s.scan(/./) { |m| break m }`: x is s once the scan
+   answers its receiver, never while it runs). A local of no other kind, an
+   element of a container a name keeps (`box = [s]`), or any other holder,
+   keeps the refusal. */
+static int sh_sole_unreached(const Compiler *c, const ShareRoute *q) {
+  const ShareFacts *F = c->share;
+  const NodeTable *nt = c->nt;
+  int r = sh_node_root(F, q->sole, 0);
+  if (r < 0 || (F->flags[r] & (SHF_UNKNOWN | SHF_MULTI)) || !q->to_name || q->to < 0) return 0;
+  int body = nt_ref(nt, q->to, "body");
+  Scope *bs = comp_scope_of((Compiler *)c, q->to);
+  int seen = 0;
+  for (int h = 0; h < F->nh; h++) {
+    if (sh_root(F, F->helem[h]) != r) continue;
+    seen++;
+    const ShareHolder *sh = &F->h[h];
+    if (sh->kind != SHK_LOCAL) return 0;
+    Scope *hs = &c->scopes[sh->scope];
+    LocalVar *lv = &hs->locals[sh->local];
+    if (hs == bs && lv->name && sp_streq(lv->name, q->to_name)) continue;
+    if (!lv->name || lv->is_param || lv->is_block_param || lv->is_cell || lv->cell_outlives ||
+        sh_mentions_local(nt, body, lv->name))
+      return 0;
+  }
+  /* (an element slot of a container a name keeps is a name too, and no
+     holder of its own: sh_finalize counts it) */
+  return sh_class_holders(F, r) <= seen;
+}
+
 static int sh_route_why(const Compiler *c, const ShareRoute *q) {
   const ShareFacts *F = c->share;
   if (F && q->value >= 0 && !q->elems && share_assign_unjoined(c, q->value)) return SH_ROUTE_OK;
@@ -4916,7 +5041,7 @@ static int sh_route_why(const Compiler *c, const ShareRoute *q) {
     Scope *ss = comp_scope_of((Compiler *)c, q->sole);
     LocalVar *sl = ss ? scope_local(ss, nt_str(c->nt, q->sole, "name")) : NULL;
     if (!sl || sl->is_param || sl->is_block_param || sl->is_cell || sl->cell_outlives ||
-        !share_node_one_name(c, q->sole)) return SH_ROUTE_UNSEEN;
+        (!share_node_one_name(c, q->sole) && !sh_sole_unreached(c, q))) return SH_ROUTE_UNSEEN;
   }
   int v = sh_node_root(F, q->value, q->elems);
   /* a value the walk reached and found no String identity in (`"a#{i}"`,
@@ -4933,6 +5058,10 @@ static int sh_route_why(const Compiler *c, const ShareRoute *q) {
   if (v < 0 && F && q->elems && q->fresh_elems && q->to >= 0 && q->value >= 0 && q->value < F->nnodes &&
       (F->nval[q->value] == -1 || (F->nval[q->value] >= 0 && F->elem[sh_root(F, F->nval[q->value])] < 0)))
     v = sh_route_to_root(c, q);
+  /* ...and elements whose class no name holds and nothing marks: a scan
+     whose block breaks with its match answers that match, so its value's
+     class is the parameter's, whose elements are no String of a name */
+  if (v >= 0 && q->elems && q->fresh_elems && q->sole >= 0 && sh_class_unnamed(F, v)) v = sh_route_to_root(c, q);
   if (v < 0) return SH_ROUTE_UNSEEN;
   if (q->to >= 0 && sh_route_to_root(c, q) != v) return SH_ROUTE_UNSEEN;
   if (!repr_str_class_shares(F->flags[v], sh_class_holders(F, v))) return SH_ROUTE_OK;

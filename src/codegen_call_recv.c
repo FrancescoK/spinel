@@ -7570,6 +7570,9 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           int teq = ++g_tmp;
           buf_printf(b, "({ sp_String *_t%d = %s; (sp_bool)(_t%d == %s); })", teq, r, teq, arefE);
         }
+        /* (a boxed reader's read under the handle demand is the handle) */
+        else if (repr_of(c, recv).demand && repr_boxed_reader_handle(c, recv) && repr_of(c, recv).ty == TY_STRING)
+          buf_printf(b, "((const void *)(%s) == (const void *)%s)", r, arefE);
         else {
           int teq = ++g_tmp;
           buf_printf(b, "({ const char *_t%d = %s; "
@@ -14702,9 +14705,19 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       for (int k = 0; k < c->nclasses; k++)
         if (comp_is_writer(&c->classes[k], base)) ncand++;
     if (ncand > 0) {
-      TyKind at = repr_of(c, argv[0]).as_ty;
+      Repr ar0 = repr_of(c, argv[0]);
+      TyKind at = ar0.as_ty;
       int nil_rhs = (at == TY_NIL || at == TY_VOID);
       int unk_rhs = at == TY_UNKNOWN;
+      /* --share-strings: a call read as the handle its writers are handed
+         (repr_write_share) holds that handle, which each arm stores and the
+         call answers; a String argument that is a handle is held as it,
+         the dispatch's poly_arg_storage, and each arm stores it */
+      Repr ir = repr_of(c, id);
+      int hv = (at == TY_STRING || at == TY_STRBUF) && repr_share_rule(c) && (ir.handle || ir.demand) &&
+               repr_write_share(c, id);
+      int hs = hv || (repr_share_rule(c) && at == TY_STRING && ar0.strbuf_src == RS_HANDLE);
+      if (hs) at = TY_STRBUF;
       TyKind at_eff = (nil_rhs || unk_rhs) ? TY_POLY : at;
       int tv = ++g_tmp, tval = ++g_tmp;
       int hold = nil_rhs ? -1 : boxed_writer_holds_handle(c, base, argv[0]);
@@ -14726,6 +14739,19 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
         NodeKind vk = nt_kind(nt, argv[0]);
         if (vk != NK_LocalVariableReadNode && vk != NK_InstanceVariableReadNode && !repr_static_read_kind(vk))
           buf_printf(b, " SP_GC_ROOT(_t%d);", tval);
+      }
+      /* --share-strings: a boxed value the rule shares (`r.a += "x"`, whose
+         value is a new String a variable keeps too) is lifted to its handle
+         once, so each writer stores and the call answers that one String */
+      else if (at == TY_POLY && repr_share_rule(c) && share_node_shares(c, argv[0])) {
+        buf_printf(b, "sp_RbVal _t%d = sp_poly_strbuf_lift(", tval);
+        emit_one_arg(c, argv[0], 0, b);
+        buf_puts(b, ");");
+      }
+      else if (hs) {
+        buf_printf(b, "sp_String *_t%d = ", tval);
+        emit_strbuf_handle_of(c, argv[0], b);
+        buf_puts(b, ";");
       }
       else { emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval); emit_one_arg(c, argv[0], 0, b); buf_puts(b, ";"); }
       buf_puts(b, " switch ("); emit_obj_switch_key(c, tv, b); buf_puts(b, ") {");

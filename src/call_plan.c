@@ -672,6 +672,28 @@ static int ct_resolve(Compiler *c, int id, int *out) {
     if (n == CPT_MAX) return CPT_UNKNOWN;
     out[n++] = k;
   }
+  /* --share-strings: the methods named by the call, each class's own
+     (comp_poly_candidates follows an alias, `alias get text`, whose method
+     has another name than the call's and the first target's) */
+  const char *cn = nt_str(c->nt, id, "name");
+  /* (not for a text conversion, #to_s or #inspect: the boxed to_s route
+     asks each class the receiver can hold for its own method, and adding
+     every class's here widened the facts of the bundled library's calls,
+     a Set's #inspect over its elements, for nothing) */
+  if (c->share_strings && cn && !is_text_conversion(cn)) {
+    int np = 0;
+    const PolyCand *pc = comp_poly_candidates(c, cn, &np);
+    for (int i = 0; i < np; i++) {
+      int k = pc[i].mi, seen = 0;
+      /* (only a method of another name than the first target's: the loop
+         above has the methods of that name) */
+      if (k < 0 || !c->scopes[k].name || sp_streq(c->scopes[k].name, name)) continue;
+      for (int j = 0; j < n && !seen; j++) seen = out[j] == k;
+      if (seen || !cplan_virtual_member(c, id, &plan, k)) continue;
+      if (n == CPT_MAX) return CPT_UNKNOWN;
+      out[n++] = k;
+    }
+  }
   return n;
 }
 

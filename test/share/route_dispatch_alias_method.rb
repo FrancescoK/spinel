@@ -1,4 +1,6 @@
-# A dispatch alias can return a borrowed String from a differently named method.
+# A dispatch alias can return a borrowed String from a differently named
+# method: the element is that String itself, beside a method's new String,
+# and a change through the element shows in the String it borrows.
 class FreshResult
   def initialize(text) = @text = text
   def plus = @text + "a"
