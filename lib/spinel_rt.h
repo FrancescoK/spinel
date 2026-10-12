@@ -7624,8 +7624,10 @@ static sp_RbVal sp_poly_splice(sp_RbVal recv, sp_int start, sp_int len, sp_RbVal
   if (recv.tag == SP_TAG_STR || sp_poly_is_strbuf(recv)) {
     const char *cur = (recv.tag == SP_TAG_STR) ? (recv.v.s ? recv.v.s : sp_str_empty)
                                                : sp_String_cstr((sp_String *)recv.v.p);
+    /* String#[]= takes a String (or a #to_str), else CRuby's TypeError: an
+       Integer, a Symbol or nil is not spliced in as its to_s */
     const char *rep = (src.tag == SP_TAG_STR) ? (src.v.s ? src.v.s : sp_str_empty)
-                                              : sp_poly_to_s(src);
+                                              : sp_poly_arg_str_chk(src);
     SP_GC_ROOT(cur); SP_GC_ROOT(rep);
     SP_GC_ROOT_RBVAL(recv);
     const char *out = sp_str_splice_at(cur, start, len, rep, 0);
