@@ -1,6 +1,7 @@
-# A value-type object local assigned inside a block loop is reset with a
-# zeroed struct, not NULL -- a method returning the object on some paths
-# and (implicit) nil on others is still a value type (#3267).
+# A local assigned inside a block loop from a method that returns the object
+# on some paths and (implicit) nil on others: the local is reset at each
+# iteration, and the nil is the one `&.` tests for (#3267). Such a class
+# keeps its pointer layout, whose NULL is the nil (the nil fact, #7444).
 class Flag
   def initialize(bool) = @bool = bool
   def bool? = @bool

@@ -44263,102 +44263,18 @@ static void an_phase_storage(Compiler *c) {
   }
 }
 
-/* A conditional arm answers nil when its tail is nil or absent. */
-static int vt_arm_nil(Compiler *c, int arm) {
+/* The classes an instance of which may be nil, by the nil fact (#7444): a
+   node, a method's value, a local or a parameter, or an ivar of the class's
+   type whose fact says so. A slot holding `nil | W` encodes nil as the heap
+   pointer's NULL, which a by-value struct has no representation for, so
+   such a class keeps its pointer layout. */
+static void vt_nil_fact_classes(Compiler *c, unsigned char *fact) {
   const NodeTable *nt = c->nt;
-  if (arm >= 0 && nt_kind(nt, arm) == NK_ElseNode) arm = nt_ref(nt, arm, "statements");
-  if (arm >= 0 && nt_kind(nt, arm) == NK_StatementsNode) {
-    int n = 0;
-    const int *body = nt_arr(nt, arm, "body", &n);
-    arm = n > 0 ? body[n - 1] : -1;
-  }
-  return arm < 0 || nt_kind(nt, arm) == NK_NilNode;
-}
-
-/* A missing else answers nil in case/when, but raises in case/in.
-   An elsif is visited as its own conditional. */
-static int vt_cond_answers_nil(Compiler *c, int id) {
-  const NodeTable *nt = c->nt;
-  NodeKind k = nt_kind(nt, id);
-  if (k == NK_IfNode || k == NK_UnlessNode) {
-    int alt = nt_ref(nt, id, k == NK_IfNode ? "subsequent" : "else_clause");
-    return alt < 0 || vt_arm_nil(c, nt_ref(nt, id, "statements")) ||
-           (nt_kind(nt, alt) != NK_IfNode && vt_arm_nil(c, alt));
-  }
-  if (k != NK_CaseNode && k != NK_CaseMatchNode) return 0;
-  int n = 0;
-  const int *arms = nt_arr(nt, id, "conditions", &n);
-  for (int i = 0; arms && i < n; i++)
-    if (vt_arm_nil(c, nt_ref(nt, arms[i], "statements"))) return 1;
-  int alt = nt_ref(nt, id, "else_clause");
-  return alt < 0 ? k == NK_CaseNode : vt_arm_nil(c, alt);
-}
-
-/* The nil witness (#1686): the class whose instances node id shows may be
-   nil, which a by-value struct has no representation for, or -1. A slot
-   holding `nil | W` encodes nil as the heap pointer's NULL; the pointer
-   form's NULL-nil machinery (and the nil-guard narrowing) then applies
-   unchanged. The witnesses: a bare or nil `return` in a method answering W,
-   a nil written to a W local, optional parameter or ivar, and a W-valued
-   conditional with a nil arm or none. --nil-check holds these against the
-   nil fact (vt_nil_witness_check). */
-static int vt_nil_witness(Compiler *c, int id, const char *ty) {
-  const NodeTable *nt = c->nt;
-  if (sp_streq(ty, "ReturnNode")) {
-    int a2 = nt_ref(nt, id, "arguments");
-    int an2 = 0;
-    const int *av2 = a2 >= 0 ? nt_arr(nt, a2, "arguments", &an2) : NULL;
-    int is_nil = (an2 == 0) ||
-                 (nt_type(nt, av2[0]) && sp_streq(nt_type(nt, av2[0]), "NilNode"));
-    Scope *s2 = is_nil ? comp_scope_of(c, id) : NULL;
-    return s2 && ty_is_object(s2->ret) ? ty_object_class(s2->ret) : -1;
-  }
-  int v2 = nt_ref(nt, id, "value");
-  int nil_value = v2 >= 0 && nt_type(nt, v2) && sp_streq(nt_type(nt, v2), "NilNode");
-  if (sp_streq(ty, "LocalVariableWriteNode") || sp_streq(ty, "LocalVariableOrWriteNode") ||
-      sp_streq(ty, "LocalVariableAndWriteNode") ||
-      sp_streq(ty, "OptionalParameterNode") || sp_streq(ty, "OptionalKeywordParameterNode")) {
-    if (!nil_value) return -1;
-    const char *nm2 = nt_str(nt, id, "name");
-    Scope *s2 = comp_scope_of(c, id);
-    LocalVar *lv2 = (nm2 && s2) ? scope_local(s2, nm2) : NULL;
-    return lv2 && ty_is_object(lv2->type) ? ty_object_class(lv2->type) : -1;
-  }
-  if (sp_streq(ty, "InstanceVariableWriteNode") || sp_streq(ty, "InstanceVariableOrWriteNode")) {
-    if (!nil_value) return -1;
-    Scope *s2 = comp_scope_of(c, id);
-    const char *ivn = nt_str(nt, id, "name");
-    int cid2 = s2 ? s2->class_id : -1;
-    /* an ivar a class body writes */
-    if (cid2 < 0 && sp_streq(ty, "InstanceVariableWriteNode") && c->node_cbody[id] >= 0)
-      cid2 = c->node_cbody[id];
-    if (cid2 < 0 || cid2 >= c->nclasses || !ivn) return -1;
-    int ix = comp_ivar_index(&c->classes[cid2], ivn);
-    TyKind it2 = ix >= 0 ? c->classes[cid2].ivar_types[ix] : TY_UNKNOWN;
-    return ty_is_object(it2) ? ty_object_class(it2) : -1;
-  }
-  if (vt_cond_answers_nil(c, id) && ty_is_object(comp_ntype(c, id)))
-    return ty_object_class(comp_ntype(c, id));
-  return -1;
-}
-
-/* --nil-check: for each class the value-type selection considered (bit 1),
-   whether a nil witness took it off the by-value layout (bit 2), against
-   whether the nil fact says one of its instances may be nil (a node or a
-   slot of the class). A FACT-ONLY class that kept the by-value layout has
-   lost a nil (#7444's reader-only Box); HELPER-ONLY means the fact missed
-   a witness. */
-static void vt_nil_witness_check(Compiler *c, const unsigned char *cand) {
-  const NodeTable *nt = c->nt;
-  unsigned char *fact = calloc((size_t)c->nclasses + 1, 1);
-  int *where = malloc(sizeof(int) * ((size_t)c->nclasses + 1));
-  if (!fact || !where) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  for (int q = 0; q < c->nclasses; q++) where[q] = -1;
   for (int id = 0; id < nt->count; id++) {
     TyKind t = c->ntype[id];
     if (!ty_is_object(t) || !nil_fact_node(c, id)) continue;
     int q = ty_object_class(t);
-    if (q >= 0 && q < c->nclasses && !fact[q]) { fact[q] = 1; where[q] = id; }
+    if (q >= 0 && q < c->nclasses) fact[q] = 1;
   }
   for (int si = 0; si < c->nscopes; si++) {
     Scope *sc = &c->scopes[si];
@@ -44371,20 +44287,6 @@ static void vt_nil_witness_check(Compiler *c, const unsigned char *cand) {
     for (int i = 0; i < c->classes[k].n_ivar_obj_may_nil && i < c->classes[k].nivars; i++)
       if (c->classes[k].ivar_obj_may_nil[i] && ty_is_object(c->classes[k].ivar_types[i]))
         fact[ty_object_class(c->classes[k].ivar_types[i])] = 1;
-  int n[3] = { 0, 0, 0 };
-  for (int q = 0; q < c->nclasses; q++) {
-    if (!(cand[q] & 1)) continue;
-    int helper = (cand[q] & 2) != 0;
-    int v = helper == fact[q] ? 0 : fact[q] ? 1 : 2;
-    n[v]++;
-    if (v == 0) continue;
-    fprintf(stderr, "nil-check: vt %s %s%s why=%s line %lld\n", v == 1 ? "FACT-ONLY" : "HELPER-ONLY",
-            c->classes[q].name, c->classes[q].is_value_type ? " by-value" : "",
-            nil_fact_why_name(where[q] >= 0 ? nil_fact_why(c, where[q]) : NFW_OPAQUE),
-            (long long)(where[q] >= 0 ? nt_int(nt, where[q], "node_line", 0) : 0));
-  }
-  fprintf(stderr, "nil-check: count vt agree %d fact-only %d helper-only %d guarded 0 init-set 0\n", n[0], n[1], n[2]);
-  free(fact); free(where);
 }
 
 /* Value-type objects: a small, immutable, scalar-only leaf class is represented by value, unless an instance is boxed, held in a class variable or captured by a proc (analyze_program's steps, in their order) */
@@ -44696,8 +44598,8 @@ static void an_presence_observe(Compiler *c, int id) {
 static void an_phase_value_types(Compiler *c) {
   /* The nil fact (analyze_nil.c, #7444): whether each object-typed node and
      slot may hold nil, from the settled types, ahead of the layout choice
-     below, which a value that may be nil cannot take. It changes no type
-     and no flag the passes before it read; nothing below reads it yet. */
+     below, which a value that may be nil cannot take (vt_nil_fact_classes).
+     It changes no type and no flag the passes before it read. */
   an_nil_facts(c);
   /* Value-type object detection (Stage 1, conservative). A user class is
      represented by value (sp_X, no heap/GC) when it is a small, immutable,
@@ -44740,11 +44642,13 @@ static void an_phase_value_types(Compiler *c) {
     if (has_sub) continue;
     ci->is_value_type = 1;   /* tentative; disqualified below */
   }
-  unsigned char *vt_cand = NULL;
-  if (g_nil_check) {
-    vt_cand = calloc((size_t)c->nclasses + 1, 1);
-    for (int i = 0; vt_cand && i < c->nclasses; i++) vt_cand[i] = c->classes[i].is_value_type ? 1 : 0;
-  }
+  /* a class an instance of which may be nil keeps its pointer, whose NULL
+     is the nil (#1686, by the nil fact since #7444) */
+  { unsigned char *fact = calloc((size_t)c->nclasses + 1, 1);
+    if (!fact) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    vt_nil_fact_classes(c, fact);
+    for (int q = 0; q < c->nclasses; q++) if (fact[q]) c->classes[q].is_value_type = 0;
+    free(fact); }
   an_presence_families(c);
   for (int id = 0; id < c->nt->count; id++) {
     const char *ty = nt_type(c->nt, id);
@@ -44781,12 +44685,6 @@ static void an_phase_value_types(Compiler *c) {
         }
       }
     }
-    /* nil-witness (#1686): a slot holding `nil | W` cannot hold W by value */
-    { int q = vt_nil_witness(c, id, ty);
-      if (q >= 0 && q < c->nclasses) {
-        c->classes[q].is_value_type = 0;
-        if (vt_cand) vt_cand[q] |= 2;
-      } }
     /* immutable check: an ivar write outside `initialize` defeats value type */
     if (sp_streq(ty, "InstanceVariableWriteNode") ||
         sp_streq(ty, "InstanceVariableOperatorWriteNode") ||
@@ -44913,11 +44811,9 @@ static void an_phase_value_types(Compiler *c) {
     TyKind lt = comp_ntype(c, st[n - 1]);
     if (ty_is_object(lt)) { int q = ty_object_class(lt); if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0; }
   }
-  if (vt_cand) vt_nil_witness_check(c, vt_cand);
   /* a bound C function's String argument reads a handle's live buffer,
      off the final slots */
   mark_native_str_operands(c);
-  free(vt_cand);
 }
 
 /* The final reconciliation and checks: hash literals and locals against their variables, operators on poly receivers, the rounds over the ivars' final types, lifted proc captures, array-or-nil slots, late poly arrays, then the seed contradictions and the late refusals (analyze_program's steps, in their order) */

@@ -7,11 +7,12 @@
    a global, a constant, an ivar, a method's value), whether the value may
    be nil. Today the question is asked again where each answer is needed --
    codegen's nil receiver guards (local_obj_nil_written, nil_value_node,
-   method_ret_nilable), the value-type selection's nil witness, parameter
-   tracking's obj_nilable -- and each asks it about the shapes it knows.
-   Step 1 computes the fact and changes nothing that reads those answers:
-   --nil-check holds it against them (nil_check_report, codegen_call.c, and
-   vt_nil_witness_check, analyze.c).
+   method_ret_nilable), parameter tracking's obj_nilable -- and each asks it
+   about the shapes it knows. Step 1 computed the fact and changed nothing
+   that reads those answers: --nil-check holds it against them
+   (nil_check_report, codegen_call.c). The value-type selection reads the
+   fact (vt_nil_fact_classes, analyze.c): a class an instance of which may
+   be nil keeps its pointer layout.
 
    The fact is a may-be-nil over-approximation. Where the analysis cannot
    see what reaches a slot it answers "may be nil": an object a builtin call
@@ -1517,10 +1518,16 @@ static void nf_calls(NF *f, int **yields, int *nyields) {
     if (an == 0 && blk < 0) continue;
     int owner = -1, dispatch = CP_NONE;
     int mi = nf_plan(f, id, &owner, &dispatch);
-    /* `W.new(k)` binds initialize's parameters */
-    if (mi < 0 && r >= 0 && sp_streq(cn, "new")) {
-      int rk = nt_kind(nt, r);
-      int k = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ? comp_class_index(c, nt_str(nt, r, "name")) : -1;
+    /* `W.new(k)` binds initialize's parameters; so does a `new` a class
+       method of W calls on its own class (`def self.empty = new(nil, 0)`) */
+    if (mi < 0 && sp_streq(cn, "new")) {
+      int k = -1;
+      if (r >= 0 && (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode))
+        k = comp_class_index(c, nt_str(nt, r, "name"));
+      else if (r < 0 || nt_kind(nt, r) == NK_SelfNode) {
+        Scope *s = comp_scope_of(c, id);
+        if (s && s->is_cmethod && s->class_id >= 0) k = s->class_id;
+      }
       if (k >= 0) mi = comp_method_in_chain(c, k, "initialize", NULL);
       dispatch = CP_DIRECT;
     }

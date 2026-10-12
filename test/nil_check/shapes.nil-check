@@ -1,13 +1,9 @@
-nil-check: vt FACT-ONLY Box by-value why=no-else line 39
-nil-check: vt FACT-ONLY Item why=elem line 79
-nil-check: vt FACT-ONLY Flag by-value why=no-else line 75
-nil-check: count vt agree 3 fact-only 3 helper-only 0 guarded 0 init-set 0
 nil-check: recv FACT-ONLY local why=unset line 62: v
-nil-check: recv FACT-ONLY call by-value why=no-else line 64: hello
-nil-check: recv FACT-ONLY call by-value why=no-else line 66: v
+nil-check: recv FACT-ONLY call why=no-else line 64: hello
+nil-check: recv FACT-ONLY call why=no-else line 66: v
 nil-check: recv FACT-ONLY local nil-answers why=nil line 70: to_s
 nil-check: recv FACT-ONLY local why=no-else line 73: poke
-nil-check: recv FACT-ONLY local by-value why=no-else line 76: on?
+nil-check: recv FACT-ONLY local why=no-else line 76: on?
 nil-check: recv FACT-ONLY local why=elem line 80: v
 nil-check: recv GUARDED local why=guarded line 98: v
 nil-check: ret FACT-ONLY why=no-else line 38: pick
