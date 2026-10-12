@@ -3296,13 +3296,15 @@ int srange_member_hop(Compiler *c, int n) {
 }
 
 /* The String Range row `name` for call id over the Range node r, which a hop
-   (srange_member_hop) stood in front of: a find_index answer the call's slot
-   holds boxed is boxed from the row's nullable Integer. */
+   (srange_member_hop) stood in front of. The find_index row answers the
+   box of its nullable Integer (sp_box_oint): a slot that holds an Integer
+   takes it unboxed, with its nil. */
 int emit_srange_hop_row(Compiler *c, int id, int r, const char *name, Buf *b) {
   Buf rb; memset(&rb, 0, sizeof rb);
   if (!emit_builtin_op(c, id, r, TY_STR_RANGE, name, &rb)) { free(rb.p); return 0; }
-  if (is_find_index(name) && repr_of(c, id).as_ty != TY_INT)
-    buf_printf(b, "({ sp_int _tfi = %s; _tfi == SP_INT_NIL ? sp_box_nil() : sp_box_int(_tfi); })", rb.p ? rb.p : "SP_INT_NIL");
+  Repr rp = repr_of(c, id);
+  if (is_find_index(name) && rp.kind != RK_BOXED && rp.as_ty == TY_INT)
+    emit_unbox_nilable_text(c, TY_INT, rb.p ? rb.p : "sp_box_nil()", b);
   else buf_puts(b, rb.p ? rb.p : "");
   free(rb.p);
   return 1;
