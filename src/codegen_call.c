@@ -13146,13 +13146,8 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       if (bn > 0 && bb) {
         TyKind elem_t = ty_array_elem(at);
         Buf vb; memset(&vb, 0, sizeof vb);
-        for (int bi = 0; bi < bn - 1; bi++) {
-          /* a statement holding a `next` is control flow, not a value */
-          if (an_next) { emit_stmt(c, bb[bi], g_pre, g_indent); continue; }
-          Buf sb; memset(&sb, 0, sizeof sb);
-          emit_expr(c, bb[bi], &sb);
-          emit_indent(g_pre, g_indent); buf_puts(g_pre, sb.p ? sb.p : ""); buf_puts(g_pre, ";\n"); free(sb.p);
-        }
+        /* the statements before the tail run for their effect alone */
+        for (int bi = 0; bi < bn - 1; bi++) emit_stmt(c, bb[bi], g_pre, g_indent);
         /* a tail marked for the shared handle boxes through emit_boxed,
            which wraps the plain string it evaluates to in a fresh handle */
         int tail_strbuf = sp_streq(k, "Poly") && repr_of(c, bb[bn - 1]).as_ty == TY_STRBUF;
