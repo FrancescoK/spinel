@@ -43231,6 +43231,10 @@ static void an_phase_late_widen(Compiler *c) {
      the rebuild below re-infers their reads/ops at the narrowed int type. */
   narrow_poly_int_locals(c);
 
+  /* `@v.between?(lo, hi)` went onto the Integer copy while @v was an Integer,
+     and a backstop above has widened @v since */
+  revert_widened_builtin_scalar_calls(c);
+
   /* finalize: gc-root needs + full node type cache */
   for (int s = 0; s < c->nscopes; s++)
     for (int i = 0; i < c->scopes[s].nlocals; i++)

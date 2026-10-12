@@ -481,6 +481,7 @@ int desugar_cmethod_cvar_reflection(Compiler *c);
 int desugar_builtin_enum_calls(Compiler *c);
 int desugar_builtin_scalar_defs(Compiler *c);
 int desugar_builtin_scalar_calls(Compiler *c);
+int revert_widened_builtin_scalar_calls(Compiler *c);
 /* Block iterator the nested-table narrow pass keeps. each / map / zip stay
    on the typed emitter. each_with_index / reduce / inject are rewritten
    onto builtins/enumerable.rb; the copy's own each is what walks the table. */
