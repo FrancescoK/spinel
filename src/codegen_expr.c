@@ -4998,6 +4998,20 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
   if (sp_streq(ty, "RationalNode")) {
     const char *rn = nt_str(nt, id, "rat_num");
     const char *rd = nt_str(nt, id, "rat_den");
+    int big = (int)nt_int(nt, id, "rat_big", 0);
+    if (big) {
+      /* A part past sp_int: the big Rational, as Rational(10**30, 3) builds
+         it, each big part from its shared literal slot */
+      buf_puts(b, "sp_box_brat(");
+      for (int k = 0; k < 2; k++) {
+        const char *part = k ? rd : rn;
+        if (k) buf_puts(b, ", ");
+        if (big & (1 << k)) buf_printf(b, "sp_bigl_get(%d)", bigl_intern(part));
+        else buf_printf(b, "sp_bigint_new_int(%sLL)", part);
+      }
+      buf_puts(b, ")");
+      return;
+    }
     buf_printf(b, "((sp_Rational){%sLL, %sLL})", rn ? rn : "0", rd ? rd : "1");
     return;
   }

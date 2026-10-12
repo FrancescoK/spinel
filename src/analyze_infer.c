@@ -9306,7 +9306,8 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_IntegerNode)             return nt_str(nt, id, "bigval") ? TY_BIGINT : TY_INT;
   if (nk == NK_FloatNode)               return TY_FLOAT;
   if (nk == NK_ImaginaryNode)           return TY_COMPLEX;
-  if (nk == NK_RationalNode)            return TY_RATIONAL;
+  /* a part past sp_int is the big Rational, a boxed value (as Rational(10**30, 3)) */
+  if (nk == NK_RationalNode)            return nt_int(nt, id, "rat_big", 0) ? TY_POLY : TY_RATIONAL;
   if (nk == NK_StringNode)              return TY_STRING;
   if (nk == NK_SourceFileNode)          return TY_STRING;
   if (nk == NK_SourceLineNode)          return TY_INT;

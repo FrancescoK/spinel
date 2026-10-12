@@ -512,6 +512,21 @@ static int pm_int_overflows(pm_integer_t *integer) {
   return overflow || val > max_positive;
 }
 
+/* The exact decimal text of an integer literal, as CRuby prints it (the
+   caller frees). pm_buffer_value is not NUL-terminated; bound by length. */
+static char *pm_int_text(pm_integer_t *integer) {
+  pm_buffer_t bb;
+  pm_buffer_init(&bb);
+  pm_integer_string(&bb, integer);
+  size_t bl = pm_buffer_length(&bb);
+  char *s = malloc(bl + 1);
+  if (!s) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  memcpy(s, pm_buffer_value(&bb), bl);
+  s[bl] = '\0';
+  pm_buffer_free(&bb);
+  return s;
+}
+
 /* frozen_string_literal flag for the file `node`'s source line came from:
    the per-line table when available, else the entry file's pragma. */
 static int sp_node_fsl(pm_node_t *node) {
@@ -1120,19 +1135,7 @@ static int flatten_node(pm_node_t *node) {
     /* A literal wider than int64 (`100000000000000000000`) saturates `value`;
        keep the exact decimal text so codegen can build an arbitrary-precision
        bigint (`sp_bigint_new_str`). CRuby treats it as a Bignum in every mode. */
-    if (pm_int_overflows(&n->value)) {
-      pm_buffer_t _bb;
-      pm_buffer_init(&_bb);
-      pm_integer_string(&_bb, &n->value);
-      /* pm_buffer_value is not guaranteed NUL-terminated; bound by length. */
-      size_t _bl = pm_buffer_length(&_bb);
-      char *_bs = malloc(_bl + 1);
-      memcpy(_bs, pm_buffer_value(&_bb), _bl);
-      _bs[_bl] = '\0';
-      emit_str(id, "bigval", _bs);
-      free(_bs);
-      pm_buffer_free(&_bb);
-    }
+    if (pm_int_overflows(&n->value)) S("bigval", pm_int_text(&n->value));
     break;
   }
   case PM_FLOAT_NODE: {
@@ -1154,14 +1157,17 @@ static int flatten_node(pm_node_t *node) {
     /* `1/2r` or `1.5r` -- rational literal. Issue #841. Emits
        numerator + denominator as decimal-text fields (loader pins
        them in @nd_rat_num / @nd_rat_den). Prism stores both as
-       reduced pm_integer_t. */
+       reduced pm_integer_t. The text is exact: a part past the
+       target's sp_int (`123456789012345678901234567890r`, `0.1r` with
+       twenty-five digits) is a Bignum in CRuby, and `rat_big` says
+       which (1 the numerator, 2 the denominator), so the literal is
+       built as the big Rational instead of a saturated sp_int pair. */
     pm_rational_node_t *n = (pm_rational_node_t *)node;
     N("RationalNode");
-    char nbuf[32];
-    snprintf(nbuf, sizeof(nbuf), "%lld", (long long)pm_int_value(&n->numerator));
-    emit_str(id, "rat_num", nbuf);
-    snprintf(nbuf, sizeof(nbuf), "%lld", (long long)pm_int_value(&n->denominator));
-    emit_str(id, "rat_den", nbuf);
+    S("rat_num", pm_int_text(&n->numerator));
+    S("rat_den", pm_int_text(&n->denominator));
+    int big = (pm_int_overflows(&n->numerator) ? 1 : 0) | (pm_int_overflows(&n->denominator) ? 2 : 0);
+    if (big) I("rat_big", big);
     break;
   }
   case PM_STRING_NODE: {

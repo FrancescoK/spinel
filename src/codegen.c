@@ -18053,6 +18053,25 @@ static void emit_runtime_include(Compiler *c, Buf *b, int blank) {
   if (blank) buf_puts(b, "\n");
 }
 
+/* One slot per DISTINCT out-of-int64 literal, filled on first use. The scan
+   is over the AST rather than the emission, so the slots exist before the
+   mark function is written: an Integer literal's value, and the parts of a
+   big Rational literal that are past sp_int themselves. */
+static void bigl_intern_program(Compiler *c) {
+  for (int id = 0; id < c->nt->count; id++) {
+    NodeKind k = nt_kind(c->nt, id);
+    if (k == NK_IntegerNode) {
+      const char *bv = nt_str(c->nt, id, "bigval");
+      if (bv) bigl_intern(bv);
+    }
+    else if (k == NK_RationalNode) {
+      int big = (int)nt_int(c->nt, id, "rat_big", 0);
+      if (big & 1) bigl_intern(nt_str(c->nt, id, "rat_num"));
+      if (big & 2) bigl_intern(nt_str(c->nt, id, "rat_den"));
+    }
+  }
+}
+
 char *codegen_program(const NodeTable *nt) {
   char *isa_ext = NULL;  /* sp_poly_is_a's class-value arms, and where they go */
   size_t isa_ext_at = 0;
@@ -18427,14 +18446,7 @@ char *codegen_program(const NodeTable *nt) {
                goint ? (lv->type == TY_FLOAT ? "SP_OFLOAT_NIL" : "SP_OINT_NIL") :
                lv->type == TY_STRING ? "NULL" : default_value(lv->type));
   }
-  /* One slot per DISTINCT out-of-int64 literal, filled on first use. The
-     scan is over the AST rather than the emission, so the slots exist before
-     the mark function below is written. */
-  for (int id = 0; id < c->nt->count; id++) {
-    if (nt_kind(c->nt, id) != NK_IntegerNode) continue;
-    const char *bv = nt_str(c->nt, id, "bigval");
-    if (bv) bigl_intern(bv);
-  }
+  bigl_intern_program(c);
   if (g_bigl_n) {
     buf_printf(&b, "static sp_Bigint *sp_bigl[%d];\n", g_bigl_n);
     buf_printf(&b, "static const char *const sp_bigl_s[%d] = {", g_bigl_n);
