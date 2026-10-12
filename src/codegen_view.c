@@ -313,7 +313,8 @@ void view_unwind(int mark) {
 /* the sites that read the recorded fact instead of typing the body again */
 static int arm_site_reads(int site) {
   return site == ARM_SITE_TAP || site == ARM_SITE_EACH_SLICE || site == ARM_SITE_SPLIT ||
-         site == ARM_SITE_SCAN || site == ARM_SITE_STR_UPTO || site == ARM_SITE_COMB_CONS;
+         site == ARM_SITE_SCAN || site == ARM_SITE_STR_UPTO || site == ARM_SITE_COMB_CONS ||
+         site == ARM_SITE_FOLD_POLY || site == ARM_SITE_FOLD_POLY2;
 }
 
 void arm_body_infer(Compiler *c, int site, int block, TyKind kind, const int *body, int n) {
