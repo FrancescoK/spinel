@@ -1620,7 +1620,9 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
           tlv0->type = rtype;
           arm_body_infer(c, ARM_SITE_THEN, blk, rtype, then_bb, then_bn);
         }
-        TyKind body_ty = infer_type(c, then_bb[then_bn - 1]);
+        /* the tail's type as the arm typed it (the fact just applied), or
+           as the analysis settled it */
+        TyKind body_ty = comp_ntype(c, then_bb[then_bn - 1]);
         int tr = ++g_tmp, tres = ++g_tmp;
         Buf rb = expr_buf(c, recv);
         emit_indent(g_pre, g_indent); emit_ctype(c, rtype, g_pre);

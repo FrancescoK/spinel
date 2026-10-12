@@ -314,7 +314,8 @@ void view_unwind(int mark) {
 static int arm_site_reads(int site) {
   return site == ARM_SITE_TAP || site == ARM_SITE_EACH_SLICE || site == ARM_SITE_SPLIT ||
          site == ARM_SITE_SCAN || site == ARM_SITE_STR_UPTO || site == ARM_SITE_COMB_CONS ||
-         site == ARM_SITE_FOLD_POLY || site == ARM_SITE_FOLD_POLY2 || site == ARM_SITE_FOLD_PAIR;
+         site == ARM_SITE_FOLD_POLY || site == ARM_SITE_FOLD_POLY2 || site == ARM_SITE_FOLD_PAIR ||
+         site == ARM_SITE_THEN;
 }
 
 /* a node typed after the body under the same arm (the pair call of a

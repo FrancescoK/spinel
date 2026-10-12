@@ -18,15 +18,16 @@
    reader yet: a missing fact or a type that differs is reported. */
 
 #include "analyze_internal.h"
+#include "repr.h"
 
 /* the iterations whose block codegen retypes per arm (codegen_iter.c,
    codegen_fold.c, codegen_call_object.c), and the parameter type each
    asks with: the box, the receiver's own kind, or a String */
-enum { AK_POLY = 1, AK_RECV = 2, AK_STRING = 4 };
+enum { AK_POLY = 1, AK_RECV = 2, AK_STRING = 4, AK_THEN = 8 };
 static int arm_kinds_of(const char *nm) {
   static const struct { const char *name; int kinds; } tab[] = {
     { "map", AK_POLY }, { "collect", AK_POLY }, { "sum", AK_POLY },
-    { "tap", AK_RECV }, { "then", AK_RECV }, { "yield_self", AK_RECV },
+    { "tap", AK_RECV }, { "then", AK_THEN }, { "yield_self", AK_THEN },
     { "each_slice", AK_RECV }, { "each_cons", AK_RECV },
     { "combination", AK_RECV }, { "permutation", AK_RECV },
     { "repeated_combination", AK_RECV }, { "repeated_permutation", AK_RECV },
@@ -113,6 +114,16 @@ void an_arm_facts(Compiler *c) {
     if (!nm || block < 0 || r < 0 || nt_kind(nt, block) != NK_BlockNode) continue;
     int kinds = arm_kinds_of(nm);
     if (!kinds) continue;
+    /* then / yield_self (codegen_call_object.c): the parameter typed by the
+       receiver's representation where its slot says otherwise */
+    if (kinds & AK_THEN) {
+      const char *q0 = block_param_name(c, block, 0);
+      Scope *qs = q0 ? comp_scope_of(c, block) : NULL;
+      LocalVar *qv = qs ? scope_local(qs, q0) : NULL;
+      TyKind rk = repr_of(c, r).as_ty;
+      if (qv && qv->type != rk && rk != TY_UNKNOWN) arm_record(c, block, qv, rk);
+      continue;
+    }
     /* the sites run in the arms of a dispatch over a boxed value, or over
        a boxed Array's elements */
     TyKind rt = c->ntype[r];
