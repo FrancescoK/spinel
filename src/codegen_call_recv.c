@@ -2686,7 +2686,8 @@ else {
     int en = 0; const int *el = nt_arr(nt, recv, "elements", &en);
     int plain = en > 0 && en <= 8;
     for (int e = 0; plain && e < en; e++)
-      if (comp_ntype(c, el[e]) != TY_INT || nullable_int_value(c, el[e])) plain = 0;
+      if (nt_kind(nt, el[e]) == NK_SplatNode || comp_ntype(c, el[e]) != TY_INT ||
+          nullable_int_value(c, el[e])) plain = 0;
     if (plain) {
       int base = g_tmp + 1; g_tmp += en + 1;
       buf_puts(b, "({");
