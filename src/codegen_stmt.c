@@ -7896,9 +7896,30 @@ static int pm_subject_boxable(Compiler *c, TyKind pt) {
   return ty_is_object(pt) || ty_is_obj_array(pt);
 }
 
+/* --share-strings: a String subject the rule holds as its handle (repr_of
+   answers RK_STRBUF) in a variable's slot, which the arms test as the bytes
+   it reads: its handle, taken beside those bytes as a call's argument that
+   runs first takes it (emit_arg_temp), into `sp_String *_tN`, for the
+   no-match raise to box. Boxing the bytes put a copy in the error, and a
+   slot read at the raise would see a guard's rebinding. Its temp, or -1
+   for any other subject (the raise boxes the subject's temp). */
+static int pm_subject_handle(Compiler *c, int pred, TyKind pt, int indent, Buf *b) {
+  if (!repr_share_rule(c) || pred < 0 || pt != TY_STRING || repr_of(c, pred).kind != RK_STRBUF) return -1;
+  NodeKind k = nt_kind(c->nt, pred);
+  char sref[192];
+  if (!(k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || repr_static_read_kind(k)) ||
+      !strbuf_slot_ref(c, pred, sref, sizeof sref))
+    return -1;
+  int th = ++g_tmp;
+  emit_indent(b, indent);
+  buf_printf(b, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, sref, th);
+  return th;
+}
+
 /* The raise of a case/in no arm took. `pat`/`guarded` are its one arm's
-   pattern and guard when it has exactly one, else pat is -1. */
-static void emit_pm_nomatch_raise(Compiler *c, int pred, int pat, int guarded, int t, TyKind pt,
+   pattern and guard when it has exactly one, else pat is -1. `th` is the
+   subject's handle temp (pm_subject_handle), or -1. */
+static void emit_pm_nomatch_raise(Compiler *c, int pred, int pat, int guarded, int t, int th, TyKind pt,
                                   int indent, Buf *b) {
   if (!pm_subject_boxable(c, pt)) {
     emit_indent(b, indent);
@@ -7909,6 +7930,14 @@ static void emit_pm_nomatch_raise(Compiler *c, int pred, int pat, int guarded, i
   snprintf(sn, sizeof sn, case_subject_boxes_sentinel(c, pred, pt) ? "_o%d" : "_t%d", t);
   Buf sb; memset(&sb, 0, sizeof sb);
   if (sn[1] == 'o') buf_printf(&sb, "%s(%s)", oint_box(pt), sn);
+  else if (th >= 0) {
+    /* the subject boxed as it is held, from the temps it ran into: its
+       handle */
+    int mark = g_n_argov;
+    ran_first_bind(pred, t, th);
+    emit_boxed(c, pred, &sb);
+    view_unbind(mark);
+  }
   else emit_boxed_text(c, pt, sn, &sb);
   /* The walk repeats on the boxed subject what the arm decided on its typed
      one. A pattern of values and classes reads any subject the same way. One
@@ -7977,6 +8006,7 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
 
   int t = ++g_tmp;
   int lbl = ++g_tmp;
+  int th = -1;
   TyKind pt = (pred >= 0) ? comp_ntype(c, pred) : TY_POLY;
   if (pt == TY_UNKNOWN) pt = TY_POLY;
   /* Evaluate the scrutinee first so its own prelude is flushed to g_pre before
@@ -7992,6 +8022,7 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
     free(ob.p);
   }
   else {
+  if (else_clause < 0) th = pm_subject_handle(c, pred, pt, indent, b);
   Buf sb; memset(&sb, 0, sizeof sb);
   if (pred >= 0) sb = expr_buf(c, pred);
   emit_indent(b, indent); emit_ctype(c, pt, b);
@@ -8816,7 +8847,7 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
       one_guard = g >= 0;
     }
     if (arms != 1) one_pat = -1;
-    emit_pm_nomatch_raise(c, pred, one_pat, one_guard, t, pt, indent, b);
+    emit_pm_nomatch_raise(c, pred, one_pat, one_guard, t, th, pt, indent, b);
   }
 
   /* The matched arm jumps here, past the no-match raise. In TAIL mode the arm
