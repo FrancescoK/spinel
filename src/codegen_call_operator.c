@@ -432,6 +432,14 @@ static int emit_isa_runtime_flag_class(Compiler *c, const NodeTable *nt, const c
   return 0;
 }
 
+/* Does a program class (not a reopened builtin) define the kind query
+   `name` itself? */
+static int kind_query_overridden(Compiler *c, const char *name) {
+  for (int k = 0; k < c->nclasses; k++)
+    if (!is_builtin_reopen(c->classes[k].name) && comp_method_in_class(c, k, name) >= 0) return 1;
+  return 0;
+}
+
 int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
   if (emit_compare_lead_arms(c, id, name, recv, argc, argv, rt, b)) return 1;
   /* a literal `<<` whose result overflowed int64 (`1 << 64`): the node is typed
@@ -1269,9 +1277,14 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     return 1;
   }
 
-  /* poly.is_a?(Class) / kind_of?: runtime tag/cls_id check */
+  /* poly.is_a?(Class) / kind_of?: runtime tag/cls_id check. A boxed receiver
+     may hold an instance of a program class with its own is_a? / kind_of? /
+     instance_of? (activesupport's Duration answers for the number it wraps),
+     which the test never asks: then the call is left to the general
+     dispatch, whose arms reach the override and answer the class test for
+     every other value. */
   if (recv >= 0 && rt == TY_POLY && argc == 1 &&
-      is_kind_query(name)) {
+      is_kind_query(name) && !kind_query_overridden(c, name)) {
     const char *cty = nt_type(nt, argv[0]);
     char cnq[192];
     const char *cn = isa_match_name(nt, argv[0], cnq, sizeof cnq);
