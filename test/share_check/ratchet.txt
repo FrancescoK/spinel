@@ -134,6 +134,8 @@ test/share/share_strings_self.rb	test/share/share_strings_self.rb:104	LocalVaria
 test/share/share_strings_slice_elements.rb	test/share/share_strings_slice_elements.rb:26	CallNode (+@)	boxed as bytes by sp_box_str (bytes face)
 test/share/share_strings_static_slot_reads.rb	test/share/share_strings_static_slot_reads.rb:39	CallNode (+@)	boxed as bytes by sp_box_str (bytes face)
 test/share/share_strings_stored_block_parameters.rb	test/share/share_strings_stored_block_parameters.rb:20	CallNode (*)	boxed as bytes by sp_box_str (bytes face)
+test/share/share_strings_yield_bang.rb	test/share/share_strings_yield_bang.rb:13	LocalVariableReadNode (s)	changed in place as bytes by sp_str_substr (bytes face)
+test/share/share_strings_yield_bang.rb	test/share/share_strings_yield_bang.rb:143	CallNode (p)	boxed as bytes by sp_box_str (sp_poly_unbox_s)
 test/share/share_strings_yield_parameter_store.rb	test/share/share_strings_yield_parameter_store.rb:23	CallNode (+@)	boxed as bytes by sp_box_str (bytes face)
 test/share/share_strings_yield_parameter_store.rb	test/share/share_strings_yield_parameter_store.rb:33	CallNode (+@)	boxed as bytes by sp_box_str (bytes face)
 test/share/share_strings_yield_parameter_store.rb	test/share/share_strings_yield_parameter_store.rb:4	CallNode (+@)	boxed as bytes by sp_box_str (bytes face)

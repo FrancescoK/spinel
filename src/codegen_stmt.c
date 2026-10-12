@@ -22369,8 +22369,16 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
   case SHFL_YIELD: {
     /* A receiver conversion keeps its handle in both the boxed yield
        and the typed block-parameter binder, and so does a String Range's
-       endpoint (emit_boxed, emit_block_arg_coerced). */
-    if (strbuf_poly_to_s(c, v) || strbuf_route_srange_kept(c, v)) return 1;
+       endpoint (emit_boxed, emit_block_arg_coerced). So does a bang on a
+       variable's handle, which hands on that handle or nil as an argument
+       does (strbuf_bang_self_local): the box takes it
+       (emit_boxed_bang_self), the block-parameter binder takes it, and a
+       proc's argument rides it (proc_arg_ty). A bang on a boxed receiver
+       is not taken: its box can hold a plain String rather than the
+       handle, and the bang then answers a new String. */
+    if (strbuf_poly_to_s(c, v) || strbuf_route_srange_kept(c, v) ||
+        strbuf_bang_self_local(c, unwrap_parens(c, v)))
+      return 1;
     /* a yield takes a variable's handle only from its bare read:
        `yield((s))` hands on a copy */
     int u = unwrap_parens(c, v);

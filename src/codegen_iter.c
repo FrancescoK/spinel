@@ -1885,11 +1885,12 @@ static void emit_block_arg_coerced(Compiler *c, int node, TyKind ot, Buf *b) {
     free(t.p);
   }
   /* a String into a parameter a mutating callee made a buffer, as a plain
-     assignment of one takes it (#6039); a receiver conversion and a String
-     Range's endpoint (strbuf_route_srange_kept) hand on the handle they
-     read */
+     assignment of one takes it (#6039); a receiver conversion, a String
+     Range's endpoint (strbuf_route_srange_kept) and a bang on a handle or a
+     box (strbuf_arg_bang, the receiver's handle or nil) hand on the handle
+     they read */
   else if (ot == TY_STRBUF && at == TY_STRING) {
-    if (strbuf_poly_to_s(c, node) || strbuf_route_srange_kept(c, node)) {
+    if (strbuf_poly_to_s(c, node) || strbuf_route_srange_kept(c, node) || strbuf_arg_bang(c, unwrap_parens(c, node))) {
       int th = ran_first_handle(node);
       if (th >= 0) buf_printf(b, "_t%d", th);
       else emit_strbuf_handle_of(c, node, b);
