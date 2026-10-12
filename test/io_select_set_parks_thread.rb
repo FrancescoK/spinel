@@ -36,11 +36,15 @@ t0 = Time.now
 p IO.select([r1, r2], nil, nil, 0.2)
 p((Time.now - t0) >= 0.15)
 
-# the write side of a set: a full pipe becomes writable when it is drained
+# the write side of a set: a full pipe becomes writable when it is drained.
+# The drainer starts before the fill: a pipe's capacity is 64 KiB only while
+# the user is under the kernel's pipe page limit, and a loaded gate runs
+# enough programs to push it to one page, where a 64 KiB write with no
+# reader yet would block for good.
 r3, w3 = IO.pipe
-w3.write("y" * 65536) rescue nil
 w3.sync = true
 drainer = Thread.new { sleep 0.1; r3.read(65536).size }
+w3.write("y" * 65536) rescue nil
 _rdw, wr = IO.select([r1], [w3])
 p wr == [w3]
 p drainer.value
