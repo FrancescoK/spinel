@@ -420,9 +420,12 @@ bool map_type(rbs_parser_t *p, rbs_node_t *node,
             sbuf_set(out, "nil", 3);
             return true;
         case RBS_TYPES_BASES_VOID:
-            /* void only appears as a return type; spinel uses "nil"
-             * (which void-returning methods discard). */
-            sbuf_set(out, "nil", 3);
+            /* void only appears as a return type, and says the value is not
+             * meant to be used -- not what it is: the method still answers
+             * its body's value, and a caller may use it. "-" pins nothing
+             * (the analyzer reads no type from it), so inference keeps the
+             * return; it was "nil", which emptied that value. */
+            sbuf_set(out, "-", 1);
             return true;
         case RBS_TYPES_BASES_ANY:
             /* `untyped` in RBS == anything. Spinel's nearest is poly

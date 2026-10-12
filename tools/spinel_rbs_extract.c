@@ -10,7 +10,7 @@
  *
  * Subset supported (everything else dropped without warning):
  *   - Primitives: Integer, Float, String, Symbol, TrueClass,
- *     FalseClass, NilClass, bool, nil, void (→ nil for returns)
+ *     FalseClass, NilClass, bool, nil; a void return pins nothing
  *   - Nominal class instances → obj_<QualifiedName>
  *   - Array[T] where T is in subset → str_array / int_array /
  *     float_array / sym_array / obj_X_ptr_array / poly_array
