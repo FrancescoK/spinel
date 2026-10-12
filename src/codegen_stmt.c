@@ -17854,11 +17854,21 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
           snprintf(islot9, sizeof islot9, "sp_strbuf_read_pub(%s)", h8);
           if (g_repr_check) repr_channel_note(c, id, RCH_PUBLISH);
         }
-        /* a class-level / toplevel static is an oint: boxed as one, read as
-           its value for a plain slot, handed over whole for an oint slot */
+        /* a class-level / toplevel static is an oint, and so is an instance
+           field read beside its nil bit: boxed as one, read as its value
+           for a plain slot, handed over whole for an oint slot */
         int civ8 = (cmeth9 || tl9 >= 0) && oint_kind(it9) && civ_is_oint(c, icls9, iidx9);
         int slot_o8 = g_result_var ? g_result_oint : g_ret_oint;
         int want_poly8 = g_result_var ? g_result_poly : ((g_result_var ? g_result_ty : g_ret_type) == TY_POLY);
+        if (plain9 && oint_kind(it9) && (want_poly8 || slot_o8) && ivar_has_nilbit(c, icls9, iidx9) &&
+            node_is_oint(c, id)) {
+          char pfx8[128], bt8[160], f8[512];
+          snprintf(pfx8, sizeof pfx8, "%s%s", g_self, g_self_deref);
+          ivar_nilbit_test(c, icls9, iidx9, pfx8, bt8, sizeof bt8);
+          snprintf(f8, sizeof f8, "%s", islot9);
+          snprintf(islot9, sizeof islot9, "((%s){ %s, %s != 0 })", oint_ctype(it9), f8, bt8);
+          civ8 = 1;
+        }
         if (want_poly8 && civ8) buf_printf(b, "%s(%s);\n", oint_box(it9), islot9);
         else if (!want_poly8 && civ8 && !slot_o8) buf_printf(b, "%s.v;\n", islot9);
         else if (!want_poly8 && !civ8 && oint_kind(it9) && slot_o8) buf_printf(b, "%s(%s);\n", oint_of(it9), islot9);
