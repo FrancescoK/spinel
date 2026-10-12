@@ -531,6 +531,63 @@ static int nf_region_writes(NF *f, int region, const char *nm) {
   f->rg_n++;
   return w;
 }
+/* is a an ancestor of d (or d itself), looking no further out than region? */
+static int nf_is_ancestor(NF *f, int a, int d, int region) {
+  for (int n = d, g = 0; n >= 0 && g < 4096; n = f->par[n], g++) {
+    if (n == a) return 1;
+    if (n == region) return 0;
+  }
+  return 0;
+}
+/* a construct that can run its body again: the next pass, or a retry,
+   reads after a write the pass before made */
+static int nf_repeats(NodeKind k) {
+  return k == NK_WhileNode || k == NK_UntilNode || k == NK_ForNode || k == NK_BlockNode ||
+         k == NK_LambdaNode || k == NK_BeginNode;
+}
+/* Can a write of nm in the guarded region (subtree n) run before the read
+   rd of it? A write on an earlier line can; one on the read's own line is
+   taken to (the two are not ordered here), unless it is the write whose
+   value holds the read (`cur = cur.nxt`: the read runs first); one on a
+   later line can only when a loop, a block, a lambda or a begin inside the
+   region holds both, whose next pass runs the read after it. */
+static int nf_write_runs_first(NF *f, int n, const char *nm, int rd, long long rl, int region, int depth) {
+  const NodeTable *nt = f->nt;
+  if (n < 0 || depth > 512) return 0;
+  switch (nt_kind(nt, n)) {
+  case NK_LocalVariableWriteNode: case NK_LocalVariableOrWriteNode:
+  case NK_LocalVariableAndWriteNode: case NK_LocalVariableOperatorWriteNode:
+  case NK_LocalVariableTargetNode: {
+    const char *wn = nt_str(nt, n, "name");
+    if (wn && sp_streq(wn, nm) && !nf_is_ancestor(f, n, rd, region)) {
+      long long wl = nt_int(nt, n, "node_line", 0);
+      if (wl <= 0 || wl <= rl) return 1;
+      for (int a = f->par[n], g = 0; a >= 0 && g < 4096; a = f->par[a], g++) {
+        if (nf_repeats(nt_kind(nt, a)) && nf_is_ancestor(f, a, rd, region)) return 1;
+        if (a == region) break;
+      }
+    }
+    break;
+  }
+  case NK_DefNode: return 0;
+  default: break;
+  }
+  for (int i = 0; i < nt_num_refs(nt, n); i++)
+    if (nf_write_runs_first(f, nt_ref_at(nt, n, i), nm, rd, rl, region, depth + 1)) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
+    for (int k = 0; k < an; k++) if (nf_write_runs_first(f, av[k], nm, rd, rl, region, depth + 1)) return 1;
+  }
+  return 0;
+}
+/* the region's writes of nm, as they bear on its read rd: none, or none
+   that can run before the read */
+static int nf_region_writes_before(NF *f, int region, const char *nm, int rd) {
+  if (!nf_region_writes(f, region, nm)) return 0;
+  long long rl = nt_int(f->nt, rd, "node_line", 0);
+  if (rl <= 0) return 1;
+  return nf_write_runs_first(f, region, nm, rd, rl, region, 0);
+}
 /* A statement that leaves the list: `return`, `next`, `break`, `raise` */
 static int nf_is_jump(const NodeTable *nt, int s) {
   s = nf_unparen(nt, s);
@@ -564,8 +621,11 @@ static int nf_exit_guard(Compiler *c, int s, const char *nm) {
 }
 
 /* Is the read rd of local nm (slot lv) under a guard that proves it is not
-   nil, with no write of nm between the guard and the read? Walks out to the
-   method, a block or a lambda, which may run after the slot changed. */
+   nil, with no write of nm between the guard and the read
+   (nf_region_writes_before: a write after the read in the guarded region is
+   no write between, unless a loop in the region runs the read again)?
+   Walks out to the method, a block or a lambda, which may run after the
+   slot changed. */
 static int nf_local_guarded(NF *f, int rd, const char *nm, const LocalVar *lv) {
   Compiler *c = f->c;
   const NodeTable *nt = f->nt;
@@ -593,8 +653,10 @@ static int nf_local_guarded(NF *f, int rd, const char *nm, const LocalVar *lv) {
        Prism's begin-modifier flag): that body runs once before the test */
     else if (pk == NK_WhileNode && !(nt_int(nt, p, "flags", 0) & 4) && cur == nt_ref(nt, p, "statements") &&
              nf_truthy_implies(c, nt_ref(nt, p, "predicate"), nm)) region = cur;
+    else if (pk == NK_UntilNode && !(nt_int(nt, p, "flags", 0) & 4) && cur == nt_ref(nt, p, "statements") &&
+             nf_falsy_implies(c, nt_ref(nt, p, "predicate"), nm)) region = cur;
     if (region >= 0) {
-      if (!nf_region_writes(f, region, nm)) return 1;
+      if (!nf_region_writes_before(f, region, nm, rd)) return 1;
     }
     else if (pk == NK_StatementsNode) {
       int bn = 0; const int *b = nt_arr(nt, p, "body", &bn);
@@ -603,7 +665,8 @@ static int nf_local_guarded(NF *f, int rd, const char *nm, const LocalVar *lv) {
       for (int i = at - 1; i >= 0; i--) {
         if (nf_exit_guard(c, b[i], nm)) {
           int clean = 1;
-          for (int j = i + 1; j <= at && clean; j++) clean = !nf_region_writes(f, b[j], nm);
+          for (int j = i + 1; j <= at && clean; j++)
+            clean = j == at ? !nf_region_writes_before(f, b[j], nm, rd) : !nf_region_writes(f, b[j], nm);
           if (clean) return 1;
           break;
         }

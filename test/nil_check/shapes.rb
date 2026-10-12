@@ -100,3 +100,39 @@ def isa(n)
   p b.v if b.kind_of?(Object)
 end
 isa(ARGV.size)
+
+# A write of the local after its read in a guarded region is no write
+# between the guard and the read: the list walk `while cur != nil; ...;
+# cur = cur.nxt; end` reads cur guarded. A write before the read, or one a
+# loop inside the region runs again, leaves the read may-be-nil.
+class Cell2
+  attr_accessor :nxt, :v
+  def initialize(v, nxt) = (@v = v; @nxt = nxt)
+end
+def walk(head, n)
+  cur = head
+  s = 0
+  while cur != nil
+    s += cur.v
+    cur = cur.nxt
+  end
+  until cur.nil?
+    cur = cur.nxt
+  end
+  cur = head
+  if cur
+    cur = cur.nxt if n > 1
+    s += cur.v
+  end
+  cur = head
+  if cur
+    s += cur.v
+    cur = nil
+  end
+  cur = head
+  while cur
+    3.times { s += cur.v; cur = cur.nxt }
+  end
+  s
+end
+p walk(Cell2.new(1, Cell2.new(2, nil)), 1)
