@@ -1232,3 +1232,36 @@ sp_RbVal sp_builtin_class_new(int kind, sp_int argc, const sp_RbVal *av, sp_Proc
     return sp_box_obj(sp_Object_new(), SP_BUILTIN_OBJECT);
   }
 }
+
+/* A case/in that no arm took, or a rightward `expr => pat` that failed:
+   NoMatchingPatternError with the subject's inspect. A single pattern also
+   says why it failed (`detail`), as CRuby does: "[1, 2]: [1, 2] length
+   mismatch (given 2, expected 1)". A key the hash lacks is the
+   NoMatchingPatternKeyError subclass. */
+void sp_pm_raise_nomatch(sp_RbVal subj, const char *detail, int key_err) {
+  SP_GC_ROOT_RBVAL(subj); SP_GC_ROOT_STR(detail);
+  const char *s = sp_poly_inspect(subj); SP_GC_ROOT_STR(s);
+  sp_raise_cls(key_err ? "NoMatchingPatternKeyError" : "NoMatchingPatternError",
+               detail ? sp_sprintf("%s: %s", s, detail) : s);
+}
+/* `pat === v` was false; pat is the pattern's inspect */
+/* sp_sprintf renders a long message again from its arguments after it
+   allocates, so every inspect it is handed is rooted first */
+const char *sp_pm_eqq_msg(const char *pat, sp_RbVal v) {
+  SP_GC_ROOT_STR(pat);
+  const char *s = sp_poly_inspect(v); SP_GC_ROOT_STR(s);
+  return sp_sprintf("%s === %s does not return true", pat, s);
+}
+/* `fmt`, a message with one %s, about v's inspect */
+const char *sp_pm_inspect_msg(const char *fmt, sp_RbVal v) {
+  SP_GC_ROOT_RBVAL(v);
+  const char *s = sp_poly_inspect(v); SP_GC_ROOT_STR(s);
+  return sp_sprintf(fmt, s);
+}
+/* an array pattern of `want` elements (at least that many with a rest) */
+const char *sp_pm_len_msg(sp_RbVal arr, sp_int want, int at_least) {
+  SP_GC_ROOT_RBVAL(arr);
+  const char *s = sp_poly_inspect(arr); SP_GC_ROOT_STR(s);
+  return sp_sprintf("%s length mismatch (given %lld, expected %lld%s)", s,
+                    (long long)sp_poly_length(arr), (long long)want, at_least ? "+" : "");
+}
