@@ -2747,6 +2747,10 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	   ! grep -q 'passed to an appending value block' "$$tmp/heuw.err"; then \
 	  echo "rbs-seed-test: FAIL (#8235 a Hash#each value into an untyped appending writer was not refused)"; ok=0; fi; \
 	;; \
+	time_unknown_method_seeded_return) \
+	$(SPINEL) test/rbs-seed/time_unknown_method_seeded_return.rb --rbs test/rbs-seed/sig --defer-refusals -o "$$tmp/tums" >"$$tmp/tums.err" 2>&1 && \
+	  "$$tmp/tums" > "$$tmp/tums.out" 2>/dev/null && cmp -s "$$tmp/tums.out" test/rbs-seed/time_unknown_method_seeded_return.expected || { echo "rbs-seed-test: FAIL (a Time method nothing defines contradicted a seeded return)"; sed -n 1,3p "$$tmp/tums.err"; ok=0; }; \
+	;; \
 	attr_writer_poly_value) \
 	$(SPINEL) test/rbs-seed/attr_writer_poly_value.rb --rbs test/rbs-seed/sig -o "$$tmp/awp" >/dev/null 2>&1 && \
 	  "$$tmp/awp" > "$$tmp/awp.out" 2>/dev/null && cmp -s "$$tmp/awp.out" test/rbs-seed/attr_writer_poly_value.expected || { echo "rbs-seed-test: FAIL (#4856 a boxed value into an --rbs Integer attr as a method's value)"; ok=0; }; \

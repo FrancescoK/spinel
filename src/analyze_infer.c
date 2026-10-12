@@ -3809,8 +3809,10 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
     /* predicates (is_a?/kind_of?/instance_of?/between?/...) before the int
        catch-all below swallows them */
     { size_t tnl = strlen(name); if (tnl > 0 && name[tnl - 1] == '?') { *out = TY_BOOL; return 1; } }
-    /* year/mon/day/hour/min/sec/wday/yday/to_i/tv_sec/tv_usec/usec/tv_nsec/nsec/... */
-    { *out = TY_INT; return 1; }
+    /* year/mon/day/hour/min/sec/wday/yday/to_i/tv_sec/tv_usec/usec/tv_nsec/nsec
+       are builtin-op rows, answered above. Any other name is not Time's, and
+       answering Integer for it gave a call Spinel refuses (Time#to_date
+       without `require "date"`) a type a seeded return then "contradicted". */
   }
   return 0;
 }

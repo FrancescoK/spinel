@@ -1,0 +1,3 @@
+class TUnkBox
+  def to_date: () -> TUnkDate
+end
