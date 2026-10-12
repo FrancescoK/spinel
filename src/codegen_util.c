@@ -596,6 +596,9 @@ int subtree_allocates(const NodeTable *nt, int id) {
     if (sc && nt_str_len(nt, id, "content") > strlen(sc)) return 1;
     return 0;
   }
+  /* A Rational literal past sp_int is built as the big Rational each time it
+     is read (sp_box_brat); any other is an sp_Rational value. */
+  if (nt_kind(nt, id) == NK_RationalNode) return nt_int(nt, id, "rat_big", 0) != 0;
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++)
     if (subtree_allocates(nt, nt_ref_at(nt, id, i))) return 1;
