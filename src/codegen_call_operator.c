@@ -439,6 +439,15 @@ static int kind_query_overridden(Compiler *c, const char *name) {
     if (!is_builtin_reopen(c->classes[k].name) && comp_method_in_class(c, k, name) >= 0) return 1;
   return 0;
 }
+/* Is kind query `id` on a boxed receiver the general dispatch's? When a
+   program class defines the query, an instance of it reached through the
+   box answers with its own method, which the class tests below never ask;
+   the dispatch's arms reach it, and answer every other value with the
+   builtin test -- by emitting this same call again as its builtin arm
+   (g_pd_skip), which the tests below are then for. */
+static int kind_query_to_dispatch(Compiler *c, int id, const char *name, TyKind rt) {
+  return rt == TY_POLY && g_pd_skip != id && kind_query_overridden(c, name);
+}
 
 int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
   if (emit_compare_lead_arms(c, id, name, recv, argc, argv, rt, b)) return 1;
@@ -1254,7 +1263,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   int builtin_rt = rt != TY_POLY && !ty_is_object(rt) && rt != TY_CLASS && rt != TY_UNKNOWN &&
                    rt != TY_VOID && rt != TY_EXCEPTION && rt != TY_IO;
   if (recv >= 0 && (rt == TY_POLY || builtin_rt) && argc == 1 &&
-      is_kind_query(name) &&
+      is_kind_query(name) && !kind_query_to_dispatch(c, id, name, rt) &&
       (comp_ntype(c, argv[0]) == TY_CLASS || repr_of(c, argv[0]).kind == RK_BOXED) &&
       !(nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode"))) {
     int t = ++g_tmp, k = ++g_tmp;
@@ -1282,14 +1291,10 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     return 1;
   }
 
-  /* poly.is_a?(Class) / kind_of?: runtime tag/cls_id check. A boxed receiver
-     may hold an instance of a program class with its own is_a? / kind_of? /
-     instance_of? (activesupport's Duration answers for the number it wraps),
-     which the test never asks: then the call is left to the general
-     dispatch, whose arms reach the override and answer the class test for
-     every other value. */
+  /* poly.is_a?(Class) / kind_of?: runtime tag/cls_id check, unless the
+     call is the general dispatch's (kind_query_to_dispatch) */
   if (recv >= 0 && rt == TY_POLY && argc == 1 &&
-      is_kind_query(name) && !kind_query_overridden(c, name)) {
+      is_kind_query(name) && !kind_query_to_dispatch(c, id, name, rt)) {
     const char *cty = nt_type(nt, argv[0]);
     char cnq[192];
     const char *cn = isa_match_name(nt, argv[0], cnq, sizeof cnq);
