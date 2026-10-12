@@ -29852,6 +29852,16 @@ static void check_seed_contradictions(Compiler *c) {
     int iv = comp_ivar_index(ci, nm);
     if (iv < 0) continue;
     TyKind slot = ci->ivar_types[iv];
+    /* `@a = @b = nil` assigns @a the nil at the bottom of the chain, not
+       @b's slot type: the write's value is what was written */
+    for (int d = 0; d < 32; d++) {
+      NodeKind vk = nt_kind(nt, v);
+      if (vk != NK_InstanceVariableWriteNode && vk != NK_LocalVariableWriteNode &&
+          vk != NK_GlobalVariableWriteNode && vk != NK_ClassVariableWriteNode) break;
+      int inner = nt_ref(nt, v, "value");
+      if (inner < 0) break;
+      v = inner;
+    }
     TyKind val = infer_type(c, v);
     if (!seed_contradicts(c, slot, val, 0)) continue;
     int ln  = (int)nt_int(nt, id, "node_line", 0);
