@@ -192,7 +192,7 @@ endif
 BUNDLED_NATIVE_MT_OBJS = $(BUNDLED_NATIVE_OBJS:.o=_mt.o)
 PKG_MT_FLAGS = -DSP_THREADS -ftls-model=initial-exec
 
-all: regexp $(SPINEL) $(RBS_EXTRACT_TARGET) tools $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS)
+all: regexp $(SPINEL) $(RBS_EXTRACT_TARGET) tools $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS) lib/spinel_rt_responds_generated.h
 
 # ---- Dependencies ----
 deps: vendor/prism/include/prism/diagnostic.h vendor/rbs/include/rbs/parser.h
@@ -347,6 +347,17 @@ build/csrc/main.o: build/csrc/spinel_rev.h
 # cannot land on the same symbol as an infixed `def x`. cmp-guarded like
 # spinel_rev.h, so only a real change recompiles.
 SP_RT_NAME_SRC = $(wildcard lib/*.h lib/*.c packages/*/*.h packages/*/*.c)
+
+# sp_poly_responds_builtin's Array/Hash/String/Integer/Float reflection
+# tables, from src/builtin_ops.c's bop_rows (tools/gen_respond_to_tables.rb
+# has the full story; see docs/superpowers/specs/2026-10-12-generate-
+# respond-to-tables-design.md). cmp-guarded like sp_rt_names.h, so a
+# content-identical regeneration does not touch the .h's mtime and does
+# not force a PCH rebuild it doesn't need.
+lib/spinel_rt_responds_generated.h: src/builtin_ops.c tools/gen_respond_to_tables.rb tools/builtin_row_gen.rb lib/spinel_rt.h
+	@t=$@.tmp.$$$$; \
+	ruby tools/gen_respond_to_tables.rb > $$t; \
+	if cmp -s $$t $@; then rm -f $$t; else mv $$t $@; fi
 
 build/csrc/sp_rt_names.h: $(SP_RT_NAME_SRC) | build/csrc
 	@t=$@.tmp.$$$$; \
@@ -1090,12 +1101,12 @@ SP_LIB_HDRS := $(wildcard lib/*.h) $(PLATFORM_HDRS)
 .PHONY: test-pch
 test-pch: $(PCH_PLAIN) $(PCH_NOPOLY)
 
-$(PCH_PLAIN): $(SP_LIB_HDRS)
+$(PCH_PLAIN): $(SP_LIB_HDRS) lib/spinel_rt_responds_generated.h
 	@mkdir -p $(@D)
 	@cp lib/spinel_rt.h $(@D)/spinel_rt.h
 	@$(CC) $(PCH_FLAGS) -Ilib -x c-header $(@D)/spinel_rt.h -o $@
 
-$(PCH_NOPOLY): $(SP_LIB_HDRS)
+$(PCH_NOPOLY): $(SP_LIB_HDRS) lib/spinel_rt_responds_generated.h
 	@mkdir -p $(@D)
 	@cp lib/spinel_rt.h $(@D)/spinel_rt.h
 	@$(CC) $(PCH_FLAGS) -DSP_TU_NO_POLY_RENDER=1 -Ilib -x c-header $(@D)/spinel_rt.h -o $@
@@ -1264,7 +1275,7 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 # `make test` always runs fresh: it wipes the prior `.ok` stamps first,
 # then runs the suite. (The old incremental `test` + `retest` split is
 # gone -- a stale `.ok` reading PASS was a recurring foot-gun.)
-test: $(SPINEL_TIMEOUT) cext-header-test cext-gc-test cext-exceptions-test cext-recorder-test
+test: lib/spinel_rt_responds_generated.h $(SPINEL_TIMEOUT) cext-header-test cext-gc-test cext-exceptions-test cext-recorder-test
 	@if [ -z "$(TIMEOUT_BIN)" ]; then \
 	  echo "WARNING: no 'timeout'/'gtimeout' on PATH -- tests run with NO time limit."; \
 	  echo "         A hanging test will hang this run until the CI job's own limit."; \
@@ -1281,7 +1292,7 @@ test-run: int-min-test timing-test signal-default-test source-marker-test rbs-te
 # C-side legs: what a 32-bit target runs (`make test-corpus CC='cc -m32'`),
 # whose CRuby extension leg and rbs tooling have no 32-bit toolchain to
 # build against.
-test-corpus: $(SPINEL_TIMEOUT)
+test-corpus: lib/spinel_rt_responds_generated.h $(SPINEL_TIMEOUT)
 	+@$(MAKE) --no-print-directory clean-test-results
 	+@$(MAKE) $(TEST_JOBS) --no-print-directory test-corpus-summary
 .PHONY: test-corpus-results test-corpus-shared-summary
