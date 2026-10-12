@@ -1273,6 +1273,7 @@ int subtree_may_write_ivar(Compiler *c, int id, const char *iv, int cls, int dep
    kind, at any depth? 0 when `arg` is no variable read. */
 int comp_node_writes_var(Compiler *c, int n, int arg);
 int comp_lvw_first(Compiler *c, const char *name);
+int comp_module_includes(Compiler *c, int m, int mod, int depth);
 int comp_class_singleton_has_module(Compiler *c, int ci, int mod);
 int comp_class_extends_any(Compiler *c, int ci);
 int comp_lvw_next(const Compiler *c, int w);

@@ -1,0 +1,17 @@
+"x, y"
+nil
+"next"
+"NEXT"
+"NEXT"
+"next"
+"ghost next"
+NoMethodError
+nil
+3
+NoMethodError
+nil
+3
+0
+[:raised, 1]
+[1, [0]]
+[3, [2, 3]]
