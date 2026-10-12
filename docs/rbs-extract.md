@@ -189,7 +189,7 @@ the field layouts coincide by construction.
 | `TrueClass`, `FalseClass`              | `bool`                                |
 | `NilClass`, `nil`                      | `nil`                                 |
 | `bool`                                 | `bool`                                |
-| `void` (return only)                   | `nil`                                 |
+| `void` (return only)                   | `-` (no pin: unused, not typed)       |
 | `Foo`, `Foo::Bar` (nominal)            | `obj_Foo`, `obj_Foo_Bar`              |
 | `Array[Integer]`                       | `int_array`                           |
 | `Array[Float]`                         | `float_array`                         |

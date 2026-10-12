@@ -1,4 +1,4 @@
 class Unions
 meth two poly poly
-meth three nil poly
-meth with_nil nil poly
+meth three - poly
+meth with_nil - poly

@@ -1,0 +1,4 @@
+class VoidRet
+  def bump: () -> void
+  def label: (String s) -> void
+end

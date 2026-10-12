@@ -85,8 +85,9 @@ annotations with ruby/rbs's default `untyped` signatures.
 | Standalone class/module-body ivar | `# @rbs @name: String`, separated from the next declaration by a blank line |
 
 The supported types match `--rbs`: `Integer`, `Float`, `String`, `Symbol`,
-`bool`, `nil`/`void`, `untyped`, program classes, `Array[T]`, `Hash[K, V]`,
-`T?`, unions as boxed values, and `singleton(C)`. See
+`bool`, `nil`, `untyped`, program classes, `Array[T]`, `Hash[K, V]`,
+`T?`, unions as boxed values, and `singleton(C)`; a `void` return is
+accepted and pins nothing (it says the value is unused, not what it is). See
 [Type vocabulary](rbs-extract.md#type-vocabulary).
 
 A method uses one signature: a method type or named parameter and return
