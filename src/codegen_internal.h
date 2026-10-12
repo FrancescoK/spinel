@@ -124,6 +124,9 @@ const int *codegen_node_parents(Compiler *c, int node);
 int user_assign_handle(Compiler *c, int id);
 int writers_change_param(Compiler *c, int id);
 int strbuf_assign_leaf(Compiler *c, int v);
+/* --share-strings: a tail some arm of which ends in a leaf only
+   emit_tail_value publishes (codegen_stmt.c) */
+int tail_pub_leaf(Compiler *c, int v);
 int strbuf_freeze_leaf(Compiler *c, int v);
 int strbuf_assign_route(Compiler *c, int v);
 /* Is an object's ivar set: 0 always, 1 when not nil, 2 cannot tell, 3 explicit flag (codegen_util.c) */
