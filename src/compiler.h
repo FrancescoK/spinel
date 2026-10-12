@@ -116,12 +116,8 @@ typedef struct {
   int site_boxed;   /* (block params) 1 when what its sites bind boxed it,
                        2 when it was boxed before they did (see
                        block_settle_types, narrow_site_boxed_block_params) */
-  int obj_nilable;  /* an object-typed parameter some call site passes nil:
-                       a user method called on it has to raise NoMethodError
-                       for nil rather than run with a NULL self (#5088) */
-  int obj_nil_written; /* codegen's memo for an object-typed local: 1 when a
-                       write in its scope stores nil, 2 when none does, 0 not
-                       yet asked (#7262) */
+  int obj_nilable;  /* an object-typed parameter some call site passes nil
+                       (#5088): a seed of the nil fact (analyze_nil.c) */
   int obj_may_nil;  /* (object-typed slots: locals, parameters, block
                        parameters, globals, constants) the nil fact
                        (analyze_nil.c, #7444): a read of the slot may answer

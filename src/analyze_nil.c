@@ -5,14 +5,12 @@
    decided once by the analysis: for every node, and for every
    slot a value is read back from (a local, a parameter, a block parameter,
    a global, a constant, an ivar, a method's value), whether the value may
-   be nil. Today the question is asked again where each answer is needed --
-   codegen's nil receiver guards (local_obj_nil_written, nil_value_node,
-   method_ret_nilable), parameter tracking's obj_nilable -- and each asks it
-   about the shapes it knows. Step 1 computed the fact and changed nothing
-   that reads those answers: --nil-check holds it against them
-   (nil_check_report, codegen_call.c). The value-type selection reads the
-   fact (vt_nil_fact_classes, analyze.c): a class an instance of which may
-   be nil keeps its pointer layout.
+   be nil. Its readers: the value-type selection (vt_nil_fact_classes,
+   analyze.c), where a class an instance of which may be nil keeps its
+   pointer layout; the representation (repr_of's may_nil); and the call
+   plan's nil target (cplan_nil, call_plan.c), which tests a receiver that
+   may be nil ahead of the call, or answers as NilClass does. Parameter
+   tracking's obj_nilable (a call hands the parameter nil) seeds it.
 
    The fact is a may-be-nil over-approximation. Where the analysis cannot
    see what reaches a slot it answers "may be nil": an object a builtin call
@@ -46,8 +44,9 @@
 
    Each may-be-nil answer carries where its nil comes from (NFW_*: of
    several sources, the first in that enum's order, a nil the program
-   writes before one the analysis cannot bound), which --nil-check reports
-   beside a disagreement and the call plan's nil target reads (cplan_nil). */
+   writes before one the analysis cannot bound), which the call plan's nil
+   target reads (cplan_nil): it tests a nil the program writes, not one the
+   fact cannot bound. */
 
 #include "analyze_internal.h"
 #include "call_plan.h"
