@@ -1780,15 +1780,29 @@ void sp_File_close_half(sp_File *f, sp_bool reading) {SP_GC_ROOT(f);
 /* IO#reopen(path, mode): rebind the handle to another file. */
 sp_File *sp_File_reopen(sp_File *f, const char *path, const char *mode) {SP_GC_ROOT(f);SP_GC_ROOT_STR(path);SP_GC_ROOT_STR(mode); sp_gc_wb((void*)f);
   if (!f) return f;
+  /* with no mode the handle keeps its own, as CRuby's does: a "w" handle
+     reopens for writing (and truncates), an "rb" one stays binary. fopen
+     takes the access part of it only: no encoding suffix, no "x" */
+  char km[8]; const char *om = mode && mode[0] ? mode : "r";
+  if (!(mode && mode[0]) && f->mode && (f->mode[0] == 'r' || f->mode[0] == 'w' || f->mode[0] == 'a')) {
+    int n = 0;
+    for (const char *q = f->mode; *q && *q != ':' && n < (int)sizeof km - 1; q++)
+      if (*q == 'r' || *q == 'w' || *q == 'a' || *q == '+' || *q == 'b') km[n++] = *q;
+    km[n] = 0;
+    om = km;
+  }
   /* a closed handle carries the shared sentinel, which must not be
      reopened: it gets a fresh stream */
-  FILE *nf = (f->closed || !f->fp) ? fopen(path ? path : "", mode && mode[0] ? mode : "r")
-                                   : freopen(path ? path : "", mode && mode[0] ? mode : "r", f->fp);
+  FILE *nf = (f->closed || !f->fp) ? fopen(path ? path : "", om)
+                                   : freopen(path ? path : "", om, f->fp);
   if (!nf) sp_file_raise_errno("reopen", path ? path : "");
   f->fp = nf;
   f->closed = 0;
   f->path = path;
-  f->mode = mode && mode[0] ? mode : "r";
+  /* a mode given replaces the handle's, as CRuby's does: an earlier
+     #binmode or #set_encoding no longer decides what a read answers */
+  if (mode && mode[0]) { f->bin_flag = 0; f->ext_enc = 0; }
+  if (om != km) f->mode = om;
   f->lineno = 0;
   return f;
 }
