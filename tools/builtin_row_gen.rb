@@ -188,6 +188,11 @@ module BuiltinRowGen
     %w[lineno= seek pos= truncate pread ungetbyte getbyte] => ["0"],
     %w[step upto downto] => ["5"],
   }.flat_map { |names, v| names.map { |n| [n, v] } }.to_h.freeze
+  # Names that look like dunder methods but are compiler-internal, never a
+  # real Ruby-level method: __bivar_get, not __id__/__send__ (those end in
+  # __ too, so the negative lookahead keeps them out of this set).
+  INTERNAL_NAME = /\A__(?!.*__\z)/.freeze
+
   # Names whose answer is not the same in two runs (an object's identity,
   # a file's inode, times, descriptor numbers), or that wait.
   SKIP = %w[hash object_id __id__ sleep wait wait_readable wait_writable wait_priority fileno to_i ino dev rdev

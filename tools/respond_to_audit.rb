@@ -67,7 +67,7 @@ ARGV.each_with_index { |a, i| ref_ruby = ARGV[i + 1] if a == "--ref" }
 # does not care which instance, so one representative is enough).
 SCOPE = %w[Array Hash String Integer Float Range Symbol Proc Exception Regexp MatchData].freeze
 
-INTERNAL_NAME = /\A__(?!.*__\z)/.freeze  # __bivar_get, not __id__/__send__
+INTERNAL_NAME = BuiltinRowGen::INTERNAL_NAME
 
 # Names bop_rows has for a typed Regexp / MatchData that a boxed one cannot
 # be called with yet (the call raises NoMethodError, or for ~ does integer
