@@ -278,7 +278,7 @@ build/rbs/%.o: $(RBS_DIR)/src/%.c
 # ---- C compiler (src/) ----
 # The single-binary C reimplementation of the analyzer + code generator.
 # Links src/spinel_parse.c, the library copy of the Prism walk (no main();
-# exposes sp_parse_file_to_text).
+# exposes sp_parse_file).
 # `spinel` is the single binary: it emits C and then drives cc to link it.
 # (SPINEL itself is defined above, just before the `all` target.)
 

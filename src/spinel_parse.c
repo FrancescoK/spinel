@@ -49,7 +49,7 @@ static int g_src_map = 1;
 /* --emit-types (SPINEL_EMIT_TYPES) also gets each node's END position, so a
    consumer can pick the tightest span under a cursor: `pts`, `pts.map { }`
    and `.inspect` all start at one column. Only then: two more attributes on
-   every node is text AST the ordinary compile has no use for (#4522). */
+   every node are node-table fields the ordinary compile has no use for (#4522). */
 static int g_emit_end = 0;
 /* Set from the ENTRY file's `# frozen_string_literal: true` magic comment.
    The pragma is per-file in Ruby: the require resolvers build g_fsl_lines
@@ -4936,10 +4936,6 @@ static int sp_const_symbol_list(const char *src, size_t len, size_t before, cons
 }
 
 /* ---- Main ---- */
-/* Parse `source_file` and append the text AST to `out`. `argv0` is the
-   invoking program path (used to locate the stdlib for plain `require`s).
-   Returns 0 on success, 1 on read/parse error. This is the library copy
-   (the in-process lib API; no standalone CLI main). */
 /* ---- recognising an inline RBS comment (docs/inline-rbs.md) ---- */
 
 /* RDoc's directives are spelled `:name:` and none of them is a valid RBS
@@ -5023,6 +5019,10 @@ static void sp_inline_rbs_done(void) {}
 static void sp_inline_rbs_free(void) {}
 #endif
 
+/* Parse `source_file` into a new node table. `argv0` is the invoking
+   program path (used to locate the stdlib for plain `require`s). Returns
+   the table, or NULL on a read or parse error. This is the library copy
+   (the in-process lib API; no standalone CLI main). */
 static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
   char *source = read_file(source_file);
   if (!source) {

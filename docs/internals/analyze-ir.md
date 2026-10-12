@@ -4,7 +4,7 @@ Spinel runs analysis and code generation as two phases of a **single
 binary**, sharing one in-memory state object:
 
 ```
-.rb  ──[sp_parse_file_to_text]──▶  text AST  ──[nt_load_text]──▶  NodeTable
+.rb  ──[sp_parse_file]──▶  NodeTable
         ──[analyze_program(c)]──▶  Compiler (filled)  ──[codegen emits]──▶  .c
 ```
 
@@ -102,8 +102,8 @@ struct field both phases see. Verify with `make check` (test) plus
 
 ## See also
 
-- [docs/AST.md](AST.md) -- the text AST format and the `NodeTable` the
-  analyzer and code generator both read.
+- [docs/AST.md](AST.md) -- the `NodeTable` the analyzer and code generator
+  both read, and its `--dump-ast` text form.
 - `src/compiler.h` -- the `Compiler` / `Scope` / `ClassInfo` structs and
   the `comp_*` accessor API.
 - `src/analyze.h` -- `analyze_program` / `infer_type` entry points.

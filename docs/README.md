@@ -54,7 +54,7 @@ Start here, then open the topic you need.
 
 How the compiler is built and where it is going. Not needed to *use* Spinel.
 
-- **[internals/AST.md](internals/AST.md)** -- the text AST the parser emits and
+- **[internals/AST.md](internals/AST.md)** -- the node table the parser fills and
   the rest of the compiler consumes.
 - **[internals/analyze-ir.md](internals/analyze-ir.md)** -- the analyze ↔ codegen
   contract (the shared in-memory `Compiler` model).

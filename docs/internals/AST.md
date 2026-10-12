@@ -85,7 +85,8 @@ one the accessors answer.
 puts "hi"
 ```
 
-prints as (without the position attributes):
+prints as (without the source and file records, the position attributes
+and the `fzl` flag):
 
 ```
 ROOT 0
@@ -106,7 +107,8 @@ S 4 content hi
 ```
 
 Node ids are assigned in DFS pre-order during parse, so a child's id is
-always greater than its parent's id.
+greater than its parent's id, except for the StatementsNode made for an
+embedded instance variable (`"#@iv"`), which follows the variable it holds.
 
 ### Encoding rules
 

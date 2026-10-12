@@ -3,7 +3,7 @@
  * One executable does the whole job, with no shell wrapper and no chain of
  * helper binaries (the legacy parse -> analyze -> codegen pipeline collapsed
  * into this process). It:
- *   1. parses the .rb (Prism walk -> text AST -> in-memory node table),
+ *   1. parses the .rb (the Prism walk fills the in-memory node table),
  *   2. infers types and emits C (codegen_program),
  *   3. invokes the C compiler (cc) to link the generated C against
  *      libspinel_rt.a into a native binary, and

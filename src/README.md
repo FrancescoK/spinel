@@ -6,4 +6,4 @@ Ruby implementation is preserved on the `self-host` branch.
 
 See [internals/analyze-ir.md](../docs/internals/analyze-ir.md) for the
 analyze/codegen contract and [internals/AST.md](../docs/internals/AST.md)
-for the text AST the parser emits.
+for the node table the parser fills.
