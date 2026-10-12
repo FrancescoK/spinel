@@ -7274,7 +7274,10 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
   else buf_puts(b, lb);
   /* a writer's dispatch (`x.body = v`) declares no result slot -- its value
      is the argument's temp -- so tr < 0 says to run the arm for its effect */
-  if (void_obj || tr < 0) buf_printf(b, " %s;", ib.p);
+  /* a nil answer into a nil slot carries no value: the slot keeps its
+     initializer, whatever form the emission wrote the nil in (IO#close
+     answers a boxed one) */
+  if (void_obj || tr < 0 || (ret == TY_NIL && bt == TY_NIL)) buf_printf(b, " %s;", ib.p);
   else buf_printf(b, " _t%d = %s;", tr, ib.p);
   buf_puts(b, arm_pre ? " } break;" : " break;");
   free(ib.p); free(arm_pre);
