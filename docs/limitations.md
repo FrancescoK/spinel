@@ -509,7 +509,16 @@ still works.
   where `s[s.index("z")]` is the same `no implicit conversion from nil to
   integer` CRuby raises rather than a read off the front of the string.
   A Range endpoint is the exception it is in CRuby: `s[ix..]` on a missed
-  `index` is the beginless Range, not an error. But bool and Symbol have
+  `index` is the beginless Range, not an error. An operator or a method
+  called on such a slot while it holds nil raises CRuby's NoMethodError
+  (`n + 1`, `n << 1`, `-n`, `~n`), except `&`, `|` and `^`, which NilClass
+  answers in CRuby (`nil & 3` is false, `nil | 3` true): Spinel raises
+  `no implicit conversion from nil to integer` for them under
+  --int-overflow=raise and wrap, since their answer is an Integer slot with
+  no room for the bool; giving the call a boxed type wherever the receiver
+  may be nil would box the bit operations of hot code (optcarrot's among
+  them). --int-overflow=promote boxes these calls already and answers as
+  CRuby. But bool and Symbol have
   no spare value at all.
 - **Comparable is keyed on `<=>` presence** -- the Comparable operator methods
   (`<`, `<=`, `>`, `>=`, `between?`, `clamp`) work on any class that defines

@@ -1754,7 +1754,9 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   /* unary bitwise complement: ~int -> (~x); ~poly -> coerce to int first */
   if (sp_streq(name, "~") && recv >= 0 && argc == 0 && (rt == TY_INT || rt == TY_POLY)) {
     if (rt == TY_POLY) { buf_puts(b, "(~sp_poly_recv_i(\"~\", "); emit_expr(c, recv, b); buf_puts(b, "))"); }
-    else { buf_puts(b, "(~"); emit_expr(c, recv, b); buf_puts(b, ")"); }
+    /* an Integer that may be nil: nil has no `~` (NoMethodError), where the
+       strict read raised the argument's TypeError (#7444) */
+    else { buf_puts(b, "(~"); emit_scalar_operand_op(c, recv, "~", b); buf_puts(b, ")"); }
     return 1;
   }
   /* poly parity predicates: Integer-only in Ruby, so truncation cannot lose a

@@ -1,0 +1,17 @@
+4
+1
+-2
+-3
+3
+true
+true
+NoMethodError: undefined method '<<' for nil
+NoMethodError: undefined method '>>' for nil
+NoMethodError: undefined method '-@' for nil
+NoMethodError: undefined method '~' for nil
+NoMethodError: undefined method '+' for nil
+NoMethodError: undefined method '<' for nil
+NoMethodError: undefined method 'even?' for nil
+NoMethodError: undefined method '~' for nil
+NoMethodError: undefined method 'abs' for nil
+NoMethodError: undefined method '*' for nil
