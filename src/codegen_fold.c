@@ -4466,6 +4466,22 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* each_slice(n).map / each_cons(n).map with one block parameter that the
+   analysis made a box (a slice of Strings the share rule shares): the
+   parameter takes the slice boxed, over the receiver walked as the PolyArray
+   of handles where it is a fresh String Array whose elements the rule shares
+   (iter_src_as_handles), so its elements are those handles. Bound as the
+   typed slice, the C did not build. Answers whether the parameter is such a
+   box; *as_handles says whether the receiver is walked as handles. */
+static int slice_param_boxed(Compiler *c, int block, int arr, TyKind arr_t, int *as_handles) {
+  const char *p0 = block_param_name(c, block, 0);
+  Scope *bsc = p0 ? comp_scope_of(c, block) : NULL;
+  LocalVar *plv = bsc ? scope_local(bsc, p0) : NULL;
+  *as_handles = 0;
+  if (!plv || plv->type != TY_POLY || block_param_is_multi(c, block, 0) || block_param_name(c, block, 1)) return 0;
+  *as_handles = arr_t == TY_STR_ARRAY && iter_src_as_handles(c, arr);
+  return 1;
+}
 /* sort_by { |x| key } as an expression: a stable bubble sort of a copy of
    the receiver, ordering by the block's computed (scalar) key. Returns 1 if
    handled. */
@@ -5096,6 +5112,8 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     if (es_argc == 1 && es_recv >= 0) {
       Repr arr_r = repr_of(c, es_recv);
       TyKind arr_rt = arr_r.as_ty;
+      int es_handles = 0, es_boxed = ty_is_array(arr_rt) && slice_param_boxed(c, block, es_recv, arr_rt, &es_handles);
+      if (es_handles) { arr_rt = TY_POLY_ARRAY; arr_r.elem = TY_POLY; }
       if (ty_is_array(arr_rt)) {
         const char *k = (arr_r.elem == TY_POLY) ? "Poly" : array_kind(arr_rt);
         if (k) {
@@ -5109,7 +5127,8 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
           int bn_es = 0; const int *bb_es = body_es >= 0 ? nt_arr(nt, body_es, "body", &bn_es) : NULL;
           if (bn_es >= 1) {
             int ta_es = ++g_tmp, ts_es = ++g_tmp, tres_es = ++g_tmp, ti_es = ++g_tmp;
-            Buf rb_es; memset(&rb_es, 0, sizeof rb_es); emit_expr(c, es_recv, &rb_es);
+            Buf rb_es; memset(&rb_es, 0, sizeof rb_es);
+            if (es_handles) emit_str_array_handles(c, es_recv, &rb_es); else emit_expr(c, es_recv, &rb_es);
             emit_indent(g_pre, g_indent); emit_ctype(c, arr_rt, g_pre);
             buf_printf(g_pre, " _t%d = %s;\n", ta_es, rb_es.p ? rb_es.p : ""); free(rb_es.p);
             /* rooted like the result array below: the length is the loop
@@ -5145,9 +5164,11 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
             else {
               const char *p0_es = block_param_name(c, block, 0); if (p0_es) p0_es = rename_local(p0_es);
               if (p0_es) {
+                char sl[96]; snprintf(sl, sizeof sl, "sp_%sArray_slice(_t%d, _t%d, _t%d)", k, ta_es, ti_es, ts_es);
                 emit_indent(g_pre, g_indent + 1);
-                buf_printf(g_pre, "lv_%s = sp_%sArray_slice(_t%d, _t%d, _t%d);\n",
-                           p0_es, k, ta_es, ti_es, ts_es);
+                buf_printf(g_pre, "lv_%s = ", p0_es);
+                if (es_boxed) emit_boxed_text(c, arr_rt, sl, g_pre); else buf_puts(g_pre, sl);
+                buf_puts(g_pre, ";\n");
               }
             }
             /* collect the block's value (next-aware) into a result temp, push it */
@@ -5183,6 +5204,8 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     if (ec_argc == 1 && ec_recv >= 0) {
       Repr arr_r_ec = repr_of(c, ec_recv);
       TyKind arr_ec = arr_r_ec.as_ty;
+      int ec_handles = 0, ec_boxed = ty_is_array(arr_ec) && slice_param_boxed(c, block, ec_recv, arr_ec, &ec_handles);
+      if (ec_handles) { arr_ec = TY_POLY_ARRAY; arr_r_ec.elem = TY_POLY; }
       if (ty_is_array(arr_ec)) {
         const char *kec = (arr_r_ec.elem == TY_POLY) ? "Poly" : array_kind(arr_ec);
         if (kec) {
@@ -5195,7 +5218,8 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
           int bn_ec = 0; const int *bb_ec = body_ec >= 0 ? nt_arr(nt, body_ec, "body", &bn_ec) : NULL;
           if (bn_ec >= 1) {
             int ta_ec = ++g_tmp, tn_ec = ++g_tmp, tres_ec = ++g_tmp, ti_ec = ++g_tmp;
-            Buf rb_ec; memset(&rb_ec, 0, sizeof rb_ec); emit_expr(c, ec_recv, &rb_ec);
+            Buf rb_ec; memset(&rb_ec, 0, sizeof rb_ec);
+            if (ec_handles) emit_str_array_handles(c, ec_recv, &rb_ec); else emit_expr(c, ec_recv, &rb_ec);
             emit_indent(g_pre, g_indent); emit_ctype(c, arr_ec, g_pre);
             buf_printf(g_pre, " _t%d = %s;\n", ta_ec, rb_ec.p ? rb_ec.p : ""); free(rb_ec.p);
             /* rooted like the result array below, for the same reason as the
@@ -5256,9 +5280,11 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
               const char *p0_ec = block_param_name(c, block, 0);
               const char *p0_ec_r = p0_ec ? rename_local(p0_ec) : NULL;
               if (p0_ec_r) {
+                char sl[96]; snprintf(sl, sizeof sl, "sp_%sArray_slice(_t%d, _t%d, _t%d)", kec, ta_ec, ti_ec, tn_ec);
                 emit_indent(g_pre, g_indent + 1);
-                buf_printf(g_pre, "lv_%s = sp_%sArray_slice(_t%d, _t%d, _t%d);\n",
-                           p0_ec_r, kec, ta_ec, ti_ec, tn_ec);
+                buf_printf(g_pre, "lv_%s = ", p0_ec_r);
+                if (ec_boxed) emit_boxed_text(c, arr_ec, sl, g_pre); else buf_puts(g_pre, sl);
+                buf_puts(g_pre, ";\n");
               }
             }
             IterStep st_ec; emit_iter_step_open(c, block, res_poly_ec, g_indent + 1, &st_ec);
