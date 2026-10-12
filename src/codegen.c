@@ -2306,18 +2306,20 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
      it on */
   /* A shared field's boxed value carries its handle even without a
      container-store lift, including defaults, throw and break values. */
+  /* a String Range's begin / end / min / max (strbuf_route_srange_kept),
+     also the value of parentheses that ran ahead (strbuf_srange_tail):
+     the handle the Range keeps for that endpoint, boxed, as a yield to a
+     boxed block parameter hands it on; any other answer is boxed as the
+     String it is, as its read answers it, also where a store lifts it
+     (a new handle over a copy was another String) */
+  if (strbuf_srange_tail(c, node) >= 0 && emit_srange_route_boxed(c, node, b)) {
+    if (g_repr_check) repr_channel_boxed(c, node, frame);
+    return;
+  }
   /* an argument that ran ahead as the handle it hands on (a lifted call
      result) */
   if (lift && ran_first_handle(node) >= 0) {
     buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", ran_first_handle(node));
-    if (g_repr_check) repr_channel_boxed(c, node, frame);
-    return;
-  }
-  /* a String Range's begin / end / min / max (strbuf_route_srange_kept):
-     the handle the Range keeps for that endpoint, boxed, as a yield to a
-     boxed block parameter hands it on; any other answer is boxed as the
-     String it is, as its read answers it */
-  if (!lift && strbuf_route_srange_kept(c, node) && emit_srange_route_boxed(c, node, b)) {
     if (g_repr_check) repr_channel_boxed(c, node, frame);
     return;
   }

@@ -2,6 +2,7 @@
 #include "repr.h"
 #include "call_plan.h"
 #include "codegen_call_arms.h"
+#include "share.h"
 
 /* An sp_oint / sp_ofloat expression where the dispatcher wants the node
    plain is unwrapped here (TypeError for nil); an oint consumer takes it
@@ -8729,11 +8730,12 @@ int ran_first_read_handle(int node) {
    take the handle of the String it hands on there? A builtin to_s keeps the
    receiver's String: its handle is captured before later arguments can
    replace the receiver. So does a String Range's endpoint
-   (strbuf_route_srange_kept): the handle the Range keeps is taken where
-   the argument runs. */
+   (strbuf_route_srange_kept), also as the value of parentheses
+   (strbuf_srange_tail): the handle the Range keeps is taken where the
+   argument runs. */
 static int arg_temp_conversion(Compiler *c, int v, TyKind at) {
   if (at != TY_STRING) return 0;
-  if (strbuf_poly_to_s(c, v) || strbuf_route_srange_kept(c, v)) return 1;
+  if (strbuf_poly_to_s(c, v) || strbuf_srange_tail(c, v) >= 0) return 1;
   /* So does a call result lifted into the handle for a boxed parameter: the
      handle its method publishes is taken where the call runs. */
   if (repr_share_rule(c) && c->poly_strbuf_lift[v] && strbuf_value_carries(c, v)) return 1;
@@ -8768,10 +8770,16 @@ static void emit_arg_temp(Compiler *c, int v) {
      `S.new(f.begin, f.begin)` bound two Strings. The Range is held,
      rooted, where the argument runs, and its receiver reads that hold from
      here on: the handle, the read and a box (emit_srange_route_boxed) take
-     the one Range. */
-  int srange = conversion && strbuf_route_srange_kept(c, v), tr = -1;
+     the one Range. Parentheses around the route (strbuf_srange_tail) run
+     their statements first, once, and their value is the route's. */
+  int stail = conversion ? strbuf_srange_tail(c, v) : -1, srange = stail >= 0, tr = -1;
   if (srange) {
-    int recv = nt_ref(c->nt, unwrap_parens(c, v), "receiver");
+    for (int w = v; w != stail && nt_kind(c->nt, w) == NK_ParenthesesNode;) {
+      int n = 0; const int *bd = nt_arr(c->nt, nt_ref(c->nt, w, "body"), "body", &n);
+      for (int i = 0; i < n - 1; i++) emit_stmt(c, bd[i], g_pre, g_indent);
+      w = bd[n - 1];
+    }
+    int recv = nt_ref(c->nt, stail, "receiver");
     tr = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb);
     emit_expr(c, recv, &rb);
@@ -8783,7 +8791,7 @@ static void emit_arg_temp(Compiler *c, int v) {
     view_bind(recv, "_t%d", tr);
   }
   Buf hw; memset(&hw, 0, sizeof hw);
-  if (conversion) emit_strbuf_handle_of(c, v, &hw);
+  if (conversion) emit_strbuf_handle_of(c, srange ? stail : v, &hw);
   else if (wshare) emit_strbuf_write_handle(c, v, &hw);
   wshare |= conversion;
   if (wshare || ((vk == NK_LocalVariableReadNode || vk == NK_InstanceVariableReadNode ||
@@ -8804,11 +8812,11 @@ static void emit_arg_temp(Compiler *c, int v) {
     /* the handle's read where the Range keeps it, the plain read of what
        it holds where it keeps none: no String the rule shares */
     char rt[24]; snprintf(rt, sizeof rt, "_t%d", tr);
-    emit_srange_kept_test(c, v, rt, &hb);
+    emit_srange_kept_test(c, stail, rt, &hb);
     buf_printf(&hb, " ? sp_strbuf_read_pub(_t%d) : ", th);
     size_t arm_at = hb.len;
-    emit_expr(c, v, &hb);
-    share_check_declare_reads(&hb, arm_at, v);
+    emit_expr(c, stail, &hb);
+    if (g_share_check) share_check_declare_reads(&hb, arm_at, stail);
   }
   else if (wshare) {
     char thr[24]; snprintf(thr, sizeof thr, "_t%d", th);
@@ -11716,6 +11724,11 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
         ran_first_bind(argv[k], ht, ht);
         continue;
       }
+      /* --share-strings: a String Range's endpoint, or parentheses that end
+         in one (strbuf_srange_tail), runs as emit_arg_temp runs it: the
+         Range held, the handle it keeps taken, and the String read off it,
+         which a box takes as the endpoint (emit_srange_route_boxed) */
+      if (at == TY_STRING && strbuf_srange_tail(c, argv[k]) >= 0) { emit_arg_temp(c, argv[k]); continue; }
       /* an Integer / Float argument that can be nil is held with its nil
          (emit_arg_temp's oint): the plain temp unwrapped it here, ahead of
          the callee, with the wrong error */

@@ -1973,6 +1973,20 @@ int strbuf_route_srange_kept(Compiler *c, int v) {
           !share_builtin_overridden(c, "Range", nt_str(c->nt, unwrap_parens(c, v), "name"))) ||
          strbuf_route_srange_extreme(c, v);
 }
+/* The String Range route (strbuf_route_srange_kept) that is the value of
+   v, through parentheses that run statements ahead of it (`(f.begin << "y";
+   f.min)`): that route's node, or -1. */
+int strbuf_srange_tail(Compiler *c, int v) {
+  for (int d = 0; v >= 0 && d < 64; d++) {
+    if (strbuf_route_srange_kept(c, v)) return unwrap_parens(c, v);
+    if (nt_kind(c->nt, v) != NK_ParenthesesNode) return -1;
+    int body = nt_ref(c->nt, v, "body"), n = 0;
+    const int *bd = body >= 0 ? nt_arr(c->nt, body, "body", &n) : NULL;
+    if (n < 1) return -1;
+    v = bd[n - 1];
+  }
+  return -1;
+}
 /* The receiver of String Range route v (strbuf_route_srange_end), held as
    the Range: for #first / #last, which raise for a beginless / endless
    Range where #begin / #end answer nil, checked so
@@ -2002,10 +2016,12 @@ void emit_srange_kept_test(Compiler *c, int v, const char *r, Buf *b) {
    that ran ahead as the handle alone is that handle's box, and one that
    ran ahead otherwise is left to the caller (0). */
 int emit_srange_route_boxed(Compiler *c, int v, Buf *b) {
-  int u = unwrap_parens(c, v), recv = nt_ref(c->nt, u, "receiver");
+  int u = strbuf_srange_tail(c, v), recv = u >= 0 ? nt_ref(c->nt, u, "receiver") : -1;
+  if (u < 0) return 0;
   int se = strbuf_route_srange_end(c, u), sx = se ? 0 : strbuf_route_srange_extreme(c, u);
   int ran = arg_ran_first(v, 0), th = ran ? ran_first_handle(v) : -1;
-  if (ran && th < 0) return 0;
+  /* (statements ahead of the route run only where the argument ran) */
+  if ((ran && th < 0) || (!ran && u != unwrap_parens(c, v))) return 0;
   if (ran && !arg_ran_first(recv, 0)) {
     buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", th);
     return 1;
@@ -4378,6 +4394,10 @@ void emit_strbuf_ivar_store(Compiler *c, int shared, int v, Buf *b) {
   memset(&slot, 0, sizeof slot);
   slot.type = TY_STRBUF;
   slot.str_shared = shared ? 1 : 0;
+  /* --share-strings: a value that ran ahead with its handle taken
+     (emit_arg_temp) is that handle: its statements ran there */
+  int held = shared && repr_share_rule(c) ? ran_first_handle(v) : -1;
+  if (held >= 0) { buf_printf(b, "_t%d", held); return; }
   if (strbuf_seq_nil_tail(c, v)) { emit_strbuf_seq_nil(c, v, b); return; }
   int u = v;
   /* The value of a parenthesized sequence is its last statement, and the
