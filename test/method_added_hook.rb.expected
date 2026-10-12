@@ -1,0 +1,5 @@
+[[:first, true], [:hidden, false]]
+[[:second, true], [:third, true]]
+[[:fourth, true]]
+false
+[2, :b]

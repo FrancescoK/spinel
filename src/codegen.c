@@ -16655,6 +16655,8 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
     buf_puts(b, "    cur=next;\n");
     buf_puts(b, "  }\n");
     buf_puts(b, "  return 0;\n}\n");
+    if (refl_md_dynamic_used(c)) emit_refl_method_defined(c, b);
+    if (refl_im_params_used(c)) emit_refl_im_params(c, b);
     /* The same walk up from a user class, matching an ANCESTOR by name: the
        runtime's poly is_a? and class-arm helper hold the arm's class as the
        name it was written with. The class itself was compared before the

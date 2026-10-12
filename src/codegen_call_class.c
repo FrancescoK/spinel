@@ -490,6 +490,43 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
      table, and builtin classes have no enumerable method set. Emit a specific
      diagnostic rather than a generic unsupported-call node dump. Covers both an
      explicit receiver and an implicit-self call (recv < 0). */
+  /* A name or class only the run time knows: answered from the reflection
+     table emit_refl_method_defined writes (every class's methods and their
+     visibility, as the literal branch above computes them). The receiver is
+     a class value; without one, self in a class method is the receiving
+     class. Thor's method_added asks `public_method_defined?(meth)` this way. */
+  if (md_family && argc >= 1 && argc <= 2) {
+    int inherit_lit = 1;
+    if (argc == 2) {
+      const char *it = nt_type(nt, argv[1]);
+      if (it && sp_streq(it, "FalseNode")) inherit_lit = 0;
+      else if (!(it && sp_streq(it, "TrueNode"))) inherit_lit = -1;
+    }
+    Scope *encl = comp_scope_of(c, id);
+    const char *self_cls = NULL;
+    char selfbuf[48];
+    if (recv < 0 && encl) {
+      if (cmethod_takes_self_cls(c, (int)(encl - c->scopes))) self_cls = encl->yields && g_self ? g_self : "_sp_cls";
+      else if (encl->class_id >= 0) { snprintf(selfbuf, sizeof selfbuf, "((sp_Class){%d})", encl->class_id); self_cls = selfbuf; }
+    }
+    TyKind nty = infer_type(c, argv[0]);
+    if (inherit_lit >= 0 && (recv >= 0 || self_cls) && (nty == TY_SYMBOL || nty == TY_STRING)) {
+      int mask = (md_pub ? 1 : 0) | (md_prot ? 2 : 0) | (md_priv ? 4 : 0);
+      buf_puts(b, "sp_refl_method_defined(");
+      /* a class held boxed (out of an Array, say) is unboxed to its sp_Class */
+      if (recv >= 0 && infer_type(c, recv) == TY_POLY) {
+        buf_puts(b, "sp_unbox_class(");
+        emit_boxed(c, recv, b);
+        buf_puts(b, ")");
+      }
+      else if (recv >= 0) emit_expr(c, recv, b);
+      else buf_puts(b, self_cls);
+      buf_puts(b, nty == TY_SYMBOL ? ", sp_sym_to_s_chilled(" : ", (");
+      emit_expr(c, argv[0], b);
+      buf_printf(b, "), %d, %d)", mask, inherit_lit);
+      return 1;
+    }
+  }
   if (md_family) {
     unsupported(c, id, "method_defined? (needs a compile-time-known class and literal method name)");
     return 1;
@@ -4508,4 +4545,180 @@ int emit_call_implicit_self_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     }
   }
   return 0;
+}
+
+/* Does the program ask Class#{,public_,protected_,private_}method_defined?
+   with a name or a receiver only the run time knows? Then the reflection
+   table below is emitted. */
+int refl_md_dynamic_used(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || (!sp_streq(nm, "method_defined?") && !sp_streq(nm, "public_method_defined?") &&
+                !sp_streq(nm, "protected_method_defined?") && !sp_streq(nm, "private_method_defined?"))) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an < 1 || !av) continue;
+    const char *aty = nt_type(nt, av[0]);
+    int recv = nt_ref(nt, id, "receiver");
+    const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
+    int lit_name = aty && (sp_streq(aty, "SymbolNode") || sp_streq(aty, "StringNode"));
+    int lit_recv = rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"));
+    if (!lit_name || !lit_recv) return 1;
+  }
+  return 0;
+}
+
+/* sp_refl_method_defined(klass, name, mask, inherit): what the literal
+   method_defined? branch answers at compile time, as a table per class.
+   mask: 1 public, 2 protected, 4 private. */
+void emit_refl_method_defined(Compiler *c, Buf *b) {
+  /* every name a method or attr accessor of any class carries */
+  int cap = 64, nn = 0;
+  const char **names = malloc(sizeof(char *) * (size_t)cap);
+  #define REFL_ADD(x) do { const char *_x = (x); int _d = 0; \
+    for (int _i = 0; _i < nn && !_d; _i++) _d = sp_streq(names[_i], _x); \
+    if (!_d) { if (nn == cap) { cap *= 2; names = realloc(names, sizeof(char *) * (size_t)cap); } names[nn++] = _x; } } while (0)
+  for (int s = 0; s < c->nscopes; s++)
+    if (c->scopes[s].name && c->scopes[s].class_id >= 0) REFL_ADD(c->scopes[s].name);
+  char **wnames = NULL; int nw = 0, wcap = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    for (int r = 0; r < c->classes[k].nreaders; r++) REFL_ADD(c->classes[k].readers[r]);
+    for (int w = 0; w < c->classes[k].nwriters; w++) {
+      size_t l = strlen(c->classes[k].writers[w]);
+      char *x = malloc(l + 2); memcpy(x, c->classes[k].writers[w], l); x[l] = '='; x[l + 1] = 0;
+      if (nw == wcap) { wcap = wcap ? wcap * 2 : 16; wnames = realloc(wnames, sizeof(char *) * (size_t)wcap); }
+      wnames[nw++] = x;
+      REFL_ADD(x);
+    }
+  }
+  #undef REFL_ADD
+  buf_puts(b, "static int sp_refl_method_defined(sp_Class k, const char *name, int mask, int inherit) {\n");
+  buf_puts(b, "  if (!strcmp(name, \"initialize\") || !strcmp(name, \"initialize_copy\") ||\n"
+              "      !strcmp(name, \"initialize_clone\") || !strcmp(name, \"initialize_dup\")) return (mask & 4) != 0;\n");
+  buf_puts(b, "  switch (k.cls_id) {\n");
+  for (int k = 0; k < c->nclasses; k++) {
+    int parent = c->classes[k].parent;
+    Buf rows; memset(&rows, 0, sizeof rows);
+    int nrows = 0;
+    for (int i = 0; i < nn; i++) {
+      const char *qm = names[i];
+      if (sp_streq(qm, "initialize") || name_is_synth_method(c, qm) || comp_is_undeffed_in_chain(c, k, qm)) continue;
+      size_t ln = strlen(qm);
+      int is_setter = ln > 0 && qm[ln - 1] == '=';
+      char base[256]; base[0] = 0;
+      if (is_setter && ln - 1 < sizeof base) { memcpy(base, qm, ln - 1); base[ln - 1] = 0; }
+      int mc = -1;
+      int mi = comp_method_in_chain(c, k, qm, &mc);
+      if (mi >= 0 && scope_is_struct_synth(c, mi)) mi = -1;
+      int found = mi >= 0 || comp_reader_in_chain(c, k, qm, NULL) ||
+                  (is_setter && comp_writer_in_chain(c, k, base, NULL));
+      if (!found) continue;
+      int rd_own = comp_is_reader(&c->classes[k], qm) &&
+                   (parent < 0 || !comp_reader_in_chain(c, parent, qm, NULL));
+      int wr_own = is_setter && comp_is_writer(&c->classes[k], base) &&
+                   (parent < 0 || !comp_writer_in_chain(c, parent, base, NULL));
+      int own = (mi >= 0 && mc == k && c->scopes[mi].origin_module_ci == 0) || rd_own || wr_own;
+      int v = comp_method_vis_in_chain(c, k, qm);
+      int vis = v == SP_VIS_PRIVATE ? 4 : v == SP_VIS_PROTECTED ? 2 : 1;
+      buf_puts(&rows, "      if (!strcmp(name, \"");
+      emit_c_escaped(&rows, qm);
+      buf_printf(&rows, "\")) return (inherit || %d) && (%d & mask) != 0;\n", own, vis);
+      nrows++;
+    }
+    if (nrows) {
+      buf_printf(b, "    case %d:\n", k);
+      buf_puts(b, rows.p);
+      buf_puts(b, "      break;\n");
+    }
+    free(rows.p);
+  }
+  buf_puts(b, "  }\n");
+  buf_puts(b, "  if (inherit && (mask & 1)) {\n");
+  for (int u = 0; respond_universal[u]; u++) {
+    buf_puts(b, "    if (!strcmp(name, \"");
+    emit_c_escaped(b, respond_universal[u]);
+    buf_puts(b, "\")) return 1;\n");
+  }
+  buf_puts(b, "  }\n  return 0;\n}\n");
+  for (int w = 0; w < nw; w++) free(wnames[w]);
+  free(wnames);
+  free(names);
+}
+
+int refl_im_params_used(Compiler *c) {
+  for (int id = 0; id < c->nt->count; id++) if (refl_im_params_call(c, id)) return 1;
+  return 0;
+}
+
+/* The call site: sp_refl_instance_method_parameters(klass, name). */
+int emit_refl_im_params_call(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (!refl_im_params_call(c, id)) return 0;
+  int im = nt_ref(nt, id, "receiver");
+  int recv = nt_ref(nt, im, "receiver");
+  int args = nt_ref(nt, im, "arguments");
+  int an = 0; const int *av = nt_arr(nt, args, "arguments", &an);
+  TyKind nty = infer_type(c, av[0]);
+  if (nty != TY_SYMBOL && nty != TY_STRING) return 0;
+  Scope *encl = comp_scope_of(c, id);
+  char selfbuf[48];
+  const char *self_cls = NULL;
+  if (recv < 0 && encl) {
+    if (cmethod_takes_self_cls(c, (int)(encl - c->scopes))) self_cls = encl->yields && g_self ? g_self : "_sp_cls";
+    else if (encl->class_id >= 0) { snprintf(selfbuf, sizeof selfbuf, "((sp_Class){%d})", encl->class_id); self_cls = selfbuf; }
+  }
+  if (recv < 0 && !self_cls) return 0;
+  buf_puts(b, "sp_refl_instance_method_parameters(");
+  if (recv >= 0 && infer_type(c, recv) == TY_POLY) { buf_puts(b, "sp_unbox_class("); emit_boxed(c, recv, b); buf_puts(b, ")"); }
+  else if (recv >= 0) emit_expr(c, recv, b);
+  else buf_puts(b, self_cls);
+  buf_puts(b, nty == TY_SYMBOL ? ", sp_sym_to_s_chilled(" : ", (");
+  emit_expr(c, av[0], b);
+  buf_puts(b, "))");
+  return 1;
+}
+
+/* sp_refl_instance_method_parameters(klass, name): the [[kind, name], ...]
+   of the method `name` resolves to in klass's chain, as Method#parameters
+   builds it; CRuby's NameError when there is none. */
+void emit_refl_im_params(Compiler *c, Buf *b) {
+  buf_puts(b, "static sp_PolyArray *sp_refl_instance_method_parameters(sp_Class k, const char *name) {\n");
+  buf_puts(b, "  switch (k.cls_id) {\n");
+  for (int k = 0; k < c->nclasses; k++) {
+    Buf rows; memset(&rows, 0, sizeof rows);
+    int nrows = 0;
+    const char **seen = NULL; int nseen = 0;
+    for (int s = 0; s < c->nscopes; s++) {
+      const char *qm = c->scopes[s].name;
+      if (!qm || c->scopes[s].class_id < 0 || c->scopes[s].is_cmethod) continue;
+      int dup = 0;
+      for (int i = 0; i < nseen && !dup; i++) dup = sp_streq(seen[i], qm);
+      if (dup) continue;
+      seen = realloc(seen, sizeof(char *) * (size_t)(nseen + 1));
+      seen[nseen++] = qm;
+      int mi = comp_method_in_chain(c, k, qm, NULL);
+      if (mi < 0 || comp_is_undeffed_in_chain(c, k, qm)) continue;
+      int dn = c->scopes[mi].def_node;
+      int pn = dn >= 0 ? nt_ref(c->nt, dn, "parameters") : -1;
+      int tr = ++g_tmp;
+      buf_puts(&rows, "    if (!strcmp(name, \"");
+      emit_c_escaped(&rows, qm);
+      buf_printf(&rows, "\")) { sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr, tr);
+      if (pn >= 0) emit_method_parameters_pushes(c, pn, tr, &rows);
+      buf_printf(&rows, " return _t%d; }\n", tr);
+      nrows++;
+    }
+    free(seen);
+    if (nrows) {
+      buf_printf(b, "  case %d: {\n", k);
+      buf_puts(b, rows.p);
+      buf_puts(b, "    break; }\n");
+    }
+    free(rows.p);
+  }
+  buf_puts(b, "  }\n");
+  buf_puts(b, "  sp_raise_cls(\"NameError\", sp_str_concat3(sp_str_concat3(\"undefined method '\", name, \"' for class '\"), sp_class_to_s(k), \"'\"));\n");
+  buf_puts(b, "  return NULL;\n}\n");
 }

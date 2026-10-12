@@ -8,6 +8,7 @@
 #include "codegen_poly.h"
 #include "builtin_ops.h"
 #include "call_plan.h"
+
 #include "codegen_call_arms.h"
 
 /* The legacy sp_int casts of the Method in _t<tr>, over the BOXED argument
@@ -42,6 +43,86 @@ static void emit_bm_legacy_casts_boxed(Compiler *c, int tr, int eargc, const int
   }
   buf_puts(b, ")");
 }
+
+/* Push [kind, name] pairs for the parameters node pn4 onto the PolyArray
+   _t<tr4>, in CRuby's order: req, opt, rest, post-req, key(req), keyrest,
+   block. Shared by Method#parameters and the reflection table
+   (sp_refl_instance_method_parameters). */
+void emit_method_parameters_pushes(Compiler *c, int pn4, int tr4, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (pn4 >= 0) {
+    /* CRuby order: req, opt, rest, post-req, key(req), keyrest, block */
+    static const struct { const char *arr; const char *kind; const char *optkind; } PKINDS[] = {
+      { "requireds", "req", NULL }, { "optionals", "opt", NULL },
+      { "rest", NULL, NULL },   /* placeholder: rest emitted in this slot */
+      { "posts", "req", NULL }, { "keywords", "keyreq", "key" },
+    };
+    for (size_t pk = 0; pk < sizeof PKINDS / sizeof PKINDS[0]; pk++) {
+      if (!PKINDS[pk].kind) {   /* the rest param, in CRuby's slot */
+        int rest4 = nt_ref(nt, pn4, "rest");
+        if (rest4 >= 0 && nt_str(nt, rest4, "name")) {
+          int tp4 = ++g_tmp;
+          buf_printf(b, " { sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                        " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4, tp4, tp4);
+          emit_str_literal(b, "rest");
+          buf_printf(b, ")));"
+                        " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4);
+          emit_str_literal(b, sp_streq(nt_str(nt, rest4, "name"), "__anon_rest") ? "*" : nt_str(nt, rest4, "name"));
+          buf_printf(b, ")));"
+                        " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }", tr4, tp4);
+        }
+        continue;
+      }
+      int an4 = 0; const int *av4 = nt_arr(nt, pn4, PKINDS[pk].arr, &an4);
+      for (int e4 = 0; e4 < an4; e4++) {
+        const char *pnm4 = nt_str(nt, av4[e4], "name");
+        if (!pnm4) continue;
+        const char *kind4 = PKINDS[pk].kind;
+        if (PKINDS[pk].optkind) {
+          const char *ety4 = nt_type(nt, av4[e4]);
+          if (ety4 && sp_streq(ety4, "OptionalKeywordParameterNode")) kind4 = PKINDS[pk].optkind;
+        }
+        int tp4 = ++g_tmp;
+        buf_printf(b, " { sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                      " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4, tp4, tp4);
+        emit_str_literal(b, kind4);
+        buf_printf(b, ")));"
+                      " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4);
+        emit_str_literal(b, pnm4);
+        buf_printf(b, ")));"
+                      " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }", tr4, tp4);
+      }
+    }
+    int kwr4 = nt_ref(nt, pn4, "keyword_rest");
+    if (kwr4 >= 0 && nt_str(nt, kwr4, "name")) {
+      int tp4 = ++g_tmp;
+      buf_printf(b, " { sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                    " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4, tp4, tp4);
+      emit_str_literal(b, "keyrest");
+      buf_printf(b, ")));"
+                    " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4);
+      emit_str_literal(b, sp_streq(nt_str(nt, kwr4, "name"), "__anon_kwrest") ? "**" : nt_str(nt, kwr4, "name"));
+      buf_printf(b, ")));"
+                    " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }", tr4, tp4);
+    }
+    int blk4 = nt_ref(nt, pn4, "block");
+    if (blk4 >= 0 && nt_str(nt, blk4, "name")) {
+      int tp4 = ++g_tmp;
+      buf_printf(b, " { sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                    " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4, tp4, tp4);
+      emit_str_literal(b, "block");
+      buf_printf(b, ")));"
+                    " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4);
+      /* an anonymous `&` carries a synthetic name (desugar_anon_block_param);
+         CRuby reports it as :& */
+      const char *bnm4 = nt_str(nt, blk4, "name");
+      emit_str_literal(b, sp_streq(bnm4, "__anon_block") ? "&" : bnm4);
+      buf_printf(b, ")));"
+                    " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }", tr4, tp4);
+    }
+  }
+}
+
 
 /* calling a Method or a Proc (call / () / [] / ===), composing Procs (<< >>), and a Proc's
    own methods (its builtin-op rows, parameters, source_location) */
@@ -1500,6 +1581,9 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       return 1;
     }
   }
+  /* `klass.instance_method(name).parameters` with a class or a name only the
+     run time knows: the reflection table's answer */
+  if (emit_refl_im_params_call(c, id, b)) return 1;
   /* Method/UnboundMethod#parameters: [[:req, :a], [:opt, :b], ...] built
      statically from the target's parameter list (#3247). */
   if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 &&
@@ -1520,77 +1604,7 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       int tr4 = ++g_tmp;
       buf_printf(b, "({ (void)("); emit_expr(c, recv, b);
       buf_printf(b, "); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr4, tr4);
-      if (pn4 >= 0) {
-        /* CRuby order: req, opt, rest, post-req, key(req), keyrest, block */
-        static const struct { const char *arr; const char *kind; const char *optkind; } PKINDS[] = {
-          { "requireds", "req", NULL }, { "optionals", "opt", NULL },
-          { "rest", NULL, NULL },   /* placeholder: rest emitted in this slot */
-          { "posts", "req", NULL }, { "keywords", "keyreq", "key" },
-        };
-        for (size_t pk = 0; pk < sizeof PKINDS / sizeof PKINDS[0]; pk++) {
-          if (!PKINDS[pk].kind) {   /* the rest param, in CRuby's slot */
-            int rest4 = nt_ref(nt, pn4, "rest");
-            if (rest4 >= 0 && nt_str(nt, rest4, "name")) {
-              int tp4 = ++g_tmp;
-              buf_printf(b, " { sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
-                            " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4, tp4, tp4);
-              emit_str_literal(b, "rest");
-              buf_printf(b, ")));"
-                            " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4);
-              emit_str_literal(b, sp_streq(nt_str(nt, rest4, "name"), "__anon_rest") ? "*" : nt_str(nt, rest4, "name"));
-              buf_printf(b, ")));"
-                            " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }", tr4, tp4);
-            }
-            continue;
-          }
-          int an4 = 0; const int *av4 = nt_arr(nt, pn4, PKINDS[pk].arr, &an4);
-          for (int e4 = 0; e4 < an4; e4++) {
-            const char *pnm4 = nt_str(nt, av4[e4], "name");
-            if (!pnm4) continue;
-            const char *kind4 = PKINDS[pk].kind;
-            if (PKINDS[pk].optkind) {
-              const char *ety4 = nt_type(nt, av4[e4]);
-              if (ety4 && sp_streq(ety4, "OptionalKeywordParameterNode")) kind4 = PKINDS[pk].optkind;
-            }
-            int tp4 = ++g_tmp;
-            buf_printf(b, " { sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
-                          " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4, tp4, tp4);
-            emit_str_literal(b, kind4);
-            buf_printf(b, ")));"
-                          " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4);
-            emit_str_literal(b, pnm4);
-            buf_printf(b, ")));"
-                          " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }", tr4, tp4);
-          }
-        }
-        int kwr4 = nt_ref(nt, pn4, "keyword_rest");
-        if (kwr4 >= 0 && nt_str(nt, kwr4, "name")) {
-          int tp4 = ++g_tmp;
-          buf_printf(b, " { sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
-                        " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4, tp4, tp4);
-          emit_str_literal(b, "keyrest");
-          buf_printf(b, ")));"
-                        " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4);
-          emit_str_literal(b, sp_streq(nt_str(nt, kwr4, "name"), "__anon_kwrest") ? "**" : nt_str(nt, kwr4, "name"));
-          buf_printf(b, ")));"
-                        " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }", tr4, tp4);
-        }
-        int blk4 = nt_ref(nt, pn4, "block");
-        if (blk4 >= 0 && nt_str(nt, blk4, "name")) {
-          int tp4 = ++g_tmp;
-          buf_printf(b, " { sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
-                        " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4, tp4, tp4);
-          emit_str_literal(b, "block");
-          buf_printf(b, ")));"
-                        " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp4);
-          /* an anonymous `&` carries a synthetic name (desugar_anon_block_param);
-             CRuby reports it as :& */
-          const char *bnm4 = nt_str(nt, blk4, "name");
-          emit_str_literal(b, sp_streq(bnm4, "__anon_block") ? "&" : bnm4);
-          buf_printf(b, ")));"
-                        " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }", tr4, tp4);
-        }
-      }
+      emit_method_parameters_pushes(c, pn4, tr4, b);
       buf_printf(b, " _t%d; })", tr4);
       return 1;
     }

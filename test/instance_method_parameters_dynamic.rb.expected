@@ -1,0 +1,6 @@
+[Base, "run", [[:req, :a], [:opt, :b], [:rest, :rest], [:keyreq, :key], [:key, :opt], [:keyrest, :more], [:block, :blk]]]
+[Base, "bare", []]
+[Child, "run", [[:req, :a], [:opt, :b], [:rest, :rest], [:keyreq, :key], [:key, :opt], [:keyrest, :more], [:block, :blk]]]
+[Child, "bare", []]
+[[:req, :x]]
+undefined method 'nope' for class 'Child'
