@@ -36152,6 +36152,15 @@ void expand_static_splat_args(Compiler *c, int from, int count) {
       const char *frn = fr >= 0 && nt_kind(nt, fr) == NK_ConstantReadNode ? nt_str(nt, fr, "name") : NULL;
       if (frn && sp_streq(frn, "File")) continue;
     }
+    /* ...and `File.join(*parts)` is not Array#join, which takes one
+       separator: a length known only at run time keeps the splat, which the
+       File arm flattens (a static length still expands to its parts) */
+    int file_join = 0;
+    if (sp_streq(cnm, "join")) {
+      int fr = nt_ref(nt, id, "receiver");
+      const char *frn = fr >= 0 && nt_kind(nt, fr) == NK_ConstantReadNode ? nt_str(nt, fr, "name") : NULL;
+      file_join = frn && sp_streq(frn, "File");
+    }
     int ex = nt_ref(nt, argv[sp_at], "expression");
     if (ex < 0) continue;
     const char *ext = nt_type(nt, ex);
@@ -36170,9 +36179,10 @@ void expand_static_splat_args(Compiler *c, int from, int count) {
     else {
       /* any other operand's length is the run time's: dispatch on it, or
          leave the call as it stands */
-      splat_dispatch_on_length(c, id, argv, argc, sp_at, ex);
+      if (!file_join) splat_dispatch_on_length(c, id, argv, argc, sp_at, ex);
       continue;
     }
+    if (file_join && n < 0) continue;
     int n_static = n >= 0;
     if (n < 0 && splat_dispatch_on_length(c, id, argv, argc, sp_at, ex)) continue;
     /* the optional-argument builtins added for the dispatch keep their old
