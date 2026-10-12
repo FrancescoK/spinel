@@ -75,7 +75,8 @@ usage: spin <command> [args]
   run [target] [-- a]  build, then run one executable
   test [file..]        build and run test/*.rb against expectations
   trust <name>         always allow <name>'s declared native build steps
-                       (one run: --allow-native-build / SPIN_ALLOW_NATIVE_BUILD=1)
+                       (one run: --allow-native-build on build/run/test/flags,
+                        or SPIN_ALLOW_NATIVE_BUILD=1)
   clean                remove build/
   flags                print the compiler flags this project implies, for a
                        build driven from outside spin (Makefile, script)
@@ -868,8 +869,11 @@ def native_build_libs_for(name, dir, version, consumer_feats)
         end
       end
     end
-    puts "native #{name}: #{cmdline}"
-    unless system("cd #{scratch} && ( #{cmdline} )")
+    # Progress, so on stderr like the cc lines, and the build tool's own output with it:
+    # `spin flags` prints the compiler flags on stdout, and a cold cache runs this step
+    # first, which spliced the command line (and anything the tool printed) into them.
+    $stderr.puts "native #{name}: #{cmdline}"
+    unless system("cd #{scratch} && ( #{cmdline} ) 1>&2")
       system("rm -rf #{scratch}")
       spin_die("native build failed (#{name})")
     end
@@ -2648,6 +2652,9 @@ when "flags"
   # rebuilds them and leaves bin/spinel untouched.
   root = find_root(Dir.pwd)
   spin_die("no spin.toml found") if root == ""
+  # it runs the dependencies' native build steps when the cache is cold, so it takes the
+  # same one-run consent as build
+  ENV["SPIN_ALLOW_NATIVE_BUILD"] = "1" if rest.include?("--allow-native-build")
   if rest.include?("--deps")
     puts toolchain_deps.join(" ")
   else

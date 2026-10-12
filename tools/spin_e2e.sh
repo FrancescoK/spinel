@@ -511,6 +511,12 @@ expect "feature-gated artifact count" "1" "$N_ART"
 OUT=$("$SPIN" run --allow-native-build 2>&1)
 echo "$OUT" | grep -q '^native mathx:' && fail "cached native build re-ran"
 expect "native cached rerun" "42" "$(echo "$OUT" | tail -1)"
+# `spin flags` on a cold cache runs the build step first; its progress, and what the build
+# tool prints, stay off stdout, which carries only the one line of flags
+rm -rf "$XDG_CACHE_HOME/spin/native"
+FLAGS=$("$SPIN" flags --allow-native-build 2>/dev/null)
+[ "$(printf '%s' "$FLAGS" | wc -l | tr -d ' ')" = "0" ] || fail "spin flags: native build step leaked onto stdout"
+case "$FLAGS" in *"--link "*libmx*) ;; *) fail "spin flags: native artifact missing from [$FLAGS]" ;; esac
 # a content change moves the key and rebuilds
 printf 'int mx_add(int a, int b) { return a + b; }\nint mx_two(void) { return 2; }\n' > vendor/mx/mx.c
 printf -- '--- a/mx.c\n+++ b/mx.c\n@@ -1,2 +1,2 @@\n-int mx_add(int a, int b) { return a + b; }\n+int mx_add(int a, int b) { return a + b + 1; }\n int mx_two(void) { return 2; }\n' > patches/01-bias.patch
