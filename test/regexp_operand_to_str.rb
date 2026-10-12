@@ -72,3 +72,19 @@ puts t { am(/la/, nil) }
 def mq(m, o) = m.match?(o)
 puts t { mq(/la/, s) }
 puts t { mq("la", "xla") }
+
+# === sets $~ as =~ does, on a Regexp literal or a Regexp-typed value
+class V; def initialize(n) = @n = n; def to_str = "x#{@n}la"; end
+r2 = /b(l)/
+p(r2 === s, $~ && $~[0], $1)
+r3 = Regexp.new("l(a)")
+p(r3 === s, $~ && $~[0], $1)
+p(r3 === "xla", $~ && $~[0], $1)
+p(r3 === nil, $~)
+p(r3 === V.new(3), $~ && $~[0])
+p(r3 === 5, $~)
+def ce(r, o)
+  x = (r === o)
+  [x, $~ && $~[0]]
+end
+p ce(/l(a)/, s), ce(Regexp.new("bl"), s), ce(r3, "zla"), ce(r3, :la)
