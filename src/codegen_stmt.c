@@ -2810,37 +2810,43 @@ int strbuf_arg_bang(Compiler *c, int v) {
 int strbuf_arg_carries(Compiler *c, int v) {
   return strbuf_value_carries(c, v) || strbuf_arg_bang(c, v);
 }
+/* Does a value conditional v hands on, taken arm by arm, answer leaf: a
+   conditional's arms, a sequence's last statement? Past the depth the walk
+   answers deep. */
+static int strbuf_cond_arm_any(Compiler *c, int v, int depth, int (*leaf)(Compiler *, int), int deep) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (v < 0) return 0;
+  if (depth > 16) return deep;
+  switch (nt_kind(nt, v)) {
+  case NK_StatementsNode: {
+    int n = 0; const int *bb = nt_arr(nt, v, "body", &n);
+    return n > 0 && strbuf_cond_arm_any(c, bb[n - 1], depth + 1, leaf, deep);
+  }
+  case NK_ElseNode: return strbuf_cond_arm_any(c, nt_ref(nt, v, "statements"), depth + 1, leaf, deep);
+  case NK_IfNode: case NK_UnlessNode:
+    return strbuf_cond_arm_any(c, nt_ref(nt, v, "statements"), depth + 1, leaf, deep) ||
+           strbuf_cond_arm_any(c, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1,
+                               leaf, deep);
+  case NK_OrNode:
+    return strbuf_cond_arm_any(c, nt_ref(nt, v, "left"), depth + 1, leaf, deep) ||
+           strbuf_cond_arm_any(c, nt_ref(nt, v, "right"), depth + 1, leaf, deep);
+  case NK_AndNode: return strbuf_cond_arm_any(c, nt_ref(nt, v, "right"), depth + 1, leaf, deep);
+  case NK_CaseNode: {
+    int nw = 0; const int *whens = nt_arr(nt, v, "conditions", &nw);
+    for (int w = 0; w < nw; w++)
+      if (strbuf_cond_arm_any(c, nt_ref(nt, whens[w], "statements"), depth + 1, leaf, deep)) return 1;
+    return strbuf_cond_arm_any(c, nt_ref(nt, v, "else_clause"), depth + 1, leaf, deep);
+  }
+  default: return leaf(c, v);
+  }
+}
 /* ...is v such a bang, or a conditional that takes its arms one by one as
    handles (strbuf_cond_has_handle_leaf) with such a bang among the values
    it hands on? An argument that runs ahead of the binding takes its handle
    there (emit_arg_temp), which the binding then takes (ran_first_handle). */
-static int strbuf_arg_bang_arm(Compiler *c, int v, int depth) {
-  const NodeTable *nt = c->nt;
-  v = unwrap_parens(c, v);
-  if (v < 0 || depth > 16) return 0;
-  switch (nt_kind(nt, v)) {
-  case NK_StatementsNode: {
-    int n = 0; const int *bb = nt_arr(nt, v, "body", &n);
-    return n > 0 && strbuf_arg_bang_arm(c, bb[n - 1], depth + 1);
-  }
-  case NK_ElseNode: return strbuf_arg_bang_arm(c, nt_ref(nt, v, "statements"), depth + 1);
-  case NK_IfNode: case NK_UnlessNode:
-    return strbuf_arg_bang_arm(c, nt_ref(nt, v, "statements"), depth + 1) ||
-           strbuf_arg_bang_arm(c, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1);
-  case NK_OrNode:
-    return strbuf_arg_bang_arm(c, nt_ref(nt, v, "left"), depth + 1) || strbuf_arg_bang_arm(c, nt_ref(nt, v, "right"), depth + 1);
-  case NK_AndNode: return strbuf_arg_bang_arm(c, nt_ref(nt, v, "right"), depth + 1);
-  case NK_CaseNode: {
-    int nw = 0; const int *whens = nt_arr(nt, v, "conditions", &nw);
-    for (int w = 0; w < nw; w++)
-      if (strbuf_arg_bang_arm(c, nt_ref(nt, whens[w], "statements"), depth + 1)) return 1;
-    return strbuf_arg_bang_arm(c, nt_ref(nt, v, "else_clause"), depth + 1);
-  }
-  default: return strbuf_arg_bang(c, v);
-  }
-}
 int strbuf_arg_bang_value(Compiler *c, int v) {
-  return strbuf_arg_bang(c, v) || (strbuf_cond_has_handle_leaf(c, v, 0) && strbuf_arg_bang_arm(c, v, 0));
+  return strbuf_arg_bang(c, v) || (strbuf_cond_has_handle_leaf(c, v, 0) && strbuf_cond_arm_any(c, v, 0, strbuf_arg_bang, 0));
 }
 /* A builtin value route can publish its handle as a method's return too.
    The return analysis and tail emitter ask the same route predicate.
@@ -22443,8 +22449,16 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
     NodeKind uk = u >= 0 ? nt_kind(nt, u) : NK_NONE;
     if (u != v && (uk == NK_LocalVariableReadNode || uk == NK_InstanceVariableReadNode || repr_static_read_kind(uk)))
       return strbuf_flow_unseen(c, u);
-    ctx = SFC_BOX;
-    break;
+    /* a box or the handle itself; else a conditional with a handle among
+       its arms (strbuf_cond_has_handle_leaf), which the binders take arm by
+       arm, as an argument's: the block-parameter binder through
+       emit_strbuf_handle_of, a box through emit_boxed_cond_arms, a proc's
+       argument as the handle (proc_arg_ty). A bang on a boxed receiver
+       among its arms is not taken, as above. */
+    if (strbuf_flow_value(c, fm, SFC_BOX, v, 0)) return 1;
+    return (uk == NK_IfNode || uk == NK_UnlessNode || uk == NK_OrNode || uk == NK_AndNode || uk == NK_CaseNode) &&
+           strbuf_cond_has_handle_leaf(c, u, 0) && !strbuf_cond_arm_any(c, u, 0, face_str_bang_call, 1) &&
+           strbuf_flow_value(c, fm, SFC_ARG, v, 0);
   }
   default: return 0;
   }
