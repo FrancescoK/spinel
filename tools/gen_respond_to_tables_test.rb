@@ -43,6 +43,21 @@ abort "false positive: \"pack\" leaked into String's array (Array#pack's " \
       "buffer-argument TY_POLY row, not a real String method)" if string_body.include?('"pack"')
 checks += 1
 
+# Dedup against the shared manual arrays sp_poly_responds_builtin already
+# ORs in: uni[] (every class), enumm[] (Array/Hash only), numm[] (Integer/
+# Float only). A name already covered there must not also be duplicated
+# into the generated array -- the manual tables never did, and the point
+# is to shrink the generated output, not just add to it.
+out = GenRespondToTables.generate(RT_HEADER)
+array_body = out[/sp_gen_responds_array\[\] = \{(.*?)\};/m, 1]
+abort "\"each\" (in enumm) was not deduped out of Array's array" if array_body.include?('"each"')
+abort "\"clone\" (in uni) was not deduped out of Array's array" if array_body.include?('"clone"')
+abort "\"uniq!\" (real Array-only name) was wrongly deduped away" unless array_body.include?('"uniq!"')
+integer_body2 = out[/sp_gen_responds_integer\[\] = \{(.*?)\};/m, 1]
+abort "\"round\" (in numm) was not deduped out of Integer's array" if integer_body2.include?('"round"')
+abort "\"digits\" (real Integer-only name) was wrongly deduped away" unless integer_body2.include?('"digits"')
+checks += 1
+
 # The Proc self-check actually fires: stub method_list with a Proc name
 # that is in neither procm nor uni, and confirm GenRespondToTables raises.
 module BuiltinRowGen

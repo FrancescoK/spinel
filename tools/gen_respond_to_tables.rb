@@ -31,20 +31,37 @@ module GenRespondToTables
   # class," where the misattribution matters.
   FALSE_POSITIVE = { "String" => %w[pack] }.freeze
 
+  # The shared manual arrays sp_poly_responds_builtin already ORs in
+  # alongside each class's generated array: uni[] unconditionally for
+  # every class (checked once, before any class dispatch), enumm[]
+  # additionally for Array and Hash, numm[] additionally for Integer and
+  # Float. A name already covered by one of these must not be duplicated
+  # into the generated array -- the hand-written tables this replaces
+  # never did, and generating it anyway would only make the output bigger
+  # without changing any respond_to? answer.
+  SHARED_ARRAYS = {
+    "Array" => %w[uni enumm], "Hash" => %w[uni enumm], "String" => %w[uni],
+    "Integer" => %w[uni numm], "Float" => %w[uni numm],
+  }.freeze
+
   class GenError < StandardError; end
 
   module_function
 
   # rt_header_text: lib/spinel_rt.h's current text, read once by the
-  # caller, so the Proc self-check (below) can look inside it without a
-  # second file read.
+  # caller, so the Proc self-check and the shared-array dedup (below) can
+  # look inside it without a second file read.
   def generate(rt_header_text)
     check_proc_coverage(rt_header_text)
+    shared = SHARED_ARRAYS.to_h { |family, arrays|
+      [family, arrays.flat_map { |a| array_literal_names(rt_header_text, a) }]
+    }
     names_by_family = FAMILIES.to_h { |f| [f, []] }
     BuiltinRowGen.method_list.each do |family, name|
       next unless names_by_family.key?(family)
       next if BuiltinRowGen::INTERNAL_NAME.match?(name)
       next if FALSE_POSITIVE.fetch(family, []).include?(name)
+      next if shared.fetch(family).include?(name)
       names_by_family[family] << name
     end
     names_by_family.each_value { |names| names.sort!.uniq! }
