@@ -61,6 +61,7 @@ static void wrn_build(Compiler *c) {
   }
 }
 static int recv_has_array_write(Compiler *c, int recv);
+static int getter_exit_ivars(Compiler *c, int mi, const char **names, int max);
 
 /* The class owning the slot an `@x` receiver names. Ivar slots are per-class
    (comp_ivar_index is a flat per-class table, and a subclass interns its own),
@@ -154,6 +155,31 @@ static int recv_has_array_write(Compiler *c, int recv) {
       for (int k = 0; k < c->nclasses; k++) {
         int rdcls = k;
         if (comp_reader_in_chain(c, k, gname, &rdcls) && rdcls == wc) return 1;
+      }
+    }
+    /* A hand-written getter (`def list = @list`) is the same READER: its
+       evidence is the array written into the ivar it returns, by its own
+       class or one up or down its chain. Asking only attr_readers declined
+       the push through it, and the slot kept the empty literal's bottom kind
+       (an int array) even with Strings pushed in. */
+    for (int k = 0; k < c->nclasses; k++) {
+      int mi = comp_method_in_class(c, k, gname);
+      if (mi < 0) continue;
+      const char *ivs[8];
+      int niv = getter_exit_ivars(c, mi, ivs, 8);
+      for (int i = 0; i < niv; i++) {
+        unsigned gb = wrn_key(ivs[i], -1) % (unsigned)wrn_buckets;
+        for (int id = wrn_head[gb]; id >= 0; id = wrn_next[id]) {
+          if (nt_kind(nt, id) != NK_InstanceVariableWriteNode) continue;
+          const char *wnm = nt_str(nt, id, "name");
+          if (!wnm || !sp_streq(wnm, ivs[i])) continue;
+          Scope *ws = comp_scope_of(c, id);
+          int wc = ws ? ws->class_id : -1;
+          if (wc < 0 || (wc != k && !is_descendant(c, wc, k) && !is_descendant(c, k, wc))) continue;
+          int v = nt_ref(nt, id, "value");
+          if (v < 0) continue;
+          if (nt_kind(nt, v) == NK_ArrayNode || ty_is_array(infer_type(c, v))) return 1;
+        }
       }
     }
     return 0;
