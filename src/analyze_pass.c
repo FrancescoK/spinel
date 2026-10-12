@@ -2732,6 +2732,24 @@ static TyKind index_op_write_value_type(Compiler *c, int id, int recv, TyKind vt
   return et == TY_FLOAT ? TY_FLOAT : vt;
 }
 
+/* The container a call stores into through the pushes it chains onto:
+   `@v << a << b` pushes b into @v, as `@v << a; @v << b` does. A push that
+   answers a type other than its receiver's (an Integer shift, a user `<<`)
+   ends the chain. */
+static int push_chain_base(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  while (recv >= 0 && nt_kind(nt, recv) == NK_CallNode && nt_ref(nt, recv, "block") < 0) {
+    const char *nm = nt_str(nt, recv, "name");
+    int base = nt_ref(nt, recv, "receiver"), args = nt_ref(nt, recv, "arguments"), an = 0;
+    if (args >= 0) nt_arr(nt, args, "arguments", &an);
+    if (base < 0 || !nm || an < 1) break;
+    if (!(sp_streq(nm, "<<") && an == 1) && !sp_streq(nm, "push") && !sp_streq(nm, "append")) break;
+    if (infer_type(c, recv) != infer_type(c, base)) break;
+    recv = base;
+  }
+  return recv;
+}
+
 static int value_leaves(Compiler *c, int n, int *out, int nout, int cap);
 static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb, int *fb, LWIndex lw_ix, LWIndex ivw_ix) {
   int changed = 0;
@@ -2752,7 +2770,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
     int elem_from = 0, elem_an = 0, elem_splat_index = 0;
     int knode = -1, vnode = -1;  /* the stored key and value, for a plain store */
     if (sp_streq(ty, "CallNode")) {
-      recv = nt_ref(nt, id, "receiver");
+      recv = push_chain_base(c, nt_ref(nt, id, "receiver"));
       const char *name = nt_str(nt, id, "name");
       int args = nt_ref(nt, id, "arguments");
       int an = 0;
