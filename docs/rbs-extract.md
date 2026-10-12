@@ -85,7 +85,9 @@ Everything else is left alone on purpose:
 - `nil` is legal in every slot.
 - `Integer` and a bignum convert at the boundary.
 - A by-value object (`Range`, `Time`, `Complex`, `Rational`) is a struct,
-  not a pointer, so the families do not apply.
+  not a pointer, so the families do not apply -- except at a return, where
+  a `Time` or a `Range` is a family of its own: the function returns it by
+  value, and nothing converts it into another declared type.
 - A value that is `poly` or not yet inferred makes no static claim. That
   is the dynamic case, and it is what `-DSP_RBS_CHECK` is for.
 
