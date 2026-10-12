@@ -1012,6 +1012,7 @@ void arity_message(char *out, size_t n, int given, int min, int max, const char 
 void arity_kw_suffix(const NodeTable *nt, int params, char *out, size_t n);
 void scope_arity_kw_suffix(Compiler *c, const Scope *m, char *out, size_t n);
 void emit_arity_raise(Buf *b, const char *given, int min, int max, const char *kw);
+int class_to_io_dispatched(Compiler *c, int k);
 void emit_arity_check(Buf *b, const char *given, int min, int max, const char *kw);
 int scope_refuses_keywords(Compiler *c, const Scope *m);
 /* The keyword ArgumentErrors, `kind` "missing" or "unknown", naming `count`
