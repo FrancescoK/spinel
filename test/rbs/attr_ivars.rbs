@@ -1,0 +1,15 @@
+# An attribute's seed is for the instance variable it declares, which is
+# not always one named after it:
+# - `self.` makes it the class object's attribute (`class << self;
+#   attr_accessor`), whose variable is the class's, not an instance's: no
+#   seed (the seed format has no class-level variable)
+# - `()` says it has no variable at all: no seed
+# - `(@raw)` names the variable: the seed is for @raw
+class AttrIvars
+  attr_accessor self.dflt: String
+  attr_reader self.count: Integer
+  attr_reader computed (): Integer
+  attr_reader parsed (@raw): String
+  attr_accessor plain: Integer
+  @explicit: Float
+end

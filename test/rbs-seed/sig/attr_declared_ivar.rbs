@@ -1,0 +1,5 @@
+class AttrIvarBox
+  attr_accessor self.dflt: String
+  attr_reader parsed (@raw): String
+  attr_reader computed (): Integer
+end
