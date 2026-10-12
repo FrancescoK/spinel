@@ -3561,8 +3561,10 @@ static SP_INLINE sp_oint sp_poly_arg_perm(sp_RbVal v) {
    supplied, as CRuby's extract_getline_args reads them: a lone argument is
    the separator when it is nil or a String, the limit otherwise; a pair is
    the separator and the limit, either of them nil. A nil separator is NULL
-   (read to the end) and no limit is 0, as sp_File_gets_sep takes them. */
-static SP_NOINLINE void sp_io_line_args(sp_PolyArray *a, const char **sep, sp_int *lim) {
+   (read to the end) and no limit is 0, as sp_File_gets_sep takes them. A
+   limit of 0 is ArgumentError naming `who` (each_line, readlines); with no
+   `who` it answers 1, gets's "" without reading. */
+static SP_NOINLINE sp_bool sp_io_line_args(sp_PolyArray *a, const char **sep, sp_int *lim, const char *who) {
   sp_int n = a ? a->len : 0;
   *sep = "\n"; *lim = 0;
   if (n > 2)
@@ -3583,8 +3585,14 @@ static SP_NOINLINE void sp_io_line_args(sp_PolyArray *a, const char **sep, sp_in
   if (lv.tag != SP_TAG_NIL) {
     *lim = sp_poly_arg_int_chk(lv);
     /* CRuby names each_line for IO#each too */
-    if (*lim == 0) sp_raise_cls("ArgumentError", "invalid limit: 0 for each_line");
+    if (*lim == 0) {
+      if (!who) return 1;
+      sp_raise_cls("ArgumentError", sp_sprintf("invalid limit: 0 for %s", who));
+    }
+    /* a negative limit is none */
+    if (*lim < 0) *lim = 0;
   }
+  return 0;
 }
 
 /* A boxed value where a Float is wanted, by Kernel#Float's rules: a real
@@ -10636,6 +10644,33 @@ static sp_RbVal sp_poly_str_become(sp_RbVal v, const char *s) {
   if (sp_poly_is_strbuf(v)) { sp_String_set_bin((sp_String *)v.v.p, s); return v; }
   sp_str_check_mutable(v.v.s);
   return sp_box_str(s);
+}
+/* IO#read with its arguments in a list a splat supplied (`def read(*a) =
+   @f.read(*a)`): none, or a nil length, reads to the end; a length reads that
+   many bytes, nil at the end of the stream. A buffer is checked for a freeze
+   before the read and then holds what was read, where it can be written in
+   place (a shared String). A plain String's new contents could not reach
+   the caller's variable through the list, so that raises before reading. */
+static SP_NOINLINE const char *sp_io_read_splat(sp_File *f, sp_PolyArray *a) {
+  SP_GC_ROOT(f); SP_GC_ROOT(a);
+  sp_int n = a ? a->len : 0;
+  if (n > 2) sp_raise_arity(n, 0, 2, NULL);
+  sp_RbVal len = n > 0 ? a->data[0] : sp_box_nil();
+  sp_RbVal buf = n > 1 ? a->data[1] : sp_box_nil();
+  sp_int ln = sp_poly_nil_p(len) ? 0 : sp_poly_arg_int_chk(len);
+  if (!sp_poly_nil_p(buf)) {
+    if (sp_poly_is_strbuf(buf)) {
+      if (sp_String_is_frozen((sp_String *)buf.v.p)) sp_raise_frozen_str(sp_String_cstr((sp_String *)buf.v.p));
+    }
+    else {
+      sp_str_check_mutable(sp_poly_arg_str_chk(buf));
+      sp_raise_cls("NotImplementedError", "IO#read into a String buffer passed through a splat is not supported by spinel");
+    }
+  }
+  const char *r = sp_poly_nil_p(len) ? sp_File_read(f) : sp_File_read_n(f, ln);
+  SP_GC_ROOT_STR(r);
+  if (!sp_poly_nil_p(buf)) (void)sp_poly_str_become(buf, r ? r : sp_str_empty);
+  return r;
 }
 /* A value-form nonblocking read fills an existing buffer or clears it at
    EOF. The caller writes a plain String back to its local before raising;

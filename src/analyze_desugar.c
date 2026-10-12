@@ -6159,6 +6159,21 @@ static int fwd_poly_recv_one_param_iter(const char *name) {
   return str_in(name, names);
 }
 
+/* The File and IO iterators whose arm (codegen_call_io.c) yields exactly one
+   value per step. */
+static int fwd_io_one_param_iter(Compiler *c, const char *name) {
+  static const char *const names[] = {
+    "each", "each_line", "each_char", "each_byte", "each_codepoint", NULL };
+  if (!str_in(name, names)) return 0;
+  /* not where the program reopens File or IO with its own method of the name */
+  static const char *const owners[] = { "File", "IO", NULL };
+  for (int k = 0; owners[k]; k++) {
+    int ci = comp_class_index(c, owners[k]);
+    if (ci >= 0 && comp_method_in_chain(c, ci, name, NULL) >= 0) return 0;
+  }
+  return 1;
+}
+
 /* Hash's own select, filter, reject and to_h yield the key and the value as
    two values, where `each` and the Enumerable iterators yield the [k, v] pair
    as one: a proc taking |x| gets the key alone, and a lambda or Method of two
@@ -6581,6 +6596,14 @@ int desugar_value_callable_forwards(Compiler *c) {
       arity = 1;
       pty[0] = TY_POLY;
     }
+    else if (rt == TY_IO && fwd_io_one_param_iter(c, name)) {
+      /* A File or IO's line, character and byte loops yield one value each:
+         a String, or an Integer from each_byte and each_codepoint. Their
+         arms run a literal block's body in place and have no proc form, so
+         left as `&blk` the loop ran with no body at all. */
+      arity = 1;
+      pty[0] = sp_streq(name, "each_byte") || sp_streq(name, "each_codepoint") ? TY_INT : TY_STRING;
+    }
     else if ((enum_pair_source_call(nt, recv) && enum_pair_spread_iter(name)) ||
              fwd_with_index_call(nt, id)) {
       /* `a.each_with_index.map(&)`, `a.map.with_index(&)`: two values are
@@ -6743,7 +6766,7 @@ int desugar_value_callable_forwards(Compiler *c) {
     Scope *fms = comp_scope_of(c, id);
     int own = anon || (nt_kind(nt, ex) == NK_LocalVariableReadNode && fms && fms->blk_param &&
                        nt_str(nt, ex, "name") && sp_streq(nt_str(nt, ex, "name"), fms->blk_param));
-    if (own && rt == TY_STRING && fwd_method_called_blockless(c, fms))
+    if (own && (rt == TY_STRING || rt == TY_IO) && fwd_method_called_blockless(c, fms))
       fwd_branch_on_block_given(c, id);
     /* a splat beside the forward was kept whole while the block was an
        `&` (a block goes on one arm only); the literal now spreads it */
