@@ -2277,6 +2277,22 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
      found by tools/respond_to_audit.rb, which this answers for). */
   static const char *const excm[] = {
     "message", "to_s", "full_message", "backtrace", "cause", "exception", NULL };
+  /* bop_rows's TY_REGEX and TY_MATCHDATA surfaces that a boxed receiver can
+     also be called with: a boxed Regexp answered false for every name, so
+     minitest's assert_match, which asks `matcher.respond_to?(:=~)`, failed
+     for a Regexp held in a boxed slot. Left out until boxed dispatch has
+     them (the call raises NoMethodError, or for Regexp#~ converts the
+     receiver to an Integer instead of matching $_): Regexp's encoding,
+     fixed_encoding?, timeout and ~; MatchData's bytebegin, byteend,
+     deconstruct, deconstruct_keys and match (tools/respond_to_audit.rb
+     lists the same names). */
+  static const char *const regm[] = {
+    "=~", "match", "match?", "source", "options", "casefold?", "names",
+    "named_captures", NULL };
+  static const char *const mdm[] = {
+    "[]", "begin", "end", "byteoffset", "captures", "length", "size",
+    "match_length", "named_captures", "names", "offset", "post_match",
+    "pre_match", "regexp", "string", "to_a", "values_at", NULL };
   const char *cn;
   if (!m) return 0;
   if (sp_str_in_list(m, uni)) return 1;
@@ -2302,6 +2318,8 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
     return sp_str_in_list(m, enumm) || sp_str_in_list(m, rngm);
   if (strcmp(cn, "Symbol") == 0) return sp_str_in_list(m, symm);
   if (strcmp(cn, "Proc") == 0) return sp_str_in_list(m, procm);
+  if (strcmp(cn, "Regexp") == 0) return sp_str_in_list(m, regm);
+  if (strcmp(cn, "MatchData") == 0) return sp_str_in_list(m, mdm);
   /* nil answers a small surface of its own; the literal receiver folded it at
      compile time, so only a nil that arrived through a slot came here and got
      a flat false (#3815). */
