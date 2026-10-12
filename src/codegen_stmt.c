@@ -11321,6 +11321,31 @@ static int emit_paren_tail_pub(Compiler *c, int v, Buf *b) {
   free(vb.p);
   return 1;
 }
+/* --share-strings: a String `||` or `&&` tail of a method that answers a
+   handle (an_tail_logic_op), whose operands the return analysis took as
+   arms: `x || y` answers x's tail, published, and y's only where x answers
+   nil; `x && y` tests x and answers y's tail, or nil. Each operand's own
+   setup runs where the operator runs it. */
+static void emit_logic_tail_pub(Compiler *c, int node, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int is_or = nt_kind(nt, node) == NK_OrNode, t = ++g_tmp;
+  Buf lpre; memset(&lpre, 0, sizeof lpre);
+  Buf lval; memset(&lval, 0, sizeof lval);
+  Buf rpre; memset(&rpre, 0, sizeof rpre);
+  Buf rval; memset(&rval, 0, sizeof rval);
+  Buf *sv = g_pre;
+  g_pre = &lpre;
+  if (is_or) emit_tail_value(c, nt_ref(nt, node, "left"), &lval);
+  else emit_cond(c, nt_ref(nt, node, "left"), &lval);
+  g_pre = &rpre;
+  emit_tail_value(c, nt_ref(nt, node, "right"), &rval);
+  g_pre = sv;
+  buf_printf(b, "({ %s", lpre.p ? lpre.p : "");
+  if (is_or) buf_printf(b, "const char *_t%d = %s; if (!_t%d) { ", t, lval.p ? lval.p : "NULL", t);
+  else buf_printf(b, "const char *_t%d = NULL; if (%s) { ", t, lval.p ? lval.p : "0");
+  buf_printf(b, "%s_t%d = %s; } _t%d; })", rpre.p ? rpre.p : "", t, rval.p ? rval.p : "NULL", t);
+  free(lpre.p); free(lval.p); free(rpre.p); free(rval.p);
+}
 static void emit_fresh_tail_value(Compiler *c, int node, Buf *b) {
   int t = ++g_tmp;
   buf_printf(b, "({ const char *_t%d = ", t);
@@ -11345,6 +11370,11 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
     emit_strbuf_handle_of(c, node, b);
     buf_puts(b, ")");
     if (g_repr_check) { repr_channel_note(c, node, RCH_PUBLISH); repr_channel_end(c, frame); }
+    return;
+  }
+  if (ts && ts->ret_handle && an_tail_logic_op(c, node)) {
+    emit_logic_tail_pub(c, node, b);
+    if (g_repr_check) repr_channel_end(c, frame);
     return;
   }
   /* ...and so does an attribute assignment on a boxed receiver, whose

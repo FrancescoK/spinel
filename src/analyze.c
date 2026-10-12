@@ -20978,6 +20978,15 @@ static void an_returns_by_scope(Compiler *c, int **start, int **list) {
    fresh String (share_node_fresh) is admitted too, counted in fresh; bangs
    counts the reads that are a bang on a handle (ret_pub_bang) */
 typedef struct { int reads, nils, fresh_ok, fresh, mi, param, arg_depth, bangs; } TailCount;
+/* Is node a String `||` or `&&` whose left operand is a String, so that it
+   answers one of its operands or nil (never false): the tail walk takes
+   its operands as arms, and emit_tail_value emits them so. */
+int an_tail_logic_op(Compiler *c, int node) {
+  NodeKind k = node >= 0 ? nt_kind(c->nt, node) : NK_NONE;
+  if (k != NK_OrNode && k != NK_AndNode) return 0;
+  TyKind t = comp_ntype(c, node), lt = comp_ntype(c, nt_ref(c->nt, node, "left"));
+  return (t == TY_STRING || t == TY_STRBUF) && (lt == TY_STRING || lt == TY_STRBUF);
+}
 typedef struct { unsigned char *st; int *ret_start, *ret_list; int fresh; } RetHandles;
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc);
 static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *n, RetHandles *R);
@@ -21038,6 +21047,18 @@ static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount
     return R ? an_tail_handle(c, R, e, tc) && an_tail_handle(c, R, r, tc)
              : an_tail_is_shared_handle(c, e, nil_ok, tc, NULL) &&
                an_tail_is_shared_handle(c, r, nil_ok, tc, NULL);
+  }
+  /* A String `x || y` answers x, or y where x answers nil: both are arms
+     (`a.squeeze!("b") || a` answers a's String either way). A String
+     `x && y` answers y, or the nil x answers: y is an arm beside a nil. */
+  if (c->share_strings && an_tail_logic_op(c, node)) {
+    int l = nt_ref(nt, node, "left"), r = nt_ref(nt, node, "right");
+    if (k == NK_AndNode) {
+      if (!nil_ok) return 0;
+      tc->nils++;
+    }
+    else if (!(R ? an_tail_handle(c, R, l, tc) : an_tail_is_shared_handle(c, l, nil_ok, tc, NULL))) return 0;
+    return R ? an_tail_handle(c, R, r, tc) : an_tail_is_shared_handle(c, r, nil_ok, tc, NULL);
   }
   if (!c->share_strings || (k != NK_IfNode && k != NK_UnlessNode)) {
     if (R && R->fresh) return share_value_fresh(c, node, 0);
