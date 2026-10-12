@@ -40075,105 +40075,129 @@ static int rd_read_dropped_for_copy(Compiler *c, int w, const char *wn) {
    walking rows taken before the first turn, would carry on. Whether a block
    reaches the subject cannot be proved from the block (an alias, a helper, a
    constant, an implicit call, a buffer a builtin writes), so the refusal is
-   lifted only for a subject nothing can name: a fresh literal (a string
-   literal, an interpolation, `+"lit"`, an element read off an Array literal of
-   them), or a plain local that the block does not mention and whose String has
-   no other name the block can reach it by (the route's `sole`, asked of the
-   final facts: sh_sole_unreached). Every other subject keeps the refusal.
-   With `named`, the value may also be one plain local's String, or an element
-   read off an Array literal that holds it (`[t, 1].first`): *named takes that
-   read, whose String the facts follow, so the route asks them of it. */
-static int scan_fresh_string(const NodeTable *nt, int r, int *named) {
+   lifted only for a subject nothing can name: a new String (a string literal,
+   an interpolation, `+"lit"`, a String method's new answer), or plain locals
+   the block does not mention whose Strings have no other name the block can
+   reach them by (the route's `sole`, asked of the final facts:
+   sh_sole_unreached). Every other subject keeps the refusal. */
+typedef struct { int v[8], n; } ScanNamed;
+/* Is node r's value a new String, no String, or one of the Strings of the
+   plain locals it reads (added to *nm), the facts following each: such a
+   literal, a local, a conditional's arms, an element read off an Array
+   literal of them (`[t, 1].first`, `[t, u][i]`), or a builtin String
+   method's new answer (bop_share's BSH_PURE: `t.dup`, `t.center(5)`)? A
+   call's answer can otherwise be a String another name holds in CRuby (an
+   exception's `to_s` is its message, `gets` sets `$_`), which no share fact
+   knows. */
+static int scan_fresh_string(Compiler *c, int r, ScanNamed *nm) {
+  const NodeTable *nt = c->nt;
   r = an_unparen(nt, r);
-  if (r < 0) return 0;
-  if (named && nt_kind(nt, r) == NK_LocalVariableReadNode) {
-    if (*named >= 0) return 0;
-    *named = r;
+  if (r < 0) return 1;  /* a conditional's missing arm: nil */
+  NodeKind k = nt_kind(nt, r);
+  if (k == NK_StringNode || k == NK_InterpolatedStringNode || k == NK_IntegerNode || k == NK_FloatNode ||
+      k == NK_SymbolNode || k == NK_NilNode || k == NK_TrueNode || k == NK_FalseNode)
+    return 1;
+  if (k == NK_LocalVariableReadNode) {
+    if (nm->n >= 8) return 0;
+    nm->v[nm->n++] = r;
     return 1;
   }
-  if (nt_kind(nt, r) == NK_StringNode || nt_kind(nt, r) == NK_InterpolatedStringNode) return 1;
-  if (nt_kind(nt, r) != NK_CallNode || !nt_str(nt, r, "name")) return 0;
-  const char *nm = nt_str(nt, r, "name");
-  int rv = an_unparen(nt, nt_ref(nt, r, "receiver"));
-  if (is_unary_plus(nm)) return rv >= 0 && nt_kind(nt, rv) == NK_StringNode;
-  /* an element of an Array literal of such literals and values that are
-     no String, read off it (`[+"abc", 1].first`, which the desugaring makes
-     `[](0)`): one of its own */
+  if (k == NK_StatementsNode || k == NK_ElseNode) {
+    int b = k == NK_ElseNode ? nt_ref(nt, r, "statements") : r, n = 0;
+    const int *st = b >= 0 ? nt_arr(nt, b, "body", &n) : NULL;
+    return n == 0 || scan_fresh_string(c, st[n - 1], nm);
+  }
+  if (k == NK_IfNode || k == NK_UnlessNode)
+    return scan_fresh_string(c, nt_ref(nt, r, "statements"), nm) &&
+           scan_fresh_string(c, nt_ref(nt, r, k == NK_IfNode ? "subsequent" : "else_clause"), nm);
+  const char *name = k == NK_CallNode ? nt_str(nt, r, "name") : NULL;
+  int rv = name ? an_unparen(nt, nt_ref(nt, r, "receiver")) : -1;
+  if (!name || rv < 0 || nt_ref(nt, r, "block") >= 0) return 0;
+  if (is_unary_plus(name)) return nt_kind(nt, rv) == NK_StringNode;
   int args = nt_ref(nt, r, "arguments"), argc = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
-  if (rv < 0 || nt_kind(nt, rv) != NK_ArrayNode || nt_ref(nt, r, "block") >= 0 ||
-      !((is_endpoint_query(nm) && argc == 0) ||
-        (is_aref_name(nm) && argc == 1 && nt_kind(nt, argv[0]) == NK_IntegerNode)))
-    return 0;
-  int n = 0;
-  const int *el = nt_arr(nt, rv, "elements", &n);
-  for (int i = 0; i < n; i++) {
-    NodeKind ek = nt_kind(nt, el[i]);
-    if (!scan_fresh_string(nt, el[i], named) && ek != NK_IntegerNode && ek != NK_FloatNode && ek != NK_SymbolNode &&
-        ek != NK_NilNode && ek != NK_TrueNode && ek != NK_FalseNode)
+  if (nt_kind(nt, rv) == NK_ArrayNode) {
+    /* an element read off it (`[t, 1].first`, which the desugaring makes
+       `[](0)`): one of its elements, or nil */
+    if (!((is_endpoint_query(name) && argc == 0) ||
+          (is_aref_name(name) && argc == 1 && nt_kind(nt, argv[0]) != NK_RangeNode)))
       return 0;
+    int n = 0;
+    const int *el = nt_arr(nt, rv, "elements", &n);
+    for (int i = 0; i < n; i++)
+      if (!scan_fresh_string(c, el[i], nm)) return 0;
+    return 1;
   }
-  return n > 0;
+  /* the String row, else the any-receiver one (`itself`), else String's
+     default */
+  TyKind rt = comp_ntype(c, rv);
+  int sh = bop_share_named(TY_STRING, name);
+  if (!sh) sh = bop_share_named(BOP_ANY_RECV, name);
+  if (!sh) sh = bop_share(TY_STRING, name);
+  return (rt == TY_STRING || rt == TY_STRBUF) && sh == BSH_PURE && rd_builtin_string_method(c, name);
 }
-static int scan_local_named_fresh(Compiler *c, int l, int depth);
-/* Is every write of local `name` under `node` a fresh literal form, or
-   another such local's String (`s = t`, `s = [t, 1].first`), which the facts
-   follow, so the sole check sees that name too? A call's answer can be a
-   String another name holds in CRuby (an exception's `to_s` is its message,
-   `gets` sets `$_`), which no share fact knows. A method, class or module
-   body has locals of its own. `depth` bounds a chain of such locals (`s = t;
-   t = s` is no fresh form). */
-static int scan_local_fresh_writes(Compiler *c, int node, const char *name, int depth) {
+/* The locals a chain of writes has followed: one met again adds no String. */
+typedef struct ScanChain { const struct ScanChain *up; int root; const char *name; int depth; } ScanChain;
+static int scan_local_named_fresh(Compiler *c, int l, const ScanChain *up);
+/* Is every write of local `name` under `node` such a value
+   (scan_fresh_string), each local it reads written so in turn? A method,
+   class or module body has locals of its own. */
+static int scan_local_fresh_writes(Compiler *c, int node, const ScanChain *ch) {
   const NodeTable *nt = c->nt;
   if (node < 0) return 1;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return 1;
   if (a_is_write_node(nt_type(nt, node))) {
     const char *wn = nt_str(nt, node, "name");
-    int named = -1;
-    if (wn && sp_streq(wn, name) &&
-        (k != NK_LocalVariableWriteNode || !scan_fresh_string(nt, nt_ref(nt, node, "value"), &named) ||
-         (named >= 0 && (depth >= 4 || !scan_local_named_fresh(c, named, depth + 1)))))
+    ScanNamed nm = {{0}, 0};
+    if (wn && sp_streq(wn, ch->name) &&
+        (k != NK_LocalVariableWriteNode || !scan_fresh_string(c, nt_ref(nt, node, "value"), &nm)))
       return 0;
+    for (int i = 0; wn && sp_streq(wn, ch->name) && i < nm.n; i++)
+      if (!scan_local_named_fresh(c, nm.v[i], ch)) return 0;
   }
   int nr = nt_num_refs(nt, node);
   for (int i = 0; i < nr; i++)
-    if (!scan_local_fresh_writes(c, nt_ref_at(nt, node, i), name, depth)) return 0;
+    if (!scan_local_fresh_writes(c, nt_ref_at(nt, node, i), ch)) return 0;
   int na = nt_num_arrs(nt, node);
   for (int i = 0; i < na; i++) {
     int n = 0; const int *a = nt_arr_at(nt, node, i, &n);
     for (int j = 0; j < n; j++)
-      if (!scan_local_fresh_writes(c, a[j], name, depth)) return 0;
+      if (!scan_local_fresh_writes(c, a[j], ch)) return 0;
   }
   return 1;
 }
-/* Is every write of the local read `l` names, in its scope, a fresh form
-   (scan_local_fresh_writes)? */
-static int scan_local_named_fresh(Compiler *c, int l, int depth) {
+/* Is every write of the local read `l` names, in its scope, such a value?
+   A local the chain already follows is (`s = [t, 1].first; t = s if f`). */
+static int scan_local_named_fresh(Compiler *c, int l, const ScanChain *up) {
   Scope *ss = comp_scope_of(c, l);
   int root = ss ? (ss->body >= 0 ? ss->body : c->nt->root_id) : -1;
-  return root >= 0 && scan_local_fresh_writes(c, root, nt_str(c->nt, l, "name"), depth);
+  const char *name = nt_str(c->nt, l, "name");
+  for (const ScanChain *p = up; p; p = p->up)
+    if (p->root == root && sp_streq(p->name, name)) return 1;
+  ScanChain ch = { up, root, name, up ? up->depth + 1 : 0 };
+  return root >= 0 && ch.depth < 8 && scan_local_fresh_writes(c, root, &ch);
 }
-static int scan_subject_trusted(Compiler *c, int blk, int subj, ShareRoute *q) {
+/* Can the scan's subject be trusted, and through which locals' Strings
+   (*nm, each the route's `sole` once)? */
+static int scan_subject_trusted(Compiler *c, int blk, int subj, ScanNamed *nm) {
   const NodeTable *nt = c->nt;
   /* CRuby checks the subject only when the block returns to the scan, and
      both take the first match before the first turn: a block that leaves
      only by jumping out (share_block_returns) cannot change the subject
      under the scan, whatever names it */
-  int returns = share_block_returns(c, blk), named = -1;
-  if (subj < 0 || !scan_fresh_string(nt, subj, &named)) return !returns;
-  if (named < 0) return 1;
-  /* a local, or the local an Array literal's element read answers */
-  if (returns) {
-    const char *name = nt_str(nt, named, "name");
-    ANameSet used = {0};
-    a_collect_used(c, nt_ref(nt, blk, "body"), &used);
-    int hit = aname_has(&used, name);
-    free(used.v);
-    if (hit || !scan_local_named_fresh(c, named, 0)) return 0;
+  int returns = share_block_returns(c, blk);
+  if (subj < 0 || !scan_fresh_string(c, subj, nm)) {
+    nm->n = 0;
+    return !returns;
   }
-  q->sole = named;
-  return 1;
+  ANameSet used = {0};
+  if (returns) a_collect_used(c, nt_ref(nt, blk, "body"), &used);
+  int ok = 1;
+  for (int i = 0; returns && ok && i < nm->n; i++)
+    ok = !aname_has(&used, nt_str(nt, nm->v[i], "name")) && scan_local_named_fresh(c, nm->v[i], NULL);
+  free(used.v);
+  return ok;
 }
 /* String routes the settled types show copying where CRuby hands over the
    one object (#6765), refused rather than compiled with the change lost:
@@ -40247,9 +40271,14 @@ static void refuse_string_read_copies(Compiler *c) {
           q.to_name = bp;
           /* the matches are new, but a subject the block could change under
              the scan keeps the refusal (scan_subject_trusted) */
-          if (!scan_subject_trusted(c, blk, an_unparen(nt, r), &q) ||
-              !share_route_defer(c, &q, sc_msg))
-            unsupported_feature(c, u, sc_msg);
+          ScanNamed nm = {{0}, 0};
+          int ok = scan_subject_trusted(c, blk, an_unparen(nt, r), &nm);
+          /* each local whose String the subject can be is a route's sole */
+          for (int i = 0; ok && i < (nm.n > 0 ? nm.n : 1); i++) {
+            q.sole = nm.n > 0 ? nm.v[i] : -1;
+            ok = share_route_defer(c, &q, sc_msg);
+          }
+          if (!ok) unsupported_feature(c, u, sc_msg);
         }
       }
     /* `kept[0] << "b"`: a String mutation through an element read of a

@@ -58,3 +58,56 @@ s6.each_char { |m| m << "."; chars << m }
 lines = []
 s6.each_line { |m| m << "|"; lines << m }
 p chars.size, lines, s6, t6
+
+# a local written from a String method's new answer
+t7 = "abc".dup
+s7 = [t7, 1].first
+acc7 = []
+s7.scan(/./) { |m| m << "!"; acc7 << m }
+p acc7, t7
+
+t8 = +"abc"
+t8 = t8.center(5) if ARGV.size > 3
+s8 = [t8, 1].first
+acc8 = []
+s8.scan(/./) { |m| m << "!"; acc8 << m }
+p acc8, t8
+
+# such an answer as the subject itself
+t9 = +"abc"
+acc9 = []
+t9.upcase.scan(/./) { |m| m << "!"; acc9 << m; t9 << "z" if acc9.size == 1 }
+p acc9, t9
+
+# a conditional's arms
+t10 = +"abc"
+s10 = ARGV.size > 5 ? 1 : t10
+acc10 = []
+s10.scan(/./) { |m| m << "!"; acc10 << m }
+p acc10, s10, t10
+
+u11 = +"q"
+t11 = +"abc"
+s11 = unless ARGV.empty? then u11 else t11 end
+acc11 = []
+s11.scan(/./) { |m| m << "!"; acc11 << m }
+p acc11, t11, u11
+
+# two Strings in the literal
+t12 = +"abc"
+u12 = +"xy"
+s12 = [t12, u12, 1][ARGV.size]
+acc12 = []
+s12.scan(/./) { |m| m << "!"; acc12 << m }
+p acc12, t12, u12
+acc12b = []
+[u12, t12][ARGV.size].scan(/./) { |m| m << "?"; acc12b << m }
+p acc12b
+
+# a cycle of locals
+t13 = +"abc"
+s13 = [t13, 1].first
+t13 = s13 if ARGV.size > 2
+acc13 = []
+s13.scan(/./) { |m| m << "!"; acc13 << m }
+p acc13, t13
