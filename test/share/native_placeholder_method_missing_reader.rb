@@ -1,5 +1,7 @@
-# spinel: not-cruby
-# Keep native-class reader declarations among conservative hook candidates.
+# A native class's reader named method_missing is a hook only for an
+# object of that class: the receiver here is never a StringIO, so CRuby
+# never routes the call to it, and the fresh String the program's method
+# answers keeps no other name.
 require "stringio"
 StringIO.new("loaded native class").read
 class StringIO

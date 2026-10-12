@@ -897,7 +897,12 @@ by itself invalidate a fresh String returned by a user method through a
 boxed receiver. Native candidate entries with no Ruby method, reader, or
 native binding for the called name or `method_missing` add no return path.
 Real native bindings and readers remain conservative, and the existing
-user-target and dynamic-hook checks still apply.
+user-target and dynamic-hook checks still apply. A `method_missing` hook (a
+method, a reader or a native binding) counts only where the receiver can
+be an object of a class that has the hook and not the called name. A
+top-level `method_missing` counts for every call, and one in a reopened
+builtin class, a module or an object's singleton class whatever the
+receiver can be.
 
 With `--share-strings`, a method that returns a fresh empty Hash directly
 (`{}` or a blockless `Hash.new` with no default or a String/nil default) can

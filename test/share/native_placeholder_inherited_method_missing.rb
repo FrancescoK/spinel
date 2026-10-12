@@ -1,5 +1,7 @@
-# spinel: not-cruby
-# Keep the conservative refusal when a real inherited user hook exists.
+# A method_missing hook in a class that answers the name itself stands in
+# for no call of that name: the receiver's classes all define
+# freshness_probe_token, the inheriting one too, so CRuby never routes the
+# call to the hook, and the fresh String each answers keeps no other name.
 require "stringio"
 StringIO.new("loaded native class").read
 

@@ -1809,7 +1809,7 @@ static TyKind sh_bop_arg_type(const void *ud, int i) {
   return i >= 0 && i < a->argc ? a->c->ntype[a->argv[i]] : TY_UNKNOWN;
 }
 
-static int sh_has_method_missing_candidate(Compiler *c);
+static int sh_method_missing_reaches(Compiler *c, int call, const char *name);
 
 /* A boxed String row can replace the container default only when the
    selected typed row describes this call shape and the dispatch plan and
@@ -1854,7 +1854,7 @@ static int sh_boxed_string_row_composable(ShareFacts *F, Compiler *c, int n,
   /* Match the existing boxed-freshness exclusions for Object and dynamic
      lookup. These routes can answer without being an ordinary user target. */
   if (object_public_method_name(name) || comp_method_index(c, "method_missing") >= 0) return 0;
-  if (sh_has_method_missing_candidate(c)) return 0;
+  if (sh_method_missing_reaches(c, n, name)) return 0;
   int missing = 0;
   comp_cmethod_candidates(c, "method_missing", &missing);
   if (missing) return 0;
@@ -4396,11 +4396,32 @@ static int sh_native_placeholder(Compiler *c, const PolyCand *p, const char *nam
   if (comp_reader_in_chain(c, p->cls, name, NULL)) return 0;
   return !comp_poly_arm_defines(c, p->cls, name);
 }
-static int sh_has_method_missing_candidate(Compiler *c) {
-  int n = 0;
+/* Can a method_missing hook answer call `call` of `name`, as CRuby routes
+   a call no method of the receiver's class answers: a class whose chain
+   holds a hook (a Ruby method, a reader, a native binding) and not the
+   name, that the receiver can be? The boxed-receiver walk lists the
+   program's classes and the native classes the receiver can be
+   (poly_recv_classes, asked only once such a class turns up); a hook in a
+   class it cannot list (a reopened builtin's, a module's, an exception's,
+   an object's singleton class) or for a receiver it cannot bound counts.
+   A hook that only classes answering the name themselves reach, or only
+   classes the receiver never is, answers nothing here. (Spinel never
+   routes a call to the hook; this keeps CRuby's answer in view.) */
+static int sh_method_missing_reaches(Compiler *c, int call, const char *name) {
+  int n = 0, nk = -1;
+  const int *ks = NULL;
   const PolyCand *p = comp_poly_candidates(c, "method_missing", &n);
-  for (int i = 0; i < n; i++)
-    if (!sh_native_placeholder(c, &p[i], "method_missing")) return 1;
+  for (int i = 0; i < n; i++) {
+    int k = p[i].cls;
+    if (sh_native_placeholder(c, &p[i], "method_missing")) continue;
+    if (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL) ||
+        (p[i].native && comp_poly_arm_defines(c, k, name))) continue;
+    if (c->classes[k].is_singleton_of || (!p[i].native && !cls_fact_bounded(c, k))) return 1;
+    if (nk < 0) ks = poly_recv_classes(c, call, &nk);
+    if (!ks) return 1;
+    for (int j = 0; j < nk; j++)
+      if (ks[j] == k) return 1;
+  }
   return 0;
 }
 
@@ -4417,10 +4438,12 @@ static int sh_builtin_fresh(Compiler *c, int call, int ostruct) {
      The dispatch plan must also exclude readers, native bindings and
      catch-all arms such as OpenStruct's member read. Object's public
      method table covers the names the arity tables omit. A user-defined
-     method_missing can answer a name with no ordinary target too. */
+     method_missing can answer a name with no ordinary target too: a
+     top-level one for any receiver, a class's where the receiver can be of
+     a class that has the hook and not the name. */
   if (object_public_method_name(name)) return 0;
   if (comp_method_index(c, "method_missing") >= 0) return 0;
-  if (sh_has_method_missing_candidate(c)) return 0;
+  if (sh_method_missing_reaches(c, call, name)) return 0;
   int missing = 0;
   comp_cmethod_candidates(c, "method_missing", &missing);
   if (missing) return 0;
