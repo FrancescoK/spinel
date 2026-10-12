@@ -100,7 +100,11 @@ typedef struct {
   int tv, tr;
   const char *idxref;   /* the index as a raw sp_int, for `[]` */
   int id;               /* the call */
+  int kwh_tmp;          /* the keyword Hash a callable arm takes, declared ahead
+                           of the pre-arms (emit_poly_callable_kwh_decl); 0 for none */
 } PolyTemps;
+int  emit_poly_callable_kwh_decl(Compiler *c, const char *name, const PolySpecialsN *ps, const PolyTemps *T,
+                                 const PolyKw *kw, Buf *b);
 void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps, const PolyTemps *T, Buf *b);
 void emit_poly_str_aset_prearm(Compiler *c, int recv, const PolySpecialsN *ps, const PolyTemps *T, Buf *b);
 void emit_poly_str_aset_writeback(Compiler *c, int recv, const PolySpecialsN *ps, const PolyTemps *T, Buf *b);

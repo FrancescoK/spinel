@@ -3290,16 +3290,20 @@ int emit_poly_prearms_n_blk(Compiler *c, int id, const char *name, const PolySpe
   else if (kwh >= 0 && !has_splat_arg &&
            is_call_alias(name) &&
            argc <= SP_PROC_ARG_SLOTS) {
-    /* The keyword split has no hash for a callable to take: build one
-       from the per-key temps, only when the slot holds a callable, and
-       pass it as the trailing argument marked as keywords. */
-    int kht = ++g_tmp;
-    buf_printf(b, "sp_SymPolyHash *_t%d = NULL; SP_GC_ROOT(_t%d); "
-                  "if (_t%d.tag == SP_TAG_OBJ && (_t%d.cls_id == SP_BUILTIN_PROC"
-                  " || _t%d.cls_id == SP_BUILTIN_CURRY || _t%d.cls_id == SP_BUILTIN_METHOD)) _t%d = ",
-               kht, kht, tv, tv, tv, tv, kht);
-    emit_kwh_sym_hash(c, kw, NULL, b);
-    buf_puts(b, "; ");
+    /* The keyword split has no hash for a callable to take: the one built
+       from the per-key temps ahead of the pre-arms (emit_poly_callable_kwh_decl,
+       the dispatch declared it where a declaration can stand), passed as
+       the trailing argument marked as keywords. */
+    int kht = T->kwh_tmp;
+    if (kht <= 0) {
+      kht = ++g_tmp;
+      buf_printf(b, "sp_SymPolyHash *_t%d = NULL; SP_GC_ROOT(_t%d); "
+                    "if (_t%d.tag == SP_TAG_OBJ && (_t%d.cls_id == SP_BUILTIN_PROC"
+                    " || _t%d.cls_id == SP_BUILTIN_CURRY || _t%d.cls_id == SP_BUILTIN_METHOD)) _t%d = ",
+                 kht, kht, tv, tv, tv, tv, kht);
+      emit_kwh_sym_hash(c, kw, NULL, b);
+      buf_puts(b, "; ");
+    }
     atmp[pos_argc] = kht;
     atmp_ty[pos_argc] = TY_SYM_POLY_HASH;
     called = emit_poly_callable_prearm(c, name, argc, atmp, atmp_ty, NULL, tv, tr, ret, 2, b);
@@ -3311,6 +3315,25 @@ int emit_poly_prearms_n_blk(Compiler *c, int id, const char *name, const PolySpe
     unsupported(c, id, "a splat before other arguments into a method called on a value of more than one type");
   if (called && g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_CALLABLE, -1, TY_UNKNOWN, PC_SAME);
   return blk_tmp2;
+}
+
+/* The Hash a callable (a Proc, a Curry, a Method) takes for a keyword
+   split, declared and filled ahead of every pre-arm: the class-value and
+   the tag pre-arms end in `else `, where a declaration cannot stand, and
+   its scope would end before the callable arm reads it (#8646). Filled
+   only when the slot holds a callable, as before. Answers the temp, or 0
+   when the dispatch has no such arm. */
+int emit_poly_callable_kwh_decl(Compiler *c, const char *name, const PolySpecialsN *ps, const PolyTemps *T,
+                                const PolyKw *kw, Buf *b) {
+  if (ps->kwh < 0 || ps->has_splat_arg || ps->kw_pos || !is_call_alias(name) || T->argc > SP_PROC_ARG_SLOTS) return 0;
+  int kht = ++g_tmp, tv = T->tv;
+  buf_printf(b, "sp_SymPolyHash *_t%d = NULL; SP_GC_ROOT(_t%d); "
+                "if (_t%d.tag == SP_TAG_OBJ && (_t%d.cls_id == SP_BUILTIN_PROC"
+                " || _t%d.cls_id == SP_BUILTIN_CURRY || _t%d.cls_id == SP_BUILTIN_METHOD)) _t%d = ",
+             kht, kht, tv, tv, tv, tv, kht);
+  emit_kwh_sym_hash(c, kw, NULL, b);
+  buf_puts(b, "; ");
+  return kht;
 }
 
 /* The builtin `case` arms a poly dispatch with arguments writes after its

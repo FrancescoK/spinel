@@ -8782,12 +8782,13 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       if (is_index && atmp_ty[0] == TY_POLY) snprintf(idxref, sizeof idxref, "sp_poly_arg_int_chk(_t%d)", atmp[0]);
       else if (is_index) snprintf(idxref, sizeof idxref, "_t%d", atmp[0]);
       PolyTemps ptemps = { argc, pos_argc, argv, atmp, atmp_ty, kwall, kwn, kwels, kwtmp, kwty, ret, tv, tr,
-                           idxref, id };
+                           idxref, id, 0 };
       int pa_frame = g_plan_check ? pa_begin(id) : -1;
       /* the argument read as the setter's value temp, its handle with it
          (ran_first_handle): an arm that re-emits it, the synthesized
          writers' default, stores that handle (unbound with kwmark) */
       if (setter_late && htmp[0]) ran_first_bind(argv[0], atmp[0], htmp[0]);
+      ptemps.kwh_tmp = emit_poly_callable_kwh_decl(c, name, &ps, &ptemps, &kw, b);
       emit_poly_prearms_n(c, name, &ps, &ptemps, b);
       int blk_tmp2 = emit_poly_prearms_n_blk(c, id, name, &ps, &ptemps, atmp, atmp_ty, &kw, htmp,
                                              is_setter_val, splat_a, splat_last, stk, b);
