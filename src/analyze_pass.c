@@ -9135,7 +9135,17 @@ static int infer_param_types_ex(Compiler *c, int settle) {
         if (ss && ss->is_cmethod && ss->class_id >= 0 && c->classes[ss->class_id].is_struct)
           changed |= struct_new_types_members(c, id, ss->class_id);
       }
-      if (sp_streq(name, "new")) continue;
+      /* `new` on an INSTANCE whose class defines an instance method `new`
+         is an ordinary method call, not a constructor: bind its params.
+         Skipping it left a `Relation#new(attrs = {}) = @model.new(attrs)`
+         delegate's param typed by its default alone (a Symbol-keyed hash),
+         so a String-keyed hash raised TypeError at runtime. */
+      if (sp_streq(name, "new")) {
+        TyKind rtn = infer_type(c, recv);
+        if (!(ty_is_object(rtn) &&
+              comp_method_in_chain(c, ty_object_class(rtn), "new", NULL) >= 0))
+          continue;
+      }
     }
     /* obj.method -> instance method params */
     TyKind rt = infer_type(c, recv);
