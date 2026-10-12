@@ -13517,9 +13517,14 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
       /* The value is the receiver as the write left it: the shared handle, or
          the plain string box the variable now holds -- not a fresh box of the
          new contents, which no alias observes (s.concat("!").equal?(s)). */
+      /* The typed emitter answered on the String face, so its value is the
+         new contents the write-back hands on, a String, also where the call
+         itself is marked to answer the handle (strbuf_box: `c.s.concat(x)`
+         over a reader of a String the rule shares); the value is the box. */
+      const char *sty = c_type_name(TY_STRING);
       int tq = ++g_tmp;
-      if (face_str_var_recv(nt, recv)) buf_printf(val, "({ %s _t%d = %s; sp_RbVal _t%d = (%s); _t%d; })", c_type_name(nat), tr, call, tq, wb.p, tq);
-      else buf_printf(val, "({ %s _t%d = %s; %s; _t%d; })", c_type_name(nat), tr, call, wb.p, box);
+      if (face_str_var_recv(nt, recv)) buf_printf(val, "({ %s _t%d = %s; sp_RbVal _t%d = (%s); _t%d; })", sty, tr, call, tq, wb.p, tq);
+      else buf_printf(val, "({ %s _t%d = %s; %s; _t%d; })", sty, tr, call, wb.p, box);
       nat = TY_POLY;
     }
     else if (flags & PF_VAL_SELF) {
