@@ -508,7 +508,20 @@ build/regexp/%.o: lib/regexp/%.c $(RE_HDRS)
 	@mkdir -p build/regexp
 	$(CC) -c $(COPT) $(SEC_FLAGS) $(RE_CASE_FLAGS) -Ilib/regexp -Ilib/regexp/shim $< -o $@
 
-RT_HDRS = $(wildcard lib/*.h lib/regexp/*.h lib/regexp/*.inc lib/regexp/shim/*.h lib/regexp/shim/mruby/*.h) $(PLATFORM_HDRS)
+# lib/spinel_rt_responds_generated.h is a plain filename here, not part of
+# the $(wildcard ...) above: on a from-clean build it does not exist yet
+# when $(RT_HDRS) is first expanded, and make caches that directory
+# listing for the rest of this invocation, so the wildcard would never
+# pick it up even after its own rule generates it later in the same run.
+# Every rule below that lists $(RT_HDRS) compiles a .c file that
+# transitively includes lib/spinel_rt.h, which #includes this header, so
+# without this every one of them races the generator under -j$(nproc) on
+# a fresh checkout (observed in CI: build/sp_poly_cold.o losing that race
+# with "fatal error: spinel_rt_responds_generated.h: No such file or
+# directory"). A plain filename here is looked up as a real prerequisite
+# with its own rule, not a wildcard scan, so it is immune to the caching
+# above and make schedules its generation before any of these rules runs.
+RT_HDRS = $(wildcard lib/*.h lib/regexp/*.h lib/regexp/*.inc lib/regexp/shim/*.h lib/regexp/shim/mruby/*.h) $(PLATFORM_HDRS) lib/spinel_rt_responds_generated.h
 
 # One rule for every lib/*.c object. The per-object header lists here used to be
 # written by hand and had drifted: build/sp_array.o never named lib/sp_str.h,
