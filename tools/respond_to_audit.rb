@@ -7,9 +7,11 @@
 #
 # This exists because sp_poly_responds_builtin's per-class tables are a
 # second, hand-maintained copy of what bop_rows already says is
-# implemented (lib/spinel_rt.h's "uni"/"enumm"/"arrm"/"hashm"/"strm"/
-# "numm"/"intm"/"fltm"/"rngm"/"symm"/"procm"/"excm"/"regm"/"mdm" arrays), and nothing
-# enforces the two stay in sync. They drifted once already: Array's table
+# implemented (lib/spinel_rt.h's "uni"/"enumm"/"numm"/"intm"/"rngm"/"symm"/
+# "procm"/"excm"/"regm"/"mdm" arrays, plus the generated
+# "sp_gen_responds_array"/"hash"/"string"/"float" tables -- see
+# tools/gen_respond_to_tables.rb), and nothing enforces the two stay in
+# sync. They drifted once already: Array's table
 # alone was missing 67 real methods, including every bang mutator (uniq!,
 # sort!, compact!, ...), which is exactly the shape of bug gem "jaccard"
 # hit for real (Jaccard.coefficient's `union.uniq! if

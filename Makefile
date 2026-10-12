@@ -359,11 +359,19 @@ lib/spinel_rt_responds_generated.h: src/builtin_ops.c tools/gen_respond_to_table
 	ruby tools/gen_respond_to_tables.rb > $$t; \
 	if cmp -s $$t $@; then rm -f $$t; else mv $$t $@; fi
 
-build/csrc/sp_rt_names.h: $(SP_RT_NAME_SRC) | build/csrc
+# lib/spinel_rt_responds_generated.h is an explicit prerequisite (not just
+# part of $(SP_RT_NAME_SRC)'s wildcard) because make caches a directory's
+# wildcard() listing for the life of this invocation: on a from-clean build
+# this header does not exist yet when $(SP_RT_NAME_SRC) is first expanded, and
+# that stale listing would persist even after the header is generated. The
+# recipe below re-globs with the shell instead of reusing $(SP_RT_NAME_SRC),
+# so it always sees the header once this prerequisite has built it.
+build/csrc/sp_rt_names.h: lib/spinel_rt_responds_generated.h $(SP_RT_NAME_SRC) | build/csrc
 	@t=$@.tmp.$$$$; \
+	src="$$(echo lib/*.h lib/*.c packages/*/*.h packages/*/*.c)"; \
 	{ echo "/* generated from the runtime sources; see the Makefile rule */"; \
 	  echo "static const char *const SP_RT_PREFIXES[] = {"; \
-	  { grep -hoE '\bsp_[a-z][a-z0-9_]*' $(SP_RT_NAME_SRC) 2>/dev/null \
+	  { grep -hoE '\bsp_[a-z][a-z0-9_]*' $$src 2>/dev/null \
     | sed 's/^sp_//' | cut -d_ -f1 | grep -v '^cext$$'; echo rb; } \
 	    | sort -u | sed 's/.*/  "&",/'; \
 	  echo "  NULL"; echo "};"; } > $$t; \
