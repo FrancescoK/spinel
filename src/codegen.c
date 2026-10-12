@@ -13066,6 +13066,31 @@ void emit_super(Compiler *c, int id, Buf *b) {
       if (!served) { cmi = omi; cdef = odef; }
     }
     if (cshadow) uname = cshadow;
+    /* An extended module's method is one entry in the class's ancestry, and
+       `super` inside it goes past the module. Copied into each class that
+       inherits the extend, the parent's copy is that same definition, not a
+       superclass method: skip such copies (Thor's ClassMethods#method_added
+       called on a Thor subclass reaches Module#method_added). */
+    while (!cshadow && cmi >= 0 && cdef >= 0 && c->scopes[cmi].def_node == s->def_node && s->def_node >= 0) {
+      int up = c->classes[cdef].parent;
+      cmi = up >= 0 ? comp_cmethod_in_chain(c, up, uname, &cdef) : -1;
+    }
+    /* Module's and Class's own hooks are no-ops answering nil: `super` from a
+       program's method_added (Thor's), inherited, included, ... reaches them
+       when no ancestor of the program defines one */
+    if (cmi < 0) {
+      static const char *const HOOKS[] = { "method_added", "method_removed", "method_undefined",
+        "singleton_method_added", "singleton_method_removed", "singleton_method_undefined",
+        "inherited", "included", "extended", "prepended", "const_added", NULL };
+      int hook = 0;
+      for (int h = 0; HOOKS[h] && !hook; h++) hook = sp_streq(uname, HOOKS[h]);
+      if (hook) {
+        TyKind ht = repr_of(c, id).as_ty;
+        if (ht == TY_POLY) buf_puts(b, "sp_box_nil()");
+        else buf_printf(b, "(%s)", raise_tail_value_c(c, ht));
+        return;
+      }
+    }
     if (cmi < 0) {
       const char *scn2 = class_ruby_name(c, s->class_id);
       if (!scn2) scn2 = c->classes[s->class_id].name;
@@ -13432,6 +13457,17 @@ void emit_super(Compiler *c, int id, Buf *b) {
     /* `super` in a respond_to? override no ancestor defines is Object's:
        the object's method-table answer for a runtime name */
     if (uname && sp_streq(uname, "respond_to?") && emit_super_respond_to(c, id, s, b)) return;
+    /* `super` in a freeze override no ancestor defines is Object#freeze: the
+       object frozen, answering itself (Thor's HashWithIndifferentAccess#freeze
+       freezes its hash, then calls super) */
+    if (uname && sp_streq(uname, "freeze") && !s->is_cmethod && s->class_id >= 0) {
+      Buf fb; memset(&fb, 0, sizeof fb);
+      buf_printf(&fb, "sp_gc_freeze(%s)", g_self);
+      if (repr_of(c, id).kind == RK_BOXED) emit_boxed_text(c, ty_object(s->class_id), fb.p, b);
+      else buf_printf(b, "((sp_%s *)%s)", c->classes[s->class_id].c_name, fb.p);
+      free(fb.p);
+      return;
+    }
     /* `super` in an is_a? / kind_of? / instance_of? override no ancestor
        defines is Object's answer for this object: its runtime class against
        the argument (activesupport's TimeWithZone#is_a? says Time, then asks
