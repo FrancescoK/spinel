@@ -1983,11 +1983,15 @@ const char *strbuf_local_name(Compiler *c, int recv) {
    holds it (strbuf_slot_ref); an instance_eval context returns -1 (its
    storage is not a per-instance field). */
 int strbuf_ivar_owner(Compiler *c, int node) {
+  /* (--share-strings: an ivar in an instance_eval/exec splice is the
+     rebound receiver's, as the ivar emitter takes it: `K.new(s).instance_exec
+     { @name }` read the surrounding scope's slot facts for K's @name) */
+  if (repr_share_rule(c) && ie_class_of(c, node) >= 0) return ie_class_of(c, node);
   Scope *cs = comp_scope_of(c, node);
   if (!cs) return -1;
   if (cs->is_cmethod) return cs->class_id;
   if (cs->class_id >= 0) return cs->class_id;
-  if (g_ie_class_id >= 0) return -1;
+  if (g_ie_class_id >= 0) return repr_share_rule(c) ? g_ie_class_id : -1;
   return comp_class_index(c, "Toplevel");
 }
 /* ---- Is an object's ivar set? ----
@@ -3028,6 +3032,20 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
     buf_puts(b, "))");
     return 1;
   }
+  /* --share-strings: a spliced yield whose block answers a holder's
+     handle (strbuf_route_yield): that handle's */
+  if (repr_share_rule(c) && recv >= 0 && nt_kind(c->nt, unwrap_parens(c, recv)) == NK_YieldNode &&
+      strbuf_yield_tail_held(c)) {
+    Buf hb; memset(&hb, 0, sizeof hb);
+    if (emit_strbuf_route(c, recv, &hb)) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)sp_String_identity(_t%d) : SP_NIL_OBJECT_ID; })",
+                 t, hb.p, t, t);
+      free(hb.p);
+      return 1;
+    }
+    free(hb.p);
+  }
   /* A receiver-returning route has the same identity as its slot. */
   char ref[1024];
   int up = 0;
@@ -3161,7 +3179,10 @@ int sb_reader_shim_open(Compiler *c, int recv, char *sref, size_t cap, SbReaderS
   int gv = repr_share_rule(c) && recv >= 0 && repr_static_read_kind(nt_kind(c->nt, recv)) && !sb_shadowed_reader(recv);
   if (recv < 0 || (nt_kind(c->nt, recv) != NK_CallNode && !gv)) return 0;
   Repr rp = repr_of(c, recv);
-  if (!gv && !rp.handle && !rp.demand) return 0;
+  /* (--share-strings: or a value route whose handle ran first, `(+s)`
+     under emit_bang_self_handle, whose temp strbuf_slot_ref answers) */
+  int ran = repr_share_rule(c) && nt_kind(c->nt, recv) == NK_CallNode && ran_first_read_handle(recv) >= 0;
+  if (!gv && !rp.handle && !rp.demand && !ran) return 0;
   if (g_n_argov >= MAX_ARG_OVERRIDE) return 0;
   if (!strbuf_slot_ref(c, recv, sref, cap)) return 0;
   int tH = ++g_tmp;
@@ -3374,6 +3395,13 @@ int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
     return 1;
   }
   if (native_share_answer_ref(c, recv, out, cap)) return 1;
+  /* (--share-strings: a value route over a handle, `(+s)`, whose handle
+     already ran into a temp (emit_bang_self_handle): that temp holds it,
+     as a variable's slot does) */
+  if (repr_share_rule(c) && recv >= 0 && nt_kind(c->nt, recv) == NK_CallNode && ran_first_read_handle(recv) >= 0) {
+    snprintf(out, cap, "_t%d", ran_first_read_handle(recv));
+    return 1;
+  }
   /* via emit_local_ref: a celled/captured local derefs its cell */
   if (strbuf_local_name(c, recv) && holder_of_node(c, recv, &h)) return holder_slot_text(c, &h, out, cap);
   /* a demand-marked reader call typed as the handle (external reader

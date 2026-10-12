@@ -361,4 +361,6 @@ int cplan_nil(Compiler *c, int id);
    a global, an ivar, an unseen caller) is not. */
 int cplan_nil_written(int why);
 
+int cplan_reopen_runs_builtin(Compiler *c, int id, int mi);
+
 #endif

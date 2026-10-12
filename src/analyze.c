@@ -1353,6 +1353,16 @@ else {
             return 1;
         }
       }
+      /* --share-strings: a String reopening's yielding method runs its
+         block through the method's proc-form clone (emit_reopen_block_call,
+         and a builtin's name with a literal block, reopen_override_block_ok):
+         the block is a real proc, and its captures need cells. A spurious
+         cell, where the method is spliced instead, is a missed optimization. */
+      else if (c->share_strings && (rt == TY_STRING || rt == TY_STRBUF) && comp_class_index(c, "String") >= 0 &&
+               comp_method_in_chain(c, comp_class_index(c, "String"), name, NULL) >= 0 &&
+               c->scopes[comp_method_in_chain(c, comp_class_index(c, "String"), name, NULL)].yields &&
+               !repr_self_handle(c, comp_method_in_chain(c, comp_class_index(c, "String"), name, NULL)))
+        return 1;
       /* A poly receiver dispatches on the runtime class, and the dispatch
          materializes the block as a real proc once, ahead of the switch, for
          any candidate that takes a real &block or is served by a proc-form

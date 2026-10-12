@@ -111,6 +111,49 @@ static void cplan_resolve_super(Compiler *c, int id, CallPlan *p) {
   }
 }
 
+/* Where node `target` sits under n: 0 not there, 1 outside any block,
+   lambda or method body, 2 inside one (it may run later). */
+static int cplan_node_place(const NodeTable *nt, int n, int target, int inner, int depth) {
+  if (n < 0 || depth > 400) return 0;
+  if (n == target) return inner ? 2 : 1;
+  NodeKind k = nt_kind(nt, n);
+  int in = inner || k == NK_BlockNode || k == NK_LambdaNode || k == NK_DefNode;
+  for (int i = 0; i < nt_num_refs(nt, n); i++) {
+    int r = cplan_node_place(nt, nt_ref_at(nt, n, i), target, in, depth + 1);
+    if (r) return r;
+  }
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) {
+      int r = cplan_node_place(nt, ids[j], target, in, depth + 1);
+      if (r) return r;
+    }
+  }
+  return 0;
+}
+/* Does call `id` run, at the program's top level, ahead of the statement
+   that defines method mi? There the name is still the builtin's. */
+static int cplan_called_before_def(Compiler *c, int id, int mi) {
+  const NodeTable *nt = c->nt;
+  int root = nt->root_id, st = root >= 0 ? nt_ref(nt, root, "statements") : -1, n = 0;
+  const int *sv = st >= 0 ? nt_arr(nt, st, "body", &n) : NULL;
+  int dn = c->scopes[mi].def_node;
+  for (int i = 0; i < n && dn >= 0; i++) {
+    if (cplan_node_place(nt, sv[i], dn, 0, 0)) return 0;
+    if (cplan_node_place(nt, sv[i], id, 0, 0) == 1) return 1;
+  }
+  return 0;
+}
+/* --share-strings: does call `id`, with a literal block, still reach the
+   builtin rather than String reopening mi's yielding method of its name,
+   for being one the program runs ahead of mi's definition at its top level
+   (as in CRuby)? The plan, the inference and the emitter ask it alike. */
+int cplan_reopen_runs_builtin(Compiler *c, int id, int mi) {
+  const NodeTable *nt = c->nt;
+  int blk = nt_ref(nt, id, "block");
+  return c->share_strings && mi >= 0 && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && c->scopes[mi].yields &&
+         c->scopes[mi].class_id == comp_class_index(c, "String") && cplan_called_before_def(c, id, mi);
+}
 static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   const NodeTable *nt = c->nt;
   if (nt_int(nt, id, "builtin_only", 0)) return;
@@ -260,6 +303,11 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   if (rc) {
     int ci = comp_class_index(c, rc);
     int mi = ci >= 0 ? comp_method_in_chain(c, ci, name, NULL) : -1;
+    /* (--share-strings: a String reopening's yielding method of a name,
+       which a call with a literal block reaches, is the builtin's still for
+       a call the program runs ahead of the method's definition, at its top
+       level, as in CRuby) */
+    if (mi >= 0 && cplan_reopen_runs_builtin(c, id, mi)) return;
     if (mi >= 0) { cplan_set(p, mi, ci, UC_REOPEN, CP_DIRECT); return; }
   }
   /* a nil receiver's NilClass reopen, an Integer or Float receiver's
@@ -1439,6 +1487,9 @@ int cplan_arm_args_fit(Compiler *c, Scope *ks, const ArgLayout *L, int pos_argc,
     TyKind pt0 = pv0 ? pv0->type : TY_UNKNOWN;
     TyKind at0 = atmp_ty[L->arg[a]];
     if (pt0 == TY_STRBUF && pv0->str_shared && (at0 == TY_STRING || at0 == TY_STRBUF)) continue;
+    /* --share-strings: a handle into a String parameter passes its bytes
+       (emit_poly_temp_as reads the held handle) */
+    if (pt0 == TY_STRING && at0 == TY_STRBUF && repr_share_rule(c)) continue;
     int pc = pt0 != TY_POLY && pt0 != TY_UNKNOWN && pt0 != TY_NIL && pt0 != TY_VOID;
     int ac = at0 != TY_POLY && at0 != TY_UNKNOWN && at0 != TY_NIL && at0 != TY_VOID;
     if (pc && ac && pt0 != at0 &&

@@ -1457,8 +1457,10 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
   /* (a bang over a route keeps its own arms below: a narrowed box's
      mutator changes the box's String in place; a receiver that is such a
      call itself, `id(s).upcase!.downcase!`, is held as its handle,
-     strbuf_held_self_answer) */
-  if (!slot && !strbuf_plain_self_call(c, node) && !strbuf_held_self_answer(c, r)) return 0;
+     strbuf_held_self_answer; one over a value route, `(+s).upcase!`,
+     answers the route's handle, taken once) */
+  if (!slot && !strbuf_plain_self_call(c, node) && !strbuf_held_self_answer(c, r) && !strbuf_value_route(c, r))
+    return 0;
   if (!slot || nt_kind(c->nt, r) == NK_CallNode) {
     /* a reader call: read once (emit_bang_self_handle); so is a route
        over a handle (`(s << x).freeze`), whose handle it takes once */
@@ -1859,6 +1861,19 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
         else plain = bt == TY_INT && int_value_plain(c, tail); }
       break;
     }
+    /* --share-strings: a block whose value is a String a holder keeps as
+       the handle answers that handle (strbuf_route_yield): boxed as its
+       bytes, the box held a copy */
+    if (repr_share_rule(c) && (bt == TY_STRING || bt == TY_STRBUF) && strbuf_yield_tail_held(c)) {
+      Buf hb; memset(&hb, 0, sizeof hb);
+      if (emit_strbuf_route(c, node, &hb)) {
+        buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
+        free(hb.p);
+        RC(RF_STRBUF_HANDLE, RW_YIELD);
+        return;
+      }
+      free(hb.p);
+    }
     /* The same Integer type can still differ in whether INTPTR_MIN is nil. */
     if ((bt != t || plain) && bt != TY_UNKNOWN) {
       if (bt == TY_POLY) { emit_expr(c, node, b); RC(RF_PASS, RW_YIELD); return; }
@@ -2068,9 +2083,10 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       return;
     }
     /* --share-strings: a String value that hands on a variable's handle (an
-       append chain over it, `a << x`): that handle, boxed as it */
+       append chain over it, `a << x`, or over a bang on it): that handle,
+       boxed as it */
     if (t == TY_STRING && repr_share_rule(c) && nt_kind(c->nt, node) == NK_CallNode &&
-        strbuf_chain_over_handle(c, node)) {
+        (strbuf_chain_over_handle(c, node) || strbuf_bang_chain(c, node))) {
       buf_puts(b, "sp_box_nullable_obj(");
       emit_strbuf_handle_of(c, node, b);
       buf_puts(b, ", SP_BUILTIN_STRBUF)");
@@ -2216,7 +2232,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     if (g_repr_check) repr_channel_boxed(c, node, frame);
     return;
   }
-  if (lift || (!arg_ran_first(node, 0) && strbuf_route_reader(c, node))) {
+  if (lift || (!arg_ran_first(node, 0) && (strbuf_route_reader(c, node) || strbuf_route_boxed_exc_message(c, node)))) {
     Buf hb; memset(&hb, 0, sizeof hb);
     if (emit_strbuf_route(c, node, &hb)) {
       buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);

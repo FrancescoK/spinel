@@ -1,0 +1,17 @@
+["Q1", "Q1", true]
+["q12", "q12"]
+["s12", true, true, true]
+["T1", "T1", 1]
+["u12", "u12", 2]
+["v123", "v123", 3]
+["y1", "y1", true, true]
+[[nil, "z15"], "z15", true]
+"undefined method '<<' for nil"
+["y1567", "y1567"]
+["v", "v!"]
+FrozenError
+[4, true, true]
+nil
+["G1234", "G1234", "G1234", true, 3]
+["H", "H", true]
+["H", "H", 7, 4]

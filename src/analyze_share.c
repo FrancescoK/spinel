@@ -2643,6 +2643,19 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
         int simple = m->nparams == 1 && m->rest_idx < 0 && m->kwrest_idx < 0;
         r = sh_join(F, r, simple ? sh_local_of(F, c, m, m->pnames[0], m->def_node) : F->unknown);
       }
+      /* a boxed receiver may be of a class whose attr writer or Struct
+         member takes the String (the dispatch's builtin arm stores it,
+         emit_boxed_writer_arms): its field holds that String too */
+      int writer = 0, iv = (rt == TY_POLY || rt == TY_UNKNOWN) ? sh_attr_ivars(F, c, name, n, &writer) : -1;
+      int avals[1];
+      if (iv >= 0 && writer) {
+        if (sh_args_vals(F, c, n, avals, 1) == 1) {
+          sh_ivar_store(F, c, iv, argv[0], avals[0]);
+          sh_flow(F, SHFL_MEMBER, n, argv[0], iv);
+        }
+        /* (the value is the String such a field holds, a new one included) */
+        r = sh_join(F, r, iv);
+      }
     }
     /* a poly receiver may be a builtin as well */
     if (c->share_strings && rt == TY_EXCEPTION && is_exception_message(name))
@@ -4819,6 +4832,16 @@ static int sh_carries_handle(const Compiler *c, int n) {
   if (r.kind == RK_BOXED && nt_kind(c->nt, n) == NK_CallNode &&
       is_unary_plus(nt_str(c->nt, n, "name")) &&
       cplan_user((Compiler *)c, n)->dispatch == CP_NONE) return 1;
+  /* A boxed append answers its receiver's box, appended in place: a chain
+     over a base that carries (`(+v) << x`) keeps that base's handle. */
+  if (r.kind == RK_BOXED && nt_kind(c->nt, n) == NK_CallNode) {
+    int cur = n, tg[CPT_MAX];
+    while (cur >= 0 && nt_kind(c->nt, cur) == NK_CallNode && nt_str(c->nt, cur, "name") &&
+           is_append_concat(nt_str(c->nt, cur, "name")) && call_plain_argc((Compiler *)c, cur) == 1 &&
+           nt_ref(c->nt, cur, "block") < 0 && cplan_targets((Compiler *)c, cur, tg, CPT_MAX) == 0)
+      cur = unwrap_parens((Compiler *)c, nt_ref(c->nt, cur, "receiver"));
+    if (cur >= 0 && cur != n && repr_of(c, cur).kind == RK_BOXED && sh_carries_handle(c, cur)) return 1;
+  }
   /* a bang method on a handle local: a write hands over the local's handle
      (emit_strbuf_value) */
   return r.kind == RK_STRBUF || r.strbuf_src != RS_NONE || sh_bang_self_slot(c, n) ||

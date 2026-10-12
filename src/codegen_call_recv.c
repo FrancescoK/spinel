@@ -4685,9 +4685,12 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     }
     /* --share-strings: one answering its receiver (insert, clear) over a call
        that answers a handle (`id(s).concat(x).insert(0, y)`) changes that
-       handle, held once (emit_bang_self_handle), and answers its read */
+       handle, held once (emit_bang_self_handle), and answers its read; a
+       receiver already read off that held handle (ran_first_read_handle)
+       is the shim's below */
     if (nmS && recvS >= 0 && is_string_position_mutator(nmS) && strbuf_self_route(c, recvS) &&
-        repr_of(c, recvS).as_ty != TY_STRBUF && (!arg_ran_first(recvS, 0) || ran_first_handle(recvS) >= 0) &&
+        repr_of(c, recvS).as_ty != TY_STRBUF && ran_first_read_handle(recvS) < 0 &&
+        (!arg_ran_first(recvS, 0) || ran_first_handle(recvS) >= 0) &&
         strbuf_bang_self_local(c, id)) {
       Buf hb; memset(&hb, 0, sizeof hb);
       if (emit_bang_self_handle(c, id, &hb)) {
@@ -4699,12 +4702,16 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       free(hb.p);
     }
     /* --share-strings: any other (slice!, setbyte) over a call that hands
-       on a handle runs on that handle's shadow (`.insert(0, y).slice!(0)`) */
+       on a handle runs on that handle's shadow (`.insert(0, y).slice!(0)`);
+       one already read off the held handle takes the reader shim below */
     if (nmS && recvS >= 0 && is_string_position_mutator(nmS) && repr_of(c, recvS).as_ty != TY_STRBUF &&
-        sb_route_expr_shim(c, id, recvS, b, emit_array_call)) return 1;
+        ran_first_read_handle(recvS) < 0 && sb_route_expr_shim(c, id, recvS, b, emit_array_call)) return 1;
     if (nmS && recvS >= 0 && comp_ntype(c, recvS) == TY_STRING &&
         (is_string_position_mutator(nmS))) {
       if (sb_iv_expr_shim(c, id, recvS, b, emit_array_call)) return 1;
+      /* (--share-strings: a value route whose handle ran first, `(+s)`) */
+      if (repr_share_rule(c) && nt_kind(ntS, recvS) == NK_CallNode && ran_first_read_handle(recvS) >= 0 &&
+          sb_reader_expr_shim(c, id, recvS, b, emit_array_call)) return 1;
       /* a global holding the handle (--share-strings) */
       if (repr_static_read_kind(nt_kind(ntS, recvS)) &&
           sb_reader_expr_shim(c, id, recvS, b, emit_array_call)) return 1;
@@ -7479,6 +7486,24 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         eq_sblv = 1;
       }
     }
+    /* --share-strings: a spliced yield whose block answers a holder's
+       handle (strbuf_route_yield), on either side: that handle, boxed, is
+       compared with the other side's box (the yield's read face is a copy) */
+    if (!eq_sblv && repr_share_rule(c)) {
+      int ys = nt_kind(nt, unwrap_parens(c, recv)) == NK_YieldNode ? recv
+             : nt_kind(nt, unwrap_parens(c, argv[0])) == NK_YieldNode ? argv[0] : -1;
+      Buf yh; memset(&yh, 0, sizeof yh);
+      if (ys >= 0 && strbuf_yield_tail_held(c) &&
+          emit_strbuf_route(c, ys, &yh)) {
+        int th = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF); SP_GC_ROOT_RBVAL(_t%d); "
+                      "(sp_bool)sp_poly_equal(_t%d, ", th, yh.p, th, th);
+        emit_boxed(c, ys == recv ? argv[0] : recv, b);
+        buf_puts(b, "); })");
+        eq_sblv = 1;
+      }
+      free(yh.p);
+    }
     /* --share-strings: a String Range's endpoint (strbuf_route_srange_end)
        against a handle: the handle the Range keeps is compared (#8321) */
     if (!eq_sblv) {
@@ -9143,7 +9168,12 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
      allocate: the guard below is the only path that holds it (g_noguard:
      the hold without the nil test) */
   int g_noguard = 0;
-  if (rt == TY_STRING && name && recv >= 0 && operand_may_allocate(c, recv) &&
+  /* (--share-strings: `yield.equal?(x)` at a site whose block answers a
+     String a holder keeps reads the yield's handle once, in equal?'s own
+     arm (str_arms_convert): held here as its bytes, the handle was lost) */
+  int y_ident = repr_share_rule(c) && name && is_equal_name(name) && recv >= 0 &&
+                nt_kind(nt, unwrap_parens(c, recv)) == NK_YieldNode && strbuf_yield_tail_held(c);
+  if (rt == TY_STRING && name && recv >= 0 && operand_may_allocate(c, recv) && !y_ident &&
       repr_of(c, recv).as_ty != TY_STRBUF &&   /* a handle is no fresh copy, and no const char * */
       !((!nil_answers_name(name)) && recv_may_be_sentinel(c, recv))) {
     for (int ai = 0; ai < argc && !g_noguard; ai++) g_noguard = operand_may_allocate(c, argv[ai]);
@@ -9157,7 +9187,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     }
   }
   if (!g_noguard && (rt == TY_INT || rt == TY_STRING) && name && recv >= 0 && !nil_answers_name(name) &&
-      recv_may_be_sentinel(c, recv)) {
+      recv_may_be_sentinel(c, recv) && !y_ident) {
     const char *sop_g = nt_str(nt, id, "call_operator");
     if (!(sop_g && sp_streq(sop_g, "&."))) {
       /* Bind the receiver once and let every arm below read the temp: some
@@ -9740,6 +9770,9 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
     if (nmS && recvS >= 0 && comp_ntype(c, recvS) == TY_STRING &&
         sp_streq(nmS, "setbyte")) {
       if (sb_iv_expr_shim(c, id, recvS, b, emit_scalar_call)) return 1;
+      /* (--share-strings: a value route whose handle ran first, `(+s)`) */
+      if (repr_share_rule(c) && nt_kind(ntS, recvS) == NK_CallNode && ran_first_read_handle(recvS) >= 0 &&
+          sb_reader_expr_shim(c, id, recvS, b, emit_scalar_call)) return 1;
       if (repr_static_read_kind(nt_kind(ntS, recvS)) &&
           sb_reader_expr_shim(c, id, recvS, b, emit_scalar_call)) return 1;
       const char *sbn = strbuf_local_name(c, recvS);
@@ -14674,9 +14707,26 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       int unk_rhs = at == TY_UNKNOWN;
       TyKind at_eff = (nil_rhs || unk_rhs) ? TY_POLY : at;
       int tv = ++g_tmp, tval = ++g_tmp;
+      int hold = nil_rhs ? -1 : boxed_writer_holds_handle(c, base, argv[0]);
+      /* (a handle the dispatch around this builtin arm holds: its temp) */
+      int rh = repr_share_rule(c) && !nil_rhs ? ran_first_handle(argv[0]) : -1;
       buf_puts(b, "({ "); tv = hold_operand(c, recv, TY_POLY, 0, tv, 1, " ", b);
       if (nil_rhs) buf_printf(b, "sp_RbVal _t%d = sp_box_nil();", tval);
       else if (unk_rhs) { buf_printf(b, "sp_RbVal _t%d = ", tval); emit_boxed(c, argv[0], b); buf_puts(b, ";"); }
+      else if (rh >= 0) {
+        at = at_eff = TY_STRBUF;
+        buf_printf(b, "sp_String *_t%d = _t%d;", tval, rh);
+      }
+      /* --share-strings: held as the handle the field takes */
+      else if (hold >= 0) {
+        at = at_eff = TY_STRBUF;
+        buf_printf(b, "sp_String *_t%d = ", tval); emit_strbuf_ivar_store(c, hold, argv[0], b);
+        buf_puts(b, ";");
+        /* (a variable's handle is rooted by its variable) */
+        NodeKind vk = nt_kind(nt, argv[0]);
+        if (vk != NK_LocalVariableReadNode && vk != NK_InstanceVariableReadNode && !repr_static_read_kind(vk))
+          buf_printf(b, " SP_GC_ROOT(_t%d);", tval);
+      }
       else { emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval); emit_one_arg(c, argv[0], 0, b); buf_puts(b, ";"); }
       buf_puts(b, " switch ("); emit_obj_switch_key(c, tv, b); buf_puts(b, ") {");
       char src[32]; snprintf(src, sizeof src, "_t%d", tval);
@@ -14686,7 +14736,9 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
       /* the call answers the value it stored; a shared handle stored where
          the call is read as a String answers the String it holds */
-      if (at == TY_STRBUF && comp_ntype(c, id) != TY_STRBUF)
+      Repr svr = repr_of(c, id);
+      if (at == TY_STRBUF && comp_ntype(c, id) != TY_STRBUF &&
+          !(repr_share_rule(c) && (svr.demand || (svr.handle && repr_write_share(c, id)))))
         buf_printf(b, " } (_t%d ? sp_String_cstr(_t%d) : NULL); })", tval, tval);
       else buf_printf(b, " } _t%d; })", tval);
       { *out = 1; return 1; }

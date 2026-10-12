@@ -267,6 +267,9 @@ int exc_message_identity_operand(Compiler *c, int v);
 void emit_exc_message_idbox(Compiler *c, int v, Buf *b);
 int emit_exc_message_equal(Compiler *c, int recv, int arg, Buf *b);
 int strbuf_route_exc_message(Compiler *c, int v);
+int strbuf_route_boxed_exc_message(Compiler *c, int v);
+int strbuf_route_ie(Compiler *c, int v);
+int strbuf_yield_tail_held(Compiler *c);
 int strbuf_route_srange_end(Compiler *c, int v);
 void emit_slot_expr(Compiler *c, int id, Buf *b);
 /* A `next` value a block's boxed answer slot takes: a shared String as its
@@ -870,6 +873,15 @@ void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b);
 void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
                             const char *objp, const char *src, TyKind at, int vnode,
                             int box_tv, int src_tv, int native_answer, Buf *b);
+/* --share-strings: is String value v held as its handle for those arms
+   (a field of theirs holds it), -1 when not, else the field's sharing. */
+int  boxed_writer_holds_handle(Compiler *c, const char *base, int v);
+/* --share-strings: a safe-navigation route over an attribute assignment's
+   handle, emitted as that handle or NULL; 0 for any other call. */
+int  emit_strbuf_assign_safe_nav(Compiler *c, int id, Buf *b);
+/* --share-strings: an append chain over a bang that answers its receiver's
+   handle or nil, which hands on that handle (codegen_stmt.c). */
+int  strbuf_bang_chain(Compiler *c, int v);
 int  method_is_void(Scope *s);
 void emit_index_op_write(Compiler *c, int id, Buf *b, int indent);
 void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or);
@@ -910,6 +922,10 @@ int ran_first_handle(int node);
 /* Bind node v to its value temp _t<t>, with th its handle's temp or -1
    (codegen_fold.c) */
 void ran_first_bind(int v, int t, int th);
+void ran_first_bind_read(int v, int th);
+int ran_first_read_handle(int node);
+int strbuf_value_route(Compiler *c, int v);
+int reopen_override_block_ok(Compiler *c, int id);
 /* The temp the nil arm's head (emit_nil_target_head) ran operand `node`
    into, while the call it heads is emitted (Repr.head_held); -1 for any
    other node, or one the head ran for its effect alone (a nil). */

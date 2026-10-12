@@ -6925,8 +6925,12 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
         if (!arg_ran_first(nt_ref(nt, el[e], "value"), 0)) held = 0;
       if (held) continue;
     }
+    /* (--share-strings: an assignment's right-hand side held as the handle
+       its arms store, which the re-entry reads as that handle) */
+    int held_h = repr_share_rule(c) && argc == 1 && call_is_setter_assign(nt, id) && atmp_ty[a] == TY_STRBUF &&
+                 repr_of(c, argv[a]).as_ty == TY_STRING;
     if (subtree_has_side_effect(c, argv[a]) &&
-        (is_splat || repr_of(c, argv[a]).as_ty != atmp_ty[a]))
+        (is_splat || (repr_of(c, argv[a]).as_ty != atmp_ty[a] && !held_h)))
       return 0;
   }
   TyKind bt = (c->poly_builtin_ty && id < c->node_cap)
@@ -6947,6 +6951,13 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
   int slot_o = oint_kind(ret) && node_is_oint(c, id);
   int slot = view_bind(recv, "_t%d", tv);
   for (int a = 0; a < argc; a++) {
+    /* (a held handle is the argument's value, which a writer arm takes:
+       ran_first_handle) */
+    if (repr_share_rule(c) && argc == 1 && call_is_setter_assign(nt, id) && atmp_ty[a] == TY_STRBUF &&
+        repr_of(c, argv[a]).as_ty == TY_STRING) {
+      ran_first_bind(argv[a], atmp[a], atmp[a]);
+      continue;
+    }
     if (!subtree_has_side_effect(c, argv[a])) continue;
     int as = view_bind(argv[a], "_t%d", atmp[a]);
   }
@@ -8506,6 +8517,8 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       /* something with an effect has run: a later argument's prelude is held
          in its place (emit_poly_arg_temp) */
       int ran = subtree_has_side_effect(c, recv);
+      Repr svr0 = repr_of(c, id);
+      int setter_handle = is_setter_val && repr_share_rule(c) && (svr0.demand || (svr0.handle && repr_write_share(c, id)));
       for (int a = 0; a < pos_argc; a++) {
         atmp[a] = ++g_tmp;
         if (nt_kind(nt, argv[a]) == NK_SplatNode) {
@@ -8526,6 +8539,17 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         /* A narrowed read can now take the handle out; its boxed argument
            still hands on the original box, as repr's source records. */
         if (ar.strbuf_src == RS_SLOT_POLY) at = TY_POLY;
+        /* --share-strings: the right-hand side of an assignment whose value
+           is taken as the handle each arm stores (user_assign_handle) is
+           held as that handle, a new String's included */
+        if (setter_handle && at == TY_STRING && ar.kind != RK_BOXED) {
+          atmp_ty[a] = TY_STRBUF;
+          buf_printf(b, "sp_String *_t%d = ", atmp[a]);
+          emit_strbuf_handle_of(c, argv[a], b);
+          buf_printf(b, "; SP_GC_ROOT(_t%d); ", atmp[a]);
+          ran |= subtree_has_side_effect(c, argv[a]);
+          continue;
+        }
         int held = poly_arg_held(c, argv[a], at);
         /* A nil/void/unresolved arg has no concrete C storage (emit_ctype would
            print `void`); hold it as a boxed poly so it can flow into a poly
@@ -21276,6 +21300,20 @@ static void emit_utime_arg_bad(Compiler *c, int node, TyKind t, Buf *b) {
   buf_printf(b, "); sp_raise_cls(\"TypeError\", \"can't convert %s into time\");", cn ? cn : "Object");
 }
 
+/* May call `id` take a reopening's own method of its name ahead of the
+   builtin arms (emit_call_body)? One without a block may. --share-strings:
+   so may one with a literal block whose String method of the program's own
+   yields: emit_reopen_primitive_call runs it (the proc form, or spliced),
+   the program's method winning as in CRuby, where the builtin arm had the
+   name. Without the flag such a call keeps the builtin arms. */
+int reopen_override_block_ok(Compiler *c, int id) {
+  int blk = nt_ref(c->nt, id, "block");
+  if (blk < 0) return 1;
+  if (!repr_share_rule(c) || nt_kind(c->nt, blk) != NK_BlockNode) return 0;
+  const CallPlan *p = cplan_user(c, id);
+  return p->via == UC_REOPEN && p->mi >= 0 && c->scopes[p->mi].yields &&
+         c->scopes[p->mi].class_id == comp_class_index(c, "String");
+}
 /* emit_reopen_primitive_call, with a plain answer lifted into an oint
    where the node is one (a `&.` left to the plain call) */
 static void emit_reopen_primitive_call_o(Compiler *c, int id, int ci, int mi, int recv, const char *nm, Buf *b) {
@@ -26011,6 +26049,9 @@ int emit_ie_poly(Compiler *c, int id, Buf *b) {
     emit_call(c, id, &vb);
     int arm_o = node_is_oint(c, id);   /* the form this arm's splice answered */
     TyKind vty = bn > 0 ? repr_of(c, bb[bn - 1]).as_ty : TY_NIL;
+    /* (--share-strings: a call read as the handle answers it, arm by arm:
+       strbuf_route_ie) */
+    if (ret == TY_STRBUF && vty == TY_STRING && repr_share_rule(c)) vty = TY_STRBUF;
     TyKind bnt = ie_splice_value_ty(c, body);
     if (bnt != TY_UNKNOWN) vty = (vty == TY_NIL || vty == TY_UNKNOWN) ? bnt : ty_unify(vty, bnt);
     ie_body_restore(c, snap);
@@ -26070,6 +26111,7 @@ int emit_ie_poly(Compiler *c, int id, Buf *b) {
     emit_call(c, id, &vb);
     int fb_o = node_is_oint(c, id);
     TyKind vty = bn > 0 ? repr_of(c, bb[bn - 1]).as_ty : TY_NIL;
+    if (ret == TY_STRBUF && vty == TY_STRING && repr_share_rule(c)) vty = TY_STRBUF;
     ie_body_restore(c, fsnap);
     view_unbind(g_n_argov - 1);
     g_ie_nil_ivars = sv_nil;
@@ -28033,7 +28075,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
     int recvR = nt_ref(ntR, id, "receiver");
     const char *nmR = nt_str(ntR, id, "name");
     /* an alias that captured the builtin (builtin_only) is the builtin's */
-    if (recvR >= 0 && nmR && nt_ref(ntR, id, "block") < 0 && !nt_int(ntR, id, "builtin_only", 0)) {
+    if (recvR >= 0 && nmR && reopen_override_block_ok(c, id) && !nt_int(ntR, id, "builtin_only", 0)) {
       TyKind rtR = comp_ntype(c, recvR);
       const char *ocR = rtR == TY_STRING || rtR == TY_STRBUF ? "String"
                       : rtR == TY_INT ? "Integer"

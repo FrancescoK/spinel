@@ -4764,7 +4764,11 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
   /* Hoisted call argument: substitute the rooted temp (see emit_args_filled). */
   for (int i = g_n_argov - 1; i >= 0; i--)
     if (g_argov_node[i] == id) {
-      buf_puts(b, g_argov_text[i]);
+      /* (--share-strings: a handle bound by ran_first_bind_read is read as
+         its String, and as the handle where the node is viewed as one) */
+      int th = repr_share_rule(c) && comp_ntype(c, id) == TY_STRBUF ? ran_first_read_handle(id) : -1;
+      if (th >= 0) buf_printf(b, "_t%d", th);
+      else buf_puts(b, g_argov_text[i]);
       /* a reader call the shim has substituted with its shadow, written back */
       if (g_share_check && sb_shadowed_reader(id)) share_check_declare_value(c, id);
       return;
