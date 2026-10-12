@@ -10526,10 +10526,18 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
    other pointer-backed reference (arrays, hashes, procs, fibers, ...) unbox via
    emit_unbox_text: a string goes through sp_poly_unbox_s (a nil box has a
    zeroed union, so this is NULL and `String?` round-trips); a pointer reads
-   `(T *)(...).v.p`. The few by-value types (Range/Time/Complex/...) have no
-   `.v.p` form, so they fall back to a plain emit (no coercion was applied for
-   them before either, and no such poly-bodied return arises). Used where a
-   method's RBS return type is narrower than its poly body value (#1417). */
+   `(T *)(...).v.p`. A by-value type (Range, Time, Complex, ...) unboxes by
+   reading the struct its box points at, as everywhere else: a seeded `-> Time`
+   whose body answers a boxed value (`@t ||= ...` on a slot that starts nil)
+   returned the box itself through the sp_Time signature, and the C did not
+   build. Used where a method's RBS return type is narrower than its poly
+   body value (#1417). */
+/* A by-value kind whose box holds the struct behind its pointer, which its
+   traits row reads back (Range, Time, Complex, ...). */
+static int struct_ret_unboxes(TyKind t) {
+  const TyTraits *tr = ty_traits_of(t);
+  return tr && tr->struct_valued && tr->unbox;
+}
 static void emit_unbox_ret_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
   /* When the slot being narrowed into is a SEEDED return, the narrowing is the
      moment the seed's truth becomes checkable, so it carries the assertion --
@@ -10556,7 +10564,8 @@ static void emit_unbox_ret_text(Compiler *c, TyKind t, const char *expr, Buf *b)
   case TY_RATIONAL: buf_printf(b, "sp_poly_as_rational(%s)", v); break;
   default: {
     const char *cn = c_type_name(t);
-    if (t == TY_STRING || ty_is_object(t) || (cn && cn[0] && cn[strlen(cn) - 1] == '*'))
+    if (t == TY_STRING || ty_is_object(t) || (cn && cn[0] && cn[strlen(cn) - 1] == '*') ||
+        struct_ret_unboxes(t))
       emit_unbox_text(c, t, v, b);
     else buf_puts(b, v);
     break;
@@ -10570,10 +10579,10 @@ static void emit_unbox_node(Compiler *c, TyKind t, int node, Buf *b) {
   emit_unbox_ret_text(c, t, src.p ? src.p : "", b);
   free(src.p);
 }
-/* Whether emit_unbox_ret_text converts a poly value into slot type `t` (the
-   by-value types other than Rational it leaves boxed). */
+/* Whether emit_unbox_ret_text converts a poly value into slot type `t`. */
 static int unbox_ret_converts(Compiler *c, TyKind t) {
-  if (t == TY_INT || t == TY_FLOAT || t == TY_BOOL || t == TY_RATIONAL || t == TY_STRING || ty_is_object(t))
+  if (t == TY_INT || t == TY_FLOAT || t == TY_BOOL || t == TY_RATIONAL || t == TY_STRING || ty_is_object(t) ||
+      struct_ret_unboxes(t))
     return 1;
   const char *cn = c_type_name(t);
   return cn && cn[0] && cn[strlen(cn) - 1] == '*';

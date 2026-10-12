@@ -1,0 +1,6 @@
+class SeedStructBox
+  def time: () -> Time
+  def plain_time: () -> Time
+  def rng: () -> Range
+  def put: (Time t) -> Time
+end
