@@ -1459,7 +1459,8 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
      call itself, `id(s).upcase!.downcase!`, is held as its handle,
      strbuf_held_self_answer; one over a value route, `(+s).upcase!`,
      answers the route's handle, taken once) */
-  if (!slot && !strbuf_plain_self_call(c, node) && !strbuf_held_self_answer(c, r) && !strbuf_value_route(c, r))
+  if (!slot && !strbuf_plain_self_call(c, node) && !strbuf_held_self_answer(c, r) && !strbuf_value_route(c, r) &&
+      !strbuf_chain_over_handle(c, r))
     return 0;
   if (!slot || nt_kind(c->nt, r) == NK_CallNode) {
     /* a reader call: read once (emit_bang_self_handle); so is a route

@@ -1,0 +1,34 @@
+["ABZ", "ABZ"]
+[nil, "ABZ"]
+["abzq", "abzq"]
+[nil, "abzq"]
+["Abzq", "Abzq"]
+[nil, "Abzq"]
+["aBZQb", "aBZQb"]
+["AbzqB", "AbzqB"]
+["AbzqBb", "AbzqBb"]
+[nil, "AbzqBb"]
+["AbzqBb", "AbzqBb"]
+[nil, "AbzqBb"]
+["AbzqBb", "AbzqBb"]
+["AbzqBb", "AbzqBb"]
+[nil, "AbzqBb"]
+["ab", "ab"]
+[nil, "ab"]
+[nil, "abx"]
+{a: "Abxa", b: "Abxa"}
+{a: nil, b: "Abxa"}
+{a: "abxaa", b: "abxaa"}
+{a: nil, b: "abxaa"}
+["abxaaC", "abxaaC"]
+[nil, "abxaaC"]
+["abxaaC", "abxaaC"]
+[nil, "abxaaC"]
+["Caaxba", "Caaxba"]
+[nil, "Caaxba"]
+[nil, "Caaxba"]
+["AbzqBb", "Caaxba"]
+["CAAXBAZ", "CAAXBAZ"]
+true
+{a: "caaxbazy", b: "caaxbazy"}
+true
