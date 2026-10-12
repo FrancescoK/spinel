@@ -1058,6 +1058,10 @@ static void cf_call(CF *f, int v) {
         return;
       }
     }
+    if (cf_owner_block(f, v, 0) >= 0) {
+      CFByName *b = cf_byname(f, nm);
+      if (b->n || b->ncm || b->nrd || b->nwr) { cf_call_any(f, v, nm, argv, argc, blk); return; }
+    }
     /* Kernel: a conversion, an iteration, `lambda`, `proc`, `loop`, `raise`
        hand on what they are given; `new` has no class here */
     if (sp_streq(nm, "lambda") || sp_streq(nm, "proc") || sp_streq(nm, "define_method")) {
@@ -1247,6 +1251,7 @@ static void cf_node(CF *f, int v) {
        it; the class whose body this is */
     if (s->def_node >= 0 && s->is_cmethod && s->class_id >= 0) cf_add_set(f, v, cf_classvals_of(f, f->desc[s->class_id]));
     else if (v < f->nnodes && c->node_cbody && c->node_cbody[v] >= 0) cf_add_set(f, v, cf_classval(f, c->node_cbody[v]));
+    else if (s->def_node < 0 && cf_owner_block(f, v, 0) >= 0) cf_all(f, v);
     return;
   }
   case NK_ArrayNode: {
