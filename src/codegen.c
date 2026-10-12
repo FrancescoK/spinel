@@ -16049,7 +16049,9 @@ static void reject_runtime_send(Compiler *c) {
    the limit on a genuine `Time.parse` call (CodeRabbit, #24). */
 /* The class-method parsers iso8601, xmlschema, httpdate, rfc2822 and
    rfc822 are the same limit without `require "time"`, as CRuby has them
-   only once it is required. */
+   only once it is required. With it, Time.parse(str) is read for its
+   numeric ISO 8601 forms (sp_time_s_parse); Time.parse(str, now) and
+   Time.strptime remain this limit. */
 static int is_time_string_parser(const char *name) {
   static const char *const names[] = { "parse", "strptime", "iso8601", "xmlschema",
                                        "httpdate", "rfc2822", "rfc822" };

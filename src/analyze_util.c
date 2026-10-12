@@ -3340,10 +3340,11 @@ int is_builtin_module_const_name(const char *n) {
 }
 
 /* Call `id` is a `require "time"` class parser that reads one fixed format
-   -- Time.httpdate, rfc2822 / rfc822, xmlschema / iso8601 -- on the builtin
-   Time, with its one argument: the runtime function that parses it, else
-   NULL (not one of them, no `require "time"`, a wrong argument count, or a
-   program whose Time has its own class method of that name). */
+   -- Time.httpdate, rfc2822 / rfc822, xmlschema / iso8601, or Time.parse for
+   its numeric ISO 8601 forms -- on the builtin Time, with its one argument:
+   the runtime function that parses it, else NULL (not one of them, no
+   `require "time"`, a wrong argument count, or a program whose Time has its
+   own class method of that name). */
 const char *time_strict_parser_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -3351,6 +3352,7 @@ const char *time_strict_parser_call(Compiler *c, int id) {
   const char *fn = sp_streq(name, "httpdate") ? "sp_time_s_httpdate"
                  : (sp_streq(name, "rfc2822") || sp_streq(name, "rfc822")) ? "sp_time_s_rfc2822"
                  : (sp_streq(name, "xmlschema") || sp_streq(name, "iso8601")) ? "sp_time_s_xmlschema"
+                 : sp_streq(name, "parse") ? "sp_time_s_parse"
                  : NULL;
   if (!fn || !sp_feature_required("time")) return NULL;
   int recv = nt_ref(nt, id, "receiver");
