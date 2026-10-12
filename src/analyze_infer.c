@@ -8835,7 +8835,7 @@ static TyKind infer_conditional_attr_write(Compiler *c, int id) {
   return v2 >= 0 ? infer_type(c, v2) : TY_UNKNOWN;
 }
 
-static TyKind infer_builtin_self(Compiler *c, int self_cls) {
+TyKind infer_builtin_self(Compiler *c, int self_cls) {
   const char *cn = c->classes[self_cls].name;
   if (sp_streq(cn, "String"))  return TY_STRING;
   if (sp_streq(cn, "Integer")) return TY_INT;

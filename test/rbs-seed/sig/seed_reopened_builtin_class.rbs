@@ -1,0 +1,5 @@
+class SeedTimeBox
+  def time: () -> Time
+  def maybe: () -> Time?
+  def set: (Time t) -> Time
+end

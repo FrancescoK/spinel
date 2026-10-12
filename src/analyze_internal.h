@@ -369,6 +369,9 @@ int infer_container_flow(Compiler *c);
 void an_cls_facts(Compiler *c);   /* analyze_cls.c (#8530) */
 int an_builtin_only_p(void);
 TyKind an_builtin_answer(Compiler *c, int id);
+/* the kind of a value of class self_cls: a reopened builtin's own (Time -> TY_TIME),
+   else the object */
+TyKind infer_builtin_self(Compiler *c, int self_cls);
 int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out);
 extern int g_scopes_settled;   /* analysis done (codegen_util.c) */
 int poly_expr_flows_container(Compiler *c, int node);
