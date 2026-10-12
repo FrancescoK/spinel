@@ -970,6 +970,23 @@ static void cf_call_any(CF *f, int v, const char *nm, const int *argv, int argc,
   (void)c;
 }
 
+static void cf_send_writers(CF *f, int v, int r) {
+  Compiler *c = f->c;
+  Scope *sc = &c->scopes[cf_scope_of(f, v)];
+  int ks = r >= 0 ? cf_set_of(f, r) : sc->def_node >= 0 && sc->class_id >= 0 ? f->desc[sc->class_id] : CF_EMPTY;
+  const ClsSet *s = &f->pool[ks];
+  for (int k = 0; k < c->nclasses; k++) {
+    int in = s->all;
+    for (int i = 0; i < s->n && !in; i++) in = s->cls[i] == k;
+    for (int x = in ? k : -1; x >= 0; x = c->classes[x].parent)
+      for (int w = 0; w < c->classes[x].nwriters; w++) {
+        char ivn[256];
+        snprintf(ivn, sizeof ivn, "@%s", c->classes[x].writers[w]);
+        cf_all(f, cf_entry(f, f->fam[k], ivn));
+      }
+  }
+}
+
 static void cf_call(CF *f, int v) {
   Compiler *c = f->c;
   const NodeTable *nt = f->nt;
@@ -983,6 +1000,9 @@ static void cf_call(CF *f, int v) {
     cf_all(f, v);
     for (int i = 0; i < argc; i++) cf_all(f, argv[i]);
     if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) { cf_all_block_params(f, blk); cf_all(f, blk); }
+    if (argc >= 2 && (sp_streq(nm, "send") || sp_streq(nm, "__send__") || sp_streq(nm, "public_send")) &&
+        nt_kind(nt, argv[0]) != NK_SymbolNode && nt_kind(nt, argv[0]) != NK_StringNode)
+      cf_send_writers(f, v, r);
     return;
   }
   if (r < 0) {
