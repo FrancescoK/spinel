@@ -13932,6 +13932,34 @@ int face_str_bang_sn_call(Compiler *c, int id) {
   return f;
 }
 
+static void emit_face_str_bang(Compiler *c, int id, unsigned own, int pub, Buf *b);
+/* --share-strings: a bang tail on a boxed receiver (strbuf_bang_tail) as a
+   method's value: its bytes or NULL, the receiver's handle published; 0 with
+   nothing emitted for a call the face table does not take. A local an is_a?
+   guard narrows out of its box (strbuf_narrowed_box_mutator) is lifted to
+   its handle first, as emit_narrowed_box_mutator lifts it. */
+int emit_face_str_bang_pub(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int narrowed = strbuf_narrowed_box_mutator(c, id) && nt_kind(nt, nt_ref(nt, id, "receiver")) == NK_LocalVariableReadNode;
+  if (!narrowed && !face_str_bang_call(c, id)) return 0;
+  int argc;
+  call_args(nt, id, &argc);
+  unsigned own = ty_poly_face_owners(nt_str(nt, id, "name"), argc, nt_ref(nt, id, "block") >= 0,
+                                     nt_call_args_plain(nt, id), 0);
+  if (!(own & PF_STR_BANG)) return 0;
+  Buf lv; memset(&lv, 0, sizeof lv);
+  int r = nt_ref(nt, id, "receiver"), vr = -1;
+  if (narrowed) {
+    emit_local_ref(c, r, nt_str(nt, r, "name"), &lv);
+    buf_printf(b, "(%s = sp_poly_strbuf_lift(%s), ", lv.p, lv.p);
+    vr = view_push(c, r, TY_POLY);   /* the receiver read as its box */
+  }
+  emit_face_str_bang(c, id, own, 1, b);
+  if (vr >= 0) view_pop(c, vr);
+  if (narrowed) buf_puts(b, ")");
+  free(lv.p);
+  return 1;
+}
 /* A String value-form mutator on a boxed receiver: compute the non-bang
    transform against the unboxed contents, then write the result back
    through the box. The contents come from sp_poly_recv_s, as every other
@@ -13939,7 +13967,10 @@ int face_str_bang_sn_call(Compiler *c, int id) {
    CRuby's NoMethodError, where its #to_s rendering had the transform
    applied and the write-back took the box for a string: a Symbol or an
    Integer crashed there, and an Array answered its own rendering. */
-static void emit_face_str_bang(Compiler *c, int id, unsigned own, Buf *b) {
+/* With pub (a method's tail, emit_face_str_bang_pub) the answer is the
+   String's bytes, or NULL, and the receiver's handle -- its box's, where the
+   box holds one -- is published (Scope.ret_handle). */
+static void emit_face_str_bang(Compiler *c, int id, unsigned own, int pub, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
@@ -13954,7 +13985,7 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, Buf *b) {
      receiver's own box when it holds a handle -- so `x.strip! || x` is x
      itself, as in CRuby, where the bytes boxed again were a new String.
      The plain form re-entered below answers its String. */
-  int boxed = repr_share_rule(c) && comp_ntype(c, id) == TY_POLY;
+  int boxed = !pub && repr_share_rule(c) && comp_ntype(c, id) == TY_POLY;
   int tvb = ++g_tmp, tob = ++g_tmp, tnb = ++g_tmp;
   Buf rbb; memset(&rbb, 0, sizeof rbb); emit_expr(c, recv, &rbb);
   emit_indent(g_pre, g_indent);
@@ -13991,7 +14022,7 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, Buf *b) {
   /* A shared handle absorbs the new contents; a plain string box cannot,
      so an lvalue receiver takes the value back the way the typed path
      does for the same case. */
-  int tbox = boxed ? ++g_tmp : 0;
+  int tbox = boxed || pub ? ++g_tmp : 0;
   if (tbox) buf_printf(b, "sp_RbVal _t%d = ", tbox);
   { const char *rvtb = nt_type(nt, recv);
     if (rvtb && (sp_streq(rvtb, "LocalVariableReadNode") ||
@@ -14001,7 +14032,12 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, Buf *b) {
     }
     else buf_printf(b, "sp_poly_str_become(_t%d, _t%d); ", tvb, tnb);
   }
-  if (tbox && nil_nc) buf_printf(b, "_t%d ? _t%d : sp_box_nil(); })", tchg, tbox);
+  if (pub && nil_nc)
+    buf_printf(b, "_sp_ret_strbuf = _t%d && sp_poly_is_strbuf(_t%d) ? _t%d.v.p : NULL; ", tchg, tbox, tbox);
+  else if (pub) buf_printf(b, "_sp_ret_strbuf = sp_poly_is_strbuf(_t%d) ? _t%d.v.p : NULL; ", tbox, tbox);
+  if (pub && nil_nc) buf_printf(b, "_t%d ? _t%d : NULL; })", tchg, tnb);
+  else if (pub) buf_printf(b, "_t%d; })", tnb);
+  else if (tbox && nil_nc) buf_printf(b, "_t%d ? _t%d : sp_box_nil(); })", tchg, tbox);
   else if (tbox) buf_printf(b, "_t%d; })", tbox);
   else if (nil_nc) buf_printf(b, "_t%d ? _t%d : NULL; })", tchg, tnb);
   else buf_printf(b, "_t%d; })", tnb);
@@ -16432,7 +16468,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     unsigned own = an_zero_arg_builtin_shadowed(c, name, argc) ? 0
                    : ty_poly_face_owners(name, argc, has_blk, nt_call_args_plain(nt, id), 0);
     unsigned kinds = own & PF_OWNERS;
-    if (own & PF_STR_BANG) { emit_face_str_bang(c, id, own, b); return 1; }
+    if (own & PF_STR_BANG) { emit_face_str_bang(c, id, own, 0, b); return 1; }
     /* one owner an argument rules out takes the switch's misfit arm: the
        re-entry's typed emitter declines the argument, and the call fell
        to NoMethodError where CRuby raises the conversion's TypeError */
