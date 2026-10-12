@@ -296,7 +296,7 @@ void comp_free(Compiler *c) {
   free(c->node_ord); free(c->node_base);
   for (int k = 0; k < c->bi_base_cap; k++) free(c->bi_base_key[k]);
   free(c->bi_base_key); free(c->bi_base_cnt);
-  c->blk_body_map = NULL;
+  c->blk_body_map = NULL; c->blk_body_map_n = 0;
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
     free(sc->name);
