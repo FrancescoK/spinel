@@ -14768,11 +14768,22 @@ static void cbi_lower_op_writes(NodeTable *nt, int node) {
    -> { @v })`, or a local holding it, `define_method(:h, pr)` -- runs with
    the other self too: the locals so passed, to leave their procs alone. */
 typedef struct {
-  const char *names[64]; int n;
+  const char **names; int n, names_cap;
   /* desugar_class_eval_ivars' walk: its own question of which blocks
      rebind self, and the calls it is unsure of (cev_self_changing_block) */
-  int cev; int doubt[64]; int ndoubt;
+  int cev; int *doubt, ndoubt, doubt_cap;
 } CbiProcLocals;
+static void *cbi_grow(void *p, int n, int *cap, size_t sz) {
+  if (n < *cap) return p;
+  *cap = *cap ? *cap * 2 : 16;
+  p = realloc(p, sz * (size_t)*cap);
+  if (!p) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  return p;
+}
+static void cbi_push(int **v, int *n, int *cap, int x) {
+  *v = cbi_grow(*v, *n, cap, sizeof **v);
+  (*v)[(*n)++] = x;
+}
 static int cbi_rebinds_self(const NodeTable *nt, int call, const CbiProcLocals *pl) {
   return pl->cev ? cev_self_changing_block(nt, call) != 0 : cbi_self_changing_block(nt, call);
 }
@@ -14790,8 +14801,10 @@ static void cbi_proc_locals(const NodeTable *nt, int node, CbiProcLocals *pl) {
       int x = i < ac ? av[i] : (ba >= 0 && nt_kind(nt, ba) == NK_BlockArgumentNode
                                 ? nt_ref(nt, ba, "expression") : -1);
       if (x >= 0 && nt_kind(nt, x) == NK_BlockArgumentNode) x = nt_ref(nt, x, "expression");
-      if (x >= 0 && nt_kind(nt, x) == NK_LocalVariableReadNode && nt_str(nt, x, "name") && pl->n < 64)
+      if (x >= 0 && nt_kind(nt, x) == NK_LocalVariableReadNode && nt_str(nt, x, "name")) {
+        pl->names = cbi_grow(pl->names, pl->n, &pl->names_cap, sizeof *pl->names);
         pl->names[pl->n++] = nt_str(nt, x, "name");
+      }
     }
   }
   int nr = nt_num_refs(nt, node);
@@ -14823,14 +14836,14 @@ static const char *cbi_defined_ivar(const NodeTable *nt, int node) {
 /* `no_procs`: in the arguments of a self-changing call, whose procs are
    entered by the other self */
 static void cbi_collect(const NodeTable *nt, int node, int in_block, int no_procs,
-                        CbiProcLocals *pl, int *hits, int *nhits, int cap, int *trigger) {
+                        CbiProcLocals *pl, int **hits, int *nhits, int *cap, int *trigger) {
   if (node < 0) return;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_DefNode || k == NK_SingletonClassNode)
     return;
   if ((k == NK_BlockNode || k == NK_LambdaNode) && no_procs) return;
-  if (k == NK_CallNode && pl->cev && pl->ndoubt < 64 && cev_self_changing_block(nt, node) == 2)
-    pl->doubt[pl->ndoubt++] = node;
+  if (k == NK_CallNode && pl->cev && cev_self_changing_block(nt, node) == 2)
+    cbi_push(&pl->doubt, &pl->ndoubt, &pl->doubt_cap, node);
   if (k == NK_CallNode && cbi_rebinds_self(nt, node, pl)) {
     /* the receiver and arguments are still body code, their procs are not */
     cbi_collect(nt, nt_ref(nt, node, "receiver"), in_block, no_procs, pl, hits, nhits, cap, trigger);
@@ -14845,18 +14858,18 @@ static void cbi_collect(const NodeTable *nt, int node, int in_block, int no_proc
       if (sp_streq(pl->names[q], nt_str(nt, node, "name"))) { no_procs = 1; break; }
   }
   if (k == NK_InstanceVariableReadNode || k == NK_InstanceVariableWriteNode) {
-    if (*nhits < cap) hits[(*nhits)++] = node;
+    cbi_push(hits, nhits, cap, node);
     if (k == NK_InstanceVariableReadNode || in_block) *trigger = 1;
   }
   /* an `@x op= v` is recorded for a caller to lower (cbi_lower_op_writes)
      before it collects again; it triggers nothing of itself */
-  if ((k == NK_InstanceVariableOperatorWriteNode || k == NK_InstanceVariableOrWriteNode ||
-       k == NK_InstanceVariableAndWriteNode) && *nhits < cap)
-    hits[(*nhits)++] = node;
+  if (k == NK_InstanceVariableOperatorWriteNode || k == NK_InstanceVariableOrWriteNode ||
+      k == NK_InstanceVariableAndWriteNode)
+    cbi_push(hits, nhits, cap, node);
   /* `defined?(@x)` asks the module's ivar as a whole: it goes to an
      accessor of its own (`Mod.__spinel_civdef_x`) */
   if (k == NK_DefinedNode && cbi_defined_ivar(nt, node)) {
-    if (*nhits < cap) hits[(*nhits)++] = node;
+    cbi_push(hits, nhits, cap, node);
     *trigger = 1;
     return;
   }
@@ -15090,19 +15103,17 @@ int desugar_class_eval_ivars(Compiler *c) {
     int body = nt_ref(nt, blk, "body");
     int m = cn ? civ_target_body(nt, cn) : -1;
     if (m < 0 || body < 0) continue;
-    int cap = 4096, nhits = 0, trigger = 0;
-    int *hits = malloc(sizeof(int) * (size_t)cap);
-    if (!hits) continue;
+    int *hits = NULL, cap = 0, nhits = 0, trigger = 0;
     CbiProcLocals pl = {0};
     pl.cev = 1;
     cbi_proc_locals(nt, body, &pl);
-    cbi_collect(nt, body, 1, 0, &pl, hits, &nhits, cap, &trigger);
+    cbi_collect(nt, body, 1, 0, &pl, &hits, &nhits, &cap, &trigger);
     /* an instance_eval block on a class that writes an ivar stays as it
        is (refused): only its reads, which agree with class_eval's writes */
     int writes = 0;
     for (int h = 0; ie && h < nhits; h++) writes |= nt_kind(nt, hits[h]) != NK_InstanceVariableReadNode &&
                                                     nt_kind(nt, hits[h]) != NK_DefinedNode;
-    if (writes) { free(hits); continue; }
+    if (writes) { free(hits); free(pl.names); free(pl.doubt); continue; }
     /* `@x op= v` as the plain read and write, then collect again */
     int lowered = 0;
     for (int h = 0; h < nhits; h++) {
@@ -15115,7 +15126,7 @@ int desugar_class_eval_ivars(Compiler *c) {
     }
     if (lowered) {
       nhits = 0; pl.ndoubt = 0;
-      cbi_collect(nt, body, 1, 0, &pl, hits, &nhits, cap, &trigger);
+      cbi_collect(nt, body, 1, 0, &pl, &hits, &nhits, &cap, &trigger);
     }
     /* a block given to a call that may run it with another self keeps its
        ivars as they are; one naming an ivar the class's own code here
@@ -15137,7 +15148,7 @@ int desugar_class_eval_ivars(Compiler *c) {
       cbi_rewrite_access(nt, x, cnb);
       changed = 1;
     }
-    free(hits);
+    free(hits); free(pl.names); free(pl.doubt);
   }
   if (changed) comp_grow_node_arrays(c);
   return changed;
@@ -15202,19 +15213,19 @@ int desugar_body_ivars(Compiler *c) {
     const char *cn = nt_str(nt, cp, "name");
     int body = nt_ref(nt, m, "body");
     if (!cn || body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
-    int cap = 4096, nhits = 0, trigger = 0;
-    int *hits = malloc(sizeof(int) * (size_t)cap);
+    int *hits = NULL, cap = 0, nhits = 0, trigger = 0;
     int bn = 0; const int *bs = nt_arr(nt, body, "body", &bn);
     CbiProcLocals pl = {0};
     for (int k = 0; k < bn; k++) cbi_proc_locals(nt, bs[k], &pl);
-    for (int k = 0; k < bn; k++) cbi_collect(nt, bs[k], 0, 0, &pl, hits, &nhits, cap, &trigger);
+    for (int k = 0; k < bn; k++) cbi_collect(nt, bs[k], 0, 0, &pl, &hits, &nhits, &cap, &trigger);
     if (trigger) {
       for (int k = 0; k < bn; k++) cbi_lower_op_writes(nt, bs[k]);
       bs = nt_arr(nt, body, "body", &bn);
       nhits = 0; pl.n = 0;
       for (int k = 0; k < bn; k++) cbi_proc_locals(nt, bs[k], &pl);
-      for (int k = 0; k < bn; k++) cbi_collect(nt, bs[k], 0, 0, &pl, hits, &nhits, cap, &trigger);
+      for (int k = 0; k < bn; k++) cbi_collect(nt, bs[k], 0, 0, &pl, &hits, &nhits, &cap, &trigger);
     }
+    free(pl.names);
     if (!trigger || nhits == 0) { free(hits); continue; }
     /* each name's getter and setter, and its defined? accessor when one is
        asked, then the accesses rewritten in place */
