@@ -2602,11 +2602,14 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
          Only when some class has the writer -- otherwise the call is the
          NoMethodError the dispatch raises. */
       if (argc == 1 && name_is_plain_setter(name) && nt_ref(nt, id, "block") < 0) {
-        int has_def = 0, has_writer = 0;
+        int has_def = 0, has_user_def = 0, has_writer = 0;
         char sbase[256];
         int has_base = setter_base_name(name, sbase, sizeof sbase);
-        for (int k = 0; k < c->nclasses && !(has_def && has_writer); k++) {
-          if (comp_poly_arm_defines_n(c, k, name, argc)) has_def = 1;
+        for (int k = 0; k < c->nclasses && !(has_user_def && has_writer); k++) {
+          if (comp_poly_arm_defines_n(c, k, name, argc)) {
+            has_def = 1;
+            if (!c->classes[k].is_native_class) has_user_def = 1;
+          }
           if (has_base && !c->classes[k].is_native_class &&
               comp_writer_in_chain(c, k, sbase, NULL)) has_writer = 1;
         }
@@ -2617,9 +2620,13 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
            and stores exactly the argument, so the plain call answers the
            argument as the assignment does: gating it on the assignment shape
            left `d.public_send("silenced=", v)` over a boxed receiver untyped,
-           and the dispatch dropped the arm. */
+           and the dispatch dropped the arm. A native class's binding of the
+           name (a StringScanner's `pos=`) is an arm of the writers' switch,
+           which answers the argument too; counting it as a method typed
+           `h.__send__(a, w)` by the binding's answer while the switch
+           yielded the boxed argument. */
         int owned = call_is_setter_assign(nt, id) ? (has_def || has_writer)
-                                                  : (has_writer && !has_def);
+                                                  : (has_writer && !has_user_def);
         TyKind at = owned ? infer_type(c, argv[0]) : TY_UNKNOWN;
         if (at == TY_STRBUF && c->share_strings) at = TY_STRING;
         if (at != TY_UNKNOWN) { *out = at; return 1; }

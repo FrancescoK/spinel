@@ -11745,11 +11745,36 @@ static int slot_takes_subclass(Compiler *c, TyKind slot, TyKind val) {
 }
 
 void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
-                            const char *objp, const char *src, TyKind at, int vnode, Buf *b) {
+                            const char *objp, const char *src, TyKind at, int vnode,
+                            int box_tv, int src_tv, int native_answer, Buf *b) {
   /* --share-strings: a String a shared boxed slot takes is its handle, as
      the typed store boxes it (emit_boxed's lift, share_lift_poly_ivar_stores) */
   int lift = vnode >= 0 && repr_share_rule(c) && c->poly_strbuf_lift[vnode] && at == TY_STRING;
   for (int k = 0; k < c->nclasses; k++) {
+    /* a native class's own binding of the writer (a StringScanner's `pos=`
+       beside a user class's `attr_accessor :pos`): its C call, as the poly
+       dispatch's native arm makes it. It has no member to resolve, so the
+       box answered NoMethodError for it. Only a boxed receiver (box_tv,
+       the switch's sp_RbVal temp) can be one. An assignment answers the
+       value it stored; a send of the name (native_answer) answers what the
+       binding returns -- `s.send(:pos=, -2)` is the clamped position -- so
+       that arm stores it back into the value temp the switch yields, and a
+       binding whose answer the temp can't hold keeps no arm. */
+    if (box_tv >= 0 && c->classes[k].is_native_class && c->classes[k].instantiated) {
+      TyKind ats[1] = { at }, mret;
+      Buf cb;
+      if (poly_native_arm_call(c, k, nm, 1, &vnode, &src_tv, ats, box_tv, &cb, &mret)) {
+        if (!native_answer) buf_printf(b, " case %d: (void)%s; break;", k, cb.p);
+        else if (mret == at) buf_printf(b, " case %d: _t%d = %s; break;", k, src_tv, cb.p);
+        else if (at == TY_POLY && mret != TY_VOID && mret != TY_UNKNOWN) {
+          buf_printf(b, " case %d: _t%d = ", k, src_tv);
+          emit_boxed_text(c, mret, cb.p, b);
+          buf_puts(b, "; break;");
+        }
+        free(cb.p);
+        continue;
+      }
+    }
     int wmdc = -1, kmi = -1;
     int kind = comp_resolve_member(c, k, base, 1, &wmdc, &kmi);
     if (kind == SP_MEMBER_METHOD && !scope_has_callable_symbol(c, kmi))
@@ -12357,7 +12382,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
       buf_puts(b, "; switch ("); emit_obj_switch_key(c, tv, b); buf_puts(b, ") {");
       char src[32]; snprintf(src, sizeof src, "_t%d", tval);
       char objp[32]; snprintf(objp, sizeof objp, "_t%d.v.p", tv);
-      emit_boxed_writer_arms(c, base, nm, objp, src, at, -1, b);
+      emit_boxed_writer_arms(c, base, nm, objp, src, at, -1, tv, tval, 0, b);
       buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", nm, tv);
       buf_puts(b, " } }\n");
       return 1;
@@ -14427,7 +14452,7 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
               buf_printf(b, " switch (_t%d->cls_id) {", tp);
               char src[32]; snprintf(src, sizeof src, "_t%d", tval);
               char objp[32]; snprintf(objp, sizeof objp, "_t%d", tp);
-              emit_boxed_writer_arms(c, base, nm, objp, src, at, argv[0], b);
+              emit_boxed_writer_arms(c, base, nm, objp, src, at, argv[0], -1, tval, 0, b);
               buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", "
                             "sp_box_obj((void *)_t%d, _t%d->cls_id))); break;", nm, tp, tp);
               buf_puts(b, " } }\n");
@@ -14475,7 +14500,7 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
             buf_puts(b, " switch ("); emit_obj_switch_key(c, tv, b); buf_puts(b, ") {");
             char src[32]; snprintf(src, sizeof src, "_t%d", tval);
             char objp[32]; snprintf(objp, sizeof objp, "_t%d.v.p", tv);
-            emit_boxed_writer_arms(c, base, nm, objp, src, at_eff, argv[0], b);
+            emit_boxed_writer_arms(c, base, nm, objp, src, at_eff, argv[0], tv, tval, 0, b);
             buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", nm, tv);
             buf_puts(b, " } }\n");
             return 1;
