@@ -1,3 +1,4 @@
+# spinel: int64 -- epoch seconds of year 1 are past 2^31; not run on a 32-bit target
 # require "time"'s class parsers that read one fixed format: Time.httpdate
 # (RFC 1123, RFC 850, asctime), Time.rfc2822 / rfc822, Time.xmlschema /
 # iso8601. Each answers a Time, or CRuby's ArgumentError for a String not in
