@@ -1,0 +1,19 @@
+#<Tagged>
+Plain
+Comparable
+String
+a WithInspect
+[1, Plain]
+"s"
+1
+nil
+TaggedName
+Plain
+Comparable
+inst-name
+:own
+true
+true
+false
+applied
+NoMethodError
