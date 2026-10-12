@@ -2277,6 +2277,13 @@ int native_class_defines(Compiler *c, const char *name) {
   return 0;
 }
 
+/* does the program's reopening of String define `name` (as a method or a
+   reader)? The only program definition a typed String receiver can reach. */
+int string_reopen_defines(Compiler *c, const char *name) {
+  int si = comp_class_index(c, "String");
+  return si >= 0 && (comp_method_in_chain(c, si, name, NULL) >= 0 || comp_reader_in_chain(c, si, name, NULL));
+}
+
 int user_defines_or_reads(Compiler *c, const char *name) {
   if (g_poly_builtin_arm) return 0;
   /* Instance reachability only: a CLASS method of the same name is reached

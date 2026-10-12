@@ -15894,6 +15894,19 @@ static void emit_poly_str_transform(Compiler *c, int recv, int argc, const int *
   view_unbind(mark);
 }
 
+/* Does a program definition of `name` take the match arm's call away? A
+   boxed receiver may be an instance of any class that defines or reads the
+   name. A typed String receiver is a String: a program class's own match? is
+   no arm of its call (#8633: a user `match?(pattern)` calling
+   `@s.match?(pattern)`, the pattern widened to a boxed value by a poly
+   dispatch elsewhere, fell to NoMethodError for the String), and only a
+   reopening of String that defines the name answers instead. */
+static int match_arm_user_claimed(Compiler *c, const char *name, TyKind rt, int argc) {
+  if (rt == TY_STRING || rt == TY_STRBUF) return string_reopen_defines(c, name);
+  if (user_defines_or_reads(c, name)) return 1;
+  return rt == TY_POLY && sp_streq(name, "match?") && poly_name_user_claimed(c, name, argc);
+}
+
 int emit_poly_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -16257,8 +16270,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
      the call by every arm: the bare bool went into that poly slot and the C
      did not compile. The dispatch below serves the builtin kinds too. */
   if (recv >= 0 && (argc == 1 || match_at) && nt_ref(nt, id, "block") < 0 &&
-      !user_defines_or_reads(c, name) &&
-      !(rt == TY_POLY && sp_streq(name, "match?") && poly_name_user_claimed(c, name, argc)) &&
+      !match_arm_user_claimed(c, name, rt, argc) &&
       (sp_streq(name, "match?") || sp_streq(name, "match") || sp_streq(name, "=~")) &&
       (rt == TY_POLY || ((rt == TY_STRING || rt == TY_STRBUF) &&
                          comp_ntype(c, argv[0]) == TY_POLY))) {
