@@ -932,6 +932,9 @@ void repr_seal(Compiler *c) {
   if (g_repr_check) repr_check_block_params(c);
   if (c->share_strings) repr_share_seal(c);
   repr_sealed_flag = 1;
+  /* the String plan (share_plan.c), from the final facts and flags, asked
+     as codegen will ask them: sealed */
+  if (c->share_strings) share_plan_build(c);
 }
 
 int repr_sealed(void) { return repr_sealed_flag; }

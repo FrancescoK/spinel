@@ -1,5 +1,5 @@
-# `freeze` changes the receiver in place, and the bytes read of it carry no
-# frozen mark back to the handle: a copy no write-back covers.
+# `freeze` changes the receiver in place. Over a shared handle it freezes the
+# handle's own String and answers it, so nothing is reported.
 s = +"a"
 t = s
 t << "b"

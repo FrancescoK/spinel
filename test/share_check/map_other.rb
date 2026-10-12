@@ -1,6 +1,6 @@
-# The declaration covers the block parameter's own reads only: the copy made
-# of another shared String inside the block (`freeze`, whose result is bound)
-# is still reported.
+# The declaration covers the block parameter's own reads only. Another shared
+# String inside the block (`freeze`, whose result is bound) is frozen and
+# answered as its handle, so nothing is reported for it either.
 keep = +"k"
 same = keep
 same << "!"

@@ -1180,6 +1180,19 @@ typedef struct {
   int proc_arg_src;
   struct ShareFacts *share;
   struct ShareAgree *share_agree;   /* --share-check's state (share_check.c) */
+  /* the String plan's memo (share_plan.c): per node, its need and its type
+     when the need was asked, filled at seal under --share-strings, and the
+     node table's version then */
+  unsigned char *share_plan;
+  TyKind *share_plan_ty;
+  int share_plan_n;
+  unsigned share_plan_ver;
+  /* the String plan's supply along chains of self-answering calls, per
+     link, for the whole compile; an entry is reused only while the view
+     epoch, the node table's version and its deciding node's answer are
+     unchanged (share_plan_sup_valid) */
+  struct SharePlanSup *share_sup;
+  int share_sup_n;
   struct HandleArgTab *share_args; /* final callers, while sealing share facts */
   struct SbArgIndex *sb_args; /* settled parameter sources, built once for storage */
   unsigned share_sig;   /* the types the facts were last applied over */

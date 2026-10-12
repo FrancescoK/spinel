@@ -1,2 +1,6 @@
 share-check: copy: test/share_check/ret.rb:13 node 68 CallNode (gsub!): answered as bytes publishing no handle by return (bytes face)
+share-check: plan: disagree: test/share_check/ret.rb:12 node 50 ConstantReadNode (G): plan handle (live), C bytes (receiver)
+share-check: plan: disagree: test/share_check/ret.rb:12 node 52 ConstantReadNode (G): plan handle (live), C bytes (receiver)
+share-check: plan: disagree: test/share_check/ret.rb:13 node 68 CallNode (gsub!): plan handle (live), C bytes (arm)
 share-check: 11 marks, 1 declared, 1 copies
+share-check: plan: 8 sites, 3 agree, 2 read, 3 disagree; handle 2/2/0/3, wrap 0/0/1/0, refuse 0/0/0/0 (C handle/read/wrap/bytes); 8 live, 0 stale

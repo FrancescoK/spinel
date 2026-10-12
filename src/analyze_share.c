@@ -4782,6 +4782,14 @@ static void sh_into_build(const Compiler *c) {
       /* the call's receiver, and each link of the chain of self-answering
          calls down to the base the flow names (sh_self_chain_base) */
       for (int r = nt_ref(nt, site, "receiver"); r >= 0; ) {
+        /* a link the walk from another change of the chain took: the links
+           below it lead to the same base and are marked, so each link is
+           walked once, not once per change above it. The base a flow names
+           (sh_self_chain_base) is a function of the link it starts from:
+           each link's class is joined when the walk reaches it, before any
+           flow above it is recorded, so two walks through one link end at
+           one base */
+        if (r < F->nnodes && (F->into[r] & SHI_MUTATED)) break;
         sh_into_mark(nt, F, r, SHI_MUTATED);
         int u = an_unparen(nt, r);
         if (u == v || u < 0 || nt_kind(nt, u) != NK_CallNode) break;
@@ -4876,9 +4884,9 @@ static int sh_bang_self_slot(const Compiler *c, int v) {
   }
   return 0;
 }
-/* Does node n hand over the shared handle (or a box holding it), not a
-   copy of its bytes? */
-static int sh_carries_handle(const Compiler *c, int n) {
+/* share.h: does node n hand over the shared handle (or a box holding it),
+   not a copy of its bytes? */
+int share_node_carries_handle(const Compiler *c, int n) {
   /* The return route takes the handle its callee publishes, including
      when a borrowed parameter is returned beside a method-owned String. */
   if (repr_call_returns_handle((Compiler *)c, n)) return 1;
@@ -4889,7 +4897,7 @@ static int sh_carries_handle(const Compiler *c, int n) {
       call_plain_argc((Compiler *)c, u) == 0 && nt_ref(c->nt, u, "block") < 0 &&
       cplan_user((Compiler *)c, u)->dispatch == CP_NONE) {
     int r = nt_ref(c->nt, u, "receiver");
-    if (r >= 0 && (share_value_fresh((Compiler *)c, r, 0) || sh_carries_handle(c, r))) return 1;
+    if (r >= 0 && (share_value_fresh((Compiler *)c, r, 0) || share_node_carries_handle(c, r))) return 1;
   }
   Repr r = repr_of(c, n);
   /* A boxed holder's read keeps what its incoming flows stored there. */
@@ -4907,7 +4915,7 @@ static int sh_carries_handle(const Compiler *c, int n) {
            is_append_concat(nt_str(c->nt, cur, "name")) && call_plain_argc((Compiler *)c, cur) == 1 &&
            nt_ref(c->nt, cur, "block") < 0 && cplan_targets((Compiler *)c, cur, tg, CPT_MAX) == 0)
       cur = unwrap_parens((Compiler *)c, nt_ref(c->nt, cur, "receiver"));
-    if (cur >= 0 && cur != n && repr_of(c, cur).kind == RK_BOXED && sh_carries_handle(c, cur)) return 1;
+    if (cur >= 0 && cur != n && repr_of(c, cur).kind == RK_BOXED && share_node_carries_handle(c, cur)) return 1;
   }
   /* a bang method on a handle local: a write hands over the local's handle
      (emit_strbuf_value) */
@@ -5074,7 +5082,7 @@ static int sh_route_why(const Compiler *c, const ShareRoute *q) {
       share_node_fresh_elems(c, q->value))
     return SH_ROUTE_COPIES;
   if (q->carry == SHARE_CARRY_COPY) return SH_ROUTE_COPIES;
-  return q->carry < 0 || sh_carries_handle(c, q->carry) ? SH_ROUTE_OK : SH_ROUTE_COPIES;
+  return q->carry < 0 || share_node_carries_handle(c, q->carry) ? SH_ROUTE_OK : SH_ROUTE_COPIES;
 }
 static int sh_route_ok(const Compiler *c, const ShareRoute *q) {
   return sh_route_why(c, q) == SH_ROUTE_OK;
