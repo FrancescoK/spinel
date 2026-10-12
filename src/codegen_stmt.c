@@ -1928,6 +1928,25 @@ int strbuf_route_srange_end(Compiler *c, int v) {
   if (sp_streq(nm, "end") || sp_streq(nm, "last")) return 2;
   return 0;
 }
+/* ...and its #min (1) or #max (2), likewise: the begin String, or an
+   inclusive Range's end String, the handle it keeps included
+   (sp_srange_extreme_h) */
+int strbuf_route_srange_extreme(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, v, "name");
+  int recv = nt_ref(nt, v, "receiver");
+  if (!nm || recv < 0 || nt_ref(nt, v, "arguments") >= 0 || nt_ref(nt, v, "block") >= 0 ||
+      comp_ntype(c, recv) != TY_STR_RANGE || cplan_user(c, v)->dispatch != CP_NONE) return 0;
+  if (!is_minmax_query(nm)) return 0;
+  return nm[1] == 'a' ? 2 : 1;   /* max, min */
+}
+/* Does v answer one of a String Range's endpoint Strings, as a route that
+   hands on the handle the Range keeps (either of the above)? */
+int strbuf_route_srange_kept(Compiler *c, int v) {
+  return strbuf_route_srange_end(c, v) || strbuf_route_srange_extreme(c, v);
+}
 static int exc_text_call(Compiler *c, int v) { return exc_text_call_on(c, v, 0); }
 /* --share-strings: an exception's #message read off a boxed receiver every
    class of which (the boxed-receiver walk) is an exception class or answers
@@ -2200,7 +2219,7 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
   if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || strbuf_route_begin(c, v) || strbuf_route_yield(c, v) ||
       strbuf_route_inline_call(c, v) || strbuf_route_reopen_pf(c, v) || strbuf_route_ie(c, v) || strbuf_route_loop(c, v) || repr_call_returns_handle(c, v) ||
       strbuf_route_exc_message(c, v) || strbuf_route_boxed_exc_message(c, v) || strbuf_route_reader(c, v) ||
-      strbuf_route_srange_end(c, v)) return 1;
+      strbuf_route_srange_kept(c, v)) return 1;
   if (strbuf_assign_leaf(c, v) || strbuf_bang_leaf(c, v)) return 1;
   /* a receiver-answering method on a value route over a handle (`(+s).insert(0, "<")`):
      the route's handle (emit_bang_self_handle) */
@@ -2356,6 +2375,16 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     buf_printf(b, "({ sp_StrRange _t%d = ", t);
     emit_expr(c, nt_ref(nt, v, "receiver"), b);
     buf_printf(b, "; _t%d.%s ? (sp_String *)_t%d.%s : sp_String_new_shared(_t%d.%s); })", t, h, t, h, t, e);
+    return 1;
+  }
+  int sx = strbuf_route_srange_extreme(c, v);
+  if (sx) {
+    /* min / max: the endpoint as above (an excluded end's max a new
+       String), or nil (sp_srange_extreme_h) */
+    v = unwrap_parens(c, v);
+    buf_puts(b, "sp_srange_extreme_h(");
+    emit_expr(c, nt_ref(nt, v, "receiver"), b);
+    buf_printf(b, ", %d)", sx == 2);
     return 1;
   }
   if (strbuf_route_proc_call(c, v)) {
@@ -21275,7 +21304,7 @@ static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   }
   if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || repr_call_returns_handle(c, v) ||
       strbuf_route_exc_message(c, v) || strbuf_route_boxed_exc_message(c, v) || strbuf_route_reader(c, v) ||
-      strbuf_route_srange_end(c, v))
+      strbuf_route_srange_kept(c, v))
     return 1;
   if (nt_kind(nt, v) == NK_BeginNode) return strbuf_flow_begin(c, fm, v, depth);
   if (strbuf_route_inline_call(c, v)) {
@@ -21504,7 +21533,7 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   if (ctx == SFC_TAIL && strbuf_tail_self_mutator(c, v)) return 1;
   if (ctx == SFC_TAIL)
     return (k == NK_BeginNode && strbuf_flow_begin(c, fm, v, depth)) || repr_call_returns_handle(c, v) ||
-           strbuf_route_exc_message(c, v) || strbuf_route_boxed_exc_message(c, v) || strbuf_route_srange_end(c, v) ||
+           strbuf_route_exc_message(c, v) || strbuf_route_boxed_exc_message(c, v) || strbuf_route_srange_kept(c, v) ||
            (strbuf_route_ie(c, v) && strbuf_flow_route(c, fm, SFC_ALIAS, v, depth)) ||
            (is_unary_plus(nt_str(nt, v, "name")) && strbuf_flow_route(c, fm, ctx, v, depth));
   /* an append chain over a variable's handle, boxed as that handle; a

@@ -2825,6 +2825,22 @@ static inline const void *sp_srange_end_id(sp_StrRange r, int last) {
   void *h = last ? r.hl : r.hf;
   return h ? sp_String_identity((sp_String *)h) : (const void *)(last ? r.last : r.first);
 }
+/* ...and #min (greatest 0) / #max (1) with no block as a String: CRuby's
+   range_min answers the begin object itself and range_max an inclusive
+   Range's end object, so an endpoint the Range keeps is its handle; the
+   walk an excluded end takes for #max answers a new String
+   (sp_srange_min_v / sp_srange_max_v, which raise for an open side), any
+   other endpoint is a new handle over the bytes it holds, and an empty
+   Range is nil (NULL) */
+static inline sp_String *sp_srange_extreme_h(sp_StrRange r, int greatest) {
+  SP_GC_ROOT(r.hf); SP_GC_ROOT(r.hl);
+  const char *v = greatest ? sp_srange_max_v(r) : sp_srange_min_v(r);
+  if (!v) return NULL;
+  void *h = greatest ? r.hl : r.hf;
+  if (h && (!greatest || !r.excl)) return (sp_String *)h;
+  SP_GC_ROOT_STR(v);
+  return sp_String_new_shared(v);
+}
 static inline sp_bool sp_poly_is_strbuf(sp_RbVal v) {
   return v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF;
 }
