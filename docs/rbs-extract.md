@@ -282,8 +282,13 @@ not implemented.
 
 ### Method signature shapes
 
-- Multiple overloads -- only the first overload is considered; if the
-  first is itself out-of-subset the whole method is skipped.
+- Overloaded methods -- several `|`-separated signatures, or one that
+  adds to another declaration with `| ...` (in any file of the
+  directory). A seed pins one signature, and the method takes what every
+  overload takes, so seeding any single overload would pin it narrower
+  than its calls: `Array.wrap: (nil) -> Array[untyped] | ...` would pin
+  its parameter to nil. The method is left to inference, as an
+  overloaded inline signature is (see [inline-rbs.md](inline-rbs.md)).
 - Optional positional params (`?String`)
 - Rest positional params (`*args`)
 - Trailing positional params

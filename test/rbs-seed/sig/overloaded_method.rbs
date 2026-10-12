@@ -1,0 +1,9 @@
+class OvWrap
+  def self.wrap: (nil) -> Array[untyped]
+               | [T] (Array[T] array) -> Array[T]
+               | [T] (T ele) -> Array[T]
+end
+
+class OvPick
+  def pick: (Integer x) -> Integer
+end

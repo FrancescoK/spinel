@@ -1,0 +1,5 @@
+# a second overload for OvPick#pick, added to overloaded_method.rbs's
+class OvPick
+  def pick: (String x) -> String
+          | ...
+end
