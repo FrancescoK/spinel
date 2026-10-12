@@ -18161,9 +18161,7 @@ char *codegen_program(const NodeTable *nt) {
                        : (t == TY_FLOAT) ? "SP_OFLOAT_NIL"
                        : (t == TY_STRING) ? "NULL"
                        : (is_scalar_ret(t)) ? default_value(t) : "0";
-      buf_puts(&b, "static ");
-      if (oint) buf_puts(&b, oint_ctype(t)); else emit_ctype(c, t, &b);
-      buf_printf(&b, " civ_%s_%s = %s;\n", ci->name, iv_c(ci->ivars[j] + 1), init);
+      emit_civ_slot_decl(c, i, ci->ivars[j], oint ? oint_ctype(t) : NULL, t, init, &b);
     }
   }
 

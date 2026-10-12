@@ -14676,6 +14676,18 @@ static void cbi_proc_locals(const NodeTable *nt, int node, CbiProcLocals *pl) {
   }
 }
 
+/* the ivar name a `defined?(@x)` asks of, else NULL */
+static const char *cbi_defined_ivar(const NodeTable *nt, int node) {
+  int v = nt_ref(nt, node, "value");
+  /* through single-statement parentheses: `defined?((@x))` */
+  while (v >= 0 && nt_kind(nt, v) == NK_ParenthesesNode) {
+    int body = nt_ref(nt, v, "body"), bn = 0;
+    const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+    v = bn == 1 ? bb[0] : -1;
+  }
+  return v >= 0 && nt_kind(nt, v) == NK_InstanceVariableReadNode ? nt_str(nt, v, "name") : NULL;
+}
+
 /* `no_procs`: in the arguments of a self-changing call, whose procs are
    entered by the other self */
 static void cbi_collect(const NodeTable *nt, int node, int in_block, int no_procs,
@@ -14701,6 +14713,13 @@ static void cbi_collect(const NodeTable *nt, int node, int in_block, int no_proc
   if (k == NK_InstanceVariableReadNode || k == NK_InstanceVariableWriteNode) {
     if (*nhits < cap) hits[(*nhits)++] = node;
     if (k == NK_InstanceVariableReadNode || in_block) *trigger = 1;
+  }
+  /* `defined?(@x)` asks the module's ivar as a whole: it goes to an
+     accessor of its own (`Mod.__spinel_civdef_x`) */
+  if (k == NK_DefinedNode && cbi_defined_ivar(nt, node)) {
+    if (*nhits < cap) hits[(*nhits)++] = node;
+    *trigger = 1;
+    return;
   }
   int blk = (k == NK_BlockNode || k == NK_LambdaNode) ? 1 : in_block;
   int nr = nt_num_refs(nt, node);
@@ -14901,14 +14920,17 @@ int desugar_body_ivars(Compiler *c) {
     if (!trigger || nhits == 0) { free(hits); continue; }
     /* names needing accessors */
     char *names[256]; int nn = 0;
+    char asked[256] = {0};   /* names[q] has a defined? hit */
     for (int h = 0; h < nhits; h++) {
-      const char *iv = nt_str(nt, hits[h], "name");
+      int isdef = nt_kind(nt, hits[h]) == NK_DefinedNode;
+      const char *iv = isdef ? cbi_defined_ivar(nt, hits[h]) : nt_str(nt, hits[h], "name");
       if (!iv || iv[0] != '@' || iv[1] == '@') continue;
-      int seen = 0;
-      for (int q = 0; q < nn; q++) if (sp_streq(names[q], iv)) seen = 1;
-      if (!seen && nn < 256) names[nn++] = strdup(iv);
+      int seen = -1;
+      for (int q = 0; q < nn; q++) if (sp_streq(names[q], iv)) seen = q;
+      if (seen < 0 && nn < 256) { seen = nn; names[nn++] = strdup(iv); }
+      if (seen >= 0 && isdef) asked[seen] = 1;
     }
-    int *defs = malloc(sizeof(int) * (size_t)(2 * nn + bn));
+    int *defs = malloc(sizeof(int) * (size_t)(3 * nn + bn));
     int nd = 0;
     for (int q = 0; q < nn; q++) {
       const char *iv = names[q];
@@ -14938,20 +14960,42 @@ int desugar_body_ivars(Compiler *c) {
       nt_node_set_ref(nt, sd, "parameters", ps);
       nt_node_set_ref(nt, sd, "body", sb);
       defs[nd++] = gd; defs[nd++] = sd;
+      if (asked[q]) {
+        /* def self.__spinel_civdef_x = defined?(@x) */
+        char dname[256];
+        snprintf(dname, sizeof dname, "__spinel_civdef_%s", iv + 1);
+        int dd = fwd_new_node_like(nt, m, "DefNode");
+        int db = fwd_new_node_like(nt, m, "StatementsNode");
+        int dq = fwd_new_node_like(nt, m, "DefinedNode");
+        int dr = fwd_new_node_like(nt, m, "InstanceVariableReadNode");
+        nt_node_set_str(nt, dr, "name", iv);
+        nt_node_set_ref(nt, dq, "value", dr);
+        nt_node_set_arr(nt, db, "body", &dq, 1);
+        nt_node_set_str(nt, dd, "name", dname);
+        nt_node_set_ref(nt, dd, "receiver", fwd_new_node_like(nt, m, "SelfNode"));
+        nt_node_set_ref(nt, dd, "body", db);
+        defs[nd++] = dd;
+      }
     }
     /* rewrite the accesses in place */
     for (int h = 0; h < nhits; h++) {
       int id = hits[h];
-      const char *iv0 = nt_str(nt, id, "name");
+      NodeKind k = nt_kind(nt, id);
+      const char *iv0 = k == NK_DefinedNode ? cbi_defined_ivar(nt, id) : nt_str(nt, id, "name");
       if (!iv0 || iv0[1] == '@') continue;
       char iv[256]; snprintf(iv, sizeof iv, "%s", iv0);
-      NodeKind k = nt_kind(nt, id);
       int line = (int)nt_int(nt, id, "node_line", 0);
       int file = (int)nt_int(nt, id, "node_file", 0);
       int recv = fwd_new_node_like(nt, id, "ConstantReadNode");
       nt_node_set_str(nt, recv, "name", cn);
       char mname[256];
-      if (k == NK_InstanceVariableReadNode) {
+      if (k == NK_DefinedNode) {
+        snprintf(mname, sizeof mname, "__spinel_civdef_%s", iv + 1);
+        nt_node_reset(nt, id, "CallNode");
+        nt_node_set_str(nt, id, "name", mname);
+        nt_node_set_ref(nt, id, "receiver", recv);
+      }
+      else if (k == NK_InstanceVariableReadNode) {
         snprintf(mname, sizeof mname, "__spinel_civget_%s", iv + 1);
         nt_node_reset(nt, id, "CallNode");
         nt_node_set_str(nt, id, "name", mname);
