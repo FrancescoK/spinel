@@ -6562,6 +6562,16 @@ static void emit_pm_deconstruct_keys_arg(Compiler *c, int pat, Buf *b) {
   buf_printf(b, " sp_box_poly_array(_t%d); })", tk);
 }
 
+/* A user object a Regexp's === converts through its #to_str (CRuby's
+   rb_check_string_type): boxed, the runtime reaches the method through the
+   conversion bridge, so only a #to_str the bridge carries qualifies. Any
+   other keeps the arms' plain no-match answer. */
+static int re_case_eq_obj_subject(Compiler *c, TyKind pt) {
+  /* the conversion bridge's own admission: a value-type copy has no row */
+  return ty_is_object(pt) && class_has_to_str_shape(c, ty_object_class(pt)) &&
+         !comp_ty_value_obj(c, pt);
+}
+
 int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *pty = nt_type(nt, pat);
@@ -6588,6 +6598,11 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
       }
       if (pt == TY_SYMBOL) {
         buf_printf(b, "sp_re_case_eq(sp_re_pat_%d, sp_box_sym(_t%d))", reidx, t);
+        return 1;
+      }
+      if (re_case_eq_obj_subject(c, pt)) {
+        char sref[32]; snprintf(sref, sizeof sref, "_t%d", t);
+        buf_printf(b, "sp_re_case_eq(sp_re_pat_%d, ", reidx); emit_boxed_text(c, pt, sref, b); buf_puts(b, ")");
         return 1;
       }
       if (pt == TY_NIL || pt == TY_INT || pt == TY_FLOAT || pt == TY_BOOL) {
@@ -8654,6 +8669,12 @@ static int emit_when_typed_test(Compiler *c, int cond, int t, TyKind pt, Buf *b)
   }
   else if (reidx >= 0 && pt == TY_SYMBOL) {
     buf_printf(b, "sp_re_case_eq(sp_re_pat_%d, sp_box_sym(_t%d))", reidx, t);
+  }
+  else if ((reidx >= 0 || comp_ntype(c, cond) == TY_REGEX) && re_case_eq_obj_subject(c, pt)) {
+    char sref[32]; snprintf(sref, sizeof sref, "_t%d", t);
+    if (reidx >= 0) buf_printf(b, "sp_re_case_eq(sp_re_pat_%d, ", reidx);
+    else { buf_puts(b, "sp_re_case_eq("); emit_expr(c, cond, b); buf_puts(b, ", "); }
+    emit_boxed_text(c, pt, sref, b); buf_puts(b, ")");
   }
   /* a Regexp value that is no literal (built by interpolation, held in a
      constant or a variable) matches as the literal does, through its pattern:

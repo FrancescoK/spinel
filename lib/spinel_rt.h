@@ -18056,11 +18056,10 @@ static sp_bool sp_range_cover_poly(sp_Range *r, sp_RbVal x) {
 static sp_bool sp_poly_case_eq(sp_RbVal pat, sp_RbVal e) {
   if (pat.tag == SP_TAG_CLASS)
     return sp_poly_is_a_hook ? (sp_bool)(sp_poly_is_a_hook(e, sp_unbox_class(pat)) != 0) : 0;
-  /* a String, a shared String or a Symbol; $~ is left alone, as grep's is */
+  /* a String, a shared String, a Symbol or an object's #to_str; $~ is left
+     alone, as grep's is */
   if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_REGEX) {
-    sp_RbVal ed = sp_poly_strbuf_deref(e);
-    const char *s = ed.tag == SP_TAG_STR ? ed.v.s
-                  : ed.tag == SP_TAG_SYM && sp_sym_name_fn ? sp_sym_name_fn((sp_sym)ed.v.i) : NULL;
+    const char *s = sp_re_operand(e, 0);
     return s && sp_re_match_p(pat.v.p, s);
   }
   if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_RANGE) {

@@ -1,0 +1,37 @@
+2
+2
+false
+true
+true
+"la"
+TypeError: no implicit conversion of N into String
+TypeError: no implicit conversion of Integer into String
+TypeError: no implicit conversion of true into String
+2
+true
+S: 2 false true true "la" 2 true true "la"
+N: TypeError: no implicit conversion of N into String TypeError: no implicit conversion of N into String TypeError: no implicit conversion of N into String false TypeError: no implicit conversion of N into String TypeError: no implicit conversion of N into String TypeError: no implicit conversion of N into String false TypeError: no implicit conversion of N into String
+Integer: TypeError: no implicit conversion of Integer into String TypeError: no implicit conversion of Integer into String TypeError: no implicit conversion of Integer into String false TypeError: no implicit conversion of Integer into String TypeError: no implicit conversion of Integer into String TypeError: no implicit conversion of Integer into String false TypeError: no implicit conversion of Integer into String
+Float: TypeError: no implicit conversion of Float into String TypeError: no implicit conversion of Float into String TypeError: no implicit conversion of Float into String false TypeError: no implicit conversion of Float into String TypeError: no implicit conversion of Float into String TypeError: no implicit conversion of Float into String false TypeError: no implicit conversion of Float into String
+TrueClass: TypeError: no implicit conversion of true into String TypeError: no implicit conversion of true into String TypeError: no implicit conversion of true into String false TypeError: no implicit conversion of true into String TypeError: no implicit conversion of true into String TypeError: no implicit conversion of true into String false TypeError: no implicit conversion of true into String
+FalseClass: TypeError: no implicit conversion of false into String TypeError: no implicit conversion of false into String TypeError: no implicit conversion of false into String false TypeError: no implicit conversion of false into String TypeError: no implicit conversion of false into String TypeError: no implicit conversion of false into String false TypeError: no implicit conversion of false into String
+Symbol: 1 false true true "la" 1 true true "la"
+String: 0 false true true "la" 0 true true "la"
+NilClass: nil true false false nil nil false false nil
+Array: TypeError: no implicit conversion of Array into String TypeError: no implicit conversion of Array into String TypeError: no implicit conversion of Array into String false TypeError: no implicit conversion of Array into String TypeError: no implicit conversion of Array into String TypeError: no implicit conversion of Array into String false TypeError: no implicit conversion of Array into String
+when: la
+when boxed: la
+when value: bl
+in: hit
+N: miss
+2
+2
+nil
+true
+TypeError: no implicit conversion of N into String
+TypeError: no implicit conversion of Integer into String
+TypeError: no implicit conversion of true into String
+1
+nil
+true
+false
