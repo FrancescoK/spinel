@@ -1,13 +1,17 @@
-# Only the first overload is considered. `first_ok`'s first overload is
-# in-subset, so it is emitted (the String overload is ignored).
-# `first_bad`'s first overload is a proc type (out of subset), so the
-# whole method is dropped even though a later overload is in-subset.
+# An overloaded method is not seeded: a seed pins one signature, and the
+# method takes what every overload takes, so its first overload alone would
+# pin a parameter narrower than the calls (`Array.wrap: (nil) -> ... | ...`
+# would pin its parameter to nil). That holds whether or not the overloads
+# are in-subset, and for one that adds to another declaration with `| ...`.
 class Overloads
   def first_ok: (Integer) -> Integer
               | (String) -> String
 
   def first_bad: (^(Integer) -> void) -> void
                | (Integer) -> Integer
+
+  def augmented: (Integer) -> Integer
+               | ...
 
   def kept: (Integer) -> Integer
 end

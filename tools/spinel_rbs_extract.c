@@ -20,7 +20,7 @@
  *   - Optional T (T?) → <subset>?    (recursive)
  *   - Union T | nil → T?    (any other union → skip)
  *
- * Dropped: generics with variables, overloads beyond #1, blocks,
+ * Dropped: generics with variables, overloaded methods, blocks,
  * proc types, intersections, records, tuples, interfaces, literal
  * types, type aliases, self / instance / class / top / bottom /
  * any types.
@@ -84,6 +84,61 @@ static void emit_position(FILE *out, int byte_pos) {
     fprintf(out, "src %s:%zu\n", g_cur_path, lo + 1);
 }
 
+/* ---- overloaded methods ------------------------------------ */
+
+/* The methods some declaration gives more than one overload: several
+ * `|`-separated signatures, or a `| ...` that adds to a declaration
+ * elsewhere (often another file). Keyed "<scope> <i|c> <name>". Collected
+ * over every file before any is emitted, so a declaration whose overloads
+ * another file adds is known for one when it is reached. */
+static char **g_overloaded = NULL;
+static size_t g_noverloaded = 0, g_coverloaded = 0;
+
+static void overloaded_key(char *buf, size_t n, const char *scope, char kind, const char *name) {
+    snprintf(buf, n, "%s %c %s", scope, kind, name);
+}
+
+static void overloaded_add(const char *scope, char kind, const char *name) {
+    char key[1024];
+    overloaded_key(key, sizeof key, scope, kind, name);
+    for (size_t i = 0; i < g_noverloaded; i++) if (strcmp(g_overloaded[i], key) == 0) return;
+    if (g_noverloaded == g_coverloaded) {
+        g_coverloaded = g_coverloaded ? g_coverloaded * 2 : 16;
+        g_overloaded = (char **) realloc(g_overloaded, g_coverloaded * sizeof(char *));
+        if (g_overloaded == NULL) { fprintf(stderr, "spinel_rbs_extract: out of memory\n"); exit(1); }
+    }
+    g_overloaded[g_noverloaded++] = strdup(key);
+}
+
+static bool overloaded_has(const char *scope, char kind, const char *name) {
+    char key[1024];
+    overloaded_key(key, sizeof key, scope, kind, name);
+    for (size_t i = 0; i < g_noverloaded; i++) if (strcmp(g_overloaded[i], key) == 0) return true;
+    return false;
+}
+
+static bool method_kind_has(rbs_ast_members_method_definition_t *m, char kind) {
+    if (m->kind == RBS_METHOD_DEFINITION_KIND_SINGLETON_INSTANCE) return true;
+    return kind == 'i' ? m->kind == RBS_METHOD_DEFINITION_KIND_INSTANCE
+                       : m->kind == RBS_METHOD_DEFINITION_KIND_SINGLETON;
+}
+
+/* Note the methods of +members+ (of class/module +scope+) that are overloaded. */
+static void collect_overloaded(rbs_parser_t *p, rbs_node_list_t *members, const char *scope) {
+    if (members == NULL) return;
+    for (rbs_node_list_node_t *cur = members->head; cur != NULL; cur = cur->next) {
+        if (cur->node->type != RBS_AST_MEMBERS_METHOD_DEFINITION) continue;
+        rbs_ast_members_method_definition_t *m = (rbs_ast_members_method_definition_t *) cur->node;
+        if (!m->overloading && (m->overloads == NULL || m->overloads->length <= 1)) continue;
+        sbuf_t mname;
+        sbuf_init(&mname);
+        name_of_symbol(p, m->name, &mname);
+        if (method_kind_has(m, 'i')) overloaded_add(scope, 'i', mname.buf);
+        if (method_kind_has(m, 'c')) overloaded_add(scope, 'c', mname.buf);
+        sbuf_free(&mname);
+    }
+}
+
 /* ---- emit one method signature ----------------------------- */
 
 /* Pick the seed-line keyword from rbs's method-definition kind.
@@ -92,10 +147,11 @@ static void emit_position(FILE *out, int byte_pos) {
  * emits both so seed_class_method on the analyzer side hits whichever
  * the source actually defined. */
 static void emit_method(rbs_parser_t *p, rbs_ast_members_method_definition_t *m,
-                        const char *enclosing_scope, FILE *out) {
+                        const char *scope, const char *enclosing_scope, FILE *out) {
     if (m->overloads == NULL || m->overloads->head == NULL) return;
-    /* Only the first overload; multiple overloads are out of subset
-     * (spinel can't pick between them deterministically). */
+    /* An overloaded method is not seeded: a seed pins one signature, and
+     * the method takes what every overload takes, so any one overload
+     * would pin it narrower than its calls (collect_overloaded). */
     rbs_node_t *first = m->overloads->head->node;
     if (first->type != RBS_AST_MEMBERS_METHOD_DEFINITION_OVERLOAD) return;
     rbs_ast_members_method_definition_overload_t *ov =
@@ -206,10 +262,9 @@ static void emit_method(rbs_parser_t *p, rbs_ast_members_method_definition_t *m,
     sbuf_init(&mname);
     name_of_symbol(p, m->name, &mname);
 
-    bool emit_inst = (m->kind == RBS_METHOD_DEFINITION_KIND_INSTANCE)
-                  || (m->kind == RBS_METHOD_DEFINITION_KIND_SINGLETON_INSTANCE);
-    bool emit_cls  = (m->kind == RBS_METHOD_DEFINITION_KIND_SINGLETON)
-                  || (m->kind == RBS_METHOD_DEFINITION_KIND_SINGLETON_INSTANCE);
+    bool emit_inst = method_kind_has(m, 'i') && !overloaded_has(scope, 'i', mname.buf);
+    bool emit_cls  = method_kind_has(m, 'c') && !overloaded_has(scope, 'c', mname.buf);
+    if (!emit_inst && !emit_cls) { sbuf_free(&mname); sbuf_free(&ret); sbuf_free(&ptypes); return; }
 
     emit_position(out, m->base.location.start_byte);
     if (emit_inst) fprintf(out, "meth %s %s %s\n",  mname.buf, ret.buf, ptypes.buf);
@@ -261,7 +316,7 @@ static void traverse_members(rbs_parser_t *p, rbs_node_list_t *members,
         rbs_node_t *n = cur->node;
         switch (n->type) {
             case RBS_AST_MEMBERS_METHOD_DEFINITION:
-                emit_method(p, (rbs_ast_members_method_definition_t *) n, lookup_scope, out);
+                emit_method(p, (rbs_ast_members_method_definition_t *) n, qualified_scope, lookup_scope, out);
                 break;
             case RBS_AST_MEMBERS_ATTR_ACCESSOR: {
                 rbs_ast_members_attr_accessor_t *a = (rbs_ast_members_attr_accessor_t *) n;
@@ -334,6 +389,7 @@ else {
     }
     sbuf_append(&qualified, leaf.buf, leaf.len);
     known_names_add(qualified.buf, qualified.len);
+    collect_overloaded(p, members, qualified.buf);
 
     if (members != NULL) {
         rbs_node_list_node_t *cur = members->head;
