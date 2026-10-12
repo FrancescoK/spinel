@@ -2711,6 +2711,17 @@ static int strbuf_tail_answer_kept(Compiler *c, int v) {
          bsearch(&key, c->kept_call_names, (size_t)c->nkept_call_names, sizeof *c->kept_call_names,
                  strbuf_kept_name_cmp) != NULL;
 }
+/* --share-strings: is tail v a bang method on a handle (strbuf_bang_self_local,
+   or on a boxed receiver that can hold a String the rule shares:
+   face_str_bang_call), which answers that handle or nil, and whose value
+   form answers its bytes, publishing nothing? A method with such a tail
+   publishes it by itself (Scope.ret_pub_bang). */
+int strbuf_bang_tail(Compiler *c, int v) {
+  const char *nm = v >= 0 && nt_kind(c->nt, v) == NK_CallNode ? nt_str(c->nt, v, "name") : NULL;
+  return repr_share_rule(c) && nm &&
+         (bop_answers_self(TY_STRING, nm, call_plain_argc(c, v), nt_ref(c->nt, v, "block") >= 0) & BOPF_SELF_OR_NIL) &&
+         (strbuf_bang_self_local(c, v) || (face_str_bang_call(c, v) && share_node_shares(c, v)));
+}
 int strbuf_builtin_tail(Compiler *c, int v) {
   if (!repr_share_rule(c) || !c->share || v < 0 || nt_kind(c->nt, v) != NK_CallNode ||
       an_arg_is_shared_handle(c, v)) return 0;
@@ -2731,7 +2742,8 @@ int strbuf_builtin_tail(Compiler *c, int v) {
               (x >= 0 && x != unwrap_parens(c, v) && nt_kind(c->nt, unwrap_parens(c, x)) == NK_ParenthesesNode);
   return (t == TY_STRING || t == TY_STRBUF) &&
          (cplan_user_fresh(c, v)->dispatch == CP_NONE || strbuf_route_reopen_pf(c, v)) &&
-         !share_node_fresh(c, v) && strbuf_value_carries(c, v) && (!built || strbuf_tail_answer_kept(c, v));
+         !share_node_fresh(c, v) && (strbuf_value_carries(c, v) || strbuf_bang_tail(c, v)) &&
+         (!built || strbuf_tail_answer_kept(c, v));
 }
 /* --share-strings: an operator write (`$g += x`) whose slot holds the
    rule's handle: that slot's text to out. The write stores a new handle
@@ -9187,7 +9199,7 @@ void emit_case_branch_value(Compiler *c, int stmts, TyKind rt, int cr, Buf *b) {
   /* A String return channel follows each arm's tail, including nested
      conditionals: use the same tail emission as begin/rescue arms. */
   Scope *sc = stmts >= 0 ? comp_scope_of(c, stmts) : NULL;
-  if (rt == TY_STRING && sc && sc->ret_pub_fresh) {
+  if (rt == TY_STRING && sc && (sc->ret_pub_fresh || sc->ret_pub_bang)) {
     char dst[32]; snprintf(dst, sizeof dst, "_cr%d", cr);
     emit_string_tail_into(c, stmts, dst, b);
     return;
@@ -10913,6 +10925,7 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
     buf_puts(b, "sp_strbuf_read_pub(");
     emit_strbuf_handle_of(c, node, b);
     buf_puts(b, ")");
+    if (g_repr_check) { repr_channel_note(c, node, RCH_PUBLISH); repr_channel_end(c, frame); }
     return;
   }
   /* ...and so does an attribute assignment on a boxed receiver, whose
@@ -10937,8 +10950,8 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
     if (g_repr_check) repr_channel_end(c, frame);
     return;
   }
-  if (ts && ts->ret_pub_fresh && (k == NK_ParenthesesNode || k == NK_IfNode ||
-                                 k == NK_UnlessNode || k == NK_CaseMatchNode)) {
+  if (ts && (ts->ret_pub_fresh || ts->ret_pub_bang) && (k == NK_ParenthesesNode || k == NK_IfNode ||
+                                                        k == NK_UnlessNode || k == NK_CaseMatchNode)) {
     int t = ++g_tmp;
     char dst[32]; snprintf(dst, sizeof dst, "_t%d", t);
     buf_printf(b, "({ const char *%s = NULL;\n", dst);
@@ -11257,7 +11270,7 @@ static void emit_return_deferred(Compiler *c, const int *a, int n, Buf *b, int i
       else if (oint_kind(ctx->retv_ty) && ctx->retv_o) emit_oint_expr(c, a[0], ctx->retv_ty, b);
       /* A deferred String return has the same publication rule as a
          direct tail, before ensure saves its selected handle. */
-      else if (ctx->retv_ty == TY_STRING && comp_scope_of(c, a[0])->ret_pub_fresh) {
+      else if (ctx->retv_ty == TY_STRING && (comp_scope_of(c, a[0])->ret_pub_fresh || comp_scope_of(c, a[0])->ret_pub_bang)) {
         const char *sv = g_result_var; g_result_var = NULL;
         TyKind st = g_ret_type; g_ret_type = ctx->retv_ty;
         emit_tail_value(c, a[0], b);
@@ -17936,7 +17949,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
 
   /* Parentheses keep their last statement in tail position. In a mixed
      String return its conditional leaves must publish or clear too. */
-  if (nt_kind(nt, id) == NK_ParenthesesNode && comp_scope_of(c, id)->ret_pub_fresh) {
+  if (nt_kind(nt, id) == NK_ParenthesesNode && (comp_scope_of(c, id)->ret_pub_fresh || comp_scope_of(c, id)->ret_pub_bang)) {
     emit_stmts_tail(c, nt_ref(nt, id, "body"), b, indent);
     return;
   }

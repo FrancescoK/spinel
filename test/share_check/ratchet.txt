@@ -57,7 +57,6 @@ test/share/share_strings_attr_assign_value_mutators.rb	test/share/share_strings_
 test/share/share_strings_attr_assign_value_mutators.rb	test/share/share_strings_attr_assign_value_mutators.rb:72	CallNode (a=)	changed in place as bytes by sp_str_freeze_val (sp_strbuf_read_pub)
 test/share/share_strings_attr_assign_value_mutators.rb	test/share/share_strings_attr_assign_value_mutators.rb:80	CallNode (a=)	changed in place as bytes by sp_str_scrub_bang (sp_strbuf_read_pub)
 test/share/share_strings_attr_assign_value_safenav_bang_consumers.rb	test/share/share_strings_attr_assign_value_safenav_bang_consumers.rb:97	CallNode (c=)	changed in place as bytes by sp_str_eq (bytes face)
-test/share/share_strings_bang_slot_nil.rb	test/share/share_strings_bang_slot_nil.rb:18	CallNode (gsub!)	answered as bytes publishing no handle by return (bytes face)
 test/share/share_strings_boxed_reader_stores.rb	test/share/share_strings_boxed_reader_stores.rb:15	CallNode (*)	boxed as bytes by sp_box_str (bytes face)
 test/share/share_strings_boxed_reader_stores.rb	test/share/share_strings_boxed_reader_stores.rb:17	CallNode (*)	boxed as bytes by sp_box_str (bytes face)
 test/share/share_strings_boxed_to_s_arms.rb	test/share/share_strings_boxed_to_s_arms.rb:22	CallNode (to_s)	boxed as bytes by sp_box_str (bytes face)

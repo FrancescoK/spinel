@@ -20974,8 +20974,9 @@ static void an_returns_by_scope(Compiler *c, int **start, int **list) {
 /* What a return tail answers, counted by an_tail_is_shared_handle: shared
    slot reads and nils. */
 /* fresh_ok (--share-strings, the pickup's own ask): a tail answering a
-   fresh String (share_node_fresh) is admitted too, counted in fresh */
-typedef struct { int reads, nils, fresh_ok, fresh, mi, param, arg_depth; } TailCount;
+   fresh String (share_node_fresh) is admitted too, counted in fresh; bangs
+   counts the reads that are a bang on a handle (ret_pub_bang) */
+typedef struct { int reads, nils, fresh_ok, fresh, mi, param, arg_depth, bangs; } TailCount;
 typedef struct { unsigned char *st; int *ret_start, *ret_list; int fresh; } RetHandles;
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc);
 static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *n, RetHandles *R);
@@ -21041,6 +21042,11 @@ static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount
     if (R && R->fresh) return share_value_fresh(c, node, 0);
     int ok = an_arg_is_shared_handle(c, node) || strbuf_builtin_tail(c, node);
     tc->reads += ok;
+    /* a bang on a handle (strbuf_builtin_tail) answers it, or nil */
+    if (ok && strbuf_bang_tail(c, node)) {
+      tc->nils += nil_ok;
+      tc->bangs++;
+    }
     if (g_repr_check && tc->mi > 0 && ok) repr_channel_predict(c, node, tc->mi, RCH_PUBLISH);
     if (!ok && tc->fresh_ok && share_node_fresh(c, node)) {
       if (g_repr_check && tc->mi > 0) repr_channel_predict(c, node, tc->mi, RCH_CLEAR);
@@ -21316,6 +21322,7 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
   }
   if (tc.nils && !R->fresh) m->ret_nil_pickup = 1;
   if (ok && tc.reads > 0 && tc.fresh) m->ret_pub_fresh = 1;
+  if (ok && tc.reads > 0 && tc.bangs && !R->fresh) m->ret_pub_bang = 1;
   /* An all-raising body publishes no handle for a caller to pick up (a fresh
      String answered beside no handle read is the fresh pickup's own). */
   R->st[mi] = ok && saw && (R->fresh || tc.reads > 0) ? RH_YES : RH_NO;

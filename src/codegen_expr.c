@@ -4433,7 +4433,8 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
       Buf ev; memset(&ev, 0, sizeof ev);
       if (rt == TY_POLY && et != TY_POLY) emit_boxed(c, e, &ev);
       else if (res_o) emit_oint_expr(c, e, rt, &ev);
-      else if (rt == TY_STRING && comp_scope_of(c, id)->ret_pub_fresh) emit_tail_value(c, e, &ev);
+      else if (rt == TY_STRING && (comp_scope_of(c, id)->ret_pub_fresh || comp_scope_of(c, id)->ret_pub_bang))
+        emit_tail_value(c, e, &ev);
       else emit_expr_slot(c, e, rt, &ev);
       g_pre = sv_pre0; g_indent = sv_ind0;
       if (epre.p) buf_puts(b, epre.p);
@@ -4493,7 +4494,8 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
       if (r_jumps) emit_expr(c, r, &rv);
       else if (rt == TY_POLY && repr_of(c, r).kind != RK_BOXED) emit_boxed(c, r, &rv);
       else if (res_o) emit_oint_expr(c, r, rt, &rv);
-      else if (rt == TY_STRING && comp_scope_of(c, id)->ret_pub_fresh) emit_tail_value(c, r, &rv);
+      else if (rt == TY_STRING && (comp_scope_of(c, id)->ret_pub_fresh || comp_scope_of(c, id)->ret_pub_bang))
+        emit_tail_value(c, r, &rv);
       else emit_expr_slot(c, r, rt, &rv);
       g_rescue_save_depth--;
       g_pre = sv_pre; g_indent = sv_ind;
