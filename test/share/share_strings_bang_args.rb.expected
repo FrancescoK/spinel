@@ -1,0 +1,12 @@
+["AB", true]
+[nil, false]
+["AB", true]
+["ab", true]
+["Ab", true]
+["Qr", "Qr", "Qr", true, true]
+["K", "K", nil, true, false]
+"W!"
+"w!aB"
+"W!ABK"
+true
+"Uk"

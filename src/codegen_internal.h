@@ -251,6 +251,8 @@ int strbuf_route_inline_call(Compiler *c, int v);
 /* --share-strings: does value v hand over a shared String as its handle
    (a variable, a route, a conditional with such an arm)? (codegen_stmt.c) */
 int strbuf_value_carries(Compiler *c, int v);
+int strbuf_arg_carries(Compiler *c, int v);
+int strbuf_arg_bang(Compiler *c, int v);
 int strbuf_builtin_tail(Compiler *c, int v);
 int strbuf_bang_tail(Compiler *c, int v);
 int strbuf_hash_default_arg(Compiler *c, int v);

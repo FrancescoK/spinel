@@ -2673,6 +2673,18 @@ int strbuf_value_carries(Compiler *c, int v) {
   return strbuf_route_carries(c, v, 0) || strbuf_cond_has_handle_leaf(c, v, 0) || strbuf_opwrite_handle(c, v, ref, sizeof ref) ||
          (k != NK_CallNode && repr_write_share(c, v));
 }
+/* --share-strings: does argument v hand a parameter that is the handle its
+   String as that handle (emit_strbuf_handle_of answers it): a value route
+   (strbuf_value_carries), or a bang method or an iterator given a block on
+   a handle, which answers that handle or nil (strbuf_bang_self_local), or a
+   String bang on a boxed receiver (`arr[0].upcase!`), which answers the
+   box's handle or nil (face_str_bang_call)? */
+int strbuf_arg_bang(Compiler *c, int v) {
+  return repr_share_rule(c) && (strbuf_bang_self_local(c, v) || face_str_bang_call(c, v));
+}
+int strbuf_arg_carries(Compiler *c, int v) {
+  return strbuf_value_carries(c, v) || strbuf_arg_bang(c, v);
+}
 /* A builtin value route can publish its handle as a method's return too.
    The return analysis and tail emitter ask the same route predicate.
    A fresh result has no existing identity for the tail to publish. */
@@ -21157,7 +21169,8 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
               conditional;
    SFC_ARG    an argument the binder takes as the handle when the value
               hands one on (strbuf_value_carries, emit_strbuf_handle_of):
-              as SFC_ALIAS, but no bang method's answer;
+              as SFC_ALIAS, but a bang method's answer only as the argument
+              itself or a conditional's arm (strbuf_arg_carries);
    SFC_BOX    a yield's value: a box or the handle itself only;
    SFC_SPLICE an Enumerator's map's block value, which the library's loop
               takes as a write takes its value (as SFC_ALIAS, and its `l ||
@@ -21362,6 +21375,9 @@ static int strbuf_flow_cond(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int
   default:
     if (ctx == SFC_ELEM_ARMS)
       return strbuf_flow_value(c, fm, strbuf_value_carries(c, v) ? SFC_ALIAS : SFC_ELEM, v, depth + 1);
+    /* an argument's conditional is taken arm by arm (emit_strbuf_cond_value),
+       a bang on a handle or a box as that handle or nil */
+    if (ctx == SFC_ARG && strbuf_arg_bang(c, v)) return 1;
     return ctx == SFC_ALIAS || ctx == SFC_SPLICE || ctx == SFC_TAIL || ctx == SFC_ARG
            ? strbuf_flow_value(c, fm, ctx, v, depth + 1) : nt_kind(nt, v) == NK_NilNode || strbuf_flow_unseen(c, v);
   }
@@ -21649,7 +21665,12 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
         ctx = SFC_BOX;
     }
     break;
-  case SHFL_ARG: ctx = SFC_ARG; break;
+  case SHFL_ARG:
+    /* a bang on a handle or a box is that handle or nil, which the binder
+       takes (strbuf_arg_carries) */
+    if (strbuf_arg_bang(c, unwrap_parens(c, v))) return 1;
+    ctx = SFC_ARG;
+    break;
   case SHFL_YIELD: {
     /* A receiver conversion keeps its handle in both the boxed yield
        and the typed block-parameter binder. */
