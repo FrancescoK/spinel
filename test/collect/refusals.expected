@@ -462,6 +462,18 @@ spinel: test/reject/const_value_not_a_module.rb:4: B is not a module: it is assi
 spinel: test/reject/def_delegators_splat.rb:10: def_delegators with arguments other than a literal symbol list is not supported (write the names as symbols: `def_delegators :@target, :name, ...`)
 == test/reject/def_delegators_splat.rb [promote] rc=1
 spinel: test/reject/def_delegators_splat.rb:10: def_delegators with arguments other than a literal symbol list is not supported (write the names as symbols: `def_delegators :@target, :name, ...`)
+== test/reject/define_method_implicit_rescue_captured_values.rb [default] rc=1
+spinel: test/reject/define_method_implicit_rescue_captured_values.rb:9: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: test/reject/define_method_implicit_rescue_captured_values.rb:46: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: test/reject/define_method_implicit_rescue_captured_values.rb:24: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: test/reject/define_method_implicit_rescue_captured_values.rb:63: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 4 refusals, nothing written
+== test/reject/define_method_implicit_rescue_captured_values.rb [promote] rc=1
+spinel: test/reject/define_method_implicit_rescue_captured_values.rb:9: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: test/reject/define_method_implicit_rescue_captured_values.rb:46: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: test/reject/define_method_implicit_rescue_captured_values.rb:24: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: test/reject/define_method_implicit_rescue_captured_values.rb:63: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 4 refusals, nothing written
 == test/reject/define_method_implicit_rescue_scope_queries.rb [default] rc=1
 spinel: test/reject/define_method_implicit_rescue_scope_queries.rb:9: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
 spinel: test/reject/define_method_implicit_rescue_scope_queries.rb:17: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)

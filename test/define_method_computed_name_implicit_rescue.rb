@@ -41,9 +41,26 @@ class Foo
   ensure_only :done
 end
 
+# the same from a module the class extends
+module Flags
+  def flag(name)
+    define_method("#{name}_flag") do
+      "flag #{name}"
+    ensure
+      puts "flagged #{name}"
+    end
+  end
+end
+
+class Bar
+  extend Flags
+  flag :on
+end
+
 f = Foo.new
 puts f.foo?
 puts f.foo_fail
 p f.num_int("3")
 p f.num_int("zz", 5)
 puts f.done!
+puts Bar.new.on_flag

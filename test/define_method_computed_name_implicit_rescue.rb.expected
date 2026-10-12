@@ -6,3 +6,5 @@ ensure num
 "num bad"
 after done
 body done
+flagged on
+flag on
