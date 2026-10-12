@@ -9,17 +9,35 @@
 
 static const SpNode *node_at(const NodeTable *nt, int id);
 
+/* An allocation that fails stops the compile, here as in the parser's walk
+   below: a node left without its type, a field without its key or a table
+   without the slot it was growing by is read later as if it were there. */
+static void nt_oom(void) {
+  fprintf(stderr, "spinel: out of memory\n");
+  exit(1);
+}
+
+/* n bytes, never NULL (an empty array still gets a block). */
+static void *nt_alloc(size_t n) {
+  void *p = malloc(n ? n : 1);
+  if (!p) nt_oom();
+  return p;
+}
+
 static void ensure_cap(void **buf, int *cap, int need, size_t elem) {
   if (need <= *cap) return;
+  if (*cap > INT_MAX / 2) nt_oom();
   int nc = *cap ? *cap * 2 : 4;
   if (nc < need) nc = need;
-  *buf = realloc(*buf, (size_t)nc * elem);
+  void *grown = realloc(*buf, (size_t)nc * elem);
+  if (!grown) nt_oom();
+  *buf = grown;
   *cap = nc;
 }
 
+/* A copy of the n bytes at s, NUL-terminated. */
 static char *dup_n(const char *s, size_t n) {
-  char *p = malloc(n + 1);
-  if (!p) return NULL;
+  char *p = nt_alloc(n + 1);
   memcpy(p, s, n);
   p[n] = '\0';
   return p;
@@ -66,21 +84,9 @@ static void node_add_arr(SpNode *nd, const char *key, size_t klen, int *ids, int
 
 /* ---- filling the table (the parser's walk) ---- */
 
-static void put_oom(void) {
-  fprintf(stderr, "spinel: out of memory\n");
-  exit(1);
-}
-
-/* A copy of the n bytes at s, NUL-terminated. */
-static char *put_dup(const char *s, size_t n) {
-  char *p = dup_n(s, n);
-  if (!p) put_oom();
-  return p;
-}
-
 NodeTable *nt_new_table(void) {
   NodeTable *nt = calloc(1, sizeof(NodeTable));
-  if (!nt) put_oom();
+  if (!nt) nt_oom();
   return nt;
 }
 
@@ -91,11 +97,11 @@ static SpNode *node_put(NodeTable *nt, int id) {
   if (id >= nt->node_cap) {
     int nc = nt->node_cap ? nt->node_cap : 256;
     while (nc <= id) {
-      if (nc > INT_MAX / 2) put_oom();
+      if (nc > INT_MAX / 2) nt_oom();
       nc *= 2;
     }
     SpNode *grown = realloc(nt->nodes, sizeof(SpNode) * (size_t)nc);
-    if (!grown) put_oom();
+    if (!grown) nt_oom();
     memset(grown + nt->node_cap, 0, sizeof(SpNode) * (size_t)(nc - nt->node_cap));
     nt->nodes = grown;
     nt->node_cap = nc;
@@ -110,7 +116,7 @@ void nt_put_type(NodeTable *nt, int id, const char *type) {
 }
 void nt_put_str(NodeTable *nt, int id, const char *key, const char *val, size_t len) {
   SpNode *nd = node_put(nt, id);
-  if (nd) node_add_str(nd, key, strlen(key), put_dup(val, len), len);
+  if (nd) node_add_str(nd, key, strlen(key), dup_n(val, len), len);
 }
 void nt_put_int(NodeTable *nt, int id, const char *key, long long val) {
   SpNode *nd = node_put(nt, id);
@@ -129,23 +135,23 @@ void nt_put_content(NodeTable *nt, int id, const char *content) {
   SpNode *nd = node_put(nt, id);
   if (!nd) return;
   free(nd->content);
-  nd->content = put_dup(content, strlen(content));
+  nd->content = dup_n(content, strlen(content));
 }
 void nt_put_source_file(NodeTable *nt, const char *path) {
   free(nt->source_file);
-  nt->source_file = put_dup(path, strlen(path));
+  nt->source_file = dup_n(path, strlen(path));
 }
 void nt_put_file(NodeTable *nt, int fid, const char *path) {
   if (fid < 0) return;
   if (fid >= nt->nfiles) {
     char **grown = realloc(nt->files, sizeof(char *) * (size_t)(fid + 1));
-    if (!grown) put_oom();
+    if (!grown) nt_oom();
     for (int k = nt->nfiles; k <= fid; k++) grown[k] = NULL;
     nt->files = grown;
     nt->nfiles = fid + 1;
   }
   free(nt->files[fid]);
-  nt->files[fid] = put_dup(path, strlen(path));
+  nt->files[fid] = dup_n(path, strlen(path));
 }
 
 /* ---- the text form (--dump-ast) ---- */
@@ -205,23 +211,22 @@ static void nt_clone_collect(NodeTable *nt, int id, char *seen, int *list, int *
 /* Deep-clone the subtree rooted at `root`, appending fresh nodes to the
    table and remapping internal child references. Refs/array elements that
    point outside the subtree are kept verbatim. Returns the new root id, or
-   -1 on failure. Grows nt->count; callers must resize parallel per-node
+   -1 for a root outside the table. Grows nt->count; callers must resize parallel per-node
    arrays (Compiler.ntype / .nscope) to match afterward. */
 int nt_clone_subtree(NodeTable *nt, int root) {
   if (root < 0 || root >= nt->count) return -1;
   char *seen = calloc((size_t)nt->count, 1);
-  int *list = malloc(sizeof(int) * (size_t)nt->count);
-  if (!seen || !list) { free(seen); free(list); return -1; }
+  if (!seen) nt_oom();
+  int *list = nt_alloc(sizeof(int) * (size_t)nt->count);
   int sn = 0;
   nt_clone_collect(nt, root, seen, list, &sn);
   free(seen);
   int base = nt->count;
-  int *map = malloc(sizeof(int) * (size_t)base);
-  if (!map) { free(list); return -1; }
+  int *map = nt_alloc(sizeof(int) * (size_t)base);
   for (int i = 0; i < base; i++) map[i] = -1;
   for (int i = 0; i < sn; i++) map[list[i]] = base + i;
   SpNode *grown = realloc(nt->nodes, sizeof(SpNode) * (size_t)(base + sn));
-  if (!grown) { free(list); free(map); return -1; }
+  if (!grown) nt_oom();
   nt->nodes = grown;
   memset(&nt->nodes[base], 0, sizeof(SpNode) * (size_t)sn);
   for (int i = 0; i < sn; i++) {
@@ -230,19 +235,17 @@ int nt_clone_subtree(NodeTable *nt, int root) {
     if (src->type)    dst->type    = dup_n(src->type, strlen(src->type));
     if (src->content) dst->content = dup_n(src->content, strlen(src->content));
     dst->ns = dst->cs = src->ns;
-    if (src->ns) { dst->s = malloc(sizeof(SpStrField) * (size_t)src->ns);
+    if (src->ns) { dst->s = nt_alloc(sizeof(SpStrField) * (size_t)src->ns);
       for (int j = 0; j < src->ns; j++) {
         dst->s[j].key = dup_n(src->s[j].key, strlen(src->s[j].key)); dst->s[j].disc = src->s[j].disc;
         dst->s[j].val_len = src->s[j].val_len;
-        dst->s[j].val = malloc(src->s[j].val_len + 1);
-        memcpy(dst->s[j].val, src->s[j].val, src->s[j].val_len);
-        dst->s[j].val[src->s[j].val_len] = 0;
+        dst->s[j].val = dup_n(src->s[j].val, src->s[j].val_len);
       } }
     dst->ni = dst->ci = src->ni;
-    if (src->ni) { dst->i = malloc(sizeof(SpIntField) * (size_t)src->ni);
+    if (src->ni) { dst->i = nt_alloc(sizeof(SpIntField) * (size_t)src->ni);
       for (int j = 0; j < src->ni; j++) { dst->i[j].key = dup_n(src->i[j].key, strlen(src->i[j].key)); dst->i[j].disc = src->i[j].disc; dst->i[j].val = src->i[j].val; } }
     dst->nr = dst->cr = src->nr;
-    if (src->nr) { dst->r = malloc(sizeof(SpRefField) * (size_t)src->nr);
+    if (src->nr) { dst->r = nt_alloc(sizeof(SpRefField) * (size_t)src->nr);
       for (int j = 0; j < src->nr; j++) {
         dst->r[j].key = dup_n(src->r[j].key, strlen(src->r[j].key));
         dst->r[j].disc = src->r[j].disc;
@@ -250,12 +253,12 @@ int nt_clone_subtree(NodeTable *nt, int root) {
         dst->r[j].ref = (rf >= 0 && rf < base && map[rf] >= 0) ? map[rf] : rf;
       } }
     dst->na = dst->ca = src->na;
-    if (src->na) { dst->a = malloc(sizeof(SpArrField) * (size_t)src->na);
+    if (src->na) { dst->a = nt_alloc(sizeof(SpArrField) * (size_t)src->na);
       for (int j = 0; j < src->na; j++) {
         dst->a[j].key = dup_n(src->a[j].key, strlen(src->a[j].key));
         dst->a[j].disc = src->a[j].disc;
         dst->a[j].n = src->a[j].n;
-        dst->a[j].ids = malloc(sizeof(int) * (size_t)src->a[j].n);
+        dst->a[j].ids = nt_alloc(sizeof(int) * (size_t)src->a[j].n);
         for (int k = 0; k < src->a[j].n; k++) {
           int e = src->a[j].ids[k];
           dst->a[j].ids[k] = (e >= 0 && e < base && map[e] >= 0) ? map[e] : e;
@@ -291,7 +294,7 @@ int nt_new_node(NodeTable *nt, const char *type) {
     int nc = nt->node_cap ? nt->node_cap * 2 : 8;
     if (nc <= nt->count) nc = nt->count + 1;
     SpNode *grown = realloc(nt->nodes, sizeof(SpNode) * (size_t)nc);
-    if (!grown) return -1;
+    if (!grown) nt_oom();
     nt->nodes = grown;
     nt->node_cap = nc;
   }
@@ -364,9 +367,8 @@ void nt_node_set_arr(NodeTable *nt, int id, const char *key, const int *ids, int
   if (!nd) return;
   int *copy = NULL;
   if (n > 0) {
-    copy = malloc(sizeof(int) * (size_t)n);
-    if (copy) memcpy(copy, ids, sizeof(int) * (size_t)n);
-    else n = 0;  /* OOM: store an empty array rather than a NULL/count mismatch */
+    copy = nt_alloc(sizeof(int) * (size_t)n);
+    memcpy(copy, ids, sizeof(int) * (size_t)n);
   }
   for (int j = 0; j < nd->na; j++)
     if (sp_streq(nd->a[j].key, key)) { free(nd->a[j].ids); nd->a[j].ids = copy; nd->a[j].n = n; return; }
@@ -490,22 +492,19 @@ static void nki_build(const NodeTable *nt) {
   if (nki_live > 0) nki_retire(nki_ids); else free(nki_ids);
   free(nki_off);
   nki_off = (int *)calloc((size_t)NK__COUNT + 1, sizeof(int));
-  nki_ids = (int *)malloc((size_t)(n > 0 ? n : 1) * sizeof(int));
+  if (!nki_off) nt_oom();
+  nki_ids = nt_alloc((size_t)n * sizeof(int));
   nki_nt = nt; nki_ntc = n;
-  if (!nki_off || !nki_ids) { nki_nt = NULL; nki_ntc = -1; return; }
   for (int id = 0; id < n; id++) nki_off[(int)nt_kind(nt, id) + 1]++;
   for (int k = 1; k <= NK__COUNT; k++) nki_off[k] += nki_off[k - 1];
   /* nki_off[k] is now the start of kind k; fill, advancing a local cursor */
-  int *cur = (int *)malloc((size_t)NK__COUNT * sizeof(int));
-  if (!cur) { free(nki_ids); free(nki_off); nki_ids = NULL; nki_off = NULL; nki_nt = NULL; nki_ntc = -1; return; }
+  int *cur = nt_alloc((size_t)NK__COUNT * sizeof(int));
   for (int k = 0; k < NK__COUNT; k++) cur[k] = nki_off[k];
   for (int id = 0; id < n; id++) { int k = (int)nt_kind(nt, id); nki_ids[cur[k]++] = id; }
   free(cur);
 }
 /* Return the ids of nodes of kind `k` (ascending), writing the count to *count.
-   The returned pointer is valid until the next call with a changed node table.
-   Falls back to count 0 on allocation failure (callers then see no nodes -- they
-   must only use this for kinds they would otherwise have filtered for anyway). */
+   The returned pointer is valid until the next call with a changed node table. */
 /* Exchange the contents of nodes a and b: what was node a is now numbered b,
    and the reverse. A desugar that must put a new node AHEAD of an existing
    one in node order (passes that fold by ascending id read it first) builds
@@ -536,8 +535,7 @@ int nt_set_str(NodeTable *nt, int id, const char *key, const char *val) {
   for (int j = 0; j < nd->ns; j++) {
     if (sp_streq(nd->s[j].key, key)) {
       free(nd->s[j].val);
-      nd->s[j].val = malloc(vlen + 1);
-      memcpy(nd->s[j].val, val, vlen + 1);
+      nd->s[j].val = dup_n(val, vlen);
       nd->s[j].val_len = vlen;
       return 1;
     }
@@ -595,11 +593,9 @@ int nt_import_subtree(NodeTable *dst, const NodeTable *src, int root) {
   const SpNode *sn = &src->nodes[root];
   int id = nt_new_node(dst, sn->type ? sn->type : "");
   if (id < 0) return -1;
-  if (sn->content) { SpNode *dn = &dst->nodes[id]; dn->content = strdup(sn->content); }
+  if (sn->content) { SpNode *dn = &dst->nodes[id]; dn->content = dup_n(sn->content, strlen(sn->content)); }
   for (int j = 0; j < sn->ns; j++) {
-    char *v = (char *)malloc(sn->s[j].val_len + 1);
-    if (!v) return -1;
-    memcpy(v, sn->s[j].val, sn->s[j].val_len); v[sn->s[j].val_len] = 0;
+    char *v = dup_n(sn->s[j].val, sn->s[j].val_len);
     node_add_str(&dst->nodes[id], sn->s[j].key, strlen(sn->s[j].key), v, sn->s[j].val_len);
   }
   for (int j = 0; j < sn->ni; j++) nt_node_set_int(dst, id, sn->i[j].key, sn->i[j].val);
@@ -609,8 +605,7 @@ int nt_import_subtree(NodeTable *dst, const NodeTable *src, int root) {
   }
   for (int j = 0; j < sn->na; j++) {
     int n = sn->a[j].n;
-    int *ids = (int *)malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
-    if (!ids) return -1;
+    int *ids = nt_alloc(sizeof(int) * (size_t)n);
     for (int q = 0; q < n; q++) ids[q] = sn->a[j].ids[q] >= 0 ? nt_import_subtree(dst, src, sn->a[j].ids[q]) : -1;
     nt_node_set_arr(dst, id, sn->a[j].key, ids, n);
     free(ids);
