@@ -3959,19 +3959,24 @@ static int str_bang_chain_var(Compiler *c, int recv) {
 }
 /* A value-form mutator's write-back of its result _t<tn>: to the receiver
    when it is a variable (lvw), else to the variable a bang chain receiver
-   starts from, whose links the mutation reaches in CRuby (one object) */
-static void emit_str_mut_writeback(Compiler *c, int recv, int lvw, int tn, Buf *b) {
-  if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn); return; }
+   starts from, whose links the mutation reaches in CRuby (one object).
+   1 when it writes into that variable's shared handle, whose buffer the
+   receiver's bytes may be (the chain's `sp_String_cstr`): they change. */
+static int emit_str_mut_writeback(Compiler *c, int recv, int lvw, int tn, Buf *b) {
+  if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn); return 0; }
   int base = str_bang_chain_var(c, recv);
-  if (base < 0) return;
+  if (base < 0) return 0;
   char sref[1024];
-  if (strbuf_slot_ref(c, base, sref, sizeof sref))
+  if (strbuf_slot_ref(c, base, sref, sizeof sref)) {
     buf_printf(b, "sp_String_set_bin(%s, _t%d); ", sref, tn);
+    return 1;
+  }
   else if (comp_ntype(c, base) == TY_STRING) { emit_expr(c, base, b); buf_printf(b, " = _t%d; ", tn); }
   else if (comp_ntype(c, base) == TY_POLY) {
     emit_expr(c, base, b); buf_puts(b, " = sp_poly_str_become(");
     emit_expr(c, base, b); buf_printf(b, ", _t%d); ", tn);
   }
+  return 0;
 }
 
 /* sub! / gsub! ask the runtime's flag whether the call made a substitution.
@@ -4213,6 +4218,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
         free(hb.p);
         hbind = view_bind(recv, "_t%d", th);
       }
+      size_t recv_at = b->len;
       buf_printf(b, "({ const char *_t%d = ", to); emit_expr(c, recv, b); buf_puts(b, "; (void)_t"); buf_printf(b, "%d; ", to);
       /* a chained bang that changed nothing answers nil, on which this one
          is NoMethodError for its own name, not the FrozenError the
@@ -4240,8 +4246,24 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       nt_node_set_str((NodeTable *)nt, id, "name", sb_bang);
       buf_printf(b, "const char *_t%d = %s; ", tn2, nb.p ? nb.p : "");
       free(nb.p);
-      emit_str_mut_writeback(c, recv, lvw, tn2, b);
-      if (sb_nil_nc)
+      /* --share-strings: a write into a shared handle changes the
+         receiver's bytes where they are that handle's buffer (`($t <<
+         x).upcase!`), so "did it change?" is decided ahead of it, as the
+         handle arm above does */
+      Buf wb; memset(&wb, 0, sizeof wb);
+      int ttc = 0, inpl = emit_str_mut_writeback(c, recv, lvw, tn2, &wb) && repr_share_rule(c);
+      if (inpl && sb_nil_nc) {
+        ttc = ++g_tmp;
+        buf_printf(b, "int _t%d = (sp_str_eq(_t%d, _t%d)%s); ", ttc, to, tn2, sm);
+      }
+      buf_puts(b, wb.p ? wb.p : "");
+      free(wb.p);
+      /* (the chain's bytes are the handle's buffer, read before the
+         write-back hands the answer to that handle: no copy) */
+      if (inpl && g_share_check) share_check_declare_reads(b, recv_at, unwrap_parens(c, recv));
+      if (ttc)
+        buf_printf(b, "_t%d ? NULL : _t%d; })", ttc, tn2);
+      else if (sb_nil_nc)
         buf_printf(b, "(sp_str_eq(_t%d, _t%d)%s) ? NULL : _t%d; })", to, tn2, sm, tn2);
       else
         buf_printf(b, "_t%d; })", tn2);
@@ -13550,9 +13572,14 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
       /* The value is the receiver as the write left it: the shared handle, or
          the plain string box the variable now holds -- not a fresh box of the
          new contents, which no alias observes (s.concat("!").equal?(s)). */
+      /* The typed emitter answered on the String face, so its value is the
+         new contents the write-back hands on, a String, also where the call
+         itself is marked to answer the handle (strbuf_box: `c.s.concat(x)`
+         over a reader of a String the rule shares); the value is the box. */
+      const char *sty = c_type_name(TY_STRING);
       int tq = ++g_tmp;
-      if (face_str_var_recv(nt, recv)) buf_printf(val, "({ %s _t%d = %s; sp_RbVal _t%d = (%s); _t%d; })", c_type_name(nat), tr, call, tq, wb.p, tq);
-      else buf_printf(val, "({ %s _t%d = %s; %s; _t%d; })", c_type_name(nat), tr, call, wb.p, box);
+      if (face_str_var_recv(nt, recv)) buf_printf(val, "({ %s _t%d = %s; sp_RbVal _t%d = (%s); _t%d; })", sty, tr, call, tq, wb.p, tq);
+      else buf_printf(val, "({ %s _t%d = %s; %s; _t%d; })", sty, tr, call, wb.p, box);
       nat = TY_POLY;
     }
     else if (flags & PF_VAL_SELF) {

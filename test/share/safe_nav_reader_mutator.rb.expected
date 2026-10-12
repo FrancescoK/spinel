@@ -1,0 +1,21 @@
+"ab>"
+true
+"[ab>"
+"[ab>"
+"[ab><"
+true
+"[Iab><"
+true
+"24[Iab><13"
+nil
+nil
+nil
+nil
+nil
+"24[Iab><135"
+true
+"624[Iab><135"
+true
+"8624[Iab><1357"
+true
+["8624[Iab><1357!", "8624[Iab><1357!"]
