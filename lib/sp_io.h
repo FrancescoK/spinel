@@ -205,6 +205,8 @@ static inline sp_bool sp_File_reads_binary(sp_File *f) {
   return f->ext_enc ? f->ext_enc == 2 : sp_File_binmode_p(f);
 }
 sp_File *sp_File_reopen_io(sp_File *f, sp_File *other);
+sp_File *sp_File_dup(sp_File *f, int keep_frozen);
+const char *sp_io_fd_mode(int fd);
 sp_bool sp_File_close_on_exec_p(sp_File *f);
 void sp_File_set_close_on_exec(sp_File *f, sp_bool on);
 sp_int sp_File_fcntl(sp_File *f, sp_int cmd, sp_int arg);

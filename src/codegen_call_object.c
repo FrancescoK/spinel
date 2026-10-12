@@ -1563,6 +1563,16 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         }
       }
     }
+    /* IO#dup/#clone: a new handle on its own dup(2) of the descriptor, not
+       the identity shortcut below, which handed back the same handle -- a
+       `$stdout.dup` kept to put stdout back after a #reopen followed it, and
+       closing it closed stdout */
+    if (argc0 == 0 && is_dup_clone && recv_t == TY_IO) {
+      buf_printf(b, "sp_File_dup(");
+      emit_expr(c, recv, b);
+      buf_printf(b, ", %d)", sp_streq(name, "clone") ? 1 : 0);
+      return 1;
+    }
     /* Proc#dup/#clone: a distinct shallow copy, not the identity shortcut
        below (d.equal?(pr) must be false) (#3048) */
     if (argc0 == 0 && is_dup_clone && recv_t == TY_PROC) {

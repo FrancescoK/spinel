@@ -4919,13 +4919,7 @@ sp_File *sp_io_for_fd(sp_int fd, const char *mode, sp_bool autoclose) {SP_GC_ROO
      pointer as f->mode and the collector reads its marker byte for as long
      as the handle lives, so a stack buffer here was a dangling pointer once
      this frame returned (seen as heap corruption under SPINEL_GC_MINOR=0). */
-  if (!mode || !*mode) {
-    int fl = fcntl((int)fd, F_GETFL);
-    int acc = fl >= 0 ? (fl & O_ACCMODE) : O_RDONLY;
-    if (acc == O_WRONLY) mode = (fl & O_APPEND) ? SPL("a") : SPL("w");
-    else if (acc == O_RDWR) mode = SPL("r+");
-    else mode = SPL("r");
-  }
+  if (!mode || !*mode) mode = sp_io_fd_mode((int)fd);
   /* autoclose:false wraps a dup(2) of the fd: close/fin then flush and
      close only the dup, and the caller's descriptor stays open -- the
      no_autoclose flag alone was set and never read, so io.close closed the
