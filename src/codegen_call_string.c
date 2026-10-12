@@ -581,10 +581,23 @@ no_gsub_enum:
           rp_ok = 1;
         }
         if (rp_ok && rp.p) {
-          if ((sp_streq(name, "match?") || sp_streq(name, "===")) && argc == 1) {
-            /* === answers false for an operand match? raises on */
+          if (sp_streq(name, "match?") && argc == 1) {
             buf_printf(b, "sp_re_match_p(%s, ", rp.p);
-            emit_re_subject(c, argv[0], a0, sp_streq(name, "match?"), b); buf_puts(b, ")");  /* nil subject: no match */
+            emit_re_subject(c, argv[0], a0, 1, b); buf_puts(b, ")");  /* nil subject: no match */
+            free(rp.p); return 1;
+          }
+          if (sp_streq(name, "===") && argc == 1) {
+            /* === sets $~ as =~ does (the literal arm's sp_re_case_eq), and
+               answers false for an operand match? raises on */
+            if (re_operand_at_runtime(c, a0)) {
+              buf_printf(b, "sp_re_case_eq(%s, ", rp.p); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+            }
+            else {
+              int t = ++g_tmp;
+              buf_printf(b, "({ const char *_t%d = ", t); emit_str_expr_nilable(c, argv[0], b);
+              buf_printf(b, "; SP_GC_ROOT(_t%d); _t%d ? sp_re_match(%s, _t%d) >= 0"
+                            " : sp_re_case_eq(%s, sp_box_nil()); })", t, t, rp.p, t, rp.p);
+            }
             free(rp.p); return 1;
           }
           if (sp_streq(name, "=~") && argc == 1) {

@@ -35,3 +35,22 @@ TypeError: no implicit conversion of true into String
 nil
 true
 false
+true
+"bl"
+"l"
+true
+"la"
+"a"
+true
+"la"
+"a"
+false
+nil
+true
+"la"
+false
+nil
+[true, "la"]
+[true, "bl"]
+[true, "la"]
+[true, "la"]
