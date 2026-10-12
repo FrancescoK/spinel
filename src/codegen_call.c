@@ -2408,6 +2408,9 @@ static TyKind proc_arg_ty(Compiler *c, int a) {
   if (repr_share_rule(c) && r.strbuf_src == RS_HANDLE) return TY_STRBUF;
   /* A value route publishes the same handle its boxed emission carries. */
   if (r.as_ty == TY_STRING && strbuf_value_carries(c, a)) return TY_STRBUF;
+  /* and so does a bang on a handle or a box, which answers that handle or
+     nil (strbuf_arg_bang), as it hands it to a method's parameter */
+  if (r.as_ty == TY_STRING && strbuf_arg_bang(c, unwrap_parens(c, a))) return TY_STRBUF;
   /* a fresh String lifted into the handle for a boxed parameter it reaches */
   if (repr_share_rule(c) && r.as_ty == TY_STRING && c->poly_strbuf_lift[a]) return TY_STRBUF;
   TyKind t = r.as_ty;
