@@ -4107,3 +4107,14 @@ const char *sp_Thread_inspect(sp_thread *t) {
                       (long long)t->birth_line, st);
   return sp_sprintf("#<Thread:0x%016llx %s>", (unsigned long long)(uintptr_t)t, st);
 }
+
+/* Whether the first Thread has brought up the worker pool, its monitor and the
+   collector's sweepers: OS threads a fork does not carry into the child
+   (Process.daemon, lib/sp_process.c). Before that the program is one thread. */
+int sp_sched_threads_started(void) {
+#ifdef SP_THREADS
+  return g_workers_started;
+#else
+  return 0;
+#endif
+}

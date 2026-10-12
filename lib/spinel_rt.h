@@ -16463,6 +16463,16 @@ sp_Time sp_file_ctime(const char *path);
 sp_Time sp_file_birthtime(const char *path);
 sp_int sp_process_getpriority(sp_int which, sp_int who);
 sp_IntArray *sp_process_groups(void);
+/* Process.daemon (lib/sp_process.c). Its flags are true, false or nil, as
+   CRuby's TO_BOOL takes them; anything else is the ArgumentError it raises. */
+sp_int sp_process_daemon(int nochdir, int noclose);
+void sp_process_daemon_available(void);   /* NotImplementedError where there is no fork */
+static inline int sp_process_daemon_flag(sp_RbVal v, const char *name) {
+  if (v.tag == SP_TAG_NIL) return 0;
+  if (v.tag == SP_TAG_BOOL) return v.v.i != 0;
+  sp_raise_cls("ArgumentError", sp_sprintf("expected true or false as %s: %s", name, sp_poly_inspect(v)));
+  return 0;
+}
 /* ---- the File stat/predicate and IO-op surface (#2774-#2778, #2782) ---- */
 const char *sp_file_ftype(const char *path);
 sp_bool sp_file_readable(const char *path);

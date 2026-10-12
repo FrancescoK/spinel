@@ -3605,6 +3605,7 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
           sp_streq(name, "uid") || sp_streq(name, "gid") ||
           sp_streq(name, "euid") || sp_streq(name, "egid") ||
           sp_streq(name, "getsid") || sp_streq(name, "getpgrp") ||
+          sp_streq(name, "daemon") ||
           (sp_streq(name, "getpriority") && argc == 2)) { *out = TY_INT; return 1; }
       if (sp_streq(name, "groups") && argc == 0) { *out = TY_INT_ARRAY; return 1; }
       if (sp_streq(name, "clock_gettime") || sp_streq(name, "clock_getres")) {

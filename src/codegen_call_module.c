@@ -953,6 +953,30 @@ int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     if (sp_streq(name, "groups") && argc == 0) {  /* (#3046) */
       buf_puts(b, "sp_process_groups()"); return 1;
     }
+    /* Process.daemon(nochdir = nil, noclose = nil): every argument is
+       evaluated first; then, as CRuby goes, a platform with no fork raises
+       NotImplementedError, the count is checked, and the flags are checked
+       noclose first */
+    if (sp_streq(name, "daemon")) {
+      for (int k = 0; k < argc; k++)
+        if (nt_kind(nt, argv[k]) == NK_SplatNode || nt_kind(nt, argv[k]) == NK_KeywordHashNode ||
+            nt_kind(nt, argv[k]) == NK_BlockArgumentNode)
+          unsupported(c, id, "Process.daemon with a splat, keyword or block argument");
+      int t = ++g_tmp;
+      buf_puts(b, "({ ");
+      for (int k = 0; k < 2 || k < argc; k++) {
+        buf_printf(b, "sp_RbVal _t%d_%d = ", t, k);
+        if (k < argc) emit_boxed(c, argv[k], b); else buf_puts(b, "sp_box_nil()");
+        buf_puts(b, "; ");
+      }
+      buf_puts(b, "sp_process_daemon_available(); ");
+      if (argc > 2)
+        buf_printf(b, "sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given %d, expected 0..2)\"); (sp_int)0; })", argc);
+      else
+        buf_printf(b, "int _t%d_cl = sp_process_daemon_flag(_t%d_1, \"noclose\"); "
+                      "sp_process_daemon(sp_process_daemon_flag(_t%d_0, \"nochdir\"), _t%d_cl); })", t, t, t, t);
+      return 1;
+    }
   }
 
   /* Integer.sqrt(n) -> integer square root (exact, Newton's method) */

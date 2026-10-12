@@ -659,3 +659,57 @@ sp_PolyArray *sp_process_waitpid2(sp_int pid) {
   sp_PolyArray_push(pa, sp_box_process_status(sp_process_status_new((sp_int)r, (sp_int)status)));
   return pa;
 }
+
+/* Process.daemon(nochdir, noclose): the process carries on as a child of
+   itself in a session of its own, detached from the terminal, as CRuby's
+   daemon(3) does. The parent leaves at once with status 0 and runs none of
+   the program's exit handlers. Unless nochdir, the child moves to "/";
+   unless noclose, its stdin, stdout and stderr read and write /dev/null.
+   Answers 0. The flags arrive already checked (sp_process_daemon_flag). */
+/* Where there is no fork, CRuby's Process.daemon raises NotImplementedError
+   before it looks at its arguments; the call checks this first. */
+void sp_process_daemon_available(void) {
+#if defined(__wasi__) || defined(_WIN32)
+  sp_raise_cls("NotImplementedError", "daemon() function is unimplemented on this machine");
+#endif
+}
+sp_int sp_process_daemon(int nochdir, int noclose) {
+#if defined(__wasi__) || defined(_WIN32)
+  (void)nochdir; (void)noclose;
+  sp_process_daemon_available();
+  return 0;
+#else
+  /* see the note at the top on this TU's includes */
+  extern int sp_sched_threads_started(void);
+  extern const char *sp_errno_class_name(int e);
+  /* the worker pool, its monitor and the collector's sweepers are threads a
+     fork leaves behind, and the child's scheduler would wait on them (the
+     SPINEL_ALLOC_REPORT reader is one too, but only a debugging report
+     waits on it, and the child just goes without) */
+  if (sp_sched_threads_started())
+    sp_raise_cls("NotImplementedError",
+                 "Process.daemon after a Thread has started: spinel's threads do not survive a fork");
+  /* what the program has buffered is written once, by the parent, before
+     the child's streams move to /dev/null */
+  fflush(NULL);
+  pid_t pid = fork();
+  if (pid > 0) _exit(0);
+  int fd = -1;
+  if (pid == 0 && setsid() >= 0) {
+    if (!nochdir) (void)!chdir("/");
+    if (noclose) return 0;
+    fd = open("/dev/null", O_RDWR);
+    if (fd >= 0) {
+      (void)dup2(fd, 0);
+      (void)dup2(fd, 1);
+      (void)dup2(fd, 2);
+      if (fd > 2) close(fd);
+      return 0;
+    }
+  }
+  /* CRuby's rb_sys_fail("daemon"): `Resource temporarily unavailable - daemon` */
+  int e = errno;
+  sp_raise_cls(sp_errno_class_name(e), sp_errf_path(e, "daemon"));
+  return 0;
+#endif
+}
