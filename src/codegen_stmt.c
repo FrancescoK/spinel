@@ -8991,10 +8991,13 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
           if (cnty && sp_streq(cnty, "RationalNode")) {
             const char *rnum = nt_str(nt, conds[j], "rat_num");
             const char *rden = nt_str(nt, conds[j], "rat_den");
-            long long den = rden ? atoll(rden) : 1;
-            long long num = rnum ? atoll(rnum) : 0;
-            /* a big numerator is past every sp_int (and atoll saturates it) */
-            if (den == 1 && !nt_int(nt, conds[j], "rat_big", 0)) buf_printf(b, "(_t%d == %lldLL)", t, num);
+            /* a part past sp_int is no sp_int's value, and atoll would
+               saturate it. (Such a literal is boxed, so the boxed test above
+               takes it first, comparing the values.) */
+            int big = (int)nt_int(nt, conds[j], "rat_big", 0);
+            long long den = big ? 0 : rden ? atoll(rden) : 1;
+            long long num = big ? 0 : rnum ? atoll(rnum) : 0;
+            if (den == 1) buf_printf(b, "(_t%d == %lldLL)", t, num);
             else buf_puts(b, "0");
           }
           /* ImaginaryNode: `when 0i` -- Complex(0,imag); integer matches only if imag==0 */
