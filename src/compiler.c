@@ -503,10 +503,11 @@ void slot_rule(Compiler *c, LocalVar *lv, TyKind t, int node, const char *reason
 }
 
 int slot_set(Compiler *c, LocalVar *lv, TyKind merged, TyKind t, int node) {
-  (void)c;
+  int held = 0;
+  if (!lv->range_held && (t == TY_RANGE || local_range_held(c, node))) { lv->range_held = 1; held = 1; }
   if (merged == lv->type) {
     if (!ty_degraded(merged) && merged != TY_UNKNOWN && node >= 0) lv->last_src = node;
-    return 0;
+    return held;
   }
   if (ty_degraded(merged) && !ty_degraded(lv->type)) {
     lv->why.node = node;
@@ -528,6 +529,15 @@ int slot_set(Compiler *c, LocalVar *lv, TyKind merged, TyKind t, int node) {
 
 int slot_take(Compiler *c, LocalVar *lv, TyKind t, int node) {
   return slot_set(c, lv, ty_unify(lv->type, t), t, node);
+}
+
+/* Is node a read of a local or parameter that a Range was written into? */
+int local_range_held(Compiler *c, int node) {
+  if (node < 0 || nt_kind(c->nt, node) != NK_LocalVariableReadNode) return 0;
+  Scope *s = comp_scope_of(c, node);
+  const char *nm = nt_str(c->nt, node, "name");
+  LocalVar *lv = s && nm ? scope_local(s, nm) : NULL;
+  return lv && lv->range_held;
 }
 
 /* Runtime typedefs `sp_<X>` a user class name could redefine. A user class whose

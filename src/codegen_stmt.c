@@ -20993,6 +20993,12 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
         unsupported(c, id, "splatted index in []= (later slice)");
         return 1;
       }
+      if (aset_range_held(c, rt, argv)) {
+        emit_indent(b, indent);
+        emit_aset_range_held(c, id, recv, rt, argv, b);
+        buf_puts(b, ";\n");
+        return 1;
+      }
       /* arr[range] = rhs : a splice over the range's (start, length). */
       if (comp_ntype(c, argv[0]) == TY_RANGE) {
         emit_indent(b, indent);
@@ -21108,6 +21114,12 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
        on the other []= arm. */
     if (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "SplatNode")) {
       unsupported(c, id, "splatted index in []= (later slice)");
+      return 1;
+    }
+    if (aset_range_held(c, rt, argv)) {
+      emit_indent(b, indent);
+      emit_aset_range_held(c, id, recv, rt, argv, b);
+      buf_puts(b, ";\n");
       return 1;
     }
     /* arr[range] = rhs : a splice over the range's (start, length). */

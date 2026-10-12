@@ -2168,6 +2168,36 @@ int emit_array_random_kw(Compiler *c, int id, Buf *b, const NodeTable *nt, const
   return 1;
 }
 
+/* `arr[i] = v` whose boxed index comes from a slot a Range was written into
+   (local_range_held), and whose value both the splice and the element store
+   take: a Range splices, anything else stores. Read as an Integer, a Range
+   stored at index 0. */
+int aset_range_held(Compiler *c, TyKind rt, const int *argv) {
+  if (comp_ntype(c, argv[0]) != TY_POLY || !local_range_held(c, argv[0])) return 0;
+  if (rt == TY_POLY_ARRAY) return 1;
+  const char *k = array_kind(rt);
+  TyKind et = ty_array_elem(rt);
+  return k && (et == TY_INT || et == TY_FLOAT || et == TY_STRING) && comp_ntype(c, argv[1]) == et &&
+         repr_of(c, argv[1]).kind != RK_BOXED && !nil_store_sfx(c, k, argv[1])[0];
+}
+void emit_aset_range_held(Compiler *c, int id, int recv, TyKind rt, const int *argv, Buf *b) {
+  int ti = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", ti); emit_expr(c, argv[0], b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? ", ti, ti, ti);
+  int bind = view_bind(argv[0], "(*(sp_Range *)_t%d.v.p)", ti);
+  int v = view_push(c, argv[0], TY_RANGE);
+  emit_array_splice(c, id, recv, rt, -1, -1, argv[0], argv[1], b);
+  view_pop(c, v);
+  view_unbind(bind);
+  buf_puts(b, " : ");
+  bind = view_bind(argv[0], "sp_poly_arg_int_chk(_t%d)", ti);
+  v = view_push(c, argv[0], TY_INT);
+  emit_call_array_arms(c, id, b, c->nt, "[]=", recv, 2, argv, rt);
+  view_pop(c, v);
+  view_unbind(bind);
+  buf_puts(b, "; })");
+}
+
 /* an Array receiver: a store in expression position (a[i] = v, a[i, n] = src, a[range] = src),
    sum and the other methods of an empty literal, then the Array emitters (emit_array_call) */
 int emit_call_array_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
@@ -2179,6 +2209,10 @@ int emit_call_array_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
   /* arr[start, len] = rhs : a splice (remove `len` at `start`, insert rhs). */
   if (recv >= 0 && ty_is_array(rt) && sp_streq(name, "[]=") && argc == 3) {
     emit_array_splice(c, id, recv, rt, argv[0], argv[1], -1, argv[2], b);
+    return 1;
+  }
+  if (recv >= 0 && ty_is_array(rt) && sp_streq(name, "[]=") && argc == 2 && aset_range_held(c, rt, argv)) {
+    emit_aset_range_held(c, id, recv, rt, argv, b);
     return 1;
   }
   if (recv >= 0 && ty_is_array(rt) && sp_streq(name, "[]=") && argc == 2) {
