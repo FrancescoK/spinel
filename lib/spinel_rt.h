@@ -2280,12 +2280,13 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
      also be called with: a boxed Regexp answered false for every name, so
      minitest's assert_match, which asks `matcher.respond_to?(:=~)`, failed
      for a Regexp held in a boxed slot. Left out until boxed dispatch has
-     them (the call raises NoMethodError): Regexp's encoding,
-     fixed_encoding? and timeout; MatchData's bytebegin, byteend,
+     them (the call raises NoMethodError, or for Regexp#~ converts the
+     receiver to an Integer instead of matching $_): Regexp's encoding,
+     fixed_encoding?, timeout and ~; MatchData's bytebegin, byteend,
      deconstruct, deconstruct_keys and match (tools/respond_to_audit.rb
      lists the same names). */
   static const char *const regm[] = {
-    "=~", "~", "match", "match?", "source", "options", "casefold?", "names",
+    "=~", "match", "match?", "source", "options", "casefold?", "names",
     "named_captures", NULL };
   static const char *const mdm[] = {
     "[]", "begin", "end", "byteoffset", "captures", "length", "size",

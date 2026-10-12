@@ -70,11 +70,12 @@ SCOPE = %w[Array Hash String Integer Float Range Symbol Proc Exception Regexp Ma
 INTERNAL_NAME = /\A__(?!.*__\z)/.freeze  # __bivar_get, not __id__/__send__
 
 # Names bop_rows has for a typed Regexp / MatchData that a boxed one cannot
-# be called with yet (the call raises NoMethodError), so its table leaves
+# be called with yet (the call raises NoMethodError, or for ~ does integer
+# conversion instead of matching $_), so its table leaves
 # them out on purpose: answering true would send a respond_to?-guarded call
 # into that raise.
 BOXED_UNCALLABLE = {
-  "Regexp" => %w[encoding fixed_encoding? timeout],
+  "Regexp" => %w[encoding fixed_encoding? timeout ~],
   "MatchData" => %w[bytebegin byteend deconstruct deconstruct_keys match],
 }.freeze
 
