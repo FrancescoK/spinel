@@ -32,12 +32,31 @@
   #define SP_FIBER_ASM 0
 #endif
 
+/* AddressSanitizer keeps its own record of the stack the thread runs on.
+   The asm switch moves the stack pointer without telling it, so the first
+   exception after a switch (a longjmp) found the stack out of its bounds,
+   left the frames it skipped poisoned, and later calls on those addresses
+   were reported as stack overflows and uses after scope. Under
+   -fsanitize=address (both the runtime and the program are built with it,
+   as with ThreadSanitizer's SP_TSAN) a context also carries the bounds of
+   its stack, and sp_ctx_swap announces each switch (sp_fiber.c). */
+#ifndef __has_feature
+#define __has_feature(x) 0
+#endif
+#if defined(__SANITIZE_ADDRESS__) || __has_feature(address_sanitizer)
+#define SP_ASAN 1
+#endif
+
 #if SP_FIBER_ASM
 
 /* The whole machine context is the saved stack pointer; the callee-saved
    registers are pushed onto / popped from the coroutine's own stack by
    sp_ctx_swap (see the file-scope asm in sp_fiber.c). */
+#ifdef SP_ASAN
+typedef struct sp_fiber_ctx { void *sp; const void *asan_lo; size_t asan_size; } sp_fiber_ctx;
+#else
 typedef struct sp_fiber_ctx { void *sp; } sp_fiber_ctx;
+#endif
 
 static inline void sp_ctx_make(sp_fiber_ctx *ctx, void *base, size_t size,
                                void (*entry)(void)) {
@@ -58,6 +77,9 @@ static inline void sp_ctx_make(sp_fiber_ctx *ctx, void *base, size_t size,
   for (int i = 0; i < 20; i++) s[i] = 0;
   s[11] = (void *)entry;                 /* x30 (lr) */
   ctx->sp = s;
+#endif
+#ifdef SP_ASAN
+  ctx->asan_lo = base; ctx->asan_size = size;
 #endif
 }
 
@@ -80,5 +102,9 @@ static inline void sp_ctx_make(sp_fiber_ctx *ctx, void *base, size_t size,
 /* Defined as file-scope asm in sp_fiber.c (asm backend) or a swapcontext
    wrapper (fallback). */
 void sp_ctx_swap(sp_fiber_ctx *from, sp_fiber_ctx *to);
+#if SP_FIBER_ASM && defined(SP_ASAN)
+/* The first code a fresh context runs (sp_fiber.c) */
+void sp_ctx_entered(void);
+#endif
 
 #endif /* SP_FIBER_CTX_H */
