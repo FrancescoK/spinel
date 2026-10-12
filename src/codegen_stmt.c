@@ -21213,12 +21213,11 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     int fuse = (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && vt != TY_POLY &&
                subtree_is_pure_read(c, v);
     /* A Float element is the operator's receiver: a nil one raises
-       NoMethodError, as `a[i] + x` does, where the bare C operator carried
-       its NaN payload through and stored nil. Only an element known to be no
-       nil skips the test (the fold's nil-free range below); a marked array's
-       nils set no run-time flag, so such an array is never folded. */
+       NoMethodError, as `a[i] + x` does. Only an element known to be no nil
+       skips the test: the fold's range ends at the array's nil-free length
+       (below), which its nil bitmap sets at run time, however the nil got
+       there -- so an array analyze marked as able to hold one folds too. */
     int fnil = rt == TY_FLOAT_ARRAY && is_arith_op(op);
-    if (fnil && nullable_int_elem_array(c, recv)) fuse = 0;
     int eff = !fuse && g_pre && subtree_has_side_effect(c, v);
     buf_printf(b, "{ %s _t%d = ", c_type_name(rt), ta); iow_emit_recv(c, recv, b);
     /* ...and when the key can run code: it can reassign the variable the

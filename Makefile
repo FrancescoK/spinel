@@ -4267,6 +4267,9 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -qE 'sp_FloatArray \* _t[0-9]+ = lv_zsum; .*(->frozen|_hcw[0-9_]+) && \(unsigned long long\)' "$$tmp/iof.c" || { echo "infer-test: FAIL (a Float slot's op-assign with a typed-array RHS is not folded in place)"; ok=0; }; \
 	grep -E 'sp_IntArray \* _t[0-9]+ = lv_g;' "$$tmp/iof.c" | grep -q -- '->frozen &&' && { echo "infer-test: FAIL (an op-assign whose RHS runs code was folded through an element pointer)"; ok=0; }; \
 	grep -qE 'sp_IntArray \* _t([0-9]+) = self->iv_a; SP_GC_ROOT\(_t\1\)' "$$tmp/iof.c" || { echo "infer-test: FAIL (an op-assign's receiver is unrooted while a key that can reassign it runs)"; ok=0; }; \
+	$(SPINEL) test/float_opassign_nil_marked.rb -c --no-line-map -o "$$tmp/fonm.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (float_opassign_nil_marked: -c)"; ok=0; }; \
+	awk '/^[a-z].* sp_zero_then_add\(.*\{$$/,/^}/' "$$tmp/fonm.c" | grep -qE 'SP_LIKELY\(_hcw[0-9_]+ && \(unsigned long long\)_t[0-9]+ < \(unsigned long long\)_hcn[0-9_]+\)' || { echo "infer-test: FAIL (a Float op-assign in a cached loop is not folded below the nil-free length of an array analyze marks as able to hold nil)"; ok=0; }; \
+	awk '/^[a-z].* sp_tail_mul\(.*\{$$/,/^}/' "$$tmp/fonm.c" | grep -qE '!SP_MAY_NIL\(_t[0-9]+\) && ' || { echo "infer-test: FAIL (a Float op-assign outside a cached loop is not folded for an array analyze marks as able to hold nil)"; ok=0; }; \
 	$(SPINEL) test/loop_array_header_cache.rb -c --no-line-map -o "$$tmp/lahc.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (loop_array_header_cache: -c)"; ok=0; }; \
 	grep -qE '^#define _SP_HCR[0-9]+\(\) .*lv_bins.*lv_counts.*lv_vals.*lv_sums' "$$tmp/lahc.c" || { echo "infer-test: FAIL (a loop that only indexes typed arrays still reads their headers at every access)"; ok=0; }; \
 	grep -E '^#define _SP_HCR' "$$tmp/lahc.c" | grep -q 'lv_cur\b' && { echo "infer-test: FAIL (an array local the loop reassigns was read through a cached header)"; ok=0; }; \

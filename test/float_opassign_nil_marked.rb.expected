@@ -1,0 +1,22 @@
+[1.5, 1.5, 1.5, 1.5]
+store loop: undefined method '+' for nil
+[2.0, nil, 6.0]
+gap loop: undefined method '+' for nil
+[2.0, 3.0, nil, 8.0]
+push loop: undefined method '+' for nil
+[2.0, 3.0, nil, 14.0]
+insert loop: undefined method '+' for nil
+[2.0, nil, 2.0, 6.0]
+unshift loop: undefined method '+' for nil
+[nil, 1.0, 4.0]
+concat loop: undefined method '+' for nil
+[2.0, 3.0, nil, 6.0]
+slice loop: undefined method '+' for nil
+[2.0, nil, 6.0, 8.0]
+fill loop: undefined method '+' for nil
+last: undefined method '*' for nil
+[2.0, 3.0, nil]
+map loop: undefined method '+' for nil
+[2.0, nil, 6.0]
+new loop: undefined method '+' for nil
+[nil, 0.0, 0.0]
