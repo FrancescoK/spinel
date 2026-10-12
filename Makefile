@@ -4285,6 +4285,10 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -E '^#define _SP_HCR' "$$tmp/lahc.c" | grep -q 'lv_cur\b' && { echo "infer-test: FAIL (an array local the loop reassigns was read through a cached header)"; ok=0; }; \
 	grep -E '^#define _SP_HCR' "$$tmp/lahc.c" | grep -q 'self->iv_v\b' && { echo "infer-test: FAIL (an ivar the loop writes was read through a cached header)"; ok=0; }; \
 	grep -qE '^#define _SP_HCR[0-9]+\(\) .*lv_qv.*lv_qk.*lv_qs' "$$tmp/lahc.c" || { echo "infer-test: FAIL (a class test on a scalar kept a loop from caching its arrays' headers)"; ok=0; }; \
+	$(SPINEL) test/loop_string_getbyte_unheld.rb -c --no-line-map -o "$$tmp/lsgu.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (loop_string_getbyte_unheld: -c)"; ok=0; }; \
+	awk '/^[a-z].* sp_(total|edges|uncached)\(.*\{$$/,/^}/' "$$tmp/lsgu.c" | grep -c 'getbyte_opt(sp_String_cstr(lv_rows), ' | grep -qx 3 || { echo "infer-test: FAIL (String#getbyte with an arithmetic index does not read its receiver where the call needs it)"; ok=0; }; \
+	awk '/^[a-z].* sp_(total|edges|uncached)\(.*\{$$/,/^}/' "$$tmp/lsgu.c" | grep -q 'SP_GC_ROOT(_t' && { echo "infer-test: FAIL (String#getbyte with an arithmetic index fetches and roots its receiver's bytes ahead of the index)"; ok=0; }; \
+	awk '/^[a-z].* sp_built\(.*\{$$/,/^}/' "$$tmp/lsgu.c" | grep -qE 'const char \*_t[0-9]+ = \(sp_String_cstr\(lv_rows\)\); SP_GC_ROOT\(_t' || { echo "infer-test: FAIL (String#getbyte with an index that allocates does not hold its receiver rooted)"; ok=0; }; \
 	$(SPINEL) test/begin_while_locals_not_volatile.rb -c --no-line-map -o "$$tmp/bwv.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (begin_while_locals_not_volatile: -c)"; ok=0; }; \
 	grep -qE 'volatile .* lv_(sum|v|f|n) ' "$$tmp/bwv.c" && { echo "infer-test: FAIL (a local a handler-less begin ... end while writes was declared volatile)"; ok=0; }; \
 	grep -qE 'volatile sp_int lv_x ' "$$tmp/bwv.c" || { echo "infer-test: FAIL (a local a begin with a rescue writes lost its volatile)"; ok=0; }; \
