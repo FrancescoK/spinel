@@ -8035,6 +8035,26 @@ static int pivs_proc_param(Compiler *c, int lit, const char *pn, char *set, int 
   }
   return calls > 0;
 }
+/* Is node w (of kind wk) a write: its type names one ("LocalVariableWriteNode",
+   "CallOperatorWriteNode", ...)? Asked of every node per local the walk
+   reaches, so a known kind answers from a table its name fills once. */
+static int pivs_write_kind(const NodeTable *nt, int w, NodeKind wk) {
+  static char is_write[NK__COUNT];
+  static int ready;
+  if (!ready) {
+    static const char *const names[] = { "",
+#define X(n) #n,
+      SP_NODE_KINDS(X)
+#undef X
+    };
+    for (int k = 0; k < NK__COUNT; k++) is_write[k] = strstr(names[k], "WriteNode") != NULL;
+    ready = 1;
+  }
+  if (wk != NK_NONE) return is_write[wk];
+  const char *ty = nt_type(nt, w);
+  return ty && strstr(ty, "WriteNode") != NULL;
+}
+
 /* A builtin iterator moved onto its copy, `__enum_each_with_index__3(recv) { }`
    (desugar_builtin_enum_calls), iterates its first argument as `recv.each_with_index { }`
    does: the iterator's name in buf, 1 for such a call name. */
@@ -8156,7 +8176,7 @@ static int pivs_local(Compiler *c, int v, char *set, int depth, int elems) {
           for (int k = 0; k < ac; k++) if (pivs_is_read_of(nt, av[k], vn)) return 0;
         }
       }
-      else if (wk != NK_LocalVariableReadNode && nt_type(nt, w) && strstr(nt_type(nt, w), "WriteNode") &&
+      else if (wk != NK_LocalVariableReadNode && pivs_write_kind(nt, w, wk) &&
                pivs_is_read_of(nt, nt_ref(nt, w, "value"), vn)) return 0;
     }
     /* the last value of a method or a block is handed out */
