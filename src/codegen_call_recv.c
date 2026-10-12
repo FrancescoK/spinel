@@ -1050,6 +1050,10 @@ static const char *repl_hash_to_s_fn(Repr hr) {
        : repr_hash_is(hr, TY_STRING, TY_INT) ? "sp_StrIntHash_to_s_values" : NULL;
 }
 static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind a0, const char *r);
+static void emit_lines_sep(Compiler *c, int a, Buf *b) {
+  if (comp_ntype(c, a) == TY_STRING) { emit_expr(c, a, b); return; }
+  buf_puts(b, "sp_poly_arg_str_or_null("); emit_boxed(c, a, b); buf_puts(b, ")");
+}
 static void emit_blk_value_as(Compiler *c, int blk, TyKind vt, Buf *b);
 static void emit_blk_value_as_o(Compiler *c, int blk, TyKind vt, Buf *b);
 
@@ -5280,8 +5284,8 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
     char rl[32]; snprintf(rl, sizeof rl, "_t%d", tl);
     buf_printf(b, "({ const char *_t%d = sp_poly_recv_s(", tl); emit_expr(c, recv, b);
     buf_printf(b, ", \"lines\"); SP_GC_ROOT(_t%d); ", tl);
-    if (argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
-      buf_printf(b, "sp_str_lines_sep(%s, ", rl); emit_expr(c, argv[0], b); buf_puts(b, ")");
+    if (argc == 1 && lines_sep_ty(c, argv[0])) {
+      buf_printf(b, "sp_str_lines_sep(%s, ", rl); emit_lines_sep(c, argv[0], b); buf_puts(b, ")");
     }
     else str_arms_convert(c, id, b, nt, name, recv, argc, argv, TY_UNKNOWN, rl);
     buf_puts(b, "; })");
@@ -5298,8 +5302,8 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
     char rl[32]; snprintf(rl, sizeof rl, "_t%d", tl);
     buf_printf(b, "({ const char *_t%d = sp_poly_recv_s(", tl); emit_expr(c, recv, b);
     buf_printf(b, ", \"each_line\"); SP_GC_ROOT(_t%d); sp_StrArray *_t%d = ", tl, ta);
-    if (argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
-      buf_printf(b, "sp_str_lines_sep(%s, ", rl); emit_expr(c, argv[0], b); buf_puts(b, ")");
+    if (argc == 1 && lines_sep_ty(c, argv[0])) {
+      buf_printf(b, "sp_str_lines_sep(%s, ", rl); emit_lines_sep(c, argv[0], b); buf_puts(b, ")");
     }
     else str_arms_convert(c, id, b, nt, "lines", recv, argc, argv, TY_UNKNOWN, rl);
     buf_printf(b, "; SP_GC_ROOT(_t%d);", ta);
@@ -7349,14 +7353,14 @@ static int emit_scrub_bang(Compiler *c, int recv, TyKind rt, int argc, const int
 static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind a0, const char *r) {
   /* lines(sep, chomp: true): a separator and the keyword together (#3546) */
   if (sp_streq(name, "lines") && argc == 2 &&
-           comp_ntype(c, argv[0]) == TY_STRING && nt_type(nt, argv[1]) &&
+           lines_sep_ty(c, argv[0]) && nt_type(nt, argv[1]) &&
            sp_streq(nt_type(nt, argv[1]), "KeywordHashNode")) {
     int chv = struct_kwarg_value(c, argv[1], "chomp");
     int isc = kw_flag_static(c, chv);
     if (isc < 0) { buf_puts(b, "("); emit_cond(c, chv, b); buf_puts(b, " ? "); }
-    if (isc != 0) { buf_printf(b, "sp_str_lines_sep_chomp(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    if (isc != 0) { buf_printf(b, "sp_str_lines_sep_chomp(%s, ", r); emit_lines_sep(c, argv[0], b); buf_puts(b, ")"); }
     if (isc < 0) buf_puts(b, " : ");
-    if (isc != 1) { buf_printf(b, "sp_str_lines_sep(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    if (isc != 1) { buf_printf(b, "sp_str_lines_sep(%s, ", r); emit_lines_sep(c, argv[0], b); buf_puts(b, ")"); }
     if (isc < 0) buf_puts(b, ")");
   }
   else if (sp_streq(name, "lines") && argc == 1 && nt_type(nt, argv[0]) &&

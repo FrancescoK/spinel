@@ -1514,9 +1514,14 @@ int poly_lines_args(Compiler *c, int argc, const int *argv) {
   const NodeTable *nt = c->nt;
   int kw = argc >= 1 && nt_type(nt, argv[argc - 1]) &&
            sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode");
-  if (argc == 1) return kw || infer_type(c, argv[0]) == TY_STRING;
-  if (argc == 2) return kw && infer_type(c, argv[0]) == TY_STRING;
+  if (argc == 1) return kw || lines_sep_ty(c, argv[0]);
+  if (argc == 2) return kw && lines_sep_ty(c, argv[0]);
   return 0;
+}
+
+int lines_sep_ty(Compiler *c, int a) {
+  TyKind t = infer_type(c, a);
+  return t == TY_STRING || t == TY_POLY || t == TY_NIL;
 }
 
 int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
