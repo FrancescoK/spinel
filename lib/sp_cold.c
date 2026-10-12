@@ -2161,6 +2161,7 @@ sp_int sp_file_chmod(sp_int mode, const char *path);
 sp_int sp_file_truncate(const char *path, sp_int n);
 sp_int sp_file_write_at(const char *path, const char *data, sp_int off);
 sp_int sp_file_write_mode(const char *path, const char *data, const char *mode);
+sp_int sp_file_write_perm(const char *path, const char *data, const char *mode, sp_oint perm);
 sp_File *sp_File_open_flags(const char *path, sp_int fl);
 sp_File *sp_File_open_flags_perm(const char *path, sp_int fl, sp_oint perm);
 void sp_file_stat_scan(void *p);
@@ -2523,6 +2524,21 @@ sp_int sp_file_write_mode(const char *path, const char *data, const char *mode) 
   size_t w = fwrite(data ? data : "", 1, n, fp);
   int err = (w < n || ferror(fp)) ? (errno ? errno : EIO) : 0;
   if (fclose(fp) != 0 && !err) err = errno ? errno : EIO;
+  if (err) {
+    errno = err;
+    sp_raise_cls(err == ENOSPC ? "Errno::ENOSPC" : "SystemCallError",
+                 sp_sprintf("%s @ rb_sys_fail_on_write - %s", strerror(err), path ? path : ""));
+    return 0;
+  }
+  return (sp_int)w;
+}
+sp_int sp_file_write_perm(const char *path, const char *data, const char *mode, sp_oint perm) {SP_GC_ROOT_STR(path);SP_GC_ROOT_STR(data);SP_GC_ROOT_STR(mode);
+  sp_File *f = sp_File_open_perm(path, mode, perm);
+  SP_GC_ROOT(f);
+  size_t n = sp_str_byte_len(data ? data : sp_str_empty);
+  size_t w = fwrite(data ? data : "", 1, n, f->fp);
+  int err = (w < n || ferror(f->fp) || fflush(f->fp) != 0) ? (errno ? errno : EIO) : 0;
+  sp_File_close(f);
   if (err) {
     errno = err;
     sp_raise_cls(err == ENOSPC ? "Errno::ENOSPC" : "SystemCallError",

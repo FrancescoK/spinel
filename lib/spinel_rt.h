@@ -16500,6 +16500,7 @@ sp_int sp_file_chmod(sp_int mode, const char *path);
 sp_int sp_file_truncate(const char *path, sp_int n);
 sp_int sp_file_write_at(const char *path, const char *data, sp_int off);
 sp_int sp_file_write_mode(const char *path, const char *data, const char *mode);
+sp_int sp_file_write_perm(const char *path, const char *data, const char *mode, sp_oint perm);
 /* File.open with integer open(2) flags: open the fd, then wrap it in the
    stdio handle the sp_File surface expects (#2788). */
 sp_File *sp_File_open_flags(const char *path, sp_int fl);
