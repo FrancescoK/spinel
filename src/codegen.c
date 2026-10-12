@@ -2295,16 +2295,36 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
   }
   int lift = repr_share_rule(c) && node >= 0 && c->poly_strbuf_lift[node] && comp_ntype(c, node) == TY_STRING;
   /* a route that hands on a handle (`q ||= s.then { |v| v }`,
-     emit_strbuf_route): that handle's box, not a new handle around a copy */
+     emit_strbuf_route): that handle's box, not a new handle around a copy;
+     a String Range's min / max (strbuf_route_srange_extreme) is the
+     endpoint the Range keeps, as a yield to a boxed block parameter hands
+     it on */
   /* A shared field's boxed value carries its handle even without a
      container-store lift, including defaults, throw and break values. */
-  /* an argument that ran ahead as the handle it hands on (a lifted call result) */
-  if (lift && ran_first_handle(node) >= 0) {
+  /* an argument that ran ahead as the handle it hands on (a lifted call
+     result, a String Range's endpoint) */
+  if ((lift || strbuf_route_srange_kept(c, node)) && ran_first_handle(node) >= 0) {
     buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", ran_first_handle(node));
     if (g_repr_check) repr_channel_boxed(c, node, frame);
     return;
   }
-  if (lift || (!arg_ran_first(node, 0) && (strbuf_route_reader(c, node) || strbuf_route_boxed_exc_message(c, node)))) {
+  /* a String Range's begin / end (strbuf_route_srange_end): the handle the
+     Range keeps for it, boxed, as a yield to a boxed block parameter hands
+     it on; one it does not keep is boxed as the bytes it holds, as its read
+     answers them */
+  int se = !lift && !arg_ran_first(node, 0) ? strbuf_route_srange_end(c, node) : 0;
+  if (se) {
+    int t = ++g_tmp;
+    const char *h = se == 1 ? "hf" : "hl", *e = se == 1 ? "first" : "last";
+    buf_printf(b, "({ sp_StrRange _t%d = ", t);
+    emit_expr(c, nt_ref(c->nt, unwrap_parens(c, node), "receiver"), b);
+    buf_printf(b, "; _t%d.%s ? sp_box_obj((sp_String *)_t%d.%s, SP_BUILTIN_STRBUF) : sp_box_str(_t%d.%s); })",
+               t, h, t, h, t, e);
+    if (g_repr_check) repr_channel_boxed(c, node, frame);
+    return;
+  }
+  if (lift || (!arg_ran_first(node, 0) && (strbuf_route_reader(c, node) || strbuf_route_boxed_exc_message(c, node) ||
+                                            strbuf_route_srange_extreme(c, node)))) {
     Buf hb; memset(&hb, 0, sizeof hb);
     if (emit_strbuf_route(c, node, &hb)) {
       buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);

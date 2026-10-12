@@ -21668,8 +21668,9 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
   case SHFL_ARG: ctx = SFC_ARG; break;
   case SHFL_YIELD: {
     /* A receiver conversion keeps its handle in both the boxed yield
-       and the typed block-parameter binder. */
-    if (strbuf_poly_to_s(c, v)) return 1;
+       and the typed block-parameter binder, and so does a String Range's
+       endpoint (emit_boxed, emit_block_arg_coerced). */
+    if (strbuf_poly_to_s(c, v) || strbuf_route_srange_kept(c, v)) return 1;
     /* a yield takes a variable's handle only from its bare read:
        `yield((s))` hands on a copy */
     int u = unwrap_parens(c, v);
