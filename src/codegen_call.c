@@ -25223,6 +25223,7 @@ int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
     Buf rb; memset(&rb, 0, sizeof rb);
     TyKind rty = ivi >= 0 ? c->classes[dispatch_cid].ivar_types[ivi] : TY_UNKNOWN;
     Repr rp = repr_of(c, id);
+    int rb_oint = 0;
     /* --share-strings: the read as a box, where a subclass overrides the
        reader: each arm boxes its own String (emit_reader_override_handle) */
     if (repr_share_rule(c) && rty == TY_STRBUF && rp.as_ty == TY_POLY && sp_streq(g_self_deref, "->")) {
@@ -25244,6 +25245,7 @@ int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
       snprintf(pfx, sizeof pfx, "%s%s", g_self, g_self_deref);
       ivar_nilbit_test(c, dispatch_cid, ivi, pfx, bt, sizeof bt);
       buf_printf(&rb, "((%s){ %s%siv_%s, %s != 0 })", oint_ctype(rty), g_self, g_self_deref, iv_c(rn), bt);
+      rb_oint = 1;
     }
     else buf_printf(&rb, "%s%siv_%s", g_self, g_self_deref, iv_c(rn));
     /* --share-strings: the handle read, where a subclass overrides the
@@ -25255,7 +25257,7 @@ int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
     }
     /* a def in a subclass overrides the reader for that subclass */
     if (!(rty != TY_UNKNOWN && sp_streq(g_self_deref, "->") &&
-          emit_reader_override_dispatch(c, id, dispatch_cid, name, g_self, rb.p, rty, b)))
+          emit_reader_override_dispatch(c, id, dispatch_cid, name, g_self, rb.p, rty, rb_oint, b)))
       buf_puts(b, rb.p);
     free(rb.p);
     return 1;

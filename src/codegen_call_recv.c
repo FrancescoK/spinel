@@ -11561,13 +11561,25 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           if (ov_simple) ovs = expr_buf(c, recv);
           else buf_printf(&ovs, "_t%d", ovt);
           Buf ovr; memset(&ovr, 0, sizeof ovr);
-          buf_printf(&ovr, "(%s)->iv_%s", ovs.p, iv_c(rn2));
+          /* a field with a nil bit is read with it where the call's
+             consumer wants the oint, as below */
+          int ovk = rdc >= 0 ? rdc : cid;
+          char ovivn[300]; snprintf(ovivn, sizeof ovivn, "@%s", rn2);
+          int oviv = comp_ivar_index(&c->classes[ovk], ovivn);
+          int ov_oint = oviv >= 0 && node_is_oint(c, id) && ivar_has_nilbit(c, ovk, oviv);
+          if (ov_oint) {
+            char objp[320], bit[400];
+            snprintf(objp, sizeof objp, "(%s)->", ovs.p);
+            ivar_nilbit_test(c, ovk, oviv, objp, bit, sizeof bit);
+            buf_printf(&ovr, "((%s){ %siv_%s, (%s) != 0 })", oint_ctype(ovty), objp, iv_c(rn2), bit);
+          }
+          else buf_printf(&ovr, "(%s)->iv_%s", ovs.p, iv_c(rn2));
           if (!ov_simple) {
             buf_puts(b, "({ "); emit_ctype(c, rt, b);
             buf_printf(b, " _t%d = ", ovt); emit_expr(c, recv, b);
             buf_printf(b, "; SP_GC_ROOT(_t%d); ", ovt);
           }
-          emit_reader_override_dispatch(c, id, cid, name, ovs.p, ovr.p, ovty, b);
+          emit_reader_override_dispatch(c, id, cid, name, ovs.p, ovr.p, ovty, ov_oint, b);
           if (!ov_simple) buf_puts(b, "; })");
           free(ovs.p); free(ovr.p);
           return 1;
