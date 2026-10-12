@@ -777,7 +777,13 @@ static int limit_exempt(Compiler *c, int id, int lx) {
                ? comp_class_index(c, nt_str(nt, recv, "name")) : -1;
     return ci >= 0 && comp_cmethod_in_chain(c, ci, name, NULL) >= 0;
   }
-  case LX_BINDING: return cplan_user_fresh(c, id)->dispatch != CP_NONE;
+  case LX_BINDING: {
+    /* a switch over every class with a class method of the name (a class
+       value, bare or boxed) leaves the classes without one on the builtin */
+    const CallPlan *p = cplan_user_fresh(c, id);
+    return p->dispatch != CP_NONE && !p->by_name &&
+           !(p->via == UC_POLY && p->mi >= 0 && c->scopes[p->mi].is_cmethod);
+  }
   }
   return 0;
 }
