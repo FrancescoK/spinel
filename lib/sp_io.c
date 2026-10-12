@@ -1724,7 +1724,11 @@ sp_File *sp_File_dup(sp_File *f, int keep_frozen) {SP_GC_ROOT(f);
   if (f && f->mode && (strcmp(f->mode, "stat") == 0 || strcmp(f->mode, "lstat") == 0)) return f;
   SP_IO_OPEN(f);
   off_t pos = ftello(f->fp);
-  fflush(f->fp);
+  /* Buffered output that cannot be written is an error here, as in CRuby.
+     Only a writable stream is checked: BSD stdio's fflush on a read-only
+     stream fails with EBADF, whatever the descriptor's own mode. */
+  if (fflush(f->fp) != 0 && f->mode && strpbrk(f->mode, "wa+"))
+    sp_file_raise_errno("rb_sys_fail_on_write", f->path ? f->path : "");
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
   /* BSD stdio's fflush leaves a read stream's read-ahead in place: give it
      back to the descriptor by hand */
