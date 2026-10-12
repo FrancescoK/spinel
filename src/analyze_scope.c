@@ -8076,6 +8076,68 @@ static int pivs_write_kind(const NodeTable *nt, int w, NodeKind wk) {
   return ty && strstr(ty, "WriteNode") != NULL;
 }
 
+/* Does a read of a local named vn appear where it is handed on: an
+   element of a literal, a returned, yielded or written value, or the last
+   value of a method or block? Only the name decides, so the answer is kept
+   per name until the node table changes (pivs_local asked it once per
+   Array local it reached, walking every node each time). */
+static ANameHash g_esc_names;
+static signed char *g_esc_res;
+static int g_esc_cap, g_esc_cnt = -1;
+static const NodeTable *g_esc_nt;
+static unsigned g_esc_ver;
+static int pivs_local_escapes_uncached(Compiler *c, const char *vn) {
+  const NodeTable *nt = c->nt;
+  for (int w = 0; w < nt->count; w++) {
+    NodeKind wk = nt_kind(nt, w);
+    if (wk == NK_ArrayNode || wk == NK_HashNode || wk == NK_KeywordHashNode || wk == NK_ReturnNode ||
+        wk == NK_YieldNode || wk == NK_AssocNode) {
+      int n = 0;
+      const int *el = wk == NK_ArrayNode || wk == NK_HashNode || wk == NK_KeywordHashNode
+                        ? nt_arr(nt, w, "elements", &n) : NULL;
+      for (int k = 0; k < n; k++) if (pivs_is_read_of(nt, el[k], vn)) return 1;
+      if (wk == NK_AssocNode && pivs_is_read_of(nt, nt_ref(nt, w, "value"), vn)) return 1;
+      if (wk == NK_ReturnNode || wk == NK_YieldNode) {
+        int a = nt_ref(nt, w, "arguments"), ac = 0;
+        const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+        for (int k = 0; k < ac; k++) if (pivs_is_read_of(nt, av[k], vn)) return 1;
+      }
+    }
+    else if (wk != NK_LocalVariableReadNode && pivs_write_kind(nt, w, wk) &&
+             pivs_is_read_of(nt, nt_ref(nt, w, "value"), vn)) return 1;
+  }
+  /* the last value of a method or a block is handed out */
+  for (int k = 0; k < 2; k++)
+    NT_FOREACH_KIND(nt, k ? NK_BlockNode : NK_DefNode, d) {
+      int b = nt_ref(nt, d, "body"), n = 0;
+      const int *st = b >= 0 && nt_kind(nt, b) == NK_StatementsNode ? nt_arr(nt, b, "body", &n) : NULL;
+      if ((n > 0 && pivs_is_read_of(nt, st[n - 1], vn)) || pivs_is_read_of(nt, b, vn)) return 1;
+    }
+  return 0;
+}
+static int pivs_local_escapes(Compiler *c, const char *vn) {
+  const NodeTable *nt = c->nt;
+  if (g_esc_nt != nt || g_esc_ver != nt->version || g_esc_cnt != nt->count) {
+    anh_free(&g_esc_names); memset(&g_esc_names, 0, sizeof g_esc_names);
+    g_esc_nt = nt; g_esc_ver = nt->version; g_esc_cnt = nt->count;
+  }
+  int k = anh_find(&g_esc_names, vn);
+  if (k >= 0) return g_esc_res[k];
+  int r = pivs_local_escapes_uncached(c, vn);
+  /* the walk reads the tree only, so the table it was asked against
+     still holds */
+  anh_add(&g_esc_names, vn);
+  k = g_esc_names.n - 1;
+  if (k >= g_esc_cap) {
+    g_esc_cap = g_esc_cap ? g_esc_cap * 2 : 64;
+    while (k >= g_esc_cap) g_esc_cap *= 2;
+    g_esc_res = realloc(g_esc_res, (size_t)g_esc_cap);
+    if (!g_esc_res) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  g_esc_res[k] = (signed char)r;
+  return r;
+}
+
 /* A builtin iterator moved onto its copy, `__enum_each_with_index__3(recv) { }`
    (desugar_builtin_enum_calls), iterates its first argument as `recv.each_with_index { }`
    does: the iterator's name in buf, 1 for such a call name. */
@@ -8182,31 +8244,7 @@ static int pivs_local(Compiler *c, int v, char *set, int depth, int elems) {
         if (pivs_is_read_of(nt, x, vn) && !(pivs_is_read_of(nt, r, vn)) && !(itfirst && k == 0)) return 0;
       }
     }
-    for (int w = 0; w < nt->count; w++) {
-      NodeKind wk = nt_kind(nt, w);
-      if (wk == NK_ArrayNode || wk == NK_HashNode || wk == NK_KeywordHashNode || wk == NK_ReturnNode ||
-          wk == NK_YieldNode || wk == NK_AssocNode) {
-        int n = 0;
-        const int *el = wk == NK_ArrayNode || wk == NK_HashNode || wk == NK_KeywordHashNode
-                          ? nt_arr(nt, w, "elements", &n) : NULL;
-        for (int k = 0; k < n; k++) if (pivs_is_read_of(nt, el[k], vn)) return 0;
-        if (wk == NK_AssocNode && pivs_is_read_of(nt, nt_ref(nt, w, "value"), vn)) return 0;
-        if (wk == NK_ReturnNode || wk == NK_YieldNode) {
-          int a = nt_ref(nt, w, "arguments"), ac = 0;
-          const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
-          for (int k = 0; k < ac; k++) if (pivs_is_read_of(nt, av[k], vn)) return 0;
-        }
-      }
-      else if (wk != NK_LocalVariableReadNode && pivs_write_kind(nt, w, wk) &&
-               pivs_is_read_of(nt, nt_ref(nt, w, "value"), vn)) return 0;
-    }
-    /* the last value of a method or a block is handed out */
-    for (int k = 0; k < 2; k++)
-      NT_FOREACH_KIND(nt, k ? NK_BlockNode : NK_DefNode, d) {
-        int b = nt_ref(nt, d, "body"), n = 0;
-        const int *st = b >= 0 && nt_kind(nt, b) == NK_StatementsNode ? nt_arr(nt, b, "body", &n) : NULL;
-        if ((n > 0 && pivs_is_read_of(nt, st[n - 1], vn)) || pivs_is_read_of(nt, b, vn)) return 0;
-      }
+    if (pivs_local_escapes(c, vn)) return 0;
   }
   for (int w = comp_lvw_first_sc(c, si, vn); w >= 0; w = comp_lvw_next_sc(c, w)) {
     if (c->nscope[w] != si || !sp_streq(nt_str(nt, w, "name"), vn)) continue;
