@@ -92,6 +92,7 @@ sp_bool sp_poly_match_p(sp_RbVal a, sp_RbVal b);
 sp_bool sp_poly_match_p_at(sp_RbVal a, sp_RbVal b, sp_int pos);
 sp_MatchData *sp_poly_match_data(sp_RbVal a, sp_RbVal b);
 sp_oint sp_poly_match_index(sp_RbVal a, sp_RbVal b);   /* =~: the position, nil on a miss */
+const char *sp_re_operand(sp_RbVal v, int strict);   /* a boxed matcher operand (reg_operand) */
 void sp_re_expand_rep(const mrb_regexp_pattern *pat, char **out_io, size_t *olen_io, size_t *cap_io, const char *rep, size_t rlen, const char *src, int *caps, int ncaps);
 const char *sp_re_gsub(mrb_regexp_pattern *pat, const char *str, const char *rep);
 const char *sp_re_sub(mrb_regexp_pattern *pat, const char *str, const char *rep);

@@ -37,6 +37,38 @@ static const char *boxed_number_value(char *text, TyKind at, char **val) {
   return NULL;
 }
 
+/* Does a Regexp matcher's operand convert at run time (sp_re_operand)? A
+   String or nil goes in as it is, and an object whose class has a #to_str
+   converts at compile time (emit_str_expr_nilable calls it); everything else
+   -- a boxed value, a Symbol, an object with no #to_str, a number -- takes
+   CRuby's reg_operand: a Symbol by its name, a #to_str found at run time, or
+   the TypeError naming the operand's class. */
+static int re_operand_at_runtime(Compiler *c, TyKind a0) {
+  if (a0 == TY_STRING || a0 == TY_NIL) return 0;
+  if (ty_is_object(a0) && comp_method_in_chain(c, ty_object_class(a0), "to_str", NULL) >= 0) return 0;
+  return 1;
+}
+/* A matcher's operand as the `const char *` subject; `strict` is
+   sp_re_operand's (all but === raise on a non-String). */
+static void emit_re_subject(Compiler *c, int arg, TyKind a0, int strict, Buf *b) {
+  if (!re_operand_at_runtime(c, a0)) { emit_str_expr_nilable(c, arg, b); return; }
+  buf_puts(b, "sp_re_operand("); emit_boxed(c, arg, b); buf_printf(b, ", %d)", strict);
+}
+/* `fn(pat, subject, pos)`: a converted subject is held rooted while the
+   position, which may allocate, is evaluated after it. */
+static void emit_re_subject_at(Compiler *c, const char *fn, const char *pat, int arg, TyKind a0,
+                               int pos, Buf *b) {
+  if (!re_operand_at_runtime(c, a0)) {
+    buf_printf(b, "%s(%s, ", fn, pat); emit_str_expr_nilable(c, arg, b);
+    buf_puts(b, ", "); emit_int_expr(c, pos, b); buf_puts(b, ")");
+    return;
+  }
+  int t = ++g_tmp;
+  buf_printf(b, "({ const char *_t%d = ", t); emit_re_subject(c, arg, a0, 1, b);
+  buf_printf(b, "; SP_GC_ROOT(_t%d); %s(%s, _t%d, ", t, fn, pat, t);
+  emit_int_expr(c, pos, b); buf_puts(b, "); })");
+}
+
 int emit_call_regexp_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0) {
   /* regex literal match predicates (bool-returning, no MatchData/globals):
      /re/.match?(str[, pos])  and  str.match?(/re/[, pos]) */
@@ -44,8 +76,7 @@ int emit_call_regexp_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     int rre = re_lit_index(c, recv);
     if (rre >= 0 && sp_streq(name, "match?") && argc == 1) {
       /* /re/.match?(str): a match boolean that leaves $~ alone (CRuby) */
-      if (a0 == TY_POLY) { buf_printf(b, "sp_re_match_p(sp_re_pat_%d, sp_poly_to_s(", rre); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
-      else { buf_printf(b, "sp_re_match_p(sp_re_pat_%d, ", rre); emit_str_expr_nilable(c, argv[0], b); buf_puts(b, ")"); }  /* nil subject: no match */
+      buf_printf(b, "sp_re_match_p(sp_re_pat_%d, ", rre); emit_re_subject(c, argv[0], a0, 1, b); buf_puts(b, ")");  /* nil subject: no match */
       return 1;
     }
     if (rre >= 0 && sp_streq(name, "===") && argc == 1) {
@@ -57,8 +88,8 @@ int emit_call_regexp_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     if (rre >= 0 && sp_streq(name, "match?") && argc == 2) {
       /* the subject converts as match(str, pos)'s does: a boxed or nil one
          went into the const char * slot raw */
-      buf_printf(b, "sp_re_match_p_at(sp_re_pat_%d, ", rre); emit_str_expr_nilable(c, argv[0], b);
-      buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+      char pn[32]; snprintf(pn, sizeof pn, "sp_re_pat_%d", rre);
+      emit_re_subject_at(c, "sp_re_match_p_at", pn, argv[0], a0, argv[1], b);
       return 1;
     }
     /* /re/ =~ str -> match offset or nil (poly) */
@@ -384,11 +415,11 @@ no_gsub_enum:
          value (e.g. a `string?` attr read) to const char*, which emit_expr would
          leave as an sp_RbVal into sp_re_matchdata's const char* slot (#3219). */
       if (argc == 1) {
-        buf_printf(b, "sp_re_matchdata(sp_re_pat_%d, ", rre); emit_str_expr_nilable(c, argv[0], b); buf_puts(b, ")");
+        buf_printf(b, "sp_re_matchdata(sp_re_pat_%d, ", rre); emit_re_subject(c, argv[0], a0, 1, b); buf_puts(b, ")");
       }
       else {
-        buf_printf(b, "sp_re_matchdata_at(sp_re_pat_%d, ", rre); emit_str_expr_nilable(c, argv[0], b);
-        buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+        char pn[32]; snprintf(pn, sizeof pn, "sp_re_pat_%d", rre);
+        emit_re_subject_at(c, "sp_re_matchdata_at", pn, argv[0], a0, argv[1], b);
       }
       return 1;
     }
@@ -551,23 +582,14 @@ no_gsub_enum:
         }
         if (rp_ok && rp.p) {
           if ((sp_streq(name, "match?") || sp_streq(name, "===")) && argc == 1) {
-            if (a0 == TY_POLY) { buf_printf(b, "sp_re_match_p(%s, sp_poly_to_s(", rp.p); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
-            else { buf_printf(b, "sp_re_match_p(%s, ", rp.p); emit_str_expr_nilable(c, argv[0], b); buf_puts(b, ")"); }  /* nil subject: no match */
+            /* === answers false for an operand match? raises on */
+            buf_printf(b, "sp_re_match_p(%s, ", rp.p);
+            emit_re_subject(c, argv[0], a0, sp_streq(name, "match?"), b); buf_puts(b, ")");  /* nil subject: no match */
             free(rp.p); return 1;
           }
           if (sp_streq(name, "=~") && argc == 1) {
             if (a0 == TY_STRING) {
               buf_printf(b, "sp_re_match_poly(%s, ", rp.p); emit_expr(c, argv[0], b); buf_puts(b, ")");
-            }
-            else if (a0 == TY_POLY) {
-              /* runtime type check: raise TypeError if not a string (a
-                 shared-string handle is a String, #4279) */
-              int tv = ++g_tmp;
-              emit_indent(g_pre, g_indent);
-              buf_printf(g_pre, "sp_RbVal _t%d = sp_poly_strbuf_deref(", tv); emit_expr(c, argv[0], g_pre); buf_puts(g_pre, ");\n");
-              emit_indent(g_pre, g_indent);
-              buf_printf(g_pre, "if (_t%d.tag != SP_TAG_STR && _t%d.tag != SP_TAG_NIL) sp_raise_no_str_conversion(_t%d);\n", tv, tv, tv);
-              buf_printf(b, "sp_re_match_poly(%s, _t%d.v.s)", rp.p, tv);
             }
             else if (a0 == TY_NIL) {
               /* nil is the one non-String `re =~ x` accepts: it answers nil
@@ -576,12 +598,10 @@ no_gsub_enum:
               free(rp.p); return 1;
             }
             else {
-              /* statically known non-string: always raises TypeError */
-              const char *tn = (a0 == TY_INT) ? "Integer" : (a0 == TY_FLOAT) ? "Float"
-                             : (a0 == TY_BOOL) ? "true/false" : "Object";
-              buf_printf(b, "((void)(");
-              emit_expr(c, argv[0], b);
-              buf_printf(b, "), sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into String\"), sp_box_nil())", tn);
+              /* a boxed operand, a Symbol, an object (#to_str), or a
+                 non-String that raises the TypeError naming its class; a
+                 shared-string handle is a String (#4279) */
+              buf_printf(b, "sp_re_match_poly(%s, ", rp.p); emit_re_subject(c, argv[0], a0, 1, b); buf_puts(b, ")");
             }
             free(rp.p); return 1;
           }
@@ -596,13 +616,9 @@ no_gsub_enum:
             buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), (sp_bool)1)");
             free(rp.p); return 1;
           }
-          if (sp_streq(name, "!~") && argc == 1 && a0 == TY_POLY) {
-            int tv = ++g_tmp;
-            /* a shared-string handle is a String (#4279) */
-            buf_printf(b, "({ sp_RbVal _t%d = sp_poly_strbuf_deref(", tv); emit_expr(c, argv[0], b);
-            buf_printf(b, "); if (_t%d.tag != SP_TAG_STR && _t%d.tag != SP_TAG_NIL) sp_raise_no_str_conversion(_t%d);"
-                          " (sp_bool)(_t%d.tag == SP_TAG_NIL || sp_re_match(%s, _t%d.v.s) < 0); })",
-                       tv, tv, tv, tv, rp.p, tv);
+          if (sp_streq(name, "!~") && argc == 1) {
+            /* a nil subject (NULL) does not match: true */
+            buf_printf(b, "(sp_re_match(%s, ", rp.p); emit_re_subject(c, argv[0], a0, 1, b); buf_puts(b, ") < 0)");
             free(rp.p); return 1;
           }
           if (sp_streq(name, "match") && argc == 1 && nt_ref(nt, id, "block") >= 0) {
@@ -628,8 +644,8 @@ no_gsub_enum:
             /* the subject can arrive boxed -- one call site passing an
                untyped block param is enough -- so unbox it into the const
                char * slot the way match? and =~ already do */
-            if (argc == 1) { buf_printf(b, "sp_re_matchdata(%s, ", rp.p); emit_str_expr_nilable(c, argv[0], b); buf_puts(b, ")"); }
-            else { buf_printf(b, "sp_re_matchdata_at(%s, ", rp.p); emit_str_expr_nilable(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
+            if (argc == 1) { buf_printf(b, "sp_re_matchdata(%s, ", rp.p); emit_re_subject(c, argv[0], a0, 1, b); buf_puts(b, ")"); }
+            else emit_re_subject_at(c, "sp_re_matchdata_at", rp.p, argv[0], a0, argv[1], b);
             free(rp.p); return 1;
           }
           free(rp.p);

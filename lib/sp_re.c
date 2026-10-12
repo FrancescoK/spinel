@@ -414,17 +414,41 @@ sp_bool sp_re_match_p_at(mrb_regexp_pattern *pat, const char *str, sp_int pos) {
   int caps[2];
   return spinel_re_exec(pat, str, slen, (sp_int)pos, caps, 2, sp_str_is_binary(str)) > 0;
 }
+const char *sp_poly_class_name(sp_RbVal v);   /* lib/sp_poly_cold.c */
+/* A boxed Regexp operand, as CRuby's reg_operand takes it: a String (or a
+   shared String's bytes), a Symbol by its name, or a user object through its
+   #to_str (the generated conversion bridge). nil is NULL, which every matcher
+   answers as no match. Anything else raises the String slot's TypeError when
+   `strict` (=~, !~, match, match?) and is NULL when not (===, which asks
+   rb_check_string_type). */
+const char *sp_re_operand(sp_RbVal v, int strict) {SP_GC_ROOT_RBVAL(v);
+  if (v.tag == SP_TAG_STR) return v.v.s;
+  if (v.tag == SP_TAG_NIL) return NULL;
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p)
+    return sp_String_cstr((sp_String *)v.v.p);
+  if (v.tag == SP_TAG_SYM && sp_sym_name_fn) return sp_sym_name_fn((sp_sym)v.v.i);
+  if (v.tag == SP_TAG_OBJ && v.cls_id >= 0 && v.v.p && sp_obj_to_str_fn) {
+    const char *r = sp_obj_to_str_fn((int)v.cls_id, v.v.p);
+    if (r) return r;
+  }
+  if (!strict) return NULL;
+  if (v.tag == SP_TAG_BOOL)
+    sp_raise_cls("TypeError", v.v.b ? "no implicit conversion of true into String"
+                                    : "no implicit conversion of false into String");
+  sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into String", sp_poly_class_name(v)));
+  return NULL;
+}
 /* Regexp#=== on a boxed operand (a case/when arm, an explicit ===). Only a
-   String (plain or shared-mutable handle) or a Symbol can match; a match
-   updates the $~ registers like =~. Any other operand answers false and
-   clears the registers (CRuby sets the backref to nil there). */
+   String (plain or shared-mutable handle), a Symbol or an object with a
+   #to_str can match; a match updates the $~ registers like =~. Any other
+   operand answers false and clears the registers (CRuby sets the backref to
+   nil there). */
 sp_bool sp_re_case_eq(mrb_regexp_pattern *pat, sp_RbVal v) {SP_GC_ROOT_RBVAL(v);
   const char *s = NULL;
   if (v.tag == SP_TAG_STR) s = v.v.s ? v.v.s : "";
   else if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p)
     s = sp_String_cstr((sp_String *)v.v.p);
-  else if (v.tag == SP_TAG_SYM && sp_sym_name_fn)
-    s = sp_sym_name_fn((sp_sym)v.v.i);
+  else s = sp_re_operand(v, 0);
   if (!s) {
     for (int i = 0; i < 10; i++) sp_re_captures[i] = NULL;
     sp_re_last_str = NULL;
@@ -496,6 +520,8 @@ sp_MatchData *sp_poly_match_data(sp_RbVal a, sp_RbVal b) {SP_GC_ROOT_RBVAL(a);SP
 }
 sp_oint sp_poly_match_index(sp_RbVal a, sp_RbVal b) {SP_GC_ROOT_RBVAL(a);SP_GC_ROOT_RBVAL(b);
   mrb_regexp_pattern *p; const char *s;
+  /* the subject of `re =~ x` converts as reg_operand takes it */
+  if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_REGEX) b = sp_box_str(sp_re_operand(b, 1));
   if (!sp_poly_match_pair(a, b, &p, &s)) return sp_oint_nil();
   sp_int r = sp_re_match(p, s);
   return r < 0 ? sp_oint_nil() : sp_oint_of(r);
