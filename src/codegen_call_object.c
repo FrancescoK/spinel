@@ -3251,6 +3251,16 @@ int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKin
       unsupported(c, id, "instance_variable_set to an ivar absent from the fixed object layout");
       return 1;
     }
+    /* unless a computed write may have put the name in the object's table (#8219) */
+    if (recv >= 0 && !is_val && c->classes[cid].computed_ivar_set) {
+      int tg = ++g_tmp;
+      char pv[24], ivn[24]; snprintf(pv, sizeof pv, "_t%d", tg); snprintf(ivn, sizeof ivn, "_ivg%d", tg);
+      buf_printf(b, "({ sp_%s *%s = ", c->classes[cid].c_name, pv); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_RbVal %s = sp_bivar_get(", ivn); emit_boxed_text(c, ty_object(cid), pv, b);
+      buf_printf(b, ", sp_sym_intern(\"%s\")); ", sym);
+      emit_ivar_reflect_answer(c, id, ivn, b);
+      return 1;
+    }
     if (recv >= 0) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), sp_box_nil())"); }
     else buf_puts(b, "sp_box_nil()");
     return 1;
@@ -3260,5 +3270,16 @@ int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKin
       nt_kind(nt, argv[0]) != NK_SymbolNode && nt_kind(nt, argv[0]) != NK_StringNode &&
       comp_method_in_chain(c, cid, name, NULL) < 0)
     return emit_object_ivar_get_computed(c, id, NULL, recv, cid, argv[0], b);
+  /* a computed name: the store by name over the class's ivars, a name the
+     class does not declare into the object-keyed table (#8219) */
+  if (sp_streq(name, "instance_variable_set") && argc == 2 && recv >= 0 && nt_ref(nt, id, "block") < 0 &&
+      nt_kind(nt, argv[0]) != NK_SymbolNode && nt_kind(nt, argv[0]) != NK_StringNode &&
+      comp_method_in_chain(c, cid, name, NULL) < 0) {
+    if (repr_of(c, recv).kind == RK_VOBJ) {
+      unsupported(c, id, "instance_variable_set with a computed name on a by-value object");
+      return 1;
+    }
+    return emit_object_ivar_set_computed(c, id, recv, cid, argv[0], argv[1], b);
+  }
   return 0;
 }

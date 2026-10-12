@@ -8739,6 +8739,50 @@ static int infer_ivar_set_call(Compiler *c, int id, NilWrites *writes) {
           }
         }
       }
+      /* A computed name (#8219) can write any field of the receiver's
+         classes when it runs: the value's type joins every ivar each such
+         class declares, so a field written only with values of its own type
+         stays typed and one that may take another widens to a box. The
+         classes are marked, for the by-name store and the reflection over
+         the object-keyed table, where a name no class declares lives. */
+      else if (san == 2 && sav && !(a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode")))) {
+        int ivrecv = nt_ref(nt, id, "receiver");
+        TyKind rt = ivrecv >= 0 ? comp_ntype(c, ivrecv) : TY_UNKNOWN;
+        int self_recv = ivrecv < 0 || (nt_kind(nt, ivrecv) == NK_SelfNode && rt != TY_POLY);
+        int scid = -1;
+        if (self_recv) {
+          Scope *s = comp_scope_of(c, id);
+          scid = s ? s->class_id : -1;
+          if (scid < 0 && id < c->node_cap && c->node_cbody[id] >= 0) scid = c->node_cbody[id];
+          /* main: its ivars are the top-level statics, the rest its table */
+          if (scid < 0 && s && !s->is_cmethod) scid = comp_class_index(c, "Toplevel");
+        }
+        TyKind vt = infer_type(c, sav[1]);
+        int any = 0;
+        for (int k = 0; k < c->nclasses; k++) {
+          int hit;
+          if (self_recv) hit = k == scid;
+          else if (ty_is_object(rt)) hit = k == ty_object_class(rt);
+          else if (rt == TY_EXCEPTION) hit = !exc_class_defines(c, "instance_variable_set") && class_is_exc_subclass(c, k);
+          else if (rt == TY_POLY) hit = poly_ivar_set_class(c, k) && poly_ivar_set_reaches(c, id, k);
+          else hit = 0;
+          if (!hit || k >= c->nclasses) continue;
+          ClassInfo *ck = &c->classes[k];
+          if (ck->is_data || comp_method_in_chain(c, k, "instance_variable_set", NULL) >= 0) continue;
+          any = 1;
+          if (!ck->computed_ivar_set) { ck->computed_ivar_set = 1; changed = 1; }
+          for (int iv = ck->is_struct ? ck->nmembers : 0; iv < ck->nivars; iv++) {
+            const char *fn = ck->ivars[iv];
+            if (!fn || fn[0] != '@') continue;
+            if (vt == TY_NIL) nil_write_note(writes, k, fn);
+            else if (!class_ivar_pinned(ck, fn)) {
+              TyKind merged = ivar_merge_with_write(ck->ivar_types[iv], vt);
+              if (merged != ck->ivar_types[iv]) { ck->ivar_types[iv] = merged; changed = 1; }
+            }
+          }
+        }
+        if (any && !c->bivar_table) { c->bivar_table = 1; changed = 1; }
+      }
       return changed;
     }
   }

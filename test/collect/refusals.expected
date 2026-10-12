@@ -450,6 +450,12 @@ spinel: 1 refusal, nothing written
 == test/reject/complex_bignum_component.rb [promote] rc=1
 spinel: test/reject/complex_bignum_component.rb:7: a Complex component given an Integer past 64 bits, which no conversion keeps in its sp_float slot
 spinel: 1 refusal, nothing written
+== test/reject/computed_ivar_set_poly_user_method.rb [default] rc=1
+spinel: test/reject/computed_ivar_set_poly_user_method.rb:13: Object#instance_variable_set with a non-literal name on a receiver that may be an instance of a class defining its own instance_variable_set is not supported (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/computed_ivar_set_poly_user_method.rb [promote] rc=1
+spinel: test/reject/computed_ivar_set_poly_user_method.rb:13: Object#instance_variable_set with a non-literal name on a receiver that may be an instance of a class defining its own instance_variable_set is not supported (see docs/limitations.md)
+spinel: 1 refusal, nothing written
 == test/reject/const_get_runtime_name.rb [default] rc=1
 spinel: test/reject/const_get_runtime_name.rb:7: unsupported const_get with a name known only at run time and no class or module receiver (an instance has no const_get; constants are resolved at compile time): node N (CallNode `const_get`) recv=-/ty-1 argc=1 arg0ty6
 == test/reject/const_get_runtime_name.rb [promote] rc=1

@@ -673,6 +673,10 @@ typedef struct {
   char *native_free;   /* finalizer C symbol, or NULL */
   int freeze_observed; /* freeze/frozen? reaches instances of this class: codegen
                           guards its ivar stores with the GC-header frozen bit */
+  int computed_ivar_set; /* an instance_variable_set with a computed name can reach
+                          instances of this class (#8219): the value's type joined
+                          every declared ivar, codegen stores by name, and names
+                          the class does not declare live in the object-keyed table */
   int presence_observed; /* a read that tells an assigned ivar from one never
                           assigned reaches instances of this class
                           (an_presence_observe): ivar_set_kind may give
@@ -1418,6 +1422,7 @@ int comp_defined_early(Compiler *c, int pred, const char **early, int cap);
 /* Classes. */
 ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node);
 int        comp_class_index(Compiler *c, const char *name);   /* -1 if none */
+int        comp_any_computed_ivar_set(Compiler *c);
 int        comp_is_wellknown_const(const char *cn);
 int        const_name_resolves_top_level(Compiler *c, const char *cn);
 /* The class Ruby sees for `ci`: a synthesized singleton subclass reports its

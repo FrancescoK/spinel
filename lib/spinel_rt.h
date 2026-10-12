@@ -12095,6 +12095,11 @@ static inline sp_bool sp_poly_frozen(sp_RbVal v) {
    keeps an identity to key on and a write to one is refused when it runs.
    The answer is the key, or NULL. */
 static const void *sp_bivar_key(sp_RbVal o) {
+#ifdef SP_TU_BIVAR_USER
+  /* an instance of a program class, for the names its class does not
+     declare (a computed instance_variable_set, #8219) */
+  if (o.tag == SP_TAG_OBJ && o.v.p && o.cls_id >= 0) return o.v.p;
+#endif
   if (o.tag == SP_TAG_OBJ && o.v.p &&
       (sp_poly_is_array_kind(o.cls_id) || sp_poly_is_hash_kind(o.cls_id) || o.cls_id == SP_BUILTIN_RANDOM ||
        o.cls_id == SP_BUILTIN_PROC || o.cls_id == SP_BUILTIN_EXCEPTION))

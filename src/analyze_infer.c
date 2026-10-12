@@ -5448,8 +5448,9 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
            the slot representation has no nil, even if all slots agree. */
         const TyTraits *tr = ty_traits_of(uni);
         if (uni != TY_UNKNOWN && !ty_is_object(uni) && (!tr || (!tr->nil && !tr->null_is_nil))) uni = TY_POLY;
-        /* a bare Object can hold any value there (sp_Object_ivar_get) */
-        if (uni != TY_UNKNOWN && an_program_news_object(c)) uni = TY_POLY;
+        /* a bare Object can hold any value there (sp_Object_ivar_get), as
+           can the table a computed instance_variable_set fills (#8219) */
+        if (uni != TY_UNKNOWN && (an_program_news_object(c) || comp_any_computed_ivar_set(c))) uni = TY_POLY;
         { *out = uni == TY_UNKNOWN ? TY_POLY : uni; return 1; }
       }
       { *out = TY_POLY; return 1; }
@@ -5482,8 +5483,7 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
      codegen twin stores it per class) */
   if (recv >= 0 && (rt == TY_POLY || (rt == TY_EXCEPTION && !exc_class_defines(c, name))) &&
       sp_streq(name, "instance_variable_set") && argc == 2) {
-    const char *a0ty = nt_type(nt, argv[0]);
-    if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) { *out = TY_POLY; return 1; }
+    *out = TY_POLY; return 1;   /* a literal name, or a computed one (#8219) */
   }
 
   /* nil? on a pointer-backed Enumerator: bool (NULL-as-nil test) */

@@ -17813,6 +17813,10 @@ char *codegen_program(const NodeTable *nt) {
      THIS TU's definitions; the macro flips the header's prototypes off
      `static` before the include (ext-design.md, Layer 1). */
   if (g_ext_init_name) buf_puts(&b, "#define SPINEL_EXT_KERNEL 1\n");
+  /* a computed instance_variable_set can reach a user class (#8219): the
+     object-keyed ivar table admits its instances, for the names the class
+     does not declare */
+  if (comp_any_computed_ivar_set(c)) buf_puts(&b, "#define SP_TU_BIVAR_USER 1\n");
   /* No poly-renderable value anywhere: skip the sp_poly_inspect hook install
      in the header (it would force sp_sym_to_s / sp_class_to_s definitions
      this TU deliberately omits). */

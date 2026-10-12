@@ -2100,8 +2100,11 @@ void emit_object_ivar_remove(Compiler *c, int id, int recv, TyKind rt, int cid, 
    class's ivars, and the whole call on a receiver of a known class */
 void emit_ivar_name_sym(Compiler *c, int arg, Buf *b);
 void emit_ivar_name_check(const char *syv, Buf *b);
-void emit_ivar_get_by_name(Compiler *c, int k, const char *objp, const char *syv, const char *out, Buf *b);
+void emit_ivar_get_by_name(Compiler *c, int k, const char *objp, const char *syv, const char *out, const char *boxv, Buf *b);
 int  emit_object_ivar_get_computed(Compiler *c, int id, const char *objp, int recv, int cid, int arg, Buf *b);
+void emit_ivar_reflect_answer(Compiler *c, int id, const char *ivn, Buf *b);
+void emit_ivar_set_by_name(Compiler *c, int k, const char *obj, const char *syv, const char *val, const char *boxv, Buf *b);
+int  emit_object_ivar_set_computed(Compiler *c, int id, int recv, int cid, int arg, int value, Buf *b);
 int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKind rt,
                           int cid, int argc, const int *argv, Buf *b);
 const char *case_map_suffix(Compiler *c, int argc, const int *argv);

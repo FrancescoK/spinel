@@ -774,18 +774,20 @@ static int cplan_str_method_mutator(Compiler *c, int id) {
 
 static int cplan_reachable(Compiler *c, int id);
 
-/* A computed instance_variable_get on a boxed receiver reads by name over
-   the classes the receiver may be (emit_poly_ivar_call, #8219); a class
-   that defines its own instance_variable_get takes the program's method,
-   which that read cannot call, so a program with such a class keeps the
-   refusal for the boxed shape. A typed receiver of such a class binds to
-   the method as any call does. */
+/* A computed instance_variable_get or _set on a boxed receiver reads or
+   writes by name over the classes the receiver may be (emit_poly_ivar_call,
+   #8219); a class that defines its own method of that name takes the
+   program's, which that dispatch cannot call, so a program with such a
+   class keeps the refusal for the boxed shape. A typed receiver of such a
+   class binds to the method as any call does. */
 static int cplan_computed_ivar_get(Compiler *c, int id, const char *name) {
-  if (!is_ivar_access(name) || is_ivar_set(name) || !sp_streq(name, "instance_variable_get") || !cplan_reachable(c, id)) return 0;
+  int set = sp_streq(name, "instance_variable_set");
+  if (!set && !sp_streq(name, "instance_variable_get")) return 0;
+  if (!cplan_reachable(c, id)) return 0;
   const NodeTable *nt = c->nt;
   int args = nt_ref(nt, id, "arguments"), ac = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
-  if (ac != 1 || nt_kind(nt, av[0]) == NK_SymbolNode || nt_kind(nt, av[0]) == NK_StringNode) return 0;
+  if (ac != (set ? 2 : 1) || nt_kind(nt, av[0]) == NK_SymbolNode || nt_kind(nt, av[0]) == NK_StringNode) return 0;
   int recv = nt_ref(nt, id, "receiver");
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
   if (rt != TY_POLY && rt != TY_EXCEPTION) return 0;
@@ -920,8 +922,11 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
     return "Module#define_method with a non-literal name is not supported; "
            "use a literal Symbol or String (see docs/limitations.md)";
   if (cplan_computed_ivar_get(c, id, name))
-    return "Object#instance_variable_get with a non-literal name on a receiver that may be an instance "
-           "of a class defining its own instance_variable_get is not supported (see docs/limitations.md)";
+    return sp_streq(name, "instance_variable_set")
+      ? "Object#instance_variable_set with a non-literal name on a receiver that may be an instance "
+        "of a class defining its own instance_variable_set is not supported (see docs/limitations.md)"
+      : "Object#instance_variable_get with a non-literal name on a receiver that may be an instance "
+        "of a class defining its own instance_variable_get is not supported (see docs/limitations.md)";
   /* marked by mark_anon_superclass_reflection: no class object stands for
      the anonymous class that CRuby's answer names. A call the plan binds to
      a user method is that method's, not Class#superclass (RDoc's

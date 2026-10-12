@@ -607,6 +607,14 @@ static void ci_build(Compiler *c) {
     ci_next[i] = ci_head[b]; ci_head[b] = i;
   }
 }
+/* can a computed instance_variable_set reach an instance of some class (or
+   main)? Then names no class declares live in the object-keyed table, and
+   the by-name reads consult it (#8219) */
+int comp_any_computed_ivar_set(Compiler *c) {
+  for (int k = 0; k < c->nclasses; k++) if (c->classes[k].computed_ivar_set) return 1;
+  return 0;
+}
+
 int comp_class_index(Compiler *c, const char *name) {
   if (!name) return -1;
   if (!ci_frozen) {
