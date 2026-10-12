@@ -94,6 +94,117 @@ static void cm_ret_close(const Scope *s, int w, Buf *b) {
   if (oint_kind(s->ret) && method_ret_is_oint(s) != (w != 0)) buf_puts(b, ")");
 }
 
+/* Does the run-time respond_to? (emit_respond_to_runtime_name) answer for a
+   receiver of type rt? An override answers only for its own class's objects
+   (and a boxed value, which dispatches). */
+int respond_to_runtime_reaches(Compiler *c, TyKind rt) {
+  return !any_class_defines(c, "respond_to?") || g_poly_builtin_arm ||
+         !(rt == TY_POLY ||
+           (ty_is_object(rt) && comp_method_in_chain(c, ty_object_class(rt), "respond_to?", NULL) >= 0));
+}
+
+/* respond_to? asked at run time, by the name's string: each class's own
+   methods by the value's class, then what every object has. */
+static void emit_respond_to_runtime_name(Compiler *c, int id, Buf *b, int recv, int argc, const int *argv) {
+  const NodeTable *nt = c->nt;
+  int tv = ++g_tmp;
+  /* boxed when the call is typed so (an IO's is, see the fold above) */
+  int boxed = repr_of(c, id).kind == RK_BOXED;
+  if (boxed) buf_puts(b, "sp_box_bool(");
+  buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, recv, b);
+  buf_printf(b, "; const char *_n%d = sp_poly_to_name(", tv); emit_boxed(c, argv[0], b);
+  buf_printf(b, "); sp_bool _a%d = ", tv);
+  if (argc >= 2) emit_cond(c, argv[1], b); else buf_puts(b, "0");
+  /* the value's class as the poly dispatch keys it: a boxed builtin a
+     reopening extended (a Time is an OBJ box naming SP_BUILTIN_TIME, a
+     String the string tag) maps to the reopening's entry, where the
+     plain cls_id never matched it */
+  buf_printf(b, "; sp_int _k%d = ", tv);
+  emit_poly_dispatch_key(c, tv, 1, 1, 0, b);
+  buf_puts(b, "; ((");
+  for (int k = 0; k < c->nclasses; k++) {
+    if (comp_class_is_module(c, &c->classes[k])) continue;
+    buf_printf(b, "(_k%d == %d && (", tv, k);
+    for (int s = 0; s < c->nscopes; s++)
+      if (c->scopes[s].name && !c->scopes[s].is_cmethod && !c->scopes[s].is_proc_form &&
+          comp_method_in_chain(c, k, c->scopes[s].name, NULL) == s)
+        emit_responds_name(c, k, c->scopes[s].name, tv, b);
+    for (int m = 0; m < c->n_native_methods; m++)
+      if (c->native_methods[m].class_id == k && !c->native_methods[m].kind)
+        emit_responds_name(c, k, c->native_methods[m].name, tv, b);
+    for (int p = k; p >= 0; p = c->classes[p].parent) {
+      ClassInfo *cl = &c->classes[p];
+      for (int r = 0; r < cl->nreaders; r++) emit_responds_name(c, k, cl->readers[r], tv, b);
+      for (int w = 0; w < cl->nwriters; w++) {
+        char wn[256];
+        snprintf(wn, sizeof wn, "%s=", cl->writers[w]);
+        emit_responds_name(c, k, wn, tv, b);
+      }
+      for (int a = 0; a < cl->naliases; a++) emit_responds_name(c, k, cl->alias_new[a], tv, b);
+    }
+    const char *const *imp[] = { enumerable_names, comparable_names, struct_names,
+                                 (const char *const[]){ "members", "to_h", "deconstruct", "deconstruct_keys", "with", NULL } };
+    for (int l = 0; l < 4; l++)
+      for (int i = 0; imp[l][i]; i++)
+        if (class_implicit_responds(c, k, imp[l][i])) emit_responds_name(c, k, imp[l][i], tv, b);
+    buf_puts(b, "0)) || ");
+  }
+  /* to include_all, Object's private methods (exit, puts) too, but not on
+     a BasicObject one, one whose class undefines the name, or a class value
+     (whose singleton may undefine it); a name an Object reopening defines
+     or undefines is left to the arms above */
+  const char *const *priv = object_private_method_names();
+  buf_printf(b, "0)) || (_a%d && (!strcmp(_n%d, \"initialize\") || (_t%d.tag != SP_TAG_CLASS && sp_str_in_list(_n%d, (const char *const[]){", tv, tv, tv, tv);
+  for (int u = 0; priv[u]; u++)
+    if (!root_reopen_defines(c, priv[u])) {
+      buf_puts(b, "\"");
+      emit_c_escaped(b, priv[u]);
+      buf_puts(b, "\", ");
+    }
+  buf_puts(b, "NULL})");
+  for (int k = 0; k < c->nclasses; k++) {
+    if (class_is_blank_slate(c, k)) { buf_printf(b, " && _k%d != %d", tv, k); continue; }
+    for (int u = 0; priv[u]; u++)
+      if (comp_is_undeffed_in_chain(c, k, priv[u])) {
+        buf_printf(b, " && !(_k%d == %d && !strcmp(_n%d, \"", tv, k, tv);
+        emit_c_escaped(b, priv[u]);
+        buf_puts(b, "\"))");
+      }
+  }
+  buf_puts(b, ")");
+  for (int s = 0; s < c->nscopes; s++) {
+    const Scope *ts = &c->scopes[s];
+    if (ts->name && ts->def_node >= 0 && ts->class_id < 0 && !ts->is_cmethod && !ts->is_proc_form)
+      buf_printf(b, " || !strcmp(_n%d, \"%s\")", tv, ts->name);
+  }
+  buf_printf(b, ")) || sp_poly_responds_builtin(_t%d, _n%d)", tv, tv);
+  /* a boxed IO: the methods IO reopenings add, by the handle's kind */
+  for (int s2 = 0; s2 < c->nscopes; s2++) {
+    Scope *ms = &c->scopes[s2];
+    if (!ms->name || ms->is_cmethod || ms->is_proc_form || ms->class_id < 0) continue;
+    if (!io_family_class(c, ms->class_id)) continue;
+    int dup = 0;
+    for (int s3 = 0; s3 < s2 && !dup; s3++)
+      dup = c->scopes[s3].name && !c->scopes[s3].is_cmethod && c->scopes[s3].class_id >= 0 &&
+            io_family_class(c, c->scopes[s3].class_id) && sp_streq(c->scopes[s3].name, ms->name);
+    if (dup) continue;
+    /* a private one too when the second argument is true (_a) */
+    Buf ab;
+    memset(&ab, 0, sizeof ab);
+    emit_io_pick(c, tv, ms->name, 0, &ab);
+    int pt = ++g_tmp;
+    char pn[24]; snprintf(pn, sizeof pn, "_p%d", pt);
+    buf_printf(b, " || (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO && !strcmp(_n%d, \"", tv, tv, tv);
+    emit_c_escaped(b, ms->name);
+    buf_printf(b, "\") && ({ int %s = %s; %s != 0x7fffffff && (_a%d || ", pn, ab.p, pn, tv);
+    emit_io_pick_public(c, ms->name, pn, b);
+    buf_puts(b, "); }))");
+    free(ab.p);
+  }
+  buf_puts(b, "; })");
+  if (boxed) buf_puts(b, ")");
+}
+
 /* respond_to?, method_defined? and its kin, const_set / const_get / const_defined? */
 int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
   if (sp_streq(name, "respond_to?") && argc >= 1 && !respond_to_user_defined(c, id, recv)) {
@@ -152,6 +263,20 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         if (run) { buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); "); }
         buf_printf(b, repr_of(c, id).kind == RK_BOXED ? "sp_box_bool(%d)" : "%d", ans);
         if (run) buf_puts(b, "; })");
+        return 1;
+      }
+      /* a user object's include_all known only at run time, or one of
+         Object's private methods (exit, puts) to a literal one where some
+         class could answer otherwise: the run-time answer, which reads the
+         flag and has Object's private methods for every value but a
+         BasicObject one or one whose class undefines the name. A name an
+         Object reopening defines or undefines is left to the arms below. */
+      if (ans < 0 && recv >= 0 && rt != TY_CLASS && argc >= 2 && !root_reopen_defines(c, qm) &&
+          (nt_kind(nt, argv[1]) == NK_TrueNode ? object_private_method_name(qm)
+                                               : ty_is_object(rt) && nt_kind(nt, argv[1]) != NK_FalseNode &&
+                                                 nt_kind(nt, argv[1]) != NK_NilNode) &&
+          respond_to_runtime_reaches(c, rt)) {
+        emit_respond_to_runtime_name(c, id, b, recv, argc, argv);
         return 1;
       }
       /* a subclass instance the receiver may hold answers by its own class */
@@ -270,85 +395,8 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       }
     }
     else if (recv >= 0 && rt != TY_CLASS && nt_kind(nt, argv[0]) != NK_SplatNode &&
-             /* an override answers only for its own class's objects (and a
-                boxed value, which dispatches) */
-             (!any_class_defines(c, "respond_to?") || g_poly_builtin_arm ||
-              !(rt == TY_POLY ||
-                (ty_is_object(rt) && comp_method_in_chain(c, ty_object_class(rt), "respond_to?", NULL) >= 0)))) {
-      int tv = ++g_tmp;
-      /* boxed when the call is typed so (an IO's is, see the fold above) */
-      int boxed = repr_of(c, id).kind == RK_BOXED;
-      if (boxed) buf_puts(b, "sp_box_bool(");
-      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, recv, b);
-      buf_printf(b, "; const char *_n%d = sp_poly_to_name(", tv); emit_boxed(c, argv[0], b);
-      buf_printf(b, "); sp_bool _a%d = ", tv);
-      if (argc >= 2) emit_cond(c, argv[1], b); else buf_puts(b, "0");
-      /* the value's class as the poly dispatch keys it: a boxed builtin a
-         reopening extended (a Time is an OBJ box naming SP_BUILTIN_TIME, a
-         String the string tag) maps to the reopening's entry, where the
-         plain cls_id never matched it */
-      buf_printf(b, "; sp_int _k%d = ", tv);
-      emit_poly_dispatch_key(c, tv, 1, 1, 0, b);
-      buf_puts(b, "; ((");
-      for (int k = 0; k < c->nclasses; k++) {
-        if (comp_class_is_module(c, &c->classes[k])) continue;
-        buf_printf(b, "(_k%d == %d && (", tv, k);
-        for (int s = 0; s < c->nscopes; s++)
-          if (c->scopes[s].name && !c->scopes[s].is_cmethod && !c->scopes[s].is_proc_form &&
-              comp_method_in_chain(c, k, c->scopes[s].name, NULL) == s)
-            emit_responds_name(c, k, c->scopes[s].name, tv, b);
-        for (int m = 0; m < c->n_native_methods; m++)
-          if (c->native_methods[m].class_id == k && !c->native_methods[m].kind)
-            emit_responds_name(c, k, c->native_methods[m].name, tv, b);
-        for (int p = k; p >= 0; p = c->classes[p].parent) {
-          ClassInfo *cl = &c->classes[p];
-          for (int r = 0; r < cl->nreaders; r++) emit_responds_name(c, k, cl->readers[r], tv, b);
-          for (int w = 0; w < cl->nwriters; w++) {
-            char wn[256];
-            snprintf(wn, sizeof wn, "%s=", cl->writers[w]);
-            emit_responds_name(c, k, wn, tv, b);
-          }
-          for (int a = 0; a < cl->naliases; a++) emit_responds_name(c, k, cl->alias_new[a], tv, b);
-        }
-        const char *const *imp[] = { enumerable_names, comparable_names, struct_names,
-                                     (const char *const[]){ "members", "to_h", "deconstruct", "deconstruct_keys", "with", NULL } };
-        for (int l = 0; l < 4; l++)
-          for (int i = 0; imp[l][i]; i++)
-            if (class_implicit_responds(c, k, imp[l][i])) emit_responds_name(c, k, imp[l][i], tv, b);
-        buf_puts(b, "0)) || ");
-      }
-      buf_printf(b, "0)) || (_a%d && (!strcmp(_n%d, \"initialize\") || !strcmp(_n%d, \"initialize_copy\")", tv, tv, tv);
-      for (int s = 0; s < c->nscopes; s++) {
-        const Scope *ts = &c->scopes[s];
-        if (ts->name && ts->def_node >= 0 && ts->class_id < 0 && !ts->is_cmethod && !ts->is_proc_form)
-          buf_printf(b, " || !strcmp(_n%d, \"%s\")", tv, ts->name);
-      }
-      buf_printf(b, ")) || sp_poly_responds_builtin(_t%d, _n%d)", tv, tv);
-      /* a boxed IO: the methods IO reopenings add, by the handle's kind */
-      for (int s2 = 0; s2 < c->nscopes; s2++) {
-        Scope *ms = &c->scopes[s2];
-        if (!ms->name || ms->is_cmethod || ms->is_proc_form || ms->class_id < 0) continue;
-        if (!io_family_class(c, ms->class_id)) continue;
-        int dup = 0;
-        for (int s3 = 0; s3 < s2 && !dup; s3++)
-          dup = c->scopes[s3].name && !c->scopes[s3].is_cmethod && c->scopes[s3].class_id >= 0 &&
-                io_family_class(c, c->scopes[s3].class_id) && sp_streq(c->scopes[s3].name, ms->name);
-        if (dup) continue;
-        /* a private one too when the second argument is true (_a) */
-        Buf ab;
-        memset(&ab, 0, sizeof ab);
-        emit_io_pick(c, tv, ms->name, 0, &ab);
-        int pt = ++g_tmp;
-        char pn[24]; snprintf(pn, sizeof pn, "_p%d", pt);
-        buf_printf(b, " || (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO && !strcmp(_n%d, \"", tv, tv, tv);
-        emit_c_escaped(b, ms->name);
-        buf_printf(b, "\") && ({ int %s = %s; %s != 0x7fffffff && (_a%d || ", pn, ab.p, pn, tv);
-        emit_io_pick_public(c, ms->name, pn, b);
-        buf_puts(b, "); }))");
-        free(ab.p);
-      }
-      buf_puts(b, "; })");
-      if (boxed) buf_puts(b, ")");
+             respond_to_runtime_reaches(c, rt)) {
+      emit_respond_to_runtime_name(c, id, b, recv, argc, argv);
       return 1;
     }
   }

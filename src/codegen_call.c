@@ -27173,6 +27173,35 @@ void emit_pre_format_args(Compiler *c, const int *av, int ac, int ta) {
 const char *const respond_universal[] = {
 #include "object_public_method_names.inc"
   NULL };
+/* Object's instance methods, public and private (Kernel's puts, exit,
+   raise, ...) */
+const char *const respond_universal_all[] = {
+#include "object_method_names.inc"
+  NULL };
+
+/* Is `qm` one of Object's private instance methods? Every object but a
+   BasicObject one has them, so they answer respond_to?(qm, true). */
+const char *const *object_private_method_names(void) {
+  static const char *priv[sizeof respond_universal_all / sizeof respond_universal_all[0]];
+  static int built = 0;
+  if (!built) {
+    int n = 0;
+    for (int u = 0; respond_universal_all[u]; u++) {
+      int pub = 0;
+      for (int v = 0; respond_universal[v] && !pub; v++) pub = sp_streq(respond_universal_all[u], respond_universal[v]);
+      if (!pub) priv[n++] = respond_universal_all[u];
+    }
+    priv[n] = NULL;
+    built = 1;
+  }
+  return priv;
+}
+int object_private_method_name(const char *qm) {
+  if (!qm) return 0;
+  const char *const *priv = object_private_method_names();
+  for (int u = 0; priv[u]; u++) if (sp_streq(qm, priv[u])) return 1;
+  return 0;
+}
 
 /* What an instance of user class cid answers to Object#respond_to?(qm): 2 =
    true, 1 = only with include_all (a private or protected match), 0 = false.
@@ -27204,7 +27233,11 @@ static int obj_responds_answer(Compiler *c, int cid, const char *qm) {
   /* the names the class answers without a method-table entry: an
      Enumerable includer's, a Comparable's, a Struct's or a Data's
      core names (#2663) */
-  if (!found) return class_implicit_responds(c, cid, qm) ? 2 : 0;
+  if (!found && class_implicit_responds(c, cid, qm)) return 2;
+  /* Object's private methods (exit, puts, raise) answer to include_all;
+     one an Object reopening redefines is left as the chain reads it */
+  if (!found) return object_private_method_name(qm) && !class_is_blank_slate(c, cid) &&
+                     !root_reopen_defines(c, qm) ? 1 : 0;
   return comp_method_vis_in_chain(c, cid, qm) == SP_VIS_PUBLIC ? 2 : 1;
 }
 
@@ -27278,8 +27311,9 @@ int emit_super_respond_to(Compiler *c, int id, Scope *s, Buf *b) {
   buf_printf(b, "; sp_bool _r%d = 0; switch (_s%d) {", t, t);
   int ncand = 0;
   char **cand = dsend_candidates(c, &ncand);
-  /* the names every object has privately, which neither list need carry */
-  static const char *const priv_universal[] = { "initialize", "initialize_copy", NULL };
+  /* the names every object has privately (Object's private methods), which
+     neither list need carry */
+  const char *const *priv_universal = object_private_method_names();
   for (int pass = 0; pass < 3; pass++) {
     int n = pass == 1 ? ncand : 0;
     const char *const *list = pass == 2 ? priv_universal : respond_universal;
@@ -27392,6 +27426,41 @@ int emit_respond_to_by_cls(Compiler *c, int recv, const char *qm, int argc,
   buf_puts(b, "; })");
   return 1;
 }
+/* Does a reopening of Object, Kernel or BasicObject define or undefine qm?
+   Then the name is left to the class chain, as it was read before Object's
+   private methods were answered. */
+int root_reopen_defines(Compiler *c, const char *qm) {
+  static const NodeTable *memo_nt = NULL; static int memo_ncl = -1, roots[8], nroots = 0;
+  if (memo_nt != c->nt || memo_ncl != c->nclasses) {
+    memo_nt = c->nt; memo_ncl = c->nclasses; nroots = 0;
+    for (int k = 0; k < c->nclasses && nroots < 8; k++)
+      if (c->classes[k].name && is_object_root(c->classes[k].name)) roots[nroots++] = k;
+  }
+  for (int i = 0; i < nroots; i++) {
+    ClassInfo *kc = &c->classes[roots[i]];
+    if (comp_method_in_class(c, roots[i], qm) >= 0 || comp_is_reader(kc, qm)) return 1;
+    for (int u = 0; u < kc->nundefs; u++) if (sp_streq(kc->undefs[u], qm)) return 1;
+  }
+  return 0;
+}
+/* Could some class answer respond_to?(qm, true) for one of Object's private
+   methods other than true? A BasicObject one has none of them, a class that
+   undefines qm lacks it, and one with its own respond_to? (instance or
+   class-level) answers for itself. */
+int private_answer_overridden(Compiler *c, const char *qm, TyKind rt) {
+  int boxed = rt == TY_POLY || rt == TY_UNKNOWN;
+  for (int k = 0; k < c->nclasses; k++) {
+    /* a builtin value is only ever a builtin class's (or a reopening's) */
+    const char *kn = c->classes[k].name;
+    int builtin = kn && (is_builtin_class_name(kn) || is_builtin_module_const_name(kn) ||
+                         is_object_root(kn));
+    if (!boxed && !builtin) continue;
+    if (class_is_blank_slate(c, k) || comp_is_undeffed_in_chain(c, k, qm) ||
+        comp_method_in_class(c, k, "respond_to?") >= 0 ||
+        comp_cmethod_in_chain(c, k, "respond_to?", NULL) >= 0) return 1;
+  }
+  return 0;
+}
 int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const char *qm,
                                     int argc, const int *argv) {
   const NodeTable *nt = c->nt;
@@ -27448,6 +27517,18 @@ int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const cha
       if (ts->name && ts->def_node >= 0 && ts->class_id < 0 && !ts->is_cmethod &&
           !ts->is_proc_form && sp_streq(ts->name, qm)) { resolved = yes = 1; break; }
     }
+  }
+  /* Object's private methods (exit, puts, raise) are every object's, so a
+     builtin value, a class value or a boxed one answers them to include_all,
+     whatever public method of the name its own class adds (IO#puts). Only
+     while no class could answer otherwise: a BasicObject one, one that
+     undefines the name, one with its own respond_to?. A user object answers
+     through its class chain below (obj_responds_answer). */
+  if (!resolved && foldable && include_all && recv >= 0 && !ty_is_object(rt) && rt != TY_CLASS &&
+      object_private_method_name(qm) && !root_reopen_defines(c, qm)) {
+    if (!private_answer_overridden(c, qm, rt)) resolved = yes = 1;
+    /* the value's class picks, at run time (emit_call_reflection_arms) */
+    else if (respond_to_runtime_reaches(c, rt)) return -1;
   }
   /* An IO answers by its kind -- a File, a socket, a server socket, a stat
      share the type -- which only the handle knows: sp_io_responds decides at
