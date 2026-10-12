@@ -6778,6 +6778,19 @@ static void emit_pm_deconstruct_keys_arg(Compiler *c, int pat, Buf *b) {
   buf_printf(b, " sp_box_poly_array(_t%d); })", tk);
 }
 
+/* The argument a hash pattern passes to the program's #deconstruct_keys
+   `mi`: the keys, or, for `def deconstruct_keys(*)`, an Array holding them
+   as the rest's one element (its parameter is that Array). */
+static void emit_pm_deconstruct_keys_call_arg(Compiler *c, int mi, int pat, Buf *b) {
+  Scope *m = &c->scopes[mi];
+  LocalVar *p0 = m->nparams > 0 && m->pnames[0] ? scope_local(m, m->pnames[0]) : NULL;
+  if (m->rest_idx != 0 || !p0 || p0->type != TY_POLY_ARRAY) { emit_pm_deconstruct_keys_arg(c, pat, b); return; }
+  int ra = ++g_tmp;
+  buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); sp_PolyArray_push(_t%d, ", ra, ra, ra);
+  emit_pm_deconstruct_keys_arg(c, pat, b);
+  buf_printf(b, "); _t%d; })", ra);
+}
+
 /* A user object a Regexp's === converts through its #to_str (CRuby's
    rb_check_string_type): boxed, the runtime reaches the method through the
    conversion bridge, so only a #to_str the bridge carries qualifies. Any
@@ -7167,7 +7180,7 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
         emit_indent(ds, di);
         emit_ctype(c, drt, ds);
         Buf kab; memset(&kab, 0, sizeof kab);
-        emit_pm_deconstruct_keys_arg(c, pat, &kab);
+        emit_pm_deconstruct_keys_call_arg(c, dm, pat, &kab);
         buf_printf(ds, " _t%d = ", dt);
         emit_obj_deconstruct_open(c, pt, drt, t, ds);
         if (isv) buf_printf(ds, "sp_%s_deconstruct_keys(_t%d, %s)", dcn, t, kab.p ? kab.p : "sp_box_nil()");
@@ -8252,7 +8265,7 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
         arm_t = ++g_tmp;
         emit_indent(b, indent + 1); emit_ctype(c, drt, b);
         Buf kab2; memset(&kab2, 0, sizeof kab2);
-        emit_pm_deconstruct_keys_arg(c, pat, &kab2);
+        emit_pm_deconstruct_keys_call_arg(c, dm, pat, &kab2);
         buf_printf(b, " _t%d = ", arm_t);
         emit_obj_deconstruct_open(c, pt, rrt, t, b);
         if (isv) buf_printf(b, "sp_%s_deconstruct_keys(_t%d, %s)", dcn, t, kab2.p ? kab2.p : "sp_box_nil()");
