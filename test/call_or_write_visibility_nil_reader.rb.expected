@@ -1,0 +1,17 @@
+1
+2
+7
+8
+[:raised, NoMethodError]
+[:raised, NoMethodError]
+[:stored, 5]
+[:raised, NoMethodError]
+5
+[:stored, nil]
+[:raised, NoMethodError]
+nil
+[:raised, NoMethodError]
+[:raised, NoMethodError]
+[:stored, 4]
+true
+:v=

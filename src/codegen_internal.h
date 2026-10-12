@@ -830,6 +830,7 @@ int  needs_root(TyKind t);
 int  kw_flag_static(Compiler *c, int node);
 void emit_kw_flag(Compiler *c, int node, Buf *out);
 int  emit_vis_refusal(Compiler *c, int id, Buf *b);
+int  method_vis_for_caller(Compiler *c, int id, int vcid, const char *vnm);
 void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b);
 /* The per-class `case` arms that store `src` into each candidate class's
    `base` writer slot through the object pointer text `objp` (codegen_stmt.c). */

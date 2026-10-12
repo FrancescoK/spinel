@@ -18469,6 +18469,28 @@ static int emit_object_reopen_vis_refusal(Compiler *c, int id, int vrecv, TyKind
   return 1;
 }
 /* --plan-check: a call refused for its visibility binds no method */
+/* The visibility vcid's method vnm has for an explicit-receiver call at
+   node id: the declared one, except that a protected method is public to a
+   caller whose self is an instance of the declaring class. */
+int method_vis_for_caller(Compiler *c, int id, int vcid, const char *vnm) {
+  int owner = -1;
+  int vis = comp_method_vis_declared(c, vcid, vnm, &owner);
+  if (vis == SP_VIS_PROTECTED) {
+    /* the caller's self must be an instance of the declaring class: that
+       class itself or a descendant */
+    Scope *cs = comp_scope_of(c, id);
+    int caller = (cs && !cs->is_cmethod) ? cs->class_id : -1;
+    if (caller >= 0 && owner >= 0 && is_descendant(c, caller, owner)) vis = SP_VIS_PUBLIC;
+    /* a module's protected method: the caller is an instance of the module
+       when its class took the method from it */
+    if (vis == SP_VIS_PROTECTED && caller >= 0 && owner >= 0) {
+      int cmi = comp_method_in_chain(c, caller, vnm, NULL);
+      if (cmi >= 0 && cmi < c->nscopes && c->scopes[cmi].origin_module_ci == owner + 1) vis = SP_VIS_PUBLIC;
+    }
+  }
+  return vis;
+}
+
 int emit_vis_refusal(Compiler *c, int id, Buf *b) {
   int r = emit_vis_refusal_x(c, id, b);
   if (r && g_plan_check) ucall_refused(id);
@@ -18500,21 +18522,9 @@ static int emit_vis_refusal_x(Compiler *c, int id, Buf *b) {
   int at_main = top_priv && vrecv < 0;
   if (vnm && vcid < 0 && vrecv >= 0) return emit_cmethod_vis_refusal(c, id, vrecv, vnm, plain, b);
   if (!vnm || (vcid < 0 && !at_main)) return 0;
-  int owner = -1;
-  int vis = top_priv ? SP_VIS_PRIVATE : comp_method_vis_declared(c, vcid, vnm, &owner);
-  if (vis == SP_VIS_PROTECTED && plain) {
-    /* the caller's self must be an instance of the declaring class: that
-       class itself or a descendant */
-    Scope *cs = comp_scope_of(c, id);
-    int caller = (cs && !cs->is_cmethod) ? cs->class_id : -1;
-    if (caller >= 0 && owner >= 0 && is_descendant(c, caller, owner)) vis = SP_VIS_PUBLIC;
-    /* a module's protected method: the caller is an instance of the module
-       when its class took the method from it */
-    if (vis == SP_VIS_PROTECTED && caller >= 0 && owner >= 0) {
-      int cmi = comp_method_in_chain(c, caller, vnm, NULL);
-      if (cmi >= 0 && cmi < c->nscopes && c->scopes[cmi].origin_module_ci == owner + 1) vis = SP_VIS_PUBLIC;
-    }
-  }
+  int vis = top_priv ? SP_VIS_PRIVATE
+          : plain ? method_vis_for_caller(c, id, vcid, vnm)
+                  : comp_method_vis_declared(c, vcid, vnm, NULL);
   if (vis == SP_VIS_PUBLIC) return 0;
   const char *vrn = at_main ? "main" : class_ruby_name(c, vcid) ? class_ruby_name(c, vcid) : c->classes[vcid].name;
   buf_puts(b, "(");
