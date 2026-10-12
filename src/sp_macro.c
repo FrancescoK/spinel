@@ -906,7 +906,14 @@ static int mx_eval(MxCtx *c, pm_node_t *n, Mv *out) {
    the macro's local only at that depth (a block parameter of the same name
    is not). */
 
-typedef struct { MxCtx *c; const uint8_t *from; MxBuf *b; int bad; uint32_t scope; } MxSubst;
+typedef struct { MxCtx *c; const uint8_t *from; MxBuf *b; int bad; uint32_t scope; int clauses; } MxSubst;
+
+static int mx_call_is(const pm_node_t *n, const char *a, const char *b) {
+  char *nm = mx_name(((const pm_call_node_t *)n)->name);
+  int r = nm && (strcmp(nm, a) == 0 || strcmp(nm, b) == 0);
+  free(nm);
+  return r;
+}
 
 static bool mx_subst_visit(const pm_node_t *n, void *data) {
   MxSubst *s = (MxSubst *)data;
@@ -920,6 +927,17 @@ static bool mx_subst_visit(const pm_node_t *n, void *data) {
     return false;
   }
   if (PM_NODE_TYPE(n) == PM_DEF_NODE) { s->bad = 1; return false; }   /* a scope of its own */
+  /* clauses moved out of a block into a def (mx_subst_body): what asks
+     about its own scope or place in the source would answer for the def,
+     not the block. `defined?(name)` read the substituted value as an
+     expression, and `__LINE__` named the expanded line. */
+  if (s->clauses &&
+      (PM_NODE_TYPE(n) == PM_DEFINED_NODE || PM_NODE_TYPE(n) == PM_SOURCE_LINE_NODE ||
+       (PM_NODE_TYPE(n) == PM_CALL_NODE && !((pm_call_node_t *)n)->receiver &&
+        mx_call_is(n, "local_variables", "binding")))) {
+    s->bad = 1;
+    return false;
+  }
   Mv v; int is_var = 0; char *nm = NULL;
   pm_constant_id_t wn = 0; uint32_t wd = 0;
   switch (PM_NODE_TYPE(n)) {
@@ -957,12 +975,13 @@ static bool mx_subst_visit(const pm_node_t *n, void *data) {
 /* `scope`: the depth of the macro's own locals as seen from `n` (1 in a
    lambda body the macro passes on). */
 
-/* The source from `from` to `to`, with n's macro locals substituted; `self`
-   also visits n itself, not only its children. */
+/* The source from `from` to `to`, with n's macro locals substituted. With
+   `clauses`, the span is n's clauses moved out of a block, and n itself is
+   not visited, only its children. */
 static int mx_subst_span(MxCtx *c, pm_node_t *n, const uint8_t *from, const uint8_t *to,
-                         MxBuf *b, uint32_t scope, int self) {
-  MxSubst s = { c, from, b, 0, scope };
-  if (!self || mx_subst_visit(n, &s)) pm_visit_child_nodes(n, mx_subst_visit, &s);
+                         MxBuf *b, uint32_t scope, int clauses) {
+  MxSubst s = { c, from, b, 0, scope, clauses };
+  if (clauses || mx_subst_visit(n, &s)) pm_visit_child_nodes(n, mx_subst_visit, &s);
   if (s.bad || s.from > to) return 0;
   mxb_putn(b, (const char *)s.from, (size_t)(to - s.from));
   return 1;
@@ -971,7 +990,7 @@ static int mx_subst_span(MxCtx *c, pm_node_t *n, const uint8_t *from, const uint
 static int mx_subst_text_at(MxCtx *c, pm_node_t *n, MxBuf *b, uint32_t scope) {
   /* `n` itself too: a read, a write of a macro local, or a block or lambda
      handed over whole (whose body is one scope further in) */
-  return mx_subst_span(c, n, n->location.start, n->location.end, b, scope, 1);
+  return mx_subst_span(c, n, n->location.start, n->location.end, b, scope, 0);
 }
 
 static int mx_subst_text(MxCtx *c, pm_node_t *n, MxBuf *b) { return mx_subst_text_at(c, n, b, 0); }
@@ -987,7 +1006,7 @@ static int mx_subst_body(MxCtx *c, pm_node_t *body, MxBuf *o) {
     pm_node_t *first = bn->statements ? (pm_node_t *)bn->statements : bn->rescue_clause ? (pm_node_t *)bn->rescue_clause
                      : bn->else_clause ? (pm_node_t *)bn->else_clause : (pm_node_t *)bn->ensure_clause;
     if (!first || !bn->end_keyword_loc.start) return 0;
-    if (!mx_subst_span(c, body, first->location.start, bn->end_keyword_loc.start, o, 1, 0)) return 0;
+    if (!mx_subst_span(c, body, first->location.start, bn->end_keyword_loc.start, o, 1, 1)) return 0;
     mxb_puts(o, "\n");
     return 1;
   }
