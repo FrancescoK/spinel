@@ -3321,6 +3321,50 @@ int desugar_match_predicate(Compiler *c) {
   return changed;
 }
 
+static int step_kw_tmp(NodeTable *nt, Scope *sc, const char *nm, int value) {
+  scope_local_intern(sc, nm);
+  int n = nt_new_node(nt, value >= 0 ? "LocalVariableWriteNode" : "LocalVariableReadNode");
+  nt_node_set_str(nt, n, "name", nm);
+  nt_node_set_int(nt, n, "depth", 0);
+  if (value >= 0) nt_node_set_ref(nt, n, "value", value);
+  return n;
+}
+
+static int step_kw_paren(NodeTable *nt, int v) {
+  if (nt_kind(nt, v) != NK_BeginNode) return v;
+  int s = nt_new_node(nt, "StatementsNode"), p = nt_new_node(nt, "ParenthesesNode");
+  nt_node_set_arr(nt, s, "body", &v, 1);
+  nt_node_set_ref(nt, p, "body", s);
+  return p;
+}
+
+void step_kw_positional(Compiler *c, NodeTable *nt, int id, int args, int to_v, int by_v, int by_first) {
+  int sc = c->nscope[id], base = nt->count;
+  Scope *scp = comp_scope_of(c, id);
+  if (by_v < 0) { by_v = nt_new_node(nt, "IntegerNode"); nt_node_set_int(nt, by_v, "value", 1); }
+  if (by_first && !call_is_safe_nav(nt, id) && (subtree_has_side_effect(c, by_v) || subtree_has_side_effect(c, to_v))) {
+    int recv = nt_ref(nt, id, "receiver"), k = nt_kind(nt, recv), st[3], n = 0;
+    char rn[32], bn[32];
+    snprintf(rn, sizeof rn, "__stpr%d", base);
+    snprintf(bn, sizeof bn, "__stpb%d", base);
+    if (k != NK_IntegerNode && k != NK_FloatNode) {
+      st[n++] = step_kw_tmp(nt, scp, rn, recv);
+      nt_node_set_ref(nt, id, "receiver", step_kw_tmp(nt, scp, rn, -1));
+    }
+    st[n++] = step_kw_tmp(nt, scp, bn, by_v);
+    by_v = step_kw_tmp(nt, scp, bn, -1);
+    int p = nt_new_node(nt, "ParenthesesNode"), body = nt_new_node(nt, "StatementsNode");
+    st[n++] = p;
+    nt_node_set_arr(nt, body, "body", st, n);
+    nt_node_set_ref(nt, p, "body", body);
+    nt_swap_nodes(nt, id, p);
+  }
+  int pos[2] = { step_kw_paren(nt, to_v), step_kw_paren(nt, by_v) };
+  nt_node_set_arr(nt, args, "arguments", pos, 2);
+  comp_grow_node_arrays(c);
+  for (int j = base; j < nt->count; j++) c->nscope[j] = sc;
+}
+
 int desugar_step_kwargs(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -3336,7 +3380,7 @@ int desugar_step_kwargs(Compiler *c) {
     if (ac != 1 || !av) continue;
     int kh = av[0];
     if (!nt_type(nt, kh) || !sp_streq(nt_type(nt, kh), "KeywordHashNode")) continue;
-    int to_v = -1, by_v = -1, other = 0;
+    int to_v = -1, by_v = -1, other = 0, by_first = 0;
     int en = 0; const int *els = nt_arr(nt, kh, "elements", &en);
     for (int i = 0; i < en; i++) {
       if (!nt_type(nt, els[i]) || !sp_streq(nt_type(nt, els[i]), "AssocNode")) { other = 1; break; }
@@ -3344,21 +3388,11 @@ int desugar_step_kwargs(Compiler *c) {
       const char *kn = (key >= 0 && nt_type(nt, key) && sp_streq(nt_type(nt, key), "SymbolNode"))
                        ? nt_str(nt, key, "value") : NULL;
       if (kn && sp_streq(kn, "to")) to_v = nt_ref(nt, els[i], "value");
-      else if (kn && sp_streq(kn, "by")) by_v = nt_ref(nt, els[i], "value");
+      else if (kn && sp_streq(kn, "by")) { by_v = nt_ref(nt, els[i], "value"); by_first = to_v < 0; }
       else { other = 1; break; }
     }
     if (other || to_v < 0) continue;   /* only the to:[/by:] form; `to` is required */
-    int sc = c->nscope[id];
-    int base = nt->count;
-    if (by_v < 0) {
-      by_v = nt_new_node(nt, "IntegerNode");
-      if (by_v < 0) continue;
-      nt_node_set_int(nt, by_v, "value", 1);
-    }
-    int pos[2] = { to_v, by_v };
-    nt_node_set_arr(nt, args, "arguments", pos, 2);
-    comp_grow_node_arrays(c);
-    for (int j = base; j < nt->count; j++) c->nscope[j] = sc;
+    step_kw_positional(c, nt, id, args, to_v, by_v, by_first);
     changed = 1;
   }
   return changed;

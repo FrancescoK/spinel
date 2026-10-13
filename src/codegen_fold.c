@@ -3155,8 +3155,8 @@ static int emit_step_boxed_limit(Compiler *c, int recv, const int *sv, int sc, B
   if (sc >= 2) emit_int_expr(c, sv[1], b); else buf_puts(b, "1");
   buf_printf(b, "; if (_es%d == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");"
                 " _el%d.tag == SP_TAG_NIL ? sp_range_endless_step(sp_box_int(_er%d), sp_box_int(_es%d))"
-                " : sp_Enumerator_new_from(sp_box_int_array(sp_IntArray_from_range_step(_er%d, sp_poly_arg_int_chk(_el%d), _es%d, 0))); })",
-             t, t, t, t, t, t, t);
+                " : (sp_poly_cmp_ck(sp_box_int(_er%d), _el%d), sp_Enumerator_new_from(sp_box_int_array(sp_IntArray_from_range_step(_er%d, sp_poly_arg_int_chk(_el%d), _es%d, 0)))); })",
+             t, t, t, t, t, t, t, t, t);
   return 1;
 }
 
