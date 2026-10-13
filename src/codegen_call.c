@@ -12778,6 +12778,17 @@ static int emit_hash_new_block_arg(Compiler *c, int id, int argc, Buf *b) {
   return 1;
 }
 
+/* Is Array.new(n, fill)'s fill held only in its C temp across the array's
+   allocation: a fresh handle box under --share-strings, or an object the
+   operand builds where it stands (`Array.new(2, {})`, `Array.new(3, "x#{i}")`),
+   which that allocation freed before the first push? A numeric fill holds no
+   reference, and a variable's or a constant's is held where it is. */
+static int array_fill_held_only_here(Compiler *c, int fill, int fh, const char *k) {
+  NodeKind fk = nt_kind(c->nt, fill);
+  if (fk == NK_LocalVariableReadNode || fk == NK_InstanceVariableReadNode || repr_static_read_kind(fk)) return 0;
+  if (fh) return 1;
+  return !is_numeric_literal_tag(k) && operand_allocates_beside(c, fill);
+}
 static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, int *out) {
   if (!(recv >= 0 && (is_hash_constructor(name)))) return 0;
   const char *rty = nt_type(nt, recv);
@@ -13600,10 +13611,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         }
         buf_puts(g_pre, ";\n");
         emit_indent(g_pre, g_indent);
-        /* a fresh handle box lives only here across the array's allocation
-           (a variable's is held by the variable) */
-        NodeKind fk = nt_kind(nt, argv[1]);
-        if (fh && fk != NK_LocalVariableReadNode && fk != NK_InstanceVariableReadNode && !repr_static_read_kind(fk)) { emit_gc_root_tmp(c, TY_POLY, tv, g_pre); buf_puts(g_pre, "\n"); emit_indent(g_pre, g_indent); }
+        if (array_fill_held_only_here(c, argv[1], fh, k)) { emit_gc_root_tmp(c, fh || ar.elem == TY_POLY ? TY_POLY : ar.elem, tv, g_pre); buf_puts(g_pre, "\n"); emit_indent(g_pre, g_indent); }
         if (is_numeric_literal_tag(k) && *nil_store_sfx(c, k, argv[1])) {
           buf_printf(g_pre, "sp_%sArray *_t%d = _t%d.nil ? sp_%sArray_new_nil(_t%d) : sp_%sArray_new_fill(_t%d, _t%d.v);\n",
                      k, tr, tv, k, tn, k, tn, tv);
