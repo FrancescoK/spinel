@@ -6063,6 +6063,42 @@ void resolve_parents(Compiler *c) {
   mark_anon_superclass_reflection(c);
 }
 
+/* Does class p define instance method od before node `at`? */
+static int inherited_alias_def_before(Compiler *c, int p, const char *od, int at) {
+  for (int si = 1; si < c->nscopes; si++) {
+    Scope *sc = &c->scopes[si];
+    if (sc->class_id == p && !sc->is_cmethod && sc->name && sp_streq(sc->name, od) &&
+        sc->def_node >= 0 && sc->def_node < at) return 1;
+  }
+  return 0;
+}
+
+/* An ancestor's method an alias took is the body in effect where the alias
+   appears; one of the ancestors up to the owner `p` that defines the name
+   again after it would take its place here, where CRuby keeps the earlier
+   body, so that is refused. */
+static void inherited_alias_refuse_later_def(Compiler *c, int ci, int a, int p) {
+  ClassInfo *cls = &c->classes[ci];
+  int at = cls->alias_node[a];
+  for (int q = cls->parent; q >= 0; q = c->classes[q].parent) {
+    for (int si = 1; si < c->nscopes; si++) {
+      Scope *sc = &c->scopes[si];
+      if (sc->class_id != q || sc->is_cmethod || !sc->name || !sp_streq(sc->name, cls->alias_old[a]) ||
+          sc->def_node <= at) continue;
+      /* the hidden alias of a forwarder (desugar_inherited_aliases) by
+         the name the program wrote */
+      const char *nw = cls->alias_new[a], *hash = strchr(nw, '#');
+      int nl = hash ? (int)(hash - nw) : (int)strlen(nw);
+      char msg[512];
+      snprintf(msg, sizeof msg, "%s#%.*s: alias of an inherited method that %s defines again after it is not supported; "
+               "see docs/limitations.md", cls->name, nl, nw, c->classes[q].name);
+      unsupported_feature(c, at, msg);
+      return;
+    }
+    if (q == p) return;
+  }
+}
+
 /* An alias of a method this class only INHERITS names the ancestor's body: a
    redefinition later in the same class, by a def or by another alias, must
    not capture it. Record where the lookup resumes, now that superclasses are
@@ -6085,15 +6121,20 @@ void resolve_inherited_aliases(Compiler *c) {
       }
       for (int b = 0; !own && !later && b < cls->naliases; b++)
         if (b != a && cls->alias_node[b] > cls->alias_node[a] && sp_streq(cls->alias_new[b], od)) later = 1;
-      if (own || !later) continue;
-      /* the table holds `class << self` aliases too: an ancestor's class
-         method is the body such an alias took */
-      for (int p = c->classes[ci].parent; p >= 0; p = c->classes[p].parent)
-        if (comp_method_in_class(c, p, od) >= 0 || comp_cmethod_in_class(c, p, od) >= 0) {
-          cls->alias_cls[a] = p;
-          comp_class_shape_changed();
-          break;
-        }
+      if (own) continue;
+      /* Not only where the class redefines the name after the alias: the
+         body the alias took is the ancestor's defined before it, whatever a
+         subclass overrides the name with. The table holds `class << self`
+         aliases too: an ancestor's class method is the body such an alias
+         took. */
+      for (int p = c->classes[ci].parent; p >= 0; p = c->classes[p].parent) {
+        int before = inherited_alias_def_before(c, p, od, cls->alias_node[a]);
+        if (!before && !(later && comp_method_in_class(c, p, od) >= 0) && comp_cmethod_in_class(c, p, od) < 0)
+          continue;
+        if (cls->alias_cls[a] != p) { cls->alias_cls[a] = p; comp_class_shape_changed(); }
+        if (before) inherited_alias_refuse_later_def(c, ci, a, p);
+        break;
+      }
     }
   }
 }

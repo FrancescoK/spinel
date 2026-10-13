@@ -12991,6 +12991,43 @@ static int alias_class_defines(const NodeTable *nt, const char *cls, const char 
   return 0;
 }
 
+/* `def <nw>(*spinel_alias_a__, &spinel_alias_b__) = <target>(*..., &...)`,
+   shaped like node `like` */
+static int alias_forwarder_like(NodeTable *nt, int like, const char *nw, const char *target) {
+  int d = fwd_new_node_like(nt, like, "DefNode");
+  int ps = fwd_new_node_like(nt, like, "ParametersNode");
+  int rp = fwd_new_node_like(nt, like, "RestParameterNode");
+  int bp = fwd_new_node_like(nt, like, "BlockParameterNode");
+  nt_node_set_str(nt, rp, "name", "spinel_alias_a__");
+  nt_node_set_str(nt, bp, "name", "spinel_alias_b__");
+  nt_node_set_ref(nt, ps, "rest", rp);
+  nt_node_set_ref(nt, ps, "block", bp);
+  int call = fwd_new_node_like(nt, like, "CallNode");
+  int args = fwd_new_node_like(nt, like, "ArgumentsNode");
+  int sp = fwd_new_node_like(nt, like, "SplatNode");
+  nt_node_set_ref(nt, sp, "expression", local_read_like(nt, like, "spinel_alias_a__"));
+  nt_node_set_arr(nt, args, "arguments", &sp, 1);
+  int ba = fwd_new_node_like(nt, like, "BlockArgumentNode");
+  nt_node_set_ref(nt, ba, "expression", local_read_like(nt, like, "spinel_alias_b__"));
+  nt_node_set_str(nt, call, "name", target);
+  nt_node_set_ref(nt, call, "arguments", args);
+  nt_node_set_ref(nt, call, "block", ba);
+  int bd = fwd_new_node_like(nt, like, "StatementsNode");
+  nt_node_set_arr(nt, bd, "body", &call, 1);
+  nt_node_set_str(nt, d, "name", nw);
+  nt_node_set_ref(nt, d, "parameters", ps);
+  nt_node_set_ref(nt, d, "body", bd);
+  nt_node_set_ref(nt, d, "receiver", -1);
+  return d;
+}
+
+/* An alias of an inherited method in a subclass that does not define it
+   becomes a method of its own, which self-dispatch from an inherited method
+   reaches: `alias nw od` turns into a hidden alias `nw#inherited` of od --
+   the mapping, which keeps the ancestor's body in effect where the alias
+   appears (resolve_inherited_aliases) -- and `def nw(*a, &b) =
+   nw#inherited(*a, &b)` right after it. A call through it reaches that body
+   whatever a subclass overrides od with. */
 int desugar_inherited_aliases(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
@@ -13000,41 +13037,37 @@ int desugar_inherited_aliases(Compiler *c) {
     const char *cls = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
     if (!cls || nt_ref(nt, m, "superclass") < 0) continue;   /* only a subclass inherits */
     int body = nt_ref(nt, m, "body");
-    int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+    int n = 0; const int *st0 = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+    if (n == 0) continue;
+    int *st = malloc(sizeof(int) * (size_t)n), *out = malloc(sizeof(int) * (size_t)n * 2);
+    if (!st || !out) { fprintf(stderr, "out of memory\n"); exit(1); }
+    memcpy(st, st0, sizeof(int) * (size_t)n);
+    int no = 0, grew = 0;
     for (int k = 0; k < n; k++) {
       int s = st[k];
+      out[no++] = s;
       const char *nw = NULL, *od = NULL;
       alias_pair_names(nt, s, &nw, &od);
       if (!nw || !od || alias_class_defines(nt, cls, od, n0)) continue;
-      char nwc[256], odc[256];
+      char nwc[256], odc[256], hid[300];
       snprintf(nwc, sizeof nwc, "%s", nw); snprintf(odc, sizeof odc, "%s", od);
-      /* def <nw>(*spinel_alias_a__, &spinel_alias_b__) = <od>(*..., &...) */
-      nt_node_reset(nt, s, "DefNode");
-      int ps = fwd_new_node_like(nt, s, "ParametersNode");
-      int rp = fwd_new_node_like(nt, s, "RestParameterNode");
-      int bp = fwd_new_node_like(nt, s, "BlockParameterNode");
-      nt_node_set_str(nt, rp, "name", "spinel_alias_a__");
-      nt_node_set_str(nt, bp, "name", "spinel_alias_b__");
-      nt_node_set_ref(nt, ps, "rest", rp);
-      nt_node_set_ref(nt, ps, "block", bp);
-      int call = fwd_new_node_like(nt, s, "CallNode");
-      int args = fwd_new_node_like(nt, s, "ArgumentsNode");
-      int sp = fwd_new_node_like(nt, s, "SplatNode");
-      nt_node_set_ref(nt, sp, "expression", local_read_like(nt, s, "spinel_alias_a__"));
-      nt_node_set_arr(nt, args, "arguments", &sp, 1);
-      int ba = fwd_new_node_like(nt, s, "BlockArgumentNode");
-      nt_node_set_ref(nt, ba, "expression", local_read_like(nt, s, "spinel_alias_b__"));
-      nt_node_set_str(nt, call, "name", odc);
-      nt_node_set_ref(nt, call, "arguments", args);
-      nt_node_set_ref(nt, call, "block", ba);
-      int bd = fwd_new_node_like(nt, s, "StatementsNode");
-      nt_node_set_arr(nt, bd, "body", &call, 1);
-      nt_node_set_str(nt, s, "name", nwc);
-      nt_node_set_ref(nt, s, "parameters", ps);
-      nt_node_set_ref(nt, s, "body", bd);
-      nt_node_set_ref(nt, s, "receiver", -1);
-      changed = 1;
+      snprintf(hid, sizeof hid, "%s#inherited", nwc);
+      long long line = nt_int(nt, s, "node_line", 0), file = nt_int(nt, s, "node_file", 0),
+                col = nt_int(nt, s, "node_col", 0);
+      nt_node_reset(nt, s, "AliasMethodNode");
+      nt_node_set_int(nt, s, "node_line", line);
+      nt_node_set_int(nt, s, "node_file", file);
+      nt_node_set_int(nt, s, "node_col", col);
+      int ns = fwd_new_node_like(nt, s, "SymbolNode"), os = fwd_new_node_like(nt, s, "SymbolNode");
+      nt_node_set_str(nt, ns, "value", hid);
+      nt_node_set_str(nt, os, "value", odc);
+      nt_node_set_ref(nt, s, "new_name", ns);
+      nt_node_set_ref(nt, s, "old_name", os);
+      out[no++] = alias_forwarder_like(nt, s, nwc, hid);
+      grew = changed = 1;
     }
+    if (grew) nt_node_set_arr(nt, body, "body", out, no);
+    free(st); free(out);
   }
   if (changed) comp_grow_node_arrays(c);
   return changed;
