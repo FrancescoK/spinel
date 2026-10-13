@@ -7849,7 +7849,7 @@ static int proc_literals_reaching(Compiler *c, int ref, int *out, int max, int d
     const char *vn = nt_str(nt, ref, "name");
     Scope *sc = vn ? comp_scope_of(c, ref) : NULL;
     if (!sc) return 0;
-    NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+    for (int w = an_local_writes_named_first(c, vn); w >= 0; w = an_local_writes_named_next(w)) {
       const char *wn = nt_str(nt, w, "name");
       if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
       n += proc_literals_reaching(c, nt_ref(nt, w, "value"), out + (n < max ? n : max), n < max ? max - n : 0, depth + 1);
@@ -12111,8 +12111,7 @@ static int fwd_callable_def(Compiler *c, int ref, int *out_body, int *out_pn) {
        curry never knew when it was fully applied and `F.curry[1][2]` answered
        an unapplied Proc (#4017). */
     const char *cn2 = nt_str(nt, ref, "name");
-    for (int w = 0; cn2 && w < nt->count; w++) {
-      if (nt_kind(nt, w) != NK_ConstantWriteNode) continue;
+    for (int w = cn2 ? comp_kind_first(c, NK_ConstantWriteNode) : -1; w >= 0; w = comp_kind_next(c, w)) {
       const char *wn2 = nt_str(nt, w, "name");
       if (!wn2 || !sp_streq(wn2, cn2)) continue;
       int val2 = nt_ref(nt, w, "value");
@@ -12131,9 +12130,7 @@ static int fwd_callable_def(Compiler *c, int ref, int *out_body, int *out_pn) {
   else if (sp_streq(ty, "LocalVariableReadNode")) {
     const char *vn = nt_str(nt, ref, "name");
     Scope *sc = vn ? comp_scope_of(c, ref) : NULL;
-    for (int w = 0; vn && w < nt->count; w++) {
-      const char *wty = nt_type(nt, w);
-      if (!wty || !sp_streq(wty, "LocalVariableWriteNode")) continue;
+    for (int w = an_local_writes_named_first(c, vn); w >= 0; w = an_local_writes_named_next(w)) {
       const char *wn = nt_str(nt, w, "name");
       if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
       int val = nt_ref(nt, w, "value");
@@ -12158,7 +12155,7 @@ static int fwd_callable_def(Compiler *c, int ref, int *out_body, int *out_pn) {
       for (int pi = 0; pi < sc->nparams; pi++)
         if (sc->pnames[pi] && sp_streq(sc->pnames[pi], vn)) { pidx = pi; break; }
       if (pidx >= 0) {
-        NT_FOREACH_KIND(nt, NK_CallNode, cs2) {
+        for (int cs2 = an_calls_named_first(c, sc->name); cs2 >= 0; cs2 = an_calls_named_next(cs2)) {
           if (comp_scope_of(c, cs2) == sc) continue;   /* not our own body */
           const char *cn2 = nt_str(nt, cs2, "name");
           if (!cn2 || !sp_streq(cn2, sc->name) || nt_ref(nt, cs2, "receiver") >= 0) continue;
