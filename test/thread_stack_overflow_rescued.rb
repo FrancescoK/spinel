@@ -22,8 +22,10 @@ end.value
 puts r
 
 # unrescued: surfaces at join
-t = Thread.new { deep(0) }
-t.report_on_exception = false
+# (the thread turns its own report off first: it runs in parallel with
+# main, and can die before a `t.report_on_exception = false` after
+# Thread.new runs, printing the report)
+t = Thread.new { Thread.current.report_on_exception = false; deep(0) }
 begin
   t.join
 rescue SystemStackError => e
