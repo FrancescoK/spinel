@@ -5099,17 +5099,23 @@ void emit_block_value_into(Compiler *c, int block, const char *dest,
   g_ie_next_ty = sv_nty; g_ie_next_oint = sv_noint;
 }
 
-/* `acc`, an element of a fused each_slice / each_cons chain's row of kind k,
-   as block parameter pn takes it. A boxed row into a scalar parameter is
-   unboxed, an oint parameter keeping its nil: under --int-overflow=promote
-   the row is boxed while the parameter keeps its element type, and the plain
-   assignment did not build (as emit_row_param_bind). */
+/* Element off of the row at _t<ti> of a fused each_slice / each_cons
+   chain's array _t<ta> of kind k, as block parameter pn takes it. A boxed
+   row into a scalar parameter is unboxed, an oint parameter keeping its nil:
+   under --int-overflow=promote the row is boxed while the parameter keeps
+   its element type, and the plain assignment did not build (as
+   emit_row_param_bind). An Integer or Float row's element keeps its nil
+   into an oint parameter or a box. */
 static void row_elem_for_param(Compiler *c, int block, const char *pn, const char *k,
-                               const char *acc, Buf *out) {
+                               int ta, int ti, int off, Buf *out) {
   Scope *sc = comp_scope_of(c, block);
   LocalVar *lv = sc ? scope_local(sc, pn) : NULL;
+  int num = sp_streq(k, "Int") || sp_streq(k, "Float");
+  int oget = num && lv && (lv->type == TY_POLY || (oint_kind(lv->type) && slot_is_oint(lv)));
+  char acc[96]; snprintf(acc, sizeof acc, "sp_%sArray_%s(_t%d, _t%d + %d)", k, oget ? "oget" : "get", ta, ti, off);
   if (lv && sp_streq(k, "Poly") && (lv->type == TY_INT || lv->type == TY_FLOAT))
     flatmap_coerce_from_poly(lv->type, slot_is_oint(lv), acc, out);
+  else if (oget && lv->type == TY_POLY) buf_printf(out, "%s(%s)", oint_box(sp_streq(k, "Int") ? TY_INT : TY_FLOAT), acc);
   else buf_puts(out, acc);
 }
 
@@ -5217,16 +5223,16 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
                 const char *ln = block_param_multi_leaf(c, block, 0, li);
                 if (!ln) continue;
                 emit_indent(g_pre, g_indent + 1);
-                buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d + %d);\n",
-                           rename_local(ln), k, ta_es, ti_es, li);
+                buf_printf(g_pre, "lv_%s = ", rename_local(ln));
+                row_elem_for_param(c, block, ln, k, ta_es, ti_es, li, g_pre); buf_puts(g_pre, ";\n");
               }
             }
             else if (np_es > 1) {
               for (int pj = 0; pj < np_es; pj++) {
                 const char *pn = block_param_name(c, block, pj); if (!pn) break;
                 emit_indent(g_pre, g_indent + 1);
-                buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d + %d);\n",
-                           rename_local(pn), k, ta_es, ti_es, pj);
+                buf_printf(g_pre, "lv_%s = ", rename_local(pn));
+                row_elem_for_param(c, block, pn, k, ta_es, ti_es, pj, g_pre); buf_puts(g_pre, ";\n");
               }
             }
             else {
@@ -5310,8 +5316,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
               for (int li = 0; li < lc_ec; li++) {
                 const char *ln = block_param_multi_leaf(c, block, 0, li);
                 if (!ln) continue;
-                char acc[80]; snprintf(acc, sizeof acc, "sp_%sArray_get(_t%d, _t%d + %d)", kec, ta_ec, ti_ec, li);
-                Buf eb; memset(&eb, 0, sizeof eb); row_elem_for_param(c, block, ln, kec, acc, &eb);
+                Buf eb; memset(&eb, 0, sizeof eb); row_elem_for_param(c, block, ln, kec, ta_ec, ti_ec, li, &eb);
                 emit_indent(g_pre, g_indent + 1);
                 buf_printf(g_pre, "lv_%s = %s;\n", rename_local(ln), eb.p);
                 free(eb.p);
@@ -5330,16 +5335,14 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
                 emit_indent(g_pre, g_indent + 1);
                 buf_printf(g_pre, "lv_%s = ", rename_local(pn));
                 char acc[80]; snprintf(acc, sizeof acc, "sp_%sArray_get(_t%d, _t%d + %d)", kec, ta_ec, ti_ec, pj);
-                if (ppt == TY_POLY && et_ec == TY_INT) buf_printf(g_pre, "sp_box_int(%s)", acc);
-                else if (ppt == TY_POLY && et_ec == TY_FLOAT) buf_printf(g_pre, "sp_box_float(%s)", acc);
-                else if (ppt == TY_POLY && et_ec == TY_STRING) buf_printf(g_pre, "sp_box_str(%s)", acc);
+                if (ppt == TY_POLY && et_ec == TY_STRING) buf_printf(g_pre, "sp_box_str(%s)", acc);
                 /* a boxed window into a typed parameter (promote's boxed
                    Integers): unboxed, with its nil where the slot holds one */
                 else if (et_ec == TY_POLY && ppt != TY_POLY && ppt != TY_UNKNOWN) {
                   if (oint_kind(ppt) && slot_is_oint(plv)) buf_printf(g_pre, "%s(%s)", oint_unbox(ppt), acc);
                   else emit_unbox_text(c, ppt, acc, g_pre);
                 }
-                else row_elem_for_param(c, block, pn, kec, acc, g_pre);
+                else row_elem_for_param(c, block, pn, kec, ta_ec, ti_ec, pj, g_pre);
                 buf_puts(g_pre, ";\n");
               }
             }
@@ -5457,8 +5460,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
                     buf_printf(g_pre, "lv_%s = %s;\n", lnr, bxw.p ? bxw.p : esw); free(bxw.p);
                   }
                   else {
-                    char acc[80]; snprintf(acc, sizeof acc, "sp_%sArray_get(_t%d, _t%d + %d)", kwi, ta_wi, ti_wi, li);
-                    Buf eb; memset(&eb, 0, sizeof eb); row_elem_for_param(c, block, ln, kwi, acc, &eb);
+                    Buf eb; memset(&eb, 0, sizeof eb); row_elem_for_param(c, block, ln, kwi, ta_wi, ti_wi, li, &eb);
                     buf_printf(g_pre, "lv_%s = %s;\n", lnr, eb.p);
                     free(eb.p);
                   }
