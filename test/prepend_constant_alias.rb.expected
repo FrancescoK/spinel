@@ -1,0 +1,8 @@
+"HELLO FROM PERSON!"
+"shout"
+[Shout, Person]
+true
+"BEEP!"
+[Quiet, Shout]
+true
+"shout"
