@@ -1078,6 +1078,10 @@ spinel: test/reject/object_builtin_alias_late_include.rb:9: K#old_to_s: alias of
 spinel: test/reject/object_builtin_alias_redefine.rb:6: K#old_to_s: alias of the builtin to_s that the class later overrides is not supported; see docs/limitations.md
 == test/reject/object_builtin_alias_redefine.rb [promote] rc=1
 spinel: test/reject/object_builtin_alias_redefine.rb:6: K#old_to_s: alias of the builtin to_s that the class later overrides is not supported; see docs/limitations.md
+== test/reject/object_builtin_alias_respond_to_redefine.rb [default] rc=1
+spinel: test/reject/object_builtin_alias_respond_to_redefine.rb:7: K#respond_to_without_dyn?: alias of the builtin respond_to? that the class later overrides is not supported; see docs/limitations.md
+== test/reject/object_builtin_alias_respond_to_redefine.rb [promote] rc=1
+spinel: test/reject/object_builtin_alias_respond_to_redefine.rb:7: K#respond_to_without_dyn?: alias of the builtin respond_to? that the class later overrides is not supported; see docs/limitations.md
 == test/reject/object_method_ivar_native_slot.rb [default] rc=1
 spinel: test/reject/object_method_ivar_native_slot.rb:4: unsupported instance variable write to a receiver without a writable slot: node N (CallNode `instance_variable_set`) recv=SelfNode/ty50 argc=2 arg0ty8
 spinel: 1 refusal, nothing written
