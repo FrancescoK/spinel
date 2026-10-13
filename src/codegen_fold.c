@@ -4063,6 +4063,20 @@ void emit_iter_step_cond(Compiler *c, const IterStep *st, int raw, Buf *cb) {
   else emit_cond(c, bb[bn - 1], cb);
 }
 
+/* Does a class of the program write its own each_with_index (a def of its
+   source, not a Struct's or Enumerable's from the builtins)? The items of a
+   builtin answer for those; a written one has to be called. */
+static int program_defines_ewi(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (c->classes[k].is_struct || c->classes[k].is_data) continue;
+    int mi = comp_method_in_chain(c, k, "each_with_index", NULL);
+    int dn = mi >= 0 ? c->scopes[mi].def_node : -1;
+    if (dn >= 0 && nt_kind(nt, dn) == NK_DefNode && nt_int(nt, dn, "node_bi", 0) == 0) return 1;
+  }
+  return 0;
+}
+
 static int ewi_chain(Compiler *c, int id, int *out_arr, int *out_off) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver");
@@ -4280,6 +4294,11 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
      it the same as a typed array with poly elements; a Hash, a Range or an
      Enumerator there gives its items (sp_poly_ewi_items). */
   int poly_src = rr.kind == RK_BOXED;
+  /* ...but not a value that may be an object of a class with its own
+     each_with_index: that one is called, and the call dispatches (the items
+     of a builtin there raised NoMethodError on the object) */
+  if (poly_src && sp_streq(nt_str(nt, nt_ref(nt, id, "receiver"), "name"), "each_with_index") &&
+      program_defines_ewi(c)) return 0;
   if (poly_src) { rt = TY_POLY_ARRAY; rr.elem = TY_POLY; }
   /* a fresh String Array whose elements the rule shares is walked as the
      PolyArray of handles a local's would be */
