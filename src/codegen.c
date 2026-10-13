@@ -2159,7 +2159,14 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     return;
   }
   if (t == TY_STRING) {
-    buf_printf(b, "%s(", ty_box_fn(TY_STRING)); emit_expr(c, node, b); buf_puts(b, ")");
+    /* --share-strings: a String no other name holds is boxed as the object
+       it is (sp_box_str_new), so the box's copies name one String; a
+       frozen literal is its own object already, and a container literal
+       whose elements the facts prove its own keeps a copy no other name
+       can tell from the String (share_plan_box_plain) */
+    int fresh = repr_share_rule(c) && !share_frozen_literal(c, node) && share_value_fresh(c, node, 0) &&
+                !share_plan_box_plain(c, node);
+    buf_printf(b, "%s(", fresh ? "sp_box_str_new" : ty_box_fn(TY_STRING)); emit_expr(c, node, b); buf_puts(b, ")");
     RC(RF_STR, RW_NONE);
     return;
   }
@@ -18292,7 +18299,7 @@ static void emit_user_exc_dispatch(Compiler *c, Buf *b) {
 extern const Compiler *g_tmc_c;
 
 static void emit_runtime_include(Compiler *c, Buf *b, int blank) {
-  if (repr_share_rule(c)) buf_puts(b, "#define SP_SHARE_STRING_LITERALS 1\n");
+  if (repr_share_rule(c)) buf_puts(b, "#define SP_SHARE_STRING_LITERALS 1\n#define SP_SHARE_BOX_HANDLES 1\n");
   /* sp_feature_required, not the require gate: without SPINEL_REQUIRE_GATE,
      respond_to?'s io/console answer must still follow the program's require,
      as CRuby's does. */

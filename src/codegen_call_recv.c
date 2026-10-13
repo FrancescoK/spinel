@@ -94,6 +94,11 @@ static void emit_int_array_delete(Compiler *c, const char *arr, int arg, int nil
   buf_puts(b, ")");
 }
 #include "analyze.h"
+
+/* --share-strings: a Struct member's name, a bare C literal compared with a
+   computed key, has no marker byte for sp_box_str to read (it boxes a
+   handle's own bytes as the handle), so it is boxed as bytes there */
+static const char *struct_name_box_fn(const Compiler *c) { return repr_share_rule(c) ? "sp_box_str_bytes" : "sp_box_str"; }
 /* codegen_fold.c: a step tail in its oint form, when it can be nil */
 int emit_iter_step_tail_o(Compiler *c, const IterStep *st, TyKind t, Buf *vb);
 /* codegen_fold.c: the call whose oint answer an arm keeps (bsearch) */
@@ -251,9 +256,9 @@ static void emit_struct_member_by_key(Compiler *c, ClassInfo *sc, const char *rt
   buf_printf(b, " sp_RbVal _t%d = sp_box_nil();", tr);
   for (int i = 0; i < sc->nmembers; i++) {
     buf_printf(b, " if(sp_rbval_eql_key(_t%d,sp_box_sym((sp_sym)%d))||sp_rbval_eql_key(_t%d,sp_box_int(%lldLL))"
-                  "||sp_rbval_eql_key(_t%d,sp_box_str(\"%s\"))){ _t%d = ",
+                  "||sp_rbval_eql_key(_t%d,%s(\"%s\"))){ _t%d = ",
                tk, comp_sym_intern(c, sc->ivars[i] + 1), tk, (long long)i,
-               tk, sc->ivars[i] + 1, tr);
+               tk, struct_name_box_fn(c), sc->ivars[i] + 1, tr);
     char fld[300]; snprintf(fld, sizeof fld, "%s->iv_%s", rtxt, iv_c(sc->ivars[i] + 1));
     emit_member_box(c, sc, i, fld, b);
     buf_puts(b, ";}\nelse");
@@ -10813,9 +10818,9 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
     emit_frozen_obj_guard(c, ty_object_class(rt), obj, b);
     for (int i = 0; i < sc->nmembers; i++) {
       buf_printf(b, " if(sp_rbval_eql_key(_t%d,sp_box_sym((sp_sym)%d))||sp_rbval_eql_key(_t%d,sp_box_int(%lldLL))"
-                    "||sp_rbval_eql_key(_t%d,sp_box_str(\"%s\"))){ _t%d->iv_%s = ",
+                    "||sp_rbval_eql_key(_t%d,%s(\"%s\"))){ _t%d->iv_%s = ",
                  tk, comp_sym_intern(c, sc->ivars[i] + 1), tk, (long long)i,
-                 tk, sc->ivars[i] + 1, tw, iv_c(sc->ivars[i] + 1));
+                 tk, struct_name_box_fn(c), sc->ivars[i] + 1, tw, iv_c(sc->ivars[i] + 1));
       char vtxt[32]; snprintf(vtxt, sizeof vtxt, "_t%d", tv);
       int scid = ty_object_class(rt);
       /* a member with a nil bit takes the nil into its bit */

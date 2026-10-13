@@ -2758,7 +2758,7 @@ static const char *sp_method_desc_cstr(sp_BoundMethod *m) {
    VALUE for any non-mutating op: deref to a plain boxed string and retry. */
 static inline sp_RbVal sp_poly_strbuf_deref(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF)
-    return sp_box_str(sp_String_cstr((sp_String *)v.v.p));
+    return sp_box_str_bytes(sp_String_cstr((sp_String *)v.v.p));
   return v;
 }
 /* The shared handle behind a boxed value: a strbuf box directly, a plain
@@ -2889,11 +2889,11 @@ static inline sp_bool sp_poly_is_strbuf(sp_RbVal v) {
 static inline sp_RbVal sp_poly_literal_identity(sp_RbVal v) {
   if (sp_poly_is_strbuf(v) && v.v.p) {
     sp_String *h = (sp_String *)v.v.p;
-    if (sp_String_literal_slot(h->data)) return sp_box_str(h->data);
+    if (sp_String_literal_slot(h->data)) return sp_box_str_bytes(h->data);
 #ifdef SP_SHARE_STRING_LITERALS
     /* and so do a frozen handle's: its payload is its read face
        (sp_strbuf_read_frozen) */
-    if (sp_String_is_frozen(h)) return sp_box_str(h->data);
+    if (sp_String_is_frozen(h)) return sp_box_str_bytes(h->data);
 #endif
   }
   return v;

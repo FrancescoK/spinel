@@ -4370,6 +4370,11 @@ int share_node_anchored(const Compiler *c, int n) {
   int r = sh_node_root(F, n, 0);
   return r >= 0 && F->anchored && F->anchored[r];
 }
+int share_node_elems_local(const Compiler *c, int n) {
+  const ShareFacts *F = c->share;
+  int r = sh_node_root(F, n, 1);
+  return r >= 0 && !(F->flags[r] & SHF_UNKNOWN) && !repr_str_class_shares(F->flags[r], sh_class_holders(F, r));
+}
 int share_node_elems_share(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
   int r = sh_node_root(F, n, 1);
