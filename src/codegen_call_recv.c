@@ -14922,6 +14922,11 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       TyKind at = ar0.as_ty;
       int nil_rhs = (at == TY_NIL || at == TY_VOID);
       int unk_rhs = at == TY_UNKNOWN;
+      /* an Integer or a Float that may be nil goes boxed, nil and all: read
+         as the plain number it lost the nil, and the call answered that
+         number where the method's value is the nilable one (#8769) */
+      int o_rhs = !nil_rhs && !unk_rhs && (at == TY_INT || at == TY_FLOAT) && node_is_oint(c, argv[0]);
+      if (o_rhs) unk_rhs = 1;
       /* --share-strings: a call read as the handle its writers are handed
          (repr_write_share) holds that handle, which each arm stores and the
          call answers; a String argument that is a handle is held as it,
@@ -14979,6 +14984,13 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       if (at == TY_STRBUF && comp_ntype(c, id) != TY_STRBUF &&
           !(repr_share_rule(c) && (svr.demand || (svr.handle && repr_write_share(c, id)))))
         buf_printf(b, " } (_t%d ? sp_String_cstr(_t%d) : NULL); })", tval, tval);
+      /* the boxed nilable number answers as the call is read */
+      else if (o_rhs && node_is_oint(c, id))
+        buf_printf(b, " } %s(_t%d); })", oint_unbox(at), tval);
+      else if (o_rhs && comp_ntype(c, id) != TY_POLY) {
+        char tn[32]; snprintf(tn, sizeof tn, "_t%d", tval);
+        buf_puts(b, " } "); emit_unbox_text(c, comp_ntype(c, id), tn, b); buf_puts(b, "; })");
+      }
       else buf_printf(b, " } _t%d; })", tval);
       { *out = 1; return 1; }
     }
