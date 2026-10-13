@@ -462,6 +462,7 @@ extern int  g_cls_tag_skip;   /* poly-dispatch builtin-arm re-entry marker */
 int subtree_may_allocate(const NodeTable *nt, int id);
 int subtree_allocates(const NodeTable *nt, int id);
 int subtree_has_side_effect(Compiler *c, int id);
+int call_unused_block(Compiler *c, int id);
 int loop_has_valued_break(Compiler *c, int root);
 /* Can evaluating the subtree store into an ivar, class variable or global? A
    write to one, or anything that runs Ruby code it does not show; not scalar
@@ -2239,6 +2240,7 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b);
 int emit_range_call(Compiler *c, int id, Buf *b);
 int emit_boxed_class_aref(Compiler *c, int id, Buf *b);
 int emit_poly_call(Compiler *c, int id, Buf *b);
+int emit_boxed_recv_call(Compiler *c, int id, Buf *b);
 int diagnose_eval_call(Compiler *c, int id);
 int diagnose_unsupported_call(Compiler *c, int id);
 int diag_user_defines(Compiler *c, const char *name);

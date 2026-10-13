@@ -29501,7 +29501,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
   if (emit_call_symbol_misc_arms(c, b, name, recv, argc, argv, rt)) return;
   if (emit_call_display_ivar_arms(c, id, b, nt, name, recv, argc, argv, rt)) return;
 
-  if (emit_or_take_back(c, id, b, emit_poly_call)) return;
+  if (emit_or_take_back(c, id, b, emit_boxed_recv_call)) return;
 
   if (emit_call_identity_arms(c, id, b, nt, name, recv, argc, argv, rt)) return;
 

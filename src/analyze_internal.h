@@ -284,6 +284,7 @@ int widen_hash_arg_for_store(Compiler *c, int arg, TyKind hk, TyKind hv);
 int pivs_settle_hash_stores(Compiler *c);
 int pivs_hash_stores_widened(Compiler *c);
 int subtree_has_side_effect(Compiler *c, int id);   /* codegen_util.c */
+int call_unused_block(Compiler *c, int id);   /* codegen_util.c */
 
 /* Shared cached local-write index (analyze_pass.c): bucket walk over
    (scope, name) for "every write of local X in scope S" queries, instead of

@@ -31880,8 +31880,10 @@ static int elem_miss_call(Compiler *c, int v) {
   if (nt_int(nt, v, "masgn_elem", LLONG_MIN) != LLONG_MIN) return 0;
   /* Integer#[] reads a bit (0 or 1), never nil */
   if (sp_streq(nm, "[]")) { TyKind brt = infer_type(c, recv); if (brt == TY_INT || brt == TY_BIGINT) return 0; }
+  /* (a block given to them goes unused, as in CRuby: `a.at(i, &b)` misses
+     as `a.at(i)` does) */
   if (sp_streq(nm, "[]") || sp_streq(nm, "at") || sp_streq(nm, "slice"))
-    return argc == 1 && blk < 0 && !const_array_index_in_range(c, recv, argv[0]);
+    return argc == 1 && (blk < 0 || call_unused_block(c, v) >= 0) && !const_array_index_in_range(c, recv, argv[0]);
   if (sp_streq(nm, "dig")) return argc >= 1;
   if (is_element_pick(nm))
     return argc == 0 && blk < 0;

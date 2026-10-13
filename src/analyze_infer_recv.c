@@ -1140,7 +1140,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       if (sp_streq(name, "permutation") && (argc == 1 || argc == 0) && block < 0) { *out = cmb; return 1; }
       if (sp_streq(name, "repeated_permutation") && argc == 1 && block < 0) { *out = cmb; return 1; }
       if (sp_streq(name, "repeated_combination") && argc == 1 && block < 0) { *out = cmb; return 1; } }
-    if (sp_streq(name, "slice") && argc == 1 && nt_ref(nt, id, "block") < 0)
+    if (sp_streq(name, "slice") && argc == 1 && (nt_ref(nt, id, "block") < 0 || call_unused_block(c, id) >= 0))
       /* slice(range) is a subarray; slice(i) one element (mirrors #[]) */
       { *out = infer_type(c, argv[0]) == TY_RANGE ? rt : ty_array_elem(rt); return 1; }
     if (sp_streq(name, "slice!") && argc == 1)
@@ -1649,6 +1649,9 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      the same boxed value (typed bool under a block, it did not build) */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") >= 0 &&
       is_casecmp_family(name) && !an_user_defines_or_reads(c, name)) { *out = TY_POLY; return 1; }
+  /* so does slice, the boxed slice emitter taking it as without one */
+  if (recv >= 0 && rt == TY_POLY && argc >= 1 && sp_streq(name, "slice") && call_unused_block(c, id) >= 0 &&
+      !an_user_defines_or_reads(c, name)) { *out = TY_POLY; return 1; }
   /* The String-only surface on a boxed receiver: the names no other class
      answers, so the result type is the one the typed String path gives. Names
      Array or Enumerable share (index, count, sum) stay untyped here and go
