@@ -2478,6 +2478,33 @@ int desugar_hash_iter_with_index(Compiler *c) {
    or did not build. transform_values and transform_keys take one parameter
    (`{ |v| pr.call(v) }`); their emitter read a Proc, lambda or Method block
    argument as an empty block, and every value became nil. */
+static int fwd_method_called_blockless(Compiler *c, Scope *ms);
+static void fwd_branch_on_block_given(Compiler *c, int id);
+
+/* `inject(seed, :op) { }` folds by the operator, and its block, written or
+   handed on, goes unused (Enumerable#inject's own rule). The fold emitters
+   ran the block instead when the operator was known only at run time, and a
+   forwarded `&b` typed the call from a block that never runs. Dropped over an
+   Array, a Hash or a Range, whose inject is the builtin one, when building
+   the block has no effect to keep. */
+static int reduce_block_unused(Compiler *c, int id, int blk) {
+  const NodeTable *nt = c->nt;
+  int ra = nt_ref(nt, id, "arguments"), rn = 0;
+  const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
+  if (rn != 2) return 0;
+  for (int k = 0; k < rn; k++)
+    if (nt_kind(nt, rv[k]) == NK_SplatNode) return 0;
+  if (nt_kind(nt, blk) == NK_BlockArgumentNode) {
+    int ex = nt_ref(nt, blk, "expression");
+    NodeKind exk = ex >= 0 ? nt_kind(nt, ex) : NK_SymbolNode;
+    if (exk != NK_LocalVariableReadNode && exk != NK_InstanceVariableReadNode &&
+        exk != NK_ConstantReadNode && exk != NK_SymbolNode) return 0;
+  }
+  TyKind rt = infer_type(c, nt_ref(nt, id, "receiver"));
+  return ty_is_array(rt) || ty_is_hash(rt) ||
+         rt == TY_RANGE || rt == TY_STR_RANGE || rt == TY_FLOAT_RANGE;
+}
+
 int desugar_reduce_proc_arg(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -2493,6 +2520,12 @@ int desugar_reduce_proc_arg(Compiler *c) {
     int arity = fallback ? 1 : conflict ? 3 : xform ? 1 : 2;
     if (nt_ref(nt, id, "receiver") < 0) continue;
     int blk = nt_ref(nt, id, "block");
+    int reduce = is_reduce_alias(nm), own = 0;
+    if (reduce && blk >= 0 && reduce_block_unused(c, id, blk)) {
+      nt_node_set_ref(nt, id, "block", -1);
+      changed = 1;
+      continue;
+    }
     if (blk < 0 || nt_kind(nt, blk) != NK_BlockArgumentNode) continue;
     if (fallback || conflict) {
       TyKind frt = infer_type(c, nt_ref(nt, id, "receiver"));
@@ -2530,11 +2563,13 @@ int desugar_reduce_proc_arg(Compiler *c) {
        one-parameter transforms */
     if (!(ext == TY_PROC || (xform && ext == TY_METHOD))) continue;
     /* the method's own `&b` handed on is nil when its caller gave no block,
-       and a comparator then compares by <=>: the forward keeps it */
-    if (!sp_streq(nm, "reduce") && !sp_streq(nm, "inject") && nt_kind(nt, ex) == NK_LocalVariableReadNode) {
+       and a comparator then compares by <=>: the forward keeps it. A fold
+       takes the block below, and its blockless form where none was given */
+    if (nt_kind(nt, ex) == NK_LocalVariableReadNode) {
       Scope *es = comp_scope_of(c, ex);
       const char *en = nt_str(nt, ex, "name");
-      if (es && es->blk_param && en && sp_streq(es->blk_param, en)) continue;
+      own = es && es->blk_param && en && sp_streq(es->blk_param, en);
+      if (own && !reduce) continue;
     }
 
     int base = nt->count;
@@ -2576,6 +2611,7 @@ int desugar_reduce_proc_arg(Compiler *c) {
       LocalVar *lv = scope_local_intern(bs, pn[k]);
       if (lv) lv->is_block_param = 1;
     }
+    if (own && fwd_method_called_blockless(c, comp_scope_of(c, id))) fwd_branch_on_block_given(c, id);
     changed = 1;
   }
   return changed;
