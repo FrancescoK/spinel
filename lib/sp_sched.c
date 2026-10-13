@@ -227,6 +227,7 @@ static pthread_t      g_sysmon;                                  /* monitor: wak
 static int            g_sysmon_started = 0;
 static int            g_sysmon_idle = 0; /* monitor is parked on g_sysmon_cv (signal it to start ticking) */
 static int            g_sysmon_pipe[2] = { -1, -1 };  /* self-pipe: wake the monitor out of poll() */
+int sp_io_make_pipe(int fds[2]);   /* lib/sp_io.c: a close-on-exec pipe */
 static void sp_sched_report_stats(void);   /* SPINEL_SCHED_STATS, below */
 /* What the monitor actually did, for SPINEL_SCHED_STATS=1. The cost of a wake
    is O(parked) three times over (rebuild, poll, unlink), so the number that
@@ -3215,7 +3216,7 @@ static int sp_sched_start_workers(void) {
      poll() immediately. Both ends non-blocking: the writer never stalls on a full
      pipe (the bytes only signal, they are drained wholesale), the reader drains
      without blocking. Created before the monitor so it sees valid fds. */
-  if (pipe(g_sysmon_pipe) == 0) {
+  if (sp_io_make_pipe(g_sysmon_pipe) == 0) {
     for (int e = 0; e < 2; e++) { int fl = fcntl(g_sysmon_pipe[e], F_GETFL, 0); if (fl >= 0) fcntl(g_sysmon_pipe[e], F_SETFL, fl | O_NONBLOCK); }
   }
   else { g_sysmon_pipe[0] = g_sysmon_pipe[1] = -1; }

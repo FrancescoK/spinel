@@ -604,6 +604,9 @@ FILE *sp_io_closed_sentinel(void) {
     if (!s) { static char none[1]; if ((s = fmemopen(none, sizeof none, "r"))) fseek(s, 0, SEEK_END); }
 #endif
     if (!s) sp_raise_cls("IOError", "cannot open /dev/null");
+#if !defined(_WIN32) && !defined(__wasi__)
+    fcntl(fileno(s), F_SETFD, fcntl(fileno(s), F_GETFD) | FD_CLOEXEC);
+#endif
     if (!SP_ATOMIC_CAS(&sentinel, &(FILE *){NULL}, s, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) fclose(s);
   }
   return sentinel;

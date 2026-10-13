@@ -8,6 +8,9 @@
  *
  * sp_net is a POSIX prefork/poll runtime (sockets, poll(2), fork,
  * sigaction). */
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE   /* accept4 */
+#endif
 #include "sp_net.h"
 #include "sp_alloc.h"   /* sp_ffi_bin_len: the binary-safe return contract */
 
@@ -32,6 +35,31 @@
 #include "sp_sched.h"  /* sp_native_enter / sp_native_leave */
 
 #define SP_NET_BUFSIZE 65536
+
+/* Every socket is close-on-exec, as CRuby's are. The flag goes in with the
+   call where the platform has it, not by fcntl afterwards: a spawn on another
+   worker in between would inherit the descriptor. */
+static int sp_net_set_cloexec(int fd) {
+    if (fd >= 0) {
+        int fl = fcntl(fd, F_GETFD);
+        if (fl >= 0) fcntl(fd, F_SETFD, fl | FD_CLOEXEC);
+    }
+    return fd;
+}
+static int sp_net_socket_cloexec(int domain, int type, int protocol) {
+#ifdef SOCK_CLOEXEC
+    return socket(domain, type | SOCK_CLOEXEC, protocol);
+#else
+    return sp_net_set_cloexec(socket(domain, type, protocol));
+#endif
+}
+static int sp_net_accept_cloexec(int sfd, struct sockaddr *addr, socklen_t *len) {
+#if defined(__linux__)
+    return accept4(sfd, addr, len, SOCK_CLOEXEC);
+#else
+    return sp_net_set_cloexec(accept(sfd, addr, len));
+#endif
+}
 
 /* ---------- graceful shutdown ---------- */
 
@@ -127,7 +155,7 @@ int sp_net_listen_host(const char *host, int port, int backlog) {
     if (sp_net_resolve((host && *host) ? host : NULL, portbuf, &hints, &res) != 0) return -1;
     int fd = -1;
     for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
-        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        fd = sp_net_socket_cloexec(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (fd < 0) continue;
         int one = 1;
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
@@ -163,7 +191,7 @@ int sp_net_listen_all(const char *host, int port, int *fds, int cap, const char 
     int n = 0, e = 0;
     *op = "bind(2)";
     for (struct addrinfo *ai = res; ai && n < cap; ai = ai->ai_next) {
-        int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        int fd = sp_net_socket_cloexec(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (fd < 0) { e = errno; *op = "socket(2)"; continue; }
         int one = 1;
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
@@ -258,7 +286,7 @@ int sp_net_sock_host(int fd, int peer, char *hostbuf, int cap) {
 
 int sp_net_listen(int port, int reuseport) {
     if (port < 0 || port > 65535) return -1;
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    int fd = sp_net_socket_cloexec(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
 
     int one = 1;
@@ -297,7 +325,7 @@ int sp_net_accept(int sfd) {
     sp_net_set_nonblock(sfd);
     for (;;) {
         if (sp_net_term_flag) return -1;
-        fd = accept(sfd, (struct sockaddr *)&caddr, &clen);
+        fd = sp_net_accept_cloexec(sfd, (struct sockaddr *)&caddr, &clen);
         /* The connection fd is non-blocking too, so recv/send on it park the
            green thread (scheduler-aware) instead of blocking the OS worker. */
         if (fd >= 0) { sp_net_set_nodelay(fd); sp_net_set_nonblock(fd); return fd; }
@@ -330,7 +358,7 @@ int sp_net_accept(int sfd) {
             return -1;
         }
         if (!(pfds[0].revents & POLLIN)) continue;  /* woken by the self-pipe alone */
-        fd = accept(sfd, (struct sockaddr *)&caddr, &clen);
+        fd = sp_net_accept_cloexec(sfd, (struct sockaddr *)&caddr, &clen);
         if (fd >= 0) { sp_net_set_nodelay(fd); return fd; }
         if (errno == EINTR) {
             if (sp_net_term_flag) return -1;
@@ -346,7 +374,7 @@ int sp_net_accept_nb(int sfd) {
     socklen_t clen = sizeof(caddr);
     int fd;
     do {
-        fd = accept(sfd, (struct sockaddr *)&caddr, &clen);
+        fd = sp_net_accept_cloexec(sfd, (struct sockaddr *)&caddr, &clen);
     } while (fd < 0 && errno == EINTR);
     if (fd >= 0) sp_net_set_nodelay(fd);
     return fd;
@@ -357,7 +385,7 @@ int sp_net_accept_nb(int sfd) {
 /* An unbound UDP socket; #bind attaches it to a local address later. */
 int sp_net_udp_open(int family) {
     signal(SIGPIPE, SIG_IGN);
-    return socket(family > 0 ? family : AF_INET, SOCK_DGRAM, 0);
+    return sp_net_socket_cloexec(family > 0 ? family : AF_INET, SOCK_DGRAM, 0);
 }
 /* The family the fd was opened with. An address resolved for the other family
    cannot be bound or sent to, so every UDP call resolves within it. */
@@ -453,7 +481,7 @@ int sp_net_unix_listen(const char *path, int backlog) {SP_GC_ROOT_STR(path);
     struct sockaddr_un sa;
     if (sp_net_unix_addr(path, &sa) != 0) return -1;
     signal(SIGPIPE, SIG_IGN);
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    int fd = sp_net_socket_cloexec(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return -1;
     if (bind(fd, (struct sockaddr *)&sa, sizeof sa) != 0) { close(fd); return -1; }
     if (listen(fd, backlog > 0 ? backlog : 128) != 0) { close(fd); return -1; }
@@ -463,7 +491,7 @@ int sp_net_unix_connect(const char *path) {SP_GC_ROOT_STR(path);
     struct sockaddr_un sa;
     if (sp_net_unix_addr(path, &sa) != 0) return -1;
     signal(SIGPIPE, SIG_IGN);
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    int fd = sp_net_socket_cloexec(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return -1;
     if (connect(fd, (struct sockaddr *)&sa, sizeof sa) != 0) { close(fd); return -1; }
     return fd;
@@ -489,12 +517,20 @@ int sp_net_gethostname(char *buf, int cap) {
 /* A connected pair of the given domain/type; fds[0]/fds[1] on success. */
 int sp_net_socketpair(int domain, int type, int protocol, int fds[2]) {
     signal(SIGPIPE, SIG_IGN);
+#ifdef SOCK_CLOEXEC
     return socketpair(domain > 0 ? domain : AF_UNIX,
-                      type > 0 ? type : SOCK_STREAM, protocol, fds);
+                      (type > 0 ? type : SOCK_STREAM) | SOCK_CLOEXEC, protocol, fds);
+#else
+    if (socketpair(domain > 0 ? domain : AF_UNIX,
+                   type > 0 ? type : SOCK_STREAM, protocol, fds) != 0) return -1;
+    sp_net_set_cloexec(fds[0]);
+    sp_net_set_cloexec(fds[1]);
+    return 0;
+#endif
 }
 int sp_net_socket(int domain, int type, int protocol) {
     signal(SIGPIPE, SIG_IGN);
-    return socket(domain, type, protocol);
+    return sp_net_socket_cloexec(domain, type, protocol);
 }
 /* getaddrinfo, one resolution at a time: `idx` selects the entry so the caller
    can walk them without owning the addrinfo list. Fills family/socktype/
@@ -598,7 +634,7 @@ int sp_net_connect(const char *host, int port) {
     int fd = -1;
     for (struct addrinfo *ai = res; ai != NULL; ai = ai->ai_next) {
         if (sp_fiber_current && sp_fiber_inject_pending(sp_fiber_current)) break;
-        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        fd = sp_net_socket_cloexec(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (fd < 0) continue;
         if (sp_net_connect_wait(fd, ai->ai_addr, ai->ai_addrlen) == 0) break;
         close(fd);
