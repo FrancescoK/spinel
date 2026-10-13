@@ -8085,7 +8085,8 @@ static void emit_pm_nomatch_raise(Compiler *c, int pred, int pat, int guarded, i
     free(sb.p);
     return;
   }
-  PmDiag d = { ++g_tmp, ++g_tmp, ++g_tmp, ++g_tmp };
+  int d_msg = ++g_tmp, d_key = ++g_tmp, d_lbl = ++g_tmp, d_bail = ++g_tmp;
+  PmDiag d = { d_msg, d_key, d_lbl, d_bail };
   int ts = ++g_tmp;
   char sv[24]; snprintf(sv, sizeof sv, "_t%d", ts);
   emit_indent(b, indent); buf_puts(b, "{\n");
