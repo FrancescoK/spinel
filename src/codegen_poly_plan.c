@@ -194,6 +194,7 @@ void pa_report(void) {
           g_pa_trial_dropped);
 }
 
+static int plan_slot_oint(Compiler *c, int id, TyKind ret);
 /* The arm class k takes in a zero-argument poly dispatch, decided class by
    class as the dispatch did before the plan (cplan_poly) took it over:
    --plan-check's assertion, and the arms of a dispatch the plan cannot
@@ -295,7 +296,8 @@ static int poly_user_arm0_decide(Compiler *c, int id, const char *name, int argc
     int ivx = comp_ivar_index(&c->classes[rdcls], ivn);
     TyKind ivt = ivx >= 0 ? c->classes[rdcls].ivar_types[ivx] : TY_INT;
     a->kind = PA_READER; a->def = (short)rdcls; a->vty = (unsigned char)ivt;
-    a->conv = ret == TY_POLY && ivt == TY_INT ? PC_BOX_OR_NIL
+    int nilbit = ivx >= 0 && oint_kind(ivt) && ivar_has_nilbit(c, rdcls, ivx);
+    a->conv = nilbit && (ret == TY_POLY || plan_slot_oint(c, id, ret)) ? PC_BOX_OR_NIL
             : ret == TY_POLY && ivt != TY_POLY ? PC_BOX
             : ret != TY_POLY && ivt == TY_POLY ? PC_UNBOX
             : ivt == TY_STRBUF && ret == TY_STRING ? PC_COPY : PC_SAME;
