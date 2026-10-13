@@ -1,5 +1,6 @@
 :on_self
 :on_self
+"method"
 false
 :bare
 :on_self

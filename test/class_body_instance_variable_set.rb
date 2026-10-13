@@ -18,6 +18,8 @@ class OnSelf < Base
   self.instance_variable_set(:@flag, :on_self)
   p instance_variable_get(:@flag)
   p self.instance_variable_get(:@flag)
+  # defined? asks about the call, not the ivar, which is not set
+  p defined?(self.instance_variable_get(:@missing))
 end
 
 class ByString < Base

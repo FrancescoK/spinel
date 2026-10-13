@@ -15012,12 +15012,13 @@ static void cbi_rewrite_access(NodeTable *nt, int id, const char *cn) {
    instance's ivar, and the class body has no instance to set it on. A set
    is rewritten where it is a statement (`stmt`); as a value it stays refused.
    The walk stops at a def, a block, a lambda, a `class << x` and a nested
-   class or module, which have a self of their own. */
+   class or module, which have a self of their own, and at `defined?`, which
+   answers "method" for the call where `defined?(@x)` asks for the ivar. */
 static int civ_self_body_access(NodeTable *nt, int node, int stmt) {
   if (node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_DefNode || k == NK_BlockNode || k == NK_LambdaNode || k == NK_SingletonClassNode ||
-      k == NK_ClassNode || k == NK_ModuleNode) return 0;
+      k == NK_ClassNode || k == NK_ModuleNode || k == NK_DefinedNode) return 0;
   int changed = 0;
   if (k == NK_CallNode && nt_ref(nt, node, "block") < 0) {
     const char *nm = nt_str(nt, node, "name");
