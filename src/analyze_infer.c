@@ -7820,7 +7820,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      alone, so a candidate answering an Integer array landed in a generic-array
      slot with no conversion and the value was read as the wrong container
      (#3399, #3409). */
-  if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") >= 0 &&
+  /* (the builtin answer alone, an_builtin_answer, asks no candidate) */
+  if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") >= 0 && !an_builtin_only &&
       poly_enum_op_for(name)) {
     for (int k = 0; k < c->nclasses; k++) {
       if (!c->classes[k].ctor_reachable) continue;
@@ -7830,7 +7831,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* Same, for a name outside that surface: only a yielding candidate makes
      the call a dispatch there, since a non-yielding one leaves a
      block-carrying call on the builtin path entirely. */
-  if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") >= 0) {
+  if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") >= 0 && !an_builtin_only) {
     for (int k = 0; k < c->nclasses; k++) {
       if (!c->classes[k].ctor_reachable) continue;
       int ymi = comp_method_in_chain(c, k, name, NULL);
