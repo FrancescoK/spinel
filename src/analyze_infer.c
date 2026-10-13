@@ -9564,6 +9564,14 @@ static TyKind infer_array_literal(Compiler *c, int id) {
     return ty_array_of(e);
 }
 
+static int g_self_raw;
+TyKind an_self_node_type(Compiler *c, int id) {
+  g_self_raw = 1;
+  TyKind t = infer_uncached(c, id);
+  g_self_raw = 0;
+  return t;
+}
+
 TyKind infer_uncached(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -9963,7 +9971,7 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_NumberedReferenceReadNode) return TY_STRING;  /* $1..$9: capture, or nil (NULL) */
   if (nk == NK_BackReferenceReadNode) return TY_STRING;  /* $&/$`/$'/$~/$+: nullable string */
   { TyKind r; if (infer_constant_path(c, id, nt, nk, &r)) return r; }
-  if (nk == NK_SelfNode) {
+  if (nk == NK_SelfNode) { if (!g_self_raw && nt_int(nt, id, "ie_rself", 0)) return TY_POLY;
     Scope *s = comp_scope_of(c, id);
     int self_cls = s->class_id;
     /* inside a class method, bare `self` is the Class object (#2443) --

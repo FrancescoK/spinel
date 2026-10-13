@@ -84,6 +84,7 @@ int user_cmp_needs_check(Compiler *c, int cid);
 void emit_ie_param_default(Compiler *c, TyKind t, Buf *b);
 int emit_ie_poly(Compiler *c, int id, Buf *b);
 int emit_ie_proc(Compiler *c, int id, int recv, int self_cls, int blk, int tramp, Buf *b);
+int emit_ie_untraced(Compiler *c, int id, int recv, int blk, Buf *b);
 extern int g_ie_poly_node;
 int ie_body_has_break_next(Compiler *c, int node);
 int ie_body_ivar_write(const NodeTable *nt, int node);

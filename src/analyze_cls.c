@@ -1448,7 +1448,7 @@ static void cf_node(CF *f, int v) {
     return;
   }
   case NK_SelfNode: {
-    if (cf_in_exec_block(f, v)) { cf_all(f, v); return; }
+    if (cf_in_exec_block(f, v) || nt_int(nt, v, "ie_rself", 0)) { cf_all(f, v); return; }
     int si = cf_scope_of(f, v);
     /* a self a pass gave a call as its receiver after the scopes were
        walked (`r` -> `self.r`) has none recorded: the call's is its */

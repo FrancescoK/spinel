@@ -892,6 +892,38 @@ int emit_ie_proc(Compiler *c, int id, int recv, int self_cls, int blk, int tramp
   return 1;
 }
 
+int emit_ie_untraced(Compiler *c, int id, int recv, int blk, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int args = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  int exec = sp_streq(nt_str(nt, id, "name"), "instance_exec"), sv_nargov = g_n_argov;
+  TyKind t = repr_of(c, id).as_ty;
+  Buf rb, pb, eb; memset(&rb, 0, sizeof rb); memset(&pb, 0, sizeof pb); memset(&eb, 0, sizeof eb);
+  int tr = ++g_tmp, tp = ++g_tmp;
+  emit_boxed(c, recv, &rb);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tr, rb.p ? rb.p : "sp_box_nil()", tr);
+  if (exec) emit_args_off_self(c, av, an, g_pre);
+  if (!emit_block_arg_proc(c, nt_ref(nt, blk, "expression"), &pb)) { free(rb.p); free(pb.p); view_unbind(sv_nargov); return 0; }
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d);\n", tp, pb.p, tp);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "if (!_t%d) sp_raise_cls(\"%s\", \"%s\");\n", tp, exec ? "LocalJumpError" : "ArgumentError",
+             exec ? "no block given" : "wrong number of arguments (given 0, expected 1..3)");
+  char ref[64];
+  snprintf(ref, sizeof ref, "sp_ie_bind(_t%d, _t%d)", tp, tr);
+  const char *sv = g_yield_proc_ref; g_yield_proc_ref = ref;
+  if (exec) emit_yield_proc_call(c, args, t, b, g_indent, 1);
+  else {
+    buf_printf(&eb, "sp_penum_call1(%s, _t%d)", ref, tr);
+    if (t == TY_POLY || t == TY_UNKNOWN) buf_puts(b, eb.p); else emit_unbox_text(c, t, eb.p, b);
+  }
+  g_yield_proc_ref = sv;
+  view_unbind(sv_nargov);
+  free(rb.p); free(pb.p); free(eb.p);
+  return 1;
+}
+
 /* Print "spinel: <file>:<line>: warning: " for node `id` when
    SPINEL_WARN_UNRESOLVED is set, so a call/constant that silently degrades to
    nil/0 (where CRuby would raise or do real work) can be audited. Returns 1

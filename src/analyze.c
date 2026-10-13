@@ -2844,6 +2844,103 @@ static int ie_param_literals(Compiler *c, int blk, int cls) {
   return traced;
 }
 
+static int ie_untraced_site(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int blk = nt_ref(nt, id, "block");
+  if (!is_instance_eval_family(nt_str(nt, id, "name")) || nt_ref(nt, id, "receiver") < 0 ||
+      blk < 0 || nt_kind(nt, blk) != NK_BlockArgumentNode) return 0;
+  int x = nt_ref(nt, blk, "expression");
+  NodeKind k = x >= 0 ? nt_kind(nt, x) : NK_NONE;
+  if (k == NK_LocalVariableReadNode) {
+    Scope *sc = comp_scope_of(c, x);
+    const char *pn = nt_str(nt, x, "name");
+    int params = sc && sc->def_node >= 0 ? nt_ref(nt, sc->def_node, "parameters") : -1;
+    if (!pn || (sc && sc->blk_param && sp_streq(sc->blk_param, pn)) || ie_block_body(c, blk) >= 0) return 0;
+    static const char *const lists[] = { "requireds", "optionals", "keywords" };
+    for (int l = 0; l < 3 && params >= 0; l++) {
+      int n = 0; const int *ps = nt_arr(nt, params, lists[l], &n);
+      for (int i = 0; i < n; i++) if (sp_streq(nt_str(nt, ps[i], "name"), pn)) return 0;
+    }
+    return 1;
+  }
+  return k == NK_InstanceVariableReadNode || k == NK_CallNode;
+}
+
+static int ie_rself_name_selfish(Compiler *c, const char *nm) {
+  static const char *const kn[] = { "send", "__send__", "public_send", "instance_variable_get", "instance_variable_set",
+    "instance_variable_defined?", "instance_variables", "method", "methods", "public_method", "respond_to?",
+    "singleton_class", "define_singleton_method", "extend", "is_a?", "kind_of?", "instance_of?", "class", "frozen?",
+    "freeze", "object_id", "hash", "inspect", "to_s", "dup", "clone", "tap", "then", "itself", "display",
+    "instance_eval", "instance_exec", "binding", NULL };
+  for (int i = 0; kn[i]; i++) if (sp_streq(nm, kn[i])) return 1;
+  for (int s = 0; s < c->nscopes; s++)
+    if (c->scopes[s].name && c->scopes[s].class_id >= 0 && !c->scopes[s].is_cmethod && sp_streq(c->scopes[s].name, nm)) return 1;
+  for (int k = 0; k < c->nclasses; k++) if (comp_reader_in_chain(c, k, nm, NULL)) return 1;
+  return 0;
+}
+
+static int ie_rself_use(Compiler *c, int n, int nested) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_SelfNode) return nested ? 2 : 1;
+  const char *ty = nt_type(nt, n);
+  if (k == NK_SuperNode || k == NK_ForwardingSuperNode || k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode ||
+      (ty && !strncmp(ty, "InstanceVariable", 16))) return 2;
+  if (k == NK_CallNode && nt_ref(nt, n, "receiver") < 0 && nt_str(nt, n, "name") &&
+      ie_rself_name_selfish(c, nt_str(nt, n, "name"))) return 2;
+  int in = nested || k == NK_BlockNode || k == NK_LambdaNode, r = 0;
+  for (int i = 0, nr = nt_num_refs(nt, n); i < nr; i++) r |= ie_rself_use(c, nt_ref_at(nt, n, i), in);
+  for (int i = 0, na = nt_num_arrs(nt, n); i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) r |= ie_rself_use(c, ids[j], in);
+  }
+  return r;
+}
+
+static int ie_rself_mark(NodeTable *nt, int n) {
+  if (n < 0) return -1;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_BlockNode || k == NK_LambdaNode) return -1;
+  int at = k == NK_SelfNode ? n : -1;
+  if (at >= 0) nt_node_set_int(nt, n, "ie_rself", 1);
+  for (int i = 0, nr = nt_num_refs(nt, n); i < nr; i++) { int x = ie_rself_mark(nt, nt_ref_at(nt, n, i)); if (at < 0) at = x; }
+  for (int i = 0, na = nt_num_arrs(nt, n); i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) { int x = ie_rself_mark(nt, ids[j]); if (at < 0) at = x; }
+  }
+  return at;
+}
+
+static void ie_rself_literal(Compiler *c, int lit) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int body = nt_ref(nt, lit, "body"), params = nt_ref(nt, lit, "parameters");
+  int u = ie_rself_use(c, body, 0) | ie_rself_use(c, params, 0);
+  if (body < 0 || !u) return;
+  nt_node_set_int(nt, body, "ie_rself_lit", u & 2 ? 2 : 1);
+  if (u & 2) return;
+  int at = ie_rself_mark(nt, params), bt = ie_rself_mark(nt, body);
+  nt_node_set_int(nt, body, "ie_rself_at", (at >= 0 ? at : bt) + 1);
+}
+
+static void mark_ie_rebindable_literals(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int any = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) if (ie_untraced_site(c, id)) { nt_node_set_int((NodeTable *)nt, id, "ie_usite", 1); any = 1; }
+  if (!any) return;
+  NT_FOREACH_KIND(nt, NK_LambdaNode, l) ie_rself_literal(c, l);
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    int blk = nt_ref(nt, id, "block"), r = nt_ref(nt, id, "receiver");
+    const char *nm = nt_str(nt, id, "name");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || !nm) continue;
+    int take = r < 0 && (sp_streq(nm, "lambda") || sp_streq(nm, "proc"));
+    take |= r >= 0 && sp_streq(nm, "new") && nt_kind(nt, r) == NK_ConstantReadNode && sp_streq(nt_str(nt, r, "name"), "Proc");
+    for (int s = 0; s < c->nscopes && !take; s++)
+      take = c->scopes[s].name && c->scopes[s].blk_param && sp_streq(c->scopes[s].name, sp_streq(nm, "new") ? "initialize" : nm);
+    if (take) ie_rself_literal(c, blk);
+  }
+}
+
 /* (Re)build the instance_eval/exec node→class map from current receiver types. */
 void build_ie_map(Compiler *c) {
   const NodeTable *nt = c->nt;
@@ -2958,6 +3055,9 @@ int ie_poly_classes_at(Compiler *c, int node, int *out, int max) {
 /* Whether `self` at node is top-level self, the main object (#4926): no
    enclosing class and no instance_eval/exec receiver rebinding it. */
 int self_is_main(Compiler *c, int node) {
+  return !nt_int(c->nt, node, "ie_rself", 0) && self_is_main_raw(c, node);
+}
+int self_is_main_raw(Compiler *c, int node) {
   Scope *s = comp_scope_of(c, node);
   return s && s->class_id < 0 && an_ie_class_id < 0 && ie_class_of(c, node) == -1 &&
          self_class_body(c, node) < 0;
@@ -43984,6 +44084,7 @@ static void an_pass_report(void) {
 static void an_phase_infer_fixpoint(Compiler *c) {
   g_fixpoint_rounds = 0;
   g_fixpoint_capped = 0;
+  mark_ie_rebindable_literals(c);
   /* Two rounds. The proc-form clones are made between them: knowing which
      methods a poly dispatch will name needs settled receiver types, and the
      clones' own bodies then need inferring like any other. The second round is
