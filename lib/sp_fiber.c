@@ -332,6 +332,13 @@ void sp_sig_unblock(int a, int b) {
 }
 static void sp_fiber_fault_write(const char *s) { size_t n = strlen(s); while (n) { ssize_t w = write(2, s, n); if (w <= 0) break; s += w; n -= (size_t)w; } }
 static void sp_fiber_fault_write_num(size_t v) { char b[24]; int i = (int)sizeof b; b[--i] = 0; do { b[--i] = (char)('0' + v % 10); v /= 10; } while (v); sp_fiber_fault_write(b + i); }
+/* The handler this one stands in front of: the GC verifier's fault report,
+   which SPINEL_GC_VERIFY and SPINEL_GC_STRESS=2 install before main. Taking
+   its place only when it is that one keeps any other handler a host put
+   there; standing in front of it keeps a stack overflow SystemStackError
+   under the verifier, where the report, which runs on the stack that just
+   ran out, died of SIGILL. */
+static void (*sp_fiber_fault_chain)(int) = 0;
 static void sp_fiber_fault_handler(int sig, siginfo_t *si, void *uctx) {
   (void)uctx;
   sp_Fiber *f = sp_fiber_current;
@@ -376,6 +383,7 @@ static void sp_fiber_fault_handler(int sig, siginfo_t *si, void *uctx) {
     sp_fiber_fault_write(" KB C stack the fiber runs on (a deep call chain, a large local, or an unoptimised build "
                          "whose frames are far larger than -O2's); SPINEL_FIBER_STACK=<bytes> in the environment gives it more\n");
   }
+  if (sp_fiber_fault_chain) { sp_fiber_fault_chain(sig); return; }   /* the verifier's report */
   signal(sig, SIG_DFL);
 }
 void (*sp_stack_overflow_raise_fn)(void) = 0;
@@ -466,7 +474,8 @@ static void sp_fiber_fault_arm(void) {
   for (int i = 0; i < 2; i++) {
     struct sigaction cur;
     if (sigaction(sigs[i], NULL, &cur) != 0) continue;
-    if (!(cur.sa_flags & SA_SIGINFO) && cur.sa_handler != SIG_DFL) continue;
+    if (!(cur.sa_flags & SA_SIGINFO) && cur.sa_handler == sp_gc_fault_report) sp_fiber_fault_chain = sp_gc_fault_report;
+    else if (!(cur.sa_flags & SA_SIGINFO) && cur.sa_handler != SIG_DFL) continue;
     if ((cur.sa_flags & SA_SIGINFO) && cur.sa_sigaction) continue;
     struct sigaction sa; memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = sp_fiber_fault_handler;
