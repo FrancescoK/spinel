@@ -664,6 +664,10 @@ spinel: test/reject/include_module_from_expression.rb:9: `include` of a module n
 spinel: test/reject/included_hook_return_in_define_method_args.rb:9: Module#define_method in a method body is supported only for a method the class does not answer yet: it is defined from the start, not when that method runs (see docs/limitations.md)
 == test/reject/included_hook_return_in_define_method_args.rb [promote] rc=1
 spinel: test/reject/included_hook_return_in_define_method_args.rb:9: Module#define_method in a method body is supported only for a method the class does not answer yet: it is defined from the start, not when that method runs (see docs/limitations.md)
+== test/reject/inherited_alias_later_redefined.rb [default] rc=1
+spinel: test/reject/inherited_alias_later_redefined.rb:9: D#o: alias of an inherited method that P defines again after it is not supported; see docs/limitations.md
+== test/reject/inherited_alias_later_redefined.rb [promote] rc=1
+spinel: test/reject/inherited_alias_later_redefined.rb:9: D#o: alias of an inherited method that P defines again after it is not supported; see docs/limitations.md
 == test/reject/instance_exec_default_ivar_write.rb [default] rc=1
 spinel: test/reject/instance_exec_default_ivar_write.rb:6: an instance variable written in a block that instance_exec or instance_eval runs on a value with no instance variable layout (nil, a builtin value, Object.new): the value has no slot to hold it at run time
 spinel: 1 refusal, nothing written
