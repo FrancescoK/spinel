@@ -830,30 +830,31 @@ int lazy_alias_chain(Compiler *c, int var_read) {
   const char *vn = nt_str(nt, var_read, "name");
   if (!vn) return -1;
   Scope *sc = comp_scope_of(c, var_read);
-  int val = -1;
-  /* Walk the write kinds through the node table's own kind index rather than
-     rescanning every node: the query runs per lazy-receiver read on every
-     fixpoint iteration, and all five kinds together are a small slice of the
-     table. The answer does not depend on the order writes are visited in --
-     it is "exactly one matching write, plain kind, same scope" -- so taking
-     them kind by kind gives what the linear scan gave. */
-  static const NodeKind LOCAL_WRITE_KINDS[] = {
-    NK_LocalVariableWriteNode, NK_LocalVariableOrWriteNode,
-    NK_LocalVariableAndWriteNode, NK_LocalVariableOperatorWriteNode,
-    NK_LocalVariableTargetNode };
-  for (size_t ki = 0; ki < sizeof LOCAL_WRITE_KINDS / sizeof *LOCAL_WRITE_KINDS; ki++) {
-    NodeKind k = LOCAL_WRITE_KINDS[ki];
-    NT_FOREACH_KIND(nt, k, w) {
-      const char *wn = nt_str(nt, w, "name");
-      /* (a local of another method's of the same name is another local) */
-      if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
-      if (k != NK_LocalVariableWriteNode || val >= 0)
-        return -1;   /* not a single plain write */
-      val = nt_ref(nt, w, "value");
-    }
+  /* The plain writes first, through the name index: the answer is -1 unless
+     there is exactly one, in this scope, whose value is a lazy chain. The
+     query runs per `.first`/`.to_a`/`.force` on a local on every fixpoint
+     iteration, and walked every write of five kinds each time; a local not
+     holding a lazy chain now stops here. */
+  int val = -1, nplain = 0;
+  for (int w = an_local_writes_named_first(c, vn); w >= 0; w = an_local_writes_named_next(w)) {
+    const char *wn = nt_str(nt, w, "name");
+    /* (a local of another method's of the same name is another local) */
+    if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
+    if (++nplain > 1) return -1;   /* not a single plain write */
+    val = nt_ref(nt, w, "value");
   }
-  if (val < 0) return -1;
-  return chain_is_lazy_valued(c, val) ? val : -1;
+  if (val < 0 || !chain_is_lazy_valued(c, val)) return -1;
+  /* ... and no write of another kind: an `||=`, `&&=`, `op=` or a
+     multiple-assignment target makes it not a single plain write */
+  static const NodeKind OTHER_WRITE_KINDS[] = {
+    NK_LocalVariableOrWriteNode, NK_LocalVariableAndWriteNode,
+    NK_LocalVariableOperatorWriteNode, NK_LocalVariableTargetNode };
+  for (size_t ki = 0; ki < sizeof OTHER_WRITE_KINDS / sizeof *OTHER_WRITE_KINDS; ki++)
+    NT_FOREACH_KIND(nt, OTHER_WRITE_KINDS[ki], w) {
+      const char *wn = nt_str(nt, w, "name");
+      if (wn && sp_streq(wn, vn) && comp_scope_of(c, w) == sc) return -1;
+    }
+  return val;
 }
 
 /* A bare call to a parameterless user method whose whole body is a lazy chain
@@ -3250,7 +3251,7 @@ static int send_name_is_computed(Compiler *c, int arg, int depth) {
   int scope = (arg >= 0 && arg < nt->count) ? c->nscope[arg] : -1;
   if (!vn) return 0;
   int written = 0;
-  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, id) {
+  for (int id = an_local_writes_named_first(c, vn); id >= 0; id = an_local_writes_named_next(id)) {
     if (c->nscope[id] != scope) continue;
     const char *wn = nt_str(nt, id, "name");
     if (!wn || !sp_streq(wn, vn)) continue;

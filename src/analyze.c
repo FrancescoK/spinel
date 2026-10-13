@@ -13696,7 +13696,7 @@ static void narrow_nil_guard_locals(Compiler *c) {
        this node's own write discounted by name-match count */
     int writes = 0;
     {
-      NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w2) {
+      for (int w2 = an_local_writes_named_first(c, nm); w2 >= 0; w2 = an_local_writes_named_next(w2)) {
         const char *n2 = nt_str(nt, w2, "name");
         if (n2 && sp_streq(n2, nm) && comp_scope_of(c, w2) == s) writes++;
       }
@@ -34978,7 +34978,7 @@ static void widen_nullable_keyed_hash_literals(Compiler *c) {
     if (wnh_local_escapes_ex(c, sc, ln, &answered)) continue;
     /* every write must be one the widening can rebuild */
     int ok = 1;
-    NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+    for (int w = an_local_writes_named_first(c, ln); w >= 0; w = an_local_writes_named_next(w)) {
       const char *wn = nt_str(nt, w, "name");
       if (!wn || !sp_streq(wn, ln) || comp_scope_of(c, w) != sc) continue;
       int v = nt_ref(nt, w, "value");
@@ -35008,7 +35008,7 @@ static void widen_nullable_keyed_hash_literals(Compiler *c) {
     }
     lv->type = want;
     wnh_widen_block_params(c, sc, ln, kn, vn);
-    NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+    for (int w = an_local_writes_named_first(c, ln); w >= 0; w = an_local_writes_named_next(w)) {
       const char *wn = nt_str(nt, w, "name");
       if (!wn || !sp_streq(wn, ln) || comp_scope_of(c, w) != sc) continue;
       c->ntype[w] = want;
@@ -37773,7 +37773,7 @@ static void psb_collect(Compiler *c, int node, int elems, PsbSyms *s, int depth)
   }
   case NK_LocalVariableReadNode: {
     const char *vn = nt_str(nt, node, "name");
-    NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+    for (int w = an_local_writes_named_first(c, vn); w >= 0; w = an_local_writes_named_next(w)) {
       const char *wn = nt_str(nt, w, "name");
       if (vn && wn && sp_streq(wn, vn) && c->nscope[w] == c->nscope[node])
         psb_collect(c, nt_ref(nt, w, "value"), elems, s, depth + 1);

@@ -9103,7 +9103,7 @@ static int ssv_local(Compiler *c, int v, char *set, int depth) {
   LocalVar *lv = scope_local(sc, vn);
   if (!lv || lv->is_param || lv->is_block_param) return 0;
   int saw = 0;
-  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+  for (int w = an_local_writes_named_first(c, vn); w >= 0; w = an_local_writes_named_next(w)) {
     const char *wn = nt_str(nt, w, "name");
     if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
     if (!ssv_value(c, nt_ref(nt, w, "value"), set, depth + 1)) return 0;
