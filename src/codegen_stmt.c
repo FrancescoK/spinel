@@ -14638,14 +14638,14 @@ static void emit_class_body_stmts(Compiler *c, int ci, int body, Buf *b, int ind
       if (cn && (sp_streq(cn, "remove_method") || sp_streq(cn, "undef_method") ||
                  sp_streq(cn, "remove_class_variable")) &&
           diagnose_unsupported_call(c, stmts[k])) break;
-      /* an instance_eval of a String (the plan's CRF_EVAL) is refused */
-      diagnose_eval_call(c, stmts[k]);
       /* a String class_eval or module_eval left in the body (one
          desugar_string_class_eval could not expand) defines its methods only
          by running: it is emitted as a statement, refused there (deferred at
          this statement under --defer-refusals) or calling the program's own
          method of the name, not skipped as a declaration */
-      if (cn && (sp_streq(cn, "class_eval") || sp_streq(cn, "module_eval")) &&
+      /* (an instance_eval of a String likewise: the plan's CRF_EVAL refuses
+         it there) */
+      if (cn && (sp_streq(cn, "class_eval") || sp_streq(cn, "module_eval") || sp_streq(cn, "instance_eval")) &&
           nt_ref(nt, stmts[k], "block") < 0 && nt_ref(nt, stmts[k], "arguments") >= 0) {
         emit_stmt_or_defer(c, stmts[k], b, indent);
         continue;

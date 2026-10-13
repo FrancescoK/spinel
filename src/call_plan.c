@@ -1245,17 +1245,41 @@ static const char *cplan_binding_what(Compiler *c, int id) {
 /* `instance_eval(str)`: dropped on any receiver, as a String class_eval was
    skipped as a class-body declaration (a class-body String class_eval or
    module_eval is now emitted as a statement, refused there as any
-   unsupported call is). Not where the program defines a method of the
-   name. */
+   unsupported call is). Not where the call reaches a method of the
+   program's own. */
+/* Does call id reach a method `name` the program defines: on self's class
+   (or the top level), on a program object's class, or as a class method of
+   a class named by a constant? A receiver of any other kind does not. */
+static int cplan_eval_reaches_own(Compiler *c, int id, const char *name) {
+  const NodeTable *nt = c->nt;
+  int r = nt_ref(nt, id, "receiver");
+  if (r < 0 || nt_kind(nt, r) == NK_SelfNode) {
+    Scope *s = comp_scope_of(c, id);
+    int k = s ? s->class_id : -1;
+    if (k < 0 && c->node_cbody && id < c->node_cap) k = c->node_cbody[id];
+    if (comp_method_index(c, name) >= 0) return 1;
+    if (k < 0) return 0;
+    /* in a class body or a class method self is the class */
+    int on_class = (s && s->is_cmethod) || (c->node_cbody && id < c->node_cap && c->node_cbody[id] >= 0 && s && !s->name);
+    return on_class ? comp_cmethod_in_chain(c, k, name, NULL) >= 0 : comp_method_in_chain(c, k, name, NULL) >= 0;
+  }
+  TyKind rt = comp_ntype(c, r);
+  if (ty_is_object(rt)) return comp_method_in_chain(c, ty_object_class(rt), name, NULL) >= 0;
+  if (nt_kind(nt, r) == NK_ConstantReadNode) {
+    int k = comp_class_index(c, nt_str(nt, r, "name"));
+    return k >= 0 && comp_cmethod_in_chain(c, k, name, NULL) >= 0;
+  }
+  return 0;
+}
 static const char *cplan_eval_text_what(Compiler *c, int id, const char *name) {
   const NodeTable *nt = c->nt;
   if (!sp_streq(name, "instance_eval")) return NULL;
   int args = nt_ref(nt, id, "arguments"), argc = 0;
   if (args >= 0) nt_arr(nt, args, "arguments", &argc);
   if (argc < 1 || nt_ref(nt, id, "block") >= 0) return NULL;
-  if (comp_method_index(c, name) >= 0) return NULL;
-  for (int k = 0; k < c->nclasses; k++)
-    if (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_cmethod_in_chain(c, k, name, NULL) >= 0) return NULL;
+  /* the program's own instance_eval only where this call reaches it: an
+     unrelated class's method of the name left every other call unrefused */
+  if (cplan_eval_reaches_own(c, id, name)) return NULL;
   return "instance_eval of a String is not supported by AOT compilation (pass a block instead)";
 }
 static const char *cplan_eval_what(Compiler *c, int id) {
