@@ -1,0 +1,14 @@
+:on_self
+:on_self
+false
+:bare
+:on_self
+:by_string
+:hooked
+false
+:bare
+:hooked
+1
+3
+"inner"
+nil

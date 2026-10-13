@@ -15006,9 +15006,59 @@ static void cbi_rewrite_access(NodeTable *nt, int id, const char *cn) {
   if (line) nt_node_set_int(nt, id, "node_line", line);
   if (file) nt_node_set_int(nt, id, "node_file", file);
 }
+/* `instance_variable_set(:@x, v)` / `instance_variable_get(:@x)` with self
+   (no receiver, or `self.`) in a class or module body: self is the class,
+   so the call is `@x = v` / `@x` there. Left a call, it is taken for an
+   instance's ivar, and the class body has no instance to set it on. A set
+   is rewritten where it is a statement (`stmt`); as a value it stays refused.
+   The walk stops at a def, a block, a lambda, a `class << x` and a nested
+   class or module, which have a self of their own. */
+static int civ_self_body_access(NodeTable *nt, int node, int stmt) {
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_BlockNode || k == NK_LambdaNode || k == NK_SingletonClassNode ||
+      k == NK_ClassNode || k == NK_ModuleNode) return 0;
+  int changed = 0;
+  if (k == NK_CallNode && nt_ref(nt, node, "block") < 0) {
+    const char *nm = nt_str(nt, node, "name");
+    int setter = nm && sp_streq(nm, "instance_variable_set");
+    int getter = nm && sp_streq(nm, "instance_variable_get");
+    int r = nt_ref(nt, node, "receiver");
+    int args = nt_ref(nt, node, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    const char *iv0 = ((setter && stmt) || getter) &&
+                      (r < 0 || nt_kind(nt, r) == NK_SelfNode) && an == (setter ? 2 : 1)
+                        ? sym_or_str_literal(nt, av[0]) : NULL;
+    if (civ_name_ok(iv0)) {
+      char iv[256]; snprintf(iv, sizeof iv, "%s", iv0);
+      int v = setter ? av[1] : -1;
+      int line = (int)nt_int(nt, node, "node_line", 0);
+      int file = (int)nt_int(nt, node, "node_file", 0);
+      nt_node_reset(nt, node, setter ? "InstanceVariableWriteNode" : "InstanceVariableReadNode");
+      nt_node_set_str(nt, node, "name", iv);
+      if (setter) nt_node_set_ref(nt, node, "value", v);
+      if (line) nt_node_set_int(nt, node, "node_line", line);
+      if (file) nt_node_set_int(nt, node, "node_file", file);
+      changed = 1;
+    }
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) changed |= civ_self_body_access(nt, nt_ref_at(nt, node, i), 0);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0;
+    const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++) changed |= civ_self_body_access(nt, ids[j], k == NK_StatementsNode);
+  }
+  return changed;
+}
+
 int desugar_const_ivar_access(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
+  static const NodeKind BK[] = { NK_ClassNode, NK_ModuleNode };
+  for (int h = 0; h < 2; h++)
+    NT_FOREACH_KIND(nt, BK[h], m) changed |= civ_self_body_access(nt, nt_ref(nt, m, "body"), 0);
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
