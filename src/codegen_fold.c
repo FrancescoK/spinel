@@ -1586,8 +1586,9 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
     if (bang) {
       int tm = ++g_tmp, tn = ++g_tmp;
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_int _t%d = _t%d->len; _t%d->len = 0; for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, _t%d));\n",
-                 tn, tres, trecv, tm, tm, tn, tm, rk, trecv, rk, tres, tm);
+      int keep_nil = !splat && bp_slot_oint(c, block, BP0(c, block), rk);
+      buf_printf(g_pre, "sp_int _t%d = _t%d->len; _t%d->len = 0; for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push%s(_t%d, sp_%sArray_%s(_t%d, _t%d));\n",
+                 tn, tres, trecv, tm, tm, tn, tm, rk, keep_nil ? "_o" : "", trecv, rk, keep_nil ? "oget" : "get", tres, tm);
       buf_printf(b, "_t%d", trecv);
     }
     else {
@@ -2259,14 +2260,15 @@ int emit_slice_when_chunk_inspect_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "if (_t%d + 1 < sp_IntArray_length(_t%d)) {\n", ti, ta);
     emit_indent(g_pre, g_indent + 2);
-    buf_printf(g_pre, "lv_%s = sp_IntArray_get(_t%d, _t%d + 1);\n", p1, ta, ti);
+    { int tnx = ++g_tmp; buf_printf(g_pre, "sp_int _t%d = _t%d + 1; lv_%s = ", tnx, ti, p1);
+      bp_elem_read(c, block, block_param_name(c, block, 1), "Int", ta, tnx, g_pre); buf_puts(g_pre, ";\n"); }
     /* emit block body condition */
     Scope *bsc = comp_scope_of(c, block);
     LocalVar *lva = bsc ? scope_local(bsc, p0n) : NULL;
     LocalVar *lvb = bsc ? scope_local(bsc, p1n) : NULL;
     TyKind pta = lva ? lva->type : TY_UNKNOWN, ptb = lvb ? lvb->type : TY_UNKNOWN;
-    if (lva) lva->type = TY_INT;
-    if (lvb) lvb->type = TY_INT;
+    if (lva && lva->type != TY_POLY) lva->type = TY_INT;
+    if (lvb && lvb->type != TY_POLY) lvb->type = TY_INT;
     for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 2);
     int save = g_indent; g_indent += 2;
     Buf cb; memset(&cb, 0, sizeof cb); emit_expr(c, bb[bn - 1], &cb); g_indent = save;
@@ -2675,13 +2677,14 @@ int emit_chunk_while_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "if (_t%d + 1 < sp_IntArray_length(_t%d)) {\n", ti, ta);
   emit_indent(g_pre, g_indent + 2);
-  buf_printf(g_pre, "lv_%s = sp_IntArray_get(_t%d, _t%d + 1);\n", p1, ta, ti);
+  { int tnx = ++g_tmp; buf_printf(g_pre, "sp_int _t%d = _t%d + 1; lv_%s = ", tnx, ti, p1);
+      bp_elem_read(c, block, block_param_name(c, block, 1), "Int", ta, tnx, g_pre); buf_puts(g_pre, ";\n"); }
   Scope *bsc = comp_scope_of(c, block);
   LocalVar *lva = bsc ? scope_local(bsc, p0n) : NULL;
   LocalVar *lvb = bsc ? scope_local(bsc, p1n) : NULL;
   TyKind pta = lva ? lva->type : TY_UNKNOWN, ptb = lvb ? lvb->type : TY_UNKNOWN;
-  if (lva) lva->type = TY_INT;
-  if (lvb) lvb->type = TY_INT;
+  if (lva && lva->type != TY_POLY) lva->type = TY_INT;
+  if (lvb && lvb->type != TY_POLY) lvb->type = TY_INT;
   for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 2);
   int save = g_indent; g_indent += 2;
   /* the block's value by Ruby's truth: a boxed one (`a.send(s, b)`) is no C

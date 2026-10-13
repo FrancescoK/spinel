@@ -36,6 +36,11 @@ def ints_of(pattern)
   p a.each_with_index.map { |v, i| [v, i] }
   p a.map.with_index { |v, i| [v, i] }
   p a.each_with_index.select { |v, i| v.nil? }
+  u = a.dup
+  p u.uniq! { |v| v }
+  p u
+  p a.slice_when { |x, y| y.nil? || x.nil? }.to_a
+  p a.chunk_while { |x, y| !y.nil? && !x.nil? }.to_a
   b = a.dup
   p b.delete_if { |v| v.nil? }
   b = a.dup
