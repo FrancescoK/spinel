@@ -1665,6 +1665,16 @@ static int emit_next_expr(Compiler *c, int id, Buf *b) {
    argument sits deeper than the call that takes the argument. */
 int g_expr_depth = 0;
 
+/* A class or module body's own ivar (outside an instance_eval), written by
+   ivar write node `id` used as a value: its civ_ slot, the one the statement
+   form writes, in `out`. 0 when the write is not one. */
+static int ivar_class_body_slot(Compiler *c, int id, Scope *s, char *out, size_t cap) {
+  const char *nm = nt_str(c->nt, id, "name");
+  if (!nm || g_class_body_id < 0 || civ_class_of(c, id, s) != g_class_body_id) return 0;
+  snprintf(out, cap, "civ_%s_%s", c->classes[g_class_body_id].name, iv_c(nm + 1));
+  return 1;
+}
+
 /* A variable's read as the slot itself, to assign to: no sp_srange_live
    around a String Range's (#8321). A read of a String Range takes no wrapper
    now either: its kept endpoints stay handles, read where they are used
@@ -2194,6 +2204,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     }
     else if (cid2 < 0 && comp_class_index(c, "Toplevel") >= 0)
       snprintf(ref2e, sizeof ref2e, "civ_Toplevel_%s", iv_c(nm + 1));
+    else if (ivar_class_body_slot(c, id, cws, ref2e, sizeof ref2e)) {}
     else {
       snprintf(ref2e, sizeof ref2e, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
       fz_cid = cid2;
@@ -2336,6 +2347,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     char ref3[300];
     if (cws3 && cws3->is_cmethod && cid3 >= 0)
       snprintf(ref3, sizeof ref3, "civ_%s_%s", c->classes[cid3].name, iv_c(nm + 1));
+    else if (ivar_class_body_slot(c, id, cws3, ref3, sizeof ref3)) {}
     else if (tl3 && cid3 >= 0)
       snprintf(ref3, sizeof ref3, "civ_Toplevel_%s", iv_c(nm + 1));
     else
@@ -5697,6 +5709,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     int tl = cs && cs->class_id < 0 && g_ie_class_id < 0 ? comp_class_index(c, "Toplevel") : -1;
     if (cs && cs->is_cmethod && cs->class_id >= 0)
       snprintf(ref, sizeof ref, "civ_%s_%s", c->classes[cs->class_id].name, iv_c(nm + 1));
+    else if (ivar_class_body_slot(c, id, cs, ref, sizeof ref)) sc = g_class_body_id;
     else if (tl >= 0) {
       snprintf(ref, sizeof ref, "civ_Toplevel_%s", iv_c(nm + 1));
       sc = tl;
