@@ -7145,6 +7145,18 @@ static int dispatch_answers_nil(Compiler *c, int cid, const char *nm, int mi) {
   return overridden && any_nil;
 }
 
+/* The type the analysis would give node `id` with no view open: what an
+   emitter asks while a view, or a hoisted argument's temp, overrides the
+   node or one inside it. Asked as a pure read (an_pure_read_begin), as
+   repr_of asks, so the answer is not recorded over the view: a hoisted
+   argument's boxed view was overwritten with the argument's own String
+   type, and the arm after it boxed the boxed temp again as a String. */
+TyKind cg_natural_type(Compiler *c, int id) {
+  an_pure_read_begin();
+  TyKind t = infer_uncached(c, id);
+  an_pure_read_end();
+  return t;
+}
 int file_stat_nil_call(Compiler *c, int v);   /* analyze.c */
 static int node_is_oint_asked(Compiler *c, int node);
 /* Codegen asks this while a view overrides a node's type (a re-entered
