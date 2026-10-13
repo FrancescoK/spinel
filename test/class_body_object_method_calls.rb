@@ -27,6 +27,7 @@ class Shape
   p itself, name, to_s, inspect, frozen?, superclass
   p is_a?(Class), kind_of?(Module), instance_of?(Class), nil?, equal?(Shape)
   p ancestors.first, include?(Kernel), included_modules.include?(Kernel)
+  p object_id == Shape.object_id, object_id.is_a?(Integer)
   p instance_methods(false), method_defined?(:area), instance_method(:area).name
   label = "#{name}!"
   p label
