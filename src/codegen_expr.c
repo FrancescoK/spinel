@@ -3051,26 +3051,16 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
          "<...>__<c_name>__<nm>" or "<c_name>__<nm>" exists. */
       int ccls[64]; const char *ckey[64]; int nc = 0;
       TyKind ct = TY_UNKNOWN; int uniform = 1;
+      int *cands, ncands = comp_const_tail_cands(c, nm, &cands);
       for (int k = 0; k < c->nclasses && nc < 64; k++) {
-        const char *kn = c->classes[k].c_name;
-        if (!kn) continue;
-        char tail[512];
-        snprintf(tail, sizeof tail, "%s__%s", kn, nm);
-        size_t tl = strlen(tail);
-        const char *found = NULL; TyKind ft = TY_UNKNOWN;
-        for (int ci2 = 0; ci2 < c->nconsts; ci2++) {
-          const char *cn2 = c->consts[ci2].name;
-          size_t l2 = strlen(cn2);
-          if (l2 < tl || strcmp(cn2 + l2 - tl, tail) != 0) continue;
-          /* either the whole key, or a component edge before it */
-          if (l2 > tl && strncmp(cn2 + l2 - tl - 2, "__", 2) != 0) continue;
-          found = cn2; ft = c->consts[ci2].type; break;
-        }
-        if (!found) continue;
+        int ci2 = comp_class_owned_const(c, k, nm, cands, ncands);
+        if (ci2 < 0) continue;
+        const char *found = c->consts[ci2].name; TyKind ft = c->consts[ci2].type;
         if (nc == 0) ct = ft;
         else if (ft != ct) uniform = 0;
         ccls[nc] = k; ckey[nc] = found; nc++;
       }
+      free(cands);
       if (nc > 0 && uniform && ct != TY_UNKNOWN) {
         int tk = ++g_tmp, tr = ++g_tmp;
         buf_printf(b, "({ sp_Class _t%d = ", tk);
