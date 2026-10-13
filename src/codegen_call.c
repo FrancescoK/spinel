@@ -2467,7 +2467,11 @@ static void emit_poly_slot_text(Compiler *c, int src, int k, int arg, const char
 }
 
 void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *b, int force_poly) {
-  int nargs = argc < 16 ? argc : 16;  /* proc-call ABI caps args at sp_int[16] */
+  /* as many arguments as the boxed channel holds (SP_PROC_ARG_SLOTS,
+     lib/sp_proc.h), in at least 16 sp_int slots: a bound Method's trampoline
+     is handed the true count and reads that many, and 16 slots left the 17th
+     argument of a 17-parameter Method past the array */
+  int nargs = argc < 64 ? argc : 64;
   int any_poly = force_poly;
   /* the scope whose block takes the arguments, to type the slots by its parameters */
   int src = -1;
@@ -2498,7 +2502,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
        published both unboxed (the sp_int[] slot, for a concrete parameter)
        and boxed (the side-channel, for a poly parameter). A nil/unknown arg
        has no storable C type; it rides an sp_int temp and boxes to nil. */
-    int atmp[16], slot[16], aoint[16], hold[16];
+    int atmp[64], slot[64], aoint[64], hold[64];
     for (int k = 0; k < nargs; k++) {
       TyKind at = proc_arg_ty(c, argv[k]);
       int storable = ty_is_object(at) || c_type_name(at) != NULL;
@@ -2561,7 +2565,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
           live = !r.unknown && !r.keeps && !r.unlifted;
         }
         /* a yield into a proc: emit_proc_yield judged its targets */
-        else if (call < 0) live = (g_yield_live_mask >> k) & 1u;
+        else if (call < 0) live = k < 32 && ((g_yield_live_mask >> k) & 1u);
         if (!live) {
           slot[k] = ++g_tmp;
           emit_indent(g_pre, g_indent);
@@ -2595,7 +2599,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
       buf_puts(b, ", ");
     }
     if (kwpos) buf_printf(b, "_sp_proc_kwpos = %d, ", kwpos);
-    buf_puts(b, "(sp_int[16]){");
+    buf_printf(b, "(sp_int[%d]){", nargs > 16 ? nargs : 16);
     for (int k = 0; k < nargs; k++) {
       TyKind at = proc_arg_ty(c, argv[k]);
       if (k) buf_puts(b, ", ");
@@ -2625,7 +2629,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
   }
   else {
     if (kwpos) buf_printf(b, "(_sp_proc_kwpos = %d, ", kwpos);
-    buf_puts(b, "(sp_int[16]){");
+    buf_printf(b, "(sp_int[%d]){", nargs > 16 ? nargs : 16);
     for (int k = 0; k < nargs; k++) {
       if (k) buf_puts(b, ", ");
       if (proc_slot_is_ptr(proc_arg_ty(c, argv[k]))) { buf_puts(b, "(sp_int)(uintptr_t)("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }

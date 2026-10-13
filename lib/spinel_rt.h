@@ -19861,10 +19861,19 @@ static void sp_proc_call_spread_blk(sp_Proc *p, sp_Proc *blk, sp_RbVal arr, int 
   if (!p || !p->fn) return;
   sp_int n = sp_poly_length(arr);
   sp_int fill = n > 16 ? 16 : n;
-  sp_int slots[16];
-  for (sp_int i = 0; i < fill; i++) {
+  /* A bound-Method trampoline is handed the true count (below) and reads
+     that many arguments, from the sp_int slots or, for a boxed parameter,
+     the boxed channel: past 16 the slots are on the heap, for the call's
+     length, and the channel is filled as far as it goes, where 16 of each
+     let the 17th argument of a 17-parameter Method read the stack past the
+     slots or a stale channel entry. */
+  int wide = p->cap_scan == sp_bm_cap_scan && p->lambda_p && n > 16;
+  sp_int slots_16[16], *slots = slots_16;
+  void *wide_slots = NULL; SP_GC_ROOT(wide_slots);
+  if (wide) slots = (sp_int *)(wide_slots = sp_gc_alloc(sizeof(sp_int) * (size_t)n, NULL, NULL));
+  for (sp_int i = 0; i < (wide ? n : fill); i++) {
     sp_RbVal e = sp_poly_arr_get(arr, i);
-    _sp_proc_poly_args[i] = e;
+    if (i < (wide ? SP_PROC_ARG_SLOTS : fill)) _sp_proc_poly_args[i] = e;
     slots[i] = (e.tag == SP_TAG_OBJ || e.tag == SP_TAG_STR)
              ? (sp_int)(uintptr_t)e.v.p : sp_poly_to_i(e);
   }
