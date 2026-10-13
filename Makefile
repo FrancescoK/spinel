@@ -4349,6 +4349,10 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -q 'sp_PolyArray \* iv_xs;' "$$tmp/tmb.c" || { echo "infer-test: FAIL (#5521 a slot holding only Arrays widened to a boxed value)"; ok=0; }; \
 	grep -q 'sp_RbVal iv_ys;' "$$tmp/tmb.c" || { echo "infer-test: FAIL (#4196 two typed array kinds no longer box)"; ok=0; }; \
 	[ "$$(grep -c 'sp_PolyArray \* iv_items;' "$$tmp/tmb.c")" = 3 ] || { echo "infer-test: FAIL (#5521 a transplanted copy of a module's array ivar widened to a boxed value)"; ok=0; }; \
+	$(SPINEL) test/infer/ivar_setter_unrelated_class_same_name.rb -c --no-line-map -o "$$tmp/isu.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (ivar_setter_unrelated_class_same_name: -c)"; ok=0; }; \
+	grep -A2 '^struct sp_State_s {' "$$tmp/isu.c" | grep -q 'sp_PtrArray \* iv_t;' || { echo "infer-test: FAIL (a setter called on another class kept a same-named ivar's table boxed)"; ok=0; }; \
+	grep -A2 '^struct sp_Ctx_s {' "$$tmp/isu.c" | grep -q 'sp_FloatArray \* iv_t;' || { echo "infer-test: FAIL (a row of a boxed same-named table widened the setter's ivar)"; ok=0; }; \
+	grep -A2 '^struct sp_Memo_s {' "$$tmp/isu.c" | grep -q 'sp_FloatArray \* iv_t;' || { echo "infer-test: FAIL (a memoized same-named ivar in another class is not its own Float array)"; ok=0; }; \
 	$(SPINEL) test/reader_read_only_no_copy.rb -c --no-line-map -o "$$tmp/rro.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (reader_read_only_no_copy: -c)"; ok=0; }; \
 	grep -q '? sp_String_cstr(_t' "$$tmp/rro.c" || { echo "infer-test: FAIL (a read-only reader read still copies the whole String)"; ok=0; }; \
 	[ "$$(grep -c 'sp_str_concat(sp_String_cstr' "$$tmp/rro.c")" -le 2 ] || { echo "infer-test: FAIL (a read-only reader read copies where it need not)"; ok=0; }; \
