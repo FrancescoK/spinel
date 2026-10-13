@@ -3727,9 +3727,14 @@ endif
 #     each other's passes even when they emit identical C;
 #   - RESULT_CACHE_FP, computed once per run after the prerequisites are
 #     built: the content of both runtime archives, every bundled package
-#     object, both PCH files and build/spinel-timeout, every header under lib/
-#     and packages/, `$(CC) --version` and -dumpmachine, the OS and
-#     architecture, and LD_LIBRARY_PATH/LIBRARY_PATH;
+#     object and build/spinel-timeout, every header under lib/ and
+#     packages/, `$(CC) --version` and -dumpmachine, the OS and
+#     architecture, LD_LIBRARY_PATH/LIBRARY_PATH, and the PCH directory and
+#     the flags the PCH files are built with. The PCH files themselves are
+#     not hashed: gcc writes different bytes for the same header, flags and
+#     compiler on every build, so hashing them made every fresh checkout,
+#     and every rebuild of the PCH, start with an empty cache. What a PCH
+#     holds is a function of those inputs, which the key already has;
 #   - RESULT_CACHE_HARNESS: bump it when this recipe's logic changes how a
 #     result is decided.
 # Only PASS is stored, never a failure, so a cached result can only repeat a
@@ -3757,7 +3762,7 @@ endif
 GATE_CACHE ?= 1
 export GATE_CACHE
 RESULT_CACHE_HARNESS := 1
-RESULT_CACHE_FP = $(if $(filter 0,$(GATE_CACHE)),off,$(eval RESULT_CACHE_FP := $(shell RC_CC="$(CC)" tools/result_cache.sh fp $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS) $(PCH_PLAIN) $(PCH_NOPOLY) $(SPINEL_TIMEOUT)))$(RESULT_CACHE_FP))
+RESULT_CACHE_FP = $(if $(filter 0,$(GATE_CACHE)),off,$(eval RESULT_CACHE_FP := $(shell RC_CC="$(CC)" tools/result_cache.sh fp $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS) $(SPINEL_TIMEOUT) -- pch $(PCH_ROOT) $(PCH_FLAGS)))$(RESULT_CACHE_FP))
 # A `<test>.rb.opt` file beside a test names the C optimization flag it is
 # compiled with (`-O0`), for a test whose C is a shape the optimizer does not
 # finish: test/cmethod_chain_reachability.rb's 24-deep static-inline chain,
