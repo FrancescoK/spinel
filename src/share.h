@@ -298,8 +298,21 @@ enum { SPF_BYTES, SPF_HANDLE, SPF_WRAP, SPF_REFUSE }; /* form */
    element, a poly argument), the role a box's emitter asks for (SPR_BOX),
    which the memo never holds */
 enum { SPR_TAKE, SPR_READ, SPR_TEST, SPR_STORE, SPR_IDENTITY, SPR_BOX };
+/* the producer that supplies a value's handle (share_plan_producer): none
+   (SPK_NONE: its bytes); a box, which hands over itself (SPK_BOX); a value
+   represented as the handle (SPK_HANDLE: a variable's slot, a demanded
+   reader, a boxed container's element, a narrowed box's slot, a Range's
+   kept endpoint, by repr_of's strbuf_src); a call that answers its String
+   receiver, whose supply is that receiver's (SPK_SELF); a bang on a boxed
+   receiver, which answers the receiver's box, a box of a String that can
+   change holding its handle (SPK_BANG_BOX); a route the analysis's carry
+   check names (SPK_ROUTE: a callee that publishes the handle, a variable
+   whose slot holds it, ...) */
+enum { SPK_NONE, SPK_BOX, SPK_HANDLE, SPK_SELF, SPK_BANG_BOX, SPK_ROUTE };
 typedef struct {
   unsigned char need, supply, form;
+  unsigned char kind;   /* SPK_*, which share_plan_of fills where the supply
+                           was asked (a need above bytes) */
 } SharePlan;
 /* the form a need and a supply give */
 int share_plan_form(int need, int supply);
@@ -325,6 +338,10 @@ SharePlan share_plan_with_need(Compiler *c, int v, int role, int need);
 int share_plan_role(Compiler *c, int v);
 int share_plan_second_role(Compiler *c, int v);
 const char *share_plan_form_name(int form);
+/* The producer of node v's handle where codegen is (SPK_*), asked live as
+   the supply is, whatever a consumer needs; *operand (may be NULL) is the
+   receiver whose handle an SPK_SELF or SPK_BANG_BOX call answers, else -1. */
+int share_plan_producer(Compiler *c, int v, int *operand);
 const char *share_plan_role_name(int role);
 /* Is node n an explicit writer's attribute assignment whose value the facts
    keep apart from its right-hand side's String (nothing observes them as one
