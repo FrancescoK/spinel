@@ -27785,6 +27785,9 @@ static int obj_responds_answer(Compiler *c, int cid, const char *qm) {
   char wbase[256]; wbase[0] = '\0';
   if (is_wr && ql - 1 < sizeof wbase) { memcpy(wbase, qm, ql - 1); wbase[ql - 1] = '\0'; }
   if (comp_is_undeffed_in_chain(c, cid, qm)) return 0;
+  /* an alias that captured an Object / Kernel method answers as that one */
+  { int bi = 0; const char *bn = comp_resolve_alias_ex(c, cid, qm, NULL, &bi);
+    if (bi == 3 && !sp_streq(bn, qm)) return 2; }
   int found = (comp_method_in_chain(c, cid, qm, NULL) >= 0 &&
                !method_hidden_from_reflection(c, cid, qm)) ||
               comp_reader_in_chain(c, cid, qm, NULL) ||

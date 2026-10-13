@@ -3758,7 +3758,7 @@ static const char *alias_embedding_parent(Compiler *c, ClassInfo *cls) {
 static int alias_object_builtin(const char *od) {
   static const char *const names[] = { "dup", "clone", "inspect", "to_s", "hash", "==", "!=",
     "eql?", "equal?", "freeze", "frozen?", "object_id", "is_a?", "kind_of?", "instance_of?",
-    "itself", NULL };
+    "itself", "respond_to?", NULL };
   for (int i = 0; names[i]; i++) if (sp_streq(od, names[i])) return 1;
   return 0;
 }
