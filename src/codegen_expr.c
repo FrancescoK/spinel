@@ -3096,7 +3096,7 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       }
       free(ccls); free(ckey);
     } }
-    LocalVar *cpcv = nm ? comp_const(c, nm) : NULL;
+    LocalVar *cpcv = nm && !const_path_in_closed_builtin(c, id) ? comp_const(c, nm) : NULL;
     /* the slot of a flagged constant already read through its receiver (emit_const_recv_wrap) */
     int cptr = cpcv ? (int)nt_int(nt, id, "const_ptr", 0) : 0;
     if (cptr) {

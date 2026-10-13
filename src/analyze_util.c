@@ -185,6 +185,100 @@ int is_builtin_exception_name(const char *n) {
      any qualified Errno name is an exception class (#2922 follow-up) */
   return n && strncmp(n, "Errno::", 7) == 0;
 }
+/* Does subtree n (not entering a nested class, module or method) write
+   the constant nm? */
+static int body_writes_const(const NodeTable *nt, int n, const char *nm) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode || k == NK_DefNode) return 0;
+  if ((k == NK_ConstantWriteNode || k == NK_ConstantOrWriteNode || k == NK_ConstantAndWriteNode ||
+       k == NK_ConstantOperatorWriteNode) && sp_streq(nt_str(nt, n, "name"), nm)) return 1;
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) if (body_writes_const(nt, nt_ref_at(nt, n, i), nm)) return 1;
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int m = 0;
+    const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) if (body_writes_const(nt, ids[j], nm)) return 1;
+  }
+  return 0;
+}
+/* Is `node` the path `pn::nm` (or `::pn::nm`)? */
+static int const_path_is(const NodeTable *nt, int node, const char *pn, const char *nm) {
+  if (node < 0 || !sp_streq(nt_str(nt, node, "name"), nm)) return 0;
+  int par = nt_ref(nt, node, "parent");
+  return par >= 0 && sp_streq(nt_str(nt, par, "name"), pn);
+}
+/* Does the program write the constant nm into the class or module named pn:
+   in a body of it, or through the path `pn::nm = v`? */
+static int program_writes_const_in(Compiler *c, const char *pn, const char *nm) {
+  const NodeTable *nt = c->nt;
+  static const NodeKind bodies[] = { NK_ClassNode, NK_ModuleNode };
+  for (int i = 0; i < 2; i++)
+    NT_FOREACH_KIND(nt, bodies[i], d) {
+      int cp = nt_ref(nt, d, "constant_path");
+      if (cp < 0 || !sp_streq(nt_str(nt, cp, "name"), pn)) continue;
+      if (body_writes_const(nt, nt_ref(nt, d, "body"), nm)) return 1;
+    }
+  static const NodeKind writes[] = { NK_ConstantPathWriteNode, NK_ConstantPathOrWriteNode,
+                                     NK_ConstantPathAndWriteNode, NK_ConstantPathOperatorWriteNode };
+  for (int i = 0; i < 4; i++)
+    NT_FOREACH_KIND(nt, writes[i], w)
+      if (const_path_is(nt, nt_ref(nt, w, "target"), pn, nm)) return 1;
+  NT_FOREACH_KIND(nt, NK_ConstantPathTargetNode, t)
+    if (const_path_is(nt, t, pn, nm)) return 1;
+  return 0;
+}
+/* Does the program define a class or module whose own name is `leaf`, nested
+   in another (Frame::JSON::Encoding)? Inside it, `leaf::X` can name it. */
+static int program_nests_class_named(Compiler *c, const char *leaf) {
+  size_t ll = strlen(leaf);
+  for (int k = 0; k < c->nclasses; k++) {
+    const char *n = c->classes[k].name;
+    size_t l = n ? strlen(n) : 0;
+    if (l > ll + 2 && sp_streq(n + l - ll, leaf) && !strncmp(n + l - ll - 2, "::", 2)) return 1;
+    n = c->classes[k].c_name;
+    l = n ? strlen(n) : 0;
+    if (l > ll + 2 && sp_streq(n + l - ll, leaf) && !strncmp(n + l - ll - 2, "__", 2)) return 1;
+  }
+  return 0;
+}
+/* `P::NAME` where P is a builtin class or module: NAME is P's own constant,
+   never a program constant that shares the leaf name (the leaf-keyed table
+   answered M::Flags::BINARY for Encoding::BINARY), unless the program writes
+   NAME into P. Object is not one: its constants are the top-level ones. Nor
+   is a P the program also defines nested somewhere, which the path may
+   name lexically. */
+int const_path_in_closed_builtin(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, id) != NK_ConstantPathNode) return 0;
+  int par = nt_ref(nt, id, "parent");
+  if (par < 0) return 0;
+  NodeKind pk = nt_kind(nt, par);
+  /* `Encoding::X` or `::Encoding::X` */
+  if (!(pk == NK_ConstantReadNode || (pk == NK_ConstantPathNode && nt_ref(nt, par, "parent") < 0)))
+    return 0;
+  const char *pn = nt_str(nt, par, "name"), *nm = nt_str(nt, id, "name");
+  if (!pn || !nm || sp_streq(pn, "Object")) return 0;
+  if (!is_builtin_class_name(pn) && !is_builtin_module_name(pn)) return 0;
+  if (comp_const(c, pn)) return 0;
+  /* the walks below look at the whole program: once per path while the
+     tree and the class table stay as they are */
+  static signed char *memo; static int memo_cap, memo_ncls; static unsigned memo_ver;
+  if (nt->version != memo_ver || c->nclasses != memo_ncls || nt->count > memo_cap) {
+    if (nt->count > memo_cap) {
+      memo_cap = nt->count * 2;
+      free(memo);
+      memo = malloc((size_t)memo_cap);
+      if (!memo) { fprintf(stderr, "out of memory\n"); exit(1); }
+    }
+    memset(memo, -1, (size_t)memo_cap);
+    memo_ver = nt->version; memo_ncls = c->nclasses;
+  }
+  if (memo[id] < 0)
+    memo[id] = (signed char)(!program_nests_class_named(c, pn) && !program_writes_const_in(c, pn, nm));
+  return memo[id];
+}
 /* The SystemCallError family, by builtin name: SystemCallError, the Errno
    classes and the IO wait-readiness classes under them. Its #initialize
    builds the message from the class's errno (syserr_initialize). */
