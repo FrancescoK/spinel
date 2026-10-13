@@ -21825,8 +21825,11 @@ int an_tail_logic_op(Compiler *c, int node) {
   return (t == TY_STRING || t == TY_STRBUF) && (lt == TY_STRING || lt == TY_STRBUF);
 }
 /* The return walk's state: per method, how far it is decided (st), and
-   how many decisions where an answer was asked (an_ret_settle) are open. */
-typedef struct RetHandles { unsigned char *st; int *ret_start, *ret_list; int fresh, settling; int *par; } RetHandles;
+   how many decisions where an answer was asked (an_ret_settle) are open.
+   prev (the fresh walk only): per method, whether the previous round found
+   it answering only new Strings, which a method still being walked (a
+   cycle) answers this round */
+typedef struct RetHandles { unsigned char *st, *prev; int *ret_start, *ret_list; int fresh, settling; int *par; } RetHandles;
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc);
 static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *n, RetHandles *R);
 /* A box a seeded String method answers: its unboxing at the return
@@ -22058,7 +22061,8 @@ static int an_mutated_handle_returns(Compiler *c, int **ret_start, int **ret_lis
    form) has no call to pick up from; one typed other than String answers
    no handle to pick up. Fresh String and nil arms use the pickup's existing
    fresh-tail clearing and nil check. Each method is decided once, its tail calls'
-   targets first (a cycle answers no), and so is a method whose answer a
+   targets first (a cycle answers no in the handle walk, and in the fresh
+   walk what an_fresh_returns' previous round found), and so is a method whose answer a
    tail's own test asks (a builtin tail over a call, strbuf_builtin_tail,
    asks whether that call publishes): the walk is Compiler.ret_walk while
    it runs, and scope_ret_handle, scope_ret_fresh and scope_ret_param decide
@@ -22229,7 +22233,7 @@ static int an_ret_box_tail(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   return 1;
 }
 static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
-  if (R->st[mi] != RH_UNSEEN) return R->st[mi] == RH_YES;
+  if (R->st[mi] != RH_UNSEEN) return R->st[mi] == RH_YES || (R->st[mi] == RH_BUSY && R->prev && R->prev[mi]);
   Scope *m = &c->scopes[mi];
   if (!R->fresh && m->yields && repr_self_handle(c, mi)) {
     int pf = scope_proc_form_of(c, mi);
@@ -22276,6 +22280,51 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
   }
   return R->st[mi] == RH_YES;
 }
+/* The fresh walk (ret_fresh, ret_param) is a greatest fixpoint: a method
+   reached again while it is being walked -- a cycle, such as an inspect that
+   calls inspect on a box that may hold its own object -- answers what the
+   previous round found for it, every method answering only new Strings at
+   first. Rounds repeat until no method's answer changes; each only takes
+   answers away, so a cycle stays fresh only if every way out of it answers
+   a new String. Each round starts from the marks the rounds do not own.
+   (A walk that does not settle within its rounds falls back to taking a
+   cycle as not fresh, from no method known fresh.) */
+static void an_fresh_returns(Compiler *c, RetHandles *R) {
+  int n = c->nscopes;
+  unsigned char *pub = malloc((size_t)n + 1);
+  R->prev = malloc((size_t)n + 1);
+  if (!pub || !R->prev) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memset(R->prev, 1, (size_t)n + 1);
+  R->fresh = 1;
+  for (int mi = 1; mi < n; mi++) {
+    pub[mi] = c->scopes[mi].ret_pub_fresh;
+    /* (a method whose body the walk does not take answers no new String) */
+    c->scopes[mi].ret_fresh = (unsigned char)an_ret_handle_body(c, R, mi);
+    c->scopes[mi].ret_param = -1;
+  }
+  for (int round = 0, changed = 1; changed; round++) {
+    /* (the fallback round: a cycle is not fresh, as nothing it answers is
+       known yet) */
+    if (round == 16) {
+      memset(R->prev, 0, (size_t)n + 1);
+      for (int mi = 1; mi < n; mi++) {
+        c->scopes[mi].ret_fresh = 0;
+        c->scopes[mi].ret_param = -1;
+      }
+    }
+    memset(R->st, 0, (size_t)n + 1);
+    for (int mi = 1; mi < n; mi++) c->scopes[mi].ret_pub_fresh = pub[mi];
+    for (int mi = 1; mi < n; mi++) an_ret_handle(c, R, mi);
+    changed = 0;
+    for (int mi = 1; mi < n; mi++) {
+      unsigned char y = R->st[mi] == RH_YES;
+      if (round < 16 && y != R->prev[mi]) { changed = 1; R->prev[mi] = y; }
+    }
+  }
+  free(pub);
+  free(R->prev);
+  R->prev = NULL;
+}
 static void an_mark_handle_returns(Compiler *c) {
   if (!c->share_strings) return;
   RetHandles R = { 0 };
@@ -22290,9 +22339,10 @@ static void an_mark_handle_returns(Compiler *c) {
      every user method answers a handle or a new String,
      repr_boxed_to_s_operand; a call answering a new String beside handle
      reads, share_call_fresh), and read before it they saw no method fresh.
-     Each method is asked once per fact, and a cycle remains conservative. */
-  R.fresh = 1;
-  for (int mi = 1; mi < c->nscopes; mi++) an_ret_handle(c, &R, mi);
+     Each method is asked once per round; the fresh fact takes a cycle as
+     its rounds settle (an_fresh_returns), the handle fact as not
+     publishing. */
+  an_fresh_returns(c, &R);
   memset(R.st, 0, (size_t)c->nscopes + 1);
   R.fresh = 0;
   for (int mi = 1; mi < c->nscopes; mi++) an_ret_handle(c, &R, mi);
