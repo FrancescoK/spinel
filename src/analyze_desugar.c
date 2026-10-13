@@ -15215,14 +15215,34 @@ int desugar_inherited_hooks(Compiler *c) {
  * picks the nearest definition, as the ancestor lookup would. */
 
 static void scg_add_def_body(NodeTable *nt, int cls, const char *cname, int like, int raising,
-                             const char *mname);
+                             const char *from, const char *mname);
 static void scg_add_def(NodeTable *nt, int cls, const char *cname, int like, const char *mname) {
-  scg_add_def_body(nt, cls, cname, like, 0, mname);
+  scg_add_def_body(nt, cls, cname, like, 0, NULL, mname);
 }
-/* `raising`: 0 reads the constant, 1 raises NameError; 2 and 3 are the
+/* `::A::B::cname` for `from` "A::B" */
+static int scg_path_node(NodeTable *nt, int like, const char *from, const char *cname) {
+  int par = -1;
+  for (const char *p = from; ; ) {
+    const char *e = strstr(p, "::");
+    char seg[256];
+    snprintf(seg, sizeof seg, "%.*s", (int)(e ? (size_t)(e - p) : strlen(p)), p);
+    int cp = fwd_new_node_like(nt, like, "ConstantPathNode");
+    nt_node_set_str(nt, cp, "name", seg);
+    if (par >= 0) nt_node_set_ref(nt, cp, "parent", par);
+    par = cp;
+    if (!e) break;
+    p = e + 2;
+  }
+  int cr = fwd_new_node_like(nt, like, "ConstantPathNode");
+  nt_node_set_str(nt, cr, "name", cname);
+  nt_node_set_ref(nt, cr, "parent", par);
+  return cr;
+}
+/* `raising`: 0 reads the constant (from the class or module qualified as
+   `from`, or lexically for NULL), 1 raises NameError; 2 and 3 are the
    `defined?` twin, `__spinel_cd_Name`, answering "constant" or nil */
 static void scg_add_def_body(NodeTable *nt, int cls, const char *cname, int like, int raising,
-                             const char *mname) {
+                             const char *from, const char *mname) {
   int body = nt_ref(nt, cls, "body");
   if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) {
     int nb = fwd_new_node_like(nt, like, "StatementsNode");
@@ -15251,19 +15271,35 @@ static void scg_add_def_body(NodeTable *nt, int cls, const char *cname, int like
     nt_node_set_arr(nt, db, "body", &dn, 1);
   }
   else if (raising) {
-    /* raise NameError, "uninitialized constant X"; nil */
+    /* raise NameError, "uninitialized constant #{name}::X"; nil -- the
+       class the lookup ran on, as CRuby names it */
     int rc = fwd_new_node_like(nt, like, "CallNode");
     int ra = fwd_new_node_like(nt, like, "ArgumentsNode");
     int ne = fwd_new_node_like(nt, like, "ConstantReadNode");
     nt_node_set_str(nt, ne, "name", "NameError");
-    char msg[300]; snprintf(msg, sizeof msg, "uninitialized constant %s", cname);
-    int av[2] = { ne, str_node_like(nt, like, msg) };
+    char tail[300]; snprintf(tail, sizeof tail, "::%s", cname);
+    int msg = fwd_new_node_like(nt, like, "InterpolatedStringNode");
+    int es = fwd_new_node_like(nt, like, "EmbeddedStatementsNode");
+    int est = fwd_new_node_like(nt, like, "StatementsNode");
+    int nm = fwd_new_node_like(nt, like, "CallNode");
+    int me = fwd_new_node_like(nt, like, "SelfNode");
+    nt_node_set_str(nt, nm, "name", "name");
+    nt_node_set_ref(nt, nm, "receiver", me);
+    nt_node_set_arr(nt, est, "body", &nm, 1);
+    nt_node_set_ref(nt, es, "statements", est);
+    int parts[3] = { str_node_like(nt, like, "uninitialized constant "), es, str_node_like(nt, like, tail) };
+    nt_node_set_arr(nt, msg, "parts", parts, 3);
+    int av[2] = { ne, msg };
     nt_node_set_arr(nt, ra, "arguments", av, 2);
     nt_node_set_str(nt, rc, "name", "raise");
     nt_node_set_ref(nt, rc, "arguments", ra);
     int nl = fwd_new_node_like(nt, like, "NilNode");
     int bb[2] = { rc, nl };
     nt_node_set_arr(nt, db, "body", bb, 2);
+  }
+  else if (from) {
+    int cr = scg_path_node(nt, like, from, cname);
+    nt_node_set_arr(nt, db, "body", &cr, 1);
   }
   else {
     int cr = fwd_new_node_like(nt, like, "ConstantReadNode");
@@ -15410,10 +15446,136 @@ static int scg_ancestor_lookup(const NodeTable *nt, int cls, const char *cname, 
   return 0;
 }
 
+/* The program's classes and modules by qualified name (`A::Shared`), for
+   what a class that includes a module reaches: an include argument or a
+   superclass resolves lexically, as Ruby resolves it, so `include
+   B::Shared` is not `A::Shared`. Each name is a group of the nodes that
+   open it. */
+typedef struct {
+  char **qn;          /* each class and module node's qualified name */
+  int *grp, *next;    /* its group, and the next node of the group or -1 */
+  int *head;          /* each group's first node */
+  ANameHash names;    /* the groups' names */
+} ScgQual;
+
+static void scg_qual_build(const NodeTable *nt, const int *parent, int n0, ScgQual *q) {
+  memset(q, 0, sizeof *q);
+  size_t n = (size_t)(n0 > 0 ? n0 : 1);
+  q->qn = inh_qualified_names(nt, parent, n0);
+  q->grp = malloc(sizeof(int) * n);
+  q->next = malloc(sizeof(int) * n);
+  q->head = malloc(sizeof(int) * n);
+  if (!q->qn || !q->grp || !q->next || !q->head) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int x = n0 - 1; x >= 0; x--) {
+    q->grp[x] = q->next[x] = -1;
+    NodeKind k = nt_kind(nt, x);
+    if (k != NK_ClassNode && k != NK_ModuleNode) continue;
+    if (!q->qn[x]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    int g = anh_find(&q->names, q->qn[x]);
+    if (g < 0) { g = q->names.n; anh_add(&q->names, q->qn[x]); q->head[g] = -1; }
+    q->next[x] = q->head[g];
+    q->head[g] = x;
+    q->grp[x] = g;
+  }
+}
+
+static void scg_qual_free(ScgQual *q, int n0) {
+  if (q->qn) for (int k = 0; k < n0; k++) free(q->qn[k]);
+  free(q->qn); free(q->grp); free(q->next); free(q->head);
+  anh_free(&q->names);
+}
+
+/* The group constant path `path`, written in `scope` (a class or module
+   node, or -1 for the top level), names: from the innermost namespace out,
+   then from the top level; -1 for none of the program's. */
+static int scg_qual_resolve(const NodeTable *nt, const int *parent, const ScgQual *q, int scope, int path) {
+  char w[512], t[1536];
+  int rooted = 0;
+  if (!cbs_path_text(nt, path, w, sizeof w, &rooted)) return -1;
+  for (int a = rooted ? -1 : scope; a >= 0; a = inh_scope_of(nt, parent, a)) {
+    if (!q->qn[a]) continue;
+    snprintf(t, sizeof t, "%s::%s", q->qn[a], w);
+    int g = anh_find(&q->names, t);
+    if (g >= 0) return g;
+  }
+  return anh_find(&q->names, w);
+}
+
+/* The include (and, with `prepends`, prepend) arguments of node `x`'s body,
+   last first, each resolved in x: the group of the i-th in out[i]. */
+static int scg_qual_includes(const NodeTable *nt, const int *parent, const ScgQual *q, int x, int prepends,
+                             int *out, int cap) {
+  int body = nt_ref(nt, x, "body"), bn = 0, n = 0;
+  const int *bs = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+  for (int k = bn - 1; k >= 0; k--) {
+    const char *nm = nt_kind(nt, bs[k]) == NK_CallNode && nt_ref(nt, bs[k], "receiver") < 0 ? nt_str(nt, bs[k], "name") : NULL;
+    if (!nm || (!sp_streq(nm, "include") && !(prepends && sp_streq(nm, "prepend")))) continue;
+    int args = nt_ref(nt, bs[k], "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    for (int a = an - 1; a >= 0 && n < cap; a--) out[n++] = scg_qual_resolve(nt, parent, q, x, av[a]);
+  }
+  return n;
+}
+
+/* The group of the superclass of group `g`, or -1. */
+static int scg_qual_super(const NodeTable *nt, const int *parent, const ScgQual *q, int g) {
+  for (int x = q->head[g]; x >= 0; x = q->next[x]) {
+    int sc = nt_kind(nt, x) == NK_ClassNode ? nt_ref(nt, x, "superclass") : -1;
+    if (sc >= 0) return scg_qual_resolve(nt, parent, q, inh_scope_of(nt, parent, x), sc);
+  }
+  return -1;
+}
+
+/* Where the lookup of `cname` from group `g` ends, as scg_named_lookup
+   answers but by qualified name: 1 when g or an ancestor defines it (the
+   group that does in *def), -1 when that definition is private and
+   `honor_private`, 0 when none does. The modules included last are searched
+   first, from the last reopening back, then the superclass. `seen` marks
+   the groups walked. */
+static int scg_qual_lookup(const NodeTable *nt, const int *parent, const ScgQual *q, int g, const char *cname,
+                           int honor_private, char *seen, int *def) {
+  if (g < 0 || seen[g]) return 0;
+  seen[g] = 1;
+  int defined = 0, priv = 0, nodes = 0;
+  for (int x = q->head[g]; x >= 0; x = q->next[x], nodes++) {
+    if (scg_body_defines(nt, x, cname)) defined = 1;
+    if (scg_body_privatizes(nt, x, cname)) priv = 1;
+  }
+  if (defined) { *def = g; return honor_private && priv ? -1 : 1; }
+  for (int i = nodes - 1; i >= 0; i--) {
+    int x = q->head[g];
+    for (int j = 0; j < i; j++) x = q->next[x];
+    int inc[64];
+    int n = scg_qual_includes(nt, parent, q, x, 0, inc, 64);
+    for (int k = 0; k < n; k++) {
+      int r = scg_qual_lookup(nt, parent, q, inc[k], cname, honor_private, seen, def);
+      if (r) return r;
+    }
+  }
+  return scg_qual_lookup(nt, parent, q, scg_qual_super(nt, parent, q, g), cname, honor_private, seen, def);
+}
+
+/* Is group `og` among the ancestors of group `g` (g itself, a module it
+   includes or prepends at any depth, a superclass)? */
+static int scg_qual_reaches(const NodeTable *nt, const int *parent, const ScgQual *q, int g, int og, char *seen) {
+  if (g < 0 || seen[g]) return 0;
+  if (g == og) return 1;
+  seen[g] = 1;
+  for (int x = q->head[g]; x >= 0; x = q->next[x]) {
+    int inc[64];
+    int n = scg_qual_includes(nt, parent, q, x, 1, inc, 64);
+    for (int k = 0; k < n; k++)
+      if (scg_qual_reaches(nt, parent, q, inc[k], og, seen)) return 1;
+  }
+  return scg_qual_reaches(nt, parent, q, scg_qual_super(nt, parent, q, g), og, seen);
+}
+
 int desugar_self_const_get(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
   int *parent = NULL;
+  ScgQual q; memset(&q, 0, sizeof q);
+  char *seen = NULL;
   for (int id = 0; id < n0; id++) {
     /* `self::NAME` in a class method, `self.class::NAME` in an instance
        method: the same lookup */
@@ -15443,8 +15605,13 @@ int desugar_self_const_get(Compiler *c) {
     cname = sym_or_str_literal(nt, av[0]);
     }
     if (!cname || !cname[0] || cname[0] < 'A' || cname[0] > 'Z' || strstr(cname, "::")) continue;
-    if (!parent) parent = an_parent_map(nt);
-    if (!parent) break;
+    if (!parent) {
+      parent = an_parent_map(nt);
+      if (!parent) break;
+      scg_qual_build(nt, parent, n0, &q);
+      seen = malloc((size_t)(q.names.n > 0 ? q.names.n : 1));
+      if (!seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
     /* `defined?(self::NAME)`: the same dispatch, to a twin that answers
        "constant" or nil, and the defined? itself becomes the call */
     int dnode = cpath && parent[id] >= 0 && nt_kind(nt, parent[id]) == NK_DefinedNode ? parent[id] : -1;
@@ -15489,12 +15656,42 @@ int desugar_self_const_get(Compiler *c) {
       const char *mn = scg_const_name(nt, nt_ref(nt, m, "constant_path"));
       ScgSeen mseen = {{0}, 0};
       int priv = honor && mn && scg_named_lookup(nt, mn, cname, n0, 1, &mseen) < 0;
-      if (dnode >= 0) scg_add_def_body(nt, m, cname, id, priv ? 3 : 2, dname);
-      else scg_add_def_body(nt, m, cname, id, priv, mname);
+      if (dnode >= 0) scg_add_def_body(nt, m, cname, id, priv ? 3 : 2, NULL, dname);
+      else scg_add_def_body(nt, m, cname, id, priv, NULL, mname);
       others = 1;
     }
+    /* a class whose lookup ends in a module it includes (at any depth, or
+       through a superclass): a module's own singleton getter is not the
+       class's, so the class gets one too, reading the name by its full
+       path, which no constant of the class's lexical scope shadows
+       (`self.class::FORMATS` with FORMATS in an included module). And when
+       the method is a module's, every class that includes it is a self it
+       can run on: one whose lookup finds the name nowhere answers as the
+       owner does without it (NameError, or nil for defined?). A lookup that
+       ends in a class body takes the getter that body has. */
+    int og = nt_kind(nt, owner) == NK_ModuleNode ? q.grp[owner] : -1;
+    for (int m = 0; m < n0; m++) {
+      if (nt_kind(nt, m) != NK_ClassNode || m == owner || q.grp[m] < 0 || scg_body_defines(nt, m, cname)) continue;
+      int dg = -1;
+      memset(seen, 0, (size_t)q.names.n);
+      int r = scg_qual_lookup(nt, parent, &q, q.grp[m], cname, honor, seen, &dg);
+      int in_module = r != 0 && nt_kind(nt, q.head[dg]) == NK_ModuleNode;
+      if (r > 0 && in_module) {
+        /* const_get reads a private constant, which the path would not */
+        int priv = 0;
+        for (int x = q.head[dg]; x >= 0; x = q.next[x]) priv |= scg_body_privatizes(nt, x, cname);
+        if (dnode >= 0) scg_add_def_body(nt, m, cname, id, 2, NULL, dname);
+        else scg_add_def_body(nt, m, cname, id, 0, priv ? NULL : q.qn[q.head[dg]], mname);
+        others = 1;
+        continue;
+      }
+      if (!in_module && r != 0) continue;
+      memset(seen, 0, (size_t)q.names.n);
+      if (r == 0 && (og < 0 || !scg_qual_reaches(nt, parent, &q, q.grp[m], og, seen))) continue;
+      scg_add_def_body(nt, m, cname, id, dnode >= 0 ? 3 : 1, NULL, dnode >= 0 ? dname : mname);
+    }
     if (dnode >= 0) {
-      scg_add_def_body(nt, owner, cname, id, scg_ancestor_lookup(nt, owner, cname, n0, 1) > 0 ? 2 : 3, dname);
+      scg_add_def_body(nt, owner, cname, id, scg_ancestor_lookup(nt, owner, cname, n0, 1) > 0 ? 2 : 3, NULL, dname);
       int line = (int)nt_int(nt, dnode, "node_line", 0);
       int file = (int)nt_int(nt, dnode, "node_file", 0);
       nt_node_reset(nt, dnode, "CallNode");
@@ -15514,7 +15711,7 @@ int desugar_self_const_get(Compiler *c) {
        private raises for `self::NAME`, while const_get reads it. */
     int found = scg_ancestor_lookup(nt, owner, cname, n0, honor);
     if (found > 0 || (!others && found == 0)) scg_add_def(nt, owner, cname, id, mname);
-    else scg_add_def_body(nt, owner, cname, id, 1, mname);
+    else scg_add_def_body(nt, owner, cname, id, 1, NULL, mname);
     if (cpath) {
       int line = (int)nt_int(nt, id, "node_line", 0);
       int file = (int)nt_int(nt, id, "node_file", 0);
@@ -15527,6 +15724,8 @@ int desugar_self_const_get(Compiler *c) {
     nt_node_set_ref(nt, id, "arguments", -1);
     changed = 1;
   }
+  if (parent) scg_qual_free(&q, n0);
+  free(seen);
   free(parent);
   if (changed) comp_grow_node_arrays(c);
   return changed;
