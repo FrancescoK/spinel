@@ -942,6 +942,7 @@ void obj_default_name(Compiler *c, int ci, char *name, size_t nn, char *arg, siz
 int anon_class_text(Compiler *c, int ci, const char *head, Buf *b);
 int scope_def_line(Compiler *c, Scope *s);
 const char *scope_def_file(Compiler *c, Scope *s);
+int display_method_scope(Compiler *c, int cid, int want_inspect, int *defcls);
 const char *obj_str_cname(Compiler *c, int cid, int want_inspect);
 const char *obj_str_mname(Compiler *c, int cid, int want_inspect);
 int obj_str_ret_poly(Compiler *c, int cid, int want_inspect);

@@ -141,6 +141,7 @@ static int bare_rescue_spec_cid(Compiler *c, int rescue_id) {
 int method_name_implicitly_invoked(const char *nm) {
   static const char *const implicit[] = {
     "to_s", "inspect", "==", "<=>", "eql?", "hash", "each", "coerce",
+    "__noarg_to_s", "__noarg_inspect",   /* desugar_noarg_display_wrappers */
     "to_str", "to_ary", "to_a", "to_i", "to_int", "to_h", "to_hash", "to_proc", "call",
     "to_path",   /* File, Dir and IO's path slots ask it first (rb_get_path) */
     "to_io",     /* IO.select waits on whatever answers it; the only caller is
@@ -40794,6 +40795,85 @@ static void reject_exc_abort_constructs(Compiler *c) {
   }
 }
 
+/* Does a def's parameter list take no argument it must be given: no
+   required or post-splat positional, no required keyword? */
+static int def_params_all_optional(const NodeTable *nt, int pn) {
+  if (pn < 0) return 1;
+  int n = 0;
+  nt_arr(nt, pn, "requireds", &n);
+  if (n) return 0;
+  nt_arr(nt, pn, "posts", &n);
+  if (n) return 0;
+  const int *kws = nt_arr(nt, pn, "keywords", &n);
+  for (int k = 0; k < n; k++)
+    if (nt_type(nt, kws[k]) && sp_streq(nt_type(nt, kws[k]), "RequiredKeywordParameterNode")) return 0;
+  return 1;
+}
+
+/* `def inspect(indent = 0)` / `def to_s(fmt = nil)`: the runtime asks for
+   the String with no argument (`p obj`, `puts obj`, "#{obj}", an element of
+   an inspected Array), and the method's C function takes its parameters.
+   Those callers passed none -- the C did not compile -- or, finding a
+   method with parameters, rendered the default form instead. Each such def
+   in a class or module body gets a sibling `def __noarg_inspect = inspect`
+   (or __noarg_to_s), a plain call whose defaults bind as any other call's,
+   and the runtime's callers call that (display_method_scope). */
+static void desugar_noarg_display_wrappers(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int cls = 0; cls < n0; cls++) {
+    NodeKind ck = nt_kind(nt, cls);
+    if (ck != NK_ClassNode && ck != NK_ModuleNode) continue;
+    int body = nt_ref(nt, cls, "body");
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+    int add = 0;
+    for (int k = 0; k < bn; k++) {
+      if (nt_kind(nt, bb[k]) != NK_DefNode || nt_ref(nt, bb[k], "receiver") >= 0) continue;
+      const char *dn = nt_str(nt, bb[k], "name");
+      int pn = nt_ref(nt, bb[k], "parameters");
+      if (dn && (sp_streq(dn, "inspect") || sp_streq(dn, "to_s")) && pn >= 0 &&
+          def_params_all_optional(nt, pn)) add++;
+    }
+    if (!add) continue;
+    int *nb = malloc(sizeof(int) * (size_t)(bn + add));
+    if (!nb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    int m = 0;
+    for (int k = 0; k < bn; k++) {
+      int d = bb[k];
+      nb[m++] = d;
+      if (nt_kind(nt, d) != NK_DefNode || nt_ref(nt, d, "receiver") >= 0) continue;
+      const char *dn = nt_str(nt, d, "name");
+      int pn = nt_ref(nt, d, "parameters");
+      if (!dn || !(sp_streq(dn, "inspect") || sp_streq(dn, "to_s")) || pn < 0 ||
+          !def_params_all_optional(nt, pn)) continue;
+      int to_s = sp_streq(dn, "to_s");
+      long long line = nt_int(nt, d, "node_line", 0), file = nt_int(nt, d, "node_file", 0);
+      int call = nt_new_node(nt, "CallNode");
+      int st = nt_new_node(nt, "StatementsNode");
+      int def = nt_new_node(nt, "DefNode");
+      if (call < 0 || st < 0 || def < 0) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      nt_node_set_str(nt, call, "name", to_s ? "to_s" : "inspect");
+      nt_node_set_ref(nt, call, "receiver", -1);
+      nt_node_set_ref(nt, call, "arguments", -1);
+      nt_node_set_ref(nt, call, "block", -1);
+      nt_node_set_arr(nt, st, "body", &call, 1);
+      nt_node_set_str(nt, def, "name", to_s ? "__noarg_to_s" : "__noarg_inspect");
+      nt_node_set_ref(nt, def, "receiver", -1);
+      nt_node_set_ref(nt, def, "parameters", -1);
+      nt_node_set_ref(nt, def, "body", st);
+      int ln[3] = { call, st, def };
+      for (int j = 0; j < 3 && line > 0; j++) {
+        nt_node_set_int(nt, ln[j], "node_line", line);
+        nt_node_set_int(nt, ln[j], "node_file", file);
+      }
+      nb[m++] = def;
+    }
+    nt_node_set_arr(nt, body, "body", nb, m);
+    free(nb);
+  }
+}
+
 static void an_phase_desugar_register(Compiler *c) {
   comp_poly_candidates_reset();
   comp_descendants_reset();
@@ -40810,6 +40890,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_nil_block_arg(c);
   desugar_thread_start(c);               /* Thread.start / .fork -> Thread.new */
   desugar_literal_undef_method(c);       /* undef_method :a in a body -> undef a */
+  desugar_noarg_display_wrappers(c);     /* def inspect(i = 0) -> + def __noarg_inspect = inspect */
   /* a bare constant CRuby's lookup cannot reach, bound by its leaf name to a
      nested definition: refused while the source still says where each
      reference is written */
