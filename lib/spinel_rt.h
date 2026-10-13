@@ -5526,7 +5526,14 @@ static sp_bool sp_poly_eq_deep(sp_RbVal a, sp_RbVal b) {
     else if (a.cls_id == SP_BUILTIN_POLY_POLY_HASH) r = sp_PolyPolyHash_eq((sp_PolyPolyHash *)a.v.p, (sp_PolyPolyHash *)b.v.p);
     else                                           r = sp_poly_hash_eq_cross(a, b, FALSE);
   }
-  else r = sp_obj_eq_hook(a, b);   /* non-NULL: sp_poly_eq's object arm checks it first */
+  else if (sp_obj_eq_hook) r = sp_obj_eq_hook(a, b);
+  else r = FALSE;   /* unreachable while the hook is installed: sp_poly_eq's
+                       object arm checks it first, and sp_poly_eq_slow only
+                       reaches deep through that same guard -- here so a
+                       program with no hook folds this arm away whole instead
+                       of leaving a call through a constant NULL (an Xtensa
+                       link fails such a folded callx8 as a dangerous
+                       relocation) */
   sp_poly_recur_pop(mark);
   return r;
 }
