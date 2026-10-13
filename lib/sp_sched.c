@@ -788,6 +788,17 @@ static void sp_stw_park_locked(void) {
 #define sched_wake_home(w) ((void)(w))
 #endif
 
+/* A thread's state changes only under the scheduler lock, but some readers
+   look at it without the lock: a contended Mutex spins while its owner is
+   RUNNING (sp_mutex_spin_acquire), and #alive?, #status and #inspect answer
+   from it. So every store is atomic, and those reads load it atomically; a
+   plain store is a data race against them (ThreadSanitizer:
+   sp_mutex_spin_acquire against sp_sched_block and runq_push). Relaxed is
+   enough: each such reader takes the value as a hint or a snapshot, and
+   anything it then does is ordered by the lock or the mutex's own exchange. */
+#define SP_TH_SET_STATE(t, s) SP_ATOMIC_STORE(&(t)->state, (s), __ATOMIC_RELAXED)
+#define SP_TH_STATE(t)        SP_ATOMIC_LOAD(&(t)->state, __ATOMIC_RELAXED)
+
 #ifdef SP_THREADS
 static void sp_safepoint_preempt(void);   /* defined after the scheduler state below */
 #endif
@@ -1179,8 +1190,8 @@ static int sp_ev_dispatch(int rfd, short rev, int only_home) {
     w->wait_next = NULL; w->wait_head = NULL;
     w->io_revents = rev; w->io_fd = -1;
     n++;
-    if (w == &g_main_thread) { w->state = SP_TH_RUNNABLE; SCHED_WAKE_MAIN(); }
-    else if (w->off_cpu) { w->state = SP_TH_RUNNABLE; runq_requeue(w); sp_sched_wake_for(w); }
+    if (w == &g_main_thread) { SP_TH_SET_STATE(w, SP_TH_RUNNABLE); SCHED_WAKE_MAIN(); }
+    else if (w->off_cpu) { SP_TH_SET_STATE(w, SP_TH_RUNNABLE); runq_requeue(w); sp_sched_wake_for(w); }
     else w->wake_pending = 1;
   }
   sp_ev_arm_fd(rfd);
@@ -1292,7 +1303,7 @@ static int sched_lat_enabled(void) {
   return g_sched_lat_on;
 }
 static void runq_push(sp_runq *q, sp_thread *t) {
-  t->state = SP_TH_RUNNABLE; t->rq_next = NULL;
+  SP_TH_SET_STATE(t, SP_TH_RUNNABLE); t->rq_next = NULL;
   if (sched_lat_enabled()) t->readied_at = sp_monotonic_now();
   if (q->tail) q->tail->rq_next = t; else q->head = t;
   q->tail = t; g_runnable++;
@@ -1511,7 +1522,7 @@ void sp_sched_init(void) {
   g_main_root = sp_fiber_worker_root();
   memset(&g_main_thread, 0, sizeof g_main_thread);
   g_main_thread.fiber = NULL;
-  g_main_thread.state = SP_TH_RUNNING;
+  SP_TH_SET_STATE(&g_main_thread, SP_TH_RUNNING);
   g_main_thread.report_on_exception = 1;
   g_main_thread.arg = sp_box_nil();
   g_main_thread.retval = sp_box_nil();
@@ -2128,7 +2139,7 @@ static void run_thread_once(sp_thread *t) { sp_gc_wb((void*)t);   /* PRE/POST: s
   sp_thread *saved = g_current;
   g_current = t;
   g_nrunning++;
-  t->state = SP_TH_RUNNING;
+  SP_TH_SET_STATE(t, SP_TH_RUNNING);
   t->off_cpu = 0;        /* on-cpu now: no other worker may pick it up */
   if (t->home_wid < 0) {   /* pin to this worker (TLS affinity) */
     t->home_wid = (short)sp_worker_id;
@@ -2168,7 +2179,7 @@ static void run_thread_once(sp_thread *t) { sp_gc_wb((void*)t);   /* PRE/POST: s
 #endif
   if (t->fiber->state == 3) {   /* the body returned (terminated) */
     t->retval = t->fiber->yielded_value;
-    t->state = SP_TH_DEAD;
+    SP_TH_SET_STATE(t, SP_TH_DEAD);
 #ifdef SP_THREADS
     if (t->home_wid >= 0 && g_wslot[t->home_wid].pinned > 0) g_wslot[t->home_wid].pinned--;
 #endif
@@ -2212,7 +2223,7 @@ static void run_thread_once(sp_thread *t) { sp_gc_wb((void*)t);   /* PRE/POST: s
   if (t->state == SP_TH_BLOCKED) {
     if (t->wake_pending) {
       t->wake_pending = 0;
-      t->state = SP_TH_RUNNABLE;
+      SP_TH_SET_STATE(t, SP_TH_RUNNABLE);
       runq_requeue(t);
       sched_wake_home(t->home_wid);   /* pinned to us: our own loop re-picks it */
     }
@@ -2278,7 +2289,7 @@ static void sp_sched_pump(sp_thread *target, int may_wait) {
     if (g_wslot[0].evfd > 0) sp_ev_worker_wait(0, 0);   /* see sp_worker_main */
 #endif
     /* main blocked on a Queue/Mutex and a runnable thread just woke it */
-    if (g_main_thread.state == SP_TH_RUNNABLE) { g_main_thread.state = SP_TH_RUNNING; return; }
+    if (g_main_thread.state == SP_TH_RUNNABLE) { SP_TH_SET_STATE(&g_main_thread, SP_TH_RUNNING); return; }
     /* Run a green thread on the main worker only at N=1. With helpers present,
        main does NOT pump general green threads: running one means transferring
        off the root and back, which leaves the root fiber's published top-level
@@ -2524,7 +2535,7 @@ sp_Fiber *sp_thread_main_fiber(void) { return g_current ? g_current->fiber : NUL
    can't be taken over by a later thread at the same address. */
 unsigned sp_thread_owner_id(void) { return g_current ? g_current->id + 1 : 0; }
 
-sp_bool sp_Thread_alive(sp_thread *t) { return t->state != SP_TH_DEAD; }
+sp_bool sp_Thread_alive(sp_thread *t) { return SP_TH_STATE(t) != SP_TH_DEAD; }
 
 /* Thread.report_on_exception=(v): set the default for threads spawned after.
    Thread.report_on_exception: read the default. Per-thread #report_on_exception
@@ -2567,7 +2578,7 @@ sp_thread *sp_Thread_list_at(sp_int i) {
 /* #status: "run" while runnable/running, "sleep" while blocked, false when it
    finished normally, nil when it died with an unhandled exception. */
 sp_RbVal sp_Thread_status(sp_thread *t) {
-  switch (t->state) {
+  switch (SP_TH_STATE(t)) {
     case SP_TH_RUNNING: case SP_TH_RUNNABLE: return sp_box_str(&("\xff" "run")[1]);
     case SP_TH_BLOCKED:                       return sp_box_str(&("\xff" "sleep")[1]);
     default:                                  return t->has_exc ? sp_box_nil() : sp_box_bool(0);
@@ -2881,8 +2892,8 @@ static void *sp_sysmon_main(void *arg) {
             if (*pp == t) { *pp = t->wait_next; break; }
           sp_timer_cancel(t);
           t->wait_next = NULL; t->wait_head = NULL; t->io_revents = g_pfds[i].revents; t->io_fd = -1;
-          if (t == &g_main_thread) { t->state = SP_TH_RUNNABLE; SCHED_WAKE_MAIN(); }
-          else if (t->off_cpu) { t->state = SP_TH_RUNNABLE; runq_requeue(t); sp_sched_wake_for(t); }
+          if (t == &g_main_thread) { SP_TH_SET_STATE(t, SP_TH_RUNNABLE); SCHED_WAKE_MAIN(); }
+          else if (t->off_cpu) { SP_TH_SET_STATE(t, SP_TH_RUNNABLE); runq_requeue(t); sp_sched_wake_for(t); }
           else t->wake_pending = 1;
         }
       }
@@ -2920,7 +2931,7 @@ static int sp_sched_sleep_park(double seconds) {
     SCHED_UNLOCK();
     return -1;
   }
-  self->state = SP_TH_BLOCKED;
+  SP_TH_SET_STATE(self, SP_TH_BLOCKED);
   self->off_cpu = 0;
   self->wake_pending = 0;
   self->woken = 0;
@@ -2972,8 +2983,8 @@ sp_thread *sp_Thread_wakeup(sp_thread *t) {
   if (t->wait_head == &g_sleepers) {
     t->woken = 1;
     sp_sched_unpark(t);   /* off g_sleepers, timer cancelled */
-    if (t == &g_main_thread) { t->state = SP_TH_RUNNABLE; SCHED_WAKE_MAIN(); }
-    else if (t->off_cpu) { t->state = SP_TH_RUNNABLE; runq_requeue(t); sp_sched_wake_for(t); }
+    if (t == &g_main_thread) { SP_TH_SET_STATE(t, SP_TH_RUNNABLE); SCHED_WAKE_MAIN(); }
+    else if (t->off_cpu) { SP_TH_SET_STATE(t, SP_TH_RUNNABLE); runq_requeue(t); sp_sched_wake_for(t); }
     else t->wake_pending = 1;   /* mid-switch: its worker enqueues it */
   }
   SCHED_UNLOCK();
@@ -3070,7 +3081,7 @@ static int sp_sched_wait_io_impl(int fd, short events, struct pollfd *set, int n
   if (set) { self->io_fd = -1; self->io_events = 0; self->io_set = set; self->io_nset = n; self->ev_set = es; }
   else { self->io_fd = fd; self->io_events = events; }
   self->io_revents = 0;
-  self->state = SP_TH_BLOCKED;
+  SP_TH_SET_STATE(self, SP_TH_BLOCKED);
   self->off_cpu = 0;
   self->wake_pending = 0;
   self->wait_next = g_io_waiters; self->wait_head = &g_io_waiters; g_io_waiters = self;
@@ -3369,7 +3380,7 @@ static void sp_sched_block(sp_thread **waitlist, int defer_inject) {   /* PRE/PO
     sp_fiber_fire_inject_if_pending();   /* raises; does not return */
     SCHED_LOCK();
   }
-  self->state = SP_TH_BLOCKED;
+  SP_TH_SET_STATE(self, SP_TH_BLOCKED);
   self->off_cpu = 0;         /* still on-cpu until our worker confirms the switch-out */
   self->wake_pending = 0;
   /* Append at the TAIL: sp_sched_wake_one takes the head, so the list is a
@@ -3442,7 +3453,7 @@ static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mute
     SP_ATOMIC_STORE(&mutex->owner, NULL, __ATOMIC_SEQ_CST);
     if (mutex->waiters) sp_sched_wake_one(&mutex->waiters);
   }
-  self->state = SP_TH_BLOCKED;
+  SP_TH_SET_STATE(self, SP_TH_BLOCKED);
   self->off_cpu = 0;
   self->wake_pending = 0;
   self->wait_head = waitlist;
@@ -3490,8 +3501,8 @@ static sp_thread *sp_sched_wake_one(sp_thread **waitlist) {
 #endif
   t->wait_next = NULL;
   t->wait_head = NULL;
-  if (t == &g_main_thread) { t->state = SP_TH_RUNNABLE; SCHED_WAKE_MAIN(); return t; }
-  if (t->off_cpu) { t->state = SP_TH_RUNNABLE; runq_requeue(t); }   /* fully parked: enqueue now */
+  if (t == &g_main_thread) { SP_TH_SET_STATE(t, SP_TH_RUNNABLE); SCHED_WAKE_MAIN(); return t; }
+  if (t->off_cpu) { SP_TH_SET_STATE(t, SP_TH_RUNNABLE); runq_requeue(t); }   /* fully parked: enqueue now */
   else { t->wake_pending = 1; }   /* still switching out: its worker enqueues it once off-cpu */
   sp_sched_wake_for(t);   /* wake an idle worker to run it (all of them if t is pinned) */
   return t;
@@ -3532,11 +3543,11 @@ static void sp_sched_timer_expire(sp_sched_timer *timer, double now) {
     t->io_fd = -1;
   }
   if (t == &g_main_thread) {
-    t->state = SP_TH_RUNNABLE;
+    SP_TH_SET_STATE(t, SP_TH_RUNNABLE);
     SCHED_WAKE_MAIN();
   }
   else if (t->off_cpu) {
-    t->state = SP_TH_RUNNABLE;
+    SP_TH_SET_STATE(t, SP_TH_RUNNABLE);
     runq_requeue(t);
     sp_sched_wake_for(t);
   }
@@ -3571,7 +3582,7 @@ static void sp_thread_deliver(sp_thread *t, int is_kill,
     sp_sched_unpark(t);
     /* runq_requeue, not rq_push: a STARTED thread is pinned to its home
        worker's TLS (home_wid) and must not resume on another worker. */
-    if (t->off_cpu) { t->state = SP_TH_RUNNABLE; runq_requeue(t); sp_sched_wake_for(t); }
+    if (t->off_cpu) { SP_TH_SET_STATE(t, SP_TH_RUNNABLE); runq_requeue(t); sp_sched_wake_for(t); }
     else { t->wake_pending = 1; }   /* mid-switch: its worker enqueues it (see run_thread_once) */
   }
   /* RUNNABLE threads are already queued; the inject fires when they run. */
@@ -4123,7 +4134,7 @@ const char *sp_Thread_inspect(sp_thread *t) {
   if (!t) return "nil";
   const char *st = "dead";
   if (t) {
-    switch (t->state) {
+    switch (SP_TH_STATE(t)) {
       case SP_TH_RUNNING: case SP_TH_RUNNABLE: st = "run"; break;
       case SP_TH_BLOCKED: st = "sleep"; break;
       default: st = t->has_exc ? "aborting" : "dead"; break;
