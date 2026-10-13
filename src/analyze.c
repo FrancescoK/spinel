@@ -21294,7 +21294,9 @@ int an_tail_logic_op(Compiler *c, int node) {
   TyKind t = comp_ntype(c, node), lt = comp_ntype(c, nt_ref(c->nt, node, "left"));
   return (t == TY_STRING || t == TY_STRBUF) && (lt == TY_STRING || lt == TY_STRBUF);
 }
-typedef struct RetHandles { unsigned char *st; int *ret_start, *ret_list; int fresh; } RetHandles;
+/* The return walk's state: per method, how far it is decided (st), and
+   how many decisions where an answer was asked (an_ret_settle) are open. */
+typedef struct RetHandles { unsigned char *st; int *ret_start, *ret_list; int fresh, settling; } RetHandles;
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc);
 static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *n, RetHandles *R);
 static int an_stmts_tail_shared(Compiler *c, int st, int nil_ok, TailCount *tc, RetHandles *R) {
@@ -21497,9 +21499,15 @@ static int an_mutated_handle_returns(Compiler *c, int **ret_start, int **ret_lis
    targets first (a cycle answers no), and so is a method whose answer a
    tail's own test asks (a builtin tail over a call, strbuf_builtin_tail,
    asks whether that call publishes): the walk is Compiler.ret_walk while
-   it runs, and scope_ret_handle and scope_ret_fresh decide such a method
-   where they are asked, not in the order the methods are defined. */
+   it runs, and scope_ret_handle, scope_ret_fresh and scope_ret_param decide
+   such a method where they are asked, not in the order the methods are
+   defined. Each such decision runs on the stack of the one that asked it
+   (about a dozen frames a link), so a chain of them is bounded
+   (RH_SETTLE_MAX, well inside the 8 MB main stack the compiler runs on):
+   past the bound an answer is read as the walk has it so far, undecided
+   (no), and the method is decided where the walk reaches it. */
 enum { RH_UNSEEN, RH_BUSY, RH_YES, RH_NO };
+enum { RH_SETTLE_MAX = 256 };
 static int an_ret_handle(Compiler *c, RetHandles *R, int mi);
 /* Method mi is decided: yes or no, and for the handle walk its field. */
 static int an_ret_decided(Compiler *c, RetHandles *R, int mi, int yes) {
@@ -21704,7 +21712,10 @@ static void an_mark_handle_returns(Compiler *c) {
    walk reads no handle fact. */
 static void an_ret_settle(Compiler *c, int mi, int fresh) {
   RetHandles *R = c->ret_walk;
-  if (R && R->fresh == fresh && mi > 0 && mi < c->nscopes) an_ret_handle(c, R, mi);
+  if (!R || R->fresh != fresh || mi <= 0 || mi >= c->nscopes || R->settling >= RH_SETTLE_MAX) return;
+  R->settling++;
+  an_ret_handle(c, R, mi);
+  R->settling--;
 }
 int scope_ret_handle(Compiler *c, int mi) {
   an_ret_settle(c, mi, 0);

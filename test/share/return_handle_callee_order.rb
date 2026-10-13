@@ -67,3 +67,31 @@ xs = [A.new(c), B.new(+"b")]
 xs[0].name << "!"
 String([A.new(c), 1][0]) << "?"
 p c, xs[1].name
+
+# an exception's message and a subclass's reader override, each over a
+# method defined after it
+class MyErr < StandardError
+  def initialize(s) = (@s = s; super(s))
+  def message = (+txt).force_encoding("UTF-8")
+  def txt = @s
+end
+bx = +"boom"
+begin
+  raise MyErr.new(bx)
+rescue => err
+  em = err.message
+  em << "!"
+  p bx, err.message
+end
+
+class R
+  attr_reader :name
+  def initialize(n) = @name = n
+end
+class S < R
+  def name = (+inner).force_encoding("UTF-8")
+  def inner = @name
+end
+rx = +"r"
+[R.new(rx), S.new(rx)].each { |o| o.name << "!" }
+p rx
