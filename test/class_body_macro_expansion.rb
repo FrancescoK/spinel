@@ -111,17 +111,3 @@ class Shadowed
   listed :z
 end
 p Shadowed::LISTED
-
-# instance_eval of a string defines on the singleton class, not in the body
-module Classy
-  def classy(n) = instance_eval("def #{n}; 1; end")
-end
-class ClassyBox
-  extend Classy
-  classy :k
-end
-begin
-  p ClassyBox.new.k
-rescue NoMethodError
-  puts "NoMethodError"
-end

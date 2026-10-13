@@ -1224,17 +1224,21 @@ static const char *cplan_binding_what(Compiler *c, int id) {
 /* `class_eval(str)`, `module_eval(str)`: the text form
    desugar_string_class_eval could not expand (an interpolation it does not
    read, a String only the run time has). Skipped as a class-body
-   declaration, its methods were never defined. Not where the program
-   defines a method of the name. */
+   declaration, its methods were never defined. `instance_eval(str)` was
+   dropped the same way, on any receiver. Not where the program defines a
+   method of the name. */
 static const char *cplan_eval_text_what(Compiler *c, int id, const char *name) {
   const NodeTable *nt = c->nt;
-  if (!sp_streq(name, "class_eval") && !sp_streq(name, "module_eval")) return NULL;
+  if (!sp_streq(name, "class_eval") && !sp_streq(name, "module_eval") && !sp_streq(name, "instance_eval"))
+    return NULL;
   int args = nt_ref(nt, id, "arguments"), argc = 0;
   if (args >= 0) nt_arr(nt, args, "arguments", &argc);
   if (argc < 1 || nt_ref(nt, id, "block") >= 0) return NULL;
   if (comp_method_index(c, name) >= 0) return NULL;
   for (int k = 0; k < c->nclasses; k++)
     if (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_cmethod_in_chain(c, k, name, NULL) >= 0) return NULL;
+  if (sp_streq(name, "instance_eval"))
+    return "instance_eval of a String is not supported by AOT compilation (pass a block instead)";
   return sp_streq(name, "module_eval")
     ? "module_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead)"
     : "class_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead)";
