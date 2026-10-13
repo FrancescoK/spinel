@@ -20616,7 +20616,8 @@ static int share_demand_nested_read(Compiler *c, int call, int recv) {
    boxed from the topmost ancestor holding it as a String Array through
    every descendant's copy, a passive one with no holder of its own
    included (an abstract class between them). A copy an --rbs seed pins
-   keeps its form. */
+   to Array[String] is boxed too: the seed gives the Ruby type, not the
+   C form. */
 static int share_box_ivar_family(Compiler *c, int cid, const char *nm) {
   int top = cid;
   for (int p = c->classes[cid].parent; p >= 0; p = c->classes[p].parent) {
@@ -20629,7 +20630,7 @@ static int share_box_ivar_family(Compiler *c, int cid, const char *nm) {
   for (int k = -1; k < nk; k++) {
     ClassInfo *kc = &c->classes[k < 0 ? top : ks[k]];
     int ki = comp_ivar_index(kc, nm);
-    if (ki < 0 || kc->ivar_types[ki] != TY_STR_ARRAY || class_ivar_pinned(kc, nm)) continue;
+    if (ki < 0 || kc->ivar_types[ki] != TY_STR_ARRAY) continue;
     kc->ivar_types[ki] = TY_POLY_ARRAY;
     kc->ivar_elems_shared[ki] = 1;
     changed = 1;
@@ -20660,9 +20661,10 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       LocalVar *lv = &s->locals[sh->local];
       if (ty_is_array(lv->type) || ty_is_hash(lv->type)) {
         /* a typed String Array settles in its poly form, whose boxes hold
-           the handle; a String written in is boxed as one */
+           the handle; a String written in is boxed as one. A parameter
+           an --rbs seed types Array[String] takes it too. */
         if ((lv->type == TY_STR_ARRAY || lv->type == TY_POLY_ARRAY) && repr_str_elems_share(c, h) &&
-            !lv->rbs_seeded && (lv->type != TY_POLY_ARRAY || !lv->elems_shared)) {
+            (!lv->rbs_seeded || lv->rbs_type == TY_STR_ARRAY) && (lv->type != TY_POLY_ARRAY || !lv->elems_shared)) {
           lv->type = TY_POLY_ARRAY;
           lv->elems_shared = 1;
           changed = 1;
@@ -20716,7 +20718,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
         }
         /* An externally written String Array uses that same form even
            when the source walk cannot reach a direct ivar write. */
-        if (it == TY_STR_ARRAY && !class_ivar_pinned(ci, sh->name)) changed |= share_box_ivar_family(c, sh->cid, sh->name);
+        if (it == TY_STR_ARRAY) changed |= share_box_ivar_family(c, sh->cid, sh->name);
         continue;
       }
       if (repr_str_shares(c, h)) changed |= strbuf_promote_ivar(c, sh->cid, sh->name);
@@ -30938,6 +30940,8 @@ static int reassert_rbs_param_seeds(Compiler *c) {
       /* a String the share rule made the handle (share_default_apply): the
          same Ruby type in its shared C form */
       if (c->share_strings && lv->rbs_type == TY_STRING && lv->type == TY_STRBUF && lv->str_shared) continue;
+      /* and a String Array whose Strings it shares, boxed as their handles */
+      if (c->share_strings && lv->rbs_type == TY_STR_ARRAY && lv->type == TY_POLY_ARRAY && lv->elems_shared) continue;
       lv->type = lv->rbs_type;
       changed = 1;
     }
