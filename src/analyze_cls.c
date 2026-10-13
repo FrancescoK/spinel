@@ -1990,7 +1990,7 @@ void an_cls_facts(Compiler *c) {
       const ClsSet *s = r >= 0 ? cls_fact_node(c, r) : NULL;
       const char *fp = nt_file_path(nt, (int)nt_int(nt, id, "node_file", 0));
       fprintf(stderr, "cls-fact: %s:%d %s receiver:", fp && *fp ? fp : "?", (int)nt_int(nt, id, "node_line", 0), nt_str(nt, id, "name") ? nt_str(nt, id, "name") : "?");
-      if (!s) fprintf(stderr, " ANY");
+      if (!s) fprintf(stderr, r < 0 ? " ANY self" : " ANY");
       else if (s->n == 0) fprintf(stderr, " none");
       else for (int i = 0; i < s->n; i++) {
         int k = s->cls[i] >= c->nclasses ? s->cls[i] - c->nclasses : s->cls[i];
