@@ -22153,10 +22153,13 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     const char *nv = nvb.p;
     NodeKind rk = nt_kind(nt, recv);
     if (rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode) {
+      /* written back only while the variable still holds the receiver read
+         first: a key or right-hand side that rebinds it keeps the rebinding */
       buf_puts(b, " ");
       emit_expr(c, recv, b);
-      buf_printf(b, " = %s(_t%d, _t%d, %s); }\n",
-                 kt == TY_INT ? "sp_poly_arr_widen_and_set" : "sp_poly_aset_back", ta, tb, nv);
+      buf_printf(b, " = %s(", kt == TY_INT ? "sp_poly_arr_widen_and_set_to" : "sp_poly_aset_back_to");
+      emit_expr(c, recv, b);
+      buf_printf(b, ", _t%d, _t%d, %s); }\n", ta, tb, nv);
     }
     else
       buf_printf(b, " %s(_t%d, _t%d, %s); }\n",

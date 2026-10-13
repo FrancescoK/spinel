@@ -13152,6 +13152,20 @@ static SP_UNUSED sp_RbVal sp_poly_aset_back(sp_RbVal v, sp_RbVal key, sp_RbVal v
   sp_poly_set_poly(v, key, val);
   return v;
 }
+/* `x[key] op= val` with x a variable: the store as sp_poly_aset_back or
+   sp_poly_arr_widen_and_set makes it, into the receiver v read before the
+   key and the right-hand side ran, answering what the variable holds
+   after: the stored-back value while it still holds v, else what one of
+   those rebound it to (`a[swap.call] += 1` where swap assigns a), which
+   CRuby leaves. */
+static SP_UNUSED sp_RbVal sp_poly_aset_back_to(sp_RbVal cur, sp_RbVal v, sp_RbVal key, sp_RbVal val) {
+  sp_RbVal r = sp_poly_aset_back(v, key, val);
+  return sp_poly_equal(cur, v) ? r : cur;
+}
+static SP_UNUSED sp_RbVal sp_poly_arr_widen_and_set_to(sp_RbVal cur, sp_RbVal v, sp_int idx, sp_RbVal val) {
+  sp_RbVal r = sp_poly_arr_widen_and_set(v, idx, val);
+  return sp_poly_equal(cur, v) ? r : cur;
+}
 
 /* The multi-set forms of String#count/#delete/#squeeze, through a value only
    known at run time: the typed receiver resolves to sp_str_*_n, and a boxed
