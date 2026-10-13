@@ -1,10 +1,12 @@
 # A boxed instance variable written a Hash in one place and a String in
 # another is changed in place through its reader, so the String shares with
 # every name that holds it, whichever way the String is written: an
-# attribute writer, its `||=`, a multiple write, instance_variable_set, a
-# send or a Method naming the writer, instance_exec, a define_method body,
-# `+=`. Each shape has an ivar of its own name: one String write of a name
-# reaches every ivar of that name.
+# attribute writer (a name with non-ASCII letters too), its `||=`, a
+# multiple write, instance_variable_set, a send or a Method naming the
+# writer, instance_exec, a define_method body, `+=` on the ivar and an
+# operator write through the attribute (`o.x *= ","`). Each shape has an
+# ivar of its own name: one String write of a name reaches every ivar of
+# that name.
 class W1
   attr_accessor :v1
   def initialize = (@v1 = {})
@@ -97,4 +99,34 @@ ow9 = W9.new(+"op")
 ow9.bump
 t9 = ow9.v9
 ow9.v9 << "+"
-p s1, s2, n, s3, s4, s5, s6, s7, s8, t9
+
+class W10
+  attr_accessor :ítem
+  def initialize = (@ítem = {})
+end
+ow10 = W10.new
+ow10.ítem["k"] = 1
+s10 = +"accent"
+ow10.ítem = s10
+ow10.ítem << "+"
+
+class W11
+  attr_accessor :itém
+  def initialize = (@itém = {})
+end
+ow11 = W11.new
+ow11.itém["k"] = 1
+s11 = +"accent-send"
+ow11.send(:itém=, s11)
+ow11.itém << "+"
+
+class W12
+  attr_accessor :v12
+  def initialize(v) = (@v12 = v)
+end
+W12.new({}).v12["k"] = 1
+ow12 = W12.new(["a", "b"])
+ow12.v12 *= ","
+t12 = ow12.v12
+ow12.v12 << "+"
+p s1, s2, n, s3, s4, s5, s6, s7, s8, t9, s10, s11, t12

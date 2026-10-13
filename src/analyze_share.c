@@ -21,7 +21,6 @@
    class instead. That keeps `grow(buf)` on a local accumulator a
    `const char *` lent by address, as without the flag. */
 
-#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 #include "analyze_internal.h"
@@ -238,8 +237,8 @@ typedef struct ShareFacts {
   /* the writes of an instance variable no write node shows, by the name
      they write (sh_ivar_writes_build): an attribute writer's call `o.x = v`,
      its `||=`, `&&=` and multiple-write target, a send or a Method naming
-     the writer, all as "x=" (an `||=` or `&&=` that names only the reader
-     as "x"), and instance_variable_set(:@x, v) as "@x"; k the node.
+     the writer, all as "x=" (an `||=`, `&&=` or `+=` that names only the
+     reader as "x"), and instance_variable_set(:@x, v) as "@x"; k the node.
      ivw_all: a call writes an ivar it does not name (a dynamic
      instance_variable_set or send, Marshal.load, an alias of a writer).
      Built on first use. ivs: the answers of sh_ivar_string so far, as
@@ -2349,13 +2348,12 @@ static int sh_blk_bound(void *ctx, Compiler *c, int scope, const char *name) {
   return got;
 }
 
-/* An attribute writer's name: an identifier and `=` (not `==`, `[]=`) */
-static int sh_attr_assign_name(const char *nm) {
+/* A name a call can write an attribute by: any name ending in `=` but the
+   operators (`==`, `!=`, `===`, `<=`, `>=`, `[]=`). No identifier test, so a
+   name one would not recognize (`ítems=`) still counts as a write. */
+static int sh_writer_name(const char *nm) {
   size_t n = nm ? strlen(nm) : 0;
-  if (n < 2 || nm[n - 1] != '=' || !(isalpha((unsigned char)nm[0]) || nm[0] == '_')) return 0;
-  for (size_t i = 1; i + 1 < n; i++)
-    if (!isalnum((unsigned char)nm[i]) && nm[i] != '_') return 0;
-  return 1;
+  return n >= 2 && nm[n - 1] == '=' && !strchr("=!<>]", nm[n - 2]);
 }
 static void sh_ivw_add(ShareFacts *F, const char *key, int node) {
   if (F->nivw >= F->civw) {
@@ -2372,7 +2370,7 @@ static void sh_ivar_writes_build(ShareFacts *F, Compiler *c) {
   NT_FOREACH_KIND(nt, NK_CallNode, u) {
     const char *nm = nt_str(nt, u, "name");
     if (!nm) continue;
-    if (sh_attr_assign_name(nm)) { sh_ivw_add(F, nm, u); continue; }
+    if (sh_writer_name(nm)) { sh_ivw_add(F, nm, u); continue; }
     int args = nt_ref(nt, u, "arguments");
     int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
     const char *lit = argc >= 1 ? sh_lit_name(nt, argv[0]) : NULL;
@@ -2383,18 +2381,18 @@ static void sh_ivar_writes_build(ShareFacts *F, Compiler *c) {
     }
     else if (is_send_family(nm) || is_method_object_name(nm)) {
       if (!lit || is_send_family(lit) || is_ivar_set(lit) || is_method_object_name(lit)) F->ivw_all = 1;
-      else if (sh_attr_assign_name(lit)) sh_ivw_add(F, lit, u);
+      else if (sh_writer_name(lit)) sh_ivw_add(F, lit, u);
     }
     else if (is_alias_method_name(nm)) {
       const char *old = argc >= 2 ? sh_lit_name(nt, argv[1]) : NULL;
-      if (!old || sh_attr_assign_name(old)) F->ivw_all = 1;
+      if (!old || sh_writer_name(old)) F->ivw_all = 1;
     }
     else if (r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode && is_marshal_const(nt_str(nt, r, "name")))
       F->ivw_all = 1;
   }
   NT_FOREACH_KIND(nt, NK_AliasMethodNode, u) {
     const char *old = sh_lit_name(nt, nt_ref(nt, u, "old_name"));
-    if (!old || sh_attr_assign_name(old)) F->ivw_all = 1;
+    if (!old || sh_writer_name(old)) F->ivw_all = 1;
   }
   /* an attribute's `||=` and `&&=` carry the writer's name, or only the
      reader's (`x`, asked for as such) */
@@ -2407,10 +2405,16 @@ static void sh_ivar_writes_build(ShareFacts *F, Compiler *c) {
     }
   NT_FOREACH_KIND(nt, NK_CallTargetNode, u)
     if (nt_str(nt, u, "name")) sh_ivw_add(F, nt_str(nt, u, "name"), u);
+  /* an attribute's `+=` (and the other operators) the desugar keeps as is,
+     a node of no kind of its own, by the reader's name */
+  NT_FOREACH_KIND(nt, NK_NONE, u)
+    if (sp_streq(nt_type(nt, u), "CallOperatorWriteNode") && nt_str(nt, u, "name"))
+      sh_ivw_add(F, nt_str(nt, u, "name"), u);
   if (F->nivw) qsort(F->ivw, (size_t)F->nivw, sizeof *F->ivw, sh_named_cmp);
 }
 /* The value a write ShareFacts.ivw lists stores, or -1 when it cannot be
-   read off the call (a splat, a Method, a multiple write's target) */
+   read off the call (a splat, a Method, a multiple write's target, an
+   operator write like `o.x += v`, which may store anything) */
 static int sh_ivw_value(Compiler *c, int u) {
   const NodeTable *nt = c->nt;
   NodeKind k = nt_kind(nt, u);
@@ -2419,7 +2423,7 @@ static int sh_ivw_value(Compiler *c, int u) {
   const char *nm = nt_str(nt, u, "name");
   int args = nt_ref(nt, u, "arguments");
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
-  int want = sh_attr_assign_name(nm) ? 1 : is_ivar_set(nm) || is_send_family(nm) ? 2 : 0;
+  int want = sh_writer_name(nm) ? 1 : is_ivar_set(nm) || is_send_family(nm) ? 2 : 0;
   if (!want || argc != want) return -1;
   NodeKind vk = nt_kind(nt, argv[want - 1]);
   return vk == NK_SplatNode || vk == NK_KeywordHashNode || vk == NK_BlockArgumentNode ? -1 : argv[want - 1];
@@ -2455,7 +2459,8 @@ static int sh_ivar_string(void *ctx, Compiler *c, const char *ivn) {
       may = v < 0 || an_value_may_be_string(c, v, &lits);
     }
   char wn[300];
-  snprintf(wn, sizeof wn, "%s=", ivn[0] == '@' ? ivn + 1 : ivn);
+  /* (a name too long for the buffer may be anything) */
+  if (snprintf(wn, sizeof wn, "%s=", ivn[0] == '@' ? ivn + 1 : ivn) >= (int)sizeof wn) may = 1;
   const char *keys[3] = { wn, ivn, ivn[0] == '@' ? ivn + 1 : ivn };
   for (int j = 0; j < 3 && !may; j++)
     for (int i = sh_named_first(F->ivw, F->nivw, keys[j]);

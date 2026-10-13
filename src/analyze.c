@@ -24656,7 +24656,8 @@ static void strbuf_reconcile_lifted_reads(Compiler *c, const HandleArgTab *hat) 
    its memo (`def x = @x`, `@x ||= v`). A Struct's or a Data's member is set by its
    constructor, not by a write, and a native class's attribute is its
    binding's, so neither is one; nor is a module's self, which any
-   includer's own method may answer. The name is left in buf. */
+   includer's own method may answer. The name is left in buf; one that
+   does not fit is no answer (NULL). */
 static const char *poly_recv_ivar(Compiler *c, int r, char *buf, size_t cap) {
   const NodeTable *nt = c->nt;
   NodeKind k = nt_kind(nt, r);
@@ -24665,8 +24666,7 @@ static const char *poly_recv_ivar(Compiler *c, int r, char *buf, size_t cap) {
     const char *in = nt_str(nt, r, "name");
     if (!in || cid < 0 || cid >= c->nclasses || c->classes[cid].is_struct || c->classes[cid].is_data ||
         c->classes[cid].is_native_class) return NULL;
-    snprintf(buf, cap, "%s", in);
-    return buf;
+    return snprintf(buf, cap, "%s", in) < (int)cap ? buf : NULL;
   }
   const char *nm = nt_str(nt, r, "name");
   if (k != NK_CallNode || !nm || nt_ref(nt, r, "arguments") >= 0 || nt_ref(nt, r, "block") >= 0) return NULL;
@@ -24691,18 +24691,15 @@ static const char *poly_recv_ivar(Compiler *c, int r, char *buf, size_t cap) {
   }
   if (kind == SP_MEMBER_NONE || c->classes[dc].is_struct || c->classes[dc].is_data || c->classes[dc].is_native_class)
     return NULL;
-  if (kind == SP_MEMBER_ATTR) {
-    snprintf(buf, cap, "@%s", comp_resolve_alias(c, cid, nm));
-    return buf;
-  }
+  if (kind == SP_MEMBER_ATTR)
+    return snprintf(buf, cap, "@%s", comp_resolve_alias(c, cid, nm)) < (int)cap ? buf : NULL;
   /* (a `return` elsewhere in the method answers another value) */
   if (mi < 0 || mi >= c->nscopes || comp_ret_first(c, mi) >= 0) return NULL;
   const char *ivn = an_memo_reader_ivar(c, mi);
   int last = scope_body_last(c, mi);
   if (!ivn && last >= 0 && nt_kind(nt, last) == NK_InstanceVariableReadNode) ivn = nt_str(nt, last, "name");
   if (!ivn) return NULL;
-  snprintf(buf, cap, "%s", ivn);
-  return buf;
+  return snprintf(buf, cap, "%s", ivn) < (int)cap ? buf : NULL;
 }
 
 int an_value_may_be_string(Compiler *c, int v, const PolyLits *lits) {
