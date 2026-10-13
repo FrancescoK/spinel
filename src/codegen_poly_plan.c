@@ -453,6 +453,10 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
     int pfi9 = scope_proc_form_of(c, mi);
     buf_printf(&cb, "sp_%s_%s(%s", mc_reopen_cls(c, defcls, c->scopes[mi].name),
                mc(pfi9 >= 0 ? c->scopes[pfi9].name : c->scopes[mi].name), _dself);
+    /* a default reading an earlier parameter (Thor's `say(message = "", color =
+       nil, force_new_line = (message.to_s !~ ...))`) reads it through a local
+       each argument binds to first, as the other arms do (ctor_arm_arg) */
+    Buf pdpre; memset(&pdpre, 0, sizeof pdpre);
     if (c->scopes[mi].nparams > 0) {
       const char *saved_self = g_self;
       const char *saved_deref = g_self_deref;
@@ -482,9 +486,18 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
       /* the defaults are spelled for the proc form's own parameter
          types when that is the symbol called (#4492) */
       Scope *ds = &c->scopes[pfi9 >= 0 ? pfi9 : mi];
+      int pd_uid = default_refs_earlier_param(c, ds) ? ++g_tmp : 0, pd_base = g_nren;
+      Buf *sv_pre9 = g_pre;
+      if (pd_uid) g_pre = &pdpre;
       for (int ai = 0; ai < ds->nparams; ai++) {
-        buf_puts(&cb, ", "); emit_arg_or_default(c, ds, ai, -1, &cb);
+        buf_puts(&cb, ", ");
+        Buf vb; memset(&vb, 0, sizeof vb);
+        emit_arg_or_default(c, ds, ai, -1, &vb);
+        ctor_arm_arg(c, ds, ai, vb.p ? vb.p : "", pd_uid, &pdpre, &cb);
+        free(vb.p);
       }
+      g_nren = pd_base;
+      g_pre = sv_pre9;
       g_self = saved_self; g_self_deref = saved_deref;
     }
     /* self is always the first argument here, so a zero-param method
@@ -503,6 +516,7 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
     buf_puts(&cb, ")");
     const char *call = cb.p ? cb.p : "";
     buf_printf(b, " case %d: ", k);
+    if (pdpre.p) buf_printf(b, "{ %s", pdpre.p);
     /* A proc form is a separately inferred clone, so its own return type
        is the one to read -- not the original's, which an inlined-only
        method never needed (#3399). */
@@ -553,8 +567,8 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
       else if (method_ret_is_oint(&c->scopes[pf9 ? pfi9 : mi])) buf_printf(b, "%s(%s)", oint_arg(cret9), call);
       else plan_put_plain(so, ret, call, b);
     }
-    buf_puts(b, "; break;");
-    free(cb.p);
+    buf_puts(b, pdpre.p ? "; } break;" : "; break;");
+    free(cb.p); free(pdpre.p);
     if (g_plan_check) pa_observe(pf9 ? PA_PROC_FORM : PA_USER, k, mi, cret9, pconv);
     return;
   }
