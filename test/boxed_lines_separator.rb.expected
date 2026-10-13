@@ -1,0 +1,19 @@
+["a,", "b,", "c"]
+["a", "b", "c"]
+["a,", "b,", "c"]
+["a", "b", "c"]
+["a,b,c"]
+["a,b,c"]
+["a\n\nb\nc\n"]
+["a,", "b,", "c"]
+["a,", "b,", "c"]
+["a\n\nb\nc\n"]
+["a\n\nb\nc\n"]
+[""]
+["a\n\nb\nc\n"]
+["a\n\n", "b\nc\n"]
+"no implicit conversion of Integer into String"
+"no implicit conversion of Integer into String"
+"AB"
+["x\ny!"]
+NoMethodError
