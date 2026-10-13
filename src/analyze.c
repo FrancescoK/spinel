@@ -6006,6 +6006,15 @@ static int te_call(NodeTable *nt, int recv, const char *name, int argsnode, int 
   if (block >= 0) nt_node_set_ref(nt, n, "block", block);
   return n;
 }
+/* A generator step that hands on what the method yielded, `__ey.yield(*__ev)`:
+   several values go on as one step of several (a pack, as Enumerator.new's
+   `y.yield(a, b)` makes), which a block of map and its kin takes spread and
+   a `|x|` reads the first of; one value as itself; none as nil */
+static int te_yield_step(NodeTable *nt) {
+  int evsplat = nt_new_node(nt, "SplatNode");
+  nt_node_set_ref(nt, evsplat, "expression", te_lvread(nt, "__ev"));
+  return te_call(nt, te_lvread(nt, "__ey"), "yield", te_args1(nt, evsplat), -1);
+}
 static int te_stmts1(NodeTable *nt, int s) {
   int n = nt_new_node(nt, "StatementsNode"); nt_node_set_arr(nt, n, "body", &s, 1); return n;
 }
@@ -6244,18 +6253,8 @@ static void desugar_enum_for_with_args(Compiler *c) {
         fargs = nt_new_node(nt, "ArgumentsNode");
         nt_node_set_arr(nt, fargs, "arguments", fwd, nfwd);
       }
-      /* __ev.length <= 1 ? __ev[0] : __ev */
-      int lencall = te_call(nt, te_lvread(nt, "__ev"), "length", -1, -1);
-      int cmp = te_call(nt, lencall, "<=", te_args1(nt, nt_new_int(nt, 1)), -1);
-      int idx = te_call(nt, te_lvread(nt, "__ev"), "[]", te_args1(nt, nt_new_int(nt, 0)), -1);
-      int elsenode = nt_new_node(nt, "ElseNode");
-      nt_node_set_ref(nt, elsenode, "statements", te_stmts1(nt, te_lvread(nt, "__ev")));
-      int ifn = nt_new_node(nt, "IfNode");
-      nt_node_set_ref(nt, ifn, "predicate", cmp);
-      nt_node_set_ref(nt, ifn, "statements", te_stmts1(nt, idx));
-      nt_node_set_ref(nt, ifn, "subsequent", elsenode);
-      int fyield = te_call(nt, te_const(nt, "Fiber"), "yield", te_args1(nt, ifn), -1);
-      /* m(args) { |*__ev| Fiber.yield(...) } */
+      int fyield = te_yield_step(nt);
+      /* m(args) { |*__ev| __ey.yield(*__ev) } */
       int evrest = nt_new_node(nt, "RestParameterNode"); nt_node_set_str(nt, evrest, "name", "__ev");
       int inner_params = nt_new_node(nt, "ParametersNode"); nt_node_set_ref(nt, inner_params, "rest", evrest);
       int inner_bp = nt_new_node(nt, "BlockParametersNode"); nt_node_set_ref(nt, inner_bp, "parameters", inner_params);
@@ -6886,19 +6885,8 @@ static void synth_to_enum_generators(Compiler *c) {
     const char *m = tm[k];   /* stable strdup: survives nt_new_node reallocs */
     char hname[160]; snprintf(hname, sizeof hname, "__to_enum_%s", m);
 
-    /* __ev.length <= 1 ? __ev[0] : __ev */
-    int lencall = te_call(nt, te_lvread(nt, "__ev"), "length", -1, -1);
-    int cmp = te_call(nt, lencall, "<=", te_args1(nt, nt_new_int(nt, 1)), -1);
-    int idx = te_call(nt, te_lvread(nt, "__ev"), "[]", te_args1(nt, nt_new_int(nt, 0)), -1);
-    int elsenode = nt_new_node(nt, "ElseNode");
-    nt_node_set_ref(nt, elsenode, "statements", te_stmts1(nt, te_lvread(nt, "__ev")));
-    int ifn = nt_new_node(nt, "IfNode");
-    nt_node_set_ref(nt, ifn, "predicate", cmp);
-    nt_node_set_ref(nt, ifn, "statements", te_stmts1(nt, idx));
-    nt_node_set_ref(nt, ifn, "subsequent", elsenode);
-    /* Fiber.yield(<collapse>) */
-    int fyield = te_call(nt, te_const(nt, "Fiber"), "yield", te_args1(nt, ifn), -1);
-    /* inner block: m { |*__ev| Fiber.yield(...) } */
+    int fyield = te_yield_step(nt);
+    /* inner block: m { |*__ev| __ey.yield(*__ev) } */
     int evrest = nt_new_node(nt, "RestParameterNode"); nt_node_set_str(nt, evrest, "name", "__ev");
     int inner_params = nt_new_node(nt, "ParametersNode"); nt_node_set_ref(nt, inner_params, "rest", evrest);
     int inner_bp = nt_new_node(nt, "BlockParametersNode"); nt_node_set_ref(nt, inner_bp, "parameters", inner_params);
