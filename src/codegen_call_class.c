@@ -2556,6 +2556,32 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
      constructor takes exactly `argc` positional params (all required) gets an
      arm; any other runtime class lands in the NoMethodError default, matching
      CRuby's ArgumentError/NoMethodError. (#2888) */
+  /* A box can hold an instance too, and a program's class may define an
+     instance method `new` (a Thor command named `new` is one): an
+     instance's `new` is that method, not a constructor. Such a box is told
+     apart by its tag, the instance taking the ordinary dispatch (this branch
+     declined for the second emission). */
+  static int g_poly_new_instance_pass = 0;
+  if (!g_poly_new_instance_pass && recv >= 0 && sp_streq(name, "new") &&
+      repr_of(c, recv).kind == RK_BOXED && repr_of(c, id).kind == RK_BOXED &&
+      !subtree_has_side_effect(c, recv)) {
+    int inst_new = 0;
+    for (int k = 0; k < c->nclasses && !inst_new; k++) inst_new = comp_method_in_class(c, k, "new") >= 0;
+    if (inst_new) {
+      buf_puts(b, "(("); emit_boxed(c, recv, b); buf_puts(b, ").tag == SP_TAG_CLASS ? ");
+      g_poly_new_instance_pass = 2;   /* this emission: the constructor arms */
+      int ok = emit_call_new_arms(c, id, b, nt, name, recv, argc, argv);
+      g_poly_new_instance_pass = 0;
+      if (!ok) buf_puts(b, "sp_box_nil()");
+      buf_puts(b, " : ");
+      g_poly_new_instance_pass = 1;   /* this one: declined here, the ordinary dispatch */
+      emit_expr(c, id, b);
+      g_poly_new_instance_pass = 0;
+      buf_puts(b, ")");
+      return 1;
+    }
+  }
+  if (g_poly_new_instance_pass == 1 && sp_streq(name, "new")) return 0;
   if (recv >= 0 && sp_streq(name, "new") && repr_of(c, recv).kind == RK_BOXED &&
       ctor_block_dispatchable(c, id)) {
     /* keyword arguments: laid out per class by name, as in the Class-valued

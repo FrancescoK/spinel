@@ -2206,6 +2206,45 @@ void rewrite_const_alias_receivers(Compiler *c) {
   }
 }
 
+/* The exception classes named by `raise Alias, msg` and by `rescue Alias`
+   resolve as an `Alias.foo` receiver does (rewrite_const_alias_receivers):
+   raising the alias raises the class it names, which a `rescue` of that
+   class's ancestor catches (Thor's AmbiguousTaskError = AmbiguousCommandError,
+   rescued as Thor::Error). Runs after an_const_presence, so an alias some
+   read can reach before its assignment (LocalVar.const_early) is left alone. */
+static void rewrite_const_alias_raise_targets(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    int targets[64], ntg = 0;
+    if (k == NK_CallNode && nt_ref(nt, id, "receiver") < 0 && nt_str(nt, id, "name") &&
+        (sp_streq(nt_str(nt, id, "name"), "raise") || sp_streq(nt_str(nt, id, "name"), "fail"))) {
+      int args = nt_ref(nt, id, "arguments"), an = 0;
+      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      if (an >= 1 && av) targets[ntg++] = av[0];
+    }
+    else if (k == NK_RescueNode) {
+      int en = 0; const int *ev = nt_arr(nt, id, "exceptions", &en);
+      for (int i = 0; i < en && ntg < 64; i++) targets[ntg++] = ev[i];
+    }
+    for (int i = 0; i < ntg; i++) {
+      int t = targets[i];
+      if (nt_kind(nt, t) != NK_ConstantReadNode && nt_kind(nt, t) != NK_ConstantPathNode) continue;
+      const char *rn = nt_str(nt, t, "name");
+      if (!rn || comp_class_index(c, rn) >= 0) continue;
+      /* a read that can run before the alias is assigned is CRuby's
+         NameError, which the constant's presence flag raises: keep it */
+      LocalVar *lv = comp_const(c, rn);
+      if (lv && lv->const_early) continue;
+      const char *real = resolve_class_alias(c, rn);
+      if (real && !sp_streq(real, rn)) {
+        char buf[256]; snprintf(buf, sizeof buf, "%s", real);
+        nt_set_str((NodeTable *)nt, t, "name", buf);
+      }
+    }
+  }
+}
+
 /* For a receiverless instance_eval/exec CallNode with a literal block inside
    an instance method, the receiver is self (CRuby resolves it to
    self.instance_exec). Return that class index, else -1. The literal-block
@@ -41518,6 +41557,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_kernel_reopen(c);              /* module Kernel; def m -> a top-level def m */
   desugar_ffi_library_functions(c);   /* attach_function :f -> def self.f (the ffi gem) */
   desugar_native_func_defs(c);          /* native_func :f -> def self.f = Mod.f (a module value finds it) */
+  desugar_explicit_receiver_mixin(c);    /* K.prepend(M) as a statement -> class K; prepend M; end */
   desugar_singleton_class_mixin(c);      /* singleton_class.prepend(M) in a body -> extend M */
   desugar_attr_const_splat(c);           /* attr_accessor(*FLAGS), FLAGS = %i[a b] -> attr_accessor(:a, :b) */
   desugar_singleton_attr(c);             /* singleton_class.attr_accessor :x -> def self.x / def self.x= */
@@ -41586,6 +41626,7 @@ static void an_phase_desugar_register(Compiler *c) {
   register_ffi_decls(c);
   register_cext_layouts(c);
   an_const_presence(c);
+  rewrite_const_alias_raise_targets(c);
 }
 
 /* Rescue-variable typing, class parents, inheritance and mixins, the block-aware marks, the synthesized enumeration helpers and the empty-literal marks (analyze_program's steps, in their order) */

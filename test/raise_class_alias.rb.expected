@@ -1,0 +1,2 @@
+[Thor::AmbiguousCommandError, "ambiguous", true]
+[Thor::AmbiguousCommandError, "direct"]

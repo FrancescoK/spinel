@@ -556,6 +556,7 @@ int desugar_body_module_eval(Compiler *c);
 int desugar_extend_self(Compiler *c);
 int desugar_kernel_reopen(Compiler *c);
 int desugar_singleton_class_mixin(Compiler *c);
+int desugar_explicit_receiver_mixin(Compiler *c);
 int desugar_singleton_attr(Compiler *c);
 int desugar_attr_const_splat(Compiler *c);
 int desugar_sclass_readers_through_class(Compiler *c);

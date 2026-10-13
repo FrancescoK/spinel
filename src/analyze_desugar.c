@@ -1265,6 +1265,110 @@ int desugar_kernel_reopen(Compiler *c) {
   return 1;
 }
 
+/* ---- `K.prepend(M)` as a statement: the reopening it amounts to ---------
+   `TTY::Prompt::List.prepend(VimMotion)` at the top of a file (one that
+   prepends a module onto TTY::Prompt::List) changes the class's ancestry
+   exactly when the same line inside `class TTY::Prompt::List ... end`
+   would, at that point of the program. When the receiver and every
+   argument are constants (symbols for the attr_* forms) and the call is a
+   statement of the program, it becomes that reopening (in a class or
+   module body, only the body's own class as the receiver, the statement
+   then left receiverless there):
+     K.prepend(M)  ->  class K; prepend M; end    (module K when K is one)
+   include and attr_reader/_writer/_accessor are the same shape. Inside a
+   method, a block or a condition the call still runs only when reached,
+   so those stay refused (call_plan.c), as does define_method. */
+/* How the program declares `leaf`: 1 a class, 2 a module, 0 neither (a
+   builtin such as Thread, whose own pass takes Thread.attr_accessor, or a
+   constant holding a class, `AliasObject = Object`, which `class AliasObject`
+   would not reopen here) */
+static int erm_declared_as(const NodeTable *nt, const char *leaf) {
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_ModuleNode && k != NK_ClassNode) continue;
+    int cp = nt_ref(nt, id, "constant_path");
+    const char *n = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (n && sp_streq(n, leaf)) return k == NK_ModuleNode ? 2 : 1;
+  }
+  return 0;
+}
+static int erm_rewrite_stmt(Compiler *c, int st, const char *self_leaf) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "block") >= 0) return st;
+  const char *nm = nt_str(nt, st, "name");
+  if (!nm) return st;
+  int attr = sp_streq(nm, "attr_reader") || sp_streq(nm, "attr_writer") || sp_streq(nm, "attr_accessor");
+  if (!attr && !sp_streq(nm, "include") && !sp_streq(nm, "prepend")) return st;
+  const char *cop = nt_str(nt, st, "call_operator");
+  if (cop && sp_streq(cop, "&.")) return st;
+  int recv = nt_ref(nt, st, "receiver");
+  if (recv < 0 || (nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode)) return st;
+  const char *leaf = nt_str(nt, recv, "name");
+  if (!leaf || sp_streq(leaf, "Object")) return st;
+  int decl = erm_declared_as(nt, leaf);
+  if (!decl) return st;
+  int args = nt_ref(nt, st, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an < 1 || !av) return st;
+  for (int i = 0; i < an; i++) {
+    NodeKind k = nt_kind(nt, av[i]);
+    if (attr ? k != NK_SymbolNode : (k != NK_ConstantReadNode && k != NK_ConstantPathNode)) return st;
+  }
+  /* in a class or module body a reopening would nest (`class K` inside
+     `class K` is K::K): there only the body's own class is rewritten, and
+     to the receiverless statement it is in that body */
+  if (self_leaf) {
+    if (nt_kind(nt, recv) != NK_ConstantReadNode || !sp_streq(leaf, self_leaf)) return st;
+    nt_node_set_ref(nt, st, "receiver", -1);
+    nt_node_set_str(nt, st, "call_operator", "");
+    return -2;   /* rewritten in place */
+  }
+  int is_mod = decl == 2;
+  int rn = nt_new_node(nt, is_mod ? "ModuleNode" : "ClassNode");
+  int body = nt_new_node(nt, "StatementsNode");
+  int path = nt_clone_subtree(nt, recv);
+  if (rn < 0 || body < 0 || path < 0) return st;
+  nt_node_set_int(nt, rn, "node_line", nt_int(nt, st, "node_line", 0));
+  nt_node_set_int(nt, rn, "node_file", nt_int(nt, st, "node_file", 0));
+  nt_node_set_ref(nt, rn, "constant_path", path);
+  nt_node_set_ref(nt, st, "receiver", -1);
+  nt_node_set_str(nt, st, "call_operator", "");
+  nt_node_set_arr(nt, body, "body", &st, 1);
+  nt_node_set_ref(nt, rn, "body", body);
+  return rn;
+}
+int desugar_explicit_receiver_mixin(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    int is_prog = nt_type(nt, id) && sp_streq(nt_type(nt, id), "ProgramNode");
+    int stmts = is_prog ? nt_ref(nt, id, "statements")
+              : (k == NK_ClassNode || k == NK_ModuleNode) ? nt_ref(nt, id, "body") : -1;
+    if (stmts < 0 || nt_kind(nt, stmts) != NK_StatementsNode) continue;
+    int bn = 0; const int *bb = nt_arr(nt, stmts, "body", &bn);
+    if (!bb || bn == 0) continue;
+    int *nb = (int *)malloc(sizeof(int) * (size_t)bn);
+    if (!nb) continue;
+    int any = 0;
+    const char *self_leaf = NULL;
+    if (!is_prog) {
+      int cp = nt_ref(nt, id, "constant_path");
+      self_leaf = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+      if (!self_leaf) { free(nb); continue; }
+    }
+    for (int i = 0; i < bn; i++) {
+      int r = erm_rewrite_stmt(c, bb[i], self_leaf);
+      if (r == -2) { nb[i] = bb[i]; changed = 1; continue; }
+      nb[i] = r; any |= r != bb[i];
+    }
+    if (any) { nt_node_set_arr(nt, stmts, "body", nb, bn); changed = 1; }
+    free(nb);
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 /* ---- `singleton_class.prepend(Mod)` in a class or module body ------------
    The statement adds Mod's methods to the class object -- what `extend Mod`
    does, the precedence between Mod and the class's own singleton methods

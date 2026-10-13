@@ -1080,6 +1080,12 @@ static void sclass_walk_stmt(Compiler *c, int s, int scope_idx, int target_class
     /* Assign scope to the def node and its body */
     c->nscope[s] = new_idx;
     c->node_cbody[s] = g_cbody_class_id;
+    /* the parameters too, as the generic def walk does: a default value
+       (`def open(path = default_path)`) is evaluated in the method, whose self
+       is the class -- unwalked, its receiverless call resolved in the caller's
+       self and raised NameError there */
+    int pn = nt_ref(nt, s, "parameters");
+    if (pn >= 0) walk_scope(c, pn, new_idx, target_class);
     if (sc->body >= 0) walk_scope(c, sc->body, new_idx, target_class);
     return;
   }
