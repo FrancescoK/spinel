@@ -9793,10 +9793,27 @@ const char *class_ruby_name(Compiler *c, int ci) {
    class `cid`, or NULL when none applies (a plain object with no inspect/to_s).
    A user-defined method routes to its defining class; a struct/data routes to
    the generated one. The caller emits sp_<name>_<meth>((sp_<name> *)expr). */
+/* The scope the runtime calls for an object's String (inspect when
+   want_inspect, else to_s), resolved from class cid, *defcls set to the class
+   that defines it; -1 for none. One that takes parameters, all of them
+   optional, is called through its __noarg_ sibling, which passes the
+   defaults (desugar_noarg_display_wrappers). */
+int display_method_scope(Compiler *c, int cid, int want_inspect, int *defcls) {
+  int d = cid;
+  int mi = comp_method_in_chain(c, cid, want_inspect ? "inspect" : "to_s", &d);
+  if (mi >= 0 && c->scopes[mi].nparams > 0) {
+    int d2 = cid;
+    int w = comp_method_in_chain(c, cid, want_inspect ? "__noarg_inspect" : "__noarg_to_s", &d2);
+    if (w >= 0) { mi = w; d = d2; }
+  }
+  if (defcls) *defcls = d;
+  return mi;
+}
+
 const char *obj_str_cname(Compiler *c, int cid, int want_inspect) {
   if (cid < 0 || cid >= c->nclasses) return NULL;
   int defcls = cid;
-  if (comp_method_in_chain(c, cid, want_inspect ? "inspect" : "to_s", &defcls) >= 0)
+  if (display_method_scope(c, cid, want_inspect, &defcls) >= 0)
     return c->classes[defcls].c_name;
   if (c->classes[cid].is_struct) return c->classes[cid].c_name;  /* generated #inspect/#to_s */
   return NULL;
@@ -9809,7 +9826,7 @@ const char *obj_str_cname(Compiler *c, int cid, int want_inspect) {
 const char *obj_str_mname(Compiler *c, int cid, int want_inspect) {
   const char *nm = want_inspect ? "inspect" : "to_s";
   if (cid < 0 || cid >= c->nclasses) return nm;
-  int mi = comp_method_in_chain(c, cid, nm, NULL);
+  int mi = display_method_scope(c, cid, want_inspect, NULL);
   if (mi < 0 || !c->scopes[mi].name) return nm;
   /* mc answers in one static buffer: keep a few results apart, a caller can
      hold two at once */
@@ -9825,7 +9842,7 @@ const char *obj_str_mname(Compiler *c, int cid, int want_inspect) {
    must route it through sp_poly_to_s instead of a pointer cast (#3266). */
 int obj_str_ret_poly(Compiler *c, int cid, int want_inspect) {
   if (cid < 0 || cid >= c->nclasses) return 0;
-  int mi = comp_method_in_chain(c, cid, want_inspect ? "inspect" : "to_s", NULL);
+  int mi = display_method_scope(c, cid, want_inspect, NULL);
   return mi >= 0 && (TyKind)c->scopes[mi].ret == TY_POLY;
 }
 
@@ -11823,7 +11840,7 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
        function no TU defines and the program did not link (#4533) */
     if (comp_class_is_module(c, tci)) continue;
     int tdef = -1;
-    int tmi = comp_method_in_chain(c, i, "to_s", &tdef);
+    int tmi = display_method_scope(c, i, 0, &tdef);
     /* a #to_s answering its String through a boxed value (one that may also
        answer something else) renders through sp_poly_to_s */
     int tspoly = tmi >= 0 && c->scopes[tmi].ret == TY_POLY;
@@ -11907,7 +11924,7 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
        #to_s dispatcher) */
     if (comp_ty_value_obj(c, ty_object(i)) && !comp_class_is_module(c, &c->classes[i])) {
       int vdef = -1;
-      int vmi = comp_method_in_chain(c, i, "inspect", &vdef);
+      int vmi = display_method_scope(c, i, 1, &vdef);
       int vpoly = vmi >= 0 && c->scopes[vmi].ret == TY_POLY;
       if (vmi >= 0 && vdef == i && c->scopes[vmi].reachable &&
           (c->scopes[vmi].ret == TY_STRING || vpoly) && c->scopes[vmi].nparams == 0)
@@ -11922,7 +11939,7 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
        element renders the same as a directly-inspected one. A module's own
        arm would name a function only its includers define (#4533). */
     int uidef = -1;
-    int uimi = comp_class_is_module(c, ci) ? -1 : comp_method_in_chain(c, i, "inspect", &uidef);
+    int uimi = comp_class_is_module(c, ci) ? -1 : display_method_scope(c, i, 1, &uidef);
     /* ...also when it answers the String through a boxed value */
     int uipoly = uimi >= 0 && c->scopes[uimi].ret == TY_POLY;
     if (uimi >= 0 && c->scopes[uimi].reachable && (c->scopes[uimi].ret == TY_STRING || uipoly) &&
