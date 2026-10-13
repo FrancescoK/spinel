@@ -6578,6 +6578,13 @@ static void fwd_branch_on_block_given(Compiler *c, int id) {
   expand_static_splat_args(c, base, nt->count);
 }
 
+/* Does any class, module or the top level define an instance method `name`? */
+static int program_defines_method_named(Compiler *c, const char *name) {
+  for (int si = 1; si < c->nscopes; si++)
+    if (!c->scopes[si].is_cmethod && c->scopes[si].name && sp_streq(c->scopes[si].name, name)) return 1;
+  return 0;
+}
+
 int desugar_value_callable_forwards(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -6726,6 +6733,15 @@ int desugar_value_callable_forwards(Compiler *c) {
          empty. */
       arity = 1;
       pty[0] = TY_INT;
+    }
+    else if ((sp_streq(name, "tap") || sp_streq(name, "then") || sp_streq(name, "yield_self")) &&
+             rt != TY_UNKNOWN && !program_defines_method_named(c, name)) {
+      /* Kernel#tap / #then hand the receiver itself to the block: any
+         receiver, a program object's included. Left as `&b`, no arm took
+         the forward and the call raised NoMethodError. Not where the
+         program defines a method of the name, which a call may reach. */
+      arity = 1;
+      pty[0] = rt;
     }
     else {
       arity = ty_block_yield(rt, name, pty, 4);
