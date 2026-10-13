@@ -6509,8 +6509,11 @@ static int widen_boxed_local_sources(Compiler *c, Scope *sc, const char *nm, Loc
       int elem_at = -1;
       if (ty_is_hash(rt))
         elem_at = sp_streq(cn, "each_value") ? 0 : is_each_or_pair(cn) ? 1 : -1;
-      else if ((ty_is_array(rt) || rt == TY_POLY) && ty_block_yield(TY_POLY_ARRAY, cn, yt, 2) > 0)
-        elem_at = 0;
+      else if ((ty_is_array(rt) || rt == TY_POLY) && ty_block_yield(TY_POLY_ARRAY, cn, yt, 2) > 0) {
+        /* not each_index, whose block takes an index */
+        const IterRow *ir = iter_row(BOP_ANY_ARRAY, cn, -1, IRF_GAP_FWD);
+        if (!ir || ir->yield[0] != YS_INDEX) elem_at = 0;
+      }
       if (bi == elem_at) ch |= widen_boxed_elem_sources(c, r, elem, depth + 1);
     }
     /* a proc or lambda literal's parameter: what its calls pass there */
