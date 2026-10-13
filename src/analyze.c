@@ -11164,7 +11164,7 @@ static int desugar_to_enum(Compiler *c) {
       /* not in a reopened builtin, whose self tail is the boxed receiver:
          the blockless call already reads the Enumerator (ret_noblock) */
       if (self_recv && es && es->name && sp_streq(es->name, m) && !value_form && reopen_ci < 0 &&
-          es->ret != TY_ENUMERATOR) {
+          es->yields && es->ret != TY_ENUMERATOR) {
         es->ret = TY_ENUMERATOR;
         es->ret_specialized = 1;
         changed = 1;
