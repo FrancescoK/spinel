@@ -51,6 +51,17 @@ static void emit_bm_legacy_casts_boxed(Compiler *c, int tr, int eargc, const int
 void emit_method_parameters_pushes(Compiler *c, int pn4, int tr4, Buf *b) {
   const NodeTable *nt = c->nt;
   if (pn4 >= 0) {
+    int ca = nt_int(nt, pn4, "cext_arity", -99);
+    if (ca != -99) {
+      int count = ca < 0 ? 1 : ca;
+      for (int i = 0; i < count; i++) {
+        int tp = ++g_tmp;
+        buf_printf(b, " { sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp, tp, tp);
+        emit_str_literal(b, ca < 0 ? "rest" : "req");
+        buf_printf(b, "))); sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }", tr4, tp);
+      }
+      return;
+    }
     /* CRuby order: req, opt, rest, post-req, key(req), keyrest, block */
     static const struct { const char *arr; const char *kind; const char *optkind; } PKINDS[] = {
       { "requireds", "req", NULL }, { "optionals", "opt", NULL },
@@ -1518,6 +1529,9 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     int tg4 = mn4 >= 0 ? method_obj_target_mi(c, mn4) : -1;
     int dn4 = tg4 >= 0 ? c->scopes[tg4].def_node : -1;
     int ln4 = dn4 >= 0 ? (int)nt_int(nt, dn4, "node_line", 0) : 0;
+    if (dn4 >= 0 && nt_int(nt, dn4, "cext_extension", 0)) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)"); return 1;
+    }
     /* a boxed receiver's wrapper (bam_poly) has no position of its own: the
        method is the one the receiver's run-time class answers by the name,
        whose def gives the pair */

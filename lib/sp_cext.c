@@ -13,6 +13,8 @@ typedef struct {
     size_t pins;
     unsigned marked;
 } sp_cext_handle;
+void *sp_cext_current_block;
+int (*sp_cext_data_class_fn)(int);
 static sp_cext_handle **table;
 static size_t capacity, count;
 static sp_cext_handle **arena;
@@ -71,6 +73,8 @@ static void pin(sp_cext_handle *h) {
 }
 VALUE sp_cext_value(sp_RbVal v) {
     install_hooks();
+    if (v.tag == SP_TAG_OBJ && v.v.p && v.cls_id >= 0 && sp_cext_data_class_fn && sp_cext_data_class_fn(v.cls_id))
+        v.cls_id = (int)((sp_cext_data *)v.v.p)->cls_id;
     if (v.tag == SP_TAG_NIL) return Qnil;
     if (v.tag == SP_TAG_BOOL) return v.v.b ? Qtrue : Qfalse;
     if (v.tag == SP_TAG_INT && v.v.i >= RUBY_FIXNUM_MIN && v.v.i <= RUBY_FIXNUM_MAX)
@@ -146,11 +150,11 @@ void sp_cext_mark_roots(void) {
 }
 void sp_cext_arena_context_save(sp_cext_arena_context *ctx) {
     ctx->entries = arena; ctx->length = arena_n;
-    ctx->capacity = arena_cap; ctx->depth = arena_depth;
+    ctx->capacity = arena_cap; ctx->depth = arena_depth;ctx->block=sp_cext_current_block;
 }
 void sp_cext_arena_context_load(const sp_cext_arena_context *ctx) {
     arena = ctx->entries; arena_n = ctx->length;
-    arena_cap = ctx->capacity; arena_depth = ctx->depth;
+    arena_cap = ctx->capacity; arena_depth = ctx->depth;sp_cext_current_block=ctx->block;
 }
 void sp_cext_arena_context_dispose(sp_cext_arena_context *ctx) {
     sp_cext_handle **entries = ctx->entries;
@@ -162,7 +166,7 @@ void sp_cext_arena_context_dispose(sp_cext_arena_context *ctx) {
  * a C root; the table itself must never keep those objects alive. */
 static int live(sp_cext_handle *h, int full) {
     sp_RbVal v = h->value;
-    if (h->pins) return 1;
+    if (h->pins || (v.tag == SP_TAG_CLASS && v.cls_id != SP_CLASS_BY_NAME)) return 1;
     if ((v.tag == SP_TAG_OBJ && v.cls_id != SP_BUILTIN_FOREIGN_PTR &&
         v.cls_id != SP_BUILTIN_REGEX && v.cls_id != SP_BUILTIN_ARGF) || v.tag == SP_TAG_BIGINT) {
         if (!v.v.p) return 0;

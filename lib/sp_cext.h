@@ -2,13 +2,36 @@
 #define SP_CEXT_H
 #include <ruby.h>
 #include "sp_gc.h"
+#include "sp_alloc.h"
+#include "sp_proc.h"
 
 /* Internal bridge. The compiler/recorder will use this only for opted-in
  * extensions; an ordinary generated translation unit never includes it. */
+typedef struct {
+    void (*init)(void);
+    VALUE (**functions)(ANYARGS);
+    size_t count;
+    int initialized;
+    VALUE *constants;
+    size_t constant_count;
+} sp_cext_extension;
+sp_PolyArray *sp_cext_share_new_array(sp_PolyArray *);
+void sp_cext_init(sp_cext_extension *);
+int sp_cext_unwinding(void);
+void sp_cext_resume_unwind(void);
+extern void *sp_cext_current_block;
+sp_RbVal sp_cext_invoke(sp_cext_extension *, int, int, sp_RbVal, sp_PolyArray *, sp_Proc *);
+void *sp_cext_allocate(sp_cext_extension *, int, int);
+sp_RbVal sp_cext_duplicate(sp_RbVal, int);
+extern void *(*sp_cext_class_alloc_fn)(int);
+extern sp_RbVal (*sp_cext_class_lookup_fn)(const char *);
+extern void *(*sp_cext_object_alloc_fn)(int);
+extern int (*sp_cext_data_class_fn)(int);
+
 VALUE sp_cext_value(sp_RbVal value);
 sp_RbVal sp_cext_rbval(VALUE value);
 typedef struct { size_t handles, depth; } sp_cext_arena_mark;
-typedef struct { void *entries; size_t length, capacity, depth; } sp_cext_arena_context;
+typedef struct { void *entries; size_t length, capacity, depth; void *block; } sp_cext_arena_context;
 void sp_cext_arena_context_save(sp_cext_arena_context *);
 void sp_cext_arena_context_load(const sp_cext_arena_context *);
 void sp_cext_arena_context_dispose(sp_cext_arena_context *);
@@ -23,7 +46,7 @@ void sp_cext_sweep_handles(int full);
  * Ruby ivars after this prefix and calls these helpers from its scan/finalize
  * functions. The standalone wrapper tests the same lifecycle today. */
 typedef struct {
-    int cls_id;
+    sp_int cls_id;
     void *cext_data;
     const rb_data_type_t *cext_type;
 } sp_cext_data;

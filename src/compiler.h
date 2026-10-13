@@ -653,6 +653,9 @@ typedef struct {
      declared C symbols instead of generated bodies. c_struct is the carried C
      struct name; free_sym its optional finalizer. Method bindings live in the
      compiler's native_methods registry, keyed by this class's index. */
+  int cext_layout; /* a TypedData family has this prefix, including ancestors */
+  int cext_extension; /* +1 extension index for a TypedData allocator */
+  int cext_allocator; /* recorder registration slot */
   int is_native_class;
   int is_builtin_const; /* builtin class/module name, classified at registration */
   /* --share-strings: a native class whose binding declares that its object
@@ -775,6 +778,9 @@ enum { FFI_SM_NONE = 0, FFI_SM_NEW, FFI_SM_GET, FFI_SM_SET };
 typedef struct { char *mod; char *names; } FfiLib;   /* names: ;-separated lib names, or "" */
 typedef struct { char *mod; char *val; } FfiCflag;   /* val: ;-separated cflags, or "" */
 typedef struct { char *mod; char *val; } FfiSource;  /* ffi_source inline C translation-unit fragment */
+
+typedef struct { char *name, *init; int slots, constants; } CextExtension;
+typedef struct { char *path; int module, extension, allocator; } CextClass;
 
 /* One `native_func` declaration (typed static binding to carried C). Unlike
    FfiFunc, arg/ret specs are the spinel type language ("any"/"string"/"int"/
@@ -1124,6 +1130,11 @@ typedef struct {
   /* FFI inline C source fragments, emitted into the generated translation unit */
   FfiSource *ffi_sources;
   int n_ffi_sources, c_ffi_sources;
+
+  CextExtension *cext_extensions;
+  int n_cext_extensions;
+  CextClass *cext_classes;
+  int n_cext_classes;
 
   /* native-binding registry: native_func declarations (Path B) */
   NativeFunc *native_funcs;

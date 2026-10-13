@@ -1522,7 +1522,8 @@ static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, 
       char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", rn);
       int ivx = comp_ivar_index(&c->classes[rdcls], ivn);
       TyKind ivt = ivx >= 0 ? c->classes[rdcls].ivar_types[ivx] : TY_INT;
-      int conv = ret == TY_POLY && ivt == TY_INT ? PC_BOX_OR_NIL
+      int optional = oint_kind(ret) && repr_of(c, id).nil_scalar && ivx >= 0 && repr_of_ivar(c, rdcls, ivx).nil_scalar;
+      int conv = ((ret == TY_POLY && ivt == TY_INT) || optional) ? PC_BOX_OR_NIL
                : ivt == TY_STRBUF && ret == TY_STRING && cpoly_conv(ret, ivt) == PC_SAME ? PC_COPY
                : cpoly_conv(ret, ivt);
       cpoly_add(p, &cap, PA_READER, k, -1, ivt, conv);

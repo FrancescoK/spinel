@@ -660,6 +660,10 @@ sp_RbVal sp_poly_slice_or_call(sp_RbVal v, sp_RbVal a, sp_RbVal b)
 
 sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen)
 {
+#ifdef SP_CEXT
+  if (v.tag == SP_TAG_OBJ && v.cls_id >= 0 && sp_cext_data_class_fn && sp_cext_data_class_fn(v.cls_id))
+    return sp_cext_duplicate(v, keep_frozen);
+#endif
   if (sp_bsub_dup_hook && v.tag == SP_TAG_OBJ && v.v.p) {
     sp_bool handled = FALSE;
     sp_RbVal r = sp_bsub_dup_hook(v, keep_frozen, &handled);

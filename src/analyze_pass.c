@@ -1,3 +1,4 @@
+#include "cext_bridge.h"
 #include "analyze_internal.h"
 #include "builtin_ops.h"
 #include "call_plan.h"
@@ -7006,11 +7007,192 @@ static int fill_empty_array_arg(Compiler *c, int arg, TyKind elem) {
   return 1;
 }
 
+/* Every container reachable from an extension argument must keep its identity
+ * when C changes its element types. Walk producer values with a visited set,
+ * not a depth bound: aliases and recursive values must terminate without
+ * leaving an inner typed Array behind. This work is absent without extensions. */
+typedef struct { unsigned char *nodes; int capacity; } CextWalk;
+static int cext_pin_array_producer(Compiler *c, int v);
+static int cext_widen_containers(Compiler *c, int v, CextWalk *seen);
+static int cext_widen_stores(Compiler *c, const char *name, Scope *scope, CextWalk *seen) {
+  int count = 0, changed = 0;
+  int *values = cext_container_stores(c, name, scope, &count);
+  for (int j = 0; j < count; j++) changed |= cext_widen_containers(c, values[j], seen);
+  free(values);
+  NT_FOREACH_KIND(c->nt, NK_LocalVariableWriteNode, w) {
+    if (seen->nodes[w] || comp_scope_of(c, w) != scope) continue;
+    int rhs = nt_ref(c->nt, w, "value");
+    if (nt_kind(c->nt, rhs) != NK_LocalVariableReadNode ||
+        !sp_streq(nt_str(c->nt, rhs, "name"), name)) continue;
+    seen->nodes[w] = 1;
+    changed |= cext_widen_stores(c, nt_str(c->nt, w, "name"), scope, seen);
+  }
+  return changed;
+}
+static int cext_widen_containers(Compiler *c, int v, CextWalk *seen) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (v < 0 || v >= nt->count) return 0;
+  if (nt->count > seen->capacity) {
+    int old = seen->capacity;
+    seen->capacity = nt->count * 2;
+    seen->nodes = realloc(seen->nodes, (size_t)seen->capacity);
+    if (!seen->nodes) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memset(seen->nodes + old, 0, (size_t)(seen->capacity - old));
+  }
+  if (seen->nodes[v]) return 0;
+  seen->nodes[v] = 1;
+  int changed = 0;
+  TyKind t = infer_type(c, v);
+  if (ty_is_array(t) || ty_is_hash(t) || t == TY_POLY)
+    changed |= cext_demand_container_strings(c, v);
+  if (ty_is_array(t)) changed |= widen_arg_array(c, v);
+  if (ty_is_hash(t)) changed |= widen_hash_arg_for_store(c, v, TY_POLY, TY_POLY);
+  NodeKind kind = nt_kind(nt, v);
+  if (kind == NK_ArrayNode || kind == NK_HashNode || kind == NK_KeywordHashNode) {
+    int count = 0; const int *els = nt_arr(nt, v, "elements", &count);
+    for (int i = 0; i < count; i++) {
+      int el = els[i];
+      if (nt_kind(nt, el) == NK_AssocNode) {
+        changed |= cext_widen_containers(c, nt_ref(nt, el, "key"), seen);
+        changed |= cext_widen_containers(c, nt_ref(nt, el, "value"), seen);
+      } else if (nt_kind(nt, el) == NK_SplatNode || nt_kind(nt, el) == NK_AssocSplatNode)
+        changed |= cext_widen_containers(c, nt_ref(nt, el, "expression"), seen);
+      else changed |= cext_widen_containers(c, el, seen);
+    }
+  } else if (kind == NK_LocalVariableReadNode) {
+    const char *name = nt_str(nt, v, "name"); Scope *scope = comp_scope_of(c, v);
+    int si = scope ? (int)(scope - c->scopes) : -1;
+    for (int r = lw_shared_first(c, name, si); r >= 0; r = lw_shared_next(r)) {
+      int w = lw_shared_node(r);
+      if (comp_scope_of(c, w) == scope && sp_streq(nt_str(nt, w, "name"), name))
+        changed |= cext_widen_containers(c, nt_ref(nt, w, "value"), seen);
+    }
+    changed |= cext_widen_stores(c, name, scope, seen);
+    int pi = -1;
+    if (scope) for (int j = 0; j < scope->nparams; j++)
+      if (scope->pnames[j] && sp_streq(scope->pnames[j], name)) { pi = j; break; }
+    if (pi >= 0) NT_FOREACH_KIND(nt, NK_CallNode, call) {
+      int targets[CPT_MAX], n = cplan_targets(c, call, targets, CPT_MAX), reaches = 0;
+      for (int q = 0; q < n; q++) reaches |= targets[q] == si;
+      if (!reaches) continue;
+      int arg = nt_ref(nt, call, "arguments"), ac = 0;
+      const int *av = arg >= 0 ? nt_arr(nt, arg, "arguments", &ac) : NULL;
+      ArgLayout layout; call_layout(c, scope, av, ac, &layout);
+      int actual = layout_plain_arg(c, scope, av, &layout, pi);
+      if (actual >= 0) changed |= cext_widen_containers(c, actual, seen);
+      else for (int q = 0; q < ac; q++) if (gather_reaches(c, scope, av, ac, 0, q, pi))
+        changed |= cext_widen_containers(c, av[q], seen);
+    }
+  } else if (kind == NK_CallNode) {
+    int targets[CPT_MAX], n = cplan_targets(c, v, targets, CPT_MAX);
+    if (!n && is_fresh_array(c, v)) changed |= cext_pin_array_producer(c, v);
+    int *leaves = malloc(sizeof(int) * (size_t)(nt->count + 1));
+    for (int q = 0; q < n; q++) {
+      int count = value_leaves(c, c->scopes[targets[q]].body, leaves, 0, nt->count);
+      for (int j = 0; j < count; j++) changed |= cext_widen_containers(c, leaves[j], seen);
+    }
+    free(leaves);
+    if (!n) {
+      /* Element reads, builtin builders and transformations take their
+       containers from the receiver or their positional values. */
+      if (ty_is_array(t) || ty_is_hash(t) || t == TY_POLY) {
+        if (!is_fresh_array(c, v))
+          changed |= cext_widen_containers(c, nt_ref(nt, v, "receiver"), seen);
+        int arg = nt_ref(nt, v, "arguments"), ac = 0;
+        const int *av = arg >= 0 ? nt_arr(nt, arg, "arguments", &ac) : NULL;
+        for (int j = 0; j < ac; j++) changed |= cext_widen_containers(c, av[j], seen);
+        int block = nt_ref(nt, v, "block");
+        if (block >= 0 && nt_kind(nt, block) == NK_BlockNode)
+          changed |= cext_widen_containers(c, nt_ref(nt, block, "body"), seen);
+      }
+    }
+  } else if (kind == NK_GlobalVariableReadNode || kind == NK_ClassVariableReadNode ||
+             kind == NK_ConstantReadNode || kind == NK_InstanceVariableReadNode) {
+    int *literals = malloc(sizeof(int) * (size_t)(nt->count + 1));
+    int count = container_literals(c, v, literals, 0, nt->count, 0);
+    for (int j = 0; j < count; j++) changed |= cext_widen_containers(c, literals[j], seen);
+    free(literals);
+  } else if (kind == NK_StatementsNode || kind == NK_IfNode || kind == NK_UnlessNode ||
+             kind == NK_BeginNode || kind == NK_LocalVariableWriteNode || kind == NK_ReturnNode) {
+    int *leaves = malloc(sizeof(int) * (size_t)(nt->count + 1));
+    int count = value_leaves(c, v, leaves, 0, nt->count);
+    for (int j = 0; j < count; j++) if (leaves[j] != v)
+      changed |= cext_widen_containers(c, leaves[j], seen);
+    free(leaves);
+  }
+  return changed;
+}
+
+/* A fresh builtin array has no observable old owner. Give it a pinned
+ * producer slot before it crosses the boundary, using ordinary assignment
+ * conversion rather than changing a builtin's return ABI in codegen. The
+ * parentheses keep receiver/argument evaluation order and run the producer
+ * exactly once. */
+static int cext_pin_array_producer(Compiler *c, int v) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  if (nt_int(nt, v, "cext_producer_pinned", 0) || infer_type(c, v) == TY_POLY_ARRAY) return 0;
+  Scope *scope = comp_scope_of(c, v);
+  if (!scope) return 0;
+  int si = (int)(scope - c->scopes);
+  char name[96]; int suffix = v;
+  do { snprintf(name, sizeof name, "__spinel_cext_array_%d", suffix++); } while (scope_local(scope, name));
+  LocalVar *local = scope_local_intern(scope, name);
+  local->type = TY_POLY_ARRAY;local->poly_array_pin = 1;local->rbs_seeded = 1;
+  int base = nt->count;
+  nt_node_set_int(nt, v, "cext_producer_pinned", 1);
+  int write = nt_new_node(nt, "LocalVariableWriteNode");
+  nt_node_set_str(nt, write, "name", name);nt_node_set_ref(nt, write, "value", v);
+  int read = nt_new_node(nt, "LocalVariableReadNode");nt_node_set_str(nt, read, "name", name);
+  int share = nt_new_node(nt, "CallNode");nt_node_set_str(nt, share, "name", "__cext_share_new_array");
+  int sa = nt_new_node(nt, "ArgumentsNode");nt_node_set_arr(nt, sa, "arguments", &read, 1);
+  nt_node_set_ref(nt, share, "arguments", sa);
+  int result = nt_new_node(nt, "LocalVariableReadNode");nt_node_set_str(nt, result, "name", name);
+  int body = nt_new_node(nt, "StatementsNode");int statements[3] = {write, share, result};nt_node_set_arr(nt, body, "body", statements, 3);
+  int parens = nt_new_node(nt, "ParenthesesNode");nt_node_set_ref(nt, parens, "body", body);
+  /* The storage conversion preserves the producer's elements. Sharing walks
+   * follow that provenance without spending their depth on synthetic nodes. */
+  nt_node_set_int(nt, parens, "cext_producer", v);
+  nt_node_set_int(nt, read, "cext_producer", v);
+  nt_node_set_int(nt, result, "cext_producer", v);
+  comp_grow_node_arrays(c);
+  for (int n = base; n < nt->count; n++) {
+    c->nscope[n] = si;c->node_cbody[n] = c->node_cbody[v];
+    nt_node_set_int(nt, n, "node_line", nt_int(nt, v, "node_line", 1));
+    nt_node_set_int(nt, n, "node_file", nt_int(nt, v, "node_file", -1));
+  }
+  /* Only the original parents: the new write must still evaluate v. Scalar
+   * refs and array refs are rewired in place so borrowed argument vectors
+   * held by another active call-plan query remain valid. */
+  for (int parent = 0; parent < base; parent++) {
+    SpNode *node = &nt->nodes[parent];
+    for (int r = 0; r < node->nr; r++) if (node->r[r].ref == v) node->r[r].ref = parens;
+    for (int a = 0; a < node->na; a++) for (int j = 0; j < node->a[a].n; j++)
+      if (node->a[a].ids[j] == v) node->a[a].ids[j] = parens;
+  }
+  nt->version++;
+  for (int q = 0; q < c->nscopes; q++) {
+    Scope *other = &c->scopes[q];
+    if (q != si && other->body == scope->body) {
+      LocalVar *copy = scope_local_intern(other, name);
+      copy->type=TY_POLY_ARRAY;copy->poly_array_pin=1;copy->rbs_seeded=1;
+    }
+    if (other->body == v) other->body = parens;
+  }
+  return 1;
+}
+
 static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, int argc) {
   if (mi < 0) return 0;
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
   int changed = 0, any_changed = 0;  /* any_changed: what wbas_share_step took out of changed */
+  if (cext_scope(c, mi)) {
+    CextWalk seen = {calloc((size_t)c->nt->count + 1, 1), c->nt->count + 1};
+    for (int k = 0; k < argc; k++) changed |= cext_widen_containers(c, argv[k], &seen);
+    free(seen.nodes);
+  }
+
   /* what the pass changed before this binding, and what this binding
      changes before it returns, ends the shared generation
      (widen_boxed_array_sources) */
@@ -7073,7 +7255,7 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
     ArgFrom from = L.from[i];
     if (from == ARG_BY_NAME || from == ARG_DEFAULT || from == ARG_REST || i == m->rest_idx) continue;
     LocalVar *p = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
-    if (!p || p->rbs_seeded) continue;
+    if (!p || p->rbs_seeded || cext_scope(c, mi)) continue;
     int anode = layout_plain_arg(c, m, argv, &L, i);
     if (anode < 0 && !L.gather) {
       int src = from == ARG_KWH ? kwh : from == ARG_ELEM ? argv[L.splat] : argv[L.arg[i]];
@@ -15119,6 +15301,24 @@ int infer_block_params(Compiler *c) {
   block_sites_index(c);
   bsn_n = 0;
   fblk_n = -1;   /* the fetch blocks are listed again when first asked for */
+  if (c->n_cext_extensions) {
+    NT_FOREACH_KIND(nt, NK_CallNode, id) {
+      int block = nt_ref(nt, id, "block");
+      if (block < 0 || nt_kind(nt, block) != NK_BlockNode) continue;
+      int targets[CPT_MAX], count = cplan_targets(c, id, targets, CPT_MAX), reaches = 0;
+      for (int t = 0; t < count; t++) reaches |= cext_scope(c, targets[t]);
+      if (!reaches) continue;
+      int pn = a_proc_params_node(c, id);
+      Scope *bs = comp_scope_of(c, block);
+      if (pn >= 0 && bs) {
+        changed |= proc_params_poly(nt, bs, pn, "requireds");
+        changed |= proc_params_poly(nt, bs, pn, "optionals");
+        changed |= proc_params_poly(nt, bs, pn, "posts");
+        changed |= proc_params_poly(nt, bs, pn, "keywords");
+      }
+    }
+  }
+
 
   /* Splat-rest / trailing-post params of proc literals: register them on the
      proc's scope so they are locals, not "uncaptured outer variables". The

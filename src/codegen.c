@@ -10139,7 +10139,8 @@ void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b) {
      so a pointer to the instance is a pointer to the Array every Array
      emitter and the runtime take, and cls_id follows it. */
   if (ci->ary_root > 0) buf_printf(b, "  %s ary;\n", arysub_array_ctype(c, cid));
-  buf_puts(b, "  sp_int cls_id;\n");  /* runtime class tag for virtual dispatch */
+  buf_puts(b, "  sp_int cls_id;\n");
+  if (ci->cext_layout) buf_puts(b, "  void *cext_data;\n  const rb_data_type_t *cext_type;\n");  /* runtime class tag for virtual dispatch */
   /* the nil bytes of the Integer / Float ivars that can hold nil (byte i:
      ivar i is nil); sized for the whole hierarchy so the fields after it
      sit at one offset in every struct of it (class_nilbyte_count) */
@@ -10209,6 +10210,7 @@ static void emit_ivar_renumber_dispatch(Compiler *c, Buf *b) {
    carries two GC strings, which needs_root cannot report because the slot
    itself is not a reference (#4353). */
 int class_needs_scan(ClassInfo *ci) {
+  if (ci->cext_layout) return 1;
   if (ci->ary_root > 0) return 1;   /* its own scan names its class (#7449) */
   for (int i = 0; i < ci->nivars; i++) {
     if (needs_root(ci->ivar_types[i]) || ci->ivar_types[i] == TY_STR_RANGE) return 1;
@@ -10230,6 +10232,7 @@ void emit_class_scan(Compiler *c, ClassInfo *ci, Buf *b) {
   if (!class_needs_scan(ci) && !is_exc_iv) return;
   buf_printf(b, "static void sp_%s__gc_scan(void *p) {\n", ci->c_name);
   buf_printf(b, "  sp_%s *o = (sp_%s *)p;\n", ci->c_name, ci->c_name);
+  if (ci->cext_layout) buf_puts(b, "  sp_cext_data_scan(p);\n");
   /* the embedded Array's elements, as its own kind's scan marks them */
   if (ci->ary_root > 0) {
     const char *at = arysub_array_ctype(c, cid);
@@ -10717,10 +10720,15 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   else {
   buf_puts(b, ") {\n");
   emit_ctor_srange_roots(c, init, b);
+  if (ci->cext_extension)
+    buf_printf(b, "  sp_%s *self = (sp_%s *)sp_cext_allocate(&_sp_cext_%d, %d, %d);\n",
+               ci->c_name, ci->c_name, ci->cext_extension - 1, ci->cext_allocator, cid);
+  else {
   buf_printf(b, "  sp_%s *self = SP_POOL_NEW(%s, %s%s%s);\n",
             ci->c_name, ci->c_name,
             class_needs_scan(ci) ? "sp_" : "", class_needs_scan(ci) ? ci->c_name : "NULL",
             class_needs_scan(ci) ? "__gc_scan" : "");
+  }
   buf_printf(b, "  SP_GC_ROOT(self);\n");
   buf_printf(b, "  self->cls_id = %d;\n", ctor_cls_id(c, cid));
   /* memset zero-inits fields, but a poly ivar's zero pattern is not nil and an
@@ -10855,6 +10863,10 @@ void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b) {
     char lv[32]; snprintf(lv, sizeof lv, "_t%d->", t);
     emit_ivar_nil_inits(c, b, ci, lv, " ", ";");
     buf_printf(b, " _t%d; })", t);
+    return;
+  }
+  if (ci->cext_extension) {
+    buf_printf(b, "((sp_%s *)sp_cext_allocate(&_sp_cext_%d, %d, %d))", ci->c_name, ci->cext_extension - 1, ci->cext_allocator, cid);
     return;
   }
   if (ci->ary_root > 0) { buf_printf(b, "sp_%s__alloc()", ci->c_name); return; }   /* #7449 */
@@ -18711,7 +18723,19 @@ char *codegen_program(const NodeTable *nt) {
   /* a reopened builtin class: sp_class_eq maps its id to the builtin's */
   if (g_needs_class_machinery && program_reopens_builtin_class(c))
     buf_puts(&b, "#define SP_TU_REOPENS_BUILTIN_CLASS 1\n");
+  if (c->n_cext_extensions) buf_puts(&b, "#define SP_CEXT 1\n/* SPINEL_USES_CEXT */\n");
   emit_runtime_include(c, &b, 0);
+  if (c->n_cext_extensions) {
+    buf_puts(&b, "#include \"sp_cext.h\"\nstatic void _sp_cext_setup(void);\n");
+    for (int x = 0; x < c->n_cext_extensions; x++) {
+      CextExtension *ext = &c->cext_extensions[x];
+      buf_printf(&b, "extern void %s(void);\nstatic VALUE (*_sp_cext_fns_%d[%d])(ANYARGS);\n"
+                 "static VALUE _sp_cext_consts_%d[%d];\n"
+                 "static sp_cext_extension _sp_cext_%d = {%s, _sp_cext_fns_%d, %d, 0, _sp_cext_consts_%d, %d};\n",
+                 ext->init, x, ext->slots ? ext->slots : 1, x, ext->constants ? ext->constants : 1,
+                 x, ext->init, x, ext->slots, x, ext->constants);
+    }
+  }
   /* the frozen literals' file-scope objects go here, once the unit is done */
   size_t fzl_at = b.len;
   emit_ffi_decls(c, &b);
@@ -18748,6 +18772,54 @@ char *codegen_program(const NodeTable *nt) {
       emit_class_scan(c, &c->classes[i], &b);
       emit_arysub_alloc(c, &c->classes[i], &b);
     }
+  if (c->n_cext_extensions) {
+    buf_puts(&b, "static sp_RbVal _sp_cext_class_lookup(const char *name) {\n");
+    for (int k = 0; k < c->nclasses; k++) {
+      buf_puts(&b, "  if (!strcmp(name, "); emit_str_literal(&b, class_ruby_name(c, k));
+      buf_printf(&b, ")) return ((sp_RbVal){SP_TAG_CLASS,%d,{.i=%d}});\n", k, k);
+    }
+    static const char *const cbuiltin[] = {"Object", "BasicObject", "Class", "Module", "String", "Array", "Hash", "Integer", "Float", "IO", NULL};
+    for (int i = 0; cbuiltin[i]; i++)
+      buf_printf(&b, "  if (!strcmp(name, \"%s\")) return sp_box_class_name((&(\"\\xff\" \"%s\")[1]));\n", cbuiltin[i], cbuiltin[i]);
+    buf_puts(&b, "  sp_raise_cls(\"NameError\", \"unknown C extension class\");\n}\n"
+                 "static int _sp_cext_data_class(int cls) { switch (cls) {\n");
+    for (int k = 0; k < c->nclasses; k++) if (c->classes[k].cext_extension)
+      buf_printf(&b, "case %d: return 1;\n", k);
+    buf_puts(&b, "default: return 0; } }\n"
+                 "static void *_sp_cext_object_alloc(int cls) { switch (cls) {\n");
+    for (int k = 0; k < c->nclasses; k++) {
+      ClassInfo *ci = &c->classes[k]; if (!ci->cext_extension) continue;
+      buf_printf(&b, "case %d: { sp_%s *o = sp_gc_alloc(sizeof(sp_%s), sp_cext_data_finalize, sp_%s__gc_scan);\n"
+                    "o->cls_id = %d;\n", k, ci->c_name, ci->c_name, ci->c_name, k);
+      emit_ivar_nil_inits(c, &b, ci, "o->", "", ";\n");
+      buf_puts(&b, "return o; }\n");
+    }
+    buf_puts(&b, "default: sp_raise_cls(\"TypeError\", \"unknown C extension data class\"); } }\n");
+    buf_puts(&b, "static void *_sp_cext_class_alloc(int cls) { switch (cls) {\n");
+    for (int k = 0; k < c->nclasses; k++) if (c->classes[k].cext_extension)
+      buf_printf(&b, "case %d: return sp_cext_allocate(&_sp_cext_%d, %d, %d);\n", k,
+                 c->classes[k].cext_extension - 1, c->classes[k].cext_allocator, k);
+    buf_puts(&b, "default: sp_raise_cls(\"TypeError\", \"unknown C extension data class\"); } }\n");
+    buf_puts(&b, "static sp_RbVal _sp_cext_exception_new(const char *name, const char *message) {\n");
+    for (int k = 0; k < c->nclasses; k++) {
+      ClassInfo *ci = &c->classes[k]; if (!class_is_exc_subclass(c, k)) continue;
+      buf_puts(&b, "  if (!strcmp(name, "); emit_str_literal(&b, class_ruby_name(c, k));
+      buf_printf(&b, ")) { sp_%s *o = (sp_%s *)sp_exc_new_sub_sized(sizeof(sp_%s), name, message);\n",
+                 ci->c_name, ci->c_name, ci->c_name);
+      if (ci->nivars > 0) {
+        buf_printf(&b, "((sp_gc_hdr *)o - 1)->scan = sp_%s__gc_scan;\n", ci->c_name);
+        emit_ivar_nil_inits(c, &b, ci, "o->", "", ";\n");
+      }
+      buf_printf(&b, "return sp_box_obj(o, %d); }\n", k);
+    }
+    buf_puts(&b, "sp_raise_cls(\"TypeError\", \"unknown C extension exception class\");\n}\n"
+                 "static void _sp_cext_setup(void) {\n"
+                 "sp_cext_exception_new_fn = _sp_cext_exception_new;\n"
+                 "sp_cext_class_lookup_fn = _sp_cext_class_lookup;\n"
+                 "sp_cext_object_alloc_fn = _sp_cext_object_alloc;\n"
+                 "sp_cext_data_class_fn = _sp_cext_data_class;\n"
+                 "sp_cext_class_alloc_fn = _sp_cext_class_alloc;\n}\n");
+  }
   if (c->nclasses > 0) buf_puts(&b, "\n");
 
   /* class variables: one file-scope static per (class, @@var) */

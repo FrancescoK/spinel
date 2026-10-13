@@ -115,6 +115,7 @@ void nt_put_type(NodeTable *nt, int id, const char *type) {
   if (nd) node_set_type(nd, type, strlen(type));
 }
 void nt_put_str(NodeTable *nt, int id, const char *key, const char *val, size_t len) {
+  if (len == 16 && !memcmp(val, "__cext_extension", 16) && !strcmp(key, "name")) nt->has_cext_decls = 1;
   SpNode *nd = node_put(nt, id);
   if (nd) node_add_str(nd, key, strlen(key), dup_n(val, len), len);
 }
@@ -339,6 +340,7 @@ void nt_node_set_str(NodeTable *nt, int id, const char *key, const char *val) {
   if (!nd) return;
   nt->version++;
   size_t klen = strlen(key), vlen = strlen(val);
+  if (vlen == 16 && !strcmp(val, "__cext_extension") && !strcmp(key, "name")) nt->has_cext_decls = 1;
   for (int j = 0; j < nd->ns; j++)
     if (sp_streq(nd->s[j].key, key)) {
       free(nd->s[j].val); nd->s[j].val = dup_n(val, vlen); nd->s[j].val_len = vlen; return;
@@ -590,6 +592,7 @@ int nt_call_args_plain(const NodeTable *nt, int id) {
    into its own table and grafts the result into the program's. */
 int nt_import_subtree(NodeTable *dst, const NodeTable *src, int root) {
   if (!dst || !src || root < 0 || root >= src->count) return -1;
+  dst->has_cext_decls |= src->has_cext_decls;
   const SpNode *sn = &src->nodes[root];
   int id = nt_new_node(dst, sn->type ? sn->type : "");
   if (id < 0) return -1;

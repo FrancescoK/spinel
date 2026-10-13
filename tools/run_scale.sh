@@ -40,7 +40,7 @@ for p in "${SHAPES[@]}"; do
     echo "run-scale: $n FAIL (exit $rs / $rl)"; fail=1; failed="$failed $n"; continue
   fi
   bs=$(bytes "$T/$n.s"); bl=$(bytes "$T/$n.l")
-  verdict=$(awk -v s="$bs" -v l="$bl" -v m="$max" 'BEGIN { r = s > 0 ? l / s : (l > 0 ? 1e9 : 1); printf "%.2f %s", r, r <= m ? "ok" : "FAIL" }')
+  verdict=$(awk -v s="$bs" -v l="$bl" -v m="$max" 'BEGIN { r = s > 0 ? l / s : (l > 0 ? 1e9 : 1); printf "%.2f %s", r, (r <= m ? "ok" : "FAIL") }')
   echo "run-scale: $n bytes $bs -> $bl, ratio ${verdict% *} (limit $max) ${verdict#* }"
   case $verdict in *FAIL) fail=1; failed="$failed $n";; esac
 done
