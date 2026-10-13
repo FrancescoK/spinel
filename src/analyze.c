@@ -35638,20 +35638,26 @@ static void mark_nullable_int_locals(Compiler *c) {
       int ca = nt_ref(nt, id, "arguments");
       int an = 0; const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
       TyKind rt = infer_type(c, recv);
-      if (an != 1 || !ty_is_object(rt)) continue;
-      int cid = ty_object_class(rt), defc = -1;
+      if (an != 1 || (!ty_is_object(rt) && rt != TY_POLY)) continue;
+      if (!nullable_int_value(c, av[0])) continue;
       char base[256]; memcpy(base, wn, wl - 1); base[wl - 1] = '\0';
-      ClassInfo *ci = NULL; int iv = -1;
-      if (comp_writer_in_chain(c, cid, base, &defc)) {
-        char ivb[300];
-        snprintf(ivb, sizeof ivb, "@%s", comp_resolve_alias(c, cid, base));
-        ci = &c->classes[defc >= 0 ? defc : cid];
-        iv = comp_ivar_index(ci, ivb);
+      /* a boxed receiver's write reaches the member of every class that
+         takes it, as `s[:x] = v` below does (#8769) */
+      for (int cid = ty_is_object(rt) ? ty_object_class(rt) : 0; cid < c->nclasses; cid++) {
+        if (ty_is_object(rt) && cid != ty_object_class(rt)) break;
+        int defc = -1;
+        ClassInfo *ci = NULL; int iv = -1;
+        if (comp_writer_in_chain(c, cid, base, &defc)) {
+          char ivb[300];
+          snprintf(ivb, sizeof ivb, "@%s", comp_resolve_alias(c, cid, base));
+          ci = &c->classes[defc >= 0 ? defc : cid];
+          iv = comp_ivar_index(ci, ivb);
+        }
+        else if (comp_method_in_chain(c, cid, wn, NULL) < 0) iv = struct_member_slot(c, cid, base, &ci);
+        if (iv < 0 || ci->ivar_nullable_int[iv]) continue;
+        if (ci->ivar_types[iv] != TY_INT && ci->ivar_types[iv] != TY_FLOAT) continue;
+        ci->ivar_nullable_int[iv] = 1; changed = 1;
       }
-      else if (comp_method_in_chain(c, cid, wn, NULL) < 0) iv = struct_member_slot(c, cid, base, &ci);
-      if (iv < 0 || ci->ivar_nullable_int[iv]) continue;
-      if (ci->ivar_types[iv] != TY_INT && ci->ivar_types[iv] != TY_FLOAT) continue;
-      if (nullable_int_value(c, av[0])) { ci->ivar_nullable_int[iv] = 1; changed = 1; }
     }
     /* A Struct's or Data's custom initialize forwarding its parameters
        through `super`: a parameter that can hold nil (a `song: nil`

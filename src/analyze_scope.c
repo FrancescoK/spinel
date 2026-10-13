@@ -9597,9 +9597,10 @@ int infer_ivar_types(Compiler *c) {
             int str_v = vt == TY_STRING || vt == TY_STRBUF, str_c = cur == TY_STRING || cur == TY_STRBUF;
             int scal_v = ty_is_numeric(vt) || vt == TY_BOOL || vt == TY_SYMBOL;
             int scal_c = ty_is_numeric(cur) || cur == TY_BOOL || cur == TY_SYMBOL;
-            /* (only a String against a scalar: other kinds keep their slots,
-               as the distinct families do) */
-            if (merged == TY_POLY && ((str_v && scal_c) || (scal_v && str_c))) {
+            /* (only a String against a scalar, or one scalar kind against
+               another -- a Float into a member set to Integers elsewhere --:
+               other kinds keep their slots, as the distinct families do) */
+            if (merged == TY_POLY && ((str_v && scal_c) || (scal_v && str_c) || (scal_v && scal_c && vt != cur))) {
               candidate->ivar_types[iv] = merged; changed = 1;
             }
           }

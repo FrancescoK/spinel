@@ -16355,6 +16355,9 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
             /* A value of no type -- a call proven to raise NoMethodError --
                is the raise's sp_RbVal; `void _t` did not compile (#6213). */
             int unk_rhs = at == TY_UNKNOWN;
+            /* an Integer or a Float that may be nil goes boxed, nil and all,
+               as the value form's does (#8769) */
+            if (!nil_rhs && !unk_rhs && (at == TY_INT || at == TY_FLOAT) && node_is_oint(c, argv[0])) unk_rhs = 1;
             /* --share-strings: a String argument that is a handle is held as
                it, and each arm stores it (the value form's rule,
                emit_poly_index_call) */
