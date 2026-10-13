@@ -4460,6 +4460,43 @@ static int emit_complex_bool_reject(Compiler *c, int argc, const int *argv, Buf 
                 " (sp_Complex){0, 0, 0}; })", ti, tr, ti, argc);
   return 1;
 }
+
+/* curry[a, b, ...]: one sp_curry_apply per argument, each answering a new
+   accumulator, then the realization when the arity is reached. Nested in
+   one C expression, an accumulator (or a curry the receiver makes) is held
+   only in the argument list while the next argument is boxed, and a box
+   that allocates (a Range's) freed it: the accumulator is kept in a rooted
+   temp then -- when an argument after the first allocates, or the first
+   does beside a receiver that makes a new curry (a variable, or a temp the
+   operand order ran, is held already). Each accumulated arg is stored
+   boxed so a non-int arg keeps its type. */
+static void emit_curry_apply_chain(Compiler *c, int recv, const int *argv, int argc, int realize,
+                                   TyKind cret, Buf *b) {
+  int held = 0;
+  for (int k = 0; k < argc && !held; k++)
+    held = !arg_ran_first(argv[k], 0) &&
+           (operand_allocates_beside(c, argv[k]) || range_boxes_new(comp_ntype(c, argv[k]))) &&
+           (k > 0 || (!arg_ran_first(recv, 0) && subtree_may_allocate(c->nt, recv)));
+  const char *rfn = cret == TY_INT ? "sp_curry_to_int(" : "sp_curry_realize_poly(";
+  if (!held) {
+    if (realize) buf_puts(b, rfn);
+    for (int k = 0; k < argc; k++) buf_puts(b, "sp_curry_apply(");
+    emit_expr(c, recv, b);
+    for (int k = 0; k < argc; k++) { buf_puts(b, ", "); emit_boxed(c, argv[k], b); buf_puts(b, ")"); }
+    if (realize) buf_puts(b, ")");
+    return;
+  }
+  int t = ++g_tmp;
+  buf_printf(b, "({ sp_Curry *_t%d = ", t); emit_expr(c, recv, b);
+  buf_printf(b, "; SP_GC_ROOT(_t%d);", t);
+  for (int k = 0; k < argc; k++) {
+    buf_printf(b, " _t%d = sp_curry_apply(_t%d, ", t, t);
+    emit_boxed(c, argv[k], b);
+    buf_puts(b, ");");
+  }
+  if (realize) buf_printf(b, " %s_t%d); })", rfn, t);
+  else buf_printf(b, " _t%d; })", t);
+}
 static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -4949,17 +4986,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "})");
         return 1;
       }
-      int realize = complete;
-      if (realize) buf_puts(b, cret == TY_INT ? "sp_curry_to_int(" : "sp_curry_realize_poly(");
-      for (int k = 0; k < argc; k++) buf_puts(b, "sp_curry_apply(");
-      emit_expr(c, recv, b);
-      for (int k = 0; k < argc; k++) {
-        /* each accumulated arg is stored boxed so a non-int arg keeps its type */
-        buf_puts(b, ", ");
-        emit_boxed(c, argv[k], b);
-        buf_puts(b, ")");
-      }
-      if (realize) buf_puts(b, ")");
+      emit_curry_apply_chain(c, recv, argv, argc, complete, cret, b);
       return 1;
     }
     if (crt == TY_INT && sp_streq(name, "quo") && argc == 1) {
