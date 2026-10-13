@@ -7319,12 +7319,13 @@ static int chain_has_aliases(Compiler *c, int ci) {
   return 0;
 }
 
-static TyKind infer_call_inner(Compiler *c, int id) {
+static TyKind infer_call_prelude(Compiler *c, int id) {
   if (c->n_cext_extensions) {
     const char *cn = nt_str(c->nt, id, "name");
-    if (cn && (sp_streq(cn, "__cext_invoke") || sp_streq(cn, "__cext_constant_value"))) return TY_POLY;
-    if (cn && sp_streq(cn, "__cext_init")) return TY_NIL;
-    if (cn && sp_streq(cn, "__cext_share_new_array")) return TY_POLY_ARRAY;
+    int synthetic = nt_int(c->nt, id, "cext_synthetic", 0);
+    if (synthetic && cn && (sp_streq(cn, "__cext_invoke") || sp_streq(cn, "__cext_constant_value"))) return TY_POLY;
+    if (synthetic && cn && sp_streq(cn, "__cext_init")) return TY_NIL;
+    if (synthetic && cn && sp_streq(cn, "__cext_share_new_array")) return TY_POLY_ARRAY;
     if (cn && sp_streq(cn, "source_location")) {
       int recv = nt_ref(c->nt, id, "receiver");
       int target = recv >= 0 ? method_obj_target_mi(c, method_recv_node(c, recv)) : -1;
@@ -7342,6 +7343,12 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     c->ucall_inf[id].via = UC_NONE;
   }
 
+  return TY_UNKNOWN;
+}
+
+static TyKind infer_call_inner(Compiler *c, int id) {
+  TyKind prelude = infer_call_prelude(c, id);
+  if (prelude != TY_UNKNOWN) return prelude;
   /* a yielder push (`y << v` inside an Enumerator.new generator) lowers to a
      Fiber.yield, whose value is boxed -- never the array append it looks like */
   if (nt_int(c->nt, id, "yielder_push", 0)) return TY_POLY;
@@ -9350,6 +9357,65 @@ static int range_indexes_seq(Compiler *c, int id) {
   return ty_is_array(rt) || rt == TY_STRING || rt == TY_STRBUF;
 }
 
+static TyKind infer_array_literal(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+    if (nt_int(nt, id, "cext_args", 0)) return TY_POLY_ARRAY;
+    int n = 0;
+    const int *els = nt_arr(nt, id, "elements", &n);
+    if (n == 0) {
+      /* An empty `[]` consumed directly as a receiver or interpolation has no
+         writes to infer from, so mark_empty_array_operands types it as a poly
+         array. An argument may instead take a specific layout through arr_want.
+         Elsewhere it stays UNKNOWN so `x = []; x << 1` can back-fill its kind. */
+      /* A SPECIFIC kind fixed by the use context outranks the generic poly
+         layout: the row of an `Array.new(n) { [] }` table is a block tail
+         (marked as a receiver-style empty) and is built as an sp_FloatArray
+         once narrow_object_arrays has decided the table's kind (#4484). */
+      if (c->arr_want && id < c->node_cap && ty_is_array(c->arr_want[id]) &&
+          c->arr_want[id] != TY_POLY_ARRAY)
+        return c->arr_want[id];
+      if (c->empty_arr_recv && id < c->node_cap && c->empty_arr_recv[id])
+        return TY_POLY_ARRAY;
+      /* kind fixed by the use context (mark_empty_array_operands) */
+      if (c->arr_want && id < c->node_cap && ty_is_array(c->arr_want[id]))
+        return c->arr_want[id];
+      return infer_empty_array_reopen(c, id);  /* empty: element type comes from usage */
+    }
+    /* A callee stores elements of another kind into the literal it is
+       passed (widen_arg_array). */
+    if (c->arr_want && id < c->node_cap && (c->arr_want[id] == TY_POLY_ARRAY || c->arr_want[id] == TY_INT_ARRAY_ARRAY))
+      return c->arr_want[id];
+    TyKind e = TY_UNKNOWN;
+    for (int k = 0; k < n; k++) {
+      TyKind et = infer_type(c, els[k]);
+      /* A nested container literal whose own type is still open (an empty
+         `[]` / `{}` element) is a non-scalar value all the same: treat it as
+         poly, exactly like the HashNode arm below does for `{}`. Otherwise
+         UNKNOWN unifies away and `[[], 1]` collapses to an IntArray, whose
+         emit pushes the nested array POINTER as an int element (silent
+         garbage). A bare `Array.new` / `Hash.new` is that same empty
+         container (node_is_empty_container). */
+      if (et == TY_UNKNOWN) {
+        const char *ety = nt_type(nt, els[k]);
+        if ((ety && (sp_streq(ety, "ArrayNode") || sp_streq(ety, "HashNode") ||
+                     sp_streq(ety, "KeywordHashNode"))) ||
+            node_is_empty_container(nt, els[k]))
+          et = TY_POLY;
+      }
+      /* a nil element keeps the literal a boxed container, as it always was:
+         the String join now absorbs nil (#4567), and a typed array or hash
+         is not where a written nil belongs */
+      if (et == TY_NIL) et = TY_POLY;
+      /* --share-strings: an element stored as the shared handle settles the
+         literal in its poly form, whose boxes hold the handle (#6765) */
+      if (et == TY_STRBUF && c->share_strings) et = TY_POLY;
+      e = ty_unify(e, et);
+    }
+    /* ty_array_of holds an all-unknown element type at bottom while the
+       fixpoint runs; see its TY_UNKNOWN case. */
+    return ty_array_of(e);
+}
+
 TyKind infer_uncached(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -9916,63 +9982,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     int s = nt_ref(nt, id, "statements");
     return s >= 0 ? infer_type(c, s) : TY_NIL;
   }
-  if (nk == NK_ArrayNode) {
-    if (nt_int(nt, id, "cext_args", 0)) return TY_POLY_ARRAY;
-    int n = 0;
-    const int *els = nt_arr(nt, id, "elements", &n);
-    if (n == 0) {
-      /* An empty `[]` consumed directly as a receiver or interpolation has no
-         writes to infer from, so mark_empty_array_operands types it as a poly
-         array. An argument may instead take a specific layout through arr_want.
-         Elsewhere it stays UNKNOWN so `x = []; x << 1` can back-fill its kind. */
-      /* A SPECIFIC kind fixed by the use context outranks the generic poly
-         layout: the row of an `Array.new(n) { [] }` table is a block tail
-         (marked as a receiver-style empty) and is built as an sp_FloatArray
-         once narrow_object_arrays has decided the table's kind (#4484). */
-      if (c->arr_want && id < c->node_cap && ty_is_array(c->arr_want[id]) &&
-          c->arr_want[id] != TY_POLY_ARRAY)
-        return c->arr_want[id];
-      if (c->empty_arr_recv && id < c->node_cap && c->empty_arr_recv[id])
-        return TY_POLY_ARRAY;
-      /* kind fixed by the use context (mark_empty_array_operands) */
-      if (c->arr_want && id < c->node_cap && ty_is_array(c->arr_want[id]))
-        return c->arr_want[id];
-      return infer_empty_array_reopen(c, id);  /* empty: element type comes from usage */
-    }
-    /* A callee stores elements of another kind into the literal it is
-       passed (widen_arg_array). */
-    if (c->arr_want && id < c->node_cap && (c->arr_want[id] == TY_POLY_ARRAY || c->arr_want[id] == TY_INT_ARRAY_ARRAY))
-      return c->arr_want[id];
-    TyKind e = TY_UNKNOWN;
-    for (int k = 0; k < n; k++) {
-      TyKind et = infer_type(c, els[k]);
-      /* A nested container literal whose own type is still open (an empty
-         `[]` / `{}` element) is a non-scalar value all the same: treat it as
-         poly, exactly like the HashNode arm below does for `{}`. Otherwise
-         UNKNOWN unifies away and `[[], 1]` collapses to an IntArray, whose
-         emit pushes the nested array POINTER as an int element (silent
-         garbage). A bare `Array.new` / `Hash.new` is that same empty
-         container (node_is_empty_container). */
-      if (et == TY_UNKNOWN) {
-        const char *ety = nt_type(nt, els[k]);
-        if ((ety && (sp_streq(ety, "ArrayNode") || sp_streq(ety, "HashNode") ||
-                     sp_streq(ety, "KeywordHashNode"))) ||
-            node_is_empty_container(nt, els[k]))
-          et = TY_POLY;
-      }
-      /* a nil element keeps the literal a boxed container, as it always was:
-         the String join now absorbs nil (#4567), and a typed array or hash
-         is not where a written nil belongs */
-      if (et == TY_NIL) et = TY_POLY;
-      /* --share-strings: an element stored as the shared handle settles the
-         literal in its poly form, whose boxes hold the handle (#6765) */
-      if (et == TY_STRBUF && c->share_strings) et = TY_POLY;
-      e = ty_unify(e, et);
-    }
-    /* ty_array_of holds an all-unknown element type at bottom while the
-       fixpoint runs; see its TY_UNKNOWN case. */
-    return ty_array_of(e);
-  }
+  if (nk == NK_ArrayNode) return infer_array_literal(c, id);
   if (nk == NK_HashNode || nk == NK_KeywordHashNode) {
     int n = 0;
     const int *els = nt_arr(nt, id, "elements", &n);

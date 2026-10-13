@@ -7012,6 +7012,15 @@ static int fill_empty_array_arg(Compiler *c, int arg, TyKind elem) {
  * not a depth bound: aliases and recursive values must terminate without
  * leaving an inner typed Array behind. This work is absent without extensions. */
 typedef struct { unsigned char *nodes; int capacity; } CextWalk;
+static void cext_walk_grow(Compiler *c, CextWalk *seen) {
+  if (c->nt->count <= seen->capacity) return;
+  int old = seen->capacity;
+  seen->capacity = c->nt->count * 2;
+  unsigned char *nodes = realloc(seen->nodes, (size_t)seen->capacity);
+  if (!nodes) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  seen->nodes = nodes;
+  memset(nodes + old, 0, (size_t)(seen->capacity - old));
+}
 static int cext_pin_array_producer(Compiler *c, int v);
 static int cext_widen_containers(Compiler *c, int v, CextWalk *seen);
 static int cext_widen_stores(Compiler *c, const char *name, Scope *scope, CextWalk *seen) {
@@ -7020,6 +7029,8 @@ static int cext_widen_stores(Compiler *c, const char *name, Scope *scope, CextWa
   for (int j = 0; j < count; j++) changed |= cext_widen_containers(c, values[j], seen);
   free(values);
   NT_FOREACH_KIND(c->nt, NK_LocalVariableWriteNode, w) {
+    if (w < 0 || w >= c->nt->count) continue;
+    cext_walk_grow(c, seen);
     if (seen->nodes[w] || comp_scope_of(c, w) != scope) continue;
     int rhs = nt_ref(c->nt, w, "value");
     if (nt_kind(c->nt, rhs) != NK_LocalVariableReadNode ||
@@ -7033,13 +7044,7 @@ static int cext_widen_containers(Compiler *c, int v, CextWalk *seen) {
   const NodeTable *nt = c->nt;
   v = unwrap_parens(c, v);
   if (v < 0 || v >= nt->count) return 0;
-  if (nt->count > seen->capacity) {
-    int old = seen->capacity;
-    seen->capacity = nt->count * 2;
-    seen->nodes = realloc(seen->nodes, (size_t)seen->capacity);
-    if (!seen->nodes) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    memset(seen->nodes + old, 0, (size_t)(seen->capacity - old));
-  }
+  cext_walk_grow(c, seen);
   if (seen->nodes[v]) return 0;
   seen->nodes[v] = 1;
   int changed = 0;
@@ -7145,6 +7150,7 @@ static int cext_pin_array_producer(Compiler *c, int v) {
   nt_node_set_str(nt, write, "name", name);nt_node_set_ref(nt, write, "value", v);
   int read = nt_new_node(nt, "LocalVariableReadNode");nt_node_set_str(nt, read, "name", name);
   int share = nt_new_node(nt, "CallNode");nt_node_set_str(nt, share, "name", "__cext_share_new_array");
+  nt_node_set_int(nt, share, "cext_synthetic", 1);
   int sa = nt_new_node(nt, "ArgumentsNode");nt_node_set_arr(nt, sa, "arguments", &read, 1);
   nt_node_set_ref(nt, share, "arguments", sa);
   int result = nt_new_node(nt, "LocalVariableReadNode");nt_node_set_str(nt, result, "name", name);

@@ -1123,6 +1123,27 @@ static int emit_freeze_recv_handle(Compiler *c, int recv, Buf *b) {
 }
 
 /* freeze / frozen?, dup / clone, the identity methods that answer the receiver, and then / yield_self */
+static int emit_cext_copy(Compiler *c, int recv, int cid, int freeze_mode, const char *name, Repr repr, Buf *b) {
+  int nil_arm = repr.may_nil && !repr.nil_tested;
+  const char *cls = c->classes[cid].c_name;
+  int source = 0, copy = 0;
+  if (nil_arm) {
+    source = ++g_tmp; copy = ++g_tmp;
+    buf_printf(b, "({ sp_%s *_t%d = ", cls, source); emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); sp_%s *_t%d = NULL; ", source, cls, copy);
+    if (freeze_mode == 0)
+      buf_printf(b, "if (!_t%d) sp_raise_cls(\"ArgumentError\", \"can't unfreeze NilClass\"); ", source);
+    buf_printf(b, "if (_t%d) _t%d = ", source, copy);
+  }
+  buf_printf(b, "((sp_%s *)(", cls);
+  buf_puts(b, freeze_mode >= 0 ? "sp_poly_clone_freeze(" : "sp_cext_duplicate(");
+  if (nil_arm) buf_printf(b, "sp_box_obj(_t%d, %d)", source, cid);
+  else emit_boxed(c, recv, b);
+  buf_printf(b, ", %d)).v.p)", freeze_mode >= 0 ? freeze_mode : sp_streq(name, "clone"));
+  if (nil_arm) buf_printf(b, "; _t%d; })", copy);
+  return 1;
+}
+
 int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc) {
   if (recv >= 0 && (comp_ntype(c, recv) == TY_RANGE || comp_ntype(c, recv) == TY_FLOAT_RANGE ||
                    comp_ntype(c, recv) == TY_STR_RANGE) &&
@@ -1390,13 +1411,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
            object's too. The copy carries the visible class's id, as the
            object did before its `def obj.m` ran, and the singleton's methods
            check for it on entry. */
-        if (c->classes[cid].cext_extension) {
-          buf_printf(b, "((sp_%s *)(", c->classes[cid].c_name);
-          buf_puts(b, freeze_mode >= 0 ? "sp_poly_clone_freeze(" : "sp_cext_duplicate(");
-          emit_boxed(c, recv, b);
-          buf_printf(b, ", %d)).v.p)", freeze_mode >= 0 ? freeze_mode : sp_streq(name, "clone"));
-          return 1;
-        }
+        if (c->classes[cid].cext_extension) return emit_cext_copy(c, recv, cid, freeze_mode, name, drr, b);
         int dup_desingleton = sp_streq(name, "dup") && c->classes[cid].is_singleton_of;
         int dup_cls = dup_desingleton ? singleton_visible_ci(c, cid) : cid;
         ClassInfo *dci = &c->classes[cid];

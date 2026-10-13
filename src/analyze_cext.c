@@ -61,6 +61,10 @@ static void graft(Compiler *c, int site, Buf *b, int ext, int slot, int arity) {
   for (int i = root; i < nt->count; i++) {
     nt_node_set_int(nt, i, "node_line", line);
     if (file >= 0) nt_node_set_int(nt, i, "node_file", file);
+    if (nt_kind(nt, i) == NK_CallNode) {
+      const char *name = nt_str(nt, i, "name");
+      if (name && !strncmp(name, "__cext_", 7)) nt_node_set_int(nt, i, "cext_synthetic", 1);
+    }
     if (slot >= 0 && nt_kind(nt, i) == NK_ParametersNode) nt_node_set_int(nt, i, "cext_arity", arity);
     if (slot >= 0 && nt_kind(nt, i) == NK_ArrayNode) nt_node_set_int(nt, i, "cext_args", 1);
     if (slot >= 0 && nt_kind(nt, i) == NK_DefNode) {
@@ -131,17 +135,21 @@ void desugar_cext_decls(Compiler *c) {
           unsupported_feature(c, site, "unsupported C extension arity or registration order");
         if (!sp_streq(scope, "instance") && !sp_streq(scope, "singleton")) unsupported_feature(c, site, "invalid C extension method scope");
         if (!sp_streq(vis, "private") && !sp_streq(vis, "public")) unsupported_feature(c, site, "invalid C extension visibility");
+        if (sp_streq(vis, "private") && sp_streq(scope, "singleton"))
+          unsupported_feature(c, site, "private C extension singleton methods are unsupported");
         owner_open(c, site, &b, cn);
         if (sp_streq(vis, "private") && sp_streq(scope, "instance")) buf_puts(&b, "private ");
         buf_printf(&b, "def %s__cext_method(", sp_streq(scope, "singleton") ? "self." : "");
+        /* Fixed arguments must use ordinary arity validation; the double-underscore
+         * convention exempts compiler forwarding slots from those checks. */
         if (arity < 0) buf_puts(&b, "*__cext_args");
-        else for (int j = 0; j < arity; j++) buf_printf(&b, "%s__cext_a%d", j ? ", " : "", j);
+        else for (int j = 0; j < arity; j++) buf_printf(&b, "%s_cext_a%d", j ? ", " : "", j);
         buf_puts(&b, arity == 0 ? "&__cext_block)\n" : ", &__cext_block)\n");
         buf_printf(&b, "__cext_invoke(%d, %d, self, ", ext, slot);
         if (arity < 0) buf_puts(&b, "__cext_args");
         else {
           buf_puts(&b, "[");
-          for (int j = 0; j < arity; j++) buf_printf(&b, "%s__cext_a%d", j ? ", " : "", j);
+          for (int j = 0; j < arity; j++) buf_printf(&b, "%s_cext_a%d", j ? ", " : "", j);
           buf_puts(&b, "]");
         }
         buf_puts(&b, ", __cext_block)\nend\nend\n");

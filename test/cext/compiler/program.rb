@@ -150,3 +150,71 @@ begin
 rescue FrozenError
   puts 'frozen array'
 end
+
+# Review regressions: internal names still dispatch to ordinary Ruby methods.
+class CextBox
+  def __cext_init(n) = n + 10
+  def __cext_constant_value(a, b) = a + b
+  def __cext_share_new_array(a) = 'ordinary share'
+  def __cext_invoke(a, b, c, d, e) = a + b + c + d + e
+end
+def pseudo_receiver(box)
+  puts 'receiver evaluated'
+  box
+end
+p pseudo_receiver(box).__cext_init(3)
+p pseudo_receiver(box).__cext_constant_value(4, 5)
+p pseudo_receiver(box).__cext_share_new_array([1])
+p pseudo_receiver(box).__cext_invoke(1, 2, 3, 4, 5)
+
+# The local-store walk must grow when a fresh producer adds AST nodes.
+def widen_fresh_local(box)
+  values = (1..3).map { |n| n }
+  alias_values = values
+  box.push(values)
+  p alias_values
+end
+widen_fresh_local(box)
+
+# A data object and nil share one optional typed receiver.
+def copy_optional_box(value)
+  p value.dup.nil?
+  p value.clone.nil?
+  p value.clone(freeze: true).nil?
+  begin
+    p value.clone(freeze: false).nil?
+  rescue ArgumentError => error
+    p error.message
+  end
+end
+copy_optional_box(box)
+copy_optional_box(nil)
+
+begin
+  box.store
+rescue ArgumentError => error
+  p error.message
+end
+begin
+  box.store(1, 2)
+rescue ArgumentError => error
+  p error.message
+end
+
+# Ruby ivars are insufficient to serialize native data, even through an upcast.
+def dump_parent(value)
+  Marshal.dump(value)
+end
+parent_for_marshal = CextParent.new
+parent_for_marshal.level = 19
+p Marshal.load(dump_parent(parent_for_marshal)).level
+begin
+  dump_parent(CextDataChild.new)
+rescue TypeError => error
+  p error.message
+end
+begin
+  Marshal.dump(box)
+rescue TypeError => error
+  p error.message
+end

@@ -77,7 +77,24 @@ void sp_cext_init(sp_cext_extension *extension) {
     BUILTIN(rb_cFloat,"Float");BUILTIN(rb_cIO,"IO");
 #undef BUILTIN
     sp_cext_arena_mark mark=sp_cext_arena_enter();
-    binding=extension; next_function=0; next_constant=0; extension->init(); binding=NULL;
+    sp_cext_extension *previous=binding;
+    size_t previous_function=next_function, previous_constant=next_constant;
+    int roots=sp_gc_nroots;
+    jmp_buf frame;
+    if(setjmp(frame)!=0) {
+        int unwind=sp_cext_unwinding();
+        const char *cls=sp_exc_cur_cls(), *msg=sp_exc_cur_msg();void *obj=sp_exc_cur_obj();
+        sp_exc_disarm();binding=previous;
+        next_function=previous_function;next_constant=previous_constant;
+        sp_cext_arena_restore(mark);sp_gc_nroots=roots;
+        if(unwind)sp_cext_resume_unwind();
+        else sp_fiber_reraise(cls,msg,obj);
+        abort();
+    }
+    sp_exc_arm(frame);
+    binding=extension;next_function=0;next_constant=0;extension->init();
+    sp_exc_disarm();binding=previous;
+    next_function=previous_function;next_constant=previous_constant;
     extension->initialized=1;
     sp_cext_arena_restore(mark);
 }
@@ -97,8 +114,10 @@ VALUE rb_data_typed_object_wrap(VALUE klass,void *data,const rb_data_type_t *typ
     return sp_cext_value(sp_box_obj(ptr,(int)k.v.i));
 }
 void *rb_data_typed_object_zalloc(VALUE klass,size_t size,const rb_data_type_t *type,VALUE *value) {
+    VALUE object=rb_data_typed_object_wrap(klass,NULL,type);
     void *data=calloc(1,size); if(!data)rb_raise(rb_eNoMemError,"TypedData allocation failed");
-    *value=rb_data_typed_object_wrap(klass,data,type); return data;
+    data_object(object)->cext_data=data;
+    *value=object;return data;
 }
 void *rb_check_typeddata(VALUE value,const rb_data_type_t *type) {
     sp_cext_data *o=data_object(value);
@@ -243,7 +262,7 @@ sp_RbVal sp_cext_invoke(sp_cext_extension *ext,int slot,int arity,sp_RbVal self,
         sp_cext_current_block=saved;sp_fiber_reraise(cls,msg,obj);abort();
     }
     sp_exc_arm(frame);
-    if(arity>=0 && argc!=arity) { rb_raise(rb_eArgError,"wrong number of arguments"); }
+    if(arity>=0 && argc!=arity) { rb_raise(rb_eArgError,"wrong number of arguments (given %d, expected %d)",argc,arity); }
     if(arity==-1)result=((VALUE (*)(int,VALUE *,VALUE))fn)(argc,argv,recv);
     else if(arity==-2)result=((VALUE (*)(VALUE,VALUE))fn)(recv,sp_cext_value(sp_box_poly_array(args)));
     else switch(arity) {

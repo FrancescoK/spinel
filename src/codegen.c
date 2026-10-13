@@ -10950,7 +10950,7 @@ static int marshal_ivar_type_ok(TyKind t) {
 static int class_marshalable(Compiler *c, int i) {
   ClassInfo *ci = &c->classes[i];
   if (is_builtin_reopen(ci->name)) return 0;
-  if (ci->is_native_class) return 0;  /* the package owns the struct; not generically marshalable */
+  if (ci->is_native_class || ci->cext_extension) return 0;  /* native data has no generic Marshal representation */
   if (comp_ty_value_obj(c, ty_object(i))) return 0;  /* value types: out of scope for v1 */
   for (int j = 0; j < ci->nivars; j++)
     if (!marshal_ivar_type_ok(ci->ivar_types[j])) return 0;
@@ -12142,8 +12142,21 @@ static int sg_has_own_method(Compiler *c, int i) {
   return 0;
 }
 
+/* A prefix-only ancestor remains serializable; inspect the actual class
+ * before generic ivar dumping so an upcast cannot discard native data. */
+static void emit_cext_marshal_check(Compiler *c, Buf *b) {
+  if (!c->n_cext_extensions) return;
+  buf_puts(b, "static void _sp_cext_marshal_check(int cls_id, void *p) { switch (cls_id) {\n");
+  for (int i = 0; i < c->nclasses; i++)
+    if (c->classes[i].cext_layout) buf_printf(b, "case %d:\n", i);
+  buf_puts(b, "  if (p && sp_cext_data_class_fn && sp_cext_data_class_fn((int)*(sp_int *)p))\n"
+              "    rb_raise(rb_eTypeError, \"no _dump_data is defined for class %s\", sp_obj_cls_name_fn((int)*(sp_int *)p));\n"
+              "  break; default: break; } }\n");
+}
 static void emit_marshal_dispatch(Compiler *c, Buf *b) {
+  emit_cext_marshal_check(c, b);
   buf_puts(b, "static int sp_marshal_obj_dump(sp_mar_buf *b, int cls_id, void *p) {\n");
+  if (c->n_cext_extensions) buf_puts(b, "  _sp_cext_marshal_check(cls_id, p);\n");
   buf_puts(b, "  switch (cls_id) {\n");
   for (int i = 0; i < c->nclasses; i++) {
     /* an object with singleton methods has nothing to load them back from;

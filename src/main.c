@@ -504,6 +504,7 @@ static void runtime_includes(Str *cmd, Str *bi, const char *lib_dir, int uses_ce
   snprintf(tmp, sizeof tmp, "-I\"%s\" -I\"%s%cregexp\" ", lib_dir, lib_dir, PATH_SEP); s_add(cmd, tmp);
   if (uses_cext) {
     snprintf(tmp, sizeof tmp, "-I\"%s%c..%cinclude\" ", lib_dir, PATH_SEP, PATH_SEP); s_add(cmd, tmp);
+    { char ci[4096]; snprintf(ci, sizeof ci, "%s%c..%cinclude", lib_dir, PATH_SEP, PATH_SEP); bi_put(bi, "include", ci); }
   }
   bi_put(bi, "include", lib_dir);
   { char rgi[4096]; snprintf(rgi, sizeof rgi, "%s%cregexp", lib_dir, PATH_SEP); bi_put(bi, "include", rgi); }
@@ -1128,7 +1129,7 @@ int main(int argc, char **argv) {
   int uses_cext;
   const char *rt_lib = runtime_archive(csrc, uses_threads, target_wasi, exc_abort, &uses_cext);
   free(csrc);
-  if (!rt_lib) return 1;
+  if (!rt_lib) { if (c_is_temp) remove(c_path); return 1; }
   /* wasm has no threads without SharedArrayBuffer and no stack switching
      without asyncify: the runtime archive there is the single-threaded one,
      and a program that reaches for Thread is refused here, where the reason
