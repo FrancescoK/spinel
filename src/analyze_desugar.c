@@ -14120,11 +14120,9 @@ static int incl_find_hook_at(const NodeTable *nt, const int *parent, char *const
   return incl_find_hook_named(nt, nt_str(nt, arg, "name"), NULL, n0, param, hook_name, mod_out);
 }
 
-int desugar_included_hooks(Compiler *c) {
-  NodeTable *nt = (NodeTable *)c->nt;
-  int n0 = nt->count;
-  int changed = 0;
-  /* each node's parent, and each class and module node's qualified name */
+/* Each node's parent, and each class and module node's qualified name, for
+   incl_find_hook_at. */
+static void incl_names_build(const NodeTable *nt, int n0, int **parent_out, char ***qn_out) {
   int *parent = malloc(sizeof(int) * (size_t)(n0 > 0 ? n0 : 1));
   char **qn = calloc((size_t)(n0 > 0 ? n0 : 1), sizeof(char *));
   if (!parent || !qn) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
@@ -14146,6 +14144,30 @@ int desugar_included_hooks(Compiler *c) {
     qn[m] = strdup(q);
     if (!qn[m]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
+  *parent_out = parent; *qn_out = qn;
+}
+
+int desugar_included_hooks(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  int changed = 0;
+  /* no `def self.included` or `def self.extended` anywhere: no hook to
+     splice, and each include need not look for one */
+  int any_hook = 0;
+  for (int d = 0; d < n0 && !any_hook; d++) {
+    if (nt_kind(nt, d) != NK_DefNode) continue;
+    const char *dn = nt_str(nt, d, "name");
+    int r = nt_ref(nt, d, "receiver");
+    any_hook = dn && (sp_streq(dn, "included") || sp_streq(dn, "extended")) && r >= 0 &&
+               nt_kind(nt, r) == NK_SelfNode;
+  }
+  if (!any_hook) return 0;
+  /* each node's parent, and each class and module node's qualified name:
+     built when an include or extend first asks, since a pass over every
+     node on every call is work that grows with the program however few
+     hooks it has */
+  int *parent = NULL;
+  char **qn = NULL;
   for (int cn = 0; cn < n0; cn++) {
     NodeKind ck = nt_kind(nt, cn);
     int is_mod = ck == NK_ModuleNode;
@@ -14185,6 +14207,7 @@ int desugar_included_hooks(Compiler *c) {
         if (ak != NK_ConstantReadNode && ak != NK_ConstantPathNode) continue;
         const char *param = NULL;
         int hook_mod = -1;
+        if (!parent) incl_names_build(nt, n0, &parent, &qn);
         int hook = incl_find_hook_at(nt, parent, qn, n0, cn, av[j], &param,
                                      is_ext ? "extended" : "included", &hook_mod);
         if (hook < 0) continue;
@@ -14217,7 +14240,7 @@ int desugar_included_hooks(Compiler *c) {
     }
     free(out);
   }
-  for (int m = 0; m < n0; m++) free(qn[m]);
+  if (qn) for (int m = 0; m < n0; m++) free(qn[m]);
   free(qn);
   free(parent);
   if (changed) comp_grow_node_arrays(c);
