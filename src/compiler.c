@@ -1012,6 +1012,7 @@ static int *cmc_slot(Compiler *c, const char *name, int is_cm) {
   cmc_cm[j] = (unsigned char)is_cm; cmc_ans[j] = a; cmc_n++;
   return a;
 }
+static const char *resolve_alias_kind(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin, int cm);
 static int chain_lookup(Compiler *c, int class_id, const char *name, int *def_class, int is_cm) {
   int *a = class_id >= 0 && class_id < c->nclasses ? cmc_slot(c, name, is_cm) : NULL;
   if (a && a[2 * class_id] != -2) {
@@ -1019,7 +1020,7 @@ static int chain_lookup(Compiler *c, int class_id, const char *name, int *def_cl
     return a[2 * class_id];
   }
   int start = class_id, mi = -1, dc = -1, bi = 0;
-  const char *rn = comp_resolve_alias_ex(c, class_id, name, &start, &bi);
+  const char *rn = resolve_alias_kind(c, class_id, name, &start, &bi, is_cm);
   /* an alias that captured a builtin's method names no method of the
      program's, whatever the class defines of that name later */
   if (bi && !is_cm && !sp_streq(rn, name)) start = -1;
@@ -1877,6 +1878,11 @@ int comp_resolve_member(Compiler *c, int class_id, const char *name, int want_wr
 }
 
 const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin) {
+  return resolve_alias_kind(c, class_id, name, start_cls, builtin, 0);
+}
+/* ... for the lookup of a class method (cm) or of an instance method: a
+   class below the alias that defines the name as one of that kind hides it */
+static const char *resolve_alias_kind(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin, int cm) {
   if (builtin) *builtin = 0;
   if (!name) return name;
   /* Follow alias links (chain-aware), guarding against cycles. A name means
@@ -1898,7 +1904,8 @@ const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, i
              in a subclass of one with `alias loc location`). Asked only
              once an alias is found, which most lookups never do. */
           for (int d = from; d >= 0 && d != cid; d = c->classes[d].parent)
-            if (comp_method_in_class(c, d, name) >= 0 || comp_is_reader(&c->classes[d], name)) return name;
+            if (cm ? comp_cmethod_in_class(c, d, name) >= 0
+                   : comp_method_in_class(c, d, name) >= 0 || comp_is_reader(&c->classes[d], name)) return name;
           next = ci->alias_old[i];
           /* An alias of an INHERITED method names the body that was in effect
              where the alias appeared, so a redefinition in this class must not

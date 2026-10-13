@@ -50,3 +50,17 @@ class D < B
 end
 d = D.new({ location: V.new, size: 2 })
 p d.loc.wal, d.location.val
+
+# a subclass's instance method or reader of the name does not hide a class
+# method alias an ancestor declares
+class SP
+  class << self
+    def bar = "SP.bar"
+    alias foo bar
+  end
+end
+class SC < SP
+  def foo = "SC#foo"
+  attr_reader :bar
+end
+p SC.foo, SC.new.foo
