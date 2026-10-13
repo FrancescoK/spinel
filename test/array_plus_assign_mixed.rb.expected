@@ -1,0 +1,2 @@
+["tmux", "new-session", "-s", "one", "-c", "/tmp"]
+["tmux", "new-session", "-s", "two", "-c", 42]

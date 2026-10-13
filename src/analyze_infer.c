@@ -9522,6 +9522,13 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (ct2 == TY_STRING || ct2 == TY_STRBUF) return TY_STRING;
     if (ty_is_numeric(ct2) && (ty_is_numeric(vt2) || vt2 == TY_POLY))
       return infer_op_assign_type(c, ct2, nt_ref(nt, id, "value"));
+    /* `cmd += ["-c", dir]` with elements of another kind than the local's
+       (a String Array and a boxed one): the concatenation answers a poly
+       Array, as `cmd = cmd + [...]` does, and the local widens to hold it */
+    { const char *bop2 = nt_str(nt, id, "binary_operator");
+      if (bop2 && sp_streq(bop2, "+") && ty_is_array(ct2) &&
+          (ty_is_array(vt2) || vt2 == TY_POLY_ARRAY) && vt2 != ct2)
+        return TY_POLY_ARRAY; }
     return ct2 != TY_UNKNOWN ? ct2 : vt2;
   }
   if (nk == NK_LocalVariableOrWriteNode || nk == NK_LocalVariableAndWriteNode) {
