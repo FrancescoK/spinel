@@ -1,3 +1,4 @@
+#include "cext_bridge.h"
 #include <stdint.h>
 #include <limits.h>
 #include "analyze_internal.h"
@@ -12303,7 +12304,7 @@ static int narrow_object_arrays(Compiler *c) {
     Scope *sc = &c->scopes[s];
     for (int li = 0; li < sc->nlocals; li++) {
       LocalVar *lv = &sc->locals[li];
-      if (lv->type != TY_POLY_ARRAY || lv->is_block_param || lv->rbs_seeded) continue;
+      if (lv->type != TY_POLY_ARRAY || lv->is_block_param || lv->rbs_seeded || cext_scope(c, s)) continue;
       if (n >= cap) { cap *= 2; sl = (OAS *)realloc(sl, sizeof(OAS) * cap); if (!sl) { fprintf(stderr, "oom\n"); exit(1); } }
       sl[n].sidx = s; sl[n].lv = lv; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = -1; sl[n].iiv = -1;
       sl[n].old_pin = lv->oa_pin; lv->oa_pin = TY_UNKNOWN; n++;
@@ -17466,6 +17467,17 @@ static int cst_first(Compiler *c, const char *name) {
   int k = name ? anh_find(&g_cst_names, name) : -1;
   return k >= 0 ? g_cst_first[k] : -1;
 }
+/* The same indexed stores used by String sharing, for containers that cross
+ * the C extension boundary. The caller owns the returned producer list. */
+int *cext_container_stores(Compiler *c, const char *name, Scope *scope, int *count) {
+  StoreVals all = {0}, values = {0};
+  for (int w = cst_first(c, name); w >= 0; w = g_cst_next[w]) {
+    strbuf_container_store_values(c, w, name, scope, 1, &values);
+    for (int j = 0; j < values.n; j++) store_vals_add(&all, values.v[j]);
+  }
+  free(values.v); *count = all.n; return all.v;
+}
+
 static int strbuf_container_stores_kind(Compiler *c, const char *contn, Scope *conts,
                                         int depth, int mode) {
   const NodeTable *nt = c->nt;
@@ -18957,6 +18969,11 @@ static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mo
 }
 static int strbuf_container_source_walk_body(Compiler *c, int node, int depth, int mode) {
   const NodeTable *nt = c->nt;
+  if (c->n_cext_extensions && node >= 0) {
+    int producer = nt_int(nt, node, "cext_producer", -1);
+    if (producer >= 0) return strbuf_container_source_walk(c, producer, depth, mode);
+  }
+
   if (node < 0 || depth > 8) return 0;
   int changed = 0;
   switch (nt_kind(nt, node)) {
@@ -19102,6 +19119,13 @@ static int strbuf_container_source_walk_body(Compiler *c, int node, int depth, i
     default:
       return 0;
   }
+}
+
+/* An opaque extension may change any String it can obtain from a container.
+ * Demand those producer values explicitly; no Ruby []/append body exists from
+ * which the ordinary mutation summaries could discover the inner effect. */
+int cext_demand_container_strings(Compiler *c, int value) {
+  return strbuf_container_source_walk(c, value, 0, SB_DEMAND);
 }
 
 /* Slot-shape eligibility for the shared handle: parameters, cells, byref
@@ -19432,6 +19456,7 @@ static int smc_next_of(int u) { return u >= 0 && u < smc_count ? smc_next[u] : -
 static int an_param_mutated_in_place(Compiler *c, int mi, int pi) {
   if (mi < 0 || mi >= c->nscopes) return 0;
   Scope *m = &c->scopes[mi];
+  if (cext_scope(c, mi)) return 1;
   if (pi < 0 || pi >= m->nparams || !m->pnames[pi]) return 0;
   const char *pn = m->pnames[pi];
   const NodeTable *nt = c->nt;
@@ -21117,6 +21142,7 @@ static int dyn_param_appended(Compiler *c, int mi, int j);
    directly: the passes that mark a parameter handed on as appended
    (convert_byref_handle_params) run after this fixpoint. */
 static int an_param_appended_deep_d(Compiler *c, int mi, int j, int depth) {
+  if (cext_scope(c, mi)) return 1;
   const NodeTable *nt = c->nt;
   if (mi < 0 || mi >= c->nscopes) return 0;
   /* a chain longer than the bound is taken as appending: sharing a String
@@ -41235,6 +41261,7 @@ static void an_phase_desugar_register(Compiler *c) {
       comp_grow_node_arrays(c);
     }
   }
+  desugar_cext_decls(c);
   mark_sym_proc_blocks(c);               /* { |_spx| _spx.m } is `&:m` */
   desugar_body_local_scopes(c);          /* a class body local -> a name of its own */
   desugar_root_scoped_constants(c);      /* ::Name -> Name (#4801) */
@@ -41354,6 +41381,7 @@ static void an_phase_desugar_register(Compiler *c) {
   rewrite_const_alias_receivers(c);
   desugar_env_values(c);
   register_ffi_decls(c);
+  register_cext_layouts(c);
   an_const_presence(c);
 }
 
@@ -42690,6 +42718,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
         }
     for (int s = 0; s < c->nscopes; s++) {
       Scope *sc = &c->scopes[s];
+      if (cext_scope(c, s)) continue; /* the external ABI is permanently boxed */
       for (int i = 0; i < sc->nparams; i++) {
         LocalVar *p = scope_local(sc, sc->pnames[i]);
         if (p && p->type == TY_POLY && !p->is_block_param && !p->poly_dispatch_widened) { p->type = TY_UNKNOWN; why_reset(&p->why); any = 1; }
@@ -45705,7 +45734,7 @@ static void an_phase_value_types(Compiler *c) {
      stored, passed, or captured). See reference_legacy_value_type_logic. */
   for (int i = 0; i < c->nclasses; i++) {
     ClassInfo *ci = &c->classes[i];
-    if (ci->is_struct) continue;
+    if (ci->is_struct || ci->cext_extension) continue;
     if (ci->def_node < 0) continue;                /* synthetic / Toplevel */
     if (!ci->name || sp_streq(ci->name, "Toplevel")) continue;
     if (ci->nivars < 1 || ci->nivars > 8) continue;
@@ -46381,6 +46410,7 @@ void analyze_program(Compiler *c) {
   an_note_written_names(c->nt);
   AN_PHASE("desugar_register", an_phase_desugar_register(c));
   AN_PHASE("class_structure", an_phase_class_structure(c));
+  if (c->n_cext_extensions) { register_cext_layouts(c); inherit_cext_layouts(c); }
   AN_PHASE("block_inline", an_phase_block_inline(c));
   AN_PHASE("pre_fixpoint", an_phase_pre_fixpoint(c));
   /* the classes a value can hold, decided once from the program's shape

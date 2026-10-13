@@ -7320,6 +7320,19 @@ static int chain_has_aliases(Compiler *c, int ci) {
 }
 
 static TyKind infer_call_inner(Compiler *c, int id) {
+  if (c->n_cext_extensions) {
+    const char *cn = nt_str(c->nt, id, "name");
+    if (cn && (sp_streq(cn, "__cext_invoke") || sp_streq(cn, "__cext_constant_value"))) return TY_POLY;
+    if (cn && sp_streq(cn, "__cext_init")) return TY_NIL;
+    if (cn && sp_streq(cn, "__cext_share_new_array")) return TY_POLY_ARRAY;
+    if (cn && sp_streq(cn, "source_location")) {
+      int recv = nt_ref(c->nt, id, "receiver");
+      int target = recv >= 0 ? method_obj_target_mi(c, method_recv_node(c, recv)) : -1;
+      if (target >= 0 && c->scopes[target].def_node >= 0 && nt_int(c->nt, c->scopes[target].def_node, "cext_extension", 0))
+        return TY_NIL;
+    }
+
+  }
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
      would be with no user method: not the call's answer, so it neither
@@ -9904,6 +9917,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     return s >= 0 ? infer_type(c, s) : TY_NIL;
   }
   if (nk == NK_ArrayNode) {
+    if (nt_int(nt, id, "cext_args", 0)) return TY_POLY_ARRAY;
     int n = 0;
     const int *els = nt_arr(nt, id, "elements", &n);
     if (n == 0) {

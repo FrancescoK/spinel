@@ -34,7 +34,7 @@ for a in "$@"; do
     *) echo "usage: $0 [--update] [--corpus]" >&2; exit 2 ;;
   esac
 done
-JOBS=${REFUSALS_JOBS:-$(nproc)}
+JOBS=${REFUSALS_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}
 tmp=$(mktemp -d /tmp/spinel-refusals.XXXXXX) || exit 2
 trap 'rm -rf "$tmp"' EXIT
 

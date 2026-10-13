@@ -1390,6 +1390,13 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
            object's too. The copy carries the visible class's id, as the
            object did before its `def obj.m` ran, and the singleton's methods
            check for it on entry. */
+        if (c->classes[cid].cext_extension) {
+          buf_printf(b, "((sp_%s *)(", c->classes[cid].c_name);
+          buf_puts(b, freeze_mode >= 0 ? "sp_poly_clone_freeze(" : "sp_cext_duplicate(");
+          emit_boxed(c, recv, b);
+          buf_printf(b, ", %d)).v.p)", freeze_mode >= 0 ? freeze_mode : sp_streq(name, "clone"));
+          return 1;
+        }
         int dup_desingleton = sp_streq(name, "dup") && c->classes[cid].is_singleton_of;
         int dup_cls = dup_desingleton ? singleton_visible_ci(c, cid) : cid;
         ClassInfo *dci = &c->classes[cid];

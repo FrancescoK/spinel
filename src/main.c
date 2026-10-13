@@ -490,6 +490,25 @@ static void usage(void) {
 static void work_report(void) { fprintf(stderr, "spinel-work: %llu\n", g_nt_work); }
 #endif
 
+static const char *runtime_archive(const char *csrc, int threads, int wasi, int abort_exceptions, int *cext) {
+  *cext = strstr(csrc, "/* SPINEL_USES_CEXT */") != NULL;
+  if (*cext && (threads || wasi || abort_exceptions)) {
+    fprintf(stderr, "spinel: C extensions currently require the native single-threaded exception runtime\n");
+    return NULL;
+  }
+  return *cext ? "libspinel_cext_rt.a" : threads ? "libspinel_rt_mt.a" : "libspinel_rt.a";
+}
+
+static void runtime_includes(Str *cmd, Str *bi, const char *lib_dir, int uses_cext) {
+  char tmp[8192];
+  snprintf(tmp, sizeof tmp, "-I\"%s\" -I\"%s%cregexp\" ", lib_dir, lib_dir, PATH_SEP); s_add(cmd, tmp);
+  if (uses_cext) {
+    snprintf(tmp, sizeof tmp, "-I\"%s%c..%cinclude\" ", lib_dir, PATH_SEP, PATH_SEP); s_add(cmd, tmp);
+  }
+  bi_put(bi, "include", lib_dir);
+  { char rgi[4096]; snprintf(rgi, sizeof rgi, "%s%cregexp", lib_dir, PATH_SEP); bi_put(bi, "include", rgi); }
+}
+
 int main(int argc, char **argv) {
 #ifdef SP_WORK_COUNT
   atexit(work_report);
@@ -1106,8 +1125,10 @@ int main(int argc, char **argv) {
      large-frame brake -- ask for the warning back (#3913). */
   int fiber_frame_guard = strstr(csrc, "/* SPINEL_FIBER_FRAME_GUARD */") != NULL;
   int uses_crypt = strstr(csrc, "sp_str_crypt(") != NULL;  /* String#crypt: link -lcrypt */
-  const char *rt_lib = uses_threads ? "libspinel_rt_mt.a" : "libspinel_rt.a";
+  int uses_cext;
+  const char *rt_lib = runtime_archive(csrc, uses_threads, target_wasi, exc_abort, &uses_cext);
   free(csrc);
+  if (!rt_lib) return 1;
   /* wasm has no threads without SharedArrayBuffer and no stack switching
      without asyncify: the runtime archive there is the single-threaded one,
      and a program that reaches for Thread is refused here, where the reason
@@ -1221,9 +1242,7 @@ int main(int argc, char **argv) {
                                     : "-fno-diagnostics-show-caret ");
   }
   if (fiber_frame_guard) s_add(&cmd, "-Wframe-larger-than=65536 ");
-  snprintf(tmp, sizeof tmp, "-I\"%s\" -I\"%s%cregexp\" ", lib_dir, lib_dir, PATH_SEP); s_add(&cmd, tmp);
-  bi_put(&bi, "include", lib_dir);
-  { char rgi[4096]; snprintf(rgi, sizeof rgi, "%s%cregexp", lib_dir, PATH_SEP); bi_put(&bi, "include", rgi); }
+  runtime_includes(&cmd, &bi, lib_dir, uses_cext);
   /* wasm32-wasi: what common.mk gives the runtime archive there (see its
      WASI_CFLAGS): lib/wasi's stand-ins for the POSIX headers wasi-libc
      leaves out, wasi-libc's emulations of signals, mmap and process clocks,

@@ -91,6 +91,36 @@ typedef struct rb_data_type_struct {
 #define RUBY_TYPED_FREE_IMMEDIATELY ((VALUE)1)
 #define RUBY_TYPED_WB_PROTECTED ((VALUE)32)
 
+VALUE rb_data_typed_object_wrap(VALUE, void *, const rb_data_type_t *);
+void *rb_data_typed_object_zalloc(VALUE, size_t, const rb_data_type_t *, VALUE *);
+void *rb_check_typeddata(VALUE, const rb_data_type_t *);
+void *sp_cext_data_ptr(VALUE);
+const rb_data_type_t *sp_cext_data_type(VALUE);
+#define TypedData_Wrap_Struct(k,t,p) rb_data_typed_object_wrap((k),(p),(t))
+#define TypedData_Make_Struct(k,T,t,p) ({ VALUE _v; (p)=(T *)rb_data_typed_object_zalloc((k),sizeof(T),(t),&_v); _v; })
+#define TypedData_Get_Struct(v,T,t,p) ((p)=(T *)rb_check_typeddata((v),(t)))
+#define DATA_PTR(v) sp_cext_data_ptr(v)
+#define RTYPEDDATA_TYPE(v) sp_cext_data_type(v)
+char *sp_cext_string_ptr(VALUE);
+long sp_cext_string_len(VALUE);
+#define RSTRING_PTR(v) sp_cext_string_ptr(v)
+#define RSTRING_LEN(v) sp_cext_string_len(v)
+VALUE rb_str_cat(VALUE, const char *, long);
+VALUE rb_str_cat_cstr(VALUE, const char *);
+int rb_block_given_p(void);
+VALUE rb_block_proc(void);
+VALUE rb_yield(VALUE);
+VALUE rb_yield_values(int, ...);
+VALUE rb_yield_values2(int, const VALUE *);
+void rb_gc_start(void);
+
+VALUE rb_ary_new(void);
+VALUE rb_ary_push(VALUE, VALUE);
+VALUE rb_ary_entry(VALUE, long);
+long sp_cext_array_len(VALUE);
+#define RARRAY_LEN(v) sp_cext_array_len(v)
+#define RARRAY_AREF(v,i) rb_ary_entry((v),(i))
+
 extern VALUE rb_eException, rb_eStandardError, rb_eRuntimeError, rb_eTypeError;
 extern VALUE rb_eArgError, rb_eRangeError, rb_eNoMemError, rb_eSystemCallError;
 VALUE rb_protect(VALUE (*)(VALUE), VALUE, int *);
@@ -125,7 +155,7 @@ void *sp_cext_no_layout(VALUE) SP_CEXT_REFUSED("CRuby object layout is not provi
 #define RBASIC(v) sp_cext_no_layout(v)
 #define ROBJECT(v) sp_cext_no_layout(v)
 #define RSTRUCT(v) sp_cext_no_layout(v)
-#ifdef SP_CEXT_RECORDER
+#if defined(SP_CEXT_RECORDER) || defined(SP_CEXT)
 #include "ruby/spinel_record.h"
 #else
 VALUE rb_eval_string(const char *) SP_CEXT_REFUSED("Ruby eval requires the C extension literal scanner");

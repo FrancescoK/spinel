@@ -254,3 +254,26 @@ void rb_fatal(const char *s,...) { (void)s;DENIED("rb_fatal"); }
 void rb_gc_mark(VALUE v) { (void)v;DENIED("rb_gc_mark"); }
 void rb_gc_mark_movable(VALUE v) { (void)v;DENIED("rb_gc_mark_movable"); }
 VALUE rb_gc_location(VALUE v) { (void)v;DENIED("rb_gc_location"); }
+
+/* Body-only APIs: definitions may reference these, but Init cannot execute
+ * them. The runtime archive supplies their real implementations. */
+VALUE rb_data_typed_object_wrap(VALUE k,void *p,const rb_data_type_t *t) { (void)k;(void)p;(void)t;DENIED("TypedData_Wrap_Struct"); }
+void *rb_data_typed_object_zalloc(VALUE k,size_t n,const rb_data_type_t *t,VALUE *v) { (void)k;(void)n;(void)t;(void)v;DENIED("TypedData_Make_Struct"); }
+void *rb_check_typeddata(VALUE v,const rb_data_type_t *t) { (void)v;(void)t;DENIED("TypedData_Get_Struct"); }
+void *sp_cext_data_ptr(VALUE v) { (void)v;DENIED("DATA_PTR"); }
+const rb_data_type_t *sp_cext_data_type(VALUE v) { (void)v;DENIED("RTYPEDDATA_TYPE"); }
+char *sp_cext_string_ptr(VALUE v) { (void)v;DENIED("RSTRING_PTR"); }
+long sp_cext_string_len(VALUE v) { (void)v;DENIED("RSTRING_LEN"); }
+VALUE rb_str_cat(VALUE v,const char *s,long n) { (void)v;(void)s;(void)n;DENIED("rb_str_cat"); }
+VALUE rb_str_cat_cstr(VALUE v,const char *s) { (void)v;(void)s;DENIED("rb_str_cat_cstr"); }
+VALUE rb_ary_new(void) { DENIED("rb_ary_new"); }
+VALUE rb_ary_push(VALUE v,VALUE i) { (void)v;(void)i;DENIED("rb_ary_push"); }
+VALUE rb_ary_entry(VALUE v,long i) { (void)v;(void)i;DENIED("rb_ary_entry"); }
+long sp_cext_array_len(VALUE v) { (void)v;DENIED("RARRAY_LEN"); }
+
+int rb_block_given_p(void) { DENIED("rb_block_given_p"); }
+VALUE rb_block_proc(void) { DENIED("rb_block_proc"); }
+VALUE rb_yield(VALUE v) { (void)v;DENIED("rb_yield"); }
+VALUE rb_yield_values(int n,...) { (void)n;DENIED("rb_yield_values"); }
+VALUE rb_yield_values2(int n,const VALUE *v) { (void)n;(void)v;DENIED("rb_yield_values2"); }
+void rb_gc_start(void) { DENIED("rb_gc_start"); }

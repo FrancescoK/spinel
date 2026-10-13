@@ -14904,7 +14904,7 @@ static void sp_rescue_push(void *e) {
   }
   sp_exc_handling[sp_rescue_sp++] = e;
 }
-#ifdef SP_CEXT
+#if defined(SP_CEXT) && !defined(SPINEL_EXT_HOST)
 int sp_cext_handled_push(void *e) {
   int mark = sp_rescue_sp; sp_rescue_push(e); return mark;
 }
@@ -16375,6 +16375,11 @@ static void sp_unwind_resume(void) {
   sp_poly_recur_pop(sp_catch_recur_mark[sp_unwind_target]);
   longjmp(sp_catch_stack[sp_unwind_target], 1);
 }
+#if defined(SP_CEXT) && !defined(SPINEL_EXT_HOST)
+int sp_cext_unwinding(void) { return sp_unwind_kind != SP_UNWIND_NONE; }
+void sp_cext_resume_unwind(void) { sp_unwind_resume(); }
+#endif
+
 
 /* ---- Per-fiber exception/catch handler context (#1474) -------------------
    The handler stacks above are process-global, but begin/rescue handlers and
@@ -16521,7 +16526,7 @@ void sp_exc_disarm(void);
 #else
 void sp_exc_disarm(void)       { if (sp_exc_top > 0) sp_exc_top--; }
 #endif
-#ifdef SP_CEXT
+#if defined(SP_CEXT) && !defined(SPINEL_EXT_HOST)
 int sp_cext_exception_p(sp_RbVal v) {
   return v.tag == SP_TAG_OBJ && v.v.p &&
     (v.cls_id == SP_BUILTIN_EXCEPTION || sp_is_exc_subclass_cls(v.cls_id));

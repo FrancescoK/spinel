@@ -51,6 +51,7 @@ typedef struct {
   int count;           /* number of allocated node slots */
   int node_cap;        /* capacity of `nodes`; >= count (for append growth) */
   int root_id;
+  int has_cext_decls; /* syntactic opt-in; avoids a declaration scan in ordinary programs */
   char *source_file;   /* SOURCE_FILE path (unescaped), NULL if none */
   char **files;        /* FILE id -> path (unescaped); for multi-file #line maps */
   int nfiles;          /* length of `files` */

@@ -28969,7 +28969,51 @@ static int enum_own_outside_brk_wrapper(Compiler *c, int id) {
   return nt_int(c->nt, id, "enum_own", 0) && (id == g_brk_skip_id || !call_breaks(c, id));
 }
 
+static int emit_cext_call(Compiler *c, int id, Buf *b) {
+  if (c->n_cext_extensions) {
+    const char *cn = nt_str(c->nt, id, "name");
+    int argc = 0; const int *argv = call_args(c->nt, id, &argc);
+    if (cn && sp_streq(cn, "__cext_init")) {
+      int ext = argc == 1 ? nt_int(c->nt, argv[0], "value", -1) : -1;
+      if (ext < 0 || ext >= c->n_cext_extensions) unsupported_feature(c, id, "invalid C extension initialization");
+      buf_printf(b, "(_sp_cext_setup(), sp_cext_init(&_sp_cext_%d), sp_box_nil())", ext);
+      return 1;
+    }
+    if (cn && sp_streq(cn, "__cext_share_new_array")) {
+      if (argc != 1) unsupported_feature(c, id, "invalid fresh C extension array");
+      buf_puts(b, "sp_cext_share_new_array(");emit_expr(c, argv[0], b);buf_puts(b, ")");return 1;
+    }
+    if (cn && sp_streq(cn, "__cext_constant_value")) {
+      int ext = argc == 2 ? nt_int(c->nt, argv[0], "value", -1) : -1;
+      int idx = argc == 2 ? nt_int(c->nt, argv[1], "value", -1) : -1;
+      if (ext < 0 || ext >= c->n_cext_extensions || idx < 0 || idx >= c->cext_extensions[ext].constants)
+        unsupported_feature(c, id, "invalid C extension constant index");
+      buf_printf(b, "sp_cext_rbval(_sp_cext_%d.constants[%d])", ext, idx);return 1;
+    }
+    if (cn && sp_streq(cn, "__cext_invoke")) {
+      Scope *sc = comp_scope_of(c, id);
+      int def = sc ? sc->def_node : -1;
+      int ext = def >= 0 ? nt_int(c->nt, def, "cext_extension", 0) - 1 : -1;
+      int slot = def >= 0 ? nt_int(c->nt, def, "cext_function", -1) : -1;
+      int arity = def >= 0 ? nt_int(c->nt, def, "cext_arity", 0) : 0;
+      if (argc != 5 || ext < 0 || slot < 0) unsupported_feature(c, id, "C extension invoke requires a recorder method");
+      buf_printf(b, "sp_cext_invoke(&_sp_cext_%d, %d, %d, ", ext, slot, arity);
+      emit_boxed(c, argv[2], b); buf_puts(b, ", ");
+      emit_expr(c, argv[3], b); buf_puts(b, ", ");
+      emit_expr(c, argv[4], b); buf_puts(b, ")");
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static void emit_call_body_ordinary(Compiler *c, int id, Buf *b);
 void emit_call_body(Compiler *c, int id, Buf *b) {
+  if (emit_cext_call(c, id, b)) return;
+  emit_call_body_ordinary(c, id, b);
+}
+
+static void emit_call_body_ordinary(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
      an instance of a class defining m, so this is that class's method, not
