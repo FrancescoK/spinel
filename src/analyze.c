@@ -20381,6 +20381,32 @@ static int share_demand_nested_read(Compiler *c, int call, int recv) {
   if (!share_node_elems_share(c, recv)) return 0;
   return strbuf_container_source_walk(c, recv, 0, SB_DEMAND_NAMED);
 }
+/* A String Array ivar the rule boxes (its elements shared) is boxed in the
+   whole family, as strbuf_promote_ivar promotes a String slot: an
+   ancestor's methods reach the slot through their own struct, so it is
+   boxed from the topmost ancestor holding it as a String Array through
+   every descendant's copy, a passive one with no holder of its own
+   included (an abstract class between them). A copy an --rbs seed pins
+   keeps its form. */
+static int share_box_ivar_family(Compiler *c, int cid, const char *nm) {
+  int top = cid;
+  for (int p = c->classes[cid].parent; p >= 0; p = c->classes[p].parent) {
+    int pi = comp_ivar_index(&c->classes[p], nm);
+    if (pi < 0 || (c->classes[p].ivar_types[pi] != TY_STR_ARRAY && c->classes[p].ivar_types[pi] != TY_POLY_ARRAY)) break;
+    top = p;
+  }
+  int nk = 0, changed = 0;
+  const int *ks = comp_descendants(c, top, &nk);
+  for (int k = -1; k < nk; k++) {
+    ClassInfo *kc = &c->classes[k < 0 ? top : ks[k]];
+    int ki = comp_ivar_index(kc, nm);
+    if (ki < 0 || kc->ivar_types[ki] != TY_STR_ARRAY || class_ivar_pinned(kc, nm)) continue;
+    kc->ivar_types[ki] = TY_POLY_ARRAY;
+    kc->ivar_elems_shared[ki] = 1;
+    changed = 1;
+  }
+  return changed;
+}
 static int share_default_apply(Compiler *c, int in_fixpoint) {
   if (!c->share_strings) return 0;
   unsigned d_in = 0;
@@ -20454,14 +20480,14 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
         /* a poly Array holds its Strings as handles, as a local's does: a
            String Array written into it is wrapped element by element */
         ClassInfo *ci = &c->classes[sh->cid];
-        if (it == TY_POLY_ARRAY && !ci->ivar_elems_shared[iv]) { ci->ivar_elems_shared[iv] = 1; changed = 1; }
-        /* An externally written String Array uses that same form even
-           when the source walk cannot reach a direct ivar write. */
-        if (it == TY_STR_ARRAY && !class_ivar_pinned(ci, sh->name)) {
-          ci->ivar_types[iv] = TY_POLY_ARRAY;
+        if (it == TY_POLY_ARRAY && !ci->ivar_elems_shared[iv]) {
           ci->ivar_elems_shared[iv] = 1;
           changed = 1;
+          changed |= share_box_ivar_family(c, sh->cid, sh->name);
         }
+        /* An externally written String Array uses that same form even
+           when the source walk cannot reach a direct ivar write. */
+        if (it == TY_STR_ARRAY && !class_ivar_pinned(ci, sh->name)) changed |= share_box_ivar_family(c, sh->cid, sh->name);
         continue;
       }
       if (repr_str_shares(c, h)) changed |= strbuf_promote_ivar(c, sh->cid, sh->name);
