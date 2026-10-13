@@ -1250,12 +1250,22 @@ static void cf_call(CF *f, int v) {
   cf_call_known(f, v, pidx, recv_el, nm, argv, argc, blk);
 }
 
-/* an attribute or index write through a call: `o.x ||= v`, `h[k] += v` */
+/* an attribute or index write through a call: `o.x ||= v`, `h[k] += v`
+   (`o.x += v` is a read and a write by then). The node's value is the
+   read, the right side and an operator's answer; that is what the write
+   stores. */
+static void cf_op_answer(CF *f, int v, const char *op, int val) {
+  if (!op) return;
+  int pidx = cf_set_of(f, v), argv[1] = { val };
+  if (pidx == CF_ALL) cf_call_any(f, v, op, argv, 1, -1);
+  else cf_call_known(f, v, pidx, v, op, argv, 1, -1);
+}
 static void cf_call_write(CF *f, int v) {
   const NodeTable *nt = f->nt;
   NodeKind k = nt_kind(nt, v);
   int r = nt_ref(nt, v, "receiver");
   int val = nt_ref(nt, v, "value");
+  const char *op = k == NK_IndexOperatorWriteNode ? nt_str(nt, v, "binary_operator") : NULL;
   cf_unite(f, v, val);
   if (r < 0) { cf_all(f, v); return; }
   int argv[33], argc = 0;
@@ -1263,28 +1273,38 @@ static void cf_call_write(CF *f, int v) {
     int a = nt_ref(nt, v, "arguments"), an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     for (int i = 0; i < an && argc < 32; i++) argv[argc++] = av[i];
-    argv[argc++] = val;
     int pidx = cf_set_of(f, r);
-    if (pidx == CF_ALL) { cf_call_any(f, v, "[]=", argv, argc, -1); cf_call_any(f, v, "[]", argv, argc - 1, -1); return; }
-    cf_call_known(f, v, pidx, r, "[]=", argv, argc, -1);
-    cf_call_known(f, v, pidx, r, "[]", argv, argc - 1, -1);
+    if (pidx == CF_ALL) cf_call_any(f, v, "[]", argv, argc, -1);
+    else cf_call_known(f, v, pidx, r, "[]", argv, argc, -1);
+    cf_op_answer(f, v, op, val);
+    argv[argc++] = v;
+    if (pidx == CF_ALL) cf_call_any(f, v, "[]=", argv, argc, -1);
+    else cf_call_known(f, v, pidx, r, "[]=", argv, argc, -1);
     return;
   }
-  const char *wn = nt_str(nt, v, "write_name"), *rn = nt_str(nt, v, "read_name");
-  if (!wn || !rn) { cf_all(f, v); return; }
-  argv[argc++] = val;
+  /* the parser keeps the reader's name; the writer's is it with `=` */
+  const char *rn = nt_str(nt, v, "name");
+  char wn[256];
+  if (!rn || strlen(rn) + 2 > sizeof wn) { cf_all(f, v); return; }
+  snprintf(wn, sizeof wn, "%s=", rn);
   int x = cf_is_class_const(f, r);
-  int pidx = x >= 0 ? CF_EMPTY : cf_set_of(f, r);
   if (x >= 0) {
-    int cm = comp_cmethod_in_chain(f->c, x, wn, NULL);
-    if (cm >= 0) cf_user_target(f, v, cm, argv, argc, -1);
-    cm = comp_cmethod_in_chain(f->c, x, rn, NULL);
+    int cm = comp_cmethod_in_chain(f->c, x, rn, NULL);
     if (cm >= 0) cf_user_target(f, v, cm, NULL, 0, -1);
+    else cf_sg_access(f, v, x, rn, NULL, 0);
+    cf_op_answer(f, v, op, val);
+    argv[argc++] = v;
+    cm = comp_cmethod_in_chain(f->c, x, wn, NULL);
+    if (cm >= 0) cf_user_target(f, v, cm, argv, argc, -1);
+    else cf_sg_access(f, v, x, wn, argv, argc);
     return;
   }
-  if (pidx == CF_ALL) { cf_call_any(f, v, wn, argv, argc, -1); return; }
-  cf_call_known(f, v, pidx, r, wn, argv, argc, -1);
+  int pidx = cf_set_of(f, r);
+  if (pidx == CF_ALL) { cf_call_any(f, v, rn, NULL, 0, -1); cf_op_answer(f, v, op, val); argv[argc++] = v; cf_call_any(f, v, wn, argv, argc, -1); return; }
   cf_call_known(f, v, pidx, r, rn, NULL, 0, -1);
+  cf_op_answer(f, v, op, val);
+  argv[argc++] = v;
+  cf_call_known(f, v, pidx, r, wn, argv, argc, -1);
 }
 
 /* ---- the node walk ---- */
