@@ -1231,22 +1231,13 @@ SHARE_TESTS = $(wildcard test/share/*.rb test/share_strings_*.rb) \
 ifneq ($(FFI_AVAILABLE),yes)
 SHARE_SKIP = test/share/share_strings_fiddle.rb packages/ffi/test/%.rb packages/fiddle/test/%.rb
 endif
+# Each program runs in tools/share_strings_one.sh, one per core: one after
+# another they took about 13 minutes, the gate's longest leg by far.
 share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS)
 	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-share.XXXXXX"); ok=1; \
-	check_output() { \
-	  if [ -f "$$1.err.expected" ]; then \
-	    "$$tmp/b" >"$$tmp/stdout" 2>"$$tmp/stderr"; \
-	    cmp -s "$$tmp/stdout" "$$2" && cmp -s "$$tmp/stderr" "$$1.err.expected"; \
-	  else "$$tmp/b" 2>&1 | cmp -s - "$$2"; fi; \
-	}; \
-	for t in $(filter-out $(SHARE_SKIP),$(SHARE_TESTS)); do \
-	  e="$$t.expected"; case "$$t" in test/reject/*) e="test/share/reject/$${t##*/}.expected";; esac; \
-	  if $(SPINEL) --share-strings "$$t" -o "$$tmp/b" >"$$tmp/out" 2>&1; then \
-	    ! grep -q 'did not converge' "$$tmp/out" || { echo "share-strings-test: FAIL $$t (the inference fixpoint ran to its round cap)"; ok=0; }; \
-	    check_output "$$t" "$$e" || { echo "share-strings-test: FAIL $$t"; ok=0; }; \
-	    SPINEL_GC_STRESS=1 check_output "$$t" "$$e" || { echo "share-strings-test: FAIL $$t (GC stress)"; ok=0; }; \
-	  else echo "share-strings-test: FAIL $$t (refused)"; cat "$$tmp/out"; ok=0; fi; \
-	done; \
+	printf '%s\n' $(filter-out $(SHARE_SKIP),$(SHARE_TESTS)) | \
+	  xargs -P $(NPROC) -n 1 sh tools/share_strings_one.sh $(SPINEL) > "$$tmp/runs" 2>&1 || ok=0; \
+	cat "$$tmp/runs"; \
 	for flags in '' '--share-strings'; do \
 	  if ! $(SPINEL) $$flags test/share_strings_class_value_stat_fields.rb -c --no-line-map -o "$$tmp/stat.c" >"$$tmp/out" 2>&1 || \
 	     grep -q 'sp_pd_[0-9]' "$$tmp/stat.c"; then \
