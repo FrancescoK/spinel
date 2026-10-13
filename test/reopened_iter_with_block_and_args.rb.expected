@@ -1,0 +1,7 @@
+2
+0
+10
+0
+[:hash_select, 3]
+[:range_select, 2]
+[:range_select, 0]
