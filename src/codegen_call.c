@@ -25299,6 +25299,23 @@ static int recv_read_before_args(Compiler *c, int id) {
   return effect ? recv : -1;
 }
 
+/* The index of `recv.at(i)` rewritten to `[]` (desugar_array_at), boxed:
+   at converts it as an Integer (to_int), so one that is a Range only at
+   run time raises TypeError where `[]` slices. Held converted, still
+   boxed, for the index read below; the binding's mark, or -1 when the
+   index needs none. */
+static int at_index_convert(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  if (argc != 1 || repr_of(c, argv[0]).as_ty != TY_POLY || g_n_argov + 1 > MAX_ARG_OVERRIDE) return -1;
+  int t = ++g_tmp;
+  buf_printf(b, "sp_RbVal _t%d = sp_box_int(sp_poly_arg_int_chk(", t);
+  emit_expr(c, argv[0], b);
+  buf_puts(b, ")); ");
+  return view_bind(argv[0], "_t%d", t);
+}
+
 /* `recv.at(i)` that desugar_array_at rewrote to `[]` before the receiver's
    type was known. A Hash, a String, a Symbol, a Range and a scalar have no
    #at, though some answer #[]: a receiver typed as one raises, and a boxed
@@ -25350,6 +25367,25 @@ static int emit_at_without_array(Compiler *c, int id, Buf *b) {
     }
     buf_printf(b, "sp_poly_ary_chk(_t%d, \"at\", 0); ", t);
     view_bind(recv, "_t%d", t);
+    at_index_convert(c, id, b);
+    int sv_chk = g_at_chk_id; g_at_chk_id = id;
+    emit_call_held(c, id, b);
+    g_at_chk_id = sv_chk;
+    view_unbind(sv_n);
+    buf_puts(b, "; })");
+    return 1;
+  }
+  /* an Array: only a boxed index wants converting (at_index_convert), after
+     the receiver is read */
+  if (ty_is_array(rt)) {
+    if (g_at_chk_id == id || g_n_argov + 2 > MAX_ARG_OVERRIDE) return 0;
+    int args = nt_ref(nt, id, "arguments");
+    int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    if (argc != 1 || repr_of(c, argv[0]).as_ty != TY_POLY) return 0;
+    int sv_n = g_n_argov;
+    buf_puts(b, "({ ");
+    if (subtree_has_side_effect(c, recv)) view_bind(recv, "_t%d", hold_operand(c, recv, rt, 0, ++g_tmp, 1, " ", b));
+    at_index_convert(c, id, b);
     int sv_chk = g_at_chk_id; g_at_chk_id = id;
     emit_call_held(c, id, b);
     g_at_chk_id = sv_chk;
