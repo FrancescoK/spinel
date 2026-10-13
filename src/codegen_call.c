@@ -20120,12 +20120,24 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
          -- `v&.entries` raised NoMethodError with the conversion already made) */
       int fv = view_push_face(recv, TY_POLY_POLY_HASH);
       int sv_pp = g_pp_hash_node; g_pp_hash_node = id;
+      /* The Hash's answer, where the call is typed boxed (the default arm of
+         a dispatch a program class's own method opened, `l&.slice` beside a
+         user `slice`): the Hash emitters answer their own type, boxed here */
+      TyKind hft = repr_of(c, id).as_ty == TY_POLY ? an_builtin_answer(c, id) : TY_POLY;
+      int hbox = hft != TY_POLY && hft != TY_UNKNOWN && hft != TY_VOID;
+      Buf hcb; memset(&hcb, 0, sizeof hcb);
+      emit_call(c, id, &hcb);
+      Buf hval; memset(&hval, 0, sizeof hval);
+      if (hbox) emit_boxed_text(c, hft, hcb.p ? hcb.p : "", &hval);
+      else buf_puts(&hval, hcb.p ? hcb.p : "");
+      free(hcb.p);
       if (hinl) {
-        emit_call(c, id, &hib);
+        buf_puts(&hib, hval.p ? hval.p : "");
         buf_puts(&hib, "; })");
         buf_puts(b, hib.p ? hib.p : "");
       }
-      else emit_call(c, id, b);
+      else buf_puts(b, hval.p ? hval.p : "");
+      free(hval.p);
       free(hib.p);
       g_pp_hash_node = sv_pp;
       view_pop(c, fv);
