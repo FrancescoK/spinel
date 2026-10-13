@@ -11160,28 +11160,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
          argument must compare with the whole path (#3260). */
       if (class_is_exc_subclass(c, cid)) {
         char qbuf[192];
-        const char *qn = isa_const_qualname(nt, argv[0], qbuf, sizeof qbuf);
+        const char *qn = isa_exc_class_name(c, argv[0], qbuf, sizeof qbuf);
         if (!qn) qn = cn;
-        /* When two modules each hold a class of the same leaf name, the
-           colliding one is carried in the AST already flattened (`A::Error`
-           arrives as `A__Error`), and prefixing its module again produced
-           "A::A__Error" -- a name no exception answers to, so is_a? was
-           silently false for both while `rescue` and #ancestors stayed right
-           (#4133, found under net/http's Timeout::Error beside URI::Error).
-           The class table's own qualified name is the one the raise site
-           uses, so ask it whenever the argument names a class we know. */
-        {
-          int qi = comp_class_index(c, qn);
-          if (qi < 0) qi = comp_class_index(c, cn);
-          if (qi >= 0) {
-            const char *rn = class_ruby_name(c, qi);
-            /* COPIED, not pointed at: class_ruby_name hands back a shared
-               static buffer, and the emit_expr for the receiver below asks it
-               for the receiver's own name -- which overwrote the target and
-               made every check compare the receiver against itself. */
-            if (rn) { snprintf(qbuf, sizeof qbuf, "%s", rn); qn = qbuf; }
-          }
-        }
         if (sp_streq(name, "instance_of?")) {
           buf_puts(b, "(strcmp(((sp_Exception *)(");
           emit_expr(c, recv, b);

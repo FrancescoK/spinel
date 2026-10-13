@@ -85,6 +85,27 @@ static int emit_exception_object_accessor(Compiler *c, int id, int recv, const c
 }
 
 /* the methods of an exception object: message, full_message, backtrace, set_backtrace, cause, ==, and the rest of TY_EXCEPTION */
+/* Exception class names are registered fully qualified ("PG::Error"), so a
+   nested-path argument compares with the whole path (#3260). When two
+   modules each hold a class of the same leaf name, the colliding one is
+   carried in the AST already flattened (`A::Error` arrives as `A__Error`),
+   and prefixing its module again produced "A::A__Error" -- a name no
+   exception answers to, so is_a? was silently false while `rescue` and
+   #ancestors stayed right (#4133). The class table's own qualified name is
+   the one the raise site uses, so it answers whenever the argument names a
+   class we know. COPIED into buf, not pointed at: class_ruby_name hands back
+   a shared static buffer, which the receiver's emit_expr overwrites. */
+const char *isa_exc_class_name(Compiler *c, int arg, char *buf, size_t bufsz) {
+  const char *qn = isa_const_qualname(c->nt, arg, buf, bufsz);
+  if (!qn) return NULL;
+  int qi = comp_class_index(c, qn);
+  if (qi < 0) qi = comp_class_index(c, nt_str(c->nt, arg, "name"));
+  const char *rn = qi >= 0 ? class_ruby_name(c, qi) : NULL;
+  if (!rn) return qn;
+  snprintf(buf, bufsz, "%s", rn);
+  return buf;
+}
+
 int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* A marked message read takes the existing exception handle route,
      including a rescued variable specialized to an exception subclass. */
@@ -636,11 +657,9 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       return 1;
     }
     if (argc == 1 && is_kind_query(name)) {
-      /* exception class names are registered fully qualified ("PG::Error"),
-         so a nested-path argument must compare with the whole path -- the
-         flat leaf name never matched (#3260) */
+      /* a constant, by the name its exceptions carry (isa_exc_class_name) */
       char qbuf[192];
-      const char *cn = isa_const_qualname(nt, argv[0], qbuf, sizeof qbuf);
+      const char *cn = isa_exc_class_name(c, argv[0], qbuf, sizeof qbuf);
       /* ...or a Class value (`e.is_a?(klass)`), by the name the class
          carries; a value that is no Class or Module (nil, or a boxed
          String) is CRuby's TypeError */

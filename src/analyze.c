@@ -41629,8 +41629,8 @@ static void an_phase_desugar_register(Compiler *c) {
   rewrite_const_alias_raise_targets(c);
 }
 
-/* Rescue-variable typing, class parents, inheritance and mixins, the block-aware marks, the synthesized enumeration helpers and the empty-literal marks (analyze_program's steps, in their order) */
-static void an_phase_class_structure(Compiler *c) {
+/* Rescue-variable typing: each `rescue X => e` binding's slot. */
+static void type_rescue_bindings(Compiler *c) {
   /* rescue variables (`rescue => e`) are typed as exception objects. When the
      arm names exactly one user exception subclass that carries ivars, type the
      binding as that object instead so `e.<ivar>` reads resolve and the carried
@@ -41680,6 +41680,11 @@ static void an_phase_class_structure(Compiler *c) {
     free(rescue_ids);
     free(arms);
   }
+}
+
+/* Rescue-variable typing, class parents, inheritance and mixins, the block-aware marks, the synthesized enumeration helpers and the empty-literal marks (analyze_program's steps, in their order) */
+static void an_phase_class_structure(Compiler *c) {
+  type_rescue_bindings(c);
 
   resolve_parents(c);
   desugar_data_positional_new(c);
@@ -41694,6 +41699,9 @@ static void an_phase_class_structure(Compiler *c) {
   register_include_attrs(c);
   register_extends(c);
   register_prepends(c);
+  /* again, for the bodies the mixins cloned into their includers: a clone's
+     binding is a slot of the copy's own, which the first pass never saw */
+  type_rescue_bindings(c);
   rewrite_prepended_builtin_supers(c);   /* super in a module prepended into Range -> Range's own */
   desugar_method_added_hook(c);   /* def in a class body -> def; method_added(:name): needs the parents and extends, and runs before class methods are specialized per class */
   /* again, now that modules have put their methods in: an alias can take an
