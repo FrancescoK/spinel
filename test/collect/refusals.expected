@@ -163,64 +163,64 @@ spinel: test/reject/class_eval_on_class_with_params.rb:4: Class.class_eval adds 
 == test/reject/class_eval_on_class_with_params.rb [promote] rc=1
 spinel: test/reject/class_eval_on_class_with_params.rb:4: Class.class_eval adds methods to Class only with a literal block and no block parameters or arguments
 == test/reject/class_eval_static_const_inherited.rb [default] rc=1
-spinel: test/reject/class_eval_static_const_inherited.rb:9: unsupported class_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/class_eval_static_const_inherited.rb:9: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_const_inherited.rb [promote] rc=1
-spinel: test/reject/class_eval_static_const_inherited.rb:9: unsupported class_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/class_eval_static_const_inherited.rb:9: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_const_mutated.rb [default] rc=1
-spinel: test/reject/class_eval_static_const_mutated.rb:7: unsupported class_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/class_eval_static_const_mutated.rb:7: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_const_mutated.rb [promote] rc=1
-spinel: test/reject/class_eval_static_const_mutated.rb:7: unsupported class_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/class_eval_static_const_mutated.rb:7: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_dynamic_file_arg.rb [default] rc=1
-spinel: test/reject/class_eval_static_dynamic_file_arg.rb:7: unsupported class_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `class_eval`) recv=-/ty-1 argc=2 arg0ty6
+spinel: test/reject/class_eval_static_dynamic_file_arg.rb:7: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=2 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_dynamic_file_arg.rb [promote] rc=1
-spinel: test/reject/class_eval_static_dynamic_file_arg.rb:7: unsupported class_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `class_eval`) recv=-/ty-1 argc=2 arg0ty6
+spinel: test/reject/class_eval_static_dynamic_file_arg.rb:7: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=2 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_method_added_hook.rb [default] rc=1
-spinel: test/reject/class_eval_static_method_added_hook.rb:7: unsupported class_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/class_eval_static_method_added_hook.rb:7: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_method_added_hook.rb [promote] rc=1
-spinel: test/reject/class_eval_static_method_added_hook.rb:7: unsupported class_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/class_eval_static_method_added_hook.rb:7: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_non_ascii_upcase.rb [default] rc=1
-spinel: test/reject/class_eval_static_non_ascii_upcase.rb:6: unsupported class_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/class_eval_static_non_ascii_upcase.rb:6: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_non_ascii_upcase.rb [promote] rc=1
-spinel: test/reject/class_eval_static_non_ascii_upcase.rb:6: unsupported class_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/class_eval_static_non_ascii_upcase.rb:6: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_private_before.rb [default] rc=1
-spinel: test/reject/class_eval_static_private_before.rb:7: unsupported class_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/class_eval_static_private_before.rb:7: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_private_before.rb [promote] rc=1
-spinel: test/reject/class_eval_static_private_before.rb:7: unsupported class_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/class_eval_static_private_before.rb:7: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_private_inside.rb [default] rc=1
-spinel: test/reject/class_eval_static_private_inside.rb:6: unsupported class_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/class_eval_static_private_inside.rb:6: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_private_inside.rb [promote] rc=1
-spinel: test/reject/class_eval_static_private_inside.rb:6: unsupported class_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/class_eval_static_private_inside.rb:6: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_reads_local.rb [default] rc=1
-spinel: test/reject/class_eval_static_reads_local.rb:6: unsupported class_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/class_eval_static_reads_local.rb:6: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_reads_local.rb [promote] rc=1
-spinel: test/reject/class_eval_static_reads_local.rb:6: unsupported class_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/class_eval_static_reads_local.rb:6: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_singleton_hook.rb [default] rc=1
-spinel: test/reject/class_eval_static_singleton_hook.rb:7: unsupported class_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/class_eval_static_singleton_hook.rb:7: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_singleton_hook.rb [promote] rc=1
-spinel: test/reject/class_eval_static_singleton_hook.rb:7: unsupported class_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/class_eval_static_singleton_hook.rb:7: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_source_line.rb [default] rc=1
-spinel: test/reject/class_eval_static_source_line.rb:6: unsupported class_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `class_eval`) recv=-/ty-1 argc=3 arg0ty6
+spinel: test/reject/class_eval_static_source_line.rb:6: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=3 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_source_line.rb [promote] rc=1
-spinel: test/reject/class_eval_static_source_line.rb:6: unsupported class_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `class_eval`) recv=-/ty-1 argc=3 arg0ty6
+spinel: test/reject/class_eval_static_source_line.rb:6: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=3 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/class_named_like_builtin_module.rb [default] rc=1
 spinel: test/reject/class_named_like_builtin_module.rb:6: unsupported class name 'Comparable': collides with the builtin module of that name
@@ -821,11 +821,11 @@ spinel: test/reject/macro_long_elsif_state.rb:10: unsupported send with a runtim
 == test/reject/macro_long_elsif_state.rb [promote] rc=1
 spinel: test/reject/macro_long_elsif_state.rb:10: unsupported send with a runtime method name (AOT needs a compile-time-known name): node N (CallNode `public_send`) recv=SelfNode/ty49 argc=1 arg0ty6
 == test/reject/macro_lowercase_heredoc.rb [default] rc=1
-spinel: test/reject/macro_lowercase_heredoc.rb:5: unsupported module_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `module_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/macro_lowercase_heredoc.rb:5: unsupported call: node N (CallNode `module_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: test/reject/macro_lowercase_heredoc.rb:13: undefined method 'hello' for a Class: no class in the program defines a class method 'hello' (NoMethodError)
 spinel: 2 refusals, nothing written
 == test/reject/macro_lowercase_heredoc.rb [promote] rc=1
-spinel: test/reject/macro_lowercase_heredoc.rb:5: unsupported module_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `module_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/macro_lowercase_heredoc.rb:5: unsupported call: node N (CallNode `module_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: test/reject/macro_lowercase_heredoc.rb:13: undefined method 'hello' for a Class: no class in the program defines a class method 'hello' (NoMethodError)
 spinel: 2 refusals, nothing written
 == test/reject/macro_mention_send.rb [default] rc=1
@@ -837,11 +837,11 @@ spinel: test/reject/macro_module_attr_writer.rb:9: unsupported send with a runti
 == test/reject/macro_module_attr_writer.rb [promote] rc=1
 spinel: test/reject/macro_module_attr_writer.rb:9: unsupported send with a runtime method name (AOT needs a compile-time-known name): node N (CallNode `public_send`) recv=SelfNode/ty49 argc=1 arg0ty6
 == test/reject/macro_multiline_literal.rb [default] rc=1
-spinel: test/reject/macro_multiline_literal.rb:6: unsupported module_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `module_eval`) recv=-/ty-1 argc=3 arg0ty6
+spinel: test/reject/macro_multiline_literal.rb:6: unsupported call: node N (CallNode `module_eval`) recv=-/ty-1 argc=3 arg0ty6
 spinel: test/reject/macro_multiline_literal.rb:16: undefined method 'hello' for a Class: no class in the program defines a class method 'hello' (NoMethodError)
 spinel: 2 refusals, nothing written
 == test/reject/macro_multiline_literal.rb [promote] rc=1
-spinel: test/reject/macro_multiline_literal.rb:6: unsupported module_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `module_eval`) recv=-/ty-1 argc=3 arg0ty6
+spinel: test/reject/macro_multiline_literal.rb:6: unsupported call: node N (CallNode `module_eval`) recv=-/ty-1 argc=3 arg0ty6
 spinel: test/reject/macro_multiline_literal.rb:16: undefined method 'hello' for a Class: no class in the program defines a class method 'hello' (NoMethodError)
 spinel: 2 refusals, nothing written
 == test/reject/macro_named_by_string.rb [default] rc=1
@@ -889,10 +889,10 @@ spinel: test/reject/macro_prim_override.rb:5: unsupported send with a runtime me
 == test/reject/macro_prim_override.rb [promote] rc=1
 spinel: test/reject/macro_prim_override.rb:5: unsupported send with a runtime method name (AOT needs a compile-time-known name): node N (CallNode `public_send`) recv=SelfNode/ty49 argc=1 arg0ty6
 == test/reject/macro_private_before.rb [default] rc=1
-spinel: test/reject/macro_private_before.rb:5: unsupported module_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `module_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/macro_private_before.rb:5: unsupported call: node N (CallNode `module_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/macro_private_before.rb [promote] rc=1
-spinel: test/reject/macro_private_before.rb:5: unsupported module_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `module_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/macro_private_before.rb:5: unsupported call: node N (CallNode `module_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/macro_receiver_write.rb [default] rc=1
 spinel: test/reject/macro_receiver_write.rb:10: unsupported send with a runtime method name (AOT needs a compile-time-known name): node N (CallNode `public_send`) recv=SelfNode/ty49 argc=1 arg0ty6
@@ -935,24 +935,24 @@ spinel: test/reject/macro_template_top_write.rb:9: unsupported send with a runti
 == test/reject/macro_template_top_write.rb [promote] rc=1
 spinel: test/reject/macro_template_top_write.rb:9: unsupported send with a runtime method name (AOT needs a compile-time-known name): node N (CallNode `public_send`) recv=SelfNode/ty49 argc=1 arg0ty6
 == test/reject/macro_text_local.rb [default] rc=1
-spinel: test/reject/macro_text_local.rb:4: unsupported module_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `module_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/macro_text_local.rb:4: unsupported call: node N (CallNode `module_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: test/reject/macro_text_local.rb:11: warning: uninitialized constant Box::Y: defined nowhere in the program (raises NameError when reached)
 spinel: 1 refusal, nothing written
 == test/reject/macro_text_local.rb [promote] rc=1
-spinel: test/reject/macro_text_local.rb:4: unsupported module_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `module_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/macro_text_local.rb:4: unsupported call: node N (CallNode `module_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: test/reject/macro_text_local.rb:11: warning: uninitialized constant Box::Y: defined nowhere in the program (raises NameError when reached)
 spinel: 1 refusal, nothing written
 == test/reject/macro_text_private.rb [default] rc=1
-spinel: test/reject/macro_text_private.rb:4: unsupported module_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `module_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/macro_text_private.rb:4: unsupported call: node N (CallNode `module_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/macro_text_private.rb [promote] rc=1
-spinel: test/reject/macro_text_private.rb:4: unsupported module_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `module_eval`) recv=-/ty-1 argc=1 arg0ty6
+spinel: test/reject/macro_text_private.rb:4: unsupported call: node N (CallNode `module_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/macro_text_source_line.rb [default] rc=1
-spinel: test/reject/macro_text_source_line.rb:5: unsupported module_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `module_eval`) recv=-/ty-1 argc=3 arg0ty6
+spinel: test/reject/macro_text_source_line.rb:5: unsupported call: node N (CallNode `module_eval`) recv=-/ty-1 argc=3 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/macro_text_source_line.rb [promote] rc=1
-spinel: test/reject/macro_text_source_line.rb:5: unsupported module_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead): node N (CallNode `module_eval`) recv=-/ty-1 argc=3 arg0ty6
+spinel: test/reject/macro_text_source_line.rb:5: unsupported call: node N (CallNode `module_eval`) recv=-/ty-1 argc=3 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/macro_two_modules.rb [default] rc=1
 spinel: test/reject/macro_two_modules.rb:12: unsupported send with a runtime method name (AOT needs a compile-time-known name): node N (CallNode `public_send`) recv=SelfNode/ty49 argc=1 arg0ty6
