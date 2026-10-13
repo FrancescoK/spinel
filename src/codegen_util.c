@@ -3121,8 +3121,10 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
     buf_printf(b, " _i%d ? (sp_int)(uintptr_t)_i%d : SP_NIL_OBJECT_ID; })", t, t);
     return 1;
   }
-  /* an attribute assignment on a handle, freeze or a chain over one: that handle's */
-  if (strbuf_assign_route(c, recv)) {
+  /* an attribute assignment on a handle, freeze or a chain over one: that
+     handle's; a String clamp: its chosen operand's */
+  int cops[3];
+  if (strbuf_assign_route(c, recv) || strbuf_route_clamp(c, recv, cops)) {
     buf_puts(b, "((sp_int)(uintptr_t)sp_String_identity(");
     emit_strbuf_route(c, recv, b);
     buf_puts(b, "))");

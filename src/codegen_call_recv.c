@@ -7875,8 +7875,18 @@ static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, 
       buf_puts(b, " sp_raise_cls(\"ArgumentError\", \"cannot clamp with an exclusive range\");");
     }
     else {
+      /* a new receiver or lower bound (`"a#{n}"`) is held across the
+         bounds evaluated after it, which can allocate and collect it (a
+         literal is static) */
+      int lo_alloc = lo_n >= 0 && operand_may_allocate(c, lo_n);
+      int hi_alloc = hi_n >= 0 && operand_may_allocate(c, hi_n);
+      if ((lo_alloc || hi_alloc) && operand_may_allocate(c, recv) &&
+          nt_kind(c->nt, unwrap_parens(c, recv)) != NK_StringNode)
+        buf_printf(b, "SP_GC_ROOT_STR(_t%d); ", tc);
       buf_printf(b, "const char *_t%d = ", tlo);
       if (lo_n >= 0) emit_expr(c, lo_n, b); else buf_puts(b, "NULL");
+      if (hi_alloc && lo_alloc && nt_kind(c->nt, unwrap_parens(c, lo_n)) != NK_StringNode)
+        buf_printf(b, "; SP_GC_ROOT_STR(_t%d)", tlo);
       buf_printf(b, "; const char *_t%d = ", thi);
       if (hi_n >= 0) emit_expr(c, hi_n, b); else buf_puts(b, "NULL");
       buf_puts(b, ";");

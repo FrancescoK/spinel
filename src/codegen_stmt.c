@@ -2280,18 +2280,28 @@ int strbuf_route_reader(Compiler *c, int v) {
   return ok;
 }
 /* String clamp chooses one operand unchanged. The literal Range form
-   exposes its endpoints; a stored Range has no endpoint handles. */
+   exposes its endpoints as operands; a Range value's endpoints are the
+   handles it keeps (#8321), read where the route is emitted (ops[1] and
+   ops[2] -1). The answer joins its operands' class (BSH_CLAMP): where the
+   rule does not share that class, no operand holds a handle, and the
+   chosen operand's own bytes are the answer (the plain arm), where a
+   handle wrapped around them was a new String, equal? to none of them. */
 int strbuf_route_clamp(Compiler *c, int v, int *ops) {
   const NodeTable *nt = c->nt;
   v = unwrap_parens(c, v);
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode ||
       bop_share_named(TY_STRING, nt_str(nt, v, "name")) != BSH_CLAMP) return 0;
+  if (!c->share || !share_node_shares(c, v)) return 0;
   ops[0] = nt_ref(nt, v, "receiver");
   if (ops[0] < 0 || comp_recv_type(c, ops[0]) != TY_STRING ||
       cplan_user(c, v)->dispatch != CP_NONE) return 0;
   int argc = 0; const int *argv = call_args(nt, v, &argc);
   if (argc == 2) { ops[1] = argv[0]; ops[2] = argv[1]; return 1; }
-  if (argc != 1 || nt_kind(nt, argv[0]) != NK_RangeNode) return 0;
+  if (argc != 1) return 0;
+  if (nt_kind(nt, argv[0]) != NK_RangeNode) {
+    ops[1] = ops[2] = -1;
+    return comp_ntype(c, argv[0]) == TY_STR_RANGE;
+  }
   ops[1] = nt_ref(nt, argv[0], "left"); ops[2] = nt_ref(nt, argv[0], "right");
   return 1;
 }
@@ -2392,8 +2402,9 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   int ops[3];
   if (strbuf_route_clamp(c, v, ops)) {
     int ts[3], argc = 0; const int *argv = call_args(nt, unwrap_parens(c, v), &argc);
+    int rvar = argc == 1 && nt_kind(nt, argv[0]) != NK_RangeNode;
     buf_puts(b, "({ ");
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < (rvar ? 1 : 3); i++) {
       ts[i] = ++g_tmp;
       TyKind t = ops[i] >= 0 ? repr_of(c, ops[i]).as_ty : TY_NIL;
       if (t == TY_STRING || t == TY_STRBUF) {
@@ -2408,6 +2419,21 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     if (argc == 1 && (nt_int(nt, argv[0], "flags", 0) & 4) &&
         ops[2] >= 0 && nt_kind(nt, ops[2]) != NK_NilNode)
       buf_puts(b, "sp_raise_cls(\"ArgumentError\", \"cannot clamp with an exclusive range\"); ");
+    if (rvar) {
+      /* an endpoint the Range keeps as a handle is that handle, any other
+         the String its field holds, an open one nil */
+      int tr = ++g_tmp;
+      buf_printf(b, "sp_StrRange _t%d = ", tr);
+      emit_expr(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT_SRANGE(_t%d); if (_t%d.excl && (_t%d.last || _t%d.hl))"
+                    " sp_raise_cls(\"ArgumentError\", \"cannot clamp with an exclusive range\"); ",
+                 tr, tr, tr, tr);
+      buf_printf(b, "sp_poly_recv_ck(_t%d, \"clamp\"); sp_poly_as_strbuf(sp_obj_clamp(_t%d, "
+                    "_t%d.hf ? sp_box_nullable_obj(_t%d.hf, SP_BUILTIN_STRBUF) : _t%d.first ? sp_box_str(_t%d.first) : sp_box_nil(), "
+                    "_t%d.hl ? sp_box_nullable_obj(_t%d.hl, SP_BUILTIN_STRBUF) : _t%d.last ? sp_box_str(_t%d.last) : sp_box_nil())); })",
+                 ts[0], ts[0], tr, tr, tr, tr, tr, tr, tr, tr);
+      return 1;
+    }
     buf_printf(b, "sp_poly_recv_ck(_t%d, \"clamp\"); sp_poly_as_strbuf(sp_obj_clamp(_t%d, _t%d, _t%d)); })",
                ts[0], ts[0], ts[1], ts[2]);
     return 1;
