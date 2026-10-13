@@ -80,10 +80,17 @@ static size_t sp_fiber_guard(void) {
    (W^X-safe) and issues no syscall. See sp_fiber_ctx.h for sp_ctx_make and the
    stack layout it must mirror. */
 #if SP_FIBER_ASM
-#if defined(__APPLE__)
-  #define SP_CTX_SYM "_sp_ctx_swap"
+/* Under AddressSanitizer the asm is sp_ctx_swap_raw, and sp_ctx_swap (below)
+   wraps it in the sanitizer's announcements. */
+#ifdef SP_ASAN
+  #define SP_CTX_NAME "sp_ctx_swap_raw"
 #else
-  #define SP_CTX_SYM "sp_ctx_swap"
+  #define SP_CTX_NAME "sp_ctx_swap"
+#endif
+#if defined(__APPLE__)
+  #define SP_CTX_SYM "_" SP_CTX_NAME
+#else
+  #define SP_CTX_SYM SP_CTX_NAME
 #endif
 #if defined(__x86_64__)
 __asm__(
@@ -129,8 +136,39 @@ __asm__(
   "  ret\n"
 );
 #endif
+#ifdef SP_ASAN
+/* The switch, announced: the sanitizer is told the stack it goes to before
+   it, and the code that runs after it -- here, once this context is resumed,
+   or sp_ctx_entered in a fresh one -- finishes the switch and learns the
+   bounds of the stack it came from, which are written into the context that
+   was left, the one a later switch back reads. A context sp_ctx_make primed
+   has them from the start; one saved from a stack the sanitizer already
+   knew (the thread's own) has them before anything can switch back to it.
+   `from` is a thread's own, for the threaded build's workers. */
+extern void __sanitizer_start_switch_fiber(void **fake_stack_save, const void *bottom, size_t size);
+extern void __sanitizer_finish_switch_fiber(void *fake_stack_save, const void **bottom_old, size_t *size_old);
+void sp_ctx_swap_raw(sp_fiber_ctx *from, sp_fiber_ctx *to);
+static SP_TLS sp_fiber_ctx *sp_ctx_left;
+static void sp_ctx_arrived(void *fake) {
+  const void *lo; size_t size;
+  __sanitizer_finish_switch_fiber(fake, &lo, &size);
+  if (sp_ctx_left) { sp_ctx_left->asan_lo = lo; sp_ctx_left->asan_size = size; }
+}
+void sp_ctx_entered(void) { sp_ctx_arrived(NULL); }
+void sp_ctx_swap(sp_fiber_ctx *from, sp_fiber_ctx *to) {
+  void *fake = NULL;
+  sp_ctx_left = from;
+  __sanitizer_start_switch_fiber(&fake, to->asan_lo, to->asan_size);
+  sp_ctx_swap_raw(from, to);
+  sp_ctx_arrived(fake);
+}
+#define SP_CTX_ENTERED() sp_ctx_entered()
+#else
+#define SP_CTX_ENTERED() ((void)0)
+#endif
 #else  /* ucontext fallback */
 void sp_ctx_swap(sp_fiber_ctx *from, sp_fiber_ctx *to) { swapcontext(&from->uc, &to->uc); }
+#define SP_CTX_ENTERED() ((void)0)
 #endif
 
 /* ---- Reached by name in the generated TU ---- */
@@ -488,6 +526,7 @@ static sp_fiber_ctx sp_main_stack_caller;
 static sp_fiber_ctx sp_main_stack_ctx;
 
 static void sp_main_stack_entry(void) {
+  SP_CTX_ENTERED();
   sp_main_stack_body();
   /* back to main, on the stack the loader gave it, to return from there */
   sp_ctx_swap(&sp_main_stack_ctx, &sp_main_stack_caller);
@@ -719,7 +758,7 @@ void sp_fiber_fire_inject_if_pending(void){sp_Fiber*f=sp_fiber_current;if(!f||f-
 /* Lock-free peek for the scheduler's pre-park checks (sp_sched_block etc.). */
 int sp_fiber_inject_pending(sp_Fiber*f){return SP_INJECT_PEEK(f)!=0;}
 SP_NORETURN void sp_fiber_raise_kill_self(void){sp_raise_cls(SP_FIBER_KILL_CLS,(&("\xff")[1]));}
-static void sp_fiber_trampoline(void){sp_Fiber*f=sp_fiber_current;jmp_buf base;if(setjmp(base)==0){sp_exc_arm(base);{int _inj=SP_INJECT_PEEK(f);if(_inj&&_inj!=3)sp_fiber_consume_inject(f);}/* a thread raise (3) defers to the body's first suspension point */f->body(f);sp_exc_disarm();}
+static void sp_fiber_trampoline(void){SP_CTX_ENTERED();sp_Fiber*f=sp_fiber_current;jmp_buf base;if(setjmp(base)==0){sp_exc_arm(base);{int _inj=SP_INJECT_PEEK(f);if(_inj&&_inj!=3)sp_fiber_consume_inject(f);}/* a thread raise (3) defers to the body's first suspension point */f->body(f);sp_exc_disarm();}
 else{const char*_cc=sp_exc_cur_cls();
   int killed=_cc&&!strcmp(_cc,SP_FIBER_KILL_CLS);
   /* a kill aimed at a main fiber goes on up to it, like an exception */
