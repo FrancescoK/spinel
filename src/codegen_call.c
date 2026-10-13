@@ -2470,7 +2470,11 @@ static void emit_poly_slot_text(Compiler *c, int src, int k, int arg, const char
 }
 
 void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *b, int force_poly) {
-  int nargs = argc < 16 ? argc : 16;  /* proc-call ABI caps args at sp_int[16] */
+  /* as many arguments as the boxed channel holds (SP_PROC_ARG_SLOTS,
+     lib/sp_proc.h), in at least 16 sp_int slots: a bound Method's trampoline
+     is handed the true count and reads that many, and 16 slots left the 17th
+     argument of a 17-parameter Method past the array */
+  int nargs = argc < 64 ? argc : 64;
   int any_poly = force_poly;
   /* the scope whose block takes the arguments, to type the slots by its parameters */
   int src = -1;
@@ -2501,7 +2505,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
        published both unboxed (the sp_int[] slot, for a concrete parameter)
        and boxed (the side-channel, for a poly parameter). A nil/unknown arg
        has no storable C type; it rides an sp_int temp and boxes to nil. */
-    int atmp[16], slot[16], aoint[16], hold[16];
+    int atmp[64], slot[64], aoint[64], hold[64];
     for (int k = 0; k < nargs; k++) {
       TyKind at = proc_arg_ty(c, argv[k]);
       int storable = ty_is_object(at) || c_type_name(at) != NULL;
@@ -2564,7 +2568,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
           live = !r.unknown && !r.keeps && !r.unlifted;
         }
         /* a yield into a proc: emit_proc_yield judged its targets */
-        else if (call < 0) live = (g_yield_live_mask >> k) & 1u;
+        else if (call < 0) live = k < 32 && ((g_yield_live_mask >> k) & 1u);
         if (!live) {
           slot[k] = ++g_tmp;
           emit_indent(g_pre, g_indent);
@@ -2598,7 +2602,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
       buf_puts(b, ", ");
     }
     if (kwpos) buf_printf(b, "_sp_proc_kwpos = %d, ", kwpos);
-    buf_puts(b, "(sp_int[16]){");
+    buf_printf(b, "(sp_int[%d]){", nargs > 16 ? nargs : 16);
     for (int k = 0; k < nargs; k++) {
       TyKind at = proc_arg_ty(c, argv[k]);
       if (k) buf_puts(b, ", ");
@@ -2628,7 +2632,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
   }
   else {
     if (kwpos) buf_printf(b, "(_sp_proc_kwpos = %d, ", kwpos);
-    buf_puts(b, "(sp_int[16]){");
+    buf_printf(b, "(sp_int[%d]){", nargs > 16 ? nargs : 16);
     for (int k = 0; k < nargs; k++) {
       if (k) buf_puts(b, ", ");
       if (proc_slot_is_ptr(proc_arg_ty(c, argv[k]))) { buf_puts(b, "(sp_int)(uintptr_t)("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
@@ -13329,11 +13333,14 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       if (comp_ntype(c, argv[0]) == TY_REGEX) {
         Buf rv; memset(&rv, 0, sizeof rv);
         emit_expr(c, argv[0], &rv);
+        /* the pattern once, and its source by its length: the source is the
+           engine's own C string, with no tag byte for sp_str_byte_len to
+           read, and one holding a NUL was cut there */
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "const char *_t%d = sp_re_source((void *)(%s));\n", ts, rv.p ? rv.p : "0");
+        buf_printf(g_pre, "void *_t%d = (void *)(%s);\n", ts, rv.p ? rv.p : "0");
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "mrb_regexp_pattern *_t%d = re_compile(_t%d, (int64_t)(_t%d ? sp_str_byte_len(_t%d) : 0), sp_re_raw_flags((void *)(%s)));\n",
-                   tp, ts, ts, ts, rv.p ? rv.p : "0");
+        buf_printf(g_pre, "mrb_regexp_pattern *_t%d = re_compile(sp_re_source(_t%d), (int64_t)sp_re_source_len(_t%d), sp_re_raw_flags(_t%d));\n",
+                   tp, ts, ts, ts);
         free(rv.p);
         buf_printf(b, "_t%d", tp);
         { *out = 1; return 1; }

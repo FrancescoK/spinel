@@ -5746,21 +5746,24 @@ intptr_t sp_bigint_bit_length(sp_Bigint *b) {
 
 /* --- Bignum receiver conveniences (#2025) ------------------------------- */
 
-/* to_s(base): mpz_get_str renders any base in [2, 36]. Owner-frees contract
-   matches sp_bigint_to_s. */
+/* to_s(base): mpz_get_str renders any base in [2, 36]. A STRING-HEAP
+   string, as sp_bigint_to_s answers and for the same reason: the poly
+   to_s(base) hands it to Ruby as it is, and a bare malloc'd buffer has no
+   marker byte, so its length was read from the byte before the chunk. */
 const char *sp_bigint_to_s_base(sp_Bigint *b, intptr_t base) {
   if (base < 2 || base > 36) {
     sp_raise_cls("ArgumentError", sp_sprintf("invalid radix %lld", (long long)base));
     return NULL;
   }
-  if (!b) { char *z0 = (char*)malloc(2); z0[0] = '0'; z0[1] = 0; return z0; }
+  if (!b) { char *z0 = sp_str_alloc_ext(1); z0[0] = '0'; return z0; }
   mpz_t *z = &b->mpz;
   size_t est = mpz_sizeinbase(z, 2) + 3;  /* base-2 digit count bounds every base */
   char *buf = (char*)malloc(est);
+  if (!buf) sp_oom_die();
   mpz_get_str(sp_mpz_ctx, buf, (mrb_int)est, base, z);
   size_t len = strlen(buf);
-  char *result = (char*)malloc(len + 1);
-  memcpy(result, buf, len + 1);
+  char *result = sp_str_alloc_ext(len);
+  memcpy(result, buf, len);
   free(buf);
   return result;
 }

@@ -12,8 +12,11 @@
 /* Format a non-negative Complex-component magnitude the way MRI does: infinite
    and NaN values become the Ruby names Infinity/NaN (not C's inf/nan), a
    Float-classed component (is_f) renders Ruby-float style ("2.0"), a whole
-   Integer-classed value stays integer-looking, else %g. Returns the length. */
-static int sp_complex_mag(char *out, size_t sz, sp_float v, int is_f) {SP_GC_ROOT_STR(out);
+   Integer-classed value stays integer-looking, else %g. Returns the length.
+   `out` is the caller's stack buffer, not a String: it is not rooted (the
+   collector's mark read the byte before the array for a tag, and could have
+   taken a neighbouring local's byte for one). */
+static int sp_complex_mag(char *out, size_t sz, sp_float v, int is_f) {
   if (isinf(v)) return snprintf(out, sz, "Infinity");
   if (isnan(v)) return snprintf(out, sz, "NaN");
   if (is_f) return snprintf(out, sz, "%s", sp_float_to_s(v));
@@ -26,7 +29,7 @@ static int sp_complex_mag(char *out, size_t sz, sp_float v, int is_f) {SP_GC_ROO
 /* Append the imaginary part ("+<mag>i" / "-<mag>i") to buf. MRI inserts a `*`
    before a non-numeric magnitude (Infinity/NaN) so `Infinity*i` stays readable,
    while a plain number is written as `10i`. */
-static int sp_complex_imag(char *buf, int n, size_t sz, sp_float im, int is_f) {SP_GC_ROOT_STR(buf);
+static int sp_complex_imag(char *buf, int n, size_t sz, sp_float im, int is_f) {   /* buf: a stack buffer, as above */
   if (n < 0 || (size_t)n >= sz) return 0;
   char mag[64];
   sp_complex_mag(mag, sizeof mag, im < 0 ? -im : im, is_f);

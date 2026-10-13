@@ -955,7 +955,9 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
         else { buf_puts(&ab, "sp_re_escape("); emit_expr(c, ops[i], &ab); buf_puts(&ab, ")"); }
       }
       emit_indent(g_pre, g_indent);
-      if (i == 0) buf_printf(g_pre, "const char *_t%d = %s;\n", ts, ab.p ? ab.p : "\"\"");
+      /* rooted: the next operand's to_s or escape allocates while the
+         joined source is held */
+      if (i == 0) buf_printf(g_pre, "const char *_t%d = %s; SP_GC_ROOT_STR(_t%d);\n", ts, ab.p ? ab.p : "\"\"", ts);
       /* byte-wise: sp_sprintf's %s would end the branch at an embedded NUL */
       else buf_printf(g_pre, "_t%d = sp_re_alt_join(_t%d, %s);\n", ts, ts, ab.p ? ab.p : "\"\"");
       free(ab.p);
@@ -1259,7 +1261,7 @@ int emit_op_string_scrub_block(Compiler *c, const BopCtx *x, Buf *b) {
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "sp_int _t%d, _t%d = sp_str_scrub_bad(_t%d, _t%d, _t%d, &_t%d);\n", tn, tb, ts, tl, tp, tn);
   emit_indent(g_pre, g_indent + 1);
-  buf_printf(g_pre, "sp_String_append_bin(_t%d, sp_str_substr(_t%d + _t%d, 0, _t%d - _t%d));\n", tout, ts, tp, tb, tp);
+  buf_printf(g_pre, "sp_String_append_bin(_t%d, sp_str_substr(_t%d, _t%d, _t%d - _t%d));\n", tout, ts, tp, tb, tp);
   emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "if (_t%d >= _t%d) break;\n", tb, tl);
   const char *p0 = block_param_name(c, block, 0);
   if (p0) {
@@ -1270,7 +1272,7 @@ int emit_op_string_scrub_block(Compiler *c, const BopCtx *x, Buf *b) {
        String of the match */
     int hnd = !box && plv && repr_of_slot(c, plv).handle;
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "lv_%s = %ssp_str_substr(_t%d + _t%d, 0, _t%d)%s;\n",
+    buf_printf(g_pre, "lv_%s = %ssp_str_substr(_t%d, _t%d, _t%d)%s;\n",
                rename_local(p0), box ? "sp_box_str(" : hnd ? "sp_String_new_fresh(" : "", ts, tb, tn,
                (box || hnd) ? ")" : "");
   }

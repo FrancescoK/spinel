@@ -293,7 +293,7 @@ sp_int sp_re_match_next(mrb_regexp_pattern *pat, const char *str, sp_int pos) {S
 const char *sp_MatchData_inspect(sp_MatchData *m) {SP_GC_ROOT(m);
   if (!m) return SPL("nil");
   sp_String *b = sp_String_new("#<MatchData "); SP_GC_ROOT(b);
-  sp_String_append(b, sp_str_inspect(sp_str_substr(m->source + m->caps[0], 0, m->caps[1] - m->caps[0])));
+  sp_String_append(b, sp_str_inspect(sp_str_substr(m->source, m->caps[0], m->caps[1] - m->caps[0])));
   for (int g = 1; g < m->ncap; g++) {
     const char *gname = re_group_name(m->pat, g);
     sp_String_append(b, " ");
@@ -304,7 +304,7 @@ const char *sp_MatchData_inspect(sp_MatchData *m) {SP_GC_ROOT(m);
     }
     sp_String_append(b, ":");
     if (m->caps[g * 2] < 0) sp_String_append(b, "nil");
-    else sp_String_append(b, sp_str_inspect(sp_str_substr(m->source + m->caps[g * 2], 0, m->caps[g * 2 + 1] - m->caps[g * 2])));
+    else sp_String_append(b, sp_str_inspect(sp_str_substr(m->source, m->caps[g * 2], m->caps[g * 2 + 1] - m->caps[g * 2])));
   }
   sp_String_append(b, ">");
   return sp_str_dup(sp_String_cstr(b));
@@ -962,14 +962,16 @@ else {
    Array held in a variable). Each element joins by alternation: a String is
    regexp-escaped, a Regexp contributes its #to_s form `(?on-off:src)` so its
    options survive. An empty array yields the never-matching /(?!)/. */
-mrb_regexp_pattern *sp_re_union_array(sp_PolyArray *a) {
+mrb_regexp_pattern *sp_re_union_array(sp_PolyArray *a) {SP_GC_ROOT(a);
   if (!a || a->len == 0) return re_compile("(?!)", 4, 0);
   /* a lone Regexp is the answer itself, its source and flags as they are */
   if (a->len == 1) {
     sp_RbVal v0 = sp_PolyArray_get(a, 0);
     if (v0.tag == SP_TAG_OBJ && v0.cls_id == SP_BUILTIN_REGEX && v0.v.p) return (mrb_regexp_pattern *)v0.v.p;
   }
+  /* rooted: the next part's escape or to_s allocates while it is held */
   const char *joined = NULL;
+  SP_GC_ROOT_STR(joined);
   for (sp_int i = 0; i < a->len; i++) {
     sp_RbVal v = sp_PolyArray_get(a, i);
     const char *part;
@@ -1227,9 +1229,15 @@ sp_StrArray *sp_Regexp_names(const mrb_regexp_pattern *pat) {
   int n = re_num_named(pat);
   for (int i = 0; i < n; i++) {
     const char *nm = re_named_name(pat, i, NULL);
+    if (!nm) continue;
+    /* The engine's name is its own malloc'd C string, with no tag byte in
+       front: copied as one (sp_str_dup_external), not read as a String,
+       whose length sp_str_dup and the comparison take from the byte before
+       it -- the allocator's, past the start of the block. */
+    nm = sp_str_dup_external(nm);
     /* a name reused across alternatives is one name, however many groups
        carry it (#3682) */
-    if (nm && !sp_StrArray_include(a, nm)) sp_StrArray_push(a, sp_str_dup(nm));
+    if (!sp_StrArray_include(a, nm)) sp_StrArray_push(a, nm);
   }
   return a;
 }
@@ -1246,7 +1254,9 @@ sp_StrArray *sp_MatchData_names(sp_MatchData *m) {SP_GC_ROOT(m);
   int n = re_num_named(m->pat);
   for (int i = 0; i < n; i++) {
     const char *nm = re_named_name(m->pat, i, NULL);
-    if (nm && !sp_StrArray_include(a, nm)) sp_StrArray_push(a, sp_str_dup(nm));
+    if (!nm) continue;
+    nm = sp_str_dup_external(nm);   /* as in sp_Regexp_names */
+    if (!sp_StrArray_include(a, nm)) sp_StrArray_push(a, nm);
   }
   return a;
 }
@@ -1416,9 +1426,19 @@ void sp_re_default_error_handler(const char *msg) {SP_GC_ROOT_STR(msg);
   sp_raise_cls("RegexpError", msg);
 }
 
+/* The hash of a pattern's source. The source is the engine's own malloc'd
+   copy (re_compile), with no tag byte in front: hashed over its bytes, as a
+   String of it would be, not through sp_str_hash, which reads the byte
+   before it for a header and writes the hash into one when it finds a tag
+   there -- the allocator's bytes, before the block. */
+sp_int sp_re_source_hash(void *pat) {
+  const char *src = pat ? sp_re_source(pat) : NULL;
+  int hi = 0;
+  return src ? (sp_int)sp_str_hash_bytes(src, &hi) : (sp_int)sp_str_hash(NULL);
+}
 /* Regexp#hash: the source AND the flags. /ab/ and /ab/i are not eql?, so a
    hash over the source alone made them collide as Hash keys (#3816). */
 sp_int sp_re_hash(void *pat) {
-  sp_int h = (sp_int)sp_str_hash(sp_re_source(pat));
+  sp_int h = sp_re_source_hash(pat);
   return h ^ ((sp_int)sp_re_options(pat) * 0x9E3779B1);
 }

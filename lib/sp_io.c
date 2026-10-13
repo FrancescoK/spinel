@@ -774,21 +774,21 @@ sp_File *sp_sock_udp_new(sp_int family) {
   sp_File *f = (sp_File *)sp_gc_alloc(sizeof(sp_File), sp_File_fin, sp_File_scan);
   f->fp = fdopen(fd, "r+");
   if (!f->fp) { close(fd); sp_raise_cls("IOError", "fdopen failed"); return NULL; }
-  f->path = NULL; f->mode = "udp"; f->lineno = 0; f->is_sock = 1; f->rev_lookup = !sp_sock_dnrl_default;
+  f->path = NULL; f->mode = SPL("udp"); f->lineno = 0; f->is_sock = 1; f->rev_lookup = !sp_sock_dnrl_default;
   return f;
 }
 sp_File *sp_sock_unix_server(const char *path) {SP_GC_ROOT_STR(path);
   extern int sp_net_unix_listen(const char *path, int backlog);
   int fd = sp_net_unix_listen(path, 128);
   if (fd < 0) sp_file_raise_errno("bind", path ? path : "");
-  sp_File *f = sp_io_fdopen_sock(fd, "unixserver");
+  sp_File *f = sp_io_fdopen_sock(fd, SPL("unixserver"));
   return f;
 }
 sp_File *sp_sock_unix_connect(const char *path) {SP_GC_ROOT_STR(path);
   extern int sp_net_unix_connect(const char *path);
   int fd = sp_net_unix_connect(path);
   if (fd < 0) sp_file_raise_errno("connect", path ? path : "");
-  return sp_io_fdopen_sock(fd, "unix");
+  return sp_io_fdopen_sock(fd, SPL("unix"));
 }
 
 /* BasicSocket#do_not_reverse_lookup and its writer: a socket's own, so a
@@ -825,7 +825,7 @@ sp_File *sp_sock_new(sp_int domain, sp_int type, sp_int proto) {
   if (!f->fp) { close(fd); sp_raise_cls("IOError", "fdopen failed"); return NULL; }
   /* Socket.new answers Socket, not the protocol-specific subclass CRuby uses
      for TCPSocket.new -- the caller asked for the generic class. */
-  f->path = NULL; f->mode = "socket"; f->lineno = 0; f->is_sock = 1; f->rev_lookup = !sp_sock_dnrl_default;
+  f->path = NULL; f->mode = SPL("socket"); f->lineno = 0; f->is_sock = 1; f->rev_lookup = !sp_sock_dnrl_default;
   return f;
 }
 /* An Integer argument a C int parameter takes, checked in its full width
@@ -881,7 +881,7 @@ sp_File *sp_sock_pair_end(sp_int domain, sp_int type, sp_int proto, sp_int which
   int fd = cached[which == 0 ? 0 : 1];
   if (fd < 0) sp_raise_cls("IOError", "socketpair");
   (void)domain; (void)type;
-  return sp_io_fdopen_sock(fd, "socket");
+  return sp_io_fdopen_sock(fd, SPL("socket"));
 }
 
 /* Socket.getaddrinfo: one row per resolution, in CRuby's 7-element shape. */
@@ -1013,16 +1013,19 @@ sp_Addrinfo *sp_sock_address(sp_File *f, sp_int peer) {SP_GC_ROOT(f);
   int fd = fileno(f->fp);
   const char *k = sp_io_kind_name(f);
   int is_unix = (strcmp(k, "UNIXSocket") == 0 || strcmp(k, "UNIXServer") == 0);
+  /* The address goes to sp_addrinfo_new as a String: it roots its argument
+     across its allocation, and a root on this stack buffer had the
+     collector read the byte before the array for a tag. */
   char buf[256];
   buf[0] = '\0';
   if (is_unix) {
     sp_net_unix_path(fd, (int)peer, buf, (int)sizeof buf);
-    return sp_addrinfo_new(buf, 0, SOCK_STREAM, 1);
+    return sp_addrinfo_new(sp_str_dup_external(buf), 0, SOCK_STREAM, 1);
   }
   int port = sp_net_sock_ip(fd, (int)peer, buf, (int)sizeof buf);
   if (port < 0) { buf[0] = '\0'; port = 0; }
   int stype = (strcmp(k, "UDPSocket") == 0) ? SOCK_DGRAM : SOCK_STREAM;
-  return sp_addrinfo_new(buf, (sp_int)port, stype, 0);
+  return sp_addrinfo_new(sp_str_dup_external(buf), (sp_int)port, stype, 0);
 }
 
 /* #getsockname / #getpeername -> the packed sockaddr of this end / the peer,
@@ -1224,7 +1227,7 @@ sp_File *sp_sock_accept_nb(sp_File *f, sp_bool exc) {SP_GC_ROOT(f);
   int e = errno;
   sp_io_nb_end(f, saved);
   errno = e;
-  if (fd >= 0) return sp_io_fdopen_sock(fd, "tcp");
+  if (fd >= 0) return sp_io_fdopen_sock(fd, SPL("tcp"));
   if (sp_sock_would_block()) {
     if (!exc) return NULL;
     sp_sock_raise_wait(0, "accept");
@@ -1423,7 +1426,7 @@ sp_File *sp_sock_accept(sp_File *f) {SP_GC_ROOT(f);
                  sp_sprintf("undefined method 'accept' for an instance of %s", sp_io_kind_name(f)));
   SP_IO_OPEN(f);
   sp_io_wait_readable(f);
-  return sp_io_fdopen_sock(sp_net_accept(fileno(f->fp)), "tcp");
+  return sp_io_fdopen_sock(sp_net_accept(fileno(f->fp)), SPL("tcp"));
 }
 
 /* `#<File:/etc/passwd>` for a path-backed handle, `#<IO:<STDOUT>>` for a

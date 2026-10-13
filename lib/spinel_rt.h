@@ -9638,12 +9638,18 @@ static sp_StrPolyHash*sp_StrPolyHash_from_str_str_hash(sp_StrStrHash*h){sp_StrPo
 static sp_StrPolyHash *sp_md_named_captures(sp_MatchData *m) {
   sp_StrPolyHash *h = sp_StrPolyHash_new();
   if (!m) return h;
-  SP_GC_ROOT(h);      /* sp_str_dup and the aref below allocate */
+  SP_GC_ROOT(h);      /* the copy and the aref below allocate */
   int n = re_num_named(m->pat);
   for (int i = 0; i < n; i++) {
     int g = -1;
     const char *nm = re_named_name(m->pat, i, &g);
-    if (nm) sp_StrPolyHash_set(h, sp_str_dup(nm), sp_box_nullable_str(sp_MatchData_aref(m, g)));
+    /* the engine's own C string, with no tag byte: copied as one
+       (sp_Regexp_names), and rooted while the value allocates */
+    if (nm) {
+      const char *k = sp_str_dup_external(nm); SP_GC_ROOT_STR(k);
+      sp_RbVal v = sp_box_nullable_str(sp_MatchData_aref(m, g));
+      sp_StrPolyHash_set(h, k, v);
+    }
   }
   return h;
 }
@@ -10119,7 +10125,7 @@ static sp_int sp_rbval_hash_key(sp_RbVal v) {
       /* two patterns with the same source are one Hash key, whichever way each
          was built (a literal or Regexp.new) (#3681) */
       if (v.cls_id == SP_BUILTIN_REGEX)
-        return v.v.p ? (sp_int)sp_str_hash(sp_re_source(v.v.p)) : 0;
+        return v.v.p ? sp_re_source_hash(v.v.p) : 0;
       if (v.cls_id == SP_BUILTIN_METHOD) {
         /* Method keys hash/eql by (bound self, fn ptr, name), so two
            `obj.method(:m)` instances collapse to one entry (optcarrot
@@ -19870,9 +19876,29 @@ static sp_RbVal sp_env_filter_bang_opt(sp_Proc *p, int keep) {
   if (sp_env_filter_core(p, keep) == 0) return sp_box_nil();
   return sp_box_obj(sp_env_to_h(), SP_BUILTIN_STR_STR_HASH);
 }
+/* A bound-Method trampoline handed more than 16 values by a splat: it is
+   handed the true count (below) and reads that many arguments, from the
+   sp_int slots or, for a boxed parameter, the boxed channel, so the slots
+   are on the heap for the call's length and the channel is filled as far as
+   it goes; 16 of each let the 17th argument of a 17-parameter Method read
+   the stack past the slots or a stale channel entry. Kept apart so the
+   common call pushes no root of its own. */
+static SP_NOINLINE void sp_proc_call_spread_wide(sp_Proc *p, sp_Proc *blk, sp_RbVal arr, sp_int n, int kwpos) {
+  SP_GC_ROOT(p); SP_GC_ROOT(blk); SP_GC_ROOT_RBVAL(arr);
+  sp_int *slots = (sp_int *)sp_gc_alloc(sizeof(sp_int) * (size_t)n, NULL, NULL); SP_GC_ROOT(slots);
+  for (sp_int i = 0; i < n; i++) {
+    sp_RbVal e = sp_poly_arr_get(arr, i);
+    if (i < SP_PROC_ARG_SLOTS) _sp_proc_poly_args[i] = e;
+    slots[i] = (e.tag == SP_TAG_OBJ || e.tag == SP_TAG_STR)
+             ? (sp_int)(uintptr_t)e.v.p : sp_poly_to_i(e);
+  }
+  _sp_proc_kwpos = kwpos;
+  sp_proc_call_blk(p, blk, n, slots);
+}
 static void sp_proc_call_spread_blk(sp_Proc *p, sp_Proc *blk, sp_RbVal arr, int kwpos) { SP_GC_ROOT(p);
   if (!p || !p->fn) return;
   sp_int n = sp_poly_length(arr);
+  if (n > 16 && p->cap_scan == sp_bm_cap_scan && p->lambda_p) { sp_proc_call_spread_wide(p, blk, arr, n, kwpos); return; }
   sp_int fill = n > 16 ? 16 : n;
   sp_int slots[16];
   for (sp_int i = 0; i < fill; i++) {

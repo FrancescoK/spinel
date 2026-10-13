@@ -1081,7 +1081,11 @@ int sp_net_pack_sockaddr_un(const char *path, void *out, int cap) {
 int sp_net_unpack_sockaddr_un(const void *sa, int salen, char *pathbuf, int cap) {
     int off = (int)offsetof(struct sockaddr_un, sun_path);
     if (!sa || salen < off || !pathbuf || cap <= 0) return -1;
-    if (((const struct sockaddr *)sa)->sa_family != AF_UNIX) return -1;
+    /* the family read out of the bytes, which are a String's and need not
+       be aligned for the struct (as in sp_net_unpack_sockaddr_in) */
+    sa_family_t fam;
+    memcpy(&fam, (const char *)sa + offsetof(struct sockaddr, sa_family), sizeof fam);
+    if (fam != AF_UNIX) return -1;
     if (salen > (int)sizeof(struct sockaddr_un)) return -2;
     const char *p = (const char *)sa + off;
     int n = salen - off;
@@ -1094,14 +1098,19 @@ int sp_net_unpack_sockaddr_un(const void *sa, int salen, char *pathbuf, int cap)
 
 int sp_net_unpack_sockaddr_in(const void *sa, int salen, char *ipbuf, int cap) {
     if (!sa || salen < (int)sizeof(struct sockaddr) || !ipbuf || cap <= 0) return -1;
-    const struct sockaddr *s = (const struct sockaddr *)sa;
+    /* The bytes are a String's, at no particular alignment: read as the
+       structs only once copied into storage aligned for them. */
+    struct sockaddr_storage ss;
+    memset(&ss, 0, sizeof ss);
+    memcpy(&ss, sa, salen < (int)sizeof ss ? (size_t)salen : sizeof ss);
+    const struct sockaddr *s = (const struct sockaddr *)&ss;
     if (s->sa_family == AF_INET && salen >= (int)sizeof(struct sockaddr_in)) {
-        const struct sockaddr_in *v4 = (const struct sockaddr_in *)sa;
+        const struct sockaddr_in *v4 = (const struct sockaddr_in *)&ss;
         if (!inet_ntop(AF_INET, &v4->sin_addr, ipbuf, (socklen_t)cap)) return -1;
         return (int)ntohs(v4->sin_port);
     }
     if (s->sa_family == AF_INET6 && salen >= (int)sizeof(struct sockaddr_in6)) {
-        const struct sockaddr_in6 *v6 = (const struct sockaddr_in6 *)sa;
+        const struct sockaddr_in6 *v6 = (const struct sockaddr_in6 *)&ss;
         if (!inet_ntop(AF_INET6, &v6->sin6_addr, ipbuf, (socklen_t)cap)) return -1;
         return (int)ntohs(v6->sin6_port);
     }
