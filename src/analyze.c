@@ -29689,6 +29689,25 @@ static int promote_forwarded_rest_args(Compiler *c) {
   return changed;
 }
 
+/* The nodes of each scope, ascending (comp_scope_of's answer), for the
+   yield-inlining pass below: it looked at one method's nodes by walking
+   every node of the program, three times per method that takes a block. */
+static int *bi_first, *bi_next, bi_ns = -1, bi_cnt = -1;
+static void bi_scope_nodes(Compiler *c) {
+  int n = c->nt->count;
+  if (bi_ns == c->nscopes && bi_cnt == n) return;
+  free(bi_first); free(bi_next);
+  bi_first = malloc(sizeof(int) * (size_t)(c->nscopes > 0 ? c->nscopes : 1));
+  bi_next = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+  if (!bi_first || !bi_next) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int s = 0; s < c->nscopes; s++) bi_first[s] = -1;
+  for (int id = n - 1; id >= 0; id--) {
+    int s = (int)(comp_scope_of(c, id) - c->scopes);
+    bi_next[id] = bi_first[s]; bi_first[s] = id;
+  }
+  bi_ns = c->nscopes; bi_cnt = n;
+}
+
 /* The block-taking method named `fn` that KEEPS its block -- reads its &blk
    parameter as anything but the receiver of `.call` or a `&blk` forward
    (`blk_call_recv` / `blk_arg_expr` mark those reads) -- or -1. `*first` gets
@@ -41318,8 +41337,9 @@ static void an_phase_block_inline(Compiler *c) {
        A blk_param read there is a real capture-escape: the proc runs
        independently and needs blk to live in a heap cell. */
     char *inproc_m = (char *)calloc((size_t)c->nt->count, 1);
+    bi_scope_nodes(c);
     if (inproc_m) {
-      for (int id = 0; id < c->nt->count; id++) {
+      for (int id = bi_first[mi]; id >= 0; id = bi_next[id]) {
         /* A Fiber/Enumerator/Thread `.new { }` block runs as an independent
            closure on its own fiber stack, and a `{ }` block lifted to a
            standalone proc (passed to a method that keeps a real &block)
@@ -41335,16 +41355,14 @@ static void an_phase_block_inline(Compiler *c) {
            named a `_cell_handler` nothing declared. */
         if (!a_proc_create_or_lifted(c, id) &&
             !a_block_lifted_by_callee_name(c, id, scope_keeps_blk)) continue;
-        if (comp_scope_of(c, id) != m) continue;
         int body = a_proc_body(c, id);
         if (body >= 0) a_mark_subtree(c, body, inproc_m);
       }
     }
     int escapes = 0, uses = 0, value_use = 0;
-    for (int id = 0; id < c->nt->count && !(escapes && value_use); id++) {
+    for (int id = bi_first[mi]; id >= 0 && !(escapes && value_use); id = bi_next[id]) {
       const char *ty = nt_type(c->nt, id);
       if (!ty || !sp_streq(ty, "LocalVariableReadNode")) continue;
-      if (comp_scope_of(c, id) != m) continue;
       const char *nm = nt_str(c->nt, id, "name");
       if (!nm || !sp_streq(nm, m->blk_param)) continue;
       /* A read inside a nested proc body is a capture-escape: the proc
@@ -41396,9 +41414,9 @@ static void an_phase_block_inline(Compiler *c) {
          would reject inlining anyway (scope_has_return), but the method would then
          be skipped in emission because yields=1 -- causing undefined references. */
       int has_ret = 0;
-      for (int id2 = 0; id2 < c->nt->count && !has_ret; id2++) {
+      for (int id2 = bi_first[mi]; id2 >= 0 && !has_ret; id2 = bi_next[id2]) {
         const char *ty2 = nt_type(c->nt, id2);
-        if (ty2 && sp_streq(ty2, "ReturnNode") && comp_scope_of(c, id2) == m) has_ret = 1;
+        if (ty2 && sp_streq(ty2, "ReturnNode")) has_ret = 1;
       }
       /* Nor if the method calls itself: inlining a self-recursive block-driving
          method cannot terminate (the depth-cap diagnostic), while the real
