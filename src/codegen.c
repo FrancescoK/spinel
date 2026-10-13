@@ -15814,6 +15814,9 @@ static int program_needs_class_machinery(Compiler *c) {
   /* ...and a class that mixes a module in: module-aware dispatch and
      Module#include? / < walk the chain with the module (sp_class_le_mod) */
   if (c->ntoplevel_includes > 0) return 1;
+  /* a method_defined? only the run time answers reads the table the bank
+     writes (emit_refl_method_defined) */
+  if (refl_md_dynamic_used(c)) return 1;
   for (int k = 0; k < c->nclasses; k++)
     /* a singleton class's methods check the object's class on entry
        (sp_class_le): the object carries its parent's id until `def obj.m` */

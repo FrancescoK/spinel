@@ -204,6 +204,17 @@ static void emit_respond_to_runtime_name(Compiler *c, int id, Buf *b, int recv, 
   buf_puts(b, "; })");
   if (boxed) buf_puts(b, ")");
 }
+/* A method_defined? whose name and class are both literals (`String.
+   method_defined?(:upcase)`): answered at compile time for a class of the
+   program and refused for any other, never through the run-time table
+   (emit_refl_method_defined), which is written only when some call needs it. */
+static int refl_md_literal_call(const NodeTable *nt, int recv, int arg) {
+  const char *aty = nt_type(nt, arg);
+  const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
+  return aty && (sp_streq(aty, "SymbolNode") || sp_streq(aty, "StringNode")) &&
+         rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"));
+}
+
 
 /* respond_to?, method_defined? and its kin, const_set / const_get / const_defined? */
 int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
@@ -520,7 +531,11 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       else if (encl->class_id >= 0) { snprintf(selfbuf, sizeof selfbuf, "((sp_Class){%d})", encl->class_id); self_cls = selfbuf; }
     }
     TyKind nty = infer_type(c, argv[0]);
-    if (inherit_lit >= 0 && (recv >= 0 || self_cls) && (nty == TY_SYMBOL || nty == TY_STRING)) {
+    /* a literal name on a literal class the table does not cover (a builtin
+       class, which the literal branch above left) is refused below, as
+       refl_md_dynamic_used, which writes the table, does not count it */
+    if (inherit_lit >= 0 && (recv >= 0 || self_cls) && (nty == TY_SYMBOL || nty == TY_STRING) &&
+        !refl_md_literal_call(nt, recv, argv[0])) {
       int mask = (md_pub ? 1 : 0) | (md_prot ? 2 : 0) | (md_priv ? 4 : 0);
       buf_puts(b, "sp_refl_method_defined(");
       /* a class held boxed (out of an Array, say) is unboxed to its sp_Class */
@@ -4574,12 +4589,7 @@ int refl_md_dynamic_used(Compiler *c) {
     int args = nt_ref(nt, id, "arguments");
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     if (an < 1 || !av) continue;
-    const char *aty = nt_type(nt, av[0]);
-    int recv = nt_ref(nt, id, "receiver");
-    const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
-    int lit_name = aty && (sp_streq(aty, "SymbolNode") || sp_streq(aty, "StringNode"));
-    int lit_recv = rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"));
-    if (!lit_name || !lit_recv) return 1;
+    if (!refl_md_literal_call(nt, nt_ref(nt, id, "receiver"), av[0])) return 1;
   }
   return 0;
 }
