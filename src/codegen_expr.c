@@ -1118,13 +1118,16 @@ static void warn_undefined_constant(Compiler *c, int id, const char *nm) {
   const char *file = nt_file_path(c->nt, fid);
   if (!file || !*file) file = c->nt->source_file;
   if (!file || !*file) file = "source.rb";
+  /* `Point::LIMIT` with LIMIT written at the top level only: defined, but
+     not where the path looks (const_path_misses_toplevel) */
+  const char *why = const_path_misses_toplevel(c, id)
+    ? "only the top level defines it, which a path through a class or module does not reach"
+    : "defined nowhere in the program";
   if (ln > 0)
-    fprintf(stderr, "spinel: %s:%d: warning: uninitialized constant %s: "
-                    "defined nowhere in the program (raises NameError when reached)\n",
-            file, ln, nm);
+    fprintf(stderr, "spinel: %s:%d: warning: uninitialized constant %s: %s (raises NameError when reached)\n",
+            file, ln, nm, why);
   else
-    fprintf(stderr, "spinel: warning: uninitialized constant %s: "
-                    "defined nowhere in the program (raises NameError when reached)\n", nm);
+    fprintf(stderr, "spinel: warning: uninitialized constant %s: %s (raises NameError when reached)\n", nm, why);
 }
 
 /* `recv.attr ||= v` / `&&=` where the reader or the writer is a real `def`.
@@ -3122,7 +3125,7 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       }
       free(ccls); free(ckey);
     } }
-    LocalVar *cpcv = nm && !const_path_in_closed_builtin(c, id) ? comp_const(c, nm) : NULL;
+    LocalVar *cpcv = nm && !const_path_in_closed_builtin(c, id) && !const_path_misses_toplevel(c, id) ? comp_const(c, nm) : NULL;
     /* the slot of a flagged constant already read through its receiver (emit_const_recv_wrap) */
     int cptr = cpcv ? (int)nt_int(nt, id, "const_ptr", 0) : 0;
     if (cptr) {

@@ -279,6 +279,57 @@ int const_path_in_closed_builtin(Compiler *c, int id) {
     memo[id] = (signed char)(!program_nests_class_named(c, pn) && !program_writes_const_in(c, pn, nm));
   return memo[id];
 }
+/* Can the path write `t` (`Q::NAME = v`) define NAME where a lookup
+   through class k finds it: Q is k, an ancestor of k, or a module one of
+   them includes? `::NAME = v` writes the top level; a Q the program has no
+   class for counts, as it may be any of them. */
+static int const_path_write_reaches(Compiler *c, int t, int k) {
+  const NodeTable *nt = c->nt;
+  int q = nt_ref(nt, t, "parent");
+  if (q < 0) return 0;
+  NodeKind qk = nt_kind(nt, q);
+  const char *qn = qk == NK_ConstantReadNode || qk == NK_ConstantPathNode ? nt_str(nt, q, "name") : NULL;
+  int qi = qn ? comp_class_index(c, qn) : -1;
+  if (qi < 0) return 1;
+  for (int a = k, d = 0; a >= 0 && a < c->nclasses && d < 64; a = c->classes[a].parent, d++)
+    if (comp_module_includes(c, a, qi, 0)) return 1;
+  return 0;
+}
+/* `P::NAME` where P is a class or module of the program (not Object) and
+   NAME is a constant the program writes only at the top level: Object's
+   constant, which a path through another class or module does not reach
+   (CRuby's NameError since 2.5), where the leaf-keyed table answered it.
+   A NAME written in any body, or through a path, is left to the table. */
+int const_path_misses_toplevel(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, id) != NK_ConstantPathNode || !c->node_cbody) return 0;
+  int par = nt_ref(nt, id, "parent");
+  if (par < 0) return 0;
+  NodeKind pk = nt_kind(nt, par);
+  if (pk != NK_ConstantReadNode && pk != NK_ConstantPathNode) return 0;
+  const char *pn = nt_str(nt, par, "name"), *nm = nt_str(nt, id, "name");
+  if (!pn || !nm || sp_streq(pn, "Object") || comp_class_index(c, pn) < 0 || comp_const(c, pn)) return 0;
+  static const NodeKind writes[] = { NK_ConstantWriteNode, NK_ConstantOrWriteNode, NK_ConstantAndWriteNode,
+                                     NK_ConstantOperatorWriteNode, NK_ConstantTargetNode };
+  int top = 0;
+  for (int i = 0; i < 5; i++)
+    NT_FOREACH_KIND(nt, writes[i], w) {
+      if (!sp_streq(nt_str(nt, w, "name"), nm)) continue;
+      if (w >= c->node_cap || c->node_cbody[w] >= 0) return 0;
+      top = 1;
+    }
+  static const NodeKind paths[] = { NK_ConstantPathWriteNode, NK_ConstantPathOrWriteNode,
+                                    NK_ConstantPathAndWriteNode, NK_ConstantPathOperatorWriteNode };
+  int k = comp_class_index(c, pn);
+  for (int i = 0; i < 4; i++)
+    NT_FOREACH_KIND(nt, paths[i], w) {
+      int t = nt_ref(nt, w, "target");
+      if (t >= 0 && sp_streq(nt_str(nt, t, "name"), nm) && const_path_write_reaches(c, t, k)) return 0;
+    }
+  NT_FOREACH_KIND(nt, NK_ConstantPathTargetNode, t)
+    if (sp_streq(nt_str(nt, t, "name"), nm) && const_path_write_reaches(c, t, k)) return 0;
+  return top;
+}
 /* The SystemCallError family, by builtin name: SystemCallError, the Errno
    classes and the IO wait-readiness classes under them. Its #initialize
    builds the message from the class's errno (syserr_initialize). */
