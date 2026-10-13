@@ -11775,7 +11775,6 @@ static int class_inspectable(Compiler *c, int i) {
   /* an exception subclass renders as #<Cls: msg>, which the dispatch below
      routes to sp_exc_inspect: without a case here `p e` fell to the default
      and printed #<Object> (#3813) */
-  if (comp_ty_value_obj(c, ty_object(i))) return 0;  /* no stable address */
   return 1;
 }
 static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
@@ -11902,9 +11901,11 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
                    i, c->native_methods[nin].csym, c->classes[i].c_struct);
       continue;
     }
-    /* a value-type class has no stable address for the default render, but
-       a user #inspect of its own still answers (self by value, as in the
-       #to_s dispatcher) */
+    /* a value-type class: a user #inspect of its own answers (self by
+       value, as in the #to_s dispatcher). One without any renders by the
+       default walk below, as a directly-inspected one does: the boxed value
+       points at its struct. Left without an arm, an element of a Hash or an
+       Array printed #<Object>. */
     if (comp_ty_value_obj(c, ty_object(i)) && !comp_class_is_module(c, &c->classes[i])) {
       int vdef = -1;
       int vmi = comp_method_in_chain(c, i, "inspect", &vdef);
@@ -11914,7 +11915,7 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
         buf_printf(b, "    case %d: return %ssp_%s_%s(*(sp_%s *)p)%s;\n",
                    i, vpoly ? "sp_poly_to_s(" : "", c->classes[i].c_name, mc(c->scopes[vmi].name),
                    c->classes[i].c_name, vpoly ? ")" : "");
-      continue;
+      if (vmi >= 0) continue;
     }
     if (!class_inspectable(c, i)) continue;
     ClassInfo *ci = &c->classes[i];
