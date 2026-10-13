@@ -77,6 +77,8 @@ typedef struct CF {
   int changed, round;
   int phase;              /* 0: only what the receivers' classes decide; 1: the builtin answers too */
   int *open; int nopen;   /* the runtime's classes and modules the program reopens (cf_open_self) */
+  unsigned char *exec_esc;    /* per scope: its block parameter may run under another self */
+  unsigned char *exec_blk;    /* per node: a block or lambda that may run under another self */
   int pending;            /* calls round 0 left to phase 1 */
 } CF;
 
@@ -667,6 +669,9 @@ static int cf_owner_block(CF *f, int v, int loop_stop) {
   }
   return -1;
 }
+
+static int cf_in_exec_block(CF *f, int v);
+static void cf_ivar_write_any(CF *f, const char *name, int v);
 
 /* the loop a break under v leaves: the nearest enclosing while, until or
    for, or -1 when a block, a lambda or a def is nearer */
@@ -1360,6 +1365,7 @@ static void cf_node(CF *f, int v) {
     return;
   }
   case NK_SelfNode: {
+    if (cf_in_exec_block(f, v)) { cf_all(f, v); return; }
     int si = cf_scope_of(f, v);
     int ik = cf_inst_class(f, si);
     if (ik >= 0) { cf_unite(f, v, f->self_el[ik]); return; }
@@ -1465,6 +1471,12 @@ static void cf_node(CF *f, int v) {
   case NK_InstanceVariableWriteNode: case NK_InstanceVariableOrWriteNode: case NK_InstanceVariableAndWriteNode:
   case NK_InstanceVariableOperatorWriteNode: {
     int val = nt_ref(nt, v, "value");
+    if (cf_in_exec_block(f, v)) {
+      cf_unite(f, v, val);
+      if (k != NK_InstanceVariableWriteNode) cf_all(f, v);
+      cf_ivar_write_any(f, nt_str(nt, v, "name"), v);
+      return;
+    }
     int els[64]; int n = cf_ivar_els(f, v, nt_str(nt, v, "name"), els, 64);
     if (k == NK_InstanceVariableOperatorWriteNode) {
       const char *op = nt_str(nt, v, "binary_operator");
@@ -1485,6 +1497,7 @@ static void cf_node(CF *f, int v) {
     return;
   }
   case NK_InstanceVariableReadNode: {
+    if (cf_in_exec_block(f, v)) { cf_all(f, v); return; }
     int els[64]; int n = cf_ivar_els(f, v, nt_str(nt, v, "name"), els, 64);
     for (int i = 0; i < n; i++) cf_unite(f, v, els[i]);
     if (f->all_ivars) cf_all(f, v);
@@ -1691,6 +1704,98 @@ static void cf_collect_dyn(CF *f) {
   }
 }
 
+/* ---- blocks run under another self ---- */
+
+/* a call that runs its block with another self (or as a method body) */
+static int cf_exec_name(const char *nm) {
+  return nm && (sp_streq(nm, "instance_exec") || sp_streq(nm, "instance_eval") || sp_streq(nm, "class_exec") ||
+                sp_streq(nm, "class_eval") || sp_streq(nm, "module_exec") || sp_streq(nm, "module_eval") ||
+                sp_streq(nm, "define_method") || sp_streq(nm, "define_singleton_method"));
+}
+/* a call that may hand its block to such a call: by name, or a method of
+   the name whose block parameter does */
+static int cf_exec_call(CF *f, const char *nm) {
+  if (cf_exec_name(nm)) return 1;
+  if (!nm) return 0;
+  CFByName *b = cf_byname(f, nm);
+  for (int i = 0; i < b->n; i++) if (f->exec_esc[b->mi[i]]) return 1;
+  for (int i = 0; i < b->ncm; i++) if (f->exec_esc[b->cmi[i]]) return 1;
+  return 0;
+}
+/* Which blocks may run with a self that is not the scope's: one a call
+   above hands to instance_exec and its kin, directly or through the
+   block parameters of the program's methods (a fixpoint: `def check(&b) =
+   new.instance_exec(&b)`), and every proc and lambda when one of those
+   calls takes a block from elsewhere (`instance_exec(&pr)`). A method
+   whose block parameter is stored or passed on as a value is taken as
+   handing it on. */
+static void cf_collect_exec(CF *f) {
+  Compiler *c = f->c;
+  const NodeTable *nt = f->nt;
+  int procs = 0;
+  for (int changed = 1; changed; ) {
+    changed = 0;
+    NT_FOREACH_KIND(nt, NK_BlockArgumentNode, id) {
+      int e = nt_ref(nt, id, "expression");
+      if (e >= 0 && nt_kind(nt, e) == NK_SymbolNode) continue;
+      int p = f->par ? f->par[id] : -1;
+      while (p >= 0 && nt_type(nt, p) && sp_streq(nt_type(nt, p), "ArgumentsNode")) p = f->par[p];
+      if (p < 0 || nt_kind(nt, p) != NK_CallNode || !cf_exec_call(f, nt_str(nt, p, "name"))) continue;
+      int mi = cf_owner_def(f, id, 1, NULL);
+      Scope *m = mi >= 0 ? &c->scopes[mi] : NULL;
+      int own = m && m->blk_param && (e < 0 ? m->blk_param[0] == 0 :
+                nt_kind(nt, e) == NK_LocalVariableReadNode && nt_str(nt, e, "name") && sp_streq(nt_str(nt, e, "name"), m->blk_param));
+      if (own) { if (!f->exec_esc[mi]) { f->exec_esc[mi] = 1; changed = 1; } }
+      else procs = 1;
+    }
+    /* a block parameter read as a value: stored, passed, returned */
+    NT_FOREACH_KIND(nt, NK_LocalVariableReadNode, id) {
+      int mi = cf_owner_def(f, id, 1, NULL);
+      if (mi < 0 || f->exec_esc[mi]) continue;
+      Scope *m = &c->scopes[mi];
+      const char *nm = nt_str(nt, id, "name");
+      if (!m->blk_param || !m->blk_param[0] || !nm || !sp_streq(nm, m->blk_param)) continue;
+      int p = f->par ? f->par[id] : -1;
+      if (p >= 0 && nt_kind(nt, p) == NK_BlockArgumentNode) continue;
+      if (p >= 0 && nt_kind(nt, p) == NK_CallNode && nt_ref(nt, p, "receiver") == id) {
+        const char *cn = nt_str(nt, p, "name");
+        if (cn && (sp_streq(cn, "call") || sp_streq(cn, "()") || sp_streq(cn, "yield") || sp_streq(cn, "===") ||
+                   sp_streq(cn, "[]") || sp_streq(cn, "arity") || sp_streq(cn, "nil?") || sp_streq(cn, "lambda?") ||
+                   sp_streq(cn, "parameters"))) continue;
+      }
+      f->exec_esc[mi] = 1; changed = 1;
+    }
+  }
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (cf_exec_call(f, nm) ||
+        (procs && nm && (sp_streq(nm, "proc") || sp_streq(nm, "lambda") || sp_streq(nm, "new"))))
+      f->exec_blk[blk] = 1;
+  }
+  if (procs) NT_FOREACH_KIND(nt, NK_LambdaNode, id) f->exec_blk[id] = 1;
+}
+/* node v runs in a block that may have another self */
+static int cf_in_exec_block(CF *f, int v) {
+  for (int q = f->par ? f->par[v] : -1, d = 0; q >= 0 && d < 100000; q = f->par[q], d++) {
+    NodeKind k = nt_kind(f->nt, q);
+    if ((k == NK_BlockNode || k == NK_LambdaNode) && q < f->nnodes && f->exec_blk[q]) return 1;
+    if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return 0;
+  }
+  return 0;
+}
+/* an ivar written where self is unknown: into the ivar of the name of
+   every class, the class-level ones and main's */
+static void cf_ivar_write_any(CF *f, const char *name, int v) {
+  if (!name) return;
+  for (int k = 0; k < f->c->nclasses; k++) {
+    if (!f->mod[k]) cf_unite(f, cf_entry(f, f->fam[k], name), v);
+    cf_unite(f, cf_entry(f, -(k + 2), name), v);
+  }
+  cf_unite(f, cf_entry(f, CF_K_MAIN, name), v);
+}
+
 static int cf_scope_has_super(CF *f, int mi) {
   Scope *s = &f->c->scopes[mi];
   if (s->body < 0) return 0;
@@ -1746,8 +1851,10 @@ void an_cls_facts(Compiler *c) {
   f.fam = malloc(sizeof(int) * ((size_t)c->nclasses + 1));
   f.mod = calloc((size_t)c->nclasses + 1, 1);
   f.open = malloc(sizeof(int) * ((size_t)c->nclasses + 1));
+  f.exec_esc = calloc((size_t)c->nscopes + 1, 1);
+  f.exec_blk = calloc((size_t)nt->count + 1, 1);
   if (!f.lv_el || !f.nlv || !f.ret_el || !f.yval_el || !f.yarg_el || !f.has_super || !f.protocol || !f.def_mi ||
-      !f.self_el || !f.own || !f.desc || !f.fam || !f.mod || !f.open || !f.par) cf_oom();
+      !f.self_el || !f.own || !f.desc || !f.fam || !f.mod || !f.open || !f.exec_esc || !f.exec_blk || !f.par) cf_oom();
   for (int k = 0; k < nt->count; k++) f.def_mi[k] = -1;
   for (int mi = 0; mi < c->nscopes; mi++) {
     Scope *s = &c->scopes[mi];
@@ -1820,6 +1927,7 @@ void an_cls_facts(Compiler *c) {
     if (used) f.yval_used[mi] = 1;
   }
   cf_collect_dyn(&f);
+  cf_collect_exec(&f);
   for (int k = 0; k < c->nclasses && !f.has_mm; k++)
     if (comp_method_in_chain(c, k, "method_missing", NULL) >= 0) f.has_mm = 1;
   /* the parameters a call the analysis cannot see binds: anything */
@@ -1903,7 +2011,7 @@ void an_cls_facts(Compiler *c) {
   free(f.par); free(f.uf); free(f.set); free(f.ph);
   for (int mi = 0; mi < c->nscopes; mi++) { free(f.lv_el[mi]); free(f.yarg_el[mi]); }
   free(f.lv_el); free(f.nlv); free(f.ret_el); free(f.yval_el); free(f.yarg_el); free(f.has_super); free(f.protocol);
-  free(f.def_mi); free(f.open); free(f.self_el); free(f.own); free(f.desc); free(f.fam); free(f.mod); free(f.dyn); free(f.yval_used); free(f.has_native);
+  free(f.def_mi); free(f.open); free(f.exec_esc); free(f.exec_blk); free(f.self_el); free(f.own); free(f.desc); free(f.fam); free(f.mod); free(f.dyn); free(f.yval_used); free(f.has_native);
   for (int k = 0; k < f.ent_cap; k++) free((char *)f.ent[k].name);
   free(f.ent);
   for (int k = 0; k < f.bn_cap; k++) if (f.bn[k].name) { free((char *)f.bn[k].name); free(f.bn[k].mi); free(f.bn[k].cmi); free(f.bn[k].rd); free(f.bn[k].wr); }
