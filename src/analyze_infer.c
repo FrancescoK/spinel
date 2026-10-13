@@ -172,11 +172,36 @@ void an_pure_read_end(void) { an_pure_reads--; }
    user answers and left the builtin one unknown (#5116). */
 static int an_bo_recv = -1;
 int builtin_method_known(const char *cls, const char *m);
+/* The Array / Hash / String reads that leave a block they are given unused,
+   so the call answers as it would without one. */
+int builtin_read_ignores_block(const char *nm) {
+  static const char *const names[] = { "take", "slice", "first", "last", "drop", "values_at",
+    "pack", "at", "dig", NULL };
+  for (int k = 0; nm && names[k]; k++) if (sp_streq(nm, names[k])) return 1;
+  return 0;
+}
+
+/* `recv.take(n, &b)`: the call hands on a block the builtin leaves unused */
+static int an_block_unused_by_builtin(Compiler *c, int id) {
+  int blk = nt_kind(c->nt, id) == NK_CallNode ? nt_ref(c->nt, id, "block") : -1;
+  return blk >= 0 && nt_kind(c->nt, blk) == NK_BlockArgumentNode &&
+         builtin_read_ignores_block(nt_str(c->nt, id, "name"));
+}
 TyKind an_builtin_answer(Compiler *c, int id) {
   int was = an_builtin_only, was_recv = an_bo_recv;
   an_builtin_only = 1;
   an_bo_recv = nt_kind(c->nt, id) == NK_CallNode ? nt_ref(c->nt, id, "receiver") : -1;
-  TyKind t = infer_call(c, id);
+  /* a block handed on as `&b` to a builtin that leaves it unused
+     (`def take(*a, &b) = to_a.take(*a, &b)`): the builtin's answer is the
+     call's without it, which the rows know */
+  TyKind t;
+  if (an_block_unused_by_builtin(c, id)) {
+    NodeTable *nt = (NodeTable *)c->nt;
+    int blk = nt_ref(nt, id, "block");
+    nt_node_set_ref(nt, id, "block", -1);
+    t = infer_call(c, id);
+    nt_node_set_ref(nt, id, "block", blk);
+  } else t = infer_call(c, id);
   an_builtin_only = was;
   an_bo_recv = was_recv;
   return t;
