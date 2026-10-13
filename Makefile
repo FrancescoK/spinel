@@ -4212,6 +4212,13 @@ respond-to-audit: $(SPINEL) $(SP_RT_LIB)
 # SPINEL_ALLOC_REPORT / SPINEL_ALLOC_SITES (#1336): the site is an address, so
 # assert the line SHAPE rather than a snapshot -- per-type lines without the
 # sites gate, `site;type` lines with it, and the program's own output either way.
+# The class facts (#8530) held against CRuby: every program class a CRuby
+# run of a test sees as a call's receiver must be in that call site's fact,
+# or a consumer may drop the arm the call needs (#8720). Not in the gate.
+.PHONY: cls-fact-check
+cls-fact-check: $(SPINEL)
+	@sh tools/cls_fact_check.sh $(TESTS)
+
 # Inference properties the stdout comparison cannot see: a boxed slot still
 # prints the right answer, so a type regression here is invisible to `make
 # test`. Assert the emitted C signature directly, the way rbs-seed-test does

@@ -1776,12 +1776,26 @@ void an_cls_facts(Compiler *c) {
       int r = nt_ref(nt, id, "receiver");
       if (r < 0) continue;
       const ClsSet *s = cls_fact_node(c, r);
-      fprintf(stderr, "cls-fact: line %d %s receiver:", (int)nt_int(nt, id, "node_line", 0), nt_str(nt, id, "name") ? nt_str(nt, id, "name") : "?");
+      const char *fp = nt_file_path(nt, (int)nt_int(nt, id, "node_file", 0));
+      fprintf(stderr, "cls-fact: %s:%d %s receiver:", fp && *fp ? fp : "?", (int)nt_int(nt, id, "node_line", 0), nt_str(nt, id, "name") ? nt_str(nt, id, "name") : "?");
       if (!s) fprintf(stderr, " ANY");
       else if (s->n == 0) fprintf(stderr, " none");
       else for (int i = 0; i < s->n; i++) {
         int k = s->cls[i] >= c->nclasses ? s->cls[i] - c->nclasses : s->cls[i];
-        fprintf(stderr, s->cls[i] >= c->nclasses ? " Class(%s)" : " %s", c->classes[k].name ? c->classes[k].name : "?");
+        /* the Ruby name, as class_ruby_name builds it (a singleton
+           subclass is its parent; a segment qualify_colliding_classes
+           rewrote is its leaf), without its cache: the name is not
+           settled this early */
+        char cn[512] = ""; int chain[16], d = 0;
+        for (int e = singleton_visible_ci(c, k); e >= 0 && d < 16; e = c->classes[e].enclosing_class) chain[d++] = e;
+        for (int q = d - 1; q >= 0; q--) {
+          const char *seg = c->classes[chain[q]].name ? c->classes[chain[q]].name : "?";
+          const char *t = q < d - 1 ? strstr(seg, "__") : NULL;
+          while (t) { seg = t + 2; t = strstr(seg, "__"); }
+          size_t l = strlen(cn);
+          snprintf(cn + l, sizeof cn - l, "%s%s", q < d - 1 ? "::" : "", seg);
+        }
+        fprintf(stderr, s->cls[i] >= c->nclasses ? " Class(%s)" : " %s", cn);
       }
       if (s && s->bv) fprintf(stderr, " +builtin");
       fprintf(stderr, "\n");
