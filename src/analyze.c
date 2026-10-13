@@ -42683,8 +42683,10 @@ static void an_phase_post_fixpoint(Compiler *c) {
 
   /* Backstop: an ivar assigned only an empty array literal (no element
      evidence from usage) is left UNKNOWN, which falls back to int and a
-     scalar struct field. Default such a slot to an (empty) int array so the
-     field is a pointer matching the emitted sp_IntArray_new(). */
+     scalar struct field. Default such a slot to an (empty) Array, boxed as a
+     local's is below: it may still be filled through another name -- the
+     block a method yields it to, or a method it is passed to -- and an Integer
+     Array raised TypeError on the String such a block pushed. */
   for (int id = 0; id < c->nt->count; id++) {
     const char *ty = nt_type(c->nt, id);
     if (!ty || !sp_streq(ty, "InstanceVariableWriteNode")) continue;
@@ -42699,7 +42701,7 @@ static void an_phase_post_fixpoint(Compiler *c) {
     if (cls_id_bs < 0) continue;
     ClassInfo *ci = &c->classes[cls_id_bs];
     int iv = comp_ivar_index(ci, nt_str(c->nt, id, "name"));
-    if (iv >= 0 && ci->ivar_types[iv] == TY_UNKNOWN) ci->ivar_types[iv] = TY_INT_ARRAY;
+    if (iv >= 0 && ci->ivar_types[iv] == TY_UNKNOWN) ci->ivar_types[iv] = TY_POLY_ARRAY;
   }
   /* An ivar write in VALUE position evaluates to the slot. When the slot is
      a strbuf, the value is presented exactly as an ordinary read of the slot
