@@ -2875,6 +2875,67 @@ static int emit_class_instance_methods_all(Compiler *c, int id, Buf *b, const No
   buf_printf(b, " sp_box_poly_array(_t%d ? _t%d : sp_PolyArray_new()); })", rt, rt);
   return 1;
 }
+/* The value class k's `class << self` accessor slot for `base` holds, boxed:
+   the civ_ static a class-level @ivar backs it with, or its own sg_ slot. */
+static void sg_slot_boxed(Compiler *c, int k, const char *base, Buf *b) {
+  ClassInfo *cls = &c->classes[k];
+  if (!comp_is_sg_civ(cls, base)) { buf_printf(b, "sg_%s_%s", cls->name, base); return; }
+  char ivn[256], ref[600];
+  snprintf(ivn, sizeof ivn, "@%s", base);
+  snprintf(ref, sizeof ref, "civ_%s_%s", cls->name, iv_c(base));
+  int ivi = comp_ivar_index(cls, ivn);
+  TyKind t = ivi >= 0 ? cls->ivar_types[ivi] : TY_POLY;
+  if (ivi >= 0 && civ_is_oint(c, k, ivi)) buf_printf(b, "sp_box_oint(%s)", ref);
+  else if (t == TY_POLY || t == TY_UNKNOWN) buf_puts(b, ref);
+  else emit_boxed_text(c, t, ref, b);
+}
+
+/* `klass.x` / `klass.x = v` on a class value only the run time knows, where x
+   is a `class << self` accessor (`klass = self.class; klass.x`, or
+   `self.class.x` once the class has a subclass): an arm per class with the
+   accessor, on that class's own slot, as `Name.x` takes it. The value is
+   boxed; a setter answers what it stored. NoMethodError for a class without
+   it. 0 when no class has the accessor. */
+static int emit_cls_value_sg_accessor(Compiler *c, int recv, const char *name, int argc, const int *argv,
+                                      Buf *b) {
+  int nlen = (int)strlen(name), setter = nlen > 1 && name[nlen - 1] == '=';
+  if (setter ? argc != 1 : argc != 0) return 0;
+  char base[256];
+  snprintf(base, sizeof base, "%.*s", setter ? nlen - 1 : nlen, name);
+  int any = 0;
+  for (int k = 0; k < c->nclasses && !any; k++) {
+    if (is_builtin_reopen(c->classes[k].name)) continue;
+    const char *rn = setter ? base : comp_resolve_alias(c, k, name);
+    any = setter ? comp_is_sg_writer(&c->classes[k], base) : comp_is_sg_reader(&c->classes[k], rn ? rn : name);
+  }
+  if (!any) return 0;
+  int tk = ++g_tmp, tr = ++g_tmp;
+  buf_printf(b, "({ sp_Class _t%d = ", tk);
+  emit_expr(c, recv, b);
+  buf_printf(b, "; sp_RbVal _t%d = sp_box_nil(); ", tr);
+  int first = 1;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (is_builtin_reopen(c->classes[k].name)) continue;
+    ClassInfo *cls = &c->classes[k];
+    const char *rn = setter ? base : comp_resolve_alias(c, k, name);
+    if (!rn) rn = name;
+    if (setter ? !comp_is_sg_writer(cls, base) : !comp_is_sg_reader(cls, rn)) continue;
+    buf_printf(b, "%sif (_t%d.cls_id == %d) { ", first ? "" : "else ", tk, k);
+    first = 0;
+    if (setter) {
+      buf_puts(b, "(void)");
+      emit_sg_accessor(c, k, cls->name, name, argc, argv, b);
+      buf_puts(b, "; ");
+    }
+    buf_printf(b, "_t%d = ", tr);
+    sg_slot_boxed(c, k, setter ? base : rn, b);
+    buf_puts(b, "; } ");
+  }
+  buf_printf(b, "else sp_raise_cls(\"NoMethodError\", sp_str_concat3(\"undefined method '%s' for class \", "
+                "sp_class_to_s(_t%d), \"\")); _t%d; })", name, tk, tr);
+  return 1;
+}
+
 
 int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* SomeClass.superclass -> the parent class as sp_Class value */
@@ -3777,6 +3838,9 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           return 1;
         }
       }
+      /* a `class << self` accessor on such a value: an arm per class that
+         has it, on its own slot */
+      if (ncand9 == 0 && emit_cls_value_sg_accessor(c, recv, name, argc, argv, b)) return 1;
       skip_cls_cmethod9:;
     }
   }
