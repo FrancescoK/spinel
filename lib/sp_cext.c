@@ -125,9 +125,9 @@ void rb_gc_mark(VALUE v) {
 }
 void rb_gc_mark_movable(VALUE v) { rb_gc_mark(v); }
 VALUE rb_gc_location(VALUE v) { return v; }
-void rb_gc_register_address(VALUE *address) {
+int sp_cext_register_address(VALUE *address) {
     install_hooks();
-    for (size_t i = 0; i < globals_n; ++i) if (globals[i] == address) return;
+    for (size_t i = 0; i < globals_n; ++i) if (globals[i] == address) return 0;
     if (globals_n == globals_cap) {
         size_t n = globals_cap ? globals_cap * 2 : 16;
         VALUE **next = allocate(n * sizeof(*next));
@@ -135,7 +135,9 @@ void rb_gc_register_address(VALUE *address) {
         free(globals); globals = next; globals_cap = n;
     }
     globals[globals_n++] = address;
+    return 1;
 }
+void rb_gc_register_address(VALUE *address) { (void)sp_cext_register_address(address); }
 void rb_global_variable(VALUE *address) { rb_gc_register_address(address); }
 void rb_gc_unregister_address(VALUE *address) {
     for (size_t i = 0; i < globals_n; ++i) if (globals[i] == address) {

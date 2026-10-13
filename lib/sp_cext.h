@@ -17,6 +17,7 @@ typedef struct {
 } sp_cext_extension;
 sp_PolyArray *sp_cext_share_new_array(sp_PolyArray *);
 void sp_cext_init(sp_cext_extension *);
+int sp_cext_register_address(VALUE *);
 int sp_cext_unwinding(void);
 void sp_cext_resume_unwind(void);
 extern void *sp_cext_current_block;
