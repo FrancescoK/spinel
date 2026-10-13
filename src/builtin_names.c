@@ -1295,3 +1295,8 @@ int is_alias_method_name(const char *n) { return n && sp_streq(n, "alias_method"
 int is_define_method_name(const char *n) {
   return n && sp_streq(n, "define_method");
 }
+
+/* node types with no NodeKind of their own, as nt_type spells them */
+int is_arguments_node_type(const char *t) { return t && sp_streq(t, "ArgumentsNode"); }
+
+int is_when_node_type(const char *t) { return t && sp_streq(t, "WhenNode"); }

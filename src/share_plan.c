@@ -91,6 +91,7 @@
 #include <stdlib.h>
 #include "codegen_internal.h"
 #include "builtin_ops.h"
+#include "builtin_names.h"
 #include "call_plan.h"
 #include "repr.h"
 #include "share.h"
@@ -229,6 +230,7 @@ static int share_plan_need_of(int need) {
 int share_plan_need(Compiler *c, int v) { return share_plan_need_of(share_value_needs_handle(c, v)); }
 
 static int share_plan_box_plain(Compiler *c, int v);
+static int share_plan_box_kept(Compiler *c, int v);
 
 /* What a consumer in `role` needs of value v, whose own need (what its
    facts say a taker needs) is `need`. */
@@ -238,11 +240,14 @@ static int share_plan_role_need(Compiler *c, int v, int role, int need) {
   /* A box is copied by value, so a box of a String's bytes is a String of
      its own once a copy is changed in place: a box of a String no other
      name holds is a new handle, which every copy names, unless a copy is
-     proven unseen (share_plan_box_plain). A frozen literal is its own
-     object already. Any other value needs what a taker does. */
+     proven unseen (share_plan_box_plain), or the box goes into nothing
+     that keeps it (share_plan_box_kept): a builtin that only reads it is
+     handed the bytes. A frozen literal is its own object already. Any
+     other value needs what a taker does. */
   if (role == SPR_BOX) {
     if (share_frozen_literal(c, v)) return SPN_BYTES;
-    if (share_value_fresh(c, v, 0)) return share_plan_box_plain(c, v) ? SPN_BYTES : SPN_NEW;
+    if (share_value_fresh(c, v, 0))
+      return share_plan_box_plain(c, v) || !share_plan_box_kept(c, v) ? SPN_BYTES : SPN_NEW;
   }
   /* the store asks past the literal it splits (never less than the value) */
   if (role == SPR_STORE && need == SPN_BYTES) return share_plan_need_of(share_store_needs_handle(c, v));
@@ -342,6 +347,101 @@ static void share_plan_roles_build(Compiler *c) {
     NT_FOREACH_KIND(nt, preds[k], n) share_plan_role_mark(c, nt_ref(nt, n, "predicate"), SPR_TEST);
   NT_FOREACH_KIND(nt, NK_MultiWriteNode, mw) share_plan_masgn_stores(c, nt_ref(nt, mw, "value"));
   NT_FOREACH_KIND(nt, NK_CallNode, n) share_plan_identity_roles(c, n);
+}
+
+/* Does builtin call `call` keep or hand on the argument it is given: a
+   store into its receiver's elements, a constructor, an ivar store, a proc
+   call (its parameter keeps it), Array(); or answer it (2: its consumer
+   decides)? A builtin that only reads it (0) is handed its bytes. */
+static int share_plan_builtin_keeps(Compiler *c, int call) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, call, "name");
+  int recv = nt_ref(nt, call, "receiver");
+  if (!nm) return 0;
+  TyKind rt = recv >= 0 ? c->ntype[recv] : TY_UNKNOWN;
+  TyKind fams[6];
+  int nf = 0;
+  if (rt == TY_STRING || rt == TY_STRBUF) fams[nf++] = TY_STRING;
+  else if (ty_is_array(rt) || ty_is_ptr_array(rt)) fams[nf++] = BOP_ANY_ARRAY;
+  else if (ty_is_hash(rt)) fams[nf++] = BOP_ANY_HASH;
+  else if (rt == TY_PROC || rt == TY_METHOD || rt == TY_CURRY) fams[nf++] = BOP_CALLABLE;
+  else if (recv >= 0 && rt != TY_POLY && rt != TY_UNKNOWN) fams[nf++] = rt;
+  else { fams[nf++] = BOP_ANY_ARRAY; fams[nf++] = BOP_ANY_HASH; fams[nf++] = TY_CLASS; fams[nf++] = BOP_CALLABLE; }
+  fams[nf++] = BOP_ANY_RECV;
+  int keep = 0;
+  for (int i = 0; i < nf; i++) {
+    switch (bop_share_named(fams[i], nm)) {
+    case BSH_STORE_LAST: case BSH_STORE_ALL: case BSH_STORE_TAIL: case BSH_MERGE: case BSH_ARRAY_OF:
+    case BSH_CALL: case BSH_IVAR_SET: case BSH_EXEC: case BSH_NEW: case BSH_NEW_FILL: case BSH_NEW_DEFAULT:
+    case BSH_NEW_FIELDS: case BSH_FILL: case BSH_SUM:
+      return 1;
+    case BSH_LAST: case BSH_FETCH:
+      keep = 2;
+      break;
+    default: break;
+    }
+  }
+  return keep;
+}
+
+static int share_plan_box_kept(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  int n = c->share_parent_n;
+  for (int depth = 0; depth < 64; depth++) {
+    int p = c->share_parent && v >= 0 && v < n ? c->share_parent[v] : -1;
+    if (p < 0 || p >= n) return 0;
+    const char *pty = nt_type(nt, p);
+    /* (no node kinds of their own) an argument list's call, a `when` arm */
+    if (is_arguments_node_type(pty)) {
+      int call = c->share_parent[p];
+      if (call < 0 || call >= n) return 0;
+      if (nt_kind(nt, call) != NK_CallNode)
+        return nt_kind(nt, call) == NK_SuperNode || nt_kind(nt, call) == NK_YieldNode;
+      const CallPlan *cp = cplan_user(c, call);
+      if (cp->mi >= 0 || cp->dispatch != CP_NONE) return 1;
+      int k = share_plan_builtin_keeps(c, call);
+      if (k != 2) return k;
+      v = call;
+      continue;
+    }
+    if (is_when_node_type(pty)) { v = p; continue; }
+    switch (nt_kind(nt, p)) {
+    /* a holder: a container literal, a variable, a constant, a value a
+       method, block or jump hands on */
+    case NK_ArrayNode: case NK_HashNode: case NK_KeywordHashNode:
+    case NK_LocalVariableWriteNode: case NK_InstanceVariableWriteNode: case NK_GlobalVariableWriteNode:
+    case NK_ClassVariableWriteNode: case NK_ConstantWriteNode: case NK_ConstantPathWriteNode:
+    case NK_LocalVariableOrWriteNode: case NK_InstanceVariableOrWriteNode: case NK_GlobalVariableOrWriteNode:
+    case NK_ClassVariableOrWriteNode: case NK_LocalVariableAndWriteNode: case NK_InstanceVariableAndWriteNode:
+    case NK_GlobalVariableAndWriteNode: case NK_ClassVariableAndWriteNode: case NK_MultiWriteNode:
+    case NK_ReturnNode: case NK_NextNode: case NK_BreakNode: case NK_YieldNode: case NK_SplatNode:
+    case NK_DefNode: case NK_BlockNode: case NK_LambdaNode: case NK_OptionalParameterNode:
+    case NK_OptionalKeywordParameterNode:
+      return 1;
+    case NK_AssocNode:
+      /* a Hash keeps a value; a String key is copied and frozen */
+      if (nt_ref(nt, p, "value") != v) return 0;
+      v = p;
+      continue;
+    /* the value of a conditional, a sequence's last statement, a group:
+       its own consumer decides */
+    case NK_ParenthesesNode: case NK_IfNode: case NK_UnlessNode: case NK_ElseNode:
+    case NK_CaseNode: case NK_InNode: case NK_CaseMatchNode: case NK_AndNode: case NK_OrNode: case NK_BeginNode:
+    case NK_RescueModifierNode:
+      v = p;
+      continue;
+    case NK_StatementsNode: {
+      int bn = 0;
+      const int *bv = nt_arr(nt, p, "body", &bn);
+      if (bn <= 0 || bv[bn - 1] != v) return 0;
+      v = p;
+      continue;
+    }
+    default:
+      return 0;
+    }
+  }
+  return 0;
 }
 
 /* Is node v, a new String, an element of a container literal a holder

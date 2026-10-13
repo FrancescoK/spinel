@@ -890,6 +890,7 @@ sp_File *sp_sock_pair_end(sp_int domain, sp_int type, sp_int proto, sp_int which
    without its AF_ / SOCK_ prefix, as CRuby reads it. An unknown name is CRuby's
    SocketError. */
 sp_int sp_sock_addrinfo_hint(sp_RbVal v, sp_int is_family) {
+  v = sp_rbval_str(v);
   if (v.tag == SP_TAG_NIL) return 0;
   if (v.tag == SP_TAG_INT) return v.v.i;
   const char *name = NULL;

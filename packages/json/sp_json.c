@@ -141,6 +141,7 @@ const char *sp_json_str(const char *s) {
 }
 
 static const char *sp_json_key(sp_RbVal k) {
+  k = sp_rbval_str(k);
   if (k.tag == SP_TAG_STR)  return sp_json_str(k.v.s);
   if (k.tag == SP_TAG_SYM)  return sp_json_str(sp_sym_name_fn ? sp_sym_name_fn((sp_sym)k.v.i) : "");
   if (k.tag == SP_TAG_INT)  return sp_json_str(sp_int_to_s(k.v.i));
@@ -256,6 +257,7 @@ static const char *sp_json_float(double d) {
 
 /* Everything but a container: the leaf arms, answering one GC string. */
 static const char *sp_json_scalar(sp_RbVal v) {
+  v = sp_rbval_str(v);
   switch (v.tag) {
     case SP_TAG_INT:  return sp_int_to_s(v.v.i);
     case SP_TAG_BIGINT: return sp_bigint_to_s((sp_Bigint *)v.v.p);

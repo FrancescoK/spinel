@@ -302,6 +302,8 @@ int array_unseen_add_kind(const char *n);
 
 int is_scan_name(const char *n); /* scan: a String's match iterator */
 int is_insert_name(const char *n); /* insert */
+int is_arguments_node_type(const char *t); /* ArgumentsNode */
+int is_when_node_type(const char *t);      /* WhenNode */
 int is_clear_name(const char *n); /* clear */
 int is_enumerator_with(const char *n); /* with_index with_object: an enumerator link */
 int is_lazy_name(const char *n);       /* lazy */
