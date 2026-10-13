@@ -2125,7 +2125,21 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
         buf_puts(b, "; ");
       }
     }
-    else if (p0) { buf_printf(b, "lv_%s = ", p0); bp_elem_read(c, block, BP0(c, block), k, ta, ti, b); buf_puts(b, "; "); }
+    else if (p0) {
+      buf_printf(b, "lv_%s = ", p0);
+      /* a boxed element into a typed parameter is unboxed to its type, as the
+         two-parameter binding above does: bound as it was, a String
+         parameter took the sp_RbVal and the C did not build */
+      Scope *psc = sp_streq(k, "Poly") ? comp_scope_of(c, block) : NULL;
+      LocalVar *plv = psc ? scope_local(psc, BP0(c, block)) : NULL;
+      if (plv && plv->type != TY_POLY && plv->type != TY_UNKNOWN) {
+        char src[64];
+        snprintf(src, sizeof src, "sp_PolyArray_get(_t%d, _t%d)", ta, ti);
+        emit_unbox_text(c, plv->type, src, b);
+      }
+      else bp_elem_read(c, block, BP0(c, block), k, ta, ti, b);
+      buf_puts(b, "; ");
+    }
   }
   /* The block's value expression may spill setup statements to g_pre (e.g.
      a nested count loop). Those must run per iteration: redirect g_pre into
