@@ -1144,6 +1144,31 @@ static int emit_cext_copy(Compiler *c, int recv, int cid, int freeze_mode, const
   return 1;
 }
 
+/* `_t<td> = ` a copy of the object _t<to> points at, as a class cid
+   receiver: the struct of its run-time class, which a method of cid
+   inherited by a subclass (Base#with's `dup` on a Var) reaches, and which
+   is larger than cid's. Copying cid's struct alone dropped the subclass's
+   instance variables. */
+static void emit_obj_struct_copy(Compiler *c, int cid, int to, int td, Buf *b) {
+  ClassInfo *dci = &c->classes[cid];
+  const char *cn = dci->c_name;
+  int any = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *kc = &c->classes[k];
+    if (k == cid || !kc->instantiated || kc->is_value_type || kc->is_native_class ||
+        !is_descendant(c, k, cid) || comp_class_is_module(c, kc)) continue;
+    if (!any) buf_printf(b, "switch (_t%d->cls_id) { ", to);
+    any = 1;
+    buf_printf(b, "case %d: { sp_%s *_n = SP_POOL_NEW(%s, %s%s%s); *_n = *(sp_%s *)_t%d; _t%d = (sp_%s *)_n; break; } ",
+               k, kc->c_name, kc->c_name, class_needs_scan(kc) ? "sp_" : "", class_needs_scan(kc) ? kc->c_name : "NULL",
+               class_needs_scan(kc) ? "__gc_scan" : "", kc->c_name, to, td, cn);
+  }
+  if (any) buf_puts(b, "default: { ");
+  buf_printf(b, "_t%d = SP_POOL_NEW(%s, %s%s%s); *_t%d = *_t%d; ", td, cn,
+             class_needs_scan(dci) ? "sp_" : "", class_needs_scan(dci) ? cn : "NULL",
+             class_needs_scan(dci) ? "__gc_scan" : "", td, to);
+  if (any) buf_puts(b, "} } ");
+}
 int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc) {
   if (recv >= 0 && (comp_ntype(c, recv) == TY_RANGE || comp_ntype(c, recv) == TY_FLOAT_RANGE ||
                    comp_ntype(c, recv) == TY_STR_RANGE) &&
@@ -1435,15 +1460,14 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
           buf_printf(b, "sp_%s *_t%d = NULL; SP_GC_ROOT(_t%d); ", cn, td, td);
           if (freeze_mode == 0)
             buf_printf(b, "if (SP_UNLIKELY(_t%d == NULL)) sp_raise_cls(\"ArgumentError\", \"can't unfreeze NilClass\"); ", to);
-          buf_printf(b, "if (SP_LIKELY(_t%d != NULL)) { _t%d = SP_POOL_NEW(%s, %s%s%s); *_t%d = *_t%d; ", to,
-                     td, cn, class_needs_scan(dci) ? "sp_" : "", class_needs_scan(dci) ? cn : "NULL",
-                     class_needs_scan(dci) ? "__gc_scan" : "", td, to);
+          buf_printf(b, "if (SP_LIKELY(_t%d != NULL)) { ", to);
+          emit_obj_struct_copy(c, cid, to, td, b);
         }
-        else
-          buf_printf(b, "sp_%s *_t%d = SP_POOL_NEW(%s, %s%s%s); *_t%d = *_t%d; SP_GC_ROOT(_t%d); ",
-                     cn, td, cn,
-                     class_needs_scan(dci) ? "sp_" : "", class_needs_scan(dci) ? cn : "NULL",
-                     class_needs_scan(dci) ? "__gc_scan" : "", td, to, td);
+        else {
+          buf_printf(b, "sp_%s *_t%d = NULL; ", cn, td);
+          emit_obj_struct_copy(c, cid, to, td, b);
+          buf_printf(b, "SP_GC_ROOT(_t%d); ", td);
+        }
         /* The struct copy carries the ORIGINAL's cls_id, which for a singleton
            receiver is the synthesized subclass: the copy then answered that
            class's methods at run time (#4043). #dup drops them, so the copy
