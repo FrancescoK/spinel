@@ -14611,8 +14611,13 @@ static void emit_class_body_stmts(Compiler *c, int ci, int body, Buf *b, int ind
                  sp_streq(cn, "remove_class_variable")) &&
           diagnose_unsupported_call(c, stmts[k])) break;
       /* an attr call whose splat names nothing the compiler can read
-         (desugar_attr_const_splat) would declare nothing */
-      if (nt_int(nt, stmts[k], "attr_splat", 0) && diagnose_unsupported_call(c, stmts[k])) break;
+         (desugar_attr_const_splat) would declare nothing: emitted as a
+         statement, refused there (deferred at it under --defer-refusals),
+         not skipped as a declaration */
+      if (nt_int(nt, stmts[k], "attr_splat", 0)) {
+        emit_stmt_or_defer(c, stmts[k], b, indent);
+        continue;
+      }
       /* Kernel calls that act (output, an exception, exit) run where they
          stand, as CRuby runs a class body top to bottom: `raise` or `warn`
          in a class body was skipped as a declaration */

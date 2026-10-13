@@ -17437,12 +17437,15 @@ static int sce_graft(Compiler *c, const char *text, int site, int **out, int *n)
 }
 /* Is every read of constant `name` in the program the receiver of a call
    that leaves the Array as it is? Then its literal is what an each sees. */
-static int sce_const_unmutated_ex(const NodeTable *nt, const char *name, int excused);
+static int sce_const_unmutated_ex(const NodeTable *nt, const char *name, int excused, int no_alias);
 static int sce_const_unmutated(const NodeTable *nt, const char *name) {
-  return sce_const_unmutated_ex(nt, name, 0);
+  return sce_const_unmutated_ex(nt, name, 0, 0);
 }
-/* ... but for `excused` reads the caller knows leave it as it is */
-static int sce_const_unmutated_ex(const NodeTable *nt, const char *name, int excused) {
+/* ... but for `excused` reads the caller knows leave it as it is. With
+   no_alias, a call that answers the Array itself (to_a) is a read that can
+   change it later (`FLAGS.to_a << :c`): the attr splat reads the names once,
+   ahead of anything that runs. */
+static int sce_const_unmutated_ex(const NodeTable *nt, const char *name, int excused, int no_alias) {
   static const char *const RO[] = { "each", "each_with_index", "each_with_object", "map", "flat_map",
     "filter_map", "select", "reject", "find", "include?", "first", "last", "size", "length", "count",
     "empty?", "any?", "all?", "none?", "join", "to_a", "freeze", "frozen?", "dup", "[]", "index",
@@ -17466,6 +17469,7 @@ static int sce_const_unmutated_ex(const NodeTable *nt, const char *name, int exc
     if (r < 0 || nt_kind(nt, r) != NK_ConstantReadNode) continue;
     const char *cn = nt_str(nt, r, "name"), *m = nt_str(nt, it.id, "name");
     if (!cn || !m || !sp_streq(cn, name)) continue;
+    if (no_alias && sp_streq(m, "to_a")) continue;
     for (int q = 0; RO[q]; q++) if (sp_streq(m, RO[q])) { ro++; break; }
   }
   nt_kind_iter_close(&it);
@@ -17506,7 +17510,8 @@ static int sce_const_elems_ex(const NodeTable *nt, int body, int before, const c
       if (w >= 0 || i >= before) return -1;
       w = bb[i];
     }
-  if (w < 0 || !sce_const_unmutated_ex(nt, name, excused)) return -1;
+  /* the attr splat (the only caller with excused reads) takes no alias */
+  if (w < 0 || !sce_const_unmutated_ex(nt, name, excused, excused > 0)) return -1;
   return sce_array_elems(nt, nt_ref(nt, w, "value"), out);
 }
 
