@@ -137,9 +137,12 @@ These are deliberate consequences of real parallelism, listed in
   `-O2`'s; the build-time default is `SP_FIBER_STACK_SIZE` in lib/sp_fiber.h.
   Below the stack sits a 256 KB guard (`SP_FIBER_GUARD_SIZE`, never
   touched), so a frame that steps past the end faults in the guard instead
-  of writing into whatever mapping is below, and the fault is reported as
-  `spinel: fiber stack overflow: ...` naming the size and the knob before
-  the process dies by the signal (#4496).
+  of writing into whatever mapping is below (#4496). The fault raises
+  `SystemStackError` in that fiber, as the main thread's overflow does: a
+  `rescue` in the body takes it, and one nothing rescues ends the thread
+  (raised again at `#join` / `#value`), the Fiber (at `#resume`) or the
+  Enumerator (at `#next`). A depth CRuby reaches but 256 KB does not is
+  `SPINEL_FIBER_STACK`'s to give.
 - **Interleaving is nondeterministic.** The ordering of `Thread.pass`,
   `Thread.list` membership, and the exact moment a `Thread#raise` / `#kill` is
   delivered are nondeterministic, where the single-worker model was
