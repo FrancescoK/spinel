@@ -1178,6 +1178,17 @@ int text_diverges(const char *txt) {
 }
 
 static void emit_str_expr_ex(Compiler *c, int node, int strict, Buf *b) {
+  /* --share-strings: a value marked to be stored as the handle (strbuf_box:
+     a literal or a constant a shared container keeps) is read here as its
+     String, with the mark lifted, as emit_boxed_strbuf reads it: this slot
+     takes its bytes, and the marked form is the handle, which no
+     conversion keeps in a const char * slot */
+  if (repr_share_rule(c) && node >= 0 && c->strbuf_box[node] && store_value_kind(c, node) == TY_STRBUF) {
+    int sv = view_push_repr(c, node, VR_STRBUF_BOX, 0);
+    emit_str_expr_ex(c, node, strict, b);
+    view_pop(c, sv);
+    return;
+  }
   if (yield_site_type(c, node) == TY_POLY) {
     /* sp_poly_arg_str, not sp_poly_to_s: a boxed user object in this slot
        converts through #to_str or raises, where to_s rendered it as
