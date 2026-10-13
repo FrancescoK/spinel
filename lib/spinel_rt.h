@@ -9641,8 +9641,13 @@ static sp_StrPolyHash *sp_md_named_captures(sp_MatchData *m) {
   for (int i = 0; i < n; i++) {
     int g = -1;
     const char *nm = re_named_name(m->pat, i, &g);
-    /* the engine's own C string, with no tag byte: copied as one (sp_Regexp_names) */
-    if (nm) sp_StrPolyHash_set(h, sp_str_dup_external(nm), sp_box_nullable_str(sp_MatchData_aref(m, g)));
+    /* the engine's own C string, with no tag byte: copied as one
+       (sp_Regexp_names), and rooted while the value allocates */
+    if (nm) {
+      const char *k = sp_str_dup_external(nm); SP_GC_ROOT_STR(k);
+      sp_RbVal v = sp_box_nullable_str(sp_MatchData_aref(m, g));
+      sp_StrPolyHash_set(h, k, v);
+    }
   }
   return h;
 }

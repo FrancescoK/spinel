@@ -12,3 +12,6 @@ false
 "(?-mix:ab+)|c\\.d|(?i-mx:e(f|g))|h\\*|(?m-ix:x)"
 true
 true
+{"word" => "abc", "num" => "123", "none" => nil}
+["word", "num", "none"]
+"123"
