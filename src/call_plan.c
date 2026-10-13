@@ -1221,11 +1221,30 @@ static const char *cplan_binding_what(Compiler *c, int id) {
          "in-scope name is)";
 }
 
+/* `class_eval(str)`, `module_eval(str)`: the text form
+   desugar_string_class_eval could not expand (an interpolation it does not
+   read, a String only the run time has). Skipped as a class-body
+   declaration, its methods were never defined. Not where the program
+   defines a method of the name. */
+static const char *cplan_eval_text_what(Compiler *c, int id, const char *name) {
+  const NodeTable *nt = c->nt;
+  if (!sp_streq(name, "class_eval") && !sp_streq(name, "module_eval")) return NULL;
+  int args = nt_ref(nt, id, "arguments"), argc = 0;
+  if (args >= 0) nt_arr(nt, args, "arguments", &argc);
+  if (argc < 1 || nt_ref(nt, id, "block") >= 0) return NULL;
+  if (comp_method_index(c, name) >= 0) return NULL;
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_cmethod_in_chain(c, k, name, NULL) >= 0) return NULL;
+  return sp_streq(name, "module_eval")
+    ? "module_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead)"
+    : "class_eval of a String the compiler cannot expand is not supported by AOT compilation (pass a block instead)";
+}
 static const char *cplan_eval_what(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, id) != NK_CallNode) return NULL;
   const char *name = nt_str(nt, id, "name");
-  if (!name || !sp_streq(name, "eval")) return NULL;
+  if (!name) return NULL;
+  if (!sp_streq(name, "eval")) return cplan_eval_text_what(c, id, name);
   int args = nt_ref(nt, id, "arguments");
   int argc = 0;
   if (args >= 0) nt_arr(nt, args, "arguments", &argc);
