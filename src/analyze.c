@@ -9536,14 +9536,15 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
   /* Explicit `self.` receiver inside a class-method body: self IS the
      class there, so a call that resolves to a sibling/inherited class
      method drops the receiver and rides the bare-call cmethod dispatch
-     (`def self.go; self.maker; end`). Writers (self.x = v) and names with
-     no matching class method (self.class, self.name, ...) keep their
+     (`def self.go; self.maker; end`). A writer goes the same way (`def
+     self.reset; self.table_name = "t"; end`): kept, its self was a class
+     no arm took a setter on, and the call was refused. Names with no
+     matching class method (self.class, self.name, ...) keep their
      receiver. */
   {
     int srecv = nt_ref(nt, id, "receiver");
     if (nm && srecv >= 0 && nt_type(nt, srecv) &&
-        sp_streq(nt_type(nt, srecv), "SelfNode") &&
-        nm[0] && nm[strlen(nm) - 1] != '=') {
+        sp_streq(nt_type(nt, srecv), "SelfNode") && nm[0]) {
       Scope *ssc = comp_scope_of(c, id);
       if (ssc && ssc->is_cmethod && ssc->class_id >= 0 &&
           comp_cmethod_in_chain(c, ssc->class_id, nm, NULL) >= 0) {
