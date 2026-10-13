@@ -40543,8 +40543,12 @@ static void refuse_string_read_copies(Compiler *c) {
              run-time length check, as CRuby's own (rt_site) */
           int grow = 0, clear = 0, rs = an_unparen(nt, r);
           const char *subj = nt_kind(nt, rs) == NK_LocalVariableReadNode ? nt_str(nt, rs, "name") : NULL;
-          /* (a subject the block rebinds is another String once it does) */
-          if (subj && scan_local_written(nt, nt_ref(nt, blk, "body"), subj)) subj = NULL;
+          /* (a subject the block rebinds is another String once it does,
+             and so is one the scan's own pattern rebinds, which runs
+             after the subject is read and before the check is opened) */
+          if (subj && (scan_local_written(nt, nt_ref(nt, blk, "body"), subj) ||
+                       scan_local_written(nt, nt_ref(nt, u, "arguments"), subj)))
+            subj = NULL;
           /* a raise out of a watched scan leaves $~ at the last match the
              loop took before the first turn, where CRuby's is the turn's:
              a method that reads it keeps the refusal */

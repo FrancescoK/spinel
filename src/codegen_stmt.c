@@ -3054,14 +3054,21 @@ int strbuf_recv_handle(Compiler *c, int id, int recv, char *out, size_t cap) {
     snprintf(out, cap, "_t%d", held);
     return 1;
   }
-  if (strbuf_slot_ref(c, recv, out, cap)) return strbuf_pickup_nil_check(c, nt_str(c->nt, id, "name"), recv, out, cap);
+  int sr = strbuf_pickup_nil_check(c, nt_str(c->nt, id, "name"), recv, out, cap);
+  if (sr) return sr;
   return strbuf_route_recv(c, id, recv, out, cap) ? 2 : 0;
 }
 /* See codegen_internal.h. */
 int strbuf_pickup_nil_check(Compiler *c, const char *name, int recv, char *out, size_t cap) {
   /* --share-strings: a deep-return pickup that can answer nil (a nil
      tail, an_pickup_tail) raises NoMethodError for name, as the copy's
-     own check did; its text runs the call, so it is read once */
+     own check did; its text runs the call, so it is read once. Where the
+     checked text does not fit out, the read declines, its prelude dropped,
+     as strbuf_slot_ref's does where its text alone does not fit, rather
+     than go on without the check. */
+  Buf *pre = g_pre;
+  size_t pre_mark = pre ? pre->len : 0;
+  if (!strbuf_slot_ref(c, recv, out, cap)) return 0;
   if (!strbuf_pickup_may_nil(c, recv)) return 1;
   int t = ++g_tmp;
   Buf nb; memset(&nb, 0, sizeof nb);
@@ -3070,8 +3077,12 @@ int strbuf_pickup_nil_check(Compiler *c, const char *name, int recv, char *out, 
              t, out, t, name, t);
   int fit = strlen(nb.p) < cap;
   if (fit) snprintf(out, cap, "%s", nb.p);
+  else if (pre && g_pre == pre && pre->len > pre_mark) {
+    pre->len = pre_mark;
+    pre->p[pre_mark] = '\0';
+  }
   free(nb.p);
-  return fit ? 2 : 1;
+  return fit ? 2 : 0;
 }
 /* strbuf_recv_handle's route half: 1 with the text in out, else 0 with
    nothing emitted */

@@ -2470,11 +2470,13 @@ static void emit_poly_slot_text(Compiler *c, int src, int k, int arg, const char
 }
 
 void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *b, int force_poly) {
-  /* as many arguments as the boxed channel holds (SP_PROC_ARG_SLOTS,
-     lib/sp_proc.h), in at least 16 sp_int slots: a bound Method's trampoline
-     is handed the true count and reads that many, and 16 slots left the 17th
-     argument of a 17-parameter Method past the array */
-  int nargs = argc < 64 ? argc : 64;
+  /* every argument, in at least 16 sp_int slots: the callee is handed the
+     true count and reads that many, and 16 slots left the 17th argument of a
+     17-parameter Method past the array. The boxed ones past the channel's
+     SP_PROC_ARG_SLOTS (lib/sp_proc.h) ride the call's wide store, opened
+     for it (sp_proc_wide_open), where the 65th argument of a wider call was
+     read past both arrays */
+  int nargs = argc;
   int any_poly = force_poly;
   /* the scope whose block takes the arguments, to type the slots by its parameters */
   int src = -1;
@@ -2505,7 +2507,10 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
        published both unboxed (the sp_int[] slot, for a concrete parameter)
        and boxed (the side-channel, for a poly parameter). A nil/unknown arg
        has no storable C type; it rides an sp_int temp and boxes to nil. */
-    int atmp[64], slot[64], aoint[64], hold[64];
+    int nt4 = nargs > 0 ? nargs : 1;
+    int *atmp = calloc((size_t)nt4 * 4, sizeof(int));
+    if (!atmp) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    int *slot = atmp + nt4, *aoint = slot + nt4, *hold = aoint + nt4;
     for (int k = 0; k < nargs; k++) {
       TyKind at = proc_arg_ty(c, argv[k]);
       int storable = ty_is_object(at) || c_type_name(at) != NULL;
@@ -2591,17 +2596,19 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
        in front of its own call. The temps above stay in the prelude: they are
        per-call, and they are what the roots are taken on. */
     buf_puts(b, "(");
+    if (nargs > SP_PROC_ARG_SLOTS) buf_printf(b, "sp_proc_wide_open(%d), ", nargs);
     for (int k = 0; k < nargs; k++) {
       TyKind at = proc_arg_ty(c, argv[k]);
       int storable = ty_is_object(at) || c_type_name(at) != NULL;
       char tn[24]; snprintf(tn, sizeof tn, "_t%d", atmp[k]);
-      buf_printf(b, "_sp_proc_poly_args[%d] = ", k);
+      if (k < SP_PROC_ARG_SLOTS) buf_printf(b, "_sp_proc_poly_args[%d] = ", k);
+      else buf_printf(b, "sp_proc_arg_set(%d, ", k);
       /* a handle parameter is NULL for a nil argument: it boxes as nil */
       if (at == TY_STRBUF) buf_printf(b, "(%s ? sp_box_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil())", tn, tn);
       else if (aoint[k]) buf_printf(b, "%s(%s)", oint_box(at), tn);
       else if (storable) emit_proc_arg_boxed(c, at, tn, hold[k], b);
       else buf_puts(b, "sp_box_nil()");
-      buf_puts(b, ", ");
+      buf_puts(b, k < SP_PROC_ARG_SLOTS ? ", " : "), ");
     }
     if (kwpos) buf_printf(b, "_sp_proc_kwpos = %d, ", kwpos);
     buf_printf(b, "(sp_int[%d]){", nargs > 16 ? nargs : 16);
@@ -2631,6 +2638,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
     }
     if (nargs == 0) buf_puts(b, "0");  /* C99: no empty initializer list */
     buf_puts(b, "}))");
+    free(atmp);
   }
   else {
     if (kwpos) buf_printf(b, "(_sp_proc_kwpos = %d, ", kwpos);
@@ -6637,14 +6645,6 @@ int emit_poly_callable_prearm(Compiler *c, const char *name, int argc,
   if (!name ||
       !is_call_alias(name))
     return 0;
-  /* The callable ABI packs positional arguments into the boxed side channel,
-     so the ceiling is that channel's: publishing past it would write out of
-     bounds and the compound literal would carry more initializers than the
-     slot array holds (a hard error under -Werror). Decline for a wider call
-     so the user-class switch arms still serve a user receiver (matching this
-     path before the pre-arm existed); a callable in the slot then raises
-     NoMethodError as it did before (#4395). */
-  if (argc > SP_PROC_ARG_SLOTS) return 0;
   /* A Curry reads its arguments from the one-global _sp_proc_poly_args
      channel, so publish the boxed args as a comma sequence immediately in
      front of the call. It is collected (not emitted as a standalone
@@ -6654,12 +6654,15 @@ int emit_poly_callable_prearm(Compiler *c, const char *name, int argc,
   Buf holds; memset(&holds, 0, sizeof holds);
   if (argc > 0) {
     g_needs_proc_poly_argslot = 1;
+    /* (past the channel's slots, into the call's wide store, opened for it) */
+    if (argc > SP_PROC_ARG_SLOTS) buf_printf(&pubs, "sp_proc_wide_open(%d), ", argc);
     for (int k = 0; k < argc; k++) {
       char tn[24]; snprintf(tn, sizeof tn, "_t%d", atmp[k]);
-      buf_printf(&pubs, "_sp_proc_poly_args[%d] = ", k);
+      if (k < SP_PROC_ARG_SLOTS) buf_printf(&pubs, "_sp_proc_poly_args[%d] = ", k);
+      else buf_printf(&pubs, "sp_proc_arg_set(%d, ", k);
       if (atmp_ty[k] == TY_POLY) buf_puts(&pubs, tn);
       else emit_proc_arg_boxed(c, atmp_ty[k], tn, proc_arg_box_hold(c, atmp_ty[k], &holds, 0), &pubs);
-      buf_puts(&pubs, ", ");
+      buf_puts(&pubs, k < SP_PROC_ARG_SLOTS ? ", " : "), ");
     }
   }
   /* Build the boxed callable expression once, then assign (unboxing when the
@@ -6777,7 +6780,7 @@ int emit_poly_callable_prearm(Compiler *c, const char *name, int argc,
   buf_puts(&eb, ")");
   /* Proc/Curry go through the callable helper, which raises NoMethodError for
      anything that is not a Proc rather than reading it as one. */
-  buf_printf(&eb, " : sp_poly_callable_call_kw(_t%d, %d, (sp_int[16]){", tv, argc);
+  buf_printf(&eb, " : sp_poly_callable_call_kw(_t%d, %d, (sp_int[%d]){", tv, argc, argc > 16 ? argc : 16);
   pa_conv = "sp_poly_slot_arg";
   for (int k = 0; k < argc; k++) { if (k) buf_puts(&eb, ", "); PA_SLOT(k); }
   if (argc == 0) buf_puts(&eb, "0");
@@ -26137,8 +26140,8 @@ void emit_adapter_arg_boxed(const char *v, char kind, Buf *out) {
    a poly slot, which has no static types at all, so every argument is read
    from the boxed side-channel and converted to the parameter's C type with a
    check (#4542). Answers 1 when the body binds (*out_min / *out_max are the
-   accepted count range, max 16 for a rest), 0 when it only raises; in the
-   thunk mode a non-binding body is not emitted at all. */
+   accepted count range, max -1 for a rest: any count), 0 when it only
+   raises; in the thunk mode a non-binding body is not emitted at all. */
 /* A thunk parameter read from the boxed side-channel: the value converted
    to the parameter's C type when it is of that kind, CRuby's TypeError
    otherwise (a String into an Integer parameter, an object of another
@@ -26219,11 +26222,11 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
      Integer as the array and crashed, `def o(a, b = 2)` called with one
      answered from an unset b, and a wrong count went through unchecked. A
      declared keyword parameter binds from the call's keyword hash, or takes
-     its default, and a `**kwrest` takes the keys none of them names. More
-     parameters than the channel's 16 slots, or a bound builtin's wrapper of
-     a fixed count, keep the plain positional binding. */
-  int bind = !tm->cs_synth && (!bam_wrapper(tm) || tm->rest_idx >= 0) &&
-             np - shift <= SP_PROC_ARG_SLOTS;
+     its default, and a `**kwrest` takes the keys none of them names. A
+     bound builtin's wrapper of a fixed count keeps the plain positional
+     binding. An argument past the channel's slots is read from the call's
+     wide store (sp_proc_arg), so any count binds. */
+  int bind = !tm->cs_synth && (!bam_wrapper(tm) || tm->rest_idx >= 0);
   int nreq = 0, nfixed = 0;
   for (int k = shift; k < np && bind; k++) {
     if (k == tm->rest_idx || k == tm->kwrest_idx) continue;
@@ -26315,16 +26318,10 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
     buf_puts(pb, ";\n");
   }
   /* The per-site trampoline binds one C argument per parameter, reading
-     `args[k - shift]`; the proc ABI carries at most 16 slots, so a
-     signature with more than 16 positional parameters would read past
-     the caller's `(sp_int[16])` array (a garbage value or a crash), and
-     no call could ever supply the missing arguments anyway. Decline it
-     the way the generic runtime trampoline declines `legacy_fixed > 16`
-     (sp_method_proc_tramp). A REST parameter needs a runtime guard
-     instead: the count is open-ended, so `argc > 16` would otherwise
-     silently drop the surplus from the rest array. */
-  if (tm->rest_idx >= 0)
-    buf_printf(pb, "  if (argc > %d) { sp_raise_cls(\"NoMethodError\", \"undefined method 'call' for an instance of Method\"); return 0; }\n", SP_PROC_ARG_SLOTS);
+     `args[k - shift]` and, for a boxed one, the channel and past its slots
+     the call's wide store: every proc call hands over slots for each of its
+     arguments, so a signature of any width binds, and a rest takes every
+     argument past the others. */
   if (takes_blk) buf_puts(pb, "  SP_GC_ROOT(_blk);\n");
   /* A default that writes a method-scope local the body reads cannot be
      answered from this trampoline frame either: the body reads its own
@@ -26338,8 +26335,7 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
      it as the rest-tail shapes above are declined. */
   int tramp_declines = mtp_rest_drops_tail || (!bind && (tm->kwrest_idx >= 0 || has_req_kw)) ||
                        default_writes_body_local(c, tm) ||
-                       callee_param_rename_overflow(c, tm) ||
-                       np - shift > SP_PROC_ARG_SLOTS;
+                       callee_param_rename_overflow(c, tm);
   if (boxed_src) {
     /* the thunk converts every parameter from a boxed value; a kind it
        cannot check declines the whole thunk (see thunk_param_ok) */
@@ -26361,16 +26357,16 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
        Hash past the required positionals taken as keywords, as a proc
        prologue does. */
     if (has_any_kw)
-      buf_printf(pb, "  sp_int _sp_haskw = argc > 0 && argc <= SP_PROC_ARG_SLOTS"
+      buf_printf(pb, "  sp_int _sp_haskw = argc > 0"
                      " && (_sp_kwpos == 2 || (_sp_kwpos == 0 && argc > %d))"
-                     " && _sp_proc_poly_args[argc-1].tag == SP_TAG_OBJ"
-                     " && sp_poly_is_hash_kind(_sp_proc_poly_args[argc-1].cls_id);\n"
-                     "  sp_RbVal _sp_kwh = _sp_haskw ? _sp_proc_poly_args[argc-1] : sp_box_nil();"
+                     " && sp_proc_arg(argc-1).tag == SP_TAG_OBJ"
+                     " && sp_poly_is_hash_kind(sp_proc_arg(argc-1).cls_id);\n"
+                     "  sp_RbVal _sp_kwh = _sp_haskw ? sp_proc_arg(argc-1) : sp_box_nil();"
                      " SP_GC_ROOT_RBVAL(_sp_kwh);\n"
                      "  argc -= _sp_haskw;\n", nreq);
     /* a `**nil` target refuses keywords the call passes as keywords */
     else if (scope_refuses_keywords(c, tm))
-      buf_puts(pb, "  if (_sp_kwpos == 2 && argc > 0 && sp_poly_length(_sp_proc_poly_args[argc-1]) > 0)"
+      buf_puts(pb, "  if (_sp_kwpos == 2 && argc > 0 && sp_poly_length(sp_proc_arg(argc-1)) > 0)"
                    " sp_raise_cls(\"ArgumentError\", \"no keywords accepted\");\n");
     /* CRuby names the required keywords in a positional-count error */
     if (nreq > 0 || tm->rest_idx < 0) {
@@ -26412,8 +26408,8 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
         char tail[32] = "";
         if (npost > 0) snprintf(tail, sizeof tail, " - %d", npost);
         buf_printf(pb, "  sp_PolyArray *_a%d = sp_PolyArray_new(); SP_GC_ROOT(_a%d);"
-                       " for (sp_int _i = %d; _i < argc%s && _i < SP_PROC_ARG_SLOTS; _i++)"
-                       " sp_PolyArray_push(_a%d, _sp_proc_poly_args[_i]);\n", j, j, j, tail, j);
+                       " for (sp_int _i = %d; _i < argc%s; _i++)"
+                       " sp_PolyArray_push(_a%d, sp_proc_arg(_i));\n", j, j, j, tail, j);
         if (tm->pnames[k] && g_nren < MAX_RENAME) {
           buf_printf(pb, "  sp_PolyArray *lv__a%d = _a%d;\n", j, j);
           snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", tm->pnames[k]);
@@ -26445,7 +26441,15 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
         }
         continue;
       }
-      char slot[96]; snprintf(slot, sizeof slot, "_sp_proc_poly_args[%s]", idx);
+      /* (an index past the channel's slots, or one counted from the end of
+         a call of any count, reads the call's wide store past them) */
+      char slot[96];
+      char *ie = NULL;
+      long ic = strtol(idx, &ie, 10);
+      if (ie && !*ie && ic < SP_PROC_ARG_SLOTS) snprintf(slot, sizeof slot, "_sp_proc_poly_args[%s]", idx);
+      else if (ie && !*ie) proc_arg_ref((int)ic, slot, sizeof slot);
+      else if (tm->rest_idx >= 0 || np - shift > SP_PROC_ARG_SLOTS) snprintf(slot, sizeof slot, "sp_proc_arg(%s)", idx);
+      else snprintf(slot, sizeof slot, "_sp_proc_poly_args[%s]", idx);
       /* A declared keyword parameter binds from the keyword hash, never
          from a positional slot, which may belong to a rest array
          (`def m(a, *r, c: 3)` called `call(1, 2, 9)`). */
@@ -26585,16 +26589,16 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
       buf_printf(&args, "sp_box_obj(_a%d, %s)", k - shift,
                  kwrest_any_key(c, tm) ? "SP_BUILTIN_POLY_POLY_HASH" : "SP_BUILTIN_SYM_POLY_HASH");
     else if (bind) buf_printf(&args, "_a%d", k - shift);
-    else if (pt == TY_POLY) buf_printf(&args, "_sp_proc_poly_args[%d]", k - shift);
+    else if (pt == TY_POLY) { char ref[48]; buf_puts(&args, proc_arg_ref(k - shift, ref, sizeof ref)); }
     else if (bm_param_nil_ok(pp, pt)) {
       char sl[48], ix[16];
-      snprintf(sl, sizeof sl, "_sp_proc_poly_args[%d]", k - shift);
+      proc_arg_ref(k - shift, sl, sizeof sl);
       snprintf(ix, sizeof ix, "%d", k - shift);
       emit_bm_param_nil_ok(pt, sl, ix, 0, &args);
     }
-    else if (pt == TY_FLOAT) buf_printf(&args, "sp_poly_to_f(_sp_proc_poly_args[%d])", k - shift);
+    else if (pt == TY_FLOAT) { char ref[48]; buf_printf(&args, "sp_poly_to_f(%s)", proc_arg_ref(k - shift, ref, sizeof ref)); }
     else if (pt == TY_SYMBOL) buf_printf(&args, "(sp_sym)args[%d]", k - shift);
-    else if (pt == TY_STRBUF) buf_printf(&args, "sp_poly_as_strbuf(_sp_proc_poly_args[%d])", k - shift);
+    else if (pt == TY_STRBUF) { char ref[48]; buf_printf(&args, "sp_poly_as_strbuf(%s)", proc_arg_ref(k - shift, ref, sizeof ref)); }
     else if (proc_slot_is_ptr(pt)) {
       buf_puts(&args, "(");
       emit_ctype(c, pt, &args);
@@ -26680,7 +26684,7 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
   free(mtp_body.p);
   if (binds) {
     if (out_min) *out_min = nreq;
-    if (out_max) *out_max = tm->rest_idx >= 0 ? SP_PROC_ARG_SLOTS : nfixed;
+    if (out_max) *out_max = tm->rest_idx >= 0 ? -1 : nfixed;
   }
   return binds;
 }

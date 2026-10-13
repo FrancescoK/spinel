@@ -1552,6 +1552,7 @@ static void sp_re_mark_globals(void) {
   SP_GLB_PHASE("globals:proc-channel");
   sp_mark_rbval_scratch(_sp_proc_poly_ret);
   for (int i = 0; i < SP_PROC_ARG_SLOTS; i++) sp_mark_rbval_scratch(_sp_proc_poly_args[i]);
+  if (_sp_proc_poly_wide) sp_gc_mark(_sp_proc_poly_wide);
   SP_GLB_PHASE("globals");
 #undef SP_GLB_PHASE
 }
@@ -16346,6 +16347,7 @@ static void sp_publish_worker_roots(void) {
   _sp_gc_root_push((void **)((uintptr_t)&_sp_proc_poly_ret | (uintptr_t)1));
   for (int i = 0; i < 16; i++)
     _sp_gc_root_push((void **)((uintptr_t)&_sp_proc_poly_args[i] | (uintptr_t)1));
+  _sp_gc_root_push((void **)&_sp_proc_poly_wide);
 }
 SP_CONSTRUCTOR static void sp_install_safepoint_publish(void) {
   sp_safepoint_publish_hook = sp_publish_worker_roots;
@@ -18790,7 +18792,40 @@ SP_TLS const char *sp_callee_name = NULL;
 extern SP_TLS sp_RbVal _sp_proc_poly_args[SP_PROC_ARG_SLOTS];
 #else
 SP_TLS sp_RbVal _sp_proc_poly_args[SP_PROC_ARG_SLOTS];
+SP_TLS sp_ProcWide *_sp_proc_poly_wide;
 #endif
+static SP_UNUSED void sp_proc_wide_scan(void *p) {
+  sp_ProcWide *w = (sp_ProcWide *)p;
+  for (sp_int i = 0; i < w->n; i++) sp_mark_rbval(w->v[i]);
+}
+/* Open the store of a call of argc arguments: one past the channel's slots
+   gets a fresh store sized for the rest, nil until published; a call
+   within the slots has none to open. */
+static inline void sp_proc_wide_open(sp_int argc) {
+  if (argc <= SP_PROC_ARG_SLOTS) return;
+  sp_int n = argc - SP_PROC_ARG_SLOTS;
+  if ((size_t)n > (SIZE_MAX - sizeof(sp_ProcWide)) / sizeof(sp_RbVal)) {
+    fprintf(stderr, "spinel: out of memory\n");
+    abort();
+  }
+  sp_ProcWide *w = (sp_ProcWide *)sp_gc_alloc(sizeof(sp_ProcWide) + sizeof(sp_RbVal) * (size_t)n, NULL, sp_proc_wide_scan);
+  w->n = n;
+  for (sp_int i = 0; i < n; i++) w->v[i] = sp_box_nil();
+  _sp_proc_poly_wide = w;
+}
+/* Boxed argument k of the call that entered: the channel's slot, or past
+   it the call's wide store (nil past the arguments passed). */
+static inline sp_RbVal sp_proc_arg(sp_int k) {
+  if (k < SP_PROC_ARG_SLOTS) return _sp_proc_poly_args[k];
+  sp_ProcWide *w = _sp_proc_poly_wide;
+  return w && k - SP_PROC_ARG_SLOTS < w->n ? w->v[k - SP_PROC_ARG_SLOTS] : sp_box_nil();
+}
+/* ...publishes it, where the call opened its store for that many */
+static inline void sp_proc_arg_set(sp_int k, sp_RbVal v) {
+  if (k < SP_PROC_ARG_SLOTS) { _sp_proc_poly_args[k] = v; return; }
+  sp_ProcWide *w = _sp_proc_poly_wide;
+  if (w && k - SP_PROC_ARG_SLOTS < w->n) { w->v[k - SP_PROC_ARG_SLOTS] = v; sp_gc_wb((void *)w); }
+}
 /* The block channel (_sp_proc_blk, declared above): the kernel TU owns it. */
 #ifndef SPINEL_EXT_HOST
 SP_TLS sp_Proc *_sp_proc_blk;
@@ -20029,7 +20064,7 @@ static sp_StrStrHash *sp_env_update_v_blk(sp_RbVal hv, sp_Proc *p) {
       _sp_proc_poly_args[1] = sp_box_str(ovh);
       _sp_proc_poly_args[2] = v;
       sp_int slots[16] = { (sp_int)(uintptr_t)k.v.s, (sp_int)(uintptr_t)ovh,
-                            (v.tag == SP_TAG_OBJ || v.tag == SP_TAG_STR) ? (sp_int)(uintptr_t)v.v.p : sp_poly_to_i(v) };
+                            (v.tag == SP_TAG_OBJ || v.tag == SP_TAG_STR) ? (sp_int)(uintptr_t)v.v.p : sp_poly_slot_arg(v) };
       _sp_proc_poly_ret = sp_box_nil();
       sp_int r = sp_proc_call(p, 3, slots);
       v = (_sp_proc_poly_ret.tag != SP_TAG_NIL) ? _sp_proc_poly_ret
@@ -20046,19 +20081,26 @@ static sp_RbVal sp_env_filter_bang_opt(sp_Proc *p, int keep) {
   if (sp_env_filter_core(p, keep) == 0) return sp_box_nil();
   return sp_box_obj(sp_env_to_h(), SP_BUILTIN_STR_STR_HASH);
 }
-/* A bound-Method trampoline handed more than 16 values by a splat: it is
-   handed the true count (below) and reads that many arguments, from the
-   sp_int slots or, for a boxed parameter, the boxed channel, so the slots
-   are on the heap for the call's length and the channel is filled as far as
-   it goes; 16 of each let the 17th argument of a 17-parameter Method read
-   the stack past the slots or a stale channel entry. Kept apart so the
+/* A splat of more than 16 values: the callee is handed the true count and
+   reads that many arguments, from the sp_int slots or, for a boxed
+   parameter, the boxed channel and past its slots the call's wide store
+   (sp_proc_arg), so the slots are on the heap for the call's length. 16 of
+   each let the 17th argument of a 17-parameter Method read the stack past
+   the slots, and a plain proc saw nil from its 17th parameter on. The
+   generic bound-Method trampoline still raises its own NoMethodError past
+   its legacy 16 slots, and sees the true count to do so. Kept apart so the
    common call pushes no root of its own. */
 static SP_NOINLINE void sp_proc_call_spread_wide(sp_Proc *p, sp_Proc *blk, sp_RbVal arr, sp_int n, int kwpos) {
   SP_GC_ROOT(p); SP_GC_ROOT(blk); SP_GC_ROOT_RBVAL(arr);
+  if ((size_t)n > SIZE_MAX / sizeof(sp_int)) {
+    fprintf(stderr, "spinel: out of memory\n");
+    abort();
+  }
   sp_int *slots = (sp_int *)sp_gc_alloc(sizeof(sp_int) * (size_t)n, NULL, NULL); SP_GC_ROOT(slots);
+  sp_proc_wide_open(n);
   for (sp_int i = 0; i < n; i++) {
     sp_RbVal e = sp_poly_arr_get(arr, i);
-    if (i < SP_PROC_ARG_SLOTS) _sp_proc_poly_args[i] = e;
+    sp_proc_arg_set(i, e);
     slots[i] = (e.tag == SP_TAG_OBJ || e.tag == SP_TAG_STR)
              ? (sp_int)(uintptr_t)e.v.p : sp_poly_to_i(e);
   }
@@ -20068,28 +20110,16 @@ static SP_NOINLINE void sp_proc_call_spread_wide(sp_Proc *p, sp_Proc *blk, sp_Rb
 static void sp_proc_call_spread_blk(sp_Proc *p, sp_Proc *blk, sp_RbVal arr, int kwpos) { SP_GC_ROOT(p);
   if (!p || !p->fn) return;
   sp_int n = sp_poly_length(arr);
-  if (n > 16 && p->cap_scan == sp_bm_cap_scan && p->lambda_p) { sp_proc_call_spread_wide(p, blk, arr, n, kwpos); return; }
-  sp_int fill = n > 16 ? 16 : n;
+  if (n > 16) { sp_proc_call_spread_wide(p, blk, arr, n, kwpos); return; }
   sp_int slots[16];
-  for (sp_int i = 0; i < fill; i++) {
+  for (sp_int i = 0; i < n; i++) {
     sp_RbVal e = sp_poly_arr_get(arr, i);
     _sp_proc_poly_args[i] = e;
     slots[i] = (e.tag == SP_TAG_OBJ || e.tag == SP_TAG_STR)
              ? (sp_int)(uintptr_t)e.v.p : sp_poly_to_i(e);
   }
-  /* The generic bound-Method trampoline raises its own NoMethodError for
-     argc > 16 -- the legacy sp_int ABI packs at most 16 slots. Hand it the
-     TRUE count so that guard fires: clamping first made
-     `[Wide.new.method(:m16)][0].to_proc.call(*a20)` answer 1+16 where the
-     plan (and CRuby) decline. The per-site `_mtp_N` bound-Method trampoline
-     checks its own argument count the same way, so it sees the true count
-     too. Both are created with sp_bm_cap_scan and lambda_p; every other proc
-     body reads the boxed channel with a `< 16` bound (its prologue indexes
-     `_sp_proc_poly_args[argc-1]`), so it keeps the clamp. A Hash default proc
-     shares the scan hook but is not a lambda. */
-  sp_int pass = (p->cap_scan == sp_bm_cap_scan && p->lambda_p) ? n : fill;
   _sp_proc_kwpos = kwpos;
-  sp_proc_call_blk(p, blk, pass, slots);
+  sp_proc_call_blk(p, blk, n, slots);
 }
 static void sp_proc_call_spread(sp_Proc *p, sp_RbVal arr, int kwpos) {
   sp_proc_call_spread_blk(p, NULL, arr, kwpos);
@@ -20298,11 +20328,13 @@ static sp_RbVal sp_poly_callable_call_kw(sp_RbVal v, sp_int n, const sp_int *arg
      call site's static classification could only see boxed operands. The
      trampoline raises the NoMethodError itself for a target neither stamp
      accepts. */
+  /* (a call of more than 16 arguments hands on the site's own slots, one
+     for each: 16 copied left the 17th past them, or dropped) */
   if (v.tag == SP_TAG_OBJ && v.v.p && v.cls_id == SP_BUILTIN_METHOD) {
-    sp_int slots[16];
+    sp_int slots_s[16], *slots = n > 16 ? (sp_int *)args : slots_s;
     for (sp_int i = 0; i < n && i < 16; i++) slots[i] = args[i];
     _sp_proc_blk = NULL;
-    sp_method_proc_tramp((void *)v.v.p, n < 16 ? n : 16, slots);
+    sp_method_proc_tramp((void *)v.v.p, n, slots);
     return _sp_proc_poly_ret;
   }
   /* anything else that is not a Proc is CRuby's NoMethodError -- the raw
@@ -20310,7 +20342,7 @@ static sp_RbVal sp_poly_callable_call_kw(sp_RbVal v, sp_int n, const sp_int *arg
      realized curry applied once more used to reach it) */
   if (v.tag != SP_TAG_OBJ || !v.v.p || v.cls_id != SP_BUILTIN_PROC)
     sp_raise_cls("NoMethodError", sp_nomethod_msg("call", v));
-  sp_int slots[16];
+  sp_int slots_s[16], *slots = n > 16 ? (sp_int *)args : slots_s;
   for (sp_int i = 0; i < n && i < 16; i++) slots[i] = args[i];
   _sp_proc_kwpos = kwpos;
   sp_proc_call((sp_Proc *)v.v.p, n, slots);
@@ -20329,7 +20361,7 @@ static sp_RbVal sp_poly_callable_call(sp_RbVal v, sp_int n, const sp_int *args) 
    does not consume it stayed behind -- through a raise, too -- for the next
    body entered without one of its own. */
 static void sp_bm_enter(sp_BoundMethod *m, sp_int n, sp_int *slots, int kwpos, sp_Proc *blk) {
-  int thunk = m && m->fn && m->thunk && !m->unbound && n <= SP_PROC_ARG_SLOTS;
+  int thunk = m && m->fn && m->thunk && !m->unbound;
   _sp_proc_kwpos = thunk ? kwpos : 0;
   _sp_proc_blk = thunk ? blk : NULL;
   sp_method_proc_tramp((void *)m, n, slots);
@@ -20357,10 +20389,19 @@ static sp_RbVal sp_bm_call_spread(sp_BoundMethod *m, sp_Proc *blk, sp_RbVal arr,
     sp_raise_cls("NoMethodError", sp_sprintf("undefined method '%s' for an instance of Object",
                                              m && m->name ? m->name : "?"));
   sp_int n = sp_poly_length(arr);
-  /* the Method lane publishes into the boxed side channel, so its ceiling
-     is that channel's -- a 17-argument call was refused outright */
-  if (n > SP_PROC_ARG_SLOTS) sp_raise_cls("NoMethodError", "undefined method 'call' for an instance of Method");
-  sp_int slots[SP_PROC_ARG_SLOTS];
+  /* the Method lane publishes into the boxed side channel, and past its
+     slots into the call's wide store, with slots on the heap for a call
+     that wide -- a 17-argument call was refused outright, and a 65th */
+  sp_int slots_s[SP_PROC_ARG_SLOTS], *slots = slots_s;
+  if (n > SP_PROC_ARG_SLOTS) {
+    SP_GC_ROOT(m); SP_GC_ROOT(blk); SP_GC_ROOT_RBVAL(arr);
+    if ((size_t)n > SIZE_MAX / sizeof(sp_int)) {
+      fprintf(stderr, "spinel: out of memory\n");
+      abort();
+    }
+    slots = (sp_int *)sp_gc_alloc(sizeof(sp_int) * (size_t)n, NULL, NULL); SP_GC_ROOT(slots);
+    sp_proc_wide_open(n);
+  }
   for (sp_int i = 0; i < n; i++) {
     sp_RbVal e = sp_poly_arr_get(arr, i);
     /* The trampoline rejects an argument whose scalar kind does not match
@@ -20368,7 +20409,7 @@ static sp_RbVal sp_bm_call_spread(sp_BoundMethod *m, sp_Proc *blk, sp_RbVal arr,
        sp_int slot at all) after reading it back from the published boxed
        side-channel below, the same way a statically-typed .call declines via
        sp_bm_legacy_abi_ok. */
-    _sp_proc_poly_args[i] = e;
+    sp_proc_arg_set(i, e);
     /* So this raw view is SPECULATIVE: the trampoline may never look at it,
        and for a Float or a Bignum it is guaranteed not to -- neither has an
        sp_int slot to be read from. Converting them anyway used to saturate

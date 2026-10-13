@@ -620,9 +620,9 @@ sp_RbVal sp_poly_clear(sp_RbVal v)
 
 sp_RbVal sp_poly_slice_or_call(sp_RbVal v, sp_RbVal a, sp_RbVal b)
 {
-  /* a shared String handle, receiver or capture name, reads as its bytes */
+  /* a shared String handle receiver reads as its bytes; a capture name
+     does below, while a callable's argument stays the String itself */
   if (sp_poly_is_strbuf(v)) v = sp_poly_strbuf_deref(v);
-  if (sp_poly_is_strbuf(b)) b = sp_poly_strbuf_deref(b);
   /* `s[/re/, n]` on a boxed String: capture n of the first match, nil when
      there is none -- the form the typed emitter answers inline. Read as a
      two-integer slice, the Regexp operand raised TypeError (campfire's
@@ -638,7 +638,8 @@ sp_RbVal sp_poly_slice_or_call(sp_RbVal v, sp_RbVal a, sp_RbVal b)
   /* `s[/(?<x>..)/, "x"]` or `, :x`: the named capture of the first match,
      nil when there is none, as the typed emitter answers it */
   if (v.tag == SP_TAG_STR && a.tag == SP_TAG_OBJ && a.v.p && a.cls_id == SP_BUILTIN_REGEX &&
-      (b.tag == SP_TAG_STR || b.tag == SP_TAG_SYM)) {
+      (b.tag == SP_TAG_STR || b.tag == SP_TAG_SYM || sp_poly_is_strbuf(b))) {
+    if (sp_poly_is_strbuf(b)) b = sp_poly_strbuf_deref(b);
     const char *nm = b.tag == SP_TAG_SYM ? sp_sym_to_s((sp_sym)b.v.i) : (b.v.s ? b.v.s : "");
     if (sp_re_match((mrb_regexp_pattern *)a.v.p, v.v.s ? v.v.s : "") < 0) return sp_box_nil();
     return sp_box_nullable_str(sp_re_named_capture((mrb_regexp_pattern *)a.v.p, nm));

@@ -7413,8 +7413,7 @@ static int emit_scrub_bang(Compiler *c, int recv, TyKind rt, int argc, const int
   if (argc == 1) emit_str_expr_nilable(c, argv[0], &rpl); else buf_puts(&rpl, "0");
   const char *rp = rpl.p ? rpl.p : "0";
   int done = 1;
-  if (strbuf_slot_ref(c, recv, srefS, sizeof srefS) &&
-      strbuf_pickup_nil_check(c, "scrub!", recv, srefS, sizeof srefS))
+  if (strbuf_pickup_nil_check(c, "scrub!", recv, srefS, sizeof srefS))
     buf_printf(b, "({ sp_String *_t%d = %s; const char *_t%dr = sp_str_scrub_bang(sp_String_cstr(_t%d), %s);"
                   " if (_t%dr != sp_String_cstr(_t%d)) sp_String_set_bin(_t%d, _t%dr); _t%dr; })",
                tsc, srefS, tsc, tsc, rp, tsc, tsc, tsc, tsc, tsc);

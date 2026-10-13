@@ -3143,6 +3143,11 @@ static int obj_to_a_call_tail(Scope *s, char *out, size_t sz) {
   return 1;
 }
 
+/* See codegen_internal.h. */
+const char *proc_arg_ref(int k, char *out, size_t n) {
+  snprintf(out, n, k < SP_PROC_ARG_SLOTS ? "_sp_proc_poly_args[%d]" : "sp_proc_arg(%d)", k);
+  return out;
+}
 static int g_iter_collect_emitted = 0;
 static void emit_iter_collect_proc(void) {
   if (g_iter_collect_emitted) return;
@@ -3155,7 +3160,7 @@ static void emit_iter_collect_proc(void) {
     "  if (argc <= 1) sp_PolyArray_push(_a, argc > 0 ? _sp_proc_poly_args[0] : sp_box_nil());\n"
     "  else {\n"
     "    sp_PolyArray *_p = sp_PolyArray_new(); SP_GC_ROOT(_p);\n"
-    "    for (sp_int _i = 0; _i < argc && _i < 16; _i++) sp_PolyArray_push(_p, _sp_proc_poly_args[_i]);\n"
+    "    for (sp_int _i = 0; _i < argc; _i++) sp_PolyArray_push(_p, sp_proc_arg(_i));\n"
     "    sp_PolyArray_push(_a, sp_box_poly_array(_p));\n"
     "  }\n"
     "  _sp_proc_poly_ret = sp_box_nil();\n"
@@ -8246,19 +8251,42 @@ static void emit_proc_rest_bind(Compiler *c, Scope *bs, const char *name, int ar
   int lift = repr_share_rule(c) && lv &&
              repr_str_elems_share(c, share_local_holder(c, (int)(bs - c->scopes), (int)(lv - bs->locals)));
   buf_printf(pb, "    sp_PolyArray *lv_%s = sp_PolyArray_new(); SP_GC_ROOT(lv_%s);\n", name, name);
-  buf_printf(pb, "    { sp_int __k = %d + _sp_ot, __hi = _sp_ps; if (__hi > 16) __hi = 16;\n", arity);
+  /* (every argument the call passed, past the channel's slots too) */
+  buf_printf(pb, "    { sp_int __k = %d + _sp_ot, __hi = _sp_ps;\n", arity);
   if (lift) {
     buf_puts(pb, "      sp_RbVal _sp_rest_value = sp_box_nil(); SP_GC_ROOT_RBVAL(_sp_rest_value);\n"
-                 "      for (; __k < __hi; __k++) { _sp_rest_value = _sp_proc_poly_args[__k];\n");
+                 "      for (; __k < __hi; __k++) { _sp_rest_value = sp_proc_arg(__k);\n");
     emit_param_string_lift("", "_sp_rest_value", pb, 1);
     buf_printf(pb, "        sp_PolyArray_push(lv_%s, _sp_rest_value); } }\n", name);
   }
   else
-    buf_printf(pb, "      for (; __k < __hi; __k++) sp_PolyArray_push(lv_%s, _sp_proc_poly_args[__k]); }\n", name);
+    buf_printf(pb, "      for (; __k < __hi; __k++) sp_PolyArray_push(lv_%s, sp_proc_arg(__k)); }\n", name);
 }
 static void emit_proc_poly_arg(Compiler *c, Scope *bs, LocalVar *lv, const char *name, int k, Buf *pb) {
-  buf_printf(pb, "(argc > %d) ? _sp_proc_poly_args[%d] : sp_box_nil();\n", k, k);
+  char ref[48];
+  buf_printf(pb, "(argc > %d) ? %s : sp_box_nil();\n", k, proc_arg_ref(k, ref, sizeof ref));
   emit_block_param_share(c, bs, lv, name, pb, 0);
+}
+/* A proc's keyword hash: the trailing argument, when the call site passed
+   it as keywords (_sp_kwpos 2) or, unless the proc takes none (no_kw), a
+   runtime path passed a Hash past its npos positionals; taken out of the
+   positional count. It is the trailing argument of a call of any count:
+   past the channel's slots it is read from the call's wide store. */
+static void emit_proc_kw_head(int no_kw, int npos, Buf *pb) {
+  char kwc[96];
+  g_needs_proc_poly_argslot = 1;
+  if (no_kw) snprintf(kwc, sizeof kwc, "_sp_kwpos == 2");
+  else snprintf(kwc, sizeof kwc, "_sp_kwpos == 2 || (_sp_kwpos == 0 && argc > %d)", npos);
+  buf_printf(pb, "    int _sp_kwpos = _sp_proc_kwpos; _sp_proc_kwpos = 0;\n"
+                 "    sp_int _sp_haskw = argc > 0 && (%s)"
+                 " && sp_proc_arg(argc-1).tag == SP_TAG_OBJ"
+                 " && sp_poly_is_hash_kind(sp_proc_arg(argc-1).cls_id);\n"
+                 "    sp_RbVal _sp_kwh = _sp_haskw ? sp_proc_arg(argc-1) : sp_box_nil();"
+                 " SP_GC_ROOT_RBVAL(_sp_kwh);\n"
+                 "    argc -= _sp_haskw;\n", kwc);
+  if (no_kw)
+    buf_puts(pb, "    if (_sp_haskw && sp_poly_length(_sp_kwh) > 0)"
+                 " sp_raise_cls(\"ArgumentError\", \"no keywords accepted\");\n");
 }
 static void emit_proc_numbered_args(Compiler *c, Scope *bs, int n, Buf *pb) {
   for (int k = 0; k < n; k++) {
@@ -8272,7 +8300,7 @@ static void emit_proc_poly_post(Compiler *c, Scope *bs, int create, LocalVar *lv
                                 const char *name, int j, Buf *pb) {
   buf_puts(pb, "    "); emit_local_ctype(c, TY_POLY, proc_local_needs_volatile(c, create, lv), pb);
   buf_printf(pb, " lv_%s = ({ sp_int __i = _sp_ps + %d;\n", name, j);
-  buf_puts(pb, "      (__i < argc && __i < 16) ? _sp_proc_poly_args[__i] : sp_box_nil(); });\n");
+  buf_puts(pb, "      __i < argc ? sp_proc_arg(__i) : sp_box_nil(); });\n");
   buf_printf(pb, "    (void)lv_%s;\n", name);
   emit_block_param_share(c, bs, lv, name, pb, 0);
 }
@@ -8345,19 +8373,20 @@ static const char *proc_cmethod_self(Compiler *c, Scope *bs, char *out, size_t n
 /* a Float parameter from the boxed side channel: the slot's oint; a plain
    slot unwraps it (a missing argument raises) */
 static void emit_proc_float_param_bind(Buf *pb, int k, int oint) {
-  buf_printf(pb, "%s(argc > %d) ? sp_unbox_ofloat(_sp_proc_poly_args[%d]) : sp_ofloat_nil()%s;\n",
-             oint ? "" : "sp_ofloat_arg(", k, k, oint ? "" : ")");
+  char ref[48];
+  buf_printf(pb, "%s(argc > %d) ? sp_unbox_ofloat(%s) : sp_ofloat_nil()%s;\n",
+             oint ? "" : "sp_ofloat_arg(", k, proc_arg_ref(k, ref, sizeof ref), oint ? "" : ")");
 }
 static void emit_proc_scalar_param_bind(Buf *pb, TyKind pt, int k, int oint) {
   const char *nilv = pt == TY_BOOL ? "0" : (pt == TY_SYMBOL) ? "((sp_sym)-1)" : NULL;
-  if (pt == TY_INT && k < 16) {
+  if (pt == TY_INT) {
     /* the slot's oint; a plain slot (the analysis saw no nil) unwraps it,
        so a missing argument raises rather than reads as 0 */
+    char ref[48];
     g_needs_proc_poly_argslot = 1;
-    buf_printf(pb, "%s(argc > %d) ? (_sp_proc_poly_args[%d].tag == SP_TAG_NIL ? sp_oint_nil() : sp_oint_of(args[%d])) : sp_oint_nil()%s;\n",
-               oint ? "" : "sp_oint_arg(", k, k, k, oint ? "" : ")");
+    buf_printf(pb, "%s(argc > %d) ? (%s.tag == SP_TAG_NIL ? sp_oint_nil() : sp_oint_of(args[%d])) : sp_oint_nil()%s;\n",
+               oint ? "" : "sp_oint_arg(", k, proc_arg_ref(k, ref, sizeof ref), k, oint ? "" : ")");
   }
-  else if (pt == TY_INT) buf_puts(pb, oint ? "sp_oint_nil();\n" : "sp_oint_arg(sp_oint_nil());\n");
   else if (nilv) buf_printf(pb, "(argc > %d) ? args[%d] : %s;\n", k, k, nilv);
   else if (pt == TY_PROC) buf_printf(pb, "(argc > %d) ? (sp_Proc *)(uintptr_t)args[%d] : NULL;\n", k, k);
   else buf_printf(pb, "args[%d];\n", k);
@@ -9042,20 +9071,7 @@ else if (orecv >= 0 && onm) {
      optional, a rest or a post never binds the keyword hash. A `**nil` proc
      takes keywords only from a call site that passed them, and refuses them. */
   int has_kwp = nkw > 0 || has_kwrest;
-  if (has_kwp) {
-    g_needs_proc_poly_argslot = 1;
-    buf_printf(pb, "    int _sp_kwpos = _sp_proc_kwpos; _sp_proc_kwpos = 0;\n"
-                   "    sp_int _sp_haskw = argc > 0 && argc <= 16"
-                   " && (_sp_kwpos == 2 || (_sp_kwpos == 0 && argc > %d))"
-                   " && _sp_proc_poly_args[argc-1].tag == SP_TAG_OBJ"
-                   " && sp_poly_is_hash_kind(_sp_proc_poly_args[argc-1].cls_id);\n"
-                   "    sp_RbVal _sp_kwh = _sp_haskw ? _sp_proc_poly_args[argc-1] : sp_box_nil();"
-                   " SP_GC_ROOT_RBVAL(_sp_kwh);\n"
-                   "    argc -= _sp_haskw;\n", no_kw ? 16 : arity + nposts);
-    if (no_kw)
-      buf_puts(pb, "    if (_sp_haskw && sp_poly_length(_sp_kwh) > 0)"
-                   " sp_raise_cls(\"ArgumentError\", \"no keywords accepted\");\n");
-  }
+  if (has_kwp) emit_proc_kw_head(no_kw, arity + nposts, pb);
   /* A block that takes only leading requireds (a trailing comma's rest
      among them) auto-splats a lone Array whatever keywords came; any other
      shape only for a call that passed none, an empty `**h` too (kwpos 3):
@@ -9120,14 +9136,11 @@ else if (orecv >= 0 && onm) {
        nil-aware for these slots; supply the slot's own nil. */
     if (pt != TY_POLY && pt != TY_FLOAT && proc_slot_via_poly(c, pt)) {
       /* a by-value struct rides the boxed side channel and unboxes here */
-      if (k < 16) {
-        g_needs_proc_poly_argslot = 1;
-        buf_printf(pb, "(argc > %d) ? ", k);
-        char slotx[48]; snprintf(slotx, sizeof slotx, "_sp_proc_poly_args[%d]", k);
-        emit_unbox_text(c, pt, slotx, pb);
-        buf_printf(pb, " : %s;\n", default_value_from_compiler(c, pt));
-      }
-      else buf_printf(pb, "%s;\n", default_value_from_compiler(c, pt));
+      g_needs_proc_poly_argslot = 1;
+      buf_printf(pb, "(argc > %d) ? ", k);
+      char slotx[48];
+      emit_unbox_text(c, pt, proc_arg_ref(k, slotx, sizeof slotx), pb);
+      buf_printf(pb, " : %s;\n", default_value_from_compiler(c, pt));
     }
     else if (pt == TY_POLY || pt == TY_FLOAT) {
       /* A poly param doesn't fit the sp_int slot, so it rides the
@@ -9135,24 +9148,22 @@ else if (orecv >= 0 && onm) {
          it too: a raw sp_float in the slot is value-truncated (0.7 -> 0), so
          read the boxed value back, unboxing a float with sp_poly_to_f_or_nil:
          a nil passed is the slot's own nil, as a missing one is, where
-         sp_poly_to_f read it as 0.0. The side-channel array holds 16 slots
-         (the proc-call ABI cap). */
-      if (k < 16) {
-        g_needs_proc_poly_argslot = 1;  /* channel array now lives in spinel_rt.h */
-        if (pt == TY_FLOAT) emit_proc_float_param_bind(pb, k, slot_is_oint(lv));
-        else
-          emit_proc_poly_arg(c, bs, lv, p, k, pb);
-      }
-      else buf_puts(pb, pt == TY_FLOAT ? "sp_ofloat_of(0.0);\n" : "0;\n");
+         sp_poly_to_f read it as 0.0. Past the channel's slots it is read
+         from the call's wide store. */
+      g_needs_proc_poly_argslot = 1;  /* channel array now lives in spinel_rt.h */
+      if (pt == TY_FLOAT) emit_proc_float_param_bind(pb, k, slot_is_oint(lv));
+      else
+        emit_proc_poly_arg(c, bs, lv, p, k, pb);
     }
-    else if (pt == TY_STRBUF && k < 16) {
+    else if (pt == TY_STRBUF) {
       /* A String parameter the body appends to is the shared handle (#6179):
          it reads the boxed channel every call publishes, which carries the
          caller's handle when the caller's String is one, and a plain String
          otherwise, wrapped in a handle of its own (sp_poly_as_strbuf). The
          sp_int slot holds bytes, never a handle. */
+      char ref[48];
       g_needs_proc_poly_argslot = 1;
-      buf_printf(pb, "(argc > %d) ? sp_poly_as_strbuf(_sp_proc_poly_args[%d]) : NULL;\n", k, k);
+      buf_printf(pb, "(argc > %d) ? sp_poly_as_strbuf(%s) : NULL;\n", k, proc_arg_ref(k, ref, sizeof ref));
       /* the handle made for a plain String is held by nothing else */
       buf_printf(pb, "    SP_GC_ROOT(lv_%s);\n", p);
     }
@@ -9285,8 +9296,12 @@ else if (orecv >= 0 && onm) {
       const char *on = proc_opt_name(c, create, j);
       if (!on) continue;
       char cond[96], arg[64];
-      snprintf(cond, sizeof cond, "%d < _sp_ot && %d + %d < 16", j, arity, j);
-      snprintf(arg, sizeof arg, "_sp_proc_poly_args[%d + %d]", arity, j);
+      /* (one past the 16th argument is read as any other, past the
+         channel's slots from the call's wide store) */
+      if (arity + j < 16) snprintf(cond, sizeof cond, "%d < _sp_ot && %d + %d < 16", j, arity, j);
+      else snprintf(cond, sizeof cond, "%d < _sp_ot", j);
+      if (arity + j < SP_PROC_ARG_SLOTS) snprintf(arg, sizeof arg, "_sp_proc_poly_args[%d + %d]", arity, j);
+      else proc_arg_ref(arity + j, arg, sizeof arg);
       { LocalVar *olv = scope_local(bs, on);
         emit_proc_param_slot(c, bs, olv, pb, on, cond, arg, proc_opt_value(c, create, j), "sp_box_nil()",
                              olv ? olv->type : TY_POLY, olv && olv->nullable_int); }
@@ -9307,8 +9322,8 @@ else if (orecv >= 0 && onm) {
         emit_proc_poly_post(c, bs, create, plv, pp, j, pb);
         continue;
       }
-      buf_printf(pb, "    sp_RbVal _pv_%s = (_sp_ps + %d < argc && _sp_ps + %d < 16) ? _sp_proc_poly_args[_sp_ps + %d]"
-                     " : sp_box_nil(); SP_GC_ROOT_RBVAL(_pv_%s);\n", pp, j, j, j, pp);
+      buf_printf(pb, "    sp_RbVal _pv_%s = _sp_ps + %d < argc ? sp_proc_arg(_sp_ps + %d)"
+                     " : sp_box_nil(); SP_GC_ROOT_RBVAL(_pv_%s);\n", pp, j, j, pp);
       char src[160];
       snprintf(src, sizeof src, "_pv_%s", pp);
       Buf ub = {0};

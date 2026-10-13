@@ -79,13 +79,16 @@ int emit_str_form(Compiler *c, int v, int role, int face, StrForm *sf) {
      SF_EVAL_ONCE       a temp of the value's type bound in a statement
                         expression, `({ T _tN = <expr>; `, whose uses the
                         consumer writes and str_form_close ends.
-   A form that needs neither is its expression. SF_ALLOCATES asks nothing
+   A form that needs both binds the rooted assignment in its temp, and
+   one that needs neither is its expression. SF_ALLOCATES asks nothing
    of the form itself: it is for the values live across it. */
 void str_form_settle(Compiler *c, StrForm *sf, Buf *b) {
   const char *e = sf->expr.p ? sf->expr.p : "";
+  Buf rb;
+  memset(&rb, 0, sizeof rb);
   if (sf->needs & SF_ROOT_UNTIL_USE) {
-    emit_rooted_conversion(c, sf->cty, e, b);
-    return;
+    emit_rooted_conversion(c, sf->cty, e, &rb);
+    e = rb.p ? rb.p : "";
   }
   if (sf->needs & SF_EVAL_ONCE) {
     Buf ct;
@@ -97,9 +100,9 @@ void str_form_settle(Compiler *c, StrForm *sf, Buf *b) {
     /* (a pointer type's star stays with the name: `sp_String *_tN`) */
     buf_printf(b, "({ %s%s_t%d = %s; ", t, n && t[n - 1] == '*' ? "" : " ", sf->tmp, e);
     free(ct.p);
-    return;
   }
-  buf_puts(b, e);
+  else buf_puts(b, e);
+  free(rb.p);
 }
 
 void str_form_of_text(StrForm *sf, const char *expr, TyKind cty, unsigned needs) {

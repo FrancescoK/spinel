@@ -9,7 +9,11 @@
 # gave invalid C. Such a hash is now boxed as the blockless form takes it: a
 # key already set yields key, old and new value, nil deletes, and a key, or a
 # stored value, that is not a String raises CRuby's TypeError, as does a
-# value that is not a hash.
+# value that is not a hash. A Float the block replaces is handed to it as
+# the Float, a huge one or Infinity included, without first being read as
+# an Integer. The keys first set by a merge are cleared first, as one
+# already in the environment would take the block's answer.
+%w[SPX_K SPX_L SPX_S].each { |k| ENV.delete(k) }
 v = +"ab"
 h = {"SPX_J" => v}
 ENV.update(h)
@@ -69,3 +73,7 @@ begin
 rescue TypeError => e
   p e.message
 end
+ENV["SPX_F"] = "a"
+ENV["SPX_I"] = "b"
+ENV.merge!({ "SPX_F" => 1e30, "SPX_I" => Float::INFINITY, "SPX_S" => "s" }) { |k, o, n| "#{k}:#{o}:#{n}" }
+p ENV["SPX_F"], ENV["SPX_I"], ENV["SPX_S"]
