@@ -4914,11 +4914,21 @@ int share_builtin_fresh(Compiler *c, int call) {
     for (int j = 0; j < n; j++) if (tg[j] == a->mi) { found = 1; break; }
     if (!found) return 0;
   }
+  /* The generic default of a dispatch with arguments (PB_ND_GENERIC) is
+     only its tail (PT_GENERIC_TAIL) unless a name's own arm joins it,
+     which the plan lists as an arm of its own. The tail re-enters the call
+     as a builtin, or takes a block arm or an element store, all of names
+     some builtin class has; for a name none has (CRuby's tables, as
+     strbuf_poly_user_boxes asks) both only raise NoMethodError. */
+  int generic_raises = !builtin_object_method_known(name) && !builtin_instance_name_known(name);
   for (int i = 0; i < p->n; i++) {
     const PolyArm *a = &p->arm[i];
     if (a->kind == PA_USER || a->kind == PA_ARITY || sh_arm_io_read_fresh(c, call, a)) continue;
     if (a->kind == PA_TRIAL && (a->key == PA_KEY_TRIAL + PT_DEFAULT0 ||
                                a->key == PA_KEY_TRIAL + PT_DEFAULT_N)) continue;
+    if (generic_raises && ((a->kind == PA_BUILTIN && a->key == PA_KEY_BUILTIN + PB_ND_GENERIC) ||
+                           (a->kind == PA_TRIAL && a->key == PA_KEY_TRIAL + PT_GENERIC_TAIL)))
+      continue;
     return 0;
   }
   return p->n > 0;
