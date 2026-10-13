@@ -13312,11 +13312,14 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       if (comp_ntype(c, argv[0]) == TY_REGEX) {
         Buf rv; memset(&rv, 0, sizeof rv);
         emit_expr(c, argv[0], &rv);
+        /* the pattern once, and its source by its length: the source is the
+           engine's own C string, with no tag byte for sp_str_byte_len to
+           read, and one holding a NUL was cut there */
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "const char *_t%d = sp_re_source((void *)(%s));\n", ts, rv.p ? rv.p : "0");
+        buf_printf(g_pre, "void *_t%d = (void *)(%s);\n", ts, rv.p ? rv.p : "0");
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "mrb_regexp_pattern *_t%d = re_compile(_t%d, (int64_t)(_t%d ? sp_str_byte_len(_t%d) : 0), sp_re_raw_flags((void *)(%s)));\n",
-                   tp, ts, ts, ts, rv.p ? rv.p : "0");
+        buf_printf(g_pre, "mrb_regexp_pattern *_t%d = re_compile(sp_re_source(_t%d), (int64_t)sp_re_source_len(_t%d), sp_re_raw_flags(_t%d));\n",
+                   tp, ts, ts, ts);
         free(rv.p);
         buf_printf(b, "_t%d", tp);
         { *out = 1; return 1; }
