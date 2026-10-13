@@ -2,8 +2,9 @@
 # answers when it returns its parameter (`rec(s) = s`) change the caller's
 # String in place, as every other String mutator does there; they had no arm
 # for the handle and were refused. A nil the method can answer raises
-# NoMethodError: the handle pickup now asks the method's nil fact, where it
-# took a nil for an empty new String.
+# NoMethodError for these and the other mutators: the handle pickup now asks
+# the method's nil fact, where it took a nil for an empty new String, and
+# the shims that re-run a mutator on the handle test it.
 # spinel: gc-minor
 def rec(s) = s
 t = +"abc"
@@ -39,8 +40,17 @@ def maybe(f) = f ? +"x" : nil
 begin; rec(maybe(false)).append_as_bytes("q"); rescue => e2; p e2.class; end
 begin; rec(maybe(false)).bytesplice(0, 0, "q"); rescue => e2; p e2.class; end
 begin; rec(maybe(false)) << "q"; rescue => e2; p e2.class; end
+begin; rec(maybe(false)).insert(0, "q"); rescue => e2; p e2.class; end
+begin; rec(maybe(false))[0] = "q"; rescue => e2; p e2.class; end
+begin; rec(maybe(false)).slice!(0); rescue => e2; p e2.class; end
+begin; rec(maybe(false)).scrub!; rescue => e2; p e2.class; end
+begin; rec(maybe(false)).clear; rescue => e2; p e2.class; end
+begin; rec(maybe(false)).upcase!; rescue => e2; p e2.class; end
 v = maybe(true)
 rec(v).append_as_bytes("q")
+rec(v).insert(0, "i")
+rec(v)[1] = "Y"
+rec(v).scrub!
 p v
 l = +""
 200.times { |i| rec(l).append_as_bytes("x" * (i % 7), i % 200) }

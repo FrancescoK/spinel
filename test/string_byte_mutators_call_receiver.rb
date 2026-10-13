@@ -26,3 +26,9 @@ begin; b.frozen_one.append_as_bytes("!"); rescue => e; p e.class; end
 begin; b.frozen_one.bytesplice(0, 1, "B"); rescue => e; p e.class; end
 begin; b.frozen_one.append_as_bytes; rescue => e; p e.class; end
 p b.frozen_one
+# a nil a method answers for its parameter raises NoMethodError, where under
+# --share-strings the handle pickup wrapped it in a new empty String
+def maybe(f) = f ? +"abc" : nil
+p((rec(maybe(false)).insert(0, "q") rescue :no_method))
+p((rec(maybe(false)).slice!(0) rescue :no_method))
+p rec(maybe(true)).insert(0, "q")

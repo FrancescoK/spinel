@@ -585,7 +585,7 @@ static int sb_reader_expr_shim(Compiler *c, int id, int recvS, Buf *b,
                                int (*rerun)(Compiler *, int, Buf *)) {
   char srefR[1024];
   SbReaderSave svR;
-  int tH = sb_reader_shim_open(c, recvS, srefR, sizeof srefR, &svR);
+  int tH = sb_reader_shim_open(c, id, recvS, srefR, sizeof srefR, &svR);
   if (!tH) return 0;
   Buf pre; memset(&pre, 0, sizeof pre);
   int mark = sb_shim_args_first(c, id, &pre, g_indent);
@@ -7362,7 +7362,8 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
    with no invalid bytes unchanged (#3333, #3338). The scrubbed text goes
    back into the receiver, a shared String's buffer (a reader call's
    handle among them) or an assignable one, as the other bang methods'
-   does; it only answered the scrubbed copy. */
+   does; it only answered the scrubbed copy. A handle a call can answer as
+   nil raises NoMethodError first (strbuf_pickup_nil_check). */
 static int emit_scrub_bang(Compiler *c, int recv, TyKind rt, int argc, const int *argv, Buf *b) {
   char srefS[1024];
   int tsc = ++g_tmp;
@@ -7370,7 +7371,8 @@ static int emit_scrub_bang(Compiler *c, int recv, TyKind rt, int argc, const int
   if (argc == 1) emit_str_expr_nilable(c, argv[0], &rpl); else buf_puts(&rpl, "0");
   const char *rp = rpl.p ? rpl.p : "0";
   int done = 1;
-  if (strbuf_slot_ref(c, recv, srefS, sizeof srefS))
+  if (strbuf_slot_ref(c, recv, srefS, sizeof srefS) &&
+      strbuf_pickup_nil_check(c, "scrub!", recv, srefS, sizeof srefS))
     buf_printf(b, "({ sp_String *_t%d = %s; const char *_t%dr = sp_str_scrub_bang(sp_String_cstr(_t%d), %s);"
                   " if (_t%dr != sp_String_cstr(_t%d)) sp_String_set_bin(_t%d, _t%dr); _t%dr; })",
                tsc, srefS, tsc, tsc, rp, tsc, tsc, tsc, tsc, tsc);
