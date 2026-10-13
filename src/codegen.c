@@ -846,13 +846,104 @@ static void emit_int_expr_ex(Compiler *c, int node, int strict, Buf *b) {
   free(tmp.p);
 }
 
+/* The literal c of an index `x + c` or `x - c`, in *lit, when c is no
+   further than 2^20 from 0 and not 0; else 0. */
+static int index_sum_lit(Compiler *c, int node, long long *lit) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || nt_kind(nt, node) != NK_CallNode || nt_ref(nt, node, "receiver") < 0 ||
+      nt_ref(nt, node, "block") >= 0) return 0;
+  const char *nm = nt_str(nt, node, "name");
+  int a = nt_ref(nt, node, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  if (!nm || !is_add_sub(nm) || ac != 1 || nt_kind(nt, av[0]) != NK_IntegerNode ||
+      nt_str(nt, av[0], "bigval")) return 0;
+  long long v = nt_int(nt, av[0], "value", 0);
+  if (v == 0 || v < -(1LL << 20) || v > (1LL << 20)) return 0;
+  *lit = v;
+  return 1;
+}
+
+/* Is s[0, n) one C operand: parentheses that balance outside string and
+   character literals, none closing early, and no comma outside them? */
+static int c_one_operand(const char *s, size_t n) {
+  int depth = 0;
+  for (size_t i = 0; i < n; i++) {
+    char ch = s[i];
+    if (ch == '"' || ch == '\'') {
+      for (i++; i < n && s[i] != ch; i++) if (s[i] == '\\') i++;
+      if (i >= n) return 0;
+    }
+    else if (ch == '(') depth++;
+    else if (ch == ')' && --depth < 0) return 0;
+    else if (ch == ',' && depth == 0) return 0;
+  }
+  return n > 0 && depth == 0;
+}
+
 /* An Array index ahead of a cached bounds compare (`i < len ? data[i] :
-   ...`). A nil index has no word of its own any more: it is refused where
-   the index is read (sp_oint_arg, the TypeError), so nothing is owed off
-   the in-range read. Answers 0 always. */
-int emit_int_index_raw(Compiler *c, int node, Buf *b) {
-  emit_int_expr(c, node, b);
-  return 0;
+   ...`): writes `sp_int _t<tk> = ` and the index. A nil index has no word
+   of its own: it is refused where the index is read (sp_oint_arg, the
+   TypeError), so nothing is owed off the in-range read.
+
+   An index `x + c` or `x - c`, c an Integer literal no further than 2^20
+   from 0, is summed wrapped (sp_int_c_add), and its checked sum is taken
+   again only where the compare fails: `redo` gets `(_t<tk> = <checked
+   sum>, `, which the out-of-range arm opens with and closes with `)`, and
+   is "" for any other index.
+   A sum that overflowed wraps to 2^63 - 2^20 or more as an unsigned word
+   (2^31 - 2^20 on a 32-bit one), past any length an Integer or Float array
+   can have, so the in-range arm only reads at a sum that did not overflow,
+   and the redone sum raises the RangeError the checked one raised before.
+   Under promote the redone sum is promote's, whose Bignum the index refuses
+   as before. x is read first, with its own nil test, as before.
+
+   The sum is taken apart only where it was emitted as one checked add of x
+   and the literal, so an arm that emits it any other way keeps it whole. */
+void emit_int_index_late(Compiler *c, int node, int tk, char *redo, size_t n, Buf *b) {
+  long long lit;
+  *redo = 0;
+  if (b == g_pre || !index_sum_lit(c, node, &lit)) {
+    buf_printf(b, "sp_int _t%d = ", tk); emit_int_expr(c, node, b);
+    return;
+  }
+  const char *op = sp_streq(nt_str(c->nt, node, "name"), "+") ? "add" : "sub";
+  Buf ix; memset(&ix, 0, sizeof ix);
+  emit_int_expr(c, node, &ix);
+  const char *t = ix.p ? ix.p : "";
+  Buf lb; memset(&lb, 0, sizeof lb);
+  emit_int_lit(&lb, lit);
+  /* the checked add, or under promote the boxed one the index converts */
+  char pre[64], suf[64];
+  snprintf(pre, sizeof pre, "sp_int_%s(", op);
+  snprintf(suf, sizeof suf, ", %s)", lb.p);
+  size_t tl = strlen(t), pl = strlen(pre), sl = strlen(suf);
+  int poly = 0, ok = tl > pl + sl && !strncmp(t, pre, pl) && !strcmp(t + tl - sl, suf);
+  if (!ok) {
+    snprintf(pre, sizeof pre, "sp_poly_arg_int_chk(sp_poly_%s(", op);
+    snprintf(suf, sizeof suf, ", sp_box_int(%s)))", lb.p);
+    pl = strlen(pre); sl = strlen(suf); poly = 1;
+    ok = tl > pl + sl && !strncmp(t, pre, pl) && !strcmp(t + tl - sl, suf);
+  }
+  if (!ok || !c_one_operand(t + pl, tl - pl - sl) || !decide_node(c->nt, node, "index-sum", NULL)) {
+    buf_printf(b, "sp_int _t%d = %s", tk, t);
+    free(lb.p); free(ix.p);
+    return;
+  }
+  int tx = ++g_tmp, xl = (int)(tl - pl - sl);
+  if (poly) {
+    /* an x that is not an Integer (a Bignum, nil) takes the out-of-range
+       arm, which adds it as before */
+    buf_printf(b, "sp_RbVal _t%d = %.*s; ", tx, xl, t + pl);
+    buf_printf(b, "sp_int _t%d = _t%d.tag == SP_TAG_INT ? sp_int_c_%s(_t%d.v.i, %s) : -1",
+               tk, tx, op, tx, lb.p);
+    snprintf(redo, n, "(_t%d = sp_poly_arg_int_chk(sp_poly_%s(_t%d, sp_box_int(%s))), ", tk, op, tx, lb.p);
+  }
+  else {
+    buf_printf(b, "sp_int _t%d = %.*s; ", tx, xl, t + pl);
+    buf_printf(b, "sp_int _t%d = sp_int_c_%s(_t%d, %s)", tk, op, tx, lb.p);
+    snprintf(redo, n, "(_t%d = sp_int_%s(_t%d, %s), ", tk, op, tx, lb.p);
+  }
+  free(lb.p); free(ix.p);
 }
 
 void emit_int_expr(Compiler *c, int node, Buf *b) {

@@ -2116,41 +2116,42 @@ static int emit_kind_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
            a nil receiver's NoMethodError comes before the nil index's
            TypeError, as CRuby calls [] on the receiver first */
         int io = node_has_oint_form(c, argv[0]);
+        char redo[160] = "";
         if (io) {
           buf_printf(b, "({ sp_oint _o%d = ", tk); emit_oint_expr(c, argv[0], TY_INT, b);
           buf_printf(b, "; sp_int _t%d = _o%d.v", tk, tk);
         }
-        else {
-          buf_printf(b, "({ sp_int _t%d = ", tk);
-          (void)emit_int_index_raw(c, argv[0], b);
-        }
+        else { buf_puts(b, "({ "); emit_int_index_late(c, argv[0], tk, redo, sizeof redo, b); }
         const char *inil = "";
         char inb[32]; if (io) { snprintf(inb, sizeof inb, "!_o%d.nil && ", tk); inil = inb; }
         /* an oint read below the header's nil-free length (_hcr) is the
            element, with no test of its own; the rest take the oget */
         char hr[48]; hc_read_len(hd, hr, sizeof hr);
-        if (oread) buf_printf(b, "; SP_LIKELY(%s(unsigned long long)_t%d < (unsigned long long)%s) ? %s(%s[_t%d]) : ({ ", inil, tk, hr, oint_of(ek), hd, tk);
-        else buf_printf(b, "; SP_LIKELY(%s(unsigned long long)_t%d < (unsigned long long)%s) ? %s[_t%d] : ({ ", inil, tk, hl, hd, tk);
+        /* an index sum's checked add (redo) runs ahead of the receiver's
+           nil test, as the whole sum did */
+        if (oread) buf_printf(b, "; SP_LIKELY(%s(unsigned long long)_t%d < (unsigned long long)%s) ? %s(%s[_t%d]) : %s({ ", inil, tk, hr, oint_of(ek), hd, tk, redo);
+        else buf_printf(b, "; SP_LIKELY(%s(unsigned long long)_t%d < (unsigned long long)%s) ? %s[_t%d] : %s({ ", inil, tk, hl, hd, tk, redo);
         emit_nil_cold_test(c, id, recv, b);
         buf_puts(b, " ");
         buf_printf(b, "sp_%sArray_%s(", k, oread ? "oget" : "get");
         emit_expr(c, recv, b);
         if (io) buf_printf(b, ", sp_oint_arg(_o%d)); }); })", tk);
-        else buf_printf(b, ", _t%d); }); })", tk);
+        else buf_printf(b, ", _t%d); })%s; })", tk, *redo ? ")" : "");
         { *out = 1; return 1; }
       }
       int tk = ++g_tmp;
-      buf_printf(b, "({ sp_int _t%d = ", tk);
-      (void)emit_int_index_raw(c, argv[0], b);
+      char redo[160];
+      buf_puts(b, "({ "); emit_int_index_late(c, argv[0], tk, redo, sizeof redo, b);
+      const char *rc = *redo ? ")" : "";
       /* unwrapped at once by its consumer (g_ck_node): the plain cached
          element, else the checked read raising the unwrap's error */
       if (oread && g_ck_node == id) {
         char hr[48]; hc_read_len(hd, hr, sizeof hr);
-        buf_printf(b, "; SP_LIKELY((unsigned long long)_t%d < (unsigned long long)%s) ? %s[_t%d] : sp_%sArray_get_%s(",
-                   tk, hr, hd, tk, k, g_ck_op == g_ck_opnd ? "opnd" : g_ck_op ? "ck" : "arg");
+        buf_printf(b, "; SP_LIKELY((unsigned long long)_t%d < (unsigned long long)%s) ? %s[_t%d] : %ssp_%sArray_get_%s(",
+                   tk, hr, hd, tk, redo, k, g_ck_op == g_ck_opnd ? "opnd" : g_ck_op ? "ck" : "arg");
         emit_expr(c, recv, b);
-        if (g_ck_op && g_ck_op != g_ck_opnd) buf_printf(b, ", _t%d, \"%s\"); })", tk, g_ck_op);
-        else buf_printf(b, ", _t%d); })", tk);
+        if (g_ck_op && g_ck_op != g_ck_opnd) buf_printf(b, ", _t%d, \"%s\")%s; })", tk, g_ck_op, rc);
+        else buf_printf(b, ", _t%d)%s; })", tk, rc);
         g_ck_done = 1;
         { *out = 1; return 1; }
       }
@@ -2159,9 +2160,9 @@ static int emit_kind_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
         buf_printf(b, "; SP_LIKELY((unsigned long long)_t%d < (unsigned long long)%s) ? %s(%s[_t%d]) : ", tk, hr, oint_of(ek), hd, tk);
       }
       else buf_printf(b, "; SP_LIKELY((unsigned long long)_t%d < (unsigned long long)%s) ? %s[_t%d] : ", tk, hl, hd, tk);
-      buf_printf(b, "sp_%sArray_%s(", k, oread ? "oget" : "get");
+      buf_printf(b, "%ssp_%sArray_%s(", redo, k, oread ? "oget" : "get");
       emit_expr(c, recv, b);
-      buf_printf(b, ", _t%d); })", tk);
+      buf_printf(b, ", _t%d)%s; })", tk, rc);
       { *out = 1; return 1; }
     }
     int uo = (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && node_is_oint(c, id);

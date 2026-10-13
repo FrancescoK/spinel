@@ -2336,9 +2336,10 @@ int emit_hash_filter_loop(Compiler *c, int recv, int block, TyKind rt, const cha
 void emit_unbox_text(Compiler *c, TyKind t, const char *expr, Buf *b);
 TyKind yield_site_type(Compiler *c, int node);
 void emit_int_expr(Compiler *c, int node, Buf *b);
-/* an index ahead of a cached bounds compare: raw when it may be nil, 1 when
-   the caller owes its nil test where the compare sends it (codegen.c) */
-int emit_int_index_raw(Compiler *c, int node, Buf *b);
+/* `sp_int _t<tk> = ` an index ahead of a cached bounds compare; `redo` is
+   what the compare's out-of-range arm runs first, "" or the checked sum of
+   an `x + c` whose check waited (codegen.c) */
+void emit_int_index_late(Compiler *c, int node, int tk, char *redo, size_t n, Buf *b);
 void emit_str_expr(Compiler *c, int node, Buf *b);
 void emit_path_expr(Compiler *c, int node, Buf *b);
 void emit_to_s_expr(Compiler *c, int node, Buf *b);
