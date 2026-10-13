@@ -253,7 +253,7 @@ static void sp_gc_verify_fail(void *obj, sp_gc_hdr *h){
    Name the root slot the collector was walking, which is what turns an
    unreproducible crash into a variable. Re-raises so the core dump is still
    produced. */
-static void sp_gc_fault_report(int sig) {
+void sp_gc_fault_report(int sig) {
   static const char hex[] = "0123456789abcdef";
   char buf[256]; size_t o = 0;
   const char *m1 = "\n*** SPINEL_GC_VERIFY: fault on the GC mark path (signal ";
