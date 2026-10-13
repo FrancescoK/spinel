@@ -592,6 +592,7 @@ test/share_strings_boxed_cond_order.rb	test/share_strings_boxed_cond_order.rb:42
 test/share_strings_boxed_cond_order.rb	test/share_strings_boxed_cond_order.rb:55	IfNode (-)	plan refuse, C handle (take, element)
 test/share_strings_builtin_fallback_arguments.rb	test/share_strings_builtin_fallback_arguments.rb:55	LocalVariableReadNode (value__bp)	plan handle, C bytes (take, argument)
 test/share_strings_builtin_fallback_reads.rb	test/share_strings_builtin_fallback_reads.rb:39	LocalVariableReadNode (value)	plan handle, C bytes (take, argument)
+test/share_strings_captured_local_shim.rb	test/share_strings_captured_local_shim.rb:107	CallNode (call)	plan wrap (live), C handle (take, yield)
 test/share_strings_exception_literal.rb	test/share_strings_exception_literal.rb:79	CallNode (message)	plan handle, C bytes (take, element)
 test/share_strings_fresh_element_conditional.rb	test/share_strings_fresh_element_conditional.rb:47	ParenthesesNode (-)	plan refuse (live), C handle (take, argument)
 test/share_strings_handover.rb	test/share_strings_handover.rb:35	CallNode (build1)	plan wrap, C handle (take, write)
