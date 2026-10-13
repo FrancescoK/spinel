@@ -5832,9 +5832,11 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     }
     free(rb.p);
     emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", tm);
+    char sc_step[512];
+    emit_scan_rtcheck_open(c, id, recv, b, indent, sc_step, sizeof sc_step);
     emit_indent(b, indent);
-    buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) {\n",
-               ti, ti, tm, ti);
+    buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++%s) {\n",
+               ti, ti, tm, ti, sc_step);
     int bodyIndent = indent + 1;
     if (use_shadow_sc) {
       int scb_bn = 0; const int *scb_bb = body >= 0 ? nt_arr(nt, body, "body", &scb_bn) : NULL;
@@ -7861,3 +7863,27 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
 }
 
 /* ---- interpolation ---- */
+
+/* --share-strings: a scan whose subject the run-time check watches
+   (scan_rtcheck, set where the share facts cannot vouch that its block
+   leaves the subject alone, and the block changes Strings only by growing
+   or clearing the subject's own local, which it never rebinds): the
+   length of that local's String is taken before the first turn, and
+   *step, which the loop runs after each turn the block returns from,
+   raises CRuby's RuntimeError when it changed (rb_str_scan's
+   str_mod_check). A `break` leaves the loop without it, as CRuby's does.
+   The matches are taken before the first turn; with no change that keeps
+   the length allowed, an unchanged length is unchanged bytes. *step is
+   empty for any other scan. */
+void emit_scan_rtcheck_open(Compiler *c, int id, int recv, Buf *pre, int indent, char *step, size_t n) {
+  step[0] = 0;
+  if (!nt_int(c->nt, id, "scan_rtcheck", 0)) return;
+  int tl = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb);
+  emit_expr(c, recv, &rb);
+  emit_indent(pre, indent);
+  buf_printf(pre, "int64_t _t%d = sp_str_byte_len(%s);\n", tl, rb.p ? rb.p : "NULL");
+  snprintf(step, n, ", (SP_UNLIKELY(sp_str_byte_len(%s) != _t%d) ? sp_raise_cls(\"RuntimeError\", \"string modified\") : (void)0)",
+           rb.p ? rb.p : "NULL", tl);
+  free(rb.p);
+}

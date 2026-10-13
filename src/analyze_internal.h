@@ -400,6 +400,7 @@ int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread); 
 void arg_layout_param_map(Compiler *c, Scope *m, const int *argv, int argc, int *out); /* codegen_fold.c */
 int arg_layout_param_source(Compiler *c, Scope *m, int call, int i, int *spread);
 int zsuper_param_source(Compiler *c, Scope *s, Scope *pm, int j);         /* codegen_fold.c */
+int ty_runs_no_code(TyKind t);  /* codegen_call.c: a builtin reading such a value runs no program code */
 int rest_packable_arm(Compiler *c, Scope *s);                    /* codegen_fold.c */
 /* The type a READ of ivar slot `iv` yields (a shared-mutable string slot
    reads as a plain String). Shared with the receiver-face helpers. */

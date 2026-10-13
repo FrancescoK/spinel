@@ -1,0 +1,30 @@
+["a!", "b!", "c!"]
+"abc"
+["a!", "b", "c"]
+"abc"
+"string modified"
+["a!"]
+"abcz"
+"string modified"
+["a!", "b!", "c!"]
+"abcz"
+"string modified"
+["a!", "b!"]
+""
+["a!", "b!", "c!"]
+"string modified"
+["a!"]
+["a!", ["a!"], "abcz"]
+"string modified"
+["a!", "b!"]
+"string modified"
+["a!"]
+"string modified"
+["b!"]
+"string modified"
+2
+"ab"
+["a!", "b!"]
+"string modified"
+"abz"
+["a!"]

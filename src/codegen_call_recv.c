@@ -8387,8 +8387,10 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_int _t%d = 0; SP_GC_ROOT_STR(_t%d);\n", sc_pos, tr);
     }
+    char sc_step[512];
+    emit_scan_rtcheck_open(c, id, nt_ref(nt, id, "receiver"), g_pre, g_indent, sc_step, sizeof sc_step);
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, tm, ti);
+    buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++%s) {\n", ti, ti, tm, ti, sc_step);
     if (sc_pos >= 0 && tpat >= 0) {
       emit_indent(g_pre, g_indent + 1);
       buf_printf(g_pre, "_t%d = sp_str_scan_at(_t%d, _t%d, _t%d);\n", sc_pos, tr, tpat, sc_pos);
@@ -8459,9 +8461,14 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         buf_puts(g_pre, ";\n");
       }
     }
+    /* a `next` continues this C loop: it leaves only the frames and rescue
+       handlers its body opens, not a begin around the scan */
+    int sv_lexc = g_loop_exc_base, sv_lexc_rb = g_loop_rescue_base, sv_lens = g_loop_ensure_base;
+    g_loop_exc_base = g_exc_frame_depth; g_loop_rescue_base = g_rescue_save_depth; g_loop_ensure_base = g_ensure_depth;
     int svind = g_indent; g_indent++;
     for (int j = 0; j < bn; j++) emit_stmt(c, bb[j], g_pre, g_indent);
     g_indent = svind;
+    g_loop_exc_base = sv_lexc; g_loop_rescue_base = sv_lexc_rb; g_loop_ensure_base = sv_lens;
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
     buf_printf(b, "_t%d", tr);
   }
