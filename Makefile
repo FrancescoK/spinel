@@ -1981,6 +1981,13 @@ reject-test: $(SPINEL)
 	  else grep -qF "$$why" "$$tmp/nc.out" || \
 	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/nc.out"; ok=0; }; fi; \
 	done; \
+	for t in $(shell grep -l '^\# spinel: reject-compact-path: ' test/reject/*.rb); do \
+	  why=$$(sed -n 's/^# spinel: reject-compact-path: //p' "$$t"); \
+	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/cp.c" >"$$tmp/cp.out" 2>&1; then \
+	    echo "reject-test: FAIL ($$t compiled: a compact path was placed under the wrong parent)"; ok=0; \
+	  else grep -qF "$$why" "$$tmp/cp.out" || \
+	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/cp.out"; ok=0; }; fi; \
+	done; \
 	t=test/reject/compact_class_internal_name_clash.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/q.c" >"$$tmp/q.out" 2>&1; then \
 	  echo "reject-test: FAIL ($$t compiled: two classes share an internal name)"; ok=0; \
