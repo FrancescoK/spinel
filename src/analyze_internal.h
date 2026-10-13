@@ -138,6 +138,7 @@ int is_builtin_exception_name(const char *n);
 const char *superclass_builtin_exc_name(const NodeTable *nt, int sc);   /* analyze_util.c */
 int is_syserr_family_name(const char *n);           /* analyze_util.c */
 int builtin_method_known(const char *cls, const char *m);
+int core_method_vis(const char *cls, const char *m, int inherit);   /* codegen_call_class.c */
 int builtin_method_arity(const char *cls, const char *m, int *out);
 int builtin_cmethod_known(const char *cls, const char *name);
 int builtin_super_cmethod_known(const char *cls, const char *name);
@@ -592,6 +593,7 @@ int desugar_dynamic_send(Compiler *c);
 void expand_static_splat_args(Compiler *c, int from, int count);
 int desugar_dynamic_method(Compiler *c);
 int desugar_method_call_runtime_name(Compiler *c);
+int desugar_builtin_method_defined_conds(Compiler *c);
 int desugar_engine_branches(Compiler *c);
 int desugar_paren_def_body(Compiler *c);
 int desugar_conditional_defs(Compiler *c);

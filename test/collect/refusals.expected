@@ -78,17 +78,11 @@ spinel: 1 refusal, nothing written
 == test/reject/builtin_ivar_string_write.rb [promote] rc=1
 spinel: test/reject/builtin_ivar_string_write.rb:7: an instance variable set on a String (`@x = v` in a String method, or instance_variable_set): a String is copied, not shared, so it keeps no identity for the variable yet (waits on #6765); see docs/limitations.md
 spinel: 1 refusal, nothing written
-== test/reject/builtin_reopen_bare_method_defined.rb [default] rc=1
-spinel: test/reject/builtin_reopen_bare_method_defined.rb:6: unsupported method_defined? (needs a compile-time-known class and literal method name): node N (CallNode `method_defined?`) recv=-/ty-1 argc=1 arg0ty8
+== test/reject/builtin_reopen_bare_instance_method.rb [default] rc=1
+spinel: test/reject/builtin_reopen_bare_instance_method.rb:6: unsupported call: node N (CallNode `instance_method`) recv=-/ty-1 argc=1 arg0ty8
 spinel: 1 refusal, nothing written
-== test/reject/builtin_reopen_bare_method_defined.rb [promote] rc=1
-spinel: test/reject/builtin_reopen_bare_method_defined.rb:6: unsupported method_defined? (needs a compile-time-known class and literal method name): node N (CallNode `method_defined?`) recv=-/ty-1 argc=1 arg0ty8
-spinel: 1 refusal, nothing written
-== test/reject/builtin_reopen_root_bare_method_defined.rb [default] rc=1
-spinel: test/reject/builtin_reopen_root_bare_method_defined.rb:5: unsupported method_defined? (needs a compile-time-known class and literal method name): node N (CallNode `method_defined?`) recv=-/ty-1 argc=1 arg0ty8
-spinel: 1 refusal, nothing written
-== test/reject/builtin_reopen_root_bare_method_defined.rb [promote] rc=1
-spinel: test/reject/builtin_reopen_root_bare_method_defined.rb:5: unsupported method_defined? (needs a compile-time-known class and literal method name): node N (CallNode `method_defined?`) recv=-/ty-1 argc=1 arg0ty8
+== test/reject/builtin_reopen_bare_instance_method.rb [promote] rc=1
+spinel: test/reject/builtin_reopen_bare_instance_method.rb:6: unsupported call: node N (CallNode `instance_method`) recv=-/ty-1 argc=1 arg0ty8
 spinel: 1 refusal, nothing written
 == test/reject/builtin_singleton_alias_call.rb [default] rc=1
 spinel: test/reject/builtin_singleton_alias_call.rb:8: File.basename: calling an alias of a builtin singleton method is not supported; see docs/limitations.md
@@ -1012,11 +1006,17 @@ spinel: 2 refusals, nothing written
 spinel: test/reject/method_called_reaches_its_target.rb:5: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
 spinel: test/reject/method_called_reaches_its_target.rb:5: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
 spinel: 2 refusals, nothing written
-== test/reject/method_defined_builtin_literal.rb [default] rc=1
-spinel: test/reject/method_defined_builtin_literal.rb:4: unsupported method_defined? (needs a compile-time-known class and literal method name): node N (CallNode `method_defined?`) recv=ConstantReadNode/ty49 argc=1 arg0ty8
+== test/reject/method_defined_polyfill_unimplemented_builtin.rb [default] rc=1
+spinel: test/reject/method_defined_polyfill_unimplemented_builtin.rb:10: String#unicode_normalize is not supported: Unicode normalization requires shipping the Unicode decomposition/composition tables, which spinel deliberately does not carry -- the same limit as String#grapheme_clusters (see docs/limitations.md)
 spinel: 1 refusal, nothing written
-== test/reject/method_defined_builtin_literal.rb [promote] rc=1
-spinel: test/reject/method_defined_builtin_literal.rb:4: unsupported method_defined? (needs a compile-time-known class and literal method name): node N (CallNode `method_defined?`) recv=ConstantReadNode/ty49 argc=1 arg0ty8
+== test/reject/method_defined_polyfill_unimplemented_builtin.rb [promote] rc=1
+spinel: test/reject/method_defined_polyfill_unimplemented_builtin.rb:10: String#unicode_normalize is not supported: Unicode normalization requires shipping the Unicode decomposition/composition tables, which spinel deliberately does not carry -- the same limit as String#grapheme_clusters (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/method_defined_unlisted_builtin_superclass.rb [default] rc=1
+spinel: test/reject/method_defined_unlisted_builtin_superclass.rb:6: unsupported method_defined? (needs a compile-time-known class and literal method name): node N (CallNode `method_defined?`) recv=ConstantReadNode/ty49 argc=1 arg0ty8
+spinel: 1 refusal, nothing written
+== test/reject/method_defined_unlisted_builtin_superclass.rb [promote] rc=1
+spinel: test/reject/method_defined_unlisted_builtin_superclass.rb:6: unsupported method_defined? (needs a compile-time-known class and literal method name): node N (CallNode `method_defined?`) recv=ConstantReadNode/ty49 argc=1 arg0ty8
 spinel: 1 refusal, nothing written
 == test/reject/method_of_builtin_module.rb [default] rc=1
 spinel: test/reject/method_of_builtin_module.rb:6: ENV.method(:each) is not supported: a Method object of a builtin module or class function has no compiled function to bind. Call ENV.each directly, or wrap it in a lambda
