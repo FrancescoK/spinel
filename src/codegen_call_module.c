@@ -188,7 +188,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
           emit_to_s_expr(c, argv[1], b); buf_puts(b, ", ");
           if (mv >= 0) emit_str_expr(c, mv, b); else buf_puts(b, "\"w\"");
           buf_puts(b, ", ");
-          if (comp_ntype(c, pv) == TY_NIL) buf_puts(b, "sp_oint_nil()");
+          if (comp_ntype(c, pv) == TY_NIL) { buf_puts(b, "({ (void)("); emit_expr(c, pv, b); buf_puts(b, "); sp_oint_nil(); })"); }
           else if (yield_site_type(c, pv) == TY_POLY) { buf_puts(b, "sp_poly_arg_perm("); emit_expr(c, pv, b); buf_puts(b, ")"); }
           else emit_oint_expr(c, pv, TY_INT, b);
           buf_puts(b, ")");
