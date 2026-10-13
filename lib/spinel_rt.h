@@ -15481,6 +15481,22 @@ static SP_NOINLINE void sp_re_startup_fail(void) {
   exit(1);
 }
 extern void sp_re_set_error_handler(void (*fn)(const char *msg));
+/* Everything ABOVE the window is dead by definition, so drop it rather than
+   trust every pop site to. The window follows sp_exc_top up and down, and a
+   slot that leaves it keeps its pointer: pop below a used slot, collect (the
+   object is now unreferenced and is freed), then push back over it, and the
+   window covers a dangling pointer again. Clearing wherever the window is
+   handed to a collection makes that sequence impossible -- after any
+   collection, a slot outside it holds nothing (#3404): the collecting worker
+   clears its own here, and a worker that parks for another's collection
+   clears its own when it publishes (sp_publish_worker_roots), since only the
+   owner may write its thread-local window. */
+static void sp_exc_clear_above_window(void) {
+  for (int i = sp_exc_top + 1; i < SP_EXC_STACK_MAX; i++) {
+    sp_exc_obj[i] = NULL;
+    sp_exc_msg[i] = NULL;
+  }
+}
 static void sp_mark_in_flight_exceptions(void) {
   /* <=: a rescue arm pops its frame (sp_exc_top--) BEFORE materializing the
      exception from the popped slot, and that materialization allocates -- the
@@ -15489,17 +15505,7 @@ static void sp_mark_in_flight_exceptions(void) {
     sp_mark_string(sp_exc_msg[i]);
     if (sp_exc_obj[i]) sp_gc_mark(sp_exc_obj[i]);  /* carried subclass object + its ivars */
   }
-  /* Everything ABOVE the window is dead by definition, so drop it here rather
-     than trust every pop site to. The window follows sp_exc_top up and down,
-     and a slot that leaves it keeps its pointer: pop below a used slot, collect
-     (the object is now unreferenced and is freed), then push back over it, and
-     the window covers a dangling pointer again. Clearing at the one place that
-     defines the window makes that sequence impossible -- after any collection,
-     a slot outside it holds nothing (#3404). */
-  for (int i = sp_exc_top + 1; i < SP_EXC_STACK_MAX; i++) {
-    sp_exc_obj[i] = NULL;
-    sp_exc_msg[i] = NULL;
-  }
+  sp_exc_clear_above_window();
   if (sp_pending_exc_obj) sp_gc_mark(sp_pending_exc_obj);
   if (sp_pending_cause) sp_gc_mark(sp_pending_cause);
   if (sp_inflight_cause) sp_gc_mark(sp_inflight_cause);
@@ -16211,15 +16217,38 @@ static void sp_mark_proc_homes(void) {
    the root-stack depth, exactly as sp_re_push_match_roots does for the regex
    globals. Only in the threaded build (the single-threaded one never parks). */
 static void sp_publish_worker_roots(void) {
-  for (int i = 0; i < sp_exc_top; i++) if (sp_exc_obj[i]) _sp_gc_root_push((void **)&sp_exc_obj[i]);
+  /* The window sp_mark_in_flight_exceptions marks for the collecting worker,
+     [0, sp_exc_top] with the slot a rescue arm has just popped, messages as
+     well as objects: published only below the top and without the messages,
+     a collection run by another worker freed a just-rescued exception's
+     message, and this worker's own next collection marked the freed String.
+     The slots above the window are cleared as the collecting worker clears
+     its own: the next push brings the one past it back into the window. */
+  for (int i = 0; i <= sp_exc_top && i < SP_EXC_STACK_MAX; i++) {
+    if (sp_exc_obj[i]) _sp_gc_root_push((void **)&sp_exc_obj[i]);
+    if (sp_exc_msg[i]) _sp_gc_root_push((void **)((uintptr_t)&sp_exc_msg[i] | (uintptr_t)2));   /* String root */
+  }
   if (sp_pending_exc_obj) _sp_gc_root_push((void **)&sp_pending_exc_obj);
   if (sp_pending_cause) _sp_gc_root_push((void **)&sp_pending_cause);
+  if (sp_inflight_cause) _sp_gc_root_push((void **)&sp_inflight_cause);
+  sp_exc_clear_above_window();
   for (int i = 0; i < sp_rescue_sp; i++)
     if (sp_exc_handling[i]) _sp_gc_root_push((void **)&sp_exc_handling[i]);
   for (sp_proc_home *h = sp_proc_ret_head; h; h = h->prev)
     _sp_gc_root_push((void **)((uintptr_t)&h->val | (uintptr_t)1));   /* sp_RbVal root */
   for (int i = 0; i < sp_brk_top; i++)
     _sp_gc_root_push((void **)((uintptr_t)&sp_brk_val[i] | (uintptr_t)1));
+  /* and the rest of what sp_mark_brk_vals marks for the collecting worker,
+     all of it thread-local too: the catch/throw values in flight, the
+     explicit cause, and the values a raise stages for its exception (a
+     NoMethodError's receiver and argument list) between the raise and the
+     handler that takes them */
+  for (int i = 0; i < sp_catch_top; i++)
+    _sp_gc_root_push((void **)((uintptr_t)&sp_catch_val[i] | (uintptr_t)1));
+  if (sp_explicit_cause) _sp_gc_root_push((void **)&sp_explicit_cause);
+  if (sp_pending_exc_flags & 1) _sp_gc_root_push((void **)((uintptr_t)&sp_pending_exc_recv | (uintptr_t)1));
+  if (sp_pending_exc_flags & 2) _sp_gc_root_push((void **)((uintptr_t)&sp_pending_exc_key | (uintptr_t)1));
+  if (sp_pending_exc_flags & 4) _sp_gc_root_push((void **)((uintptr_t)&sp_pending_exc_val | (uintptr_t)1));
   /* The boxed proc calling-convention channel is per-worker too, and the
      globals hook marks only the collecting worker's copy. Whatever a boxed
      call last left in another worker's slots -- an argument, or a returned
