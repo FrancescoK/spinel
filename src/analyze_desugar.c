@@ -12936,6 +12936,21 @@ static void cn_raise_module_super(NodeTable *nt, int id, int par) {
    so the eval runs `obj.m(recv)` (class_eval, module_eval, instance_eval
    pass the receiver) or `obj.m(args...)` (class_exec, module_exec,
    instance_exec pass their arguments), and answers what it answers. */
+/* An expression whose evaluation has no effect (a constant, self, a local
+   or ivar read, nothing at all), so where it is evaluated does not matter */
+static int emb_pure(const NodeTable *nt, int e) {
+  if (e < 0) return 1;
+  NodeKind k = nt_kind(nt, e);
+  return k == NK_ConstantReadNode || k == NK_ConstantPathNode || k == NK_SelfNode ||
+         k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode;
+}
+
+static int emb_program_defines(const NodeTable *nt, const char *nm) {
+  NT_FOREACH_KIND(nt, NK_DefNode, d)
+    if (nt_str(nt, d, "name") && sp_streq(nt_str(nt, d, "name"), nm)) return 1;
+  return 0;
+}
+
 int desugar_eval_method_block(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
@@ -12950,18 +12965,28 @@ int desugar_eval_method_block(Compiler *c) {
     int ma = nt_ref(nt, mc, "arguments"), mac = 0;
     const int *mav = ma >= 0 ? nt_arr(nt, ma, "arguments", &mac) : NULL;
     if (mac != 1 || nt_kind(nt, mav[0]) != NK_SymbolNode || !nt_str(nt, mav[0], "value")) continue;
-    char meth[256]; snprintf(meth, sizeof meth, "%s", nt_str(nt, mav[0], "value"));
     int exec = strstr(nm, "_exec") != NULL;
     int recv = nt_ref(nt, id, "receiver");
     int args = nt_ref(nt, id, "arguments");
+    /* an eval takes no argument beside its block (one is CRuby's
+       ArgumentError, which the call keeps); the receivers are evaluated in
+       the call's order only when neither has an effect of its own (the
+       exec's receiver is not evaluated at all in the rewrite); and a
+       program's own `method` may answer another object's */
+    int ac = 0; if (args >= 0) nt_arr(nt, args, "arguments", &ac);
+    if ((!exec && ac > 0) || !emb_pure(nt, recv) || !emb_pure(nt, nt_ref(nt, mc, "receiver")) ||
+        emb_program_defines(nt, "method")) continue;
+    char *meth = strdup(nt_str(nt, mav[0], "value"));
+    if (!meth) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     if (!exec) {
       /* the block's one argument is the receiver: self when bare */
       if (recv < 0) recv = fwd_new_node_like(nt, id, "SelfNode");
       args = fwd_new_node_like(nt, id, "ArgumentsNode");
-      if (recv < 0 || args < 0) continue;
+      if (recv < 0 || args < 0) { free(meth); continue; }
       nt_node_set_arr(nt, args, "arguments", &recv, 1);
     }
     nt_node_set_str(nt, id, "name", meth);
+    free(meth);
     nt_node_set_ref(nt, id, "receiver", nt_ref(nt, mc, "receiver"));
     nt_node_set_ref(nt, id, "arguments", args);
     nt_node_set_ref(nt, id, "block", -1);
