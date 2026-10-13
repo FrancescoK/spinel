@@ -28976,7 +28976,7 @@ static int enum_own_outside_brk_wrapper(Compiler *c, int id) {
 }
 
 static int emit_cext_call(Compiler *c, int id, Buf *b) {
-  if (c->n_cext_extensions) {
+  if (c->n_cext_extensions && nt_int(c->nt, id, "cext_synthetic", 0)) {
     const char *cn = nt_str(c->nt, id, "name");
     int argc = 0; const int *argv = call_args(c->nt, id, &argc);
     if (cn && sp_streq(cn, "__cext_init")) {

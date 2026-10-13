@@ -2,6 +2,7 @@ require 'fileutils'
 require 'tmpdir'
 require 'open3'
 require 'rbconfig'
+require 'shellwords'
 require_relative '../../tools/cext-record'
 ROOT = File.expand_path('../..', __dir__)
 def command(*args, env: {}, chdir: ROOT)
@@ -22,6 +23,14 @@ Dir.mktmpdir('spinel-cext-compiler-') do |tmp|
   c_text = File.read(c_file)
   raise 'an unrelated Array lost its typed representation' unless c_text.match?(/sp_IntArray\s*\*\s*(?:const\s+)?lv_untouched/)
   raise 'a fresh map widened its unrelated source' unless c_text.match?(/sp_IntArray\s*\*\s*(?:const\s+)?lv_source/ )
+  build_recipe = command(File.join(ROOT, 'bin/spinel'), File.join(tmp, 'program.rb'), '--print-build', '--link', File.join(tmp, 'sample.a'), '-o', exe)
+  raise 'print-build omitted the extension headers' unless build_recipe.lines.any? { |line| line.start_with?('include ') && File.expand_path(line.delete_prefix('include ').strip) == File.join(ROOT, 'include') }
+  refusal_source = File.join(tmp, 'runtime-refusal.rb')
+  File.write(refusal_source, "require_relative 'sample'; CextBox.new; Thread.new { 1 }.join\n")
+  scratch = File.join(tmp, 'driver-tmp'); FileUtils.mkdir_p(scratch)
+  out, err, status = Open3.capture3({'TMPDIR' => scratch}, File.join(ROOT, 'bin/spinel'), refusal_source, '-o', exe + '-refused')
+  raise "missing runtime refusal: #{out}#{err}" if status.success? || !err.include?('native single-threaded exception runtime')
+  raise 'runtime refusal leaked generated C' unless Dir[File.join(scratch, 'spinel_out_*')].empty?
   actual = command(exe)
   command(File.join(ROOT, 'bin/spinel'), File.join(tmp, 'program.rb'), '--share-strings', '--link', File.join(tmp, 'sample.a'), '-o', exe + '-shared')
   shared = command(exe + '-shared')
@@ -35,13 +44,24 @@ Dir.mktmpdir('spinel-cext-compiler-') do |tmp|
     '__cext_extension("bad", "Init_bad", 2)' => 'manifest version',
     '__cext_extension("bad", "Init_bad", 1); __cext_class("Bad", "Object"); __cext_method("Bad", "m", "instance", "public", 16, 0)' => 'arity',
     '__cext_extension("bad", "Init_bad", 1); __cext_allocator("Missing", 0)' => 'manifest class',
-    '__cext_extension("bad", "Init_bad", 1); __cext_unknown(0)' => 'unknown C extension declaration'
+    '__cext_extension("bad", "Init_bad", 1); __cext_unknown(0)' => 'unknown C extension declaration',
+    '__cext_extension("bad", "Init_bad", 1); __cext_class("Bad", "Object"); __cext_method("Bad", "m", "singleton", "private", 0, 0)' => 'private C extension singleton',
+    '__cext_extension("bad", "Init_bad", 1); __cext_class("Bad", "Object"); __cext_constant("Bad", "Foo::BAR", "nil", nil, nil, nil)' => 'constant key must be a single name'
   }.each_with_index do |(source, reason), i|
     file = File.join(tmp, "refusal#{i}.rb")
     File.write(file, source)
     out, err, status = Open3.capture3(File.join(ROOT, 'bin/spinel'), '-c', file, '-o', File.join(tmp, "refusal#{i}.c"))
     raise "missing refusal #{reason}: #{out}#{err}" if status.success? || !err.include?(reason)
   end
+  cc = Shellwords.split(ENV.fetch('CC', RbConfig::CONFIG['CC']))
+  checked_bridge = File.join(tmp, 'checked-bridge.o')
+  command(*cc, '-O2', '-DSP_CEXT', '-Dcalloc=counted_calloc', "-I#{ROOT}/lib", "-I#{ROOT}/include", '-c', File.join(ROOT, 'lib/sp_cext_bridge.c'), '-o', checked_bridge)
+  bridge_source = File.join(tmp, 'bridge-check.c')
+  FileUtils.cp(File.join(ROOT, 'test/cext/compiler/bridge-check.c'), bridge_source)
+  bridge_exe = File.join(tmp, 'bridge-check')
+  command(*cc, '-O2', "-I#{ROOT}/lib", "-I#{ROOT}/include", bridge_source, checked_bridge, File.join(tmp, 'sample.a'), File.join(ROOT, 'lib/libspinel_cext_rt.a'), '-lm', '-o', bridge_exe)
+  command(bridge_exe)
+  command(bridge_exe, env: {'SPINEL_GC_STRESS' => '1'})
   native = File.join(tmp, 'cruby')
   FileUtils.mkdir_p(native)
   FileUtils.cp(File.join(ROOT, 'test/cext/compiler/sample.c'), File.join(native, 'sample.c'))
