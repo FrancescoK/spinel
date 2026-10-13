@@ -1558,6 +1558,8 @@ void       comp_scope_index_set_frozen(int frozen);
 int        comp_scope_index_is_frozen(void);
 /* Generation counter, bumped on every freeze/unfreeze transition. */
 unsigned   comp_scope_index_gen(void);
+/* An alias or a class's parent changed: drops what the chain lookups memoized. */
+void       comp_class_shape_changed(void);
 /* Find the class (singleton) method scope for class_id + name, or -1 (no chain). */
 int        comp_cmethod_in_class(Compiler *c, int class_id, const char *name);
 /* Find the class (singleton) method scope, walking the superclass chain. */
