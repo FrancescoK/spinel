@@ -15599,9 +15599,75 @@ static int civ_self_body_access(NodeTable *nt, int node, int stmt) {
   return changed;
 }
 
+static int civ_enclosing(const NodeTable *nt, const int *parent, int n, NodeKind k) {
+  for (int p = n >= 0 ? parent[n] : -1; p >= 0; p = parent[p]) if (nt_kind(nt, p) == k) return p;
+  return -1;
+}
+/* a block between `n` and its ancestor `top` */
+static int civ_in_block(const NodeTable *nt, const int *parent, int n, int top) {
+  for (int p = parent[n]; p >= 0 && p != top; p = parent[p])
+    if (nt_kind(nt, p) == NK_BlockNode || nt_kind(nt, p) == NK_LambdaNode) return 1;
+  return 0;
+}
+static int civ_writes_local(const NodeTable *nt, int node, const char *name) {
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if ((k == NK_LocalVariableWriteNode || k == NK_LocalVariableTargetNode ||
+       k == NK_LocalVariableOperatorWriteNode || k == NK_LocalVariableOrWriteNode ||
+       k == NK_LocalVariableAndWriteNode) && nt_str(nt, node, "name") && sp_streq(nt_str(nt, node, "name"), name))
+    return 1;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) if (civ_writes_local(nt, nt_ref_at(nt, node, i), name)) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++) if (civ_writes_local(nt, ids[j], name)) return 1;
+  }
+  return 0;
+}
+/* The class node of class value `r` where it can only be that class or one
+   below it: `sub` in `def self.inherited(sub)` (or `def inherited(sub)` in
+   `class << self`), never assigned in the method, or `self.class` in an
+   instance method. Not in a block, where self or the name could mean
+   something else. -1 otherwise. */
+static int civ_class_value_owner(const NodeTable *nt, const int *parent, int r) {
+  int d = civ_enclosing(nt, parent, r, NK_DefNode);
+  if (d < 0 || civ_in_block(nt, parent, r, d)) return -1;
+  int dr = nt_ref(nt, d, "receiver");
+  int above = parent[d];
+  while (above >= 0 && nt_kind(nt, above) != NK_ClassNode && nt_kind(nt, above) != NK_ModuleNode &&
+         nt_kind(nt, above) != NK_SingletonClassNode) above = parent[above];
+  if (above < 0 || civ_in_block(nt, parent, d, above)) return -1;
+  int in_sclass = nt_kind(nt, above) == NK_SingletonClassNode;
+  if (in_sclass) {
+    int e = nt_ref(nt, above, "expression"), sc = above;
+    if (dr >= 0 || e < 0 || nt_kind(nt, e) != NK_SelfNode) return -1;
+    above = civ_enclosing(nt, parent, sc, NK_ClassNode);
+    if (above < 0 || civ_in_block(nt, parent, sc, above)) return -1;
+  }
+  if (nt_kind(nt, above) != NK_ClassNode) return -1;
+  int cm = in_sclass || (dr >= 0 && nt_kind(nt, dr) == NK_SelfNode);
+  NodeKind rk = nt_kind(nt, r);
+  if (rk == NK_LocalVariableReadNode) {
+    const char *dn = nt_str(nt, d, "name"), *rn = nt_str(nt, r, "name");
+    int ps = nt_ref(nt, d, "parameters"), rq = 0;
+    const int *rv = ps >= 0 ? nt_arr(nt, ps, "requireds", &rq) : NULL;
+    if (!cm || !dn || !sp_streq(dn, "inherited") || rq != 1 || !rn ||
+        !nt_str(nt, rv[0], "name") || !sp_streq(nt_str(nt, rv[0], "name"), rn) ||
+        civ_writes_local(nt, nt_ref(nt, d, "body"), rn)) return -1;
+    return above;
+  }
+  int rr = rk == NK_CallNode ? nt_ref(nt, r, "receiver") : -1;
+  if (rr >= 0 && !cm && nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), "class") &&
+      nt_ref(nt, r, "arguments") < 0 && nt_ref(nt, r, "block") < 0 && nt_kind(nt, rr) == NK_SelfNode)
+    return above;
+  return -1;
+}
+
 int desugar_const_ivar_access(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
+  int *parent = NULL;
   static const NodeKind BK[] = { NK_ClassNode, NK_ModuleNode };
   for (int h = 0; h < 2; h++)
     NT_FOREACH_KIND(nt, BK[h], m) changed |= civ_self_body_access(nt, nt_ref(nt, m, "body"), 0);
@@ -15612,14 +15678,24 @@ int desugar_const_ivar_access(Compiler *c) {
     if (!setter && !(nm && sp_streq(nm, "instance_variable_get"))) continue;
     if (nt_ref(nt, id, "block") >= 0) continue;
     int r = nt_ref(nt, id, "receiver");
-    if (r < 0 || nt_kind(nt, r) != NK_ConstantReadNode) continue;
-    const char *cn = nt_str(nt, r, "name");
+    if (r < 0) continue;
     int args = nt_ref(nt, id, "arguments"), an = 0;
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     if (an != (setter ? 2 : 1)) continue;
     const char *iv0 = sym_or_str_literal(nt, av[0]);
-    if (!cn || !civ_name_ok(iv0)) continue;
-    int m = civ_target_body(nt, cn);
+    if (!civ_name_ok(iv0)) continue;
+    int m;
+    if (nt_kind(nt, r) == NK_ConstantReadNode) {
+      const char *cn = nt_str(nt, r, "name");
+      m = cn ? civ_target_body(nt, cn) : -1;
+    }
+    else {
+      /* a class value only the run time knows: the accessor goes on the
+         class the receiver can only be or descend from, whose subclasses
+         answer it each on its own slot */
+      if (!parent) parent = an_parent_map(nt);
+      m = parent ? civ_class_value_owner(nt, parent, r) : -1;
+    }
     if (m < 0) continue;
     char iv[256]; snprintf(iv, sizeof iv, "%s", iv0);
     civ_ensure_accessor(nt, m, iv, setter);
@@ -15635,6 +15711,7 @@ int desugar_const_ivar_access(Compiler *c) {
     else nt_node_set_ref(nt, id, "arguments", -1);
     changed = 1;
   }
+  free(parent);
   if (changed) comp_grow_node_arrays(c);
   return changed;
 }
