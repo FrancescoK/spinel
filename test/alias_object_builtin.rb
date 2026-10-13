@@ -51,3 +51,33 @@ class R
   alias old_inspect inspect
 end
 p Q.new.old_to_s, R.new.old_inspect, Other.new.to_s
+
+# an alias an ancestor declared reaches a subclass that declares none
+class Base
+  attr_reader :v
+  def initialize(v) = (@v = v)
+  alias original_dup dup
+  def dup = "own dup"
+end
+class Sub < Base; end
+p Sub.new(1).original_dup.class, Sub.new(2).original_dup.v, Base.new(3).original_dup.class
+
+# a method a module brings or an ancestor gets after the alias is not the
+# one the alias took
+module Late
+  def dup = "Late#dup"
+end
+class Before
+  alias old_dup dup
+  include Late
+end
+p Before.new.old_dup.class, Before.new.dup
+class Root; end
+class Leaf < Root; end
+class Leaf
+  alias old_dup dup
+end
+class Root
+  def dup = "Root#dup"
+end
+p Leaf.new.old_dup.class, Leaf.new.dup

@@ -14,3 +14,10 @@ true
 "P#to_s"
 "Mx#inspect"
 "other"
+Sub
+2
+Base
+Before
+"Late#dup"
+Leaf
+"Root#dup"
