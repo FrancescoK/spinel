@@ -1182,6 +1182,8 @@ void emit_strbuf_orw_guard(Compiler *c, const char *ref, int v, int is_or, Buf *
   char srefO[1024];
   if (strbuf_slot_ref(c, v, srefO, sizeof srefO)) buf_puts(&vval, srefO);
   else if (emit_strbuf_write_handle(c, v, &vval)) { }
+  /* (--share-strings: in the String plan's form, a box's handle) */
+  else if (c->share_plan) emit_str_form_handle(c, v, &vval);
   else { buf_puts(&vval, "sp_String_new_shared("); emit_str_expr(c, v, &vval); buf_puts(&vval, ")"); }
   g_pre = saved_pre;
   buf_printf(b, "if (%s%s) { ", is_or ? "!" : "", ref);

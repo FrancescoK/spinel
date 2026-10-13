@@ -413,6 +413,9 @@ void str_form_settle(Compiler *c, StrForm *sf, Buf *b);
 void str_form_of_text(StrForm *sf, const char *expr, TyKind cty, unsigned needs);
 void str_form_close(const StrForm *sf, Buf *b);
 void str_form_free(StrForm *sf);
+/* Node v into a slot that holds the shared handle (an ivar's store, its
+   `||=`), in the plan's form: emit_str_form's handle face, settled. */
+void emit_str_form_handle(Compiler *c, int v, Buf *b);
 extern int g_block_nren;
 extern int g_yield_block_fallback_nren;
 /* Paired 1:1 with g_block_nren / g_yield_block_fallback_nren: the &block
