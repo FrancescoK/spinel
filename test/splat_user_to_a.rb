@@ -108,3 +108,42 @@ begin
 rescue TypeError => e
   p e.message
 end
+
+# an answer that is a value or nil: the value is a TypeError, nil spreads
+# the object itself, wherever the splat lands
+class MaybeInt
+  def initialize(c) = @c = c
+  def to_a = (@c ? 5 : nil)
+end
+
+class MaybeStr
+  def initialize(c) = @c = c
+  def to_a = (@c ? "s" : nil)
+end
+
+[true, false].each do |c|
+  [MaybeInt.new(c), MaybeStr.new(c)].each do |o|
+    begin
+      p [*o].map(&:class)
+    rescue TypeError => e
+      p e.message
+    end
+    begin
+      p count(*o)
+    rescue TypeError => e
+      p e.message
+    end
+    begin
+      a, b = *o
+      p [a.class, b]
+    rescue TypeError => e
+      p e.message
+    end
+  end
+end
+p [*Nothing.new].map(&:class)
+
+# a receiver that may be nil: nil.to_a spreads nothing
+def held(v) = [*v]
+p held(Holder.new([1]))
+p held(nil)

@@ -11423,6 +11423,8 @@ static void emit_obj_to_a_dispatch(Compiler *c, Buf *b) {
                c->classes[defc].c_name, mc(c->scopes[mi].name), c->classes[defc].c_name, tail);
       buf_puts(b, "      return ");
       if (mret == TY_POLY) buf_puts(b, callx);
+      /* an answer that holds its nil beside the value (sp_oint) */
+      else if (method_ret_is_oint(&c->scopes[mi])) buf_printf(b, "%s(%s)", oint_box(mret), callx);
       else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, mret, callx, &bx);
              buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
       buf_puts(b, ";\n    }\n");

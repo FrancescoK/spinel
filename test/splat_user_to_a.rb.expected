@@ -21,3 +21,18 @@
 "can't convert Six to Array (Six#to_a gives Integer)"
 "can't convert Six to Array (Six#to_a gives Integer)"
 "can't convert Holder to Array (Holder#to_a gives Integer)"
+"can't convert MaybeInt to Array (MaybeInt#to_a gives Integer)"
+"can't convert MaybeInt to Array (MaybeInt#to_a gives Integer)"
+"can't convert MaybeInt to Array (MaybeInt#to_a gives Integer)"
+"can't convert MaybeStr to Array (MaybeStr#to_a gives String)"
+"can't convert MaybeStr to Array (MaybeStr#to_a gives String)"
+"can't convert MaybeStr to Array (MaybeStr#to_a gives String)"
+[MaybeInt]
+1
+[MaybeInt, nil]
+[MaybeStr]
+1
+[MaybeStr, nil]
+[Nothing]
+[1]
+[]
