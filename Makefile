@@ -4864,9 +4864,11 @@ share-check-test: $(SPINEL)
 # share-check-ratchet: the sites --share-check reports over the sharing
 # corpus (test/share/*.rb, test/share/verify/*.rb,
 # test/share/verify/conflicts/*.rb and test/share_strings_*.rb), compared line
-# by line with test/share_check/ratchet.txt (tools/share_check_ratchet.sh has
-# the line format and how to update the list). A site the list lacks fails,
-# and so does a listed line no site matches, so the list only shrinks. It is
+# by line with two lists: the copies with test/share_check/ratchet.txt, and
+# the places where the String plan disagrees with the C with
+# test/share_check/plan_ratchet.txt (tools/share_check_ratchet.sh has the
+# line format and how to update the lists). A site a list lacks fails, and so
+# does a listed line no site matches, so the lists only shrink. It is
 # report-only (Matz, #8328): the compiler refuses at no flagged site yet. It
 # is a `make gate` leg (gate-props), so a pull request that adds a site or
 # leaves a stale line fails its gate rather than master's ratchet.
