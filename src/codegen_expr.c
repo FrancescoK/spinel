@@ -4019,8 +4019,16 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
          narrower than the arm the analysis has already gone wrong, so the C
          type error that raises is the honest answer, not a silent value. */
       int fbox = fres == TY_POLY && repr_of(c, lb[ln - 1]).kind != RK_BOXED;
+      /* ...and an empty `[]`, which has no element kind of its own, takes
+         the result's array kind as the unfolded pair gives it: emitted raw
+         it was the default Integer array, stored into a poly array slot */
+      int fempty = 0;
+      if (ln == 1 && ty_is_array(fres) && nt_kind(nt, lb[0]) == NK_ArrayNode) {
+        int fen = 0; nt_arr(nt, lb[0], "elements", &fen);
+        fempty = fen == 0;
+      }
       if (ln == 1) {
-        if (fbox) emit_ternary_arm(c, lb[0], fres, b); else emit_expr(c, lb[0], b);
+        if (fbox || fempty) emit_ternary_arm(c, lb[0], fres, b); else emit_expr(c, lb[0], b);
         return 1;
       }
       /* The leading statements go into the PRELUDE, not inside a statement
