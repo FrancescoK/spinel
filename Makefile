@@ -2518,8 +2518,8 @@ thread-puts-test: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	[ $$rc -eq 0 ] || \
 	  { echo "thread-puts-test: FAIL (fiber stack overflow: compile, exit $$rc)"; tail -5 "$$tmp/cc.out"; rm -rf "$$tmp"; exit 1; }; \
 	$(TIMEOUT60) "$$tmp/s" > "$$tmp/sout" 2> "$$tmp/serr"; rc=$$?; \
-	[ $$rc -ne 0 ] && [ $$rc -ne 124 ] || { echo "thread-puts-test: FAIL (fiber stack overflow: the program did not die, rc=$$rc)"; ok=0; }; \
-	grep -q 'fiber stack overflow' "$$tmp/serr" || { echo "thread-puts-test: FAIL (fiber stack overflow: the fault was not reported as one)"; head -3 "$$tmp/serr"; ok=0; }; \
+	[ $$rc -eq 1 ] || { echo "thread-puts-test: FAIL (fiber stack overflow: not an uncaught raise, rc=$$rc)"; ok=0; }; \
+	grep -qx 'stack level too deep (SystemStackError)' "$$tmp/serr" || { echo "thread-puts-test: FAIL (fiber stack overflow: not raised as SystemStackError)"; head -3 "$$tmp/serr"; ok=0; }; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "thread-puts-test: pass"; else exit 1; fi
 

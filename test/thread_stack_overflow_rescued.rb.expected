@@ -1,0 +1,17 @@
+before
+rescued: SystemStackError: stack level too deep
+join: SystemStackError
+nil
+thread 0: 100
+thread 1: 100
+thread 2: 100
+:fiber_rescued
+:fiber_done
+resume: SystemStackError
+false
+1
+next: SystemStackError
+[:ensured, :rescued]
+main: rescued
+1000
+after

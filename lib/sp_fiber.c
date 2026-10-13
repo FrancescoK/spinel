@@ -301,13 +301,14 @@ SP_TLS sp_Fiber *sp_fiber_current = &sp_fiber_root;    /* extern: read by the ge
    workers from their startup). A no-op-shaped reset in the single-threaded build
    (sp_fiber_current already equals &sp_fiber_root). */
 /* A fault inside the current fiber's guard is a stack overflow, and it is
-   reported as one: without this the program died in ___chkstk_darwin on macOS
+   raised as one: without this the program died in ___chkstk_darwin on macOS
    or in a corrupted neighbour mapping on Linux, and nothing named the fiber
    stack (#4496). The handler runs on a per-thread alternate stack, since the
-   fiber's own is what just ran out, writes the line with write(2) only, then
-   restores the default disposition and returns so the faulting instruction
-   re-executes and the process dies the ordinary way (a core, the signal in
-   the exit status). Any other fault is left to the default just the same.
+   fiber's own is what just ran out. With no raise to make, it writes the line
+   with write(2) only, then restores the default disposition and returns so
+   the faulting instruction re-executes and the process dies the ordinary way
+   (a core, the signal in the exit status). Any other fault is left to the
+   default just the same.
    Installed once, only when nothing else has claimed the signal (the GC
    verifier's fault reporter, for one). */
 #include <signal.h>
@@ -339,17 +340,38 @@ static void sp_fiber_fault_write_num(size_t v) { char b[24]; int i = (int)sizeof
    under the verifier, where the report, which runs on the stack that just
    ran out, died of SIGILL. */
 static void (*sp_fiber_fault_chain)(int) = 0;
+/* What the program already printed is still in stdout's buffer, and neither
+   _exit nor death by a signal flushes it: a run that printed a hundred lines
+   and then overflowed would otherwise show none of them. The buffer is
+   stdio's, already allocated, so flushing it is the write(2) of what is there.
+   Only if the lock is free, though: another worker holding stdout (the
+   threaded build) would otherwise hang the dying process on it. The at_exit
+   hooks do NOT run -- they are Ruby code, and the stack they would run on is
+   the one that just ran out. */
+static void sp_fiber_fault_flush(void) {
+  if (ftrylockfile(stdout) == 0) { fflush(stdout); funlockfile(stdout); }
+}
 static void sp_fiber_fault_handler(int sig, siginfo_t *si, void *uctx) {
   (void)uctx;
   sp_Fiber *f = sp_fiber_current;
   char *a = si ? (char *)si->si_addr : NULL;
   /* The thread's own stack ran past its end: the fault lands in the OS guard
      just below it. Read as an ordinary segfault this killed the process where
-     CRuby raises SystemStackError and lets a rescue continue. The raise is
-     the generated TU's (it owns the exception stack). */
-  if (sp_stack_overflow_raise_fn && a && sp_thread_stack_lo &&
+     CRuby raises SystemStackError and lets a rescue continue. */
+  int thread_overflow = a && sp_thread_stack_lo &&
       a < sp_thread_stack_lo && a >= sp_thread_stack_lo - (ptrdiff_t)(1 << 20) &&
-      (!f || f == &sp_fiber_root || !f->stack)) {
+      (!f || f == &sp_fiber_root || !f->stack);
+  /* A green thread, Fiber or Enumerator body ran into the guard below its own
+     stack. It is the same SystemStackError, raised in that fiber: every
+     handler the exception slots hold while it runs was armed on its own stack
+     (sp_exc_ctx_load gave it its own set, and the trampoline arms the lowest
+     one), so the jump lands in one of the frames that filled it, and one the
+     body does not rescue ends the fiber the way any other raise does -- a
+     Thread's surfaces at #join / #value, a Fiber's at #resume. */
+  int fiber_overflow = f && f != &sp_fiber_root && f->stack &&
+      a >= f->stack && a < f->stack + sp_fiber_guard();
+  /* The raise is the generated TU's (it owns the exception stack). */
+  if (sp_stack_overflow_raise_fn && (thread_overflow || fiber_overflow)) {
     /* unblock the signal first: this raise does not return, and the mask it
        was entered with would otherwise stay blocked in the frame we jump to
        (on Linux longjmp does not restore it) */
@@ -362,22 +384,20 @@ static void sp_fiber_fault_handler(int sig, siginfo_t *si, void *uctx) {
       __sigreturn(NULL, 0x80000000 /* UC_RESET_ALT_STACK */, 0); }
 #endif
     sp_stack_overflow_raise_fn();   /* returns only if no handler is armed */
+  }
+  if (thread_overflow) {
     /* Nothing to rescue it: report it as the uncaught exception it is and
        leave, rather than letting the default disposition kill the process on
        a signal with nothing said. Writing a fixed string and _exit are all
        this handler may do -- the allocator is not safe to re-enter from a
        signal, and the stack a formatter would want is the one that just ran
        out. */
-    /* what the program already printed is still in stdout's buffer, and
-       _exit does not flush it: a run that printed a hundred lines and then
-       overflowed would otherwise show none of them. The at_exit hooks do NOT
-       run here -- they are Ruby code, and the stack they would run on is the
-       one that just ran out. */
-    fflush(stdout);
+    sp_fiber_fault_flush();
     sp_fiber_fault_write("stack level too deep (SystemStackError)\n");
     _exit(1);
   }
-  if (f && f != &sp_fiber_root && f->stack && a >= f->stack && a < f->stack + sp_fiber_guard()) {
+  if (fiber_overflow) {
+    sp_fiber_fault_flush();
     sp_fiber_fault_write("spinel: fiber stack overflow: a green thread, Fiber or Enumerator body ran past the ");
     sp_fiber_fault_write_num(f->stack_size / 1024);
     sp_fiber_fault_write(" KB C stack the fiber runs on (a deep call chain, a large local, or an unoptimised build "
