@@ -8349,7 +8349,15 @@ static void emit_arg_rooted(Compiler *c, Scope *m, int idx, int provided, int he
     if (!arg_read_converts(c, pt, provided)) { emit_arg_or_default(c, m, idx, provided, out); return; }
     Buf cb; memset(&cb, 0, sizeof cb);
     emit_arg_or_default(c, m, idx, provided, &cb);
-    emit_rooted_conversion(c, pt, cb.p ? cb.p : "NULL", out);
+    /* a String a handle parameter takes made here (a handle around the
+       argument's bytes) states that it stays rooted until the call */
+    if (pt == TY_STRBUF) {
+      StrForm sf;
+      str_form_of_text(&sf, cb.p ? cb.p : "NULL", pt, SF_ROOT_UNTIL_USE);
+      str_form_settle(c, &sf, out);
+      str_form_free(&sf);
+    }
+    else emit_rooted_conversion(c, pt, cb.p ? cb.p : "NULL", out);
     free(cb.p);
     return;
   }

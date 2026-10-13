@@ -324,8 +324,12 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
        copy on every read); any other is its bytes. Which it is, is the
        String plan's to say (emit_str_form). A nullable String boxes NULL as
        nil, whose fixed id must not be the NULL pointer's integer value. */
-    else if ((comp_recv_type(c, recv) == TY_STRING && repr_of(c, recv).may_nil) || rt == TY_STRING)
-      emit_str_form(c, recv, SPR_IDENTITY, SPX_ID, b);
+    else if ((comp_recv_type(c, recv) == TY_STRING && repr_of(c, recv).may_nil) || rt == TY_STRING) {
+      StrForm sf;
+      emit_str_form(c, recv, SPR_IDENTITY, SPX_ID, &sf);
+      str_form_settle(c, &sf, b);
+      str_form_free(&sf);
+    }
     /* unboxed value structs have no identity: derive a stable Integer from
        the value hash (see the identity note in docs/limitations.md) */
     else if (rt == TY_COMPLEX || rt == TY_RATIONAL || rt == TY_RANGE || rt == TY_FLOAT_RANGE ||
