@@ -1,0 +1,10 @@
+class Sender
+  def initialize: () -> void
+  attr_accessor channel: String?
+  def send_text: (String text) -> String
+end
+
+class Mailer < Sender
+  def initialize: () -> void
+  def go: () -> String
+end

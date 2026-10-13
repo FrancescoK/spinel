@@ -7649,12 +7649,25 @@ void inherit_members(Compiler *c) {
       (dst)->ivar_nullable_int_elem[di] = (src)->ivar_nullable_int_elem[si]; \
       (dst)->ivar_arr_elem_arr_or_nil[di] = (src)->ivar_arr_elem_arr_or_nil[si]; \
     } while (0)
+    /* which of the child's slots the child's own seed pinned, read before
+       the parent's pins are copied in below: the two are told apart when
+       the parent's pin disagrees with the child's */
+    char *own_pin = (char *)calloc((size_t)(oldn > 0 ? oldn : 1), 1);
+    for (int k = 0; k < oldn && own_pin; k++) own_pin[k] = class_ivar_pinned(ci, old[k]) ? 1 : 0;
     for (int k = 0; k < pc->nivars; k++) {
       int idx = comp_ivar_intern(ci, pc->ivars[k]);
       ci->ivar_types[idx] = pc->ivar_types[k];
       /* the layouts must stay cast-compatible, so a slot the parent narrowed
          is narrowed the same way here */
       IV_SIDE_COPY(ci, idx, pc, k);
+      /* and a slot an --rbs seed pinned in the parent is pinned here too:
+         the seed names the field every class below reaches through a
+         (Parent*) cast. Copying the type alone let the child's own passes
+         widen its slot (a subclass that never assigns the ivar read it as
+         nil and unified it to poly) while the parent's stayed pinned, and
+         check_class_layout_prefix then refused the program over an
+         `attr_accessor x: String?` declared once, in the base class. */
+      if (class_ivar_pinned(pc, pc->ivars[k])) class_pin_ivar(ci, pc->ivars[k]);
     }
     for (int k = 0; k < oldn; k++) {
       int idx = comp_ivar_intern(ci, old[k]);
@@ -7670,7 +7683,20 @@ void inherit_members(Compiler *c) {
       if (class_ivar_pinned(ci, old[k])) {
         int pidx = comp_ivar_index(pc, old[k]);
         TyKind pt = pidx >= 0 ? pc->ivar_types[pidx] : TY_UNKNOWN;
-        if (pidx >= 0 && pt != TY_UNKNOWN && pt != TY_NIL && pt != oldt[k]) {
+        if (pidx >= 0 && class_ivar_pinned(pc, old[k])) {
+          /* the parent's pin, copied above with the parent's type: that
+             type is the slot's, whatever the child's passes inferred for it
+             before the seed applied (a subclass that never assigns the ivar
+             had read it as nil). A seed of the child's own on the same ivar
+             that names another type yields to it, as to an ancestor's
+             inferred type below, and says so. */
+          if (own_pin && own_pin[k] && oldt[k] != TY_UNKNOWN && oldt[k] != pt) {
+            fprintf(stderr,
+                    "spinel: warning: --rbs ivar pin %s dropped on %s: ancestor %s pins it as %s (layouts must stay cast-compatible)\n",
+                    old[k], ci->name, pc->name, ty_name(pt));
+          }
+        }
+        else if (pidx >= 0 && pt != TY_UNKNOWN && pt != TY_NIL && pt != oldt[k]) {
           fprintf(stderr,
                   "spinel: warning: --rbs ivar pin %s dropped on %s: ancestor %s holds it as %s (layouts must stay cast-compatible)\n",
                   old[k], ci->name, pc->name, ty_name(pt));
@@ -7698,7 +7724,7 @@ void inherit_members(Compiler *c) {
     /* the parent's ivars lead the rebuilt layout, so its members lead them */
     if (pc->is_struct && ci->nmembers < pc->nmembers) ci->nmembers = pc->nmembers;
     free(old); free(oldt); free(old_ss); free(old_es); free(old_it); free(old_oa); free(old_os);
-    free(old_oc); free(old_ni); free(old_ne); free(old_ae);
+    free(old_oc); free(old_ni); free(old_ne); free(old_ae); free(own_pin);
 
     /* An inherited attribute the child overrides with a `def` stops there: the
        def answers the name for the child and everything below it, so copying

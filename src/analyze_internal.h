@@ -365,6 +365,7 @@ int infer_ivar_types(Compiler *c);
 /* 1 if `name` (incl '@') is an ivar pinned by an --rbs seed in class `ci`;
    the ivar inference write sites consult this to avoid widening a pinned slot. */
 int class_ivar_pinned(ClassInfo *ci, const char *name);
+void class_pin_ivar(ClassInfo *ci, const char *name);
 void class_unpin_ivar(ClassInfo *ci, const char *name);
 void sp_ivwatch(const char *name, const char *where, TyKind old, TyKind nw);
 void sp_narrow_memo_bump(void);

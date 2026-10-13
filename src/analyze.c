@@ -5104,7 +5104,7 @@ void class_unpin_ivar(ClassInfo *ci, const char *name) {
   }
 }
 
-static void class_pin_ivar(ClassInfo *ci, const char *name) {
+void class_pin_ivar(ClassInfo *ci, const char *name) {
   if (class_ivar_pinned(ci, name)) return;
   if (ci->n_rbs_pin_ivars >= ci->c_rbs_pin_ivars) {
     int nc = ci->c_rbs_pin_ivars ? ci->c_rbs_pin_ivars * 2 : 4;
