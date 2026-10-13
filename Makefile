@@ -2033,6 +2033,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a typed array held by the caller, stored into through a boxed parameter, compiled)"; ok=0; \
 	else grep -q "which the method stores elements of other kinds into" "$$tmp/tb.out" || \
 	  { echo "reject-test: FAIL (a held typed array into a boxed parameter's store rejected without saying why)"; sed -n 1,5p "$$tmp/tb.out"; ok=0; }; fi; \
+	t=test/reject/included_hook_return_in_define_method_args.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/ihr.c" >"$$tmp/ihr.out" 2>&1; then \
+	  echo "reject-test: FAIL (an included hook with a return in a define_method's arguments compiled)"; ok=0; \
+	else grep -q "Module#define_method in a method body" "$$tmp/ihr.out" || \
+	  { echo "reject-test: FAIL (an included hook with a return in a define_method's arguments refused without saying why)"; sed -n 1,5p "$$tmp/ihr.out"; ok=0; }; fi; \
 	t=test/reject/const_get_runtime_name.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/cg.c" >"$$tmp/cg.out" 2>&1; then \
 	  echo "reject-test: FAIL (a const_get with a run-time name on a class value compiled)"; ok=0; \
