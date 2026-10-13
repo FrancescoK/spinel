@@ -110,6 +110,35 @@ static int recv_has_scalar_numeric_write(Compiler *c, int recv) {
   return 0;
 }
 
+/* A local every write of which is still untyped this round, none of them
+   an Array literal: `buf = src.byteslice(0, 3)` while `src` is settling.
+   Its `<<` may be String#<< as well as a push, and reading it as a push
+   committed the local to an Array that the slots it reached kept after
+   it settled on a String: a Hash keyed by the method's answer went boxed
+   for good (#8783). */
+static int recv_local_writes_unsettled(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode) return 0;
+  const char *rnm = nt_str(nt, recv, "name");
+  Scope *rscope = comp_scope_of(c, recv);
+  if (!rnm || !rscope) return 0;
+  if (wrn_nt != nt || wrn_ntc != nt->count) wrn_build(c);
+  if (!wrn_buckets) return 0;
+  int qscope = (int)(rscope - c->scopes), n = 0;
+  unsigned b = wrn_key(rnm, qscope) % (unsigned)wrn_buckets;
+  for (int id = wrn_head[b]; id >= 0; id = wrn_next[id]) {
+    if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
+    const char *wnm = nt_str(nt, id, "name");
+    if (!wnm || !sp_streq(wnm, rnm) || comp_scope_of(c, id) != rscope) continue;
+    int v = nt_ref(nt, id, "value");
+    if (v < 0) continue;
+    NodeKind vk = nt_kind(nt, v);
+    if (vk == NK_ArrayNode || infer_type(c, v) != TY_UNKNOWN) return 0;
+    n++;
+  }
+  return n > 0;
+}
+
 /* Does the receiver slot have a write that is definitely an array? Used to
    tell a genuine push accumulator (`out = []` ... `out << e`) from a slot
    whose `<<` is a user class's own operator. */
@@ -2787,6 +2816,9 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
            receiver is a shift, so don't promote its slot to an array. push/append
            take any number of arguments; every one of them is element evidence. */
         if (sp_streq(name, "<<") && recv_has_scalar_numeric_write(c, recv)) continue;
+        /* nor, while the fixpoint runs, a local whose writes are all still
+           untyped: a String's `<<` too (the second stage still takes it) */
+        if (sp_streq(name, "<<") && g_infer_optimistic && recv_local_writes_unsettled(c, recv)) continue;
         /* `<<` is ambiguous a third way: a user class can own it. A slot whose
            value comes from a container -- a fused loop variable over an array
            of such objects -- has no array evidence of its own, and reading its
