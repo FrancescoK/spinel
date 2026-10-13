@@ -3079,7 +3079,7 @@ static void sg_slot_boxed(Compiler *c, int k, const char *base, Buf *b) {
    accessor, on that class's own slot, as `Name.x` takes it. The value is
    boxed; a setter answers what it stored. NoMethodError for a class without
    it. 0 when no class has the accessor. */
-static int emit_cls_value_sg_accessor(Compiler *c, int recv, const char *name, int argc, const int *argv,
+static int emit_cls_value_sg_accessor(Compiler *c, int id, int recv, const char *name, int argc, const int *argv,
                                       Buf *b) {
   int nlen = (int)strlen(name), setter = nlen > 1 && name[nlen - 1] == '=';
   if (setter ? argc != 1 : argc != 0) return 0;
@@ -3107,7 +3107,7 @@ static int emit_cls_value_sg_accessor(Compiler *c, int recv, const char *name, i
     first = 0;
     if (setter) {
       buf_puts(b, "(void)");
-      emit_sg_accessor(c, k, cls->name, name, argc, argv, b);
+      emit_sg_accessor(c, id, k, cls->name, name, argc, argv, b);
       buf_puts(b, "; ");
     }
     buf_printf(b, "_t%d = ", tr);
@@ -4032,7 +4032,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       }
       /* a `class << self` accessor on such a value: an arm per class that
          has it, on its own slot */
-      if (ncand9 == 0 && emit_cls_value_sg_accessor(c, recv, name, argc, argv, b)) return 1;
+      if (ncand9 == 0 && emit_cls_value_sg_accessor(c, id, recv, name, argc, argv, b)) return 1;
       skip_cls_cmethod9:;
     }
   }
