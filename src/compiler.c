@@ -1908,6 +1908,10 @@ const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, i
           }
           break;
         }
+      /* a class that defines the name itself answers it: an ancestor's
+         alias of that name is behind it (`attr_reader :loc` in a subclass
+         of one with `alias loc location`) */
+      if (!next && (comp_method_in_class(c, cid, name) >= 0 || comp_is_reader(ci, name))) break;
     }
     if (!next) return name;
     name = next;
