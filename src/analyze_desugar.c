@@ -13909,12 +13909,15 @@ static void cn_raise_module_super(NodeTable *nt, int id, int par) {
  * `Point = Struct.new(:x) do ... end` names the class only when the
  * constant is written, after the block has run: in the block self is an
  * anonymous class, whose name is nil and whose to_s is `#<Class:0x...>`.
- * Here the class has its name from the start, so a read of the name there
- * would answer "Point". Such a read is refused: `self.name`, `to_s`,
- * `inspect` and `display` on self (or bare), self printed (p, puts, print,
- * pp, warn, format, sprintf, printf, String) or interpolated. Any other use
- * of self, a call on it or a value handed elsewhere and read later, is the
- * class, as in CRuby. */
+ * The constant's write is marked as a Class.new class's is
+ * (class_new_anonymous): the class answers as an anonymous one until the
+ * write names it (sp_class_assign_name, after the block's statements).
+ *
+ * A block a local holds (`k = Struct.new(:x) do ... end`, and an inline one
+ * desugar_inline_struct_blocks gives a local) does not run with the class
+ * as self yet, so a read of the name there is still refused: `self.name`,
+ * `to_s`, `inspect` and `display` on self (or bare), self printed (p, puts,
+ * print, pp, warn, format, sprintf, printf, String) or interpolated. */
 static const char *const SB_NAME_MSG =
   "spinel: the name of a Struct.new or Data.define class read in its own block "
   "(where CRuby has not named it yet) is not supported";
@@ -14064,6 +14067,9 @@ int desugar_struct_block_name_reads(Compiler *c) {
     if (!is_struct_call(c, val)) continue;
     int blk = nt_ref(nt, val, "block");
     if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+    /* a constant names the class once the block has run: until then it is
+       anonymous, as a Class.new class is (sp_class_assign_name) */
+    if (k == NK_ConstantWriteNode) { nt_node_set_int(nt, id, "class_new_anonymous", 1); continue; }
     changed |= sb_walk(nt, nt_ref(nt, blk, "body"));
   }
   if (changed) comp_grow_node_arrays(c);

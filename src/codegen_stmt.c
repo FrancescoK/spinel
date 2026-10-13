@@ -17755,8 +17755,12 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
          despite being declared and typed (a method reading them, e.g. a Linedef
          FLAGS[:TWOSIDED] flag helper, silently sees an empty constant). Mirrors
          fix_struct_block_scopes, which does the analogous fixup for DefNodes. */
-      if (!isg && v >= 0 && is_struct_call(c, v))
-        emit_class_body_stmts(c, comp_class_index(c, nm), class_def_body(c, id), b, indent);
+      if (!isg && v >= 0 && is_struct_call(c, v)) {
+        int sci = comp_class_index(c, nm);
+        emit_class_body_stmts(c, sci, class_def_body(c, id), b, indent);
+        /* the block ran with the class anonymous; the write names it */
+        if (comp_class_anonymous(c, sci)) emit_class_assign_name(c, sci, class_ruby_name(c, sci), b, indent);
+      }
       return 1;
     }
     if (!isg && lv->init_guarded) {
