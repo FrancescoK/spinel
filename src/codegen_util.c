@@ -3881,6 +3881,10 @@ void refuse_prepass_at_emit(Compiler *c, int id) {
   if (nt_int(c->nt, id, "fwd_new_class_value", 0))
     unsupported_feature(c, id, "`...` forwarded to `new` on a class value, where an initialize "
                                "takes keywords and a Struct or Data class could be constructed");
+  /* an attr call whose splat the desugar could not spell out
+     (desugar_attr_const_splat): refused where it is emitted, so a deferred
+     refusal stands at its own statement */
+  if (nt_int(c->nt, id, "attr_splat", 0)) diagnose_unsupported_call(c, id);
   if (!defer_refusals()) return;
   refuse_from_plan(c, id, CRF_SEND, "refuse-send");
   refuse_from_plan(c, id, CRF_CONST_GET, "refuse-const-get");
