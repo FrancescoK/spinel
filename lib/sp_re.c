@@ -962,14 +962,16 @@ else {
    Array held in a variable). Each element joins by alternation: a String is
    regexp-escaped, a Regexp contributes its #to_s form `(?on-off:src)` so its
    options survive. An empty array yields the never-matching /(?!)/. */
-mrb_regexp_pattern *sp_re_union_array(sp_PolyArray *a) {
+mrb_regexp_pattern *sp_re_union_array(sp_PolyArray *a) {SP_GC_ROOT(a);
   if (!a || a->len == 0) return re_compile("(?!)", 4, 0);
   /* a lone Regexp is the answer itself, its source and flags as they are */
   if (a->len == 1) {
     sp_RbVal v0 = sp_PolyArray_get(a, 0);
     if (v0.tag == SP_TAG_OBJ && v0.cls_id == SP_BUILTIN_REGEX && v0.v.p) return (mrb_regexp_pattern *)v0.v.p;
   }
+  /* rooted: the next part's escape or to_s allocates while it is held */
   const char *joined = NULL;
+  SP_GC_ROOT_STR(joined);
   for (sp_int i = 0; i < a->len; i++) {
     sp_RbVal v = sp_PolyArray_get(a, i);
     const char *part;
