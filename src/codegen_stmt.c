@@ -14626,6 +14626,9 @@ static void emit_class_body_stmts(Compiler *c, int ci, int body, Buf *b, int ind
       /* a String class_eval the compiler could not expand defines nothing:
          refused (the plan's CRF_EVAL), not skipped as a declaration */
       diagnose_eval_call(c, stmts[k]);
+      /* an attr call whose splat names nothing the compiler can read
+         (desugar_attr_const_splat) would declare nothing */
+      if (nt_int(nt, stmts[k], "attr_splat", 0) && diagnose_unsupported_call(c, stmts[k])) break;
       /* Kernel calls that act (output, an exception, exit) run where they
          stand, as CRuby runs a class body top to bottom: `raise` or `warn`
          in a class body was skipped as a declaration */

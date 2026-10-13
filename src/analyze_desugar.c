@@ -17893,7 +17893,12 @@ static int sce_graft(Compiler *c, const char *text, int site, int **out, int *n)
 }
 /* Is every read of constant `name` in the program the receiver of a call
    that leaves the Array as it is? Then its literal is what an each sees. */
+static int sce_const_unmutated_ex(const NodeTable *nt, const char *name, int excused);
 static int sce_const_unmutated(const NodeTable *nt, const char *name) {
+  return sce_const_unmutated_ex(nt, name, 0);
+}
+/* ... but for `excused` reads the caller knows leave it as it is */
+static int sce_const_unmutated_ex(const NodeTable *nt, const char *name, int excused) {
   static const char *const RO[] = { "each", "each_with_index", "each_with_object", "map", "flat_map",
     "filter_map", "select", "reject", "find", "include?", "first", "last", "size", "length", "count",
     "empty?", "any?", "all?", "none?", "join", "to_a", "freeze", "frozen?", "dup", "[]", "index",
@@ -17920,7 +17925,7 @@ static int sce_const_unmutated(const NodeTable *nt, const char *name) {
     for (int q = 0; RO[q]; q++) if (sp_streq(m, RO[q])) { ro++; break; }
   }
   nt_kind_iter_close(&it);
-  return reads == ro;
+  return reads - excused == ro;
 }
 /* the element texts of an Array literal of Strings and Symbols (`%w(a b)`,
    `%i[a b]`, `["a", :b]`), or -1 */
@@ -17943,7 +17948,13 @@ static int sce_array_elems(const NodeTable *nt, int v, const char ***out) {
    this body, ahead of it, and never changed after (sce_const_unmutated).
    One written anywhere else could be shadowed by a superclass's or an
    enclosing scope's on the way, so only the body's own is read. -1 if not. */
+static int sce_const_elems_ex(const NodeTable *nt, int body, int before, const char *name, int excused,
+                              const char ***out);
 static int sce_const_elems(const NodeTable *nt, int body, int before, const char *name, const char ***out) {
+  return sce_const_elems_ex(nt, body, before, name, 0, out);
+}
+static int sce_const_elems_ex(const NodeTable *nt, int body, int before, const char *name, int excused,
+                              const char ***out) {
   int w = -1;
   int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
   for (int i = 0; i < bn; i++)
@@ -17951,8 +17962,106 @@ static int sce_const_elems(const NodeTable *nt, int body, int before, const char
       if (w >= 0 || i >= before) return -1;
       w = bb[i];
     }
-  if (w < 0 || !sce_const_unmutated(nt, name)) return -1;
+  if (w < 0 || !sce_const_unmutated_ex(nt, name, excused)) return -1;
   return sce_array_elems(nt, nt_ref(nt, w, "value"), out);
+}
+
+/* ---- `attr_accessor(*FLAGS)` in a class or module body ----
+   FLAGS = %i[a b]; attr_accessor(*FLAGS) declares a and b. With FLAGS an
+   Array literal of Symbols or Strings written once in the body ahead of the
+   call and never changed (sce_const_elems), the splat becomes those names,
+   which the attr tables read. Any other splat is marked `attr_splat`: the
+   call would declare nothing, so it is refused (feature_limit). */
+static int attr_family(const char *nm) {
+  return nm && (sp_streq(nm, "attr_accessor") || sp_streq(nm, "attr_reader") ||
+                sp_streq(nm, "attr_writer") || sp_streq(nm, "attr"));
+}
+/* the `*NAME` arguments of attr calls in the program: reads of NAME that
+   leave the Array as it is. One already spelled out stays in the table, cut
+   off from the call (marked attr_splat_done). */
+static int attr_splat_reads(const NodeTable *nt, const char *name) {
+  int n = 0;
+  NtKindIter sp = nt_kind_iter_begin(nt, NK_SplatNode);
+  while (nt_kind_iter_next(&sp)) {
+    int e = nt_ref(nt, sp.id, "expression");
+    if (nt_int(nt, sp.id, "attr_splat_done", 0) && e >= 0 && sp_streq(nt_str(nt, e, "name"), name)) n++;
+  }
+  nt_kind_iter_close(&sp);
+  NtKindIter it = nt_kind_iter_begin(nt, NK_CallNode);
+  while (nt_kind_iter_next(&it)) {
+    if (!attr_family(nt_str(nt, it.id, "name"))) continue;
+    int args = nt_ref(nt, it.id, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    for (int a = 0; a < an; a++) {
+      int e = nt_kind(nt, av[a]) == NK_SplatNode ? nt_ref(nt, av[a], "expression") : -1;
+      if (e >= 0 && nt_kind(nt, e) == NK_ConstantReadNode && sp_streq(nt_str(nt, e, "name"), name)) n++;
+    }
+  }
+  nt_kind_iter_close(&it);
+  return n;
+}
+/* the call's arguments with each `*CONST` spelled out, or -1 (marked) */
+static int attr_splat_expand(NodeTable *nt, int body, int i, int st) {
+  int args = nt_ref(nt, st, "arguments"), an = 0;
+  const int *av0 = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  int *av = (int *)malloc(sizeof(int) * (size_t)(an > 0 ? an : 1));
+  if (!av) { fprintf(stderr, "out of memory\n"); exit(1); }
+  if (an > 0) memcpy(av, av0, sizeof(int) * (size_t)an);
+  int *out = NULL, no = 0, any = 0, ok = 1;
+  for (int a = 0; a < an && ok; a++) {
+    if (nt_kind(nt, av[a]) != NK_SplatNode) { xc_push(&out, &no, av[a]); continue; }
+    any = 1;
+    int e = nt_ref(nt, av[a], "expression");
+    const char *cn = e >= 0 && nt_kind(nt, e) == NK_ConstantReadNode ? nt_str(nt, e, "name") : NULL;
+    const char **els = NULL;
+    int en = cn ? sce_const_elems_ex(nt, body, i, cn, attr_splat_reads(nt, cn), &els) : -1;
+    if (en < 0) { ok = 0; break; }
+    for (int j = 0; j < en && ok; j++) {
+      int sym = nt_new_node(nt, "SymbolNode");
+      if (sym < 0) { ok = 0; break; }
+      nt_node_set_str(nt, sym, "value", els[j]);
+      nt_node_set_int(nt, sym, "node_line", nt_int(nt, st, "node_line", 0));
+      xc_push(&out, &no, sym);
+    }
+    free(els);
+    nt_node_set_int(nt, av[a], "attr_splat_done", 1);
+  }
+  free(av);
+  if (!any) { free(out); return 0; }
+  if (!ok) { free(out); nt_node_set_int(nt, st, "attr_splat", 1); return 0; }
+  nt_node_set_arr(nt, args, "arguments", out, no);
+  free(out);
+  return 1;
+}
+int desugar_attr_const_splat(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_ModuleNode && k != NK_ClassNode) continue;
+    int body = nt_ref(nt, id, "body");
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+    for (int i = 0; i < bn; i++) {
+      int st = bb[i];
+      if (nt_kind(nt, st) != NK_CallNode || !attr_family(nt_str(nt, st, "name"))) continue;
+      int rcv = nt_ref(nt, st, "receiver");
+      if (rcv >= 0 && nt_kind(nt, rcv) != NK_SelfNode) continue;
+      changed |= attr_splat_expand(nt, body, i, st);
+      bb = nt_arr(nt, body, "body", &bn);   /* new nodes may have moved the table */
+    }
+  }
+  /* a splat left anywhere else (`class << self`, an explicit receiver) */
+  NtKindIter it = nt_kind_iter_begin(nt, NK_CallNode);
+  while (nt_kind_iter_next(&it)) {
+    if (!attr_family(nt_str(nt, it.id, "name"))) continue;
+    int args = nt_ref(nt, it.id, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    for (int a = 0; a < an; a++)
+      if (nt_kind(nt, av[a]) == NK_SplatNode) { nt_node_set_int(nt, it.id, "attr_splat", 1); break; }
+  }
+  nt_kind_iter_close(&it);
+  return changed;
 }
 /* A program that gives class_eval / module_eval a method of its own, or
    hooks what a graft does (method_added, singleton_method_added,
