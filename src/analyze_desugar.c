@@ -13564,8 +13564,14 @@ int desugar_class_body_object_acts(Compiler *c) {
   for (int cn = 0; cn < n0; cn++) {
     NodeKind ck = nt_kind(nt, cn);
     if (ck != NK_ClassNode && ck != NK_ModuleNode) continue;
+    /* the builtin itself: `String` at the top level, or `::String`, not a
+       class of that name in another namespace (`Foo::String`, or `String`
+       inside `module Foo`) */
     int cp = nt_ref(nt, cn, "constant_path");
-    const char *cname = cp >= 0 && nt_kind(nt, cp) == NK_ConstantReadNode ? nt_str(nt, cp, "name") : NULL;
+    NodeKind cpk = cp >= 0 ? nt_kind(nt, cp) : NK_NilNode;
+    int top = cpk == NK_ConstantReadNode ? !engine_lexically_nested(nt, cn)
+            : cpk == NK_ConstantPathNode && nt_ref(nt, cp, "parent") < 0;
+    const char *cname = top ? nt_str(nt, cp, "name") : NULL;
     int builtin = cname && (is_builtin_class_name(cname) || is_builtin_module_name(cname));
     changed |= cb_give_self(nt, nt_ref(nt, cn, "body"), builtin);
   }

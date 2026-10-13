@@ -84,6 +84,12 @@ spinel: 1 refusal, nothing written
 == test/reject/builtin_reopen_bare_method_defined.rb [promote] rc=1
 spinel: test/reject/builtin_reopen_bare_method_defined.rb:6: unsupported method_defined? (needs a compile-time-known class and literal method name): node N (CallNode `method_defined?`) recv=-/ty-1 argc=1 arg0ty8
 spinel: 1 refusal, nothing written
+== test/reject/builtin_reopen_root_bare_method_defined.rb [default] rc=1
+spinel: test/reject/builtin_reopen_root_bare_method_defined.rb:5: unsupported method_defined? (needs a compile-time-known class and literal method name): node N (CallNode `method_defined?`) recv=-/ty-1 argc=1 arg0ty8
+spinel: 1 refusal, nothing written
+== test/reject/builtin_reopen_root_bare_method_defined.rb [promote] rc=1
+spinel: test/reject/builtin_reopen_root_bare_method_defined.rb:5: unsupported method_defined? (needs a compile-time-known class and literal method name): node N (CallNode `method_defined?`) recv=-/ty-1 argc=1 arg0ty8
+spinel: 1 refusal, nothing written
 == test/reject/builtin_singleton_alias_call.rb [default] rc=1
 spinel: test/reject/builtin_singleton_alias_call.rb:8: File.basename: calling an alias of a builtin singleton method is not supported; see docs/limitations.md
 spinel: 1 refusal, nothing written
