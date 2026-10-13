@@ -1104,6 +1104,8 @@ void arity_kw_suffix(const NodeTable *nt, int params, char *out, size_t n);
 void scope_arity_kw_suffix(Compiler *c, const Scope *m, char *out, size_t n);
 void emit_arity_raise(Buf *b, const char *given, int min, int max, const char *kw);
 int class_to_io_dispatched(Compiler *c, int k);
+/* Does an instantiated class answer #to_a through sp_obj_to_a_fn? */
+int obj_to_a_any(Compiler *c);
 void emit_arity_check(Buf *b, const char *given, int min, int max, const char *kw);
 int scope_refuses_keywords(Compiler *c, const Scope *m);
 /* The keyword ArgumentErrors, `kind` "missing" or "unknown", naming `count`
