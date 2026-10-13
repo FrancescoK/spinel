@@ -422,6 +422,52 @@ int an_calls_named_first(Compiler *c, const char *name) {
 }
 int an_calls_named_next(int id) { return (id >= 0 && id < g_cn_cnt) ? g_cn_next[id] : -1; }
 
+/* The LocalVariableWriteNodes of each name, ascending, rebuilt whenever the
+   node table changes, as the calls above are. Resolving a Method-typed local
+   walked every write of the program per read (method_recv_node), once per
+   call site a bound builtin wrapper counts (bam_call_argc). */
+static ANameHash g_lw_names;
+static int *g_lw_first, *g_lw_next, g_lw_cap;
+static const NodeTable *g_lw_nt;
+static unsigned g_lw_ver;
+static int g_lw_cnt = -1;
+int an_local_writes_named_first(Compiler *c, const char *name) {
+  const NodeTable *nt = c->nt;
+  if (!name) return -1;
+  if (g_lw_nt != nt || g_lw_ver != nt->version || g_lw_cnt != nt->count) {
+    anh_free(&g_lw_names); memset(&g_lw_names, 0, sizeof g_lw_names);
+    free(g_lw_first); free(g_lw_next);
+    g_lw_cap = 64;
+    g_lw_first = malloc(sizeof(int) * (size_t)g_lw_cap);
+    g_lw_next = malloc(sizeof(int) * (size_t)(nt->count > 0 ? nt->count : 1));
+    int *last = malloc(sizeof(int) * (size_t)g_lw_cap);
+    if (!g_lw_first || !g_lw_next || !last) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int id = comp_kind_first(c, NK_LocalVariableWriteNode); id >= 0; id = comp_kind_next(c, id)) {
+      const char *nm = nt_str(nt, id, "name");
+      if (!nm) continue;
+      g_lw_next[id] = -1;
+      int k = anh_find(&g_lw_names, nm);
+      if (k < 0) {
+        anh_add(&g_lw_names, nm); k = g_lw_names.n - 1;
+        if (k >= g_lw_cap) {
+          g_lw_cap *= 2;
+          g_lw_first = realloc(g_lw_first, sizeof(int) * (size_t)g_lw_cap);
+          last = realloc(last, sizeof(int) * (size_t)g_lw_cap);
+          if (!g_lw_first || !last) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        }
+        g_lw_first[k] = id;
+      }
+      else g_lw_next[last[k]] = id;
+      last[k] = id;
+    }
+    free(last);
+    g_lw_nt = nt; g_lw_ver = nt->version; g_lw_cnt = nt->count;
+  }
+  int k = anh_find(&g_lw_names, name);
+  return k >= 0 ? g_lw_first[k] : -1;
+}
+int an_local_writes_named_next(int id) { return (id >= 0 && id < g_lw_cnt) ? g_lw_next[id] : -1; }
+
 int str_in(const char *s, const char *const *set) {
   if (!s) return 0;
   for (int i = 0; set[i]; i++) if (sp_streq(s, set[i])) return 1;
@@ -2915,7 +2961,7 @@ int method_recv_node(Compiler *c, int recv) {
        at run time. A write of the same target again (a loop's
        `m = o.method(:x)`, `m = m.dup`) keeps the node. */
     int found = -1;
-    NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+    for (int w = an_local_writes_named_first(c, vn); w >= 0; w = an_local_writes_named_next(w)) {
       if (comp_scope_of(c, w) != sc) continue;
       const char *wn = nt_str(nt, w, "name");
       if (!wn || !vn || !sp_streq(wn, vn)) continue;
@@ -2965,7 +3011,7 @@ int method_recv_nodes(Compiler *c, int recv, int **out) {
   if (recv < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode) return 0;
   const char *vn = nt_str(nt, recv, "name");
   Scope *sc = comp_scope_of(c, recv);
-  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+  for (int w = an_local_writes_named_first(c, vn); w >= 0; w = an_local_writes_named_next(w)) {
     if (comp_scope_of(c, w) != sc) continue;
     const char *wn = nt_str(nt, w, "name");
     if (!wn || !vn || !sp_streq(wn, vn)) continue;
@@ -2994,7 +3040,7 @@ int proc_to_proc_method_nodes(Compiler *c, int recv, int **out) {
     Scope *sc = comp_scope_of(c, recv);
     cand = -1;
     /* the writes only, through the kind index (the first one that is a call) */
-    NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+    for (int w = an_local_writes_named_first(c, vn); w >= 0; w = an_local_writes_named_next(w)) {
       if (cand >= 0) continue;
       if (comp_scope_of(c, w) != sc) continue;
       const char *wn = nt_str(nt, w, "name");
