@@ -8946,6 +8946,13 @@ int head_held_read(Compiler *c, int node, const char *text) {
   return sp_streq(share_check_unmarked(text), ht) ? h : -1;
 }
 
+/* See codegen_internal.h. */
+int ran_first_read(Compiler *c, int node, const char *text) {
+  TyKind t = repr_of(c, node).as_ty;
+  if (!text || !(needs_root(t) || t == TY_POLY)) return -1;
+  return ran_first_temp(node, 0, text, NULL);
+}
+
 /* A box that only wraps what its operand holds (an immediate, or a pointer
    the operand's own temp roots): built from the head's temp, it needs no
    root of its own. A struct, a value object or a fresh handle is a new
