@@ -10846,6 +10846,16 @@ void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b) {
   }
 }
 
+/* The runtime calls the hooks below (sp_obj_to_a, sp_obj_conv_sw, the
+   operator dispatchers, ...) with an object it may hold in nothing but the
+   argument -- one a call has just answered, `ns.slice(1, 2).to_a` or
+   `1 / BigDecimal(s)` -- and a hook allocates or calls a method of the
+   program's on it, which roots its parameters but not self (a caller holds
+   its receiver): the hook roots the object on entry, a slot of its frame. */
+static void emit_hook_object_root(Buf *b, const char *root, const char *obj) {
+  buf_printf(b, "  %s(%s);\n", root, obj);
+}
+
 /* ---- Marshal of user objects (CRuby `o` form) ----
    For each marshalable class, codegen emits an arm in two dispatchers that
    sp_marshal.h calls: sp_marshal_obj_dump (by cls_id) writes `o`<:Class><nivar>
@@ -10970,6 +10980,7 @@ static void emit_marshal_unbox_ivar(Compiler *c, TyKind t, Buf *b) {
 static void emit_obj_to_hash_dispatch(Compiler *c, Buf *b) {
   if (!g_gen_obj_hash) return;
   buf_puts(b, "static sp_RbVal sp_obj_to_hash(sp_RbVal v) {\n");
+  emit_hook_object_root(b, "SP_GC_ROOT_RBVAL", "v");
   buf_puts(b, "  switch (v.cls_id) {\n");
   for (int i = 0; i < c->nclasses; i++) {
     ClassInfo *ci = &c->classes[i];
@@ -11054,6 +11065,7 @@ static int obj_to_json_any(Compiler *c) {
 static void emit_obj_to_json_dispatch(Compiler *c, Buf *b) {
   if (!g_gen_obj_to_json) return;
   buf_puts(b, "static const char *sp_obj_to_json(sp_RbVal v) {\n");
+  emit_hook_object_root(b, "SP_GC_ROOT_RBVAL", "v");
   buf_puts(b, "  switch (v.cls_id) {\n");
   for (int i = 0; i < c->nclasses; i++) {
     if (comp_class_is_module(c, &c->classes[i])) continue;   /* no instances (#4654) */
@@ -11226,6 +11238,7 @@ static void emit_member_boxed(Compiler *c, int cid, int j, Buf *b) {
 static void emit_obj_to_h_dispatch(Compiler *c, Buf *b) {
   if (!g_gen_obj_to_h) return;
   buf_puts(b, "static sp_RbVal sp_obj_to_h(sp_RbVal v) {\n");
+  emit_hook_object_root(b, "SP_GC_ROOT_RBVAL", "v");
   buf_puts(b, "  switch (v.cls_id) {\n");
   for (int i = 0; i < c->nclasses; i++) {
     ClassInfo *ci = &c->classes[i];
@@ -11284,6 +11297,7 @@ static void emit_obj_to_h_dispatch(Compiler *c, Buf *b) {
 static void emit_obj_struct_values_dispatch(Compiler *c, Buf *b) {
   if (!g_gen_obj_struct_values) return;
   buf_puts(b, "static sp_RbVal sp_obj_struct_values(sp_RbVal v) {\n");
+  emit_hook_object_root(b, "SP_GC_ROOT_RBVAL", "v");
   buf_puts(b, "  switch (v.cls_id) {\n");
   for (int i = 0; i < c->nclasses; i++) {
     ClassInfo *ci = &c->classes[i];
@@ -11355,6 +11369,7 @@ static void emit_basicobject_singleton_to_a_wrappers(Compiler *c, Buf *b) {
 static void emit_obj_to_a_dispatch(Compiler *c, Buf *b) {
   if (obj_to_a_any(c)) {
     buf_puts(b, "static sp_RbVal sp_obj_to_a(sp_RbVal v) {\n");
+    emit_hook_object_root(b, "SP_GC_ROOT_RBVAL", "v");
     buf_puts(b, "  switch (v.cls_id) {\n");
     for (int i = 0; i < c->nclasses; i++) {
       ClassInfo *ci = &c->classes[i];
@@ -11402,6 +11417,7 @@ static int obj_to_ary_any(Compiler *c) {
 static void emit_obj_to_ary_dispatch(Compiler *c, Buf *b) {
   if (!obj_to_ary_any(c)) return;
   buf_puts(b, "static sp_RbVal sp_obj_to_ary(sp_RbVal v) {\n");
+  emit_hook_object_root(b, "SP_GC_ROOT_RBVAL", "v");
   buf_puts(b, "  switch (v.cls_id) {\n");
   for (int i = 0; i < c->nclasses; i++) {
     ClassInfo *ci = &c->classes[i];
@@ -11455,6 +11471,7 @@ static int obj_deconstruct_any(Compiler *c) {
 static void emit_obj_deconstruct_dispatch(Compiler *c, Buf *b) {
   if (!obj_deconstruct_any(c)) return;
   buf_puts(b, "static sp_RbVal sp_obj_deconstruct(sp_RbVal v) {\n");
+  emit_hook_object_root(b, "SP_GC_ROOT_RBVAL", "v");
   buf_puts(b, "  switch (v.cls_id) {\n");
   for (int i = 0; i < c->nclasses; i++) {
     ClassInfo *ci = &c->classes[i];
@@ -11510,6 +11527,7 @@ static void emit_obj_is_data(Compiler *c, Buf *b) {
 static void emit_obj_with_dispatch(Compiler *c, Buf *b) {
   if (!g_gen_obj_with) return;
   buf_puts(b, "static sp_RbVal sp_obj_with(sp_RbVal v, sp_RbVal ov) {\n");
+  emit_hook_object_root(b, "SP_GC_ROOT_RBVAL", "v");
   buf_puts(b, "  switch (v.cls_id) {\n");
   for (int i = 0; i < c->nclasses; i++) {
     ClassInfo *ci = &c->classes[i];
@@ -11683,8 +11701,9 @@ static void emit_kconv_bridge(Compiler *c, Buf *b) {
                  comp_ty_value_obj(c, ty_object(callee)) ? "" : "*", bridge_blk_param(c, tmi));
     }
   }
-  buf_puts(b, "static int sp_obj_conv_sw(int cls_id, void *p, int which, sp_RbVal *out) {\n"
-              "  switch (cls_id) {\n");
+  buf_puts(b, "static int sp_obj_conv_sw(int cls_id, void *p, int which, sp_RbVal *out) {\n");
+  emit_hook_object_root(b, "SP_GC_ROOT", "p");
+  buf_puts(b, "  switch (cls_id) {\n");
   for (int i = 0; i < c->nclasses; i++) {
     int rows = 0;
     for (int w = 0; w < 4; w++)
@@ -11747,7 +11766,9 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
   }
   /* user #to_s dispatcher: only classes defining one get an arm; NULL means
      "no user to_s" and the caller renders the #<Name:0xADDR> default. */
-  buf_puts(b, "static const char *sp_obj_to_s_sw(int cls_id, void *p) {\n  switch (cls_id) {\n");
+  buf_puts(b, "static const char *sp_obj_to_s_sw(int cls_id, void *p) {\n");
+  emit_hook_object_root(b, "SP_GC_ROOT", "p");
+  buf_puts(b, "  switch (cls_id) {\n");
   for (int i = 0; i < c->nclasses; i++) {
     ClassInfo *tci = &c->classes[i];
     /* a native class binding its own to_s (IO::Buffer): dispatch to the
@@ -11833,6 +11854,7 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "static const char *sp_obj_cls_name_rt(int cls_id) {\n"
               "  sp_Class _c = {cls_id}; return sp_class_to_s(_c);\n}\n");
   buf_puts(b, "static const char *sp_obj_inspect_sw(int cls_id, void *p) {\n");
+  emit_hook_object_root(b, "SP_GC_ROOT", "p");
   buf_puts(b, "  switch (cls_id) {\n");
   for (int i = 0; i < c->nclasses; i++) {
     /* native classes with a bound #inspect, same as the to_s dispatcher */
@@ -13684,6 +13706,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
    to not-comparable, which the callers raise as an ArgumentError. */
 static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "static sp_int sp_obj_cmp_dispatch(sp_RbVal a, sp_RbVal b, sp_bool *comparable) {\n");
+  emit_hook_object_root(b, "SP_GC_ROOT_RBVAL", "a");
   buf_puts(b, "  switch (a.cls_id) {\n");
   for (int k = 0; k < c->nclasses; k++) {
     /* a reopened Time or Range is keyed by its builtin id, and its method
@@ -13886,6 +13909,7 @@ static int user_aset_scope(Compiler *c, int k, int *defcls) {
    containers, so an object with its own []= lost the store. */
 static void emit_user_aset_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "static void sp_user_aset_dispatch(sp_RbVal a, sp_RbVal k, sp_RbVal v, sp_bool *handled) {\n");
+  emit_hook_object_root(b, "SP_GC_ROOT_RBVAL", "a");
   buf_puts(b, "  *handled = FALSE;\n  switch (a.cls_id) {\n");
   for (int ci = 0; ci < c->nclasses; ci++) {
     if (!c->classes[ci].instantiated) continue;
@@ -13918,7 +13942,9 @@ static int user_init_copy_scope(Compiler *c, int k, int *defcls) {
 }
 
 static void emit_user_init_copy_dispatch(Compiler *c, Buf *b) {
-  buf_puts(b, "static void sp_user_init_copy_dispatch(sp_RbVal copy, sp_RbVal orig) {\n  switch (copy.cls_id) {\n");
+  buf_puts(b, "static void sp_user_init_copy_dispatch(sp_RbVal copy, sp_RbVal orig) {\n");
+  emit_hook_object_root(b, "SP_GC_ROOT_RBVAL", "copy");
+  buf_puts(b, "  switch (copy.cls_id) {\n");
   for (int k = 0; k < c->nclasses; k++) {
     int defcls = -1, mi = user_init_copy_scope(c, k, &defcls);
     if (mi < 0) continue;
@@ -13999,6 +14025,7 @@ static int program_has_user_eql(Compiler *c) {
    `uops` the class defines; `derive_eq` adds Comparable's `==` from `<=>`. */
 static void emit_user_op_dispatch(Compiler *c, Buf *b, const char *fname, const char *const *uops, int derive_eq) {
   buf_printf(b, "static sp_RbVal %s(const char *op, sp_RbVal a, sp_RbVal b, sp_bool *handled) {\n", fname);
+  emit_hook_object_root(b, "SP_GC_ROOT_RBVAL", "a");
   buf_puts(b, "  *handled = FALSE;\n  switch (a.cls_id) {\n");
   for (int k = 0; k < c->nclasses; k++) {
     /* A reopened builtin's boxed values carry the builtin's own id, and its
@@ -14164,6 +14191,7 @@ int class_to_io_dispatched(Compiler *c, int k) {
 
 static void emit_user_to_io_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "static sp_File *sp_user_to_io_dispatch(sp_RbVal v) {\n");
+  emit_hook_object_root(b, "SP_GC_ROOT_RBVAL", "v");
   buf_puts(b, "  switch (v.cls_id) {\n");
   for (int k = 0; k < c->nclasses; k++) {
     if (!class_to_io_dispatched(c, k)) continue;
@@ -14201,6 +14229,7 @@ static void emit_user_to_io_dispatch(Compiler *c, Buf *b) {
    "can't be coerced" instead (#3960). */
 static void emit_user_coerce_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "static sp_RbVal sp_user_coerce_dispatch(const char *op, sp_RbVal recv, sp_RbVal obj, sp_bool *handled) {\n");
+  emit_hook_object_root(b, "SP_GC_ROOT_RBVAL", "obj");
   buf_puts(b, "  *handled = FALSE;\n  sp_PolyArray *_pr = NULL;\n  switch (obj.cls_id) {\n");
   for (int k = 0; k < c->nclasses; k++) {
     if (!c->classes[k].instantiated || !class_coerce_emittable(c, k)) continue;
@@ -14393,7 +14422,9 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
    compare by VALUE inside Array/Hash equality, include?/index/uniq, and as
    nested members. Installed as sp_obj_eq_hook. */
 static void emit_obj_valeq_dispatch(Compiler *c, Buf *b) {
-  buf_puts(b, "static sp_bool sp_obj_eq_dispatch(sp_RbVal a, sp_RbVal b) {\n  switch (a.cls_id) {\n");
+  buf_puts(b, "static sp_bool sp_obj_eq_dispatch(sp_RbVal a, sp_RbVal b) {\n");
+  emit_hook_object_root(b, "SP_GC_ROOT_RBVAL", "a");
+  buf_puts(b, "  switch (a.cls_id) {\n");
   for (int k = 0; k < c->nclasses; k++) {
     ClassInfo *ci = &c->classes[k];
     if (!ci->instantiated || !(ci->is_struct || ci->is_data)) continue;
