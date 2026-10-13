@@ -286,6 +286,9 @@ int share_store_needs_handle(Compiler *c, int v);
    (share_route_defer), and the String plan's supply for a value held as
    bytes. */
 int share_node_carries_handle(const Compiler *c, int n);
+/* ... by a route alone: a value represented as the handle is not taken as
+   handing it over for that (repr_of names its source, or wraps it new). */
+int share_node_carries_route(const Compiler *c, int n);
 
 /* ---- the String plan (share_plan.c, #8328) ----
    For each String value under --share-strings, once the analysis is final:

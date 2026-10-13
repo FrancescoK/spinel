@@ -128,13 +128,16 @@ static int share_plan_producer_at(Compiler *c, int v, int *recv) {
   Repr r = repr_of(c, v);
   *recv = -1;
   if (r.kind == RK_BOXED) return SPK_BOX;
-  if (r.kind == RK_STRBUF) return r.strbuf_src != RS_FRESH ? SPK_HANDLE : SPK_NONE;
+  if (r.kind == RK_STRBUF && r.strbuf_src != RS_FRESH) return SPK_HANDLE;
   int rv = share_plan_self_recv(c, v);
   if (rv >= 0) { *recv = rv; return SPK_SELF; }
   if (face_str_bang_call(c, v)) { *recv = nt_ref(c->nt, v, "receiver"); return SPK_BANG_BOX; }
-  /* a new String (share_value_fresh) has no handle to hand over, whatever
+  /* a value repr_of wraps new where the handle is demanded (RS_FRESH)
+     has one only by a route of its own, not by being represented as one;
+     a new String (share_value_fresh) has no handle to hand over, whatever
      a route says about whether its copy can be seen */
-  return share_node_carries_handle(c, v) && !share_value_fresh(c, v, 0) ? SPK_ROUTE : SPK_NONE;
+  int carries = r.kind == RK_STRBUF ? share_node_carries_route(c, v) : share_node_carries_handle(c, v);
+  return carries && !share_value_fresh(c, v, 0) ? SPK_ROUTE : SPK_NONE;
 }
 
 int share_plan_producer(Compiler *c, int v, int *operand) {
@@ -175,7 +178,9 @@ static int share_plan_sup_valid(Compiler *c, const struct SharePlanSup *e) {
         was planned where it was boxed;
      2. a value represented as the handle has it, unless repr_of says the
         handle is a new one wrapped around its bytes where it is demanded
-        (RS_FRESH);
+        (RS_FRESH). That is repr_of's answer for a String handle whose
+        source none of its checks names, not a proof that the String is
+        new, so such a value is asked the rules below;
      3. a call that answers its String receiver hands over what that
         receiver does;
      3b. a bang on a boxed receiver (face_str_bang_call) answers the
@@ -185,7 +190,9 @@ static int share_plan_sup_valid(Compiler *c, const struct SharePlanSup *e) {
         the analysis checks a carry against hand it along
         (share_node_carries_handle: a callee that publishes it, a bang over
         a slot that holds it, a variable whose slot holds it, a String
-        Range's endpoint), unless it is a new String.
+        Range's endpoint), unless it is a new String; an RS_FRESH value by
+        those routes alone (share_node_carries_route), not by its
+        representation, which rule 2 has read.
    A chain of rule 3 is asked at each of its links, outermost first: the
    walk down it keeps each link's answer with the node that decided it
    (Compiler.share_sup), and a link asked again reads it while the view
