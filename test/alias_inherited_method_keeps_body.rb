@@ -28,3 +28,19 @@ class S < R
   def name = "S"
 end
 p S.new.old_name, S.new.name
+
+# a `class << self` alias took the inherited class method: redefining the
+# instance method of the name later does not touch it
+class SP
+  def m = "SP#m"
+  def self.m = "SP.m"
+end
+class SD < SP
+  class << self
+    alias o m
+  end
+end
+class SP
+  def m = "SP#m2"
+end
+p SD.o, SD.new.m

@@ -6063,11 +6063,12 @@ void resolve_parents(Compiler *c) {
   mark_anon_superclass_reflection(c);
 }
 
-/* Does class p define instance method od before node `at`? */
-static int inherited_alias_def_before(Compiler *c, int p, const char *od, int at) {
+/* Does class p define method od before node `at` -- a class method for a
+   singleton alias (sg), an instance method otherwise? */
+static int inherited_alias_def_before(Compiler *c, int p, const char *od, int at, int sg) {
   for (int si = 1; si < c->nscopes; si++) {
     Scope *sc = &c->scopes[si];
-    if (sc->class_id == p && !sc->is_cmethod && sc->name && sp_streq(sc->name, od) &&
+    if (sc->class_id == p && !sc->is_cmethod == !sg && sc->name && sp_streq(sc->name, od) &&
         sc->def_node >= 0 && sc->def_node < at) return 1;
   }
   return 0;
@@ -6080,18 +6081,21 @@ static int inherited_alias_def_before(Compiler *c, int p, const char *od, int at
 static void inherited_alias_refuse_later_def(Compiler *c, int ci, int a, int p) {
   ClassInfo *cls = &c->classes[ci];
   int at = cls->alias_node[a];
+  /* a `class << self` alias took a class method, and only another of
+     those takes its place */
+  int sg = cls->alias_sg && cls->alias_sg[a];
   for (int q = cls->parent; q >= 0; q = c->classes[q].parent) {
     for (int si = 1; si < c->nscopes; si++) {
       Scope *sc = &c->scopes[si];
-      if (sc->class_id != q || sc->is_cmethod || !sc->name || !sp_streq(sc->name, cls->alias_old[a]) ||
+      if (sc->class_id != q || !sc->is_cmethod != !sg || !sc->name || !sp_streq(sc->name, cls->alias_old[a]) ||
           sc->def_node <= at) continue;
       /* the hidden alias of a forwarder (desugar_inherited_aliases) by
          the name the program wrote */
       const char *nw = cls->alias_new[a], *hash = strchr(nw, '#');
       int nl = hash ? (int)(hash - nw) : (int)strlen(nw);
       char msg[512];
-      snprintf(msg, sizeof msg, "%s#%.*s: alias of an inherited method that %s defines again after it is not supported; "
-               "see docs/limitations.md", cls->name, nl, nw, c->classes[q].name);
+      snprintf(msg, sizeof msg, "%s%s%.*s: alias of an inherited method that %s defines again after it is not supported; "
+               "see docs/limitations.md", cls->name, sg ? "." : "#", nl, nw, c->classes[q].name);
       unsupported_feature(c, at, msg);
       return;
     }
@@ -6128,7 +6132,7 @@ void resolve_inherited_aliases(Compiler *c) {
          aliases too: an ancestor's class method is the body such an alias
          took. */
       for (int p = c->classes[ci].parent; p >= 0; p = c->classes[p].parent) {
-        int before = inherited_alias_def_before(c, p, od, cls->alias_node[a]);
+        int before = inherited_alias_def_before(c, p, od, cls->alias_node[a], cls->alias_sg && cls->alias_sg[a]);
         if (!before && !(later && comp_method_in_class(c, p, od) >= 0) && comp_cmethod_in_class(c, p, od) < 0)
           continue;
         if (cls->alias_cls[a] != p) { cls->alias_cls[a] = p; comp_class_shape_changed(); }
