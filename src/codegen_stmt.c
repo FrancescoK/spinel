@@ -2849,8 +2849,11 @@ int strbuf_value_carries(Compiler *c, int v) {
 int strbuf_arg_bang(Compiler *c, int v) {
   return repr_share_rule(c) && (strbuf_bang_self_local(c, v) || face_str_bang_call(c, v));
 }
+/* (a boxed receiver's call of methods answering a String, a handle or a
+   new one, is bound as its box's handle: strbuf_poly_user_base) */
 int strbuf_arg_carries(Compiler *c, int v) {
-  return strbuf_value_carries(c, v) || strbuf_arg_bang(c, v);
+  return strbuf_value_carries(c, v) || strbuf_arg_bang(c, v) ||
+         (repr_share_rule(c) && strbuf_poly_user_base(c, v) >= 0);
 }
 /* Does a value conditional v hands on, taken arm by arm, answer leaf: a
    conditional's arms, a sequence's last statement? Past the depth the walk
@@ -4269,6 +4272,17 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
     buf_printf(b, "({ sp_RbVal _t%d = ", t);
     emit_boxed(c, v, b);
     buf_printf(b, "; sp_poly_nil_p(_t%d) ? (sp_String *)NULL : sp_poly_as_strbuf(_t%d); })", t, t);
+  }
+  /* --share-strings: a boxed receiver's call whose every arm answers a
+     String, a handle it publishes or a new one (strbuf_poly_user_boxes):
+     the dispatch read as a box, each arm boxing its own answer, and the
+     slot takes that box's handle (a new one around a fresh String; NULL
+     for nil). A conversion over it (`call.to_s`) answers the same String
+     (strbuf_poly_user_base). */
+  else if (shared && repr_share_rule(c) && strbuf_poly_user_base(c, v) >= 0) {
+    buf_puts(b, "sp_poly_as_strbuf(");
+    emit_boxed(c, strbuf_poly_user_base(c, v), b);
+    buf_puts(b, ")");
   }
   /* A chained assignment (`u = t = s`) whose inner target is the handle too:
      run the inner write, then alias ITS handle. Wrapping the write's value
@@ -22385,6 +22399,24 @@ int strbuf_poly_user_boxes(Compiler *c, int v) {
   }
   return 1;
 }
+/* The call strbuf_poly_user_boxes takes under v: v itself, or the receiver
+   of a conversion a String answers with itself (`call.to_s`, no arguments
+   and no block, String's own); -1 for none. */
+int strbuf_poly_user_base(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  for (int d = 0; v >= 0 && d < 8; d++) {
+    /* (an attribute assignment answers its right-hand side: its own route) */
+    if (strbuf_poly_user_boxes(c, v)) return call_is_setter_assign(nt, v) ? -1 : v;
+    const char *nm = nt_kind(nt, v) == NK_CallNode ? nt_str(nt, v, "name") : NULL;
+    int r = nm ? nt_ref(nt, v, "receiver") : -1;
+    if (r < 0 || !is_receiver_conversion(nm) || call_plain_argc(c, v) != 0 || nt_ref(nt, v, "block") >= 0 ||
+        comp_ntype(c, r) != TY_STRING || share_builtin_overridden(c, "String", nm))
+      return -1;
+    v = unwrap_parens(c, r);
+  }
+  return -1;
+}
 
 /* A route emit_strbuf_route hands the handle on through (strbuf_route_*),
    whose own tail carries it in turn: 1, else 0. */
@@ -22727,6 +22759,10 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
     /* a String bang on a boxed receiver written into a local's handle hands
        on the receiver's handle (emit_strbuf_value) */
     if (ctx == SFC_ALIAS && sk == NK_LocalVariableWriteNode && face_str_bang_call(c, unwrap_parens(c, v))) return 1;
+    /* so does a boxed receiver's call of methods that each answer a
+       String, the handle they publish or a new one: the local takes the
+       box's handle (strbuf_poly_user_base, emit_strbuf_value) */
+    if (ctx == SFC_ALIAS && sk == NK_LocalVariableWriteNode && strbuf_poly_user_base(c, v) >= 0) return 1;
     break;
   }
   case SHFL_MEMBER: case SHFL_PARAM: case SHFL_MUTATE: ctx = SFC_ALIAS; break;
@@ -22778,6 +22814,10 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
     /* a bang on a handle or a box is that handle or nil, which the binder
        takes (strbuf_arg_carries) */
     if (strbuf_arg_bang(c, unwrap_parens(c, v))) return 1;
+    /* a boxed receiver's call of methods that each answer a String, a
+       handle or a new one, is bound as its box's handle, as a local takes
+       it above */
+    if (strbuf_poly_user_base(c, v) >= 0) return 1;
     ctx = SFC_ARG;
     break;
   case SHFL_YIELD: {
