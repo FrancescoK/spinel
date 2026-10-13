@@ -1401,6 +1401,11 @@ it are qualified by their module path before the collision can happen, the
 way a nested `class Array` already was. activesupport's
 `ActiveSupport::JSON::Encoding` is the shape. Builtin *modules*
 (`Comparable`, `Kernel`, `Math`, …) reopen normally at any nesting level.
+A *class* named after a builtin module is CRuby's `TypeError` (`Comparable is
+not a class`) at the top level, as `class ::Comparable` anywhere and a
+`class Kernel` in a `Class.new` block are, and Spinel reports it at compile
+time; a nested or path-qualified one (`Reports::Warning`, `Text::Comparable`)
+is a class of its own and compiles.
 The methods a top-level `module Kernel` reopening defines are modelled as
 top-level defs (Kernel is mixed into Object, so they are bare calls from
 every scope), and a `Kernel.m(...)` naming one drops its receiver, as the
