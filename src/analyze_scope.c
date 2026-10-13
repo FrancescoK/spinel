@@ -6690,6 +6690,11 @@ void rewrite_attr_supers(Compiler *c) {
     NodeKind nk = nt_kind(nt, id);
     if (nk != NK_SuperNode && nk != NK_ForwardingSuperNode) continue;
     if (nt_ref(nt, id, "block") >= 0) continue;
+    /* defined?(super) runs nothing: it asks whether the super reaches a
+       method, which the attribute is */
+    int asked = 0;
+    NT_FOREACH_KIND(nt, NK_DefinedNode, d) if (nt_ref(nt, d, "value") == id) asked = 1;
+    if (asked) continue;
     Scope *s = comp_scope_of(c, id);
     if (!s || !s->name || s->class_id < 0 || s->is_cmethod) continue;
     ClassInfo *cls = &c->classes[s->class_id];

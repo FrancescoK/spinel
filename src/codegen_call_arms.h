@@ -280,6 +280,7 @@ int bind_owner_mismatch(Compiler *c, int target, TyKind ot);
 int builtin_method_arity(const char *cls, const char *m, int *out);
 int builtin_method_known(const char *cls, const char *m);
 int core_method_vis(const char *cls, const char *m, int inherit);   /* codegen_call_class.c */
+int refl_builtin_vis(Compiler *c, int ci, const char *m, int inherit);   /* codegen_call_class.c */
 int builtin_comparable_owns(const char *cls, const char *m);
 int builtin_comparable_arity(const char *m);
 int builtin_numeric_owns(const char *cls, const char *m);

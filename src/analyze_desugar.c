@@ -14402,6 +14402,13 @@ static void incl_subst(NodeTable *nt, int node, const InclSubst *is, int self_mo
              nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), is->param))
       nt_node_set_ref(nt, node, "receiver", -1);
   }
+  /* the hook's super reaches Module#included, #extended or #prepended */
+  NodeKind dv = k == NK_DefinedNode ? nt_kind(nt, nt_ref(nt, node, "value")) : NK_NilNode;
+  if (self_mod && (dv == NK_SuperNode || dv == NK_ForwardingSuperNode)) {
+    nt_node_reset(nt, node, "StringNode");
+    nt_node_set_str(nt, node, "content", "super");
+    return;
+  }
   if (k == NK_SelfNode && self_mod) {
     int line = (int)nt_int(nt, node, "node_line", 0);
     int file = (int)nt_int(nt, node, "node_file", 0);
@@ -15094,12 +15101,19 @@ static void inh_index_build(Compiler *c, InhIndex *ix, int n0) {
   }
 }
 
-/* `super` in a hook that reaches Class#inherited -> nil */
+/* `super` in a hook that reaches Class#inherited -> nil, and
+   `defined?(super)` there -> "super" */
 static void inh_drop_super(NodeTable *nt, int node) {
   if (node < 0) return;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return;
   if (k == NK_SuperNode || k == NK_ForwardingSuperNode) { nt_node_reset(nt, node, "NilNode"); return; }
+  NodeKind vk = k == NK_DefinedNode ? nt_kind(nt, nt_ref(nt, node, "value")) : NK_NilNode;
+  if (vk == NK_SuperNode || vk == NK_ForwardingSuperNode) {
+    nt_node_reset(nt, node, "StringNode");
+    nt_node_set_str(nt, node, "content", "super");
+    return;
+  }
   int nr = nt_num_refs(nt, node);
   for (int i = 0; i < nr; i++) inh_drop_super(nt, nt_ref_at(nt, node, i));
   int na = nt_num_arrs(nt, node);
