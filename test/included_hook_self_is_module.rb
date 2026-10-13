@@ -35,6 +35,21 @@ module Ext2
   def self.greet(b) = puts("hello #{b}")
 end
 
+# self.m names the module's private singleton method too, and a method
+# defined under a visibility call or module_function is its own as well
+module Ext3
+  def self.included(base)
+    self.audit(base)
+    puts "#{tagline} / #{short}"
+  end
+  def self.audit(b) = puts("audit #{b}")
+  private_class_method :audit
+  class << self
+    private def tagline = "tagline"
+  end
+  module_function def short = "short"
+end
+
 class A
   include Ext
 end
@@ -42,6 +57,10 @@ end
 class B
   include Ext
   extend Ext2
+end
+
+class D
+  include Ext3
 end
 
 p Ext.seen

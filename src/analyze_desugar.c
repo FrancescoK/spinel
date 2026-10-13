@@ -13041,7 +13041,8 @@ static int incl_find_hook_named(const NodeTable *nt, const char *mn, int n0, con
 }
 
 /* Does a body of module `mn` define singleton method `meth` (`def self.meth`,
-   or `def meth` in its `class << self`)? */
+   `module_function def meth`, or `def meth` in its `class << self`, a
+   visibility call around it or not)? */
 static int incl_mod_singleton(const NodeTable *nt, const char *mn, int n0, const char *meth) {
   for (int m = 0; m < n0; m++) {
     if (nt_kind(nt, m) != NK_ModuleNode) continue;
@@ -13058,10 +13059,13 @@ static int incl_mod_singleton(const NodeTable *nt, const char *mn, int n0, const
         sv = sb >= 0 ? nt_arr(nt, sb, "body", &sn) : NULL;
       }
       for (int j = -1; j < sn; j++) {
-        int e = j < 0 ? d : sv[j];
-        if (nt_kind(nt, e) != NK_DefNode || !nt_str(nt, e, "name") || !sp_streq(nt_str(nt, e, "name"), meth)) continue;
+        int e = fwd_body_def(nt, j < 0 ? d : sv[j]);
+        if (e < 0 || !nt_str(nt, e, "name") || !sp_streq(nt_str(nt, e, "name"), meth)) continue;
         int r = nt_ref(nt, e, "receiver");
-        if (j < 0 ? (r >= 0 && nt_kind(nt, r) == NK_SelfNode) : r < 0) return 1;
+        const char *wrap = j < 0 && e != d ? nt_str(nt, d, "name") : NULL;
+        if (j >= 0 ? r < 0
+                   : (r >= 0 && nt_kind(nt, r) == NK_SelfNode) || (wrap && sp_streq(wrap, "module_function")))
+          return 1;
       }
     }
   }
@@ -13105,8 +13109,9 @@ static void incl_call_on_mod(NodeTable *nt, int node, const InclSubst *is) {
 
 /* Rewrite the cloned hook body in place: see the header comment. Where
    `self_mod`, self is still the module, as in the hook: `self` reads it and
-   a receiverless call of its own singleton method goes to it. A class_eval
-   family block or a define_method block has a self of its own. */
+   a call of its own singleton method, bare or on self, goes to it. A
+   class_eval family block, a define_method block and a `class << x` body
+   have a self of their own; a `&blk` expression is the hook's. */
 static void incl_subst(NodeTable *nt, int node, const InclSubst *is, int self_mod) {
   if (node < 0) return;
   NodeKind k = nt_kind(nt, node);
@@ -13116,13 +13121,15 @@ static void incl_subst(NodeTable *nt, int node, const InclSubst *is, int self_mo
     int r = nt_ref(nt, node, "receiver");
     const char *cm = nt_str(nt, node, "name");
     blk = nt_ref(nt, node, "block");
-    if (cm && (is_eval_exec_family(cm) || sp_streq(cm, "define_method") ||
-               sp_streq(cm, "define_singleton_method"))) blk_self_mod = 0;
+    if (cm && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode &&
+        (is_eval_exec_family(cm) || sp_streq(cm, "define_method") ||
+         sp_streq(cm, "define_singleton_method"))) blk_self_mod = 0;
     /* the module's own introspection reads the class: `base.name` */
     int introspect = cm && (sp_streq(cm, "name") || sp_streq(cm, "to_s") || sp_streq(cm, "inspect") ||
                             sp_streq(cm, "ancestors") || sp_streq(cm, "superclass") ||
                             sp_streq(cm, "instance_methods") || sp_streq(cm, "const_get"));
-    if (r < 0 && self_mod && cm && incl_mod_singleton(nt, is->mod_name, is->n0, cm))
+    if ((r < 0 || nt_kind(nt, r) == NK_SelfNode) && self_mod && cm &&
+        incl_mod_singleton(nt, is->mod_name, is->n0, cm))
       incl_call_on_mod(nt, node, is);
     else if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && !introspect &&
              nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), is->param))
@@ -13146,6 +13153,10 @@ static void incl_subst(NodeTable *nt, int node, const InclSubst *is, int self_mo
     nt_node_reset(nt, node, "ConstantReadNode");
     nt_node_set_str(nt, node, "name", is->cls);
     return;
+  }
+  if (k == NK_SingletonClassNode) {
+    blk = nt_ref(nt, node, "body");
+    blk_self_mod = 0;
   }
   int nr = nt_num_refs(nt, node);
   for (int i = 0; i < nr; i++) {
