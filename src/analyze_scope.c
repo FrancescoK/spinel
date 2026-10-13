@@ -1883,13 +1883,14 @@ static void vis_apply_cmethod_call(ClassInfo *cls, const NodeTable *nt, int s, i
 
 /* A visibility call inside a class-body statement's value (`x = private def
    m`, `p(private :a)`) takes effect as the bare statement does. Nested bodies
-   with their own self are not walked. */
+   with their own self are not walked, nor is `defined?(private)`, which does
+   not run what it asks about. */
 static void vis_apply_nested(Compiler *c, ClassInfo *cls, int node, int sg, int *cur) {
   const NodeTable *nt = c->nt;
   if (node < 0) return;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode ||
-      k == NK_BlockNode || k == NK_LambdaNode)
+      k == NK_BlockNode || k == NK_LambdaNode || k == NK_DefinedNode)
     return;
   int nr = nt_num_refs(nt, node);
   for (int i = 0; i < nr; i++) {
