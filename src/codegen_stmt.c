@@ -2940,6 +2940,16 @@ int strbuf_bang_tail(Compiler *c, int v) {
          (strbuf_bang_self_local(c, v) || (face_str_bang_call(c, v) && share_node_shares(c, v)));
 }
 int strbuf_builtin_tail(Compiler *c, int v) {
+  /* A boxed local's read narrowed to a String (`v.is_a?(String) ? v : d`)
+     whose String the rule shares: the box holds the handle (its stores are
+     lifted, share_lift_poly_local_stores), which the read takes by lifting
+     the box (emit_strbuf_value), and its value form answers the bytes. */
+  if (repr_share_rule(c) && c->share && v >= 0 && nt_kind(c->nt, v) == NK_LocalVariableReadNode &&
+      strbuf_boxed_local(c, v) && (repr_of(c, v).narrowed == TY_STRING || repr_of(c, v).narrowed == TY_STRBUF)) {
+    Scope *s = comp_scope_of(c, v);
+    LocalVar *lv = scope_local(s, nt_str(c->nt, v, "name"));
+    return lv && repr_str_shares(c, share_local_holder(c, (int)(s - c->scopes), (int)(lv - s->locals)));
+  }
   if (!repr_share_rule(c) || !c->share || v < 0 || nt_kind(c->nt, v) != NK_CallNode ||
       an_arg_is_shared_handle(c, v)) return 0;
   /* Only the block route carries a demanded handle through &.'s guard.
