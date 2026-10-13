@@ -45,7 +45,8 @@ Dir.mktmpdir('spinel-cext-compiler-') do |tmp|
     '__cext_extension("bad", "Init_bad", 1); __cext_class("Bad", "Object"); __cext_method("Bad", "m", "instance", "public", 16, 0)' => 'arity',
     '__cext_extension("bad", "Init_bad", 1); __cext_allocator("Missing", 0)' => 'manifest class',
     '__cext_extension("bad", "Init_bad", 1); __cext_unknown(0)' => 'unknown C extension declaration',
-    '__cext_extension("bad", "Init_bad", 1); __cext_class("Bad", "Object"); __cext_method("Bad", "m", "singleton", "private", 0, 0)' => 'private C extension singleton'
+    '__cext_extension("bad", "Init_bad", 1); __cext_class("Bad", "Object"); __cext_method("Bad", "m", "singleton", "private", 0, 0)' => 'private C extension singleton',
+    '__cext_extension("bad", "Init_bad", 1); __cext_class("Bad", "Object"); __cext_constant("Bad", "Foo::BAR", "nil", nil, nil, nil)' => 'constant key must be a single name'
   }.each_with_index do |(source, reason), i|
     file = File.join(tmp, "refusal#{i}.rb")
     File.write(file, source)

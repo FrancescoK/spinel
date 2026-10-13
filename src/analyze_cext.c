@@ -183,6 +183,7 @@ void desugar_cext_decls(Compiler *c) {
         need(c, site, ac, 6);
         const char *cn = text(c, site, av[0]), *key = text(c, site, av[1]);
         path(c, site, cn); path(c, site, key);
+        if (strstr(key, "::")) unsupported_feature(c, site, "C extension constant key must be a single name");
         int idx = c->cext_extensions[ext].constants++;
         if (!sp_streq(cn, "Object")) owner_open(c, site, &b, cn);
         buf_printf(&b, "%s = __cext_constant_value(%d, %d)\n", key, ext, idx);

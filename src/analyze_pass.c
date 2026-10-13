@@ -7021,6 +7021,11 @@ static void cext_walk_grow(Compiler *c, CextWalk *seen) {
   seen->nodes = nodes;
   memset(nodes + old, 0, (size_t)(seen->capacity - old));
 }
+static int *cext_walk_values(Compiler *c) {
+  int *values = malloc(sizeof(int) * ((size_t)c->nt->count + 1));
+  if (!values) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  return values;
+}
 static int cext_pin_array_producer(Compiler *c, int v);
 static int cext_widen_containers(Compiler *c, int v, CextWalk *seen);
 static int cext_widen_stores(Compiler *c, const char *name, Scope *scope, CextWalk *seen) {
@@ -7092,12 +7097,12 @@ static int cext_widen_containers(Compiler *c, int v, CextWalk *seen) {
   } else if (kind == NK_CallNode) {
     int targets[CPT_MAX], n = cplan_targets(c, v, targets, CPT_MAX);
     if (!n && is_fresh_array(c, v)) changed |= cext_pin_array_producer(c, v);
-    int *leaves = malloc(sizeof(int) * (size_t)(nt->count + 1));
     for (int q = 0; q < n; q++) {
+      int *leaves = cext_walk_values(c);
       int count = value_leaves(c, c->scopes[targets[q]].body, leaves, 0, nt->count);
       for (int j = 0; j < count; j++) changed |= cext_widen_containers(c, leaves[j], seen);
+      free(leaves);
     }
-    free(leaves);
     if (!n) {
       /* Element reads, builtin builders and transformations take their
        containers from the receiver or their positional values. */
@@ -7114,13 +7119,13 @@ static int cext_widen_containers(Compiler *c, int v, CextWalk *seen) {
     }
   } else if (kind == NK_GlobalVariableReadNode || kind == NK_ClassVariableReadNode ||
              kind == NK_ConstantReadNode || kind == NK_InstanceVariableReadNode) {
-    int *literals = malloc(sizeof(int) * (size_t)(nt->count + 1));
+    int *literals = cext_walk_values(c);
     int count = container_literals(c, v, literals, 0, nt->count, 0);
     for (int j = 0; j < count; j++) changed |= cext_widen_containers(c, literals[j], seen);
     free(literals);
   } else if (kind == NK_StatementsNode || kind == NK_IfNode || kind == NK_UnlessNode ||
              kind == NK_BeginNode || kind == NK_LocalVariableWriteNode || kind == NK_ReturnNode) {
-    int *leaves = malloc(sizeof(int) * (size_t)(nt->count + 1));
+    int *leaves = cext_walk_values(c);
     int count = value_leaves(c, v, leaves, 0, nt->count);
     for (int j = 0; j < count; j++) if (leaves[j] != v)
       changed |= cext_widen_containers(c, leaves[j], seen);
