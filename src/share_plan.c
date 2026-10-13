@@ -132,6 +132,11 @@ static int share_plan_producer_at(Compiler *c, int v, int *recv) {
   int rv = share_plan_self_recv(c, v);
   if (rv >= 0) { *recv = rv; return SPK_SELF; }
   if (face_str_bang_call(c, v)) { *recv = nt_ref(c->nt, v, "receiver"); return SPK_BANG_BOX; }
+  /* a boxed receiver's call whose every arm answers a String, the handle it
+     publishes or a new one (or a conversion of it a String answers with
+     itself): the dispatch is read as a box, and its handle is bound
+     (strbuf_poly_user_base) */
+  if (repr_share_rule(c) && strbuf_poly_user_base(c, v) >= 0) return SPK_ROUTE;
   /* a new String (share_value_fresh) has no handle to hand over, whatever
      a route says about whether its copy can be seen */
   return share_node_carries_handle(c, v) && !share_value_fresh(c, v, 0) ? SPK_ROUTE : SPK_NONE;
@@ -181,6 +186,8 @@ static int share_plan_sup_valid(Compiler *c, const struct SharePlanSup *e) {
      3b. a bang on a boxed receiver (face_str_bang_call) answers the
         receiver's box, which holds the handle of a String that can change
         (a box of such a String is its handle), or nil;
+     3c. a boxed receiver's call whose arms each answer a String
+        (strbuf_poly_user_base) is read as a box, whose handle is bound;
      4. any other value, represented as its bytes, has one where the routes
         the analysis checks a carry against hand it along
         (share_node_carries_handle: a callee that publishes it, a bang over
