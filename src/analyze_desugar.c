@@ -5359,6 +5359,59 @@ int desugar_interp_reopened_to_s(Compiler *c) {
   return changed;
 }
 
+/* A block handed to an Array's, a Hash's or a String's read that leaves it
+   unused (`def size(*a, &b) = @a.size(*a, &b)`) is no part of the call: CRuby
+   runs the read and never the block. The rows type such a read only without
+   one, so a forwarded `&b` left it untyped (NoMethodError) or the C did not
+   build; it is taken off once the receiver is known to be one of those
+   kinds, where the program gives the class no method of the name of its
+   own. Only a literal block, or a `&` of a local, nil or a Symbol: anything
+   else may run code, which CRuby runs. */
+static int unused_block_read(TyKind rt, const char *nm) {
+  static const char *const ary[] = { "size", "length", "empty?", "join", "include?", "member?",
+    "first", "last", "take", "drop", "at", "dig", "slice", "values_at", "pack", "reverse",
+    "rotate", "compact", "flatten", "to_a", "to_s", "inspect", "frozen?", NULL };
+  static const char *const hsh[] = { "size", "length", "empty?", "key?", "has_key?", "include?",
+    "member?", "value?", "has_value?", "keys", "values", "dig", "to_s", "inspect", "frozen?", NULL };
+  static const char *const str[] = { "size", "length", "empty?", "bytesize", "include?",
+    "start_with?", "end_with?", "upcase", "downcase", "strip", "to_s", "inspect", "frozen?", NULL };
+  const char *const *t = ty_is_array(rt) ? ary : ty_is_hash(rt) ? hsh : rt == TY_STRING ? str : NULL;
+  for (int k = 0; t && t[k]; k++) if (sp_streq(nm, t[k])) return 1;
+  return 0;
+}
+int desugar_unused_block_arg(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    int blk = nt_ref(nt, id, "block"), recv = nt_ref(nt, id, "receiver");
+    if (blk < 0 || recv < 0) continue;
+    if (nt_kind(nt, blk) == NK_BlockArgumentNode) {
+      int e = nt_ref(nt, blk, "expression");
+      NodeKind ek = e >= 0 ? nt_kind(nt, e) : NK_NONE;
+      if (ek != NK_LocalVariableReadNode && ek != NK_NilNode && ek != NK_SymbolNode) continue;
+    }
+    else if (nt_kind(nt, blk) != NK_BlockNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    TyKind rt = infer_type(c, recv);
+    if (!unused_block_read(rt, nm)) continue;
+    const char *cn = ty_is_array(rt) ? "Array" : ty_is_hash(rt) ? "Hash" : "String";
+    int ci = comp_class_index(c, cn);
+    int mi = ci >= 0 ? comp_method_in_chain(c, ci, nm, NULL) : -1;
+    if (mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
+        !nt_int(nt, c->scopes[mi].def_node, "node_bi", 0)) continue;
+    nt_node_set_ref(nt, id, "block", -1);
+    /* a splat the expansion left whole for the block (splat_dispatch_on_length)
+       is expanded now, as the blockless call's is */
+    int args = nt_ref(nt, id, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    for (int k = 0; k < an; k++)
+      if (nt_kind(nt, av[k]) == NK_SplatNode) { expand_static_splat_args(c, id, id + 1); break; }
+    changed = 1;
+  }
+  return changed;
+}
+
 int desugar_array_at(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;

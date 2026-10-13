@@ -36839,6 +36839,8 @@ static int splat_builtin_arity(const char *name) {
     { "value?", 1 }, { "has_value?", 1 }, { "index", 1 }, { "rindex", 1 },
     { "count", 1 }, { "split", 1 }, { "join", 1 },
     { "start_with?", 1 }, { "end_with?", 1 }, { "tr", 2 }, { "tr_s", 2 },
+    /* the counts take none (splat_builtin_range) */
+    { "size", 0 }, { "length", 0 }, { "empty?", 0 },
     { NULL, 0 }
   };
   for (int i = 0; tab[i].name; i++)
@@ -42858,6 +42860,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= AN_PASS("desugar_str_range_methods", desugar_str_range_methods(c));        /* ("a".."e").map -> .to_a.map */
     ch |= AN_PASS("desugar_sym_to_proc_call", desugar_sym_to_proc_call(c));         /* :m.to_proc.call(r, a) -> r.m(a) */
     ch |= AN_PASS("desugar_reduce_method_symbol", desugar_reduce_method_symbol(c));     /* reduce(:gcd) -> reduce { |a,x| a.gcd(x) } */
+    ch |= AN_PASS("desugar_unused_block_arg", desugar_unused_block_arg(c));         /* a.size(&b) -> a.size */
     ch |= AN_PASS("desugar_symbol_var_block_arg", desugar_symbol_var_block_arg(c));     /* m(&sym_var) -> m { |x| x.send(sym_var) } */
     ch |= AN_PASS("desugar_poly_symbol_block_arg", desugar_poly_symbol_block_arg(c));    /* m(&poly) -> each literal Symbol its own proc */
     ch |= AN_PASS("desugar_kernel_method_block_arg", desugar_kernel_method_block_arg(c));  /* m(&method(:Integer)) -> m { |x| Integer(x) } */
