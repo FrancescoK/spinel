@@ -1454,8 +1454,7 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
   }
   if (!strbuf_bang_self_local(c, node)) return 0;
   int r = nt_ref(c->nt, node, "receiver");
-  char srefB[1024];
-  int slot = strbuf_slot_ref(c, r, srefB, sizeof srefB);
+  int slot = strbuf_slot_has(c, r);
   /* (a bang over a route keeps its own arms below: a narrowed box's
      mutator changes the box's String in place; a receiver that is such a
      call itself, `id(s).upcase!.downcase!`, is held as its handle,
@@ -1466,22 +1465,31 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
     return 0;
   if (!slot || nt_kind(c->nt, r) == NK_CallNode) {
     /* a reader call: read once (emit_bang_self_handle); so is a route
-       over a handle (`(s << x).freeze`), whose handle it takes once */
-    Buf hb; memset(&hb, 0, sizeof hb);
+       over a handle (`(s << x).freeze`), whose handle it takes once --
+       where the bang has a handle form, decided before anything is
+       emitted (bang_self_handle_has) */
     int sv_b = view_push_repr(c, node, VR_STRBUF_BOX, 0);
-    int ok = emit_bang_self_handle(c, node, &hb);
+    if (!bang_self_handle_has(c, node)) {
+      view_pop(c, sv_b);
+      return 0;
+    }
+    Buf hb; memset(&hb, 0, sizeof hb);
+    emit_bang_self_handle(c, node, &hb);
     view_pop(c, sv_b);
-    if (ok) buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
+    buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p ? hb.p : "NULL");
     free(hb.p);
-    if (ok) RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
-    return ok;
+    RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
+    return 1;
   }
+  Buf sb; memset(&sb, 0, sizeof sb);
+  strbuf_slot_text(c, r, &sb);
   int tb = ++g_tmp;
   buf_printf(b, "({ const char *_t%d = ", tb);
   int sv_b = view_push_repr(c, node, VR_STRBUF_BOX, 0);
   emit_expr(c, node, b);
   view_pop(c, sv_b);
-  buf_printf(b, "; _t%d ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil(); })", tb, srefB);
+  buf_printf(b, "; _t%d ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil(); })", tb, sb.p ? sb.p : "");
+  free(sb.p);
   RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
   return 1;
 }

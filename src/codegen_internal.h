@@ -163,6 +163,9 @@ int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap);
    and whether recv has one at all (nothing emitted) */
 int strbuf_slot_text(Compiler *c, int recv, Buf *b);
 int strbuf_slot_has(Compiler *c, int recv);
+/* --share-strings: does bang v have a handle form (emit_bang_self_handle),
+   asked before anything is emitted? */
+int bang_self_handle_has(Compiler *c, int v);
 /* holder_slot_text and holder_static_handle_text (holder.h) appended to b,
    whatever their length; with b NULL the answer alone */
 int holder_slot_buf(Compiler *c, const HolderRef *h, Buf *b);
