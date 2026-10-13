@@ -8780,7 +8780,9 @@ int desugar_forwarding_to_rest_callee(Compiler *c) {
   return changed;
 }
 
-typedef struct { int def, st, top, tst, cond, cm, cls; const char *path, *vis; } CondDef;
+/* cond: under a condition anywhere above; here: under one inside the def's
+   own class body (a class body under a condition resets it) */
+typedef struct { int def, st, top, tst, cond, cm, cls; const char *path, *vis; int here; } CondDef;
 static int cdef_vis_def(const NodeTable *nt, int id) {
   const char *nm = nt_kind(nt, id) == NK_CallNode && nt_ref(nt, id, "receiver") < 0 ? nt_str(nt, id, "name") : NULL;
   int an = 0;
@@ -8809,6 +8811,7 @@ static void cdef_walk(NodeTable *nt, int id, CondDef x, CondDef **v, int *n) {
   }
   case NK_IfNode: case NK_UnlessNode: case NK_ElseNode:
     x.cond = 1;
+    x.here = 1;
     cdef_walk(nt, nt_ref(nt, id, "statements"), x, v, n);
     cdef_walk(nt, nt_ref(nt, id, "subsequent"), x, v, n);
     cdef_walk(nt, nt_ref(nt, id, "else_clause"), x, v, n);
@@ -8817,7 +8820,7 @@ static void cdef_walk(NodeTable *nt, int id, CondDef x, CondDef **v, int *n) {
     char p[1024];
     snprintf(p, sizeof p, "%s", x.path);
     cdef_path(nt, nt_ref(nt, id, "constant_path"), p, sizeof p);
-    x.path = p; x.cls = id; x.cm = 0; x.top = -1;
+    x.path = p; x.cls = id; x.cm = 0; x.top = -1; x.here = 0;
     cdef_walk(nt, nt_ref(nt, id, "body"), x, v, n);
     break;
   }
@@ -8895,7 +8898,7 @@ static int cdef_stmts(NodeTable *nt, int st) {
    method only the run time knows, and the lists of methods
    (instance_methods, methods and their kin). Refused at compile time where
    reachable (feature_limit, "cond_def_reflect"). */
-static void cdef_refuse(NodeTable *nt, int id) {
+static void cdef_refuse(NodeTable *nt, int id, const char *flag) {
   long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0),
             col = nt_int(nt, id, "node_col", 0);
   int args = nt_new_node(nt, "ArgumentsNode");
@@ -8907,7 +8910,7 @@ static void cdef_refuse(NodeTable *nt, int id) {
   nt_node_set_int(nt, id, "node_file", file);
   nt_node_set_int(nt, id, "node_col", col);
   nt_node_set_str(nt, id, "name", "raise");
-  nt_node_set_int(nt, id, "cond_def_reflect", 1);
+  nt_node_set_int(nt, id, flag, 1);
   nt_node_set_str(nt, ex, "name", "NotImplementedError");
   nt_node_set_str(nt, msg, "content", "spinel: a method defined under a run-time condition, asked about by name");
   int av[2] = { ex, msg };
@@ -8938,8 +8941,19 @@ static void cdef_refuse_reflection(NodeTable *nt, const char *const *lone, int n
       if (!q) { hit = 1; break; }
       for (int j = 0; j < nlone && !hit; j++) hit = sp_streq(q, lone[j]);
     }
-    if (hit) cdef_refuse(nt, id);
+    if (hit) cdef_refuse(nt, id, "cond_def_reflect");
   }
+}
+
+/* Could a call of `nm` reach a method other than def `own` (another def
+   of the name, or a builtin one every object or class has)? */
+static int cdef_name_inherited(const NodeTable *nt, const char *nm, int own) {
+  if (builtin_object_method_known(nm) || builtin_method_known("Kernel", nm) ||
+      builtin_method_known("Object", nm) || builtin_method_known("Module", nm))
+    return 1;
+  NT_FOREACH_KIND(nt, NK_DefNode, d)
+    if (d != own && nt_str(nt, d, "name") && sp_streq(nt_str(nt, d, "name"), nm)) return 1;
+  return 0;
 }
 
 int desugar_conditional_defs(Compiler *c) {
@@ -8948,7 +8962,7 @@ int desugar_conditional_defs(Compiler *c) {
   int n = 0, serial = 0, groups = 0;
   char **lone = NULL;   /* the names a single def under a run-time condition defines */
   int nlone = 0;
-  cdef_walk(nt, nt_ref(nt, nt->root_id, "statements"), (CondDef){ -1, -1, -1, -1, 0, 0, -1, "", "" }, &v, &n);
+  cdef_walk(nt, nt_ref(nt, nt->root_id, "statements"), (CondDef){ -1, -1, -1, -1, 0, 0, -1, "", "", 0 }, &v, &n);
   for (int i = 0; i < n; i++) {
     if (v[i].def < 0 || !v[i].cond) continue;
     char *base = strdup(nt_str(nt, v[i].def, "name"));
@@ -8968,7 +8982,21 @@ int desugar_conditional_defs(Compiler *c) {
       v[j].def = -1;
     }
     /* one def under a run-time condition is the same choice with no other
-       arm: it answers only once its branch has run */
+       arm: it answers only once its branch has run. Only for a name nothing
+       else can answer -- no other def of it, no builtin Object, Kernel or
+       Module method -- since the arm that runs otherwise raises, where CRuby
+       reaches the method the def would have overridden. */
+    /* a lone def is chosen by a condition of its own class body; one in a
+       class that a condition defines is that class's for good */
+    if (ng == 1 && !g[0].here) { free(base); continue; }
+    if (ng == 1 && cdef_name_inherited(nt, base, d0)) {
+      /* which method answers when the branch did not run is not known
+         here: refused, rather than the def standing whatever the
+         condition said */
+      cdef_refuse(nt, d0, "cond_def_override");
+      free(base);
+      continue;
+    }
     if (bad || (ng >= 2 && same)) { free(base); continue; }
     if (ng == 1) {
       char **nn = realloc(lone, sizeof(char *) * (size_t)(nlone + 1));
