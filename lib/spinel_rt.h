@@ -19984,7 +19984,7 @@ static sp_StrStrHash *sp_env_update_v_blk(sp_RbVal hv, sp_Proc *p) {
       _sp_proc_poly_args[1] = sp_box_str(ovh);
       _sp_proc_poly_args[2] = v;
       sp_int slots[16] = { (sp_int)(uintptr_t)k.v.s, (sp_int)(uintptr_t)ovh,
-                            (v.tag == SP_TAG_OBJ || v.tag == SP_TAG_STR) ? (sp_int)(uintptr_t)v.v.p : sp_poly_to_i(v) };
+                            (v.tag == SP_TAG_OBJ || v.tag == SP_TAG_STR) ? (sp_int)(uintptr_t)v.v.p : sp_poly_slot_arg(v) };
       _sp_proc_poly_ret = sp_box_nil();
       sp_int r = sp_proc_call(p, 3, slots);
       v = (_sp_proc_poly_ret.tag != SP_TAG_NIL) ? _sp_proc_poly_ret
