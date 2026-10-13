@@ -3636,6 +3636,15 @@ static int literal_truth(NodeTable *nt, int e) {
     const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
     return bn == 1 ? literal_truth(nt, bb[0]) : -1;
   }
+  /* `a && b`, `a || b`: fixed when the left side decides it, or when the
+     left side is fixed and the right one too (a left side that is not
+     fixed runs, and is left to the run time) */
+  if (k == NK_AndNode || k == NK_OrNode) {
+    int l = literal_truth(nt, nt_ref(nt, e, "left"));
+    if (l < 0) return -1;
+    if (k == NK_AndNode ? !l : l) return l;
+    return literal_truth(nt, nt_ref(nt, e, "right"));
+  }
   if (k != NK_CallNode || nt_ref(nt, e, "block") >= 0) return -1;
   const char *op = nt_str(nt, e, "name");
   int recv = nt_ref(nt, e, "receiver"), args = nt_ref(nt, e, "arguments"), ac = 0;
