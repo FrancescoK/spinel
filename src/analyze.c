@@ -3230,7 +3230,10 @@ static int qc_push_header(const NodeTable *nt, int node, char (**pathp)[64], int
   if (!mn) return depth;
   char segs[QC_MAXDEPTH][64];
   int ns = qc_header_segs(nt, cp, segs);
-  int base = ns > 0 && node < qc_nhdr && qc_hdr_base[node] >= 0 && qc_hdr_base[node] < depth
+  /* `class ::Foo` is Foo at the top level, wherever it is written */
+  int anchored = nt_kind(nt, cp) == NK_ConstantPathNode && nt_ref(nt, cp, "parent") < 0;
+  int base = anchored ? 0
+             : ns > 0 && node < qc_nhdr && qc_hdr_base[node] >= 0 && qc_hdr_base[node] < depth
              ? qc_hdr_base[node] : depth;
   if (base + ns + 1 > QC_MAXDEPTH) { ns = 0; base = depth; }
   char (*old)[64] = *pathp;
@@ -3267,15 +3270,18 @@ typedef struct { int node; int depth; char path[QC_MAXDEPTH][64]; } QCDef;
 static QCDef *qc_defs = NULL;
 static int qc_ndefs = 0, qc_cdefs = 0;
 static void qc_free_defs(void) { free(qc_defs); qc_defs = NULL; qc_ndefs = qc_cdefs = 0; }
-/* whether a body defined so far has the path path[0..n) + head */
-static int qc_known_has(char (*path)[64], int n, const char *head) {
+/* the body defined so far that has the path path[0..n) + head, or -1 */
+static int qc_def_find(char (*path)[64], int n, const char *head) {
   for (int d = 0; d < qc_ndefs; d++) {
     if (qc_defs[d].depth != n + 1 || !sp_streq(qc_defs[d].path[n], head)) continue;
     int ok = 1;
     for (int i = 0; i < n && ok; i++) if (!sp_streq(qc_defs[d].path[i], path[i])) ok = 0;
-    if (ok) return 1;
+    if (ok) return d;
   }
-  return 0;
+  return -1;
+}
+static int qc_known_has(char (*path)[64], int n, const char *head) {
+  return qc_def_find(path, n, head) >= 0;
 }
 /* the latest alias written so far as `name` directly in the body path[0..n) */
 static int qc_alias_find(char (*path)[64], int n, const char *name) {
@@ -3322,9 +3328,11 @@ static int qc_ancestor_lookup(const NodeTable *nt, char (*path)[64], int n, cons
    *via when an alias was followed. A head no lexical scope has is looked
    for in the innermost body's ancestors, then taken from the program's
    only write of that name. */
+static int qc_holder = -1;   /* the alias of the last lookup whose head holds no module, or -1 */
 static int qc_alias_chain(const QCScope *sc, int nsc, char (*in)[64], int n,
                             char (*out)[64], int *via) {
   *via = 0;
+  qc_holder = -1;
   if (n < 1) return 0;
   int len = -1, a = -1, anc = 0;
   for (int q = 0; q < nsc && len < 0 && a < 0; q++) {
@@ -3334,6 +3342,15 @@ static int qc_alias_chain(const QCScope *sc, int nsc, char (*in)[64], int n,
       anc = 1;
       int m = qc_ancestor_lookup(qc_hdr_nt, sc[0].path, sc[0].n, in[0], qc_alias_ws, qc_nalias_ws, 1, 0);
       if (m >= 0) { a = qc_alias_ws[m].node; break; }
+      /* or a class or module an ancestor defines (`class Sub < Base;
+         class A::Foo` where Base has a class A) */
+      m = qc_ancestor_lookup(qc_hdr_nt, sc[0].path, sc[0].n, in[0], NULL, -1, 1, 0);
+      if (m >= 0) {
+        len = 0;
+        for (int i = 0; i < qc_defs[m].depth; i++) snprintf(out[len++], 64, "%s", qc_defs[m].path[i]);
+        *via = 1;
+        break;
+      }
     }
     if (qc_known_has(sc[q].path, sc[q].n, in[0])) {
       len = 0;
@@ -3351,6 +3368,7 @@ static int qc_alias_chain(const QCScope *sc, int nsc, char (*in)[64], int n,
     len = 0;
     for (int i = 0; i < qc_aliases[a].depth; i++) snprintf(out[len++], 64, "%s", qc_aliases[a].scope[i]);
     snprintf(out[len++], 64, "%s", qc_aliases[a].orig);
+    qc_holder = a;
   }
   else if (len < 0) {
     len = 0;
@@ -3431,10 +3449,41 @@ static void qc_note_alias(const NodeTable *nt, int w, char (*path)[64], int dept
       if (!qc_alias_ws) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     }
     QCWrite *aw = &qc_alias_ws[qc_nalias_ws++];
-    aw->node = qc_naliases - 1; aw->depth = depth;
+    aw->node = qc_naliases - 1; aw->depth = depth; aw->salt = 0; aw->head[0] = 0;
     for (int i = 0; i < depth; i++) snprintf(aw->path[i], 64, "%s", path[i]);
     snprintf(aw->name, sizeof aw->name, "%s", k ? al->orig : al->name);
   }
+}
+/* `class Object::Foo` is `class ::Foo`: Object is the top level, so Foo is
+   not defined under the body around the header. The passes and walk_scope
+   read the anchored form, which they already place at the top level. */
+static void qc_anchor_object_header(const NodeTable *nt, int cp) {
+  for (int q = cp; q >= 0 && nt_kind(nt, q) == NK_ConstantPathNode; ) {
+    int par = nt_ref(nt, q, "parent");
+    if (par >= 0 && nt_kind(nt, par) == NK_ConstantReadNode && sp_streq(nt_str(nt, par, "name"), "Object")) {
+      nt_node_set_ref((NodeTable *)nt, q, "parent", -1);
+      return;
+    }
+    q = par;
+  }
+}
+/* The compact headers whose head is a constant holding no module (`Point =
+   Struct.new`), for qc_refuse_holder_headers: the header node, the
+   constant's alias, and whether the body path the header is written in is
+   not the constant's own. */
+typedef struct { int node, alias, away; } QCHolderHdr;
+static QCHolderHdr *qc_holder_hdrs = NULL;
+static int qc_nholder_hdrs = 0, qc_cholder_hdrs = 0;
+static void qc_note_holder_header(int node, int alias, char (*path)[64], int depth) {
+  if (qc_nholder_hdrs == qc_cholder_hdrs) {
+    qc_cholder_hdrs = qc_cholder_hdrs ? qc_cholder_hdrs * 2 : 8;
+    qc_holder_hdrs = realloc(qc_holder_hdrs, sizeof(QCHolderHdr) * (size_t)qc_cholder_hdrs);
+    if (!qc_holder_hdrs) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  QCHolderHdr *h = &qc_holder_hdrs[qc_nholder_hdrs++];
+  h->node = node; h->alias = alias;
+  h->away = qc_aliases[alias].depth != depth;
+  for (int i = 0; i < depth && !h->away; i++) h->away = !sp_streq(qc_aliases[alias].scope[i], path[i]);
 }
 static void qc_resolve_walk(const NodeTable *nt, int node, char (*path)[64], int depth, unsigned char *lex) {
   if (node < 0) return;
@@ -3443,6 +3492,7 @@ static void qc_resolve_walk(const NodeTable *nt, int node, char (*path)[64], int
   if (k == NK_ConstantWriteNode) qc_note_alias(nt, node, path, depth, lex);
   if ((k == NK_ClassNode || k == NK_ModuleNode) && depth < QC_MAXDEPTH) {
     int cp = nt_ref(nt, node, "constant_path");
+    qc_anchor_object_header(nt, cp);
     const char *mn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
     char segs[QC_MAXDEPTH][64];
     int aliased = 0, ns = mn ? qc_header_segs(nt, cp, segs) : 0;
@@ -3455,6 +3505,7 @@ static void qc_resolve_walk(const NodeTable *nt, int node, char (*path)[64], int
       QCScope sc[QC_MAXDEPTH + 2];
       char full[QC_MAXDEPTH + 1][64];
       int via, fl = qc_alias_chain(sc, qc_hdr_scopes(path, depth, lex, sc), segs, ns, full, &via);
+      if (fl > 0 && !via && qc_holder >= 0) qc_note_holder_header(node, qc_holder, path, depth);
       if (fl > 0 && via && cp < qc_nhdr) {
         QCAlias *al = qc_alias_new();   /* nameless: only the header reads it */
         al->tl = fl;
@@ -3494,7 +3545,27 @@ static void qc_resolve_walk(const NodeTable *nt, int node, char (*path)[64], int
   for (int i = 0; i < na; i++) { int m = 0; const int *ids = nt_arr_at(nt, node, i, &m); for (int j = 0; j < m; j++) qc_resolve_walk(nt, ids[j], path, depth, lex); }
   qc_pop_header(own, lex);
 }
+/* A compact header under a constant that holds a Struct or Data class
+   (`Point = Struct.new`) names the class Point::Formatter. Two forms put
+   it in the wrong place, and are refused. The first is a header in another
+   body than the one that writes the constant: its class stays under its own
+   body. The second is a header before a `class Point` body: spinel makes
+   Point a parent only when that body starts. Run after the walk, when
+   every body is known. */
+static void qc_refuse_holder_headers(Compiler *c) {
+  for (int i = 0; i < qc_nholder_hdrs; i++) {
+    const QCAlias *al = &qc_aliases[qc_holder_hdrs[i].alias];
+    int reopened = qc_def_find((char (*)[64])al->scope, al->depth, al->orig) >= 0;
+    if (!qc_holder_hdrs[i].away && !reopened) continue;
+    char msg[512];
+    snprintf(msg, sizeof msg, "a class or module under %s, a constant that holds a Struct or Data class, "
+             "is not supported here; write it in the body that writes %s, after any `class %s` body",
+             al->orig, al->orig, al->orig);
+    unsupported_feature(c, qc_holder_hdrs[i].node, msg);
+  }
+}
 static void qc_free_headers(void) {
+  free(qc_holder_hdrs); qc_holder_hdrs = NULL; qc_nholder_hdrs = qc_cholder_hdrs = 0;
   free(qc_hdr_base); qc_hdr_base = NULL;
   free(qc_hdr_alias); qc_hdr_alias = NULL; qc_nhdr = 0;
   free(qc_aliases); qc_aliases = NULL; qc_naliases = qc_caliases = 0;
@@ -3514,6 +3585,7 @@ static void qc_resolve_headers(Compiler *c) {
   char path[QC_MAXDEPTH][64];
   unsigned char lex[QC_MAXDEPTH + 1] = {1};
   qc_resolve_walk(nt, nt->root_id, path, 0, lex);
+  qc_refuse_holder_headers(c);
 }
 
 void qc_collect_writes(Compiler *c, int node, char (*path)[64], int depth,
@@ -3530,7 +3602,7 @@ void qc_collect_writes(Compiler *c, int node, char (*path)[64], int depth,
     if (nm) {
       if (*n >= *cap) { *cap = *cap ? *cap * 2 : 16; *ws = realloc(*ws, sizeof(QCWrite) * (size_t)*cap); }
       QCWrite *w = &(*ws)[(*n)++];
-      w->node = node; w->depth = depth;
+      w->node = node; w->depth = depth; w->salt = 0; w->head[0] = 0;
       for (int i = 0; i < depth; i++) snprintf(w->path[i], 64, "%s", path[i]);
       snprintf(w->name, sizeof w->name, "%s", nm);
     }
@@ -3578,6 +3650,7 @@ static int qc_read_chain_as(const NodeTable *nt, int node, char (*chain)[64], in
 
 void qc_qualified_name(char *out, size_t cap, const QCWrite *w) {
   out[0] = 0;
+  for (int i = 0; i < w->salt; i++) strncat(out, "_", cap - strlen(out) - 1);
   for (int i = 0; i < w->depth; i++) { strncat(out, w->path[i], cap - strlen(out) - 1); strncat(out, "__", cap - strlen(out) - 1); }
   strncat(out, w->name, cap - strlen(out) - 1);
 }
@@ -3683,7 +3756,9 @@ static int qc_write_in(char (*path)[64], int n, const char *nm, QCWrite *ws, int
    body that names it, by its whole path, so `B` inside `Outer` is
    `Outer::B` where there is one. The walk is bounded, so an include cycle
    ends. Without this, a constant a superclass defines, where another class
-   defines the same name, read as undefined. */
+   defines the same name, read as undefined. With a negative wn it
+   looks for a class or module body of that name instead, and answers its
+   index in qc_defs. */
 static int qc_ancestor_lookup(const NodeTable *nt, char (*path)[64], int n, const char *nm,
                               QCWrite *ws, int wn, int own, int depth);
 static int qc_mixin_lookup(const NodeTable *nt, char (*path)[64], int n, const char *mixer,
@@ -3714,7 +3789,7 @@ static int qc_ancestor_lookup(const NodeTable *nt, char (*path)[64], int n, cons
   if (n <= 0 || depth > 32) return -1;
   int m = qc_mixin_lookup(nt, path, n, "prepend", nm, ws, wn, depth);
   if (m >= 0) return m;
-  if (!own && (m = qc_write_in(path, n, nm, ws, wn)) >= 0) return m;
+  if (!own && (m = wn >= 0 ? qc_write_in(path, n, nm, ws, wn) : qc_def_find(path, n, nm)) >= 0) return m;
   if ((m = qc_mixin_lookup(nt, path, n, "include", nm, ws, wn, depth)) >= 0) return m;
   char sup[QC_MAXDEPTH][64];
   int supn = 0;
@@ -4041,24 +4116,6 @@ void qc_collect_class_writes(Compiler *c, int node, char (*path)[64], int depth,
   if ((sp_streq(ty, "ModuleNode") || sp_streq(ty, "ClassNode")) && depth < QC_MAXDEPTH) {
     int cp = nt_ref(nt, node, "constant_path");
     const char *mn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    /* `class ::Array` inside a module names the top-level constant: it is a
-       definition at the root, and its body's lexical path starts there --
-       taken as nested, it was qualified to Outer::Array, a new class, and
-       the reopening reached nothing. Its own path buffer: the caller's is
-       still in use for the siblings. */
-    if (mn && nt_kind(nt, cp) == NK_ConstantPathNode && nt_ref(nt, cp, "parent") < 0) {
-      if (*n >= *cap) { *cap = *cap ? *cap * 2 : 16; *ws = realloc(*ws, sizeof(QCWrite) * (size_t)*cap); }
-      QCWrite *w = &(*ws)[(*n)++];
-      w->node = cp; w->depth = 0;
-      snprintf(w->name, sizeof w->name, "%s", mn);
-      char root[QC_MAXDEPTH][64];
-      snprintf(root[0], 64, "%s", mn);
-      int nr = nt_num_refs(nt, node);
-      for (int i = 0; i < nr; i++) qc_collect_class_writes(c, nt_ref_at(nt, node, i), root, 1, ws, n, cap);
-      int na = nt_num_arrs(nt, node);
-      for (int i = 0; i < na; i++) { int m = 0; const int *ids = nt_arr_at(nt, node, i, &m); for (int k = 0; k < m; k++) qc_collect_class_writes(c, ids[k], root, 1, ws, n, cap); }
-      return;
-    }
     if (mn) {
       /* `class A::B`: B is defined in A, so it is recorded as a write under
          A as well as under the module it is written in -- `class X::Foo`
@@ -4069,9 +4126,15 @@ void qc_collect_class_writes(Compiler *c, int node, char (*path)[64], int depth,
       depth = qc_push_header(nt, node, &path, depth, NULL, &own);
       if (*n >= *cap) { *cap = *cap ? *cap * 2 : 16; *ws = realloc(*ws, sizeof(QCWrite) * (size_t)*cap); }
       QCWrite *w = &(*ws)[(*n)++];
-      w->node = cp; w->depth = depth - 1;
+      w->node = cp; w->depth = depth - 1; w->salt = 0; w->head[0] = 0;
       for (int i = 0; i < depth - 1; i++) snprintf(w->path[i], 64, "%s", path[i]);
       snprintf(w->name, sizeof w->name, "%s", mn);
+      /* a builtin parent (`class String::Helper`) is no body the passes
+         place the class under: it stays registered by its leaf, under the
+         body it is written in. The parent's name tells two of them apart. */
+      int par = nt_kind(nt, cp) == NK_ConstantPathNode ? nt_ref(nt, cp, "parent") : -1;
+      const char *hn = par >= 0 && nt_kind(nt, par) == NK_ConstantReadNode ? nt_str(nt, par, "name") : NULL;
+      if (hn && (is_builtin_class_name(hn) || is_builtin_module_name(hn))) snprintf(w->head, sizeof w->head, "%s", hn);
     }
   }
   /* `Node = Struct.new(...)` / `Data.define(...)` inside a class or module
@@ -4092,7 +4155,7 @@ void qc_collect_class_writes(Compiler *c, int node, char (*path)[64], int depth,
            (sp_streq(rn, "Data") && sp_streq(vn, "define")))) {
         if (*n >= *cap) { *cap = *cap ? *cap * 2 : 16; *ws = realloc(*ws, sizeof(QCWrite) * (size_t)*cap); }
         QCWrite *w = &(*ws)[(*n)++];
-        w->node = node; w->depth = depth;
+        w->node = node; w->depth = depth; w->salt = 0; w->head[0] = 0;
         for (int i = 0; i < depth; i++) snprintf(w->path[i], 64, "%s", path[i]);
         snprintf(w->name, sizeof w->name, "%s", cn);
       }
@@ -4139,6 +4202,26 @@ void qualify_colliding_classes(Compiler *c) {
   char path[QC_MAXDEPTH][64];
   qc_resolve_headers(c);
   qc_collect_class_writes(c, nt->root_id, path, 0, &ws, &wn, &wcap);
+  /* A class under a builtin parent (`class String::Helper`) stays under the
+     body it is written in, registered by its leaf. Another definition of
+     that leaf in the same body, with another parent or none, would merge
+     with it. When the class is nested, any other definition of the leaf
+     makes the passes qualify it, and a read of its path then reaches the
+     other one. A top-level class is left alone beside a nested one. */
+  for (int i = 0; i < wn; i++) {
+    if (!ws[i].head[0]) continue;
+    for (int j = 0; j < wn; j++) {
+      if (j == i || !sp_streq(ws[j].name, ws[i].name)) continue;
+      int same_body = qc_path_eq(ws[i].path, ws[i].depth, ws[j].path, ws[j].depth);
+      if (same_body && sp_streq(ws[j].head, ws[i].head)) continue;
+      if (!same_body && ws[i].depth == 0) continue;
+      char msg[512];
+      snprintf(msg, sizeof msg, "a class or module named %s under the builtin %s is not supported beside "
+               "another definition of %s: spinel cannot keep the two apart; rename one of them",
+               ws[i].name, ws[i].head, ws[i].name);
+      unsupported_feature(c, ws[i].node, msg);
+    }
+  }
   /* the plain constant writes left under a bare leaf (the constant pass
      qualified the nested ones that collide), for a nested class named like a
      top-level constant: `Config = {...}` beside `module Rack; class Config` */
@@ -4194,12 +4277,12 @@ void qualify_colliding_classes(Compiler *c) {
     /* ... and a nested class sharing its leaf with a plain constant written
        elsewhere, which keeps the bare leaf as its key */
     if (!collide && ws[i].depth > 0 && qc_leaf_elsewhere(&ws[i], kws, kwn)) collide = 1;
-    /* ... unless the qualified name is one the program gives a class or
-       module of its own (`class Foo__Mutex` beside `class Foo::Mutex`):
-       renamed, the two would be one class. Left alone, the definition
-       keeps the leaf it had, which is its own only when no top-level
-       definition has that leaf too; when one does, either name merges two
-       classes, so it is refused. */
+    /* ... and when the qualified name is one the program gives a class or
+       module of its own (`class Foo__Mutex` beside `class Foo::Mutex`),
+       the name takes a leading underscore, as often as it needs to be
+       new. The leaf is no key for it: another definition of the leaf
+       (`Bar::Mutex`) would merge with it. A top-level definition of the
+       leaf is still refused. */
     if (collide && ws[i].depth > 0) {
       char qn[512]; qc_qualified_name(qn, sizeof qn, &ws[i]);
       if (qc_class_name_defined(c, qn)) {
@@ -4211,7 +4294,10 @@ void qualify_colliding_classes(Compiler *c) {
                      "top-level %s is defined too; rename one of them", ws[i].name, qn, qn, ws[i].name);
             unsupported_feature(c, ws[i].node, msg);
           }
-        collide = 0;
+        while (qc_class_name_defined(c, qn)) {
+          ws[i].salt++;
+          qc_qualified_name(qn, sizeof qn, &ws[i]);
+        }
       }
     }
     if (!collide) { ws[i] = ws[--wn]; i--; continue; }

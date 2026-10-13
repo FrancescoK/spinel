@@ -454,6 +454,22 @@ spinel: test/reject/class_then_module.rb:6: Thing is not a module (the first dec
 spinel: test/reject/compact_class_internal_name_clash.rb:5: a class or module named Foo under a module path takes the internal name X__Foo, which the program's own class X__Foo already has, and a top-level Foo is defined too; rename one of them
 == test/reject/compact_class_internal_name_clash.rb [promote] rc=1
 spinel: test/reject/compact_class_internal_name_clash.rb:5: a class or module named Foo under a module path takes the internal name X__Foo, which the program's own class X__Foo already has, and a top-level Foo is defined too; rename one of them
+== test/reject/compact_path_native_parent_collision.rb [default] rc=1
+spinel: test/reject/compact_path_native_parent_collision.rb:7: a class or module named Helper under the builtin String is not supported beside another definition of Helper: spinel cannot keep the two apart; rename one of them
+== test/reject/compact_path_native_parent_collision.rb [promote] rc=1
+spinel: test/reject/compact_path_native_parent_collision.rb:7: a class or module named Helper under the builtin String is not supported beside another definition of Helper: spinel cannot keep the two apart; rename one of them
+== test/reject/compact_path_native_parent_two_bodies.rb [default] rc=1
+spinel: test/reject/compact_path_native_parent_two_bodies.rb:7: a class or module named Helper under the builtin String is not supported beside another definition of Helper: spinel cannot keep the two apart; rename one of them
+== test/reject/compact_path_native_parent_two_bodies.rb [promote] rc=1
+spinel: test/reject/compact_path_native_parent_two_bodies.rb:7: a class or module named Helper under the builtin String is not supported beside another definition of Helper: spinel cannot keep the two apart; rename one of them
+== test/reject/compact_path_struct_parent_in_module.rb [default] rc=1
+spinel: test/reject/compact_path_struct_parent_in_module.rb:9: a class or module under Point, a constant that holds a Struct or Data class, is not supported here; write it in the body that writes Point, after any `class Point` body
+== test/reject/compact_path_struct_parent_in_module.rb [promote] rc=1
+spinel: test/reject/compact_path_struct_parent_in_module.rb:9: a class or module under Point, a constant that holds a Struct or Data class, is not supported here; write it in the body that writes Point, after any `class Point` body
+== test/reject/compact_path_struct_parent_reopened_later.rb [default] rc=1
+spinel: test/reject/compact_path_struct_parent_reopened_later.rb:8: a class or module under Point, a constant that holds a Struct or Data class, is not supported here; write it in the body that writes Point, after any `class Point` body
+== test/reject/compact_path_struct_parent_reopened_later.rb [promote] rc=1
+spinel: test/reject/compact_path_struct_parent_reopened_later.rb:8: a class or module under Point, a constant that holds a Struct or Data class, is not supported here; write it in the body that writes Point, after any `class Point` body
 == test/reject/compare_by_identity_chained.rb [default] rc=1
 spinel: test/reject/compare_by_identity_chained.rb:8: unsupported Hash#compare_by_identity (identity-keyed hashing): node N (CallNode `compare_by_identity`) recv=LocalVariableReadNode/ty28 argc=0
 spinel: 1 refusal, nothing written

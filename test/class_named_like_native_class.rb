@@ -27,6 +27,16 @@ class Foo__Mutex
   def hi = "foo__mutex"
 end
 
+module Bar
+  class Mutex
+    def hi = "bar mutex"
+  end
+end
+
+class Bar__Mutex
+  def hi = "bar__mutex"
+end
+
 class OpenStruct
   def initialize(name)
     @name = name
@@ -39,6 +49,8 @@ puts App::Mutex.new.hi
 puts App::Queue.new("a").hi
 puts Foo::Mutex.new.hi
 puts Foo__Mutex.new.hi
+puts Bar::Mutex.new.hi
+puts Bar__Mutex.new.hi
 puts OpenStruct.new("b").hi
 m = Mutex.new
 m.synchronize { puts "builtin mutex" }
