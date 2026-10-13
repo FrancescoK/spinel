@@ -1182,7 +1182,12 @@ const char *sp_sock_recvfrom(sp_File *f, sp_int len, const char **ip_out, sp_int
   sp_sock_require(f, "recvfrom");
   char ipbuf[64];
   int port = 0;
-  if (len <= 0) { *ip_out = sp_str_from_bytes("", 0); *port_out = 0; return sp_str_from_bytes("", 0); }
+  if (len <= 0) {
+    const char *s = sp_str_from_bytes("", 0); SP_GC_ROOT_STR(s);   /* across the address's copy */
+    *ip_out = sp_str_from_bytes("", 0);
+    *port_out = 0;
+    return s;
+  }
   sp_io_wait_readable(f);   /* as sp_sock_recv (#7555) */
   char *buf = (char *)malloc((size_t)len);
   if (!buf) sp_raise_cls("NoMemoryError", "recvfrom");
