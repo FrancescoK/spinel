@@ -5147,10 +5147,12 @@ static int sh_call_fresh(Compiler *c, int n, int depth) {
    String or nil, or does it leave no value (none, or empty)? */
 static int sh_arm_fresh(Compiler *c, int a, int depth) {
   const NodeTable *nt = c->nt;
-  a = an_unparen(nt, a);
   if (a < 0) return 1;
   switch (nt_kind(nt, a)) {
   case NK_NilNode: return 1;
+  /* parentheses answer their last statement, or nil when empty
+     (an_unparen reads only one statement) */
+  case NK_ParenthesesNode: return sh_arm_fresh(c, nt_ref(nt, a, "body"), depth);
   case NK_ElseNode: return sh_arm_fresh(c, nt_ref(nt, a, "statements"), depth);
   case NK_StatementsNode: {
     int n = 0; const int *bb = nt_arr(nt, a, "body", &n);
