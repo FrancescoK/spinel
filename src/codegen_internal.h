@@ -343,6 +343,13 @@ void emit_str_frozen_check(Compiler *c, int recv, Buf *b);
 int strbuf_boxed_elem_read(Compiler *c, int v);
 int emit_strbuf_read_ref(Compiler *c, int recv, Buf *b);
 int strbuf_object_ref(Compiler *c, int recv, Buf *b);
+/* A String value in the form the String plan (share_plan.c) gives it for
+   a consumer in `role` (SPR_*), in the face the consumer holds it in
+   (codegen_str.c, #8328): an expression, with no temporary, hold or root
+   of its own. Answers the form it rendered (SPF_*). The faces:
+     SPX_ID  its object id, an sp_int (object_id, __id__). */
+enum { SPX_ID };
+int emit_str_form(Compiler *c, int v, int role, int face, Buf *b);
 extern int g_block_nren;
 extern int g_yield_block_fallback_nren;
 /* Paired 1:1 with g_block_nren / g_yield_block_fallback_nren: the &block
