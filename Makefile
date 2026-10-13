@@ -1029,12 +1029,12 @@ else ifeq ($(SPINEL_INT_OVERFLOW),wrap)
 # raises, and promote_*.rb a Bignum wrap never makes, so both stay out (the
 # first wrap run found no test whose answer needs the Bignum of the default
 # mode's growth-pattern promotion: that promotion is the analysis's and is
-# the same here). stack_overflow_unhandled and stack_overflow_rescued guard
-# the C stack, not arithmetic: their `1 + deep(n + 1)` is a checked add in
-# raise mode, which keeps the recursion a call, and a plain add here, which
-# lets clang turn it into a loop that never overflows the stack and runs
-# until the test's timeout.
-TESTS := $(filter-out $(RAISE_MODE_PINS) test/promote_%.rb test/stack_overflow_unhandled.rb test/stack_overflow_rescued.rb,$(TESTS))
+# the same here). stack_overflow_unhandled and stack_overflow_rescued, and
+# their thread_ counterparts, guard the C stack, not arithmetic: their
+# `1 + deep(n + 1)` is a checked add in raise mode, which keeps the
+# recursion a call, and a plain add here, which lets clang turn it into a
+# loop that never overflows the stack and runs until the test's timeout.
+TESTS := $(filter-out $(RAISE_MODE_PINS) test/promote_%.rb test/stack_overflow_unhandled.rb test/stack_overflow_rescued.rb test/thread_stack_overflow_unhandled.rb test/thread_stack_overflow_rescued.rb,$(TESTS))
 SP_OV_FLAG := --int-overflow=wrap
 SP_OV_DEFINE := -DSP_INT_OVERFLOW_MODE_WRAP
 else
