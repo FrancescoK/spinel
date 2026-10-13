@@ -1,0 +1,4 @@
+1
+ensure
+"undefined method 'undo' for an instance of Ed"
+"undefined method 'redo' for an instance of Ed"
