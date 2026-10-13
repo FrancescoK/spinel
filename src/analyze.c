@@ -9380,9 +9380,19 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
      the error landing on whatever the real return type supported several
      lines later (#3378). While the receiver's type is still unresolved,
      wait rather than guess: g_infer_optimistic says the fixpoint has more
-     to say. */
+     to say.
+
+     The argument count, not just the ArgumentsNode's presence, is what
+     matters: a respond_to? probe (desugar_respond_to_probe) always builds
+     an ArgumentsNode, even for its no-argument shapes, so gating on "no
+     ArgumentsNode at all" never matched a probe and respond_to?(:to_set)
+     answered false on a concrete receiver for a method that otherwise
+     works (K-026). */
+  int tsargs = nt_ref(nt, id, "arguments");
+  int tsargc = 0;
+  if (tsargs >= 0) nt_arr(nt, tsargs, "arguments", &tsargc);
   if (nm && sp_streq(nm, "to_set") &&
-      nt_ref(nt, id, "arguments") < 0 && comp_class_index(c, "Set") >= 0) {
+      tsargc == 0 && comp_class_index(c, "Set") >= 0) {
     int recv = nt_ref(nt, id, "receiver");
     if (recv >= 0) {
       TyKind rt = infer_type(c, recv);
