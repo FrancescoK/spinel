@@ -3390,12 +3390,31 @@ int emit_poly_callable_kwh_decl(Compiler *c, const char *name, const PolySpecial
   return kht;
 }
 
+/* A builtin arm's argument a, boxed, into ab: its temp, or for the keyword
+   hash (which has no temp; the keywords were split off) a Hash built from
+   them, as CRuby hands a method without keywords one. That Hash is held
+   in a rooted temp opened in b: 1 when the caller must close it with `}`. */
+static int poly_case_arg_boxed(Compiler *c, const PolyTemps *T, const PolyKw *kw, int a, Buf *ab, Buf *b) {
+  if (kw && kw->kwh >= 0 && a >= T->pos_argc) {
+    int th = ++g_tmp;
+    buf_printf(b, " { sp_RbVal _t%d = ", th);
+    emit_kwh_pos_hash(c, kw, 1, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", th);
+    buf_printf(ab, "_t%d", th);
+    return 1;
+  }
+  char tn[32]; snprintf(tn, sizeof tn, "_t%d", T->atmp[a]);
+  if (T->atmp_ty[a] == TY_POLY) buf_puts(ab, tn);
+  else emit_boxed_text(c, T->atmp_ty[a], tn, ab);
+  return 0;
+}
+
 /* The builtin `case` arms a poly dispatch with arguments writes after its
    class arms: an Array's index, push, unshift, pack, join, include?,
    index and intersect?, an IO's write, read and the rest, a Time's
    strftime, a Hash's `[]` and fetch by key kind, a predicate. */
 void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecialsN *ps, const PolyTemps *T,
-                       int splat_a, int is_aref, int is_fetch, Buf *b) {
+                       const PolyKw *kw, int splat_a, int is_aref, int is_fetch, Buf *b) {
   const NodeTable *nt = c->nt;
   int argc = T->argc, pos_argc = T->pos_argc, kwh = ps->kwh;
   const int *argv = T->argv, *atmp = T->atmp;
@@ -3696,11 +3715,10 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
                    ti, ti, atmp[a], ti, tv, a, ti, atmp[a], ti);
         continue;
       }
-      char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
       Buf ab; memset(&ab, 0, sizeof ab);
-      if (atmp_ty[a] == TY_POLY) buf_puts(&ab, tn);
-      else emit_boxed_text(c, atmp_ty[a], tn, &ab);
+      int kb = poly_case_arg_boxed(c, T, kw, a, &ab, b);
       buf_printf(b, " sp_poly_insert(_t%d, %d, %s);", tv, a, ab.p ? ab.p : "sp_box_nil()");
+      if (kb) buf_puts(b, " }");
       free(ab.p);
     }
     if (ret == TY_POLY) buf_printf(b, " _t%d = _t%d;", tr, tv);
@@ -3720,11 +3738,10 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
                    ti, ti, atmp[a], ti, tv, atmp[a], ti);
         continue;
       }
-      char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
       Buf ab; memset(&ab, 0, sizeof ab);
-      if (atmp_ty[a] == TY_POLY) buf_puts(&ab, tn);
-      else emit_boxed_text(c, atmp_ty[a], tn, &ab);
+      int kb = poly_case_arg_boxed(c, T, kw, a, &ab, b);
       buf_printf(b, " sp_poly_shl(_t%d, %s);", tv, ab.p ? ab.p : "sp_box_nil()");
+      if (kb) buf_puts(b, " }");
       free(ab.p);
     }
     if (ret == TY_POLY) buf_printf(b, " _t%d = _t%d;", tr, tv);
@@ -3745,7 +3762,9 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
       for (int a = 0; a < argc; a++) {
         char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
         buf_puts(b, a ? ", " : " ");
-        if (atmp_ty[a] == TY_POLY) buf_puts(b, tn); else emit_boxed_text(c, atmp_ty[a], tn, b);
+        if (kwh >= 0 && a >= pos_argc) emit_kwh_pos_hash(c, kw, 1, b);
+        else if (atmp_ty[a] == TY_POLY) buf_puts(b, tn);
+        else emit_boxed_text(c, atmp_ty[a], tn, b);
       }
       if (argc == 0) buf_puts(b, " sp_box_nil()");
       buf_printf(b, " }; sp_poly_queue_push_n(_t%d, %d, _t%d); }", tv, argc, tq);
@@ -3758,11 +3777,10 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
                    ti, ti, atmp[a], ti, tv, atmp[a], ti);
         continue;
       }
-      char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
       Buf ab; memset(&ab, 0, sizeof ab);
-      if (atmp_ty[a] == TY_POLY) buf_puts(&ab, tn);
-      else emit_boxed_text(c, atmp_ty[a], tn, &ab);
+      int kb = poly_case_arg_boxed(c, T, kw, a, &ab, b);
       buf_printf(b, " sp_poly_shl(_t%d, %s);", tv, ab.p ? ab.p : "sp_box_nil()");
+      if (kb) buf_puts(b, " }");
       free(ab.p);
     }
     if (ret == TY_POLY) buf_printf(b, " _t%d = _t%d;", tr, tv);
