@@ -1548,13 +1548,14 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         buf_printf(b, "sp_sock_recv(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
         free(rb.p); return 1;
       }
-      /* recvfrom -> [payload, ["AF_INET", port, ip, ip]] */
+      /* recvfrom -> [payload, ["AF_INET", port, ip, ip]]; the payload and
+         the peer's address are new Strings, held while the Arrays are made */
       if (sp_streq(name, "recvfrom") && argc == 1) {
         int tp = ++g_tmp, ti = ++g_tmp, to = ++g_tmp, ta = ++g_tmp, tw = ++g_tmp;
         buf_printf(b, "({ const char *_t%d = NULL; sp_int _t%d = 0;"
                       " const char *_t%d = sp_sock_recvfrom(%s, ", ti, tp, to, r);
         emit_int_expr(c, argv[0], b);
-        buf_printf(b, ", &_t%d, &_t%d);"
+        buf_printf(b, ", &_t%d, &_t%d); SP_GC_ROOT(_t%d); SP_GC_ROOT(_t%d);"
                       " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
                       " sp_PolyArray_push(_t%d, sp_box_str(strchr(_t%d, ':') ? SPL(\"AF_INET6\") : SPL(\"AF_INET\")));"
                       " sp_PolyArray_push(_t%d, sp_box_int(_t%d));"
@@ -1563,7 +1564,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
                       " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
                       " sp_PolyArray_push(_t%d, sp_box_str(_t%d));"
                       " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); _t%d; })",
-                   ti, tp, ta, ta, ta, ti, ta, tp, ta, ti, ta, ti, tw, tw, tw, to, tw, ta, tw);
+                   ti, tp, ti, to, ta, ta, ta, ti, ta, tp, ta, ti, ta, ti, tw, tw, tw, to, tw, ta, tw);
         free(rb.p); return 1;
       }
       if (sp_streq(name, "shutdown") && argc <= 1) {
