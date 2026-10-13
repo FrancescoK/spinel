@@ -1209,6 +1209,14 @@ typedef struct {
      unchanged (share_plan_sup_valid) */
   struct SharePlanSup *share_sup;
   int share_sup_n;
+  /* strbuf_bang_self_local's answers within one outermost query
+     (codegen_util.c): per node, the query it was answered in and the
+     answer. Its recursion over a receiver chain reaches each link by
+     several paths; within a query nothing it reads changes. */
+  unsigned *bsl_gen;
+  unsigned char *bsl_val;
+  int bsl_n, bsl_depth;
+  unsigned bsl_cur;
   struct HandleArgTab *share_args; /* final callers, while sealing share facts */
   struct SbArgIndex *sb_args; /* settled parameter sources, built once for storage */
   unsigned share_sig;   /* the types the facts were last applied over */
