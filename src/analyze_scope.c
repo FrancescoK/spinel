@@ -1938,6 +1938,7 @@ static void register_method_visibility_body(Compiler *c, ClassInfo *cls, int bod
     if (!sty) continue;
     if (sp_streq(sty, "DefNode")) {
       const char *mname = nt_str(nt, s, "name");
+      if (nt_int(nt, s, "alias_forwarder", 0)) continue;
       /* `def initialize` is private whatever section it sits in; only a
          later `public :initialize` makes it public */
       if (mname && nt_ref(nt, s, "receiver") < 0)
@@ -6103,6 +6104,22 @@ static void inherited_alias_refuse_later_def(Compiler *c, int ci, int a, int p) 
   }
 }
 
+/* The forwarder an alias of an inherited method becomes (the hidden alias
+   `nw#inherited`, desugar_inherited_aliases) takes the visibility of the
+   method it names, as an alias does, unless the body declares one for it. */
+static void inherited_alias_vis(Compiler *c, int ci, int a) {
+  ClassInfo *cls = &c->classes[ci];
+  const char *an = cls->alias_new[a], *hash = strchr(an, '#');
+  if (!hash || strcmp(hash, "#inherited") != 0 || cls->parent < 0) return;
+  char nw[256];
+  int nl = (int)(hash - an);
+  if (nl >= (int)sizeof nw) return;
+  memcpy(nw, an, (size_t)nl); nw[nl] = '\0';
+  for (int i = 0; i < cls->nvis; i++) if (sp_streq(cls->vis_names[i], nw)) return;
+  int vis = comp_method_vis_in_chain(c, cls->parent, cls->alias_old[a]);
+  if (vis != SP_VIS_PUBLIC) { comp_method_vis_set(cls, nw, vis); comp_class_shape_changed(); }
+}
+
 /* An alias of a method this class only INHERITS names the ancestor's body: a
    redefinition later in the same class, by a def or by another alias, must
    not capture it. Record where the lookup resumes, now that superclasses are
@@ -6126,6 +6143,7 @@ void resolve_inherited_aliases(Compiler *c) {
       for (int b = 0; !own && !later && b < cls->naliases; b++)
         if (b != a && cls->alias_node[b] > cls->alias_node[a] && sp_streq(cls->alias_new[b], od)) later = 1;
       if (own) continue;
+      inherited_alias_vis(c, ci, a);
       /* Not only where the class redefines the name after the alias: the
          body the alias took is the ancestor's defined before it, whatever a
          subclass overrides the name with. The table holds `class << self`
