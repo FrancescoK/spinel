@@ -8703,7 +8703,7 @@ static int infer_constant_path(Compiler *c, int id, const NodeTable *nt, NodeKin
       if (nc > 0 && uniform && ct != TY_UNKNOWN) { *out = ct; return 1; }
     }
   }
-  LocalVar *lv = nm ? comp_const(c, nm) : NULL;
+  LocalVar *lv = nm && !const_path_in_closed_builtin(c, id) ? comp_const(c, nm) : NULL;
   /* Same guard the bare ConstantReadNode carries: a registered constant
      whose type never settled (Block = Struct.new(:kind), which registers
      the name before the anonymous class exists) must not shadow the
