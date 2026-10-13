@@ -4,3 +4,5 @@
 "77"
 2
 #<data Pt x=1>
+super: no superclass method 'x=' for an instance of Frozen
+1

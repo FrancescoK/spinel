@@ -6624,8 +6624,9 @@ static int super_lands_on_attr(Compiler *c, int ci, const char *base, int want_w
   snprintf(mname, sizeof mname, want_write ? "%s=" : "%s", base);
   ClassInfo *self_cls = &c->classes[ci];
   /* `class T < Struct.new(:a)` is the struct itself, but its member
-     accessors are the anonymous superclass's */
-  if (refl_member_of_struct_superclass(c, ci, base)) return 1;
+     accessors are the anonymous superclass's -- readers only for a
+     `Data.define(:a)`, whose members have no writer */
+  if (refl_member_of_struct_superclass(c, ci, base) && !(want_write && self_cls->is_data)) return 1;
   for (int k = 0; k < self_cls->nincluded_mods; k++) {
     int mi = self_cls->included_mods[k];
     if (mi < 0 || mi >= c->nclasses || mi == ci) continue;
