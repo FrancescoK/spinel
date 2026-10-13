@@ -1,8 +1,10 @@
-# A builtin call answers by kind (#8837): a comparison, a count, a
-# conversion or a predicate answers a scalar and keeps none of its
-# operands, and an element read answers the receiver's elements. A block
-# given to either still takes the receiver's elements, so a call on what
-# the read answers, or on the block's parameter, reaches every class.
+# A builtin call with no block answers by kind (#8837): a comparison, a
+# count, a conversion or a predicate answers a scalar and keeps none of
+# its operands, and an element read answers the receiver's elements. A
+# call with a block keeps the general rule, so its parameters still take
+# the receiver's elements -- including from a receiver a method the
+# compiler supplies builds, as ThreadGroup's list does. A call on what
+# either answers, or on a block's parameter, reaches every class.
 class Lamp
   def initialize(w) = @w = w
   def on? = @w > 1
@@ -34,3 +36,13 @@ p h[:fan].name
 stack = [Fan.new(7), Lamp.new(8)]
 p stack.pop.name
 p stack.shift.name
+
+# a group's members through the list ThreadGroup keeps (builtins/thread_group.rb)
+g = ThreadGroup.new
+t = Thread.new { sleep 0.05 }
+g.add(t)
+p g.list.include?(t)
+p ThreadGroup::Default.list.include?(t)
+p ThreadGroup::Default.list.any? { |x| x.equal?(Thread.current) }
+t.join
+p g.list.size

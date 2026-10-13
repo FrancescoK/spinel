@@ -797,38 +797,31 @@ static int cf_element_answer(const char *nm) {
   for (int i = 0; nm && names[i]; i++) if (sp_streq(nm, names[i])) return 1;
   return 0;
 }
-/* Are the arguments and the block plain: no Symbol (a method a builtin may
-   call by name), no &block, no splat? Only then is the answer by kind. */
+/* Is the call plain: no block, no Symbol (a method a builtin may call by
+   name), no splat? Only then is the answer by kind. A block keeps today's
+   rule: its parameters take what the call's value is united with, and a
+   receiver built by a method the compiler supplies (ThreadGroup's
+   __groups) reaches them only that way. */
 static int cf_plain_builtin_call(CF *f, const int *argv, int argc, int blk) {
   const NodeTable *nt = f->nt;
-  if (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode) return 0;
+  if (blk >= 0) return 0;
   for (int i = 0; i < argc; i++) {
     NodeKind k = nt_kind(nt, argv[i]);
     if (k == NK_SymbolNode || k == NK_BlockArgumentNode || k == NK_SplatNode) return 0;
   }
   return 1;
 }
-/* a block given to a builtin takes the receiver's elements */
-static void cf_block_takes_elements(CF *f, int recv_el, int blk) {
-  if (blk < 0) return;
-  int body = nt_ref(f->nt, blk, "body");
-  const char *names[64];
-  int n = cf_all_param_names(f, blk, names, 64);
-  for (int i = 0; i < n; i++) cf_unite(f, recv_el, cf_lv(f, body >= 0 ? body : blk, names[i]));
-}
 static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc, int blk, const char *nm) {
   const NodeTable *nt = f->nt;
   if (cf_plain_builtin_call(f, argv, argc, blk)) {
     if (cf_scalar_answer(nm)) {
       cf_add_set(f, v, cf_bv_set(f));
-      cf_block_takes_elements(f, recv_el, blk);
       return;
     }
     if (cf_element_answer(nm)) {
       cf_unite(f, v, recv_el);
       cf_add_set(f, v, cf_bv_set(f));
       cf_protocol_returns(f, v, recv_el);
-      cf_block_takes_elements(f, recv_el, blk);
       return;
     }
   }
