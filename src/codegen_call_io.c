@@ -57,8 +57,11 @@ static void emit_io_readlines_args(Compiler *c, const char *r, const int *pos, i
    a `begin`..`ensure` around the call, which it used to jump to as if the
    whole block were done (`x = parse(line) rescue next` under an ensure
    stopped the loop at the first bad line). The iterator discards the
-   block's value, so a `next` value has no slot here either. */
-static void emit_io_loop_body(Compiler *c, const int *stmts, int n, Buf *b) {
+   block's value, so a `next` value has no slot here either. The block
+   parameter `pname` (bound by the caller in its plain slot) is published
+   into its cell first when a proc captures it. */
+static void emit_io_loop_body(Compiler *c, int blk, const char *pname, const int *stmts, int n, Buf *b) {
+  if (pname) emit_param_cell_publish(c, blk, pname, b, 0);
   const char *sv_nx = g_ie_next_var;
   int sv_lexc = g_loop_exc_base, sv_lens = g_loop_ensure_base;
   g_ie_next_var = NULL;
@@ -1860,7 +1863,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         buf_printf(b, " %s lv_%s = _t%d;", (is_byte || is_cp) ? "sp_int" : "const char *", bpn2, lt2);
         if (!is_byte && !is_cp) buf_printf(b, " SP_GC_ROOT_STR(lv_%s);", bpn2);
       }
-      emit_io_loop_body(c, bbb2, bbn2, b);
+      emit_io_loop_body(c, blk2, bp2, bbb2, bbn2, b);
       buf_printf(b, " } (sp_File *)_t%d; })", rf2);
       free(rb.p); return 1;
     }
@@ -2214,7 +2217,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       if (bpn && file_block_param_poly(c, id, bpn))
         buf_printf(b, " sp_RbVal lv_%s = sp_box_str(_t%d); SP_GC_ROOT_RBVAL(lv_%s);", bpn, lt, bpn);
       else if (bpn) emit_line_param_decl(c, id, bpn, lt, b);
-      emit_io_loop_body(c, bbb, bbn, b);
+      emit_io_loop_body(c, blk, bp, bbb, bbn, b);
       buf_printf(b, " } (sp_File *)_t%d; })", rf);
       return 1;
     }
@@ -2262,7 +2265,7 @@ int emit_call_handle_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       buf_printf(b, "const char *_t%d = NULL; SP_GC_ROOT_STR(_t%d);"
                     " while ((_t%d = sp_argf_gets()) != NULL) {", lt, lt, lt);
       if (bpn) emit_line_param_decl(c, id, bpn, lt, b);
-      emit_io_loop_body(c, bbb, bbn, b);
+      emit_io_loop_body(c, blk, bp, bbb, bbn, b);
       buf_puts(b, " } (&sp_argf_obj); })");
       return 1;
     }
@@ -2333,7 +2336,7 @@ int emit_call_handle_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         buf_printf(b, " if (sp_str_eq(_t%d, (&(\"\\xff\" \".\")[1])) ||"
                       " sp_str_eq(_t%d, (&(\"\\xff\" \"..\")[1]))) continue;", tdn, tdn);
       if (dbpn) emit_line_param_decl(c, id, dbpn, tdn, b);
-      emit_io_loop_body(c, dbbb, dbbn, b);
+      emit_io_loop_body(c, dblk2, dbp, dbbb, dbbn, b);
       buf_printf(b, " } (sp_Dir *)_t%d; })", tdh);
       return 1;
     }

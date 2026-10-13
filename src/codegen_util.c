@@ -1874,6 +1874,27 @@ static const char *cell_var_name(const char *rn, char *buf, size_t cap) {
     snprintf(buf, cap, "_cell_%s", rn);
   return buf;
 }
+/* A block parameter an emitter binds by writing its plain C slot `lv_<p>`
+   (File.open's handle), published into a fresh cell when a proc captures
+   it: every read in the body, and the proc's, goes through the cell, which
+   otherwise still held nil (`File.open(f) { |io| tx { io.each_line ... } }`,
+   with `tx(&block)` a real proc, read a closed stream). Inside a proc
+   function where the name is a capture of the proc itself, the capture fill
+   is the publish, as for the loop emitters' parameters below. */
+void emit_param_cell_publish(Compiler *c, int blk, const char *pname, Buf *b, int indent) {
+  Scope *psc = blk >= 0 ? comp_scope_of(c, blk) : NULL;
+  LocalVar *plv = psc ? scope_local(psc, pname) : NULL;
+  if (!plv || !plv->is_cell) return;
+  const char *prn = rename_local(pname);
+  if (g_cap_struct && g_cap_names && nameset_has(g_cap_names, prn)) return;
+  char pcell_buf[160];
+  emit_fresh_cell(c, plv, cell_var_name(prn, pcell_buf, sizeof pcell_buf), b, indent);
+  emit_indent(b, indent);
+  if (plv->type == TY_PROC)
+    buf_printf(b, "*_cell_%s = (sp_int)(uintptr_t)lv_%s;\n", prn, prn);
+  else
+    buf_printf(b, "*_cell_%s = lv_%s;\n", prn, prn);
+}
 void emit_block_locals_reset(Compiler *c, int blk, Buf *b, int indent) {
   if (blk < 0) return;
   const char *locs = nt_str(c->nt, blk, "locals");

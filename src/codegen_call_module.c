@@ -482,6 +482,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         /* Declare the file param as a local: look it up in the enclosing scope.
            Since it's the block param, just use the sp_File * type directly. */
         buf_printf(b, "sp_File *lv_%s = _t%d; ", frn, tf);
+        emit_param_cell_publish(c, block, fp, b, 0);
       }
       for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);
       if (bn > 0) {
