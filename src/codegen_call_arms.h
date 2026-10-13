@@ -145,6 +145,7 @@ int emit_or_take_back(Compiler *c, int id, Buf *b, int (*fn)(Compiler *, int, Bu
 int emit_sg_accessor(Compiler *c, int ci, const char *cn, const char *name, int argc, const int *argv, Buf *b);
 void ffi_check_buffer_bounds(Compiler *c, int id, int arg, const char *kind, int off, const char *dir);
 extern int g_setter_value_inner;
+int emit_cmethod_setter_assign(Compiler *c, int id, Buf *b);
 int call_has_keyword_args(const NodeTable *nt, const int *argv, int argc);
 int call_has_splat_arg(const NodeTable *nt, const int *argv, int argc);
 int ctor_alloc_decl(Compiler *c, int cid, Buf *b);
