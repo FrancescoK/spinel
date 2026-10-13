@@ -355,6 +355,29 @@ static int cf_ivar_els(CF *f, int v, const char *name, int *out, int max) {
   out[n++] = cf_entry(f, ck >= 0 ? -(ck + 2) : CF_K_MAIN, name);
   return n;
 }
+/* `X.name` or `X.name = v` through a `class << self` accessor of class k:
+   k's class-level ivar, the slot its class body and its class methods name
+   `@name` (an over-approximation where the accessor's storage is its own) */
+static int cf_sg_access(CF *f, int v, int k, const char *nm, const int *argv, int argc) {
+  ClassInfo *ci = &f->c->classes[k];
+  char ivn[256];
+  size_t ln = strlen(nm);
+  if (argc == 0 && comp_is_sg_reader(ci, nm)) {
+    snprintf(ivn, sizeof ivn, "@%s", nm);
+    if (v >= 0) cf_unite(f, v, cf_entry(f, -(k + 2), ivn));
+    return 1;
+  }
+  if (ln > 1 && ln < sizeof ivn - 1 && nm[ln - 1] == '=') {
+    char base[256];
+    memcpy(base, nm, ln - 1); base[ln - 1] = 0;
+    if (!comp_is_sg_writer(ci, base)) return 0;
+    snprintf(ivn, sizeof ivn, "@%s", base);
+    int e = cf_entry(f, -(k + 2), ivn);
+    for (int a = 0; a < argc; a++) { cf_unite(f, e, argv[a]); if (v >= 0) cf_unite(f, v, argv[a]); }
+    return 1;
+  }
+  return 0;
+}
 /* the last segment of a constant path's name */
 static const char *cf_const_key(const char *name) {
   if (!name) return NULL;
@@ -898,6 +921,7 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
       }
       int cm = comp_cmethod_in_chain(c, kc, nm, NULL);
       if (cm >= 0 && cf_user_target(f, v, cm, argv, argc, blk)) continue;
+      if (cm < 0 && cf_sg_access(f, v, kc, nm, argv, argc)) continue;
       if (cm < 0 && f->mod[kc]) { int mm = comp_method_in_chain(c, kc, nm, NULL); if (mm >= 0 && cf_user_target(f, v, mm, argv, argc, blk)) continue; }
       if (cf_class_has_natives(f, kc)) { cf_all(f, v); continue; }
       builtin = 1;
@@ -1046,6 +1070,9 @@ static void cf_call(CF *f, int v) {
           int cm2 = comp_cmethod_in_chain(c, ds->cls[i], nm, NULL);
           if (cm2 >= 0 && cf_user_target(f, v, cm2, argv, argc, blk)) found = 1;
         }
+        /* a singleton accessor of the class self is, or of a subclass */
+        if (!found && cf_sg_access(f, v, s->class_id, nm, argv, argc)) found = 1;
+        for (int i = 0; i < ds->n; i++) if (ds->cls[i] != s->class_id && cf_sg_access(f, v, ds->cls[i], nm, argv, argc)) found = 1;
       }
       else {
         for (int i = 0; i < ds->n; i++) {
@@ -1112,6 +1139,7 @@ static void cf_call(CF *f, int v) {
     }
     int cm = comp_cmethod_in_chain(c, x, nm, NULL);
     if (cm >= 0 && cf_user_target(f, v, cm, argv, argc, blk)) return;
+    if (cm < 0 && cf_sg_access(f, v, x, nm, argv, argc)) return;
     if (cm < 0 && f->mod[x]) {
       /* a module function */
       int mi = comp_method_in_chain(c, x, nm, NULL);
