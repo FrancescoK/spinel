@@ -1,3 +1,4 @@
+# spinel: reject-subclass: Module#define_method in a method body
 # A `return` in a define_method's arguments runs in the included hook and
 # leaves it, so the hook is called, not spliced into the class body (where
 # the return would end the program). Called, its define_method on the class
