@@ -4820,6 +4820,22 @@ static int infer_operator_call(Compiler *c, int id, const NodeTable *nt, const c
     { *out = TY_BOOL; return 1; }
   return 0;
 }
+/* Does some class have a `class << self` accessor `name` (`x`, or `x=` with
+   one argument)? */
+static int cls_value_sg_accessor_any(Compiler *c, const char *name, int argc) {
+  int nlen = (int)strlen(name), setter = nlen > 1 && name[nlen - 1] == '=';
+  if (setter ? argc != 1 : argc != 0) return 0;
+  char base[256];
+  snprintf(base, sizeof base, "%.*s", setter ? nlen - 1 : nlen, name);
+  for (int k = 0; k < c->nclasses; k++) {
+    if (is_builtin_reopen(c->classes[k].name)) continue;
+    const char *rn = setter ? base : comp_resolve_alias(c, k, name);
+    if (setter ? comp_is_sg_writer(&c->classes[k], base) : comp_is_sg_reader(&c->classes[k], rn ? rn : name))
+      return 1;
+  }
+  return 0;
+}
+
 
 /* A Class receiver, Class and Module reflection, and the declarations of a class body (infer_call_inner's rules, in their order) */
 static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind *out) {
@@ -4944,6 +4960,9 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
         else if (kr != uret) uret = TY_POLY;
       }
       if (nblk > 0) { *out = TY_POLY; return 1; }
+      /* a `class << self` accessor of some class, no class method of the
+         name: the per-class arms answer boxed (emit_cls_value_sg_accessor) */
+      if (recv_is_var && ncc == 0 && cls_value_sg_accessor_any(c, name, argc)) { *out = TY_POLY; return 1; }
       /* a candidate that answers nothing (a raise-only body) keeps its
          void: the consumer then runs the call for its effect and reads nil,
          as it does for the same call on a constant receiver (#8645) */
