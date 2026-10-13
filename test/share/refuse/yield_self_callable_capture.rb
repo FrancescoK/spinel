@@ -1,5 +1,6 @@
 # spinel: not-cruby
-# A callable block has no supported result-identity route; refuse at compile time.
+# The proc handed to yield_self answers s itself, which r then changes in
+# place: the String is shared with another name, refused at compile time.
 s = +"a"
 keep = proc { s }
 r = s.yield_self(&keep)
