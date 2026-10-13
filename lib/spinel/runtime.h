@@ -35,6 +35,15 @@
  *     BECAUSE the argument was still live on entry; a package that instead
  *     keeps a borrowed pointer past its return (a scanner over its source)
  *     also needs a scan hook that marks it.
+ *
+ *   Write barrier (sp_gc.h):
+ *     sp_gc_wb(obj)
+ *     A package object whose scan hook marks a reference stored AFTER the
+ *     object was made (a scanner's last match) calls it on the object before
+ *     each such store, with nothing that allocates in between. By then the
+ *     object may be old, and a minor collection walks only the young objects
+ *     and the old ones the barrier recorded: without it, the new value the
+ *     old object holds is freed.
  */
 #ifndef SPINEL_RUNTIME_H
 #define SPINEL_RUNTIME_H
