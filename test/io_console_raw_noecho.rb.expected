@@ -1,0 +1,4 @@
+[Errno::ENOTTY, false]
+[Errno::ENOTTY, false]
+"mode raw true 1"
+Errno::ENOTTY

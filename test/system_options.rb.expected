@@ -1,0 +1,14 @@
+false
+true
+nil
+true
+Command failed with exit 4: sh
+Errno::ENOENT
+true
+false
+2
+[p]
+/
+true
+[q]
+true

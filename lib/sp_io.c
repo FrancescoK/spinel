@@ -17,6 +17,7 @@
 #include <unistd.h>   /* pipe, isatty */
 #include <sys/stat.h> /* stat() for the File predicates */
 #include <sys/ioctl.h> /* TIOCGWINSZ for #winsize */
+#include <termios.h>   /* io/console's IO#raw / IO#noecho */
 #include <sys/socket.h> /* the Socket:: constants */
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -470,6 +471,51 @@ sp_IntArray *sp_File_winsize(sp_File *f) {
   sp_IntArray_push(a, rows);
   sp_IntArray_push(a, cols);
   return a;
+}
+
+/* io/console's IO#raw { } and IO#noecho { }, which the analysis turns into
+   `s = io.__sp_tty_mode(kind); begin ... ensure io.__sp_tty_restore(s) end`.
+   The terminal's settings are saved and the mode set as CRuby's console.c
+   sets it (set_rawmode: cfmakeraw, then ECHOE and ECHOK off; set_noecho:
+   ECHO, ECHOE, ECHOK and ECHONL off), applied with TCSANOW. A handle that is
+   not a terminal raises tcgetattr's Errno (ENOTTY), as CRuby's does. Answers
+   the slot the saved settings sit in, for the restore; nested modes take a
+   slot each. */
+#define SP_TTY_SLOTS 16
+static struct termios sp_tty_saved[SP_TTY_SLOTS];
+static int sp_tty_saved_fd[SP_TTY_SLOTS];
+static int sp_tty_saved_used[SP_TTY_SLOTS];
+sp_int sp_File_tty_mode(sp_File *f, sp_int kind) {
+  SP_IO_OPEN(f);
+  int fd = (int)sp_File_fileno(f);
+  struct termios t;
+  if (tcgetattr(fd, &t) != 0) { int e = errno; sp_raise_cls(sp_errno_class_name(e), strerror(e)); }
+  int slot = -1;
+  for (int i = 0; i < SP_TTY_SLOTS; i++) if (!sp_tty_saved_used[i]) { slot = i; break; }
+  if (slot < 0) sp_raise_cls("RuntimeError", "io/console: terminal modes nested too deep");
+  sp_tty_saved[slot] = t;
+  sp_tty_saved_fd[slot] = fd;
+  sp_tty_saved_used[slot] = 1;
+  if (kind == 1) {
+    cfmakeraw(&t);
+    t.c_lflag &= ~(tcflag_t)(ECHOE | ECHOK);
+  } else {
+    t.c_lflag &= ~(tcflag_t)(ECHO | ECHOE | ECHOK | ECHONL);
+  }
+  if (tcsetattr(fd, TCSANOW, &t) != 0) {
+    int e = errno;
+    sp_tty_saved_used[slot] = 0;
+    sp_raise_cls(sp_errno_class_name(e), strerror(e));
+  }
+  return (sp_int)slot;
+}
+/* The settings slot `slot` saved, back on the terminal they came from. */
+sp_int sp_File_tty_restore(sp_File *f, sp_int slot) {
+  (void)f;
+  if (slot < 0 || slot >= SP_TTY_SLOTS || !sp_tty_saved_used[slot]) return 0;
+  tcsetattr(sp_tty_saved_fd[slot], TCSANOW, &sp_tty_saved[slot]);
+  sp_tty_saved_used[slot] = 0;
+  return 0;
 }
 
 /* IO#winsize= [rows, cols] or [rows, cols, xpixel, ypixel], as CRuby's

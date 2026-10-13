@@ -631,6 +631,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        sp_streq(name, "tty?") || sp_streq(name, "isatty") ||
        (sp_streq(name, "winsize") && sp_feature_enabled("io/console")) ||
        (boxed_winsize_set(c, name, argc, argv)) ||
+       ((sp_streq(name, "__sp_tty_mode") || sp_streq(name, "__sp_tty_restore")) && argc == 1) ||
        sp_streq(name, "readlines") || sp_streq(name, "rewind") ||
        sp_streq(name, "readpartial") ||
        /* a socket read back out of a container: its non-blocking connect and
@@ -987,6 +988,10 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       else if (sp_streq(name, "tty?") || sp_streq(name, "isatty"))
         buf_printf(b, "sp_File_tty_p(_t%d); })", tio2);
       else if (sp_streq(name, "winsize")) buf_printf(b, "sp_File_winsize(_t%d); })", tio2);
+      else if (sp_streq(name, "__sp_tty_mode") || sp_streq(name, "__sp_tty_restore")) {
+        buf_printf(b, "%s(_t%d, ", sp_streq(name, "__sp_tty_mode") ? "sp_File_tty_mode" : "sp_File_tty_restore", tio2);
+        emit_expr(c, argv[0], b); buf_puts(b, "); })");
+      }
       else if (is_socket_address(name) && argc == 1) {
         buf_printf(b, "SP_GC_ROOT(_t%d); sp_sock_addr_rl(_t%d, %d, sp_sock_rl_flag(", tio2, tio2,
                    sp_streq(name, "peeraddr") ? 1 : 0);
@@ -2036,6 +2041,11 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
     }
     if (sp_streq(name, "winsize") && sp_feature_enabled("io/console")) {
       buf_printf(b, "sp_File_winsize(%s)", r); free(rb.p); return 1;
+    }
+    /* IO#raw / IO#noecho's mode switch and restore (desugar_io_console_modes) */
+    if ((sp_streq(name, "__sp_tty_mode") || sp_streq(name, "__sp_tty_restore")) && argc == 1) {
+      buf_printf(b, "%s(%s, ", sp_streq(name, "__sp_tty_mode") ? "sp_File_tty_mode" : "sp_File_tty_restore", r);
+      emit_expr(c, argv[0], b); buf_puts(b, ")"); free(rb.p); return 1;
     }
     /* IO#winsize= [rows, cols(, xpixel, ypixel)]: an Integer Array, the shape
        every caller writes. Any other operand is left to the refusal below,

@@ -10705,6 +10705,73 @@ static int desugar_thread_start(Compiler *c) {
   return changed;
 }
 
+/* system(cmd, ..., out: File::NULL) -> __sp_system_spawn(cmd, ..., out: ...):
+   CRuby's system is a spawn and a wait, and Process.spawn already takes the
+   options, so a call with keyword arguments goes to builtins/system_spawn.rb,
+   which the parser spliced for it. Only when that method is there and the
+   program defines no `system` of its own; any other system call keeps its
+   direct path (and its refusals). */
+static int desugar_system_options(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, helper = 0, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_DefNode || nt_ref(nt, id, "receiver") >= 0) continue;
+    const char *dn = nt_str(nt, id, "name");
+    if (!dn) continue;
+    if (sp_streq(dn, "system")) return 0;
+    if (sp_streq(dn, "__sp_system_spawn")) helper = 1;
+  }
+  if (!helper) return 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "system") || nt_ref(nt, id, "receiver") >= 0) continue;
+    if (nt_ref(nt, id, "block") >= 0) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an < 2 || nt_kind(nt, av[an - 1]) != NK_KeywordHashNode) continue;
+    nt_node_set_str(nt, id, "name", "__sp_system_spawn");
+    changed = 1;
+  }
+  return changed;
+}
+
+/* IO.popen(cmd, mode) { |io| ... } / IO.popen(cmd, &:read) ->
+   IO.__sp_popen(...): the block form reads the command's output through a
+   pipe and reaps the child (builtins/io_popen.rb, spliced by the parser).
+   Only when that method is there and the call has a block; the blockless
+   form keeps its refusal. */
+static int desugar_io_popen_block(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, helper = 0, changed = 0;
+  for (int id = 0; id < n0 && !helper; id++)
+    if (nt_kind(nt, id) == NK_DefNode && nt_ref(nt, id, "receiver") >= 0 &&
+        nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "__sp_popen")) helper = 1;
+  if (!helper) return 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "popen") || nt_ref(nt, id, "block") < 0) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) continue;
+    const char *rn = nt_str(nt, recv, "name");
+    if (!rn || !sp_streq(rn, "IO")) continue;
+    /* only a read: the mode, when given, is a literal "r", "rb", "rt", ...
+       A write mode or one known only at run time keeps the compile-time
+       refusal (#7199) rather than a NotImplementedError when it runs. */
+    int args = nt_ref(nt, id, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an >= 2 && nt_kind(nt, av[1]) != NK_KeywordHashNode) {
+      const char *mode = nt_kind(nt, av[1]) == NK_StringNode ? nt_str(nt, av[1], "content") : NULL;
+      if (!mode || mode[0] != 'r' || strchr(mode, '+')) continue;
+    }
+    nt_node_set_str(nt, id, "name", "__sp_popen");
+    changed = 1;
+  }
+  return changed;
+}
+
 static int desugar_file_stat_new(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -40889,6 +40956,8 @@ static void an_phase_desugar_register(Compiler *c) {
   /* `m(&nil)` is the blockless call */
   desugar_nil_block_arg(c);
   desugar_thread_start(c);               /* Thread.start / .fork -> Thread.new */
+  desugar_system_options(c);             /* system(..., out:) -> spawn + wait */
+  desugar_io_popen_block(c);             /* IO.popen(cmd) { } -> pipe + spawn + wait */
   desugar_literal_undef_method(c);       /* undef_method :a in a body -> undef a */
   desugar_noarg_display_wrappers(c);     /* def inspect(i = 0) -> + def __noarg_inspect = inspect */
   /* a bare constant CRuby's lookup cannot reach, bound by its leaf name to a
@@ -42347,6 +42416,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= AN_PASS("desugar_block_capture_wrap", desugar_block_capture_wrap(c));       /* { |i| ->{i} } -> { |i| (->(i){ ->{i} }).call(i) } */
     ch |= AN_PASS("desugar_user_not_match", desugar_user_not_match(c));            /* a !~ b -> !(a =~ b) for a user =~ (#3019) */
     ch |= AN_PASS("desugar_env_enum", desugar_env_enum(c));                 /* ENV.keys/... -> __env_to_h.keys/... */
+    ch |= AN_PASS("desugar_io_console_modes", desugar_io_console_modes(c));         /* io.raw { } / io.noecho { } -> mode, begin, ensure restore */
     ch |= AN_PASS("desugar_dir_surface", desugar_dir_surface(c));              /* Dir.foreach{} -> entries.each{}, chdir{} splice, ... */           /* C.class_eval { v } -> (->(){v}).call */
     ch |= AN_PASS("desugar_enumerable_chain", desugar_enumerable_chain(c));               /* x.chain(y) / enum+enum -> __enum_chain(x.to_a + y.to_a) */
     ch |= AN_PASS("desugar_implicit_send", desugar_implicit_send(c));            /* send(:m, a) -> m(a) on self */
