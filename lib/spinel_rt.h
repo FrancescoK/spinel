@@ -1199,6 +1199,7 @@ const char *sp_str_splice_at(const char *s, sp_int from, sp_int n, const char *v
    whose per-TU sp_str_heap can't be shared across translation units. */
 #include "sp_io.h"
 static inline const char *sp_File_gets(sp_File *f) {
+  SP_GC_ROOT(f);   /* `File.new(path).gets` holds the File nowhere else */
   SP_IO_OPEN(f);
   sp_io_wait_readable(f);
   /* getline answers the line whole, however long, with its byte count, so a
@@ -1352,7 +1353,10 @@ static inline const char *sp_File_path(sp_File *f) { return f && f->path ? f->pa
 /* sp_file_join: moved to lib/sp_cold.c */
 const char *sp_file_join(const char **parts, int n);
 static inline sp_StrArray *sp_File_readlines(sp_File *f) {
+  SP_GC_ROOT(f);
+  /* each line is a new String: the array is held across its allocation */
   sp_StrArray *a = sp_StrArray_new();
+  SP_GC_ROOT(a);
   const char *line;
   while ((line = sp_File_gets(f)) != NULL) sp_StrArray_push(a, line);
   return a;
@@ -9641,6 +9645,7 @@ static sp_StrPolyHash*sp_StrPolyHash_from_str_str_hash(sp_StrStrHash*h){sp_StrPo
    non-participating named group maps to nil, so the value side is poly. Lives
    here (not sp_re.c) because the typed-hash machinery is TU-coupled. */
 static sp_StrPolyHash *sp_md_named_captures(sp_MatchData *m) {
+  SP_GC_ROOT(m);      /* a new MatchData is held only here */
   sp_StrPolyHash *h = sp_StrPolyHash_new();
   if (!m) return h;
   SP_GC_ROOT(h);      /* the copy and the aref below allocate */
@@ -9822,6 +9827,7 @@ static SP_UNUSED sp_PolyArray *sp_srange_items_poly(sp_StrRange r) {
   return a;
 }
 static sp_SymPolyHash *sp_md_named_captures_sym(sp_MatchData *m) {
+  SP_GC_ROOT(m);      /* as in sp_md_named_captures */
   sp_SymPolyHash *h = sp_SymPolyHash_new();
   if (!m) return h;
   SP_GC_ROOT(h);      /* sp_sym_intern and the aref below allocate */
@@ -9838,6 +9844,7 @@ static sp_SymPolyHash *sp_md_named_captures_sym(sp_MatchData *m) {
    empty hash right away when more keys are asked for than exist (#3015). */
 static sp_SymPolyHash *sp_md_deconstruct_keys(sp_MatchData *m, sp_RbVal keys) {
   if (keys.tag == SP_TAG_NIL) return sp_md_named_captures_sym(m);
+  SP_GC_ROOT(m); SP_GC_ROOT_RBVAL(keys);   /* read after the hash's allocation */
   /* only an Array of Symbols selects keys; anything else is a TypeError (#3643) */
   if (!(keys.tag == SP_TAG_OBJ && sp_poly_is_array_kind(keys.cls_id)))
     sp_raise_cls("TypeError", sp_sprintf("wrong argument type %s (expected Array or nil)",
