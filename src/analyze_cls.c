@@ -1838,9 +1838,10 @@ void an_cls_facts(Compiler *c) {
   c->cls_pool = f.pool; c->ncls_pool = f.npool;
   if (getenv("SPINEL_CLS_FACTS")) {
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
+      /* a call on self has no fact of its own: a consumer holds every
+         class there, and so does the dump */
       int r = nt_ref(nt, id, "receiver");
-      if (r < 0) continue;
-      const ClsSet *s = cls_fact_node(c, r);
+      const ClsSet *s = r >= 0 ? cls_fact_node(c, r) : NULL;
       const char *fp = nt_file_path(nt, (int)nt_int(nt, id, "node_file", 0));
       fprintf(stderr, "cls-fact: %s:%d %s receiver:", fp && *fp ? fp : "?", (int)nt_int(nt, id, "node_line", 0), nt_str(nt, id, "name") ? nt_str(nt, id, "name") : "?");
       if (!s) fprintf(stderr, " ANY");
