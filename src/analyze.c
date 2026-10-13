@@ -7530,6 +7530,16 @@ static int desugar_builtin_method_obj(Compiler *c) {
       int knf = bam_call_argc(c, id, &kpassed);
       if (knf > 8) knf = BAM_VARIADIC;
       if (knf != BAM_VARIADIC && knf < 1) knf = 1;
+      /* puts, print, p and pp take any number of arguments of any kind, so
+         their wrapper does too: `def __bam_N(*__bam_r) = puts(*__bam_r)`,
+         which binds a thunk (emit_method_thunk) the Method is called through
+         whatever a site passes. Sized from the sites alone, a Method held
+         where no site is counted (an ivar) took one parameter typed from
+         every boxed call of the program: a splat anywhere made it an
+         Integer, and a String the program passed found no way in (the call
+         raised NoMethodError for the Method). */
+      if (sp_streq(ksym, "puts") || sp_streq(ksym, "print") || sp_streq(ksym, "p") || sp_streq(ksym, "pp"))
+        knf = BAM_VARIADIC;
       int kparams, kargs;
       bam_wrapper_params(nt, NULL, knf, &kparams, &kargs);
       int kcall = nt_new_node(nt, "CallNode");
