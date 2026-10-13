@@ -575,14 +575,15 @@ static pm_node_t *sp_fw_recv(const char *s, size_t n, const pm_node_t *at) {
 }
 
 /* One forwarding def, `als` delegating to `meth` of the receiver:
-   `def als(*_fw_a) = _fw_a.length == 0 ? R.meth : R.meth(*_fw_a)`. The arity
+   `def als(*_fw_a) = _fw_a.length == 0 ? R.meth : R.meth(*_fw_a)`; for an
+   `each` / `each_*` target the caller's block too, as `&_fw_b` where one
+   was given. The arity
    split keeps a zero-argument delegation off the splat path (a builtin
    target's optional-argument arm would otherwise see the empty rest array
    as an argument). A setter alias (`:timer_a=`) is
    `def als(_fw_v); R.target = _fw_v; end`, the target written as the
    assignment the delegate would make, whether or not `meth` is itself a
-   setter (#4518). `def self.als` under def_single_delegator(s). Block
-   forwarding is not written (a known forwarding gap). */
+   setter (#4518). `def self.als` under def_single_delegator(s). */
 static pm_node_t *sp_fw_def(const char *r, size_t rl, const char *meth, size_t ml, const char *als, size_t al,
                             int single, const pm_node_t *at) {
   pm_def_node_t *d = sp_made(PM_DEF_NODE, sizeof *d, at);
@@ -606,17 +607,53 @@ static pm_node_t *sp_fw_def(const char *r, size_t rl, const char *meth, size_t m
     pm_rest_parameter_node_t *rest = sp_made(PM_REST_PARAMETER_NODE, sizeof *rest, at);
     rest->name = sp_made_id("_fw_a", 5);
     d->parameters->rest = &rest->base;
-    pm_integer_node_t *zero = sp_made(PM_INTEGER_NODE, sizeof *zero, at);
-    pm_node_t *len = sp_made_call(sp_made_lvar("_fw_a", at), sp_made_id("length", 6), NULL, 0, at);
-    pm_if_node_t *f = sp_made(PM_IF_NODE, sizeof *f, at);
-    f->predicate = sp_made_call(len, sp_made_id("==", 2), &zero->base, 0, at);
-    f->statements = sp_made_stmts(sp_made_call(sp_fw_recv(r, rl, at), sp_made_id(meth, ml), NULL, 0, at), at);
-    pm_splat_node_t *all = sp_made(PM_SPLAT_NODE, sizeof *all, at);
-    all->expression = sp_made_lvar("_fw_a", at);
-    pm_else_node_t *e = sp_made(PM_ELSE_NODE, sizeof *e, at);
-    e->statements = sp_made_stmts(sp_made_call(sp_fw_recv(r, rl, at), sp_made_id(meth, ml), &all->base, 0, at), at);
-    f->subsequent = &e->base;
-    body = &f->base;
+    /* The caller's block goes on to an each target: `def_delegators :@a,
+       :each` with `include Enumerable` reaches each with Enumerable's
+       block, and without it every Enumerable method answered empty. Only
+       an each, whose target is an iterator too: another name may be a
+       builtin that takes no block, which has no arm for one. */
+    int blk = (ml == 4 && !memcmp(meth, "each", 4)) || (ml > 5 && !memcmp(meth, "each_", 5));
+    if (blk) {
+      pm_block_parameter_node_t *bp = sp_made(PM_BLOCK_PARAMETER_NODE, sizeof *bp, at);
+      bp->name = sp_made_id("_fw_b", 5);
+      d->parameters->block = bp;
+    }
+    /* `block_given? ? <split with &_fw_b> : <split without>`: a call with
+       no block hands the target none, and each answers its Enumerator */
+    pm_node_t *arm[2] = { NULL, NULL };
+    for (int wb = 0; wb < 1 + blk; wb++) {
+      pm_integer_node_t *zero = sp_made(PM_INTEGER_NODE, sizeof *zero, at);
+      pm_node_t *len = sp_made_call(sp_made_lvar("_fw_a", at), sp_made_id("length", 6), NULL, 0, at);
+      pm_if_node_t *f = sp_made(PM_IF_NODE, sizeof *f, at);
+      f->predicate = sp_made_call(len, sp_made_id("==", 2), &zero->base, 0, at);
+      pm_node_t *c0 = sp_made_call(sp_fw_recv(r, rl, at), sp_made_id(meth, ml), NULL, 0, at);
+      f->statements = sp_made_stmts(c0, at);
+      pm_splat_node_t *all = sp_made(PM_SPLAT_NODE, sizeof *all, at);
+      all->expression = sp_made_lvar("_fw_a", at);
+      pm_else_node_t *e = sp_made(PM_ELSE_NODE, sizeof *e, at);
+      pm_node_t *c1 = sp_made_call(sp_fw_recv(r, rl, at), sp_made_id(meth, ml), &all->base, 0, at);
+      e->statements = sp_made_stmts(c1, at);
+      f->subsequent = &e->base;
+      if (wb) {
+        pm_node_t *cs[2] = { c0, c1 };
+        for (int k = 0; k < 2; k++) {
+          pm_block_argument_node_t *ba = sp_made(PM_BLOCK_ARGUMENT_NODE, sizeof *ba, at);
+          ba->expression = sp_made_lvar("_fw_b", at);
+          ((pm_call_node_t *)cs[k])->block = &ba->base;
+        }
+      }
+      arm[wb] = &f->base;
+    }
+    if (blk) {
+      pm_if_node_t *g = sp_made(PM_IF_NODE, sizeof *g, at);
+      g->predicate = sp_made_call(NULL, sp_made_id("block_given?", 12), NULL, 1, at);
+      g->statements = sp_made_stmts(arm[1], at);
+      pm_else_node_t *ge = sp_made(PM_ELSE_NODE, sizeof *ge, at);
+      ge->statements = sp_made_stmts(arm[0], at);
+      g->subsequent = &ge->base;
+      body = &g->base;
+    }
+    else body = arm[0];
   }
   d->body = &sp_made_stmts(body, at)->base;
   return &d->base;
