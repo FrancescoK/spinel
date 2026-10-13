@@ -198,7 +198,7 @@ int repr_call_returns_handle(Compiler *c, int v) {
   v = unwrap_parens(c, v);
   if (repr_share_rule(c) && v >= 0 && (nt_kind(nt, v) == NK_SuperNode || nt_kind(nt, v) == NK_ForwardingSuperNode)) {
     const CallPlan *p = cplan_user(c, v);
-    return p->dispatch == CP_DIRECT && repr_self_handle(c, p->mi) && c->scopes[p->mi].ret_handle;
+    return p->dispatch == CP_DIRECT && repr_self_handle(c, p->mi) && scope_ret_handle(c, p->mi);
   }
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
   /* an attribute assignment answers its right-hand side, not what the
@@ -229,7 +229,7 @@ int repr_call_returns_handle(Compiler *c, int v) {
   if (recv >= 0 && nm && comp_ntype(c, recv) == TY_METHOD && is_call_alias(nm)) {
     int mn = method_recv_node(c, recv);
     int mi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
-    return mi > 0 && c->scopes[mi].ret_handle;
+    return mi > 0 && scope_ret_handle(c, mi);
   }
   int mis[CPT_MAX];
   int n;
@@ -244,14 +244,15 @@ int repr_call_returns_handle(Compiler *c, int v) {
     const int *ks = poly_recv_classes(c, v, &n);
     if (!ks || n <= 0 || n > CPT_MAX) return 0;
     for (int i = 0; i < n; i++) {
+      /* (ret_nil_pickup is decided with ret_handle) */
       int mi = comp_method_in_chain(c, ks[i], "to_str", NULL);
-      if (mi >= 0 && c->scopes[mi].ret_nil_pickup) {
+      if (mi >= 0 && (scope_ret_handle(c, mi), c->scopes[mi].ret_nil_pickup)) {
         int fallback = comp_method_in_chain(c, ks[i], "to_s", NULL);
-        if (fallback < 0 || !c->scopes[fallback].ret_handle || c->scopes[fallback].ret_nil_pickup) return 0;
+        if (fallback < 0 || !scope_ret_handle(c, fallback) || c->scopes[fallback].ret_nil_pickup) return 0;
       }
       if (mi < 0) {
         mi = comp_method_in_chain(c, ks[i], "to_s", NULL);
-        if (mi >= 0 && c->scopes[mi].ret_nil_pickup) return 0;
+        if (mi >= 0 && (scope_ret_handle(c, mi), c->scopes[mi].ret_nil_pickup)) return 0;
       }
       if (mi < 0) return 0;
       mis[i] = mi;
@@ -262,7 +263,7 @@ int repr_call_returns_handle(Compiler *c, int v) {
      answering their objects' handles, which their arms publish */
   if (n == 0 && repr_boxed_native_handle(c, v)) return 1;
   if (n <= 0) return 0;
-  for (int i = 0; i < n; i++) if (!c->scopes[mis[i]].ret_handle) return 0;
+  for (int i = 0; i < n; i++) if (!scope_ret_handle(c, mis[i])) return 0;
   return 1;
 }
 /* A boxed receiver's reader arms already box their shared fields as
@@ -303,8 +304,8 @@ int repr_boxed_to_s_operand(Compiler *c, int v) {
   int targets[CPT_MAX], n = cplan_targets(c, v, targets, CPT_MAX);
   if (n < 0) return -1;
   for (int i = 0; i < n; i++) {
-    Scope *m = &c->scopes[targets[i]];
-    if (m->ret != TY_STRING || (!m->ret_handle && !m->ret_fresh)) return -1;
+    if (c->scopes[targets[i]].ret != TY_STRING ||
+        (!scope_ret_handle(c, targets[i]) && !scope_ret_fresh(c, targets[i]))) return -1;
   }
   return recv;
 }

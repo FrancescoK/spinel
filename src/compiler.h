@@ -1209,6 +1209,11 @@ typedef struct {
      unchanged (share_plan_sup_valid) */
   struct SharePlanSup *share_sup;
   int share_sup_n;
+  /* --share-strings: the walk deciding the methods' answers while
+     an_mark_handle_returns runs (analyze.c), else NULL: a method's answer
+     asked meanwhile is decided where it is asked (scope_ret_handle,
+     scope_ret_fresh) */
+  struct RetHandles *ret_walk;
   /* --share-strings: each node's parent at seal, for where a new String is
      boxed (share_plan_box_plain) */
   int *share_parent;

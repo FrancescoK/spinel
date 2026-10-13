@@ -22345,9 +22345,10 @@ int strbuf_poly_user_boxes(Compiler *c, int v) {
     int held = 0;
     for (int j = 0; j < nk && !held; j++) held = p->arm[i].key == ks[j];
     if (!held) continue;
-    const Scope *m = p->arm[i].mi >= 0 ? &c->scopes[p->arm[i].mi] : NULL;
-    if (p->arm[i].kind != PA_USER || !m || m->ret != TY_STRING || (!m->ret_handle && !m->ret_fresh)) return 0;
-    pub |= m->ret_handle;
+    int ami = p->arm[i].mi;
+    if (p->arm[i].kind != PA_USER || ami < 0 || c->scopes[ami].ret != TY_STRING ||
+        (!scope_ret_handle(c, ami) && !scope_ret_fresh(c, ami))) return 0;
+    pub |= scope_ret_handle(c, ami);
   }
   /* (with no arm publishing, the call's String is a new one, which the
      dispatch's plain value boxes alike) */
@@ -22545,7 +22546,7 @@ int strbuf_flow_unseen(Compiler *c, int v) {
 static int strbuf_pickup_published(Compiler *c, int v) {
   int tg[CPT_MAX], n = cplan_targets(c, v, tg, CPT_MAX);
   for (int i = 0; i < n; i++)
-    if (!c->scopes[tg[i]].ret_handle) return 0;
+    if (!scope_ret_handle(c, tg[i])) return 0;
   return 1;
 }
 static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int depth) {

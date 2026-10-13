@@ -5797,7 +5797,7 @@ int exc_text_override_calls_super(Compiler *c) {
          publishes the handle it answers, `def message = super`, hands on
          that String) */
       if (mi >= 0 && scope_calls_super(c, mi) &&
-          !(c->share_strings && (c->scopes[mi].ret_fresh || c->scopes[mi].ret_handle))) {
+          !(c->share_strings && (scope_ret_fresh(c, mi) || scope_ret_handle(c, mi)))) {
         c->exc_text_super = 2;
         break;
       }

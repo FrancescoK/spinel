@@ -143,6 +143,15 @@ int an_re_has_captures(const char *src);
    pickup of a call to it then answers the call's nil as nil
    (an_tail_is_shared_handle). */
 int an_tail_answers_nil(Compiler *c, int mi);
+/* --share-strings: does method mi answer a shared String's handle it
+   publishes (Scope.ret_handle, with its ret_nil_pickup, ret_pub_fresh and
+   ret_pub_bang), or a new String or a parameter on every path
+   (Scope.ret_fresh, ret_param)? While an_mark_handle_returns decides them,
+   a method not decided yet is decided where it is asked, whatever order
+   the methods are defined in; after it, the facts as decided. */
+int scope_ret_handle(Compiler *c, int mi);
+int scope_ret_fresh(Compiler *c, int mi);
+int scope_ret_param(Compiler *c, int mi);
 /* A String `||` or `&&` over a String left operand: a tail whose operands
    are its arms (an_tail_is_shared_handle, emit_tail_value). */
 int an_tail_logic_op(Compiler *c, int node);
