@@ -940,6 +940,9 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
   if (!name) return NULL;
   if (is_raise_alias(name) && nt_int(nt, id, "class_new_capture", 0) && cplan_reachable(c, id))
     return "Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md";
+  if (is_raise_alias(name) && nt_int(nt, id, "struct_block_name", 0) && cplan_reachable(c, id))
+    return "the name of a Struct.new or Data.define class read in its own block (where CRuby has "
+           "not named it yet) is not supported; see docs/limitations.md";
   if (is_raise_alias(name) && nt_int(nt, id, "class_new_superclass", 0) && cplan_reachable(c, id))
     return "Class.new with a non-constant superclass is not supported; "
            "use a constant superclass (see docs/limitations.md)";

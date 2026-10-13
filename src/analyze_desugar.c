@@ -12932,6 +12932,131 @@ static void cn_raise_module_super(NodeTable *nt, int id, int par) {
   }
 }
 
+/* ---- The name of a Struct.new / Data.define class in its own block ----
+ *
+ * `Point = Struct.new(:x) do ... end` names the class only when the
+ * constant is written, after the block has run: in the block self is an
+ * anonymous class, whose name is nil and whose to_s is `#<Class:0x...>`.
+ * Here the class has its name from the start, so a read of the name there
+ * would answer "Point". Such a read is refused: `self.name`, `to_s`,
+ * `inspect` and `display` on self (or bare), self printed (p, puts, print,
+ * pp, warn, format, sprintf, printf, String) or interpolated. Any other use
+ * of self, a call on it or a value handed elsewhere and read later, is the
+ * class, as in CRuby. */
+static const char *const SB_NAME_MSG =
+  "spinel: the name of a Struct.new or Data.define class read in its own block "
+  "(where CRuby has not named it yet) is not supported";
+
+static int sb_name_method(const char *nm) {
+  return nm && (sp_streq(nm, "name") || sp_streq(nm, "to_s") || sp_streq(nm, "inspect") ||
+                sp_streq(nm, "display"));
+}
+
+static int sb_printer(const char *nm) {
+  static const char *const P[] = { "p", "puts", "print", "pp", "warn", "format", "sprintf", "printf",
+                                   "String", NULL };
+  for (int i = 0; nm && P[i]; i++) if (sp_streq(nm, P[i])) return 1;
+  return 0;
+}
+
+/* Turn node `id` into `raise NotImplementedError, SB_NAME_MSG`, refused at
+   compile time where it is reachable (feature_limit). */
+static void sb_refuse(NodeTable *nt, int id) {
+  long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0),
+            col = nt_int(nt, id, "node_col", 0);
+  cn_neutralize(nt, id);
+  nt_node_reset(nt, id, "CallNode");
+  nt_node_set_int(nt, id, "node_line", line);
+  nt_node_set_int(nt, id, "node_file", file);
+  nt_node_set_int(nt, id, "node_col", col);
+  nt_node_set_str(nt, id, "name", "raise");
+  nt_node_set_int(nt, id, "struct_block_name", 1);
+  int args = fwd_new_node_like(nt, id, "ArgumentsNode");
+  int ex = fwd_new_node_like(nt, id, "ConstantReadNode");
+  int msg = str_node_like(nt, id, SB_NAME_MSG);
+  if (args < 0 || ex < 0 || msg < 0) return;
+  nt_node_set_str(nt, ex, "name", "NotImplementedError");
+  int av[2] = { ex, msg };
+  nt_node_set_arr(nt, args, "arguments", av, 2);
+  nt_node_set_ref(nt, id, "arguments", args);
+}
+
+/* `Kernel` or `::Kernel` as a receiver: Kernel.puts(self) prints self as a
+   bare puts does */
+static int sb_kernel_recv(const NodeTable *nt, int r) {
+  NodeKind rk = nt_kind(nt, r);
+  if (rk == NK_ConstantPathNode && nt_ref(nt, r, "parent") >= 0) return 0;
+  return (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) && nt_str(nt, r, "name") &&
+         sp_streq(nt_str(nt, r, "name"), "Kernel");
+}
+
+/* Does the program define a method named `nm` (a printer of its own)? */
+static int sb_program_defines(const NodeTable *nt, const char *nm) {
+  NT_FOREACH_KIND(nt, NK_DefNode, d)
+    if (nt_str(nt, d, "name") && sp_streq(nt_str(nt, d, "name"), nm)) return 1;
+  return 0;
+}
+
+static int sb_walk(NodeTable *nt, int node) {
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode ||
+      k == NK_LambdaNode) return 0;
+  if (k == NK_CallNode) {
+    const char *nm = nt_str(nt, node, "name");
+    int r = nt_ref(nt, node, "receiver");
+    int an = nt_ref(nt, node, "arguments"), ac = 0;
+    const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+    if (sb_name_method(nm) && ac == 0 && (r < 0 || nt_kind(nt, r) == NK_SelfNode)) {
+      sb_refuse(nt, node);
+      return 1;
+    }
+    if ((r < 0 || sb_kernel_recv(nt, r)) && sb_printer(nm) && !sb_program_defines(nt, nm))
+      for (int i = 0; i < ac; i++)
+        if (nt_kind(nt, av[i]) == NK_SelfNode) { sb_refuse(nt, node); return 1; }
+    /* a block that rebinds self (class_eval and kin, define_method) has a
+       self of its own */
+    int blk = nt_ref(nt, node, "block");
+    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && nm &&
+        (is_eval_exec_family(nm) || sp_streq(nm, "define_method") || sp_streq(nm, "define_singleton_method"))) {
+      int changed = sb_walk(nt, r);
+      return changed | sb_walk(nt, an);
+    }
+  }
+  /* "#{self}" */
+  if (k == NK_EmbeddedStatementsNode) {
+    int st = nt_ref(nt, node, "statements"), sn = 0;
+    const int *sv = st >= 0 ? nt_arr(nt, st, "body", &sn) : NULL;
+    if (sn == 1 && nt_kind(nt, sv[0]) == NK_SelfNode) { sb_refuse(nt, sv[0]); return 1; }
+  }
+  int changed = 0;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) changed |= sb_walk(nt, nt_ref_at(nt, node, i));
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0;
+    const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++) changed |= sb_walk(nt, ids[j]);
+  }
+  return changed;
+}
+
+int desugar_struct_block_name_reads(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_ConstantWriteNode && k != NK_LocalVariableWriteNode) continue;
+    int val = nt_ref(nt, id, "value");
+    if (!is_struct_call(c, val)) continue;
+    int blk = nt_ref(nt, val, "block");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+    changed |= sb_walk(nt, nt_ref(nt, blk, "body"));
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 int desugar_class_new_blocks(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0, serial = 0;

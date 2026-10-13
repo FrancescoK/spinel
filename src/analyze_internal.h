@@ -625,6 +625,7 @@ int desugar_reassigned_block_params(Compiler *c);
 int desugar_class_new_blocks(Compiler *c);
 int desugar_included_hooks(Compiler *c);
 int desugar_class_body_object_acts(Compiler *c);
+int desugar_struct_block_name_reads(Compiler *c);
 int desugar_inherited_hooks(Compiler *c);
 int desugar_self_const_get(Compiler *c);
 int desugar_dynamic_const_get(Compiler *c);
