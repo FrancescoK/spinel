@@ -16308,6 +16308,11 @@ void an_byref_eligible_scopes(Compiler *c, char *elig) {
         comp_ntype(c, lit) != TY_POLY && comp_ntype(c, lit) != TY_UNKNOWN) continue;
     if (k == NK_BlockArgumentNode && comp_ntype(c, lit) != TY_SYMBOL && comp_ntype(c, lit) != TY_POLY)
       continue;
+    /* the `&blk` of a forward that became a literal block
+       (desugar_value_callable_forwards) is no call's any more: its read
+       carries the sentinel name, and it reaches no method */
+    if (k == NK_BlockArgumentNode && lk == NK_LocalVariableReadNode && sp_streq(nt_str(nt, lit, "name"), "__orphaned__"))
+      continue;
     dyn_nonlit = 1;
   }
   for (int id = 0; id < nt->count; id++) {
