@@ -21563,6 +21563,29 @@ static int operand_binds_identity_box(Compiler *c, int id, int v) {
   return v == recv && comp_ntype(c, argv[0]) == TY_POLY && strbuf_route_srange_kept(c, recv);
 }
 
+/* held[i]: is argument operand[i] (the receiver, operand 0 when has_recv,
+   is never one) a new heap value only the C argument list would hold -- one
+   that allocates where it stands, of a reference type, not a container
+   literal the arms take as written, not a shared String's handle -- with a
+   later operand that can allocate? Ruby runs it before that operand anyway,
+   so binding it ahead of the call moves nothing; only the root is new. */
+static void operands_held_for_later(Compiler *c, const int *operand, int nop, int has_recv, int *held) {
+  int later = 0;
+  for (int i = nop - 1; i >= 0; i--) {
+    int v = operand[i];
+    Repr r = repr_of(c, v);
+    int ran = r.head_held || arg_ran_first(v, 0);
+    held[i] = 0;
+    /* (a read of a shared String slot is no new value: its copy is taken
+       last, after every other operand, by the copy-at-risk binding) */
+    if (i >= has_recv && later && !ran && operand_binds_as_value(nt_kind(c->nt, v)) && !strbuf_read_copies(c, v) &&
+        (needs_root(r.as_ty) || r.as_ty == TY_POLY) && r.as_ty != TY_STRBUF && !r.handle && !r.demand &&
+        operand_allocates_beside(c, v))
+      held[i] = 1;
+    if (!ran && operand_allocates_beside(c, v)) later = 1;
+  }
+}
+
 static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   /* The buffer arm holds its operands, including the handle a keyword
      may replace, before it checks or converts any of them. */
@@ -21651,6 +21674,14 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
      local read is ordered the same way when a later operand can rebind it
      (read_rebound_by): a call that may run a proc assigning its cell,
      `v.divmod(la.call)` for `la = -> { v = 0; 5 }`. */
+  /* An argument that builds a new heap value where it stands is held only
+     in the C argument list, and a later argument that allocates frees it
+     before the call takes it (`IO.copy_stream("#{a}", "#{b}")`): such an
+     argument is bound and rooted ahead of the call like an observable one
+     (operand_held_for_later). */
+  int held[nmax], nheld = 0;
+  operands_held_for_later(c, operand, nop, recv >= 0, held);
+  for (int i = 0; i < nop; i++) nheld += held[i];
   int effects = 0;
   for (int i = 0; i < nop; i++)
     if (!repr_of(c, operand[i]).head_held && subtree_may_reassign_state(c, operand[i])) effects++;
@@ -21685,7 +21716,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     char sref[192];
     if ((state_read || local_read) && strbuf_slot_ref(c, operand[i], sref, sizeof sref))
       state_read = local_read = 0;
-    if (!local_read && (state_read ? effects < 1 : !subtree_has_side_effect(c, operand[i]))) {
+    if (!held[i] && !local_read && (state_read ? effects < 1 : !subtree_has_side_effect(c, operand[i]))) {
       /* ...unless its copy is at risk, decided below */
       cand[i] = operand_reads_copy(c, id, operand[i]);
       ncand += cand[i];
@@ -21705,7 +21736,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     int bindable = !route_op && (k == NK_CallNode || k == NK_SuperNode || k == NK_IfNode || k == NK_UnlessNode ||
                     k == NK_ForwardingSuperNode || k == NK_YieldNode ||
                     (k == NK_ParenthesesNode && pty != TY_STRING && pty != TY_STRBUF) ||
-                    state_read || local_read);
+                    state_read || local_read || held[i]);
     /* ...and any other value (a parenthesized statement, a write, a
        begin) when a copy beside it is at risk, decided below: a copy is
        taken last, so it can only follow an operand that is bound */
@@ -21778,7 +21809,9 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
      it, so the copy follows it: bound last when at risk, else read in the
      call after the bound operands. */
   if (unb >= 0) {
-    if (!ncand) return emit_operands_before_unbound(c, id, operand, nop, recv >= 0, unb, b);
+    /* (an argument held for a later one binds the value operands beside
+       it as a copy at risk does, in order) */
+    if (!ncand && !nheld) return emit_operands_before_unbound(c, id, operand, nop, recv >= 0, unb, b);
     if (unb_lit) return 0;
   }
   /* Operands that are all pure reads -- `m.data[i * m.cols + j]`, two readers
@@ -21799,7 +21832,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   }
   /* One observable operand has no sibling to be ordered against or collected by:
      it is the only thing running, and the call consumes it immediately. */
-  if ((observable < 2 && !(converts && observable >= 1)) || nb < 1 ||
+  if ((observable < 2 && !(converts && observable >= 1) && !nheld) || nb < 1 ||
       g_n_argov + nb > MAX_ARG_OVERRIDE) return 0;
 
   size_t pre_mark = g_pre->len;
@@ -21816,7 +21849,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
      the whole call, once per nesting level: 2^depth copies of a receiver
      chain (#4925). A copy is rendered with its binding, from its handle's
      temp. */
-  int operands_last = observable < 2;
+  int operands_last = observable < 2 && !nheld;
   for (int i = 0; i < nb; i++)
     if (copy[i]) { memset(&opb[i], 0, sizeof opb[i]); memset(&opp[i], 0, sizeof opp[i]); }
   for (; !operands_last && rendered < nb && ok; rendered++) {
@@ -21887,7 +21920,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
        and costs a rooted temp on what may be a hot path (`@fetch[addr][addr]`
        is poly, and converts nothing). Counted as emitted, not as held: a
        #to_int renders inline and IO#write holds per operand. */
-    if (observable < 2 && g_conv_emitted == conv_mark) ok = 0;
+    if (observable < 2 && !nheld && g_conv_emitted == conv_mark) ok = 0;
     for (; operands_last && rendered < nb && ok; rendered++) {
       if (copy[rendered]) continue;
       render_bound_operand(c, node[rendered], fresh[rendered],

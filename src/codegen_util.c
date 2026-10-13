@@ -6593,7 +6593,9 @@ void emit_recv_rooted(Compiler *c, int recv, int t, const char *rootm, Buf *b) {
    go into the array passed to the builtin. The caller owns the scope. With
    `tmps`, each operand's temp goes there, and one the nil arm's head ran is
    read from the head's temp (head_held_read), or boxed from it with no root
-   of its own (head_held_box); without, the temps are first + i. */
+   of its own (head_held_box); without, the temps are first + i. An operand
+   the operand-order rewrite ran into a rooted temp (ran_first_read) is held
+   there: its copy takes no root of its own. */
 int emit_rooted_arg_list(Compiler *c, const int *argv, int argc,
                          const char *ctype, const char *root,
                          void (*emit)(Compiler *, int, Buf *), int *tmps, Buf *b) {
@@ -6605,7 +6607,8 @@ int emit_rooted_arg_list(Compiler *c, const int *argv, int argc,
     if (pre.len) buf_puts(b, pre.p);
     int held = tmps ? head_held_read(c, argv[i], val.p) : -1;
     if (tmps) tmps[i] = held >= 0 ? held : first + i;
-    if (held < 0 && tmps && emit == emit_boxed && head_held_box(c, argv[i]))
+    if (held < 0 && (ran_first_read(c, argv[i], val.p) >= 0 ||
+                     (tmps && emit == emit_boxed && head_held_box(c, argv[i]))))
       buf_printf(b, "%s _t%d = %s; ", ctype, first + i, val.p);
     else if (held < 0)
       buf_printf(b, "%s _t%d = %s; %s(_t%d); ", ctype, first + i, val.p, root, first + i);

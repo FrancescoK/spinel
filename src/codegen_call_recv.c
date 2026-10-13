@@ -6040,6 +6040,34 @@ static void emit_hash_fetch_default_tail(Compiler *c, int id, int dflt, const ch
   }
 }
 
+/* A merge of String-keyed Hashes of two value layouts: both sides are
+   promoted to sp_StrPolyHash (a receiver that already is one is taken as it
+   is), then merged. The receiver's promotion, or a receiver that builds a
+   new Hash (a merge before it), is held only in the C argument list while
+   the argument's promotion (or the argument itself) allocates: it is made
+   first into a rooted temp then. The operands are variables or calls the
+   operand-order rewrite sees; the promotions are not. */
+static void emit_str_poly_merge(Compiler *c, TyKind rt, TyKind at, int recv, int arg, Buf *b) {
+  const char *rfn = rt == TY_STR_INT_HASH ? "sp_StrPolyHash_from_str_int_hash("
+                  : rt == TY_STR_STR_HASH ? "sp_StrPolyHash_from_str_str_hash("
+                                          : NULL;
+  const char *afn = at == TY_STR_INT_HASH ? "sp_StrPolyHash_from_str_int_hash("
+                  : at == TY_STR_STR_HASH  ? "sp_StrPolyHash_from_str_str_hash("
+                                           : NULL;
+  int fresh = rfn || subtree_may_allocate(c->nt, recv);
+  int th = fresh && (afn || operand_allocates_beside(c, arg)) ? ++g_tmp : 0;
+  if (th) buf_printf(b, "({ sp_StrPolyHash *_t%d = ", th);
+  else buf_puts(b, "sp_StrPolyHash_merge(");
+  if (rfn) buf_puts(b, rfn);
+  emit_expr(c, recv, b);
+  if (rfn) buf_puts(b, ")");
+  if (th) buf_printf(b, "; SP_GC_ROOT(_t%d); sp_StrPolyHash_merge(_t%d, ", th, th);
+  else buf_puts(b, ", ");
+  if (afn) { buf_puts(b, afn); emit_expr(c, arg, b); buf_puts(b, ")"); }
+  else emit_expr(c, arg, b);
+  buf_puts(b, th ? "); })" : ")");
+}
+
 int emit_hash_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -6855,16 +6883,7 @@ else {
         /* cross-variant str merge: promote both sides to str_poly_hash */
         if ((rt == TY_STR_INT_HASH || rt == TY_STR_STR_HASH) &&
             ty_is_hash(at) && ty_hash_key(at) == TY_STRING && at != rt) {
-          buf_puts(b, "sp_StrPolyHash_merge(");
-          const char *rfn = rt == TY_STR_INT_HASH ? "sp_StrPolyHash_from_str_int_hash("
-                                                   : "sp_StrPolyHash_from_str_str_hash(";
-          buf_puts(b, rfn); emit_expr(c, recv, b); buf_puts(b, "), ");
-          const char *afn = at == TY_STR_INT_HASH ? "sp_StrPolyHash_from_str_int_hash("
-                          : at == TY_STR_STR_HASH  ? "sp_StrPolyHash_from_str_str_hash("
-                                                   : NULL;
-          if (afn) { buf_puts(b, afn); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-          else { emit_expr(c, argv[0], b); }
-          buf_puts(b, ")");
+          emit_str_poly_merge(c, rt, at, recv, argv[0], b);
           return 1;
         }
         /* any other cross-variant merge (mismatched key or value layout):
@@ -6914,14 +6933,14 @@ else {
             return 1;
           }
         }
-        buf_printf(b, "sp_%sHash_merge(", hn); emit_expr(c, recv, b); buf_puts(b, ", ");
         /* a str_poly receiver may be merged with a concrete str-keyed hash;
            coerce the argument to the receiver's variant first */
         if (rt == TY_STR_POLY_HASH && (at == TY_STR_STR_HASH || at == TY_STR_INT_HASH)) {
-          buf_printf(b, "sp_StrPolyHash_from_%s(", at == TY_STR_STR_HASH ? "str_str_hash" : "str_int_hash");
-          emit_expr(c, argv[0], b); buf_puts(b, ")");
+          emit_str_poly_merge(c, rt, at, recv, argv[0], b);
+          return 1;
         }
-        else if (at == TY_POLY && rt == TY_POLY_POLY_HASH) {
+        buf_printf(b, "sp_%sHash_merge(", hn); emit_expr(c, recv, b); buf_puts(b, ", ");
+        if (at == TY_POLY && rt == TY_POLY_POLY_HASH) {
           /* A boxed argument holds whichever variant the value really is, so
              the pointer cast below would read a Sym-keyed hash through a
              Poly-keyed struct. The general hash can be rebuilt from any of

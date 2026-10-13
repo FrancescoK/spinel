@@ -981,6 +981,10 @@ int head_held_temp(Compiler *c, int node);
    itself, unconverted: the arm reads it in place of a hold of its own. -1
    otherwise. */
 int head_held_read(Compiler *c, int node, const char *text);
+/* The temp the operand-order rewrite ran argument `node` into and rooted
+   (arg_ran_first), when `text` (the argument as an arm rendered it) is that
+   temp; -1 otherwise. */
+int ran_first_read(Compiler *c, int node, const char *text);
 /* Is operand `node` one the head ran, boxed by a wrap of the head's temp
    (an immediate, or a pointer that temp roots, repr_box_form)? A hold of
    that box needs no root of its own. */
