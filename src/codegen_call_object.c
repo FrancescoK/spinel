@@ -334,7 +334,7 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
        nil, whose fixed id must not be the NULL pointer's integer value. */
     else if ((comp_recv_type(c, recv) == TY_STRING && repr_of(c, recv).may_nil) || rt == TY_STRING) {
       StrForm sf;
-      emit_str_form(c, recv, SPR_IDENTITY, SPX_ID, &sf);
+      emit_str_form(c, recv, SPR_IDENTITY, SPX_ID, 0, &sf);
       str_form_settle(c, &sf, b);
       str_form_free(&sf);
     }

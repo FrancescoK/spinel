@@ -387,9 +387,21 @@ typedef struct {
 /* Node v in the form the String plan (share_plan.c) gives it for a
    consumer in `role` (SPR_*), in the face the consumer holds it in, into
    sf; answers the form it rendered (SPF_*). The faces:
-     SPX_ID  its object id, an sp_int (object_id, __id__). */
-enum { SPX_ID };
-int emit_str_form(Compiler *c, int v, int role, int face, StrForm *sf);
+     SPX_ID      its object id, an sp_int (object_id, __id__);
+     SPX_HANDLE  the sp_String * a slot that is the shared handle takes
+                 (a method's parameter; under --share-strings also a block
+                 parameter that is a String buffer).
+   `dest` says what the destination does with a new handle (SFD_*):
+     SFD_OWN     it holds its own copy (a parameter that is the handle
+                 because a Method reaches it, LocalVar.dyn_handle): a new
+                 handle keeps its bytes inside the object. */
+enum { SPX_ID, SPX_HANDLE };
+enum { SFD_OWN = 1 };
+int emit_str_form(Compiler *c, int v, int role, int face, unsigned dest, StrForm *sf);
+/* A write in value position (a local's whose slot is a String buffer, any
+   other whose slot holds the shared handle) as the handle it writes, into
+   out; 0, writing nothing, for any other node. */
+int emit_strbuf_local_write_handle(Compiler *c, int node, Buf *out);
 /* Write sf's expression into b with its needs met: the one place a String
    form's evaluation, hold and root are decided. An SF_EVAL_ONCE value
    opens a statement expression that binds it; the consumer writes its

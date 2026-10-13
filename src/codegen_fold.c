@@ -6834,7 +6834,7 @@ static void emit_arg_or_default_at(Compiler *c, Scope *m, int idx, int provided,
    global's, a class variable's, a `||=` or `&&=`: repr_write_share), as
    that slot's handle. A write already hoisted into a temp
    (emit_args_filled) is that temp. Returns 0 for any other node. */
-static int emit_strbuf_local_write_handle(Compiler *c, int node, Buf *out) {
+int emit_strbuf_local_write_handle(Compiler *c, int node, Buf *out) {
   if (node < 0) return 0;
   int local = nt_kind(c->nt, node) == NK_LocalVariableWriteNode;
   const char *nm = local ? nt_str(c->nt, node, "name") : NULL;
@@ -7196,77 +7196,24 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
      filled default -- materializes a rooted temp and passes that: for a
      non-lvalue argument CRuby's mutation is equally invisible to the caller,
      for the rest this keeps the pre-byref behavior. */
-  /* shared-handle string parameter (#3227 P5): a shared slot argument passes
-     the handle itself; a plain value wraps a fresh handle (a non-lvalue
-     argument's mutation is invisible to the caller in CRuby too). */
+  /* shared-handle string parameter (#3227 P5): the argument as the handle,
+     in the String plan's form (emit_str_form): a shared slot argument
+     passes the handle itself; a plain value wraps a fresh handle (a
+     non-lvalue argument's mutation is invisible to the caller in CRuby
+     too). */
+  if (provided >= 0 && repr_of_slot(c, p).handle) {
+    StrForm sf;
+    emit_str_form(c, provided, SPR_TAKE, SPX_HANDLE, p->dyn_handle ? SFD_OWN : 0, &sf);
+    str_form_settle(c, &sf, out);
+    str_form_free(&sf);
+    return;
+  }
   /* `show(buf = +"abc")`: the write runs, and the argument is the local's
      handle -- the parameter and the local are one object. The analyzer
      types the parameter from the write, which is the local's sp_String *,
      while the write's value form is the const char * copy. */
   if (repr_of_slot(c, p).kind == RK_STRBUF && emit_strbuf_local_write_handle(c, provided, out)) return;
   if (repr_of_slot(c, p).handle) {
-    if (provided >= 0) {
-      char srefP[192];
-      /* A variable the call ran first is read where it ran, not at its
-         slot (see the byref slot below), which a later argument can
-         overwrite. What it read then is an OBJECT: the handle taken with
-         it, so the callee and the caller's other names still share one
-         String. A fresh handle of the bytes read was a second String --
-         a caller writing into its own afterwards went unseen. */
-      NodeKind pk = nt_kind(c->nt, provided);
-      int late = (pk == NK_LocalVariableReadNode || pk == NK_InstanceVariableReadNode ||
-                  repr_static_read_kind(pk)) &&
-                 arg_ran_first(provided, 0);
-      if (late) {
-        int th = ran_first_handle(provided);
-        if (th >= 0) { buf_printf(out, "_t%d", th); return; }
-      }
-      /* --share-strings: a value that ran first as the handle it hands on
-         (a route, `s << x`), or one that runs here as it */
-      if (repr_share_rule(c) && !late && arg_ran_first(provided, 0) && ran_first_handle(provided) >= 0) {
-        buf_printf(out, "_t%d", ran_first_handle(provided));
-        return;
-      }
-      if (!late && !arg_ran_first(provided, 0) && pk != NK_LocalVariableReadNode &&
-          pk != NK_InstanceVariableReadNode && !repr_static_read_kind(pk) &&
-          repr_of(c, provided).as_ty == TY_STRING && strbuf_arg_carries(c, provided)) {
-        emit_strbuf_handle_of(c, provided, out);
-        return;
-      }
-      if (!late && strbuf_slot_ref(c, provided, srefP, sizeof srefP)) {
-        buf_puts(out, srefP);
-        return;
-      }
-      /* A parameter that is the handle because a Method reaches it (#6179):
-         a literal or a temporary is a String nobody else holds, so the
-         handle is made with its bytes inside the object, and `+"lit"`
-         straight from the literal rather than from a copy of it. */
-      if (!arg_ran_first(provided, 0) && dyn_handle_lit_arg(c, m, idx, provided)) {
-        buf_puts(out, "sp_String_new_unfrozen(");
-        emit_expr(c, nt_ref(c->nt, provided, "receiver"), out);
-        buf_puts(out, ")");
-        return;
-      }
-      /* nil, a default's or an argument's, is the NULL handle a nullable
-         handle parameter reads as nil (`def initialize(o: nil)`) */
-      if (comp_ntype(c, provided) == TY_NIL) { buf_puts(out, "NULL"); return; }
-      /* a boxed argument that holds nil at run time is the NULL handle too:
-         converted as a String first, it raised TypeError where CRuby binds
-         nil (`n = nil` beside a String, `def go(v) = run(v) { |t| ... }`) */
-      if (repr_of(c, provided).kind == RK_BOXED) {
-        int tpv = ++g_tmp;
-        buf_puts(out, "({ "); tpv = hold_operand(c, provided, TY_POLY, 0, tpv, 1, " ", out);
-        buf_printf(out, "sp_poly_nil_p(_t%d) ? NULL : %s(sp_poly_arg_str_chk(_t%d)); })", tpv,
-                   p->dyn_handle && pk != NK_LocalVariableReadNode && pk != NK_InstanceVariableReadNode
-                     ? "sp_String_new_fresh" : "sp_String_new_shared", tpv);
-        return;
-      }
-      buf_printf(out, "%s(", p->dyn_handle && pk != NK_LocalVariableReadNode && pk != NK_InstanceVariableReadNode
-                      ? "sp_String_new_fresh" : strbuf_new_func(c, provided));
-      emit_str_expr(c, provided, out);
-      buf_puts(out, ")");
-      return;
-    }
     int dvP = m->pdefault[idx];
     if (dvP >= 0 && comp_ntype(c, dvP) == TY_NIL) { buf_puts(out, "NULL"); return; }
     if (repr_self_shared(c, dvP)) { emit_strbuf_handle_of(c, dvP, out); return; }

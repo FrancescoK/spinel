@@ -1886,20 +1886,20 @@ static void emit_block_arg_coerced(Compiler *c, int node, TyKind ot, Buf *b) {
     free(t.p);
   }
   /* a String into a parameter a mutating callee made a buffer, as a plain
-     assignment of one takes it (#6039); a receiver conversion, a String
-     Range's endpoint (strbuf_route_srange_kept) and a bang on a handle or a
-     box (strbuf_arg_bang, the receiver's handle or nil) hand on the handle
-     they read, and a conditional with a handle among its arms
-     (strbuf_cond_has_handle_leaf) hands on each arm's, as an argument's
-     does */
+     assignment of one takes it (#6039). Under --share-strings it takes the
+     String plan's form (emit_str_form's handle face), the handle wherever
+     a method's parameter takes one; without the flag, a new handle of its
+     bytes */
+  else if (ot == TY_STRBUF && at == TY_STRING && c->share_plan) {
+    StrForm sf;
+    emit_str_form(c, node, SPR_TAKE, SPX_HANDLE, 0, &sf);
+    str_form_settle(c, &sf, b);
+    str_form_free(&sf);
+  }
   else if (ot == TY_STRBUF && at == TY_STRING) {
-    if (strbuf_poly_to_s(c, node) || strbuf_route_srange_kept(c, node) || strbuf_arg_bang(c, unwrap_parens(c, node)) ||
-        (repr_share_rule(c) && strbuf_cond_has_handle_leaf(c, node, 0))) {
-      int th = ran_first_handle(node);
-      if (th >= 0) buf_printf(b, "_t%d", th);
-      else emit_strbuf_handle_of(c, node, b);
-    }
-    else { buf_puts(b, "sp_String_new_shared("); emit_expr(c, node, b); buf_puts(b, ")"); }
+    buf_puts(b, "sp_String_new_shared(");
+    emit_expr(c, node, b);
+    buf_puts(b, ")");
   }
   /* the shared handle, its read marked for a proc a yield of it may call,
      into a plain String parameter: the copy a plain read takes */
