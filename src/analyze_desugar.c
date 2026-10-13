@@ -8886,10 +8886,68 @@ static int cdef_stmts(NodeTable *nt, int st) {
   nt_node_set_arr(nt, b, "body", &st, 1);
   return b;
 }
+/* A method one def defines under a condition only the run time decides is
+   there or not as the condition went, but its name answers from the start
+   (the dispatching def the choice is lowered to): a question about it by
+   name would answer true where CRuby, when the branch did not run, says
+   false. Such a question is refused: respond_to?, method_defined? and its
+   kin, instance_method, method and public_method naming it, or naming a
+   method only the run time knows, and the lists of methods
+   (instance_methods, methods and their kin). Refused at compile time where
+   reachable (feature_limit, "cond_def_reflect"). */
+static void cdef_refuse(NodeTable *nt, int id) {
+  long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0),
+            col = nt_int(nt, id, "node_col", 0);
+  int args = nt_new_node(nt, "ArgumentsNode");
+  int ex = nt_new_node(nt, "ConstantReadNode");
+  int msg = nt_new_node(nt, "StringNode");
+  if (args < 0 || ex < 0 || msg < 0) return;
+  nt_node_reset(nt, id, "CallNode");
+  nt_node_set_int(nt, id, "node_line", line);
+  nt_node_set_int(nt, id, "node_file", file);
+  nt_node_set_int(nt, id, "node_col", col);
+  nt_node_set_str(nt, id, "name", "raise");
+  nt_node_set_int(nt, id, "cond_def_reflect", 1);
+  nt_node_set_str(nt, ex, "name", "NotImplementedError");
+  nt_node_set_str(nt, msg, "content", "spinel: a method defined under a run-time condition, asked about by name");
+  int av[2] = { ex, msg };
+  nt_node_set_arr(nt, args, "arguments", av, 2);
+  nt_node_set_ref(nt, id, "arguments", args);
+}
+
+static void cdef_refuse_reflection(NodeTable *nt, const char *const *lone, int nlone) {
+  static const char *const by_name[] = { "respond_to?", "method_defined?", "public_method_defined?",
+    "private_method_defined?", "protected_method_defined?", "instance_method", "public_instance_method",
+    "method", "public_method", NULL };
+  static const char *const lists[] = { "instance_methods", "public_instance_methods", "methods",
+    "public_methods", NULL };
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int hit = 0;
+    for (int i = 0; nm && lists[i] && !hit; i++) hit = sp_streq(nm, lists[i]);
+    for (int i = 0; nm && by_name[i] && !hit; i++) {
+      if (!sp_streq(nm, by_name[i])) continue;
+      int args = nt_ref(nt, id, "arguments"), ac = 0;
+      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+      if (ac < 1) break;
+      NodeKind ak = nt_kind(nt, av[0]);
+      const char *q = ak == NK_SymbolNode ? nt_str(nt, av[0], "value") :
+                      ak == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
+      if (!q) { hit = 1; break; }
+      for (int j = 0; j < nlone && !hit; j++) hit = sp_streq(q, lone[j]);
+    }
+    if (hit) cdef_refuse(nt, id);
+  }
+}
+
 int desugar_conditional_defs(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   CondDef *v = NULL;
   int n = 0, serial = 0, groups = 0;
+  char **lone = NULL;   /* the names a single def under a run-time condition defines */
+  int nlone = 0;
   cdef_walk(nt, nt_ref(nt, nt->root_id, "statements"), (CondDef){ -1, -1, -1, -1, 0, 0, -1, "", "" }, &v, &n);
   for (int i = 0; i < n; i++) {
     if (v[i].def < 0 || !v[i].cond) continue;
@@ -8909,7 +8967,15 @@ int desugar_conditional_defs(Compiler *c) {
       g[ng++] = v[j];
       v[j].def = -1;
     }
-    if (ng < 2 || bad || same) { free(base); continue; }
+    /* one def under a run-time condition is the same choice with no other
+       arm: it answers only once its branch has run */
+    if (bad || (ng >= 2 && same)) { free(base); continue; }
+    if (ng == 1) {
+      char **nn = realloc(lone, sizeof(char *) * (size_t)(nlone + 1));
+      if (!nn) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      lone = nn;
+      lone[nlone++] = strdup(base);
+    }
     char msg[512], nm[512], sel[64], pn[32];
     const char *cn = g[0].cls >= 0 ? nt_str(nt, nt_ref(nt, g[0].cls, "constant_path"), "name") : NULL;
     if (!cn) snprintf(msg, sizeof msg, "undefined method '%s' for main", base);
@@ -8980,6 +9046,9 @@ int desugar_conditional_defs(Compiler *c) {
   }
   for (int i = 0; i < n; i++) free((char *)v[i].path);
   free(v);
+  if (nlone) cdef_refuse_reflection(nt, (const char *const *)lone, nlone);
+  for (int i = 0; i < nlone; i++) free(lone[i]);
+  free(lone);
   comp_grow_node_arrays(c);
   return groups > 0;
 }
