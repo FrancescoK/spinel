@@ -139,7 +139,7 @@ to_s_spec__002	PASS
 to_s_spec__003	REJECT
 to_s_spec__004	ERROR
 to_s_spec__005	PASS
-to_s_spec__006	PASS
+to_s_spec__006	REJECT
 values_at_spec__001	PASS
 values_at_spec__002	PASS
 values_at_spec__003	PASS

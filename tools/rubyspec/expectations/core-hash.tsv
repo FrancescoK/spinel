@@ -143,7 +143,7 @@ element_reference_spec__013	PASS
 element_reference_spec__014	HARNESS-SKEW
 element_set_spec__001	PASS
 element_set_spec__002	PASS
-element_set_spec__003	PASS
+element_set_spec__003	REJECT
 element_set_spec__004	HARNESS-SKEW
 element_set_spec__005	PASS
 element_set_spec__006	HARNESS-SKEW
@@ -309,7 +309,7 @@ rehash_spec__004	PASS
 rehash_spec__005	ERROR
 rehash_spec__006	PASS
 reject_spec__001	PASS
-reject_spec__002	PASS
+reject_spec__002	REJECT
 reject_spec__003	PASS
 reject_spec__004	PASS
 reject_spec__005	PASS
@@ -360,7 +360,7 @@ select_spec__012	PASS
 select_spec__013	PASS
 shift_spec__001	PASS
 shift_spec__002	PASS
-shift_spec__003	PASS
+shift_spec__003	REJECT
 shift_spec__004	PASS
 shift_spec__005	PASS
 shift_spec__006	PASS

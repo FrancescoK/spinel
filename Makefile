@@ -1709,6 +1709,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a singleton def on an untraceable receiver compiled)"; ok=0; \
 	else grep -q "singleton method that needs a self, on a receiver that is not one user-class instance" "$$tmp/r.out" || \
 	  { echo "reject-test: FAIL (rejected without saying why)"; sed -n 1,5p "$$tmp/r.out"; ok=0; }; fi; \
+	t=test/reject/singleton_untraced_no_self.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/r.c" >"$$tmp/r.out" 2>&1; then \
+	  echo "reject-test: FAIL (a singleton def no call could reach compiled)"; ok=0; \
+	else n=$$(grep -c "singleton method on a receiver spinel cannot trace to one" "$$tmp/r.out"); [ "$$n" -eq 11 ] || \
+	  { echo "reject-test: FAIL (refused $$n of 11 untraced singleton defs)"; sed -n 1,9p "$$tmp/r.out"; ok=0; }; fi; \
 	t=test/reject/new_receiver_class_method_still_reached.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/nrc.c" >"$$tmp/nrc.out" 2>&1; then \
 	  echo "reject-test: FAIL (a called class method's provable NoMethodError compiled)"; ok=0; \

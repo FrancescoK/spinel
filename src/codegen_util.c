@@ -3750,14 +3750,28 @@ int unsup_message(Compiler *c, int id, const char *what, int self_ci, char *msg,
   return CR_GAP;
 }
 
+/* The refusal analyze_scope marked on a `def recv.m` whose receiver is not
+   one traced object, or NULL: one that needs a self, or one whose calls would
+   never reach it. */
+const char *sg_refused_msg(Compiler *c, int def) {
+  if (def < 0 || def >= c->nt->count) return NULL;
+  if (nt_int(c->nt, def, "sg_needs_self_refused", 0))
+    return "singleton method that needs a self, on a receiver that is not one user-class instance";
+  if (nt_int(c->nt, def, "sg_untraced_refused", 0))
+    return "singleton method on a receiver spinel cannot trace to one `new` of a user class or Object "
+           "(a String, an Array, a parameter, a value read out of a collection, a class held in a variable): "
+           "no call on it would reach the method";
+  return NULL;
+}
+
+void sg_refused_def(Compiler *c, int def) {
+  const char *msg = sg_refused_msg(c, def);
+  if (msg) unsupported_feature(c, def, msg);
+}
+
 /* A reader of the call plan's refusal (CP_REFUSE): the plan refuses node id
    by the decision `from`, so codegen raises it in the plan's words (site: the
    --plan-check reader name). Returns when the plan does not. */
-void sg_refused_def(Compiler *c, int def) {
-  if (def >= 0 && def < c->nt->count && nt_int(c->nt, def, "sg_needs_self_refused", 0))
-    unsupported_feature(c, def, "singleton method that needs a self, on a receiver that is not one user-class instance");
-}
-
 void refuse_from_plan(Compiler *c, int id, int from, const char *site) {
   const CallPlan *p = cplan_refuse(c, id);
   if (p->dispatch != CP_REFUSE || p->rfrom != from) return;

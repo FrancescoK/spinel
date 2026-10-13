@@ -2853,6 +2853,72 @@ static int sg_dsm_transplantable(const NodeTable *nt, int id) {
   return !sg_block_captures(nt, nt_ref(nt, id, "block"), 0);
 }
 
+/* Is `v` an expression whose value is a class: a class's own constant, or a
+   builder of one (Class.new, Module.new, Struct.new, Data.define)? */
+static int sg_class_value(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (v < 0) return 0;
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_ConstantReadNode || k == NK_ConstantPathNode) {
+    const char *cn = nt_str(nt, v, "name");
+    return cn && (comp_class_index(c, cn) >= 0 || is_builtin_class_name(cn));
+  }
+  if (k != NK_CallNode) return 0;
+  int r = nt_ref(nt, v, "receiver");
+  NodeKind rk = r >= 0 ? nt_kind(nt, r) : NK_NilNode;
+  return (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) &&
+         is_class_builder(nt_str(nt, r, "name"), nt_str(nt, v, "name"));
+}
+
+/* Does constant `name` hold a class, whose `def NAME.m` is a class method:
+   is every write of it in the program a plain `NAME = <class>`
+   (sg_class_value)? One the program never writes is a builtin's: a class
+   (Mutex, Encoding) but for the objects ARGV, ENV, the standard streams and
+   RUBY_*. */
+static int sg_const_holds_class(Compiler *c, const char *name) {
+  const NodeTable *nt = c->nt;
+  int writes = 0;
+  for (int w = 0; w < nt->count; w++) {
+    NodeKind k = nt_kind(nt, w);
+    if (k != NK_ConstantWriteNode && k != NK_ConstantOrWriteNode && k != NK_ConstantAndWriteNode &&
+        k != NK_ConstantOperatorWriteNode && k != NK_ConstantTargetNode) continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, name)) continue;
+    if (k != NK_ConstantWriteNode || !sg_class_value(c, nt_ref(nt, w, "value"))) return 0;
+    writes++;
+  }
+  if (writes) return 1;
+  static const char *const objs[] = { "ARGV", "ARGF", "ENV", "STDIN", "STDOUT", "STDERR",
+                                      "DATA", "TOPLEVEL_BINDING", NULL };
+  for (int i = 0; objs[i]; i++) if (sp_streq(name, objs[i])) return 0;
+  return strncmp(name, "RUBY_", 5) != 0;
+}
+
+/* `def (self).m`, `def (Foo).m`: the receiver inside its parentheses */
+static int sg_unparen(const NodeTable *nt, int recv) {
+  for (int d = 0; d < 8 && recv >= 0 && nt_kind(nt, recv) == NK_ParenthesesNode; d++) {
+    int body = nt_ref(nt, recv, "body");
+    if (body >= 0 && nt_kind(nt, body) == NK_StatementsNode) {
+      int n = 0; const int *st = nt_arr(nt, body, "body", &n);
+      if (n != 1) break;
+      body = st[0];
+    }
+    if (body < 0) break;
+    recv = body;
+  }
+  return recv;
+}
+
+/* The innermost `def` whose body holds `id`, or -1 */
+static int sg_enclosing_def(const NodeTable *nt, int id) {
+  int in = -1;
+  for (int d = 0; d < nt->count; d++)
+    if (d != id && nt_kind(nt, d) == NK_DefNode && sg_contains(nt, nt_ref(nt, d, "body"), id, 0) &&
+        (in < 0 || sg_contains(nt, nt_ref(nt, in, "body"), d, 0)))
+      in = d;
+  return in;
+}
+
 void register_singleton_defs(Compiler *c) {
   /* not const: the pass marks a resolved dsm call on the node itself */
   NodeTable *nt = (NodeTable *)c->nt;
@@ -2887,7 +2953,35 @@ void register_singleton_defs(Compiler *c) {
     else continue;
 
     int bk = SG_LOCAL; const char *rn = NULL; Scope *owner = NULL;
-    if (sg_binding(c, id, recv, &bk, &rn, &owner) < 0) continue;
+    if (sg_binding(c, id, recv, &bk, &rn, &owner) < 0) {
+      /* `def (expr).m`: the value of an expression, a call's or an element
+         read out of a collection, has no binding to trace to a `new` at all.
+         The walk filed the def as a method of the enclosing class, which no
+         call on the object reaches. Left alone: self, a class's constant and
+         `self.class`, in parentheses or not, which name that class. */
+      if (recv < 0) continue;
+      int ur = sg_unparen(nt, recv);
+      NodeKind rk = ur >= 0 ? nt_kind(nt, ur) : NK_SelfNode;
+      const char *un = rk == NK_CallNode ? nt_str(nt, ur, "name") : NULL;
+      int self_class = un && sp_streq(un, "class") &&
+                       (nt_ref(nt, ur, "receiver") < 0 || nt_kind(nt, nt_ref(nt, ur, "receiver")) == NK_SelfNode);
+      if (idk == NK_DefNode && rk != NK_SelfNode && rk != NK_ConstantReadNode &&
+          rk != NK_ConstantPathNode && !self_class)
+        nt_node_set_int(nt, id, "sg_untraced_refused", 1);
+      /* `def self.m` in an instance method of a reopened builtin (String,
+         Array) is the one object's: the walk filed it as a class method, which
+         no call on the object reaches. A user class's instance answers
+         NoMethodError there instead, a known gap. */
+      if (idk == NK_DefNode && rk == NK_SelfNode) {
+        int ed = sg_enclosing_def(nt, id), es = -1;
+        for (int k = 0; ed >= 0 && k < c->nscopes && es < 0; k++) if (c->scopes[k].def_node == ed) es = k;
+        int eci = es >= 0 ? c->scopes[es].class_id : -1;
+        if (eci >= 0 && !c->scopes[es].is_cmethod && c->classes[eci].name &&
+            is_builtin_class_name(c->classes[eci].name))
+          nt_node_set_int(nt, id, "sg_untraced_refused", 1);
+      }
+      continue;
+    }
     int parent_ci = -1;
     int wnode = sg_single_new_write(c, rn, bk, owner, id, &parent_ci);
     if (wnode < 0 && bk == SG_LOCAL && parent_ci != -2 && parent_ci != -3)
@@ -2949,9 +3043,21 @@ void register_singleton_defs(Compiler *c) {
          method that defines it: refused here, ahead of emission, it stopped
          the build of a program that never runs the line (activerecord's
          Explain#exec_explain, `def str.inspect; self; end`). */
-      if (idk == NK_DefNode && !is_extend && !is_dsm && !is_scls &&
-          sg_def_needs_self(c, id))
-        nt_node_set_int(nt, id, "sg_needs_self_refused", 1);
+      /* A body that needs no self compiled before as a plain function that
+         nothing calls, so the program ran on as if the def were not there:
+         `def str.==(o) = false` and then `str == other` answered String's
+         own true. CRuby calls the singleton method, so that is a wrong
+         answer, refused the same way. A constant that holds a class
+         (`def Mutex.helper`, sg_const_holds_class) takes a class method;
+         `__self` is a builtin reopening's own receiver: its class in the
+         class body, one instance inside a method (`def self.m` there). */
+      if (idk == NK_DefNode && !is_extend && !is_dsm && !is_scls) {
+        if (sg_def_needs_self(c, id))
+          nt_node_set_int(nt, id, "sg_needs_self_refused", 1);
+        else if (bk == SG_CONST ? !sg_const_holds_class(c, rn)
+                                : !sp_streq(rn, "__self") || sg_enclosing_def(nt, id) >= 0)
+          nt_node_set_int(nt, id, "sg_untraced_refused", 1);
+      }
       continue;   /* not statically traceable: leave as today */
     }
     /* `def @a.m` / `def @@a.m` / `def a.m`: the receiver is read where the

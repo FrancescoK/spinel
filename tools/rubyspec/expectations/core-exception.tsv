@@ -122,7 +122,7 @@ load_error_spec__002	PASS
 message_spec__001	PASS
 message_spec__002	PASS
 message_spec__003	PASS
-message_spec__004	PASS
+message_spec__004	REJECT
 name_error_spec__001	PASS
 name_error_spec__002	HARNESS-SKEW
 name_error_spec__003	FAIL
