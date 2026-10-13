@@ -1358,6 +1358,7 @@ void refuse_prepass_at_emit(Compiler *c, int id);
 const char *sg_refused_msg(Compiler *c, int def);
 void sg_refused_def(Compiler *c, int def);
 __attribute__((noreturn)) void unsupported_feature(Compiler *c, int id, const char *msg);
+void unsupported_feature_collect(Compiler *c, int id, const char *msg);
 
 /* Compile a regexp literal with the engine and throw the result away, to
    refuse at COMPILE time a pattern that would only have failed at the
