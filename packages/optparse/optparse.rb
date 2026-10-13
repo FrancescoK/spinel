@@ -4,7 +4,7 @@
 #   - OptionParser.new(banner, width, indent) { |opts| ... }
 #   - on / on_tail with any number of switch names ("-nNAME" declares -n with
 #     a value), any number of description lines and an optional value type
-#     (String, Array, Integer, Float, DecimalInteger, OctalInteger,
+#     (String, Array, Integer, Float, Numeric, DecimalInteger, OctalInteger,
 #     DecimalNumeric, TrueClass or FalseClass), in any order
 #   - separator, banner=, summary_width, summary_indent, to_s (help text)
 #   - top.long / top.short: the switches declared with on, by name without
@@ -35,6 +35,8 @@
 #   - DecimalInteger reads only decimal digits (010 is 10), OctalInteger
 #     octal digits (10 is 8), and DecimalNumeric an Integer or, when a "." or
 #     an exponent follows the digits, a Float
+#   - Numeric reads what Integer does (010 is 8), a Float when a "." or an
+#     exponent follows the digits, and a fraction as a Rational ("1/3")
 #   - TrueClass and FalseClass read yes, true and + as true and no, false, - and
 #     nil as false, each cut short as far as it stays a prefix ("y", "fa");
 #     case matters. Any other word raises InvalidArgument, an empty one
@@ -48,8 +50,8 @@
 #     converts the word instead
 #
 # Not supported: other value types than String, Array, Integer, Float,
-# DecimalInteger, OctalInteger, DecimalNumeric, TrueClass and FalseClass,
-# and an Array of allowed values that are not names ([1, 2]).
+# Numeric, DecimalInteger, OctalInteger, DecimalNumeric, TrueClass and
+# FalseClass, and an Array of allowed values that are not names ([1, 2]).
 
 class OptionParser
   class ParseError < StandardError
@@ -73,17 +75,20 @@ class OptionParser
   class AmbiguousArgument < InvalidArgument
   end
 
-  # The words an Integer or a Float switch accepts. radix is a leading 0
-  # with an octal, binary (0b) or hexadecimal (0x) number. The lookahead
-  # group captures what follows the leading digits: DecimalNumeric reads
-  # the word as a Float when it is there, and as an Integer when not.
+  # The words an Integer, a Float or a Numeric switch accepts. radix is a
+  # leading 0 with an octal, binary (0b) or hexadecimal (0x) number. The
+  # lookahead group captures what follows the leading digits: DecimalNumeric
+  # and Numeric read the word as a Float when it is there, and as an
+  # Integer when not. A Numeric word may be a fraction ("1/3").
   digits = '\d+(?:_\d+)*'
   binary = 'b[01]+(?:_[01]+)*'
   hex = 'x[\da-f]+(?:_[\da-f]+)*'
   radix = "0(?:[0-7]+(?:_[0-7]+)*|#{binary}|#{hex})?"
   INTEGER_VALUE = /\A[-+]?(?:#{radix}|#{digits})\z/io
-  FLOAT_VALUE = /\A[-+]?(?:#{digits}(?=(.)?)(?:\.(?:#{digits})?)?|\.#{digits})
-                 (?:E[-+]?#{digits})?\z/iox
+  float = "(?:#{digits}(?=(.)?)(?:\\.(?:#{digits})?)?|\\.#{digits})(?:E[-+]?#{digits})?"
+  FLOAT_VALUE = /\A[-+]?#{float}\z/io
+  real = "[-+]?(?:#{radix}|#{float})"
+  NUMERIC_VALUE = /\A(#{real})(?:\/(#{real}))?\z/io
 
   # The value types CRuby names by their pattern, as it defines them.
   DecimalInteger = /\A[-+]?#{digits}\z/io
@@ -101,7 +106,10 @@ class OptionParser
     Float => [FLOAT_VALUE, ->(word, m) { word.to_f }],
     DecimalInteger => [DecimalInteger, ->(word, m) { Integer(word, 10) }],
     OctalInteger => [OctalInteger, ->(word, m) { Integer(word, 8) }],
-    DecimalNumeric => [DecimalNumeric, ->(word, m) { m[1] ? Float(word) : Integer(word) }]
+    DecimalNumeric => [DecimalNumeric, ->(word, m) { m[1] ? Float(word) : Integer(word) }],
+    # to_s: under --share-strings a capture read in this table reaches
+    # Rational() as another type, and "1.5" reads as 1
+    Numeric => [NUMERIC_VALUE, ->(word, m) { m[3] ? Rational(m[1].to_s, m[3].to_s) : (m[2] ? Float(word) : Integer(word)) }]
   }
 
   # One name an enum switch accepts and the value it passes.
@@ -314,9 +322,9 @@ class OptionParser
         choice_value = true if choices.nil?
         choices ||= []
         add_choices(choices, a)
-      elsif a.is_a?(Module) && a != Object && a != NilClass && a != Numeric && a != Regexp
-        # CRuby has no converter for it either. Numeric and Regexp are
-        # CRuby value types that still pass the word as it is.
+      elsif a.is_a?(Module) && a != Object && a != NilClass && a != Regexp
+        # CRuby has no converter for it either. Regexp is a CRuby value
+        # type that still passes the word as it is.
         raise ArgumentError, "unsupported argument type: #{a}"
       end
     end
@@ -408,6 +416,9 @@ class OptionParser
       return choice.value if sw.choice_value
     end
     return type == TrueClass if value.nil? && (type == TrueClass || type == FalseClass)
+    # CRuby's Numeric converter has no nil guard: an absent optional value
+    # reaches Integer(nil), which raises TypeError
+    return Integer(value) if value.nil? && type == Numeric
     return value if value.nil? || type == Object
     return boolean_value(value, shown) if type == TrueClass || type == FalseClass
     pattern, converter = ACCEPT[type]
@@ -416,6 +427,8 @@ class OptionParser
     begin
       converter.call(value, match)
     rescue ArgumentError
+      # CRuby's Numeric converter lets it through (".5", "08")
+      raise if type == Numeric
       raise invalid_argument(shown)
     end
   end
