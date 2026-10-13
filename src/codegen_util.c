@@ -3267,11 +3267,13 @@ int sb_shim_args_first(Compiler *c, int id, Buf *pre, int indent) {
   g_pre = sv_pre; g_indent = sv_ind;
   return mark;
 }
-/* Open the shim over a reader call `recv` that hands out the shared handle:
-   the handle's text goes to sref, and until sb_reader_shim_close the call node
-   reads as the shadow `lv__sbT`, with the handle marks lifted. Answers T, or 0
-   when `recv` is no such call. */
-int sb_reader_shim_open(Compiler *c, int recv, char *sref, size_t cap, SbReaderSave *sv) {
+/* Open the shim over a reader call `recv` that hands out the shared handle
+   to String mutator id: the handle's text goes to sref, and until
+   sb_reader_shim_close the call node reads as the shadow `lv__sbT`, with the
+   handle marks lifted. Answers T, or 0 when `recv` is no such call. A pickup
+   that can answer nil raises NoMethodError for id there, as the mutator's
+   handle arms do (strbuf_pickup_nil_check). */
+int sb_reader_shim_open(Compiler *c, int id, int recv, char *sref, size_t cap, SbReaderSave *sv) {
   /* a global holding the handle (--share-strings) is such a slot too:
      strbuf_slot_ref answers for it only then */
   int gv = repr_share_rule(c) && recv >= 0 && repr_static_read_kind(nt_kind(c->nt, recv)) && !sb_shadowed_reader(recv);
@@ -3283,6 +3285,7 @@ int sb_reader_shim_open(Compiler *c, int recv, char *sref, size_t cap, SbReaderS
   if (!gv && !rp.handle && !rp.demand && !ran) return 0;
   if (g_n_argov >= MAX_ARG_OVERRIDE) return 0;
   if (!strbuf_slot_ref(c, recv, sref, cap)) return 0;
+  strbuf_pickup_nil_check(c, nt_str(c->nt, id, "name"), recv, sref, cap);
   int tH = ++g_tmp;
   /* the marks lifted and the handle type dropped for the shim's lifetime:
      views, so a refusal inside it puts them back (view_unwind) */

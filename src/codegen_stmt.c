@@ -3031,22 +3031,24 @@ int strbuf_recv_handle(Compiler *c, int id, int recv, char *out, size_t cap) {
     snprintf(out, cap, "_t%d", held);
     return 1;
   }
-  if (strbuf_slot_ref(c, recv, out, cap)) {
-    /* --share-strings: a deep-return pickup that can answer nil (a nil
-       tail, an_pickup_tail) raises NoMethodError for id, as the copy's
-       own check did; its text runs the call, so it is read once */
-    if (!strbuf_pickup_may_nil(c, recv)) return 1;
-    int t = ++g_tmp;
-    Buf nb; memset(&nb, 0, sizeof nb);
-    buf_printf(&nb, "({ sp_String *_t%d = %s; if (SP_UNLIKELY(!_t%d)) "
-               "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })",
-               t, out, t, nt_str(c->nt, id, "name"), t);
-    int fit = strlen(nb.p) < cap;
-    if (fit) snprintf(out, cap, "%s", nb.p);
-    free(nb.p);
-    return fit ? 2 : 1;
-  }
+  if (strbuf_slot_ref(c, recv, out, cap)) return strbuf_pickup_nil_check(c, nt_str(c->nt, id, "name"), recv, out, cap);
   return strbuf_route_recv(c, id, recv, out, cap) ? 2 : 0;
+}
+/* See codegen_internal.h. */
+int strbuf_pickup_nil_check(Compiler *c, const char *name, int recv, char *out, size_t cap) {
+  /* --share-strings: a deep-return pickup that can answer nil (a nil
+     tail, an_pickup_tail) raises NoMethodError for name, as the copy's
+     own check did; its text runs the call, so it is read once */
+  if (!strbuf_pickup_may_nil(c, recv)) return 1;
+  int t = ++g_tmp;
+  Buf nb; memset(&nb, 0, sizeof nb);
+  buf_printf(&nb, "({ sp_String *_t%d = %s; if (SP_UNLIKELY(!_t%d)) "
+             "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })",
+             t, out, t, name, t);
+  int fit = strlen(nb.p) < cap;
+  if (fit) snprintf(out, cap, "%s", nb.p);
+  free(nb.p);
+  return fit ? 2 : 1;
 }
 /* strbuf_recv_handle's route half: 1 with the text in out, else 0 with
    nothing emitted */
@@ -20799,7 +20801,7 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
        goes with a declined shim, or the reader runs twice) */
     Buf *pre0 = g_pre;
     size_t pre0_mark = pre0 ? pre0->len : 0;
-    int tH = sb_reader_shim_open(c, recv, srefR, sizeof srefR, &svR);
+    int tH = sb_reader_shim_open(c, id, recv, srefR, sizeof srefR, &svR);
     if (tH) {
       Buf pre; memset(&pre, 0, sizeof pre);
       int mark = sb_shim_args_first(c, id, &pre, indent + 1);

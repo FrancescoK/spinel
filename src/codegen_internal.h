@@ -239,6 +239,11 @@ int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth);
    a route (read once, nil raising NoMethodError for id), 0 neither
    (codegen_stmt.c) */
 int strbuf_recv_handle(Compiler *c, int id, int recv, char *out, size_t cap);
+/* --share-strings: handle text `out` of recv (strbuf_slot_ref) wrapped,
+   when recv is a deep-return pickup that can answer nil, to raise
+   NoMethodError for String mutator `name`; 2 wrapped, else 1
+   (codegen_stmt.c) */
+int strbuf_pickup_nil_check(Compiler *c, const char *name, int recv, char *out, size_t cap);
 /* strbuf_recv_handle, and under --share-strings a route whose text outgrows
    out, emitted whole into lb instead (emit_recv_route_handle; 2): the
    handle's text is lb's where it has one, else out's */
@@ -329,7 +334,7 @@ int strbuf_read_copies(Compiler *c, int v);
 /* what sb_reader_shim_open lifted: the node's marks and type as they were,
    and the views (ntok of them from tok) that hold the lifted ones */
 typedef struct { unsigned char box, demand; TyKind ty; int tok, ntok; } SbReaderSave;
-int sb_reader_shim_open(Compiler *c, int recv, char *sref, size_t cap, SbReaderSave *sv);
+int sb_reader_shim_open(Compiler *c, int id, int recv, char *sref, size_t cap, SbReaderSave *sv);
 void sb_reader_shim_close(Compiler *c, int recv, const SbReaderSave *sv);
 int sb_shadowed_reader(int node);
 int sb_shim_args_first(Compiler *c, int id, Buf *pre, int indent);
