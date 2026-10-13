@@ -3049,7 +3049,9 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         Buf _eb = expr_buf(c, recv);
         emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", _texc);
         buf_puts(g_pre, _eb.p ? _eb.p : ""); buf_puts(g_pre, ";\n"); free(_eb.p);
-        buf_printf(b, "((sp_Class){(sp_int)-1, _t%d ? sp_exc_class_name((sp_Exception *)_t%d) : SPL(\"NilClass\")})", _texc, _texc);
+        /* by its own id (sp_user_exc_class), so #superclass and #ancestors
+           walk the user chain */
+        buf_printf(b, "(_t%d ? sp_user_exc_class(sp_exc_class_name((sp_Exception *)_t%d)) : ((sp_Class){(sp_int)-1, SPL(\"NilClass\")}))", _texc, _texc);
         return 1;
       }
       int _tobj = ++g_tmp;

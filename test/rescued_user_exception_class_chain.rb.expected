@@ -1,0 +1,15 @@
+Invalid
+Bad
+StandardError
+[Invalid, Bad, StandardError]
+true
+true
+"Invalid"
+Invalid
+[Admin::Oops, Invalid, Bad, StandardError]
+StandardError
+Bad
+[Invalid, Bad, StandardError]
+Bad
+Invalid
+[Tagged, Tag, Bad, StandardError]
