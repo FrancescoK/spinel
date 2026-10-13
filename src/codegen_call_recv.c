@@ -3434,6 +3434,10 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
       }
       else emit_expr(c, recv, b);
       buf_puts(b, "; ");
+      /* the rebuilt poly array is new, and the fill value made next can
+         allocate (a Range boxes into a new object): rooted across it */
+      if (fill_conflict && (operand_allocates_beside(c, argv[0]) || range_boxes_new(comp_ntype(c, argv[0]))))
+        buf_printf(b, "SP_GC_ROOT(_t%d); ", t);
       const char *fsfx = nil_store_sfx(c, fk, argv[0]);   /* a nil fill value takes the _nilable store */
       if (fsfx[0] && fill_rt != TY_POLY_ARRAY) buf_printf(b, "%s _t%d = ", oint_ctype(ty_array_elem(fill_rt)), tv);
       else { emit_ctype(c, ty_array_elem(fill_rt), b); buf_printf(b, " _t%d = ", tv); }
