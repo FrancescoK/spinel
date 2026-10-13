@@ -628,6 +628,21 @@ static void sh_bind_self(ShareFacts *F, Compiler *c, int call, int mi, int rv) {
   if (pf >= 0) sh_union(F, self, sh_self(F, c, pf));
 }
 
+/* Is node n in a class method's own body, where self is a Class (not in
+   a block, which instance_exec or class_eval can rebind)? */
+static int sh_in_class_method(Compiler *c, int n) {
+  const Scope *sc = comp_scope_of(c, n);
+  return sc && sc->is_cmethod && sc->def_node >= 0 && nt_kind(c->nt, sc->def_node) == NK_DefNode;
+}
+/* Does a class have a singleton accessor of the name (`class << self;
+   attr_reader :name`), which a class method's receiverless call reads? */
+static int sh_singleton_accessor(ShareFacts *F, Compiler *c, const char *name) {
+  if (!F->singleton_accessors) return 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_is_sg_reader(&c->classes[k], name) || comp_is_sg_writer(&c->classes[k], name)) return 1;
+  return 0;
+}
+
 static int sh_holder_read(const NodeTable *nt, int n) {
   NodeKind k = n >= 0 ? nt_kind(nt, n) : NK_NONE;
   return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
@@ -2784,11 +2799,13 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     return sh_join(F, r, sh_container_default(F, c, n, rv, blk));
   }
 
-  /* an attr reader or writer */
+  /* an attr reader or writer (not an instance's for a class method's self,
+     a Class) */
+  int cls_self = recv < 0 && sh_in_class_method(c, n);
   if (argc <= 1 && (recv < 0 || ty_is_object(rt) || rt == TY_POLY || rt == TY_UNKNOWN)) {
     int writer = 0;
     int iv = sh_attr_ivars(F, c, name, n, &writer);
-    if (iv >= 0 && writer == (argc == 1)) {
+    if (iv >= 0 && writer == (argc == 1) && !(cls_self && !sh_singleton_accessor(F, c, name))) {
       int r = iv;
       if (writer) {
         int vals[1];
@@ -2846,6 +2863,9 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   /* a builtin */
   if (recv < 0) {
     int s = bop_share_named(BOP_KERNEL, name);
+    /* a class method's self is its Class (`name` there is Module#name) */
+    if (!s && cls_self && bop_share_named(TY_CLASS, name) && !sh_singleton_accessor(F, c, name))
+      s = bop_share_named(TY_CLASS, name);
     if (!s) s = bop_share_named(BOP_ANY_RECV, name);
     return s ? sh_builtin(F, c, n, s, rv, blk, 0) : sh_unknown_call(F, c, n, blk);
   }

@@ -2805,6 +2805,10 @@ static const BopShareRow bop_share_rows[] = {
   { TY_CLASS,       "waitpid2", BSH_PURE },
   { TY_CLASS,       "pid", BSH_PURE },
   { TY_CLASS,       "allocate", BSH_PURE },
+  /* Regexp.escape and its alias quote answer a new String, also for a
+     String with nothing to escape */
+  { TY_CLASS,       "escape", BSH_PURE },
+  { TY_CLASS,       "quote", BSH_PURE },
 
   /* An OpenStruct's fields are its elements; a field's reader and writer
      (`os.name`, `os.name = s`) are read as `[]` and `[]=` (analyze_share.c

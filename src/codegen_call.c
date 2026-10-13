@@ -25308,13 +25308,15 @@ int emit_reopen_own_call(Compiler *c, int id, int dispatch_cid, Buf *b) {
    implicit-self resolution, which also carries the template-method and
    builtin-reopening fallbacks that must NOT preempt a builtin. */
 /* The class a receiverless call dispatches on when it names an attr reader
-   there (and no def overrides it), else -1. */
+   there (and no def overrides it), else -1. In a class method's own body
+   self is the Class, which has no instance's reader (`name` there is
+   Module#name), unless an instance_exec rebinds it. */
 int implicit_self_reader_cid(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   if (!name || nt_ref(nt, id, "receiver") >= 0) return -1;
   Scope *self = comp_scope_of(c, id);
-  if (!self) return -1;
+  if (!self || (self->is_cmethod && g_ie_class_id < 0)) return -1;
   int dispatch_cid = (g_ie_class_id >= 0) ? g_ie_class_id
                    : (g_emitting_class_id >= 0) ? g_emitting_class_id : self->class_id;
   if (dispatch_cid < 0) return -1;
