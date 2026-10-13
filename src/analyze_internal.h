@@ -273,6 +273,7 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id);
 /* A program's own Object method serving a call on a builtin receiver of
    class `cls` that does not have the name itself (see analyze_infer.c). */
 int object_reopen_answers(Compiler *c, const char *cls, int call_id, TyKind *out);
+int sclass_value_call(Compiler *c, int id);   /* analyze_infer.c */
 /* is_proc_constant / is_proc_literal are declared in analyze.h (codegen needs them). */
 /* 1 if `id` is any proc-creating literal: a proc/lambda/Proc.new call (above)
    or a `->(){}` LambdaNode. */

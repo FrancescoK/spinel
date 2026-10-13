@@ -1845,6 +1845,12 @@ static inline const char *sp_class_val_display(sp_RbVal v) {
 #ifdef SP_TU_REOPENS_BUILTIN_CLASS
 static int sp_reopened_builtin_id(int cls_id);
 #endif
+/* A singleton class's superclass and ancestors are not modeled: asked of
+   one, they raise rather than answer as for some other class. */
+static inline void sp_sclass_unmodeled(sp_Class c) {
+  if (sp_class_sclass_p(c))
+    sp_raise_cls("NotImplementedError", "spinel: the ancestry of a singleton class is not modeled");
+}
 /* Class identity: a name-backed class compares by its (complete) name, so it
    equals the id-backed class of the same name. */
 static inline sp_bool sp_class_eq(sp_Class a, sp_Class b) {
@@ -19581,6 +19587,8 @@ sp_RbVal sp_builtin_class_new(int kind, sp_int argc, const sp_RbVal *av, sp_Proc
    exception class, constructed as `RuntimeError.new(msg)` is, or a class
    the program cannot construct through a class value. */
 static sp_RbVal sp_class_value_new_fallback(sp_RbVal cls, const char *cn, sp_int argc, const sp_RbVal *av) {
+  if (cls.tag == SP_TAG_CLASS && sp_sclass_id_p(cls.v.i))
+    sp_raise_cls("TypeError", "can't create instance of singleton class");
   if (cn && sp_syserr_kind(cn, NULL) != SP_SYSERR_NONE)
     return sp_box_obj(sp_syserr_build(cn, argc, av), SP_BUILTIN_EXCEPTION);
   if (cn && (!strcmp(cn, "Exception") || sp_exc_parent_of_name(cn))) {

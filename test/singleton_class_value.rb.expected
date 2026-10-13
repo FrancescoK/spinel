@@ -1,0 +1,39 @@
+#<Class:Foo>
+nil
+"#<Class:Foo>"
+"#<Class:Foo>"
+"#<Class:Foo>"
+Class
+true
+false
+true
+false
+true
+false
+[#<Class:Foo>, #<Class:Bar>]
+1
+#<Class:String>
+#<Class:Comparable>
+#<Class:Bar>
+[nil, "Foo"]
+defining on #<Class:Shape>
+#<Class:Shape>
+nil
+"#<Class:Shape>"
+#<Class:Shape>
+"#<Class:Shape>"
+#<Class:Shape>
+true
+7
+#<Class:Holder>
+#<Class:Holder>
+true
+[:conf, :conf=, :helper, :make]
+[:own]
+true
+true
+true
+false
+[:conf, :conf=, :helper, :make]
+true
+"can't create instance of singleton class"

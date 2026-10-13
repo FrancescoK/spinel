@@ -191,6 +191,16 @@ typedef struct{sp_int cls_id;const char *name;}sp_Class;
 #define SP_CLASS_NIL_ID ((sp_int)-900)
 #define sp_class_nil_p(c) ((c).name == NULL && (c).cls_id == SP_CLASS_NIL_ID)
 #define SP_CLASS_NIL ((sp_Class){SP_CLASS_NIL_ID, NULL})
+/* The singleton class of class id `id` (`Foo.singleton_class`, self in a
+   `class << Foo` body): the id moved past every real one, a user class's up
+   by SP_SCLASS_OFF and a builtin's down by it, so it stays clear of
+   SP_CLASS_NIL_ID and SP_CLASS_BY_NAME and fits a 32-bit sp_int. */
+#define SP_SCLASS_OFF ((sp_int)1 << 20)
+#define sp_sclass_id(id) ((id) >= 0 ? (id) + SP_SCLASS_OFF : (id) - SP_SCLASS_OFF)
+#define sp_sclass_id_p(id) (((id) >= SP_SCLASS_OFF && (id) < 2 * SP_SCLASS_OFF) || \
+                            ((id) <= -SP_SCLASS_OFF && (id) > -2 * SP_SCLASS_OFF))
+#define sp_sclass_base_id(id) ((id) >= 0 ? (id) - SP_SCLASS_OFF : (id) + SP_SCLASS_OFF)
+#define sp_class_sclass_p(c) ((c).name == NULL && sp_sclass_id_p((c).cls_id))
 /* A class known only by name (see sp_box_class_name in sp_alloc.h): marks a
    boxed SP_TAG_CLASS value whose v.s carries the name instead of a resolved
    cls_id. */

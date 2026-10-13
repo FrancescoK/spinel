@@ -1727,7 +1727,7 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
     int fzn = sp_streq(name, "name");
     /* A Class.new class answers its name only once a constant names it: nil
        before, its display form for to_s and inspect (sp_class_val_display). */
-    if (c->has_anonymous_classes && fzn)
+    if ((c->has_anonymous_classes || comp_has_sclass_values(c)) && fzn)
       buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) { const char *_cn%d = sp_class_name_or_nil(sp_unbox_class(_t%d)); "
                     "_t%d = _cn%d ? %ssp_str_uminus_val(_cn%d)%s : %s; } else ",
                  tv, tv, tv, tr, tv, sbopen, tv, sbclose, ret == TY_POLY ? "sp_box_nil()" : "NULL");

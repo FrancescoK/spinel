@@ -3558,6 +3558,23 @@ int comp_class_extends_any(Compiler *c, int ci) {
 }
 
 /* Class.new identities acquire their public name only at an executed constant write. */
+/* Can the program hold a singleton class as a value (`k.singleton_class`,
+   self in a `class << X` body)? Asked once; the answer does not change
+   after the analysis. */
+int comp_has_sclass_values(Compiler *c) {
+  static const Compiler *memo_c = NULL;
+  static int memo = 0;
+  if (memo_c == c) return memo;
+  const NodeTable *nt = c->nt;
+  int any = 0;
+  for (int id = 0; id < nt->count && !any; id++)
+    any = (nt_kind(nt, id) == NK_SelfNode && nt_int(nt, id, "sclass_value", 0)) ||
+          (nt_kind(nt, id) == NK_CallNode && nt_str(nt, id, "name") &&
+           sp_streq(nt_str(nt, id, "name"), "singleton_class"));
+  memo_c = c; memo = any;
+  return any;
+}
+
 int comp_class_anonymous(Compiler *c, int ci) {
   return ci >= 0 && ci < c->nclasses &&
          nt_int(c->nt, c->classes[ci].def_node, "class_new_anonymous", 0);

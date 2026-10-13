@@ -956,8 +956,8 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
            "respond_to?, method_defined?, instance_methods and their kin (it would answer as if "
            "the branch had run); see docs/limitations.md";
   if (is_raise_alias(name) && nt_int(nt, id, "sclass_self", 0) && cplan_reachable(c, id))
-    return "self inside class << X is X's singleton class, which Spinel does not model: only its "
-           "declarations and defs are supported there; see docs/limitations.md";
+    return "the ancestry and the method table of a singleton class are not modeled: its name, "
+           "identity, instance_methods(false) and method_defined? are; see docs/limitations.md";
   if (is_raise_alias(name) && nt_int(nt, id, "class_new_superclass", 0) && cplan_reachable(c, id))
     return "Class.new with a non-constant superclass is not supported; "
            "use a constant superclass (see docs/limitations.md)";
@@ -1080,6 +1080,9 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
   };
   int hit = -1;
   for (int k = 0; tbl[k].m; k++) if (sp_streq(name, tbl[k].m)) { hit = k; break; }
+  /* a class's singleton class is a value of its own (sp_sclass_id); an
+     object's is not modeled */
+  if (hit >= 0 && sp_streq(name, "singleton_class") && sclass_value_call(c, id)) hit = -1;
 
   /* The receiver's constant name, for the limits that are keyed on it. */
   const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
