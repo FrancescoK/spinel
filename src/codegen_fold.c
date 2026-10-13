@@ -8350,10 +8350,11 @@ static void emit_arg_rooted(Compiler *c, Scope *m, int idx, int provided, int he
     Buf cb; memset(&cb, 0, sizeof cb);
     emit_arg_or_default(c, m, idx, provided, &cb);
     /* a String a handle parameter takes made here (a handle around the
-       argument's bytes) states that it stays rooted until the call */
+       argument's bytes) states that it stays rooted until the call, and
+       that making it may allocate */
     if (pt == TY_STRBUF) {
       StrForm sf;
-      str_form_of_text(&sf, cb.p ? cb.p : "NULL", pt, SF_ROOT_UNTIL_USE);
+      str_form_of_text(&sf, cb.p ? cb.p : "NULL", pt, SF_ROOT_UNTIL_USE | SF_ALLOCATES);
       str_form_settle(c, &sf, out);
       str_form_free(&sf);
     }

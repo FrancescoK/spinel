@@ -340,14 +340,24 @@ int emit_strbuf_read_ref(Compiler *c, int recv, Buf *b);
 int strbuf_object_ref(Compiler *c, int recv, Buf *b);
 /* A String value rendered for a consumer (codegen_str.c, #8328): its C
    expression, and what the expression needs from where it is used, which
-   str_form_settle meets. The needs:
+   str_form_settle meets. Two flags are needs of the value itself:
      SF_EVAL_ONCE       the value is used more than once (in two forms, or
                         twice), so it is evaluated once, into a temp of
                         type `cty` that the uses read (`tmp`);
      SF_ROOT_UNTIL_USE  the value is an object made here that what runs
                         before its use could collect, so it stays rooted
-                        until then. */
-enum { SF_EVAL_ONCE = 1, SF_ROOT_UNTIL_USE = 2 };
+                        until then.
+   The third describes the form's effect on other values:
+     SF_ALLOCATES       producing this form may allocate (it wraps a new
+                        handle around bytes or makes a String), so any
+                        other value live across it must be rooted. It is
+                        never set where the form reads an existing slot,
+                        box or handle; the value's own evaluation is the
+                        consumer's to judge, as operand_may_allocate does.
+                        The schedule layer reads it, and so is the
+                        argument binder's rooting of the values that run
+                        ahead to; str_form_settle does not act on it. */
+enum { SF_EVAL_ONCE = 1, SF_ROOT_UNTIL_USE = 2, SF_ALLOCATES = 4 };
 typedef struct {
   Buf expr;
   unsigned needs;
