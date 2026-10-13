@@ -413,6 +413,7 @@ void arg_layout_param_map(Compiler *c, Scope *m, const int *argv, int argc, int 
 int arg_layout_param_source(Compiler *c, Scope *m, int call, int i, int *spread);
 int zsuper_param_source(Compiler *c, Scope *s, Scope *pm, int j);         /* codegen_fold.c */
 int ty_runs_no_code(TyKind t);  /* codegen_call.c: a builtin reading such a value runs no program code */
+int refl_member_of_struct_superclass(Compiler *c, int ci, const char *m);  /* codegen_call.c */
 int subtree_reads_match_globals(Compiler *c, int root);  /* codegen_call_recv.c: $~, $1.. read there */
 int rest_packable_arm(Compiler *c, Scope *s);                    /* codegen_fold.c */
 /* The type a READ of ivar slot `iv` yields (a shared-mutable string slot
