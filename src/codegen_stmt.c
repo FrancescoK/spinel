@@ -14652,6 +14652,10 @@ static void emit_class_body_stmts(Compiler *c, int ci, int body, Buf *b, int ind
       int is_output = 0;
       for (int q = 0; cn && kernel_acts[q] && !is_output; q++) is_output = sp_streq(cn, kernel_acts[q]);
       int is_user = cn && comp_method_index(c, cn) >= 0;
+      /* a class_eval family call given a `&blk` runs it: not the reopen a
+         literal block of defs is */
+      int blk_arg = cn && is_eval_exec_family(cn) &&
+                    nt_kind(nt, nt_ref(nt, stmts[k], "block")) == NK_BlockArgumentNode;
       /* self in a class body is the class, so a receiver-less call naming one
          of its class methods (its own or an ancestor's) is a real call, not a
          declaration macro -- the shape every declarative DSL uses (`key :a`,
@@ -14670,7 +14674,7 @@ static void emit_class_body_stmts(Compiler *c, int ci, int body, Buf *b, int ind
                    cn, ci >= 0 && comp_class_is_module(c, &c->classes[ci]) ? "module" : "class", rn ? rn : "Object");
         continue;
       }
-      if (!is_output && !is_user) continue;
+      if (!is_output && !is_user && !blk_arg) continue;
     }
     emit_stmt_or_defer(c, stmts[k], b, indent);
   }

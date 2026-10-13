@@ -12932,6 +12932,45 @@ static void cn_raise_module_super(NodeTable *nt, int id, int par) {
   }
 }
 
+/* `recv.class_eval(&obj.method(:m))`: a Method object keeps its own self,
+   so the eval runs `obj.m(recv)` (class_eval, module_eval, instance_eval
+   pass the receiver) or `obj.m(args...)` (class_exec, module_exec,
+   instance_exec pass their arguments), and answers what it answers. */
+int desugar_eval_method_block(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int blk = nt_ref(nt, id, "block");
+    if (!nm || !is_eval_exec_family(nm) || blk < 0 || nt_kind(nt, blk) != NK_BlockArgumentNode) continue;
+    int mc = nt_ref(nt, blk, "expression");
+    const char *mn = mc >= 0 && nt_kind(nt, mc) == NK_CallNode ? nt_str(nt, mc, "name") : NULL;
+    if (!mn || !sp_streq(mn, "method") || nt_ref(nt, mc, "block") >= 0) continue;
+    int ma = nt_ref(nt, mc, "arguments"), mac = 0;
+    const int *mav = ma >= 0 ? nt_arr(nt, ma, "arguments", &mac) : NULL;
+    if (mac != 1 || nt_kind(nt, mav[0]) != NK_SymbolNode || !nt_str(nt, mav[0], "value")) continue;
+    char meth[256]; snprintf(meth, sizeof meth, "%s", nt_str(nt, mav[0], "value"));
+    int exec = strstr(nm, "_exec") != NULL;
+    int recv = nt_ref(nt, id, "receiver");
+    int args = nt_ref(nt, id, "arguments");
+    if (!exec) {
+      /* the block's one argument is the receiver: self when bare */
+      if (recv < 0) recv = fwd_new_node_like(nt, id, "SelfNode");
+      args = fwd_new_node_like(nt, id, "ArgumentsNode");
+      if (recv < 0 || args < 0) continue;
+      nt_node_set_arr(nt, args, "arguments", &recv, 1);
+    }
+    nt_node_set_str(nt, id, "name", meth);
+    nt_node_set_ref(nt, id, "receiver", nt_ref(nt, mc, "receiver"));
+    nt_node_set_ref(nt, id, "arguments", args);
+    nt_node_set_ref(nt, id, "block", -1);
+    changed = 1;
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 int desugar_class_new_blocks(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0, serial = 0;
