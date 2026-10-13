@@ -1,0 +1,38 @@
+[Bad, true, true, false]
+[Invalid, true, true, true]
+[Admin::Oops, false, false, false]
+[StandardError, true, true, false]
+[Exception, true, true, false]
+[ArgumentError, false, false, false]
+[Object, true, true, false]
+[Kernel, true, true, false]
+[Tag, false, false, false]
+[Comparable, false, false, false]
+[Bad, true, true, false]
+[Invalid, true, true, false]
+[Admin::Oops, true, true, true]
+[StandardError, true, true, false]
+[Exception, true, true, false]
+[ArgumentError, false, false, false]
+[Object, true, true, false]
+[Kernel, true, true, false]
+[Tag, true, true, false]
+[Comparable, false, false, false]
+true
+false
+true
+"bad"
+true
+"class or module required"
+true
+false
+false
+true
+true
+true
+true
+true
+true
+false
+"class or module required"
+true

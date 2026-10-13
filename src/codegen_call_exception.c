@@ -641,17 +641,32 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
          flat leaf name never matched (#3260) */
       char qbuf[192];
       const char *cn = isa_const_qualname(nt, argv[0], qbuf, sizeof qbuf);
-      if (cn) {
-        /* instance_of? is an exact-class test, not an ancestor walk: an
-           ArgumentError is not instance_of?(StandardError) (#3013) */
-        if (sp_streq(name, "instance_of?")) {
-          buf_puts(b, "(strcmp(sp_exc_class_name("); emit_expr(c, recv, b);
-          buf_printf(b, "), \"%s\") == 0)", cn);
+      /* ...or a Class value (`e.is_a?(klass)`), by the name the class
+         carries; a value that is no Class or Module (nil, or a boxed
+         String) is CRuby's TypeError */
+      TyKind kt = comp_ntype(c, argv[0]);
+      if (cn || kt == TY_CLASS || kt == TY_POLY) {
+        Buf rb = {0}, kb = {0};
+        if (cn) {
+          rb = expr_buf(c, recv);
+          buf_printf(&kb, "\"%s\"", cn);
         }
         else {
-          buf_puts(b, "sp_exc_is_a("); emit_expr(c, recv, b);
-          buf_printf(b, ", \"%s\")", cn);
+          /* the receiver is read into a temporary first: the class argument
+             may assign it, and C leaves the order of call arguments open */
+          buf_printf(&rb, "_t%d", hoist_exc_recv(c, recv));
+          buf_puts(&kb, kt == TY_CLASS ? "sp_class_to_s(sp_isa_class_arg(sp_box_class("
+                                       : "sp_class_to_s(sp_isa_class_arg(");
+          emit_expr(c, argv[0], &kb);
+          buf_puts(&kb, kt == TY_CLASS ? ")))" : "))");
         }
+        /* instance_of? is an exact-class test, not an ancestor walk: an
+           ArgumentError is not instance_of?(StandardError) (#3013) */
+        if (sp_streq(name, "instance_of?"))
+          buf_printf(b, "(strcmp(sp_exc_class_name(%s), %s) == 0)", rb.p ? rb.p : "", kb.p ? kb.p : "");
+        else
+          buf_printf(b, "sp_exc_is_a(%s, %s)", rb.p ? rb.p : "", kb.p ? kb.p : "");
+        free(rb.p); free(kb.p);
         return 1;
       }
     }
