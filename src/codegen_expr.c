@@ -1665,6 +1665,20 @@ static int emit_next_expr(Compiler *c, int id, Buf *b) {
    argument sits deeper than the call that takes the argument. */
 int g_expr_depth = 0;
 
+/* Does self at `defined?` node `id` answer bare call `cn` with a builtin
+   method: one of BasicObject's public ones, which every object has, one of
+   Object's, which every object has but one below BasicObject, or in a class
+   body or a class method, one of Class's or Module's own? */
+static int defined_bare_builtin(Compiler *c, int id, const char *cn) {
+  Scope *s = comp_scope_of(c, id);
+  if (basicobject_own_method(cn) && !sp_streq(cn, "initialize") && !sp_streq(cn, "method_missing"))
+    return 1;
+  if (builtin_object_method_known(cn))
+    return !(s && !s->is_cmethod && s->class_id >= 0 && class_is_blank_slate(c, s->class_id));
+  int cls = !s ? -1 : s->is_cmethod ? s->class_id : s->class_id < 0 && g_ie_class_id < 0 ? g_class_body_id : -1;
+  return cls >= 0 && class_object_answers_builtin(cn, comp_class_is_module(c, &c->classes[cls]));
+}
+
 /* A variable's read as the slot itself, to assign to: no sp_srange_live
    around a String Range's (#8321). A read of a String Range takes no wrapper
    now either: its kept endpoints stay handles, read where they are used
@@ -3465,6 +3479,7 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
                (comp_method_in_chain(c, comp_scope_of(c, id)->class_id, cn, NULL) >= 0 ||
                 comp_reader_in_chain(c, comp_scope_of(c, id)->class_id, cn, NULL)))
         res = "method";
+      else if (cn && defined_bare_builtin(c, id, cn)) res = "method";
       /* builtin kernel functions the compiler always resolves */
       else if (cn) {
         static const char *const kfns[] = {

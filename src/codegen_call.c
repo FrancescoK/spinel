@@ -16764,6 +16764,13 @@ static int class_object_private_method(const char *qm, int is_module) {
   for (int u = 0; module_only[u]; u++) if (sp_streq(qm, module_only[u])) return 1;
   return 0;
 }
+/* Does a class object (a module's when is_module) answer `qm` with one of
+   Class's or Module's own methods, public or private: what a bare call in
+   its body or in one of its class methods reaches? */
+int class_object_answers_builtin(const char *qm, int is_module) {
+  if (class_object_universal_method(qm)) return !(is_module && class_only_method(qm));
+  return class_object_private_method(qm, is_module);
+}
 static int class_is_module(Compiler *c, int ci) {
   return comp_class_is_module(c, &c->classes[ci]);
 }
