@@ -489,10 +489,12 @@ sp_StringIO *sp_StringIO_new_hn(sp_int cls_id) {
   return sp_StringIO_new_h(cls_id, sp_String_new_fresh(sp_str_empty));
 }
 /* #string as the shared handle itself. One opened on no handle takes one
-   over its bytes now, which then holds them. */
+   over its bytes now, which then holds them; over a frozen String it is
+   frozen, as #string answers that String itself, and takes no write. */
 sp_String *sp_StringIO_string_h(sp_StringIO *s) {SP_GC_ROOT(s);
   if (!s->str) {
     sp_String *h = sp_String_new_len(s->buf ? s->buf : "", s->buf ? s->len : 0);
+    if (s->borrowed && sp_str_is_frozen_val(s->buf)) sp_String_freeze(h);
     if (!s->borrowed) free(s->buf);
     s->borrowed = 0;
     s->str = h;

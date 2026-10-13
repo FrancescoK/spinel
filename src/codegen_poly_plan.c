@@ -346,12 +346,20 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
     int nmi = comp_native_method_find(c, k, name, 0, 0);
     if (a->kind == PA_NATIVE) {
       NativeMethod *nmet = &c->native_methods[nmi];
-      char nbuf[300];
+      char nbuf[300], cbuf[240];
       const char *rest0 = nmet->rest ? ", 0, NULL" : "";
-      if (sp_streq(nmet->ret, "string?"))
-        snprintf(nbuf, sizeof nbuf, "sp_box_nullable_str(%s((%s *)_t%d.v.p%s))", nmet->csym, c->classes[k].c_struct, tv, rest0);
+      /* --share-strings: a binding answering the String its object keeps,
+         where the rule shares the call's String, publishes that String's
+         handle, read through its handle form (repr_native_arm_handle), as
+         a method arm's tail read does: the call's pickup takes it */
+      if (repr_native_arm_handle(c, id, k) && share_node_shares(c, id))
+        snprintf(cbuf, sizeof cbuf, "sp_strbuf_read_pub(%s((%s *)_t%d.v.p))", nmet->share_csym, c->classes[k].c_struct, tv);
       else
-        snprintf(nbuf, sizeof nbuf, "%s((%s *)_t%d.v.p%s)", nmet->csym, c->classes[k].c_struct, tv, rest0);
+        snprintf(cbuf, sizeof cbuf, "%s((%s *)_t%d.v.p%s)", nmet->csym, c->classes[k].c_struct, tv, rest0);
+      if (sp_streq(nmet->ret, "string?"))
+        snprintf(nbuf, sizeof nbuf, "sp_box_nullable_str(%s)", cbuf);
+      else
+        snprintf(nbuf, sizeof nbuf, "%s", cbuf);
       TyKind mret = native_spec_to_ty(nmet->ret);
       buf_printf(b, " case %d: ", k);
       int pconv = PC_SAME;
