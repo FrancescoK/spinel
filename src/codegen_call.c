@@ -11588,6 +11588,10 @@ static void emit_super_new_forward(Compiler *c, int id, int ci, Scope *s,
     }
     emit_ctype(c, dt, b);
     buf_printf(b, " lv__sn%d_%d = %s; ", uid, i, vb.p ? vb.p : "0");
+    /* a value bound here (a default's new String) is held while the next
+       parameter's default and the constructor allocate */
+    { char ln[48]; snprintf(ln, sizeof ln, "lv__sn%d_%d", uid, i);
+      if (ty_gc_rootable(c, dt)) { emit_gc_root_var(c, dt, ln, b); buf_puts(b, " "); } }
     free(vb.p);
     if (pn && g_nren < MAX_RENAME) {
       snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", pn);
