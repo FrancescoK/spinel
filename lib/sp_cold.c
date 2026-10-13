@@ -3408,7 +3408,9 @@ sp_Enumerator *sp_Enumerator_regroup_gen(sp_Enumerator *e, sp_int n, sp_bool con
   sp_Enumerator *r = sp_Enumerator_new_gen(sp_regroup_gen, cap, sp_box_nil());
   SP_GC_ROOT(r);
   r->source = e->source;
-  r->meth = sp_sprintf(cons ? "each_cons(%lld)" : "each_slice(%lld)", (long long)n);
+  const char *m = sp_sprintf(cons ? "each_cons(%lld)" : "each_slice(%lld)", (long long)n);
+  sp_gc_wb((void *)r);   /* the sprintf can promote the rooted enumerator */
+  r->meth = m;
   return sp_enum_inherit_size(r, e);
 }
 sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, sp_int off) {
@@ -5406,10 +5408,14 @@ sp_Addrinfo *sp_addrinfo_new(const char *ip, sp_int port, sp_int stype, sp_int i
   sp_Addrinfo *a = (sp_Addrinfo *)sp_gc_alloc(sizeof(sp_Addrinfo), NULL, sp_addrinfo_scan);
   a->ip = NULL; a->afname = NULL;
   SP_GC_ROOT(a);
-  a->ip = sp_sprintf("%s", ip ? ip : "");
+  /* each sprintf can collect and promote the rooted object, so each store
+     takes the barrier after the allocation it stores: one barrier after
+     both was cleared by the second's collection, which freed the first */
+  const char *s = sp_sprintf("%s", ip ? ip : "");
+  sp_gc_wb((void *)a); a->ip = s;
   int v6 = !is_unix && ip && strchr(ip, ':') != NULL;
-  a->afname = sp_sprintf("%s", is_unix ? "AF_UNIX" : v6 ? "AF_INET6" : "AF_INET");
-  sp_gc_wb((void *)a);   /* the two sprintfs can promote the rooted object */
+  s = sp_sprintf("%s", is_unix ? "AF_UNIX" : v6 ? "AF_INET6" : "AF_INET");
+  sp_gc_wb((void *)a); a->afname = s;
   a->afamily = is_unix ? AF_UNIX : v6 ? AF_INET6 : AF_INET;
   a->port = port;
   a->socktype = stype;
