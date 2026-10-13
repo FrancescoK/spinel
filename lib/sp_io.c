@@ -17,7 +17,9 @@
 #include <unistd.h>   /* pipe, isatty */
 #include <sys/stat.h> /* stat() for the File predicates */
 #include <sys/ioctl.h> /* TIOCGWINSZ for #winsize */
+#if !defined(__wasi__) && !defined(_WIN32)
 #include <termios.h>   /* io/console's IO#raw / IO#noecho */
+#endif
 #include <sys/socket.h> /* the Socket:: constants */
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -481,6 +483,16 @@ sp_IntArray *sp_File_winsize(sp_File *f) {
    not a terminal raises tcgetattr's Errno (ENOTTY), as CRuby's does. Answers
    the slot the saved settings sit in, for the restore; nested modes take a
    slot each. */
+#if defined(__wasi__) || defined(_WIN32)
+/* No termios: no handle is a terminal whose mode can be set. */
+sp_int sp_File_tty_mode(sp_File *f, sp_int kind) {
+  (void)kind;
+  SP_IO_OPEN(f);
+  sp_raise_cls(sp_errno_class_name(ENOTTY), strerror(ENOTTY));
+  return 0;
+}
+sp_int sp_File_tty_restore(sp_File *f, sp_int slot) { (void)f; (void)slot; return 0; }
+#else
 #define SP_TTY_SLOTS 16
 static struct termios sp_tty_saved[SP_TTY_SLOTS];
 static int sp_tty_saved_fd[SP_TTY_SLOTS];
@@ -517,6 +529,7 @@ sp_int sp_File_tty_restore(sp_File *f, sp_int slot) {
   sp_tty_saved_used[slot] = 0;
   return 0;
 }
+#endif
 
 /* IO#winsize= [rows, cols] or [rows, cols, xpixel, ypixel], as CRuby's
    io/console: any other length is ArgumentError, and a handle that is not a
