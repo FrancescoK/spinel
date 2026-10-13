@@ -7626,6 +7626,9 @@ static sp_RbVal sp_poly_splice(sp_RbVal recv, sp_int start, sp_int len, sp_RbVal
                                                : sp_String_cstr((sp_String *)recv.v.p);
     /* String#[]= takes a String (or a #to_str), else CRuby's TypeError: an
        Integer, a Symbol or nil is not spliced in as its to_s */
+    /* a Class or an Encoding has no #to_str either, but the String-slot
+       conversion would take it through its to_s */
+    if (src.tag == SP_TAG_CLASS || src.tag == SP_TAG_ENCODING) sp_raise_no_str_conversion(src);
     const char *rep = (src.tag == SP_TAG_STR) ? (src.v.s ? src.v.s : sp_str_empty)
                                               : sp_poly_arg_str_chk(src);
     SP_GC_ROOT(cur); SP_GC_ROOT(rep);
