@@ -10,3 +10,6 @@
 "uninitialized constant Point::LIMIT"
 "uninitialized constant M::TOP_ONLY"
 "uninitialized constant Sub::TOP_ONLY"
+9
+8
+"uninitialized constant Point::TOP_ONLY"

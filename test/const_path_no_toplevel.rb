@@ -37,3 +37,15 @@ p Point.new.lim
     p e.message
   end
 end
+
+# a path write through an unrelated class does not define the name for
+# another class's path; one through an ancestor does
+class Other; end
+Other::TOP_ONLY = 9
+Base::VIA_BASE = 8
+p Other::TOP_ONLY, Sub::VIA_BASE
+begin
+  p Point::TOP_ONLY
+rescue NameError => e
+  p e.message
+end
