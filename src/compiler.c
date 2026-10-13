@@ -1888,10 +1888,17 @@ const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, i
   int lim_cls = -1, lim = 0;
   for (int hops = 0; hops < 32; hops++) {
     const char *next = NULL;
+    int from = class_id;
     for (int cid = class_id; cid >= 0 && !next; cid = c->classes[cid].parent) {
       ClassInfo *ci = &c->classes[cid];
       for (int i = (cid == lim_cls ? lim : ci->naliases) - 1; i >= 0; i--)
         if (sp_streq(ci->alias_new[i], name)) {
+          /* a class below that defines the name itself answers it: the
+             ancestor's alias of that name is behind it (`attr_reader :loc`
+             in a subclass of one with `alias loc location`). Asked only
+             once an alias is found, which most lookups never do. */
+          for (int d = from; d >= 0 && d != cid; d = c->classes[d].parent)
+            if (comp_method_in_class(c, d, name) >= 0 || comp_is_reader(&c->classes[d], name)) return name;
           next = ci->alias_old[i];
           /* An alias of an INHERITED method names the body that was in effect
              where the alias appeared, so a redefinition in this class must not
@@ -1911,10 +1918,6 @@ const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, i
           }
           break;
         }
-      /* a class that defines the name itself answers it: an ancestor's
-         alias of that name is behind it (`attr_reader :loc` in a subclass
-         of one with `alias loc location`) */
-      if (!next && (comp_method_in_class(c, cid, name) >= 0 || comp_is_reader(ci, name))) break;
     }
     if (!next) return name;
     name = next;
