@@ -2177,8 +2177,11 @@ int aset_range_held(Compiler *c, TyKind rt, const int *argv) {
   if (rt == TY_POLY_ARRAY) return 1;
   const char *k = array_kind(rt);
   TyKind et = ty_array_elem(rt);
-  return k && (et == TY_INT || et == TY_FLOAT || et == TY_STRING) && comp_ntype(c, argv[1]) == et &&
-         repr_of(c, argv[1]).kind != RK_BOXED && !nil_store_sfx(c, k, argv[1])[0];
+  if (!k || (et != TY_INT && et != TY_FLOAT && et != TY_STRING)) return 0;
+  /* a boxed value (promote's Integers) takes the same two arms: the
+     splice unboxes it as an element, the store as it stores one */
+  if (repr_of(c, argv[1]).kind == RK_BOXED) return 1;
+  return comp_ntype(c, argv[1]) == et && !nil_store_sfx(c, k, argv[1])[0];
 }
 void emit_aset_range_held(Compiler *c, int id, int recv, TyKind rt, const int *argv, Buf *b) {
   buf_puts(b, "({ ");
@@ -2186,6 +2189,39 @@ void emit_aset_range_held(Compiler *c, int id, int recv, TyKind rt, const int *a
   int rbind = view_bind(recv, "_t%d", tr);
   int ti = ++g_tmp;
   buf_printf(b, "sp_RbVal _t%d = ", ti); emit_expr(c, argv[0], b);
+  /* A boxed value (promote's Integers): held once, each arm takes it boxed
+     and is a statement, and the store answers it as the call is read --
+     the two arms' own answers (the splice's sp_RbVal, the store's oint)
+     do not meet in one conditional */
+  if (rt != TY_POLY_ARRAY && repr_of(c, argv[1]).kind == RK_BOXED) {
+    int tv = ++g_tmp;
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", ti, tv); emit_boxed(c, argv[1], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) { (void)", tv, ti, ti);
+    int vbind = view_bind(argv[1], "_t%d", tv);
+    int vv = view_push(c, argv[1], TY_POLY);
+    int bind = view_bind(argv[0], "(*(sp_Range *)_t%d.v.p)", ti);
+    int v = view_push(c, argv[0], TY_RANGE);
+    emit_array_splice(c, id, recv, rt, -1, -1, argv[0], argv[1], b);
+    view_pop(c, v);
+    view_unbind(bind);
+    buf_puts(b, "; }\nelse { (void)");
+    bind = view_bind(argv[0], "sp_poly_arg_int_chk(_t%d)", ti);
+    v = view_push(c, argv[0], TY_INT);
+    emit_call_array_arms(c, id, b, c->nt, "[]=", recv, 2, argv, rt);
+    view_pop(c, v);
+    view_unbind(bind);
+    view_pop(c, vv);
+    view_unbind(vbind);
+    view_unbind(rbind);
+    buf_puts(b, "; } ");
+    TyKind et = ty_array_elem(rt), it = comp_ntype(c, id);
+    char tn[32]; snprintf(tn, sizeof tn, "_t%d", tv);
+    if (oint_kind(et) && node_is_oint(c, id)) buf_printf(b, "%s(%s)", oint_unbox(et), tn);
+    else if (it == TY_POLY || it == TY_UNKNOWN || repr_of(c, id).kind == RK_BOXED) buf_puts(b, tn);
+    else emit_unbox_text(c, it, tn, b);
+    buf_puts(b, "; })");
+    return;
+  }
   buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? ", ti, ti, ti);
   int bind = view_bind(argv[0], "(*(sp_Range *)_t%d.v.p)", ti);
   int v = view_push(c, argv[0], TY_RANGE);
