@@ -71,3 +71,40 @@ begin
 rescue TypeError => e
   p e.message
 end
+
+# #to_a answering something other than an Array is a TypeError, whether
+# the class is known (a def, an alias of a reader) or the value is boxed;
+# a boxed nil answer spreads the object itself
+class Holder
+  def initialize(v) = @v = v
+  attr_reader :v
+  alias to_a v
+end
+
+class Six
+  def to_a = 6
+end
+
+[5, nil, [1, 2], {a: 1}].each do |v|
+  begin
+    p [*Holder.new(v)].map(&:class)
+  rescue TypeError => e
+    p e.message
+  end
+end
+begin
+  p [*Six.new]
+rescue TypeError => e
+  p e.message
+end
+begin
+  a, b = *Six.new
+  p [a, b]
+rescue TypeError => e
+  p e.message
+end
+begin
+  p all(Holder.new(7))
+rescue TypeError => e
+  p e.message
+end

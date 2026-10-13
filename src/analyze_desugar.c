@@ -6149,6 +6149,7 @@ int desugar_splat_to_a(Compiler *c) {
     nt_node_set_ref(nt, call, "receiver", val);
     nt_node_set_str(nt, call, "name", "to_a");
     nt_node_set_int(nt, call, "made_to_a", 1);
+    nt_node_set_int(nt, call, "splat_to_a", 1);   /* its answer must be an Array (emit_splat_to_a_check_wrap) */
     nt_node_set_ref(nt, call, "arguments", -1);
     nt_node_set_ref(nt, call, "block", -1);
     nt_node_set_ref(nt, id, "expression", call);

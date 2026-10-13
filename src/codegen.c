@@ -11352,15 +11352,14 @@ static int obj_to_a_method(Compiler *c, int cid, int *defc) {
 }
 /* The instance variable behind an attr_reader that answers #to_a
    (`alias to_a children` of `attr_reader :children`), as its index in class
-   cid's ivars, when it holds an Array or a boxed value; else -1. */
+   cid's ivars, or -1. Whatever it holds is the answer: a caller raises
+   CRuby's TypeError for one that is not an Array. */
 static int obj_to_a_reader(Compiler *c, int cid) {
   if (comp_resolve_member(c, cid, "to_a", 0, NULL, NULL) != SP_MEMBER_ATTR) return -1;
   const char *rn = comp_resolve_alias(c, cid, "to_a");
   ClassInfo *ci = &c->classes[cid];
   for (int j = 0; j < ci->nivars; j++) {
-    if (!sp_streq(ci->ivars[j] + 1, rn)) continue;
-    TyKind t = ci->ivar_types[j];
-    return ty_is_array(t) || t == TY_POLY ? j : -1;
+    if (sp_streq(ci->ivars[j] + 1, rn)) return ci->ivar_types[j] == TY_UNKNOWN ? -1 : j;
   }
   return -1;
 }

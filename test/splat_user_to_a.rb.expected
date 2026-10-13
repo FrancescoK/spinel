@@ -14,3 +14,10 @@
 [Nothing]
 [Plain]
 "can't convert Five to Array (Five#to_a gives Integer)"
+"can't convert Holder to Array (Holder#to_a gives Integer)"
+[Holder]
+[Integer, Integer]
+"can't convert Holder to Array (Holder#to_a gives Hash)"
+"can't convert Six to Array (Six#to_a gives Integer)"
+"can't convert Six to Array (Six#to_a gives Integer)"
+"can't convert Holder to Array (Holder#to_a gives Integer)"
