@@ -387,7 +387,10 @@ static int share_plan_builtin_keeps(Compiler *c, int call) {
 static int share_plan_box_kept(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   int n = c->share_parent_n;
-  for (int depth = 0; depth < 64; depth++) {
+  /* the parents form a tree, so a walk of n steps reaches the root; the
+     bound only guards a malformed map, and running out of it answers
+     "kept": a handle is never wrong, bytes would be a copy */
+  for (int depth = 0; depth < n; depth++) {
     int p = c->share_parent && v >= 0 && v < n ? c->share_parent[v] : -1;
     if (p < 0 || p >= n) return 0;
     const char *pty = nt_type(nt, p);
@@ -441,7 +444,7 @@ static int share_plan_box_kept(Compiler *c, int v) {
       return 0;
     }
   }
-  return 0;
+  return 1;
 }
 
 /* Is node v, a new String, an element of a container literal a holder
