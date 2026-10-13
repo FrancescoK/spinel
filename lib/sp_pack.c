@@ -438,6 +438,7 @@ static void pk_ber_poly(sp_RbVal v, char **buf, size_t *len, size_t *cap) {
 
 /* Keep the ordinary loop's inlined conversion with a second packing entry. */
 static inline double pk_poly_to_flt(sp_RbVal v) {
+  v = sp_rbval_str(v);
   switch (v.tag) {
     case SP_TAG_FLT:  return v.v.f;
     case SP_TAG_INT:  return (double)v.v.i;

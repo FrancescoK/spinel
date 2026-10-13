@@ -758,24 +758,19 @@ static inline sp_RbVal sp_box_int(sp_int v)    { sp_RbVal r; r.tag = SP_TAG_INT;
    invariant); preserve that across the boxing boundary, or a boxed nil-string
    carries SP_TAG_STR and fails tag-keyed comparisons -- `defined?(x).should
    == nil` compared STR(NULL) against NIL and answered false. */
-/* --share-strings (SP_SHARE_BOX_HANDLES, which a program built with it
-   defines): a box of a String that can still change is the String object,
-   its handle, so every copy of the box names one object and a change in
-   place through one holder is seen through the others. A handle's own bytes
-   (marker 0xfd) box as that handle (sp_box_str_owner, sp_string.h); a new
-   String the compiler boxes is made one (sp_box_str_new). */
-#ifdef SP_SHARE_BOX_HANDLES
-static inline sp_RbVal sp_box_str_owner(const char *v);
-#endif
-static inline sp_RbVal sp_box_str(const char *v){ sp_RbVal r; if (!v) { r.tag = SP_TAG_NIL; r.cls_id = 0; r.v.s = NULL; return r; }
-#ifdef SP_SHARE_BOX_HANDLES
-  if (SP_UNLIKELY(((const unsigned char *)v)[-1] == 0xfd)) return sp_box_str_owner(v);
-#endif
-  r.tag = SP_TAG_STR;  r.cls_id = 0; r.v.s = v; return r; }
-/* A String's bytes boxed as themselves, never as its handle: the value a
-   handle box is read as (sp_poly_strbuf_deref), and the identity of a
-   literal's or a frozen handle's bytes (sp_poly_literal_identity). */
-static inline sp_RbVal sp_box_str_bytes(const char *v){ sp_RbVal r; if (!v) { r.tag = SP_TAG_NIL; r.cls_id = 0; r.v.s = NULL; return r; } r.tag = SP_TAG_STR; r.cls_id = 0; r.v.s = v; return r; }
+static inline sp_RbVal sp_box_str(const char *v){ sp_RbVal r; if (!v) { r.tag = SP_TAG_NIL; r.cls_id = 0; r.v.s = NULL; return r; } r.tag = SP_TAG_STR;  r.cls_id = 0; r.v.s = v; return r; }
+/* A boxed value as the String it holds, for a reader that takes a String
+   by its tag: a shared String's handle (SP_BUILTIN_STRBUF) reads as a box
+   of its bytes, the handle's first field (sp_String.data); any other value
+   is itself. */
+static inline sp_RbVal sp_rbval_str(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p) {
+    v.tag = SP_TAG_STR;
+    v.cls_id = 0;
+    v.v.s = *(const char **)v.v.p;
+  }
+  return v;
+}
 /* A String mutator's value from a poly arm, which answers the box or the
    unboxed String by mutator: boxed either way (a NULL String is nil). */
 static inline sp_RbVal sp_box_same(sp_RbVal v){ return v; }

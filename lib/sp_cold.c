@@ -2348,6 +2348,7 @@ sp_oint sp_File_getbyte(sp_File *f) {
   return ch == EOF ? sp_oint_nil() : sp_oint_of((sp_int)ch);
 }
 sp_RbVal sp_File_ungetc(sp_File *f, sp_RbVal v) {
+  v = sp_rbval_str(v);
   SP_IO_OPEN(f);
   if (v.tag == SP_TAG_STR && v.v.s && v.v.s[0]) {
     size_t n = sp_str_byte_len(v.v.s);
@@ -2391,6 +2392,7 @@ sp_int sp_File_fsync(sp_File *f) {
   return 0;
 }
 sp_RbVal sp_File_putc(sp_File *f, sp_RbVal v) {
+  v = sp_rbval_str(v);
   SP_IO_OPEN(f);
   if (v.tag == SP_TAG_INT) fputc((int)(v.v.i & 0xff), f->fp);
   else if (v.tag == SP_TAG_STR) { if (v.v.s && v.v.s[0]) fputc(v.v.s[0], f->fp); }
@@ -3653,6 +3655,7 @@ void sp_sig_exit_dispatch(void) {
   if (p) { sp_int slot = 0; _sp_proc_poly_args[0] = sp_box_int(0); sp_proc_call(p, 1, &slot); }
 }
 sp_RbVal sp_signal_trap(sp_RbVal sig, sp_RbVal handler) {SP_GC_ROOT_RBVAL(sig);SP_GC_ROOT_RBVAL(handler);
+  handler = sp_rbval_str(handler);
   int no = sp_signal_resolve(sig);
   if (no == SIGKILL || no == SIGSTOP)
     sp_raise_cls("Errno::EINVAL",
@@ -4625,6 +4628,7 @@ static const char *const sp_encoding_names[][2] = {
 #include "sp_encoding_names.h"
   { NULL, NULL } };
 sp_RbVal sp_encoding_find(sp_RbVal v) {
+  v = sp_rbval_str(v);
   if (v.tag == SP_TAG_ENCODING) return v;
   if (v.tag != SP_TAG_STR) {
     const char *cn = v.tag == SP_TAG_NIL ? "nil" : v.tag == SP_TAG_INT ? "Integer"
@@ -4668,6 +4672,7 @@ int sp_force_encoding_mode(sp_RbVal enc) {
    external), 2 ASCII-8BIT, -1 another encoding, -2 a "BOM|" one, 0 a name
    no encoding has. `*nm` is the name. */
 static int sp_io_enc_side(sp_RbVal v, const char *s, const char **nm) {
+  v = sp_rbval_str(v);
   const char *n = NULL;
   if (s) {
     if (!strncasecmp(s, "BOM|", 4)) { *nm = s; return -2; }
@@ -4697,6 +4702,7 @@ static int sp_io_enc_side(sp_RbVal v, const char *s, const char **nm) {
 sp_File *sp_File_set_encoding(sp_File *f, sp_RbVal ext, sp_RbVal in) {
   SP_GC_ROOT(f); SP_GC_ROOT_RBVAL(ext); SP_GC_ROOT_RBVAL(in);
   SP_IO_OPEN(f);
+  ext = sp_rbval_str(ext); in = sp_rbval_str(in);
   char eb[64];
   const char *es = NULL, *is = NULL, *en, *inn;
   if (ext.tag == SP_TAG_STR && in.tag == SP_TAG_NIL && strchr(ext.v.s, ':')) {
@@ -5730,6 +5736,7 @@ SP_NORETURN void sp_raise_cannot_freeze(const char *cls, void *p) {
    A name the model does not know (ISO-8859-1, UTF-16) is left as the bytes,
    which is what every earlier spinel answered for the whole method (#4439). */
 static int sp_enc_kind(sp_RbVal e, int dflt) {   /* 1 UTF-8, 2 binary, 0 unknown */
+  e = sp_rbval_str(e);
   const char *n = NULL;
   if (e.tag == SP_TAG_STR || e.tag == SP_TAG_ENCODING) n = e.v.s;
   else return dflt;
@@ -5745,6 +5752,7 @@ static int sp_enc_kw_replace(sp_RbVal v) {   /* `invalid: :replace` / `undef: :r
 const char *sp_str_encode(const char *s, sp_RbVal dst, sp_RbVal src,
                           sp_RbVal invalid, sp_RbVal undef, sp_RbVal replace) {
   SP_GC_ROOT_STR(s); SP_GC_ROOT_RBVAL(dst); SP_GC_ROOT_RBVAL(src); SP_GC_ROOT_RBVAL(replace);
+  replace = sp_rbval_str(replace);
   if (!s) sp_nil_recv("encode");
   int from = sp_enc_kind(src, sp_str_is_binary(s) ? 2 : 1);
   int to = sp_enc_kind(dst, 1);

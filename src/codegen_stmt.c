@@ -2855,6 +2855,19 @@ int strbuf_arg_carries(Compiler *c, int v) {
 /* Does a value conditional v hands on, taken arm by arm, answer leaf: a
    conditional's arms, a sequence's last statement? Past the depth the walk
    answers deep. */
+/* --share-strings: is v a String bang on a boxed receiver whose box holds
+   the String's handle, so the bang answers that box (or nil)? A box the
+   compiler made for a holder holds the handle (sp_box_str_new); an element
+   of a container a builtin call made (each_slice's rows, split's Strings)
+   was boxed by the runtime as its bytes, and the bang would answer a new
+   String no other holder sees (share_node_runtime_elems). */
+static int face_str_bang_handle_box(Compiler *c, int v) {
+  return face_str_bang_call(c, v) && !share_node_runtime_elems(c, unwrap_parens(c, nt_ref(c->nt, v, "receiver")));
+}
+/* ...and is v such a bang whose box can hold the bytes? */
+static int face_str_bang_bytes_box(Compiler *c, int v) {
+  return face_str_bang_call(c, v) && share_node_runtime_elems(c, unwrap_parens(c, nt_ref(c->nt, v, "receiver")));
+}
 static int strbuf_cond_arm_any(Compiler *c, int v, int depth, int (*leaf)(Compiler *, int), int deep) {
   const NodeTable *nt = c->nt;
   v = unwrap_parens(c, v);
@@ -22735,11 +22748,11 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
        does (strbuf_bang_self_local): the box takes it
        (emit_boxed_bang_self), the block-parameter binder takes it, and a
        proc's argument rides it (proc_arg_ty). So does a bare bang on a
-       boxed receiver: a box of a String that can change holds its handle
-       (sp_box_str_new), and the bang answers that box or nil; in
-       parentheses the binders take a copy, as of a variable below. */
+       boxed receiver whose box holds the handle (face_str_bang_handle_box),
+       which the bang answers or nil; in parentheses the binders take a
+       copy, as of a variable below. */
     if (strbuf_poly_to_s(c, v) || strbuf_route_srange_kept(c, v) ||
-        strbuf_bang_self_local(c, unwrap_parens(c, v)) || face_str_bang_call(c, v))
+        strbuf_bang_self_local(c, unwrap_parens(c, v)) || face_str_bang_handle_box(c, v))
       return 1;
     /* a yield takes a variable's handle only from its bare read:
        `yield((s))` hands on a copy */
@@ -22752,10 +22765,12 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
        arm, as an argument's: the block-parameter binder through
        emit_strbuf_handle_of, a box through emit_boxed_cond_arms, a proc's
        argument as the handle (proc_arg_ty), a bang on a boxed receiver
-       among its arms as its box's handle, as above. */
+       among its arms as its box's handle, as above, where the box holds
+       one. */
     if (strbuf_flow_value(c, fm, SFC_BOX, v, 0)) return 1;
     return (uk == NK_IfNode || uk == NK_UnlessNode || uk == NK_OrNode || uk == NK_AndNode || uk == NK_CaseNode) &&
-           strbuf_cond_has_handle_leaf(c, u, 0) && strbuf_flow_value(c, fm, SFC_ARG, v, 0);
+           strbuf_cond_has_handle_leaf(c, u, 0) && !strbuf_cond_arm_any(c, u, 0, face_str_bang_bytes_box, 1) &&
+           strbuf_flow_value(c, fm, SFC_ARG, v, 0);
   }
   default: return 0;
   }

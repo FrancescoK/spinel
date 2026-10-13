@@ -396,6 +396,7 @@ sp_RbVal sp_StringIO_readlines(sp_StringIO *s) {SP_GC_ROOT(s);
    line, via the generic container hooks) and terminates lines. A value kind
    this in-memory stream can't render raises rather than writing garbage. */
 static int64_t sio_write_val(sp_StringIO *s, sp_RbVal v, int is_puts) {SP_GC_ROOT(s);SP_GC_ROOT_RBVAL(v);
+  v = sp_rbval_str(v);
   int64_t p0 = s->pos, w = 0;
   switch (v.tag) {
     case SP_TAG_STR: { const char *t = v.v.s ? v.v.s : ""; w += sio_write(s, t, (int64_t)sp_str_byte_len(t)); break; }
