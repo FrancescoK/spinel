@@ -1859,6 +1859,25 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
    sp_poly_add, starting from the initial value or Integer 0. The block param is
    pinned to poly so a user-method call on the element dispatches dynamically
    (`bucket.sum(&:value)`). (#2872) */
+
+/* A sum block's one parameter bound to element ti of array _t<ta> (kind
+   k). A boxed element into a typed parameter is unboxed to its type, as
+   the two-parameter binding does: bound as it was, a String parameter took
+   the sp_RbVal and the C did not build. Both sum loops bind through this,
+   the plain one and promote's (sp_SumState). */
+static void emit_sum_elem_bind(Compiler *c, int block, const char *p0, const char *k, int ta, int ti, Buf *b) {
+  buf_printf(b, "lv_%s = ", p0);
+  Scope *psc = sp_streq(k, "Poly") ? comp_scope_of(c, block) : NULL;
+  LocalVar *plv = psc ? scope_local(psc, BP0(c, block)) : NULL;
+  if (plv && plv->type != TY_POLY && plv->type != TY_UNKNOWN) {
+    char src[64];
+    snprintf(src, sizeof src, "sp_PolyArray_get(_t%d, _t%d)", ta, ti);
+    emit_unbox_text(c, plv->type, src, b);
+  }
+  else bp_elem_read(c, block, BP0(c, block), k, ta, ti, b);
+  buf_puts(b, "; ");
+}
+
 int emit_sum_block_poly_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   int block = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
@@ -2023,7 +2042,7 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
           if (plv) buf_printf(b, "lv_%s = sp_poly_massign_get(_t%d, %d); ", rename_local(pn), te, pj);
         }
       }
-      else if (p0) { buf_printf(b, "lv_%s = ", p0); bp_elem_read(c, block, BP0(c, block), k, ta, ti, b); buf_puts(b, "; "); }
+      else if (p0) emit_sum_elem_bind(c, block, p0, k, ta, ti, b);
     }
     {
       Buf inner; memset(&inner, 0, sizeof inner);
@@ -2126,19 +2145,7 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
       }
     }
     else if (p0) {
-      buf_printf(b, "lv_%s = ", p0);
-      /* a boxed element into a typed parameter is unboxed to its type, as the
-         two-parameter binding above does: bound as it was, a String
-         parameter took the sp_RbVal and the C did not build */
-      Scope *psc = sp_streq(k, "Poly") ? comp_scope_of(c, block) : NULL;
-      LocalVar *plv = psc ? scope_local(psc, BP0(c, block)) : NULL;
-      if (plv && plv->type != TY_POLY && plv->type != TY_UNKNOWN) {
-        char src[64];
-        snprintf(src, sizeof src, "sp_PolyArray_get(_t%d, _t%d)", ta, ti);
-        emit_unbox_text(c, plv->type, src, b);
-      }
-      else bp_elem_read(c, block, BP0(c, block), k, ta, ti, b);
-      buf_puts(b, "; ");
+      emit_sum_elem_bind(c, block, p0, k, ta, ti, b);
     }
   }
   /* The block's value expression may spill setup statements to g_pre (e.g.
