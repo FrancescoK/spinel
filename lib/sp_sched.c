@@ -3598,7 +3598,7 @@ void sp_Queue_push_options_check(sp_queue *q, int has_non_block, int has_timeout
 }
 
 static int sp_queue_push_impl(sp_queue *q, sp_RbVal v, int non_block,
-                              int timed, double seconds) { sp_gc_wb((void*)q);
+                              int timed, double seconds) {
   /* On a full SizedQueue, block until a #pop frees a slot. Root v across the
      block: it lives in this (possibly suspended) frame, and the parking
      thread's saved roots only cover the shadow stack. */
@@ -3649,6 +3649,14 @@ static int sp_queue_push_impl(sp_queue *q, sp_RbVal v, int non_block,
     free(q->buf);
     q->buf = nb; q->cap = nc; q->head = 0;
   }
+  /* The barrier goes here, with the store, under the scheduler lock. At the
+     top of the function, before the lock, two threads pushing onto one old
+     queue raced on its header word, one reading the dirty bit while the
+     other set it (ThreadSanitizer: sp_gc_wb against sp_gc_wb_slow). It also
+     came before a wait for room that can let a collection run, and a
+     collection clears the bit: the barrier has to follow the last point
+     that can collect, as run_thread_once's second one does. */
+  sp_gc_wb((void *)q);
   q->buf[(q->head + q->len) % q->cap] = v;
   q->len++;
   sp_sched_wake_one(&q->pop_waiters);   /* hand the new value to a waiting popper */
