@@ -3776,6 +3776,116 @@ static int literal_cond_has_def(NodeTable *nt, int node) {
   return 0;
 }
 
+/* ---- method_defined? on a builtin class, in a polyfill's condition ----
+ *
+ *   class String
+ *     unless method_defined?(:unicode_normalize)
+ *       def unicode_normalize ...
+ *
+ * CRuby's String has the method, so the def never runs. A def is defined
+ * wherever it is written unless its condition is a literal one
+ * (desugar_engine_branches), so such a condition whose answer CRuby's table
+ * (core_method_vis) gives as true becomes `true`. Only where the answer is
+ * sure: the class is a builtin one and the program has no def of the name
+ * outside the condition, and no undef, alias, remove_method, undef_method,
+ * define_method, attr or visibility change naming it anywhere. */
+static int mdfold_names(NodeTable *nt, int id, const char *m) {
+  int args = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+  for (int i = 0; i < ac; i++) {
+    NodeKind ak = nt_kind(nt, av[i]);
+    const char *v = ak == NK_SymbolNode ? nt_str(nt, av[i], "value") :
+                    ak == NK_StringNode ? nt_str(nt, av[i], "content") :
+                    ak == NK_DefNode ? nt_str(nt, av[i], "name") : NULL;
+    if (v && sp_streq(v, m)) return 1;
+  }
+  return 0;
+}
+static int mdfold_within(const int *parent, int n, int top) {
+  for (; n >= 0; n = parent[n]) if (n == top) return 1;
+  return 0;
+}
+static int mdfold_answer_sure(NodeTable *nt, const int *parent, const char *m, int cond) {
+  static const char *const changers[] = { "remove_method", "undef_method", "alias_method", "define_method",
+    "private", "public", "protected", "module_function", "private_class_method", "public_class_method",
+    "attr", "attr_reader", "attr_writer", "attr_accessor", NULL };
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k == NK_DefNode && nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), m) &&
+        !mdfold_within(parent, id, cond)) return 0;
+    if (k == NK_UndefNode) {
+      int un = 0; const int *uv = nt_arr(nt, id, "names", &un);
+      for (int i = 0; i < un; i++)
+        if (nt_str(nt, uv[i], "value") && sp_streq(nt_str(nt, uv[i], "value"), m)) return 0;
+    }
+    if (k == NK_AliasMethodNode) {
+      int nn = nt_ref(nt, id, "new_name"), on = nt_ref(nt, id, "old_name");
+      if ((nn >= 0 && nt_str(nt, nn, "value") && sp_streq(nt_str(nt, nn, "value"), m)) ||
+          (on >= 0 && nt_str(nt, on, "value") && sp_streq(nt_str(nt, on, "value"), m))) return 0;
+    }
+    if (k != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    for (int i = 0; nm && changers[i]; i++)
+      if (sp_streq(nm, changers[i]) && mdfold_names(nt, id, m)) return 0;
+  }
+  return 1;
+}
+/* The class a receiverless or self call `id` runs in: the name of the class
+   or module body it sits in directly (no def or block between), or NULL */
+static const char *mdfold_body_class(NodeTable *nt, const int *parent, int id) {
+  for (int p = parent[id]; p >= 0; p = parent[p]) {
+    NodeKind k = nt_kind(nt, p);
+    if (k == NK_DefNode || k == NK_BlockNode || k == NK_LambdaNode || k == NK_SingletonClassNode) return NULL;
+    if (k == NK_ClassNode || k == NK_ModuleNode) {
+      int cp = nt_ref(nt, p, "constant_path");
+      return cp >= 0 && nt_kind(nt, cp) == NK_ConstantReadNode ? nt_str(nt, cp, "name") : NULL;
+    }
+  }
+  return NULL;
+}
+static int mdfold_call(NodeTable *nt, const int *parent, int e, int cond) {
+  NodeKind k = nt_kind(nt, e);
+  if (k == NK_ParenthesesNode) {
+    int body = nt_ref(nt, e, "body"), bn = 0;
+    const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+    return bn == 1 ? mdfold_call(nt, parent, bb[0], cond) : 0;
+  }
+  if (k != NK_CallNode || nt_ref(nt, e, "block") >= 0) return 0;
+  const char *nm = nt_str(nt, e, "name");
+  int recv = nt_ref(nt, e, "receiver"), args = nt_ref(nt, e, "arguments"), ac = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+  if (nm && sp_streq(nm, "!") && ac == 0 && recv >= 0) return mdfold_call(nt, parent, recv, cond);
+  int mask = !nm ? 0 : sp_streq(nm, "method_defined?") ? 3 : sp_streq(nm, "public_method_defined?") ? 1 :
+             sp_streq(nm, "protected_method_defined?") ? 2 : sp_streq(nm, "private_method_defined?") ? 4 : 0;
+  if (!mask || ac < 1 || ac > 2) return 0;
+  NodeKind ik = ac == 2 ? nt_kind(nt, av[1]) : NK_TrueNode;
+  if (ik != NK_TrueNode && ik != NK_FalseNode) return 0;
+  NodeKind ak = nt_kind(nt, av[0]);
+  const char *m = ak == NK_SymbolNode ? nt_str(nt, av[0], "value") :
+                  ak == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
+  NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_SelfNode;
+  const char *cls = rk == NK_ConstantReadNode ? nt_str(nt, recv, "name") :
+                    rk == NK_SelfNode ? mdfold_body_class(nt, parent, e) : NULL;
+  if (!m || !cls || !(is_builtin_class_name(cls) || is_builtin_module_name(cls))) return 0;
+  int v = core_method_vis(cls, m, ik == NK_TrueNode);
+  if (v <= 0 || !(v & mask) || !mdfold_answer_sure(nt, parent, m, cond)) return 0;
+  nt_node_reset(nt, e, "TrueNode");
+  return 1;
+}
+
+int desugar_builtin_method_defined_conds(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int *parent = NULL, changed = 0;
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if ((k != NK_IfNode && k != NK_UnlessNode) || !literal_cond_has_def(nt, id)) continue;
+    if (!parent && !(parent = an_parent_map(nt))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    changed |= mdfold_call(nt, parent, nt_ref(nt, id, "predicate"), id);
+  }
+  free(parent);
+  return changed;
+}
+
 int desugar_engine_branches(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
@@ -14291,21 +14401,35 @@ static int cb_program_defines(const NodeTable *nt, const char *nm) {
 /* The Module methods that read a class's method table, which a reopened
    builtin class (String, Array) answers for the program's own methods alone:
    left bare there, as they are refused, rather than answered without the
-   builtin's methods. */
+   builtin's methods. method_defined? and its kin, which answer a builtin's
+   methods from CRuby's table, take the class by name instead. */
 static int cb_method_table_name(const char *nm) {
   return nm && (sp_streq(nm, "instance_methods") || sp_streq(nm, "public_instance_methods") ||
-                sp_streq(nm, "instance_method") || sp_streq(nm, "method_defined?") ||
-                sp_streq(nm, "public_method_defined?") || sp_streq(nm, "private_method_defined?"));
+                sp_streq(nm, "instance_method"));
+}
+static int cb_method_defined_name(const char *nm) {
+  return nm && (sp_streq(nm, "method_defined?") || sp_streq(nm, "public_method_defined?") ||
+                sp_streq(nm, "private_method_defined?") || sp_streq(nm, "protected_method_defined?"));
 }
 
-static int cb_give_self(NodeTable *nt, int node, int builtin) {
+static int cb_give_self(NodeTable *nt, int node, const char *builtin) {
   if (node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode ||
       k == NK_BlockNode || k == NK_LambdaNode) return 0;
   int changed = 0;
   const char *cm = k == NK_CallNode ? nt_str(nt, node, "name") : NULL;
-  if (cb_self_act(nt, node) && !cb_program_defines(nt, cm) && !(builtin && cb_method_table_name(cm))) {
+  int r = k == NK_CallNode ? nt_ref(nt, node, "receiver") : -1;
+  if (builtin && cb_method_defined_name(cm) && !cb_program_defines(nt, cm) &&
+      (r < 0 || nt_kind(nt, r) == NK_SelfNode)) {
+    int cls = fwd_new_node_like(nt, node, "ConstantReadNode");
+    if (cls >= 0) {
+      nt_node_set_str(nt, cls, "name", builtin);
+      nt_node_set_ref(nt, node, "receiver", cls);
+      changed = 1;
+    }
+  }
+  else if (cb_self_act(nt, node) && !cb_program_defines(nt, cm) && !(builtin && cb_method_table_name(cm))) {
     int self = fwd_new_node_like(nt, node, "SelfNode");
     if (self >= 0) {
       nt_node_set_ref(nt, node, "receiver", self);
@@ -14338,7 +14462,7 @@ int desugar_class_body_object_acts(Compiler *c) {
             : cpk == NK_ConstantPathNode && nt_ref(nt, cp, "parent") < 0;
     const char *cname = top ? nt_str(nt, cp, "name") : NULL;
     int builtin = cname && (is_builtin_class_name(cname) || is_builtin_module_name(cname));
-    changed |= cb_give_self(nt, nt_ref(nt, cn, "body"), builtin);
+    changed |= cb_give_self(nt, nt_ref(nt, cn, "body"), builtin ? cname : NULL);
   }
   if (changed) comp_grow_node_arrays(c);
   return changed;

@@ -216,6 +216,106 @@ static int refl_md_literal_call(const NodeTable *nt, int recv, int arg) {
 }
 
 
+/* CRuby's own instance methods of each core class and module with their
+   visibility, and its ancestors (core_class_methods.inc, written by
+   tools/gen_method_names.rb) */
+#define CCM(k, m, v) { k, m, v },
+#define CCA(k, a)
+static const struct { const char *cls, *m; int vis; } core_cls_methods[] = {
+#include "core_class_methods.inc"
+  { NULL, NULL, 0 }
+};
+#undef CCM
+#undef CCA
+#define CCM(k, m, v)
+#define CCA(k, a) { k, a },
+static const struct { const char *cls, *anc; } core_cls_ancestors[] = {
+#include "core_class_methods.inc"
+  { NULL, NULL }
+};
+#undef CCM
+#undef CCA
+
+static int core_own_vis(const char *cls, size_t cl, const char *m) {
+  for (int i = 0; core_cls_methods[i].cls; i++)
+    if (strlen(core_cls_methods[i].cls) == cl && !strncmp(core_cls_methods[i].cls, cls, cl) &&
+        sp_streq(core_cls_methods[i].m, m)) return core_cls_methods[i].vis;
+  return 0;
+}
+
+/* The visibility (1 public, 2 protected, 4 private) of instance method `m`
+   of core class or module `cls` in CRuby, through its ancestors with
+   `inherit`; 0 where it has none, -1 where the table does not hold `cls`. */
+int core_method_vis(const char *cls, const char *m, int inherit) {
+  const char *anc = NULL;
+  for (int i = 0; cls && !anc && core_cls_ancestors[i].cls; i++)
+    if (sp_streq(core_cls_ancestors[i].cls, cls)) anc = core_cls_ancestors[i].anc;
+  if (!anc) return -1;
+  if (!inherit) return core_own_vis(cls, strlen(cls), m);
+  for (const char *p = anc; *p;) {
+    const char *e = strchr(p, ' ');
+    size_t l = e ? (size_t)(e - p) : strlen(p);
+    int v = core_own_vis(p, l, m);
+    if (v) return v;
+    p += l + (e ? 1 : 0);
+  }
+  return 0;
+}
+
+/* `private :m` and its kin on class k: the visibility bit it gives m, or 0 */
+static int refl_explicit_vis(const ClassInfo *k, const char *m) {
+  for (int i = 0; i < k->nvis; i++)
+    if (sp_streq(k->vis_names[i], m))
+      return k->vis_kinds[i] == SP_VIS_PRIVATE ? 4 : k->vis_kinds[i] == SP_VIS_PROTECTED ? 2 : 1;
+  return 0;
+}
+
+/* m's visibility from the builtin modules class or module k is or includes,
+   as core_method_vis answers */
+static int refl_builtin_vis_in(Compiler *c, int k, const char *m, int depth) {
+  const ClassInfo *ki = &c->classes[k];
+  int v = refl_explicit_vis(ki, m);
+  if (v) return v;
+  if (ki->is_builtin_const && ki->enclosing_class < 0 && (v = core_method_vis(ki->name, m, 1)) != 0) return v;
+  for (int j = 0; j < ki->nincluded_mods && depth < 16; j++)
+    if ((v = refl_builtin_vis_in(c, ki->included_mods[j], m, depth + 1)) != 0) return v;
+  for (int j = 0; j < ki->nincluded_mod_names; j++)
+    if ((v = core_method_vis(ki->included_mod_names[j], m, 1)) != 0) return v;
+  return 0;
+}
+
+/* The visibility CRuby gives instance method m of class ci where the
+   program defines none: from a builtin class it reopens, the builtin modules
+   its chain includes, and the builtin class at the root of the chain (Object
+   unless it names another). 0 for none; -1 where one of those is not in
+   core_class_methods.inc. */
+static int refl_builtin_vis(Compiler *c, int ci, const char *m, int inherit) {
+  const ClassInfo *ki = &c->classes[ci];
+  if (!inherit) {
+    int v = refl_explicit_vis(ki, m);
+    return v ? v : ki->is_builtin_const && ki->enclosing_class < 0 ? core_method_vis(ki->name, m, 0) : 0;
+  }
+  int root = ci;
+  for (int k = ci; k >= 0; k = c->classes[k].parent) {
+    int v = refl_builtin_vis_in(c, k, m, 0);
+    if (v) return v;
+    root = k;
+  }
+  const ClassInfo *ri = &c->classes[root];
+  if ((ri->is_builtin_const && ri->enclosing_class < 0) || comp_class_is_module(c, (ClassInfo *)ri)) return 0;
+  const char *sup = "Object";
+  if (ri->is_struct) sup = ri->is_data ? "Data" : "Struct";
+  else {
+    int sc = ri->def_node >= 0 ? nt_ref(c->nt, ri->def_node, "superclass") : -1;
+    const char *exc = sc >= 0 ? superclass_builtin_exc_name(c->nt, sc) : NULL;
+    NodeKind sk = sc >= 0 ? nt_kind(c->nt, sc) : NK_NilNode;
+    if (exc) sup = exc;
+    else if (sk == NK_ConstantReadNode || sk == NK_ConstantPathNode) sup = nt_str(c->nt, sc, "name");
+    else if (sc >= 0) return -1;
+  }
+  return core_method_vis(sup, m, 1);
+}
+
 /* respond_to?, method_defined? and its kin, const_set / const_get / const_defined? */
 int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
   if (sp_streq(name, "respond_to?") && argc >= 1 && !respond_to_user_defined(c, id, recv)) {
@@ -442,12 +542,18 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     if (aty && sp_streq(aty, "SymbolNode")) qm = nt_str(nt, argv[0], "value");
     else if (aty && sp_streq(aty, "StringNode")) qm = nt_str(nt, argv[0], "content");
     int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+    int inherit = 1;
+    if (argc >= 2) {
+      const char *it = nt_type(nt, argv[1]);
+      if (it && sp_streq(it, "FalseNode")) inherit = 0;
+    }
+    /* a builtin class the program does not open: CRuby's own table */
+    int bv = qm && ci < 0 ? core_method_vis(nt_str(nt, recv, "name"), qm, inherit) : -1;
+    if (bv >= 0) {
+      buf_printf(b, "%d", ((bv & 1) && md_pub) || ((bv & 2) && md_prot) || ((bv & 4) && md_priv));
+      return 1;
+    }
     if (qm && ci >= 0) {
-      int inherit = 1;
-      if (argc >= 2) {
-        const char *it = nt_type(nt, argv[1]);
-        if (it && sp_streq(it, "FalseNode")) inherit = 0;
-      }
       /* a writer query (`m=`) consults the writer table under its base name */
       size_t ln = strlen(qm);
       int is_setter = ln > 0 && qm[ln - 1] == '=';
@@ -487,22 +593,22 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         /* a method copied in from an included module is the module's */
         found = (mi >= 0 && mc == ci && c->scopes[mi].origin_module_ci == 0) || rd_own || wr_own;
       }
-      /* Methods inherited from Object/Kernel are defined on every class. With
-         `inherit` (the default) method_defined? must report the public ones as
-         true even though they have no entry in the user class chain (#2673). */
-      if (!found && inherit && md_pub) {
-        for (int u = 0; respond_universal[u]; u++)
-          if (sp_streq(qm, respond_universal[u])) { buf_puts(b, "1"); return 1; }
+      /* a name the program's defs leave open is answered by CRuby's own
+         methods of the builtin classes and modules above the class, Object
+         and Kernel among them (#2673); one the table does not hold is
+         refused below */
+      bv = found ? 0 : refl_builtin_vis(c, ci, qm, inherit);
+      if (bv >= 0) {
+        int yes = ((bv & 1) && md_pub) || ((bv & 2) && md_prot) || ((bv & 4) && md_priv);
+        if (found) {
+          int v = inherit ? comp_method_vis_in_chain(c, ci, qm)
+                          : comp_method_vis(&c->classes[ci], qm);
+          yes = (v == SP_VIS_PUBLIC && md_pub) || (v == SP_VIS_PROTECTED && md_prot) ||
+                (v == SP_VIS_PRIVATE && md_priv);
+        }
+        buf_printf(b, "%d", yes);
+        return 1;
       }
-      int yes = 0;
-      if (found) {
-        int v = inherit ? comp_method_vis_in_chain(c, ci, qm)
-                        : comp_method_vis(&c->classes[ci], qm);
-        yes = (v == SP_VIS_PUBLIC && md_pub) || (v == SP_VIS_PROTECTED && md_prot) ||
-              (v == SP_VIS_PRIVATE && md_priv);
-      }
-      buf_printf(b, "%d", yes);
-      return 1;
     }
   }
 
