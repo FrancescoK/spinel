@@ -9636,12 +9636,13 @@ static sp_StrPolyHash*sp_StrPolyHash_from_str_str_hash(sp_StrStrHash*h){sp_StrPo
 static sp_StrPolyHash *sp_md_named_captures(sp_MatchData *m) {
   sp_StrPolyHash *h = sp_StrPolyHash_new();
   if (!m) return h;
-  SP_GC_ROOT(h);      /* sp_str_dup and the aref below allocate */
+  SP_GC_ROOT(h);      /* the copy and the aref below allocate */
   int n = re_num_named(m->pat);
   for (int i = 0; i < n; i++) {
     int g = -1;
     const char *nm = re_named_name(m->pat, i, &g);
-    if (nm) sp_StrPolyHash_set(h, sp_str_dup(nm), sp_box_nullable_str(sp_MatchData_aref(m, g)));
+    /* the engine's own C string, with no tag byte: copied as one (sp_Regexp_names) */
+    if (nm) sp_StrPolyHash_set(h, sp_str_dup_external(nm), sp_box_nullable_str(sp_MatchData_aref(m, g)));
   }
   return h;
 }
@@ -10117,7 +10118,7 @@ static sp_int sp_rbval_hash_key(sp_RbVal v) {
       /* two patterns with the same source are one Hash key, whichever way each
          was built (a literal or Regexp.new) (#3681) */
       if (v.cls_id == SP_BUILTIN_REGEX)
-        return v.v.p ? (sp_int)sp_str_hash(sp_re_source(v.v.p)) : 0;
+        return v.v.p ? sp_re_source_hash(v.v.p) : 0;
       if (v.cls_id == SP_BUILTIN_METHOD) {
         /* Method keys hash/eql by (bound self, fn ptr, name), so two
            `obj.method(:m)` instances collapse to one entry (optcarrot

@@ -4942,8 +4942,8 @@ sp_PolyArray *sp_io_pipe(void) {
   if (sp_io_make_pipe(fds) != 0) sp_raise_cls("IOError", "pipe failed");
   sp_PolyArray *a = sp_PolyArray_new();
   SP_GC_ROOT(a);
-  sp_PolyArray_push(a, sp_box_obj(sp_io_fdopen(fds[0], "r"), SP_BUILTIN_IO));
-  { sp_File *wf = sp_io_fdopen(fds[1], "w");
+  sp_PolyArray_push(a, sp_box_obj(sp_io_fdopen(fds[0], SPL("r")), SP_BUILTIN_IO));
+  { sp_File *wf = sp_io_fdopen(fds[1], SPL("w"));
     /* CRuby documents the write end as sync: a write reaches the descriptor
        at once, so a reader on the other end (or an IO.select on it) sees the
        bytes without a flush (#4263). */
@@ -4973,11 +4973,11 @@ sp_File *sp_io_for_fd(sp_int fd, const char *mode, sp_bool autoclose) {SP_GC_ROO
   if (!autoclose) {
     int d = dup((int)fd);
     if (d < 0) sp_raise_cls("SystemCallError", sp_sprintf("dup(2) failed for fd %d", (int)fd));
-    sp_File *f = sp_io_fdopen_ex(d, mode && *mode ? mode : "r", 0);
+    sp_File *f = sp_io_fdopen_ex(d, mode && *mode ? mode : SPL("r"), 0);
     if (f) { f->no_autoclose = 1; f->fno_plus1 = (int)fd + 1; }
     return f;
   }
-  sp_File *f = sp_io_fdopen_ex((int)fd, mode && *mode ? mode : "r", 0);
+  sp_File *f = sp_io_fdopen_ex((int)fd, mode && *mode ? mode : SPL("r"), 0);
   return f;
 }
 

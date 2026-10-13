@@ -290,7 +290,7 @@ const char*sp_str_chop(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("chop")
 /* slice!(str): s without the first occurrence of pat, or s itself when there
    is none. Unlike sub it sets no `$~`, as CRuby's slice! sets none. */
 const char*sp_str_remove_first(const char*s,const char*pat){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(pat);if(!s||!pat)return s;size_t pl=sp_str_byte_len(pat),sl=sp_str_byte_len(s);const char*f=sp_bytestr(s,sl,pat,pl);if(!f)return s;size_t n=(size_t)(f-s);char*r=sp_str_alloc_raw(sl-pl+1);memcpy(r,s,n);memcpy(r+n,f+pl,sl-n-pl);r[sl-pl]=0;sp_str_set_len(r,sl-pl);return r;}
-const char*sp_str_sub(const char*s,const char*pat,const char*rep){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(pat);SP_GC_ROOT_STR(rep);if(!s)sp_nil_recv("sub");if(!pat||!rep)return s;size_t pl0=sp_str_byte_len(pat),sl0=sp_str_byte_len(s);const char*f=sp_bytestr(s,sl0,pat,pl0);if(!f){if(sp_re_track_last)sp_re_clear_last_match();return sp_str_dup(s);}sp_re_sub_matched=1;if(sp_re_track_last)sp_re_set_lit_match(s,(sp_int)(f-s),(sp_int)(f-s+pl0));size_t el=0;char*rep_exp=sp_str_rep_expand(rep,pat,pl0,&el);if(rep_exp)rep=rep_exp;size_t pl=pl0,rl=rep_exp?el:sp_str_byte_len(rep),sl=sl0;char*r=sp_str_alloc_raw(sl-pl+rl+1);size_t n=f-s;memcpy(r,s,n);memcpy(r+n,rep,rl);memcpy(r+n+rl,f+pl,sl-n-pl);r[sl-pl+rl]=0;sp_str_set_len(r,sl-pl+rl);if(rep_exp)free(rep_exp);return sp_str_bin_like(s,r);}
+const char*sp_str_sub(const char*s,const char*pat,const char*rep){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(pat);SP_GC_ROOT_STR(rep);if(!s)sp_nil_recv("sub");if(!pat||!rep)return s;size_t pl0=sp_str_byte_len(pat),sl0=sp_str_byte_len(s);const char*f=sp_bytestr(s,sl0,pat,pl0);if(!f){if(sp_re_track_last)sp_re_clear_last_match();return sp_str_dup(s);}sp_re_sub_matched=1;if(sp_re_track_last)sp_re_set_lit_match(s,(sp_int)(f-s),(sp_int)(f-s+pl0));size_t el=0;char*rep_exp=sp_str_rep_expand(rep,pat,pl0,&el);const char*rp=rep_exp?rep_exp:rep;size_t pl=pl0,rl=rep_exp?el:sp_str_byte_len(rp),sl=sl0;char*r=sp_str_alloc_raw(sl-pl+rl+1);size_t n=f-s;memcpy(r,s,n);memcpy(r+n,rp,rl);memcpy(r+n+rl,f+pl,sl-n-pl);r[sl-pl+rl]=0;sp_str_set_len(r,sl-pl+rl);if(rep_exp)free(rep_exp);return sp_str_bin_like(s,r);}
 const char*sp_str_capitalize(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("capitalize");if(sp_str_is_binary(s))return sp_str_case_bin(s,3);size_t l=sp_str_byte_len(s);char*r=sp_str_alloc_raw(l*3+1);size_t oi=0;int first=1;for(size_t i=0;i<l;){uint32_t cp;int n=sp_utf8_decode(s+i,&cp);i+=(size_t)n;if(first){uint32_t u=sp_uc_toupper(cp);if(cp==0xDF){r[oi++]='S';r[oi++]='S';}
 else oi+=(size_t)sp_utf8_encode(u,r+oi);first=0;}
 else oi+=(size_t)sp_utf8_encode(sp_uc_tolower(cp),r+oi);}r[oi]=0;sp_str_set_len(r,oi);return r;}
@@ -398,8 +398,11 @@ const char*sp_str_gsub(const char*s,const char*pat,const char*rep){SP_GC_ROOT_ST
      opportunistic NUL policy). */
   size_t pl0=sp_str_byte_len(pat);
   size_t el=0;char*rep_exp=sp_str_rep_expand(rep,pat,pl0,&el);
-  if(rep_exp)rep=rep_exp;
-  size_t pl=pl0,rl=rep_exp?el:sp_str_byte_len(rep),sl=sp_str_byte_len(s);
+  /* the expansion is malloc'd: it goes in a variable of its own, since `rep`
+     is rooted as a String and the collector would read (and mark) the byte
+     before a malloc'd block (#827) */
+  const char*rp=rep_exp?rep_exp:rep;
+  size_t pl=pl0,rl=rep_exp?el:sp_str_byte_len(rp),sl=sp_str_byte_len(s);
   if(pl==0){
     sp_re_sub_matched=1;
     /* Empty pattern: insert rep between every codepoint + at start/end.
@@ -407,11 +410,11 @@ const char*sp_str_gsub(const char*s,const char*pat,const char*rep){SP_GC_ROOT_ST
     size_t cap=sl+(rl*(sl+1))+1;
     char*out=(char*)malloc(cap);
     size_t ol=0;
-    memcpy(out+ol,rep,rl); ol+=rl;
+    memcpy(out+ol,rp,rl); ol+=rl;
     for(size_t i=0;i<sl;){
       int n=sp_utf8_advance(s+i); if(n<1)n=1; if((size_t)n>sl-i)n=(int)(sl-i);
       memcpy(out+ol,s+i,(size_t)n); ol+=(size_t)n;
-      memcpy(out+ol,rep,rl); ol+=rl;
+      memcpy(out+ol,rp,rl); ol+=rl;
       i+=(size_t)n;
     }
     out[ol]=0;
@@ -430,7 +433,7 @@ const char*sp_str_gsub(const char*s,const char*pat,const char*rep){SP_GC_ROOT_ST
     size_t n=(size_t)(f-p);
     if(ol+n+rl>=cap){cap=((ol+n+rl)*2)+1;out=(char*)realloc(out,cap);}
     memcpy(out+ol,p,n);ol+=n;
-    memcpy(out+ol,rep,rl);ol+=rl;
+    memcpy(out+ol,rp,rl);ol+=rl;
     p=f+pl;
   }
   /* `$~` is the last match, or nil when there was none */

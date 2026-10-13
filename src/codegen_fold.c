@@ -1796,7 +1796,7 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_int _t%d = sp_re_caps[0] - _t%d;\n", tms, tpos);
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_int _t%d = sp_re_caps[1] - _t%d;\n", tme, tpos);
   }
-  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_String_append_bin(_t%d, sp_str_substr(_t%d + _t%d, 0, _t%d));\n", tout, ts, tpos, tms);
+  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_String_append_bin(_t%d, sp_str_substr(_t%d, _t%d, _t%d));\n", tout, ts, tpos, tms);
   if (p0) {
     Scope *ps = comp_scope_of(c, block);
     LocalVar *plv = ps ? scope_local(ps, block_param_name(c, block, 0)) : NULL;
@@ -1805,7 +1805,7 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
        String of the match */
     int hnd = !box && plv && repr_of_slot(c, plv).handle;
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "lv_%s = %ssp_str_substr(_t%d + _t%d, _t%d, _t%d - _t%d)%s;\n",
+    buf_printf(g_pre, "lv_%s = %ssp_str_substr(_t%d, _t%d + _t%d, _t%d - _t%d)%s;\n",
                p0, box ? "sp_box_str(" : hnd ? "sp_String_new_fresh(" : "", ts, tpos, tms, tme, tms,
                (box || hnd) ? ")" : "");
   }
@@ -1830,7 +1830,7 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_String_append_bin(_t%d, _t%d + _t%d + _t%d); break;\n", tout, ts, tpos, tme);
   }
   else {
-    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "if (_t%d == _t%d) { if (_t%d + _t%d < _t%d) sp_String_append_bin(_t%d, sp_str_substr(_t%d + _t%d, _t%d, 1)); _t%d += _t%d + 1; }\n",
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "if (_t%d == _t%d) { if (_t%d + _t%d < _t%d) sp_String_append_bin(_t%d, sp_str_substr(_t%d, _t%d + _t%d, 1)); _t%d += _t%d + 1; }\n",
                tme, tms, tpos, tme, tslen, tout, ts, tpos, tme, tpos, tme);
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d += _t%d; }\n", tpos, tme);
   }

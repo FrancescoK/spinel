@@ -107,6 +107,7 @@ const char *sp_str_slice_re(mrb_regexp_pattern *pat, const char *s, const char *
 const char *sp_re_alt_join(const char *a, const char *b);  /* `a|b`, NUL-safe */
 const char *sp_re_source(void *pat);
 uint32_t sp_re_source_len(void *pat);   /* its byte length (may hold a NUL) */
+sp_int sp_re_source_hash(void *pat);    /* the hash of its bytes, as a String's (lib/sp_re.c) */
 sp_bool sp_re_src_linear_time(const char *src);   /* Regexp.linear_time? on a source string */
 const char *sp_re_inspect_str(void *pat);
 const char *sp_re_to_s_str(void *pat);
