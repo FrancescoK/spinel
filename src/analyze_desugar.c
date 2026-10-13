@@ -14393,8 +14393,8 @@ static void incl_mod_ivar(NodeTable *nt, int node, const InclSubst *is) {
   int line = (int)nt_int(nt, node, "node_line", 0), file = (int)nt_int(nt, node, "node_file", 0);
   int sym = fwd_new_node_like(nt, node, "SymbolNode");
   nt_node_set_str(nt, sym, "value", iv);
-  int recv = fwd_new_node_like(nt, node, "ConstantReadNode");
-  nt_node_set_str(nt, recv, "name", is->mod_name);
+  /* the module as the include names it (`include Outer::Ext` too) */
+  int recv = nt_clone_subtree(nt, is->mod);
   int av[2] = { sym, v };
   int args = fwd_new_node_like(nt, node, "ArgumentsNode");
   nt_node_set_arr(nt, args, "arguments", av, v >= 0 ? 2 : 1);
@@ -14411,13 +14411,13 @@ static void incl_subst(NodeTable *nt, int node, const InclSubst *is, int self_mo
   if (node < 0) return;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return;
-  if (self_mod && is->mod_name && (k == NK_InstanceVariableOperatorWriteNode ||
+  if (self_mod && is->mod >= 0 && (k == NK_InstanceVariableOperatorWriteNode ||
                                    k == NK_InstanceVariableOrWriteNode || k == NK_InstanceVariableAndWriteNode)) {
     cbi_lower_op_writes(nt, node);
     if (nt_kind(nt, node) != k) incl_subst(nt, node, is, self_mod);
     return;
   }
-  if (self_mod && is->mod_name && (k == NK_InstanceVariableWriteNode || k == NK_InstanceVariableReadNode)) {
+  if (self_mod && is->mod >= 0 && (k == NK_InstanceVariableWriteNode || k == NK_InstanceVariableReadNode)) {
     if (k == NK_InstanceVariableWriteNode) incl_subst(nt, nt_ref(nt, node, "value"), is, self_mod);
     incl_mod_ivar(nt, node, is);
     return;
