@@ -116,7 +116,7 @@ void emit_kwh_sym_hash(Compiler *c, const PolyKw *kw, Scope *skip_kw, Buf *out);
 void emit_poly_fetch_absent(Compiler *c, int argc, const int *atmp, TyKind dty,
                             int key_node, TyKind ret, TyKind trt, Buf *b);
 void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecialsN *ps, const PolyTemps *T,
-                       int splat_a, int is_aref, int is_fetch, Buf *b);
+                       const PolyKw *kw, int splat_a, int is_aref, int is_fetch, Buf *b);
 void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const PolySpecialsN *ps,
                           const PolyTemps *T, const PolyKw *kw, int splat_a, int is_aref, int is_aref2,
                           int is_fetch, int blk_tmp2, int is_setter_val, Buf *b);

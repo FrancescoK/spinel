@@ -9132,7 +9132,7 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       int is_fetch = sp_streq(name, "fetch") && (argc == 1 || argc == 2) && splat_a < 0 &&
                      nt_ref(nt, id, "block") < 0;
       if (g_plan_check) pa_resume(pa_frame);
-      emit_poly_cases_n(c, id, name, &ps, &ptemps, splat_a, is_aref, is_fetch, b);
+      emit_poly_cases_n(c, id, name, &ps, &ptemps, &kw, splat_a, is_aref, is_fetch, b);
       if (g_plan_check) pa_resume(pa_frame);
       emit_poly_defaults_n(c, id, recv, name, &ps, &ptemps, &kw, splat_a, is_aref, is_aref2, is_fetch,
                            blk_tmp2, is_setter_val, b);
