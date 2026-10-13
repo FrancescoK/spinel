@@ -41,3 +41,12 @@ class F
   def call_y = y
 end
 p F.new.call_y
+
+# a def of the name in a branch of the class body is the class's own too
+class Cond
+  include Tr
+  if true
+    def on_a(_n) = "Cond#on_a"
+  end
+end
+p Cond.new.on_a(1)

@@ -6430,24 +6430,29 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci);
    A module takes its own includes' surface in the same walk, and one can come
    after a class that includes it (a module nested in its includer), so the
    walk repeats until no class gains a name. */
-/* Does a body of class ci (bodies from class_body_list) define `name` with
-   a def of its own, bare or under a visibility call (`private def x`)? */
-static int body_defs_name(Compiler *c, int nb, const int *bci, const int *bnode, int ci, const char *name) {
-  const NodeTable *nt = c->nt;
-  for (int b = 0; b < nb; b++) {
-    if (bci[b] != ci || bnode[b] < 0) continue;
-    int sn = 0; const int *ss = nt_arr(nt, bnode[b], "body", &sn);
-    for (int i = 0; i < sn; i++) {
-      int d = ss[i];
-      if (nt_kind(nt, d) == NK_CallNode) {
-        int an = 0; int args = nt_ref(nt, d, "arguments");
-        const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-        d = an == 1 ? av[0] : -1;
-      }
-      if (d >= 0 && nt_kind(nt, d) == NK_DefNode && nt_ref(nt, d, "receiver") < 0 &&
-          sp_streq(nt_str(nt, d, "name"), name)) return 1;
-    }
+/* Does subtree n of a class body define `name` with a def of its own (one
+   on self, not under a nested class, module or method)? A def under a
+   condition or a block of the body counts: it is the class's when it runs. */
+static int subtree_defs_name(const NodeTable *nt, int n, const char *name, int depth) {
+  if (n < 0 || depth > 64) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode) return nt_ref(nt, n, "receiver") < 0 && sp_streq(nt_str(nt, n, "name"), name);
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return 0;
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) if (subtree_defs_name(nt, nt_ref_at(nt, n, i), name, depth + 1)) return 1;
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) if (subtree_defs_name(nt, ids[j], name, depth + 1)) return 1;
   }
+  return 0;
+}
+/* Does a body of class ci (bodies from class_body_list) define `name` with
+   a def of its own, bare, under a visibility call (`private def x`), or in a
+   branch or block of the body (`if cond; def x; end; end`)? */
+static int body_defs_name(Compiler *c, int nb, const int *bci, const int *bnode, int ci, const char *name) {
+  for (int b = 0; b < nb; b++)
+    if (bci[b] == ci && subtree_defs_name(c->nt, bnode[b], name, 0)) return 1;
   return 0;
 }
 
