@@ -99,7 +99,12 @@ int emit_iter_step_tail_o(Compiler *c, const IterStep *st, TyKind t, Buf *vb);
 /* codegen_fold.c: the call whose oint answer an arm keeps (bsearch) */
 extern int g_face_oint_id, g_face_oint_got;   /* got: the kept oint's kind */
 
-static void emit_str_encode_call(Compiler *c, const char *recv_txt, const int *argv, int argc, Buf *b);
+static void emit_str_encode_call(Compiler *c, const char *recv_txt, int recv, const int *argv, int argc, Buf *b);
+static void emit_str_encode_bang(Compiler *c, const char *recv_txt, const int *argv, int argc, Buf *b);
+static void emit_str_encode_bang_to(Compiler *c, const char *recv_txt, int recv, const int *argv, int argc,
+                                    const char *into, Buf *b);
+static int encode_bang_slot(Compiler *c, int recv);
+static void emit_strbuf_encode_bang(Compiler *c, const char *ref, int hr, const int *argv, int argc, Buf *b);
 
 /* Object's identity protocol, text form (defined with its node form at the end of this file). */
 static void emit_native_object_protocol_text(Compiler *c, const char *name, TyKind rt, const char *r, TyKind at, const char *a, Buf *b);
@@ -4775,7 +4780,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       const int *avE = call_args(ntS, id, &acE);
       Buf feref; memset(&feref, 0, sizeof feref);
       Buf lbE; memset(&lbE, 0, sizeof lbE);
-      int hrE = acE <= 2 ? strbuf_recv_handle_any(c, id, recvS, &feref, &lbE) : 0;
+      int hrE = acE <= encoding_mutator_max_argc(nmS) ? strbuf_recv_handle_any(c, id, recvS, &feref, &lbE) : 0;
       if (hrE) {
         emit_strbuf_force_encoding(c, nmS, lbE.p ? lbE.p : feref.p, hrE, avE, acE, b);
         free(lbE.p); free(feref.p);
@@ -7897,10 +7902,21 @@ static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, 
   /* force_encoding / encode! set state ON the receiver: CRuby raises on a
      frozen string whether or not the call would change anything (#3334).
      `b` and non-bang `encode` return a NEW string, so they never raise. */
-  else if ((is_encoding_mutator(name)) && argc <= 2) {
+  else if ((is_encoding_mutator(name)) && argc <= encoding_mutator_max_argc(name)) {
     Buf feref; memset(&feref, 0, sizeof feref);
     int hr = strbuf_recv_handle(c, id, recv, &feref);
     if (hr) emit_strbuf_force_encoding(c, name, feref.p, hr, argv, argc, b);
+    /* --share-strings leaves a String unshared only where no other name
+       sees it (repr_str_class_shares): its one slot takes encode!'s new
+       bytes back, unless the receiver reads a temp the call site bound
+       (`n&.encode!`), which is no slot */
+    else if (sp_streq(name, "encode!") && encode_bang_slot(c, recv)) {
+      int tw = ++g_tmp;
+      buf_printf(b, "({ const char *_t%d = ", tw);
+      emit_str_encode_bang_to(c, r, recv, argv, argc, "sp_str_encode_slot", b);
+      buf_puts(b, "; "); emit_expr(c, recv, b); buf_printf(b, " = _t%d; _t%d; })", tw, tw);
+    }
+    else if (sp_streq(name, "encode!")) emit_str_encode_bang_to(c, r, recv, argv, argc, "sp_str_encode_into", b);
     else emit_str_force_encoding(c, name, r, argv, argc, b);
     free(feref.p);
   }
@@ -7916,7 +7932,7 @@ static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, 
   }
   /* encode with no argument is the receiver; with a destination it is a
      transcode between the two encodings the runtime models (#4439) */
-  else if (sp_streq(name, "encode") && argc <= 3) emit_str_encode_call(c, r, argv, argc, b);
+  else if (sp_streq(name, "encode") && argc <= 3) emit_str_encode_call(c, r, recv, argv, argc, b);
   /* an operand whose class answers #to_str: CRuby converts it and
      compares, where the arm below discarded it and answered nil. The
      answer is boxed because the conversion can still come back empty --
@@ -9155,7 +9171,8 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
   /* --share-strings: an encoding mutator over a call that hands on a handle
      takes that handle alone: the receiver's read made below first would run
      the call a second time (the arm itself uses the handle) */
-  if (rt == TY_STRING && repr_share_rule(c) && name && is_encoding_mutator(name) && argc <= 2 &&
+  if (rt == TY_STRING && repr_share_rule(c) && name && is_encoding_mutator(name) &&
+      argc <= encoding_mutator_max_argc(name) &&
       nt_kind(nt, unwrap_parens(c, recv)) == NK_CallNode) {
     Buf *pre = g_pre;
     size_t pre_mark = pre ? pre->len : 0;
@@ -9265,7 +9282,11 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
      arm (str_arms_convert): held here as its bytes, the handle was lost) */
   int y_ident = repr_share_rule(c) && name && is_equal_name(name) && recv >= 0 &&
                 nt_kind(nt, unwrap_parens(c, recv)) == NK_YieldNode && strbuf_yield_tail_held(c);
-  if (rt == TY_STRING && name && recv >= 0 && operand_may_allocate(c, recv) && !y_ident &&
+  /* (encode and encode! hold and root their receiver themselves, after
+     the arguments where CRuby reads it there, or take a shared String's
+     handle: encode_hold) */
+  int enc_holds = rt == TY_STRING && name && (sp_streq(name, "encode") || sp_streq(name, "encode!")) && argc <= 3;
+  if (rt == TY_STRING && name && recv >= 0 && operand_may_allocate(c, recv) && !y_ident && !enc_holds &&
       repr_of(c, recv).as_ty != TY_STRBUF &&   /* a handle is no fresh copy, and no const char * */
       !((!nil_answers_name(name)) && recv_may_be_sentinel(c, recv))) {
     for (int ai = 0; ai < argc && !g_noguard; ai++) g_noguard = operand_allocates_beside(c, argv[ai]);
@@ -11898,7 +11919,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
    the runtime decides the pair. `recv_txt` is the receiver's `const char *`
    expression. */
 
-/* String#force_encoding / #encode! on `recv_txt`, a `const char *` expression.
+/* String#force_encoding on `recv_txt`, a `const char *` expression.
    The argument was once ignored entirely, so `force_encoding("ASCII-8BIT")`
    left the string naming UTF-8 -- and spinel's one tag is exactly what that
    argument asks for. A constant path (Encoding::BINARY) or a string literal
@@ -11908,7 +11929,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
    check and the retag, and a receiver that is a call with effects --
    campfire's `request.body.read.force_encoding("UTF-8")`, where `read`
    advances a cursor -- ran twice and retagged the second, empty, read. */
-/* The encoding a force_encoding / encode! call names as a literal: 1 for
+/* The encoding a force_encoding call names as a literal: 1 for
    ASCII-8BIT, 0 for UTF-8, -1 for any other or a computed one, which only
    checks that the receiver may change. */
 /* Encoding::X or ::Encoding::X; a user constant (M::E) is a value */
@@ -11995,6 +12016,8 @@ static void emit_str_force_encoding_held(Compiler *c, const char *name, const ch
   else buf_printf(b, "_t%d; })", trc);
 }
 void emit_str_force_encoding(Compiler *c, const char *name, const char *r, const int *argv, int argc, Buf *b) {
+  /* encode! transcodes; force_encoding only retags */
+  if (sp_streq(name, "encode!")) { emit_str_encode_bang(c, r, argv, argc, b); return; }
   emit_str_force_encoding_held(c, name, r, argv, argc, -1, b);
 }
 /* The same on a shared String handle (#6179), whose ASCII-8BIT tag lives on
@@ -12003,6 +12026,7 @@ void emit_str_force_encoding(Compiler *c, const char *name, const char *r, const
    handle local or ivar reads back as one -- or was dropped by the next
    append that moved the bytes. `ref` is the handle; the value is its bytes. */
 static void emit_strbuf_force_encoding(Compiler *c, const char *name, const char *ref, int hr, const int *argv, int argc, Buf *b) {
+  if (sp_streq(name, "encode!")) { emit_strbuf_encode_bang(c, ref, hr, argv, argc, b); return; }
   int th = ++g_tmp;
   char hv[24]; snprintf(hv, sizeof hv, "_t%d", th);
   buf_printf(b, "({ sp_String *_t%d = %s;", th, ref);
@@ -12012,23 +12036,225 @@ static void emit_strbuf_force_encoding(Compiler *c, const char *name, const char
   emit_strbuf_force_encoding_mode(c, hv, argv, argc, ta, b);
   buf_printf(b, "); sp_String_cstr(_t%d); })", th);
 }
-static void emit_str_encode_call(Compiler *c, const char *recv_txt, const int *argv, int argc, Buf *b) {
+/* The option among an encode call's keyword hash elements (`els`, `en` of
+   them) that the runtime does not read and that changes the bytes (xml:,
+   fallback:, the newline ones), or NULL. CRuby ignores a key it does not
+   know, and so does the runtime. */
+const char *encode_opt_unread(const NodeTable *nt, const int *els, int en) {
+  static const char *const CHANGES[] = { "xml", "fallback", "newline", "universal_newline",
+                                         "crlf_newline", "cr_newline", "lf_newline", NULL };
+  for (int e = 0; e < en; e++) {
+    int key = nt_ref(nt, els[e], "key");
+    const char *kn = key >= 0 && nt_type(nt, key) && sp_streq(nt_type(nt, key), "SymbolNode")
+                     ? nt_str(nt, key, "value") : NULL;
+    for (int k = 0; kn && CHANGES[k]; k++)
+      if (sp_streq(kn, CHANGES[k])) return kn;
+  }
+  return NULL;
+}
+/* encode / encode!'s arguments, run in Ruby's order into rooted boxed temps
+   _a<N>_0 .. _a<N>_4: the destination, the source, then invalid:, undef: and
+   replace: (nil for one the call does not pass). Answers N; *npos is how
+   many positional arguments the call passed, which tells the runtime a
+   destination passed as nil (a TypeError) from none (the String's own). A
+   splat whose operand is no list, a key known only at run time or an option
+   the runtime does not read is refused: any of them could change the
+   answer. */
+/* The boxed temp of encode's argument `node` (-1: none, nil) needs a GC root
+   unless it boxes an immediate: a Symbol, an Integer, a Float, nil, true or
+   false holds no heap pointer for a later argument's allocation to move, and
+   an Encoding constant (Encoding::UTF_8) boxes a static name. */
+static void encode_arg_root(Compiler *c, int node, const char *temp, Buf *b) {
+  TyKind t = node >= 0 ? comp_ntype(c, node) : TY_NIL;
+  if (t == TY_NIL || t == TY_INT || t == TY_FLOAT || t == TY_SYMBOL || t == TY_BOOL) return;
+  const char *nm = enc_const_path(c->nt, node) ? nt_str(c->nt, node, "name") : NULL;
+  if (nm && (encoding_const_name(nm) || sp_streq(nm, "UTF8"))) return;
+  buf_printf(b, " SP_GC_ROOT_RBVAL(%s);", temp);
+}
+static int encode_args_hold(Compiler *c, const int *argv, int argc, int *npos, Buf *b) {
   const NodeTable *nt = c->nt;
   int kwh = -1, pos = argc;
   if (argc > 0 && nt_type(nt, argv[argc - 1]) && sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
     kwh = argv[argc - 1]; pos = argc - 1;
   }
-  buf_printf(b, "sp_str_encode(%s, ", recv_txt);
-  if (pos >= 1) emit_boxed(c, argv[0], b); else buf_puts(b, "sp_box_nil()");
-  buf_puts(b, ", ");
-  if (pos >= 2) emit_boxed(c, argv[1], b); else buf_puts(b, "sp_box_nil()");
-  static const char *const KW[] = { "invalid", "undef", "replace" };
-  for (int k = 0; k < 3; k++) {
-    buf_puts(b, ", ");
-    int v = kwh >= 0 ? kwh_lookup(nt, kwh, KW[k]) : -1;
-    if (v >= 0) emit_boxed(c, argv[0] == v ? v : v, b); else buf_puts(b, "sp_box_nil()");
+  /* a splat's count is the run time's: the positionals are gathered into
+     one list there (a dynamic send's arm that keeps its splat passes one) */
+  int spl = 0;
+  for (int k = 0; k < pos; k++)
+    if (nt_kind(nt, argv[k]) == NK_SplatNode) {
+      int so = nt_ref(nt, argv[k], "expression");
+      if (!splat_operand_ok(c, so >= 0 ? so : argv[k]))
+        unsupported_feature(c, argv[k], "String#encode with a splatted argument list");
+      spl = 1;
+    }
+  int en = 0; const int *els = kwh >= 0 ? nt_arr(nt, kwh, "elements", &en) : NULL;
+  /* a `**` operand's options are read at run time (sp_str_encode_kw_splat),
+     as a dynamic send's arm forwards them */
+  int kw_splat = 0;
+  for (int e = 0; e < en; e++) {
+    if (nt_kind(nt, els[e]) == NK_AssocSplatNode) { kw_splat = 1; continue; }
+    int key = nt_ref(nt, els[e], "key");
+    const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
+    if (!kty || (!sp_streq(kty, "SymbolNode") && !sp_streq(kty, "StringNode")))
+      unsupported_feature(c, els[e], "String#encode with an option hash known only at run time");
   }
-  buf_puts(b, ")");
+  const char *unread = encode_opt_unread(nt, els, en);
+  if (unread) {
+    char msg[96];
+    snprintf(msg, sizeof msg, "String#encode with the %s: option", unread);
+    unsupported_feature(c, kwh, msg);
+  }
+  /* every argument runs, in source order: the positionals, then each
+     option's value, a key the runtime does not read included; the last
+     value a key is given is the one it binds, as CRuby's */
+  static const char *const KW[] = { "invalid", "undef", "replace" };
+  int ta = ++g_tmp, opt[3] = { -1, -1, -1 };
+  if (spl) {
+    buf_printf(b, " sp_PolyArray *_a%d_l = sp_PolyArray_new(); SP_GC_ROOT(_a%d_l);", ta, ta);
+    for (int k = 0; k < pos; k++) {
+      if (nt_kind(nt, argv[k]) == NK_SplatNode) {
+        int so = nt_ref(nt, argv[k], "expression"), ts = ++g_tmp;
+        buf_printf(b, " { sp_PolyArray *_t%d = ", ts);
+        emit_splat_operand_array(c, so >= 0 ? so : argv[k], b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); for (sp_int _i = 0; _i < _t%d->len; _i++) { sp_PolyArray_push(_a%d_l, _t%d->data[_i]); } }",
+                   ts, ts, ta, ts);
+      }
+      else { buf_printf(b, " sp_PolyArray_push(_a%d_l, ", ta); emit_boxed(c, argv[k], b); buf_puts(b, ");"); }
+    }
+    buf_printf(b, " int _a%d_n = (int)_a%d_l->len;"
+                  " sp_RbVal _a%d_0 = _a%d_n > 0 ? _a%d_l->data[0] : sp_box_nil();"
+                  " sp_RbVal _a%d_1 = _a%d_n > 1 ? _a%d_l->data[1] : sp_box_nil();",
+               ta, ta, ta, ta, ta, ta, ta, ta);
+  }
+  for (int k = 0; !spl && k < (pos > 2 ? pos : 2); k++) {
+    /* a third positional runs too, before the ArgumentError, in a temp of
+       its own */
+    const char *nm = k < 2 ? "" : "x";
+    buf_printf(b, " sp_RbVal _a%d_%s%d = ", ta, nm, k);
+    if (k < pos) emit_boxed(c, argv[k], b); else buf_puts(b, "sp_box_nil()");
+    char tv[40]; snprintf(tv, sizeof tv, "_a%d_%s%d", ta, nm, k);
+    buf_puts(b, ";"); encode_arg_root(c, k < pos ? argv[k] : -1, tv, b);
+  }
+  int kwk[64];
+  for (int e = 0; e < en && e < 64; e++) {
+    kwk[e] = -1;
+    buf_printf(b, " sp_RbVal _a%d_v%d = ", ta, e);
+    if (nt_kind(nt, els[e]) == NK_AssocSplatNode) {
+      if (!emit_kw_splat_value(c, els[e], b)) buf_puts(b, "sp_box_nil()");
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_a%d_v%d);", ta, e);
+      continue;
+    }
+    int val = nt_ref(nt, els[e], "value");
+    emit_boxed(c, val, b);
+    char tv[40]; snprintf(tv, sizeof tv, "_a%d_v%d", ta, e);
+    buf_puts(b, ";"); encode_arg_root(c, val, tv, b);
+    int key = nt_ref(nt, els[e], "key");
+    const char *kn = sp_streq(nt_type(nt, key), "SymbolNode") ? nt_str(nt, key, "value") : NULL;
+    for (int k = 0; kn && k < 3; k++)
+      if (sp_streq(kn, KW[k])) { opt[k] = e; kwk[e] = k; }
+  }
+  if (en > 64) unsupported_feature(c, kwh, "String#encode with more than 64 options");
+  if (kw_splat) {
+    /* each source binds in its turn, a later one over an earlier */
+    for (int k = 0; k < 3; k++) buf_printf(b, " sp_RbVal _a%d_%d = sp_box_nil();", ta, k + 2);
+    for (int e = 0; e < en; e++) {
+      if (nt_kind(nt, els[e]) == NK_AssocSplatNode)
+        buf_printf(b, " sp_str_encode_kw_splat(_a%d_v%d, &_a%d_2, &_a%d_3, &_a%d_4);", ta, e, ta, ta, ta);
+      else if (kwk[e] >= 0) buf_printf(b, " _a%d_%d = _a%d_v%d;", ta, kwk[e] + 2, ta, e);
+    }
+  }
+  else for (int k = 0; k < 3; k++) {
+    if (opt[k] >= 0) buf_printf(b, " sp_RbVal _a%d_%d = _a%d_v%d;", ta, k + 2, ta, opt[k]);
+    else buf_printf(b, " sp_RbVal _a%d_%d = sp_box_nil();", ta, k + 2);
+  }
+  if (spl)
+    buf_printf(b, " if (_a%d_n > 2) sp_raise_cls(\"ArgumentError\", sp_sprintf(\"wrong number of arguments"
+                  " (given %%d, expected 0..2)\", _a%d_n));", ta, ta);
+  else if (pos > 2)
+    buf_printf(b, " sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given %d, expected 0..2)\");", pos);
+  /* (-1: the count is _a<N>_n's, emit_encode_args) */
+  *npos = spl ? -1 : pos;
+  return ta;
+}
+/* encode!'s receiver is the slot that takes new bytes back: under
+   --share-strings, a variable the call reads itself */
+static int encode_bang_slot(Compiler *c, int recv) {
+  return repr_share_rule(c) && str_mut_var_recv(c, recv) && !arg_ran_first(recv, 0);
+}
+static void emit_encode_args(int ta, int npos, Buf *b) {
+  if (npos < 0) buf_printf(b, "_a%d_n", ta); else buf_printf(b, "%d", npos);
+  buf_printf(b, ", _a%d_0, _a%d_1, _a%d_2, _a%d_3, _a%d_4", ta, ta, ta, ta, ta);
+}
+/* encode's receiver `recv_txt` (node `recv`, or -1) into the rooted temp
+   _t<tr>, of C type `ctype`, and the arguments (encode_args_hold), in the
+   order that reads the String CRuby converts. A mutator moves a plain
+   String's bytes to a new buffer the variable then holds, so a local or
+   instance variable is read after the arguments (`s.encode((s << "x";
+   e))` converts "...x"), unless one of them can give it another value and
+   cannot mutate it (`s.encode((s = t; e))` converts the String read
+   first): aset_recv_rebinds_only's rule, over every argument. Any other
+   receiver is read first, as CRuby evaluates it. Answers the arguments'
+   N. */
+static int encode_hold(Compiler *c, const char *ctype, const char *rootm, const char *recv_txt, int recv,
+                       const int *argv, int argc, int tr, int *npos, Buf *b) {
+  int after = recv >= 0 && !arg_ran_first(recv, 0);
+  if (after) {
+    NodeKind k = nt_kind(c->nt, recv);
+    after = k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode;
+  }
+  if (after) {
+    int rebinds = 0, mut = 0;
+    for (int i = 0; i < argc; i++) {
+      rebinds |= read_rebound_by(c, recv, argv[i]);
+      mut |= aset_recv_may_mutate(c, recv, argv[i], argv[i]);
+    }
+    after = !rebinds || mut;
+  }
+  if (!after) buf_printf(b, " %s _t%d = %s; %s(_t%d);", ctype, tr, recv_txt, rootm, tr);
+  int ta = encode_args_hold(c, argv, argc, npos, b);
+  if (after) buf_printf(b, " %s _t%d = %s; %s(_t%d);", ctype, tr, recv_txt, rootm, tr);
+  return ta;
+}
+static void emit_str_encode_call(Compiler *c, const char *recv_txt, int recv, const int *argv, int argc, Buf *b) {
+  int tr = ++g_tmp, npos;
+  buf_puts(b, "({");
+  int ta = encode_hold(c, "const char *", "SP_GC_ROOT", recv_txt, recv, argv, argc, tr, &npos, b);
+  buf_printf(b, " sp_str_encode(_t%d, ", tr);
+  emit_encode_args(ta, npos, b);
+  buf_puts(b, "); })");
+}
+/* String#encode! on `recv_txt`, a `const char *` expression: the arguments
+   run first; then the receiver's nil and frozen checks, in CRuby's order;
+   then the transcode encode makes, which retags the receiver in place where
+   the bytes stay; new bytes are NotImplementedError on a String that is not
+   shared by reference (sp_str_encode_into). encode! took
+   force_encoding's path once, a retag alone: `"\u00e9".encode!("BINARY")`
+   answered the bytes as binary where CRuby raises, and an argument that
+   named no encoding was never read. */
+static void emit_str_encode_bang_to(Compiler *c, const char *recv_txt, int recv, const int *argv, int argc,
+                                    const char *into, Buf *b) {
+  int tr = ++g_tmp, npos;
+  buf_puts(b, "({");
+  int ta = encode_hold(c, "const char *", "SP_GC_ROOT", recv_txt, recv, argv, argc, tr, &npos, b);
+  buf_printf(b, " if (!_t%d) sp_nil_recv(\"encode!\"); sp_str_check_mutable(_t%d);"
+                " %s(_t%d, sp_str_encode(_t%d, ", tr, tr, into, tr, tr);
+  emit_encode_args(ta, npos, b);
+  buf_puts(b, ")); })");
+}
+static void emit_str_encode_bang(Compiler *c, const char *recv_txt, const int *argv, int argc, Buf *b) {
+  emit_str_encode_bang_to(c, recv_txt, -1, argv, argc, "sp_str_encode_into", b);
+}
+/* The same on a shared String handle, which takes the new bytes and the tag */
+static void emit_strbuf_encode_bang(Compiler *c, const char *ref, int hr, const int *argv, int argc, Buf *b) {
+  int th = ++g_tmp, npos;
+  buf_printf(b, "({ sp_String *_t%d = %s;", th, ref);
+  emit_route_recv_root(c, hr, th, 0, NULL, TY_STRING, b);
+  int ta = encode_args_hold(c, argv, argc, &npos, b);
+  buf_printf(b, " if (!_t%d) sp_nil_recv(\"encode!\");"
+                " if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);"
+                " sp_String_encode_into(_t%d, sp_str_encode(sp_String_cstr(_t%d), ", th, th, th, th, th);
+  emit_encode_args(ta, npos, b);
+  buf_printf(b, ")); sp_String_cstr(_t%d); })", th);
 }
 int emit_value_recv_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
@@ -16502,6 +16728,55 @@ static int match_arm_user_claimed(Compiler *c, const char *name, TyKind rt, int 
   return rt == TY_POLY && sp_streq(name, "match?") && poly_name_user_claimed(c, name, argc);
 }
 
+/* encode! and force_encoding on a boxed receiver (emit_poly_call) */
+static void emit_poly_encoding_mutator(Compiler *c, const char *name, int recv, const int *argv, int argc, Buf *b) {
+  if (sp_streq(name, "encode!")) {
+    /* encode! transcodes as on a String receiver (emit_str_encode_bang),
+       the arguments run while the box is held: a shared handle in the box
+       takes the new bytes and the tag; a String takes the tag on its
+       bytes, and the call answers the box */
+    int tv = ++g_tmp, npos;
+    Buf rv = expr_buf(c, recv);
+    buf_puts(b, "({");
+    int ta = encode_hold(c, "sp_RbVal", "SP_GC_ROOT_RBVAL", rv.p ? rv.p : "", recv, argv, argc, tv, &npos, b);
+    free(rv.p);
+    buf_printf(b, " if (sp_poly_is_strbuf(_t%d)) { sp_String *_h%d = (sp_String *)_t%d.v.p;"
+                  " if (sp_String_is_frozen(_h%d)) sp_raise_frozen_str(_h%d->data);"
+                  " sp_String_encode_into(_h%d, sp_str_encode(sp_String_cstr(_h%d), ",
+               tv, tv, tv, tv, tv, tv, tv);
+    emit_encode_args(ta, npos, b);
+    /* --share-strings: a String left unshared has this one slot, which
+       takes new bytes back (as the String receiver's arm) */
+    int slot = encode_bang_slot(c, recv);
+    buf_printf(b, ")); } else { const char *_s%d = sp_poly_recv_s(_t%d, \"encode!\"); sp_str_check_mutable(_s%d);"
+                  " _t%d = sp_box_str(%s(_s%d, sp_str_encode(_s%d, ",
+               tv, tv, tv, tv, slot ? "sp_str_encode_slot" : "sp_str_encode_into", tv, tv);
+    emit_encode_args(ta, npos, b);
+    buf_puts(b, ")));");
+    if (slot) { buf_puts(b, " "); emit_expr(c, recv, b); buf_printf(b, " = _t%d;", tv); }
+    buf_printf(b, " } _t%d; })", tv);
+    return;
+  }
+  /* the String receiver's arm on the unboxed value: a `String | nil` slot
+     holding a String answered NoMethodError for want of this (#4441) */
+  /* a shared handle in the box takes the tag on the handle, and the call
+     answers the box itself */
+  int tv = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
+  buf_puts(b, ";");
+  /* the argument runs first, while the box is held */
+  if (str_force_encoding_computed(c, name, argv, argc)) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", tv);
+  int ta = force_encoding_arg_hold(c, name, argv, argc, b);
+  char hv[48]; snprintf(hv, sizeof hv, "((sp_String *)_t%d.v.p)", tv);
+  buf_printf(b, " sp_poly_is_strbuf(_t%d) ? (sp_String_force_encoding(%s, ", tv, hv);
+  emit_strbuf_force_encoding_mode(c, hv, argv, argc, ta, b);
+  buf_printf(b, "), _t%d) : ", tv);
+  char rv[64]; snprintf(rv, sizeof rv, "sp_poly_recv_s(_t%d, \"%s\")", tv, name);
+  buf_puts(b, "sp_box_str(");
+  emit_str_force_encoding_held(c, name, rv, argv, argc, ta, b);
+  buf_puts(b, "); })");
+}
+
 int emit_poly_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -17191,7 +17466,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
        (sp_streq(name, "byteslice") && (argc == 1 || argc == 2)) ||
        (sp_streq(name, "scrub") && argc == 1) ||
        (sp_streq(name, "encode") && argc >= 1 && argc <= 3) ||
-       ((is_encoding_mutator(name)) && argc >= 1 && argc <= 2))) {
+       ((is_encoding_mutator(name)) && argc >= 1 && argc <= encoding_mutator_max_argc(name)))) {
     if (sp_streq(name, "unpack")) {
       buf_puts(b, "sp_box_poly_array(");
       emit_poly_str_transform(c, recv, argc, argv, name, "unpack", 0, b);
@@ -17226,31 +17501,12 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       emit_poly_str_transform(c, recv, argc, argv, name, "scrub", 0, b);
       buf_puts(b, ")");
     }
-    else if (is_encoding_mutator(name)) {
-      /* the String receiver's arm on the unboxed value: a `String | nil` slot
-         holding a String answered NoMethodError for want of this (#4441) */
-      /* a shared handle in the box takes the tag on the handle, and the call
-         answers the box itself */
-      int tv = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
-      buf_puts(b, ";");
-      /* the argument runs first, while the box is held */
-      if (str_force_encoding_computed(c, name, argv, argc)) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", tv);
-      int ta = force_encoding_arg_hold(c, name, argv, argc, b);
-      char hv[48]; snprintf(hv, sizeof hv, "((sp_String *)_t%d.v.p)", tv);
-      buf_printf(b, " sp_poly_is_strbuf(_t%d) ? (sp_String_force_encoding(%s, ", tv, hv);
-      emit_strbuf_force_encoding_mode(c, hv, argv, argc, ta, b);
-      buf_printf(b, "), _t%d) : ", tv);
-      char rv[64]; snprintf(rv, sizeof rv, "sp_poly_recv_s(_t%d, \"%s\")", tv, name);
-      buf_puts(b, "sp_box_str(");
-      emit_str_force_encoding_held(c, name, rv, argv, argc, ta, b);
-      buf_puts(b, "); })");
-    }
+    else if (is_encoding_mutator(name)) emit_poly_encoding_mutator(c, name, recv, argv, argc, b);
     else {  /* encode: the same transcode the String receiver takes (#4439) */
       Buf rb; memset(&rb, 0, sizeof rb);
       buf_puts(&rb, "sp_poly_recv_s("); emit_expr(c, recv, &rb); buf_puts(&rb, ", \"encode\")");
       buf_puts(b, "sp_box_str(");
-      emit_str_encode_call(c, rb.p ? rb.p : "", argv, argc, b);
+      emit_str_encode_call(c, rb.p ? rb.p : "", recv, argv, argc, b);
       buf_puts(b, ")");
       free(rb.p);
     }

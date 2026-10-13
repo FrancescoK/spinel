@@ -13574,6 +13574,32 @@ static sp_RbVal sp_kw_splat_conv(sp_RbVal v, int user_ok) {
   sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Hash", sp_convert_src_name(v)));
   return v;
 }
+/* String#encode's options from a `**` operand (sp_kw_splat_conv's answer:
+   nil or a Hash), bound over the ones before it as a later key binds:
+   invalid:, undef: and replace: by Symbol key, as CRuby reads them. An
+   option the runtime does not read (xml:, fallback:, the newline ones)
+   with a value raises NotImplementedError, as its literal key is refused
+   at compile time. */
+static void sp_poly_hash_pair_i(sp_RbVal h, sp_int i, sp_RbVal *k, sp_RbVal *v);
+static SP_UNUSED void sp_str_encode_kw_splat(sp_RbVal h, sp_RbVal *invalid, sp_RbVal *undef, sp_RbVal *replace) {
+  if (h.tag == SP_TAG_NIL) return;
+  static const char *const unread[] = { "xml", "fallback", "newline", "universal_newline", "crlf_newline",
+                                        "cr_newline", "lf_newline", NULL };
+  sp_int n = sp_poly_length(h);
+  for (sp_int i = 0; i < n; i++) {
+    sp_RbVal k, v;
+    sp_poly_hash_pair_i(h, i, &k, &v);
+    if (k.tag != SP_TAG_SYM) continue;
+    const char *nm = sp_sym_to_s((sp_sym)k.v.i);
+    if (!strcmp(nm, "invalid")) *invalid = v;
+    else if (!strcmp(nm, "undef")) *undef = v;
+    else if (!strcmp(nm, "replace")) *replace = v;
+    else if (v.tag != SP_TAG_NIL)
+      for (int u = 0; unread[u]; u++)
+        if (!strcmp(nm, unread[u]))
+          sp_raise_cls("NotImplementedError", sp_sprintf("String#encode with the %s: option", unread[u]));
+  }
+}
 static sp_RbVal sp_kernel_hash(sp_RbVal v) {
   if (v.tag == SP_TAG_NIL || (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id) && sp_poly_length(v) == 0))
     return sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH);

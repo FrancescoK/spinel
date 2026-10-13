@@ -2222,6 +2222,13 @@ reject-test: $(SPINEL)
 	  else grep -qF "$$why" "$$tmp/sy.out" || \
 	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/sy.out"; ok=0; }; fi; \
 	done; \
+	for t in $(shell grep -l '^\# spinel: reject-encode: ' test/reject/*.rb); do \
+	  why=$$(sed -n 's/^# spinel: reject-encode: //p' "$$t"); \
+	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/en.c" >"$$tmp/en.out" 2>&1; then \
+	    echo "reject-test: FAIL ($$t compiled: an encode argument the runtime does not read)"; ok=0; \
+	  else grep -qF "$$why" "$$tmp/en.out" || \
+	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/en.out"; ok=0; }; fi; \
+	done; \
 	for t in $(shell grep -l '^\# spinel: reject-conversion: ' test/reject/*.rb); do \
 	  why=$$(sed -n 's/^# spinel: reject-conversion: //p' "$$t"); \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/co.c" >"$$tmp/co.out" 2>&1; then \

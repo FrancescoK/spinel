@@ -2801,7 +2801,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
           (sp_streq(name, "byteslice") && (argc == 1 || argc == 2)) ||
           (sp_streq(name, "scrub") && argc == 1) ||
           (sp_streq(name, "encode") && argc >= 1 && argc <= 3) ||
-          ((is_encoding_mutator(name)) && argc >= 1 && argc <= 2))
+          ((is_encoding_mutator(name)) && argc >= 1 && argc <= encoding_mutator_max_argc(name)))
         { *out = an_poly_concrete(c, name, TY_POLY); return 1; }
       /* chomp / chop / delete_prefix / delete_suffix answer a String and are
          served at argc 0 only, so the separator forms -- `line.chomp("|")`,

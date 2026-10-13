@@ -3280,7 +3280,7 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
   if (is_strencode && pos_argc <= 2 && (ret == TY_POLY || ret == TY_STRING)) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_STR_ENCODE, -1, TY_UNKNOWN, PC_SAME);
     Buf eb; memset(&eb, 0, sizeof eb);
-    buf_printf(&eb, "sp_str_encode(_t%d.v.s", tv);
+    buf_printf(&eb, "sp_str_encode(_t%d.v.s, %d", tv, pos_argc);
     for (int a = 0; a < 2; a++) {
       buf_puts(&eb, ", ");
       if (a < pos_argc) {
@@ -3296,7 +3296,7 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
       for (int e = 0; e < kwn; e++) {
         int key = nt_ref(nt, kwels[e], "key");
         const char *kn = key >= 0 ? nt_str(nt, key, "value") : NULL;
-        if (kn && sp_streq(kn, EKW[k])) { found = e; break; }
+        if (kn && sp_streq(kn, EKW[k])) found = e;   /* the last one binds */
       }
       if (found >= 0) {
         char tn[32]; snprintf(tn, sizeof tn, "_t%d", kwtmp[found]);
@@ -3305,6 +3305,14 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
       else buf_puts(&eb, "sp_box_nil()");
     }
     buf_puts(&eb, ")");
+    /* an option the runtime does not read changes the bytes (xml:, the
+       newline ones): the String raises rather than answer without it */
+    const char *unread = encode_opt_unread(nt, kwels, kwn);
+    if (unread) {
+      eb.len = 0;
+      buf_printf(&eb, "(sp_raise_cls(\"NotImplementedError\", \"String#encode with the %s: option\"), (const char *)0)",
+                 unread);
+    }
     buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = ", tv, tr);
     if (ret == TY_POLY) buf_printf(b, "sp_box_str(%s)", eb.p); else buf_puts(b, eb.p);
     buf_puts(b, "; }\nelse ");

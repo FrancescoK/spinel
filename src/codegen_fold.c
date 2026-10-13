@@ -8701,6 +8701,19 @@ void emit_kw_splat_conv_temp(Compiler *c, const char *tmp) {
 }
 
 /* See codegen_internal.h. */
+int emit_kw_splat_value(Compiler *c, int el, Buf *b) {
+  int v = nt_ref(c->nt, el, "value");
+  const char *akw = v < 0 ? anon_kwrest_name(c, el) : NULL;
+  if (v < 0 && !akw) return 0;
+  buf_puts(b, "sp_kw_splat_conv(");
+  if (v >= 0) emit_boxed(c, v, b);
+  else buf_printf(b, "sp_box_obj(lv_%s, %s)", rename_local(akw),
+                  anon_kwrest_type(c, el) == TY_POLY_POLY_HASH ? "SP_BUILTIN_POLY_POLY_HASH" : "SP_BUILTIN_SYM_POLY_HASH");
+  buf_printf(b, ", %d)", kw_splat_user_may_convert(c));
+  return 1;
+}
+
+/* See codegen_internal.h. */
 void emit_kw_splat_operand_inline(Compiler *c, int node, Buf *b) {
   Repr tr = repr_of(c, node);
   TyKind t = tr.as_ty;

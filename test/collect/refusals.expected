@@ -1394,6 +1394,28 @@ spinel: 1 refusal, nothing written
 == test/reject/string_duplicate_keyword_variable.rb [promote] rc=1
 spinel: test/reject/string_duplicate_keyword_variable.rb:5: a String is passed to a proc's parameter `k` through a repeated keyword, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a repeated keyword). Return the String from the proc and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
+== test/reject/string_encode_bang_options_result.rb [default] rc=1
+spinel: test/reject/string_encode_bang_options_result.rb:5: the result of a String bang method, which is its receiver, is mutated in place (a String is not yet shared by reference through a bang method's result). Mutate the receiver instead.
+== test/reject/string_encode_bang_options_result.rb [promote] rc=1
+spinel: test/reject/string_encode_bang_options_result.rb:5: the result of a String bang method, which is its receiver, is mutated in place (a String is not yet shared by reference through a bang method's result). Mutate the receiver instead.
+== test/reject/string_encode_newline_option.rb [default] rc=1
+spinel: test/reject/string_encode_newline_option.rb:5: String#encode with the crlf_newline: option
+spinel: 1 refusal, nothing written
+== test/reject/string_encode_newline_option.rb [promote] rc=1
+spinel: test/reject/string_encode_newline_option.rb:5: String#encode with the crlf_newline: option
+spinel: 1 refusal, nothing written
+== test/reject/string_encode_option_hash.rb [default] rc=1
+spinel: test/reject/string_encode_option_hash.rb:6: String#encode with an option hash known only at run time
+spinel: 1 refusal, nothing written
+== test/reject/string_encode_option_hash.rb [promote] rc=1
+spinel: test/reject/string_encode_option_hash.rb:6: String#encode with an option hash known only at run time
+spinel: 1 refusal, nothing written
+== test/reject/string_encode_xml_option.rb [default] rc=1
+spinel: test/reject/string_encode_xml_option.rb:5: String#encode with the xml: option
+spinel: 1 refusal, nothing written
+== test/reject/string_encode_xml_option.rb [promote] rc=1
+spinel: test/reject/string_encode_xml_option.rb:5: String#encode with the xml: option
+spinel: 1 refusal, nothing written
 == test/reject/string_fiber_arg.rb [default] rc=1
 spinel: test/reject/string_fiber_arg.rb:6: a String is passed to a block's parameter `t` through `Fiber#resume`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `Fiber#resume`). Return the String from the proc and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written

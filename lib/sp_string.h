@@ -298,6 +298,8 @@ static inline sp_RbVal sp_box_str_new(const char *v) {
   return sp_box_str(v);
 }
 
+/* encode! on a handle, given the String encode answered for it (lib/sp_cold.c) */
+void sp_String_encode_into(sp_String *h, const char *t);
 /* Cold in-place mutators (compiled once in lib/sp_string.c). */
 void sp_String_prepend(sp_String*s,const char*t);
 void sp_String_insert(sp_String*s,int64_t idx,const char*t);
