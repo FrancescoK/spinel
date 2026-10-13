@@ -3309,7 +3309,8 @@ static int subtree_builds_name(const NodeTable *nt, int n, int depth) {
 static int container_same(Compiler *c, int r, int x) {
   const NodeTable *nt = c->nt;
   NodeKind rk = nt_kind(nt, r), xk = nt_kind(nt, x);
-  if (!sp_streq(nt_str(nt, r, "name"), nt_str(nt, x, "name"))) return 0;
+  const char *rn = nt_str(nt, r, "name"), *xn = nt_str(nt, x, "name");
+  if (!rn || !xn || !sp_streq(rn, xn)) return 0;
   switch (rk) {
     case NK_LocalVariableReadNode:
       return (xk == NK_LocalVariableReadNode || xk == NK_LocalVariableWriteNode) && comp_scope_of(c, x) == comp_scope_of(c, r);
