@@ -13153,6 +13153,48 @@ int desugar_included_hooks(Compiler *c) {
   return changed;
 }
 
+/* ---- Object's own methods on self in a class body ----
+ *
+ * A receiverless call in a class or module body that names none of the
+ * program's methods is taken for a declaration (attr_*, include, private)
+ * and runs nothing. Object's methods that act on self or run a block with
+ * it are calls, though: `tap { }`, `display`, `instance_eval { }`,
+ * `class_eval { }`. Self there is the class, so such a statement is given
+ * self as its receiver and runs where it stands, as in CRuby. */
+static int cb_self_act(const NodeTable *nt, int s) {
+  static const char *const block_runners[] = { "tap", "yield_self", "instance_eval",
+    "instance_exec", "class_eval", "class_exec", "module_eval", "module_exec", NULL };
+  static const char *const acts[] = { "display", "public_send", "instance_variable_set", NULL };
+  if (nt_kind(nt, s) != NK_CallNode || nt_ref(nt, s, "receiver") >= 0) return 0;
+  const char *nm = nt_str(nt, s, "name");
+  if (!nm) return 0;
+  int blk = nt_ref(nt, s, "block");
+  for (int i = 0; block_runners[i]; i++)
+    if (sp_streq(nm, block_runners[i])) return blk >= 0 && nt_kind(nt, blk) == NK_BlockNode;
+  for (int i = 0; acts[i]; i++) if (sp_streq(nm, acts[i])) return 1;
+  return 0;
+}
+
+int desugar_class_body_object_acts(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int cn = 0; cn < n0; cn++) {
+    NodeKind ck = nt_kind(nt, cn);
+    int body = ck == NK_ClassNode || ck == NK_ModuleNode ? nt_ref(nt, cn, "body") : -1;
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int n = 0; const int *st = nt_arr(nt, body, "body", &n);
+    for (int k = 0; k < n; k++) {
+      if (!cb_self_act(nt, st[k])) continue;
+      int self = fwd_new_node_like(nt, st[k], "SelfNode");
+      if (self < 0) continue;
+      nt_node_set_ref(nt, st[k], "receiver", self);
+      changed = 1;
+    }
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 /* ---- Class.inherited hooks ----
  *
  * `class A < Base` calls Base.inherited(A) as the class is created, before
