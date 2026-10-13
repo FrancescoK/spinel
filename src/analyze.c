@@ -41260,6 +41260,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_class_new_blocks(c);           /* X = Class.new(B) do..end -> class X < B; ..; end */
   desugar_struct_block_name_reads(c);   /* Point = Struct.new do p self end -> refused */
   desugar_included_hooks(c);             /* include M / extend M -> M.included/extended(base)'s body */
+  desugar_eval_method_block(c);          /* k.class_eval(&o.method(:m)) -> o.m(k) */
   desugar_inherited_hooks(c);            /* class A < B -> B.inherited(A) first in A's body */
   /* a hook body spliced into its includer can carry a class_eval "<text>"
      of its own (`base.class_eval do class_eval "..." end`): graft it as the
