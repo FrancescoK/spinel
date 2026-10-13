@@ -2831,6 +2831,12 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     int fs = bop_share_named(BOP_FILETEST, name);
     if (fs) return sh_builtin(F, c, n, fs, rv, blk, 0);
   }
+  /* Marshal.dump(obj) answers a new String of the bytes and keeps nothing
+     it is handed. Marshal, like FileTest, has no Class type unless the
+     program defines it; the two-argument form answers its IO. */
+  if (nt_kind(nt, recv) == NK_ConstantReadNode && is_marshal_dump(nt_str(nt, recv, "name"), name) &&
+      argc == 1 && blk < 0 && !comp_const(c, nt_str(nt, recv, "name")) && !sh_has_targets(c, n))
+    return sh_builtin(F, c, n, BSH_PURE, rv, blk, 0);
 
   /* a user method */
   int tg[64];
