@@ -39,10 +39,12 @@ p stack.shift.name
 
 # a group's members through the list ThreadGroup keeps (builtins/thread_group.rb)
 g = ThreadGroup.new
-t = Thread.new { sleep 0.05 }
+q = Queue.new
+t = Thread.new { q.pop }
 g.add(t)
 p g.list.include?(t)
 p ThreadGroup::Default.list.include?(t)
 p ThreadGroup::Default.list.any? { |x| x.equal?(Thread.current) }
+q << 1
 t.join
 p g.list.size
