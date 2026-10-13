@@ -402,10 +402,18 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         EMIT_IV(); buf_printf(&conv, "), %s))", ty_nullable_builtin_id(t));
       }
       else if (ty_is_object(t)) {
-        /* user object without to_s: fall back to poly_to_s of boxed value */
+        /* user object without to_s: fall back to poly_to_s of boxed value,
+           boxed by value for a value-type class (sp_box_obj takes a pointer,
+           and the C did not compile) */
         int cid2 = ty_object_class(t);
-        buf_printf(&conv, "sp_poly_to_s(sp_box_obj(");
-        EMIT_IV(); buf_printf(&conv, ", %d))", cid2);
+        if (c->classes[cid2].is_value_type) {
+          buf_printf(&conv, "sp_poly_to_s(sp_box_vobj_%s(", c->classes[cid2].c_name);
+          EMIT_IV(); buf_puts(&conv, "))");
+        }
+        else {
+          buf_printf(&conv, "sp_poly_to_s(sp_box_obj(");
+          EMIT_IV(); buf_printf(&conv, ", %d))", cid2);
+        }
       }
       else if (t == TY_UNKNOWN) {
         /* An untyped value (e.g. a method resolved only through an included
