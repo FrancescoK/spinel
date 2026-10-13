@@ -3360,6 +3360,25 @@ static SP_INLINE const char *sp_poly_arg_str_chk(sp_RbVal v) {
   if (v.tag == SP_TAG_STR) return v.v.s;
   return sp_poly_arg_str_chk_slow(v);
 }
+/* The replacement String#[]= takes: a String, or an object's #to_str. Any
+   other value is CRuby's TypeError, raised before the String is touched --
+   not spliced in as its to_s. A Class or an Encoding has no #to_str either,
+   which the String-slot conversion would read through its to_s. */
+/* the refusals that need no allocation, so a caller can raise them before
+   it roots anything */
+static void sp_str_aset_refuse(sp_RbVal val) {
+  if (val.tag == SP_TAG_STR || sp_poly_is_strbuf(val)) return;
+  if (val.tag == SP_TAG_OBJ && val.cls_id >= 0) return;   /* a program object: its #to_str */
+  if (val.tag == SP_TAG_OBJ || val.tag == SP_TAG_CLASS || val.tag == SP_TAG_ENCODING)
+    sp_raise_no_str_conversion(val);
+  /* nil, true, false and the numbers and Symbols, worded as CRuby words them */
+  (void)sp_poly_arg_str_chk_slow(val);
+}
+static const char *sp_str_aset_rep(sp_RbVal val) {
+  if (val.tag == SP_TAG_STR) return val.v.s ? val.v.s : sp_str_empty;
+  sp_str_aset_refuse(val);
+  return sp_poly_arg_str_chk(val);
+}
 /* String#split's separator slot: the one String slot CRuby documents nil in
    (nil = whitespace mode). NULL preserves that answer, where the loose form
    above stringifies nil to "" and turns the call into a character split; a
@@ -7640,13 +7659,7 @@ static sp_RbVal sp_poly_splice(sp_RbVal recv, sp_int start, sp_int len, sp_RbVal
   if (recv.tag == SP_TAG_STR || sp_poly_is_strbuf(recv)) {
     const char *cur = (recv.tag == SP_TAG_STR) ? (recv.v.s ? recv.v.s : sp_str_empty)
                                                : sp_String_cstr((sp_String *)recv.v.p);
-    /* String#[]= takes a String (or a #to_str), else CRuby's TypeError: an
-       Integer, a Symbol or nil is not spliced in as its to_s */
-    /* a Class or an Encoding has no #to_str either, but the String-slot
-       conversion would take it through its to_s */
-    if (src.tag == SP_TAG_CLASS || src.tag == SP_TAG_ENCODING) sp_raise_no_str_conversion(src);
-    const char *rep = (src.tag == SP_TAG_STR) ? (src.v.s ? src.v.s : sp_str_empty)
-                                              : sp_poly_arg_str_chk(src);
+    const char *rep = sp_str_aset_rep(src);
     SP_GC_ROOT(cur); SP_GC_ROOT(rep);
     SP_GC_ROOT_RBVAL(recv);
     const char *out = sp_str_splice_at(cur, start, len, rep, 0);
@@ -12899,8 +12912,7 @@ static sp_RbVal sp_poly_arr_widen_and_set(sp_RbVal v, sp_int idx, sp_RbVal val) 
      string, silently dropping the mutation) (#3172). */
   if (v.tag == SP_TAG_STR) {
     if (v.v.s && sp_str_is_frozen_val(v.v.s)) sp_raise_frozen_str(v.v.s);   /* #6328 */
-    const char *rep = (val.tag == SP_TAG_STR) ? (val.v.s ? val.v.s : sp_str_empty)
-                                              : sp_poly_to_s(val);
+    const char *rep = sp_str_aset_rep(val);
     return sp_box_str(sp_str_splice_at(v.v.s ? v.v.s : sp_str_empty, idx, 1, rep, 0));
   }
   /* the same on a SHARED string: the handle absorbs the spliced contents, so
@@ -12909,8 +12921,7 @@ static sp_RbVal sp_poly_arr_widen_and_set(sp_RbVal v, sp_int idx, sp_RbVal val) 
      slot for, and the mutation was lost or refused (#3940). */
   if (sp_poly_is_strbuf(v)) {
     sp_String *sh = (sp_String *)v.v.p;
-    const char *rep = (val.tag == SP_TAG_STR) ? (val.v.s ? val.v.s : sp_str_empty)
-                                              : sp_poly_to_s(val);
+    const char *rep = sp_str_aset_rep(val);
     SP_GC_ROOT_RBVAL(v);
     SP_GC_ROOT(rep);
     sp_String_set_bin(sh, sp_str_splice_at(sp_String_cstr(sh), idx, 1, rep, 0));
@@ -12937,9 +12948,12 @@ static sp_RbVal sp_poly_str_aset_key(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
     return v;
   }
   if (v.tag == SP_TAG_STR && v.v.s && sp_str_is_frozen_val(v.v.s)) sp_raise_frozen_str(v.v.s);
+  /* refused before anything is rooted: a raise past a root would leave it
+     dangling under an inline rescue */
+  sp_str_aset_refuse(val);
   SP_GC_ROOT_RBVAL(v); SP_GC_ROOT_RBVAL(key); SP_GC_ROOT_RBVAL(val);
   const char *cur = v.tag == SP_TAG_STR ? (v.v.s ? v.v.s : sp_str_empty) : sp_String_cstr((sp_String *)v.v.p);
-  const char *rep = val.tag == SP_TAG_STR ? (val.v.s ? val.v.s : sp_str_empty) : sp_poly_to_s(val);
+  const char *rep = sp_str_aset_rep(val);
   SP_GC_ROOT(cur); SP_GC_ROOT(rep);
   const char *out;
   if (re) out = sp_str_splice_re((mrb_regexp_pattern *)key.v.p, cur, rep);
