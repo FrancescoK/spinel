@@ -5201,6 +5201,9 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
      and nothing is written back over it from the copy. The copy stays the
      receiver's temp for the result text alone. */
   int live = g_face_live_box && g_face_live_recv == recv && rt == TY_POLY_ARRAY;
+  /* an Integer or Float element is held with its nil, so a kept nil is
+     written down as nil */
+  int ote = oint_kind(et) && !live;
   char lv[32], lenf[48], getf[48], setf[48];
   snprintf(lv, sizeof lv, "_t%d", live ? g_face_live_box : t);
   if (live) {
@@ -5211,8 +5214,8 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
   }
   else {
     snprintf(lenf, sizeof lenf, "sp_%sArray_length", kk);
-    snprintf(getf, sizeof getf, "sp_%sArray_get", kk);
-    snprintf(setf, sizeof setf, "sp_%sArray_set", kk);
+    snprintf(getf, sizeof getf, "sp_%sArray_%s", kk, ote ? "oget" : "get");
+    snprintf(setf, sizeof setf, "sp_%sArray_%s", kk, ote ? "oset" : "set");
   }
   Buf rb = expr_buf(c, recv);
   /* rooted: a receiver that is a temporary has no other holder once its own
@@ -5232,10 +5235,14 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
   emit_indent(b, indent);
   buf_printf(b, "sp_int _t%d = %s(%s); volatile sp_int _t%d = 0, _t%d = 0; sp_int _t%d = 0;", to, lenf, lv, ti, tw, tk);
   buf_printf(b, " sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tnv, tnv);
-  emit_indent(b, indent); emit_ctype(c, et, b);
-  if (et == TY_POLY) buf_printf(b, " _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", te, te);
-  else if (et == TY_STRING) buf_printf(b, " _t%d = NULL; SP_GC_ROOT_STR(_t%d);\n", te, te);
-  else buf_printf(b, " _t%d = 0;\n", te);
+  emit_indent(b, indent);
+  if (ote) buf_printf(b, "%s _t%d = %s;\n", oint_ctype(et), te, oint_nil(et));
+  else {
+    emit_ctype(c, et, b);
+    if (et == TY_POLY) buf_printf(b, " _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", te, te);
+    else if (et == TY_STRING) buf_printf(b, " _t%d = NULL; SP_GC_ROOT_STR(_t%d);\n", te, te);
+    else buf_printf(b, " _t%d = 0;\n", te);
+  }
   /* the region: emit_begin's ensure protocol, less the deferred-next flag
      no inner region chains to (a `next` in the block targets this loop,
      which the region encloses) */
@@ -5285,6 +5292,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
   if (block_binds_gathered(c, block)) {
     Buf eb; memset(&eb, 0, sizeof eb);
     if (et == TY_POLY) buf_puts(&eb, es);
+    else if (ote) buf_printf(&eb, "%s(%s)", oint_box(et), es);
     else emit_boxed_text(c, et, es, &eb);
     Buf vals; memset(&vals, 0, sizeof vals);
     buf_printf(&vals, "sp_yielded_args(0, %s)", eb.p ? eb.p : es);
@@ -5308,8 +5316,11 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
        a PolyArray of handles (emit_array_filter_loop_handles) is shadowed
        boxed, as a typed one is */
     int boxed_shadow = handle_param;
-    if (oint_kind(et) && fpl && slot_is_oint(fpl) && kk && !sp_streq(kk, "Poly"))
-      buf_printf(b, "%s lv_%s = sp_%sArray_oget(_t%d, _t%d);", oint_ctype(et), bp, kk, t, ti);
+    if (ote && fpl && slot_is_oint(fpl))
+      buf_printf(b, "%s lv_%s = _t%d;", oint_ctype(et), bp, te);
+    else if (ote) {
+      emit_ctype(c, et, b); buf_printf(b, " lv_%s = _t%d.v;", bp, te);
+    }
     else {
       if (et != TY_POLY || boxed_shadow) { emit_ctype(c, et, b); buf_puts(b, " "); }
       buf_printf(b, "lv_%s = _t%d;", bp, te);
@@ -5324,6 +5335,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
     emit_indent(b, indent);
     /* live: CRuby answers nil when every element the loop reached was kept */
     if (live) buf_printf(b, "sp_poly_arr_live_truncate(%s, _t%d); _t%d = _t%d;\n", lv, tw, to, ti);
+    else if (ote) buf_printf(b, "if (_t%d) sp_%sArray_cut(_t%d, _t%d);\n", t, kk, t, tw);
     else buf_printf(b, "if (_t%d) _t%d->len = _t%d;\n", t, t, tw);
     if (flv) flv->type = fsaved;
     *tr = t; *torig = to; *twp = tw;
@@ -5353,8 +5365,9 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
   }
   else {
     buf_printf(b, "if (_t%d) { for (sp_int _t%d = _t%d; _t%d < sp_%sArray_length(_t%d); _t%d++, _t%d++)", t, tj, ti, tj, kk, t, tj, tw);
-    buf_printf(b, " if (_t%d != _t%d) sp_%sArray_set(_t%d, _t%d, sp_%sArray_get(_t%d, _t%d)); _t%d->len = _t%d; }\n",
-               tw, tj, kk, t, tw, kk, t, tj, t, tw);
+    buf_printf(b, " if (_t%d != _t%d) %s(_t%d, _t%d, %s(_t%d, _t%d));", tw, tj, setf, t, tw, getf, t, tj);
+    if (ote) buf_printf(b, " sp_%sArray_cut(_t%d, _t%d); }\n", kk, t, tw);
+    else buf_printf(b, " _t%d->len = _t%d; }\n", t, tw);
   }
   emit_indent(b, indent); buf_puts(b, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n");
   emit_indent(b, indent);
