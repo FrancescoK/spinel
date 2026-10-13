@@ -1989,6 +1989,15 @@ void register_method_visibility(Compiler *c) {
   for (int b = 0; b < nb; b++) register_method_visibility_body(c, &c->classes[bci[b]], bnode[b], 0);
   free(bci);
   free(bnode);
+  /* `class << Foo`, wherever it stands: Foo's class methods, as a
+     `class << self` in Foo's body declares them */
+  NT_FOREACH_KIND(c->nt, NK_SingletonClassNode, sc) {
+    int ex = nt_ref(c->nt, sc, "expression");
+    NodeKind ek = ex >= 0 ? nt_kind(c->nt, ex) : NK_NilNode;
+    if (ek != NK_ConstantReadNode && ek != NK_ConstantPathNode) continue;
+    int ci = comp_class_index(c, nt_str(c->nt, ex, "name"));
+    if (ci >= 0) register_method_visibility_body(c, &c->classes[ci], nt_ref(c->nt, sc, "body"), 1);
+  }
 }
 
 void register_locals(Compiler *c) {
