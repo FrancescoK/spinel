@@ -14628,7 +14628,7 @@ static void emit_class_body_stmts(Compiler *c, int ci, int body, Buf *b, int ind
          in a class body was skipped as a declaration */
       static const char *const kernel_acts[] = { "puts", "print", "p", "pp", "printf",
         "putc", "warn", "raise", "fail", "exit", "exit!", "abort", "sleep", "at_exit",
-        "srand", NULL };
+        "srand", "loop", "catch", NULL };
       int is_output = 0;
       for (int q = 0; cn && kernel_acts[q] && !is_output; q++) is_output = sp_streq(cn, kernel_acts[q]);
       int is_user = cn && comp_method_index(c, cn) >= 0;

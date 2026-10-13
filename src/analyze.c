@@ -41014,6 +41014,7 @@ static void an_phase_desugar_register(Compiler *c) {
      of its own (`base.class_eval do class_eval "..." end`): graft it as the
      first pass did the includer's own */
   desugar_static_class_eval(c);
+  desugar_class_body_object_acts(c);     /* class B; tap { } -> self.tap { } */
   desugar_nil_block_arg(c);
   desugar_self_const_get(c);             /* const_get(:X) / self::X in a class method -> per subclass */
   desugar_dynamic_const_get(c);          /* M.const_get(expr) -> a table of M's constants */
