@@ -8818,6 +8818,9 @@ int desugar_kernel_recv(Compiler *c) {
     const char *mn = nt_str(nt, id, "name");
     if (!mn || !is_kernel_module_function(mn) || cplan_const_user(c, id, rn, 1)) continue;
     nt_node_set_ref(nt, id, "receiver", -1);
+    /* still Kernel's: a reopening's pass that gives a bare call self
+       (desugar_handle_reopen_self_recv) leaves it bare */
+    nt_node_set_int(nt, id, "kernel_recv", 1);
     changed = 1;
   }
   return changed;
