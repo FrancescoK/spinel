@@ -171,6 +171,15 @@ int emit_str_form(Compiler *c, int v, int role, int face, unsigned dest, StrForm
   return form;
 }
 
+/* Node v into a slot that holds the shared handle, rendered whole: the
+   handle face with the taker's role, its needs met. */
+void emit_str_form_handle(Compiler *c, int v, Buf *b) {
+  StrForm sf;
+  emit_str_form(c, v, SPR_TAKE, SPX_HANDLE, 0, &sf);
+  str_form_settle(c, &sf, b);
+  str_form_free(&sf);
+}
+
 /* The seam between the String forms and the schedule: the one place a
    form's needs are met. Evaluation order, holds and roots are the schedule
    layer's (#8328), which is to replace this function; until it does, the

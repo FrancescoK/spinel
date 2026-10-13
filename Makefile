@@ -3058,6 +3058,11 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	  "$$tmp/srsr" > "$$tmp/srsr.out" 2>/dev/null && cmp -s "$$tmp/srsr.out" test/rbs-seed/shared_rbs_string_return.expected && \
 	  SPINEL_GC_STRESS=1 "$$tmp/srsr" > "$$tmp/srsr.gc" 2>/dev/null && cmp -s "$$tmp/srsr.gc" test/rbs-seed/shared_rbs_string_return.expected || { echo "rbs-seed-test: FAIL (#6765 an --rbs '-> String' method under --share-strings: refused, or not the shared String)"; sed -n 1,5p "$$tmp/srsr.err"; ok=0; }; \
 	;; \
+	shared_rbs_string_boxed_arg) \
+	$(SPINEL) test/rbs-seed/shared_rbs_string_boxed_arg.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srsb" >/dev/null 2>"$$tmp/srsb.err" && \
+	  "$$tmp/srsb" > "$$tmp/srsb.out" 2>/dev/null && cmp -s "$$tmp/srsb.out" test/rbs-seed/shared_rbs_string_boxed_arg.expected && \
+	  SPINEL_GC_STRESS=1 "$$tmp/srsb" > "$$tmp/srsb.gc" 2>/dev/null && cmp -s "$$tmp/srsb.gc" test/rbs-seed/shared_rbs_string_boxed_arg.expected || { echo "rbs-seed-test: FAIL (#6765 an --rbs String parameter or ivar given a boxed String under --share-strings: not the box's handle)"; sed -n 1,5p "$$tmp/srsb.err"; ok=0; }; \
+	;; \
 	byref_string_param) \
 	$(SPINEL) test/rbs-seed/byref_string_param.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/br.c" 2>/dev/null; \

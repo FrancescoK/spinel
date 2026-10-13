@@ -16789,6 +16789,12 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
       else if (emit_strbuf_write_handle(c, v, b)) { }
       /* a route that hands on one (`@iv = s.then { |v| v }`) */
       else if (emit_strbuf_route(c, v, b)) { }
+      /* --share-strings: any other value in the String plan's form for a
+         handle slot (emit_str_form's handle face), as a method's parameter
+         takes it: a box that holds a String's handle hands over that
+         handle (`@x: String` seeded over a poly argument), where a copy of
+         its bytes forked the ivar off the caller's String */
+      else if (c->share_plan) emit_str_form_handle(c, v, b);
       else {
         buf_printf(b, "%s(", strbuf_new_func(c, v));
         emit_str_expr(c, v, b);
@@ -18314,6 +18320,8 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
       else if (ivt2 == TY_STRBUF) {
         if (strbuf_slot_ref(c, v, srefO2, sizeof srefO2)) buf_puts(&vval, srefO2);
         else if (emit_strbuf_write_handle(c, v, &vval)) { }
+        /* (--share-strings: in the String plan's form, a box's handle) */
+        else if (c->share_plan) emit_str_form_handle(c, v, &vval);
         else { buf_puts(&vval, "sp_String_new_shared("); emit_str_expr(c, v, &vval); buf_puts(&vval, ")"); }
       }
       else if (ty_is_object(ivt2) || ty_is_array(ivt2) || ty_is_hash(ivt2) ||
