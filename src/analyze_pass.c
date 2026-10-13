@@ -2935,6 +2935,11 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       }
       else if (name && sp_streq(name, "[]=") && an == 2) {
         is_idx_write = 1; kt = infer_type(c, argv[0]);
+        /* nor an Integer key while the local's writes are all still
+           untyped: `a = s.bytes; a[3] = 1` stores into an Array, and the
+           int-keyed Hash it was read as reshaped `a.select(&:nil?)` for a
+           Hash's pairs (the second stage still takes it) */
+        if (kt == TY_INT && g_infer_optimistic && recv_local_writes_unsettled(c, recv)) continue;
         vt = tuple_elem_evidence(c, argv[1], infer_type(c, argv[1]));
         knode = argv[0]; vnode = argv[1];
         /* a range key is a splice: the RHS contributes element evidence */
