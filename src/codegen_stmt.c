@@ -21782,6 +21782,30 @@ static int g_iow_val_taken = 0;
 void emit_index_opw_value_into(const char *tmp) { g_iow_val_next = tmp; g_iow_val_taken = 0; }
 int emit_index_opw_value_taken(void) { return g_iow_val_taken; }
 
+/* Whether the receiver of `recv[key] op= v` is a plain C local that still
+   holds the receiver's object while the key and the right-hand side run: a
+   local is rooted where it is declared and the collector does not move
+   objects, so the temp the receiver is copied into needs no root of its own
+   unless the key or the right-hand side can rebind the local -- by writing
+   it, or, for a local a closure captured, through the closure. */
+static int iow_recv_local_held(Compiler *c, int recv, int key, int v) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, recv) != NK_LocalVariableReadNode) return 0;
+  const char *nm = nt_str(nt, recv, "name");
+  if (!nm) return 0;
+  LocalVar *lv = scope_local(comp_scope_of(c, recv), nm);
+  if (!lv || lv->is_cell || (g_cap_struct && g_cap_names && nameset_has(g_cap_names, nm)))
+    return 0;
+  /* spelled as the C local itself, not a cell or a capture slot */
+  Buf rb; memset(&rb, 0, sizeof rb);
+  emit_expr(c, recv, &rb);
+  char want[300];
+  snprintf(want, sizeof want, "lv_%s", nm);
+  int plain = rb.p && sp_streq(rb.p, want);
+  free(rb.p);
+  return plain && !subtree_writes_local(c, key, nm) && !subtree_writes_local(c, v, nm);
+}
+
 void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
   const char *val_ref = g_iow_val_next;
   g_iow_val_next = NULL;
@@ -21807,12 +21831,17 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     /* The receiver's temp is the hash's only holder once the key or the RHS
        drops it, and a key that can allocate has no holder at all: root the
        receiver when either can -- a call, a write, or the fold on a poly
-       slot, which is a call -- and the key when it can allocate. Temps the
-       value form hoisted (g_iow_*) carry the root they were declared with. */
+       slot, which is a call -- and the key when it can allocate. None of
+       them drops a plain local's hash (iow_recv_local_held), which still
+       holds it. Temps the value form hoisted (g_iow_*) carry the root they
+       were declared with. */
     int drops = subtree_has_side_effect(c, argv[0]) || subtree_has_side_effect(c, v) || vt == TY_POLY;
     buf_printf(b, "{ %s _t%d = ", c_type_name(rt), ta); iow_emit_recv(c, recv, b);
     buf_puts(b, "; ");
-    if (!g_iow_recv_ref && (subtree_may_allocate(nt, recv) || drops)) { emit_gc_root_tmp(c, rt, ta, b); buf_puts(b, " "); }
+    if (!g_iow_recv_ref &&
+        (subtree_may_allocate(nt, recv) || (drops && !iow_recv_local_held(c, recv, argv[0], v)))) {
+      emit_gc_root_tmp(c, rt, ta, b); buf_puts(b, " ");
+    }
     /* a key that may be nil or of another class: held boxed, the read
        misses on it and the store converts it (hash_opw_okey) */
     int ok = hash_opw_okey(c, argv[0], rt);
@@ -21900,9 +21929,13 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     /* ...and when the key can run code: it can reassign the variable the
        receiver was read from (`@a[swap_a] += 1`) and allocate, and the temp
        is then the old array's only holder while the key runs -- the fold
-       below writes into it. A key that is a pure read does neither. */
-    if (subtree_may_allocate(nt, recv) || (eff && !g_iow_recv_ref) ||
-        (!g_iow_recv_ref && !subtree_is_pure_read(c, argv[0])))
+       below writes into it. A key that is a pure read does neither, and
+       neither can one that leaves a plain local receiver alone: the local's
+       own root still holds the array (`h[k * 256 + s.getbyte(i)] += r`
+       pushed and popped a root on every turn of a histogram loop). */
+    if (subtree_may_allocate(nt, recv) ||
+        (!g_iow_recv_ref && (eff || !subtree_is_pure_read(c, argv[0])) &&
+         !iow_recv_local_held(c, recv, argv[0], v)))
       buf_printf(b, "; SP_GC_ROOT(_t%d)", ta);
     buf_printf(b, "; sp_int _t%d = ", tb); iow_emit_key(c, argv[0], b, IOW_KEY_INT, TY_INT);
     buf_puts(b, "; ");
