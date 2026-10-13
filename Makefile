@@ -3028,6 +3028,16 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	  "$$tmp/srsa" > "$$tmp/srsa.out" 2>/dev/null && cmp -s "$$tmp/srsa.out" test/rbs-seed/shared_rbs_string_array_param.expected && \
 	  SPINEL_GC_STRESS=1 "$$tmp/srsa" > "$$tmp/srsa.gc" 2>/dev/null && cmp -s "$$tmp/srsa.gc" test/rbs-seed/shared_rbs_string_array_param.expected || { echo "rbs-seed-test: FAIL (#6765 an --rbs Array[String] parameter, reader or ivar under --share-strings: refused, or not the boxed handles)"; sed -n 1,5p "$$tmp/srsa.err"; ok=0; }; \
 	;; \
+	shared_rbs_string_hash) \
+	$(SPINEL) test/rbs-seed/shared_rbs_string_hash.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srsh" >/dev/null 2>"$$tmp/srsh.err" && \
+	  "$$tmp/srsh" > "$$tmp/srsh.out" 2>/dev/null && cmp -s "$$tmp/srsh.out" test/rbs-seed/shared_rbs_string_hash.expected && \
+	  SPINEL_GC_STRESS=1 "$$tmp/srsh" > "$$tmp/srsh.gc" 2>/dev/null && cmp -s "$$tmp/srsh.gc" test/rbs-seed/shared_rbs_string_hash.expected || { echo "rbs-seed-test: FAIL (#6765 an --rbs Hash[String, String] parameter, return or ivar under --share-strings: refused, or not the boxed handles)"; sed -n 1,5p "$$tmp/srsh.err"; ok=0; }; \
+	;; \
+	shared_rbs_void_writer_tail) \
+	$(SPINEL) test/rbs-seed/shared_rbs_void_writer_tail.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srvw" >/dev/null 2>"$$tmp/srvw.err" && \
+	  "$$tmp/srvw" > "$$tmp/srvw.out" 2>/dev/null && cmp -s "$$tmp/srvw.out" test/rbs-seed/shared_rbs_void_writer_tail.expected && \
+	  SPINEL_GC_STRESS=1 "$$tmp/srvw" > "$$tmp/srvw.gc" 2>/dev/null && cmp -s "$$tmp/srvw.gc" test/rbs-seed/shared_rbs_void_writer_tail.expected || { echo "rbs-seed-test: FAIL (#6765 an attribute assignment ending a --rbs '-> nil' writer under --share-strings: refused, or not shared)"; sed -n 1,5p "$$tmp/srvw.err"; ok=0; }; \
+	;; \
 	byref_string_param) \
 	$(SPINEL) test/rbs-seed/byref_string_param.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/br.c" 2>/dev/null; \

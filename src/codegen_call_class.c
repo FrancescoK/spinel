@@ -1149,10 +1149,14 @@ static int assign_peeked_reader(Compiler *c, int id) {
    whose call just answers the yield (`def y = yield`) and is itself
    dropped? What ends the climb (a loop body, a block of an iterator) is
    an_value_dropped's, unless a user class defines a method of the block
-   call's name, which can answer the block's value. */
+   call's name, which can answer the block's value. The tail or `return`
+   of a method that answers nothing (a `void` C function, as an --rbs
+   `-> nil` seed makes it) is thrown away too. */
 static int assign_value_dropped(Compiler *c, int id, const int *par) {
   const NodeTable *nt = c->nt;
   int n = id;
+  Scope *ms = comp_scope_of(c, id);
+  if (ms && ms->def_node >= 0 && method_is_void(ms) && (assign_is_tail(c, id, par) || assign_is_returned(c, id, par))) return 1;
   for (int p = par[n]; ; p = par[n]) {
     /* (a node can be a call's receiver and a statement's value both: the
        parent map keeps one of them, comp_recv_parent the receiver) */

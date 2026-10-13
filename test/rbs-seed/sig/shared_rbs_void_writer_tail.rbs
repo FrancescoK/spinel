@@ -1,0 +1,5 @@
+class ShrvwRec
+  def name=: (String value) -> nil
+  def title=: (String value) -> nil
+  def label=: (String value) -> nil
+end
