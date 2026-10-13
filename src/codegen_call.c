@@ -8431,10 +8431,14 @@ int poly_native_arm_call(Compiler *c, int k, const char *name, int n, const int 
       else { ok = 0; break; }
     }
     else {
-      TyKind aw = ffi_spec_to_ty(spec);
+      TyKind aw = ffi_spec_to_ty(spec), ffi = aw;
       if (sp_streq(spec, "text")) aw = TY_STRING;
       if (aw == TY_UNKNOWN) { ok = 0; break; }
-      if (atmp_ty[ai] == TY_POLY) emit_unbox_text(c, aw, tn, cb);
+      /* a write payload (`:text`, which the FFI types not) is the boxed
+         operand's #to_s, as the typed call's (emit_to_s_expr): unboxed as
+         a String, an Integer's was read as a pointer */
+      if (atmp_ty[ai] == TY_POLY && aw != ffi) buf_printf(cb, "sp_poly_to_s(%s)", tn);
+      else if (atmp_ty[ai] == TY_POLY) emit_unbox_text(c, aw, tn, cb);
       /* a shared handle into a String parameter: the String it holds */
       else if (aw == TY_STRING && atmp_ty[ai] == TY_STRBUF) buf_printf(cb, "(%s ? sp_String_cstr(%s) : NULL)", tn, tn);
       else if (atmp_ty[ai] == aw) buf_puts(cb, tn);

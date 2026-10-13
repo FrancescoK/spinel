@@ -1711,6 +1711,32 @@ int emit_op_array_pred_class(Compiler *c, const BopCtx *x, Buf *b) {
   return 1;
 }
 
+/* `boxed << x` dispatched at run time from receiver temp _t<t> with the boxed
+   argument text arg: sp_poly_shl, which knows the builtin values and the user
+   classes, after an arm for each native class the box can hold (any the
+   program makes, where the walk cannot bound the box) whose binding takes
+   `<<` (StringIO#<<, as its typed receiver calls it), answering the
+   receiver */
+static void emit_poly_shl_call(Compiler *c, int id, const int *argv, int t, const char *arg, Buf *b) {
+  int nk = 0, ta = -1, tr = -1;
+  const int *ks = poly_recv_classes(c, id, &nk);
+  TyKind aty = TY_POLY;
+  Buf arms; memset(&arms, 0, sizeof arms);
+  for (int i = 0; i < (ks ? nk : c->nclasses); i++) {
+    int k = ks ? ks[i] : i;
+    Buf cb; TyKind mret;
+    if (k < 0 || k >= c->nclasses || !c->classes[k].is_native_class || !c->classes[k].instantiated) continue;
+    if (ta < 0) { ta = ++g_tmp; tr = ++g_tmp; }
+    if (!poly_native_arm_call(c, k, "<<", 1, argv, &ta, &aty, t, &cb, &mret)) continue;
+    buf_printf(&arms, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d) { %s; _t%d = _t%d; }\nelse ", t, t, k, cb.p, tr, t);
+    free(cb.p);
+  }
+  if (arms.p) buf_printf(b, "({ sp_RbVal _t%d = %s; sp_RbVal _t%d; %s_t%d = sp_poly_shl(_t%d, _t%d); _t%d; })",
+                         ta, arg, tr, arms.p, tr, t, ta, tr);
+  else buf_printf(b, "sp_poly_shl(_t%d, %s)", t, arg);
+  free(arms.p);
+}
+
 /* << and push on a poly or array receiver, a splat into an Array mutator, and their poly element stores */
 int emit_call_append_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* `poly_val << x`: runtime dispatch via sp_poly_shl. For an array receiver it
@@ -1742,18 +1768,22 @@ int emit_call_append_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     int slot = rvn && strncmp(rvn, "__cap_", 6) == 0 ? recv : poly_shl_root_slot(c, recv);
     int se = 0;
     int t = poly_binop_recv_temp(c, recv, argv[0], b, &se);
+    Buf ab; memset(&ab, 0, sizeof ab);
     if (slot < 0) {
-      buf_printf(b, "sp_poly_shl(_t%d, ", t);
-      emit_boxed(c, argv[0], b);
-      buf_puts(b, se ? "); })" : ")");
+      emit_boxed(c, argv[0], &ab);
+      emit_poly_shl_call(c, id, argv, t, ab.p, b);
+      free(ab.p);
+      buf_puts(b, se ? "; })" : "");
       c->args_in_call = recv;
       return 1;
     }
     int got = ++g_tmp, cur = ++g_tmp;
     if (!se) buf_puts(b, "({ ");
-    buf_printf(b, "sp_RbVal _t%d = sp_poly_shl(_t%d, ", got, t);
-    emit_boxed(c, argv[0], b);
-    buf_printf(b, "); if (_t%d.tag == SP_TAG_STR) { sp_RbVal _t%d = ", t, cur);
+    buf_printf(b, "sp_RbVal _t%d = ", got);
+    emit_boxed(c, argv[0], &ab);
+    emit_poly_shl_call(c, id, argv, t, ab.p, b);
+    free(ab.p);
+    buf_printf(b, "; if (_t%d.tag == SP_TAG_STR) { sp_RbVal _t%d = ", t, cur);
     emit_expr(c, slot, b);
     buf_printf(b, "; if (_t%d.tag == SP_TAG_STR && _t%d.v.s == _t%d.v.s) ", cur, cur, t);
     emit_expr(c, slot, b);

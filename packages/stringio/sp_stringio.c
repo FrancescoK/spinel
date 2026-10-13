@@ -497,6 +497,8 @@ sp_String *sp_StringIO_string_h(sp_StringIO *s) {SP_GC_ROOT(s);
     if (s->borrowed && sp_str_is_frozen_val(s->buf)) sp_String_freeze(h);
     if (!s->borrowed) free(s->buf);
     s->borrowed = 0;
+    /* (s can be old by now: the barrier keeps the new handle it holds) */
+    sp_gc_wb(s);
     s->str = h;
     sio_sync(s);
   }

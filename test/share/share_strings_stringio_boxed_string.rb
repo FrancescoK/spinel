@@ -1,13 +1,13 @@
 # Flag-only. StringIO#string on a boxed receiver (an Array element that may
 # also be another class's object) answers the String the StringIO is opened
 # on, as CRuby's does: a change through the answer shows in the StringIO
-# and in the String's other names, and a write through the StringIO shows
-# in the answer. Also the answer handed on as an argument, an Array
-# element, a Hash value, an ivar and a global, a StringIO opened on no
-# String, a grown String, and a StringIO over a frozen literal, whose
-# #string is that frozen String and takes no write (typed or boxed). No
-# class of the program has a #string of its own (for one that does:
-# share_strings_stringio_boxed_string_mixed.rb).
+# and in the String's other names, and a write through the StringIO (write,
+# print, putc, truncate, `<<`) shows in the answer. Also the answer handed
+# on as an argument, an Array element, a Hash value, an ivar and a global,
+# a StringIO opened on no String, a grown String, and a StringIO over a
+# frozen literal, whose #string is that frozen String and takes no write
+# (typed or boxed). No class of the program has a #string of its own (for
+# one that does: share_strings_stringio_boxed_string_mixed.rb).
 require "stringio"
 class Plain
   def token = String.new("fresh")
@@ -28,6 +28,21 @@ s << "1"
 t << "2"
 o.write("W")
 p s, t, t.equal?(s)
+
+o = [1, StringIO.new(+"ab")][1]
+tk = o.string
+o.write("Z")
+o.print("P")
+o.putc("C")
+p tk
+o.truncate(1)
+p tk
+o.rewind
+o << "Q" << "R"
+p tk, o.read
+tk << "!"
+o << "S"
+p tk, o.string
 
 o = [nil, StringIO.new(+"ab")][1]
 t = o.string
