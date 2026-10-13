@@ -18547,10 +18547,14 @@ static int strbuf_ivar_source_walk_body(Compiler *c, int cid, const char *ivn, i
   /* An ivar an --rbs seed pins to a typed String container (`@out:
      Hash[String, String]`) keeps plain Strings in its slots: a demand that
      its stores become handles cannot be met there, and only left a store's
-     value a handle its slot has no conversion for (#8302) */
+     value a handle its slot has no conversion for (#8302). Under
+     --share-strings a String Array or String Hash the seed pins is boxed
+     (share_default_apply), so its stores are demanded; Hash[Integer,
+     String] has no boxed form. */
   if (SB_KIND(mode) == SB_DEMAND && class_ivar_pinned(&c->classes[cid], ivn)) {
     int iv = comp_ivar_index(&c->classes[cid], ivn);
-    if (iv >= 0 && repr_typed_str_container(c->classes[cid].ivar_types[iv])) return 0;
+    TyKind it = iv >= 0 ? c->classes[cid].ivar_types[iv] : TY_UNKNOWN;
+    if (repr_typed_str_container(it) && (!c->share_strings || it == TY_INT_STR_HASH)) return 0;
   }
   /* its `=`, `||=` and `&&=` (VS_STORE) */
   for (int e = comp_vsite_first(c, VS_STORE, NK_InstanceVariableReadNode, ivn, cid); e >= 0;
@@ -20388,12 +20392,14 @@ static int share_demand_nested_read(Compiler *c, int call, int recv) {
    every descendant's copy, a passive one with no holder of its own
    included (an abstract class between them). A copy an --rbs seed pins
    to Array[String] is boxed too: the seed gives the Ruby type, not the
-   C form. */
-static int share_box_ivar_family(Compiler *c, int cid, const char *nm) {
+   C form. So is a Hash an --rbs seed pins to Hash[String, String]
+   (`hash`: the family's slots are that Hash, boxed as the poly Hash). */
+static int share_box_ivar_family(Compiler *c, int cid, const char *nm, int hash) {
+  TyKind typed = hash ? TY_STR_STR_HASH : TY_STR_ARRAY, boxed = hash ? TY_STR_POLY_HASH : TY_POLY_ARRAY;
   int top = cid;
   for (int p = c->classes[cid].parent; p >= 0; p = c->classes[p].parent) {
     int pi = comp_ivar_index(&c->classes[p], nm);
-    if (pi < 0 || (c->classes[p].ivar_types[pi] != TY_STR_ARRAY && c->classes[p].ivar_types[pi] != TY_POLY_ARRAY)) break;
+    if (pi < 0 || (c->classes[p].ivar_types[pi] != typed && c->classes[p].ivar_types[pi] != boxed)) break;
     top = p;
   }
   int nk = 0, changed = 0;
@@ -20401,9 +20407,9 @@ static int share_box_ivar_family(Compiler *c, int cid, const char *nm) {
   for (int k = -1; k < nk; k++) {
     ClassInfo *kc = &c->classes[k < 0 ? top : ks[k]];
     int ki = comp_ivar_index(kc, nm);
-    if (ki < 0 || kc->ivar_types[ki] != TY_STR_ARRAY) continue;
-    kc->ivar_types[ki] = TY_POLY_ARRAY;
-    kc->ivar_elems_shared[ki] = 1;
+    if (ki < 0 || kc->ivar_types[ki] != typed) continue;
+    kc->ivar_types[ki] = boxed;
+    if (!hash) kc->ivar_elems_shared[ki] = 1;
     changed = 1;
   }
   return changed;
@@ -20438,6 +20444,13 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
             (!lv->rbs_seeded || lv->rbs_type == TY_STR_ARRAY) && (lv->type != TY_POLY_ARRAY || !lv->elems_shared)) {
           lv->type = TY_POLY_ARRAY;
           lv->elems_shared = 1;
+          changed = 1;
+        }
+        /* and so does a Hash an --rbs seed types Hash[String, String]:
+           its values are boxes of the handles */
+        if (lv->type == TY_STR_STR_HASH && lv->rbs_seeded && lv->rbs_type == TY_STR_STR_HASH &&
+            repr_str_elems_share(c, h)) {
+          lv->type = TY_STR_POLY_HASH;
           changed = 1;
         }
         if (repr_str_elems_share(c, h)) changed |= strbuf_demand_container_stores(c, lv->name, s);
@@ -20485,11 +20498,13 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
         if (it == TY_POLY_ARRAY && !ci->ivar_elems_shared[iv]) {
           ci->ivar_elems_shared[iv] = 1;
           changed = 1;
-          changed |= share_box_ivar_family(c, sh->cid, sh->name);
+          changed |= share_box_ivar_family(c, sh->cid, sh->name, 0);
         }
         /* An externally written String Array uses that same form even
            when the source walk cannot reach a direct ivar write. */
-        if (it == TY_STR_ARRAY) changed |= share_box_ivar_family(c, sh->cid, sh->name);
+        if (it == TY_STR_ARRAY) changed |= share_box_ivar_family(c, sh->cid, sh->name, 0);
+        if (it == TY_STR_STR_HASH && class_ivar_pinned(ci, sh->name))
+          changed |= share_box_ivar_family(c, sh->cid, sh->name, 1);
         continue;
       }
       if (repr_str_shares(c, h)) changed |= strbuf_promote_ivar(c, sh->cid, sh->name);
@@ -30647,6 +30662,8 @@ static int reassert_rbs_param_seeds(Compiler *c) {
       if (c->share_strings && lv->rbs_type == TY_STRING && lv->type == TY_STRBUF && lv->str_shared) continue;
       /* and a String Array whose Strings it shares, boxed as their handles */
       if (c->share_strings && lv->rbs_type == TY_STR_ARRAY && lv->type == TY_POLY_ARRAY && lv->elems_shared) continue;
+      /* and a String Hash whose Strings it shares, boxed as their handles */
+      if (c->share_strings && lv->rbs_type == TY_STR_STR_HASH && lv->type == TY_STR_POLY_HASH) continue;
       lv->type = lv->rbs_type;
       changed = 1;
     }
