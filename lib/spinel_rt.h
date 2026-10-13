@@ -19873,6 +19873,41 @@ static sp_StrStrHash *sp_env_update_h_blk(sp_StrStrHash *h, sp_Proc *p) { SP_GC_
   }
   return sp_env_to_h();
 }
+/* ENV.update/merge!(hash) { |key, old, new| } on a hash of another variant,
+   boxed, as sp_env_update_v takes it: a key that is already set takes the
+   block's answer. CRuby checks the key before it yields and the value after,
+   so a value the block replaces need not be a String; the one stored must be
+   a String, or nil, which deletes. */
+static sp_StrStrHash *sp_env_update_v_blk(sp_RbVal hv, sp_Proc *p) {
+  SP_GC_ROOT_RBVAL(hv); SP_GC_ROOT(p);
+  sp_PolyPolyHash *h = sp_poly_as_poly_poly_hash(hv);
+  if (!h) sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Hash", sp_convert_src_name(hv)));
+  SP_GC_ROOT(h);
+  for (sp_int i = 0; i < h->len; i++) {
+    sp_RbVal k = sp_poly_strbuf_deref(h->keys[h->order[i]]), v = h->vals[h->order[i]];
+    SP_GC_ROOT_RBVAL(k); SP_GC_ROOT_RBVAL(v);
+    if (k.tag != SP_TAG_STR) sp_raise_no_str_conversion(k);
+    const char *ov = getenv(sp_env_chk(k.v.s, 0));
+    if (ov && p) {
+      const char *ovh = sp_str_dup_external(ov);  /* environ may move */
+      ((unsigned char *)ovh)[-1] = 0xfa;
+      SP_GC_ROOT(ovh);
+      _sp_proc_poly_args[0] = k;
+      _sp_proc_poly_args[1] = sp_box_str(ovh);
+      _sp_proc_poly_args[2] = v;
+      sp_int slots[16] = { (sp_int)(uintptr_t)k.v.s, (sp_int)(uintptr_t)ovh,
+                            (v.tag == SP_TAG_OBJ || v.tag == SP_TAG_STR) ? (sp_int)(uintptr_t)v.v.p : sp_poly_to_i(v) };
+      _sp_proc_poly_ret = sp_box_nil();
+      sp_int r = sp_proc_call(p, 3, slots);
+      v = (_sp_proc_poly_ret.tag != SP_TAG_NIL) ? _sp_proc_poly_ret
+            : r ? sp_box_str((const char *)(uintptr_t)r) : sp_box_nil();
+    }
+    v = sp_poly_strbuf_deref(v);
+    if (v.tag != SP_TAG_STR && v.tag != SP_TAG_NIL) sp_raise_no_str_conversion(v);
+    if (v.tag == SP_TAG_STR && v.v.s) setenv(k.v.s, sp_env_chk(v.v.s, 1), 1); else unsetenv(k.v.s);
+  }
+  return sp_env_to_h();
+}
 /* reject!/select!/filter!: nil when nothing changed (#2844) */
 static sp_RbVal sp_env_filter_bang_opt(sp_Proc *p, int keep) {
   if (sp_env_filter_core(p, keep) == 0) return sp_box_nil();
