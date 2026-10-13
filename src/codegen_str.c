@@ -30,8 +30,16 @@
    nil. An identity is never wrapped or refused. Answers the form it
    rendered: the bytes' where strbuf_object_ref names no handle, as it did
    before the plan was read. */
-static int str_render_id(Compiler *c, int v, int form, Buf *b) {
-  if (form == SPF_HANDLE && strbuf_object_ref(c, v, b)) return SPF_HANDLE;
+static int str_render_id(Compiler *c, int v, int form, StrForm *sf) {
+  Buf *b = &sf->expr;
+  if (form == SPF_HANDLE && strbuf_object_ref(c, v, b)) {
+    /* (a String Range's min or max can be a String of its own, which
+       sp_srange_extreme_h makes: strbuf_object_ref's arm for it, after the
+       exception message's and the endpoints') */
+    if (!exc_message_identity_operand(c, v) && !strbuf_route_srange_end(c, v) && strbuf_route_srange_extreme(c, v))
+      sf->needs |= SF_ALLOCATES;
+    return SPF_HANDLE;
+  }
   if (comp_recv_type(c, v) == TY_STRING && repr_of(c, v).may_nil) {
     int t = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", t);
@@ -54,7 +62,7 @@ int emit_str_form(Compiler *c, int v, int role, int face, StrForm *sf) {
   switch (face) {
   case SPX_ID:
     sf->cty = TY_INT;
-    return str_render_id(c, v, form, &sf->expr);
+    return str_render_id(c, v, form, sf);
   }
   return form;
 }
@@ -71,7 +79,8 @@ int emit_str_form(Compiler *c, int v, int role, int face, StrForm *sf) {
      SF_EVAL_ONCE       a temp of the value's type bound in a statement
                         expression, `({ T _tN = <expr>; `, whose uses the
                         consumer writes and str_form_close ends.
-   A form that needs neither is its expression. */
+   A form that needs neither is its expression. SF_ALLOCATES asks nothing
+   of the form itself: it is for the values live across it. */
 void str_form_settle(Compiler *c, StrForm *sf, Buf *b) {
   const char *e = sf->expr.p ? sf->expr.p : "";
   if (sf->needs & SF_ROOT_UNTIL_USE) {
