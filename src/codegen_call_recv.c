@@ -13815,7 +13815,8 @@ static void emit_face_value(Compiler *c, TyKind slot, TyKind nat, const char *va
    pin emit_face_arm pops only on its normal return (view_unwind pops them
    otherwise), the argument overrides, the conversion hold, the prelude,
    and the recovery point itself, which the driver armed for the whole
-   unit. The arm's prelude is captured to `pre` and its value to `val`;
+   unit, and the emitter's loop and ensure state. The arm's prelude is
+   captured to `pre` and its value to `val`;
    answers 0 when the arm was dropped. */
 static int face_probe_arm(Compiler *c, int id, unsigned kind, unsigned flags, int box,
                           Buf *pre, Buf *val, TyKind *nat) {
@@ -13827,9 +13828,14 @@ static int face_probe_arm(Compiler *c, int id, unsigned kind, unsigned flags, in
   jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
   volatile int ok = 1;
   int sv_moves = comp_scope_move_depth(), sv_views = view_mark();
+  /* the loop, ensure and break state an arm abandoned partway through left
+     set: a `times` arm dropped inside its loop left the loop depth raised,
+     and the next method's ensure emitted a `continue` with no loop round it */
+  EmitUnitState *sv_state = emit_state_snapshot();
   g_pre = pre; g_unsup_probe = 1;
   if (setjmp(g_unsup_recover) == 0) *nat = emit_face_arm(c, id, kind, flags, box, val);
   else { ok = 0; comp_scope_move_unwind(sv_moves); view_unwind(sv_views); }
+  emit_state_release(sv_state, !ok);
   memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
   view_unbind(sv_argov);
   g_open_defaults = sv_open_defaults;
