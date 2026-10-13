@@ -24292,9 +24292,10 @@ static int nonlocal_string_typed(Compiler *c, int a) {
 }
 /* A global or a class variable handed to a method's parameter that takes
    a String's handle or box and appends to it. The binder wraps a fresh
-   handle of its bytes, or boxes a copy, since neither variable has a handle
-   of its own to give; only a lent slot (the byref ABI) can carry it. A
-   receiver that is boxed reaches every class's method of the name. */
+   handle of its bytes, or boxes a copy, where the variable has no handle
+   of its own to give; only a lent slot (the byref ABI) can carry it. One
+   that holds the handle hands it over. A receiver that is boxed reaches
+   every class's method of the name. */
 static void refuse_nonlocal_param_args(Compiler *c, int id, const char *name) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver");
@@ -24352,6 +24353,13 @@ static void refuse_nonlocal_param_args(Compiler *c, int id, const char *name) {
         }
       }
       if (!refuse_nonlocal_var(nt, arg) || !nonlocal_string_typed(c, arg)) continue;
+      /* a variable that holds the String's handle (--share-strings gives a
+         global or a class variable the handle of a String it shares) hands
+         that handle itself to a parameter that takes one: the method
+         appends to the caller's String, as CRuby's does. (The share route
+         above declines it: the facts lend a global argument to the
+         parameter instead of joining their classes, sh_bind.) */
+      if (repr_of(c, arg).handle && repr_of_slot(c, q).handle) continue;
       const char *kind = nt_kind(nt, arg) == NK_GlobalVariableReadNode || nt_kind(nt, arg) == NK_GlobalVariableWriteNode
                          ? "a global variable" : "a class variable";
       char mt[96]; snprintf(mt, sizeof mt, "`%s`", m->name ? m->name : name);
