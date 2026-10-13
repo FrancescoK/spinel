@@ -11432,6 +11432,98 @@ int desugar_reduce_splat_args(Compiler *c) {
   return changed;
 }
 
+/* `a.each(*args) { }` on an Array, a Hash or a Range: an iterator that takes
+   no argument handed a splat (`def each(*args, &b) = @a.each(*args, &b)`).
+   The emitters read the splat as no argument and ran the loop, but the
+   inference has no row for the call with one, so it was typed void and
+   answered nil; a splat that is not empty went unnoticed where CRuby raises.
+   The call becomes
+     (r = recv; s = [*args]
+      raise ArgumentError, "wrong number of arguments (given N, expected 0)" if s.length > 0
+      r.each { })
+   each_with_index takes `*args` but hands them to each, so it raises the same. */
+int desugar_iter_splat_args(Compiler *c) {
+  static const char *const names[] = {
+    "each", "map", "collect", "flat_map", "collect_concat", "filter_map", "select", "filter",
+    "find_all", "reject", "sort_by", "group_by", "partition", "take_while", "drop_while",
+    "each_with_index", "uniq", "minmax_by", NULL };
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  int changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    int args = nt_ref(nt, id, "arguments");
+    if (recv < 0 || args < 0 || nt_ref(nt, id, "block") < 0) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int known = 0;
+    for (int k = 0; nm && names[k]; k++) if (sp_streq(nm, names[k])) known = 1;
+    if (!known) continue;
+    int argc = 0; const int *av0 = nt_arr(nt, args, "arguments", &argc);
+    if (argc < 1 || argc > 16) continue;
+    int av[16], only_splats = 1;
+    for (int k = 0; k < argc; k++) {
+      av[k] = av0[k];
+      if (nt_kind(nt, av[k]) != NK_SplatNode || nt_ref(nt, av[k], "expression") < 0) only_splats = 0;
+    }
+    if (!only_splats) continue;
+    TyKind rt = infer_type(c, recv);
+    if (!ty_is_array(rt) && !ty_is_hash(rt) && rt != TY_RANGE && rt != TY_STR_RANGE && rt != TY_FLOAT_RANGE)
+      continue;
+    long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
+    char rn[96], sn[96];
+    snprintf(rn, sizeof rn, "__isp_%s_r", comp_node_tag(c, id));
+    snprintf(sn, sizeof sn, "__isp_%s_s", comp_node_tag(c, id));
+    int base = nt->count;
+    BsB b = { nt, 1 };
+    /* the call moves to a new number, and the parenthesized form takes `id`'s */
+    int call = bs_new(&b, "CallNode");
+    if (!b.ok) continue;
+    nt_swap_nodes(nt, id, call);
+    nt_node_reset(nt, id, "ParenthesesNode");
+    int ary = bs_new(&b, "ArrayNode");
+    if (ary >= 0) nt_node_set_arr(nt, ary, "elements", av, argc);
+    int wr = bs_write(&b, rn, recv), ws = bs_write(&b, sn, ary);
+    int head = bs_new(&b, "StringNode"), tail = bs_new(&b, "StringNode");
+    if (head >= 0) nt_node_set_str(nt, head, "content", "wrong number of arguments (given ");
+    if (tail >= 0) nt_node_set_str(nt, tail, "content", ", expected 0)");
+    int len = bs_call(&b, bs_read(&b, sn), "length", NULL, 0);
+    int ns = bs_call(&b, len, "to_s", NULL, 0);
+    int m1 = bs_call(&b, head, "+", &ns, 1);
+    int msg = bs_call(&b, m1, "+", &tail, 1);
+    int cls = bs_new(&b, "ConstantReadNode");
+    if (cls >= 0) nt_node_set_str(nt, cls, "name", "ArgumentError");
+    int ra[2] = { cls, msg };
+    int rz = bs_call(&b, -1, "raise", ra, 2);
+    int chk = bs_new(&b, "IfNode"), chk_then = bs_stmts(&b, &rz, 1);
+    if (chk >= 0) {
+      nt_node_set_ref(nt, chk, "predicate", bs_len_gt(&b, sn, 0));
+      nt_node_set_ref(nt, chk, "statements", chk_then);
+      nt_node_set_ref(nt, chk, "subsequent", -1);
+    }
+    /* the original call, its receiver read from the temp and no argument */
+    nt_node_set_ref(nt, call, "receiver", bs_read(&b, rn));
+    nt_node_set_ref(nt, call, "arguments", -1);
+    int body[4] = { wr, ws, chk, call };
+    int st = bs_stmts(&b, body, 4);
+    if (!b.ok || st < 0) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    nt_node_set_ref(nt, id, "body", st);
+    if (line > 0) {
+      nt_node_set_int(nt, id, "node_line", line); nt_node_set_int(nt, id, "node_file", file);
+      for (int j = base; j < nt->count; j++)
+        if (nt_int(nt, j, "node_line", 0) == 0) { nt_node_set_int(nt, j, "node_line", line); nt_node_set_int(nt, j, "node_file", file); }
+    }
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    Scope *s = comp_scope_of(c, id);
+    scope_local_intern(s, rn);
+    scope_local_intern(s, sn);
+    changed = 1;
+  }
+  return changed;
+}
+
 static int pdl_body_reads(const NodeTable *nt, int id, const char **names, int n);
 
 /* Does the block read one of its leading requireds past the `m` values a

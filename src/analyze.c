@@ -42477,6 +42477,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= AN_PASS("desugar_std_stream_bare_warn", desugar_std_stream_bare_warn(c));  /* warn x -> $stderr.write(<x as warn renders it>), once $stderr can hold a program object with its own write */
     ch |= AN_PASS("desugar_class_literal_ctors", desugar_class_literal_ctors(c));      /* Array[a,b] -> [a,b]; Range.new -> (a..b) */
     ch |= AN_PASS("desugar_enum_iter_splat_args", desugar_enum_iter_splat_args(c));     /* enum.map(*a, &b) -> enum.map(&b) */
+    ch |= AN_PASS("desugar_iter_splat_args", desugar_iter_splat_args(c));     /* ary.each(*a) { } -> raise unless a.empty?; ary.each { } */
     ch |= AN_PASS("desugar_enum_pair_lone_param", desugar_enum_pair_lone_param(c));     /* a.each_with_index.map { |x| } -> { |x, i| } */
     ch |= AN_PASS("desugar_builtin_iter_block_shapes", desugar_builtin_iter_block_shapes(c));  /* [1].each { |c, a = 10| } -> { |v| c = v; a = 10 } */
     ch |= AN_PASS("desugar_fresh_array_each_writeback", desugar_fresh_array_each_writeback(c)); /* s.scan(re).each { |x| x.gsub!(..) }.join -> map! { |x| ..; x } */
