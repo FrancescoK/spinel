@@ -1638,7 +1638,9 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      kind the box holds. Untyped, the call was nil and the packed string was
      dropped. A user object as the format is left untyped, as the emitter
      leaves it to the user dispatch (#4319). */
-  if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+  /* A block handed on to it (`to_a.pack(f, &blk)`) goes unused, as in CRuby. */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 &&
+      (nt_ref(nt, id, "block") < 0 || nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockArgumentNode) &&
       sp_streq(name, "pack") && !an_user_defines_or_reads(c, name)) {
     TyKind fmt_t = infer_type(c, argv[0]);
     if (fmt_t == TY_STRING || fmt_t == TY_POLY || fmt_t == TY_UNKNOWN)
