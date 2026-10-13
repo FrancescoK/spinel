@@ -1,0 +1,38 @@
+:a
+[:a, 1]
+[:a, 1]
+[:b, [:b, 2], [:b, 2], 2]
+[:c, [:c, 3], [:c, 3], 2]
+[1, [1, 2, 3], [1, 2, 3], 3]
+[7, [7, 8], [7, 8], 2]
+[nil, [], [], 0]
+[:d, [:d], [:d], 1]
+["s", ["s"], ["s"], 1]
+[4, [4], [4], 1]
+[[:k, 1], [[:k, 1]], [[:k, 1]], 1]
+[1, [1, 2], [1, 2], 2]
+[Nothing]
+[Plain]
+"can't convert Five to Array (Five#to_a gives Integer)"
+"can't convert Holder to Array (Holder#to_a gives Integer)"
+[Holder]
+[Integer, Integer]
+"can't convert Holder to Array (Holder#to_a gives Hash)"
+"can't convert Six to Array (Six#to_a gives Integer)"
+"can't convert Six to Array (Six#to_a gives Integer)"
+"can't convert Holder to Array (Holder#to_a gives Integer)"
+"can't convert MaybeInt to Array (MaybeInt#to_a gives Integer)"
+"can't convert MaybeInt to Array (MaybeInt#to_a gives Integer)"
+"can't convert MaybeInt to Array (MaybeInt#to_a gives Integer)"
+"can't convert MaybeStr to Array (MaybeStr#to_a gives String)"
+"can't convert MaybeStr to Array (MaybeStr#to_a gives String)"
+"can't convert MaybeStr to Array (MaybeStr#to_a gives String)"
+[MaybeInt]
+1
+[MaybeInt, nil]
+[MaybeStr]
+1
+[MaybeStr, nil]
+[Nothing]
+[1]
+[]

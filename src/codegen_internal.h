@@ -1104,6 +1104,8 @@ void arity_kw_suffix(const NodeTable *nt, int params, char *out, size_t n);
 void scope_arity_kw_suffix(Compiler *c, const Scope *m, char *out, size_t n);
 void emit_arity_raise(Buf *b, const char *given, int min, int max, const char *kw);
 int class_to_io_dispatched(Compiler *c, int k);
+/* Does an instantiated class answer #to_a through sp_obj_to_a_fn? */
+int obj_to_a_any(Compiler *c);
 void emit_arity_check(Buf *b, const char *given, int min, int max, const char *kw);
 int scope_refuses_keywords(Compiler *c, const Scope *m);
 /* The keyword ArgumentErrors, `kind` "missing" or "unknown", naming `count`
@@ -1894,6 +1896,7 @@ int class_def_body(Compiler *c, int def_node);
 int class_body_list(Compiler *c, int **out_ci, int **out_body);
 int local_all_writes_empty_array(Compiler *c, Scope *sc, const char *name);
 TyKind an_builtin_answer(Compiler *c, int id);
+TyKind infer_call(Compiler *c, int id);
 int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out);
 int node_is_empty_container(const NodeTable *nt, int node);
 int an_empty_container_kind(Compiler *c, int b);

@@ -11334,6 +11334,12 @@ static void emit_obj_struct_values_dispatch(Compiler *c, Buf *b) {
    collection (0 / nil / false) (#3761). */
 static int obj_to_a_method(Compiler *c, int cid, int *defc) {
   int mi = comp_method_in_chain(c, cid, "to_a", defc);
+  if (mi < 0) {
+    /* `alias to_a entries`: the method the alias names */
+    int start = cid;
+    const char *tn = comp_resolve_alias_at(c, cid, "to_a", &start);
+    if (!sp_streq(tn, "to_a")) mi = comp_method_in_chain(c, start, tn, defc);
+  }
   { int pfi = mi >= 0 ? scope_proc_form_of(c, mi) : -1; if (pfi >= 0) mi = pfi; }   /* the emitted clone (#3399) */
   char tail[64];
   if (mi >= 0 && obj_to_a_call_tail(&c->scopes[mi], tail, sizeof tail) && scope_has_callable_symbol(c, mi)) return mi;
@@ -11344,11 +11350,24 @@ static int obj_to_a_method(Compiler *c, int cid, int *defc) {
   if (mi >= 0 && c->scopes[mi].nparams == 0 && scope_has_callable_symbol(c, mi)) return mi;
   return -1;
 }
-static int obj_to_a_any(Compiler *c) {
+/* The instance variable behind an attr_reader that answers #to_a
+   (`alias to_a children` of `attr_reader :children`), as its index in class
+   cid's ivars, or -1. Whatever it holds is the answer: a caller raises
+   CRuby's TypeError for one that is not an Array. */
+static int obj_to_a_reader(Compiler *c, int cid) {
+  if (comp_resolve_member(c, cid, "to_a", 0, NULL, NULL) != SP_MEMBER_ATTR) return -1;
+  const char *rn = comp_resolve_alias(c, cid, "to_a");
+  ClassInfo *ci = &c->classes[cid];
+  for (int j = 0; j < ci->nivars; j++) {
+    if (sp_streq(ci->ivars[j] + 1, rn)) return ci->ivar_types[j] == TY_UNKNOWN ? -1 : j;
+  }
+  return -1;
+}
+int obj_to_a_any(Compiler *c) {
   for (int i = 0; i < c->nclasses; i++) {
     ClassInfo *ci = &c->classes[i];
     if (ci->is_native_class || !ci->instantiated || comp_class_is_module(c, ci)) continue;   /* a module has no instances (#4654) */
-    if (obj_to_a_method(c, i, NULL) >= 0) return 1;
+    if (obj_to_a_method(c, i, NULL) >= 0 || obj_to_a_reader(c, i) >= 0) return 1;
   }
   return 0;
 }
@@ -11382,7 +11401,17 @@ static void emit_obj_to_a_dispatch(Compiler *c, Buf *b) {
       if (ci->is_native_class || !ci->instantiated || comp_class_is_module(c, ci)) continue;   /* a module has no instances (#4654) */
       int defc = -1;
       int mi = obj_to_a_method(c, i, &defc);
-      if (mi < 0) continue;
+      if (mi < 0) {
+        int j = obj_to_a_reader(c, i);
+        if (j < 0) continue;
+        char fld[256];
+        snprintf(fld, sizeof fld, "((sp_%s *)v.v.p)->iv_%s", ci->c_name, iv_c(ci->ivars[j] + 1));
+        Buf bx; memset(&bx, 0, sizeof bx);
+        emit_boxed_text(c, ci->ivar_types[j], fld, &bx);
+        buf_printf(b, "    case %d: return %s;\n", i, bx.p ? bx.p : "sp_box_nil()");
+        free(bx.p);
+        continue;
+      }
       TyKind mret = (TyKind)c->scopes[mi].ret;
       buf_printf(b, "    case %d: {\n", i);
       char callx[256];
@@ -11394,6 +11423,8 @@ static void emit_obj_to_a_dispatch(Compiler *c, Buf *b) {
                c->classes[defc].c_name, mc(c->scopes[mi].name), c->classes[defc].c_name, tail);
       buf_puts(b, "      return ");
       if (mret == TY_POLY) buf_puts(b, callx);
+      /* an answer that holds its nil beside the value (sp_oint) */
+      else if (method_ret_is_oint(&c->scopes[mi])) buf_printf(b, "%s(%s)", oint_box(mret), callx);
       else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, mret, callx, &bx);
              buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
       buf_puts(b, ";\n    }\n");

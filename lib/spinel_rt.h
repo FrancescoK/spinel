@@ -7143,6 +7143,18 @@ static sp_RbVal sp_splat_to_array(sp_RbVal v) {
         cn, cn, sp_poly_class_name(a)));
     }
   }
+  /* a program object answers its own #to_a, through the generated hook; one
+     without it, or whose #to_a answers nil, wraps */
+  if (sp_poly_is_user_obj(v) && v.v.p && sp_obj_to_a_fn) {
+    SP_GC_ROOT_RBVAL(v);
+    sp_RbVal a = sp_obj_to_a_fn(v);
+    if (a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(a.cls_id)) return a;
+    if (a.tag != SP_TAG_NIL) {
+      const char *cn = sp_poly_class_name(v);
+      sp_raise_cls("TypeError", sp_sprintf("can't convert %s to Array (%s#to_a gives %s)",
+        cn, cn, sp_poly_class_name(a)));
+    }
+  }
   { sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); sp_PolyArray_push(r, v); return sp_box_poly_array(r); }
 }
 /* sp_poly_arr_get's other array kinds, out of line: their boxing helpers are

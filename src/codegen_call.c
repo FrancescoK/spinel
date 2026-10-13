@@ -18241,6 +18241,58 @@ static int emit_bivar_copy_wrap(Compiler *c, int id, Buf *b) {
    the same call on the Range's member Array (srange_enum): when it answers an
    Enumerator, that Enumerator has no size, as the Range's own is nil. The
    Enumerators built on it inherit that (sp_enum_inherit_size). */
+/* `*obj` on a program object reads `obj.to_a` (desugar_splat_to_a). An
+   answer that may be no Array is typed a PolyArray there: the answer the
+   class gives is kept and checked, as CRuby's splat does -- an Array spreads,
+   nil spreads the object itself, anything else is a TypeError. */
+static int g_splat_to_a_inner = -1;
+static int emit_splat_to_a_check_wrap(Compiler *c, int id, Buf *b) {
+  if (!nt_int(c->nt, id, "splat_to_a", 0) || g_splat_to_a_inner == id) return 0;
+  int r = nt_ref(c->nt, id, "receiver");
+  TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+  if (!ty_is_object(rt) || comp_ty_value_obj(c, rt) || repr_of(c, id).as_ty != TY_POLY_ARRAY) return 0;
+  an_pure_read_begin();
+  TyKind t = infer_call(c, id);
+  an_pure_read_end();
+  if (t == TY_UNKNOWN || ty_is_array(t)) return 0;
+  const char *cn = c->classes[ty_object_class(rt)].name;
+  int tr = ++g_tmp, tb = ++g_tmp, ta = ++g_tmp;
+  buf_puts(b, "({ ");
+  /* the receiver, held once: ahead of the statement when there is one, where
+     the call's own hoisted parts read it */
+  Buf rb; memset(&rb, 0, sizeof rb);
+  emit_expr(c, r, &rb);
+  Buf *rd = g_pre ? g_pre : b;
+  emit_ctype(c, rt, rd);
+  buf_printf(rd, " _t%d = %s; SP_GC_ROOT(_t%d);%s", tr, rb.p ? rb.p : "NULL", tr, g_pre ? "\n" : " ");
+  free(rb.p);
+  int slot = view_bind(r, "_t%d", tr);
+  int vw = view_push(c, id, t);
+  int save = g_splat_to_a_inner;
+  g_splat_to_a_inner = id;
+  Buf nb; memset(&nb, 0, sizeof nb);
+  emit_call(c, id, &nb);
+  int oint = node_is_oint(c, id);
+  g_splat_to_a_inner = save;
+  view_pop(c, vw);
+  view_unbind(slot);
+  /* a receiver that is nil spreads nothing (nil.to_a) */
+  buf_printf(b, "sp_PolyArray *_t%d;\nif (!_t%d) _t%d = sp_PolyArray_new();\nelse {\nsp_RbVal _t%d = ", ta, tr, ta, tb);
+  if (oint) buf_printf(b, "%s(%s)", oint_box(t), nb.p ? nb.p : oint_nil(t));
+  else emit_boxed_text(c, t, nb.p ? nb.p : "0", b);
+  free(nb.p);
+  buf_puts(b, ";\n");
+  buf_printf(b, "if (_t%d.tag == SP_TAG_NIL) { _t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); sp_PolyArray_push(_t%d, ", tb, ta, ta, ta);
+  char rn[32]; snprintf(rn, sizeof rn, "_t%d", tr);
+  emit_boxed_text(c, rt, rn, b);
+  buf_puts(b, "); }\n");
+  buf_printf(b, "else if (_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)) _t%d = sp_poly_to_poly_array(_t%d);\n", tb, tb, ta, tb);
+  buf_printf(b, "else { sp_raise_cls(\"TypeError\", sp_sprintf(\"can't convert %s to Array (%s#to_a gives %%s)\", sp_poly_class_name(_t%d))); _t%d = NULL; }\n",
+             cn, cn, tb, ta);
+  buf_printf(b, "}\n_t%d; })", ta);
+  return 1;
+}
+
 static int emit_srange_enum_wrap(Compiler *c, int id, Buf *b) {
   if (!nt_int(c->nt, id, "srange_enum", 0) || comp_ntype(c, id) != TY_ENUMERATOR ||
       repr_of(c, id).kind == RK_BOXED) return 0;
@@ -24916,6 +24968,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (emit_bivar_copy_wrap(c, id, b)) return;
   /* an Enumerator over a String Range's members has no size */
   if (emit_srange_enum_wrap(c, id, b)) return;
+  if (emit_splat_to_a_check_wrap(c, id, b)) return;
   /* a flagged constant read through a receiver that runs: once, whatever the lowering does with it */
   if (emit_const_recv_wrap(c, id, b)) return;
   int env_args = emit_env_args_before(c, id);

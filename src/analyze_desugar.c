@@ -6102,6 +6102,16 @@ static int splat_feeds_user_method(Compiler *c, int sp) {
   return 0;
 }
 
+/* Class cid answers #to_a by a def, an attr_reader, or an alias
+   (`alias to_a children`). */
+static int class_defines_to_a(Compiler *c, int cid) {
+  if (comp_method_in_chain(c, cid, "to_a", NULL) >= 0) return 1;
+  int builtin = 0;
+  const char *tn = comp_resolve_alias_ex(c, cid, "to_a", NULL, &builtin);
+  if (builtin || !sp_streq(tn, "to_a")) return 1;
+  return comp_resolve_member(c, cid, "to_a", 0, NULL, NULL) != SP_MEMBER_NONE;
+}
+
 /* `[*h]`, `x = *h`, `f(*h)` with a Hash, a Struct, or an object defining #to_a:
    a splat converts its operand through #to_a, so a Hash spreads its [k, v]
    pairs rather than landing as one element. Rewrite the operand to
@@ -6131,7 +6141,7 @@ int desugar_splat_to_a(Compiler *c) {
       if (cid < 0) continue;
       int st = 0;
       for (int k = cid; k >= 0 && !st; k = c->classes[k].parent) st = c->classes[k].is_struct;
-      if (!st && comp_method_in_chain(c, cid, "to_a", NULL) < 0) continue;
+      if (!st && !class_defines_to_a(c, cid)) continue;
     }
     int base = nt->count;
     int call = nt_new_node(nt, "CallNode");
@@ -6139,6 +6149,7 @@ int desugar_splat_to_a(Compiler *c) {
     nt_node_set_ref(nt, call, "receiver", val);
     nt_node_set_str(nt, call, "name", "to_a");
     nt_node_set_int(nt, call, "made_to_a", 1);
+    nt_node_set_int(nt, call, "splat_to_a", 1);   /* its answer must be an Array (emit_splat_to_a_check_wrap) */
     nt_node_set_ref(nt, call, "arguments", -1);
     nt_node_set_ref(nt, call, "block", -1);
     nt_node_set_ref(nt, id, "expression", call);

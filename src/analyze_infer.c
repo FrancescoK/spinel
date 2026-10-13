@@ -10234,7 +10234,14 @@ TyKind infer_uncached(Compiler *c, int id) {
     }
     return have ? r : body_t;
   }
-  if (nk == NK_CallNode) return infer_call(c, id);
+  if (nk == NK_CallNode) {
+    TyKind t = infer_call(c, id);
+    /* `*obj` read as `obj.to_a` (desugar_splat_to_a): an answer that may be
+       no Array is checked, and nil spreads the object itself, so the splat
+       takes the Array that check builds (emit_splat_to_a_check_wrap) */
+    if (nt_int(nt, id, "splat_to_a", 0) && t != TY_UNKNOWN && !ty_is_array(t)) return TY_POLY_ARRAY;
+    return t;
+  }
 
   if (nk == NK_RescueModifierNode) {
     int e = nt_ref(nt, id, "expression");
