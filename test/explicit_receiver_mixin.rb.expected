@@ -1,0 +1,8 @@
+"down"
+"list x"
+"a"
+nil
+"hi from TTY::Prompt::List"
+["a", "b"]
+[Motion, TTY::Prompt::List, Greeting]
+0
