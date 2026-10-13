@@ -12438,7 +12438,18 @@ static int narrow_object_arrays(Compiler *c) {
     }
   }
 
-  /* 3. op-assign / multi-target write forms on a slot are unmodeled -> kill. */
+  /* 3. op-assign / multi-target write forms on a slot are unmodeled -> kill.
+        An ivar form directly in an instance method of a class writes that
+        class's ivar, so it kills that slot alone: a memoizing `@t ||= x` in
+        one class is no write of an unrelated class's @t. Anywhere else -- a
+        block (instance_eval, a trampoline), a module, a singleton method, the
+        top level -- self is not settled here, so it kills every class's slot
+        of the name. */
+  unsigned char *in_blk = (unsigned char *)calloc((size_t)nc, 1);
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (ty && (sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode"))) oa_mark_subtree(nt, id, in_blk);
+  }
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
@@ -12447,7 +12458,17 @@ static int narrow_object_arrays(Compiler *c) {
         sp_streq(ty, "InstanceVariableAndWriteNode") ||
         sp_streq(ty, "InstanceVariableOrWriteNode")) {
       const char *nm = nt_str(nt, id, "name");
-      for (int i = 0; nm && i < n; i++)
+      if (!nm) continue;
+      Scope *sc = comp_scope_of(c, id);
+      int own = (sc && !sc->is_cmethod && !in_blk[id] && sc->class_id >= 0 && sc->class_id < c->nclasses &&
+                 c->classes[sc->class_id].def_node >= 0 &&
+                 nt_kind(nt, c->classes[sc->class_id].def_node) != NK_ModuleNode) ? sc->class_id : -1;
+      if (own >= 0) {
+        int i = OA_IVSLOT(own, nm);
+        if (i >= 0) sl[i].alive = 0;
+        continue;
+      }
+      for (int i = 0; i < n; i++)
         if (sl[i].ici >= 0 && sp_streq(c->classes[sl[i].ici].ivars[sl[i].iiv], nm)) sl[i].alive = 0;
       continue;
     }
@@ -12461,6 +12482,7 @@ static int narrow_object_arrays(Compiler *c) {
     int si = lv ? oa_find(sl, n, sidx, lv) : -1;
     if (si >= 0) sl[si].alive = 0;
   }
+  free(in_blk);
 
   /* 3a. a route that INVOKES an ivar's writer. A writer stores whatever it is
          handed, and a synthesized `attr_accessor`/`attr_writer` one does so
@@ -12469,8 +12491,12 @@ static int narrow_object_arrays(Compiler *c) {
          the slot with. Every route is named here instead: `o.t = v` and the
          multi-target form carry the setter name, the op-assign forms carry the
          BARE name (they read and write through both), and a `:t=` symbol
-         anywhere is `send`/`method`/`define_method`/`alias`. Matching the name
-         without resolving the receiver is the conservatism step 3 uses too.
+         anywhere is `send`/`method`/`define_method`/`alias`. A route whose
+         receiver is statically an instance of a class reaches only that
+         class's writer or a subclass's, so it kills only those slots: `o.t =
+         v` on a Ctx is no write of an unrelated State's @t. A symbol, or a
+         receiver that is not statically a class instance, kills the slot of
+         every class with the name -- the conservatism step 3 uses too.
 
          This replaces a blanket bail on any class DECLARING a writer (#4444),
          which cost the narrowing to writers that are never called -- ones
@@ -12481,8 +12507,9 @@ static int narrow_object_arrays(Compiler *c) {
          once: a scan of every slot per setter call is the O(nodes x slots)
          shape that took a 100k-line program from seconds to minutes (the same
          trap ivslot above was introduced for). Distinct setter names are tens,
-         not thousands. */
-  int nwn = 0, cwn = 0; char **wn = NULL;
+         not thousands. Each name is kept with its receiver's class (-1 when
+         unresolved), so a pair is distinct by both. */
+  int nwn = 0, cwn = 0; char **wn = NULL; int *wcls = NULL;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
@@ -12502,19 +12529,37 @@ static int narrow_object_arrays(Compiler *c) {
       if (strlen(nm) >= sizeof attr) continue;
       strcpy(attr, nm);
     }
+    int rcls = -1;
+    if (!sp_streq(ty, "SymbolNode")) {
+      int recv = nt_ref(nt, id, "receiver");
+      TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
+      if (ty_is_object(rt)) rcls = ty_object_class(rt);
+      if (rcls >= c->nclasses) rcls = -1;
+    }
     int seen = 0;
-    for (int k = 0; k < nwn && !seen; k++) if (sp_streq(wn[k], attr)) seen = 1;
+    for (int k = 0; k < nwn && !seen; k++) if (wcls[k] == rcls && sp_streq(wn[k], attr)) seen = 1;
     if (seen) continue;
-    if (nwn >= cwn) { cwn = cwn ? cwn * 2 : 16; wn = (char **)realloc(wn, sizeof(char *) * (size_t)cwn); if (!wn) { fprintf(stderr, "oom\n"); exit(1); } }
+    if (nwn >= cwn) {
+      cwn = cwn ? cwn * 2 : 16;
+      wn = (char **)realloc(wn, sizeof(char *) * (size_t)cwn);
+      wcls = (int *)realloc(wcls, sizeof(int) * (size_t)cwn);
+      if (!wn || !wcls) { fprintf(stderr, "oom\n"); exit(1); }
+    }
+    wcls[nwn] = rcls;
     wn[nwn++] = strdup(attr);
   }
   for (int i = 0; nwn && i < n; i++) {
     if (sl[i].ici < 0 || !sl[i].alive) continue;
     const char *bare = c->classes[sl[i].ici].ivars[sl[i].iiv] + 1;
-    for (int k = 0; k < nwn; k++) if (sp_streq(wn[k], bare)) { sl[i].alive = 0; break; }
+    for (int k = 0; k < nwn && sl[i].alive; k++) {
+      if (!sp_streq(wn[k], bare)) continue;
+      /* the slot's class is the receiver's or a subclass of it */
+      for (int a = sl[i].ici; a >= 0; a = c->classes[a].parent)
+        if (wcls[k] < 0 || a == wcls[k]) { sl[i].alive = 0; break; }
+    }
   }
   for (int k = 0; k < nwn; k++) free(wn[k]);
-  free(wn);
+  free(wn); free(wcls);
 
   /* 4. CallNodes: classify slot-as-receiver (supported op + element evidence)
         and slot-as-arg (positional into a resolvable free method -> edge). */
