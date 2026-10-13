@@ -2858,6 +2858,15 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   int ntg = sh_targets_in(F, c, n, tg, 64);
   if (ntg != 0) sh_read_site(F, n);
   if (ntg < 0) return sh_unknown_call(F, c, n, blk);
+  /* a call none of whose targets can bind its arguments (cplan_target_binds)
+     reaches them only to raise ArgumentError: it answers as a call with no
+     target, its arguments still bound to them */
+  int nbind = 0;
+  for (int i = 0; i < ntg; i++) nbind += cplan_target_binds(c, n, tg[i]);
+  if (ntg > 0 && nbind == 0) {
+    for (int i = 0; i < ntg; i++) sh_bind(F, c, n, tg[i]);
+    ntg = 0;
+  }
   /* a bare `new` in a class method builds the class it runs for, or a subclass
      of it: every initialize cplan_initializers names, as for a constant receiver */
   int own_inits[CPT_MAX];
@@ -2916,7 +2925,9 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     int r = -1;
     for (int i = 0; i < ntg; i++) {
       sh_bind(F, c, n, tg[i]);
-      r = sh_join(F, r, sh_scope_holder(F, SHK_RET, tg[i]));
+      /* (a target that cannot bind the arguments raises ArgumentError and
+         answers nothing: cplan_target_binds) */
+      if (cplan_target_binds(c, n, tg[i])) r = sh_join(F, r, sh_scope_holder(F, SHK_RET, tg[i]));
       if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) sh_block_to_method(F, c, blk, tg[i]);
       else if (blk >= 0) sh_block_value_to(F, c, n, blk, tg[i]);
       /* a block passed as a value (`&proc`, `&method(:m)`): what the method
@@ -4937,6 +4948,8 @@ static int sh_user_call_fresh(Compiler *c, int call, int depth) {
   if (n <= 0) return 0;
   for (int i = 0; i < n; i++) {
     if (tg[i] < 0 || tg[i] >= c->nscopes) return 0;
+    /* (one that cannot bind the arguments only raises) */
+    if (!cplan_target_binds(c, call, tg[i])) continue;
     Scope *m = &c->scopes[tg[i]];
     int rp = scope_ret_param(c, tg[i]);
     if (rp >= 0) {

@@ -22135,6 +22135,8 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   if (R->fresh && cnt == 0 && isa_node_diverges(c, n) && !bare_call_class_owned(c, n)) return 1;
   if (cnt <= 0) return 0;
   for (int i = 0; i < cnt; i++) {
+    /* (a target that cannot bind the arguments only raises) */
+    if (R->fresh && !cplan_target_binds(c, n, mis[i])) continue;
     if (!an_ret_handle(c, R, mis[i])) return 0;
     Scope *m = &c->scopes[mis[i]];
     if (R->fresh && !m->ret_fresh && !an_tail_param_arg(c, R, n, mis[i], tc)) return 0;
