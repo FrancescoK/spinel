@@ -21,3 +21,6 @@ Before
 "Late#dup"
 Leaf
 "Root#dup"
+"Named#to_s"
+Own
+"own dup"

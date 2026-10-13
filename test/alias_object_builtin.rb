@@ -81,3 +81,21 @@ class Root
   def dup = "Root#dup"
 end
 p Leaf.new.old_dup.class, Leaf.new.dup
+
+# a receiverless call of the alias inside the class: the ancestor's method
+# where one defined it before the alias, the builtin otherwise
+class Named
+  def to_s = "Named#to_s"
+end
+class Child < Named; end
+class Child
+  alias old_to_s to_s
+  def show = old_to_s
+end
+class Own
+  alias old_dup dup
+  def initialize = (@v = 1)
+  def copy = old_dup
+  def dup = "own dup"
+end
+p Child.new.show, Own.new.copy.class, Own.new.dup
