@@ -92,6 +92,18 @@ class ShrsrTails
   end
 end
 
+class ShrsrLogic
+  def initialize(s)
+    @s = s
+  end
+
+  def orlocal
+    k = ShrsrConf.secret_key_base
+    t = @s
+    k || t
+  end
+end
+
 class ShrsrRec
   def created_at_raw
     @created_at_raw
@@ -161,3 +173,10 @@ buf.replace("abc")
 got = shrsr_pass(tails.memo)
 got << "!"
 puts "memo: #{got} #{buf}"
+
+ShrsrConf.secret_key_base = nil
+buf.replace("abc")
+logic = ShrsrLogic.new(buf)
+got = shrsr_pass(logic.orlocal)
+got << "!"
+puts "orlocal: #{got} #{buf} #{got.equal?(buf)}"

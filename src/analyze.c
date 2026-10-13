@@ -21735,14 +21735,27 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc);
 static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *n, RetHandles *R);
 /* A box a seeded String method answers: its unboxing at the return
    publishes the handle the box holds (sp_poly_unbox_s_pub). */
+/* A boxed `x || y` / `x && y` builds its box from its operands: a String
+   call's operand is boxed from its bytes, which holds no handle, so such
+   an operand (the `s` of `k || s`, a reader of a shared String) keeps the
+   tail refused. A box, a variable or a literal operand is boxed whole. */
+static int an_boxed_logic_ok(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  node = an_unparen(nt, node);
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_OrNode || k == NK_AndNode)
+    return an_boxed_logic_ok(c, nt_ref(nt, node, "left")) && an_boxed_logic_ok(c, nt_ref(nt, node, "right"));
+  return k != NK_CallNode || c->ntype[node] == TY_POLY;
+}
 static int an_tail_boxed_string(Compiler *c, int node, TailCount *tc) {
   int mi = tc->mi;
   if (!c->share_strings || tc->in_begin || mi <= 0 || !c->scopes[mi].ret_rbs_seeded ||
       c->scopes[mi].ret != TY_STRING || node < 0 || c->ntype[node] != TY_POLY) return 0;
   /* the kinds whose unboxing at the return is the one that publishes */
   NodeKind k = nt_kind(c->nt, node);
-  return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_CallNode ||
-         k == NK_OrNode || k == NK_AndNode;
+  if (k == NK_OrNode || k == NK_AndNode) return an_boxed_logic_ok(c, node);
+  return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_CallNode;
 }
 static int an_stmts_tail_shared(Compiler *c, int st, int nil_ok, TailCount *tc, RetHandles *R) {
   int n = 0; const int *b = st >= 0 && nt_kind(c->nt, st) == NK_StatementsNode ? nt_arr(c->nt, st, "body", &n) : NULL;

@@ -5,7 +5,9 @@
 # that a change in place never reaches (or, from the ensure, a stale
 # handle):
 # - a `return` inside a begin with an ensure (the value waits in a result
-#   slot until the ensure has run), also a def's or a block's own ensure.
+#   slot until the ensure has run), also a def's or a block's own ensure;
+# - an `||` or `&&` whose operand is a call answering a shared String (boxed
+#   from its bytes).
 # spinel: rbs-seed-check
 module ShrsrfConf
   class << self
@@ -72,6 +74,15 @@ class ShrsrfApp
     end
     "y"
   end
+
+  def or_call
+    k = ShrsrfConf.key
+    k || s
+  end
+
+  def and_call(v)
+    v && s
+  end
 end
 
 def shrsrf_pass(x) = x
@@ -80,6 +91,6 @@ buf = +"ab"
 ShrsrfConf.key = buf
 a = ShrsrfApp.new(buf, +"other")
 r = [shrsrf_pass(a.ens_after(true)), shrsrf_pass(a.ens_reader(true)), shrsrf_pass(a.ens_tail(true)),
-     shrsrf_pass(a.ens_def(true)), shrsrf_pass(a.ens_block)]
+     shrsrf_pass(a.ens_def(true)), shrsrf_pass(a.ens_block), shrsrf_pass(a.or_call), shrsrf_pass(a.and_call(1))]
 buf << "!"
 p r, r.map { |x| x.equal?(buf) }

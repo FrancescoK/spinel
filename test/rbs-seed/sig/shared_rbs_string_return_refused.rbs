@@ -4,4 +4,6 @@ class ShrsrfApp
   def ens_tail: (bool f) -> String
   def ens_def: (bool f) -> String
   def ens_block: () -> String
+  def or_call: () -> String
+  def and_call: (untyped v) -> String
 end
