@@ -1204,6 +1204,14 @@ spinel: 1 refusal, nothing written
 == test/reject/singleton_class_body_non_def.rb [promote] rc=1
 spinel: test/reject/singleton_class_body_non_def.rb:6: `class << obj` with a statement other than `def`, `private def` or `protected def` is not supported by AOT compilation: the methods are placed on the object's class at compile time, and only a `def` has a place there. Write each one as `def obj.m` (see docs/limitations.md)
 spinel: 1 refusal, nothing written
+== test/reject/singleton_class_declaration_in_method.rb [default] rc=1
+spinel: test/reject/singleton_class_declaration_in_method.rb:5: Object#singleton_class is not supported by AOT compilation: it is the gateway to a per-object method table, which direct C calls have no room for -- the same limit as define_singleton_method. Define methods in the class body instead (see docs/limitations.md)
+spinel: test/reject/singleton_class_declaration_in_method.rb:8: undefined method 'x=' for a Class: no class in the program defines a class method 'x=' (NoMethodError)
+spinel: 2 refusals, nothing written
+== test/reject/singleton_class_declaration_in_method.rb [promote] rc=1
+spinel: test/reject/singleton_class_declaration_in_method.rb:5: Object#singleton_class is not supported by AOT compilation: it is the gateway to a per-object method table, which direct C calls have no room for -- the same limit as define_singleton_method. Define methods in the class body instead (see docs/limitations.md)
+spinel: test/reject/singleton_class_declaration_in_method.rb:8: undefined method 'x=' for a Class: no class in the program defines a class method 'x=' (NoMethodError)
+spinel: 2 refusals, nothing written
 == test/reject/singleton_extend_extended_hook.rb [default] rc=1
 spinel: test/reject/singleton_extend_extended_hook.rb:8: Object#extend is not supported by AOT compilation: mixing a module into a live object needs a per-object method table. Use `include`/`prepend` in the class body instead (see docs/limitations.md)
 spinel: 1 refusal, nothing written

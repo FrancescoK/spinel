@@ -41525,6 +41525,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_reassigned_block_params(c);   /* |p| p = other -> |p__bpin| p = p__bpin; p = other */
   desugar_class_reopen(c);               /* class Class / Class.class_eval -> a module */
   desugar_inline_struct_blocks(c);      /* Struct.new(:x) { .. } -> (__spinel_struct_1 = Struct.new(:x) { .. }) */
+  desugar_singleton_class_meta(c);      /* Foo.singleton_class.attr_accessor :a -> class << Foo; attr_accessor :a; end */
   desugar_class_new_blocks(c);           /* X = Class.new(B) do..end -> class X < B; ..; end */
   desugar_struct_block_name_reads(c);   /* Point = Struct.new do p self end -> refused */
   desugar_singleton_body_self(c);       /* class << X; p self; end -> refused */
