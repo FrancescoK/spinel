@@ -13648,13 +13648,24 @@ static int cb_program_defines(const NodeTable *nt, const char *nm) {
   return 0;
 }
 
-static int cb_give_self(NodeTable *nt, int node) {
+/* The Module methods that read a class's method table, which a reopened
+   builtin class (String, Array) answers for the program's own methods alone:
+   left bare there, as they are refused, rather than answered without the
+   builtin's methods. */
+static int cb_method_table_name(const char *nm) {
+  return nm && (sp_streq(nm, "instance_methods") || sp_streq(nm, "public_instance_methods") ||
+                sp_streq(nm, "instance_method") || sp_streq(nm, "method_defined?") ||
+                sp_streq(nm, "public_method_defined?") || sp_streq(nm, "private_method_defined?"));
+}
+
+static int cb_give_self(NodeTable *nt, int node, int builtin) {
   if (node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode ||
       k == NK_BlockNode || k == NK_LambdaNode) return 0;
   int changed = 0;
-  if (cb_self_act(nt, node) && !cb_program_defines(nt, nt_str(nt, node, "name"))) {
+  const char *cm = k == NK_CallNode ? nt_str(nt, node, "name") : NULL;
+  if (cb_self_act(nt, node) && !cb_program_defines(nt, cm) && !(builtin && cb_method_table_name(cm))) {
     int self = fwd_new_node_like(nt, node, "SelfNode");
     if (self >= 0) {
       nt_node_set_ref(nt, node, "receiver", self);
@@ -13662,12 +13673,12 @@ static int cb_give_self(NodeTable *nt, int node) {
     }
   }
   int nr = nt_num_refs(nt, node);
-  for (int i = 0; i < nr; i++) changed |= cb_give_self(nt, nt_ref_at(nt, node, i));
+  for (int i = 0; i < nr; i++) changed |= cb_give_self(nt, nt_ref_at(nt, node, i), builtin);
   int na = nt_num_arrs(nt, node);
   for (int i = 0; i < na; i++) {
     int cnt = 0;
     const int *ids = nt_arr_at(nt, node, i, &cnt);
-    for (int j = 0; j < cnt; j++) changed |= cb_give_self(nt, ids[j]);
+    for (int j = 0; j < cnt; j++) changed |= cb_give_self(nt, ids[j], builtin);
   }
   return changed;
 }
@@ -13677,7 +13688,11 @@ int desugar_class_body_object_acts(Compiler *c) {
   int n0 = nt->count, changed = 0;
   for (int cn = 0; cn < n0; cn++) {
     NodeKind ck = nt_kind(nt, cn);
-    if (ck == NK_ClassNode || ck == NK_ModuleNode) changed |= cb_give_self(nt, nt_ref(nt, cn, "body"));
+    if (ck != NK_ClassNode && ck != NK_ModuleNode) continue;
+    int cp = nt_ref(nt, cn, "constant_path");
+    const char *cname = cp >= 0 && nt_kind(nt, cp) == NK_ConstantReadNode ? nt_str(nt, cp, "name") : NULL;
+    int builtin = cname && (is_builtin_class_name(cname) || is_builtin_module_name(cname));
+    changed |= cb_give_self(nt, nt_ref(nt, cn, "body"), builtin);
   }
   if (changed) comp_grow_node_arrays(c);
   return changed;
