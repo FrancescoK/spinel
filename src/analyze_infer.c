@@ -7430,6 +7430,24 @@ static TyKind infer_call_inner(Compiler *c, int id) {
           }
           name = an_pure_reads ? rn : nt_str(nt, id, "name");
         }
+        /* an alias that captured an Object / Kernel method
+           (`alias original_dup dup`): the builtin's call, past the class's
+           own method of the name */
+        else if (!over && !nt_int(nt, id, "builtin_only", 0)) {
+          int bi = 0;
+          const char *brn = comp_resolve_alias_ex(c, oci, name, NULL, &bi);
+          if (bi && brn && !sp_streq(brn, name)) {
+            char *bn = strdup(brn);
+            if (!bn) { fprintf(stderr, "out of memory\n"); exit(1); }
+            if (!an_pure_reads) {
+              nt_node_set_str((NodeTable *)nt, id, "name", bn);
+              nt_node_set_int((NodeTable *)nt, id, "builtin_only", 1);
+            }
+            bonly = 1;
+            name = an_pure_reads ? brn : nt_str(nt, id, "name");
+            free(bn);
+          }
+        }
       }
     }
     /* a call already resolved to a captured builtin keeps it: its name is
@@ -7445,6 +7463,14 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         if (bi) { bonly = 1; if (!an_pure_reads) nt_node_set_int((NodeTable *)nt, id, "builtin_only", 1); }
       }
     }
+  }
+
+  /* Kernel#dup / #clone an alias captured on a program object
+     (builtin_only): a copy of the receiver, whatever the class's own method
+     of the name answers */
+  if ((bonly || nt_int(nt, id, "builtin_only", 0)) && recv >= 0 && is_copy_alias(name)) {
+    TyKind crt = infer_type(c, recv);
+    if (ty_is_object(crt)) return crt;
   }
 
   /* `Module.accessor.cmethod(...)` where the singleton accessor statically

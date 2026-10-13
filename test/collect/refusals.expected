@@ -1016,6 +1016,10 @@ spinel: 1 refusal, nothing written
 == test/reject/new_receiver_class_method_still_reached.rb [promote] rc=1
 spinel: test/reject/new_receiver_class_method_still_reached.rb:6: undefined method '[]=' for a Class: no class in the program defines a class method '[]=' (NoMethodError)
 spinel: 1 refusal, nothing written
+== test/reject/object_builtin_alias_redefine.rb [default] rc=1
+spinel: test/reject/object_builtin_alias_redefine.rb:6: K#old_to_s: alias of the builtin to_s that the class later overrides is not supported; see docs/limitations.md
+== test/reject/object_builtin_alias_redefine.rb [promote] rc=1
+spinel: test/reject/object_builtin_alias_redefine.rb:6: K#old_to_s: alias of the builtin to_s that the class later overrides is not supported; see docs/limitations.md
 == test/reject/object_method_ivar_native_slot.rb [default] rc=1
 spinel: test/reject/object_method_ivar_native_slot.rb:4: unsupported instance variable write to a receiver without a writable slot: node N (CallNode `instance_variable_set`) recv=SelfNode/ty50 argc=2 arg0ty8
 spinel: 1 refusal, nothing written

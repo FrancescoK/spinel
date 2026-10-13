@@ -41175,6 +41175,7 @@ static void an_phase_class_structure(Compiler *c) {
   /* again, now that modules have put their methods in: an alias can take an
      inherited method an ancestor got from one */
   resolve_inherited_aliases(c);
+  settle_object_builtin_aliases(c);   /* alias original_dup dup: the builtin's, or an ancestor's */
   /* super into Array, X.new / X[], implicit self, in the class's methods and
      the copies its modules put in (#7449) */
   rewrite_array_subclass_calls(c);
