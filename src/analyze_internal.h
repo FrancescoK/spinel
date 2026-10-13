@@ -34,12 +34,20 @@ int an_fiber_new_block(Compiler *c, int v);
 /* --share-strings: can boxed or untyped receiver r be a String
    (analyze.c)? `lits` is the asker's: bound() says how a literal block or
    a lambda of scope `scope` binds variable `name`: 0 not at all, 1 only as
-   Enumerator.new's yielder, 2 another way (analyze_share.c keeps it). */
+   Enumerator.new's yielder, 2 another way (analyze_share.c keeps it).
+   ivar(), when set, says whether instance variable `name` (with its `@`)
+   may hold a String, by everything that writes one of that name; the
+   receiver an ivar's read or an attribute reader's call is answers by
+   it. */
 typedef struct PolyLits {
   int (*bound)(void *ctx, Compiler *c, int scope, const char *name);
   void *ctx;
+  int (*ivar)(void *ctx, Compiler *c, const char *name);
 } PolyLits;
 int an_recv_may_be_string(Compiler *c, int r, const PolyLits *lits);
+/* Can value v be a String, as an_recv_may_be_string reads a variable's
+   written value (by its type, or its form with `lits`)? */
+int an_value_may_be_string(Compiler *c, int v, const PolyLits *lits);
 /* A noncaptured, nonparameter local with fresh writes, read nowhere else. */
 int an_local_read_once(Compiler *c, int n);
 int ffi_find_buf(Compiler *c, const char *mod, const char *name);

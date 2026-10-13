@@ -24647,16 +24647,85 @@ static void strbuf_reconcile_lifted_reads(Compiler *c, const HandleArgTab *hat) 
   }
 }
 
+/* The instance variable receiver r reads, as its node names it (with the
+   `@`), or NULL: an ivar's read, or an argument-less call on the current
+   instance or on a receiver of a known class that every class it can be --
+   the class and each subclass, which a singleton method or an extended
+   module also makes -- answers with one and the same reader: an attribute
+   reader, or a method with no `return` whose value is an ivar's read or
+   its memo (`def x = @x`, `@x ||= v`). A Struct's or a Data's member is set by its
+   constructor, not by a write, and a native class's attribute is its
+   binding's, so neither is one; nor is a module's self, which any
+   includer's own method may answer. The name is left in buf. */
+static const char *poly_recv_ivar(Compiler *c, int r, char *buf, size_t cap) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, r);
+  if (k == NK_InstanceVariableReadNode) {
+    int cid = comp_ivar_owner(c, r);
+    const char *in = nt_str(nt, r, "name");
+    if (!in || cid < 0 || cid >= c->nclasses || c->classes[cid].is_struct || c->classes[cid].is_data ||
+        c->classes[cid].is_native_class) return NULL;
+    snprintf(buf, cap, "%s", in);
+    return buf;
+  }
+  const char *nm = nt_str(nt, r, "name");
+  if (k != NK_CallNode || !nm || nt_ref(nt, r, "arguments") >= 0 || nt_ref(nt, r, "block") >= 0) return NULL;
+  int recv = an_unparen(nt, nt_ref(nt, r, "receiver")), cid = -1;
+  if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
+    Scope *s = comp_scope_of(c, r);
+    if (!s || s->is_cmethod) return NULL;
+    cid = s->class_id;
+  }
+  else if (ty_is_object(comp_ntype(c, recv))) cid = ty_object_class(comp_ntype(c, recv));
+  if (cid < 0 || cid >= c->nclasses || comp_class_is_module(c, &c->classes[cid])) return NULL;
+  int kind = SP_MEMBER_NONE, dc = -1, mi = -1;
+  for (int j = 0; j < c->nclasses; j++) {
+    int a = j;
+    while (a >= 0 && a != cid) a = c->classes[a].parent;
+    if (a != cid) continue;
+    int jd = -1, jm = -1;
+    int jk = comp_resolve_member(c, j, nm, 0, &jd, &jm);
+    if (jk == SP_MEMBER_NONE || jd < 0 || jd >= c->nclasses) return NULL;
+    if (j == cid) { kind = jk; dc = jd; mi = jm; }
+    else if (jk != kind || jd != dc || (jk == SP_MEMBER_METHOD && jm != mi)) return NULL;
+  }
+  if (kind == SP_MEMBER_NONE || c->classes[dc].is_struct || c->classes[dc].is_data || c->classes[dc].is_native_class)
+    return NULL;
+  if (kind == SP_MEMBER_ATTR) {
+    snprintf(buf, cap, "@%s", comp_resolve_alias(c, cid, nm));
+    return buf;
+  }
+  /* (a `return` elsewhere in the method answers another value) */
+  if (mi < 0 || mi >= c->nscopes || comp_ret_first(c, mi) >= 0) return NULL;
+  const char *ivn = an_memo_reader_ivar(c, mi);
+  int last = scope_body_last(c, mi);
+  if (!ivn && last >= 0 && nt_kind(nt, last) == NK_InstanceVariableReadNode) ivn = nt_str(nt, last, "name");
+  if (!ivn) return NULL;
+  snprintf(buf, cap, "%s", ivn);
+  return buf;
+}
+
+int an_value_may_be_string(Compiler *c, int v, const PolyLits *lits) {
+  return poly_value_may_be_string(c, lits ? c->share_args : NULL, v, 0, lits);
+}
+
 /* --share-strings (#6765): can receiver r, a boxed or untyped value, be a
    String? A variable answers by its values (poly_var_may_hold_string), a
-   literal or a conditional by its form; a parameter, a block's parameter,
-   a captured local and any other value may be one. At seal, the final
-   caller table also bounds parameters, using the same argument walk. */
+   literal or a conditional by its form, an instance variable's read or an
+   attribute reader's call by what is written to the ivar (PolyLits.ivar,
+   poly_recv_ivar); a parameter, a block's parameter, a captured local and
+   any other value may be one. At seal, the final caller table also bounds
+   parameters, using the same argument walk. */
 int an_recv_may_be_string(Compiler *c, int r, const PolyLits *lits) {
   const NodeTable *nt = c->nt;
   r = an_unparen(nt, r);
   if (r < 0) return 1;
-  if (nt_kind(nt, r) != NK_LocalVariableReadNode) return poly_lit_may_be_string(c, lits ? c->share_args : NULL, r, 0, lits) != 0;
+  if (nt_kind(nt, r) != NK_LocalVariableReadNode) {
+    char ivb[300];
+    const char *iv = lits && lits->ivar ? poly_recv_ivar(c, r, ivb, sizeof ivb) : NULL;
+    if (iv) return lits->ivar(lits->ctx, c, iv);
+    return poly_lit_may_be_string(c, lits ? c->share_args : NULL, r, 0, lits) != 0;
+  }
   const char *vn = nt_str(nt, r, "name");
   Scope *vs = vn ? comp_scope_of(c, r) : NULL;
   const HandleArgTab *hat = lits ? c->share_args : NULL;

@@ -1236,6 +1236,13 @@ int is_proc_new(const char *recv, const char *meth) {
 }
 /* `method`: Kernel#method, the Method of the name it is handed */
 int is_method_ref_name(const char *n) { return n && sp_streq(n, "method"); }
+/* a Method (or an UnboundMethod) of the name a call is handed: calling it
+   runs that method, a writer included */
+int is_method_object_name(const char *n) {
+  return n && (sp_streq(n, "method") || sp_streq(n, "public_method") || sp_streq(n, "instance_method"));
+}
+/* Marshal, whose load makes objects with any ivars set */
+int is_marshal_const(const char *n) { return n && sp_streq(n, "Marshal"); }
 /* ENV, which answers a new String each read */
 int is_env_const(const char *n) { return n && sp_streq(n, "ENV"); }
 /* ARGV, whose Strings CRuby freezes */

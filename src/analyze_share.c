@@ -21,6 +21,7 @@
    class instead. That keeps `grow(buf)` on a local accumulator a
    `const char *` lent by address, as without the flag. */
 
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 #include "analyze_internal.h"
@@ -234,6 +235,17 @@ typedef struct ShareFacts {
      Enumerator.new's yielder; built on first use (sh_blk_bound) */
   struct ShNamed *blkp;
   int nblkp, cblkp, blkp_built;
+  /* the writes of an instance variable no write node shows, by the name
+     they write (sh_ivar_writes_build): an attribute writer's call `o.x = v`,
+     its `||=`, `&&=` and multiple-write target, a send or a Method naming
+     the writer, all as "x=" (an `||=` or `&&=` that names only the reader
+     as "x"), and instance_variable_set(:@x, v) as "@x"; k the node.
+     ivw_all: a call writes an ivar it does not name (a dynamic
+     instance_variable_set or send, Marshal.load, an alias of a writer).
+     Built on first use. ivs: the answers of sh_ivar_string so far, as
+     (name, k 0 or 1). */
+  struct ShNamed *ivw, *ivs;
+  int nivw, civw, ivw_built, ivw_all, nivs, civs;
 } ShareFacts;
 
 /* ---- the union-find ---- */
@@ -2337,6 +2349,131 @@ static int sh_blk_bound(void *ctx, Compiler *c, int scope, const char *name) {
   return got;
 }
 
+/* An attribute writer's name: an identifier and `=` (not `==`, `[]=`) */
+static int sh_attr_assign_name(const char *nm) {
+  size_t n = nm ? strlen(nm) : 0;
+  if (n < 2 || nm[n - 1] != '=' || !(isalpha((unsigned char)nm[0]) || nm[0] == '_')) return 0;
+  for (size_t i = 1; i + 1 < n; i++)
+    if (!isalnum((unsigned char)nm[i]) && nm[i] != '_') return 0;
+  return 1;
+}
+static void sh_ivw_add(ShareFacts *F, const char *key, int node) {
+  if (F->nivw >= F->civw) {
+    F->civw = F->civw ? F->civw * 2 : 64;
+    F->ivw = realloc(F->ivw, sizeof *F->ivw * (size_t)F->civw);
+    if (!F->ivw) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  F->ivw[F->nivw++] = (struct ShNamed){ key, node, 0 };
+}
+/* ShareFacts.ivw, in one pass over the calls */
+static void sh_ivar_writes_build(ShareFacts *F, Compiler *c) {
+  const NodeTable *nt = c->nt;
+  F->ivw_built = 1;
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    const char *nm = nt_str(nt, u, "name");
+    if (!nm) continue;
+    if (sh_attr_assign_name(nm)) { sh_ivw_add(F, nm, u); continue; }
+    int args = nt_ref(nt, u, "arguments");
+    int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    const char *lit = argc >= 1 ? sh_lit_name(nt, argv[0]) : NULL;
+    int r = nt_ref(nt, u, "receiver");
+    if (is_ivar_set(nm)) {
+      if (lit) sh_ivw_add(F, lit, u);
+      else F->ivw_all = 1;
+    }
+    else if (is_send_family(nm) || is_method_object_name(nm)) {
+      if (!lit || is_send_family(lit) || is_ivar_set(lit) || is_method_object_name(lit)) F->ivw_all = 1;
+      else if (sh_attr_assign_name(lit)) sh_ivw_add(F, lit, u);
+    }
+    else if (is_alias_method_name(nm)) {
+      const char *old = argc >= 2 ? sh_lit_name(nt, argv[1]) : NULL;
+      if (!old || sh_attr_assign_name(old)) F->ivw_all = 1;
+    }
+    else if (r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode && is_marshal_const(nt_str(nt, r, "name")))
+      F->ivw_all = 1;
+  }
+  NT_FOREACH_KIND(nt, NK_AliasMethodNode, u) {
+    const char *old = sh_lit_name(nt, nt_ref(nt, u, "old_name"));
+    if (!old || sh_attr_assign_name(old)) F->ivw_all = 1;
+  }
+  /* an attribute's `||=` and `&&=` carry the writer's name, or only the
+     reader's (`x`, asked for as such) */
+  static const NodeKind ow[] = { NK_CallOrWriteNode, NK_CallAndWriteNode };
+  for (size_t i = 0; i < sizeof ow / sizeof *ow; i++)
+    NT_FOREACH_KIND(nt, ow[i], u) {
+      const char *wn = nt_str(nt, u, "write_name");
+      if (!wn) wn = nt_str(nt, u, "name");
+      if (wn) sh_ivw_add(F, wn, u);
+    }
+  NT_FOREACH_KIND(nt, NK_CallTargetNode, u)
+    if (nt_str(nt, u, "name")) sh_ivw_add(F, nt_str(nt, u, "name"), u);
+  if (F->nivw) qsort(F->ivw, (size_t)F->nivw, sizeof *F->ivw, sh_named_cmp);
+}
+/* The value a write ShareFacts.ivw lists stores, or -1 when it cannot be
+   read off the call (a splat, a Method, a multiple write's target) */
+static int sh_ivw_value(Compiler *c, int u) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, u);
+  if (k == NK_CallOrWriteNode || k == NK_CallAndWriteNode) return nt_ref(nt, u, "value");
+  if (k != NK_CallNode || nt_ref(nt, u, "block") >= 0) return -1;
+  const char *nm = nt_str(nt, u, "name");
+  int args = nt_ref(nt, u, "arguments");
+  int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  int want = sh_attr_assign_name(nm) ? 1 : is_ivar_set(nm) || is_send_family(nm) ? 2 : 0;
+  if (!want || argc != want) return -1;
+  NodeKind vk = nt_kind(nt, argv[want - 1]);
+  return vk == NK_SplatNode || vk == NK_KeywordHashNode || vk == NK_BlockArgumentNode ? -1 : argv[want - 1];
+}
+/* PolyLits.ivar for an_recv_may_be_string: may instance variable `ivn`
+   (`@x`) hold a String? Asked of every write of an ivar of that name in
+   any class -- the write nodes, and the calls ShareFacts.ivw lists --
+   each value by its type or form (an_value_may_be_string). A Struct's or
+   a Data's member of the name is set by its constructor, not a write, so
+   it may. Answers are kept per name for the build (ivn is the asker's
+   buffer, so the name is copied). */
+static int sh_ivar_string(void *ctx, Compiler *c, const char *ivn) {
+  ShareFacts *F = ctx;
+  const NodeTable *nt = c->nt;
+  for (int i = 0; i < F->nivs; i++) if (sp_streq(F->ivs[i].name, ivn)) return F->ivs[i].k;
+  if (!F->ivw_built) sh_ivar_writes_build(F, c);
+  const PolyLits lits = { sh_blk_bound, F, NULL };
+  int may = F->ivw_all;
+  for (int k = 0; k < c->nclasses && !may; k++) {
+    const ClassInfo *ci = &c->classes[k];
+    if (!ci->is_struct && !ci->is_data) continue;
+    for (int m = 0; m < ci->nmembers && m < ci->nivars && !may; m++) may = sp_streq(ci->ivars[m], ivn);
+  }
+  static const NodeKind wk[] = { NK_InstanceVariableWriteNode, NK_InstanceVariableOrWriteNode,
+                                 NK_InstanceVariableAndWriteNode, NK_InstanceVariableOperatorWriteNode,
+                                 NK_InstanceVariableTargetNode };
+  for (size_t i = 0; i < sizeof wk / sizeof *wk && !may; i++)
+    NT_FOREACH_KIND(nt, wk[i], w) {
+      if (may || !sp_streq(nt_str(nt, w, "name"), ivn)) continue;
+      /* `@x += v` and a multiple write's target take a value not read here */
+      int v = wk[i] == NK_InstanceVariableOperatorWriteNode || wk[i] == NK_InstanceVariableTargetNode
+              ? -1 : nt_ref(nt, w, "value");
+      may = v < 0 || an_value_may_be_string(c, v, &lits);
+    }
+  char wn[300];
+  snprintf(wn, sizeof wn, "%s=", ivn[0] == '@' ? ivn + 1 : ivn);
+  const char *keys[3] = { wn, ivn, ivn[0] == '@' ? ivn + 1 : ivn };
+  for (int j = 0; j < 3 && !may; j++)
+    for (int i = sh_named_first(F->ivw, F->nivw, keys[j]);
+         !may && i < F->nivw && sp_streq(F->ivw[i].name, keys[j]); i++) {
+      int v = sh_ivw_value(c, F->ivw[i].k);
+      may = v < 0 || an_value_may_be_string(c, v, &lits);
+    }
+  if (F->nivs >= F->civs) {
+    F->civs = F->civs ? F->civs * 2 : 16;
+    F->ivs = realloc(F->ivs, sizeof *F->ivs * (size_t)F->civs);
+    if (!F->ivs) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  char *kept = strdup(ivn);
+  if (!kept) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  F->ivs[F->nivs++] = (struct ShNamed){ kept, may, 0 };
+  return may;
+}
+
 /* An argument of kind t that a String's method could take as a String:
    a String, a value whose class is not known, or a user object (which may
    define to_str); an Integer too where `int_ok` (`<<` and concat append a
@@ -2520,11 +2657,14 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
 
   /* an in-place String mutation of the receiver: through a boxed or an
      untyped receiver, only one a String can make, on a receiver that can
-     be a String */
+     be a String (under the flag an ivar's read or an attribute reader's
+     call can be one only if a write of the ivar stores one:
+     sh_ivar_string) */
   /* Encoding and frozen-state changes are visible through every alias. */
+  const PolyLits recv_lits = { sh_blk_bound, F, c->share_strings ? sh_ivar_string : NULL };
   if (maybe_str && bop_name_mutates(name, c->share_strings ? 0 : BOP_MUT_LOCAL) &&
       (rt == TY_STRING || rt == TY_STRBUF ||
-       (!sh_args_refuse_string(c, n, name) && an_recv_may_be_string(c, recv, &(PolyLits){ sh_blk_bound, F })))) {
+       (!sh_args_refuse_string(c, n, name) && an_recv_may_be_string(c, recv, &recv_lits)))) {
     int base = sh_self_chain_base(F, c, recv);
     /* a freeze changes no bytes: the value of an attribute assignment it
        freezes is one pointer all its names read, frozen in place, so no
@@ -3670,7 +3810,9 @@ static void sh_free(ShareFacts *F) {
   free(F->h); free(F->helem); free(F->bucket); free(F->hnext); free(F->nval);
   free(F->lend_arg); free(F->lend_par); free(F->lend_node); free(F->lend_direct); free(F->lend_done);
   free(F->dyn); free(F->union_stack);
-  free(F->any_new_blk); free(F->attr_r); free(F->attr_w); free(F->blkp);
+  free(F->any_new_blk); free(F->attr_r); free(F->attr_w); free(F->blkp); free(F->ivw);
+  for (int i = 0; i < F->nivs; i++) free((char *)F->ivs[i].name);
+  free(F->ivs);
   free(F->jump); free(F->jseen); free(F->fgen);
   free(F->key); free(F->lk_c); free(F->lk_k); free(F->lk_done);
   for (int i = 0; i < F->nboxed_fresh; i++) {
