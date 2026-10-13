@@ -1886,10 +1886,13 @@ const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, i
 /* The class-method side of a class reads its singleton aliases
    (`class << self; alias a b`) and those of the modules it extends: an
    instance one names no class method (`alias name cop_name` made a class
-   method's Module#name call the class method cop_name). A module's side
-   and the instance side read every alias, as they always have. */
+   method's Module#name call the class method cop_name). The instance side
+   reads the instance aliases, and a module's side reads every alias. */
 const char *comp_resolve_cm_alias_at(Compiler *c, int class_id, const char *name, int *start_cls) {
   return resolve_alias_side(c, class_id, name, start_cls, NULL, 1);
+}
+const char *comp_resolve_cm_alias_ex(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin) {
+  return resolve_alias_side(c, class_id, name, start_cls, builtin, 1);
 }
 static const char *resolve_alias_side(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin, int sg) {
   if (builtin) *builtin = 0;
@@ -1905,12 +1908,15 @@ static const char *resolve_alias_side(Compiler *c, int class_id, const char *nam
     const char *next = NULL;
     for (int cid = class_id; cid >= 0 && !next; cid = c->classes[cid].parent) {
       ClassInfo *ci = &c->classes[cid];
-      /* a module's instance alias can be a module function too
-         (`alias shellwords shellsplit; module_function :shellwords`, or
-         `extend self`): there both sides read it, as before */
-      int both = !sg || (ci->def_node >= 0 && nt_kind(c->nt, ci->def_node) == NK_ModuleNode);
-      for (int i = (cid == lim_cls ? lim : ci->naliases) - 1; i >= 0; i--)
-        if ((both || (ci->alias_sg && ci->alias_sg[i])) && sp_streq(ci->alias_new[i], name)) {
+      /* The instance side reads the instance aliases only. The class side
+         reads the singleton ones, and in a module the instance ones too: a
+         module's instance alias can be a module function as well (`alias
+         shellwords shellsplit; module_function :shellwords`, or `extend
+         self`). */
+      int mod = ci->def_node >= 0 && nt_kind(c->nt, ci->def_node) == NK_ModuleNode;
+      for (int i = (cid == lim_cls ? lim : ci->naliases) - 1; i >= 0; i--) {
+        int asg = ci->alias_sg && ci->alias_sg[i];
+        if ((sg ? asg || mod : !asg) && sp_streq(ci->alias_new[i], name)) {
           next = ci->alias_old[i];
           /* An alias of an INHERITED method names the body that was in effect
              where the alias appeared, so a redefinition in this class must not
@@ -1930,6 +1936,7 @@ static const char *resolve_alias_side(Compiler *c, int class_id, const char *nam
           }
           break;
         }
+      }
       /* on the class side, a module the class extends brings its instance
          aliases as the class's own -- behind the class methods the class
          defines itself, which its singleton class answers first */
@@ -1949,18 +1956,23 @@ static const char *resolve_alias_side(Compiler *c, int class_id, const char *nam
 }
 
 /* Is `name` in class_id's chain only a singleton alias (`class << self;
-   alias a b`), with no instance method, reader or instance alias of its
-   own? The instance-side alias lookup reads singleton aliases as well, so
-   a reflection that answers for an instance asks this first. */
+   alias a b`), with no instance method, reader, writer (`x=`) or instance
+   alias of its own? A reflection that answers for an instance from the
+   alias table asks this first. */
 int comp_name_is_sg_alias_only(Compiler *c, int class_id, const char *name) {
   int sg = 0;
+  /* a writer is listed by the name it assigns (`x` for `x=`) */
+  char wbase[256] = "";
+  size_t nl = strlen(name);
+  if (nl > 1 && nl < sizeof wbase && name[nl - 1] == '=') { memcpy(wbase, name, nl - 1); wbase[nl - 1] = '\0'; }
   for (int cid = class_id; cid >= 0 && cid < c->nclasses; cid = c->classes[cid].parent) {
     ClassInfo *ci = &c->classes[cid];
     for (int i = 0; i < ci->naliases; i++) {
       if (!sp_streq(ci->alias_new[i], name)) continue;
       if (ci->alias_sg && ci->alias_sg[i]) sg = 1; else return 0;
     }
-    if (comp_method_in_class(c, cid, name) >= 0 || comp_is_reader(ci, name)) return 0;
+    if (comp_method_in_class(c, cid, name) >= 0 || comp_is_reader(ci, name) || (wbase[0] && comp_is_writer(ci, wbase)))
+      return 0;
   }
   return sg;
 }

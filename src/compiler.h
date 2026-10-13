@@ -1749,6 +1749,7 @@ int         comp_resolve_member(Compiler *c, int class_id, const char *name, int
 const char *comp_resolve_alias(Compiler *c, int class_id, const char *name);
 const char *comp_resolve_alias_at(Compiler *c, int class_id, const char *name, int *start_cls);
 const char *comp_resolve_cm_alias_at(Compiler *c, int class_id, const char *name, int *start_cls);
+const char *comp_resolve_cm_alias_ex(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin);
 int comp_name_is_sg_alias_only(Compiler *c, int class_id, const char *name);
 const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin);
 

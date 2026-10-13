@@ -592,6 +592,10 @@ spinel: 1 refusal, nothing written
 == test/reject/exception_own_ivar_reflection.rb [promote] rc=1
 spinel: test/reject/exception_own_ivar_reflection.rb:9: unsupported call: node N (CallNode `instance_variables`) recv=LocalVariableReadNode/ty18 argc=0
 spinel: 1 refusal, nothing written
+== test/reject/extend_alias_of_own_class_method.rb [default] rc=1
+spinel: test/reject/extend_alias_of_own_class_method.rb:7: K.copied: alias in the extended module M of a class method K defines itself is not supported; see docs/limitations.md
+== test/reject/extend_alias_of_own_class_method.rb [promote] rc=1
+spinel: test/reject/extend_alias_of_own_class_method.rb:7: K.copied: alias in the extended module M of a class method K defines itself is not supported; see docs/limitations.md
 == test/reject/ffi_ptr_ruby_object.rb [default] rc=1
 spinel: test/reject/ffi_ptr_ruby_object.rb:11: unsupported ffi pointer argument (a Ruby object has no C address; pass an IO::Buffer, a String or a :ptr value): node 23 (CallNode `new`) recv=ConstantReadNode/ty49 argc=0
 spinel: 1 refusal, nothing written

@@ -9,3 +9,10 @@ false
 true
 [:b, :c, :d]
 [:a, :b]
+"K#foo"
+"K.bar"
+true
+true
+true
+[:foo, :x=]
+[:bar, :foo, :x=, :y=]

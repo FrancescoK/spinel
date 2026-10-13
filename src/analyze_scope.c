@@ -6815,6 +6815,24 @@ void unmark_referenced_module_sources(Compiler *c) {
   }
 }
 
+/* An instance alias in module mod_id of `name`, which the class ci that
+   extends the module defines as its own class method (`alias copied
+   original` in the module, `def self.original` in the class): the alias
+   keeps the module's body, which no class method of ci holds, so it is
+   refused. */
+static void extend_alias_refuse_own(Compiler *c, int mod_id, int ci, const char *name) {
+  ClassInfo *m = &c->classes[mod_id];
+  for (int i = 0; i < m->naliases; i++) {
+    if ((m->alias_sg && m->alias_sg[i]) || !sp_streq(m->alias_old[i], name) ||
+        comp_cmethod_in_class(c, ci, m->alias_new[i]) >= 0) continue;
+    char msg[512];
+    snprintf(msg, sizeof msg, "%s.%s: alias in the extended module %s of a class method %s defines itself is not "
+             "supported; see docs/limitations.md", c->classes[ci].name, m->alias_new[i], m->name, c->classes[ci].name);
+    unsupported_feature(c, m->alias_node[i] >= 0 ? m->alias_node[i] : c->classes[ci].def_node, msg);
+    return;
+  }
+}
+
 /* `inherited`: a superclass already extends mod_id, so the module is among
    the singleton's ancestors. CRuby ignores the extend for the lookup: the
    module stays behind the superclass, and it supersedes no earlier module's
@@ -6841,6 +6859,7 @@ static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited) {
     char *own_name = NULL;
     char behind[256] = "";
     if (own >= 0 && !c->scopes[own].is_extend_copy) {
+      extend_alias_refuse_own(c, mod_id, ci, src->name);
       if (!scope_body_has_super(c, own)) continue;
       ClassInfo *cif = &c->classes[ci];
       char key[320];
