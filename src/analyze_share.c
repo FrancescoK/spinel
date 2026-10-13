@@ -1915,6 +1915,35 @@ static int sh_boxed_string_row_composable(ShareFacts *F, Compiler *c, int n,
   return 1;
 }
 
+static int sh_native_placeholder(Compiler *c, const PolyCand *p, const char *name);
+/* Is call n, on a boxed receiver, of a name no program method answers
+   (no target here, no method_missing, no reader, native binding or
+   OpenStruct field of the name, no singleton accessor) and that every
+   builtin kind having it answers with a new String or no String
+   (bop_share_pure_anywhere): `x.tr("-", "_")`, `x.squeeze`? The box holds
+   one of those kinds, or the call raises NoMethodError. */
+static int sh_boxed_pure_name(ShareFacts *F, Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, n, "name");
+  int argc = call_plain_argc(c, n), np = 0, missing = 0;
+  /* (an answer typed poly is boxed by the dispatch's String arm as its
+     bytes, a box whose copies stop naming one String once one of them is
+     appended to: such a call stays in its receiver's class) */
+  if (!name || c->ntype[n] != TY_STRING || F->ostruct || nt_ref(nt, n, "block") >= 0 || !nt_call_args_plain(nt, n) ||
+      object_public_method_name(name) || bop_name_has_reader(name, BOP_READ_NUMERIC | BOP_READ_CONTAINER) ||
+      (ty_poly_face_owners(name, argc, 0, 1, 1) & PF_OWNERS & ~(PF_STRING | PF_INT | PF_FLOAT | PF_RANGE |
+                                                                 PF_FRANGE | PF_RANDOM)) ||
+      !bop_share_pure_anywhere(name, argc, 0) || comp_method_index(c, "method_missing") >= 0)
+    return 0;
+  comp_cmethod_candidates(c, "method_missing", &missing);
+  if (missing) return 0;
+  /* (a native class's empty placeholder row answers nothing) */
+  const PolyCand *pc = comp_poly_candidates(c, name, &np);
+  for (int i = 0; i < np; i++)
+    if (!sh_native_placeholder(c, &pc[i], name)) return 0;
+  return !sh_singleton_accessor(F, c, name) && !sh_method_missing_reaches(c, n, name);
+}
+
 static void sh_record_boxed_fresh(ShareFacts *F, Compiler *c, int n,
                                   int share, int family, int container,
                                   const BuiltinOp *row, TyKind plan_ret,
@@ -2894,6 +2923,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     int s = 0, container = 1;
     if (sh_boxed_builtin_row(F, c, n, &s, NULL, &container))
       return sh_builtin(F, c, n, s, rv, blk, container);
+    if (sh_boxed_pure_name(F, c, n)) return sh_builtin(F, c, n, BSH_PURE, rv, blk, 0);
     return sh_container_default(F, c, n, rv, blk);
   }
   if (rt == TY_OPENSTRUCT) return sh_ostruct_call(F, c, n, name, rv, blk);
