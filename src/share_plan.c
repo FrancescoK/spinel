@@ -26,9 +26,15 @@
    it only asks whether it is nil or false, as a predicate does (SPR_TEST);
    or, for an element of the Array literal a multiple write splits (also
    through a splat, `a, b = *[s, t]`), the target the element is stored
-   into takes it (SPR_STORE), where the literal is no container. A taker needs what the value's facts say
+   into takes it (SPR_STORE), where the literal is no container; or it
+   asks the value's identity, as equal?, object_id and __id__ do where no
+   class of the program defines them (SPR_IDENTITY). A taker needs what the value's facts say
    (share_value_needs_handle); a reader and a test need its bytes; a store
-   needs what its target does (share_store_needs_handle).
+   needs what its target does (share_store_needs_handle). An identity asks
+   for the object, and is the handle where the producer has one and the
+   bytes' pointer where it has only bytes, which are then all the String
+   there is: never a new handle, which no other name holds, and never a
+   refusal.
    Some values have a second consumer:
      - a call that answers its receiver or nil (rule 3 below) answers its
        receiver's String, so its own answer is only tested for nil
@@ -67,8 +73,9 @@
    outside all of those, so it is always computed where it is asked.
    The role is the kind of the node a value sits in, as the program has
    it at seal, and needs no guard: codegen renames calls and retypes
-   values, but no interpolation, predicate or multiple write changes
-   where its parts sit; a receiver or arguments swapped in for one
+   values, but no interpolation, predicate, multiple write or identity
+   query changes where its parts sit, and no rename makes or unmakes an
+   identity query; a receiver or arguments swapped in for one
    emission (nt_node_set_ref) and nodes added after seal sit in a call,
    whose role is a taker's. The second role of a call that answers its
    receiver reads its name, its receiver's type and its targets, as rule 3
@@ -114,7 +121,7 @@ static int share_plan_self_recv(Compiler *c, int v) {
 static int share_plan_supply_at(Compiler *c, int v, int *recv) {
   Repr r = repr_of(c, v);
   *recv = -1;
-  if (r.kind == RK_BOXED) return 1;
+  if (r.kind == RK_BOXED || strbuf_srange_tail(c, v) >= 0) return 1;
   if (r.kind == RK_STRBUF) return r.strbuf_src != RS_FRESH;
   int rv = share_plan_self_recv(c, v);
   if (rv >= 0) { *recv = rv; return -1; }
@@ -147,7 +154,11 @@ static int share_plan_sup_valid(Compiler *c, const struct SharePlanSup *e) {
         was planned where it was boxed;
      2. a value represented as the handle has it, unless repr_of says the
         handle is a new one wrapped around its bytes where it is demanded
-        (RS_FRESH);
+        (RS_FRESH); a String Range's endpoint (begin, end, first, last,
+        min, max, also as the value of parentheses: strbuf_srange_tail)
+        has the handle the Range keeps for it, as the typed and the boxed
+        endpoint routes take it, whatever repr_of says (it calls that
+        handle RS_FRESH where one is demanded);
      3. a call that answers its String receiver hands over what that
         receiver does;
      4. any other value, represented as its bytes, has one where the routes
@@ -189,8 +200,8 @@ static int share_plan_supplies(Compiler *c, int v) {
 
 /* The memo's byte per node: the need of the value (SPN_*), or SPN_ASK for
    a node whose scope was unreachable at seal (codegen can still make its
-   method reachable, so its need is asked live), and above it the role of
-   the node's consumer (SPR_*). */
+   method reachable, so its need is asked live), and above it, in the
+   byte's other six bits, the role of the node's consumer (SPR_*). */
 enum { SPN_ASK = 3, SPM_NEED = 3, SPM_ROLE_SHIFT = 2 };
 
 static int share_plan_need_of(int need) {
@@ -202,6 +213,7 @@ int share_plan_need(Compiler *c, int v) { return share_plan_need_of(share_value_
    facts say a taker needs) is `need`. */
 static int share_plan_role_need(Compiler *c, int v, int role, int need) {
   if (role == SPR_READ || role == SPR_TEST) return SPN_BYTES;
+  if (role == SPR_IDENTITY) return SPN_OBJECT;
   /* the store asks past the literal it splits (never less than the value) */
   if (role == SPR_STORE && need == SPN_BYTES) return share_plan_need_of(share_store_needs_handle(c, v));
   return need;
@@ -213,13 +225,14 @@ SharePlan share_plan_with_need(Compiler *c, int v, int role, int need) {
   SharePlan p = { (unsigned char)need, SPS_BYTES, SPF_BYTES };
   if (need == SPN_BYTES) return p;
   p.supply = share_plan_supplies(c, v) ? SPS_HANDLE : SPS_BYTES;
-  p.form = (unsigned char)share_plan_form(p.need, p.supply);
+  /* (an identity is the handle or the bytes' pointer) */
+  p.form = (unsigned char)(role == SPR_IDENTITY && p.supply == SPS_BYTES ? SPF_BYTES : share_plan_form(p.need, p.supply));
   return p;
 }
 
 const char *share_plan_role_name(int role) {
-  static const char *const names[] = { "take", "read", "test", "store" };
-  return role >= SPR_TAKE && role <= SPR_STORE ? names[role] : "?";
+  static const char *const names[] = { "take", "read", "test", "store", "identity" };
+  return role >= SPR_TAKE && role <= SPR_IDENTITY ? names[role] : "?";
 }
 
 int share_plan_role(Compiler *c, int v) {
@@ -260,10 +273,32 @@ static void share_plan_masgn_stores(Compiler *c, int v) {
   }
 }
 
+/* The operands of identity query n (equal?'s receiver and argument,
+   object_id's and __id__'s receiver), where no class of the program
+   defines its name: a method of the program's own takes them. An arm of
+   a dynamic send shares the send's receiver, which the send takes. */
+static void share_plan_identity_roles(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, n, "name");
+  int recv = nt_ref(nt, n, "receiver"), args = nt_ref(nt, n, "arguments"), np = 0, an = 0;
+  if (!nm || recv < 0 || nt_ref(nt, n, "block") >= 0 || !is_identity_query(nm) || is_freeze_family(nm) ||
+      nt_int(nt, n, "dyn_arm", 0))
+    return;
+  int pair = is_equality_name(nm);
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an != pair || call_plain_argc(c, n) != pair) return;
+  const PolyCand *pc = comp_poly_candidates(c, nm, &np);
+  for (int i = 0; i < np; i++)
+    if (pc[i].mi >= 0 || pc[i].rdcls >= 0) return;
+  share_plan_role_mark(c, recv, SPR_IDENTITY);
+  if (pair) share_plan_role_mark(c, av[0], SPR_IDENTITY);
+}
+
 /* The roles other than a taker's, from the consumers that have them: an
    interpolation reads, a predicate tests, a multiple write stores each
    element of its value's literal (and of a literal splatted in it) into
-   its target. One pass over each kind. */
+   its target, an identity query asks its operands' identity. One pass over
+   each kind. */
 static void share_plan_roles_build(Compiler *c) {
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_EmbeddedStatementsNode, e) share_plan_role_mark(c, nt_ref(nt, e, "statements"), SPR_READ);
@@ -271,6 +306,7 @@ static void share_plan_roles_build(Compiler *c) {
   for (int k = 0; k < 4; k++)
     NT_FOREACH_KIND(nt, preds[k], n) share_plan_role_mark(c, nt_ref(nt, n, "predicate"), SPR_TEST);
   NT_FOREACH_KIND(nt, NK_MultiWriteNode, mw) share_plan_masgn_stores(c, nt_ref(nt, mw, "value"));
+  NT_FOREACH_KIND(nt, NK_CallNode, n) share_plan_identity_roles(c, n);
 }
 
 void share_plan_free(Compiler *c) {

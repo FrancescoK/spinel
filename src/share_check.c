@@ -11,7 +11,7 @@
    With the flag on, each value choke point (emit_expr, emit_boxed,
    emit_strbuf_value) writes an in-band mark before the text of a String
    value whose plan (share_plan.c) needs the handle. A mark is the control
-   byte SK_OPEN, "sk", the node, the face, an optional "f", an optional
+   byte SK_OPEN, "sk", the node, the face, an optional "f" or "i", an optional
    "t" (the plan lists a consumer that tests the value), the plan's form
    as a digit (SPF_*, plus SK_LIVE when the memo could not answer the need),
    and the control byte SK_CLOSE. Every emitter that
@@ -19,7 +19,9 @@
    program cannot spell a mark; one that does not parse as a mark whole is
    none. The face is what the emitter asked for: bytes (b), handle (h), box
    (B) or a poly (p); an `f` says the value is a new String, which may be
-   copied unless a box keeps it.
+   copied unless a box keeps it, and an `i` that the value needs no handle
+   and is marked only for the identity its consumer asks, so no conversion
+   of it is a copy.
 
    When a function's text is final -- before the passes that read it as
    text (gc_frame_build, pd_hoist's dispatch helpers) -- share_check_harvest
@@ -47,7 +49,9 @@
    The marks follow the String plan (share_plan.c), asked live where the
    emitter is: a value is marked where its own need (a taker's) is a
    handle, or where a multiple write stores it into a target that needs
-   one (a store's need), and the mark carries the plan's form there for the role of the
+   one (a store's need), or where an identity query asks a String's
+   identity (the plan's form for it is the handle or the bytes' pointer),
+   and the mark carries the plan's form there for the role of the
    value's consumer (share_plan_role). The harvest gives each mark a
    consumer: a value whose bytes the C only tests for nil (a call that
    answers its receiver, whose handle is then the answer) is its test's,
@@ -62,11 +66,14 @@
    report compares the conversion with the plan:
      agree     the plan's handle and the handle, the plan's wrap and a wrap,
                the plan's refuse and a copy, or the plan's bytes (a
-               reader's, a test's) and no new handle;
+               reader's, a test's, an identity's: the bytes' pointer) and
+               no new handle;
      read      a taker given the bytes, kept by nothing the check sees: a
                consumer that only reads (one the share facts have no row
                for, so the plan asks the object), or a handle passed on
-               where the check cannot follow it;
+               where the check cannot follow it; or an identity the plan
+               gives the handle, read as bytes the same way (an operand
+               read ahead of a comparison of its slot's handle);
      disagree  anything else, named per node with its consumer.
    Where the plan's memo can answer the need (the node read as itself), its
    answer is compared with the live one, and a contradiction is counted
@@ -110,7 +117,7 @@ enum { SKC_NONE, SKC_WRAP, SKC_BOX, SKC_MUT, SKC_RET };
 /* the conversion a mark shows, the most copying last */
 enum { SKE_READ, SKE_HANDLE, SKE_WRAP, SKE_BYTES, SKE__COUNT };
 /* the consumer roles a site is kept per (SPR_*) */
-enum { SK_ROLES = SPR_STORE + 1 };
+enum { SK_ROLES = SPR_IDENTITY + 1 };
 /* the control bytes that open and close a mark */
 enum { SK_OPEN = 1, SK_CLOSE = 2 };
 /* beside a mark's form: the memo could not answer the need, asked live */
@@ -155,9 +162,10 @@ void share_check_free(Compiler *c) {
 }
 
 /* Mark the value of node v, which the emitter is about to write into b,
-   when its own need, asked live, is a handle, or a multiple write stores
-   it into a target that needs one; the mark carries the plan's form for
-   its consumer's role. face: 'x' the emitter's own face (what the node is
+   when its own need, asked live, is a handle, a multiple write stores
+   it into a target that needs one, or it is a String whose identity its
+   consumer asks; the mark carries the plan's form for its consumer's
+   role. face: 'x' the emitter's own face (what the node is
    as emitted), 'B' a box, 'H' a handle for a shared slot. Where the memo
    can answer the need, a contradiction of the live need is counted. */
 int share_check_mark(Compiler *c, int v, char face, Buf *b) {
@@ -171,7 +179,10 @@ int share_check_mark(Compiler *c, int v, char face, Buf *b) {
   SharePlan plan = share_plan_with_need(c, v, role, need);
   /* (a store's need is never below the value's own) */
   if (role == SPR_STORE) need = plan.need;
-  if (need == SPN_BYTES) return 0;
+  /* (a String whose identity is asked is marked whatever its need) */
+  int idonly = need == SPN_BYTES;
+  TyKind vt = comp_ntype(c, v);
+  if (idonly && (role != SPR_IDENTITY || (vt != TY_STRING && vt != TY_STRBUF))) return 0;
   int tests = role == SPR_TEST || share_plan_second_role(c, v) == SPR_TEST;
   int pushed = face == 'x';   /* (only emit_expr's marks stay open) */
   if (face == 'x') {
@@ -179,7 +190,7 @@ int share_check_mark(Compiler *c, int v, char face, Buf *b) {
     face = t == TY_STRBUF ? 'h' : t == TY_POLY ? 'p' : 'b';
   }
   size_t off = b->len;
-  buf_printf(b, "%csk%d%c%s%s%c%c", SK_OPEN, v, face, need == SPN_NEW ? "f" : "", tests ? "t" : "",
+  buf_printf(b, "%csk%d%c%s%s%c%c", SK_OPEN, v, face, need == SPN_NEW ? "f" : idonly ? "i" : "", tests ? "t" : "",
              '0' + (plan.form | (memo ? 0 : SK_LIVE)), SK_CLOSE);
   if (!pushed) return 0;
   struct ShareAgree *A = sk_state(c);
@@ -205,8 +216,9 @@ void share_check_mark_end(Compiler *c) {
 }
 
 /* The mark that starts at p: its end, with the node, the face, whether the
-   value is new and the plan's form; NULL when p starts no mark (whole: a
-   lone SK_OPEN, or one with no end, is program text). */
+   value is new (1) or marked for its identity only (2), and the plan's
+   form; NULL when p starts no mark (whole: a lone SK_OPEN, or one with no
+   end, is program text). */
 static const char *sk_mark_at(const char *p, long *node, char *face, int *fresh, int *tested, int *form) {
   if (p[0] != SK_OPEN || p[1] != 's' || p[2] != 'k') return NULL;
   const char *q = p + 3;
@@ -218,7 +230,7 @@ static const char *sk_mark_at(const char *p, long *node, char *face, int *fresh,
   }
   char f = *q;
   if (f != 'b' && f != 'h' && f != 'p' && f != 'B' && f != 'H' && f != 'e') return NULL;
-  int fr = *++q == 'f';
+  int fr = *++q == 'f' ? 1 : *q == 'i' ? 2 : 0;
   if (fr) q++;
   int ts = *q == 't';
   if (ts) q++;
@@ -253,10 +265,10 @@ static const char *sk_next(const char *p) {
 
 /* Make the mark that ends at e exempt, if it is not already. */
 static void sk_exempt_mark(const char *e) {
-  char *face = (char *)e - 3;   /* before the form and SK_CLOSE; an `f` and a
-                                   `t` may sit between */
+  char *face = (char *)e - 3;   /* before the form and SK_CLOSE; an `f` or
+                                   an `i`, and a `t`, may sit between */
   if (*face == 't') face--;
-  if (*face == 'f') face--;
+  if (*face == 'f' || *face == 'i') face--;
   if (*face != 'e') *face = 'e';
 }
 
@@ -627,7 +639,7 @@ static void sk_read_mark(Compiler *c, struct ShareAgree *A, Buf *b, const char *
                kind == SKC_WRAP ? SKE_WRAP : kind != SKC_NONE ? SKE_BYTES
                : bytes && !A->published ? SKE_READ : SKE_HANDLE,
                form);
-  if (fresh && kind != SKC_BOX) kind = SKC_NONE;
+  if (fresh == 2 || (fresh && kind != SKC_BOX)) kind = SKC_NONE;
   if (kind == SKC_NONE || A->seen[v]) return;
   A->seen[v] = 1;
   static const char *const kn[] = { "", "bytes wrapped into a new handle", "boxed as bytes",
@@ -745,8 +757,13 @@ static void sk_plan_report(Compiler *c, struct ShareAgree *A) {
       tally[form][e]++;
       /* a taker given the bytes, kept by nothing the check sees: the C
          may hand them to a consumer that only reads (one the facts have no
-         row for), or pass a handle on where the check cannot follow it */
-      if (e == SKE_READ && role != SPR_READ && role != SPR_TEST) { read++; continue; }
+         row for), or pass a handle on where the check cannot follow it;
+         so may an identity the plan gives the handle (an operand read
+         ahead of a comparison of the handle) */
+      if (e == SKE_READ && role != SPR_READ && role != SPR_TEST && (role != SPR_IDENTITY || form != SPF_BYTES)) {
+        read++;
+        continue;
+      }
       if (sk_plan_agrees(form, e)) { agree++; continue; }
       char what[160];
       snprintf(what, sizeof what, "plan %s%s, C %s (%s, %s)", share_plan_form_name(form), live ? " (live)" : "",

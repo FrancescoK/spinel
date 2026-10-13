@@ -51,4 +51,4 @@ share-check: plan: disagree: ?:0 node 87 CallNode (clear): plan handle (live), C
 share-check: plan: disagree: ?:0 node 91 CallNode (concat): plan handle (live), C bytes (take, argument)
 share-check: plan: disagree: test/share_check/send_arms.rb:8 node 13 LocalVariableReadNode (s): plan handle, C bytes (take, receiver)
 share-check: 160 marks, 15 declared, 26 copies
-share-check: plan: 28 sites, 2 agree, 0 read, 26 disagree; handle 1/0/0/26, wrap 0/0/1/0, refuse 0/0/0/0, bytes 0/0/0/0 (C handle/read/wrap/bytes); by consumer take 28, read 0, test 0, store 0; 21 live, 0 stale
+share-check: plan: 28 sites, 2 agree, 0 read, 26 disagree; handle 1/0/0/26, wrap 0/0/1/0, refuse 0/0/0/0, bytes 0/0/0/0 (C handle/read/wrap/bytes); by consumer take 28, read 0, test 0, store 0, identity 0; 21 live, 0 stale
