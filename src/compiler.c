@@ -1931,7 +1931,9 @@ static const char *resolve_alias_side(Compiler *c, int class_id, const char *nam
           break;
         }
       /* on the class side, a module the class extends brings its instance
-         aliases as the class's own */
+         aliases as the class's own -- behind the class methods the class
+         defines itself, which its singleton class answers first */
+      if (sg && !next && comp_cmethod_in_class(c, cid, name) >= 0) break;
       for (int e = 0; sg && !next && e < ci->nextended_mods; e++) {
         int m = ci->extended_mods[e];
         if (m < 0 || m >= c->nclasses) continue;

@@ -24,3 +24,19 @@ class Base
 end
 class Cop < Base; end
 p Cop.cop_name, Cop.new.name, Base.name
+
+# a class method the class defines itself answers ahead of the instance
+# alias of a module it extends, whichever comes first
+module Greeting
+  def hello = "Greeting#hello"
+  alias greet hello
+end
+class Own
+  extend Greeting
+  def self.greet = "Own.greet"
+end
+class OwnFirst
+  def self.greet = "OwnFirst.greet"
+  extend Greeting
+end
+p Own.greet, Own.hello, OwnFirst.greet
