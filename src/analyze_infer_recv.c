@@ -902,7 +902,9 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
            init type. (The block-fold form uses the block, not a sym operator.) */
         if (nt_ref(nt, id, "block") < 0 && !sym_static_value(c, argv[argc - 1])) {
           TyKind opt = infer_type(c, argv[argc - 1]);
-          if (opt == TY_SYMBOL || opt == TY_POLY) { *out = TY_POLY; return 1; }
+          /* any other operand too: a String names the operator, and the rest
+             raise TypeError (sp_poly_inject_op) */
+          if (opt != TY_UNKNOWN) { *out = TY_POLY; return 1; }
         }
         /* `reduce(id, :>>)` composes callables: the fold runs through the
            generic symbol-operator helper, whose result is boxed, so typing it
