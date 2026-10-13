@@ -13837,14 +13837,18 @@ int desugar_class_new_blocks(Compiler *c) {
  * `M.__send__(:included, self)`, the call CRuby makes.
  *
  * The hook method itself stays on M for anything that calls it by name. */
-static int incl_find_hook_named(const NodeTable *nt, const char *mn, int n0, const char **param,
-                                const char *hook_name);
-static int incl_find_hook_named(const NodeTable *nt, const char *mn, int n0, const char **param,
-                                const char *hook_name) {
+static int incl_find_hook_named(const NodeTable *nt, const char *mn, char *const *qn, int n0,
+                                const char **param, const char *hook_name, int *mod_out);
+/* The `def self.<hook_name>(param)` of a module, or -1; the module node that
+   defines it in *mod_out. With `qn` (the qualified name of each module node)
+   the module is the one whose qualified name is `mn`; without, any whose own
+   last name is `mn`. */
+static int incl_find_hook_named(const NodeTable *nt, const char *mn, char *const *qn, int n0,
+                                const char **param, const char *hook_name, int *mod_out) {
   for (int m = 0; m < n0; m++) {
     if (nt_kind(nt, m) != NK_ModuleNode) continue;
     int cp = nt_ref(nt, m, "constant_path");
-    const char *nm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    const char *nm = qn ? qn[m] : cp >= 0 ? nt_str(nt, cp, "name") : NULL;
     if (!nm || !sp_streq(nm, mn)) continue;
     int body = nt_ref(nt, m, "body");
     int n = 0; const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
@@ -13858,21 +13862,20 @@ static int incl_find_hook_named(const NodeTable *nt, const char *mn, int n0, con
       int rn = 0; const int *rq = ps >= 0 ? nt_arr(nt, ps, "requireds", &rn) : NULL;
       if (rn != 1) continue;
       *param = nt_str(nt, rq[0], "name");
+      *mod_out = m;
       return *param ? d : -1;
     }
   }
   return -1;
 }
 
-/* Does a body of module `mn` define singleton method `meth` (`def self.meth`,
-   `module_function def meth`, or `def meth` in its `class << self`, a
-   visibility call around it or not)? */
-static int incl_mod_singleton(const NodeTable *nt, const char *mn, int n0, const char *meth) {
-  for (int m = 0; m < n0; m++) {
-    if (nt_kind(nt, m) != NK_ModuleNode) continue;
-    int cp = nt_ref(nt, m, "constant_path");
-    const char *nm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    if (!nm || !sp_streq(nm, mn)) continue;
+/* Does the body of module node `m`, the one that defines the hook, define
+   singleton method `meth` (`def self.meth`, `module_function def meth`, or
+   `def meth` in its `class << self`, a visibility call around it or not)?
+   Only that body: another module of the same last name in another namespace
+   is not the hook's self. */
+static int incl_mod_singleton(const NodeTable *nt, int m, const char *meth) {
+  {
     int body = nt_ref(nt, m, "body");
     int n = 0; const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
     for (int k = 0; k < n; k++) {
@@ -13898,12 +13901,10 @@ static int incl_mod_singleton(const NodeTable *nt, const char *mn, int n0, const
 
 /* What the cloned hook body is rewritten with: the hook's parameter, the
    including class's name (NULL: the class is self), the `include` argument
-   naming the module, and the module's name */
+   naming the module, and the module node that defines the hook */
 typedef struct {
   const char *param, *cls;
-  int mod;
-  const char *mod_name;
-  int n0;
+  int mod, hook_mod;
 } InclSubst;
 
 /* `note(x)` -> `M.__send__(:note, x)`: a receiverless call of the module's
@@ -13953,7 +13954,7 @@ static void incl_subst(NodeTable *nt, int node, const InclSubst *is, int self_mo
                             sp_streq(cm, "ancestors") || sp_streq(cm, "superclass") ||
                             sp_streq(cm, "instance_methods") || sp_streq(cm, "const_get"));
     if ((r < 0 || nt_kind(nt, r) == NK_SelfNode) && self_mod && cm &&
-        incl_mod_singleton(nt, is->mod_name, is->n0, cm))
+        incl_mod_singleton(nt, is->hook_mod, cm))
       incl_call_on_mod(nt, node, is);
     else if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && !introspect &&
              nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), is->param))
@@ -14070,10 +14071,81 @@ static int incl_hook_call(NodeTable *nt, int at, int mod, const char *hook_name)
   return call;
 }
 
+/* The text of constant path `node` (`A::B`, a leading `::` kept) into buf. */
+static void incl_path_text(const NodeTable *nt, int node, char *buf, size_t cap) {
+  const char *nm = nt_str(nt, node, "name");
+  if (nt_kind(nt, node) != NK_ConstantPathNode) { snprintf(buf, cap, "%s", nm ? nm : "?"); return; }
+  int par = nt_ref(nt, node, "parent");
+  char head[512] = "";
+  if (par >= 0) incl_path_text(nt, par, head, sizeof head);
+  snprintf(buf, cap, "%s::%s", head, nm ? nm : "?");
+}
+
+/* The qualified name of class or module node `m` (`Outer::Ext`): the
+   enclosing class and module paths, outermost first, then its own; a path
+   written from the root (`module ::Ext`) stands alone. */
+static void incl_qualified(const NodeTable *nt, const int *parent, int m, char *buf, size_t cap) {
+  char own[512];
+  incl_path_text(nt, nt_ref(nt, m, "constant_path"), own, sizeof own);
+  if (own[0] == ':') { snprintf(buf, cap, "%s", own + 2); return; }
+  int a = parent[m];
+  while (a >= 0 && nt_kind(nt, a) != NK_ClassNode && nt_kind(nt, a) != NK_ModuleNode) a = parent[a];
+  if (a < 0) { snprintf(buf, cap, "%s", own); return; }
+  char outer[1024];
+  incl_qualified(nt, parent, a, outer, sizeof outer);
+  snprintf(buf, cap, "%s::%s", outer, own);
+}
+
+/* The hook of the module `include`/`extend` argument `arg` names at the
+   include site `site` (a class or module node, or a Struct.new write): the
+   constant resolved lexically, from the innermost enclosing namespace out to
+   the top level, against the modules' qualified names. A name no module of
+   the program is qualified as falls back to the last segment alone. */
+static int incl_find_hook_at(const NodeTable *nt, const int *parent, char *const *qn, int n0, int site,
+                             int arg, const char **param, const char *hook_name, int *mod_out) {
+  char path[512], target[1536];
+  incl_path_text(nt, arg, path, sizeof path);
+  if (path[0] == ':') return incl_find_hook_named(nt, path + 2, qn, n0, param, hook_name, mod_out);
+  for (int a = site; a >= 0; a = parent[a]) {
+    if (nt_kind(nt, a) != NK_ClassNode && nt_kind(nt, a) != NK_ModuleNode) continue;
+    if (!qn[a]) continue;
+    snprintf(target, sizeof target, "%s::%s", qn[a], path);
+    int h = incl_find_hook_named(nt, target, qn, n0, param, hook_name, mod_out);
+    if (h >= 0) return h;
+  }
+  int h = incl_find_hook_named(nt, path, qn, n0, param, hook_name, mod_out);
+  if (h >= 0) return h;
+  for (int m = 0; m < n0; m++)   /* a module the qualified names know: none other */
+    if (qn[m] && nt_kind(nt, m) == NK_ModuleNode && sp_streq(qn[m], path)) return -1;
+  return incl_find_hook_named(nt, nt_str(nt, arg, "name"), NULL, n0, param, hook_name, mod_out);
+}
+
 int desugar_included_hooks(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
   int changed = 0;
+  /* each node's parent, and each class and module node's qualified name */
+  int *parent = malloc(sizeof(int) * (size_t)(n0 > 0 ? n0 : 1));
+  char **qn = calloc((size_t)(n0 > 0 ? n0 : 1), sizeof(char *));
+  if (!parent || !qn) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = 0; i < n0; i++) parent[i] = -1;
+  for (int p = 0; p < n0; p++) {
+    int nr = nt_num_refs(nt, p);
+    for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, p, i); if (ch >= 0 && ch < n0) parent[ch] = p; }
+    int na = nt_num_arrs(nt, p);
+    for (int i = 0; i < na; i++) {
+      int cnt = 0; const int *ids = nt_arr_at(nt, p, i, &cnt);
+      for (int j = 0; j < cnt; j++) if (ids[j] >= 0 && ids[j] < n0) parent[ids[j]] = p;
+    }
+  }
+  for (int m = 0; m < n0; m++) {
+    if (nt_kind(nt, m) != NK_ClassNode && nt_kind(nt, m) != NK_ModuleNode) continue;
+    if (nt_ref(nt, m, "constant_path") < 0) continue;
+    char q[1536];
+    incl_qualified(nt, parent, m, q, sizeof q);
+    qn[m] = strdup(q);
+    if (!qn[m]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
   for (int cn = 0; cn < n0; cn++) {
     NodeKind ck = nt_kind(nt, cn);
     int is_mod = ck == NK_ModuleNode;
@@ -14112,8 +14184,9 @@ int desugar_included_hooks(Compiler *c) {
         NodeKind ak = nt_kind(nt, av[j]);
         if (ak != NK_ConstantReadNode && ak != NK_ConstantPathNode) continue;
         const char *param = NULL;
-        int hook = incl_find_hook_named(nt, nt_str(nt, av[j], "name"), n0, &param,
-                                        is_ext ? "extended" : "included");
+        int hook_mod = -1;
+        int hook = incl_find_hook_at(nt, parent, qn, n0, cn, av[j], &param,
+                                     is_ext ? "extended" : "included", &hook_mod);
         if (hook < 0) continue;
         int hb = nt_ref(nt, hook, "body");
         if (hb < 0) continue;
@@ -14126,7 +14199,7 @@ int desugar_included_hooks(Compiler *c) {
         }
         int clone = nt_clone_subtree(nt, hb);
         if (clone < 0) continue;
-        InclSubst is = { param, cls, av[j], nt_str(nt, av[j], "name"), n0 };
+        InclSubst is = { param, cls, av[j], hook_mod };
         incl_subst(nt, clone, &is, 1);
         int hn = 0; const int *hs = nt_kind(nt, clone) == NK_StatementsNode ? nt_arr(nt, clone, "body", &hn) : NULL;
         if (!hs) { incl_emit_stmt(nt, clone, &out, &no, &cap); spliced = 1; continue; }
@@ -14144,6 +14217,9 @@ int desugar_included_hooks(Compiler *c) {
     }
     free(out);
   }
+  for (int m = 0; m < n0; m++) free(qn[m]);
+  free(qn);
+  free(parent);
   if (changed) comp_grow_node_arrays(c);
   return changed;
 }
