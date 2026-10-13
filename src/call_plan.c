@@ -943,6 +943,12 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
   if (is_raise_alias(name) && nt_int(nt, id, "class_new_superclass", 0) && cplan_reachable(c, id))
     return "Class.new with a non-constant superclass is not supported; "
            "use a constant superclass (see docs/limitations.md)";
+  if (nt_int(nt, id, "attr_splat", 0)) {
+    snprintf(buf, cap, "%s with a splat of anything but a constant Array literal of Symbols or Strings "
+             "(written once, ahead of the call, and never changed) is not supported; "
+             "name the attributes (see docs/limitations.md)", name);
+    return buf;
+  }
   if (nt_int(nt, id, "define_method_name", 0) && cplan_reachable(c, id))
     return "Module#define_method with a non-literal name is not supported; "
            "use a literal Symbol or String (see docs/limitations.md)";
