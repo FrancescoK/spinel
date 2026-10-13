@@ -9730,7 +9730,9 @@ typedef struct sp_OpenStruct_s { sp_SymPolyHash *tbl; } sp_OpenStruct;
 static void sp_OpenStruct_scan(void *p){ sp_OpenStruct *o=(sp_OpenStruct*)p; if(o->tbl) sp_gc_mark(o->tbl); }
 static sp_OpenStruct *sp_OpenStruct_new(void){
   sp_OpenStruct *o=(sp_OpenStruct*)sp_gc_alloc(sizeof(sp_OpenStruct),NULL,sp_OpenStruct_scan);
-  o->tbl=sp_SymPolyHash_new(); return o;
+  /* the table's allocation can collect and promote the new object: it is
+     rooted across it, and the store takes the barrier */
+  SP_GC_ROOT(o); o->tbl=NULL; sp_SymPolyHash *t=sp_SymPolyHash_new(); sp_gc_wb((void*)o); o->tbl=t; return o;
 }
 static sp_SymPolyHash *sp_OpenStruct_to_h(sp_OpenStruct *o);   /* defined below */
 static sp_RbVal sp_OpenStruct_get(sp_OpenStruct *o, sp_sym k){
@@ -14675,9 +14677,12 @@ static sp_RbVal sp_json_symbolize(sp_RbVal v) {
     sp_PolyArray *a = (sp_PolyArray *)v.v.p;
     SP_GC_ROOT(a);
     /* in place: the recursion answers a freshly built hash for every object
-       element, so an already-old array takes a young reference here */
-    if (a) { sp_gc_wb((void *)a);
-      for (sp_int i = 0; i < a->len; i++) a->data[i] = sp_json_symbolize(a->data[i]); }
+       element, so an already-old array takes a young reference here. The
+       barrier goes with each store, after the recursion that allocates: one
+       run before the loop was cleared by the first element's collection, and
+       the next minor collection freed the hashes stored after it. */
+    if (a)
+      for (sp_int i = 0; i < a->len; i++) { sp_RbVal nv = sp_json_symbolize(a->data[i]); sp_gc_wb((void *)a); a->data[i] = nv; }
     return v;
   }
   return v;
@@ -18145,7 +18150,7 @@ static sp_Enumerator *sp_Enumerator_new_cycle(sp_RbVal arr, sp_int n) {
     for (sp_int i = 0; i < len; i++) sp_PolyArray_push(out, items->data[i]);
   { sp_Enumerator *e = sp_Enumerator_new_from_items(out); SP_GC_ROOT(e);
     sp_gc_wb((void*)e); e->source = arr;
-    e->meth = sp_sprintf("cycle(%lld)", (long long)n); return e; }
+    const char *m = sp_sprintf("cycle(%lld)", (long long)n); sp_gc_wb((void*)e); e->meth = m; return e; }
 }
 /* blockless cycle(n) on a boxed receiver: an Array's, a Hash's, an Integer
    or String Range's or an Enumerator's items repeated n times, the

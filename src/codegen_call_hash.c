@@ -535,12 +535,17 @@ int emit_op_hash_set_default(Compiler *c, const BopCtx *x, Buf *b) {
      << x`, `h[:missing] << x` change it): its handle, boxed */
   char dref[1024];
   int dhandle = !shared_default && held && (at == TY_STRING || at == TY_STRBUF) && strbuf_var_handle(c, argv[0], dref, sizeof dref);
+  /* A default that is an object is a reference the hash's scan marks, stored
+     into a hash that can be old: the store takes the barrier, recorded after
+     it, since the value's own expression can allocate and would clear a
+     record made before it. A nil or an Integer default stores no reference. */
   if (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH) {
-    buf_printf(b, " if (_t%d) _t%d->default_v = ", t, t);
+    buf_printf(b, is_nil ? " if (_t%d) _t%d->default_v = " : " if (_t%d) { _t%d->default_v = ", t, t);
     if (is_nil) buf_puts(b, "sp_box_nil()");
     else if (dhandle) buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", dref);
     else if (held) emit_boxed_text(c, at, av, b); else emit_boxed(c, argv[0], b);
-    buf_puts(b, ";");
+    if (is_nil) buf_puts(b, ";");
+    else buf_printf(b, "; sp_gc_wb((void *)_t%d); }", t);
   }
   /* The typed variants keep the default in the values' slot: a value that
      does not fit goes through the store coercion an element store takes
@@ -568,12 +573,13 @@ int emit_op_hash_set_default(Compiler *c, const BopCtx *x, Buf *b) {
     }
   }
   else if (rt == TY_STR_STR_HASH || rt == TY_INT_STR_HASH) {
-    buf_printf(b, " if (_t%d) _t%d->default_v = ", t, t);
+    buf_printf(b, is_nil ? " if (_t%d) _t%d->default_v = " : " if (_t%d) { _t%d->default_v = ", t, t);
     if (is_nil) buf_puts(b, "NULL");
     else if (held && at == TY_POLY) buf_printf(b, "sp_poly_hval_s(%s)", av);
     else if (held) emit_coerce_text(c, argv[0], at, TY_STRING, CO_HOLD, av, "a Hash default", b);
     else emit_coerce(c, argv[0], TY_STRING, CO_HOLD, "a Hash default", b);
-    buf_puts(b, ";");
+    if (is_nil) buf_puts(b, ";");
+    else buf_printf(b, "; sp_gc_wb((void *)_t%d); }", t);
   }
   buf_puts(b, " ");
   if (shared_default && !repr_of(c, x->id).demand) buf_printf(b, "sp_strbuf_read_pub(%s)", av);

@@ -461,6 +461,7 @@ sp_Exception *sp_exc_exception(sp_Exception *e, const char *msg) {SP_GC_ROOT(e);
     if (msg == sp_exc_no_msg_frozen) ((unsigned char *)n->msg)[-1] = 0xfa;
   }
   n->msg_h = NULL;   /* the new message, not the receiver's handle */
+  sp_gc_wb((void *)n);   /* for the message: the ivar copy below can allocate and promote n first */
   if (sp_exc_bivar_copy_fn) sp_exc_bivar_copy_fn(e, n);   /* a copy takes the receiver's ivars */
   sp_gc_wb((void *)n);   /* same reason as sp_exc_new_sub_sized */
   return n;

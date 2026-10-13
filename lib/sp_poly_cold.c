@@ -772,6 +772,7 @@ sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen)
     if (v.cls_id == SP_BUILTIN_OBJECT && ((sp_Object *)n)->ivars) {
       SP_GC_ROOT(n);
       sp_SymPolyHash *t = sp_SymPolyHash_dup(((sp_Object *)n)->ivars);
+      sp_gc_wb(n);   /* the copy can collect and promote the rooted object */
       ((sp_Object *)n)->ivars = t;
     }
     if (sp_user_init_copy_hook) { SP_GC_ROOT(n); sp_RbVal r = v; r.v.p = n; sp_user_init_copy_hook(r, v); }
@@ -1058,6 +1059,7 @@ sp_PolyPolyHash *sp_poly_hash_merge(sp_RbVal a, sp_RbVal b)
           sizeof(*ctx), NULL, sp_poly_hash_dproc_ctx_scan);
       ctx->source = a;
       r->dproc = sp_poly_hash_dproc_bridge;
+      sp_gc_wb((void *)r);   /* the context's allocation can promote the rooted hash */
       r->dproc_self = ctx;
     }
   }
