@@ -11496,11 +11496,16 @@ int desugar_iter_splat_args(Compiler *c) {
     int ra[2] = { cls, msg };
     int rz = bs_call(&b, -1, "raise", ra, 2);
     int chk = bs_new(&b, "IfNode"), chk_then = bs_stmts(&b, &rz, 1);
+    int gt = bs_len_gt(&b, sn, 0);
     if (chk >= 0) {
-      nt_node_set_ref(nt, chk, "predicate", bs_len_gt(&b, sn, 0));
+      nt_node_set_ref(nt, chk, "predicate", gt);
       nt_node_set_ref(nt, chk, "statements", chk_then);
       nt_node_set_ref(nt, chk, "subsequent", -1);
     }
+    /* the count and the message are the builtins' own: a program that reopens
+       Array#length, Integer#> or String#+ does not reach into them */
+    int own[6] = { len, ns, m1, msg, gt, gt >= 0 ? nt_ref(nt, gt, "receiver") : -1 };
+    for (int q = 0; q < 6; q++) if (own[q] >= 0) nt_node_set_int(nt, own[q], "builtin_only", 1);
     /* the original call, its receiver read from the temp and no argument */
     nt_node_set_ref(nt, call, "receiver", bs_read(&b, rn));
     nt_node_set_ref(nt, call, "arguments", -1);
