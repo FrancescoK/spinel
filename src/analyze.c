@@ -41008,6 +41008,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_reassigned_block_params(c);   /* |p| p = other -> |p__bpin| p = p__bpin; p = other */
   desugar_class_reopen(c);               /* class Class / Class.class_eval -> a module */
   desugar_class_new_blocks(c);           /* X = Class.new(B) do..end -> class X < B; ..; end */
+  desugar_struct_block_name_reads(c);   /* Point = Struct.new do p self end -> refused */
   desugar_included_hooks(c);             /* include M / extend M -> M.included/extended(base)'s body */
   desugar_inherited_hooks(c);            /* class A < B -> B.inherited(A) first in A's body */
   /* a hook body spliced into its includer can carry a class_eval "<text>"

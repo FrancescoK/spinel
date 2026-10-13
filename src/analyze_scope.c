@@ -3265,6 +3265,25 @@ void register_structs(Compiler *c) {
   }
 }
 
+/* Mark the nodes of a Struct.new / Data.define block as the body of class
+   `ci` (node_cbody), as walk_scope marks a class's: self there is the class
+   (self_class_body), not main. A nested class or module keeps its own. */
+static void struct_block_cbody(Compiler *c, int node, int ci) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || node >= c->node_cap) return;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_ClassNode || k == NK_ModuleNode) return;
+  if (c->node_cbody[node] < 0) c->node_cbody[node] = ci;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) struct_block_cbody(c, nt_ref_at(nt, node, i), ci);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0;
+    const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++) struct_block_cbody(c, ids[j], ci);
+  }
+}
+
 /* Fix scope class_id for DefNodes inside Struct.new { } blocks.
    walk_scope runs before register_structs, so defs in struct blocks get
    class_id=-1. This pass corrects them after the class is registered. */
@@ -3282,6 +3301,7 @@ void fix_struct_block_scopes(Compiler *c) {
     if (wk == NK_LocalVariableWriteNode) { snprintf(an, sizeof an, "StructAnon_%s", comp_node_tag(c, id)); cname = an; }
     int ci = cname ? comp_class_index(c, cname) : -1;
     if (ci < 0) continue;
+    struct_block_cbody(c, bbody, ci);
     int bn = 0;
     const int *stmts = nt_arr(nt, bbody, "body", &bn);
     for (int k = 0; k < bn; k++) {
