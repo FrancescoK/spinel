@@ -401,6 +401,8 @@ int is_hash_transform(const char *n) {
 int is_fallback_block_call(const char *n) {
   return sp_streq(n, "fetch") || sp_streq(n, "delete") || sp_streq(n, "fetch_values");
 }
+/* delete: removal by key */
+int is_delete_name(const char *n) { return n && sp_streq(n, "delete"); }
 
 int is_sort_family(const char *n) {
   return sp_streq(n, "sort") || sp_streq(n, "sort!");

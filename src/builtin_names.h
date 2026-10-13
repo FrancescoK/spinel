@@ -176,6 +176,7 @@ int is_io_offset_move(const char *n); /* pos= sysseek: the descriptor-control ca
 int is_sort_family(const char *n); /* sort sort! */
 int is_hash_transform(const char *n); /* transform_values transform_keys */
 int is_fallback_block_call(const char *n); /* fetch delete fetch_values: the block is the fallback */
+int is_delete_name(const char *n);       /* delete: removal by key (ENV's missing-key block answers) */
 int is_io_write(const char *n); /* syswrite write */
 int is_to_integer(const char *n); /* to_i to_int */
 int is_match_operator(const char *n); /* !~ =~ */

@@ -1921,6 +1921,9 @@ int recv_is_const(const NodeTable *nt, int recv, const char *name);
 int sp_is_fiber_storage_recv(const NodeTable *nt, int recv);
 int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b);
 int emit_env_args_before(Compiler *c, int id);
+/* The value ENV.delete(k)'s literal missing-key block answers (its last
+   statement), -1 for any other call. */
+int env_delete_block_value(Compiler *c, int v);
 void emit_call(Compiler *c, int id, Buf *b);
 /* A builtin call the builtin-op table covers (codegen_ops.c): 1 when it
    emitted the call, 0 to keep falling through the chain. */

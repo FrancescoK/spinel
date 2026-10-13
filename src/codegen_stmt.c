@@ -22238,6 +22238,9 @@ static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   const NodeTable *nt = c->nt;
   int ops[3];
   if (strbuf_hash_default_arg(c, v) >= 0) return 1;
+  /* ENV.delete's missing-key block value, published as its handle */
+  int dv = env_delete_block_value(c, v);
+  if (dv >= 0) return repr_call_returns_handle(c, v) && strbuf_flow_value(c, fm, SFC_ALIAS, dv, depth + 1);
   if (strbuf_route_clamp(c, v, ops)) {
     for (int i = 0; i < 3; i++)
       if (!strbuf_flow_value(c, fm, SFC_ALIAS, ops[i], depth + 1)) return 0;
