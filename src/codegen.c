@@ -14008,6 +14008,8 @@ static void emit_user_binop_dispatch(Compiler *c, Buf *b) {
     /* the comparisons too: a boxed receiver reached sp_poly_cmp, which knows
        nothing of a user `<`, and answered ArgumentError (#3501) */
     "<", ">", "<=", ">=", "<=>", "==",
+    /* and a `!=` of its own, which `x != nil` on a boxed x asks first */
+    "!=",
     /* and the element read, which a boxed `r[k] ||= v` / `r[k] += v` reads
        through sp_poly_index_poly */
     "[]", NULL };

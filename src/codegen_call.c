@@ -14125,6 +14125,36 @@ static void emit_cmp_derived_eq(Compiler *c, int id, int recv, int arg, int ecid
   free(argb.p);
   free(selfb.p);
 }
+/* `x == nil` (or `!=`) on a boxed x: an object of a program class that
+   defines `==` (or `!=`) answers by it, which need not be a Boolean
+   (`def ==(o) = nil`). */
+static int poly_nil_eq_is_users(Compiler *c, int eq) {
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *ci = &c->classes[k];
+    if (ci->is_native_class || !ci->instantiated || comp_class_is_module(c, ci)) continue;
+    if (comp_method_in_chain(c, k, "==", NULL) >= 0) return 1;
+    if (!eq && comp_method_in_chain(c, k, "!=", NULL) >= 0) return 1;
+  }
+  return 0;
+}
+/* The hook answers for a program object whose method takes nil: `!=` its
+   own, else the negation of its `==`. Any other value is nil only when it
+   is nil. A call typed boxed keeps the method's answer. */
+static void emit_poly_nil_eq_user(Compiler *c, int id, int recv, int eq, Buf *b) {
+  int tv = ++g_tmp, tu = ++g_tmp;
+  int boxed = comp_ntype(c, id) == TY_POLY;
+  buf_printf(b, "({ sp_RbVal _t%d = ", tv);
+  emit_boxed(c, recv, b);
+  buf_printf(b, "; sp_RbVal _t%d; ", tu);
+  if (!eq)
+    buf_printf(b, "sp_poly_user_cmp(\"!=\", _t%d, sp_box_nil(), &_t%d) ? %s_t%d%s : ",
+               tv, tu, boxed ? "" : "sp_poly_truthy(", tu, boxed ? "" : ")");
+  buf_printf(b, "sp_poly_user_cmp(\"==\", _t%d, sp_box_nil(), &_t%d) ? ", tv, tu);
+  if (boxed)
+    buf_printf(b, "%s_t%d%s : sp_box_bool(%ssp_poly_nil_p(_t%d)); })",
+               eq ? "" : "sp_box_bool(!sp_poly_truthy(", tu, eq ? "" : "))", eq ? "" : "!", tv);
+  else buf_printf(b, "%ssp_poly_truthy(_t%d) : %ssp_poly_nil_p(_t%d); })", eq ? "" : "!", tu, eq ? "" : "!", tv);
+}
 /* Does the program give nil an `==` or a `!=` of its own: on NilClass, on a
    class every object has, or at the top level? */
 static int nil_eq_is_the_programs(Compiler *c) {
@@ -14370,6 +14400,10 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       /* The nil-typed operand's evaluation. As the RECEIVER it runs before the
          test, which a comma expresses; as the ARGUMENT it runs after the
          receiver, which needs the test's value held while it runs. */
+      if (a_nil && ot == TY_POLY && poly_nil_eq_is_users(c, eq)) {
+        emit_poly_nil_eq_user(c, id, recv, eq, b);
+        return 1;
+      }
       int nt_tmp = 0;
       if (r_niltyped) {
         buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), ");
