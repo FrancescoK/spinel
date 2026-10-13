@@ -41037,6 +41037,100 @@ static void desugar_noarg_display_wrappers(Compiler *c) {
   }
 }
 
+/* Does the subtree at n hold a node whose meaning depends on being the
+   method it is written in: super, yield, block_given?? */
+static int reinit_body_bound(const NodeTable *nt, int n, int depth) {
+  if (n < 0 || depth > 400) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_SuperNode || k == NK_ForwardingSuperNode || k == NK_YieldNode) return 1;
+  if (k == NK_CallNode && nt_str(nt, n, "name") && sp_streq(nt_str(nt, n, "name"), "block_given?")) return 1;
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) if (reinit_body_bound(nt, nt_ref_at(nt, n, i), depth + 1)) return 1;
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) if (reinit_body_bound(nt, av[j], depth + 1)) return 1;
+  }
+  return 0;
+}
+
+/* Renames each receiverless `initialize(...)` call under n to `to`; answers
+   how many. */
+static int reinit_rename_calls(NodeTable *nt, int n, const char *to, int depth) {
+  if (n < 0 || depth > 400) return 0;
+  int hit = 0;
+  if (nt_kind(nt, n) == NK_CallNode && nt_ref(nt, n, "receiver") < 0 &&
+      nt_str(nt, n, "name") && sp_streq(nt_str(nt, n, "name"), "initialize")) {
+    nt_node_set_str(nt, n, "name", to);
+    hit = 1;
+  }
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) hit += reinit_rename_calls(nt, nt_ref_at(nt, n, i), to, depth + 1);
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) hit += reinit_rename_calls(nt, av[j], to, depth + 1);
+  }
+  return hit;
+}
+
+/* `def reload(s) = initialize(s)`: a method of the class calling its own
+   initialize, for its effect and for its value. The emitted initialize is a
+   constructor body: it answers nothing, and on a class laid out by value it
+   takes a pointer the method does not have, so the C did not compile. The
+   class gets a copy of the def as an ordinary method (__spinel_reinit),
+   which answers the body's value as CRuby's initialize does, and the calls
+   in the class's other methods call that. A body bound to being initialize
+   (super, yield, block_given?) is left alone. */
+static void desugar_explicit_initialize_calls(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int cls = 0; cls < n0; cls++) {
+    if (nt_kind(nt, cls) != NK_ClassNode) continue;
+    int body = nt_ref(nt, cls, "body");
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int bn = 0; const int *bb0 = nt_arr(nt, body, "body", &bn);
+    int init = -1;
+    for (int k = 0; k < bn; k++)
+      if (nt_kind(nt, bb0[k]) == NK_DefNode && nt_ref(nt, bb0[k], "receiver") < 0 &&
+          nt_str(nt, bb0[k], "name") && sp_streq(nt_str(nt, bb0[k], "name"), "initialize"))
+        init = bb0[k];
+    if (init < 0 || reinit_body_bound(nt, nt_ref(nt, init, "body"), 0)) continue;
+    int *bb = malloc(sizeof(int) * (size_t)(bn + 2));
+    if (!bb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memcpy(bb, bb0, sizeof(int) * (size_t)bn);
+    int hits = 0;
+    for (int k = 0; k < bn; k++)
+      if (nt_kind(nt, bb[k]) == NK_DefNode && bb[k] != init)
+        hits += reinit_rename_calls(nt, nt_ref(nt, bb[k], "body"), "__spinel_reinit", 0);
+    if (hits) {
+      int copy = nt_clone_subtree(nt, init);
+      if (copy < 0) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      nt_node_set_str(nt, copy, "name", "__spinel_reinit");
+      /* private, as initialize is: no caller outside the class sees it */
+      int sym = nt_new_node(nt, "SymbolNode"), args = nt_new_node(nt, "ArgumentsNode"),
+          priv = nt_new_node(nt, "CallNode");
+      if (sym < 0 || args < 0 || priv < 0) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      nt_node_set_str(nt, sym, "value", "__spinel_reinit");
+      nt_node_set_arr(nt, args, "arguments", &sym, 1);
+      nt_node_set_str(nt, priv, "name", "private");
+      nt_node_set_ref(nt, priv, "receiver", -1);
+      nt_node_set_ref(nt, priv, "arguments", args);
+      nt_node_set_ref(nt, priv, "block", -1);
+      long long line = nt_int(nt, init, "node_line", 0), file = nt_int(nt, init, "node_file", 0);
+      int ln[3] = { sym, args, priv };
+      for (int j = 0; j < 3 && line > 0; j++) {
+        nt_node_set_int(nt, ln[j], "node_line", line);
+        nt_node_set_int(nt, ln[j], "node_file", file);
+      }
+      bb[bn] = copy;
+      bb[bn + 1] = priv;
+      nt_node_set_arr(nt, body, "body", bb, bn + 2);
+    }
+    free(bb);
+  }
+}
+
 static void an_phase_desugar_register(Compiler *c) {
   comp_poly_candidates_reset();
   comp_descendants_reset();
@@ -41055,6 +41149,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_system_options(c);             /* system(..., out:) -> spawn + wait */
   desugar_io_popen_block(c);             /* IO.popen(cmd) { } -> pipe + spawn + wait */
   desugar_literal_undef_method(c);       /* undef_method :a in a body -> undef a */
+  desugar_explicit_initialize_calls(c);  /* initialize(x) in a method -> a copy of it as a method */
   desugar_noarg_display_wrappers(c);     /* def inspect(i = 0) -> + def __noarg_inspect = inspect */
   /* a bare constant CRuby's lookup cannot reach, bound by its leaf name to a
      nested definition: refused while the source still says where each
