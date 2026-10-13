@@ -6309,6 +6309,14 @@ static void fwd_drop_spent_anon_block_param(Compiler *c, int id, int n0) {
   }
   free(ms->blk_param);
   ms->blk_param = NULL;
+  /* and it is that yielding method: the forward is a block that yields now.
+     The scan that marks a written `yield` ran before this rewrite, and the
+     inlining pass may have declined the forward while the receiver was still
+     unknown (another class's `each` keeps its block) -- left unmarked, the
+     method had neither a block parameter nor a block, and its yield raised
+     LocalJumpError (thor's HashWithIndifferentAccess#each beside
+     tty-prompt's Choices#each, which answers to_enum blockless). */
+  ms->yields = 1;
 }
 
 /* Is the method's `&blk` name read anywhere in scope `ms` other than as the
