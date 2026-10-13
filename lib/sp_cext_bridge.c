@@ -22,6 +22,10 @@ void *(*sp_cext_object_alloc_fn)(int);
 void *(*sp_cext_class_alloc_fn)(int);
 static sp_cext_extension *binding;
 static size_t next_function, next_constant;
+/* Volatile journal fields survive longjmp; each nested Init owns only its
+ * newly registered constant addresses, not the process-wide root registry. */
+typedef struct { VALUE **addresses; size_t count; } InitRoots;
+static volatile InitRoots *init_roots;
 #define current_block ((sp_Proc *)sp_cext_current_block)
 static const char *class_name(VALUE v) {
     sp_RbVal r = sp_cext_rbval(v);
@@ -64,7 +68,8 @@ void rb_define_const(VALUE o,const char *n,VALUE v) {
     (void)o;(void)n;
     if(!binding || next_constant>=binding->constant_count)sp_raise_cls("RuntimeError","C constant definitions outside Init are unsupported");
     binding->constants[next_constant]=v;
-    rb_gc_register_address(&binding->constants[next_constant++]);
+    VALUE *address=&binding->constants[next_constant++];
+    if(sp_cext_register_address(address))init_roots->addresses[init_roots->count++]=address;
 }
 void sp_cext_init(sp_cext_extension *extension) {
     if (extension->initialized) return;
@@ -76,6 +81,10 @@ void sp_cext_init(sp_cext_extension *extension) {
     BUILTIN(rb_cHash,"Hash");BUILTIN(rb_cInteger,"Integer");
     BUILTIN(rb_cFloat,"Float");BUILTIN(rb_cIO,"IO");
 #undef BUILTIN
+    VALUE **addresses=extension->constant_count?malloc(extension->constant_count*sizeof(*addresses)):NULL;
+    if(extension->constant_count && !addresses)rb_raise(rb_eNoMemError,"C extension Init root allocation failed");
+    volatile InitRoots journal={addresses,0};
+    volatile InitRoots *previous_roots=init_roots;
     sp_cext_arena_mark mark=sp_cext_arena_enter();
     sp_cext_extension *previous=binding;
     size_t previous_function=next_function, previous_constant=next_constant;
@@ -84,7 +93,11 @@ void sp_cext_init(sp_cext_extension *extension) {
     if(setjmp(frame)!=0) {
         int unwind=sp_cext_unwinding();
         const char *cls=sp_exc_cur_cls(), *msg=sp_exc_cur_msg();void *obj=sp_exc_cur_obj();
-        sp_exc_disarm();binding=previous;
+        sp_exc_disarm();
+        for(size_t i=0;i<journal.count;i++) {
+            rb_gc_unregister_address(addresses[i]);*addresses[i]=Qnil;
+        }
+        init_roots=previous_roots;free(addresses);binding=previous;
         next_function=previous_function;next_constant=previous_constant;
         sp_cext_arena_restore(mark);sp_gc_nroots=roots;
         if(unwind)sp_cext_resume_unwind();
@@ -92,8 +105,8 @@ void sp_cext_init(sp_cext_extension *extension) {
         abort();
     }
     sp_exc_arm(frame);
-    binding=extension;next_function=0;next_constant=0;extension->init();
-    sp_exc_disarm();binding=previous;
+    init_roots=&journal;binding=extension;next_function=0;next_constant=0;extension->init();
+    sp_exc_disarm();init_roots=previous_roots;free(addresses);binding=previous;
     next_function=previous_function;next_constant=previous_constant;
     extension->initialized=1;
     sp_cext_arena_restore(mark);
