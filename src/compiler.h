@@ -1586,6 +1586,8 @@ int        io_family_descends(Compiler *c, int k, int owner);
 /* Like comp_method_in_class but walks the superclass chain. On success,
    *def_class (if non-NULL) is set to the class that defines the method. */
 int        comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_class);
+int        send_def_just_supers(Compiler *c, int mi);          /* analyze_desugar.c */
+int        send_family_program_owns(Compiler *c, const char *name);
 /* Array subclasses (#7449, ClassInfo.ary_root): the root of class cid's
    Array chain or -1; the same for an object type (-1 for any other type);
    the kind of the Array the chain's instances embed, TY_POLY_ARRAY once the

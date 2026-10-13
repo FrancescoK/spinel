@@ -2893,6 +2893,76 @@ int desugar_enumerable_chain(Compiler *c) {
   return changed;
 }
 
+/* Is the program's method `mi` (send, __send__ or public_send) one whose whole
+   body is a bare `super`? It answers exactly what the method above it does --
+   Object's when none does (ruby/spec's super_spec: a module's
+   `def __send__(name, *args, &block) = super`, included into a class) -- so it
+   is no method of the program's own for the questions below. */
+int send_def_just_supers(Compiler *c, int mi) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int def = c->scopes[mi].def_node;
+  if (def < 0) return 0;
+  int body = nt_ref(nt, def, "body");
+  if (body >= 0 && nt_kind(nt, body) == NK_StatementsNode) {
+    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+    body = bn == 1 ? bb[0] : -1;
+  }
+  return body >= 0 && nt_kind(nt, body) == NK_ForwardingSuperNode && nt_ref(nt, body, "block") < 0;
+}
+
+/* Does the chain of class `cid` (its singleton chain when `cm`) reach a method
+   `name` of the program's own, past the ones that only call super? */
+static int send_own_in_chain(Compiler *c, int cid, const char *name, int cm) {
+  while (cid >= 0) {
+    int dc = -1;
+    int mi = cm ? comp_cmethod_in_chain(c, cid, name, &dc) : comp_method_in_chain(c, cid, name, &dc);
+    if (mi < 0) return 0;
+    if (!send_def_just_supers(c, mi)) return 1;
+    cid = dc >= 0 ? c->classes[dc].parent : -1;
+  }
+  return 0;
+}
+
+/* Does the program's own method `name` (send, __send__ or public_send) answer
+   call `id` rather than Object's? In Ruby a class's `def send` is that class's:
+   the bubbletea gem's Runner#send(message) sits in the same program as Thor's
+   and tty-reader's runtime-name sends, which are Object#send all the same.
+   Taken as the program's when the program defines the name at the top level
+   (Object's then, for every receiver), when the call has no receiver (or self)
+   and the enclosing class's chain defines it, when the receiver's class does,
+   or when the receiver is known only at run time and any class of the program
+   defines it (no flow says which classes reach it). A method that only calls
+   super is not one (send_def_just_supers). */
+/* Does the program define `name` (send, __send__ or public_send) anywhere,
+   past the methods that only call super? 2 for a top-level def (Object's,
+   so every receiver's), 1 for a class's or module's, 0 for none. */
+int send_family_program_owns(Compiler *c, const char *name) {
+  int tmi = comp_method_index(c, name);
+  if (tmi >= 0 && c->scopes[tmi].class_id < 0 && !send_def_just_supers(c, tmi)) return 2;
+  for (int k = 0; k < c->nclasses; k++) {
+    int mi = comp_method_in_class(c, k, name);
+    if (mi >= 0 && !send_def_just_supers(c, mi)) return 1;
+  }
+  return 0;
+}
+
+static int send_family_user_answers(Compiler *c, int id, int recv, const char *name) {
+  int own = send_family_program_owns(c, name);
+  if (own != 1) return own == 2;
+  if (recv < 0 || nt_kind(c->nt, recv) == NK_SelfNode) {
+    Scope *sc = comp_scope_of(c, id);
+    if (!sc || sc->class_id < 0) return 0;
+    return send_own_in_chain(c, sc->class_id, name, sc->is_cmethod);
+  }
+  TyKind rt = infer_type(c, recv);
+  if (ty_is_object(rt)) return send_own_in_chain(c, ty_object_class(rt), name, 0);
+  if (rt == TY_POLY || rt == TY_UNKNOWN) return 1;
+  /* a builtin receiver: the program's only through a reopening of its class */
+  const char *bcls = builtin_class_of_type(rt);
+  int bci = bcls ? comp_class_index(c, bcls) : -1;
+  return bci >= 0 && send_own_in_chain(c, bci, name, 0);
+}
+
 int desugar_implicit_send(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -2902,6 +2972,7 @@ int desugar_implicit_send(Compiler *c) {
     if (nt_ref(nt, id, "receiver") >= 0) continue;        /* implicit self only */
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !is_send_family(nm)) continue;
+    if (send_family_user_answers(c, id, -1, nm)) continue;   /* the class's own send */
     int args = nt_ref(nt, id, "arguments");
     if (args < 0) continue;
     int argc = 0; const int *argv = nt_arr(nt, args, "arguments", &argc);
@@ -2957,6 +3028,8 @@ int desugar_public_send_recv(Compiler *c) {
     int is_pub = nm && sp_streq(nm, "public_send");
     int is_snd = nm && (sp_streq(nm, "send") || sp_streq(nm, "__send__"));
     if (!is_pub && !is_snd) continue;
+    /* the receiver's class's own send answers it (send_family_user_answers) */
+    if (send_family_user_answers(c, id, nt_ref(nt, id, "receiver"), nm)) continue;
     /* A blank-slate receiver has no #send / #public_send (only __send__ is
        BasicObject's): leave the call unretargeted, and the blank-slate gate
        raises CRuby's NoMethodError for the send itself (#2725). */
@@ -4141,9 +4214,6 @@ static int desugar_dynamic_send_inner(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
   int changed = 0;
-  /* a user-defined method named send/etc. resolves normally; don't intercept */
-  for (int s = 0; s < c->nscopes; s++) { const char *sn = c->scopes[s].name;
-    if (sn && is_send_family(sn)) return 0; }
   /* quick out: nothing to do unless some not-yet-lowered explicit-receiver send
      with a runtime name exists (the common case has none, so skip the scans). */
   { int any = 0;
@@ -4171,6 +4241,8 @@ static int desugar_dynamic_send_inner(Compiler *c) {
     if (!nm) continue;
     if (!is_send_family(nm)) continue;
     int recv = nt_ref(nt, id, "receiver");
+    /* a program's own send answers where its class does (send_family_user_answers) */
+    if (send_family_user_answers(c, id, recv, nm)) continue;
     if (recv < 0) {
       /* A receiverless `send(name, ...)` in a method is `self.send(name, ...)`:
          send ignores visibility, so the two reach the same (private) methods,
