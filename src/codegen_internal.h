@@ -282,12 +282,15 @@ int strbuf_pickup_answers_nil(Compiler *c, int id);
 /* --share-strings: the handle slot a variable's read names, 0 for any
    other node (codegen_stmt.c) */
 int strbuf_var_handle(Compiler *c, int n, char *out, size_t cap);
-/* --share-strings: the String identity comparison of two operands through
-   their boxes (codegen_call_operator.c), and an inline-spliced call whose
-   result is the handle itself (codegen_stmt.c) */
-void emit_string_identity(Compiler *c, int recv, int arg, Buf *b);
-int string_identity_inline(Compiler *c, int recv, int arg);
+/* --share-strings: an inline-spliced call whose result is the handle
+   itself (codegen_stmt.c) */
 int strbuf_route_inline_call(Compiler *c, int v);
+/* --share-strings: a route that hands its String on as a box (a proc's
+   answer, a spliced call's tails), as that box (codegen_stmt.c) */
+int emit_strbuf_route_box(Compiler *c, int v, Buf *b);
+/* --share-strings: the boxed operand whose String a route answers, or -1
+   (codegen_stmt.c) */
+int strbuf_route_box_operand(Compiler *c, int v);
 /* --share-strings: does value v hand over a shared String as its handle
    (a variable, a route, a conditional with such an arm)? (codegen_stmt.c) */
 int strbuf_value_carries(Compiler *c, int v);
@@ -312,7 +315,6 @@ int exc_msg_handle(Compiler *c, int arg, char *href, size_t cap);
 /* --share-strings: `e.message` over a variable's exception (codegen_stmt.c) */
 int exc_message_identity_operand(Compiler *c, int v);
 void emit_exc_message_idbox(Compiler *c, int v, Buf *b);
-int emit_exc_message_equal(Compiler *c, int recv, int arg, Buf *b);
 int strbuf_route_exc_message(Compiler *c, int v);
 int strbuf_route_boxed_exc_message(Compiler *c, int v);
 int strbuf_route_ie(Compiler *c, int v);
@@ -399,18 +401,23 @@ typedef struct {
      SPX_ID      its object id, an sp_int (object_id, __id__);
      SPX_HANDLE  the sp_String * a slot that is the shared handle takes
                  (a method's parameter; under --share-strings also a block
-                 parameter that is a String buffer).
+                 parameter that is a String buffer);
+     SPX_BOX     an sp_RbVal whose identity (sp_poly_equal) is the String's,
+                 for the identity role (equal?).
    `dest` says what the destination does with a new handle (SFD_*):
      SFD_OWN     it holds its own copy (a parameter that is the handle
                  because a Method reaches it, LocalVar.dyn_handle): a new
                  handle keeps its bytes inside the object. */
-enum { SPX_ID, SPX_HANDLE };
+enum { SPX_ID, SPX_HANDLE, SPX_BOX };
 enum { SFD_OWN = 1 };
 int emit_str_form(Compiler *c, int v, int role, int face, unsigned dest, StrForm *sf);
 /* A write in value position (a local's whose slot is a String buffer, any
    other whose slot holds the shared handle) as the handle it writes, into
    out; 0, writing nothing, for any other node. */
 int emit_strbuf_local_write_handle(Compiler *c, int node, Buf *out);
+/* --share-strings: String#equal? through the plan (codegen_str.c); 0,
+   with nothing emitted, where it does not answer. */
+int emit_str_equal(Compiler *c, int id, Buf *b);
 /* Write sf's expression into b with its needs met: the one place a String
    form's evaluation, hold and root are decided. An SF_EVAL_ONCE value
    opens a statement expression that binds it; the consumer writes its
