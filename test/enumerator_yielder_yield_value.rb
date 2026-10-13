@@ -22,3 +22,13 @@ def twice(en) = en.each { |x| x * 2 }
 p twice(gen)
 gen.each { |x| p x if x > 3 }
 p e.next, gen.take(2), [5, 6].each.each { |x| x + 1 }
+# the same through to_enum / enum_for of a method that yields: yield answers
+# the each block's value
+def one
+  yield 3
+end
+def two
+  return enum_for(__method__) unless block_given?
+  yield(4) + 1
+end
+p to_enum(:one).each { |x| x * 2 }, two.each { |x| x * 10 }
