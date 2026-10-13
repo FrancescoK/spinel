@@ -97,8 +97,11 @@ before inflating it with the bundled one-shot zlib codec; it is not streaming.
 The codec can reject incomplete streams or trailing bytes with `Zlib::DataError`
 where CRuby's streaming inflater returns a body. An explicit Accept-Encoding
 disables automatic decoding, and Content-Range responses retain their wire
-bytes. `URI` parses http, https and a bare form; there is no URI::FTP or the
-scheme registry behind it. An https request needs the
+bytes. `URI` parses into URI::HTTP, HTTPS, FTP, File, WS, WSS, MailTo or Generic
+by scheme, but there is no URI::LDAP and no scheme registry to add a class
+to (`URI.register_scheme`, `URI.scheme_list`). `#route_to`/`#route_from`,
+`URI.extract`, `URI.regexp` and `#find_proxy` are absent, and the component
+writers do not validate what they are given. An https request needs the
 `openssl` package below.
 
 **TLS / `openssl`.** The `openssl` package binds the system libssl and
