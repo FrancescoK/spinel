@@ -14325,6 +14325,16 @@ static sp_sym sp_thread_local_key(sp_RbVal k) {
   sp_raise_cls("TypeError", sp_sprintf("%s is not a symbol nor a string", sp_poly_inspect(k)));
   return (sp_sym)0;
 }
+/* The operator inject / reduce is given when it is known only at run time:
+   a Symbol, or a String naming one; anything else is CRuby's TypeError. */
+static sp_sym sp_poly_inject_op(sp_RbVal v) {
+  v = sp_poly_strbuf_deref(v);
+  SP_GC_ROOT_RBVAL(v);
+  if (v.tag == SP_TAG_SYM) return (sp_sym)v.v.i;
+  if (v.tag == SP_TAG_STR && v.v.s) return sp_sym_intern_n(v.v.s, sp_str_byte_len(v.v.s));
+  sp_raise_cls("TypeError", sp_sprintf("%s is not a symbol nor a string", sp_poly_inspect(v)));
+  return (sp_sym)0;
+}
 
 /* `poly.join(<number>)` can only be Thread#join(limit): Array#join with a
    numeric separator is a TypeError in CRuby, so a numeric argument leaves no

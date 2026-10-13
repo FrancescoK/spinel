@@ -3308,9 +3308,9 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
     else { buf_puts(b, "sp_IntArray_fold1_v("); emit_expr(c, recv, b); buf_printf(b, ", %d)", mul); }
     return 1;
   }
-  int runtime_sym = (!op && block < 0 && argc >= 1 &&
-                     (comp_ntype(c, argv[argc - 1]) == TY_SYMBOL ||
-                      repr_of(c, argv[argc - 1]).kind == RK_BOXED));
+  /* ...or any other operand not known to be a Symbol: a String names the
+     operator, and anything else raises CRuby's TypeError (sp_poly_inject_op) */
+  int runtime_sym = (!op && block < 0 && argc >= 1 && comp_ntype(c, argv[argc - 1]) != TY_UNKNOWN);
   int poly_sym_fold = (k && sp_streq(k, "Poly") && block < 0 && argc >= 1 &&
                        comp_ntype(c, argv[argc - 1]) == TY_SYMBOL);
   /* A seed of a class other than the elements' folds boxed as well. Ruby's
@@ -3339,10 +3339,10 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
        `arr.reduce(Rational(1, 2), :+)`. */
     buf_printf(b, "; SP_GC_ROOT(_t%d); sp_int _t%d = sp_%sArray_length(_t%d); sp_sym _t%d = ",
                ta, tn, k, ta, tsy);
-    /* a statically-poly operand (a `|sym|` block param over a poly array)
-       carries the symbol in its .v.i slot */
+    /* an operand not typed a Symbol is asked at run time: a Symbol's id, a
+       String's, or the TypeError */
     if (repr_of(c, symarg).as_ty == TY_SYMBOL) emit_expr(c, symarg, b);
-    else { buf_puts(b, "(sp_sym)("); emit_expr(c, symarg, b); buf_puts(b, ").v.i"); }
+    else { buf_puts(b, "sp_poly_inject_op("); emit_boxed(c, symarg, b); buf_puts(b, ")"); }
     buf_printf(b, "; sp_RbVal _t%d = ", tacc);
     int start;
     if (rinit >= 0) { emit_boxed(c, rinit, b); start = 0; }
