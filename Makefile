@@ -4862,7 +4862,11 @@ gate-full:
 # last. Its examples run through xargs, outside the job server, and at the
 # default of nproc-2 workers it was still running long after the corpus legs
 # had finished, on half the machine. Under the gate it takes every core.
-gate-legs: gate-rubyspec gate-test gate-test-shared gate-bench gate-optcarrot gate-rubyboy gate-props
+# GATE_RUBYSPEC=0 leaves the rubyspec leg out, for a gate whose rubyspec run
+# happens elsewhere at the same commit (the maintainer's merge cycle runs it
+# on a second machine beside the CI lanes). A plain `make gate` runs it.
+GATE_RUBYSPEC ?= 1
+gate-legs: $(if $(filter 0,$(GATE_RUBYSPEC)),,gate-rubyspec) gate-test gate-test-shared gate-bench gate-optcarrot gate-rubyboy gate-props
 # Both corpus sub-makes use the same -O1 PCH files. Build them once before
 # either leg starts so one cannot read a PCH while the other writes it.
 .PHONY: gate-pch
