@@ -11796,11 +11796,28 @@ int desugar_reduce_splat_args(Compiler *c) {
    The emitters read the splat as no argument and ran the loop, but the
    inference has no row for the call with one, so it was typed void and
    answered nil; a splat that is not empty went unnoticed where CRuby raises.
+   Without a block the call had no arm at all, and raised NoMethodError where
+   CRuby answers the Enumerator.
    The call becomes
      (r = recv; s = [*args]
       raise ArgumentError, "wrong number of arguments (given N, expected 0)" if s.length > 0
       r.each { })
-   each_with_index takes `*args` but hands them to each, so it raises the same. */
+   each_with_index takes `*args` but hands them to each, so it raises the same
+   (without a block, CRuby raises it only once the Enumerator is iterated). */
+/* A method of the name the program gives Array, Hash, Range or Enumerable
+   (reopened, or through a module it includes there; not one builtins/
+   defines): the call reaches it, and it takes what arguments it says. */
+static int iter_name_program_defined(Compiler *c, const char *nm) {
+  static const char *const owners[] = { "Array", "Hash", "Range", "Enumerable", NULL };
+  for (int k = 0; owners[k]; k++) {
+    int ci = comp_class_index(c, owners[k]);
+    int mi = ci >= 0 ? comp_method_in_chain(c, ci, nm, NULL) : -1;
+    if (mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
+        !nt_int(c->nt, c->scopes[mi].def_node, "node_bi", 0))
+      return 1;
+  }
+  return 0;
+}
 int desugar_iter_splat_args(Compiler *c) {
   static const char *const names[] = {
     "each", "map", "collect", "flat_map", "collect_concat", "filter_map", "select", "filter",
@@ -11813,11 +11830,11 @@ int desugar_iter_splat_args(Compiler *c) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     int recv = nt_ref(nt, id, "receiver");
     int args = nt_ref(nt, id, "arguments");
-    if (recv < 0 || args < 0 || nt_ref(nt, id, "block") < 0) continue;
+    if (recv < 0 || args < 0) continue;
     const char *nm = nt_str(nt, id, "name");
     int known = 0;
     for (int k = 0; nm && names[k]; k++) if (sp_streq(nm, names[k])) known = 1;
-    if (!known) continue;
+    if (!known || iter_name_program_defined(c, nm)) continue;
     int argc = 0; const int *av0 = nt_arr(nt, args, "arguments", &argc);
     if (argc < 1 || argc > 16) continue;
     int av[16], only_splats = 1;
