@@ -33,3 +33,68 @@ begin
 rescue NameError => e
   puts e.message
 end
+
+# An include resolves its module as Ruby does: B::Shared is not A::Shared,
+# though both are "Shared".
+module A
+  module Shared
+    TAG = 1
+  end
+end
+module B
+  module Shared
+    def tagged? = !defined?(self.class::TAG).nil?
+  end
+end
+class Tagless
+  include B::Shared
+end
+p Tagless.new.tagged?
+
+# A constant an included module keeps private is no class's to read.
+module Hidden
+  SECRET = 1
+  private_constant :SECRET
+end
+module Peek
+  def peek? = !defined?(self.class::SECRET).nil?
+  def peek
+    self.class::SECRET
+  rescue NameError
+    :hidden
+  end
+end
+class Peeker
+  include Hidden
+  include Peek
+end
+p Peeker.new.peek?, Peeker.new.peek
+
+# A superclass's constant reaches a subclass that includes the module.
+module Reach
+  def depth = self.class::DEPTH
+  def depth? = !defined?(self.class::DEPTH).nil?
+end
+class Shallow
+  DEPTH = 1
+end
+class Deep < Shallow
+  include Reach
+end
+p Deep.new.depth, Deep.new.depth?
+
+# The included module's constant, not one of the class's lexical scope.
+module Unit
+  SCALE = 10
+end
+module Scaled
+  def scale = self.class::SCALE
+end
+module Outer
+  SCALE = 2
+  class Gauge
+    include Unit
+    include Scaled
+  end
+end
+p Outer::Gauge.new.scale
