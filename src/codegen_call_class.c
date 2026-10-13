@@ -245,7 +245,8 @@ static int core_own_vis(const char *cls, size_t cl, const char *m) {
 
 /* The visibility (1 public, 2 protected, 4 private) of instance method `m`
    of core class or module `cls` in CRuby, through its ancestors with
-   `inherit`; 0 where it has none, -1 where the table does not hold `cls`. */
+   `inherit` (only those above `cls` with 2, where its `super` looks); 0
+   where it has none, -1 where the table does not hold `cls`. */
 int core_method_vis(const char *cls, const char *m, int inherit) {
   const char *anc = NULL;
   for (int i = 0; cls && !anc && core_cls_ancestors[i].cls; i++)
@@ -255,7 +256,7 @@ int core_method_vis(const char *cls, const char *m, int inherit) {
   for (const char *p = anc; *p;) {
     const char *e = strchr(p, ' ');
     size_t l = e ? (size_t)(e - p) : strlen(p);
-    int v = core_own_vis(p, l, m);
+    int v = inherit == 2 && p == anc ? 0 : core_own_vis(p, l, m);
     if (v) return v;
     p += l + (e ? 1 : 0);
   }
@@ -271,14 +272,17 @@ static int refl_explicit_vis(const ClassInfo *k, const char *m) {
 }
 
 /* m's visibility from the builtin modules class or module k is or includes,
-   as core_method_vis answers */
-static int refl_builtin_vis_in(Compiler *c, int k, const char *m, int depth) {
+   as core_method_vis answers. For what k's own super reaches (`above`), past
+   k's own builtin method, and with no visibility the program gives its own
+   methods, which emit_super's lookup answers for. */
+static int refl_builtin_vis_in(Compiler *c, int k, const char *m, int depth, int above, int own) {
   const ClassInfo *ki = &c->classes[k];
-  int v = refl_explicit_vis(ki, m);
+  int v = own ? refl_explicit_vis(ki, m) : 0;
   if (v) return v;
-  if (ki->is_builtin_const && ki->enclosing_class < 0 && (v = core_method_vis(ki->name, m, 1)) != 0) return v;
+  if (ki->is_builtin_const && ki->enclosing_class < 0 && (v = core_method_vis(ki->name, m, above ? 2 : 1)) != 0)
+    return v;
   for (int j = 0; j < ki->nincluded_mods && depth < 16; j++)
-    if ((v = refl_builtin_vis_in(c, ki->included_mods[j], m, depth + 1)) != 0) return v;
+    if ((v = refl_builtin_vis_in(c, ki->included_mods[j], m, depth + 1, 0, own)) != 0) return v;
   for (int j = 0; j < ki->nincluded_mod_names; j++)
     if ((v = core_method_vis(ki->included_mod_names[j], m, 1)) != 0) return v;
   return 0;
@@ -287,9 +291,10 @@ static int refl_builtin_vis_in(Compiler *c, int k, const char *m, int depth) {
 /* The visibility CRuby gives instance method m of class ci where the
    program defines none: from a builtin class it reopens, the builtin modules
    its chain includes, and the builtin class at the root of the chain (Object
-   unless it names another). 0 for none; -1 where one of those is not in
-   core_class_methods.inc. */
-static int refl_builtin_vis(Compiler *c, int ci, const char *m, int inherit) {
+   unless it names another). With `inherit` 2, what a super in ci's own m
+   reaches there, past a reopened builtin's own method. 0 for none; -1 where
+   one of those is not in core_class_methods.inc. */
+int refl_builtin_vis(Compiler *c, int ci, const char *m, int inherit) {
   const ClassInfo *ki = &c->classes[ci];
   if (!inherit) {
     int v = refl_explicit_vis(ki, m);
@@ -297,7 +302,7 @@ static int refl_builtin_vis(Compiler *c, int ci, const char *m, int inherit) {
   }
   int root = ci;
   for (int k = ci; k >= 0; k = c->classes[k].parent) {
-    int v = refl_builtin_vis_in(c, k, m, 0);
+    int v = refl_builtin_vis_in(c, k, m, 0, inherit == 2 && k == ci, inherit != 2);
     if (v) return v;
     root = k;
   }

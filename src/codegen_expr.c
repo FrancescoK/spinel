@@ -3338,6 +3338,44 @@ void emit_constant_slot(Compiler *c, int id, Buf *b) {
   emit_constant_expr(c, id, b, c->nt, nt_type(c->nt, id), 1);
 }
 
+/* defined?(super): 1 where the super of its method reaches a method, 0
+   where none does, -1 where the answer is not known here. The program's
+   methods are looked up as emit_super looks; a builtin's from CRuby's table
+   of the core classes (refl_builtin_vis), a class method's from Class's or
+   Module's, which answer for every class or module whose singleton class has
+   no builtin method of its own above it. */
+static int defined_super_reaches(Compiler *c, int sup) {
+  Scope *s = comp_scope_of(c, sup);
+  if (!s || !s->name) return 0;
+  if (s->class_id < 0) return -1;
+  const ClassInfo *ci = &c->classes[s->class_id];
+  int mod = comp_class_is_module(c, (ClassInfo *)ci);
+  if (mod && !s->is_cmethod) return -1;   /* its includer's chain decides */
+  if (comp_super_shadow(c, s)) return 1;
+  int p = comp_super_parent(c, s->class_id, s->is_cmethod);
+  const char *u = comp_super_name(c, p, s->name, s->is_cmethod);
+  if (!u) return -1;
+  if (s->is_cmethod) {
+    if (p >= 0 && comp_cmethod_in_chain(c, p, u, NULL) >= 0) return 1;
+    if (core_method_vis(mod ? "Module" : "Class", u, 1) > 0) return 1;
+    int root = s->class_id;
+    while (c->classes[root].parent >= 0) root = c->classes[root].parent;
+    const ClassInfo *ri = &c->classes[root];
+    int plain = mod || (!ri->is_struct && !ri->is_builtin_const &&
+                        (ri->def_node < 0 || nt_ref(c->nt, ri->def_node, "superclass") < 0));
+    return plain ? 0 : -1;
+  }
+  size_t ln = strlen(u);
+  char base[256];
+  int setter = ln > 1 && ln - 1 < sizeof base && u[ln - 1] == '=';
+  if (setter) { memcpy(base, u, ln - 1); base[ln - 1] = '\0'; }
+  if (p >= 0 && (comp_method_in_chain(c, p, u, NULL) >= 0 || comp_reader_in_chain(c, p, u, NULL) ||
+                 (setter && comp_writer_in_chain(c, p, base, NULL))))
+    return 1;
+  int v = refl_builtin_vis(c, s->class_id, u, 2);
+  return v < 0 ? -1 : v > 0;
+}
+
 /* A defined?(...) expression (emit_expr_node's arms, in their order) */
 static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
   if (!(sp_streq(ty, "DefinedNode"))) return 0;
@@ -3556,6 +3594,12 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
      received a block, else nil -- the same runtime question as block_given?.
      An inlined yielding scope statically has a block; a lowered scope tests
      its runtime __yblk__ parameter; any other scope has no block. */
+  if (!res && vt && (sp_streq(vt, "SuperNode") || sp_streq(vt, "ForwardingSuperNode"))) {
+    int r = defined_super_reaches(c, v);
+    if (r < 0) unsupported(c, id, "defined?(super) where the method super reaches is not known at compile time");
+    buf_puts(b, r > 0 ? "SPL(\"super\")" : "NULL");
+    return 1;
+  }
   if (!res && vt && sp_streq(vt, "YieldNode")) {
     if (g_block_id >= 0) { buf_puts(b, "SPL(\"yield\")"); return 1; }
     if (g_current_scope_is_lowered) {
