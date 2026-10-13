@@ -1651,6 +1651,58 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* A block-form sub / gsub on a box that holds a String or an object of a
+   class with its own method of the name: the box is held once, and its tag
+   picks the String scan (emit_gsub_block_expr, its prelude kept inside the
+   branch) or the call's dispatch (the same call with the scan stepped
+   aside). Both answers are boxed into one slot, the node's value read out
+   of it. */
+static int g_gsub_split_id = -1, g_gsub_dispatch_id = -1;
+static int emit_gsub_block_split(Compiler *c, int id, int recv, Buf *b) {
+  int tr = ++g_tmp, tres = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb);
+  emit_boxed(c, recv, &rb);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n",
+             tr, rb.p ? rb.p : "sp_box_nil()", tr, tres, tres);
+  free(rb.p);
+  int slot = view_bind(recv, "_t%d", tr);
+  Buf *sv_pre = g_pre;
+  int sv_split = g_gsub_split_id, sv_disp = g_gsub_dispatch_id;
+  /* the String's scan */
+  Buf spre; memset(&spre, 0, sizeof spre);
+  Buf sval; memset(&sval, 0, sizeof sval);
+  g_pre = &spre; g_indent++;
+  g_gsub_split_id = id;
+  int ok = emit_gsub_block_expr(c, id, &sval);
+  g_gsub_split_id = sv_split;
+  /* the dispatch, which reaches every class's own method */
+  Buf dpre; memset(&dpre, 0, sizeof dpre);
+  Buf dval; memset(&dval, 0, sizeof dval);
+  g_pre = &dpre;
+  g_gsub_dispatch_id = id;
+  if (ok) emit_boxed(c, id, &dval);
+  g_gsub_dispatch_id = sv_disp;
+  g_indent--; g_pre = sv_pre;
+  view_unbind(slot);
+  if (ok) {
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) {\n", tr, tr);
+    if (spre.p) buf_puts(g_pre, spre.p);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "_t%d = sp_box_str(%s);\n", tres, sval.p ? sval.p : "\"\"");
+    emit_indent(g_pre, g_indent); buf_puts(g_pre, "} else {\n");
+    if (dpre.p) buf_puts(g_pre, dpre.p);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "_t%d = %s;\n", tres, dval.p ? dval.p : "sp_box_nil()");
+    emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+    char rt[32]; snprintf(rt, sizeof rt, "_t%d", tres);
+    emit_unbox_text(c, repr_of(c, id).as_ty, rt, b);
+  }
+  free(spre.p); free(sval.p); free(dpre.p); free(dval.p);
+  return ok;
+}
+
 /* "str".gsub(/re/) { |m| repl } / sub as an expression: iterate the matches
    of a regex literal, binding the block param to each matched substring and
    appending its return value as the replacement. sub replaces only the first
@@ -1667,6 +1719,14 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
   Repr recv_r = repr_of(c, recv);
   TyKind recv_ty = recv_r.as_ty;
   if (recv < 0 || (recv_ty != TY_STRING && recv_r.kind != RK_BOXED)) return 0;
+  /* a box can hold an object of a class of the program with its own sub
+     or gsub, which answers for it: the scan below where the box holds a
+     String, the poly dispatch otherwise (emit_gsub_block_split) */
+  if (recv_r.kind == RK_BOXED && g_gsub_split_id != id) {
+    int npc = 0;
+    comp_poly_candidates_at(c, id, name, &npc);
+    if (npc > 0) return g_gsub_dispatch_id == id ? 0 : emit_gsub_block_split(c, id, recv, b);
+  }
   int args = nt_ref(nt, id, "arguments");
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   if (argc != 1) return 0;
