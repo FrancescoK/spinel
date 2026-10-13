@@ -50,6 +50,22 @@ module Ext3
   module_function def short = "short"
 end
 
+# a module of the same last name elsewhere is not the hook's self: its
+# singleton `describe` does not stand for the one the hook reaches
+def describe(k) = "top-level describe of #{k}"
+module Other
+  module Plugin
+    def self.describe(k) = "Other::Plugin.describe of #{k}"
+  end
+end
+module Outer
+  module Plugin
+    def self.included(base)
+      puts describe(base)
+    end
+  end
+end
+
 class A
   include Ext
 end
@@ -61,6 +77,10 @@ end
 
 class D
   include Ext3
+end
+
+class E
+  include Outer::Plugin
 end
 
 p Ext.seen

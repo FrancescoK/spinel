@@ -13172,9 +13172,11 @@ int desugar_class_new_blocks(Compiler *c) {
  *
  * The hook method itself stays on M for anything that calls it by name. */
 static int incl_find_hook_named(const NodeTable *nt, const char *mn, int n0, const char **param,
-                                const char *hook_name);
+                                const char *hook_name, int *mod_out);
+/* The `def self.<hook_name>(param)` of a module named `mn`, or -1; the module
+   node that defines it in *mod_out. */
 static int incl_find_hook_named(const NodeTable *nt, const char *mn, int n0, const char **param,
-                                const char *hook_name) {
+                                const char *hook_name, int *mod_out) {
   for (int m = 0; m < n0; m++) {
     if (nt_kind(nt, m) != NK_ModuleNode) continue;
     int cp = nt_ref(nt, m, "constant_path");
@@ -13192,21 +13194,20 @@ static int incl_find_hook_named(const NodeTable *nt, const char *mn, int n0, con
       int rn = 0; const int *rq = ps >= 0 ? nt_arr(nt, ps, "requireds", &rn) : NULL;
       if (rn != 1) continue;
       *param = nt_str(nt, rq[0], "name");
+      *mod_out = m;
       return *param ? d : -1;
     }
   }
   return -1;
 }
 
-/* Does a body of module `mn` define singleton method `meth` (`def self.meth`,
-   `module_function def meth`, or `def meth` in its `class << self`, a
-   visibility call around it or not)? */
-static int incl_mod_singleton(const NodeTable *nt, const char *mn, int n0, const char *meth) {
-  for (int m = 0; m < n0; m++) {
-    if (nt_kind(nt, m) != NK_ModuleNode) continue;
-    int cp = nt_ref(nt, m, "constant_path");
-    const char *nm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    if (!nm || !sp_streq(nm, mn)) continue;
+/* Does the body of module node `m`, the one that defines the hook, define
+   singleton method `meth` (`def self.meth`, `module_function def meth`, or
+   `def meth` in its `class << self`, a visibility call around it or not)?
+   Only that body: another module of the same last name in another namespace
+   is not the hook's self. */
+static int incl_mod_singleton(const NodeTable *nt, int m, const char *meth) {
+  {
     int body = nt_ref(nt, m, "body");
     int n = 0; const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
     for (int k = 0; k < n; k++) {
@@ -13232,12 +13233,10 @@ static int incl_mod_singleton(const NodeTable *nt, const char *mn, int n0, const
 
 /* What the cloned hook body is rewritten with: the hook's parameter, the
    including class's name (NULL: the class is self), the `include` argument
-   naming the module, and the module's name */
+   naming the module, and the module node that defines the hook */
 typedef struct {
   const char *param, *cls;
-  int mod;
-  const char *mod_name;
-  int n0;
+  int mod, hook_mod;
 } InclSubst;
 
 /* `note(x)` -> `M.__send__(:note, x)`: a receiverless call of the module's
@@ -13287,7 +13286,7 @@ static void incl_subst(NodeTable *nt, int node, const InclSubst *is, int self_mo
                             sp_streq(cm, "ancestors") || sp_streq(cm, "superclass") ||
                             sp_streq(cm, "instance_methods") || sp_streq(cm, "const_get"));
     if ((r < 0 || nt_kind(nt, r) == NK_SelfNode) && self_mod && cm &&
-        incl_mod_singleton(nt, is->mod_name, is->n0, cm))
+        incl_mod_singleton(nt, is->hook_mod, cm))
       incl_call_on_mod(nt, node, is);
     else if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && !introspect &&
              nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), is->param))
@@ -13446,8 +13445,9 @@ int desugar_included_hooks(Compiler *c) {
         NodeKind ak = nt_kind(nt, av[j]);
         if (ak != NK_ConstantReadNode && ak != NK_ConstantPathNode) continue;
         const char *param = NULL;
+        int hook_mod = -1;
         int hook = incl_find_hook_named(nt, nt_str(nt, av[j], "name"), n0, &param,
-                                        is_ext ? "extended" : "included");
+                                        is_ext ? "extended" : "included", &hook_mod);
         if (hook < 0) continue;
         int hb = nt_ref(nt, hook, "body");
         if (hb < 0) continue;
@@ -13460,7 +13460,7 @@ int desugar_included_hooks(Compiler *c) {
         }
         int clone = nt_clone_subtree(nt, hb);
         if (clone < 0) continue;
-        InclSubst is = { param, cls, av[j], nt_str(nt, av[j], "name"), n0 };
+        InclSubst is = { param, cls, av[j], hook_mod };
         incl_subst(nt, clone, &is, 1);
         int hn = 0; const int *hs = nt_kind(nt, clone) == NK_StatementsNode ? nt_arr(nt, clone, "body", &hn) : NULL;
         if (!hs) { incl_emit_stmt(nt, clone, &out, &no, &cap); spliced = 1; continue; }
