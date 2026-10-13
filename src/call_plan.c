@@ -1905,6 +1905,7 @@ static void cpoly_prearms0_blk(Compiler *c, int id, const char *name, const Poly
   int blk = nt_ref(c->nt, id, "block");
   int live_blk = blk >= 0 && resolve_forwarded_block(c, blk) >= 0;
   if (live_blk && poly_enum_op_for(name)) cpoly_family(p, cap, PB_ENUM_PROC);
+  if (live_blk && sp_streq(name, "each_index")) cpoly_family(p, cap, PB_ENUM_PROC);
   if (live_blk && sp_streq(name, "synchronize")) cpoly_family(p, cap, PB_SYNC);
   if (is_call_alias(name)) cpoly_family(p, cap, PB_CALLABLE);
   PolyArgs none = { NULL, 0, NULL, NULL, NULL, NULL };
@@ -1947,7 +1948,7 @@ static void cpoly_defaults0(Compiler *c, int id, const char *name, const PolySpe
   else if (sp_streq(name, "to_h") && blockless && ret == TY_POLY) fam = PB_D_TO_H;
   else if (sp_streq(name, "display") && blockless) fam = PB_D_DISPLAY;
   if (fam >= 0) cpoly_family(p, cap, fam);
-  if (is_indexed_each(name)) cpoly_family(p, cap, PB_N_EACH_INDEX);
+  if (blockless && is_indexed_each(name)) cpoly_family(p, cap, PB_N_EACH_INDEX);
   if (sp_streq(name, "join")) cpoly_family(p, cap, PB_N_JOIN);
   if (sp_streq(name, "alive?")) cpoly_family(p, cap, PB_N_ALIVE);
   if (sp_streq(name, "kill")) cpoly_family(p, cap, PB_N_KILL);

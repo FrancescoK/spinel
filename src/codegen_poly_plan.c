@@ -2055,6 +2055,28 @@ int emit_poly_prearms0_blk(Compiler *c, int id, const char *name, const PolySpec
       buf_puts(b, "; }\nelse ");
     }
   }
+  /* each_index with a block on a boxed Array, in a dispatch that exists
+     because a user class also defines it: the shared proc is driven over
+     the indices, and the Array answers itself (the pre-arm above has no
+     walk for it) */
+  if (sp_streq(name, "each_index") && argc == 0 && nt_ref(nt, id, "block") >= 0) {
+    if (blk_tmp0 < 0) {
+      int cblk3 = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
+      if (cblk3 >= 0) blk_tmp0 = hoist_block_proc(c, cblk3);
+    }
+    if (blk_tmp0 >= 0) {
+      if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_ENUM_PROC, -1, TY_UNKNOWN, PC_SAME);
+      int ti = ++g_tmp;
+      char icall[256];
+      snprintf(icall, sizeof icall, "({ for (sp_int _t%d = 0; _t%d < sp_poly_length(_t%d); _t%d++)"
+                                    " sp_penum_call1(_t%d, sp_box_int(_t%d)); _t%d; })",
+               ti, ti, tv, ti, blk_tmp0, ti, tv);
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)) { _t%d = ", tv, tv, tr);
+      if (ret == TY_POLY) buf_puts(b, icall);
+      else emit_unbox_text(c, ret, icall, b);
+      buf_puts(b, "; }\nelse ");
+    }
+  }
   /* a boxed Proc/Curry/Method in a slot a user `call`/`[]` shadows (#4395) */
   if (emit_poly_callable_prearm(c, name, 0, NULL, NULL, NULL, tv, tr, ret, 0, b) && g_plan_check)
     pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_CALLABLE, -1, TY_UNKNOWN, PC_SAME);
@@ -2412,8 +2434,11 @@ int emit_poly_defaults0(Compiler *c, int id, int recv, const char *name, const P
     obj_default_done = 1;
   }
   /* The blockless index enumerators, same shape: an Array reaching this
-     dispatch still answers them with an Enumerator. */
-  if (argc == 0 && (is_indexed_each(name))) {
+     dispatch still answers them with an Enumerator. Given a block, the
+     builtin containers' pre-arm (sp_poly_enum_proc) runs it; an arm here
+     stored the Enumerator into the block form's result slot, and the C did
+     not compile. */
+  if (argc == 0 && (is_indexed_each(name)) && nt_ref(nt, id, "block") < 0) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_N_EACH_INDEX, -1, TY_UNKNOWN, PC_SAME);
     int ewi = !sp_streq(name, "each_index");
     char ev[96];
