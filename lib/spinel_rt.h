@@ -6267,6 +6267,7 @@ static sp_RbVal sp_poly_remainder(sp_RbVal a, sp_RbVal b) {
 /* Numeric#coerce: [other, self], both lifted to the wider of the two kinds.
    The numeric protocol's entry point, so a boxed receiver has to answer it. */
 static sp_RbVal sp_poly_coerce(sp_RbVal a, sp_RbVal b) {
+  SP_GC_ROOT_RBVAL(a); SP_GC_ROOT_RBVAL(b);   /* a Rational operand can be new, and the pair is allocated */
   /* Rational#coerce: a Float makes both Floats, an Integer becomes a
      Rational and a Rational stays one; any other operand is TypeError */
   if (sp_poly_is_rat_kind(a)) {
@@ -9633,7 +9634,7 @@ static sp_StrStrHash *sp_StrIntHash_to_s_values(sp_StrIntHash *h) {
   }
   return r;
 }
-static sp_StrPolyHash*sp_StrPolyHash_from_str_str_hash(sp_StrStrHash*h){sp_StrPolyHash*r=sp_StrPolyHash_new();if(!h)return r;if(h->default_v)r->default_v=sp_box_str(h->default_v);for(sp_int i=0;i<h->len;i++){const char*k=h->order[i];sp_StrPolyHash_set(r,k,sp_box_str(sp_StrStrHash_get(h,k)));}if(sp_gc_is_frozen(h))sp_gc_freeze(r);return r;}
+static sp_StrPolyHash*sp_StrPolyHash_from_str_str_hash(sp_StrStrHash*h){SP_GC_ROOT(h);sp_StrPolyHash*r=sp_StrPolyHash_new();if(!h)return r;if(h->default_v)r->default_v=sp_box_str(h->default_v);for(sp_int i=0;i<h->len;i++){const char*k=h->order[i];sp_StrPolyHash_set(r,k,sp_box_str(sp_StrStrHash_get(h,k)));}if(sp_gc_is_frozen(h))sp_gc_freeze(r);return r;}
 /* MatchData#named_captures: {String name => group substring | nil}. A
    non-participating named group maps to nil, so the value side is poly. Lives
    here (not sp_re.c) because the typed-hash machinery is TU-coupled. */
@@ -9680,7 +9681,7 @@ static sp_int sp_gc_stat_key(sp_RbVal k) {
   if (!sp_StrIntHash_has_key(h, kn)) sp_raise_cls("ArgumentError", sp_sprintf("unknown key: %s", kn));
   return sp_StrIntHash_get(h, kn);
 }
-static sp_StrPolyHash*sp_StrPolyHash_from_str_int_hash(sp_StrIntHash*h){sp_StrPolyHash*r=sp_StrPolyHash_new();if(!h)return r;/* the int hash's nil default is nil in the boxed hash: read as a number, a missing key answered a number + 100 through `h[k] &&= h[k] + 100` */ r->default_v=h->default_nil?sp_box_nil():sp_box_int(h->default_v);for(sp_int i=0;i<h->len;i++){const char*k=h->order[i];sp_StrPolyHash_set(r,k,sp_box_oint(sp_StrIntHash_vget(h,k)));}if(sp_gc_is_frozen(h))sp_gc_freeze(r);return r;}
+static sp_StrPolyHash*sp_StrPolyHash_from_str_int_hash(sp_StrIntHash*h){SP_GC_ROOT(h);sp_StrPolyHash*r=sp_StrPolyHash_new();if(!h)return r;/* the int hash's nil default is nil in the boxed hash: read as a number, a missing key answered a number + 100 through `h[k] &&= h[k] + 100` */ r->default_v=h->default_nil?sp_box_nil():sp_box_int(h->default_v);for(sp_int i=0;i<h->len;i++){const char*k=h->order[i];sp_StrPolyHash_set(r,k,sp_box_oint(sp_StrIntHash_vget(h,k)));}if(sp_gc_is_frozen(h))sp_gc_freeze(r);return r;}
 
 /* SymPolyHash: symbol keys, sp_RbVal values -- same shape as SymStrHash but with poly values. */
 /* Named struct so lib/sp_fiber.c can forward-declare it for sp_Fiber's
@@ -11998,6 +11999,11 @@ static void sp_poly_dig_check(sp_RbVal v) {
                                        sp_poly_class_name(v)));
 }
 static sp_RbVal sp_poly_dig_n(sp_RbVal recv, sp_int n, const sp_RbVal *keys) {
+  /* the receiver and the keys are read after each step, which can allocate
+     (a user #dig, a Hash's default block), as in sp_poly_values_at_n */
+  SP_GC_ROOT_RBVAL(recv);
+  SP_GC_SAVE();
+  for (sp_int i = 0; i < n; i++) _sp_gc_root_push((void **)((uintptr_t)&keys[i] | (uintptr_t)1));
   /* only a nil reached PART WAY through the walk ends it quietly; a nil
      RECEIVER has no dig (#4485) */
   /* nor has any other receiver that cannot be dug: the call's NoMethodError,
@@ -12019,6 +12025,10 @@ static sp_RbVal sp_poly_dig_n(sp_RbVal recv, sp_int n, const sp_RbVal *keys) {
 static sp_RbVal sp_poly_arr_values_at(sp_RbVal v, sp_PolyArray *idx);
 static sp_RbVal sp_poly_values_at_n(sp_RbVal recv, sp_int n, const sp_RbVal *keys) {
   SP_GC_ROOT_RBVAL(recv);   /* read per key, and sp_poly_index_poly can allocate */
+  /* so are the keys, which the call site boxes into an array of its own: a
+     Range key (`values_at(0, 2..)`) is a new object nothing else holds */
+  SP_GC_SAVE();
+  for (sp_int i = 0; i < n; i++) _sp_gc_root_push((void **)((uintptr_t)&keys[i] | (uintptr_t)1));
   /* an Array selects by offset, a Range the run it covers (sp_poly_arr_values_at):
      read as `[]`, a Range answered the slice inside the result */
   if (recv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(recv.cls_id)) {
@@ -14529,8 +14539,8 @@ const char*sp_PolyPolyHash_inspect(sp_PolyPolyHash*h);
    poly_poly_hash so any (key, value) pair shape is uniformly
    representable. str_str_hash_invert lives above (line ~1132)
    and stays as a same-type round-trip. */
-static sp_PolyPolyHash*sp_StrIntHash_invert_poly(sp_StrIntHash*h){sp_PolyPolyHash*r=sp_PolyPolyHash_new();if(!h)return r;for(sp_int i=0;i<h->len;i++)sp_PolyPolyHash_set(r,sp_box_oint(sp_StrIntHash_vget(h,h->order[i])),sp_box_str(h->order[i]));return r;}
-static sp_PolyPolyHash*sp_IntStrHash_invert(sp_IntStrHash*h){sp_PolyPolyHash*r=sp_PolyPolyHash_new();if(!h)return r;for(sp_int i=0;i<h->len;i++)sp_PolyPolyHash_set(r,sp_box_str(sp_IntStrHash_get(h,h->order[i])),sp_box_int(h->order[i]));return r;}
+static sp_PolyPolyHash*sp_StrIntHash_invert_poly(sp_StrIntHash*h){SP_GC_ROOT(h);sp_PolyPolyHash*r=sp_PolyPolyHash_new();if(!h)return r;for(sp_int i=0;i<h->len;i++)sp_PolyPolyHash_set(r,sp_box_oint(sp_StrIntHash_vget(h,h->order[i])),sp_box_str(h->order[i]));return r;}
+static sp_PolyPolyHash*sp_IntStrHash_invert(sp_IntStrHash*h){SP_GC_ROOT(h);sp_PolyPolyHash*r=sp_PolyPolyHash_new();if(!h)return r;for(sp_int i=0;i<h->len;i++)sp_PolyPolyHash_set(r,sp_box_str(sp_IntStrHash_get(h,h->order[i])),sp_box_int(h->order[i]));return r;}
 static sp_bool sp_PolyPolyHash_eq(sp_PolyPolyHash*a,sp_PolyPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(sp_int i=0;i<a->len;i++){sp_RbVal k=a->keys[a->order[i]];if(!sp_PolyPolyHash_has_key(b,k))return FALSE;if(!sp_poly_rb_equal(sp_PolyPolyHash_get(a,k),sp_PolyPolyHash_get(b,k)))return FALSE;}return TRUE;}
 /* --- cross-variant hash equality ------------------------------------------
    Boxed key/value of the i-th insertion-ordered pair, per variant. */

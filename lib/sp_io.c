@@ -921,8 +921,9 @@ sp_PolyArray *sp_sock_getaddrinfo(const char *host, sp_int port, sp_int family, 
     if (sp_net_getaddrinfo_at(host, (int)port, (int)family, (int)socktype, i, &fam, &stype, &proto,
                               ip, (int)sizeof ip, &p) != 0) break;
     const char *ips = sp_str_from_bytes(ip, strlen(ip));
+    SP_GC_ROOT_STR(ips);   /* held across the row's allocation */
     sp_PolyArray *row = sp_PolyArray_new();
-    sp_PolyArray_push(row, sp_box_str(fam == AF_INET6 ? "AF_INET6" : "AF_INET"));
+    sp_PolyArray_push(row, sp_box_str(fam == AF_INET6 ? SPL("AF_INET6") : SPL("AF_INET")));
     sp_PolyArray_push(row, sp_box_int((sp_int)p));
     sp_PolyArray_push(row, sp_box_str(ips));
     sp_PolyArray_push(row, sp_box_str(ips));
