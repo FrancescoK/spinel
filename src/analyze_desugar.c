@@ -13006,6 +13006,8 @@ int desugar_class_new_blocks(Compiler *c) {
  *   base.class_eval do BODY end   ->  BODY           (self is the class)
  *   base.m(args)                  ->  m(args)        (a class-body call)
  *   any other read of base        ->  the class's constant
+ *   self                          ->  M              (outside those blocks)
+ *   m(args), m M's singleton      ->  M.__send__(:m, args)
  *
  * A body with a `return` of its own is not spliced: the include runs
  * `M.__send__(:included, self)`, the call CRuby makes.
@@ -13038,31 +13040,118 @@ static int incl_find_hook_named(const NodeTable *nt, const char *mn, int n0, con
   return -1;
 }
 
-/* Rewrite the cloned hook body in place: see the header comment. */
-static void incl_subst(NodeTable *nt, int node, const char *param, const char *cls_name) {
+/* Does a body of module `mn` define singleton method `meth` (`def self.meth`,
+   or `def meth` in its `class << self`)? */
+static int incl_mod_singleton(const NodeTable *nt, const char *mn, int n0, const char *meth) {
+  for (int m = 0; m < n0; m++) {
+    if (nt_kind(nt, m) != NK_ModuleNode) continue;
+    int cp = nt_ref(nt, m, "constant_path");
+    const char *nm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (!nm || !sp_streq(nm, mn)) continue;
+    int body = nt_ref(nt, m, "body");
+    int n = 0; const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+    for (int k = 0; k < n; k++) {
+      int d = st[k], sn = 0;
+      const int *sv = NULL;
+      if (nt_kind(nt, d) == NK_SingletonClassNode && nt_kind(nt, nt_ref(nt, d, "expression")) == NK_SelfNode) {
+        int sb = nt_ref(nt, d, "body");
+        sv = sb >= 0 ? nt_arr(nt, sb, "body", &sn) : NULL;
+      }
+      for (int j = -1; j < sn; j++) {
+        int e = j < 0 ? d : sv[j];
+        if (nt_kind(nt, e) != NK_DefNode || !nt_str(nt, e, "name") || !sp_streq(nt_str(nt, e, "name"), meth)) continue;
+        int r = nt_ref(nt, e, "receiver");
+        if (j < 0 ? (r >= 0 && nt_kind(nt, r) == NK_SelfNode) : r < 0) return 1;
+      }
+    }
+  }
+  return 0;
+}
+
+/* What the cloned hook body is rewritten with: the hook's parameter, the
+   including class's name (NULL: the class is self), the `include` argument
+   naming the module, and the module's name */
+typedef struct {
+  const char *param, *cls;
+  int mod;
+  const char *mod_name;
+  int n0;
+} InclSubst;
+
+/* `note(x)` -> `M.__send__(:note, x)`: a receiverless call of the module's
+   own singleton method, which self (the module) answers in the hook.
+   __send__, as the method may be private. */
+static void incl_call_on_mod(NodeTable *nt, int node, const InclSubst *is) {
+  int recv = nt_clone_subtree(nt, is->mod);
+  int sym = fwd_new_node_like(nt, node, "SymbolNode");
+  if (recv < 0 || sym < 0) return;
+  nt_node_set_str(nt, sym, "value", nt_str(nt, node, "name"));
+  int an = nt_ref(nt, node, "arguments"), ac = 0;
+  const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+  int *out = malloc(sizeof(int) * (size_t)(ac + 1));
+  if (!out) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  out[0] = sym;
+  if (ac > 0) memcpy(out + 1, av, sizeof(int) * (size_t)ac);
+  if (an < 0) {
+    an = fwd_new_node_like(nt, node, "ArgumentsNode");
+    if (an < 0) { free(out); return; }
+    nt_node_set_ref(nt, node, "arguments", an);
+  }
+  nt_node_set_arr(nt, an, "arguments", out, ac + 1);
+  free(out);
+  nt_node_set_str(nt, node, "name", "__send__");
+  nt_node_set_ref(nt, node, "receiver", recv);
+}
+
+/* Rewrite the cloned hook body in place: see the header comment. Where
+   `self_mod`, self is still the module, as in the hook: `self` reads it and
+   a receiverless call of its own singleton method goes to it. A class_eval
+   family block or a define_method block has a self of its own. */
+static void incl_subst(NodeTable *nt, int node, const InclSubst *is, int self_mod) {
   if (node < 0) return;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return;
+  int blk = -1, blk_self_mod = self_mod;
   if (k == NK_CallNode) {
     int r = nt_ref(nt, node, "receiver");
     const char *cm = nt_str(nt, node, "name");
+    blk = nt_ref(nt, node, "block");
+    if (cm && (is_eval_exec_family(cm) || sp_streq(cm, "define_method") ||
+               sp_streq(cm, "define_singleton_method"))) blk_self_mod = 0;
     /* the module's own introspection reads the class: `base.name` */
     int introspect = cm && (sp_streq(cm, "name") || sp_streq(cm, "to_s") || sp_streq(cm, "inspect") ||
                             sp_streq(cm, "ancestors") || sp_streq(cm, "superclass") ||
                             sp_streq(cm, "instance_methods") || sp_streq(cm, "const_get"));
-    if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && !introspect &&
-        nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), param))
+    if (r < 0 && self_mod && cm && incl_mod_singleton(nt, is->mod_name, is->n0, cm))
+      incl_call_on_mod(nt, node, is);
+    else if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && !introspect &&
+             nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), is->param))
       nt_node_set_ref(nt, node, "receiver", -1);
   }
+  if (k == NK_SelfNode && self_mod) {
+    int line = (int)nt_int(nt, node, "node_line", 0);
+    int file = (int)nt_int(nt, node, "node_file", 0);
+    int cp = nt_clone_subtree(nt, is->mod);
+    if (cp < 0) return;
+    nt_node_reset(nt, node, nt_type(nt, cp));
+    nt_node_set_str(nt, node, "name", nt_str(nt, cp, "name"));
+    nt_node_set_ref(nt, node, "parent", nt_ref(nt, cp, "parent"));
+    if (line) nt_node_set_int(nt, node, "node_line", line);
+    if (file) nt_node_set_int(nt, node, "node_file", file);
+    return;
+  }
   if (k == NK_LocalVariableReadNode && nt_str(nt, node, "name") &&
-      sp_streq(nt_str(nt, node, "name"), param)) {
-    if (!cls_name) { nt_node_reset(nt, node, "SelfNode"); return; }
+      sp_streq(nt_str(nt, node, "name"), is->param)) {
+    if (!is->cls) { nt_node_reset(nt, node, "SelfNode"); return; }
     nt_node_reset(nt, node, "ConstantReadNode");
-    nt_node_set_str(nt, node, "name", cls_name);
+    nt_node_set_str(nt, node, "name", is->cls);
     return;
   }
   int nr = nt_num_refs(nt, node);
-  for (int i = 0; i < nr; i++) incl_subst(nt, nt_ref_at(nt, node, i), param, cls_name);
+  for (int i = 0; i < nr; i++) {
+    int ch = nt_ref_at(nt, node, i);
+    incl_subst(nt, ch, is, ch == blk ? blk_self_mod : self_mod);
+  }
   int na = nt_num_arrs(nt, node);
   for (int i = 0; i < na; i++) {
     int cnt = 0;
@@ -13070,7 +13159,7 @@ static void incl_subst(NodeTable *nt, int node, const char *param, const char *c
     int *cp = cnt > 0 ? malloc(sizeof(int) * (size_t)cnt) : NULL;
     if (cnt > 0 && !cp) continue;
     if (cnt > 0) memcpy(cp, ids, sizeof(int) * (size_t)cnt);
-    for (int j = 0; j < cnt; j++) incl_subst(nt, cp[j], param, cls_name);
+    for (int j = 0; j < cnt; j++) incl_subst(nt, cp[j], is, self_mod);
     free(cp);
   }
 }
@@ -13202,7 +13291,8 @@ int desugar_included_hooks(Compiler *c) {
         }
         int clone = nt_clone_subtree(nt, hb);
         if (clone < 0) continue;
-        incl_subst(nt, clone, param, cls);
+        InclSubst is = { param, cls, av[j], nt_str(nt, av[j], "name"), n0 };
+        incl_subst(nt, clone, &is, 1);
         int hn = 0; const int *hs = nt_kind(nt, clone) == NK_StatementsNode ? nt_arr(nt, clone, "body", &hn) : NULL;
         if (!hs) { incl_emit_stmt(nt, clone, &out, &no, &cap); spliced = 1; continue; }
         int *hcp = hn > 0 ? malloc(sizeof(int) * (size_t)hn) : NULL;
