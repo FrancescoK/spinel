@@ -36,3 +36,17 @@ end
 
 c = C.new({ location: V.new, size: 3 })
 p c.source_range, c.length, c.loc.class, B.new({ location: V.new, size: 1 }).loc.val
+
+# a subclass's own reader of the alias's name reads its own ivar
+class W
+  def wal = "w"
+end
+class D < B
+  attr_reader :loc
+  def initialize(properties)
+    @loc = W.new
+    super
+  end
+end
+d = D.new({ location: V.new, size: 2 })
+p d.loc.wal, d.location.val
