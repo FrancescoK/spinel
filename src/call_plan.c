@@ -955,6 +955,9 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
     return "a method defined under a condition only the run time decides is not answered for by "
            "respond_to?, method_defined?, instance_methods and their kin (it would answer as if "
            "the branch had run); see docs/limitations.md";
+  if (is_raise_alias(name) && nt_int(nt, id, "sclass_self", 0) && cplan_reachable(c, id))
+    return "self inside class << X is X's singleton class, which Spinel does not model: only its "
+           "declarations and defs are supported there; see docs/limitations.md";
   if (is_raise_alias(name) && nt_int(nt, id, "class_new_superclass", 0) && cplan_reachable(c, id))
     return "Class.new with a non-constant superclass is not supported; "
            "use a constant superclass (see docs/limitations.md)";

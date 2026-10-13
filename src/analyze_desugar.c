@@ -13501,6 +13501,100 @@ int desugar_eval_method_block(Compiler *c) {
   return changed;
 }
 
+/* ---- self in a `class << X` body ----
+ *
+ * Self in the body of `class << X` is X's singleton class, which Spinel
+ * does not model: it is X there. The declarations a singleton body makes
+ * (attr_*, define_method, alias_method, visibility, include) and its defs
+ * land where CRuby puts them, but a use that sees self itself would answer
+ * about X: `p self` prints X for `#<Class:X>`, `instance_methods` lists X's
+ * instance methods. Such a use is refused: self as a value other than the
+ * receiver of a declaration, and a bare call of a reflection method. A def,
+ * a nested class, module or singleton body, and a block that rebinds self
+ * (class_eval and kin, define_method) are not walked. */
+static int sc_declaration(const char *nm) {
+  static const char *const D[] = { "attr", "attr_reader", "attr_writer", "attr_accessor",
+    "define_method", "alias_method", "private", "public", "protected", "module_function",
+    "private_class_method", "public_class_method", "private_constant", "public_constant",
+    "include", "extend", "prepend", "remove_method", "undef_method", NULL };
+  for (int i = 0; nm && D[i]; i++) if (sp_streq(nm, D[i])) return 1;
+  return 0;
+}
+
+static int sc_reflection(const char *nm) {
+  static const char *const R[] = { "name", "to_s", "inspect", "display", "itself", "instance_methods",
+    "public_instance_methods", "private_instance_methods", "protected_instance_methods", "ancestors",
+    "superclass", "method_defined?", "public_method_defined?", "private_method_defined?",
+    "protected_method_defined?", "instance_method", "public_instance_method", "included_modules",
+    "include?", "attached_object", NULL };
+  for (int i = 0; nm && R[i]; i++) if (sp_streq(nm, R[i])) return 1;
+  return 0;
+}
+
+/* Turn node `id` into `raise NotImplementedError, msg`, refused at compile
+   time where it is reachable (feature_limit, "sclass_self"). */
+static void sc_refuse(NodeTable *nt, int id) {
+  long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0),
+            col = nt_int(nt, id, "node_col", 0);
+  cn_neutralize(nt, id);
+  nt_node_reset(nt, id, "CallNode");
+  nt_node_set_int(nt, id, "node_line", line);
+  nt_node_set_int(nt, id, "node_file", file);
+  nt_node_set_int(nt, id, "node_col", col);
+  nt_node_set_str(nt, id, "name", "raise");
+  nt_node_set_int(nt, id, "sclass_self", 1);
+  int args = fwd_new_node_like(nt, id, "ArgumentsNode");
+  int ex = fwd_new_node_like(nt, id, "ConstantReadNode");
+  int msg = str_node_like(nt, id, "spinel: self in a class << X body is X's singleton class, "
+                                  "which is not modeled");
+  if (args < 0 || ex < 0 || msg < 0) return;
+  nt_node_set_str(nt, ex, "name", "NotImplementedError");
+  int av[2] = { ex, msg };
+  nt_node_set_arr(nt, args, "arguments", av, 2);
+  nt_node_set_ref(nt, id, "arguments", args);
+}
+
+static int sc_walk(NodeTable *nt, int node) {
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode)
+    return 0;
+  if (k == NK_SelfNode) { sc_refuse(nt, node); return 1; }
+  int changed = 0;
+  if (k == NK_CallNode) {
+    const char *nm = nt_str(nt, node, "name");
+    int r = nt_ref(nt, node, "receiver");
+    if (r < 0 && sc_reflection(nm) && !sc_declaration(nm)) { sc_refuse(nt, node); return 1; }
+    int blk = nt_ref(nt, node, "block");
+    int rebinds = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && nm &&
+                  (is_eval_exec_family(nm) || sp_streq(nm, "define_method") ||
+                   sp_streq(nm, "define_singleton_method"));
+    /* `self.attr_accessor :x`: the receiver of a declaration is fine */
+    if (!(r >= 0 && nt_kind(nt, r) == NK_SelfNode && sc_declaration(nm))) changed |= sc_walk(nt, r);
+    changed |= sc_walk(nt, nt_ref(nt, node, "arguments"));
+    if (!rebinds) changed |= sc_walk(nt, blk);
+    return changed;
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) changed |= sc_walk(nt, nt_ref_at(nt, node, i));
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0;
+    const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++) changed |= sc_walk(nt, ids[j]);
+  }
+  return changed;
+}
+
+int desugar_singleton_body_self(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++)
+    if (nt_kind(nt, id) == NK_SingletonClassNode) changed |= sc_walk(nt, nt_ref(nt, id, "body"));
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 int desugar_class_new_blocks(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0, serial = 0;
