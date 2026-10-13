@@ -64,3 +64,31 @@ m = method(:app)
 y = +"m"
 m.call(y)
 p y, m.call(+"q"), app(+"z")
+
+# a box into a parameter a signature keeps a String: the String the box
+# holds, not a copy of its bytes
+class Req
+  attr_reader :path
+  #: (String, String) -> void
+  def initialize(m, path)
+    @path = path
+    @path << "!" if m == "M"
+  end
+end
+class Get < Req
+  def initialize(path)
+    super("M", path)
+  end
+end
+g0 = +"/a"
+gr = Get.new([g0, 1][ARGV.size])
+p g0, gr.path.equal?(g0), Get.new(+"/k").path
+
+# a block parameter's default
+def yy(*a) = yield(*a)
+d = +"a"
+yy { |b = d, c = d.then { _1 }| b << "1"; c << "2" }
+dk = []
+yy(+"x") { |b = d| b << "3"; dk << b }
+yy { |b = d| b << "4"; dk << b }
+p d, dk
