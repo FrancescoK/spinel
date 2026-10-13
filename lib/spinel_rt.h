@@ -17206,19 +17206,21 @@ static void sp_poly_hash_dproc_ctx_scan(void *p) {
   sp_mark_rbval(ctx->source);
 }
 static sp_RbVal sp_poly_hash_dproc_bridge(sp_PolyPolyHash *h, sp_RbVal key, void *self) {
-  key = sp_rbval_str(key);
+  /* a shared String key's handle reads as its bytes for the String-keyed
+     source's test and its typed callback; a Proc gets the key itself */
+  sp_RbVal skey = sp_rbval_str(key);
   sp_poly_hash_dproc_ctx *ctx = (sp_poly_hash_dproc_ctx *)self;
   sp_RbVal source = ctx->source;
   (void)h;
   if (source.tag != SP_TAG_OBJ || !source.v.p) return sp_box_nil();
-  if (source.cls_id == SP_BUILTIN_STR_POLY_HASH && key.tag == SP_TAG_STR) {
+  if (source.cls_id == SP_BUILTIN_STR_POLY_HASH && skey.tag == SP_TAG_STR) {
     sp_StrPolyHash *sh = (sp_StrPolyHash *)source.v.p;
     /* default_proc= stores the Proc in dproc_self; pass the merged result to
        it, rather than the typed source retained by this bridge. */
     if (sh->dproc_self)
       return sp_penum_call2((sp_Proc *)sh->dproc_self,
                             sp_box_obj(h, SP_BUILTIN_POLY_POLY_HASH), key);
-    return sh->dproc(sh, key.v.s, sh->dproc_self);
+    return sh->dproc(sh, skey.v.s, sh->dproc_self);
   }
   if (source.cls_id == SP_BUILTIN_SYM_POLY_HASH && key.tag == SP_TAG_SYM) {
     sp_SymPolyHash *sh = (sp_SymPolyHash *)source.v.p;
