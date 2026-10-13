@@ -1,0 +1,4 @@
+[["bad 0", 690], ["bad 1", 690], ["bad 2", 690]]
+690
+["bad 0", "invalid value for Integer(): \"x0\"", "bad 1", "invalid value for Integer(): \"x1\"", "bad 2", "invalid value for Integer(): \"x2\""]
+[[NoMethodError, :x], [NoMethodError, :x], [NoMethodError, :x], [NoMethodError, :x]]
