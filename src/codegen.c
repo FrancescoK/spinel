@@ -8282,7 +8282,7 @@ static void emit_proc_param_slot(Compiler *c, Scope *bs, LocalVar *lv, Buf *pb, 
     else if (lt == TY_STRBUF) buf_printf(&ub, "sp_poly_nil_p(%s) ? NULL : sp_poly_as_strbuf(%s)", src, src);
     else emit_unbox_text(c, lt, src, &ub);
     buf_printf(pb, "    %s lv_%s = %s;", oint ? oint_ctype(lt) : c_type_name(lt), name, ub.p);
-    if (proc_slot_is_ptr(lt)) buf_printf(pb, " SP_GC_ROOT(lv_%s);", name);
+    if (proc_slot_is_ptr(lt) && ty_gc_rootable(c, lt)) buf_printf(pb, " SP_GC_ROOT(lv_%s);", name);
     buf_printf(pb, " (void)lv_%s;\n", name);
     free(ub.p);
   }
@@ -9285,7 +9285,7 @@ else if (orecv >= 0 && onm) {
       buf_puts(pb, "    ");
       emit_local_slot_ctype(c, plv, lt, proc_local_needs_volatile(c, create, plv), pb);
       buf_printf(pb, " lv_%s = %s;", pp, ub.p ? ub.p : "0");
-      if (proc_slot_is_ptr(lt)) buf_printf(pb, " SP_GC_ROOT(lv_%s);", pp);
+      if (proc_slot_is_ptr(lt) && ty_gc_rootable(c, lt)) buf_printf(pb, " SP_GC_ROOT(lv_%s);", pp);
       buf_printf(pb, " (void)lv_%s;\n", pp);
       free(ub.p);
     }

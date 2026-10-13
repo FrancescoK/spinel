@@ -2548,7 +2548,9 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
               buf_printf(g_pre, "SP_GC_ROOT(_t%d.iv_%s);\n", atmp[k], iv_c(vc->ivars[i] + 1));
             }
         }
-        else if (proc_slot_is_ptr(at) || at == TY_PROC) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", atmp[k]); }
+        /* (a pointer the slot carries that is no heap object, a compiled
+           Regexp's pattern, takes no root: the mark walk cannot read it) */
+        else if ((proc_slot_is_ptr(at) && ty_gc_rootable(c, at)) || at == TY_PROC) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", atmp[k]); }
         free(vb.p);
       }
       hold[k] = proc_arg_box_hold(c, at, g_pre, g_indent);
