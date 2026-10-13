@@ -393,6 +393,7 @@ sp_int sp_method_proc_tramp(void *cap, sp_int argc, sp_int *args) {
   #undef SP_BM_TRAMP_RET
 }
 sp_Proc *sp_method_to_proc(sp_BoundMethod *m) {
+  SP_GC_ROOT(m);   /* `&method(:m)` hands over a Method nothing else holds */
   return sp_proc_new_meta((void *)sp_method_proc_tramp, m, sp_bm_cap_scan, 1, TRUE, 0, NULL, NULL);
 }
 /* Bound Method object: `obj.method(:foo)` / `method(:foo)`. `self` is the
