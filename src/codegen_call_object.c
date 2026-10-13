@@ -2193,6 +2193,25 @@ static int emit_case_eq_identity(Compiler *c, int id, int recv, Buf *b) {
   buf_puts(b, boxed ? "))" : ")");
   return 1;
 }
+/* The respond_to? a `defined?(recv.m)` asks (desugar_defined_method_call)
+   of an object below BasicObject, which has no respond_to?: whether its class
+   chain has a public m, or BasicObject does, as CRuby's lookup finds it. The
+   receiver is evaluated for its effects. */
+static int emit_blank_slate_defined_ask(Compiler *c, int id, int recv, int ci, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int an = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+  const char *m = ac == 1 && nt_kind(nt, av[0]) == NK_SymbolNode ? nt_str(nt, av[0], "value") : NULL;
+  int yes = m && ((comp_method_in_chain(c, ci, m, NULL) >= 0 &&
+                   comp_method_vis_in_chain(c, ci, m) == SP_VIS_PUBLIC) ||
+                  comp_reader_in_chain(c, ci, m, NULL) || comp_writer_in_chain(c, ci, m, NULL) ||
+                  (basicobject_own_method(m) && !sp_streq(m, "initialize") && !sp_streq(m, "method_missing")));
+  buf_puts(b, "((void)(");
+  emit_expr(c, recv, b);
+  buf_printf(b, "), %d)", yes);
+  return 1;
+}
+
 
 
 
@@ -2452,6 +2471,9 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
     const char *bsnm = nt_str(nt, id, "name");
     if (bsnm && ty_is_object(bsrt)) {
       int bsci = ty_object_class(bsrt);
+      if (bsci >= 0 && class_is_blank_slate(c, bsci) && nt_int(nt, id, "defined_ask", 0) &&
+          comp_method_in_chain(c, bsci, bsnm, NULL) < 0)
+        return emit_blank_slate_defined_ask(c, id, bsrecv, bsci, b);
       if (bsci >= 0 && class_is_blank_slate(c, bsci) &&
           !basicobject_own_method(bsnm) &&
           comp_method_in_chain(c, bsci, bsnm, NULL) < 0 &&
