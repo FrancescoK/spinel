@@ -12764,6 +12764,20 @@ static int alias_class_defines(const NodeTable *nt, const char *cls, const char 
       const char *anw = NULL, *aod = NULL;
       alias_pair_names(nt, st[k], &anw, &aod);
       if (anw && sp_streq(anw, meth)) return 1;
+      /* and so is an attr_reader / attr_accessor of the name here: the
+         forwarder read it through the class's own view of the ivar, which
+         a subclass's instances never write */
+      if (nt_kind(nt, st[k]) == NK_CallNode && nt_ref(nt, st[k], "receiver") < 0) {
+        const char *an = nt_str(nt, st[k], "name");
+        if (an && (sp_streq(an, "attr_reader") || sp_streq(an, "attr_accessor") || sp_streq(an, "attr"))) {
+          int ar = nt_ref(nt, st[k], "arguments"), ac = 0;
+          const int *av = ar >= 0 ? nt_arr(nt, ar, "arguments", &ac) : NULL;
+          for (int a = 0; a < ac; a++) {
+            const char *v = sym_or_str_literal(nt, av[a]);
+            if (v && sp_streq(v, meth)) return 1;
+          }
+        }
+      }
     }
   }
   return 0;
