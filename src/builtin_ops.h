@@ -397,6 +397,13 @@ typedef enum {
    family's default row's when the name has none, or 0 when the family has
    no default either. */
 int bop_share(TyKind fam, const char *name);
+/* Does every builtin kind that has `name` at this call shape (argc
+   arguments, a block when has_block) answer it keeping none of the Strings
+   it is handed and answering none it was handed: is each row of the name a
+   family's whose methods do so (a String, an IO, a scalar) with that
+   family's share fact BSH_PURE, and no Object or Kernel row the name's?
+   A receiver of any other builtin kind then has no such method. */
+int bop_share_pure_anywhere(const char *name, int argc, int has_block);
 int builtin_ops_share_check(void);
 /* Exact name lookup, including iterator contracts. */
 int bop_share_named(TyKind fam, const char *name);
