@@ -10050,12 +10050,36 @@ void emit_ctor_arm_param(Compiler *c, Scope *is, int j, const ArgLayout *L, cons
     else buf_puts(out, rt);
     return;
   }
+  /* An empty **kwrest's Hash, and a default that builds a value, are new
+     objects the constructor's allocation could free before initialize
+     takes them: each is made into a rooted temp in pdpre, as the rest's
+     Array is, and the argument reads the temp. */
   if (j == is->kwrest_idx) {
-    if (pt == TY_POLY) emit_boxed_text(c, TY_SYM_POLY_HASH, "sp_SymPolyHash_new()", out);
-    else buf_puts(out, pt == TY_POLY_POLY_HASH ? "sp_PolyPolyHash_new()" : "sp_SymPolyHash_new()");
+    int th = ++g_tmp;
+    const char *hk = pt == TY_POLY_POLY_HASH ? "PolyPoly" : "SymPoly";
+    buf_printf(pdpre, "sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d); ", hk, th, hk, th);
+    char ht[24]; snprintf(ht, sizeof ht, "_t%d", th);
+    if (pt == TY_POLY) emit_boxed_text(c, TY_SYM_POLY_HASH, ht, out);
+    else buf_puts(out, ht);
     return;
   }
-  if (L->from[j] != ARG_NODE) { emit_arg_or_default(c, is, j, -1, out); return; }
+  if (L->from[j] != ARG_NODE) {
+    if (!is->pdefault || is->pdefault[j] < 0 || !subtree_may_allocate(c->nt, is->pdefault[j]) ||
+        !(ty_gc_rootable(c, pt) || pt == TY_POLY) || (pp && slot_is_oint(pp))) {
+      emit_arg_or_default(c, is, j, -1, out);
+      return;
+    }
+    Buf db; memset(&db, 0, sizeof db);
+    emit_arg_or_default(c, is, j, -1, &db);
+    int td = ++g_tmp;
+    emit_ctype(c, pt, pdpre);
+    buf_printf(pdpre, " _t%d = %s; ", td, db.p ? db.p : "");
+    emit_gc_root_tmp(c, pt, td, pdpre);
+    buf_puts(pdpre, " ");
+    buf_printf(out, "_t%d", td);
+    free(db.p);
+    return;
+  }
   char at[24]; snprintf(at, sizeof at, "_t%d", atmp[L->arg[j]]);
   if (pt == TY_POLY) buf_puts(out, at);
   /* a parameter slot that holds its nil takes the box with it */
