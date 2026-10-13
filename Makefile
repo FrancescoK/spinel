@@ -3030,6 +3030,14 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	  "$$tmp/srsp" > "$$tmp/srsp.out" 2>/dev/null && cmp -s "$$tmp/srsp.out" test/rbs-seed/shared_rbs_string_param.expected && \
 	  SPINEL_GC_STRESS=1 "$$tmp/srsp" > "$$tmp/srsp.gc" 2>/dev/null && cmp -s "$$tmp/srsp.gc" test/rbs-seed/shared_rbs_string_param.expected || { echo "rbs-seed-test: FAIL (#6765 an --rbs String parameter under --share-strings: refused, or not the shared handle)"; sed -n 1,5p "$$tmp/srsp.err"; ok=0; }; \
 	;; \
+	boxed_key_hash_seed) \
+	for fl in "" --share-strings; do \
+	$(SPINEL) test/rbs-seed/boxed_key_hash_seed.rb --rbs test/rbs-seed/sig $$fl -o "$$tmp/bkh" >/dev/null 2>"$$tmp/bkh.err" && \
+	  "$$tmp/bkh" > "$$tmp/bkh.out" 2>/dev/null && cmp -s "$$tmp/bkh.out" test/rbs-seed/boxed_key_hash_seed.expected && \
+	  SPINEL_GC_STRESS=1 "$$tmp/bkh" > "$$tmp/bkh.gc" 2>/dev/null && cmp -s "$$tmp/bkh.gc" test/rbs-seed/boxed_key_hash_seed.expected || { echo "rbs-seed-test: FAIL (an --rbs Hash[String, Integer] slot given a Hash with a boxed key$${fl:+ under $$fl}: refused, or not the caller's Hash)"; sed -n 1,5p "$$tmp/bkh.err"; ok=0; }; \
+	rm -f "$$tmp/bkh"; \
+	done; \
+	;; \
 	shared_rbs_string_array_param) \
 	$(SPINEL) test/rbs-seed/shared_rbs_string_array_param.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srsa" >/dev/null 2>"$$tmp/srsa.err" && \
 	  "$$tmp/srsa" > "$$tmp/srsa.out" 2>/dev/null && cmp -s "$$tmp/srsa.out" test/rbs-seed/shared_rbs_string_array_param.expected && \

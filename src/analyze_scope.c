@@ -9861,7 +9861,7 @@ int infer_ivar_types(Compiler *c) {
          it here would replace the narrowed type with something strictly
          worse, and a parameter bound from `@t[k][j]` would take poly for
          good (parameters only widen). */
-      if (!class_ivar_pinned(ci, nm) && !ci->ivar_int_table[iv]) {
+      if (!class_ivar_pin_holds(ci, nm, vt) && !ci->ivar_int_table[iv]) {
         TyKind merged = ivar_merge_with_write(ci->ivar_types[iv], vt);
         sp_ivwatch(nm, "ivar_write_merge", ci->ivar_types[iv], merged);
         if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
@@ -9919,7 +9919,7 @@ int infer_ivar_types(Compiler *c) {
       if (sgc >= 0 && comp_is_sg_writer(&c->classes[sgc], base)) {
         ClassInfo *ci = &c->classes[sgc];
         int iv = comp_is_sg_civ(ci, base) ? comp_ivar_index(ci, ivname) : -1;
-        if (iv < 0 || class_ivar_pinned(ci, ivname)) continue;
+        if (iv < 0 || class_ivar_pin_holds(ci, ivname, vt)) continue;
         if (vt == TY_NIL) { nil_write_note(&nilw, sgc, ci->ivars[iv]); continue; }
         TyKind merged = ty_unify(ci->ivar_types[iv], empty_container_write(c, argv[0], vt, ci->ivar_types[iv]));
         if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
@@ -9941,7 +9941,7 @@ int infer_ivar_types(Compiler *c) {
         ClassInfo *ci = &c->classes[ty_object_class(rt)];
         if (!comp_is_writer(ci, base)) continue;
         int iv = comp_ivar_index(ci, ivname);
-        if (iv < 0 || class_ivar_pinned(ci, ivname)) continue;
+        if (iv < 0 || class_ivar_pin_holds(ci, ivname, vt)) continue;
         TyKind merged = ty_unify(ci->ivar_types[iv], empty_container_write(c, argv[0], vt, ci->ivar_types[iv]));
         if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
       }
@@ -10009,7 +10009,7 @@ int infer_ivar_types(Compiler *c) {
         if (only < 0) continue;
         ClassInfo *ci = &c->classes[only];
         int iv = comp_ivar_index(ci, ivname);
-        if (iv < 0 || class_ivar_pinned(ci, ivname)) continue;
+        if (iv < 0 || class_ivar_pin_holds(ci, ivname, vt)) continue;
         TyKind merged = ty_unify(ci->ivar_types[iv], empty_container_write(c, argv[0], vt, ci->ivar_types[iv]));
         if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
       }
