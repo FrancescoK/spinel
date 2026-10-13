@@ -11488,7 +11488,11 @@ static sp_StrArray *sp_poly_as_str_array(sp_RbVal v) {
   sp_int n = sp_poly_length(v);
   for (sp_int i = 0; i < n; i++) {
     sp_RbVal e = sp_poly_arr_get(v, i);
-    sp_StrArray_push(a, e.tag == SP_TAG_NIL ? (const char *)0 : e.v.s);
+    /* a String changed in place is boxed as its handle: the typed Array
+       holds its bytes, read out of the handle (a copy, as any String a
+       typed Array is given), not the handle's pointer read as bytes */
+    sp_StrArray_push(a, e.tag == SP_TAG_NIL ? (const char *)0
+                        : sp_poly_is_strbuf(e) ? sp_strbuf_read((sp_String *)e.v.p) : e.v.s);
   }
   return a;
 }
