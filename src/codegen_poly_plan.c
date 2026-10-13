@@ -81,6 +81,7 @@ static void pa_arm_text(Compiler *c, const PolyArm *a, char *out, size_t n) {
                                      "default enum-each", "default to_s", "default case-conv", "default numeric",
                                      "default digits", "default array-transform", "default predicate",
                                      "default to_i/to_f", "default any?/none?", "default to_h", "default display",
+                                     "default hash",
                                      "each_index", "join", "alive?", "kill", "status", "queue", "io-read",
                                      "io-flush", "io-close", "enum-to_a",
                                      "cover?", "try_convert", "gcdlcm", "unpack1", "include?", "str-delete",
@@ -2431,6 +2432,21 @@ int emit_poly_defaults0(Compiler *c, int id, int recv, const char *name, const P
     buf_printf(b, " default: fputs(sp_poly_to_s(_t%d), stdout);", tv);
     if (ret == TY_POLY) buf_printf(b, " _t%d = sp_box_nil();", tr);
     buf_puts(b, " break;");
+    obj_default_done = 1;
+  }
+  /* hash, the same shape: the dispatch exists because a class answers hash
+     with a reader (emit_call_identity_arms), and every other receiver --
+     a builtin, an object with a def of hash -- has the key the containers
+     use, which reaches a def through the runtime's hook */
+  if (!obj_default_done && argc == 0 && sp_streq(name, "hash") && nt_ref(nt, id, "block") < 0 &&
+      (ret == TY_INT || ret == TY_POLY)) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_D_HASH, -1, TY_UNKNOWN, PC_SAME);
+    char hv[64];
+    snprintf(hv, sizeof hv, "sp_rbval_hash_key(_t%d)", tv);
+    buf_printf(b, " default: _t%d = ", tr);
+    if (ret == TY_POLY) emit_boxed_text(c, TY_INT, hv, b);
+    else plan_put_plain(plan_slot_oint(c, id, ret), ret, hv, b);
+    buf_puts(b, "; break;");
     obj_default_done = 1;
   }
   /* The blockless index enumerators, same shape: an Array reaching this

@@ -1318,7 +1318,9 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     /* Object#hash default (no user hash in the chain): value/pointer int.
        Structs keep their dedicated value-based hash arm. */
     if (sp_streq(name, "hash") && argc == 0 && !cls->is_struct &&
-        comp_method_in_chain(c, cid, "hash", NULL) < 0) { *out = TY_INT; return 1; }
+        comp_method_in_chain(c, cid, "hash", NULL) < 0 &&
+        /* a reader named hash answers its ivar, typed as the ivar is */
+        !comp_reader_in_chain(c, cid, "hash", NULL)) { *out = TY_INT; return 1; }
     /* native class (C-backed): a declared instance method returns its spec type */
     if (cls->is_native_class) {
       /* IO::Buffer#get_value with a LITERAL type symbol lowers to a typed
