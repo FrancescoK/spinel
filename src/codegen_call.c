@@ -21637,6 +21637,18 @@ static int operand_copy_at_risk(Compiler *c, const int *operand, int nop, int i,
   return 0;
 }
 
+/* Is operand v, which no binding takes, one to bind ahead of a shared
+   String slot's copy at risk beside it (operand_copy_at_risk): a value that
+   allocates where it stands and is a heap value the binding roots, not one
+   that ran already, a handle or a container literal? */
+static int operand_binds_as_value(NodeKind k);
+static int operand_held_beside_copy(Compiler *c, int v) {
+  Repr r = repr_of(c, v);
+  if (r.head_held || arg_ran_first(v, 0) || r.handle || r.demand || r.as_ty == TY_STRBUF) return 0;
+  if (!operand_binds_as_value(nt_kind(c->nt, v)) || strbuf_read_copies(c, v)) return 0;
+  return (needs_root(r.as_ty) || r.as_ty == TY_POLY) && operand_allocates_beside(c, v);
+}
+
 /* Can an operand of kind k be bound to a temp as its value? Not a
    container literal (binding materializes it, which some arms never do:
    `x.clamp(lo..hi)`), a splat, a block or a lambda. */
@@ -21948,12 +21960,25 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   for (int i = 0; i < nop && ncand; i++)
     if (obs[i]) { Repr hr = repr_of(c, operand[i]); if (hr.handle || hr.demand) ncand = 0; }
   if (ncand) {
-    int n2[nmax], f2[nmax], o2[nmax], s2[nmax], b2[nmax], k = 0, m = 0, obs0 = observable;
+    int n2[nmax], f2[nmax], o2[nmax], s2[nmax], b2[nmax], k = 0, m = 0, obs0 = observable, risk = 0;
     TyKind t2[nmax];
+    for (int i = 0; i < nop && !risk; i++)
+      risk = cand[i] && operand_copy_at_risk(c, operand, nop, i, cand, obs, obs0);
     for (int i = 0; i < nop; i++) {
       if (obs[i] == 1) { n2[m] = node[k]; t2[m] = ty[k]; f2[m] = fresh[k]; o2[m] = oo[k]; s2[m] = sh[k]; b2[m] = fb[k]; copy[m] = 0; k++; m++; }
       else if (cand[i] && operand_copy_at_risk(c, operand, nop, i, cand, obs, obs0)) {
         n2[m] = operand[i]; t2[m] = TY_STRING; f2[m] = 0; o2[m] = 0; s2[m] = 0; b2[m] = 0; copy[m] = 1;
+        m++;
+        observable++;
+      }
+      /* the allocating operand that puts a copy at risk, when nothing binds
+         it (an interpolation with no effect, `File.rename(@path, "#{to}")`):
+         bound in its place, so it runs before the copy is taken, and its
+         new value is held while the copy allocates */
+      else if (risk && !obs[i] && !cand[i] && operand_held_beside_copy(c, operand[i])) {
+        int fr = operand_fresh_str(c, operand[i]);
+        n2[m] = operand[i]; t2[m] = fr ? TY_STRING : repr_of(c, operand[i]).as_ty;
+        f2[m] = fr; o2[m] = 0; s2[m] = 0; b2[m] = 0; copy[m] = 0;
         m++;
         observable++;
       }
