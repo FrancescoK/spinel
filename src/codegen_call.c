@@ -9904,6 +9904,7 @@ int emit_reopen_recv_in_order(Compiler *c, int id, int mi, int recv, int boxed, 
   else {
     buf_printf(g_pre, "%s _t%d = %s; ", boxed ? "sp_RbVal" : c_type_name(rt), t, rx.p ? rx.p : "");
     if (boxed || rt == TY_POLY) buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d); ", t);
+    else if (comp_ty_value_obj(c, rt)) { emit_gc_root_tmp_refs(c, rt, t, g_pre); buf_puts(g_pre, " "); }
     else if (needs_root(rt)) buf_printf(g_pre, "SP_GC_ROOT(_t%d); ", t);
     buf_printf(&ab, "_t%d", t);
   }
@@ -9942,6 +9943,7 @@ int emit_reopen_recv_args(Compiler *c, int id, int mi, int recv, int boxed, cons
   buf_printf(g_pre, "%s _t%d = %s;\n", boxed ? "sp_RbVal" : c_type_name(rt), t, rx.p ? rx.p : "");
   free(rx.p);
   if (boxed || rt == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", t); }
+  else if (comp_ty_value_obj(c, rt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp_refs(c, rt, t, g_pre); buf_puts(g_pre, "\n"); }
   else if (needs_root(rt)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t); }
   buf_puts(b, self);
   const char *sv_arm_self = g_arm_self; const Scope *sv_arm_scope = g_arm_scope;
@@ -11850,6 +11852,7 @@ static int emit_struct_member_temp(Compiler *c, ClassInfo *cls, int a, int vnode
     char ref[32]; snprintf(ref, sizeof ref, "_t%d", t);
     emit_srange_handle_roots(c, ref, g_pre);
   }
+  else if (comp_ty_value_obj(c, mt)) { buf_puts(g_pre, " "); emit_gc_root_tmp_refs(c, mt, t, g_pre); }
   else if (needs_root(mt)) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", t);
   buf_puts(g_pre, "\n");
   free(lv.p);
@@ -12370,6 +12373,7 @@ int emit_struct_new_call(Compiler *c, int id, int ci, int argc, const int *argv,
       buf_printf(g_pre, "__typeof__(%s) _t%d = %s;", vb.p ? vb.p : "0", t, vb.p ? vb.p : "0");
       if (vt == TY_POLY) buf_printf(g_pre, " SP_GC_ROOT_RBVAL(_t%d);", t);
       else if (vt == TY_STRING) buf_printf(g_pre, " SP_GC_ROOT_STR(_t%d);", t);
+      else if (comp_ty_value_obj(c, vt)) { buf_puts(g_pre, " "); emit_gc_root_tmp_refs(c, vt, t, g_pre); }
       else if (needs_root(vt)) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", t);
       buf_puts(g_pre, "\n");
       free(vb.p);
@@ -19610,6 +19614,7 @@ int hoist_dispatch_args(Compiler *c, int argsN, int **sv, int **vw) {
         else emit_ctype(c, vt, g_pre);
         buf_printf(g_pre, " _t%d = %s;", ht, vb.p ? vb.p : default_value_from_compiler(c, vt));
         if (vt == TY_POLY) buf_printf(g_pre, " SP_GC_ROOT_RBVAL(_t%d);", ht);
+        else if (comp_ty_value_obj(c, vt)) { buf_puts(g_pre, " "); emit_gc_root_tmp_refs(c, vt, ht, g_pre); }
         else if (needs_root(vt)) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", ht);
         buf_puts(g_pre, "\n");
         free(vb.p);
@@ -22141,6 +22146,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     else if (ty[i] == TY_POLY) buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d); ", tmp[i]);
     /* a String Range is two Strings by value, each rooted as a local's are */
     else if (ty[i] == TY_STR_RANGE) { emit_gc_root_tmp_refs(c, ty[i], tmp[i], b); buf_puts(b, " "); }
+    else if (comp_ty_value_obj(c, ty[i])) { emit_gc_root_tmp_refs(c, ty[i], tmp[i], b); buf_puts(b, " "); }
     else if (needs_root(ty[i])) buf_printf(b, "SP_GC_ROOT(_t%d); ", tmp[i]);
     free(opb[i].p);
   }
@@ -22889,6 +22895,7 @@ static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead
       if (ko) buf_puts(b, oint_ctype(ty[i])); else emit_ctype(c, ty[i], b);
       buf_printf(b, " _t%d = %s;", t, ob.p ? ob.p : ko ? oint_nil(ty[i]) : default_value_from_compiler(c, ty[i]));
       if (later_alloc && ty[i] == TY_POLY) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", t);
+      else if (later_alloc && comp_ty_value_obj(c, ty[i])) { buf_puts(b, " "); emit_gc_root_tmp_refs(c, ty[i], t, b); }
       else if (later_alloc && needs_root(ty[i])) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
       buf_puts(b, *lead ? "\n" : " ");
     }

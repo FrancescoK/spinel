@@ -39,7 +39,8 @@ static void hoist_loop_recv(Compiler *c, TyKind rt, Buf *rb, Buf *b, int indent)
   emit_indent(b, indent);
   buf_printf(b, "%s _t%d = %s;", ct.p ? ct.p : "sp_RbVal", t, rb->p);
   free(ct.p);
-  if (needs_root(rt)) buf_printf(b, rt == TY_POLY ? " SP_GC_ROOT_RBVAL(_t%d);" : " SP_GC_ROOT(_t%d);", t);
+  if (comp_ty_value_obj(c, rt)) { buf_puts(b, " "); emit_gc_root_tmp_refs(c, rt, t, b); }
+  else if (needs_root(rt)) buf_printf(b, rt == TY_POLY ? " SP_GC_ROOT_RBVAL(_t%d);" : " SP_GC_ROOT(_t%d);", t);
   buf_puts(b, "\n");
   free(rb->p); memset(rb, 0, sizeof *rb);
   buf_printf(rb, "_t%d", t);
@@ -4842,7 +4843,8 @@ int iter_recv_bind_once(Compiler *c, int node) {
   emit_ctype(c, ot, g_pre);
   buf_printf(g_pre, " _t%d = %s;", t, ob.p ? ob.p : "");
   free(ob.p);
-  if (needs_root(ot)) buf_printf(g_pre, ot == TY_POLY ? " SP_GC_ROOT_RBVAL(_t%d);" : " SP_GC_ROOT(_t%d);", t);
+  if (comp_ty_value_obj(c, ot)) { buf_puts(g_pre, " "); emit_gc_root_tmp_refs(c, ot, t, g_pre); }
+  else if (needs_root(ot)) buf_printf(g_pre, ot == TY_POLY ? " SP_GC_ROOT_RBVAL(_t%d);" : " SP_GC_ROOT(_t%d);", t);
   /* a String Range is held by value: its two ends are what the walk must
      keep, the binding being read again as the answer after it */
   else if (ot == TY_STR_RANGE) { buf_puts(g_pre, " "); emit_gc_root_tmp_refs(c, ot, t, g_pre); }
@@ -4946,7 +4948,8 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
      across the whole loop body, which allocates. is_scalar_ret() answers TRUE
      for arrays, hashes and objects (it asks how a value is RETURNED, not
      whether it is collectable), so this rooted almost nothing. */
-  if (needs_root(rt)) buf_printf(b, rt == TY_POLY ? "SP_GC_ROOT_RBVAL(_t%d); " : "SP_GC_ROOT(_t%d); ", ta);
+  if (comp_ty_value_obj(c, rt)) { emit_gc_root_tmp_refs(c, rt, ta, b); buf_puts(b, " "); }
+  else if (needs_root(rt)) buf_printf(b, rt == TY_POLY ? "SP_GC_ROOT_RBVAL(_t%d); " : "SP_GC_ROOT(_t%d); ", ta);
   /* a String Range is held by value: its two ends */
   else if (rt == TY_STR_RANGE) { emit_gc_root_tmp_refs(c, rt, ta, b); buf_puts(b, " "); }
   buf_puts(b, body.p ? body.p : "");
