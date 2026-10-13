@@ -1,0 +1,13 @@
+{a: 1}
+{a: 1, b: 2}
+{a: 1}
+{a: 1, b: 2}
+1
+12
+[]
+["RegA"]
+[:inherited, :req]
+[:inherited, :req]
+true
+[:hits]
+[:hits]
