@@ -3336,6 +3336,81 @@ static int node_is_container_read(const NodeTable *nt, int n) {
    silently raising the wrong NoMethodError for a method the arms never built. */
 static int send_name_is_computed(Compiler *c, int arg, int depth);
 
+/* Does subtree n build a name no literal spells: an interpolated Symbol or
+   String, or a to_sym / intern of something? */
+static int subtree_builds_name(const NodeTable *nt, int n, int depth) {
+  if (n < 0 || depth > 64) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_InterpolatedSymbolNode || k == NK_InterpolatedStringNode) return 1;
+  if (k == NK_CallNode) {
+    const char *cn = nt_str(nt, n, "name");
+    if (cn && (sp_streq(cn, "to_sym") || sp_streq(cn, "intern"))) return 1;
+  }
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) if (subtree_builds_name(nt, nt_ref_at(nt, n, i), depth + 1)) return 1;
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) if (subtree_builds_name(nt, ids[j], depth + 1)) return 1;
+  }
+  return 0;
+}
+/* Does node x name the same container as receiver r: a local of the same
+   scope, an ivar of the same class, a constant of the same name? */
+static int container_same(Compiler *c, int r, int x) {
+  const NodeTable *nt = c->nt;
+  NodeKind rk = nt_kind(nt, r), xk = nt_kind(nt, x);
+  const char *rn = nt_str(nt, r, "name"), *xn = nt_str(nt, x, "name");
+  if (!rn || !xn || !sp_streq(rn, xn)) return 0;
+  switch (rk) {
+    case NK_LocalVariableReadNode:
+      return (xk == NK_LocalVariableReadNode || xk == NK_LocalVariableWriteNode) && comp_scope_of(c, x) == comp_scope_of(c, r);
+    case NK_InstanceVariableReadNode:
+      return (xk == NK_InstanceVariableReadNode || xk == NK_InstanceVariableWriteNode) &&
+             comp_ivar_owner(c, x) == comp_ivar_owner(c, r);
+    case NK_ConstantReadNode: case NK_ConstantPathNode:
+      return xk == NK_ConstantReadNode || xk == NK_ConstantPathNode || xk == NK_ConstantWriteNode;
+    default:
+      return 0;
+  }
+}
+/* Is the container a read of element `arg` comes out of filled with names
+   no literal spells? One whose own write builds them (`M = Hash.new { |h,
+   t| h[t] = :"on_#{t}" }`, `plan = [:"on_#{x}"]`, `@tab = [...]`), or one a
+   `X[k] = v`, `X << v` or `X.push(v)` stores such a name into -- the same
+   container: a local of the read's scope, an ivar of its class. Then the
+   element is a computed name, whose arms are every method rather than the
+   literals. */
+static int container_read_holds_computed(Compiler *c, int arg) {
+  const NodeTable *nt = c->nt;
+  int r = nt_ref(nt, arg, "receiver");
+  if (r < 0 || !nt_str(nt, r, "name")) return 0;
+  /* the container's own writes (`M = {...}`, `plan = [:"on_#{x}"]`,
+     `@tab = [...]`) */
+  static const NodeKind wk[] = { NK_ConstantWriteNode, NK_LocalVariableWriteNode, NK_InstanceVariableWriteNode };
+  for (int k = 0; k < 3; k++)
+    NT_FOREACH_KIND(nt, wk[k], w)
+      if (container_same(c, r, w) && subtree_builds_name(nt, nt_ref(nt, w, "value"), 0)) return 1;
+  /* ... and the elements stored into it (`X[k] = v`, `X << v`, `X.push(v)`) */
+  NT_FOREACH_KIND(nt, NK_CallNode, w) {
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !(sp_streq(wn, "[]=") || sp_streq(wn, "<<") || sp_streq(wn, "push") || sp_streq(wn, "unshift")))
+      continue;
+    int wr = nt_ref(nt, w, "receiver");
+    if (wr < 0 || !container_same(c, r, wr)) continue;
+    int a = nt_ref(nt, w, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (an >= 1 && subtree_builds_name(nt, av[an - 1], 0)) return 1;
+  }
+  return 0;
+}
+/* Is value n a name no literal spells: computed itself, or an element of a
+   container holding such names? */
+static int value_is_computed_name(Compiler *c, int n) {
+  if (node_is_container_read(c->nt, n)) return container_read_holds_computed(c, n);
+  return node_is_computed_name(c->nt, n);
+}
+
 /* Is the parameter `vn` of the method owning `arg` handed a computed name by
    a caller (#8592)? `handle(name) = public_send(name)` called with
    `"on_#{ev}".to_sym` reaches names no literal spells, so its send takes the
@@ -3377,8 +3452,7 @@ static int param_handed_computed_name(Compiler *c, int arg, const char *vn, int 
     int x = av[pi];
     NodeKind xk = nt_kind(nt, x);
     if (xk == NK_SplatNode || xk == NK_KeywordHashNode || xk == NK_BlockArgumentNode) continue;
-    if (node_is_container_read(nt, x)) continue;
-    if (node_is_computed_name(nt, x) || (xk == NK_LocalVariableReadNode && send_name_is_computed(c, x, depth + 1))) res = 1;
+    if (value_is_computed_name(c, x) || (xk == NK_LocalVariableReadNode && send_name_is_computed(c, x, depth + 1))) res = 1;
   }
   /* the memo may have been rebuilt by a deeper call: write only into the live one */
   if (key >= 0 && c->send_param_memo && c->send_param_memo_nodes == nt->count && key < c->send_param_memo_n)
@@ -3388,7 +3462,7 @@ static int param_handed_computed_name(Compiler *c, int arg, const char *vn, int 
 
 static int send_name_is_computed(Compiler *c, int arg, int depth) {
   const NodeTable *nt = c->nt;
-  if (node_is_container_read(nt, arg)) return 0;
+  if (node_is_container_read(nt, arg)) return container_read_holds_computed(c, arg);
   if (node_is_computed_name(nt, arg)) return 1;
   const char *aty = arg >= 0 ? nt_type(nt, arg) : NULL;
   if (!aty || !sp_streq(aty, "LocalVariableReadNode")) return 0;
@@ -3404,7 +3478,7 @@ static int send_name_is_computed(Compiler *c, int arg, int depth) {
     /* a local bound to such an element (`step = PLAN[i]; send(step)`) is
        that element */
     int wv = nt_ref(nt, id, "value");
-    if (node_is_computed_name(nt, wv) && !node_is_container_read(nt, wv)) return 1;
+    if (value_is_computed_name(c, wv)) return 1;
   }
   /* a parameter no statement of the method rebinds: the names its callers hand it */
   if (!written) return param_handed_computed_name(c, arg, vn, depth);

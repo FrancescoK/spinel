@@ -139,7 +139,9 @@ writers, and the Object methods every instance has -- so the set is complete; on
 boxed receiver it covers every user class plus the program's literals. A method's
 parameter is a computed name when a caller hands it one (`handle(name) =
 public_send(name)` called with `"on_#{ev}".to_sym`), also through a method that
-passes the parameter on; handed only literals, it keeps the literal arms. A computed
+passes the parameter on; handed only literals, it keeps the literal arms. An element
+of a table filled with such names is computed too (`M = Hash.new { |h, t| h[t] =
+:"on_#{t}" }` then `send(M[t])`, or a table a `[]=` stores them into). A computed
 name sent to a builtin receiver (a String, an Array, ...) is still refused at compile
 time. A **literal** name is fully resolved -- see below.
 `public_send(*args, &blk)` with the name as the first element of a splatted
