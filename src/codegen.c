@@ -14408,14 +14408,31 @@ static void emit_user_coerce_dispatch(Compiler *c, Buf *b) {
    an eql arm, one that fails gets neither and falls through to pointer identity.
    #eql?'s typed-object param must be class k itself (the hook only ever compares
    two keys of the same cls_id), so the arg cast is never to an unrelated struct. */
+/* The ivar class k's hash reader (`attr_reader :hash`) reads, *rdcls the
+   class holding the attr; -1 when hash is no reader, or one whose ivar is
+   neither an Integer nor boxed. */
+static int hash_reader_ivar(Compiler *c, int k, int *rdcls) {
+  int d = -1;
+  if (comp_method_in_chain(c, k, "hash", NULL) >= 0 || !comp_reader_in_chain(c, k, "hash", &d) || d < 0) return -1;
+  const char *rn = comp_resolve_alias(c, k, "hash");
+  char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", rn);
+  int ivx = comp_ivar_index(&c->classes[d], ivn);
+  if (ivx < 0) return -1;
+  TyKind ivt = c->classes[d].ivar_types[ivx];
+  if (ivt != TY_INT && ivt != TY_POLY) return -1;
+  *rdcls = d;
+  return ivx;
+}
+
 static int class_is_hashkey(Compiler *c, int k) {
   if (!c->classes[k].instantiated) return 0;
   int h_mi = comp_method_in_chain(c, k, "hash", NULL);
   int e_mi = comp_method_in_chain(c, k, "eql?", NULL);
-  if (h_mi < 0 || e_mi < 0) return 0;
+  int rd = -1;
+  if (e_mi < 0 || (h_mi < 0 && hash_reader_ivar(c, k, &rd) < 0)) return 0;
 
-  Scope *h_m = &c->scopes[h_mi];
-  if (h_m->nparams > 0 || (h_m->ret != TY_INT && h_m->ret != TY_POLY)) return 0;
+  Scope *h_m = h_mi >= 0 ? &c->scopes[h_mi] : NULL;
+  if (h_m && (h_m->nparams > 0 || (h_m->ret != TY_INT && h_m->ret != TY_POLY))) return 0;
 
   Scope *e_m = &c->scopes[e_mi];
   if (e_m->nparams < 1 || e_m->rest_idx >= 0 || (e_m->ret != TY_BOOL && e_m->ret != TY_POLY)) return 0;
@@ -14452,6 +14469,24 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
     if (!class_is_hashkey(c, k)) continue;
     int defcls = -1;
     int mi = comp_method_in_chain(c, k, "hash", &defcls);
+    if (mi < 0) {
+      /* hash is a reader: its ivar is the hash, an Integer as it is, and
+         anything else -- nil, or a boxed non-Integer -- CRuby's TypeError */
+      int rd = -1, ivx = hash_reader_ivar(c, k, &rd);
+      const char *rcn = c->classes[rd].c_name;
+      const char *rn = comp_resolve_alias(c, k, "hash");
+      char fld[600];
+      snprintf(fld, sizeof fld, "((sp_%s *)p)->iv_%s", rcn, iv_c(rn));
+      buf_printf(b, "    case %d: ", comp_class_index(c, c->classes[k].name));
+      if (c->classes[rd].ivar_types[ivx] == TY_POLY) buf_printf(b, "return sp_poly_arg_int_chk(%s);\n", fld);
+      else if (ivar_has_nilbit(c, rd, ivx)) {
+        char objp[200]; snprintf(objp, sizeof objp, "((sp_%s *)p)->", rcn);
+        char bit[400]; ivar_nilbit_test(c, rd, ivx, objp, bit, sizeof bit);
+        buf_printf(b, "return sp_oint_arg(%s ? sp_oint_nil() : sp_oint_of(%s));\n", bit, fld);
+      }
+      else buf_printf(b, "return %s;\n", fld);
+      continue;
+    }
     Scope *m = &c->scopes[mi];   /* signature validated in class_is_hashkey */
     const char *dcn = c->classes[defcls].c_name;
     const char *slf = c->classes[defcls].is_value_type ? "*" : "";
