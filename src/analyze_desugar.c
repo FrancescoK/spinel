@@ -13501,6 +13501,70 @@ int desugar_eval_method_block(Compiler *c) {
   return changed;
 }
 
+/* `Struct.new(:x) { ... }` / `Data.define(:a) { ... }` with a block, held by
+   nothing: the class is built from a write (`Name = ...`, `k = ...`), whose
+   block is the class body, so an inline one ran no statement of its block
+   and gave none of its defs to the class. It is written to a local of its
+   own and read back, `(__spinel_struct_N = Struct.new(:x) { ... };
+   __spinel_struct_N)`, whose value is the class, as the call's is. A
+   superclass position is left as it is. */
+int desugar_inline_struct_blocks(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0, serial = 0;
+  int *parent = NULL;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode || !is_struct_call(c, id)) continue;
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+    if (!parent) {
+      parent = malloc(sizeof(int) * (size_t)n0);
+      if (!parent) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      for (int i = 0; i < n0; i++) parent[i] = -1;
+      for (int p = 0; p < n0; p++) {
+        int nr = nt_num_refs(nt, p);
+        for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, p, i); if (ch >= 0 && ch < n0) parent[ch] = p; }
+        int na = nt_num_arrs(nt, p);
+        for (int i = 0; i < na; i++) {
+          int cnt = 0; const int *ids = nt_arr_at(nt, p, i, &cnt);
+          for (int j = 0; j < cnt; j++) if (ids[j] >= 0 && ids[j] < n0) parent[ids[j]] = p;
+        }
+      }
+    }
+    int par = parent[id];
+    NodeKind pk = par >= 0 ? nt_kind(nt, par) : NK_NilNode;
+    if ((pk == NK_ConstantWriteNode || pk == NK_LocalVariableWriteNode) && nt_ref(nt, par, "value") == id)
+      continue;
+    if (pk == NK_ClassNode && nt_ref(nt, par, "superclass") == id) continue;
+    /* the receiver of a call (`Struct.new(:x) { ... }.new(1)`): that call is
+       the one wrapped, on the local, so its receiver is the class itself */
+    int at = pk == NK_CallNode && nt_ref(nt, par, "receiver") == id ? par : id;
+    int call = nt_clone_subtree(nt, id);
+    int wr = fwd_new_node_like(nt, id, "LocalVariableWriteNode");
+    int rd = fwd_new_node_like(nt, id, "LocalVariableReadNode");
+    int st = fwd_new_node_like(nt, id, "StatementsNode");
+    int last = at == id ? rd : nt_clone_subtree(nt, at);
+    if (call < 0 || wr < 0 || rd < 0 || st < 0 || last < 0) continue;
+    char name[64]; snprintf(name, sizeof name, "__spinel_struct_%d", ++serial);
+    nt_node_set_str(nt, wr, "name", name);
+    nt_node_set_int(nt, wr, "depth", 0);
+    nt_node_set_ref(nt, wr, "value", call);
+    nt_node_set_str(nt, rd, "name", name);
+    nt_node_set_int(nt, rd, "depth", 0);
+    if (last != rd) nt_node_set_ref(nt, last, "receiver", rd);
+    int sv[2] = { wr, last };
+    nt_node_set_arr(nt, st, "body", sv, 2);
+    long long line = nt_int(nt, at, "node_line", 0), file = nt_int(nt, at, "node_file", 0);
+    nt_node_reset(nt, at, "ParenthesesNode");
+    nt_node_set_ref(nt, at, "body", st);
+    nt_node_set_int(nt, at, "node_line", line);
+    nt_node_set_int(nt, at, "node_file", file);
+    changed = 1;
+  }
+  free(parent);
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 int desugar_class_new_blocks(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0, serial = 0;
