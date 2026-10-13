@@ -58,3 +58,22 @@ q = +"abc"; qq = q
 p q.upcase!.equal?(qq), (q << "d").equal?(qq), q.concat("e").equal?(qq), q.freeze.equal?(qq)
 lo = +"a"; hi = +"z"; mid = +"m"
 p mid.clamp(lo, hi).equal?(mid), (+"0").clamp(lo, hi).equal?(lo)
+# a String no handle holds, handed on by then, a begin block, a loop's
+# break or a conditional, is its own identity: never a new handle around it
+pw = +"w"
+p pw.then { |v| v }.equal?(pw), pw.yield_self { |v| v }.equal?(pw), pw.itself.then { |v| v }.equal?(pw)
+pd = +"d"
+p pd.equal?(begin; pd; end), pd.equal?(1.then { pd }), pd.equal?(loop { break pd })
+pe = "e#{ARGV.size}"
+p pe.equal?(begin; pe; end), (begin; pe; end).equal?(pe), pe.equal?(begin; pe; ensure; nn; end)
+p pe.equal?(begin; raise "e"; rescue; pe; end), pe.equal?(if nn == 0 then pe else pe end)
+ph = +"h#{ARGV.size}"
+ph << "!"
+p ph.equal?(begin; ph; end), ph.equal?(1.then { ph }), :sym.to_s.then { |v| v }.equal?(:sym)
+# an exception's text read through a box is the String the exception
+# keeps, also after an append moved that String's bytes
+mx = +"msg"
+bxe = [RuntimeError.new(mx), 1].first
+p bxe.to_s.equal?((mx << "y" * 5000; bxe.to_s)), bxe.message.equal?((mx << "z" * 5000; bxe.message))
+p((mx << "q" * 5000; bxe.to_s).equal?(bxe.to_s))
+p [mx, 1].first.to_s.equal?(mx)

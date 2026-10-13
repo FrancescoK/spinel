@@ -291,6 +291,9 @@ int emit_strbuf_route_box(Compiler *c, int v, Buf *b);
 /* --share-strings: the boxed operand whose String a route answers, or -1
    (codegen_stmt.c) */
 int strbuf_route_box_operand(Compiler *c, int v);
+/* the deep-return pickup of a call publishing its handle: the handle
+   (box 0) or a box of what the call answered (box 1) (codegen_stmt.c) */
+void emit_strbuf_pickup(Compiler *c, int v, int box, Buf *b);
 /* --share-strings: does value v hand over a shared String as its handle
    (a variable, a route, a conditional with such an arm)? (codegen_stmt.c) */
 int strbuf_value_carries(Compiler *c, int v);
@@ -315,6 +318,9 @@ int exc_msg_handle(Compiler *c, int arg, char *href, size_t cap);
 /* --share-strings: `e.message` over a variable's exception (codegen_stmt.c) */
 int exc_message_identity_operand(Compiler *c, int v);
 void emit_exc_message_idbox(Compiler *c, int v, Buf *b);
+/* --share-strings: `x.message` / `x.to_s` on a box, whose identity box
+   tests the box at run time (codegen_stmt.c) */
+int exc_message_box_operand(Compiler *c, int v);
 int strbuf_route_exc_message(Compiler *c, int v);
 int strbuf_route_boxed_exc_message(Compiler *c, int v);
 int strbuf_route_ie(Compiler *c, int v);
@@ -402,13 +408,14 @@ typedef struct {
      SPX_HANDLE  the sp_String * a slot that is the shared handle takes
                  (a method's parameter; under --share-strings also a block
                  parameter that is a String buffer);
-     SPX_BOX     an sp_RbVal whose identity (sp_poly_equal) is the String's,
-                 for the identity role (equal?).
+     SPX_IDENT   what its identity is held in, for the identity role
+                 (equal?): the handle, the bytes or a box, whichever its
+                 producer holds (sf->cty TY_STRBUF, TY_STRING, TY_POLY).
    `dest` says what the destination does with a new handle (SFD_*):
      SFD_OWN     it holds its own copy (a parameter that is the handle
                  because a Method reaches it, LocalVar.dyn_handle): a new
                  handle keeps its bytes inside the object. */
-enum { SPX_ID, SPX_HANDLE, SPX_BOX };
+enum { SPX_ID, SPX_HANDLE, SPX_IDENT };
 enum { SFD_OWN = 1 };
 int emit_str_form(Compiler *c, int v, int role, int face, unsigned dest, StrForm *sf);
 /* A write in value position (a local's whose slot is a String buffer, any
