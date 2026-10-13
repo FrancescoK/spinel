@@ -2216,6 +2216,7 @@ int str_enum_h_made(Compiler *c);                   /* ...does the program make 
 int emit_unresolved_call(Compiler *c, int id, Buf *b);
 int emit_array_call(Compiler *c, int id, Buf *b);
 int emit_array_splat_mutator(Compiler *c, int id, Buf *b);
+void emit_gather_call_args(Compiler *c, const int *argv, int argc, int ta, Buf *b);
 void emit_str_insert_text(Compiler *c, int arg, Buf *b);
 int emit_hash_call(Compiler *c, int id, Buf *b);
 int emit_scalar_call(Compiler *c, int id, Buf *b);

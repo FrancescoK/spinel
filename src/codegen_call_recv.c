@@ -1090,6 +1090,39 @@ void emit_str_insert_text(Compiler *c, int arg, Buf *b) {
              ts, ts, ts);
 }
 
+/* The arguments argv[0..argc) gathered, left to right, into a new rooted poly
+   array _t<ta>: a `*splat` contributes each of its elements, any other
+   argument itself, boxed. An anonymous `*` needs emit_anon_rest_ref to have
+   answered for it. */
+void emit_gather_call_args(Compiler *c, const int *argv, int argc, int ta, Buf *b) {
+  const NodeTable *nt = c->nt;
+  buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
+  for (int a = 0; a < argc; a++) {
+    if (nt_kind(nt, argv[a]) == NK_SplatNode) {
+      int inner = nt_ref(nt, argv[a], "expression");
+      buf_printf(b, " sp_PolyArray_append_all(_t%d, ", ta);
+      TyKind at = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
+      if (inner < 0) emit_anon_rest_ref(c, argv[a], b);
+      else if (at == TY_RANGE || at == TY_STR_RANGE || ty_is_hash(at)) {
+        buf_puts(b, "sp_enum_items_from(");
+        emit_boxed(c, inner, b);
+        buf_puts(b, ")");
+      }
+      else {
+        buf_puts(b, "sp_poly_to_poly_array(sp_splat_to_array(");
+        emit_boxed(c, inner, b);
+        buf_puts(b, "))");
+      }
+      buf_puts(b, ");");
+    }
+    else {
+      buf_printf(b, " sp_PolyArray_push(_t%d, ", ta);
+      emit_boxed(c, argv[a], b);
+      buf_puts(b, ");");
+    }
+  }
+}
+
 /* push / append / unshift / prepend / insert / concat with a `*splat` among
    the arguments: the splat spreads across the argument list, so its length is
    only known at run time. The per-name arms read each argument as one element,
@@ -1159,31 +1192,7 @@ int emit_array_splat_mutator(Compiler *c, int id, Buf *b) {
     ti = ++g_tmp;
     buf_printf(b, "sp_int _t%d = ", ti); emit_int_expr(c, argv[0], b); buf_puts(b, "; ");
   }
-  buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
-  for (int a = is_insert ? 1 : 0; a < argc; a++) {
-    if (nt_kind(nt, argv[a]) == NK_SplatNode) {
-      int inner = nt_ref(nt, argv[a], "expression");
-      buf_printf(b, " sp_PolyArray_append_all(_t%d, ", ta);
-      TyKind at = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
-      if (inner < 0) emit_anon_rest_ref(c, argv[a], b);
-      else if (at == TY_RANGE || at == TY_STR_RANGE || ty_is_hash(at)) {
-        buf_puts(b, "sp_enum_items_from(");
-        emit_boxed(c, inner, b);
-        buf_puts(b, ")");
-      }
-      else {
-        buf_puts(b, "sp_poly_to_poly_array(sp_splat_to_array(");
-        emit_boxed(c, inner, b);
-        buf_puts(b, "))");
-      }
-      buf_puts(b, ");");
-    }
-    else {
-      buf_printf(b, " sp_PolyArray_push(_t%d, ", ta);
-      emit_boxed(c, argv[a], b);
-      buf_puts(b, ");");
-    }
-  }
+  emit_gather_call_args(c, argv + (is_insert ? 1 : 0), argc - (is_insert ? 1 : 0), ta, b);
   if (is_concat) {
     int tf = ++g_tmp, tc = ++g_tmp;
     buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"

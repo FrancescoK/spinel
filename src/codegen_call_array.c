@@ -524,6 +524,64 @@ static int emit_setop_fold_poly(Compiler *c, int id, int recv, TyKind rt, const 
   return 1;
 }
 
+/* union / intersection / difference with a `*splat` among the operands
+   (`a.union(*others)`): how many operands it gives is known only at run time.
+   The per-arity arms read the splat as one operand -- a poly array where an
+   sp_RbVal goes, which failed to compile, or a call that raised
+   NoMethodError. 1 when argv holds a splat this fold can spread (an
+   anonymous `*` needs its rest parameter). */
+static int setop_splat_args(Compiler *c, const int *argv, int argc) {
+  const NodeTable *nt = c->nt;
+  int splat = 0;
+  for (int j = 0; j < argc; j++) {
+    if (nt_kind(nt, argv[j]) != NK_SplatNode) continue;
+    splat = 1;
+    if (nt_ref(nt, argv[j], "expression") >= 0) continue;
+    Buf ab; memset(&ab, 0, sizeof ab);
+    int ok = emit_anon_rest_ref(c, argv[j], &ab);
+    free(ab.p);
+    if (!ok) return 0;
+  }
+  return splat;
+}
+
+/* The operands gathered, then the poly op folded over each into the rooted
+   poly array _t<tr>, which holds the receiver's elements; one that is no
+   Array is CRuby's TypeError. None at all leaves the receiver's copy,
+   deduplicated by union alone. */
+static void emit_setop_splat_fold(Compiler *c, const int *argv, int argc, const char *name, int tr, Buf *b) {
+  int ta = ++g_tmp, ti = ++g_tmp;
+  const char *fn = fn_of_named_setop(name);
+  emit_gather_call_args(c, argv, argc, ta, b);
+  buf_printf(b, " if (_t%d->len == 0) _t%d = sp_PolyArray_%s(_t%d, NULL);"
+                " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
+                " _t%d = sp_PolyArray_%s(_t%d, sp_poly_set_operand(_t%d->data[_t%d]));",
+             ta, tr, sp_streq(fn, "union") ? "union" : "difference", tr,
+             ti, ti, ta, ti, tr, fn, tr, ta, ti);
+}
+
+/* a typed array's set op over a splat (setop_splat_args): the receiver taken
+   as a poly array. 0 for a call not typed a poly array. */
+static int emit_setop_splat(Compiler *c, int id, int recv, TyKind rt, const char *name, Buf *b) {
+  int argc; const int *argv = call_args(c->nt, id, &argc);
+  if (!is_named_set_operator(name) || !setop_splat_args(c, argv, argc)) return 0;
+  if (repr_of(c, id).as_ty != TY_POLY_ARRAY || rt == TY_UNKNOWN || rt == TY_POLY) return 0;
+  Buf rb; memset(&rb, 0, sizeof rb);
+  int ok = setop_poly_operand(rt, "", &rb);
+  free(rb.p);
+  if (!ok) return 0;
+  memset(&rb, 0, sizeof rb);
+  emit_expr(c, recv, &rb);
+  int tr = ++g_tmp;
+  buf_printf(b, "({ sp_PolyArray *_t%d = ", tr);
+  setop_poly_operand(rt, rb.p ? rb.p : "", b);
+  buf_printf(b, "; SP_GC_ROOT(_t%d); ", tr);
+  free(rb.p);
+  emit_setop_splat_fold(c, argv, argc, name, tr, b);
+  buf_printf(b, " _t%d; })", tr);
+  return 1;
+}
+
 /* Array#& / #| / #- and intersection / union / difference with operands: the
    same kind runs the typed set op; another kind, or a boxed operand, the poly one */
 int emit_op_array_setop(Compiler *c, const BopCtx *x, Buf *b) {
@@ -537,6 +595,7 @@ int emit_op_array_setop(Compiler *c, const BopCtx *x, Buf *b) {
   const char *k = array_kind(rt);
   int block = nt_ref(nt, id, "block");
   (void)name; (void)a0; (void)k; (void)block; (void)argv;
+  if (emit_setop_splat(c, id, recv, rt, name, b)) return 1;
   if (emit_array_operand_type_error(c, x, b)) return 1;
   if (rt == TY_POLY_ARRAY) {
     if (is_set_op(name) && argc == 1 && (a0r.elem == TY_POLY || a0r.untyped)) {
@@ -1817,6 +1876,18 @@ int emit_call_append_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       repr_of(c, recv).kind == RK_BOXED && !user_defines_or_reads(c, name)) {
     int splat = 0;
     for (int a = 0; a < argc; a++) if (nt_kind(nt, argv[a]) == NK_SplatNode) splat = 1;
+    if (splat && setop_splat_args(c, argv, argc)) {
+      int t = ++g_tmp, tr = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_boxed(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);"
+                    " if (!(_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)))"
+                    " sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d));"
+                    " sp_PolyArray *_t%d = sp_poly_to_poly_array(_t%d); SP_GC_ROOT(_t%d); ",
+                 t, t, t, name, t, tr, t, tr);
+      emit_setop_splat_fold(c, argv, argc, name, tr, b);
+      buf_printf(b, " sp_box_poly_array(_t%d); })", tr);
+      return 1;
+    }
     if (!splat) {
       int t = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_boxed(c, recv, b);
