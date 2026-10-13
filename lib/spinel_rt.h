@@ -19862,23 +19862,34 @@ static sp_RbVal sp_env_filter_bang_opt(sp_Proc *p, int keep) {
   if (sp_env_filter_core(p, keep) == 0) return sp_box_nil();
   return sp_box_obj(sp_env_to_h(), SP_BUILTIN_STR_STR_HASH);
 }
+/* A bound-Method trampoline handed more than 16 values by a splat: it is
+   handed the true count (below) and reads that many arguments, from the
+   sp_int slots or, for a boxed parameter, the boxed channel, so the slots
+   are on the heap for the call's length and the channel is filled as far as
+   it goes; 16 of each let the 17th argument of a 17-parameter Method read
+   the stack past the slots or a stale channel entry. Kept apart so the
+   common call pushes no root of its own. */
+static SP_NOINLINE void sp_proc_call_spread_wide(sp_Proc *p, sp_Proc *blk, sp_RbVal arr, sp_int n, int kwpos) {
+  SP_GC_ROOT(p); SP_GC_ROOT(blk); SP_GC_ROOT_RBVAL(arr);
+  sp_int *slots = (sp_int *)sp_gc_alloc(sizeof(sp_int) * (size_t)n, NULL, NULL); SP_GC_ROOT(slots);
+  for (sp_int i = 0; i < n; i++) {
+    sp_RbVal e = sp_poly_arr_get(arr, i);
+    if (i < SP_PROC_ARG_SLOTS) _sp_proc_poly_args[i] = e;
+    slots[i] = (e.tag == SP_TAG_OBJ || e.tag == SP_TAG_STR)
+             ? (sp_int)(uintptr_t)e.v.p : sp_poly_to_i(e);
+  }
+  _sp_proc_kwpos = kwpos;
+  sp_proc_call_blk(p, blk, n, slots);
+}
 static void sp_proc_call_spread_blk(sp_Proc *p, sp_Proc *blk, sp_RbVal arr, int kwpos) { SP_GC_ROOT(p);
   if (!p || !p->fn) return;
   sp_int n = sp_poly_length(arr);
+  if (n > 16 && p->cap_scan == sp_bm_cap_scan && p->lambda_p) { sp_proc_call_spread_wide(p, blk, arr, n, kwpos); return; }
   sp_int fill = n > 16 ? 16 : n;
-  /* A bound-Method trampoline is handed the true count (below) and reads
-     that many arguments, from the sp_int slots or, for a boxed parameter,
-     the boxed channel: past 16 the slots are on the heap, for the call's
-     length, and the channel is filled as far as it goes, where 16 of each
-     let the 17th argument of a 17-parameter Method read the stack past the
-     slots or a stale channel entry. */
-  int wide = p->cap_scan == sp_bm_cap_scan && p->lambda_p && n > 16;
-  sp_int slots_16[16], *slots = slots_16;
-  void *wide_slots = NULL; SP_GC_ROOT(wide_slots);
-  if (wide) slots = (sp_int *)(wide_slots = sp_gc_alloc(sizeof(sp_int) * (size_t)n, NULL, NULL));
-  for (sp_int i = 0; i < (wide ? n : fill); i++) {
+  sp_int slots[16];
+  for (sp_int i = 0; i < fill; i++) {
     sp_RbVal e = sp_poly_arr_get(arr, i);
-    if (i < (wide ? SP_PROC_ARG_SLOTS : fill)) _sp_proc_poly_args[i] = e;
+    _sp_proc_poly_args[i] = e;
     slots[i] = (e.tag == SP_TAG_OBJ || e.tag == SP_TAG_STR)
              ? (sp_int)(uintptr_t)e.v.p : sp_poly_to_i(e);
   }
