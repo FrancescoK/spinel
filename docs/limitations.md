@@ -982,6 +982,7 @@ Not yet shared:
 - into a container, a String held by a block parameter no element iterator binds (a proc's, a lambda's, a yielding method's block, `each_char`'s, `scan`'s), when an element is then mutated in place;
 - through `scan`'s block parameter, a match the block keeps and mutates in place (it did not build);
 - through a global variable's Array, a String element mutated in place through the Array (`$b.each { |y| y << x }`, `$b[0] << x`);
+- through a local bound to the Array `split`, `scan`, `lines` or `chars` answers (or its `to_a`), a String element an iterator's block mutates in place, when the local is read afterwards (`lines = s.lines; lines.each { |l| l.chomp! }; lines`);
 - into an Array or Hash a caller passes a method, a String the method stores (`def keep(a) = (a << n)`), when the caller mutates the element in place;
 
 - through an ivar's or a call's Array, a fresh Array literal, a narrowed boxed String element, or a fresh String's `tap`, into an appending block or parameter;

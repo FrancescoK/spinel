@@ -21178,7 +21178,19 @@ static int an_hash_chain_is_unobserved_literal(Compiler *c, int hrecv) {
   return 1;
 }
 
-/* String#split's result carries ordinary String copies whose elements are
+/* A call answering a fresh Array of Strings a String builtin builds
+   (split, scan, lines, chars), or its `to_a`. */
+static int an_fresh_string_array_call(const NodeTable *nt, int v) {
+  v = an_unparen(nt, v);
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  const char *mn = nt_str(nt, v, "name");
+  if (!mn) return 0;
+  if (sp_streq(mn, "split") || sp_streq(mn, "scan") || sp_streq(mn, "lines") || sp_streq(mn, "chars")) return 1;
+  int a = nt_ref(nt, v, "arguments");
+  return sp_streq(mn, "to_a") && a < 0 && nt_ref(nt, v, "block") < 0 &&
+         an_fresh_string_array_call(nt, nt_ref(nt, v, "receiver"));
+}
+/* Such a call's result carries ordinary String copies whose elements are
    not visible to the store walk. Do not promote the block parameter alone
    and silently mutate a detached copy. */
 static int an_local_string_array_has_untracked_call_store(Compiler *c,
@@ -21190,8 +21202,7 @@ static int an_local_string_array_has_untracked_call_store(Compiler *c,
     if (!wn || !sp_streq(wn, name) || comp_scope_of(c, w) != scope ||
         nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
     int value = an_unparen(nt, nt_ref(nt, w, "value"));
-    if (value < 0 || nt_kind(nt, value) != NK_CallNode || infer_type(c, value) != TY_STR_ARRAY ||
-        !nt_str(nt, value, "name") || !sp_streq(nt_str(nt, value, "name"), "split"))
+    if (value < 0 || infer_type(c, value) != TY_STR_ARRAY || !an_fresh_string_array_call(nt, value))
       continue;
     if (strbuf_container_store_values(c, w, name, scope, 1, &stores) == 0) { free(stores.v); return 1; }
   }
