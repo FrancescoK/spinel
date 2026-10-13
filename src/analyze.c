@@ -36722,9 +36722,10 @@ static void desugar_diverging_args(Compiler *c) {
 
    The receiver, and any fixed argument that is not a leaf, is bound to a
    temporary first so it is evaluated once. The range also covers the
-   counts a user method of the name takes. Returns 0, leaving the call to
-   the old expansion, when such a method takes a rest parameter or more
-   than 8 arguments. */
+   counts a user method of the name takes; one with a rest parameter takes
+   every count, so the arms run up to the cap of 8 arguments. Returns 0,
+   leaving the call to the old expansion, when such a method takes a
+   keyword rest or more than 8 arguments. */
 static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int argc,
                                     int sp_at, int ex) {
   NodeTable *nt = (NodeTable *)c->nt;
@@ -36775,13 +36776,17 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   /* the builtin's own counts, before a user method's widen them: what the
      kept splat call of a variadic-2 name (slice) reports as its arity */
   int blo = lo, bhi = hi;
-  int nuser = 0, ukw = 0;
+  int nuser = 0, ukw = 0, urest = 0, mhi = -1;
   /* a user method of the name may own the call: the range widens to the
      counts it takes, so each arm calls whichever method the receiver has
      with the arguments it was given. One with a rest parameter takes any
-     count, which no range covers. A variadic-2 name (slice) needs no
-     widening: its other counts keep the splat call, which reaches the user
-     method as any splat call does. */
+     count, so the arms run up to the cap and a longer list raises as a
+     variadic name's does. Leaving it to the old expansion read only the
+     builtin's required count and dropped the rest: with any
+     `def index(*a)` in the program (a def_delegators line makes one),
+     `s.index(*a)` on a String with a = ["b", 2] answered `s.index("b")`. A
+     variadic-2 name (slice) needs no widening: its other counts keep the
+     splat call, which reaches the user method as any splat call does. */
   /* a call marked as the builtin's (a super into Array or Hash) is never a
      user method's */
   if (variadic != 2 && !splat_recv_is_builtin_literal(nt, id) && !nt_int(nt, id, "builtin_only", 0)) {
@@ -36791,17 +36796,27 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
       /* A constructor's receiver names its class: another class's own
          `def self.new` is not the one `Hash.new` reaches. */
       if (ctor >= 0 && splat_ctor_other_cnew(c, s, recv)) continue;
-      if (s->rest_idx >= 0 || s->kwrest_idx >= 0) return 0;
+      if (s->kwrest_idx >= 0) return 0;
+      /* Only where the old expansion would cut the list: a splat of a
+         local, into a name it cuts to its arity. Any other keeps its splat
+         call, which reaches a rest parameter whole, as does a dynamic
+         send's arm (the n < 0 dyn_arm case in the caller) */
+      if (s->rest_idx >= 0 && (odyn || !ex_local || splat_builtin_arity(cnm) < 0)) return 0;
+      if (s->rest_idx >= 0) urest = 1;
       nuser++;
       int pn = s->def_node >= 0 ? nt_ref(nt, s->def_node, "parameters") : -1, kn = 0;
       if (pn >= 0) nt_arr(nt, pn, "keywords", &kn);
       if (kn > 0) ukw = 1;
       int req = 0;
-      for (int p = 0; p < s->nparams; p++) if (s->pdefault && s->pdefault[p] < 0) req++;
+      for (int p = 0; p < s->nparams; p++) if (s->pdefault && s->pdefault[p] < 0 && p != s->rest_idx) req++;
       if (req < lo) lo = req;
       if (s->nparams > hi) hi = s->nparams;
     }
     if (hi > 8) return 0;
+    /* a rest parameter's arms run to the cap; the arity message keeps the
+       counts the receivers have, and only a list past the cap raises the
+       variadic names' NotImplementedError */
+    if (urest) { mhi = hi; hi = 8; }
   }
   int idx = (is_string_index(cnm)) && comp_method_index(c, cnm) < 0;
   for (int si = 0; idx && si < c->nscopes; si++)
@@ -36903,10 +36918,10 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   if (variadic)
     snprintf(msg, sizeof msg, "spinel: a splat of more than %d arguments into %s is not supported",
              hi - fixed, cnm);
-  else if (lo == hi)
+  else if (lo == (mhi >= 0 ? mhi : hi))
     snprintf(msg, sizeof msg, ", expected %d)", lo);
   else
-    snprintf(msg, sizeof msg, ", expected %d..%d)", lo, hi);
+    snprintf(msg, sizeof msg, ", expected %d..%d)", lo, mhi >= 0 ? mhi : hi);
   int ecn = nt_new_node(nt, "ConstantReadNode");
   nt_node_set_str(nt, ecn, "name", variadic ? "NotImplementedError" : "ArgumentError");
   int emn = nt_new_node(nt, "StringNode");
@@ -36961,6 +36976,27 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     nt_node_set_ref(nt, p2, "arguments", pb);
     nt_node_set_ref(nt, p2, "block", -1);
     emn = p2;
+  }
+  if (urest && !variadic) {
+    /* one raise, its class and message picked by the length:
+       raise(a.length > cap ? NotImplementedError : ArgumentError,
+             a.length > cap ? "..." : <the arity message>) */
+    char cmsg[160];
+    snprintf(cmsg, sizeof cmsg, "spinel: a splat of more than %d arguments into %s is not supported",
+             hi - fixed, cnm);
+    int over[2];
+    for (int k = 0; k < 2; k++) {
+      int ard = nt_new_node(nt, "LocalVariableReadNode");
+      nt_node_set_str(nt, ard, "name", anm);
+      nt_node_set_int(nt, ard, "depth", adepth);
+      int cap = nt_new_node(nt, "IntegerNode");
+      nt_node_set_int(nt, cap, "value", hi - fixed);
+      over[k] = sd_call(nt, ">", sd_call(nt, "length", ard, NULL, 0), &cap, 1);
+    }
+    int ncn = nt_new_node(nt, "ConstantReadNode");
+    nt_node_set_str(nt, ncn, "name", "NotImplementedError");
+    ecn = sd_if(nt, over[0], ncn, ecn);
+    emn = sd_if(nt, over[1], sd_str(nt, cmsg), emn);
   }
   int ea[2] = { ecn, emn };
   int eargs = nt_new_node(nt, "ArgumentsNode");
