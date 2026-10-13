@@ -25412,6 +25412,9 @@ static void emit_call_held(Compiler *c, int id, Buf *b) {
     view_unbind(g_n_argov - 1);
     return;
   }
+  /* a class writer's assignment answers its right-hand side; its writer
+     call comes back to emit_call_body for effect */
+  if (emit_cmethod_setter_assign(c, id, b)) return;
   ConvHold hold; memset(&hold, 0, sizeof hold);
   ConvHold *saved = g_conv_hold;
   size_t pre_mark = g_pre ? g_pre->len : 0;

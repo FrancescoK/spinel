@@ -2433,6 +2433,20 @@ void an_user_call_record(Compiler *c, int id, int mi, int via, int owner_ci) {
 
 TyKind an_user_call(Compiler *c, int id, int mi, int via, int owner_ci) {
   an_user_call_record(c, id, mi, via, owner_ci);
+  /* `Klass.x = v` through the class's writer is an assignment: its value
+     is v as written, whatever the body returns (emit_cmethod_setter_assign),
+     as an instance writer's is. An argument not yet typed leaves the call
+     to the method's return, which the next round revisits. */
+  if (via == UC_CMETH && c->scopes[mi].is_cmethod && nt_ref(c->nt, id, "block") < 0 &&
+      call_is_setter_assign(c->nt, id)) {
+    int an = nt_ref(c->nt, id, "arguments"), ac = 0;
+    const int *av = an >= 0 ? nt_arr(c->nt, an, "arguments", &ac) : NULL;
+    if (ac == 1 && nt_kind(c->nt, av[0]) != NK_SplatNode) {
+      TyKind rk = infer_type(c, av[0]);
+      if (rk == TY_STRBUF && c->share_strings) rk = TY_STRING;
+      if (rk != TY_UNKNOWN) return rk;
+    }
+  }
   /* A yielding reopening is called through its proc form. Its return
      includes the block's boxed answer, also through rescue or ensure. */
   int pf = via == UC_REOPEN && c->scopes[mi].yields ? scope_proc_form_of(c, mi) : -1;

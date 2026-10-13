@@ -1265,6 +1265,142 @@ static void emit_setter_call_for_effect(Compiler *c, int id, int shr, Buf *b) {
   g_setter_stmt_id = saved;
 }
 
+/* An explicit `def x=(v)` reached as `obj.x = v` in value position: the
+   expression's value is the right-hand side, as for every assignment, not
+   what the writer's body returns. The generic call answered the body (a
+   void, or a poly), and a block ending in `status.interrupt = true`
+   handed that to a slot inference had typed from the right-hand side
+   (#4516). A side-effect-free argument (a literal, a variable) is
+   re-emitted after the call; any other is bound once to a temporary local
+   that the call reads. Returns 0 where the argument has no type yet. */
+static int emit_setter_assign_value(Compiler *c, int id, const int *argv, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *aty = nt_type(nt, argv[0]);
+  int simple = aty && (sp_streq(aty, "IntegerNode") || sp_streq(aty, "FloatNode") ||
+                       sp_streq(aty, "TrueNode") || sp_streq(aty, "FalseNode") ||
+                       sp_streq(aty, "NilNode") || sp_streq(aty, "SymbolNode") ||
+                       sp_streq(aty, "StringNode") || sp_streq(aty, "LocalVariableReadNode") ||
+                       sp_streq(aty, "InstanceVariableReadNode") || sp_streq(aty, "SelfNode"));
+  TyKind at = repr_of(c, argv[0]).as_ty;
+  /* --share-strings: where the rule shares the String (shr), the
+     writer is handed its handle, not a copy of its bytes, and where
+     the value is taken as the handle it is that handle (hv) */
+  Repr hr = repr_of(c, id);
+  int shr = user_assign_handle(c, id), hv = shr && (hr.handle || hr.demand);
+  if (shr && !hv) assign_value_route(c, id, argv[0], 0, 1);
+  if (simple) {
+    buf_puts(b, "({ (void)(");
+    emit_setter_call_for_effect(c, id, shr, b);
+    buf_puts(b, "); ");
+    if (shr) {
+      Buf hb; memset(&hb, 0, sizeof hb);
+      emit_strbuf_handle_of(c, argv[0], &hb);
+      if (hv) buf_puts(b, hb.p);
+      else emit_strbuf_node_read(c, id, hb.p, b);
+      free(hb.p);
+    }
+    /* the value with its nil where the node answers an oint (a
+       parameter that may hold a nil Integer, as a method returning
+       the assignment takes it, #8569) */
+    else if (oint_kind(at) && node_is_oint(c, id)) emit_oint_expr(c, argv[0], at, b);
+    else emit_expr(c, argv[0], b);
+    buf_puts(b, "; })");
+    return 1;
+  }
+  if (shr) at = TY_STRBUF;
+  if (at != TY_UNKNOWN && at != TY_VOID) {
+    Scope *esc = comp_scope_of(c, id);
+    int saved0_arg = argv[0];
+    if (esc) {
+      char svn[32]; snprintf(svn, sizeof svn, "__sv%d", ++g_tmp);
+      LocalVar *lv = scope_local_intern(esc, svn);
+      lv->type = at;
+      lv->str_shared = shr;
+      /* the temporary holds the argument's value, nil included: an
+         Integer one that can be nil (`r.x = h[k]&.to_i`) keeps the
+         slot's nil, or the setter's -2^63 check reads it as -2^63 */
+      lv->nullable_int = (at == TY_INT || at == TY_FLOAT) && nullable_int_value(c, saved0_arg);
+      int rd = nt_new_node((NodeTable *)nt, "LocalVariableReadNode");
+      nt_node_set_str((NodeTable *)nt, rd, "name", svn);
+      comp_grow_node_arrays(c);
+      c->nscope[rd] = c->nscope[id];
+      c->ntype[rd] = at;
+      int saved0 = argv[0];
+      int argsn = nt_ref(nt, id, "arguments");
+      int one[1] = { rd };
+      /* the local is declared in the prelude, ahead of whatever the
+         call's own emission hoists there (its arguments included) */
+      Buf *decl = g_pre ? g_pre : b;
+      /* the argument's own prelude (a block-taking call's loop) goes
+         ahead of the declaration, not into the middle of it */
+      Buf apre; memset(&apre, 0, sizeof apre);
+      Buf aval; memset(&aval, 0, sizeof aval);
+      /* a temporary that can hold nil takes the argument's oint form */
+      int sv_oint = slot_is_oint(lv);
+      { Buf *sv_pre = g_pre; g_pre = &apre;
+        if (shr) emit_strbuf_handle_of(c, saved0, &aval);
+        else if (sv_oint) emit_oint_expr(c, saved0, at, &aval);
+        else emit_one_arg(c, saved0, 0, &aval);
+        g_pre = sv_pre; }
+      if (!g_pre) buf_puts(b, "({ ");
+      if (apre.p) buf_puts(decl, apre.p);
+      if (g_pre) emit_indent(g_pre, g_indent);
+      if (sv_oint) buf_puts(decl, oint_ctype(at)); else emit_ctype(c, at, decl);
+      buf_printf(decl, " lv_%s = %s; ", svn, aval.p ? aval.p : "0");
+      free(apre.p); free(aval.p);
+      /* a poly temporary is an sp_RbVal, and its root is the RbVal
+         kind -- needs_root() answers yes for TY_POLY too, so that
+         test has to come second, or the plain root reads the
+         RbVal's tag word as an object pointer at the next mark */
+      if (at == TY_POLY) buf_printf(decl, "SP_GC_ROOT_RBVAL(lv_%s); ", svn);
+      else if (needs_root(at) && !comp_ty_value_obj(c, at)) buf_printf(decl, "SP_GC_ROOT(lv_%s); ", svn);
+      if (g_pre) { buf_puts(g_pre, "\n"); buf_puts(b, "({ "); }
+      nt_node_set_arr((NodeTable *)nt, argsn, "arguments", one, 1);
+      buf_puts(b, "(void)(");
+      emit_setter_call_for_effect(c, id, shr, b);
+      buf_puts(b, "); ");
+      int back[1] = { saved0 };
+      nt_node_set_arr((NodeTable *)nt, argsn, "arguments", back, 1);
+      /* the assignment's value is the argument as written, nil
+         included: its oint where the consumer takes one */
+      if (shr && !hv) {
+        char sref[40]; snprintf(sref, sizeof sref, "lv_%s", svn);
+        emit_strbuf_node_read(c, id, sref, b);   /* the handle's read */
+      }
+      else if (sv_oint && !(node_is_oint(c, id) || repr_of(c, id).kind == RK_OPT))
+        buf_printf(b, "%s(lv_%s)", oint_arg(at), svn);
+      else buf_printf(b, "lv_%s", svn);
+      buf_puts(b, "; })");
+      for (int k = esc->nlocals - 1; k >= 0; k--)
+        if (sp_streq(esc->locals[k].name, svn)) {
+          memmove(&esc->locals[k], &esc->locals[k + 1], sizeof(LocalVar) * (size_t)(esc->nlocals - k - 1));
+          esc->nlocals--;
+          break;
+        }
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/* `Klass.x = v` through the class's own writer `def self.x=(v)`, by a
+   constant or by self in a class method: an assignment too, so its value
+   is v as written, as an instance writer's is. The class-method call
+   answered the writer's body. Asked by emit_call_held. */
+int emit_cmethod_setter_assign(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int argc; const int *argv = call_args(nt, id, &argc);
+  /* (a statement has no reader for the value: emit_stmt marks it) */
+  if (g_setter_value_inner || id == g_setter_stmt_id || argc != 1 || !name || nt_ref(nt, id, "block") >= 0 ||
+      nt_kind(nt, argv[0]) == NK_SplatNode || !call_is_setter_assign(nt, id) ||
+      !(name[0] == '_' || (name[0] >= 'a' && name[0] <= 'z') || (name[0] >= 'A' && name[0] <= 'Z')))
+    return 0;
+  const CallPlan *pl = cplan_user(c, id);
+  if (!pl || pl->mi < 0 || pl->via != UC_CMETH || !c->scopes[pl->mi].is_cmethod) return 0;
+  return emit_setter_assign_value(c, id, argv, b);
+}
+
 /* a call on a module or a class: native and FFI functions, singleton accessors, a writer in an instance_eval block, class methods */
 int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* native binding dispatch (Path B): Module.func(...) where Module declared
@@ -1939,123 +2075,12 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           else buf_puts(b, "; })");
           return 1;
         }
-        /* An explicit `def x=(v)` reached as `obj.x = v` in value position:
-           the expression's value is the right-hand side, as for every
-           assignment, not what the writer's body returns. The generic call
-           answered the body (a void, or a poly), and a block ending in
-           `status.interrupt = true` handed that to a slot inference had
-           typed from the right-hand side (#4516). A side-effect-free
-           argument (a literal, a variable) is re-emitted after the call; any
-           other is bound once to a temporary local that the call reads. */
+        /* its value is the argument (emit_setter_assign_value) */
         if (argc == 1 && comp_method_in_chain(c, _arc, name, NULL) >= 0 &&
             nt_ref(nt, id, "block") < 0 && !g_setter_value_inner &&
             call_is_setter_assign(nt, id) &&   /* not a send's plain call (#4921) */
             (name[0] == '_' || (name[0] >= 'a' && name[0] <= 'z') || (name[0] >= 'A' && name[0] <= 'Z'))) {   /* a setter, not ==, <=, [] = */
-          const char *aty = nt_type(nt, argv[0]);
-          int simple = aty && (sp_streq(aty, "IntegerNode") || sp_streq(aty, "FloatNode") ||
-                               sp_streq(aty, "TrueNode") || sp_streq(aty, "FalseNode") ||
-                               sp_streq(aty, "NilNode") || sp_streq(aty, "SymbolNode") ||
-                               sp_streq(aty, "StringNode") || sp_streq(aty, "LocalVariableReadNode") ||
-                               sp_streq(aty, "InstanceVariableReadNode") || sp_streq(aty, "SelfNode"));
-          TyKind at = repr_of(c, argv[0]).as_ty;
-          /* --share-strings: where the rule shares the String (shr), the
-             writer is handed its handle, not a copy of its bytes, and where
-             the value is taken as the handle it is that handle (hv) */
-          Repr hr = repr_of(c, id);
-          int shr = user_assign_handle(c, id), hv = shr && (hr.handle || hr.demand);
-          if (shr && !hv) assign_value_route(c, id, argv[0], 0, 1);
-          if (simple) {
-            buf_puts(b, "({ (void)(");
-            emit_setter_call_for_effect(c, id, shr, b);
-            buf_puts(b, "); ");
-            if (shr) {
-              Buf hb; memset(&hb, 0, sizeof hb);
-              emit_strbuf_handle_of(c, argv[0], &hb);
-              if (hv) buf_puts(b, hb.p);
-              else emit_strbuf_node_read(c, id, hb.p, b);
-              free(hb.p);
-            }
-            /* the value with its nil where the node answers an oint (a
-               parameter that may hold a nil Integer, as a method returning
-               the assignment takes it, #8569) */
-            else if (oint_kind(at) && node_is_oint(c, id)) emit_oint_expr(c, argv[0], at, b);
-            else emit_expr(c, argv[0], b);
-            buf_puts(b, "; })");
-            return 1;
-          }
-          if (shr) at = TY_STRBUF;
-          if (at != TY_UNKNOWN && at != TY_VOID) {
-            Scope *esc = comp_scope_of(c, id);
-            int saved0_arg = argv[0];
-            if (esc) {
-              char svn[32]; snprintf(svn, sizeof svn, "__sv%d", ++g_tmp);
-              LocalVar *lv = scope_local_intern(esc, svn);
-              lv->type = at;
-              lv->str_shared = shr;
-              /* the temporary holds the argument's value, nil included: an
-                 Integer one that can be nil (`r.x = h[k]&.to_i`) keeps the
-                 slot's nil, or the setter's -2^63 check reads it as -2^63 */
-              lv->nullable_int = (at == TY_INT || at == TY_FLOAT) && nullable_int_value(c, saved0_arg);
-              int rd = nt_new_node((NodeTable *)nt, "LocalVariableReadNode");
-              nt_node_set_str((NodeTable *)nt, rd, "name", svn);
-              comp_grow_node_arrays(c);
-              c->nscope[rd] = c->nscope[id];
-              c->ntype[rd] = at;
-              int saved0 = argv[0];
-              int argsn = nt_ref(nt, id, "arguments");
-              int one[1] = { rd };
-              /* the local is declared in the prelude, ahead of whatever the
-                 call's own emission hoists there (its arguments included) */
-              Buf *decl = g_pre ? g_pre : b;
-              /* the argument's own prelude (a block-taking call's loop) goes
-                 ahead of the declaration, not into the middle of it */
-              Buf apre; memset(&apre, 0, sizeof apre);
-              Buf aval; memset(&aval, 0, sizeof aval);
-              /* a temporary that can hold nil takes the argument's oint form */
-              int sv_oint = slot_is_oint(lv);
-              { Buf *sv_pre = g_pre; g_pre = &apre;
-                if (shr) emit_strbuf_handle_of(c, saved0, &aval);
-                else if (sv_oint) emit_oint_expr(c, saved0, at, &aval);
-                else emit_one_arg(c, saved0, 0, &aval);
-                g_pre = sv_pre; }
-              if (!g_pre) buf_puts(b, "({ ");
-              if (apre.p) buf_puts(decl, apre.p);
-              if (g_pre) emit_indent(g_pre, g_indent);
-              if (sv_oint) buf_puts(decl, oint_ctype(at)); else emit_ctype(c, at, decl);
-              buf_printf(decl, " lv_%s = %s; ", svn, aval.p ? aval.p : "0");
-              free(apre.p); free(aval.p);
-              /* a poly temporary is an sp_RbVal, and its root is the RbVal
-                 kind -- needs_root() answers yes for TY_POLY too, so that
-                 test has to come second, or the plain root reads the
-                 RbVal's tag word as an object pointer at the next mark */
-              if (at == TY_POLY) buf_printf(decl, "SP_GC_ROOT_RBVAL(lv_%s); ", svn);
-              else if (needs_root(at) && !comp_ty_value_obj(c, at)) buf_printf(decl, "SP_GC_ROOT(lv_%s); ", svn);
-              if (g_pre) { buf_puts(g_pre, "\n"); buf_puts(b, "({ "); }
-              nt_node_set_arr((NodeTable *)nt, argsn, "arguments", one, 1);
-              buf_puts(b, "(void)(");
-              emit_setter_call_for_effect(c, id, shr, b);
-              buf_puts(b, "); ");
-              int back[1] = { saved0 };
-              nt_node_set_arr((NodeTable *)nt, argsn, "arguments", back, 1);
-              /* the assignment's value is the argument as written, nil
-                 included: its oint where the consumer takes one */
-              if (shr && !hv) {
-                char sref[40]; snprintf(sref, sizeof sref, "lv_%s", svn);
-                emit_strbuf_node_read(c, id, sref, b);   /* the handle's read */
-              }
-              else if (sv_oint && !(node_is_oint(c, id) || repr_of(c, id).kind == RK_OPT))
-                buf_printf(b, "%s(lv_%s)", oint_arg(at), svn);
-              else buf_printf(b, "lv_%s", svn);
-              buf_puts(b, "; })");
-              for (int k = esc->nlocals - 1; k >= 0; k--)
-                if (sp_streq(esc->locals[k].name, svn)) {
-                  memmove(&esc->locals[k], &esc->locals[k + 1], sizeof(LocalVar) * (size_t)(esc->nlocals - k - 1));
-                  esc->nlocals--;
-                  break;
-                }
-              return 1;
-            }
-          }
+          if (emit_setter_assign_value(c, id, argv, b)) return 1;
         }
       }
     }
