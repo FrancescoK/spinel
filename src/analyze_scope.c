@@ -2910,13 +2910,13 @@ static int sg_unparen(const NodeTable *nt, int recv) {
 }
 
 /* The innermost `def` whose body holds `id`, or -1 */
-static int sg_enclosing_def(const NodeTable *nt, int id) {
-  int in = -1;
-  for (int d = 0; d < nt->count; d++)
-    if (d != id && nt_kind(nt, d) == NK_DefNode && sg_contains(nt, nt_ref(nt, d, "body"), id, 0) &&
-        (in < 0 || sg_contains(nt, nt_ref(nt, in, "body"), d, 0)))
-      in = d;
-  return in;
+static int sg_enclosing_def(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  Scope *s = comp_scope_of(c, id);
+  /* the scope walk_scope gave the node: a method's, or a body's; it read
+     every node of the program per `def self.m` before, quadratic in the
+     program (make scale-test) */
+  return (s && s->def_node >= 0 && s->def_node != id && nt_kind(nt, s->def_node) == NK_DefNode) ? s->def_node : -1;
 }
 
 void register_singleton_defs(Compiler *c) {
@@ -2973,7 +2973,7 @@ void register_singleton_defs(Compiler *c) {
          no call on the object reaches. A user class's instance answers
          NoMethodError there instead, a known gap. */
       if (idk == NK_DefNode && rk == NK_SelfNode) {
-        int ed = sg_enclosing_def(nt, id), es = -1;
+        int ed = sg_enclosing_def(c, id), es = -1;
         for (int k = 0; ed >= 0 && k < c->nscopes && es < 0; k++) if (c->scopes[k].def_node == ed) es = k;
         int eci = es >= 0 ? c->scopes[es].class_id : -1;
         if (eci >= 0 && !c->scopes[es].is_cmethod && c->classes[eci].name &&
@@ -3055,7 +3055,7 @@ void register_singleton_defs(Compiler *c) {
         if (sg_def_needs_self(c, id))
           nt_node_set_int(nt, id, "sg_needs_self_refused", 1);
         else if (bk == SG_CONST ? !sg_const_holds_class(c, rn)
-                                : !sp_streq(rn, "__self") || sg_enclosing_def(nt, id) >= 0)
+                                : !sp_streq(rn, "__self") || sg_enclosing_def(c, id) >= 0)
           nt_node_set_int(nt, id, "sg_untraced_refused", 1);
       }
       continue;   /* not statically traceable: leave as today */
