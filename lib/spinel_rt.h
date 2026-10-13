@@ -2219,6 +2219,10 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
        deliberately excluded here. */
     "minmax", "overlap?", "bsearch", "member?", "%", "entries", "tally",
     "grep", "grep_v", "uniq", "lazy", "chunk", "chunk_while", "cycle",
+    /* to_set is real (Enumerable's, same family as tally/uniq above) --
+       missing here made respond_to?(:to_set) answer false for every
+       Range, boxed or not (K-026). */
+    "to_set",
     NULL };
   static const char *const symm[] = {
     "to_proc", "to_sym", "id2name", "name", "length", "size", "succ", "next",
