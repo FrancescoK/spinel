@@ -499,6 +499,44 @@ int is_mixin_call(const char *n) {
   return sp_streq(n, "include") || sp_streq(n, "extend") || sp_streq(n, "prepend");
 }
 
+int is_class_plain_query(const char *n) {
+  static const char *const names[] = {
+    "new", "allocate", "name", "to_s", "inspect", "===", "==", "!=", "<", "<=", ">", ">=", "<=>",
+    "hash", "eql?", "equal?", "respond_to?", "is_a?", "kind_of?", "instance_of?", "const_defined?",
+    "method_defined?", "instance_methods", "private_class_method", "public_class_method",
+    "private_constant", "attr_accessor", "attr_reader", "attr_writer", "include?", NULL };
+  for (int i = 0; n && names[i]; i++) if (sp_streq(n, names[i])) return 1;
+  return is_mixin_call(n) || is_visibility_or_module_function(n);
+}
+
+int is_self_rebinding_call(const char *n) {
+  return is_eval_exec_family(n) || sp_streq(n, "define_singleton_method");
+}
+
+int is_class_relatives_query(const char *n) {
+  return sp_streq(n, "ancestors") || sp_streq(n, "superclass") || sp_streq(n, "subclasses") ||
+         sp_streq(n, "descendants") || sp_streq(n, "included_modules");
+}
+
+int is_class_query(const char *n) {
+  return sp_streq(n, "class");
+}
+
+int is_method_owner_query(const char *n) {
+  return sp_streq(n, "owner");
+}
+
+int is_method_object_maker(const char *n) {
+  return sp_streq(n, "method") || sp_streq(n, "public_method") || sp_streq(n, "singleton_method") ||
+         sp_streq(n, "instance_method") || sp_streq(n, "public_instance_method");
+}
+
+int is_constant_or_object_reflection(const char *n) {
+  return sp_streq(n, "const_get") || sp_streq(n, "const_source_location") || sp_streq(n, "nesting") ||
+         sp_streq(n, "attached_object") || sp_streq(n, "each_object") || sp_streq(n, "eval") ||
+         sp_streq(n, "binding");
+}
+
 int is_const_set_name(const char *n) {
   return sp_streq(n, "const_set");
 }

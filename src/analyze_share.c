@@ -1290,14 +1290,31 @@ static int sh_named_first(const struct ShNamed *a, int n, const char *name);
    dropped at its start. */
 static int sh_targets_in(ShareFacts *F, Compiler *c, int call, int *out, int cap) {
   (void)F;
-  int n = cplan_targets(c, call, out, cap);
-  return n == CPT_UNKNOWN ? -1 : n;
+  int n = cplan_targets(c, call, out, cap), m = 0;
+  if (n == CPT_UNKNOWN) return -1;
+  for (int i = 0; i < n; i++)
+    if (share_target_reachable(c, call, out[i])) out[m++] = out[i];
+  return m;
 }
 static int sh_targets(Compiler *c, int call, int *out, int cap) { return sh_targets_in(NULL, c, call, out, cap); }
+int share_target_reachable(Compiler *c, int call, int mi) {
+  if (mi < 0 || mi >= c->nscopes || !c->scopes[mi].is_cmethod || cplan_user_fresh(c, call)->via != UC_POLY)
+    return 1;
+  int ncc = 0;
+  const PolyCand *ccs = comp_cmethod_candidates(c, c->scopes[mi].name, &ncc);
+  for (int i = 0; i < ncc; i++)
+    if (ccs[i].mi == mi && comp_class_may_be_value(c, ccs[i].cls)) return 1;
+  return 0;
+}
 /* does a call reach a user method (sh_targets != 0), without listing them */
 static int sh_has_targets(Compiler *c, int call) {
   const CallPlan *p = cplan_user_fresh(c, call);
-  return p->mi >= 0 && p->dispatch != CP_REFUSE;
+  if (p->mi < 0 || p->dispatch == CP_REFUSE) return 0;
+  /* (a boxed receiver's plan led by a class method lists only those no box
+     may reach, share_target_reachable, when none is left) */
+  if (p->via != UC_POLY || !c->scopes[p->mi].is_cmethod) return 1;
+  int tg[CPT_MAX];
+  return sh_targets(c, call, tg, CPT_MAX) != 0;
 }
 
 /* the receiver family a builtin's share row is keyed by */
@@ -4984,6 +5001,8 @@ static int sh_user_call_fresh(Compiler *c, int call, int depth) {
     if (tg[i] < 0 || tg[i] >= c->nscopes) return 0;
     /* (one that cannot bind the arguments only raises) */
     if (!cplan_target_binds(c, call, tg[i])) continue;
+    /* (a class method of a class whose object no box holds) */
+    if (!share_target_reachable(c, call, tg[i])) continue;
     Scope *m = &c->scopes[tg[i]];
     int rp = scope_ret_param(c, tg[i]);
     if (rp >= 0) {

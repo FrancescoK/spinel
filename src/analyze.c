@@ -22173,6 +22173,8 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   for (int i = 0; i < cnt; i++) {
     /* (a target that cannot bind the arguments only raises) */
     if (R->fresh && !cplan_target_binds(c, n, mis[i])) continue;
+    /* (a class method no box can reach) */
+    if (R->fresh && !share_target_reachable(c, n, mis[i])) continue;
     if (!an_ret_handle(c, R, mis[i])) return 0;
     Scope *m = &c->scopes[mis[i]];
     if (R->fresh && !m->ret_fresh && !an_tail_param_arg(c, R, n, mis[i], tc)) return 0;

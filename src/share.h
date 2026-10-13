@@ -230,6 +230,11 @@ int share_call_fresh(Compiler *c, int call);
    a parameter answers the String the other holder keeps, whatever its
    argument. */
 int share_param_kept(Compiler *c, int mi, int pj);
+/* Can call `call` reach its target `mi`? Not a class method a boxed
+   receiver's call lists for the class objects a box may hold, where no
+   class reaching it by that name can be a value (comp_class_may_be_value):
+   no box ever holds that class object. */
+int share_target_reachable(Compiler *c, int call, int mi);
 /* Can block node blk hand control back to the call that yields to it: does
    its body fall off its end, or hold a `next` of its own (not a nested
    block's, lambda's, method's or loop's)? A body whose last statement is a
