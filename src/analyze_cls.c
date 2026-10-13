@@ -51,6 +51,7 @@ int class_has_exc_name(Compiler *c, int ci);   /* codegen.c */
 #define CF_EMPTY 1      /* ... and of no class */
 #define CF_YARGS 8      /* yield positions a method's blocks are bound by */
 #define CF_ROUNDS 64
+#define CF_WHY_CAP (-1)
 
 typedef struct { int cls; const char *name; int el; } CFEntry;
 typedef struct { const char *name; int *mi; int n; int *cmi; int ncm; int *rd; int nrd; int *wr; int nwr; } CFByName;
@@ -77,6 +78,11 @@ typedef struct CF {
   int changed, round;
   int phase;              /* 0: only what the receivers' classes decide; 1: the builtin answers too */
   int *open; int nopen;   /* the runtime's classes and modules the program reopens (cf_open_self) */
+  int *why;                   /* SPINEL_CLS_FACTS=why: per root, the rule (its source line) that made it
+                                 every class, CF_WHY_CAP when a union outgrew CLS_SET_MAX */
+  int *why_el;                /* ... and the element the rule named (a node: the call, the argument) */
+  int *usz;                   /* ... per root, its element count */
+  int (*uev)[3]; int nuev, cuev;  /* ... each union of two classes: the rule's line, the root, the smaller count */
   unsigned char *exec_esc;    /* per scope: its block parameter may run under another self */
   unsigned char *exec_blk;    /* per node: a block or lambda that may run under another self */
   int pending;            /* calls round 0 left to phase 1 */
@@ -195,30 +201,54 @@ static int cf_new_el(CF *f) {
     f->uf = realloc(f->uf, sizeof *f->uf * (size_t)f->cel);
     f->set = realloc(f->set, sizeof *f->set * (size_t)f->cel);
     if (!f->uf || !f->set) cf_oom();
+    if (f->why && !(f->why = realloc(f->why, sizeof *f->why * (size_t)f->cel))) cf_oom();
+    if (f->usz && !(f->usz = realloc(f->usz, sizeof *f->usz * (size_t)f->cel))) cf_oom();
+    if (f->why_el && !(f->why_el = realloc(f->why_el, sizeof *f->why_el * (size_t)f->cel))) cf_oom();
   }
   f->uf[f->nel] = f->nel; f->set[f->nel] = CF_EMPTY;
+  if (f->why) { f->why[f->nel] = 0; f->why_el[f->nel] = -1; f->usz[f->nel] = 1; }
   return f->nel++;
 }
 static int cf_find(CF *f, int x) {
   while (f->uf[x] != x) { f->uf[x] = f->uf[f->uf[x]]; x = f->uf[x]; }
   return x;
 }
-static void cf_unite(CF *f, int a, int b) {
+static void cf_unite_at(CF *f, int a, int b, int line) {
   if (a < 0 || b < 0) return;
   a = cf_find(f, a); b = cf_find(f, b);
   if (a == b) return;
   if (a > b) { int t = a; a = b; b = t; }
   f->uf[b] = a;
-  f->set[a] = cf_union(f, f->set[a], f->set[b]);
+  if (f->usz) {
+    int lo = f->usz[a] < f->usz[b] ? f->usz[a] : f->usz[b];
+    f->usz[a] += f->usz[b];
+    if (f->nuev == f->cuev) {
+      f->cuev = f->cuev ? f->cuev * 2 : 4096;
+      if (!(f->uev = realloc(f->uev, sizeof *f->uev * (size_t)f->cuev))) cf_oom();
+    }
+    f->uev[f->nuev][0] = line; f->uev[f->nuev][1] = a; f->uev[f->nuev][2] = lo; f->nuev++;
+  }
+  int sa = f->set[a], sb = f->set[b];
+  f->set[a] = cf_union(f, sa, sb);
+  if (f->why && f->set[a] == CF_ALL && sa != CF_ALL) {
+    f->why[a] = sb == CF_ALL ? f->why[b] : CF_WHY_CAP;
+    f->why_el[a] = sb == CF_ALL ? f->why_el[b] : -1;
+  }
   f->changed = 1;
 }
-static void cf_add_set(CF *f, int x, int pidx) {
+static void cf_add_set_at(CF *f, int x, int pidx, int line) {
   if (x < 0) return;
+  int x0 = x;
   x = cf_find(f, x);
   int u = cf_union(f, f->set[x], pidx);
-  if (u != f->set[x]) { f->set[x] = u; f->changed = 1; }
+  if (u != f->set[x]) {
+    if (f->why && u == CF_ALL) { f->why[x] = pidx == CF_ALL ? line : CF_WHY_CAP; f->why_el[x] = x0; }
+    f->set[x] = u; f->changed = 1;
+  }
 }
-static void cf_all(CF *f, int x) { cf_add_set(f, x, CF_ALL); }
+#define cf_add_set(f, x, pidx) cf_add_set_at((f), (x), (pidx), __LINE__)
+#define cf_unite(f, a, b) cf_unite_at((f), (a), (b), __LINE__)
+#define cf_all(f, x) cf_add_set_at((f), (x), CF_ALL, __LINE__)
 static int cf_set_of(CF *f, int x) { return x < 0 ? CF_ALL : f->set[cf_find(f, x)]; }
 
 /* ---- the slots ---- */
@@ -1819,6 +1849,119 @@ static int cf_scope_has_super(CF *f, int mi) {
   return has;
 }
 
+/* SPINEL_CLS_FACTS=why: for the receivers with no fact, what made their
+   element every class (the source line of the rule here, or the cap),
+   and the largest elements by node count with their reason */
+static int cf_why_cmp(const void *a, const void *b) { return ((const int *)b)[1] - ((const int *)a)[1]; }
+static void cf_why_report(CF *f) {
+  const NodeTable *nt = f->nt;
+  int maxl = 4096, *byline = calloc((size_t)maxl + 2, sizeof *byline);
+  int *size = calloc((size_t)f->nel, sizeof *size), *recv_any = calloc((size_t)f->nel, sizeof *recv_any);
+  if (!byline || !size || !recv_any) cf_oom();
+  int total = 0;
+  for (int v = 0; v < f->nnodes; v++) size[cf_find(f, v)]++;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    int r = nt_ref(nt, id, "receiver");
+    if (r < 0 || cf_set_of(f, r) != CF_ALL) continue;
+    int root = cf_find(f, r), w = f->why[root];
+    byline[w == CF_WHY_CAP ? maxl + 1 : w > 0 && w <= maxl ? w : 0]++;
+    recv_any[root]++;
+    total++;
+  }
+  fprintf(stderr, "cls-fact-why: %d receivers with no fact\n", total);
+  for (int l = 0; l <= maxl + 1; l++)
+    if (byline[l]) fprintf(stderr, "cls-fact-why: %6d %s%d\n", byline[l], l == maxl + 1 ? "cap " : l ? "analyze_cls.c:" : "unknown ", l == maxl + 1 ? CLS_SET_MAX : l);
+  int nr = 0, (*roots)[2] = malloc(sizeof *roots * (size_t)f->nel);
+  if (!roots) cf_oom();
+  for (int x = 0; x < f->nel; x++) if (recv_any[x]) { roots[nr][0] = x; roots[nr][1] = recv_any[x]; nr++; }
+  qsort(roots, (size_t)nr, sizeof *roots, cf_why_cmp);
+  for (int i = 0; i < nr && i < 10; i++) {
+    int x = roots[i][0];
+    fprintf(stderr, "cls-fact-why: element %d: %d receivers, %d nodes, %s%d\n", x, roots[i][1], size[x],
+            f->why[x] == CF_WHY_CAP ? "cap " : "analyze_cls.c:", f->why[x] == CF_WHY_CAP ? CLS_SET_MAX : f->why[x]);
+    /* back through the calls on a receiver with no fact, to where it began */
+    for (int step = 0, root = x; step < 12; step++) {
+      int e = f->why_el[root];
+      if (e < 0 || e >= f->nnodes) { fprintf(stderr, "cls-fact-why:     <- element %d (not a node)\n", e); break; }
+      int fid = (int)nt_int(nt, e, "node_file", 0);
+      const char *fp = nt_file_path(nt, fid), *nm = nt_str(nt, e, "name");
+      fprintf(stderr, "cls-fact-why:     <- %s:%d %s %s (rule %d)\n", fp ? fp : "?", (int)nt_int(nt, e, "node_line", 0),
+              nt_type(nt, e), nm ? nm : "", f->why[root]);
+      int r = nt_kind(nt, e) == NK_CallNode ? nt_ref(nt, e, "receiver") : -1;
+      if (r < 0 || cf_set_of(f, r) != CF_ALL) break;
+      int nroot = cf_find(f, r);
+      if (nroot == root) { fprintf(stderr, "cls-fact-why:     (its receiver is in the same element)\n"); break; }
+      root = nroot;
+    }
+  }
+  /* each receiver with no fact, back to where its every-class began: the
+     rule and the node (or element) it named */
+  {
+    int cap = 1 << 16, ns = 0;
+    int (*seed)[3] = calloc((size_t)cap, sizeof *seed);   /* line, element, count */
+    if (!seed) cf_oom();
+    NT_FOREACH_KIND(nt, NK_CallNode, id) {
+      int r = nt_ref(nt, id, "receiver");
+      if (r < 0 || cf_set_of(f, r) != CF_ALL) continue;
+      int root = cf_find(f, r), line = f->why[root], el = f->why_el[root];
+      for (int step = 0; step < 200; step++) {
+        int nxt = -1;
+        if (el >= 0 && el < f->nnodes && nt_kind(nt, el) == NK_CallNode) {
+          int rr = nt_ref(nt, el, "receiver");
+          if (rr >= 0 && cf_set_of(f, rr) == CF_ALL) nxt = cf_find(f, rr);
+        }
+        if (nxt < 0 || nxt == root) break;
+        root = nxt; line = f->why[root]; el = f->why_el[root];
+      }
+      int i = 0;
+      for (; i < ns; i++) if (seed[i][0] == line && seed[i][1] == el) break;
+      if (i == ns) { if (ns == cap) continue; seed[ns][0] = line; seed[ns][1] = el; seed[ns][2] = 0; ns++; }
+      seed[i][2]++;
+    }
+    for (int a = 0; a < ns; a++) for (int b = a + 1; b < ns; b++)
+      if (seed[b][2] > seed[a][2]) { int t[3]; memcpy(t, seed[a], sizeof t); memcpy(seed[a], seed[b], sizeof t); memcpy(seed[b], t, sizeof t); }
+    for (int i = 0; i < ns && i < 25; i++) {
+      int e = seed[i][1];
+      if (e >= f->nnodes) {
+        /* a slot: name the local or parameter */
+        for (int mi = 0; mi < f->c->nscopes; mi++)
+          for (int q = 0; q < f->nlv[mi]; q++)
+            if (f->lv_el[mi] && f->lv_el[mi][q] == e) {
+              Scope *sc = &f->c->scopes[mi];
+              const char *ln = q < sc->nlocals ? sc->locals[q].name : "?";
+              fprintf(stderr, "cls-fact-why: seed %5d receivers: rule %d at local %s of %s%s%s\n", seed[i][2], seed[i][0], ln ? ln : "?",
+                      sc->class_id >= 0 ? f->c->classes[sc->class_id].name : "", sc->is_cmethod ? "." : "#", sc->name ? sc->name : "?");
+              goto named;
+            }
+      }
+      const char *fp = e >= 0 && e < f->nnodes ? nt_file_path(nt, (int)nt_int(nt, e, "node_file", 0)) : NULL;
+      const char *nm = e >= 0 && e < f->nnodes ? nt_str(nt, e, "name") : NULL;
+      fprintf(stderr, "cls-fact-why: seed %5d receivers: rule %d at %s:%d %s %s\n", seed[i][2], seed[i][0],
+              fp ? fp : "(element)", e >= 0 && e < f->nnodes ? (int)nt_int(nt, e, "node_line", 0) : e,
+              e >= 0 && e < f->nnodes ? nt_type(nt, e) : "", nm ? nm : "");
+      named:;
+    }
+    free(seed);
+  }
+  /* the unions that built the largest element, by rule, weighted by the
+     smaller side (what each union brought in) */
+  if (nr > 0) {
+    int big = roots[0][0];
+    long *w = calloc((size_t)maxl + 1, sizeof *w);
+    int *cnt = calloc((size_t)maxl + 1, sizeof *cnt);
+    if (!w || !cnt) cf_oom();
+    for (int i = 0; i < f->nuev; i++) {
+      if (cf_find(f, f->uev[i][1]) != big) continue;
+      int l = f->uev[i][0] > 0 && f->uev[i][0] <= maxl ? f->uev[i][0] : 0;
+      w[l] += f->uev[i][2]; cnt[l]++;
+    }
+    for (int l = 0; l <= maxl; l++)
+      if (w[l] >= 200) fprintf(stderr, "cls-fact-why: unions into element %d: analyze_cls.c:%d brought %ld (%d unions)\n", big, l, w[l], cnt[l]);
+    free(w); free(cnt);
+  }
+  free(roots); free(byline); free(size); free(recv_any);
+}
+
 void an_cls_facts(Compiler *c) {
   const NodeTable *nt = c->nt;
   CF f;
@@ -1843,6 +1986,14 @@ void an_cls_facts(Compiler *c) {
   if (!f.uf || !f.set) cf_oom();
   for (int i = 0; i < nt->count; i++) { f.uf[i] = i; f.set[i] = CF_EMPTY; }
   f.nel = nt->count;
+  const char *dump = getenv("SPINEL_CLS_FACTS");
+  if (dump && sp_streq(dump, "why")) {
+    f.why = calloc((size_t)f.cel, sizeof *f.why);
+    f.why_el = malloc(sizeof *f.why_el * (size_t)f.cel);
+    f.usz = malloc(sizeof *f.usz * (size_t)f.cel);
+    if (!f.why || !f.why_el || !f.usz) cf_oom();
+    for (int i = 0; i < f.cel; i++) { f.why_el[i] = -1; f.usz[i] = 1; }
+  }
   f.lv_el = calloc((size_t)c->nscopes + 1, sizeof *f.lv_el);
   f.nlv = malloc(sizeof(int) * ((size_t)c->nscopes + 1));
   f.ret_el = malloc(sizeof(int) * ((size_t)c->nscopes + 1));
@@ -1904,9 +2055,9 @@ void an_cls_facts(Compiler *c) {
     f.set[f.self_el[k]] = f.desc[k];
     /* a class or module the compiler supplies, or one of the runtime's the
        program reopens, runs for any object */
-    if (c->classes[k].def_node >= 0 && nt_int(nt, c->classes[k].def_node, "node_bi", 0) != 0) f.set[f.self_el[k]] = CF_ALL;
+    if (c->classes[k].def_node >= 0 && nt_int(nt, c->classes[k].def_node, "node_bi", 0) != 0) cf_all(&f, f.self_el[k]);
     if (cf_open_self(&f, k)) {
-      f.set[f.self_el[k]] = CF_ALL;
+      cf_all(&f, f.self_el[k]);
       f.open[f.nopen++] = k;
     }
   }
@@ -2013,11 +2164,12 @@ void an_cls_facts(Compiler *c) {
       fprintf(stderr, "\n");
     }
   }
+  if (f.why) cf_why_report(&f);
   /* the pass's own */
   free(f.par); free(f.uf); free(f.set); free(f.ph);
   for (int mi = 0; mi < c->nscopes; mi++) { free(f.lv_el[mi]); free(f.yarg_el[mi]); }
   free(f.lv_el); free(f.nlv); free(f.ret_el); free(f.yval_el); free(f.yarg_el); free(f.has_super); free(f.protocol);
-  free(f.def_mi); free(f.open); free(f.exec_esc); free(f.exec_blk); free(f.self_el); free(f.own); free(f.desc); free(f.fam); free(f.mod); free(f.dyn); free(f.yval_used); free(f.has_native);
+  free(f.def_mi); free(f.why); free(f.why_el); free(f.usz); free(f.uev); free(f.open); free(f.exec_esc); free(f.exec_blk); free(f.self_el); free(f.own); free(f.desc); free(f.fam); free(f.mod); free(f.dyn); free(f.yval_used); free(f.has_native);
   for (int k = 0; k < f.ent_cap; k++) free((char *)f.ent[k].name);
   free(f.ent);
   for (int k = 0; k < f.bn_cap; k++) if (f.bn[k].name) { free((char *)f.bn[k].name); free(f.bn[k].mi); free(f.bn[k].cmi); free(f.bn[k].rd); free(f.bn[k].wr); }
