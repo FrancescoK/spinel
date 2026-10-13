@@ -6870,11 +6870,17 @@ int desugar_value_callable_forwards(Compiler *c) {
     if (anon) fwd_drop_spent_anon_block_param(c, id, n0);
     /* the method's own block may be absent where it is called: a String
        builtin then answers its blockless form (split's Array, an
-       Enumerator), not a yield to no block */
+       Enumerator), not a yield to no block, and so does an Array's, a
+       Hash's or a Range's iterator (its Enumerator). One written in Ruby in
+       the builtins asks block_given? of the enclosing method's block
+       already, and is left to that. */
     Scope *fms = comp_scope_of(c, id);
     int own = anon || (nt_kind(nt, ex) == NK_LocalVariableReadNode && fms && fms->blk_param &&
                        nt_str(nt, ex, "name") && sp_streq(nt_str(nt, ex, "name"), fms->blk_param));
-    if (own && (rt == TY_STRING || rt == TY_IO) && fwd_method_called_blockless(c, fms))
+    int blockless_form = rt == TY_STRING || rt == TY_IO ||
+                         ((ty_is_array(rt) || ty_is_hash(rt) || rt == TY_RANGE) &&
+                          builtin_enum_name_index(name) < 0);
+    if (own && blockless_form && fwd_method_called_blockless(c, fms))
       fwd_branch_on_block_given(c, id);
     /* a splat beside the forward was kept whole while the block was an
        `&` (a block goes on one arm only); the literal now spreads it */
