@@ -1,0 +1,5 @@
+TypeError
+["ab", "cd"]
+[{"k" => nil}, {"k" => 3}]
+["x", {"k" => :two}]
+["ab", "cd!"]
