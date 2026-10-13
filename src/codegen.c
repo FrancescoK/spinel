@@ -17420,6 +17420,24 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
       }
     }
     buf_puts(b, "  return 0;\n}\n");
+    /* A rescued exception's #class, from its name: a class of the program
+       answers its own id, so #superclass and #ancestors walk the user chain
+       from it; any other name stays name-carried on cls_id 0, which
+       sp_class_superclass resolves by name first. */
+    buf_puts(b, "static sp_Class sp_user_exc_class(const char *cls) SP_UNUSED;\n");
+    buf_puts(b, "static sp_Class sp_user_exc_class(const char *cls){\n");
+    for (int i = 0; any && i < c->nclasses; i++) {
+      if (!class_is_exc_subclass(c, i)) continue;
+      const char *cn0 = class_ruby_name(c, i);
+      if (!cn0) cn0 = c->classes[i].name;
+      if (!cn0) continue;
+      char *cn = strdup(cn0);
+      buf_printf(b, "  if(!strcmp(cls,\"%s\"))return ((sp_Class){%d});\n", cn, i);
+      if (c->classes[i].name && !sp_streq(cn, c->classes[i].name))
+        buf_printf(b, "  if(!strcmp(cls,\"%s\"))return ((sp_Class){%d});\n", c->classes[i].name, i);
+      free(cn);
+    }
+    buf_puts(b, "  return ((sp_Class){0, cls});\n}\n");
     /* The modules each exception class includes, for the module-aware match.
        Reuses the same include walk sp_class_ancestors is built from, so
        `rescue SomeModule` and `e.is_a?(SomeModule)` agree. */
