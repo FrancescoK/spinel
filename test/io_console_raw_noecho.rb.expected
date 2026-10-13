@@ -1,4 +1,4 @@
-[Errno::ENOTTY, false]
-[Errno::ENOTTY, false]
+[true, false]
+[true, false]
 "mode raw true 1"
-Errno::ENOTTY
+true

@@ -2,20 +2,23 @@
 # for the block and the settings restored however it ends, and the block's
 # value is the call's (checked under a pseudo-terminal by hand; the test
 # harness has none). On anything else the mode cannot be read: CRuby raises
-# Errno::ENOTTY and the block does not run.
+# the OS's errno (Errno::ENOTTY on Linux, Errno::ENODEV for macOS's
+# /dev/null) and the block does not run.
 require "io/console"
+
+def not_a_tty?(e) = e.is_a?(Errno::ENOTTY) || e.is_a?(Errno::ENODEV)
 
 File.open(File::NULL) do |f|
   ran = false
   begin
     f.raw { ran = true }
   rescue SystemCallError => e
-    p [e.class, ran]
+    p [not_a_tty?(e), ran]
   end
   begin
     f.noecho { |io| ran = io }
   rescue SystemCallError => e
-    p [e.class, ran]
+    p [not_a_tty?(e), ran]
   end
 end
 
@@ -31,5 +34,5 @@ p pick(0).raw { 1 }
 begin
   pick(1).raw { 2 }
 rescue SystemCallError => e
-  p e.class
+  p not_a_tty?(e)
 end
