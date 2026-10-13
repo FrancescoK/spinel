@@ -3049,9 +3049,14 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
          (Probe__Block__CODE) while the class's c_name is its leaf (Block), so
          the owner is found by asking each class whether a constant keyed
          "<...>__<c_name>__<nm>" or "<c_name>__<nm>" exists. */
-      int ccls[64]; const char *ckey[64]; int nc = 0;
+      /* every class that owns one: a fixed 64 left the rest to the default
+         arm, which raised NameError for a class that defines the constant */
+      int *ccls = malloc(sizeof(int) * (size_t)(c->nclasses > 0 ? c->nclasses : 1));
+      const char **ckey = malloc(sizeof(char *) * (size_t)(c->nclasses > 0 ? c->nclasses : 1));
+      if (!ccls || !ckey) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      int nc = 0;
       TyKind ct = TY_UNKNOWN; int uniform = 1;
-      for (int k = 0; k < c->nclasses && nc < 64; k++) {
+      for (int k = 0; k < c->nclasses; k++) {
         const char *kn = c->classes[k].c_name;
         if (!kn) continue;
         char tail[512];
@@ -3096,8 +3101,10 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
                       "\"uninitialized constant %%s::%s\", sp_class_to_s(_t%d))); break;",
                    nm, tk);
         buf_printf(b, " } _t%d; })", tr);
+        free(ccls); free(ckey);
         return 1;
       }
+      free(ccls); free(ckey);
     } }
     LocalVar *cpcv = nm ? comp_const(c, nm) : NULL;
     /* the slot of a flagged constant already read through its receiver (emit_const_recv_wrap) */
