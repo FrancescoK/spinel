@@ -2697,6 +2697,7 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_ANY_ARRAY, "member?",   BSH_PURE },
   { BOP_ANY_ARRAY, "index",     BSH_QUERY },
   { BOP_ANY_ARRAY, "find_index", BSH_QUERY },
+  { BOP_ANY_ARRAY, "bsearch_index", BSH_QUERY },   /* an index, or without a block an Enumerator over the receiver */
   { BOP_ANY_ARRAY, "rindex",    BSH_QUERY },
   { BOP_ANY_ARRAY, "count",     BSH_PURE },
   { BOP_ANY_ARRAY, "size",      BSH_PURE },
