@@ -334,4 +334,5 @@ int is_untabled_native_class_name(const char *n);
 int is_define_method_name(const char *n); /* define_method */
 int is_alias_method_name(const char *n);  /* alias_method */
 
+const char *encoding_const_name(const char *nm);  /* Encoding::NM's encoding name, or NULL */
 #endif

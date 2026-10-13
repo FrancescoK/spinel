@@ -1307,3 +1307,26 @@ int is_define_method_name(const char *n) {
 int is_arguments_node_type(const char *t) { return t && sp_streq(t, "ArgumentsNode"); }
 
 int is_when_node_type(const char *t) { return t && sp_streq(t, "WhenNode"); }
+
+/* The encoding `Encoding::<nm>` names, or NULL. CRuby defines a constant
+   for every encoding name and alias with `-` and `.` as `_`, as written and
+   upcased (Encoding::Shift_JIS, Encoding::ISO_8859_1,
+   Encoding::ANSI_X3_4_1968, Encoding::CP65001); the answer is the
+   encoding's own name (CP65001 is UTF-8). */
+static const char *const enc_const_names[][2] = {
+#include "../lib/sp_encoding_names.h"
+  { NULL, NULL } };
+static int enc_const_spells(const char *name, const char *nm, int up) {
+  for (; *name && *nm; name++, nm++) {
+    char ch = *name == '-' || *name == '.' ? '_' : up && *name >= 'a' && *name <= 'z' ? (char)(*name - 'a' + 'A') : *name;
+    if (ch != *nm) return 0;
+  }
+  return !*name && !*nm;
+}
+const char *encoding_const_name(const char *nm) {
+  if (!nm || !*nm) return NULL;
+  for (int k = 0; enc_const_names[k][0]; k++)
+    if (enc_const_spells(enc_const_names[k][0], nm, 1) || enc_const_spells(enc_const_names[k][0], nm, 0))
+      return enc_const_names[k][1];
+  return NULL;
+}
