@@ -5982,6 +5982,23 @@ static void gc_wb_insert_seg(Compiler *c, Buf *b, size_t fn_off) {
   }
 }
 
+/* The root a method's `self` takes when its body can allocate, or NULL.
+   Every parameter is rooted by the callee, but self is the receiver the
+   caller holds, and the caller roots one only when it is a call's answer
+   (`Pt.new(1, 2).desc`). Two kinds of self arrive as other new values the
+   argument alone holds: a boxed self, which an instance method reopening
+   Object, Numeric, Array or Hash takes (`sp_RbVal self`): every read of $~
+   hands a new MatchData, so `$~.pair(1)` freed it at the body's first
+   allocation; and a String reopening's `const char *self`, which an
+   interpolation hands a new String (`"a#{i}".two`). A typed class's
+   receiver comes from a call or a variable. */
+static const char *method_self_root(Compiler *c, Scope *s) {
+  if (s->class_id < 0 || s->is_cmethod || s->def_node < 0) return NULL;
+  const char *cn = c->classes[s->class_id].c_name;
+  const char *m = is_boxed_self_class_name(cn) ? "SP_GC_ROOT_RBVAL" : is_string_class_name(cn) ? "SP_GC_ROOT_STR" : NULL;
+  int body = m ? nt_ref(c->nt, s->def_node, "body") : -1;
+  return body >= 0 && subtree_may_allocate(c->nt, body) ? m : NULL;
+}
 void emit_method(Compiler *c, Scope *s, Buf *b) {
   /* an IO handle has no slots for a program's instance variables */
   if (s->class_id >= 0 && !s->is_cmethod && io_family_class(c, s->class_id) &&
@@ -6106,6 +6123,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   buf_puts(b, "    SP_GC_SAVE();\n");
   size_t gc_save_len = b->len - gc_save_off;
   if (repr_self_handle(c, (int)(s - c->scopes))) buf_puts(b, "    SP_GC_ROOT(self);\n");
+  else if (method_self_root(c, s)) buf_printf(b, "    %s(self);\n", method_self_root(c, s));
   emit_scope_decls(c, s, b);
   /* a method's entry is a safe point for pending finalizers (sp_gc.h) */
   if (g_uses_finalizers) buf_puts(b, "    SP_FIN_POLL();\n");
@@ -7240,9 +7258,7 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
     cap_self = 1;
     cap_self_class = c->classes[encl->class_id].c_name;
     { const char *rcn = c->classes[encl->class_id].name;
-      self_boxed = rcn && is_builtin_reopen(rcn) &&
-                   (sp_streq(rcn, "Array") || sp_streq(rcn, "Hash") || sp_streq(rcn, "Object") ||
-                    sp_streq(rcn, "Numeric")); }
+      self_boxed = rcn && is_builtin_reopen(rcn) && is_boxed_self_class_name(rcn); }
     self_is_value = c->classes[encl->class_id].is_value_type;
     self_is_ptr = !self_is_value || (encl->name && sp_streq(encl->name, "initialize"));
   }
@@ -8608,9 +8624,7 @@ else if (orecv >= 0 && onm) {
   int self_is_value = cap_self && c->classes[scls].is_value_type;
   /* an Object / Array / Hash / Numeric reopening holds self boxed (its
      methods take `sp_RbVal self`): captured as the boxed value */
-  int self_boxed = cap_self && !self_is_value && c->classes[scls].name &&
-                   (sp_streq(c->classes[scls].name, "Object") || sp_streq(c->classes[scls].name, "Array") ||
-                    sp_streq(c->classes[scls].name, "Hash") || sp_streq(c->classes[scls].name, "Numeric"));
+  int self_boxed = cap_self && !self_is_value && is_boxed_self_class_name(c->classes[scls].name);
   const char *self_cls = cap_self ? c->classes[scls].c_name : NULL;
 
   /* parameter metadata for Proc#parameters: every parameter kind in signature
