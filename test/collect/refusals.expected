@@ -78,6 +78,12 @@ spinel: 1 refusal, nothing written
 == test/reject/builtin_ivar_string_write.rb [promote] rc=1
 spinel: test/reject/builtin_ivar_string_write.rb:7: an instance variable set on a String (`@x = v` in a String method, or instance_variable_set): a String is copied, not shared, so it keeps no identity for the variable yet (waits on #6765); see docs/limitations.md
 spinel: 1 refusal, nothing written
+== test/reject/builtin_reopen_bare_method_defined.rb [default] rc=1
+spinel: test/reject/builtin_reopen_bare_method_defined.rb:6: unsupported method_defined? (needs a compile-time-known class and literal method name): node N (CallNode `method_defined?`) recv=-/ty-1 argc=1 arg0ty8
+spinel: 1 refusal, nothing written
+== test/reject/builtin_reopen_bare_method_defined.rb [promote] rc=1
+spinel: test/reject/builtin_reopen_bare_method_defined.rb:6: unsupported method_defined? (needs a compile-time-known class and literal method name): node N (CallNode `method_defined?`) recv=-/ty-1 argc=1 arg0ty8
+spinel: 1 refusal, nothing written
 == test/reject/builtin_singleton_alias_call.rb [default] rc=1
 spinel: test/reject/builtin_singleton_alias_call.rb:8: File.basename: calling an alias of a builtin singleton method is not supported; see docs/limitations.md
 spinel: 1 refusal, nothing written
