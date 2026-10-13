@@ -7,3 +7,6 @@ false
 [:inspect, :to_s]
 false
 false
+[:__noarg_inspect]
+true
+"own"

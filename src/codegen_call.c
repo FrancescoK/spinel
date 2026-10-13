@@ -1824,9 +1824,11 @@ int name_is_synth_method(Compiler *c, const char *m) {
   /* a class's copy of its initialize as a method, for its own calls of it
      (desugar_explicit_initialize_calls) */
   if (sp_streq(m, "__spinel_reinit")) return 1;
-  /* the no-argument siblings of an inspect / to_s whose parameters are all
-     optional (desugar_noarg_display_wrappers) */
-  if (sp_streq(m, "__noarg_inspect") || sp_streq(m, "__noarg_to_s")) return 1;
+  /* `__noarg inspect` / `__noarg to_s`: the no-argument siblings of an
+     inspect / to_s whose parameters are all optional
+     (desugar_noarg_display_wrappers); the space is no `def`'s, so a method
+     the program names `__noarg_inspect` is its own */
+  if (strncmp(m, "__noarg ", 8) == 0) return 1;
   /* `__inc <n> <name>`: the shadow copy of an included module's method, kept
      so an override can reach it through super (#3738) */
   if (strncmp(m, "__inc ", 6) == 0) return 1;

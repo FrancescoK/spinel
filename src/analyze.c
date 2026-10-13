@@ -142,7 +142,7 @@ static int bare_rescue_spec_cid(Compiler *c, int rescue_id) {
 int method_name_implicitly_invoked(const char *nm) {
   static const char *const implicit[] = {
     "to_s", "inspect", "==", "<=>", "eql?", "hash", "each", "coerce",
-    "__noarg_to_s", "__noarg_inspect",   /* desugar_noarg_display_wrappers */
+    "__noarg to_s", "__noarg inspect",   /* desugar_noarg_display_wrappers */
     "to_str", "to_ary", "to_a", "to_i", "to_int", "to_h", "to_hash", "to_proc", "call",
     "to_path",   /* File, Dir and IO's path slots ask it first (rb_get_path) */
     "to_io",     /* IO.select waits on whatever answers it; the only caller is
@@ -41352,9 +41352,11 @@ static int def_params_all_optional(const NodeTable *nt, int pn) {
    an inspected Array), and the method's C function takes its parameters.
    Those callers passed none -- the C did not compile -- or, finding a
    method with parameters, rendered the default form instead. Each such def
-   in a class or module body gets a sibling `def __noarg_inspect = inspect`
-   (or __noarg_to_s), a plain call whose defaults bind as any other call's,
-   and the runtime's callers call that (display_method_scope). */
+   in a class or module body gets a sibling, `__noarg inspect` (or
+   `__noarg to_s`): `= inspect`, a plain call whose defaults bind as any other
+   call's, and the runtime's callers call that (display_method_scope). The
+   space keeps the name out of the program's reach, as `__inc` does: no
+   `def` the program writes is taken for it. */
 static void desugar_noarg_display_wrappers(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
@@ -41395,7 +41397,7 @@ static void desugar_noarg_display_wrappers(Compiler *c) {
       nt_node_set_ref(nt, call, "arguments", -1);
       nt_node_set_ref(nt, call, "block", -1);
       nt_node_set_arr(nt, st, "body", &call, 1);
-      nt_node_set_str(nt, def, "name", to_s ? "__noarg_to_s" : "__noarg_inspect");
+      nt_node_set_str(nt, def, "name", to_s ? "__noarg to_s" : "__noarg inspect");
       nt_node_set_ref(nt, def, "receiver", -1);
       nt_node_set_ref(nt, def, "parameters", -1);
       nt_node_set_ref(nt, def, "body", st);
@@ -41524,7 +41526,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_io_popen_block(c);             /* IO.popen(cmd) { } -> pipe + spawn + wait */
   desugar_literal_undef_method(c);       /* undef_method :a in a body -> undef a */
   desugar_explicit_initialize_calls(c);  /* initialize(x) in a method -> a copy of it as a method */
-  desugar_noarg_display_wrappers(c);     /* def inspect(i = 0) -> + def __noarg_inspect = inspect */
+  desugar_noarg_display_wrappers(c);     /* def inspect(i = 0) -> + `__noarg inspect` = inspect */
   /* a bare constant CRuby's lookup cannot reach, bound by its leaf name to a
      nested definition: refused while the source still says where each
      reference is written */

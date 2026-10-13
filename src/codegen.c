@@ -9822,14 +9822,14 @@ const char *class_ruby_name(Compiler *c, int ci) {
 /* The scope the runtime calls for an object's String (inspect when
    want_inspect, else to_s), resolved from class cid, *defcls set to the class
    that defines it; -1 for none. One that takes parameters, all of them
-   optional, is called through its __noarg_ sibling, which passes the
+   optional, is called through its `__noarg ` sibling, which passes the
    defaults (desugar_noarg_display_wrappers). */
 int display_method_scope(Compiler *c, int cid, int want_inspect, int *defcls) {
   int d = cid;
   int mi = comp_method_in_chain(c, cid, want_inspect ? "inspect" : "to_s", &d);
   if (mi >= 0 && c->scopes[mi].nparams > 0) {
     int d2 = cid;
-    int w = comp_method_in_chain(c, cid, want_inspect ? "__noarg_inspect" : "__noarg_to_s", &d2);
+    int w = comp_method_in_chain(c, cid, want_inspect ? "__noarg inspect" : "__noarg to_s", &d2);
     if (w >= 0) { mi = w; d = d2; }
   }
   if (defcls) *defcls = d;
