@@ -1962,6 +1962,8 @@ void arm_node_infer(Compiler *c, int site, int block, TyKind kind, int node);
 int view_push(Compiler *c, int id, TyKind t);
 void view_pop(Compiler *c, int tok);
 int view_depth(void);
+/* node `id`'s type with no view open, asked without recording it (codegen_util.c) */
+TyKind cg_natural_type(Compiler *c, int id);
 int view_mark(void);
 /* The arm context a poly dispatch's builtin arm re-enters the call under,
    pushed and popped like a view (view_push_arm / view_pop) and put back by

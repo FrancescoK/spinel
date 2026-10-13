@@ -1808,7 +1808,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
            answers as a raw C scalar, so this arm needs no table of its own --
            it boxes whatever the type names. A hand-kept list stood here and
            went stale within a day of being written. */
-        TyKind nat = infer_uncached(c, id);
+        TyKind nat = cg_natural_type(c, id);
         int boxit = (nat != TY_POLY && nat != TY_UNKNOWN && nat != TY_VOID &&
                      !ty_is_array(nat) && nat != TY_STRING);
         if (boxit && !user_defines_or_reads(c, name)) {
@@ -1916,14 +1916,14 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           /* The call is typed poly but its natural answer may render as a C
              pointer (a poly-hash face answering an array): box the text under
              that type, or the guard's two arms disagree (#4070 follow-up). */
-          TyKind natg = ret2 == TY_POLY ? infer_uncached(c, id) : ret2;
+          TyKind natg = ret2 == TY_POLY ? cg_natural_type(c, id) : ret2;
           /* A Hash/Enumerable face name answers what it would under the face
              the arm below installs -- ask with the same pin, or the answer
              comes back poly while the value arm renders that face's C type. */
           if (ret2 == TY_POLY && natg == TY_POLY &&
               ty_poly_hash_face_name(nt_str(nt, id, "name"))) {
             int fv = view_push_face(recv, TY_POLY_POLY_HASH);
-            TyKind fac = infer_uncached(c, id);
+            TyKind fac = cg_natural_type(c, id);
             view_pop(c, fv);
             /* a face that answers another hash boxes
                through a different entry point than emit_boxed_text picks */
@@ -2079,7 +2079,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           /* infer_type widened a C bool answer to poly so the nil arm has
              somewhere to live; the value arm still renders the bool. Emit it
              under its natural type and box the text. */
-          TyKind nat2 = ret2 == TY_POLY ? infer_uncached(c, id) : ret2;
+          TyKind nat2 = ret2 == TY_POLY ? cg_natural_type(c, id) : ret2;
           int sn_box = (ret2 == TY_POLY && nat2 != TY_POLY &&
                         nat2 != TY_UNKNOWN && nat2 != TY_VOID);
           int vw = sn_box ? view_push(c, id, nat2) : -1;
@@ -2139,7 +2139,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
          the slot it lands in disagrees (#4070). */
       {
         TyKind ret3 = repr_of(c, id).as_ty;
-        TyKind nat3 = ret3 == TY_POLY ? infer_uncached(c, id) : ret3;
+        TyKind nat3 = ret3 == TY_POLY ? cg_natural_type(c, id) : ret3;
         if (ret3 == TY_POLY && g_sn_skip != id &&
             nat3 != TY_POLY && nat3 != TY_UNKNOWN && nat3 != TY_VOID) {
           int sv_skip3 = g_sn_skip; g_sn_skip = id;

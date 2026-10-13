@@ -15859,7 +15859,7 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
     enum_walk = repr_of(c, id).kind == RK_BOXED;
   }
   int sv_ig = g_infer_ignore_brk; g_infer_ignore_brk = 1;
-  TyKind normal_ty = self_ret ? comp_ntype(c, wrecv) : infer_uncached(c, id);
+  TyKind normal_ty = self_ret ? comp_ntype(c, wrecv) : cg_natural_type(c, id);
   g_infer_ignore_brk = sv_ig;
   if (normal_ty == TY_STRBUF) normal_ty = TY_STRING;
   int tR = ++g_tmp, tG = ++g_tmp, tS = ++g_tmp;
@@ -28568,7 +28568,7 @@ static int sn_arg_runs_nothing(Compiler *c, int n) {
 static int emit_reopen_call_first(Compiler *c, int id, int recv, TyKind rt, const char *name, int mi, Buf *b) {
   if (rt == TY_IO) { emit_io_reopen_call(c, id, recv, name, b); return 1; }
   if ((rt != TY_STRING && rt != TY_INT && rt != TY_FLOAT) || !sn_guard_pending(c, id)) return 0;
-  TyKind ret = repr_of(c, id).as_ty, nat = ret == TY_POLY ? infer_uncached(c, id) : ret;
+  TyKind ret = repr_of(c, id).as_ty, nat = ret == TY_POLY ? cg_natural_type(c, id) : ret;
   if (nat != c->scopes[mi].ret || repr_of(c, recv).kind == RK_BOXED || g_n_argov >= MAX_ARG_OVERRIDE) return 0;
   int an = nt_ref(c->nt, id, "arguments"), argc = 0;
   const int *argv = an >= 0 ? nt_arr(c->nt, an, "arguments", &argc) : NULL;
