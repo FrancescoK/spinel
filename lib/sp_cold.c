@@ -1665,7 +1665,8 @@ const char *sp_file_basename(const char *path) {SP_GC_ROOT_STR(path);
 /* File.basename(path, suffix): ".*" strips the (non-leading) last extension,
    any other suffix strips a literal tail match (#2774). */
 const char *sp_file_basename2(const char *path, const char *suffix) {SP_GC_ROOT_STR(path);SP_GC_ROOT_STR(suffix);
-  const char *base = sp_file_basename(path);
+  /* a new String, read again after the copy below allocates */
+  const char *base = sp_file_basename(path); SP_GC_ROOT_STR(base);
   size_t n = strlen(base);
   if (suffix && strcmp(suffix, ".*") == 0) {
     const char *dot = strrchr(base, '.');
@@ -1681,7 +1682,8 @@ const char *sp_file_basename2(const char *path, const char *suffix) {SP_GC_ROOT_
   return r;
 }
 
-const char *sp_file_extname(const char *path) {
+const char *sp_file_extname(const char *path) {SP_GC_ROOT_STR(path);
+  /* (the extension is copied out of the path after the copy allocates) */
   const char *base = strrchr(path, '/');
   base = base ? base + 1 : path;
   const char *dot = strrchr(base, '.');
