@@ -861,8 +861,54 @@ static void cf_protocol_returns(CF *f, int v, int el) {
     }
   }
 }
+/* a builtin whose value is a scalar no program class is: a comparison, a
+   count or size, a conversion to a String, a number or a Symbol, a
+   predicate. It keeps none of its arguments. */
+static int cf_scalar_answer(const char *nm) {
+  static const char *const names[] = { "==", "!=", "<", "<=", ">", ">=", "<=>", "===", "eql?", "equal?",
+    "=~", "!~", "size", "length", "bytesize", "count", "hash", "to_i", "to_f", "to_s", "to_str", "to_sym",
+    "inspect", NULL };
+  if (!nm) return 0;
+  for (int i = 0; names[i]; i++) if (sp_streq(nm, names[i])) return 1;
+  size_t l = strlen(nm);
+  return l > 1 && nm[l - 1] == '?';
+}
+/* a builtin that answers its receiver's elements (one, or a run of them)
+   and keeps none of its arguments: an index or a key is only looked up */
+static int cf_element_answer(const char *nm) {
+  static const char *const names[] = { "[]", "first", "last", "pop", "shift", "sample", "min", "max",
+    "dig", "at", NULL };
+  for (int i = 0; nm && names[i]; i++) if (sp_streq(nm, names[i])) return 1;
+  return 0;
+}
+/* Is the call plain: no block, no Symbol (a method a builtin may call by
+   name), no splat? Only then is the answer by kind. A block keeps today's
+   rule: its parameters take what the call's value is united with, and a
+   receiver built by a method the compiler supplies (ThreadGroup's
+   __groups) reaches them only that way. */
+static int cf_plain_builtin_call(CF *f, const int *argv, int argc, int blk) {
+  const NodeTable *nt = f->nt;
+  if (blk >= 0) return 0;
+  for (int i = 0; i < argc; i++) {
+    NodeKind k = nt_kind(nt, argv[i]);
+    if (k == NK_SymbolNode || k == NK_BlockArgumentNode || k == NK_SplatNode) return 0;
+  }
+  return 1;
+}
 static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc, int blk, const char *nm) {
   const NodeTable *nt = f->nt;
+  if (cf_plain_builtin_call(f, argv, argc, blk)) {
+    if (cf_scalar_answer(nm)) {
+      cf_add_set(f, v, cf_bv_set(f));
+      return;
+    }
+    if (cf_element_answer(nm)) {
+      cf_unite(f, v, recv_el);
+      cf_add_set(f, v, cf_bv_set(f));
+      cf_protocol_returns(f, v, recv_el);
+      return;
+    }
+  }
   cf_unite(f, v, recv_el);
   cf_add_set(f, v, cf_bv_set(f));
   cf_protocol_returns(f, v, recv_el);
