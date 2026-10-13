@@ -13765,8 +13765,11 @@ static void incl_subst(NodeTable *nt, int node, const InclSubst *is, int self_mo
         incl_mod_singleton(nt, is->mod_name, is->n0, cm))
       incl_call_on_mod(nt, node, is);
     else if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && !introspect &&
-             nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), is->param))
-      nt_node_set_ref(nt, node, "receiver", -1);
+             nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), is->param)) {
+      /* `base.class` keeps its receiver, which becomes the class below:
+         bare, `class` is the keyword */
+      if (!sp_streq(cm, "class")) nt_node_set_ref(nt, node, "receiver", -1);
+    }
   }
   if (k == NK_SelfNode && self_mod) {
     int line = (int)nt_int(nt, node, "node_line", 0);
