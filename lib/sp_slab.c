@@ -792,7 +792,15 @@ static SP_NOINLINE void *sp_gc_alloc_full(size_t sz, void (*fin)(void *), void (
   if (SP_EXPECT(sp_alloc_report_on, 0)) sp_alloc_report_count((void *)scn, sz);
   SP_GC_HEAP_PUSH(h); sp_gc_bytes_add(need);
   if (SP_EXPECT(sp_slab_verify_on, 0)) sp_slab_note(h, 1);
-  SP_GC_CTR_SET(sp_gc_alloc_fast_ok, sp_gc_stress_checked && sp_slab_on > 0 && !sp_slab_verify_on && !sp_alloc_report_on);
+  /* Stored only when it changes, which is once. Every lean allocation on
+     every worker reads the flag, and the line it sits on holds the slab's other
+     switches the allocation paths read (sp_slab_verify_on, sp_slab_epoch), so
+     an unconditional store here took that line away from all of them on each
+     allocation that came this way -- one past 256 bytes, a run that ran dry,
+     a collection due -- and their next allocations missed on it. The byte
+     count was made per-worker for the same reason (sp_gc_bytes_add). */
+  { int ok = sp_gc_stress_checked && sp_slab_on > 0 && !sp_slab_verify_on && !sp_alloc_report_on;
+    if (SP_GC_CTR_GET(sp_gc_alloc_fast_ok) != ok) SP_GC_CTR_SET(sp_gc_alloc_fast_ok, ok); }
   return (char *)h + sizeof(sp_gc_hdr);
 #else
   SP_HEAP_LOCK();
