@@ -1,0 +1,20 @@
+class ShrsrApp
+  def secret_key_base: () -> String
+  def part: (untyped pairs, Integer index) -> String
+  def db_time: (untyped value) -> String?
+end
+
+class ShrsrRec
+  def created_at=: (untyped value) -> nil
+end
+
+class ShrsrTails
+  def ifs: (bool f) -> String
+  def ternary: (bool f) -> String
+  def orop: () -> String
+  def early: (bool f) -> String
+  def elsifs: (Integer n) -> String
+  def looped: (untyped arr) -> String
+  def memo: () -> String
+  def cased: (Integer n) -> String
+end

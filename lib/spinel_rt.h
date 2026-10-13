@@ -2951,6 +2951,13 @@ static inline const char *sp_poly_unbox_s(sp_RbVal v) {
   if (sp_poly_is_strbuf(v) && v.v.p) return sp_String_cstr((sp_String *)v.v.p);
   return v.v.s;
 }
+/* sp_poly_unbox_s for a method answering the String a box holds: the box's
+   handle (NULL when it holds plain bytes) goes to the deep-return side
+   channel, which the caller picks up as it does a handle's read. */
+static inline const char *sp_poly_unbox_s_pub(sp_RbVal v) {
+  _sp_ret_strbuf = (sp_poly_is_strbuf(v) && v.v.p) ? v.v.p : NULL;
+  return sp_poly_unbox_s(v);
+}
 /* The object pointer a boxed value carries, for a slot that holds pointers
    rather than sp_RbVal (a PtrArray of one user class). nil is a NULL element,
    which is how that slot spells nil already. */

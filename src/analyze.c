@@ -21301,7 +21301,7 @@ static void an_returns_by_scope(Compiler *c, int **start, int **list) {
 /* fresh_ok (--share-strings, the pickup's own ask): a tail answering a
    fresh String (share_node_fresh) is admitted too, counted in fresh; bangs
    counts the reads that are a bang on a handle (ret_pub_bang) */
-typedef struct { int reads, nils, fresh_ok, fresh, mi, param, arg_depth, bangs; } TailCount;
+typedef struct { int reads, nils, fresh_ok, fresh, mi, param, arg_depth, bangs, in_begin; } TailCount;
 /* Is node a String `||` or `&&` whose left operand is a String, so that it
    answers one of its operands or nil (never false): the tail walk takes
    its operands as arms, and emit_tail_value emits them so. */
@@ -21314,6 +21314,17 @@ int an_tail_logic_op(Compiler *c, int node) {
 typedef struct { unsigned char *st; int *ret_start, *ret_list; int fresh; } RetHandles;
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc);
 static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *n, RetHandles *R);
+/* A box a seeded String method answers: its unboxing at the return
+   publishes the handle the box holds (sp_poly_unbox_s_pub). */
+static int an_tail_boxed_string(Compiler *c, int node, TailCount *tc) {
+  int mi = tc->mi;
+  if (!c->share_strings || tc->in_begin || mi <= 0 || !c->scopes[mi].ret_rbs_seeded ||
+      c->scopes[mi].ret != TY_STRING || node < 0 || c->ntype[node] != TY_POLY) return 0;
+  /* the kinds whose unboxing at the return is the one that publishes */
+  NodeKind k = nt_kind(c->nt, node);
+  return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_CallNode ||
+         k == NK_OrNode || k == NK_AndNode;
+}
 static int an_stmts_tail_shared(Compiler *c, int st, int nil_ok, TailCount *tc, RetHandles *R) {
   int n = 0; const int *b = st >= 0 && nt_kind(c->nt, st) == NK_StatementsNode ? nt_arr(c->nt, st, "body", &n) : NULL;
   if (st < 0) { tc->nils += nil_ok; return nil_ok; }
@@ -21346,12 +21357,17 @@ static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount
   }
   if (c->share_strings && k == NK_ParenthesesNode) return an_stmts_tail_shared(c, nt_ref(nt, node, "body"), nil_ok, tc, R);
   if (c->share_strings && k == NK_BeginNode) {
-    /* the body's value is the begin's only when no else follows it */
-    int be = nt_ref(nt, node, "else_clause");
-    if (be < 0 && !an_stmts_tail_shared(c, nt_ref(nt, node, "statements"), nil_ok, tc, R)) return 0;
-    for (int rc = nt_ref(nt, node, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
-      if (!an_stmts_tail_shared(c, nt_ref(nt, rc, "statements"), nil_ok, tc, R)) return 0;
-    return be < 0 || an_stmts_tail_shared(c, nt_ref(nt, be, "statements"), nil_ok, tc, R);
+    /* the body's value is the begin's only when no else follows it (a box
+       its arms answer is unboxed in the begin's result slot, which does not
+       publish: in_begin) */
+    int be = nt_ref(nt, node, "else_clause"), ok = 1;
+    tc->in_begin++;
+    if (be < 0 && !an_stmts_tail_shared(c, nt_ref(nt, node, "statements"), nil_ok, tc, R)) ok = 0;
+    for (int rc = nt_ref(nt, node, "rescue_clause"); ok && rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
+      if (!an_stmts_tail_shared(c, nt_ref(nt, rc, "statements"), nil_ok, tc, R)) ok = 0;
+    ok = ok && (be < 0 || an_stmts_tail_shared(c, nt_ref(nt, be, "statements"), nil_ok, tc, R));
+    tc->in_begin--;
+    return ok;
   }
   if (c->share_strings && (k == NK_CaseNode || k == NK_CaseMatchNode)) {
     int n = 0; const int *arms = nt_arr(nt, node, "conditions", &n);
@@ -21370,9 +21386,12 @@ static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount
   }
   if (c->share_strings && k == NK_RescueModifierNode) {
     int e = nt_ref(nt, node, "expression"), r = nt_ref(nt, node, "rescue_expression");
-    return R ? an_tail_handle(c, R, e, tc) && an_tail_handle(c, R, r, tc)
-             : an_tail_is_shared_handle(c, e, nil_ok, tc, NULL) &&
-               an_tail_is_shared_handle(c, r, nil_ok, tc, NULL);
+    tc->in_begin++;
+    int ok = R ? an_tail_handle(c, R, e, tc) && an_tail_handle(c, R, r, tc)
+               : an_tail_is_shared_handle(c, e, nil_ok, tc, NULL) &&
+                 an_tail_is_shared_handle(c, r, nil_ok, tc, NULL);
+    tc->in_begin--;
+    return ok;
   }
   /* A String `x || y` answers x, or y where x answers nil: both are arms
      (`a.squeeze!("b") || a` answers a's String either way). A String
@@ -21388,7 +21407,7 @@ static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount
   }
   if (!c->share_strings || (k != NK_IfNode && k != NK_UnlessNode)) {
     if (R && R->fresh) return share_value_fresh(c, node, 0);
-    int ok = an_arg_is_shared_handle(c, node) || strbuf_builtin_tail(c, node);
+    int ok = an_arg_is_shared_handle(c, node) || strbuf_builtin_tail(c, node) || an_tail_boxed_string(c, node, tc);
     tc->reads += ok;
     /* a bang on a handle (strbuf_builtin_tail) answers it, or nil */
     if (ok && strbuf_bang_tail(c, node)) {

@@ -11516,7 +11516,20 @@ static int struct_ret_unboxes(TyKind t) {
   const TyTraits *tr = ty_traits_of(t);
   return tr && tr->struct_valued && tr->unbox;
 }
-static void emit_unbox_ret_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
+/* Does the String return unboxing a method's tail at node publishes the
+   box's handle (Scope.ret_handle of a method an --rbs seed types String)? */
+static int unbox_ret_pub(Compiler *c, TyKind t, int node) {
+  Scope *ms = t == TY_STRING && !g_result_var && repr_share_rule(c) ? comp_scope_of(c, node) : NULL;
+  int pub = ms && ms->ret_handle && ms->ret_rbs_seeded;
+  if (pub && g_repr_check) {
+    /* (an explicit `return`'s value has no frame of its own yet) */
+    int frame = repr_channel_begin(c, node);
+    repr_channel_note(c, node, RCH_PUBLISH);
+    repr_channel_end(c, frame);
+  }
+  return pub;
+}
+static void emit_unbox_ret_text(Compiler *c, TyKind t, const char *expr, Buf *b, int pub) {
   /* When the slot being narrowed into is a SEEDED return, the narrowing is the
      moment the seed's truth becomes checkable, so it carries the assertion --
      a no-op macro without -DSP_RBS_CHECK (#3412). g_ret_seeded is set for the
@@ -11542,7 +11555,8 @@ static void emit_unbox_ret_text(Compiler *c, TyKind t, const char *expr, Buf *b)
   case TY_RATIONAL: buf_printf(b, "sp_poly_as_rational(%s)", v); break;
   default: {
     const char *cn = c_type_name(t);
-    if (t == TY_STRING || ty_is_object(t) || (cn && cn[0] && cn[strlen(cn) - 1] == '*') ||
+    if (pub && t == TY_STRING) buf_printf(b, "sp_poly_unbox_s_pub(%s)", v);
+    else if (t == TY_STRING || ty_is_object(t) || (cn && cn[0] && cn[strlen(cn) - 1] == '*') ||
         struct_ret_unboxes(t))
       emit_unbox_text(c, t, v, b);
     else buf_puts(b, v);
@@ -11554,7 +11568,7 @@ static void emit_unbox_ret_text(Compiler *c, TyKind t, const char *expr, Buf *b)
 static void emit_unbox_node(Compiler *c, TyKind t, int node, Buf *b) {
   Buf src; memset(&src, 0, sizeof src);
   emit_expr(c, node, &src);
-  emit_unbox_ret_text(c, t, src.p ? src.p : "", b);
+  emit_unbox_ret_text(c, t, src.p ? src.p : "", b, unbox_ret_pub(c, t, node));
   free(src.p);
 }
 /* Whether emit_unbox_ret_text converts a poly value into slot type `t`. */
@@ -18933,12 +18947,12 @@ static int tail_slot_reaches_ret(Compiler *c, TyKind slot) {
   if (want_poly || slot == ret) return 1;
   return slot == TY_POLY && ret != TY_UNKNOWN && ret != TY_VOID && ret != TY_NIL && unbox_ret_converts(c, ret);
 }
-static void emit_tail_slot(Compiler *c, TyKind slot, const char *ref, Buf *b) {
+static void emit_tail_slot(Compiler *c, TyKind slot, const char *ref, Buf *b, int node) {
   TyKind ret = g_result_var ? g_result_ty : g_ret_type;
   int want_poly = g_result_var ? g_result_poly : (ret == TY_POLY);
   Buf bx; memset(&bx, 0, sizeof bx);
   if (want_poly && slot != TY_POLY) emit_boxed_text(c, slot, ref, &bx);
-  else if (!want_poly && slot == TY_POLY && ret != TY_POLY) emit_unbox_ret_text(c, ret, ref, &bx);
+  else if (!want_poly && slot == TY_POLY && ret != TY_POLY) emit_unbox_ret_text(c, ret, ref, &bx, unbox_ret_pub(c, ret, node));
   else buf_puts(&bx, ref);
   buf_printf(b, "%s;\n", bx.p ? bx.p : "sp_box_nil()");
   free(bx.p);
@@ -19152,7 +19166,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
         if (want_poly8 && civ8) buf_printf(b, "%s(%s);\n", oint_box(it9), islot9);
         else if (!want_poly8 && civ8 && !slot_o8) buf_printf(b, "%s.v;\n", islot9);
         else if (!want_poly8 && !civ8 && oint_kind(it9) && slot_o8) buf_printf(b, "%s(%s);\n", oint_of(it9), islot9);
-        else emit_tail_slot(c, it9, islot9, b);
+        else emit_tail_slot(c, it9, islot9, b, id);
         return;
       }
     }
@@ -19188,7 +19202,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(b, "%s(%s);\n", oint_arg(lt9), lref9);
     else if (!want_poly9 && oint_kind(lt9) && lv9 && !slot_is_oint(lv9) && ores9)
       buf_printf(b, "%s(%s);\n", oint_of(lt9), lref9);
-    else emit_tail_slot(c, lt9, lref9, b);
+    else emit_tail_slot(c, lt9, lref9, b, id);
     return;
   }
   /* A tail GLOBAL write answers the stored value too (`def m; $g = v; end`),
@@ -19223,7 +19237,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(b, "%s(%s);\n", oint_arg(gt9), gref9);
     else if (!want_poly9g && oint_kind(gt9) && !gvar_is_oint(c, h9.lv) && ores9g)
       buf_printf(b, "%s(%s);\n", oint_of(gt9), gref9);
-    else emit_tail_slot(c, gt9, gref9, b);
+    else emit_tail_slot(c, gt9, gref9, b, id);
     return;
   }
   /* A tail CONSTANT write (a block's `{ A = v }`) answers the constant
@@ -19235,7 +19249,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
       emit_stmt(c, id, b, indent);
       char cref9[300]; snprintf(cref9, sizeof cref9, "cst_%s", cn9);
       emit_indent(b, indent); emit_tail_lead(b);
-      emit_tail_slot(c, cv9->type, cref9, b);
+      emit_tail_slot(c, cv9->type, cref9, b, id);
       return;
     }
   }
