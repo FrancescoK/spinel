@@ -5720,6 +5720,7 @@ static void gc_wb_cells(Compiler *c, Buf *b) {
       buf_printf(&ins, ") _wc%d = ", wid);
       buf_putn(&ins, b->p + is, ie - is);
       buf_printf(&ins, "; (*_wc%d)", wid);
+      size_t eq_at = ins.len + (q - (j + 1));
       buf_putn(&ins, b->p + j + 1, send - j);
       buf_printf(&ins, " sp_gc_wb((void *)_wc%d); }", wid);
       size_t grew2 = ins.len - (send + 1 - i);
@@ -5728,7 +5729,12 @@ static void gc_wb_cells(Compiler *c, Buf *b) {
       memmove(b->p + i + ins.len, b->p + i + (send + 1 - i), tail2);
       memcpy(b->p + i, ins.p, ins.len);
       b->p[b->len] = '\0';
-      i = i + ins.len;
+      /* Go on scanning from the value, not past the statement: the value can
+         hold stores into other cells of its own (`t = s.upcase!.to_s` in a
+         proc stores the bang's result back into `s` inside `t`'s value), and
+         the allocation that builds the rest of the value collects with such
+         a store unrecorded. */
+      i = i + eq_at;
       free(ins.p);
       continue;
     }
