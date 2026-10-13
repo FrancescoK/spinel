@@ -1146,6 +1146,18 @@ spinel: 1 refusal, nothing written
 spinel: test/reject/scrub_bang_retained_append.rb:3: a String is not yet shared by reference through a retained scrub! result that is appended to
 == test/reject/scrub_bang_retained_append.rb [promote] rc=1
 spinel: test/reject/scrub_bang_retained_append.rb:3: a String is not yet shared by reference through a retained scrub! result that is appended to
+== test/reject/send_override_bare_super_beside_own.rb [default] rc=1
+spinel: test/reject/send_override_bare_super_beside_own.rb:8: unsupported `super` in a program-defined `send`: it reaches Object#send, which a program method cannot call yet (only a `send` whose whole body is `super` is supported, in a program with no other `send` of its own)
+spinel: 1 refusal, nothing written
+== test/reject/send_override_bare_super_beside_own.rb [promote] rc=1
+spinel: test/reject/send_override_bare_super_beside_own.rb:8: unsupported `super` in a program-defined `send`: it reaches Object#send, which a program method cannot call yet (only a `send` whose whole body is `super` is supported, in a program with no other `send` of its own)
+spinel: 1 refusal, nothing written
+== test/reject/send_override_super_does_more.rb [default] rc=1
+spinel: test/reject/send_override_super_does_more.rb:10: unsupported `super` in a program-defined `send`: it reaches Object#send, which a program method cannot call yet (only a `send` whose whole body is `super` is supported, in a program with no other `send` of its own)
+spinel: 1 refusal, nothing written
+== test/reject/send_override_super_does_more.rb [promote] rc=1
+spinel: test/reject/send_override_super_does_more.rb:10: unsupported `super` in a program-defined `send`: it reaches Object#send, which a program method cannot call yet (only a `send` whose whole body is `super` is supported, in a program with no other `send` of its own)
+spinel: 1 refusal, nothing written
 == test/reject/setter_symbol_block_builtin.rb [default] rc=1
 spinel: test/reject/setter_symbol_block_builtin.rb:6: a setter Symbol (`&:name=`) as the block of a builtin method is not supported
 spinel: 1 refusal, nothing written

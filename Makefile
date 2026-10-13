@@ -1964,6 +1964,12 @@ reject-test: $(SPINEL)
 	else grep -q "unsupported value of \`super\` in initialize" "$$tmp/siv.out" || \
 	  { echo "reject-test: FAIL (the value of super in initialize rejected without saying why: $$t)"; sed -n 1,5p "$$tmp/siv.out"; ok=0; }; fi; \
 	done; \
+	for t in $(shell grep -l '^\# spinel: reject-send-super$$' test/reject/*.rb); do \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/ss.c" >"$$tmp/ss.out" 2>&1; then \
+	  echo "reject-test: FAIL (super from a program-defined send into Object#send compiled: $$t)"; ok=0; \
+	else grep -q "unsupported \`super\` in a program-defined \`send\`" "$$tmp/ss.out" || \
+	  { echo "reject-test: FAIL (super from a program-defined send rejected without saying why: $$t)"; sed -n 1,5p "$$tmp/ss.out"; ok=0; }; fi; \
+	done; \
 	t=test/reject/forwarding_super_yielding_optional.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/fy.c" >"$$tmp/fy.out" 2>&1; then \
 	  echo "reject-test: FAIL (super(...) into a yielding parent with an optional compiled)"; ok=0; \
