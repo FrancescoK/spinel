@@ -585,10 +585,13 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
   /* shared-mutable ivar read into a plain string slot: the safe
      copy, not the raw handle pointer (#3227) */
   else if (ivt == TY_STRBUF && ret == TY_STRING) {
-    /* (--share-strings: published where the call picks up the handle its
-       every target publishes, a method arm beside it among them) */
-    buf_printf(b, "%s(%s)", repr_share_rule(c) && repr_call_returns_handle(c, id) ? "sp_strbuf_read_pub" : "sp_strbuf_read",
-               fld);
+    /* (--share-strings: always published. A consumer that picks the
+       handle up clears the channel before the call, so a publication no one
+       picks up is harmless; asked here, repr_call_returns_handle reads the
+       call under the pickup's own view, which has dropped the box mark, and
+       answered no, so the pickup wrapped the bytes in a new handle and the
+       field's String lost its identity: `{ host: req.host }` held a copy) */
+    buf_printf(b, "%s(%s)", repr_share_rule(c) ? "sp_strbuf_read_pub" : "sp_strbuf_read", fld);
     pconv = PC_COPY;
   }
   /* a plain String field (a Struct member) where the call answers a handle

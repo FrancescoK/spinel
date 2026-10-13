@@ -5108,6 +5108,42 @@ int share_node_carries_handle(const Compiler *c, int n) {
     int r = nt_ref(c->nt, u, "receiver");
     if (r >= 0 && (share_value_fresh((Compiler *)c, r, 0) || share_node_carries_handle(c, r))) return 1;
   }
+  /* A call on a boxed receiver each of whose arms publishes its String's
+     handle: an attr reader of a field that holds the handle (its arm reads
+     it through sp_strbuf_read_pub), or a method that publishes its own. A
+     pickup around the call takes that handle, so the value is the field's
+     String itself: `{ host: req.host }` with two classes answering host. */
+  if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && repr_share_rule((Compiler *)c) &&
+      nt_ref(c->nt, u, "receiver") >= 0 && repr_of(c, nt_ref(c->nt, u, "receiver")).kind == RK_BOXED &&
+      nt_ref(c->nt, u, "block") < 0) {
+    const PolyPlan *pp = cplan_poly_arms((Compiler *)c, u);
+    int all = pp->n > 0;
+    for (int i = 0; i < pp->n && all; i++) {
+      const PolyArm *a = &pp->arm[i];
+      if (a->kind == PA_READER) all = a->vty == TY_STRBUF;
+      else if (a->kind == PA_USER) all = a->mi > 0 && c->scopes[a->mi].ret_handle;
+      else all = 0;
+    }
+    if (all) return 1;
+  }
+  /* An attr reader of a boxed field on a receiver of one class: a field
+     whose class the rule shares stores its Strings as the handle
+     (share_lift_poly_ivar_stores), so the box the reader answers is the
+     handle's own; `{ host: req.host }` with `attr_accessor :host` */
+  if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && repr_share_rule((Compiler *)c) &&
+      call_plain_argc((Compiler *)c, u) == 0 && nt_ref(c->nt, u, "block") < 0) {
+    int rv = nt_ref(c->nt, u, "receiver");
+    TyKind rt = rv >= 0 ? comp_ntype((Compiler *)c, rv) : TY_UNKNOWN;
+    const char *rn = nt_str(c->nt, u, "name");
+    int kd = -1;
+    if (rn && ty_is_object(rt) && comp_reader_in_chain((Compiler *)c, ty_object_class(rt), rn, &kd) &&
+        ({ int _tg[CPT_MAX]; cplan_targets((Compiler *)c, u, _tg, CPT_MAX) == 0; })) {
+      char ivn[260]; snprintf(ivn, sizeof ivn, "@%s", rn);
+      ClassInfo *ci = &c->classes[kd >= 0 ? kd : ty_object_class(rt)];
+      int ix = comp_ivar_index(ci, ivn);
+      if (ix >= 0 && ci->ivar_types[ix] == TY_POLY) return 1;
+    }
+  }
   Repr r = repr_of(c, n);
   /* A boxed holder's read keeps what its incoming flows stored there. */
   if (r.kind == RK_BOXED && strbuf_boxed_local((Compiler *)c, n)) return 1;
