@@ -76,6 +76,7 @@ typedef struct CF {
   CFByName *bn; int bn_cap, bn_n;
   int changed, round;
   int phase;              /* 0: only what the receivers' classes decide; 1: the builtin answers too */
+  int *open; int nopen;   /* the runtime's classes and modules the program reopens (cf_open_self) */
   int pending;            /* calls round 0 left to phase 1 */
 } CF;
 
@@ -1004,6 +1005,13 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
     }
     /* `.class`: the Class objects of the receiver's classes */
     if (sp_streq(nm, "class") && argc == 0) cf_add_set(f, v, cf_classvals_of(f, pidx));
+    /* a method the program adds to a runtime class or module it reopens
+       answers for the runtime's values too (`class Object; def tagged`,
+       `42.tagged`) */
+    for (int i = 0; i < f->nopen; i++) {
+      int mi = comp_method_in_chain(c, f->open[i], nm, NULL);
+      if (mi >= 0) cf_user_target(f, v, mi, argv, argc, blk);
+    }
     cf_builtin_rule(f, v, recv_el, argv, argc, blk, nm);
   }
 }
@@ -1717,8 +1725,9 @@ void an_cls_facts(Compiler *c) {
   f.desc = malloc(sizeof(int) * ((size_t)c->nclasses + 1));
   f.fam = malloc(sizeof(int) * ((size_t)c->nclasses + 1));
   f.mod = calloc((size_t)c->nclasses + 1, 1);
+  f.open = malloc(sizeof(int) * ((size_t)c->nclasses + 1));
   if (!f.lv_el || !f.nlv || !f.ret_el || !f.yval_el || !f.yarg_el || !f.has_super || !f.protocol || !f.def_mi ||
-      !f.self_el || !f.own || !f.desc || !f.fam || !f.mod || !f.par) cf_oom();
+      !f.self_el || !f.own || !f.desc || !f.fam || !f.mod || !f.open || !f.par) cf_oom();
   for (int k = 0; k < nt->count; k++) f.def_mi[k] = -1;
   for (int mi = 0; mi < c->nscopes; mi++) {
     Scope *s = &c->scopes[mi];
@@ -1763,7 +1772,10 @@ void an_cls_facts(Compiler *c) {
     /* a class or module the compiler supplies, or one of the runtime's the
        program reopens, runs for any object */
     if (c->classes[k].def_node >= 0 && nt_int(nt, c->classes[k].def_node, "node_bi", 0) != 0) f.set[f.self_el[k]] = CF_ALL;
-    if (cf_open_self(&f, k)) f.set[f.self_el[k]] = CF_ALL;
+    if (cf_open_self(&f, k)) {
+      f.set[f.self_el[k]] = CF_ALL;
+      f.open[f.nopen++] = k;
+    }
   }
   {
     ClsSet s; memset(&s, 0, sizeof s);
@@ -1871,7 +1883,7 @@ void an_cls_facts(Compiler *c) {
   free(f.par); free(f.uf); free(f.set); free(f.ph);
   for (int mi = 0; mi < c->nscopes; mi++) { free(f.lv_el[mi]); free(f.yarg_el[mi]); }
   free(f.lv_el); free(f.nlv); free(f.ret_el); free(f.yval_el); free(f.yarg_el); free(f.has_super); free(f.protocol);
-  free(f.def_mi); free(f.self_el); free(f.own); free(f.desc); free(f.fam); free(f.mod); free(f.dyn); free(f.yval_used); free(f.has_native);
+  free(f.def_mi); free(f.open); free(f.self_el); free(f.own); free(f.desc); free(f.fam); free(f.mod); free(f.dyn); free(f.yval_used); free(f.has_native);
   for (int k = 0; k < f.ent_cap; k++) free((char *)f.ent[k].name);
   free(f.ent);
   for (int k = 0; k < f.bn_cap; k++) if (f.bn[k].name) { free((char *)f.bn[k].name); free(f.bn[k].mi); free(f.bn[k].cmi); free(f.bn[k].rd); free(f.bn[k].wr); }
