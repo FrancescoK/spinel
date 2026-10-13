@@ -6823,8 +6823,11 @@ void unmark_referenced_module_sources(Compiler *c) {
 static void extend_alias_refuse_own(Compiler *c, int mod_id, int ci, const char *name) {
   ClassInfo *m = &c->classes[mod_id];
   for (int i = 0; i < m->naliases; i++) {
-    if ((m->alias_sg && m->alias_sg[i]) || !sp_streq(m->alias_old[i], name) ||
-        comp_cmethod_in_class(c, ci, m->alias_new[i]) >= 0) continue;
+    if ((m->alias_sg && m->alias_sg[i]) || !sp_streq(m->alias_old[i], name)) continue;
+    /* the class's own class method of the alias's name answers instead; a
+       copy an earlier extend made does not, this module coming first */
+    int own = comp_cmethod_in_class(c, ci, m->alias_new[i]);
+    if (own >= 0 && !c->scopes[own].is_extend_copy) continue;
     char msg[512];
     snprintf(msg, sizeof msg, "%s.%s: alias in the extended module %s of a class method %s defines itself is not "
              "supported; see docs/limitations.md", c->classes[ci].name, m->alias_new[i], m->name, c->classes[ci].name);

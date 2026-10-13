@@ -39,3 +39,12 @@ end
 w = :x=
 p K.new.foo, K.foo, K.new.respond_to?(:foo), K.new.respond_to?(:x=), K.new.respond_to?(w)
 p K.instance_methods(false).sort, K.singleton_methods.sort
+
+# a module's own class method answers ahead of its instance alias of the
+# same name
+module Both
+  def self.copied = "Both.copied"
+  def original = "Both#original"
+  alias copied original
+end
+p Both.copied

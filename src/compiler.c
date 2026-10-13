@@ -1912,7 +1912,9 @@ static const char *resolve_alias_side(Compiler *c, int class_id, const char *nam
          :shellwords`, or `extend self`). An instance method's lookup (2)
          reads the instance aliases only; the other callers (0) read every
          alias, as they always have. */
-      int mod = ci->def_node >= 0 && nt_kind(c->nt, ci->def_node) == NK_ModuleNode;
+      /* ... but not over a class method the module defines itself */
+      int mod = ci->def_node >= 0 && nt_kind(c->nt, ci->def_node) == NK_ModuleNode &&
+                !(sg == 1 && comp_cmethod_in_class(c, cid, name) >= 0);
       for (int i = (cid == lim_cls ? lim : ci->naliases) - 1; i >= 0; i--) {
         int asg = ci->alias_sg && ci->alias_sg[i];
         if ((sg == 1 ? asg || mod : sg == 2 ? !asg : 1) && sp_streq(ci->alias_new[i], name)) {
