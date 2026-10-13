@@ -25,7 +25,11 @@ int emit_op_thread_raise(Compiler *c, const BopCtx *x, Buf *b) {
   int argc;
   const int *argv = call_args(c->nt, x->id, &argc);
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+  /* Thread#raise answers nil (the thread raises, or a dead one does not),
+     as the boxed receiver's arm does */
+  buf_puts(b, "((void)(");
   emit_concurrency_raise(c, rb.p ? rb.p : "NULL", argc, argv, "sp_thread", 't', "sp_Thread_raise", b);
+  buf_puts(b, "), sp_box_nil())");
   free(rb.p);
   return 1;
 }
