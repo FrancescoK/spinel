@@ -9513,6 +9513,10 @@ TyKind infer_uncached(Compiler *c, int id) {
       TyKind tt = tiv >= 0 ? ivar_value_ty(&c->classes[tl], tiv) : TY_UNKNOWN;
       if (tt != TY_UNKNOWN) return tt;
     }
+    /* a class or module body's own ivar: the class's slot, which the store
+       there writes (the civ_ static) */
+    if (wcls < 0 && !s->is_cmethod && id < c->node_cap && c->node_cbody[id] >= 0)
+      wcls = c->node_cbody[id];
     if (wcls < 0) return infer_type(c, nt_ref(nt, id, "value"));
     ClassInfo *ci = &c->classes[wcls];
     int iv = nm ? comp_ivar_index(ci, nm) : -1;
