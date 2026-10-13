@@ -985,9 +985,12 @@ int user_assign_handle(Compiler *c, int id) {
      receiver) */
   TyKind rty = comp_ntype(c, recv);
   if (rty == TY_POLY || rty == TY_UNKNOWN) {
-    /* ...of a safe-navigation chain, when one user class has the writer
-       (an explicit one; a class with an attr writer or a Struct member
-       beside it is a second class the dispatch has no arm for) */
+    /* ...when user classes have the writer, through a safe-navigation
+       link or a plain one: each arm stores the handle the call holds (an
+       explicit writer's parameter takes it, or its bytes; an attr writer's
+       field, emit_boxed_writer_arms), every explicit writer of one plain
+       parameter. One attr writer or Struct member alone is
+       attr_assign_slot's. */
     const char *wn = nt_str(nt, id, "name");
     size_t wl = wn ? strlen(wn) : 0;
     char base[256];
@@ -996,22 +999,13 @@ int user_assign_handle(Compiler *c, int id) {
     memcpy(base, wn, wl - 1);
     base[wl - 1] = '\0';
     int found = boxed_writer_defs(c, wn, base, &mi, &wcls);
-    /* ...or when several classes have it, each arm storing the handle the
-       call holds (an explicit writer's parameter takes it, or its bytes;
-       an attr writer's field, emit_boxed_writer_arms), every explicit one
-       of one plain parameter */
-    if (found >= 2) {
-      for (int k = 0; k < c->nclasses; k++) {
-        int m = comp_method_in_class(c, k, wn);
-        const Scope *w = m >= 0 ? &c->scopes[m] : NULL;
-        if (w && !(w->nparams == 1 && w->rest_idx < 0 && w->kwrest_idx < 0 && !w->blk_param)) return 0;
-      }
-      return 1;
+    if (found == 0 || (found == 1 && mi < 0)) return 0;
+    for (int k = 0; k < c->nclasses; k++) {
+      int m = comp_method_in_class(c, k, wn);
+      const Scope *w = m >= 0 ? &c->scopes[m] : NULL;
+      if (w && !(w->nparams == 1 && w->rest_idx < 0 && w->kwrest_idx < 0 && !w->blk_param)) return 0;
     }
-    if (!call_is_safe_nav(nt, id) || found != 1) return 0;
-    if (mi < 0) return 0;   /* (an attr writer or a Struct member: attr_assign_slot) */
-    const Scope *w = &c->scopes[mi];
-    return w->nparams == 1 && w->rest_idx < 0 && w->kwrest_idx < 0 && !w->blk_param;
+    return 1;
   }
   if (!ty_is_object(rty)) return 0;
   const CallPlan *p = cplan_user(c, id);

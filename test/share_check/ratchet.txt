@@ -56,7 +56,6 @@ test/share/share_strings_attr_assign_value_mutators.rb	test/share/share_strings_
 test/share/share_strings_attr_assign_value_mutators.rb	test/share/share_strings_attr_assign_value_mutators.rb:156	CallNode (a=)	changed in place as bytes by sp_str_scrub_bang (sp_strbuf_read_pub)
 test/share/share_strings_attr_assign_value_mutators.rb	test/share/share_strings_attr_assign_value_mutators.rb:72	CallNode (a=)	changed in place as bytes by sp_str_freeze_val (sp_strbuf_read_pub)
 test/share/share_strings_attr_assign_value_mutators.rb	test/share/share_strings_attr_assign_value_mutators.rb:80	CallNode (a=)	changed in place as bytes by sp_str_scrub_bang (sp_strbuf_read_pub)
-test/share/share_strings_attr_assign_value_safenav_bang_consumers.rb	test/share/share_strings_attr_assign_value_safenav_bang_consumers.rb:97	CallNode (c=)	changed in place as bytes by sp_str_eq (bytes face)
 test/share/share_strings_bang_args_run_first.rb	test/share/share_strings_bang_args_run_first.rb:22	ParenthesesNode (-)	boxed as bytes by sp_box_str (bytes face)
 test/share/share_strings_bang_args_run_first.rb	test/share/share_strings_bang_args_run_first.rb:22	ParenthesesNode (-)	boxed as bytes by sp_box_str (bytes face)
 test/share/share_strings_bang_args_run_first.rb	test/share/share_strings_bang_args_run_first.rb:23	ParenthesesNode (-)	boxed as bytes by sp_box_str (bytes face)
