@@ -3467,6 +3467,22 @@ static void register_attrs_in_value(Compiler *c, ClassInfo *cls, int node, int s
 /* Collect attr_reader/attr_writer/attr_accessor declarations in class
    bodies, registering backing ivars + reader/writer method names.
    Also scans class << self bodies for singleton-level attr_accessors. */
+/* The singleton accessors a `class << X` body declares on class `cls`. */
+static void register_sclass_attrs(Compiler *c, ClassInfo *cls, int sbody) {
+  const NodeTable *nt = c->nt;
+  if (sbody < 0) return;
+  int sn = 0;
+  const int *sstmts = nt_arr(nt, sbody, "body", &sn);
+  for (int j = 0; j < sn; j++) {
+    int ss = sstmts[j];
+    const char *ssty = nt_type(nt, ss);
+    if (ssty && sp_streq(ssty, "CallNode"))
+      register_attr_call(c, cls, ss, 1);
+    else if (ssty && sp_streq(ssty, "LocalVariableWriteNode"))
+      register_attrs_in_value(c, cls, nt_ref(nt, ss, "value"), 1);
+  }
+}
+
 void register_attrs_body(Compiler *c, ClassInfo *cls, int body) {
   const NodeTable *nt = c->nt;
   int n = 0;
@@ -3497,19 +3513,11 @@ void register_attrs_body(Compiler *c, ClassInfo *cls, int body) {
              sp_streq(sty, "GlobalVariableWriteNode"))
       register_attrs_in_value(c, cls, nt_ref(nt, s, "value"), 0);
     else if (sp_streq(sty, "SingletonClassNode")) {
-      /* class << self; attr_accessor :x; end */
-      int sbody = nt_ref(nt, s, "body");
-      if (sbody < 0) continue;
-      int sn = 0;
-      const int *sstmts = nt_arr(nt, sbody, "body", &sn);
-      for (int j = 0; j < sn; j++) {
-        int ss = sstmts[j];
-        const char *ssty = nt_type(nt, ss);
-        if (ssty && sp_streq(ssty, "CallNode"))
-          register_attr_call(c, cls, ss, 1);
-        else if (ssty && sp_streq(ssty, "LocalVariableWriteNode"))
-          register_attrs_in_value(c, cls, nt_ref(nt, ss, "value"), 1);
-      }
+      /* class << self; attr_accessor :x; end (a `class << Const` is the
+         named class's, register_attrs) */
+      int sx = nt_ref(nt, s, "expression");
+      if (sx < 0 || nt_kind(nt, sx) != NK_SelfNode) continue;
+      register_sclass_attrs(c, cls, nt_ref(nt, s, "body"));
       /* An accessor whose name the CLASS BODY also assigns as `@x` names the
          class-level ivar, which is where `def self.m; @x; end` reads too: mark
          it so both spellings share civ_<Class>_<x> (#3776). */
@@ -3532,11 +3540,20 @@ void register_attrs_body(Compiler *c, ClassInfo *cls, int body) {
 }
 
 void register_attrs(Compiler *c) {
+  const NodeTable *nt = c->nt;
   int *bci, *bnode;
   int nb = class_body_list(c, &bci, &bnode);
   for (int b = 0; b < nb; b++) register_attrs_body(c, &c->classes[bci[b]], bnode[b]);
   free(bci);
   free(bnode);
+  /* `class << Const; attr_accessor :x; end`, at the top level or in another
+     class's body: the accessors are the named class's own */
+  for (int n = comp_kind_first(c, NK_SingletonClassNode); n >= 0; n = comp_kind_next(c, n)) {
+    int recv = nt_ref(nt, n, "expression");
+    if (nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode) continue;
+    int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+    if (ci >= 0) register_sclass_attrs(c, &c->classes[ci], nt_ref(nt, n, "body"));
+  }
 }
 
 /* Classify a modifier/if predicate as a compile-time constant: 1 = always
