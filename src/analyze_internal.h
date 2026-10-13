@@ -559,6 +559,7 @@ int desugar_hash_iter_with_index(Compiler *c);
 int desugar_array_op_to_ary(Compiler *c);
 int widen_shared_cmp_params(Compiler *c);
 int desugar_reduce_proc_arg(Compiler *c);
+int desugar_reduce_splat_args(Compiler *c);
 int desugar_block_capture_wrap(Compiler *c);
 int desugar_user_not_match(Compiler *c);
 int desugar_env_enum(Compiler *c);

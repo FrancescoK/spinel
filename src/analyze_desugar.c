@@ -11186,6 +11186,125 @@ int desugar_enum_iter_splat_args(Compiler *c) {
   return changed;
 }
 
+/* nscope of each node of `copy`, a clone of `orig`, set to its original's:
+   the walk follows both trees, which have the same shape. */
+static void copy_nscope_along(Compiler *c, int orig, int copy) {
+  const NodeTable *nt = c->nt;
+  if (orig < 0 || copy < 0 || orig == copy) return;
+  c->nscope[copy] = c->nscope[orig];
+  int nr = nt_num_refs(nt, orig);
+  for (int i = 0; i < nr && i < nt_num_refs(nt, copy); i++)
+    copy_nscope_along(c, nt_ref_at(nt, orig, i), nt_ref_at(nt, copy, i));
+  int na = nt_num_arrs(nt, orig);
+  for (int i = 0; i < na && i < nt_num_arrs(nt, copy); i++) {
+    int on = 0, cn = 0;
+    const int *oa = nt_arr_at(nt, orig, i, &on), *ca = nt_arr_at(nt, copy, i, &cn);
+    for (int k = 0; k < on && k < cn; k++) copy_nscope_along(c, oa[k], ca[k]);
+  }
+}
+
+/* `recv.inject(*args)` / reduce: how many arguments the splat gives -- none,
+   a seed, an operator, or both -- is known only at run time, and the fold
+   emitters read each form by its arity, so the splat itself reached them as
+   a seed and the C did not compile. The call becomes
+     (r = recv; a = [*args]
+      if a.length == 2 then r.inject(a[0], a[1])
+      elsif a.length > 2 then raise ArgumentError, "wrong number ..."
+      elsif a.length == 1 then r.inject(a[0]) { blk }
+      else r.inject { blk } end)
+   The block goes on the forms that take it (a seed and an operator leave it
+   unused). Over an Array, a Hash or a Range, whose inject is the builtin. */
+int desugar_reduce_splat_args(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver"), args = nt_ref(nt, id, "arguments");
+    if (!nm || !is_reduce_alias(nm) || recv < 0 || args < 0) continue;
+    int argc = 0; const int *av0 = nt_arr(nt, args, "arguments", &argc);
+    if (argc > 16) continue;
+    int av[16];
+    memcpy(av, av0, sizeof(int) * (size_t)argc);
+    int splat = 0;
+    for (int k = 0; k < argc; k++)
+      if (nt_kind(nt, av[k]) == NK_SplatNode) {
+        if (nt_ref(nt, av[k], "expression") < 0) splat = -1;
+        else if (splat == 0) splat = 1;
+      }
+    if (splat <= 0) continue;
+    TyKind rt = infer_type(c, recv);
+    if (!ty_is_array(rt) && !ty_is_hash(rt) && rt != TY_RANGE && rt != TY_STR_RANGE && rt != TY_FLOAT_RANGE)
+      continue;
+    int blk = nt_ref(nt, id, "block");
+    long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
+    char rn[96], an[96];
+    snprintf(rn, sizeof rn, "__inj_%s_r", comp_node_tag(c, id));
+    snprintf(an, sizeof an, "__inj_%s_a", comp_node_tag(c, id));
+    int base = nt->count;
+    BsB b = { nt, 1 };
+    /* the call moves to a new number, and the conditional takes `id`'s */
+    int call = bs_new(&b, "CallNode");
+    if (!b.ok) continue;
+    nt_swap_nodes(nt, id, call);
+    nt_node_reset(nt, id, "ParenthesesNode");
+    int ary = bs_new(&b, "ArrayNode");
+    if (ary >= 0) nt_node_set_arr(nt, ary, "elements", av, argc);
+    int wr = bs_write(&b, rn, recv), wa = bs_write(&b, an, ary);
+    int i0 = bs_index(&b, an, 0), i1 = bs_index(&b, an, 0), i2 = bs_index(&b, an, 1);
+    int blk2 = blk >= 0 ? nt_clone_subtree(nt, blk) : -1;
+    int two_args[2] = { i1, i2 };
+    int two = bs_call(&b, bs_read(&b, rn), nm, two_args, 2);
+    int one = bs_call(&b, bs_read(&b, rn), nm, &i0, 1);
+    if (one >= 0) nt_node_set_ref(nt, one, "block", blk2);
+    /* the original call is the blockless-argument form: its receiver read
+       from the temp, its block kept */
+    nt_node_set_ref(nt, call, "receiver", bs_read(&b, rn));
+    nt_node_set_ref(nt, call, "arguments", -1);
+    int len[4];
+    for (int k = 0; k < 4; k++) len[k] = bs_call(&b, bs_read(&b, an), "length", NULL, 0);
+    int lit2 = bs_int(&b, 2), lit2b = bs_int(&b, 2), lit1 = bs_int(&b, 1);
+    int eq2 = bs_call(&b, len[0], "==", &lit2, 1);
+    int gt2 = bs_call(&b, len[1], ">", &lit2b, 1);
+    int eq1 = bs_call(&b, len[2], "==", &lit1, 1);
+    /* "wrong number of arguments (given N, expected 0..2)", 1..2 for a call
+       without a block, as Enumerable#inject words it */
+    int head = bs_new(&b, "StringNode"), tail = bs_new(&b, "StringNode");
+    if (head >= 0) nt_node_set_str(nt, head, "content", "wrong number of arguments (given ");
+    if (tail >= 0) nt_node_set_str(nt, tail, "content", blk >= 0 ? ", expected 0..2)" : ", expected 1..2)");
+    int ns = bs_call(&b, len[3], "to_s", NULL, 0);
+    int m1 = bs_call(&b, head, "+", &ns, 1);
+    int msg = bs_call(&b, m1, "+", &tail, 1);
+    int cls = bs_new(&b, "ConstantReadNode");
+    if (cls >= 0) nt_node_set_str(nt, cls, "name", "ArgumentError");
+    int ra[2] = { cls, msg };
+    int rz = bs_call(&b, -1, "raise", ra, 2);
+    int if1 = bs_if(&b, eq1, &one, 1, &call, 1);
+    int if2 = bs_if(&b, gt2, &rz, 1, &if1, 1);
+    int if3 = bs_if(&b, eq2, &two, 1, &if2, 1);
+    int body[3] = { wr, wa, if3 };
+    int st = bs_stmts(&b, body, 3);
+    if (!b.ok || st < 0) continue;
+    nt_node_set_ref(nt, id, "body", st);
+    if (line > 0) {
+      nt_node_set_int(nt, id, "node_line", line); nt_node_set_int(nt, id, "node_file", file);
+      for (int j = base; j < nt->count; j++)
+        if (nt_int(nt, j, "node_line", 0) == 0) { nt_node_set_int(nt, j, "node_line", line); nt_node_set_int(nt, j, "node_file", file); }
+    }
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    /* the block's copy sits in the scopes its original does */
+    copy_nscope_along(c, blk, blk2);
+    Scope *s = comp_scope_of(c, id);
+    scope_local_intern(s, rn);
+    scope_local_intern(s, an);
+    changed = 1;
+  }
+  return changed;
+}
+
 static int pdl_body_reads(const NodeTable *nt, int id, const char **names, int n);
 
 /* Does the block read one of its leading requireds past the `m` values a
