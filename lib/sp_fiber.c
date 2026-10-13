@@ -342,10 +342,14 @@ static void sp_fiber_fault_write_num(size_t v) { char b[24]; int i = (int)sizeof
 static void (*sp_fiber_fault_chain)(int) = 0;
 /* What the program already printed is still in stdout's buffer, and neither
    _exit nor death by a signal flushes it: a run that printed a hundred lines
-   and then overflowed would otherwise show none of them. The buffer is
-   stdio's, already allocated, so flushing it is the write(2) of what is there.
-   Only if the lock is free, though: another worker holding stdout (the
-   threaded build) would otherwise hang the dying process on it. The at_exit
+   and then overflowed would otherwise show none of them. fflush is not on
+   POSIX's async-signal-safe list, and this is a deliberate exception: the
+   buffer is stdio's, already allocated, so the flush allocates nothing and
+   is the write(2) of what is there. Only if the lock is free, though: another
+   worker holding stdout (the threaded build) would otherwise hang the dying
+   process on it. The case left is an overflow inside a stdout call on this
+   very thread, whose recursive lock this takes again: that flush can write
+   garbled output, on a path that is about to die anyway. The at_exit
    hooks do NOT run -- they are Ruby code, and the stack they would run on is
    the one that just ran out. */
 static void sp_fiber_fault_flush(void) {

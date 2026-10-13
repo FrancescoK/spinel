@@ -21,11 +21,12 @@ r = Thread.new do
 end.value
 puts r
 
-# unrescued: surfaces at join
-# (the thread turns its own report off first: it runs in parallel with
-# main, and can die before a `t.report_on_exception = false` after
-# Thread.new runs, printing the report)
-t = Thread.new { Thread.current.report_on_exception = false; deep(0) }
+# unrescued: surfaces at join (quiet from the thread's first line: set after
+# Thread.new, the flag can come too late for a thread already gone)
+t = Thread.new do
+  Thread.current.report_on_exception = false
+  deep(0)
+end
 begin
   t.join
 rescue SystemStackError => e
