@@ -8843,6 +8843,12 @@ static int infer_constant_path(Compiler *c, int id, const NodeTable *nt, NodeKin
   return 0;
 }
 
+/* yield_value_diverges for `ymi`, computed on the first ask (*dv starts -1) */
+static int yvd_once(Compiler *c, int ymi, int *dv) {
+  if (*dv < 0) *dv = yield_value_diverges(c, ymi);
+  return *dv;
+}
+
 /* A YieldNode: the block's value at its call sites (infer_uncached's arms, in their order) */
 static int infer_yield_node(Compiler *c, int id, const NodeTable *nt, NodeKind nk, TyKind *out) {
   if (!(nk == NK_YieldNode)) return 0;
@@ -8865,7 +8871,8 @@ static int infer_yield_node(Compiler *c, int id, const NodeTable *nt, NodeKind n
      local is a boxed carrier and each inlined site boxes its own value. A
      bare-yield tail is handled per-site by emit_block_invoke_coerced /
      method_call_ret and must keep its concrete first-site type. */
-  if (yield_value_diverges(c, ymi)) {
+  {
+    int dv = -1;   /* yield_value_diverges, asked once a use could take it */
     for (int u = yield_uses(c, id); u >= 0; u = g_yu_next[u]) {
       int w = g_yu_node[u];
       switch (g_yu_kind[u]) {
@@ -8876,14 +8883,14 @@ static int infer_yield_node(Compiler *c, int id, const NodeTable *nt, NodeKind n
            local: the variable takes one type, the first site's, and the
            other site's value was emitted into it (`@y = yield(x)` with a
            String block, then an Integer one, stopped the build). */
-        if (value_arm_is(nt, nt_ref(nt, w, "value"), id)) { *out = TY_POLY; return 1; }
+        if (value_arm_is(nt, nt_ref(nt, w, "value"), id)) { if (yvd_once(c, ymi, &dv)) { *out = TY_POLY; return 1; } break; }
         break;
       case YU_ELEMENT: {
         /* An array literal's element likewise: `[yield(x)]` built its
            array from the first site's element type. */
         int en = 0; const int *ev = nt_arr(nt, w, "elements", &en);
         for (int e = 0; e < en; e++)
-          if (value_arm_is(nt, ev[e], id)) { *out = TY_POLY; return 1; }
+          if (value_arm_is(nt, ev[e], id)) { if (yvd_once(c, ymi, &dv)) { *out = TY_POLY; return 1; } break; }
         break;
       }
       case YU_ARGUMENT: {
@@ -8903,7 +8910,7 @@ static int infer_yield_node(Compiler *c, int id, const NodeTable *nt, NodeKind n
         if (!wn || !call_may_reach_user_method(c, w, wn)) break;
         int ac = 0; const int *av = nt_arr(nt, an, "arguments", &ac);
         for (int e = 0; e < ac; e++)
-          if (value_arm_is(nt, av[e], id)) { *out = TY_POLY; return 1; }
+          if (value_arm_is(nt, av[e], id)) { if (yvd_once(c, ymi, &dv)) { *out = TY_POLY; return 1; } break; }
         break;
       }
       case YU_BLOCK: {
@@ -8913,9 +8920,9 @@ static int infer_yield_node(Compiler *c, int id, const NodeTable *nt, NodeKind n
            with an Integer block at one site and a String one at another
            emitted the String into an sp_int. Poly boxes each site's. */
         const char *wn = nt_str(nt, w, "name");
-        if (wn && call_may_reach_user_method(c, w, wn)) { *out = TY_POLY; return 1; }
+        if (wn && call_may_reach_user_method(c, w, wn)) { if (yvd_once(c, ymi, &dv)) { *out = TY_POLY; return 1; } break; }
         if (wn && sp_streq(wn, "synchronize") && nt_ref(nt, w, "receiver") >= 0)
-          { *out = TY_POLY; return 1; }
+          { if (yvd_once(c, ymi, &dv)) { *out = TY_POLY; return 1; } break; }
         break;
       }
       case YU_RECEIVER: {
@@ -8934,7 +8941,7 @@ static int infer_yield_node(Compiler *c, int id, const NodeTable *nt, NodeKind n
         if (an >= 0) nt_arr(nt, an, "arguments", &ac);
         if (ac == 1 && op && (sp_streq(op, "+") || sp_streq(op, "-") || sp_streq(op, "*") ||
                               sp_streq(op, "/") || sp_streq(op, "%")))
-          { *out = TY_POLY; return 1; }
+          { if (yvd_once(c, ymi, &dv)) { *out = TY_POLY; return 1; } break; }
         /* A builtin whose result follows the receiver's kind (yield.abs,
            yield.first, yield.dup): the same mismatch, the slot typed from
            the first site's receiver and the other site's concrete result
@@ -8945,7 +8952,7 @@ static int infer_yield_node(Compiler *c, int id, const NodeTable *nt, NodeKind n
            emit its concrete value into the poly slot unboxed, which turned
            a wrong value into C that does not compile when this arm widened
            every method. */
-        if (yield_recv_builtin_every_site(c, w)) { *out = TY_POLY; return 1; }
+        if (yvd_once(c, ymi, &dv) && yield_recv_builtin_every_site(c, w)) { *out = TY_POLY; return 1; }
         break;
       }
       case YU_FRAME: {
@@ -8967,7 +8974,7 @@ static int infer_yield_node(Compiler *c, int id, const NodeTable *nt, NodeKind n
         int st = nt_ref(nt, w, "statements");
         if (st < 0) break;
         int bn = 0; const int *bs = nt_arr(nt, st, "body", &bn);
-        if (bs && bn > 0 && bs[bn - 1] == id) { *out = TY_POLY; return 1; }
+        if (bs && bn > 0 && bs[bn - 1] == id) { if (yvd_once(c, ymi, &dv)) { *out = TY_POLY; return 1; } break; }
         break;
       }
       }
