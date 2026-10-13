@@ -6222,6 +6222,30 @@ static void intern_scope_ivars(Compiler *c, int ms, int ci) {
    included module method. We copy (not mutate) so multiple classes can include
    the same module independently. */
 int g_inc_did_clone = 0;
+/* Does module `mod` alias its method `m` (`alias_method :a, :m`)? */
+static int module_aliases_name(const ClassInfo *mod, const char *m) {
+  for (int a = 0; a < mod->naliases; a++)
+    if (sp_streq(mod->alias_old[a], m)) return 1;
+  return 0;
+}
+
+/* The copy in class ci of module mod's method `m` under a shadow name
+   (`__inc <n> m`), which an alias the module makes of m names when the
+   class overrides m, or NULL */
+static const char *include_shadow_copy(Compiler *c, int ci, int mod, const char *m) {
+  int src = comp_method_in_class(c, mod, m);
+  if (src < 0) return NULL;
+  for (int s = 1; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    if (sc->class_id == ci && !sc->is_cmethod && sc->name && !strncmp(sc->name, "__inc ", 6) &&
+        sc->def_node == c->scopes[src].def_node && sp_streq(comp_prep_user_name(sc->name), m)) {
+      sc->reachable = 1;
+      return sc->name;
+    }
+  }
+  return NULL;
+}
+
 /* Copy module mod_id's instance methods into class ci, one clone per
    includer, as `include` does (process_include_body). */
 static void include_module_methods(Compiler *c, int ci, int mod_id) {
@@ -6263,9 +6287,16 @@ static void include_module_methods(Compiler *c, int ci, int mod_id) {
       /* The class overrides the module method. If the override calls super,
          the module method is the super target: copy it under a shadow name
          and chain to it so emit_super reaches it via the prepend-super path.
-         Otherwise the module method is simply shadowed -- nothing to emit. */
-      if (!scope_body_has_super(c, own)) { if (!src->is_module_function) src->is_transplanted_source = 1; continue; }
-      const char *existing = comp_prep_chain_target(c, ci, src->name);
+         An alias the module makes of it reaches it too: then it is copied
+         under a shadow name only, which the alias names
+         (register_include_attrs). Otherwise the module method is simply
+         shadowed -- nothing to emit. */
+      int super_reaches = scope_body_has_super(c, own);
+      if (!super_reaches && !module_aliases_name(&c->classes[mod_id], src->name)) {
+        if (!src->is_module_function) src->is_transplanted_source = 1;
+        continue;
+      }
+      const char *existing = super_reaches ? comp_prep_chain_target(c, ci, src->name) : NULL;
       /* spaces keep the shadow unwritable in Ruby source, so an explicit
          `obj.__inc_0_tag` finds nothing and raises; mc() folds them back
          to underscores, so the C symbol is unchanged (#3738) */
@@ -6288,7 +6319,7 @@ static void include_module_methods(Compiler *c, int ci, int mod_id) {
         comp_prep_chain_add(cif, inc_shadow, prev);
         free(prev);
       }
-      else {
+      else if (super_reaches) {
         comp_prep_chain_add(&c->classes[ci], src->name, inc_shadow);
       }
       dst_name = inc_shadow;
@@ -6605,7 +6636,10 @@ void register_include_attrs(Compiler *c) {
       }
       for (int a = 0; a < mod->naliases; a++) {
         if (bci && body_defs_name(c, nb, bci, bnode, ci, mod->alias_new[a])) continue;
-        comp_add_alias(cls, mod->alias_new[a], mod->alias_old[a]);
+        /* the module's body of the name, where the class has one of its own */
+        const char *shadow = comp_method_in_class(c, ci, mod->alias_old[a]) >= 0
+                             ? include_shadow_copy(c, ci, mi, mod->alias_old[a]) : NULL;
+        comp_add_alias(cls, mod->alias_new[a], shadow ? shadow : mod->alias_old[a]);
       }
     }
     if (cls->nreaders + cls->nwriters + cls->naliases != n0) grew = 1;
