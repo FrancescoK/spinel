@@ -1128,6 +1128,14 @@ spinel: 1 refusal, nothing written
 == test/reject/redo_unlabeled_iterator.rb [promote] rc=1
 spinel: test/reject/redo_unlabeled_iterator.rb:9: redo in this block (its iterator cannot re-run the body)
 spinel: 1 refusal, nothing written
+== test/reject/reopen_redef_poly_call_between.rb [default] rc=1
+spinel: test/reject/reopen_redef_poly_call_between.rb:13: a method redefined by a later reopening of its class is called between the two definitions on a value whose class is known only at run time, so which definition the call reaches is not known here. Call it on a value of the class itself, or define the method once.
+== test/reject/reopen_redef_poly_call_between.rb [promote] rc=1
+spinel: test/reject/reopen_redef_poly_call_between.rb:13: a method redefined by a later reopening of its class is called between the two definitions on a value whose class is known only at run time, so which definition the call reaches is not known here. Call it on a value of the class itself, or define the method once.
+== test/reject/reopen_redef_subclass_override_between.rb [default] rc=1
+spinel: test/reject/reopen_redef_subclass_override_between.rb:10: a method redefined by a later reopening of its class is called between the two definitions on an object of a subclass that overrides it, so which definition the call reaches depends on where the override is defined. Define the method once, or the override before the call.
+== test/reject/reopen_redef_subclass_override_between.rb [promote] rc=1
+spinel: test/reject/reopen_redef_subclass_override_between.rb:10: a method redefined by a later reopening of its class is called between the two definitions on an object of a subclass that overrides it, so which definition the call reaches depends on where the override is defined. Define the method once, or the override before the call.
 == test/reject/retry_in_ensure.rb [default] rc=1
 spinel: test/reject/retry_in_ensure.rb:12: Invalid retry (SyntaxError)
 == test/reject/retry_in_ensure.rb [promote] rc=1

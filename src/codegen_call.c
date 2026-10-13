@@ -1818,6 +1818,13 @@ int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int argc,
    reflection (respond_to?, instance_methods): they are implementation detail
    with no CRuby counterpart. Matched by exact name so a user-defined `__foo`
    stays visible. */
+/* The name a message about call `id` says: the one the program wrote, where
+   the call was pointed at a hidden definition (version_redefined_reopen_defs). */
+const char *call_shown_name(const NodeTable *nt, int id) {
+  const char *sh = nt_str(nt, id, "redef_shown");
+  return sh ? sh : nt_str(nt, id, "name");
+}
+
 int name_is_synth_method(Compiler *c, const char *m) {
   if (!m) return 0;
   if (sp_streq(m, "__enum_to_a")) return 1;
@@ -19403,7 +19410,7 @@ static int emit_vis_refusal_x(Compiler *c, int id, Buf *b) {
               !nt_int(nt, id, "dyn_arm", 0) && !(vrty && sp_streq(vrty, "SelfNode")) &&
               !nt_int(nt, id, "self_call", 0);  /* a class body's own call, given its class as receiver */
   if (!stamped && !plain) return 0;
-  const char *vnm = nt_str(nt, id, "name");
+  const char *vnm = call_shown_name(nt, id);
   int vcid = -1;
   if (vrecv >= 0) {
     TyKind vrt = comp_ntype(c, vrecv);
@@ -19471,7 +19478,7 @@ void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b) {
   int plain = !stamped && vrecv >= 0 && !nt_str(nt, id, "send_blind") &&
               !nt_int(nt, id, "dyn_arm", 0) && !(vrty && sp_streq(vrty, "SelfNode"));
   if (!stamped && !plain) return;
-  const char *vnm = nt_str(nt, id, "name");
+  const char *vnm = call_shown_name(nt, id);
   if (!vnm) return;
   Scope *cs = comp_scope_of(c, id);
   int caller = (cs && !cs->is_cmethod) ? cs->class_id : -1;
@@ -19819,7 +19826,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
       g_gate_raise) {
     int vac = 0; call_args(nt, id, &vac);
     if (vac == 0) {
-      const char *vnm = nt_str(nt, id, "name");
+      const char *vnm = call_shown_name(nt, id);
       TyKind vret = repr_of(c, id).as_ty;
       const char *vcn = g_emitting_class_id >= 0 ? class_ruby_name(c, g_emitting_class_id) : NULL;
       char head[200];

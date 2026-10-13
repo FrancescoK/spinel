@@ -135,14 +135,10 @@ puts cpu.boot
 puts T_method_param_unify_to_poly_User.new(cpu).reset
 
 # === method_redefinition_warning ===
-# Issue #667: spinel is an AOT compiler with static dispatch; method
-# redefinition is a documented subset limitation. The analyzer detects
-# the case in append_cls_meth and emits a stderr warning, then follows
-# "last def wins" semantics (matching class reopen for new methods).
-# This test verifies the program compiles and runs with the warning
-# emitted; full CRuby semantics ("original" then "redefined") would
-# require source-order call-site versioning, which is a separate
-# multi-day effort.
+# Issue #667: a method defined again by a later reopening of its class is
+# the earlier definition for the program body's calls made before the
+# reopening, and the later one after it ("original" then "redefined"), as in
+# CRuby (version_redefined_reopen_defs).
 
 class T_method_redefinition_warning_Foo
   def test

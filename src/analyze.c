@@ -37977,6 +37977,165 @@ static void rename_redefined_toplevel_defs(Compiler *c) {
   free(st);
 }
 
+/* The calls of `nm` with a receiver under top-level statement `id` -- the
+   statement and the blocks in it, not a def, class or module body -- into
+   out (at most cap); answers how many. */
+static int redef_collect_calls(const NodeTable *nt, int id, const char *nm, int *out, int n, int cap, int depth) {
+  if (id < 0 || id >= nt->count || depth > 400) return n;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return n;
+  if (k == NK_CallNode && nt_ref(nt, id, "receiver") >= 0 && nt_str(nt, id, "name") &&
+      sp_streq(nt_str(nt, id, "name"), nm) && n < cap)
+    out[n++] = id;
+  const SpNode *nd = &nt->nodes[id];
+  for (int i = 0; i < nd->nr; i++) n = redef_collect_calls(nt, nd->r[i].ref, nm, out, n, cap, depth + 1);
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++) n = redef_collect_calls(nt, nd->a[i].ids[j], nm, out, n, cap, depth + 1);
+  return n;
+}
+
+/* The DefNode of instance method `nm` in class body statement `cls`, or -1. */
+static int redef_class_def(const NodeTable *nt, int cls, const char *nm) {
+  int body = nt_ref(nt, cls, "body");
+  int bn = 0; const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+  for (int k = 0; k < bn; k++)
+    if (nt_kind(nt, bb[k]) == NK_DefNode && nt_ref(nt, bb[k], "receiver") < 0 &&
+        nt_str(nt, bb[k], "name") && sp_streq(nt_str(nt, bb[k], "name"), nm)) return bb[k];
+  return -1;
+}
+
+static const char *redef_class_name(const NodeTable *nt, int cls) {
+  int cp = nt_ref(nt, cls, "constant_path");
+  return cp >= 0 && nt_kind(nt, cp) == NK_ConstantReadNode ? nt_str(nt, cp, "name") : NULL;
+}
+
+/* A class reopened at the top level with an instance method defined again
+   (`class B; def get = 1; end; ...; class B; def get = 2; end`) has, as the
+   top-level method does (rename_redefined_toplevel_defs), the earlier
+   definition until the later `def` runs. Spinel had one function per name,
+   so the calls the program body makes between the two -- `B.new.get` --
+   reached the later body. Where some top-level statement between them calls
+   the name on a receiver, the earlier def takes a hidden name
+   (`get#redef<n>`, no Ruby def can spell it, and reflection lists none such)
+   and those calls are marked with it; once their receivers are typed,
+   desugar_redef_version_calls points the ones on the class at it. Calls in
+   method bodies, which run whenever they are called, keep the last def. */
+static void version_redefined_reopen_defs(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int body = nt_ref(nt, nt->root_id, "statements");
+  int n = 0;
+  const int *st0 = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+  if (!st0 || n < 2) return;
+  int *st = malloc(sizeof(int) * (size_t)n);
+  if (!st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memcpy(st, st0, sizeof(int) * (size_t)n);
+  int serial = 0;
+  for (int i = 0; i < n; i++) {
+    if (nt_kind(nt, st[i]) != NK_ClassNode) continue;
+    const char *cn = redef_class_name(nt, st[i]);
+    int cb = nt_ref(nt, st[i], "body");
+    int bn = 0; const int *bb0 = cn && cb >= 0 && nt_kind(nt, cb) == NK_StatementsNode ? nt_arr(nt, cb, "body", &bn) : NULL;
+    for (int k = 0; k < bn; k++) {
+      const int *bb = nt_arr(nt, cb, "body", &bn);
+      int d1 = bb[k];
+      if (nt_kind(nt, d1) != NK_DefNode || nt_ref(nt, d1, "receiver") >= 0 || !nt_str(nt, d1, "name")) continue;
+      char *nm = strdup(nt_str(nt, d1, "name"));
+      if (!nm) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      int j = -1;
+      for (int q = i + 1; q < n && j < 0; q++)
+        if (nt_kind(nt, st[q]) == NK_ClassNode && redef_class_name(nt, st[q]) &&
+            sp_streq(redef_class_name(nt, st[q]), cn) && redef_class_def(nt, st[q], nm) >= 0) j = q;
+      int calls[256], nc = 0;
+      for (int q = i + 1; j >= 0 && q < j; q++) nc = redef_collect_calls(nt, st[q], nm, calls, nc, 256, 0);
+      if (j < 0 || nc == 0) { free(nm); continue; }
+      char hidden[300];
+      snprintf(hidden, sizeof hidden, "%s#redef%d", nm, ++serial);
+      nt_set_str(nt, d1, "name", hidden);
+      for (int q = 0; q < nc; q++) {
+        nt_node_set_str(nt, calls[q], "redef_name", hidden);
+        nt_node_set_str(nt, calls[q], "redef_class", cn);
+      }
+      /* its own receiverless calls run while it is the definition */
+      redef_rename_calls(nt, nt_ref(nt, d1, "body"), nm, hidden, 0);
+      /* the visibility the body gives it after the def (`private :get`) is
+         this definition's, not the later one's */
+      for (int q = k + 1; q < bn; q++) {
+        int vc = bb[q];
+        const char *vn = nt_kind(nt, vc) == NK_CallNode && nt_ref(nt, vc, "receiver") < 0 ? nt_str(nt, vc, "name") : NULL;
+        if (!vn || !(sp_streq(vn, "private") || sp_streq(vn, "protected") || sp_streq(vn, "public"))) continue;
+        int va = nt_ref(nt, vc, "arguments"), van = 0;
+        const int *vav = va >= 0 ? nt_arr(nt, va, "arguments", &van) : NULL;
+        for (int r = 0; r < van; r++)
+          if (nt_kind(nt, vav[r]) == NK_SymbolNode && nt_str(nt, vav[r], "value") &&
+              sp_streq(nt_str(nt, vav[r], "value"), nm))
+            nt_set_str(nt, vav[r], "value", hidden);
+      }
+      free(nm);
+    }
+  }
+  free(st);
+}
+
+/* The calls version_redefined_reopen_defs marked, once their receivers are
+   typed: one on the class (or a descendant inheriting the method) takes the
+   earlier definition's hidden name; one on a value that may be such an
+   object and may be another is refused, the definition it reaches being
+   decided by its class at run time; one on anything else stays as it is. */
+int is_descendant(Compiler *c, int k, int anc);
+static int desugar_redef_version_calls(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *hid = nt_str(nt, id, "redef_name"), *cn = nt_str(nt, id, "redef_class");
+    if (!hid || !cn || nt_int(nt, id, "redef_done", 0)) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    const char *nm = nt_str(nt, id, "name");
+    int cid = comp_class_index(c, cn);
+    if (recv < 0 || !nm || cid < 0) continue;
+    TyKind rt = infer_type(c, recv);
+    if (rt == TY_UNKNOWN) continue;
+    /* the class whose method the call reaches: the redefined one, where the
+       receiver's class inherits it unchanged */
+    int reaches = 0, maybe = 0;
+    if (ty_is_object(rt)) {
+      int k = ty_object_class(rt), d = -1;
+      if ((k == cid || is_descendant(c, k, cid)) && comp_method_in_chain(c, k, nm, &d) >= 0) {
+        if (d == cid) reaches = 1;
+        /* a descendant's own override: whether it is defined yet where the
+           call runs decides between it and the earlier definition */
+        else if (d >= 0 && is_descendant(c, d, cid)) maybe = 2;
+      }
+    }
+    else if (rt == TY_POLY) {
+      for (int k = 0; k < c->nclasses && !maybe; k++) {
+        int d = -1;
+        if ((k == cid || is_descendant(c, k, cid)) && comp_method_in_chain(c, k, nm, &d) >= 0 && d == cid)
+          maybe = 1;
+      }
+    }
+    nt_node_set_int(nt, id, "redef_done", 1);
+    if (reaches) {
+      /* the name a message says is the one the program wrote */
+      nt_node_set_str(nt, id, "redef_shown", nm);
+      nt_set_str(nt, id, "name", hid);
+      changed = 1;
+    }
+    else if (maybe == 2)
+      unsupported_feature(c, id,
+        "a method redefined by a later reopening of its class is called between the two definitions on an "
+        "object of a subclass that overrides it, so which definition the call reaches depends on where the "
+        "override is defined. Define the method once, or the override before the call.");
+    else if (maybe)
+      unsupported_feature(c, id,
+        "a method redefined by a later reopening of its class is called between the two definitions on a "
+        "value whose class is known only at run time, so which definition the call reaches is not known "
+        "here. Call it on a value of the class itself, or define the method once.");
+  }
+  return changed;
+}
+
 /* Can evaluating `e` do anything observable? A read of a local, an ivar or a
    constant, a literal, self, `&:sym`, and a lambda or `proc { }` literal
    cannot; anything else (a call, above all) may. */
@@ -41626,6 +41785,7 @@ static void an_phase_desugar_register(Compiler *c) {
      container per file (analyze_desugar.c's sp_bx_* table) */
   desugar_builtin_scalar_defs(c);
   rename_redefined_toplevel_defs(c);     /* def f; f; def f -> def f__redef1; f__redef1; def f */
+  version_redefined_reopen_defs(c);      /* class B; def g; end; B.new.g; class B; def g -> g#redef1 there */
   rename_main_singleton_defs(c);         /* def self.k beside def k -> def self.k__main1 */
   scope_numbered_block_params(c);
   desugar_singleton_class_define_method(c); /* singleton_class.define_method -> define_singleton_method */
@@ -42836,6 +42996,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= AN_PASS("desugar_hash_iter_with_index", desugar_hash_iter_with_index(c));     /* h.select.with_index { } -> h.select { } with a counter */
     ch |= AN_PASS("widen_shared_cmp_params", widen_shared_cmp_params(c));          /* multi-class <=> takes its operand boxed */
     ch |= AN_PASS("desugar_reduce_splat_args", desugar_reduce_splat_args(c));      /* inject(*a) -> by a.length */
+    ch |= AN_PASS("desugar_redef_version_calls", desugar_redef_version_calls(c));   /* B.new.g between two defs -> g#redef1 */
     ch |= AN_PASS("desugar_reduce_proc_arg", desugar_reduce_proc_arg(c));          /* reduce(&pr) -> reduce { |a,b| pr.call(a,b) } */
     ch |= AN_PASS("desugar_block_capture_wrap", desugar_block_capture_wrap(c));       /* { |i| ->{i} } -> { |i| (->(i){ ->{i} }).call(i) } */
     ch |= AN_PASS("desugar_user_not_match", desugar_user_not_match(c));            /* a !~ b -> !(a =~ b) for a user =~ (#3019) */
