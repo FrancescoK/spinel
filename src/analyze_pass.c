@@ -3734,6 +3734,23 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
   return changed;
 }
 
+/* A local target `tgt` of a multiple assignment whose right-hand side is
+   destructured at run time takes type t (answers whether that is a change). */
+static int masgn_poly_local(Compiler *c, Scope *ms, int tgt, TyKind t, int value) {
+  const char *nm = nt_str(c->nt, tgt, "name");
+  LocalVar *lv = nm ? scope_local(ms, nm) : NULL;
+  if (!lv || lv->is_block_param) return 0;
+  if (lv->is_param) return masgn_local_take(c, lv, t, value);
+  TyKind mg = ty_unify(lv->type, t);
+  /* plain locals are reset+recomputed each iteration; net change is
+     detected by the end-of-pass stash compare. Reporting the re-derivation
+     here reads as change every iteration and the fixpoint never converges.
+     Only a non-reset (pinned) slot's transition is a real change. */
+  if (mg == lv->type) return 0;
+  lv->type = mg;
+  return lv->rbs_seeded;
+}
+
 /* infer_write_types's pass over multiple assignments: each target takes its
    element's type (answers whether it changed a type) */
 static int infer_write_multi_assign(Compiler *c, const NodeTable *nt) {
@@ -3923,19 +3940,8 @@ static int infer_write_multi_assign(Compiler *c, const NodeTable *nt) {
           Scope *ms_poly = comp_scope_of(c, id);
           for (int i = 0; i < ln; i++) {
             const char *lty_p = nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "";
-            if (sp_streq(lty_p, "LocalVariableTargetNode")) {
-              const char *lnm_p = nt_str(nt, lefts[i], "name");
-              LocalVar *lv_p = lnm_p ? scope_local(ms_poly, lnm_p) : NULL;
-              if (!lv_p || lv_p->is_block_param) continue;
-              if (lv_p->is_param) { changed |= masgn_local_take(c, lv_p, TY_POLY, value); continue; }
-              TyKind mg_p = ty_unify(lv_p->type, TY_POLY);
-              /* plain locals are reset+recomputed each iteration; net change
-                 is detected by the end-of-pass stash compare. Reporting the
-                 re-derivation here reads as change every iteration and the
-                 fixpoint never converges. Only a non-reset (pinned) slot's
-                 transition is a real change. */
-              if (mg_p != lv_p->type) { lv_p->type = mg_p; if (lv_p->rbs_seeded) changed = 1; }
-            }
+            if (sp_streq(lty_p, "LocalVariableTargetNode"))
+              changed |= masgn_poly_local(c, ms_poly, lefts[i], TY_POLY, value);
             else if (sp_streq(lty_p, "GlobalVariableTargetNode") || sp_streq(lty_p, "ClassVariableTargetNode") ||
                      masgn_ivar_untyped(c, ms_poly, lefts[i]))
               changed |= masgn_unify_elem(c, ms_poly, &lefts[i], 1, TY_POLY);
@@ -3944,7 +3950,9 @@ static int infer_write_multi_assign(Compiler *c, const NodeTable *nt) {
           const int *rights_p = nt_arr(nt, id, "rights", &rn_p);
           for (int j = 0; j < rn_p; j++) {
             const char *rty_p = nt_type(nt, rights_p[j]) ? nt_type(nt, rights_p[j]) : "";
-            if (sp_streq(rty_p, "GlobalVariableTargetNode") || sp_streq(rty_p, "ClassVariableTargetNode") ||
+            if (sp_streq(rty_p, "LocalVariableTargetNode"))
+              changed |= masgn_poly_local(c, ms_poly, rights_p[j], TY_POLY, value);
+            else if (sp_streq(rty_p, "GlobalVariableTargetNode") || sp_streq(rty_p, "ClassVariableTargetNode") ||
                 masgn_ivar_untyped(c, ms_poly, rights_p[j]))
               changed |= masgn_unify_elem(c, ms_poly, &rights_p[j], 1, TY_POLY);
           }
@@ -3954,6 +3962,11 @@ static int infer_write_multi_assign(Compiler *c, const NodeTable *nt) {
           if (st == TY_POLY && rin_p >= 0 && nt_type(nt, rin_p) &&
               !sp_streq(nt_type(nt, rin_p), "LocalVariableTargetNode"))
             changed |= masgn_unify_elem(c, ms_poly, &rin_p, 1, TY_POLY_ARRAY);
+          /* a local rest target collects the elements into an array of boxed
+             values (`*dept, _ = poly.split('/')`); left untyped, a method
+             answering it took its type from its other answers alone */
+          if (rin_p >= 0 && nt_kind(nt, rin_p) == NK_LocalVariableTargetNode)
+            changed |= masgn_poly_local(c, ms_poly, rin_p, TY_POLY_ARRAY, value);
         }
         if (ty_is_array(st)) {
           TyKind elem = ty_array_elem(st);
