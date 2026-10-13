@@ -2257,7 +2257,17 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
        can tell from the String (share_plan_box_plain) */
     int fresh = repr_share_rule(c) && !share_frozen_literal(c, node) && share_value_fresh(c, node, 0) &&
                 !share_plan_box_plain(c, node);
-    buf_printf(b, "%s(", fresh ? "sp_box_str_new" : ty_box_fn(TY_STRING)); emit_expr(c, node, b); buf_puts(b, ")");
+    /* The new handle is an object only this box holds, and the box is
+       often a temporary handed to a runtime call that allocates before it
+       is done with it (a Hash lookup's key): rooted here, as the runtime
+       roots a String key by its tag but not a handle's box. Unrooted, a
+       collection inside the lookup freed the handle and its inline bytes. */
+    if (fresh) {
+      int tb = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = sp_box_str_new(", tb); emit_expr(c, node, b);
+      buf_printf(b, "); SP_GC_ROOT_RBVAL(_t%d); _t%d; })", tb, tb);
+    }
+    else { buf_printf(b, "%s(", ty_box_fn(TY_STRING)); emit_expr(c, node, b); buf_puts(b, ")"); }
     RC(RF_STR, RW_NONE);
     return;
   }
