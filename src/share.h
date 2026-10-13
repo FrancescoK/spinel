@@ -288,9 +288,10 @@ enum { SPN_BYTES, SPN_NEW, SPN_OBJECT };              /* need */
 enum { SPS_BYTES, SPS_HANDLE };                       /* supply */
 enum { SPF_BYTES, SPF_HANDLE, SPF_WRAP, SPF_REFUSE }; /* form */
 /* the role of a value's consumer: it takes the value (keeps, changes,
-   compares or hands it on), reads its bytes, tests it for nil or false, or
-   stores it into a multiple write's target */
-enum { SPR_TAKE, SPR_READ, SPR_TEST, SPR_STORE };
+   compares or hands it on), reads its bytes, tests it for nil or false,
+   stores it into a multiple write's target, or asks its identity (equal?,
+   object_id, __id__) */
+enum { SPR_TAKE, SPR_READ, SPR_TEST, SPR_STORE, SPR_IDENTITY };
 typedef struct {
   unsigned char need, supply, form;
 } SharePlan;
