@@ -1,0 +1,13 @@
+[Always, true, :eq]
+[Never, nil, :ne]
+[Ver, false, :ne]
+[OwnNe, true, :ne]
+[Plain, false, :ne]
+[NilClass, true, :eq]
+[Integer, false, :ne]
+[String, false, :ne]
+[Array, false, :ne]
+:fallback
+true
+true
+:fallback
