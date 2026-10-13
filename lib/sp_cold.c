@@ -4072,6 +4072,10 @@ const char *sp_int_codepoint_to_str(sp_int n) {
   /* String#<< / #concat with an out-of-range codepoint raises RangeError,
      matching CRuby ("N out of char range"). */
   if (n < 0 || n > 0x10FFFF) sp_raise_cls("RangeError", sp_sprintf("%lld out of char range", (long long)n));
+  /* An ASCII codepoint is its own byte: hand back the static one-byte
+     String Integer#chr uses rather than allocate one per `s << 65` (the
+     caller only copies the byte into the receiver). */
+  if (n < 0x80) return sp_plain_char((unsigned char)n);
   char *s = sp_str_alloc_raw(5);
   int len = sp_utf8_encode((uint32_t)n, s);
   s[len] = 0;
