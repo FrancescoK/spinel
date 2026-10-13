@@ -1256,9 +1256,10 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
     /* IO.popen is not implemented: refused at compile time, as an
        unsupported API is, rather than a NoMethodError the first time the
        line runs (#7199). A program's own IO.popen is its own. */
-    /* Time.httpdate / rfc2822 / xmlschema: the runtime parser of that
-       format. A nil argument reaches it as NULL, which it answers as CRuby
-       does (time.rb matches a regexp against it); any other non-String is
+    /* Time.httpdate / rfc2822 / xmlschema / parse: the runtime parser of
+       that format. A nil argument reaches it as NULL, which it answers as
+       CRuby does (time.rb matches a regexp against it, Date._parse wants a
+       String); any other non-String is
        CRuby's TypeError, or for httpdate, whose regexp is matched with
        String#match?, its NoMethodError. */
     { const char *tfn = time_strict_parser_call(c, id);
@@ -1280,8 +1281,9 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
         buf_puts(b, ")");
         return 1;
       } }
-    /* Time.parse / Time.strptime, refused here under --defer-refusals (the
-       pass ahead of emission refuses them otherwise; see reject_time_parse) */
+    /* Time.strptime, and a Time.parse the parser above does not take,
+       refused here under --defer-refusals (the pass ahead of emission
+       refuses them otherwise; see reject_time_parse) */
     { char tpm[320];
       if (defer_refusals() && time_parse_refusal(c, id, tpm, sizeof tpm)) {
         unsupported_feature(c, id, tpm);

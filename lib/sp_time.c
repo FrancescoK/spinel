@@ -1143,3 +1143,75 @@ bad:
   sp_raise_cls("ArgumentError", sp_sprintf("invalid xmlschema format: %s", sp_str_inspect(str)));
   return (sp_Time){0, 0, 1};
 }
+
+/* Time.parse(str): the numeric ISO 8601 forms, as time.rb reads them through
+   Date._parse: YYYY-MM-DD, optionally a T or blanks and h[h]:mm[:ss[.frac]],
+   then optionally a zone after the time (Z, a name such as UTC / GMT / EST,
+   or +hh, +hh:mm, +hhmm). A zone puts the instant there as force_zone! does
+   (tp_in_zone); without one it is the host local time, a date alone its
+   midnight. A blank string has no time information (CRuby ArgumentError).
+   Date._parse also reads month names, weekdays, RFC 2822, a time without a
+   date and text around a date: those are not read here, and say so with a
+   NotImplementedError rather than as an invalid date. */
+sp_Time sp_time_s_parse(const char *str) {SP_GC_ROOT_STR(str);
+  const char *sp_sprintf(const char *fmt, ...);  /* generated TU */
+  if (!str) sp_raise_cls("TypeError", "no implicit conversion of nil into String");
+  const char *p = tp_skip_ws(str), *q, *z = NULL, *end = str + sp_str_byte_len(str);
+  if (p == end)
+    sp_raise_cls("ArgumentError", sp_sprintf("no time information in %s", sp_str_inspect(str)));
+  int64_t year, mon, day, h = 0, mi = 0, s = 0, nsec = 0;
+  int timed = 0;
+  const char *ys = p;
+  if ((year = tp_digits(p, 4, 1 << 30, &q)) < 0 || *q != '-') goto unsupported;
+  tp_year_fits(ys, q);
+  if ((mon = tp_digits(q + 1, 1, 2, &q)) < 0 || *q != '-') goto unsupported;
+  if ((day = tp_digits(q + 1, 1, 2, &q)) < 0) goto unsupported;
+  /* the time of day, after a T or blanks */
+  { const char *t = (*q == 'T' || *q == 't') ? q + 1 : tp_skip_ws(q), *r;
+    int64_t hv;
+    if (t > q && (hv = tp_digits(t, 1, 2, &r)) >= 0 && *r == ':' &&
+        (mi = tp_digits(r + 1, 2, 2, &r)) >= 0) {
+      h = hv;
+      q = r;
+      timed = 1;
+      if (*q == ':') {
+        if ((s = tp_digits(q + 1, 2, 2, &q)) < 0) goto unsupported;
+        if (*q == '.') {
+          int nd = 0;
+          q++;
+          while (q[nd] >= '0' && q[nd] <= '9') { if (nd < 9) nsec = nsec * 10 + (q[nd] - '0'); nd++; }
+          for (int k = nd < 9 ? nd : 9; k < 9; k++) nsec *= 10;
+          q += nd;
+        }
+      }
+    }
+    else mi = 0;
+  }
+  /* the zone, if any (Date._parse reads one only after a time of day), then
+     nothing but blanks */
+  q = tp_skip_ws(q);
+  size_t zl = 0;
+  if (timed && (*q == '+' || *q == '-')) {
+    const char *r, *r2;
+    if (tp_digits(q + 1, 2, 2, &r) >= 0) {
+      if (*r == ':' && tp_digits(r + 1, 2, 2, &r2) >= 0) r = r2;
+      else if (tp_digits(r, 2, 2, &r2) >= 0) r = r2;
+      z = q; zl = (size_t)(r - q); q = r;
+    }
+  }
+  else if (timed && ((*q >= 'A' && *q <= 'Z') || (*q >= 'a' && *q <= 'z'))) {
+    size_t n = 0;
+    int ok;
+    while ((q[n] >= 'A' && q[n] <= 'Z') || (q[n] >= 'a' && q[n] <= 'z')) n++;
+    tp_zone_offset(q, n, &ok);
+    if (ok) { z = q; zl = n; q += n; }
+  }
+  if (tp_skip_ws(q) != end) goto unsupported;
+  if (z) return tp_in_zone(year, mon, day, h, mi, s, nsec, z, zl);
+  return sp_time_add_nsec(sp_time_new(year, mon, day, h, mi, s), nsec);
+unsupported:
+  sp_raise_cls("NotImplementedError",
+               sp_sprintf("Time.parse: spinel reads the ISO 8601 forms (YYYY-MM-DD, "
+                          "optionally hh:mm[:ss[.frac]] and a zone), not %s", sp_str_inspect(str)));
+  return (sp_Time){0, 0, 1};
+}

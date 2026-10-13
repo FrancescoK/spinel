@@ -1,7 +1,7 @@
-# Time.parse is not implemented: a compile-time refusal naming the
+# Time.parse without `require "time"`: a compile-time refusal naming the
 # documented limit, not a run-time NoMethodError the first time the line
-# runs (K-001). Same refusal whether or not `require "time"` was written,
-# since neither path implements the string-parsing additions.
+# runs (K-001). With the require, Time.parse reads the numeric ISO 8601
+# forms (test/time_parse.rb).
 # spinel: reject-time-parse: Time.parse is not supported
 def read_log_line(s)
   t = Time.parse(s)
