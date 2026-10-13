@@ -1,0 +1,19 @@
+true
+false
+true
+false
+[:a, false]
+[:b, true]
+[:d, true]
+false
+true
+[:b, :c, :d]
+[:a, :b]
+"K#foo"
+"K.bar"
+true
+true
+true
+[:foo, :x=]
+[:bar, :foo, :x=, :y=]
+"Both.copied"

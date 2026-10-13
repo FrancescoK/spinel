@@ -140,7 +140,9 @@ static void emit_respond_to_runtime_name(Compiler *c, int id, Buf *b, int recv, 
         snprintf(wn, sizeof wn, "%s=", cl->writers[w]);
         emit_responds_name(c, k, wn, tv, b);
       }
-      for (int a = 0; a < cl->naliases; a++) emit_responds_name(c, k, cl->alias_new[a], tv, b);
+      for (int a = 0; a < cl->naliases; a++)
+        if (!comp_name_is_sg_alias_only(c, k, cl->alias_new[a]))   /* a class method's, not the instance's */
+          emit_responds_name(c, k, cl->alias_new[a], tv, b);
     }
     const char *const *imp[] = { enumerable_names, comparable_names, struct_names,
                                  (const char *const[]){ "members", "to_h", "deconstruct", "deconstruct_keys", "with", NULL } };

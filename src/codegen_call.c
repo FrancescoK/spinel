@@ -16369,6 +16369,7 @@ void refl_own_instance_methods(Compiler *c, int ci, int pub, int prot, int priv,
   for (int i = 0; i < k->naliases; i++) {
     const char *an = k->alias_new[i];
     if (!an || name_is_synth_method(c, an)) continue;
+    if (k->alias_sg && k->alias_sg[i]) continue;   /* a singleton alias: a class method */
     int v = SP_VIS_PUBLIC, own = 0;
     for (int j = 0; j < k->nvis; j++)
       if (sp_streq(k->vis_names[j], an)) { v = k->vis_kinds[j]; own = 1; break; }
@@ -16552,13 +16553,16 @@ void refl_class_singleton_methods(Compiler *c, int ci, int all, ReflNames *r) {
       if (s->class_id != k || !s->is_cmethod || !s->name || !s->name[0]) continue;
       if (strncmp(s->name, "__", 2) == 0 || name_is_synth_method(c, s->name)) continue;
       if (!all && refl_scope_is_copy(c, si)) continue;
+      /* singleton_methods lists the public and protected ones */
+      if (comp_cmethod_vis_declared(c, k, s->name, NULL) == SP_VIS_PRIVATE) continue;
       refl_note(r, s->name, 1);
     }
     for (int i = 0; i < kc->naliases; i++) {
       const char *an = kc->alias_new[i];
-      if (!an || name_is_synth_method(c, an)) continue;
+      if (!an || name_is_synth_method(c, an) || comp_cmethod_vis_declared(c, k, an, NULL) == SP_VIS_PRIVATE) continue;
       const char *od = comp_resolve_alias(c, k, an);
-      if (comp_cmethod_in_chain(c, k, od, NULL) >= 0 && comp_method_in_chain(c, k, od, NULL) < 0)
+      if ((kc->alias_sg && kc->alias_sg[i]) ||
+          (comp_cmethod_in_chain(c, k, od, NULL) >= 0 && comp_method_in_chain(c, k, od, NULL) < 0))
         refl_note(r, an, 1);
     }
     /* an accessor inherited from an ancestor's `class << self` is the
@@ -27796,6 +27800,8 @@ static int obj_responds_answer(Compiler *c, int cid, const char *qm) {
   char wbase[256]; wbase[0] = '\0';
   if (is_wr && ql - 1 < sizeof wbase) { memcpy(wbase, qm, ql - 1); wbase[ql - 1] = '\0'; }
   if (comp_is_undeffed_in_chain(c, cid, qm)) return 0;
+  /* a singleton alias names a class method, not one of the instance's */
+  if (comp_name_is_sg_alias_only(c, cid, qm)) return 0;
   int found = (comp_method_in_chain(c, cid, qm, NULL) >= 0 &&
                !method_hidden_from_reflection(c, cid, qm)) ||
               comp_reader_in_chain(c, cid, qm, NULL) ||

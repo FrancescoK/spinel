@@ -1016,6 +1016,7 @@ static int *cmc_slot(Compiler *c, const char *name, int is_cm) {
   cmc_cm[j] = (unsigned char)is_cm; cmc_ans[j] = a; cmc_n++;
   return a;
 }
+static const char *resolve_alias_side(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin, int sg);
 static int chain_lookup(Compiler *c, int class_id, const char *name, int *def_class, int is_cm) {
   int *a = class_id >= 0 && class_id < c->nclasses ? cmc_slot(c, name, is_cm) : NULL;
   if (a && a[2 * class_id] != -2) {
@@ -1023,7 +1024,8 @@ static int chain_lookup(Compiler *c, int class_id, const char *name, int *def_cl
     return a[2 * class_id];
   }
   int start = class_id, mi = -1, dc = -1, bi = 0;
-  const char *rn = comp_resolve_alias_ex(c, class_id, name, &start, &bi);
+  const char *rn = is_cm ? comp_resolve_cm_alias_at(c, class_id, name, &start)
+                         : resolve_alias_side(c, class_id, name, &start, &bi, 2);
   /* an alias that captured a builtin's method names no method of the
      program's, whatever the class defines of that name later */
   if (bi && !is_cm && !sp_streq(rn, name)) start = -1;
@@ -1833,12 +1835,14 @@ void comp_add_alias_from(ClassInfo *ci, const char *new_name, const char *old_na
     ci->alias_cls = realloc(ci->alias_cls, sizeof(int) * (size_t)ci->caliases);
     ci->alias_node = realloc(ci->alias_node, sizeof(int) * (size_t)ci->caliases);
     ci->alias_builtin = realloc(ci->alias_builtin, sizeof(int) * (size_t)ci->caliases);
+    ci->alias_sg = realloc(ci->alias_sg, sizeof(int) * (size_t)ci->caliases);
   }
   ci->alias_new[ci->naliases] = strdup(new_name);
   ci->alias_old[ci->naliases] = strdup(old_name);
   ci->alias_cls[ci->naliases] = -1;
   ci->alias_node[ci->naliases] = alias_node;
   ci->alias_builtin[ci->naliases] = 0;
+  ci->alias_sg[ci->naliases] = 0;
   ci->naliases++;
   comp_class_shape_changed();
 }
@@ -1881,6 +1885,18 @@ int comp_resolve_member(Compiler *c, int class_id, const char *name, int want_wr
 }
 
 const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin) {
+  return resolve_alias_side(c, class_id, name, start_cls, builtin, 0);
+}
+/* The class-method side of a class reads its singleton aliases
+   (`class << self; alias a b`) and those of the modules it extends: an
+   instance one names no class method (`alias name cop_name` made a class
+   method's Module#name call the class method cop_name). An instance
+   method's lookup reads the instance aliases, and a module's side every
+   alias. */
+const char *comp_resolve_cm_alias_at(Compiler *c, int class_id, const char *name, int *start_cls) {
+  return resolve_alias_side(c, class_id, name, start_cls, NULL, 1);
+}
+static const char *resolve_alias_side(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin, int sg) {
   if (builtin) *builtin = 0;
   if (!name) return name;
   /* Follow alias links (chain-aware), guarding against cycles. A name means
@@ -1895,14 +1911,26 @@ const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, i
     int from = class_id;
     for (int cid = class_id; cid >= 0 && !next; cid = c->classes[cid].parent) {
       ClassInfo *ci = &c->classes[cid];
-      for (int i = (cid == lim_cls ? lim : ci->naliases) - 1; i >= 0; i--)
-        if (sp_streq(ci->alias_new[i], name)) {
-          /* a class below that defines the name itself answers it: the
-             ancestor's alias of that name is behind it (`attr_reader :loc`
-             in a subclass of one with `alias loc location`). Asked only
-             once an alias is found, which most lookups never do. */
+      /* The class side (1) reads the singleton aliases, and in a module the
+         instance ones too: a module's instance alias can be a module
+         function as well (`alias shellwords shellsplit; module_function
+         :shellwords`, or `extend self`). An instance method's lookup (2)
+         reads the instance aliases only; the other callers (0) read every
+         alias, as they always have. */
+      /* ... but not over a class method the module defines itself */
+      int mod = ci->def_node >= 0 && nt_kind(c->nt, ci->def_node) == NK_ModuleNode &&
+                !(sg == 1 && comp_cmethod_in_class(c, cid, name) >= 0);
+      for (int i = (cid == lim_cls ? lim : ci->naliases) - 1; i >= 0; i--) {
+        int asg = ci->alias_sg && ci->alias_sg[i];
+        if ((sg == 1 ? asg || mod : sg == 2 ? !asg : 1) && sp_streq(ci->alias_new[i], name)) {
+          /* a class below that defines the name itself, as the kind looked
+             up, answers it: the ancestor's alias of that name is behind it
+             (`attr_reader :loc` in a subclass of one with `alias loc
+             location`). Asked only once an alias is found, which most
+             lookups never do. */
           for (int d = from; d >= 0 && d != cid; d = c->classes[d].parent)
-            if (comp_method_in_class(c, d, name) >= 0 || comp_is_reader(&c->classes[d], name)) return name;
+            if (sg == 1 ? comp_cmethod_in_class(c, d, name) >= 0
+                        : comp_method_in_class(c, d, name) >= 0 || comp_is_reader(&c->classes[d], name)) return name;
           next = ci->alias_old[i];
           /* An alias of an INHERITED method names the body that was in effect
              where the alias appeared, so a redefinition in this class must not
@@ -1922,11 +1950,45 @@ const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, i
           }
           break;
         }
+      }
+      /* on the class side, a module the class extends brings its instance
+         aliases as the class's own -- behind the class methods the class
+         defines itself, which its singleton class answers first */
+      if (sg == 1 && !next && comp_cmethod_in_class(c, cid, name) >= 0) break;
+      for (int e = 0; sg == 1 && !next && e < ci->nextended_mods; e++) {
+        int m = ci->extended_mods[e];
+        if (m < 0 || m >= c->nclasses) continue;
+        ClassInfo *mi = &c->classes[m];
+        for (int i = mi->naliases - 1; i >= 0 && !next; i--)
+          if (!(mi->alias_sg && mi->alias_sg[i]) && sp_streq(mi->alias_new[i], name)) next = mi->alias_old[i];
+      }
     }
     if (!next) return name;
     name = next;
   }
   return name;
+}
+
+/* Is `name` in class_id's chain only a singleton alias (`class << self;
+   alias a b`), with no instance method, reader, writer (`x=`) or instance
+   alias of its own? A reflection that answers for an instance from the
+   alias table asks this first. */
+int comp_name_is_sg_alias_only(Compiler *c, int class_id, const char *name) {
+  int sg = 0;
+  /* a writer is listed by the name it assigns (`x` for `x=`) */
+  char wbase[256] = "";
+  size_t nl = strlen(name);
+  if (nl > 1 && nl < sizeof wbase && name[nl - 1] == '=') { memcpy(wbase, name, nl - 1); wbase[nl - 1] = '\0'; }
+  for (int cid = class_id; cid >= 0 && cid < c->nclasses; cid = c->classes[cid].parent) {
+    ClassInfo *ci = &c->classes[cid];
+    for (int i = 0; i < ci->naliases; i++) {
+      if (!sp_streq(ci->alias_new[i], name)) continue;
+      if (ci->alias_sg && ci->alias_sg[i]) sg = 1; else return 0;
+    }
+    if (comp_method_in_class(c, cid, name) >= 0 || comp_is_reader(ci, name) || (wbase[0] && comp_is_writer(ci, wbase)))
+      return 0;
+  }
+  return sg;
 }
 
 const char *comp_resolve_alias_at(Compiler *c, int class_id, const char *name, int *start_cls) {
