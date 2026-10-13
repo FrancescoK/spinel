@@ -14615,10 +14615,14 @@ static void emit_class_body_stmts(Compiler *c, int ci, int body, Buf *b, int ind
     }
     if (sp_streq(sty, "AliasMethodNode")) continue;
     /* `class << self`: its defs are the class's own, but the constants it
-       assigns are assigned where it stands (#5996) */
+       assigns are assigned where it stands (#5996); so are the statements of
+       a `class << Const` naming a class or module, as at the top level */
     if (sp_streq(sty, "SingletonClassNode")) {
       int sx = nt_ref(nt, stmts[k], "expression");
-      if ((sx >= 0 && nt_kind(nt, sx) == NK_SelfNode) || sg_activates_ci(c, stmts[k]) >= 0)
+      NodeKind sxk = sx >= 0 ? nt_kind(nt, sx) : NK_NilNode;
+      int named = (sxk == NK_ConstantReadNode || sxk == NK_ConstantPathNode) &&
+                  comp_class_index(c, nt_str(nt, sx, "name")) >= 0;
+      if (sxk == NK_SelfNode || named || sg_activates_ci(c, stmts[k]) >= 0)
         emit_stmt_or_defer(c, stmts[k], b, indent);
       continue;
     }
