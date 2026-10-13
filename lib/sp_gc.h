@@ -176,7 +176,9 @@ typedef struct { int nv; int np; } sp_gc_frame_hdr;
    assignment inside a larger expression. The statement expression evaluates the
    object once, which a comma form would not. */
 #define SP_WBO(x) ({ __typeof__(x) _sp_wbo = (x); sp_gc_wb((void *)_sp_wbo); _sp_wbo; })
+#ifndef SP_GC_REMEMBERED_MAX
 #define SP_GC_REMEMBERED_MAX 65536
+#endif
 extern void *sp_gc_remembered[SP_GC_REMEMBERED_MAX];
 extern int sp_gc_nremembered;
 extern int sp_gc_rem_overflow;
@@ -226,7 +228,9 @@ void sp_gc_pin_remembered_slow(void *obj);
 static inline void sp_gc_pin_remembered(void *obj) {
   if (SP_EXPECT(sp_gc_minor_on, 1)) sp_gc_pin_remembered_slow(obj);
 }
+#ifndef SP_GC_PINNED_MAX
 #define SP_GC_PINNED_MAX 16384
+#endif
 extern void *sp_gc_pinned[SP_GC_PINNED_MAX];
 extern int sp_gc_npinned;
 extern int sp_gc_pin_overflow;

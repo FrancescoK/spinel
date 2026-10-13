@@ -127,7 +127,9 @@ static int sp_str_major_forced = 0;
    Sampling at the sweep removes that limit: the cadence becomes the
    collector's, not the clock's. A ring, so a long run costs no more than a
    short one and the samples are the most recent SP_STR_SHAPE_MAX. */
+#ifndef SP_STR_SHAPE_MAX
 #define SP_STR_SHAPE_MAX 8192
+#endif
 static size_t sp_str_shape[SP_STR_SHAPE_MAX];
 static unsigned sp_str_shape_n = 0;      /* total sweeps seen */
 static int sp_str_shape_cmp(const void *a, const void *b) {

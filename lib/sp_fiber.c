@@ -442,6 +442,14 @@ static SP_TLS int sp_fiber_fault_armed = 0;
 /* this thread's sigaltstack buffer; external, so the store is not optimized away */
 SP_TLS void *sp_fiber_altstack;
 static void sp_fiber_fault_arm(void) {
+#ifdef SP_NO_SIGNALS
+  /* Targets with no signals (ESP32: newlib+FreeRTOS): no handler can be
+     installed, and the per-thread 64 KB sigaltstack buffer would be charged
+     against a ~400 KB DRAM budget for a handler that can never fire. Mark
+     armed so callers' once-semantics hold, and leave stack overflow to the
+     platform (FreeRTOS canary check / panic handler). */
+  sp_fiber_fault_armed = 1;
+#else
   if (sp_fiber_fault_armed) return;
   sp_fiber_fault_armed = 1;
   { char here; sp_thread_stack_bounds(&here); }
@@ -467,6 +475,7 @@ static void sp_fiber_fault_arm(void) {
     sigaction(sigs[i], &sa, NULL);
   }
   installed = 1;
+#endif /* SP_NO_SIGNALS */
 }
 /* Arm the fault handler for a program that never creates a fiber: the C
    stack it overflows is the thread's own, and the handler is what turns that
