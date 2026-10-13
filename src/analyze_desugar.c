@@ -8857,7 +8857,9 @@ int desugar_forwarding_to_rest_callee(Compiler *c) {
   return changed;
 }
 
-typedef struct { int def, st, top, tst, cond, cm, cls; const char *path, *vis; } CondDef;
+/* cond: under a condition anywhere above; here: under one inside the def's
+   own class body (a class body under a condition resets it) */
+typedef struct { int def, st, top, tst, cond, cm, cls; const char *path, *vis; int here; } CondDef;
 static int cdef_vis_def(const NodeTable *nt, int id) {
   const char *nm = nt_kind(nt, id) == NK_CallNode && nt_ref(nt, id, "receiver") < 0 ? nt_str(nt, id, "name") : NULL;
   int an = 0;
@@ -8884,18 +8886,41 @@ static void cdef_walk(NodeTable *nt, int id, CondDef x, CondDef **v, int *n) {
     }
     break;
   }
-  case NK_IfNode: case NK_UnlessNode: case NK_ElseNode:
+  case NK_IfNode: case NK_UnlessNode: case NK_ElseNode: {
+    /* a literal true, false or nil decides nothing at run time; an else
+       goes with its if */
+    NodeKind pk = k == NK_ElseNode ? NK_ElseNode : nt_kind(nt, nt_ref(nt, id, "predicate"));
     x.cond = 1;
+    if (pk != NK_ElseNode && pk != NK_TrueNode && pk != NK_FalseNode && pk != NK_NilNode) x.here = 1;
     cdef_walk(nt, nt_ref(nt, id, "statements"), x, v, n);
     cdef_walk(nt, nt_ref(nt, id, "subsequent"), x, v, n);
     cdef_walk(nt, nt_ref(nt, id, "else_clause"), x, v, n);
     break;
+  }
   case NK_ClassNode: case NK_ModuleNode: {
     char p[1024];
     snprintf(p, sizeof p, "%s", x.path);
     cdef_path(nt, nt_ref(nt, id, "constant_path"), p, sizeof p);
-    x.path = p; x.cls = id; x.cm = 0; x.top = -1;
+    x.path = p; x.cls = id; x.cm = 0; x.top = -1; x.here = 0;
     cdef_walk(nt, nt_ref(nt, id, "body"), x, v, n);
+    break;
+  }
+  case NK_ConstantWriteNode: case NK_ConstantPathWriteNode: case NK_LocalVariableWriteNode:
+    if (nt_kind(nt, nt_ref(nt, id, "value")) == NK_CallNode) cdef_walk(nt, nt_ref(nt, id, "value"), x, v, n);
+    break;
+  case NK_CallNode: {
+    /* a block that becomes a class body only later (desugar_class_new_blocks):
+       its defs are a class of their own, which cls -2 marks */
+    int blk = nt_ref(nt, id, "block"), r = nt_ref(nt, id, "receiver");
+    const char *cn = nt_str(nt, id, "name");
+    const char *rn = r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode ? nt_str(nt, r, "name") : NULL;
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || !cn || !rn ||
+        !((sp_streq(cn, "new") && (sp_streq(rn, "Class") || sp_streq(rn, "Module") || sp_streq(rn, "Struct"))) ||
+          (sp_streq(cn, "define") && sp_streq(rn, "Data")))) break;
+    char p[1024];
+    snprintf(p, sizeof p, "%s/#%d", x.path, id);
+    x.path = p; x.cls = -2; x.cm = 0; x.top = -1; x.here = 0;
+    cdef_walk(nt, nt_ref(nt, blk, "body"), x, v, n);
     break;
   }
   default: break;
@@ -8963,11 +8988,113 @@ static int cdef_stmts(NodeTable *nt, int st) {
   nt_node_set_arr(nt, b, "body", &st, 1);
   return b;
 }
+/* A method one def defines under a condition only the run time decides is
+   there or not as the condition went, but its name answers from the start
+   (the dispatching def the choice is lowered to): a question about it by
+   name would answer true where CRuby, when the branch did not run, says
+   false. Such a question is refused: respond_to?, method_defined? and its
+   kin, instance_method, method and public_method naming it, or naming a
+   method only the run time knows, and the lists of methods
+   (instance_methods, methods and their kin). Refused at compile time where
+   reachable (feature_limit, "cond_def_reflect"). */
+static void cdef_refuse(NodeTable *nt, int id, const char *flag) {
+  long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0),
+            col = nt_int(nt, id, "node_col", 0);
+  int args = nt_new_node(nt, "ArgumentsNode");
+  int ex = nt_new_node(nt, "ConstantReadNode");
+  int msg = nt_new_node(nt, "StringNode");
+  if (args < 0 || ex < 0 || msg < 0) return;
+  nt_node_reset(nt, id, "CallNode");
+  nt_node_set_int(nt, id, "node_line", line);
+  nt_node_set_int(nt, id, "node_file", file);
+  nt_node_set_int(nt, id, "node_col", col);
+  nt_node_set_str(nt, id, "name", "raise");
+  nt_node_set_int(nt, id, flag, 1);
+  nt_node_set_str(nt, ex, "name", "NotImplementedError");
+  nt_node_set_str(nt, msg, "content", "spinel: a method defined under a run-time condition, asked about by name");
+  int av[2] = { ex, msg };
+  nt_node_set_arr(nt, args, "arguments", av, 2);
+  nt_node_set_ref(nt, id, "arguments", args);
+}
+
+static void cdef_refuse_reflection(NodeTable *nt, const char *const *lone, int nlone) {
+  static const char *const by_name[] = { "respond_to?", "method_defined?", "public_method_defined?",
+    "private_method_defined?", "protected_method_defined?", "instance_method", "public_instance_method",
+    "method", "public_method", NULL };
+  static const char *const lists[] = { "instance_methods", "public_instance_methods", "methods",
+    "public_methods", NULL };
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int hit = 0;
+    for (int i = 0; nm && lists[i] && !hit; i++) hit = sp_streq(nm, lists[i]);
+    for (int i = 0; nm && by_name[i] && !hit; i++) {
+      if (!sp_streq(nm, by_name[i])) continue;
+      int args = nt_ref(nt, id, "arguments"), ac = 0;
+      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+      if (ac < 1) break;
+      NodeKind ak = nt_kind(nt, av[0]);
+      const char *q = ak == NK_SymbolNode ? nt_str(nt, av[0], "value") :
+                      ak == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
+      if (!q) { hit = 1; break; }
+      for (int j = 0; j < nlone && !hit; j++) hit = sp_streq(q, lone[j]);
+    }
+    if (hit) cdef_refuse(nt, id, "cond_def_reflect");
+  }
+}
+
+/* Does call `id` name `nm` (or, for a writer `nm`, its base) among its
+   literal arguments? */
+static int cdef_call_names(const NodeTable *nt, int id, const char *nm) {
+  size_t ln = strlen(nm);
+  int args = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+  for (int i = 0; i < ac; i++) {
+    NodeKind ak = nt_kind(nt, av[i]);
+    const char *v = ak == NK_SymbolNode ? nt_str(nt, av[i], "value") :
+                    ak == NK_StringNode ? nt_str(nt, av[i], "content") : NULL;
+    if (v && (sp_streq(v, nm) || (ln > 1 && nm[ln - 1] == '=' && strlen(v) == ln - 1 && !strncmp(v, nm, ln - 1))))
+      return 1;
+  }
+  return 0;
+}
+
+/* Could a call of `nm` reach a method other than def `own`: another def of
+   the name, an accessor, Struct member, define_method or alias of it, or a
+   builtin one every object or class has? */
+static int cdef_name_inherited(const NodeTable *nt, const char *nm, int own) {
+  static const char *const makers[] = { "attr", "attr_reader", "attr_writer", "attr_accessor",
+    "define_method", "alias_method", NULL };
+  if (builtin_object_method_known(nm) || builtin_method_known("Kernel", nm) ||
+      builtin_method_known("Object", nm) || builtin_method_known("Module", nm))
+    return 1;
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k == NK_DefNode && id != own && nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), nm)) return 1;
+    if (k == NK_AliasMethodNode) {
+      int nn = nt_ref(nt, id, "new_name");
+      if (nn >= 0 && nt_str(nt, nn, "value") && sp_streq(nt_str(nt, nn, "value"), nm)) return 1;
+    }
+    if (k != NK_CallNode) continue;
+    const char *cn = nt_str(nt, id, "name");
+    int r = nt_ref(nt, id, "receiver");
+    const char *rn = r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode ? nt_str(nt, r, "name") : NULL;
+    int member = cn && rn && ((sp_streq(cn, "new") && sp_streq(rn, "Struct")) ||
+                              (sp_streq(cn, "define") && sp_streq(rn, "Data")));
+    for (int i = 0; cn && makers[i] && !member; i++) member = sp_streq(cn, makers[i]);
+    if (member && cdef_call_names(nt, id, nm)) return 1;
+  }
+  return 0;
+}
+
 int desugar_conditional_defs(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   CondDef *v = NULL;
   int n = 0, serial = 0, groups = 0;
-  cdef_walk(nt, nt_ref(nt, nt->root_id, "statements"), (CondDef){ -1, -1, -1, -1, 0, 0, -1, "", "" }, &v, &n);
+  char **lone = NULL;   /* the names a single def under a run-time condition defines */
+  int nlone = 0;
+  cdef_walk(nt, nt_ref(nt, nt->root_id, "statements"), (CondDef){ -1, -1, -1, -1, 0, 0, -1, "", "", 0 }, &v, &n);
   for (int i = 0; i < n; i++) {
     if (v[i].def < 0 || !v[i].cond) continue;
     char *base = strdup(nt_str(nt, v[i].def, "name"));
@@ -8986,7 +9113,36 @@ int desugar_conditional_defs(Compiler *c) {
       g[ng++] = v[j];
       v[j].def = -1;
     }
-    if (ng < 2 || bad || same) { free(base); continue; }
+    /* one def under a run-time condition is the same choice with no other
+       arm: it answers only once its branch has run. Only for a name nothing
+       else can answer -- no other def of it, no builtin Object, Kernel or
+       Module method -- since the arm that runs otherwise raises, where CRuby
+       reaches the method the def would have overridden. */
+    /* a lone def is chosen by a condition of its own class body; one in a
+       class that a condition defines is that class's for good */
+    /* in a Class.new block the lowering would want the name the class does
+       not have yet: a lone def there is refused, and a group left as it was */
+    if (g[0].cls == -2) {
+      if (ng == 1 && g[0].here) cdef_refuse(nt, d0, "cond_def_class_new");
+      free(base);
+      continue;
+    }
+    if (ng == 1 && !g[0].here) { free(base); continue; }
+    if (ng == 1 && cdef_name_inherited(nt, base, d0)) {
+      /* which method answers when the branch did not run is not known
+         here: refused, rather than the def standing whatever the
+         condition said */
+      cdef_refuse(nt, d0, "cond_def_override");
+      free(base);
+      continue;
+    }
+    if (bad || (ng >= 2 && same)) { free(base); continue; }
+    if (ng == 1) {
+      char **nn = realloc(lone, sizeof(char *) * (size_t)(nlone + 1));
+      if (!nn) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      lone = nn;
+      lone[nlone++] = strdup(base);
+    }
     char msg[512], nm[512], sel[64], pn[32];
     const char *cn = g[0].cls >= 0 ? nt_str(nt, nt_ref(nt, g[0].cls, "constant_path"), "name") : NULL;
     if (!cn) snprintf(msg, sizeof msg, "undefined method '%s' for main", base);
@@ -9057,6 +9213,9 @@ int desugar_conditional_defs(Compiler *c) {
   }
   for (int i = 0; i < n; i++) free((char *)v[i].path);
   free(v);
+  if (nlone) cdef_refuse_reflection(nt, (const char *const *)lone, nlone);
+  for (int i = 0; i < nlone; i++) free(lone[i]);
+  free(lone);
   comp_grow_node_arrays(c);
   return groups > 0;
 }

@@ -1112,6 +1112,30 @@ spinel: 1 refusal, nothing written
 spinel: test/reject/retry_in_ensure.rb:12: Invalid retry (SyntaxError)
 == test/reject/retry_in_ensure.rb [promote] rc=1
 spinel: test/reject/retry_in_ensure.rb:12: Invalid retry (SyntaxError)
+== test/reject/runtime_condition_def_class_new.rb [default] rc=1
+spinel: test/reject/runtime_condition_def_class_new.rb:7: a def under a condition only the run time decides, in a Class.new, Module.new, Struct.new or Data.define block, is not supported: write the class with `class`; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_class_new.rb [promote] rc=1
+spinel: test/reject/runtime_condition_def_class_new.rb:7: a def under a condition only the run time decides, in a Class.new, Module.new, Struct.new or Data.define block, is not supported: write the class with `class`; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_over_accessor.rb [default] rc=1
+spinel: test/reject/runtime_condition_def_over_accessor.rb:11: a def under a condition only the run time decides, of a name another method answers (a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did not run is not known at compile time; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_over_accessor.rb [promote] rc=1
+spinel: test/reject/runtime_condition_def_over_accessor.rb:11: a def under a condition only the run time decides, of a name another method answers (a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did not run is not known at compile time; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_override.rb [default] rc=1
+spinel: test/reject/runtime_condition_def_override.rb:10: a def under a condition only the run time decides, of a name another method answers (a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did not run is not known at compile time; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_override.rb [promote] rc=1
+spinel: test/reject/runtime_condition_def_override.rb:10: a def under a condition only the run time decides, of a name another method answers (a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did not run is not known at compile time; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_respond_to.rb [default] rc=1
+spinel: test/reject/runtime_condition_def_respond_to.rb:9: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/runtime_condition_def_respond_to.rb [promote] rc=1
+spinel: test/reject/runtime_condition_def_respond_to.rb:9: a method defined under a condition only the run time decides is not answered for by respond_to?, method_defined?, instance_methods and their kin (it would answer as if the branch had run); see docs/limitations.md
+spinel: 1 refusal, nothing written
 == test/reject/scrub_bang_block.rb [default] rc=1
 spinel: test/reject/scrub_bang_block.rb:2: String#scrub! with a block is not yet supported: the block would be ignored
 spinel: 1 refusal, nothing written

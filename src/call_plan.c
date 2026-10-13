@@ -943,6 +943,18 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
   if (is_raise_alias(name) && nt_int(nt, id, "struct_block_name", 0) && cplan_reachable(c, id))
     return "the name of a Struct.new or Data.define class read in its own block (where CRuby has "
            "not named it yet) is not supported; see docs/limitations.md";
+  if (is_raise_alias(name) && nt_int(nt, id, "cond_def_class_new", 0) && cplan_reachable(c, id))
+    return "a def under a condition only the run time decides, in a Class.new, Module.new, "
+           "Struct.new or Data.define block, is not supported: write the class with `class`; "
+           "see docs/limitations.md";
+  if (is_raise_alias(name) && nt_int(nt, id, "cond_def_override", 0) && cplan_reachable(c, id))
+    return "a def under a condition only the run time decides, of a name another method answers "
+           "(a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did "
+           "not run is not known at compile time; see docs/limitations.md";
+  if (is_raise_alias(name) && nt_int(nt, id, "cond_def_reflect", 0) && cplan_reachable(c, id))
+    return "a method defined under a condition only the run time decides is not answered for by "
+           "respond_to?, method_defined?, instance_methods and their kin (it would answer as if "
+           "the branch had run); see docs/limitations.md";
   if (is_raise_alias(name) && nt_int(nt, id, "class_new_superclass", 0) && cplan_reachable(c, id))
     return "Class.new with a non-constant superclass is not supported; "
            "use a constant superclass (see docs/limitations.md)";
