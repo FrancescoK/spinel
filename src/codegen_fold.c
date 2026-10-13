@@ -1588,15 +1588,17 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
     if (clv0) clv0->type = csaved0;
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
     if (bang) {
-      int tm = ++g_tmp, tn = ++g_tmp;
+      int tm = ++g_tmp, tn = ++g_tmp, to = ++g_tmp;
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_int _t%d = _t%d->len; ", tn, tres);
+      buf_printf(g_pre, "sp_int _t%d = _t%d->len, _t%d = _t%d->len; ", tn, tres, to, trecv);
       /* an Integer or Float receiver's nil bits are cut with its length */
       if (sp_streq(rk, "Int") || sp_streq(rk, "Float")) buf_printf(g_pre, "sp_%sArray_cut(_t%d, 0);", rk, trecv);
       else buf_printf(g_pre, "_t%d->len = 0;", trecv);
       buf_printf(g_pre, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push%s(_t%d, sp_%sArray_%s(_t%d, _t%d));\n",
                  tm, tm, tn, tm, rk, keep_nil ? "_o" : "", trecv, rk, keep_nil ? "oget" : "get", tres, tm);
-      buf_printf(b, "_t%d", trecv);
+      /* the receiver, or nil when nothing was removed */
+      char self[16]; snprintf(self, sizeof self, "_t%d", trecv);
+      buf_printf(b, "(_t%d != _t%d ? ", tn, to); emit_boxed_text(c, rt, self, b); buf_puts(b, " : sp_box_nil())");
     }
     else {
       buf_printf(b, "_t%d", tres);

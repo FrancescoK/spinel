@@ -2253,7 +2253,7 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "dig",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "$<sp_$AArray_get$O($h, $i0)$>" },  /* one step: arr[i]; an Integer or Float element with its nil (sp_IntArray_get_o) */
   { BOP_ANY_ARRAY, "slice!",                1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SLICE_BANG_RANGE, NULL, BOP_K(TY_RANGE) },
   { BOP_ANY_ARRAY, "slice!",                1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "$<sp_$AArray_delete_at$O($h, $i0)$>" },  /* the element, or nil */
-  { BOP_ANY_ARRAY, "uniq!",                 0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_TEMPLATE, "sp_$AArray_uniq_bangq($r)", 0, 0, BOPF_SELF_OR_NIL },
+  { BOP_ANY_ARRAY, "uniq!",                 0,   0, BF_REQUIRED, TY_POLY,       BOPE_TEMPLATE, "sp_$AArray_uniq_bangq($r)", 0, 0, BOPF_SELF_OR_NIL },
   { BOP_ANY_ARRAY, "reverse!",              0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "({ sp_$AArray *_t$t = $r; sp_$AArray_reverse_bang(_t$t); _t$t; })", 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "shuffle!",              0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "({ sp_$AArray *_t$t = $r; sp_$AArray_shuffle_bang(_t$t); _t$t; })", 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "sort!",                 0,   0, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_SORT_BANG, NULL, 0, 0, BOPF_SELF },
