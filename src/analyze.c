@@ -12401,9 +12401,10 @@ static int narrow_object_arrays(Compiler *c) {
      (ie_class_of), not the enclosing method's class's: a use of the slot
      from another class's code, unvetted. Kills the receiver's slot (each
      class a poly receiver can be; every slot of the name when those are not
-     known) and answers 1; 0 for a node outside such a block, or in one whose
-     receiver is of the enclosing instance method's own class (the same slot,
-     vetted as any of the method's own uses). */
+     known, or fill the list and may have been cut short) and answers 1; 0
+     for a node outside such a block, or in one whose receiver is of the
+     enclosing instance method's own class (the same slot, vetted as any of
+     the method's own uses). */
   #define OA_IE_KILL(node, ivn) ({ int _h = 0, _iec = ie_class_of(c, (node)); \
     Scope *_isc = comp_scope_of(c, (node)); \
     if (_iec >= 0 && _isc && !_isc->is_cmethod && _isc->class_id == _iec) { } \
@@ -12411,7 +12412,7 @@ static int narrow_object_arrays(Compiler *c) {
     else if (_iec < -1) { \
       int _pk[64], _np = ie_poly_classes_at(c, (node), _pk, 64); \
       for (int _q = 0; _q < _np; _q++) { int _s = OA_IVSLOT(_pk[_q], (ivn)); if (_s >= 0) sl[_s].alive = 0; } \
-      if (_np == 0) for (int _q = 0; _q < n; _q++) \
+      if (_np == 0 || _np == 64) for (int _q = 0; _q < n; _q++) \
         if (sl[_q].ici >= 0 && sp_streq(c->classes[sl[_q].ici].ivars[sl[_q].iiv], (ivn))) sl[_q].alive = 0; \
       _h = 1; } \
     _h; })
