@@ -14370,10 +14370,14 @@ static void emit_massign_poly_target(Compiler *c, int id, int tgt, const char *v
 /* A `next` value a block's boxed answer slot takes (a proc's return, a
    fiber body's value): under --share-strings, a String the rule shares
    handed on as its handle's box, as the block's tail boxes it; any other
-   value boxed as it is. */
+   value boxed as it is. A String Range's endpoint (its first, last, min or
+   max) boxes as the tail boxes it too: the handle the Range keeps, else
+   the endpoint's own String, where the handle route would wrap a new
+   handle around its bytes and the answer would be another object. */
 void emit_boxed_next_value(Compiler *c, int v, Buf *b) {
   TyKind t = comp_ntype(c, v);
-  if ((t == TY_STRING || t == TY_STRBUF) && strbuf_value_carries(c, v)) {
+  if ((t == TY_STRING || t == TY_STRBUF) && strbuf_value_carries(c, v) &&
+      !strbuf_route_srange_end(c, v) && !strbuf_route_srange_extreme(c, v)) {
     buf_puts(b, "sp_box_nullable_obj(");
     emit_strbuf_handle_of(c, v, b);
     buf_puts(b, ", SP_BUILTIN_STRBUF)");
