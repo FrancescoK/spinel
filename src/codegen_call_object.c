@@ -80,6 +80,13 @@ static void emit_str_between_cmp(int tv, int tbnd, const char *op, Buf *b) {
 }
 
 /* between?, object_id / __id__, hash, nil? and === on a receiver whose kind decides them */
+/* Is there a class whose hash is a reader rather than a def? */
+static int hash_reader_class(Compiler *c) {
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_reader_in_chain(c, k, "hash", NULL) && comp_method_in_chain(c, k, "hash", NULL) < 0) return 1;
+  return 0;
+}
+
 int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
   /* between?(lo, hi): lo <= self <= hi */
   if (sp_streq(name, "between?") && argc == 2) {
@@ -365,6 +372,7 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
      agrees across calls (#2284). */
   if (sp_streq(name, "hash") && recv >= 0 && argc == 0 && ty_is_object(rt) &&
       comp_ty_value_obj(c, rt) && comp_method_in_chain(c, ty_object_class(rt), "hash", NULL) < 0 &&
+      !comp_reader_in_chain(c, ty_object_class(rt), "hash", NULL) &&
       !c->classes[ty_object_class(rt)].is_struct) {
     int t = ++g_tmp;
     buf_printf(b, "({ sp_%s _t%d = ", c->classes[ty_object_class(rt)].c_name, t);
@@ -372,10 +380,17 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     buf_printf(b, "; sp_bytes_hash(&_t%d, sizeof _t%d); })", t, t);
     return 1;
   }
+  /* a boxed receiver that may be an object whose class answers hash with a
+     reader (`attr_reader :hash`) is left to the dispatch, which reads it: the
+     key below reaches a def of hash through the runtime's hook (with its
+     recursion guard) but hashes a reader's object by its identity */
+  if (sp_streq(name, "hash") && recv >= 0 && argc == 0 && rt == TY_POLY && hash_reader_class(c)) return 0;
   if (sp_streq(name, "hash") && recv >= 0 && argc == 0 &&
       rt != TY_MATCHDATA &&   /* MatchData has a dedicated content hash (#3014) */
       (!ty_is_object(rt) ||
        (comp_method_in_chain(c, ty_object_class(rt), "hash", NULL) < 0 &&
+        /* a reader named hash (`attr_reader :hash`) answers its ivar */
+        !comp_reader_in_chain(c, ty_object_class(rt), "hash", NULL) &&
         /* structs keep their dedicated value-based hash arm below */
         !c->classes[ty_object_class(rt)].is_struct))) {
     buf_puts(b, "sp_rbval_hash_key("); emit_boxed(c, recv, b); buf_puts(b, ")");
