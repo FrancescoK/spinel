@@ -3159,7 +3159,7 @@ static void blkp_stamp_subtree(const NodeTable *nt, int node, int *stamp, int ge
    holds the full module path of a compact header reached through one, or
    -1. */
 typedef struct { int depth; char scope[QC_MAXDEPTH][64]; char name[64], orig[64];
-                 int tl; char target[QC_MAXDEPTH][64]; } QCAlias;
+                 int tl; char target[QC_MAXDEPTH][64]; int sd; } QCAlias;
 static QCAlias *qc_aliases = NULL;
 /* a lookup scope: the body path[0..n) */
 typedef struct { char (*path)[64]; int n; } QCScope;
@@ -3403,6 +3403,18 @@ static QCAlias *qc_alias_new(void) {
   memset(al, 0, sizeof *al);
   return al;
 }
+/* Is the node `Struct.new(...)` or `Data.define(...)`, a call that makes a
+   class? */
+static int qc_struct_or_data_value(const NodeTable *nt, int v) {
+  const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
+  if (!vty || !sp_streq(vty, "CallNode")) return 0;
+  const char *vn = nt_str(nt, v, "name");
+  int vr = nt_ref(nt, v, "receiver");
+  const char *rn = vr >= 0 && nt_type(nt, vr) &&
+                   sp_streq(nt_type(nt, vr), "ConstantReadNode") ? nt_str(nt, vr, "name") : NULL;
+  return rn && vn && ((sp_streq(rn, "Struct") && sp_streq(vn, "new")) ||
+                      (sp_streq(rn, "Data") && sp_streq(vn, "define")));
+}
 /* `A = ::P`, `A = P`, `A = B::C`: record the module path A stands for,
    resolved where the write is, the way a header's head is (so `module Q;
    module P; end; A = P` is Q::P), through an alias written before it. An
@@ -3441,6 +3453,7 @@ static void qc_note_alias(const NodeTable *nt, int w, char (*path)[64], int dept
   snprintf(al->orig, 64, "%s", on ? on : wn);
   for (int i = 0; i < depth; i++) snprintf(al->scope[i], 64, "%s", path[i]);
   al->tl = n;
+  al->sd = qc_struct_or_data_value(nt, val);
   for (int i = 0; i < n; i++) snprintf(al->target[i], 64, "%s", out[i]);
   for (int k = 0; k < (sp_streq(al->orig, al->name) ? 1 : 2); k++) {
     if (qc_nalias_ws == qc_calias_ws) {
@@ -3505,7 +3518,8 @@ static void qc_resolve_walk(const NodeTable *nt, int node, char (*path)[64], int
       QCScope sc[QC_MAXDEPTH + 2];
       char full[QC_MAXDEPTH + 1][64];
       int via, fl = qc_alias_chain(sc, qc_hdr_scopes(path, depth, lex, sc), segs, ns, full, &via);
-      if (fl > 0 && !via && qc_holder >= 0) qc_note_holder_header(node, qc_holder, path, depth);
+      if (fl > 0 && !via && qc_holder >= 0 && qc_aliases[qc_holder].sd)
+        qc_note_holder_header(node, qc_holder, path, depth);
       if (fl > 0 && via && cp < qc_nhdr) {
         QCAlias *al = qc_alias_new();   /* nameless: only the header reads it */
         al->tl = fl;
@@ -4142,23 +4156,13 @@ void qc_collect_class_writes(Compiler *c, int node, char (*path)[64], int depth,
      same way -- two sibling namespaces each with their own `TreeNode` bound
      every reference to whichever was registered first. */
   if (sp_streq(ty, "ConstantWriteNode") && depth > 0) {
-    int v = nt_ref(nt, node, "value");
-    const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
-    if (vty && sp_streq(vty, "CallNode")) {
-      const char *vn = nt_str(nt, v, "name");
-      int vr = nt_ref(nt, v, "receiver");
-      const char *rn = vr >= 0 && nt_type(nt, vr) &&
-                       sp_streq(nt_type(nt, vr), "ConstantReadNode") ? nt_str(nt, vr, "name") : NULL;
-      const char *cn = nt_str(nt, node, "name");
-      if (cn && rn && vn &&
-          ((sp_streq(rn, "Struct") && sp_streq(vn, "new")) ||
-           (sp_streq(rn, "Data") && sp_streq(vn, "define")))) {
-        if (*n >= *cap) { *cap = *cap ? *cap * 2 : 16; *ws = realloc(*ws, sizeof(QCWrite) * (size_t)*cap); }
-        QCWrite *w = &(*ws)[(*n)++];
-        w->node = node; w->depth = depth; w->salt = 0; w->head[0] = 0;
-        for (int i = 0; i < depth; i++) snprintf(w->path[i], 64, "%s", path[i]);
-        snprintf(w->name, sizeof w->name, "%s", cn);
-      }
+    const char *cn = nt_str(nt, node, "name");
+    if (cn && qc_struct_or_data_value(nt, nt_ref(nt, node, "value"))) {
+      if (*n >= *cap) { *cap = *cap ? *cap * 2 : 16; *ws = realloc(*ws, sizeof(QCWrite) * (size_t)*cap); }
+      QCWrite *w = &(*ws)[(*n)++];
+      w->node = node; w->depth = depth; w->salt = 0; w->head[0] = 0;
+      for (int i = 0; i < depth; i++) snprintf(w->path[i], 64, "%s", path[i]);
+      snprintf(w->name, sizeof w->name, "%s", cn);
     }
   }
   int nr = nt_num_refs(nt, node);
