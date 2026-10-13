@@ -25,7 +25,8 @@ typedef struct sp_StringIO_s {
      and cap mirror it, read again on each entry since a change to the
      String through another name moves them. NULL otherwise. */
   sp_String *str;
-  int ro;              /* opened on a frozen String: no write, even after #string= */
+  int ro;              /* no write: 1 opened on a frozen String (even after
+                          #string=), 2 handed one by #string= */
 } sp_StringIO;
 
 sp_StringIO *sp_StringIO_new(sp_int cls_id);

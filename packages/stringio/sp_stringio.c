@@ -38,11 +38,13 @@ static void sio_own(sp_StringIO *sio) {SP_GC_ROOT(sio);
   sio->cap = nc;
   sio->borrowed = 0;
 }
-/* A StringIO opened on a frozen String, or over one now, takes no write, as
-   CRuby's (run with frozen string literals) */
+/* A StringIO opened on a frozen String, or handed one by #string=, takes no
+   write, as CRuby's (run with frozen string literals); nor one whose String
+   was frozen since, in CRuby's other words */
 static void sio_check_write(sp_StringIO *sio) {
-  if (sio->ro || (sio->str ? sp_String_is_frozen(sio->str) : sio->borrowed && sp_str_is_frozen_val(sio->buf)))
-    sp_raise_cls("IOError", "not opened for writing");
+  if (sio->ro) sp_raise_cls("IOError", "not opened for writing");
+  if (sio->str ? sp_String_is_frozen(sio->str) : sio->borrowed && sp_str_is_frozen_val(sio->buf))
+    sp_raise_cls("IOError", "not modifiable string");
 }
 /* a frozen String opened for writing ("w", "a", "r+") is EACCES, as CRuby's */
 static void sio_mode_check(int frozen, const char *mode) {
@@ -513,12 +515,14 @@ const char *sp_StringIO_set_string(sp_StringIO *s, const char *str) {SP_GC_ROOT(
   if (!str) sp_raise_cls("TypeError", "no implicit conversion of nil into String");
   sio_reopen(s);
   s->str = NULL; s->buf = (char *)str; s->len = s->cap = (int64_t)sp_str_byte_len(str); s->borrowed = 1;
+  s->ro = (s->ro & 1) | (sp_str_is_frozen_val(str) ? 2 : 0);
   return str;
 }
 sp_String *sp_StringIO_set_string_h(sp_StringIO *s, sp_String *str) {SP_GC_ROOT(s);SP_GC_ROOT(str);
   if (!str) sp_raise_cls("TypeError", "no implicit conversion of nil into String");
   sio_reopen(s);
   s->str = str;
+  s->ro = (s->ro & 1) | (sp_String_is_frozen(str) ? 2 : 0);
   sio_sync(s);
   return str;
 }

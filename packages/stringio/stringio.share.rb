@@ -19,6 +19,9 @@ module StringIOPackage
   native_share "new",      [:string, :string], "keeps",   "sp_StringIO_new_hm"
   native_share "new",      [:string, :string], "changes"   # mode "w" truncates it
   native_share "string",   [],                 "answers", "sp_StringIO_string_h"
+  # #string= exists only in this build: the StringIO keeps the String it is
+  # handed from then on (its plain form, for a String no name shares)
+  native_method :string=,  [:string], :string, "sp_StringIO_set_string"
   native_share "string=",  [:string],          "keeps",   "sp_StringIO_set_string_h"
   native_share "write",    "changes"
   native_share "<<",       "changes"

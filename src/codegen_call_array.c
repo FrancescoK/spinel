@@ -1725,7 +1725,10 @@ static void emit_poly_shl_call(Compiler *c, int id, const int *argv, int t, cons
   for (int i = 0; i < (ks ? nk : c->nclasses); i++) {
     int k = ks ? ks[i] : i;
     Buf cb; TyKind mret;
-    if (k < 0 || k >= c->nclasses || !c->classes[k].is_native_class || !c->classes[k].instantiated) continue;
+    /* (a reopening's own `<<` is sp_poly_shl's user arm) */
+    if (k < 0 || k >= c->nclasses || !c->classes[k].is_native_class || !c->classes[k].instantiated ||
+        comp_method_in_chain(c, k, "<<", NULL) >= 0)
+      continue;
     if (ta < 0) { ta = ++g_tmp; tr = ++g_tmp; }
     if (!poly_native_arm_call(c, k, "<<", 1, argv, &ta, &aty, t, &cb, &mret)) continue;
     buf_printf(&arms, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d) { %s; _t%d = _t%d; }\nelse ", t, t, k, cb.p, tr, t);

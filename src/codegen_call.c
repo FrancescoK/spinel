@@ -8422,7 +8422,7 @@ int poly_native_arm_call(Compiler *c, int k, const char *name, int n, const int 
     int a = atmp[0];
     if (atmp_ty[0] == TY_STRBUF) buf_printf(cb, "sp_strbuf_read(%s((%s *)_t%d.v.p, _t%d))", hs, cs, tv, a);
     else buf_printf(cb, "(sp_poly_is_strbuf(_t%d) ? sp_strbuf_read(%s((%s *)_t%d.v.p, (sp_String *)_t%d.v.p)) : "
-                        "%s((%s *)_t%d.v.p, sp_poly_unbox_s(_t%d)))", a, hs, cs, tv, a, nmet->csym, cs, tv, a);
+                        "%s((%s *)_t%d.v.p, sp_poly_arg_str_chk(_t%d)))", a, hs, cs, tv, a, nmet->csym, cs, tv, a);
     *mret = TY_STRING;
     return 1;
   }
@@ -8452,6 +8452,9 @@ int poly_native_arm_call(Compiler *c, int k, const char *name, int n, const int 
          operand's #to_s, as the typed call's (emit_to_s_expr): unboxed as
          a String, an Integer's was read as a pointer */
       if (atmp_ty[ai] == TY_POLY && aw != ffi) buf_printf(cb, "sp_poly_to_s(%s)", tn);
+      /* a boxed operand in a String slot: its String, or CRuby's TypeError
+         naming its class (unboxed as a String, an Integer was a pointer) */
+      else if (atmp_ty[ai] == TY_POLY && aw == TY_STRING) buf_printf(cb, "sp_poly_arg_str_chk(%s)", tn);
       else if (atmp_ty[ai] == TY_POLY) emit_unbox_text(c, aw, tn, cb);
       /* a shared handle into a String parameter: the String it holds */
       else if (aw == TY_STRING && atmp_ty[ai] == TY_STRBUF) buf_printf(cb, "(%s ? sp_String_cstr(%s) : NULL)", tn, tn);
