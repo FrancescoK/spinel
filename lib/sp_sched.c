@@ -3894,13 +3894,16 @@ void sp_Mutex_lock(sp_mutex *m) {
                                   __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
     { SCHED_UNLOCK(); return; }
   /* Count ourselves BEFORE the last look at `owner`: an unlocker that clears
-     it after this point re-reads the count and finds us. */
-  m->nwaiters++;
+     it after this point re-reads the count and finds us. The count changes
+     only under the scheduler lock, but the unlock fast path reads it without
+     the lock, so every change is atomic: a plain one is a data race against
+     that read (ThreadSanitizer: sp_Mutex_lock against sp_Mutex_unlock). */
+  SP_ATOMIC_FETCH_ADD(&m->nwaiters, 1, __ATOMIC_SEQ_CST);
   SP_ATOMIC_FENCE(__ATOMIC_SEQ_CST);
   expect = NULL;
   if (SP_ATOMIC_CAS(&m->owner, &expect, self, 0,
                                   __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
-    m->nwaiters--;                           /* released under us; took it instead */
+    SP_ATOMIC_FETCH_SUB(&m->nwaiters, 1, __ATOMIC_SEQ_CST);   /* released under us; took it instead */
     SCHED_UNLOCK();
     return;
   }
@@ -3922,7 +3925,7 @@ void sp_Mutex_lock(sp_mutex *m) {
     self->repark_front = 1;   /* re-park at the head (sp_sched_block honours this) */
   }
   if (mt0 > 0) sched_hist_add(g_mtx_hist, &g_mtx_n, &g_mtx_max, (sp_monotonic_now() - mt0) * 1e6);
-  m->nwaiters--;
+  SP_ATOMIC_FETCH_SUB(&m->nwaiters, 1, __ATOMIC_SEQ_CST);
   SCHED_UNLOCK();
 }
 
