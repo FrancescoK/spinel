@@ -317,6 +317,9 @@ int emit_strbuf_ivar_write_handle(Compiler *c, int v, Buf *b);
    taken: the write, valued as that handle (codegen_expr.c) */
 int emit_strbuf_write_handle(Compiler *c, int v, Buf *b);
 int operand_may_allocate(Compiler *c, int id);
+/* Does boxing a value of type t make a new object (a Range of any kind,
+   whose sp_box_* allocates)? */
+int range_boxes_new(TyKind t);
 /* Can operand `v` allocate where it stands? operand_may_allocate, less
    what builds nothing: a pure read (subtree_is_pure_read: a typed Array's
    element, a plain field), and a shared String slot's read that hands its

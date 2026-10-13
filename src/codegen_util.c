@@ -7981,3 +7981,8 @@ void emit_scalar_operand_op(Compiler *c, int node, const char *op, Buf *b) {
   if (oint_kind(t) && cmp_operand_may_be_nil(c, node)) { emit_oint_unwrap_ck(c, node, t, op, b); return; }
   emit_scalar_operand(c, node, t == TY_FLOAT ? "0.0" : "0", b);
 }
+
+/* See codegen_internal.h. */
+int range_boxes_new(TyKind t) {
+  return t == TY_RANGE || t == TY_FLOAT_RANGE || t == TY_STR_RANGE;
+}
