@@ -1,0 +1,25 @@
+2
+2
+3
+nil
+1
+[nil, 1, 2, 3]
+comparison of NilClass with 3 failed
+2
+2
+3.5
+nil
+[nil, 1.5, 2.5, 3.5]
+2
+2
+98
+nil
+[nil, 1, 97, 98]
+[nil, 98]
+[98, 97]
+[nil, 1, 97, 98]
+1
+1
+2.5
+nil
+[nil, 1.5, 2.5]

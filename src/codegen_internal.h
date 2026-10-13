@@ -1743,6 +1743,7 @@ int emit_chunk_first_class_expr(Compiler *c, int id, Buf *b);
 int emit_cycle_bounded_expr(Compiler *c, int id, Buf *b);
 int emit_predicate_expr(Compiler *c, int id, Buf *b);
 int emit_find_index_poly_expr(Compiler *c, int id, Buf *b);
+void bp_elem_read(Compiler *c, int block, const char *orig, const char *k, int ta, int ti, Buf *b);
 void emit_autosplat_params(Compiler *c, int block, int np, int elem_temp, int indent);
 int emit_tuple_block_params(Compiler *c, int id, int block, const char *tuple_src, Buf *out);
 int poly_block_call_needs_dispatch(Compiler *c, int id);

@@ -1478,7 +1478,7 @@ static int bp_slot_oint(Compiler *c, int block, const char *orig, const char *k)
    parameter `orig`: with its nil (oget) into a slot that holds it, and
    boxed through the element's oint into a poly slot, so a nil element
    stays nil. */
-static void bp_elem_read(Compiler *c, int block, const char *orig, const char *k, int ta, int ti, Buf *b) {
+void bp_elem_read(Compiler *c, int block, const char *orig, const char *k, int ta, int ti, Buf *b) {
   int num = k && (sp_streq(k, "Int") || sp_streq(k, "Float"));
   Scope *sc = num && orig ? comp_scope_of(c, block) : NULL;
   LocalVar *lv = sc ? scope_local(sc, orig) : NULL;
@@ -1487,6 +1487,17 @@ static void bp_elem_read(Compiler *c, int block, const char *orig, const char *k
   else buf_printf(b, "sp_%sArray_%s(_t%d, _t%d)", k, bp_slot_oint(c, block, orig, k) ? "oget" : "get", ta, ti);
 }
 #define BP0(c, block) block_param_name((c), (block), 0)
+/* A block parameter's slot, once pinned to the element kind `et` (a
+   comparator's shadow), holds its nil: a parameter widened to poly by
+   another block is pinned, and keeps a nil element nil. */
+static int bp_pinned_oint(LocalVar *lv, TyKind et) {
+  if (!lv || !oint_kind(et)) return 0;
+  TyKind saved = lv->type;
+  lv->type = et;
+  int r = slot_is_oint(lv);
+  lv->type = saved;
+  return r;
+}
 
 int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
@@ -4759,7 +4770,7 @@ int emit_sort_cmp_expr(Compiler *c, int id, Buf *b) {
   int ono = 0;
   if (oint_kind(et) && !hash_sort) {
     Scope *nbs = comp_scope_of(c, block);
-    ono = nbs && ((p0 && slot_is_oint(scope_local(nbs, p0))) || (p1 && slot_is_oint(scope_local(nbs, p1))));
+    ono = nbs && ((p0 && bp_pinned_oint(scope_local(nbs, p0), et)) || (p1 && bp_pinned_oint(scope_local(nbs, p1), et)));
   }
   const char *gf = ono ? "oget" : "get", *sf = ono ? "oset" : "set";
   int trv = ++g_tmp, tr = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp, tj = ++g_tmp, ta = ++g_tmp, tb = ++g_tmp;
@@ -4953,29 +4964,35 @@ int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b) {
   if (nil_cmp) cmp_boxed = 1;
   else if (cmp_ty != TY_INT && !cmp_boxed) return 0;
   int trv = ++g_tmp, tn = ++g_tmp, tmin = ++g_tmp, tmax = ++g_tmp, ti = ++g_tmp, te = ++g_tmp;
+  Scope *bsc = comp_scope_of(c, block);
+  LocalVar *lv_p0 = (bsc && p0) ? scope_local(bsc, p0) : NULL;
+  LocalVar *lv_p1 = (bsc && p1) ? scope_local(bsc, p1) : NULL;
+  /* an element parameter holding its nil (an Integer array with nils):
+     the elements move as oints, and their nil bits with them */
+  int ono = bp_pinned_oint(lv_p0, et) || bp_pinned_oint(lv_p1, et);
+  Buf ect; memset(&ect, 0, sizeof ect);
+  if (ono) buf_puts(&ect, oint_ctype(et)); else emit_ctype(c, et, &ect);
+  const char *ecs = ect.p ? ect.p : "sp_int";
   /* the length is hoisted once, but every turn takes its element out of this
      temp after the comparator has run, and the comparator is user code that
      allocates: rooted. A range or hash receiver arrives here already rooted
      by the arm above that materialized it, and takes a second slot. */
   emit_pre_rooted_recv(c, recv, rt, trv);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_int _t%d = sp_%sArray_length(_t%d);\n", tn, k, trv);
-  emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre);
   /* An empty comparator reduction returns nil: a number's answer below
      carries that case beside the value. */
-  buf_printf(g_pre, " _t%d = _t%d > 0 ? sp_%sArray_get(_t%d, 0) : %s;\n", tmin, tn, k, trv,
-             et == TY_INT ? "0" : et == TY_FLOAT ? "0.0" :
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "%s _t%d = _t%d > 0 ? sp_%sArray_%s(_t%d, 0) : %s;\n", ecs, tmin, tn, k, ono ? "oget" : "get", trv,
+             ono ? oint_nil(et) : et == TY_INT ? "0" : et == TY_FLOAT ? "0.0" :
              et == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, et));
-  emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = _t%d;\n", tmax, tmin);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "%s _t%d = _t%d;\n", ecs, tmax, tmin);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (sp_int _t%d = 1; _t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);
-  emit_indent(g_pre, g_indent + 1); emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = sp_%sArray_get(_t%d, _t%d);\n", te, k, trv, ti);
+  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "%s _t%d = sp_%sArray_%s(_t%d, _t%d);\n", ecs, te, k, ono ? "oget" : "get", trv, ti);
   /* Block params may be widened to TY_POLY across multiple block sites.
      Pin them to the element type for body emission:
      - temporarily set scope types to `et`
      - refresh ntype cache for body nodes (infer_type writes to cache)
      - emit C shadow declarations inside { } to give lv_p0/lv_p1 the right C type */
-  Scope *bsc = comp_scope_of(c, block);
-  LocalVar *lv_p0 = (bsc && p0) ? scope_local(bsc, p0) : NULL;
-  LocalVar *lv_p1 = (bsc && p1) ? scope_local(bsc, p1) : NULL;
   TyKind saved_p0 = lv_p0 ? lv_p0->type : TY_UNKNOWN;
   TyKind saved_p1 = lv_p1 ? lv_p1->type : TY_UNKNOWN;
   if (lv_p0) lv_p0->type = et;
@@ -4986,8 +5003,14 @@ int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b) {
   /* Open C shadow scope with et-typed block param vars */
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "{\n"); g_indent++;
   emit_indent(g_pre, g_indent);
-  if (p0) { emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = _t%d; ", p0, te); }
-  if (p1) { emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = _t%d;", p1, tacc); }
+  for (int pi = 0; pi < 2; pi++) {
+    const char *pn = pi ? p1 : p0;
+    if (!pn) continue;
+    int pto = ono && slot_is_oint(pi ? lv_p1 : lv_p0);
+    if (pto) buf_puts(g_pre, oint_ctype(et)); else emit_ctype(c, et, g_pre);
+    if (ono && !pto) buf_printf(g_pre, " lv_%s = %s(_t%d);%s", pn, oint_arg(et), pi ? tacc : te, pi ? "" : " ");
+    else buf_printf(g_pre, " lv_%s = _t%d;%s", pn, pi ? tacc : te, pi ? "" : " ");
+  }
   buf_puts(g_pre, "\n");
   /* an Integer answer that can be nil stays unboxed, as its oint */
   int ans_o = nil_cmp && cmp_ty == TY_INT;
@@ -4997,9 +5020,11 @@ int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b) {
   else if (!ans_o) emit_iter_step_tail(c, &st, &cm);
   g_indent--;
   emit_indent(g_pre, g_indent);
-  char ea[32], eb[32]; snprintf(ea, sizeof ea, "_t%d", te); snprintf(eb, sizeof eb, "_t%d", tacc);
+  char ea[48], eb[48];
+  snprintf(ea, sizeof ea, ono ? "%s(_t%d)" : "%s_t%d", ono ? oint_box(et) : "", te);
+  snprintf(eb, sizeof eb, ono ? "%s(_t%d)" : "%s_t%d", ono ? oint_box(et) : "", tacc);
   Buf sg; memset(&sg, 0, sizeof sg);
-  emit_cmp_block_sign(c, bn > 0 ? bb[bn - 1] : -1, cmp_ty, ans_o ? 2 : cmp_boxed, cm.p ? cm.p : "sp_box_nil()", et, ea, eb, &sg);
+  emit_cmp_block_sign(c, bn > 0 ? bb[bn - 1] : -1, cmp_ty, ans_o ? 2 : cmp_boxed, cm.p ? cm.p : "sp_box_nil()", ono ? TY_POLY : et, ea, eb, &sg);
   buf_printf(g_pre, "if (%s %c 0) _t%d = _t%d;\n", sg.p, is_min ? '<' : '>', tacc, te);
   free(sg.p);
   free(cm.p);
@@ -5008,7 +5033,9 @@ int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b) {
   if (lv_p1) lv_p1->type = saved_p1;
   g_indent = save;
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-  emit_seedless_fold_answer(c, id, oint_kind(et) ? et : TY_UNKNOWN, tn, is_min ? tmin : tmax, b);
+  free(ect.p);
+  if (ono) buf_printf(b, node_is_oint(c, id) ? "%s_t%d" : "%s(_t%d)", node_is_oint(c, id) ? "" : oint_arg(et), tacc);
+  else emit_seedless_fold_answer(c, id, oint_kind(et) ? et : TY_UNKNOWN, tn, tacc, b);
   return 1;
 }
 
