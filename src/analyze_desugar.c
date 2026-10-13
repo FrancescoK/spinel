@@ -147,24 +147,32 @@ int desugar_builtin_class_var_recv(Compiler *c) {
   return changed;
 }
 
+/* Does a receiverless call `id` to `name` reach a method of the program's
+   own rather than Kernel's? A receiverless call goes through self: a
+   top-level def (Object's, so every self's), or one in the chain of the
+   class (or, in a class method, the singleton chain) the call sits in. The
+   bubbletea gem's `Bubbletea.exec(callable)` is its module's; a bare `exec`
+   in another class is still Kernel#exec. */
+static int bare_call_reaches_own(Compiler *c, int id, const char *name) {
+  if (comp_method_index(c, name) >= 0) return 1;
+  Scope *sc = comp_scope_of(c, id);
+  if (!sc || sc->class_id < 0) return 0;
+  return (sc->is_cmethod ? comp_cmethod_in_chain(c, sc->class_id, name, NULL)
+                         : comp_method_in_chain(c, sc->class_id, name, NULL)) >= 0;
+}
+
 /* Kernel#spawn and Kernel#exec are Process.spawn and Process.exec: a
    receiverless `spawn(...)` / `exec(...)` gets Process as its receiver,
-   which their arms take, unless the program defines a method of that name
-   of its own anywhere (#7203). */
+   which their arms take, unless it reaches a method of that name of the
+   program's own (#7203; bare_call_reaches_own). */
 int desugar_bare_spawn(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int own_spawn = 0, own_exec = 0;
-  for (int s = 0; s < c->nscopes; s++) {
-    const char *sn = c->scopes[s].name;
-    if (sn && sp_streq(sn, "spawn")) own_spawn = 1;
-    if (sn && sp_streq(sn, "exec")) own_exec = 1;
-  }
-  if (own_spawn && own_exec) return 0;
   int changed = 0;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || !((sp_streq(nm, "spawn") && !own_spawn) || (sp_streq(nm, "exec") && !own_exec))) continue;
+    if (!nm || (!sp_streq(nm, "spawn") && !sp_streq(nm, "exec"))) continue;
     if (nt_ref(nt, id, "receiver") >= 0 || nt_ref(nt, id, "block") >= 0) continue;
+    if (bare_call_reaches_own(c, id, nm)) continue;
     int an = 0, args = nt_ref(nt, id, "arguments");
     if (args >= 0) nt_arr(nt, args, "arguments", &an);
     if (an < 1 || id >= c->node_cap) continue;
