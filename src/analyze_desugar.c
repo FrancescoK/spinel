@@ -15629,11 +15629,13 @@ static int civ_writes_local(const NodeTable *nt, int node, const char *name) {
    below it: `sub` in `def self.inherited(sub)` (or `def inherited(sub)` in
    `class << self`), never assigned in the method, or `self.class` in an
    instance method. Not in a block, where self or the name could mean
-   something else. -1 otherwise. */
+   something else, nor in a def on another receiver (`def Other.m`,
+   `def obj.m`), where self is that object. -1 otherwise. */
 static int civ_class_value_owner(const NodeTable *nt, const int *parent, int r) {
   int d = civ_enclosing(nt, parent, r, NK_DefNode);
   if (d < 0 || civ_in_block(nt, parent, r, d)) return -1;
   int dr = nt_ref(nt, d, "receiver");
+  if (dr >= 0 && nt_kind(nt, dr) != NK_SelfNode) return -1;
   int above = parent[d];
   while (above >= 0 && nt_kind(nt, above) != NK_ClassNode && nt_kind(nt, above) != NK_ModuleNode &&
          nt_kind(nt, above) != NK_SingletonClassNode) above = parent[above];
