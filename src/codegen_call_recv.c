@@ -14340,6 +14340,19 @@ int emit_boxed_class_aref(Compiler *c, int id, Buf *b) {
   return 0;
 }
 
+/* poly.bytes / .codepoints / .chars: the String method on the receiver's
+   text. The answer is the array itself, or that array boxed when the call
+   is typed poly: inference counts a user class owning the name even when
+   no instance of it can be reached, and its poly slot takes no bare array. */
+static void emit_poly_str_array_call(Compiler *c, int id, int recv, const char *fn, const char *name,
+                                     TyKind at, Buf *b) {
+  Buf eb; memset(&eb, 0, sizeof eb);
+  buf_printf(&eb, "%s(sp_poly_recv_s(", fn); emit_expr(c, recv, &eb); buf_printf(&eb, ", \"%s\"))", name);
+  if (comp_ntype(c, id) == TY_POLY) emit_boxed_text(c, at, eb.p, b);
+  else buf_puts(b, eb.p);
+  free(eb.p);
+}
+
 /* A zero-argument call on a boxed receiver (emit_poly_call's arms, in their order) */
 static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int *out) {
   if (!(recv >= 0 && rt == TY_POLY && argc == 0)) return 0;
@@ -14769,10 +14782,10 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
                tvC, tvC, tvC, tvC, tvC, tvC, tvC);
     { *out = 1; return 1; }
   }
-  /* poly.bytes / poly.codepoints -> concrete TY_INT_ARRAY, no boxing (matches
-     the inference rule). A String that widened to poly (a binary lump slice)
-     reaches here; without this arm .bytes hit the generic poly method
-     dispatch and raised "undefined method 'bytes' for poly". */
+  /* poly.bytes / poly.codepoints -> TY_INT_ARRAY, boxed only where the
+     inference rule types the call poly. A String that widened to poly (a
+     binary lump slice) reaches here; without this arm .bytes hit the generic
+     poly method dispatch and raised "undefined method 'bytes' for poly". */
   if ((sp_streq(name, "bytes") || sp_streq(name, "codepoints")) && argc == 0 &&
       nt_ref(nt, id, "block") < 0) {
     /* Skip when a user class owns the name -- the runtime value may be one of
@@ -14780,15 +14793,17 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
        Struct member or attr_reader called `bytes` hit exactly that (#3364);
        the `chars` arm below has carried this guard since #2909. */
     if (!user_defines_or_reads(c, name)) {
-      buf_printf(b, "sp_str_%s(sp_poly_recv_s(", sp_streq(name, "bytes") ? "bytes" : "codepoints");
-      emit_expr(c, recv, b); buf_printf(b, ", \"%s\"))", name); { *out = 1; return 1; }
+      emit_poly_str_array_call(c, id, recv, sp_streq(name, "bytes") ? "sp_str_bytes" : "sp_str_codepoints",
+                               name, TY_INT_ARRAY, b);
+      { *out = 1; return 1; }
     }
   }
   /* poly.chars -> TY_STR_ARRAY: a String read out of a container or
      destructured from a pair (`|a, b|`) reaches here poly-typed (#2909). */
   if (sp_streq(name, "chars") && argc == 0 && nt_ref(nt, id, "block") < 0) {
     if (!user_defines_or_reads(c, "chars")) {
-      buf_puts(b, "sp_str_chars(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"chars\"))"); { *out = 1; return 1; }
+      emit_poly_str_array_call(c, id, recv, "sp_str_chars", "chars", TY_STR_ARRAY, b);
+      { *out = 1; return 1; }
     }
   }
   /* poly.each_char { }: walk the same char array #chars answers. A String
