@@ -8773,7 +8773,7 @@ static int arg_temp_conversion(Compiler *c, int v, TyKind at) {
    g_argov overrides so its uses read the temp. */
 static void emit_arg_temp(Compiler *c, int v) {
   Repr r = repr_of(c, v);
-  int fresh = r.as_ty == TY_STRBUF && r.strbuf_src == RS_FRESH;
+  int fresh = repr_handle_apart(c, v, r);
   TyKind at = fresh ? TY_STRING : r.as_ty;
   /* A shared String slot's read is the value form, a copy; a shared-handle
      parameter wants the OBJECT read here, not a fresh one of its bytes. So
@@ -9202,7 +9202,7 @@ static char *arg_handle_params(Compiler *c, Scope *m, const int *argv, int argc,
 static int emit_arg_handle_first(Compiler *c, int v, int rebound) {
   NodeKind k = nt_kind(c->nt, v);
   Repr r = repr_of(c, v);
-  TyKind at = r.as_ty == TY_STRBUF && r.strbuf_src == RS_FRESH ? TY_STRING : r.as_ty;
+  TyKind at = repr_handle_apart(c, v, r) ? TY_STRING : r.as_ty;
   if (at != TY_STRING || k == NK_SplatNode || k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
       repr_static_read_kind(k) || arg_ran_first(v, 0) || (!rebound && !subtree_has_side_effect(c, v)) ||
       repr_write_share(c, unwrap_parens(c, v)) || arg_temp_conversion(c, v, at) || !strbuf_arg_carries(c, v))
@@ -11676,7 +11676,7 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
     for (int k = 0; k < pos_argc && k < m->nparams; k++) {
       argov_reserve();   /* past MAX_ARG_OVERRIDE arguments too */
       Repr r = repr_of(c, argv[k]);
-      int fresh = r.as_ty == TY_STRBUF && r.strbuf_src == RS_FRESH;
+      int fresh = repr_handle_apart(c, argv[k], r);
       TyKind at = fresh ? TY_STRING : r.as_ty;
       /* An argument emit_ctype would spell `void` has no C storage to
          sequence into -- `void _tN = ...` is not a declaration C accepts.

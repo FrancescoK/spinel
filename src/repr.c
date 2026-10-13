@@ -360,6 +360,10 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
   if (repr_write_share(c, node)) return RS_HANDLE;
   /* an element a boxed container hands out is a boxed handle already */
   if (strbuf_boxed_elem_read(mc, node)) return RS_ELEM;
+  /* a String Range's endpoint (begin, end, first, last, min, max), also
+     as the value of parentheses (strbuf_srange_tail), is the handle the
+     Range keeps for it, as a slot's read is the slot's handle */
+  if (strbuf_srange_tail(mc, node) >= 0) return RS_HANDLE;
   /* a reader call (or a call answering its receiver) that renders the
      handle itself */
   if (k == NK_CallNode) {
@@ -388,6 +392,11 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
   }
   /* a String value stored where a handle is demanded: a fresh one */
   return RS_FRESH;
+}
+
+/* See repr.h. */
+int repr_handle_apart(Compiler *c, int v, Repr r) {
+  return r.as_ty == TY_STRBUF && (r.strbuf_src == RS_FRESH || strbuf_srange_tail(c, v) >= 0);
 }
 
 /* The type a node is STORED as, given its cached type t (comp_ntype's

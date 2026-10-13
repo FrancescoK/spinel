@@ -121,7 +121,7 @@ static int share_plan_self_recv(Compiler *c, int v) {
 static int share_plan_supply_at(Compiler *c, int v, int *recv) {
   Repr r = repr_of(c, v);
   *recv = -1;
-  if (r.kind == RK_BOXED || strbuf_srange_tail(c, v) >= 0) return 1;
+  if (r.kind == RK_BOXED) return 1;
   if (r.kind == RK_STRBUF) return r.strbuf_src != RS_FRESH;
   int rv = share_plan_self_recv(c, v);
   if (rv >= 0) { *recv = rv; return -1; }
@@ -154,18 +154,14 @@ static int share_plan_sup_valid(Compiler *c, const struct SharePlanSup *e) {
         was planned where it was boxed;
      2. a value represented as the handle has it, unless repr_of says the
         handle is a new one wrapped around its bytes where it is demanded
-        (RS_FRESH); a String Range's endpoint (begin, end, first, last,
-        min, max, also as the value of parentheses: strbuf_srange_tail)
-        has the handle the Range keeps for it, as the typed and the boxed
-        endpoint routes take it, whatever repr_of says (it calls that
-        handle RS_FRESH where one is demanded);
+        (RS_FRESH);
      3. a call that answers its String receiver hands over what that
         receiver does;
      4. any other value, represented as its bytes, has one where the routes
         the analysis checks a carry against hand it along
         (share_node_carries_handle: a callee that publishes it, a bang over
-        a slot that holds it, a variable whose slot holds it), unless it is
-        a new String.
+        a slot that holds it, a variable whose slot holds it, a String
+        Range's endpoint), unless it is a new String.
    A chain of rule 3 is asked at each of its links, outermost first: the
    walk down it keeps each link's answer with the node that decided it
    (Compiler.share_sup), and a link asked again reads it while the view
