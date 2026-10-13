@@ -1821,6 +1821,9 @@ int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int argc,
 int name_is_synth_method(Compiler *c, const char *m) {
   if (!m) return 0;
   if (sp_streq(m, "__enum_to_a")) return 1;
+  /* a class's copy of its initialize as a method, for its own calls of it
+     (desugar_explicit_initialize_calls) */
+  if (sp_streq(m, "__spinel_reinit")) return 1;
   /* `__inc <n> <name>`: the shadow copy of an included module's method, kept
      so an override can reach it through super (#3738) */
   if (strncmp(m, "__inc ", 6) == 0) return 1;
