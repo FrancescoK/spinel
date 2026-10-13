@@ -3819,6 +3819,22 @@ static const char *alias_embedding_parent(Compiler *c, ClassInfo *cls) {
   const char *par = builtin_value_superclass(c, nt_ref(c->nt, dn, "superclass"));
   return par && (sp_streq(par, "Array") || sp_streq(par, "Hash")) ? par : NULL;
 }
+/* The Object / Kernel methods an alias in a program class can capture: a
+   call through the alias runs the builtin's own (builtin_only), as CRuby's
+   alias keeps the body in effect where it appeared, whatever the class
+   defines of the name after it (`alias original_dup dup; def dup = self`). */
+static int alias_object_builtin(const char *od) {
+  static const char *const names[] = { "dup", "clone", "inspect", "to_s", "hash", "==", "!=",
+    "eql?", "equal?", "freeze", "frozen?", "object_id", "is_a?", "kind_of?", "instance_of?",
+    "itself", NULL };
+  for (int i = 0; names[i]; i++) if (sp_streq(od, names[i])) return 1;
+  return 0;
+}
+/* ... of which a call still runs the builtin when the class defines its own
+   method of the name after the alias; for the rest that is refused */
+static int alias_object_builtin_past_own(const char *od) {
+  return sp_streq(od, "dup") || sp_streq(od, "clone");
+}
 static void alias_register(Compiler *c, ClassInfo *cls, const char *nw, const char *od, int s, int singleton) {
   alias_refuse_early_call(c, cls, nw, s);
   int cid = cls->name ? comp_class_index(c, cls->name) : -1;
@@ -3853,6 +3869,84 @@ static void alias_register(Compiler *c, ClassInfo *cls, const char *nw, const ch
       !alias_target_defined_before(c, cls, cid, od, s, singleton)) {
     for (int i = cls->naliases - 1; i >= 0; i--)
       if (cls->alias_node[i] == s && sp_streq(cls->alias_new[i], nw)) { cls->alias_builtin[i] = singleton ? 2 : 1; comp_class_shape_changed(); break; }
+  }
+  /* In a program class, of an Object / Kernel method it has not defined
+     there yet: the builtin's, unless an ancestor or a module turns out to
+     define it (settle_object_builtin_aliases, once the chains are known) */
+  else if (s >= 0 && cid >= 0 && !singleton && !alias_prim_class(cls->name) && !ep &&
+           !is_builtin_reopen(cls->name) && !comp_class_is_module(c, cls) && alias_object_builtin(od) &&
+           !alias_target_defined_before(c, cls, cid, od, s, 0)) {
+    for (int i = cls->naliases - 1; i >= 0; i--)
+      if (cls->alias_node[i] == s && sp_streq(cls->alias_new[i], nw)) { cls->alias_builtin[i] = 3; comp_class_shape_changed(); break; }
+  }
+}
+
+/* Does the body of class k include or prepend module mi before node `at`? */
+static int alias_module_included_before(Compiler *c, int k, int mi, int at) {
+  const NodeTable *nt = c->nt;
+  const char *mn = c->classes[mi].name;
+  if (!mn || !c->node_cbody) return 0;
+  const char *leaf = strrchr(mn, ':');
+  leaf = leaf ? leaf + 1 : mn;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    if (id >= at) continue;
+    const char *cn = nt_str(nt, id, "name");
+    if (!cn || (!sp_streq(cn, "include") && !sp_streq(cn, "prepend")) || nt_ref(nt, id, "receiver") >= 0) continue;
+    if (id >= c->node_cap || c->node_cbody[id] != k) continue;
+    int a = nt_ref(nt, id, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    for (int j = 0; j < an; j++) {
+      const char *an_ = nt_str(nt, av[j], "name");
+      if (an_ && sp_streq(an_, leaf)) return 1;
+    }
+  }
+  return 0;
+}
+
+/* Is an instance method `od` of class k in effect at node `at`, where an
+   alias of it appears: one the class defines before it, or a copy of a
+   module's that the class included before it? `own` 1 for the alias's own
+   class, whose own definitions are no ancestor's. *later is set for a
+   definition that comes after the alias. */
+static int alias_method_in_effect(Compiler *c, int k, const char *od, int at, int own, int *later) {
+  int found = 0;
+  for (int si = 1; si < c->nscopes; si++) {
+    Scope *sc = &c->scopes[si];
+    if (sc->class_id != k || sc->is_cmethod || !sc->name || !sp_streq(sc->name, od)) continue;
+    int copy = sc->is_include_copy || sc->origin_module_ci > 0;
+    int before = sc->def_node >= 0 && sc->def_node < at &&
+                 (!copy || alias_module_included_before(c, k, sc->origin_module_ci - 1, at));
+    if (!before) *later = 1;
+    else if (copy || !own) found = 1;
+  }
+  return found;
+}
+
+/* An alias that took an Object / Kernel method (alias_builtin 3) names the
+   program's method instead where an ancestor or an included module defined
+   the name before the alias appeared. One that stays the builtin's, in a
+   class whose chain defines the name after it (the class itself, a module
+   it includes later, a reopened ancestor), is refused but for dup and
+   clone, whose builtin call on a program object the emitter serves past
+   the class's own. */
+void settle_object_builtin_aliases(Compiler *c) {
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *cls = &c->classes[k];
+    for (int i = 0; i < cls->naliases; i++) {
+      if (!cls->alias_builtin || cls->alias_builtin[i] != 3) continue;
+      const char *od = cls->alias_old[i];
+      int at = cls->alias_node[i] >= 0 ? cls->alias_node[i] : cls->def_node;
+      int inherited = 0, later = 0;
+      for (int p = k; p >= 0 && !inherited; p = c->classes[p].parent)
+        inherited = alias_method_in_effect(c, p, od, at, p == k, &later);
+      if (inherited) { cls->alias_builtin[i] = 0; comp_class_shape_changed(); continue; }
+      if (later && !alias_object_builtin_past_own(od)) {
+        char msg[512];
+        snprintf(msg, sizeof msg, "%s#%s: alias of the builtin %s that the class later overrides is not supported; "
+                 "see docs/limitations.md", cls->name, cls->alias_new[i], od);
+        unsupported_feature(c, at, msg);
+      }
+    }
   }
 }
 

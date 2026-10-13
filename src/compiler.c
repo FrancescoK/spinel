@@ -1018,8 +1018,11 @@ static int chain_lookup(Compiler *c, int class_id, const char *name, int *def_cl
     if (a[2 * class_id] >= 0 && def_class) *def_class = a[2 * class_id + 1];
     return a[2 * class_id];
   }
-  int start = class_id, mi = -1, dc = -1;
-  const char *rn = comp_resolve_alias_at(c, class_id, name, &start);
+  int start = class_id, mi = -1, dc = -1, bi = 0;
+  const char *rn = comp_resolve_alias_ex(c, class_id, name, &start, &bi);
+  /* an alias that captured a builtin's method names no method of the
+     program's, whatever the class defines of that name later */
+  if (bi && !is_cm && !sp_streq(rn, name)) start = -1;
   for (int cid = start; cid >= 0; cid = c->classes[cid].parent) {
     int m = is_cm ? comp_cmethod_in_class(c, cid, rn) : comp_method_in_class(c, cid, rn);
     if (m >= 0) { mi = m; dc = cid; break; }

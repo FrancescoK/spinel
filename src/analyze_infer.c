@@ -7311,6 +7311,14 @@ static int strbuf_mutator_answers_self(const char *name, int argc) {
   return argc == 0 && sp_streq(name, "clear");
 }
 
+/* Does class ci or an ancestor declare an alias? One an ancestor declared
+   reaches the class too. */
+static int chain_has_aliases(Compiler *c, int ci) {
+  for (int k = ci; k >= 0 && k < c->nclasses; k = c->classes[k].parent)
+    if (c->classes[k].naliases > 0) return 1;
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -7408,8 +7416,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       int oci = -1;
       if (recv >= 0) { TyKind ort = infer_type(c, recv); if (ty_is_object(ort)) oci = ty_object_class(ort); }
       else { int si = id < c->nt->count ? c->nscope[id] : -1; oci = si >= 0 ? c->scopes[si].class_id : -1; }
-      if (oci >= 0 && oci < c->nclasses && c->classes[oci].naliases > 0 &&
-          !is_builtin_reopen(c->classes[oci].name) &&
+      if (chain_has_aliases(c, oci) && !is_builtin_reopen(c->classes[oci].name) &&
           comp_method_in_chain(c, oci, name, NULL) < 0) {
         const char *rn = comp_resolve_alias(c, oci, name);
         /* not where a subclass defines either name: over the alias, or
@@ -7419,7 +7426,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         for (int k = 0; k < c->nclasses && !over; k++)
           if (k != oci && is_descendant(c, k, oci) &&
               (comp_method_in_class(c, k, name) >= 0 || (rn && comp_method_in_class(c, k, rn) >= 0))) over = 1;
-        if (!over && rn && !sp_streq(rn, name) && comp_reader_in_chain(c, oci, rn, NULL) &&
+        if (!over && c->classes[oci].naliases > 0 && rn && !sp_streq(rn, name) && comp_reader_in_chain(c, oci, rn, NULL) &&
             comp_method_vis_in_chain(c, oci, name) == SP_VIS_PUBLIC) {
           if (!an_pure_reads) {
             /* the name it was written as stays: nil answers that one
@@ -7433,6 +7440,24 @@ static TyKind infer_call_inner(Compiler *c, int id) {
             nt_node_set_str((NodeTable *)nt, id, "name", rn);
           }
           name = an_pure_reads ? rn : nt_str(nt, id, "name");
+        }
+        /* an alias that captured an Object / Kernel method
+           (`alias original_dup dup`): the builtin's call, past the class's
+           own method of the name */
+        else if (!over && !nt_int(nt, id, "builtin_only", 0)) {
+          int bi = 0;
+          const char *brn = comp_resolve_alias_ex(c, oci, name, NULL, &bi);
+          if (bi && brn && !sp_streq(brn, name)) {
+            char *bn = strdup(brn);
+            if (!bn) { fprintf(stderr, "out of memory\n"); exit(1); }
+            if (!an_pure_reads) {
+              nt_node_set_str((NodeTable *)nt, id, "name", bn);
+              nt_node_set_int((NodeTable *)nt, id, "builtin_only", 1);
+            }
+            bonly = 1;
+            name = an_pure_reads ? brn : nt_str(nt, id, "name");
+            free(bn);
+          }
         }
       }
     }
@@ -7449,6 +7474,14 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         if (bi) { bonly = 1; if (!an_pure_reads) nt_node_set_int((NodeTable *)nt, id, "builtin_only", 1); }
       }
     }
+  }
+
+  /* Kernel#dup / #clone an alias captured on a program object
+     (builtin_only): a copy of the receiver, whatever the class's own method
+     of the name answers */
+  if ((bonly || nt_int(nt, id, "builtin_only", 0)) && recv >= 0 && is_copy_alias(name)) {
+    TyKind crt = infer_type(c, recv);
+    if (ty_is_object(crt)) return crt;
   }
 
   /* `Module.accessor.cmethod(...)` where the singleton accessor statically

@@ -1303,8 +1303,9 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   if (recv >= 0 && (is_copy_alias(name)) &&
       /* a generated READER of the name owns it, as in CRuby (#4190), and so
          does a method the class defines itself: Nokogiri's Node#dup is a deep
-         copy, and the built-in shallow copy took its place (#5450) */
-      !(ty_is_object(comp_ntype(c, recv)) &&
+         copy, and the built-in shallow copy took its place (#5450). Not for
+         a call an alias captured the builtin for (builtin_only). */
+      !(!nt_int(nt, id, "builtin_only", 0) && ty_is_object(comp_ntype(c, recv)) &&
         comp_resolve_member(c, ty_object_class(comp_ntype(c, recv)), name, 0, NULL, NULL) != SP_MEMBER_NONE) &&
       !(comp_ntype(c, recv) == TY_POLY && an_user_defines_method(c, name))) {
     int dargs = nt_ref(nt, id, "arguments");
