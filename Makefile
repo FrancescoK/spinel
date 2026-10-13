@@ -3038,6 +3038,11 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	  "$$tmp/srvw" > "$$tmp/srvw.out" 2>/dev/null && cmp -s "$$tmp/srvw.out" test/rbs-seed/shared_rbs_void_writer_tail.expected && \
 	  SPINEL_GC_STRESS=1 "$$tmp/srvw" > "$$tmp/srvw.gc" 2>/dev/null && cmp -s "$$tmp/srvw.gc" test/rbs-seed/shared_rbs_void_writer_tail.expected || { echo "rbs-seed-test: FAIL (#6765 an attribute assignment ending a --rbs '-> nil' writer under --share-strings: refused, or not shared)"; sed -n 1,5p "$$tmp/srvw.err"; ok=0; }; \
 	;; \
+	shared_rbs_string_return) \
+	$(SPINEL) test/rbs-seed/shared_rbs_string_return.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srsr" >/dev/null 2>"$$tmp/srsr.err" && \
+	  "$$tmp/srsr" > "$$tmp/srsr.out" 2>/dev/null && cmp -s "$$tmp/srsr.out" test/rbs-seed/shared_rbs_string_return.expected && \
+	  SPINEL_GC_STRESS=1 "$$tmp/srsr" > "$$tmp/srsr.gc" 2>/dev/null && cmp -s "$$tmp/srsr.gc" test/rbs-seed/shared_rbs_string_return.expected || { echo "rbs-seed-test: FAIL (#6765 an --rbs '-> String' method under --share-strings: refused, or not the shared String)"; sed -n 1,5p "$$tmp/srsr.err"; ok=0; }; \
+	;; \
 	byref_string_param) \
 	$(SPINEL) test/rbs-seed/byref_string_param.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/br.c" 2>/dev/null; \
