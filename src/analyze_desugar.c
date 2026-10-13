@@ -14336,7 +14336,7 @@ static int cb_self_act(const NodeTable *nt, int s) {
   static const char *const acts[] = { "display", "public_send", "instance_variable_set",
     /* Object's answers about self */
     "itself", "inspect", "to_s", "hash", "frozen?", "is_a?", "kind_of?", "instance_of?", "nil?",
-    "eql?", "equal?",
+    "eql?", "equal?", "object_id",
     /* Module's */
     "name", "ancestors", "superclass", "instance_methods", "public_instance_methods",
     "instance_method", "method_defined?", "public_method_defined?", "private_method_defined?",
