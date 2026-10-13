@@ -7608,7 +7608,11 @@ static int emit_poly_arg_temp(Compiler *c, int node, TyKind ty, int boxed, int t
      the handle in the box: it is taken out, not wrapped */
   int poly_src = as_handle && infer_type(c, node) == TY_POLY;
   if (as_handle) buf_puts(&val, poly_src ? "sp_poly_as_strbuf(" : "SP_AS_STRING_HANDLE(");
-  if (!boxed && ty == TY_STRBUF && repr_share_rule(c) && repr_of(c, node).strbuf_src == RS_HANDLE)
+  /* (a value whose handle is formed apart from its String,
+     repr_handle_apart, is held as the String, the mark asking for its
+     handle) */
+  Repr nr = repr_of(c, node);
+  if (!boxed && ty == TY_STRBUF && repr_share_rule(c) && nr.strbuf_src == RS_HANDLE && !repr_handle_apart(c, node, nr))
     emit_strbuf_handle_of(c, node, &val);
   else if (boxed) emit_boxed(c, node, &val); else emit_expr(c, node, &val);
   if (as_handle) buf_puts(&val, ")");
@@ -21306,15 +21310,16 @@ static int emit_operands_before_unbound(Compiler *c, int id, const int *operand,
 }
 
 /* Is argument `node` a String value stored where a shared handle is wanted,
-   which the store wraps in a fresh handle (repr_of's RS_FRESH: `+"x"` in
-   `@a << +"x"` whose element is appended to later)? The store reads it as a
-   String with the handle mark lifted (emit_boxed_strbuf), so its temp is
-   rendered and declared that way; its stored type, the handle, declared an
-   sp_String * for the String. A receiver is read by its own call, as the
-   handle it renders (`s << a << b`). */
+   whose handle the store forms apart from its String (repr_handle_apart):
+   a fresh one it wraps around it (repr_of's RS_FRESH: `+"x"` in
+   `@a << +"x"` whose element is appended to later), or the one a String
+   Range keeps for its endpoint? The store reads it as a String with the
+   handle mark lifted (emit_boxed_strbuf), so its temp is rendered and
+   declared that way; its stored type, the handle, declared an sp_String *
+   for the String. A receiver is read by its own call, as the handle it
+   renders (`s << a << b`). */
 static int operand_fresh_str(Compiler *c, int node) {
-  Repr r = repr_of(c, node);
-  return r.as_ty == TY_STRBUF && r.strbuf_src == RS_FRESH;
+  return repr_handle_apart(c, node, repr_of(c, node));
 }
 /* One operand of emit_operands_in_order rendered into `out`, with the
    statements its emission hoists caught in `pre` rather than the enclosing
