@@ -962,7 +962,8 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
     int mi = comp_method_in_chain(c, k, nm, NULL);
     if (mi >= 0) { if (!cf_user_target(f, v, mi, argv, argc, blk)) builtin = 1; continue; }
     if (comp_reader_in_chain(c, k, nm, NULL)) {
-      char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", nm);
+      /* the reader an alias names reads its own ivar (`alias loc location`) */
+      char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, k, nm));
       cf_unite(f, v, cf_entry(f, f->fam[k], ivn));
       continue;
     }
@@ -1117,7 +1118,7 @@ static void cf_call(CF *f, int v) {
           int mi = comp_method_in_chain(c, ds->cls[i], nm, NULL);
           if (mi >= 0) { if (cf_user_target(f, v, mi, argv, argc, blk)) found = 1; continue; }
           if (comp_reader_in_chain(c, ds->cls[i], nm, NULL)) {
-            char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", nm);
+            char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, ds->cls[i], nm));
             cf_unite(f, v, cf_entry(f, f->fam[ds->cls[i]], ivn));
             found = 1;
           }
