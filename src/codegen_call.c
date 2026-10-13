@@ -19374,6 +19374,16 @@ int method_vis_for_caller(Compiler *c, int id, int vcid, const char *vnm) {
       if (caller_includes_module(c, caller, owner) ||
           (cmi >= 0 && cmi < c->nscopes && c->scopes[cmi].origin_module_ci == owner + 1)) vis = SP_VIS_PUBLIC;
     }
+    /* a call in a module's own method (or a block in it): self there is an
+       instance of a class that includes the module, so the module's
+       protected method is callable on a receiver whose class includes it
+       too (`ch.visit(&block)` inside the module's `visit`) */
+    if (vis == SP_VIS_PROTECTED && caller >= 0 && comp_class_is_module(c, &c->classes[caller])) {
+      int rmi = comp_method_in_chain(c, vcid, vnm, NULL);
+      int from_caller = owner == caller ||
+                        (rmi >= 0 && rmi < c->nscopes && c->scopes[rmi].origin_module_ci == caller + 1);
+      if (from_caller && (vcid == caller || caller_includes_module(c, vcid, caller))) vis = SP_VIS_PUBLIC;
+    }
   }
   return vis;
 }
@@ -19491,10 +19501,10 @@ void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b) {
         continue;
       }
     }
-    int owner = -1;
-    int vis = comp_method_vis_declared(c, k, vnm, &owner);
-    if (vis == SP_VIS_PROTECTED && plain && caller >= 0 && owner >= 0 &&
-        is_descendant(c, caller, owner)) vis = SP_VIS_PUBLIC;
+    /* a protected method is open to the caller by the same rules as a
+       typed receiver's call (method_vis_for_caller): a descendant, a class
+       including the declaring module, a call inside that module */
+    int vis = plain ? method_vis_for_caller(c, id, k, vnm) : comp_method_vis_declared(c, k, vnm, NULL);
     if (vis == SP_VIS_PUBLIC) continue;
     const char *vrn = class_ruby_name(c, k) ? class_ruby_name(c, k) : c->classes[k].name;
     {
