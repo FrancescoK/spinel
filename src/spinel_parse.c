@@ -4286,6 +4286,14 @@ static char *sp_splice_system_spawn(char *source, const char *exe_path,
   return sp_prepend_require(source, exe_path, "require \"builtins/system_spawn\"\n", fsl, fsl_n);
 }
 
+/* builtins/io_popen.rb: IO.popen with a block, for a program that calls
+   IO.popen (the analysis renames the block form to it, desugar_io_popen_block) */
+static char *sp_splice_io_popen(char *source, const char *exe_path,
+                                unsigned char **fsl, size_t *fsl_n) {
+  if (!strstr(source, "IO.popen")) return source;
+  return sp_prepend_require(source, exe_path, "require \"builtins/io_popen\"\n", fsl, fsl_n);
+}
+
 static char *sp_splice_builtins(char *source, const char *exe_path,
                                 unsigned char **fsl, size_t *fsl_n) {
   if (getenv("SPINEL_NO_BUILTINS")) return source;   /* the A/B switch: the C emitters alone */
@@ -5106,6 +5114,7 @@ static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
   source = sp_splice_object_space(source, argv0, &fsl, &fsl_n);
   source = sp_splice_process_detach(source, argv0, &fsl, &fsl_n);
   source = sp_splice_system_spawn(source, argv0, &fsl, &fsl_n);
+  source = sp_splice_io_popen(source, argv0, &fsl, &fsl_n);
   /* CRuby provides Set (3.2+) and IO::Buffer without a require wherever
      they are used, in a required file as well (activesupport's
      notifications/fanout.rb; #6740 for IO::Buffer). Ask over the resolved

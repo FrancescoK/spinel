@@ -1,0 +1,8 @@
+"a\x00b"
+3
+true
+"hi\n"
+3
+["one", "two"]
+"out\n"
+Errno::ENOENT

@@ -10736,6 +10736,41 @@ static int desugar_system_options(Compiler *c) {
   return changed;
 }
 
+/* IO.popen(cmd, mode) { |io| ... } / IO.popen(cmd, &:read) ->
+   IO.__sp_popen(...): the block form reads the command's output through a
+   pipe and reaps the child (builtins/io_popen.rb, spliced by the parser).
+   Only when that method is there and the call has a block; the blockless
+   form keeps its refusal. */
+static int desugar_io_popen_block(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, helper = 0, changed = 0;
+  for (int id = 0; id < n0 && !helper; id++)
+    if (nt_kind(nt, id) == NK_DefNode && nt_ref(nt, id, "receiver") >= 0 &&
+        nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "__sp_popen")) helper = 1;
+  if (!helper) return 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "popen") || nt_ref(nt, id, "block") < 0) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) continue;
+    const char *rn = nt_str(nt, recv, "name");
+    if (!rn || !sp_streq(rn, "IO")) continue;
+    /* only a read: the mode, when given, is a literal "r", "rb", "rt", ...
+       A write mode or one known only at run time keeps the compile-time
+       refusal (#7199) rather than a NotImplementedError when it runs. */
+    int args = nt_ref(nt, id, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an >= 2 && nt_kind(nt, av[1]) != NK_KeywordHashNode) {
+      const char *mode = nt_kind(nt, av[1]) == NK_StringNode ? nt_str(nt, av[1], "content") : NULL;
+      if (!mode || mode[0] != 'r' || strchr(mode, '+')) continue;
+    }
+    nt_node_set_str(nt, id, "name", "__sp_popen");
+    changed = 1;
+  }
+  return changed;
+}
+
 static int desugar_file_stat_new(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -40812,6 +40847,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_nil_block_arg(c);
   desugar_thread_start(c);               /* Thread.start / .fork -> Thread.new */
   desugar_system_options(c);             /* system(..., out:) -> spawn + wait */
+  desugar_io_popen_block(c);             /* IO.popen(cmd) { } -> pipe + spawn + wait */
   desugar_literal_undef_method(c);       /* undef_method :a in a body -> undef a */
   /* a bare constant CRuby's lookup cannot reach, bound by its leaf name to a
      nested definition: refused while the source still says where each
