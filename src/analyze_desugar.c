@@ -13745,10 +13745,49 @@ static void incl_call_on_mod(NodeTable *nt, int node, const InclSubst *is) {
    a call of its own singleton method, bare or on self, goes to it. A
    class_eval family block, a define_method block and a `class << x` body
    have a self of their own; a `&blk` expression is the hook's. */
+static void cbi_lower_op_writes(NodeTable *nt, int node);
+
+/* `@x` / `@x = v` in the hook, where self is the module: the module's own
+   ivar, `M.instance_variable_get(:@x)` / `M.instance_variable_set(:@x, v)`,
+   which desugar_const_ivar_access gives the module's slot. Spliced into the
+   includer's body as it was, it was the includer's. */
+static void incl_mod_ivar(NodeTable *nt, int node, const InclSubst *is) {
+  NodeKind k = nt_kind(nt, node);
+  char iv[256];
+  snprintf(iv, sizeof iv, "%s", nt_str(nt, node, "name") ? nt_str(nt, node, "name") : "");
+  int v = k == NK_InstanceVariableWriteNode ? nt_ref(nt, node, "value") : -1;
+  int line = (int)nt_int(nt, node, "node_line", 0), file = (int)nt_int(nt, node, "node_file", 0);
+  int sym = fwd_new_node_like(nt, node, "SymbolNode");
+  nt_node_set_str(nt, sym, "value", iv);
+  int recv = fwd_new_node_like(nt, node, "ConstantReadNode");
+  nt_node_set_str(nt, recv, "name", is->mod_name);
+  int av[2] = { sym, v };
+  int args = fwd_new_node_like(nt, node, "ArgumentsNode");
+  nt_node_set_arr(nt, args, "arguments", av, v >= 0 ? 2 : 1);
+  nt_node_reset(nt, node, "CallNode");
+  nt_node_set_str(nt, node, "name", v >= 0 ? "instance_variable_set" : "instance_variable_get");
+  nt_node_set_ref(nt, node, "receiver", recv);
+  nt_node_set_ref(nt, node, "arguments", args);
+  nt_node_set_ref(nt, node, "block", -1);
+  if (line) nt_node_set_int(nt, node, "node_line", line);
+  if (file) nt_node_set_int(nt, node, "node_file", file);
+}
+
 static void incl_subst(NodeTable *nt, int node, const InclSubst *is, int self_mod) {
   if (node < 0) return;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return;
+  if (self_mod && is->mod_name && (k == NK_InstanceVariableOperatorWriteNode ||
+                                   k == NK_InstanceVariableOrWriteNode || k == NK_InstanceVariableAndWriteNode)) {
+    cbi_lower_op_writes(nt, node);
+    if (nt_kind(nt, node) != k) incl_subst(nt, node, is, self_mod);
+    return;
+  }
+  if (self_mod && is->mod_name && (k == NK_InstanceVariableWriteNode || k == NK_InstanceVariableReadNode)) {
+    if (k == NK_InstanceVariableWriteNode) incl_subst(nt, nt_ref(nt, node, "value"), is, self_mod);
+    incl_mod_ivar(nt, node, is);
+    return;
+  }
   int blk = -1, blk_self_mod = self_mod;
   if (k == NK_CallNode) {
     int r = nt_ref(nt, node, "receiver");
