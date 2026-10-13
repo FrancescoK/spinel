@@ -36946,6 +36946,24 @@ static int splat_builtin_range(const char *name, int *lo, int *hi, int *variadic
   }
   return 0;
 }
+/* The counts CRuby's tables give every class with a builtin instance
+   method of this name, where they are few (find_index, assoc, casecmp,
+   divmod), for a blockless call `id` the list above leaves out. 0 for a name no builtin has,
+   or one taking any number, which keeps its splat call. */
+static int splat_builtin_spec_range(const NodeTable *nt, int id, const char *name, int *lo, int *hi) {
+  int l, h;
+  /* the tables are instance methods': a class's (`File.unlink(*paths)`)
+     is no row of theirs */
+  int r = nt_ref(nt, id, "receiver");
+  if (r >= 0 && (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode)) return 0;
+  /* (between?'s arms compare the receiver with the elements' boxes as
+     integers, which the C build rejects: it keeps its splat call) */
+  if (sp_streq(name, "between?")) return 0;
+  if (!builtin_name_arity_span(name, 0, &l, &h) || h < 0 || h > l + 3) return 0;
+  if (lo) *lo = l;
+  if (hi) *hi = h;
+  return 1;
+}
 static int splat_builtin_keeps_kwsplat(const char *name) {
   static const char *const kw[] = { "round", "encode", "encode!", "each_line", "lines", "readlines", "readline",
                                     "gets", "unpack", "unpack1", "clone", "Integer", "Float", "Rational", "Complex",
@@ -37330,8 +37348,10 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   int ctor = splat_constructor_arity(nt, id, cnm);
   if (ctor >= 0) { lo = 0; hi = ctor; variadic = 0; }
   else if (!splat_builtin_range(cnm, &lo, &hi, &variadic)) {
-    if (!splat_dyn_arm_range(c, id, cnm, blk >= 0, &lo, &hi, &variadic)) return 0;
-    odyn = 1;
+    if (splat_dyn_arm_range(c, id, cnm, blk >= 0, &lo, &hi, &variadic)) odyn = 1;
+    /* another builtin name the list above leaves out */
+    else if (blk >= 0 || !splat_builtin_spec_range(nt, id, cnm, &lo, &hi)) return 0;
+    else variadic = 0;
   }
   /* A block goes on one arm only. The substitutions take it at one
      argument, the pattern alone (`s.gsub(*a) { |m| .. }`), and ignore it
@@ -37741,7 +37761,8 @@ void expand_static_splat_args(Compiler *c, int from, int count) {
     int listed = splat_builtin_arity(cnm) >= 0 || sp_streq(cnm, "slice") || sp_streq(cnm, "fill");
     if (!listed && splat_constructor_arity(nt, id, cnm) < 0 &&
         !splat_builtin_range(cnm, NULL, NULL, NULL) &&
-        !splat_dyn_arm_range(c, id, cnm, nt_ref(nt, id, "block") >= 0, NULL, NULL, NULL)) continue;
+        !splat_dyn_arm_range(c, id, cnm, nt_ref(nt, id, "block") >= 0, NULL, NULL, NULL) &&
+        (nt_ref(nt, id, "block") >= 0 || !splat_builtin_spec_range(nt, id, cnm, NULL, NULL))) continue;
     /* ...but the name has to BE the builtin. A receiverless call to a
        top-level `def count(*args)` is the user's own variadic method, and
        expanding its splat to the builtin's arity handed it one element where
