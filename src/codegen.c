@@ -2159,14 +2159,12 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     return;
   }
   if (t == TY_STRING) {
-    /* --share-strings: a String no other name holds is boxed as the object
-       it is (sp_box_str_new), so the box's copies name one String; a
-       frozen literal is its own object already, and a container literal
-       whose elements the facts prove its own keeps a copy no other name
-       can tell from the String (share_plan_box_plain) */
-    int fresh = repr_share_rule(c) && !share_frozen_literal(c, node) && share_value_fresh(c, node, 0) &&
-                !share_plan_box_plain(c, node);
-    buf_printf(b, "%s(", fresh ? "sp_box_str_new" : ty_box_fn(TY_STRING)); emit_expr(c, node, b); buf_puts(b, ")");
+    /* --share-strings: the String plan's form for a box (SPR_BOX): a String
+       the plan wraps is boxed as the new handle it is (sp_box_str_new), so
+       the box's copies name one String; any other is boxed as its bytes,
+       which sp_box_str boxes as their handle where a handle owns them */
+    int wrap = c->share_plan && share_plan_of(c, node, SPR_BOX, NULL).form == SPF_WRAP;
+    buf_printf(b, "%s(", wrap ? "sp_box_str_new" : ty_box_fn(TY_STRING)); emit_expr(c, node, b); buf_puts(b, ")");
     RC(RF_STR, RW_NONE);
     return;
   }

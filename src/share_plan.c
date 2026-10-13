@@ -205,11 +205,22 @@ static int share_plan_need_of(int need) {
 }
 int share_plan_need(Compiler *c, int v) { return share_plan_need_of(share_value_needs_handle(c, v)); }
 
+static int share_plan_box_plain(Compiler *c, int v);
+
 /* What a consumer in `role` needs of value v, whose own need (what its
    facts say a taker needs) is `need`. */
 static int share_plan_role_need(Compiler *c, int v, int role, int need) {
   if (role == SPR_READ || role == SPR_TEST) return SPN_BYTES;
   if (role == SPR_IDENTITY) return SPN_OBJECT;
+  /* A box is copied by value, so a box of a String's bytes is a String of
+     its own once a copy is changed in place: a box of a String no other
+     name holds is a new handle, which every copy names, unless a copy is
+     proven unseen (share_plan_box_plain). A frozen literal is its own
+     object already. Any other value needs what a taker does. */
+  if (role == SPR_BOX) {
+    if (share_frozen_literal(c, v)) return SPN_BYTES;
+    if (share_value_fresh(c, v, 0)) return share_plan_box_plain(c, v) ? SPN_BYTES : SPN_NEW;
+  }
   /* the store asks past the literal it splits (never less than the value) */
   if (role == SPR_STORE && need == SPN_BYTES) return share_plan_need_of(share_store_needs_handle(c, v));
   return need;
@@ -227,8 +238,8 @@ SharePlan share_plan_with_need(Compiler *c, int v, int role, int need) {
 }
 
 const char *share_plan_role_name(int role) {
-  static const char *const names[] = { "take", "read", "test", "store", "identity" };
-  return role >= SPR_TAKE && role <= SPR_IDENTITY ? names[role] : "?";
+  static const char *const names[] = { "take", "read", "test", "store", "identity", "box" };
+  return role >= SPR_TAKE && role <= SPR_BOX ? names[role] : "?";
 }
 
 int share_plan_role(Compiler *c, int v) {
@@ -305,7 +316,11 @@ static void share_plan_roles_build(Compiler *c) {
   NT_FOREACH_KIND(nt, NK_CallNode, n) share_plan_identity_roles(c, n);
 }
 
-int share_plan_box_plain(Compiler *c, int v) {
+/* Is node v, a new String, an element of a container literal a holder
+   keeps whose elements share_node_elems_local proves its own? No other
+   name can tell a copy of its box from the String there, and a handle
+   would cost an allocation and a copy per box. */
+static int share_plan_box_plain(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   int n = c->share_parent_n, p = c->share_parent && v >= 0 && v < n ? c->share_parent[v] : -1;
   while (p >= 0 && p < n && nt_kind(nt, p) == NK_ParenthesesNode) p = c->share_parent[p];
