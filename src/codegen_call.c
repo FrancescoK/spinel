@@ -16373,6 +16373,9 @@ void refl_own_instance_methods(Compiler *c, int ci, int pub, int prot, int priv,
     const char *an = k->alias_new[i];
     if (!an || name_is_synth_method(c, an)) continue;
     if (k->alias_sg && k->alias_sg[i]) continue;   /* a singleton alias: a class method */
+    /* an alias with no statement here is one an included module made
+       (register_include_attrs): the module's, as its methods are */
+    if (k->alias_node[i] < 0 && !with_modules) continue;
     int v = SP_VIS_PUBLIC, own = 0;
     for (int j = 0; j < k->nvis; j++)
       if (sp_streq(k->vis_names[j], an)) { v = k->vis_kinds[j]; own = 1; break; }
