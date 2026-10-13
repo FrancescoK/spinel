@@ -716,10 +716,13 @@ int emit_hash_sort_by_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
   TyKind bret;
-  HASH_VNIL_OF(c, id);
-  char *vb = emit_hash_block_eval(c, block, rr, hn, trecv, ti, block_param_name(c, block, 1) ? 0 : 2, &bret);
+  /* The tuple is made before the block runs: the block's value is a temp
+     whose own root ends with the block (a new Array, a String), and the
+     tuple's allocation after it freed it before the push took it. */
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tup, tup);
+  HASH_VNIL_OF(c, id);
+  char *vb = emit_hash_block_eval(c, block, rr, hn, trecv, ti, block_param_name(c, block, 1) ? 0 : 2, &bret);
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", tup);
   if (bret == TY_POLY) buf_puts(g_pre, vb ? vb : "sp_box_nil()");
