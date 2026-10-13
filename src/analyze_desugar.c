@@ -12996,6 +12996,9 @@ int desugar_class_new_blocks(Compiler *c) {
  *   base.m(args)                  ->  m(args)        (a class-body call)
  *   any other read of base        ->  the class's constant
  *
+ * A body with a `return` of its own is not spliced: the include runs
+ * `M.__send__(:included, self)`, the call CRuby makes.
+ *
  * The hook method itself stays on M for anything that calls it by name. */
 static int incl_find_hook_named(const NodeTable *nt, const char *mn, int n0, const char **param,
                                 const char *hook_name);
@@ -13083,6 +13086,49 @@ static void incl_emit_stmt(const NodeTable *nt, int s, int **out, int *no, int *
   (*out)[(*no)++] = s;
 }
 
+/* Does the hook body hold a `return` that leaves the hook? Spliced into the
+   class body it would end the program instead. A `def`, a lambda or a
+   define_method block is a method of its own: its `return` stays inside. */
+static int incl_hook_returns(const NodeTable *nt, int node) {
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_ReturnNode) return 1;
+  if (k == NK_DefNode || k == NK_LambdaNode || k == NK_ClassNode || k == NK_ModuleNode) return 0;
+  if (k == NK_CallNode) {
+    const char *cn = nt_str(nt, node, "name");
+    if (cn && (sp_streq(cn, "define_method") || sp_streq(cn, "define_singleton_method"))) return 0;
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++)
+    if (incl_hook_returns(nt, nt_ref_at(nt, node, i))) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0;
+    const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++)
+      if (incl_hook_returns(nt, ids[j])) return 1;
+  }
+  return 0;
+}
+
+/* `M.__send__(:included, self)`: the hook run as the method it is, for a body
+   that cannot be spliced. -1 when a node cannot be made. */
+static int incl_hook_call(NodeTable *nt, int at, int mod, const char *hook_name) {
+  int recv = nt_clone_subtree(nt, mod);
+  int call = fwd_new_node_like(nt, at, "CallNode");
+  int args = fwd_new_node_like(nt, at, "ArgumentsNode");
+  int sym = fwd_new_node_like(nt, at, "SymbolNode");
+  int self = fwd_new_node_like(nt, at, "SelfNode");
+  if (recv < 0 || call < 0 || args < 0 || sym < 0 || self < 0) return -1;
+  nt_node_set_str(nt, sym, "value", hook_name);
+  nt_node_set_str(nt, call, "name", "__send__");
+  nt_node_set_ref(nt, call, "receiver", recv);
+  int av[2] = { sym, self };
+  nt_node_set_arr(nt, args, "arguments", av, 2);
+  nt_node_set_ref(nt, call, "arguments", args);
+  return call;
+}
+
 int desugar_included_hooks(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
@@ -13130,6 +13176,13 @@ int desugar_included_hooks(Compiler *c) {
         if (hook < 0) continue;
         int hb = nt_ref(nt, hook, "body");
         if (hb < 0) continue;
+        if (incl_hook_returns(nt, hb)) {
+          int call = incl_hook_call(nt, s, av[j], is_ext ? "extended" : "included");
+          if (call < 0) continue;
+          incl_emit_stmt(nt, call, &out, &no, &cap);
+          spliced = 1;
+          continue;
+        }
         int clone = nt_clone_subtree(nt, hb);
         if (clone < 0) continue;
         incl_subst(nt, clone, param, cls);
