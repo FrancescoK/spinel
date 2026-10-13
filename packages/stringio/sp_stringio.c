@@ -38,10 +38,22 @@ static void sio_own(sp_StringIO *sio) {SP_GC_ROOT(sio);
   sio->cap = nc;
   sio->borrowed = 0;
 }
+/* A StringIO opened on a frozen String, or handed one by #string=, takes no
+   write, as CRuby's (run with frozen string literals); nor one whose String
+   was frozen since, in CRuby's other words */
+static void sio_check_write(sp_StringIO *sio) {
+  if (sio->ro) sp_raise_cls("IOError", "not opened for writing");
+  if (sio->str ? sp_String_is_frozen(sio->str) : sio->borrowed && sp_str_is_frozen_val(sio->buf))
+    sp_raise_cls("IOError", "not modifiable string");
+}
+/* a frozen String opened for writing ("w", "a", "r+") is EACCES, as CRuby's */
+static void sio_mode_check(int frozen, const char *mode) {
+  if (frozen && mode && (mode[0] == 'w' || mode[0] == 'a' || strchr(mode, '+')))
+    sp_raise_cls("Errno::EACCES", "Permission denied");
+}
 static void sio_grow(sp_StringIO *sio, int64_t need) {SP_GC_ROOT(sio);
+  sio_check_write(sio);
   if (sio->str) {
-    /* a frozen String takes no write, as CRuby's StringIO over one */
-    if (sp_String_is_frozen(sio->str)) sp_raise_cls("IOError", "not opened for writing");
     if (!sp_fd_grow(sio->str, sio->pos + need)) sp_oom_die();
     sio_sync(sio);
     return;
@@ -56,7 +68,7 @@ static void sp_StringIO_scan_gc(void *p) { sp_StringIO *s = (sp_StringIO *)p; if
 sp_StringIO *sp_StringIO_new(sp_int cls_id) { sp_StringIO *s = (sp_StringIO *)sp_gc_alloc(sizeof(sp_StringIO), sp_StringIO_free, sp_StringIO_scan_gc); memset(s, 0, sizeof *s); s->cls_id = cls_id; s->buf = (char *)calloc(1, 64); if (!s->buf) sp_oom_die(); s->cap = 63; return s; }
 /* Adopt the incoming GC string without copying so #string keeps identity
    with the constructor argument; the first mutation copies (sio_own). */
-sp_StringIO *sp_StringIO_new_s(sp_int cls_id, const char *init) {SP_GC_ROOT_STR(init); if (!init) sp_raise_cls("TypeError", "no implicit conversion of nil into String"); sp_StringIO *s = (sp_StringIO *)sp_gc_alloc(sizeof(sp_StringIO), sp_StringIO_free, sp_StringIO_scan_gc); memset(s, 0, sizeof *s); s->cls_id = cls_id; int64_t l = (int64_t)sp_str_byte_len(init); s->buf = (char *)init; s->len = l; s->cap = l; s->borrowed = 1; return s; }
+sp_StringIO *sp_StringIO_new_s(sp_int cls_id, const char *init) {SP_GC_ROOT_STR(init); if (!init) sp_raise_cls("TypeError", "no implicit conversion of nil into String"); sp_StringIO *s = (sp_StringIO *)sp_gc_alloc(sizeof(sp_StringIO), sp_StringIO_free, sp_StringIO_scan_gc); memset(s, 0, sizeof *s); s->cls_id = cls_id; int64_t l = (int64_t)sp_str_byte_len(init); s->buf = (char *)init; s->len = l; s->cap = l; s->borrowed = 1; s->ro = sp_str_is_frozen_val(init); return s; }
 /* StringIO.new(str, mode): the mode's first char selects the initial
    content/position. "w"/"w+" truncate to empty; "a"/"a+" keep the content and
    seek to the end; "r"/"r+" and anything else keep the content at position 0.
@@ -64,6 +76,7 @@ sp_StringIO *sp_StringIO_new_s(sp_int cls_id, const char *init) {SP_GC_ROOT_STR(
 sp_StringIO *sp_StringIO_new_sm(sp_int cls_id, const char *init, const char *mode) {SP_GC_ROOT_STR(init);SP_GC_ROOT_STR(mode);
   if (!init) sp_raise_cls("TypeError", "no implicit conversion of nil into String");
   if (!mode || !mode[0]) return sp_StringIO_new_s(cls_id, init);
+  sio_mode_check(sp_str_is_frozen_val(init), mode);
   char m0 = mode[0];
   if (m0 == 'w') return sp_StringIO_new(cls_id);
   sp_StringIO *s = sp_StringIO_new_s(cls_id, init);
@@ -132,7 +145,7 @@ sp_int sp_StringIO_rewind(sp_StringIO *s) { s->pos = 0; s->lineno = 0; return 0;
 sp_int sp_StringIO_seek(sp_StringIO *s, sp_int off) { if (off < 0) off = 0; s->pos = off; return 0; }
 sp_int sp_StringIO_tell(sp_StringIO *s) { return s->pos; }
 sp_bool sp_StringIO_eof_p(sp_StringIO *s) { sio_sync(s); return s->pos >= s->len; }
-sp_int sp_StringIO_truncate(sp_StringIO *s, sp_int l) { sio_sync(s); if (l < 0) l = 0; if (l < s->len) { if (s->str && sp_String_is_frozen(s->str)) sp_raise_cls("IOError", "not opened for writing"); sio_own(s); s->len = l; s->buf[l] = '\0'; sio_publish(s); } return 0; }
+sp_int sp_StringIO_truncate(sp_StringIO *s, sp_int l) { sio_sync(s); if (l < 0) l = 0; sio_check_write(s); if (l < s->len) { sio_own(s); s->len = l; s->buf[l] = '\0'; sio_publish(s); } return 0; }
 void sp_StringIO_close(sp_StringIO *s) { s->closed = 1; }
 sp_bool sp_StringIO_closed_p(sp_StringIO *s) { return s->closed; }
 sp_StringIO *sp_StringIO_flush(sp_StringIO *s) { return s; }
@@ -472,11 +485,13 @@ sp_StringIO *sp_StringIO_new_h(sp_int cls_id, sp_String *str) {SP_GC_ROOT(str);
   memset(s, 0, sizeof *s);
   s->cls_id = cls_id;
   s->str = str;
+  s->ro = sp_String_is_frozen(str);
   sio_sync(s);
   return s;
 }
 /* with a mode: "w" truncates the String, "a" starts at its end */
 sp_StringIO *sp_StringIO_new_hm(sp_int cls_id, sp_String *str, const char *mode) {SP_GC_ROOT(str);SP_GC_ROOT_STR(mode);
+  sio_mode_check(str && sp_String_is_frozen(str), mode);
   sp_StringIO *s = sp_StringIO_new_h(cls_id, str);
   SP_GC_ROOT(s);
   char m0 = mode ? mode[0] : 0;
@@ -488,13 +503,40 @@ sp_StringIO *sp_StringIO_new_hm(sp_int cls_id, sp_String *str, const char *mode)
 sp_StringIO *sp_StringIO_new_hn(sp_int cls_id) {
   return sp_StringIO_new_h(cls_id, sp_String_new_fresh(sp_str_empty));
 }
+/* #string=: the StringIO keeps that String from now on, read from its start
+   (a frozen one takes no write, nor one opened on a frozen String); the
+   String it kept is no longer its own. The value is the String. */
+static void sio_reopen(sp_StringIO *s) {
+  if (!s->borrowed && !s->str) free(s->buf);
+  s->buf = NULL; s->len = s->cap = s->pos = s->lineno = 0; s->borrowed = 0;
+  sp_gc_wb(s);
+}
+const char *sp_StringIO_set_string(sp_StringIO *s, const char *str) {SP_GC_ROOT(s);SP_GC_ROOT_STR(str);
+  if (!str) sp_raise_cls("TypeError", "no implicit conversion of nil into String");
+  sio_reopen(s);
+  s->str = NULL; s->buf = (char *)str; s->len = s->cap = (int64_t)sp_str_byte_len(str); s->borrowed = 1;
+  s->ro = (s->ro & 1) | (sp_str_is_frozen_val(str) ? 2 : 0);
+  return str;
+}
+sp_String *sp_StringIO_set_string_h(sp_StringIO *s, sp_String *str) {SP_GC_ROOT(s);SP_GC_ROOT(str);
+  if (!str) sp_raise_cls("TypeError", "no implicit conversion of nil into String");
+  sio_reopen(s);
+  s->str = str;
+  s->ro = (s->ro & 1) | (sp_String_is_frozen(str) ? 2 : 0);
+  sio_sync(s);
+  return str;
+}
 /* #string as the shared handle itself. One opened on no handle takes one
-   over its bytes now, which then holds them. */
+   over its bytes now, which then holds them; over a frozen String it is
+   frozen, as #string answers that String itself, and takes no write. */
 sp_String *sp_StringIO_string_h(sp_StringIO *s) {SP_GC_ROOT(s);
   if (!s->str) {
     sp_String *h = sp_String_new_len(s->buf ? s->buf : "", s->buf ? s->len : 0);
+    if (s->borrowed && sp_str_is_frozen_val(s->buf)) sp_String_freeze(h);
     if (!s->borrowed) free(s->buf);
     s->borrowed = 0;
+    /* (s can be old by now: the barrier keeps the new handle it holds) */
+    sp_gc_wb(s);
     s->str = h;
     sio_sync(s);
   }

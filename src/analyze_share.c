@@ -2132,10 +2132,46 @@ static int sh_native_call(ShareFacts *F, Compiler *c, int n, int cid, const char
   int nm = comp_native_method_find(c, cid, name, argc, 0);
   unsigned sh = nm >= 0 ? c->native_methods[nm].share : 0;
   if (!sh || (on_self && !(sh & NSH_FRESH))) return -2;
+  /* one that keeps its argument (`io.string = s`) keeps it as the object's
+     String from then on, as a constructor does; its value is that String */
+  if ((sh & NSH_KEEPS) && argc == 1) {
+    const int *argv = call_args(c->nt, n, &argc);
+    int av = sh_arg_val(F, c, argv[0]), e = sh_elem(F, rv);
+    sh_union(F, e, av);
+    /* (stored as a member is: the seal checks the route carries the handle) */
+    sh_flow(F, SHFL_MEMBER, n, argv[0], e);
+    return av;
+  }
   int u = sh_unknown_call(F, c, n, blk);
   if (sh & NSH_FRESH) return -1;
   if (sh & NSH_CHANGES) sh_mark_at(F, sh_elem(F, rv), SHF_MUT | SHF_INDIRECT, n);
   return sh & NSH_ANSWERS ? sh_elem(F, rv) : u;
+}
+
+/* The native class whose binding a boxed receiver's call n takes, as its
+   `native_share` rows declare: the receiver can hold one native class's
+   objects, whose binding of the name declares its share, and other classes'
+   with no method or member of the name and no method_missing (they raise,
+   or a builtin's own arm answers, as the dispatch's arms do:
+   repr_native_arm_handle). Their values join the native class's as they
+   would a typed receiver's. -1 otherwise. */
+static int sh_boxed_native_class(Compiler *c, int n, const char *name, int argc) {
+  int nk = 0, k = -1;
+  const int *ks = poly_recv_classes(c, n, &nk);
+  if (!ks || nk <= 0) return -1;
+  for (int i = 0; i < nk; i++) {
+    int cid = ks[i];
+    if (cid < 0 || cid >= c->nclasses) return -1;
+    if (c->classes[cid].is_native_class) {
+      int nm = comp_native_method_find(c, cid, name, argc, 0);
+      if (nm < 0 || !c->native_methods[nm].share || (k >= 0 && k != cid)) return -1;
+      k = cid;
+    }
+    else if (comp_method_in_chain(c, cid, "method_missing", NULL) >= 0 ||
+             comp_resolve_member(c, cid, name, 0, NULL, NULL) != SP_MEMBER_NONE)
+      return -1;
+  }
+  return k;
 }
 
 /* `Klass.new(...)`: the class's initialize, a Struct's members */
@@ -2572,9 +2608,11 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
 
   /* a native class's method (its binding's `native_share`), on an object
      or, in the package's own Ruby methods, on self */
-  int ncid = ty_is_object(rt) ? ty_object_class(rt) : recv < 0 ? sh_ivar_owner(c, n) : -1;
+  /* (or on a box holding one: sh_boxed_native_class) */
+  int ncid = ty_is_object(rt) ? ty_object_class(rt) : recv < 0 ? sh_ivar_owner(c, n)
+             : c->share_strings && rt == TY_POLY ? sh_boxed_native_class(c, n, name, argc) : -1;
   if (ncid >= 0 && ncid < c->nclasses && c->classes[ncid].is_native_class) {
-    int r = sh_native_call(F, c, n, ncid, name, argc, rv, blk, !ty_is_object(rt));
+    int r = sh_native_call(F, c, n, ncid, name, argc, rv, blk, recv < 0);
     if (r != -2) return r;
   }
   /* a Lazy (`a.lazy.map { }`, held in a variable or not) has no type of

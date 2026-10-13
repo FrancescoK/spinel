@@ -147,6 +147,8 @@ typedef enum {
 int repr_handle_apart(Compiler *c, int v, Repr r);
 /* Does a call's settled return route hand back a shared String handle? */
 int repr_call_returns_handle(Compiler *c, int v);
+/* The native binding whose handle a boxed call's arm for class k publishes. */
+const NativeMethod *repr_native_arm_handle(Compiler *c, int v, int k);
 /* A builtin receiver conversion's String operand, or -1. */
 int repr_string_conversion_operand(Compiler *c, int v);
 /* An ENV store's value operand whose identity the result can keep, or -1. */

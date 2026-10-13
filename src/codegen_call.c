@@ -8420,6 +8420,20 @@ int poly_native_arm_call(Compiler *c, int k, const char *name, int n, const int 
   int nmi = poly_native_arm_fits(c, k, name, n, argv, atmp_ty, mret);
   if (nmi < 0) return 0;
   NativeMethod *nmet = &c->native_methods[nmi];
+  /* --share-strings: a binding that keeps its String argument from then on
+     (`native_share ... "keeps"`), handed a shared handle or a box that holds
+     one, keeps that handle through its handle form; its plain form would
+     keep the handle's bytes, which move as the String grows */
+  const char *cs = c->classes[k].c_struct, *hs = nmet->share_csym;
+  if (repr_share_rule(c) && nmet->kind == 0 && (nmet->share & NSH_KEEPS) && hs && nmet->nargs == 1 && !nmet->rest &&
+      n == 1 && (atmp_ty[0] == TY_STRBUF || atmp_ty[0] == TY_POLY)) {
+    int a = atmp[0];
+    if (atmp_ty[0] == TY_STRBUF) buf_printf(cb, "sp_strbuf_read(%s((%s *)_t%d.v.p, _t%d))", hs, cs, tv, a);
+    else buf_printf(cb, "(sp_poly_is_strbuf(_t%d) ? sp_strbuf_read(%s((%s *)_t%d.v.p, (sp_String *)_t%d.v.p)) : "
+                        "%s((%s *)_t%d.v.p, sp_poly_arg_str_chk(_t%d)))", a, hs, cs, tv, a, nmet->csym, cs, tv, a);
+    *mret = TY_STRING;
+    return 1;
+  }
   buf_printf(cb, "%s((%s *)_t%d.v.p", nmet->csym, c->classes[k].c_struct, tv);
   int ok = 1;
   for (int ai = 0; ai < nmet->nargs && ok; ai++) {
@@ -8439,10 +8453,17 @@ int poly_native_arm_call(Compiler *c, int k, const char *name, int n, const int 
       else { ok = 0; break; }
     }
     else {
-      TyKind aw = ffi_spec_to_ty(spec);
+      TyKind aw = ffi_spec_to_ty(spec), ffi = aw;
       if (sp_streq(spec, "text")) aw = TY_STRING;
       if (aw == TY_UNKNOWN) { ok = 0; break; }
-      if (atmp_ty[ai] == TY_POLY) emit_unbox_text(c, aw, tn, cb);
+      /* a write payload (`:text`, which the FFI types not) is the boxed
+         operand's #to_s, as the typed call's (emit_to_s_expr): unboxed as
+         a String, an Integer's was read as a pointer */
+      if (atmp_ty[ai] == TY_POLY && aw != ffi) buf_printf(cb, "sp_poly_to_s(%s)", tn);
+      /* a boxed operand in a String slot: its String, or CRuby's TypeError
+         naming its class (unboxed as a String, an Integer was a pointer) */
+      else if (atmp_ty[ai] == TY_POLY && aw == TY_STRING) buf_printf(cb, "sp_poly_arg_str_chk(%s)", tn);
+      else if (atmp_ty[ai] == TY_POLY) emit_unbox_text(c, aw, tn, cb);
       /* a shared handle into a String parameter: the String it holds */
       else if (aw == TY_STRING && atmp_ty[ai] == TY_STRBUF) buf_printf(cb, "(%s ? sp_String_cstr(%s) : NULL)", tn, tn);
       else if (atmp_ty[ai] == aw) buf_puts(cb, tn);
@@ -9227,6 +9248,22 @@ static int emit_native_share_ctor(Compiler *c, int id, int ci, const NativeMetho
   }
   free(hb.p);
   buf_puts(b, ")");
+  return 1;
+}
+/* --share-strings: a method that keeps the String it is handed from then on
+   (`native_share "string=", ... "keeps"`), where the rule shares the String
+   the object keeps: its handle form, handed the String's handle as a
+   member store hands it on (emit_strbuf_handle_of; the seal checks that
+   route, SHFL_MEMBER); its value read out of it. 0 otherwise. */
+int emit_native_share_keeps(Compiler *c, int recv, const NativeMethod *m, int argc, const int *argv, Buf *b) {
+  if (!repr_share_rule(c) || m->kind != 0 || !(m->share & NSH_KEEPS) || !m->share_csym || m->rest || m->nargs != 1 ||
+      argc != 1 || !share_node_elems_share(c, recv))
+    return 0;
+  buf_printf(b, "sp_strbuf_read(%s(", m->share_csym);
+  emit_expr(c, recv, b);
+  buf_puts(b, ", ");
+  emit_strbuf_handle_of(c, argv[0], b);
+  buf_puts(b, "))");
   return 1;
 }
 int emit_native_ctor(Compiler *c, int id, int ci, int argc, const int *argv, Buf *b) {

@@ -1,0 +1,17 @@
+["write", IOError, "not opened for writing"]
+["print", IOError, "not opened for writing"]
+["puts", IOError, "not opened for writing"]
+["putc", IOError, "not opened for writing"]
+["<<", IOError, "not opened for writing"]
+["truncate", IOError, "not opened for writing"]
+"lit"
+"lit"
+["w", Errno::EACCES, "Permission denied"]
+["a", Errno::EACCES, "Permission denied"]
+["r+", Errno::EACCES, "Permission denied"]
+["r", "lit"]
+"!wn"
+[:boxed, IOError, "not opened for writing"]
+[:boxed_write, IOError, "not opened for writing"]
+"lit"
+[:frozen_since, IOError, "not modifiable string"]

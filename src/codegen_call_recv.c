@@ -11473,6 +11473,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       if (nm >= 0) {
         NativeMethod *m = &c->native_methods[nm];
         native_arg_check(c, id, "native method", m, argc, argv);
+        if (emit_native_share_keeps(c, recv, m, argc, argv, b)) return 1;
         int wrap = sp_streq(m->ret, "string?");
         /* The two borrowed-buffer return modes, which the native_func arm
            (codegen_call.c) has carried since they were introduced and this

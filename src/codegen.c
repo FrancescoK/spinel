@@ -17628,7 +17628,7 @@ static void emit_ffi_decls(Compiler *c, Buf *b) {
       if (m->kind == 1) buf_printf(b, "extern %s *%s(sp_int", cstruct, m->share_csym);
       else buf_printf(b, "extern sp_String *%s(%s *", m->share_csym, cstruct);
       for (int ai = 0; ai < m->nargs; ai++)
-        buf_printf(b, ", %s", m->kind == 1 && ai == 0 ? "sp_String *" : native_c_type(m->args[ai]));
+        buf_printf(b, ", %s", (m->kind == 1 || (m->share & NSH_KEEPS)) && ai == 0 ? "sp_String *" : native_c_type(m->args[ai]));
       buf_puts(b, ");\n");
     }
     /* IO::Buffer as an ffi_func pointer argument (codegen_call.c) */

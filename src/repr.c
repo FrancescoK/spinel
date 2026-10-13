@@ -145,6 +145,50 @@ int repr_write_share(const Compiler *c, int node) {
   return 0;
 }
 
+/* --share-strings: the binding a boxed receiver's call v takes for native
+   class k, when it answers the String its object keeps (`native_share ...
+   "answers"`), has that String's handle form and the rule shares the
+   receiver's Strings; else NULL. The dispatch's arm for k publishes that
+   handle (emit_poly_user_arm0), as a method arm's tail read does. */
+const NativeMethod *repr_native_arm_handle(Compiler *c, int v, int k) {
+  const NodeTable *nt = c->nt;
+  int recv = v >= 0 && nt_kind(nt, v) == NK_CallNode ? nt_ref(nt, v, "receiver") : -1;
+  if (!repr_share_rule(c) || !c->share || recv < 0 || k < 0 || k >= c->nclasses || !c->classes[k].is_native_class ||
+      nt_ref(nt, v, "arguments") >= 0 || nt_ref(nt, v, "block") >= 0)
+    return NULL;
+  int nm = comp_native_method_find(c, k, nt_str(nt, v, "name"), 0, 0);
+  const NativeMethod *m = nm >= 0 ? &c->native_methods[nm] : NULL;
+  return m && (m->share & NSH_ANSWERS) && m->share_csym && share_node_elems_share(c, recv) ? m : NULL;
+}
+/* Is v a boxed receiver's call whose arm, for each class the receiver can
+   hold, is such a native binding (`o.string` where o holds a StringIO or a
+   class without the method, which raises)? */
+static int repr_boxed_native_handle(Compiler *c, int v) {
+  int recv = nt_ref(c->nt, v, "receiver");
+  const char *nm = nt_str(c->nt, v, "name");
+  if (recv < 0 || !nm || repr_of(c, recv).kind != RK_BOXED) return 0;
+  const PolyPlan *p = cplan_poly_arms(c, v);
+  int nk = 0, any = 0;
+  const int *ks = poly_recv_classes(c, v, &nk);
+  if (p->n <= 0 || !ks || nk <= 0) return 0;
+  for (int j = 0; j < nk; j++) {
+    int arm = -1;
+    for (int i = 0; i < p->n && arm < 0; i++)
+      if (p->arm[i].key == ks[j]) arm = i;
+    /* (a class with no arm and no method_missing raises NoMethodError,
+       which answers no String: strbuf_poly_user_boxes) */
+    if (arm < 0) {
+      if (ks[j] < 0 || ks[j] >= c->nclasses || comp_method_in_chain(c, ks[j], "method_missing", NULL) >= 0 ||
+          comp_resolve_member(c, ks[j], nm, 0, NULL, NULL) != SP_MEMBER_NONE)
+        return 0;
+      continue;
+    }
+    if (p->arm[arm].kind != PA_NATIVE || !repr_native_arm_handle(c, v, ks[j])) return 0;
+    any = 1;
+  }
+  return any;
+}
+
 /* --share-strings: a call whose every target method answers a shared
    String's handle (Scope.ret_handle): the value is that handle, which the
    callee's tail read publishes. (A call marked to be stored as the handle
@@ -214,6 +258,9 @@ int repr_call_returns_handle(Compiler *c, int v) {
     }
   }
   else n = cplan_targets(c, v, mis, CPT_MAX);
+  /* a boxed receiver's call that reaches no method but native bindings
+     answering their objects' handles, which their arms publish */
+  if (n == 0 && repr_boxed_native_handle(c, v)) return 1;
   if (n <= 0) return 0;
   for (int i = 0; i < n; i++) if (!c->scopes[mis[i]].ret_handle) return 0;
   return 1;
