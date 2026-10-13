@@ -5315,7 +5315,15 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
     else str_arms_convert(c, id, b, nt, "lines", recv, argc, argv, TY_UNKNOWN, rl);
     buf_printf(b, "; SP_GC_ROOT(_t%d);", ta);
     int eblk = nt_ref(nt, id, "block");
-    if (eblk < 0) { buf_printf(b, " _t%d; })", ta); return 1; }
+    int boxed = comp_ntype(c, id) == TY_POLY;
+    char ans[32];
+    if (eblk < 0) {
+      snprintf(ans, sizeof ans, "_t%d", ta);
+      buf_puts(b, " ");
+      if (boxed) emit_boxed_text(c, TY_STR_ARRAY, ans, b); else buf_puts(b, ans);
+      buf_puts(b, "; })");
+      return 1;
+    }
     const char *ebp = block_param_name(c, eblk, 0);
     const char *ebpn = ebp ? rename_local(ebp) : NULL;
     int ebody = nt_ref(nt, eblk, "body");
@@ -5324,7 +5332,10 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
     buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) {", ti, ti, ta, ti);
     if (ebpn) emit_str_elem_param(c, eblk, ebp, ebpn, ta, ti, b);
     for (int k2 = 0; k2 < ebn; k2++) emit_stmt(c, ebb[k2], b, 0);
-    buf_printf(b, " } _t%d; })", tl);
+    snprintf(ans, sizeof ans, "_t%d", tl);
+    buf_puts(b, " } ");
+    if (boxed) emit_boxed_text(c, TY_STRING, ans, b); else buf_puts(b, ans);
+    buf_puts(b, "; })");
     return 1;
   }
   /* `poly.map! { |x| ... }` / `collect!` where poly is an array read out of a
