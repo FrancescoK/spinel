@@ -659,7 +659,7 @@ int desugar_singleton_class_meta(Compiler *c);
 int desugar_class_new_blocks(Compiler *c);
 int desugar_included_hooks(Compiler *c);
 int desugar_class_body_object_acts(Compiler *c);
-int desugar_struct_block_name_reads(Compiler *c);
+int desugar_struct_block_anonymous(Compiler *c);
 int desugar_eval_method_block(Compiler *c);
 int desugar_singleton_body_self(Compiler *c);
 int desugar_inherited_hooks(Compiler *c);

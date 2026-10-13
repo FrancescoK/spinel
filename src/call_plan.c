@@ -940,9 +940,6 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
   if (!name) return NULL;
   if (is_raise_alias(name) && nt_int(nt, id, "class_new_capture", 0) && cplan_reachable(c, id))
     return "Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md";
-  if (is_raise_alias(name) && nt_int(nt, id, "struct_block_name", 0) && cplan_reachable(c, id))
-    return "the name of a Struct.new or Data.define class read in its own block (where CRuby has "
-           "not named it yet) is not supported; see docs/limitations.md";
   if (is_raise_alias(name) && nt_int(nt, id, "cond_def_class_new", 0) && cplan_reachable(c, id))
     return "a def under a condition only the run time decides, in a Class.new, Module.new, "
            "Struct.new or Data.define block, is not supported: write the class with `class`; "

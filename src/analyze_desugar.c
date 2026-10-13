@@ -13908,171 +13908,25 @@ static void cn_raise_module_super(NodeTable *nt, int id, int par) {
  *
  * `Point = Struct.new(:x) do ... end` names the class only when the
  * constant is written, after the block has run: in the block self is an
- * anonymous class, whose name is nil and whose to_s is `#<Class:0x...>`.
- * The constant's write is marked as a Class.new class's is
- * (class_new_anonymous): the class answers as an anonymous one until the
- * write names it (sp_class_assign_name, after the block's statements).
- *
- * A block a local holds (`k = Struct.new(:x) do ... end`, and an inline one
- * desugar_inline_struct_blocks gives a local) does not run with the class
- * as self yet, so a read of the name there is still refused: `self.name`,
- * `to_s`, `inspect` and `display` on self (or bare), self printed (p, puts,
- * print, pp, warn, format, sprintf, printf, String) or interpolated. */
-static const char *const SB_NAME_MSG =
-  "spinel: the name of a Struct.new or Data.define class read in its own block "
-  "(where CRuby has not named it yet) is not supported";
-
-static int sb_name_method(const char *nm) {
-  return nm && (sp_streq(nm, "name") || sp_streq(nm, "to_s") || sp_streq(nm, "inspect") ||
-                sp_streq(nm, "display"));
-}
-
-static int sb_printer(const char *nm) {
-  static const char *const P[] = { "p", "puts", "print", "pp", "warn", "format", "sprintf", "printf",
-                                   "String", NULL };
-  for (int i = 0; nm && P[i]; i++) if (sp_streq(nm, P[i])) return 1;
-  return 0;
-}
-
-/* Turn node `id` into `raise NotImplementedError, SB_NAME_MSG`, refused at
-   compile time where it is reachable (feature_limit). */
-static void sb_refuse(NodeTable *nt, int id) {
-  long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0),
-            col = nt_int(nt, id, "node_col", 0);
-  cn_neutralize(nt, id);
-  nt_node_reset(nt, id, "CallNode");
-  nt_node_set_int(nt, id, "node_line", line);
-  nt_node_set_int(nt, id, "node_file", file);
-  nt_node_set_int(nt, id, "node_col", col);
-  nt_node_set_str(nt, id, "name", "raise");
-  nt_node_set_int(nt, id, "struct_block_name", 1);
-  int args = fwd_new_node_like(nt, id, "ArgumentsNode");
-  int ex = fwd_new_node_like(nt, id, "ConstantReadNode");
-  int msg = str_node_like(nt, id, SB_NAME_MSG);
-  if (args < 0 || ex < 0 || msg < 0) return;
-  nt_node_set_str(nt, ex, "name", "NotImplementedError");
-  int av[2] = { ex, msg };
-  nt_node_set_arr(nt, args, "arguments", av, 2);
-  nt_node_set_ref(nt, id, "arguments", args);
-}
-
-/* `Kernel` or `::Kernel` as a receiver: Kernel.puts(self) prints self as a
-   bare puts does */
-static int sb_kernel_recv(const NodeTable *nt, int r) {
-  NodeKind rk = nt_kind(nt, r);
-  if (rk == NK_ConstantPathNode && nt_ref(nt, r, "parent") >= 0) return 0;
-  return (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) && nt_str(nt, r, "name") &&
-         sp_streq(nt_str(nt, r, "name"), "Kernel");
-}
-
-/* Does statement list `body` define instance method `nm` (`def nm`, a
-   visibility call around it or not)? */
-static int sb_body_defines(const NodeTable *nt, int body, const char *nm) {
-  int n = 0; const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
-  for (int k = 0; k < n; k++) {
-    int d = fwd_body_def(nt, st[k]);
-    if (d >= 0 && nt_ref(nt, d, "receiver") < 0 && nt_str(nt, d, "name") && sp_streq(nt_str(nt, d, "name"), nm))
-      return 1;
-  }
-  return 0;
-}
-
-/* Does the program give Kernel's singleton printer `nm` (what Kernel.puts
-   calls; a module function, which a redefined instance method does not
-   change) a body of its own: `def self.nm` in a Kernel body, or
-   `def Kernel.nm`? */
-static int sb_kernel_singleton_redefined(const NodeTable *nt, const char *nm) {
-  NT_FOREACH_KIND(nt, NK_DefNode, d) {
-    const char *dn = nt_str(nt, d, "name");
-    int r = nt_ref(nt, d, "receiver");
-    if (!dn || !sp_streq(dn, nm) || r < 0) continue;
-    if (sb_kernel_recv(nt, r)) return 1;
-    if (nt_kind(nt, r) != NK_SelfNode) continue;
-    NT_FOREACH_KIND(nt, NK_ModuleNode, m) {
-      const char *cn = nt_str(nt, nt_ref(nt, m, "constant_path"), "name");
-      int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, m, "body"), "body", &bn);
-      for (int k = 0; cn && sp_streq(cn, "Kernel") && k < bn; k++) if (fwd_body_def(nt, bv[k]) == d) return 1;
-    }
-  }
-  return 0;
-}
-
-/* Does the program give Kernel's printer `nm` a body of its own: a def of it
-   at the top level or in a reopened Kernel or Object, which a bare puts
-   reaches? A method of that name in any other class is not that one. */
-static int sb_kernel_printer_redefined(const NodeTable *nt, const char *nm) {
-  if (sb_body_defines(nt, nt_ref(nt, nt->root_id, "statements"), nm)) return 1;
-  static const NodeKind K[] = { NK_ClassNode, NK_ModuleNode };
-  for (int h = 0; h < 2; h++)
-    NT_FOREACH_KIND(nt, K[h], m) {
-      const char *cn = nt_str(nt, nt_ref(nt, m, "constant_path"), "name");
-      if (cn && (sp_streq(cn, "Kernel") || sp_streq(cn, "Object")) && sb_body_defines(nt, nt_ref(nt, m, "body"), nm))
-        return 1;
-    }
-  return 0;
-}
-
-static int sb_walk(NodeTable *nt, int node) {
-  if (node < 0) return 0;
-  NodeKind k = nt_kind(nt, node);
-  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode ||
-      k == NK_LambdaNode) return 0;
-  if (k == NK_CallNode) {
-    const char *nm = nt_str(nt, node, "name");
-    int r = nt_ref(nt, node, "receiver");
-    int an = nt_ref(nt, node, "arguments"), ac = 0;
-    const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
-    if (sb_name_method(nm) && ac == 0 && (r < 0 || nt_kind(nt, r) == NK_SelfNode)) {
-      sb_refuse(nt, node);
-      return 1;
-    }
-    if (sb_printer(nm) && ((r < 0 && !sb_kernel_printer_redefined(nt, nm)) ||
-                           (r >= 0 && sb_kernel_recv(nt, r) && !sb_kernel_singleton_redefined(nt, nm))))
-      for (int i = 0; i < ac; i++)
-        if (nt_kind(nt, av[i]) == NK_SelfNode) { sb_refuse(nt, node); return 1; }
-    /* a block that rebinds self (class_eval and kin, define_method) has a
-       self of its own */
-    int blk = nt_ref(nt, node, "block");
-    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && nm &&
-        (is_eval_exec_family(nm) || sp_streq(nm, "define_method") || sp_streq(nm, "define_singleton_method"))) {
-      int changed = sb_walk(nt, r);
-      return changed | sb_walk(nt, an);
-    }
-  }
-  /* "#{self}" */
-  if (k == NK_EmbeddedStatementsNode) {
-    int st = nt_ref(nt, node, "statements"), sn = 0;
-    const int *sv = st >= 0 ? nt_arr(nt, st, "body", &sn) : NULL;
-    if (sn == 1 && nt_kind(nt, sv[0]) == NK_SelfNode) { sb_refuse(nt, sv[0]); return 1; }
-  }
-  int changed = 0;
-  int nr = nt_num_refs(nt, node);
-  for (int i = 0; i < nr; i++) changed |= sb_walk(nt, nt_ref_at(nt, node, i));
-  int na = nt_num_arrs(nt, node);
-  for (int i = 0; i < na; i++) {
-    int cnt = 0;
-    const int *ids = nt_arr_at(nt, node, i, &cnt);
-    for (int j = 0; j < cnt; j++) changed |= sb_walk(nt, ids[j]);
-  }
-  return changed;
-}
-
-int desugar_struct_block_name_reads(Compiler *c) {
+ * anonymous class, whose name is nil and which prints as `#<Class:0x...>`,
+ * as do its instances (`#<struct x=1>`). The write is marked as a Class.new
+ * class's is (class_new_anonymous): the class answers as an anonymous one
+ * until the write names it (sp_class_assign_name, after the block's
+ * statements). A class a local holds, or nothing (an inline block
+ * desugar_inline_struct_blocks gives a local), is never named. */
+int desugar_struct_block_anonymous(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int n0 = nt->count, changed = 0;
-  for (int id = 0; id < n0; id++) {
+  int changed = 0;
+  for (int id = 0; id < nt->count; id++) {
     NodeKind k = nt_kind(nt, id);
     if (k != NK_ConstantWriteNode && k != NK_LocalVariableWriteNode) continue;
     int val = nt_ref(nt, id, "value");
     if (!is_struct_call(c, val)) continue;
     int blk = nt_ref(nt, val, "block");
     if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
-    /* a constant names the class once the block has run: until then it is
-       anonymous, as a Class.new class is (sp_class_assign_name) */
-    if (k == NK_ConstantWriteNode) { nt_node_set_int(nt, id, "class_new_anonymous", 1); continue; }
-    changed |= sb_walk(nt, nt_ref(nt, blk, "body"));
+    nt_node_set_int(nt, id, "class_new_anonymous", k == NK_ConstantWriteNode ? 1 : 2);
+    changed = 1;
   }
-  if (changed) comp_grow_node_arrays(c);
   return changed;
 }
 
@@ -15216,7 +15070,14 @@ static int cb_method_defined_name(const char *nm) {
                 sp_streq(nm, "private_method_defined?") || sp_streq(nm, "protected_method_defined?"));
 }
 
-static int cb_give_self(NodeTable *nt, int node, const char *builtin) {
+/* Struct's and Data's own class methods, which a block they build answers
+   on self as Object's and Module's are (`members`) */
+static int cb_struct_act(const NodeTable *nt, int s) {
+  const char *nm = nt_kind(nt, s) == NK_CallNode && nt_ref(nt, s, "receiver") < 0 ? nt_str(nt, s, "name") : NULL;
+  return nm && (sp_streq(nm, "members") || sp_streq(nm, "keyword_init?"));
+}
+
+static int cb_give_self(NodeTable *nt, int node, const char *builtin, int strct) {
   if (node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode ||
@@ -15233,7 +15094,8 @@ static int cb_give_self(NodeTable *nt, int node, const char *builtin) {
       changed = 1;
     }
   }
-  else if (cb_self_act(nt, node) && !cb_program_defines(nt, cm) && !(builtin && cb_method_table_name(cm))) {
+  else if ((cb_self_act(nt, node) || (strct && cb_struct_act(nt, node))) && !cb_program_defines(nt, cm) &&
+           !(builtin && cb_method_table_name(cm))) {
     int self = fwd_new_node_like(nt, node, "SelfNode");
     if (self >= 0) {
       nt_node_set_ref(nt, node, "receiver", self);
@@ -15241,12 +15103,12 @@ static int cb_give_self(NodeTable *nt, int node, const char *builtin) {
     }
   }
   int nr = nt_num_refs(nt, node);
-  for (int i = 0; i < nr; i++) changed |= cb_give_self(nt, nt_ref_at(nt, node, i), builtin);
+  for (int i = 0; i < nr; i++) changed |= cb_give_self(nt, nt_ref_at(nt, node, i), builtin, strct);
   int na = nt_num_arrs(nt, node);
   for (int i = 0; i < na; i++) {
     int cnt = 0;
     const int *ids = nt_arr_at(nt, node, i, &cnt);
-    for (int j = 0; j < cnt; j++) changed |= cb_give_self(nt, ids[j], builtin);
+    for (int j = 0; j < cnt; j++) changed |= cb_give_self(nt, ids[j], builtin, strct);
   }
   return changed;
 }
@@ -15265,7 +15127,16 @@ int desugar_class_body_object_acts(Compiler *c) {
     const char *cname = cpk == NK_ConstantReadNode || cpk == NK_ConstantPathNode ? nt_str(nt, cp, "name") : NULL;
     int builtin = cname && (is_builtin_class_name(cname) || is_builtin_module_name(cname)) &&
                   (cpk == NK_ConstantReadNode ? !engine_lexically_nested(nt, cn) : nt_ref(nt, cp, "parent") < 0);
-    changed |= cb_give_self(nt, nt_ref(nt, cn, "body"), builtin ? cname : NULL);
+    changed |= cb_give_self(nt, nt_ref(nt, cn, "body"), builtin ? cname : NULL, 0);
+  }
+  /* a Struct.new / Data.define block a constant or a local holds is the
+     class's body, where self is the class as well */
+  for (int w = 0; w < n0; w++) {
+    NodeKind wk = nt_kind(nt, w);
+    if (wk != NK_ConstantWriteNode && wk != NK_LocalVariableWriteNode) continue;
+    int val = nt_ref(nt, w, "value");
+    int blk = is_struct_call(c, val) ? nt_ref(nt, val, "block") : -1;
+    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) changed |= cb_give_self(nt, nt_ref(nt, blk, "body"), NULL, 1);
   }
   if (changed) comp_grow_node_arrays(c);
   return changed;
