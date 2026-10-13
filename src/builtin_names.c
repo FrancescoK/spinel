@@ -1202,14 +1202,8 @@ int array_unseen_add_kind(const char *n) {
 }
 
 int is_scan_name(const char *n) { return sp_streq(n, "scan"); }
-/* The String mutators that never shorten their receiver: an append (of a
-   non-empty String, the caller's to check), prepend and insert */
-int is_string_grower(const char *n) {
-  return sp_streq(n, "<<") || sp_streq(n, "concat") || sp_streq(n, "prepend") || sp_streq(n, "insert");
-}
+int is_insert_name(const char *n) { return sp_streq(n, "insert"); }
 int is_clear_name(const char *n) { return sp_streq(n, "clear"); }
-/* An Array's size reads, which call no method of its elements */
-int is_size_query(const char *n) { return sp_streq(n, "length") || sp_streq(n, "size") || sp_streq(n, "empty?"); }
 
 /* with_index / with_object: an enumerator link that hands on its source's
    elements first */
