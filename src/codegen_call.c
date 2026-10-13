@@ -17082,6 +17082,19 @@ int builtin_numeric_arity(const char *m, int *out) {
     }
   return 0;
 }
+/* CRuby's accepted positional counts for cls#m without a block, and its
+   "expected" texts for a call below and above them (NULL where no count
+   is too few): 1 when the table proves them, 0 for a name it does not
+   have or an unbounded maximum (*max -1). */
+int builtin_class_arity_spec(const char *cls, const char *m, int *min, int *max,
+                             const char **lo_exp, const char **hi_exp) {
+  for (const SpAritySpec *r = sp_builtin_arity_spec_tbl; r->cls; r++) {
+    if (!sp_streq(r->cls, cls) || !sp_streq(r->m, m) || r->min < 0) continue;
+    *min = r->min; *max = r->max; *lo_exp = r->lo_exp; *hi_exp = r->hi_exp;
+    return r->max >= 0;
+  }
+  return 0;
+}
 /* Is `m` a method the builtin File (IO and its Enumerable included) has? */
 static int io_builtin_name(const char *m) {
   for (const SpAritySpec *r = sp_builtin_arity_spec_tbl; r->cls; r++)

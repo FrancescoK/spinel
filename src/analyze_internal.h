@@ -472,6 +472,9 @@ int desugar_to_proc_block_arg(Compiler *c);
 int desugar_proc_expr_block_arg(Compiler *c);
 int desugar_to_hash_splat(Compiler *c);
 int desugar_splat_to_a(Compiler *c);
+int desugar_builtin_splat_forward(Compiler *c);
+int builtin_class_arity_spec(const char *cls, const char *m, int *min, int *max,
+                             const char **lo_exp, const char **hi_exp);
 int desugar_lazy_method_call(Compiler *c);
 int desugar_value_callable_forwards(Compiler *c);
 int desugar_root_scoped_constants(Compiler *c);
