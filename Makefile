@@ -1347,6 +1347,10 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	   grep -q '^share-unknown-mut:' "$$tmp/out"; then \
 	  echo "share-strings-test: FAIL (a send in an uncalled method widens the sharing facts)"; ok=0; \
 	fi; \
+	if ! SPINEL_SHARE_STATS=3 $(SPINEL) --share-strings test/share/share_strings_dead_define_method.rb -c --no-line-map -o "$$tmp/deaddm.c" >"$$tmp/out" 2>&1 || \
+	   grep -q '^share-unknown-mut:' "$$tmp/out"; then \
+	  echo "share-strings-test: FAIL (a send in a define_method body that never runs widens the sharing facts)"; ok=0; \
+	fi; \
 	t=test/share/share_strings_flow_destinations; \
 	if ! SPINEL_SHARE_STATS=2 $(SPINEL) --share-strings "$$t.rb" -c --no-line-map -o "$$tmp/dest.c" >"$$tmp/out" 2>&1 || \
 	   ! grep '^share-flow-need:' "$$tmp/out" | cmp -s - "$$t.flows"; then \

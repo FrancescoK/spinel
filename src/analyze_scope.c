@@ -1240,6 +1240,33 @@ static int method_never_named(Compiler *c, const char *name) {
   return 1;
 }
 
+/* A subtree no longer in the tree -- the arguments and block of a
+   define_method replaced by its NameError (below) -- filed under a scope
+   nothing calls, so it is never reachable. Left unwalked, its nodes kept
+   the top level's scope, and a whole-program walk read the body's
+   runtime-name send as live code: every method then took UNKNOWN Strings
+   (the share facts' dyn_all), though the body can never run. */
+static int detached_scope(Compiler *c) {
+  for (int s = 1; s < c->nscopes; s++)
+    if (c->scopes[s].name && sp_streq(c->scopes[s].name, "__spinel_detached") && c->scopes[s].def_node < 0)
+      return s;
+  Scope *ds = comp_scope_new(c, "__spinel_detached", -1);
+  ds->class_id = -1;
+  return c->nscopes - 1;
+}
+static void file_detached(Compiler *c, int n, int ds, int depth) {
+  const NodeTable *nt = c->nt;
+  if (n < 0 || n >= nt->count || depth > 4096) return;
+  c->nscope[n] = ds;
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) file_detached(c, nt_ref_at(nt, n, i), ds, depth + 1);
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int k = 0; const int *ids = nt_arr_at(nt, n, i, &k);
+    for (int j = 0; j < k; j++) file_detached(c, ids[j], ds, depth + 1);
+  }
+}
+
 static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int proc, int dead) {
   if (id < 0 || id >= c->nt->count) return;
   c->nscope[id] = scope_idx;
@@ -1455,6 +1482,9 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
       if (ac > 0 && nt_kind(c->nt, av[0]) != NK_SymbolNode && nt_kind(c->nt, av[0]) != NK_StringNode &&
           !an_user_define_method(c)) {
         NodeTable *nt = (NodeTable *)c->nt;
+        int ds = detached_scope(c);
+        file_detached(c, nt_ref(nt, id, "block"), ds, 0);
+        file_detached(c, an, ds, 0);
         nt_node_set_int(nt, id, "define_method_name", 1);
         nt_node_set_str(nt, id, "name", "raise");
         nt_node_set_ref(nt, id, "receiver", -1);
