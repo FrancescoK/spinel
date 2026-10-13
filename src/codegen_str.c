@@ -8,11 +8,11 @@
    and gets the C expression of the plan's form in that face. Consumers
    move to it one family at a time; the others still decide on their own.
 
-   It renders an expression, nothing else. Where the value is evaluated,
-   what holds it while other operands run and what roots it stay where they
-   are: with the consumer, and with the renderer of the producer it hands
-   the value to, which writes the text it wrote before the consumer read the
-   plan. It adds no temporary, hold or root of its own.
+   A form says what its expression needs from where it is used (StrForm's
+   needs: to be evaluated once, to stay rooted until its use) rather than
+   holding or rooting it itself, and str_form_settle meets those needs.
+   Where the value is evaluated in the consumer's order, and what holds it
+   while other operands run, stays with the consumer.
 
    Without --share-strings there is no plan, and the producer decides as it
    did: a String the default build keeps as a shared handle (#3227) is that
@@ -46,12 +46,65 @@ static int str_render_id(Compiler *c, int v, int form, Buf *b) {
   return SPF_BYTES;
 }
 
-int emit_str_form(Compiler *c, int v, int role, int face, Buf *b) {
+int emit_str_form(Compiler *c, int v, int role, int face, StrForm *sf) {
+  memset(sf, 0, sizeof *sf);
   /* (the plan exists where share_plan_build made it: under the flag, once
      the share facts are built) */
   int form = c->share_plan ? share_plan_of(c, v, role, NULL).form : SPF_HANDLE;
   switch (face) {
-  case SPX_ID: return str_render_id(c, v, form, b);
+  case SPX_ID:
+    sf->cty = TY_INT;
+    return str_render_id(c, v, form, &sf->expr);
   }
   return form;
+}
+
+/* The seam between the String forms and the schedule: the one place a
+   form's needs are met. Evaluation order, holds and roots are the schedule
+   layer's (#8328), which is to replace this function; until it does, the
+   needs are met with the helpers the sites used before they stated them,
+   so the C is the one those sites wrote:
+     SF_ROOT_UNTIL_USE  emit_rooted_conversion: a temp declared NULL and
+                        rooted ahead of the statement (g_pre), assigned
+                        where the value stands, so its evaluation does not
+                        move;
+     SF_EVAL_ONCE       a temp of the value's type bound in a statement
+                        expression, `({ T _tN = <expr>; `, whose uses the
+                        consumer writes and str_form_close ends.
+   A form that needs neither is its expression. */
+void str_form_settle(Compiler *c, StrForm *sf, Buf *b) {
+  const char *e = sf->expr.p ? sf->expr.p : "";
+  if (sf->needs & SF_ROOT_UNTIL_USE) {
+    emit_rooted_conversion(c, sf->cty, e, b);
+    return;
+  }
+  if (sf->needs & SF_EVAL_ONCE) {
+    Buf ct;
+    memset(&ct, 0, sizeof ct);
+    emit_ctype(c, sf->cty, &ct);
+    const char *t = ct.p ? ct.p : "void";
+    size_t n = strlen(t);
+    sf->tmp = ++g_tmp;
+    /* (a pointer type's star stays with the name: `sp_String *_tN`) */
+    buf_printf(b, "({ %s%s_t%d = %s; ", t, n && t[n - 1] == '*' ? "" : " ", sf->tmp, e);
+    free(ct.p);
+    return;
+  }
+  buf_puts(b, e);
+}
+
+void str_form_of_text(StrForm *sf, const char *expr, TyKind cty, unsigned needs) {
+  memset(sf, 0, sizeof *sf);
+  buf_puts(&sf->expr, expr);
+  sf->cty = cty;
+  sf->needs = needs;
+}
+
+void str_form_close(const StrForm *sf, Buf *b) {
+  if (sf->needs & SF_EVAL_ONCE) buf_puts(b, "; })");
+}
+
+void str_form_free(StrForm *sf) {
+  free(sf->expr.p);
+  memset(sf, 0, sizeof *sf);
 }

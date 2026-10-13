@@ -3095,6 +3095,19 @@ static int strbuf_box_ref_as(Compiler *c, int recv, const char *fmt, Buf *b) {
    falls back to emit_expr. A narrowed box is not a handle slot: its ordinary
    expression reads the bytes without allocating a handle first. */
 int emit_strbuf_read_ref(Compiler *c, int recv, Buf *b) { return strbuf_box_ref_as(c, recv, "sp_String_cstr(%s)", b); }
+/* The object_id of handle `h`, a String that can be nil: the handle is
+   used twice, tested for nil and asked its identity, so it is evaluated
+   once (SF_EVAL_ONCE); nil answers `nil_id`. Without --share-strings the
+   id is the handle's address, as master's shared slot (#3227) has it. */
+static void strbuf_nilable_id(Compiler *c, const char *h, const char *nil_id, Buf *b) {
+  StrForm sf;
+  str_form_of_text(&sf, h ? h : "", TY_STRBUF, SF_EVAL_ONCE);
+  str_form_settle(c, &sf, b);
+  buf_printf(b, repr_share_rule(c) ? "_t%d ? (sp_int)(uintptr_t)sp_String_identity(_t%d) : %s"
+                                   : "_t%d ? (sp_int)(uintptr_t)_t%d : %s", sf.tmp, sf.tmp, nil_id);
+  str_form_close(&sf, b);
+  str_form_free(&sf);
+}
 /* The object_id of a String held as a shared sp_String: the handle's address,
    which is what a box of it carries. 0 when `recv` is not one.
    A frozen literal's handle keeps the identity of its static bytes. */
@@ -3136,9 +3149,7 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
       strbuf_yield_tail_held(c)) {
     Buf hb; memset(&hb, 0, sizeof hb);
     if (emit_strbuf_route(c, recv, &hb)) {
-      int t = ++g_tmp;
-      buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)sp_String_identity(_t%d) : SP_NIL_OBJECT_ID; })",
-                 t, hb.p, t, t);
+      strbuf_nilable_id(c, hb.p, "SP_NIL_OBJECT_ID", b);
       free(hb.p);
       return 1;
     }
@@ -3149,21 +3160,15 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
   int up = 0;
   int route = strbuf_self_route_slot(c, recv, &up, ref, sizeof ref);
   if (route && !up) {
-    if (repr_of(c, route - 1).may_nil) {
-      int t = ++g_tmp;
-      buf_printf(b, repr_share_rule(c) ? "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)sp_String_identity(_t%d) : %s; })"
-                                     : "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)_t%d : %s; })",
-                 t, ref, t, t, repr_of(c, recv).may_nil ? "SP_NIL_OBJECT_ID" : "(sp_int)(uintptr_t)sp_str_frozen_empty");
-    }
+    if (repr_of(c, route - 1).may_nil)
+      strbuf_nilable_id(c, ref, repr_of(c, recv).may_nil ? "SP_NIL_OBJECT_ID" : "(sp_int)(uintptr_t)sp_str_frozen_empty", b);
     else buf_printf(b, (repr_share_rule(c) ? "((sp_int)(uintptr_t)sp_String_identity(%s))" : "((sp_int)(uintptr_t)(%s))"), ref);
     return 1;
   }
   if (repr_of(c, recv).may_nil) {
     Buf rb; memset(&rb, 0, sizeof rb);
     if (!strbuf_box_ref_as(c, recv, "%s", &rb)) return 0;
-    int t = ++g_tmp;
-    buf_printf(b, repr_share_rule(c) ? "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)sp_String_identity(_t%d) : SP_NIL_OBJECT_ID; })"
-                                   : "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)_t%d : SP_NIL_OBJECT_ID; })", t, rb.p, t, t);
+    strbuf_nilable_id(c, rb.p, "SP_NIL_OBJECT_ID", b);
     free(rb.p);
     return 1;
   }

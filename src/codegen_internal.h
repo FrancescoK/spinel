@@ -343,13 +343,39 @@ void emit_str_frozen_check(Compiler *c, int recv, Buf *b);
 int strbuf_boxed_elem_read(Compiler *c, int v);
 int emit_strbuf_read_ref(Compiler *c, int recv, Buf *b);
 int strbuf_object_ref(Compiler *c, int recv, Buf *b);
-/* A String value in the form the String plan (share_plan.c) gives it for
-   a consumer in `role` (SPR_*), in the face the consumer holds it in
-   (codegen_str.c, #8328): an expression, with no temporary, hold or root
-   of its own. Answers the form it rendered (SPF_*). The faces:
+/* A String value rendered for a consumer (codegen_str.c, #8328): its C
+   expression, and what the expression needs from where it is used, which
+   str_form_settle meets. The needs:
+     SF_EVAL_ONCE       the value is used more than once (in two forms, or
+                        twice), so it is evaluated once, into a temp of
+                        type `cty` that the uses read (`tmp`);
+     SF_ROOT_UNTIL_USE  the value is an object made here that what runs
+                        before its use could collect, so it stays rooted
+                        until then. */
+enum { SF_EVAL_ONCE = 1, SF_ROOT_UNTIL_USE = 2 };
+typedef struct {
+  Buf expr;
+  unsigned needs;
+  TyKind cty;
+  int tmp;
+} StrForm;
+/* Node v in the form the String plan (share_plan.c) gives it for a
+   consumer in `role` (SPR_*), in the face the consumer holds it in, into
+   sf; answers the form it rendered (SPF_*). The faces:
      SPX_ID  its object id, an sp_int (object_id, __id__). */
 enum { SPX_ID };
-int emit_str_form(Compiler *c, int v, int role, int face, Buf *b);
+int emit_str_form(Compiler *c, int v, int role, int face, StrForm *sf);
+/* Write sf's expression into b with its needs met: the one place a String
+   form's evaluation, hold and root are decided. An SF_EVAL_ONCE value
+   opens a statement expression that binds it; the consumer writes its
+   uses of _t<sf->tmp>, and str_form_close ends it. */
+void str_form_settle(Compiler *c, StrForm *sf, Buf *b);
+/* The form of an expression a producer's renderer wrote that is not behind
+   emit_str_form yet (a handle parameter's argument, a nilable handle's
+   identity), with the needs it states. */
+void str_form_of_text(StrForm *sf, const char *expr, TyKind cty, unsigned needs);
+void str_form_close(const StrForm *sf, Buf *b);
+void str_form_free(StrForm *sf);
 extern int g_block_nren;
 extern int g_yield_block_fallback_nren;
 /* Paired 1:1 with g_block_nren / g_yield_block_fallback_nren: the &block
