@@ -2944,6 +2944,15 @@ static int emit_class_instance_methods_all(Compiler *c, int id, Buf *b, const No
   return 1;
 }
 
+/* The anonymous Struct / Data class a `new` receiver names statically: a
+   `Struct.new(...)` call, or a local the analysis holds one in; -1 else */
+static int anon_struct_recv_ci(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  int ci = nt_kind(nt, recv) == NK_CallNode ? anon_struct_ci_for_value(c, recv)
+         : nt_kind(nt, recv) == NK_LocalVariableReadNode ? class_var_static_ci(c, recv) : -1;
+  return ci >= 0 && ci < c->nclasses && c->classes[ci].is_anon_struct ? ci : -1;
+}
+
 int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* SomeClass.superclass -> the parent class as sp_Class value */
   if (recv >= 0 && argc == 0 && sp_streq(name, "superclass") &&
@@ -3688,6 +3697,11 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
          below build with an arm per class -- the user `self.new` ones among
          them. Taken here, the classes that construct normally had no arm. */
       if (sp_streq(name, "new") && repr_of(c, id).kind == RK_BOXED) goto skip_cls_cmethod9;
+      /* nor is `Struct.new(...).new(...)`, or `k.new(...)` on a local the
+         analysis holds that anonymous Struct in, whose class the receiver
+         names: the constructor below builds it, where this dispatch had arms
+         only for the classes with a `self.new` of their own */
+      if (sp_streq(name, "new") && anon_struct_recv_ci(c, recv) >= 0) goto skip_cls_cmethod9;
       TyKind uret9 = TY_UNKNOWN; int uret_set9 = 0, splat9 = 0;
       for (int a = 0; a < argc; a++)
         if (nt_kind(nt, argv[a]) == NK_SplatNode) splat9++;
