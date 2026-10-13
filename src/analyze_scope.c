@@ -740,6 +740,27 @@ static void rca_index(const NodeTable *nt) {
     rca_ntcount = nt->count;
   }
 }
+/* The class constant local read `v` holds when every write of that local
+   in the program assigns that one constant (`q = Module.new do ... end`, by
+   now a read of the module the call defines); NULL otherwise. */
+static const char *local_holds_class(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  const char *ln = nt_str(nt, v, "name"), *held = NULL;
+  if (!ln) return NULL;
+  static const NodeKind WK[] = { NK_LocalVariableWriteNode, NK_LocalVariableTargetNode,
+    NK_LocalVariableOrWriteNode, NK_LocalVariableAndWriteNode, NK_LocalVariableOperatorWriteNode };
+  for (int k = 0; k < 5; k++)
+    NT_FOREACH_KIND(nt, WK[k], w) {
+      const char *wn = nt_str(nt, w, "name");
+      if (!wn || !sp_streq(wn, ln)) continue;
+      int wv = WK[k] == NK_LocalVariableWriteNode ? nt_ref(nt, w, "value") : -1;
+      const char *vn = wv >= 0 && nt_kind(nt, wv) == NK_ConstantReadNode ? nt_str(nt, wv, "name") : NULL;
+      if (!vn || comp_class_index(c, vn) < 0 || (held && !sp_streq(held, vn))) return NULL;
+      held = vn;
+    }
+  return held;
+}
+
 const char *resolve_class_alias(Compiler *c, const char *cname) {
   const NodeTable *nt = c->nt;
   rca_index(nt);
@@ -754,6 +775,7 @@ const char *resolve_class_alias(Compiler *c, const char *cname) {
       const char *vn = nt_str(nt, v, "name");
       if (vn && (comp_class_index(c, vn) >= 0 || is_builtin_class_name(vn))) return vn;
     }
+    if (vty && sp_streq(vty, "LocalVariableReadNode")) return local_holds_class(c, v);
     if (vty && sp_streq(vty, "CallNode") && nt_str(nt, v, "name") &&
         sp_streq(nt_str(nt, v, "name"), "class")) {
       int r = nt_ref(nt, v, "receiver");
