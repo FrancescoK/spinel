@@ -1071,6 +1071,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         /* rooted like the while form's: a `break <v>` stores it here and then
            runs the ensure bodies it leaves, which may allocate */
         if (bt == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", t); }
+        else if (comp_ty_value_obj(c, bt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp_refs(c, bt, t, g_pre); buf_puts(g_pre, "\n"); }
         else if (needs_root(bt)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t); }
         /* Kernel#loop rescues StopIteration to terminate; wrap in a setjmp. */
         emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_exc_check_depth();\n");

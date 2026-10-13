@@ -8892,6 +8892,7 @@ static void emit_arg_temp(Compiler *c, int v) {
   else emit_ctype(c, at, g_pre);
   buf_printf(g_pre, " _t%d = %s;", t, hb.p ? hb.p : to ? oint_nil(at) : default_value_from_compiler(c, at));
   if (at == TY_POLY) buf_printf(g_pre, " SP_GC_ROOT_RBVAL(_t%d);", t);
+  else if (comp_ty_value_obj(c, at)) { buf_puts(g_pre, " "); emit_gc_root_tmp_refs(c, at, t, g_pre); }
   else if (needs_root(at)) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", t);
   /* a String Range is two Strings by value, each rooted as a local's are */
   else if (at == TY_STR_RANGE) { buf_puts(g_pre, " "); emit_gc_root_tmp_refs(c, at, t, g_pre); }
@@ -8982,6 +8983,7 @@ int hold_operand(Compiler *c, int node, TyKind ty, int boxed, int t, int root, c
   if (boxed || ty == TY_POLY) buf_puts(b, "sp_RbVal"); else emit_ctype(c, ty, b);
   buf_printf(b, " _t%d = %s;", t, vb.p ? vb.p : boxed ? "sp_box_nil()" : default_value_from_compiler(c, ty));
   if (!wrap && (boxed || ty == TY_POLY)) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", t);
+  else if (!wrap && comp_ty_value_obj(c, ty)) { buf_puts(b, " "); emit_gc_root_tmp_refs(c, ty, t, b); }
   else if (!wrap && needs_root(ty)) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
   buf_puts(b, sep);
   free(vb.p);
@@ -11478,6 +11480,7 @@ static void emit_strict_args(Compiler *c, int mi, const int *argv, int pos_argc,
         buf_printf(pre, "__typeof__(%s) _t%d = %s;", vb.p ? vb.p : "0", t, vb.p ? vb.p : "0");
         if (vt == TY_POLY) buf_printf(pre, " SP_GC_ROOT_RBVAL(_t%d);", t);
         else if (vt == TY_STRING) buf_printf(pre, " SP_GC_ROOT_STR(_t%d);", t);
+        else if (comp_ty_value_obj(c, vt)) { buf_puts(pre, " "); emit_gc_root_tmp_refs(c, vt, t, pre); }
         else if (needs_root(vt)) buf_printf(pre, " SP_GC_ROOT(_t%d);", t);
         buf_puts(pre, "\n");
         view_bind(v, "_t%d", t);
@@ -12957,6 +12960,7 @@ else {
                    (read_of_fixed_param(c, provided) || read_unbound_in_stmt(c, provided));
         if (held) {}
         else if (att == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", atmp[k]); }
+        else if (comp_ty_value_obj(c, att)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp_refs(c, att, atmp[k], g_pre); buf_puts(g_pre, "\n"); }
         else if (needs_root(att)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", atmp[k]); }
         /* a String Range is two Strings by value, each rooted as a local's are */
         else if (att == TY_STR_RANGE) { emit_indent(g_pre, g_indent); emit_gc_root_tmp_refs(c, att, atmp[k], g_pre); buf_puts(g_pre, "\n"); }
