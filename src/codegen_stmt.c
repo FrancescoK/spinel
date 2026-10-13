@@ -14487,7 +14487,9 @@ static void emit_class_body_stmts(Compiler *c, int ci, int body, Buf *b, int ind
     /* a `def VALUE.m` / `class << VALUE` on an object the body holds is
        where that object's singleton methods start, as at top level */
     if (sp_streq(sty, "DefNode")) {
-      if (sg_activates_ci(c, stmts[k]) >= 0) emit_stmt_or_defer(c, stmts[k], b, indent);
+      /* a refused one (sg_refused_msg) is refused here, as at top level */
+      if (sg_activates_ci(c, stmts[k]) >= 0 || sg_refused_msg(c, stmts[k]))
+        emit_stmt_or_defer(c, stmts[k], b, indent);
       continue;
     }
     if (sp_streq(sty, "AliasMethodNode")) continue;

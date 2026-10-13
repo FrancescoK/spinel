@@ -70,7 +70,7 @@ curry_spec__023	PASS
 curry_spec__024	ERROR
 curry_spec__025	FAIL
 curry_spec__026	PASS
-dup_spec__001	PASS
+dup_spec__001	REJECT
 dup_spec__002	PASS
 dup_spec__003	REJECT
 element_reference_spec__001	ERROR-BYDESIGN
