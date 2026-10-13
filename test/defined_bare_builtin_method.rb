@@ -2,6 +2,7 @@
 # Object's, and Class's and Module's in a class or module body and in a
 # class method.
 p defined?(freeze), defined?(itself), defined?(instance_variable_get(:@m)), defined?(nosuch)
+p defined?(__id__), defined?(equal?(1)), defined?(instance_eval)
 
 class Shape
   p defined?(freeze), defined?(itself), defined?(nosuch)
