@@ -18248,6 +18248,10 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
     int sc2 = cws2 ? cws2->class_id : -1;
     if (sc2 < 0 && g_class_body_id >= 0) sc2 = g_class_body_id;
     if (sc2 < 0) sc2 = comp_class_index(c, "Toplevel");
+    /* inside an instance_eval/exec block the slot is the receiver's, as the
+       plain write reads it */
+    if (ie_class_of(c, id) >= 0) sc2 = ie_class_of(c, id);
+    else if (cws2 && cws2->class_id < 0 && !cws2->is_cmethod && g_ie_class_id >= 0) sc2 = g_ie_class_id;
     TyKind ivt2 = TY_UNKNOWN;
     int eh2 = 0;
     if (sc2 >= 0) {

@@ -2365,9 +2365,14 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     if (tl3) cid3 = comp_class_index(c, "Toplevel");
     TyKind ivt3 = TY_UNKNOWN;
     int eh3 = 0;
-    if (cid3 >= 0) {
-      int iv3 = comp_ivar_index(&c->classes[cid3], nm);
-      if (iv3 >= 0) { ivt3 = c->classes[cid3].ivar_types[iv3]; eh3 = repr_of_ivar(c, cid3, iv3).elems_handle; }
+    /* inside an instance_eval/exec block the slot is the receiver's, as the
+       plain write above reads it: the enclosing method's class has no such
+       ivar, or one of another type */
+    int tcid3 = ie_class_of(c, id) >= 0 ? ie_class_of(c, id) :
+                cws3 && cws3->class_id < 0 && !cws3->is_cmethod && g_ie_class_id >= 0 ? g_ie_class_id : cid3;
+    if (tcid3 >= 0) {
+      int iv3 = comp_ivar_index(&c->classes[tcid3], nm);
+      if (iv3 >= 0) { ivt3 = c->classes[tcid3].ivar_types[iv3]; eh3 = repr_of_ivar(c, tcid3, iv3).elems_handle; }
     }
     char ref3[300];
     if (cws3 && cws3->is_cmethod && cid3 >= 0)

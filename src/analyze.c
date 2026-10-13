@@ -12489,6 +12489,25 @@ static int narrow_object_arrays(Compiler *c) {
     ivslot[sl[i].ici][sl[i].iiv] = i + 1;
   }
   #define OA_IVSLOT(ci, ivn) ({ int _r = -1; if ((ci) >= 0 && (ci) < c->nclasses && ivslot[ci]) { int _iv = comp_ivar_index(&c->classes[ci], (ivn)); if (_iv >= 0) _r = ivslot[ci][_iv] - 1; } _r; })
+  /* A reference inside an instance_eval/exec block is to the RECEIVER's ivar
+     (ie_class_of), not the enclosing method's class's: a use of the slot
+     from another class's code, unvetted. Kills the receiver's slot (each
+     class a poly receiver can be; every slot of the name when those are not
+     known, or fill the list and may have been cut short) and answers 1; 0
+     for a node outside such a block, or in one whose receiver is of the
+     enclosing instance method's own class (the same slot, vetted as any of
+     the method's own uses). */
+  #define OA_IE_KILL(node, ivn) ({ int _h = 0, _iec = ie_class_of(c, (node)); \
+    Scope *_isc = comp_scope_of(c, (node)); \
+    if (_iec >= 0 && _isc && !_isc->is_cmethod && _isc->class_id == _iec) { } \
+    else if (_iec >= 0) { int _s = OA_IVSLOT(_iec, (ivn)); if (_s >= 0) sl[_s].alive = 0; _h = 1; } \
+    else if (_iec < -1) { \
+      int _pk[64], _np = ie_poly_classes_at(c, (node), _pk, 64); \
+      for (int _q = 0; _q < _np; _q++) { int _s = OA_IVSLOT(_pk[_q], (ivn)); if (_s >= 0) sl[_s].alive = 0; } \
+      if (_np == 0 || _np == 64) for (int _q = 0; _q < n; _q++) \
+        if (sl[_q].ici >= 0 && sp_streq(c->classes[sl[_q].ici].ivars[sl[_q].iiv], (ivn))) sl[_q].alive = 0; \
+      _h = 1; } \
+    _h; })
   int nc = nt->count ? nt->count : 1;
   /* The copy of Enumerable#each_with_index (and the other yielding builtins)
      keeps both arms of `if block_given?` in the AST. Codegen folds the test,
@@ -12601,7 +12620,7 @@ static int narrow_object_arrays(Compiler *c) {
          of the class itself (a class-level ivar of the same name) */
       const char *nm = nt_str(nt, id, "name");
       Scope *sc = comp_scope_of(c, id);
-      if (!nm || !sc) continue;
+      if (!nm || !sc || OA_IE_KILL(id, nm)) continue;
       int i = OA_IVSLOT(sc->class_id, nm);
       if (i < 0) continue;
       if (sc->is_cmethod) sl[i].alive = 0;
@@ -12614,13 +12633,15 @@ static int narrow_object_arrays(Compiler *c) {
       int args = nt_ref(nt, id, "arguments"); int an = 0;
       if (args >= 0) nt_arr(nt, args, "arguments", &an);
       if (!nm || an != 0 || nt_ref(nt, id, "block") >= 0) continue;
+      char ivn[300];
+      if (strlen(nm) >= sizeof ivn - 1) continue;
+      ivn[0] = '@'; strcpy(ivn + 1, nm);
+      /* a bare call in an instance_eval/exec block is the receiver's reader */
+      if (recv < 0 && OA_IE_KILL(id, ivn)) continue;
       int rci = -1;
       if (recv >= 0) { TyKind rt = infer_type(c, recv); if (ty_is_object(rt)) rci = ty_object_class(rt); }
       else { Scope *sc = comp_scope_of(c, id); if (sc && !sc->is_cmethod) rci = sc->class_id; }
       if (rci < 0 || !ivslot[rci] || !comp_is_reader(&c->classes[rci], nm)) continue;
-      char ivn[300];
-      if (strlen(nm) >= sizeof ivn - 1) continue;
-      ivn[0] = '@'; strcpy(ivn + 1, nm);
       int i = OA_IVSLOT(rci, ivn);
       /* the synthesized attr_reader only: an explicit `def x; @x; end` is a
          method with a return slot, reached through call_ret in step 4 */
@@ -12977,7 +12998,7 @@ static int narrow_object_arrays(Compiler *c) {
     if (!ty || !sp_streq(ty, "InstanceVariableWriteNode")) continue;
     const char *nm = nt_str(nt, id, "name");
     Scope *sc = comp_scope_of(c, id);
-    if (!nm || !sc) continue;
+    if (!nm || !sc || OA_IE_KILL(id, nm)) continue;
     int i = OA_IVSLOT(sc->class_id, nm);
     if (i < 0) continue;
     if (sc->is_cmethod) sl[i].alive = 0;
@@ -13254,6 +13275,7 @@ static int narrow_object_arrays(Compiler *c) {
   free(cleared);
   for (int k = 0; k < c->nclasses; k++) free(ivslot[k]);
   free(ivslot);
+  #undef OA_IE_KILL
   #undef OA_IVSLOT
   free(sl); free(read_slot); free(call_ret); free(claimed); free(value_ok); free(walk_disc); free(attr_sym); free(dead);
   return changed;
