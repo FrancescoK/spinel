@@ -12990,10 +12990,50 @@ static int sb_kernel_recv(const NodeTable *nt, int r) {
          sp_streq(nt_str(nt, r, "name"), "Kernel");
 }
 
-/* Does the program define a method named `nm` (a printer of its own)? */
-static int sb_program_defines(const NodeTable *nt, const char *nm) {
-  NT_FOREACH_KIND(nt, NK_DefNode, d)
-    if (nt_str(nt, d, "name") && sp_streq(nt_str(nt, d, "name"), nm)) return 1;
+/* Does statement list `body` define instance method `nm` (`def nm`, a
+   visibility call around it or not)? */
+static int sb_body_defines(const NodeTable *nt, int body, const char *nm) {
+  int n = 0; const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+  for (int k = 0; k < n; k++) {
+    int d = fwd_body_def(nt, st[k]);
+    if (d >= 0 && nt_ref(nt, d, "receiver") < 0 && nt_str(nt, d, "name") && sp_streq(nt_str(nt, d, "name"), nm))
+      return 1;
+  }
+  return 0;
+}
+
+/* Does the program give Kernel's singleton printer `nm` (what Kernel.puts
+   calls; a module function, which a redefined instance method does not
+   change) a body of its own: `def self.nm` in a Kernel body, or
+   `def Kernel.nm`? */
+static int sb_kernel_singleton_redefined(const NodeTable *nt, const char *nm) {
+  NT_FOREACH_KIND(nt, NK_DefNode, d) {
+    const char *dn = nt_str(nt, d, "name");
+    int r = nt_ref(nt, d, "receiver");
+    if (!dn || !sp_streq(dn, nm) || r < 0) continue;
+    if (sb_kernel_recv(nt, r)) return 1;
+    if (nt_kind(nt, r) != NK_SelfNode) continue;
+    NT_FOREACH_KIND(nt, NK_ModuleNode, m) {
+      const char *cn = nt_str(nt, nt_ref(nt, m, "constant_path"), "name");
+      int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, m, "body"), "body", &bn);
+      for (int k = 0; cn && sp_streq(cn, "Kernel") && k < bn; k++) if (fwd_body_def(nt, bv[k]) == d) return 1;
+    }
+  }
+  return 0;
+}
+
+/* Does the program give Kernel's printer `nm` a body of its own: a def of it
+   at the top level or in a reopened Kernel or Object, which a bare puts
+   reaches? A method of that name in any other class is not that one. */
+static int sb_kernel_printer_redefined(const NodeTable *nt, const char *nm) {
+  if (sb_body_defines(nt, nt_ref(nt, nt->root_id, "statements"), nm)) return 1;
+  static const NodeKind K[] = { NK_ClassNode, NK_ModuleNode };
+  for (int h = 0; h < 2; h++)
+    NT_FOREACH_KIND(nt, K[h], m) {
+      const char *cn = nt_str(nt, nt_ref(nt, m, "constant_path"), "name");
+      if (cn && (sp_streq(cn, "Kernel") || sp_streq(cn, "Object")) && sb_body_defines(nt, nt_ref(nt, m, "body"), nm))
+        return 1;
+    }
   return 0;
 }
 
@@ -13011,7 +13051,8 @@ static int sb_walk(NodeTable *nt, int node) {
       sb_refuse(nt, node);
       return 1;
     }
-    if ((r < 0 || sb_kernel_recv(nt, r)) && sb_printer(nm) && !sb_program_defines(nt, nm))
+    if (sb_printer(nm) && ((r < 0 && !sb_kernel_printer_redefined(nt, nm)) ||
+                           (r >= 0 && sb_kernel_recv(nt, r) && !sb_kernel_singleton_redefined(nt, nm))))
       for (int i = 0; i < ac; i++)
         if (nt_kind(nt, av[i]) == NK_SelfNode) { sb_refuse(nt, node); return 1; }
     /* a block that rebinds self (class_eval and kin, define_method) has a
