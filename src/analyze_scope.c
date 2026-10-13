@@ -7254,7 +7254,8 @@ static int cmethod_reaches_override(Compiler *c, int mi, int ci, int def_cls, in
    whoever ends up reading it has to read the CALLING class's storage; a DSL
    writes one indirectly (`field` calls `fields`, which is the one that says
    `@fields`), and reading only mi's own body left `field` unspecialized and
-   still pointed at the base class's slot (#4051). The depth cap bounds the walk
+   still pointed at the base class's slot (#4051). A `class << self` accessor
+   (`self.x = v`) reads and writes such an @ivar as well. The depth cap bounds the walk
    and doubles as a cycle guard for mutually-recursive cmethods. */
 static int cmethod_reaches_class_ivar_walk(Compiler *c, int mi, int def_cls, unsigned char *seen) {
   if (mi < 0 || mi >= c->nscopes || seen[mi]) return 0;
@@ -7272,6 +7273,17 @@ static int cmethod_reaches_class_ivar_walk(Compiler *c, int mi, int def_cls, uns
     if (!cm_call_on_self(nt, id)) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || sp_streq(nm, "new")) continue;
+    /* a `class << self` accessor's @ivar is per class too (`self.x = v`) */
+    if (def_cls >= 0 && def_cls < c->nclasses) {
+      char base[256];
+      size_t bl = strlen(nm);
+      if (bl < sizeof base) {
+        memcpy(base, nm, bl + 1);
+        if (bl > 1 && base[bl - 1] == '=') base[bl - 1] = '\0';
+        ClassInfo *dc = &c->classes[def_cls];
+        if (comp_is_sg_reader(dc, base) || comp_is_sg_writer(dc, base)) return 1;   /* sg_ or civ_, per class */
+      }
+    }
     int sub_def = -1;
     int mdef = comp_cmethod_in_chain(c, def_cls, nm, &sub_def);
     if (mdef >= 0 && mdef != mi && sub_def >= 0 &&
