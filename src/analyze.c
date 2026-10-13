@@ -41172,6 +41172,7 @@ static void an_phase_class_structure(Compiler *c) {
   register_prepends(c);
   rewrite_prepended_builtin_supers(c);   /* super in a module prepended into Range -> Range's own */
   desugar_method_added_hook(c);   /* def in a class body -> def; method_added(:name): needs the parents and extends, and runs before class methods are specialized per class */
+  desugar_reader_index_write(c);  /* all[k] = v through a reader of @all -> (all; @all[k] = v) */
   /* again, now that modules have put their methods in: an alias can take an
      inherited method an ancestor got from one */
   resolve_inherited_aliases(c);
