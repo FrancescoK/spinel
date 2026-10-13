@@ -6,6 +6,7 @@
    that inference also uses (subtree_has_kind, subtree_rename_local, the
    bdp_/ie_ pairs); moving those would widen their linkage for no reason but
    this file split. */
+#include "builtin_ops.h"
 #include "analyze_internal.h"
 #include <stdio.h>
 #include <ctype.h>
@@ -6743,6 +6744,14 @@ static void fwd_drop_spent_anon_block_param(Compiler *c, int id, int n0) {
   }
   free(ms->blk_param);
   ms->blk_param = NULL;
+  /* and it is that yielding method: the forward is a block that yields now.
+     The scan that marks a written `yield` ran before this rewrite, and the
+     inlining pass may have declined the forward while the receiver was still
+     unknown (another class's `each` keeps its block) -- left unmarked, the
+     method had neither a block parameter nor a block, and its yield raised
+     LocalJumpError (thor's HashWithIndifferentAccess#each beside
+     tty-prompt's Choices#each, which answers to_enum blockless). */
+  ms->yields = 1;
 }
 
 /* Is the method's `&blk` name read anywhere in scope `ms` other than as the
@@ -9843,6 +9852,15 @@ int desugar_builtins(Compiler *c) {
       if (er >= 0 && nt_kind(nt, er) == NK_CallNode && nt_ref(nt, er, "block") < 0) cn0 = nt_str(nt, er, "name");
     }
     if (cn0 && sp_streq(cn0, "with_object")) cn0 = "each_with_object";
+    /* Array#index with a block and no argument is find_index, renamed so in
+       the fixpoint once the receiver is an Array (desugar_builtin_enum_calls);
+       so is the block-only arm a delegator's `index(*args, &block)` splits
+       into (desugar_builtin_splat_forward), which keeps this site's copy */
+    if (cn0 && sp_streq(cn0, "index") && nt_ref(nt, id, "block") >= 0 && nt_ref(nt, id, "receiver") >= 0) {
+      int ia = nt_ref(nt, id, "arguments"), iac = 0;
+      const int *iav = ia >= 0 ? nt_arr(nt, ia, "arguments", &iac) : NULL;
+      if (iac == 0 || (iac == 1 && nt_kind(nt, iav[0]) == NK_SplatNode)) cn0 = "find_index";
+    }
     /* `recv.send(:tally)` / public_send / __send__ with a literal name is
        retargeted onto `recv.tally` inside the fixpoint
        (desugar_public_send_recv), after this pass: give it its copy under
@@ -10326,6 +10344,177 @@ static int enum_is_a_chain(Compiler *c, const char *rn, const int *defcls, int n
   return pred;
 }
 
+/* ---- `@a.m(*args, &block)`: a delegator's splat into a builtin ------------
+   Forwardable's delegators (and tty-prompt's Choices, written that way) hand
+   a method's own rest parameter and block to a builtin:
+     def first(*args, &block) = @a.first(*args, &block)
+   The builtin's rows are fixed arities, and a splat matched a one-argument
+   row as one argument (the whole array): `first` raised, `fetch(k, d)` and
+   `index(v)` answered wrong. The builtin's arities are known, so the call
+   picks one at run time, by the rest parameter's size, as Ruby binds it:
+     case args.size
+     when 0 then block_given? ? @a.first(&block) : @a.first
+     when 1 then block_given? ? @a.first(args[0], &block) : @a.first(args[0])
+     else raise ArgumentError, "wrong number of arguments (given N, expected 0..1)"
+     end
+   (the `block_given?` arm only when the block is the method's own). A
+   receiver read twice must read the same thing: a local, an ivar, self or
+   a constant. A builtin taking any number of arguments keeps its splat. */
+#define SPL_MAX_ARITY 4
+static int spl_pure_recv(const NodeTable *nt, int r) {
+  NodeKind k = nt_kind(nt, r);
+  return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_SelfNode ||
+         k == NK_ConstantReadNode || k == NK_ConstantPathNode;
+}
+static int spl_has_yield(const NodeTable *nt, int n) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_YieldNode) return 1;
+  if (k == NK_DefNode || k == NK_LambdaNode) return 0;
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) if (spl_has_yield(nt, nt_ref_at(nt, n, i))) return 1;
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) if (spl_has_yield(nt, ids[j])) return 1;
+  }
+  return 0;
+}
+static int spl_str(NodeTable *nt, const char *s) {
+  int n = nt_new_node(nt, "StringNode");
+  if (n >= 0) { nt_node_set_str(nt, n, "unescaped", s); nt_node_set_str(nt, n, "content", s); }
+  return n;
+}
+static int spl_call(NodeTable *nt, int recv, const char *name, const int *args, int argc, int blk) {
+  int call = nt_new_node(nt, "CallNode");
+  nt_node_set_ref(nt, call, "receiver", recv);
+  nt_node_set_str(nt, call, "name", name);
+  int an = -1;
+  if (argc > 0) { an = nt_new_node(nt, "ArgumentsNode"); nt_node_set_arr(nt, an, "arguments", args, argc); }
+  nt_node_set_ref(nt, call, "arguments", an);
+  nt_node_set_ref(nt, call, "block", blk);
+  return call;
+}
+static int spl_if(NodeTable *nt, int pred, int yes, int no) {
+  int ifn = nt_new_node(nt, "IfNode");
+  int ys = nt_new_node(nt, "StatementsNode"), ns = nt_new_node(nt, "StatementsNode"), el = nt_new_node(nt, "ElseNode");
+  nt_node_set_arr(nt, ys, "body", &yes, 1);
+  nt_node_set_arr(nt, ns, "body", &no, 1);
+  nt_node_set_ref(nt, el, "statements", ns);
+  nt_node_set_ref(nt, ifn, "predicate", pred);
+  nt_node_set_ref(nt, ifn, "statements", ys);
+  nt_node_set_ref(nt, ifn, "subsequent", el);
+  return ifn;
+}
+/* An arm: the original call with these arguments and block, cloned so it
+   keeps what earlier passes marked on the site (the Ruby-defined builtin
+   copy an Enumerable name was given) */
+static int spl_arm(NodeTable *nt, int id, int recv, const int *args, int argc, int blk) {
+  int call = nt_new_node(nt, "CallNode");
+  if (call < 0) return -1;
+  const SpNode *src = &nt->nodes[id];
+  for (int i = 0; i < src->ni; i++) nt_node_set_int(nt, call, src->i[i].key, src->i[i].val);
+  nt_node_set_str(nt, call, "name", nt_str(nt, id, "name"));
+  nt_node_set_ref(nt, call, "receiver", nt_clone_subtree(nt, recv));
+  int an = -1;
+  if (argc > 0) { an = nt_new_node(nt, "ArgumentsNode"); nt_node_set_arr(nt, an, "arguments", args, argc); }
+  nt_node_set_ref(nt, call, "arguments", an);
+  nt_node_set_ref(nt, call, "block", blk);
+  return call;
+}
+int desugar_builtin_splat_forward(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver");
+    int args = nt_ref(nt, id, "arguments");
+    if (!nm || recv < 0 || args < 0 || !spl_pure_recv(nt, recv)) continue;
+    int an = 0; const int *av = nt_arr(nt, args, "arguments", &an);
+    if (an != 1 || nt_kind(nt, av[0]) != NK_SplatNode) continue;
+    int sv = nt_ref(nt, av[0], "expression");
+    if (sv < 0 || nt_kind(nt, sv) != NK_LocalVariableReadNode) continue;
+    const char *rest = nt_str(nt, sv, "name");
+    Scope *ms = comp_scope_of(c, id);
+    if (!rest || !ms || ms->rest_idx < 0 || ms->rest_idx >= ms->nparams || !ms->pnames ||
+        !ms->pnames[ms->rest_idx] || !sp_streq(ms->pnames[ms->rest_idx], rest)) continue;
+    /* the block: none, the method's own (`&block`, or the yielding literal
+       a forward of it became), or the caller's own literal */
+    int blk = nt_ref(nt, id, "block"), own = 0;
+    if (blk >= 0) {
+      if (nt_kind(nt, blk) == NK_BlockArgumentNode) {
+        int ex = nt_ref(nt, blk, "expression");
+        if (ex < 0 || nt_kind(nt, ex) != NK_LocalVariableReadNode || !ms->blk_param ||
+            !nt_str(nt, ex, "name") || !sp_streq(nt_str(nt, ex, "name"), ms->blk_param)) continue;
+        own = 1;
+      } else own = spl_has_yield(nt, blk);
+    }
+    TyKind rt = infer_type(c, recv);
+    const char *cls = ty_is_array(rt) || ty_is_obj_array(rt) ? "Array" : ty_is_hash(rt) ? "Hash"
+                    : rt == TY_STRING ? "String" : NULL;
+    if (!cls) continue;
+    /* CRuby's own counts (builtin_arity.inc, dumped from ruby itself) */
+    int lo = 0, hi = 0; const char *lo_exp = NULL, *hi_exp = NULL;
+    if (!builtin_class_arity_spec(cls, nm, &lo, &hi, &lo_exp, &hi_exp) || hi > SPL_MAX_ARITY || !hi_exp) continue;
+    int base = nt->count;
+    /* the arms, innermost last: CRuby's ArgumentError for any other size */
+    int tail = -1;
+    for (int e = 0; e < 2; e++) {
+      const char *exp = e ? lo_exp : hi_exp;
+      if (!exp) continue;
+      char msg[96]; snprintf(msg, sizeof msg, ", expected %s)", exp);
+      int sz = spl_call(nt, hwi_lread(nt, rest), "size", NULL, 0, -1);
+      int tos = spl_call(nt, sz, "to_s", NULL, 0, -1);
+      int pre = spl_str(nt, "wrong number of arguments (given ");
+      int cat1 = spl_call(nt, pre, "+", &tos, 1, -1);
+      int post = spl_str(nt, msg);
+      int cat2 = spl_call(nt, cat1, "+", &post, 1, -1);
+      int ae = nt_new_node(nt, "ConstantReadNode"); nt_node_set_str(nt, ae, "name", "ArgumentError");
+      int rargs[2] = { ae, cat2 };
+      int rz = spl_call(nt, -1, "raise", rargs, 2, -1);
+      if (tail < 0) tail = rz;
+      else {   /* too few below lo, too many above hi */
+        int lon = hwi_new_int(nt, lo);
+        int sz3 = spl_call(nt, hwi_lread(nt, rest), "size", NULL, 0, -1);
+        int lt = spl_call(nt, sz3, "<", &lon, 1, -1);
+        tail = spl_if(nt, lt, rz, tail);
+      }
+    }
+    for (int k = hi; k >= lo; k--) {
+      int ka[SPL_MAX_ARITY];
+      for (int i = 0; i < k; i++) { int ix = hwi_new_int(nt, i); ka[i] = spl_call(nt, hwi_lread(nt, rest), "[]", &ix, 1, -1); }
+      int with = spl_arm(nt, id, recv, ka, k, blk >= 0 ? nt_clone_subtree(nt, blk) : -1);
+      int arm = with;
+      if (own) {
+        int kb[SPL_MAX_ARITY];
+        for (int i = 0; i < k; i++) { int ix = hwi_new_int(nt, i); kb[i] = spl_call(nt, hwi_lread(nt, rest), "[]", &ix, 1, -1); }
+        int without = spl_arm(nt, id, recv, kb, k, -1);
+        arm = spl_if(nt, spl_call(nt, -1, "block_given?", NULL, 0, -1), with, without);
+      }
+      int kn = hwi_new_int(nt, k);
+      int sz2 = spl_call(nt, hwi_lread(nt, rest), "size", NULL, 0, -1);
+      int eq = spl_call(nt, sz2, "==", &kn, 1, -1);
+      tail = spl_if(nt, eq, arm, tail);
+    }
+    long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
+    int body = nt_new_node(nt, "StatementsNode");
+    nt_node_set_arr(nt, body, "body", &tail, 1);
+    nt_node_reset(nt, id, "ParenthesesNode");
+    nt_node_set_ref(nt, id, "body", body);
+    nt_node_set_int(nt, id, "node_line", line);
+    nt_node_set_int(nt, id, "node_file", file);
+    comp_grow_node_arrays(c);
+    for (int j = base; j < nt->count; j++) {
+      c->nscope[j] = c->nscope[id];
+      nt_node_set_int(nt, j, "node_line", line);
+      nt_node_set_int(nt, j, "node_file", file);
+    }
+    changed = 1;
+  }
+  return changed;
+}
+
 int desugar_builtin_enum_calls(Compiler *c) {
   if (sp_builtin_enum_names_n == 0) return 0;
   NodeTable *nt = (NodeTable *)c->nt;
@@ -10357,7 +10546,21 @@ int desugar_builtin_enum_calls(Compiler *c) {
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *name = nt_str(nt, id, "name");
-    if (builtin_enum_name_index(name) < 0) continue;
+    /* Array#index with a block and no argument is find_index (CRuby defines
+       both as rb_ary_index): `@choices.index(&block)`, Forwardable's
+       delegator shape in tty-prompt's Choices, had no emitter of its own */
+    const char *bname = NULL;
+    if (name && sp_streq(name, "index") && nt_ref(nt, id, "block") >= 0 && nt_ref(nt, id, "arguments") < 0 &&
+        nt_ref(nt, id, "receiver") >= 0 && builtin_enum_name_index("find_index") >= 0) {
+      TyKind irt = infer_type(c, nt_ref(nt, id, "receiver"));
+      if (ty_is_array(irt) || ty_is_obj_array(irt)) { nt_node_set_str(nt, id, "name", "find_index"); name = nt_str(nt, id, "name"); changed = 1; }
+      /* a value known only at run time takes find_index's definition for an
+         Array and keeps `index` for a class of the program that defines it
+         (tty-prompt's Choices beside the Array a filtered list is): the
+         dispatch below, under the builtin's name */
+      else if (irt == TY_POLY) bname = "find_index";
+    }
+    if (builtin_enum_name_index(bname ? bname : name) < 0) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;
     if (chained && chained[id]) continue;

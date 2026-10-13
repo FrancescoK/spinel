@@ -4373,7 +4373,9 @@ static char *sp_splice_builtins(char *source, const char *exe_path,
   for (int i = 0; i < sp_builtin_enum_names_n && !any; i++)
     if (sp_source_mentions_method(source, sp_builtin_enum_names[i])) any = 1;
   /* the spellings the analyzer rewrites onto a builtin's name */
-  static const char *const aliases[][2] = { { "with_object", "each_with_object" }, { "collect_concat", "flat_map" }, { "detect", "find" }, { NULL, NULL } };
+  static const char *const aliases[][2] = { { "with_object", "each_with_object" }, { "collect_concat", "flat_map" }, { "detect", "find" },
+    /* Array#index with a block and no argument (desugar_builtin_enum_calls) */
+    { "index", "find_index" }, { NULL, NULL } };
   for (int k = 0; aliases[k][0] && !any; k++) {
     int known = 0;
     for (int i = 0; i < sp_builtin_enum_names_n; i++) if (strcmp(sp_builtin_enum_names[i], aliases[k][1]) == 0) known = 1;
