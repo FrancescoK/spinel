@@ -325,6 +325,31 @@ static int cf_class_has_natives(CF *f, int k) {
   }
   return f->has_native[k] || f->c->classes[k].is_native_class;
 }
+/* a top-level class or module of the runtime's that the program reopens
+   (Object, Kernel, Comparable, String, Exception, ...): its methods run for
+   objects the program's classes do not list, its own subclasses and
+   includers among them */
+static int cf_open_self(CF *f, int k) {
+  ClassInfo *ci = &f->c->classes[k];
+  const char *nm = ci->name;
+  if (!nm || ci->enclosing_class >= 0) return 0;
+  return is_builtin_reopen_name(nm) || is_object_root(nm) || is_builtin_class_name(nm) ||
+         is_builtin_module_name(nm) || is_builtin_exception_name(nm);
+}
+/* a Kernel function or a class body's declaration: a receiverless call
+   whose answer does not come from self */
+static int cf_selfless_fn(const char *nm) {
+  static const char *const names[] = { "puts", "print", "p", "pp", "printf", "sprintf", "format", "putc",
+    "raise", "fail", "require", "require_relative", "load", "sleep", "rand", "srand", "Integer", "Float",
+    "String", "Array", "Hash", "Rational", "Complex", "loop", "catch", "throw", "lambda", "proc",
+    "block_given?", "binding", "caller", "caller_locations", "exit", "exit!", "abort", "at_exit", "gets",
+    "warn", "open", "system", "spawn", "`", "select", "trap", "fork", "exec", "autoload", "readline",
+    "readlines", "__method__", "__dir__", "attr_reader", "attr_writer", "attr_accessor", "attr", "private",
+    "public", "protected", "module_function", "include", "prepend", "define_method", "alias_method",
+    "remove_method", "undef_method", "private_constant", "private_class_method", "public_class_method", NULL };
+  for (int i = 0; names[i]; i++) if (sp_streq(nm, names[i])) return 1;
+  return 0;
+}
 /* a scope's instance class: the class whose instances run it, -1 for a
    class method, a class body or the top level */
 static int cf_inst_class(CF *f, int si) {
@@ -1127,7 +1152,10 @@ static void cf_call(CF *f, int v) {
     if (sp_streq(nm, "lambda") || sp_streq(nm, "proc") || sp_streq(nm, "define_method")) {
       if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) cf_all_block_params(f, blk);
     }
-    cf_builtin_rule(f, v, -1, argv, argc, blk, nm);
+    /* self is the receiver (`def seal = freeze` answers self, a bare
+       `each` in an Array subclass iterates self) */
+    int ik = cf_inst_class(f, si);
+    cf_builtin_rule(f, v, ik >= 0 && !cf_selfless_fn(nm) ? f->self_el[ik] : -1, argv, argc, blk, nm);
     return;
   }
   int x = cf_is_class_const(f, r);
@@ -1310,7 +1338,14 @@ static void cf_node(CF *f, int v) {
     Scope *s = &c->scopes[si];
     /* the Class object: of the class a class method runs for, or one below
        it; the class whose body this is */
-    if (s->def_node >= 0 && s->is_cmethod && s->class_id >= 0) cf_add_set(f, v, cf_classvals_of(f, f->desc[s->class_id]));
+    if (s->def_node >= 0 && s->is_cmethod && s->class_id >= 0) {
+      /* a module's own (a module_function's, an `extend self`'s) runs for
+         the module too, which its subtree does not list; a reopened
+         runtime class's for its classes the program does not list */
+      if (cf_open_self(f, s->class_id)) { cf_all(f, v); return; }
+      cf_add_set(f, v, cf_classvals_of(f, f->desc[s->class_id]));
+      if (f->mod[s->class_id]) cf_add_set(f, v, cf_classval(f, s->class_id));
+    }
     else if (v < f->nnodes && c->node_cbody && c->node_cbody[v] >= 0) cf_add_set(f, v, cf_classval(f, c->node_cbody[v]));
     else if (s->def_node < 0 && cf_owner_block(f, v, 0) >= 0) cf_all(f, v);
     return;
@@ -1725,8 +1760,10 @@ void an_cls_facts(Compiler *c) {
     f.desc[k] = cf_pool(&f, &s);
     f.self_el[k] = cf_new_el(&f);
     f.set[f.self_el[k]] = f.desc[k];
-    /* a class or module the compiler supplies runs for any object */
+    /* a class or module the compiler supplies, or one of the runtime's the
+       program reopens, runs for any object */
     if (c->classes[k].def_node >= 0 && nt_int(nt, c->classes[k].def_node, "node_bi", 0) != 0) f.set[f.self_el[k]] = CF_ALL;
+    if (cf_open_self(&f, k)) f.set[f.self_el[k]] = CF_ALL;
   }
   {
     ClsSet s; memset(&s, 0, sizeof s);

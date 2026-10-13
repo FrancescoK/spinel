@@ -37,7 +37,8 @@ File.foreach(trace_path) do |l|
   next if sends.include?([path, line.to_i])
   next if set.include?("ANY") || set.include?(recv)
   # a class defined by its path (`class A::B::C`) is named by its leaf
-  leaf = ->(n) { n.sub(/\AClass\((.*)\)\z/) { "Class(#{$1.split('::').last})" }.split("::").last }
+  # (or by a name qualify_colliding_classes joined with __)
+  leaf = ->(n) { n.gsub("__", "::").sub(/\AClass\((.*)\)\z/) { "Class(#{$1.split('::').last})" }.split("::").last }
   next if set.any? { |e| leaf.(e) == leaf.(recv) }
   next if src.nil? || src.empty? || !files.include?(File.expand_path(src))
   tag = callee.to_s.start_with?("<internal:") ? " [builtin]" : ""
