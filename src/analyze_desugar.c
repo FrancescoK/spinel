@@ -14276,13 +14276,25 @@ static void scg_add_def_body(NodeTable *nt, int cls, const char *cname, int like
     nt_node_set_arr(nt, db, "body", &dn, 1);
   }
   else if (raising) {
-    /* raise NameError, "uninitialized constant X"; nil */
+    /* raise NameError, "uninitialized constant #{name}::X"; nil -- the
+       class the lookup ran on, as CRuby names it */
     int rc = fwd_new_node_like(nt, like, "CallNode");
     int ra = fwd_new_node_like(nt, like, "ArgumentsNode");
     int ne = fwd_new_node_like(nt, like, "ConstantReadNode");
     nt_node_set_str(nt, ne, "name", "NameError");
-    char msg[300]; snprintf(msg, sizeof msg, "uninitialized constant %s", cname);
-    int av[2] = { ne, str_node_like(nt, like, msg) };
+    char tail[300]; snprintf(tail, sizeof tail, "::%s", cname);
+    int msg = fwd_new_node_like(nt, like, "InterpolatedStringNode");
+    int es = fwd_new_node_like(nt, like, "EmbeddedStatementsNode");
+    int est = fwd_new_node_like(nt, like, "StatementsNode");
+    int nm = fwd_new_node_like(nt, like, "CallNode");
+    int me = fwd_new_node_like(nt, like, "SelfNode");
+    nt_node_set_str(nt, nm, "name", "name");
+    nt_node_set_ref(nt, nm, "receiver", me);
+    nt_node_set_arr(nt, est, "body", &nm, 1);
+    nt_node_set_ref(nt, es, "statements", est);
+    int parts[3] = { str_node_like(nt, like, "uninitialized constant "), es, str_node_like(nt, like, tail) };
+    nt_node_set_arr(nt, msg, "parts", parts, 3);
+    int av[2] = { ne, msg };
     nt_node_set_arr(nt, ra, "arguments", av, 2);
     nt_node_set_str(nt, rc, "name", "raise");
     nt_node_set_ref(nt, rc, "arguments", ra);
@@ -14435,6 +14447,57 @@ static int scg_ancestor_lookup(const NodeTable *nt, int cls, const char *cname, 
   return 0;
 }
 
+/* Does class or module node `m` include module `name`, directly or through
+   the modules it includes? */
+static int scg_includes_named(NodeTable *nt, int m, const char *name, int n0, int depth) {
+  if (depth > 16) return 0;
+  int body = nt_ref(nt, m, "body"), bn = 0;
+  const int *bs = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+  for (int k = 0; k < bn; k++) {
+    const char *nm = nt_kind(nt, bs[k]) == NK_CallNode && nt_ref(nt, bs[k], "receiver") < 0 ? nt_str(nt, bs[k], "name") : NULL;
+    if (!nm || (!sp_streq(nm, "include") && !sp_streq(nm, "prepend"))) continue;
+    int args = nt_ref(nt, bs[k], "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    for (int a = 0; a < an; a++) {
+      const char *mn = nt_kind(nt, av[a]) == NK_ConstantReadNode || nt_kind(nt, av[a]) == NK_ConstantPathNode
+                       ? nt_str(nt, av[a], "name") : NULL;
+      if (!mn) continue;
+      if (sp_streq(mn, name)) return 1;
+      for (int x = 0; x < n0; x++) {
+        if (nt_kind(nt, x) != NK_ModuleNode) continue;
+        const char *xn = nt_str(nt, nt_ref(nt, x, "constant_path"), "name");
+        if (xn && sp_streq(xn, mn) && scg_includes_named(nt, x, name, n0, depth + 1)) return 1;
+      }
+    }
+  }
+  return 0;
+}
+
+/* Does class or module node `m` include, directly or through the modules
+   it includes, a module whose body defines constant `cname`? */
+static int scg_includes_definer(NodeTable *nt, int m, const char *cname, int n0, int depth) {
+  if (depth > 16) return 0;
+  int body = nt_ref(nt, m, "body"), bn = 0;
+  const int *bs = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+  for (int k = 0; k < bn; k++) {
+    const char *nm = nt_kind(nt, bs[k]) == NK_CallNode && nt_ref(nt, bs[k], "receiver") < 0 ? nt_str(nt, bs[k], "name") : NULL;
+    if (!nm || (!sp_streq(nm, "include") && !sp_streq(nm, "prepend"))) continue;
+    int args = nt_ref(nt, bs[k], "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    for (int a = 0; a < an; a++) {
+      if (nt_kind(nt, av[a]) != NK_ConstantReadNode && nt_kind(nt, av[a]) != NK_ConstantPathNode) continue;
+      const char *mn = nt_str(nt, av[a], "name");
+      for (int x = 0; mn && x < n0; x++) {
+        if (nt_kind(nt, x) != NK_ModuleNode) continue;
+        const char *xn = nt_str(nt, nt_ref(nt, x, "constant_path"), "name");
+        if (!xn || !sp_streq(xn, mn)) continue;
+        if (scg_body_defines(nt, x, cname) || scg_includes_definer(nt, x, cname, n0, depth + 1)) return 1;
+      }
+    }
+  }
+  return 0;
+}
+
 int desugar_self_const_get(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
@@ -14517,6 +14580,29 @@ int desugar_self_const_get(Compiler *c) {
       if (dnode >= 0) scg_add_def_body(nt, m, cname, id, priv ? 3 : 2, dname);
       else scg_add_def_body(nt, m, cname, id, priv, mname);
       others = 1;
+    }
+    /* a class that includes a module defining the name (or a module that
+       does, at any depth): a module's own singleton getter is not the
+       class's, so the class gets one too, which finds the name through its
+       ancestors (`self.class::FORMATS` with FORMATS in an included module) */
+    for (int m = 0; m < n0; m++) {
+      if (nt_kind(nt, m) != NK_ClassNode || m == owner || scg_body_defines(nt, m, cname)) continue;
+      if (!scg_includes_definer(nt, m, cname, n0, 0)) continue;
+      if (dnode >= 0) scg_add_def_body(nt, m, cname, id, 2, dname);
+      else scg_add_def_body(nt, m, cname, id, 0, mname);
+      others = 1;
+    }
+    /* the method in a module: every class that includes it is a self it
+       can run on, and one that has the name nowhere answers as the owner
+       does without it (NameError, or nil for defined?) */
+    if (nt_kind(nt, owner) == NK_ModuleNode) {
+      const char *on = nt_str(nt, nt_ref(nt, owner, "constant_path"), "name");
+      for (int m = 0; on && m < n0; m++) {
+        if (nt_kind(nt, m) != NK_ClassNode || scg_body_defines(nt, m, cname)) continue;
+        if (scg_includes_definer(nt, m, cname, n0, 0) || !scg_includes_named(nt, m, on, n0, 0)) continue;
+        if (dnode >= 0) scg_add_def_body(nt, m, cname, id, 3, dname);
+        else scg_add_def_body(nt, m, cname, id, 1, mname);
+      }
     }
     if (dnode >= 0) {
       scg_add_def_body(nt, owner, cname, id, scg_ancestor_lookup(nt, owner, cname, n0, 1) > 0 ? 2 : 3, dname);
