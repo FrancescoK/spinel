@@ -296,7 +296,7 @@ void comp_free(Compiler *c) {
   free(c->node_ord); free(c->node_base);
   for (int k = 0; k < c->bi_base_cap; k++) free(c->bi_base_key[k]);
   free(c->bi_base_key); free(c->bi_base_cnt);
-  c->blk_body_map = NULL;
+  c->blk_body_map = NULL; c->blk_body_map_n = 0;
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
     free(sc->name);
@@ -2336,8 +2336,13 @@ void comp_descendants_reset(void) {
   free(desc_lists); free(desc_counts); desc_lists = NULL; desc_counts = NULL; desc_nclasses = -1;
 }
 
+/* The scope node_id is in. A node a desugar appended is past the per-node
+   arrays until comp_grow_node_arrays runs, and is in scope 0 there, as the
+   grown entry would say: bounded by the table's count, the read went past
+   the end of nscope (desugar_value_callable_forwards asks of the receivers
+   of calls appended since). */
 Scope *comp_scope_of(Compiler *c, int node_id) {
-  if (node_id < 0 || node_id >= c->nt->count) return &c->scopes[0];
+  if (node_id < 0 || node_id >= c->node_cap) return &c->scopes[0];
   int idx = c->nscope[node_id];
   if (idx < 0 || idx >= c->nscopes) idx = 0;
   return &c->scopes[idx];

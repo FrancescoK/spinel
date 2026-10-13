@@ -34134,7 +34134,10 @@ static int ps_walk(Compiler *c, Scope *m, int n, PStrict *ps, char *seen, int *o
 }
 /* The program's names, sorted once so each method looks its own up rather
    than rescanning the program: the scopes by name, the Symbol / String values,
-   and the calls by name (in node order within a name). */
+   and the calls by name (in node order within a name). The node names are
+   copied into the index's own block: a rewrite that renames a call for a
+   moment (emit_str_mutator_call emits `s.upcase!` through `upcase` and puts
+   the name back) frees the string the node held, and the index read it after. */
 typedef struct { const char *name; int id; } PsName;
 static PsName *g_ps_scopes, *g_ps_lits, *g_ps_calls;
 static int g_ps_nscopes, g_ps_nlits, g_ps_ncalls, g_ps_mm, g_ps_ncount = -1;
@@ -34153,16 +34156,31 @@ static int ps_name_first(const PsName *v, int n, const char *name) {
   }
   return lo;
 }
-static PsName *ps_names_alloc(int n) {
-  PsName *v = malloc(sizeof *v * (size_t)(n > 0 ? n : 1));
+/* n entries and `bytes` of name text after them, *pool at the text */
+static PsName *ps_names_alloc(int n, size_t bytes, char **pool) {
+  size_t cnt = (size_t)(n > 0 ? n : 1);
+  PsName *v = malloc(sizeof *v * cnt + bytes);
   if (!v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  if (pool) *pool = (char *)(v + cnt);
   return v;
+}
+static const char *ps_name_copy(char **pool, const char *s) {
+  size_t n = strlen(s) + 1;
+  char *d = *pool;
+  memcpy(d, s, n);
+  *pool += n;
+  return d;
+}
+static const char *ps_lit_name(const NodeTable *nt, int id) {
+  if (nt_kind(nt, id) == NK_SymbolNode) return nt_str(nt, id, "value");
+  const char *v = nt_str(nt, id, "unescaped");
+  return v ? v : nt_content(nt, id);
 }
 static void ps_index_build(Compiler *c) {
   const NodeTable *nt = c->nt;
   free(g_ps_scopes); free(g_ps_lits); free(g_ps_calls);
   g_ps_ncount = nt->count;
-  g_ps_scopes = ps_names_alloc(c->nscopes);
+  g_ps_scopes = ps_names_alloc(c->nscopes, 0, NULL);
   g_ps_nscopes = 0; g_ps_mm = 0;
   for (int k = 0; k < c->nscopes; k++) {
     const char *sn = c->scopes[k].name;
@@ -34172,24 +34190,25 @@ static void ps_index_build(Compiler *c) {
     g_ps_scopes[g_ps_nscopes++] = (PsName){ sn, k };
   }
   int nl = 0, ncall = 0;
-  NT_FOREACH_KIND(nt, NK_SymbolNode, id) { (void)id; nl++; }
-  NT_FOREACH_KIND(nt, NK_StringNode, id) { (void)id; nl++; }
-  NT_FOREACH_KIND(nt, NK_CallNode, id) { (void)id; ncall++; }
-  g_ps_lits = ps_names_alloc(nl);
-  g_ps_calls = ps_names_alloc(ncall);
+  size_t lbytes = 0, cbytes = 0;
+  NT_FOREACH_KIND(nt, NK_SymbolNode, id) { const char *v = ps_lit_name(nt, id); if (v) { nl++; lbytes += strlen(v) + 1; } }
+  NT_FOREACH_KIND(nt, NK_StringNode, id) { const char *v = ps_lit_name(nt, id); if (v) { nl++; lbytes += strlen(v) + 1; } }
+  NT_FOREACH_KIND(nt, NK_CallNode, id) { const char *cn = nt_str(nt, id, "name"); if (cn) { ncall++; cbytes += strlen(cn) + 1; } }
+  char *lpool, *cpool;
+  g_ps_lits = ps_names_alloc(nl, lbytes, &lpool);
+  g_ps_calls = ps_names_alloc(ncall, cbytes, &cpool);
   g_ps_nlits = 0; g_ps_ncalls = 0;
   NT_FOREACH_KIND(nt, NK_SymbolNode, id) {
-    const char *v = nt_str(nt, id, "value");
-    if (v && g_ps_nlits < nl) g_ps_lits[g_ps_nlits++] = (PsName){ v, id };
+    const char *v = ps_lit_name(nt, id);
+    if (v) g_ps_lits[g_ps_nlits++] = (PsName){ ps_name_copy(&lpool, v), id };
   }
   NT_FOREACH_KIND(nt, NK_StringNode, id) {
-    const char *v = nt_str(nt, id, "unescaped");
-    if (!v) v = nt_content(nt, id);
-    if (v && g_ps_nlits < nl) g_ps_lits[g_ps_nlits++] = (PsName){ v, id };
+    const char *v = ps_lit_name(nt, id);
+    if (v) g_ps_lits[g_ps_nlits++] = (PsName){ ps_name_copy(&lpool, v), id };
   }
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *cn = nt_str(nt, id, "name");
-    if (cn && g_ps_ncalls < ncall) g_ps_calls[g_ps_ncalls++] = (PsName){ cn, id };
+    if (cn) g_ps_calls[g_ps_ncalls++] = (PsName){ ps_name_copy(&cpool, cn), id };
   }
   qsort(g_ps_scopes, (size_t)g_ps_nscopes, sizeof *g_ps_scopes, ps_name_cmp);
   qsort(g_ps_lits, (size_t)g_ps_nlits, sizeof *g_ps_lits, ps_name_cmp);

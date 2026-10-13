@@ -106,8 +106,17 @@ if [ "$bad" -gt 0 ]; then
       sed -e "s|^\(src/[^:]*:[0-9]*\):[0-9]*: runtime error: |\1$TAB$f$TAB|" -e "s|\$|$TAB$log|" | sort -u -t"$TAB" -k1,1
     if grep -q 'ERROR: AddressSanitizer' "$log"; then
       kind=$(grep -m1 -o 'ERROR: AddressSanitizer: [a-z-]*' "$log" | sed 's/.*: //')
-      grep -m1 -o ' in [A-Za-z_0-9]* src/[a-z_0-9]*\.c:[0-9]*' "$log" |
-        sed "s|^ in \([^ ]*\) \(.*\)|\2$TAB$f$TAB$kind in \1$TAB$log|"
+      # the first frame in the compiler's own C. The symbolizer names its
+      # file by the path it was compiled from, by the absolute path, or, as
+      # atos on macOS does, by the file's name alone: a frame read only as
+      # ` src/x.c` matched none of the last two, and the report was counted
+      # with no line for its site.
+      site=$(sed -n 's/^ *#[0-9]* 0x[0-9a-f]* in \([A-Za-z_0-9]*\) \([^ ]*\.c\):\([0-9]*\).*/\1 \2 \3/p' "$log" |
+        while read -r fn path line; do
+          [ -f "src/${path##*/}" ] && { echo "src/${path##*/}:$line$TAB$fn"; break; }
+        done)
+      [ -n "$site" ] || site="no frame in src/${TAB}unknown"
+      printf '%s\t%s\t%s in %s\t%s\n' "${site%%"$TAB"*}" "$f" "$kind" "${site#*"$TAB"}" "$log"
     fi
   done > "$LOGS/sites"
   cut -f1 "$LOGS/sites" | sort | uniq -c | sort -rn | while read -r n site; do

@@ -1153,8 +1153,10 @@ typedef struct {
   char *exc_text_late;  /* the plain exception text dispatchers, defined after the globals (emit_exc_text_dispatch) */
   int exc_text_super;        /* exc_text_override_calls_super's memo: 0 unasked, 1 no, 2 yes */
   /* body-node id -> enclosing BlockNode id (lazy; emit_stmts block-local
-     resets). Sized nt->count; -1 = not a block body. */
+     resets). Covers the first blk_body_map_n nodes, extended as the table
+     grows; -1 = not a block body. */
   int *blk_body_map;
+  int blk_body_map_n;
   struct ReprChannelCheck *repr_channel_check; /* --repr-check return-channel shadow */
   /* node id -> the number a name invented from the node carries
      (comp_node_ord), bit 0 set for a builtin's. Extended over appended
