@@ -20140,6 +20140,9 @@ static sp_int sp_proc_compose_fn(void *cap, sp_int argc, sp_int *args) {
      thread it to the outer proc on BOTH channels -- a poly parameter reads
      the side-channel, a concrete one reads the sp_int slot. */
   sp_RbVal mid = _sp_proc_poly_ret;
+  /* the intermediate is often new (`made >> g` with made answering an
+     Array) and held by nothing else while the outer proc's call allocates */
+  SP_GC_ROOT_RBVAL(mid);
   /* the outer function always receives the single threaded value; CRuby
      raises when a lambda's arity disagrees (`(f >> g)` reaching a 2-ary g). */
   if (c->outer && c->outer->lambda_p && c->outer->arity >= 0)
