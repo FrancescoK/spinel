@@ -11,7 +11,9 @@
 # the set's +builtin); several calls of one name on one line are held
 # against the union of their sets. A call that reached one of CRuby's own
 # Ruby-defined methods (`<internal:...>`) is marked [builtin]: no dispatch
-# arm is lost there, but the fact is still wrong. A line with a send
+# arm is lost there, but the fact is still wrong. A call a C method of
+# CRuby makes back into the program is not the line's call: it is left
+# out (printed to stderr with CLS_FACT_CALLBACKS=1). A line with a send
 # (`send`, `public_send`, `__send__`) is skipped: the method it reaches is
 # not the call the fact is about.
 require "set"
@@ -30,6 +32,7 @@ File.foreach(facts_path) do |l|
 end
 
 bad = []
+callbacks = []
 File.foreach(trace_path) do |l|
   path, line, meth, recv, src, callee = l.chomp.split("\t", -1)
   set = facts[[path, line.to_i, meth]] if facts.key?([path, line.to_i, meth])
@@ -44,8 +47,14 @@ File.foreach(trace_path) do |l|
   # constant it is later assigned to
   next if set.any? { |e| e.include?("SpinelAnonClass") }
   next if src.nil? || src.empty? || !files.include?(File.expand_path(src))
+  # a C method's call back into the program: reported, not counted
+  if callee.to_s.start_with?("callback:")
+    callbacks << "#{path}:#{line} #{meth}: receiver #{recv} not in {#{set.to_a.sort.join(' ')}} [callback]"
+    next
+  end
   tag = callee.to_s.start_with?("<internal:") ? " [builtin]" : ""
   bad << "#{path}:#{line} #{meth}: receiver #{recv} not in {#{set.to_a.sort.join(' ')}}#{tag}"
 end
 bad.uniq.each { |b| puts b }
+callbacks.uniq.each { |b| warn b } if ENV["CLS_FACT_CALLBACKS"]
 exit(bad.empty? ? 0 : 1)
