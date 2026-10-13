@@ -6412,7 +6412,36 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci);
    A module takes its own includes' surface in the same walk, and one can come
    after a class that includes it (a module nested in its includer), so the
    walk repeats until no class gains a name. */
+/* Does a body of class ci (bodies from class_body_list) define `name` with
+   a def of its own, bare or under a visibility call (`private def x`)? */
+static int body_defs_name(Compiler *c, int nb, const int *bci, const int *bnode, int ci, const char *name) {
+  const NodeTable *nt = c->nt;
+  for (int b = 0; b < nb; b++) {
+    if (bci[b] != ci || bnode[b] < 0) continue;
+    int sn = 0; const int *ss = nt_arr(nt, bnode[b], "body", &sn);
+    for (int i = 0; i < sn; i++) {
+      int d = ss[i];
+      if (nt_kind(nt, d) == NK_CallNode) {
+        int an = 0; int args = nt_ref(nt, d, "arguments");
+        const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+        d = an == 1 ? av[0] : -1;
+      }
+      if (d >= 0 && nt_kind(nt, d) == NK_DefNode && nt_ref(nt, d, "receiver") < 0 &&
+          sp_streq(nt_str(nt, d, "name"), name)) return 1;
+    }
+  }
+  return 0;
+}
+
 void register_include_attrs(Compiler *c) {
+  /* a class's own def of a name answers before an alias of it a module
+     brings (CRuby looks in the class before its modules): the alias is not
+     copied over it. The bodies are listed once, and only if some module
+     has an alias at all. */
+  int nb = 0, *bci = NULL, *bnode = NULL;
+  for (int k = 0; k < c->nclasses && !bci; k++)
+    if (c->classes[k].naliases > 0 && comp_class_is_module(c, &c->classes[k]))
+      nb = class_body_list(c, &bci, &bnode);
   int grew = 1;
   while (grew) {
   grew = 0;
@@ -6435,12 +6464,15 @@ void register_include_attrs(Compiler *c) {
         comp_ivar_intern(cls, ivname);
         comp_add_writer(cls, mod->writers[w]);
       }
-      for (int a = 0; a < mod->naliases; a++)
+      for (int a = 0; a < mod->naliases; a++) {
+        if (bci && body_defs_name(c, nb, bci, bnode, ci, mod->alias_new[a])) continue;
         comp_add_alias(cls, mod->alias_new[a], mod->alias_old[a]);
+      }
     }
     if (cls->nreaders + cls->nwriters + cls->naliases != n0) grew = 1;
   }
   }
+  free(bci); free(bnode);
 }
 
 /* The class a `super` from class `ci`'s method `mname` lands on answers it with
