@@ -6229,6 +6229,19 @@ static int module_aliases_name(const ClassInfo *mod, const char *m) {
   return 0;
 }
 
+/* The method module `mod` defines that its alias `m` names at last: through
+   its aliases of aliases (`alias_method :z, :y` after `alias_method :y, :x`
+   names x), or `m` itself */
+static const char *module_alias_root(const ClassInfo *mod, const char *m) {
+  for (int hops = 0; hops < mod->naliases; hops++) {
+    int a = 0;
+    while (a < mod->naliases && !(sp_streq(mod->alias_new[a], m) && !sp_streq(mod->alias_old[a], m))) a++;
+    if (a == mod->naliases) break;
+    m = mod->alias_old[a];
+  }
+  return m;
+}
+
 /* The copy in class ci of module mod's method `m` under a shadow name
    (`__inc <n> m`), which an alias the module makes of m names when the
    class overrides m, or NULL */
@@ -6636,10 +6649,12 @@ void register_include_attrs(Compiler *c) {
       }
       for (int a = 0; a < mod->naliases; a++) {
         if (bci && body_defs_name(c, nb, bci, bnode, ci, mod->alias_new[a])) continue;
-        /* the module's body of the name, where the class has one of its own */
-        const char *shadow = comp_method_in_class(c, ci, mod->alias_old[a]) >= 0
-                             ? include_shadow_copy(c, ci, mi, mod->alias_old[a]) : NULL;
-        comp_add_alias(cls, mod->alias_new[a], shadow ? shadow : mod->alias_old[a]);
+        /* the module's body of the name, where the class has one of its own;
+           an alias of an alias names the module's method below both */
+        const char *old_nm = module_alias_root(mod, mod->alias_old[a]);
+        const char *shadow = comp_method_in_class(c, ci, old_nm) >= 0
+                             ? include_shadow_copy(c, ci, mi, old_nm) : NULL;
+        comp_add_alias(cls, mod->alias_new[a], shadow ? shadow : old_nm);
       }
     }
     if (cls->nreaders + cls->nwriters + cls->naliases != n0) grew = 1;
