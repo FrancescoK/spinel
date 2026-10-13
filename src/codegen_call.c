@@ -7265,7 +7265,16 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
   BuiltinDefaultProbe pr = { name, argc, ret, bt, slot_o, 0 };
   Buf *nb = calloc(1, sizeof *nb);
   char *arm_pre = NULL;
+  /* Array#at, kept by name where a program class owns it (desugar_array_at),
+     is the index read that checks its receiver is an Array (an index, never
+     a Range, as the rewrite takes it) */
+  TyKind at_ty = argc == 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+  int as_at = sp_streq(name, "at") && argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode &&
+              nt_ref(nt, id, "block") < 0 && !nt_int(nt, id, "was_at", 0) &&
+              at_ty != TY_RANGE && at_ty != TY_FLOAT_RANGE && at_ty != TY_STR_RANGE;
+  if (as_at) { nt_node_set_str((NodeTable *)nt, id, "name", "[]"); nt_node_set_int((NodeTable *)nt, id, "was_at", 1); }
   int ok = poly_arm_probe(c, id, builtin_default_probe_fn, &pr, nb, &arm_pre);
+  if (as_at) { nt_node_set_str((NodeTable *)nt, id, "name", "at"); nt_node_set_int((NodeTable *)nt, id, "was_at", 0); }
   box_o = pr.box_o;
   view_pop(c, vw);
   view_pop(c, va);

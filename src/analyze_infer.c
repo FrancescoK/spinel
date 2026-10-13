@@ -2763,6 +2763,8 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
         { *out = an_poly_concrete(c, name, TY_POLY); return 1; }
       }
       if (sp_streq(name, "[]") && argc == 1) { *out = an_poly_concrete(c, name, TY_POLY); return 1; }  /* boxed array element access */
+      /* Array#at, the one builtin with the name, reads an element as `[]` does */
+      if (sp_streq(name, "at") && argc == 1) { *out = an_poly_concrete(c, name, TY_POLY); return 1; }
       if (sp_streq(name, "[]") && argc == 2) { *out = an_poly_concrete(c, name, TY_POLY); return 1; }  /* 2-arg poly slice */
       /* fetch on a poly Hash yields a boxed (poly) value, like `[]` -- the
          hash-value type is not statically known through the poly widening. Type
