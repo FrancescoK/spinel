@@ -221,6 +221,8 @@ sp_int sp_File_rewind(sp_File *f);     /* #rewind */
 sp_bool sp_File_tty_p(sp_File *f);     /* #tty? / #isatty -- isatty(fileno) */
 sp_int sp_File_fileno(sp_File *f);     /* #fileno */
 sp_IntArray *sp_File_winsize(sp_File *f); /* #winsize -> [rows, cols] (ioctl, or [0,0]) */
+sp_int sp_File_tty_mode(sp_File *f, sp_int kind);   /* IO#raw (1) / IO#noecho (2): set, answer the saved slot */
+sp_int sp_File_tty_restore(sp_File *f, sp_int slot); /* ... and back */
 sp_IntArray *sp_File_set_winsize(sp_File *f, sp_IntArray *size); /* #winsize= [rows, cols(, xpx, ypx)] (ioctl; Errno on a non-tty) */
 
 /* STDOUT / STDERR as shared IO handles wrapping the C stdout/stderr streams.

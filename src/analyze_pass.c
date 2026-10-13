@@ -17106,3 +17106,149 @@ void infer_bigint_loop_locals(Compiler *c) {
     if (body >= 0) bi_scan_loop_body(c, body);
   }
 }
+
+/* io/console's `io.raw { |x| body }` and `io.noecho { |x| body }`: the mode is
+   set, the block runs with the IO, and the terminal's settings come back
+   however the block ends -- CRuby's ttymode() -- spelled with the
+   save/restore the runtime provides (sp_File_tty_mode):
+     (__io = io; __sav = __io.__sp_tty_mode(kind)
+      begin __val = (x = __io; body) ensure __io.__sp_tty_restore(__sav) end
+      __val)
+   The block's value is the call's, as CRuby's. tty-reader reads keypresses
+   this way. A program defining its own raw/noecho keeps its call. */
+int desugar_io_console_modes(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  if (!sp_feature_enabled("io/console")) return 0;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || (!sp_streq(nm, "raw") && !sp_streq(nm, "noecho"))) continue;
+    int recv = nt_ref(nt, id, "receiver"), blk = nt_ref(nt, id, "block");
+    if (recv < 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode || nt_ref(nt, id, "arguments") >= 0) continue;
+    if (nt_int(nt, id, "ioc_kept", 0)) continue;   /* the program class's arm of a dispatch made here */
+    int body = nt_ref(nt, blk, "body");
+    if (body >= 0 && subtree_has_kind(nt, body, NK_DefNode, 0)) continue;
+    int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    if (bn > 60) continue;
+    int kind = sp_streq(nm, "raw") ? 1 : 2;
+    /* the receiver's type decides: an IO takes io/console's form; a value
+       known only at run time takes it when it is an IO, and a program class
+       with a method of the name (tty-reader's own Mode#raw) keeps its call */
+    TyKind rt = infer_type(c, recv);
+    if (rt != TY_IO && rt != TY_POLY && rt != TY_UNKNOWN) continue;
+    int owned = 0;
+    if (rt != TY_IO) {
+      if (comp_method_index(c, nm) >= 0) continue;   /* a top-level def answers on any receiver */
+      for (int k = 0; k < c->nclasses && !owned; k++) owned = comp_method_in_class(c, k, nm) >= 0;
+    }
+    int kbase = nt->count;
+    int keep = owned ? nt_clone_subtree(nt, id) : -1;
+    if (owned && keep < 0) continue;
+    char ion[64], savn[64], valn[64];
+    snprintf(ion, sizeof ion, "__ioc_io_%s", comp_node_tag(c, id));
+    snprintf(savn, sizeof savn, "__ioc_sav_%s", comp_node_tag(c, id));
+    snprintf(valn, sizeof valn, "__ioc_val_%s", comp_node_tag(c, id));
+    Scope *es = comp_scope_of(c, id);
+    if (!es) continue;
+    const char *bp0 = block_param_name(c, blk, 0);
+    /* interned before any pointer is taken (an intern can grow the array) */
+    scope_local_intern(es, ion); scope_local_intern(es, savn); scope_local_intern(es, valn);
+    if (bp0) scope_local_intern(es, bp0);
+    LocalVar *slv = scope_local(es, savn);
+    if (!slv || !scope_local(es, ion) || !scope_local(es, valn)) continue;
+    slv->type = TY_INT;
+    int base = nt->count;
+    /* __io = recv */
+    int wio = nt_new_node(nt, "LocalVariableWriteNode");
+    nt_node_set_str(nt, wio, "name", ion);
+    nt_node_set_ref(nt, wio, "value", recv);
+    /* __sav = __io.__sp_tty_mode(kind) */
+    int rio1 = nt_new_node(nt, "LocalVariableReadNode"); nt_node_set_str(nt, rio1, "name", ion);
+    int kn = nt_new_node(nt, "IntegerNode"); nt_node_set_int(nt, kn, "value", kind);
+    int ma = nt_new_node(nt, "ArgumentsNode"); nt_node_set_arr(nt, ma, "arguments", &kn, 1);
+    int mode = nt_new_node(nt, "CallNode");
+    nt_node_set_str(nt, mode, "name", "__sp_tty_mode");
+    nt_node_set_ref(nt, mode, "receiver", rio1);
+    nt_node_set_ref(nt, mode, "arguments", ma);
+    nt_node_set_ref(nt, mode, "block", -1);
+    int wsav = nt_new_node(nt, "LocalVariableWriteNode");
+    nt_node_set_str(nt, wsav, "name", savn);
+    nt_node_set_ref(nt, wsav, "value", mode);
+    /* __val = (x = __io; body) */
+    int items[64]; int ni = 0;
+    if (bp0) {
+      int rio2 = nt_new_node(nt, "LocalVariableReadNode"); nt_node_set_str(nt, rio2, "name", ion);
+      int wp = nt_new_node(nt, "LocalVariableWriteNode");
+      nt_node_set_str(nt, wp, "name", bp0);
+      nt_node_set_ref(nt, wp, "value", rio2);
+      items[ni++] = wp;
+    }
+    for (int k = 0; k < bn; k++) items[ni++] = bb[k];
+    if (ni == 0) { items[ni++] = nt_new_node(nt, "NilNode"); }
+    int pst = nt_new_node(nt, "StatementsNode"); nt_node_set_arr(nt, pst, "body", items, ni);
+    int par = nt_new_node(nt, "ParenthesesNode"); nt_node_set_ref(nt, par, "body", pst);
+    int wval = nt_new_node(nt, "LocalVariableWriteNode");
+    nt_node_set_str(nt, wval, "name", valn);
+    nt_node_set_ref(nt, wval, "value", par);
+    /* ensure __io.__sp_tty_restore(__sav) */
+    int rio3 = nt_new_node(nt, "LocalVariableReadNode"); nt_node_set_str(nt, rio3, "name", ion);
+    int rsav = nt_new_node(nt, "LocalVariableReadNode"); nt_node_set_str(nt, rsav, "name", savn);
+    int ra = nt_new_node(nt, "ArgumentsNode"); nt_node_set_arr(nt, ra, "arguments", &rsav, 1);
+    int rest = nt_new_node(nt, "CallNode");
+    nt_node_set_str(nt, rest, "name", "__sp_tty_restore");
+    nt_node_set_ref(nt, rest, "receiver", rio3);
+    nt_node_set_ref(nt, rest, "arguments", ra);
+    nt_node_set_ref(nt, rest, "block", -1);
+    int bst = nt_new_node(nt, "StatementsNode"); nt_node_set_arr(nt, bst, "body", &wval, 1);
+    int est = nt_new_node(nt, "StatementsNode"); nt_node_set_arr(nt, est, "body", &rest, 1);
+    int ens = nt_new_node(nt, "EnsureNode"); nt_node_set_ref(nt, ens, "statements", est);
+    int beg = nt_new_node(nt, "BeginNode");
+    nt_node_set_ref(nt, beg, "statements", bst);
+    nt_node_set_ref(nt, beg, "rescue_clause", -1);
+    nt_node_set_ref(nt, beg, "else_clause", -1);
+    nt_node_set_ref(nt, beg, "ensure_clause", ens);
+    int rval = nt_new_node(nt, "LocalVariableReadNode"); nt_node_set_str(nt, rval, "name", valn);
+    int opar;
+    if (!owned) {
+      int all[4] = { wio, wsav, beg, rval };
+      int ost = nt_new_node(nt, "StatementsNode"); nt_node_set_arr(nt, ost, "body", all, 4);
+      opar = nt_new_node(nt, "ParenthesesNode"); nt_node_set_ref(nt, opar, "body", ost);
+    } else {
+      /* (__io = recv; __io.is_a?(IO) ? (io/console's form) : __io.raw { body }) */
+      int con[3] = { wsav, beg, rval };
+      int cst = nt_new_node(nt, "StatementsNode"); nt_node_set_arr(nt, cst, "body", con, 3);
+      int rio4 = nt_new_node(nt, "LocalVariableReadNode"); nt_node_set_str(nt, rio4, "name", ion);
+      nt_node_set_ref(nt, keep, "receiver", rio4);
+      nt_node_set_int(nt, keep, "ioc_kept", 1);
+      int kst = nt_new_node(nt, "StatementsNode"); nt_node_set_arr(nt, kst, "body", &keep, 1);
+      int kel = nt_new_node(nt, "ElseNode"); nt_node_set_ref(nt, kel, "statements", kst);
+      int rio5 = nt_new_node(nt, "LocalVariableReadNode"); nt_node_set_str(nt, rio5, "name", ion);
+      int ioc = nt_new_node(nt, "ConstantReadNode"); nt_node_set_str(nt, ioc, "name", "IO");
+      int iaa = nt_new_node(nt, "ArgumentsNode"); nt_node_set_arr(nt, iaa, "arguments", &ioc, 1);
+      int isa = nt_new_node(nt, "CallNode");
+      nt_node_set_str(nt, isa, "name", "is_a?");
+      nt_node_set_ref(nt, isa, "receiver", rio5);
+      nt_node_set_ref(nt, isa, "arguments", iaa);
+      nt_node_set_ref(nt, isa, "block", -1);
+      int ifn = nt_new_node(nt, "IfNode");
+      nt_node_set_ref(nt, ifn, "predicate", isa);
+      nt_node_set_ref(nt, ifn, "statements", cst);
+      nt_node_set_ref(nt, ifn, "subsequent", kel);
+      int all[2] = { wio, ifn };
+      int ost = nt_new_node(nt, "StatementsNode"); nt_node_set_arr(nt, ost, "body", all, 2);
+      opar = nt_new_node(nt, "ParenthesesNode"); nt_node_set_ref(nt, opar, "body", ost);
+    }
+    nt_node_set_str(nt, id, "name", "itself");
+    nt_node_set_ref(nt, id, "receiver", opar);
+    nt_node_set_ref(nt, id, "arguments", -1);
+    nt_node_set_ref(nt, id, "block", -1);
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = kbase; j < base; j++) c->nscope[j] = encl;   /* the kept call's copy */
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    if (body >= 0) rehome_block_body(c, body, encl);
+    changed = 1;
+  }
+  return changed;
+}
