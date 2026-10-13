@@ -21931,10 +21931,19 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     }
     else {
       buf_printf(b, "; sp_RbVal _t%d = ", tb); iow_emit_key(c, argv[0], b, IOW_KEY_BOXED, TY_POLY); buf_puts(b, "; ");
-      if (eff && !g_iow_key_ref && subtree_may_allocate(nt, argv[0])) buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d); ", tb);
+      /* a key that is a new object -- a heap value the operand builds, or a
+         Range its boxing allocates -- is read again by the store, after the
+         read, the right-hand side and the operator, any of which can
+         allocate (`r[0..1] += "-"` freed the boxed Range) */
+      TyKind kt0 = comp_ntype(c, argv[0]);
+      if (!g_iow_key_ref && (range_boxes_new(kt0) ||
+                             ((needs_root(kt0) || kt0 == TY_POLY) && subtree_may_allocate(nt, argv[0]))))
+        buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d); ", tb);
       buf_printf(b, "sp_RbVal _t%d = sp_poly_index_poly(_t%d, _t%d);", tc, ta, tb);
     }
-    if (eff) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", tc);
+    /* the element read (a new String for a String receiver's slice) is held
+       while a right-hand side that allocates is made */
+    if (eff || subtree_may_allocate(nt, v)) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", tc);
     char *rhs = iow_rhs(c, v, IOW_RHS_BOXED, eff ? b : NULL);
     /* A String receiver splices into a fresh buffer, and a typed Array given
        an element of another kind widens to a general one: either store
