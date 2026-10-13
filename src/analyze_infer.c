@@ -7417,7 +7417,17 @@ static TyKind infer_call_inner(Compiler *c, int id) {
               (comp_method_in_class(c, k, name) >= 0 || (rn && comp_method_in_class(c, k, rn) >= 0))) over = 1;
         if (!over && rn && !sp_streq(rn, name) && comp_reader_in_chain(c, oci, rn, NULL) &&
             comp_method_vis_in_chain(c, oci, name) == SP_VIS_PUBLIC) {
-          if (!an_pure_reads) nt_node_set_str((NodeTable *)nt, id, "name", rn);
+          if (!an_pure_reads) {
+            /* the name it was written as stays: nil answers that one
+               (cplan_nil), as `nil.to_a` does under `alias to_a children` */
+            if (!nt_str(nt, id, "written_name")) {
+              char *wn = strdup(name);
+              if (!wn) { fprintf(stderr, "out of memory\n"); exit(1); }
+              nt_node_set_str((NodeTable *)nt, id, "written_name", wn);
+              free(wn);
+            }
+            nt_node_set_str((NodeTable *)nt, id, "name", rn);
+          }
           name = an_pure_reads ? rn : nt_str(nt, id, "name");
         }
       }
