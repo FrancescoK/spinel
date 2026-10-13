@@ -1811,15 +1811,19 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
             tfd, tkv, topts, tkv,
             topts);
         }
-        /* chdir: look up, must be String, or nil. */
+        /* chdir: look up, must be String, or nil. --share-strings: a
+           directory boxed as the String's handle reads as the String, as a
+           redirect's filename does above */
         buf_printf(b,
           " { sp_RbVal _t%d; sp_bool _t%d; "
           "_t%d = sp_poly_hash_get_pair_val(_t%d, "
-          "sp_box_sym(sp_sym_intern(\"chdir\")), &_t%d); "
+          "sp_box_sym(sp_sym_intern(\"chdir\")), &_t%d); ",
+          tkv, tfd, tkv, tth, tfd);
+        if (repr_share_rule(c)) buf_printf(b, "_t%d = sp_poly_strbuf_deref(_t%d); ", tkv, tkv);
+        buf_printf(b,
           "if (_t%d && _t%d.tag == SP_TAG_STR) "
           "{ sp_PolyArray_push(_t%d, _t%d); } "
           "\nelse { sp_PolyArray_push(_t%d, sp_box_nil()); } }",
-          tkv, tfd, tkv, tth, tfd,
           tfd, tkv, topts, tkv,
           topts);
       }
