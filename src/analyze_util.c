@@ -3304,30 +3304,51 @@ static int subtree_builds_name(const NodeTable *nt, int n, int depth) {
   }
   return 0;
 }
+/* Does node x name the same container as receiver r: a local of the same
+   scope, an ivar of the same class, a constant of the same name? */
+static int container_same(Compiler *c, int r, int x) {
+  const NodeTable *nt = c->nt;
+  NodeKind rk = nt_kind(nt, r), xk = nt_kind(nt, x);
+  if (!sp_streq(nt_str(nt, r, "name"), nt_str(nt, x, "name"))) return 0;
+  switch (rk) {
+    case NK_LocalVariableReadNode:
+      return (xk == NK_LocalVariableReadNode || xk == NK_LocalVariableWriteNode) && comp_scope_of(c, x) == comp_scope_of(c, r);
+    case NK_InstanceVariableReadNode:
+      return (xk == NK_InstanceVariableReadNode || xk == NK_InstanceVariableWriteNode) &&
+             comp_ivar_owner(c, x) == comp_ivar_owner(c, r);
+    case NK_ConstantReadNode: case NK_ConstantPathNode:
+      return xk == NK_ConstantReadNode || xk == NK_ConstantPathNode || xk == NK_ConstantWriteNode;
+    default:
+      return 0;
+  }
+}
 /* Is the container a read of element `arg` comes out of filled with names
-   no literal spells? A constant whose value builds them (`M = Hash.new { |h,
-   t| h[t] = :"on_#{t}" }`, a literal of interpolated names), or any
-   container a `X[k] = v` stores such a name into. Then the element is a
-   computed name, whose arms are every method rather than the literals. */
+   no literal spells? One whose own write builds them (`M = Hash.new { |h,
+   t| h[t] = :"on_#{t}" }`, `plan = [:"on_#{x}"]`, `@tab = [...]`), or one a
+   `X[k] = v`, `X << v` or `X.push(v)` stores such a name into -- the same
+   container: a local of the read's scope, an ivar of its class. Then the
+   element is a computed name, whose arms are every method rather than the
+   literals. */
 static int container_read_holds_computed(Compiler *c, int arg) {
   const NodeTable *nt = c->nt;
   int r = nt_ref(nt, arg, "receiver");
-  if (r < 0) return 0;
-  NodeKind rk = nt_kind(nt, r);
-  const char *rn = nt_str(nt, r, "name");
-  if (!rn) return 0;
-  if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
-    NT_FOREACH_KIND(nt, NK_ConstantWriteNode, w)
-      if (sp_streq(nt_str(nt, w, "name"), rn) && subtree_builds_name(nt, nt_ref(nt, w, "value"), 0)) return 1;
-  }
+  if (r < 0 || !nt_str(nt, r, "name")) return 0;
+  /* the container's own writes (`M = {...}`, `plan = [:"on_#{x}"]`,
+     `@tab = [...]`) */
+  static const NodeKind wk[] = { NK_ConstantWriteNode, NK_LocalVariableWriteNode, NK_InstanceVariableWriteNode };
+  for (int k = 0; k < 3; k++)
+    NT_FOREACH_KIND(nt, wk[k], w)
+      if (container_same(c, r, w) && subtree_builds_name(nt, nt_ref(nt, w, "value"), 0)) return 1;
+  /* ... and the elements stored into it (`X[k] = v`, `X << v`, `X.push(v)`) */
   NT_FOREACH_KIND(nt, NK_CallNode, w) {
     const char *wn = nt_str(nt, w, "name");
-    if (!wn || !sp_streq(wn, "[]=")) continue;
+    if (!wn || !(sp_streq(wn, "[]=") || sp_streq(wn, "<<") || sp_streq(wn, "push") || sp_streq(wn, "unshift")))
+      continue;
     int wr = nt_ref(nt, w, "receiver");
-    if (wr < 0 || nt_kind(nt, wr) != rk || !sp_streq(nt_str(nt, wr, "name"), rn)) continue;
+    if (wr < 0 || !container_same(c, r, wr)) continue;
     int a = nt_ref(nt, w, "arguments"), an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-    if (an >= 2 && subtree_builds_name(nt, av[an - 1], 0)) return 1;
+    if (an >= 1 && subtree_builds_name(nt, av[an - 1], 0)) return 1;
   }
   return 0;
 }
