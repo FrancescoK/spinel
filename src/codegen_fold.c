@@ -1577,16 +1577,16 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "int _t%d = 0; for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) if (sp_poly_eq(_t%d->data[_t%d], _t%d)) { _t%d = 1; break; }\n",
                tdup, tj, tj, tseen, tj, tseen, tj, tkey, tdup);
     emit_indent(g_pre, din);
+    int keep_nil = !splat && bp_slot_oint(c, block, BP0(c, block), rk);
     if (splat) buf_printf(g_pre, "if (!_t%d) { sp_PolyArray_push(_t%d, _t%d); sp_%sArray_push(_t%d, %s); }\n", tdup, tseen, tkey, rk, tres, es);
     else buf_printf(g_pre, "if (!_t%d) { sp_PolyArray_push(_t%d, _t%d); sp_%sArray_push%s(_t%d, lv_%s); }\n", tdup, tseen, tkey, rk,
-                    bp_slot_oint(c, block, BP0(c, block), rk) ? "_o" : "", tres, p0);
+                    keep_nil ? "_o" : "", tres, p0);
     if (use_shadow) { din--; emit_indent(g_pre, din); buf_puts(g_pre, "}\n"); }
     if (clv0) clv0->type = csaved0;
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
     if (bang) {
       int tm = ++g_tmp, tn = ++g_tmp;
       emit_indent(g_pre, g_indent);
-      int keep_nil = !splat && bp_slot_oint(c, block, BP0(c, block), rk);
       buf_printf(g_pre, "sp_int _t%d = _t%d->len; _t%d->len = 0; for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push%s(_t%d, sp_%sArray_%s(_t%d, _t%d));\n",
                  tn, tres, trecv, tm, tm, tn, tm, rk, keep_nil ? "_o" : "", trecv, rk, keep_nil ? "oget" : "get", tres, tm);
       buf_printf(b, "_t%d", trecv);
