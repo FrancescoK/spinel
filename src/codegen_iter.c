@@ -4461,6 +4461,8 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   TyKind et = repr_of(c, recv).as_ty;
+  /* an object whose class writes its own tap / then is called */
+  if (ty_is_object(et) && comp_method_in_chain(c, ty_object_class(et), name, NULL) >= 0) return 0;
   /* An empty array literal receiver (`[].tap { |a| a << x }.join`) has no
      element type of its own, so comp_ntype leaves it unknown. Adopt the block
      param's container type (it was typed from the pushes) and materialize a
@@ -5588,6 +5590,10 @@ static void emit_row_param_bind(Compiler *c, int block, int pj, const char *k, T
    with a block (answers 1 emitted, 0 declined, -1 to go on) */
 static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, int block, const char *name, int recv, int body, const char *p0_orig, const char *p0, TyKind rt) {
   /* recv.tap { |p| body } -- run block for side effects, preserve outer var */
+  /* an object whose class writes its own tap is called */
+  if (sp_streq(name, "tap") && recv >= 0 && ty_is_object(repr_of(c, recv).as_ty) &&
+      comp_method_in_chain(c, ty_object_class(repr_of(c, recv).as_ty), "tap", NULL) >= 0)
+    return -1;
   if (sp_streq(name, "tap") && recv >= 0) {
     TyKind et = repr_of(c, recv).as_ty;
     /* a receiver of no type -- a call proven to raise NoMethodError -- is

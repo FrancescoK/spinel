@@ -1644,8 +1644,11 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     }
   }
 
-  /* then / yield_self: pass receiver to block, return block result */
-  if (recv >= 0 && (is_then_alias(name))) {
+  /* then / yield_self: pass receiver to block, return block result -- but
+     an object whose class writes its own is called */
+  if (recv >= 0 && (is_then_alias(name)) &&
+      !(ty_is_object(comp_ntype(c, recv)) &&
+        comp_method_in_chain(c, ty_object_class(comp_ntype(c, recv)), name, NULL) >= 0)) {
     int blk = nt_ref(nt, id, "block");
     /* with NO block, an enumerator of one element -- the receiver (#4028),
        named `then` for either name, as CRuby's yield_self is then's alias */
