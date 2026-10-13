@@ -143,8 +143,16 @@ typedef struct ShareRoute {
                           receiver whose value is dropped, so a container
                           whose elements no name holds hands on Strings no
                           other name holds */
+  int rt_site, rt_grow; /* (scan routes) the call whose block changes no
+                          String in place but by growing or clearing it
+                          (scan_block_changes), or -1: a failed sole check
+                          leaves its subject to a run-time length check
+                          (rt_grow: one is needed, on a handle subject)
+                          instead of refusing */
   char *msg;           /* (a kept route's message) */
 } ShareRoute;
+/* a route's sole when the subject is no local the facts can be asked of */
+enum { SHARE_SOLE_UNVOUCHED = -2 };
 enum { SHARE_CARRY_NONE = -1, SHARE_CARRY_COPY = -2 };
 ShareRoute share_route(int site, int value, int elems);
 /* Is node n's value a String the walk reached and found no identity in (a

@@ -21178,7 +21178,7 @@ int subtree_may_reassign_state(Compiler *c, int id) {
    program's: numbers, Strings, Symbols, their ranges and typed Arrays. A
    Proc, an object, a boxed value or a container of them may call back into
    the program (an element's #==, #to_s, #<=>). */
-static int ty_runs_no_code(TyKind t) {
+int ty_runs_no_code(TyKind t) {
   switch (t) {
     case TY_NIL: case TY_INT: case TY_BIGINT: case TY_FLOAT: case TY_STRING:
     case TY_STRBUF: case TY_SYMBOL: case TY_BOOL: case TY_RANGE: case TY_FLOAT_RANGE:

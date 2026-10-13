@@ -40178,6 +40178,108 @@ static int scan_local_named_fresh(Compiler *c, int l, const ScanChain *up) {
   ScanChain ch = { up, root, name, up ? up->depth + 1 : 0 };
   return root >= 0 && ch.depth < 8 && scan_local_fresh_writes(c, root, &ch);
 }
+/* Does the subtree at n write local `name`? */
+static int scan_local_written(const NodeTable *nt, int n, const char *name) {
+  if (n < 0) return 0;
+  if (a_is_write_node(nt_type(nt, n)) && sp_streq(nt_str(nt, n, "name"), name)) return 1;
+  for (int i = 0; i < nt_num_refs(nt, n); i++)
+    if (scan_local_written(nt, nt_ref_at(nt, n, i), name)) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int m = 0; const int *a = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++)
+      if (scan_local_written(nt, a[j], name)) return 1;
+  }
+  return 0;
+}
+/* What can scan block blk's body (node) do to a String in place, its own
+   parameters' matches aside? Sets *grow for a mutator that never shortens
+   (`<<` or concat of non-empty literals, prepend, insert) and *clear for
+   clear, called on the subject's local `subj` itself, and answers 1 for
+   any other in-place mutator (the rows' mark, sp_str_mutator), the same on
+   any other receiver, or for code that may run the program's own (a method of
+   its, a yield, a proc, a builtin handed a value that may be an object,
+   an interpolated one), which could. A change that keeps the length is no
+   change a length check sees: CRuby scans on over the changed bytes, or
+   raises for a long subject, so it keeps the refusal. Growing and clearing
+   together could restore the length, so they keep it too. */
+static int scan_block_changes(Compiler *c, int blk, int node, const char *subj, int *grow, int *clear) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_YieldNode || k == NK_SuperNode || k == NK_ForwardingSuperNode || k == NK_DefNode) return 1;
+  if (k == NK_EmbeddedStatementsNode && !ty_runs_no_code(comp_ntype(c, node))) return 1;
+  /* the implicit calls: `===` of a `case`, deconstruction, to_a and to_proc
+     of a splat or a block argument, each of a `for`, a Range's `<=>` */
+  if (k == NK_CaseMatchNode || k == NK_ForNode || k == NK_MultiWriteNode || k == NK_SplatNode ||
+      k == NK_AssocSplatNode || k == NK_MatchPredicateNode || k == NK_MatchRequiredNode || k == NK_BlockArgumentNode)
+    return 1;
+  if (k == NK_RangeNode) {
+    int lo = nt_ref(nt, node, "left"), hi = nt_ref(nt, node, "right");
+    if ((lo >= 0 && !ty_runs_no_code(comp_ntype(c, lo))) || (hi >= 0 && !ty_runs_no_code(comp_ntype(c, hi)))) return 1;
+  }
+  if (k == NK_CaseNode) {
+    int pr = nt_ref(nt, node, "predicate"), nw = 0;
+    if (pr >= 0 && !ty_runs_no_code(comp_ntype(c, pr))) return 1;
+    const int *w = nt_arr(nt, node, "conditions", &nw);
+    for (int i = 0; i < nw; i++) {
+      int nc = 0; const int *cv = nt_arr(nt, w[i], "conditions", &nc);
+      for (int j = 0; j < nc; j++) {
+        TyKind t = comp_ntype(c, cv[j]);
+        if (!ty_runs_no_code(t) && t != TY_REGEX) return 1;
+      }
+    }
+  }
+  if (k == NK_CallNode) {
+    const char *nm = nt_str(nt, node, "name");
+    int r = an_unparen(nt, nt_ref(nt, node, "receiver"));
+    int args = nt_ref(nt, node, "arguments"), argc = 0;
+    const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+    if (!nm || cplan_targets(c, node, NULL, 0) != 0 || an_user_defines_or_reads(c, nm)) return 1;
+    /* the block's own parameter, never rebound, holds a match: a new String */
+    const char *rn = r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode ? nt_str(nt, r, "name") : NULL;
+    int own = 0;
+    for (int i = 0; rn && block_param_name(c, blk, i); i++)
+      own |= sp_streq(rn, block_param_name(c, blk, i)) && !scan_local_written(nt, nt_ref(nt, blk, "body"), rn);
+    int mut = !own && sp_str_mutator(nm, SP_MUT_LOCAL) &&
+              (r < 0 || rt == TY_STRING || rt == TY_STRBUF || rt == TY_POLY || rt == TY_UNKNOWN);
+    if (mut) {
+      int lit = argc > 0;
+      for (int i = 0; i < argc; i++)
+        lit &= nt_kind(nt, argv[i]) == NK_StringNode && nt_str(nt, argv[i], "content") &&
+               nt_str(nt, argv[i], "content")[0];
+      /* only the subject's own local grows or clears: its length is what
+         the check reads, where another name of the same String could be a
+         copy the facts keep apart (a parameter's caller) */
+      if (!rn || !subj || !sp_streq(rn, subj)) return 1;
+      if (is_clear_name(nm)) *clear = 1;
+      else if (is_string_grower(nm) && (lit || !is_append_concat(nm))) *grow = 1;
+      else return 1;
+    }
+    /* what a builtin is handed: a value that may be an object can call back,
+       but an Array's store only keeps it, and its size and endpoint reads
+       call nothing on its elements (the smallest list the walk needs; no
+       row marks a query that calls no element method) */
+    int st = bop_share_named(BOP_ANY_ARRAY, nm);
+    int store = r >= 0 && ty_is_array(rt) &&
+                (st == BSH_STORE_ALL || st == BSH_STORE_LAST ||
+                 (argc == 0 && nt_ref(nt, node, "block") < 0 &&
+                  (is_size_query(nm) || is_endpoint_query(nm))));
+    if (r >= 0 && !own && !mut && !ty_runs_no_code(rt) && !store) return 1;
+    for (int i = 0; i < argc && !store; i++)
+      if (!ty_runs_no_code(comp_ntype(c, argv[i]))) return 1;
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++)
+    if (scan_block_changes(c, blk, nt_ref_at(nt, node, i), subj, grow, clear)) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *a = nt_arr_at(nt, node, i, &n);
+    for (int j = 0; j < n; j++)
+      if (scan_block_changes(c, blk, a[j], subj, grow, clear)) return 1;
+  }
+  return 0;
+}
 /* Can the scan's subject be trusted, and through which locals' Strings
    (*nm, each the route's `sole` once)? */
 static int scan_subject_trusted(Compiler *c, int blk, int subj, ScanNamed *nm) {
@@ -40272,10 +40374,23 @@ static void refuse_string_read_copies(Compiler *c) {
           /* the matches are new, but a subject the block could change under
              the scan keeps the refusal (scan_subject_trusted) */
           ScanNamed nm = {{0}, 0};
-          int ok = scan_subject_trusted(c, blk, an_unparen(nt, r), &nm);
+          int trusted = scan_subject_trusted(c, blk, an_unparen(nt, r), &nm);
+          /* a block that changes no String in place but by growing or
+             clearing one leaves a subject the facts cannot vouch for to a
+             run-time length check, as CRuby's own (rt_site) */
+          int grow = 0, clear = 0, rs = an_unparen(nt, r);
+          const char *subj = nt_kind(nt, rs) == NK_LocalVariableReadNode ? nt_str(nt, rs, "name") : NULL;
+          /* (a subject the block rebinds is another String once it does) */
+          if (subj && scan_local_written(nt, nt_ref(nt, blk, "body"), subj)) subj = NULL;
+          if (!scan_block_changes(c, blk, nt_ref(nt, blk, "body"), subj, &grow, &clear) && !(grow && clear)) {
+            q.rt_site = u;
+            q.rt_grow = grow || clear;
+          }
+          int ok = trusted || q.rt_site >= 0;
+          if (!trusted) nm.n = 0;
           /* each local whose String the subject can be is a route's sole */
           for (int i = 0; ok && i < (nm.n > 0 ? nm.n : 1); i++) {
-            q.sole = nm.n > 0 ? nm.v[i] : -1;
+            q.sole = nm.n > 0 ? nm.v[i] : trusted ? -1 : SHARE_SOLE_UNVOUCHED;
             ok = share_route_defer(c, &q, sc_msg);
           }
           if (!ok) unsupported_feature(c, u, sc_msg);

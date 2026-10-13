@@ -5068,6 +5068,7 @@ ShareRoute share_route(int site, int value, int elems) {
   r.to = -1;
   r.carry = -1;
   r.sole = -1;
+  r.rt_site = -1;
   return r;
 }
 
@@ -5247,20 +5248,31 @@ static int sh_sole_unreached(const Compiler *c, const ShareRoute *q) {
   return sh_class_holders(F, r) <= seen;
 }
 
+/* Does the route's sole hold: a local the final facts show as a plain
+   local that no other holder, no capture and nothing the walk does not
+   follow reaches? A scan block that never returns to the scan cannot
+   change the subject under it (share_block_returns), whatever names the
+   subject has. */
+static int sh_route_sole_ok(const Compiler *c, const ShareRoute *q) {
+  if (q->sole == -1 || (q->to >= 0 && !share_block_returns(c, q->to))) return 1;
+  if (q->sole < 0) return 0;
+  Scope *ss = comp_scope_of((Compiler *)c, q->sole);
+  LocalVar *sl = ss ? scope_local(ss, nt_str(c->nt, q->sole, "name")) : NULL;
+  return sl && !sl->is_param && !sl->is_block_param && !sl->is_cell && !sl->cell_outlives &&
+         (share_node_one_name(c, q->sole) || sh_sole_unreached(c, q));
+}
+/* A scan whose sole fails can leave its subject to the run-time length
+   check (rt_site): needed only where the block grows or clears the
+   subject's own local (scan_block_changes), whose length the check reads. */
+static int sh_route_rt_watch(const Compiler *c, const ShareRoute *q) {
+  return q->rt_site >= 0;
+}
 static int sh_route_why(const Compiler *c, const ShareRoute *q) {
   const ShareFacts *F = c->share;
   if (F && q->value >= 0 && !q->elems && share_assign_unjoined(c, q->value)) return SH_ROUTE_OK;
   /* a route that vouches for a local by its being the only name its String
-     has: the final facts have to show a plain local that no other holder,
-     no capture and nothing the walk does not follow reaches. A scan block
-     that never returns to the scan cannot change the subject under it
-     (share_block_returns), whatever names the subject has. */
-  if (q->sole >= 0 && (q->to < 0 || share_block_returns(c, q->to))) {
-    Scope *ss = comp_scope_of((Compiler *)c, q->sole);
-    LocalVar *sl = ss ? scope_local(ss, nt_str(c->nt, q->sole, "name")) : NULL;
-    if (!sl || sl->is_param || sl->is_block_param || sl->is_cell || sl->cell_outlives ||
-        (!share_node_one_name(c, q->sole) && !sh_sole_unreached(c, q))) return SH_ROUTE_UNSEEN;
-  }
+     has, unless the run-time check watches the subject */
+  if (!sh_route_sole_ok(c, q) && !sh_route_rt_watch(c, q)) return SH_ROUTE_UNSEEN;
   int v = sh_node_root(F, q->value, q->elems);
   /* a value the walk reached and found no String identity in (`"a#{i}"`,
      a builtin's fresh answer) is a String no other name holds: its class
@@ -5297,15 +5309,25 @@ static int sh_route_why(const Compiler *c, const ShareRoute *q) {
 static int sh_route_ok(const Compiler *c, const ShareRoute *q) {
   return sh_route_why(c, q) == SH_ROUTE_OK;
 }
+/* A route that holds by the run-time check marks its scan to emit it
+   (scan_rtcheck: the subject's length, read again after each turn). */
+static void sh_route_rt_mark(Compiler *c, const ShareRoute *q) {
+  if (q->rt_site >= 0 && q->rt_grow && !sh_route_sole_ok(c, q))
+    nt_node_set_int((NodeTable *)c->nt, q->rt_site, "scan_rtcheck", 1);
+}
 
 int share_route_defer(Compiler *c, const ShareRoute *q, const char *msg) {
   if (!c->share_strings) return 0;
-  if (repr_sealed()) return sh_route_ok(c, q);
+  if (repr_sealed()) {
+    if (!sh_route_ok(c, q)) return 0;
+    sh_route_rt_mark(c, q);
+    return 1;
+  }
   for (int i = 0; i < c->nshare_route; i++) {
     const ShareRoute *r = &c->share_route[i];
     if (r->site == q->site && r->value == q->value && r->elems == q->elems && r->to == q->to &&
         r->to_elems == q->to_elems && r->carry == q->carry && r->fresh_elems == q->fresh_elems &&
-        r->sole == q->sole &&
+        r->sole == q->sole && r->rt_site == q->rt_site && r->rt_grow == q->rt_grow &&
         (r->to_name == q->to_name || (r->to_name && q->to_name && sp_streq(r->to_name, q->to_name))))
       return 1;
   }
@@ -5328,7 +5350,10 @@ void share_routes_check(Compiler *c) {
               r->elems ? " (elements)" : "", r->to, r->to_elems ? " (elements)" : "",
               r->to_name ? " local " : "", r->to_name ? r->to_name : "", r->carry, sh_route_ok(c, r));
     int why = sh_route_why(c, r);
-    if (why == SH_ROUTE_OK) continue;
+    if (why == SH_ROUTE_OK) {
+      sh_route_rt_mark(c, r);
+      continue;
+    }
     /* the refusal says which half the rule could not answer */
     const char *lead = why == SH_ROUTE_UNSEEN
       ? "under --share-strings, the share analysis does not follow this route, so it cannot prove "

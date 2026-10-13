@@ -409,6 +409,9 @@ int subtree_may_reassign_state(Compiler *c, int id);
    Strings, Symbols, their ranges and typed Arrays can; a builtin over those
    alone, with no block, cannot: `total + i.to_s` (codegen_call.c). */
 int subtree_may_run_proc(Compiler *c, int id);
+/* --share-strings: a watched scan's handle and length before its loop, and
+   the loop step that raises "string modified" (codegen_iter.c) */
+void emit_scan_rtcheck_open(Compiler *c, int id, int recv, Buf *pre, int indent, char *step, size_t n);
 /* Does evaluating the subtree run no code, store nothing and allocate nothing
    -- variable and literal reads, scalar arithmetic, typed-array reads and
    plain field reads, all the way down (codegen_call.c)? */
