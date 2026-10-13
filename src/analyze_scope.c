@@ -2616,6 +2616,7 @@ static int sg_chain_link(Compiler *c, SgMap *m, int wnode, int parent_ci) {
   ClassInfo *sc = comp_class_new(c, snm, wnode);
   int newci = (int)(sc - c->classes);
   sc->parent = prev >= 0 ? prev : orig;
+  comp_class_shape_changed();
   sc->is_singleton_of = orig + 1;
   /* the binding's type is the LAST link: retarget on every addition */
   sg_retarget(c, wnode, snm);
@@ -2638,6 +2639,7 @@ static int sg_get_or_make(Compiler *c, SgMap *m, int wnode, int parent_ci) {
   ClassInfo *sc = comp_class_new(c, snm, wnode);
   int newci = (int)(sc - c->classes);
   sc->parent = parent_ci;
+  comp_class_shape_changed();
   sc->is_singleton_of = parent_ci + 1;
   /* retarget the `= Parent.new(...)` receiver to the synthesized class so the
      binding's type becomes ty_object(newci) and .new builds it. */
@@ -3676,7 +3678,7 @@ static void alias_register(Compiler *c, ClassInfo *cls, const char *nw, const ch
        alias_prim_class(cls->name) || (ep && builtin_instance_method_known(ep, od))) &&
       !alias_target_defined_before(c, cls, cid, od, s, singleton)) {
     for (int i = cls->naliases - 1; i >= 0; i--)
-      if (cls->alias_node[i] == s && sp_streq(cls->alias_new[i], nw)) { cls->alias_builtin[i] = singleton ? 2 : 1; break; }
+      if (cls->alias_node[i] == s && sp_streq(cls->alias_new[i], nw)) { cls->alias_builtin[i] = singleton ? 2 : 1; comp_class_shape_changed(); break; }
   }
 }
 
@@ -5732,7 +5734,7 @@ void resolve_parents(Compiler *c) {
        same way as an unqualified ConstantReadNode superclass. */
     if (sty && (sp_streq(sty, "ConstantReadNode") || sp_streq(sty, "ConstantPathNode"))) {
       int p = comp_class_index(c, nt_str(nt, sc, "name"));
-      if (p >= 0 && p != i) c->classes[i].parent = p;
+      if (p >= 0 && p != i) { c->classes[i].parent = p; comp_class_shape_changed(); }
     }
   }
   mark_array_subclasses(c);
@@ -5806,6 +5808,7 @@ void resolve_inherited_aliases(Compiler *c) {
       for (int p = c->classes[ci].parent; p >= 0; p = c->classes[p].parent)
         if (comp_method_in_class(c, p, od) >= 0 || comp_cmethod_in_class(c, p, od) >= 0) {
           cls->alias_cls[a] = p;
+          comp_class_shape_changed();
           break;
         }
     }

@@ -943,24 +943,85 @@ int comp_method_in_class(Compiler *c, int class_id, const char *name) {
 int comp_cmethod_in_class(Compiler *c, int class_id, const char *name) {
   return sm_lookup(c, class_id, name, 1);
 }
-int comp_cmethod_in_chain(Compiler *c, int class_id, const char *name, int *def_class) {
-  int start = class_id;
-  name = comp_resolve_alias_at(c, class_id, name, &start);
-  for (int cid = start; cid >= 0; cid = c->classes[cid].parent) {
-    int mi = comp_cmethod_in_class(c, cid, name);
-    if (mi >= 0) { if (def_class) *def_class = cid; return mi; }
+/* (name, instance or class side) -> per class, the method a chain lookup
+   answers and the class that defines it. A poly dispatch, an arity plan and
+   the instance_eval forwarding map ask it for every class of the program in
+   turn, and each ask walked the class's whole superclass chain, resolving
+   the name's aliases at every level: about a fifth of a large program's
+   inference fixpoint. The answer is shape alone (scopes, aliases, parents),
+   so it is kept while the scope index is frozen and no scope is moved, and
+   dropped when the index's epoch, the scope or class count, or the class
+   shape (comp_class_shape_changed) moves. */
+static unsigned cmc_shape = 0;
+void comp_class_shape_changed(void) { cmc_shape++; }
+static char **cmc_name; static unsigned char *cmc_cm; static int **cmc_ans;
+static int cmc_cap = 0, cmc_n = 0;
+static const Compiler *cmc_c; static unsigned cmc_gen, cmc_shape_at;
+static int cmc_nscopes = -1, cmc_nclasses = -1;
+static void cmc_clear(void) {
+  for (int i = 0; i < cmc_cap; i++) if (cmc_name && cmc_name[i]) { free(cmc_name[i]); free(cmc_ans[i]); }
+  free(cmc_name); free(cmc_cm); free(cmc_ans);
+  cmc_name = NULL; cmc_cm = NULL; cmc_ans = NULL; cmc_cap = cmc_n = 0;
+}
+/* The answers for (name, is_cm), two ints per class (-2 while unasked), or
+   NULL when the memo cannot be trusted now. */
+static int *cmc_slot(Compiler *c, const char *name, int is_cm) {
+  if (!sm_frozen || mv_n || !name || c->nclasses <= 0) return NULL;
+  if (cmc_c != c || cmc_gen != sm_gen || cmc_shape_at != cmc_shape ||
+      cmc_nscopes != c->nscopes || cmc_nclasses != c->nclasses) {
+    cmc_clear();
+    cmc_c = c; cmc_gen = sm_gen; cmc_shape_at = cmc_shape;
+    cmc_nscopes = c->nscopes; cmc_nclasses = c->nclasses;
   }
-  return -1;
+  if (cmc_n * 2 >= cmc_cap) {
+    int ocap = cmc_cap; char **on = cmc_name; unsigned char *ocm = cmc_cm; int **oa = cmc_ans;
+    cmc_cap = ocap ? ocap * 2 : 256;
+    cmc_name = calloc((size_t)cmc_cap, sizeof(char *));
+    cmc_cm = calloc((size_t)cmc_cap, 1);
+    cmc_ans = calloc((size_t)cmc_cap, sizeof(int *));
+    if (!cmc_name || !cmc_cm || !cmc_ans) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < ocap; i++) {
+      if (!on[i]) continue;
+      unsigned j = (sp_strhash(on[i]) ^ ocm[i]) & (unsigned)(cmc_cap - 1);
+      while (cmc_name[j]) j = (j + 1) & (unsigned)(cmc_cap - 1);
+      cmc_name[j] = on[i]; cmc_cm[j] = ocm[i]; cmc_ans[j] = oa[i];
+    }
+    free(on); free(ocm); free(oa);
+  }
+  unsigned j = (sp_strhash(name) ^ (unsigned)is_cm) & (unsigned)(cmc_cap - 1);
+  while (cmc_name[j]) {
+    if (cmc_cm[j] == is_cm && sp_streq(cmc_name[j], name)) return cmc_ans[j];
+    j = (j + 1) & (unsigned)(cmc_cap - 1);
+  }
+  int *a = malloc(sizeof(int) * 2 * (size_t)c->nclasses);
+  cmc_name[j] = strdup(name);
+  if (!a || !cmc_name[j]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < 2 * c->nclasses; k++) a[k] = -2;
+  cmc_cm[j] = (unsigned char)is_cm; cmc_ans[j] = a; cmc_n++;
+  return a;
+}
+static int chain_lookup(Compiler *c, int class_id, const char *name, int *def_class, int is_cm) {
+  int *a = class_id >= 0 && class_id < c->nclasses ? cmc_slot(c, name, is_cm) : NULL;
+  if (a && a[2 * class_id] != -2) {
+    if (a[2 * class_id] >= 0 && def_class) *def_class = a[2 * class_id + 1];
+    return a[2 * class_id];
+  }
+  int start = class_id, mi = -1, dc = -1;
+  const char *rn = comp_resolve_alias_at(c, class_id, name, &start);
+  for (int cid = start; cid >= 0; cid = c->classes[cid].parent) {
+    int m = is_cm ? comp_cmethod_in_class(c, cid, rn) : comp_method_in_class(c, cid, rn);
+    if (m >= 0) { mi = m; dc = cid; break; }
+  }
+  if (a) { a[2 * class_id] = mi; a[2 * class_id + 1] = dc; }
+  if (mi >= 0 && def_class) *def_class = dc;
+  return mi;
+}
+int comp_cmethod_in_chain(Compiler *c, int class_id, const char *name, int *def_class) {
+  return chain_lookup(c, class_id, name, def_class, 1);
 }
 
 int comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_class) {
-  int start = class_id;
-  name = comp_resolve_alias_at(c, class_id, name, &start);
-  for (int cid = start; cid >= 0; cid = c->classes[cid].parent) {
-    int mi = comp_method_in_class(c, cid, name);
-    if (mi >= 0) { if (def_class) *def_class = cid; return mi; }
-  }
-  return -1;
+  return chain_lookup(c, class_id, name, def_class, 0);
 }
 
 int comp_ary_root(Compiler *c, int cid) {
@@ -1760,6 +1821,7 @@ void comp_add_alias_from(ClassInfo *ci, const char *new_name, const char *old_na
   ci->alias_node[ci->naliases] = alias_node;
   ci->alias_builtin[ci->naliases] = 0;
   ci->naliases++;
+  comp_class_shape_changed();
 }
 
 void comp_add_alias(ClassInfo *ci, const char *new_name, const char *old_name) {
