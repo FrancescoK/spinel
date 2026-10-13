@@ -1367,17 +1367,19 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
       exit(1);
     }
     /* The reverse: `class Comparable` reopens a builtin MODULE as a class,
-       which CRuby refuses with a TypeError. A nested or path-qualified name
-       is a fresh constant in CRuby, but the generated C name is the bare
-       tail and collides, so refuse that as unsupported. */
-    if (nt_kind(c->nt, id) == NK_ClassNode && cname && is_builtin_module_const_name(cls_leaf)) {
+       which CRuby refuses with a TypeError. So does `class ::Comparable`
+       anywhere, and a `class Kernel` in a Class.new block, which opens no
+       constant scope of its own. Any other nested or path-qualified name
+       (`R::Warning`) is a fresh constant, whose generated C name carries its
+       namespace, so it is a class like any other. */
+    int names_root = cls_toplevel ||
+                     (cp >= 0 && nt_kind(c->nt, cp) == NK_ConstantPathNode && nt_ref(c->nt, cp, "parent") < 0) ||
+                     (cp >= 0 && nt_kind(c->nt, cp) == NK_ConstantReadNode && class_id >= 0 &&
+                      nt_int(c->nt, c->classes[class_id].def_node, "block_made_body", 0));
+    if (nt_kind(c->nt, id) == NK_ClassNode && cname && is_builtin_module_const_name(cls_leaf) && names_root) {
       int ln = (int)nt_int(c->nt, id, "node_line", 0);
       const char *file = c->nt->source_file ? c->nt->source_file : "source.rb";
-      if (cls_toplevel)
-        fprintf(stderr, "spinel: %s:%d: %s is not a class (TypeError)\n", file, ln, cname);
-      else
-        fprintf(stderr, "spinel: %s:%d: unsupported class name '%s': "
-                        "collides with the builtin module of that name\n", file, ln, cls_leaf);
+      fprintf(stderr, "spinel: %s:%d: %s is not a class (TypeError)\n", file, ln, cls_leaf);
       exit(1);
     }
     /* `class CONST` where CONST aliases an existing class reopens that class.

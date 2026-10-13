@@ -246,14 +246,6 @@ spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_source_line.rb [promote] rc=1
 spinel: test/reject/class_eval_static_source_line.rb:6: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=3 arg0ty6
 spinel: 1 refusal, nothing written
-== test/reject/class_named_like_builtin_module.rb [default] rc=1
-spinel: test/reject/class_named_like_builtin_module.rb:6: unsupported class name 'Comparable': collides with the builtin module of that name
-== test/reject/class_named_like_builtin_module.rb [promote] rc=1
-spinel: test/reject/class_named_like_builtin_module.rb:6: unsupported class name 'Comparable': collides with the builtin module of that name
-== test/reject/class_named_like_builtin_module_path.rb [default] rc=1
-spinel: test/reject/class_named_like_builtin_module_path.rb:8: unsupported class name 'Comparable': collides with the builtin module of that name
-== test/reject/class_named_like_builtin_module_path.rb [promote] rc=1
-spinel: test/reject/class_named_like_builtin_module_path.rb:8: unsupported class name 'Comparable': collides with the builtin module of that name
 == test/reject/class_named_like_monitor_path.rb [default] rc=1
 spinel: test/reject/class_named_like_monitor_path.rb:4: unsupported class name 'Monitor': collides with the builtin class of that name
 == test/reject/class_named_like_monitor_path.rb [promote] rc=1
@@ -371,9 +363,9 @@ spinel: test/reject/class_reopens_builtin_module_alias.rb:6: Foo is not a class 
 == test/reject/class_reopens_builtin_module_alias.rb [promote] rc=1
 spinel: test/reject/class_reopens_builtin_module_alias.rb:6: Foo is not a class (TypeError)
 == test/reject/class_reopens_builtin_module_class_new.rb [default] rc=1
-spinel: test/reject/class_reopens_builtin_module_class_new.rb:6: unsupported class name 'Kernel': collides with the builtin module of that name
+spinel: test/reject/class_reopens_builtin_module_class_new.rb:6: Kernel is not a class (TypeError)
 == test/reject/class_reopens_builtin_module_class_new.rb [promote] rc=1
-spinel: test/reject/class_reopens_builtin_module_class_new.rb:6: unsupported class name 'Kernel': collides with the builtin module of that name
+spinel: test/reject/class_reopens_builtin_module_class_new.rb:6: Kernel is not a class (TypeError)
 == test/reject/class_reopens_builtin_module_errno.rb [default] rc=1
 spinel: test/reject/class_reopens_builtin_module_errno.rb:5: Errno is not a class (TypeError)
 == test/reject/class_reopens_builtin_module_errno.rb [promote] rc=1
@@ -383,9 +375,9 @@ spinel: test/reject/class_reopens_builtin_module_kernel.rb:4: Kernel is not a cl
 == test/reject/class_reopens_builtin_module_kernel.rb [promote] rc=1
 spinel: test/reject/class_reopens_builtin_module_kernel.rb:4: Kernel is not a class (TypeError)
 == test/reject/class_reopens_builtin_module_rooted.rb [default] rc=1
-spinel: test/reject/class_reopens_builtin_module_rooted.rb:6: unsupported class name 'Comparable': collides with the builtin module of that name
+spinel: test/reject/class_reopens_builtin_module_rooted.rb:5: Comparable is not a class (TypeError)
 == test/reject/class_reopens_builtin_module_rooted.rb [promote] rc=1
-spinel: test/reject/class_reopens_builtin_module_rooted.rb:6: unsupported class name 'Comparable': collides with the builtin module of that name
+spinel: test/reject/class_reopens_builtin_module_rooted.rb:5: Comparable is not a class (TypeError)
 == test/reject/class_reopens_condition_variable.rb [default] rc=1
 spinel: test/reject/class_reopens_condition_variable.rb:4: reopening the builtin class ConditionVariable is not supported
 == test/reject/class_reopens_condition_variable.rb [promote] rc=1
