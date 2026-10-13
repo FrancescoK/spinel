@@ -1,0 +1,10 @@
+"found:a"
+nil
+"fallback:c"
+nil
+["found:e", "fallback:e"]
+"found:f"
+"fallback:g"
+"fallback:h"
+1
+nil

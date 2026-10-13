@@ -617,6 +617,17 @@ static int cf_owner_block(CF *f, int v, int loop_stop) {
   return -1;
 }
 
+/* the loop a break under v leaves: the nearest enclosing while, until or
+   for, or -1 when a block, a lambda or a def is nearer */
+static int cf_owner_loop(CF *f, int v) {
+  for (int q = f->par ? f->par[v] : -1, d = 0; q >= 0 && d < 100000; q = f->par[q], d++) {
+    NodeKind k = nt_kind(f->nt, q);
+    if (k == NK_WhileNode || k == NK_UntilNode || k == NK_ForNode) return q;
+    if (k == NK_BlockNode || k == NK_LambdaNode || k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return -1;
+  }
+  return -1;
+}
+
 /* ---- parameters ---- */
 
 /* is parameter idx of method m a keyword parameter? */
@@ -1318,9 +1329,11 @@ static void cf_node(CF *f, int v) {
   }
   case NK_AndNode: case NK_OrNode: cf_unite(f, v, nt_ref(nt, v, "left")); cf_unite(f, v, nt_ref(nt, v, "right")); return;
   case NK_RescueModifierNode: cf_unite(f, v, nt_ref(nt, v, "expression")); cf_unite(f, v, nt_ref(nt, v, "rescue_expression")); return;
-  case NK_WhileNode: case NK_UntilNode: cf_all(f, v); return;
+  /* nil, or what a break hands it (NK_BreakNode) */
+  case NK_WhileNode: case NK_UntilNode: return;
   case NK_ForNode: {
-    cf_all(f, v);
+    /* the collection it walked, or what a break hands it */
+    cf_unite(f, v, nt_ref(nt, v, "collection"));
     int idx = nt_ref(nt, v, "index");
     if (idx >= 0 && nt_kind(nt, idx) == NK_LocalVariableTargetNode) cf_unite(f, cf_lv(f, idx, nt_str(nt, idx, "name")), nt_ref(nt, v, "collection"));
     return;
@@ -1464,7 +1477,12 @@ static void cf_node(CF *f, int v) {
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     if (an == 0) return;
     int blk = cf_owner_block(f, v, 1);
-    if (blk < 0) return;   /* a loop's value is anything already */
+    if (blk < 0) {
+      /* a break is its loop's value; a next's argument in a loop goes nowhere */
+      int loop = k == NK_BreakNode ? cf_owner_loop(f, v) : -1;
+      for (int i = 0; loop >= 0 && i < an; i++) cf_unite(f, loop, nt_kind(nt, av[i]) == NK_SplatNode ? nt_ref(nt, av[i], "expression") : av[i]);
+      return;
+    }
     /* a next is the block's value; a break is the call's */
     int to = blk;
     if (k == NK_BreakNode) {
