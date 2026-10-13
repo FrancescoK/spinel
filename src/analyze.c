@@ -11951,6 +11951,21 @@ static int narrow_locals_from_arrays(Compiler *c) {
   return any;
 }
 
+/* Does every branch of `if` value v end in a value other than nil? (A nil one leaves the slot boxed, taking the branch by reference, #4486.) */
+static int oa_branches_all_valued(const NodeTable *nt, int v) {
+  const char *t = v >= 0 ? nt_type(nt, v) : NULL;
+  if (!t) return 0;
+  if (sp_streq(t, "StatementsNode")) {
+    int bn = 0; const int *bb = nt_arr(nt, v, "body", &bn);
+    return bn > 0 && oa_branches_all_valued(nt, bb[bn - 1]);
+  }
+  if (sp_streq(t, "ElseNode")) return oa_branches_all_valued(nt, nt_ref(nt, v, "statements"));
+  if (sp_streq(t, "IfNode") || sp_streq(t, "UnlessNode")) {
+    int alt = nt_ref(nt, v, sp_streq(t, "IfNode") ? "subsequent" : "else_clause");
+    return oa_branches_all_valued(nt, nt_ref(nt, v, "statements")) && oa_branches_all_valued(nt, alt);
+  }
+  return !sp_streq(t, "NilNode");
+}
 /* Classify one value flowing into slot S: an object or int-array literal is
    element evidence, another slot (or a narrowable call's value) is an alias
    edge, nil is neutral, and anything the pass does not model kills the slot.
@@ -11963,6 +11978,21 @@ static void oa_classify_value(Compiler *c, OAS *sl, int n, const int *read_slot,
   const NodeTable *nt = c->nt;
   const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
   if (!vty) { sl[S].alive = 0; return; }
+  /* not a kill for a local whose branches all have a value: it died while the branches narrowed, and inference then gave it a pointer array no pass had vetted */
+  if (sl[S].lv && (sp_streq(vty, "IfNode") || sp_streq(vty, "UnlessNode") || sp_streq(vty, "ElseNode") ||
+                   sp_streq(vty, "StatementsNode")) && oa_branches_all_valued(nt, v)) {
+    if (sp_streq(vty, "StatementsNode")) {
+      int bn = 0; const int *bb = nt_arr(nt, v, "body", &bn);
+      if (bn > 0) oa_classify_value(c, sl, n, read_slot, call_ret, claimed, S, bb[bn - 1]);
+      return;
+    }
+    int st = nt_ref(nt, v, "statements");
+    if (st >= 0) oa_classify_value(c, sl, n, read_slot, call_ret, claimed, S, st);
+    int alt = sp_streq(vty, "IfNode") ? nt_ref(nt, v, "subsequent")
+            : sp_streq(vty, "UnlessNode") ? nt_ref(nt, v, "else_clause") : -1;
+    if (alt >= 0) oa_classify_value(c, sl, n, read_slot, call_ret, claimed, S, alt);
+    return;
+  }
   if (sp_streq(vty, "ArrayNode")) {
     int en = 0; const int *el = nt_arr(nt, v, "elements", &en);
     for (int e = 0; e < en; e++) {
