@@ -1824,7 +1824,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
       const char *cn = nt_str(nt, recv, "name");
       int ci = cn ? comp_class_index(c, cn) : -1;
-      if (ci >= 0 && emit_sg_accessor(c, ci, cn, name, argc, argv, b)) return 1;
+      if (ci >= 0 && emit_sg_accessor(c, id, ci, cn, name, argc, argv, b)) return 1;
     }
   }
 
@@ -1836,7 +1836,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     Scope *_sgencl = comp_scope_of(c, id);
     int _sg_cid = (_sgencl && _sgencl->is_cmethod && _sgencl->class_id >= 0)
                   ? _sgencl->class_id : g_class_body_id;
-    if (_sg_cid >= 0 && emit_sg_accessor(c, _sg_cid, c->classes[_sg_cid].name, name, argc, argv, b))
+    if (_sg_cid >= 0 && emit_sg_accessor(c, id, _sg_cid, c->classes[_sg_cid].name, name, argc, argv, b))
       return 1;
   }
 
@@ -4246,7 +4246,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
       }
       Buf sgb; memset(&sgb, 0, sizeof sgb);
       if (!class_has_subclass(c, cid) &&
-          emit_sg_accessor(c, cid, c->classes[cid].name, name, argc, argv, &sgb)) {
+          emit_sg_accessor(c, id, cid, c->classes[cid].name, name, argc, argv, &sgb)) {
         buf_puts(b, "((void)("); emit_expr(c, robj, b); buf_printf(b, "), %s)", sgb.p);
         free(sgb.p);
         return 1;

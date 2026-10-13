@@ -142,7 +142,7 @@ void emit_call_body(Compiler *c, int id, Buf *b);
 void emit_ffi_callback_arg(Compiler *c, int cbidx, int argnode, Buf *out);
 void emit_ffi_num_arg(Compiler *c, int arg, TyKind at, const char *spec, int dbl, Buf *b);
 int emit_or_take_back(Compiler *c, int id, Buf *b, int (*fn)(Compiler *, int, Buf *));
-int emit_sg_accessor(Compiler *c, int ci, const char *cn, const char *name, int argc, const int *argv, Buf *b);
+int emit_sg_accessor(Compiler *c, int id, int ci, const char *cn, const char *name, int argc, const int *argv, Buf *b);
 void ffi_check_buffer_bounds(Compiler *c, int id, int arg, const char *kind, int off, const char *dir);
 extern int g_setter_value_inner;
 int call_has_keyword_args(const NodeTable *nt, const int *argv, int argc);
