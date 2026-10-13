@@ -40,6 +40,9 @@ File.foreach(trace_path) do |l|
   # (or by a name qualify_colliding_classes joined with __)
   leaf = ->(n) { n.gsub("__", "::").sub(/\AClass\((.*)\)\z/) { "Class(#{$1.split('::').last})" }.split("::").last }
   next if set.any? { |e| leaf.(e) == leaf.(recv) }
+  # a Class.new spinel names SpinelAnonClassN, which CRuby names by the
+  # constant it is later assigned to
+  next if set.any? { |e| e.include?("SpinelAnonClass") }
   next if src.nil? || src.empty? || !files.include?(File.expand_path(src))
   tag = callee.to_s.start_with?("<internal:") ? " [builtin]" : ""
   bad << "#{path}:#{line} #{meth}: receiver #{recv} not in {#{set.to_a.sort.join(' ')}}#{tag}"

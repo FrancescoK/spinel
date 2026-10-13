@@ -1367,6 +1367,12 @@ static void cf_node(CF *f, int v) {
   case NK_SelfNode: {
     if (cf_in_exec_block(f, v)) { cf_all(f, v); return; }
     int si = cf_scope_of(f, v);
+    /* `def (self.class).m`: the receiver is the enclosing scope's self */
+    for (int x = v, q = f->par ? f->par[v] : -1; q >= 0; x = q, q = f->par[q]) {
+      if (nt_kind(nt, q) != NK_DefNode) continue;
+      if (nt_ref(nt, q, "receiver") == x && f->par[q] >= 0) si = cf_scope_of(f, f->par[q]);
+      break;
+    }
     int ik = cf_inst_class(f, si);
     if (ik >= 0) { cf_unite(f, v, f->self_el[ik]); return; }
     Scope *s = &c->scopes[si];
