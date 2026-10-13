@@ -13095,8 +13095,14 @@ static int incl_hook_returns(const NodeTable *nt, int node) {
   if (k == NK_ReturnNode) return 1;
   if (k == NK_DefNode || k == NK_LambdaNode || k == NK_ClassNode || k == NK_ModuleNode) return 0;
   if (k == NK_CallNode) {
+    /* the method a define_method defines is its literal block: the
+       receiver, the arguments and a `&blk` expression still run in the hook */
     const char *cn = nt_str(nt, node, "name");
-    if (cn && (sp_streq(cn, "define_method") || sp_streq(cn, "define_singleton_method"))) return 0;
+    int blk = nt_ref(nt, node, "block");
+    if (cn && (sp_streq(cn, "define_method") || sp_streq(cn, "define_singleton_method")))
+      return incl_hook_returns(nt, nt_ref(nt, node, "receiver")) ||
+             incl_hook_returns(nt, nt_ref(nt, node, "arguments")) ||
+             (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode && incl_hook_returns(nt, blk));
   }
   int nr = nt_num_refs(nt, node);
   for (int i = 0; i < nr; i++)
