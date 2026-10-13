@@ -8828,6 +8828,24 @@ static void cdef_walk(NodeTable *nt, int id, CondDef x, CondDef **v, int *n) {
     cdef_walk(nt, nt_ref(nt, id, "body"), x, v, n);
     break;
   }
+  case NK_ConstantWriteNode: case NK_ConstantPathWriteNode: case NK_LocalVariableWriteNode:
+    if (nt_kind(nt, nt_ref(nt, id, "value")) == NK_CallNode) cdef_walk(nt, nt_ref(nt, id, "value"), x, v, n);
+    break;
+  case NK_CallNode: {
+    /* a block that becomes a class body only later (desugar_class_new_blocks):
+       its defs are a class of their own, which cls -2 marks */
+    int blk = nt_ref(nt, id, "block"), r = nt_ref(nt, id, "receiver");
+    const char *cn = nt_str(nt, id, "name");
+    const char *rn = r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode ? nt_str(nt, r, "name") : NULL;
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || !cn || !rn ||
+        !((sp_streq(cn, "new") && (sp_streq(rn, "Class") || sp_streq(rn, "Module") || sp_streq(rn, "Struct"))) ||
+          (sp_streq(cn, "define") && sp_streq(rn, "Data")))) break;
+    char p[1024];
+    snprintf(p, sizeof p, "%s/#%d", x.path, id);
+    x.path = p; x.cls = -2; x.cm = 0; x.top = -1; x.here = 0;
+    cdef_walk(nt, nt_ref(nt, blk, "body"), x, v, n);
+    break;
+  }
   default: break;
   }
   if (k == NK_SingletonClassNode && nt_kind(nt, nt_ref(nt, id, "expression")) == NK_SelfNode) {
@@ -8949,14 +8967,47 @@ static void cdef_refuse_reflection(NodeTable *nt, const char *const *lone, int n
   }
 }
 
-/* Could a call of `nm` reach a method other than def `own` (another def
-   of the name, or a builtin one every object or class has)? */
+/* Does call `id` name `nm` (or, for a writer `nm`, its base) among its
+   literal arguments? */
+static int cdef_call_names(const NodeTable *nt, int id, const char *nm) {
+  size_t ln = strlen(nm);
+  int args = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+  for (int i = 0; i < ac; i++) {
+    NodeKind ak = nt_kind(nt, av[i]);
+    const char *v = ak == NK_SymbolNode ? nt_str(nt, av[i], "value") :
+                    ak == NK_StringNode ? nt_str(nt, av[i], "content") : NULL;
+    if (v && (sp_streq(v, nm) || (ln > 1 && nm[ln - 1] == '=' && strlen(v) == ln - 1 && !strncmp(v, nm, ln - 1))))
+      return 1;
+  }
+  return 0;
+}
+
+/* Could a call of `nm` reach a method other than def `own`: another def of
+   the name, an accessor, Struct member, define_method or alias of it, or a
+   builtin one every object or class has? */
 static int cdef_name_inherited(const NodeTable *nt, const char *nm, int own) {
+  static const char *const makers[] = { "attr", "attr_reader", "attr_writer", "attr_accessor",
+    "define_method", "alias_method", NULL };
   if (builtin_object_method_known(nm) || builtin_method_known("Kernel", nm) ||
       builtin_method_known("Object", nm) || builtin_method_known("Module", nm))
     return 1;
-  NT_FOREACH_KIND(nt, NK_DefNode, d)
-    if (d != own && nt_str(nt, d, "name") && sp_streq(nt_str(nt, d, "name"), nm)) return 1;
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k == NK_DefNode && id != own && nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), nm)) return 1;
+    if (k == NK_AliasMethodNode) {
+      int nn = nt_ref(nt, id, "new_name");
+      if (nn >= 0 && nt_str(nt, nn, "value") && sp_streq(nt_str(nt, nn, "value"), nm)) return 1;
+    }
+    if (k != NK_CallNode) continue;
+    const char *cn = nt_str(nt, id, "name");
+    int r = nt_ref(nt, id, "receiver");
+    const char *rn = r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode ? nt_str(nt, r, "name") : NULL;
+    int member = cn && rn && ((sp_streq(cn, "new") && sp_streq(rn, "Struct")) ||
+                              (sp_streq(cn, "define") && sp_streq(rn, "Data")));
+    for (int i = 0; cn && makers[i] && !member; i++) member = sp_streq(cn, makers[i]);
+    if (member && cdef_call_names(nt, id, nm)) return 1;
+  }
   return 0;
 }
 
@@ -8992,6 +9043,13 @@ int desugar_conditional_defs(Compiler *c) {
        reaches the method the def would have overridden. */
     /* a lone def is chosen by a condition of its own class body; one in a
        class that a condition defines is that class's for good */
+    /* in a Class.new block the lowering would want the name the class does
+       not have yet: a lone def there is refused, and a group left as it was */
+    if (g[0].cls == -2) {
+      if (ng == 1 && g[0].here) cdef_refuse(nt, d0, "cond_def_class_new");
+      free(base);
+      continue;
+    }
     if (ng == 1 && !g[0].here) { free(base); continue; }
     if (ng == 1 && cdef_name_inherited(nt, base, d0)) {
       /* which method answers when the branch did not run is not known
