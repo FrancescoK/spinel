@@ -54,3 +54,14 @@ p n.sum
 s = +"ab"
 s << "c" << 100
 p s
+
+# a user `<<` that answers another object ends the chain: the second push
+# goes to that object, not back into the first receiver
+class Bag
+  attr_reader :items
+  def initialize(items = []) = @items = items
+  def <<(x) = Bag.new(@items + [x])
+end
+bag = Bag.new
+grown = bag << 1 << "two"
+p bag.items, grown.items

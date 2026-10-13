@@ -2733,9 +2733,14 @@ static TyKind index_op_write_value_type(Compiler *c, int id, int recv, TyKind vt
 }
 
 /* The container a call stores into through the pushes it chains onto:
-   `@v << a << b` pushes b into @v, as `@v << a; @v << b` does. A push that
-   answers a type other than its receiver's (an Integer shift, a user `<<`)
-   ends the chain. */
+   `@v << a << b` pushes b into @v, as `@v << a; @v << b` does. Only the
+   builtin Array push answers its receiver; any other `<<` (an Integer
+   shift, a user class's, a reopened Array's) ends the chain. */
+static int array_push_reopened(Compiler *c, const char *nm) {
+  for (int k = 0; k < c->nclasses; k++)
+    if (sp_streq(c->classes[k].name, "Array") && comp_method_in_chain(c, k, nm, NULL) >= 0) return 1;
+  return 0;
+}
 static int push_chain_base(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
   while (recv >= 0 && nt_kind(nt, recv) == NK_CallNode && nt_ref(nt, recv, "block") < 0) {
@@ -2744,7 +2749,8 @@ static int push_chain_base(Compiler *c, int recv) {
     if (args >= 0) nt_arr(nt, args, "arguments", &an);
     if (base < 0 || !nm || an < 1) break;
     if (!(sp_streq(nm, "<<") && an == 1) && !sp_streq(nm, "push") && !sp_streq(nm, "append")) break;
-    if (infer_type(c, recv) != infer_type(c, base)) break;
+    TyKind bt = infer_type(c, base);
+    if (!ty_is_array(bt) || infer_type(c, recv) != bt || array_push_reopened(c, nm)) break;
     recv = base;
   }
   return recv;
