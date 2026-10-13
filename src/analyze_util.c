@@ -3285,6 +3285,59 @@ static int node_is_container_read(const NodeTable *nt, int n) {
    silently raising the wrong NoMethodError for a method the arms never built. */
 static int send_name_is_computed(Compiler *c, int arg, int depth);
 
+/* Does subtree n build a name no literal spells: an interpolated Symbol or
+   String, or a to_sym / intern of something? */
+static int subtree_builds_name(const NodeTable *nt, int n, int depth) {
+  if (n < 0 || depth > 64) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_InterpolatedSymbolNode || k == NK_InterpolatedStringNode) return 1;
+  if (k == NK_CallNode) {
+    const char *cn = nt_str(nt, n, "name");
+    if (cn && (sp_streq(cn, "to_sym") || sp_streq(cn, "intern"))) return 1;
+  }
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) if (subtree_builds_name(nt, nt_ref_at(nt, n, i), depth + 1)) return 1;
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) if (subtree_builds_name(nt, ids[j], depth + 1)) return 1;
+  }
+  return 0;
+}
+/* Is the container a read of element `arg` comes out of filled with names
+   no literal spells? A constant whose value builds them (`M = Hash.new { |h,
+   t| h[t] = :"on_#{t}" }`, a literal of interpolated names), or any
+   container a `X[k] = v` stores such a name into. Then the element is a
+   computed name, whose arms are every method rather than the literals. */
+static int container_read_holds_computed(Compiler *c, int arg) {
+  const NodeTable *nt = c->nt;
+  int r = nt_ref(nt, arg, "receiver");
+  if (r < 0) return 0;
+  NodeKind rk = nt_kind(nt, r);
+  const char *rn = nt_str(nt, r, "name");
+  if (!rn) return 0;
+  if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
+    NT_FOREACH_KIND(nt, NK_ConstantWriteNode, w)
+      if (sp_streq(nt_str(nt, w, "name"), rn) && subtree_builds_name(nt, nt_ref(nt, w, "value"), 0)) return 1;
+  }
+  NT_FOREACH_KIND(nt, NK_CallNode, w) {
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, "[]=")) continue;
+    int wr = nt_ref(nt, w, "receiver");
+    if (wr < 0 || nt_kind(nt, wr) != rk || !sp_streq(nt_str(nt, wr, "name"), rn)) continue;
+    int a = nt_ref(nt, w, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (an >= 2 && subtree_builds_name(nt, av[an - 1], 0)) return 1;
+  }
+  return 0;
+}
+/* Is value n a name no literal spells: computed itself, or an element of a
+   container holding such names? */
+static int value_is_computed_name(Compiler *c, int n) {
+  if (node_is_container_read(c->nt, n)) return container_read_holds_computed(c, n);
+  return node_is_computed_name(c->nt, n);
+}
+
 /* Is the parameter `vn` of the method owning `arg` handed a computed name by
    a caller (#8592)? `handle(name) = public_send(name)` called with
    `"on_#{ev}".to_sym` reaches names no literal spells, so its send takes the
@@ -3326,8 +3379,7 @@ static int param_handed_computed_name(Compiler *c, int arg, const char *vn, int 
     int x = av[pi];
     NodeKind xk = nt_kind(nt, x);
     if (xk == NK_SplatNode || xk == NK_KeywordHashNode || xk == NK_BlockArgumentNode) continue;
-    if (node_is_container_read(nt, x)) continue;
-    if (node_is_computed_name(nt, x) || (xk == NK_LocalVariableReadNode && send_name_is_computed(c, x, depth + 1))) res = 1;
+    if (value_is_computed_name(c, x) || (xk == NK_LocalVariableReadNode && send_name_is_computed(c, x, depth + 1))) res = 1;
   }
   /* the memo may have been rebuilt by a deeper call: write only into the live one */
   if (key >= 0 && c->send_param_memo && c->send_param_memo_nodes == nt->count && key < c->send_param_memo_n)
@@ -3337,7 +3389,7 @@ static int param_handed_computed_name(Compiler *c, int arg, const char *vn, int 
 
 static int send_name_is_computed(Compiler *c, int arg, int depth) {
   const NodeTable *nt = c->nt;
-  if (node_is_container_read(nt, arg)) return 0;
+  if (node_is_container_read(nt, arg)) return container_read_holds_computed(c, arg);
   if (node_is_computed_name(nt, arg)) return 1;
   const char *aty = arg >= 0 ? nt_type(nt, arg) : NULL;
   if (!aty || !sp_streq(aty, "LocalVariableReadNode")) return 0;
@@ -3353,7 +3405,7 @@ static int send_name_is_computed(Compiler *c, int arg, int depth) {
     /* a local bound to such an element (`step = PLAN[i]; send(step)`) is
        that element */
     int wv = nt_ref(nt, id, "value");
-    if (node_is_computed_name(nt, wv) && !node_is_container_read(nt, wv)) return 1;
+    if (value_is_computed_name(c, wv)) return 1;
   }
   /* a parameter no statement of the method rebinds: the names its callers hand it */
   if (!written) return param_handed_computed_name(c, arg, vn, depth);
