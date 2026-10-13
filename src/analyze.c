@@ -36521,6 +36521,10 @@ static int splat_builtin_range(const char *name, int *lo, int *hi, int *variadic
     /* none is the no-pattern form, one the pattern: the Array whole was
        taken as the pattern (`any?(*[])` asked `[] === e`) */
     { "all?", 0, 1, 0 }, { "any?", 0, 1, 0 }, { "none?", 0, 1, 0 }, { "one?", 0, 1, 0 },
+    /* the readers a delegator forwards `*args` to, which take none: an
+       empty splat is the plain call, any other is the arity error */
+    { "size", 0, 0, 0 }, { "length", 0, 0, 0 }, { "empty?", 0, 0, 0 },
+    { "keys", 0, 0, 0 }, { "values", 0, 0, 0 }, { "to_a", 0, 0, 0 },
     { NULL, 0, 0, 0 }
   };
   for (int i = 0; tab[i].name; i++)
