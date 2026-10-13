@@ -1225,7 +1225,7 @@ typedef struct {
   /* --share-strings: the walk deciding the methods' answers while
      an_mark_handle_returns runs (analyze.c), else NULL: a method's answer
      asked meanwhile is decided where it is asked (scope_ret_handle,
-     scope_ret_fresh) */
+     scope_ret_fresh, scope_ret_param) */
   struct RetHandles *ret_walk;
   /* --share-strings: each node's parent at seal, for where a new String is
      boxed (share_plan_box_plain) */
