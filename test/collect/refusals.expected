@@ -1192,6 +1192,12 @@ spinel: 1 refusal, nothing written
 == test/reject/setter_symbol_block_builtin.rb [promote] rc=1
 spinel: test/reject/setter_symbol_block_builtin.rb:6: a setter Symbol (`&:name=`) as the block of a builtin method is not supported
 spinel: 1 refusal, nothing written
+== test/reject/singleton_body_self_value.rb [default] rc=1
+spinel: test/reject/singleton_body_self_value.rb:6: self inside class << X is X's singleton class, which Spinel does not model: only its declarations and defs are supported there; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/singleton_body_self_value.rb [promote] rc=1
+spinel: test/reject/singleton_body_self_value.rb:6: self inside class << X is X's singleton class, which Spinel does not model: only its declarations and defs are supported there; see docs/limitations.md
+spinel: 1 refusal, nothing written
 == test/reject/singleton_class_body_non_def.rb [default] rc=1
 spinel: test/reject/singleton_class_body_non_def.rb:6: `class << obj` with a statement other than `def`, `private def` or `protected def` is not supported by AOT compilation: the methods are placed on the object's class at compile time, and only a `def` has a place there. Write each one as `def obj.m` (see docs/limitations.md)
 spinel: 1 refusal, nothing written
