@@ -794,10 +794,13 @@ static void sp_stw_park_locked(void) {
    from it. So every store is atomic, and those reads load it atomically; a
    plain store is a data race against them (ThreadSanitizer:
    sp_mutex_spin_acquire against sp_sched_block and runq_push). Relaxed is
-   enough: each such reader takes the value as a hint or a snapshot, and
-   anything it then does is ordered by the lock or the mutex's own exchange. */
+   enough for the spin, which takes the value as a hint and lets the mutex's
+   own exchange decide. The Thread readers load it with acquire: once they
+   see DEAD they read has_exc and the exception beside it, and the exit path
+   stores DEAD with release after those, so a thread that died of an
+   exception is never reported as one that finished normally. */
 #define SP_TH_SET_STATE(t, s) SP_ATOMIC_STORE(&(t)->state, (s), __ATOMIC_RELAXED)
-#define SP_TH_STATE(t)        SP_ATOMIC_LOAD(&(t)->state, __ATOMIC_RELAXED)
+#define SP_TH_STATE(t)        SP_ATOMIC_LOAD(&(t)->state, __ATOMIC_ACQUIRE)
 
 #ifdef SP_THREADS
 static void sp_safepoint_preempt(void);   /* defined after the scheduler state below */
@@ -2179,7 +2182,6 @@ static void run_thread_once(sp_thread *t) { sp_gc_wb((void*)t);   /* PRE/POST: s
 #endif
   if (t->fiber->state == 3) {   /* the body returned (terminated) */
     t->retval = t->fiber->yielded_value;
-    SP_TH_SET_STATE(t, SP_TH_DEAD);
 #ifdef SP_THREADS
     if (t->home_wid >= 0 && g_wslot[t->home_wid].pinned > 0) g_wslot[t->home_wid].pinned--;
 #endif
@@ -2194,6 +2196,9 @@ static void run_thread_once(sp_thread *t) { sp_gc_wb((void*)t);   /* PRE/POST: s
       do_report = t->report_on_exception &&
                   !(ec && strcmp(ec, "SystemExit") == 0);
     }
+    /* DEAD goes up after retval and the exception fields, with release:
+       #status and #inspect read has_exc once they see it, without the lock. */
+    SP_ATOMIC_STORE(&t->state, SP_TH_DEAD, __ATOMIC_RELEASE);
     /* Record t AFTER the stores above, not only on the way into this function.
        The barrier at the top has been consumed by then: the transfer runs the
        thread's body, which allocates, and any collection in there clears every
