@@ -1585,7 +1585,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_FLOAT, "integer?",    0, 127, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "((void)($r), FALSE)" },
   { TY_FLOAT, "real?",       0, 127, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "((void)($r), TRUE)" },
   { TY_FLOAT, "nonzero?",    0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "(($r) != 0.0 ? sp_box_float($r) : sp_box_nil())" },  /* self or nil */
-  { TY_FLOAT, "div",         1,   1, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "sp_float_div_i($r, $f0)" },
+  { TY_FLOAT, "div",         1,   1, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "sp_float_div_i($r, $F0)" },
   { TY_FLOAT, "abs2",        0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "(($r) * ($r))" },
   { TY_FLOAT, "real",        0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "($r)" },
   { TY_FLOAT, "conj",        0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "($r)" },
@@ -1596,7 +1596,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_FLOAT, "magnitude",   0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "fabs($r)" },
   { TY_FLOAT, "modulo",      1,   1, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "sp_fmod($r, $F0)" },
   { TY_FLOAT, "modulo",      0, 127, BF_ANY,      TY_FLOAT,       BOPE_NONE },
-  { TY_FLOAT, "remainder",   1,   1, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "sp_fremainder($r, $f0)" },
+  { TY_FLOAT, "remainder",   1,   1, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "sp_fremainder($r, $F0)" },
   { TY_FLOAT, "remainder",   0, 127, BF_ANY,      TY_FLOAT,       BOPE_NONE },
   { TY_FLOAT, "to_f",        0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "({ sp_ofloat _t$t = $N; _t$t.nil ? 0.0 : _t$t.v; })" },
   { TY_FLOAT, "imag",        0, 127, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "((void)($r), (sp_int)0)" },

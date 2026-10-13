@@ -512,8 +512,14 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     if ((is_to_rational(name)) && argc == 0) {
       buf_printf(b, "sp_brat_from_bigint(%s)", r); free(rs.p); return 1;
     }
+    /* quo divides as the boxed one does, exactly or as a Float: the
+       operand read as a Bignum made a Float or a Rational a truncated
+       Integer (sp_poly_as_bigint), and a zero one a (1/0) */
     if (sp_streq(name, "quo") && argc == 1) {
-      buf_printf(b, "sp_box_brat(%s, ", r); emit_bigint_operand(c, argv[0], b); buf_puts(b, ")");
+      int t = ++g_tmp, ta = ++g_tmp;
+      buf_printf(b, "({ sp_Bigint *_t%d = %s; SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", t, r, t, ta);
+      emit_boxed(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_poly_quo(sp_box_bigint(_t%d), _t%d); })", ta, t, ta);
       free(rs.p); return 1;
     }
     free(rs.p);

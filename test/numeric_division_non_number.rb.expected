@@ -1,0 +1,198 @@
+7.div: TypeError: :a can't be coerced into Integer
+7.divmod: TypeError: :a can't be coerced into Integer
+7.remainder: TypeError: :a can't be coerced into Integer
+7.quo: TypeError: :a can't be coerced into Rational
+2.5.fdiv: TypeError: :a can't be coerced into Float
+2**70.div: TypeError: :a can't be coerced into Integer
+Rational.quo: TypeError: :a can't be coerced into Rational
+typed 7.div: TypeError: :a can't be coerced into Integer
+typed 7.divmod: TypeError: :a can't be coerced into Integer
+typed 7.quo: TypeError: :a can't be coerced into Rational
+typed 2**70.div: TypeError: :a can't be coerced into Integer
+typed 2**70.quo: TypeError: :a can't be coerced into Rational
+typed 2.5.div: TypeError: :a can't be coerced into Float
+typed 2.5.remainder: TypeError: :a can't be coerced into Float
+typed 2.5.modulo: TypeError: :a can't be coerced into Float
+typed 2.5.quo: TypeError: :a can't be coerced into Float
+7.div: TypeError: String can't be coerced into Integer
+7.divmod: TypeError: String can't be coerced into Integer
+7.remainder: TypeError: String can't be coerced into Integer
+7.quo: TypeError: String can't be coerced into Rational
+2.5.fdiv: TypeError: String can't be coerced into Float
+2**70.div: TypeError: String can't be coerced into Integer
+Rational.quo: TypeError: String can't be coerced into Rational
+typed 7.div: TypeError: String can't be coerced into Integer
+typed 7.divmod: TypeError: String can't be coerced into Integer
+typed 7.quo: TypeError: String can't be coerced into Rational
+typed 2**70.div: TypeError: String can't be coerced into Integer
+typed 2**70.quo: TypeError: String can't be coerced into Rational
+typed 2.5.div: TypeError: String can't be coerced into Float
+typed 2.5.remainder: TypeError: String can't be coerced into Float
+typed 2.5.modulo: TypeError: String can't be coerced into Float
+typed 2.5.quo: TypeError: String can't be coerced into Float
+7.div: TypeError: nil can't be coerced into Integer
+7.divmod: TypeError: nil can't be coerced into Integer
+7.remainder: TypeError: nil can't be coerced into Integer
+7.quo: TypeError: nil can't be coerced into Rational
+2.5.fdiv: TypeError: nil can't be coerced into Float
+2**70.div: TypeError: nil can't be coerced into Integer
+Rational.quo: TypeError: nil can't be coerced into Rational
+typed 7.div: TypeError: nil can't be coerced into Integer
+typed 7.divmod: TypeError: nil can't be coerced into Integer
+typed 7.quo: TypeError: nil can't be coerced into Rational
+typed 2**70.div: TypeError: nil can't be coerced into Integer
+typed 2**70.quo: TypeError: nil can't be coerced into Rational
+typed 2.5.div: TypeError: nil can't be coerced into Float
+typed 2.5.remainder: TypeError: nil can't be coerced into Float
+typed 2.5.modulo: TypeError: nil can't be coerced into Float
+typed 2.5.quo: TypeError: nil can't be coerced into Float
+7.div: TypeError: true can't be coerced into Integer
+7.divmod: TypeError: true can't be coerced into Integer
+7.remainder: TypeError: true can't be coerced into Integer
+7.quo: TypeError: true can't be coerced into Rational
+2.5.fdiv: TypeError: true can't be coerced into Float
+2**70.div: TypeError: true can't be coerced into Integer
+Rational.quo: TypeError: true can't be coerced into Rational
+typed 7.div: TypeError: true can't be coerced into Integer
+typed 7.divmod: TypeError: true can't be coerced into Integer
+typed 7.quo: TypeError: true can't be coerced into Rational
+typed 2**70.div: TypeError: true can't be coerced into Integer
+typed 2**70.quo: TypeError: true can't be coerced into Rational
+typed 2.5.div: TypeError: true can't be coerced into Float
+typed 2.5.remainder: TypeError: true can't be coerced into Float
+typed 2.5.modulo: TypeError: true can't be coerced into Float
+typed 2.5.quo: TypeError: true can't be coerced into Float
+7.div: TypeError: Array can't be coerced into Integer
+7.divmod: TypeError: Array can't be coerced into Integer
+7.remainder: TypeError: Array can't be coerced into Integer
+7.quo: TypeError: Array can't be coerced into Rational
+2.5.fdiv: TypeError: Array can't be coerced into Float
+2**70.div: TypeError: Array can't be coerced into Integer
+Rational.quo: TypeError: Array can't be coerced into Rational
+typed 7.div: TypeError: Array can't be coerced into Integer
+typed 7.divmod: TypeError: Array can't be coerced into Integer
+typed 7.quo: TypeError: Array can't be coerced into Rational
+typed 2**70.div: TypeError: Array can't be coerced into Integer
+typed 2**70.quo: TypeError: Array can't be coerced into Rational
+typed 2.5.div: TypeError: Array can't be coerced into Float
+typed 2.5.remainder: TypeError: Array can't be coerced into Float
+typed 2.5.modulo: TypeError: Array can't be coerced into Float
+typed 2.5.quo: TypeError: Array can't be coerced into Float
+7.div: TypeError: Plain can't be coerced into Integer
+7.divmod: TypeError: Plain can't be coerced into Integer
+7.remainder: TypeError: Plain can't be coerced into Integer
+7.quo: TypeError: Plain can't be coerced into Rational
+2.5.fdiv: TypeError: Plain can't be coerced into Float
+2**70.div: TypeError: Plain can't be coerced into Integer
+Rational.quo: TypeError: Plain can't be coerced into Rational
+typed 7.div: TypeError: Plain can't be coerced into Integer
+typed 7.divmod: TypeError: Plain can't be coerced into Integer
+typed 7.quo: TypeError: Plain can't be coerced into Rational
+typed 2**70.div: TypeError: Plain can't be coerced into Integer
+typed 2**70.quo: TypeError: Plain can't be coerced into Rational
+typed 2.5.div: TypeError: Plain can't be coerced into Float
+typed 2.5.remainder: TypeError: Plain can't be coerced into Float
+typed 2.5.modulo: TypeError: Plain can't be coerced into Float
+typed 2.5.quo: TypeError: Plain can't be coerced into Float
+WithF 7.div: 3
+WithF 7.divmod: [3, 1.0]
+WithF 7.quo: 3.5
+WithF 7.fdiv: 3.5
+WithF 2.5.div: 1
+WithF 2.5.divmod: [1, 0.5]
+WithF 2.5.quo: 1.25
+WithF 2**70.div: 590295810358705651712
+WithF 2**70.quo: 5.902958103587057e+20
+WithF Rational.quo: 1.75
+WithF typed 7.div: 3
+WithF typed 7.divmod: [3, 1.0]
+WithF typed 7.quo: 3.5
+WithF typed 2**70.div: 590295810358705651712
+WithF typed 2**70.quo: 5.902958103587057e+20
+WithF typed 2.5.div: 1
+WithF typed 2.5.modulo: 0.5
+WithF typed 2.5.quo: 1.25
+WithF typed 2.5.fdiv: 1.25
+NoF 7.div: TypeError: can't convert NoF into Float
+NoF 7.divmod: TypeError: can't convert NoF into Float
+NoF 7.quo: TypeError: can't convert NoF into Float
+NoF 7.fdiv: TypeError: can't convert NoF into Float
+NoF 2.5.div: TypeError: can't convert NoF into Float
+NoF 2.5.divmod: TypeError: can't convert NoF into Float
+NoF 2.5.quo: TypeError: can't convert NoF into Float
+NoF 2**70.div: TypeError: can't convert NoF into Float
+NoF 2**70.quo: TypeError: can't convert NoF into Float
+NoF Rational.quo: TypeError: can't convert NoF into Float
+NoF typed 7.div: TypeError: can't convert NoF into Float
+NoF typed 7.divmod: TypeError: can't convert NoF into Float
+NoF typed 7.quo: TypeError: can't convert NoF into Float
+NoF typed 2**70.div: TypeError: can't convert NoF into Float
+NoF typed 2**70.quo: TypeError: can't convert NoF into Float
+NoF typed 2.5.div: TypeError: can't convert NoF into Float
+NoF typed 2.5.modulo: TypeError: can't convert NoF into Float
+NoF typed 2.5.quo: TypeError: can't convert NoF into Float
+NoF typed 2.5.fdiv: TypeError: can't convert NoF into Float
+Rational / Complex: ["1.000000e-01", "-2.000000e-01"]
+Rational.quo Complex: ["1.000000e-01", "-2.000000e-01"]
+Complex / Rational: ["8.000000e+00", "1.600000e+01"]
+Complex.quo Rational: ["8.000000e+00", "1.600000e+01"]
+Integer / Complex: ["2.361183e+20", "-4.722366e+20"]
+Integer.quo Complex: ["2.361183e+20", "-4.722366e+20"]
+Complex / Integer: ["8.470329e-22", "1.694066e-21"]
+Complex.quo Integer: ["8.470329e-22", "1.694066e-21"]
+Rational / Complex: ["7.870611e+19", "-1.574122e+20"]
+Rational.quo Complex: ["7.870611e+19", "-1.574122e+20"]
+Complex / Rational: ["2.541099e-21", "5.082198e-21"]
+Complex.quo Rational: ["2.541099e-21", "5.082198e-21"]
+7.quo Complex: ["1.400000e+00", "-2.800000e+00"]
+2.5.quo Complex: ["5.000000e-01", "-1.000000e+00"]
+Complex / 0r: ZeroDivisionError: divided by 0
+Complex.quo 0r: ZeroDivisionError: divided by 0
+Float Complex / 0r: (Infinity+Infinity*i)
+Complex / Rational: (3+6i)
+Float Complex / Rational: (10.0+20.0i)
+Float Complex / 2**600: (2.409919865102884e-181+4.819839730205768e-181i)
+Complex.quo 2: (2+4i)
+Complex.quo nil: TypeError: nil can't be coerced into Complex
+Integer / Complex(0, 0): ZeroDivisionError: divided by 0
+Float / Complex(0, 0): ZeroDivisionError: divided by 0
+Rational / Complex(0, 0): ZeroDivisionError: divided by 0
+Complex / Complex(0, 0): ZeroDivisionError: divided by 0
+Complex / Complex(0.0, 0): (NaN+NaN*i)
+Slash.quo Complex: NoMethodError
+1180591620717411303424 + 1/3: (3541774862152233910273/3)
+1180591620717411303424 - 1/3: (3541774862152233910271/3)
+1180591620717411303424 * 1/3: (1180591620717411303424/3)
+1180591620717411303424 / 1/3: (3541774862152233910272/1)
+1/3 + 1180591620717411303424: (3541774862152233910273/3)
+1/3 - 1180591620717411303424: (-3541774862152233910271/3)
+1/3 * 1180591620717411303424: (1180591620717411303424/3)
+1/3 / 1180591620717411303424: (1/3541774862152233910272)
+1180591620717411303424 <=> WithF: 1
+1180591620717411303424 < WithF: false
+1180591620717411303424 <=> NoF: TypeError: can't convert NoF into Float
+7 <=> WithF: 1
+7 < WithF: false
+7 <=> NoF: TypeError: can't convert NoF into Float
+1.5 <=> WithF: -1
+1.5 < WithF: true
+1.5 <=> NoF: TypeError: can't convert NoF into Float
+1/2 <=> WithF: -1
+1/2 < WithF: true
+1/2 <=> NoF: TypeError: can't convert NoF into Float
+7.quo(2**70): (7/1180591620717411303424)
+7.quo(Rational): (21/1)
+7.quo(box 2.5): 2.8
+7.quo(box 2**70): (7/1180591620717411303424)
+7.quo(box 0): ZeroDivisionError: divided by 0
+2**70.quo(3): (1180591620717411303424/3)
+2**70.quo(2.5): 4.7223664828696455e+20
+2**70.quo(Rational): (3541774862152233910272/1)
+2**70.quo(box 0): ZeroDivisionError: divided by 0
+box 2**70.quo(box 3): (1180591620717411303424/3)
+box 2**70.quo(box 2**68 * 3): (4/3)
+box Rational.quo(box 2**70): (1/3541774862152233910272)
+nil
+nil
+1
+"comparison of Integer with :a failed"
