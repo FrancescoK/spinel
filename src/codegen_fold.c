@@ -12326,7 +12326,7 @@ int reader_override_handle_arms(Compiler *c, int id, int cid, const char *name, 
     if (arm < 0) return 0;
     /* (read as a box, an override answering a box hands on what it holds) */
     if (boxed && (TyKind)c->scopes[kmi].ret == TY_POLY) { any = 1; continue; }
-    if ((TyKind)c->scopes[kmi].ret != TY_STRING || (!c->scopes[arm].ret_handle && !c->scopes[arm].ret_fresh))
+    if ((TyKind)c->scopes[kmi].ret != TY_STRING || (!scope_ret_handle(c, arm) && !scope_ret_fresh(c, arm)))
       return 0;
     any = 1;
   }

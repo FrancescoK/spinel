@@ -4932,10 +4932,11 @@ static int sh_user_call_fresh(Compiler *c, int call, int depth) {
   for (int i = 0; i < n; i++) {
     if (tg[i] < 0 || tg[i] >= c->nscopes) return 0;
     Scope *m = &c->scopes[tg[i]];
-    if (m->ret_param >= 0) {
-      if (!share_value_fresh(c, arg_layout_param_source(c, m, call, m->ret_param, NULL), depth + 1)) return 0;
+    int rp = scope_ret_param(c, tg[i]);
+    if (rp >= 0) {
+      if (!share_value_fresh(c, arg_layout_param_source(c, m, call, rp, NULL), depth + 1)) return 0;
     }
-    else if (F->ret_joined[tg[i]] && !m->ret_fresh) return 0;
+    else if (F->ret_joined[tg[i]] && !scope_ret_fresh(c, tg[i])) return 0;
   }
   return 1;
 }
@@ -5452,7 +5453,7 @@ int share_node_carries_handle(const Compiler *c, int n) {
     for (int i = 0; i < pp->n && all; i++) {
       const PolyArm *a = &pp->arm[i];
       if (a->kind == PA_READER) all = a->vty == TY_STRBUF;
-      else if (a->kind == PA_USER) all = a->mi > 0 && c->scopes[a->mi].ret_handle;
+      else if (a->kind == PA_USER) all = a->mi > 0 && scope_ret_handle((Compiler *)c, a->mi);
       else all = 0;
     }
     if (all) return 1;

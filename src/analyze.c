@@ -21555,7 +21555,7 @@ int an_tail_logic_op(Compiler *c, int node) {
   TyKind t = comp_ntype(c, node), lt = comp_ntype(c, nt_ref(c->nt, node, "left"));
   return (t == TY_STRING || t == TY_STRBUF) && (lt == TY_STRING || lt == TY_STRBUF);
 }
-typedef struct { unsigned char *st; int *ret_start, *ret_list; int fresh; } RetHandles;
+typedef struct RetHandles { unsigned char *st; int *ret_start, *ret_list; int fresh; } RetHandles;
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc);
 static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *n, RetHandles *R);
 static int an_stmts_tail_shared(Compiler *c, int st, int nil_ok, TailCount *tc, RetHandles *R) {
@@ -21755,9 +21755,19 @@ static int an_mutated_handle_returns(Compiler *c, int **ret_start, int **ret_lis
    form) has no call to pick up from; one typed other than String answers
    no handle to pick up. Fresh String and nil arms use the pickup's existing
    fresh-tail clearing and nil check. Each method is decided once, its tail calls'
-   targets first (a cycle answers no). */
+   targets first (a cycle answers no), and so is a method whose answer a
+   tail's own test asks (a builtin tail over a call, strbuf_builtin_tail,
+   asks whether that call publishes): the walk is Compiler.ret_walk while
+   it runs, and scope_ret_handle and scope_ret_fresh decide such a method
+   where they are asked, not in the order the methods are defined. */
 enum { RH_UNSEEN, RH_BUSY, RH_YES, RH_NO };
 static int an_ret_handle(Compiler *c, RetHandles *R, int mi);
+/* Method mi is decided: yes or no, and for the handle walk its field. */
+static int an_ret_decided(Compiler *c, RetHandles *R, int mi, int yes) {
+  R->st[mi] = yes ? RH_YES : RH_NO;
+  if (!R->fresh) c->scopes[mi].ret_handle = (unsigned char)yes;
+  return yes;
+}
 /* A parameter's identity survives mutation, but not rebinding. The local
    write index is a bucket: check both its scope and name. All borrowed
    tails must name the same parameter of the method being decided. */
@@ -21883,13 +21893,9 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
   if (!R->fresh && m->yields && repr_self_handle(c, mi)) {
     int pf = scope_proc_form_of(c, mi);
     R->st[mi] = RH_BUSY;
-    R->st[mi] = pf >= 0 && an_ret_handle(c, R, pf) ? RH_YES : RH_NO;
-    return R->st[mi] == RH_YES;
+    return an_ret_decided(c, R, mi, pf >= 0 && an_ret_handle(c, R, pf));
   }
-  if (!an_ret_handle_body(c, R, mi)) {
-    R->st[mi] = RH_NO;
-    return 0;
-  }
+  if (!an_ret_handle_body(c, R, mi)) return an_ret_decided(c, R, mi, 0);
   R->st[mi] = RH_BUSY;
   const NodeTable *nt = c->nt;
   int ok = 1, saw = 0;
@@ -21917,7 +21923,7 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
   if (ok && tc.reads > 0 && tc.bangs && !R->fresh) m->ret_pub_bang = 1;
   /* An all-raising body publishes no handle for a caller to pick up (a fresh
      String answered beside no handle read is the fresh pickup's own). */
-  R->st[mi] = ok && saw && (R->fresh || tc.reads > 0) ? RH_YES : RH_NO;
+  an_ret_decided(c, R, mi, ok && saw && (R->fresh || tc.reads > 0));
   if (R->fresh) {
     m->ret_fresh = R->st[mi] == RH_YES && tc.param < 0;
     m->ret_param = R->st[mi] == RH_YES ? tc.param : -1;
@@ -21930,13 +21936,15 @@ static void an_mark_handle_returns(Compiler *c) {
   R.st = calloc((size_t)c->nscopes + 1, 1);
   if (!R.st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   an_returns_by_scope(c, &R.ret_start, &R.ret_list);
-  for (int mi = 1; mi < c->nscopes; mi++) c->scopes[mi].ret_handle = (unsigned char)an_ret_handle(c, &R, mi);
+  c->ret_walk = &R;
+  for (int mi = 1; mi < c->nscopes; mi++) an_ret_handle(c, &R, mi);
   /* The sibling fact uses the same tails, return index and active-visit
      guard; only its leaf question differs. Each method is asked once per
      fact, and a cycle remains conservative. */
   memset(R.st, 0, (size_t)c->nscopes + 1);
   R.fresh = 1;
   for (int mi = 1; mi < c->nscopes; mi++) an_ret_handle(c, &R, mi);
+  c->ret_walk = NULL;
   free(R.st); free(R.ret_start); free(R.ret_list);
   /* A deep-return pickup marked while the types settled, on a call whose
      method answers a box after all (a parameter that settled poly): the
@@ -21950,6 +21958,26 @@ static void an_mark_handle_returns(Compiler *c) {
     for (int i = 0; i < cnt && poly; i++) poly = c->scopes[mis[i]].ret == TY_POLY;
     if (poly) c->strbuf_box[n] = 0;
   }
+}
+/* The accessors of analyze.h. A fact is decided here only while its own
+   walk runs: the handle walk runs first and reads the fresh facts as not
+   decided yet (no, and no parameter), as it always has, and the fresh
+   walk reads no handle fact. */
+static void an_ret_settle(Compiler *c, int mi, int fresh) {
+  RetHandles *R = c->ret_walk;
+  if (R && R->fresh == fresh && mi > 0 && mi < c->nscopes) an_ret_handle(c, R, mi);
+}
+int scope_ret_handle(Compiler *c, int mi) {
+  an_ret_settle(c, mi, 0);
+  return mi > 0 && mi < c->nscopes && c->scopes[mi].ret_handle;
+}
+int scope_ret_fresh(Compiler *c, int mi) {
+  an_ret_settle(c, mi, 1);
+  return mi > 0 && mi < c->nscopes && c->scopes[mi].ret_fresh;
+}
+int scope_ret_param(Compiler *c, int mi) {
+  an_ret_settle(c, mi, 1);
+  return mi > 0 && mi < c->nscopes ? c->scopes[mi].ret_param : -1;
 }
 static int promote_shared_stored_strings_pass(Compiler *c);
 /* A String builtin answering a new Array of new Strings nothing else holds
