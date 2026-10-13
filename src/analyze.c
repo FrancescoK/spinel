@@ -10704,6 +10704,38 @@ static int desugar_thread_start(Compiler *c) {
   return changed;
 }
 
+/* system(cmd, ..., out: File::NULL) -> __sp_system_spawn(cmd, ..., out: ...):
+   CRuby's system is a spawn and a wait, and Process.spawn already takes the
+   options, so a call with keyword arguments goes to builtins/system_spawn.rb,
+   which the parser spliced for it. Only when that method is there and the
+   program defines no `system` of its own; any other system call keeps its
+   direct path (and its refusals). */
+static int desugar_system_options(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, helper = 0, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_DefNode || nt_ref(nt, id, "receiver") >= 0) continue;
+    const char *dn = nt_str(nt, id, "name");
+    if (!dn) continue;
+    if (sp_streq(dn, "system")) return 0;
+    if (sp_streq(dn, "__sp_system_spawn")) helper = 1;
+  }
+  if (!helper) return 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "system") || nt_ref(nt, id, "receiver") >= 0) continue;
+    if (nt_ref(nt, id, "block") >= 0) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an < 2 || nt_kind(nt, av[an - 1]) != NK_KeywordHashNode) continue;
+    nt_node_set_str(nt, id, "name", "__sp_system_spawn");
+    changed = 1;
+  }
+  return changed;
+}
+
 static int desugar_file_stat_new(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -40779,6 +40811,7 @@ static void an_phase_desugar_register(Compiler *c) {
   /* `m(&nil)` is the blockless call */
   desugar_nil_block_arg(c);
   desugar_thread_start(c);               /* Thread.start / .fork -> Thread.new */
+  desugar_system_options(c);             /* system(..., out:) -> spawn + wait */
   desugar_literal_undef_method(c);       /* undef_method :a in a body -> undef a */
   /* a bare constant CRuby's lookup cannot reach, bound by its leaf name to a
      nested definition: refused while the source still says where each

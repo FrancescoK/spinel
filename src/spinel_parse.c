@@ -4255,6 +4255,37 @@ static char *sp_splice_process_detach(char *source, const char *exe_path,
   return sp_prepend_require(source, exe_path, "require \"builtins/process_detach\"\n", fsl, fsl_n);
 }
 
+/* builtins/system_spawn.rb: Kernel#system with an options or environment
+   Hash, for a program that calls system with a keyword argument (the
+   analysis renames those calls to it, desugar_system_options) */
+static int sp_src_system_call_has_keyword(const char *source) {
+  for (const char *p = strstr(source, "system"); p; p = strstr(p + 6, "system")) {
+    if (p > source && (isalnum((unsigned char)p[-1]) || p[-1] == '_' || p[-1] == '.' ||
+                       p[-1] == ':' || p[-1] == '@' || p[-1] == '$')) continue;
+    const char *q = p + 6;
+    if (*q != '(' && *q != ' ') continue;
+    /* the call's text: to the end of its line, and on through a line that
+       ends inside the argument list (a trailing comma or open parenthesis) */
+    for (; *q; q++) {
+      if (*q == '\n') {
+        const char *e = q;
+        while (e > p && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r')) e--;
+        if (e > p && (e[-1] == ',' || e[-1] == '(')) continue;
+        break;
+      }
+      /* `name:` and not `Name::` -- a keyword argument */
+      if (*q == ':' && q[1] != ':' && (isalnum((unsigned char)q[-1]) || q[-1] == '_')) return 1;
+    }
+  }
+  return 0;
+}
+
+static char *sp_splice_system_spawn(char *source, const char *exe_path,
+                                    unsigned char **fsl, size_t *fsl_n) {
+  if (!sp_src_system_call_has_keyword(source)) return source;
+  return sp_prepend_require(source, exe_path, "require \"builtins/system_spawn\"\n", fsl, fsl_n);
+}
+
 static char *sp_splice_builtins(char *source, const char *exe_path,
                                 unsigned char **fsl, size_t *fsl_n) {
   if (getenv("SPINEL_NO_BUILTINS")) return source;   /* the A/B switch: the C emitters alone */
@@ -5074,6 +5105,7 @@ static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
   source = sp_splice_named_builtin(source, argv0, "ThreadGroup", "builtins/thread_group", &fsl, &fsl_n);
   source = sp_splice_object_space(source, argv0, &fsl, &fsl_n);
   source = sp_splice_process_detach(source, argv0, &fsl, &fsl_n);
+  source = sp_splice_system_spawn(source, argv0, &fsl, &fsl_n);
   /* CRuby provides Set (3.2+) and IO::Buffer without a require wherever
      they are used, in a required file as well (activesupport's
      notifications/fanout.rb; #6740 for IO::Buffer). Ask over the resolved
