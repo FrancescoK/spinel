@@ -1012,6 +1012,7 @@ static int *cmc_slot(Compiler *c, const char *name, int is_cm) {
   cmc_cm[j] = (unsigned char)is_cm; cmc_ans[j] = a; cmc_n++;
   return a;
 }
+static const char *resolve_alias_side(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin, int sg);
 static int chain_lookup(Compiler *c, int class_id, const char *name, int *def_class, int is_cm) {
   int *a = class_id >= 0 && class_id < c->nclasses ? cmc_slot(c, name, is_cm) : NULL;
   if (a && a[2 * class_id] != -2) {
@@ -1020,7 +1021,7 @@ static int chain_lookup(Compiler *c, int class_id, const char *name, int *def_cl
   }
   int start = class_id, mi = -1, dc = -1, bi = 0;
   const char *rn = is_cm ? comp_resolve_cm_alias_at(c, class_id, name, &start)
-                         : comp_resolve_alias_ex(c, class_id, name, &start, &bi);
+                         : resolve_alias_side(c, class_id, name, &start, &bi, 2);
   /* an alias that captured a builtin's method names no method of the
      program's, whatever the class defines of that name later */
   if (bi && !is_cm && !sp_streq(rn, name)) start = -1;
@@ -1879,20 +1880,17 @@ int comp_resolve_member(Compiler *c, int class_id, const char *name, int want_wr
   return SP_MEMBER_METHOD;
 }
 
-static const char *resolve_alias_side(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin, int sg);
 const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin) {
   return resolve_alias_side(c, class_id, name, start_cls, builtin, 0);
 }
 /* The class-method side of a class reads its singleton aliases
    (`class << self; alias a b`) and those of the modules it extends: an
    instance one names no class method (`alias name cop_name` made a class
-   method's Module#name call the class method cop_name). The instance side
-   reads the instance aliases, and a module's side reads every alias. */
+   method's Module#name call the class method cop_name). An instance
+   method's lookup reads the instance aliases, and a module's side every
+   alias. */
 const char *comp_resolve_cm_alias_at(Compiler *c, int class_id, const char *name, int *start_cls) {
   return resolve_alias_side(c, class_id, name, start_cls, NULL, 1);
-}
-const char *comp_resolve_cm_alias_ex(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin) {
-  return resolve_alias_side(c, class_id, name, start_cls, builtin, 1);
 }
 static const char *resolve_alias_side(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin, int sg) {
   if (builtin) *builtin = 0;
@@ -1908,15 +1906,16 @@ static const char *resolve_alias_side(Compiler *c, int class_id, const char *nam
     const char *next = NULL;
     for (int cid = class_id; cid >= 0 && !next; cid = c->classes[cid].parent) {
       ClassInfo *ci = &c->classes[cid];
-      /* The instance side reads the instance aliases only. The class side
-         reads the singleton ones, and in a module the instance ones too: a
-         module's instance alias can be a module function as well (`alias
-         shellwords shellsplit; module_function :shellwords`, or `extend
-         self`). */
+      /* The class side (1) reads the singleton aliases, and in a module the
+         instance ones too: a module's instance alias can be a module
+         function as well (`alias shellwords shellsplit; module_function
+         :shellwords`, or `extend self`). An instance method's lookup (2)
+         reads the instance aliases only; the other callers (0) read every
+         alias, as they always have. */
       int mod = ci->def_node >= 0 && nt_kind(c->nt, ci->def_node) == NK_ModuleNode;
       for (int i = (cid == lim_cls ? lim : ci->naliases) - 1; i >= 0; i--) {
         int asg = ci->alias_sg && ci->alias_sg[i];
-        if ((sg ? asg || mod : !asg) && sp_streq(ci->alias_new[i], name)) {
+        if ((sg == 1 ? asg || mod : sg == 2 ? !asg : 1) && sp_streq(ci->alias_new[i], name)) {
           next = ci->alias_old[i];
           /* An alias of an INHERITED method names the body that was in effect
              where the alias appeared, so a redefinition in this class must not
@@ -1940,8 +1939,8 @@ static const char *resolve_alias_side(Compiler *c, int class_id, const char *nam
       /* on the class side, a module the class extends brings its instance
          aliases as the class's own -- behind the class methods the class
          defines itself, which its singleton class answers first */
-      if (sg && !next && comp_cmethod_in_class(c, cid, name) >= 0) break;
-      for (int e = 0; sg && !next && e < ci->nextended_mods; e++) {
+      if (sg == 1 && !next && comp_cmethod_in_class(c, cid, name) >= 0) break;
+      for (int e = 0; sg == 1 && !next && e < ci->nextended_mods; e++) {
         int m = ci->extended_mods[e];
         if (m < 0 || m >= c->nclasses) continue;
         ClassInfo *mi = &c->classes[m];
