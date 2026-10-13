@@ -9185,9 +9185,9 @@ static int str_arms_poly_pattern(Compiler *c, int id, Buf *b, const NodeTable *n
   ok = ok && str_arms_text(c, id, &eb, nt, name, recv, argc, argv, rs);
   view_pop(c, v);
   view_unbind(bind);
-  /* a Range, from a slot one was written into, takes the substring arm:
+  /* a Range (value_may_be_range) takes the substring arm:
      s[range] read it as an Integer index */
-  if (is_slice_alias(name) && argc == 1 && local_range_held(c, argv[0])) {
+  if (is_slice_alias(name) && argc == 1 && value_may_be_range(c, argv[0])) {
     buf_printf(&eb, ") : (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? (", tp, tp);
     bind = view_bind(argv[0], "(*(sp_Range *)_t%d.v.p)", tp);
     v = view_push(c, argv[0], TY_RANGE);

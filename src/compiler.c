@@ -557,7 +557,7 @@ void slot_rule(Compiler *c, LocalVar *lv, TyKind t, int node, const char *reason
 
 int slot_set(Compiler *c, LocalVar *lv, TyKind merged, TyKind t, int node) {
   int held = 0;
-  if (!lv->range_held && (t == TY_RANGE || local_range_held(c, node))) { lv->range_held = 1; held = 1; }
+  if (!lv->range_held && (t == TY_RANGE || value_may_be_range(c, node))) { lv->range_held = 1; held = 1; }
   if (merged == lv->type) {
     if (!ty_degraded(merged) && merged != TY_UNKNOWN && node >= 0) lv->last_src = node;
     return held;
@@ -591,6 +591,44 @@ int local_range_held(Compiler *c, int node) {
   const char *nm = nt_str(c->nt, node, "name");
   LocalVar *lv = s && nm ? scope_local(s, nm) : NULL;
   return lv && lv->range_held;
+}
+
+/* Can node's value be a Range, by its form: a Range-typed value, a read of
+   a slot one was written into, an arm of a conditional, or a call of a
+   method whose value can be one (Scope.ret_range)? */
+int value_may_be_range(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  for (int d = 0; node >= 0 && d < 32; d++) {
+    if (comp_ntype(c, node) == TY_RANGE) return 1;
+    switch (nt_kind(nt, node)) {
+    case NK_LocalVariableReadNode: return local_range_held(c, node);
+    case NK_RangeNode: return 1;
+    case NK_ParenthesesNode: node = nt_ref(nt, node, "body"); break;
+    case NK_ElseNode: node = nt_ref(nt, node, "statements"); break;
+    case NK_StatementsNode: {
+      int n = 0; const int *b = nt_arr(nt, node, "body", &n);
+      node = n > 0 ? b[n - 1] : -1;
+      break;
+    }
+    case NK_IfNode: case NK_UnlessNode:
+      if (value_may_be_range(c, nt_ref(nt, node, "statements"))) return 1;
+      node = nt_ref(nt, node, nt_kind(nt, node) == NK_IfNode ? "subsequent" : "else_clause");
+      break;
+    case NK_OrNode: case NK_AndNode:
+      if (value_may_be_range(c, nt_ref(nt, node, "left"))) return 1;
+      node = nt_ref(nt, node, "right");
+      break;
+    case NK_CallNode: {
+      const char *nm = nt_str(nt, node, "name");
+      int recv = nt_ref(nt, node, "receiver"), mi = -1;
+      if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) mi = comp_self_call_mi(c, node, nm);
+      else if (ty_is_object(comp_ntype(c, recv))) mi = comp_method_in_chain(c, ty_object_class(comp_ntype(c, recv)), nm, NULL);
+      return mi >= 0 && mi < c->nscopes && c->scopes[mi].ret_range;
+    }
+    default: return 0;
+    }
+  }
+  return 0;
 }
 
 /* Runtime typedefs `sp_<X>` a user class name could redefine. A user class whose

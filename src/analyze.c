@@ -13331,7 +13331,8 @@ static int narrow_object_arrays(Compiler *c) {
    which is `sprite[2]` -- a poly-array element -- on one branch but is only ever
    used `% 4`, `==`, and as `@output_color[pixel]`). Requiring at least one index
    use proves the value is genuinely an integer, so coercing a poly source is
-   sound. Strictly conservative: any non-int use, op-assign, or non-int/poly
+   sound -- unless a Range can reach the slot (range_held), which indexes
+   too and takes the slice. Strictly conservative: any non-int use, op-assign, or non-int/poly
    write source leaves it TY_POLY. */
 /* Arithmetic/bitwise operators only -- NOT comparisons (`==`/`<`/`<=>`...),
    which are polymorphic (a string compares with `==` too), so a comparison
@@ -13377,7 +13378,7 @@ static void narrow_poly_int_locals(Compiler *c) {
     for (int li = 0; li < sc->nlocals; li++) {
       LocalVar *lv = &sc->locals[li];
       if (lv->type != TY_POLY) continue;
-      if (lv->is_param || lv->is_block_param || lv->is_cell || lv->rbs_seeded) continue;
+      if (lv->is_param || lv->is_block_param || lv->is_cell || lv->rbs_seeded || lv->range_held) continue;
       const char *nm = lv->name;
       int ok = 1, saw_write = 0;
 

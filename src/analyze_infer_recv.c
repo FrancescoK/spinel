@@ -778,9 +778,8 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       if (argc == 2) { *out = rt; return 1; }
       if (argc == 1 && ((nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode")) ||
                         a0 == TY_RANGE)) { *out = rt; return 1; }
-      /* a boxed index from a slot a Range was written into: an element or a
-         subarray, boxed */
-      if (argc == 1 && a0 == TY_POLY && local_range_held(c, argv[0])) { *out = TY_POLY; return 1; }
+      /* a boxed index that may be a Range: an element or a subarray, boxed */
+      if (argc == 1 && a0 == TY_POLY && value_may_be_range(c, argv[0])) { *out = TY_POLY; return 1; }
       { *out = ty_array_elem(rt); return 1; }
     }
     if (sp_streq(name, "fetch") && (argc == 1 || argc == 2)) {
