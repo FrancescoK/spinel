@@ -1321,6 +1321,14 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	   grep -q 'sp_String_new_shared' "$$tmp/queries.c"; then \
 	  echo "share-strings-test: FAIL (a literal query unnecessarily shares its Strings)"; ok=0; \
 	fi; \
+	if ! $(SPINEL) --share-strings test/share/poly_ivar_store_receivers.rb -c --no-line-map -o "$$tmp/ivstore.c" >"$$tmp/out" 2>&1 || \
+	   grep -q 'sp_String_new_fresh' "$$tmp/ivstore.c"; then \
+	  echo "share-strings-test: FAIL (a Hash store through a boxed ivar's reader shares a String)"; ok=0; \
+	fi; \
+	if ! $(SPINEL) --share-strings test/share/poly_ivar_op_write_shares.rb -c --no-line-map -o "$$tmp/ivopw.c" >"$$tmp/out" 2>&1 || \
+	   ! grep -q 'sp_String_new_fresh' "$$tmp/ivopw.c"; then \
+	  echo "share-strings-test: FAIL (an operator write through an attribute is not taken as a String write)"; ok=0; \
+	fi; \
 	if ! $(SPINEL) --share-strings test/share/share_strings_narrow_reads.rb -c --no-line-map -o "$$tmp/reads.c" >"$$tmp/out" 2>&1 || \
 	   grep -q 'sp_poly_as_strbuf' "$$tmp/reads.c"; then \
 	  echo "share-strings-test: FAIL (a narrowed byte read allocates a handle)"; ok=0; \
