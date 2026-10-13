@@ -12981,6 +12981,22 @@ static void sb_refuse(NodeTable *nt, int id) {
   nt_node_set_ref(nt, id, "arguments", args);
 }
 
+/* `Kernel` or `::Kernel` as a receiver: Kernel.puts(self) prints self as a
+   bare puts does */
+static int sb_kernel_recv(const NodeTable *nt, int r) {
+  NodeKind rk = nt_kind(nt, r);
+  if (rk == NK_ConstantPathNode && nt_ref(nt, r, "parent") >= 0) return 0;
+  return (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) && nt_str(nt, r, "name") &&
+         sp_streq(nt_str(nt, r, "name"), "Kernel");
+}
+
+/* Does the program define a method named `nm` (a printer of its own)? */
+static int sb_program_defines(const NodeTable *nt, const char *nm) {
+  NT_FOREACH_KIND(nt, NK_DefNode, d)
+    if (nt_str(nt, d, "name") && sp_streq(nt_str(nt, d, "name"), nm)) return 1;
+  return 0;
+}
+
 static int sb_walk(NodeTable *nt, int node) {
   if (node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
@@ -12995,7 +13011,7 @@ static int sb_walk(NodeTable *nt, int node) {
       sb_refuse(nt, node);
       return 1;
     }
-    if (r < 0 && sb_printer(nm))
+    if ((r < 0 || sb_kernel_recv(nt, r)) && sb_printer(nm) && !sb_program_defines(nt, nm))
       for (int i = 0; i < ac; i++)
         if (nt_kind(nt, av[i]) == NK_SelfNode) { sb_refuse(nt, node); return 1; }
     /* a block that rebinds self (class_eval and kin, define_method) has a
