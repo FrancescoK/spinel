@@ -22283,12 +22283,18 @@ static void an_mark_handle_returns(Compiler *c) {
   if (!R.st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   an_returns_by_scope(c, &R.ret_start, &R.ret_list);
   c->ret_walk = &R;
-  for (int mi = 1; mi < c->nscopes; mi++) an_ret_handle(c, &R, mi);
-  /* The sibling fact uses the same tails, return index and active-visit
-     guard; only its leaf question differs. Each method is asked once per
-     fact, and a cycle remains conservative. */
-  memset(R.st, 0, (size_t)c->nscopes + 1);
+  /* The sibling fact, a new String or a parameter on every path (ret_fresh,
+     ret_param), uses the same tails, return index and active-visit guard;
+     only its leaf question differs, and it reads no handle fact. It is
+     decided first: the handle walk's own tests read it (a boxed to_s whose
+     every user method answers a handle or a new String,
+     repr_boxed_to_s_operand; a call answering a new String beside handle
+     reads, share_call_fresh), and read before it they saw no method fresh.
+     Each method is asked once per fact, and a cycle remains conservative. */
   R.fresh = 1;
+  for (int mi = 1; mi < c->nscopes; mi++) an_ret_handle(c, &R, mi);
+  memset(R.st, 0, (size_t)c->nscopes + 1);
+  R.fresh = 0;
   for (int mi = 1; mi < c->nscopes; mi++) an_ret_handle(c, &R, mi);
   c->ret_walk = NULL;
   free(R.st); free(R.ret_start); free(R.ret_list); free(R.par);
@@ -22306,9 +22312,8 @@ static void an_mark_handle_returns(Compiler *c) {
   }
 }
 /* The accessors of analyze.h. A fact is decided here only while its own
-   walk runs: the handle walk runs first and reads the fresh facts as not
-   decided yet (no, and no parameter), as it always has, and the fresh
-   walk reads no handle fact. */
+   walk runs: the fresh walk runs first and reads no handle fact, and the
+   handle walk reads the fresh facts it settled. */
 static void an_ret_settle(Compiler *c, int mi, int fresh) {
   RetHandles *R = c->ret_walk;
   if (!R || R->fresh != fresh || mi <= 0 || mi >= c->nscopes || R->settling >= RH_SETTLE_MAX) return;

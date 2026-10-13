@@ -3085,8 +3085,13 @@ int strbuf_builtin_tail(Compiler *c, int v) {
   int x = strbuf_route_operand(c, v);
   int built = strbuf_route_reopen_pf(c, v) || strbuf_route_ie(c, v) ||
               (x >= 0 && x != unwrap_parens(c, v) && nt_kind(c->nt, unwrap_parens(c, x)) == NK_ParenthesesNode);
+  /* (a boxed to_s whose every user method answers a handle it publishes
+     or a new String, repr_boxed_to_s_operand, is such a route over its
+     dispatch: emit_strbuf_handle_of takes each arm's answer as a handle,
+     the box's own where the default arm answers the String in it) */
   return (t == TY_STRING || t == TY_STRBUF) &&
-         (cplan_user_fresh(c, v)->dispatch == CP_NONE || strbuf_route_reopen_pf(c, v)) &&
+         (cplan_user_fresh(c, v)->dispatch == CP_NONE || strbuf_route_reopen_pf(c, v) ||
+          repr_boxed_to_s_operand(c, v) >= 0) &&
          !share_node_fresh(c, v) && (strbuf_value_carries(c, v) || strbuf_bang_tail(c, v)) &&
          (!built || strbuf_tail_answer_kept(c, v));
 }
