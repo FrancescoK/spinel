@@ -649,11 +649,26 @@ static int sh_in_class_method(Compiler *c, int n) {
   return sc && sc->is_cmethod && sc->def_node >= 0 && nt_kind(c->nt, sc->def_node) == NK_DefNode;
 }
 /* Does a class have a singleton accessor of the name (`class << self;
-   attr_reader :name`), which a class method's receiverless call reads? */
+   attr_reader :name`), which a boxed receiver's call may read? */
 static int sh_singleton_accessor(ShareFacts *F, Compiler *c, const char *name) {
   if (!F->singleton_accessors) return 0;
   for (int k = 0; k < c->nclasses; k++)
     if (comp_is_sg_reader(&c->classes[k], name) || comp_is_sg_writer(&c->classes[k], name)) return 1;
+  return 0;
+}
+/* ... one that the receiverless call n in a class method may read: self
+   there is the method's class or a subclass, which answers the accessor of
+   an ancestor or its own. Another class's accessor of the name is not
+   self's method (`name` there is still Module#name). */
+static int sh_self_singleton_accessor(ShareFacts *F, Compiler *c, int n, const char *name) {
+  if (!F->singleton_accessors) return 0;
+  const Scope *sc = comp_scope_of(c, n);
+  int cid = sc ? sc->class_id : -1;
+  if (cid < 0 || cid >= c->nclasses) return sh_singleton_accessor(F, c, name);
+  for (int k = 0; k < c->nclasses; k++)
+    if ((comp_is_sg_reader(&c->classes[k], name) || comp_is_sg_writer(&c->classes[k], name)) &&
+        (is_descendant(c, cid, k) || is_descendant(c, k, cid)))
+      return 1;
   return 0;
 }
 
@@ -2977,12 +2992,14 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   }
 
   /* an attr reader or writer (not an instance's for a class method's self,
-     a Class) */
+     a Class: its singleton accessor reads the class's own storage, which
+     no instance's ivar holds, and the call stays one the walk does not
+     follow) */
   int cls_self = recv < 0 && sh_in_class_method(c, n);
   if (argc <= 1 && (recv < 0 || ty_is_object(rt) || rt == TY_POLY || rt == TY_UNKNOWN)) {
     int writer = 0;
     int iv = sh_attr_ivars(F, c, name, n, &writer);
-    if (iv >= 0 && writer == (argc == 1) && !(cls_self && !sh_singleton_accessor(F, c, name))) {
+    if (iv >= 0 && writer == (argc == 1) && !cls_self) {
       int r = iv;
       if (writer) {
         int vals[1];
@@ -3041,7 +3058,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   if (recv < 0) {
     int s = bop_share_named(BOP_KERNEL, name);
     /* a class method's self is its Class (`name` there is Module#name) */
-    if (!s && cls_self && bop_share_named(TY_CLASS, name) && !sh_singleton_accessor(F, c, name))
+    if (!s && cls_self && bop_share_named(TY_CLASS, name) && !sh_self_singleton_accessor(F, c, n, name))
       s = bop_share_named(TY_CLASS, name);
     if (!s) s = bop_share_named(BOP_ANY_RECV, name);
     return s ? sh_builtin(F, c, n, s, rv, blk, 0) : sh_unknown_call(F, c, n, blk);
