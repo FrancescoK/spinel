@@ -24678,6 +24678,11 @@ static const char *poly_recv_ivar(Compiler *c, int r, char *buf, size_t cap) {
   }
   else if (ty_is_object(comp_ntype(c, recv))) cid = ty_object_class(comp_ntype(c, recv));
   if (cid < 0 || cid >= c->nclasses || comp_class_is_module(c, &c->classes[cid])) return NULL;
+  /* A subclass's alias can name another attribute of the same class
+     (`alias_method :x, :y` under the class of both readers): the reader is
+     the defining class's either way, so the attribute each class reads is
+     compared by the name its aliases resolve to. */
+  const char *an = comp_resolve_alias(c, cid, nm);
   int kind = SP_MEMBER_NONE, dc = -1, mi = -1;
   for (int j = 0; j < c->nclasses; j++) {
     int a = j;
@@ -24687,12 +24692,13 @@ static const char *poly_recv_ivar(Compiler *c, int r, char *buf, size_t cap) {
     int jk = comp_resolve_member(c, j, nm, 0, &jd, &jm);
     if (jk == SP_MEMBER_NONE || jd < 0 || jd >= c->nclasses) return NULL;
     if (j == cid) { kind = jk; dc = jd; mi = jm; }
-    else if (jk != kind || jd != dc || (jk == SP_MEMBER_METHOD && jm != mi)) return NULL;
+    else if (jk != kind || jd != dc || (jk == SP_MEMBER_METHOD && jm != mi) ||
+             (jk == SP_MEMBER_ATTR && !sp_streq(comp_resolve_alias(c, j, nm), an))) return NULL;
   }
   if (kind == SP_MEMBER_NONE || c->classes[dc].is_struct || c->classes[dc].is_data || c->classes[dc].is_native_class)
     return NULL;
   if (kind == SP_MEMBER_ATTR)
-    return snprintf(buf, cap, "@%s", comp_resolve_alias(c, cid, nm)) < (int)cap ? buf : NULL;
+    return snprintf(buf, cap, "@%s", an) < (int)cap ? buf : NULL;
   /* (a `return` elsewhere in the method answers another value) */
   if (mi < 0 || mi >= c->nscopes || comp_ret_first(c, mi) >= 0) return NULL;
   const char *ivn = an_memo_reader_ivar(c, mi);
