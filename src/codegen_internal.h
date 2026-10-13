@@ -251,10 +251,10 @@ int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth);
    a route (read once, nil raising NoMethodError for id), 0 neither
    (codegen_stmt.c) */
 int strbuf_recv_handle(Compiler *c, int id, int recv, char *out, size_t cap);
-/* --share-strings: handle text `out` of recv (strbuf_slot_ref) wrapped,
-   when recv is a deep-return pickup that can answer nil, to raise
-   NoMethodError for String mutator `name`; 2 wrapped, else 1
-   (codegen_stmt.c) */
+/* The handle text `out` of recv (strbuf_slot_ref), wrapped under
+   --share-strings, when recv is a deep-return pickup that can answer nil,
+   to raise NoMethodError for String mutator `name`: 2 wrapped, 1 read
+   bare, 0 no slot read (nothing emitted) (codegen_stmt.c) */
 int strbuf_pickup_nil_check(Compiler *c, const char *name, int recv, char *out, size_t cap);
 /* strbuf_recv_handle, and under --share-strings a route whose text outgrows
    out, emitted whole into lb instead (emit_recv_route_handle; 2): the

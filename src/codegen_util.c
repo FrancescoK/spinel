@@ -3289,8 +3289,7 @@ int sb_reader_shim_open(Compiler *c, int id, int recv, char *sref, size_t cap, S
   int ran = repr_share_rule(c) && nt_kind(c->nt, recv) == NK_CallNode && ran_first_read_handle(recv) >= 0;
   if (!gv && !rp.handle && !rp.demand && !ran) return 0;
   if (g_n_argov >= MAX_ARG_OVERRIDE) return 0;
-  if (!strbuf_slot_ref(c, recv, sref, cap)) return 0;
-  strbuf_pickup_nil_check(c, nt_str(c->nt, id, "name"), recv, sref, cap);
+  if (!strbuf_pickup_nil_check(c, nt_str(c->nt, id, "name"), recv, sref, cap)) return 0;
   int tH = ++g_tmp;
   /* the marks lifted and the handle type dropped for the shim's lifetime:
      views, so a refusal inside it puts them back (view_unwind) */
