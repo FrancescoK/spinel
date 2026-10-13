@@ -775,9 +775,13 @@ no_gsub_enum:
         emit_boxed(c, argv[0], &vb);
         char *val = NULL;
         const char *fn = vb.p ? boxed_number_value(vb.p, at, &val) : NULL;
+        /* a value that can be nil is boxed from its oint / ofloat, so the
+           temp holding it has that type */
+        const char *vty = at == TY_INT ? "sp_int" : "sp_float";
+        if (fn && fn == ty_box_nil_fn(at)) vty = at == TY_INT ? "sp_oint" : "sp_ofloat";
         if (fn)
           buf_printf(b, ", ({ %s _fv = %s; sp_PolyArray *_fa = sp_PolyArray_new(); sp_PolyArray_push(_fa, %s(_fv)); _fa; })%s",
-                     at == TY_INT ? "sp_int" : "sp_float", val, fn, fend ? fend : ")");
+                     vty, val, fn, fend ? fend : ")");
         else
           buf_printf(b, ", ({ sp_PolyArray *_fa = sp_PolyArray_new(); SP_GC_ROOT(_fa); sp_PolyArray_push(_fa, %s); _fa; })%s",
                      vb.p ? vb.p : "sp_box_nil()", fend ? fend : ")");
