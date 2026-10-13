@@ -41463,6 +41463,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_reader_aliases_before_redef(c); /* attr_reader :v; alias w v; def v -> def w = @v */
   desugar_reassigned_block_params(c);   /* |p| p = other -> |p__bpin| p = p__bpin; p = other */
   desugar_class_reopen(c);               /* class Class / Class.class_eval -> a module */
+  desugar_inline_struct_blocks(c);      /* Struct.new(:x) { .. } -> (__spinel_struct_1 = Struct.new(:x) { .. }) */
   desugar_class_new_blocks(c);           /* X = Class.new(B) do..end -> class X < B; ..; end */
   desugar_struct_block_name_reads(c);   /* Point = Struct.new do p self end -> refused */
   desugar_included_hooks(c);             /* include M / extend M -> M.included/extended(base)'s body */
