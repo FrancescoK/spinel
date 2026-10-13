@@ -90,6 +90,20 @@ class OptionParser
   OctalInteger = /\A[-+]?(?:[0-7]+(?:_[0-7]+)*|0(?:#{binary}|#{hex}))\z/io
   DecimalNumeric = FLOAT_VALUE
 
+  # The value types with a converter, as CRuby's accept(type, pattern): the
+  # word must match the pattern, and a converter that raises ArgumentError
+  # (0x1f for OctalInteger) makes it invalid. TrueClass and FalseClass,
+  # which complete their words, are read by boolean_value.
+  ACCEPT = {
+    String => [/.+/m, ->(word, m) { word }],
+    Array => [//, ->(word, m) { word.split(",").map { |item| item.empty? ? nil : item } }],
+    Integer => [INTEGER_VALUE, ->(word, m) { Integer(word) }],
+    Float => [FLOAT_VALUE, ->(word, m) { word.to_f }],
+    DecimalInteger => [DecimalInteger, ->(word, m) { Integer(word, 10) }],
+    OctalInteger => [OctalInteger, ->(word, m) { Integer(word, 8) }],
+    DecimalNumeric => [DecimalNumeric, ->(word, m) { m[1] ? Float(word) : Integer(word) }]
+  }
+
   # One name an enum switch accepts and the value it passes.
   class Choice
     attr_reader :name, :value, :string_key
@@ -292,8 +306,7 @@ class OptionParser
         (a[1] == "-" ? longs : shorts).push(a[0, cut])
       elsif a.is_a?(String)
         descriptions.push(a)
-      elsif a == String || a == Array || a == Integer || a == Float || a == TrueClass || a == FalseClass ||
-            a == DecimalInteger || a == OctalInteger || a == DecimalNumeric
+      elsif ACCEPT.key?(a) || a == TrueClass || a == FalseClass
         type = a
         choice_value = false
       elsif enum?(a)
@@ -378,59 +391,32 @@ class OptionParser
     @tail + [@help]
   end
 
-  # Passes the value to the block in the switch's type. An empty String or
-  # a word that is not an Integer or a Float raises InvalidArgument naming
-  # it as given (shown). Object is the type of a switch declared without one.
   def invoke(sw, value, shown)
+    value = convert(sw, value, shown)
     handler = sw.handler
+    handler.call(value) if handler
+  end
+
+  # The value in the switch's type. A word the type refuses raises
+  # InvalidArgument naming it as given (shown). Object is the type of a
+  # switch declared without one, and passes the word as it is.
+  def convert(sw, value, shown)
     type = sw.type
     choices = sw.choices
     if choices && !value.nil?
       choice = choose(choices, value, shown)
-      if sw.choice_value
-        handler.call(choice.value) if handler
-        return
-      end
+      return choice.value if sw.choice_value
     end
-    if value.nil? && (type == TrueClass || type == FalseClass)
-      handler.call(type == TrueClass) if handler
-    elsif value.nil? || type == Object
-      handler.call(value) if handler
-    elsif type == TrueClass || type == FalseClass
-      handler.call(boolean_value(value, shown)) if handler
-    elsif type == String
-      raise invalid_argument(shown) if value.empty?
-      handler.call(value) if handler
-    elsif type == Array
-      handler.call(value.split(",").map { |item| item.empty? ? nil : item }) if handler
-    elsif type == Integer
-      raise invalid_argument(shown) unless value.match?(INTEGER_VALUE)
-      begin
-        number = Integer(value)
-      rescue ArgumentError
-        raise invalid_argument(shown)
-      end
-      handler.call(number) if handler
-    elsif type == DecimalInteger || type == OctalInteger
-      raise invalid_argument(shown) unless value.match?(type)
-      begin
-        number = Integer(value, type == DecimalInteger ? 10 : 8)
-      rescue ArgumentError
-        raise invalid_argument(shown)
-      end
-      handler.call(number) if handler
-    elsif type == DecimalNumeric
-      match = DecimalNumeric.match(value)
-      raise invalid_argument(shown) unless match
-      begin
-        number = match[1] ? Float(value) : Integer(value)
-      rescue ArgumentError
-        raise invalid_argument(shown)
-      end
-      handler.call(number) if handler
-    else
-      raise invalid_argument(shown) unless value.match?(FLOAT_VALUE)
-      handler.call(value.to_f) if handler
+    return type == TrueClass if value.nil? && (type == TrueClass || type == FalseClass)
+    return value if value.nil? || type == Object
+    return boolean_value(value, shown) if type == TrueClass || type == FalseClass
+    pattern, converter = ACCEPT[type]
+    match = pattern.match(value)
+    raise invalid_argument(shown) unless match
+    begin
+      converter.call(value, match)
+    rescue ArgumentError
+      raise invalid_argument(shown)
     end
   end
 
