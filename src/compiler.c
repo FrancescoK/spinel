@@ -408,6 +408,53 @@ int comp_const_write_valued(const Compiler *c, const LocalVar *cv) {
   return cv && cv->type != TY_UNKNOWN && cv->type != TY_STRING && !cv->init_guarded &&
          repr_slot_kind(c, cv) != RK_STRBUF;
 }
+/* A `klass::NM` read on a class value names whichever constant the runtime
+   class owns: the one keyed "<c_name>__NM", or "<...>__<c_name>__NM" under an
+   owner's qualified spelling. Asking each class meant walking every constant
+   per class, classes x constants per read. Only a constant keyed "<...>__NM"
+   can match, so those are listed once (ascending, in a malloc'd *out the
+   caller frees), and each class looks among them. */
+int comp_const_tail_cands(Compiler *c, const char *nm, int **out) {
+  *out = NULL;
+  if (!nm) return 0;
+  size_t nl = strlen(nm);
+  int n = 0, cap = 0;
+  for (int i = 0; i < c->nconsts; i++) {
+    const char *cn = c->consts[i].name;
+    size_t l = strlen(cn);
+    if (l < nl + 2 || strcmp(cn + l - nl, nm) != 0 || strncmp(cn + l - nl - 2, "__", 2) != 0) continue;
+    if (n == cap) {
+      cap = cap ? cap * 2 : 8;
+      *out = realloc(*out, sizeof(int) * (size_t)cap);
+      if (!*out) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    (*out)[n++] = i;
+  }
+  return n;
+}
+/* The constant class k owns under NM (comp_const_tail_cands above), or -1:
+   the first, in table order, whose key is "<c_name>__NM" or ends in
+   "__<c_name>__NM". A key too long for the buffer is matched as it was
+   before the list, against every constant. */
+int comp_class_owned_const(Compiler *c, int k, const char *nm, const int *cands, int ncands) {
+  const char *kn = c->classes[k].c_name;
+  if (!kn || !nm) return -1;
+  char tail[512];
+  snprintf(tail, sizeof tail, "%s__%s", kn, nm);
+  size_t tl = strlen(tail);
+  int all = strlen(kn) + 2 + strlen(nm) >= sizeof tail;
+  int n = all ? c->nconsts : ncands;
+  for (int j = 0; j < n; j++) {
+    int ci = all ? j : cands[j];
+    const char *cn = c->consts[ci].name;
+    size_t l = strlen(cn);
+    if (l < tl || strcmp(cn + l - tl, tail) != 0) continue;
+    /* either the whole key, or a component edge before it */
+    if (l > tl && strncmp(cn + l - tl - 2, "__", 2) != 0) continue;
+    return ci;
+  }
+  return -1;
+}
 /* Constants are looked up by name on every read the analysis types, and a
    large program has thousands: a hash over the names, rebuilt when the table
    grows or moves (its names are unique, interned by comp_const_intern). */

@@ -8690,23 +8690,15 @@ static int infer_constant_path(Compiler *c, int id, const NodeTable *nt, NodeKin
     TyKind prt = dyn ? infer_type(c, dpar) : TY_UNKNOWN;
     if (nm && dyn && (prt == TY_CLASS || prt == TY_POLY)) {
       TyKind ct = TY_UNKNOWN; int nc = 0, uniform = 1;
+      int *cands, ncands = comp_const_tail_cands(c, nm, &cands);
       for (int k = 0; k < c->nclasses; k++) {
-        const char *kn = c->classes[k].c_name;
-        if (!kn) continue;
-        char tail[512];
-        snprintf(tail, sizeof tail, "%s__%s", kn, nm);
-        size_t tl = strlen(tail);
-        for (int ci2 = 0; ci2 < c->nconsts; ci2++) {
-          const char *cn2 = c->consts[ci2].name;
-          size_t l2 = strlen(cn2);
-          if (l2 < tl || strcmp(cn2 + l2 - tl, tail) != 0) continue;
-          if (l2 > tl && strncmp(cn2 + l2 - tl - 2, "__", 2) != 0) continue;
-          if (nc == 0) ct = c->consts[ci2].type;
-          else if (c->consts[ci2].type != ct) uniform = 0;
-          nc++;
-          break;
-        }
+        int ci2 = comp_class_owned_const(c, k, nm, cands, ncands);
+        if (ci2 < 0) continue;
+        if (nc == 0) ct = c->consts[ci2].type;
+        else if (c->consts[ci2].type != ct) uniform = 0;
+        nc++;
       }
+      free(cands);
       if (nc > 0 && uniform && ct != TY_UNKNOWN) { *out = ct; return 1; }
     }
   }
