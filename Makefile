@@ -5015,6 +5015,11 @@ CALL_SHAPES_LIMIT ?= 4.5
 # plan's own work is about 0.02% of either count); the limit sits about 5%
 # above.
 SCALE_SHARE_LIMIT ?= 6.6
+# A chain of forty bangs over a String a method answers, compiled to C with
+# --share-strings under a CPU-time limit, as the hash-literal fan-out is:
+# strbuf_bang_self_local asked each link once per path that reaches it,
+# exponential in the chain's length (25 links took more than ten minutes;
+# 40 take a fraction of a second once each link is answered once per query).
 # Each count is taken only from a compile that succeeded (sw): spinel-work
 # prints its count from an atexit handler, also when the compile fails, so
 # reading it alone would accept the ratio of a program that did not build.
@@ -5041,6 +5046,8 @@ scale-test: $(SPINEL_WORK)
 	hb=$$(sw -c -o "$$tmp/h128.c" "$$tmp/h128.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	( ulimit -t 20; $(SPINEL_WORK) -c -o "$$tmp/hls.c" test/scale/hash_literal_sources_fanout.rb ) >/dev/null 2>&1 || \
 	  { rm -rf "$$tmp"; echo "scale-test: FAIL (the hash-literal source walk revisited call sites along every path)"; exit 1; }; \
+	( ulimit -t 20; $(SPINEL_WORK) --share-strings -c -o "$$tmp/bch.c" test/share/bang_chain_held_receiver.rb ) >/dev/null 2>&1 || \
+	  { rm -rf "$$tmp"; echo "scale-test: FAIL (a bang chain over a held receiver was asked once per path to each link, see strbuf_bang_self_local)"; exit 1; }; \
 	sh test/scale/ie_forward_chain.sh 2 > "$$tmp/f2.rb"; sh test/scale/ie_forward_chain.sh 4 > "$$tmp/f4.rb"; \
 	fa=$$(sw -c -o "$$tmp/f2.c" "$$tmp/f2.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	fb=$$(sw -c -o "$$tmp/f4.c" "$$tmp/f4.rb") || { rm -rf "$$tmp"; exit 1; }; \

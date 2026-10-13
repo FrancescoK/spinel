@@ -3399,7 +3399,58 @@ int strbuf_held_chain(const Compiler *c, int r) {
    variable or a constant that holds the handle the rule assigned, or a
    reader call read as the handle on a variable or self): its value is that
    String, or nil. */
+static int strbuf_bang_self_local_at(const Compiler *c, int v);
+/* The predicate asks itself of v's receiver, directly and through
+   strbuf_value_carries, strbuf_plain_self_call and strbuf_held_chain, so a
+   chain of bangs over a held receiver (`id(s).upcase!.downcase!...`) was
+   asked each link once per path to it: exponential in the chain's length.
+   It emits nothing and changes nothing it reads, so within one outermost
+   query each node's answer is fixed, whatever view, arm or splice is open:
+   the answers are kept for that query only (Compiler.bsl_*), each node's
+   stamped with the query, and a new query starts afresh. No answer outlives
+   its query, so nothing repr_of answers is kept across a change of view.
+   The invariant: a query is open only while its outermost call runs. A
+   refusal leaves by longjmp to a probe's recovery point (unsup_leave), past
+   any frame of a query, so unsupported and unsupported_feature close an open
+   query before they leave (strbuf_bang_query_close): an answer kept in it
+   would otherwise be reused by the next query, under another view. */
+static void strbuf_bang_query_close(Compiler *c) {
+  if (!c || c->bsl_depth == 0) return;
+  c->bsl_depth = 0;
+  /* (its answers are stale: the next query gets a stamp of its own) */
+  if (++c->bsl_cur == 0) {
+    memset(c->bsl_gen, 0, sizeof *c->bsl_gen * (size_t)c->bsl_n);
+    c->bsl_cur = 1;
+  }
+}
 int strbuf_bang_self_local(const Compiler *c, int v) {
+  if (v < 0) return 0;
+  Compiler *m = (Compiler *)c;
+  int n = c->nt->count;
+  if (v >= m->bsl_n) {
+    int nn = n > v ? n : v + 1;
+    unsigned *g = realloc(m->bsl_gen, sizeof *g * (size_t)nn);
+    unsigned char *a = realloc(m->bsl_val, (size_t)nn);
+    if (!g || !a) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memset(g + m->bsl_n, 0, sizeof *g * (size_t)(nn - m->bsl_n));
+    m->bsl_gen = g;
+    m->bsl_val = a;
+    m->bsl_n = nn;
+  }
+  if (m->bsl_depth == 0 && ++m->bsl_cur == 0) {
+    /* (the stamp wrapped: every kept answer is stale) */
+    memset(m->bsl_gen, 0, sizeof *m->bsl_gen * (size_t)m->bsl_n);
+    m->bsl_cur = 1;
+  }
+  if (m->bsl_gen[v] == m->bsl_cur) return m->bsl_val[v];
+  m->bsl_depth++;
+  int ans = strbuf_bang_self_local_at(c, v);
+  m->bsl_depth--;
+  m->bsl_gen[v] = m->bsl_cur;
+  m->bsl_val[v] = (unsigned char)ans;
+  return ans;
+}
+static int strbuf_bang_self_local_at(const Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   if (v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
   int self_ans = bop_share_self_answer(nt_str(nt, v, "name"), nt_ref(nt, v, "block") >= 0);
@@ -3622,6 +3673,7 @@ const char *rename_local(const char *nm) {
    compiler can be debugged, this names the feature and stops: the internals are
    noise when the answer is "this is a documented limit". #2652 / #2667 / #2668 */
 __attribute__((noreturn)) void unsupported_feature(Compiler *c, int id, const char *msg) {
+  strbuf_bang_query_close(c);
   if (g_unsup_probe) longjmp(g_unsup_recover, 1);
   refuse_at(c, id);
   int ln; const char *file = unsup_pos(c, id, &ln);
@@ -3822,6 +3874,8 @@ void refuse_prepass_at_emit(Compiler *c, int id) {
 }
 
 __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what) {
+  /* (no query of strbuf_bang_self_local's stays open past the unwind) */
+  strbuf_bang_query_close(c);
   /* Silent emittability probe (dynamic-send arm selection): unwind without a
      diagnostic, the caller just drops this arm. */
   if (g_unsup_probe) longjmp(g_unsup_recover, 1);
