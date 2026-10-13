@@ -1550,7 +1550,12 @@ static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, 
       int ivx = comp_ivar_index(&c->classes[rdcls], ivn);
       TyKind ivt = ivx >= 0 ? c->classes[rdcls].ivar_types[ivx] : TY_INT;
       int optional = oint_kind(ret) && repr_of(c, id).nil_scalar && ivx >= 0 && repr_of_ivar(c, rdcls, ivx).nil_scalar;
-      int conv = ((ret == TY_POLY && ivt == TY_INT) || optional) ? PC_BOX_OR_NIL
+      /* an Integer or Float ivar with a nil bit goes with its nil into a
+         boxed result or a result slot that holds one (an sp_oint), as the
+         arm emitter writes it */
+      int nilbit = ivx >= 0 && oint_kind(ivt) && ivar_has_nilbit(c, rdcls, ivx);
+      int slot_oint = is_scalar_ret(ret) && oint_kind(ret) && node_is_oint(c, id);
+      int conv = (ret == TY_POLY && ivt == TY_INT) || optional || (nilbit && (ret == TY_POLY || slot_oint)) ? PC_BOX_OR_NIL
                : ivt == TY_STRBUF && ret == TY_STRING && cpoly_conv(ret, ivt) == PC_SAME ? PC_COPY
                : cpoly_conv(ret, ivt);
       cpoly_add(p, &cap, PA_READER, k, -1, ivt, conv);
