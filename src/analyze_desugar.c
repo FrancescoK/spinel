@@ -3623,6 +3623,69 @@ int desugar_paren_def_body(Compiler *c) {
   return changed;
 }
 
+/* The truth of a condition fixed by its literals, or -1: true, false, nil,
+   their negation, and a comparison of two Integer, String or Symbol
+   literals (==, != for Symbols; also <, <=, >, >= for Integers and Strings)
+   whose operator the program does not define itself. */
+static int literal_truth(NodeTable *nt, int e) {
+  NodeKind k = nt_kind(nt, e);
+  if (k == NK_TrueNode) return 1;
+  if (k == NK_FalseNode || k == NK_NilNode) return 0;
+  if (k == NK_ParenthesesNode) {
+    int body = nt_ref(nt, e, "body"), bn = 0;
+    const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+    return bn == 1 ? literal_truth(nt, bb[0]) : -1;
+  }
+  if (k != NK_CallNode || nt_ref(nt, e, "block") >= 0) return -1;
+  const char *op = nt_str(nt, e, "name");
+  int recv = nt_ref(nt, e, "receiver"), args = nt_ref(nt, e, "arguments"), ac = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+  if (!op || recv < 0) return -1;
+  if (sp_streq(op, "!") && ac == 0) {
+    int t = literal_truth(nt, recv);
+    return t < 0 ? -1 : !t;
+  }
+  if (ac != 1) return -1;
+  int eq = sp_streq(op, "==") || sp_streq(op, "!=");
+  int ord = sp_streq(op, "<") || sp_streq(op, "<=") || sp_streq(op, ">") || sp_streq(op, ">=");
+  if (!eq && !ord) return -1;
+  NT_FOREACH_KIND(nt, NK_DefNode, d)
+    if (nt_str(nt, d, "name") && sp_streq(nt_str(nt, d, "name"), op)) return -1;
+  NodeKind lk = nt_kind(nt, recv), rk = nt_kind(nt, av[0]);
+  if (lk != rk) return eq && (lk == NK_IntegerNode || lk == NK_StringNode || lk == NK_SymbolNode) &&
+                       (rk == NK_IntegerNode || rk == NK_StringNode || rk == NK_SymbolNode)
+                         ? sp_streq(op, "!=") : -1;
+  int cmp;
+  if (lk == NK_IntegerNode) {
+    if (nt_str(nt, recv, "bigval") || nt_str(nt, av[0], "bigval")) return -1;
+    long long a = nt_int(nt, recv, "value", 0), b = nt_int(nt, av[0], "value", 0);
+    cmp = a < b ? -1 : a > b;
+  }
+  else if (lk == NK_StringNode || (lk == NK_SymbolNode && eq)) {
+    const char *key = lk == NK_StringNode ? "content" : "value";
+    const char *a = nt_str(nt, recv, key), *b = nt_str(nt, av[0], key);
+    if (!a || !b) return -1;
+    cmp = strcmp(a, b);
+  }
+  else return -1;
+  return sp_streq(op, "==") ? cmp == 0 : sp_streq(op, "!=") ? cmp != 0 : sp_streq(op, "<") ? cmp < 0 :
+         sp_streq(op, "<=") ? cmp <= 0 : sp_streq(op, ">") ? cmp > 0 : cmp >= 0;
+}
+
+/* Does `node` hold a def (not inside a nested def)? */
+static int literal_cond_has_def(NodeTable *nt, int node) {
+  if (node < 0) return 0;
+  if (nt_kind(nt, node) == NK_DefNode) return 1;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) if (literal_cond_has_def(nt, nt_ref_at(nt, node, i))) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++) if (literal_cond_has_def(nt, ids[j])) return 1;
+  }
+  return 0;
+}
+
 int desugar_engine_branches(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
@@ -3640,6 +3703,20 @@ int desugar_engine_branches(Compiler *c) {
   for (int id = 0; id < n0; id++)
     if (nt_kind(nt, id) == NK_IfNode || nt_kind(nt, id) == NK_UnlessNode)
       changed |= engine_absent_fold(nt, nt_ref(nt, id, "predicate"), id);
+  /* `if false; def m ... end; end`: a condition its literals fix defines
+     the method only on its live branch, as CRuby runs the body */
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_IfNode && nt_kind(nt, id) != NK_UnlessNode) continue;
+    int pred = nt_ref(nt, id, "predicate");
+    if (pred < 0 || nt_int(nt, pred, "engine_check", 0) > 0 || !literal_cond_has_def(nt, id)) continue;
+    int truth = literal_truth(nt, pred);
+    if (truth < 0) continue;
+    int nr = nt_num_refs(nt, pred);
+    for (int i = 0; i < nr; i++) engine_blank(nt, nt_ref_at(nt, pred, i));
+    nt_node_reset(nt, pred, truth ? "TrueNode" : "FalseNode");
+    nt_node_set_int(nt, pred, "engine_check", 1);
+    changed = 1;
+  }
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *op = nt_str(nt, id, "name");
