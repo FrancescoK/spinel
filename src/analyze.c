@@ -5196,6 +5196,50 @@ void class_unpin_ivar(ClassInfo *ci, const char *name) {
   }
 }
 
+/* A seed declares the Ruby type, not the C form (#8925). A Hash whose keys
+   inference boxes (`{[s, 1][0] => 1}`, an sp_PolyPolyHash) has no
+   conversion into a Hash the seed keys by one class (`Hash[String,
+   Integer]`, an sp_StrIntHash): the store was refused, and a return did not
+   compile. The seed of a slot such a Hash reaches gives way, and the slot
+   takes the form its values give it, as it does with no seed. A slot the
+   emitter converts such a Hash into keeps its seed (the callers say which). */
+static int seed_form_gives_way(TyKind seed, TyKind val) {
+  return ty_is_hash(seed) && seed != TY_POLY_POLY_HASH && val == TY_POLY_POLY_HASH;
+}
+
+/* Does ivar `name`'s pin hold against a write of `vt`? One that gives way
+   is dropped, and the slot re-derives from its writes. */
+int class_ivar_pin_holds(ClassInfo *ci, const char *name, TyKind vt) {
+  if (!class_ivar_pinned(ci, name)) return 0;
+  int iv = comp_ivar_index(ci, name);
+  if (iv < 0 || !seed_form_gives_way(ci->ivar_types[iv], vt)) return 1;
+  class_unpin_ivar(ci, name);
+  ci->ivar_types[iv] = TY_UNKNOWN;
+  return 0;
+}
+
+/* The same for a parameter's seed against an argument of `at`. A
+   Symbol-keyed one converts the argument at the call (sp_seed_sym_hash_arg,
+   #3994). */
+int param_seed_holds(LocalVar *lv, TyKind at) {
+  if (!lv->rbs_seeded) return 0;
+  if (lv->rbs_type == TY_SYM_POLY_HASH || !seed_form_gives_way(lv->rbs_type, at)) return 1;
+  lv->rbs_seeded = 0;
+  lv->rbs_type = TY_UNKNOWN;
+  lv->type = TY_UNKNOWN;
+  return 0;
+}
+
+/* And a return's against the value its body answers. A return of a
+   poly-valued Hash converts it (emit_hash_tail_conversion). */
+int ret_seed_holds(Scope *s, TyKind r) {
+  if (!s->ret_rbs_seeded) return 0;
+  if (s->ret == TY_SYM_POLY_HASH || s->ret == TY_STR_POLY_HASH || !seed_form_gives_way(s->ret, r)) return 1;
+  s->ret_rbs_seeded = 0;
+  s->ret_rbs_nilable = 0;
+  return 0;
+}
+
 void class_pin_ivar(ClassInfo *ci, const char *name) {
   if (class_ivar_pinned(ci, name)) return;
   if (ci->n_rbs_pin_ivars >= ci->c_rbs_pin_ivars) {

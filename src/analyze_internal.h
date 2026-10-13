@@ -383,6 +383,12 @@ int infer_ivar_types(Compiler *c);
 int class_ivar_pinned(ClassInfo *ci, const char *name);
 void class_pin_ivar(ClassInfo *ci, const char *name);
 void class_unpin_ivar(ClassInfo *ci, const char *name);
+/* 1 if a seed still pins the slot against a value of type `vt`; a Hash
+   keyed by boxed values reaching a Hash the seed keys by one class drops
+   the seed (see seed_form_gives_way in analyze.c) */
+int class_ivar_pin_holds(ClassInfo *ci, const char *name, TyKind vt);
+int param_seed_holds(LocalVar *lv, TyKind at);
+int ret_seed_holds(Scope *s, TyKind r);
 void sp_ivwatch(const char *name, const char *where, TyKind old, TyKind nw);
 void sp_narrow_memo_bump(void);
 int infer_write_types(Compiler *c);

@@ -7255,8 +7255,9 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
     ArgFrom from = L.from[i];
     if (from == ARG_BY_NAME || from == ARG_DEFAULT || from == ARG_REST || i == m->rest_idx) continue;
     LocalVar *p = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
-    if (!p || p->rbs_seeded || cext_scope(c, mi)) continue;
+    if (!p || cext_scope(c, mi)) continue;
     int anode = layout_plain_arg(c, m, argv, &L, i);
+    if (p->rbs_seeded && (anode < 0 || param_seed_holds(p, infer_type(c, anode)))) continue;
     if (anode < 0 && !L.gather) {
       int src = from == ARG_KWH ? kwh : from == ARG_ELEM ? argv[L.splat] : argv[L.arg[i]];
       changed |= slot_take(c, p, bound_source_type(c, src, p), src);
@@ -7545,8 +7546,8 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
            positionally, as the layout above says. */
         if (!callee_has_kwarg(c, m, kname)) continue;
         LocalVar *p = scope_local(m, kname);
-        if (!p || p->rbs_seeded) continue;
         TyKind at = infer_type(c, val);
+        if (!p || param_seed_holds(p, at)) continue;
         changed |= slot_take(c, p, at, val);
       }
     }
@@ -8537,7 +8538,7 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
       }
     }
     else if (a < an) vnode = argv[a];
-    if (class_ivar_pinned(cls, cls->ivars[a])) continue;
+    if (class_ivar_pin_holds(cls, cls->ivars[a], vnode >= 0 ? infer_type(c, vnode) : TY_NIL)) continue;
     if ((splat_at >= 0 && a >= splat_at) || (kw_splat && (vnode < 0 || splat_after) && (!kwf || a == 0))) {
       TyKind sm = ty_unify(cls->ivar_types[a], TY_POLY);
       if (sm != cls->ivar_types[a]) { cls->ivar_types[a] = sm; changed = 1; }
@@ -16193,12 +16194,17 @@ static int irt_scope(Compiler *c, int s, IrtCtx *x) {
      values -- the RBS value type is too narrow for what the code returns).
      Emitting the StrPolyHash body through a StrStrHash* signature is a layout
      mismatch that corrupts every read, so let the body widen the return to
-     its poly-valued sibling. Every other rbs-seeded return stays pinned. */
-  if (sc->ret_rbs_seeded) {
+     its poly-valued sibling. A body whose Hash boxes its keys drops the
+     seed (ret_seed_holds), and the return derives as an unseeded one. Every
+     other rbs-seeded return stays pinned. */
+  TyKind hbr = TY_UNKNOWN;
+  if (sc->ret_rbs_seeded && ty_is_hash(sc->ret)) {
+    hbr = sc->body >= 0 ? infer_type(c, sc->body) : TY_UNKNOWN;
+    if (has_ret && has_ret[s]) hbr = ty_unify(hbr, ret_acc[s]);
+  }
+  if (ret_seed_holds(sc, hbr)) {
     if (sc->ret == TY_STR_STR_HASH || sc->ret == TY_STR_INT_HASH) {
-      TyKind br = sc->body >= 0 ? infer_type(c, sc->body) : TY_UNKNOWN;
-      if (has_ret && has_ret[s]) br = ty_unify(br, ret_acc[s]);
-      if (br == TY_STR_POLY_HASH) { sc->ret = TY_STR_POLY_HASH; ch = 1; }
+      if (hbr == TY_STR_POLY_HASH) { sc->ret = TY_STR_POLY_HASH; ch = 1; }
     }
     /* Same shape, and the same reason. RBS `Integer` covers both machine
        ints and bignums, so a body that grew a bignum is a valid inhabitant
