@@ -4286,6 +4286,14 @@ static char *sp_splice_system_spawn(char *source, const char *exe_path,
   return sp_prepend_require(source, exe_path, "require \"builtins/system_spawn\"\n", fsl, fsl_n);
 }
 
+/* builtins/file_foreach_first.rb: File.foreach(path).first(n), for a program
+   that writes `foreach(` and `.first(` (desugar_dir_surface renames the call) */
+static char *sp_splice_foreach_first(char *source, const char *exe_path,
+                                     unsigned char **fsl, size_t *fsl_n) {
+  if (!strstr(source, "foreach(") || !strstr(source, ".first(")) return source;
+  return sp_prepend_require(source, exe_path, "require \"builtins/file_foreach_first\"\n", fsl, fsl_n);
+}
+
 /* builtins/io_popen.rb: IO.popen with a block, for a program that calls
    IO.popen (the analysis renames the block form to it, desugar_io_popen_block) */
 static char *sp_splice_io_popen(char *source, const char *exe_path,
@@ -5115,6 +5123,7 @@ static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
   source = sp_splice_process_detach(source, argv0, &fsl, &fsl_n);
   source = sp_splice_system_spawn(source, argv0, &fsl, &fsl_n);
   source = sp_splice_io_popen(source, argv0, &fsl, &fsl_n);
+  source = sp_splice_foreach_first(source, argv0, &fsl, &fsl_n);
   /* CRuby provides Set (3.2+) and IO::Buffer without a require wherever
      they are used, in a required file as well (activesupport's
      notifications/fanout.rb; #6740 for IO::Buffer). Ask over the resolved

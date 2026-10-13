@@ -11614,6 +11614,12 @@ int desugar_dir_surface(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
+  /* the parser spliced builtins/file_foreach_first.rb (File.foreach(..).first) */
+  int has_foreach_first = 0;
+  for (int id = 0; id < n0 && !has_foreach_first; id++)
+    if (nt_kind(nt, id) == NK_DefNode && nt_ref(nt, id, "receiver") >= 0 &&
+        nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "__sp_foreach_first"))
+      has_foreach_first = 1;
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     {
@@ -11717,6 +11723,44 @@ int desugar_dir_surface(Compiler *c) {
         changed = 1;
       }
       continue;
+    }
+    /* File.foreach(path).first(n) -> File.__sp_foreach_first(path, n): the
+       first n lines read one at a time (builtins/file_foreach_first.rb), as
+       CRuby's lazy Enumerator reads them. The blockless foreach below
+       materializes every line: 85 ms for the first 20 lines of a 106 MB file,
+       against 0.07 ms in CRuby (an indexer that reads the first lines of
+       many files pays it on each). Only the one-argument foreach and an n
+       written as one plain argument. */
+    if (has_foreach_first && nm && sp_streq(nm, "first") && recv >= 0 &&
+        nt_kind(nt, recv) == NK_CallNode && nt_ref(nt, id, "block") < 0) {
+      const char *fnm = nt_str(nt, recv, "name");
+      int frecv = nt_ref(nt, recv, "receiver");
+      const char *frn = frecv >= 0 && nt_kind(nt, frecv) == NK_ConstantReadNode ? nt_str(nt, frecv, "name") : NULL;
+      int fargs = nt_ref(nt, recv, "arguments"), fan = 0;
+      const int *fav = fargs >= 0 ? nt_arr(nt, fargs, "arguments", &fan) : NULL;
+      int nargs = nt_ref(nt, id, "arguments"), nan = 0;
+      const int *nav = nargs >= 0 ? nt_arr(nt, nargs, "arguments", &nan) : NULL;
+      if (fnm && sp_streq(fnm, "foreach") && frn && (sp_streq(frn, "File") || sp_streq(frn, "IO")) &&
+          nt_ref(nt, recv, "block") < 0 && fan == 1 && nan == 1 &&
+          nt_kind(nt, fav[0]) != NK_SplatNode && nt_kind(nt, fav[0]) != NK_KeywordHashNode &&
+          nt_kind(nt, nav[0]) != NK_SplatNode && nt_kind(nt, nav[0]) != NK_KeywordHashNode &&
+          nt_kind(nt, nav[0]) != NK_BlockArgumentNode) {
+        int an2 = nt_new_node(nt, "ArgumentsNode");
+        int fc2 = nt_new_node(nt, "ConstantReadNode");
+        if (an2 >= 0 && fc2 >= 0) {
+          int items[2] = { fav[0], nav[0] };
+          nt_node_set_arr(nt, an2, "arguments", items, 2);
+          nt_node_set_str(nt, fc2, "name", "File");
+          nt_node_set_str(nt, id, "name", "__sp_foreach_first");
+          nt_node_set_ref(nt, id, "receiver", fc2);
+          nt_node_set_ref(nt, id, "arguments", an2);
+          comp_grow_node_arrays(c);
+          c->nscope[an2] = c->nscope[id];
+          c->nscope[fc2] = c->nscope[id];
+          changed = 1;
+          continue;
+        }
+      }
     }
     if (!nm || recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) continue;
     const char *rn = nt_str(nt, recv, "name");
