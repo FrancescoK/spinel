@@ -1853,6 +1853,11 @@ static int cf_scope_has_super(CF *f, int mi) {
    element every class (the source line of the rule here, or the cap),
    and the largest elements by node count with their reason */
 static int cf_why_cmp(const void *a, const void *b) { return ((const int *)b)[1] - ((const int *)a)[1]; }
+static int cf_seed_key_cmp(const void *a, const void *b) {
+  const int *x = a, *y = b;
+  return x[0] != y[0] ? (x[0] < y[0] ? -1 : 1) : x[1] != y[1] ? (x[1] < y[1] ? -1 : 1) : 0;
+}
+static int cf_seed_count_cmp(const void *a, const void *b) { return ((const int *)b)[2] - ((const int *)a)[2]; }
 static void cf_why_report(CF *f) {
   const NodeTable *nt = f->nt;
   int maxl = 4096, *byline = calloc((size_t)maxl + 2, sizeof *byline);
@@ -1897,7 +1902,7 @@ static void cf_why_report(CF *f) {
   /* each receiver with no fact, back to where its every-class began: the
      rule and the node (or element) it named */
   {
-    int cap = 1 << 16, ns = 0;
+    int cap = f->nnodes + 1, nall = 0, ns = 0;
     int (*seed)[3] = calloc((size_t)cap, sizeof *seed);   /* line, element, count */
     if (!seed) cf_oom();
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
@@ -1913,13 +1918,15 @@ static void cf_why_report(CF *f) {
         if (nxt < 0 || nxt == root) break;
         root = nxt; line = f->why[root]; el = f->why_el[root];
       }
-      int i = 0;
-      for (; i < ns; i++) if (seed[i][0] == line && seed[i][1] == el) break;
-      if (i == ns) { if (ns == cap) continue; seed[ns][0] = line; seed[ns][1] = el; seed[ns][2] = 0; ns++; }
-      seed[i][2]++;
+      if (nall < cap) { seed[nall][0] = line; seed[nall][1] = el; seed[nall][2] = 1; nall++; }
     }
-    for (int a = 0; a < ns; a++) for (int b = a + 1; b < ns; b++)
-      if (seed[b][2] > seed[a][2]) { int t[3]; memcpy(t, seed[a], sizeof t); memcpy(seed[a], seed[b], sizeof t); memcpy(seed[b], t, sizeof t); }
+    /* group equal seeds, then the largest groups first */
+    qsort(seed, (size_t)nall, sizeof *seed, cf_seed_key_cmp);
+    for (int i = 0; i < nall; i++) {
+      if (ns > 0 && seed[ns - 1][0] == seed[i][0] && seed[ns - 1][1] == seed[i][1]) { seed[ns - 1][2]++; continue; }
+      memcpy(seed[ns++], seed[i], sizeof seed[0]);
+    }
+    qsort(seed, (size_t)ns, sizeof *seed, cf_seed_count_cmp);
     for (int i = 0; i < ns && i < 25; i++) {
       int e = seed[i][1];
       if (e >= f->nnodes) {
