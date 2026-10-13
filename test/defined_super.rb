@@ -68,3 +68,15 @@ class String
   def to_s = defined?(super) ? self : ""
 end
 p "a".shout, "a".upcase, "a".to_s
+
+# an ancestor that undefs the name: the super reaches nothing
+class UndefBase
+  def probe = 1
+end
+class UndefMiddle < UndefBase
+  undef :probe
+end
+class UndefLeaf < UndefMiddle
+  def probe = defined?(super)
+end
+p UndefLeaf.new.probe

@@ -3384,6 +3384,9 @@ static int defined_super_reaches(Compiler *c, int sup) {
   char base[256];
   int setter = ln > 1 && ln - 1 < sizeof base && u[ln - 1] == '=';
   if (setter) { memcpy(base, u, ln - 1); base[ln - 1] = '\0'; }
+  /* an ancestor that undefs the name ahead of any definition: the super
+     reaches nothing (`undef :test` in the superclass) */
+  if (p >= 0 && comp_is_undeffed_in_chain(c, p, u)) return 0;
   if (p >= 0 && (comp_method_in_chain(c, p, u, NULL) >= 0 || comp_reader_in_chain(c, p, u, NULL) ||
                  (setter && comp_writer_in_chain(c, p, base, NULL))))
     return 1;
