@@ -38864,13 +38864,14 @@ static void rewrite_prepended_builtin_supers(Compiler *c) {
   }
 }
 
-/* A receiverless call, in a reopened primitive, of an alias that captured
-   the builtin method (`def plus_with(o) = plus_without(o)` after
-   `alias_method :plus_without, :+`): it is the builtin's call on self.
+/* A receiverless call, in a reopened primitive or a program class, of an
+   alias that captured the builtin method (`def plus_with(o) = plus_without(o)`
+   after `alias_method :plus_without, :+`, `def od = original_dup` after
+   `alias original_dup dup`): it is the builtin's call on self.
    Spelled as one -- self as the receiver, the builtin's name, marked so the
    class's own method of that name does not take it -- since a receiverless
    `+` is a call of the class's own `+`, which by then is plus_with. */
-static void rewrite_builtin_alias_self_calls(Compiler *c) {
+static void rewrite_builtin_alias_self_calls(Compiler *c, int settled) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
@@ -38881,7 +38882,11 @@ static void rewrite_builtin_alias_self_calls(Compiler *c) {
     if (!nm || k < 0 || c->scopes[si].is_cmethod || c->classes[k].naliases == 0) continue;
     int bi = 0;
     const char *rn = comp_resolve_alias_ex(c, k, nm, NULL, &bi);
-    if (!bi || !rn) continue;
+    /* An Object method's alias in a program class (3) keeps the builtin
+       only once settle_object_builtin_aliases has found no ancestor or
+       module that defined the name before it: those calls are spelled in a
+       second run after that, the rest in the first. */
+    if (!bi || (bi == 3) != settled || !rn) continue;
     char *target = strdup(rn);
     int self = nt_new_node(nt, "SelfNode");
     comp_grow_node_arrays(c);
@@ -41393,7 +41398,7 @@ static void an_phase_desugar_register(Compiler *c) {
   register_attrs(c);
   register_method_visibility(c);
   register_aliases(c);
-  rewrite_builtin_alias_self_calls(c);  /* plus_without(o) -> self.+(o), the builtin's */
+  rewrite_builtin_alias_self_calls(c, 0);  /* plus_without(o) -> self.+(o), the builtin's */
   register_undefs(c);
   register_globals_consts(c);
   rewrite_const_alias_receivers(c);
@@ -41473,6 +41478,7 @@ static void an_phase_class_structure(Compiler *c) {
      inherited method an ancestor got from one */
   resolve_inherited_aliases(c);
   settle_object_builtin_aliases(c);   /* alias original_dup dup: the builtin's, or an ancestor's */
+  rewrite_builtin_alias_self_calls(c, 1);
   /* super into Array, X.new / X[], implicit self, in the class's methods and
      the copies its modules put in (#7449) */
   rewrite_array_subclass_calls(c);
