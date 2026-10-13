@@ -8809,13 +8809,17 @@ static void cdef_walk(NodeTable *nt, int id, CondDef x, CondDef **v, int *n) {
     }
     break;
   }
-  case NK_IfNode: case NK_UnlessNode: case NK_ElseNode:
+  case NK_IfNode: case NK_UnlessNode: case NK_ElseNode: {
+    /* a literal true, false or nil decides nothing at run time; an else
+       goes with its if */
+    NodeKind pk = k == NK_ElseNode ? NK_ElseNode : nt_kind(nt, nt_ref(nt, id, "predicate"));
     x.cond = 1;
-    x.here = 1;
+    if (pk != NK_ElseNode && pk != NK_TrueNode && pk != NK_FalseNode && pk != NK_NilNode) x.here = 1;
     cdef_walk(nt, nt_ref(nt, id, "statements"), x, v, n);
     cdef_walk(nt, nt_ref(nt, id, "subsequent"), x, v, n);
     cdef_walk(nt, nt_ref(nt, id, "else_clause"), x, v, n);
     break;
+  }
   case NK_ClassNode: case NK_ModuleNode: {
     char p[1024];
     snprintf(p, sizeof p, "%s", x.path);
