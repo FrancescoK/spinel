@@ -6584,6 +6584,33 @@ static int program_defines_method_named(Compiler *c, const char *name) {
     if (!c->scopes[si].is_cmethod && c->scopes[si].name && sp_streq(c->scopes[si].name, name)) return 1;
   return 0;
 }
+/* ... one every object answers: the top level's, or Object's, Kernel's or
+   BasicObject's own */
+static int program_defines_object_method_named(Compiler *c, const char *name) {
+  for (int si = 1; si < c->nscopes; si++) {
+    Scope *sc = &c->scopes[si];
+    if (sc->is_cmethod || !sc->name || !sp_streq(sc->name, name)) continue;
+    const char *cn = sc->class_id >= 0 && sc->class_id < c->nclasses ? c->classes[sc->class_id].name : NULL;
+    if (!cn || sp_streq(cn, "Object") || sp_streq(cn, "Kernel") || sp_streq(cn, "BasicObject") ||
+        sp_streq(cn, "Toplevel")) return 1;
+  }
+  return 0;
+}
+/* May a call of `name` on a receiver of type rt reach a method the program
+   defines? For a program object, its class's chain; for a builtin, the
+   program's reopening of it; for either, a method every object answers.
+   A receiver of no single class asks the whole program. */
+static int recv_may_reach_program_method(Compiler *c, TyKind rt, const char *name) {
+  int k = -1;
+  if (ty_is_object(rt)) k = ty_object_class(rt);
+  else {
+    const char *bn = builtin_class_of_type(rt);
+    if (!bn) return program_defines_method_named(c, name);
+    k = comp_class_index(c, bn);
+  }
+  if (k >= 0 && comp_method_in_chain(c, k, name, NULL) >= 0) return 1;
+  return program_defines_object_method_named(c, name);
+}
 
 int desugar_value_callable_forwards(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
@@ -6735,11 +6762,11 @@ int desugar_value_callable_forwards(Compiler *c) {
       pty[0] = TY_INT;
     }
     else if ((sp_streq(name, "tap") || sp_streq(name, "then") || sp_streq(name, "yield_self")) &&
-             rt != TY_UNKNOWN && !program_defines_method_named(c, name)) {
+             rt != TY_UNKNOWN && !recv_may_reach_program_method(c, rt, name)) {
       /* Kernel#tap / #then hand the receiver itself to the block: any
          receiver, a program object's included. Left as `&b`, no arm took
          the forward and the call raised NoMethodError. Not where the
-         program defines a method of the name, which a call may reach. */
+         receiver may reach a method of the name the program defines. */
       arity = 1;
       pty[0] = rt;
     }
