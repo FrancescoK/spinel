@@ -60,3 +60,11 @@ s.put_s(1..2, "y")
 s.put_m(0, 7)
 s.put_m(2.., 8)
 s.show
+
+# the receiver is evaluated before the held index, as in CRuby
+def put_after(a, i)
+  (i = 1; a)[i] = 9
+  a
+end
+p put_after([1, 2, 3], 0..1)
+p put_after([1, 2, 3], 0)

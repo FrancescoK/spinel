@@ -2181,8 +2181,11 @@ int aset_range_held(Compiler *c, TyKind rt, const int *argv) {
          repr_of(c, argv[1]).kind != RK_BOXED && !nil_store_sfx(c, k, argv[1])[0];
 }
 void emit_aset_range_held(Compiler *c, int id, int recv, TyKind rt, const int *argv, Buf *b) {
+  buf_puts(b, "({ ");
+  int tr = hold_operand(c, recv, rt, 0, ++g_tmp, 1, " ", b);
+  int rbind = view_bind(recv, "_t%d", tr);
   int ti = ++g_tmp;
-  buf_printf(b, "({ sp_RbVal _t%d = ", ti); emit_expr(c, argv[0], b);
+  buf_printf(b, "sp_RbVal _t%d = ", ti); emit_expr(c, argv[0], b);
   buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? ", ti, ti, ti);
   int bind = view_bind(argv[0], "(*(sp_Range *)_t%d.v.p)", ti);
   int v = view_push(c, argv[0], TY_RANGE);
@@ -2195,6 +2198,7 @@ void emit_aset_range_held(Compiler *c, int id, int recv, TyKind rt, const int *a
   emit_call_array_arms(c, id, b, c->nt, "[]=", recv, 2, argv, rt);
   view_pop(c, v);
   view_unbind(bind);
+  view_unbind(rbind);
   buf_puts(b, "; })");
 }
 
