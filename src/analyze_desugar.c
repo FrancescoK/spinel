@@ -6258,7 +6258,8 @@ static int fwd_poly_recv_one_param_iter(const char *name) {
     "each", "each_value", "each_key", "each_entry", "map", "collect", "flat_map",
     "filter_map", "select", "filter", "reject", "find", "detect", "find_index",
     "any?", "all?", "none?", "sort_by", "min_by", "max_by", "group_by",
-    "partition", "count", "sum", "take_while", "drop_while", "each_char", "each_line", "each_byte", NULL };
+    "partition", "count", "sum", "take_while", "drop_while", "each_char", "each_line", "each_byte",
+    "bsearch", "bsearch_index", NULL };
   return str_in(name, names);
 }
 

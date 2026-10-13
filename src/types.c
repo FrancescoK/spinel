@@ -56,6 +56,8 @@ static const PolyFace ty_poly_face_tbl[] = {
      A String Range's bsearch is its TypeError, raised by its own row. */
   {"step", PF_RANGE | PF_FRANGE | PF_SRANGE, 0, 1, 1},
   {"bsearch", PF_ARRAY | PF_RANGE | PF_FRANGE | PF_SRANGE, 0, 0, 1},
+  /* bsearch_index with a block is Array's alone (a Range has none) */
+  {"bsearch_index", PF_ARRAY, 0, 0, 1},
   /* minmax is Range's own, read off the endpoints (a Float Range cannot be
      walked), beside the Enumerable row below that walks a collection */
   {"minmax", PF_RANGE | PF_FRANGE | PF_SRANGE, 0, 0, -1},
