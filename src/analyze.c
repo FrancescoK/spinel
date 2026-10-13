@@ -36823,6 +36823,18 @@ static int sd_call(NodeTable *nt, const char *name, int recv, const int *args, i
   nt_node_set_ref(nt, cl, "block", -1);
   return cl;
 }
+/* The same, for a builtin the desugar asks of a value it built or knows (a
+   splat's Array, its length): never a reopened class's own method of the
+   name */
+static void sd_builtin(NodeTable *nt, int cl) {
+  nt_node_set_int(nt, cl, "builtin_only", 1);
+  nt_node_set_int(nt, cl, "desugar_builtin", 1);   /* typed as the builtin alone (infer_call) */
+}
+static int sd_bcall(NodeTable *nt, const char *name, int recv, const int *args, int n) {
+  int cl = sd_call(nt, name, recv, args, n);
+  sd_builtin(nt, cl);
+  return cl;
+}
 static int sd_str(NodeTable *nt, const char *s) {
   int n = nt_new_node(nt, "StringNode");
   nt_node_set_str(nt, n, "content", s);
@@ -36887,7 +36899,7 @@ static int kwb_conv(NodeTable *nt, Scope *sc, const char *hn) {
 static int kwb_reject(NodeTable *nt, Scope *sc, const char *xn) {
   int one = nt_new_node(nt, "IntegerNode");
   nt_node_set_int(nt, one, "value", 1);
-  int pl = sd_if(nt, sd_call(nt, ">", sd_call(nt, "size", kwb_lv(nt, sc, xn, -1), NULL, 0), &one, 1),
+  int pl = sd_if(nt, sd_bcall(nt, ">", sd_bcall(nt, "size", kwb_lv(nt, sc, xn, -1), NULL, 0), &one, 1),
                  sd_str(nt, "s"), sd_str(nt, ""));
   int lb = sd_str(nt, "["), rb = sd_str(nt, "]"), co = sd_str(nt, ": ");
   int ls = sd_call(nt, "delete_suffix", sd_call(nt, "delete_prefix", sd_call(nt, "inspect", kwb_lv(nt, sc, xn, -1),
@@ -37356,6 +37368,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     nt_node_set_ref(nt, alen, "receiver", ard);
     nt_node_set_ref(nt, alen, "arguments", -1);
     nt_node_set_ref(nt, alen, "block", -1);
+    sd_builtin(nt, alen);
     int given = alen;
     if (fixed > 0) {
       int fl = nt_new_node(nt, "IntegerNode");
@@ -37367,12 +37380,14 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
       nt_node_set_ref(nt, given, "receiver", alen);
       nt_node_set_ref(nt, given, "arguments", fa);
       nt_node_set_ref(nt, given, "block", -1);
+      sd_builtin(nt, given);
     }
     int ts = nt_new_node(nt, "CallNode");
     nt_node_set_str(nt, ts, "name", "to_s");
     nt_node_set_ref(nt, ts, "receiver", given);
     nt_node_set_ref(nt, ts, "arguments", -1);
     nt_node_set_ref(nt, ts, "block", -1);
+    sd_builtin(nt, ts);
     int head = nt_new_node(nt, "StringNode");
     nt_node_set_str(nt, head, "content", "wrong number of arguments (given ");
     int pa = nt_new_node(nt, "ArgumentsNode");
@@ -37382,6 +37397,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     nt_node_set_ref(nt, p1, "receiver", head);
     nt_node_set_ref(nt, p1, "arguments", pa);
     nt_node_set_ref(nt, p1, "block", -1);
+    sd_builtin(nt, p1);
     int pb = nt_new_node(nt, "ArgumentsNode");
     nt_node_set_arr(nt, pb, "arguments", &emn, 1);
     int p2 = nt_new_node(nt, "CallNode");
@@ -37389,6 +37405,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     nt_node_set_ref(nt, p2, "receiver", p1);
     nt_node_set_ref(nt, p2, "arguments", pb);
     nt_node_set_ref(nt, p2, "block", -1);
+    sd_builtin(nt, p2);
     emn = p2;
   }
   if (urest && !variadic) {
@@ -37405,7 +37422,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
       nt_node_set_int(nt, ard, "depth", adepth);
       int cap = nt_new_node(nt, "IntegerNode");
       nt_node_set_int(nt, cap, "value", hi - fixed);
-      over[k] = sd_call(nt, ">", sd_call(nt, "length", ard, NULL, 0), &cap, 1);
+      over[k] = sd_bcall(nt, ">", sd_bcall(nt, "length", ard, NULL, 0), &cap, 1);
     }
     int ncn = nt_new_node(nt, "ConstantReadNode");
     nt_node_set_str(nt, ncn, "name", "NotImplementedError");
@@ -37471,6 +37488,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
         nt_node_set_ref(nt, el, "receiver", rd);
         nt_node_set_ref(nt, el, "arguments", ia);
         nt_node_set_ref(nt, el, "block", -1);
+        sd_builtin(nt, el);
         args[m++] = el;
       }
     }
@@ -37498,6 +37516,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     nt_node_set_ref(nt, alen, "receiver", ard);
     nt_node_set_ref(nt, alen, "arguments", -1);
     nt_node_set_ref(nt, alen, "block", -1);
+    sd_builtin(nt, alen);
     int lit = nt_new_node(nt, "IntegerNode");
     nt_node_set_int(nt, lit, "value", len);
     int la = nt_new_node(nt, "ArgumentsNode");
@@ -37507,6 +37526,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     nt_node_set_ref(nt, pred, "receiver", alen);
     nt_node_set_ref(nt, pred, "arguments", la);
     nt_node_set_ref(nt, pred, "block", -1);
+    sd_builtin(nt, pred);
     int ts = nt_new_node(nt, "StatementsNode");
     nt_node_set_arr(nt, ts, "body", &cl, 1);
     int es = nt_new_node(nt, "StatementsNode");
