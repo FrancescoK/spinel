@@ -2081,6 +2081,13 @@ static int emit_kind_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
                tf, tf, tn, k, k, ta, tf, tl);
     { *out = 1; return 1; }
   }
+  /* a boxed index that may hold a Range (infer_array_call): an Integer
+     reads an element, a Range a subarray */
+  if (sp_streq(name, "[]") && argc == 1 && a0 == TY_POLY && comp_ntype(c, id) == TY_POLY) {
+    buf_puts(b, "sp_poly_index_poly("); emit_boxed(c, recv, b); buf_puts(b, ", ");
+    emit_expr(c, argv[0], b); buf_puts(b, ")");
+    { *out = 1; return 1; }
+  }
   if ((is_element_at_alias(name)) && argc == 1) {
     /* an array whose header the loop being emitted holds (hc_array):
        in range, read the element there; anything else, the get */
@@ -9102,6 +9109,16 @@ static int str_arms_poly_pattern(Compiler *c, int id, Buf *b, const NodeTable *n
   ok = ok && str_arms_text(c, id, &eb, nt, name, recv, argc, argv, rs);
   view_pop(c, v);
   view_unbind(bind);
+  /* a Range, from a slot one was written into, takes the substring arm:
+     s[range] read it as an Integer index */
+  if (is_slice_alias(name) && argc == 1 && local_range_held(c, argv[0])) {
+    buf_printf(&eb, ") : (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? (", tp, tp);
+    bind = view_bind(argv[0], "(*(sp_Range *)_t%d.v.p)", tp);
+    v = view_push(c, argv[0], TY_RANGE);
+    ok = ok && str_arms_text(c, id, &eb, nt, name, recv, argc, argv, rs);
+    view_pop(c, v);
+    view_unbind(bind);
+  }
   buf_puts(&eb, ") : (");
   /* anything else: split and partition say CRuby's "expected Regexp" */
   if (sp_streq(name, "split") || is_partition_family(name))

@@ -165,6 +165,9 @@ typedef struct {
                        retracted when that parameter stops being a general Array */
   int widen_from_scope;
   unsigned char widen_blocked; /* (params) retracted once: the reverse binding does not widen it again */
+  unsigned char range_held; /* an Integer Range was written into it (slot_set),
+                       or the value of a slot that held one: a boxed index
+                       read from it may be a Range at run time */
   int push_widened; /* (params) a push through this parameter carried an element
                        its bound type could not hold, so it must stay the POLY
                        ARRAY: the call-site unification would otherwise collapse
@@ -1393,6 +1396,7 @@ LocalVar *scope_local(Scope *s, const char *name);
    into `lv`, answer whether it changed, and note the why when the slot
    degrades. slot_set is the same with the merged type already decided. */
 int slot_take(Compiler *c, LocalVar *lv, TyKind t, int node);
+int local_range_held(Compiler *c, int node);
 int slot_set(Compiler *c, LocalVar *lv, TyKind merged, TyKind t, int node);
 /* A rule sets the slot to `t` and says why in its own words, with `node`
    its subject (a default's expression, an argument) or -1. The why is
