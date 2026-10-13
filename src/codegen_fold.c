@@ -2738,8 +2738,15 @@ int emit_chunk_while_expr(Compiler *c, int id, Buf *b) {
    pairs); any other element binds the first, with the second nil. The second
    is written only where it has a C declaration (`_2` beside `_1` and `_3`
    has none) and is not the first's own name (`|_, _|`). */
-static void emit_chunk_elem_bind(Compiler *c, int ta, int ti, const char *p0,
-                                 const char *p1, int p1_declared, TyKind at0, TyKind at1, int pin_poly) {
+/* A boxed element bound to block parameter lv of type at: as is into a poly
+   slot, with its nil into a slot that holds one */
+static void chunk_param_unbox(Compiler *c, LocalVar *lv, TyKind at, const char *v, Buf *b) {
+  if (at == TY_POLY) buf_puts(b, v);
+  else if (oint_kind(at) && lv && slot_is_oint(lv)) buf_printf(b, "%s(%s)", oint_unbox(at), v);
+  else emit_unbox_text(c, at, v, b);
+}
+static void emit_chunk_elem_bind(Compiler *c, int ta, int ti, const char *p0, const char *p1, int p1_declared,
+                                 LocalVar *lva, LocalVar *lvb, TyKind at0, TyKind at1, int pin_poly) {
   char gv[48]; snprintf(gv, sizeof gv, "sp_PolyArray_get(_t%d, _t%d)", ta, ti);
   if (pin_poly && p1) {
     int te = ++g_tmp;
@@ -2752,18 +2759,18 @@ static void emit_chunk_elem_bind(Compiler *c, int ta, int ti, const char *p0,
     snprintf(v0, sizeof v0, "(_fs%d ? sp_poly_index_poly(_t%d, sp_box_int(0)) : _t%d)", te, te, te);
     snprintf(v1, sizeof v1, "(_fs%d ? sp_poly_index_poly(_t%d, sp_box_int(1)) : sp_box_nil())", te, te);
     buf_printf(g_pre, "lv_%s = ", p0);
-    if (at0 == TY_POLY) buf_puts(g_pre, v0); else emit_unbox_text(c, at0, v0, g_pre);
+    chunk_param_unbox(c, lva, at0, v0, g_pre);
     buf_puts(g_pre, ";\n");
     if (p1_declared && !sp_streq(p0, p1)) {
       emit_indent(g_pre, g_indent + 1);
       buf_printf(g_pre, "lv_%s = ", p1);
-      if (at1 == TY_POLY) buf_puts(g_pre, v1); else emit_unbox_text(c, at1, v1, g_pre);
+      chunk_param_unbox(c, lvb, at1, v1, g_pre);
       buf_puts(g_pre, ";\n");
     }
     return;
   }
   buf_printf(g_pre, "lv_%s = ", p0);
-  if (at0 == TY_POLY) buf_puts(g_pre, gv); else emit_unbox_text(c, at0, gv, g_pre);
+  chunk_param_unbox(c, lva, at0, gv, g_pre);
   buf_puts(g_pre, ";\n");
 }
 
@@ -2873,7 +2880,7 @@ static int emit_chunk_family_runs(Compiler *c, int ck) {
   if (is_ck) {
     int tk = ++g_tmp;
     emit_indent(g_pre, g_indent + 1);
-    emit_chunk_elem_bind(c, ta, ti, p0, p1, ptb != TY_UNKNOWN, at0, at1, pin_poly);
+    emit_chunk_elem_bind(c, ta, ti, p0, p1, ptb != TY_UNKNOWN, lva, lvb, at0, at1, pin_poly);
     Buf kb; memset(&kb, 0, sizeof kb);
     /* a `next <key>` answers the key through a slot the body writes */
     if (fold_body_has_next(c, body)) {
@@ -2912,7 +2919,7 @@ static int emit_chunk_family_runs(Compiler *c, int ck) {
        after a true element */
     int tc = ++g_tmp;
     emit_indent(g_pre, g_indent + 1);
-    emit_chunk_elem_bind(c, ta, ti, p0, p1, ptb != TY_UNKNOWN, at0, at1, pin_poly);
+    emit_chunk_elem_bind(c, ta, ti, p0, p1, ptb != TY_UNKNOWN, lva, lvb, at0, at1, pin_poly);
     Buf cb; memset(&cb, 0, sizeof cb);
     if (!emit_block_cond_next(c, block, g_indent + 1, &cb)) {
       for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
@@ -2951,14 +2958,14 @@ static int emit_chunk_family_runs(Compiler *c, int ck) {
     {
       char gv[48]; snprintf(gv, sizeof gv, "sp_PolyArray_get(_t%d, _t%d - 1)", ta, ti);
       buf_printf(g_pre, "lv_%s = ", p0);
-      if (at0 == TY_POLY) buf_puts(g_pre, gv); else emit_unbox_text(c, at0, gv, g_pre);
+      chunk_param_unbox(c, lva, at0, gv, g_pre);
       buf_puts(g_pre, ";\n");
     }
     emit_indent(g_pre, g_indent + 2);
     {
       char gv[48]; snprintf(gv, sizeof gv, "sp_PolyArray_get(_t%d, _t%d)", ta, ti);
       buf_printf(g_pre, "lv_%s = ", p1);
-      if (at1 == TY_POLY) buf_puts(g_pre, gv); else emit_unbox_text(c, at1, gv, g_pre);
+      chunk_param_unbox(c, lvb, at1, gv, g_pre);
       buf_puts(g_pre, ";\n");
     }
     Buf cb; memset(&cb, 0, sizeof cb);

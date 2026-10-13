@@ -31600,7 +31600,8 @@ int elem_block_params(Compiler *c, int call, int *recv_out) {
   const char *rnm2 = nt_str(nt, call, "name");
   *recv_out = -1;
   if (recv < 0 || blk < 0 || !rnm2) return 0;
-  int both = is_reduce_alias(rnm2) || is_sort_family(rnm2) || is_extrema_family(rnm2);
+  int both = is_reduce_alias(rnm2) || is_sort_family(rnm2) || is_extrema_family(rnm2) ||
+             sp_streq(rnm2, "slice_when") || sp_streq(rnm2, "chunk_while");
   int first = strbuf_elem_first_iterator(rnm2) || is_enumerator_with(rnm2);
   /* the enumerator a blockless call hands on yields the same elements */
   for (int guard = 0; first && guard < 4 && nt_kind(nt, recv) == NK_CallNode &&
