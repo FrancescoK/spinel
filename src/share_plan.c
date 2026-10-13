@@ -28,13 +28,14 @@
    through a splat, `a, b = *[s, t]`), the target the element is stored
    into takes it (SPR_STORE), where the literal is no container; or it
    asks the value's identity, as equal?, object_id and __id__ do where no
-   class of the program defines them (SPR_IDENTITY). A taker needs what the value's facts say
-   (share_value_needs_handle); a reader and a test need its bytes; a store
-   needs what its target does (share_store_needs_handle). An identity asks
-   for the object, and is the handle where the producer has one and the
-   bytes' pointer where it has only bytes, which are then all the String
-   there is: never a new handle, which no other name holds, and never a
-   refusal.
+   class of the program defines them (SPR_IDENTITY). A taker needs what
+   the value's facts say (share_value_needs_handle); a reader and a test
+   need its bytes; a store needs what its target does
+   (share_store_needs_handle). An identity asks for the object, and is the
+   handle where the producer has one (for an exception's message, the box
+   the exception keeps it in) and the bytes' pointer where it has only
+   bytes, which are then all the String there is: never a new handle,
+   which no other name holds, and never a refusal.
    Some values have a second consumer:
      - a call that answers its receiver or nil (rule 3 below) answers its
        receiver's String, so its own answer is only tested for nil
@@ -47,9 +48,12 @@
        stores in a new Array: a taker beside the store, which needs no more
        than the store (the literal's elements need what its facts say).
 
-   No emitter reads the plan yet, and nothing is refused by it: --share-check
-   (share_check.c) reads it at each site it marks and reports how often it
-   agrees with the conversion the emitted C has there.
+   Nothing is refused by the plan. One consumer reads it: object_id and
+   __id__ on a String, through emit_str_form (codegen_str.c), the one
+   place a consumer is to ask for a String in the plan's form. Every other
+   emitter still decides on its own; --share-check (share_check.c) reads
+   the plan at each site it marks and reports how often it agrees with the
+   conversion the emitted C has there.
 
    repr_of is not memoised, and neither is anything that reads it. The
    need reads the share facts, final at seal, the node's type, names and
@@ -81,7 +85,8 @@
    receiver reads its name, its receiver's type and its targets, as rule 3
    does, so it is asked where it is asked.
    --share-check asks the need live too: the memo is measured, never
-   trusted, until an emitter reads it. */
+   trusted, until an emitter reads it. (The one that does asks for an
+   identity, whose need is the object whatever the memo says.) */
 
 #include <stdlib.h>
 #include "codegen_internal.h"
@@ -221,6 +226,11 @@ SharePlan share_plan_with_need(Compiler *c, int v, int role, int need) {
   SharePlan p = { (unsigned char)need, SPS_BYTES, SPF_BYTES };
   if (need == SPN_BYTES) return p;
   p.supply = share_plan_supplies(c, v) ? SPS_HANDLE : SPS_BYTES;
+  /* an exception's message asked its identity is the box the exception
+     keeps it in (exc_message_identity_operand), which the identity reads
+     where the value is read as bytes: no handle is attached to the read,
+     so no other consumer has it */
+  if (role == SPR_IDENTITY && p.supply == SPS_BYTES && exc_message_identity_operand(c, v)) p.supply = SPS_HANDLE;
   /* (an identity is the handle or the bytes' pointer) */
   p.form = (unsigned char)(role == SPR_IDENTITY && p.supply == SPS_BYTES ? SPF_BYTES : share_plan_form(p.need, p.supply));
   return p;

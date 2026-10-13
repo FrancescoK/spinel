@@ -282,8 +282,9 @@ int share_node_carries_handle(const Compiler *c, int n);
 /* ---- the String plan (share_plan.c, #8328) ----
    For each String value under --share-strings, once the analysis is final:
    what its consumer needs, what its producer supplies, and the form those
-   give. No emitter reads it yet; --share-check compares it with the
-   conversion each emitted site has. */
+   give. A consumer asks for a String in the plan's form through
+   emit_str_form (codegen_internal.h); --share-check compares the plan with
+   the conversion each emitted site has. */
 enum { SPN_BYTES, SPN_NEW, SPN_OBJECT };              /* need */
 enum { SPS_BYTES, SPS_HANDLE };                       /* supply */
 enum { SPF_BYTES, SPF_HANDLE, SPF_WRAP, SPF_REFUSE }; /* form */
