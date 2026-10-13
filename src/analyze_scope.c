@@ -3835,6 +3835,12 @@ static int alias_object_builtin(const char *od) {
 static int alias_object_builtin_past_own(const char *od) {
   return sp_streq(od, "dup") || sp_streq(od, "clone");
 }
+/* the entries alias statement s registered are singleton ones */
+static void alias_mark_sg(ClassInfo *cls, int s, int singleton) {
+  if (!singleton || s < 0) return;
+  for (int i = 0; i < cls->naliases; i++)
+    if (cls->alias_node[i] == s) { cls->alias_sg[i] = 1; comp_class_shape_changed(); }
+}
 static void alias_register(Compiler *c, ClassInfo *cls, const char *nw, const char *od, int s, int singleton) {
   alias_refuse_early_call(c, cls, nw, s);
   int cid = cls->name ? comp_class_index(c, cls->name) : -1;
@@ -3853,8 +3859,9 @@ static void alias_register(Compiler *c, ClassInfo *cls, const char *nw, const ch
         unsupported_feature(c, s, msg);
       }
   }
-  if (alias_capture_earlier_def(c, cls, nw, od, s)) return;
+  if (alias_capture_earlier_def(c, cls, nw, od, s)) { alias_mark_sg(cls, s, singleton); return; }
   comp_add_alias_from(cls, nw, od, s);
+  alias_mark_sg(cls, s, singleton);
   /* In a reopened primitive, an alias of a name the program has not defined
      there yet names the builtin method: it keeps naming it when the class
      later defines or re-aliases that name (`alias_method :plus_without, :+`

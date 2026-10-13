@@ -1019,7 +1019,8 @@ static int chain_lookup(Compiler *c, int class_id, const char *name, int *def_cl
     return a[2 * class_id];
   }
   int start = class_id, mi = -1, dc = -1, bi = 0;
-  const char *rn = comp_resolve_alias_ex(c, class_id, name, &start, &bi);
+  const char *rn = is_cm ? comp_resolve_cm_alias_at(c, class_id, name, &start)
+                         : comp_resolve_alias_ex(c, class_id, name, &start, &bi);
   /* an alias that captured a builtin's method names no method of the
      program's, whatever the class defines of that name later */
   if (bi && !is_cm && !sp_streq(rn, name)) start = -1;
@@ -1829,12 +1830,14 @@ void comp_add_alias_from(ClassInfo *ci, const char *new_name, const char *old_na
     ci->alias_cls = realloc(ci->alias_cls, sizeof(int) * (size_t)ci->caliases);
     ci->alias_node = realloc(ci->alias_node, sizeof(int) * (size_t)ci->caliases);
     ci->alias_builtin = realloc(ci->alias_builtin, sizeof(int) * (size_t)ci->caliases);
+    ci->alias_sg = realloc(ci->alias_sg, sizeof(int) * (size_t)ci->caliases);
   }
   ci->alias_new[ci->naliases] = strdup(new_name);
   ci->alias_old[ci->naliases] = strdup(old_name);
   ci->alias_cls[ci->naliases] = -1;
   ci->alias_node[ci->naliases] = alias_node;
   ci->alias_builtin[ci->naliases] = 0;
+  ci->alias_sg[ci->naliases] = 0;
   ci->naliases++;
   comp_class_shape_changed();
 }
@@ -1876,7 +1879,19 @@ int comp_resolve_member(Compiler *c, int class_id, const char *name, int want_wr
   return SP_MEMBER_METHOD;
 }
 
+static const char *resolve_alias_side(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin, int sg);
 const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin) {
+  return resolve_alias_side(c, class_id, name, start_cls, builtin, 0);
+}
+/* The class-method side of a class reads its singleton aliases
+   (`class << self; alias a b`) and those of the modules it extends: an
+   instance one names no class method (`alias name cop_name` made a class
+   method's Module#name call the class method cop_name). A module's side
+   and the instance side read every alias, as they always have. */
+const char *comp_resolve_cm_alias_at(Compiler *c, int class_id, const char *name, int *start_cls) {
+  return resolve_alias_side(c, class_id, name, start_cls, NULL, 1);
+}
+static const char *resolve_alias_side(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin, int sg) {
   if (builtin) *builtin = 0;
   if (!name) return name;
   /* Follow alias links (chain-aware), guarding against cycles. A name means
@@ -1890,8 +1905,12 @@ const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, i
     const char *next = NULL;
     for (int cid = class_id; cid >= 0 && !next; cid = c->classes[cid].parent) {
       ClassInfo *ci = &c->classes[cid];
+      /* a module's instance alias can be a module function too
+         (`alias shellwords shellsplit; module_function :shellwords`, or
+         `extend self`): there both sides read it, as before */
+      int both = !sg || (ci->def_node >= 0 && nt_kind(c->nt, ci->def_node) == NK_ModuleNode);
       for (int i = (cid == lim_cls ? lim : ci->naliases) - 1; i >= 0; i--)
-        if (sp_streq(ci->alias_new[i], name)) {
+        if ((both || (ci->alias_sg && ci->alias_sg[i])) && sp_streq(ci->alias_new[i], name)) {
           next = ci->alias_old[i];
           /* An alias of an INHERITED method names the body that was in effect
              where the alias appeared, so a redefinition in this class must not
@@ -1911,6 +1930,15 @@ const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, i
           }
           break;
         }
+      /* on the class side, a module the class extends brings its instance
+         aliases as the class's own */
+      for (int e = 0; sg && !next && e < ci->nextended_mods; e++) {
+        int m = ci->extended_mods[e];
+        if (m < 0 || m >= c->nclasses) continue;
+        ClassInfo *mi = &c->classes[m];
+        for (int i = mi->naliases - 1; i >= 0 && !next; i--)
+          if (!(mi->alias_sg && mi->alias_sg[i]) && sp_streq(mi->alias_new[i], name)) next = mi->alias_old[i];
+      }
     }
     if (!next) return name;
     name = next;
