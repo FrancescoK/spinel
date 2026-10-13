@@ -14,6 +14,7 @@
 #include "compiler.h"
 #include "analyze.h"
 #include "decide.h"
+#include "holder.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -158,6 +159,17 @@ extern const char *g_sb_iv_name;   /* "@bt" while a shim is open, else NULL */
 extern int         g_sb_iv_cid;
 extern char        g_sb_iv_repl[64];
 int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap);
+/* ...the same slot's text appended to b, never declined for its length,
+   and whether recv has one at all (nothing emitted) */
+int strbuf_slot_text(Compiler *c, int recv, Buf *b);
+int strbuf_slot_has(Compiler *c, int recv);
+/* --share-strings: does bang v have a handle form (emit_bang_self_handle),
+   asked before anything is emitted? */
+int bang_self_handle_has(Compiler *c, int v);
+/* holder_slot_text and holder_static_handle_text (holder.h) appended to b,
+   whatever their length; with b NULL the answer alone */
+int holder_slot_buf(Compiler *c, const HolderRef *h, Buf *b);
+int holder_static_handle_buf(Compiler *c, int node, Buf *b);
 int strbuf_bang_self_local(const Compiler *c, int v);
 /* Does emit_bang_self_handle answer v's handle (it emits nothing for the
    rest)? Every receiver strbuf_bang_self_local takes is a slot or a route

@@ -3973,30 +3973,51 @@ static void emit_bang_answer_end(Buf *b, int tr, const char *h, int pub) {
   if (pub) buf_printf(b, "; _sp_ret_strbuf = _t%d ? (void *)%s : NULL; _t%d; })", tr, h, tr);
   else buf_printf(b, "; _t%d ? %s : (sp_String *)NULL; })", tr, h);
 }
-static int emit_bang_self_handle_1(Compiler *c, int v, int pub, Buf *b) {
-  if (!repr_share_rule(c) || !strbuf_bang_self_local(c, v)) return 0;
+/* The forms of a bang's handle (emit_bang_self_handle_1), decided before
+   anything is emitted (bang_self_form):
+     BSF_FREEZE       a freeze over a handle: the handle frozen;
+     BSF_HELD_CONV    a conversion over a held chain: the handle it holds;
+     BSF_HELD_FREEZE  a freeze over a held chain: that handle frozen;
+     BSF_HELD_SHIM    any other bang over a held chain, through its shim;
+     BSF_ROUTE        a bang over a route that hands on a handle, taken once;
+     BSF_SLOT_REBOUND a bang on a slot an argument rebinds, the old handle
+                      held;
+     BSF_SLOT_VAR     a bang on a variable's slot;
+     BSF_SLOT_CALL    a bang on a reader call read as its handle. */
+enum { BSF_NONE, BSF_FREEZE, BSF_HELD_CONV, BSF_HELD_FREEZE, BSF_HELD_SHIM, BSF_ROUTE, BSF_SLOT_REBOUND,
+       BSF_SLOT_VAR, BSF_SLOT_CALL };
+static int bang_self_form(Compiler *c, int v, int pub);
+/* Does emit_held_handle render a handle for held chain r? Every form of it
+   does but a bang's, which does where that bang has a form of its own. */
+static int held_handle_has(Compiler *c, int r) {
+  r = unwrap_parens(c, r);
+  const char *rn = nt_str(c->nt, r, "name");
+  if (is_receiver_conversion(rn) || face_str_bang_sn_call(c, r) || face_str_bang_call(c, r) || is_unary_plus(rn))
+    return 1;
+  return bang_self_handle_has(c, r);
+}
+int bang_self_handle_has(Compiler *c, int v) {
+  return (repr_share_rule(c) && strbuf_bang_self_local(c, v) && ran_first_handle(v) >= 0) ||
+         bang_self_form(c, v, 0) != BSF_NONE;
+}
+/* Which form bang v's handle takes (BSF_*), or BSF_NONE where it has none;
+   pub: as a method's tail (emit_bang_self_pub). Nothing is emitted. */
+static int bang_self_form(Compiler *c, int v, int pub) {
+  if (!repr_share_rule(c) || !strbuf_bang_self_local(c, v)) return BSF_NONE;
   int r = nt_ref(c->nt, v, "receiver");
   /* a safe-navigation call over an attribute assignment's handle skips a nil the route raises on (emit_strbuf_route_chain) */
   if (call_is_safe_nav(c->nt, v) && strbuf_assign_leaf(c, r) &&
       !bop_share_self_answer(nt_str(c->nt, v, "name"), nt_ref(c->nt, v, "block") >= 0))
-    return 0;
-  char sref[1024];
-  int slot = strbuf_slot_ref(c, r, sref, sizeof sref);
+    return BSF_NONE;
+  int slot = strbuf_slot_has(c, r);
   /* the slot forms read the slot after the route's block ran: declined when
      that block rebinds it, and the value form takes the route's own answer */
-  if (slot && route_block_rebinds_base(c, v)) return 0;
+  if (slot && route_block_rebinds_base(c, v)) return BSF_NONE;
   /* freeze answers its receiver, nil for nil: the handle is frozen and
      answered, with no read of its bytes to test (a consumer that wants them
      reads them once) */
-  if (self_call_answers_nil(c, v) && (slot || strbuf_value_carries(c, r) || strbuf_self_route(c, r))) {
-    if (pub) return 0;
-    int th = ++g_tmp;
-    buf_printf(b, "({ sp_String *_t%d = ", th);
-    if (slot) buf_puts(b, sref);
-    else emit_strbuf_handle_of(c, unwrap_parens(c, r), b);
-    buf_printf(b, "; sp_String_freeze(_t%d); _t%d; })", th, th);
-    return 1;
-  }
+  if (self_call_answers_nil(c, v) && (slot || strbuf_value_carries(c, r) || strbuf_self_route(c, r)))
+    return pub ? BSF_NONE : BSF_FREEZE;
   /* A receiver that is such a call itself (`pick(s).upcase!.downcase!`)
      is held with its handle (emit_held_self_answer_shim). */
   /* (a v the statement already holds, as its bytes, is not run again) */
@@ -4008,30 +4029,11 @@ static int emit_bang_self_handle_1(Compiler *c, int v, int pub, Buf *b) {
   int route_form = vn && !is_receiver_conversion(vn) && !is_freeze_name(vn) &&
                    !(is_substitution_bang(vn) && nt_ref(c->nt, v, "block") >= 0) && strbuf_self_route(c, r);
   if (!slot && !route_form && !arg_ran_first(v, 0) && !sb_shadowed_reader(ru) && strbuf_held_self_answer(c, r)) {
-    if (pub) return 0;
+    if (pub) return BSF_NONE;
     /* a freeze freezes the held handle and answers it (nil for nil); a
        conversion answers it (emit_held_handle) */
-    if (is_receiver_conversion(nt_str(c->nt, v, "name"))) {
-      Buf hb; memset(&hb, 0, sizeof hb);
-      emit_held_handle(c, v, &hb);
-      int ok = hb.p && hb.p[0];
-      if (ok) buf_puts(b, hb.p);
-      free(hb.p);
-      if (ok) return 1;
-    }
-    if (is_freeze_name(nt_str(c->nt, v, "name"))) {
-      Buf hb; memset(&hb, 0, sizeof hb);
-      emit_held_handle(c, r, &hb);
-      int ok = hb.p && hb.p[0];
-      if (ok) buf_printf(b, "sp_String_freeze(%s)", hb.p);
-      free(hb.p);
-      if (ok) return 1;
-    }
-    int tH = emit_held_self_answer_shim(c, v, unwrap_parens(c, r), TY_STRING, b, emit_self_call_arm);
-    if (tH) {
-      buf_printf(b, "_res%d ? _t%d : (sp_String *)NULL; })", tH, tH);
-      return 1;
-    }
+    if (is_receiver_conversion(vn)) return BSF_HELD_CONV;
+    if (held_handle_has(c, r)) return is_freeze_name(vn) ? BSF_HELD_FREEZE : BSF_HELD_SHIM;
   }
   /* A receiver-returning call takes its receiver route's handle once,
      before its own arguments can change the base slot. */
@@ -4042,7 +4044,56 @@ static int emit_bang_self_handle_1(Compiler *c, int v, int pub, Buf *b) {
       (strbuf_value_carries(c, r) ||
        (nt_kind(c->nt, unwrap_parens(c, r)) == NK_CallNode &&
         bop_share_self_answer(nt_str(c->nt, unwrap_parens(c, r), "name"), nt_ref(c->nt, unwrap_parens(c, r), "block") >= 0) &&
-        strbuf_bang_self_local(c, unwrap_parens(c, r))))) {
+        strbuf_bang_self_local(c, unwrap_parens(c, r)))))
+    return BSF_ROUTE;
+  if (!slot) return BSF_NONE;
+  /* The result keeps the old handle too when an argument rebinds its
+     slot; taking the slot after the call would return the new String. */
+  int args = nt_ref(c->nt, v, "arguments");
+  if (args >= 0 && read_rebound_by(c, r, args)) return BSF_SLOT_REBOUND;
+  return nt_kind(c->nt, r) != NK_CallNode ? BSF_SLOT_VAR : BSF_SLOT_CALL;
+}
+/* Bang v's handle in the form bang_self_form decides; 0 with nothing
+   emitted where it has none. */
+static int emit_bang_self_handle_1(Compiler *c, int v, int pub, Buf *b) {
+  int form = bang_self_form(c, v, pub);
+  if (form == BSF_NONE) return 0;
+  int r = nt_ref(c->nt, v, "receiver");
+  /* the receiver's slot, where the form reads it, is read first */
+  Buf sb;
+  memset(&sb, 0, sizeof sb);
+  int slot = form >= BSF_SLOT_REBOUND || (form == BSF_FREEZE && strbuf_slot_has(c, r));
+  if (slot) strbuf_slot_text(c, r, &sb);
+  const char *sref = sb.p ? sb.p : "";
+  switch (form) {
+  case BSF_FREEZE: {
+    int th = ++g_tmp;
+    buf_printf(b, "({ sp_String *_t%d = ", th);
+    if (slot) buf_puts(b, sref);
+    else emit_strbuf_handle_of(c, unwrap_parens(c, r), b);
+    buf_printf(b, "; sp_String_freeze(_t%d); _t%d; })", th, th);
+    break;
+  }
+  case BSF_HELD_CONV: {
+    Buf hb; memset(&hb, 0, sizeof hb);
+    emit_held_handle(c, v, &hb);
+    buf_puts(b, hb.p ? hb.p : "");
+    free(hb.p);
+    break;
+  }
+  case BSF_HELD_FREEZE: {
+    Buf hb; memset(&hb, 0, sizeof hb);
+    emit_held_handle(c, r, &hb);
+    buf_printf(b, "sp_String_freeze(%s)", hb.p ? hb.p : "");
+    free(hb.p);
+    break;
+  }
+  case BSF_HELD_SHIM: {
+    int tH = emit_held_self_answer_shim(c, v, unwrap_parens(c, r), TY_STRING, b, emit_self_call_arm);
+    buf_printf(b, "_res%d ? _t%d : (sp_String *)NULL; })", tH, tH);
+    break;
+  }
+  case BSF_ROUTE: {
     int th = ++g_tmp, tr = ++g_tmp;
     /* Taking the handle directly keeps the receiver route's nil check
        (nil.freeze is nil: the frozen face of a NULL handle is NULL). */
@@ -4090,41 +4141,44 @@ static int emit_bang_self_handle_1(Compiler *c, int v, int pub, Buf *b) {
     if (as_h) { view_pop(c, st); view_pop(c, sv); }
     if (late) view_unbind(amark);
     { char hn[24]; snprintf(hn, sizeof hn, "_t%d", th); emit_bang_answer_end(b, tr, hn, pub); }
-    return 1;
+    break;
   }
-  if (!slot) return 0;
-  int tr = ++g_tmp;
-  /* The result keeps the old handle too when an argument rebinds its
-     slot; taking the slot after the call would return the new String. */
-  int args = nt_ref(c->nt, v, "arguments");
-  if (args >= 0 && read_rebound_by(c, r, args)) {
+  case BSF_SLOT_REBOUND: {
+    int tr = ++g_tmp;
     int th = ++g_tmp, mark = g_n_argov;
     emit_bang_held_open(c, v, th, sref, 1, 0, b);
     if (emit_self_mutator_stmt(c, v, b)) {
       buf_printf(b, pub ? "sp_strbuf_read_pub(_t%d); })" : "_t%d; })", th);
-      return 1;
+      break;
     }
     buf_printf(b, "const char *_t%d = ", tr);
     ran_first_bind(r, th, th);
     emit_bang_on_held(c, v, th, b);
     view_unbind(mark);
     { char hn[24]; snprintf(hn, sizeof hn, "_t%d", th); emit_bang_answer_end(b, tr, hn, pub); }
-    return 1;
+    break;
   }
-  if (nt_kind(c->nt, r) != NK_CallNode) {
+  case BSF_SLOT_VAR: {
+    int tr = ++g_tmp;
     buf_printf(b, "({ const char *_t%d = ", tr);
     emit_self_call_char(c, v, b);
     emit_bang_answer_end(b, tr, sref, pub);
-    return 1;
+    break;
   }
-  int th = ++g_tmp;
-  emit_bang_held_open(c, v, th, sref, strbuf_route_nonnil(c, r) || self_call_answers_nil(c, v), 0, b);
-  buf_printf(b, "const char *_t%d = ", tr);
-  int mark = g_n_argov;
-  ran_first_bind(r, th, th);
-  emit_bang_on_held(c, v, th, b);
-  view_unbind(mark);
-  { char hn[24]; snprintf(hn, sizeof hn, "_t%d", th); emit_bang_answer_end(b, tr, hn, pub); }
+  case BSF_SLOT_CALL: {
+    int tr = ++g_tmp;
+    int th = ++g_tmp;
+    emit_bang_held_open(c, v, th, sref, strbuf_route_nonnil(c, r) || self_call_answers_nil(c, v), 0, b);
+    buf_printf(b, "const char *_t%d = ", tr);
+    int mark = g_n_argov;
+    ran_first_bind(r, th, th);
+    emit_bang_on_held(c, v, th, b);
+    view_unbind(mark);
+    { char hn[24]; snprintf(hn, sizeof hn, "_t%d", th); emit_bang_answer_end(b, tr, hn, pub); }
+    break;
+  }
+  }
+  free(sb.p);
   return 1;
 }
 

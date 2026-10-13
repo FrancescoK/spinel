@@ -120,19 +120,34 @@ static int share_plan_self_recv(Compiler *c, int v) {
   return cplan_targets(c, v, tg, CPT_MAX) == 0 ? r : -1;
 }
 
-/* The supply node v decides by itself (rules 1, 2 and 4 below), or -1
-   when it is a call answering its String receiver, whose supply is the
-   receiver's: *recv is then that receiver. */
-static int share_plan_supply_at(Compiler *c, int v, int *recv) {
+/* The producer of node v's handle by the rules below (SPK_*); for a call
+   answering its String receiver (SPK_SELF) or a bang on a boxed receiver
+   (SPK_BANG_BOX), *recv is that receiver, else -1. */
+static int share_plan_producer_at(Compiler *c, int v, int *recv) {
   Repr r = repr_of(c, v);
   *recv = -1;
-  if (r.kind == RK_BOXED) return 1;
-  if (r.kind == RK_STRBUF) return r.strbuf_src != RS_FRESH;
+  if (r.kind == RK_BOXED) return SPK_BOX;
+  if (r.kind == RK_STRBUF) return r.strbuf_src != RS_FRESH ? SPK_HANDLE : SPK_NONE;
   int rv = share_plan_self_recv(c, v);
-  if (rv >= 0) { *recv = rv; return -1; }
+  if (rv >= 0) { *recv = rv; return SPK_SELF; }
+  if (face_str_bang_call(c, v)) { *recv = nt_ref(c->nt, v, "receiver"); return SPK_BANG_BOX; }
   /* a new String (share_value_fresh) has no handle to hand over, whatever
      a route says about whether its copy can be seen */
-  return share_node_carries_handle(c, v) && !share_value_fresh(c, v, 0);
+  return share_node_carries_handle(c, v) && !share_value_fresh(c, v, 0) ? SPK_ROUTE : SPK_NONE;
+}
+
+int share_plan_producer(Compiler *c, int v, int *operand) {
+  int rv, k = share_plan_producer_at(c, v, &rv);
+  if (operand) *operand = rv;
+  return k;
+}
+
+/* The supply node v decides by itself (1 or 0), or -1 when it is a call
+   answering its String receiver, whose supply is the receiver's: *recv is
+   then that receiver. */
+static int share_plan_supply_at(Compiler *c, int v, int *recv) {
+  int k = share_plan_producer_at(c, v, recv);
+  return k == SPK_SELF ? -1 : k != SPK_NONE;
 }
 
 /* One answer of a chain of self-answering calls: the stamp it holds for
@@ -162,6 +177,9 @@ static int share_plan_sup_valid(Compiler *c, const struct SharePlanSup *e) {
         (RS_FRESH);
      3. a call that answers its String receiver hands over what that
         receiver does;
+     3b. a bang on a boxed receiver (face_str_bang_call) answers the
+        receiver's box, which holds the handle of a String that can change
+        (a box of such a String is its handle), or nil;
      4. any other value, represented as its bytes, has one where the routes
         the analysis checks a carry against hand it along
         (share_node_carries_handle: a callee that publishes it, a bang over
@@ -210,11 +228,22 @@ static int share_plan_need_of(int need) {
 }
 int share_plan_need(Compiler *c, int v) { return share_plan_need_of(share_value_needs_handle(c, v)); }
 
+static int share_plan_box_plain(Compiler *c, int v);
+
 /* What a consumer in `role` needs of value v, whose own need (what its
    facts say a taker needs) is `need`. */
 static int share_plan_role_need(Compiler *c, int v, int role, int need) {
   if (role == SPR_READ || role == SPR_TEST) return SPN_BYTES;
   if (role == SPR_IDENTITY) return SPN_OBJECT;
+  /* A box is copied by value, so a box of a String's bytes is a String of
+     its own once a copy is changed in place: a box of a String no other
+     name holds is a new handle, which every copy names, unless a copy is
+     proven unseen (share_plan_box_plain). A frozen literal is its own
+     object already. Any other value needs what a taker does. */
+  if (role == SPR_BOX) {
+    if (share_frozen_literal(c, v)) return SPN_BYTES;
+    if (share_value_fresh(c, v, 0)) return share_plan_box_plain(c, v) ? SPN_BYTES : SPN_NEW;
+  }
   /* the store asks past the literal it splits (never less than the value) */
   if (role == SPR_STORE && need == SPN_BYTES) return share_plan_need_of(share_store_needs_handle(c, v));
   return need;
@@ -237,8 +266,8 @@ SharePlan share_plan_with_need(Compiler *c, int v, int role, int need) {
 }
 
 const char *share_plan_role_name(int role) {
-  static const char *const names[] = { "take", "read", "test", "store", "identity" };
-  return role >= SPR_TAKE && role <= SPR_IDENTITY ? names[role] : "?";
+  static const char *const names[] = { "take", "read", "test", "store", "identity", "box" };
+  return role >= SPR_TAKE && role <= SPR_BOX ? names[role] : "?";
 }
 
 int share_plan_role(Compiler *c, int v) {
@@ -315,7 +344,11 @@ static void share_plan_roles_build(Compiler *c) {
   NT_FOREACH_KIND(nt, NK_CallNode, n) share_plan_identity_roles(c, n);
 }
 
-int share_plan_box_plain(Compiler *c, int v) {
+/* Is node v, a new String, an element of a container literal a holder
+   keeps whose elements share_node_elems_local proves its own? No other
+   name can tell a copy of its box from the String there, and a handle
+   would cost an allocation and a copy per box. */
+static int share_plan_box_plain(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   int n = c->share_parent_n, p = c->share_parent && v >= 0 && v < n ? c->share_parent[v] : -1;
   while (p >= 0 && p < n && nt_kind(nt, p) == NK_ParenthesesNode) p = c->share_parent[p];
@@ -377,5 +410,8 @@ int share_plan_memo_need(Compiler *c, int v) {
 SharePlan share_plan_of(Compiler *c, int v, int role, int *memo) {
   int m = share_plan_memo_need(c, v);
   if (memo) *memo = m >= 0;
-  return share_plan_with_need(c, v, role, m >= 0 ? m : share_plan_need(c, v));
+  SharePlan p = share_plan_with_need(c, v, role, m >= 0 ? m : share_plan_need(c, v));
+  /* (the producer, where the supply was asked) */
+  if (p.need != SPN_BYTES) p.kind = (unsigned char)share_plan_producer(c, v, NULL);
+  return p;
 }

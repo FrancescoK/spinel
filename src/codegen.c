@@ -1545,8 +1545,7 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
   }
   if (!strbuf_bang_self_local(c, node)) return 0;
   int r = nt_ref(c->nt, node, "receiver");
-  char srefB[1024];
-  int slot = strbuf_slot_ref(c, r, srefB, sizeof srefB);
+  int slot = strbuf_slot_has(c, r);
   /* (a bang over a route keeps its own arms below: a narrowed box's
      mutator changes the box's String in place; a receiver that is such a
      call itself, `id(s).upcase!.downcase!`, is held as its handle,
@@ -1557,22 +1556,31 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
     return 0;
   if (!slot || nt_kind(c->nt, r) == NK_CallNode) {
     /* a reader call: read once (emit_bang_self_handle); so is a route
-       over a handle (`(s << x).freeze`), whose handle it takes once */
-    Buf hb; memset(&hb, 0, sizeof hb);
+       over a handle (`(s << x).freeze`), whose handle it takes once --
+       where the bang has a handle form, decided before anything is
+       emitted (bang_self_handle_has) */
     int sv_b = view_push_repr(c, node, VR_STRBUF_BOX, 0);
-    int ok = emit_bang_self_handle(c, node, &hb);
+    if (!bang_self_handle_has(c, node)) {
+      view_pop(c, sv_b);
+      return 0;
+    }
+    Buf hb; memset(&hb, 0, sizeof hb);
+    emit_bang_self_handle(c, node, &hb);
     view_pop(c, sv_b);
-    if (ok) buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
+    buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p ? hb.p : "NULL");
     free(hb.p);
-    if (ok) RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
-    return ok;
+    RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
+    return 1;
   }
+  Buf sb; memset(&sb, 0, sizeof sb);
+  strbuf_slot_text(c, r, &sb);
   int tb = ++g_tmp;
   buf_printf(b, "({ const char *_t%d = ", tb);
   int sv_b = view_push_repr(c, node, VR_STRBUF_BOX, 0);
   emit_expr(c, node, b);
   view_pop(c, sv_b);
-  buf_printf(b, "; _t%d ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil(); })", tb, srefB);
+  buf_printf(b, "; _t%d ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil(); })", tb, sb.p ? sb.p : "");
+  free(sb.p);
   RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
   return 1;
 }
@@ -2250,19 +2258,17 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     return;
   }
   if (t == TY_STRING) {
-    /* --share-strings: a String no other name holds is boxed as the object
-       it is (sp_box_str_new), so the box's copies name one String; a
-       frozen literal is its own object already, and a container literal
-       whose elements the facts prove its own keeps a copy no other name
-       can tell from the String (share_plan_box_plain) */
-    int fresh = repr_share_rule(c) && !share_frozen_literal(c, node) && share_value_fresh(c, node, 0) &&
-                !share_plan_box_plain(c, node);
+    /* --share-strings: the String plan's form for a box (SPR_BOX): a String
+       the plan wraps is boxed as the new handle it is (sp_box_str_new), so
+       the box's copies name one String; any other is boxed as its bytes,
+       which sp_box_str boxes as their handle where a handle owns them */
+    int wrap = c->share_plan && share_plan_of(c, node, SPR_BOX, NULL).form == SPF_WRAP;
     /* The new handle is an object only this box holds, and the box is
        often a temporary handed to a runtime call that allocates before it
        is done with it (a Hash lookup's key): rooted here, as the runtime
        roots a String key by its tag but not a handle's box. Unrooted, a
        collection inside the lookup freed the handle and its inline bytes. */
-    if (fresh) {
+    if (wrap) {
       int tb = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = sp_box_str_new(", tb); emit_expr(c, node, b);
       buf_printf(b, "); SP_GC_ROOT_RBVAL(_t%d); _t%d; })", tb, tb);

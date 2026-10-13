@@ -164,10 +164,6 @@ int share_node_elems_share(const Compiler *c, int n);
    the rule does not share it, and it meets nothing the walk does not
    follow? */
 int share_node_elems_local(const Compiler *c, int n);
-/* Is node v, a new String, boxed into a container literal a holder keeps
-   whose elements share_node_elems_local proves its own, so that a copy of
-   the box no other name can tell from the String may hold its bytes? */
-int share_plan_box_plain(Compiler *c, int v);
 /* Is node n a blockless builtin's new Array of new Strings whose elements
    the rule shares? Its one evaluation is the only source of those Strings,
    so where it is consumed each can be wrapped as a handle of its own. */
@@ -299,10 +295,25 @@ enum { SPF_BYTES, SPF_HANDLE, SPF_WRAP, SPF_REFUSE }; /* form */
 /* the role of a value's consumer: it takes the value (keeps, changes,
    compares or hands it on), reads its bytes, tests it for nil or false,
    stores it into a multiple write's target, or asks its identity (equal?,
-   object_id, __id__) */
-enum { SPR_TAKE, SPR_READ, SPR_TEST, SPR_STORE, SPR_IDENTITY };
+   object_id, __id__); or it boxes the value (a poly slot, a container's
+   element, a poly argument), the role a box's emitter asks for (SPR_BOX),
+   which the memo never holds */
+enum { SPR_TAKE, SPR_READ, SPR_TEST, SPR_STORE, SPR_IDENTITY, SPR_BOX };
+/* the producer that supplies a value's handle (share_plan_producer): none
+   (SPK_NONE: its bytes); a box, which hands over itself (SPK_BOX); a value
+   represented as the handle (SPK_HANDLE: a variable's slot, a demanded
+   reader, a boxed container's element, a narrowed box's slot, a Range's
+   kept endpoint, by repr_of's strbuf_src); a call that answers its String
+   receiver, whose supply is that receiver's (SPK_SELF); a bang on a boxed
+   receiver, which answers the receiver's box, a box of a String that can
+   change holding its handle (SPK_BANG_BOX); a route the analysis's carry
+   check names (SPK_ROUTE: a callee that publishes the handle, a variable
+   whose slot holds it, ...) */
+enum { SPK_NONE, SPK_BOX, SPK_HANDLE, SPK_SELF, SPK_BANG_BOX, SPK_ROUTE };
 typedef struct {
   unsigned char need, supply, form;
+  unsigned char kind;   /* SPK_*, which share_plan_of fills where the supply
+                           was asked (a need above bytes) */
 } SharePlan;
 /* the form a need and a supply give */
 int share_plan_form(int need, int supply);
@@ -328,6 +339,10 @@ SharePlan share_plan_with_need(Compiler *c, int v, int role, int need);
 int share_plan_role(Compiler *c, int v);
 int share_plan_second_role(Compiler *c, int v);
 const char *share_plan_form_name(int form);
+/* The producer of node v's handle where codegen is (SPK_*), asked live as
+   the supply is, whatever a consumer needs; *operand (may be NULL) is the
+   receiver whose handle an SPK_SELF or SPK_BANG_BOX call answers, else -1. */
+int share_plan_producer(Compiler *c, int v, int *operand);
 const char *share_plan_role_name(int role);
 /* Is node n an explicit writer's attribute assignment whose value the facts
    keep apart from its right-hand side's String (nothing observes them as one
