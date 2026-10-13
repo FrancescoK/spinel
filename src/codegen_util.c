@@ -7503,6 +7503,9 @@ static int node_is_oint_asked(Compiler *c, int node) {
       if (ty_is_object(xt) && comp_cmethod_in_chain(c, ty_object_class(xt), nm, NULL) >= 0)
         return class_switch_arm_oint(c, ty_object_class(xt), nm);
     }
+    /* a class or module value only the run time knows: the switch over the
+       classes with a class method of the name (#8985) */
+    else if (rt == TY_CLASS && nullable_int_value(c, node)) return 1;
     /* a builtin value's method the program reopened its class with
        (`class Symbol; def mark = ...`) */
     if (mi < 0 && !io_bi && r >= 0 && rt != TY_POLY && rt != TY_UNKNOWN && !ty_is_object(rt))

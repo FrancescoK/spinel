@@ -34224,6 +34224,16 @@ int nullable_int_value(Compiler *c, int v) {
         /* the receiver stayed poly, so no single callee resolves -- fall back
            to the runtime dispatch set */
         else if (rt == TY_POLY) return poly_dispatch_nullable(c, v, cn);
+        /* a class or module value only the run time knows (`g.upd` with g
+           a module): any class's method of the name the dispatch can reach,
+           as emit's class-value switch reaches them (#8985) */
+        else if (rt == TY_CLASS) {
+          for (int k = 0; k < c->nclasses; k++) {
+            if (is_builtin_reopen(c->classes[k].name)) continue;
+            int kmi = comp_cmethod_in_chain(c, k, cn, NULL);
+            if (kmi >= 0 && c->scopes[kmi].ret_nullable_int) return 1;
+          }
+        }
       }
     }
     if (mi >= 0 && c->scopes[mi].ret_nullable_int) return 1;

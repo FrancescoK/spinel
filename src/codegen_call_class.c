@@ -3953,9 +3953,15 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           g_pre = sv_pre9;
           if (hp9.p) buf_puts(b, hp9.p);
           free(hp9.p);
-          emit_ctype(c, slot9, b);
-          buf_printf(b, " _t%d = %s; switch (_t%d.cls_id) {", tr9,
-                     slot9 == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, slot9), tk9);
+          /* a call that can answer nil holds an Integer or Float with its
+             nil (#8985) */
+          int onil9 = oint_kind(slot9) && node_is_oint(c, id);
+          if (onil9) buf_printf(b, "%s _t%d = %s; switch (_t%d.cls_id) {", oint_ctype(slot9), tr9, oint_nil(slot9), tk9);
+          else {
+            emit_ctype(c, slot9, b);
+            buf_printf(b, " _t%d = %s; switch (_t%d.cls_id) {", tr9,
+                       slot9 == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, slot9), tk9);
+          }
           char rcls9[24], rraise9[256];
           snprintf(rcls9, sizeof rcls9, "_t%d", tk9);
           snprintf(rraise9, sizeof rraise9, "sp_raise_nomethod(sp_sprintf(\"undefined method '%s' for %%s\", sp_class_to_s(_t%d)))", name, tk9);
@@ -4002,7 +4008,10 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
             buf_puts(&cb9, ")");
             if (apre9.p && apre9.p[0]) { buf_puts(b, "{ "); buf_puts(b, apre9.p); }
             buf_printf(b, "_t%d = ", tr9);
-            if (slot9 == TY_POLY && kr != TY_POLY) emit_poly_user_box(c, id, &c->scopes[kmi], cb9.p ? cb9.p : "", b);
+            if (onil9 && !method_ret_is_oint(&c->scopes[kmi]))
+              buf_printf(b, "%s(%s)", slot9 == TY_FLOAT ? "sp_ofloat_of" : "sp_oint_of", cb9.p ? cb9.p : "");
+            else if (onil9) buf_puts(b, cb9.p ? cb9.p : "");
+            else if (slot9 == TY_POLY && kr != TY_POLY) emit_poly_user_box(c, id, &c->scopes[kmi], cb9.p ? cb9.p : "", b);
             else if (slot9 != TY_POLY && kr == TY_POLY) emit_unbox_text(c, slot9, cb9.p ? cb9.p : "", b);
             else buf_puts(b, cb9.p ? cb9.p : "");
             if (apre9.p && apre9.p[0]) buf_puts(b, "; }");
