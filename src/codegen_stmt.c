@@ -5057,9 +5057,9 @@ static int nilfree_operand(Compiler *c, int v, const char *op, int left, const c
     return 0;
   int nilr = cplan_nil(c, v) == CN_RAISE;
   int tk = ++g_tmp;
-  buf_printf(b, "({ sp_int _t%d = ", tk);
-  emit_int_expr(c, vav[0], b);
-  buf_printf(b, "; SP_LIKELY((unsigned long long)_t%d < (unsigned long long)%s) ? %s[_t%d] : ", tk, hn, hd, tk);
+  char redo[160];
+  buf_puts(b, "({ "); emit_int_index_late(c, vav[0], tk, redo, sizeof redo, b);
+  buf_printf(b, "; SP_LIKELY((unsigned long long)_t%d < (unsigned long long)%s) ? %s[_t%d] : %s", tk, hn, hd, tk, redo);
   if (nilr) { buf_puts(b, "({ "); emit_nil_cold_test(c, v, vr, b); buf_puts(b, " "); }
   /* out of the nil-free range the element is read with its nil: the
      operator's receiver raises NoMethodError for it (a comparison's too),
@@ -5071,7 +5071,7 @@ static int nilfree_operand(Compiler *c, int v, const char *op, int left, const c
   if (left) buf_printf(b, ", _t%d), \"%s\")", tk, op);
   else if (cmp) buf_printf(b, ", _t%d), \"%s\", \"Float\")", tk, op);
   else buf_printf(b, ", _t%d))", tk);
-  buf_printf(b, "%s; })", nilr ? "; })" : "");
+  buf_printf(b, "%s%s; })", nilr ? "; })" : "", *redo ? ")" : "");
   return 1;
 }
 
@@ -20931,6 +20931,22 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
   return -1;
 }
 
+/* `sp_int _t<tk> = ` the index of a store into an array a cached header
+   holds. An index sum's check waits for the out-of-range set
+   (emit_int_index_late) only past a value that runs no code of its own --
+   a literal, a variable read -- so that nothing runs in another order. */
+static void emit_store_index(Compiler *c, int ix, int v, int tk, char *redo, size_t n, Buf *b) {
+  switch (nt_kind(c->nt, v)) {
+  case NK_IntegerNode: case NK_FloatNode: case NK_NilNode:
+  case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode:
+    emit_int_index_late(c, ix, tk, redo, n, b);
+    return;
+  default:
+    *redo = 0;
+    buf_printf(b, "sp_int _t%d = ", tk); emit_int_expr(c, ix, b);
+  }
+}
+
 static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -21195,13 +21211,13 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
         (comp_ntype(c, argv[0]) == TY_INT || hc_promoted_int(c, argv[0])) &&
         hc_array(c, recv, 0, hd, hl, hw, sizeof hd)) {
       int tk = ++g_tmp, tv = ++g_tmp;
-      char hr[48]; hc_read_len(hd, hr, sizeof hr);
-      buf_printf(b, "{ sp_int _t%d = ", tk); emit_int_expr(c, argv[0], b);
+      char hr[48], redo[160]; hc_read_len(hd, hr, sizeof hr);
+      buf_puts(b, "{ "); emit_store_index(c, argv[0], argv[1], tk, redo, sizeof redo, b);
       buf_printf(b, "; sp_oint _t%d = sp_poly_elem_i(", tv); emit_expr(c, argv[1], b);
       buf_printf(b, "); if (SP_LIKELY(%s && !_t%d.nil && (unsigned long long)_t%d < (unsigned long long)%s)) %s[_t%d] = _t%d.v;",
                  hw, tv, tk, hr, hd, tk, tv);
-      buf_puts(b, " else sp_IntArray_set_nilable("); emit_expr(c, recv, b);
-      buf_printf(b, ", _t%d, _t%d)%s; }\n", tk, tv, hc_mark());
+      buf_printf(b, " else %ssp_IntArray_set_nilable(", redo); emit_expr(c, recv, b);
+      buf_printf(b, ", _t%d, _t%d)%s%s; }\n", tk, tv, hc_mark(), *redo ? ")" : "");
       return 1;
     }
     /* a value that can be nil into a cached header's array: a non-nil one
@@ -21212,13 +21228,13 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
         (comp_ntype(c, argv[0]) == TY_INT || hc_promoted_int(c, argv[0])) &&
         hc_array(c, recv, rt == TY_FLOAT_ARRAY, hd, hl, hw, sizeof hd)) {
       int tk = ++g_tmp, tv = ++g_tmp;
-      char hr[48]; hc_read_len(hd, hr, sizeof hr);
-      buf_printf(b, "{ sp_int _t%d = ", tk); emit_int_expr(c, argv[0], b);
+      char hr[48], redo[160]; hc_read_len(hd, hr, sizeof hr);
+      buf_puts(b, "{ "); emit_store_index(c, argv[0], argv[1], tk, redo, sizeof redo, b);
       buf_printf(b, "; %s _t%d = ", oint_ctype(et), tv); emit_elem_store_value(c, k, argv[1], b);
       buf_printf(b, "; if (SP_LIKELY(%s && !_t%d.nil && (unsigned long long)_t%d < (unsigned long long)%s)) %s[_t%d] = _t%d.v;",
                  hw, tv, tk, hr, hd, tk, tv);
-      buf_printf(b, " else sp_%sArray_set_nilable(", k); emit_expr(c, recv, b);
-      buf_printf(b, ", _t%d, _t%d)%s; }\n", tk, tv, hc_mark());
+      buf_printf(b, " else %ssp_%sArray_set_nilable(", redo, k); emit_expr(c, recv, b);
+      buf_printf(b, ", _t%d, _t%d)%s%s; }\n", tk, tv, hc_mark(), *redo ? ")" : "");
       return 1;
     }
     /* a plain value in range of a cached header is stored where it is; a
@@ -21227,17 +21243,17 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
         (comp_ntype(c, argv[0]) == TY_INT || hc_promoted_int(c, argv[0])) &&
         hc_array(c, recv, rt == TY_FLOAT_ARRAY, hd, hl, hw, sizeof hd)) {
       int tk = ++g_tmp, tv = ++g_tmp;
-      buf_printf(b, "{ sp_int _t%d = ", tk);
-      emit_int_expr(c, argv[0], b);
+      char redo[160];
+      buf_puts(b, "{ "); emit_store_index(c, argv[0], argv[1], tk, redo, sizeof redo, b);
       buf_printf(b, "; %s _t%d = ", c_type_name(et), tv); emit_expr(c, argv[1], b);
       /* below the nil-free length: no nil bit to clear */
       char hr[48]; hc_read_len(hd, hr, sizeof hr);
       buf_printf(b, "; if (SP_LIKELY(%s && (unsigned long long)_t%d < (unsigned long long)%s)) ", hw, tk, hr);
       buf_printf(b, "%s[_t%d] = _t%d;", hd, tk, tv);
-      buf_puts(b, " else ");
+      buf_printf(b, " else %s", redo);
       buf_printf(b, "sp_%sArray_set(", k);
       emit_expr(c, recv, b);
-      buf_printf(b, ", _t%d, _t%d)%s; }\n", tk, tv, hc_mark());
+      buf_printf(b, ", _t%d, _t%d)%s%s; }\n", tk, tv, hc_mark(), *redo ? ")" : "");
       return 1;
     }
     buf_printf(b, "sp_%sArray_set%s(", k, nsfx);
