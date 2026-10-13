@@ -12193,12 +12193,15 @@ int reader_override_arms(Compiler *c, int id, int cid, const char *name, TyKind 
      String) */
   int copy = ret == TY_STRING && reader_ty == TY_STRBUF;
   if (ret != reader_ty && ret != TY_POLY && !copy) return 0;
+  /* (an Integer / Float read that can be nil takes an arm answering nil) */
+  int ro = oint_kind(ret) && node_is_oint(c, id);
   for (int k = 0; k < c->nclasses; k++) {
     if (k == cid || !is_descendant(c, k, cid)) continue;
     int kmi = comp_method_in_chain(c, k, name, NULL);
     if (kmi < 0 || kmi == base_mi) continue;
     if (dispatch_arm_scope(c, kmi) < 0) return 0;
     TyKind kr = (TyKind)c->scopes[kmi].ret;
+    if (ro && (kr == TY_NIL || kr == TY_VOID)) continue;
     if (kr != ret && ret != TY_POLY) return 0;
   }
   return 1;
@@ -12230,19 +12233,24 @@ TyKind reader_override_ty(Compiler *c, int id, int cid, const char *name) {
 /* A call of `name` that cid's chain answers with an attr reader, in a class
    some descendant of which overrides the reader with a def: a switch on the
    runtime class, with an arm calling the def for each overriding descendant
-   and the reader's text (`reader`, of type reader_ty) for the rest. 0 when no
-   descendant overrides it, or when the arms cannot agree on the call's type. */
+   and the reader's text (`reader`, of type reader_ty, the oint where
+   reader_oint) for the rest. 0 when no descendant overrides it, or when the
+   arms cannot agree on the call's type. */
 int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name,
                                   const char *selfptr, const char *reader,
-                                  TyKind reader_ty, Buf *b) {
+                                  TyKind reader_ty, int reader_oint, Buf *b) {
   const NodeTable *nt = c->nt;
   if (!reader_override_arms(c, id, cid, name, reader_ty)) return 0;
   int base_mi = comp_method_in_chain(c, cid, name, NULL);
   TyKind ret = repr_of(c, id).as_ty;
   int argsNode = nt_ref(nt, id, "arguments");
   int rtmp = ++g_tmp;
+  /* a read that can be nil (an override answering nil, a field with a nil
+     bit, whose read the caller passes as the oint) holds the oint */
+  int sv_disp_ro = g_disp_ro;
+  g_disp_ro = oint_kind(ret) && node_is_oint(c, id);
   buf_puts(b, "({ ");
-  emit_ctype(c, ret, b);
+  if (g_disp_ro) buf_puts(b, oint_ctype(ret)); else emit_ctype(c, ret, b);
   buf_printf(b, " _t%d; switch (", rtmp);
   emit_obj_dispatch_key(c, cid, selfptr, b);
   buf_puts(b, ") {");
@@ -12259,8 +12267,10 @@ int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name
   buf_printf(b, " default: _t%d = ", rtmp);
   if (ret == TY_POLY && reader_ty != TY_POLY) emit_boxed_text(c, reader_ty, reader, b);
   else if (ret == TY_STRING && reader_ty == TY_STRBUF) buf_printf(b, "sp_strbuf_read(%s)", reader);
+  else if (g_disp_ro && !reader_oint) buf_printf(b, "%s(%s)", oint_of(ret), reader);
   else buf_puts(b, reader);
   buf_printf(b, "; break; } _t%d; })", rtmp);
+  g_disp_ro = sv_disp_ro;
   return 1;
 }
 
