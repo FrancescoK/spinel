@@ -1392,6 +1392,16 @@ static const BuiltinOp bop_rows[] = {
   { TY_SYMBOL, "==",          0, 127, BF_ANY, TY_BOOL,    BOPE_NONE },
   { TY_SYMBOL, "!=",              1, 127, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "(!($r == $e0))", 0 },
   { TY_SYMBOL, "!=",          0, 127, BF_ANY, TY_BOOL,    BOPE_NONE },
+  /* Symbol#eql? and #equal? are identity: another Symbol by its id, a boxed
+     value by its tag and id, any other kind never */
+  { TY_SYMBOL, "eql?",            1,   1, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "($r == $e0)", BOP_K(TY_SYMBOL) },
+  { TY_SYMBOL, "eql?",            1,   1, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE,
+    "({ sp_sym _t$t = $r; sp_RbVal _t$u = $b0; (sp_bool)(_t$u.tag == SP_TAG_SYM && (sp_sym)_t$u.v.i == _t$t); })", BOP_K(TY_POLY) },
+  { TY_SYMBOL, "eql?",            1,   1, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "((void)($r), (void)($b0), (sp_bool)0)", 0 },
+  { TY_SYMBOL, "equal?",          1,   1, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "($r == $e0)", BOP_K(TY_SYMBOL) },
+  { TY_SYMBOL, "equal?",          1,   1, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE,
+    "({ sp_sym _t$t = $r; sp_RbVal _t$u = $b0; (sp_bool)(_t$u.tag == SP_TAG_SYM && (sp_sym)_t$u.v.i == _t$t); })", BOP_K(TY_POLY) },
+  { TY_SYMBOL, "equal?",          1,   1, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "((void)($r), (void)($b0), (sp_bool)0)", 0 },
   { TY_SYMBOL, "[]",              2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_sub_range(sp_sym_to_s($r), $i0, $i1)", 0 },
   { TY_SYMBOL, "[]",          1,   2, BF_ANY, TY_STRING,  BOPE_NONE },
   { TY_SYMBOL, "slice",           2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_sub_range(sp_sym_to_s($r), $i0, $i1)", 0 },
