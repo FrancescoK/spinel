@@ -44800,57 +44800,75 @@ static void an_phase_storage(Compiler *c) {
     for (int s = 0; s < c->nscopes; s++) conv0[s] = share_converted_locals(c, s);
   }
   HandleArgTab hat;
-  for (;;) {
-    handle_arg_tab_init(c, &hat);
-    int ch = promote_params_stored_in_shared_ivars(c, &hat);
-    if (convert_byref_handle_params(c, &hat)) ch = 1;
-    if (lift_poly_alias_reads(c, &hat)) ch = 1;
-    if (promote_local_alias_pairs(c)) ch = 1;
-    if (promote_dyncall_string_args(c)) ch = 1;
-    if (promote_spread_string_args(c)) ch = 1;
-    if (promote_default_alias_params(c)) ch = 1;
-    if (promote_forwarded_rest_args(c)) ch = 1;
-    if (promote_ivar_handle_stores(c)) ch = 1;
-    /* --share-strings: a typed String Array the rule converts to the poly
-       Array this late (share_default_apply) is a late widening: a method
-       answering it, and the locals written from that method, follow it as
-       they follow the late ivar and return widenings (rejoin_local_writes) */
-    if (c->share_strings && c->sb_args->changed) {
-      /* Newly reached stores can widen a literal. Bind its parameters
-         again through the existing worklist, including super's chain,
-         until those bindings settle too. */
-      c->sb_args->changed = infer_param_types_settle(c);
-      if (c->sb_args->changed) ch = late_widened = 1;
-    }
-    if (c->share_strings && ch) {
-      g_ret_no_new_poly = 3;
-      if (infer_return_types(c)) ch = late_widened = 1;
-      g_ret_no_new_poly = 0;
-      if (rejoin_local_writes(c)) ch = late_widened = 1;
-    }
-    if (!ch) break;
-    handle_arg_tab_free(&hat);
-  }
-  /* ... and the reads of what widened take its type, as the proc-return
-     re-derivation's refresh does (an_phase_proc_returns): everywhere when a
-     return or a re-joined local moved, else the scopes of the locals
-     converted here alone (a local is its scope's; their reads' types,
-     and the types of the expressions over them, are that scope's nodes) */
-  if (late_widened)
-    for (int id = 0; id < c->nt->count; id++) infer_type(c, id);
-  else if (conv0) {
-    int any = 0;
-    for (int s = 0; s < c->nscopes; s++) {
-      int moved = share_converted_locals(c, s) != conv0[s];
-      conv0[s] = moved;
-      any |= moved;
-    }
-    if (any)
-      for (int id = 0; id < c->nt->count; id++) {
-        Scope *sc = comp_scope_of(c, id);
-        if (sc && conv0[sc - c->scopes]) infer_type(c, id);
+  /* The refresh below moves node types the rule's facts are built from: a
+     variable an expression over a widened read joins can only now meet a
+     String the rule shares. Under the rule the loop runs again while the
+     refresh moves a type, so the rule decides over the types the seal will
+     see (a holder it shares only by them is refused there otherwise). */
+  TyKind *nt0 = NULL;
+  for (int round = 0;; round++) {
+    for (;;) {
+      handle_arg_tab_init(c, &hat);
+      int ch = promote_params_stored_in_shared_ivars(c, &hat);
+      if (convert_byref_handle_params(c, &hat)) ch = 1;
+      if (lift_poly_alias_reads(c, &hat)) ch = 1;
+      if (promote_local_alias_pairs(c)) ch = 1;
+      if (promote_dyncall_string_args(c)) ch = 1;
+      if (promote_spread_string_args(c)) ch = 1;
+      if (promote_default_alias_params(c)) ch = 1;
+      if (promote_forwarded_rest_args(c)) ch = 1;
+      if (promote_ivar_handle_stores(c)) ch = 1;
+      /* --share-strings: a typed String Array the rule converts to the poly
+         Array this late (share_default_apply) is a late widening: a method
+         answering it, and the locals written from that method, follow it as
+         they follow the late ivar and return widenings (rejoin_local_writes) */
+      if (c->share_strings && c->sb_args->changed) {
+        /* Newly reached stores can widen a literal. Bind its parameters
+           again through the existing worklist, including super's chain,
+           until those bindings settle too. */
+        c->sb_args->changed = infer_param_types_settle(c);
+        if (c->sb_args->changed) ch = late_widened = 1;
       }
+      if (c->share_strings && ch) {
+        g_ret_no_new_poly = 3;
+        if (infer_return_types(c)) ch = late_widened = 1;
+        g_ret_no_new_poly = 0;
+        if (rejoin_local_writes(c)) ch = late_widened = 1;
+      }
+      if (!ch) break;
+      handle_arg_tab_free(&hat);
+    }
+    /* ... and the reads of what widened take its type, as the proc-return
+       re-derivation's refresh does (an_phase_proc_returns): everywhere when a
+       return or a re-joined local moved, else the scopes of the locals
+       converted here alone (a local is its scope's; their reads' types,
+       and the types of the expressions over them, are that scope's nodes) */
+    if (c->share_strings && round < 4) {
+      if (!nt0) nt0 = malloc(sizeof(TyKind) * (size_t)(c->nt->count > 0 ? c->nt->count : 1));
+      if (!nt0) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      memcpy(nt0, c->ntype, sizeof(TyKind) * (size_t)c->nt->count);
+    }
+    if (late_widened)
+      for (int id = 0; id < c->nt->count; id++) infer_type(c, id);
+    else if (conv0) {
+      int any = 0;
+      for (int s = 0; s < c->nscopes; s++) {
+        int moved = share_converted_locals(c, s) != conv0[s];
+        conv0[s] = moved;
+        any |= moved;
+      }
+      if (any)
+        for (int id = 0; id < c->nt->count; id++) {
+          Scope *sc = comp_scope_of(c, id);
+          if (sc && conv0[sc - c->scopes]) infer_type(c, id);
+        }
+    }
+    if (!c->share_strings || round >= 4 || !memcmp(nt0, c->ntype, sizeof(TyKind) * (size_t)c->nt->count)) break;
+    handle_arg_tab_free(&hat);
+    late_widened = 0;
+    for (int s = 0; s < c->nscopes; s++) conv0[s] = share_converted_locals(c, s);
   }
+  free(nt0);
   free(conv0);
   /* A read an is_a? or nil guard narrowed to String (`m(x) if
      x.is_a?(String)`) unboxed a copy of the String its POLY variable holds:
