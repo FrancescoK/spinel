@@ -19783,10 +19783,17 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
        end
      and a Spinel program has no RubyGems, as under --disable-gems. Without
      that rescue the call stays refused: there it is more likely a builtin the
-     compiler has no arm for than a method the program expects to miss. */
+     compiler has no arm for than a method the program expects to miss.
+     A `send(:name, ...)` (`public_send` too) names its method at run time,
+     as such a probe does: the call it was rewritten to (send_blind,
+     vis_enforce) raises the NoMethodError CRuby does when it runs, and a body
+     that never runs it builds -- refused, it also cost a boxed receiver's
+     arm around it (`n.times { send(:undo, nil) }` on an Integer n raised
+     NoMethodError for times). */
   if ((recv < 0 || nt_kind(nt, recv) == NK_SelfNode) && g_gate_raise && !nt_int(nt, id, "vcall", 0) &&
       nt_ref(nt, id, "block") < 0 && !an_user_defines_method(c, name) &&
-      !builtin_object_method_known(name) && call_rescued_as_missing(nt, id)) {
+      !builtin_object_method_known(name) &&
+      (call_rescued_as_missing(nt, id) || nt_str(nt, id, "send_blind") || nt_str(nt, id, "vis_enforce"))) {
     int plain = 1;
     for (int k = 0; k < argc; k++) {
       NodeKind ak = nt_kind(nt, argv[k]);
