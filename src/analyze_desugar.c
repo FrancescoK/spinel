@@ -14040,7 +14040,7 @@ int desugar_class_new_blocks(Compiler *c) {
     if (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode) continue;
     /* An omitted block has the same empty class body as `{}`. */
     if (blk < 0) {
-      if (is_module || ac > 1) continue;
+      if (ac > (is_module ? 0 : 1)) continue;
       if (super_node >= 0 && nt_kind(nt, super_node) != NK_ConstantReadNode &&
           nt_kind(nt, super_node) != NK_ConstantPathNode) continue;
       if (super_node >= 0 && is_embedding_builtin(nt_str(nt, super_node, "name"))) continue;
@@ -14080,7 +14080,7 @@ int desugar_class_new_blocks(Compiler *c) {
       nt_node_set_ref(nt, par, "constant_path", cp);
       if (!is_module) nt_node_set_ref(nt, par, "superclass", super_node);
       nt_node_set_ref(nt, par, "body", body);
-      if (!is_module) nt_node_set_int(nt, par, "class_new_anonymous", 1);
+      nt_node_set_int(nt, par, "class_new_anonymous", 1);
       nt_node_set_int(nt, par, "block_made_body", 1);
       changed = 1;
       continue;
@@ -14102,7 +14102,7 @@ int desugar_class_new_blocks(Compiler *c) {
       char name[64]; snprintf(name, sizeof name, "SpinelAnonClass%d", ++serial);
       int cls = cn_make_class(nt, id, is_module, name, super_node, body);
       if (cls < 0) continue;
-      if (!is_module) nt_node_set_int(nt, cls, "class_new_anonymous", 2);
+      nt_node_set_int(nt, cls, "class_new_anonymous", 2);
       nt_node_set_int(nt, cls, "block_made_body", 1);
       rs = nt_arr(nt, host_st, "body", &rn2);
       int *out = malloc(sizeof(int) * (size_t)(rn2 + 1));

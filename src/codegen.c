@@ -18257,8 +18257,9 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
       for (int i = 0; i < c->nclasses; i++)
         if (comp_class_anonymous(c, i)) {
           char mk[192];
-          snprintf(mk, sizeof mk, "sp_anon_text(\"\",sp_sprintf(SPL(\"#<Class:0x%%016llx>\"),"
-                                  "(unsigned long long)(uintptr_t)&sp_class_to_s+%d))", i);
+          snprintf(mk, sizeof mk, "sp_anon_text(\"\",sp_sprintf(SPL(\"#<%s:0x%%016llx>\"),"
+                                  "(unsigned long long)(uintptr_t)&sp_class_to_s+%d))",
+                   nt_kind(c->nt, c->classes[i].def_node) == NK_ModuleNode ? "Module" : "Class", i);
           char nx[96]; anon_name_expr(nx, sizeof nx, i);
           buf_printf(b, "case %d:if(%s)return %s;{static const char *t;", i, nx, nx);
           if (g_uses_threads)
