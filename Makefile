@@ -4623,7 +4623,9 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 # missed pointed INTO that unit's stack frame, so the next unit's emission read
 # a dead frame: a SIGSEGV whose site moved with the optimization level, and,
 # short of that, a later method silently emitted with the wrong return
-# convention. Both are checked here (#4141). tools/refusals.sh then compares
+# convention. Both are checked here (#4141). The --share-strings seal, which
+# runs before any unit is emitted, reports every refusal it finds under
+# SP_COLLECT_ERRORS instead of stopping at the first (#8328). tools/refusals.sh then compares
 # every message test/reject/ and test/collect/ print, in both overflow modes,
 # with test/collect/refusals.expected.
 collect-errors-test: $(SPINEL)
@@ -4646,6 +4648,13 @@ collect-errors-test: $(SPINEL)
 	n=$$(grep -c 'seed contradicted' "$$tmp/s2.err"); \
 	[ "$$n" -eq 2 ] || { echo "collect-errors-test: FAIL (without the flag the run reported $$n of 2 contradictions: every compile collects)"; ok=0; }; \
 	[ $$rc -ne 0 ] || { echo "collect-errors-test: FAIL (a contradicted seed was emitted without the flag)"; ok=0; }; \
+	sr=test/share/refuse/seal_collect_route_and_flow.rb; \
+	SP_COLLECT_ERRORS=1 $(SPINEL) --share-strings "$$sr" -c -o "$$tmp/sr.c" >"$$tmp/sr.err" 2>&1; \
+	n=$$(grep -c '^spinel: .*under --share-strings' "$$tmp/sr.err"); \
+	[ "$$n" -eq 3 ] || { echo "collect-errors-test: FAIL (collect mode reported $$n of the seal's 3 refusals)"; ok=0; }; \
+	$(SPINEL) --share-strings "$$sr" -c -o "$$tmp/sr2.c" >"$$tmp/sr2.err" 2>&1; rc=$$?; \
+	n=$$(grep -c '^spinel: .*under --share-strings' "$$tmp/sr2.err"); \
+	[ $$rc -ne 0 ] && [ "$$n" -eq 1 ] || { echo "collect-errors-test: FAIL (without the flag the seal reported $$n refusals, rc=$$rc: it stops at the first)"; ok=0; }; \
 	$(SPINEL) "$$src" -c --no-line-map -o "$$tmp/g2.c" >"$$tmp/g2.err" 2>&1; rc=$$?; \
 	[ $$rc -ne 0 ] || { echo "collect-errors-test: FAIL (a program with a gap compiled without the flag)"; ok=0; }; \
 	[ ! -f "$$tmp/g2.c" ] || { echo "collect-errors-test: FAIL (a refused program's C was written)"; ok=0; }; \

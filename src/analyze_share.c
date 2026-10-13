@@ -5438,7 +5438,8 @@ void share_routes_check(Compiler *c) {
     char *m = malloc(n);
     if (!m) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     snprintf(m, n, "%s%s", lead, r->msg);
-    unsupported_feature(c, r->site, m);
+    unsupported_feature_collect(c, r->site, m);
+    free(m);
   }
 }
 

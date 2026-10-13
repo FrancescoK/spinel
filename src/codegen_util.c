@@ -3627,6 +3627,20 @@ __attribute__((noreturn)) void unsupported_feature(Compiler *c, int id, const ch
   int ln; const char *file = unsup_pos(c, id, &ln);
   unsup_leave(file, ln, msg);
 }
+/* unsupported_feature for a check that can go on past a refusal (the
+   seal's): under SP_COLLECT_ERRORS (collect_emit_anyway) the refusal is
+   reported and counted and the caller goes on to the next one, so a run
+   lists every refusal of the check, not only the first; otherwise it
+   leaves as unsupported_feature does. */
+void unsupported_feature_collect(Compiler *c, int id, const char *msg) {
+  if (!collect_emit_anyway() || g_unsup_probe) unsupported_feature(c, id, msg);
+  refuse_at(c, id);
+  int ln; const char *file = unsup_pos(c, id, &ln);
+  diag_record(file, ln, msg);
+  refuse_observe(msg);
+  if (ln > 0) fprintf(stderr, "spinel: %s:%d: %s\n", file, ln, msg);
+  else fprintf(stderr, "spinel: %s\n", msg);
+}
 
 /* A NoMethodError text that names a Class.new class `ci`: "<head><class>" as a C
    expression, appended to b. The class prints at run time (its constant may be
