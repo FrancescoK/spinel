@@ -3053,6 +3053,12 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	  "$$tmp/srvw" > "$$tmp/srvw.out" 2>/dev/null && cmp -s "$$tmp/srvw.out" test/rbs-seed/shared_rbs_void_writer_tail.expected && \
 	  SPINEL_GC_STRESS=1 "$$tmp/srvw" > "$$tmp/srvw.gc" 2>/dev/null && cmp -s "$$tmp/srvw.gc" test/rbs-seed/shared_rbs_void_writer_tail.expected || { echo "rbs-seed-test: FAIL (#6765 an attribute assignment ending a --rbs '-> nil' writer under --share-strings: refused, or not shared)"; sed -n 1,5p "$$tmp/srvw.err"; ok=0; }; \
 	;; \
+	shared_rbs_string_return_refused) \
+	SP_COLLECT_ERRORS=1 $(SPINEL) test/rbs-seed/shared_rbs_string_return_refused.rb --rbs test/rbs-seed/sig --share-strings -c --no-line-map -o "$$tmp/srsf.c" >/dev/null 2>"$$tmp/srsf.err"; \
+	for m in ens_after ens_reader ens_tail ens_def ens_block; do \
+	  grep -q "the value of \`$$m\` hands on" "$$tmp/srsf.err" || { echo "rbs-seed-test: FAIL (#6765 a seeded String method's $$m was not refused: its tail does not publish the box's handle)"; ok=0; }; \
+	done; \
+	;; \
 	shared_rbs_string_return) \
 	$(SPINEL) test/rbs-seed/shared_rbs_string_return.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srsr" >/dev/null 2>"$$tmp/srsr.err" && \
 	  "$$tmp/srsr" > "$$tmp/srsr.out" 2>/dev/null && cmp -s "$$tmp/srsr.out" test/rbs-seed/shared_rbs_string_return.expected && \
