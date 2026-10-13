@@ -8,8 +8,29 @@ class_eval Shape
 class_exec
 loop
 catch
+Shape
+"Shape"
+"Shape"
+"Shape"
+false
+Object
+true
+true
+true
+false
+true
+Shape
+true
+true
+[:area]
+true
+:area
+"Shape!"
 end of Shape
 tap Util
 module_eval Util
 module_exec
+"Util"
+false
+true
 0

@@ -13153,18 +13153,29 @@ int desugar_included_hooks(Compiler *c) {
   return changed;
 }
 
-/* ---- Object's own methods on self in a class body ----
+/* ---- Object's and Module's methods on self in a class body ----
  *
- * A receiverless call in a class or module body that names none of the
- * program's methods is taken for a declaration (attr_*, include, private)
- * and runs nothing. Object's methods that act on self or run a block with
- * it are calls, though: `tap { }`, `display`, `instance_eval { }`,
- * `class_eval { }`. Self there is the class, so such a statement is given
- * self as its receiver and runs where it stands, as in CRuby. */
+ * Self in a class or module body is the class, but a receiverless call
+ * there that names none of the program's methods was taken for a
+ * declaration (attr_*, include, private) and ran nothing as a statement,
+ * and as a value it was asked of main. Object's methods that act on self
+ * or run a block with it (`tap { }`, `display`, `instance_eval { }`,
+ * `class_eval { }`), and the Object and Module methods that answer about
+ * it (`name`, `itself`, `ancestors`, `is_a?(Class)`), are calls on the
+ * class: such a call is given self as its receiver, which runs it where it
+ * stands, as in CRuby. The walk stops at a def, a nested class or module, a
+ * `class << x`, a block and a lambda. */
 static int cb_self_act(const NodeTable *nt, int s) {
   static const char *const block_runners[] = { "tap", "yield_self", "instance_eval",
     "instance_exec", "class_eval", "class_exec", "module_eval", "module_exec", NULL };
-  static const char *const acts[] = { "display", "public_send", "instance_variable_set", NULL };
+  static const char *const acts[] = { "display", "public_send", "instance_variable_set",
+    /* Object's answers about self */
+    "itself", "inspect", "to_s", "hash", "frozen?", "is_a?", "kind_of?", "instance_of?", "nil?",
+    "eql?", "equal?",
+    /* Module's */
+    "name", "ancestors", "superclass", "instance_methods", "public_instance_methods",
+    "instance_method", "method_defined?", "public_method_defined?", "private_method_defined?",
+    "include?", "included_modules", NULL };
   if (nt_kind(nt, s) != NK_CallNode || nt_ref(nt, s, "receiver") >= 0) return 0;
   const char *nm = nt_str(nt, s, "name");
   if (!nm) return 0;
@@ -13175,21 +13186,44 @@ static int cb_self_act(const NodeTable *nt, int s) {
   return 0;
 }
 
+/* Is `nm` the name of a method the program defines? Its call already goes
+   where the program's method is. */
+static int cb_program_defines(const NodeTable *nt, const char *nm) {
+  NT_FOREACH_KIND(nt, NK_DefNode, d)
+    if (nt_str(nt, d, "name") && sp_streq(nt_str(nt, d, "name"), nm)) return 1;
+  return 0;
+}
+
+static int cb_give_self(NodeTable *nt, int node) {
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode ||
+      k == NK_BlockNode || k == NK_LambdaNode) return 0;
+  int changed = 0;
+  if (cb_self_act(nt, node) && !cb_program_defines(nt, nt_str(nt, node, "name"))) {
+    int self = fwd_new_node_like(nt, node, "SelfNode");
+    if (self >= 0) {
+      nt_node_set_ref(nt, node, "receiver", self);
+      changed = 1;
+    }
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) changed |= cb_give_self(nt, nt_ref_at(nt, node, i));
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0;
+    const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++) changed |= cb_give_self(nt, ids[j]);
+  }
+  return changed;
+}
+
 int desugar_class_body_object_acts(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
   for (int cn = 0; cn < n0; cn++) {
     NodeKind ck = nt_kind(nt, cn);
-    int body = ck == NK_ClassNode || ck == NK_ModuleNode ? nt_ref(nt, cn, "body") : -1;
-    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
-    int n = 0; const int *st = nt_arr(nt, body, "body", &n);
-    for (int k = 0; k < n; k++) {
-      if (!cb_self_act(nt, st[k])) continue;
-      int self = fwd_new_node_like(nt, st[k], "SelfNode");
-      if (self < 0) continue;
-      nt_node_set_ref(nt, st[k], "receiver", self);
-      changed = 1;
-    }
+    if (ck == NK_ClassNode || ck == NK_ModuleNode) changed |= cb_give_self(nt, nt_ref(nt, cn, "body"));
   }
   if (changed) comp_grow_node_arrays(c);
   return changed;
