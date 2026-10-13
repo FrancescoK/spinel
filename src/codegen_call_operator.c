@@ -65,7 +65,16 @@ void emit_string_identity(Compiler *c, int recv, int arg, Buf *b) {
   int operand[2] = { recv, arg }, t[2];
   buf_puts(b, "({ ");
   for (int i = 0; i < 2; i++) {
-    int sv = -1;
+    int sv = -1, cops[3];
+    /* a String clamp's String is the handle of the operand it answers;
+       its read face is a copy */
+    if (strbuf_route_clamp(c, operand[i], cops)) {
+      t[i] = ++g_tmp;
+      buf_printf(b, "sp_RbVal _t%d = sp_box_nullable_obj(", t[i]);
+      emit_strbuf_route(c, operand[i], b);
+      buf_printf(b, ", SP_BUILTIN_STRBUF); SP_GC_ROOT_RBVAL(_t%d); ", t[i]);
+      continue;
+    }
     if (string_identity_handle_operand(c, operand[i], operand[1 - i])) {
       sv = view_push(c, operand[i], TY_STRBUF);
       view_push_repr(c, operand[i], VR_STRBUF_BOX, 1);
@@ -289,10 +298,13 @@ static int emit_compare_lead_arms(Compiler *c, int id, const char *name, int rec
   }
   /* A call's shared String answer is compared as its handle, including
      against a boxed operand. Hold the receiver before the argument can
-     replace the return channel, without a fixed-size slot-text buffer. */
+     replace the return channel, without a fixed-size slot-text buffer.
+     So is a String clamp's answer (strbuf_route_clamp). */
+  int cops[3];
   if (repr_share_rule(c) && recv >= 0 && argc == 1 && is_identity_query(name) && is_equality_name(name) &&
       comp_recv_type(c, recv) == TY_STRING &&
-      (repr_call_returns_handle(c, recv) || repr_call_returns_handle(c, argv[0]))) {
+      (repr_call_returns_handle(c, recv) || repr_call_returns_handle(c, argv[0]) ||
+       strbuf_route_clamp(c, recv, cops) || strbuf_route_clamp(c, argv[0], cops))) {
     emit_string_identity(c, recv, argv[0], b);
     return 1;
   }
