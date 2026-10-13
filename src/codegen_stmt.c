@@ -22661,11 +22661,12 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
        variable's handle, which hands on that handle or nil as an argument
        does (strbuf_bang_self_local): the box takes it
        (emit_boxed_bang_self), the block-parameter binder takes it, and a
-       proc's argument rides it (proc_arg_ty). A bang on a boxed receiver
-       is not taken: its box can hold a plain String rather than the
-       handle, and the bang then answers a new String. */
+       proc's argument rides it (proc_arg_ty). So does a bare bang on a
+       boxed receiver: a box of a String that can change holds its handle
+       (sp_box_str_new), and the bang answers that box or nil; in
+       parentheses the binders take a copy, as of a variable below. */
     if (strbuf_poly_to_s(c, v) || strbuf_route_srange_kept(c, v) ||
-        strbuf_bang_self_local(c, unwrap_parens(c, v)))
+        strbuf_bang_self_local(c, unwrap_parens(c, v)) || face_str_bang_call(c, v))
       return 1;
     /* a yield takes a variable's handle only from its bare read:
        `yield((s))` hands on a copy */
@@ -22677,12 +22678,11 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
        its arms (strbuf_cond_has_handle_leaf), which the binders take arm by
        arm, as an argument's: the block-parameter binder through
        emit_strbuf_handle_of, a box through emit_boxed_cond_arms, a proc's
-       argument as the handle (proc_arg_ty). A bang on a boxed receiver
-       among its arms is not taken, as above. */
+       argument as the handle (proc_arg_ty), a bang on a boxed receiver
+       among its arms as its box's handle, as above. */
     if (strbuf_flow_value(c, fm, SFC_BOX, v, 0)) return 1;
     return (uk == NK_IfNode || uk == NK_UnlessNode || uk == NK_OrNode || uk == NK_AndNode || uk == NK_CaseNode) &&
-           strbuf_cond_has_handle_leaf(c, u, 0) && !strbuf_cond_arm_any(c, u, 0, face_str_bang_call, 1) &&
-           strbuf_flow_value(c, fm, SFC_ARG, v, 0);
+           strbuf_cond_has_handle_leaf(c, u, 0) && strbuf_flow_value(c, fm, SFC_ARG, v, 0);
   }
   default: return 0;
   }
