@@ -93,6 +93,8 @@ Repr repr_of_holder(const Compiler *c, const HolderRef *h);
    emit_local_ref, self->iv_<name>, civ_<Class>_<name>, gv_<name>,
    cvar_<Owner>_<name>, cst_<name>). 1, or 0 for a kind with no slot. */
 int holder_slot_text(Compiler *c, const HolderRef *h, char *out, size_t cap);
+/* (holder_slot_buf and holder_static_handle_buf, the same text into a Buf,
+   are declared with Buf in codegen_internal.h) */
 /* Codegen: for a read or write node of a global, a constant or a class
    variable that holds the shared handle (repr_static_share), its slot's
    text to out: 1 when it did. */
