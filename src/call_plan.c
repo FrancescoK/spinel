@@ -1641,10 +1641,9 @@ static void cpoly_prearms_n(Compiler *c, int id, const char *name, int argc, con
   cpoly_cls_value_arms(c, id, name, pos_argc, &A, ret, !is_setter_val, p, cap);
   free(kwty);
   int callable = is_call_alias(name);
-  if (callable &&
-      (ps.kw_pos && !ps.has_splat_arg ? (ps.kw_ds ? pos_argc : argc) <= SP_PROC_ARG_SLOTS
-       : kwh >= 0 && !ps.has_splat_arg ? argc <= SP_PROC_ARG_SLOTS
-       : splat_last))
+  /* (of any argument count: one past the channel's slots rides the call's
+     wide store) */
+  if (callable && ((!ps.has_splat_arg && (ps.kw_pos || kwh >= 0)) || splat_last))
     cpoly_family(p, cap, PB_CALLABLE);
   if (ps.kw_pos && ps.straset) cpoly_family(p, cap, PB_STR_ASET);
   if (ps.kw_pos && !ps.has_splat_arg && cpoly_str_trial(c, id, name, argc, argv, atmp_ty, ret, p))

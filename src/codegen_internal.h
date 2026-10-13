@@ -1436,6 +1436,10 @@ const char *sp_re_literal_error(const char *src, int len, int flags);
 #ifndef SP_PROC_ARG_SLOTS
 #define SP_PROC_ARG_SLOTS 64
 #endif
+/* The boxed argument k (a constant) of the call that entered a proc, into
+   out: the side channel's slot, or past its SP_PROC_ARG_SLOTS the call's
+   wide store (sp_proc_arg) (codegen.c) */
+const char *proc_arg_ref(int k, char *out, size_t n);
 int builtin_class_id(const char *name);
 int builtin_class_parent_id(int id);   /* analyze_util.c */
 int is_builtin_class_name(const char *n);

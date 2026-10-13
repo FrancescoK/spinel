@@ -39,6 +39,12 @@ sp_int sp_proc_call(sp_Proc *p, sp_int argc, sp_int *args);   /* defined in the 
 #define SP_PROC_ARG_SLOTS 64
 extern SP_TLS sp_RbVal _sp_proc_poly_args[SP_PROC_ARG_SLOTS];    /* defined in the generated TU */
 extern SP_TLS sp_RbVal _sp_proc_poly_ret;                        /* defined in the generated TU */
+/* A call wider than the channel: its boxed arguments past the
+   SP_PROC_ARG_SLOTS slots ride a call-sized store the call opens
+   (sp_proc_wide_open) and its callee reads (sp_proc_arg). The store stays
+   here, marked with the channel, until the next wide call replaces it. */
+typedef struct { sp_int n; sp_RbVal v[]; } sp_ProcWide;
+extern SP_TLS sp_ProcWide *_sp_proc_poly_wide;                   /* defined in the generated TU */
 
 /* The lineage root of a proc: dups/clones of one proc share it, so Proc#== /
    #eql? compare roots (a dup == its original) while distinct literals differ. */
@@ -165,7 +171,7 @@ typedef struct sp_BoundMethod { void *self; sp_int fn; const char *name; sp_int 
                            default below full arity, a rest, a mixed promote
                            signature); 0 when the bind site had no static target
                            or the target's shape declines (keywords). */
-  sp_int thunk_min, thunk_max;   /* the argument counts it binds (max 16 for a rest) */
+  sp_int thunk_min, thunk_max;   /* the argument counts it binds (max -1 for a rest: any count) */
 } sp_BoundMethod;
 void sp_bm_cap_scan(void *p);
 sp_int sp_method_proc_tramp(void *cap, sp_int argc, sp_int *args);
