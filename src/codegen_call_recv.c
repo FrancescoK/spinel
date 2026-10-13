@@ -7650,6 +7650,20 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
          --share-strings it can hold a frozen literal's handle, which the
          boxed comparison reads as the literal's bytes. */
       int trq = ++g_tmp, teq = ++g_tmp;
+      /* --share-strings: a String Range's endpoint is boxed as the handle
+         the Range keeps for it (strbuf_route_srange_kept), the box a
+         container got when the endpoint was stored: its bytes boxed anew
+         are another String. Held while the operand runs, as a min or max
+         may be a String of its own. */
+      if (strbuf_route_srange_kept(c, recv)) {
+        buf_printf(b, "({ sp_RbVal _t%d = ", trq);
+        emit_boxed(c, recv, b);
+        if (operand_may_allocate(c, argv[0])) buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d)", trq);
+        buf_printf(b, "; sp_RbVal _t%d = ", teq);
+        emit_boxed(c, argv[0], b);
+        buf_printf(b, "; sp_poly_equal(_t%d, _t%d); })", trq, teq);
+        return 1;
+      }
       buf_printf(b, "({ const char *_t%d = %s; sp_RbVal _t%d = ", trq, r, teq);
       emit_boxed(c, argv[0], b);
       if (repr_share_rule(c))
