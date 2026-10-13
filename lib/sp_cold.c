@@ -4848,6 +4848,8 @@ const char *sp_str_gsub_str_str_hash(const char *str, const char *pat, sp_StrStr
   if (n == 0) { if (sp_re_track_last) sp_re_clear_last_match(); return str; }
   size_t total = slen + n * rlen - (plen ? n * plen : 0);
   char *out = sp_str_alloc_raw(total + 1);
+  /* the answer is held across `$~`'s allocations at the end */
+  SP_GC_ROOT_STR(out);
   size_t o = 0, last = 0;
   if (plen == 0) {
     for (size_t i = 0; i < slen; i++) {

@@ -747,7 +747,11 @@ static void split_push_slice(sp_StrArray *arr, const char *str, int64_t from, in
 }
 
 sp_StrArray *sp_re_split_limit(mrb_regexp_pattern *pat, const char *str, sp_int limit) {SP_GC_ROOT_STR(str);if(!str)sp_nil_recv("split");
+  /* every field is a new String, so the array is held across each field's
+     allocation: unrooted, a collection there freed it with the fields
+     already pushed */
   sp_StrArray *arr = sp_StrArray_new();
+  SP_GC_ROOT(arr);
   int64_t slen = (int64_t)sp_str_byte_len(str);
 
   /* limit == 1: the whole string is the single field; "" splits to []. */
