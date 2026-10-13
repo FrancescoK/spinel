@@ -1948,6 +1948,23 @@ static const char *resolve_alias_side(Compiler *c, int class_id, const char *nam
   return name;
 }
 
+/* Is `name` in class_id's chain only a singleton alias (`class << self;
+   alias a b`), with no instance method, reader or instance alias of its
+   own? The instance-side alias lookup reads singleton aliases as well, so
+   a reflection that answers for an instance asks this first. */
+int comp_name_is_sg_alias_only(Compiler *c, int class_id, const char *name) {
+  int sg = 0;
+  for (int cid = class_id; cid >= 0 && cid < c->nclasses; cid = c->classes[cid].parent) {
+    ClassInfo *ci = &c->classes[cid];
+    for (int i = 0; i < ci->naliases; i++) {
+      if (!sp_streq(ci->alias_new[i], name)) continue;
+      if (ci->alias_sg && ci->alias_sg[i]) sg = 1; else return 0;
+    }
+    if (comp_method_in_class(c, cid, name) >= 0 || comp_is_reader(ci, name)) return 0;
+  }
+  return sg;
+}
+
 const char *comp_resolve_alias_at(Compiler *c, int class_id, const char *name, int *start_cls) {
   return comp_resolve_alias_ex(c, class_id, name, start_cls, NULL);
 }

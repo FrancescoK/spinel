@@ -1,0 +1,11 @@
+true
+false
+true
+false
+[:a, false]
+[:b, true]
+[:d, true]
+false
+true
+[:b, :c, :d]
+[:a, :b]
