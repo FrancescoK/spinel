@@ -964,6 +964,22 @@ static void emit_env_str(Compiler *c, int v, int value, Buf *b) {
   emit_str_expr(c, v, b);
   if (env_str_checked(c, v)) buf_printf(b, ", %d)", value);
 }
+/* The value ENV.delete(k)'s literal block answers when k is unset: its
+   last statement (codegen_internal.h; repr_call_returns_handle asks it) */
+int env_delete_block_value(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  const char *nm = v >= 0 && nt_kind(nt, v) == NK_CallNode ? nt_str(nt, v, "name") : NULL;
+  int recv = is_delete_name(nm) ? nt_ref(nt, v, "receiver") : -1;
+  int blk = recv >= 0 ? nt_ref(nt, v, "block") : -1, argc = 0;
+  if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || nt_kind(nt, recv) != NK_ConstantReadNode ||
+      !is_env_const(nt_str(nt, recv, "name")) || comp_const(c, "ENV"))
+    return -1;
+  call_args(nt, v, &argc);
+  if (argc != 1) return -1;
+  int body = nt_ref(nt, blk, "body"), n = 0;
+  const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+  return n > 0 ? bb[n - 1] : -1;
+}
 
 /* control flow and the process: caller, eval, caller_locations, loop, catch / throw, system, trap, Fiber storage reads, and ENV */
 int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
@@ -1470,18 +1486,28 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         int dblk = nt_ref(nt, id, "block");
         int dpoly = repr_of(c, id).kind == RK_BOXED;
         int result = dpoly ? ++g_tmp : t2;
+        /* --share-strings: a block value that is a handle is published, as
+           fetch's default is; a present key clears the return channel */
+        int dhandle = repr_call_returns_handle(c, id);
+        /* --share-strings: a variable's handle is read as a copy of its
+           bytes, which reach unsetenv past sp_env_str's allocation */
+        char kref[1024];
+        int key_handle = repr_share_rule(c) && strbuf_slot_ref(c, eav[0], kref, sizeof kref);
         buf_printf(b, "({ const char *_t%d = ", t1); emit_env_str(c, eav[0], 0, b);
+        if (key_handle) buf_printf(b, "; SP_GC_ROOT(_t%d)", t1);
         buf_printf(b, "; const char *_t%d = getenv(_t%d);"
                       " _t%d = _t%d ? sp_env_str(_t%d) : NULL;"
                       " unsetenv(_t%d); ", t2, t1, t2, t2, t2, t1);
+        if (dhandle) buf_puts(b, "_sp_ret_strbuf = NULL; ");
         if (dpoly) buf_printf(b, "sp_RbVal _t%d = sp_box_str(_t%d); ", result, t2);
         if (dblk >= 0) {
           const char *dp0 = block_param_name(c, dblk, 0);
-          char kref[1024];
-          int key_handle = repr_share_rule(c) && strbuf_slot_ref(c, eav[0], kref, sizeof kref);
           if (repr_share_rule(c) && dp0 && share_node_shares(c, eav[0])) {
             ShareRoute q = share_route(id, eav[0], 0);
-            q.to = dblk; q.to_name = dp0; q.carry = key_handle ? eav[0] : SHARE_CARRY_COPY;
+            /* a key no other name can see a copy of (a new String) takes
+               a new handle of its own */
+            q.to = dblk; q.to_name = dp0;
+            q.carry = key_handle ? eav[0] : strbuf_flow_unseen(c, eav[0]) ? SHARE_CARRY_NONE : SHARE_CARRY_COPY;
             const char *msg = "ENV.delete is not supported: its block would receive a copy of a shared String key; see docs/limitations.md";
             if (!share_route_defer(c, &q, msg)) unsupported_feature(c, id, msg);
           }
@@ -1514,7 +1540,12 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
                          rename_local(dp0), t1, rename_local(dp0));
           }
           for (int k = 0; k < dbn - 1; k++) emit_stmt(c, dbb[k], b, 0);
-          if (dval >= 0) {
+          if (dval >= 0 && dhandle) {
+            buf_printf(b, "_t%d = sp_strbuf_read_pub(", result);
+            emit_strbuf_handle_of(c, dval, b);
+            buf_puts(b, "); ");
+          }
+          else if (dval >= 0) {
             buf_printf(b, "_t%d = ", result);
             emit_coerce(c, dval, dpoly ? TY_POLY : TY_STRING, CO_HOLD, "an ENV.delete block result", b);
             buf_puts(b, "; ");
