@@ -1418,22 +1418,30 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
          present in the environment (#2998) */
       if (enm && (is_hash_merge_bang(enm)) && eac == 1 &&
           nt_ref(nt, id, "block") >= 0) {
-        Repr hbr = repr_of(c, eav[0]);
-        const char *htyb = nt_type(nt, eav[0]);
-        if (repr_hash_is(hbr, TY_STRING, TY_STRING) ||
-            (htyb && (sp_streq(htyb, "HashNode") || sp_streq(htyb, "KeywordHashNode")))) {
-          /* a block passed as a proc (`&pr`, `&proc { }`) is that proc; a
-             literal one is built here. Built as a literal, `&pr` gave a proc
-             with no body and every conflict read nil. */
-          int bt = nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockArgumentNode ? poly_call_blk_proc(c, id, -1) : -1;
+        /* a block passed as a proc (`&pr`, `&proc { }`) is that proc; a
+           literal one is built here. Built as a literal, `&pr` gave a proc
+           with no body and every conflict read nil. */
+        int bt = nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockArgumentNode ? poly_call_blk_proc(c, id, -1) : -1;
+        /* a hash of any other variant (a shared String value, nil, an
+           Integer, `{}`), or something a hash may be, goes boxed, as the
+           blockless arm below takes it; rooted, as building the proc after
+           it allocates */
+        int boxed = !repr_hash_is(repr_of(c, eav[0]), TY_STRING, TY_STRING);
+        int tn = boxed ? ++g_tmp : 0;
+        if (boxed) {
+          buf_printf(b, "({ sp_RbVal _t%d = ", tn);
+          emit_boxed(c, eav[0], b);
+          buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_env_update_v_blk(_t%d, ", tn, tn);
+        }
+        else {
           buf_puts(b, "sp_env_update_h_blk(");
           emit_expr(c, eav[0], b);
           buf_puts(b, ", ");
-          if (bt >= 0) buf_printf(b, "_t%d", bt);
-          else emit_proc_literal(c, id, b);
-          buf_puts(b, ")");
-          return 1;
         }
+        if (bt >= 0) buf_printf(b, "_t%d", bt);
+        else emit_proc_literal(c, id, b);
+        buf_puts(b, boxed ? "); })" : ")");
+        return 1;
       }
       if (enm && (sp_streq(enm, "update") || sp_streq(enm, "merge!") ||
                   sp_streq(enm, "replace")) && eac == 1 &&
