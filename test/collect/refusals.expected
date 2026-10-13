@@ -1717,10 +1717,10 @@ spinel: 1 refusal, nothing written
 spinel: test/reject/struct_block_self_name.rb:6: the name of a Struct.new or Data.define class read in its own block (where CRuby has not named it yet) is not supported; see docs/limitations.md
 spinel: 1 refusal, nothing written
 == test/reject/struct_block_self_name_kernel.rb [default] rc=1
-spinel: test/reject/struct_block_self_name_kernel.rb:5: the name of a Struct.new or Data.define class read in its own block (where CRuby has not named it yet) is not supported; see docs/limitations.md
+spinel: test/reject/struct_block_self_name_kernel.rb:9: the name of a Struct.new or Data.define class read in its own block (where CRuby has not named it yet) is not supported; see docs/limitations.md
 spinel: 1 refusal, nothing written
 == test/reject/struct_block_self_name_kernel.rb [promote] rc=1
-spinel: test/reject/struct_block_self_name_kernel.rb:5: the name of a Struct.new or Data.define class read in its own block (where CRuby has not named it yet) is not supported; see docs/limitations.md
+spinel: test/reject/struct_block_self_name_kernel.rb:9: the name of a Struct.new or Data.define class read in its own block (where CRuby has not named it yet) is not supported; see docs/limitations.md
 spinel: 1 refusal, nothing written
 == test/reject/struct_masgn_string_member.rb [default] rc=1
 spinel: test/reject/struct_masgn_string_member.rb:11: unsupported multiple assignment index target non-array/hash: node N (MultiWriteNode)
