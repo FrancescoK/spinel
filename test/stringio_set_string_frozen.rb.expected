@@ -1,0 +1,20 @@
+"xyz"
+0
+"xyz"
+"Qyz"
+[:frozen, IOError, "not opened for writing"]
+true
+"Thaw"
+[:nil, TypeError, "no implicit conversion of nil into String"]
+["write", IOError, "not opened for writing"]
+["print", IOError, "not opened for writing"]
+["puts", IOError, "not opened for writing"]
+["putc", IOError, "not opened for writing"]
+["<<", IOError, "not opened for writing"]
+["truncate", IOError, "not opened for writing"]
+"lit"
+[:reopened, IOError, "not opened for writing"]
+[:w, Errno::EACCES, "Permission denied"]
+"Boxed"
+[:boxed_lit, IOError, "not opened for writing"]
+"lit"

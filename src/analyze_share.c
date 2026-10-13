@@ -2132,6 +2132,16 @@ static int sh_native_call(ShareFacts *F, Compiler *c, int n, int cid, const char
   int nm = comp_native_method_find(c, cid, name, argc, 0);
   unsigned sh = nm >= 0 ? c->native_methods[nm].share : 0;
   if (!sh || (on_self && !(sh & NSH_FRESH))) return -2;
+  /* one that keeps its argument (`io.string = s`) keeps it as the object's
+     String from then on, as a constructor does; its value is that String */
+  if ((sh & NSH_KEEPS) && argc == 1) {
+    const int *argv = call_args(c->nt, n, &argc);
+    int av = sh_arg_val(F, c, argv[0]), e = sh_elem(F, rv);
+    sh_union(F, e, av);
+    /* (stored as a member is: the seal checks the route carries the handle) */
+    sh_flow(F, SHFL_MEMBER, n, argv[0], e);
+    return av;
+  }
   int u = sh_unknown_call(F, c, n, blk);
   if (sh & NSH_FRESH) return -1;
   if (sh & NSH_CHANGES) sh_mark_at(F, sh_elem(F, rv), SHF_MUT | SHF_INDIRECT, n);

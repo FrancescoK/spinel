@@ -23,6 +23,7 @@ module StringIOPackage
   native_new [:string, :string], "sp_StringIO_new_sm"
 
   native_method :string,   [], :string,  "sp_StringIO_string"
+  native_method :string=,  [:string], :string, "sp_StringIO_set_string"
   native_method :pos,      [], :int,     "sp_StringIO_pos"
   native_method :tell,     [], :int,     "sp_StringIO_tell"
   native_method :size,     [], :int,     "sp_StringIO_size"
