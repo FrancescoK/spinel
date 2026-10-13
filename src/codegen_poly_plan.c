@@ -929,15 +929,19 @@ static int poly_user_arm_n_replay(Compiler *c, int id, const char *name, const P
             and handed its sp_bool to an sp_oint value slot, a hard C
             error; into a plain sp_int it read true as 1 */
          (pt0 == TY_BOOL) != (at0 == TY_BOOL) ||
-         /* two concretely different CONTAINER kinds. sp_StrStrHash * and
-            sp_SymPolyHash * are different structs, so the raw pass is a
-            hard C error, not a coercion that works -- the same argument
-            the collapsed-keyword slot below already makes. Without it, a
-            `merge` seeded Hash[String, String] on an unrelated class
-            took the arm for a plain Hash's call and the build stopped
-            inside that class (#4172). */
-         (ty_is_hash(pt0) && ty_is_hash(at0)) ||
-         (ty_is_array(pt0) && ty_is_array(at0)))) {
+         /* two concretely different kinds, either of them a builtin
+            pointer kind (a Hash, an Exception, a Proc, a Regexp, an Array
+            variant): the other is a different C struct, a scalar, or an
+            sp_PtrArray * holding other elements, so the raw pass is a hard C error, not a coercion that works --
+            the same argument the collapsed-keyword slot below already
+            makes. Without it, a `merge` seeded Hash[String, String] on an
+            unrelated class took the arm for a plain Hash's call and the
+            build stopped inside that class (#4172); a computed-name `send`
+            reached an unrelated `create(attrs = {})` with an Exception, an
+            object-array parameter with an Exception, or an Integer
+            parameter with a Regexp the same way. cplan_arm_args_fit
+            (call_plan.c) is this same test; keep them identical. */
+         (ty_is_builtin_ptr(pt0) || ty_is_builtin_ptr(at0)))) {
       arm_key_incompat = 1; break;
     }
   }
