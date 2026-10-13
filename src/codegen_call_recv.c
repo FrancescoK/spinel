@@ -1053,7 +1053,7 @@ static const char *repl_hash_to_s_fn(Repr hr) {
        : repr_hash_is(hr, TY_STRING, TY_INT) ? "sp_StrIntHash_to_s_values" : NULL;
 }
 static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind a0, const char *r);
-static void emit_lines_sep(Compiler *c, int a, Buf *b) {
+void emit_lines_sep(Compiler *c, int a, Buf *b) {
   if (comp_ntype(c, a) == TY_STRING) { emit_expr(c, a, b); return; }
   buf_puts(b, "sp_poly_arg_str_or_null("); emit_boxed(c, a, b); buf_puts(b, ")");
 }

@@ -4430,7 +4430,7 @@ static int infer_string_recv_call(Compiler *c, int id, const NodeTable *nt, cons
     if (sp_streq(name, "each_line") && argc == 1 && nt_ref(nt, id, "block") < 0 &&
         nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode"))
       { *out = TY_ENUMERATOR; return 1; }  /* each_line(chomp: ...) blockless */
-    if (sp_streq(name, "each_line") && nt_ref(nt, id, "block") < 0 && infer_type(c, argv[0]) == TY_STRING &&
+    if (sp_streq(name, "each_line") && nt_ref(nt, id, "block") < 0 && lines_sep_ty(c, argv[0]) &&
         (argc == 1 || (argc == 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "KeywordHashNode"))))
       { *out = TY_ENUMERATOR; return 1; }  /* each_line(sep) blockless */
     if (sp_streq(name, "lines") && argc == 1 && infer_type(c, argv[0]) == TY_STRING)
