@@ -21894,12 +21894,15 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     else
       snprintf(slot, sizeof slot, "sp_%sHash_get%s(_t%d, %s)", hn, rs, ta, rk);
     if (eff) iow_capture_slot(c, vt, slot, sizeof slot, b);
-    char *rhs = iow_rhs(c, v, pf ? IOW_RHS_BOXED : IOW_RHS_EXPR, eff ? b : NULL);
+    /* an Integer slot given a boxed right-hand side (a method answering a
+       promoted Integer) takes it as an Integer, as an Integer operand */
+    int rhs_int = !pf && vt == TY_INT && comp_ntype(c, v) == TY_POLY;
+    char *rhs = iow_rhs(c, v, pf ? IOW_RHS_BOXED : rhs_int ? IOW_RHS_INT : IOW_RHS_EXPR, eff ? b : NULL);
     buf_printf(b, "%s _t%d = ", c_type_name(vt), tv);
     /* a poly-valued slot folds via the dynamic operator on boxed operands */
     if (vt == TY_STRING && sp_streq(op, "+")) buf_printf(b, "sp_str_concat(%s, %s)", slot, rhs);
     else if (pf) buf_printf(b, "%s(%s, %s)", pf, slot, rhs);
-    else if (iow_scalar_fold(c, vt, op, comp_ntype(c, v), v, slot, rhs, b)) { }
+    else if (iow_scalar_fold(c, vt, op, rhs_int ? TY_INT : comp_ntype(c, v), v, slot, rhs, b)) { }
     else buf_printf(b, "%s %s (%s)", slot, op, rhs);
     free(rhs);
     buf_puts(b, "; ");
