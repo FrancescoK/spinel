@@ -238,8 +238,10 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       buf_printf(b, "; sp_int_round_check_ndigits(_rnd); _rnd; }), %d)", mode); free(rs.p); return 1;
     }
     if (sp_streq(name, "to_s") && argc == 1) {
-      buf_printf(b, "sp_str_dup_external(sp_bigint_to_s_base(%s, ", r);
-      emit_int_expr(c, argv[0], b); buf_puts(b, "))"); free(rs.p); return 1;
+      /* a string-heap String already: a copy of it allocated while it was
+         held by nothing, and a collection there freed it */
+      buf_printf(b, "sp_bigint_to_s_base(%s, ", r);
+      emit_int_expr(c, argv[0], b); buf_puts(b, ")"); free(rs.p); return 1;
     }
     /* digits: kept only for the poly "face table" re-entry, not reached by
        any static concrete call site any more -- see the matching comment
