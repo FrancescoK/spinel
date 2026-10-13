@@ -315,7 +315,21 @@ static void share_plan_roles_build(Compiler *c) {
   NT_FOREACH_KIND(nt, NK_CallNode, n) share_plan_identity_roles(c, n);
 }
 
+int share_plan_box_plain(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  int n = c->share_parent_n, p = c->share_parent && v >= 0 && v < n ? c->share_parent[v] : -1;
+  while (p >= 0 && p < n && nt_kind(nt, p) == NK_ParenthesesNode) p = c->share_parent[p];
+  if (p >= 0 && p < n && nt_kind(nt, p) == NK_AssocNode) p = c->share_parent[p];
+  if (p < 0 || p >= n || (nt_kind(nt, p) != NK_ArrayNode && nt_kind(nt, p) != NK_HashNode)) return 0;
+  /* (a temporary literal is not: the walk joins an element read off it,
+     `[s, 1].first`, to no class of the literal's) */
+  return share_node_anchored(c, p) && share_node_elems_local(c, p);
+}
+
 void share_plan_free(Compiler *c) {
+  free(c->share_parent);
+  c->share_parent = NULL;
+  c->share_parent_n = 0;
   free(c->share_plan);
   free(c->share_plan_ty);
   free(c->share_sup);
@@ -342,6 +356,9 @@ void share_plan_build(Compiler *c) {
   c->share_plan_n = n;
   c->share_plan_ver = c->nt->version;
   share_plan_roles_build(c);
+  c->share_parent = an_parent_map(c->nt);
+  if (!c->share_parent) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  c->share_parent_n = n;
 }
 
 /* Is codegen where the memo may answer: the node read as itself (no view,

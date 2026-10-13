@@ -1341,7 +1341,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         buf_puts(b, ")");
       }
       else if (argc >= 2) emit_boxed(c, argv[1], b);
-      else buf_puts(b, "sp_box_str(\"DEFAULT\")");
+      else buf_puts(b, repr_share_rule(c) ? "sp_box_str_bytes(\"DEFAULT\")" : "sp_box_str(\"DEFAULT\")");
       buf_puts(b, ")");
       return 1;
     }
