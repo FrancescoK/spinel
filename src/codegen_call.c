@@ -28364,11 +28364,14 @@ void emit_handle_inspect(Compiler *c, int recv, TyKind rt, Buf *b) {
 /* --share-strings: can the deep-return pickup `id` answer nil? A target
    the plan cannot list may be such a method; a call that reaches none (a
    builtin's, `String.new`) has no tail to answer nil through
-   (an_tail_answers_nil). */
+   (an_tail_answers_nil). A tail the pickup admits can still read a nil,
+   which the method's nil fact says (ret_obj_may_nil: `def rec(s) = s`
+   called with nil); without the test the pickup wrapped it in a new empty
+   String. */
 int strbuf_pickup_answers_nil(Compiler *c, int id) {
   if (!repr_share_rule(c)) return 0;
   int t[8], n = cplan_targets(c, id, t, 8), nil = n < 0;
-  for (int i = 0; i < n && !nil; i++) nil = an_tail_answers_nil(c, t[i]);
+  for (int i = 0; i < n && !nil; i++) nil = an_tail_answers_nil(c, t[i]) || c->scopes[t[i]].ret_obj_may_nil;
   return nil;
 }
 /* --share-strings: is String call id a mutator (or a `<<` chain) on a local

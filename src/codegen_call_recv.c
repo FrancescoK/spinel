@@ -4422,6 +4422,25 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
     }
   }
   if (rt == TY_STRING && emit_builtin_op_stage(c, id, recv, rt, name, 6, b)) { *out = 1; return 1; }
+  /* The byte mutators below take a handle receiver too: TY_STRBUF, the
+     handle a call answers under --share-strings (`rec(s).bytesplice(...)`
+     where rec returns its parameter) or a reader of an ivar that holds one.
+     Only their handle arms can take it, and change it in place; without a
+     handle it stays unsupported. append_as_bytes() appends nothing (the
+     arity check has bytesplice take two arguments or more), but a frozen
+     handle still raises. */
+  int hrecv = rt == TY_STRBUF && recv >= 0 && is_string_byte_mutator(name);
+  if (hrecv) rt = TY_STRING;
+  if (hrecv && argc == 0) {
+    char sref0[1024];
+    Buf lb0; memset(&lb0, 0, sizeof lb0);
+    if (!strbuf_recv_handle_any(c, id, recv, sref0, sizeof sref0, &lb0)) return 0;
+    int t0 = ++g_tmp;
+    buf_printf(b, "({ sp_String *_t%d = %s; if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);"
+                  " sp_String_cstr(_t%d); })", t0, lb0.p ? lb0.p : sref0, t0, t0, t0);
+    free(lb0.p);
+    { *out = 1; return 1; }
+  }
   /* String#bytesplice(start, len, str): byte-range replace returning self
      (value-semantics strings: the helper builds the new value and an lvalue
      receiver is rebound to it). */
@@ -4445,6 +4464,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
         buf_printf(b, "); sp_String_set_bin(_t%d, _t%d); _t%d; })", tm2, tn3, tn3);
         { *out = 1; return 1; }
       } }
+    if (hrecv) return 0;
     int lvw9 = str_mut_var_recv(c, recv);
     int tr9 = ++g_tmp, tn9 = ++g_tmp;
     buf_puts(b, "({ ");
@@ -4480,6 +4500,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
         buf_printf(b, " sp_String_cstr(_t%d); })", tm2);
         { *out = 1; return 1; }
       } }
+    if (hrecv) return 0;
     int lvw9 = str_mut_var_recv(c, recv) || sb_held_shadow(recv);
     int tn9 = ++g_tmp;
     /* append_as_bytes accepts String AND Integer arguments; an Integer is the
@@ -4522,6 +4543,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
         buf_printf(b, "); sp_String_set_bin(_t%d, _t%d); _t%d; })", tm2, tn3, tn3);
         { *out = 1; return 1; }
       } }
+    if (hrecv) return 0;
     int lvw = str_mut_var_recv(c, recv) || sb_shadowed_reader(recv);
     int tn2 = ++g_tmp;
     /* in-place mutator: a frozen receiver raises before the splice (#3333) */
