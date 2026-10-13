@@ -11,7 +11,9 @@
 # stored value, that is not a String raises CRuby's TypeError, as does a
 # value that is not a hash. A Float the block replaces is handed to it as
 # the Float, a huge one or Infinity included, without first being read as
-# an Integer.
+# an Integer. The keys first set by a merge are cleared first, as one
+# already in the environment would take the block's answer.
+%w[SPX_K SPX_L SPX_S].each { |k| ENV.delete(k) }
 v = +"ab"
 h = {"SPX_J" => v}
 ENV.update(h)
