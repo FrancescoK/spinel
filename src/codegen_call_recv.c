@@ -8465,9 +8465,11 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
        handlers its body opens, not a begin around the scan */
     int sv_lexc = g_loop_exc_base, sv_lexc_rb = g_loop_rescue_base, sv_lens = g_loop_ensure_base;
     g_loop_exc_base = g_exc_frame_depth; g_loop_rescue_base = g_rescue_save_depth; g_loop_ensure_base = g_ensure_depth;
+    g_c_loop_depth++;
     int svind = g_indent; g_indent++;
     for (int j = 0; j < bn; j++) emit_stmt(c, bb[j], g_pre, g_indent);
     g_indent = svind;
+    g_c_loop_depth--;
     g_loop_exc_base = sv_lexc; g_loop_rescue_base = sv_lexc_rb; g_loop_ensure_base = sv_lens;
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
     buf_printf(b, "_t%d", tr);
