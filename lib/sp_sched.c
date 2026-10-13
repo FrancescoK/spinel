@@ -1663,11 +1663,29 @@ static void sp_cs_finish(int ran) {
   }
   pthread_mutex_unlock(&g_cs_lock);
 }
-static void sp_cs_enter(void) { pthread_mutex_lock(&g_cs_lock); SP_ATOMIC_FETCH_ADD(&g_cs_running, 1, __ATOMIC_RELAXED); pthread_mutex_unlock(&g_cs_lock); }
+/* Entering the task list: only a sweep with a task still unclaimed. A
+   thread that saw work to do and reaches here late -- a sweeper thread the
+   OS woke after the others finished, a parked helper descheduled between
+   its look and this lock -- may find the sweep over, and the collector, who
+   read g_cs_running at zero, already writing the task array and the claim
+   flags for the next one. Counting itself in then would walk them while
+   they are written: ThreadSanitizer reports it (sp_cs_run_tasks against
+   sp_sched_conc_start and its memset), and on a weakly ordered CPU the walk
+   can claim a cleared flag and still read the previous sweep's task.
+   Under g_cs_lock the count is exact enough: a claim whose task finished
+   was counted out before its sp_cs_finish took this lock, and a claimer
+   still to finish takes it after us and so sees us running, which keeps
+   the collector waiting for us. PRE: g_cs_lock held. */
+static int sp_cs_join_locked(void) {
+  if (SP_ATOMIC_LOAD(&g_cs_unclaimed, __ATOMIC_RELAXED) == 0) return 0;
+  SP_ATOMIC_FETCH_ADD(&g_cs_running, 1, __ATOMIC_RELAXED);
+  return 1;
+}
+static int sp_cs_enter(void) { pthread_mutex_lock(&g_cs_lock); int in = sp_cs_join_locked(); pthread_mutex_unlock(&g_cs_lock); return in; }
 /* The owner's share, run by the released worker with the world running. */
 static void sp_cs_owner_run(int wid) {
   int was = sp_gc_in_sweeper;
-  sp_cs_enter();
+  if (!sp_cs_enter()) return;
   sp_gc_in_sweeper = 1;
   int ran = sp_cs_run_tasks(CS_RUN_OWNER, wid);
   sp_gc_in_sweeper = was;
@@ -1678,7 +1696,7 @@ static void sp_cs_owner_run(int wid) {
    the collector recounts the bytes the mark saw. */
 static void sp_cs_help_run(void) {
   int was = sp_gc_in_sweeper;
-  sp_cs_enter();
+  if (!sp_cs_enter()) return;
   sp_gc_in_sweeper = 1;
   int ran = sp_cs_run_tasks(CS_RUN_ANY, -1);
   sp_gc_in_sweeper = was;
@@ -1701,9 +1719,9 @@ static void *sp_cs_sweeper_main(void *arg) {
     while (g_cs_gen == seen && !SP_ATOMIC_LOAD(&g_shutdown, __ATOMIC_RELAXED)) pthread_cond_wait(&g_cs_go, &g_cs_lock);
     if (SP_ATOMIC_LOAD(&g_shutdown, __ATOMIC_RELAXED)) { pthread_mutex_unlock(&g_cs_lock); break; }
     seen = g_cs_gen;
-    SP_ATOMIC_FETCH_ADD(&g_cs_running, 1, __ATOMIC_RELAXED);
+    int in = sp_cs_join_locked();
     pthread_mutex_unlock(&g_cs_lock);
-    sp_cs_finish(sp_cs_run_tasks(CS_RUN_SWEEPER, -1));
+    if (in) sp_cs_finish(sp_cs_run_tasks(CS_RUN_SWEEPER, -1));
   }
   return NULL;
 }
