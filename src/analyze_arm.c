@@ -86,6 +86,15 @@ static void arm_record_x(Compiler *c, int block, LocalVar *lv, TyKind kind, int 
   /* a block whose first parameter is no plain one (`|*r|`): the sites
      retype the body with no slot set, and so does this */
   TyKind lsaved = lv ? lv->type : TY_UNKNOWN;
+  /* the calls the body makes keep what the analysis bound them to: typed
+     under one arm, a call on the parameter binds that arm's method alone
+     (--plan-check) */
+  UCallInf *usaved = c->ucall_inf ? malloc(sizeof *usaved * (size_t)(len + blen + 1)) : NULL;
+  if (c->ucall_inf && !usaved) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = 0; usaved && i < len + blen; i++) {
+    int n = i < len ? nodes[i] : bnodes[i - len];
+    if (n < c->node_cap) usaved[i] = c->ucall_inf[n];
+  }
   if (lv) lv->type = kind;
   for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
   if (extra >= 0) infer_type(c, extra);
@@ -93,6 +102,11 @@ static void arm_record_x(Compiler *c, int block, LocalVar *lv, TyKind kind, int 
   if (lv) lv->type = lsaved;
   for (int i = 0; i < len; i++) if (nodes[i] < c->node_cap) c->ntype[nodes[i]] = saved[i];
   for (int i = 0; i < blen; i++) if (bnodes[i] < c->node_cap) c->ntype[bnodes[i]] = bsaved[i];
+  for (int i = 0; usaved && i < len + blen; i++) {
+    int n = i < len ? nodes[i] : bnodes[i - len];
+    if (n < c->node_cap) c->ucall_inf[n] = usaved[i];
+  }
+  free(usaved);
   free(saved); free(bsaved); free(bnodes);
   if (c->narm_facts >= c->carm_facts) {
     c->carm_facts = c->carm_facts ? c->carm_facts * 2 : 16;
