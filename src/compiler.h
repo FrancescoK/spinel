@@ -1212,7 +1212,8 @@ typedef struct {
   /* strbuf_bang_self_local's answers within one outermost query
      (codegen_util.c): per node, the query it was answered in and the
      answer. Its recursion over a receiver chain reaches each link by
-     several paths; within a query nothing it reads changes. */
+     several paths; within a query nothing it reads changes. A refusal
+     closes an open query before it unwinds (strbuf_bang_query_close). */
   unsigned *bsl_gen;
   unsigned char *bsl_val;
   int bsl_n, bsl_depth;

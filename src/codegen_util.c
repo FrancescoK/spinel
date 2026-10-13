@@ -3409,8 +3409,20 @@ static int strbuf_bang_self_local_at(const Compiler *c, int v);
    the answers are kept for that query only (Compiler.bsl_*), each node's
    stamped with the query, and a new query starts afresh. No answer outlives
    its query, so nothing repr_of answers is kept across a change of view.
-   (The query's depth comes back to 0 because nothing it asks refuses: no
-   probe unwinds past an open query.) */
+   The invariant: a query is open only while its outermost call runs. A
+   refusal leaves by longjmp to a probe's recovery point (unsup_leave), past
+   any frame of a query, so unsupported and unsupported_feature close an open
+   query before they leave (strbuf_bang_query_close): an answer kept in it
+   would otherwise be reused by the next query, under another view. */
+static void strbuf_bang_query_close(Compiler *c) {
+  if (!c || c->bsl_depth == 0) return;
+  c->bsl_depth = 0;
+  /* (its answers are stale: the next query gets a stamp of its own) */
+  if (++c->bsl_cur == 0) {
+    memset(c->bsl_gen, 0, sizeof *c->bsl_gen * (size_t)c->bsl_n);
+    c->bsl_cur = 1;
+  }
+}
 int strbuf_bang_self_local(const Compiler *c, int v) {
   if (v < 0) return 0;
   Compiler *m = (Compiler *)c;
@@ -3661,6 +3673,7 @@ const char *rename_local(const char *nm) {
    compiler can be debugged, this names the feature and stops: the internals are
    noise when the answer is "this is a documented limit". #2652 / #2667 / #2668 */
 __attribute__((noreturn)) void unsupported_feature(Compiler *c, int id, const char *msg) {
+  strbuf_bang_query_close(c);
   if (g_unsup_probe) longjmp(g_unsup_recover, 1);
   refuse_at(c, id);
   int ln; const char *file = unsup_pos(c, id, &ln);
@@ -3847,6 +3860,8 @@ void refuse_prepass_at_emit(Compiler *c, int id) {
 }
 
 __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what) {
+  /* (no query of strbuf_bang_self_local's stays open past the unwind) */
+  strbuf_bang_query_close(c);
   /* Silent emittability probe (dynamic-send arm selection): unwind without a
      diagnostic, the caller just drops this arm. */
   if (g_unsup_probe) longjmp(g_unsup_recover, 1);
