@@ -201,6 +201,7 @@ sp_IntArray *sp_IntArray_slice_range(sp_IntArray *a, sp_int start, sp_int end_, 
 void sp_IntArray_replace(sp_IntArray *dst, sp_IntArray *src);
 /* a[start, len] = plain values (no nil among them) */
 void sp_IntArray_splice(sp_IntArray *a, sp_int start, sp_int len, const sp_int *src, sp_int srcn);
+void sp_IntArray_append_o(sp_IntArray *a, sp_IntArray *src);
 void sp_FloatArray_splice(sp_FloatArray *a, sp_int start, sp_int len, const sp_float *src, sp_int srcn);
 /* a[start, len] = a whole typed array, whose nil elements come along */
 void sp_IntArray_splice_o(sp_IntArray *a, sp_int start, sp_int len, sp_IntArray *src);

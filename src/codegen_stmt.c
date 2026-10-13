@@ -21415,6 +21415,12 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       emit_indent(&lp, indent + 1);
       /* the same number kind copies each element with its nil */
       int same_o = *nilable && sp_streq(ak, k) && (sp_streq(k, "Int") || sp_streq(k, "Float"));
+      /* one Integer Array onto another: one runtime move, nils and all,
+         rather than a loop whose push the C inliner may leave out of line */
+      if (same_o && argc == 1 && sp_streq(k, "Int")) {
+        buf_printf(&lp, "sp_IntArray_append_o(_t%d, _t%d);\n", tr, ts);
+        continue;
+      }
       buf_printf(&lp, "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push%s(_t%d, ",
                  ti, ti, tn, ti, k, same_o ? "_o" : sp_streq(ak, "Poly") ? nilable : "", tr);
       char getexpr[256];

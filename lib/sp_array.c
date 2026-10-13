@@ -163,6 +163,26 @@ void sp_IntArray_splice(sp_IntArray*a,sp_int start,sp_int len,const sp_int*src,s
   if(to){for(sp_int i=0;i<tail_n;i++)if(to[i].nil)SP_NILBIT_SET_A(a, a->start+s+srcn+i);sp_pl_free(to-tail_from);}
   sp_pl_free(sb);sp_pl_free(tb);
 }
+/* `a.concat(src)` of the same Integer kind: the room is made once and the
+   elements are copied in one move, each nil with its bit. A loop of
+   sp_IntArray_push_o in the generated code costs what gcc's inliner
+   decides, and a large unit at its budget left the push out of line:
+   optcarrot's APU#flush_sound took 1.5% more instructions for it. */
+void sp_IntArray_append_o(sp_IntArray*a,sp_IntArray*src){
+  if(!a||!src)return;
+  if(a->frozen){sp_raise_frozen_array_at(a,SP_BUILTIN_INT_ARRAY);return;}
+  sp_int n=src->len;if(n<=0)return;
+  if(a->start+a->len+n>a->cap){
+    if(a->start>0){memmove(a->data,a->data+a->start,sizeof(sp_int)*a->len);if(SP_UNLIKELY(a->nilbits))SP_NILBITS_MOVE_A(a,a->cap,a->start,0,a->len);a->start=0;}
+    if(a->len+n>a->cap)sp_IntArray_set_cap(a,(a->len+n)*2+1);
+  }
+  /* (src may be a: its first n elements sit below the room written here) */
+  memcpy(a->data+a->start+a->len,src->data+src->start,sizeof(sp_int)*(size_t)n);
+  if(SP_UNLIKELY(src->nilbits)){
+    for(sp_int i=0;i<n;i++)if(sp_nilbit_get(src->nilbits,src->start+i)){if(!a->nilbits)SP_NILBITS_NEW_A(a);SP_NILBIT_SET_A(a,a->start+a->len+i);}
+  }
+  a->len+=n;
+}
 /* the splice of a whole typed array, whose nil elements come along */
 void sp_IntArray_splice_o(sp_IntArray*a,sp_int start,sp_int len,sp_IntArray*src){
   /* a source with no bits is the plain splice, which roots what it needs */
