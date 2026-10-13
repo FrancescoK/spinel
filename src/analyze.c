@@ -33922,6 +33922,44 @@ int native_call_ret_plain_num(Compiler *c, int v) {
 }
 
 int g_nn_builtin_call = -1;
+int class_has_subclass(Compiler *c, int ocid);
+/* Is call v a class-level accessor's reader (`class << self; attr_reader
+   :x; end`) reading a class-level @x that holds an Integer or a Float? Such
+   a slot starts nil and may be set to nil by its writer, which no flow the
+   analysis follows rules out: its read is nil where CRuby's is. The
+   receivers sg_accessor_type answers: the class's constant, self in a class
+   method or body, and self.class in an instance method of a class with no
+   subclass. */
+static int sg_civ_reader_call(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, v, "name");
+  int r = nt_ref(nt, v, "receiver");
+  if (!nm || r < 0 || nt_ref(nt, v, "arguments") >= 0) return 0;
+  int ci = -1;
+  NodeKind rk = nt_kind(nt, r);
+  if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
+    const char *cn = nt_str(nt, r, "name");
+    ci = cn ? comp_class_index(c, cn) : -1;
+  }
+  else {
+    Scope *s = comp_scope_of(c, v);
+    if (!s || s->class_id < 0) return 0;
+    if (rk == NK_SelfNode && s->is_cmethod) ci = s->class_id;
+    else if (rk == NK_CallNode && nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), "class") &&
+             nt_ref(nt, r, "receiver") >= 0 && nt_kind(nt, nt_ref(nt, r, "receiver")) == NK_SelfNode &&
+             !s->is_cmethod && !class_has_subclass(c, s->class_id))
+      ci = s->class_id;
+  }
+  if (ci < 0) return 0;
+  ClassInfo *cls = &c->classes[ci];
+  const char *rn = comp_resolve_alias(c, ci, nm);
+  if (!rn) rn = nm;
+  if (!comp_is_sg_reader(cls, rn) || !comp_is_sg_civ(cls, rn)) return 0;
+  char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", rn);
+  int ivi = comp_ivar_index(cls, ivn);
+  return ivi >= 0 && (cls->ivar_types[ivi] == TY_INT || cls->ivar_types[ivi] == TY_FLOAT);
+}
+
 int nullable_int_value(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   if (v < 0) return 0;
@@ -34152,6 +34190,7 @@ int nullable_int_value(Compiler *c, int v) {
       }
     }
     if (nn_call_unboxes_nil(c, v)) return 1;
+    if (sg_civ_reader_call(c, v)) return 1;
     /* A setter assignment answers its RHS, not the writer's return. Its
        nullable scalar must survive when the assignment itself is boxed.
        The check above already accounts for a safe-navigation receiver. */

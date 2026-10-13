@@ -27231,7 +27231,7 @@ void emit_push_arg_list(Compiler *c, const int *argv, int argc, int tpa, Buf *b)
   }
 }
 
-int emit_sg_accessor(Compiler *c, int ci, const char *cn, const char *name,
+int emit_sg_accessor(Compiler *c, int id, int ci, const char *cn, const char *name,
                             int argc, const int *argv, Buf *b) {
   ClassInfo *cls = &c->classes[ci];
   int nlen = (int)strlen(name);
@@ -27286,7 +27286,17 @@ int emit_sg_accessor(Compiler *c, int ci, const char *cn, const char *name,
   const char *rn = comp_resolve_alias(c, ci, name);
   if (!rn) rn = name;
   if (!comp_is_sg_reader(cls, rn)) return 0;
-  if (comp_is_sg_civ(cls, rn)) buf_printf(b, "civ_%s_%s", cn, iv_c(rn));
+  if (comp_is_sg_civ(cls, rn)) {
+    /* a slot that holds its nil beside the Integer (an sp_oint) read where
+       the plain Integer goes: the value, nil being CRuby's TypeError there,
+       as the other oint reads into a plain slot are */
+    char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", rn);
+    int ivx = comp_ivar_index(cls, ivn);
+    int plain = ivx >= 0 && civ_is_oint(c, ci, ivx) && id >= 0 && !node_is_oint(c, id);
+    if (plain) buf_printf(b, "%s(", oint_arg(cls->ivar_types[ivx] == TY_FLOAT ? TY_FLOAT : TY_INT));
+    buf_printf(b, "civ_%s_%s", cn, iv_c(rn));
+    if (plain) buf_puts(b, ")");
+  }
   else buf_printf(b, "sg_%s_%s", cn, rn);
   return 1;
 }
