@@ -3147,6 +3147,19 @@ int emit_product_inspect_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+static int emit_step_boxed_limit(Compiler *c, int recv, const int *sv, int sc, Buf *b) {
+  int t = ++g_tmp;
+  buf_printf(b, "({ sp_int _er%d = ", t); emit_int_expr(c, recv, b);
+  buf_printf(b, "; sp_RbVal _el%d = ", t); emit_boxed(c, sv[0], b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_el%d); sp_int _es%d = ", t, t);
+  if (sc >= 2) emit_int_expr(c, sv[1], b); else buf_puts(b, "1");
+  buf_printf(b, "; if (_es%d == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");"
+                " _el%d.tag == SP_TAG_NIL ? sp_range_endless_step(sp_box_int(_er%d), sp_box_int(_es%d))"
+                " : sp_Enumerator_new_from(sp_box_int_array(sp_IntArray_from_range_step(_er%d, sp_poly_arg_int_chk(_el%d), _es%d, 0))); })",
+             t, t, t, t, t, t, t);
+  return 1;
+}
+
 /* numeric.step(limit[, step]) without a block, materialized as an int or
    float array (so a following .to_a / .inspect works). Returns 1 if handled. */
 int emit_step_array_expr(Compiler *c, int id, Buf *b) {
@@ -3205,6 +3218,7 @@ int emit_step_array_expr(Compiler *c, int id, Buf *b) {
   }
   int is_float = (rt == TY_FLOAT) || comp_ntype(c, sv[0]) == TY_FLOAT ||
                  (sc >= 2 && comp_ntype(c, sv[1]) == TY_FLOAT);
+  if (rt == TY_INT && !is_float && !g_promote_mode && comp_ntype(c, sv[0]) == TY_POLY) return emit_step_boxed_limit(c, recv, sv, sc, b);
   int tr = ++g_tmp, tl = ++g_tmp, ts = ++g_tmp, ti = ++g_tmp;
   if (!is_float) {
     buf_printf(b, "({ sp_int _t%d = ", tl);
