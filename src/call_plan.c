@@ -2241,11 +2241,18 @@ int cplan_nil_written(int why) {
   return why == NFW_NIL || why == NFW_NO_ELSE || why == NFW_SAFE_NAV || why == NFW_UNSET || why == NFW_ELEM_NIL;
 }
 
+/* The name call id was written as: an alias of a reader is renamed to the
+   reader (infer_call_inner), but nil answers the name the program called. */
+const char *cplan_call_name(const NodeTable *nt, int id) {
+  const char *wn = nt_kind(nt, id) == NK_CallNode ? nt_str(nt, id, "written_name") : NULL;
+  return wn ? wn : nt_str(nt, id, "name");
+}
+
 int cplan_nil(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (id < 0 || id >= nt->count || nt_kind(nt, id) != NK_CallNode) return CN_NONE;
   int r = nt_ref(nt, id, "receiver");
-  const char *nm = nt_str(nt, id, "name");
+  const char *nm = cplan_call_name(nt, id);
   const char *op = nt_str(nt, id, "call_operator");
   if (r < 0 || !nm || (op && sp_streq(op, "&."))) return CN_NONE;
   /* the receiver as settled, not as a view retypes it: a poly arm's

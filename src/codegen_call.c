@@ -22973,7 +22973,7 @@ static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead
   }
   else
     buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));%s",
-               enum_walk_name(c, id, r, nt_str(nt, id, "name")), rb.p ? " }" : "");
+               enum_walk_name(c, id, r, cplan_call_name(nt, id)), rb.p ? " }" : "");
   free(rb.p);
   buf_puts(b, *lead ? "\n" : " ");
 }
@@ -23125,7 +23125,7 @@ static void nil_target_release(Compiler *c, int mark, int held) {
    held. Answers a static text, or NULL for a name or a type not served. */
 static const char *nil_answer_text(Compiler *c, int id, char *buf, size_t cap) {
   const NodeTable *nt = c->nt;
-  const char *nm = nt_str(nt, id, "name");
+  const char *nm = cplan_call_name(nt, id);
   TyKind t = comp_ntype(c, id);
   int a = nt_ref(nt, id, "arguments"), an = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
@@ -23140,6 +23140,14 @@ static const char *nil_answer_text(Compiler *c, int id, char *buf, size_t cap) {
   if (sp_streq(nm, "to_i") && t == TY_POLY && an == 0) return "sp_box_int(0LL)";
   if (sp_streq(nm, "hash") && t == TY_POLY && an == 0) return "sp_box_int(sp_rbval_hash_key(sp_box_nil()))";
   if (sp_streq(nm, "to_f") && t == TY_POLY && an == 0) return "sp_box_float(0.0)";
+  /* nil.to_a is a fresh empty Array, of the call's kind */
+  if (sp_streq(nm, "to_a") && an == 0) {
+    if (t == TY_POLY_ARRAY) return "sp_PolyArray_new()";
+    if (t == TY_POLY) return "sp_box_poly_array(sp_PolyArray_new())";
+    if (!ty_is_array(t) || !array_kind(t)) return NULL;
+    snprintf(buf, cap, "sp_%sArray_new()", array_kind(t));
+    return buf;
+  }
   if (t != TY_BOOL) return NULL;
   if ((sp_streq(nm, "nil?") || sp_streq(nm, "!") || sp_streq(nm, "frozen?")) && an == 0) return "1";
   if ((sp_streq(nm, "is_a?") || sp_streq(nm, "kind_of?") || sp_streq(nm, "instance_of?")) && an == 1) {
@@ -23166,7 +23174,7 @@ static const char *nil_answer_text(Compiler *c, int id, char *buf, size_t cap) {
    operand text)? The plan's refusal asks before the emission does. */
 int cplan_nil_answer_served(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
-  const char *nm = nt_str(nt, id, "name");
+  const char *nm = cplan_call_name(nt, id);
   TyKind t = comp_ntype(c, id);
   int a = nt_ref(nt, id, "arguments"), an = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
@@ -23174,6 +23182,8 @@ int cplan_nil_answer_served(Compiler *c, int id) {
   if ((sp_streq(nm, "to_s") || sp_streq(nm, "inspect")) && an == 0) return t == TY_STRING;
   if ((sp_streq(nm, "to_i") || sp_streq(nm, "hash")) && an == 0) return t == TY_INT || t == TY_POLY;
   if (sp_streq(nm, "to_f") && an == 0) return t == TY_FLOAT || t == TY_POLY;
+  if (sp_streq(nm, "to_a") && an == 0)
+    return t == TY_POLY_ARRAY || t == TY_POLY || (ty_is_array(t) && array_kind(t) != NULL);
   if (t != TY_BOOL) return 0;
   if ((sp_streq(nm, "nil?") || sp_streq(nm, "!") || sp_streq(nm, "frozen?")) && an == 0) return 1;
   if ((sp_streq(nm, "is_a?") || sp_streq(nm, "kind_of?") || sp_streq(nm, "instance_of?")) && an == 1)
@@ -23189,6 +23199,18 @@ static void nil_target_recv_text(Compiler *c, int r, const char *rtext, Buf *b) 
   else if (strbuf_slot_ref(c, r, sref, sizeof sref)) buf_puts(b, sref);
   else emit_expr(c, r, b);
 }
+/* Does class k answer `name` itself: a def, an attr_reader, or an alias
+   (`alias to_a children`), which would otherwise run for a nil receiver as
+   the method it names? */
+static int class_answers_name(Compiler *c, int k, const char *name) {
+  if (!name) return 0;
+  if (comp_method_in_chain(c, k, name, NULL) >= 0) return 1;
+  if (comp_resolve_member(c, k, name, 0, NULL, NULL) != SP_MEMBER_NONE) return 1;
+  int builtin = 0;
+  const char *tn = comp_resolve_alias_ex(c, k, name, NULL, &builtin);
+  return !builtin && !sp_streq(tn, name) &&
+         (comp_method_in_chain(c, k, tn, NULL) >= 0 || comp_resolve_member(c, k, tn, 0, NULL, NULL) != SP_MEMBER_NONE);
+}
 /* Call id in value position with nil's answer beside it: the receiver and
    the arguments held in Ruby's order, then the answer for a NULL receiver
    and the call for any other. 1 when it emitted. */
@@ -23203,7 +23225,7 @@ static int emit_nil_answer_call(Compiler *c, int id, Buf *b) {
   /* only where the class answers the name itself: Object's own == (an
      identity), nil? and to_s take a NULL receiver as nil in their emitters
      already (`cur != nil` is the pointer test) */
-  if (comp_method_in_chain(c, ty_object_class(rt), nt_str(nt, id, "name"), NULL) < 0) return 0;
+  if (!class_answers_name(c, ty_object_class(rt), cplan_call_name(nt, id))) return 0;
   Buf hb; memset(&hb, 0, sizeof hb);
   int mark, held;
   char rtext[32] = "";

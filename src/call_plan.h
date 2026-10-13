@@ -358,6 +358,7 @@ typedef enum {
                   answer has the call's type (nil_answer_text); a call whose
                   answer has not is emitted as before, untested */
 } CplanNil;
+const char *cplan_call_name(const NodeTable *nt, int id);
 int cplan_nil(Compiler *c, int id);
 int cplan_nil_answer_served(Compiler *c, int id);   /* codegen_call.c: nil's answer has the call's type */
 /* Is a nil fact's source `why` (nil_fact_why) a nil the program writes --
