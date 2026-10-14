@@ -1,0 +1,46 @@
+undefined method '<<' for nil
+undefined method 'size' for nil
+undefined method 'size' for nil
+undefined method 'upcase' for nil
+undefined method '<<' for nil
+["s!", "t", nil, "s!"]
+nil
+true
+true
+true
+false
+true
+true
+nil
+nil
+
+|
+nil
+nil
+nil
+nil
+undefined method 'size' for nil
+undefined method 'size' for nil
+undefined method '<<' for nil
+undefined method 'upcase' for nil
+[]
+true
+nil
+undefined method '<<' for nil
+3
+2
+undefined method 'size' for nil
+false
+false
+true
+false
+["s!.", "t.", nil, "s!."]
+"s!."
+true
+false
+true
+true
+true
+true
+false
+true

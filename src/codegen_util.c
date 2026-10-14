@@ -3599,24 +3599,38 @@ const NativeMethod *strbuf_native_answer(Compiler *c, int n) {
 /* --share-strings (#8328 step 5): the handle call v (an element read or a
    pop or shift of a String Array of handles, strh_call_op) answers, as the
    C expression of the sp_String * */
+/* The name of the method called on element read v when nil has none of it
+   and v can be nil, which the handle is then tested for, or NULL */
+static const char *strh_elem_nil_raise(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  const int *par = codegen_parents(c, v, 0);
+  int p = v < nt->count ? par[v] : -1;
+  if (p < 0 || nt_kind(nt, p) != NK_CallNode || an_unparen(nt, nt_ref(nt, p, "receiver")) != v) return NULL;
+  const char *nm = nt_str(nt, p, "name");
+  return nm && !is_nil_method(nm) ? nm : NULL;
+}
 void strh_elem_handle_text(Compiler *c, int v, Buf *b) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, v, "receiver"), argc = 0;
   const int *argv = call_args(nt, v, &argc);
   const char *nm = nt_str(nt, v, "name");
+  const char *nilm = strh_elem_nil_raise(c, v);
+  if (nilm) buf_puts(b, "sp_StrhArray_nn(");
   if (strh_call_op(c, v, comp_recv_type(c, recv)) == STRH_TAKE) {
     int pop = sp_streq(nm, "pop");
     buf_puts(b, pop ? "((sp_String *)sp_PtrArray_pop(" : "((sp_String *)sp_PtrArray_delete_at(");
     emit_expr(c, recv, b);
     buf_puts(b, pop ? "))" : ", 0))");
-    return;
   }
-  buf_puts(b, "((sp_String *)sp_PtrArray_get(");
-  emit_expr(c, recv, b);
-  buf_puts(b, ", ");
-  if (argc == 1) emit_int_expr(c, argv[0], b);
-  else buf_puts(b, sp_streq(nm, "first") ? "0" : "-1");
-  buf_puts(b, "))");
+  else {
+    buf_puts(b, "((sp_String *)sp_PtrArray_get(");
+    emit_expr(c, recv, b);
+    buf_puts(b, ", ");
+    if (argc == 1) emit_int_expr(c, argv[0], b);
+    else buf_puts(b, sp_streq(nm, "first") ? "0" : "-1");
+    buf_puts(b, "))");
+  }
+  if (nilm) buf_printf(b, ", \"%s\")", nilm);
 }
 /* Is v an element read, pop or shift of a String Array of handles, which
    answers the String's handle (strh_elem_handle_text)? */

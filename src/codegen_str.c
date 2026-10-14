@@ -225,8 +225,9 @@ static int str_route_names_handle(Compiler *c, int v) {
        String it answered (emit_strbuf_pickup), or a route over a box
        answering the String the box holds, read live and boxed by
        sp_box_str as the handle that owns it (no copy);
-     - a handle: a variable's or a reader's slot, a call answering its
-       receiver (emit_bang_self_handle), a route that names its handle
+     - a handle: a variable's or a reader's slot, an element a String
+       Array of handles reads or removes, a call answering its receiver
+       (emit_bang_self_handle), a route that names its handle
        (str_route_names_handle);
    and else the value as it is emitted: its bytes, or the handle it is
    held as. Nothing here makes a handle around bytes: a new handle is
@@ -274,6 +275,14 @@ static int str_render_ident(Compiler *c, int v, int form, StrForm *sf) {
     return SPF_HANDLE;
   }
   else if (emit_strbuf_route_box(c, v, b)) return SPF_HANDLE;
+  /* (an element a String Array of handles reads or removes is that
+     handle, as a slot's is) */
+  else if (strh_handle_call(c, v)) {
+    sf->cty = TY_STRBUF;
+    if (g_share_check) share_check_mark(c, v, 'H', b);
+    strh_elem_handle_text(c, v, b);
+    return SPF_HANDLE;
+  }
   else if (repr_call_returns_handle(c, v)) {
     emit_strbuf_pickup(c, v, 1, b);
     return SPF_HANDLE;

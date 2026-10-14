@@ -21012,6 +21012,11 @@ static int strh_elem_use_ok(Compiler *c, const int *par, int e) {
     int ca = nt_ref(nt, p, "arguments"), argc = 0;
     if (ca >= 0) nt_arr(nt, ca, "arguments", &argc);
     if (!nm || share_builtin_overridden(c, "String", nm)) return 0;
+    /* (the element can be nil: nil answers a few of these as a String does,
+       the rest raise the NoMethodError the element read tests for) */
+    if (is_nil_method(nm) && !sp_streq(nm, "nil?") && !sp_streq(nm, "equal?") && !sp_streq(nm, "==") &&
+        !sp_streq(nm, "!="))
+      return 0;
     /* (an append lands in the Array's String where the read is a slot of it:
        a local's Array at an index) */
     if (is_append_concat(nm)) {
@@ -21029,11 +21034,9 @@ static int strh_elem_use_ok(Compiler *c, const int *par, int e) {
         !share_builtin_overridden(c, "Kernel", pn) && !share_builtin_overridden(c, "Object", pn))
       return 1;
     if (pr < 0 || !pn) return 0;
-    int op = strh_call_op_in(c, pc, comp_ntype(c, pr), 1);
     TyKind rt = comp_ntype(c, pr);
-    if (rt == TY_STRH_ARRAY || rt == TY_UNKNOWN) op = strh_call_op_in(c, pc, TY_STRH_ARRAY, 1);
-    if (op == STRH_PUSH || op == STRH_STORE) return 1;
-    return (rt == TY_STRING || rt == TY_STRBUF) && !share_builtin_overridden(c, "String", pn);
+    int op = rt == TY_STRH_ARRAY || rt == TY_UNKNOWN ? strh_call_op_in(c, pc, TY_STRH_ARRAY, 1) : STRH_NONE;
+    return op == STRH_PUSH || op == STRH_STORE;
   }
   return 0;
 }
