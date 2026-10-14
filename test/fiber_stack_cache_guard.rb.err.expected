@@ -1,0 +1,1 @@
+spinel: fiber stack overflow: a green thread, Fiber or Enumerator body ran past the 256 KB C stack the fiber runs on (a deep call chain, a large local, or an unoptimised build whose frames are far larger than -O2's); SPINEL_FIBER_STACK=<bytes> in the environment gives it more

@@ -2230,6 +2230,7 @@ static void run_thread_once(sp_thread *t) { sp_gc_wb((void*)t);   /* PRE/POST: s
        the call; gc_wb_cells makes the same choice on the codegen side, and
        says why in its own comment. */
     sp_gc_wb((void *)t);
+    sp_fiber_release_stack(t->fiber);   /* off its stack for good: the next thread's (sp_fiber.c) */
     sp_thread_wake_joiners(t);
     reg_remove(t);   /* collectable once no user reference remains */
     g_nrunning--;

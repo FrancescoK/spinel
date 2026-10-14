@@ -671,7 +671,93 @@ static void sp_mark_suspended_fibers(void){sp_fiber_collecting=sp_fiber_current;
   /* and the fiber a transferred one returns to, suspended in its transfer */
   if(sp_fiber_current&&sp_fiber_current->return_to)sp_fiber_mark_chain(sp_fiber_current->return_to);}
 static void sp_fiber_install_gc_hook(void){if(!sp_gc_mark_suspended_fibers_hook)sp_gc_mark_suspended_fibers_hook=sp_mark_suspended_fibers;}
-static void sp_Fiber_fin(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->stack)munmap(f->stack,sp_fiber_guard()+f->stack_size);if(f->saved_roots)free(f->saved_roots);if(f->exc_ctx)sp_exc_ctx_free(f->exc_ctx);
+/* ---- the fiber stack cache ----
+ * A fiber's stack is a mapping of its own with a guard page below it, and
+ * making one is three system calls (mmap, then mprotect for the guard) and
+ * freeing it a fourth (munmap). A program that runs its work in short-lived
+ * threads paid them for every Thread.new; an empty fork-join round of eight
+ * threads spent a quarter of the spawning thread's time there, and the
+ * munmaps ran in the sweep -- inside a collection's stopped window when the
+ * collection ran there.
+ *
+ * Stacks go into a small cache instead, and the next fiber of the same size
+ * takes one with its guard page still in place. A thread's stack goes back
+ * as soon as its body has returned and its worker has switched off it
+ * (sp_fiber_release_stack, from the scheduler); left to the collector, the
+ * wanted them had mapped their own. A cached stack keeps the pages its last
+ * fiber touched, so the cache holds at most that many stacks' worth of
+ * memory; handing the pages back (madvise) saved none on short-lived threads
+ * and cost a system call per thread under the scheduler lock, and the stacks
+ * the cache replaces stayed mapped until a sweep, all of them, so the
+ * process is smaller with it than without (an 8-thread spawn loop peaked at
+ * 25 MB instead of 99).
+ *
+ * SPINEL_FIBER_STACK_CACHE is how many stacks it keeps (default 32, 0 turns
+ * it off). It is off under AddressSanitizer, where a reused stack could hide
+ * a use of a dead fiber's frames. A spin lock guards it: the finalizer runs
+ * on whichever thread sweeps, a sweeper thread included, and each critical
+ * section is a few loads and stores. */
+#ifndef SP_FIBER_STACK_CACHE
+#define SP_FIBER_STACK_CACHE 32
+#endif
+#define SP_FIBER_STACK_CACHE_MAX 1024
+static char  *sp_stk_cache[SP_FIBER_STACK_CACHE_MAX];
+static size_t sp_stk_cache_sz[SP_FIBER_STACK_CACHE_MAX];
+static int    sp_stk_n = 0;
+static int    sp_stk_lock = 0;
+static int    sp_stk_cap = -1;   /* -1: not read yet */
+static int sp_stack_cache_cap(void) {
+  int cap = SP_ATOMIC_LOAD(&sp_stk_cap, __ATOMIC_RELAXED);
+  if (cap >= 0) return cap;
+#ifdef SP_ASAN
+  cap = 0;
+#else
+  const char *e = getenv("SPINEL_FIBER_STACK_CACHE");
+  cap = (e && *e) ? atoi(e) : SP_FIBER_STACK_CACHE;
+  if (cap < 0) cap = 0;
+  if (cap > SP_FIBER_STACK_CACHE_MAX) cap = SP_FIBER_STACK_CACHE_MAX;
+#endif
+  SP_ATOMIC_STORE(&sp_stk_cap, cap, __ATOMIC_RELAXED);
+  return cap;
+}
+static void sp_stack_cache_lock(void) {
+  while (SP_ATOMIC_EXCHANGE(&sp_stk_lock, 1, __ATOMIC_ACQUIRE)) {}
+}
+static void sp_stack_cache_unlock(void) { SP_ATOMIC_STORE(&sp_stk_lock, 0, __ATOMIC_RELEASE); }
+/* A cached stack of `sz` usable bytes, guard in place, or NULL. */
+static char *sp_stack_cache_take(size_t sz) {
+  if (sp_stack_cache_cap() == 0) return NULL;
+  char *st = NULL;
+  sp_stack_cache_lock();
+  for (int i = sp_stk_n - 1; i >= 0; i--)
+    if (sp_stk_cache_sz[i] == sz) {
+      st = sp_stk_cache[i];
+      sp_stk_cache[i] = sp_stk_cache[sp_stk_n - 1];
+      sp_stk_cache_sz[i] = sp_stk_cache_sz[sp_stk_n - 1];
+      sp_stk_n--;
+      break;
+    }
+  sp_stack_cache_unlock();
+  return st;
+}
+/* Keep the stack at `st` (guard included) for a later fiber, or unmap it
+   when the cache is full. */
+static void sp_stack_cache_give(char *st, size_t sz) {
+  size_t g = sp_fiber_guard();
+  int cap = sp_stack_cache_cap(), kept = 0;
+  if (cap > 0) {
+    sp_stack_cache_lock();
+    if (sp_stk_n < cap) { sp_stk_cache[sp_stk_n] = st; sp_stk_cache_sz[sp_stk_n] = sz; sp_stk_n++; kept = 1; }
+    sp_stack_cache_unlock();
+  }
+  if (!kept) munmap(st, g + sz);
+}
+void sp_fiber_release_stack(sp_Fiber *f) {
+  if (!f || !f->stack || f->stack_released) return;
+  sp_stack_cache_give(f->stack, f->stack_size);
+  f->stack_released = 1;   /* the pointer stays: a NULL stack means the root fiber elsewhere */
+}
+static void sp_Fiber_fin(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->stack&&!f->stack_released)sp_stack_cache_give(f->stack,f->stack_size);if(f->saved_roots)free(f->saved_roots);if(f->exc_ctx)sp_exc_ctx_free(f->exc_ctx);
 #ifdef SP_TSAN
   if(f->tsan_fiber)__tsan_destroy_fiber(f->tsan_fiber);
 #endif
@@ -682,7 +768,7 @@ static void sp_Fiber_scan(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->user_data)sp_gc_
   if(f!=sp_fiber_collecting&&f!=sp_fiber_current&&f->state!=3)sp_fiber_mark_roots(f);}
 sp_Fiber*sp_Fiber_new(void(*body)(sp_Fiber*)){sp_fiber_fault_arm();sp_Fiber*f=(sp_Fiber*)sp_gc_alloc(sizeof(sp_Fiber),sp_Fiber_fin,sp_Fiber_scan);{size_t _g=sp_fiber_guard();f->stack_size=sp_fiber_stack_bytes();
 /* MAP_NORESERVE: the stack is virtual space until touched, and a strict-overcommit host must not charge every fiber the whole of it (#4496) */
-f->stack=(char*)mmap(NULL,_g+f->stack_size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_STACK|MAP_NORESERVE,-1,0);if(f->stack==MAP_FAILED){f->stack=NULL;sp_raise_cls("FiberError","failed to allocate fiber stack");}mprotect(f->stack,_g,PROT_NONE);}f->state=0;f->transferred=0;f->body=body;f->yielded_value=sp_box_nil();f->resumed_value=sp_box_nil();f->user_data=NULL;f->saved_exc_top=0;f->saved_catch_top=0;f->exc_ctx=sp_exc_ctx_new();f->raised=0;f->raised_cls=NULL;f->raised_msg=NULL;f->raised_obj=NULL;f->inject=0;f->inject_defer=0;f->inj_cls=NULL;f->inj_msg=NULL;f->inj_obj=NULL;f->storage=NULL;f->attrs=NULL;f->birth_file=NULL;f->birth_line=0;f->pass_argc=-1;f->owner=sp_thread_owner_id();f->return_to=NULL;f->thread_main=0;f->blocking=0;f->saved_roots=NULL;f->saved_nroots=0;f->saved_roots_cap=0;f->fiber_next=NULL;f->fiber_prev=NULL;sp_fiber_list_add(f);sp_fiber_install_gc_hook();if(sp_fiber_current&&sp_fiber_current->storage){sp_Fiber*volatile _froot=f;int _pushed=0;if(sp_gc_nroots<SP_GC_STACK_MAX){sp_gc_roots[sp_gc_nroots++]=(void**)&_froot;_pushed=1;}sp_FiberStore*_fst=sp_FiberStore_dup((sp_FiberStore*)sp_fiber_current->storage);sp_gc_wb((void*)f);f->storage=_fst;if(_pushed)sp_gc_nroots--;}
+f->stack=sp_stack_cache_take(f->stack_size);if(!f->stack){f->stack=(char*)mmap(NULL,_g+f->stack_size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_STACK|MAP_NORESERVE,-1,0);if(f->stack==MAP_FAILED){f->stack=NULL;sp_raise_cls("FiberError","failed to allocate fiber stack");}mprotect(f->stack,_g,PROT_NONE);}}f->state=0;f->transferred=0;f->body=body;f->yielded_value=sp_box_nil();f->resumed_value=sp_box_nil();f->user_data=NULL;f->saved_exc_top=0;f->saved_catch_top=0;f->exc_ctx=sp_exc_ctx_new();f->raised=0;f->raised_cls=NULL;f->raised_msg=NULL;f->raised_obj=NULL;f->inject=0;f->inject_defer=0;f->inj_cls=NULL;f->inj_msg=NULL;f->inj_obj=NULL;f->storage=NULL;f->attrs=NULL;f->birth_file=NULL;f->birth_line=0;f->pass_argc=-1;f->owner=sp_thread_owner_id();f->return_to=NULL;f->thread_main=0;f->blocking=0;f->stack_released=0;f->saved_roots=NULL;f->saved_nroots=0;f->saved_roots_cap=0;f->fiber_next=NULL;f->fiber_prev=NULL;sp_fiber_list_add(f);sp_fiber_install_gc_hook();if(sp_fiber_current&&sp_fiber_current->storage){sp_Fiber*volatile _froot=f;int _pushed=0;if(sp_gc_nroots<SP_GC_STACK_MAX){sp_gc_roots[sp_gc_nroots++]=(void**)&_froot;_pushed=1;}sp_FiberStore*_fst=sp_FiberStore_dup((sp_FiberStore*)sp_fiber_current->storage);sp_gc_wb((void*)f);f->storage=_fst;if(_pushed)sp_gc_nroots--;}
 #ifdef SP_TSAN
   if(!sp_fiber_root.tsan_fiber)sp_fiber_root.tsan_fiber=__tsan_get_current_fiber();
   f->tsan_fiber=__tsan_create_fiber(0);f->caller_fiber=NULL;
