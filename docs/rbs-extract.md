@@ -298,6 +298,12 @@ parameter to inference:
 - a parameter whose type is outside the subset (the type-level list
   below)
 
+A field that lands on the slot of the def's rest parameter or `**rest`
+is not applied, since the signature declares an optional positional where
+the def gathers its arguments (`?Integer c` for `def m(*c)`): that slot
+is typed by construction, and a scalar type on it would make every call
+pass the gathered array to a slot of another C type.
+
 A return outside the subset reads `-`, as `void` does: nothing is pinned
 and the parameters keep their seeds. In a class, `instance` and the
 `self` of an instance method are an instance of that class

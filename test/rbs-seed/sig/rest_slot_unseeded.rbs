@@ -1,0 +1,9 @@
+class Rel
+  def initialize: () -> void
+  def exists?: (?(Integer | String | nil) condition) -> bool
+  def any?: () -> bool
+  def count_of: (?Integer id) -> Integer
+  def pick: (String first, ?Integer rest) -> String
+  def opts: (String key, ?Integer named) -> String
+  def last_of: (?Integer xs, Integer tail) -> String
+end
