@@ -2789,6 +2789,15 @@ static inline sp_String *sp_poly_as_strbuf(sp_RbVal v) {
   if (sp_poly_nil_p(v)) return NULL;
   return sp_String_new((&("\xff")[1]));
 }
+/* The String Array of handles (--share-strings, TY_STRH_ARRAY) element a
+   boxed String is: a handle as it is, a plain String as sp_String_new_shared
+   makes it (a frozen literal's own handle, here where
+   SP_SHARE_STRING_LITERALS is set, which lib/sp_array.c's copy of the
+   constructor never sees), nil as NULL. */
+static inline sp_String *sp_StrhArray_unbox(sp_RbVal v) {
+  if (v.tag == SP_TAG_NIL) return NULL;
+  return v.tag == SP_TAG_STR ? sp_String_new_shared(v.v.s) : (sp_String *)v.v.p;
+}
 /* The read face of a frozen handle: a copy that is frozen too (0xfa, a
    frozen heap String that is collected), so the String read through it,
    and a handle a consumer wraps around it, keep the frozen mark the
