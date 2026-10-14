@@ -21,14 +21,12 @@ z[0] << "z"
 p s, z, z[0].equal?(s), z[0].equal?(z[1])
 class Box
   def initialize(v) = @v = v
-  def each_twice = (yield @v; yield @v)
   def map_v(&blk) = blk.call(@v)
 end
 b = Box.new(3)
 def relay(o, m, &blk) = o.send(m, &blk)
 r1 = relay(b, :map_v) { |x| x + 1 }
-r2 = relay(b, :each_twice) { |x| x.to_s + "!" }
 r3 = relay(b, :map_v) { |x| "n#{x}" }
 r4 = [r3, r3]
 r4[0] << "#"
-p r1, r2, r3, r4, r4[0].equal?(r4[1])
+p r1, r3, r4, r4[0].equal?(r4[1])

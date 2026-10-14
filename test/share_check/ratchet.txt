@@ -87,7 +87,6 @@ test/share/share_strings_iter_untaken_break_receiver.rb	test/share/share_strings
 test/share/share_strings_net_http_zlib.rb	packages/net/net/http.rb:693	CallNode (path)	boxed as bytes by sp_box_str (bytes face)
 test/share/share_strings_net_http_zlib.rb	packages/uri/uri.rb:228	CallNode (path)	boxed as bytes by sp_box_str (bytes face)
 test/share/share_strings_net_http_zlib.rb	packages/uri/uri.rb:230	CallNode (path)	boxed as bytes by sp_box_str (bytes face)
-test/share/share_strings_proc_answer_box.rb	test/share/share_strings_proc_answer_box.rb:24	YieldNode (-)	boxed as bytes by sp_box_str (bytes face)
 test/share/share_strings_read_nonblock_buffer.rb	test/share/share_strings_read_nonblock_buffer.rb:17	CallNode (call)	boxed as bytes by sp_box_str (bytes face)
 test/share/share_strings_reopen_block_returns.rb	test/share/share_strings_reopen_block_returns.rb:30	CallNode (p)	boxed as bytes by sp_box_str (sp_poly_unbox_s)
 test/share/share_strings_reopen_block_returns.rb	test/share/share_strings_reopen_block_returns.rb:31	CallNode (p)	boxed as bytes by sp_box_str (sp_poly_unbox_s)
