@@ -661,8 +661,8 @@ static void sp_out_enter_locked(int wid, int how) {
     if (root && root != sp_fiber_current) g_native_fiber[wid][g_native_nfiber[wid]++] = root;
     SP_ATOMIC_STORE(&g_native_out[wid], (unsigned char)how, __ATOMIC_RELEASE);
   }
-  g_nnative++;
-  if (g_stw_active && g_nparked + g_nnative >= sp_active_workers - 1)
+  SP_ATOMIC_FETCH_ADD(&g_nnative, 1, __ATOMIC_SEQ_CST);
+  if (g_stw_active && g_nparked + SP_ATOMIC_LOAD(&g_nnative, __ATOMIC_SEQ_CST) >= sp_active_workers - 1)
     pthread_cond_signal(&g_stw_request);
 }
 /* Back in the world (PRE: sched lock held). A collection in progress counted
@@ -671,10 +671,10 @@ static void sp_out_enter_locked(int wid, int how) {
    has run on it). */
 static void sp_out_leave_locked(int wid) {
   if (g_stw_active) {
-    g_nnative--;
+    SP_ATOMIC_FETCH_SUB(&g_nnative, 1, __ATOMIC_SEQ_CST);
     unsigned my_epoch = g_stw_epoch;
     g_nparked++;
-    if (g_nparked + g_nnative >= sp_active_workers - 1) pthread_cond_signal(&g_stw_request);
+    if (g_nparked + SP_ATOMIC_LOAD(&g_nnative, __ATOMIC_SEQ_CST) >= sp_active_workers - 1) pthread_cond_signal(&g_stw_request);
     while (g_stw_active && g_stw_epoch == my_epoch) {
       if (g_cs_help && SP_ATOMIC_LOAD(&g_cs_unclaimed, __ATOMIC_RELAXED) > 0) {
         SCHED_UNLOCK(); sp_cs_help_run(); SCHED_LOCK(); continue;
@@ -683,7 +683,7 @@ static void sp_out_leave_locked(int wid) {
     }
     if (g_stw_epoch == my_epoch) g_nparked--;
   }
-  else g_nnative--;
+  else SP_ATOMIC_FETCH_SUB(&g_nnative, 1, __ATOMIC_SEQ_CST);
   if (wid >= 0 && wid < SP_MAX_WORKERS) { SP_ATOMIC_STORE(&g_native_out[wid], 0, __ATOMIC_RELEASE); g_native_nfiber[wid] = 0; }
   /* the collection that ran while this worker was out left it its own young
      lists to sweep, and after a full cycle its slab chunks to release */
@@ -747,7 +747,7 @@ static void sp_stw_park_locked(void) {
      set (then sweeping a still-live root). */
   unsigned my_epoch = g_stw_epoch;
   g_nparked++;
-  if (g_nparked + g_nnative >= sp_active_workers - 1) pthread_cond_signal(&g_stw_request);
+  if (g_nparked + SP_ATOMIC_LOAD(&g_nnative, __ATOMIC_SEQ_CST) >= sp_active_workers - 1) pthread_cond_signal(&g_stw_request);
   while (g_stw_active && g_stw_epoch == my_epoch) {
     /* Sweep our own slot if the collector has asked for it. Dropping the
        scheduler lock is safe and necessary: nothing else touches this slot
@@ -911,7 +911,7 @@ static void sp_stw_collect_impl(int force) {
   /* wake idle workers (and main waiting in its pump) so they park at the barrier
      rather than sit through the collection without publishing their roots. */
   sched_wake_all_workers(1);   /* reaches an ev_waiting main and workers too, except those out */
-  while (g_nparked + g_nnative < sp_active_workers - 1) pthread_cond_wait(&g_stw_request, &g_sched_lock);
+  while (g_nparked + SP_ATOMIC_LOAD(&g_nnative, __ATOMIC_SEQ_CST) < sp_active_workers - 1) pthread_cond_wait(&g_stw_request, &g_sched_lock);
   /* the workers out in a blocking native call: their roots were published
      on the way out, and the fibers they recorded are marked like a parked
      worker's (a worker that came back meanwhile is a parker of this epoch,
@@ -1527,6 +1527,41 @@ static void sched_make_runnable(sp_thread *t) {
     }
     else return;
   }
+}
+
+/* PoC (#8702 option 2): the waiter lists of a Mutex and a ConditionVariable are
+   guarded by the object's own wait lock (sp_wlock), not the scheduler lock.
+   Take the first waiter off such a list; the caller holds its lock. */
+static sp_thread *wl_take_one(sp_thread **waitlist) {
+  sp_thread *t = *waitlist;
+  if (!t) return NULL;
+  *waitlist = t->wait_next;
+  t->wait_next = NULL; t->wait_head = NULL; t->wait_lock = NULL;
+  return t;
+}
+/* Make a waiter that is off its list runnable; no wait lock held. Main waits
+   in its pump under the scheduler lock, so its wake goes through that lock,
+   and so does cancelling a timed wait's timer (the heap is under it). */
+static void sched_wake_unlinked(sp_thread *t) {
+#ifdef SP_THREADS
+  if (t->timer) { int had = g_sched_held; if (!had) SCHED_LOCK(); sp_timer_cancel(t); if (!had) SCHED_UNLOCK(); }
+#endif
+  if (t == &g_main_thread) {
+    int had = g_sched_held;
+    if (!had) SCHED_LOCK();
+    SP_TH_SET_STATE(t, SP_TH_RUNNABLE);
+    SCHED_WAKE_MAIN();
+    if (!had) SCHED_UNLOCK();
+    return;
+  }
+  sched_make_runnable(t);
+}
+/* Wake one thread parked in m's #lock, if any; m's wait lock not held. */
+static void sp_mutex_wake_waiter(sp_mutex *m) {
+  wl_lock(&m->wl);
+  sp_thread *t = wl_take_one(&m->waiters);
+  wl_unlock(&m->wl);
+  if (t) sched_wake_unlinked(t);
 }
 
 static void reg_add(sp_thread *t) {
@@ -2210,7 +2245,7 @@ static void sp_thread_report(sp_thread *t) {
 static void       sp_sched_block(sp_thread **waitlist, int defer_inject);
 static sp_thread *sp_sched_wake_one(sp_thread **waitlist);
 #ifdef SP_THREADS
-static int        sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mutex *mutex);
+static int        sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mutex *mutex, sp_wlock *wl);
 #endif
 
 /* A finished thread's parked joiners become runnable again (the main thread,
@@ -2629,7 +2664,7 @@ sp_thread *sp_Thread_join_timeout(sp_thread *t, double seconds) {
   }
 
 #ifdef SP_THREADS
-  int woken = sp_sched_block_timeout(&t->joiners, sp_monotonic_now() + seconds, NULL);
+  int woken = sp_sched_block_timeout(&t->joiners, sp_monotonic_now() + seconds, NULL, NULL);
   if (woken < 0) {
     SCHED_UNLOCK();
     sp_raise_cls("NoMemoryError", "failed to schedule thread join timeout");
@@ -3297,6 +3332,30 @@ int sp_sched_wait_io_set(struct pollfd *set, int n, double timeout_s) {
 /* A helper worker: adopt its native stack as a per-worker root fiber, then pull
    runnable green threads off the GRQ forever. It parks at the GC barrier when a
    collection is in progress and exits when main signals shutdown at drain. */
+/* PoC (#8702 option 2): run what is queued on this worker without the scheduler
+   lock, for as long as there is some (PRE/POST: the scheduler lock NOT held).
+   A popped thread leaves g_runnable before run_thread_once counts it in
+   g_nrunning, and main's pump reads both to decide that nothing can wake it,
+   so a slot is held in g_nrunning across the pop. Every 61st pick returns to
+   the locked loop, which gives the global queue its turn and drains this
+   worker's readiness set. Answers whether it ran anything. */
+static int sp_worker_run_local(int wid) {
+  SP_ATOMIC_FETCH_ADD(&g_nrunning, 1, __ATOMIC_SEQ_CST);
+  RQ_LOCK(wid); sp_thread *ft = runq_pop(&g_lrq[wid]); RQ_UNLOCK(wid);
+  int ran = ft != NULL;
+  while (ft) {
+    run_thread_once(ft);
+    ft = NULL;
+    if (SP_ATOMIC_LOAD(&g_stw_active, __ATOMIC_SEQ_CST) || SP_ATOMIC_LOAD(&g_shutdown, __ATOMIC_RELAXED)) break;
+    if ((++g_pick_tick % 61u) == 0) break;
+    RQ_LOCK(wid); ft = runq_pop(&g_lrq[wid]); RQ_UNLOCK(wid);
+  }
+  SP_ATOMIC_FETCH_SUB(&g_nrunning, 1, __ATOMIC_SEQ_CST);
+  if (SP_ATOMIC_LOAD(&g_nrunning, __ATOMIC_SEQ_CST) == 0 && SP_ATOMIC_LOAD(&g_runnable, __ATOMIC_SEQ_CST) == 0)
+    { SCHED_LOCK(); sp_sched_signal_if_quiescent(); SCHED_UNLOCK(); }
+  return ran;
+}
+
 static void *sp_worker_main(void *arg) {
   int wid = (int)(intptr_t)arg;
   sp_worker_id = wid;          /* TLS: read only by this worker */
@@ -3317,24 +3376,8 @@ static void *sp_worker_main(void *arg) {
        g_nrunning; main's pump reads both to decide that nothing can wake it,
        so the slot is held in g_nrunning across the pop. */
     {
-      SP_ATOMIC_FETCH_ADD(&g_nrunning, 1, __ATOMIC_SEQ_CST);
-      RQ_LOCK(wid); sp_thread *ft = runq_pop(&g_lrq[wid]); RQ_UNLOCK(wid);
-      if (ft) {
-        SCHED_UNLOCK();
-        while (ft) {
-          run_thread_once(ft);
-          ft = NULL;
-          if (SP_ATOMIC_LOAD(&g_stw_active, __ATOMIC_SEQ_CST) || SP_ATOMIC_LOAD(&g_shutdown, __ATOMIC_RELAXED)) break;
-          if ((++g_pick_tick % 61u) == 0) break;
-          RQ_LOCK(wid); ft = runq_pop(&g_lrq[wid]); RQ_UNLOCK(wid);
-        }
-        SCHED_LOCK();
-        SP_ATOMIC_FETCH_SUB(&g_nrunning, 1, __ATOMIC_SEQ_CST);
-        sp_sched_signal_if_quiescent();
-        continue;
-      }
-      SP_ATOMIC_FETCH_SUB(&g_nrunning, 1, __ATOMIC_SEQ_CST);
-      sp_sched_signal_if_quiescent();
+      RQ_LOCK(wid); int have = g_lrq[wid].head != NULL; RQ_UNLOCK(wid);
+      if (have) { SCHED_UNLOCK(); sp_worker_run_local(wid); SCHED_LOCK(); continue; }
     }
 #ifdef SP_EV_BACKEND
     /* Drain what is ready before picking, every turn. A worker with runnable
@@ -3372,7 +3415,26 @@ static void *sp_worker_main(void *arg) {
       SCHED_UNLOCK();
       pthread_cond_wait(&g_wslot[wid].cv, &g_rq_lock[wid]);   /* woken for work meant for us, or shutdown */
       g_wslot[wid].idle = 0;
+      int work = g_lrq[wid].head != NULL;
       RQ_UNLOCK(wid);
+      /* PoC: woken for a thread pinned here, with no collection up and no
+         sweep left for us: back in the world with atomics alone, then run it.
+         The count drops before stop-the-world is read, and a collection seen
+         then puts us back out and through the locked path, so a collector
+         that counted us out never sees us run. */
+      if (work && !SP_ATOMIC_LOAD(&g_cs_unclaimed, __ATOMIC_RELAXED)) {
+        SP_ATOMIC_STORE(&g_native_out[wid], 0, __ATOMIC_RELEASE);
+        SP_ATOMIC_FETCH_SUB(&g_nnative, 1, __ATOMIC_SEQ_CST);
+        if (!SP_ATOMIC_LOAD(&g_stw_active, __ATOMIC_SEQ_CST)) {
+          g_native_nfiber[wid] = 0;
+          SP_ATOMIC_STORE(&g_wslot[wid].parked, 0, __ATOMIC_RELAXED);
+          sp_worker_run_local(wid);
+          SCHED_LOCK();
+          continue;
+        }
+        SP_ATOMIC_FETCH_ADD(&g_nnative, 1, __ATOMIC_SEQ_CST);
+        SP_ATOMIC_STORE(&g_native_out[wid], (unsigned char)SP_OUT_IDLE, __ATOMIC_RELEASE);
+      }
       SCHED_LOCK();
     }
     else RQ_UNLOCK(wid);
@@ -3582,6 +3644,7 @@ static void sp_sched_block(sp_thread **waitlist, int defer_inject) {   /* PRE/PO
      was 4 ms. The walk is O(waiters) under the scheduler lock, which is what
      one park already costs. */
   self->wait_head = waitlist;   /* so #kill/#raise can unlink it */
+  self->wait_lock = NULL;       /* PoC: this list is under the scheduler lock */
   if (self->repark_front) {   /* a mutex waiter that lost the race after its wake: keep its turn */
     self->repark_front = 0;
     self->wait_next = *waitlist; *waitlist = self;
@@ -3626,6 +3689,49 @@ static void sp_sched_block(sp_thread **waitlist, int defer_inject) {   /* PRE/PO
   }
 }
 
+/* PoC (#8702 option 2): park on a list guarded by wait lock `wl` (held on
+   entry and on return; the scheduler lock is not). The thread is linked and
+   marked PARKING under `wl`, so a waker that unlinks it under `wl` either finds
+   it PARKING (and its worker queues it once it is off its stack) or PARKED. If
+   `release` is set (ConditionVariable#wait) that mutex is released after the
+   thread is on the list and before it switches out: a #signal from whoever
+   takes the mutex next finds it there. */
+static void sp_sched_block_wl(sp_thread **waitlist, sp_wlock *wl, int defer_inject, sp_mutex *release) {
+  sp_thread *self = g_current;
+  if (self != &g_main_thread && self->fiber && sp_fiber_inject_pending(self->fiber)) {
+    wl_unlock(wl);
+    sp_fiber_fire_inject_if_pending();   /* raises; does not return */
+    wl_lock(wl);
+  }
+  SP_TH_SET_STATE(self, SP_TH_BLOCKED);
+  SP_ATOMIC_STORE(&self->park, SP_PK_PARKING, __ATOMIC_SEQ_CST);
+  self->wait_head = waitlist;
+  self->wait_lock = wl;
+  if (self->repark_front) { self->repark_front = 0; self->wait_next = *waitlist; *waitlist = self; }
+  else { self->wait_next = NULL; sp_thread **pp = waitlist; while (*pp) pp = &(*pp)->wait_next; *pp = self; }
+  wl_unlock(wl);
+  if (release) { SP_ATOMIC_STORE(&release->owner, NULL, __ATOMIC_SEQ_CST); sp_mutex_wake_waiter(release); }
+  if (self == &g_main_thread) {
+    SCHED_LOCK();
+    sp_sched_pump(NULL, 1);   /* returns once a waker marks main RUNNABLE */
+    if (SP_TH_STATE(self) != SP_TH_RUNNING) {
+      SCHED_UNLOCK();
+      sp_raise_cls("ThreadError", "deadlock detected: all threads blocked");
+    }
+    SCHED_UNLOCK();
+  }
+  else {
+    void *exc_snap = sp_exc_ctx_new();
+    sp_exc_ctx_save(exc_snap);
+    if (defer_inject) sp_fiber_defer_inject();
+    sp_sched_switch_out();
+    sp_exc_ctx_load(exc_snap);
+    sp_exc_ctx_free(exc_snap);
+    sp_fiber_fire_inject_if_pending();
+  }
+  wl_lock(wl);
+}
+
 #ifdef SP_THREADS
 /* A timed wait reserves its timer and publishes the waiter under the scheduler
    lock, preserving wake-vs-park atomicity. If mutex is non-NULL, it is checked
@@ -3634,7 +3740,7 @@ static void sp_sched_block(sp_thread **waitlist, int defer_inject) {   /* PRE/PO
    NULL. Returns -1 if timer storage could not be allocated,
    0 if the deadline expired, or 1 if another event woke the thread. The caller
    holds the scheduler lock on return. */
-static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mutex *mutex) {
+static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mutex *mutex, sp_wlock *wl) {
   sp_thread *self = g_current;
   if (mutex && SP_ATOMIC_LOAD(&mutex->owner, __ATOMIC_SEQ_CST) != self) {
     SCHED_UNLOCK();
@@ -3648,13 +3754,11 @@ static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mute
   self->timer_expired = 0;
   if (!sp_timer_schedule(self, deadline, SP_TIMER_WAIT)) return -1;
 
-  if (mutex) {
-    SP_ATOMIC_STORE(&mutex->owner, NULL, __ATOMIC_SEQ_CST);
-    if (mutex->waiters) sp_sched_wake_one(&mutex->waiters);
-  }
   SP_TH_SET_STATE(self, SP_TH_BLOCKED);
   SP_ATOMIC_STORE(&self->park, SP_PK_PARKING, __ATOMIC_SEQ_CST);   /* PoC: on a list, still on its stack */
+  if (wl) wl_lock(wl);   /* PoC: a ConditionVariable's list is under its own lock */
   self->wait_head = waitlist;
+  self->wait_lock = wl;
   if (self->repark_front) {
     self->repark_front = 0;
     self->wait_next = *waitlist;
@@ -3665,6 +3769,11 @@ static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mute
     sp_thread **pp = waitlist;
     while (*pp) pp = &(*pp)->wait_next;
     *pp = self;
+  }
+  if (wl) wl_unlock(wl);
+  if (mutex) {   /* released once we are on the list (ConditionVariable#wait) */
+    SP_ATOMIC_STORE(&mutex->owner, NULL, __ATOMIC_SEQ_CST);
+    sp_mutex_wake_waiter(mutex);
   }
   if (self == &g_main_thread) {
     sp_sched_pump(NULL, 1);
@@ -3706,7 +3815,18 @@ static sp_thread *sp_sched_wake_one(sp_thread **waitlist) {
 
 /* Remove a parked thread from whatever wait list it sits on (for #kill/#raise). */
 static void sp_sched_unpark(sp_thread *t) {
-  if (!t->wait_head) return;
+  /* PoC: a list with its own lock is unlinked under it. The thread may be
+     woken and re-park elsewhere between the read and the lock, so the lock is
+     checked again once held. */
+  sp_wlock *wl;
+  for (;;) {
+    wl = t->wait_lock;
+    if (!wl) break;
+    wl_lock(wl);
+    if (t->wait_lock == wl) break;
+    wl_unlock(wl);
+  }
+  if (!t->wait_head) { if (wl) wl_unlock(wl); return; }
 #ifdef SP_THREADS
   sp_timer_cancel(t);
 #endif
@@ -3719,6 +3839,8 @@ static void sp_sched_unpark(sp_thread *t) {
       if (*pp == t) { *pp = t->wait_next; break; }
   t->wait_next = NULL;
   t->wait_head = NULL;
+  t->wait_lock = NULL;
+  if (wl) wl_unlock(wl);
 }
 
 #ifdef SP_THREADS
@@ -3881,7 +4003,7 @@ static int sp_queue_push_impl(sp_queue *q, sp_RbVal v, int non_block,
         if (q->max > 0 && q->len >= q->max) { SCHED_UNLOCK(); return 0; }
       }
       else {
-        int woken = sp_sched_block_timeout(&q->push_waiters, deadline, NULL);
+        int woken = sp_sched_block_timeout(&q->push_waiters, deadline, NULL, NULL);
         if (woken < 0) {
           SCHED_UNLOCK();
           sp_raise_cls("NoMemoryError", "failed to schedule queue timeout");
@@ -3967,7 +4089,7 @@ sp_RbVal sp_Queue_pop_timeout(sp_queue *q, double seconds) {
       if (q->len == 0) { SCHED_UNLOCK(); return sp_box_nil(); }
     }
     else {
-      int woken = sp_sched_block_timeout(&q->pop_waiters, deadline, NULL);
+      int woken = sp_sched_block_timeout(&q->pop_waiters, deadline, NULL, NULL);
       if (woken < 0) {
         SCHED_UNLOCK();
         sp_raise_cls("NoMemoryError", "failed to schedule queue timeout");
@@ -4121,14 +4243,14 @@ void sp_Mutex_lock(sp_mutex *m) {
     { if (sched_lat_enabled()) SP_ATOMIC_FETCH_ADD(&g_mtx_fast, 1, __ATOMIC_RELAXED); return; }   /* was unlocked: ours, no lock taken */
   if (sp_mutex_spin_acquire(m, self))
     { if (sched_lat_enabled()) SP_ATOMIC_FETCH_ADD(&g_mtx_spin, 1, __ATOMIC_RELAXED); return; }
-  SCHED_LOCK();
+  wl_lock(&m->wl);
   /* the owner re-entering its own Monitor just goes deeper */
-  if (SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) == self && m->reentrant) { m->depth++; SCHED_UNLOCK(); return; }
-  if (SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) == self) { SCHED_UNLOCK(); sp_raise_cls("ThreadError", "deadlock; recursive locking"); }
+  if (SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) == self && m->reentrant) { m->depth++; wl_unlock(&m->wl); return; }
+  if (SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) == self) { wl_unlock(&m->wl); sp_raise_cls("ThreadError", "deadlock; recursive locking"); }
   expect = NULL;
   if (SP_ATOMIC_CAS(&m->owner, &expect, self, 0,
                                   __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
-    { SCHED_UNLOCK(); return; }
+    { wl_unlock(&m->wl); return; }
   /* Count ourselves BEFORE the last look at `owner`: an unlocker that clears
      it after this point re-reads the count and finds us. The count changes
      only under the scheduler lock, but the unlock fast path reads it without
@@ -4140,7 +4262,7 @@ void sp_Mutex_lock(sp_mutex *m) {
   if (SP_ATOMIC_CAS(&m->owner, &expect, self, 0,
                                   __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
     SP_ATOMIC_FETCH_SUB(&m->nwaiters, 1, __ATOMIC_SEQ_CST);   /* released under us; took it instead */
-    SCHED_UNLOCK();
+    wl_unlock(&m->wl);
     return;
   }
   /* The unlocker clears `owner` and wakes us; we take the mutex ourselves
@@ -4154,7 +4276,7 @@ void sp_Mutex_lock(sp_mutex *m) {
      decides who is offered the mutex next. */
   double mt0 = sched_lat_enabled() ? sp_monotonic_now() : 0;
   for (;;) {
-    sp_sched_block(&m->waiters, 0);
+    sp_sched_block_wl(&m->waiters, &m->wl, 0, NULL);
     expect = NULL;
     if (SP_ATOMIC_CAS(&m->owner, &expect, self, 0,
                                     __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) break;
@@ -4162,7 +4284,7 @@ void sp_Mutex_lock(sp_mutex *m) {
   }
   if (mt0 > 0) sched_hist_add(g_mtx_hist, &g_mtx_n, &g_mtx_max, (sp_monotonic_now() - mt0) * 1e6);
   SP_ATOMIC_FETCH_SUB(&m->nwaiters, 1, __ATOMIC_SEQ_CST);
-  SCHED_UNLOCK();
+  wl_unlock(&m->wl);
 }
 
 void sp_Mutex_unlock(sp_mutex *m) {
@@ -4194,21 +4316,18 @@ void sp_Mutex_unlock(sp_mutex *m) {
          leaves it on the list where it was. Nothing is lost by declining: a
          listed waiter is a counted one, so the thread that won the race sees
          nwaiters > 0 and cannot take this fast path when it unlocks. */
-      SCHED_LOCK();
-      if (m->waiters) sp_sched_wake_one(&m->waiters);   /* it takes the mutex itself, or re-parks */
-      SCHED_UNLOCK();
+      sp_mutex_wake_waiter(m);   /* it takes the mutex itself, or re-parks */
       return;
     }
   }
-  SCHED_LOCK();
-  if (m->depth > 0 && SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) == self) { m->depth--; SCHED_UNLOCK(); return; }
+  wl_lock(&m->wl);
+  if (m->depth > 0 && SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) == self) { m->depth--; wl_unlock(&m->wl); return; }
   if (SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) != self) {
-    SCHED_UNLOCK();
+    wl_unlock(&m->wl);
     sp_raise_cls("ThreadError", "Attempt to unlock a mutex which is not locked");
   }
   SP_ATOMIC_STORE(&m->owner, NULL, __ATOMIC_SEQ_CST);
-  if (m->waiters) sp_sched_wake_one(&m->waiters);
-  SCHED_UNLOCK();
+  { sp_thread *w = wl_take_one(&m->waiters); wl_unlock(&m->wl); if (w) sched_wake_unlinked(w); }
 }
 
 /* Every read and write of `owner` outside the scheduler lock is atomic, since
@@ -4240,27 +4359,19 @@ sp_condvar *sp_CondVar_new(void) {
 
 sp_RbVal sp_CondVar_wait(sp_condvar *cv, sp_mutex *m) {
   time_t beg = time(NULL);
-  /* Release the mutex and park on the CV atomically under the one lock, so a
-     concurrent #signal cannot slip in between and be lost. The mutex unlock is
-     inlined (its hand-off + ownership check) since sp_Mutex_unlock would take
-     the lock again on its own. */
-  SCHED_LOCK();
-  if (SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) != g_current) {
-    SCHED_UNLOCK();
+  /* PoC: the owner check and a pending #kill/#raise need no lock; the park
+     itself is ordered under the condvar's own (sp_sched_block_wl) */
+  if (SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) != g_current)
     sp_raise_cls("ThreadError", "Attempt to unlock a mutex which is not locked");
-  }
-  if (g_current != &g_main_thread && g_current->fiber &&
-      sp_fiber_inject_pending(g_current->fiber)) {
-    SCHED_UNLOCK();
+  if (g_current != &g_main_thread && g_current->fiber && sp_fiber_inject_pending(g_current->fiber))
     sp_fiber_fire_inject_if_pending();
-    SCHED_LOCK();
-  }
-  SP_ATOMIC_STORE(&m->owner, NULL, __ATOMIC_SEQ_CST);
-  if (m->waiters) sp_sched_wake_one(&m->waiters);
   double ct0 = sched_lat_enabled() ? sp_monotonic_now() : 0;
-  sp_sched_block(&cv->waiters, 1);              /* park (drops+retakes the lock) */
+  /* PoC: on the condvar's list under its own lock, then the mutex released,
+     then parked (sp_sched_block_wl) */
+  wl_lock(&cv->wl);
+  sp_sched_block_wl(&cv->waiters, &cv->wl, 1, m);
+  wl_unlock(&cv->wl);
   if (ct0 > 0) sched_hist_add(g_cv_hist, &g_cv_n, &g_cv_max, (sp_monotonic_now() - ct0) * 1e6);
-  SCHED_UNLOCK();
   sp_Mutex_lock(m);   /* re-acquire (may block again on the mutex) */
   sp_fiber_undefer_inject();
   sp_fiber_fire_inject_if_pending();
@@ -4276,7 +4387,7 @@ static void sp_CondVar_wait_timeout_blocking(sp_mutex *m, double seconds) {
     sp_raise_cls("ThreadError", "Attempt to unlock a mutex which is not locked");
   }
   SP_ATOMIC_STORE(&m->owner, NULL, __ATOMIC_SEQ_CST);
-  if (m->waiters) sp_sched_wake_one(&m->waiters);
+  sp_mutex_wake_waiter(m);   /* PoC: under m's own wait lock */
   SCHED_UNLOCK();
   while (seconds > 86400.0) {
     struct timespec day = {86400, 0};
@@ -4304,7 +4415,7 @@ sp_RbVal sp_CondVar_wait_timeout(sp_condvar *cv, sp_mutex *m, double seconds) {
   time_t beg = time(NULL);
   SCHED_LOCK();
   double ct0 = sched_lat_enabled() ? sp_monotonic_now() : 0;
-  int woken = sp_sched_block_timeout(&cv->waiters, sp_monotonic_now() + seconds, m);
+  int woken = sp_sched_block_timeout(&cv->waiters, sp_monotonic_now() + seconds, m, &cv->wl);
   if (woken < 0) {
     SCHED_UNLOCK();
     sp_raise_cls("NoMemoryError", "failed to schedule condition variable timeout");
@@ -4339,7 +4450,7 @@ sp_RbVal sp_CondVar_wait_nb(sp_condvar *cv, sp_mutex *m) {
   }
   sp_fiber_defer_inject();
   SP_ATOMIC_STORE(&m->owner, NULL, __ATOMIC_SEQ_CST);
-  if (m->waiters) sp_sched_wake_one(&m->waiters);
+  sp_mutex_wake_waiter(m);   /* PoC: under m's own wait lock */
   SCHED_UNLOCK();
   sp_Mutex_lock(m);
   sp_fiber_undefer_inject();
@@ -4347,8 +4458,25 @@ sp_RbVal sp_CondVar_wait_nb(sp_condvar *cv, sp_mutex *m) {
   return sp_box_nil();
 }
 
-void sp_CondVar_signal(sp_condvar *cv)    { SCHED_LOCK(); sp_sched_wake_one(&cv->waiters);            SCHED_UNLOCK(); }
-void sp_CondVar_broadcast(sp_condvar *cv) { SCHED_LOCK(); while (sp_sched_wake_one(&cv->waiters)) { }  SCHED_UNLOCK(); }
+void sp_CondVar_signal(sp_condvar *cv) {
+  wl_lock(&cv->wl);
+  sp_thread *t = wl_take_one(&cv->waiters);
+  wl_unlock(&cv->wl);
+  if (t) sched_wake_unlinked(t);
+}
+void sp_CondVar_broadcast(sp_condvar *cv) {
+  /* collected under the lock and woken after it: a woken thread can run and
+     park again at once, rewriting its links, so the list is not walked late */
+  sp_thread *few[64], **ts = few; int n = 0, cap = 64;
+  wl_lock(&cv->wl);
+  for (sp_thread *t = cv->waiters; t; t = t->wait_next) n++;
+  if (n > cap) { ts = (sp_thread **)malloc(sizeof(sp_thread *) * (size_t)n); cap = n; }
+  n = 0;
+  for (sp_thread *t; ts && (t = wl_take_one(&cv->waiters)) != NULL; ) ts[n++] = t;
+  wl_unlock(&cv->wl);
+  for (int i = 0; i < n; i++) sched_wake_unlinked(ts[i]);
+  if (ts != few) free(ts);
+}
 
 /* Thread#inspect / #to_s: CRuby's "#<Thread:0xADDR <status>>" shape (the
    source-location segment CRuby inserts is not carried) (#2977). */
