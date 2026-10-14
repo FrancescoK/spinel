@@ -203,6 +203,15 @@ int strbuf_self_reader_slot(Compiler *c, int id);
 int strbuf_self_reader_handle(Compiler *c, int id);
 int strbuf_call_reads_handle(Compiler *c, int recv);
 int strbuf_route_reader(Compiler *c, int v);
+/* The String plan's producer kind (SPK_*) of route v, and the operand
+   whose supply it hands on (codegen_stmt.c). */
+int strbuf_route_kind(Compiler *c, int v, int *op);
+/* ... of value v by strbuf_value_carries's arms. */
+int strbuf_value_kind(Compiler *c, int v, int *op);
+/* Kernel#loop with a literal block (its value a break's); the method a
+   spliced yielding call v runs (codegen_stmt.c) */
+int strbuf_route_loop(Compiler *c, int v);
+int strbuf_inline_mi(Compiler *c, int v);
 const NativeMethod *strbuf_native_answer(Compiler *c, int n);
 int strbuf_io_outbuf(Compiler *c, int id);
 int emit_io_read_nonblock_outbuf(Compiler *c, int id, Buf *b);

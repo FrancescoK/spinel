@@ -37,7 +37,7 @@
    bytes, which are then all the String there is: never a new handle,
    which no other name holds, and never a refusal.
    Some values have a second consumer:
-     - a call that answers its receiver or nil (rule 3 below) answers its
+     - a call that answers its receiver or nil (rule 4 below) answers its
        receiver's String, so its own answer is only tested for nil
        (share_plan_second_role: SPR_TEST);
      - a write, an attribute or index assignment, an `||=` or `&&=` and a
@@ -82,7 +82,7 @@
    identity query; a receiver or arguments swapped in for one
    emission (nt_node_set_ref) and nodes added after seal sit in a call,
    whose role is a taker's. The second role of a call that answers its
-   receiver reads its name, its receiver's type and its targets, as rule 3
+   receiver reads its name, its receiver's type and its targets, as rule 4
    does, so it is asked where it is asked.
    --share-check asks the need live too: the memo is measured, never
    trusted, until an emitter reads it. (The one that does asks for an
@@ -121,28 +121,100 @@ static int share_plan_self_recv(Compiler *c, int v) {
   return cplan_targets(c, v, tg, CPT_MAX) == 0 ? r : -1;
 }
 
-/* The producer of node v's handle by the rules below (SPK_*); for a call
-   answering its String receiver (SPK_SELF) or a bang on a boxed receiver
-   (SPK_BANG_BOX), *recv is that receiver, else -1. */
-static int share_plan_producer_at(Compiler *c, int v, int *recv) {
+/* Is node v a frozen String: a literal (share_frozen_literal), or a read
+   of a builtin String constant no constant of the program's own shadows?
+   Its handle is its own, the one every read of it names. */
+static int share_plan_frozen(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  int u = an_unparen(nt, v);
+  if (u >= 0 && nt_kind(nt, u) == NK_ConstantReadNode) {
+    const char *nm = nt_str(nt, u, "name");
+    return is_engine_string_const(nm) && !comp_const(c, nm);
+  }
+  return share_frozen_literal(c, v);
+}
+
+/* Is node v super in an exception class's message or to_s that publishes
+   the String it answers (scope_ret_handle) and inherits the builtin's
+   (no ancestor of the program's own defines it): the message the
+   exception keeps, as its handle? */
+static int share_plan_exc_super(Compiler *c, int v) {
+  NodeKind k = v >= 0 ? nt_kind(c->nt, v) : NK_NONE;
+  if (k != NK_SuperNode && k != NK_ForwardingSuperNode) return 0;
+  Scope *sc = comp_scope_of(c, v);
+  int mi = sc ? (int)(sc - c->scopes) : -1, cls = sc ? sc->class_id : -1;
+  if (mi < 0 || cls < 0 || cls >= c->nclasses || sc->def_node < 0 || !sc->name ||
+      (!is_exception_message(sc->name)) || (!class_is_exc_subclass(c, cls) && !class_is_exc_reopen(c, cls)))
+    return 0;
+  int sup = c->classes[cls].parent;
+  return scope_ret_handle(c, mi) && (sup < 0 || comp_method_in_chain(c, sup, sc->name, NULL) < 0);
+}
+
+/* The producer of node v's handle (SPK_*, share.h), the first of these
+   that names it:
+     1. a box (SPK_BOX);
+     2. a value repr_of represents as the handle by where the handle comes
+        from: a slot, a demanded call, a boxed element, a narrowed box. Not
+        RS_FRESH, repr_of's answer for a handle whose source none of its
+        checks names, not a proof that the String is new: such a value is
+        asked the rules below;
+     3. a frozen String, whose handle is its own (SPK_FROZEN);
+     4. a call that answers its String receiver (SPK_SELF; *op is that
+        receiver), a bang on a boxed receiver (SPK_BANG_BOX; *op the
+        receiver), a boxed receiver's call whose arms each answer a String,
+        read as a box whose handle is bound (SPK_POLY_ARMS);
+     5. a new String (share_value_fresh), which has no handle to hand over,
+        whatever a route says about whether its copy can be seen: none;
+     6. super in an exception's text override (SPK_EXC_SUPER);
+     7. the route the analysis checks a carry against
+        (share_node_carry_kind, which names each route by its kind: a
+        callee that publishes the handle, a reader, a write, a value route
+        over an operand, a block's value, a conditional ...);
+     8. parentheses or statements: their last statement (SPK_SEQUENCE).
+   Anything else has its bytes only (SPK_NONE). */
+static int share_plan_producer_at(Compiler *c, int v, int *op) {
+  const NodeTable *nt = c->nt;
   Repr r = repr_of(c, v);
-  *recv = -1;
+  *op = -1;
   if (r.kind == RK_BOXED) return SPK_BOX;
-  if (r.kind == RK_STRBUF && r.strbuf_src != RS_FRESH) return SPK_HANDLE;
+  if (r.kind == RK_STRBUF && r.strbuf_src != RS_FRESH) {
+    switch (r.strbuf_src) {
+    case RS_DEMANDED: return SPK_DEMANDED;
+    case RS_ELEM: return SPK_ELEM;
+    case RS_SLOT_POLY: return SPK_SLOT_POLY;
+    default: return SPK_SLOT;
+    }
+  }
+  if (share_plan_frozen(c, v)) return SPK_FROZEN;
   int rv = share_plan_self_recv(c, v);
-  if (rv >= 0) { *recv = rv; return SPK_SELF; }
-  if (face_str_bang_call(c, v)) { *recv = nt_ref(c->nt, v, "receiver"); return SPK_BANG_BOX; }
+  if (rv >= 0) { *op = rv; return SPK_SELF; }
+  if (face_str_bang_call(c, v)) { *op = nt_ref(nt, v, "receiver"); return SPK_BANG_BOX; }
   /* a boxed receiver's call whose every arm answers a String, the handle it
      publishes or a new one (or a conversion of it a String answers with
      itself): the dispatch is read as a box, and its handle is bound
      (strbuf_poly_user_base) */
-  if (repr_share_rule(c) && strbuf_poly_user_base(c, v) >= 0) return SPK_ROUTE;
-  /* a value repr_of wraps new where the handle is demanded (RS_FRESH)
-     has one only by a route of its own, not by being represented as one;
-     a new String (share_value_fresh) has no handle to hand over, whatever
-     a route says about whether its copy can be seen */
-  int carries = r.kind == RK_STRBUF ? share_node_carries_route(c, v) : share_node_carries_handle(c, v);
-  return carries && !share_value_fresh(c, v, 0) ? SPK_ROUTE : SPK_NONE;
+  if (repr_share_rule(c) && strbuf_poly_user_base(c, v) >= 0) return SPK_POLY_ARMS;
+  if (share_value_fresh(c, v, 0)) return SPK_NONE;
+  if (share_plan_exc_super(c, v)) return SPK_EXC_SUPER;
+  int k = share_node_carry_kind(c, v, op);
+  if (k != SPK_NONE) return k;
+  NodeKind nk = v >= 0 ? nt_kind(nt, v) : NK_NONE;
+  if (nk == NK_ParenthesesNode || nk == NK_StatementsNode) {
+    int b = nk == NK_ParenthesesNode ? nt_ref(nt, v, "body") : v, bn = 0;
+    const int *bv = b >= 0 && nt_kind(nt, b) == NK_StatementsNode ? nt_arr(nt, b, "body", &bn) : NULL;
+    if (b >= 0 && !bv) bn = 1, bv = &b;
+    if (bn > 0) { *op = bv[bn - 1]; return SPK_SEQUENCE; }
+  }
+  return SPK_NONE;
+}
+
+const char *share_plan_kind_name(int kind) {
+  static const char *const names[] = { "none", "box", "slot", "demanded", "elem", "slot_poly", "frozen", "self",
+                                       "bang_box", "proc_call", "poly_arms", "exc_message", "exc_super", "published",
+                                       "reader", "write", "assign", "operand", "block_value", "yield", "cond",
+                                       "sequence", "lift" };
+  _Static_assert(sizeof names / sizeof names[0] == SPK__COUNT, "a name for each producer kind");
+  return kind >= 0 && kind < SPK__COUNT ? names[kind] : "?";
 }
 
 int share_plan_producer(Compiler *c, int v, int *operand) {
@@ -151,12 +223,153 @@ int share_plan_producer(Compiler *c, int v, int *operand) {
   return k;
 }
 
-/* The supply node v decides by itself (1 or 0), or -1 when it is a call
-   answering its String receiver, whose supply is the receiver's: *recv is
-   then that receiver. */
-static int share_plan_supply_at(Compiler *c, int v, int *recv) {
-  int k = share_plan_producer_at(c, v, recv);
-  return k == SPK_SELF ? -1 : k != SPK_NONE;
+static int share_plan_supplies_d(Compiler *c, int v, int depth);
+
+/* Does leaf a of a value taken arm by arm (a conditional's arm, a block's
+   value) give its consumer what it needs: nil, a raise (no value), a
+   String no other name holds (a new handle cannot be told from it), or a
+   producer that supplies the handle? */
+static int share_plan_leaf_ok(Compiler *c, int a, int depth) {
+  const NodeTable *nt = c->nt;
+  if (a < 0) return 1;
+  NodeKind k = nt_kind(nt, a);
+  /* (a variable's read hands on its slot, which the seal checks as a
+     holder: as the leaf of a splice, read under the splice's own self) */
+  if (k == NK_NilNode || k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || repr_static_read_kind(k))
+    return 1;
+  const char *nm = k == NK_CallNode ? nt_str(nt, a, "name") : NULL;
+  if (nm && is_raise_alias(nm) && nt_ref(nt, a, "receiver") < 0 && comp_method_index(c, nm) < 0) return 1;
+  if (share_plan_need(c, a) != SPN_OBJECT) return 1;
+  return depth < 16 && share_plan_supplies_d(c, a, depth + 1);
+}
+
+/* ...and each jump of kind k (NK_NextNode, NK_BreakNode) under n that
+   leaves what n is the body of, its value the leaf */
+static int share_plan_jumps_ok(Compiler *c, int n, NodeKind k, int depth) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 1;
+  NodeKind nk = nt_kind(nt, n);
+  if (nk == NK_BlockNode || nk == NK_LambdaNode || nk == NK_DefNode || nk == NK_WhileNode || nk == NK_UntilNode ||
+      nk == NK_ForNode)
+    return 1;
+  if (nk == k) {
+    int argc = 0;
+    const int *argv = call_args(nt, n, &argc);
+    if (argc > 1 || (argc == 1 && !share_plan_leaf_ok(c, argv[0], depth))) return 0;
+  }
+  for (int i = 0; i < nt_num_refs(nt, n); i++)
+    if (!share_plan_jumps_ok(c, nt_ref_at(nt, n, i), k, depth)) return 0;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int m = 0;
+    const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) if (!share_plan_jumps_ok(c, ids[j], k, depth)) return 0;
+  }
+  return 1;
+}
+
+/* ...a body's value: its last statement, and each jump of kind k */
+static int share_plan_body_ok(Compiler *c, int body, NodeKind k, int depth) {
+  const NodeTable *nt = c->nt;
+  int n = 0;
+  const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+  return (n == 0 || share_plan_leaf_ok(c, bb[n - 1], depth)) && (k == NK_NONE || share_plan_jumps_ok(c, body, k, depth));
+}
+
+/* Does conditional (or begin, or rescue modifier) v hand on what each of
+   its arms supplies: is every arm a leaf that gives the consumer what it
+   needs? `l && r` answers r where l is a String (l is truthy), and l only
+   where l is nil or false, so l is no String leaf. */
+static int share_plan_arms_ok(Compiler *c, int v, int depth) {
+  const NodeTable *nt = c->nt;
+  if (v < 0) return 1;
+  if (depth > 16) return 0;
+  switch (nt_kind(nt, v)) {
+  case NK_ParenthesesNode:
+    return share_plan_arms_ok(c, nt_ref(nt, v, "body"), depth + 1);
+  case NK_StatementsNode: {
+    int n = 0;
+    const int *bb = nt_arr(nt, v, "body", &n);
+    return n == 0 || share_plan_arms_ok(c, bb[n - 1], depth + 1);
+  }
+  case NK_ElseNode:
+    return share_plan_arms_ok(c, nt_ref(nt, v, "statements"), depth + 1);
+  case NK_IfNode: case NK_UnlessNode:
+    return share_plan_arms_ok(c, nt_ref(nt, v, "statements"), depth + 1) &&
+           share_plan_arms_ok(c, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1);
+  case NK_OrNode:
+    return share_plan_arms_ok(c, nt_ref(nt, v, "left"), depth + 1) && share_plan_arms_ok(c, nt_ref(nt, v, "right"), depth + 1);
+  case NK_AndNode:
+    return share_plan_arms_ok(c, nt_ref(nt, v, "right"), depth + 1);
+  case NK_CaseNode: {
+    int nw = 0;
+    const int *whens = nt_arr(nt, v, "conditions", &nw);
+    for (int w = 0; w < nw; w++)
+      if (!share_plan_arms_ok(c, nt_ref(nt, whens[w], "statements"), depth + 1)) return 0;
+    return share_plan_arms_ok(c, nt_ref(nt, v, "else_clause"), depth + 1);
+  }
+  case NK_RescueModifierNode:
+    return share_plan_arms_ok(c, nt_ref(nt, v, "expression"), depth + 1) &&
+           share_plan_arms_ok(c, nt_ref(nt, v, "rescue_expression"), depth + 1);
+  case NK_BeginNode: {
+    int el = nt_ref(nt, v, "else_clause");
+    /* (the body's value is the begin's only when no else follows it) */
+    if (el < 0 && !share_plan_body_ok(c, nt_ref(nt, v, "statements"), NK_NONE, depth)) return 0;
+    for (int rc = nt_ref(nt, v, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
+      if (!share_plan_body_ok(c, nt_ref(nt, rc, "statements"), NK_NONE, depth)) return 0;
+    return el < 0 || share_plan_body_ok(c, nt_ref(nt, el, "statements"), NK_NONE, depth);
+  }
+  default:
+    return share_plan_leaf_ok(c, v, depth);
+  }
+}
+
+/* Does call v, which answers its literal block's value (SPK_BLOCK_VALUE),
+   hand on what each value it answers supplies: the block's tail and each
+   `next` (then, inject, instance_exec's splice, a spliced yielding call
+   that answers its yield), each `break` (loop)? A spliced call that
+   answers a variable of its method hands on that slot, and a call whose
+   value no block gives (sum, an ENV store) is the route's own. */
+static int share_plan_block_ok(Compiler *c, int v, int depth) {
+  const NodeTable *nt = c->nt;
+  int u = an_unparen(nt, v), blk = u >= 0 && nt_kind(nt, u) == NK_CallNode ? nt_ref(nt, u, "block") : -1;
+  if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return 1;
+  int body = nt_ref(nt, blk, "body");
+  if (strbuf_route_loop(c, u)) return share_plan_jumps_ok(c, body, NK_BreakNode, depth);
+  if (strbuf_route_ie(c, u)) return share_plan_body_ok(c, body, NK_NONE, depth);
+  if (strbuf_route_inline_call(c, u)) {
+    int mi = strbuf_inline_mi(c, u), last = mi > 0 ? scope_body_last(c, mi) : -1;
+    int bl = block_given_tail_then_last(c, last);
+    if (bl >= 0) last = bl;
+    if (last >= 0 && nt_kind(nt, last) != NK_YieldNode) return 1;
+  }
+  return share_plan_body_ok(c, body, NK_NextNode, depth);
+}
+
+/* The supply node v decides by itself (1 or 0), or -1 when it hands on its
+   operand's (a call answering its receiver, a value route over an operand,
+   a sequence's last statement): *op is then that node. */
+static int share_plan_supply_at(Compiler *c, int v, int *op, int depth) {
+  int k = share_plan_producer_at(c, v, op);
+  switch (k) {
+  case SPK_NONE: return 0;
+  case SPK_SELF: case SPK_SEQUENCE: return -1;
+  case SPK_OPERAND: {
+    if (*op >= 0) return -1;
+    /* a String clamp: each operand it can answer */
+    int ops[3];
+    if (!strbuf_route_clamp(c, v, ops)) return 1;
+    for (int i = 0; i < 3; i++)
+      if (ops[i] >= 0 && !share_plan_leaf_ok(c, ops[i], depth)) return 0;
+    return 1;
+  }
+  case SPK_COND: return share_plan_arms_ok(c, an_unparen(c->nt, v), depth);
+  case SPK_BLOCK_VALUE: return share_plan_block_ok(c, v, depth);
+  case SPK_BOX: case SPK_SLOT: case SPK_DEMANDED: case SPK_ELEM: case SPK_SLOT_POLY: case SPK_FROZEN:
+  case SPK_BANG_BOX: case SPK_PROC_CALL: case SPK_POLY_ARMS: case SPK_EXC_MESSAGE: case SPK_EXC_SUPER:
+  case SPK_PUBLISHED: case SPK_READER: case SPK_WRITE: case SPK_ASSIGN: case SPK_YIELD: case SPK_LIFT:
+    return 1;
+  }
+  return 0;
 }
 
 /* One answer of a chain of self-answering calls: the stamp it holds for
@@ -175,32 +388,18 @@ static int share_plan_sup_valid(Compiler *c, const struct SharePlanSup *e) {
   if (!e->set || e->epoch != view_epoch() || e->ver != c->nt->version) return 0;
   Repr r = repr_of(c, e->d);
   int rv;
-  return r.kind == e->kind && r.strbuf_src == e->src && share_plan_supply_at(c, e->d, &rv) == e->val;
+  return r.kind == e->kind && r.strbuf_src == e->src && share_plan_supply_at(c, e->d, &rv, 0) == e->val;
 }
 
-/* Can node v's producer hand over the String's handle?
-     1. a box hands over itself, whatever it holds: a String boxed elsewhere
-        was planned where it was boxed;
-     2. a value represented as the handle has it, unless repr_of says the
-        handle is a new one wrapped around its bytes where it is demanded
-        (RS_FRESH). That is repr_of's answer for a String handle whose
-        source none of its checks names, not a proof that the String is
-        new, so such a value is asked the rules below;
-     3. a call that answers its String receiver hands over what that
-        receiver does;
-     3b. a bang on a boxed receiver (face_str_bang_call) answers the
-        receiver's box, which holds the handle of a String that can change
-        (a box of such a String is its handle), or nil;
-     3c. a boxed receiver's call whose arms each answer a String
-        (strbuf_poly_user_base) is read as a box, whose handle is bound;
-     4. any other value, represented as its bytes, has one where the routes
-        the analysis checks a carry against hand it along
-        (share_node_carries_handle: a callee that publishes it, a bang over
-        a slot that holds it, a variable whose slot holds it, a String
-        Range's endpoint), unless it is a new String; an RS_FRESH value by
-        those routes alone (share_node_carries_route), not by its
-        representation, which rule 2 has read.
-   A chain of rule 3 is asked at each of its links, outermost first: the
+/* Can node v's producer hand over the String's handle? By its kind
+   (share_plan_producer_at): a value that hands on its operand's supply
+   (a call answering its receiver, a value route over an operand, a
+   sequence's last statement) supplies what that operand does; a value
+   taken arm by arm (a conditional, a begin, a call answering its block's
+   value) supplies the handle where each of its arms gives its consumer
+   what it needs (share_plan_leaf_ok); every other kind but SPK_NONE has
+   the handle, or a box that holds it.
+   A chain of operands is asked at each of its links, outermost first: the
    walk down it keeps each link's answer with the node that decided it
    (Compiler.share_sup), and a link asked again reads it while the view
    epoch and the table's version are the same and the deciding node still
@@ -208,8 +407,8 @@ static int share_plan_sup_valid(Compiler *c, const struct SharePlanSup *e) {
    link. Nothing outside the chain's own emission can change a link in
    between: an emitter retypes a block parameter's local, which no
    receiver chain outside the block reaches. */
-static int share_plan_supplies(Compiler *c, int v) {
-  int rv, s = share_plan_supply_at(c, v, &rv);
+static int share_plan_supplies_d(Compiler *c, int v, int depth) {
+  int rv, s = share_plan_supply_at(c, v, &rv, depth);
   if (s >= 0) return s;
   int n = c->nt->count;
   if (!c->share_sup || c->share_sup_n < n) {
@@ -222,15 +421,20 @@ static int share_plan_supplies(Compiler *c, int v) {
   if (share_plan_sup_valid(c, e)) return e->val;
   /* walk down to the deciding node, then stamp every link on the way */
   int d = rv;
-  while ((s = share_plan_supply_at(c, d, &rv)) < 0) {
+  while (d >= 0 && (s = share_plan_supply_at(c, d, &rv, depth)) < 0) {
     if (d < n && share_plan_sup_valid(c, &c->share_sup[d])) { s = c->share_sup[d].val; d = c->share_sup[d].d; break; }
     d = rv;
   }
+  if (d < 0) return 0;
   Repr r = repr_of(c, d);
   struct SharePlanSup fill = { view_epoch(), c->nt->version, d, r.kind, r.strbuf_src, (unsigned char)s, 1 };
-  for (int l = v; l >= 0 && l < n && l != d; l = share_plan_self_recv(c, l)) c->share_sup[l] = fill;
+  for (int l = v, o; l >= 0 && l < n && l != d; l = o) {
+    c->share_sup[l] = fill;
+    if (share_plan_producer_at(c, l, &o) == SPK_NONE) break;
+  }
   return s;
 }
+static int share_plan_supplies(Compiler *c, int v) { return share_plan_supplies_d(c, v, 0); }
 
 /* The memo's byte per node: the need of the value (SPN_*), or SPN_ASK for
    a node whose scope was unreachable at seal (codegen can still make its
@@ -279,8 +483,10 @@ SharePlan share_plan_with_need(Compiler *c, int v, int role, int need) {
      where the value is read as bytes: no handle is attached to the read,
      so no other consumer has it */
   if (role == SPR_IDENTITY && p.supply == SPS_BYTES && exc_message_identity_operand(c, v)) p.supply = SPS_HANDLE;
-  /* (an identity is the handle or the bytes' pointer) */
-  p.form = (unsigned char)(role == SPR_IDENTITY && p.supply == SPS_BYTES ? SPF_BYTES : share_plan_form(p.need, p.supply));
+  /* (an identity is the handle or the bytes' pointer; a frozen String's
+     is its bytes' pointer, which every handle of it names too) */
+  int bytes_id = role == SPR_IDENTITY && (p.supply == SPS_BYTES || share_plan_frozen(c, v));
+  p.form = (unsigned char)(bytes_id ? SPF_BYTES : share_plan_form(p.need, p.supply));
   return p;
 }
 

@@ -320,6 +320,7 @@ int is_method_object_name(const char *n); /* method public_method instance_metho
 int is_marshal_const(const char *n);     /* Marshal, whose load makes objects with any ivars */
 int is_env_const(const char *n);         /* ENV */
 int is_argv_const(const char *n);        /* ARGV */
+int is_engine_string_const(const char *n); /* RUBY_DESCRIPTION RUBY_VERSION ...: a frozen String */
 int is_proc_conversion_name(const char *n); /* to_proc curry: makes a proc */
 int is_aref_name(const char *n);         /* []: an element read */
 int is_shovel_name(const char *n);       /* <<: an append, a chain's link */
