@@ -22409,6 +22409,22 @@ static int promote_shared_stored_strings(Compiler *c) {
   sb_targets_on = 0;
   return r;
 }
+/* `x << {...}`, `x.concat([...])`: String's `<<`, `concat` and `prepend`
+   take Strings (and Integers), and raise TypeError for a Hash or an Array,
+   so a call handing one a Hash or Array literal appends to no String,
+   whatever its receiver turns out to be. */
+static int str_append_arg_not_string(Compiler *c, int call) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, call, "name");
+  if (!nm || !(sp_streq(nm, "<<") || sp_streq(nm, "concat") || sp_streq(nm, "prepend"))) return 0;
+  int a = nt_ref(nt, call, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  for (int i = 0; i < ac; i++) {
+    NodeKind k = nt_kind(nt, av[i]);
+    if (k == NK_HashNode || k == NK_KeywordHashNode || k == NK_ArrayNode) return 1;
+  }
+  return 0;
+}
 static int promote_shared_stored_strings_pass(Compiler *c) {
   int changed = 0;
   /* --share-strings: the one rule decides first (#6765) */
@@ -22559,6 +22575,10 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
     /* `h[0][k] = 2`: String#[]= raises for a value that is no String, so a
        String element is not changed through it */
     if (sp_streq(mun, "[]=") && elem_assign_value_never_string(c, mu)) continue;
+    /* `folder["devices"] << { ... }` appends to an Array: on an untyped
+       `folder` the `[]` reached every class's, and the Strings stored in
+       each became handles */
+    if (str_append_arg_not_string(c, mu)) continue;
     /* an element a program method hands out (`h[0] << x` with `def [](i) =
        @values[i]`): its container is the method's */
     if (strbuf_demand_user_elem_call(c, mrecv, 0)) { changed = 1; continue; }
