@@ -31498,7 +31498,22 @@ static int seed_contradicts(Compiler *c, TyKind slot, TyKind val, int ret) {
   if (ret && ty_is_object(slot) && ty_is_object(val) && slot != val) {
     int cs = ty_object_class(slot), cv = ty_object_class(val);
     if (cs < 0 || cs >= c->nclasses || cv < 0 || cv >= c->nclasses) return 0;
-    return !is_descendant(c, cv, cs);
+    if (is_descendant(c, cv, cs)) return 0;
+    /* A module's `self` is the object of a class that includes the module.
+       A slot of such a class holds it when every class that includes the
+       module is that class or one under it: `def attach = self` in Widget,
+       declared `-> Widget::Gadget?` where only Gadget includes Widget
+       (#9161). Another includer's object would not fit the slot. */
+    if (comp_class_is_module(c, &c->classes[cv])) {
+      int any = 0;
+      for (int k = 0; k < c->nclasses; k++) {
+        if (k == cv || comp_class_is_module(c, &c->classes[k]) || !comp_module_includes(c, k, cv, 0)) continue;
+        if (!is_descendant(c, k, cs)) return 1;
+        any = 1;
+      }
+      if (any) return 0;
+    }
+    return 1;
   }
   int ks = ret ? seed_ret_kind(slot) : seed_ptr_kind(slot);
   int kv = ret ? seed_ret_kind(val)  : seed_ptr_kind(val);
