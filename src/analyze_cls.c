@@ -931,6 +931,12 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
       /* a Symbol a builtin takes may name a method it calls (`inject(:+)`,
          `map(&:name)` is the block form above) */
       cf_dyn_add(f, nt_str(nt, argv[i], "value"));
+      /* `to_enum(:m)`: the Enumerator yields what m yields, so its values
+         are m's yield arguments (as each's are, cf_protocol_returns) */
+      if (i == 0 && (sp_streq(nm, "to_enum") || sp_streq(nm, "enum_for"))) {
+        CFByName *b = cf_byname(f, nt_str(nt, argv[i], "value"));
+        for (int q = 0; q < b->n; q++) for (int y = 0; y < CF_YARGS; y++) cf_unite(f, v, f->yarg_el[b->mi[q]][y]);
+      }
       continue;
     }
     cf_unite(f, v, k == NK_SplatNode ? nt_ref(nt, argv[i], "expression") : argv[i]);
