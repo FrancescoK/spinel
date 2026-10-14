@@ -351,6 +351,14 @@ const char *share_plan_form_name(int form);
    receiver whose handle an SPK_SELF or SPK_BANG_BOX call answers, else -1. */
 int share_plan_producer(Compiler *c, int v, int *operand);
 const char *share_plan_role_name(int role);
+/* Is node v, a tail of a method whose value is a String, a box whose String
+   the plan gives a taker as its handle (a taker needs the handle where its
+   facts say a name of the String must see the same object, and a box
+   supplies its own)? Such a tail publishes that handle for the caller's
+   pickup (sp_poly_unbox_s_pub). A value that is control flow (a conditional,
+   a case, a begin, a sequence, `||` / `&&`, a rescue modifier, a loop) is
+   emitted arm by arm, each arm a value of its own: it is none. */
+int share_plan_return_box(Compiler *c, int v);
 /* Is node n an explicit writer's attribute assignment whose value the facts
    keep apart from its right-hand side's String (nothing observes them as one
    object)? */
