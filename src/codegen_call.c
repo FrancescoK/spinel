@@ -6075,10 +6075,7 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
   /* String#bytesplice on a poly value, in each of its forms
      (emit_bytesplice_bytes): in-place byte splice on the shared handle
      (#3227). */
-  if (sp_streq(name, "bytesplice") &&
-      ((argc == 2 && comp_ntype(c, argv[0]) == TY_RANGE) || argc == 3 || argc == 5) &&
-      (argc != 3 || comp_ntype(c, argv[0]) != TY_RANGE || comp_ntype(c, argv[2]) == TY_RANGE ||
-       comp_ntype(c, argv[2]) == TY_INT)) {
+  if (sp_streq(name, "bytesplice") && bytesplice_form_ok(c, argv, argc)) {
     int tvB = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", tvB);
     emit_expr(c, recv, b);

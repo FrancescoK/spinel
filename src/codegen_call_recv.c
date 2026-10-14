@@ -4122,11 +4122,33 @@ static int emit_str_mut_recv_once(Compiler *c, int recv, int lvw, Buf *b) {
    more than once): (start, len, str), (start, len, str, str_start, str_len),
    (range, str) or (range, str, str_range). The arguments run in order, and
    a range is measured against its own String as CRuby measures it. */
+/* The call shapes emit_bytesplice_bytes takes: (range, str), three
+   arguments whose third is a Range or an Integer when the first is a Range,
+   and five. Anything else stays the NoMethodError it was. */
+int bytesplice_form_ok(Compiler *c, const int *argv, int argc) {
+  if (argc == 2) return comp_ntype(c, argv[0]) == TY_RANGE;
+  if (argc == 3)
+    return comp_ntype(c, argv[0]) != TY_RANGE || comp_ntype(c, argv[2]) == TY_RANGE ||
+           comp_ntype(c, argv[2]) == TY_INT;
+  return argc == 5;
+}
+
 void emit_bytesplice_bytes(Compiler *c, const int *argv, int argc, const char *rs, Buf *b) {
   /* five arguments are always (start, len, str, str_start, str_len) */
   int rng = argc != 5 && comp_ntype(c, argv[0]) == TY_RANGE;
   int t = ++g_tmp;
   buf_puts(b, "({ ");
+  /* three arguments whose first is no Integer take the range form, where a
+     first that is no Range either is CRuby's TypeError */
+  TyKind t0 = comp_ntype(c, argv[0]);
+  const char *t0n = t0 == TY_FLOAT ? "Float" : t0 == TY_STRING ? "String" : t0 == TY_NIL ? "nil" :
+                    t0 == TY_SYMBOL ? "Symbol" : NULL;
+  if (argc == 3 && t0n) {
+    for (int j = 0; j < argc; j++) { buf_puts(b, "(void)("); emit_expr(c, argv[j], b); buf_puts(b, "); "); }
+    buf_printf(b, "sp_raise_cls(\"TypeError\", \"wrong argument type %s (expected Range)\"); "
+                  "(const char *)NULL; })", t0n);
+    return;
+  }
   /* an Integer slot holding a Range: CRuby's NUM2LONG TypeError, once the
      arguments have run and the slots ahead of it converted */
   if (!rng) {
@@ -4165,8 +4187,7 @@ void emit_bytesplice_bytes(Compiler *c, const int *argv, int argc, const char *r
      its range measured. A range is measured against its own String. */
   buf_printf(b, "sp_Range _r%d = ", t); emit_expr(c, argv[0], b); buf_puts(b, "; ");
   TyKind vt = comp_ntype(c, argv[1]);
-  int held = vt == TY_POLY || vt == TY_INT || vt == TY_FLOAT || vt == TY_NIL || vt == TY_BOOL ||
-             vt == TY_SYMBOL ? hold_operand(c, argv[1], TY_POLY, 1, ++g_tmp, 1, " ", b) : -1;
+  int held = vt != TY_STRING && vt != TY_STRBUF ? hold_operand(c, argv[1], TY_POLY, 1, ++g_tmp, 1, " ", b) : -1;
   if (held < 0) {
     buf_printf(b, "const char *_v%d = ", t); emit_str_expr(c, argv[1], b);
     buf_printf(b, "; SP_GC_ROOT_STR(_v%d); ", t);
@@ -4596,10 +4617,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
   /* String#bytesplice: a byte-range replace returning self (value-semantics
      strings: the helper builds the new value and an lvalue receiver is
      rebound to it), in each of its forms (emit_bytesplice_bytes). */
-  if (rt == TY_STRING && sp_streq(name, "bytesplice") && recv >= 0 &&
-      ((argc == 2 && comp_ntype(c, argv[0]) == TY_RANGE) || argc == 3 || argc == 5) &&
-      (argc != 3 || comp_ntype(c, argv[0]) != TY_RANGE || comp_ntype(c, argv[2]) == TY_RANGE ||
-       comp_ntype(c, argv[2]) == TY_INT)) {
+  if (rt == TY_STRING && sp_streq(name, "bytesplice") && recv >= 0 && bytesplice_form_ok(c, argv, argc)) {
     /* shared handle receiver: swap the buffer in place (#3227) */
     { Buf srefBS; memset(&srefBS, 0, sizeof srefBS);
       Buf lbBS; memset(&lbBS, 0, sizeof lbBS);

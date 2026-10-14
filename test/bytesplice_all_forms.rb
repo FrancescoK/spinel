@@ -46,3 +46,10 @@ begin; "hello".dup.bytesplice(0, 1, "abc", 0..1, 1); rescue => e; p e.class, e.m
 begin; "abc".dup.bytesplice(9..10, 1); rescue => e; p e.class, e.message; end
 bn = mk3(["ab".b, 1][ARGV.size]); bn.bytesplice(0, 1, "é", 0, 2); p bn, bn.encoding == Encoding::UTF_8
 br = mk3(["ab".b, 1][ARGV.size]); br.bytesplice(0..0, "é"); p br, br.encoding == Encoding::UTF_8
+class BSToStr; def to_str; puts "to_str"; "zz"; end; end
+begin; "abc".dup.bytesplice(9..10, BSToStr.new); rescue => e; p e.class, e.message; end
+p "abc".dup.bytesplice(0..1, BSToStr.new)
+begin; "abc".dup.bytesplice(9..10, [1]); rescue => e; p e.class, e.message; end
+begin; "hello".dup.bytesplice(1.0, 2, "x"); rescue => e; p e.class, e.message; end
+begin; "hello".dup.bytesplice(1..-Float::INFINITY, "x"); rescue => e; p e.class, e.message; end
+p "hello".dup.bytesplice(1..2.5, "x")

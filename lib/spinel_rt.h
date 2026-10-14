@@ -10833,18 +10833,19 @@ static sp_RbVal sp_poly_pop(sp_RbVal v) {
    box has no handle to write through, so it follows the value-form contract
    the typed emitter uses for the same case (frozen check, then the new
    string). */
-static sp_RbVal sp_poly_str_become(sp_RbVal v, const char *s) {
-  if (sp_poly_is_strbuf(v)) { sp_String_set_bin((sp_String *)v.v.p, s); return v; }
+/* `enc`: the new contents carry the result's encoding (PF_ENC: bytesplice),
+   which a shared handle takes, binary or text. */
+static sp_RbVal sp_poly_str_become_ex(sp_RbVal v, const char *s, int enc) {
+  if (sp_poly_is_strbuf(v)) {
+    if (enc) sp_String_set_bin_enc((sp_String *)v.v.p, s);
+    else sp_String_set_bin((sp_String *)v.v.p, s);
+    return v;
+  }
   sp_str_check_mutable(v.v.s);
   return sp_box_str(s);
 }
-/* The same for a mutator whose new contents carry the result's encoding
-   (PF_ENC: bytesplice): a shared handle takes it, binary or text. */
-static sp_RbVal sp_poly_str_become_enc(sp_RbVal v, const char *s) {
-  if (sp_poly_is_strbuf(v)) { sp_String_set_bin_enc((sp_String *)v.v.p, s); return v; }
-  sp_str_check_mutable(v.v.s);
-  return sp_box_str(s);
-}
+static sp_RbVal sp_poly_str_become(sp_RbVal v, const char *s) { return sp_poly_str_become_ex(v, s, 0); }
+static sp_RbVal sp_poly_str_become_enc(sp_RbVal v, const char *s) { return sp_poly_str_become_ex(v, s, 1); }
 /* IO#read with its arguments in a list a splat supplied (`def read(*a) =
    @f.read(*a)`): none, or a nil length, reads to the end; a length reads that
    many bytes, nil at the end of the stream. A buffer is checked for a freeze
@@ -10899,15 +10900,16 @@ static const char *sp_io_read_nonblock_buffer(sp_File *f, sp_int n, sp_RbVal *bu
    the change; a plain string box has nowhere to send them, and the call
    raises the NoMethodError it raised before the row existed, rather than a
    mutation that silently goes nowhere. */
-static sp_RbVal sp_poly_str_become_handle(sp_RbVal v, const char *s, const char *name) {
-  if (sp_poly_is_strbuf(v)) { sp_String_set_bin((sp_String *)v.v.p, s); return v; }
+static sp_RbVal sp_poly_str_become_handle_ex(sp_RbVal v, const char *s, const char *name, int enc) {
+  if (sp_poly_is_strbuf(v)) return sp_poly_str_become_ex(v, s, enc);
   sp_raise_nomethod(sp_nomethod_msg(name, v));
   return v;
 }
+static sp_RbVal sp_poly_str_become_handle(sp_RbVal v, const char *s, const char *name) {
+  return sp_poly_str_become_handle_ex(v, s, name, 0);
+}
 static sp_RbVal sp_poly_str_become_handle_enc(sp_RbVal v, const char *s, const char *name) {
-  if (sp_poly_is_strbuf(v)) { sp_String_set_bin_enc((sp_String *)v.v.p, s); return v; }
-  sp_raise_nomethod(sp_nomethod_msg(name, v));
-  return v;
+  return sp_poly_str_become_handle_ex(v, s, name, 1);
 }
 /* Are the contents a mutator answered the receiver's own? Then it changed
    nothing, and a mutator that writes only when it changed something (scrub!)

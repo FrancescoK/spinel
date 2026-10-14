@@ -178,9 +178,10 @@ sp_bool sp_range_cover_f(sp_Range *r, sp_float x);
 const char *sp_range_str(sp_Range r);
 /* CRuby's rb_range_beg_len over a sequence of `len` (bytesplice's span): a
    beginless side from 0, an endless one to the end, a negative end from the
-   end, the end clipped to `len`, and a begin outside it a RangeError naming
-   the Range. */
+   end, the end clipped to `len`, a begin outside it a RangeError naming the
+   Range, and a Float end no sp_int holds NUM2LONG's RangeError. */
 static inline void sp_range_beg_len(sp_Range r0, sp_int len, sp_int *bp, sp_int *lp){
+  if(r0.fe)sp_float_arg_check(r0.fend);
   sp_Range r=sp_range_ix(r0);
   sp_int b=r.nobeg?0:r.first,e=r.noend?len:r.last;
   if(b<0)b+=len;

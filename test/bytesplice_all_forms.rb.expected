@@ -55,3 +55,14 @@ RangeError
 true
 "éb"
 true
+RangeError
+"9..10 out of range"
+to_str
+"zzc"
+RangeError
+"9..10 out of range"
+TypeError
+"wrong argument type Float (expected Range)"
+RangeError
+"float -Inf out of range of integer"
+"hxlo"
