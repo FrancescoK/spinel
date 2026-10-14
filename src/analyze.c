@@ -43970,15 +43970,17 @@ static void an_tree_ran(Compiler *c, int slot) {
   g_an_tree[slot].ran = 1;
   g_an_tree[slot].after = c->nt->version;
 }
+/* a named pass begins and ends with infer_type's memo emptied (#8852) */
+#define AN_MEMO_REGION(call) ({ infer_memo_boundary(); int _mr = (call); infer_memo_boundary(); _mr; })
 #define AN_SHADOWED(nm, call) (!an_shadow_on() ? AN_TREE_SKIPPED(nm, call) : \
-  ({ int _si = an_shadow_begin(c, (nm)); int _sr = (call); an_shadow_end(c, _si, _sr); _sr; }))
+  ({ int _si = an_shadow_begin(c, (nm)); int _sr = AN_MEMO_REGION(call); an_shadow_end(c, _si, _sr); _sr; }))
 #define AN_TREE_SKIPPED(nm, call) \
-  ({ int _ts; int _tr = an_tree_skip(c, (nm), &_ts) ? 0 : (call); if (!_tr || _ts >= 0) an_tree_ran(c, _ts); _tr; })
+  ({ int _ts; int _tr = an_tree_skip(c, (nm), &_ts) ? 0 : AN_MEMO_REGION(call); if (!_tr || _ts >= 0) an_tree_ran(c, _ts); _tr; })
 #define AN_PASS(nm, call) (!sp_timing_on() ? AN_SHADOWED(nm, call) : \
   ({ double _pt0 = sp_timing_now(); int _pr = AN_SHADOWED(nm, call); an_pass_note((nm), _pt0, _pr != 0); _pr; }))
-#define AN_PASS_V(nm, call) do { if (!sp_timing_on()) { call; } \
+#define AN_PASS_V(nm, call) do { infer_memo_boundary(); if (!sp_timing_on()) { call; } \
   else { \
-  double _pt0 = sp_timing_now(); call; an_pass_note((nm), _pt0, 0); } } while (0)
+  double _pt0 = sp_timing_now(); call; an_pass_note((nm), _pt0, 0); } infer_memo_boundary(); } while (0)
 static int an_pass_cmp(const void *a, const void *b) {
   double x = ((const typeof(g_an_pass[0]) *)a)->ms, y = ((const typeof(g_an_pass[0]) *)b)->ms;
   return x < y ? 1 : x > y ? -1 : 0;
@@ -47945,7 +47947,7 @@ static void an_phase_reconcile_check(Compiler *c) {
 }
 
 /* an analysis phase under --timing: `phase=an_<name>` */
-#define AN_PHASE(nm, call) do { double _ph0 = sp_timing_now(); call; sp_timing_end(_ph0, "an_" nm, ""); } while (0)
+#define AN_PHASE(nm, call) do { double _ph0 = sp_timing_now(); infer_memo_boundary(); call; infer_memo_boundary(); sp_timing_end(_ph0, "an_" nm, ""); } while (0)
 /* Is read `o` only looked at: the receiver of a call that answers a new
    value (`v.to_s.downcase`), through the calls that answer their receiver,
    none of them a mutator? */

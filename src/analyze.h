@@ -228,6 +228,9 @@ int strbuf_ivar_alias_value(const NodeTable *nt, int v);
 /* Infer (and cache) the type of node `id`. Used during analysis; codegen
    reads the cached results via comp_ntype. */
 TyKind infer_type(Compiler *c, int id);
+/* empty infer_type's memo of earlier queries' answers: the start or end of
+   a pass whose writes are not all counted (#8852) */
+void infer_memo_boundary(void);
 /* A pure read of the settled analysis (repr_of) asks its questions between
    an_pure_read_begin and an_pure_read_end. infer_type answers as usual but
    records nothing it derives: not the node-type cache, a poly call's

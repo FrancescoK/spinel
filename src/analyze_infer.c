@@ -104,11 +104,38 @@ int an_poly_raw_argc(const char *name) {
    builtin-only re-derivation (an_builtin_only), an instance_eval rebind
    (an_ie_class_id) and a `then`-block param pin (g_infer_blv_pin) make the
    SAME node answer differently for their duration, so while any is active
-   the memo is neither consulted nor fed. */
+   the memo is neither consulted nor fed.
+   An answer can also outlive its tree (#8852): a pass that asks each node of
+   a chain re-inferred the chain below it every time, n^2/2 inferences a
+   pass. An earlier tree's answer is the one a fresh tree would give while no
+   table it was derived from has changed since that tree began: the setters
+   of those tables count every change (comp_ty_edits, NodeTable.edits),
+   and g_imemo_clean is the first generation begun after the last count
+   moved. Each pass and phase the analysis runs by name (AN_PASS, AN_PHASE)
+   begins and ends with the memo emptied (infer_memo_boundary), so what came
+   before it is never in doubt, only its own writes between two of its
+   queries, and those go through the setters. SPINEL_IMEMO=round keeps those
+   answers, SPINEL_IMEMO=shadow computes each afresh and reports where one
+   would have differed. */
 static unsigned g_imemo_gen = 0;
+static unsigned g_imemo_clean = 1;
+static unsigned long g_imemo_edits = 0;
 static unsigned *g_imemo_stamp = NULL;
 static TyKind *g_imemo_val = NULL;
 static int g_imemo_cap = 0;
+enum { IMEMO_TREE, IMEMO_ROUND, IMEMO_SHADOW };
+static int g_imemo_mode = -1;
+static unsigned long g_imemo_shadow_hits, g_imemo_shadow_bad;
+static void imemo_shadow_report(void) {
+  fprintf(stderr, "imemo-shadow: %lu kept answers, %lu differ\n", g_imemo_shadow_hits, g_imemo_shadow_bad);
+}
+void infer_memo_boundary(void) { comp_ty_edits++; }
+static void imemo_mode_init(void) {
+  const char *m = getenv("SPINEL_IMEMO");
+  g_imemo_mode = !m ? IMEMO_TREE : sp_streq(m, "round") ? IMEMO_ROUND :
+                 sp_streq(m, "shadow") ? IMEMO_SHADOW : IMEMO_TREE;
+  if (g_imemo_mode == IMEMO_SHADOW) atexit(imemo_shadow_report);
+}
 static int g_infer_depth = 0;
 static int g_infer_blv_pin = 0;
 
@@ -10676,17 +10703,34 @@ TyKind infer_type(Compiler *c, int id) {
   /* see an_builtin_answer: the asked call's receiver keeps its own type */
   if (an_builtin_only && id == an_bo_recv && id < c->node_cap && c->ntype[id] != TY_UNKNOWN)
     return c->ntype[id];
-  /* A depth-0 entry opens a fresh memo generation: nothing carries over from
-     the previous tree, so the fixpoint sees every table change. */
+  /* A depth-0 entry opens a fresh memo generation. A table changed since
+     the last look ends what the earlier generations hold: within this tree
+     after its own answers, before it with them. */
+  if (g_imemo_mode < 0) imemo_mode_init();
+  unsigned long edits = comp_ty_edits + c->nt->edits;
+  if (edits != g_imemo_edits) {
+    g_imemo_edits = edits;
+    /* the last generation stands for its own successor until the wrap */
+    g_imemo_clean = g_imemo_gen + 1 ? g_imemo_gen + 1 : g_imemo_gen;
+  }
   if (g_infer_depth == 0 && ++g_imemo_gen == 0) {
     if (g_imemo_stamp)
       memset(g_imemo_stamp, 0, sizeof(unsigned) * (size_t)g_imemo_cap);
     g_imemo_gen = 1;
+    g_imemo_clean = 1;
   }
   int memo_ok = !face_active() && !an_builtin_only && an_ie_class_id < 0 &&
                 g_infer_blv_pin == 0;
-  if (memo_ok && id < g_imemo_cap && g_imemo_stamp[id] == g_imemo_gen)
-    return g_imemo_val[id];
+  int kept = 0;
+  TyKind kept_t = TY_UNKNOWN;
+  if (memo_ok && id < g_imemo_cap) {
+    unsigned st = g_imemo_stamp[id];
+    if (st == g_imemo_gen) return g_imemo_val[id];
+    if (st >= g_imemo_clean && g_imemo_mode != IMEMO_TREE) {
+      if (g_imemo_mode == IMEMO_ROUND) return g_imemo_val[id];
+      kept = 1; kept_t = g_imemo_val[id];
+    }
+  }
   g_infer_depth++;
   TyKind t = infer_uncached(c, id);
   g_infer_depth--;
@@ -10761,6 +10805,15 @@ TyKind infer_type(Compiler *c, int id) {
     }
     g_imemo_stamp[id] = g_imemo_gen;
     g_imemo_val[id] = t;
+  }
+  if (kept) {
+    g_imemo_shadow_hits++;
+    if (kept_t != t) {
+      g_imemo_shadow_bad++;
+      fprintf(stderr, "imemo-shadow: node %d (%s, line %lld) kept %s, fresh %s\n", id,
+              nt_type(c->nt, id) ? nt_type(c->nt, id) : "?", nt_int(c->nt, id, "node_line", 0),
+              ty_name(kept_t), ty_name(t));
+    }
   }
   return t;
 }
