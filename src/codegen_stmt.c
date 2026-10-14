@@ -1882,20 +1882,27 @@ int strbuf_route_ie(Compiler *c, int v) {
 }
 /* --share-strings: a proc's answer read as a String (`pr.call`, the
    BSH_CALL row's names). The proc hands it back boxed, a String the rule
-   shares as its handle's box. A catch likewise keeps the thrown box and
-   boxes its normal tail, preserving either path's shared handle. */
-static int strbuf_route_proc_call(Compiler *c, int v) {
+   shares as its handle's box. */
+int strbuf_proc_call_box(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   v = unwrap_parens(c, v);
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
   int recv = nt_ref(nt, v, "receiver");
   TyKind vt = comp_ntype(c, v);
-  if (vt != TY_STRING && vt != TY_STRBUF) return 0;
-  if (recv < 0 && is_catch_name(nt_str(nt, v, "name")) && call_plain_argc(c, v) <= 1 &&
-      nt_ref(nt, v, "block") >= 0 && !bare_call_class_owned(c, v) &&
-      cplan_user_fresh(c, v)->mi < 0) return 1;
-  return recv >= 0 && comp_ntype(c, recv) == TY_PROC &&
+  return (vt == TY_STRING || vt == TY_STRBUF) && recv >= 0 && comp_ntype(c, recv) == TY_PROC &&
          bop_share_named(BOP_CALLABLE, nt_str(nt, v, "name")) == BSH_CALL;
+}
+/* ...or, as a catch keeps the thrown box and boxes its normal tail, a
+   catch's answer, preserving either path's shared handle. */
+static int strbuf_route_proc_call(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (strbuf_proc_call_box(c, v)) return 1;
+  v = unwrap_parens(c, v);
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  TyKind vt = comp_ntype(c, v);
+  return (vt == TY_STRING || vt == TY_STRBUF) && nt_ref(nt, v, "receiver") < 0 &&
+         is_catch_name(nt_str(nt, v, "name")) && call_plain_argc(c, v) <= 1 && nt_ref(nt, v, "block") >= 0 &&
+         !bare_call_class_owned(c, v) && cplan_user_fresh(c, v)->mi < 0;
 }
 /* A reflective ivar read is a value route too. Its emitter knows the
    backing slot's representation and answers a handle under the demand. */
