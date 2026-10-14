@@ -724,6 +724,61 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     if (cg_qm && argc >= 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "FalseNode")) {
       if (cg_rnm && !const_owned_by_class(c, cg_rnm, cg_qm)) cg_own = 1;
     }
+    /* A receiver known only at run time (a local, a parameter) searches the
+       module it holds, not Object: switch on its class id over every module
+       whose own lookup answers another class. Left to the folding below,
+       `m.const_get(:Foo)` with m holding Admin answered the top-level Foo,
+       not Admin::Foo. Only when every module's answer is a class: a value
+       constant's C type is chosen by the typing, which does not know the
+       receiver here. Not for `const_get(name, false)` either: the own-only
+       search needs the receiver's name, and this one is not known. */
+    int cg_inherit = argc == 1 || (argc == 2 && nt_kind(nt, argv[1]) == NK_TrueNode);
+    if (cg_qm && !cg_rnm && cg_inherit) {
+      NodeKind rk0 = nt_kind(nt, recv);
+      TyKind rt0 = infer_type(c, recv);
+      int dflt = -1;
+      if (rk0 != NK_ConstantReadNode && rk0 != NK_ConstantPathNode && rk0 != NK_SelfNode &&
+          (rt0 == TY_CLASS || rt0 == TY_POLY) && !const_get_lookup(c, NULL, cg_qm, &dflt)) {
+        /* each module's answer, by class index; any value constant gives up */
+        int *cks = calloc(c->nclasses > 0 ? c->nclasses : 1, sizeof *cks);
+        int any = 0, allcls = 1;
+        for (int k = 0; k < c->nclasses; k++) {
+          cks[k] = dflt;
+          if (!c->classes[k].name) continue;
+          if (const_get_lookup(c, c->classes[k].name, cg_qm, &cks[k])) { allcls = 0; break; }
+          if (cks[k] != dflt) any = 1;
+        }
+        if (any && allcls) {
+          int t = ++g_tmp;
+          int boxed = repr_of(c, id).as_ty != TY_CLASS;
+          buf_printf(b, "({ sp_Class _cr%d = ", t);
+          /* a class held boxed (out of an Array, say) is unboxed to its sp_Class */
+          if (rt0 == TY_POLY) { buf_puts(b, "sp_unbox_class("); emit_boxed(c, recv, b); buf_puts(b, ")"); }
+          else emit_expr(c, recv, b);
+          buf_printf(b, "; int _ck%d = %d; switch (_cr%d.cls_id) {", t, dflt, t);
+          for (int k = 0; k < c->nclasses; k++)
+            if (cks[k] != dflt) buf_printf(b, " case %d: _ck%d = %d; break;", k, t, cks[k]);
+          buf_puts(b, " default: break; } ");
+          /* a module with no such constant and none at the top level: NameError,
+             with the receiver staged and the message qualified by its name as
+             the literal rule below does -- but for Object and its kin */
+          if (dflt < 0) {
+            buf_printf(b, "if (_ck%d < 0) { const char *_cn%d = sp_class_to_s(_cr%d); "
+                          "sp_exc_stage_recv(sp_box_class(_cr%d)); "
+                          "if (strcmp(_cn%d, \"Object\") == 0 || strcmp(_cn%d, \"Kernel\") == 0 || "
+                          "strcmp(_cn%d, \"BasicObject\") == 0) "
+                          "sp_raise_cls(\"NameError\", \"uninitialized constant %s\"); "
+                          "else sp_raise_cls(\"NameError\", sp_sprintf(\"uninitialized constant %%s::%s\", _cn%d)); } ",
+                       t, t, t, t, t, t, t, cg_qm, cg_qm, t);
+          }
+          if (boxed) buf_printf(b, "sp_box_class((sp_Class){_ck%d}); })", t);
+          else buf_printf(b, "(sp_Class){_ck%d}; })", t);
+          free(cks);
+          return 1;
+        }
+        free(cks);
+      }
+    }
     if (cg_qm && !cg_own) {
       /* the value or the class of that leaf, as the typing chose */
       const char *cg_key = const_get_value_key(c, cg_rnm, cg_qm);
