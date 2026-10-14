@@ -1606,34 +1606,15 @@ int poly_cls_value_cands(Compiler *c, int id, const char *name, int argc, const 
   for (int k = 0; A->argv && k < argc; k++)
     if (nt_kind(nt, A->argv[k]) == NK_SplatNode) splat = k;
   *wants_blk = 0;
-  /* the Class values the receiver can hold, when the walk bounds them: a
-     class method of any other class is unreachable (Shellwords.split for a
-     value that is a String or Integer), and its arm would put that method's
-     answer into a slot typed for the others */
-  /* asked of the first candidate it can drop: the walk is the receiver's,
-     and a call with no class-method candidate (most) has nothing to drop */
-  int cv_asked = 0;
-  const char *cvals = NULL;
   for (int ki = 0; ki < ncc8; ki++) {
     int k = cc8[ki].cls;
     if (is_builtin_reopen(c->classes[k].name)) continue;
-    /* a method of Class, Module or the classes every class is an instance
-       of answers for any class value, a builtin's included: `class Class;
-       def greet` reached String.greet through a boxed receiver */
-    const char *kn = c->classes[k].name;
-    size_t kl = kn ? strlen(kn) : 0;
-    if (kl > 8 && strcmp(kn + kl - 8, "__reopen") == 0) kl -= 8;   /* `class Class` reopened */
-    int every_class = kn && ((kl == 5 && !strncmp(kn, "Class", 5)) || (kl == 6 && !strncmp(kn, "Module", 6)) ||
-                             (kl == 6 && !strncmp(kn, "Object", 6)) || (kl == 11 && !strncmp(kn, "BasicObject", 11)) ||
-                             (kl == 6 && !strncmp(kn, "Kernel", 6)));
-    if (!every_class && !cv_asked) { cvals = poly_recv_class_values(c, id); cv_asked = 1; }
-    if (cvals && !every_class) {
-      /* a value of the class or of a class under it (which inherits it) */
-      int held = 0;
-      for (int v = 0; v < c->nclasses && !held; v++)
-        held = cvals[v] && (v == k || is_descendant(c, v, k));
-      if (!held) continue;
-    }
+    /* the Class values the receiver can hold, when the walk bounds them: a
+       class method of any other class is unreachable (Shellwords.split for
+       a value that is a String or Integer), and its arm would put that
+       method's answer into a slot typed for the others. Asked of a
+       candidate it can drop; the walk is memoized per call. */
+    if (!poly_cls_value_reaches(c, id, k)) continue;
     int kmi = cc8[ki].mi;
     /* a yielding candidate is called through its proc form (#3399) */
     int kpf = scope_proc_form_of(c, kmi);
@@ -1843,6 +1824,15 @@ int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int argc,
          answer is lifted into a slot that holds the oint */
       int ko = oint_kind(kr) && method_ret_is_oint(ks), so = oint_kind(ret) && node_is_oint(c, id);
       if (ret == TY_POLY && kr != TY_POLY) { emit_poly_user_box(c, id, ks, cb.p ? cb.p : "", b); pconv = PC_BOX; }
+      /* a typed Array into the boxed Array the call joined it in
+         (an_class_concrete): a module's `def self.split = ["n", s]` beside
+         another's mixed one */
+      else if (ret == TY_POLY_ARRAY && (kr == TY_INT_ARRAY || kr == TY_STR_ARRAY || kr == TY_FLOAT_ARRAY)) {
+        buf_printf(b, "%s(%s)", kr == TY_INT_ARRAY ? "sp_IntArray_to_poly" :
+                                kr == TY_STR_ARRAY ? "sp_StrArray_to_poly_fmt" : "sp_FloatArray_to_poly",
+                   cb.p ? cb.p : "NULL");
+        pconv = PC_BOX;
+      }
       else if (ret != TY_POLY && kr == TY_POLY) { emit_unbox_text(c, ret, cb.p ? cb.p : "", b); pconv = PC_UNBOX; }
       else if (ko && !so) buf_printf(b, "%s(%s)", oint_arg(kr), cb.p ? cb.p : "");
       else if (!ko && so && oint_kind(kr)) buf_printf(b, "%s(%s)", oint_of(kr), cb.p ? cb.p : "");

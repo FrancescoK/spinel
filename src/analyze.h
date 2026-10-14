@@ -23,6 +23,11 @@ const int *poly_recv_classes(Compiler *c, int call, int *n);
    constant naming one, `{b: Integer}`), marked in a set over the class
    table, or NULL when the walk cannot bound the receiver's values */
 const char *poly_recv_class_values(Compiler *c, int call);
+/* Can a class method of class k be reached through that receiver: k is a
+   class every class value answers for (Class, Module, ...), or one of
+   the receiver's Class values is k or under it; 1 when the walk cannot
+   bound them. Shared by the dispatch's arms and the call's type. */
+int poly_cls_value_reaches(Compiler *c, int call, int k);
 /* Can that receiver be a builtin value as well (nil, a literal, a builtin
    class's instance), which no class it lists stands for? 1 also when the
    walk cannot bound it. */

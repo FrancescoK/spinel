@@ -9568,6 +9568,26 @@ int poly_ivar_set_reaches(Compiler *c, int call, int k) {
   return set ? set[k] : 1;
 }
 /* See analyze_internal.h. */
+/* See analyze.h. */
+int poly_cls_value_reaches(Compiler *c, int call, int k) {
+  if (k < 0 || k >= c->nclasses) return 1;
+  /* a method of Class, Module or the classes every class is an instance
+     of answers for any class value, a builtin's included: `class Class;
+     def greet` reached String.greet through a boxed receiver */
+  const char *kn = c->classes[k].name;
+  size_t kl = kn ? strlen(kn) : 0;
+  if (kl > 8 && strcmp(kn + kl - 8, "__reopen") == 0) kl -= 8;   /* `class Class` reopened */
+  if (kn && ((kl == 5 && !strncmp(kn, "Class", 5)) || (kl == 6 && !strncmp(kn, "Module", 6)) ||
+             (kl == 6 && !strncmp(kn, "Object", 6)) || (kl == 11 && !strncmp(kn, "BasicObject", 11)) ||
+             (kl == 6 && !strncmp(kn, "Kernel", 6))))
+    return 1;
+  const char *cvals = poly_recv_class_values(c, call);
+  if (!cvals) return 1;
+  /* a value of the class or of a class under it (which inherits it) */
+  for (int v = 0; v < c->nclasses; v++)
+    if (cvals[v] && (v == k || is_descendant(c, v, k))) return 1;
+  return 0;
+}
 const char *poly_recv_class_values(Compiler *c, int call) {
   if (call < 0 || call >= c->nt->count) return NULL;
   (void)pivs_call_set(c, call, NULL, NULL, 0);
