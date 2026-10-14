@@ -9,6 +9,10 @@
 #
 #   ruby tools/gen_respond_to_tables.rb > lib/spinel_rt_responds_generated.h
 #
+# The sources it reads are UTF-8 whatever the locale: under LC_ALL=C (a bare
+# container) Ruby read them as US-ASCII and the build stopped at the first
+# non-ASCII byte (#9190).
+Encoding.default_external = Encoding::UTF_8
 require_relative "builtin_row_gen"
 
 module GenRespondToTables
