@@ -1290,7 +1290,10 @@ and the caller and the callee hold the same Hash, as in CRuby, which ignores
 the signature. The slot then compiles as one without a signature does, so the
 signature buys nothing there. An instance variable so typed also takes a boxed
 value stored into it as it is (a parameter that holds such a Hash, say), where
-it would otherwise have to rebuild the Hash in the declared form.
+it would otherwise have to rebuild the Hash in the declared form. A parameter,
+keyword or return typed `Hash[Symbol, untyped]` likewise takes a boxed value
+as it is, where the Hash read out of an Array of mixed values may have keys
+that are not Symbols.
 
 **Regexp literals share one compiled object.** Each pattern is compiled once
 at startup and every textually-equal literal names that one object, so
