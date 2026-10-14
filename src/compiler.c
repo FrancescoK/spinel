@@ -2520,9 +2520,13 @@ static void cv_build(Compiler *c) {
       }
     }
     if (!plain && blk < 0 && rk == NK_SelfNode) {
+      /* (self is the class object in a class method or a class body, where
+         only a class method of the name answers it; an instance method of
+         the name does not) */
       Scope *sc = comp_scope_of(c, n);
       int k = sc ? sc->class_id : -1;
-      plain = k >= 0 && (comp_cmethod_in_chain(c, k, nm, NULL) >= 0 || comp_method_in_chain(c, k, nm, NULL) >= 0);
+      int inst = sc && sc->def_node >= 0 && nt_kind(nt, sc->def_node) == NK_DefNode && !sc->is_cmethod;
+      plain = k >= 0 && (comp_cmethod_in_chain(c, k, nm, NULL) >= 0 || (inst && comp_method_in_chain(c, k, nm, NULL) >= 0));
     }
     if (plain) nonval[recv] = 1;
   }
