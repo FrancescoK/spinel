@@ -3714,6 +3714,19 @@ static int engine_method_absent(NodeTable *nt, const char *cls, const char *m, i
   return a;
 }
 
+/* Does the program define library `h` from source (stdlib_name_from_source),
+   as a class or module of that name? */
+static int engine_source_lib(NodeTable *nt, const char *h) {
+  if (!stdlib_name_from_source(h)) return 0;
+  static const NodeKind kinds[] = { NK_ClassNode, NK_ModuleNode };
+  for (int i = 0; i < 2; i++)
+    NT_FOREACH_KIND(nt, kinds[i], id) {
+      int cp = nt_ref(nt, id, "constant_path");
+      if (cp >= 0 && nt_kind(nt, cp) == NK_ConstantReadNode && sp_streq(nt_str(nt, cp, "name"), h)) return 1;
+    }
+  return 0;
+}
+
 static int engine_absent(NodeTable *nt, int e, int in) {
   const char *x = NULL;
   const char *en = nt_kind(nt, e) == NK_CallNode && nt_ref(nt, e, "block") < 0 ? nt_str(nt, e, "name") : NULL;
@@ -3730,9 +3743,16 @@ static int engine_absent(NodeTable *nt, int e, int in) {
     return a;
   }
   if (nt_kind(nt, e) == NK_DefinedNode) {
-    int v = nt_ref(nt, e, "value");
-    while (nt_kind(nt, v) == NK_ConstantPathNode && nt_ref(nt, v, "parent") >= 0) v = nt_ref(nt, v, "parent");
+    int v = nt_ref(nt, e, "value"), below = -1;
+    while (nt_kind(nt, v) == NK_ConstantPathNode && nt_ref(nt, v, "parent") >= 0) {
+      below = v;
+      v = nt_ref(nt, v, "parent");
+    }
     if (nt_kind(nt, v) == NK_ConstantReadNode || nt_kind(nt, v) == NK_ConstantPathNode) x = nt_str(nt, v, "name");
+    /* under a library the program defines from source (`ERB::Escape`), the
+       question is the name the source would define in it */
+    if (x && below >= 0 && nt_kind(nt, v) == NK_ConstantReadNode && engine_source_lib(nt, x))
+      x = nt_str(nt, below, "name");
   }
   else if (en && sp_streq(en, "const_defined?") && (nt_kind(nt, nt_ref(nt, e, "receiver")) == NK_ConstantReadNode ||
                                                      nt_kind(nt, nt_ref(nt, e, "receiver")) == NK_ConstantPathNode)) {
