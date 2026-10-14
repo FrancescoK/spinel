@@ -2923,6 +2923,16 @@ static void ie_rself_literal(Compiler *c, int lit) {
   nt_node_set_int(nt, body, "ie_rself_at", (at >= 0 ? at : bt) + 1);
 }
 
+static int ie_new_takes_block(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  NodeKind rk = nt_kind(nt, recv);
+  int ci = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ? comp_class_index(c, nt_str(nt, recv, "name")) : -1;
+  if (ci < 0) return -1;
+  int mi = comp_cmethod_in_chain(c, ci, "new", NULL);
+  if (mi < 0) mi = comp_method_in_chain(c, ci, "initialize", NULL);
+  return mi >= 0 && c->scopes[mi].blk_param;
+}
+
 static void mark_ie_rebindable_literals(Compiler *c) {
   const NodeTable *nt = c->nt;
   int any = 0;
@@ -2935,7 +2945,9 @@ static void mark_ie_rebindable_literals(Compiler *c) {
     if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || !nm) continue;
     int take = r < 0 && (sp_streq(nm, "lambda") || sp_streq(nm, "proc"));
     take |= r >= 0 && sp_streq(nm, "new") && nt_kind(nt, r) == NK_ConstantReadNode && sp_streq(nt_str(nt, r, "name"), "Proc");
-    for (int s = 0; s < c->nscopes && !take; s++)
+    int known = !take && r >= 0 && sp_streq(nm, "new") ? ie_new_takes_block(c, r) : -1;
+    if (known >= 0) take = known;
+    for (int s = 0; s < c->nscopes && !take && known < 0; s++)
       take = c->scopes[s].name && c->scopes[s].blk_param && sp_streq(c->scopes[s].name, sp_streq(nm, "new") ? "initialize" : nm);
     if (take) ie_rself_literal(c, blk);
   }
