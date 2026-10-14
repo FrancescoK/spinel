@@ -2667,7 +2667,7 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
     if (h.r.share) {
       LocalVar slot;
       memset(&slot, 0, sizeof slot);
-      slot.type = TY_STRBUF;
+      lv_set_type(&slot, TY_STRBUF);
       slot.str_shared = 1;
       if (nt_kind(nt, v) == NK_NilNode) buf_puts(b, "NULL");
       else emit_strbuf_value(c, &slot, v, b);

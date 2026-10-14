@@ -128,7 +128,7 @@ void collect_def_params(Compiler *c, int def_id, Scope *s) {
       if (kwrname) {
         LocalVar *lv = scope_local_intern(s, kwrname);
         lv->is_param = 1;
-        lv->type = TY_SYM_POLY_HASH;
+        lv_set_type(lv, TY_SYM_POLY_HASH);
         if (s->nparams % 8 == 0) {
           s->pnames   = realloc(s->pnames,   sizeof(char *) * (size_t)(s->nparams + 8));
           s->pdefault = realloc(s->pdefault, sizeof(int)    * (size_t)(s->nparams + 8));
@@ -148,7 +148,7 @@ void collect_def_params(Compiler *c, int def_id, Scope *s) {
     if (bn && bn[0]) {
       LocalVar *blv = scope_local_intern(s, bn);
       blv->is_param = 1;
-      blv->type = TY_PROC;
+      lv_set_type(blv, TY_PROC);
     }
   }
   /* `def foo(...)`: Prism attaches a ForwardingParameterNode as keyword_rest.
@@ -682,7 +682,7 @@ int collect_dm_each_unroll(Compiler *c, int id, int class_id) {
     }
     /* the loop var reads inside the body resolve to the literal type */
     LocalVar *lv = scope_local_intern(ms, bv);
-    lv->type = lt;
+    lv_set_type(lv, lt);
     lv->is_param = 1;  /* not a real C param, but keeps it out of decls */
     /* Walk the (shared) define_method body in this synthetic scope so its
        nodes get nscope attribution. The last element wins for the shared
@@ -845,12 +845,12 @@ static void cs_synth_method(Compiler *c, int class_id, int def_node, const char 
   Scope *s = comp_scope_new(c, name, def_node);
   s->class_id = class_id;
   s->cs_synth = cs_synth;
-  s->ret = ret;
+  scope_set_ret(s, ret);
   s->body = -1;
   for (int i = 0; i < nparams; i++) {
     scope_add_param(s, pnames[i], -1);
     LocalVar *lv = scope_local(s, pnames[i]);
-    if (lv) lv->type = ptypes[i];
+    if (lv) lv_set_type(lv, ptypes[i]);
   }
 }
 void collect_compiler_state(Compiler *c, int id, int class_id) {
@@ -881,7 +881,7 @@ void collect_compiler_state(Compiler *c, int id, int class_id) {
     if (!fname) continue;
     char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", fname);
     int iv = comp_ivar_intern(ci, ivn);
-    ci->ivar_types[iv] = cs_field_type(kind);
+    ivar_set_type(ci, iv, cs_field_type(kind));
     if (ci->ncs >= ci->ccs) {
       ci->ccs = ci->ccs ? ci->ccs * 2 : 16;
       ci->cs_names = realloc(ci->cs_names, sizeof(char *) * (size_t)ci->ccs);
@@ -2779,7 +2779,7 @@ static void scope_copy_block_param(Scope *dst, const Scope *src) {
   if (dst->blk_param[0]) {
     LocalVar *lv = scope_local_intern(dst, dst->blk_param);
     lv->is_param = 1;
-    lv->type = TY_PROC;
+    lv_set_type(lv, TY_PROC);
   }
 }
 
@@ -2845,7 +2845,7 @@ static void sg_transplant_module(Compiler *c, int mod_ci, int newci) {
         LocalVar *dp = scope_local_intern(dst, dst->pnames[p]);
         if (!dp) continue;
         dp->is_param = 1;
-        if (sp_lv && dp->type == TY_UNKNOWN) dp->type = sp_lv->type;
+        if (sp_lv && dp->type == TY_UNKNOWN) lv_set_type(dp, sp_lv->type);
         src = &c->scopes[ms]; dst = &c->scopes[dst_idx];  /* intern may realloc */
       }
       scope_own_defaults(c, dst_idx);
@@ -4280,7 +4280,7 @@ void register_globals_consts(Compiler *c) {
       /* regex constants: store with type TY_REGEX so call-type inference works */
       if (nm && is_regex_const) {
         LocalVar *cv = comp_const_intern(c, nm);
-        cv->type = TY_REGEX;
+        lv_set_type(cv, TY_REGEX);
       }
       /* a Struct/Data const names a class, not a value constant.
          Do NOT skip when the name collides with a module: M::V = "str" is a
@@ -5249,7 +5249,7 @@ static TyKind fallback_hash_variant(Compiler *c, int vnode, NodeKind rk, const c
   TyKind hv = rk == NK_ClassVariableReadNode ? cvar_hash_variant_from_writes(c, sname, -1)
                                              : slot_hash_variant_from_writes(c, rk, sname, -1);
   if (!ty_is_hash(hv)) return TY_UNKNOWN;
-  if (c->hash_want[fb] != hv) { c->hash_want[fb] = hv; *changed = 1; }
+  if (c->hash_want[fb] != hv) { comp_set_hash_want(c, fb, hv); *changed = 1; }
   return hv;
 }
 
@@ -5384,7 +5384,7 @@ static int gvar_implicit_nil_writes(Compiler *c) {
     char g0 = lv->name[0];
     if (!((g0 >= 'a' && g0 <= 'z') || (g0 >= 'A' && g0 <= 'Z') || g0 == '_')) continue;
     if (gvar_seeded_before_read(c, lv->name)) continue;
-    lv->type = nil_write_type(lv->type);
+    lv_set_type(lv, nil_write_type(lv->type));
     changed = 1;
   }
   return changed;
@@ -5426,7 +5426,7 @@ int infer_global_const_types(Compiler *c) {
       }
       if (lv) vt = empty_container_write(c, vnode, vt, lv->type);
       if (vt == TY_NIL) {
-        if (lv && nil_write_type(lv->type) != lv->type) { lv->type = nil_write_type(lv->type); changed = 1; }
+        if (lv && nil_write_type(lv->type) != lv->type) { lv_set_type(lv, nil_write_type(lv->type)); changed = 1; }
         continue;
       }
     }
@@ -5451,7 +5451,7 @@ int infer_global_const_types(Compiler *c) {
       if (rn) lv = comp_gvar(c, rn);
       vt = infer_type(c, nt_ref(nt, id, "value"));
       if (vt == TY_NIL) {
-        if (lv && nil_write_type(lv->type) != lv->type) { lv->type = nil_write_type(lv->type); changed = 1; }
+        if (lv && nil_write_type(lv->type) != lv->type) { lv_set_type(lv, nil_write_type(lv->type)); changed = 1; }
         continue;
       }
     }
@@ -5511,7 +5511,7 @@ int infer_global_const_types(Compiler *c) {
         TyKind vt2 = (els && i < en) ? infer_type(c, els[i]) : TY_UNKNOWN;
         if (vt2 == TY_NIL || vt2 == TY_UNKNOWN) continue;
         TyKind merged2 = ty_unify(glv->type, vt2);
-        if (merged2 != glv->type) { glv->type = merged2; changed = 1; }
+        if (merged2 != glv->type) { lv_set_type(glv, merged2); changed = 1; }
       }
       /* handle splat-rest global target (*$rest = ...) */
       int rest_nid2 = nt_ref(nt, id, "rest");
@@ -5530,7 +5530,7 @@ int infer_global_const_types(Compiler *c) {
             TyKind rest_arr_t = (rest_elem != TY_UNKNOWN) ? ty_array_of(rest_elem) : TY_UNKNOWN;
             if (rest_arr_t != TY_UNKNOWN) {
               TyKind merged3 = ty_unify(glv2->type, rest_arr_t);
-              if (merged3 != glv2->type) { glv2->type = merged3; changed = 1; }
+              if (merged3 != glv2->type) { lv_set_type(glv2, merged3); changed = 1; }
             }
           }
         }
@@ -5573,7 +5573,7 @@ int infer_global_const_types(Compiler *c) {
     }
     if (!lv) continue;
     TyKind merged = keep_general_array(lv->type, vt) ? lv->type : ty_unify(lv->type, vt);
-    if (merged != lv->type) { lv->type = merged; changed = 1; }
+    if (merged != lv->type) { lv_set_type(lv, merged); changed = 1; }
   }
   changed |= gvar_implicit_nil_writes(c);
   /* $stdout / $stderr start out holding the standard stream, so a program
@@ -5586,7 +5586,7 @@ int infer_global_const_types(Compiler *c) {
   for (int k = 0; k < 2; k++) {
     LocalVar *sv = comp_gvar(c, std_streams[k]);
     if (!sv || sv->type == TY_UNKNOWN || sv->type == TY_IO || sv->type == TY_POLY) continue;
-    sv->type = TY_POLY;
+    lv_set_type(sv, TY_POLY);
     changed = 1;
   }
   return changed;
@@ -5616,7 +5616,7 @@ int infer_multiwrite_const_types(Compiler *c) {
       const char *nm = nt_str(nt, lefts[i], "name");
       LocalVar *cv = nm ? comp_const(c, nm) : NULL;
       if (!cv || cv->type == elem) continue;
-      cv->type = elem; changed = 1;
+      lv_set_type(cv, elem); changed = 1;
     }
     int rn = 0;
     const int *rights = nt_arr(nt, id, "rights", &rn);
@@ -5626,7 +5626,7 @@ int infer_multiwrite_const_types(Compiler *c) {
       const char *nm = nt_str(nt, rights[j], "name");
       LocalVar *cv = nm ? comp_const(c, nm) : NULL;
       if (!cv || cv->type == elem) continue;
-      cv->type = elem; changed = 1;
+      lv_set_type(cv, elem); changed = 1;
     }
   }
   return changed;
@@ -6380,7 +6380,7 @@ static void scope_copy_params(Scope *dst, const Scope *src) {
       if (p == src->rest_idx || p == src->kwrest_idx) {
         for (int L = 0; L < src->nlocals; L++)
           if (src->locals[L].name && sp_streq(src->locals[L].name, dst->pnames[p])) {
-            if (lv->type == TY_UNKNOWN) lv->type = src->locals[L].type;
+            if (lv->type == TY_UNKNOWN) lv_set_type(lv, src->locals[L].type);
             break;
           }
       }
@@ -7693,7 +7693,7 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci) {
      specialization, lets normal return inference compute the type from the
      cloned, ci-attributed body. */
   if (has_new && body_tail_is_bare_new(nt, new_body)) {
-    dst->ret = ty_object(ci);
+    scope_set_ret(dst, ty_object(ci));
     dst->ret_specialized = 1;
   }
   scope_copy_block_param(dst, src);
@@ -8127,7 +8127,7 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
             dst->nrequired = sc->nrequired;
             dst->rest_idx = sc->rest_idx;
             dst->kwrest_idx = sc->kwrest_idx;
-            dst->ret = sc->ret;
+            scope_set_ret(dst, sc->ret);
             scope_copy_block_param(dst, sc);
             /* register_locals has already run, so the parameters have to be
                copied across by hand and their locals re-interned -- exactly
@@ -8186,7 +8186,7 @@ void inherit_members(Compiler *c) {
       ci->is_data = pc->is_data;
     }
 
-    char **old = ci->ivars; TyKind *oldt = ci->ivar_types; int oldn = ci->nivars;
+    char **old = ci->ivars; TyKind *oldt = (TyKind *)ci->ivar_types; int oldn = ci->nivars;
     /* The per-slot side fields ride along with the names: this rebuild runs
        again after the fixpoint, and dropping them there undid what the
        passes had decided. narrow_object_arrays' pin (ivar_oa_type and
@@ -8221,7 +8221,7 @@ void inherit_members(Compiler *c) {
     for (int k = 0; k < oldn && own_pin; k++) own_pin[k] = class_ivar_pinned(ci, old[k]) ? 1 : 0;
     for (int k = 0; k < pc->nivars; k++) {
       int idx = comp_ivar_intern(ci, pc->ivars[k]);
-      ci->ivar_types[idx] = pc->ivar_types[k];
+      ivar_set_type(ci, idx, pc->ivar_types[k]);
       /* the layouts must stay cast-compatible, so a slot the parent narrowed
          is narrowed the same way here */
       IV_SIDE_COPY(ci, idx, pc, k);
@@ -8266,14 +8266,14 @@ void inherit_members(Compiler *c) {
                   "spinel: warning: --rbs ivar pin %s dropped on %s: ancestor %s holds it as %s (layouts must stay cast-compatible)\n",
                   old[k], ci->name, pc->name, ty_name(pt));
           class_unpin_ivar(ci, old[k]);
-          ci->ivar_types[idx] = ty_unify(ci->ivar_types[idx], oldt[k]);
+          ivar_set_type(ci, idx, ty_unify(ci->ivar_types[idx], oldt[k]));
         }
         else {
-          ci->ivar_types[idx] = oldt[k];
+          ivar_set_type(ci, idx, oldt[k]);
         }
       }
       else
-        ci->ivar_types[idx] = ty_unify(ci->ivar_types[idx], oldt[k]);
+        ivar_set_type(ci, idx, ty_unify(ci->ivar_types[idx], oldt[k]));
       /* an own slot keeps its side fields; one the parent also carries took
          the parent's above */
       if (comp_ivar_index(pc, old[k]) < 0 && old_oa) {
@@ -8338,7 +8338,7 @@ int infer_inherited_ivars(Compiler *c) {
         class_unpin_ivar(ci, pc->ivars[k]);
       }
       TyKind merged = ty_unify(ci->ivar_types[idx], pc->ivar_types[k]);
-      if (merged != ci->ivar_types[idx]) { ci->ivar_types[idx] = merged; changed = 1; }
+      if (merged != ci->ivar_types[idx]) { ivar_set_type(ci, idx, merged); changed = 1; }
     }
   }
   return changed;
@@ -8471,7 +8471,7 @@ static int cvar_note_write(Compiler *c, int cid, int id, int nil_only) {
     if (vt == TY_NIL) return changed;
   }
   TyKind merged = keep_general_array(cur, vt) ? cur : ty_unify(cur, vt);
-  if (merged != cur) { ci->cvar_types[idx] = merged; changed = 1; }
+  if (merged != cur) { cvar_set_type(ci, idx, merged); changed = 1; }
   return changed;
 }
 
@@ -8512,7 +8512,7 @@ int infer_cvar_types(Compiler *c, int nil_only) {
           TyKind mvt2 = (mels && mi < men) ? infer_type(c, mels[mi]) : TY_UNKNOWN;
           if (mvt2 == TY_NIL || mvt2 == TY_UNKNOWN) continue;
           TyKind mmerged = ty_unify(mcl->cvar_types[midx], mvt2);
-          if (mmerged != mcl->cvar_types[midx]) { mcl->cvar_types[midx] = mmerged; changed = 1; }
+          if (mmerged != mcl->cvar_types[midx]) { cvar_set_type(mcl, midx, mmerged); changed = 1; }
         }
       }
     }
@@ -8575,7 +8575,7 @@ int infer_cvar_types(Compiler *c, int nil_only) {
     TyKind vt = infer_type(c, av[1]);
     if (vt == TY_NIL || vt == TY_UNKNOWN) continue;
     TyKind merged = ty_unify(scl->cvar_types[idx], vt);
-    if (merged != scl->cvar_types[idx]) { scl->cvar_types[idx] = merged; changed = 1; }
+    if (merged != scl->cvar_types[idx]) { cvar_set_type(scl, idx, merged); changed = 1; }
   }
   /* Pass 3: top-level writes (class_id == -1 in scope 0, and not inside any
      class body) -- use Toplevel pseudo-class. */
@@ -8600,8 +8600,9 @@ int infer_cvar_types(Compiler *c, int nil_only) {
       if (comp_cvar_owner(c, ci, cl->cvars[j]) == ci) { j++; continue; }
       free(cl->cvars[j]);
       memmove(&cl->cvars[j], &cl->cvars[j + 1], sizeof(char *) * (size_t)(cl->ncvars - j - 1));
-      memmove(&cl->cvar_types[j], &cl->cvar_types[j + 1], sizeof(TyKind) * (size_t)(cl->ncvars - j - 1));
+      memmove((TyKind *)&cl->cvar_types[j], &cl->cvar_types[j + 1], sizeof(TyKind) * (size_t)(cl->ncvars - j - 1));
       cl->ncvars--;
+      comp_ty_edits++;
       changed = 1;
     }
   }
@@ -9548,7 +9549,7 @@ static int nil_writes_apply(Compiler *c, NilWrites *w) {
       TyKind t = nil_write_type(ci->ivar_types[iv]);
       if (t == ci->ivar_types[iv]) continue;
       sp_ivwatch(w->nm[k], "ivar_nil_write", ci->ivar_types[iv], t);
-      ci->ivar_types[iv] = t;
+      ivar_set_type(ci, iv, t);
       changed = 1;
     }
   }
@@ -9720,7 +9721,7 @@ static int infer_ivar_set_call(Compiler *c, int id, NilWrites *writes) {
               if (evt == TY_NIL) nil_write_note(writes, k, sym);
               else if (!class_ivar_pinned(ek, sym)) {
                 TyKind em = ivar_merge_with_write(ek->ivar_types[eiv], evt);
-                if (em != ek->ivar_types[eiv]) { ek->ivar_types[eiv] = em; changed = 1; }
+                if (em != ek->ivar_types[eiv]) { ivar_set_type(ek, eiv, em); changed = 1; }
               }
             }
           }
@@ -9746,7 +9747,7 @@ static int infer_ivar_set_call(Compiler *c, int id, NilWrites *writes) {
               if (pvt == TY_NIL) nil_write_note(writes, k, sym);
               else if (!class_ivar_pinned(pk, sym)) {
                 TyKind pm = ivar_merge_with_write(pk->ivar_types[piv], pvt);
-                if (pm != pk->ivar_types[piv]) { pk->ivar_types[piv] = pm; changed = 1; }
+                if (pm != pk->ivar_types[piv]) { ivar_set_type(pk, piv, pm); changed = 1; }
               }
             }
           }
@@ -9762,7 +9763,7 @@ static int infer_ivar_set_call(Compiler *c, int id, NilWrites *writes) {
           if (vt == TY_NIL) nil_write_note(writes, tcid, sym);
           else if (!class_ivar_pinned(ci, sym)) {
             TyKind merged = ivar_merge_with_write(ci->ivar_types[iv], vt);
-            if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
+            if (merged != ci->ivar_types[iv]) { ivar_set_type(ci, iv, merged); changed = 1; }
           }
         }
       }
@@ -9804,7 +9805,7 @@ static int infer_ivar_set_call(Compiler *c, int id, NilWrites *writes) {
             if (vt == TY_NIL) nil_write_note(writes, k, fn);
             else if (!class_ivar_pinned(ck, fn)) {
               TyKind merged = ivar_merge_with_write(ck->ivar_types[iv], vt);
-              if (merged != ck->ivar_types[iv]) { ck->ivar_types[iv] = merged; changed = 1; }
+              if (merged != ck->ivar_types[iv]) { ivar_set_type(ck, iv, merged); changed = 1; }
             }
           }
         }
@@ -9967,7 +9968,7 @@ static int infer_struct_aset_call(Compiler *c, int id, NilWrites *writes, Struct
           !(c->share_strings && (mt == TY_STRING || mt == TY_STRBUF))) continue;
       if (vt == TY_NIL) { nil_write_note(writes, k, ci->ivars[m]); continue; }
       TyKind merged = ty_unify(ci->ivar_types[m], empty_container_write(c, v, vt, ci->ivar_types[m]));
-      if (merged != ci->ivar_types[m]) { ci->ivar_types[m] = merged; changed = 1; }
+      if (merged != ci->ivar_types[m]) { ivar_set_type(ci, m, merged); changed = 1; }
     }
   }
   return changed;
@@ -10097,7 +10098,7 @@ int infer_ivar_types(Compiler *c) {
             if (class_ivar_pinned(pci, nm) || pci->ivar_int_table[piv]) continue;
             TyKind pvt = empty_container_write(c, vnode, vt, pci->ivar_types[piv]);
             TyKind pm = ty_unify(pci->ivar_types[piv], pvt);
-            if (pm != pci->ivar_types[piv]) { pci->ivar_types[piv] = pm; changed = 1; }
+            if (pm != pci->ivar_types[piv]) { ivar_set_type(pci, piv, pm); changed = 1; }
           }
           if (npk > 0) continue;
         } }
@@ -10166,7 +10167,7 @@ int infer_ivar_types(Compiler *c) {
       if (!class_ivar_pin_holds(ci, nm, vt) && !ci->ivar_int_table[iv]) {
         TyKind merged = ivar_merge_with_write(ci->ivar_types[iv], vt);
         sp_ivwatch(nm, "ivar_write_merge", ci->ivar_types[iv], merged);
-        if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
+        if (merged != ci->ivar_types[iv]) { ivar_set_type(ci, iv, merged); changed = 1; }
       }
       /* Propagate to transplanted copies (module included into a class).
          Body nodes still point to the module scope, so cls_id2 is the module.
@@ -10186,7 +10187,7 @@ int infer_ivar_types(Compiler *c) {
           if (tc->ivar_int_table[tiv]) continue;
           TyKind tmerged = ivar_merge_with_write(tc->ivar_types[tiv], vt);
           sp_ivwatch(nm, "transplant_merge", tc->ivar_types[tiv], tmerged);
-          if (tmerged != tc->ivar_types[tiv]) { tc->ivar_types[tiv] = tmerged; changed = 1; }
+          if (tmerged != tc->ivar_types[tiv]) { ivar_set_type(tc, tiv, tmerged); changed = 1; }
         }
       }
     }
@@ -10224,7 +10225,7 @@ int infer_ivar_types(Compiler *c) {
         if (iv < 0 || class_ivar_pin_holds(ci, ivname, vt)) continue;
         if (vt == TY_NIL) { nil_write_note(&nilw, sgc, ci->ivars[iv]); continue; }
         TyKind merged = ty_unify(ci->ivar_types[iv], empty_container_write(c, argv[0], vt, ci->ivar_types[iv]));
-        if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
+        if (merged != ci->ivar_types[iv]) { ivar_set_type(ci, iv, merged); changed = 1; }
         continue;
       }
       TyKind rt = infer_type(c, recv);
@@ -10245,7 +10246,7 @@ int infer_ivar_types(Compiler *c) {
         int iv = comp_ivar_index(ci, ivname);
         if (iv < 0 || class_ivar_pin_holds(ci, ivname, vt)) continue;
         TyKind merged = ty_unify(ci->ivar_types[iv], empty_container_write(c, argv[0], vt, ci->ivar_types[iv]));
-        if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
+        if (merged != ci->ivar_types[iv]) { ivar_set_type(ci, iv, merged); changed = 1; }
       }
       else {
         /* Poly/unknown receiver -- e.g. `cell` read from a poly array/hash
@@ -10303,7 +10304,7 @@ int infer_ivar_types(Compiler *c) {
                another -- a Float into a member set to Integers elsewhere --:
                other kinds keep their slots, as the distinct families do) */
             if (merged == TY_POLY && ((str_v && scal_c) || (scal_v && str_c) || (scal_v && scal_c && vt != cur))) {
-              candidate->ivar_types[iv] = merged; changed = 1;
+              ivar_set_type(candidate, iv, merged); changed = 1;
             }
           }
           continue;
@@ -10313,7 +10314,7 @@ int infer_ivar_types(Compiler *c) {
         int iv = comp_ivar_index(ci, ivname);
         if (iv < 0 || class_ivar_pin_holds(ci, ivname, vt)) continue;
         TyKind merged = ty_unify(ci->ivar_types[iv], empty_container_write(c, argv[0], vt, ci->ivar_types[iv]));
-        if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
+        if (merged != ci->ivar_types[iv]) { ivar_set_type(ci, iv, merged); changed = 1; }
       }
     }
   }

@@ -1486,7 +1486,7 @@ static int emit_setter_assign_value(Compiler *c, int id, const int *argv, Buf *b
     if (esc) {
       char svn[32]; snprintf(svn, sizeof svn, "__sv%d", ++g_tmp);
       LocalVar *lv = scope_local_intern(esc, svn);
-      lv->type = at;
+      lv_set_type(lv, at);
       lv->str_shared = shr;
       /* the temporary holds the argument's value, nil included: an
          Integer one that can be nil (`r.x = h[k]&.to_i`) keeps the
@@ -1496,7 +1496,7 @@ static int emit_setter_assign_value(Compiler *c, int id, const int *argv, Buf *b
       nt_node_set_str((NodeTable *)nt, rd, "name", svn);
       comp_grow_node_arrays(c);
       c->nscope[rd] = c->nscope[id];
-      c->ntype[rd] = at;
+      comp_set_ntype(c, rd, at);
       int saved0 = argv[0];
       int argsn = nt_ref(nt, id, "arguments");
       int one[1] = { rd };
@@ -1547,6 +1547,7 @@ static int emit_setter_assign_value(Compiler *c, int id, const int *argv, Buf *b
         if (sp_streq(esc->locals[k].name, svn)) {
           memmove(&esc->locals[k], &esc->locals[k + 1], sizeof(LocalVar) * (size_t)(esc->nlocals - k - 1));
           esc->nlocals--;
+          comp_ty_edits++;
           break;
         }
       return 1;

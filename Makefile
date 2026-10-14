@@ -53,7 +53,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: int-min-test all hooks share-strings-test gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
+.PHONY: ty-setter-check int-min-test all hooks share-strings-test gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-test-shared gate-bench gc-phases-test gc-stress-test gc-str-major-test gc-str-budget-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot rubyboy gate-rubyboy scale-test clean install uninstall deps tools
@@ -5096,7 +5096,15 @@ test-corpus-shared-summary: test-corpus-results
 # under the gate's job server (they took 181 s one after another, the
 # longest of the gate's legs; spin-check alone is 72 s).
 gate-props:
-	+@$(MAKE) --no-print-directory alloc-report-test infer-test collect-errors-test spin-check diff-test scale-test traits-check-test bop-arity-check-test bop-share-check-test poly-cold-test share-strings-test share-check-ratchet wrap-test
+	+@$(MAKE) --no-print-directory alloc-report-test infer-test collect-errors-test spin-check diff-test scale-test traits-check-test ty-setter-check bop-arity-check-test bop-share-check-test poly-cold-test share-strings-test share-check-ratchet wrap-test
+
+# The tables infer_type reads are written only through setters that count
+# each change for its memo (#8852). Under SP_TY_GUARD their fields are const,
+# so a direct write anywhere in the compiler does not compile.
+ty-setter-check: $(SPINEL)
+	@printf '%s\n' $(patsubst build/csrc/%.o,src/%.c,$(SPINEL_OBJ)) | \
+	 xargs -P $(NPROC) -I{} $(CC) $(CFLAGS) -fsyntax-only -DSP_TY_GUARD -Werror=discarded-qualifiers -Isrc -Ibuild/csrc {} && \
+	 echo "ty-setter-check: pass"
 
 # The ty_traits table (types.c) against the functions each column names,
 # for every builtin kind, in both integer-overflow modes.

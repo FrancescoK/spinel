@@ -520,11 +520,11 @@ int infer_param_hash_value(Compiler *c) {
            settled unless the writes are more specific */
         if (ty_hash_key(cur) != kt) {
           TyKind want = ty_hash_of(kt, ty_hash_val(cur) != TY_UNKNOWN ? ty_hash_val(cur) : vt);
-          if (want != TY_UNKNOWN && want != cur) { lv->type = want; changed = 1; }
+          if (want != TY_UNKNOWN && want != cur) { lv_set_type(lv, want); changed = 1; }
         }
         continue;
       }
-      if (hv != cur && ty_hash_val(hv) != TY_POLY) { lv->type = hv; changed = 1; }
+      if (hv != cur && ty_hash_val(hv) != TY_POLY) { lv_set_type(lv, hv); changed = 1; }
     }
   }
   return changed;
@@ -997,7 +997,7 @@ static int pm_seed_locals_poly(Compiler *c, Scope *ms, int pat) {
        seeding it POLY looks like a change every round even when the answer is
        last round's. The end-of-pass sweep reports it. (#4116) */
     if (lv && !lv->is_param && !lv->is_block_param)
-      lv->type = ty_unify(lv->type, TY_POLY);
+      lv_set_type(lv, ty_unify(lv->type, TY_POLY));
     return changed;
   }
   if (sp_streq(pty, "CapturePatternNode")) {
@@ -1140,7 +1140,7 @@ static int infer_case_pattern_locals(Compiler *c) {
           if (!lv || lv->is_param || lv->is_block_param) continue;
           TyKind et = (vt != TY_UNKNOWN && vt != TY_NIL) ? vt : TY_POLY;
           TyKind mg = ty_unify(lv->type, et);
-          if (mg != lv->type) lv->type = mg;   /* reset slot: the sweep reports */
+          if (mg != lv->type) lv_set_type(lv, mg);   /* reset slot: the sweep reports */
         }
       }
       else if (sp_streq(pty, "FindPatternNode")) {
@@ -1159,7 +1159,7 @@ static int infer_case_pattern_locals(Compiler *c) {
           LocalVar *lv = snm ? scope_local(ms, snm) : NULL;
           if (!lv || lv->is_param || lv->is_block_param) continue;
           TyKind mg = ty_unify(lv->type, arr_t);
-          if (mg != lv->type) lv->type = mg;   /* reset slot: the sweep reports */
+          if (mg != lv->type) lv_set_type(lv, mg);   /* reset slot: the sweep reports */
         }
         int rn = 0;
         const int *reqs = nt_arr(nt, pat, "requireds", &rn);
@@ -1178,7 +1178,7 @@ static int infer_case_pattern_locals(Compiler *c) {
           if (!lv || lv->is_param || lv->is_block_param) continue;
           TyKind et = (elem_t != TY_UNKNOWN) ? elem_t : TY_POLY;
           TyKind mg = ty_unify(lv->type, et);
-          if (mg != lv->type) lv->type = mg;
+          if (mg != lv->type) lv_set_type(lv, mg);
         }
       }
       /* Bind simple LV target to scrutinee type */
@@ -1187,7 +1187,7 @@ static int infer_case_pattern_locals(Compiler *c) {
         LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
         if (lv && !lv->is_param && !lv->is_block_param) {
           TyKind mg = ty_unify(lv->type, scrutinee_t);
-          if (mg != lv->type) lv->type = mg;
+          if (mg != lv->type) lv_set_type(lv, mg);
         }
       }
       /* Handle ArrayPatternNode requireds and rest splat */
@@ -1224,7 +1224,7 @@ static int infer_case_pattern_locals(Compiler *c) {
                     : (darr != TY_UNKNOWN) ? ty_array_elem(darr)
                     : ty_is_object(array_scrutinee) ? TY_INT : TY_POLY;
           TyKind mg = ty_unify(lv->type, et);
-          if (mg != lv->type) lv->type = mg;
+          if (mg != lv->type) lv_set_type(lv, mg);
         }
         /* rest splat: *name gets array type */
         int rest_nid = nt_ref(nt, array_pat, "rest");
@@ -1247,7 +1247,7 @@ static int infer_case_pattern_locals(Compiler *c) {
                               : (darr2 != TY_UNKNOWN) ? darr2
                               : ty_is_object(array_scrutinee) ? TY_INT_ARRAY : TY_POLY_ARRAY;
               TyKind mg = ty_unify(lv->type, rest_arr);
-              if (mg != lv->type) lv->type = mg;
+              if (mg != lv->type) lv_set_type(lv, mg);
             }
           }
         }
@@ -1291,7 +1291,7 @@ int widen_arrays_from_map_bang(Compiler *c) {
     if (!lv || lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
     if (!ty_is_array(lv->type) || lv->type == TY_POLY_ARRAY) continue;
     if (tt == ty_array_elem(lv->type)) continue;
-    lv->type = TY_POLY_ARRAY; changed = 1;
+    lv_set_type(lv, TY_POLY_ARRAY); changed = 1;
   }
   return changed;
 }
@@ -1348,7 +1348,7 @@ static int lv_is_handle_of(const Compiler *c, const LocalVar *lv, TyKind t) {
 static int lv_widen(LocalVar *lv, TyKind t) {
   TyKind m = ty_unify(lv->type, t);
   if (m == lv->type) return 0;
-  lv->type = m;
+  lv_set_type(lv, m);
   return 1;
 }
 
@@ -1655,7 +1655,7 @@ static int widen_aliased_array_ivars(Compiler *c, int node, int cls_id) {
     if (iv < 0 || class_ivar_pinned(ci, nm) || ci->ivar_int_table[iv]) return 0;
     if (ty_is_array(ci->ivar_types[iv]) && ci->ivar_types[iv] != TY_POLY_ARRAY) {
       sp_ivwatch(nm, "aliased_local_push", ci->ivar_types[iv], TY_POLY_ARRAY);
-      ci->ivar_types[iv] = TY_POLY_ARRAY;
+      ivar_set_type(ci, iv, TY_POLY_ARRAY);
       changed = 1;
     }
     return changed;
@@ -1681,7 +1681,7 @@ static int widen_aliased_array_ivars(Compiler *c, int node, int cls_id) {
 }
 
 /* The type slot a global, class-variable or constant read names, or NULL. */
-static TyKind *named_array_slot(Compiler *c, int recv) {
+static TyRef named_array_slot(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, recv, "name");
   if (!nm) return NULL;
@@ -1750,7 +1750,7 @@ static TyKind tuple_elem_evidence(Compiler *c, int node, TyKind vt) {
 /* Folds one piece of container evidence into `slot` (see the usage fold in
    infer_write_types). Returns 0 where the evidence does not apply to the
    slot, leaving it untouched. */
-static int fold_container_evidence(TyKind *slot, int is_push, int is_splice,
+static int fold_container_evidence(TyRef slot, int is_push, int is_splice,
                                    TyKind kt, TyKind vt) {
   if (is_push) {
     /* explicit push/append: definitely array.  A PolyArray stays PolyArray
@@ -1761,24 +1761,24 @@ static int fold_container_evidence(TyKind *slot, int is_push, int is_splice,
     /* (a String Array of handles keeps a String; a value that may be
        another class widens it, as it widens a String Array) */
     if (*slot == TY_STRH_ARRAY) {
-      if (vt != TY_STRING && vt != TY_STRBUF) *slot = TY_POLY_ARRAY;
+      if (vt != TY_STRING && vt != TY_STRBUF) ty_ref_set(slot, TY_POLY_ARRAY);
       return 1;
     }
     /* If a [] read already promoted this slot to a hash type, the push
        wins: a variable that is pushed to is an array, not a hash.
        Reset the slot so the array promotion below can fire. */
-    if (ty_is_hash(*slot)) *slot = TY_UNKNOWN;
+    if (ty_is_hash(*slot)) ty_ref_set(slot, TY_UNKNOWN);
     if (*slot != TY_UNKNOWN && !ty_is_array(*slot)) return 0;
     if (*slot == TY_POLY_ARRAY) return 0;  /* already widest array type */
     TyKind want = ty_array_of(vt);
     if (*slot != TY_UNKNOWN && want != *slot) want = TY_POLY_ARRAY;
-    *slot = want;
+    ty_ref_set(slot, want);
   }
   else if (*slot == TY_STRH_ARRAY) {
     /* a String Array of handles takes a String at an Integer index; any
        other write widens it */
     if (vt != TY_UNKNOWN && (is_splice || (kt != TY_INT && kt != TY_UNKNOWN) || (vt != TY_STRING && vt != TY_STRBUF)))
-      *slot = TY_POLY_ARRAY;
+      ty_ref_set(slot, TY_POLY_ARRAY);
   }
   else if (is_splice) {
     /* arr[s,l] = rhs / arr[range] = rhs: a source whose elements the typed
@@ -1790,9 +1790,9 @@ static int fold_container_evidence(TyKind *slot, int is_push, int is_splice,
        range key alone is not (h[1..2] = v is a legal hash write). */
     if (vt == TY_UNKNOWN || vt == TY_POLY) { /* no evidence / exempt */ }
     else if (ty_is_array(*slot)) {
-      if (*slot != TY_POLY_ARRAY && vt != ty_array_elem(*slot)) *slot = TY_POLY_ARRAY;
+      if (*slot != TY_POLY_ARRAY && vt != ty_array_elem(*slot)) ty_ref_set(slot, TY_POLY_ARRAY);
     }
-    else if (*slot == TY_UNKNOWN && kt != TY_RANGE) *slot = ty_array_of(vt);
+    else if (*slot == TY_UNKNOWN && kt != TY_RANGE) ty_ref_set(slot, ty_array_of(vt));
   }
   else if (*slot == TY_POLY_POLY_HASH) {
     /* already widest hash type; no further promotion needed */
@@ -1810,7 +1810,7 @@ static int fold_container_evidence(TyKind *slot, int is_push, int is_splice,
        index was handed to the int setter (#4832). */
     if (vt != TY_UNKNOWN && vt != TY_POLY &&
         *slot != TY_POLY_ARRAY && vt != ty_array_elem(*slot))
-      *slot = TY_POLY_ARRAY;
+      ty_ref_set(slot, TY_POLY_ARRAY);
   }
   else if (kt == TY_INT) {
     /* int key []= on a non-array slot: infer an int-keyed hash */
@@ -1820,10 +1820,10 @@ static int fold_container_evidence(TyKind *slot, int is_push, int is_splice,
     if (hv == TY_UNKNOWN) hv = TY_POLY_POLY_HASH;  /* int key + unknown val type */
     if (*slot != TY_UNKNOWN && *slot != hv) {
       /* widen to poly-poly if mismatch */
-      if (ty_is_hash(*slot)) { *slot = TY_POLY_POLY_HASH; }
+      if (ty_is_hash(*slot)) { ty_ref_set(slot, TY_POLY_POLY_HASH); }
       return 0;
     }
-    *slot = hv;
+    ty_ref_set(slot, hv);
   }
   else if (kt == TY_STRING) {
     if (vt == TY_UNKNOWN) return 0;
@@ -1834,19 +1834,19 @@ static int fold_container_evidence(TyKind *slot, int is_push, int is_splice,
     if (*slot != TY_UNKNOWN && *slot != hv &&
         (*slot == TY_STR_INT_HASH || *slot == TY_STR_STR_HASH || *slot == TY_STR_POLY_HASH))
       hv = TY_STR_POLY_HASH;
-    *slot = hv;
+    ty_ref_set(slot, hv);
   }
   else if (kt == TY_SYMBOL) {
     /* symbol key -> SymPolyHash (boxed values) */
     if (vt == TY_UNKNOWN) return 0;
     if (*slot != TY_UNKNOWN && *slot != TY_SYM_POLY_HASH) return 0;
-    *slot = TY_SYM_POLY_HASH;
+    ty_ref_set(slot, TY_SYM_POLY_HASH);
   }
   else if (kt != TY_UNKNOWN) {
     /* non-standard key type (array, object, etc.): heterogeneous hash */
     if (vt == TY_UNKNOWN) return 0;
     if (*slot != TY_UNKNOWN && !ty_is_hash(*slot)) return 0;
-    *slot = TY_POLY_POLY_HASH;
+    ty_ref_set(slot, TY_POLY_POLY_HASH);
   }
   return 1;
 }
@@ -1865,7 +1865,7 @@ static int class_or_ancestor(Compiler *c, int a, int k) {
    on the same object, and the layouts must agree), so the guards weigh the
    ancestors' writes and pins: `super; @a[0] = 1` under a superclass's
    `@a = [0]` is an element write, not a Hash the slot starts as. */
-static TyKind *ivar_evidence_slot(Compiler *c, const LWIndex *ivw, int ivar_cls_id,
+static TyRef ivar_evidence_slot(Compiler *c, const LWIndex *ivw, int ivar_cls_id,
                                   const char *inm, int is_push, TyKind *vt) {
   const NodeTable *nt = c->nt;
   ClassInfo *ci = &c->classes[ivar_cls_id];
@@ -1909,7 +1909,7 @@ static TyKind *ivar_evidence_slot(Compiler *c, const LWIndex *ivw, int ivar_cls_
     if (nonarray_write) return NULL;
     if (other_kind_write) *vt = TY_POLY;   /* ty_array_of => the poly array */
   }
-  TyKind *slot = &ci->ivar_types[iv];
+  TyRef slot = &ci->ivar_types[iv];
   /* If the slot is TY_UNKNOWN but has a direct InstanceVariableWriteNode
      that assigns a typed value OR an empty array/hash literal (e.g.
      @buf = [nil]*7 or @free = []), skip usage-driven hash promotion
@@ -2253,7 +2253,7 @@ static void widen_ivar_hash_literals(Compiler *c, const LWIndex *ivw, int cls, c
     if (!ws || ws->class_id != cls) continue;
     int wv = nt_ref(nt, wi, "value");
     if (wv >= 0 && wv < c->node_cap && nt_kind(nt, wv) == NK_HashNode)
-      c->hash_want[wv] = TY_POLY_POLY_HASH;
+      comp_set_hash_want(c, wv, TY_POLY_POLY_HASH);
     else if (unassigned_param_read(c, ws, wv) >= 0)
       widen_arg_hash(c, wv);
   }
@@ -2276,7 +2276,7 @@ static int retype_ivar_empty_hash_literals(Compiler *c, const LWIndex *ivw, int 
     int wv = nt_ref(nt, wi, "value");
     if (wv < 0 || wv >= c->node_cap || nt_kind(nt, wv) != NK_HashNode) continue;
     int hen = 0; nt_arr(nt, wv, "elements", &hen);
-    if (hen == 0 && c->hash_want[wv] != want) { c->hash_want[wv] = want; changed = 1; }
+    if (hen == 0 && c->hash_want[wv] != want) { comp_set_hash_want(c, wv, want); changed = 1; }
   }
   return changed;
 }
@@ -2599,7 +2599,7 @@ static int masgn_local_take(Compiler *c, LocalVar *lv, TyKind t, int node) {
     lv->body_write = ty_unify(lv->body_write, t);
     return slot_take(c, lv, t, node);
   }
-  lv->type = ty_unify(lv->type, t);
+  lv_set_type(lv, ty_unify(lv->type, t));
   return 0;
 }
 
@@ -2624,7 +2624,7 @@ static int masgn_unify_elem(Compiler *c, Scope *ms, const int *tgts, int n, TyKi
       if (iv_ms < 0 || class_ivar_pinned(&c->classes[icid], ivnm)) continue;
       TyKind mg = ty_unify(c->classes[icid].ivar_types[iv_ms], elem);
       if (mg != c->classes[icid].ivar_types[iv_ms]) {
-        c->classes[icid].ivar_types[iv_ms] = mg; changed = 1;
+        ivar_set_type(&c->classes[icid], iv_ms, mg); changed = 1;
       }
     }
     else if (sp_streq(lty_ms, "GlobalVariableTargetNode")) {
@@ -2644,7 +2644,7 @@ static int masgn_unify_elem(Compiler *c, Scope *ms, const int *tgts, int n, TyKi
       if (cvx < 0) continue;
       TyKind mg = ty_unify(c->classes[cc].cvar_types[cvx], elem);
       if (mg != c->classes[cc].cvar_types[cvx]) {
-        c->classes[cc].cvar_types[cvx] = mg; changed = 1;
+        cvar_set_type(&c->classes[cc], cvx, mg); changed = 1;
       }
     }
     else if (sp_streq(lty_ms, "ConstantTargetNode") || sp_streq(lty_ms, "ConstantPathTargetNode")) {
@@ -2911,7 +2911,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
           TyKind kt2 = ty_hash_key(dplv->type);
           TyKind want2 = kt2 == TY_SYMBOL ? TY_SYM_POLY_HASH
                        : kt2 == TY_STRING ? TY_STR_POLY_HASH : TY_POLY_POLY_HASH;
-          if (dplv->type != want2) { dplv->type = want2; changed = 1; }
+          if (dplv->type != want2) { lv_set_type(dplv, want2); changed = 1; }
         }
         continue;
       }
@@ -2931,7 +2931,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
           if (!rplv || rplv->is_block_param) continue;
           if (!rplv->is_param) {
             if (ty_is_hash(rplv->type) && rplv->type != ot && rplv->type != TY_POLY_POLY_HASH)
-              rplv->type = TY_POLY_POLY_HASH;   /* a reset local: the sweep reports */
+              lv_set_type(rplv, TY_POLY_POLY_HASH);   /* a reset local: the sweep reports */
             continue;
           }
         }
@@ -3211,7 +3211,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
     }
     /* fold into a local's type or an ivar's type (an empty `@buf=[]` filled by
        `@buf << x` infers its element type the same way a local does) */
-    TyKind *slot = NULL;
+    TyRef slot = NULL;
     LocalVar *slot_lv = NULL;   /* the local whose type slot is, if one */
     int slot_reset = 0;  /* slot is a plain local, reset+recomputed per iteration:
                             net change is the stash compare's job, not this site's */
@@ -3318,7 +3318,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
           TyKind folded = lv->type;
           int fits = fold_container_evidence(&folded, 0, 0, hkt, hvt);
           if (fits && folded == lv->type) continue;
-          lv->type = TY_POLY_POLY_HASH; lv->push_widened = 1; changed = 1;
+          lv_set_type(lv, TY_POLY_POLY_HASH); lv->push_widened = 1; changed = 1;
           continue;
         }
         /* An element write through it stores into the caller's array the
@@ -3336,7 +3336,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
           int poly_src = is_splice && !is_fill && vt == TY_POLY_ARRAY;
           if (is_splice ? !is_fill && !splice_arr && !poly_src : kt != TY_INT && kt != TY_POLY) continue;
           if (vt == TY_UNKNOWN || vt == TY_POLY || vt == ty_array_elem(lv->type)) continue;
-          lv->type = TY_POLY_ARRAY; lv->push_widened = 1; changed = 1;
+          lv_set_type(lv, TY_POLY_ARRAY); lv->push_widened = 1; changed = 1;
           continue;
         }
         /* What a push through an untyped or array parameter stores is
@@ -3388,7 +3388,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
                                                    elem_splat_index, ty_array_elem(lv->type))) &&
             (vt == TY_UNKNOWN || vt == TY_POLY || vt == TY_POLY_ARRAY ||
              vt == ty_array_elem(lv->type))) continue;
-        lv->type = TY_POLY_ARRAY; lv->push_widened = 1; changed = 1;
+        lv_set_type(lv, TY_POLY_ARRAY); lv->push_widened = 1; changed = 1;
         continue;
       }
       if (elem_splat_index) continue;
@@ -3462,7 +3462,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
                      comp_scope_of(c, w) == lsc;
         }
         int lit = assigned ? -1 : local_proc_literal_param_of(c, lsc, rnm);
-        if (lit >= 0 && !proc_literal_calls_in_sight(c, lit)) { lv->type = TY_POLY; continue; }
+        if (lit >= 0 && !proc_literal_calls_in_sight(c, lit)) { lv_set_type(lv, TY_POLY); continue; }
       }
       /* A row read out of a narrowed table (`row = @t[k]` over an Integer or
          Float table), or a local copied from one (`al = row`, table_row_alias),
@@ -3501,11 +3501,11 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
          the general Array here, as it does a local's. Only the widening is
          taken: seeding or re-keying these slots stays with their write
          passes, which keep a general Array against a typed array write. */
-      TyKind *nslot = named_array_slot(c, recv);
+      TyRef nslot = named_array_slot(c, recv);
       if (!nslot || !ty_is_array(*nslot) || *nslot == TY_POLY_ARRAY) continue;
       TyKind nt2 = *nslot;
       fold_container_evidence(&nt2, is_push, is_splice, (TyKind)kt, (TyKind)vt);
-      if (nt2 == TY_POLY_ARRAY) { *nslot = TY_POLY_ARRAY; changed = 1; }
+      if (nt2 == TY_POLY_ARRAY) { ty_ref_set(nslot, TY_POLY_ARRAY); changed = 1; }
       continue;
     }
     else if ((is_push || is_idx_write) && rty && sp_streq(rty, "CallNode") &&
@@ -3589,7 +3589,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
               if (!ty_is_array(ck->ivar_types[ivi])) continue;   /* an established array slot only */
               if (ck->ivar_types[ivi] == TY_POLY_ARRAY) continue;
               if (ck->ivar_types[ivi] != ty_array_of(pvt)) {
-                ck->ivar_types[ivi] = TY_POLY_ARRAY;
+                ivar_set_type(ck, ivi, TY_POLY_ARRAY);
                 changed = 1;
               }
             }
@@ -3660,7 +3660,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
            ivar's own writes decide what it holds, and a typeless slot keeps
            whatever they decide. */
         else if (!ty_is_hash(ci2->ivar_types[iv2]) && !ty_is_array(ci2->ivar_types[iv2])) continue;
-        TyKind *tslot = ivar_evidence_slot(c, &ivw_ix, tcls[ti], tiv[ti], is_push, &tvt);
+        TyRef tslot = ivar_evidence_slot(c, &ivw_ix, tcls[ti], tiv[ti], is_push, &tvt);
         if (!tslot) continue;
         TyKind tbefore = *tslot;
         /* A boxed value is exempt, as it is for an array element: the typed
@@ -3676,7 +3676,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
            slot as it is for a Symbol key. */
         if (!is_push && ty_is_hash(tbefore) &&
             (*tslot != tbefore || (!fits && kt != TY_UNKNOWN && tvt != TY_UNKNOWN))) {
-          *tslot = TY_POLY_POLY_HASH;
+          ty_ref_set(tslot, TY_POLY_POLY_HASH);
           widen_ivar_hash_literals(c, &ivw_ix, tcls[ti], tiv[ti]);
         }
         sp_ivwatch(tiv[ti], is_push ? "getter_push" : "getter_idxwrite", tbefore, *tslot);
@@ -3708,7 +3708,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
     if (c->share_strings && slot_lv && is_push && !slot_lv->strh_no && *slot == TY_POLY_ARRAY &&
         (vt == TY_STRBUF || vt == TY_STRING) &&
         (before == TY_UNKNOWN || before == TY_STR_ARRAY || before == TY_STRH_ARRAY))
-      *slot = TY_STRH_ARRAY;
+      ty_ref_set(slot, TY_STRH_ARRAY);
     /* An ivar hash the write does not fit widens to the poly-keyed variant,
        with the literals the ivar is assigned, as a write through its getter
        does: other sites (a getter's `c[1] = 2`) settled the key, and the fold
@@ -3722,7 +3722,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
         ((!fits && kt != TY_UNKNOWN && vt != TY_UNKNOWN) ||
          (ty_is_hash(*slot) && ty_hash_key(*slot) != ty_hash_key(before)) ||
          (*slot != before && ivar_has_param_write(c, &ivw_ix, watch_cls, watch_nm)))) {
-      *slot = TY_POLY_POLY_HASH;
+      ty_ref_set(slot, TY_POLY_POLY_HASH);
       widen_ivar_hash_literals(c, &ivw_ix, watch_cls, watch_nm);
       sp_ivwatch(watch_nm, "usage_idxwrite_misfit", before, *slot);
       changed = 1;
@@ -3774,7 +3774,7 @@ static int masgn_poly_local(Compiler *c, Scope *ms, int tgt, TyKind t, int value
      here reads as change every iteration and the fixpoint never converges.
      Only a non-reset (pinned) slot's transition is a real change. */
   if (mg == lv->type) return 0;
-  lv->type = mg;
+  lv_set_type(lv, mg);
   return lv->rbs_seeded;
 }
 
@@ -3805,7 +3805,7 @@ static int infer_write_multi_assign(Compiler *c, const NodeTable *nt) {
         int hv = vs[i], hen = 0;
         if (hv < 0 || hv >= c->node_cap || nt_kind(nt, hv) != NK_HashNode || !c->hash_want) continue;
         nt_arr(nt, hv, "elements", &hen);
-        if (hen == 0 && !ty_is_hash(c->hash_want[hv])) { c->hash_want[hv] = TY_POLY_POLY_HASH; changed = 1; }
+        if (hen == 0 && !ty_is_hash(c->hash_want[hv])) { comp_set_hash_want(c, hv, TY_POLY_POLY_HASH); changed = 1; }
       }
     }
     const char *vty = nt_type(nt, value);
@@ -3837,7 +3837,7 @@ static int infer_write_multi_assign(Compiler *c, const NodeTable *nt) {
             const char *cnm_io = nt_str(nt, lefts[i], "name");
             LocalVar *cv_io = cnm_io ? comp_const(c, cnm_io) : NULL;
             if (cv_io && cv_io->type != TY_IO) {
-              cv_io->type = ty_unify(cv_io->type, TY_IO);
+              lv_set_type(cv_io, ty_unify(cv_io->type, TY_IO));
               changed = 1;
             }
             continue;
@@ -3847,7 +3847,7 @@ static int infer_write_multi_assign(Compiler *c, const NodeTable *nt) {
           if (!sp_streq(lty_io, "LocalVariableTargetNode")) continue;
           const char *lnm = nt_str(nt, lefts[i], "name");
           LocalVar *lv = lnm ? scope_local_intern(comp_scope_of(c, id), lnm) : NULL;
-          if (lv) lv->type = TY_IO;   /* the end-of-pass sweep reports it */
+          if (lv) lv_set_type(lv, TY_IO);   /* the end-of-pass sweep reports it */
         }
         continue;
       }
@@ -3881,7 +3881,7 @@ static int infer_write_multi_assign(Compiler *c, const NodeTable *nt) {
             if (ivx < 0 || class_ivar_pinned(&c->classes[ms_mr->class_id], ivnm)) continue;
             TyKind mg = ty_unify(c->classes[ms_mr->class_id].ivar_types[ivx], elems[i]);
             if (mg != c->classes[ms_mr->class_id].ivar_types[ivx]) {
-              c->classes[ms_mr->class_id].ivar_types[ivx] = mg; changed = 1;
+              ivar_set_type(&c->classes[ms_mr->class_id], ivx, mg); changed = 1;
             }
           }
           else if (sp_streq(lty_mr, "GlobalVariableTargetNode") || sp_streq(lty_mr, "ClassVariableTargetNode"))
@@ -3895,7 +3895,7 @@ static int infer_write_multi_assign(Compiler *c, const NodeTable *nt) {
                round must be able to correct it (constants persist across
                rounds, unlike locals). Same convention as
                infer_multiwrite_const_types. */
-            if (cv->type != elems[i]) { cv->type = elems[i]; changed = 1; }
+            if (cv->type != elems[i]) { lv_set_type(cv, elems[i]); changed = 1; }
           }
         }
         continue;  /* the generic poly-tuple widening below must not re-widen */
@@ -4053,7 +4053,7 @@ static int infer_write_multi_assign(Compiler *c, const NodeTable *nt) {
         if (et == TY_NIL) et = TY_POLY;
         TyKind mg = ty_unify(c->classes[iv_cid].ivar_types[iv_idx], et);
         if (mg != c->classes[iv_cid].ivar_types[iv_idx]) {
-          c->classes[iv_cid].ivar_types[iv_idx] = mg; changed = 1;
+          ivar_set_type(&c->classes[iv_cid], iv_idx, mg); changed = 1;
         }
       }
       else if (sp_streq(lty, "GlobalVariableTargetNode") || sp_streq(lty, "ClassVariableTargetNode")) {
@@ -4135,7 +4135,7 @@ static int infer_write_multi_assign(Compiler *c, const NodeTable *nt) {
         if (iv_idx3 < 0 || class_ivar_pinned(&c->classes[iv_cid3], ivnm3)) continue;
         TyKind mg4 = ty_unify(c->classes[iv_cid3].ivar_types[iv_idx3], et);
         if (mg4 != c->classes[iv_cid3].ivar_types[iv_idx3]) {
-          c->classes[iv_cid3].ivar_types[iv_idx3] = mg4; changed = 1;
+          ivar_set_type(&c->classes[iv_cid3], iv_idx3, mg4); changed = 1;
         }
       }
     }
@@ -4390,7 +4390,7 @@ static void lv_keep_decisions(LocalVar *lv, int stashed) {
      type is neither String nor the handle, the promotion's precondition is
      genuinely gone and the flag goes with it. */
   if (lv->str_append) {
-    if (lv->type == TY_STRING) lv->type = TY_STRBUF;
+    if (lv->type == TY_STRING) lv_set_type(lv, TY_STRBUF);
     else if (lv->type != TY_STRBUF) lv->str_append = 0;
   }
   /* The same contract for a slot narrowed to a pointer array. The reset
@@ -4406,7 +4406,7 @@ static void lv_keep_decisions(LocalVar *lv, int stashed) {
        as the plain poly scalar the read hands back, exactly as a narrowed
        container re-derives as the poly array. */
     if (lv->type == TY_POLY_ARRAY || lv->type == TY_POLY || lv->type == lv->oa_pin)
-      lv->type = lv->oa_pin;
+      lv_set_type(lv, lv->oa_pin);
     else lv->oa_pin = TY_UNKNOWN;
   }
   /* The same again for the empty-`{}` argument a TY_POLY parameter widened to
@@ -4418,14 +4418,14 @@ static void lv_keep_decisions(LocalVar *lv, int stashed) {
      at all has lost the precondition and the pin with it. */
   if (lv->poly_hash_pin) {
     if (lv->type == TY_UNKNOWN || lv->type == TY_POLY || ty_is_hash(lv->type))
-      lv->type = TY_POLY_POLY_HASH;
+      lv_set_type(lv, TY_POLY_POLY_HASH);
     else lv->poly_hash_pin = 0;
   }
   /* And for the array-literal local a widened parameter took (poly_array_pin):
      its literals re-derive a typed array kind every round. */
   if (lv->poly_array_pin) {
     if (lv->type == TY_UNKNOWN || lv->type == TY_POLY || ty_is_array(lv->type))
-      lv->type = TY_POLY_ARRAY;
+      lv_set_type(lv, TY_POLY_ARRAY);
     else lv->poly_array_pin = 0;
   }
   /* A slot this round could not derive AT ALL keeps what it had. The round's
@@ -4439,7 +4439,7 @@ static void lv_keep_decisions(LocalVar *lv, int stashed) {
      own case; this is the same rule without the special case. */
   if (stashed && !lv->is_param && !lv->is_block_param && !lv->rbs_seeded &&
       lv->type == TY_UNKNOWN && (TyKind)lv->gc_root != TY_UNKNOWN)
-    lv->type = (TyKind)lv->gc_root;
+    lv_set_type(lv, (TyKind)lv->gc_root);
   /* The shared-mutable / append-accumulator promotion is durable -- the mark
      is, and analyze re-asserts the slot type from it after the fixpoint. Do it
      HERE too, before infer_write_types compares the slot with its stash: the
@@ -4449,11 +4449,11 @@ static void lv_keep_decisions(LocalVar *lv, int stashed) {
      shared-mutable string (#3227, #4116). Same treatment oa_pin gets just
      above, and for the same reason. */
   if ((lv->str_shared || lv->str_append) &&
-      (lv->type == TY_STRING || lv->type == TY_STR_ARRAY)) lv->type = TY_STRBUF;
+      (lv->type == TY_STRING || lv->type == TY_STR_ARRAY)) lv_set_type(lv, TY_STRBUF);
   /* --share-strings: a String Array the rule settled in its poly form
      keeps it (share_default_apply) */
-  if (lv->strh_form && lv->type == TY_STR_ARRAY) lv->type = TY_STRH_ARRAY;
-  if (lv->elems_shared && lv->type == TY_STR_ARRAY) lv->type = TY_POLY_ARRAY;
+  if (lv->strh_form && lv->type == TY_STR_ARRAY) lv_set_type(lv, TY_STRH_ARRAY);
+  if (lv->elems_shared && lv->type == TY_STR_ARRAY) lv_set_type(lv, TY_POLY_ARRAY);
 }
 
 int infer_write_types(Compiler *c) {
@@ -4477,7 +4477,7 @@ int infer_write_types(Compiler *c) {
          write in node order and would re-derive from UNKNOWN forever (#2723) */
       if (!lv->is_param && !lv->is_block_param && !lv->rbs_seeded) {
         lv->gc_root = (int)lv->type;
-        lv->type = TY_UNKNOWN;
+        lv_set_type(lv, TY_UNKNOWN);
       }
       /* a parameter keeps its type, but what its body assigns it is
          gathered afresh (infer_param_hash_value reads it) */
@@ -4524,7 +4524,7 @@ int infer_write_types(Compiler *c) {
         if (tlv && !tlv->is_param && !tlv->is_block_param) {
           /* see the note at the multi-write arm below: no `changed` for a
              plain local this pass reset. */
-          tlv->type = ty_unify(tlv->type, TY_STRING);
+          lv_set_type(tlv, ty_unify(tlv->type, TY_STRING));
         }
       }
       continue;
@@ -4616,7 +4616,7 @@ int infer_write_types(Compiler *c) {
         const char *pnm = nt_str(nt, reqs[0], "name");
         Scope *lsc = pnm ? comp_scope_of(c, conds[j]) : NULL;
         LocalVar *plv = lsc ? scope_local(lsc, pnm) : NULL;
-        if (plv && plv->type != cpt && !lv_is_handle_of(c, plv, cpt)) { plv->type = cpt; changed = 1; }
+        if (plv && plv->type != cpt && !lv_is_handle_of(c, plv, cpt)) { lv_set_type(plv, cpt); changed = 1; }
       }
     }
   }
@@ -4647,8 +4647,8 @@ int infer_write_types(Compiler *c) {
         if (dst->type == src->type) continue;
         /* Both are reset locals, so the sweep reports; `prop` still drives
            this loop's own re-run to a fixed point within the round. */
-        if (dst->type == TY_POLY_ARRAY) { src->type = TY_POLY_ARRAY; prop = 1; }
-        else if (src->type == TY_POLY_ARRAY) { dst->type = TY_POLY_ARRAY; prop = 1; }
+        if (dst->type == TY_POLY_ARRAY) { lv_set_type(src, TY_POLY_ARRAY); prop = 1; }
+        else if (src->type == TY_POLY_ARRAY) { lv_set_type(dst, TY_POLY_ARRAY); prop = 1; }
       }
     }
   }
@@ -4678,7 +4678,7 @@ int infer_write_types(Compiler *c) {
     LocalVar *lv = nm ? scope_local(comp_scope_of(c, id), nm) : NULL;
     if (!lv || lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
     TyKind merged = ty_unify(lv->type, TY_POLY);
-    if (merged != lv->type) lv->type = merged;
+    if (merged != lv->type) lv_set_type(lv, merged);
   }
 
   /* Second pass: re-compute proc_ret for proc-typed locals after body-internal
@@ -4714,7 +4714,7 @@ int infer_write_types(Compiler *c) {
         }
         pr_lv[npr] = lv; pr_old[npr] = lv->proc_ret; npr++;
       }
-      lv->proc_ret = (int)pr;
+      lv_set_proc_ret(lv, (int)pr);
     }
     for (int k = 0; k < npr; k++) if (pr_lv[k]->proc_ret != pr_old[k]) changed = 1;
     free(pr_lv); free(pr_old);
@@ -5312,7 +5312,7 @@ static int bind_dynamic_new_initializers(Compiler *c, int call_id) {
         }
         else if (a == 0) at = TY_POLY;
         if (at == TY_UNKNOWN || at == mt) continue;
-        sk->ivar_types[a] = TY_POLY; changed = 1;
+        ivar_set_type(sk, a, TY_POLY); changed = 1;
         /* before the next initialize this call binds walks */
         if (wbas_shared) wbas_touch();
       }
@@ -5356,7 +5356,7 @@ static int is_fresh_hash(Compiler *c, int v) {
 static int want_poly_hash(Compiler *c, int v) {
   if (!c->hash_want || v < 0 || v >= c->node_cap || nt_kind(c->nt, v) != NK_HashNode) return 0;
   if (c->hash_want[v] == TY_POLY_POLY_HASH) return 0;
-  c->hash_want[v] = TY_POLY_POLY_HASH;
+  comp_set_hash_want(c, v, TY_POLY_POLY_HASH);
   return 1;
 }
 
@@ -5374,14 +5374,14 @@ static int widen_arg_hash(Compiler *c, int arg) {
   Scope *asc = an ? comp_scope_of(c, arg) : NULL;
   if (!asc) return 0;
   NodeKind wk;
-  TyKind *slot = NULL;
+  TyRef slot = NULL;
   int cid = -1;
   if (ak == NK_LocalVariableReadNode) {
     LocalVar *al = scope_local(asc, an);
     if (!al || al->is_block_param || !ty_is_hash(al->type) || al->type == TY_POLY_POLY_HASH) return 0;
     if (al->is_param) {
       if (al->rbs_seeded) return 0;
-      al->type = TY_POLY_POLY_HASH; al->push_widened = 1;
+      lv_set_type(al, TY_POLY_POLY_HASH); al->push_widened = 1;
       return 1;
     }
     int si = (int)(asc - c->scopes), saw = 0;
@@ -5397,7 +5397,7 @@ static int widen_arg_hash(Compiler *c, int arg) {
       if (comp_scope_of(c, w) == asc && sp_streq(nt_str(nt, w, "name"), an))
         want_poly_hash(c, nt_ref(nt, w, "value"));
     }
-    al->type = TY_POLY_POLY_HASH; al->poly_hash_pin = 1;
+    lv_set_type(al, TY_POLY_POLY_HASH); al->poly_hash_pin = 1;
     return 1;
   }
   if (ak == NK_InstanceVariableReadNode) {
@@ -5435,7 +5435,7 @@ static int widen_arg_hash(Compiler *c, int arg) {
     }
     if (!saw) return 0;
   }
-  *slot = TY_POLY_POLY_HASH;
+  ty_ref_set(slot, TY_POLY_POLY_HASH);
   return 1;
 }
 
@@ -5572,7 +5572,7 @@ static int widen_nested_literals(Compiler *c, int recv, int is_push, int is_spli
       if (!is_push && kt != TY_INT && kt != TY_POLY) continue;
       if (ty_is_array(lt) && vt == ty_array_elem(lt)) continue;
       if (!c->arr_want || l >= c->node_cap || c->arr_want[l] == TY_POLY_ARRAY) continue;
-      c->arr_want[l] = TY_POLY_ARRAY;
+      comp_set_arr_want(c, l, TY_POLY_ARRAY);
       changed = 1;
     }
   }
@@ -5887,7 +5887,7 @@ static int literal_rows_read(Compiler *c, int v, int apply) {
       TyKind et = infer_type(c, el);
       if (nt_kind(nt, el) != NK_ArrayNode || !is_fresh_array(c, el) || ty_is_ptr_array(et) ||
           (et != TY_UNKNOWN && !ty_is_array(et)) || !c->arr_want || el >= c->node_cap) return -1;
-      if (apply && c->arr_want[el] != TY_POLY_ARRAY) { c->arr_want[el] = TY_POLY_ARRAY; ch = 1; }
+      if (apply && c->arr_want[el] != TY_POLY_ARRAY) { comp_set_arr_want(c, el, TY_POLY_ARRAY); ch = 1; }
     }
     saw = 1;
   }
@@ -5926,7 +5926,7 @@ static int array_src_walk(Compiler *c, int v, int pinned, int apply, int *stack,
         !c->arr_want || v >= c->node_cap) return 0;
     if (!apply) return 1;
     if (c->arr_want[v] == TY_POLY_ARRAY) return 0;
-    c->arr_want[v] = TY_POLY_ARRAY;
+    comp_set_arr_want(c, v, TY_POLY_ARRAY);
     return 1;
   }
   if (!ty_is_array(vt) || ty_is_ptr_array(vt)) return 0;
@@ -5949,7 +5949,7 @@ static int array_src_walk(Compiler *c, int v, int pinned, int apply, int *stack,
     if (lv->is_param) {
       if (lv->rbs_seeded) return 0;
       if (!apply) return 1;
-      lv->type = TY_POLY_ARRAY; lv->push_widened = 1;
+      lv_set_type(lv, TY_POLY_ARRAY); lv->push_widened = 1;
       return 1;
     }
     int saw = 0, ch = 0;
@@ -5982,15 +5982,15 @@ static int array_src_walk(Compiler *c, int v, int pinned, int apply, int *stack,
       saw = 1;
     }
     if (!saw || !apply) return saw;
-    if (!lv->poly_array_pin || lv->type != TY_POLY_ARRAY) { lv->type = TY_POLY_ARRAY; lv->poly_array_pin = 1; ch = 1; }
+    if (!lv->poly_array_pin || lv->type != TY_POLY_ARRAY) { lv_set_type(lv, TY_POLY_ARRAY); lv->poly_array_pin = 1; ch = 1; }
     return ch;
   }
   if (k == NK_GlobalVariableReadNode || k == NK_ClassVariableReadNode || k == NK_ConstantReadNode) {
-    TyKind *ns = named_array_slot(c, v);
+    TyRef ns = named_array_slot(c, v);
     if (!ns || !ty_is_array(*ns) || ty_is_ptr_array(*ns) || !named_writes_fresh(c, v)) return 0;
     if (!apply) return 1;
     if (*ns == TY_POLY_ARRAY) return 0;
-    *ns = TY_POLY_ARRAY;
+    ty_ref_set(ns, TY_POLY_ARRAY);
     return 1;
   }
   /* An ivar, read here or through an attr_reader, widens after the
@@ -6114,7 +6114,7 @@ static int widen_arg_array(Compiler *c, int arg) {
   NodeKind ak = nt_kind(nt, arg);
   if (ak == NK_ArrayNode) {
     if (!c->arr_want || arg >= c->node_cap || !is_fresh_array(c, arg) || c->arr_want[arg] == TY_POLY_ARRAY) return 0;
-    c->arr_want[arg] = TY_POLY_ARRAY;
+    comp_set_arr_want(c, arg, TY_POLY_ARRAY);
     return 1;
   }
   if (ak == NK_LocalVariableReadNode) {
@@ -6125,24 +6125,24 @@ static int widen_arg_array(Compiler *c, int arg) {
     if (al->is_param) {
       if (al->rbs_seeded) return 0;
       if (g_wcause_name && al->widen_blocked) return 0;
-      al->type = TY_POLY_ARRAY;
+      lv_set_type(al, TY_POLY_ARRAY);
       if (!al->push_widened && g_wcause_name) { al->widen_from_scope = g_wcause_scope; al->widen_from_name = g_wcause_name; }
       al->push_widened = 1;
       return 1;
     }
-    if (local_all_writes_empty_array(c, asc, an)) { al->type = TY_POLY_ARRAY; return 1; }
+    if (local_all_writes_empty_array(c, asc, an)) { lv_set_type(al, TY_POLY_ARRAY); return 1; }
     if (local_all_writes_fresh_array(c, asc, an)) {
       /* the pin is re-asserted each round, where the local re-derives from
          its writes: only a new pin is a change, or a widening asked every
          round never settles */
       int was = al->poly_array_pin;
-      al->type = TY_POLY_ARRAY; al->poly_array_pin = 1; return !was;
+      lv_set_type(al, TY_POLY_ARRAY); al->poly_array_pin = 1; return !was;
     }
     return widen_array_sources(c, arg);
   }
   if (ak == NK_GlobalVariableReadNode || ak == NK_ClassVariableReadNode || ak == NK_ConstantReadNode) {
-    TyKind *ns = named_array_slot(c, arg);
-    if (ns && ty_is_array(*ns) && *ns != TY_POLY_ARRAY) { *ns = TY_POLY_ARRAY; return 1; }
+    TyRef ns = named_array_slot(c, arg);
+    if (ns && ty_is_array(*ns) && *ns != TY_POLY_ARRAY) { ty_ref_set(ns, TY_POLY_ARRAY); return 1; }
     return 0;
   }
   return widen_array_sources(c, arg);
@@ -6290,7 +6290,7 @@ int widen_hash_arg_for_store(Compiler *c, int arg, TyKind hk, TyKind hv) {
       if (ty_is_hash(al->type) && al->type != TY_POLY_POLY_HASH) {
         TyKind folded = al->type;
         if (fold_container_evidence(&folded, 0, 0, hk, hv) && folded == al->type) return 0;
-        al->type = TY_POLY_POLY_HASH; al->push_widened = 1;
+        lv_set_type(al, TY_POLY_POLY_HASH); al->push_widened = 1;
         return 1;
       }
       return 0;
@@ -6592,7 +6592,7 @@ static int widen_boxed_local_sources(Compiler *c, Scope *sc, const char *nm, Loc
   if (all && leaves_need_pin(c, wl, nl, elem) && leaves_widen_to_poly_array(c, wl, nl, 0)) {
     ch |= leaves_widen_to_poly_array(c, wl, nl, 1);
     if (!lv->poly_array_pin) { lv->poly_array_pin = 1; ch = 1; }
-    lv->type = TY_POLY_ARRAY;
+    lv_set_type(lv, TY_POLY_ARRAY);
     wbas_touch();
   }
   return ch;
@@ -7016,7 +7016,7 @@ static int ivar_writes_all_empty_array(Compiler *c, int cls, const char *ivn) {
 static int fill_empty_array_arg(Compiler *c, int arg, TyKind elem) {
   const NodeTable *nt = c->nt;
   arg = unwrap_parens(c, arg);
-  TyKind *slot = NULL;
+  TyRef slot = NULL;
   if (nt_kind(nt, arg) == NK_LocalVariableReadNode) {
     const char *an = nt_str(nt, arg, "name");
     Scope *asc = an ? comp_scope_of(c, arg) : NULL;
@@ -7035,7 +7035,7 @@ static int fill_empty_array_arg(Compiler *c, int arg, TyKind elem) {
   if (!slot || (*slot != TY_UNKNOWN && !ty_is_array(*slot))) return 0;
   TyKind was = *slot, now = was;
   if (!fold_container_evidence(&now, 1, 0, TY_UNKNOWN, elem) || !ty_is_array(now) || now == was) return 0;
-  *slot = now;
+  ty_ref_set(slot, now);
   return 1;
 }
 
@@ -7089,7 +7089,7 @@ static int cext_widen_containers(Compiler *c, int v, CextWalk *seen) {
   int constant = nt_int(nt, v, "cext_const_node", 0) - 1;
   if (constant >= 0) {
     changed |= cext_widen_containers(c, constant, seen);
-    if (c->strbuf_box[constant] && !c->strbuf_box[v]) { c->strbuf_box[v] = 1; changed = 1; }
+    if (c->strbuf_box[constant] && !c->strbuf_box[v]) { comp_set_strbuf_box(c, v, 1); changed = 1; }
     return changed;
   }
   if (nt_kind(nt, v) == NK_CallNode) changed |= cext_demand_reader(c, v);
@@ -7200,7 +7200,7 @@ static int cext_pin_array_producer(Compiler *c, int v) {
   char name[96]; int suffix = v;
   do { snprintf(name, sizeof name, "__spinel_cext_array_%d", suffix++); } while (scope_local(scope, name));
   LocalVar *local = scope_local_intern(scope, name);
-  local->type = TY_POLY_ARRAY;local->poly_array_pin = 1;local->rbs_seeded = 1;
+  lv_set_type(local, TY_POLY_ARRAY);local->poly_array_pin = 1;local->rbs_seeded = 1;
   int base = nt->count;
   nt_node_set_int(nt, v, "cext_producer_pinned", 1);
   int write = nt_new_node(nt, "LocalVariableWriteNode");
@@ -7238,7 +7238,7 @@ static int cext_pin_array_producer(Compiler *c, int v) {
     Scope *other = &c->scopes[q];
     if (q != si && other->body == scope->body) {
       LocalVar *copy = scope_local_intern(other, name);
-      copy->type=TY_POLY_ARRAY;copy->poly_array_pin=1;copy->rbs_seeded=1;
+      lv_set_type(copy, TY_POLY_ARRAY);copy->poly_array_pin=1;copy->rbs_seeded=1;
     }
     if (other->body == v) other->body = parens;
   }
@@ -7412,7 +7412,7 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
       if (al && !al->is_param && !al->is_block_param &&
           (al->type == TY_UNKNOWN || al->type == TY_POLY) &&
           local_all_writes_empty_hash(c, asc, an)) {
-        al->type = p->type; changed = 1;
+        lv_set_type(al, p->type); changed = 1;
       }
     }
     /* Same, but the callee takes the hash opaquely (a TY_POLY param). An empty
@@ -7428,7 +7428,7 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
           (al->type == TY_UNKNOWN || al->type == TY_POLY || ty_is_hash(al->type)) &&
           al->type != TY_POLY_POLY_HASH &&
           local_all_writes_empty_hash(c, asc, an)) {
-        al->type = TY_POLY_POLY_HASH; al->poly_hash_pin = 1; changed = 1;
+        lv_set_type(al, TY_POLY_POLY_HASH); al->poly_hash_pin = 1; changed = 1;
       }
     }
     /* A key or value the method stores through a typed container parameter
@@ -7454,7 +7454,7 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
       }
     }
     if (src_misfit && p->type != TY_POLY) {
-      p->type = ty_is_array(p->type) ? TY_POLY_ARRAY : TY_POLY_POLY_HASH;
+      lv_set_type(p, ty_is_array(p->type) ? TY_POLY_ARRAY : TY_POLY_POLY_HASH);
       p->push_widened = 1; changed = 1;
     }
     /* Reverse binding for an ARRAY argument: the callee mutates the very array
@@ -7520,7 +7520,7 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
          (each call overwriting it flipped the slot round after round) */
       TyKind pr = proc_ret_of(c, anode);
       if (pr != TY_UNKNOWN && p->proc_ret != TY_UNKNOWN) pr = ty_unify((TyKind)p->proc_ret, pr);
-      if (pr != TY_UNKNOWN && p->proc_ret != (int)pr) { p->proc_ret = (int)pr; changed = 1; }
+      if (pr != TY_UNKNOWN && p->proc_ret != (int)pr) { lv_set_proc_ret(p, (int)pr); changed = 1; }
     }
   }
   arg_layout_free(&L);
@@ -7835,10 +7835,10 @@ int infer_default_param_types(Compiler *c) {
         TyKind w = c->arr_want[dv];
         if ((ty_is_array(ep->type) || ty_is_obj_array(ep->type)) && ep->type != TY_POLY_ARRAY &&
             (w == TY_UNKNOWN || w == ep->type)) {
-          if (w != ep->type) { c->arr_want[dv] = ep->type; changed = 1; }
+          if (w != ep->type) { comp_set_arr_want(c, dv, ep->type); changed = 1; }
           continue;
         }
-        if ((ty_is_array(w) || ty_is_obj_array(w)) && w != TY_POLY_ARRAY) { c->arr_want[dv] = TY_POLY_ARRAY; changed = 1; }
+        if ((ty_is_array(w) || ty_is_obj_array(w)) && w != TY_POLY_ARRAY) { comp_set_arr_want(c, dv, TY_POLY_ARRAY); changed = 1; }
       }
       TyKind dt = infer_type(c, dv);
       /* An empty hash `{}` default returns TY_UNKNOWN from infer_type; treat
@@ -7930,7 +7930,7 @@ int infer_params_from_ivar_hash_ops(Compiler *c) {
         const char *anm = nt_str(nt, argv[0], "name");
         LocalVar *lv = anm ? scope_local(s, anm) : NULL;
         if (lv && lv->is_param && lv->type == TY_UNKNOWN) {
-          lv->type = hk; changed = 1;
+          lv_set_type(lv, hk); changed = 1;
         }
       }
     }
@@ -7940,7 +7940,7 @@ int infer_params_from_ivar_hash_ops(Compiler *c) {
         const char *anm = nt_str(nt, argv[1], "name");
         LocalVar *lv = anm ? scope_local(s, anm) : NULL;
         if (lv && lv->is_param && lv->type == TY_UNKNOWN) {
-          lv->type = hv; changed = 1;
+          lv_set_type(lv, hv); changed = 1;
         }
       }
     }
@@ -7989,7 +7989,7 @@ int infer_hash_params(Compiler *c) {
       else if (wkt == TY_SYMBOL) wwant = TY_SYM_POLY_HASH;
       else if (wkt == TY_INT) wwant = TY_POLY_POLY_HASH;
       if (wwant == TY_UNKNOWN) continue;
-      wlv->type = wwant; changed = 1;
+      lv_set_type(wlv, wwant); changed = 1;
       continue;
     }
     if (!sp_streq(ty, "CallNode")) continue;
@@ -8023,7 +8023,7 @@ int infer_hash_params(Compiler *c) {
       else if (sp_streq(kty, "SymbolNode"))
         want = TY_SYM_POLY_HASH;
       if (want == TY_UNKNOWN) continue;
-      lv->type = want; changed = 1;
+      lv_set_type(lv, want); changed = 1;
       continue;
     }
     /* []=: infer hash variant from key + value types */
@@ -8041,12 +8041,12 @@ int infer_hash_params(Compiler *c) {
       else if (kt2 == TY_SYMBOL) want = TY_SYM_POLY_HASH;
       else if (kt2 == TY_INT)    want = TY_POLY_POLY_HASH;
       if (want == TY_UNKNOWN) continue;
-      lv->type = want; changed = 1;
+      lv_set_type(lv, want); changed = 1;
       continue;
     }
     /* Hash-only methods: widen to str_poly_hash (most common variant) */
     for (int k = 0; hash_only_meths[k]; k++) {
-      if (sp_streq(name, hash_only_meths[k])) { lv->type = TY_STR_POLY_HASH; changed = 1; break; }
+      if (sp_streq(name, hash_only_meths[k])) { lv_set_type(lv, TY_STR_POLY_HASH); changed = 1; break; }
     }
   }
   return changed;
@@ -8086,7 +8086,7 @@ int infer_array_params(Compiler *c) {
     LocalVar *lv = scope_local(s, nt_str(nt, recv, "name"));
     if (lv && lv->is_param && !lv->rbs_seeded &&
         (lv->type == TY_UNKNOWN || (strong && ty_is_hash(lv->type)))) {
-      lv->type = TY_POLY_ARRAY; changed = 1;
+      lv_set_type(lv, TY_POLY_ARRAY); changed = 1;
     }
   }
   return changed;
@@ -8105,7 +8105,7 @@ int infer_string_params(Compiler *c) {
     if (!rty || !sp_streq(rty, "LocalVariableReadNode")) continue;
     Scope *s = comp_scope_of(c, id);
     LocalVar *lv = scope_local(s, nt_str(nt, recv, "name"));
-    if (lv && lv->is_param && lv->type == TY_UNKNOWN) { lv->type = TY_STRING; changed = 1; }
+    if (lv && lv->is_param && lv->type == TY_UNKNOWN) { lv_set_type(lv, TY_STRING); changed = 1; }
   }
   return changed;
 }
@@ -8128,7 +8128,7 @@ static int widen_proc_params_poly(Compiler *c, int ref) {
   for (int k = 0; k < rn && reqs; k++) {
     const char *pnm = nt_str(nt, reqs[k], "name");
     LocalVar *lv = pnm ? scope_local(sc, pnm) : NULL;
-    if (lv && !lv->rbs_seeded && lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
+    if (lv && !lv->rbs_seeded && lv->type != TY_POLY) { lv_set_type(lv, TY_POLY); changed = 1; }
   }
   return changed;
 }
@@ -8197,7 +8197,7 @@ static int widen_reaching_literals_poly(Compiler *c, int bexpr) {
     for (int k = 0; k < rn && reqs; k++) {
       const char *pnm = nt_str(nt, reqs[k], "name");
       LocalVar *lv = pnm ? scope_local(sc, pnm) : NULL;
-      if (lv && !lv->rbs_seeded && lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
+      if (lv && !lv->rbs_seeded && lv->type != TY_POLY) { lv_set_type(lv, TY_POLY); changed = 1; }
     }
   }
   return changed;
@@ -8320,7 +8320,7 @@ int bind_coerce_operator_params(Compiler *c) {
       if (m->nparams < 1 || !m->pnames[0]) continue;
       LocalVar *p = scope_local(m, m->pnames[0]);
       if (!p || p->rbs_seeded || p->type == TY_POLY) continue;
-      p->type = TY_POLY; changed = 1;
+      lv_set_type(p, TY_POLY); changed = 1;
     }
   }
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
@@ -8436,7 +8436,7 @@ static int struct_super_types_members(Compiler *c, int id, Scope *s) {
     if (class_ivar_pinned(cls, cls->ivars[a])) continue;
     if (spreads) {
       TyKind sm = ty_unify(cls->ivar_types[a], TY_POLY);
-      if (sm != cls->ivar_types[a]) { cls->ivar_types[a] = sm; changed = 1; }
+      if (sm != cls->ivar_types[a]) { ivar_set_type(cls, a, sm); changed = 1; }
       continue;
     }
     const char *mname = cls->ivars[a] + 1;
@@ -8482,7 +8482,7 @@ static int struct_super_types_members(Compiler *c, int id, Scope *s) {
     /* A Float member boxes without the nil check an Integer one has, so one
        that can be nil is kept boxed. */
     if (m == TY_FLOAT && (nilable || at == TY_NIL)) m = TY_POLY;
-    if (m != cls->ivar_types[a]) { cls->ivar_types[a] = m; changed = 1; }
+    if (m != cls->ivar_types[a]) { ivar_set_type(cls, a, m); changed = 1; }
   }
   return changed;
 }
@@ -8538,7 +8538,7 @@ static int struct_with_types_members(Compiler *c, int id, int ci) {
     for (int a = 0; a < cls->nmembers; a++) {
       if (!sp_streq(cls->ivars[a] + 1, kname) || class_ivar_pinned(cls, cls->ivars[a])) continue;
       TyKind m = ty_unify(cls->ivar_types[a], struct_member_arg_type(c, v));
-      if (m != cls->ivar_types[a]) { cls->ivar_types[a] = m; changed = 1; }
+      if (m != cls->ivar_types[a]) { ivar_set_type(cls, a, m); changed = 1; }
     }
   }
   return changed;
@@ -8604,7 +8604,7 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
     if (class_ivar_pin_holds(cls, cls->ivars[a], vnode >= 0 ? infer_type(c, vnode) : TY_NIL)) continue;
     if ((splat_at >= 0 && a >= splat_at) || (kw_splat && (vnode < 0 || splat_after) && (!kwf || a == 0))) {
       TyKind sm = ty_unify(cls->ivar_types[a], TY_POLY);
-      if (sm != cls->ivar_types[a]) { cls->ivar_types[a] = sm; changed = 1; }
+      if (sm != cls->ivar_types[a]) { ivar_set_type(cls, a, sm); changed = 1; }
       continue;
     }
     TyKind at = vnode >= 0 ? struct_member_arg_type(c, vnode) : TY_NIL;
@@ -8620,7 +8620,7 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
       if (!sn || sp_streq(sn, mname))
         m = ty_unify(m, struct_member_arg_type(c, v));
     }
-    if (m != cls->ivar_types[a]) { cls->ivar_types[a] = m; changed = 1; }
+    if (m != cls->ivar_types[a]) { ivar_set_type(cls, a, m); changed = 1; }
     /* An empty `{}` argument has no keys of its own: build it as the variant
        the member settles on, which writes through the member's reader can
        widen past what the literal alone says. Built as its own default it
@@ -8628,7 +8628,7 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
     if (vnode >= 0 && c->hash_want && vnode < c->node_cap && ty_is_hash(m) &&
         nt_kind(nt, vnode) == NK_HashNode && c->hash_want[vnode] != m) {
       int hen = 0; nt_arr(nt, vnode, "elements", &hen);
-      if (hen == 0) { c->hash_want[vnode] = m; changed = 1; }
+      if (hen == 0) { comp_set_hash_want(c, vnode, m); changed = 1; }
     }
   }
   return changed;
@@ -9413,7 +9413,7 @@ static int infer_param_types_ex(Compiler *c, int settle) {
             for (int a = 0; a < sk->nmembers; a++) {
               if (class_ivar_pinned(sk, sk->ivars[a])) continue;
               TyKind m = ty_unify(sk->ivar_types[a], TY_POLY);
-              if (m != sk->ivar_types[a]) { sk->ivar_types[a] = m; changed = 1; }
+              if (m != sk->ivar_types[a]) { ivar_set_type(sk, a, m); changed = 1; }
             }
           }
           splat_new = 1;
@@ -9563,7 +9563,7 @@ static int infer_param_types_ex(Compiler *c, int settle) {
              `@v.include?(o)`), and the rule then fed itself. */
           if (up->type != TY_INT && up->type != TY_FLOAT &&
               up->type != TY_BOOL && up->type != TY_SYMBOL) continue;
-          up->type = TY_POLY; up->poly_dispatch_widened = 1; changed = 1;
+          lv_set_type(up, TY_POLY); up->poly_dispatch_widened = 1; changed = 1;
         }
       }
     }
@@ -9791,7 +9791,7 @@ int infer_for_index(Compiler *c) {
       LocalVar *lv = scope_local_intern(isc, vn);
       lv->is_block_param = 1;  /* iteration-bound: survives the write-types reset */
       et = for_local_other_writes(c, lv, vn, et);
-      if (lv->type != et) { lv->type = et; changed = 1; }
+      if (lv->type != et) { lv_set_type(lv, et); changed = 1; }
     }
   }
   return changed;
@@ -9822,7 +9822,7 @@ int infer_catch_block_params(Compiler *c) {
        that String already; resetting it each round kept the fixpoint from
        settling */
     if (lv_is_handle_of(c, lv, want)) continue;
-    if (lv->type != want) { lv->type = want; changed = 1; }
+    if (lv->type != want) { lv_set_type(lv, want); changed = 1; }
   }
   return changed;
 }
@@ -10698,14 +10698,14 @@ static int block_params_widen(Compiler *c, int block, const BlockSig *s, int kep
     if (!kw && absentf[i]) tf = ty_unify(tf, TY_POLY);
     LocalVar *lv = scope_local_intern(bs, bp); lv->is_block_param = 1;
     if (!kept && (tf == TY_UNKNOWN || ty_unify(lv->type, tf) == lv->type)) continue;
-    if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
+    if (lv->type != TY_POLY) { lv_set_type(lv, TY_POLY); changed = 1; }
   }
   /* a destructuring parameter's leaves, which kept blocks bind too */
   for (int k = 0; kept; k++) {
     const char *bp = block_param_name(c, block, k);
     if (!bp) break;
     LocalVar *lv = scope_local_intern(bs, bp); lv->is_block_param = 1;
-    if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
+    if (lv->type != TY_POLY) { lv_set_type(lv, TY_POLY); changed = 1; }
   }
   return changed;
 }
@@ -10748,7 +10748,7 @@ int type_block_rest_params(Compiler *c) {
     if (!bs) continue;
     LocalVar *lv = scope_local_intern(bs, rn);
     lv->is_block_param = 1;
-    if (lv->type != TY_POLY_ARRAY) { lv->type = TY_POLY_ARRAY; changed = 1; }
+    if (lv->type != TY_POLY_ARRAY) { lv_set_type(lv, TY_POLY_ARRAY); changed = 1; }
   }
   return changed;
 }
@@ -11529,7 +11529,7 @@ int desugar_instance_eval_builtin(Compiler *c) {
       Scope *es = comp_scope_of(c, id);
       LocalVar *lv = es ? scope_local_intern(es, tmp) : NULL;
       if (!lv) continue;
-      lv->type = rt;
+      lv_set_type(lv, rt);
       /* seeded: the temp's type IS the receiver's static type, and the write
          pass's per-run reset must not wipe it -- node order processes users of
          the temp before its own (late, synthesized) write, so an unseeded temp
@@ -11638,7 +11638,7 @@ int widen_shared_cmp_params(Compiler *c) {
       if (comp_method_in_chain(c, k, "<=>", NULL) == mi) users++;
     if (users < 2) continue;
     LocalVar *p = scope_local(m, m->pnames[0]);
-    if (p && p->type != TY_POLY) { p->type = TY_POLY; changed = 1; }
+    if (p && p->type != TY_POLY) { lv_set_type(p, TY_POLY); changed = 1; }
   }
   return changed;
 }
@@ -12335,7 +12335,7 @@ int desugar_dir_surface(Compiler *c) {
       LocalVar *vlv = es ? scope_local(es, valn) : NULL;
       LocalVar *dlv = es ? scope_local(es, dirn) : NULL;
       if (!slv || !vlv || !dlv) continue;
-      slv->type = TY_STRING; slv->rbs_seeded = 1;
+      lv_set_type(slv, TY_STRING); slv->rbs_seeded = 1;
       LocalVar *plv = (cdp0 && es) ? scope_local(es, cdp0) : NULL;
       int aan = 0; const int *aav = nt_arr(nt, args, "arguments", &aan);
       if (aan < 1) continue;
@@ -12742,13 +12742,13 @@ int narrow_empty_array_args_by_yield(Compiler *c) {
       }
       if (restamp) {
         if (!open && acc != TY_UNKNOWN && ty_array_of(acc) != c->arr_want[a]) {
-          c->arr_want[a] = TY_POLY_ARRAY;
+          comp_set_arr_want(c, a, TY_POLY_ARRAY);
           changed = 1;
         }
         continue;
       }
       if (!open && (acc == TY_INT || acc == TY_FLOAT || acc == TY_STRING)) {
-        c->arr_want[a] = ty_array_of(acc);
+        comp_set_arr_want(c, a, ty_array_of(acc));
         changed = 1;
       }
     }
@@ -13320,7 +13320,7 @@ static int cs_type_params(Compiler *c, int create, const int *argv, int argc) {
     if ((merged == TY_INT || merged == TY_FLOAT) && (nil_int || (absent[k] & BS_ABSENT)) &&
         !lv->nullable_int) { lv->nullable_int = 1; changed = 1; }
     if (lit && !lv->nil_passed) { lv->nil_passed = 1; changed = 1; }
-    if (merged != lv->type) { lv->type = merged; changed = 1; }
+    if (merged != lv->type) { lv_set_type(lv, merged); changed = 1; }
     /* Reverse binding, as a method's (bind_call_params): an empty-`{}`-only
        local handed to a parameter the body types as a Hash is that Hash,
        filled through the reference; it takes the parameter's variant rather
@@ -13335,7 +13335,7 @@ static int cs_type_params(Compiler *c, int create, const int *argv, int argc) {
       if (al && !al->is_param && !al->is_block_param && al->type != lv->type &&
           (al->type == TY_UNKNOWN || al->type == TY_POLY || ty_is_hash(al->type)) &&
           local_all_writes_empty_hash(c, asc, an)) {
-        al->type = lv->type; changed = 1;
+        lv_set_type(al, lv->type); changed = 1;
       }
     }
   }
@@ -13363,7 +13363,7 @@ static int register_proc_numbered(Compiler *c, int create) {
           (nm[2] == '\0' || !strncmp(nm + 2, "__b", 3)))) continue;
     LocalVar *lv = scope_local_intern(bs, nm);
     lv->is_block_param = 1;
-    if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
+    if (lv->type != TY_POLY) { lv_set_type(lv, TY_POLY); changed = 1; }
   }
   free(used.v);
   return changed;
@@ -13695,14 +13695,14 @@ int block_settle_types(Compiler *c, int blk, const BlockSig *s,
       m = at;
     if (nil_int && m == at && !lv->nullable_int) { lv->nullable_int = 1; changed = 1; }
     if (m == TY_POLY && !lv->site_boxed) lv->site_boxed = at == TY_POLY && was != TY_POLY ? 1 : 2;
-    if (m != lv->type) { lv->type = m; changed = 1; }
+    if (m != lv->type) { lv_set_type(lv, m); changed = 1; }
   }
   const char *rest[2] = { block_rest_name(c, blk), block_kwrest_name(c, blk) };
   for (int r = 0; r < 2; r++) {
     if (!rest[r]) continue;
     LocalVar *lv = scope_local_intern(bs, rest[r]); lv->is_block_param = 1;
     TyKind m = r ? ty_unify(lv->type, TY_POLY_POLY_HASH) : TY_POLY_ARRAY;
-    if (m != lv->type) { lv->type = m; changed = 1; }
+    if (m != lv->type) { lv_set_type(lv, m); changed = 1; }
   }
   return changed;
 }
@@ -13852,7 +13852,7 @@ int narrow_site_boxed_block_params(Compiler *c) {
       for (int b = comp_kind_first(c, kinds[q]); b >= 0; b = comp_kind_next(c, b))
         if (b < c->node_cap && c->nscope[b] == sc && blkp_binds_param(c, b, lv->name)) binders++;
     if (!ok || binders != cbind[k]) continue;
-    lv->type = ct[k];
+    lv_set_type(lv, ct[k]);
     if (cn[k]) lv->nullable_int = 1;
     n++;
   }
@@ -13951,7 +13951,7 @@ static int proc_params_poly(const NodeTable *nt, Scope *bs, int pn, const char *
     if (!pname) continue;
     LocalVar *lv = scope_local_intern(bs, pname);
     lv->is_block_param = 1;
-    if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
+    if (lv->type != TY_POLY) { lv_set_type(lv, TY_POLY); changed = 1; }
   }
   return changed;
 }
@@ -14244,7 +14244,7 @@ static int infer_block_params_container_arms(Compiler *c, const NodeTable *nt, i
     if (sp_streq(name, "each_value")) {
       int hcls = hv_value_class(c, recv);
       if (hcls >= 0) {
-        if (vp->type != ty_object(hcls)) { vp->type = ty_object(hcls); changed = 1; }
+        if (vp->type != ty_object(hcls)) { lv_set_type(vp, ty_object(hcls)); changed = 1; }
         return changed | 2;
       }
     }
@@ -14619,13 +14619,13 @@ static TyKind block_elem_ty(Compiler *c, int id, int block, const char *name, in
       an_literal_int_rows(c, recv) && rows_param_read_only(nt, body, pn, 0)) {
     const char *cn = call_assigns_const(c, id);
     if (cn && const_rows_elem_reads_only(c, cn)) {
-      c->arr_want[recv] = TY_INT_ARRAY_ARRAY;
+      comp_set_arr_want(c, recv, TY_INT_ARRAY_ARRAY);
       return TY_INT_ARRAY;
     }
   }
   /* the rows no longer read as Integer arrays: the literal goes back to
      the general Array its elements build */
-  if (c->arr_want[recv] == TY_INT_ARRAY_ARRAY) c->arr_want[recv] = TY_UNKNOWN;
+  if (c->arr_want[recv] == TY_INT_ARRAY_ARRAY) comp_set_arr_want(c, recv, TY_UNKNOWN);
   return TY_POLY;
 }
 
@@ -14984,7 +14984,7 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
       const char *bp = block_param_name(c, block, k);
       if (!bp) break;
       LocalVar *lv = scope_local_intern(bs, bp); lv->is_block_param = 1;
-      if (lv->type == TY_UNKNOWN) { lv->type = deflt; changed = 1; }
+      if (lv->type == TY_UNKNOWN) { lv_set_type(lv, deflt); changed = 1; }
     }
     return changed | 2;
   }
@@ -14995,7 +14995,7 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
       sp_streq(nt_str(nt, recv, "name"), "Array")) {
     const char *p0 = block_param_name(c, block, 0);
     if (p0) { LocalVar *l = scope_local_intern(comp_scope_of(c, block), p0); l->is_block_param = 1;
-              if (l->type != TY_INT) { l->type = TY_INT; changed = 1; } }
+              if (l->type != TY_INT) { lv_set_type(l, TY_INT); changed = 1; } }
     return changed | 2;
   }
 
@@ -15014,7 +15014,7 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
       !cplan_const_user(c, id, nt_str(nt, recv, "name"), 1)) {
     const char *p0 = block_param_name(c, block, 0);
     if (p0) { LocalVar *l = scope_local_intern(comp_scope_of(c, block), p0); l->is_block_param = 1;
-              if (l->type != TY_IO) { l->type = TY_IO; changed = 1; } }
+              if (l->type != TY_IO) { lv_set_type(l, TY_IO); changed = 1; } }
     return changed | 2;
   }
 
@@ -15025,8 +15025,8 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
       const char *kp = block_param_name(c, block, 0);
       const char *vp = block_param_name(c, block, 1);
       Scope *bs = comp_scope_of(c, block);
-      if (kp) { LocalVar *l = scope_local_intern(bs, kp); l->is_block_param = 1; if (l->type != TY_SYMBOL) { l->type = TY_SYMBOL; changed = 1; } }
-      if (vp) { LocalVar *l = scope_local_intern(bs, vp); l->is_block_param = 1; if (l->type != TY_POLY) { l->type = TY_POLY; changed = 1; } }
+      if (kp) { LocalVar *l = scope_local_intern(bs, kp); l->is_block_param = 1; if (l->type != TY_SYMBOL) { lv_set_type(l, TY_SYMBOL); changed = 1; } }
+      if (vp) { LocalVar *l = scope_local_intern(bs, vp); l->is_block_param = 1; if (l->type != TY_POLY) { lv_set_type(l, TY_POLY); changed = 1; } }
       return changed | 2;
     }
   }
@@ -15185,7 +15185,7 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
             if (!bp2) break;
             LocalVar *lv2 = scope_local_intern(bs2, bp2);
             lv2->is_block_param = 1;
-            if (lv2->type != TY_POLY) { lv2->type = TY_POLY; changed = 1; }
+            if (lv2->type != TY_POLY) { lv_set_type(lv2, TY_POLY); changed = 1; }
           }
           return changed | 2;
         }
@@ -15251,7 +15251,7 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
           TyKind merged = ty_unify(lv->type, absent[k] ? ty_unify(at, TY_NIL) : at);
           if ((absent[k] & BS_NIL) && (merged == TY_INT || merged == TY_FLOAT) && g_promote_mode) merged = TY_POLY;
           if ((merged == TY_INT || merged == TY_FLOAT) && absent[k] && !lv->nullable_int) { lv->nullable_int = 1; changed = 1; }
-          if (merged != lv->type) { lv->type = merged; changed = 1; }
+          if (merged != lv->type) { lv_set_type(lv, merged); changed = 1; }
         }
       }
       changed |= block_params_widen(c, block, &s, kept, posf, absentf, posf + np);
@@ -15273,7 +15273,7 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
         const char *bp = block_param_name(c, block, k);
         if (!bp) break;
         LocalVar *lv = scope_local_intern(bs, bp); lv->is_block_param = 1;
-        if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
+        if (lv->type != TY_POLY) { lv_set_type(lv, TY_POLY); changed = 1; }
       }
       return changed | 2;
     }
@@ -15414,7 +15414,7 @@ int infer_block_params(Compiler *c) {
         if (rname && rname[0]) {
           LocalVar *lv = scope_local_intern(bs, rname);
           lv->is_block_param = 1;
-          if (lv->type != TY_POLY_ARRAY) { lv->type = TY_POLY_ARRAY; changed = 1; }
+          if (lv->type != TY_POLY_ARRAY) { lv_set_type(lv, TY_POLY_ARRAY); changed = 1; }
         }
         changed |= proc_params_poly(nt, bs, pn, "posts");
         changed |= proc_params_poly(nt, bs, pn, "optionals");
@@ -15441,7 +15441,7 @@ int infer_block_params(Compiler *c) {
     if (rname && rname[0]) {
       LocalVar *lv = scope_local_intern(bs, rname);
       lv->is_block_param = 1;
-      if (lv->type != TY_POLY_ARRAY) { lv->type = TY_POLY_ARRAY; changed = 1; }
+      if (lv->type != TY_POLY_ARRAY) { lv_set_type(lv, TY_POLY_ARRAY); changed = 1; }
     }
     changed |= proc_params_poly(nt, bs, pn, "posts");
     changed |= proc_params_poly(nt, bs, pn, "optionals");
@@ -15487,7 +15487,7 @@ int infer_block_params(Compiler *c) {
       if (!p) break;
       TyKind want = (k == 0) ? TY_POLY_POLY_HASH : TY_POLY;
       LocalVar *lv = scope_local_intern(bs, p); lv->is_block_param = 1;
-      if (lv->type != want) { lv->type = want; changed = 1; }
+      if (lv->type != want) { lv_set_type(lv, want); changed = 1; }
     }
   }
 
@@ -15539,7 +15539,7 @@ int infer_block_params(Compiler *c) {
         const char *nm = numbered_param_name(c, pn, k - 1);
         if (!nm) continue;
         LocalVar *lv = scope_local_intern(bs, nm); lv->is_block_param = 1;
-        if (!intern_only && lv->type != rt && !lv_is_handle_of(c, lv, rt)) { lv->type = rt; changed = 1; }
+        if (!intern_only && lv->type != rt && !lv_is_handle_of(c, lv, rt)) { lv_set_type(lv, rt); changed = 1; }
       }
       continue;
     }
@@ -15550,7 +15550,7 @@ int infer_block_params(Compiler *c) {
       const char *p = nt_str(nt, reqs[k], "name");
       if (!p) continue;
       LocalVar *lv = scope_local_intern(bs, p); lv->is_block_param = 1;
-      if (!intern_only && lv->type != rt && !lv_is_handle_of(c, lv, rt)) { lv->type = rt; changed = 1; }
+      if (!intern_only && lv->type != rt && !lv_is_handle_of(c, lv, rt)) { lv_set_type(lv, rt); changed = 1; }
     }
   }
 
@@ -15627,7 +15627,7 @@ int infer_block_params(Compiler *c) {
       const char *p = nt_str(nt, reqs[k], "name");
       if (!p) continue;
       LocalVar *lv = scope_local_intern(bs, p); lv->is_block_param = 1;
-      if (lv->type == TY_UNKNOWN) { lv->type = TY_POLY; changed = 1; }
+      if (lv->type == TY_UNKNOWN) { lv_set_type(lv, TY_POLY); changed = 1; }
     }
   }
 
@@ -15695,7 +15695,7 @@ int infer_block_params(Compiler *c) {
       const char *p = nt_str(nt, reqs[k], "name");
       if (!p) continue;
       LocalVar *lv = scope_local(bs, p);
-      if (lv && lv->type == TY_UNKNOWN) { lv->type = deflt; changed = 1; }
+      if (lv && lv->type == TY_UNKNOWN) { lv_set_type(lv, deflt); changed = 1; }
     }
   }
 
@@ -15995,7 +15995,7 @@ int infer_block_params(Compiler *c) {
          assigned the loop's sp_RbVal element to an sp_FloatArray * and the
          program did not compile. */
       if (pt == TY_UNKNOWN || !pure_block_param(c, s, p0)) continue;
-      lv->type = pt; changed = 1;
+      lv_set_type(lv, pt); changed = 1;
       continue;
     }
     if (lv_widen(lv, pt)) changed = 1;
@@ -16244,7 +16244,7 @@ int backprop_hash_return_types(Compiler *c) {
   for (int mi = 0; mi < ns; mi++) {
     if (!ty_is_hash(want[mi])) continue;   /* TY_UNKNOWN (none) or TY_POLY (conflict) */
     Scope *m = &c->scopes[mi];
-    if (m->ret == TY_UNKNOWN) { m->ret = want[mi]; changed = 1; }
+    if (m->ret == TY_UNKNOWN) { scope_set_ret(m, want[mi]); changed = 1; }
   }
   free(want);
   return changed;
@@ -16312,7 +16312,7 @@ static int irt_scope(Compiler *c, int s, IrtCtx *x) {
   }
   if (ret_seed_holds(sc, hbr)) {
     if (sc->ret == TY_STR_STR_HASH || sc->ret == TY_STR_INT_HASH) {
-      if (hbr == TY_STR_POLY_HASH) { sc->ret = TY_STR_POLY_HASH; ch = 1; }
+      if (hbr == TY_STR_POLY_HASH) { scope_set_ret(sc, TY_STR_POLY_HASH); ch = 1; }
     }
     /* Same shape, and the same reason. RBS `Integer` covers both machine
        ints and bignums, so a body that grew a bignum is a valid inhabitant
@@ -16323,7 +16323,7 @@ static int irt_scope(Compiler *c, int s, IrtCtx *x) {
     else if (sc->ret == TY_INT) {
       TyKind br = sc->body >= 0 ? infer_type(c, sc->body) : TY_UNKNOWN;
       if (has_ret && has_ret[s]) br = ty_unify(br, ret_acc[s]);
-      if (br == TY_BIGINT) { sc->ret = TY_BIGINT; ch = 1; }
+      if (br == TY_BIGINT) { scope_set_ret(sc, TY_BIGINT); ch = 1; }
     }
     return ch;
   }
@@ -16397,7 +16397,7 @@ static int irt_scope(Compiler *c, int s, IrtCtx *x) {
       int tn3 = 0; const int *tb3 = ts >= 0 ? nt_arr(nt, ts, "body", &tn3) : NULL;
       int en3 = 0; const int *eb3 = es >= 0 ? nt_arr(nt, es, "body", &en3) : NULL;
       TyKind et = en3 > 0 ? infer_type(c, eb3[en3 - 1]) : TY_NIL;
-      if (et != TY_UNKNOWN && sc->ret_noblock != et) sc->ret_noblock = et;
+      if (et != TY_UNKNOWN && sc->ret_noblock != et) scope_set_ret_noblock(sc, et);
       /* a block arm ending in `yield` is typed per call site by
          method_call_ret, as a yield-tailed body is; any other block arm
          types the method alone, even while it is still unknown: letting
@@ -16511,14 +16511,14 @@ static int irt_scope(Compiler *c, int s, IrtCtx *x) {
       sc->ret_why.then = then; sc->ret_why.round = g_infer_round;
     }
     else if (!ty_degraded(r)) why_reset(&sc->ret_why);
-    sc->ret = r; ch = 1;
+    scope_set_ret(sc, r); ch = 1;
   }
   /* For a method with a &block param, record the value type its block yields
      (unified across all call sites). Blocks passed to it are emitted returning
      this common type so the sp_proc_call ABI is consistent. */
   if (sc->blk_param && sc->blk_param[0] && !sc->yields && !sc->is_lowered_yield) {
     TyKind bvt = yield_value_type(c, (int)(sc - c->scopes));
-    if (bvt != TY_UNKNOWN && sc->blk_ret != (int)bvt) { sc->blk_ret = (int)bvt; ch = 1; }
+    if (bvt != TY_UNKNOWN && sc->blk_ret != (int)bvt) { scope_set_blk_ret(sc, (int)bvt); ch = 1; }
   }
   /* When the method returns a proc, record the proc's body return type so a
      caller's `m.call(...)` resolves its result type (factory pattern). */
@@ -16543,7 +16543,7 @@ static int irt_scope(Compiler *c, int s, IrtCtx *x) {
         if (an > 0) pr = ty_unify(pr == TY_UNKNOWN ? TY_UNKNOWN : pr, proc_ret_of(c, av[0]));
       }
     }
-    if (pr != TY_UNKNOWN && sc->ret_proc_ret != (int)pr) { sc->ret_proc_ret = (int)pr; ch = 1; }
+    if (pr != TY_UNKNOWN && sc->ret_proc_ret != (int)pr) { scope_set_ret_proc_ret(sc, (int)pr); ch = 1; }
   }
   return ch;
 }
@@ -16755,7 +16755,7 @@ int infer_return_types(Compiler *c) {
          default build's return convergence unchanged. */
       if (c->share_strings && c->scopes[s].yields &&
           block_given_tail_then_last(c, scope_body_last(c, s)) >= 0) continue;
-      c->scopes[s].ret_noblock = TY_UNKNOWN;
+      scope_set_ret_noblock(&c->scopes[s], TY_UNKNOWN);
     }
     for (int id = 0; id < nt->count; id++) {
       if (nt_kind(nt, id) != NK_ReturnNode) continue;
@@ -16765,7 +16765,7 @@ int infer_return_types(Compiler *c) {
       if (si < 0 || si >= ns) continue;
       TyKind rt = (ret_narrow && ret_narrow[id]) ? ret_narrow[id] : return_node_type(c, id);
       if (noblk && noblk[id] && rs->yields) {
-        rs->ret_noblock = rs->ret_noblock == TY_UNKNOWN ? rt : ty_unify(rs->ret_noblock, rt);
+        scope_set_ret_noblock(rs, rs->ret_noblock == TY_UNKNOWN ? rt : ty_unify(rs->ret_noblock, rt));
         continue;
       }
       ret_acc[si] = has_ret[si] ? ty_unify(ret_acc[si], rt) : rt;
@@ -16813,7 +16813,7 @@ int infer_return_types(Compiler *c) {
       if (ot->ret == TY_VOID || ot->ret == TY_UNKNOWN) continue;
       unified = (unified == TY_VOID) ? ot->ret : ty_unify(unified, ot->ret);
     }
-    if (unified != TY_VOID) { sc->ret = unified; changed = 1; }
+    if (unified != TY_VOID) { scope_set_ret(sc, unified); changed = 1; }
   }
 
   /* A method whose body ends in a call nothing resolves infers a void return:
@@ -16849,7 +16849,7 @@ int infer_return_types(Compiler *c) {
       /* Only when it moves. This assigned and reported unconditionally, so a
          return already settled on POLY answered "changed" every round and the
          fixpoint ran to its cap (#4116). */
-      if (value_used && sc->ret != TY_POLY) { sc->ret = TY_POLY; changed = 1; }
+      if (value_used && sc->ret != TY_POLY) { scope_set_ret(sc, TY_POLY); changed = 1; }
     }
     free(stmt_pos);
   }
@@ -16861,7 +16861,7 @@ int infer_return_types(Compiler *c) {
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
     if (sc->ret_oa_pin == TY_UNKNOWN) continue;
-    if (sc->ret == TY_POLY_ARRAY || sc->ret == sc->ret_oa_pin) sc->ret = sc->ret_oa_pin;
+    if (sc->ret == TY_POLY_ARRAY || sc->ret == sc->ret_oa_pin) scope_set_ret(sc, sc->ret_oa_pin);
     else sc->ret_oa_pin = TY_UNKNOWN;
   }
 
@@ -17165,7 +17165,7 @@ static void bi_promote(Compiler *c, int write_id, const char *lname) {
      bound int from a call site still widens; a body local derives its type
      from the body the scan is reading and widens from unknown as before. */
   if (lv->is_param && lv->type == TY_UNKNOWN) return;
-  if (lv->type == TY_UNKNOWN || lv->type == TY_INT) lv->type = TY_BIGINT;
+  if (lv->type == TY_UNKNOWN || lv->type == TY_INT) lv_set_type(lv, TY_BIGINT);
 }
 
 static void bi_scan_loop_node(Compiler *c, int id, const BiPair *pairs, int np) {
@@ -17504,7 +17504,7 @@ int desugar_io_console_modes(Compiler *c) {
     if (bp0) scope_local_intern(es, bp0);
     LocalVar *slv = scope_local(es, savn);
     if (!slv || !scope_local(es, ion) || !scope_local(es, valn)) continue;
-    slv->type = TY_INT;
+    lv_set_type(slv, TY_INT);
     int base = nt->count;
     /* __io = recv */
     int wio = nt_new_node(nt, "LocalVariableWriteNode");

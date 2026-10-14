@@ -353,7 +353,7 @@ void register_cext_layouts(Compiler *c) {
     if (nt_int(c->nt, s->def_node, "cext_stub", 0)) { s->is_ext_entry = 1; lower_constant_stub(c, mi); }
     for (int p = 0; p < s->nparams; p++) {
       LocalVar *lv = scope_local(s, s->pnames[p]);
-      if (lv) lv->type = p == s->rest_idx ? TY_POLY_ARRAY : TY_POLY;
+      if (lv) lv_set_type(lv, p == s->rest_idx ? TY_POLY_ARRAY : TY_POLY);
     }
   }
   /* A Ruby method C may call publishes an opaque VALUE. Pin its return
@@ -365,7 +365,7 @@ void register_cext_layouts(Compiler *c) {
     for (int mi = 1; mi < c->nscopes; mi++) {
       Scope *s = &c->scopes[mi];
       if (s->class_id < 0 || !s->name || !sp_streq(s->name, stub->key)) continue;
-      s->ret = TY_POLY; s->ret_rbs_seeded = 1;
+      scope_set_ret(s, TY_POLY); s->ret_rbs_seeded = 1;
     }
   }
   for (int q = 0; q < c->n_cext_classes; q++) {

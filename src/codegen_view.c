@@ -151,13 +151,13 @@ static int view_read(Compiler *c, int kind, int id) {
 }
 static void view_write(Compiler *c, int kind, int id, int v) {
   switch (kind) {
-  case VK_TYPE:          c->ntype[id] = (TyKind)v; break;
-  case VR_STRBUF_BOX:    c->strbuf_box[id] = (unsigned char)v; break;
+  case VK_TYPE:          comp_set_ntype(c, id, (TyKind)v); break;
+  case VR_STRBUF_BOX:    comp_set_strbuf_box(c, id, (unsigned char)v); break;
   case VR_HANDLE_DEMAND: c->strbuf_handle_demand[id] = (unsigned char)v; break;
   case VR_POLY_LIFT:     c->poly_strbuf_lift[id] = (unsigned char)v; break;
   case VR_NIL_TESTED:    c->nil_tested[id] = (unsigned char)v; break;
   case VR_HEAD_HELD:     c->head_held[id] = (unsigned char)v; break;
-  default:               c->nilnarrow[id] = (TyKind)v; break;
+  default:               comp_set_nilnarrow(c, id, (TyKind)v); break;
   }
 }
 
@@ -331,7 +331,7 @@ void arm_body_infer(Compiler *c, int site, int block, TyKind kind, const int *bo
   const ArmFact *rf = !g_arm_check && arm_site_reads(site) ? arm_fact_find(c, block, kind) : NULL;
   if (rf) {
     /* the body's types under this arm, as the analysis recorded them */
-    for (int i = 0; i < rf->n; i++) if (rf->nodes[i] < c->node_cap) c->ntype[rf->nodes[i]] = rf->types[i];
+    for (int i = 0; i < rf->n; i++) if (rf->nodes[i] < c->node_cap) comp_set_ntype(c, rf->nodes[i], rf->types[i]);
   }
   else for (int j = 0; j < n; j++) infer_type(c, body[j]);
   if (g_arm_check) {

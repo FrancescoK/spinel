@@ -1397,7 +1397,7 @@ void emit_strbuf_handle_of(Compiler *c, int v, Buf *b) {
   if (repr_share_rule(c) && strbuf_plain_self_call(c, v) && emit_bang_self_handle(c, v, b)) return;
   LocalVar slot;
   memset(&slot, 0, sizeof slot);
-  slot.type = TY_STRBUF;
+  lv_set_type(&slot, TY_STRBUF);
   slot.str_shared = 1;
   emit_strbuf_value(c, &slot, v, b);
 }
@@ -4678,7 +4678,7 @@ void emit_strbuf_ivar_store(Compiler *c, int shared, int v, Buf *b) {
   const NodeTable *nt = c->nt;
   LocalVar slot;
   memset(&slot, 0, sizeof slot);
-  slot.type = TY_STRBUF;
+  lv_set_type(&slot, TY_STRBUF);
   slot.str_shared = shared ? 1 : 0;
   /* --share-strings: a value that ran ahead with its handle taken
      (emit_arg_temp) is that handle: its statements ran there */
@@ -17121,7 +17121,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     if (h.r.share) {
       LocalVar slot;
       memset(&slot, 0, sizeof slot);
-      slot.type = TY_STRBUF;
+      lv_set_type(&slot, TY_STRBUF);
       slot.str_shared = 1;
       if (nt_kind(nt, v) == NK_NilNode) buf_puts(b, "NULL");
       else emit_strbuf_value(c, &slot, v, b);

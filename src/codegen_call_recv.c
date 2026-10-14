@@ -1754,7 +1754,7 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
       Scope *ms = comp_scope_of(c, block);
       LocalVar *mlv = (ms && bp0) ? scope_local(ms, bp0) : NULL;
       TyKind msaved = mlv ? mlv->type : TY_UNKNOWN;
-      if (mlv) { mlv->type = et; for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]); }
+      if (mlv) { lv_set_type(mlv, et); for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]); }
       int trecv = ++g_tmp, ti = ++g_tmp;
       Buf rb = expr_buf(c, recv);
       emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
@@ -1795,7 +1795,7 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
         if (g_share_check && et == TY_STRING) share_check_declare_local_reads(c, g_pre, store_at, bp); }
       free(vb.p);
       emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-      if (mlv) mlv->type = msaved;
+      if (mlv) lv_set_type(mlv, msaved);
       buf_printf(b, "_t%d", trecv); { *out = 1; return 1; }
     }
   }
@@ -5731,7 +5731,7 @@ static int emit_merge_block_boxed(Compiler *c, int id, int recv, int arg, int mb
       const char *pn = block_param_name(c, mblk, i);
       mlv[i] = (ms && pn) ? scope_local(ms, pn) : NULL;
       msave[i] = mlv[i] ? mlv[i]->type : TY_UNKNOWN;
-      if (mlv[i]) mlv[i]->type = TY_POLY;
+      if (mlv[i]) lv_set_type(mlv[i], TY_POLY);
     }
     for (int j = 0; j < mbn; j++) infer_subtree(c, mbb[j]);
     int ta = ++g_tmp, tb = ++g_tmp, tr = ++g_tmp, tp = ++g_tmp, ti = ++g_tmp, tk = ++g_tmp;
@@ -5785,7 +5785,7 @@ static int emit_merge_block_boxed(Compiler *c, int id, int recv, int arg, int mb
        otherwise concatenate into the `} else` form the C style forbids */
     buf_printf(b, "\nelse sp_PolyPolyHash_set(_t%d, _tk%d, _tv%d); }", tr, tk, tk);
     buf_printf(b, " _t%d; })", tr);
-    for (int i = 0; i < 3; i++) if (mlv[i]) mlv[i]->type = msave[i];
+    for (int i = 0; i < 3; i++) if (mlv[i]) lv_set_type(mlv[i], msave[i]);
     return 1;
   }
   return 0;

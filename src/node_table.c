@@ -268,7 +268,7 @@ int nt_clone_subtree(NodeTable *nt, int root) {
   }
   int newroot = map[root];
   nt->count = base + sn;
-  nt->version++;
+  nt->version++; nt->edits++;
   nt->node_cap = nt->count;  /* realloc above sized the array exactly */
   free(list); free(map);
   return newroot;
@@ -287,7 +287,7 @@ void nt_node_set_type(NodeTable *nt, int id, const char *type) {
   SpNode *nd = &nt->nodes[id];
   node_set_type(nd, type, strlen(type));
   nd->kind = 0;          /* the cached NodeKind is stale now */
-  nt->version++;
+  nt->version++; nt->edits++;
   nki_retyped(nt, id, was);
 }
 int nt_new_node(NodeTable *nt, const char *type) {
@@ -300,7 +300,7 @@ int nt_new_node(NodeTable *nt, const char *type) {
     nt->node_cap = nc;
   }
   int id = nt->count++;
-  nt->version++;
+  nt->version++; nt->edits++;
   SpNode *nd = &nt->nodes[id];
   memset(nd, 0, sizeof(SpNode));
   if (type) node_set_type(nd, type, strlen(type));
@@ -322,7 +322,7 @@ void nt_node_reset(NodeTable *nt, int id, const char *type) {
   SpNode *nd = (SpNode *)node_at(nt, id);
   if (!nd) return;
   NodeKind was = nt_kind(nt, id);
-  nt->version++;
+  nt->version++; nt->edits++;
   free(nd->type); nd->type = NULL;
   free(nd->content); nd->content = NULL;
   for (int j = 0; j < nd->ns; j++) { free(nd->s[j].key); free(nd->s[j].val); }
@@ -338,7 +338,7 @@ void nt_node_reset(NodeTable *nt, int id, const char *type) {
 void nt_node_set_str(NodeTable *nt, int id, const char *key, const char *val) {
   SpNode *nd = (SpNode *)node_at(nt, id);
   if (!nd) return;
-  nt->version++;
+  nt->version++; nt->edits++;
   size_t klen = strlen(key), vlen = strlen(val);
   if (vlen == 16 && !strcmp(val, "__cext_extension") && !strcmp(key, "name")) nt->has_cext_decls = 1;
   for (int j = 0; j < nd->ns; j++)
@@ -352,7 +352,11 @@ void nt_node_set_int(NodeTable *nt, int id, const char *key, long long val) {
   SpNode *nd = (SpNode *)node_at(nt, id);
   if (!nd) return;
   for (int j = 0; j < nd->ni; j++)
-    if (sp_streq(nd->i[j].key, key)) { nd->i[j].val = val; return; }
+    if (sp_streq(nd->i[j].key, key)) {
+      if (nd->i[j].val != val) { nd->i[j].val = val; nt->edits++; }
+      return;
+    }
+  nt->edits++;
   node_add_int(nd, key, strlen(key), val);
 }
 
@@ -360,13 +364,18 @@ void nt_node_set_ref(NodeTable *nt, int id, const char *key, int child) {
   SpNode *nd = (SpNode *)node_at(nt, id);
   if (!nd) return;
   for (int j = 0; j < nd->nr; j++)
-    if (sp_streq(nd->r[j].key, key)) { nd->r[j].ref = child; return; }
+    if (sp_streq(nd->r[j].key, key)) {
+      if (nd->r[j].ref != child) { nd->r[j].ref = child; nt->edits++; }
+      return;
+    }
+  nt->edits++;
   node_add_ref(nd, key, strlen(key), child);
 }
 
 void nt_node_set_arr(NodeTable *nt, int id, const char *key, const int *ids, int n) {
   SpNode *nd = (SpNode *)node_at(nt, id);
   if (!nd) return;
+  nt->edits++;
   int *copy = NULL;
   if (n > 0) {
     copy = nt_alloc(sizeof(int) * (size_t)n);
@@ -517,7 +526,7 @@ void nt_swap_nodes(NodeTable *nt, int a, int b) {
   SpNode t = nt->nodes[a];
   nt->nodes[a] = nt->nodes[b];
   nt->nodes[b] = t;
-  nt->version++;
+  nt->version++; nt->edits++;
   nki_nt = NULL;   /* the kind index lists ids by kind: rebuild it */
 }
 
@@ -532,7 +541,7 @@ const int *nt_nodes_of_kind(const NodeTable *nt, NodeKind k, int *count) {
 int nt_set_str(NodeTable *nt, int id, const char *key, const char *val) {
   SpNode *nd = (SpNode *)node_at(nt, id);
   if (!nd) return 0;
-  nt->version++;
+  nt->version++; nt->edits++;
   size_t vlen = strlen(val);
   for (int j = 0; j < nd->ns; j++) {
     if (sp_streq(nd->s[j].key, key)) {

@@ -1643,12 +1643,12 @@ int sb_shim_shadow(const char *name, const char *rn) {
 SbShimSave sb_shim_enter(LocalVar *lv) {
   SbShimSave sv = { lv->type, lv->shim_ty, lv->shim_lift };
   lv->shim_ty = lv->type;
-  lv->type = TY_STRING;
+  lv_set_type(lv, TY_STRING);
   lv->shim_lift = 0;
   return sv;
 }
 void sb_shim_leave(LocalVar *lv, SbShimSave sv) {
-  lv->type = sv.type;
+  lv_set_type(lv, sv.type);
   lv->shim_ty = sv.shim_ty;
   lv->shim_lift = sv.shim_lift;
 }
@@ -1664,8 +1664,8 @@ static void sb_shim_lifted(Compiler *c, int node, int delta) {
     if (!sb_shim_shadow(g_ren_from[i], g_ren_to[i])) continue;
     LocalVar *lv = scope_local(sc, g_ren_from[i]);
     if (!lv || lv->shim_ty == TY_UNKNOWN) continue;
-    if (delta > 0) { if (lv->shim_lift++ == 0) lv->type = lv->shim_ty; }
-    else if (--lv->shim_lift == 0) lv->type = TY_STRING;
+    if (delta > 0) { if (lv->shim_lift++ == 0) lv_set_type(lv, lv->shim_ty); }
+    else if (--lv->shim_lift == 0) lv_set_type(lv, TY_STRING);
   }
 }
 void sb_shim_lift(Compiler *c, int node) { sb_shim_lifted(c, node, 1); }

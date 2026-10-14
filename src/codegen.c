@@ -3109,7 +3109,7 @@ void emit_scope_decls_ends(Compiler *c, Scope *s, Buf *b, size_t *ends) {
          loop emitter binds it, and an empty literal receiver leaves no element
          type to infer, so `[].each_with_index { |x, i| }` referenced an
          undeclared lv_x (#3853). A boxed slot is what the binding writes. */
-      if (lv->type == TY_UNKNOWN && lv->is_block_param) lv->type = TY_POLY;
+      if (lv->type == TY_UNKNOWN && lv->is_block_param) lv_set_type(lv, TY_POLY);
       int vol = has_begin && (all_vol || name_list_has(volnames, nvol, lv->name));
       declare_local(c, b, lv, vol);
     }
@@ -4717,10 +4717,10 @@ static void inherit_transplant_locals(Compiler *c, Scope *s) {
       LocalVar sl = src->locals[k];  /* copy: intern may realloc src->locals */
       if (!sl.name || scope_local(s, sl.name)) continue;
       LocalVar *dl = scope_local_intern(s, sl.name);
-      dl->type = sl.type;
+      lv_set_type(dl, sl.type);
       dl->is_param = sl.is_param;
       dl->is_block_param = sl.is_block_param;
-      dl->proc_ret = sl.proc_ret;
+      lv_set_proc_ret(dl, sl.proc_ret);
       dl->is_cell = sl.is_cell;
       dl->byref_out = sl.byref_out;
       dl->borrowed_volatile = sl.borrowed_volatile;
@@ -16601,7 +16601,7 @@ static int deferred_raise_body(Compiler *c, int like, int scope, const char *msg
   nt_node_set_arr(nt, args, "arguments", av, 2);
   nt_node_set_ref(nt, call, "arguments", args);
   nt_node_set_arr(nt, st, "body", &call, 1);
-  c->ntype[cls] = TY_CLASS; c->ntype[str] = TY_STRING; c->ntype[call] = TY_VOID; c->ntype[st] = TY_VOID;
+  comp_set_ntype(c, cls, TY_CLASS); comp_set_ntype(c, str, TY_STRING); comp_set_ntype(c, call, TY_VOID); comp_set_ntype(c, st, TY_VOID);
   return st;
 }
 

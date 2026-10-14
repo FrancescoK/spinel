@@ -59,6 +59,10 @@ typedef struct {
      exactly the edits that can change which node carries which name. Caches
      keyed on node identity or name can revalidate against it. */
   unsigned version;
+  /* Bumped by every edit of a node, an int, ref or array field's included,
+     which version leaves out. infer_type keeps an earlier query's answers
+     only while it has not moved (#8852). */
+  unsigned long edits;
 } NodeTable;
 
 

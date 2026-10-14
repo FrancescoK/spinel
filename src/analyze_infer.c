@@ -2594,7 +2594,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
           id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN &&
           an_user_defines_or_reads(c, name)) {
         TyKind bt = an_builtin_answer(c, id);
-        c->poly_builtin_ty[id] = bt;
+        comp_set_poly_builtin_ty(c, id, bt);
       }
       if (is_text_conversion(name)) { *out = an_poly_concrete(c, name, TY_STRING); return 1; }
       if ((is_substitution(name)) && argc == 2) { *out = an_poly_concrete(c, name, TY_STRING); return 1; }
@@ -3024,7 +3024,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
         if (!phit) {
           TyKind pbt = an_builtin_answer(c, id);
           narrow_memo_put(pk, (int)pbt);
-          if (pbt != TY_UNKNOWN && pbt != TY_VOID) c->poly_builtin_ty[id] = pbt;
+          if (pbt != TY_UNKNOWN && pbt != TY_VOID) comp_set_poly_builtin_ty(c, id, pbt);
         }
       }
       if (found && !an_builtin_only && r != TY_POLY && r != TY_UNKNOWN &&
@@ -3070,7 +3070,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
            their answer is the one their arms were built against. */
         if (bt != TY_UNKNOWN && bt != TY_VOID && c->poly_builtin_ty && !an_pure_reads &&
             id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN)
-          c->poly_builtin_ty[id] = bt;
+          comp_set_poly_builtin_ty(c, id, bt);
         if (bt != TY_UNKNOWN && bt != TY_VOID && bt != r) { *out = TY_POLY; return 1; }
       }
       if (found) { *out = r; return 1; }
@@ -3086,7 +3086,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
         if (bt != TY_UNKNOWN && bt != TY_VOID) {
           if (c->poly_builtin_ty && !an_pure_reads && id < c->node_cap &&
               c->poly_builtin_ty[id] == TY_UNKNOWN)
-            c->poly_builtin_ty[id] = bt;
+            comp_set_poly_builtin_ty(c, id, bt);
           { *out = an_poly_concrete(c, name, TY_POLY); return 1; }
         }
       }
@@ -3371,7 +3371,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
         if (ubt != TY_UNKNOWN && ubt != TY_VOID) {
           if (c->poly_builtin_ty && !an_pure_reads && id < c->node_cap &&
               c->poly_builtin_ty[id] == TY_UNKNOWN)
-            c->poly_builtin_ty[id] = ubt;
+            comp_set_poly_builtin_ty(c, id, ubt);
           { *out = TY_POLY; return 1; }
         }
       }
@@ -3766,7 +3766,7 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
         const char *bp0 = block_param_name(c, blk, 0);
         Scope *bs = bp0 ? comp_scope_of(c, blk) : NULL;
         LocalVar *blv = (bs && bp0) ? scope_local(bs, bp0) : NULL;
-        if (blv && !an_pure_reads) blv->type = TY_IO;
+        if (blv && !an_pure_reads) lv_set_type(blv, TY_IO);
         { *out = TY_POLY; return 1; }
       }
     }
@@ -3904,7 +3904,7 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
         const char *bp0 = block_param_name(c, blk, 0);
         Scope *bs = bp0 ? comp_scope_of(c, blk) : NULL;
         LocalVar *blv = (bs && bp0) ? scope_local(bs, bp0) : NULL;
-        if (blv && !an_pure_reads) blv->type = TY_STRING;
+        if (blv && !an_pure_reads) lv_set_type(blv, TY_STRING);
       }
       { *out = TY_ARGF; return 1; }
     }
@@ -3919,7 +3919,7 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
     const char *dp0 = block_param_name(c, dblk, 0);
     Scope *dbs = dp0 ? comp_scope_of(c, dblk) : NULL;
     LocalVar *dlv = (dbs && dp0) ? scope_local(dbs, dp0) : NULL;
-    if (dlv && !an_pure_reads) dlv->type = TY_DIR;
+    if (dlv && !an_pure_reads) lv_set_type(dlv, TY_DIR);
     { *out = TY_POLY; return 1; }   /* block form: the block's boxed value (File.open's rule) */
   }
   if (recv >= 0 && rt == TY_DIR) {
@@ -3941,7 +3941,7 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
         const char *dbp3 = block_param_name(c, dblk3, 0);
         Scope *dbs3 = dbp3 ? comp_scope_of(c, dblk3) : NULL;
         LocalVar *dlv3 = (dbs3 && dbp3) ? scope_local(dbs3, dbp3) : NULL;
-        if (dlv3) dlv3->type = TY_STRING;
+        if (dlv3) lv_set_type(dlv3, TY_STRING);
       }
       { *out = TY_DIR; return 1; }
     }
@@ -4013,7 +4013,7 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
            storage fixpoint never settled */
         int handle = blv && blv->type == TY_STRBUF && blv->str_shared && c->share_strings &&
                      !is_byte_codepoint_each(name);
-        if (blv && !handle) blv->type = (is_byte_codepoint_each(name)) ? TY_INT : TY_STRING;
+        if (blv && !handle) lv_set_type(blv, (is_byte_codepoint_each(name)) ? TY_INT : TY_STRING);
       }
       { *out = TY_IO; return 1; }
     }
@@ -6126,11 +6126,11 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
       Scope *bs = bp0 ? comp_scope_of(c, blk_id) : NULL;
       LocalVar *blv = (bs && bp0) ? scope_local(bs, bp0) : NULL;
       TyKind saved_blv = blv ? blv->type : TY_UNKNOWN;
-      if (blv && rt != TY_UNKNOWN) blv->type = rt;
+      if (blv && rt != TY_UNKNOWN) lv_set_type(blv, rt);
       g_infer_blv_pin++;
       TyKind result = then_block_value_ty(c, bdy, infer_type(c, bbb[bbn - 1]));
       g_infer_blv_pin--;
-      if (blv) blv->type = saved_blv;
+      if (blv) lv_set_type(blv, saved_blv);
       { *out = result; return 1; }
     }
   }
@@ -6500,7 +6500,7 @@ static int infer_runtime_value_call(Compiler *c, int id, const NodeTable *nt, co
       (is_pop_shift(name))) {
     if (c->poly_builtin_ty && !an_pure_reads && id < c->node_cap &&
         c->poly_builtin_ty[id] == TY_UNKNOWN)
-      c->poly_builtin_ty[id] = TY_POLY_ARRAY;   /* the dispatch's builtin default */
+      comp_set_poly_builtin_ty(c, id, TY_POLY_ARRAY);   /* the dispatch's builtin default */
     for (int k = 0; k < c->nclasses; k++)
       if (comp_poly_arm_defines_n(c, k, name, argc)) { *out = TY_POLY; return 1; }
     { *out = TY_POLY_ARRAY; return 1; }
@@ -6518,7 +6518,7 @@ static int infer_runtime_value_call(Compiler *c, int id, const NodeTable *nt, co
        own to_i makes the call poly (emit_poly_str_prearm) */
     if (c->poly_builtin_ty && !an_pure_reads && id < c->node_cap &&
         c->poly_builtin_ty[id] == TY_UNKNOWN)
-      c->poly_builtin_ty[id] = TY_INT;
+      comp_set_poly_builtin_ty(c, id, TY_INT);
     for (int k = 0; k < c->nclasses; k++) {
       if (c->classes[k].is_native_class) {
         if (comp_poly_arm_defines_n(c, k, name, argc)) { *out = TY_POLY; return 1; }
@@ -7788,7 +7788,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      method answered `{}` where CRuby answered an Array (#3952). */
   if (recv >= 0 && argc == 0 && (is_copy_alias(name)) &&
       infer_type(c, recv) == TY_POLY) {
-    if (c->poly_builtin_ty && !an_pure_reads && id < c->node_cap) c->poly_builtin_ty[id] = TY_POLY;
+    if (c->poly_builtin_ty && !an_pure_reads && id < c->node_cap) comp_set_poly_builtin_ty(c, id, TY_POLY);
     return TY_POLY;
   }
 
@@ -9576,9 +9576,10 @@ TyKind infer_uncached(Compiler *c, int id) {
      demand saw `x.to_s.strip` while the re-narrow had x re-cleared, and
      the box the value now is was handed on as a String. */
   if (c->strbuf_box[id]) {
-    c->strbuf_box[id] = 0;
+    /* put back before it returns: not a change of the table */
+    ((unsigned char *)c->strbuf_box)[id] = 0;
     TyKind u = infer_uncached(c, id);
-    c->strbuf_box[id] = 1;
+    ((unsigned char *)c->strbuf_box)[id] = 1;
     return u == TY_POLY ? TY_POLY : TY_STRBUF;
   }
   /* a multiple assignment's element, read back for desugar_masgn_store_evidence:
@@ -10732,7 +10733,7 @@ TyKind infer_type(Compiler *c, int id) {
   /* Nor is a pure read's answer recorded (an_pure_reads): it is asked after
      the analysis, under whatever view codegen has open. */
   if (!an_builtin_only && !an_pure_reads && id != an_pinned_node) {
-    c->ntype[id] = t;
+    comp_set_ntype(c, id, t);
     /* the origin only when a consumer asked (--warn-widen, --emit-types):
        its ivar arm walks the program's ivar writes per read and its call
        arm scans the scopes by name, +10% analysis on optcarrot and +23% on

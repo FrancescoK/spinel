@@ -1901,7 +1901,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     Scope *ebs = ebp ? comp_scope_of(c, eb) : NULL;
     LocalVar *ebl = (ebs && ebp) ? scope_local(ebs, ebp) : NULL;
     if (ebl && ebl->type != TY_STRING && !(ebl->type == TY_STRBUF && ebl->str_shared && c->share_strings))
-      ebl->type = ebl->type == TY_INT || (ebl->type == TY_POLY && block_yields_int_too(nt, eb)) ? TY_POLY : TY_STRING;
+      lv_set_type(ebl, ebl->type == TY_INT || (ebl->type == TY_POLY && block_yields_int_too(nt, eb)) ? TY_POLY : TY_STRING);
     { *out = TY_STRING; return 1; }
   }
   if (recv >= 0 && rt == TY_POLY && argc == 0 && is_byte_codepoint_each(name) &&
@@ -1910,7 +1910,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     const char *ebp = block_param_name(c, eb, 0);
     Scope *ebs = ebp ? comp_scope_of(c, eb) : NULL;
     LocalVar *ebl = (ebs && ebp) ? scope_local(ebs, ebp) : NULL;
-    if (ebl && ebl->type != TY_INT && ebl->type != TY_POLY) ebl->type = ebl->type == TY_UNKNOWN ? TY_INT : TY_POLY;
+    if (ebl && ebl->type != TY_INT && ebl->type != TY_POLY) lv_set_type(ebl, ebl->type == TY_UNKNOWN ? TY_INT : TY_POLY);
     { *out = TY_STRING; return 1; }
   }
   /* `poly.empty?`: the dispatch carries builtin String / Array / Hash arms, so

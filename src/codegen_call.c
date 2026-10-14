@@ -7102,7 +7102,7 @@ static int emit_poly_builtin_default_spread(Compiler *c, int id, int recv, const
   int an[3];
   for (int n = 0; n < 3; n++) an[n] = nt_new_node(nt, "ArgumentsNode");
   comp_grow_node_arrays(c);
-  for (int k = 0; k < 2; k++) c->ntype[el[k]] = TY_POLY;
+  for (int k = 0; k < 2; k++) comp_set_ntype(c, el[k], TY_POLY);
   nt_node_set_arr(nt, an[0], "arguments", NULL, 0);
   for (int n = 1; n < 3; n++) nt_node_set_arr(nt, an[n], "arguments", el, n);
   Buf arms; memset(&arms, 0, sizeof arms);
@@ -26110,7 +26110,7 @@ static void emit_callee_local_decls(Compiler *c, Scope *tm, Buf *b) {
     /* The method prologue normalizes an untyped block param to a boxed slot;
        this frame may be emitted before that prologue runs, and declare_local
        rejects TY_UNKNOWN. */
-    if (blv->type == TY_UNKNOWN) blv->type = TY_POLY;
+    if (blv->type == TY_UNKNOWN) lv_set_type(blv, TY_POLY);
     if (!blv->is_cell) { declare_local_named(c, b, blv, blv->name, 0); continue; }
     /* A celled local: emit_inlined_local_decl declares the plain shadow slot
        the inline iterator binds, then the heap cell the closure reads. */
@@ -26248,7 +26248,7 @@ int declare_default_locals(Compiler *c, Scope *m, int dnode) {
     if (!uid) uid = ++g_tmp;
     char rn[160];
     snprintf(rn, sizeof rn, "_dl%d_%s", uid, lv->name);
-    if (lv->type == TY_UNKNOWN) lv->type = TY_POLY;
+    if (lv->type == TY_UNKNOWN) lv_set_type(lv, TY_POLY);
     /* a name the rename table cannot hold is declared as the default spells
        it, unrenamed */
     if (g_nren >= MAX_RENAME || strlen(lv->name) >= sizeof g_ren_from[0] ||

@@ -6482,7 +6482,7 @@ int desugar_to_proc_block_arg(Compiler *c) {
     comp_grow_node_arrays(c);
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
     LocalVar *lv = scope_local_intern(comp_scope_of(c, id), tpname);
-    lv->type = TY_PROC;
+    lv_set_type(lv, TY_PROC);
     changed = 1;
   }
   return changed;
@@ -6534,7 +6534,7 @@ int desugar_proc_expr_block_arg(Compiler *c) {
     comp_grow_node_arrays(c);
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
     LocalVar *lv = scope_local_intern(comp_scope_of(c, id), bname);
-    lv->type = TY_PROC;
+    lv_set_type(lv, TY_PROC);
     changed = 1;
   }
   return changed;
@@ -6829,7 +6829,7 @@ static void fwd_drop_spent_anon_block_param(Compiler *c, int id, int n0) {
      declares */
   if (named) {
     LocalVar *plv = scope_local(ms, ms->blk_param);
-    if (plv) { plv->is_param = 0; plv->is_block_param = 0; plv->type = TY_UNKNOWN; plv->is_cell = 0; }
+    if (plv) { plv->is_param = 0; plv->is_block_param = 0; lv_set_type(plv, TY_UNKNOWN); plv->is_cell = 0; }
   }
   free(ms->blk_param);
   ms->blk_param = NULL;
@@ -7390,7 +7390,7 @@ int desugar_value_callable_forwards(Compiler *c) {
       snprintf(pn, sizeof pn, "__fwd_%s_%d", comp_node_tag(c, id), k);
       LocalVar *lv = scope_local_intern(bs, pn);
       lv->is_block_param = 1;
-      lv->type = pty[k];
+      lv_set_type(lv, pty[k]);
     }
     if (anon) fwd_drop_spent_anon_block_param(c, id, n0);
     /* the method's own block may be absent where it is called: a String
@@ -10238,7 +10238,7 @@ static int fold_if_arm(Compiler *c, int id, int pred, int ans, Scope *s, const u
   for (int i = 0; i < s->nlocals; i++) {
     LocalVar *l = &s->locals[i];
     if (l->is_param || l->is_block_param || l->rbs_seeded) continue;
-    l->type = TY_UNKNOWN; l->gc_root = (int)TY_UNKNOWN;
+    lv_set_type(l, TY_UNKNOWN); l->gc_root = (int)TY_UNKNOWN;
   }
   return 1;
 }
@@ -12998,7 +12998,7 @@ int sym_proc_poly_pair_view(Compiler *c, int id) {
   comp_grow_node_arrays(c);
   for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[blk];
   LocalVar *lv = scope_local_intern(comp_scope_of(c, blk), an);
-  if (lv) { lv->is_block_param = 1; lv->type = TY_POLY; }
+  if (lv) { lv->is_block_param = 1; lv_set_type(lv, TY_POLY); }
   return 1;
 }
 

@@ -73,6 +73,9 @@ int comp_scalar_literal_chain_bottom(const NodeTable *nt, int v) {
   return -1;
 }
 
+/* see compiler.h: every change of a table infer_type reads */
+unsigned long comp_ty_edits;
+
 Compiler *comp_new(const NodeTable *nt) {
   Compiler *c = calloc(1, sizeof(Compiler));
   if (!c) return NULL;
@@ -225,10 +228,10 @@ const char *comp_node_tag(Compiler *c, int id) {
 void comp_grow_node_arrays(Compiler *c) {
   int n = c->nt->count;
   if (n <= c->node_cap) return;
-  c->ntype = realloc(c->ntype, sizeof(TyKind) * (size_t)n);
+  c->ntype = realloc((TyKind *)c->ntype, sizeof(TyKind) * (size_t)n);
   c->norigin = realloc(c->norigin, sizeof(int) * (size_t)n);
-  c->nilnarrow = realloc(c->nilnarrow, sizeof(TyKind) * (size_t)n);
-  c->strbuf_box = realloc(c->strbuf_box, (size_t)n);
+  c->nilnarrow = realloc((TyKind *)c->nilnarrow, sizeof(TyKind) * (size_t)n);
+  c->strbuf_box = realloc((unsigned char *)c->strbuf_box, (size_t)n);
   c->strbuf_handle_demand = realloc(c->strbuf_handle_demand, (size_t)n);
   c->strbuf_read_raw = realloc(c->strbuf_read_raw, (size_t)n);
   c->poly_strbuf_lift = realloc(c->poly_strbuf_lift, (size_t)n);
@@ -237,21 +240,21 @@ void comp_grow_node_arrays(Compiler *c) {
   if (!c->head_held) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   c->nscope = realloc(c->nscope, sizeof(int) * (size_t)n);
   c->node_cbody = realloc(c->node_cbody, sizeof(int) * (size_t)n);
-  c->empty_arr_recv = realloc(c->empty_arr_recv, (size_t)n);
-  c->empty_hash_recv = realloc(c->empty_hash_recv, (size_t)n);
-  c->empty_hash_arg = realloc(c->empty_hash_arg, (size_t)n);
+  c->empty_arr_recv = realloc((char *)c->empty_arr_recv, (size_t)n);
+  c->empty_hash_recv = realloc((char *)c->empty_hash_recv, (size_t)n);
+  c->empty_hash_arg = realloc((char *)c->empty_hash_arg, (size_t)n);
   c->store_misfit_arg = realloc(c->store_misfit_arg, (size_t)n);
   c->ivar_widen_src = realloc(c->ivar_widen_src, (size_t)n);
-  c->hash_want = realloc(c->hash_want, sizeof(TyKind) * (size_t)n);
-  c->arr_want = realloc(c->arr_want, sizeof(TyKind) * (size_t)n);
-  c->poly_builtin_ty = realloc(c->poly_builtin_ty, sizeof(TyKind) * (size_t)n);
+  c->hash_want = realloc((TyKind *)c->hash_want, sizeof(TyKind) * (size_t)n);
+  c->arr_want = realloc((TyKind *)c->arr_want, sizeof(TyKind) * (size_t)n);
+  c->poly_builtin_ty = realloc((TyKind *)c->poly_builtin_ty, sizeof(TyKind) * (size_t)n);
   c->lw_joined = realloc(c->lw_joined, sizeof(TyKind) * (size_t)n);
   if (!c->lw_joined) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   c->bop_inf = realloc(c->bop_inf, sizeof *c->bop_inf * (size_t)n);
   for (int i = c->node_cap; i < n; i++) c->bop_inf[i] = NULL;
   c->ucall_inf = realloc(c->ucall_inf, sizeof *c->ucall_inf * (size_t)n);
   memset(c->ucall_inf + c->node_cap, 0, sizeof *c->ucall_inf * (size_t)(n - c->node_cap));
-  for (int i = c->node_cap; i < n; i++) { c->ntype[i] = TY_UNKNOWN; c->norigin[i] = -1; c->nilnarrow[i] = TY_UNKNOWN; c->nscope[i] = 0; c->node_cbody[i] = -1; c->empty_arr_recv[i] = 0; c->empty_hash_recv[i] = 0; c->empty_hash_arg[i] = 0; c->store_misfit_arg[i] = 0; c->ivar_widen_src[i] = 0; c->hash_want[i] = TY_UNKNOWN; c->arr_want[i] = TY_UNKNOWN; c->poly_builtin_ty[i] = TY_UNKNOWN; c->lw_joined[i] = TY_UNKNOWN; c->strbuf_box[i] = 0; c->strbuf_handle_demand[i] = 0; c->strbuf_read_raw[i] = 0; c->poly_strbuf_lift[i] = 0; c->nil_tested[i] = 0; c->head_held[i] = 0; }
+  for (int i = c->node_cap; i < n; i++) { ((TyKind *)c->ntype)[i] = TY_UNKNOWN; c->norigin[i] = -1; ((TyKind *)c->nilnarrow)[i] = TY_UNKNOWN; c->nscope[i] = 0; c->node_cbody[i] = -1; ((char *)c->empty_arr_recv)[i] = 0; ((char *)c->empty_hash_recv)[i] = 0; ((char *)c->empty_hash_arg)[i] = 0; c->store_misfit_arg[i] = 0; c->ivar_widen_src[i] = 0; ((TyKind *)c->hash_want)[i] = TY_UNKNOWN; ((TyKind *)c->arr_want)[i] = TY_UNKNOWN; ((TyKind *)c->poly_builtin_ty)[i] = TY_UNKNOWN; c->lw_joined[i] = TY_UNKNOWN; ((unsigned char *)c->strbuf_box)[i] = 0; c->strbuf_handle_demand[i] = 0; c->strbuf_read_raw[i] = 0; c->poly_strbuf_lift[i] = 0; c->nil_tested[i] = 0; c->head_held[i] = 0; }
   c->node_cap = n;
 }
 
@@ -327,7 +330,7 @@ void comp_free(Compiler *c) {
     free(c->classes[i].name);
     for (int j = 0; j < c->classes[i].nivars; j++) free(c->classes[i].ivars[j]);
     free(c->classes[i].ivars);
-    free(c->classes[i].ivar_types);
+    free((TyKind *)c->classes[i].ivar_types);
     free(c->classes[i].ivar_obj_may_nil);
     free(c->classes[i].ivar_elem_may_nil);
     for (int j = 0; j < c->classes[i].n_rbs_pin_ivars; j++) free(c->classes[i].rbs_pin_ivars[j]);
@@ -366,17 +369,17 @@ void comp_free(Compiler *c) {
   if (c->stmt_wr_names)
     for (int i = 0; i < c->stmt_wr_cap; i++) free(c->stmt_wr_names[i]);
   free(c->stmt_wr_names); free(c->stmt_wr_state); free(c->stmt_wr_mark);
-  free(c->ntype);
+  free((TyKind *)c->ntype);
   free(c->norigin);
   free(c->node_cbody);
-  free(c->empty_arr_recv);
-  free(c->empty_hash_recv);
+  free((char *)c->empty_arr_recv);
+  free((char *)c->empty_hash_recv);
   free(c->store_misfit_arg);
   free(c->ivar_widen_src);
-  free(c->hash_want);
-  free(c->arr_want);
+  free((TyKind *)c->hash_want);
+  free((TyKind *)c->arr_want);
   free(c->lw_joined);
-  free(c->poly_builtin_ty);
+  free((TyKind *)c->poly_builtin_ty);
   free(c->bop_inf);
   free(c->ucall_inf);
   free(c);
@@ -393,7 +396,8 @@ static LocalVar *lv_intern(LocalVar **arr, int *n, int *cap, const char *name) {
   lv = &(*arr)[(*n)++];
   memset(lv, 0, sizeof(*lv));
   lv->name = strdup(name);
-  lv->type = TY_UNKNOWN;
+  *(TyKind *)&lv->type = TY_UNKNOWN;
+  comp_ty_edits++;    /* a new slot is a change of the table */
   return lv;
 }
 LocalVar *comp_gvar(Compiler *c, const char *name) { return lv_find(c->gvars, c->ngvars, name); }
@@ -536,9 +540,10 @@ Scope *comp_scope_new(Compiler *c, const char *name, int def_node) {
   s->class_id = -1;
   s->rest_idx = -1;
   s->kwrest_idx = -1;
-  s->ret = TY_UNKNOWN;
-  s->ret_noblock = TY_UNKNOWN;
-  s->ret_withblock = TY_UNKNOWN;
+  *(TyKind *)&s->ret = TY_UNKNOWN;
+  comp_ty_edits++;    /* a new scope is a change of the tables */
+  scope_set_ret_noblock(s, TY_UNKNOWN);
+  scope_set_ret_withblock(s, TY_UNKNOWN);
   why_reset(&s->ret_why);
   s->dm_subst_node = -1;
   return s;
@@ -561,7 +566,7 @@ void slot_rule(Compiler *c, LocalVar *lv, TyKind t, int node, const char *reason
     lv->why.node = node; lv->why.other = -1; lv->why.prev = lv->type; lv->why.then = t;
     lv->why.round = g_infer_round; lv->why.reason = reason;
   }
-  lv->type = t;
+  lv_set_type(lv, t);
 }
 
 int slot_set(Compiler *c, LocalVar *lv, TyKind merged, TyKind t, int node) {
@@ -585,7 +590,7 @@ int slot_set(Compiler *c, LocalVar *lv, TyKind merged, TyKind t, int node) {
     why_reset(&lv->why);
     if (node >= 0) lv->last_src = node;
   }
-  lv->type = merged;
+  lv_set_type(lv, merged);
   return 1;
 }
 
@@ -693,6 +698,7 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
     c->classes = realloc(c->classes, sizeof(ClassInfo) * (size_t)c->cclasses);
   }
   ClassInfo *ci = &c->classes[c->nclasses++];
+  comp_ty_edits++;    /* a new class is a change of the tables */
   c->anon_struct_ids_valid = 0;
   memset(ci, 0, sizeof(*ci));
   ci->ctor_reachable = 1;   /* conservatively, until compute_instantiated's early pass has looked */
@@ -763,7 +769,7 @@ int comp_ivar_intern(ClassInfo *ci, const char *name) {
   if (ci->nivars >= ci->civars) {
     ci->civars = ci->civars ? ci->civars * 2 : 8;
     ci->ivars = realloc(ci->ivars, sizeof(char *) * (size_t)ci->civars);
-    ci->ivar_types = realloc(ci->ivar_types, sizeof(TyKind) * (size_t)ci->civars);
+    ci->ivar_types = realloc((TyKind *)ci->ivar_types, sizeof(TyKind) * (size_t)ci->civars);
     ci->ivar_str_shared = realloc(ci->ivar_str_shared, (size_t)ci->civars);
     ci->ivar_elems_shared = realloc(ci->ivar_elems_shared, (size_t)ci->civars);
     ci->ivar_int_table = realloc(ci->ivar_int_table, (size_t)ci->civars);
@@ -775,7 +781,8 @@ int comp_ivar_intern(ClassInfo *ci, const char *name) {
     ci->ivar_arr_elem_arr_or_nil = realloc(ci->ivar_arr_elem_arr_or_nil, (size_t)ci->civars);
   }
   ci->ivars[ci->nivars] = strdup(name);
-  ci->ivar_types[ci->nivars] = TY_UNKNOWN;
+  ((TyKind *)ci->ivar_types)[ci->nivars] = TY_UNKNOWN;
+  comp_ty_edits++;    /* a new ivar is a change of the table */
   ci->ivar_str_shared[ci->nivars] = 0;
   ci->ivar_elems_shared[ci->nivars] = 0;
   ci->ivar_int_table[ci->nivars] = 0;
@@ -796,7 +803,8 @@ int comp_member_intern(ClassInfo *ci, const char *name) {
   if (idx < ci->nmembers) return idx;
   int m = ci->nmembers;
   if (idx != m) {
-#define IV_SWAP(arr, T) do { T _t = ci->arr[idx]; ci->arr[idx] = ci->arr[m]; ci->arr[m] = _t; } while (0)
+    comp_ty_edits++;  /* the ivars are renumbered */
+#define IV_SWAP(arr, T) do { T _t = ci->arr[idx]; ((T *)ci->arr)[idx] = ci->arr[m]; ((T *)ci->arr)[m] = _t; } while (0)
     IV_SWAP(ivars, char *);
     IV_SWAP(ivar_types, TyKind);
     IV_SWAP(ivar_str_shared, unsigned char);
@@ -845,13 +853,14 @@ int comp_cvar_intern(ClassInfo *ci, const char *name) {
   if (ci->ncvars >= ci->ccvars) {
     ci->ccvars = ci->ccvars ? ci->ccvars * 2 : 8;
     ci->cvars = realloc(ci->cvars, sizeof(char *) * (size_t)ci->ccvars);
-    ci->cvar_types = realloc(ci->cvar_types, sizeof(TyKind) * (size_t)ci->ccvars);
+    ci->cvar_types = realloc((TyKind *)ci->cvar_types, sizeof(TyKind) * (size_t)ci->ccvars);
     ci->cvar_nullable_int = realloc(ci->cvar_nullable_int, (size_t)ci->ccvars);
     ci->cvar_str_shared = realloc(ci->cvar_str_shared, (size_t)ci->ccvars);
     ci->cvar_elems_shared = realloc(ci->cvar_elems_shared, (size_t)ci->ccvars);
   }
   ci->cvars[ci->ncvars] = strdup(name);
-  ci->cvar_types[ci->ncvars] = TY_UNKNOWN;
+  ((TyKind *)ci->cvar_types)[ci->ncvars] = TY_UNKNOWN;
+  comp_ty_edits++;    /* a new cvar is a change of the table */
   ci->cvar_nullable_int[ci->ncvars] = 0;
   ci->cvar_str_shared[ci->ncvars] = 0;
   ci->cvar_elems_shared[ci->ncvars] = 0;
@@ -3466,13 +3475,14 @@ LocalVar *scope_local_intern(Scope *s, const char *name) {
   lv = &s->locals[s->nlocals++];
   memset(lv, 0, sizeof *lv);
   lv->name = strdup(name);
-  lv->type = TY_UNKNOWN;
+  *(TyKind *)&lv->type = TY_UNKNOWN;
+  comp_ty_edits++;    /* a new local is a change of the scope's table */
   why_reset(&lv->why);
   lv->last_src = -1;
   lv->gc_root = 0;
   lv->is_param = 0;
   lv->is_block_param = 0;
-  lv->proc_ret = TY_UNKNOWN;
+  lv_set_proc_ret(lv, TY_UNKNOWN);
   lv->is_cell = 0;
   lv->cell_shadow = 0;
   lv->cell_outlives = 0;

@@ -4585,7 +4585,7 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   if (unbox) { use_shadow = 0; for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]); }
   int din = g_indent;
   if (use_shadow) {
-    tlv0->type = et;
+    lv_set_type(tlv0, et);
     for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "{\n");
     din = g_indent + 1;
@@ -4657,7 +4657,7 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   }
   g_indent = sv;
   if (use_shadow) { emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n"); }
-  if (tlv0) tlv0->type = tsaved0;
+  if (tlv0) lv_set_type(tlv0, tsaved0);
 
   /* a receiver read as the shared handle (a block parameter that appends to
      it is the handle, promote_shared_stored_strings): tap's value is that
@@ -5062,8 +5062,8 @@ int emit_hash_filter_loop(Compiler *c, int recv, int block, TyKind rt, const cha
   LocalVar *vlv = (vp && hs) ? scope_local(hs, p1_raw) : NULL;
   TyKind ksaved = klv ? klv->type : TY_UNKNOWN;
   TyKind vsaved = vlv ? vlv->type : TY_UNKNOWN;
-  if (klv) klv->type = hkt;
-  if (vlv) vlv->type = hvt;
+  if (klv) lv_set_type(klv, hkt);
+  if (vlv) lv_set_type(vlv, hvt);
   for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);
   int t = ++g_tmp, ti = ++g_tmp, to = ++g_tmp, tw = ++g_tmp;
   int tn = ++g_tmp, tk = ++g_tmp, tkey = ++g_tmp, tnv = ++g_tmp;
@@ -5145,8 +5145,8 @@ int emit_hash_filter_loop(Compiler *c, int recv, int block, TyKind rt, const cha
   emit_indent(b, indent); buf_puts(b, "}\n");
   emit_indent(b, indent);
   buf_printf(b, "sp_int _t%d = _t%d ? _t%d->len : 0;\n", tw, t, t);
-  if (klv) klv->type = ksaved;
-  if (vlv) vlv->type = vsaved;
+  if (klv) lv_set_type(klv, ksaved);
+  if (vlv) lv_set_type(vlv, vsaved);
   *tr = t; *torig = to; *twp = tw;
   return 1;
 }
@@ -5201,7 +5201,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
     /* a widened parameter shadowed at a numeric element type still holds
        the element's nil */
     if (fsaved == TY_POLY && (et == TY_INT || et == TY_FLOAT)) flv->nullable_int = 1;
-    flv->type = et; for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);
+    lv_set_type(flv, et); for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);
   }
   int t = ++g_tmp, ti = ++g_tmp, to = ++g_tmp, tw = ++g_tmp, tk = ++g_tmp, tnv = ++g_tmp, te = ++g_tmp;
   int eid = ++g_tmp, tj = ++g_tmp;
@@ -5349,7 +5349,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
     if (live) buf_printf(b, "sp_poly_arr_live_truncate(%s, _t%d); _t%d = _t%d;\n", lv, tw, to, ti);
     else if (ote) buf_printf(b, "if (_t%d) sp_%sArray_cut(_t%d, _t%d);\n", t, kk, t, tw);
     else buf_printf(b, "if (_t%d) _t%d->len = _t%d;\n", t, t, tw);
-    if (flv) { flv->type = fsaved; flv->nullable_int = fnsaved; }
+    if (flv) { lv_set_type(flv, fsaved); flv->nullable_int = fnsaved; }
     *tr = t; *torig = to; *twp = tw;
     return 1;
   }
@@ -5413,7 +5413,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
     emit_indent(b, indent);
     buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_reraise_continues = 1; sp_raise_cls(_exccls%d, _excmsg%d); }\n", eid, eid, eid, eid);
   }
-  if (flv) { flv->type = fsaved; flv->nullable_int = fnsaved; }
+  if (flv) { lv_set_type(flv, fsaved); flv->nullable_int = fnsaved; }
   *tr = t; *torig = to; *twp = tw;
   return 1;
 }
@@ -5703,7 +5703,7 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     if (tap_next) g_ie_next_var = NULL;
     if (use_shadow_t && !tap_escapes) {
       int tbody_bn = 0; const int *tbody_bb = body >= 0 ? nt_arr(nt, body, "body", &tbody_bn) : NULL;
-      tlv0->type = et;
+      lv_set_type(tlv0, et);
       arm_body_infer(c, ARM_SITE_TAP, block, et, tbody_bb, tbody_bn);
       emit_indent(b, indent); buf_puts(b, tap_next ? "do {\n" : "{\n");
       emit_indent(b, indent + 1); emit_ctype(c, et, b);
@@ -5711,7 +5711,7 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
       else buf_printf(b, " lv_%s = _t%d;\n", p0, tr);
       emit_loop_body(c, body, b, indent + 1);
       emit_indent(b, indent); buf_puts(b, tap_next ? "} while (0);\n" : "}\n");
-      tlv0->type = tsaved0;
+      lv_set_type(tlv0, tsaved0);
     }
     else {
       if (p0) {
@@ -5779,7 +5779,7 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     }
     else if (use_shadow_es) {
       int esb_bn = 0; const int *esb_bb = body >= 0 ? nt_arr(nt, body, "body", &esb_bn) : NULL;
-      clv0->type = rt;
+      lv_set_type(clv0, rt);
       arm_body_infer(c, ARM_SITE_EACH_SLICE, block, rt, esb_bb, esb_bn);
       emit_indent(b, bodyIndent); buf_puts(b, "{\n"); bodyIndent++;
       emit_indent(b, bodyIndent); emit_ctype(c, rt, b);
@@ -5787,7 +5787,7 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
       emit_loop_body(c, body, b, bodyIndent);
       bodyIndent--;
       emit_indent(b, bodyIndent); buf_puts(b, "}\n");
-      clv0->type = csaved0;
+      lv_set_type(clv0, csaved0);
     }
     else {
       if (p0) { emit_indent(b, bodyIndent); buf_printf(b, "lv_%s = sp_%sArray_slice(_t%d, _t%d, _t%d);\n", p0, k, ta, ti, ts); }
@@ -5853,14 +5853,14 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     int spIndent = indent + 1;
     if (use_shadow_sp) {
       int sb_bn = 0; const int *sb_bb = body >= 0 ? nt_arr(nt, body, "body", &sb_bn) : NULL;
-      clv0->type = et;
+      lv_set_type(clv0, et);
       arm_body_infer(c, ARM_SITE_SPLIT, block, et, sb_bb, sb_bn);
       emit_indent(b, spIndent); buf_puts(b, "{\n"); spIndent++;
       emit_indent(b, spIndent); buf_printf(b, "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti);
       emit_loop_body(c, body, b, spIndent);
       spIndent--;
       emit_indent(b, spIndent); buf_puts(b, "}\n");
-      clv0->type = csaved0;
+      lv_set_type(clv0, csaved0);
     }
     else {
       if (p0) { emit_indent(b, spIndent); buf_printf(b, "lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti); }
@@ -5914,14 +5914,14 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     int bodyIndent = indent + 1;
     if (use_shadow_sc) {
       int scb_bn = 0; const int *scb_bb = body >= 0 ? nt_arr(nt, body, "body", &scb_bn) : NULL;
-      clv0->type = et;
+      lv_set_type(clv0, et);
       arm_body_infer(c, ARM_SITE_SCAN, block, et, scb_bb, scb_bn);
       emit_indent(b, bodyIndent); buf_puts(b, "{\n"); bodyIndent++;
       emit_indent(b, bodyIndent); buf_printf(b, "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti);
       emit_loop_body(c, body, b, bodyIndent);
       bodyIndent--;
       emit_indent(b, bodyIndent); buf_puts(b, "}\n");
-      clv0->type = csaved0;
+      lv_set_type(clv0, csaved0);
     }
     else {
       if (p0) {
@@ -6005,12 +6005,12 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
         buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, ta, ti);
         if (use_shadow) {
           int sbn = 0; const int *sbb = body >= 0 ? nt_arr(nt, body, "body", &sbn) : NULL;
-          slv->type = TY_STRING;
+          lv_set_type(slv, TY_STRING);
           arm_body_infer(c, ARM_SITE_STR_UPTO, block, TY_STRING, sbb, sbn);
           emit_indent(b, indent + 1);
           buf_printf(b, "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, ta, ti);
           emit_loop_body(c, body, b, indent + 1);
-          slv->type = saved;
+          lv_set_type(slv, saved);
         }
         else {
           emit_indent(b, indent + 1);
@@ -6310,14 +6310,14 @@ static int iter_combination_cons_arms(Compiler *c, int id, Buf *b, int indent, c
       int use_shadow_ec = clv_ec && clv_ec->type != rt && rt != TY_UNKNOWN;
       if (use_shadow_ec) {
         int bodyBn = 0; const int *bodyBb = body >= 0 ? nt_arr(nt, body, "body", &bodyBn) : NULL;
-        clv_ec->type = rt;
+        lv_set_type(clv_ec, rt);
         arm_body_infer(c, ARM_SITE_COMB_CONS, block, rt, bodyBb, bodyBn);
         emit_indent(b, indent + 1); buf_puts(b, "{\n");
         emit_indent(b, indent + 2); emit_ctype(c, rt, b);
         buf_printf(b, " lv_%s = sp_%sArray_slice(_t%d, _t%d, _t%d);\n", rpn, k, ta, ti, tnn);
         emit_loop_body(c, body, b, indent + 2);
         emit_indent(b, indent + 1); buf_puts(b, "}\n");
-        clv_ec->type = csaved_ec;
+        lv_set_type(clv_ec, csaved_ec);
       }
       else {
         emit_indent(b, indent + 1);

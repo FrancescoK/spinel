@@ -95,13 +95,13 @@ static void arm_record_x(Compiler *c, int block, LocalVar *lv, TyKind kind, int 
     int n = i < len ? nodes[i] : bnodes[i - len];
     if (n < c->node_cap) usaved[i] = c->ucall_inf[n];
   }
-  if (lv) lv->type = kind;
+  if (lv) lv_set_type(lv, kind);
   for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
   if (extra >= 0) infer_type(c, extra);
   for (int i = 0; i < len; i++) types[i] = nodes[i] < c->node_cap ? c->ntype[nodes[i]] : TY_UNKNOWN;
-  if (lv) lv->type = lsaved;
-  for (int i = 0; i < len; i++) if (nodes[i] < c->node_cap) c->ntype[nodes[i]] = saved[i];
-  for (int i = 0; i < blen; i++) if (bnodes[i] < c->node_cap) c->ntype[bnodes[i]] = bsaved[i];
+  if (lv) lv_set_type(lv, lsaved);
+  for (int i = 0; i < len; i++) if (nodes[i] < c->node_cap) comp_set_ntype(c, nodes[i], saved[i]);
+  for (int i = 0; i < blen; i++) if (bnodes[i] < c->node_cap) comp_set_ntype(c, bnodes[i], bsaved[i]);
   for (int i = 0; usaved && i < len + blen; i++) {
     int n = i < len ? nodes[i] : bnodes[i - len];
     if (n < c->node_cap) c->ucall_inf[n] = usaved[i];
