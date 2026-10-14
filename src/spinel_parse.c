@@ -515,6 +515,19 @@ static size_t sp_plain_sym(const pm_node_t *n, const char **s) {
   *s = (const char *)y->value_loc.start;
   return (size_t)(y->value_loc.end - y->value_loc.start);
 }
+/* The text of a quoted Symbol with no interpolation or escape
+   (`:'Faraday::Utils'`, `:"Utils"`), as the receiver of def_delegators names
+   a constant path; 0 for any other node. */
+static size_t sp_quoted_recv_sym(const pm_node_t *n, const char **s) {
+  if (!n || PM_NODE_TYPE(n) != PM_SYMBOL_NODE) return 0;
+  const pm_symbol_node_t *y = (const pm_symbol_node_t *)n;
+  if (!y->opening_loc.start || y->opening_loc.end - y->opening_loc.start != 2 ||
+      y->opening_loc.start[0] != ':' || (y->opening_loc.start[1] != '"' && y->opening_loc.start[1] != '\'') ||
+      !y->closing_loc.start || !y->value_loc.start) return 0;
+  for (const uint8_t *p = y->value_loc.start; p < y->value_loc.end; p++) if (*p == '\\' || *p == '#') return 0;
+  *s = (const char *)y->value_loc.start;
+  return (size_t)(y->value_loc.end - y->value_loc.start);
+}
 static int sp_word_char(char ch) {
   return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_';
 }
@@ -554,6 +567,26 @@ static pm_node_t *sp_sym_proc_block(pm_node_t *node) {
    object (a vcall unless it ends in `?` or `!`). A new node per read; NULL
    for any other spelling. */
 static pm_node_t *sp_fw_recv(const char *s, size_t n, const pm_node_t *at) {
+  /* a constant path (`:'Faraday::Utils'`): the last segment a constant
+     name, on the path before it */
+  size_t last = 0;
+  for (size_t k = 1; k + 1 < n; k++) if (s[k] == ':' && s[k + 1] == ':') last = k;
+  if (last) {
+    const char *t = s + last + 2;
+    size_t tl = n - last - 2;
+    if (tl == 0 || t[0] < 'A' || t[0] > 'Z') return NULL;
+    for (size_t j = 0; j < tl; j++) if (!sp_word_char(t[j])) return NULL;
+    pm_node_t *parent = sp_fw_recv(s, last, at);
+    if (!parent) return NULL;
+    if (PM_NODE_TYPE(parent) != PM_CONSTANT_READ_NODE && PM_NODE_TYPE(parent) != PM_CONSTANT_PATH_NODE) {
+      pm_node_destroy((pm_parser_t *)g_parser, parent);
+      return NULL;
+    }
+    pm_constant_path_node_t *cp = sp_made(PM_CONSTANT_PATH_NODE, sizeof *cp, at);
+    cp->parent = parent;
+    cp->name = sp_made_id(t, tl);
+    return &cp->base;
+  }
   size_t i = s[0] == '@' ? 1 : 0, e = n;
   if (i == 0 && n > 1 && (s[n - 1] == '?' || s[n - 1] == '!')) e = n - 1;
   if (i >= e || (s[i] >= '0' && s[i] <= '9')) return NULL;
@@ -687,6 +720,7 @@ static int sp_lower_delegators(pm_node_t *stmt, pm_node_list_t *out) {
   pm_node_list_t *args = &c->arguments->arguments;
   const char *r;
   size_t rl = sp_plain_sym(args->nodes[0], &r);
+  if (!rl) rl = sp_quoted_recv_sym(args->nodes[0], &r);
   pm_node_t *probe = rl ? sp_fw_recv(r, rl, stmt) : NULL;
   if (!probe) return 0;
   pm_node_destroy((pm_parser_t *)g_parser, probe);
