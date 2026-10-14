@@ -4248,6 +4248,19 @@ sp_StrArray *sp_get_ARGV(void) {
   return sp_argv_array_cache;
 }
 sp_StrArray *sp_loaded_features_cache = NULL;
+void sp_require_computed(const char *path, const char *const *features, int n) {
+  if (!path) path = "";
+  size_t pl = strlen(path);
+  if (pl > 3 && strcmp(path + pl - 3, ".rb") == 0) pl -= 3;
+  for (int i = 0; i < n; i++) {
+    const char *f = features[i];
+    size_t fl = strlen(f);
+    if (fl > pl) continue;
+    if (memcmp(path + pl - fl, f, fl) != 0) continue;
+    if (fl == pl || path[pl - fl - 1] == '/') return;
+  }
+  sp_raise_cls("LoadError", sp_sprintf("cannot load such file -- %s", path));
+}
 sp_StrArray *sp_get_loaded_features(void) {
   if (!sp_loaded_features_cache) sp_loaded_features_cache = sp_StrArray_new();
   return sp_loaded_features_cache;
