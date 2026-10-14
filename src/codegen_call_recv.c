@@ -1764,7 +1764,12 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n",
                  ti, ti, k, trecv, ti);
-      if (bp) {
+      /* a parameter slot that holds its nil reads the element with it */
+      if (bp && mlv && slot_is_oint(mlv)) {
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "%s lv_%s = sp_%sArray_oget(_t%d, _t%d);\n", oint_ctype(et), bp, k, trecv, ti);
+      }
+      else if (bp) {
         emit_indent(g_pre, g_indent + 1); emit_ctype(c, et, g_pre);
         buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti);
       }
