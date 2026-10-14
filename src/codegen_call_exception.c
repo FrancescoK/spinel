@@ -982,14 +982,15 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
         else {
           /* an explicitly given message is kept even when empty, unlike the
              class-only form, which falls back to the class name (#3711) */
-          char mh[256];
-          if (comp_ntype(c, av[1]) == TY_STRING && exc_msg_handle(c, av[1], mh, sizeof mh)) {
+          Buf mh; memset(&mh, 0, sizeof mh);
+          if (comp_ntype(c, av[1]) == TY_STRING && exc_msg_handle(c, av[1], &mh)) {
             /* the exception is built here, holding the handle, as the
                rescue would build it (sp_exc_new_for_catch) */
             buf_printf(b, "sp_raise_exc((sp_Exception *)sp_exc_attach_msg(sp_exc_new_for_catch(\"%s\", "
                           "sp_exc_msg_given(", effn);
             emit_expr(c, av[1], b);
-            buf_printf(b, ")), %s))", mh);
+            buf_printf(b, ")), %s))", mh.p);
+            free(mh.p);
           }
           else if (comp_ntype(c, av[1]) == TY_STRING) {
             buf_printf(b, "sp_raise_cls(\"%s\", sp_exc_msg_given(", effn);
@@ -1043,16 +1044,17 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
       else if (at == TY_STRING) {
         /* `raise "msg"` raises RuntimeError with the message, holding a
            shared String's handle (exc_msg_handle) */
-        char mh[256];
+        Buf mh; memset(&mh, 0, sizeof mh);
         if (strbuf_route_reader(c, av[0])) {
           /* A reader's box keeps its shared field as the message. */
           buf_puts(b, "sp_raise_poly("); emit_boxed(c, av[0], b); buf_puts(b, ")");
         }
-        else if (exc_msg_handle(c, av[0], mh, sizeof mh)) {
+        else if (exc_msg_handle(c, av[0], &mh)) {
           buf_puts(b, "sp_raise_exc((sp_Exception *)sp_exc_attach_msg(sp_exc_new_for_catch(\"RuntimeError\", "
                       "sp_exc_msg_given(");
           emit_expr(c, av[0], b);
-          buf_printf(b, ")), %s))", mh);
+          buf_printf(b, ")), %s))", mh.p);
+          free(mh.p);
         }
         else { buf_puts(b, "sp_raise(sp_exc_msg_given("); emit_expr(c, av[0], b); buf_puts(b, "))"); }
       }
@@ -1085,7 +1087,7 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
    variable whose slot holds the shared handle (strbuf_var_handle) holds
    that handle as its message (sp_Exception.msg_h, through
    sp_exc_attach_msg around its construction), so #message answers the
-   String itself, as CRuby's does. 1 with the handle's text in href. */
-int exc_msg_handle(Compiler *c, int arg, char *href, size_t cap) {
-  return arg >= 0 && strbuf_var_handle(c, arg, href, cap);
+   String itself, as CRuby's does. 1 with the handle's text appended to b. */
+int exc_msg_handle(Compiler *c, int arg, Buf *b) {
+  return arg >= 0 && strbuf_var_handle(c, arg, b);
 }

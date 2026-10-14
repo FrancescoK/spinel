@@ -9,7 +9,7 @@
    civ_<Class>_<name>, gv_<name>, cvar_<Owner>_<name>, cst_<name>.
 
    holder_of_node answers both once: which holder a node names, as a
-   HolderRef, and repr_of_holder its representation. holder_slot_text
+   HolderRef, and repr_of_holder its representation. holder_slot_buf
    spells its C slot. The emitters' arms do not all resolve an ivar or a
    class variable by the same rule yet (a class body's ivar, an
    instance_eval block, a multiple-assignment target); such an arm resolves
@@ -89,15 +89,9 @@ void holder_ivar(const Compiler *c, int node, int cid, int cls_slot, HolderRef *
    (an empty Repr, TY_UNKNOWN, when its class has no entry). */
 Repr repr_of_holder(const Compiler *c, const HolderRef *h);
 
-/* Codegen: h's C slot, as an lvalue, to out (lv_<name> or its cell through
-   emit_local_ref, self->iv_<name>, civ_<Class>_<name>, gv_<name>,
-   cvar_<Owner>_<name>, cst_<name>). 1, or 0 for a kind with no slot. */
-int holder_slot_text(Compiler *c, const HolderRef *h, char *out, size_t cap);
-/* (holder_slot_buf and holder_static_handle_buf, the same text into a Buf,
-   are declared with Buf in codegen_internal.h) */
-/* Codegen: for a read or write node of a global, a constant or a class
-   variable that holds the shared handle (repr_static_share), its slot's
-   text to out: 1 when it did. */
-int holder_static_handle_text(Compiler *c, int node, char *out, size_t cap);
+/* (holder_slot_buf, h's C slot as an lvalue appended to a Buf, and
+   holder_static_handle_buf, the same for a read or write node of a global,
+   a constant or a class variable that holds the shared handle, are declared
+   with Buf in codegen_internal.h) */
 
 #endif
