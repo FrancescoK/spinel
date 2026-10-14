@@ -48,7 +48,7 @@ enum { SHF_CHG = 64, SHF_FRZ = 128 };
    last statement, the tail of a block whose iterator keeps none of its
    values (SHU_TAIL). Only the method reads (sh_settle_reads) take the
    second. SHU_SPLIT marks an Array literal a multiple write splits into its
-   targets (sh_masgn_plain): no container holds its elements. SHU_PEEK
+   targets (share_masgn_plain): no container holds its elements. SHU_PEEK
    marks a container literal handed to a builtin that only reads it and
    keeps none of it (`puts [a, b]`, `p [a, b]` as a statement), and such a
    `p a, b` itself: no name sees its elements again (sh_settle_peeks).
@@ -3355,7 +3355,7 @@ static int sh_super(ShareFacts *F, Compiler *c, int n) {
 
 /* `a, b = x, y`: a multiple write of an Array literal with no splat into
    targets with no rest; each target takes its own value. */
-static int sh_masgn_plain(const NodeTable *nt, int n) {
+int share_masgn_plain(const NodeTable *nt, int n) {
   int value = nt_ref(nt, n, "value");
   if (value < 0 || nt_kind(nt, value) != NK_ArrayNode || nt_ref(nt, n, "rest") >= 0) return 0;
   int en = 0; const int *el = nt_arr(nt, value, "elements", &en);
@@ -3519,7 +3519,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
     int en = 0; const int *el = value >= 0 && nt_kind(nt, value) == NK_ArrayNode
                                 ? nt_arr(nt, value, "elements", &en) : NULL;
     int nl = 0; const int *lefts = nt_arr(nt, n, "lefts", &nl);
-    if (sh_masgn_plain(nt, n)) {
+    if (share_masgn_plain(nt, n)) {
       /* `a, b = x, y`: each target takes its own value */
       for (int i = 0; i < nl; i++) {
         int src = i < en ? sh_val(F, c, el[i]) : -1;
@@ -4633,7 +4633,7 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
     NT_FOREACH_KIND(nt, k == 1 ? NK_ClassNode : NK_ModuleNode, pn) sh_mark_last_unused(F, nt, nt_ref(nt, pn, "body"), SHU_STMT);
   }
   NT_FOREACH_KIND(nt, NK_MultiWriteNode, mw)
-    if (sh_masgn_plain(nt, mw)) F->unused[nt_ref(nt, mw, "value")] |= SHU_SPLIT;
+    if (share_masgn_plain(nt, mw)) F->unused[nt_ref(nt, mw, "value")] |= SHU_SPLIT;
   sh_mark_printed(F, c);
   sh_mark_local_lambdas(F, c);
   sh_jumps(F, c);

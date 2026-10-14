@@ -204,7 +204,7 @@ typedef struct {
   signed char *yield_ok;   /* per method scope: its yields carry the handle
                               (1), do not (0), not asked yet (-1) */
 } StrbufFlowMemo;
-int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int v);
+int strbuf_flow_carries(Compiler *c, int kind, int site, int v);
 int strbuf_call_picks_up(Compiler *c, int id);
 /* ...and does every method such a pickup call v reaches publish its handle
    (codegen_stmt.c)? */

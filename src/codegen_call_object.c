@@ -3378,6 +3378,11 @@ int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKin
         else if (mt == TY_STRBUF) {
           Buf srefIS; memset(&srefIS, 0, sizeof srefIS);
           if (strbuf_slot_text(c, argv[1], &srefIS)) { buf_puts(b, srefIS.p); free(srefIS.p); }
+          /* (--share-strings: the handle the String plan gives, rendered by
+             the handle face: a boxed receiver's call whose arms answer one) */
+          else if (c->share_plan && share_plan_producer(c, argv[1], NULL) == SPK_POLY_ARMS &&
+                   share_plan_of(c, argv[1], SPR_STORE, NULL).form == SPF_HANDLE)
+            emit_str_form_handle(c, argv[1], b);
           else {
             buf_puts(b, "sp_String_new_shared(");
             emit_str_expr(c, argv[1], b);

@@ -460,13 +460,34 @@ static int share_plan_yield_supply(Compiler *c, int v, int depth) {
    operand's (a call answering its receiver, a value route over an operand,
    a sequence's last statement): *op is then that node. */
 static int share_plan_supply_kind(Compiler *c, int v, int k, int *op, int depth);
+
+/* Is the base of the chain of self-answering calls and sequences that value
+   v hands on (v itself included) a boxed receiver's call whose arms answer a
+   String (SPK_POLY_ARMS)? */
+static int share_plan_poly_base(Compiler *c, int v) {
+  for (int depth = 0; depth < 16; depth++) {
+    int u = an_unparen(c->nt, v), o;
+    if (u < 0) return 0;
+    int k = share_plan_producer_at(c, u, &o);
+    if (k == SPK_POLY_ARMS) return 1;
+    if ((k != SPK_SELF && k != SPK_SEQUENCE) || o < 0) return 0;
+    v = o;
+  }
+  return 0;
+}
 static int share_plan_supply_at(Compiler *c, int v, int *op, int depth) {
   return share_plan_supply_kind(c, v, share_plan_producer_at(c, v, op), op, depth);
 }
 static int share_plan_supply_kind(Compiler *c, int v, int k, int *op, int depth) {
   switch (k) {
   case SPK_NONE: return 0;
-  case SPK_SELF: return *op >= 0 ? -1 : 1;
+  /* a call answering its receiver hands on its receiver's supply, but the
+     face renders a chain over a boxed receiver's call whose arms answer a
+     String (SPK_POLY_ARMS) as that call's bytes: no handle (the change
+     reaches the String, the answer is a copy) */
+  case SPK_SELF:
+    if (*op < 0) return 1;
+    return share_plan_poly_base(c, *op) ? 0 : -1;
   case SPK_SEQUENCE: return -1;
   /* a call whose targets publish their handle: where it picks the handle
      up after the call, only if every target publishes it on each path
@@ -494,6 +515,7 @@ static int share_plan_supply_kind(Compiler *c, int v, int k, int *op, int depth)
   case SPK_LIFT: {
     int k2 = share_plan_producer_core(c, v, op, 1);
     if (k2 == SPK_NONE) return strbuf_poly_to_s(c, v);
+    if (k2 == SPK_SEQUENCE && *op >= 0 && share_plan_poly_base(c, *op)) return 0;
     return k2 != SPK_LIFT && share_plan_supply_kind(c, v, k2, op, depth);
   }
   /* a yield: what its method's blocks answer (a spliced yield's route,
@@ -670,13 +692,111 @@ static int share_plan_fresh_handle(Compiler *c, int v, int role) {
   return k != SPK_NONE && share_plan_supply_kind(c, v, k, &op, 0) == 1;
 }
 
+/* Is value e of a kind whose text emit_expr gives as the handle (a read, a
+   publication, a route over a handle, a block's value, a call answering its
+   receiver without changing it), not the bytes it answers (a call changing
+   its receiver, a conditional, a boxed receiver's call, a bang on a boxed
+   receiver, a lifted String, inject's value)? */
+static int share_plan_emits_handle_kind(Compiler *c, int e) {
+  for (int depth = 0; depth < 16; depth++) {
+    int o, k = share_plan_producer(c, e, &o);
+    if (k == SPK_SEQUENCE && o >= 0) { e = o; continue; }
+    int u = an_unparen(c->nt, e);
+    const char *nm = u >= 0 && nt_kind(c->nt, u) == NK_CallNode ? nt_str(c->nt, u, "name") : NULL;
+    /* (a call answering its receiver gives it as the handle unless it
+       changes it in place; inject answers its block's text) */
+    /* (a variable's write in parentheses is that write's value) */
+    if (u >= 0 && holder_kind_of(nt_kind(c->nt, u)) != HK_NONE && strstr(nt_type(c->nt, u), "Write")) return 1;
+    if (nm && is_reduce_alias(nm)) return 0;
+    if (k == SPK_SELF) return !(nm && bop_name_mutates(nm, 0));
+    return k != SPK_COND && k != SPK_POLY_ARMS && k != SPK_BANG_BOX && k != SPK_LIFT && k != SPK_SEQUENCE;
+  }
+  return 0;
+}
+int share_plan_emits_handle(Compiler *c, int e) {
+  Repr r = repr_of(c, e);
+  if (r.as_ty != TY_STRING && r.as_ty != TY_STRBUF) return 1;
+  return r.as_ty == TY_STRBUF && r.handle && share_plan_emits_handle_kind(c, e);
+}
+
+/* Does multiple write mw store the value of its element e (an element of
+   its Array literal, parentheses and all) so that the plan can give it as
+   the handle? A value emit_expr gives as the handle is stored as it is into
+   any target. Any other is rendered through the handle face by
+   emit_multi_write into a local, an instance variable, a global or an
+   attribute, and into an index when its kind is one emit_expr gives as the
+   handle; into a nested target, a class variable or a constant it has no
+   store of such a temp, so the value stays its bytes to the plan, and is
+   refused where the String is shared. So is one in a write
+   that has a nested target, unless it runs nothing or is of a kind
+   emit_expr gives as the handle: the write builds the nested literal ahead
+   of its other values, and a value that runs nothing cannot tell the
+   order. */
+int share_plan_multi_renders(Compiler *c, int mw, int e) {
+  const NodeTable *nt = c->nt;
+  if (mw < 0 || nt_kind(nt, mw) != NK_MultiWriteNode || !share_masgn_plain(nt, mw)) return 1;
+  int en = 0, ln = 0;
+  const int *el = nt_arr(nt, nt_ref(nt, mw, "value"), "elements", &en), *lefts = nt_arr(nt, mw, "lefts", &ln);
+  int ti = -1, nested = 0;
+  for (int i = 0; i < ln; i++) {
+    nested |= nt_kind(nt, lefts[i]) == NK_MultiTargetNode;
+    if (i < en && el[i] == e) ti = i;
+  }
+  if (ti < 0) return 1;
+  NodeKind k = nt_kind(nt, lefts[ti]);
+  /* (a variable whose slot is typed as an Array or a Hash, as a top-level
+     instance variable a later `<<` types so, holds no String: no handle goes
+     into it) */
+  HolderRef h;
+  if (holder_kind_of(k) != HK_NONE && holder_of_node(c, lefts[ti], &h) && (ty_is_array(h.r.ty) || ty_is_hash(h.r.ty)))
+    return 0;
+  if (share_plan_emits_handle(c, e)) return 1;
+  int kind_ok = share_plan_emits_handle_kind(c, e);
+  if (k == NK_IndexTargetNode) return kind_ok;
+  int target = k == NK_LocalVariableTargetNode || k == NK_InstanceVariableTargetNode ||
+               k == NK_GlobalVariableTargetNode || k == NK_CallTargetNode;
+  return target && (!nested || !subtree_has_side_effect(c, e) || kind_ok);
+}
+
+/* Is value v, stored by a consumer in role SPR_STORE, one its target takes
+   as a handle (share_plan_multi_renders)? The element of a multiple write
+   is found through the parents (the map the plan builds once the seal is
+   done: the seal asks share_plan_multi_renders of the write itself). */
+int share_plan_store_renders(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  int n = c->share_parent_n, p = c->share_parent && v >= 0 && v < n ? c->share_parent[v] : -1, e = v;
+  while (p >= 0 && p < n && (nt_kind(nt, p) == NK_ParenthesesNode || nt_kind(nt, p) == NK_StatementsNode)) {
+    e = p;
+    p = c->share_parent[p];
+  }
+  if (p < 0 || p >= n || nt_kind(nt, p) != NK_ArrayNode) return 1;
+  int mw = c->share_parent[p];
+  return mw < 0 || mw >= n || nt_ref(nt, mw, "value") != p || share_plan_multi_renders(c, mw, e);
+}
+
+/* Does the receiver path of in-place change `call` render the handle of
+   `base`, the String the change reaches (the base of the chain of
+   self-answering calls its receiver is)? emit_recv_route_handle renders a
+   boxed receiver's call whose arms answer a String (SPK_POLY_ARMS) through
+   the handle face when it is the receiver itself, but not as the base of a
+   chain (`px.pick(s).concat("2").concat("3")`): the outer change reaches the
+   bytes the inner one answered. */
+int share_plan_recv_renders(Compiler *c, int call, int base) {
+  const NodeTable *nt = c->nt;
+  if (call < 0 || base < 0 || nt_kind(nt, call) != NK_CallNode) return 1;
+  int u = an_unparen(nt, base);
+  return u == an_unparen(nt, nt_ref(nt, call, "receiver")) || share_plan_producer(c, u, NULL) != SPK_POLY_ARMS;
+}
+
 /* The plan of value v for a consumer in `role`, v's own need known. */
 SharePlan share_plan_with_need(Compiler *c, int v, int role, int need) {
   need = share_plan_role_need(c, v, role, need);
   SharePlan p = { (unsigned char)need, SPS_BYTES, SPF_BYTES };
   if (need == SPN_BYTES) return p;
-  p.supply = share_plan_supplies(c, v) ? SPS_HANDLE : SPS_BYTES;
-  if (p.supply == SPS_BYTES && need == SPN_NEW && share_plan_fresh_handle(c, v, role)) p.supply = SPS_HANDLE;
+  p.supply = share_plan_supplies(c, v) && (role != SPR_STORE || share_plan_store_renders(c, v)) ? SPS_HANDLE : SPS_BYTES;
+  if (p.supply == SPS_BYTES && need == SPN_NEW && (role != SPR_STORE || share_plan_store_renders(c, v)) &&
+      share_plan_fresh_handle(c, v, role))
+    p.supply = SPS_HANDLE;
   /* an exception's message asked its identity is the box the exception
      keeps it in (exc_message_identity_operand), which the identity reads
      where the value is read as bytes: no handle is attached to the read,

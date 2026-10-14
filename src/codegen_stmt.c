@@ -3315,8 +3315,16 @@ int emit_recv_route_handle(Compiler *c, int id, int recv, Buf *b) {
   else {
     free(hb.p); memset(&hb, 0, sizeof hb);
     if (pre && g_pre == pre && pre->len > pre_mark) { pre->len = pre_mark; pre->p[pre_mark] = '\0'; }
-    if (!strbuf_self_route(c, recv)) return 0;
-    emit_strbuf_handle_of(c, unwrap_parens(c, recv), &hb);
+    if (c->share_plan && share_plan_producer(c, recv, NULL) == SPK_POLY_ARMS) {
+      /* a boxed receiver's call whose arms each answer a String is read as
+         a box whose handle is bound: the handle face renders it */
+      emit_str_form_handle(c, recv, &hb);
+      nonnil = 1;
+    }
+    else {
+      if (!strbuf_self_route(c, recv)) return 0;
+      emit_strbuf_handle_of(c, unwrap_parens(c, recv), &hb);
+    }
   }
   /* a `&.` call skips a nil receiver, which the raise below would not:
      its guard takes the receiver (emit_call_safe_nav_arms) */
@@ -16043,7 +16051,15 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
     /* a write whose slot holds the rule's handle (--share-strings): that
        handle, as a local's read hands over its own */
     Buf hw; memset(&hw, 0, sizeof hw);
-    int hwrite = hshared && elt != TY_STRBUF && !hread && emit_strbuf_write_handle(c, els[i], &hw);
+    /* --share-strings: a value the String plan gives as the handle that
+       emit_expr does not (share_plan_emits_handle), into a target the plan
+       says takes one (share_plan_multi_renders): the handle face renders it,
+       whatever its producer, and the handle it makes is rooted while a later
+       value is built (nothing else holds a new one) */
+    int hface = !hread && i < ln && c->share_plan && share_masgn_plain(nt, id) && !share_plan_emits_handle(c, els[i]) &&
+                share_plan_of(c, els[i], SPR_STORE, NULL).form == SPF_HANDLE;
+    if (hface) emit_str_form_handle(c, els[i], &hw);
+    int hwrite = hface || (hshared && elt != TY_STRBUF && !hread && emit_strbuf_write_handle(c, els[i], &hw));
     /* a route over such a handle (`t, u = s.then { |x| x }, 1`): the handle
        it hands on */
     hwrite = hwrite || (hshared && elt != TY_STRBUF && !hread && emit_strbuf_route(c, els[i], &hw));
@@ -16053,7 +16069,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       else buf_printf(b, hup >= 0 ? "sp_String * _t%d = sp_String_uplus(%s);" : "sp_String * _t%d = %s;", tmps[i], hsrc.p);
       free(hw.p); free(hsrc.p);
       if (tmpts) tmpts[i] = TY_STRBUF;
-      int later_alloc_h = store_alloc || fresh_stmt;
+      int later_alloc_h = store_alloc || fresh_stmt || (hface && i + 1 < en);
       for (int j = i + 1; j < en && !later_alloc_h; j++) later_alloc_h = masgn_part_allocates(c, els[j]);
       if (later_alloc_h) masgn_root(c, TY_STRBUF, tmps[i], b);
       buf_puts(b, "\n");
@@ -23290,10 +23306,8 @@ static int face_bang_cond_on_runtime_elems(Compiler *c, int v) {
          strbuf_cond_arm_any(c, v, 0, face_bang_on_runtime_elems, 1);
 }
 /* repr.c's flow check asks this (codegen_internal.h). */
-int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int v) {
+int strbuf_flow_carries(Compiler *c, int kind, int site, int v) {
   const NodeTable *nt = c->nt;
-  int ctx;
-  NodeKind sk = site >= 0 && kind != SHFL_LEND ? nt_kind(nt, site) : NK_NONE;
   switch (kind) {
   case SHFL_WRITE:
     /* a variable's, an ivar's or an attribute's write takes its value by
@@ -23311,8 +23325,24 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
       return p.need != SPN_OBJECT;
     return p.form != SPF_REFUSE;
   }
-  case SHFL_MEMBER: case SHFL_PARAM: case SHFL_MUTATE: ctx = SFC_ALIAS; break;
-  case SHFL_MULTI: ctx = SFC_SLOT; break;
+  case SHFL_MEMBER: case SHFL_MULTI: {
+    /* an attribute's, a Struct member's or a multiple write's target takes
+       the value as a store does (SPR_STORE): the handle where the plan
+       gives it, which a multiple write's target takes only where
+       emit_multi_write renders one into it (share_plan_multi_renders; the
+       plan asks the same of the element's parents) */
+    SharePlan p = share_plan_of(c, v, SPR_STORE, NULL);
+    if (kind == SHFL_MULTI && p.form == SPF_HANDLE && !share_plan_multi_renders(c, site, v))
+      return p.need != SPN_OBJECT;
+    return p.form != SPF_REFUSE;
+  }
+  case SHFL_PARAM: case SHFL_MUTATE:
+    /* a block's parameter an iterator binds its receiver to, and a String
+       mutator's receiver, take the value as a taker does (a mutator's
+       receiver path renders the producers the handle face does but one
+       chain base: share_plan_recv_renders) */
+    if (kind == SHFL_MUTATE && !share_plan_recv_renders(c, site, v)) return 0;
+    return share_plan_of(c, v, SPR_TAKE, NULL).form != SPF_REFUSE;
   /* a lent parameter takes the address of a variable's slot (a
      parenthesized one's too; a local's write lends the local it writes);
      any other argument is lent a temporary copy (the binder's byref arm) */
@@ -23375,5 +23405,4 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
   }
   default: return 0;
   }
-  return strbuf_flow_value(c, fm, ctx, v, 0);
 }

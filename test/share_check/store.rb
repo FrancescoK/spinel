@@ -1,9 +1,8 @@
 # A multiple write stores each element of the Array literal it splits into
 # its target, also through a splat (#8328): the store needs what the target
 # does, though the literal, which no name sees, needs only bytes. Where the
-# targets are instance variables the C boxes or wraps a copy, and a change
-# through @iv does not reach s: the check marks the stores and reports it
-# (the answer differs from CRuby's under --share-strings today).
+# targets are instance variables the C stores the handle each element is, and
+# a change through @iv reaches s (the answer is CRuby's).
 s = +"s"; t = +"t"; u = +"u"
 a, b = *[s, t]
 a << "?"
