@@ -1,0 +1,33 @@
+[["a!", "z", "c?", "p1", "2", "y3", ""]]
+["a!", "z", "c?", "p1", "2", "y3", ""]
+[true, true, true, true, true, true, true]
+["y", "plain?"]
+"plain?"
+true
+["b", "other!"]
+"other!"
+true
+{a: ["n", "third#"]}
+"third#"
+["b!", "r!", "plain!!", "held!!", "held!!", "plain!!"]
+["b!", "r!", "plain!!", "held!!", "held!!", "plain!!"]
+["held", "held!!"]
+"q.r"
+"plain!!"
+[true, true, true, true, true, true]
+["y!", "w!", "plain!!", "plain!!"]
+["y!", "w!", "plain!!", "plain!!"]
+["y!"]
+"plain!!"
+true
+true
+true
+["xy2", "a", "xy2", "ivv!"]
+"xy2"
+true
+true
+true
+["abc1", "abc1", "tail"]
+"abc1"
+true
+true

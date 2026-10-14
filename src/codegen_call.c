@@ -21714,8 +21714,9 @@ static void render_operand(Compiler *c, int node, int fresh, int handle, int oin
 /* render_operand for an operand emit_operands_in_order binds as a box
    (`box`): 1 for a String bang on a boxed receiver, rendered as its box
    while the call is emitted (operand_binds_face_box), 2 for an `equal?`
-   operand, rendered as the box that keeps its handle (emit_boxed,
-   operand_binds_identity_box). */
+   operand, rendered as the box that keeps its handle, or a dispatch that
+   boxes each arm's answer (emit_boxed, operand_binds_identity_box,
+   operand_binds_user_box). */
 static void render_bound_operand(Compiler *c, int node, int fresh, int handle, int oint, int box,
                                  Buf *out, Buf *pre) {
   if (box == 2) {
@@ -21891,6 +21892,17 @@ static int operand_binds_identity_box(Compiler *c, int id, int v) {
     return repr_of(c, recv).kind == RK_BOXED && poly_identity_operand(c, name, argc, v, repr_of(c, v).as_ty);
   /* (the operand's test is str_arms_convert's, which emits that arm) */
   return v == recv && comp_ntype(c, argv[0]) == TY_POLY && strbuf_route_srange_kept(c, recv);
+}
+
+/* --share-strings: is String operand v a call on a boxed receiver whose
+   dispatch boxes each arm's answer (strbuf_poly_user_boxes) that a handle
+   demand typed a handle? Bound as its handle, the dispatch assigned each
+   arm's `const char *` answer to a handle temp, and the C did not build
+   (the later pushes of `o << x.m(a) << x.m(b)`). It is bound as the box
+   emit_boxed makes of it, which the store reads as the element. */
+static int operand_binds_user_box(Compiler *c, int v) {
+  return repr_share_rule(c) && !arg_ran_first(v, 0) && repr_of(c, v).as_ty == TY_STRBUF &&
+         strbuf_poly_user_boxes(c, v);
 }
 
 /* held[i]: is argument operand[i] (the receiver, operand 0 when has_recv,
@@ -22084,7 +22096,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     int bsh = operand[i] != harg && operand_binds_self_handle(c, operand[i]);
     int bfb = bsh || operand[i] == harg ? 0
             : operand_binds_face_box(c, operand[i]) ? 1
-            : operand_binds_identity_box(c, id, operand[i]) ? 2 : 0;
+            : operand_binds_identity_box(c, id, operand[i]) || operand_binds_user_box(c, operand[i]) ? 2 : 0;
     TyKind t = operand[i] == harg || bsh ? TY_STRBUF : bfb ? TY_POLY : fr ? TY_STRING : repr_of(c, operand[i]).as_ty;
     if (t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL) {
       if (unb < 0) return 0;

@@ -1,0 +1,31 @@
+class ShstCols
+  @where: Array[Array[String]]
+  @cols: Array[String]
+  def initialize: () -> void
+  def name_of: (String col) -> String
+  def first_of: (String col) -> String?
+  def nth_of: (String col, Integer i) -> String
+  def chain: (String a, String b) -> Array[String]
+  def push_cols: (Array[String] cols) -> ShstCols
+  def add: (Hash[String | Symbol, untyped] h) -> ShstCols
+end
+class ShstBase
+  @s: String
+  def initialize: () -> void
+  def m: (String col) -> String
+  def s: () -> String
+end
+class ShstSub < ShstBase
+  def m: (String col) -> String
+end
+class ShstYield
+  def m: (String col) { (String) -> String } -> String
+end
+class ShstIv
+  @iv: String
+  def initialize: () -> void
+  def m: (String x) -> String
+end
+class ShstTap
+  def m: (String x) { (String) -> String } -> String
+end
