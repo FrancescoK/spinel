@@ -1364,8 +1364,26 @@ const char *const_get_recv_name(Compiler *c, int call, int recv) {
    the qualified name R's own carries) or NULL with *cls the class, -1 when
    there is neither. */
 static const char *const_get_resolve(Compiler *c, const char *rnm, const char *cgn, int *cls) {
-  LocalVar *cv = comp_const(c, cgn);
   *cls = -1;
+  /* A qualified path ("A::B", "::A::B") is read segment by segment: each
+     but the last names a class or module, which the next is looked up in,
+     a leading `::` from the top level; a segment that is none is the
+     NameError of the whole path. */
+  if (cgn && strstr(cgn, "::")) {
+    const char *p = cgn, *cur = rnm;
+    if (p[0] == ':' && p[1] == ':') { p += 2; cur = NULL; }
+    for (const char *sep; (sep = strstr(p, "::")); p = sep + 2) {
+      char seg[256];
+      size_t l = (size_t)(sep - p);
+      if (l == 0 || l >= sizeof seg) return NULL;
+      memcpy(seg, p, l); seg[l] = '\0';
+      int k = -1;
+      if (const_get_resolve(c, cur, seg, &k) || k < 0) return NULL;
+      cur = c->classes[k].name;
+    }
+    return *p ? const_get_resolve(c, cur, p, cls) : NULL;
+  }
+  LocalVar *cv = comp_const(c, cgn);
   /* the common case, one constant of that leaf and no class: no body scan */
   if (cv && cv->type != TY_UNKNOWN && !qc_leaf_qualified(cgn) && !class_leaf_any(c, cgn)) return cgn;
   int rk = rnm ? comp_class_index(c, rnm) : -1;

@@ -1,0 +1,6 @@
+Adapters::SQLite3Adapter
+Adapters::Nested::Deep
+3
+Adapters::SQLite3Adapter
+"sqlite"
+"uninitialized constant Adapters::Missing"
