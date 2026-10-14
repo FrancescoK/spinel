@@ -1313,11 +1313,28 @@ SHARE_TESTS = $(wildcard test/share/*.rb test/share_strings_*.rb) \
 ifneq ($(FFI_AVAILABLE),yes)
 SHARE_SKIP = test/share/share_strings_fiddle.rb packages/ffi/test/%.rb packages/fiddle/test/%.rb
 endif
+# The test/rbs-seed programs that have an .expected (their CRuby answer) run
+# under the flag too, with their signatures (--rbs test/rbs-seed/sig, added by
+# tools/share_strings_one.sh): a seed pins a slot's type (a bare String slot
+# is a byte pointer, not a handle), so the sharing decisions differ from those
+# for the same program without signatures, and no program without signatures
+# exercises them. A program that cannot run this way carries
+# `# spinel: rbs-seed-no-share` (its reason in its header); one the flag
+# answers wrongly or refuses today is listed in RBS_SEED_SHARE_SKIP, with a
+# comment naming the bug it waits on. The programs are only discovered when
+# vendor/rbs is fetched, as for rbs-seed-test.
+RBS_SEED_SHARE_SKIP =
+ifeq ($(wildcard $(RBS_INC)/rbs/parser.h),)
+RBS_SEED_SHARE_TESTS =
+else
+RBS_SEED_SHARE_NO = $(shell grep -l '^\# spinel: rbs-seed-no-share$$' test/rbs-seed/*.rb)
+RBS_SEED_SHARE_TESTS = $(foreach t,$(filter-out $(RBS_SEED_SHARE_SKIP) $(RBS_SEED_SHARE_NO),$(wildcard test/rbs-seed/*.rb)),$(if $(wildcard $(t:.rb=.expected)),$(t)))
+endif
 # Each program runs in tools/share_strings_one.sh, one per core: one after
 # another they took about 13 minutes, the gate's longest leg by far.
-share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS)
+share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS) $(if $(RBS_SEED_SHARE_TESTS),rbs-seed-extractor)
 	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-share.XXXXXX"); ok=1; \
-	printf '%s\n' $(filter-out $(SHARE_SKIP),$(SHARE_TESTS)) | \
+	printf '%s\n' $(filter-out $(SHARE_SKIP),$(SHARE_TESTS)) $(RBS_SEED_SHARE_TESTS) | \
 	  xargs -P $(NPROC) -n 1 sh tools/share_strings_one.sh $(SPINEL) > "$$tmp/runs" 2>&1 || ok=0; \
 	cat "$$tmp/runs"; \
 	for flags in '' '--share-strings'; do \
