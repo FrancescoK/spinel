@@ -3660,15 +3660,6 @@ static void sp_sched_block(sp_thread **waitlist, int defer_inject) {   /* PRE/PO
   if (self == &g_main_thread) {
     sp_sched_pump(NULL, 1);   /* returns (lock held) once a waker marks main RUNNABLE */
     if (self->state != SP_TH_RUNNING) {
-#ifdef SP_THREADS
-      if (getenv("SP_POC_DEBUG")) {   /* PoC debug: the state behind a false deadlock */
-        fprintf(stderr, "[poc] nrunning=%d runnable=%d workers=%d\n", SP_ATOMIC_LOAD(&g_nrunning, __ATOMIC_SEQ_CST), SP_ATOMIC_LOAD(&g_runnable, __ATOMIC_SEQ_CST), sp_active_workers);
-        for (int i = 0; i < sp_active_workers; i++) { int n = 0; for (sp_thread *w = g_lrq[i].head; w; w = w->rq_next) n++;
-          fprintf(stderr, "[poc] w%d lrq=%d idle=%d evfd=%d cur=%p\n", i, n, g_wslot[i].idle, g_wslot[i].evfd, (void *)g_wslot[i].cur); }
-        for (sp_thread *t = g_all; t; t = t->all_next)
-          fprintf(stderr, "[poc] t%u state=%d park=%d home=%d wait=%p\n", t->id, (int)t->state, t->park, t->home_wid, (void *)t->wait_head);
-      }
-#endif
       SCHED_UNLOCK();
       sp_raise_cls("ThreadError", "deadlock detected: all threads blocked");
     }
