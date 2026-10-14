@@ -3218,7 +3218,7 @@ int emit_step_array_expr(Compiler *c, int id, Buf *b) {
   }
   int is_float = (rt == TY_FLOAT) || comp_ntype(c, sv[0]) == TY_FLOAT ||
                  (sc >= 2 && comp_ntype(c, sv[1]) == TY_FLOAT);
-  if (rt == TY_INT && !is_float && !g_promote_mode && comp_ntype(c, sv[0]) == TY_POLY) return emit_step_boxed_limit(c, recv, sv, sc, b);
+  if (rt == TY_INT && !is_float && comp_ntype(c, sv[0]) == TY_POLY) return emit_step_boxed_limit(c, recv, sv, sc, b);
   int tr = ++g_tmp, tl = ++g_tmp, ts = ++g_tmp, ti = ++g_tmp;
   if (!is_float) {
     buf_printf(b, "({ sp_int _t%d = ", tl);
