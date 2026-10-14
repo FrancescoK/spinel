@@ -70,60 +70,35 @@ static int str_uplus_literal(Compiler *c, int v) {
   return nm && is_unary_plus(nm) && nt_ref(nt, v, "arguments") < 0 && r >= 0 && nt_kind(nt, r) == NK_StringNode;
 }
 
-/* Node v as the handle a handle slot takes (a method's parameter that is
-   the shared handle), in the plan's form. Where the plan gives the handle,
-   or gives no form (without --share-strings, or where the value's own
-   need is no more than its bytes or a new handle), the producer's handle
-   is handed over where it has one, in this order:
-     - a local buffer's write: that local's buffer;
-     - a value that ran ahead of the binding (arg_ran_first): the handle it
-       took there (ran_first_handle), a variable's at its read, so a later
-       argument that writes the variable does not change what is bound;
-     - a route over a handle (strbuf_arg_carries): emit_strbuf_handle_of;
-     - a variable that holds the handle: its slot;
-   and else a new handle is made of its bytes, which no other name sees:
-     - `+"lit"` into a slot that holds its own copy (SFD_OWN): straight
-       from the literal;
-     - nil: the NULL handle a nullable slot reads as nil
-       (`def initialize(o: nil)`);
-     - a box: the NULL handle where it holds nil (converted as a String
-       first, it raised TypeError where CRuby binds nil), else a handle of
-       its String; where the plan gives the handle, a box that holds a
-       String's handle hands over that handle (a box of a String that can
-       change holds its handle), which a copy of its bytes would fork;
-     - any other value: a handle made of its bytes (SF_ALLOCATES), with the
-       bytes inside the object for a slot that holds its own copy.
-   A form the plan gives the handle that no arm hands over (a renderer gap
-   the seal did not see, under a view or an arm) is the new handle, as
-   before the plan was read; --share-check reports it. Answers the form
-   rendered. */
-static int str_render_handle(Compiler *c, int v, int form, unsigned dest, StrForm *sf) {
+/* The handle arms of str_render_handle, each answering 1 with the handle
+   rendered, or 0 with nothing emitted: a value that ran ahead of the
+   binding (the handle it took there); a route over a handle; a variable's
+   slot. */
+static int str_handle_ran_first(Compiler *c, int v, StrForm *sf) {
+  int ran = arg_ran_first(v, 0), late = ran && str_var_read(c, v);
+  if (ran_first_handle(v) < 0 || (!late && !(repr_share_rule(c) && ran))) return 0;
+  buf_printf(&sf->expr, "_t%d", ran_first_handle(v));
+  return 1;
+}
+static int str_handle_route(Compiler *c, int v, StrForm *sf) {
+  if (arg_ran_first(v, 0) || str_var_read(c, v) || repr_of(c, v).as_ty != TY_STRING || !strbuf_arg_carries(c, v)) return 0;
+  emit_strbuf_handle_of(c, v, &sf->expr);
+  return 1;
+}
+static int str_handle_slot(Compiler *c, int v, StrForm *sf) {
+  char sref[192];
+  if ((arg_ran_first(v, 0) && str_var_read(c, v)) || !strbuf_slot_ref(c, v, sref, sizeof sref)) return 0;
+  buf_puts(&sf->expr, sref);
+  return 1;
+}
+
+/* ...and the new handle made of a value's bytes, which no other name sees
+   (a box's: the handle it holds where the form is the handle) */
+static int str_handle_new(Compiler *c, int v, int form, unsigned dest, StrForm *sf) {
   Buf *b = &sf->expr;
   NodeKind k = nt_kind(c->nt, v);
-  int var = str_var_read(c, v), ran = arg_ran_first(v, 0), late = var && ran;
-  char sref[192];
-  sf->cty = TY_STRBUF;
-  if (emit_strbuf_local_write_handle(c, v, b)) return SPF_HANDLE;
-  if (late && ran_first_handle(v) >= 0) {
-    buf_printf(b, "_t%d", ran_first_handle(v));
-    return SPF_HANDLE;
-  }
-  /* (--share-strings: a value that ran first as the handle it hands on, a
-     route or `s << x`, or one that runs here as it) */
-  if (repr_share_rule(c) && !late && ran && ran_first_handle(v) >= 0) {
-    buf_printf(b, "_t%d", ran_first_handle(v));
-    return SPF_HANDLE;
-  }
-  if (!late && !ran && !var && repr_of(c, v).as_ty == TY_STRING && strbuf_arg_carries(c, v)) {
-    emit_strbuf_handle_of(c, v, b);
-    return SPF_HANDLE;
-  }
-  if (!late && strbuf_slot_ref(c, v, sref, sizeof sref)) {
-    buf_puts(b, sref);
-    return SPF_HANDLE;
-  }
   int own = (dest & SFD_OWN) && k != NK_LocalVariableReadNode && k != NK_InstanceVariableReadNode;
-  if (!ran && (dest & SFD_OWN) && str_uplus_literal(c, v)) {
+  if (!arg_ran_first(v, 0) && (dest & SFD_OWN) && str_uplus_literal(c, v)) {
     buf_puts(b, "sp_String_new_unfrozen(");
     emit_expr(c, nt_ref(c->nt, v, "receiver"), b);
     buf_puts(b, ")");
@@ -152,6 +127,73 @@ static int str_render_handle(Compiler *c, int v, int form, unsigned dest, StrFor
   buf_puts(b, ")");
   sf->needs |= SF_ALLOCATES;
   return SPF_WRAP;
+}
+
+/* Node v as the handle a handle slot takes (a method's parameter that is
+   the shared handle), in the plan's form. Where the plan gives the handle,
+   or gives no form (without --share-strings, or where the value's own
+   need is no more than its bytes or a new handle), the producer's handle
+   is handed over where it has one, in this order:
+     - a local buffer's write: that local's buffer;
+     - a value that ran ahead of the binding (arg_ran_first): the handle it
+       took there (ran_first_handle), a variable's at its read, so a later
+       argument that writes the variable does not change what is bound;
+     - a route over a handle (strbuf_arg_carries): emit_strbuf_handle_of;
+     - a variable that holds the handle: its slot;
+   and else a new handle is made of its bytes, which no other name sees
+   (str_handle_new):
+     - `+"lit"` into a slot that holds its own copy (SFD_OWN): straight
+       from the literal;
+     - nil: the NULL handle a nullable slot reads as nil
+       (`def initialize(o: nil)`);
+     - a box: the NULL handle where it holds nil (converted as a String
+       first, it raised TypeError where CRuby binds nil), else a handle of
+       its String; where the plan gives the handle, a box that holds a
+       String's handle hands over that handle (a box of a String that can
+       change holds its handle), which a copy of its bytes would fork;
+     - any other value: a handle made of its bytes (SF_ALLOCATES), with the
+       bytes inside the object for a slot that holds its own copy.
+   Under --share-strings the producer's kind (share_plan_producer) picks
+   the arms instead, one render per kind (str_handle_by_kind). A form the
+   plan gives the handle that no arm hands over (a renderer gap the seal
+   did not see, under a view or an arm) is the new handle, as before the
+   plan was read; --share-check reports it. Answers the form rendered. */
+static int str_handle_by_kind(Compiler *c, int v, int form, unsigned dest, StrForm *sf);
+static int str_render_handle(Compiler *c, int v, int form, unsigned dest, StrForm *sf) {
+  sf->cty = TY_STRBUF;
+  if (c->share_plan) return str_handle_by_kind(c, v, form, dest, sf);
+  if (emit_strbuf_local_write_handle(c, v, &sf->expr)) return SPF_HANDLE;
+  if (str_handle_ran_first(c, v, sf) || str_handle_route(c, v, sf) || str_handle_slot(c, v, sf)) return SPF_HANDLE;
+  return str_handle_new(c, v, form, dest, sf);
+}
+
+/* --share-strings: the handle face's render of each producer kind
+   (share.h's SPK_*), asked where the value is bound:
+     NONE, FROZEN   a new handle of the bytes, which for a frozen literal
+                    is the literal's own (sp_String_new_shared), after a
+                    value that ran first, which holds what it took;
+     BOX            the box's handle or a handle of its String (a box
+                    that ran first is the handle it took);
+     any other      the handle the producer hands on: a local buffer's
+                    write, a value that ran first, a route over a handle,
+                    a variable's slot; a kind none of these renders (a
+                    renderer gap) is the new handle. */
+static int str_handle_by_kind(Compiler *c, int v, int form, unsigned dest, StrForm *sf) {
+  int kind = share_plan_producer(c, v, NULL);
+  _Static_assert(SPK__COUNT == 23, "a handle render for each producer kind");
+  switch (kind) {
+  case SPK_NONE: case SPK_FROZEN: case SPK_BOX:
+    if (str_handle_ran_first(c, v, sf)) return SPF_HANDLE;
+    return str_handle_new(c, v, form, dest, sf);
+  case SPK_SLOT: case SPK_DEMANDED: case SPK_ELEM: case SPK_SLOT_POLY: case SPK_SELF: case SPK_BANG_BOX:
+  case SPK_PROC_CALL: case SPK_POLY_ARMS: case SPK_EXC_MESSAGE: case SPK_EXC_SUPER: case SPK_PUBLISHED:
+  case SPK_READER: case SPK_WRITE: case SPK_ASSIGN: case SPK_OPERAND: case SPK_BLOCK_VALUE: case SPK_YIELD:
+  case SPK_COND: case SPK_SEQUENCE: case SPK_LIFT:
+    if (emit_strbuf_local_write_handle(c, v, &sf->expr)) return SPF_HANDLE;
+    if (str_handle_ran_first(c, v, sf) || str_handle_route(c, v, sf) || str_handle_slot(c, v, sf)) return SPF_HANDLE;
+    return str_handle_new(c, v, form, dest, sf);
+  }
+  return str_handle_new(c, v, form, dest, sf);
 }
 
 int emit_str_form(Compiler *c, int v, int role, int face, unsigned dest, StrForm *sf) {
