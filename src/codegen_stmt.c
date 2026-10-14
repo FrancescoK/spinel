@@ -2193,6 +2193,21 @@ int strbuf_route_boxed_exc_message(Compiler *c, int v) {
 int exc_message_identity_operand(Compiler *c, int v) {
   return exc_text_call(c, v) || exc_text_call_on(c, v, 1);
 }
+/* --share-strings: `x.message` / `x.to_s` on a box (exc_text_call_on's
+   call shape, the receiver boxed), whatever the box can hold: its
+   identity box (emit_exc_message_idbox) tests the box at run time, and an
+   exception in it answers the message it keeps, any other value the read
+   the call makes. */
+int exc_message_box_operand(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, v, "name");
+  int recv = nt_ref(nt, v, "receiver");
+  return nm && recv >= 0 && is_exception_message(nm) && nt_ref(nt, v, "arguments") < 0 &&
+         nt_ref(nt, v, "block") < 0 && (comp_ntype(c, v) == TY_STRING || comp_ntype(c, v) == TY_STRBUF) &&
+         comp_ntype(c, recv) == TY_POLY;
+}
 /* The identity box of exception message operand v (exc_message_identity_operand);
    the receiver and the text are each evaluated once. */
 void emit_exc_message_idbox(Compiler *c, int v, Buf *b) {
@@ -2205,7 +2220,7 @@ void emit_exc_message_idbox(Compiler *c, int v, Buf *b) {
   char ask[96];
   if (overridden) snprintf(ask, sizeof ask, "sp_user_exc_%s_id", message ? "message" : "to_s");
   else snprintf(ask, sizeof ask, "sp_exc_message_idbox");
-  if (exc_text_call_on(c, v, 1)) {
+  if (exc_message_box_operand(c, v)) {
     /* a boxed receiver: an exception in the box is asked its identity, as a
        typed receiver is; a String's to_s is the String itself, and any other
        value keeps the read the call makes */
@@ -2231,7 +2246,14 @@ void emit_exc_message_idbox(Compiler *c, int v, Buf *b) {
       view_pop(c, sd);
       view_pop(c, sb);
     }
-    else emit_boxed(c, v, b);
+    else {
+      /* (this arm runs for what is no exception: its to_s is a String of
+         its own, no copy of one the rule shares, and its #message the read
+         the call makes) */
+      size_t arm_at = b->len;
+      emit_boxed(c, v, b);
+      if (g_share_check) share_check_declare_reads(b, arm_at, v);
+    }
     g_conv_hold = hold;
     view_unbind(mark);
     buf_puts(b, "; })");
@@ -2244,24 +2266,6 @@ void emit_exc_message_idbox(Compiler *c, int v, Buf *b) {
   if (cplan_nil(c, v) == CN_RAISE) emit_nil_cold_test(c, v, recv, b);
   view_unbind(mark);
   buf_printf(b, "%s(_e%d); })", ask, t);
-}
-/* equal? with an exception's message on a side (exc_message_identity_operand):
-   the two identity boxes compared, the other side as the box it is held in.
-   0, with nothing emitted, when neither side is one. */
-int emit_exc_message_equal(Compiler *c, int recv, int arg, Buf *b) {
-  if (!repr_share_rule(c) || !(exc_message_identity_operand(c, recv) || exc_message_identity_operand(c, arg))) return 0;
-  /* a receiver that is not the message may be an object of a class that
-     defines #equal? itself, which answers the call */
-  if (!exc_message_identity_operand(c, recv))
-    for (int k = 0; k < c->nclasses; k++)
-      if (comp_method_in_class(c, k, "equal?") >= 0) return 0;
-  int th = ++g_tmp;
-  buf_printf(b, "({ sp_RbVal _t%d = ", th);
-  if (exc_message_identity_operand(c, recv)) emit_exc_message_idbox(c, recv, b); else emit_boxed(c, recv, b);
-  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (sp_bool)sp_poly_equal(_t%d, ", th, th);
-  if (exc_message_identity_operand(c, arg)) emit_exc_message_idbox(c, arg, b); else emit_boxed(c, arg, b);
-  buf_puts(b, "); })");
-  return 1;
 }
 /* A plain reader of a shared String slot normally answers a snapshot.
    Its field-read arm can hand on the handle under a demand instead, as
@@ -2431,6 +2435,70 @@ int strbuf_route_kind(Compiler *c, int v, int *op) {
     return strbuf_native_answer(c, v) || strbuf_call_reads_handle(c, v) ? SPK_READER : SPK_NONE;
   return strbuf_slot_ref(c, v, ref, sizeof ref) ? SPK_SLOT : SPK_NONE;
 }
+/* The deep-return pickup of call v (repr_call_returns_handle; emit_call_body's):
+   the channel cleared, the call run, its published handle taken. A nil
+   answer takes precedence over an earlier published handle, as in
+   emit_deep_return_pickup. Where nothing was published the call answered
+   a String of its own: as a handle (box 0) a new one around it, as a box
+   (box 1) the String it is, which an identity compares as it stands. */
+void emit_strbuf_pickup(Compiler *c, int v, int box, Buf *b) {
+  v = unwrap_parens(c, v);
+  int t = ++g_tmp;
+  size_t at = b->len;
+  buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", t);
+  int sv = view_push_repr(c, v, VR_STRBUF_BOX, 0), sd = view_push_repr(c, v, VR_HANDLE_DEMAND, 0);
+  emit_expr(c, v, b);
+  view_pop(c, sd); view_pop(c, sv);
+  buf_puts(b, "; ");
+  if (strbuf_pickup_answers_nil(c, v)) buf_printf(b, "!_v%d ? %s : ", t, box ? "sp_box_nil()" : "NULL");
+  if (g_repr_check) repr_channel_pickup(c, v, strbuf_pickup_answers_nil(c, v));
+  /* (as a box, the bytes it takes only where nothing was published are
+     the String the call answered: no copy) */
+  if (box)
+    buf_printf(b, "_sp_ret_strbuf ? sp_box_nullable_obj((sp_String *)_sp_ret_strbuf, SP_BUILTIN_STRBUF) : sp_box_str(_v%d); })", t);
+  else buf_printf(b, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : sp_String_new_shared(_v%d); })", t);
+  if (box && g_share_check) share_check_declare_reads(b, at, v);
+}
+/* --share-strings: the boxed operand whose String route v answers (`y.to_s`,
+   `+y`, `String(y)` with y boxed: strbuf_route_operand), or -1. The
+   route's read takes that String as the box holds it: a plain String's
+   bytes, or a handle's live buffer, never a copy. */
+int strbuf_route_box_operand(Compiler *c, int v) {
+  int x = strbuf_route_operand(c, v);
+  return x >= 0 && x != unwrap_parens(c, v) && repr_of(c, x).kind == RK_BOXED ? x : -1;
+}
+/* --share-strings: `x.then { |v| ... }` (yield_self) or `x.tap { |v| ... }`
+   with a literal block and no `&.` (whose guard is the bang's,
+   emit_bang_self_handle), the route strbuf_route_operand takes: its
+   block's value, or its receiver. */
+static int strbuf_route_then(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  const char *nm = v >= 0 && nt_kind(nt, v) == NK_CallNode ? nt_str(nt, v, "name") : NULL;
+  int blk = nm ? nt_ref(nt, v, "block") : -1;
+  return blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && (is_then_alias(nm) || is_tap_name(nm)) &&
+         !call_is_safe_nav(nt, v) && strbuf_route_operand(c, v) == v;
+}
+/* --share-strings: route v that hands its String on as a box -- a proc's
+   answer (strbuf_route_proc_call), the box a proc-form clone hands back
+   (strbuf_route_reopen_pf), or the value of a call spliced in with its
+   literal block (strbuf_route_inline_call) or of a `then` or `tap`
+   (strbuf_route_then), each tail boxed as what it is -- as that box: its handle's, a plain String's, or nil. 0, with
+   nothing emitted, for any other value. An identity compares the box as
+   it is; emit_strbuf_route makes a plain String's box a new handle. */
+int emit_strbuf_route_box(Compiler *c, int v, Buf *b) {
+  int pc = strbuf_route_proc_call(c, v);
+  if (!pc && !strbuf_route_reopen_pf(c, v) && !strbuf_route_inline_call(c, v) && !strbuf_route_then(c, v)) return 0;
+  v = unwrap_parens(c, v);
+  int sv = view_push(c, v, TY_POLY);
+  /* a block literal the call splices answers its tail boxed: asked as
+     the call's own type, a tail that is a shared String came out as its
+     bytes (#8399) */
+  if (pc && is_block_call(c, v)) emit_block_invoke(c, nt_ref(c->nt, v, "arguments"), b, 0, 1, TY_POLY);
+  else emit_expr(c, v, b);
+  view_pop(c, sv);
+  return 1;
+}
 /* The handle a route (strbuf_route_operand) hands on, as an sp_String *:
    1, or 0 with nothing emitted when v is no route over a handle. Wrapped
    fresh around the route's String read, the holder it reached forked off
@@ -2589,29 +2657,13 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     buf_printf(b, ", %d)", sx == 2);
     return 1;
   }
-  if (strbuf_route_proc_call(c, v)) {
-    /* the box as the proc handed it back: its handle, a plain String's
-       new one, or nil */
-    v = unwrap_parens(c, v);
-    int t = ++g_tmp, sv = view_push(c, v, TY_POLY);
+  /* the box as the proc (or the proc-form clone) handed it back: its
+     handle, a plain String's new one, or nil */
+  if (strbuf_route_proc_call(c, v) || strbuf_route_reopen_pf(c, v)) {
+    int t = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", t);
-    /* a block literal the call splices answers its tail boxed: asked as
-       the call's own type, a tail that is a shared String came out as its
-       bytes (#8399) */
-    if (is_block_call(c, v)) emit_block_invoke(c, nt_ref(c->nt, v, "arguments"), b, 0, 1, TY_POLY);
-    else emit_expr(c, v, b);
+    emit_strbuf_route_box(c, v, b);
     buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? (sp_String *)NULL : sp_poly_as_strbuf(_t%d); })", t, t);
-    view_pop(c, sv);
-    return 1;
-  }
-  if (strbuf_route_reopen_pf(c, v)) {
-    /* the box the proc-form clone hands back, read as the proc call's is */
-    v = unwrap_parens(c, v);
-    int t = ++g_tmp, sv = view_push(c, v, TY_POLY);
-    buf_printf(b, "({ sp_RbVal _t%d = ", t);
-    emit_expr(c, v, b);
-    buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? (sp_String *)NULL : sp_poly_as_strbuf(_t%d); })", t, t);
-    view_pop(c, sv);
     return 1;
   }
   int x = strbuf_route_operand(c, v);
@@ -2626,20 +2678,7 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     return 1;
   }
   if (repr_call_returns_handle(c, v) && (x < 0 || repr_of(c, x).kind != RK_BOXED)) {
-    /* the deep-return pickup (emit_call_body's): the channel cleared, the
-       call run, its published handle taken, or a String of its own if none
-       was published. A nil answer takes precedence over an earlier
-       published handle, as in emit_deep_return_pickup. */
-    v = unwrap_parens(c, v);
-    int t = ++g_tmp;
-    buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", t);
-    int sv = view_push_repr(c, v, VR_STRBUF_BOX, 0), sd = view_push_repr(c, v, VR_HANDLE_DEMAND, 0);
-    emit_expr(c, v, b);
-    view_pop(c, sd); view_pop(c, sv);
-    buf_puts(b, "; ");
-    if (strbuf_pickup_answers_nil(c, v)) buf_printf(b, "!_v%d ? NULL : ", t);
-    if (g_repr_check) repr_channel_pickup(c, v, strbuf_pickup_answers_nil(c, v));
-    buf_printf(b, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : sp_String_new_shared(_v%d); })", t);
+    emit_strbuf_pickup(c, v, 0, b);
     return 1;
   }
   if (strbuf_route_inline_call(c, v)) {

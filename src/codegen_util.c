@@ -3171,7 +3171,11 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
   int cops[3];
   if (strbuf_assign_route(c, recv) || strbuf_route_clamp(c, recv, cops)) {
     buf_puts(b, "((sp_int)(uintptr_t)sp_String_identity(");
+    size_t at = b->len;
     emit_strbuf_route(c, recv, b);
+    /* (the route's text is that handle: the marks of the node's own
+       expressions in it, read as bytes by the check, are no read) */
+    if (g_share_check) share_check_declare_reads(b, at, recv);
     buf_puts(b, "))");
     return 1;
   }
