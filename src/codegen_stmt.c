@@ -15882,6 +15882,10 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       /* a mutable-String ivar holds an sp_String *: a String element is
          wrapped, as a local target's is */
       else if (ivt == TY_STRBUF && valt == TY_STRING) buf_printf(b, "sp_String_new_shared(_t%d)", tmps[i]);
+      /* a boxed element into a String ivar: a box holding a handle is that
+         handle, a boxed nil the slot's NULL, as a local target's is */
+      else if (ivt == TY_STRBUF && valt == TY_POLY) buf_printf(b, "sp_poly_as_strbuf(_t%d)", tmps[i]);
+      else if (ivt == TY_STRING && valt == TY_POLY) masgn_conv(c, lefts[i], ivt, valt, ivex, b);
       else buf_printf(b, "_t%d", tmps[i]);
       splice_store_close(c, lefts[i], sk, b);
       buf_puts(b, ";\n");
