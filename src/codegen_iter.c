@@ -559,13 +559,10 @@ int emit_handle_var_ref(Compiler *c, int a, Buf *b) {
      the new String by now (ran_first_handle, as emit_boxed asks it) */
   int th = ran_first_handle(a);
   if (th >= 0) { buf_printf(b, "_t%d", th); return 1; }
-  char ref[1024];
   int svm = view_push_repr(c, a, VR_STRBUF_BOX, 1);
-  int ok = strbuf_slot_ref(c, a, ref, sizeof ref);
+  int ok = strbuf_slot_text(c, a, b);
   view_pop(c, svm);
-  if (!ok) return 0;
-  buf_puts(b, ref);
-  return 1;
+  return ok;
 }
 /* Which parameters of inlined method `mi` bind as ALIASES of the caller's
    variables (see inline_param_mutated above): a String the body mutates,
@@ -595,12 +592,14 @@ unsigned inline_alias_params(Compiler *c, int mi, const int *argv, int pargc, co
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
   unsigned alias_mask = 0;
+  Buf gref; memset(&gref, 0, sizeof gref);
   for (int i = 0; i < m->nparams && i < 32 && !L->gather; i++) {
     if (L->from[i] != ARG_NODE || L->arg[i] >= pargc || (m->rest_idx >= 0 && i >= m->rest_idx)) continue;
     int an = argv[L->arg[i]];
     NodeKind ak = nt_kind(nt, an);
     /* the C global lent, when the argument is one (refuse_lent_global_rebound) */
-    char gref[256];
+    gref.len = 0;
+    if (gref.p) gref.p[0] = '\0';
     int gslot = 0;
     if (ak == NK_InstanceVariableReadNode) {
       /* an ivar buffer: the object's own slot, from an instance method of a
@@ -608,7 +607,7 @@ unsigned inline_alias_params(Compiler *c, int mi, const int *argv, int pargc, co
          the C global a top-level or class method's ivar lives in */
       Scope *as = comp_scope_of(c, an);
       if (comp_ntype(c, an) != TY_STRING) continue;
-      gslot = ivar_global_slot(c, an, gref, sizeof gref);
+      gslot = ivar_global_slot(c, an, &gref);
       if (!gslot &&
           (!as || as->class_id < 0 || as->is_cmethod ||
            comp_ty_value_obj(c, ty_object(as->class_id)) || !g_self)) continue;
@@ -617,8 +616,8 @@ unsigned inline_alias_params(Compiler *c, int mi, const int *argv, int pargc, co
        lends it */
     else if (ak == NK_GlobalVariableReadNode || ak == NK_ClassVariableReadNode) {
       if (comp_ntype(c, an) != TY_STRING ||
-          !(ak == NK_GlobalVariableReadNode ? gvar_global_slot(c, an, gref, sizeof gref)
-                                            : cvar_global_slot(c, an, gref, sizeof gref))) continue;
+          !(ak == NK_GlobalVariableReadNode ? gvar_global_slot(c, an, &gref)
+                                            : cvar_global_slot(c, an, &gref))) continue;
       gslot = 1;
     }
     /* a String that is the shared handle has no slot to lend: the
@@ -634,8 +633,8 @@ unsigned inline_alias_params(Compiler *c, int mi, const int *argv, int pargc, co
         (!inline_param_mutated(c, mi, m->pnames[i]) &&
          !inline_param_yielded_mutated(c, mi, m->pnames[i], blk))) continue;
     if (!lv->inline_alias && !an_inline_param_lent(c, mi, i, blk) &&
-        (gslot ? lent_global_slot_rebound(c, an, gref) >= 0 : comp_block_rebinds_arg(c, blk, an))) continue;
-    if (gslot) refuse_lent_global_rebound(c, an, gref, m->name, m->pnames[i]);
+        (gslot ? lent_global_slot_rebound(c, an, gref.p) >= 0 : comp_block_rebinds_arg(c, blk, an))) continue;
+    if (gslot) refuse_lent_global_rebound(c, an, gref.p, m->name, m->pnames[i]);
     alias_mask |= 1u << i;
     lv->inline_alias++;
     lv->is_cell = 1;
@@ -644,6 +643,7 @@ unsigned inline_alias_params(Compiler *c, int mi, const int *argv, int pargc, co
       if (*splice_tok < 0) *splice_tok = tok;
     }
   }
+  free(gref.p);
   return alias_mask;
 }
 /* Can the alias of argument `an` move onto the splice's private slot at
@@ -773,8 +773,8 @@ void emit_inline_alias_arg(Compiler *c, int av, Buf *b) {
        store lands inside this expansion, past any dirty bit (#4378) */
     const char *ivn = nt_str(nt, av, "name");
     /* a C global is a root every collection marks: no owner to pin */
-    char gref[256];
-    if (ivar_global_slot(c, av, gref, sizeof gref)) { buf_printf(b, "%s)", gref); return; }
+    Buf gref; memset(&gref, 0, sizeof gref);
+    if (ivar_global_slot(c, av, &gref)) { buf_printf(b, "%s)", gref.p); free(gref.p); return; }
     buf_printf(b, "%s%siv_%s); sp_gc_pin_remembered((void *)%s)", g_self, g_self_deref, iv_c(ivn + 1), g_self);
     return;
   }
@@ -1214,7 +1214,9 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      emit_block_invoke, which restores the real function's funnel. */
   int m_has_ret = scope_has_return(c, mi);
   int block = nt_ref(nt, id, "block");   /* may be -1: no block passed */
-  char yprocbuf[128];  /* holds "lv_" + a rename_local result (g_ren_to width 112) */
+  /* the forwarded proc's C name: an enclosing proc form's parameter is as
+     long as its Ruby name */
+  Buf yprocbuf; memset(&yprocbuf, 0, sizeof yprocbuf);
   const char *fwd_yield_proc = NULL;
   int fwd_proc_expr = -1, fwd_proc_tmp = 0;
   int fwd_value = -1;   /* the block argument's value, for g_yield_proc_expr */
@@ -1246,8 +1248,8 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
        undeclared `lv_b`. */
     if (g_block_id < 0 && pn && g_yield_proc_ref &&
         g_block_param_name && sp_streq(pn, g_block_param_name)) {
-      snprintf(yprocbuf, sizeof yprocbuf, "%s", g_yield_proc_ref);
-      fwd_yield_proc = yprocbuf;
+      buf_puts(&yprocbuf, g_yield_proc_ref);
+      fwd_yield_proc = yprocbuf.p;
       if (g_yield_proc_expr_ref == g_yield_proc_ref) fwd_value = g_yield_proc_expr;
     }
     /* The same forward at a site that has NO block and no proc either: the
@@ -1260,8 +1262,8 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
       /* nothing to forward: fall through with block = -1 below */
     }
     else if (no_encl && plv && plv->type == TY_PROC && !plv->is_cell) {
-      snprintf(yprocbuf, sizeof yprocbuf, "lv_%s", rename_local(pn));
-      fwd_yield_proc = yprocbuf;
+      buf_printf(&yprocbuf, "lv_%s", rename_local(pn));
+      fwd_yield_proc = yprocbuf.p;
       fwd_value = fexpr;
     }
     /* Any other first-class callable passed with `&` -- a lambda literal, a
@@ -1273,21 +1275,21 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
       if (fkt == TY_PROC || fkt == TY_METHOD || fkt == TY_POLY) {
         fwd_proc_expr = fexpr;
         fwd_proc_tmp = ++g_tmp;
-        snprintf(yprocbuf, sizeof yprocbuf, "_t%d", fwd_proc_tmp);
-        fwd_yield_proc = yprocbuf;
+        buf_printf(&yprocbuf, "_t%d", fwd_proc_tmp);
+        fwd_yield_proc = yprocbuf.p;
         fwd_value = fexpr;
       }
     }
     /* a proc value drives the yields; the site's own block is not this one */
     block = (fwd_yield_proc && !fwd_encl) ? -1 : g_block_id;
   }
-  if (g_nren + m->nlocals >= MAX_RENAME) return 0;
+  if (g_nren + m->nlocals >= MAX_RENAME) { free(yprocbuf.p); return 0; }
   /* Pre-check: every body local must have an emittable type. Bail BEFORE
      writing anything (a mid-emit bail would leave an unbalanced `{`). */
   for (int i = 0; i < m->nlocals; i++) {
     LocalVar *lv = &m->locals[i];
     if (m->blk_param && lv->name && sp_streq(lv->name, m->blk_param)) continue;
-    if (!is_scalar_ret(lv->type)) return 0;
+    if (!is_scalar_ret(lv->type)) { free(yprocbuf.p); return 0; }
   }
 
   int tag = ++g_tmp;
@@ -1665,6 +1667,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_current_scope_is_lowered = saved_low;
   g_lowered_blk_name = saved_lbn;
   if (g_inline_depth > 0) g_inline_depth--;
+  free(yprocbuf.p);
   return 1;
 }
 
@@ -2898,16 +2901,18 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
     /* A global's or a class variable's C global is aliased the same way,
        as a call lends it, unless the block or what it calls can assign the
        variable meanwhile (refuse_lent_global_rebound). */
-    char gref[256];
+    Buf gref; memset(&gref, 0, sizeof gref);
     NodeKind yk = poly_splat_tmp < 0 && k < yc ? nt_kind(nt, yargs[k]) : NK__COUNT;
-    int gslot = (yk == NK_GlobalVariableReadNode && gvar_global_slot(c, yargs[k], gref, sizeof gref)) ||
-                (yk == NK_ClassVariableReadNode && cvar_global_slot(c, yargs[k], gref, sizeof gref));
+    int gslot = (yk == NK_GlobalVariableReadNode && gvar_global_slot(c, yargs[k], &gref)) ||
+                (yk == NK_ClassVariableReadNode && cvar_global_slot(c, yargs[k], &gref));
     if (poly_splat_tmp < 0 && k < yc &&
         ((yk == NK_LocalVariableReadNode && !local_is_handle(c, yargs[k])) || gslot) &&
         comp_ntype(c, yargs[k]) == TY_STRING && block_param_wants_alias(c, blk, k, -1)) {
       LocalVar *bl = bsc ? scope_local(bsc, bp) : NULL;
       if (bl && al && !gslot) refuse_alias_of_snapshot(c, yargs[k], bp);
-      if (bl && al && gslot) refuse_lent_global_rebound(c, yargs[k], gref, "a block", bp);
+      if (bl && al && gslot) refuse_lent_global_rebound(c, yargs[k], gref.p, "a block", bp);
+      free(gref.p);
+      gref.p = NULL;
       if (bl && al && al->n < (int)(sizeof al->nm / sizeof al->nm[0])) {
         if (!as_expr && !al->open) { buf_puts(b, "{\n"); emit_indent(b, indent); al->open = 1; }
         buf_printf(b, "%s *_cell_%s = &(", borrowed_string_type(bl), bpr);
@@ -2918,6 +2923,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
         continue;
       }
     }
+    free(gref.p);
     buf_printf(b, "lv_%s = ", bpr);
     if (poly_splat_tmp >= 0) {
       LocalVar *bl = bsc ? scope_local(bsc, bp) : NULL;

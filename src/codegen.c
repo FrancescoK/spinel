@@ -1636,7 +1636,7 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
        is the handle it read then: the slot read here is late, after a later
        argument may have rebound it (`m(s, *xs, (s = +"q"; 1))` packed "q"
        where CRuby passes the String s held first). */
-    char srefS[1024];
+    Buf srefS; memset(&srefS, 0, sizeof srefS);
     int th = ran_first_handle(node);
     if (th >= 0) {
       buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", th);
@@ -1645,8 +1645,9 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
     }
     /* a write whose slot holds the rule's handle: that handle */
     if (emit_boxed_write_handle(c, node, b)) return;
-    strbuf_slot_ref(c, node, srefS, sizeof srefS);
-    buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", srefS);
+    strbuf_slot_text(c, node, &srefS);
+    buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", srefS.p ? srefS.p : "");
+    free(srefS.p);
     RC(RF_STRBUF_HANDLE, RW_NONE);
     return;
   }
@@ -1682,12 +1683,14 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
   /* an ivar's, or a global's (--share-strings), shared handle slot */
   if (rp->strbuf_src == RS_HANDLE &&
       (k == NK_InstanceVariableReadNode || repr_static_read_kind(k))) {
-    char srefX[192];
-    if (strbuf_slot_ref(c, node, srefX, sizeof srefX)) {
-      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", srefX);
+    Buf srefX; memset(&srefX, 0, sizeof srefX);
+    if (strbuf_slot_text(c, node, &srefX)) {
+      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", srefX.p);
+      free(srefX.p);
       RC(RF_STRBUF_HANDLE, RW_NONE);
       return;
     }
+    free(srefX.p);
   }
   /* An ivar WRITE in value position lowers to `({ iv_x = ...; iv_x; })`,
      so its value IS the slot -- the same handle the read above boxes, not
@@ -1741,17 +1744,19 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
   /* --share-strings: a variable that holds a handle the rule shares (a
      `next s` an Array.new block answers), or a route that hands on one
      (emit_strbuf_route): that handle's box */
-  { char vref[1024];
+  { Buf vref; memset(&vref, 0, sizeof vref);
     /* a `next s` tail is its value's */
     int vn = node, na = 0;
     if (nt_kind(c->nt, node) == NK_NextNode && nt_ref(c->nt, node, "arguments") >= 0 &&
         nt_arr(c->nt, nt_ref(c->nt, node, "arguments"), "arguments", &na) && na == 1)
       vn = nt_arr(c->nt, nt_ref(c->nt, node, "arguments"), "arguments", &na)[0];
-    if (strbuf_var_handle(c, vn, vref, sizeof vref)) {
-      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", vref);
+    if (strbuf_var_handle(c, vn, &vref)) {
+      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", vref.p);
+      free(vref.p);
       RC(RF_STRBUF_HANDLE, RW_NONE);
       return;
-    } }
+    }
+    free(vref.p); }
   { Buf hb; memset(&hb, 0, sizeof hb);
     if (emit_strbuf_route(c, node, &hb)) {
       buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
@@ -1806,9 +1811,8 @@ static void emit_boxed_cond_body(Compiler *c, int st, Buf *b, void *ctx) {
   }
   buf_printf(b, "_t%d = ", a->dst);
   /* (a variable's handle arm is boxed as that handle: nothing to lift) */
-  char ref[1024];
   int lift = a->lift && st >= 0 && nt_kind(c->nt, st) != NK_StringNode &&
-             !strbuf_var_handle(c, st, ref, sizeof ref);
+             !strbuf_var_handle(c, st, NULL);
   if (lift) buf_puts(b, "sp_poly_strbuf_lift(");
   if (st < 0) buf_puts(b, "sp_box_nil()");
   /* An arm can hand on a route's handle as well as a variable's. */
@@ -2196,12 +2200,13 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
        (sp_poly_to_s_box) */
     if (t == TY_STRING && strbuf_poly_to_s(c, node)) {
       int r = nt_ref(c->nt, node, "receiver");
-      char hr[1024];
+      Buf hr; memset(&hr, 0, sizeof hr);
       /* `s&.to_s` answers nil for a nil s, where `s.to_s` answers "". */
       int sn = call_is_safe_nav(c->nt, node) && g_sn_skip != node;
-      if (strbuf_var_handle(c, r, hr, sizeof hr)) {
-        if (sn) buf_printf(b, "(%s ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil())", hr, hr);
-        else buf_printf(b, "sp_strbuf_to_s_box(%s)", hr);
+      if (strbuf_var_handle(c, r, &hr)) {
+        if (sn) buf_printf(b, "(%s ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil())", hr.p, hr.p);
+        else buf_printf(b, "sp_strbuf_to_s_box(%s)", hr.p);
+        free(hr.p);
       }
       else if (sn) {
         int t2 = ++g_tmp;
@@ -4736,6 +4741,27 @@ static void inherit_transplant_locals(Compiler *c, Scope *s) {
   }
 }
 
+/* Is the line [i, le) a `#line` directive of the line map? */
+static int is_line_marker(const char *p, size_t i, size_t le) {
+  return (i == 0 || p[i - 1] == '\n') && le - i >= 6 && !strncmp(p + i, "#line ", 6);
+}
+/* Does [beg, end) (from the start of a line) hold s outside the line map's
+   `#line` lines? A directive names the program's file, and a path such as
+   test/setjmp_local_volatile.rb holding "setjmp" read as a setjmp in the
+   code, so the C differed with and without --no-line-map. */
+static int text_has_code(const char *p, size_t beg, size_t end, const char *s) {
+  size_t sl = strlen(s);
+  for (size_t i = beg; i < end; ) {
+    const char *nl = memchr(p + i, '\n', end - i);
+    size_t le = nl ? (size_t)(nl - p) : end;
+    if (!is_line_marker(p, i, le))
+      for (size_t k = i; k + sl <= le; k++)
+        if (p[k] == s[0] && !strncmp(p + k, s, sl)) return 1;
+    i = nl ? le + 1 : end;
+  }
+  return 0;
+}
+
 /* SP_GC_SAVE restores the root-stack depth on the way out. A function that
    registers no root of its own moved nothing to restore, so the save is dead
    weight -- and it is what stops the C compiler from leaving such a function
@@ -4748,9 +4774,9 @@ static void inherit_transplant_locals(Compiler *c, Scope *s) {
    back, whether or not it pushed anything itself. */
 static void gc_save_take_back(Buf *b, size_t off, size_t save_len, const char *site) {
   if (off + save_len > b->len) return;
-  const char *body = b->p + off + save_len;
-  if (strstr(body, "SP_GC_ROOT") || strstr(body, "setjmp") ||
-      strstr(body, "sp_gc_nroots")) return;
+  size_t from = off + save_len;
+  if (text_has_code(b->p, from, b->len, "SP_GC_ROOT") || text_has_code(b->p, from, b->len, "setjmp") ||
+      text_has_code(b->p, from, b->len, "sp_gc_nroots")) return;
   if (!decide_fn("gc-save", site, NULL)) return;
   buf_erase(b, off, save_len);
 }
@@ -4893,12 +4919,11 @@ static const char *gc_temp_arr_or_nil_ivar(Compiler *c, Scope *s, const char *fn
 static void gc_roots_take_back(Compiler *c, Scope *s, Buf *b, size_t fn_off) {
   if (fn_off >= b->len) return;
   /* straight-line functions only: with a backward edge the text order is not
-     the execution order, so "the last mention" says nothing about liveness. */
-  {
-    const char *fn = b->p + fn_off;
-    if (strstr(fn, "setjmp") || strstr(fn, "while (") || strstr(fn, "for (") ||
-        strstr(fn, "do {") || strstr(fn, "goto ")) return;
-  }
+     the execution order, so "the last mention" says nothing about liveness.
+     (Asked of the code, not of the line map's file names: text_has_code.) */
+  if (text_has_code(b->p, fn_off, b->len, "setjmp") || text_has_code(b->p, fn_off, b->len, "while (") ||
+      text_has_code(b->p, fn_off, b->len, "for (") || text_has_code(b->p, fn_off, b->len, "do {") ||
+      text_has_code(b->p, fn_off, b->len, "goto ")) return;
   for (int i = 0; i < s->nlocals; i++) {
     LocalVar *lv = &s->locals[i];
     if (!lv->arr_or_nil || lv->type != TY_POLY) continue;
@@ -5187,7 +5212,7 @@ static int gc_frame_build(Compiler *c, Buf *b, size_t ins, const char *site) {
   frame_collect(p, ins, end, &ts);
   int any = 0;
   for (int i = 0; i < ts.n; i++) if (frame_convertible(&ts.v[i])) { any = 1; break; }
-  if (!any && !strstr(p + ins, "SP_GC_ROOT")) { free(ts.v); free(ts.h); return 0; }
+  if (!any && !text_has_code(p, ins, end, "SP_GC_ROOT")) { free(ts.v); free(ts.h); return 0; }
 
   Buf nb; memset(&nb, 0, sizeof nb);
   int depth = 1, wm = 0, peak = 0, np = 0;
@@ -5291,9 +5316,25 @@ static int gc_frame_build(Compiler *c, Buf *b, size_t ins, const char *site) {
    file scope, where every part reaches the same storage, and the body keeps
    its initialisation and its root. Its root stays in the body's frame, which
    outlives every part. A program under the threshold, or with no setjmp at
-   its top level, is emitted as before. */
+   its top level, is emitted as before. The sizes count the code alone
+   (main_code_bytes): the line map's `#line` lines and the line breaks it
+   adds cost the C compiler nothing, and with them counted the parts were
+   cut elsewhere with and without --no-line-map. */
 #define MAIN_SPLIT_BYTES (64 * 1024)
 #define MAIN_PART_BYTES (32 * 1024)
+
+/* The bytes of [beg, end) that are code: not a line break, and not in a
+   `#line` line (beg starts a line or a statement) */
+static size_t main_code_bytes(const char *p, size_t beg, size_t end) {
+  size_t n = 0;
+  for (size_t i = beg; i < end; ) {
+    const char *nl = memchr(p + i, '\n', end - i);
+    size_t le = nl ? (size_t)(nl - p) : end;
+    if (!is_line_marker(p, i, le)) n += le - i;
+    i = nl ? le + 1 : end;
+  }
+  return n;
+}
 
 /* Does [beg, end) contain the word `w` outside literals and comments? */
 static int main_text_has_word(const char *p, size_t beg, size_t end, const char *w) {
@@ -5365,7 +5406,7 @@ static int main_body_split(Compiler *c, Buf *body, size_t open, size_t *frame_in
      moves with it */
   Scope *s0 = &c->scopes[0];
   size_t dend = nl > 0 ? decl_ends[nl - 1] : dbeg;
-  if (ncuts < 2 || end - sbeg < MAIN_SPLIT_BYTES || cuts[ncuts - 1] != end) return 0;
+  if (ncuts < 2 || cuts[ncuts - 1] != end || main_code_bytes(p, sbeg, end) < MAIN_SPLIT_BYTES) return 0;
   if (!main_text_has_word(p, sbeg, end, "setjmp")) return 0;
   /* a `return` at the top level returns from the body; out of a part it
      would only end the part. The body's other C returns are an ensure's
@@ -5376,9 +5417,11 @@ static int main_body_split(Compiler *c, Buf *body, size_t open, size_t *frame_in
 
   /* the parts: statements [first, last] each, closed once past the size */
   int *pend = (int *)malloc(sizeof(int) * (size_t)ncuts), np = 0;
-  size_t from = sbeg;
-  for (int k = 0; k < ncuts; k++)
-    if (cuts[k] - from >= MAIN_PART_BYTES || k == ncuts - 1) { pend[np++] = k; from = cuts[k]; }
+  size_t from = sbeg, code = 0;
+  for (int k = 0; k < ncuts; k++) {
+    code += main_code_bytes(p, k ? cuts[k - 1] : sbeg, cuts[k]);
+    if (code >= MAIN_PART_BYTES || k == ncuts - 1) { pend[np++] = k; code = 0; }
+  }
   if (np < 2) { free(pend); return 0; }
 
   /* which parts name each local */
@@ -6221,14 +6264,20 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
      on that proc rather than an inline splice (#3399). */
   const char *sv_ypr9 = g_yield_proc_ref;
   TyKind sv_yst9 = g_yield_slot_ty;
-  char ypr9[64];
+  /* (the parameter's C name is as long as its Ruby name: a fixed buffer cut
+     it, into a name nothing declares) */
+  Buf ypr9; memset(&ypr9, 0, sizeof ypr9);
   if (s->is_proc_form && s->blk_param) {
-    snprintf(ypr9, sizeof ypr9, "lv_%s", s->blk_param);
-    g_yield_proc_ref = ypr9;
+    buf_printf(&ypr9, "lv_%s", s->blk_param);
+    g_yield_proc_ref = ypr9.p;
     g_yield_slot_ty = TY_POLY;
   }
 
-  if (s->cs_synth) { emit_compiler_state_method(c, s, b); return; }
+  if (s->cs_synth) {
+    emit_compiler_state_method(c, s, b);
+    g_yield_proc_ref = sv_ypr9; g_yield_slot_ty = sv_yst9; free(ypr9.p);
+    return;
+  }
   /* a `def recv.m` on a receiver that is not one traced object: refused at
      the def statement (sg_refused_def), which is where the program would
      define it; its body, which has no singleton to belong to, is a stub, as
@@ -6252,6 +6301,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
       else buf_puts(b, default_value_from_compiler(c, s->ret));
       buf_puts(b, ";\n}\n");
     }
+    g_yield_proc_ref = sv_ypr9; g_yield_slot_ty = sv_yst9; free(ypr9.p);
     return;
   }
   inherit_transplant_locals(c, s);
@@ -6488,7 +6538,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   g_ret_seeded = saved_rseed;
   g_lowered_blk_name = saved_lbn;
   g_brk_ser_var = saved_bser; g_brk_skip_id = saved_bskip;
-  g_yield_proc_ref = sv_ypr9; g_yield_slot_ty = sv_yst9;
+  g_yield_proc_ref = sv_ypr9; g_yield_slot_ty = sv_yst9; free(ypr9.p);
   buf_puts(b, "}\n");
   if (g_share_check) share_check_harvest(c, b, gc_save_off);
   if (!g_no_root_elision) gc_roots_take_back(c, s, b, gc_save_off);
@@ -7748,7 +7798,7 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
       int last = bb[bn - 1];
       Repr lr = repr_of(c, last);
       TyKind lty = lr.as_ty;
-      char sref_fb[1024];
+      Buf sref_fb; memset(&sref_fb, 0, sizeof sref_fb);
       if (as_gen && stmt_is_yielder_push(c, last, bp0)) {
         /* A generator ending in a bare `y << v` yields v, then terminates with
            the yielder as its result, which `<<` answers. */
@@ -7765,8 +7815,9 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
       }
       /* --share-strings: a String the rule shares is the thread's value
          itself (`Thread.new { s }.value << x` changes s): its handle, boxed */
-      else if ((lty == TY_STRING || lty == TY_STRBUF) && strbuf_var_handle(c, last, sref_fb, sizeof sref_fb)) {
-        buf_printf(pb, "    _fb->yielded_value = sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF);\n", sref_fb);
+      else if ((lty == TY_STRING || lty == TY_STRBUF) && strbuf_var_handle(c, last, &sref_fb)) {
+        buf_printf(pb, "    _fb->yielded_value = sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF);\n", sref_fb.p);
+        free(sref_fb.p);
       }
       /* a route over one, or a conditional with such an arm (`c ? s : nil`) */
       else if ((lty == TY_STRING || lty == TY_STRBUF) && strbuf_value_carries(c, last)) {
@@ -13561,9 +13612,10 @@ void emit_super(Compiler *c, int id, Buf *b) {
            minor collection frees the young message self still names. */
         buf_printf(b, ", sp_gc_wb((void *)%s)", g_self);
         /* a shared String message is held as its handle too (exc_msg_handle) */
-        char mh[256];
-        if (comp_ntype(c, argv2[0]) == TY_STRING && exc_msg_handle(c, argv2[0], mh, sizeof mh))
-          buf_printf(b, ", (void)sp_exc_attach_msg((void *)%s, %s)", g_self, mh);
+        Buf mh; memset(&mh, 0, sizeof mh);
+        if (comp_ntype(c, argv2[0]) == TY_STRING && exc_msg_handle(c, argv2[0], &mh))
+          buf_printf(b, ", (void)sp_exc_attach_msg((void *)%s, %s)", g_self, mh.p);
+        free(mh.p);
         buf_printf(b, ", %s->msg)", g_self);
       }
       else if (ty && sp_streq(ty, "ForwardingSuperNode") && s->nparams > 0) {

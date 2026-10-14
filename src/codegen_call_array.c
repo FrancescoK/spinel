@@ -50,15 +50,17 @@ static void emit_pack_kw_writeback(Compiler *c, int kwh, int tr, Buf *b) {
       buf_puts(b, "if (sp_poly_eq("); emit_boxed(c, key, b);
       buf_printf(b, ", sp_box_sym((sp_sym)%d))) { ", sym);
     }
-    HolderRef h; char ref[1024], val[32];
+    HolderRef h; Buf ref; char val[32];
+    memset(&ref, 0, sizeof ref);
     int vslot = unwrap_parens(c, v), rebound = 0;
     for (int j = e + 1; j < en; j++)
       rebound |= read_rebound_by(c, v, nt_ref(nt, el[j], "value"));
-    if (!rebound && holder_of_node(c, vslot, &h) && holder_slot_text(c, &h, ref, sizeof ref) &&
+    if (!rebound && holder_of_node(c, vslot, &h) && holder_slot_buf(c, &h, &ref) &&
         (h.r.kind == RK_BOXED || h.r.as_ty == TY_STRING)) {
       snprintf(val, sizeof val, "_t%d", tr);
-      buf_printf(b, "%s = ", ref); emit_unbox_text(c, h.r.as_ty, val, b); buf_puts(b, "; ");
+      buf_printf(b, "%s = ", ref.p); emit_unbox_text(c, h.r.as_ty, val, b); buf_puts(b, "; ");
     }
+    free(ref.p);
     if (!dynamic) break;
     buf_puts(b, "}\nelse { "); close++;
   }
@@ -100,16 +102,16 @@ int emit_op_array_pack_buffer(Compiler *c, const BopCtx *x, Buf *b) {
     int sym = comp_sym_intern(c, "buffer");
     buf_printf(b, "sp_RbVal _t%d = sp_poly_nil_p(_t%d) || !sp_poly_has_key(_t%d, sp_box_sym((sp_sym)%d)) ? sp_box_nil() : sp_poly_get_sym(_t%d, (sp_sym)%d); SP_GC_ROOT_RBVAL(_t%d); ", tb, kh, kh, sym, kh, sym, tb);
   }
-  char ref[1024];
+  Buf ref; memset(&ref, 0, sizeof ref);
   HolderRef h;
   int source = unwrap_parens(c, ob), slot = kh < 0 && holder_of_node(c, source, &h);
-  int handle = kh < 0 && strbuf_slot_ref(c, slot ? source : ob, ref, sizeof ref);
-  slot = !handle && slot && holder_slot_text(c, &h, ref, sizeof ref);
+  int handle = kh < 0 && strbuf_slot_text(c, slot ? source : ob, &ref);
+  slot = !handle && slot && holder_slot_buf(c, &h, &ref);
   if (handle)
-    buf_printf(b, "sp_RbVal _t%d = sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF); SP_GC_ROOT_RBVAL(_t%d); ", tb, ref, tb);
+    buf_printf(b, "sp_RbVal _t%d = sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF); SP_GC_ROOT_RBVAL(_t%d); ", tb, ref.p, tb);
   else if (kh < 0) tb = hold_operand(c, ob, TY_POLY, 1, tb, 1, " ", b);
   if (repr_share_rule(c) && slot && h.r.kind == RK_BOXED)
-    buf_printf(b, "_t%d = sp_poly_strbuf_lift(_t%d); %s = _t%d; ", tb, tb, ref, tb);
+    buf_printf(b, "_t%d = sp_poly_strbuf_lift(_t%d); %s = _t%d; ", tb, tb, ref.p, tb);
   buf_printf(b, "sp_RbVal _t%d = sp_poly_pack_buffer(_t%d, ", tr, ta);
   char fmt[32]; snprintf(fmt, sizeof fmt, "_t%d", tf);
   emit_boxed_text(c, ft, fmt, b);
@@ -124,10 +126,11 @@ int emit_op_array_pack_buffer(Compiler *c, const BopCtx *x, Buf *b) {
   view_unbind(kwmark);
   if (slot && (h.r.kind == RK_BOXED || h.r.as_ty == TY_STRING)) {
     char val[32]; snprintf(val, sizeof val, "_t%d", tr);
-    buf_printf(b, "if (!sp_poly_nil_p(_t%d)) %s = ", tb, ref);
+    buf_printf(b, "if (!sp_poly_nil_p(_t%d)) %s = ", tb, ref.p);
     emit_unbox_text(c, h.r.as_ty, val, b);
     buf_puts(b, "; ");
   }
+  free(ref.p);
   buf_printf(b, "_t%d; })", tr);
   return 1;
 }
@@ -2547,8 +2550,6 @@ static int arysub_bind(Compiler *c, int n, TyKind k) {
   NodeKind nk = nt_kind(c->nt, n);
   Buf rb; memset(&rb, 0, sizeof rb);
   emit_expr(c, n, &rb);
-  char cast[96];
-  snprintf(cast, sizeof cast, "((%s *)(%s))", at, rb.p ? rb.p : "NULL");
   /* a String subclass instance's String: boxed as its handle, or a copy of
      its bytes (comp_arysub_call) */
   if (comp_ary_is_str(c, cid)) {
@@ -2565,15 +2566,22 @@ static int arysub_bind(Compiler *c, int n, TyKind k) {
     }
     return view_bind(n, "sp_strbuf_read(_t%d)", t);
   }
+  /* a variable is read through the cast where the call reads it; one whose
+     cast is longer than a bound text holds (a long name: a fixed buffer cut
+     the cast and bound what was left) goes through a temp, as any other
+     receiver does, holding the same pointer */
   int slot;
-  if ((nk == NK_LocalVariableReadNode || nk == NK_SelfNode) && strlen(cast) < sizeof g_argov_text[0])
-    slot = view_bind(n, "%s", cast);
+  Buf cast; memset(&cast, 0, sizeof cast);
+  buf_printf(&cast, "((%s *)(%s))", at, rb.p ? rb.p : "NULL");
+  if ((nk == NK_LocalVariableReadNode || nk == NK_SelfNode) && cast.len < sizeof g_argov_text[0])
+    slot = view_bind(n, "%s", cast.p);
   else {
     int t = ++g_tmp;
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "%s *_t%d = (%s *)(%s); SP_GC_ROOT(_t%d);\n", at, t, at, rb.p ? rb.p : "NULL", t);
     slot = view_bind(n, "_t%d", t);
   }
+  free(cast.p);
   free(rb.p);
   return slot;
 }

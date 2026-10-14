@@ -3564,10 +3564,11 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
     if (atmp_ty[0] == TY_POLY) buf_printf(b, "sp_poly_arg_int_chk(_t%d)", atmp[0]);
     else buf_printf(b, "(sp_int)_t%d", atmp[0]);
     buf_puts(b, "); ");
-    char hr[1024];
-    if (strbuf_slot_ref(c, argv[1], hr, sizeof hr)) buf_printf(b, "sp_String_set_bin(%s, _t%d); ", hr, trp);
+    Buf hr; memset(&hr, 0, sizeof hr);
+    if (strbuf_slot_text(c, argv[1], &hr)) buf_printf(b, "sp_String_set_bin(%s, _t%d); ", hr.p, trp);
     else if (nt_kind(nt, argv[1]) == NK_LocalVariableReadNode)
       buf_printf(b, "lv_%s = _t%d; ", rename_local(nt_str(nt, argv[1], "name")), trp);
+    free(hr.p);
     buf_printf(b, "_t%d = ", tr);
     if (ret == TY_POLY) buf_printf(b, "sp_box_str(_t%d)", trp);
     else buf_printf(b, "_t%d", trp);

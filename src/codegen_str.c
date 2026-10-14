@@ -88,9 +88,7 @@ static int str_handle_route(Compiler *c, int v, StrForm *sf) {
   return 1;
 }
 static int str_handle_slot(Compiler *c, int v, StrForm *sf) {
-  char sref[192];
-  if ((arg_ran_first(v, 0) && str_var_read(c, v)) || !strbuf_slot_ref(c, v, sref, sizeof sref)) return 0;
-  buf_puts(&sf->expr, sref);
+  if ((arg_ran_first(v, 0) && str_var_read(c, v)) || !strbuf_slot_text(c, v, &sf->expr)) return 0;
   return 1;
 }
 
@@ -206,9 +204,11 @@ static int str_handle_by_kind(Compiler *c, int v, int form, unsigned dest, StrFo
    (strbuf_yield_tail_held)? Any other route makes a handle around a
    String that has none where it runs, which would be another object. */
 static int str_route_names_handle(Compiler *c, int v) {
-  char ref[1024];
+  Buf ref; memset(&ref, 0, sizeof ref);
   int up = 0, ops[3];
-  return strbuf_self_route_slot(c, v, &up, ref, sizeof ref) || strbuf_assign_route(c, v) ||
+  int named = strbuf_self_route_slot(c, v, &up, &ref);
+  free(ref.p);
+  return named || strbuf_assign_route(c, v) ||
          strbuf_route_clamp(c, v, ops) ||
          (nt_kind(c->nt, unwrap_parens(c, v)) == NK_YieldNode && strbuf_yield_tail_held(c));
 }

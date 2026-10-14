@@ -1110,11 +1110,11 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
    String holds, and answers the frozen face, or nil for a nil receiver.
    0 with nothing emitted for any other receiver. */
 static int emit_freeze_recv_handle(Compiler *c, int recv, Buf *b) {
-  char ref[1024];
+  Buf ref; memset(&ref, 0, sizeof ref);
   int th;
-  if (strbuf_slot_ref(c, recv, ref, sizeof ref) && !strbuf_pickup_may_nil(c, recv)) {
+  if (strbuf_slot_text(c, recv, &ref) && !strbuf_pickup_may_nil(c, recv)) {
     th = ++g_tmp;
-    buf_printf(b, "({ sp_String *_t%d = %s; ", th, ref);
+    buf_printf(b, "({ sp_String *_t%d = %s; ", th, ref.p);
   }
   else if (strbuf_assign_route(c, recv)) {
     th = ++g_tmp;
@@ -1133,7 +1133,8 @@ static int emit_freeze_recv_handle(Compiler *c, int recv, Buf *b) {
     emit_strbuf_handle_of(c, recv, b);
     buf_puts(b, "; ");
   }
-  else return 0;
+  else { free(ref.p); return 0; }
+  free(ref.p);
   buf_printf(b, "SP_GC_ROOT(_t%d); sp_String_freeze(_t%d); sp_str_freeze_val(sp_strbuf_read_pub(_t%d)); })", th, th, th);
   return 1;
 }
@@ -1235,16 +1236,21 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     }
     /* a shared String handle keeps its own frozen flag: read through it, not
        through the String value the handle is read as (a fresh copy) */
-    char fsref[1024];
+    Buf fsref; memset(&fsref, 0, sizeof fsref);
     int up = 0;
-    if (frt == TY_STRING && strbuf_self_route_slot(c, recv, &up, fsref, sizeof fsref) && !up) {
-      buf_printf(b, "sp_String_is_frozen(%s)", fsref);
+    if (frt == TY_STRING && strbuf_self_route_slot(c, recv, &up, &fsref) && !up) {
+      buf_printf(b, "sp_String_is_frozen(%s)", fsref.p);
+      free(fsref.p);
       return 1;
     }
-    if ((frt == TY_STRING || frt == TY_STRBUF) && strbuf_slot_ref(c, recv, fsref, sizeof fsref)) {
-      buf_printf(b, "sp_String_is_frozen(%s)", fsref);
+    fsref.len = 0;
+    if (fsref.p) fsref.p[0] = 0;
+    if ((frt == TY_STRING || frt == TY_STRBUF) && strbuf_slot_text(c, recv, &fsref)) {
+      buf_printf(b, "sp_String_is_frozen(%s)", fsref.p);
+      free(fsref.p);
       return 1;
     }
+    free(fsref.p);
     /* --share-strings: so does a route that hands on the handle (`String(t)`,
        `x.tap { }`, a conditional over one): its read face is an unfrozen
        copy */
@@ -1293,16 +1299,17 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       return 1;
     }
     const char *rtyf = nt_type(nt, recv);
-    char gfz[256];   /* a global holding the handle (--share-strings) */
+    /* (a global holding the handle, --share-strings) */
     int assignable_f = rtyf && (sp_streq(rtyf, "LocalVariableReadNode") || sp_streq(rtyf, "InstanceVariableReadNode") ||
                                 (repr_static_read_kind(nt_kind(nt, recv)) &&
-                                 strbuf_slot_ref(c, recv, gfz, sizeof gfz)));
+                                 strbuf_slot_has(c, recv)));
     /* a shared String handle reads back as an expression (a copy), which
        cannot be assigned to: freeze the handle, which every later mutation
        through it checks, and answer its contents frozen */
-    char fzref[1024];
-    if (assignable_f && strbuf_slot_ref(c, recv, fzref, sizeof fzref)) {
-      buf_printf(b, "({ sp_String_freeze(%s); sp_str_freeze_val(", fzref);
+    Buf fzref; memset(&fzref, 0, sizeof fzref);
+    if (assignable_f && strbuf_slot_text(c, recv, &fzref)) {
+      buf_printf(b, "({ sp_String_freeze(%s); sp_str_freeze_val(", fzref.p);
+      free(fzref.p);
       emit_expr(c, recv, b); buf_puts(b, "); })");
       return 1;
     }
@@ -1313,7 +1320,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
        is read again. */
     int fzu = unwrap_parens(c, recv);
     int fzb = !assignable_f && fzu >= 0 && nt_kind(nt, fzu) == NK_CallNode ? str_alias_chain_base(c, fzu) : fzu;
-    if (fzb != fzu && g_n_argov < MAX_ARG_OVERRIDE && strbuf_slot_ref(c, fzb, fzref, sizeof fzref)) {
+    if (fzb != fzu && g_n_argov < MAX_ARG_OVERRIDE && strbuf_slot_text(c, fzb, &fzref)) {
       int th = ++g_tmp;
       char thr[24];
       snprintf(thr, sizeof thr, "_t%d", th);
@@ -1326,7 +1333,8 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
             bop_name_mutates(nt_str(nt, k, "name"), BOP_MUT_LOCAL))
           fzrun = 1;
       }
-      buf_printf(b, "({ sp_String *%s = %s; SP_GC_ROOT(%s);", thr, fzref, thr);
+      buf_printf(b, "({ sp_String *%s = %s; SP_GC_ROOT(%s);", thr, fzref.p, thr);
+      free(fzref.p);
       if (fzrun) {
         int fzcall = nt_kind(nt, fzb) == NK_CallNode;
         int mk = fzcall ? view_bind(fzb, "%s", thr) : -1;
@@ -1672,12 +1680,13 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       /* A shared String handle keeps its frozen flag on the handle, and reads
          back as a fresh copy that never carries it: clone asks the handle,
          as frozen? does, or the clone of a frozen String came back unfrozen. */
-      char clref[1024];
-      if (sp_streq(name, "clone") && strbuf_slot_ref(c, recv, clref, sizeof clref)) {
+      Buf clref; memset(&clref, 0, sizeof clref);
+      if (sp_streq(name, "clone") && strbuf_slot_text(c, recv, &clref)) {
         int th = ++g_tmp, tcl = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = %s; const char *_t%d = _t%d ? sp_str_dup(sp_String_cstr(_t%d)) : NULL;"
                       " _t%d && sp_String_is_frozen(_t%d) ? sp_str_freeze_val(_t%d) : _t%d; })",
-                   th, clref, tcl, th, th, tcl, th, tcl, tcl);
+                   th, clref.p, tcl, th, th, tcl, th, tcl, tcl);
+        free(clref.p);
         return 1;
       }
       buf_printf(b, "%s(", sp_streq(name, "clone") ? "sp_str_clone_val" : "sp_str_dup");
@@ -3366,8 +3375,8 @@ int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKin
           buf_printf(b, "%s(%s)", oint_arg(mt), oint_nil(mt));
         }
         else if (mt == TY_STRBUF) {
-          char srefIS[1024];
-          if (strbuf_slot_ref(c, argv[1], srefIS, sizeof srefIS)) buf_puts(b, srefIS);
+          Buf srefIS; memset(&srefIS, 0, sizeof srefIS);
+          if (strbuf_slot_text(c, argv[1], &srefIS)) { buf_puts(b, srefIS.p); free(srefIS.p); }
           else {
             buf_puts(b, "sp_String_new_shared(");
             emit_str_expr(c, argv[1], b);

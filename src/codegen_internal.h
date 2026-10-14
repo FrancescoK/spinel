@@ -114,9 +114,9 @@ typedef struct { int sv, from, n; char (*f)[96]; char (*t)[112]; int fence; } Re
 RenPark ren_park(int from);
 void ren_unpark(RenPark *p);
 const char *strbuf_local_name(Compiler *c, int recv);
-int ivar_global_slot(Compiler *c, int node, char *out, size_t cap);
-int gvar_global_slot(Compiler *c, int node, char *out, size_t cap);
-int cvar_global_slot(Compiler *c, int node, char *out, size_t cap);
+int ivar_global_slot(Compiler *c, int node, Buf *out);
+int gvar_global_slot(Compiler *c, int node, Buf *out);
+int cvar_global_slot(Compiler *c, int node, Buf *out);
 int lent_global_slot_rebound(Compiler *c, int arg, const char *slot);
 void refuse_lent_global_rebound(Compiler *c, int arg, const char *slot, const char *target, const char *pname);
 int strbuf_ivar_owner(Compiler *c, int node);
@@ -158,16 +158,16 @@ int ie_class_of(Compiler *c, int node);
 extern const char *g_sb_iv_name;   /* "@bt" while a shim is open, else NULL */
 extern int         g_sb_iv_cid;
 extern char        g_sb_iv_repl[64];
-int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap);
-/* ...the same slot's text appended to b, never declined for its length,
-   and whether recv has one at all (nothing emitted) */
+/* The handle text of recv's slot appended to b, never declined for its
+   length, and whether recv has one at all (nothing emitted) */
 int strbuf_slot_text(Compiler *c, int recv, Buf *b);
 int strbuf_slot_has(Compiler *c, int recv);
 /* --share-strings: does bang v have a handle form (emit_bang_self_handle),
    asked before anything is emitted? */
 int bang_self_handle_has(Compiler *c, int v);
-/* holder_slot_text and holder_static_handle_text (holder.h) appended to b,
-   whatever their length; with b NULL the answer alone */
+/* The C slot of a holder (holder.h) and of a read or write node of a global,
+   a constant or a class variable that holds the shared handle, appended to
+   b, whatever their length; with b NULL the answer alone */
 int holder_slot_buf(Compiler *c, const HolderRef *h, Buf *b);
 int holder_static_handle_buf(Compiler *c, int node, Buf *b);
 int strbuf_bang_self_local(const Compiler *c, int v);
@@ -256,7 +256,7 @@ int strbuf_seq_nil_tail(Compiler *c, int v);
 int strbuf_plain_self_call(Compiler *c, int v);
 int strbuf_narrowed_box_mutator(Compiler *c, int id);
 void emit_narrowed_box_mutator(Compiler *c, int id, Buf *b);
-int strbuf_opwrite_handle(Compiler *c, int v, char *out, size_t cap);
+int strbuf_opwrite_handle(Compiler *c, int v, Buf *b);
 int strbuf_poly_to_s(Compiler *c, int v);
 int strbuf_boxed_local(Compiler *c, int v);
 /* Is a variable holding the shared handle (or, --share-strings, a route or
@@ -265,16 +265,16 @@ int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth);
 /* String mutator id's receiver recv as the handle it changes: 1 a slot, 2
    a route (read once, nil raising NoMethodError for id), 0 neither
    (codegen_stmt.c) */
-int strbuf_recv_handle(Compiler *c, int id, int recv, char *out, size_t cap);
-/* The handle text `out` of recv (strbuf_slot_ref), wrapped under
+int strbuf_recv_handle(Compiler *c, int id, int recv, Buf *out);
+/* The handle text of recv (strbuf_slot_text) appended to out, wrapped under
    --share-strings, when recv is a deep-return pickup that can answer nil,
    to raise NoMethodError for String mutator `name`: 2 wrapped, 1 read
    bare, 0 no slot read (nothing emitted) (codegen_stmt.c) */
-int strbuf_pickup_nil_check(Compiler *c, const char *name, int recv, char *out, size_t cap);
-/* strbuf_recv_handle, and under --share-strings a route whose text outgrows
-   out, emitted whole into lb instead (emit_recv_route_handle; 2): the
-   handle's text is lb's where it has one, else out's */
-int strbuf_recv_handle_any(Compiler *c, int id, int recv, char *out, size_t cap, Buf *lb);
+int strbuf_pickup_nil_check(Compiler *c, const char *name, int recv, Buf *out);
+/* strbuf_recv_handle, and under --share-strings a route emitted whole into
+   lb instead (emit_recv_route_handle; 2): the handle's text is lb's where
+   it has one, else out's */
+int strbuf_recv_handle_any(Compiler *c, int id, int recv, Buf *out, Buf *lb);
 /* Root receiver handle _t<t> when strbuf_recv_handle answered a route (hr
    2) and something can allocate while it is live: the mutator (argv NULL)
    or one of its argc ty operands argv; a slot's needs none (codegen_stmt.c) */
@@ -287,7 +287,7 @@ int strbuf_pickup_may_nil(Compiler *c, int recv);
 int strbuf_pickup_answers_nil(Compiler *c, int id);
 /* --share-strings: the handle slot a variable's read names, 0 for any
    other node (codegen_stmt.c) */
-int strbuf_var_handle(Compiler *c, int n, char *out, size_t cap);
+int strbuf_var_handle(Compiler *c, int n, Buf *b);
 /* --share-strings: an inline-spliced call whose result is the handle
    itself (codegen_stmt.c) */
 int strbuf_route_inline_call(Compiler *c, int v);
@@ -316,11 +316,11 @@ int strbuf_route_clamp(Compiler *c, int v, int *ops);
 /* `String(x)` or `+x` over a variable whose slot holds the handle: that
    slot's text, *uplus for `+x` (codegen_stmt.c). Returns the operand node
    plus one, or zero when there is no route. */
-int strbuf_self_route_slot(Compiler *c, int v, int *uplus, char *out, size_t cap);
+int strbuf_self_route_slot(Compiler *c, int v, int *uplus, Buf *out);
 /* --share-strings: an exception's message argument that reads a variable
    holding the handle, which the exception then holds
    (codegen_call_exception.c) */
-int exc_msg_handle(Compiler *c, int arg, char *href, size_t cap);
+int exc_msg_handle(Compiler *c, int arg, Buf *b);
 /* --share-strings: `e.message` over a variable's exception (codegen_stmt.c) */
 int exc_message_identity_operand(Compiler *c, int v);
 void emit_exc_message_idbox(Compiler *c, int v, Buf *b);
@@ -378,7 +378,7 @@ int strbuf_read_copies(Compiler *c, int v);
 /* what sb_reader_shim_open lifted: the node's marks and type as they were,
    and the views (ntok of them from tok) that hold the lifted ones */
 typedef struct { unsigned char box, demand; TyKind ty; int tok, ntok; } SbReaderSave;
-int sb_reader_shim_open(Compiler *c, int id, int recv, char *sref, size_t cap, SbReaderSave *sv);
+int sb_reader_shim_open(Compiler *c, int id, int recv, Buf *sref, SbReaderSave *sv);
 void sb_reader_shim_close(Compiler *c, int recv, const SbReaderSave *sv);
 int sb_shadowed_reader(int node);
 int sb_shim_args_first(Compiler *c, int id, Buf *pre, int indent);

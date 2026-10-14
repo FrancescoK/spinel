@@ -7338,10 +7338,11 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
     if (repr_self_shared(c, dvP)) { emit_strbuf_handle_of(c, dvP, out); return; }
     /* a default that is an earlier parameter binds that parameter's handle,
        the one String both names hold (promote_default_alias_params) */
-    { char srefD[192];
+    { Buf srefD; memset(&srefD, 0, sizeof srefD);
       if (dvP >= 0 && nt_kind(c->nt, dvP) == NK_LocalVariableReadNode &&
-          strbuf_slot_ref(c, dvP, srefD, sizeof srefD)) {
-        buf_puts(out, srefD);
+          strbuf_slot_text(c, dvP, &srefD)) {
+        buf_puts(out, srefD.p);
+        free(srefD.p);
         return;
       } }
     /* a default that writes a slot holding the --share-strings handle
@@ -7378,7 +7379,7 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
     }
     if (provided >= 0 && !arg_ran_first(provided, 0)) {
       const char *aty = nt_type(c->nt, provided);
-      char gref[256];
+      Buf gref; memset(&gref, 0, sizeof gref);
       if (aty && sp_streq(aty, "LocalVariableReadNode")) {
         const char *vn = nt_str(c->nt, provided, "name");
         if (emit_lent_local(vn ? scope_local(comp_scope_of(c, provided), vn) : NULL, vn, out))
@@ -7413,26 +7414,29 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
            read emitter's civ_ slot), a root every collection marks: its
            address is lent as an instance's slot is, with no owner to pin.
            Lent a temp, the callee's appends stayed in the copy. */
-        if (comp_ntype(c, provided) == TY_STRING && ivar_global_slot(c, provided, gref, sizeof gref)) {
-          refuse_lent_global_rebound(c, provided, gref, m->name, m->pnames[idx]);
-          buf_printf(out, "&%s", gref);
+        if (comp_ntype(c, provided) == TY_STRING && ivar_global_slot(c, provided, &gref)) {
+          refuse_lent_global_rebound(c, provided, gref.p, m->name, m->pnames[idx]);
+          buf_printf(out, "&%s", gref.p);
+          free(gref.p);
           return;
         }
       }
       /* a global variable's C global likewise, when the read is the plain
          gv_ slot (not a special global's runtime accessor) */
       if (aty && sp_streq(aty, "GlobalVariableReadNode") && comp_ntype(c, provided) == TY_STRING &&
-          gvar_global_slot(c, provided, gref, sizeof gref)) {
-        refuse_lent_global_rebound(c, provided, gref, m->name, m->pnames[idx]);
-        buf_printf(out, "&%s", gref);
+          gvar_global_slot(c, provided, &gref)) {
+        refuse_lent_global_rebound(c, provided, gref.p, m->name, m->pnames[idx]);
+        buf_printf(out, "&%s", gref.p);
+        free(gref.p);
         return;
       }
       /* a class variable's C global likewise: lent a temp, the callee's
          appends stayed in the copy */
       if (aty && sp_streq(aty, "ClassVariableReadNode") && comp_ntype(c, provided) == TY_STRING &&
-          cvar_global_slot(c, provided, gref, sizeof gref)) {
-        refuse_lent_global_rebound(c, provided, gref, m->name, m->pnames[idx]);
-        buf_printf(out, "&%s", gref);
+          cvar_global_slot(c, provided, &gref)) {
+        refuse_lent_global_rebound(c, provided, gref.p, m->name, m->pnames[idx]);
+        buf_printf(out, "&%s", gref.p);
+        free(gref.p);
         return;
       }
     }
@@ -8351,9 +8355,8 @@ void emit_rooted_operand(Compiler *c, TyKind pt, int provided, const char *expr,
 int arg_read_converts(Compiler *c, TyKind pt, int provided) {
   if (provided < 0 || pt == TY_POLY) return 0;
   if (pt == TY_STRBUF) {
-    char ref[192];
     return repr_of(c, provided).as_ty != TY_NIL &&
-           !strbuf_slot_ref(c, provided, ref, sizeof ref);
+           !strbuf_slot_has(c, provided);
   }
   if (!(ty_is_array(pt) || ty_is_obj_array(pt) || ty_is_hash(pt))) return 0;
   Repr sr = repr_of(c, provided);
@@ -8851,7 +8854,7 @@ static void ran_first_bind_o(int v, int t, int th, int to) {
 }
 /* --share-strings: String node v whose handle ran into _t<th>: its reads
    are that handle's String (sp_strbuf_read_pub), as a variable's that holds
-   the handle are, and ran_first_handle (strbuf_slot_ref) answers _t<th>. */
+   the handle are, and ran_first_handle (strbuf_slot_text) answers _t<th>. */
 void ran_first_bind_read(int v, int th) {
   ran_first_bind_o(v, th, th, 0);
   snprintf(g_argov_text[g_n_argov - 1], ARGOV_TEXT_LEN, "sp_strbuf_read_pub(_t%d)", th);
@@ -8897,7 +8900,7 @@ static void emit_arg_temp(Compiler *c, int v) {
      parameter wants the OBJECT read here, not a fresh one of its bytes. So
      a variable's handle is taken too, just ahead, and recorded with the
      override below (ran_first_handle). */
-  char sref[192];
+  Buf sref; memset(&sref, 0, sizeof sref);
   NodeKind vk = nt_kind(c->nt, v);
   int th = -1;
   /* So does a write whose slot holds the --share-strings handle
@@ -8938,12 +8941,12 @@ static void emit_arg_temp(Compiler *c, int v) {
   wshare |= conversion;
   if (wshare || ((vk == NK_LocalVariableReadNode || vk == NK_InstanceVariableReadNode ||
                   repr_static_read_kind(vk)) &&
-                 strbuf_slot_ref(c, v, sref, sizeof sref))) {
+                 strbuf_slot_text(c, v, &sref))) {
     th = ++g_tmp;
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, wshare ? hw.p : sref, th);
+    buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, wshare ? hw.p : sref.p, th);
   }
-  free(hw.p);
+  free(hw.p); free(sref.p);
   int t = ++g_tmp;
   Buf hb; memset(&hb, 0, sizeof hb);
   /* an Integer / Float producer whose nil rides beside the value keeps it
