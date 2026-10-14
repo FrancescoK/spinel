@@ -20620,6 +20620,18 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "), %s)", dflt);
         return 1;
       }
+      /* A lazy chain has no value of its own: it is fused into the call that
+         forces it, and a local or a method answering it is spliced in there.
+         Held anywhere else (an instance, class or global variable, a
+         constant), its `lazy` reached no method at run time, where CRuby's
+         collection answers one: refused here, naming the line (#9160). */
+      if (nm && sp_streq(nm, "lazy") && recv >= 0 && nt_ref(nt, id, "block") < 0 &&
+          nt_ref(nt, id, "arguments") < 0 && !diag_user_defines(c, "lazy") &&
+          (ty_is_array(grt) || ty_is_hash(grt) || grt == TY_RANGE || grt == TY_FLOAT_RANGE ||
+           grt == TY_STR_RANGE || grt == TY_ENUMERATOR))
+        unsupported(c, id, "a lazy chain held in an instance, class or global variable or a "
+                           "constant (an Enumerator::Lazy is fused into the call that forces it; "
+                           "keep the chain in a local or force it where it is built)");
       if (g_gate_raise) {
         /* Scalar slot: the comma-expr yields a typed default the surrounding C
            accepts directly. Poly slot: emit the recognizable sp_raise_nomethod

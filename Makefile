@@ -2229,6 +2229,13 @@ reject-test: $(SPINEL)
 	  else grep -qF "$$why" "$$tmp/co.out" || \
 	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/co.out"; ok=0; }; fi; \
 	done; \
+	for t in $(shell grep -l '^\# spinel: reject-lazy: ' test/reject/*.rb); do \
+	  why=$$(sed -n 's/^# spinel: reject-lazy: //p' "$$t"); \
+	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/lz.c" >"$$tmp/lz.out" 2>&1; then \
+	    echo "reject-test: FAIL ($$t compiled: a lazy chain held outside a local has no value at run time)"; ok=0; \
+	  else grep -qF "$$why" "$$tmp/lz.out" || \
+	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/lz.out"; ok=0; }; fi; \
+	done; \
 	for t in $(shell grep -l '^\# spinel: reject-subclass: ' test/reject/*.rb); do \
 	  why=$$(sed -n 's/^# spinel: reject-subclass: //p' "$$t"); \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sb.c" >"$$tmp/sb.out" 2>&1; then \

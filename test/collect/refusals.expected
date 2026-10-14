@@ -708,6 +708,18 @@ spinel: 1 refusal, nothing written
 == test/reject/ivar_set_shared_string_slot.rb [promote] rc=1
 spinel: test/reject/ivar_set_shared_string_slot.rb:10: an instance variable write given a String, which no conversion keeps in its sp_String * slot
 spinel: 1 refusal, nothing written
+== test/reject/lazy_chain_in_global.rb [default] rc=1
+spinel: test/reject/lazy_chain_in_global.rb:3: unsupported a lazy chain held in an instance, class or global variable or a constant (an Enumerator::Lazy is fused into the call that forces it; keep the chain in a local or force it where it is built): node 3 (CallNode `lazy`) recv=ArrayNode/ty19 argc=0
+spinel: 1 refusal, nothing written
+== test/reject/lazy_chain_in_global.rb [promote] rc=1
+spinel: test/reject/lazy_chain_in_global.rb:3: unsupported a lazy chain held in an instance, class or global variable or a constant (an Enumerator::Lazy is fused into the call that forces it; keep the chain in a local or force it where it is built): node 3 (CallNode `lazy`) recv=ArrayNode/ty19 argc=0
+spinel: 1 refusal, nothing written
+== test/reject/lazy_chain_in_ivar.rb [default] rc=1
+spinel: test/reject/lazy_chain_in_ivar.rb:8: unsupported a lazy chain held in an instance, class or global variable or a constant (an Enumerator::Lazy is fused into the call that forces it; keep the chain in a local or force it where it is built): node 8 (CallNode `lazy`) recv=ArrayNode/ty19 argc=0
+spinel: 1 refusal, nothing written
+== test/reject/lazy_chain_in_ivar.rb [promote] rc=1
+spinel: test/reject/lazy_chain_in_ivar.rb:8: unsupported a lazy chain held in an instance, class or global variable or a constant (an Enumerator::Lazy is fused into the call that forces it; keep the chain in a local or force it where it is built): node 8 (CallNode `lazy`) recv=ArrayNode/ty19 argc=0
+spinel: 1 refusal, nothing written
 == test/reject/lazy_stage_string_mutation.rb [default] rc=1
 spinel: test/reject/lazy_stage_string_mutation.rb:6: a lazy stage's block that changes its String element in place (`<<`, `concat`, a `!` method) is not supported: the lazy pipeline hands the block a copy of the element, so the String the source holds would not change. Use the eager form (drop `.lazy`), or return a new String (`x + "!"`) (see docs/limitations.md)
 spinel: 1 refusal, nothing written
