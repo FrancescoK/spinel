@@ -568,9 +568,10 @@ still works.
   thread *interleaving* (and so the ordering of `Thread.pass`, `Thread.list`
   membership, and the exact moment a `Thread#raise`/`#kill` is delivered) is
   nondeterministic, where the single-worker model was deterministic.
-  `Thread#raise`/`#kill` targeting the **main** thread is a no-op (main runs on
-  the scheduler's root fiber, which has no inject delivery points); CRuby
-  delivers the exception to main.
+  `Thread#raise` targeting the **main** thread is delivered at main's next
+  wait (a `sleep`, a `Queue#pop`, a `join`, a `Mutex#lock`, an IO wait) or
+  `Thread.pass`, not in the middle of a computation as CRuby can;
+  `Thread#kill` of the main thread is a no-op, where CRuby ends the process.
 
 ### Intentional incompatibilities with CRuby
 
