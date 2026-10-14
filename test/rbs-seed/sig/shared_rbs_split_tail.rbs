@@ -9,3 +9,12 @@ class ShstCols
   def push_cols: (Array[String] cols) -> ShstCols
   def add: (Hash[String | Symbol, untyped] h) -> ShstCols
 end
+class ShstBase
+  @s: String
+  def initialize: () -> void
+  def m: (String col) -> String
+  def s: () -> String
+end
+class ShstSub < ShstBase
+  def m: (String col) -> String
+end

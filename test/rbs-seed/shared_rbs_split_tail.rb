@@ -10,7 +10,8 @@
 # The same method called as the second element of a chained `<<` stores
 # its handle too, as it does as a statement of its own (the store walk saw
 # only the first push of a chain): into a local Array, an ivar's and the
-# Array an Hash element holds.
+# Array an Hash element holds, and where the method is one of a class and
+# its subclass (the dispatch boxes each arm's answer).
 # spinel: rbs-seed-check
 class ShstCols
   def initialize
@@ -84,3 +85,32 @@ h = { a: [] }
 h[:a] << r.name_of(+"m.n") << r.name_of(q)
 h[:a][1] << "#"
 p h, q
+
+class ShstBase
+  def initialize
+    @s = +"held"
+  end
+  attr_reader :s
+
+  def m(col)
+    return col unless col.include?(".")
+    col.split(".").last.to_s
+  end
+end
+
+class ShstSub < ShstBase
+  def m(col)
+    return col unless col.include?(".")
+    @s
+  end
+end
+
+objs = [ShstBase.new, ShstSub.new]
+q = +"q.r"
+z = +"plain"
+d = []
+objs.each { |x| d << x.m(+"a.b") << x.m(q) << x.m(z) }
+w = d.map { |e| e }
+w.each { |e| e << "!" }
+p d, w, objs.map(&:s), q, z
+p d.each_index.map { |i| d[i].equal?(w[i]) }
