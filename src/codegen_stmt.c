@@ -19357,6 +19357,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
          outer poly result var widened under promote): box it to match. */
       int target_poly = g_result_var ? g_result_poly : (g_ret_type == TY_POLY);
       int slot_o = g_result_var ? g_result_oint : g_ret_oint;
+      TyKind slot_t = g_result_var ? g_result_ty : g_ret_type;
       if (target_poly && rt != TY_POLY && bo) buf_printf(b, "%s(_t%d);\n", oint_box(rt), t);
       else if (target_poly && rt != TY_POLY) { emit_boxed_tmp(c, rt, t, b); buf_puts(b, ";\n"); }
       /* the oint temp into a plain slot is its value (TypeError for nil);
@@ -19367,13 +19368,16 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
          nil) tailing into a CONCRETE return slot. The slot is what the --rbs
          seed says, and `String?` is a NULL `const char *` here, so narrow the
          accumulator rather than hand back the box. The if/else and ternary
-         forms of the same union already coerce per arm (#4154). */
-      else if (!g_result_var && rt == TY_POLY && g_ret_type != TY_POLY &&
-               g_ret_type != TY_VOID && g_ret_type != TY_UNKNOWN &&
-               is_scalar_ret(g_ret_type)) {
+         forms of the same union already coerce per arm (#4154). A spliced
+         method's result var is such a slot too: `return to_enum unless
+         block_given?` types it Enumerator, and a begin around the loop
+         answers nil boxed. */
+      else if (rt == TY_POLY && !target_poly && (!g_result_var || !slot_o) &&
+               slot_t != TY_POLY && slot_t != TY_VOID && slot_t != TY_UNKNOWN &&
+               is_scalar_ret(slot_t)) {
         char ex[24]; snprintf(ex, sizeof ex, "_t%d", t);
         Buf ux; memset(&ux, 0, sizeof ux);
-        emit_unbox_nilable_text(c, g_ret_type, ex, &ux);
+        emit_unbox_nilable_text(c, slot_t, ex, &ux);
         buf_printf(b, "%s;\n", ux.p ? ux.p : "0"); free(ux.p);
       }
       else buf_printf(b, "_t%d;\n", t);
