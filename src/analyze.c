@@ -37698,12 +37698,52 @@ static void desugar_diverging_args(Compiler *c) {
    the Array a splat makes of it (emit_local_ivar_write_expr), where its
    length read raised NoMethodError for a boxed Integer
    (`{5 => 1}.fetch(*s)`). A typed Array reads as it did. */
-static int splat_operand_read(NodeTable *nt, const char *anm, long long depth, int view) {
+static int splat_operand_read(Compiler *c, NodeTable *nt, const char *anm, long long depth, int view) {
   int rd = nt_new_node(nt, "LocalVariableReadNode");
   nt_node_set_str(nt, rd, "name", anm);
   nt_node_set_int(nt, rd, "depth", depth);
-  if (view) nt_node_set_int(nt, rd, "splat_view", 1);
+  if (view) {
+    nt_node_set_int(nt, rd, "splat_view", 1);
+    int *sv = realloc(c->splat_views, sizeof(int) * (size_t)(c->nsplat_views + 1));
+    if (!sv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    c->splat_views = sv;
+    c->splat_views[c->nsplat_views++] = rd;
+  }
   return rd;
+}
+
+/* The splat_view reads once their local is typed: a builtin scalar spreads
+   as itself, so the read becomes the one-element list `[x]` (nil the empty
+   one) the arms measure and index; `h.fetch(*k)` with k an Integer local
+   read k's length and its C did not compile. An Array or a boxed value
+   reads as it is (the box through sp_splat_to_array); anything else (a
+   Hash, a Range, an object's to_a) keeps the read. */
+static int desugar_splat_view_scalars(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  for (int r = 0; r < c->nsplat_views; r++) {
+    int id = c->splat_views[r];
+    if (id < 0) continue;
+    TyKind t = infer_type(c, id);
+    if (t == TY_UNKNOWN) continue;
+    c->splat_views[r] = -1;
+    int scalar = t == TY_INT || t == TY_BIGINT || t == TY_FLOAT || t == TY_STRING || t == TY_SYMBOL ||
+                 t == TY_BOOL || t == TY_RATIONAL || t == TY_COMPLEX;
+    if (!scalar && t != TY_NIL) continue;
+    int el = -1;
+    if (scalar) {
+      el = nt_new_node(nt, "LocalVariableReadNode");
+      nt_node_set_str(nt, el, "name", nt_str(nt, id, "name"));
+      nt_node_set_int(nt, el, "depth", nt_int(nt, id, "depth", 0));
+    }
+    nt_node_set_type(nt, id, "ArrayNode");
+    nt_node_set_arr(nt, id, "elements", &el, scalar ? 1 : 0);
+    comp_grow_node_arrays(c);
+    if (el >= 0) c->nscope[el] = c->nscope[id];
+    c->ntype[id] = TY_UNKNOWN;
+    changed = 1;
+  }
+  return changed;
 }
 
 /* `recv.m(pre, *a, post)` where a's length is only known at run time and m
@@ -37887,7 +37927,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
       nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) {
     snprintf(knm, sizeof knm, "__splk%s", comp_node_tag(c, id));
     scope_local_intern(comp_scope_of(c, id), knm);
-    int ar = splat_operand_read(nt, anm, adepth, aview);
+    int ar = splat_operand_read(c, nt, anm, adepth, aview);
     int one = nt_new_node(nt, "ArrayNode");
     int kv = nt_clone_subtree(nt, fargs[argc - 1]);
     nt_node_set_arr(nt, one, "elements", &kv, 1);
@@ -37933,7 +37973,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   if (!variadic) {
     /* CRuby's message counts what was given:
        "wrong number of arguments (given " + (a.length + fixed).to_s + msg */
-    int ard = splat_operand_read(nt, anm, adepth, aview);
+    int ard = splat_operand_read(c, nt, anm, adepth, aview);
     int alen = nt_new_node(nt, "CallNode");
     nt_node_set_str(nt, alen, "name", "length");
     nt_node_set_ref(nt, alen, "receiver", ard);
@@ -37988,7 +38028,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
              hi - fixed, cnm);
     int over[2];
     for (int k = 0; k < 2; k++) {
-      int ard = splat_operand_read(nt, anm, adepth, aview);
+      int ard = splat_operand_read(c, nt, anm, adepth, aview);
       int cap = nt_new_node(nt, "IntegerNode");
       nt_node_set_int(nt, cap, "value", hi - fixed);
       over[k] = sd_bcall(nt, ">", sd_bcall(nt, "length", ard, NULL, 0), &cap, 1);
@@ -38045,7 +38085,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
         continue;
       }
       for (int i = 0; i < len; i++) {
-        int rd = splat_operand_read(nt, anm, adepth, aview);
+        int rd = splat_operand_read(c, nt, anm, adepth, aview);
         int ix = nt_new_node(nt, "IntegerNode");
         nt_node_set_int(nt, ix, "value", i);
         int ia = nt_new_node(nt, "ArgumentsNode");
@@ -38075,7 +38115,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     nt_node_set_ref(nt, cl, "arguments", an);
     if (krow >= 0) kwb_clone_split(c, cl, comp_scope_of(c, id));
     if (orow >= 0) kwb_optional_split(nt, cl, orow, comp_scope_of(c, id));
-    int ard = splat_operand_read(nt, anm, adepth, aview);
+    int ard = splat_operand_read(c, nt, anm, adepth, aview);
     int alen = nt_new_node(nt, "CallNode");
     nt_node_set_str(nt, alen, "name", "length");
     nt_node_set_ref(nt, alen, "receiver", ard);
@@ -43598,6 +43638,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= AN_PASS("widen_shared_cmp_params", widen_shared_cmp_params(c));          /* multi-class <=> takes its operand boxed */
     ch |= AN_PASS("desugar_reduce_splat_args", desugar_reduce_splat_args(c));      /* inject(*a) -> by a.length */
     ch |= AN_PASS("desugar_redef_version_calls", desugar_redef_version_calls(c));   /* B.new.g between two defs -> g#redef1 */
+    ch |= AN_PASS("desugar_splat_view_scalars", desugar_splat_view_scalars(c));   /* h.fetch(*k), k an Integer -> the arms read [k] */
     ch |= AN_PASS("desugar_reduce_proc_arg", desugar_reduce_proc_arg(c));          /* reduce(&pr) -> reduce { |a,b| pr.call(a,b) } */
     ch |= AN_PASS("desugar_block_capture_wrap", desugar_block_capture_wrap(c));       /* { |i| ->{i} } -> { |i| (->(i){ ->{i} }).call(i) } */
     ch |= AN_PASS("desugar_user_not_match", desugar_user_not_match(c));            /* a !~ b -> !(a =~ b) for a user =~ (#3019) */

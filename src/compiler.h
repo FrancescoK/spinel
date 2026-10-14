@@ -1302,6 +1302,10 @@ typedef struct {
      receivers are typed (-1 once resolved) */
   int *redef_calls;
   int nredef_calls;
+  /* the operand-local reads splat_dispatch_on_length marked splat_view,
+     which desugar_splat_view_scalars rewrites once typed (-1 once seen) */
+  int *splat_views;
+  int nsplat_views;
 } Compiler;
 enum { PRES_UNMARKED = 1, PRES_REMOVED = 2 };
 

@@ -297,6 +297,7 @@ void comp_free(Compiler *c) {
   for (int i = 0; i < c->pres_ord_n; i++) free(c->pres_ord[i]);
   free(c->pres_ord); c->pres_ord = NULL; c->pres_ord_n = 0;
   free(c->redef_calls); c->redef_calls = NULL; c->nredef_calls = 0;
+  free(c->splat_views); c->splat_views = NULL; c->nsplat_views = 0;
   c->pres_names = NULL; c->pres_flags = NULL; c->npres = c->cpres = 0;
   free(c->nil_fact);
   free(c->nil_elem_fact);
