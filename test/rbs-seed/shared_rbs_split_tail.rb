@@ -13,7 +13,8 @@
 # Array an Hash element holds, and where the method is one of a class and
 # its subclass (the dispatch boxes each arm's answer), and where it yields
 # its answer (the inlined call answers the handle its `return` and its tail
-# hold).
+# hold), and where an early `return x` stands beside a tail that reads an
+# ivar (the call is not the ivar's slot).
 # spinel: rbs-seed-check
 class ShstCols
   def initialize
@@ -134,3 +135,23 @@ yw = yo.map { |e| e }
 yw.each { |e| e << "!" }
 p yo, yw, kept, yk
 p yo[0].equal?(kept[0]), yo[2].equal?(yk), yo[3].equal?(yk)
+
+class ShstIv
+  def initialize
+    @iv = +"ivv"
+  end
+
+  def m(x)
+    return x if x.size < 3
+    @iv
+  end
+end
+
+iv = ShstIv.new
+iy = +"xy"
+ir = []
+ir << iv.m(iy)
+ir << +"a" << iv.m(iy) << iv.m(+"long")
+iy << "2"
+ir[3] << "!"
+p ir, iy, ir[0].equal?(iy), ir[2].equal?(iy), ir[3].equal?(iv.m(+"long"))

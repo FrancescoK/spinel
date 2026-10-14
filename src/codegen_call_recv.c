@@ -11693,8 +11693,11 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
     }
+    /* (the slot is the answer only of a method that answers nothing else:
+       an explicit `return x` before the read answers x, and the slot would
+       be read in its place) */
     if (mi >= 0 && !sg_guarded && repr_of(c, id).kind != RK_BOXED &&
-        (repr_of(c, id).handle || repr_of(c, id).demand)) {
+        (repr_of(c, id).handle || repr_of(c, id).demand) && !scope_has_return(c, mi)) {
       int lastH = scope_body_last(c, mi);
       if (lastH >= 0 && nt_kind(nt, lastH) == NK_InstanceVariableReadNode) {
         const char *ivnH = nt_str(nt, lastH, "name");
@@ -11726,7 +11729,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
     /* a memoizing reader (`def s = (@s ||= +"")`) has to run to fill the
        slot first; then the slot is the handle */
     if (mi >= 0 && !sg_guarded && repr_of(c, id).kind != RK_BOXED &&
-        (repr_of(c, id).handle || repr_of(c, id).demand)) {
+        (repr_of(c, id).handle || repr_of(c, id).demand) && !scope_has_return(c, mi)) {
       const char *ivnM = an_memo_reader_ivar(c, mi);
       int defcM = c->scopes[mi].class_id;
       int ivM = (ivnM && defcM >= 0) ? comp_ivar_index(&c->classes[defcM], ivnM) : -1;

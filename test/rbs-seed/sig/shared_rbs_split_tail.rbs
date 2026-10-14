@@ -21,3 +21,8 @@ end
 class ShstYield
   def m: (String col) { (String) -> String } -> String
 end
+class ShstIv
+  @iv: String
+  def initialize: () -> void
+  def m: (String x) -> String
+end
