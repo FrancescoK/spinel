@@ -110,15 +110,16 @@ module OpenSSL
   end
 
   module HMAC
-    # CRuby takes the algorithm first, as a String or a Digest instance. Only
-    # the String form is here, and only for the two the runtime carries: an
-    # algorithm that is not one of them raises DigestError -- the class CRuby
-    # raises, so `rescue OpenSSL::Digest::DigestError` catches the same thing
-    # -- rather than answering a hash from the wrong function. HMAC-MD5 is one
-    # of those: CRuby has it, the runtime's crypto does not (its MD5 is the
+    # CRuby takes the algorithm first, as a String or a Digest instance
+    # (`OpenSSL::Digest.new("sha256")`, whose name is the algorithm), and
+    # only the two the runtime carries are here: an algorithm that is not
+    # one of them raises DigestError -- the class CRuby raises, so
+    # `rescue OpenSSL::Digest::DigestError` catches the same thing -- rather
+    # than answering a hash from the wrong function. HMAC-MD5 is one of
+    # those: CRuby has it, the runtime's crypto does not (its MD5 is the
     # digest alone).
     def self.hexdigest(algo, key, data)
-      case algo.to_s.upcase
+      case HMAC.algorithm(algo)
       when "SHA256" then Crypto.hmac_sha256_hex(key, data)
       when "SHA1"   then Crypto.hmac_sha1_hex(key, data)
       else raise Digest::DigestError, "unsupported digest algorithm: #{algo}"
@@ -138,11 +139,17 @@ module OpenSSL
     # Same algorithm set and the same refusal as `hexdigest`: whatever one
     # answers, the other answers.
     def self.digest(algo, key, data)
-      case algo.to_s.upcase
+      case HMAC.algorithm(algo)
       when "SHA256" then Crypto.hmac_sha256_bin(key, data)
       when "SHA1"   then Crypto.hmac_sha1_bin(key, data)
       else raise Digest::DigestError, "unsupported digest algorithm: #{algo}"
       end
+    end
+
+    # The algorithm's name, upcased: a Digest instance's own (only its
+    # algorithm counts, not what it was given to hash), or the String's.
+    def self.algorithm(algo)
+      algo.is_a?(Digest) ? algo.name : algo.to_s.upcase
     end
   end
 end

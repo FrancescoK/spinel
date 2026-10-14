@@ -110,7 +110,8 @@ provides `OpenSSL::SSL` only: `SSLContext`, `SSLSocket`, `SSLError` and the
 `VERIFY_*` constants, which is what an outbound HTTPS client reaches.
 `OpenSSL::Digest` (`SHA256` / `SHA1` / `MD5`, the class-method forms and the
 object: `OpenSSL::Digest.new("SHA256")`, `update` / `<<`, `digest`,
-`hexdigest`, `digest_length`), `OpenSSL::HMAC`, `OpenSSL::KDF.hkdf` /
+`hexdigest`, `digest_length`), `OpenSSL::HMAC` (the algorithm by name or as
+a Digest), `OpenSSL::KDF.hkdf` /
 `pbkdf2_hmac` and `OpenSSL::PKCS5.pbkdf2_hmac` are there, over the runtime's
 own crypto rather than libssl, and no HMAC-MD5; the digest object buffers its
 input and hashes it whole. `Cipher` (aes-gcm) and `PKey::EC` are subsets,
