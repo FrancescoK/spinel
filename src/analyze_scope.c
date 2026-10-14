@@ -6084,6 +6084,32 @@ static void mark_array_subclasses(Compiler *c) {
   }
 }
 
+/* The class a superclass constant that names no class of its own holds:
+   `Impl = Base; class Sub < Impl`, a chain of such constants followed to
+   the class. -1 where it is not one constant the program writes once (a
+   builtin's name, or a name written twice), -2 (with the write in *wr)
+   where the value is something else (a case, an if, a call): a class only
+   the run time picks. */
+static int superclass_alias_target(Compiler *c, const char *name, int depth, int *wr) {
+  const NodeTable *nt = c->nt;
+  if (!name || depth > 8) return -1;
+  int w = -1, nw = 0;
+  NT_FOREACH_KIND(nt, NK_ConstantWriteNode, id) {
+    const char *n = nt_str(nt, id, "name");
+    if (n && sp_streq(n, name)) { w = id; nw++; }
+  }
+  if (nw != 1) return -1;
+  int v = nt_ref(nt, w, "value");
+  NodeKind vk = v >= 0 ? nt_kind(nt, v) : NK_NONE;
+  if (vk == NK_ConstantReadNode || vk == NK_ConstantPathNode) {
+    const char *vn = nt_str(nt, v, "name");
+    int k = vn ? comp_class_index(c, vn) : -1;
+    return k >= 0 ? k : superclass_alias_target(c, vn, depth + 1, wr);
+  }
+  *wr = w;
+  return -2;
+}
+
 void resolve_parents(Compiler *c) {
   check_class_redeclarations(c);
   check_blk_param_writes(c);
@@ -6100,6 +6126,20 @@ void resolve_parents(Compiler *c) {
        same way as an unqualified ConstantReadNode superclass. */
     if (sty && (sp_streq(sty, "ConstantReadNode") || sp_streq(sty, "ConstantPathNode"))) {
       int p = comp_class_index(c, nt_str(nt, sc, "name"));
+      /* a constant holding a class (`class Sub < Impl` after `Impl = Base`)
+         is that class; one whose class only the run time picks is refused,
+         where the parent was left unset with no word */
+      if (p < 0 && !builtin_value_superclass(c, sc)) {
+        int wr = -1;
+        p = superclass_alias_target(c, nt_str(nt, sc, "name"), 0, &wr);
+        if (p == -2) {
+          char msg[400];
+          snprintf(msg, sizeof msg, "class %s < %s: the superclass is a constant whose class is chosen at run time "
+                   "(a case, an if or a call); write the class it holds, or assign it a class constant",
+                   c->classes[i].name, nt_str(nt, sc, "name"));
+          unsupported_feature(c, sc, msg);
+        }
+      }
       if (p >= 0 && p != i) { c->classes[i].parent = p; comp_class_shape_changed(); }
     }
   }
