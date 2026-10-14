@@ -678,6 +678,17 @@ int call_is_scalar_op(Compiler *c, int id) {
   return scalar_r && scalar_v;
 }
 
+/* The block of a call to a builtin that leaves it unused (Array#slice), so
+   the call is typed and emitted as the one without it: a literal block, or
+   a forwarded `&b` whose operand runs nothing. -1 for any other. */
+int call_unused_block(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int blk = nt_ref(nt, id, "block");
+  if (blk < 0) return -1;
+  if (nt_kind(nt, blk) == NK_BlockNode) return blk;
+  return nt_kind(nt, blk) == NK_BlockArgumentNode && !subtree_has_side_effect(c, blk) ? blk : -1;
+}
+
 int subtree_has_side_effect(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (id < 0) return 0;

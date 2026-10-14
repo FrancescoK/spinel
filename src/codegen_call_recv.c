@@ -4873,10 +4873,13 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       int args0 = nt_ref(nt0, id, "arguments");
       int an0 = 0;
       if (args0 >= 0) nt_arr(nt0, args0, "arguments", &an0);
-      if (recv0 >= 0 && an0 == 1 && ty_is_array(comp_ntype(c, recv0)) &&
-          nt_ref(nt0, id, "block") < 0) {
+      /* (a block it is given goes unused: call_unused_block) */
+      int blk0 = nt_ref(nt0, id, "block"), drop0 = blk0 >= 0 && call_unused_block(c, id) >= 0;
+      if (recv0 >= 0 && an0 == 1 && ty_is_array(comp_ntype(c, recv0)) && (blk0 < 0 || drop0)) {
         nt_node_set_str((NodeTable *)nt0, id, "name", "[]");
+        if (drop0) nt_node_set_ref((NodeTable *)nt0, id, "block", -1);
         int h = emit_array_call(c, id, b);
+        if (drop0) nt_node_set_ref((NodeTable *)nt0, id, "block", blk0);
         nt_node_set_str((NodeTable *)nt0, id, "name", "slice");
         if (h) return 1;
       }
@@ -17571,6 +17574,22 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     }
   }
   return 0;
+}
+
+/* A call on a boxed receiver (emit_poly_call). A block given to the
+   builtin slice goes unused (call_unused_block): the call is emitted as the
+   one without it, which emit_poly_call's boxed slice arm takes. */
+int emit_boxed_recv_call(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  const char *name = nt_str(nt, id, "name");
+  int sblk = recv >= 0 && name && sp_streq(name, "slice") && comp_recv_type(c, recv) == TY_POLY &&
+             !user_defines_or_reads(c, "slice") ? call_unused_block(c, id) : -1;
+  if (sblk < 0) return emit_poly_call(c, id, b);
+  nt_node_set_ref((NodeTable *)nt, id, "block", -1);
+  int h = emit_poly_call(c, id, b);
+  nt_node_set_ref((NodeTable *)nt, id, "block", sblk);
+  return h;
 }
 
 /* Object's universal protocol -- ===, ==, !=, equal?, eql?, frozen?, freeze,
