@@ -20770,7 +20770,8 @@ int desugar_time_singleton_bare_ctor(Compiler *c) {
  * where no class of the program is the builtin's subclass (self could be
  * that subclass), and not for a name the program defines as a class method
  * of the builtin. The walk stays out of blocks, which may run under another
- * self. */
+ * self. A constant read through self (`self::INFINITY`) there, and in the
+ * class body, is the class's constant likewise. */
 typedef struct { const char *cls; const char *defs[256]; int nd; } BscmNames;
 static void bscm_collect(const NodeTable *nt, int body, int in_sg, BscmNames *t) {
   int bn = 0; const int *bs = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
@@ -20786,13 +20787,22 @@ static int bscm_defined(const BscmNames *t, const char *nm) {
   for (int i = 0; i < t->nd; i++) if (sp_streq(t->defs[i], nm)) return 1;
   return 0;
 }
-static int bscm_walk(NodeTable *nt, int n, const BscmNames *t) {
+static int bscm_walk(NodeTable *nt, int n, const BscmNames *t, int consts_only) {
   if (n < 0) return 0;
   NodeKind k = nt_kind(nt, n);
   if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode || k == NK_DefNode ||
       k == NK_BlockNode || k == NK_LambdaNode) return 0;
   int changed = 0;
-  if (k == NK_CallNode) {
+  /* `self::INFINITY`: the class's constant, as `Float::INFINITY` reads it */
+  if (k == NK_ConstantPathNode) {
+    int par = nt_ref(nt, n, "parent");
+    if (par >= 0 && nt_kind(nt, par) == NK_SelfNode) {
+      nt_node_reset(nt, par, "ConstantReadNode");
+      nt_node_set_str(nt, par, "name", t->cls);
+      return 1;
+    }
+  }
+  if (k == NK_CallNode && !consts_only) {
     const char *nm = nt_str(nt, n, "name");
     int r = nt_ref(nt, n, "receiver");
     if (nm && (r < 0 || nt_kind(nt, r) == NK_SelfNode) && !sp_streq(nm, "new") && !sp_streq(nm, "allocate") &&
@@ -20806,11 +20816,11 @@ static int bscm_walk(NodeTable *nt, int n, const BscmNames *t) {
     }
   }
   int nr = nt_num_refs(nt, n);
-  for (int i = 0; i < nr; i++) changed |= bscm_walk(nt, nt_ref_at(nt, n, i), t);
+  for (int i = 0; i < nr; i++) changed |= bscm_walk(nt, nt_ref_at(nt, n, i), t, consts_only);
   int na = nt_num_arrs(nt, n);
   for (int i = 0; i < na; i++) {
     int cnt = 0; const int *ids = nt_arr_at(nt, n, i, &cnt);
-    for (int j = 0; j < cnt; j++) changed |= bscm_walk(nt, ids[j], t);
+    for (int j = 0; j < cnt; j++) changed |= bscm_walk(nt, ids[j], t, consts_only);
   }
   return changed;
 }
@@ -20822,9 +20832,11 @@ static int bscm_rewrite(NodeTable *nt, int body, int in_sg, const BscmNames *t) 
     NodeKind sk = nt_kind(nt, st);
     if (sk == NK_DefNode && (in_sg || (nt_ref(nt, st, "receiver") >= 0 &&
                                        nt_kind(nt, nt_ref(nt, st, "receiver")) == NK_SelfNode)))
-      changed |= bscm_walk(nt, nt_ref(nt, st, "body"), t);
+      changed |= bscm_walk(nt, nt_ref(nt, st, "body"), t, 0);
     else if (sk == NK_SingletonClassNode && nt_kind(nt, nt_ref(nt, st, "expression")) == NK_SelfNode)
       changed |= bscm_rewrite(nt, nt_ref(nt, st, "body"), 1, t);
+    /* a statement of the class body, where self is the class itself */
+    else if (!in_sg && sk != NK_DefNode) changed |= bscm_walk(nt, st, t, 1);
   }
   return changed;
 }
