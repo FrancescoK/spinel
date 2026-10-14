@@ -280,6 +280,40 @@ silently drops seeds for unknown types -- no symbol table is required.
 Covers the common sibling-in-module pattern; full lexical lookup is
 not implemented.
 
+## Parameters and returns
+
+A method's seed has one field per parameter of the Ruby def. The
+positionals take plain fields in the def's order: required positionals,
+optional positionals (`?T`), the rest parameter (`*T`), trailing
+positionals. A keyword (`name: T`, `?name: T`) takes a `name:type`
+field, and the analyzer applies it to the parameter of that name: Ruby
+matches a keyword by name, and a def lists its keywords in any order
+(`def m(b:, a: 1)` under `(?a: Integer, b: String)` seeds both right).
+The keyword fields are written in the signature's source order. A
+`**rest` is the def's last slot and takes no field. A field is empty
+where the seed has nothing to say, and the analyzer leaves that
+parameter to inference:
+
+- the rest parameter: the analyzer types it a poly array by construction
+- a parameter whose type is outside the subset (the type-level list
+  below)
+
+A return outside the subset reads `-`, as `void` does: nothing is pinned
+and the parameters keep their seeds. In a class, `instance` and the
+`self` of an instance method are an instance of that class
+(`obj_<QualifiedName>`); the `self` of a singleton method (`def
+self.make: () -> self`) is the class object (`class`, as `singleton(K)`
+reads), and the `self` of a `def self?.` method is both, so `-`. In a
+module `self` and `instance` are the including object, which the seed
+cannot name, so `-`.
+
+A method that only entry points call (the public method of a library,
+with no call site in the program) has no call site to bind its
+parameters, so without a seed each of them widens to untyped. Dropping
+the whole signature over one optional positional or a `self` return
+made exactly those methods lose their declarations; each parameter now
+stands on its own.
+
 ## Dropped (silently skipped)
 
 ### Method signature shapes
@@ -291,28 +325,13 @@ not implemented.
   than its calls: `Array.wrap: (nil) -> Array[untyped] | ...` would pin
   its parameter to nil. The method is left to inference, as an
   overloaded inline signature is (see [inline-rbs.md](inline-rbs.md)).
-- Optional positional params (`?String`)
-- Rest positional params (`*args`)
-- Trailing positional params
-- Required keyword params (`name: T`)
-- Optional keyword params (`?name: T`)
-- Rest keyword params (`**rest`)
-- Block params (`{ ... }`, `?{ ... }`)
 - Generic method params (`[X]`)
 - Proc / untyped function types
 
-A signature that touches any of the above is dropped wholesale rather
-than emitted partially.
+### Type-level (an empty field as a parameter, `-` as a return)
 
-### Param-level -- any one of these in any required positional kills the whole signature
-
-- A type that doesn't reduce to a supported tag.
-- A generic container that isn't `Array[T]` or `Hash[K, V]`.
-- A union that isn't `T | nil`.
-
-### Type-level
-
-- `self`, `instance`, `class`, `top`, `bot`, `untyped` / `any`
+- `self` and `instance` as a parameter, or as the return of a module's
+  method; `class`, `top`, `bot`
 - Interfaces (`_Foo`)
 - Intersections (`T & U`)
 - Literal types (`:foo`, `42`, `"x"`)
@@ -339,7 +358,8 @@ inference fixpoint):
 ```
 class <QualifiedName>           # enter class scope; nested names use `_`
 meth <name> <ret> <ptypes>      # `-` means "leave alone"; ptypes is
-cmeth <name> <ret> <ptypes>     # comma-separated, or `-` for nullary
+cmeth <name> <ret> <ptypes>     # comma-separated, or `-` for nullary;
+                                # a keyword's field is `name:type`
 ivar <name> <type>
 src <file>:<line>               # --positions only: the .rbs line the next
                                 # seed is from (named when an inline RBS

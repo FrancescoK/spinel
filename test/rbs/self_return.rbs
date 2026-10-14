@@ -1,0 +1,22 @@
+# An `instance` return in a class names an instance of that class
+# (obj_<QualifiedName>), nested classes included, and so does `self` in
+# an instance method. `self` in a singleton method is the class object
+# (class, as singleton(K) reads); in a `def self?.` method it is two
+# types, so "-". In a module `self` and `instance` are the including
+# object, which the seed cannot name: "-", and the parameters keep
+# their seeds.
+class Plotter
+  def mark: (Integer x) -> self
+  def fresh: () -> instance
+  def self.make: (Integer n) -> instance
+  def self.build: () -> self
+  def self?.flip: (Integer n) -> self
+
+  class Pen
+    def lift: () -> self
+  end
+end
+
+module Movable
+  def shift: (Integer dx) -> self
+end

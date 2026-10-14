@@ -3393,6 +3393,11 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	  echo "rbs-seed-test: FAIL (a seeded general-Array parameter lost a held typed array's mutation)"; ok=0; \
 	else grep -q "which the method mutates" "$$tmp/stam.out" || { echo "rbs-seed-test: FAIL (seeded array mutation rejected without saying why)"; sed -n 1,5p "$$tmp/stam.out"; ok=0; }; fi; \
 	;; \
+	seed_partial_signature) \
+	$(SPINEL) test/rbs-seed/seed_partial_signature.rb --rbs test/rbs-seed/sig --warn-widen -o "$$tmp/sps" >/dev/null 2>"$$tmp/sps.err" && \
+	  "$$tmp/sps" > "$$tmp/sps.out" 2>/dev/null && cmp -s "$$tmp/sps.out" test/rbs-seed/seed_partial_signature.expected || { echo "rbs-seed-test: FAIL (a signature with an optional positional, a rest parameter, a self return or keywords out of hash order: a seed went to the wrong slot or the wrong type)"; sed -n 1,5p "$$tmp/sps.err"; ok=0; }; \
+	[ "$$(grep -c 'widened to untyped' "$$tmp/sps.err")" = 1 ] || { echo "rbs-seed-test: FAIL (the rest parameter is the one slot that widens; another did: an optional positional, a self return or a rest parameter dropped the seeds beside it)"; grep 'widened' "$$tmp/sps.err"; ok=0; }; \
+	;; \
 	*) echo "rbs-seed-test: FAIL (no check named $*)"; ok=0 ;; \
 	esac; } > "$$tmp/log" 2>&1; \
 	cat "$$tmp/log"; rm -rf "$$tmp"; echo $$ok > $@
