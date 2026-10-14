@@ -4449,6 +4449,8 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
      finalizer is Ruby code that may resize an array this loop has cached, so
      the cache reloads after one runs, as after a safepoint. */
   if (polls_here && g_uses_finalizers) { emit_indent(b, indent); buf_printf(b, "if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_fin_pending_flag, __ATOMIC_RELAXED))) sp_fin_run_pending()%s;\n", hc_mark()); }
+  /* and for a delivered Signal.trap, Ruby code as a finalizer is */
+  if (polls_here && g_uses_traps) { emit_indent(b, indent); buf_printf(b, "if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_sig_pending_flag, __ATOMIC_RELAXED))) sp_sig_run_pending()%s;\n", hc_mark()); }
   emit_stmts(c, body, b, indent);
   if (has_redo) g_redo_depth--;
   g_c_loop_depth--;

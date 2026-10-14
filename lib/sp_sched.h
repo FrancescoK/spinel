@@ -59,6 +59,8 @@ typedef struct sp_thread {
                                     stack; a waker may only enqueue it once off_cpu, otherwise it
                                     could be run on a second worker mid-context-switch */
   unsigned char     wake_pending; /* a wake arrived while still on-cpu; the worker enqueues it */
+  unsigned char     internal;    /* the runtime's own (the trap thread, lib/sp_cold.c): left out
+                                    of Thread.list, as CRuby has no such Ruby thread */
   unsigned char     repark_front;  /* next sp_sched_block puts this thread at the HEAD of the wait
                                       list: a mutex waiter woken but beaten to the exchange keeps
                                       its place in the arrival order */
@@ -106,6 +108,7 @@ void       sp_sched_init(void);
    a green thread and enqueue it RUNNABLE. It runs the next time the current
    thread yields, or at drain. Returns the thread (boxed SP_BUILTIN_THREAD). */
 sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg);
+void sp_thread_set_internal(sp_thread *t);
 sp_thread *sp_Thread_spawn_fiber_at(sp_Fiber *f, sp_RbVal arg, const char *file, sp_int line);
 
 /* #join: block until the thread has finished, re-raise its unhandled exception

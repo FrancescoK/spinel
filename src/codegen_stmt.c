@@ -11173,7 +11173,7 @@ static void hc_bounded_index(Compiler *c, int prev, int pred, int body, HcRegion
   if (one < 0 || nt_kind(nt, one) != NK_IntegerNode || nt_int(nt, one, "value", 0) != 1) return;
   for (int k = 0; k < bn - 1; k++) if (subtree_changes_local(c, bs[k], in)) return;
   if (subtree_changes_local(c, pred, in)) return;
-  if ((g_uses_threads || g_uses_finalizers) && hc_subtree_loops(nt, body)) return;
+  if ((g_uses_threads || g_uses_finalizers || g_uses_traps) && hc_subtree_loops(nt, body)) return;
   r->bi = in;
   r->ba = an;
 }
@@ -11357,7 +11357,7 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   g_pre = sv_pre; g_indent = sv_ind;
   /* a proved loop polls ahead of its test (hc_bounded_index); a condition with
      a prelude has no single test to put them ahead of, so it keeps its checks */
-  int polls_in_cond = proved && !(cpre.p && cpre.p[0]) && (g_uses_threads || g_uses_finalizers);
+  int polls_in_cond = proved && !(cpre.p && cpre.p[0]) && (g_uses_threads || g_uses_finalizers || g_uses_traps);
   if (proved && cpre.p && cpre.p[0]) { pr->bi = NULL; proved = 0; }
   if (proved) {
     Buf hcc; memset(&hcc, 0, sizeof hcc);
@@ -11384,6 +11384,8 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
       if (g_uses_threads) buf_printf(b, "if (SP_UNLIKELY(SP_SAFEPOINT_POLL())) sp_safepoint()%s; ", hc_mark());
       if (g_uses_finalizers)
         buf_printf(b, "if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_fin_pending_flag, __ATOMIC_RELAXED))) sp_fin_run_pending()%s; ", hc_mark());
+      if (g_uses_traps)
+        buf_printf(b, "if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_sig_pending_flag, __ATOMIC_RELAXED))) sp_sig_run_pending()%s; ", hc_mark());
     }
     if (is_until) buf_puts(b, "!(");
     buf_puts(b, ccond.p ? ccond.p : "");
