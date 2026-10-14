@@ -2272,12 +2272,12 @@ int emit_array_random_kw(Compiler *c, int id, Buf *b, const NodeTable *nt, const
   return 1;
 }
 
-/* `arr[i] = v` whose boxed index comes from a slot a Range was written into
-   (local_range_held), and whose value both the splice and the element store
+/* `arr[i] = v` whose boxed index may be a Range (value_may_be_range), and
+   whose value both the splice and the element store
    take: a Range splices, anything else stores. Read as an Integer, a Range
    stored at index 0. */
 int aset_range_held(Compiler *c, TyKind rt, const int *argv) {
-  if (comp_ntype(c, argv[0]) != TY_POLY || !local_range_held(c, argv[0])) return 0;
+  if (comp_ntype(c, argv[0]) != TY_POLY || !value_may_be_range(c, argv[0])) return 0;
   if (rt == TY_POLY_ARRAY) return 1;
   const char *k = array_kind(rt);
   TyKind et = ty_array_elem(rt);

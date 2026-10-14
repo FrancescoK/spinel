@@ -15966,6 +15966,14 @@ static int return_value_node(Compiler *c, int id) {
   return (a && n == 1) ? a[0] : id;
 }
 
+/* Can a Range be method s's value: its tail, or a `return`'s? */
+static int scope_value_may_be_range(Compiler *c, int s) {
+  if (value_may_be_range(c, c->scopes[s].body)) return 1;
+  for (int rid = comp_ret_first(c, s); rid >= 0; rid = comp_ret_next(c, rid))
+    if (value_may_be_range(c, return_value_node(c, rid))) return 1;
+  return 0;
+}
+
 /* Defined in codegen_fold.c (linked in). */
 int is_descendant(Compiler *c, int k, int anc);
 
@@ -16196,6 +16204,7 @@ static int irt_scope(Compiler *c, int s, IrtCtx *x) {
   (void)ret_empty; (void)ret_next;
   int ch = 0;
   Scope *sc = &c->scopes[s];
+  if (!sc->ret_range && sc->name && scope_value_may_be_range(c, s)) { sc->ret_range = 1; ch = 1; }
   /* Specialized inherited-cls-new copies keep their fixed subclass return
      type (the shared body's bare `new` would otherwise infer the base). */
   if (sc->ret_specialized) return ch;

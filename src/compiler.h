@@ -165,9 +165,9 @@ typedef struct {
                        retracted when that parameter stops being a general Array */
   int widen_from_scope;
   unsigned char widen_blocked; /* (params) retracted once: the reverse binding does not widen it again */
-  unsigned char range_held; /* an Integer Range was written into it (slot_set),
-                       or the value of a slot that held one: a boxed index
-                       read from it may be a Range at run time */
+  unsigned char range_held; /* a value that may be a Range was written into it
+                       (slot_set, value_may_be_range): a boxed index read
+                       from it may be a Range at run time */
   int push_widened; /* (params) a push through this parameter carried an element
                        its bound type could not hold, so it must stay the POLY
                        ARRAY: the call-site unification would otherwise collapse
@@ -473,6 +473,8 @@ typedef struct {
                           their typed kinds, and a new array of another kind
                           (`Array.new(n, 0)`) is converted where it is
                           returned, which nothing else holds to notice. */
+  unsigned char ret_range; /* a Range can be the method's value: its tail or a
+                       `return` (value_may_be_range), set by the return pass */
   int ret_proc_ret; /* when ret==TY_PROC: the returned proc's body return type
                        (TyKind), so a caller's `m.call` knows the result type */
   int blk_ret;      /* for a method with a &block param: the unified value type
@@ -1435,6 +1437,7 @@ LocalVar *scope_local(Scope *s, const char *name);
    degrades. slot_set is the same with the merged type already decided. */
 int slot_take(Compiler *c, LocalVar *lv, TyKind t, int node);
 int local_range_held(Compiler *c, int node);
+int value_may_be_range(Compiler *c, int node);
 int slot_set(Compiler *c, LocalVar *lv, TyKind merged, TyKind t, int node);
 /* A rule sets the slot to `t` and says why in its own words, with `node`
    its subject (a default's expression, an argument) or -1. The why is
