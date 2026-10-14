@@ -19841,27 +19841,16 @@ static int emit_poly_arity_guard(Compiler *c, int id, Buf *b) {
    and :lithuanian alone or together, :fold for downcasing only. Any other
    option, or a combination, is ArgumentError; spinel mapped regardless, or
    raised FrozenError for a `!` on a frozen String. The call is emitted
-   behind sp_case_opts_check, unless its option is a literal :ascii, which
-   keeps its C. Any other valid option maps as if absent, so the check also
-   refuses it (NotImplementedError) on text where that answer differs from
-   CRuby's (non-ASCII, or an i or I under :turkic). A receiver that is not a
+   behind sp_case_opts_check, unless its options are a literal :ascii or
+   :turkic (with :lithuanian), which pick their own mapping (case_map_suffix).
+   Any other valid option maps as if absent, so the check also refuses it
+   (NotImplementedError) on text where that answer differs from CRuby's
+   (non-ASCII, or an i or I under a :turkic known only at run time). A receiver that is not a
    plain read is evaluated into a temp first, as CRuby evaluates it before
    the method checks its options. A block that breaks is wrapped first
    (emit_brk_wrapped_call) and the check runs inside the wrapper: the
    wrapper hoists the call it re-enters into g_pre, ahead of the temp this
    check would declare around it. */
-static int case_opts_valid_lits(Compiler *c, const int *av, int argc, int down) {
-  const char *a[2] = { NULL, NULL };
-  if (argc > 2) return 0;
-  for (int i = 0; i < argc; i++) {
-    if (nt_kind(c->nt, av[i]) != NK_SymbolNode || !(a[i] = nt_str(c->nt, av[i], "value"))) return 0;
-  }
-  (void)down;
-  /* only :ascii picks its own mapping (case_map_suffix); :turkic,
-     :lithuanian and :fold map as if absent, which the runtime check
-     answers only where that is CRuby's answer too */
-  return argc == 1 && sp_streq(a[0], "ascii");
-}
 static int g_case_opts_node = -1;
 static int emit_case_opts_guard(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
@@ -19884,7 +19873,7 @@ static int emit_case_opts_guard(Compiler *c, int id, Buf *b) {
   if (argc == 0 || user_defines_or_reads(c, name)) return 0;
   if (nt_argv_has(nt, av, argc, NT_ARG_SPLAT | NT_ARG_BLOCK) || nt_argv_has_kwsplat(nt, av, argc)) return 0;
   int down = sp_streq(base, "downcase");
-  if (case_opts_valid_lits(c, av, argc, down)) return 0;
+  if (*case_map_suffix(c, argc, av)) return 0;
   NodeKind rk = nt_kind(nt, recv);
   int plain = rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode || rk == NK_SelfNode ||
               rk == NK_ConstantReadNode || rk == NK_StringNode || rk == NK_SymbolNode;

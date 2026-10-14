@@ -1574,7 +1574,7 @@ int emit_op_poly_case_options(Compiler *c, const BopCtx *x, Buf *b) {
   if (!user_defines_or_reads(c, name)) {
     int plain_args = !nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK);
     if (plain_args) {
-      const char *sfx = argc == 1 ? case_map_suffix(c, argc, argv) : "";
+      const char *sfx = case_map_suffix(c, argc, argv);
       int tv = ++g_tmp;
       buf_puts(b, "({ ");
       tv = hold_operand(c, recv, TY_POLY, 0, tv, 1, " ", b);
@@ -1599,7 +1599,8 @@ int emit_op_poly_case_options(Compiler *c, const BopCtx *x, Buf *b) {
         free(ta);
         buf_printf(b, "}, %s, _t%d); ", x->op->arg, tv);
       }
-      buf_printf(b, "sp_poly_case_conv(_t%d, sp_str_%s%s, \"%s\"); })", tv, name, sfx, name);
+      if (sp_streq(sfx, "_turkic")) buf_printf(b, "sp_poly_case_conv(_t%d, _t%d.tag == SP_TAG_SYM ? sp_str_%s_turkic_sym : sp_str_%s_turkic, \"%s\"); })", tv, tv, name, name, name);
+      else buf_printf(b, "sp_poly_case_conv(_t%d, sp_str_%s%s, \"%s\"); })", tv, name, sfx, name);
       return 1;
     }
   }

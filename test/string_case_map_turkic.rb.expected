@@ -1,0 +1,44 @@
+"SS İ"
+["İI", "iı", "İı", "İı"]
+["İI", "iı"]
+["İI", "iı", "İı", "iI"]
+["İI", "iı"]
+["Iİ", "ıi", "Ii", "ıi"]
+["Iİ", "ıi"]
+["IIİ", "ııi", "Iıi", "ııİ"]
+["IIİ", "ııi"]
+["İSTANBUL", "istanbul", "İstanbul", "İSTANBUL"]
+["İSTANBUL", "istanbul"]
+["İSTANBUL", "istanbul", "İstanbul", "istanbul"]
+["İSTANBUL", "istanbul"]
+["DİYARBAKIR", "diyarbakır", "Diyarbakır", "DiYARBAKIR"]
+["DİYARBAKIR", "diyarbakır"]
+["ÉCOLE İ", "école i", "École i", "école İ"]
+["ÉCOLE İ", "école i"]
+["AIB", "aıb", "Aıb", "AıB"]
+["AIB", "aıb"]
+"IİİI"
+"ıiiı"
+"IİİI"
+"Iiiı"
+"Diyar"
+:İII
+:iı
+:Ii
+:ıI
+:éA
+:Éa
+"ıi"
+"ıi"
+:II
+"II"
+"ii"
+"I"
+"i"
+[ArgumentError, "invalid second option"]
+[ArgumentError, "invalid second option"]
+[ArgumentError, "too many options"]
+[ArgumentError, "invalid second option"]
+[ArgumentError, "too many options"]
+[FrozenError, "can't modify frozen String: \"iI\""]
+"İI"
