@@ -3256,6 +3256,7 @@ sp_RbVal sp_Enumerator_feed(sp_Enumerator *e, sp_RbVal v);
 sp_PolyArray *sp_Enumerator_take(sp_Enumerator *e, sp_int n);
 sp_PolyArray *sp_Enumerator_to_a(sp_Enumerator *e);
 void sp_sig_c_handler(int no);
+void sp_sig_thread_dispatch(void);   /* the generated TU (spinel_rt.h) */
 void sp_exc_resignal(const char *cls, const char *msg);
 void sp_sig_exit_dispatch(void);
 sp_RbVal sp_signal_trap(sp_RbVal sig, sp_RbVal handler);
@@ -3726,10 +3727,81 @@ sp_PolyArray *sp_Enumerator_to_a(sp_Enumerator *e) {
   if (e->items) for (sp_int i = 0; i < e->items->len; i++) sp_PolyArray_push(r, e->items->data[i]);
   return r;
 }
+/* ---- Signal.trap delivery ----
+   The handler only counts the delivery. It used to run the trap proc right
+   there, and a signal from outside that landed while the program was inside
+   malloc, the collector or stdio ran Ruby on top of a half-updated heap: a
+   trap that allocates, sent USR1 in a loop while the program allocated,
+   aborted on glibc's heap checks every run. The proc now runs where Ruby may
+   run, as CRuby's does: in the single-threaded runtime at the safe points
+   the compiler emits for a program that traps (a method's entry, a loop's
+   back-edge: sp_sig_pending_flag), right after a Process.kill, and in the
+   waits (sleep, the cooperative IO park, Thread.pass); in the threaded one on
+   a green thread of its own, parked on a wake pipe, so a trap runs while the
+   main thread stays blocked in a read or a sleep. Nothing here but the two
+   atomics and the write(2) is called from the handler. */
+static int sp_sig_pending[SP_SIG_MAX];
+volatile int sp_sig_pending_flag;
+#ifdef SP_THREADS
+static int sp_sig_wake[2] = { -1, -1 };
+#endif
 void sp_sig_c_handler(int no) {
-  sp_Proc *p = (no >= 0 && no < SP_SIG_MAX) ? (sp_Proc *)sp_trap_proc[no] : NULL;
-  if (p) sp_trap_call(p, no);
+  if (no <= 0 || no >= SP_SIG_MAX) return;
+  int e = errno;
+  SP_ATOMIC_FETCH_ADD(&sp_sig_pending[no], 1, __ATOMIC_RELEASE);
+#ifdef SP_THREADS
+  if (sp_sig_wake[1] >= 0) { char b = 0; ssize_t w = write(sp_sig_wake[1], &b, 1); (void)w; }
+#else
+  SP_ATOMIC_STORE(&sp_sig_pending_flag, 1, __ATOMIC_RELEASE);
+#endif
+  errno = e;
 }
+/* Run the procs of the signals delivered since the last call. Deliveries of
+   one signal that arrive before its proc runs are one run, as the kernel
+   merges them while the signal is pending. The signal is blocked while its
+   proc runs, as it was in the handler, so a second delivery waits for the
+   proc instead of nesting on it; sp_trap_call unblocks it when the proc
+   leaves by a raise or a throw. */
+void sp_sig_run_pending(void) {
+  SP_ATOMIC_STORE(&sp_sig_pending_flag, 0, __ATOMIC_RELAXED);
+  for (int no = 1; no < SP_SIG_MAX; no++) {
+    if (!SP_ATOMIC_LOAD(&sp_sig_pending[no], __ATOMIC_RELAXED)) continue;
+    if (!SP_ATOMIC_EXCHANGE(&sp_sig_pending[no], 0, __ATOMIC_ACQUIRE)) continue;
+    sp_Proc *p = (sp_Proc *)sp_trap_proc[no];
+    if (!p) continue;
+    sigset_t m; sigemptyset(&m); sigaddset(&m, no);
+#ifdef SP_THREADS
+    pthread_sigmask(SIG_BLOCK, &m, NULL);
+#else
+    sigprocmask(SIG_BLOCK, &m, NULL);
+#endif
+    sp_trap_call(p, no);
+    sp_sig_unblock(no, 0);
+  }
+}
+#ifdef SP_THREADS
+/* The threaded runtime's trap thread: parks on the wake pipe the handler
+   writes, and runs the procs (sp_sig_thread_dispatch hands a raise out of
+   one to the main thread, where CRuby raises it). */
+static void sp_sig_thread_body(sp_Fiber *f) {
+  (void)f;
+  for (;;) {
+    sp_io_wait_fd_readable(sp_sig_wake[0]);
+    char buf[64];
+    while (read(sp_sig_wake[0], buf, sizeof buf) > 0) {}
+    sp_sig_thread_dispatch();
+  }
+}
+static void sp_sig_thread_start(void) {
+  static int started = 0;
+  if (started) return;
+  if (sp_io_make_pipe(sp_sig_wake) != 0) return;
+  for (int e = 0; e < 2; e++) { int fl = fcntl(sp_sig_wake[e], F_GETFL, 0); if (fl >= 0) fcntl(sp_sig_wake[e], F_SETFL, fl | O_NONBLOCK); }
+  started = 1;
+  sp_thread *t = sp_Thread_spawn_fiber(sp_Fiber_new(sp_sig_thread_body), sp_box_nil());
+  sp_thread_set_internal(t);
+}
+#endif
 void sp_sig_exit_dispatch(void) {
   sp_Proc *p = (sp_Proc *)sp_trap_proc[0];
   sp_trap_proc[0] = NULL;   /* run once */
@@ -3752,8 +3824,10 @@ sp_RbVal sp_signal_trap(sp_RbVal sig, sp_RbVal handler) {SP_GC_ROOT_RBVAL(sig);S
     sp_trap_state[no] = NULL;
     if (no == 0) { static int armed = 0; if (!armed) { armed = 1; atexit(sp_sig_exit_dispatch); } }
     else {
-      /* no SA_NODEFER: the signal stays blocked while its proc runs, so a
-         second delivery waits instead of nesting (sp_trap_call) */
+#ifdef SP_THREADS
+      sp_sig_thread_start();
+#endif
+      /* the handler only records the delivery (sp_sig_c_handler) */
       struct sigaction sa; memset(&sa, 0, sizeof sa);
       sa.sa_handler = sp_sig_c_handler;
       sigemptyset(&sa.sa_mask);
@@ -3782,6 +3856,9 @@ sp_int sp_process_kill1(sp_RbVal sig, sp_int pid) {SP_GC_ROOT_RBVAL(sig);
     if (errno == EPERM) sp_raise_cls("Errno::EPERM", sp_sprintf("Operation not permitted - %lld", (long long)pid));
     sp_raise_cls("Errno::EINVAL", "Invalid argument");
   }
+  /* a signal sent to this process is handled before kill returns, as in
+     CRuby: the kernel delivered it to this thread on the way out */
+  if (SP_ATOMIC_LOAD(&sp_sig_pending_flag, __ATOMIC_ACQUIRE)) sp_sig_run_pending();
   return 1;
 }
 sp_RbVal sp_Enumerator_size(sp_Enumerator *e) {SP_GC_ROOT(e);
@@ -5396,7 +5473,9 @@ void sp_sleep(sp_float s) {
   req.tv_nsec = (long)((s - (double)req.tv_sec) * 1e9);
   if (req.tv_nsec < 0) req.tv_nsec = 0;
   if (req.tv_nsec >= 1000000000L) req.tv_nsec = 999999999L;
-  while (nanosleep(&req, &req) == -1 && errno == EINTR) {}
+  /* a trap delivered meanwhile runs, and the sleep goes on, as CRuby's does */
+  while (nanosleep(&req, &req) == -1 && errno == EINTR)
+    if (SP_ATOMIC_LOAD(&sp_sig_pending_flag, __ATOMIC_ACQUIRE)) sp_sig_run_pending();
 #endif
 }
 

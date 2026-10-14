@@ -2759,7 +2759,13 @@ sp_RbVal sp_Thread_value(sp_thread *t) {
   return t->retval;
 }
 
+/* lib/sp_cold.c: the single-threaded runtime runs a delivered Signal.trap at
+   the waits that hand the scheduler round, a read's park among them; the
+   threaded one never raises the flag (its trap thread runs them) */
+extern volatile int sp_sig_pending_flag;
+void sp_sig_run_pending(void);
 void sp_Thread_pass(void) {
+  if (SP_ATOMIC_LOAD(&sp_sig_pending_flag, __ATOMIC_ACQUIRE)) sp_sig_run_pending();
   SCHED_LOCK();
   sp_thread *self = g_current;
   if (self == &g_main_thread) {
@@ -2815,15 +2821,17 @@ void sp_Thread_set_priority(sp_thread *t, sp_int p) {
    over these accessors since it owns sp_PolyArray. */
 sp_int sp_Thread_list_count(void) {
   sp_int n = 1;   /* the main thread */
-  for (sp_thread *t = g_all; t; t = t->all_next) n++;
+  for (sp_thread *t = g_all; t; t = t->all_next) if (!t->internal) n++;
   return n;
 }
 sp_thread *sp_Thread_list_at(sp_int i) {
   if (i <= 0) return &g_main_thread;
   sp_thread *t = g_all;
-  for (sp_int k = 1; t && k < i; k++) t = t->all_next;
+  while (t && t->internal) t = t->all_next;
+  for (sp_int k = 1; t && k < i; k++) do t = t->all_next; while (t && t->internal);
   return t ? t : &g_main_thread;
 }
+void sp_thread_set_internal(sp_thread *t) { t->internal = 1; }
 
 /* #status: "run" while runnable/running, "sleep" while blocked, false when it
    finished normally, nil when it died with an unhandled exception. */

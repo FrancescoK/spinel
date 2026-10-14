@@ -19368,6 +19368,30 @@ void sp_trap_call(sp_Proc *p, int no) {
   sp_pending_exc_obj = eobj; sp_raise_cls(ecls, emsg);
 }
 #endif
+/* The threaded runtime runs the trap procs on a green thread of its own
+   (sp_sig_thread_body, lib/sp_cold.c). A raise out of one is the main
+   thread's, where CRuby runs every trap: it is handed there as Thread#raise
+   hands one, and the trap thread goes back to waiting. A throw or a break
+   has no frame of the main thread to land in from here, and is dropped. */
+#if defined(SP_THREADS) && !defined(SPINEL_EXT_HOST)
+void sp_sig_run_pending(void);
+void sp_sig_thread_dispatch(void) {
+  int catch_top = sp_catch_top, brk_top = sp_brk_top;
+  sp_proc_home *ret_head = sp_proc_ret_head;
+  sp_exc_check_depth();
+  sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;
+  sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;
+  if (setjmp(sp_exc_stack[sp_exc_top - 1]) == 0) { sp_sig_run_pending(); sp_exc_top--; return; }
+  sp_exc_top--;
+  sp_gc_nroots = sp_exc_rootmark[sp_exc_top]; sp_rescue_sp = sp_rescue_mark[sp_exc_top];
+  sp_catch_top = catch_top; sp_brk_top = brk_top; sp_proc_ret_head = ret_head;
+  int unwound = sp_unwind_kind != SP_UNWIND_NONE;
+  sp_unwind_kind = SP_UNWIND_NONE;
+  sp_explicit_cause = NULL; sp_explicit_cause_set = 0;
+  if (!unwound)
+    sp_Thread_raise(sp_Thread_main(), sp_exc_cls[sp_exc_top], sp_exc_msg[sp_exc_top], sp_exc_obj[sp_exc_top]);
+}
+#endif
 /* The default of SIGINT and SIGTERM, as CRuby's: an Interrupt (a SignalException
    "SIGTERM", #signo 15) raised where the signal arrived, so rescue and ensure
    run. The handler is left by a jump, so its signal is unblocked first (as
@@ -20110,6 +20134,10 @@ SP_COLD int sp_signal_resolve(sp_RbVal sig) {
 }
 #endif
 void sp_sig_c_handler(int no);
+/* a delivered trap waits for one of these (lib/sp_cold.c): the compiler's safe
+   points poll the flag in a program that traps */
+extern volatile int sp_sig_pending_flag;
+void sp_sig_run_pending(void);
 void sp_sig_exit_dispatch(void);
 sp_RbVal sp_signal_trap(sp_RbVal sig, sp_RbVal handler);
 /* Process.kill: send `sig` to one pid; raises the errno family on failure and
