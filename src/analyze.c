@@ -10371,7 +10371,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
       return 1;
     }
   }
-  if (nm && sp_streq(nm, "step")) {
+  if (nm && sp_streq(nm, "step") && nt_ref(nt, id, "receiver") >= 0) {
     /* Numeric#step keyword forms lower to the positional (limit, step):
        step(to: T, by: B) / step(by: B, to: T) / step(T, by: B). An
        endless step (by: only, no to:) stays a loud reject. */

@@ -37,3 +37,13 @@ p 1.step(by: 2, to: 9).to_a
     p e.message
   end
 end
+
+$wlog = []
+$wby = -> { $wlog << :by; 2 }
+$wto = -> { $wlog << :to; 9 }
+class Walker
+  def step(to:, by:) = [to, by]
+  def go = step(by: $wby.call, to: $wto.call)
+end
+p Walker.new.go
+p $wlog

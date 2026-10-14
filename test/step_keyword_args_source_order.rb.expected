@@ -7,3 +7,5 @@
 [1, 3, 5, 7, 9]
 "comparison of Integer with String failed"
 "comparison of Integer with :a failed"
+[9, 2]
+[:by, :to]
