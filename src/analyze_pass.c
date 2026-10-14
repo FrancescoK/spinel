@@ -1757,13 +1757,15 @@ static int fold_container_evidence(TyRef slot, int is_push, int is_splice,
        regardless of the pushed value type; mixing typed arrays widens to
        PolyArray (ty_unify would return TY_POLY scalar, so use array-aware
        widening instead). */
-    if (vt == TY_UNKNOWN) return 0;
     /* (a String Array of handles keeps a String; a value that may be
-       another class widens it, as it widens a String Array) */
+       another class widens it, as it widens a String Array, and so does one
+       of no type yet: a bare `Array.new` stays untyped and is boxed, which
+       no handle is) */
     if (*slot == TY_STRH_ARRAY) {
       if (vt != TY_STRING && vt != TY_STRBUF) ty_ref_set(slot, TY_POLY_ARRAY);
       return 1;
     }
+    if (vt == TY_UNKNOWN) return 0;
     /* If a [] read already promoted this slot to a hash type, the push
        wins: a variable that is pushed to is an array, not a hash.
        Reset the slot so the array promotion below can fire. */
@@ -1776,8 +1778,9 @@ static int fold_container_evidence(TyRef slot, int is_push, int is_splice,
   }
   else if (*slot == TY_STRH_ARRAY) {
     /* a String Array of handles takes a String at an Integer index; any
-       other write widens it */
-    if (vt != TY_UNKNOWN && (is_splice || (kt != TY_INT && kt != TY_UNKNOWN) || (vt != TY_STRING && vt != TY_STRBUF)))
+       other write widens it, a value of no type yet included (a bare
+       `Array.new` is boxed, which no handle is) */
+    if (is_splice || (kt != TY_INT && kt != TY_UNKNOWN) || (vt != TY_STRING && vt != TY_STRBUF))
       ty_ref_set(slot, TY_POLY_ARRAY);
   }
   else if (is_splice) {
