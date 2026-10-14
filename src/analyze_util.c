@@ -1247,18 +1247,20 @@ static const char *const_value_owned_key(Compiler *c, const char *clsname, const
     if (key) return key;
   }
   /* ... or a path write through it (`Base::N = v`, or through an alias of
-     it), under the key the constant qualifier gave it */
+     it), under the key the constant qualifier gave it. The qualifier
+     resolved the whole path (qc_owner): `Left::Base` is not a top-level
+     Base. */
+  const char *rn = class_ruby_name(c, comp_class_index(c, clsname));
+  if (!rn) return NULL;
   static const NodeKind pw[] = { NK_ConstantPathWriteNode, NK_ConstantPathOrWriteNode,
                                  NK_ConstantPathAndWriteNode, NK_ConstantPathOperatorWriteNode };
   for (int i = 0; i < 4; i++)
     NT_FOREACH_KIND(nt, pw[i], w) {
-      int t = nt_ref(nt, w, "target"), par = t >= 0 ? nt_ref(nt, t, "parent") : -1;
+      int t = nt_ref(nt, w, "target");
       const char *on = t >= 0 ? nt_str(nt, t, "qc_orig_name") : NULL;
       if (!on) on = t >= 0 ? nt_str(nt, t, "name") : NULL;
-      const char *pn = par >= 0 ? nt_str(nt, par, "name") : NULL;
-      const char *ra = pn && !sp_streq(pn, clsname) ? resolve_class_alias(c, pn) : NULL;
-      if (on && pn && sp_streq(on, constname) && (sp_streq(pn, clsname) || (ra && sp_streq(ra, clsname))))
-        return nt_str(nt, t, "name");
+      const char *own = t >= 0 ? nt_str(nt, t, "qc_owner") : NULL;
+      if (on && own && sp_streq(on, constname) && sp_streq(own, rn)) return nt_str(nt, t, "name");
     }
   return NULL;
 }

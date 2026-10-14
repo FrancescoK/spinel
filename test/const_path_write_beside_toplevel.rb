@@ -28,3 +28,18 @@ CAP = 0
 DEPTH = 9
 p Held::CAP, HeldAlias::CAP, Held.cap, CAP, Held.const_get(:CAP)
 p Outer::Base::DEPTH, NestAlias::DEPTH, DEPTH
+# a class's path write is its own, not that of another class of the same leaf
+class Leaf; end
+module Lhs
+  class Leaf; end
+end
+module Rhs
+  Leaf = Lhs::Leaf
+end
+Lhs::Leaf::SIZE = 5
+Leaf::SIZE = 6
+Rhs::Leaf::WIDTH = 7
+SIZE = 0
+WIDTH = 0
+p Lhs::Leaf::SIZE, Leaf::SIZE, SIZE, Lhs::Leaf.const_get(:SIZE), Leaf.const_get(:SIZE)
+p Lhs::Leaf::WIDTH, Lhs::Leaf.const_get(:WIDTH), WIDTH
