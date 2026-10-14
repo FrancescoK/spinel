@@ -11794,6 +11794,14 @@ static int bs_call(BsB *b, int recv, const char *name, const int *args, int n) {
   nt_node_set_ref(b->nt, id, "arguments", an);
   return id;
 }
+/* A call on a value the desugar built or knows (an Array of the yielded
+   values, its length): the builtin's, never a reopened class's own method
+   of the name */
+static int bs_bcall(BsB *b, int recv, const char *name, const int *args, int n) {
+  int id = bs_call(b, recv, name, args, n);
+  if (id >= 0) { nt_node_set_int(b->nt, id, "builtin_only", 1); nt_node_set_int(b->nt, id, "desugar_builtin", 1); }
+  return id;
+}
 static int bs_stmts(BsB *b, const int *ids, int n) {
   int id = bs_new(b, "StatementsNode");
   if (id >= 0) nt_node_set_arr(b->nt, id, "body", ids, n);
@@ -11821,12 +11829,12 @@ static int bs_write(BsB *b, const char *name, int value) {
 }
 static int bs_index(BsB *b, const char *ary, long i) {
   int ix = bs_int(b, i);
-  return bs_call(b, bs_read(b, ary), "[]", &ix, 1);
+  return bs_bcall(b, bs_read(b, ary), "[]", &ix, 1);
 }
 static int bs_len_gt(BsB *b, const char *ary, long n) {
-  int len = bs_call(b, bs_read(b, ary), "length", NULL, 0);
+  int len = bs_bcall(b, bs_read(b, ary), "length", NULL, 0);
   int lit = bs_int(b, n);
-  return bs_call(b, len, ">", &lit, 1);
+  return bs_bcall(b, len, ">", &lit, 1);
 }
 
 typedef struct {
@@ -11888,12 +11896,12 @@ static int bs_bind_dynamic(BsB *b, const BsShape *s, const char *ary, int copy_d
   const char *rn = s->rest >= 0 ? nt_str(nt, s->rest, "name") : NULL;
   if (rn && *rn) {
     int fixed = s->P + s->O + s->Q;
-    int len = bs_call(b, bs_read(b, ary), "length", NULL, 0);
+    int len = bs_bcall(b, bs_read(b, ary), "length", NULL, 0);
     int fx = bs_int(b, fixed);
-    int sargs[2] = { bs_int(b, s->P + s->O), bs_call(b, len, "-", &fx, 1) };
-    int t = bs_write(b, rn, bs_call(b, bs_read(b, ary), "[]", sargs, 2));
+    int sargs[2] = { bs_int(b, s->P + s->O), bs_bcall(b, len, "-", &fx, 1) };
+    int t = bs_write(b, rn, bs_bcall(b, bs_read(b, ary), "[]", sargs, 2));
     int z[2] = { bs_int(b, 0), bs_int(b, 0) };
-    int e = bs_write(b, rn, bs_call(b, bs_read(b, ary), "[]", z, 2));
+    int e = bs_write(b, rn, bs_bcall(b, bs_read(b, ary), "[]", z, 2));
     out[n++] = bs_if(b, bs_len_gt(b, ary, fixed), &t, 1, &e, 1);
   }
   /* the posts take the last values once the pre-requireds are covered, and
@@ -12108,19 +12116,19 @@ int desugar_reduce_splat_args(Compiler *c) {
     nt_node_set_ref(nt, call, "receiver", bs_read(&b, rn));
     nt_node_set_ref(nt, call, "arguments", -1);
     int len[4];
-    for (int k = 0; k < 4; k++) len[k] = bs_call(&b, bs_read(&b, an), "length", NULL, 0);
+    for (int k = 0; k < 4; k++) len[k] = bs_bcall(&b, bs_read(&b, an), "length", NULL, 0);
     int lit2 = bs_int(&b, 2), lit2b = bs_int(&b, 2), lit1 = bs_int(&b, 1);
-    int eq2 = bs_call(&b, len[0], "==", &lit2, 1);
-    int gt2 = bs_call(&b, len[1], ">", &lit2b, 1);
-    int eq1 = bs_call(&b, len[2], "==", &lit1, 1);
+    int eq2 = bs_bcall(&b, len[0], "==", &lit2, 1);
+    int gt2 = bs_bcall(&b, len[1], ">", &lit2b, 1);
+    int eq1 = bs_bcall(&b, len[2], "==", &lit1, 1);
     /* "wrong number of arguments (given N, expected 0..2)", 1..2 for a call
        without a block, as Enumerable#inject words it */
     int head = bs_new(&b, "StringNode"), tail = bs_new(&b, "StringNode");
     if (head >= 0) nt_node_set_str(nt, head, "content", "wrong number of arguments (given ");
     if (tail >= 0) nt_node_set_str(nt, tail, "content", blk >= 0 ? ", expected 0..2)" : ", expected 1..2)");
-    int ns = bs_call(&b, len[3], "to_s", NULL, 0);
-    int m1 = bs_call(&b, head, "+", &ns, 1);
-    int msg = bs_call(&b, m1, "+", &tail, 1);
+    int ns = bs_bcall(&b, len[3], "to_s", NULL, 0);
+    int m1 = bs_bcall(&b, head, "+", &ns, 1);
+    int msg = bs_bcall(&b, m1, "+", &tail, 1);
     int cls = bs_new(&b, "ConstantReadNode");
     if (cls >= 0) nt_node_set_str(nt, cls, "name", "ArgumentError");
     int ra[2] = { cls, msg };

@@ -2289,6 +2289,11 @@ static int yield_recv_builtin_every_site(Compiler *c, int call) {
 }
 
 TyKind infer_call(Compiler *c, int id) {
+  /* a builtin call a desugar built (desugar_builtin, beside builtin_only)
+     answers what the builtin alone answers, as it is emitted: a reopened
+     class's own method of the name is no candidate */
+  if (!an_builtin_only && nt_int(c->nt, id, "desugar_builtin", 0) && nt_ref(c->nt, id, "receiver") >= 0)
+    return an_builtin_answer(c, id);
   /* `klass.instance_method(name).parameters` answered by the reflection table */
   if (refl_im_params_call(c, id)) return TY_POLY_ARRAY;
   /* the class arm of a builtin's receiver test (`__r.is_a?(K) ? __r.m { }
