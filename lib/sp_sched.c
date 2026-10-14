@@ -3313,7 +3313,7 @@ static int sp_sched_wait_io_impl(int fd, short events, struct pollfd *set, int n
      itself. Without this the registration went in after the forget (or the
      kernel dropped it at the close that followed) and a read with no
      deadline waited forever: the #4546 test hung on one macOS run in three. */
-  if (cancel && *cancel) { SCHED_UNLOCK(); return 1; }
+  if (cancel && SP_ATOMIC_LOAD(cancel, __ATOMIC_RELAXED)) { SCHED_UNLOCK(); return 1; }
   sp_ev_waiter *es = NULL;
   if (set) {
     es = (sp_ev_waiter *)malloc(sizeof(sp_ev_waiter) * (size_t)n);

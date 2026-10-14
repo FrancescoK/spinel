@@ -52,10 +52,11 @@ typedef struct {
                                   read: 0 not yet asked, 1 never (a regular
                                   file is always ready), 2 park before a read
                                   that could block (#4307) */
-  unsigned char closed;        /* #close ran. The FILE the handle then carries
-                                  is the shared /dev/null sentinel, never the
-                                  freed one: a thread mid-read when another
-                                  closes the handle reads EOF from it instead
+  unsigned char closed;        /* #close ran. Once no thread is inside a read
+                                  or write of it (uses below), the FILE the
+                                  handle carries is the shared /dev/null
+                                  sentinel, never the freed one: a thread that
+                                  loads it after the close reads EOF instead
                                   of dereferencing NULL or the next accept's
                                   descriptor; every entry point tests this
                                   flag (SP_IO_OPEN) and the parks re-test it
@@ -71,6 +72,13 @@ typedef struct {
                                   of fd so close/fin never touch the caller's
                                   descriptor; this carries the ORIGINAL fd (+1,
                                   0 = unset) so #fileno answers it (#4208) */
+  unsigned int uses;           /* the threads inside a descriptor read or write
+                                  of this handle right now, with the top bit set
+                                  once #close has begun. The FILE and its
+                                  descriptor are released by whichever of the
+                                  closer and those threads leaves last, so none
+                                  of them reads a freed FILE or a descriptor
+                                  number already reused (sp_io_use, sp_io.c) */
 } sp_File;
 
 /* Object#frozen? / #freeze on a handle. A nil slot is nil's answer: frozen. */
@@ -123,7 +131,9 @@ sp_int sp_File_close(sp_File *f);
    answers here where CRuby raises: a File::Stat rides this same struct with
    no descriptor, so that check cannot be this one. */
 SP_NORETURN SP_COLD void sp_io_raise_closed(void);
-#define SP_IO_OPEN(f) do { if (!(f) || !(f)->fp || (f)->closed) sp_io_raise_closed(); } while (0)
+/* The loads are atomic because another thread's close writes both fields. */
+#define SP_IO_OPEN(f) do { if (!(f) || !SP_ATOMIC_LOAD(&(f)->fp, __ATOMIC_RELAXED) || \
+                               SP_ATOMIC_LOAD(&(f)->closed, __ATOMIC_RELAXED)) sp_io_raise_closed(); } while (0)
 /* The FILE a closed handle carries (see sp_File.closed): /dev/null, opened once. */
 FILE *sp_io_closed_sentinel(void);
 sp_bool sp_File_closed_p(sp_File *f);
