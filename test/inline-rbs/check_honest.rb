@@ -24,6 +24,11 @@ class Row
   def take(x)
     x
   end
+
+  #: (untyped) -> String
+  def pick(x)
+    x
+  end
 end
 
 # values arrive boxed, out of a poly container, so each store is a real
@@ -36,3 +41,11 @@ p r.n
 r.s = vals[1]
 p r.s
 p r.take(vals[0])
+
+# a String changed in place is boxed as its handle, and is a String all the
+# same
+t = +"s"
+t << "x"
+strs = [t, 1]
+strs[0] << "y"
+p r.pick(strs[0])
