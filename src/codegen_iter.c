@@ -559,13 +559,10 @@ int emit_handle_var_ref(Compiler *c, int a, Buf *b) {
      the new String by now (ran_first_handle, as emit_boxed asks it) */
   int th = ran_first_handle(a);
   if (th >= 0) { buf_printf(b, "_t%d", th); return 1; }
-  char ref[1024];
   int svm = view_push_repr(c, a, VR_STRBUF_BOX, 1);
-  int ok = strbuf_slot_ref(c, a, ref, sizeof ref);
+  int ok = strbuf_slot_text(c, a, b);
   view_pop(c, svm);
-  if (!ok) return 0;
-  buf_puts(b, ref);
-  return 1;
+  return ok;
 }
 /* Which parameters of inlined method `mi` bind as ALIASES of the caller's
    variables (see inline_param_mutated above): a String the body mutates,

@@ -262,14 +262,15 @@ static int emit_io_read_outbuf(Compiler *c, int id, const char *name, const char
                                int nint, int ob, int rest, Buf *b) {
   TyKind bt = comp_ntype(c, ob);
   int boxed = repr_of(c, ob).kind == RK_BOXED;
-  char ref[1024];
+  Buf ref; memset(&ref, 0, sizeof ref);
   /* The default build already has handle slots, including unshared
      accumulators. Fill that slot, and answer its handle under a demand.
      Its rooted box keeps the old bytes alive across the read. */
-  int handle = !repr_share_rule(c) && strbuf_slot_ref(c, ob, ref, sizeof ref);
+  int handle = !repr_share_rule(c) && strbuf_slot_text(c, ob, &ref);
   if (!boxed && !handle && (bt == TY_STRING || bt == TY_STRBUF)) return 0;
   emit_io_read_buffer(c, name, fn, r, argv, nint, ob, rest, boxed || handle,
-                      handle && repr_of(c, id).demand, handle ? ref : NULL, b);
+                      handle && repr_of(c, id).demand, handle ? ref.p : NULL, b);
+  free(ref.p);
   return 1;
 }
 
@@ -344,8 +345,7 @@ static void emit_io_read_nonblock_value(Compiler *c, int id, Buf *b) {
   if (exc < 0 || !boxed[3]) buf_puts(b, "NULL");
   else buf_printf(b, "&_t%d", held[3]);
   buf_printf(b, ", &_e%d); ", eof);
-  char hr[1024];
-  if (nt_kind(nt, argv[1]) == NK_LocalVariableReadNode && !strbuf_slot_ref(c, argv[1], hr, sizeof hr)) {
+  if (nt_kind(nt, argv[1]) == NK_LocalVariableReadNode && !strbuf_slot_has(c, argv[1])) {
     buf_printf(b, "if (!sp_poly_nil_p(_t%d) && (_t%d || _e%d)) { ", held[2], tr, eof);
     if (rebound) buf_printf(b, "if (_t%d) { ", update);
     emit_local_ref(c, argv[1], nt_str(nt, argv[1], "name"), b);
@@ -376,7 +376,7 @@ static void emit_io_read_nonblock_buffer(Compiler *c, int id, int handle, Buf *b
   g_pre = b;
   tr = hold_operand(c, recv, TY_POLY, 1, tr, 1, " ", b);
   for (int i = 0; i < argc; i++) {
-    char hr[1024];
+    Buf hr; memset(&hr, 0, sizeof hr);
     if (i == 1 && shared && strbuf_boxed_local(c, argv[i])) {
       held[i] = ++g_tmp;
       Buf lv = {0};
@@ -385,10 +385,11 @@ static void emit_io_read_nonblock_buffer(Compiler *c, int id, int handle, Buf *b
                  held[i], lv.p, lv.p, held[i]);
       free(lv.p);
     }
-    else if (i == 1 && strbuf_slot_ref(c, argv[i], hr, sizeof hr)) {
+    else if (i == 1 && strbuf_slot_text(c, argv[i], &hr)) {
       held[i] = ++g_tmp;
       buf_printf(b, "sp_RbVal _t%d = sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF); SP_GC_ROOT_RBVAL(_t%d); ",
-                 held[i], hr, held[i]);
+                 held[i], hr.p, held[i]);
+      free(hr.p);
     }
     else {
       int arg = i == 2 ? kwh_lookup(nt, argv[i], "exception") : argv[i];
@@ -420,8 +421,7 @@ static void emit_io_read_nonblock_buffer(Compiler *c, int id, int handle, Buf *b
   buf_printf(b, "if (_t%d && (_t%d || _e%d)) { _t%d = sp_poly_str_become(_t%d, _t%d ? _t%d : sp_str_empty); ",
              ts, tb, eof, held[1], held[1], tb, tb);
   if (nt_kind(nt, argv[1]) == NK_LocalVariableReadNode) {
-    char hr[1024];
-    if (!strbuf_slot_ref(c, argv[1], hr, sizeof hr) && !(shared && strbuf_boxed_local(c, argv[1]))) {
+    if (!strbuf_slot_has(c, argv[1]) && !(shared && strbuf_boxed_local(c, argv[1]))) {
       int rebound = argc == 3 && read_rebound_by(c, argv[1], argv[2]);
       if (rebound) {
         buf_puts(b, "if (sp_poly_unbox_s("); emit_boxed(c, argv[1], b);
@@ -1257,12 +1257,13 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           emit_int_expr(c, argv[0], b);
           buf_puts(b, ")");
           if (argc >= 2) {
-            { char hr[1024];
+            { Buf hr; memset(&hr, 0, sizeof hr);
             /* a buffer that is also appended to is a mutable String handle:
                replace its contents, where assigning the bytes to the handle
                did not compile (#7314) */
-            if (sbp && strbuf_slot_ref(c, argv[1], hr, sizeof hr)) buf_printf(b, "; sp_String_set_read_bytes(%s, _t%d ? _t%d : sp_str_empty)", hr, tsp, tsp);
-            else if (sbp) { buf_puts(b, "; "); emit_local_ref(c, argv[1], sbp, b); buf_printf(b, " = _t%d ? _t%d : sp_str_empty", tsp, tsp); } }
+            if (sbp && strbuf_slot_text(c, argv[1], &hr)) buf_printf(b, "; sp_String_set_read_bytes(%s, _t%d ? _t%d : sp_str_empty)", hr.p, tsp, tsp);
+            else if (sbp) { buf_puts(b, "; "); emit_local_ref(c, argv[1], sbp, b); buf_printf(b, " = _t%d ? _t%d : sp_str_empty", tsp, tsp); }
+            free(hr.p); }
             buf_printf(b, "; if (!_t%d) sp_raise_cls(\"EOFError\", \"end of file reached\"); _t%d", tsp, tsp);
           }
           buf_puts(b, "; })");
@@ -1726,17 +1727,18 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         /* (len, outbuf): the buffer takes the bytes read, as readpartial's
            does; the argument was read past and the buffer left as it was */
         int ob = (argc >= 2 && argv[1] != kwh8 && nt_kind(nt, argv[1]) == NK_LocalVariableReadNode) ? argv[1] : -1;
-        char obset[1200]; obset[0] = 0;
+        Buf obset; memset(&obset, 0, sizeof obset);
         int tob = ++g_tmp;
         if (ob >= 0) {
-          char hr[1024];
-          if (strbuf_slot_ref(c, ob, hr, sizeof hr)) snprintf(obset, sizeof obset, "sp_String_set_read_bytes(%s, _t%d); ", hr, tob);
+          Buf hr; memset(&hr, 0, sizeof hr);
+          if (strbuf_slot_text(c, ob, &hr)) buf_printf(&obset, "sp_String_set_read_bytes(%s, _t%d); ", hr.p, tob);
           else {
             Buf lb; memset(&lb, 0, sizeof lb);
             emit_local_ref(c, ob, nt_str(nt, ob, "name"), &lb);
-            snprintf(obset, sizeof obset, "%s = _t%d; ", lb.p ? lb.p : "", tob);
+            buf_printf(&obset, "%s = _t%d; ", lb.p ? lb.p : "", tob);
             free(lb.p);
           }
+          free(hr.p);
         }
         if (no_exc8) {
           int te = ++g_tmp;
@@ -1745,7 +1747,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
           buf_printf(b, "sp_bool _e%d; const char *_t%d = sp_sock_read_nb(%s, ", te, tob, r);
           emit_int_expr(c, argv[0], b);
           buf_printf(b, ", 0, 0, &_e%d); ", te);
-          if (ob >= 0) buf_printf(b, "if (_t%d) { %s} ", tob, obset);
+          if (ob >= 0) buf_printf(b, "if (_t%d) { %s} ", tob, obset.p ? obset.p : "");
           buf_printf(b, "_t%d ? sp_box_str(_t%d)"
                         " : (_e%d ? sp_box_nil() : sp_box_sym(sp_sym_intern(\"wait_readable\"))); })",
                      tob, tob, te);
@@ -1753,12 +1755,13 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         else if (ob >= 0) {
           buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, ob, b);
           buf_printf(b, "); const char *_t%d = sp_sock_read_nb(%s, ", tob, r); emit_int_expr(c, argv[0], b);
-          buf_printf(b, ", 1, 0, NULL); %s_t%d; })", obset, tob);
+          buf_printf(b, ", 1, 0, NULL); %s_t%d; })", obset.p ? obset.p : "", tob);
         }
         else {
           buf_printf(b, "sp_sock_read_nb(%s, ", r); emit_int_expr(c, argv[0], b);
           buf_puts(b, ", 1, 0, NULL)");
         }
+        free(obset.p);
       }
       else {
         /* String operand -> the _bin entry (header length, so an embedded NUL
@@ -1799,12 +1802,13 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       }
       buf_printf(b, "%s(%s, ", argc >= 2 ? "sp_File_readpartial_or_nil" : "sp_File_readpartial", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
       if (argc >= 2) {
-        { char hr[1024];
+        { Buf hr; memset(&hr, 0, sizeof hr);
           /* a buffer that is also appended to is a mutable String handle:
              replace its contents, where assigning the bytes to the handle
              did not compile (#7314) */
-          if (sbn && strbuf_slot_ref(c, argv[1], hr, sizeof hr)) buf_printf(b, "; sp_String_set_read_bytes(%s, _t%d ? _t%d : sp_str_empty)", hr, tsr, tsr);
-          else if (sbn) { buf_puts(b, "; "); emit_local_ref(c, argv[1], sbn, b); buf_printf(b, " = _t%d ? _t%d : sp_str_empty", tsr, tsr); } }
+          if (sbn && strbuf_slot_text(c, argv[1], &hr)) buf_printf(b, "; sp_String_set_read_bytes(%s, _t%d ? _t%d : sp_str_empty)", hr.p, tsr, tsr);
+          else if (sbn) { buf_puts(b, "; "); emit_local_ref(c, argv[1], sbn, b); buf_printf(b, " = _t%d ? _t%d : sp_str_empty", tsr, tsr); }
+          free(hr.p); }
         buf_printf(b, "; if (!_t%d) sp_raise_cls(\"EOFError\", \"end of file reached\"); _t%d; })", tsr, tsr);
       }
       free(rb.p); return 1;

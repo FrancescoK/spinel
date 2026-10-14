@@ -1636,7 +1636,7 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
        is the handle it read then: the slot read here is late, after a later
        argument may have rebound it (`m(s, *xs, (s = +"q"; 1))` packed "q"
        where CRuby passes the String s held first). */
-    char srefS[1024];
+    Buf srefS; memset(&srefS, 0, sizeof srefS);
     int th = ran_first_handle(node);
     if (th >= 0) {
       buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", th);
@@ -1645,8 +1645,9 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
     }
     /* a write whose slot holds the rule's handle: that handle */
     if (emit_boxed_write_handle(c, node, b)) return;
-    strbuf_slot_ref(c, node, srefS, sizeof srefS);
-    buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", srefS);
+    strbuf_slot_text(c, node, &srefS);
+    buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", srefS.p ? srefS.p : "");
+    free(srefS.p);
     RC(RF_STRBUF_HANDLE, RW_NONE);
     return;
   }
@@ -1682,12 +1683,14 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
   /* an ivar's, or a global's (--share-strings), shared handle slot */
   if (rp->strbuf_src == RS_HANDLE &&
       (k == NK_InstanceVariableReadNode || repr_static_read_kind(k))) {
-    char srefX[192];
-    if (strbuf_slot_ref(c, node, srefX, sizeof srefX)) {
-      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", srefX);
+    Buf srefX; memset(&srefX, 0, sizeof srefX);
+    if (strbuf_slot_text(c, node, &srefX)) {
+      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", srefX.p);
+      free(srefX.p);
       RC(RF_STRBUF_HANDLE, RW_NONE);
       return;
     }
+    free(srefX.p);
   }
   /* An ivar WRITE in value position lowers to `({ iv_x = ...; iv_x; })`,
      so its value IS the slot -- the same handle the read above boxes, not
@@ -1741,17 +1744,19 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
   /* --share-strings: a variable that holds a handle the rule shares (a
      `next s` an Array.new block answers), or a route that hands on one
      (emit_strbuf_route): that handle's box */
-  { char vref[1024];
+  { Buf vref; memset(&vref, 0, sizeof vref);
     /* a `next s` tail is its value's */
     int vn = node, na = 0;
     if (nt_kind(c->nt, node) == NK_NextNode && nt_ref(c->nt, node, "arguments") >= 0 &&
         nt_arr(c->nt, nt_ref(c->nt, node, "arguments"), "arguments", &na) && na == 1)
       vn = nt_arr(c->nt, nt_ref(c->nt, node, "arguments"), "arguments", &na)[0];
-    if (strbuf_var_handle(c, vn, vref, sizeof vref)) {
-      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", vref);
+    if (strbuf_var_handle(c, vn, &vref)) {
+      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", vref.p);
+      free(vref.p);
       RC(RF_STRBUF_HANDLE, RW_NONE);
       return;
-    } }
+    }
+    free(vref.p); }
   { Buf hb; memset(&hb, 0, sizeof hb);
     if (emit_strbuf_route(c, node, &hb)) {
       buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
@@ -1806,9 +1811,8 @@ static void emit_boxed_cond_body(Compiler *c, int st, Buf *b, void *ctx) {
   }
   buf_printf(b, "_t%d = ", a->dst);
   /* (a variable's handle arm is boxed as that handle: nothing to lift) */
-  char ref[1024];
   int lift = a->lift && st >= 0 && nt_kind(c->nt, st) != NK_StringNode &&
-             !strbuf_var_handle(c, st, ref, sizeof ref);
+             !strbuf_var_handle(c, st, NULL);
   if (lift) buf_puts(b, "sp_poly_strbuf_lift(");
   if (st < 0) buf_puts(b, "sp_box_nil()");
   /* An arm can hand on a route's handle as well as a variable's. */
@@ -2196,12 +2200,13 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
        (sp_poly_to_s_box) */
     if (t == TY_STRING && strbuf_poly_to_s(c, node)) {
       int r = nt_ref(c->nt, node, "receiver");
-      char hr[1024];
+      Buf hr; memset(&hr, 0, sizeof hr);
       /* `s&.to_s` answers nil for a nil s, where `s.to_s` answers "". */
       int sn = call_is_safe_nav(c->nt, node) && g_sn_skip != node;
-      if (strbuf_var_handle(c, r, hr, sizeof hr)) {
-        if (sn) buf_printf(b, "(%s ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil())", hr, hr);
-        else buf_printf(b, "sp_strbuf_to_s_box(%s)", hr);
+      if (strbuf_var_handle(c, r, &hr)) {
+        if (sn) buf_printf(b, "(%s ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil())", hr.p, hr.p);
+        else buf_printf(b, "sp_strbuf_to_s_box(%s)", hr.p);
+        free(hr.p);
       }
       else if (sn) {
         int t2 = ++g_tmp;
@@ -7748,7 +7753,7 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
       int last = bb[bn - 1];
       Repr lr = repr_of(c, last);
       TyKind lty = lr.as_ty;
-      char sref_fb[1024];
+      Buf sref_fb; memset(&sref_fb, 0, sizeof sref_fb);
       if (as_gen && stmt_is_yielder_push(c, last, bp0)) {
         /* A generator ending in a bare `y << v` yields v, then terminates with
            the yielder as its result, which `<<` answers. */
@@ -7765,8 +7770,9 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
       }
       /* --share-strings: a String the rule shares is the thread's value
          itself (`Thread.new { s }.value << x` changes s): its handle, boxed */
-      else if ((lty == TY_STRING || lty == TY_STRBUF) && strbuf_var_handle(c, last, sref_fb, sizeof sref_fb)) {
-        buf_printf(pb, "    _fb->yielded_value = sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF);\n", sref_fb);
+      else if ((lty == TY_STRING || lty == TY_STRBUF) && strbuf_var_handle(c, last, &sref_fb)) {
+        buf_printf(pb, "    _fb->yielded_value = sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF);\n", sref_fb.p);
+        free(sref_fb.p);
       }
       /* a route over one, or a conditional with such an arm (`c ? s : nil`) */
       else if ((lty == TY_STRING || lty == TY_STRBUF) && strbuf_value_carries(c, last)) {
@@ -13561,9 +13567,10 @@ void emit_super(Compiler *c, int id, Buf *b) {
            minor collection frees the young message self still names. */
         buf_printf(b, ", sp_gc_wb((void *)%s)", g_self);
         /* a shared String message is held as its handle too (exc_msg_handle) */
-        char mh[256];
-        if (comp_ntype(c, argv2[0]) == TY_STRING && exc_msg_handle(c, argv2[0], mh, sizeof mh))
-          buf_printf(b, ", (void)sp_exc_attach_msg((void *)%s, %s)", g_self, mh);
+        Buf mh; memset(&mh, 0, sizeof mh);
+        if (comp_ntype(c, argv2[0]) == TY_STRING && exc_msg_handle(c, argv2[0], &mh))
+          buf_printf(b, ", (void)sp_exc_attach_msg((void *)%s, %s)", g_self, mh.p);
+        free(mh.p);
         buf_printf(b, ", %s->msg)", g_self);
       }
       else if (ty && sp_streq(ty, "ForwardingSuperNode") && s->nparams > 0) {

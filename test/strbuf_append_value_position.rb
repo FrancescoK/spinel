@@ -1,5 +1,5 @@
 # `obj.buf << x` in VALUE position, where the reader's ivar has become the
-# shared handle. The statement form asks strbuf_slot_ref directly and always
+# shared handle. The statement form asks strbuf_slot_text directly and always
 # worked; the value form matched no arm (the String rows are gated on
 # TY_STRING and a handle reader answers TY_STRBUF) and was refused outright.
 class St

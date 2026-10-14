@@ -634,7 +634,7 @@ int subtree_may_allocate(const NodeTable *nt, int id) {
    ivar, or a global, a constant or a class variable the --share-strings
    rule made the handle) renders as a fresh copy of the live buffer, not as
    the slot itself. A read marked to hand out the handle (strbuf_box)
-   copies nothing. The checks are strbuf_slot_ref's, without the emission
+   copies nothing. The checks are strbuf_slot_text's, without the emission
    it does, on the read inside any parentheses (`(a) == b`). */
 int operand_may_allocate(Compiler *c, int id) {
   if (subtree_may_allocate(c->nt, id)) return 1;
@@ -2024,7 +2024,7 @@ const char *strbuf_local_name(Compiler *c, int recv) {
 /* The owning class slot of an ivar READ node, mirroring the read emitter's
    storage resolution: instance method -> its class; top-level method ->
    the Toplevel pseudo-class; a class method -> its class, whose civ_ slot
-   holds it (strbuf_slot_ref); an instance_eval context returns -1 (its
+   holds it (strbuf_slot_text); an instance_eval context returns -1 (its
    storage is not a per-instance field). */
 int strbuf_ivar_owner(Compiler *c, int node) {
   /* (--share-strings: an ivar in an instance_eval/exec splice is the
@@ -2869,7 +2869,11 @@ int cvar_global_slot(Compiler *c, int node, char *out, size_t cap) {
   const char *nm = nt_str(c->nt, node, "name");
   HolderRef h;
   if (!nm || nm[0] != '@' || nm[1] != '@' || !holder_of_node(c, node, &h) || h.kind != HK_CVAR) return 0;
-  return holder_slot_text(c, &h, out, cap);
+  Buf t; memset(&t, 0, sizeof t);
+  int ok = holder_slot_buf(c, &h, &t);
+  if (ok) snprintf(out, cap, "%s", t.p ? t.p : "");
+  free(t.p);
+  return ok;
 }
 /* The innermost block or lambda `node` is written in, within its method;
    -1 at the method's own level. */
@@ -3112,12 +3116,13 @@ int emit_poly_rhs_coerced(Compiler *c, TyKind slot, int v, Buf *b) {
 }
 
 static int strbuf_box_ref_as(Compiler *c, int recv, const char *fmt, Buf *b) {
-  char sref[1024];
+  Buf sref; memset(&sref, 0, sizeof sref);
   int svm = view_push_repr(c, recv, VR_STRBUF_BOX, 1);
-  int is_sb = strbuf_slot_ref(c, recv, sref, sizeof sref);
+  int is_sb = strbuf_slot_text(c, recv, &sref);
   view_pop(c, svm);
   if (!is_sb) return 0;
-  buf_printf(b, fmt, sref);
+  buf_printf(b, fmt, sref.p);
+  free(sref.p);
   return 1;
 }
 
@@ -3201,15 +3206,17 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
     free(hb.p);
   }
   /* A receiver-returning route has the same identity as its slot. */
-  char ref[1024];
+  Buf ref; memset(&ref, 0, sizeof ref);
   int up = 0;
-  int route = strbuf_self_route_slot(c, recv, &up, ref, sizeof ref);
+  int route = strbuf_self_route_slot(c, recv, &up, &ref);
   if (route && !up) {
     if (repr_of(c, route - 1).may_nil)
-      strbuf_nilable_id(c, ref, repr_of(c, recv).may_nil ? "SP_NIL_OBJECT_ID" : "(sp_int)(uintptr_t)sp_str_frozen_empty", b);
-    else buf_printf(b, (repr_share_rule(c) ? "((sp_int)(uintptr_t)sp_String_identity(%s))" : "((sp_int)(uintptr_t)(%s))"), ref);
+      strbuf_nilable_id(c, ref.p, repr_of(c, recv).may_nil ? "SP_NIL_OBJECT_ID" : "(sp_int)(uintptr_t)sp_str_frozen_empty", b);
+    else buf_printf(b, (repr_share_rule(c) ? "((sp_int)(uintptr_t)sp_String_identity(%s))" : "((sp_int)(uintptr_t)(%s))"), ref.p);
+    free(ref.p);
     return 1;
   }
+  free(ref.p);
   if (repr_of(c, recv).may_nil) {
     Buf rb; memset(&rb, 0, sizeof rb);
     if (!strbuf_box_ref_as(c, recv, "%s", &rb)) return 0;
@@ -3318,23 +3325,23 @@ int sb_shim_args_first(Compiler *c, int id, Buf *pre, int indent) {
   return mark;
 }
 /* Open the shim over a reader call `recv` that hands out the shared handle
-   to String mutator id: the handle's text goes to sref, and until
+   to String mutator id: the handle's text is appended to sref, and until
    sb_reader_shim_close the call node reads as the shadow `lv__sbT`, with the
    handle marks lifted. Answers T, or 0 when `recv` is no such call. A pickup
    that can answer nil raises NoMethodError for id there, as the mutator's
    handle arms do (strbuf_pickup_nil_check). */
-int sb_reader_shim_open(Compiler *c, int id, int recv, char *sref, size_t cap, SbReaderSave *sv) {
+int sb_reader_shim_open(Compiler *c, int id, int recv, Buf *sref, SbReaderSave *sv) {
   /* a global holding the handle (--share-strings) is such a slot too:
-     strbuf_slot_ref answers for it only then */
+     strbuf_slot_text answers for it only then */
   int gv = repr_share_rule(c) && recv >= 0 && repr_static_read_kind(nt_kind(c->nt, recv)) && !sb_shadowed_reader(recv);
   if (recv < 0 || (nt_kind(c->nt, recv) != NK_CallNode && !gv)) return 0;
   Repr rp = repr_of(c, recv);
   /* (--share-strings: or a value route whose handle ran first, `(+s)`
-     under emit_bang_self_handle, whose temp strbuf_slot_ref answers) */
+     under emit_bang_self_handle, whose temp strbuf_slot_text answers) */
   int ran = repr_share_rule(c) && nt_kind(c->nt, recv) == NK_CallNode && ran_first_read_handle(recv) >= 0;
   if (!gv && !rp.handle && !rp.demand && !ran) return 0;
   if (g_n_argov >= MAX_ARG_OVERRIDE) return 0;
-  if (!strbuf_pickup_nil_check(c, nt_str(c->nt, id, "name"), recv, sref, cap)) return 0;
+  if (!strbuf_pickup_nil_check(c, nt_str(c->nt, id, "name"), recv, sref)) return 0;
   int tH = ++g_tmp;
   /* the marks lifted and the handle type dropped for the shim's lifetime:
      views, so a refusal inside it puts them back (view_unwind) */
@@ -3521,7 +3528,6 @@ static int strbuf_bang_self_local_at(const Compiler *c, int v) {
   /* (--share-strings: a String method that answers its receiver always,
      `insert`, too) */
   if (!repr_share_rule(c)) return 0;
-  char ref[1024];
   NodeKind rk = nt_kind(nt, r);
   if (!self_ans) {
     int argc;
@@ -3543,7 +3549,7 @@ static int strbuf_bang_self_local_at(const Compiler *c, int v) {
      raises, or under safe navigation answers nil */
   if (rk == NK_CallNode && strbuf_held_chain(c, r)) return 1;
   if (rk == NK_InstanceVariableReadNode || repr_static_read_kind(rk))
-    return strbuf_var_handle((Compiler *)c, r, ref, sizeof ref);
+    return strbuf_var_handle((Compiler *)c, r, NULL);
   /* a reader call read as the handle on a variable or self (`o.s.strip!`),
      which emit_bang_self_handle reads once */
   int rr = rk == NK_CallNode ? nt_ref(nt, r, "receiver") : -1;
@@ -3553,7 +3559,7 @@ static int strbuf_bang_self_local_at(const Compiler *c, int v) {
          strbuf_call_reads_handle((Compiler *)c, r);
 }
 /* Is recv a demand-marked reader call typed as the handle, whose emitted
-   read is the sp_String * itself (strbuf_slot_ref's call arm)? */
+   read is the sp_String * itself (strbuf_slot_text's call arm)? */
 /* --share-strings: is call n an attr reader whose field is a box (an ivar
    that also holds nil or another class), so its read is an sp_RbVal that
    holds the handle? */
@@ -3592,10 +3598,9 @@ const NativeMethod *strbuf_native_answer(Compiler *c, int n) {
   if (!m || !(m->share & NSH_ANSWERS) || !m->share_csym || argc != 0 || !share_node_elems_share(c, r)) return NULL;
   return m;
 }
-/* strbuf_slot_ref's text for recv, appended to b: with cap 0 it is never
-   too long for its buffer, and with b NULL only the answer is given,
-   nothing emitted (cap 0 too). The one place the paths are decided:
-   strbuf_slot_ref, strbuf_slot_text and strbuf_slot_has are this. */
+/* The handle text of recv's slot, appended to b of any length, and with b
+   NULL only the answer is given, nothing emitted. The one place the paths
+   are decided: strbuf_slot_text and strbuf_slot_has are this. */
 /* --share-strings (#8328 step 5): the handle call v (an element read or a
    pop or shift of a String Array of handles, strh_call_op) answers, as the
    C expression of the sp_String * */
@@ -3654,20 +3659,20 @@ int strh_elem_slot(Compiler *c, int v) {
       strh_call_op(c, v, comp_recv_type(c, recv)) != STRH_ELEM) return 0;
   return argc == 0 || nt_kind(nt, argv[0]) == NK_IntegerNode || nt_kind(nt, argv[0]) == NK_LocalVariableReadNode;
 }
-static int strbuf_slot_into(Compiler *c, int recv, Buf *b, size_t cap) {
+static int strbuf_slot_into(Compiler *c, int recv, Buf *b) {
   HolderRef h;
   /* an element of a String Array of handles is a slot of the Array */
   if (strh_elem_slot(c, recv)) {
     if (!b) return 1;
     Buf t; memset(&t, 0, sizeof t);
     strh_elem_handle_text(c, recv, &t);
-    int fit = t.p && (!cap || strlen(t.p) < cap);
+    int fit = t.p != NULL;
     if (fit) buf_puts(b, t.p);
     free(t.p);
     return fit;
   }
   if (repr_self_shared(c, recv)) {
-    if (!g_self || (cap && strlen(g_self) >= cap)) return 0;
+    if (!g_self) return 0;
     if (b) buf_puts(b, g_self);
     return 1;
   }
@@ -3678,7 +3683,7 @@ static int strbuf_slot_into(Compiler *c, int recv, Buf *b, size_t cap) {
     if (!b) return 1;
     Buf rb; memset(&rb, 0, sizeof rb);
     emit_expr(c, nt_ref(c->nt, recv, "receiver"), &rb);
-    int fit = rb.p && (!cap || strlen(rb.p) + strlen(nm->share_csym) + 3 <= cap);
+    int fit = rb.p != NULL;
     if (fit) buf_printf(b, "%s(%s)", nm->share_csym, rb.p);
     free(rb.p);
     if (fit) return 1;
@@ -3694,8 +3699,7 @@ static int strbuf_slot_into(Compiler *c, int recv, Buf *b, size_t cap) {
   if (strbuf_local_name(c, recv) && holder_of_node(c, recv, &h)) return holder_slot_buf(c, &h, b);
   /* a demand-marked reader call typed as the handle (external reader
      mutation, e.g. `subs[0].topic << x`): the emitted read IS the sp_String*
-     expression. Declined when it does not fit the caller's buffer (the
-     branches then fall through to the value-form arms). */
+     expression. */
   /* strbuf_handle_demand is the same demand carried without the type: a mark
      made after the node-type cache is finalized cannot move the type without
      moving the call off the surface that dispatches it (see compiler.h). */
@@ -3720,7 +3724,7 @@ static int strbuf_slot_into(Compiler *c, int recv, Buf *b, size_t cap) {
     int boxed = (is_aref_name(cnm) &&
                  (er.kind == RK_BOXED || er.elem == TY_POLY || er.key != TY_UNKNOWN)) ||
                 strbuf_reader_field_boxed(c, recv);
-    int fit = rb2.p && (!cap || strlen(rb2.p) + 24 <= cap);
+    int fit = rb2.p != NULL;
     if (fit) buf_printf(b, boxed ? "sp_poly_as_strbuf(%s)" : "(%s)", rb2.p);
     else if (repr_share_rule(c) && pre && g_pre == pre && pre->len > pre_mark) {
       pre->len = pre_mark;
@@ -3741,16 +3745,8 @@ static int strbuf_slot_into(Compiler *c, int recv, Buf *b, size_t cap) {
   if (g_sb_iv_name && sp_streq(h.name, g_sb_iv_name) && h.cid == g_sb_iv_cid) return 0;
   return holder_slot_buf(c, &h, b);
 }
-int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
-  Buf t;
-  memset(&t, 0, sizeof t);
-  int ok = strbuf_slot_into(c, recv, &t, cap);
-  if (ok) snprintf(out, cap, "%s", t.p ? t.p : "");
-  free(t.p);
-  return ok;
-}
-int strbuf_slot_text(Compiler *c, int recv, Buf *b) { return strbuf_slot_into(c, recv, b, 0); }
-int strbuf_slot_has(Compiler *c, int recv) { return strbuf_slot_into(c, recv, NULL, 0); }
+int strbuf_slot_text(Compiler *c, int recv, Buf *b) { return strbuf_slot_into(c, recv, b); }
+int strbuf_slot_has(Compiler *c, int recv) { return strbuf_slot_into(c, recv, NULL); }
 /* rename_local for a name whose CELL is wanted: the shim's shadow rename is
    skipped, since the shadow is a plain C local and the cell the local lives
    in keeps the name an enclosing inline gave it (or the source name). */
@@ -5517,9 +5513,10 @@ int emit_catch_tag(Compiler *c, int id, Buf *b) {
   TyKind t = tr.as_ty;
   /* a variable holding the shared handle is that String, whichever face
      its read is typed as: a read of the handle hands out a copy */
-  char href[256];
-  if ((t == TY_STRBUF || t == TY_STRING) && strbuf_slot_ref(c, id, href, sizeof href)) {
-    buf_printf(b, "((const char *)(void *)%s)", href);
+  Buf href; memset(&href, 0, sizeof href);
+  if ((t == TY_STRBUF || t == TY_STRING) && strbuf_slot_text(c, id, &href)) {
+    buf_printf(b, "((const char *)(void *)%s)", href.p);
+    free(href.p);
     return 3;
   }
   if (t == TY_STRBUF)

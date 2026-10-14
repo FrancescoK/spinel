@@ -1509,8 +1509,8 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         int dhandle = repr_call_returns_handle(c, id);
         /* --share-strings: a variable's handle is read as a copy of its
            bytes, which reach unsetenv past sp_env_str's allocation */
-        char kref[1024];
-        int key_handle = repr_share_rule(c) && strbuf_slot_ref(c, eav[0], kref, sizeof kref);
+        Buf kref; memset(&kref, 0, sizeof kref);
+        int key_handle = repr_share_rule(c) && strbuf_slot_text(c, eav[0], &kref);
         /* a key the operand builds (`ENV.delete(key(1))`) is a new String
            nothing else holds, and it too reaches unsetenv past that
            allocation; a variable's or a literal's is held where it is */
@@ -1547,13 +1547,13 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
             if (repr_share_rule(c) && repr_of_slot(c, dlv).handle) {
               if (!key_handle && !key_new && nt_kind(nt, eav[0]) != NK_StringNode) buf_printf(b, "SP_GC_ROOT(_t%d); ", t1);
               buf_printf(b, "sp_String *lv_%s = ", rename_local(dp0));
-              if (key_handle) buf_puts(b, kref);
+              if (key_handle) buf_puts(b, kref.p);
               else buf_printf(b, "sp_String_new_shared(_t%d)", t1);
               buf_printf(b, "; SP_GC_ROOT(lv_%s); ", rename_local(dp0));
             }
             else if (dpt == TY_POLY && key_handle)
               buf_printf(b, "sp_RbVal lv_%s = sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF); SP_GC_ROOT_RBVAL(lv_%s); ",
-                         rename_local(dp0), kref, rename_local(dp0));
+                         rename_local(dp0), kref.p, rename_local(dp0));
             else if (dpt == TY_POLY)
               buf_printf(b, "sp_RbVal lv_%s = sp_box_str(_t%d); (void)lv_%s; ",
                          rename_local(dp0), t1, rename_local(dp0));
@@ -1574,6 +1574,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           }
           buf_puts(b, "} ");
         }
+        free(kref.p);
         buf_printf(b, "_t%d; })", result);
         return 1;
       }

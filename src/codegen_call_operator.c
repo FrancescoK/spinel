@@ -1477,20 +1477,21 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   /* String#clear consumed as a value: empty the assignable receiver in place
      and yield the now-empty string (#2332) */
   /* TY_STRBUF too: a reader handing out the shared handle is still a String
-     receiver, and the strbuf_slot_ref arm just below is the one written for
+     receiver, and the strbuf_slot_text arm just below is the one written for
      it. Gated on TY_STRING alone, the value form of `obj.buf.clear` matched
      nothing, cleared nothing and answered nil. */
   if (recv >= 0 && (rt == TY_STRING || rt == TY_STRBUF) && sp_streq(name, "clear") && argc == 0) {
     /* A shared-mutable receiver owns a buffer: empty it in place and answer
        the same string, as CRuby does. Its read is a copy out of the handle,
        not an lvalue, so the reassignment below did not even compile. */
-    { char srefC[1024];
-      if (strbuf_slot_ref(c, recv, srefC, sizeof srefC)) {
+    { Buf srefC; memset(&srefC, 0, sizeof srefC);
+      if (strbuf_slot_text(c, recv, &srefC)) {
         int tC2 = ++g_tmp;
         /* marked to hand out the handle (`r = obj.buf.clear`): the
            receiver itself, as for the appends */
         buf_printf(b, "({ sp_String *_t%d = %s; sp_String_set_bin(_t%d, (&(\"\\xff\")[1]));",
-                   tC2, srefC, tC2);
+                   tC2, srefC.p, tC2);
+        free(srefC.p);
         if (repr_of(c, id).handle) buf_printf(b, " _t%d; })", tC2);
         else buf_printf(b, " sp_String_cstr(_t%d); })", tC2);
         return 1;
