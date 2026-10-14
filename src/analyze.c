@@ -22098,7 +22098,7 @@ static int an_tail_param(Compiler *c, int n, TailCount *tc) {
    bound those expression queries as share_value_fresh does. */
 static int an_tail_param_arg(Compiler *c, RetHandles *R, int call, int mi, TailCount *tc) {
   Scope *m = &c->scopes[mi];
-  if (tc->arg_depth >= 8) return 0;
+  if (tc->arg_depth >= 8 || share_param_kept(c, mi, m->ret_param)) return 0;
   int a = arg_layout_param_source(c, m, call, m->ret_param, NULL);
   tc->arg_depth++;
   int ok = an_tail_handle(c, R, a, tc);

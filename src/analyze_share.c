@@ -151,6 +151,8 @@ typedef struct ShareFacts {
      share_value_fresh) */
   int *lam;
   int *hcount;         /* per root, once built: holders storing a String */
+  unsigned char *pkept;   /* per element, built when first asked (share_param_kept):
+                             a flow takes the value of a read of it */
   unsigned char *anchored;   /* per root, once built: a container of the class
                                 can be reached again (sh_finalize) */
   /* per root, built when first asked (share_node_runtime_elems): the
@@ -3888,7 +3890,7 @@ static void sh_free(ShareFacts *F) {
   if (!F) return;
   for (int i = 0; i < F->nh; i++) free((char *)F->h[i].name);
   free(F->parent); free(F->elem); free(F->nhold); free(F->nmem); free(F->nelem); free(F->hidx);
-  free(F->owner); free(F->hcount); free(F->anchored); free(F->rt_elems); free(F->mconst);
+  free(F->owner); free(F->hcount); free(F->pkept); free(F->anchored); free(F->rt_elems); free(F->mconst);
   free(F->mut_n); free(F->mut_v);
   free(F->aj_v); free(F->aj_s); free(F->aj_done);
   free(F->fl_site); free(F->fl_val); free(F->fl_kind); free(F->fl_dest); free(F->into); free(F->pk); free(F->lam);
@@ -4944,6 +4946,28 @@ int share_builtin_fresh(Compiler *c, int call) {
   }
   return p->n > 0;
 }
+/* Is parameter pj of method mi read into a slot that takes it: a store of
+   it (`$g = x`, `@k = x`, an element) or an argument handed to a method?
+   A method answering such a parameter answers the String that slot keeps,
+   however new the argument is. These are the flows (sh_flow) from reads of
+   the parameter, not those of the names the caller gives the answer, and
+   an in-place change of it keeps nothing. */
+int share_param_kept(Compiler *c, int mi, int pj) {
+  ShareFacts *F = c->share;
+  Scope *m = &c->scopes[mi];
+  LocalVar *lv = pj >= 0 && pj < m->nparams && m->pnames[pj] ? scope_local(m, m->pnames[pj]) : NULL;
+  int h = lv && F ? share_local_holder(c, mi, (int)(lv - m->locals)) : -1;
+  if (h < 0) return 1;
+  if (!F->pkept) {
+    F->pkept = calloc((size_t)(F->n > 0 ? F->n : 1), 1);
+    if (!F->pkept) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < F->nfl; i++) {
+      int e = F->fl_val[i] >= 0 && F->fl_val[i] < F->nnodes ? F->nval[F->fl_val[i]] : -1;
+      if (e >= 0 && F->fl_kind[i] != SHFL_MUTATE) F->pkept[e] = 1;
+    }
+  }
+  return F->pkept[F->helem[h]] || lv->cell_outlives;
+}
 static int sh_user_call_fresh(Compiler *c, int call, int depth) {
   const ShareFacts *F = c->share;
   if (!F || call < 0 || depth > 8 || nt_kind(c->nt, call) != NK_CallNode) return 0;
@@ -4963,7 +4987,8 @@ static int sh_user_call_fresh(Compiler *c, int call, int depth) {
     Scope *m = &c->scopes[tg[i]];
     int rp = scope_ret_param(c, tg[i]);
     if (rp >= 0) {
-      if (!share_value_fresh(c, arg_layout_param_source(c, m, call, rp, NULL), depth + 1)) return 0;
+      if (share_param_kept(c, tg[i], rp) ||
+          !share_value_fresh(c, arg_layout_param_source(c, m, call, rp, NULL), depth + 1)) return 0;
     }
     else if (F->ret_joined[tg[i]] && !scope_ret_fresh(c, tg[i])) return 0;
   }
