@@ -16187,6 +16187,19 @@ typedef struct {
 } IrtCtx;
 static int irt_settle_callers(Compiler *c, IrtCtx *x);
 
+/* Whether any explicit return of scope s answers a Hash with boxed keys. The
+   body or another return of a different Hash form, joined with it, is a plain
+   poly value (ty_unify), so the join no longer shows it to a seeded return's
+   test (ret_seed_holds). */
+static int irt_returns_boxed_hash(Compiler *c, int s, const IrtCtx *x) {
+  if (!x->ret_head || !x->ret_next) return 0;
+  for (int id = x->ret_head[s]; id >= 0; id = x->ret_next[id]) {
+    TyKind rt = (x->ret_narrow && x->ret_narrow[id]) ? x->ret_narrow[id] : return_node_type(c, id);
+    if (rt == TY_POLY_POLY_HASH) return 1;
+  }
+  return 0;
+}
+
 /* infer_return_types' derivation of scope s's value from its body and its
    explicit returns (x's tables); 1 when anything it sets changed */
 static int irt_scope(Compiler *c, int s, IrtCtx *x) {
@@ -16211,7 +16224,9 @@ static int irt_scope(Compiler *c, int s, IrtCtx *x) {
   TyKind hbr = TY_UNKNOWN;
   if (sc->ret_rbs_seeded && ty_is_hash(sc->ret)) {
     hbr = sc->body >= 0 ? infer_type(c, sc->body) : TY_UNKNOWN;
+    int boxed = has_ret && has_ret[s] && irt_returns_boxed_hash(c, s, x);
     if (has_ret && has_ret[s]) hbr = ty_unify(hbr, ret_acc[s]);
+    if (boxed) hbr = TY_POLY_POLY_HASH;   /* an explicit return with boxed keys */
   }
   if (ret_seed_holds(sc, hbr)) {
     if (sc->ret == TY_STR_STR_HASH || sc->ret == TY_STR_INT_HASH) {

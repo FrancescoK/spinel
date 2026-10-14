@@ -1,0 +1,6 @@
+class BkhrBox
+  def guard: (bool f) -> Hash[String, Integer]
+  def two: (Integer f) -> Hash[String, Integer]
+  def body: (bool f) -> Hash[String, Integer]
+  def mixed: (Integer f) -> Hash[String, Integer]
+end
