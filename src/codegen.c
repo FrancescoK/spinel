@@ -10918,6 +10918,23 @@ void emit_own_class_alloc(Compiler *c, int id, int base, Buf *b) {
   buf_puts(b, "; })");
 }
 
+/* A proc or fiber body is written out ahead of the classes'
+   constructors, and so ahead of the SP_POOL_DEFINE this names: declare
+   the pool to it (a Class value's `new` built inline in a block did not
+   compile). */
+void emit_pool_fwd(Compiler *c, int cid) {
+  if (!g_in_proc_body && !g_in_fiber_body) return;
+  if (g_pool_fwd_n < c->nclasses) {
+    g_pool_fwd = realloc(g_pool_fwd, (size_t)c->nclasses);
+    memset(g_pool_fwd + g_pool_fwd_n, 0, (size_t)(c->nclasses - g_pool_fwd_n));
+    g_pool_fwd_n = c->nclasses;
+  }
+  if (!g_pool_fwd[cid]) {
+    g_pool_fwd[cid] = 1;
+    buf_printf(&g_proc_protos, "SP_POOL_DECLARE(%s)\n", c->classes[cid].c_name);
+  }
+}
+
 /* Emit a statement-expression that allocates an instance of class `cid` with
    its ivars zero/nil-initialized and cls_id stamped, but WITHOUT running
    initialize -- the Class#allocate primitive. Handles both value-type objects
@@ -10962,21 +10979,7 @@ void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b) {
     buf_printf(b, " _t%d; })", t);
   }
   else {
-    /* A proc or fiber body is written out ahead of the classes'
-       constructors, and so ahead of the SP_POOL_DEFINE this names: declare
-       the pool to it (a Class value's `new` built inline in a block did not
-       compile). */
-    if (g_in_proc_body || g_in_fiber_body) {
-      if (g_pool_fwd_n < c->nclasses) {
-        g_pool_fwd = realloc(g_pool_fwd, (size_t)c->nclasses);
-        memset(g_pool_fwd + g_pool_fwd_n, 0, (size_t)(c->nclasses - g_pool_fwd_n));
-        g_pool_fwd_n = c->nclasses;
-      }
-      if (!g_pool_fwd[cid]) {
-        g_pool_fwd[cid] = 1;
-        buf_printf(&g_proc_protos, "SP_POOL_DECLARE(%s)\n", ci->c_name);
-      }
-    }
+    emit_pool_fwd(c, cid);
     /* No SP_GC_ROOT needed: allocate runs no initialize, so nothing after the
        SP_POOL_NEW allocates (memset and sp_box_nil are non-allocating), and the
        fresh pointer is consumed by the enclosing expression with no intervening

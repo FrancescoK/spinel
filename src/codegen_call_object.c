@@ -1468,6 +1468,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
            cannot be unfrozen. The copy and its hook run only for an
            object. */
         int nil_arm = drr.may_nil && !drr.nil_tested;
+        emit_pool_fwd(c, cid);
         buf_printf(b, "({ sp_%s *_t%d = ", cn, to);
         emit_expr(c, recv, b);
         buf_printf(b, "; SP_GC_ROOT(_t%d); ", to);

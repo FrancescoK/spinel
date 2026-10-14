@@ -15692,7 +15692,7 @@ static void emit_poly_ivar_set_computed(Compiler *c, int id, int recv, TyKind rt
   emit_ivar_switch_key(c, tv, b);
   buf_puts(b, ") {");
   for (int k = 0; k < c->nclasses; k++) {
-    if (!c->classes[k].instantiated) continue;
+    if (!c->classes[k].instantiated || is_builtin_reopen(c->classes[k].name)) continue;
     /* a Data instance is frozen: the write raises, as in CRuby */
     if (c->classes[k].is_data) {
       buf_printf(b, " case %d: sp_raise_frozen_obj(_t%d, (&(\"\\xff\" \"can't modify frozen %s\")[1])); break;",
