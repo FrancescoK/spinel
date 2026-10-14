@@ -13109,8 +13109,13 @@ else {
     /* a value-type receiver is passed by value (no pointer cast); so is
        the self of an Object / Array / Hash / Numeric reopening, which its
        methods take boxed (emit_method_signature) and which has no struct */
-    if (comp_ty_value_obj(c, ty_object(cid)) || reopen_takes_boxed_self(c, defcls))
-      buf_printf(b, "sp_%s_%s(%s", c->classes[defcls].c_name, mc(mname), selfptr);
+    if (comp_ty_value_obj(c, ty_object(cid)) || reopen_takes_boxed_self(c, defcls)) {
+      /* only a value type's initialize holds self through a pointer
+         (g_self_deref "->"): its methods take the object */
+      int vptr = comp_ty_value_obj(c, ty_object(cid)) && g_self && sp_streq(selfptr, g_self) &&
+                 g_self_deref && sp_streq(g_self_deref, "->");
+      buf_printf(b, vptr ? "sp_%s_%s((*%s)" : "sp_%s_%s(%s", c->classes[defcls].c_name, mc(mname), selfptr);
+    }
     else
       buf_printf(b, "sp_%s_%s((sp_%s *)%s", c->classes[defcls].c_name, mc(mname), c->classes[defcls].c_name, selfptr);
     for (int k = 0; k < np; k++) {
