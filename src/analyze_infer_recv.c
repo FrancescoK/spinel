@@ -314,6 +314,8 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       nt_type(nt, argv[argc - 1]) &&
       sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) { *out = TY_INT; return 1; }
   if (rt == TY_INT && sp_streq(name, "quo") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) { *out = TY_FLOAT; return 1; }
+  /* a Bignum divisor makes a Rational past the small one's words: a boxed one */
+  if (rt == TY_INT && sp_streq(name, "quo") && argc == 1 && comp_ntype(c, argv[0]) == TY_BIGINT) { *out = TY_POLY; return 1; }
   if (rt == TY_INT && sp_streq(name, "quo")) { *out = TY_RATIONAL; return 1; }
   /* Float#quo is float division (Numeric#quo via /; no Rational) */
   if (rt == TY_FLOAT && sp_streq(name, "quo")) { *out = TY_FLOAT; return 1; }

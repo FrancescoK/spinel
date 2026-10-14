@@ -5018,6 +5018,13 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         emit_float_expr(c, argv[0], b); buf_puts(b, "))");
         return 1;
       }
+      /* a Bignum divisor: the boxed quotient, a Rational of Bignums */
+      if (comp_ntype(c, argv[0]) == TY_BIGINT) {
+        buf_puts(b, "sp_poly_quo(sp_box_int(");
+        emit_expr(c, recv, b); buf_puts(b, "), ");
+        emit_boxed(c, argv[0], b); buf_puts(b, ")");
+        return 1;
+      }
       int tq9 = ++g_tmp;
       buf_printf(b, "({ sp_int _t%d = (sp_int)(", tq9);
       emit_expr(c, argv[0], b);

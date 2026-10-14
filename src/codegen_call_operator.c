@@ -492,7 +492,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     if (is_shift_op(name)) {
       buf_printf(b, "({ sp_Bigint *_t%d = ", tbl); emit_expr(c, recv, b);
       buf_printf(b, "; SP_GC_ROOT(_t%d); int64_t _t%d = ", tbl, tbr);
-      if (a0r.big) { buf_puts(b, "sp_bigint_to_int("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      if (a0r.big) { buf_puts(b, "sp_bigint_shift_count("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else emit_int_expr(c, argv[0], b);
       buf_printf(b, "; sp_bigint_%s(_t%d, _t%d); })", sp_streq(name, "<<") ? "shl" : "shr", tbl, tbr);
     }
@@ -584,6 +584,8 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       buf_puts(b, ", ");
       if (at0 == TY_POLY) { buf_puts(b, "sp_poly_bit_operand("); emit_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
       else if (at0 == TY_FLOAT) { buf_puts(b, "sp_float_to_i_checked("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      /* a Bignum count saturates (sp_bigint_shift_count): every bit leaves */
+      else if (repr_of(c, argv[0]).big) { buf_puts(b, "sp_bigint_shift_count("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else emit_int_expr(c, argv[0], b);
       buf_puts(b, ")");
       return 1;
@@ -616,7 +618,8 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        typed as a bigint; the result slot is int, so take its low-64 bit pattern
        (sp_bigint_to_int truncates) -- this is the xorshift/64-bit-mask idiom. */
     else if (a0r.big) {
-      buf_puts(b, "sp_bigint_to_int("); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      /* (a shift count saturates instead: sp_bigint_shift_count) */
+      buf_puts(b, is_shift ? "sp_bigint_shift_count(" : "sp_bigint_to_int("); emit_expr(c, argv[0], b); buf_puts(b, ")");
     }
     else emit_expr(c, argv[0], b);
     if (shl_neg_safe) buf_puts(b, ")");

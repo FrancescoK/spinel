@@ -3165,6 +3165,14 @@ static SP_NOINLINE sp_int sp_poly_arg_int_obj(sp_RbVal v);   /* the object arm, 
 static int sp_bigint_fits_int(sp_Bigint *b) {
   return sp_bigint_bit_length(b) <= (sp_int)(sizeof(sp_int) * 8 - 1);
 }
+/* A Bignum shift count as an sp_int: one past the word's range is held at
+   the largest count of its sign, which shifts every bit out (`5 >> 2**65`
+   is 0, `-5 >> 2**65` is -1, `5 << -2**65` is 0). Truncating it took its
+   low bits for the count. */
+static SP_UNUSED sp_int sp_bigint_shift_count(sp_Bigint *b) {
+  if (sp_bigint_fits_int(b)) return (sp_int)sp_bigint_to_int(b);
+  return sp_bigint_sign(b) < 0 ? (sp_int)(INTPTR_MIN + 1) : (sp_int)INTPTR_MAX;
+}
 static SP_NOINLINE sp_int sp_poly_to_i_cold(sp_RbVal v) {
   v = sp_poly_strbuf_deref(v);   /* a shared String handle reads as its String (#7263) */
   if (v.tag == SP_TAG_BIGINT) return sp_i64_to_int(sp_bigint_to_int((sp_Bigint *)v.v.p));   /* a 32-bit sp_int refuses what does not fit (RangeError); 64-bit keeps its wrap */
@@ -4967,6 +4975,16 @@ static sp_RbVal sp_box_f_to_int(sp_float v) {
   if (v < -(sp_float)INTPTR_MIN && v >= (sp_float)INTPTR_MIN) return sp_box_int((sp_int)v);
   return sp_box_bigint(sp_bigint_new_double(v));
 }
+/* A Float#divmod quotient: the Bignum past sp_int where promote mode boxes
+   wide Integers, and in raise / wrap mode the RangeError Float#floor and
+   #div raise there (test/float_to_int_out_of_range.rb). */
+static inline sp_RbVal sp_box_divmod_q(sp_float q) {
+#ifdef SP_INT_OVERFLOW_MODE_PROMOTE
+  return sp_box_f_to_int(q);
+#else
+  return sp_box_int(sp_float_fit_i(q));
+#endif
+}
 /* Numeric#div by a Float, and Integer#div(Float): the floor of the real
    quotient, an Integer. A zero divisor is ZeroDivisionError and a NaN or
    infinite quotient FloatDomainError; a quotient past sp_int is the Bignum
@@ -5853,6 +5871,8 @@ static inline sp_int sp_poly_bit_operand(sp_RbVal v, int shift) {
   if (SP_LIKELY(v.tag == SP_TAG_INT)) return v.v.i;
   if (sp_int_operand_bad(v, shift)) sp_int_operand_fail(v, shift);
   if (v.tag == SP_TAG_FLT) return sp_float_to_i_checked(v.v.f);
+  /* a Bignum shift count saturates (sp_bigint_shift_count) */
+  if (shift && v.tag == SP_TAG_BIGINT && v.v.p) return sp_bigint_shift_count((sp_Bigint *)v.v.p);
   return sp_poly_to_i(v);
 }
 /* rb_cmpint-checked comparison: an incomparable pair (nil `<=>`) raises the
@@ -6379,6 +6399,10 @@ static sp_RbVal sp_poly_quo(sp_RbVal a, sp_RbVal b) {
     sp_raise_poly_nomethod("quo", a);
   if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT)
     return sp_box_float(sp_poly_to_f_with_rational(a) / sp_poly_to_f_with_rational(b));
+  /* a Bignum on either side divides as Rationals of Bignums: the small
+     Rational read a Bignum as 0 (`7.quo(2**65)` raised ZeroDivisionError) */
+  if (a.tag == SP_TAG_BIGINT || b.tag == SP_TAG_BIGINT || sp_poly_is_brat(a) || sp_poly_is_brat(b))
+    return sp_brat_div_poly(a, b);
   return sp_box_rational(sp_rational_div(sp_poly_as_rational(a), sp_poly_as_rational(b)));
 }
 /* Comparable#clamp on boxed numerics, faithful to CRuby: the result is the
@@ -10047,6 +10071,8 @@ static inline sp_int sp_int_shl_ck(sp_int a, sp_int b) {
     return r;
   }
   if (b < 0) return (b <= -(w - 1)) ? (a < 0 ? -1 : 0) : (a >> (-b));
+  /* zero shifted any distance is zero (`0 << 2**64`, a saturated count) */
+  if (a == 0) return 0;
 #ifdef SP_INT_OVERFLOW_MODE_WRAP
   /* every bit leaves the word: the wrapped value is 0, as sp_int_shl answers
      for a literal count */
