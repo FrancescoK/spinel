@@ -23673,13 +23673,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
      inside its guard (emit_call_safe_nav_arms holds the receiver's handle
      and re-enters the call): run here, the arguments ran ahead of the nil
      test that skips them */
-  if (repr_share_rule(c) && sn_guard_pending(c, id) && nt_ref(nt, id, "receiver") >= 0 &&
-      strbuf_self_route(c, nt_ref(nt, id, "receiver")))
-    return 0;
-  /* a `&.` send tests its receiver for nil ahead of the name and the
-     arguments, which the guard (emit_call_safe_nav_arms) orders inside it
-     when it passes the call on */
-  { int dn = 0; nt_arr(nt, id, "dyn_send_arms", &dn); if (dn > 0 && sn_guard_pending(c, id)) return 0; }
+  if (sn_guard_pending(c, id)) return 0;
   int hroute = 0;
   if (harg < 0 && repr_share_rule(c)) {
     int sr = nt_ref(nt, id, "receiver");

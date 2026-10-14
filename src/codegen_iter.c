@@ -5756,9 +5756,16 @@ static int emit_iteration_stmt_sn(Compiler *c, int id, Buf *b, int indent) {
   else buf_printf(&gb, " if (_sn%d != NULL) {\n", t);
   int slot = oint_kind(rt) && !boxed ? view_bind(recv, "_sn%d.v", t) : view_bind(recv, "_sn%d", t);
   int sv = g_sn_skip; g_sn_skip = id;
-  int ok = emit_ivar_nil_guarded(c, id, &gb, indent + 1, emit_iteration_stmt_body);
+  Buf ip; memset(&ip, 0, sizeof ip);
+  Buf ib; memset(&ib, 0, sizeof ib);
+  g_pre = &ip;
+  int ok = emit_ivar_nil_guarded(c, id, &ib, indent + 1, emit_iteration_stmt_body);
+  g_pre = sv_pre;
   g_sn_skip = sv;
   view_unbind(slot);
+  buf_puts(&gb, ip.p ? ip.p : "");
+  buf_puts(&gb, ib.p ? ib.p : "");
+  free(ip.p); free(ib.p);
   emit_indent(&gb, indent);
   buf_puts(&gb, "} }\n");
   if (ok && rpre.p) buf_puts(g_pre ? g_pre : b, rpre.p);
