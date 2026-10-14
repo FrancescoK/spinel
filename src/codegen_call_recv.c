@@ -662,7 +662,7 @@ static int sb_route_expr_shim(Compiler *c, int id, int recvS, Buf *b,
 static int emit_array_block_index(Compiler *c, int id, int recv, TyKind rt, const char *k,
                                   const char *name, int block, Buf *b) {
   const NodeTable *nt = c->nt;
-  const char *bp = block_param_name(c, block, 0); if (bp) bp = rename_local(bp);
+  const char *bpo = block_param_name(c, block, 0), *bp = bpo ? rename_local(bpo) : NULL;
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn >= 1) {
@@ -683,7 +683,10 @@ static int emit_array_block_index(Compiler *c, int id, int recv, TyKind rt, cons
     else
       buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n",
                  ti, ti, k, trecv, ti);
-    if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti); }
+    if (bp) {
+      emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = ", bp);
+      bp_elem_read(c, block, bpo, k, trecv, ti, g_pre); buf_puts(g_pre, ";\n");
+    }
     /* the block's value by Ruby's truthiness: an Integer 0 is a hit, and
        a boxed value is no C scalar (read raw, 0 missed and a boxed value
        did not build) */
