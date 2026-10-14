@@ -73,3 +73,10 @@ end
 Walker.new.each { w[0] }
 Walker.new.each { w2.first }
 p w, w2, s
+
+# destructuring block parameters
+dd = [s, +"d"]
+dd.each { |(x)| x << "D" }
+d2 = [s, +"d"]
+d2.each { |(x, y)| x << "E" }
+p dd, d2

@@ -3691,6 +3691,36 @@ static int strh_arg_ty_ok(const Compiler *c, int n, TyKind want, TyKind want2, i
   TyKind t = comp_ntype(c, n);
   return t == want || t == want2 || (unknown_ok && t == TY_UNKNOWN);
 }
+/* Does block blk take no parameter or one plain one, which binds the
+   element (not a destructuring `|(x, y)|`, a rest, a default, a keyword, a
+   block parameter or a block-local)? */
+static int strh_plain_block_params(Compiler *c, int blk) {
+  const NodeTable *nt = c->nt;
+  int bp = nt_ref(nt, blk, "parameters");
+  if (bp < 0) return 1;
+  const char *bpty = nt_type(nt, bp);
+  if (!bpty || !sp_streq(bpty, "BlockParametersNode")) return 0;
+  int lc = 0;
+  nt_arr(nt, bp, "locals", &lc);
+  if (lc > 0) return 0;
+  int pn = nt_ref(nt, bp, "parameters");
+  if (pn < 0) return 1;
+  int n = 0;
+  const int *rq = nt_arr(nt, pn, "requireds", &n);
+  if (n > 1 || (n == 1 && !(nt_type(nt, rq[0]) && sp_streq(nt_type(nt, rq[0]), "RequiredParameterNode")))) return 0;
+  /* (a destructuring parameter is a hidden parameter and a read of its
+     elements by the time the walk runs) */
+  const char *pnm = n == 1 ? nt_str(nt, rq[0], "name") : NULL;
+  if (pnm && !strncmp(pnm, "__destr", 7)) return 0;
+  int k = 0;
+  nt_arr(nt, pn, "optionals", &k);
+  if (k > 0) return 0;
+  nt_arr(nt, pn, "posts", &k);
+  if (k > 0) return 0;
+  nt_arr(nt, pn, "keywords", &k);
+  if (k > 0) return 0;
+  return nt_ref(nt, pn, "rest") < 0 && nt_ref(nt, pn, "keyword_rest") < 0 && nt_ref(nt, pn, "block") < 0;
+}
 int strh_call_op_in(Compiler *c, int call, TyKind rt, int unknown_ok) {
   const NodeTable *nt = c->nt;
   if (rt != TY_STRH_ARRAY || call < 0 || nt_kind(nt, call) != NK_CallNode) return STRH_NONE;
@@ -3702,12 +3732,7 @@ int strh_call_op_in(Compiler *c, int call, TyKind rt, int unknown_ok) {
     if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return STRH_NONE;
   }
   int op = strh_op(nm, argc, blk < 0 ? 0 : nt_kind(nt, blk) == NK_BlockNode ? 1 : 2);
-  /* (a block of one plain parameter: the element) */
-  if (op == STRH_EACH) {
-    int np = 0;
-    while (block_param_name(c, blk, np)) np++;
-    if (np > 1 || block_rest_name(c, blk) || (np > 0 && block_param_is_multi(c, blk, 0))) return STRH_NONE;
-  }
+  if (op == STRH_EACH && !strh_plain_block_params(c, blk)) return STRH_NONE;
   if ((op == STRH_ELEM && argc == 1) || op == STRH_STORE)
     for (int k = 0; k < (op == STRH_STORE ? 1 : argc); k++)
       if (!strh_arg_ty_ok(c, av[k], TY_INT, TY_INT, unknown_ok)) return STRH_NONE;
