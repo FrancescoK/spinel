@@ -1028,13 +1028,8 @@ endif
 # int64 raises, which wrap reads at the wrapped sum; promote_array_index_sum
 # is its promote counterpart.
 RAISE_MODE_PINS := test/int_overflow_raises.rb test/int_overflow_op_assign.rb test/poly_int_overflow_raises.rb test/str_to_i_overflow.rb test/string_to_i_overflow_raises.rb test/bounded_counter_unchecked_add.rb test/float_to_int_out_of_range.rb test/bigrational_to_i_out_of_range.rb test/float_to_int_boundary.rb test/poly_call_legacy_abi_gate.rb test/poly_call_fast_abi_gate.rb test/poly_method_return_kinds.rb test/int_min_overflow_raises.rb test/masgn_boxed_ivar_slot_mismatch.rb test/array_index_sum_overflow.rb
-# Tests a promote gap fails, out of the promote lane until it is fixed:
-# index_opw_local_hash_recv_root binds a Hash literal whose value is a
-# method's promoted Integer to an Integer-valued Hash variable; a write of
-# it into an ivar is refused, and a method returning the variable after a
-# key that rebinds it answers the other Hash kind as the first (`{"z" => 0}`
-# for {"z" => 500}).
-PROMOTE_GAPS := test/index_opw_local_hash_recv_root.rb
+# Tests a promote gap fails, out of the promote lane until it is fixed.
+PROMOTE_GAPS :=
 ifeq ($(SPINEL_INT_OVERFLOW),promote)
 TESTS := $(filter-out $(RAISE_MODE_PINS) $(PROMOTE_GAPS),$(TESTS))
 # Drive the spinel front-end and the C compile in promote mode so the test

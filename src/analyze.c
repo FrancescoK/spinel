@@ -45717,6 +45717,10 @@ static void an_phase_proc_returns(Compiler *c) {
         }
         if (ihash) {
           if (ty_is_hash(br) && ty_hash_val(br) == TY_POLY) { sc->ret = br; changed = 1; }
+          /* a tail that widened to a box (a local the method rebinds to the
+             boxed-value hash) returns the box: the typed return cast it to
+             the Integer-valued struct and read its boxed values as raw */
+          else if (br == TY_POLY) { sc->ret = TY_POLY; changed = 1; }
           continue;
         }
         /* the ReturnNodes, not every node: this ran per scope (roundhouse#72) */
@@ -45763,8 +45767,14 @@ static void an_phase_proc_returns(Compiler *c) {
         /* the flat scalar arrays only: a table (Array[Array[Integer]]) and an
            object array are the narrowing passes' kinds, re-derived by them */
         #define PW_TYPED_ARR(t) ((t) == TY_INT_ARRAY || (t) == TY_STR_ARRAY || (t) == TY_FLOAT_ARRAY)
+        /* ...and an Integer-valued hash fed the same hash with boxed values
+           (`@h = { "z" => junk }`, junk's Integer answer boxed above), as
+           step 3 widens a method's return */
+        #define PW_IHASH_WIDENS(cur, val) (ty_is_hash(cur) && ty_hash_val(cur) == TY_INT && ty_is_hash(val) && \
+                                           ty_hash_val(val) == TY_POLY && ty_hash_key(val) == ty_hash_key(cur))
         #define PW_JOIN(cur, val) (PW_TYPED_ARR(cur) && (val) == TY_POLY_ARRAY ? TY_POLY_ARRAY \
-                                   : PW_TYPED_ARR(cur) && (val) == TY_POLY ? TY_POLY : (cur))
+                                   : PW_TYPED_ARR(cur) && (val) == TY_POLY ? TY_POLY \
+                                   : PW_IHASH_WIDENS(cur, val) ? (val) : (cur))
         /* (6) an ivar / cvar written a poly array or a boxed element */
         for (int id = 0; id < nt->count; id++) {
           NodeKind k = nt_kind(nt, id);
@@ -45780,7 +45790,7 @@ static void an_phase_proc_returns(Compiler *c) {
           const char *nm = nt_str(nt, id, "name");
           if (!nm) continue;
           TyKind vt = infer_type(c, vnode);
-          if (vt != TY_POLY_ARRAY && vt != TY_POLY) continue;
+          if (vt != TY_POLY_ARRAY && vt != TY_POLY && !(ty_is_hash(vt) && ty_hash_val(vt) == TY_POLY)) continue;
           if (iv_write) {
             int cid = comp_ivar_owner(c, id);
             int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
@@ -46174,6 +46184,7 @@ static void an_phase_proc_returns(Compiler *c) {
         }
         #undef PW_JOIN
         #undef PW_TYPED_ARR
+        #undef PW_IHASH_WIDENS
       }
     }
     /* refresh the node-type cache so a `proc.call` node picks up the updated
@@ -47173,6 +47184,13 @@ static void an_phase_reconcile_check(Compiler *c) {
     /* an empty literal adopts ANY destination hash variant (nothing to
        re-box), fixing e.g. a Sym-keyed slot initialized with `... || {}` */
     else if (lit_n == 0 && ty_is_hash(dstt) && litt != dstt)
+      c->ntype[v] = dstt;
+    /* an Integer-valued literal into the same keys' boxed-value variant: its
+       values box as they go in. The slot widens so after the fixpoint in
+       promote mode, where another write's value answers its Integers boxed
+       (`@h = { "a" => 1 }` beside `@h = { "z" => junk }`). */
+    else if (ty_is_hash(litt) && ty_is_hash(dstt) && ty_hash_val(litt) == TY_INT &&
+             ty_hash_val(dstt) == TY_POLY && ty_hash_key(litt) == ty_hash_key(dstt))
       c->ntype[v] = dstt;
   }
 
