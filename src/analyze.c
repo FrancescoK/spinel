@@ -21826,10 +21826,10 @@ int an_tail_logic_op(Compiler *c, int node) {
 }
 /* The return walk's state: per method, how far it is decided (st), and
    how many decisions where an answer was asked (an_ret_settle) are open.
-   prev (the fresh walk only): per method, whether the previous round found
-   it answering only new Strings, which a method still being walked (a
-   cycle) answers this round */
-typedef struct RetHandles { unsigned char *st, *prev; int *ret_start, *ret_list; int fresh, settling; int *par; } RetHandles;
+   prev (the fresh walk only): per method, what the previous round found for
+   it -- 0 no, 1 only new Strings, 2 + p its parameter p -- which a method
+   still being walked (a cycle) answers this round */
+typedef struct RetHandles { unsigned char *st; int *prev; int *ret_start, *ret_list; int fresh, settling; int *par; } RetHandles;
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc);
 static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *n, RetHandles *R);
 /* A box a seeded String method answers: its unboxing at the return
@@ -22292,9 +22292,9 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
 static void an_fresh_returns(Compiler *c, RetHandles *R) {
   int n = c->nscopes;
   unsigned char *pub = malloc((size_t)n + 1);
-  R->prev = malloc((size_t)n + 1);
+  R->prev = malloc(((size_t)n + 1) * sizeof(int));
   if (!pub || !R->prev) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  memset(R->prev, 1, (size_t)n + 1);
+  for (int mi = 0; mi <= n; mi++) R->prev[mi] = 1;
   R->fresh = 1;
   for (int mi = 1; mi < n; mi++) {
     pub[mi] = c->scopes[mi].ret_pub_fresh;
@@ -22306,7 +22306,7 @@ static void an_fresh_returns(Compiler *c, RetHandles *R) {
     /* (the fallback round: a cycle is not fresh, as nothing it answers is
        known yet) */
     if (round == 16) {
-      memset(R->prev, 0, (size_t)n + 1);
+      for (int mi = 0; mi <= n; mi++) R->prev[mi] = 0;
       for (int mi = 1; mi < n; mi++) {
         c->scopes[mi].ret_fresh = 0;
         c->scopes[mi].ret_param = -1;
@@ -22317,7 +22317,9 @@ static void an_fresh_returns(Compiler *c, RetHandles *R) {
     for (int mi = 1; mi < n; mi++) an_ret_handle(c, R, mi);
     changed = 0;
     for (int mi = 1; mi < n; mi++) {
-      unsigned char y = R->st[mi] == RH_YES;
+      /* (the whole answer: a method answering its parameter is not one
+         answering a new String, to a cycle reading it) */
+      int y = R->st[mi] != RH_YES ? 0 : c->scopes[mi].ret_fresh ? 1 : 2 + c->scopes[mi].ret_param;
       if (round < 16 && y != R->prev[mi]) { changed = 1; R->prev[mi] = y; }
     }
   }
