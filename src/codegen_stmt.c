@@ -20028,10 +20028,16 @@ static int emit_stmt_or_defer_as(Compiler *c, int st, Buf *b, int indent, int ta
       else snprintf(dmsg, sizeof dmsg, "%s", d->msg);
     }
     else snprintf(dmsg, sizeof dmsg, "refused at compile time");
+    /* the statement may be the value of a statement expression (the last
+       one of a block spliced as a find's condition), so the raise keeps a
+       value of its type: void there does not compile */
+    TyKind dt = repr_of(c, st).as_ty;
+    int dval = dt != TY_VOID && dt != TY_UNKNOWN && is_scalar_ret(dt) && !comp_ty_value_obj(c, dt);
     emit_indent(b, indent);
-    buf_puts(b, "sp_raise_cls(\"NotImplementedError\", \"");
+    buf_puts(b, dval ? "(sp_raise_cls(\"NotImplementedError\", \"" : "sp_raise_cls(\"NotImplementedError\", \"");
     emit_c_escaped(b, dmsg);
-    buf_puts(b, "\");\n");
+    if (dval) buf_printf(b, "\"), %s);\n", default_value_from_compiler(c, dt));
+    else buf_puts(b, "\");\n");
   }
   if (saved) emit_state_release(saved, 0);
   memcpy(g_unsup_recover, outer, sizeof outer);
