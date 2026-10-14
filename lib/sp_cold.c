@@ -2236,6 +2236,8 @@ sp_bool sp_file_pipe(const char *path);
 sp_bool sp_file_identical(const char *a, const char *b);
 const char *sp_file_realpath(const char *path);
 const char *sp_file_read_len(const char *path, sp_int n);
+const char *sp_file_read_at(const char *path, sp_int n, sp_int off);
+const char *sp_file_read_from(const char *path, sp_int off);
 sp_int sp_file_chmod(sp_int mode, const char *path);
 sp_int sp_file_truncate(const char *path, sp_int n);
 sp_int sp_file_write_at(const char *path, const char *data, sp_int off);
@@ -2575,6 +2577,35 @@ const char *sp_file_read_len(const char *path, sp_int n) {SP_GC_ROOT_STR(path);
   fclose(fp);
   r[got] = 0;
   sp_str_set_len(r, got);
+  return r;
+}
+static FILE *sp_file_open_at(const char *path, sp_int off) {
+  if (off < 0) sp_raise_cls("ArgumentError", sp_sprintf("negative offset %lld given", (long long)off));
+  FILE *fp = fopen(path ? path : "", "rb");
+  if (!fp) sp_file_raise_errno("rb_sysopen", path);
+  if (fseeko(fp, (off_t)off, SEEK_SET) != 0) {
+    fclose(fp);
+    sp_file_raise_errno("rb_io_seek", path);
+  }
+  return fp;
+}
+const char *sp_file_read_at(const char *path, sp_int n, sp_int off) {SP_GC_ROOT_STR(path);
+  FILE *fp = sp_file_open_at(path, off);
+  if (n < 0) {
+    fclose(fp);
+    sp_raise_cls("ArgumentError", sp_sprintf("negative length %lld given", (long long)n));
+  }
+  char *r = sp_str_alloc(n);
+  size_t got = fread(r, 1, (size_t)n, fp);
+  fclose(fp);
+  r[got] = 0;
+  sp_str_set_len(r, got);
+  return r;
+}
+const char *sp_file_read_from(const char *path, sp_int off) {SP_GC_ROOT_STR(path);
+  FILE *fp = sp_file_open_at(path, off);
+  const char *r = sp_slurp_stream(fp);
+  fclose(fp);
   return r;
 }
 sp_int sp_file_chmod(sp_int mode, const char *path) {SP_GC_ROOT_STR(path);

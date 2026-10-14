@@ -88,6 +88,21 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         if (bin_r2) buf_puts(b, ")"); }
       return 1;
     }
+    if ((sp_streq(name, "read") || sp_streq(name, "binread")) && argc == 3) {
+      int bin_r3 = sp_streq(name, "binread");
+      if (bin_r3) buf_puts(b, "sp_str_as_binary(");
+      if (comp_ntype(c, argv[1]) == TY_NIL) {
+        buf_puts(b, "({ (void)("); emit_expr(c, argv[1], b);
+        buf_puts(b, "); sp_file_read_from("); emit_path_expr(c, argv[0], b); buf_puts(b, ", ");
+        emit_int_expr(c, argv[2], b); buf_puts(b, "); })");
+      }
+      else {
+        buf_puts(b, "sp_file_read_at("); emit_path_expr(c, argv[0], b); buf_puts(b, ", ");
+        emit_int_expr(c, argv[1], b); buf_puts(b, ", "); emit_int_expr(c, argv[2], b); buf_puts(b, ")");
+      }
+      if (bin_r3) buf_puts(b, ")");
+      return 1;
+    }
     /* the stat/predicate family (#2775) */
     if (sp_streq(name, "ftype") && argc == 1) {
       buf_puts(b, "sp_file_ftype("); emit_path_expr(c, argv[0], b); buf_puts(b, ")"); return 1;

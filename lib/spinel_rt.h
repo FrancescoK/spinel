@@ -16779,6 +16779,8 @@ const char *sp_file_realpath(const char *path);
 sp_bool sp_file_absolute_path_p(const char *path);
 sp_int sp_file_chown(const char *path, sp_int uid, sp_int gid);
 const char *sp_file_read_len(const char *path, sp_int n);
+const char *sp_file_read_at(const char *path, sp_int n, sp_int off);
+const char *sp_file_read_from(const char *path, sp_int off);
 sp_int sp_file_chmod(sp_int mode, const char *path);
 sp_int sp_file_truncate(const char *path, sp_int n);
 sp_int sp_file_write_at(const char *path, const char *data, sp_int off);
