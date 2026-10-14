@@ -7526,9 +7526,15 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
     self_is_ptr = !self_is_value || (encl->name && sp_streq(encl->name, "initialize"));
   }
 
+  /* A class method that takes its receiving class as _sp_cls hands it to the
+     body in the capture struct too: the body is a function of its own, where
+     _sp_cls is not in scope (a `to_enum` in such a method). */
+  int cap_cls = encl && encl->is_cmethod && cmethod_takes_self_cls(c, (int)(encl - c->scopes));
+
   /* Emit capture struct + GC scan function when there are captured vars or self */
-  if (ncap > 0 || cap_self) {
+  if (ncap > 0 || cap_self || cap_cls) {
     buf_printf(&g_proc_protos, "typedef struct {");
+    if (cap_cls) buf_puts(&g_proc_protos, " sp_Class self_cls;");
     if (cap_self && self_boxed) buf_puts(&g_proc_protos, " sp_RbVal self_val;");
     else if (cap_self) buf_printf(&g_proc_protos, self_is_value ? " sp_%s self_val;" : " sp_%s *self_ptr;", cap_self_class);
     for (int i = 0; i < ncap; i++) {
@@ -7652,8 +7658,9 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
   g_exc_frame_depth = 0; g_method_pr_exc_depth = 0; g_rescue_save_depth = 0;
 
   /* Unpack capture struct */
-  if (ncap > 0 || cap_self) {
+  if (ncap > 0 || cap_self || cap_cls) {
     buf_printf(pb, "    _fib_cap_%d *_fc = (_fib_cap_%d *)_fb->user_data;\n", fid, fid);
+    if (cap_cls) buf_puts(pb, "    sp_Class _sp_cls = _fc->self_cls;\n    (void)_sp_cls;\n");
     if (cap_self && self_boxed) {
       const char *svar = sv_self ? sv_self : "self";
       buf_printf(pb, "    sp_RbVal %s = _fc->self_val;\n", svar);
@@ -7902,7 +7909,7 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
      assign to fiber->user_data, then return the fiber.
      Without captures: just sp_Fiber_new(fname). */
   int gen_multi = as_gen && gen_yields_multi(nt, body, bp0);
-  if (ncap > 0 || cap_self) {
+  if (ncap > 0 || cap_self || cap_cls) {
     int tc = ++g_tmp;
     /* For a generator the fiber is created lazily by the enumerator, so only the
        capture struct is built here and handed to sp_Enumerator_new_gen. */
@@ -7923,6 +7930,11 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
        rooting here covers both uniformly). */
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tc);
+    if (cap_cls) {
+      /* a spliced class method has its receiving class in self */
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "_t%d->self_cls = %s;\n", tc, encl->yields && sv_self ? sv_self : "_sp_cls");
+    }
     if (cap_self) {
       emit_indent(g_pre, g_indent);
       if (self_boxed) buf_printf(g_pre, "_t%d->self_val = %s;\n", tc, sv_self ? sv_self : "self");
