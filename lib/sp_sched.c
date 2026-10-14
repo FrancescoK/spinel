@@ -2599,11 +2599,15 @@ sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
      always goes to the global queue -- never main's local queue, where it would
      wait on a steal. (g_worker_cap > 0 whenever threads are in use.) */
 #ifdef SP_THREADS
-  if (g_current == &g_main_thread && g_worker_cap > 0) rq_push(t);
+  /* PoC (#8702 option 2): main places the new thread on its worker now, as
+     the picker would (sched_place_unstarted): onto that worker's own queue,
+     which it runs without the scheduler lock. */
+  if (g_current == &g_main_thread && g_worker_cap > 0) {
+    if (!sched_place_unstarted(0, t)) { rq_push(t); SCHED_WAKE(); }
+  }
   else
 #endif
-  lrq_push(sp_worker_id, t);
-  SCHED_WAKE();   /* a helper worker may be idle: hand it the new thread */
+  { lrq_push(sp_worker_id, t); SCHED_WAKE(); }   /* a helper worker may be idle: hand it the new thread */
   SCHED_UNLOCK();
   return t;
 }
