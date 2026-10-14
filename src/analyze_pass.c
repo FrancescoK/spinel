@@ -5523,6 +5523,26 @@ static int container_literals(Compiler *c, int n, int *out, int nout, int cap, i
           !sp_streq(nt_str(nt, w, "name"), nm)) continue;
       nout = container_literals(c, nt_ref(nt, w, "value"), out, nout, cap, depth + 1);
     }
+    /* a method's parameter: the containers its callers pass there
+       (`def add(h) = h[:attrs]["y"] = v` with `add({attrs: {x: 1}})`) */
+    LocalVar *lv = scope_local(sc, nm);
+    if (lv && lv->is_param && !lv->is_block_param && sc->name && sc->def_node >= 0) {
+      int pi = -1;
+      for (int i = 0; i < sc->nparams && pi < 0; i++) if (sc->pnames[i] && sp_streq(sc->pnames[i], nm)) pi = i;
+      for (int call = pi >= 0 ? an_calls_named_first(c, sc->name) : -1; call >= 0 && nout < cap;
+           call = an_calls_named_next(call)) {
+        int targets[CPT_MAX], nt_ = cplan_targets(c, call, targets, CPT_MAX), hit = 0;
+        for (int t = 0; t < nt_ && !hit; t++) hit = targets[t] == si;
+        if (!hit) continue;
+        int a = nt_ref(nt, call, "arguments"), an = 0;
+        const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+        ArgLayout L;
+        call_layout(c, sc, av, an, &L);
+        int from = pi < L.n && L.from[pi] == ARG_NODE ? L.arg[pi] : -1;
+        arg_layout_free(&L);
+        if (from >= 0 && from < an) nout = container_literals(c, av[from], out, nout, cap, depth + 1);
+      }
+    }
     return nout;
   }
   NodeKind wk = k == NK_InstanceVariableReadNode ? NK_InstanceVariableWriteNode
