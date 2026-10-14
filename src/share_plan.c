@@ -228,15 +228,19 @@ static int share_plan_supplies_d(Compiler *c, int v, int depth);
 /* Does leaf a of a value taken arm by arm (a conditional's arm, a block's
    value) give its consumer what it needs: nil, a raise (no value), a
    String no other name holds (a new handle cannot be told from it), or a
-   producer that supplies the handle? */
-static int share_plan_leaf_ok(Compiler *c, int a, int depth) {
+   producer that supplies the handle? A variable's read supplies what its
+   slot holds: the handle, or bytes no handle holds, whose identity is
+   theirs. With foreign set, a is read under another object's self (an
+   instance_exec or instance_eval splice): an instance variable's read
+   there is that object's, which the plan cannot read from here, so it
+   hands on its slot, which the seal checks as a holder. */
+static int share_plan_leaf_ok(Compiler *c, int a, int foreign, int depth) {
   const NodeTable *nt = c->nt;
   if (a < 0) return 1;
   NodeKind k = nt_kind(nt, a);
-  /* (a variable's read hands on its slot, which the seal checks as a
-     holder: as the leaf of a splice, read under the splice's own self) */
-  if (k == NK_NilNode || k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || repr_static_read_kind(k))
-    return 1;
+  if (k == NK_NilNode || (foreign && k == NK_InstanceVariableReadNode)) return 1;
+  if (k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || repr_static_read_kind(k))
+    return depth < 16 && share_plan_supplies_d(c, a, depth + 1);
   const char *nm = k == NK_CallNode ? nt_str(nt, a, "name") : NULL;
   if (nm && is_raise_alias(nm) && nt_ref(nt, a, "receiver") < 0 && comp_method_index(c, nm) < 0) return 1;
   if (share_plan_need(c, a) != SPN_OBJECT) return 1;
@@ -245,7 +249,7 @@ static int share_plan_leaf_ok(Compiler *c, int a, int depth) {
 
 /* ...and each jump of kind k (NK_NextNode, NK_BreakNode) under n that
    leaves what n is the body of, its value the leaf */
-static int share_plan_jumps_ok(Compiler *c, int n, NodeKind k, int depth) {
+static int share_plan_jumps_ok(Compiler *c, int n, NodeKind k, int foreign, int depth) {
   const NodeTable *nt = c->nt;
   if (n < 0) return 1;
   NodeKind nk = nt_kind(nt, n);
@@ -255,24 +259,25 @@ static int share_plan_jumps_ok(Compiler *c, int n, NodeKind k, int depth) {
   if (nk == k) {
     int argc = 0;
     const int *argv = call_args(nt, n, &argc);
-    if (argc > 1 || (argc == 1 && !share_plan_leaf_ok(c, argv[0], depth))) return 0;
+    if (argc > 1 || (argc == 1 && !share_plan_leaf_ok(c, argv[0], foreign, depth))) return 0;
   }
   for (int i = 0; i < nt_num_refs(nt, n); i++)
-    if (!share_plan_jumps_ok(c, nt_ref_at(nt, n, i), k, depth)) return 0;
+    if (!share_plan_jumps_ok(c, nt_ref_at(nt, n, i), k, foreign, depth)) return 0;
   for (int i = 0; i < nt_num_arrs(nt, n); i++) {
     int m = 0;
     const int *ids = nt_arr_at(nt, n, i, &m);
-    for (int j = 0; j < m; j++) if (!share_plan_jumps_ok(c, ids[j], k, depth)) return 0;
+    for (int j = 0; j < m; j++) if (!share_plan_jumps_ok(c, ids[j], k, foreign, depth)) return 0;
   }
   return 1;
 }
 
 /* ...a body's value: its last statement, and each jump of kind k */
-static int share_plan_body_ok(Compiler *c, int body, NodeKind k, int depth) {
+static int share_plan_body_ok(Compiler *c, int body, NodeKind k, int foreign, int depth) {
   const NodeTable *nt = c->nt;
   int n = 0;
   const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
-  return (n == 0 || share_plan_leaf_ok(c, bb[n - 1], depth)) && (k == NK_NONE || share_plan_jumps_ok(c, body, k, depth));
+  return (n == 0 || share_plan_leaf_ok(c, bb[n - 1], foreign, depth)) &&
+         (k == NK_NONE || share_plan_jumps_ok(c, body, k, foreign, depth));
 }
 
 /* Does conditional (or begin, or rescue modifier) v hand on what each of
@@ -313,13 +318,13 @@ static int share_plan_arms_ok(Compiler *c, int v, int depth) {
   case NK_BeginNode: {
     int el = nt_ref(nt, v, "else_clause");
     /* (the body's value is the begin's only when no else follows it) */
-    if (el < 0 && !share_plan_body_ok(c, nt_ref(nt, v, "statements"), NK_NONE, depth)) return 0;
+    if (el < 0 && !share_plan_body_ok(c, nt_ref(nt, v, "statements"), NK_NONE, 0, depth)) return 0;
     for (int rc = nt_ref(nt, v, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
-      if (!share_plan_body_ok(c, nt_ref(nt, rc, "statements"), NK_NONE, depth)) return 0;
-    return el < 0 || share_plan_body_ok(c, nt_ref(nt, el, "statements"), NK_NONE, depth);
+      if (!share_plan_body_ok(c, nt_ref(nt, rc, "statements"), NK_NONE, 0, depth)) return 0;
+    return el < 0 || share_plan_body_ok(c, nt_ref(nt, el, "statements"), NK_NONE, 0, depth);
   }
   default:
-    return share_plan_leaf_ok(c, v, depth);
+    return share_plan_leaf_ok(c, v, 0, depth);
   }
 }
 
@@ -334,15 +339,15 @@ static int share_plan_block_ok(Compiler *c, int v, int depth) {
   int u = an_unparen(nt, v), blk = u >= 0 && nt_kind(nt, u) == NK_CallNode ? nt_ref(nt, u, "block") : -1;
   if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return 1;
   int body = nt_ref(nt, blk, "body");
-  if (strbuf_route_loop(c, u)) return share_plan_jumps_ok(c, body, NK_BreakNode, depth);
-  if (strbuf_route_ie(c, u)) return share_plan_body_ok(c, body, NK_NONE, depth);
+  if (strbuf_route_loop(c, u)) return share_plan_jumps_ok(c, body, NK_BreakNode, 0, depth);
+  if (strbuf_route_ie(c, u)) return share_plan_body_ok(c, body, NK_NONE, 1, depth);
   if (strbuf_route_inline_call(c, u)) {
     int mi = strbuf_inline_mi(c, u), last = mi > 0 ? scope_body_last(c, mi) : -1;
     int bl = block_given_tail_then_last(c, last);
     if (bl >= 0) last = bl;
     if (last >= 0 && nt_kind(nt, last) != NK_YieldNode) return 1;
   }
-  return share_plan_body_ok(c, body, NK_NextNode, depth);
+  return share_plan_body_ok(c, body, NK_NextNode, 0, depth);
 }
 
 /* The supply node v decides by itself (1 or 0), or -1 when it hands on its
@@ -359,7 +364,7 @@ static int share_plan_supply_at(Compiler *c, int v, int *op, int depth) {
     int ops[3];
     if (!strbuf_route_clamp(c, v, ops)) return 1;
     for (int i = 0; i < 3; i++)
-      if (ops[i] >= 0 && !share_plan_leaf_ok(c, ops[i], depth)) return 0;
+      if (ops[i] >= 0 && !share_plan_leaf_ok(c, ops[i], 0, depth)) return 0;
     return 1;
   }
   case SPK_COND: return share_plan_arms_ok(c, an_unparen(c->nt, v), depth);
