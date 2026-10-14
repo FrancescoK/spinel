@@ -5572,6 +5572,14 @@ static void seed_method(Compiler *c, Scope *s, const char *ret_tok, char *ptypes
   for (int i = 0; i < nf; i++) {
     int slot = seed_field_param(s, ptypes, i, field, sizeof field);
     if (slot < 0 || slot >= s->nparams) continue;   /* a name the def has not */
+    /* A rest or keyword rest slot is typed by construction (the poly array
+       or hash its callers' arguments are gathered into), and the extractor
+       gives it an empty field. A field that still lands on one comes from a
+       signature that declares an optional positional where the def gathers
+       its arguments (`?Integer c` for `def m(*c)`): pinning the gathered
+       array to the element's type would make every call pass an Array to a
+       slot of another C type. */
+    if (slot == s->rest_idx || slot == s->kwrest_idx) continue;
     TyKind pt = parse_seed_type(c, field);
     if (pt != TY_UNKNOWN) {
       LocalVar *lv = scope_local(s, s->pnames[slot]);
