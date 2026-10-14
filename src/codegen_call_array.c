@@ -2719,10 +2719,14 @@ void emit_strh_elem(Compiler *c, int v, Buf *b) {
 
 /* Can the evaluation of argument a of an operation on a String Array of
    handles change what the operation reads, the Array's variable or its
-   Strings? Only a String literal or a local's read cannot. */
-static int strh_arg_inert(const NodeTable *nt, int a) {
+   Strings? A String literal cannot. A local's read cannot change them, but
+   the receiver, evaluated first, can change the local when it is a call
+   (a parameter's or a method's Array, whose block rebinds it): a read is
+   inert beside a receiver that is itself a variable's read (recv, -1 when
+   the receiver is evaluated already). */
+static int strh_arg_inert(const NodeTable *nt, int recv, int a) {
   NodeKind k = nt_kind(nt, a);
-  return k == NK_StringNode || k == NK_LocalVariableReadNode;
+  return k == NK_StringNode || (k == NK_LocalVariableReadNode && (recv < 0 || strh_var_read(nt, recv)));
 }
 
 /* Opens a statement expression that evaluates the receiver of an operation
@@ -2732,7 +2736,7 @@ static int strh_arg_inert(const NodeTable *nt, int a) {
    the argument of `a.include?((a = other; "x"))` rebinds the receiver's
    variable. */
 static int strh_recv_first(Compiler *c, int recv, int arg, Buf *b) {
-  if (arg < 0 || strh_arg_inert(c->nt, arg)) return 0;
+  if (arg < 0 || strh_arg_inert(c->nt, recv, arg)) return 0;
   int tr = ++g_tmp;
   buf_printf(b, "({ sp_PtrArray *_t%d = ", tr); emit_expr(c, recv, b);
   buf_printf(b, "; SP_GC_ROOT(_t%d); ", tr);
@@ -2785,7 +2789,7 @@ int emit_strh_call(Compiler *c, int id, Buf *b) {
     /* every argument is evaluated, and rooted, before the first is appended,
        as CRuby does: a later one can read the Array */
     int early = 0;
-    for (int a = 1; a < argc; a++) early |= !strh_arg_inert(nt, argv[a]);
+    for (int a = 1; a < argc; a++) early |= !strh_arg_inert(nt, -1, argv[a]);
     if (early)
       for (int a = 0; a < argc; a++) {
         buf_printf(b, " sp_String *_t%d_%d = ", tr, a);

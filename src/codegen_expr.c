@@ -1362,7 +1362,7 @@ void emit_slot_orw_value_o(Compiler *c, TyKind t, int elems_handle, const char *
        when NULL, so `@x ||= v` is `if (!@x) @x = v` and `@x &&= v` is
        `if (@x) @x = v`. Falling through to a bare read dropped the init when
        this or-write was the RHS of a poly-receiver setter switch (#1447). */
-    else if (ty_is_object(t) || ty_is_array(t) || ty_is_hash(t) || t == TY_BIGINT ||
+    else if (ty_is_object(t) || ty_is_array(t) || t == TY_STRH_ARRAY || ty_is_hash(t) || t == TY_BIGINT ||
              t == TY_FIBER || t == TY_THREAD || t == TY_QUEUE || t == TY_MUTEX || t == TY_CONDVAR || t == TY_PROC || t == TY_IO ||
              t == TY_MATCHDATA || t == TY_EXCEPTION || t == TY_REGEX) {
       snprintf(condb, sizeof condb, "%s%s", is_or ? "!" : "", ref);

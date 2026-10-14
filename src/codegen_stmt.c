@@ -16985,7 +16985,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     else if (ty_is_ptr_array(ivt) && v_empty_array) buf_puts(b, ptr_array_new_c(ivt));
     /* `@t = [[..], [..]]` into a narrowed pointer-array ivar: build the
        sp_PtrArray with the unboxed element pointers, as the local write does. */
-    else if (ty_is_ptr_array(ivt) && vty && sp_streq(vty, "ArrayNode")) {
+    else if (ty_is_ptr_array(ivt) && ivt != TY_STRH_ARRAY && vty && sp_streq(vty, "ArrayNode")) {
       int tpa = ++g_tmp;
       buf_printf(b, "({ sp_PtrArray *_t%d = sp_PtrArray_new(); SP_GC_ROOT(_t%d);", tpa, tpa);
       int pen = 0; const int *pel = nt_arr(nt, v, "elements", &pen);
@@ -17963,6 +17963,7 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
         buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); _t%d->frozen = 1; _t%d; })", _ft, _ft, _ft); }
       else buf_puts(b, "sp_PolyArray_new()");
     }
+    else if (v_empty_arr && lv->type == TY_STRH_ARRAY) buf_puts(b, ptr_array_new_c(lv->type));
     else if (v_empty_arr && array_kind(lv->type)) {
       if (v_lit_frozen) { int _ft = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_new(); _t%d->frozen = 1; _t%d; })",

@@ -3689,6 +3689,65 @@ const int *comp_parent_map(Compiler *c) {
   return c->cg_parent;
 }
 
+/* Is the value of method m only ever taken where a call node reads it? A
+   method the runtime or a protocol calls (deconstruct, to_s, an extension
+   entry, a proc form) has it taken where no node does. */
+int strh_method_open(const Scope *m) {
+  return m->name && !method_name_implicitly_invoked(m->name) && !(m->class_id >= 0 && (sp_streq(m->name, "deconstruct") || sp_streq(m->name, "deconstruct_keys"))) && !m->is_ext_entry &&
+         !m->is_proc_form && !m->is_lowered_yield;
+}
+/* Is node n, a read of an Array of handles, the value its method answers: the
+   body's last statement (an `if`'s arm, a begin's body and parentheses
+   included) or the one argument of a `return`? The caller's name for it is
+   the method's value (a SHK_RET holder of its class). */
+int strh_value_returned(Compiler *c, const int *par, int n) {
+  const NodeTable *nt = c->nt;
+  for (int depth = 0; depth < 8 && n >= 0 && n < nt->count; depth++) {
+    int p = par[n];
+    if (p < 0) return 0;
+    NodeKind pk = nt_kind(nt, p);
+    if (is_arguments_node_type(nt_type(nt, p))) {
+      int g = par[p], an = 0;
+      const int *av = nt_arr(nt, p, "arguments", &an);
+      return g >= 0 && nt_kind(nt, g) == NK_ReturnNode && an == 1 && an_unparen(nt, av[0]) == n &&
+             comp_scope_of(c, g)->def_node >= 0 && strh_method_open(comp_scope_of(c, g));
+    }
+    if (pk == NK_StatementsNode) {
+      int bn = 0, g = par[p];
+      const int *bb = nt_arr(nt, p, "body", &bn);
+      if (bn < 1 || bb[bn - 1] != n || g < 0) return 0;
+      if (nt_kind(nt, g) == NK_DefNode) return nt_ref(nt, g, "body") == p && strh_method_open(comp_scope_of(c, n));
+      NodeKind gk = nt_kind(nt, g);
+      if (gk != NK_IfNode && gk != NK_UnlessNode && gk != NK_ElseNode && gk != NK_BeginNode) return 0;
+      n = g;
+    }
+    else if (pk == NK_ParenthesesNode || pk == NK_ElseNode || pk == NK_BeginNode) n = p;
+    else if ((pk == NK_IfNode || pk == NK_UnlessNode) && nt_ref(nt, p, "predicate") != n) n = p;
+    else return 0;
+  }
+  return 0;
+}
+/* Is Array literal n where a variable can hold it: a local's, an instance
+   variable's, a global's, a class variable's or a constant's write, an
+   argument of a call or a yield, a method's value? The String handle Array
+   form is given to a literal only there, and share_strh_gate asks the
+   places that name a holder of its class (strh_literal_valid). */
+int strh_literal_held(Compiler *c, int n) {
+  if (comp_lwrite_of_value(c, n) >= 0) return 1;
+  const int *par = comp_parent_map(c);
+  int p = n >= 0 && n < c->nt->count ? par[n] : -1;
+  if (p < 0) return 0;
+  NodeKind pk = nt_kind(c->nt, p);
+  if ((pk == NK_InstanceVariableWriteNode || pk == NK_GlobalVariableWriteNode || pk == NK_ClassVariableWriteNode ||
+       pk == NK_ConstantWriteNode) && an_unparen(c->nt, nt_ref(c->nt, p, "value")) == n)
+    return 1;
+  /* an argument of a call or a yield, the value of a method */
+  if (is_arguments_node_type(nt_type(c->nt, p)) && par[p] >= 0 &&
+      (nt_kind(c->nt, par[p]) == NK_CallNode || nt_kind(c->nt, par[p]) == NK_YieldNode))
+    return 1;
+  return strh_value_returned(c, par, n);
+}
+
 /* Is argument n's type want, or (unknown_ok, for the gate's early rounds)
    not settled yet? */
 static int strh_arg_ty_ok(const Compiler *c, int n, TyKind want, TyKind want2, int unknown_ok) {
@@ -3739,6 +3798,14 @@ int strh_call_op_in(Compiler *c, int call, TyKind rt, int unknown_ok) {
   if ((op == STRH_ELEM && argc == 1) || op == STRH_STORE)
     for (int k = 0; k < (op == STRH_STORE ? 1 : argc); k++)
       if (!strh_arg_ty_ok(c, av[k], TY_INT, TY_INT, unknown_ok)) return STRH_NONE;
+  /* (what is stored is a String, or a box that may hold one, which
+     sp_StrhArray_unbox opens: any other value is no store of this form, and
+     widens the Array (fold_container_evidence), so the gate sees it) */
+  if (op == STRH_PUSH || (op == STRH_STORE && argc == 2))
+    for (int k = op == STRH_STORE ? 1 : 0; k < argc; k++) {
+      TyKind vt = comp_ntype(c, av[k]);
+      if (vt != TY_STRING && vt != TY_STRBUF && vt != TY_UNKNOWN && vt != TY_POLY) return STRH_NONE;
+    }
   /* (the other operand of == is another Array of handles) */
   if (op == STRH_EQ && !strh_arg_ty_ok(c, av[0], TY_STRH_ARRAY, TY_STRH_ARRAY, unknown_ok)) return STRH_NONE;
   /* (a separator or a needle that is a String) */
@@ -3748,3 +3815,11 @@ int strh_call_op_in(Compiler *c, int call, TyKind rt, int unknown_ok) {
   return op;
 }
 int strh_call_op(Compiler *c, int call, TyKind rt) { return strh_call_op_in(c, call, rt, 0); }
+/* Is node n a read of a variable (a local, an instance variable, a global, a
+   constant or a class variable), which the handle element emitters can read
+   again where an element is used as the slot it is? */
+int strh_var_read(const NodeTable *nt, int n) {
+  NodeKind k = n >= 0 ? nt_kind(nt, n) : NK_NONE;
+  return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_GlobalVariableReadNode ||
+         k == NK_ConstantReadNode || k == NK_ClassVariableReadNode;
+}

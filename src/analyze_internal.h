@@ -91,6 +91,10 @@ const int *comp_parent_map(Compiler *c);
 /* --share-strings: is node n an Array literal refused the String handle
    Array form for good (share_strh_gate)? */
 int share_strh_node_no(const Compiler *c, int n);
+/* ...and is it written into a variable already holding the form? */
+int share_strh_literal_slot(Compiler *c, int n);
+int strh_method_open(const Scope *m);   /* analyze_util.c */
+int strh_value_returned(Compiler *c, const int *par, int n);
 /* The definite-assignment walk (analyze.c), shared with the nil facts
    (analyze_nil.c): the program's parent map, each statement's place in its
    list (filled one list at a time, -1 for a node not in its parent's list),

@@ -9590,7 +9590,8 @@ static TyKind infer_array_literal(Compiler *c, int id) {
        String Array of handles (#8328 step 5) when a local holds it, where its
        container class can take that form (share_strh_gate refuses it
        otherwise, for good) */
-    if (strh_all && strh_has && !share_strh_node_no(c, id) && comp_lwrite_of_value(c, id) >= 0) return TY_STRH_ARRAY;
+    if (strh_all && (strh_has || share_strh_literal_slot(c, id)) && !share_strh_node_no(c, id) && strh_literal_held(c, id))
+      return TY_STRH_ARRAY;
     /* ty_array_of holds an all-unknown element type at bottom while the
        fixpoint runs; see its TY_UNKNOWN case. */
     return ty_array_of(e);

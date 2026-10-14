@@ -809,6 +809,13 @@ typedef struct {
   int ncs, ccs;
 } ClassInfo;
 
+/* The bits of ClassInfo.ivar_elems_shared and cvar_elems_shared */
+enum {
+  ELEMS_POLY = 1,     /* the TY_POLY_ARRAY slot holds its Strings as handles */
+  ELEMS_STRH = 2,     /* the slot is a String Array of handles (TY_STRH_ARRAY) */
+  ELEMS_STRH_NO = 4   /* ...and a container class that cannot take that form,
+                         for good (share_strh_gate) */
+};
 static inline TyKind ivar_set_type(ClassInfo *ci, int k, TyKind t) {
   if (ci->ivar_types[k] != t) { ((TyKind *)ci->ivar_types)[k] = t; comp_ty_edits++; }
   return t;
