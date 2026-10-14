@@ -654,6 +654,7 @@ int desugar_encoding_queries(Compiler *c);
 int desugar_alias_method_string_names(Compiler *c);
 int desugar_alias_method_values(Compiler *c);
 int desugar_inherited_aliases(Compiler *c);
+int desugar_builtin_alias_calls(Compiler *c);
 int desugar_reader_aliases_before_redef(Compiler *c);
 int desugar_reassigned_block_params(Compiler *c);
 int desugar_inline_struct_blocks(Compiler *c);

@@ -13475,6 +13475,35 @@ static int alias_forwarder_like(NodeTable *nt, int like, const char *nw, const c
    appears (resolve_inherited_aliases) -- and `def nw(*a, &b) =
    nw#inherited(*a, &b)` right after it. A call through it reaches that body
    whatever a subclass overrides od with. */
+/* Does class cls's superclass chain, through the program's own classes,
+   end at Hash, Array or String with none of them defining meth: is meth
+   the builtin's own method? */
+static int alias_builtin_rooted(const NodeTable *nt, const char *cls, const char *meth, int n0) {
+  for (int hop = 0; cls && hop < 16; hop++) {
+    const char *sup = NULL;
+    for (int m = 0; m < n0 && !sup; m++) {
+      if (nt_kind(nt, m) != NK_ClassNode) continue;
+      int cp = nt_ref(nt, m, "constant_path");
+      const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+      int sc = nt_ref(nt, m, "superclass");
+      if (cn && sp_streq(cn, cls) && sc >= 0 && nt_kind(nt, sc) == NK_ConstantReadNode)
+        sup = nt_str(nt, sc, "name");
+    }
+    if (!sup) return 0;
+    int own = 0;
+    for (int m = 0; m < n0 && !own; m++) {
+      if (nt_kind(nt, m) != NK_ClassNode) continue;
+      int cp = nt_ref(nt, m, "constant_path");
+      const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+      own = cn && sp_streq(cn, sup) && nt_ref(nt, m, "superclass") >= 0;
+    }
+    if (!own) return sp_streq(sup, "Hash") || sp_streq(sup, "Array") || sp_streq(sup, "String");
+    if (alias_class_defines(nt, sup, meth, n0)) return 0;
+    cls = sup;
+  }
+  return 0;
+}
+
 int desugar_inherited_aliases(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
@@ -13511,12 +13540,71 @@ int desugar_inherited_aliases(Compiler *c) {
       nt_node_set_ref(nt, s, "new_name", ns);
       nt_node_set_ref(nt, s, "old_name", os);
       out[no++] = alias_forwarder_like(nt, s, nwc, hid);
+      /* the builtin's own method, in a class deriving from Hash, Array or
+         String: a call whose receiver is known to be of such a class names
+         it directly (desugar_builtin_alias_calls), and the forwarder keeps
+         its splat as written for one known only at run time */
+      if (alias_builtin_rooted(nt, cls, odc, n0)) {
+        int fd = out[no - 1], fb = nt_ref(nt, fd, "body"), fbn = 0;
+        const int *fbb = fb >= 0 ? nt_arr(nt, fb, "body", &fbn) : NULL;
+        nt_node_set_str(nt, fd, "alias_of_builtin", odc);
+        if (fbn == 1) nt_node_set_int(nt, fbb[0], "alias_fwd", 1);
+      }
       grew = changed = 1;
     }
     if (grew) nt_node_set_arr(nt, body, "body", out, no);
     free(st); free(out);
   }
   if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
+/* A call of an alias of a builtin's method (desugar_inherited_aliases'
+   alias_of_builtin) on a receiver known to be of the aliasing class, or a
+   receiverless one in its own methods, calls the builtin's method by its
+   own name: the forwarder splatted its arguments and handed on its block,
+   which a builtin outside the splat dispatch's names (`to_h`, `sort`) did
+   not take, and the call raised NoMethodError. A class on the receiver's
+   chain defining the builtin's name keeps the alias: in CRuby the alias
+   still reaches the builtin's. */
+int desugar_builtin_alias_calls(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    if (id >= c->node_cap) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    int recv = nt_ref(nt, id, "receiver"), k = -1;
+    if (recv >= 0) {
+      TyKind rt = c->ntype[recv];
+      if (ty_is_object(rt)) k = ty_object_class(rt);
+    }
+    else {
+      Scope *s = comp_scope_of(c, id);
+      if (s && !s->is_cmethod) k = s->class_id;
+    }
+    if (k < 0 || k >= c->nclasses) continue;
+    int mi = comp_method_in_chain(c, k, nm, NULL);
+    if (mi < 0 || c->scopes[mi].def_node < 0) continue;
+    const char *od = nt_str(nt, c->scopes[mi].def_node, "alias_of_builtin");
+    if (!od || comp_method_in_chain(c, k, od, NULL) >= 0) continue;
+    nt_node_set_str(nt, id, "name", strdup(od));
+    /* a receiverless one is self's (the subclass rewrite gave the bare
+       calls their self before this ran), and no longer a bare identifier */
+    if (recv < 0) {
+      int sf = nt_new_node(nt, "SelfNode");
+      if (sf >= 0) {
+        nt_node_set_int(nt, sf, "node_line", nt_int(nt, id, "node_line", 0));
+        nt_node_set_int(nt, sf, "node_file", nt_int(nt, id, "node_file", 0));
+        nt_node_set_ref(nt, id, "receiver", sf);
+        nt_node_set_str(nt, id, "call_operator", ".");
+        nt_node_set_int(nt, id, "vcall", 0);
+        comp_grow_node_arrays(c);
+        c->nscope[sf] = c->nscope[id];
+      }
+    }
+    changed = 1;
+  }
   return changed;
 }
 
