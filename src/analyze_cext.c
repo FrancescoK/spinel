@@ -5,6 +5,7 @@
 #include "codegen_internal.h"
 #include "cext_bridge.h"
 #include <ctype.h>
+#include "builtin_ops.h"
 NodeTable *sp_parse_snippet(const char *src);
 
 static const char *text(Compiler *c, int site, int n) {
@@ -175,6 +176,32 @@ void desugar_cext_decls(Compiler *c) {
         need(c, site, ac, 2); owner_open(c, site, &b, text(c, site, av[0]));
         const char *mod = text(c, site, av[1]); path(c, site, mod);
         buf_printf(&b, "%s %s\nend\n", name + 7, mod);
+      } else if (sp_streq(name, "__cext_ivar") || sp_streq(name, "__cext_eval") || sp_streq(name, "__cext_constant_reads")) {
+        need(c, site, ac, sp_streq(name, "__cext_constant_reads") ? 0 : 1);
+        buf_puts(&b, "nil");
+      } else if (sp_streq(name, "__cext_stub")) {
+        need(c, site, ac, 3);
+        int kind = (int)integer(c, site, av[0]), argc = (int)integer(c, site, av[2]);
+        const char *key = text(c, site, av[1]);
+        if (kind < 0 || kind > 4 || argc < 0)
+          unsupported_feature(c, site, "invalid C extension dispatch stub");
+        int idx = c->n_cext_stubs++;
+        c->cext_stubs = realloc(c->cext_stubs, sizeof(CextStub) * (size_t)c->n_cext_stubs);
+        c->cext_stubs[idx] = (CextStub){strdup(key), kind, argc, site};
+        buf_printf(&b, "def __cext_dispatch_%d(r", idx);
+        for (int j = 0; j < argc; j++) buf_printf(&b, ", a%d", j);
+        buf_puts(&b, ", &block)\n__cext_box(block)\n__cext_box(");
+        if (kind == 0) {
+          buf_puts(&b, "r.__cext_target(");
+          for (int j = 0; j < argc; j++) buf_printf(&b, "%sa%d", j ? ", " : "", j);
+          buf_puts(&b, argc ? ", &block)" : "&block)");
+        } else if (kind == 1 || kind == 2) {
+          buf_printf(&b, "r.instance_variable_%s(", kind == 1 ? "get" : "set"); symbol(&b, key);
+          buf_puts(&b, kind == 1 ? ")" : ", a0)");
+        } else if (kind == 3) {
+          path(c, site, key); buf_printf(&b, "r.const_get("); symbol(&b, key); buf_puts(&b, ")");
+        } else buf_printf(&b, "begin\n%s\nend", key);
+        buf_puts(&b, ")\nend\n");
       } else if (sp_streq(name, "__cext_literal_id")) {
         need(c, site, ac, 1); symbol(&b, text(c, site, av[0]));
       } else if (sp_streq(name, "__cext_funcall_arity")) {
@@ -192,6 +219,18 @@ void desugar_cext_decls(Compiler *c) {
     }
     int imported = nt->count;
     graft(c, site, &b, ext, slot, arity);
+    if (sp_streq(name, "__cext_stub")) {
+      nt_node_set_int(nt, site, "cext_extension", ext + 1);
+      nt_node_set_int(nt, site, "cext_stub", c->n_cext_stubs);
+      CextStub *stub = &c->cext_stubs[c->n_cext_stubs - 1];
+      for (int j = imported; j < nt->count; j++) if (nt_kind(nt, j) == NK_CallNode &&
+          nt_str(nt, j, "name") && sp_streq(nt_str(nt, j, "name"), "__cext_target"))
+        nt_node_set_str(nt, j, "name", stub->key);
+      for (int j = imported; j < nt->count; j++) if (nt_kind(nt, j) == NK_DefNode) {
+        nt_node_set_int(nt, j, "cext_extension", ext + 1);
+        nt_node_set_int(nt, j, "cext_stub", c->n_cext_stubs);
+      }
+    }
     if (slot >= 0) {
       const char *mn = text(c, site, av[1]);
       for (int j = imported; j < nt->count; j++)
@@ -205,13 +244,128 @@ int cext_scope(const Compiler *c, int mi) {
   return c->n_cext_extensions && mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
     nt_int(c->nt, c->scopes[mi].def_node, "cext_extension", 0) != 0;
 }
+static int constant_owned_in_chain(Compiler *c, const char *owner, const char *key) {
+  if (!owner) return 0;
+  if (const_owned_by_class(c, owner, key)) return 1;
+  int cid = comp_class_index(c, owner);
+  for (int n = 0; cid >= 0 && n < c->nclasses; n++, cid = c->classes[cid].parent)
+    if (const_owned_by_class(c, c->classes[cid].name, key)) return 1;
+  return const_owned_by_class(c, "Object", key);
+}
+static void builtin_constant_read(Compiler *c, int call, int mi) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int an = nt_ref(nt, call, "arguments"), ac = 0;
+  const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+  if (ac != 1 || nt_kind(nt, av[0]) != NK_SymbolNode) return;
+  const char *key = nt_str(nt, av[0], "value");
+  int recv = nt_ref(nt, call, "receiver");
+  const char *owner = const_get_recv_name(c, call, recv);
+  int value = -1;
+  const char *source = const_get_value_key(c, owner, key);
+  if (source && !constant_owned_in_chain(c, owner, key)) {
+    nt_node_set_int(nt, call, "cext_const_missing", 1); return;
+  }
+  if (source) {
+    value = nt_new_node(nt, "ConstantReadNode"); nt_node_set_str(nt, value, "name", source);
+  } else if (!const_get_value_key(c, owner, key) &&
+      (builtin_class_id(key) || is_builtin_module_const_name(key) || is_builtin_exception_name(key))) {
+    value = nt_new_node(nt, "ConstantReadNode"); nt_node_set_str(nt, value, "name", key);
+  } else if (owner && (builtin_class_id(owner) || is_builtin_module_const_name(owner))) {
+    value = nt_new_node(nt, "ConstantPathNode"); nt_node_set_str(nt, value, "name", key);
+    nt_node_set_ref(nt, value, "parent", recv);
+    comp_grow_node_arrays(c); c->nscope[value] = mi;
+    if (!infer_cext_builtin_constant(c, value)) value = -1;
+  }
+  if (value >= 0) {
+    comp_grow_node_arrays(c); c->nscope[value] = mi;
+    nt_node_set_int(nt, call, "cext_const_node", value + 1);
+  }
+}
+void cext_resolve_constant(Compiler *c, int call) {
+  if (nt_int(c->nt, call, "cext_const_node", 0)) return;
+  int an = nt_ref(c->nt, call, "arguments"), ac = 0;
+  const int *av = an >= 0 ? nt_arr(c->nt, an, "arguments", &ac) : NULL;
+  if (ac != 1 || nt_kind(c->nt, av[0]) != NK_SymbolNode) return;
+  const char *key = nt_str(c->nt, av[0], "value");
+  int recv = nt_ref(c->nt, call, "receiver");
+  if (!const_get_value_key(c, const_get_recv_name(c, call, recv), key)) return;
+  Scope *scope = comp_scope_of(c, call);
+  if (scope) builtin_constant_read(c, call, (int)(scope - c->scopes));
+}
+static void lower_constant_stub(Compiler *c, int mi) {
+  Scope *sc = &c->scopes[mi];
+  int index = nt_int(c->nt, sc->def_node, "cext_stub", 0) - 1;
+  if (index < 0 || c->cext_stubs[index].kind != 3 ||
+      nt_int(c->nt, sc->def_node, "cext_const_lowered", 0)) return;
+  const char *key = c->cext_stubs[index].key;
+  Buf body = {0};
+  buf_puts(&body, "def __cext_constant_stub(r)\n");
+  int opened = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    const char *cn = class_ruby_name(c, k);
+    if (!cn) continue;
+    buf_printf(&body, "%s r == %s\n__cext_box(%s.const_get(", opened++ ? "elsif" : "if", cn, cn);
+    symbol(&body, key); buf_puts(&body, "))\n");
+  }
+  static const char *const core[] = {"Object", "BasicObject", "Class", "Module", "String", "Array", "Hash", "Integer", "Float", "IO", NULL};
+  for (int i = 0; core[i]; i++) {
+    buf_printf(&body, "%s r == %s\n__cext_box(%s.const_get(", opened++ ? "elsif" : "if", core[i], core[i]);
+    symbol(&body, key); buf_puts(&body, "))\n");
+  }
+  for (int i = 0; i < c->n_cext_stubs; i++) {
+    const char *cn = c->cext_stubs[i].key;
+    if (c->cext_stubs[i].kind != 3 || (!builtin_class_id(cn) && !is_builtin_module_const_name(cn))) continue;
+    buf_printf(&body, "elsif r == %s\n__cext_box(%s.const_get(", cn, cn);
+    symbol(&body, key); buf_puts(&body, "))\n");
+  }
+  if (opened) buf_puts(&body, "else\n");
+  buf_puts(&body, "__cext_box(Object.const_get("); symbol(&body, key); buf_puts(&body, "))\n");
+  if (opened) buf_puts(&body, "end");
+  buf_puts(&body, "\nend");
+  NodeTable *tmp = sp_parse_snippet(body.p);
+  if (!tmp) unsupported_feature(c, sc->def_node, "invalid C extension constant stub");
+  int st = nt_ref(tmp, tmp->root_id, "statements"), n = 0;
+  const int *roots = nt_arr(tmp, st, "body", &n);
+  int start = c->nt->count;
+  int tmp_body = n == 1 ? nt_ref(tmp, roots[0], "body") : -1;
+  int root = tmp_body >= 0 ? nt_import_subtree((NodeTable *)c->nt, tmp, tmp_body) : -1;
+  nt_free(tmp); free(body.p);
+  if (root < 0) unsupported_feature(c, sc->def_node, "invalid C extension constant stub");
+  nt_node_set_ref((NodeTable *)c->nt, sc->def_node, "body", root); sc->body = root;
+  nt_node_set_int((NodeTable *)c->nt, sc->def_node, "cext_const_lowered", 1);
+  comp_grow_node_arrays(c);
+  for (int id = start; id < c->nt->count; id++) {
+    c->nscope[id] = mi;
+    if (nt_kind(c->nt, id) == NK_CallNode && nt_str(c->nt, id, "name") &&
+        sp_streq(nt_str(c->nt, id, "name"), "const_get")) {
+      nt_node_set_int((NodeTable *)c->nt, id, "cext_const_read", 1);
+      builtin_constant_read(c, id, mi);
+    }
+    if (nt_kind(c->nt, id) == NK_CallNode && nt_str(c->nt, id, "name") &&
+        sp_streq(nt_str(c->nt, id, "name"), "__cext_box"))
+      nt_node_set_int((NodeTable *)c->nt, id, "cext_synthetic", 1);
+  }
+}
 void register_cext_layouts(Compiler *c) {
   if (!c->n_cext_extensions) return;
   for (int mi = 0; mi < c->nscopes; mi++) if (cext_scope(c, mi)) {
     Scope *s = &c->scopes[mi];
+    if (nt_int(c->nt, s->def_node, "cext_stub", 0)) { s->is_ext_entry = 1; lower_constant_stub(c, mi); }
     for (int p = 0; p < s->nparams; p++) {
       LocalVar *lv = scope_local(s, s->pnames[p]);
       if (lv) lv->type = p == s->rest_idx ? TY_POLY_ARRAY : TY_POLY;
+    }
+  }
+  /* A Ruby method C may call publishes an opaque VALUE. Pin its return
+   * before inference, so ordinary callers and call plans see that same box;
+   * only methods named by the literal send table cross this boundary. */
+  for (int q = 0; q < c->n_cext_stubs; q++) {
+    CextStub *stub = &c->cext_stubs[q];
+    if (stub->kind != 0) continue;
+    for (int mi = 1; mi < c->nscopes; mi++) {
+      Scope *s = &c->scopes[mi];
+      if (s->class_id < 0 || !s->name || !sp_streq(s->name, stub->key)) continue;
+      s->ret = TY_POLY; s->ret_rbs_seeded = 1;
     }
   }
   for (int q = 0; q < c->n_cext_classes; q++) {
@@ -254,4 +408,50 @@ void inherit_cext_layouts(Compiler *c) {
       for (int a = q; a >= 0; a = c->classes[a].parent)
         if (a == top) { c->classes[q].cext_layout = 1; break; }
   }
+}
+
+static void known_name(char ***names, int *count, const char *name) {
+  if (!name) return;
+  for (int i = 0; i < *count; i++) if (sp_streq((*names)[i], name)) return;
+  *names = realloc(*names, sizeof(char *) * (size_t)(*count + 1));
+  (*names)[(*count)++] = strdup(name);
+}
+static void emit_missing_cext_send(Compiler *c, Buf *b) {
+  char **names = NULL; int count = 0;
+  for (int i = 0; i < c->nscopes; i++) if (c->scopes[i].class_id >= 0)
+    known_name(&names, &count, c->scopes[i].name);
+  for (int i = 0; i < bop_row_count(); i++) known_name(&names, &count, bop_row(i)->name);
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *ci = &c->classes[k];
+    for (int j = 0; j < ci->naliases; j++) known_name(&names, &count, ci->alias_new[j]);
+    for (int j = 0; j < ci->nreaders; j++) known_name(&names, &count, ci->readers[j]);
+    for (int j = 0; j < ci->nwriters; j++) {
+      Buf name = {0}; buf_printf(&name, "%s=", ci->writers[j]);
+      known_name(&names, &count, name.p); free(name.p);
+    }
+  }
+  buf_puts(b, "if (kind == 0) { static const char *const known[] = {\n");
+  for (int i = 0; i < count; i++) { emit_str_literal(b, names[i]); buf_puts(b, ",\n"); free(names[i]); }
+  free(names);
+  buf_puts(b, "NULL}; for (int i = 0; known[i]; i++) if (!strcmp(key, known[i]))\n"
+              "rb_bug(\"C extension called known method %s with uncompiled arity %d\", key, argc); }\n");
+}
+/* Stubs have ordinary call plans and representations; this table only adapts
+ * the boxed external ABI to their permanently boxed parameters. */
+void emit_cext_dispatch(Compiler *c, Buf *b) {
+  if (!c->n_cext_extensions) return;
+  buf_puts(b, "static sp_RbVal _sp_cext_dispatch(int kind, const char *key, sp_RbVal r, int argc, const sp_RbVal *argv, sp_Proc *block) {\n");
+  for (int mi = 1; mi < c->nscopes; mi++) {
+    Scope *sc = &c->scopes[mi];
+    int idx = sc->def_node >= 0 ? nt_int(c->nt, sc->def_node, "cext_stub", 0) - 1 : -1;
+    if (idx < 0) continue;
+    CextStub *stub = &c->cext_stubs[idx];
+    buf_printf(b, "if (kind == %d && argc == %d && !strcmp(key, ", stub->kind, stub->argc);
+    emit_str_literal(b, stub->key); buf_puts(b, ")) return ");
+    emit_method_cname(c, sc, b); buf_puts(b, "(r");
+    for (int j = 0; j < stub->argc; j++) buf_printf(b, ", argv[%d]", j);
+    buf_puts(b, ", block);\n");
+  }
+  emit_missing_cext_send(c, b);
+  buf_puts(b, "sp_raise_cls(\"NoMethodError\", \"C extension dispatch has no compiled stub\");\n}\n");
 }

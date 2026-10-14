@@ -19373,6 +19373,54 @@ static int strbuf_container_source_walk_body(Compiler *c, int node, int depth, i
 /* An opaque extension may change any String it can obtain from a container.
  * Demand those producer values explicitly; no Ruby []/append body exists from
  * which the ordinary mutation summaries could discover the inner effect. */
+int cext_demand_reader(Compiler *c, int call) {
+  const char *name = nt_str(c->nt, call, "name");
+  int recv = nt_ref(c->nt, call, "receiver");
+  if (!name || recv < 0) return 0;
+  int changed = 0;
+  size_t size = strlen(name) + 2;
+  char *ivar = malloc(size);
+  if (!ivar) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  snprintf(ivar, size, "@%s", name);
+  for (int k = 0; k < c->nclasses; k++) {
+    int owner = -1;
+    if (cls_fact_excludes(c, recv, k) ||
+        comp_resolve_member(c, k, name, 0, NULL, NULL) != SP_MEMBER_ATTR ||
+        !comp_reader_in_chain(c, k, name, &owner)) continue;
+    changed |= strbuf_promote_ivar(c, owner, ivar);
+  }
+  free(ivar);
+  return changed;
+}
+int cext_demand_string(Compiler *c, int value) {
+  if (share_frozen_literal(c, value)) return 0;
+  if (nt_kind(c->nt, value) == NK_ConstantReadNode) {
+    const char *name = nt_str(c->nt, value, "name");
+    LocalVar *slot = name ? comp_const(c, name) : NULL;
+    if (slot && (slot->type == TY_STRING || slot->type == TY_STRBUF)) {
+      int changed = slot->type != TY_STRBUF || !slot->str_shared || !c->strbuf_box[value];
+      slot->type = TY_STRBUF; slot->str_shared = 1; c->strbuf_box[value] = 1;
+      /* All reads of this holder must retain its identity across a C mutation. */
+      for (int read = 0; read < c->nt->count; read++) {
+        NodeKind kind = nt_kind(c->nt, read);
+        if (kind != NK_ConstantReadNode && kind != NK_ConstantPathNode) continue;
+        const char *key = nt_str(c->nt, read, "name");
+        if (!key || !sp_streq(key, name) || c->strbuf_box[read]) continue;
+        c->strbuf_box[read] = 1; changed = 1;
+      }
+      return changed;
+    }
+  }
+  if (nt_kind(c->nt, value) == NK_CallNode) {
+    int targets[CPT_MAX];
+    /* Walk user method return producers in cext_widen_containers. Demanding
+     * a copy of the call here would lose the producer's alias identity. */
+    if (cplan_targets(c, value, targets, CPT_MAX)) return 0;
+    int owner = -1; char ivar[256];
+    if (an_reader_ivar_of(c, value, &owner, ivar, sizeof ivar)) return cext_demand_reader(c, value);
+  }
+  return strbuf_demand_store_leaf(c, value, 0);
+}
 int cext_demand_container_strings(Compiler *c, int value) {
   return strbuf_container_source_walk(c, value, 0, SB_DEMAND);
 }

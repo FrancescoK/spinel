@@ -258,6 +258,8 @@ void comp_free(Compiler *c) {
   if (!c) return;
   for (int i = 0; i < c->n_cext_extensions; i++) { free(c->cext_extensions[i].name); free(c->cext_extensions[i].init); }
   free(c->cext_extensions);
+  for (int i = 0; i < c->n_cext_stubs; i++) free(c->cext_stubs[i].key);
+  free(c->cext_stubs);
   for (int i = 0; i < c->n_cext_classes; i++) free(c->cext_classes[i].path);
   free(c->cext_classes);
   share_facts_free(c);

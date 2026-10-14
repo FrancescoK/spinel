@@ -184,7 +184,7 @@ int holder_slot_text(Compiler *c, const HolderRef *h, char *out, size_t cap) {
 
 int holder_static_handle_buf(Compiler *c, int node, Buf *b) {
   HolderRef h;
-  if (!c->share_strings || !holder_static_node(nt_kind(c->nt, node)) || !holder_of_node(c, node, &h) || !h.r.share)
+  if ((!c->share_strings && !c->n_cext_extensions) || !holder_static_node(nt_kind(c->nt, node)) || !holder_of_node(c, node, &h) || (!h.r.share && !(c->n_cext_extensions && h.r.handle)))
     return 0;
   return holder_slot_buf(c, &h, b);
 }

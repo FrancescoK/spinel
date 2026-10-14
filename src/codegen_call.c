@@ -29071,9 +29071,29 @@ static int enum_own_outside_brk_wrapper(Compiler *c, int id) {
 }
 
 static int emit_cext_call(Compiler *c, int id, Buf *b) {
+  if (c->n_cext_extensions && nt_int(c->nt, id, "cext_const_read", 0)) {
+    if (nt_int(c->nt, id, "cext_const_missing", 0)) {
+      int ac = 0; const int *av = call_args(c->nt, id, &ac);
+      const char *key = ac == 1 ? nt_str(c->nt, av[0], "value") : "";
+      buf_puts(b, "(sp_raise_cls(\"NameError\", ");
+      Buf message = {0}; buf_printf(&message, "uninitialized constant %s", key);
+      emit_str_literal(b, message.p); free(message.p);
+      buf_puts(b, "), sp_box_nil())"); return 1;
+    }
+    int value = nt_int(c->nt, id, "cext_const_node", 0) - 1;
+    if (value >= 0) { emit_expr(c, value, b); return 1; }
+    int argc = 0, recv = nt_ref(c->nt, id, "receiver");
+    const int *argv = call_args(c->nt, id, &argc);
+    return emit_call_reflection_arms(c, id, b, c->nt, "const_get", recv, argc, argv, comp_ntype(c, recv));
+  }
   if (c->n_cext_extensions && nt_int(c->nt, id, "cext_synthetic", 0)) {
     const char *cn = nt_str(c->nt, id, "name");
     int argc = 0; const int *argv = call_args(c->nt, id, &argc);
+    if (cn && sp_streq(cn, "__cext_box")) {
+      if (argc != 1) unsupported_feature(c, id, "invalid C extension boxed result");
+      int value = nt_int(c->nt, argv[0], "cext_const_node", 0) - 1;
+      emit_boxed(c, value >= 0 ? value : argv[0], b); return 1;
+    }
     if (cn && sp_streq(cn, "__cext_init")) {
       int ext = argc == 1 ? nt_int(c->nt, argv[0], "value", -1) : -1;
       if (ext < 0 || ext >= c->n_cext_extensions) unsupported_feature(c, id, "invalid C extension initialization");

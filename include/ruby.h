@@ -62,7 +62,13 @@ static inline SIGNED_VALUE sp_cext_fix2long(VALUE v) {
 #define FIX2LONG(v) sp_cext_fix2long((VALUE)(v))
 #define FIX2INT(v) ((int)FIX2LONG(v))
 #define ID2SYM(id) (((VALUE)(id) << RUBY_SPECIAL_SHIFT) | RUBY_SYMBOL_FLAG)
+#ifdef SP_CEXT_RECORDER
+/* Keep this ID-producing operation visible in preprocessed extension source. */
+ID sp_cext_scanned_sym2id(VALUE);
+#define SYM2ID(v) sp_cext_scanned_sym2id((v))
+#else
 #define SYM2ID(v) ((ID)((VALUE)(v) >> RUBY_SPECIAL_SHIFT))
+#endif
 #define RB_GC_GUARD(v) (v)
 
 void rb_gc_mark(VALUE);

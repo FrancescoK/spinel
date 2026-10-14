@@ -7058,7 +7058,16 @@ static int cext_widen_containers(Compiler *c, int v, CextWalk *seen) {
   if (seen->nodes[v]) return 0;
   seen->nodes[v] = 1;
   int changed = 0;
+  if (nt_int(nt, v, "cext_const_read", 0)) cext_resolve_constant(c, v);
+  int constant = nt_int(nt, v, "cext_const_node", 0) - 1;
+  if (constant >= 0) {
+    changed |= cext_widen_containers(c, constant, seen);
+    if (c->strbuf_box[constant] && !c->strbuf_box[v]) { c->strbuf_box[v] = 1; changed = 1; }
+    return changed;
+  }
+  if (nt_kind(nt, v) == NK_CallNode) changed |= cext_demand_reader(c, v);
   TyKind t = infer_type(c, v);
+  if (t == TY_STRING || t == TY_STRBUF) changed |= cext_demand_string(c, v);
   if (ty_is_array(t) || ty_is_hash(t) || t == TY_POLY)
     changed |= cext_demand_container_strings(c, v);
   if (ty_is_array(t)) changed |= widen_arg_array(c, v);
@@ -7100,6 +7109,17 @@ static int cext_widen_containers(Compiler *c, int v, CextWalk *seen) {
         changed |= cext_widen_containers(c, av[q], seen);
     }
   } else if (kind == NK_CallNode) {
+    const char *name = nt_str(nt, v, "name");
+    int ac = 0, an = nt_ref(nt, v, "arguments");
+    const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+    if (name && sp_streq(name, "instance_variable_get") && ac == 1 && nt_kind(nt, av[0]) == NK_SymbolNode) {
+      char *ivar = strdup(nt_str(nt, av[0], "value"));
+      NT_FOREACH_KIND(nt, NK_InstanceVariableWriteNode, write) {
+        const char *wn = nt_str(nt, write, "name");
+        if (wn && sp_streq(wn, ivar)) changed |= cext_widen_containers(c, nt_ref(nt, write, "value"), seen);
+      }
+      free(ivar);
+    }
     int targets[CPT_MAX], n = cplan_targets(c, v, targets, CPT_MAX);
     if (!n && is_fresh_array(c, v)) changed |= cext_pin_array_producer(c, v);
     for (int q = 0; q < n; q++) {
@@ -9009,6 +9029,15 @@ static int infer_param_types_ex(Compiler *c, int settle) {
        its dummy-argument shape must not type real method params */
     const char *name = nt_str(nt, id, "name");
     int recv = nt_ref(nt, id, "receiver");
+    if (c->n_cext_extensions && name && sp_streq(name, "__cext_box") &&
+        nt_int(nt, id, "cext_synthetic", 0)) {
+      int ac = 0, an = nt_ref(nt, id, "arguments");
+      const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+      CextWalk seen = {calloc((size_t)nt->count + 1, 1), nt->count + 1};
+      for (int j = 0; j < ac; j++) changed |= cext_widen_containers(c, av[j], &seen);
+      free(seen.nodes);
+      continue;
+    }
 
     /* `Mod.fn(..., method(:m), ...)` where Mod declares `ffi_func fn` and the
        spec at that position is an ffi_callback: C calls m with the callback's

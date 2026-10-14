@@ -2151,7 +2151,8 @@ void an_cls_facts(Compiler *c) {
        to hold anything rather than nothing (#8720) */
     if (cf_protocol_name(s->name) || cf_opaque_name(s->name) || cf_is_dyn(&f, s->name) ||
         s->is_proc_form || s->is_lowered_yield ||
-        s->cs_synth || s->is_module_function || cf_prelude_scope(&f, mi)) {
+        s->cs_synth || s->is_module_function || cf_prelude_scope(&f, mi) ||
+        (c->n_cext_extensions && s->def_node >= 0 && nt_int(c->nt, s->def_node, "cext_stub", 0))) {
       f.protocol[mi] = 1;
       cf_all_params(&f, mi);
     }

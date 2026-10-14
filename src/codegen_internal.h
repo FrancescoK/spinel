@@ -2726,4 +2726,5 @@ size_t share_check_strip(char *s, size_t len);
 void share_check_declare_value(Compiler *c, int node);
 void share_check_declare_reads(Buf *b, size_t from, int node);
 void share_check_declare_local_reads(Compiler *c, Buf *b, size_t from, const char *name);
+void emit_cext_dispatch(Compiler *c, Buf *b);
 #endif

@@ -5353,4 +5353,4 @@ cext-compiler-test: $(SPINEL) lib/libspinel_rt.a lib/libspinel_cext_rt.a
 	@if ! command -v ruby >/dev/null 2>&1; then echo "cext-compiler-test: skipped (no ruby)"; exit 0; fi; \
 	RH=$$(ruby -rrbconfig -e 'print RbConfig::CONFIG["rubyhdrdir"]'); \
 	if [ ! -f "$$RH/ruby.h" ]; then echo "cext-compiler-test: skipped (no ruby.h)"; exit 0; fi; \
-	CC="$(CC)" ruby test/cext/compiler-test.rb
+	CC="$(CC)" ruby test/cext/compiler-test.rb && CC="$(CC)" ruby test/cext/send-test.rb

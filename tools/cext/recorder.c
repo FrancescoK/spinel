@@ -277,3 +277,21 @@ VALUE rb_yield(VALUE v) { (void)v;DENIED("rb_yield"); }
 VALUE rb_yield_values(int n,...) { (void)n;DENIED("rb_yield_values"); }
 VALUE rb_yield_values2(int n,const VALUE *v) { (void)n;(void)v;DENIED("rb_yield_values2"); }
 void rb_gc_start(void) { DENIED("rb_gc_start"); }
+
+ID rb_intern2(const char *s, long len) {
+    if (len < 0 || memchr(s, 0, (size_t)len)) refuse("rb_intern2", "invalid literal length");
+    char *name = malloc((size_t)len + 1);
+    if (!name) refuse("rb_intern2", "out of memory");
+    memcpy(name, s, (size_t)len); name[len] = 0;
+    ID id = rb_intern(name); free(name); return id;
+}
+VALUE rb_funcallv(VALUE v, ID id, int argc, const VALUE *args) { (void)v;(void)id;(void)argc;(void)args;DENIED("rb_funcallv"); }
+VALUE rb_iv_get(VALUE v, const char *s) { (void)v;(void)s;DENIED("rb_iv_get"); }
+VALUE rb_iv_set(VALUE v, const char *s, VALUE a) { (void)v;(void)s;(void)a;DENIED("rb_iv_set"); }
+VALUE rb_ivar_get(VALUE v, ID id) { (void)v;(void)id;DENIED("rb_ivar_get"); }
+VALUE rb_ivar_set(VALUE v, ID id, VALUE a) { (void)v;(void)id;(void)a;DENIED("rb_ivar_set"); }
+
+VALUE rb_block_call(VALUE v, ID id, int n, const VALUE *a, rb_block_call_func_t f, VALUE d) { (void)v;(void)id;(void)n;(void)a;(void)f;(void)d;DENIED("rb_block_call"); }
+
+ID sp_cext_scanned_sym2id(VALUE v) { return (ID)(v >> RUBY_SPECIAL_SHIFT); }
+VALUE rb_str_intern(VALUE v) { (void)v;DENIED("rb_str_intern"); }
