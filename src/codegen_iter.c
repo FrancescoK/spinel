@@ -5190,7 +5190,13 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
   Scope *fs = comp_scope_of(c, block);
   LocalVar *flv = (fs && bp0) ? scope_local(fs, bp0) : NULL;
   TyKind fsaved = flv ? flv->type : TY_UNKNOWN;
-  if (flv) { flv->type = et; for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]); }
+  int fnsaved = flv ? flv->nullable_int : 0;
+  if (flv) {
+    /* a widened parameter shadowed at a numeric element type still holds
+       the element's nil */
+    if (fsaved == TY_POLY && (et == TY_INT || et == TY_FLOAT)) flv->nullable_int = 1;
+    flv->type = et; for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);
+  }
   int t = ++g_tmp, ti = ++g_tmp, to = ++g_tmp, tw = ++g_tmp, tk = ++g_tmp, tnv = ++g_tmp, te = ++g_tmp;
   int eid = ++g_tmp, tj = ++g_tmp;
   int has_retval = (g_ret_type != TY_VOID && g_ret_type != TY_UNKNOWN);
@@ -5337,7 +5343,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
     if (live) buf_printf(b, "sp_poly_arr_live_truncate(%s, _t%d); _t%d = _t%d;\n", lv, tw, to, ti);
     else if (ote) buf_printf(b, "if (_t%d) sp_%sArray_cut(_t%d, _t%d);\n", t, kk, t, tw);
     else buf_printf(b, "if (_t%d) _t%d->len = _t%d;\n", t, t, tw);
-    if (flv) flv->type = fsaved;
+    if (flv) { flv->type = fsaved; flv->nullable_int = fnsaved; }
     *tr = t; *torig = to; *twp = tw;
     return 1;
   }
@@ -5401,7 +5407,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
     emit_indent(b, indent);
     buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_reraise_continues = 1; sp_raise_cls(_exccls%d, _excmsg%d); }\n", eid, eid, eid, eid);
   }
-  if (flv) flv->type = fsaved;
+  if (flv) { flv->type = fsaved; flv->nullable_int = fnsaved; }
   *tr = t; *torig = to; *twp = tw;
   return 1;
 }
