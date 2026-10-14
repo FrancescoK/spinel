@@ -11056,7 +11056,7 @@ int ctor_arity_error(Compiler *c, int ci, int initm, int argc, char *msg, size_t
   msg[0] = 0;
   if (initm < 0) {
     if (k->is_struct) {
-      int nm = k->nreaders;
+      int nm = k->nmembers;
       if (nm <= 0) return 0;
       if (k->is_data) {
         if (argc > nm) {

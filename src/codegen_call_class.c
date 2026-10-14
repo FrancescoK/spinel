@@ -2548,7 +2548,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
          one is spliced at static sites only and has no constructor to call. */
       if (c->classes[ci].is_struct && initm >= 0 && c->scopes[initm].yields) continue;
       if (c->classes[ci].is_struct && initm < 0) {
-        np = nreq = c->classes[ci].nreaders;
+        np = nreq = c->classes[ci].nmembers;
         /* a positional Hash standing for every member (keywords take the
            layout of emit_class_value_new_kw) */
         if (argc == 1 && argv && nt_kind(nt, argv[0]) == NK_HashNode) kw_ctor = 1;
@@ -2840,7 +2840,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
          like any class, and a yielding one has no constructor to call. */
       int gen_ctor = c->classes[ci].is_struct && initm < 0;
       if (c->classes[ci].is_struct && initm >= 0 && c->scopes[initm].yields) continue;
-      if (gen_ctor) np = nreq = c->classes[ci].nreaders;
+      if (gen_ctor) np = nreq = c->classes[ci].nmembers;
       /* A zero-arg construction also reaches a constructor whose params are all
          optional: the arm fills each with its default, exactly as the
          statically-known `Klass.new` does. */
