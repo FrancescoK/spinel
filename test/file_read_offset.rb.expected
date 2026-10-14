@@ -1,0 +1,10 @@
+"3456"
+"89"
+"789"
+""
+""
+"234"
+#<Encoding:BINARY (ASCII-8BIT)>
+[ArgumentError, "negative offset -1 given"]
+[ArgumentError, "negative length -1 given"]
+Errno::ENOENT
