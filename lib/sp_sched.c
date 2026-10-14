@@ -3379,9 +3379,12 @@ int sp_sched_wait_io_set(struct pollfd *set, int n, double timeout_s) {
    lock, for as long as there is some (PRE/POST: the scheduler lock NOT held).
    A popped thread leaves g_runnable before run_thread_once counts it in
    g_nrunning, and main's pump reads both to decide that nothing can wake it,
-   so a slot is held in g_nrunning across the pop. Every 61st pick returns to
-   the locked loop, which gives the global queue its turn and drains this
-   worker's readiness set. Answers whether it ran anything. */
+   so a slot is held in g_nrunning across the pop. Every 61st pick, and when a
+   descriptor of a thread pinned here is ready, it returns for one turn of the
+   locked loop, which drains this worker's readiness set and gives the global
+   queue its turn. Answers SP_LOCAL_TURN then, and otherwise whether it ran
+   anything. */
+#define SP_LOCAL_TURN 2
 static int sp_worker_run_local(int wid) {
   SP_ATOMIC_FETCH_ADD(&g_nrunning, 1, __ATOMIC_SEQ_CST);
   RQ_LOCK(wid); sp_thread *ft = runq_pop(&g_lrq[wid]); RQ_UNLOCK(wid);
@@ -3390,14 +3393,14 @@ static int sp_worker_run_local(int wid) {
     run_thread_once(ft);
     ft = NULL;
     if (SP_ATOMIC_LOAD(&g_stw_active, __ATOMIC_SEQ_CST) || SP_ATOMIC_LOAD(&g_shutdown, __ATOMIC_RELAXED)) break;
-    if ((++g_pick_tick % 61u) == 0) break;
+    if ((++g_pick_tick % 61u) == 0) { ran = SP_LOCAL_TURN; break; }
 #ifdef SP_EV_BACKEND
     /* a descriptor of a thread pinned here is ready: its event waits in this
        worker's own set, drained on the locked path, so go there now (the set
        is readable while an event is pending) */
     if (g_wslot[wid].evfd > 0) {
       struct pollfd ep = { g_wslot[wid].evfd, POLLIN, 0 };
-      if (poll(&ep, 1, 0) > 0) break;
+      if (poll(&ep, 1, 0) > 0) { ran = SP_LOCAL_TURN; break; }
     }
 #endif
     RQ_LOCK(wid); ft = runq_pop(&g_lrq[wid]); RQ_UNLOCK(wid);
@@ -3413,6 +3416,7 @@ static void *sp_worker_main(void *arg) {
   sp_worker_id = wid;          /* TLS: read only by this worker */
   sp_fiber_worker_init();
   SCHED_LOCK();
+  int locked_turn = 0;   /* the fast path asked for one turn of this loop */
   g_wslot[wid].tid = pthread_self();   /* publish under the lock; the monitor reads it there */
   g_wslot[wid].active = 1;
   for (;;) {
@@ -3427,10 +3431,16 @@ static void *sp_worker_main(void *arg) {
     /* A popped thread leaves g_runnable before run_thread_once counts it in
        g_nrunning; main's pump reads both to decide that nothing can wake it,
        so the slot is held in g_nrunning across the pop. */
-    {
+    /* A turn the fast path asked for is taken before going back to it: with
+       this worker's queue never empty (a thread that does not block), the
+       loop went straight back in, and neither the global queue nor the
+       readiness set had a turn. At one helper, a thread spawned before the
+       helper started waited on the global queue for good. */
+    if (!locked_turn) {
       RQ_LOCK(wid); int have = g_lrq[wid].head != NULL; RQ_UNLOCK(wid);
-      if (have) { SCHED_UNLOCK(); sp_worker_run_local(wid); SCHED_LOCK(); continue; }
+      if (have) { SCHED_UNLOCK(); locked_turn = sp_worker_run_local(wid) == SP_LOCAL_TURN; SCHED_LOCK(); continue; }
     }
+    locked_turn = 0;
 #ifdef SP_EV_BACKEND
     /* Drain what is ready before picking, every turn. A worker with runnable
        work never reaches the blocking wait below, and its OWN set is the only
@@ -3480,7 +3490,7 @@ static void *sp_worker_main(void *arg) {
         if (!SP_ATOMIC_LOAD(&g_stw_active, __ATOMIC_SEQ_CST)) {
           g_native_nfiber[wid] = 0;
           SP_ATOMIC_STORE(&g_wslot[wid].parked, 0, __ATOMIC_RELAXED);
-          sp_worker_run_local(wid);
+          locked_turn = sp_worker_run_local(wid) == SP_LOCAL_TURN;
           SCHED_LOCK();
           continue;
         }
