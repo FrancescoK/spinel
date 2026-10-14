@@ -2412,6 +2412,38 @@ static void cv_nonval_args(const NodeTable *nt, unsigned char *nonval, int call)
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   for (int a = 0; a < an; a++) nonval[av[a]] = 1;
 }
+/* A call with no receiver in a class or module body, made on the class as
+   self, that answers the class (is_class_self_answer: include,
+   private_class_method ...) makes it a value where its answer is used:
+   `X = private_class_method(:helper)` names the class X. Its answer is
+   unused as a statement before the last of a list, and as the last of a
+   class body whose class expression is unused itself; any other position
+   counts as used. cls is the enclosing class's constant path, discarded
+   whether n's own value is unused. */
+static void cv_self_answers(Compiler *c, unsigned char *v, int n, int cls, int discarded, int depth) {
+  const NodeTable *nt = c->nt;
+  if (n < 0 || depth > 400) return;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_CallNode && !discarded && cls >= 0 && nt_ref(nt, n, "receiver") < 0 &&
+      is_class_self_answer(nt_str(nt, n, "name")))
+    cv_mark_name(c, v, nt_str(nt, cls, "name"));
+  if (k == NK_StatementsNode) {
+    int m = 0; const int *ids = nt_arr(nt, n, "body", &m);
+    for (int j = 0; j < m; j++) cv_self_answers(c, v, ids[j], cls, j < m - 1 || discarded, depth + 1);
+    return;
+  }
+  int body = (k == NK_ClassNode || k == NK_ModuleNode) ? nt_ref(nt, n, "body") : -1;
+  int ncls = body >= 0 ? nt_ref(nt, n, "constant_path") : cls;
+  for (int i = 0; i < nt_num_refs(nt, n); i++) {
+    int r = nt_ref_at(nt, n, i);
+    if (r == body) cv_self_answers(c, v, r, ncls, discarded, depth + 1);
+    else cv_self_answers(c, v, r, ncls, 0, depth + 1);
+  }
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) cv_self_answers(c, v, ids[j], ncls, 0, depth + 1);
+  }
+}
 static void cv_build(Compiler *c) {
   const NodeTable *nt = c->nt;
   int nk = c->nclasses, nn = nt->count;
@@ -2529,6 +2561,7 @@ static void cv_build(Compiler *c) {
     if (e >= 0 && nt_kind(nt, e) != NK_SelfNode && cv_self_value(nt, nonval, nt_ref(nt, n, "body"), 1))
       cv_mark_name(c, v, nt_str(nt, e, "name"));
   }
+  cv_self_answers(c, v, nt_ref(nt, nt->root_id, "statements"), -1, 1, 0);
   if (owner && methods) all = 1;
   for (int k = 0; k < nk; k++) {
     int dn = c->classes[k].def_node;

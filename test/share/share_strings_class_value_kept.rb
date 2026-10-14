@@ -1,7 +1,8 @@
 # A class whose object the program hands out -- read into a variable,
 # answered by its own class method, frozen, tapped, through a constant
 # alias, as self in a class_eval block, as self in a module it extends or in
-# its `class << self` body -- can be held by a box, and a boxed call then
+# its `class << self` body, or answered by private_class_method or
+# public_class_method (which answer their receiver) -- can be held by a box, and a boxed call then
 # reaches its class method: the String it answers is the one that method
 # keeps, and a change through the answer shows through it.
 $all = []
@@ -48,5 +49,17 @@ class C10
   def self.tag(a) = ($k10 ||= +"k10")
 end
 p run([C10.me, Obj.new][ARGV.size])
-p $k1, $k2, $k3, $k4, $k7, $k8, $k9, $k10
+class C11
+  def self.tag(a) = ($k11 ||= +"k11")
+  def self.helper = 1
+  Me11 = private_class_method(:helper)
+end
+p run([C11::Me11, Obj.new][ARGV.size])
+class C12
+  def self.tag(a) = ($k12 ||= +"k12")
+  def self.helper = 1
+  Me12 = public_class_method(:helper)
+end
+p run([C12::Me12, Obj.new][ARGV.size])
+p $k1, $k2, $k3, $k4, $k7, $k8, $k9, $k10, $k11, $k12
 p $all

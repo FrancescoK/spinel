@@ -232,8 +232,11 @@ int is_visibility_or_module_function(const char *n); /* module_function private 
 int is_mixin_call(const char *n); /* include extend prepend */
 /* The calls on a class's constant or self that answer neither the class nor
    a block of its own (comp_class_may_be_value): new allocate name to_s
-   inspect === == ... respond_to? attr_* include extend prepend visibility */
+   inspect === == ... respond_to? attr_* visibility. Not include, extend,
+   prepend, private_constant, private_class_method and public_class_method:
+   those answer their receiver. */
 int is_class_plain_query(const char *n);
+int is_class_self_answer(const char *n); /* include extend prepend private_class_method public_class_method private_constant public_constant remove_method undef_method: answer their receiver */
 int is_self_rebinding_call(const char *n); /* instance_/class_/module_ eval and exec, define_singleton_method */
 int is_class_relatives_query(const char *n); /* ancestors superclass subclasses descendants included_modules */
 int is_class_query(const char *n); /* class */

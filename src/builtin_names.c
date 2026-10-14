@@ -503,10 +503,16 @@ int is_class_plain_query(const char *n) {
   static const char *const names[] = {
     "new", "allocate", "name", "to_s", "inspect", "===", "==", "!=", "<", "<=", ">", ">=", "<=>",
     "hash", "eql?", "equal?", "respond_to?", "is_a?", "kind_of?", "instance_of?", "const_defined?",
-    "method_defined?", "instance_methods", "private_class_method", "public_class_method",
-    "private_constant", "attr_accessor", "attr_reader", "attr_writer", "include?", NULL };
+    "method_defined?", "instance_methods", "attr_accessor", "attr_reader", "attr_writer",
+    "include?", NULL };
   for (int i = 0; n && names[i]; i++) if (sp_streq(n, names[i])) return 1;
-  return is_mixin_call(n) || is_visibility_or_module_function(n);
+  return is_visibility_or_module_function(n);
+}
+
+int is_class_self_answer(const char *n) {
+  return n && (is_mixin_call(n) || sp_streq(n, "private_class_method") || sp_streq(n, "public_class_method") ||
+               sp_streq(n, "private_constant") || sp_streq(n, "public_constant") ||
+               sp_streq(n, "remove_method") || sp_streq(n, "undef_method"));
 }
 
 int is_self_rebinding_call(const char *n) {
