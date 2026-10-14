@@ -5590,6 +5590,13 @@ int emit_poly_pred_value(Compiler *c, int id, const char *tvref,
    Emitted as a runtime tag/cls_id check; declined when a user class defines the
    name so the general dispatch (which then has arms) wins. (#3162) */
 static int reopened_owns(Compiler *c, const char *cls, const char *name);   /* below */
+void emit_base_arg(Compiler *c, int arg, int t, char *bv, size_t n, Buf *b) {
+  int ib = comp_ntype(c, arg) == TY_INT;
+  snprintf(bv, n, ib ? "_t%d" : "sp_poly_arg_int_chk(_t%d)", t);
+  buf_printf(b, ib ? "; sp_int _t%d = " : "; sp_RbVal _t%d = ", t);
+  if (ib) emit_int_expr(c, arg, b);
+  else emit_boxed(c, arg, b);
+}
 static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -5990,15 +5997,16 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
      the argument makes the call CRuby's ArgumentError rather than something
      to ignore. Receiver then argument are bound in that order, as the
      to_i(base) arm does: CRuby evaluates both before the call raises. */
-  if (sp_streq(name, "to_s") && argc == 1) {
+  if ((sp_streq(name, "to_s") || sp_streq(name, "inspect")) && argc == 1) {
     int tv = ++g_tmp, tb = ++g_tmp;
+    char bv[48];
     buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
-    buf_printf(b, "; sp_int _t%d = ", tb); emit_int_expr(c, argv[0], b);
-    buf_printf(b, "; _t%d.tag == SP_TAG_INT ? sp_int_to_s_base(_t%d.v.i, _t%d)"
-                  " : _t%d.tag == SP_TAG_BIGINT ? sp_bigint_to_s_base(sp_poly_as_bigint(_t%d), _t%d)"
+    emit_base_arg(c, argv[0], tb, bv, sizeof bv, b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_INT ? sp_int_to_s_base(_t%d.v.i, %s)"
+                  " : _t%d.tag == SP_TAG_BIGINT ? sp_bigint_to_s_base(sp_poly_as_bigint(_t%d), %s)"
                   " : (const char *)(sp_raise_cls(\"ArgumentError\","
                   " \"wrong number of arguments (given 1, expected 0)\"), (void *)0); })",
-               tv, tv, tb, tv, tv, tb);
+               tv, tv, bv, tv, tv, bv);
     return 1;
   }
   /* Hash#merge(other): fold both hashes into a general PolyPoly hash; a
@@ -17482,8 +17490,13 @@ static const struct { const char *cls; const char *m; } sp_builtin_kwpos_tbl[] =
 #undef BAC
 #undef BAK
 static int kwh_counts(const char *cls, const char *name) {
-  int fa;
-  if (builtin_method_arity(cls, name, &fa) && fa >= 0) return 1;
+  int fa, fixed = 0;
+  if (builtin_method_arity(cls, name, &fa)) { if (fa >= 0) return 1; }
+  else for (int i = 0; sp_builtin_arity_tbl[i].cls && !fixed; i++)
+    fixed = sp_streq(sp_builtin_arity_tbl[i].m, name) && sp_builtin_arity_tbl[i].a >= 0;
+  for (int i = 0; fixed && sp_builtin_arity_spec_tbl[i].cls; i++)
+    if (sp_streq(sp_builtin_arity_spec_tbl[i].cls, cls) && sp_streq(sp_builtin_arity_spec_tbl[i].m, name) &&
+        sp_builtin_arity_spec_tbl[i].min >= 0 && sp_builtin_arity_spec_tbl[i].min == sp_builtin_arity_spec_tbl[i].max) return 1;
   for (int i = 0; sp_builtin_kwpos_tbl[i].cls; i++)
     if (sp_streq(sp_builtin_kwpos_tbl[i].cls, cls) && sp_streq(sp_builtin_kwpos_tbl[i].m, name)) return 1;
   return 0;
@@ -18954,12 +18967,13 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
       /* the FIRST offending literal decides the message, as a real call
          validates arguments in order */
       int off = -1; NodeKind offk = (NodeKind)0;
+      int kwop = !sp_streq(nn, "round") && !sp_streq(nn, "step") && !sp_streq(nn, "clamp") && !sp_streq(nn, "between?");
       for (int a = 0; a < nc && off < 0; a++) {
         if (nv[a] < 0) continue;
         NodeKind ak = nt_kind(nt, nv[a]);
         /* a keyword hash is an OPTION (`round(half: :even)`), not an operand */
         if (ak == NK_NilNode || ak == NK_StringNode || ak == NK_SymbolNode ||
-            ak == NK_ArrayNode || ak == NK_TrueNode || ak == NK_FalseNode) {
+            ak == NK_ArrayNode || ak == NK_TrueNode || ak == NK_FalseNode || (ak == NK_KeywordHashNode && kwop)) {
           /* nil is an OPEN side for clamp and "no limit" for step */
           if (ak == NK_NilNode && (sp_streq(nn, "clamp") || sp_streq(nn, "step"))) continue;
           off = nv[a]; offk = ak;
@@ -18992,12 +19006,13 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
         int conv_of = sp_streq(nn, "digits") || sp_streq(nn, "[]");
         const char *litcls =
           offk == NK_StringNode ? "String" : offk == NK_SymbolNode ? "Symbol" :
-          offk == NK_ArrayNode ? "Array" : offk == NK_TrueNode ? "true" :
+          offk == NK_ArrayNode ? "Array" : offk == NK_KeywordHashNode ? "Hash" : offk == NK_TrueNode ? "true" :
           offk == NK_FalseNode ? "false" : "nil";
         const char *cn = nrt == TY_FLOAT ? "Float" : "Integer";
         TyKind rty = repr_of(c, id).as_ty;
         const char *dv = default_value_from_compiler(c, rty);
         buf_puts(b, "({ (void)("); emit_expr(c, nr, b); buf_puts(b, "); ");
+        if (offk == NK_KeywordHashNode) { buf_puts(b, "(void)("); emit_boxed(c, off, b); buf_puts(b, "); "); }
         if (cmpform) {
           /* CRuby names the operand: a class for a String/Array, the value
              itself for nil/true/false, the inspect form for a Symbol */
