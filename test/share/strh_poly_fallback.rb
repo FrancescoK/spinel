@@ -65,13 +65,11 @@ w = [s, +"t"]
 w2 = [s, +"t"]
 class Walker
   def each
-    v = yield
-    v << "Y"
-    v
+    yield.size
   end
 end
-Walker.new.each { w[0] }
-Walker.new.each { w2.first }
+p Walker.new.each { w[0] }, Walker.new.each { w2.first }
+w[1] << "!"
 p w, w2, s
 
 # destructuring block parameters
@@ -107,3 +105,7 @@ m2 << (m2[1] = +"q")
 xv = (m2[0] = +"r")
 xv << "X"
 p m1, m2, s
+
+# a safe navigation on an element that can be nil
+sn = [s, +"t"]
+p sn[5]&.size, sn[0]&.size

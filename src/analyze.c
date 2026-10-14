@@ -20955,8 +20955,8 @@ static int strh_pure_index(const NodeTable *nt, int a) {
 }
 /* Is the value of node n unused: a statement that is not its list's last, or
    the last of a loop's body, of a block an iterator that ignores its block's
-   value (each, times, ...) runs, or of an `if` arm whose own value is
-   unused? */
+   value (each, times, ...) runs, or of an `if` arm or a begin or rescue body
+   whose own value is unused? */
 static int strh_value_ignored(Compiler *c, const int *par, int n) {
   const NodeTable *nt = c->nt;
   for (int depth = 0; depth < 8 && n >= 0 && n < nt->count; depth++) {
@@ -20987,10 +20987,12 @@ static int strh_value_ignored(Compiler *c, const int *par, int n) {
           return (rt == TY_UNKNOWN || rt == TY_STRING || rt == TY_STRBUF) && !share_builtin_overridden(c, "String", nm);
         return 0;
       }
-      if (gk != NK_IfNode && gk != NK_UnlessNode && gk != NK_ElseNode) return 0;
+      if (g >= 0 && sp_streq(nt_type(nt, g), "EnsureNode")) return 1;
+      if (gk != NK_IfNode && gk != NK_UnlessNode && gk != NK_ElseNode && gk != NK_BeginNode && gk != NK_RescueNode)
+        return 0;
       n = g;
     }
-    else if (pk == NK_ElseNode) n = p;
+    else if (pk == NK_ElseNode || pk == NK_BeginNode || pk == NK_RescueNode) n = p;
     else if ((pk == NK_IfNode || pk == NK_UnlessNode) && nt_ref(nt, p, "predicate") != n) n = p;
     else return 0;
   }
@@ -21025,6 +21027,10 @@ static int strh_elem_use_ok(Compiler *c, const int *par, int e) {
     int ca = nt_ref(nt, p, "arguments"), argc = 0;
     if (ca >= 0) nt_arr(nt, ca, "arguments", &argc);
     if (!nm || share_builtin_overridden(c, "String", nm)) return 0;
+    /* (a safe navigation skips a nil element, which a test of the handle
+       would raise on) */
+    const char *cop = nt_str(nt, p, "call_operator");
+    if (cop && sp_streq(cop, "&.")) return 0;
     /* (the element can be nil: nil answers a few of these as a String does,
        the rest raise the NoMethodError the element read tests for) */
     if (is_nil_method(nm) && !sp_streq(nm, "nil?") && !sp_streq(nm, "equal?") && !sp_streq(nm, "==") &&
@@ -21048,6 +21054,10 @@ static int strh_elem_use_ok(Compiler *c, const int *par, int e) {
       return 1;
     if (pr < 0 || !pn) return 0;
     TyKind rt = comp_ntype(c, pr);
+    /* (the identity or equality of a String and an element, nil included) */
+    if ((rt == TY_STRING || rt == TY_STRBUF) &&
+        (sp_streq(pn, "equal?") || sp_streq(pn, "==") || sp_streq(pn, "!=")) && !share_builtin_overridden(c, "String", pn))
+      return 1;
     int op = rt == TY_STRH_ARRAY || rt == TY_UNKNOWN ? strh_call_op_in(c, pc, TY_STRH_ARRAY, 1) : STRH_NONE;
     return op == STRH_PUSH || op == STRH_STORE;
   }

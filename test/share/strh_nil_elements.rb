@@ -34,6 +34,8 @@ rescue NoMethodError => e
   puts e.message
 end
 p a, a[2], a[2].nil?, a[2].equal?(nil), a[2] == nil, a[1].nil?
+yy = +"yy"
+p yy.equal?(a[5]), yy == a[5], yy != a[5], a[5] == yy, a[0].equal?(s)
 y = a[7]
 p y.equal?(nil), y.nil?, y
 p a[9]

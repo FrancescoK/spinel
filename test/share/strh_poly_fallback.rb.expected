@@ -28,13 +28,17 @@
 [["s!..mn"], ["k"]]
 "s!..mn"
 {k: ["s!..mn", "hv", "third"]}
-["s!..mnYY", "t"]
-["s!..mnYY", "t"]
-"s!..mnYY"
-["s!..mnYYDE", "dD"]
-["s!..mnYYDE", "dE"]
+6
+6
+["s!..mn", "t!"]
+["s!..mn", "t"]
+"s!..mn"
+["s!..mnDE", "dD"]
+["s!..mnDE", "dE"]
 "w!V"
 "nV"
 ["q", "q"]
 ["rX", "q", "q"]
-"s!..mnYYDE"
+"s!..mnDE"
+nil
+8
