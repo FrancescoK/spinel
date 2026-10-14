@@ -1444,6 +1444,9 @@ static void cf_node(CF *f, int v) {
   case NK_SelfNode: {
     if (cf_in_exec_block(f, v)) { cf_all(f, v); return; }
     int si = cf_scope_of(f, v);
+    /* a self a pass gave a call as its receiver after the scopes were
+       walked (`r` -> `self.r`) has none recorded: the call's is its */
+    if (si == 0 && f->par && v < f->nnodes && f->par[v] >= 0) si = cf_scope_of(f, f->par[v]);
     /* `def (self.class).m`: the receiver is the enclosing scope's self */
     for (int x = v, q = f->par ? f->par[v] : -1; q >= 0; x = q, q = f->par[q]) {
       if (nt_kind(nt, q) != NK_DefNode) continue;
