@@ -21,6 +21,21 @@
 #define sp_sym_intern sp_poly_cold_sym_intern
 #include "spinel_rt.h"
 
+#ifdef SP_CEXT
+sp_RbVal sp_cext_plain_object_new(void) {
+  return sp_box_obj(sp_Object_new(),SP_BUILTIN_OBJECT);
+}
+sp_RbVal sp_cext_hash_new(void) {
+  return sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH);
+}
+void sp_cext_hash_set(sp_RbVal hash, sp_RbVal key, sp_RbVal value) {
+  if(hash.tag != SP_TAG_OBJ || hash.cls_id != SP_BUILTIN_POLY_POLY_HASH)
+    sp_raise_cls("TypeError", "expected a widened Hash");
+  if(sp_gc_is_frozen(hash.v.p))sp_raise_frozen_hash_at(hash.v.p,SP_BUILTIN_POLY_POLY_HASH);
+  sp_PolyPolyHash_set(hash.v.p,key,value);
+}
+#endif
+
 const char *(*sp_class_name_fn)(sp_Class);
 const char *(*sp_class_display_fn)(sp_Class);
 /* the hooks the generated unit installs for this unit (SP_INSTALL_HOOK) */

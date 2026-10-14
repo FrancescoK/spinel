@@ -11,6 +11,7 @@ def run(*args, env: {})
 end
 Dir.mktmpdir('spinel-cxl-') do |tmp|
   CextRecord.record(name: 'cxl_sample', init: 'Init_cxl_sample',
+    libs: [],
     sources: [File.join(ROOT, 'test/cext/threads/sample.c')],
     output: File.join(tmp, 'cxl_sample.json'), declarations: File.join(tmp, 'cxl_sample.rb'),
     object_archive: File.join(tmp, 'cxl_sample.a'))

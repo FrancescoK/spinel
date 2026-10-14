@@ -29272,6 +29272,10 @@ static int emit_cext_call(Compiler *c, int id, Buf *b) {
   if (c->n_cext_extensions && nt_int(c->nt, id, "cext_synthetic", 0)) {
     const char *cn = nt_str(c->nt, id, "name");
     int argc = 0; const int *argv = call_args(c->nt, id, &argc);
+    if (cn && sp_streq(cn, "__cext_class_key")) {
+      if(argc!=1 || nt_kind(c->nt,argv[0])!=NK_StringNode)unsupported_feature(c,id,"invalid C extension class key");
+      buf_puts(b,"_sp_cext_class_lookup(");emit_expr(c,argv[0],b);buf_puts(b,")");return 1;
+    }
     if (cn && sp_streq(cn, "__cext_box")) {
       if (argc != 1) unsupported_feature(c, id, "invalid C extension boxed result");
       int value = nt_int(c->nt, argv[0], "cext_const_node", 0) - 1;

@@ -2999,6 +2999,12 @@ static void *sp_sysmon_main(void *arg) {
     for (int i = 0; i < sp_active_workers; i++) {
       sp_thread *r = g_wslot[i].active ? SP_ATOMIC_LOAD(&g_wslot[i].cur, __ATOMIC_ACQUIRE) : NULL;
       if (!r) continue;
+#ifdef SP_CEXT
+      /* Repeat I/O nudges until unregister closes the lifetime of UBF data.
+         This covers cancellation arriving just before the native syscall. */
+      if(r->cext_repeat_unblock && r->cext_unblock && r->fiber && sp_fiber_inject_pending(r->fiber))
+        r->cext_unblock(r->cext_unblock_data);
+#endif
       busy = 1;
       if (!SP_ATOMIC_LOAD(&r->preempt_request, __ATOMIC_ACQUIRE) && (now - wslot_since(i)) >= SP_PREEMPT_QUANTUM) {
         SP_ATOMIC_STORE(&r->preempt_request, 1, __ATOMIC_RELEASE);
@@ -3950,13 +3956,14 @@ static void sp_thread_deliver(sp_thread *t, int is_kill,
 }
 
 #if defined(SP_CEXT) && defined(SP_THREADS)
-int sp_cext_native_register(void (*unblock)(void *), void *data) {
+int sp_cext_native_register(void (*unblock)(void *), void *data,int repeat) {
   SCHED_LOCK();
   sp_thread *t = g_current;
   int pending = t && t->fiber && sp_fiber_inject_pending(t->fiber);
   if (t && !pending) {
     t->cext_unblock = unblock;
     t->cext_unblock_data = data;
+    t->cext_repeat_unblock = repeat;
   }
   SCHED_UNLOCK();
   return !pending;
@@ -3966,6 +3973,7 @@ void sp_cext_native_unregister(void) {
   if (g_current) {
     g_current->cext_unblock = NULL;
     g_current->cext_unblock_data = NULL;
+    g_current->cext_repeat_unblock = 0;
   }
   SCHED_UNLOCK();
 }

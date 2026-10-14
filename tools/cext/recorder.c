@@ -1,5 +1,7 @@
 /* Standalone definition recorder, never part of the program runtime. */
 #include "ruby.h"
+#include "ruby/encoding.h"
+#include "ruby/thread.h"
 #include "recorder.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,7 +11,7 @@
 typedef struct Node {
     char *name, *bytes;
     size_t length;
-    int module, frozen, exported;
+    int module, frozen, exported, opaque;
     char *superclass;
     unsigned index;
     struct Node *next;
@@ -38,6 +40,7 @@ static void refuse(const char *api, const char *why) {
     fprintf(stderr, "spinel cext: %s: %s: %s\n", extension, api, why);
     exit(2);
 }
+void sp_cext_record_external(const char *name) { refuse(name,"native library calls are not allowed during Init"); }
 static void *alloc(size_t n) {
     void *p = calloc(1, n);
     if (!p) refuse("recorder", "out of memory");
@@ -100,6 +103,7 @@ static Node *new_node(void) {
 }
 static VALUE named(const char *name, int module) {
     for (Node *n = nodes; n; n = n->next) if (n->name && !strcmp(n->name, name)) {
+        if(n->module==-1)n->module=module;
         if (n->module != module) refuse("rb_define_class/module", "class/module kind mismatch");
         return (VALUE)n;
     }
@@ -167,7 +171,7 @@ static VALUE define(VALUE outer, const char *name, VALUE super, int module) {
     field("path", owner(v, "definition")->name);
     if (!module) {
         Node *s = owner(super, "rb_define_class");
-        if (s->module) refuse("rb_define_class", "superclass must be a class");
+        if (s->module == 1) refuse("rb_define_class", "superclass must be a class");
         Node *klass = owner(v,"rb_define_class");
         if (klass->superclass && strcmp(klass->superclass,s->name)) refuse("rb_define_class","superclass mismatch when reopening class");
         if (!klass->superclass) klass->superclass=copy(s->name);
@@ -176,6 +180,10 @@ static VALUE define(VALUE outer, const char *name, VALUE super, int module) {
     end(); return v;
 }
 VALUE rb_define_class(const char *n, VALUE s) { return define(rb_cObject, n, s, 0); }
+VALUE rb_obj_alloc(VALUE klass) {
+    if(klass!=rb_cObject)refuse("rb_obj_alloc","only plain Object allocation is supported during Init");
+    Node *n=new_node();n->opaque=1;return (VALUE)n;
+}
 VALUE rb_define_class_under(VALUE o, const char *n, VALUE s) { return define(o, n, s, 0); }
 VALUE rb_define_module(const char *n) { return define(rb_cObject, n, Qnil, 1); }
 VALUE rb_define_module_under(VALUE o, const char *n) { return define(o, n, Qnil, 1); }
@@ -213,7 +221,7 @@ VALUE rb_str_new(const char *s, long len) {
     if (len) memcpy(n->bytes,s,(size_t)len); return (VALUE)n;
 }
 VALUE rb_str_new_cstr(const char *s) { return rb_str_new(s,(long)strlen(s)); }
-VALUE rb_str_freeze(VALUE v) { Node *n = node(v,"rb_str_freeze"); if (n->name) refuse("rb_str_freeze","expected string"); if (n->exported && !n->frozen) refuse("rb_str_freeze","freeze string constants before defining them"); n->frozen=1; return v; }
+VALUE rb_str_freeze(VALUE v) { Node *n = node(v,"rb_str_freeze"); if (n->name || n->opaque) refuse("rb_str_freeze","expected string"); if (n->exported && !n->frozen) refuse("rb_str_freeze","freeze string constants before defining them"); n->frozen=1; return v; }
 void rb_define_const(VALUE o, const char *n, VALUE v) {
     constant_name(n);
     bind(o,n,v);
@@ -224,6 +232,7 @@ void rb_define_const(VALUE o, const char *n, VALUE v) {
     else if (SYMBOL_P(v)) { quoted(events,"symbol"); field("value",rb_id2name(SYM2ID(v))); }
     else {
         Node *x=node(v,"rb_define_const"); x->exported=1;
+        if(x->opaque)refuse("rb_define_const","opaque Object constants are outside the recorder subset");
         if (x->name) { quoted(events,"reference"); field("value",x->name); }
         else { quoted(events,"string"); fputs(",\"hex\":\"",events); for(size_t i=0;i<x->length;i++) fprintf(events,"%02x",(unsigned char)x->bytes[i]); fputc('"',events); fprintf(events, ",\"object\":%u,\"frozen\":%s", x->index, x->frozen ? "true" : "false"); }
     }
@@ -234,7 +243,20 @@ void rb_gc_unregister_address(VALUE *v) { (void)v; }
 void rb_global_variable(VALUE *v) { (void)v; }
 #define DENIED(api) refuse(api,"Ruby execution or runtime state is not allowed during Init")
 VALUE rb_funcall(VALUE v, ID id, int argc, ...) { (void)v;(void)id;(void)argc;DENIED("rb_funcall"); }
-VALUE rb_const_get(VALUE v, ID id) { (void)v;(void)id;DENIED("rb_const_get"); }
+VALUE rb_const_get(VALUE value,ID id) {
+    const char *name=rb_id2name(id);constant_name(name);
+    Binding *existing=binding(value,name);
+    if(existing)return existing->value;
+    Node *parent=owner(value,"rb_const_get");
+    size_t length=strlen(parent->name)+strlen(name)+3;
+    char *full=alloc(length);
+    if(value==rb_cObject)strcpy(full,name);
+    else snprintf(full,length,"%s::%s",parent->name,name);
+    Node *reference=new_node();reference->name=full;reference->module=-1;
+    bind(value,name,(VALUE)reference);
+    event("reference",value);field("path",full);end();
+    return (VALUE)reference;
+}
 VALUE rb_eval_string(const char *s) { (void)s;DENIED("rb_eval_string"); }
 void rb_raise(VALUE v,const char *s,...) { (void)v;(void)s;DENIED("rb_raise"); }
 void rb_exc_raise(VALUE v) { (void)v;DENIED("rb_exc_raise"); }
@@ -267,7 +289,29 @@ long sp_cext_string_len(VALUE v) { (void)v;DENIED("RSTRING_LEN"); }
 VALUE rb_str_cat(VALUE v,const char *s,long n) { (void)v;(void)s;(void)n;DENIED("rb_str_cat"); }
 VALUE rb_str_cat_cstr(VALUE v,const char *s) { (void)v;(void)s;DENIED("rb_str_cat_cstr"); }
 VALUE rb_ary_new(void) { DENIED("rb_ary_new"); }
+VALUE rb_hash_new(void) { DENIED("rb_hash_new"); }
+char *sp_cext_string_cstr(VALUE v) { (void)v;DENIED("StringValueCStr"); }
+void ruby_xfree(void *p) { free(p); }
+void rb_fd_init(rb_fdset_t *s) { (void)s;DENIED("rb_fd_init"); }
+void rb_fd_term(rb_fdset_t *s) { (void)s;DENIED("rb_fd_term"); }
+void rb_fd_set(int fd,rb_fdset_t *s) { (void)fd;(void)s;DENIED("rb_fd_set"); }
+int rb_fd_isset(int fd,const rb_fdset_t *s) { (void)fd;(void)s;DENIED("rb_fd_isset"); }
+int rb_thread_fd_select(int n,rb_fdset_t *r,rb_fdset_t *w,rb_fdset_t *e,struct timeval *t) { (void)n;(void)r;(void)w;(void)e;(void)t;DENIED("rb_thread_fd_select"); }
+void *sp_cext_allocv(VALUE *v,size_t s,size_t n) { (void)v;(void)s;(void)n;DENIED("RB_ALLOCV_N"); }
+VALUE rb_utf8_str_new(const char *s,long n) { (void)s;(void)n;DENIED("rb_utf8_str_new"); }
+rb_encoding *rb_ascii8bit_encoding(void) { DENIED("rb_ascii8bit_encoding"); }
+VALUE rb_enc_associate(VALUE v,rb_encoding *e) { (void)v;(void)e;DENIED("rb_enc_associate"); }
+int rb_enc_str_coderange(VALUE v) { (void)v;DENIED("rb_enc_str_coderange"); }
+VALUE rb_hash_new_capa(long n) { (void)n;DENIED("rb_hash_new_capa"); }
+VALUE rb_hash_aset(VALUE h,VALUE k,VALUE v) { (void)h;(void)k;(void)v;DENIED("rb_hash_aset"); }
+int rb_num2int(VALUE v) { (void)v;DENIED("NUM2INT"); }
+void rb_check_type(VALUE v,int t) { (void)v;(void)t;DENIED("Check_Type"); }
+VALUE rb_ll2inum(long long n) { (void)n;DENIED("LL2NUM"); }
+VALUE rb_float_new(double n) { (void)n;DENIED("DBL2NUM"); }
+VALUE rb_ary_new_capa(long n) { (void)n;DENIED("rb_ary_new_capa"); }
 VALUE rb_ary_push(VALUE v,VALUE i) { (void)v;(void)i;DENIED("rb_ary_push"); }
+VALUE rb_ary_pop(VALUE v) { (void)v;DENIED("rb_ary_pop"); }
+void rb_ary_store(VALUE v,long i,VALUE item) { (void)v;(void)i;(void)item;DENIED("rb_ary_store"); }
 VALUE rb_ary_entry(VALUE v,long i) { (void)v;(void)i;DENIED("rb_ary_entry"); }
 long sp_cext_array_len(VALUE v) { (void)v;DENIED("RARRAY_LEN"); }
 

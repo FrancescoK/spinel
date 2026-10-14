@@ -19677,6 +19677,15 @@ int cext_demand_reader(Compiler *c, int call) {
 }
 int cext_demand_string(Compiler *c, int value) {
   if (share_frozen_literal(c, value)) return 0;
+  if(nt_kind(c->nt,value)==NK_InstanceVariableReadNode) {
+    Scope *scope=comp_scope_of(c,value);
+    const char *name=nt_str(c->nt,value,"name");
+    if(scope && scope->class_id>=0 && name) {
+      int changed = strbuf_promote_ivar(c,scope->class_id,name);
+      if (!c->strbuf_box[value]) { comp_set_strbuf_box(c, value, 1); changed = 1; }
+      return changed;
+    }
+  }
   if (nt_kind(c->nt, value) == NK_ConstantReadNode) {
     const char *name = nt_str(c->nt, value, "name");
     LocalVar *slot = name ? comp_const(c, name) : NULL;
@@ -19698,9 +19707,9 @@ int cext_demand_string(Compiler *c, int value) {
     int targets[CPT_MAX];
     /* Walk user method return producers in cext_widen_containers. Demanding
      * a copy of the call here would lose the producer's alias identity. */
-    if (cplan_targets(c, value, targets, CPT_MAX)) return 0;
+    if (cplan_targets(c, value, targets, CPT_MAX)>0) return 0;
     int owner = -1; char ivar[256];
-    if (an_reader_ivar_of(c, value, &owner, ivar, sizeof ivar)) return cext_demand_reader(c, value);
+    if (an_reader_ivar_of(c, value, &owner, ivar, sizeof ivar)) return strbuf_promote_ivar(c,owner,ivar);
   }
   return strbuf_demand_store_leaf(c, value, 0);
 }
@@ -22609,6 +22618,21 @@ static int an_tail_arm(Compiler *c, RetHandles *R, int a, TailCount *tc) {
    the return channel. Count it with the pickup's own tail predicate. */
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   const NodeTable *nt = c->nt;
+  if (!R->fresh && c->n_cext_extensions && n >= 0 &&
+      nt_kind(nt, n) == NK_InstanceVariableReadNode && comp_ntype(c, n) == TY_STRBUF) {
+    if (g_repr_check) repr_channel_predict(c, n, tc->mi, RCH_PUBLISH);
+    tc->reads++;
+    return 1;
+  }
+  if(!R->fresh && c->n_cext_extensions && n>=0 && nt_kind(nt,n)==NK_LocalVariableReadNode) {
+    Scope *scope=comp_scope_of(c,n);
+    const char *name=nt_str(nt,n,"name");
+    LocalVar *local=scope && name ? scope_local(scope,name) : NULL;
+    if(local && local->type==TY_STRBUF) {
+      if(g_repr_check)repr_channel_predict(c,n,tc->mi,RCH_PUBLISH);
+      tc->reads++;return 1;
+    }
+  }
   if (share_return_owned(c, n, tc->mi)) {
     if (g_repr_check && !R->fresh) repr_channel_predict(c, n, tc->mi, RCH_CLEAR);
     tc->fresh++; return 1;
@@ -22811,7 +22835,21 @@ static void an_fresh_returns(Compiler *c, RetHandles *R) {
   R->prev = NULL;
 }
 static void an_mark_handle_returns(Compiler *c) {
-  if (!c->share_strings) return;
+  if (!c->share_strings) {
+    if(c->n_cext_extensions)for(int mi=1;mi<c->nscopes;mi++) {
+      Scope *method=&c->scopes[mi];int tail=scope_body_last(c,mi);
+      if (method->ret == TY_STRING && tail >= 0 &&
+          nt_kind(c->nt, tail) == NK_InstanceVariableReadNode && comp_ntype(c, tail) == TY_STRBUF) {
+        method->ret_handle = 1;
+        continue;
+      }
+      if(method->ret!=TY_STRING || tail<0 || nt_kind(c->nt,tail)!=NK_LocalVariableReadNode)continue;
+      const char *name=nt_str(c->nt,tail,"name");
+      LocalVar *local=name ? scope_local(method,name) : NULL;
+      if(local && local->type==TY_STRBUF)method->ret_handle=1;
+    }
+    return;
+  }
   RetHandles R = { 0 };
   R.st = calloc((size_t)c->nscopes + 1, 1);
   if (!R.st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }

@@ -7499,7 +7499,7 @@ static TyKind infer_call_prelude(Compiler *c, int id) {
     }
     const char *cn = nt_str(c->nt, id, "name");
     int synthetic = nt_int(c->nt, id, "cext_synthetic", 0);
-    if (synthetic && cn && (sp_streq(cn, "__cext_invoke") || sp_streq(cn, "__cext_constant_value") || sp_streq(cn, "__cext_box"))) return TY_POLY;
+    if (synthetic && cn && (sp_streq(cn, "__cext_invoke") || sp_streq(cn, "__cext_constant_value") || sp_streq(cn, "__cext_box") || sp_streq(cn, "__cext_class_key"))) return TY_POLY;
     if (synthetic && cn && sp_streq(cn, "__cext_init")) return TY_NIL;
     if (synthetic && cn && sp_streq(cn, "__cext_share_new_array")) return TY_POLY_ARRAY;
     if (cn && sp_streq(cn, "source_location")) {

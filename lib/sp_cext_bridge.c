@@ -3,10 +3,12 @@
 #ifdef SP_CEXT
 #include "sp_cext.h"
 #include "sp_string.h"
+#include <ruby/encoding.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <math.h>
 #include "sp_setjmp.h"
 void sp_exc_arm(jmp_buf);
 void sp_exc_disarm(void);
@@ -150,6 +152,13 @@ static sp_cext_data *data_object(VALUE object) {
         rb_raise(rb_eTypeError,"expected TypedData object");
     return r.v.p;
 }
+VALUE rb_obj_alloc(VALUE klass) {
+    if(!strcmp(class_name(klass),"Object"))return sp_cext_value(sp_cext_plain_object_new());
+    sp_RbVal value=sp_cext_rbval(klass);
+    if(value.tag==SP_TAG_CLASS && value.cls_id>=0 && sp_cext_data_class_fn && sp_cext_data_class_fn(value.cls_id))
+        return sp_cext_value(sp_box_obj(sp_cext_class_alloc_fn(value.cls_id),value.cls_id));
+    rb_raise(rb_eTypeError,"class has no C extension allocation hook");
+}
 VALUE rb_data_typed_object_wrap(VALUE klass,void *data,const rb_data_type_t *type) {
     sp_RbVal k=sp_cext_rbval(klass);
     if(k.tag!=SP_TAG_CLASS || k.cls_id==SP_CLASS_BY_NAME || !sp_cext_object_alloc_fn ||
@@ -196,6 +205,28 @@ sp_RbVal sp_cext_duplicate(sp_RbVal value,int keep_frozen) {
     if(keep_frozen && hdr->frozen)((sp_gc_hdr *)ptr-1)->frozen=1;
     return copy;
 }
+int rb_num2int(VALUE value) {
+    sp_RbVal number=sp_cext_rbval(value);
+    if(number.tag==SP_TAG_INT) {
+        if(number.v.i<INT_MIN || number.v.i>INT_MAX)rb_raise(rb_eRangeError,"integer out of range of int");
+        return (int)number.v.i;
+    }
+    if(number.tag==SP_TAG_FLT || number.tag==SP_TAG_BIGINT) {
+        double converted=number.tag==SP_TAG_FLT ? number.v.f : sp_bigint_to_double(number.v.p);
+        double integer=trunc(converted);
+        if(!isfinite(integer) || integer<INT_MIN || integer>INT_MAX)rb_raise(rb_eRangeError,"number out of range of int");
+        return (int)integer;
+    }
+    rb_raise(rb_eTypeError,"expected a numeric value");
+}
+void rb_check_type(VALUE value,int type) {
+    sp_RbVal object=sp_cext_rbval(value);
+    if(type==T_STRING && (object.tag==SP_TAG_STR || (object.tag==SP_TAG_OBJ && object.cls_id==SP_BUILTIN_STRBUF)))return;
+    if(type==T_ARRAY && object.tag==SP_TAG_OBJ && object.cls_id==SP_BUILTIN_POLY_ARRAY)return;
+    rb_raise(rb_eTypeError,"unexpected C extension argument type");
+}
+VALUE rb_ll2inum(long long number) { return sp_cext_value(sp_box_int(number)); }
+VALUE rb_float_new(double number) { return sp_cext_value(sp_box_float(number)); }
 VALUE rb_str_new(const char *s,long len) {
     if(len<0)rb_raise(rb_eArgError,"negative string size");
     if(len>INT64_MAX/2-64)rb_raise(rb_eArgError,"string size too large");
@@ -208,6 +239,19 @@ VALUE rb_str_new(const char *s,long len) {
     return sp_cext_value(sp_box_obj(str,SP_BUILTIN_STRBUF));
 }
 VALUE rb_str_new_cstr(const char *s) { return rb_str_new(s,(long)strlen(s)); }
+void ruby_xfree(void *pointer) { free(pointer); }
+void *sp_cext_allocv(VALUE *handle,size_t size,size_t count) {
+    size_t alignment=_Alignof(max_align_t);
+    if(size && count>((size_t)LONG_MAX-alignment)/size)rb_raise(rb_eArgError,"temporary allocation too large");
+    /* The handle is pinned by the invocation arena even when C unwinds
+     * through a Ruby exception before an explicit cleanup operation. */
+    *handle=rb_str_new(NULL,(long)(size*count+alignment));
+    uintptr_t pointer=(uintptr_t)RSTRING_PTR(*handle);
+    return (void *)((pointer+alignment-1)/alignment*alignment);
+}
+struct sp_cext_encoding { int binary; };
+static struct sp_cext_encoding ascii8bit={1};
+rb_encoding *rb_ascii8bit_encoding(void) { return &ascii8bit; }
 static sp_String *string(VALUE value) {
     sp_RbVal r=sp_cext_rbval(value);
     if(r.tag==SP_TAG_OBJ && r.cls_id==SP_BUILTIN_STRBUF)return r.v.p;
@@ -218,6 +262,27 @@ VALUE rb_str_freeze(VALUE v) {
     sp_RbVal r=sp_cext_rbval(v);
     if(r.tag==SP_TAG_STR && sp_str_is_frozen_val(r.v.s))return v;
     sp_String_freeze(string(v));return v;
+}
+VALUE rb_utf8_str_new(const char *bytes,long length) {
+    VALUE value=rb_str_new(bytes,length);
+    sp_String_force_encoding(string(value),0);
+    return value;
+}
+VALUE rb_enc_associate(VALUE value,rb_encoding *encoding) {
+    if(encoding!=&ascii8bit)rb_raise(rb_eArgError,"unsupported C extension encoding");
+    sp_String_force_encoding(string(value),1);
+    return value;
+}
+extern sp_bool sp_str_valid_encoding(const char *);
+int rb_enc_str_coderange(VALUE value) {
+    const char *bytes=RSTRING_PTR(value);
+    if(sp_str_ascii_only(bytes))return ENC_CODERANGE_7BIT;
+    return sp_str_valid_encoding(bytes) ? ENC_CODERANGE_VALID : ENC_CODERANGE_BROKEN;
+}
+char *sp_cext_string_cstr(VALUE value) {
+    char *bytes=RSTRING_PTR(value);
+    if(memchr(bytes,0,(size_t)RSTRING_LEN(value)))rb_raise(rb_eArgError,"string contains null byte");
+    return bytes;
 }
 char *sp_cext_string_ptr(VALUE v) {
     sp_RbVal r=sp_cext_rbval(v);if(r.tag==SP_TAG_STR)return (char *)r.v.s;
@@ -252,7 +317,36 @@ sp_PolyArray *sp_cext_share_new_array(sp_PolyArray *array) {
     return array;
 }
 VALUE rb_ary_new(void) { return sp_cext_value(sp_box_poly_array(sp_PolyArray_new())); }
+VALUE rb_hash_new(void) { return sp_cext_value(sp_cext_hash_new()); }
+VALUE rb_hash_new_capa(long capacity) {
+    if(capacity<0)rb_raise(rb_eArgError,"negative hash size");
+    return rb_hash_new();
+}
+VALUE rb_hash_aset(VALUE hash,VALUE key,VALUE value) {
+    sp_cext_hash_set(sp_cext_rbval(hash),sp_cext_rbval(key),sp_cext_rbval(value));
+    return value;
+}
+VALUE rb_ary_new_capa(long capacity) {
+    if(capacity<0)rb_raise(rb_eArgError,"negative array size");
+    /* Capacity is a reservation hint; the array remains empty. */
+    return rb_ary_new();
+}
 VALUE rb_ary_push(VALUE v,VALUE item) { sp_PolyArray_push(array(v),sp_cext_rbval(item));return v; }
+VALUE rb_ary_pop(VALUE v) {
+    sp_PolyArray *a=array(v);
+    if(a->frozen)sp_raise_frozen_array_at(a,SP_BUILTIN_POLY_ARRAY);
+    return a->len ? sp_cext_value(a->data[--a->len]) : Qnil;
+}
+void rb_ary_store(VALUE v,long index,VALUE item) {
+    sp_PolyArray *a=array(v);
+    if(a->frozen)sp_raise_frozen_array_at(a,SP_BUILTIN_POLY_ARRAY);
+    if(index<0)index+=a->len;
+    if(index<0)sp_raise_cls("IndexError","array index too small");
+    sp_RbVal value=sp_cext_rbval(item);
+    while(a->len<index)sp_PolyArray_push(a,sp_box_nil());
+    if(index==a->len)sp_PolyArray_push(a,value);
+    else { sp_gc_wb(a);a->data[index]=value; }
+}
 VALUE rb_ary_entry(VALUE v,long i) { sp_PolyArray *a=array(v);if(i<0)i+=a->len;return i<0||i>=a->len?Qnil:sp_cext_value(a->data[i]); }
 long sp_cext_array_len(VALUE v) { return (long)array(v)->len; }
 ID rb_intern(const char *name) {

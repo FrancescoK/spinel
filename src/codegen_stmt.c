@@ -12051,6 +12051,12 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
   TyKind slot = g_result_var && g_result_ty != TY_UNKNOWN ? g_result_ty : g_ret_type;
   Scope *ts = slot == TY_STRING ? comp_scope_of(c, node) : NULL;
   NodeKind k = nt_kind(c->nt, node);
+  if(c->n_cext_extensions && slot==TY_STRING && comp_ntype(c,node)==TY_STRBUF &&
+     (k==NK_LocalVariableReadNode || k==NK_InstanceVariableReadNode)) {
+    buf_puts(b,"sp_strbuf_read_pub(");emit_expr(c,node,b);buf_puts(b,")");
+    if(g_repr_check) { repr_channel_note(c,node,RCH_PUBLISH);repr_channel_end(c,frame); }
+    return;
+  }
   /* a bang tail publishes its receiver's handle and answers its own bytes,
      with no copy of the handle's (emit_bang_self_pub) */
   if (ts && ts->ret_handle && strbuf_bang_tail(c, node) && !sn_guard_pending(c, node) &&

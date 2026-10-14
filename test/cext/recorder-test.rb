@@ -71,7 +71,7 @@ Dir.mktmpdir("cext-recorder-test-") do |dir|
 
   refusals = {
     "Ruby execution" => ['rb_funcall(rb_cObject, rb_intern("name"), 0);', "rb_funcall"],
-    "constant lookup" => ['rb_const_get(rb_cObject, rb_intern("ENV"));', "rb_const_get"],
+    "invalid constant lookup" => ['rb_const_get(rb_cObject, rb_intern("lower"));', "ASCII constant names"],
     "eval" => ['rb_eval_string("ENV[\\\"HOME\\\"]");', "rb_eval_string"],
     "runtime state" => ['rb_errinfo();', "rb_errinfo"],
     "environment" => ['getenv("HOME");', "getenv"],

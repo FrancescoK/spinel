@@ -694,6 +694,11 @@ lib/libspinel_cext_rec.a: build/cext/recorder.o
 	$(AR) rcs $@ $<
 cext-recorder-test:
 	@CC="$(CC)" ruby test/cext/recorder-test.rb
+cext-build-test: bin/spin
+	@CC="$(CC)" ruby test/cext/build-test.rb
+	@CC="$(CC)" ruby test/cext/extconf-test.rb
+	@CC="$(CC)" ruby test/cext/spin-build-test.rb
+.PHONY: cext-build-test
 cext-recorder-oracle:
 	@CC="$(CC)" sh test/cext/recorder-oracle.sh
 
@@ -963,7 +968,7 @@ regexp: $(SP_RT_LIB) $(SP_RT_MT_LIB)
 # cc -- the same as the compiler. Each tools/<name>.rb becomes bin/spinel-<name>,
 # beside the compiler, so the `spinel-<name>` command is found next to `spinel`.
 # A tool that no longer fits the subset breaks the build, which keeps them honest.
-TOOL_NAMES = doctor reduce flatten diff bisect
+TOOL_NAMES = doctor reduce flatten diff bisect cext-build
 TOOL_BINS  = $(addprefix bin/spinel-,$(TOOL_NAMES))
 
 tools: $(TOOL_BINS) bin/spin
@@ -1423,7 +1428,7 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 # `make test` always runs fresh: it wipes the prior `.ok` stamps first,
 # then runs the suite. (The old incremental `test` + `retest` split is
 # gone -- a stale `.ok` reading PASS was a recurring foot-gun.)
-test: lib/spinel_rt_responds_generated.h $(SPINEL_TIMEOUT) cext-header-test cext-gc-test cext-exceptions-test cext-recorder-test cext-compiler-test cext-threads-test
+test: lib/spinel_rt_responds_generated.h $(SPINEL_TIMEOUT) cext-header-test cext-gc-test cext-exceptions-test cext-recorder-test cext-compiler-test cext-threads-test cext-build-test
 	@if [ -z "$(TIMEOUT_BIN)" ]; then \
 	  echo "WARNING: no 'timeout'/'gtimeout' on PATH -- tests run with NO time limit."; \
 	  echo "         A hanging test will hang this run until the CI job's own limit."; \
@@ -5444,6 +5449,13 @@ install: all bin/spin
 	fi
 	install -m 644 lib/libspinel_rt.a    $(SPNLDIR)/lib/
 	install -m 644 lib/libspinel_rt_mt.a $(SPNLDIR)/lib/
+	install -m 644 lib/libspinel_cext_rt.a lib/libspinel_cext_rt_mt.a $(SPNLDIR)/lib/
+	install -d $(SPNLDIR)/include/ruby $(SPNLDIR)/tools/cext $(SPNLDIR)/tools/spin
+	install -m 644 include/ruby.h $(SPNLDIR)/include/
+	for h in include/ruby/*.h; do install -m 644 $$h $(SPNLDIR)/include/ruby/; done
+	install -m 644 tools/cext/recorder.c tools/cext/recorder.h $(SPNLDIR)/tools/cext/
+	install -m 644 tools/cext-record.rb tools/cext-build.rb tools/cext-extconf.rb $(SPNLDIR)/tools/
+	install -m 644 tools/spin/toml.rb $(SPNLDIR)/tools/spin/
 	@# Every lib/*.h is installed, derived from the tree rather than
 	@# enumerated: spinel_rt.h includes what it includes, and a hand-kept
 	@# list goes stale the day a new header lands -- sp_process_status.h
@@ -5482,9 +5494,11 @@ install: all bin/spin
 	install -d $(PREFIX)/bin
 	ln -sf $(SPNLDIR)/spinel $(PREFIX)/bin/spinel
 	ln -sf $(SPNLDIR)/spin   $(PREFIX)/bin/spin
-	for t in $(TOOL_NAMES); do \
+	for t in $(filter-out cext-build,$(TOOL_NAMES)); do \
 	  install -m 755 bin/spinel-$$t $(PREFIX)/bin/spinel-$$t; \
 	done
+	install -m 755 bin/spinel-cext-build $(SPNLDIR)/spinel-cext-build
+	ln -sf $(SPNLDIR)/spinel-cext-build $(PREFIX)/bin/spinel-cext-build
 
 uninstall:
 	rm -f $(PREFIX)/bin/spinel $(PREFIX)/bin/spin
@@ -5518,3 +5532,6 @@ cext-threads-test: $(SPINEL) lib/libspinel_cext_rt.a lib/libspinel_cext_rt_mt.a
 	$(CC) -O2 -DSP_CEXT -DSP_THREADS -Iinclude -Ilib test/cext/threads/lock.c lib/sp_cext_thread.c -pthread -o build/cext/cxl-lock-test
 	./build/cext/cxl-lock-test
 	CC="$(CC)" ruby test/cext/threads-test.rb
+
+bin/spinel-cext-build: tools/cext-record.rb tools/cext-extconf.rb tools/spin/toml.rb tools/cext/recorder.c tools/cext/recorder.h include/ruby.h lib/libspinel_cext_rt.a lib/libspinel_cext_rt_mt.a
+bin/spin: bin/spinel-cext-build
