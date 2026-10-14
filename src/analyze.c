@@ -2180,28 +2180,46 @@ static void reject_dynamic_mixin_args(Compiler *c) {
   }
 }
 
+/* Renames a constant node that names a class alias to the underlying class. */
+static void rewrite_const_alias_name(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || !nt_type(nt, node)) return;
+  const char *ty = nt_type(nt, node);
+  /* A ConstantPathNode whose LEAF is the alias (`Outer::OC.five` where
+     `OC = Util`) resolves the same way: constants register by leaf name,
+     and a path receiver with a real class leaf already dispatches. */
+  if (!sp_streq(ty, "ConstantReadNode") && !sp_streq(ty, "ConstantPathNode")) return;
+  const char *rn = nt_str(nt, node, "name");
+  if (!rn || comp_class_index(c, rn) >= 0) return;  /* already a class name */
+  const char *real = resolve_class_alias(c, rn);
+  if (real && !sp_streq(real, rn)) {
+    char buf[256]; snprintf(buf, sizeof buf, "%s", real);  /* copy: set frees rn */
+    nt_set_str((NodeTable *)nt, node, "name", buf);
+  }
+}
+
 /* `A = SomeClass` (a constant aliasing a class) then `A.foo`: rewrite the
    ConstantRead receiver's name to the underlying class so class-method dispatch
-   resolves it exactly like the direct `SomeClass.foo`. Mirrors the `class CONST`
-   reopening rewrite in walk_scope. Runs once after classes are registered. */
+   resolves it exactly like the direct `SomeClass.foo`. The class argument of
+   is_a?/kind_of?/instance_of? (`x.is_a?(A)`) and each `when` condition
+   (`when A`) resolve the same way. Mirrors the `class CONST` reopening rewrite
+   in walk_scope. Runs once after classes are registered. */
 void rewrite_const_alias_receivers(Compiler *c) {
   const NodeTable *nt = c->nt;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
+    if (ty && sp_streq(ty, "WhenNode")) {
+      int wn = 0; const int *wc = nt_arr(nt, id, "conditions", &wn);
+      for (int i = 0; i < wn; i++) rewrite_const_alias_name(c, wc[i]);
+      continue;
+    }
     if (!ty || !sp_streq(ty, "CallNode")) continue;
-    int recv = nt_ref(nt, id, "receiver");
-    if (recv < 0 || !nt_type(nt, recv)) continue;
-    const char *rvty = nt_type(nt, recv);
-    /* A ConstantPathNode whose LEAF is the alias (`Outer::OC.five` where
-       `OC = Util`) resolves the same way: constants register by leaf name,
-       and a path receiver with a real class leaf already dispatches. */
-    if (!sp_streq(rvty, "ConstantReadNode") && !sp_streq(rvty, "ConstantPathNode")) continue;
-    const char *rn = nt_str(nt, recv, "name");
-    if (!rn || comp_class_index(c, rn) >= 0) continue;  /* already a class name */
-    const char *real = resolve_class_alias(c, rn);
-    if (real && !sp_streq(real, rn)) {
-      char buf[256]; snprintf(buf, sizeof buf, "%s", real);  /* copy: set frees rn */
-      nt_set_str((NodeTable *)nt, recv, "name", buf);
+    rewrite_const_alias_name(c, nt_ref(nt, id, "receiver"));
+    const char *nm = nt_str(nt, id, "name");
+    if (nm && is_kind_query(nm)) {
+      int args = nt_ref(nt, id, "arguments"), an = 0;
+      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      if (an == 1 && av) rewrite_const_alias_name(c, av[0]);
     }
   }
 }
