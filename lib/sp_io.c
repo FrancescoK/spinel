@@ -200,9 +200,11 @@ size_t sp_io_stdio_buffered(FILE *fp) {
    already been given. So the reads and writes that go to the descriptor
    take a use of the handle around it (sp_io_use .. sp_io_unuse); the close
    marks the handle, and the FILE is released by whichever of the closer
-   and those users leaves last. A use never spans a park: a parked thread is
-   woken by the close (sp_sched_ev_forget) and re-tests the closed flag. */
+   and those users leaves last. A use spans no park but accept's, which the
+   close cancels: a parked thread is woken by the close (sp_sched_ev_forget)
+   and re-tests the closed flag. */
 #define SP_IO_CLOSING 0x80000000u
+#define SP_IO_RETIRED 0x40000000u   /* with CLOSING: the FILE is released */
 /* The stream, with a use taken; NULL when a close has begun. */
 static FILE *sp_io_try_use(sp_File *f) {
   unsigned int u = SP_ATOMIC_LOAD(&f->uses, __ATOMIC_RELAXED);
@@ -232,7 +234,10 @@ static int sp_io_retire(sp_File *f) {
    answers fclose's result; errno is the caller's to keep. */
 static int sp_io_unuse(sp_File *f) {
   if (SP_ATOMIC_SUB_FETCH(&f->uses, 1, __ATOMIC_ACQ_REL) != SP_IO_CLOSING) return 0;
-  return sp_io_retire(f);
+  int r = sp_io_retire(f);
+  /* only now may #reopen give the handle a new stream (sp_File_reopen) */
+  SP_ATOMIC_STORE(&f->uses, SP_IO_CLOSING | SP_IO_RETIRED, __ATOMIC_RELEASE);
+  return r;
 }
 
 /* Can this handle's I/O block indefinitely? Asked once per handle, from an
@@ -1243,7 +1248,9 @@ const char *sp_sock_recv(sp_File *f, sp_int len) {SP_GC_ROOT(f);
   sp_io_wait_readable(f);
   char *buf = (char *)malloc((size_t)len);
   if (!buf) sp_raise_cls("NoMemoryError", "recv");
-  int fd = fileno(sp_io_use(f));
+  FILE *fp = sp_io_try_use(f);
+  if (!fp) { free(buf); sp_raise_cls("IOError", "stream closed in another thread"); }
+  int fd = fileno(fp);
   int n = sp_net_udp_recv_from(fd, buf, (int)len, NULL, 0, NULL);
   int e = errno;
   /* a stream socket at EOF answers nil (Ruby 3.3 and later); an empty
@@ -1273,7 +1280,9 @@ const char *sp_sock_recvfrom(sp_File *f, sp_int len, const char **ip_out, sp_int
   sp_io_wait_readable(f);   /* as sp_sock_recv (#7555) */
   char *buf = (char *)malloc((size_t)len);
   if (!buf) sp_raise_cls("NoMemoryError", "recvfrom");
-  int n = sp_net_udp_recv_from(fileno(sp_io_use(f)), buf, (int)len, ipbuf, (int)sizeof ipbuf, &port);
+  FILE *fp = sp_io_try_use(f);
+  if (!fp) { free(buf); sp_raise_cls("IOError", "stream closed in another thread"); }
+  int n = sp_net_udp_recv_from(fileno(fp), buf, (int)len, ipbuf, (int)sizeof ipbuf, &port);
   { int e = errno; sp_io_unuse(f); errno = e; }
   if (n < 0) { free(buf); sp_file_raise_errno("recvfrom", ""); }
   const char *s = sp_str_from_bytes(buf, (size_t)n); SP_GC_ROOT_STR(s);   /* across the address's copy */
@@ -1576,14 +1585,18 @@ sp_oint sp_sock_connect_nb_sa(sp_File *f, const char *sa, sp_int salen, sp_bool 
    blocking accept would stall the whole green-thread scheduler -- then wrap the
    new descriptor. Only a socket handle answers it. */
 sp_File *sp_sock_accept(sp_File *f) {SP_GC_ROOT(f);
-  extern int sp_net_accept(int sfd);
+  extern int sp_net_accept_unless(int sfd, const unsigned char *cancel);
   if (!f || !f->is_sock)
     sp_raise_cls("NoMethodError",
                  sp_sprintf("undefined method 'accept' for an instance of %s", sp_io_kind_name(f)));
   SP_IO_OPEN(f);
   sp_io_wait_readable(f);
-  int fd = sp_net_accept(fileno(sp_io_use(f)));
+  /* the one use that spans a park: another acceptor can take the pending
+     connection first, and the accept then waits for the next one, a wait
+     the close cancels */
+  int fd = sp_net_accept_unless(fileno(sp_io_use(f)), &f->closed);
   { int e = errno; sp_io_unuse(f); errno = e; }
+  if (fd < 0 && SP_ATOMIC_LOAD(&f->closed, __ATOMIC_RELAXED)) sp_raise_cls("IOError", "stream closed in another thread");
   return sp_io_fdopen_sock(fd, SPL("tcp"));
 }
 
@@ -2028,15 +2041,15 @@ sp_File *sp_File_reopen(sp_File *f, const char *path, const char *mode) {SP_GC_R
      reopened: it gets a fresh stream, once no thread is still inside a
      read of the old one (sp_io_use), whose release would close the new */
   if (f->closed) {
-    unsigned int u = SP_IO_CLOSING;
+    unsigned int u = SP_IO_CLOSING | SP_IO_RETIRED;
     if (!SP_ATOMIC_CAS(&f->uses, &u, 0, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
       sp_raise_cls("IOError", "stream closed in another thread");
   }
   FILE *nf = (f->closed || !f->fp) ? fopen(path ? path : "", om)
                                    : freopen(path ? path : "", om, f->fp);
   if (!nf) sp_file_raise_errno("reopen", path ? path : "");
-  f->fp = nf;
-  f->closed = 0;
+  SP_ATOMIC_STORE(&f->fp, nf, __ATOMIC_RELAXED);
+  SP_ATOMIC_STORE(&f->closed, 0, __ATOMIC_RELAXED);
   f->path = path;
   /* a mode given replaces the handle's, as CRuby's does: an earlier
      #binmode or #set_encoding no longer decides what a read answers */

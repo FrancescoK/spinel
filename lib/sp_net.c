@@ -313,8 +313,13 @@ int sp_net_listen(int port, int reuseport) {
 
 #ifdef SP_THREADS
 int sp_sched_wait_io(int fd, short events);   /* lib/sp_sched.c: scheduler-aware I/O wait */
+int sp_sched_wait_io_unless(int fd, short events, const unsigned char *cancel);
 #endif
-int sp_net_accept(int sfd) {
+int sp_net_accept(int sfd) { return sp_net_accept_unless(sfd, NULL); }
+/* `cancel` is the listening handle's closed flag (or NULL): a close from
+   another thread ends the wait for a connection, where the retry after
+   EAGAIN parked again on a descriptor the close was waiting to release. */
+int sp_net_accept_unless(int sfd, const unsigned char *cancel) {
     struct sockaddr_in caddr;
     socklen_t clen = sizeof(caddr);
     int fd;
@@ -325,13 +330,14 @@ int sp_net_accept(int sfd) {
     sp_net_set_nonblock(sfd);
     for (;;) {
         if (sp_net_term_flag) return -1;
+        if (cancel && SP_ATOMIC_LOAD(cancel, __ATOMIC_RELAXED)) return -1;
         fd = sp_net_accept_cloexec(sfd, (struct sockaddr *)&caddr, &clen);
         /* The connection fd is non-blocking too, so recv/send on it park the
            green thread (scheduler-aware) instead of blocking the OS worker. */
         if (fd >= 0) { sp_net_set_nodelay(fd); sp_net_set_nonblock(fd); return fd; }
         if (errno == EINTR) continue;
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            if (!sp_sched_wait_io(sfd, POLLIN)) return -1;
+            if (!sp_sched_wait_io_unless(sfd, POLLIN, cancel)) return -1;
             continue;
         }
         return -1;
