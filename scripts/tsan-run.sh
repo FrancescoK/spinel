@@ -1,10 +1,10 @@
 #!/bin/bash
 # tsan-run.sh -- compile and run a threaded spinel program under ThreadSanitizer.
 #
-# The normal test gate links the single-threaded archive even for threaded tests
-# (test-run does its own cc with libspinel_rt.a and no -DSP_THREADS), so it never
-# exercises the mt archive's parallel paths. This drives a program through the
-# *threaded* runtime instead, instrumented with TSan, so a data race on the
+# The normal test gate links a threaded test against the threaded runtime, as
+# the driver does, but uninstrumented: a data race there only shows when it
+# happens to corrupt the output. This drives a program through the threaded
+# runtime instrumented with TSan, so a data race on the
 # shared GC heap, the thread registry, or the run queue is reported instead of
 # silently corrupting memory. This is the Phase 1 (N>1) validation gate.
 #
