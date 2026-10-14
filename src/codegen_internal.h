@@ -1498,6 +1498,9 @@ static inline const char *isa_match_name(const NodeTable *nt, int arg, char *buf
       (is_builtin_exception_name(q) || builtin_class_id(q) != 0)) return q;
   return l;
 }
+/* The name an exception's is_a? compares with for constant argument `arg`
+   (codegen_call_exception.c), or NULL for no constant */
+const char *isa_exc_class_name(Compiler *c, int arg, char *buf, size_t bufsz);
 const char *c_type_name(TyKind t);
 int is_scalar_ret(TyKind t);
 /* A constant whose slot has a presence flag, cst_NAME__set (LocalVar.const_early):
