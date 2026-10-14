@@ -26,3 +26,13 @@ end
 C.new([1, 2])
 p C.new([[7, 8], 66]).at(1)
 begin; C.new([1, 2]).at(0..1); rescue TypeError => e; puts e.message; end
+
+# the index can reassign the receiver: at reads the Array it was called on
+a = [10]
+j = [0, "0"][0]
+p a.at((a = [99]; j))
+p a
+b = [1]; d = [2]
+p b.at((b = d; j))
+y = nil
+p(y && r(y).at((y = [1]; j)))

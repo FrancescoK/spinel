@@ -25376,7 +25376,11 @@ static int emit_at_without_array(Compiler *c, int id, Buf *b) {
     return 1;
   }
   /* an Array: only a boxed index wants converting (at_index_convert), after
-     the receiver is read */
+     the receiver is read. The receiver is held even when reading it runs no
+     code: the index can reassign it (`a.at((a = [9]; i))` reads the old a).
+     Ahead of the statement, as poly_binop_recv_temp does: what the index
+     hoists there runs before the call, and the call's own operand order
+     binds the receiver there too */
   if (ty_is_array(rt)) {
     if (g_at_chk_id == id || g_n_argov + 2 > MAX_ARG_OVERRIDE) return 0;
     int args = nt_ref(nt, id, "arguments");
@@ -25384,7 +25388,7 @@ static int emit_at_without_array(Compiler *c, int id, Buf *b) {
     if (argc != 1 || repr_of(c, argv[0]).as_ty != TY_POLY) return 0;
     int sv_n = g_n_argov;
     buf_puts(b, "({ ");
-    if (subtree_has_side_effect(c, recv)) view_bind(recv, "_t%d", hold_operand(c, recv, rt, 0, ++g_tmp, 1, " ", b));
+    view_bind(recv, "_t%d", hold_operand_pre(c, recv, rt, 0, ++g_tmp, 1));
     at_index_convert(c, id, b);
     int sv_chk = g_at_chk_id; g_at_chk_id = id;
     emit_call_held(c, id, b);
