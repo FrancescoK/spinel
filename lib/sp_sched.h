@@ -33,7 +33,7 @@ typedef struct sp_ev_waiter {
 
 typedef struct sp_sched_timer sp_sched_timer;
 
-/* PoC (#8702 option 2): a one-word spin lock guarding one object's waiter list. */
+/* (#8702) a one-word spin lock guarding one object's waiter list. */
 typedef int sp_wlock;
 
 typedef struct sp_thread {
@@ -92,8 +92,8 @@ typedef struct sp_thread {
   short             io_events;   /* poll events it is waiting for (POLLIN/POLLOUT) */
   short             io_revents;  /* poll result the monitor delivered when the fd became ready */
   unsigned          id;
-  int               park;        /* PoC: SP_PK_RUN / PARKING / PARKED / WOKEN (sp_sched.c), atomic */
-  sp_wlock         *wait_lock;   /* PoC: the lock of the object whose waiter list holds it, or NULL
+  int               park;        /* SP_PK_RUN / PARKING / PARKED / WOKEN (sp_sched.c), atomic */
+  sp_wlock         *wait_lock;   /* the lock of the object whose waiter list holds it, or NULL
                                     when that list is under the scheduler lock */
 } sp_thread;
 
@@ -284,7 +284,7 @@ typedef struct sp_mutex {
      there is nobody to hand off to without taking the global scheduler lock
      (#4346). Mutated only under that lock; read atomically outside it. */
   int nwaiters;
-  sp_wlock wl;   /* PoC: guards `waiters` (option 2) */
+  sp_wlock wl;   /* guards `waiters` (#8702) */
 } sp_mutex;
 
 sp_mutex  *sp_Mutex_new(void);
@@ -301,7 +301,7 @@ sp_bool   sp_Mutex_owned(sp_mutex *m);      /* #owned? */
 /* ---- ConditionVariable (wait/signal/broadcast over a Mutex) ---- */
 typedef struct sp_condvar {
   struct sp_thread *waiters;   /* threads blocked in #wait */
-  sp_wlock wl;                 /* PoC: guards `waiters` (option 2) */
+  sp_wlock wl;                 /* guards `waiters` (#8702) */
 } sp_condvar;
 
 sp_condvar *sp_CondVar_new(void);
