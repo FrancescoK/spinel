@@ -22,8 +22,9 @@
    A need is a consumer's. A value has one consumer, the node it sits in,
    whose role says what it does with it (share_plan_role): it takes the
    value -- keeps it, changes it, compares it, hands it on (SPR_TAKE); it
-   reads its bytes and keeps nothing, as an interpolation does (SPR_READ);
-   it only asks whether it is nil or false, as a predicate does (SPR_TEST);
+   reads its bytes and keeps nothing, as an interpolation does, or a
+   freeze of a variable's String, which reaches the String through the
+   variable (SPR_READ); it only asks whether it is nil or false, as a predicate does (SPR_TEST);
    or, for an element of the Array literal a multiple write splits (also
    through a splat, `a, b = *[s, t]`), the target the element is stored
    into takes it (SPR_STORE), where the literal is no container; or it
@@ -577,11 +578,34 @@ static void share_plan_identity_roles(Compiler *c, int n) {
   if (pair) share_plan_role_mark(c, av[0], SPR_IDENTITY);
 }
 
+/* Is call n a freeze of a String variable's read (a local, an instance
+   variable, a global or a constant), with no method of the program's own?
+   The String it freezes is the one the variable holds: the C freezes the
+   handle the variable's slot keeps (sp_String_freeze), whose flag every
+   name of the String reads, and the read of the variable gives the bytes
+   the call answers frozen. The variable's value is only read. */
+static int share_plan_freeze_read(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, n, "name");
+  int recv = an_unparen(nt, nt_ref(nt, n, "receiver")), tg[CPT_MAX];
+  if (!nm || recv < 0 || !is_freeze_name(nm) || nt_ref(nt, n, "arguments") >= 0 || nt_ref(nt, n, "block") >= 0)
+    return 0;
+  NodeKind k = nt_kind(nt, recv);
+  if (k != NK_LocalVariableReadNode && k != NK_InstanceVariableReadNode && !repr_static_read_kind(k)) return 0;
+  return (c->ntype[recv] == TY_STRING || c->ntype[recv] == TY_STRBUF) && cplan_targets(c, n, tg, CPT_MAX) == 0;
+}
+
+/* The roles of the receivers that a builtin call only reads: a freeze of
+   a variable's String (share_plan_freeze_read). */
+static void share_plan_reader_roles(Compiler *c, int n) {
+  if (share_plan_freeze_read(c, n)) share_plan_role_mark(c, nt_ref(c->nt, n, "receiver"), SPR_READ);
+}
+
 /* The roles other than a taker's, from the consumers that have them: an
    interpolation reads, a predicate tests, a multiple write stores each
    element of its value's literal (and of a literal splatted in it) into
-   its target, an identity query asks its operands' identity. One pass over
-   each kind. */
+   its target, an identity query asks its operands' identity, and a
+   builtin that only reads its receiver reads it. One pass over each kind. */
 static void share_plan_roles_build(Compiler *c) {
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_EmbeddedStatementsNode, e) share_plan_role_mark(c, nt_ref(nt, e, "statements"), SPR_READ);
@@ -589,7 +613,10 @@ static void share_plan_roles_build(Compiler *c) {
   for (int k = 0; k < 4; k++)
     NT_FOREACH_KIND(nt, preds[k], n) share_plan_role_mark(c, nt_ref(nt, n, "predicate"), SPR_TEST);
   NT_FOREACH_KIND(nt, NK_MultiWriteNode, mw) share_plan_masgn_stores(c, nt_ref(nt, mw, "value"));
-  NT_FOREACH_KIND(nt, NK_CallNode, n) share_plan_identity_roles(c, n);
+  NT_FOREACH_KIND(nt, NK_CallNode, n) {
+    share_plan_identity_roles(c, n);
+    share_plan_reader_roles(c, n);
+  }
 }
 
 /* Does builtin call `call` keep or hand on the argument it is given: a
