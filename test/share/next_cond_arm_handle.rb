@@ -1503,3 +1503,55 @@ w_c5 = y_c5(s_c5) { |t| u = t }
 u << "u"
 w_c5 << "w"
 puts "shared local write: #{[s_c5, u, w_c5].inspect}"
+
+# A variable's `||=`, `&&=` and `op=` (a local's, an instance, global or class
+# variable's) as the block's value, and a Float or Range `next`.
+def y1(x) = yield(x)
+$opq = nil
+$opr = 3
+class OpK
+  @@c = nil
+  @@d = 4
+  def initialize; @z = nil; @n = 2; @s = nil; end
+  def run
+    r = []
+    r << y1(5) { |t| @z ||= t }
+    r << y1(5) { |t| @n &&= t }
+    r << y1(5) { |t| @n += t }
+    r << y1(5) { |t| @n -= 1 }
+    r << y1(5) { |t| $opq ||= t }
+    r << y1(5) { |t| $opr &&= t }
+    r << y1(6) { |t| $opr += t }
+    r << y1(5) { |t| @@c ||= t }
+    r << y1(5) { |t| @@d &&= t }
+    r << y1(5) { |t| @@d *= t }
+    r << y1("s") { |t| @s ||= t }
+    r << y1("s") { |t| @s &&= t }
+    r << y1("s") { |t| @s += t }
+    r
+  end
+end
+p OpK.new.run
+x = 1
+w = y1(5) { |t| x += t }
+p w, x
+w = y1(5) { |t| x -= t }
+p w
+w = y1(5) { |t| x *= 2 }
+p w
+w = y1(5) { |t| @optop ||= t }
+p w
+w = y1(5) { |t| $optop2 ||= t }
+p w
+w = y1(5) { |t| $optop2 &&= t + 1 }
+p w
+p(y1(0.0) { |v| next 0.25 if v == 0.0; v / 4 })
+p(y1(1.5) { |v| next 0.25 if v == 0.0; v / 4 })
+p(y1(0) { |v| next (1..3) if v == 0; (4..5) })
+p(y1(1) { |v| next (1..3) if v == 0; (4..5) })
+p(y1(0) { |v| next 2.5r if v == 0; 1r })
+p(y1(0) { |v| next Time.at(0).utc.year if v == 0; 5 })
+p(y1(0) { |v| next [1] if v == 0; [2, 3] })
+p(y1(0) { |v| next 1 if v == 0; nil })
+p(y1(0) { |v| next 1.5 if v == 0; nil })
+p(y1(0) { |v| next Complex(1, 2) if v == 0; Complex(0, 1) })
