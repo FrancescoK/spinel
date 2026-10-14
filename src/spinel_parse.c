@@ -792,6 +792,55 @@ static int sp_lower_body(const pm_node_list_t *body, pm_node_list_t *out, pm_nod
 /* The builtin node the names invented from the node being flattened count
    from (`node_bi`, comp_node_ord): its enclosing def, or, outside every def,
    its top-level statement. -1 outside builtins/. */
+/* `def m(a, ...)` in a class that inherits Hash or Array, whose `...`
+   only a bare `super` uses (faraday's Headers#fetch): the method is
+   `def m(a, *__fwd_r, &__fwd_b)`, which the super into the builtin passes
+   on whole. The `...` model binds one slot per argument some caller of the
+   name passes, so `fetch(k)` beside a `fetch(k, default)` handed the
+   builtin a nil default. A builtin method of these takes no keywords, and
+   initialize (Hash.new's capacity:) keeps its own path. */
+static bool sp_fwd_uses(const pm_node_t *node, void *data) {
+  int *u = data;
+  if (PM_NODE_TYPE(node) == PM_FORWARDING_SUPER_NODE) u[0]++;
+  else if (PM_NODE_TYPE(node) == PM_FORWARDING_ARGUMENTS_NODE) u[1]++;
+  else if (PM_NODE_TYPE(node) == PM_DEF_NODE) u[2]++;
+  return true;
+}
+static int sp_builtin_coll_super(const pm_node_t *sup) {
+  if (!sup) return 0;
+  pm_constant_id_t nm;
+  if (PM_NODE_TYPE(sup) == PM_CONSTANT_READ_NODE) nm = ((const pm_constant_read_node_t *)sup)->name;
+  else if (PM_NODE_TYPE(sup) == PM_CONSTANT_PATH_NODE && !((const pm_constant_path_node_t *)sup)->parent)
+    nm = ((const pm_constant_path_node_t *)sup)->name;
+  else return 0;
+  const pm_constant_t *k = &g_parser->constant_pool.constants[nm - 1];
+  return (k->length == 4 && !memcmp(k->start, "Hash", 4)) || (k->length == 5 && !memcmp(k->start, "Array", 5));
+}
+static void sp_fwd_super_to_rest(pm_class_node_t *cls, const pm_node_t *sup) {
+  if (!sp_builtin_coll_super(sup) || !cls->body || PM_NODE_TYPE(cls->body) != PM_STATEMENTS_NODE) return;
+  pm_node_list_t *body = &((pm_statements_node_t *)cls->body)->body;
+  for (size_t i = 0; i < body->size; i++) {
+    if (PM_NODE_TYPE(body->nodes[i]) != PM_DEF_NODE) continue;
+    pm_def_node_t *d = (pm_def_node_t *)body->nodes[i];
+    pm_parameters_node_t *ps = d->parameters;
+    if (d->receiver || !ps || !ps->keyword_rest || PM_NODE_TYPE(ps->keyword_rest) != PM_FORWARDING_PARAMETER_NODE) continue;
+    if (ps->rest || ps->block || ps->keywords.size || ps->posts.size) continue;
+    const pm_constant_t *k = &g_parser->constant_pool.constants[d->name - 1];
+    if (k->length == 10 && !memcmp(k->start, "initialize", 10)) continue;
+    int u[3] = { 0, 0, 0 };
+    if (d->body) pm_visit_node(d->body, sp_fwd_uses, u);
+    if (!u[0] || u[1] || u[2]) continue;
+    pm_node_destroy((pm_parser_t *)g_parser, ps->keyword_rest);
+    ps->keyword_rest = NULL;
+    pm_rest_parameter_node_t *r = sp_made(PM_REST_PARAMETER_NODE, sizeof *r, &d->base);
+    r->name = sp_made_id("__fwd_r", 7);
+    ps->rest = &r->base;
+    pm_block_parameter_node_t *b = sp_made(PM_BLOCK_PARAMETER_NODE, sizeof *b, &d->base);
+    b->name = sp_made_id("__fwd_b", 7);
+    ps->block = b;
+  }
+}
+
 static int g_bi_base = -1;
 static int flatten_node(pm_node_t *node);
 static int flatten(pm_node_t *node) {
@@ -801,6 +850,8 @@ static int flatten(pm_node_t *node) {
   if (made) node = made;
   /* the node's inline RBS facts, under the id flatten_node gives it next */
   if (node) sp_inline_rbs_emit(node, node_counter);
+  if (node && PM_NODE_TYPE(node) == PM_CLASS_NODE)
+    sp_fwd_super_to_rest((pm_class_node_t *)node, ((pm_class_node_t *)node)->superclass);
   int id = flatten_node(node);
   if (made) pm_node_destroy((pm_parser_t *)g_parser, made);
   g_bi_base = saved;
