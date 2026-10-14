@@ -15122,14 +15122,24 @@ static void mark_mixed_key_hash_locals(Compiler *c) {
    that key selects, instead of the StrPolyHash fallback that would coerce a
    Symbol key to a String (#3028) or emit ill-typed C for an Integer one
    (#3029). Values stay poly: the empty literal says nothing about them. */
-/* The empty hash a slot write stores when its value is `{}` itself or the
-   nil-guard fallback `x || {}` / `x || Hash.new`, else -1. */
+/* The empty hash a slot write stores when its value is `{}` itself, the
+   nil-guard fallback `x || {}` / `x || Hash.new`, or an attribute write of
+   one (`adj = ctx.adjacent = {}`: the write answers its argument), else -1. */
 static int empty_hash_write_lit(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   if (v < 0) return -1;
   if (nt_kind(nt, v) == NK_HashNode) {
     int en = 0; nt_arr(nt, v, "elements", &en);
     return en == 0 ? v : -1;
+  }
+  if (nt_kind(nt, v) == NK_CallNode && nt_ref(nt, v, "receiver") >= 0 && nt_ref(nt, v, "block") < 0) {
+    const char *nm = nt_str(nt, v, "name");
+    size_t ln = nm ? strlen(nm) : 0;
+    int args = nt_ref(nt, v, "arguments");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (ln > 1 && nm[ln - 1] == '=' && an == 1 && av &&
+        (isalpha((unsigned char)nm[ln - 2]) || nm[ln - 2] == '_' || isdigit((unsigned char)nm[ln - 2])))
+      return empty_hash_write_lit(c, av[0]);
   }
   return an_or_empty_hash_fallback(c, v);
 }
