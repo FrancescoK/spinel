@@ -6288,6 +6288,25 @@ static int infer_enum_chain_call(Compiler *c, int id, const NodeTable *nt, const
     }
   }
 
+  /* --share-strings: a String Array of handles answers the operations its
+     gate admits (strh_call_op), and those only (#8328 step 5) */
+  if (recv >= 0 && rt == TY_STRH_ARRAY) {
+    switch (strh_call_op(c, id, rt)) {
+    case STRH_ELEM: case STRH_TAKE: *out = TY_STRING; return 1;
+    case STRH_PUSH: case STRH_EACH: case STRH_DUP: case STRH_SELF: *out = rt; return 1;
+    case STRH_STORE: {
+      int sa = nt_ref(nt, id, "arguments"), sn = 0;
+      const int *sv = sa >= 0 ? nt_arr(nt, sa, "arguments", &sn) : NULL;
+      *out = sn == 2 ? infer_type(c, sv[1]) : TY_STRING;
+      if (*out == TY_STRBUF) *out = TY_STRING;
+      return 1;
+    }
+    case STRH_LEN: *out = TY_INT; return 1;
+    case STRH_EMPTY: case STRH_INCLUDE: case STRH_EQ: *out = TY_BOOL; return 1;
+    case STRH_JOIN: case STRH_INSPECT: *out = TY_STRING; return 1;
+    default: break;
+    }
+  }
   /* homogeneous object array (sp_PtrArray of unboxed sp_X*): the typed
      counterpart of the poly-array block below, for the narrowed TY_OBJ_ARRAY
      type. Only the ops narrow_object_arrays admits appear here. */
@@ -7411,7 +7430,7 @@ static int chain_has_aliases(Compiler *c, int ci) {
    builtin's name the reopen defines without yielding (`def each(*a) =
    a.size`), which leaves the block unused, as codegen calls it
    (reopen_override_block_ok). The reopen's method, or -1. */
-static int ty_array_or_hash(TyKind t) { return ty_is_array(t) || ty_is_obj_array(t) || ty_is_hash(t); }
+static int ty_array_or_hash(TyKind t) { return ty_is_array(t) || ty_is_obj_array(t) || t == TY_STRH_ARRAY || ty_is_hash(t); }
 static int array_hash_reopen_owner(Compiler *c, int id, TyKind rt, const char *name) {
   const char *cn = ty_is_hash(rt) ? "Hash" : "Array";
   /* A block-carrying call of a builtin's name is the reopen's only when it
@@ -8785,7 +8804,7 @@ int an_or_empty_hash_fallback(Compiler *c, int node) {
    empty literal's kind of container */
 int an_empty_container_disagrees(int kind, TyKind other) {
   if (!kind || other == TY_UNKNOWN || other == TY_NIL || other == TY_VOID || other == TY_POLY) return 0;
-  if (kind == 1) return !ty_is_array(other) && !ty_is_obj_array(other);
+  if (kind == 1) return !ty_is_array(other) && !ty_is_obj_array(other) && other != TY_STRH_ARRAY;
   return !ty_is_hash(other);
 }
 
@@ -9505,8 +9524,13 @@ static TyKind infer_array_literal(Compiler *c, int id) {
     if (c->arr_want && id < c->node_cap && (c->arr_want[id] == TY_POLY_ARRAY || c->arr_want[id] == TY_INT_ARRAY_ARRAY))
       return c->arr_want[id];
     TyKind e = TY_UNKNOWN;
+    /* --share-strings: whether every element is a String and one is a
+       handle (strh_has), for the String handle Array form below */
+    int strh_all = c->share_strings, strh_has = 0;
     for (int k = 0; k < n; k++) {
       TyKind et = infer_type(c, els[k]);
+      if (et == TY_STRBUF) strh_has = 1;
+      else if (et != TY_STRING) strh_all = 0;
       /* A nested container literal whose own type is still open (an empty
          `[]` / `{}` element) is a non-scalar value all the same: treat it as
          poly, exactly like the HashNode arm below does for `{}`. Otherwise
@@ -9530,6 +9554,11 @@ static TyKind infer_array_literal(Compiler *c, int id) {
       if (et == TY_STRBUF && c->share_strings) et = TY_POLY;
       e = ty_unify(e, et);
     }
+    /* ...unless its Strings are all held as handles: the literal is a
+       String Array of handles (#8328 step 5) when a local holds it, where its
+       container class can take that form (share_strh_gate refuses it
+       otherwise, for good) */
+    if (strh_all && strh_has && !share_strh_node_no(c, id) && comp_lwrite_of_value(c, id) >= 0) return TY_STRH_ARRAY;
     /* ty_array_of holds an all-unknown element type at bottom while the
        fixpoint runs; see its TY_UNKNOWN case. */
     return ty_array_of(e);

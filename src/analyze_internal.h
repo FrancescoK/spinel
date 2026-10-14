@@ -87,6 +87,10 @@ int proc_to_proc_method_nodes(Compiler *c, int recv, int **out);
 int local_sole_range_node(Compiler *c, int recv);
 int const_array_elems_all_int_array(Compiler *c, const char *cname);
 int *an_parent_map(const NodeTable *nt);
+const int *comp_parent_map(Compiler *c);
+/* --share-strings: is node n an Array literal refused the String handle
+   Array form for good (share_strh_gate)? */
+int share_strh_node_no(const Compiler *c, int n);
 /* The definite-assignment walk (analyze.c), shared with the nil facts
    (analyze_nil.c): the program's parent map, each statement's place in its
    list (filled one list at a time, -1 for a node not in its parent's list),

@@ -105,6 +105,13 @@ int share_self_used(const Compiler *c, int holder);
 /* The element of holder h's containers' elements, or -1 (not a holder:
    read it with share_elem_flags / share_elem_holders). */
 int share_elem_holder(const Compiler *c, int h);
+/* The class a value belongs to, as an index below share_class_count: holder
+   h's, or node n's (-1 when the walk gave n no value). Two names one
+   container flows between have one class; it is the unit the String handle
+   Array form is decided for (share_strh_gate, #8328 step 5). */
+int share_class_count(const Compiler *c);
+int share_holder_class(const Compiler *c, int h);
+int share_node_class(const Compiler *c, int n);
 
 /* The facts of holder h's class. */
 unsigned share_class_flags(const Compiler *c, int h);

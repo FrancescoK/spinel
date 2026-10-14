@@ -237,6 +237,12 @@ typedef struct {
                        the rule shares settled in its poly form, and its
                        elements are boxed handles (repr_of_slot's
                        elems_handle) */
+  unsigned char strh_form; /* --share-strings: a String Array the rule
+                       settled as an Array of the Strings' handles
+                       (TY_STRH_ARRAY, share_strh_gate) */
+  unsigned char strh_no; /* ...and one whose container class cannot take that
+                       form yet: it keeps the poly form, for good (the mark
+                       is never cleared, so the fixpoint ends) */
   int str_shared;   /* (TY_STRBUF) a shared-mutable string: it is aliased
                        (`s2 = s1`) AND mutated in place, so the whole alias set
                        holds the one sp_String* handle -- reads hand out the live
@@ -1238,6 +1244,12 @@ typedef struct {
      boxed (share_plan_box_plain) */
   int *share_parent;
   int share_parent_n;
+  /* --share-strings: per node, an Array literal or a call answering a new
+     Array whose container class cannot take the String handle Array form
+     (share_strh_gate): it keeps the poly form, as the holders of its class
+     do. Grown on demand; never cleared */
+  unsigned char *strh_no;
+  int strh_no_cap;
   /* strbuf_bang_self_local's answers within one outermost query
      (codegen_util.c): per node, the query it was answered in and the
      answer. Its recursion over a receiver chain reaches each link by
