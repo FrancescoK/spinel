@@ -1941,6 +1941,15 @@ static void emit_local_orw_result(Compiler *c, int id, LocalVar *lv, const char 
 static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
   if (sp_streq(ty, "LocalVariableReadNode")) {
     const char *lrn = nt_str(nt, id, "name");
+    /* a splat operand the length dispatch reads (splat_operand_read): a boxed
+       one is the Array the splat makes of it, a scalar wrapped in one */
+    static int in_splat_view;
+    if (!in_splat_view && comp_ntype(c, id) == TY_POLY && nt_int(nt, id, "splat_view", 0)) {
+      in_splat_view = 1;
+      buf_puts(b, "sp_splat_to_array("); emit_expr(c, id, b); buf_puts(b, ")");
+      in_splat_view = 0;
+      return 1;
+    }
     /* a local a shared-handle shim reads through its shadow, which the shim
        writes back into the handle: no copy of the String */
     if (g_share_check && lrn && sb_shim_shadow(lrn, rename_local(lrn))) share_check_declare_value(c, id);

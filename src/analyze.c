@@ -37624,6 +37624,19 @@ static void desugar_diverging_args(Compiler *c) {
   }
 }
 
+/* A read of the splat operand local `anm`. Where the local itself is the
+   operand (`view`), the read is marked splat_view: a boxed one is read as
+   the Array a splat makes of it (emit_local_ivar_write_expr), where its
+   length read raised NoMethodError for a boxed Integer
+   (`{5 => 1}.fetch(*s)`). A typed Array reads as it did. */
+static int splat_operand_read(NodeTable *nt, const char *anm, long long depth, int view) {
+  int rd = nt_new_node(nt, "LocalVariableReadNode");
+  nt_node_set_str(nt, rd, "name", anm);
+  nt_node_set_int(nt, rd, "depth", depth);
+  if (view) nt_node_set_int(nt, rd, "splat_view", 1);
+  return rd;
+}
+
 /* `recv.m(pre, *a, post)` where a's length is only known at run time and m
    is a builtin taking lo..hi arguments. Expanding to the required count
    dropped every optional argument (`h.fetch(*[:k, 0])` ran fetch(:k) and
@@ -37682,6 +37695,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
      its elements), in its turn among the arguments, and the arms read that. */
   int ex_local = nt_kind(nt, ex) == NK_LocalVariableReadNode;
   const char *anm = ex_local ? nt_str(nt, ex, "name") : NULL;
+  int aview = ex_local;   /* anm is the operand local itself (splat_operand_read) */
   if (ex_local && !anm) return 0;
   long long adepth = ex_local ? nt_int(nt, ex, "depth", 0) : 0;
   int recv = nt_ref(nt, id, "receiver");
@@ -37769,6 +37783,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
       nt_node_set_ref(nt, w, "value", arr);
       pre[npre++] = w;
       anm = snm;
+      aview = 0;
       continue;
     }
     if (k == sp_at || splat_leaf_node(nt, argv[k])) continue;
@@ -37801,9 +37816,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
       nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) {
     snprintf(knm, sizeof knm, "__splk%s", comp_node_tag(c, id));
     scope_local_intern(comp_scope_of(c, id), knm);
-    int ar = nt_new_node(nt, "LocalVariableReadNode");
-    nt_node_set_str(nt, ar, "name", anm);
-    nt_node_set_int(nt, ar, "depth", adepth);
+    int ar = splat_operand_read(nt, anm, adepth, aview);
     int one = nt_new_node(nt, "ArrayNode");
     int kv = nt_clone_subtree(nt, fargs[argc - 1]);
     nt_node_set_arr(nt, one, "elements", &kv, 1);
@@ -37814,6 +37827,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     nt_node_set_ref(nt, w, "value", sd_if(nt, sd_call(nt, "empty?", nt_clone_subtree(nt, fargs[argc - 1]), NULL, 0), ar, cat));
     pre[npre++] = w;
     anm = knm;
+    aview = 0;
     adepth = 0;
     argc--;
   }
@@ -37848,9 +37862,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   if (!variadic) {
     /* CRuby's message counts what was given:
        "wrong number of arguments (given " + (a.length + fixed).to_s + msg */
-    int ard = nt_new_node(nt, "LocalVariableReadNode");
-    nt_node_set_str(nt, ard, "name", anm);
-    nt_node_set_int(nt, ard, "depth", adepth);
+    int ard = splat_operand_read(nt, anm, adepth, aview);
     int alen = nt_new_node(nt, "CallNode");
     nt_node_set_str(nt, alen, "name", "length");
     nt_node_set_ref(nt, alen, "receiver", ard);
@@ -37905,9 +37917,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
              hi - fixed, cnm);
     int over[2];
     for (int k = 0; k < 2; k++) {
-      int ard = nt_new_node(nt, "LocalVariableReadNode");
-      nt_node_set_str(nt, ard, "name", anm);
-      nt_node_set_int(nt, ard, "depth", adepth);
+      int ard = splat_operand_read(nt, anm, adepth, aview);
       int cap = nt_new_node(nt, "IntegerNode");
       nt_node_set_int(nt, cap, "value", hi - fixed);
       over[k] = sd_bcall(nt, ">", sd_bcall(nt, "length", ard, NULL, 0), &cap, 1);
@@ -37964,9 +37974,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
         continue;
       }
       for (int i = 0; i < len; i++) {
-        int rd = nt_new_node(nt, "LocalVariableReadNode");
-        nt_node_set_str(nt, rd, "name", anm);
-        nt_node_set_int(nt, rd, "depth", adepth);
+        int rd = splat_operand_read(nt, anm, adepth, aview);
         int ix = nt_new_node(nt, "IntegerNode");
         nt_node_set_int(nt, ix, "value", i);
         int ia = nt_new_node(nt, "ArgumentsNode");
@@ -37996,9 +38004,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     nt_node_set_ref(nt, cl, "arguments", an);
     if (krow >= 0) kwb_clone_split(c, cl, comp_scope_of(c, id));
     if (orow >= 0) kwb_optional_split(nt, cl, orow, comp_scope_of(c, id));
-    int ard = nt_new_node(nt, "LocalVariableReadNode");
-    nt_node_set_str(nt, ard, "name", anm);
-    nt_node_set_int(nt, ard, "depth", adepth);
+    int ard = splat_operand_read(nt, anm, adepth, aview);
     int alen = nt_new_node(nt, "CallNode");
     nt_node_set_str(nt, alen, "name", "length");
     nt_node_set_ref(nt, alen, "receiver", ard);
