@@ -1234,6 +1234,10 @@ typedef struct {
      asked meanwhile is decided where it is asked (scope_ret_handle,
      scope_ret_fresh, scope_ret_param) */
   struct RetHandles *ret_walk;
+  /* per class, whether its class object can be a value
+     (comp_class_may_be_value), built for the node and class counts kept */
+  unsigned char *cls_value;
+  int cls_value_n, cls_value_nodes;
   /* --share-strings: each node's parent at seal, for where a new String is
      boxed (share_plan_box_plain) */
   int *share_parent;
@@ -1727,6 +1731,11 @@ void comp_poly_candidates_reset(void);
    each with the scope comp_cmethod_in_chain gives (`cls`, `mi`; the other
    fields unused). Memoized under the same stamps as comp_poly_candidates. */
 const PolyCand *comp_cmethod_candidates(Compiler *c, const char *name, int *n);
+/* Can class `k`'s class object be a value: held by a variable, a box or a
+   container, so that a call on a receiver of no fixed class may reach its
+   class methods? Not when the program only ever names it to call it, define
+   it or test against it (see compiler.c). */
+int comp_class_may_be_value(Compiler *c, int k);
 /* Every proper descendant of class `cid`, ascending; fixed once classes are
    collected. See comp_descendants. */
 const int *comp_descendants(Compiler *c, int cid, int *n);

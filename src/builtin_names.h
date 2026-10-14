@@ -230,6 +230,20 @@ int is_match_family(const char *n); /* !~ =~ match match? */
 int is_integer_iteration(const char *n); /* downto step times upto */
 int is_visibility_or_module_function(const char *n); /* module_function private protected public */
 int is_mixin_call(const char *n); /* include extend prepend */
+/* The calls on a class's constant or self that answer neither the class nor
+   a block of its own (comp_class_may_be_value): new allocate name to_s
+   inspect === == ... respond_to? attr_* visibility. Not include, extend,
+   prepend, private_constant, private_class_method and public_class_method:
+   those answer their receiver. */
+int is_class_plain_query(const char *n);
+int is_class_self_answer(const char *n); /* include extend prepend private_class_method public_class_method private_constant public_constant remove_method undef_method: answer their receiver */
+int is_self_rebinding_call(const char *n); /* instance_/class_/module_ eval and exec, define_singleton_method */
+int is_class_relatives_query(const char *n); /* ancestors superclass subclasses descendants included_modules */
+int is_class_query(const char *n); /* class */
+int is_method_owner_query(const char *n); /* owner */
+int is_method_object_maker(const char *n); /* method public_method singleton_method instance_method public_instance_method */
+/* const_get const_source_location nesting attached_object each_object eval binding */
+int is_constant_or_object_reflection(const char *n);
 int is_const_set_name(const char *n); /* const_set */
 int is_const_query_name(const char *n); /* const_get const_defined? const_source_location */
 int is_constants_list_name(const char *n); /* constants */

@@ -3,6 +3,7 @@
 #include "repr.h"
 #include "analyze.h"
 #include "builtin_names.h"
+#include "codegen_poly.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -346,6 +347,7 @@ void comp_free(Compiler *c) {
     free(c->classes[i].prep_to);
   }
   free(c->classes);
+  free(c->cls_value);
   for (int i = 0; i < c->ngvars; i++) free(c->gvars[i].name);
   free(c->gvars);
   for (int i = 0; i < c->nconsts; i++) free(c->consts[i].name);
@@ -2340,6 +2342,245 @@ const PolyCand *comp_poly_candidates_at(Compiler *c, int id, const char *name, i
   for (int i = 0; i < npc; i++)
     if (!cls_fact_excludes(c, recv, p[i].cls)) e->cands[e->n++] = p[i];
   *n = e->n; return e->cands;
+}
+
+/* ---- Which class objects can be values ----
+   A class's or a module's object is a value -- something a variable, a box
+   or a container can hold, so that a call on a receiver of no fixed class
+   may reach its class methods -- unless every way the program names it
+   keeps it from being one. It is one when:
+     - its constant is read anywhere but as the receiver of a call that
+       answers neither it nor a block of its own (a class method of its own,
+       or one of is_class_plain_query), a namespace (`K::X`), a class or module
+       header, a superclass, an `include`, `extend` or `prepend`, an
+       `is_a?`-like test, a `raise`, a `rescue` list, a `when`, or `defined?`;
+     - `self` is so read in its class body or class methods (blocks in them
+       included), or in a module's instance methods (as a module_function
+       or through `extend`, self is the module or the class that extends it);
+       the class's descendants then are too (their class methods run the
+       same body);
+     - `self` appears in a block an instance_eval, class_eval or
+       define_singleton_method family call runs on its constant or its self;
+     - the program calls `class` anywhere and it is a class (a module has
+       no instances);
+     - the program asks a class or module for its relatives (ancestors,
+       superclass, subclasses, included_modules) and it has a superclass, a
+       subclass, or is included, extended or prepended anywhere;
+     - it is no class or module the program defines with a header (a
+       Struct.new, a singleton class, a reopened builtin, a native class);
+     - the program reflects on constants or methods (const_get, nesting,
+       ObjectSpace's each_object, eval, binding, Marshal.load, or a Method's
+       owner where it makes Methods): every class is. */
+/* every class whose name's last segment is nm (`A::B` names B) */
+static void cv_mark_name(Compiler *c, unsigned char *v, const char *nm) {
+  for (int k = 0; nm && k < c->nclasses; k++) {
+    const char *cn = c->classes[k].name, *seg = cn ? strrchr(cn, ':') : NULL;
+    if (cn && sp_streq(seg ? seg + 1 : cn, nm)) v[k] = 1;
+  }
+}
+static void cv_mark_tree(Compiler *c, unsigned char *v, int k) {
+  if (k < 0 || k >= c->nclasses) return;
+  v[k] = 1;
+  int nd = 0;
+  const int *ds = comp_descendants(c, k, &nd);
+  for (int i = 0; i < nd; i++) v[ds[i]] = 1;
+  /* (a module's methods run with the class that extends it as self) */
+  for (int j = 0; j < c->nclasses; j++)
+    for (int e = 0; e < c->classes[j].nextended_mods; e++)
+      if (c->classes[j].extended_mods[e] == k) v[j] = 1;
+}
+/* Is there a `self` in subtree n not marked as no value (nonval), outside
+   instance methods (`def m`, with module 1 inside them too) and nested
+   class or module bodies? */
+static int cv_self_value(const NodeTable *nt, const unsigned char *nonval, int n, int module) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_SelfNode) return !nonval[n];
+  if (k == NK_ClassNode || k == NK_ModuleNode) return 0;
+  if (k == NK_DefNode && nt_ref(nt, n, "receiver") < 0 && !module) return 0;
+  /* (a `class << self` body's methods are class methods) */
+  if (k == NK_SingletonClassNode) module = 1;
+  for (int i = 0; i < nt_num_refs(nt, n); i++)
+    if (cv_self_value(nt, nonval, nt_ref_at(nt, n, i), module)) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) if (cv_self_value(nt, nonval, ids[j], module)) return 1;
+  }
+  return 0;
+}
+static void cv_nonval_args(const NodeTable *nt, unsigned char *nonval, int call) {
+  int args = nt_ref(nt, call, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  for (int a = 0; a < an; a++) nonval[av[a]] = 1;
+}
+/* A call with no receiver in a class or module body, made on the class as
+   self, that answers the class (is_class_self_answer: include,
+   private_class_method ...) makes it a value where its answer is used:
+   `X = private_class_method(:helper)` names the class X. Its answer is
+   unused as a statement before the last of a list, and as the last of a
+   class body whose class expression is unused itself; any other position
+   counts as used. cls is the enclosing class's constant path, discarded
+   whether n's own value is unused. */
+static void cv_self_answers(Compiler *c, unsigned char *v, int n, int cls, int discarded, int depth) {
+  const NodeTable *nt = c->nt;
+  if (n < 0 || depth > 400) return;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_CallNode && !discarded && cls >= 0 && nt_ref(nt, n, "receiver") < 0 &&
+      is_class_self_answer(nt_str(nt, n, "name")))
+    cv_mark_name(c, v, nt_str(nt, cls, "name"));
+  if (k == NK_StatementsNode) {
+    int m = 0; const int *ids = nt_arr(nt, n, "body", &m);
+    for (int j = 0; j < m; j++) cv_self_answers(c, v, ids[j], cls, j < m - 1 || discarded, depth + 1);
+    return;
+  }
+  int body = (k == NK_ClassNode || k == NK_ModuleNode) ? nt_ref(nt, n, "body") : -1;
+  int ncls = body >= 0 ? nt_ref(nt, n, "constant_path") : cls;
+  for (int i = 0; i < nt_num_refs(nt, n); i++) {
+    int r = nt_ref_at(nt, n, i);
+    if (r == body) cv_self_answers(c, v, r, ncls, discarded, depth + 1);
+    else cv_self_answers(c, v, r, ncls, 0, depth + 1);
+  }
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) cv_self_answers(c, v, ids[j], ncls, 0, depth + 1);
+  }
+}
+static void cv_build(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int nk = c->nclasses, nn = nt->count;
+  unsigned char *v = calloc((size_t)nk + 1, 1), *nonval = calloc((size_t)nn + 1, 1);
+  if (!v || !nonval) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int all = 0, rel = 0, cls_call = 0, owner = 0, methods = 0;
+  for (int k = 0; k < nk; k++) {
+    int dn = c->classes[k].def_node;
+    NodeKind dk = dn >= 0 && dn < nn ? nt_kind(nt, dn) : NK_NONE;
+    if ((dk != NK_ClassNode && dk != NK_ModuleNode) || c->classes[k].is_singleton_of ||
+        c->classes[k].is_native_class || class_is_prim_reopen(c, k))
+      v[k] = 1;
+  }
+  /* the positions that are no value */
+  NT_FOREACH_KIND(nt, NK_ConstantPathNode, n) { int p = nt_ref(nt, n, "parent"); if (p >= 0) nonval[p] = 1; }
+  NT_FOREACH_KIND(nt, NK_ClassNode, n) {
+    int p = nt_ref(nt, n, "constant_path"), s = nt_ref(nt, n, "superclass");
+    if (p >= 0) nonval[p] = 1;
+    if (s >= 0) nonval[s] = 1;
+  }
+  NT_FOREACH_KIND(nt, NK_ModuleNode, n) { int p = nt_ref(nt, n, "constant_path"); if (p >= 0) nonval[p] = 1; }
+  NT_FOREACH_KIND(nt, NK_RescueNode, n) {
+    int en = 0; const int *ev = nt_arr(nt, n, "exceptions", &en);
+    for (int i = 0; i < en; i++) nonval[ev[i]] = 1;
+  }
+  NT_FOREACH_KIND(nt, NK_CaseNode, n) {
+    int wn = 0; const int *wv = nt_arr(nt, n, "conditions", &wn);
+    for (int w = 0; w < wn; w++) {
+      int en = 0; const int *ev = nt_arr(nt, wv[w], "conditions", &en);
+      for (int i = 0; i < en; i++) nonval[ev[i]] = 1;
+    }
+  }
+  NT_FOREACH_KIND(nt, NK_DefinedNode, n) { int p = nt_ref(nt, n, "value"); if (p >= 0) nonval[p] = 1; }
+  NT_FOREACH_KIND(nt, NK_DefNode, n) { int r = nt_ref(nt, n, "receiver"); if (r >= 0) nonval[r] = 1; }
+  NT_FOREACH_KIND(nt, NK_SingletonClassNode, n) { int e = nt_ref(nt, n, "expression"); if (e >= 0) nonval[e] = 1; }
+  NT_FOREACH_KIND(nt, NK_CallNode, n) {
+    const char *nm = nt_str(nt, n, "name");
+    int recv = nt_ref(nt, n, "receiver"), blk = nt_ref(nt, n, "block");
+    if (!nm) continue;
+    if (is_constant_or_object_reflection(nm)) all = 1;
+    /* Marshal.load can make any class's object; a program's own `load` is no
+       such call */
+    if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode && is_marshal_load(nt_str(nt, recv, "name"), nm))
+      all = 1;
+    if (is_method_owner_query(nm)) owner = 1;
+    if (is_method_object_maker(nm)) methods = 1;
+    if (is_class_relatives_query(nm)) rel = 1;
+    if (is_class_query(nm) && nt_ref(nt, n, "arguments") < 0) cls_call = 1;
+    if (is_mixin_call(nm) || is_kind_query(nm) || is_raise_alias(nm)) cv_nonval_args(nt, nonval, n);
+    NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_NONE;
+    if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode && rk != NK_SelfNode) continue;
+    /* a receiver whose call answers no class object: a class method of its
+       own (of any class the name may be), or a plain query; a block of its
+       own runs elsewhere */
+    int plain = blk < 0 && is_class_plain_query(nm);
+    if (!plain && blk < 0 && rk != NK_SelfNode) {
+      const char *cn = nt_str(nt, recv, "name");
+      for (int k = 0; cn && k < nk && !plain; k++) {
+        const char *kn = c->classes[k].name, *seg = kn ? strrchr(kn, ':') : NULL;
+        plain = kn && sp_streq(seg ? seg + 1 : kn, cn) && comp_cmethod_in_chain(c, k, nm, NULL) >= 0;
+      }
+    }
+    if (!plain && blk < 0 && rk == NK_SelfNode) {
+      Scope *sc = comp_scope_of(c, n);
+      int k = sc ? sc->class_id : -1;
+      plain = k >= 0 && (comp_cmethod_in_chain(c, k, nm, NULL) >= 0 || comp_method_in_chain(c, k, nm, NULL) >= 0);
+    }
+    if (plain) nonval[recv] = 1;
+  }
+  NT_FOREACH_KIND(nt, NK_CallNode, n) {
+    const char *nm = nt_str(nt, n, "name");
+    int recv = nt_ref(nt, n, "receiver"), blk = nt_ref(nt, n, "block");
+    if (!nm || !is_self_rebinding_call(nm) || blk < 0 || !cv_self_value(nt, nonval, blk, 1)) continue;
+    if (recv >= 0 && (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode))
+      cv_mark_name(c, v, nt_str(nt, recv, "name"));
+    else if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
+      Scope *sc = comp_scope_of(c, n);
+      if (sc) cv_mark_tree(c, v, sc->class_id);
+    }
+  }
+  /* constants read as values, and self in a class's own body */
+  NT_FOREACH_KIND(nt, NK_ConstantReadNode, n) if (!nonval[n]) cv_mark_name(c, v, nt_str(nt, n, "name"));
+  NT_FOREACH_KIND(nt, NK_ConstantPathNode, n) if (!nonval[n]) cv_mark_name(c, v, nt_str(nt, n, "name"));
+  for (int k = 0; k < nk; k++) {
+    int dn = c->classes[k].def_node;
+    if (dn < 0 || dn >= nn || (nt_kind(nt, dn) != NK_ClassNode && nt_kind(nt, dn) != NK_ModuleNode)) continue;
+    if (cv_self_value(nt, nonval, nt_ref(nt, dn, "body"), nt_kind(nt, dn) == NK_ModuleNode)) cv_mark_tree(c, v, k);
+  }
+  /* (a reopened class's other bodies, and methods defined on a constant) */
+  NT_FOREACH_KIND(nt, NK_ClassNode, n) {
+    int p = nt_ref(nt, n, "constant_path");
+    if (p >= 0 && cv_self_value(nt, nonval, nt_ref(nt, n, "body"), 0)) {
+      for (int k = 0; k < nk; k++) {
+        const char *kn = c->classes[k].name, *seg = kn ? strrchr(kn, ':') : NULL;
+        if (kn && sp_streq(seg ? seg + 1 : kn, nt_str(nt, p, "name"))) cv_mark_tree(c, v, k);
+      }
+    }
+  }
+  NT_FOREACH_KIND(nt, NK_ModuleNode, n) {
+    int p = nt_ref(nt, n, "constant_path");
+    if (p >= 0 && cv_self_value(nt, nonval, nt_ref(nt, n, "body"), 1)) {
+      for (int k = 0; k < nk; k++) {
+        const char *kn = c->classes[k].name, *seg = kn ? strrchr(kn, ':') : NULL;
+        if (kn && sp_streq(seg ? seg + 1 : kn, nt_str(nt, p, "name"))) cv_mark_tree(c, v, k);
+      }
+    }
+  }
+  NT_FOREACH_KIND(nt, NK_DefNode, n) {
+    int r = nt_ref(nt, n, "receiver");
+    if (r >= 0 && nt_kind(nt, r) != NK_SelfNode && cv_self_value(nt, nonval, nt_ref(nt, n, "body"), 0))
+      cv_mark_name(c, v, nt_str(nt, r, "name"));
+  }
+  NT_FOREACH_KIND(nt, NK_SingletonClassNode, n) {
+    int e = nt_ref(nt, n, "expression");
+    if (e >= 0 && nt_kind(nt, e) != NK_SelfNode && cv_self_value(nt, nonval, nt_ref(nt, n, "body"), 1))
+      cv_mark_name(c, v, nt_str(nt, e, "name"));
+  }
+  cv_self_answers(c, v, nt_ref(nt, nt->root_id, "statements"), -1, 1, 0);
+  if (owner && methods) all = 1;
+  for (int k = 0; k < nk; k++) {
+    int dn = c->classes[k].def_node;
+    if (all || (cls_call && !(dn >= 0 && dn < nn && nt_kind(nt, dn) == NK_ModuleNode))) v[k] = 1;
+    if (rel && c->classes[k].parent >= 0) v[k] = v[c->classes[k].parent] = 1;
+    for (int e = 0; rel && e < c->classes[k].nincluded_mods; e++) v[c->classes[k].included_mods[e]] = 1;
+    for (int e = 0; rel && e < c->classes[k].nextended_mods; e++) v[c->classes[k].extended_mods[e]] = 1;
+  }
+  free(nonval);
+  free(c->cls_value);
+  c->cls_value = v;
+  c->cls_value_n = nk;
+  c->cls_value_nodes = nn;
+}
+int comp_class_may_be_value(Compiler *c, int k) {
+  if (k < 0 || k >= c->nclasses || !c->nt) return 1;
+  if (!c->cls_value || c->cls_value_n != c->nclasses || c->cls_value_nodes != c->nt->count) cv_build(c);
+  return c->cls_value[k];
 }
 
 /* ---- Class-method candidates by name ----
