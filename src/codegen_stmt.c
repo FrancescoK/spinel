@@ -3018,19 +3018,6 @@ int strbuf_arg_carries(Compiler *c, int v) {
 /* Does a value conditional v hands on, taken arm by arm, answer leaf: a
    conditional's arms, a sequence's last statement? Past the depth the walk
    answers deep. */
-/* --share-strings: is v a String bang on a boxed receiver whose box holds
-   the String's handle, so the bang answers that box (or nil)? A box the
-   compiler made for a holder holds the handle (sp_box_str_new); an element
-   of a container a builtin call made (each_slice's rows, split's Strings)
-   was boxed by the runtime as its bytes, and the bang would answer a new
-   String no other holder sees (share_node_runtime_elems). */
-static int face_str_bang_handle_box(Compiler *c, int v) {
-  return face_str_bang_call(c, v) && !share_node_runtime_elems(c, unwrap_parens(c, nt_ref(c->nt, v, "receiver")));
-}
-/* ...and is v such a bang whose box can hold the bytes? */
-static int face_str_bang_bytes_box(Compiler *c, int v) {
-  return face_str_bang_call(c, v) && share_node_runtime_elems(c, unwrap_parens(c, nt_ref(c->nt, v, "receiver")));
-}
 static int strbuf_cond_arm_any(Compiler *c, int v, int depth, int (*leaf)(Compiler *, int), int deep) {
   const NodeTable *nt = c->nt;
   v = unwrap_parens(c, v);
@@ -22584,17 +22571,14 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
    SFC_TAIL   the tail of a route a demand reads as the handle (a spliced
               block's, a then block's, a loop's break): `+s`, a begin, a
               conditional;
-   SFC_ARG    an argument the binder takes as the handle when the value
-              hands one on (strbuf_value_carries, emit_strbuf_handle_of):
-              as SFC_ALIAS, but a bang method's answer only as the argument
-              itself or a conditional's arm (strbuf_arg_carries);
-   SFC_BOX    a yield's value: a box or the handle itself only;
+   SFC_BOX    a `next`'s or map!'s block value, stored as it is: a box or
+              the handle itself only;
    SFC_SPLICE an Enumerator's map's block value, which the library's loop
               takes as a write takes its value (as SFC_ALIAS, and its `l ||
               r` takes any l);
    SFC_ELEM_ARMS an arm of a String `if` a box takes arm by arm
               (emit_boxed_cond_arms): each arm as SFC_ELEM takes it. */
-enum { SFC_ALIAS, SFC_SLOT, SFC_ELEM, SFC_TAIL, SFC_BOX, SFC_SPLICE, SFC_ARG, SFC_ELEM_ARMS };
+enum { SFC_ALIAS, SFC_SLOT, SFC_ELEM, SFC_TAIL, SFC_BOX, SFC_SPLICE, SFC_ELEM_ARMS };
 
 static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int depth);
 static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int depth);
@@ -22819,10 +22803,7 @@ static int strbuf_flow_cond(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int
   default:
     if (ctx == SFC_ELEM_ARMS)
       return strbuf_flow_value(c, fm, strbuf_value_carries(c, v) ? SFC_ALIAS : SFC_ELEM, v, depth + 1);
-    /* an argument's conditional is taken arm by arm (emit_strbuf_cond_value),
-       a bang on a handle or a box as that handle or nil */
-    if (ctx == SFC_ARG && strbuf_arg_bang(c, v)) return 1;
-    return ctx == SFC_ALIAS || ctx == SFC_SPLICE || ctx == SFC_TAIL || ctx == SFC_ARG
+    return ctx == SFC_ALIAS || ctx == SFC_SPLICE || ctx == SFC_TAIL
            ? strbuf_flow_value(c, fm, ctx, v, depth + 1) : nt_kind(nt, v) == NK_NilNode || strbuf_flow_unseen(c, v);
   }
 }
@@ -22930,10 +22911,10 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   /* a demand-marked reader call typed as the handle: its read is the
      handle (strbuf_slot_ref's call arm, which a write and a mutator take
      first) */
-  if ((ctx == SFC_ALIAS || ctx == SFC_SPLICE || ctx == SFC_ARG) && strbuf_call_reads_handle(c, v)) return 1;
+  if ((ctx == SFC_ALIAS || ctx == SFC_SPLICE) && strbuf_call_reads_handle(c, v)) return 1;
   /* a native binding answering the String its object keeps: its handle
      form (strbuf_slot_ref's first arm) */
-  if ((ctx == SFC_ALIAS || ctx == SFC_SPLICE || ctx == SFC_ARG) && strbuf_native_answer(c, v)) return 1;
+  if ((ctx == SFC_ALIAS || ctx == SFC_SPLICE) && strbuf_native_answer(c, v)) return 1;
   /* A demanded tail uses emit_strbuf_handle_of, whose slot read takes
      the native answer's handle too. */
   if (ctx == SFC_TAIL && strbuf_native_answer(c, v)) return 1;
@@ -22946,7 +22927,7 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
       return strbuf_flow_cond(c, fm, SFC_ELEM_ARMS, v, depth);
     /* emit_strbuf_value takes a conditional arm by arm only when one of its
        arms is a handle (strbuf_cond_has_handle_leaf); else whole, a copy */
-    if ((ctx == SFC_ALIAS || ctx == SFC_ARG || ctx == SFC_SPLICE) && !strbuf_flow_has_leaf(c, fm, v, 0)) ctx = SFC_SLOT;
+    if ((ctx == SFC_ALIAS || ctx == SFC_SPLICE) && !strbuf_flow_has_leaf(c, fm, v, 0)) ctx = SFC_SLOT;
     /* a box takes a String `if` or `unless` with a handle arm arm by arm
        (emit_boxed_cond_arms) */
     if (ctx == SFC_ELEM && (k == NK_IfNode || k == NK_UnlessNode) && strbuf_flow_has_leaf(c, fm, v, 0))
@@ -23021,17 +23002,14 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
     }
     return fm->yield_ok[mi];
   }
-  if (ctx != SFC_ALIAS && ctx != SFC_SPLICE && ctx != SFC_ARG) return 0;
+  if (ctx != SFC_ALIAS && ctx != SFC_SPLICE) return 0;
   /* a bang method or an iterator with a block on a local's handle answers
      that handle or nil */
-  if (ctx != SFC_ARG && strbuf_bang_self_local(c, v)) return 1;
+  if (strbuf_bang_self_local(c, v)) return 1;
   /* and so does a bang on a boxed receiver, or a call held as its handle
      where a mutator takes it (strbuf_held_chain) */
-  if (ctx != SFC_ARG && (face_str_bang_call(c, v) || strbuf_held_chain(c, v))) return 1;
-  /* (a call without a bang that answers its receiver over a handle hands
-     that handle on as an argument too: strbuf_value_carries) */
-  if (ctx == SFC_ARG && strbuf_plain_self_call(c, v)) return 1;
-  if (ctx != SFC_ARG && strbuf_narrowed_box_mutator(c, v)) return 1;
+  if (face_str_bang_call(c, v) || strbuf_held_chain(c, v)) return 1;
+  if (strbuf_narrowed_box_mutator(c, v)) return 1;
   /* an operator write into a handle slot hands on the slot's new handle */
   char oref[1024];
   if (strbuf_opwrite_handle(c, v, oref, sizeof oref)) return 1;
@@ -23048,6 +23026,14 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
                                strbuf_bang_chain(c, v));
 }
 
+/* --share-strings: is v a String bang on a boxed receiver whose box holds
+   the bytes, an element of a container a builtin call made (each_slice's
+   rows, split's Strings: share_node_runtime_elems)? The bang answers a new
+   String the container never sees, where the box a holder made holds the
+   String's handle (sp_box_str_new) and the bang answers that box. */
+static int face_bang_on_runtime_elems(Compiler *c, int v) {
+  return face_str_bang_call(c, v) && share_node_runtime_elems(c, unwrap_parens(c, nt_ref(c->nt, v, "receiver")));
+}
 /* repr.c's flow check asks this (codegen_internal.h). */
 int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int v) {
   const NodeTable *nt = c->nt;
@@ -23131,36 +23117,29 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
     return p.form != SPF_REFUSE;
   }
   case SHFL_YIELD: {
-    /* A receiver conversion keeps its handle in both the boxed yield
-       and the typed block-parameter binder, and so does a String Range's
-       endpoint (emit_boxed, emit_block_arg_coerced). So does a bang on a
-       variable's handle, which hands on that handle or nil as an argument
-       does (strbuf_bang_self_local): the box takes it
-       (emit_boxed_bang_self), the block-parameter binder takes it, and a
-       proc's argument rides it (proc_arg_ty). So does a bare bang on a
-       boxed receiver whose box holds the handle (face_str_bang_handle_box),
-       which the bang answers or nil; in parentheses the binders take a
-       copy, as of a variable below. */
-    if (strbuf_poly_to_s(c, v) || strbuf_route_srange_kept(c, v) ||
-        strbuf_bang_self_local(c, unwrap_parens(c, v)) || face_str_bang_handle_box(c, v))
-      return 1;
-    /* a yield takes a variable's handle only from its bare read:
-       `yield((s))` hands on a copy */
+    /* a yield's value is bound by the block parameter's binder (the
+       handle face for a parameter that is the handle) or boxed (the box
+       face), and each renders every producer kind: it is carried where
+       the String plan does not refuse it (#8328). A bare bang on a boxed
+       receiver the binders take as the receiver's box, which holds the
+       bytes where the runtime boxed an element of a container a builtin
+       made (each_slice's rows, split's Strings): the bang's answer is
+       then a new String the container never sees
+       (share_node_runtime_elems) */
     int u = unwrap_parens(c, v);
-    NodeKind uk = u >= 0 ? nt_kind(nt, u) : NK_NONE;
-    if (u != v && (uk == NK_LocalVariableReadNode || uk == NK_InstanceVariableReadNode || repr_static_read_kind(uk)))
-      return strbuf_flow_unseen(c, u);
-    /* a box or the handle itself; else a conditional with a handle among
-       its arms (strbuf_cond_has_handle_leaf), which the binders take arm by
-       arm, as an argument's: the block-parameter binder through
-       emit_strbuf_handle_of, a box through emit_boxed_cond_arms, a proc's
-       argument as the handle (proc_arg_ty), a bang on a boxed receiver
-       among its arms as its box's handle, as above, where the box holds
-       one. */
-    if (strbuf_flow_value(c, fm, SFC_BOX, v, 0)) return 1;
-    return (uk == NK_IfNode || uk == NK_UnlessNode || uk == NK_OrNode || uk == NK_AndNode || uk == NK_CaseNode) &&
-           strbuf_cond_has_handle_leaf(c, u, 0) && !strbuf_cond_arm_any(c, u, 0, face_str_bang_bytes_box, 1) &&
-           strbuf_flow_value(c, fm, SFC_ARG, v, 0);
+    if (face_bang_on_runtime_elems(c, u)) return 0;
+    /* (a value the block parameter's binder cannot hand on where the block
+       is spliced in, share_plan_splice_renders, is its bytes) */
+    SharePlan p = share_plan_of(c, v, SPR_TAKE, NULL);
+    if (p.form == SPF_HANDLE && !face_str_bang_call(c, u) && !share_plan_splice_renders(c, v, 0, 0)) return p.need != SPN_OBJECT;
+    /* (and a `||` or `&&` with such a bang on an arm is its bytes to the
+       binder: a yield is boxed, and the box face takes the conditional arm
+       by arm, each bang as its receiver's own box. This goes when the
+       handle face renders a conditional arm by arm too) */
+    if (p.form == SPF_HANDLE && strbuf_face_bang_cond(c, u) &&
+        strbuf_cond_arm_any(c, u, 0, face_bang_on_runtime_elems, 1))
+      return p.need != SPN_OBJECT;
+    return p.form != SPF_REFUSE;
   }
   default: return 0;
   }
