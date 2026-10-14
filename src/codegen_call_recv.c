@@ -1337,6 +1337,15 @@ static int emit_poly_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
     emit_expr(c, argv[0], b); buf_puts(b, ")");
     { *out = 1; return 1; }
   }
+  /* Array#at, kept by name where a program class owns `at` too
+     (desugar_array_at): the Integer index read [] makes */
+  if (sp_streq(name, "at") && argc == 1 && a0 != TY_RANGE && a0 != TY_FLOAT_RANGE && a0 != TY_STR_RANGE) {
+    buf_puts(b, "sp_PolyArray_get("); emit_expr(c, recv, b); buf_puts(b, ", ");
+    if (a0 == TY_POLY && nt_kind(nt, argv[0]) != NK_SplatNode) { buf_puts(b, "sp_poly_arg_int_chk("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else emit_int_expr(c, argv[0], b);
+    buf_puts(b, ")");
+    { *out = 1; return 1; }
+  }
   if (sp_streq(name, "[]") && argc == 1) {
     buf_puts(b, "sp_PolyArray_get("); emit_expr(c, recv, b); buf_puts(b, ", ");
     if (a0 == TY_POLY) { buf_puts(b, "sp_poly_arg_int_chk("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
