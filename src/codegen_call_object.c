@@ -527,7 +527,7 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         /* an object slot holds nil as NULL: asked at run time below */
         if (sp_streq(cn, "NilClass"))
           yn = (at2 == TY_NIL || (aty && sp_streq(aty, "NilNode"))) ? 1 :
-               (at2 != TY_POLY && !ty_is_object(at2) ? 0 : -1);
+               (at2 != TY_POLY && at2 != TY_EXCEPTION && !ty_is_object(at2) ? 0 : -1);
         else if (sp_streq(cn, "TrueClass"))
           yn = (aty && sp_streq(aty, "TrueNode")) ? 1 : (aty && sp_streq(aty, "FalseNode")) ? 0 : (at2 != TY_BOOL && at2 != TY_POLY ? 0 : -1);
         else

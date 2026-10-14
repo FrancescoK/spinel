@@ -7155,7 +7155,17 @@ static int re_case_eq_obj_subject(Compiler *c, TyKind pt) {
          !comp_ty_value_obj(c, pt);
 }
 
+/* emit_pm_cond over the subject node `subj` that temp `t` holds (the arm's
+   own subject), or -1 where the temp is another value: the node's nil fact
+   (Repr.may_nil) says whether a poly-array subject can be NULL. PM_SUBJ_FRESH
+   is a temp the arm built itself (a Struct's members, a MatchData's
+   captures): an array, never nil. */
+#define PM_SUBJ_FRESH (-2)
+static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, Buf *b);
 int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
+  return emit_pm_cond_subj(c, pat, t, pt, -1, b);
+}
+static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *pty = nt_type(nt, pat);
   if (!pty) return 0;
@@ -7201,9 +7211,9 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
       char ref[24]; snprintf(ref, sizeof ref, "_o%d", t);   /* the subject's oint (emit_case_match) */
       buf_puts(b, "!"); emit_slot_truthy(pt, ref, b);
     }
-    /* a no-match MatchData is a NULL pointer, and a String slot holds nil
-       as NULL; `in nil` matches it */
-    else if (pt == TY_MATCHDATA || pt == TY_STRING) buf_printf(b, "(_t%d == NULL)", t);
+    /* a no-match MatchData is a NULL pointer, a String slot holds nil as
+       NULL, and so does a typed Hash or Array slot; `in nil` matches it */
+    else if (pt == TY_MATCHDATA || ty_null_is_nil(pt)) buf_printf(b, "(_t%d == NULL)", t);
     else if (ty_is_object(pt)) emit_obj_nil(c, pt, t, b);
     else buf_puts(b, (pt == TY_NIL) ? "1" : "0");
     return 1;
@@ -7259,10 +7269,11 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
     int yes = ty_matches_class(pt, cn2, 0);
     /* a scalar subject holding nil (its nil flag) is a NilClass, and is not
        the Integer or Float its slot is; Object and its ancestors hold for
-       nil too, as in the is_a? fold. A String slot holds nil as NULL. */
-    if ((t == g_pm_sentinel_t || pt == TY_STRING) && !is_object_root(cn2) &&
+       nil too, as in the is_a? fold. A String slot, a typed Hash or Array
+       slot and the other builtin pointers hold nil as NULL. */
+    if ((t == g_pm_sentinel_t || ty_null_is_nil(pt)) && !is_object_root(cn2) &&
         (yes > 0 || sp_streq(cn2, "NilClass"))) {
-      /* the nullable subject's oint (emit_case_match); a String subject is its pointer */
+      /* the nullable subject's oint (emit_case_match); a pointer subject is its pointer */
       char ref[24]; snprintf(ref, sizeof ref, t == g_pm_sentinel_t ? "_o%d" : "_t%d", t);
       if (!sp_streq(cn2, "NilClass")) emit_slot_truthy(pt, ref, b);
       else { buf_puts(b, "!"); emit_slot_truthy(pt, ref, b); }
@@ -7275,9 +7286,9 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
   if (sp_streq(pty, "AlternationPatternNode")) {
     int l = nt_ref(nt, pat, "left"), r = nt_ref(nt, pat, "right");
     buf_puts(b, "(");
-    if (!emit_pm_cond(c, l, t, pt, b)) buf_puts(b, "1");
+    if (!emit_pm_cond_subj(c, l, t, pt, subj, b)) buf_puts(b, "1");
     buf_puts(b, " || ");
-    if (!emit_pm_cond(c, r, t, pt, b)) buf_puts(b, "1");
+    if (!emit_pm_cond_subj(c, r, t, pt, subj, b)) buf_puts(b, "1");
     buf_puts(b, ")");
     return 1;
   }
@@ -7344,9 +7355,18 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
        nested sub-arrays and required literal element checks uniformly. */
     if (pt == TY_POLY || pt == TY_POLY_ARRAY) {
       char arr[48];
-      if (pt == TY_POLY_ARRAY) snprintf(arr, sizeof arr, "sp_box_poly_array(_t%d)", t);
-      else                     snprintf(arr, sizeof arr, "_t%d", t);
-      emit_pm_array_cond(c, pat, arr, pt == TY_POLY, b);
+      snprintf(arr, sizeof arr, "_t%d", t);
+      /* a poly-array pointer is NULL for nil: box it nullably, so the nil
+         subject is no array (and matches no `in []`). The arm's own subject
+         the nil fact says is never nil keeps the plain box. */
+      Buf boxed; memset(&boxed, 0, sizeof boxed);
+      if (pt == TY_POLY_ARRAY) {
+        if (subj == PM_SUBJ_FRESH || (subj >= 0 && !repr_of(c, subj).may_nil))
+          snprintf(arr, sizeof arr, "sp_box_poly_array(_t%d)", t);
+        else emit_boxed_text(c, pt, arr, &boxed);
+      }
+      emit_pm_array_cond(c, pat, boxed.p ? boxed.p : arr, pt == TY_POLY, b);
+      free(boxed.p);
       return 1;
     }
     /* A user object answers an array pattern through its own #deconstruct,
@@ -7471,7 +7491,7 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
   if (sp_streq(pty, "CapturePatternNode")) {
     /* Check inner pattern's condition if any */
     int val = nt_ref(nt, pat, "value");
-    if (val >= 0) return emit_pm_cond(c, val, t, pt, b);
+    if (val >= 0) return emit_pm_cond_subj(c, val, t, pt, subj, b);
     return 0;
   }
   if (sp_streq(pty, "FindPatternNode")) {
@@ -8886,7 +8906,7 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
       int saved_sink_indent = g_pm_hash_sink_indent;
       g_pm_hash_sink = b;
       g_pm_hash_sink_indent = indent + 1;
-      has_cond = emit_pm_cond(c, pat, arm_t, arm_pt, &cond_buf);
+      has_cond = emit_pm_cond_subj(c, pat, arm_t, arm_pt, arm_t == t && arm_pt == pt ? pred : PM_SUBJ_FRESH, &cond_buf);
       g_pm_hash_sink = saved_sink;
       g_pm_hash_sink_indent = saved_sink_indent;
     }
