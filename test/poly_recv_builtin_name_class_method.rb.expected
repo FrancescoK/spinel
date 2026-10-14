@@ -1,0 +1,8 @@
+["x", "y"]
+["X", "Y"]
+undefined method 'split' for class Integer
+[1, 2]
+["p", "q"]
+["bar", ","]
+["m", "n"]
+["base", ","]

@@ -8690,7 +8690,8 @@ int poly_ivar_set_class(Compiler *c, int k) {
    serves. */
 enum { PX_BLOCK_PARAM, PX_SYMBOL, PX_BLOCK_WRITE, PX_SUPER, PX_N };
 typedef struct PivsFacts {
-  struct { int ok; char *set; int *cls, ncls; int *hash, nhash, typed, sweep, builtin; } *memo;
+  struct { int ok; char *set; int *cls, ncls; int *hash, nhash, typed, sweep, builtin;
+           int walked, has_class; char *cvals; } *memo;
   int *memo_at;             /* per node: its call's memo entry + 1, or 0 */
                            /* three slots: classes, Hash origins, callables */
   struct { int call; uint64_t done[4]; } *seen;
@@ -8720,7 +8721,7 @@ static void pivs_ix_clear(PivsFacts *f) {
 void pivs_facts_free(Compiler *c) {
   PivsFacts *f = c->pivs;
   if (!f) return;
-  for (int i = 0; i < f->nmemo; i++) { free(f->memo[i].set); free(f->memo[i].cls); free(f->memo[i].hash); }
+  for (int i = 0; i < f->nmemo; i++) { free(f->memo[i].set); free(f->memo[i].cls); free(f->memo[i].hash); free(f->memo[i].cvals); }
   free(f->memo); free(f->memo_at); free(f->seen);
   pivs_ix_clear(f);
   free(f);
@@ -8804,6 +8805,25 @@ static int pivs_elems(Compiler *c, int arr, char *set, int depth);
    query's memo entry (poly_recv_builtin). */
 static void pivs_note_builtin(Compiler *c) {
   if (c->pivs->active >= 0) c->pivs->memo[c->pivs->active].builtin = 1;
+}
+/* A constant naming a class or module, read as a value: the class query
+   records it beside its instance set (poly_recv_class_values) and walks on,
+   though the instance set's own answer stays unbounded for it. Only a name
+   one class of the program carries, or a builtin class's, is taken. */
+static int pivs_note_class_value(Compiler *c, int v) {
+  PivsFacts *f = c->pivs;
+  if (f->hash_mode != 0 || f->active < 0 || nt_kind(c->nt, v) != NK_ConstantReadNode) return 0;
+  const char *cn = nt_str(c->nt, v, "name");
+  if (!cn) return 0;
+  int ci = -1, nmatch = 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (c->classes[k].name && sp_streq(c->classes[k].name, cn)) { ci = k; nmatch++; }
+  if (nmatch > 1) return 0;
+  if (ci >= 0 && comp_const(c, cn)) return 0;   /* a value constant of the name */
+  if (ci < 0 && builtin_class_id(cn) == 0) return 0;
+  f->memo[f->active].has_class = 1;
+  if (ci >= 0) f->memo[f->active].cvals[ci] = 1;
+  return 1;
 }
 /* Does `n` read local `vn`, or call one of the methods answering their
    receiver on such a read (`xs.each { }`, `xs.tap { }`)? */
@@ -9370,6 +9390,8 @@ static int pivs_value_uncached(Compiler *c, int v, char *set, int depth) {
         return pivs_value(c, r, set, depth + 1);
       return 0;
     }
+    case NK_ConstantReadNode:
+      return pivs_note_class_value(c, v);
     default:
       return 0;
   }
@@ -9409,7 +9431,7 @@ static PivsFacts *pivs_ready(Compiler *c) {
   PivsFacts *f = pivs_facts(c);
   if (f->memo_n != c->nclasses || f->memo_count != c->nt->count ||
       f->memo_ver != c->nt->version) {
-    for (int i = 0; i < f->nmemo; i++) { free(f->memo[i].set); free(f->memo[i].cls); free(f->memo[i].hash); }
+    for (int i = 0; i < f->nmemo; i++) { free(f->memo[i].set); free(f->memo[i].cls); free(f->memo[i].hash); free(f->memo[i].cvals); }
     free(f->memo_at); free(f->seen);
     f->nmemo = f->query = 0; f->memo_n = c->nclasses; f->memo_count = c->nt->count;
     f->memo_ver = c->nt->version;
@@ -9437,7 +9459,8 @@ static const char *pivs_call_set(Compiler *c, int call, const int **cls, int *n,
     memset(&f->memo[m], 0, sizeof f->memo[m]);
     f->memo[m].sweep = -1;
     f->memo[m].set = (char *)calloc((size_t)(c->nclasses > 0 ? c->nclasses : 1), 1);
-    if (!f->memo[m].set) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    f->memo[m].cvals = (char *)calloc((size_t)(c->nclasses > 0 ? c->nclasses : 1), 1);
+    if (!f->memo[m].set || !f->memo[m].cvals) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     if (hashes) f->memo[m].hash = malloc(64 * sizeof *f->memo[m].hash);
     if (hashes && !f->memo[m].hash) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
@@ -9445,6 +9468,8 @@ static const char *pivs_call_set(Compiler *c, int call, const int **cls, int *n,
     f->memo[m].sweep = f->sweep; f->memo[m].nhash = 0; f->memo[m].typed = 0; f->memo[m].builtin = 0;
     f->hash_mode = hashes; f->active = m; f->query++;
     memset(f->memo[m].set, 0, (size_t)(c->nclasses > 0 ? c->nclasses : 1));
+    memset(f->memo[m].cvals, 0, (size_t)(c->nclasses > 0 ? c->nclasses : 1));
+    f->memo[m].has_class = 0;
     free(f->memo[m].cls);
     int recv = nt_ref(c->nt, call, "receiver");
     /* Kernel#String dispatches a conversion on its argument. Keep that
@@ -9454,7 +9479,9 @@ static const char *pivs_call_set(Compiler *c, int call, const int **cls, int *n,
       const int *av = a >= 0 ? nt_arr(c->nt, a, "arguments", &ac) : NULL;
       if (ac == 1) recv = av[0];
     }
-    f->memo[m].ok = pivs_value(c, recv, f->memo[m].set, 0);
+    f->memo[m].walked = pivs_value(c, recv, f->memo[m].set, 0);
+    /* a Class value is no instance: the instance set bounds nothing then */
+    f->memo[m].ok = f->memo[m].walked && !f->memo[m].has_class;
     f->memo[m].cls = NULL; f->memo[m].ncls = 0;
     if (f->memo[m].ok) {
       int nk = 0;
@@ -9490,6 +9517,14 @@ int poly_ivar_set_reaches(Compiler *c, int call, int k) {
   const char *set = pivs_call_set(c, call, NULL, NULL, 0);
   if (k < 0 || k >= c->nclasses) return 0;
   return set ? set[k] : 1;
+}
+/* See analyze_internal.h. */
+const char *poly_recv_class_values(Compiler *c, int call) {
+  if (call < 0 || call >= c->nt->count) return NULL;
+  (void)pivs_call_set(c, call, NULL, NULL, 0);
+  PivsFacts *f = c->pivs;
+  int m = f->memo_at[(size_t)call * 3] - 1;
+  return m >= 0 && f->memo[m].walked ? f->memo[m].cvals : NULL;
 }
 /* See analyze_internal.h. */
 const int *poly_recv_classes(Compiler *c, int call, int *n) {
