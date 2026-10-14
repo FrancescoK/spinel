@@ -3574,12 +3574,16 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     buf_puts(b, "; ");
   }
   else if (as_expr && !rd_lbl && !nx_own && bn3 > 0 && !nx_tail_stmt &&
-           (nt_kind(nt, bd3[bn3 - 1]) == NK_CallOrWriteNode || nt_kind(nt, bd3[bn3 - 1]) == NK_CallAndWriteNode)) {
+           (nt_kind(nt, bd3[bn3 - 1]) == NK_CallOrWriteNode || nt_kind(nt, bd3[bn3 - 1]) == NK_CallAndWriteNode ||
+            nt_kind(nt, bd3[bn3 - 1]) == NK_IndexOrWriteNode || nt_kind(nt, bd3[bn3 - 1]) == NK_IndexAndWriteNode ||
+            nt_kind(nt, bd3[bn3 - 1]) == NK_IndexOperatorWriteNode)) {
     /* a conditional attribute write (`o.a ||= v`) as the tail: its statement
        form casts the write to void, the calls being its point there, which
        left the statement expression without a value where the yield's was
        read (`r = yield` over `try { o.v ||= 1 }`: the C build stopped). The
-       value form runs the write and answers the attribute. */
+       value form runs the write and answers the attribute. An element's
+       (`h[k] ||= v`, `&&=`, `+=`) is the same: its statement form is a
+       block of C statements (#9123's cache, `@store[k] ||= render`). */
     if (block_of_body(c, bbody) >= 0) emit_block_locals_reset(c, block_of_body(c, bbody), b, 0);
     for (int k3 = 0; k3 < bn3 - 1; k3++) emit_stmt(c, bd3[k3], b, 0);
     { Buf tb; memset(&tb, 0, sizeof tb);
