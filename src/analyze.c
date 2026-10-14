@@ -5307,11 +5307,12 @@ static int seed_form_gives_way(TyKind seed, TyKind val) {
   return ty_is_hash(seed) && seed != TY_POLY_POLY_HASH && val == TY_POLY_POLY_HASH;
 }
 
-/* A box written into an ivar the seed keys by one class: the box may hold a
-   Hash with boxed keys (a parameter whose seed gave way to one), and the
-   store would unbox it into a copy of the seed's form, its keys read as the
-   seed's class whatever they are. The ivar takes the box instead. */
-static int seed_ivar_box_gives_way(TyKind seed, TyKind val) {
+/* A box written into an ivar, or answered by a return, the seed keys by one
+   class: the box may hold a Hash with boxed keys (a parameter whose seed
+   gave way to one, a method whose Hash did), and the store would unbox it
+   into a copy of the seed's form, its keys read as the seed's class
+   whatever they are. The slot takes the box instead. */
+static int seed_box_gives_way(TyKind seed, TyKind val) {
   return ty_is_hash(seed) && seed != TY_POLY_POLY_HASH && val == TY_POLY;
 }
 
@@ -5328,7 +5329,7 @@ static int seed_symkey_box_gives_way(TyKind seed, TyKind val) {
 int class_ivar_pin_holds(ClassInfo *ci, const char *name, TyKind vt) {
   if (!class_ivar_pinned(ci, name)) return 0;
   int iv = comp_ivar_index(ci, name);
-  if (iv < 0 || !(seed_form_gives_way(ci->ivar_types[iv], vt) || seed_ivar_box_gives_way(ci->ivar_types[iv], vt)))
+  if (iv < 0 || !(seed_form_gives_way(ci->ivar_types[iv], vt) || seed_box_gives_way(ci->ivar_types[iv], vt)))
     return 1;
   class_unpin_ivar(ci, name);
   ci->ivar_types[iv] = TY_UNKNOWN;
@@ -5348,7 +5349,8 @@ int param_seed_holds(LocalVar *lv, TyKind at) {
 /* And a return's against the value its body answers. */
 int ret_seed_holds(Scope *s, TyKind r) {
   if (!s->ret_rbs_seeded) return 0;
-  if (!seed_form_gives_way(s->ret, r) && !seed_symkey_box_gives_way(s->ret, r)) return 1;
+  if (!seed_form_gives_way(s->ret, r) && !seed_box_gives_way(s->ret, r) && !seed_symkey_box_gives_way(s->ret, r))
+    return 1;
   s->ret_rbs_seeded = 0;
   s->ret_rbs_nilable = 0;
   return 0;

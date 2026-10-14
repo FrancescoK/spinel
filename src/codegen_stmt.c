@@ -6803,6 +6803,13 @@ static Buf *g_pm_hash_sink = NULL;
 static int case_subject_boxes_sentinel(Compiler *c, int pred, TyKind pt) {
   return pred >= 0 && (pt == TY_INT || pt == TY_FLOAT) && node_is_oint(c, pred);
 }
+/* A typed Array or Hash subject that can be nil (the nil fact: a seeded
+   nilable return, an ivar set later) holds its nil as NULL, which the typed
+   arms read as an Array or a Hash. It is bound boxed instead, so a `when
+   nil` and a `when Hash` ask the value's class. */
+static int case_subject_ptr_nil(Compiler *c, int pred, TyKind pt) {
+  return pred >= 0 && (ty_is_array(pt) || ty_is_hash(pt)) && repr_of(c, pred).may_nil;
+}
 /* The case scrutinee temp `_tN` whose sp_oint sits beside it as `_oN`
    (an Integer or Float scrutinee that can be nil), or -1: `when nil` tests
    the oint's flag, and the plain `_tN` compares the value. */
@@ -9774,7 +9781,7 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
     pt = comp_ntype(c, pred);
     t = ++g_tmp;
     emit_indent(b, indent);
-    if (pt == TY_UNKNOWN || pt == TY_VOID || pt == TY_NIL) {
+    if (pt == TY_UNKNOWN || pt == TY_VOID || pt == TY_NIL || case_subject_ptr_nil(c, pred, pt)) {
       emit_ctype(c, TY_POLY, b); buf_printf(b, " _t%d = ", t); emit_boxed(c, pred, b);
       buf_puts(b, ";\n"); pt = TY_POLY;
     }
@@ -10341,7 +10348,7 @@ static void emit_case_expr_in(Compiler *c, int id, Buf *b) {
     /* a scrutinee with no usable C storage type (an empty `[]`/`{}` literal
        caches UNKNOWN, and nil/void have no slot) is boxed poly so the temp is
        not declared `void`; the when arms compare it via sp_poly_eq. */
-    if (pt == TY_UNKNOWN || pt == TY_VOID || pt == TY_NIL) {
+    if (pt == TY_UNKNOWN || pt == TY_VOID || pt == TY_NIL || case_subject_ptr_nil(c, pred, pt)) {
       emit_ctype(c, TY_POLY, b); buf_printf(b, " _t%d = ", t); emit_boxed(c, pred, b); buf_puts(b, "; ");
       pt = TY_POLY;
     }

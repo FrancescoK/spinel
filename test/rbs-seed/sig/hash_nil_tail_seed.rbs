@@ -1,0 +1,8 @@
+module HntsRouter
+  def self.match_parts: (Array[String] pattern_parts, Array[String] path_parts) -> Hash[String, String]?
+  def self.first: (Array[String] parts) -> Hash[String, String]?
+end
+module HntsBoxed
+  def self.match: (untyped pat, untyped path) -> Hash[String, String]?
+  def self.scan: (untyped routes, untyped path) -> Hash[String, String]?
+end

@@ -16259,17 +16259,23 @@ typedef struct {
 } IrtCtx;
 static int irt_settle_callers(Compiler *c, IrtCtx *x);
 
-/* Whether any explicit return of scope s answers a Hash with boxed keys. The
-   body or another return of a different Hash form, joined with it, is a plain
-   poly value (ty_unify), so the join no longer shows it to a seeded return's
-   test (ret_seed_holds). */
-static int irt_returns_boxed_hash(Compiler *c, int s, const IrtCtx *x) {
-  if (!x->ret_head || !x->ret_next) return 0;
+/* The Hash a seeded Hash return of scope s answers through its explicit
+   returns: their types joined, a `return nil` (or a bare one) left out, as
+   the seed's pointer holds nil as NULL whatever the Hash's form. *boxed:
+   one of them answers a Hash with boxed keys. The body or another return
+   of a different Hash form, joined with it, is a plain poly value
+   (ty_unify), so the join no longer shows it to a seeded return's test
+   (ret_seed_holds). */
+static TyKind irt_returns_hash(Compiler *c, int s, const IrtCtx *x, int *boxed) {
+  TyKind r = TY_UNKNOWN;
+  *boxed = 0;
+  if (!x->ret_head || !x->ret_next) return x->ret_acc[s];
   for (int id = x->ret_head[s]; id >= 0; id = x->ret_next[id]) {
     TyKind rt = (x->ret_narrow && x->ret_narrow[id]) ? x->ret_narrow[id] : return_node_type(c, id);
-    if (rt == TY_POLY_POLY_HASH) return 1;
+    if (rt == TY_POLY_POLY_HASH) *boxed = 1;
+    if (rt != TY_NIL) r = ty_unify(r, rt);
   }
-  return 0;
+  return r;
 }
 
 /* infer_return_types' derivation of scope s's value from its body and its
@@ -16297,8 +16303,11 @@ static int irt_scope(Compiler *c, int s, IrtCtx *x) {
   TyKind hbr = TY_UNKNOWN;
   if (sc->ret_rbs_seeded && ty_is_hash(sc->ret)) {
     hbr = sc->body >= 0 ? infer_type(c, sc->body) : TY_UNKNOWN;
-    int boxed = has_ret && has_ret[s] && irt_returns_boxed_hash(c, s, x);
-    if (has_ret && has_ret[s]) hbr = ty_unify(hbr, ret_acc[s]);
+    /* (a nil the body ends in is the seed's NULL too: only the Hashes the
+       method answers decide the form, `return params` beside a last nil) */
+    if (hbr == TY_NIL) hbr = TY_UNKNOWN;
+    int boxed = 0;
+    if (has_ret && has_ret[s]) hbr = ty_unify(hbr, irt_returns_hash(c, s, x, &boxed));
     if (boxed) hbr = TY_POLY_POLY_HASH;   /* an explicit return with boxed keys */
   }
   if (ret_seed_holds(sc, hbr)) {

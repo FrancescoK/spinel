@@ -3048,6 +3048,19 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	rm -f "$$tmp/bkh"; \
 	done; \
 	;; \
+	shared_rbs_hash_nil_tail) \
+	$(SPINEL) test/rbs-seed/shared_rbs_hash_nil_tail.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srhn" >/dev/null 2>"$$tmp/srhn.err" && \
+	  "$$tmp/srhn" > "$$tmp/srhn.out" 2>/dev/null && cmp -s "$$tmp/srhn.out" test/rbs-seed/shared_rbs_hash_nil_tail.expected && \
+	  SPINEL_GC_STRESS=1 "$$tmp/srhn" > "$$tmp/srhn.gc" 2>/dev/null && cmp -s "$$tmp/srhn.gc" test/rbs-seed/shared_rbs_hash_nil_tail.expected || { echo "rbs-seed-test: FAIL (#6765 an --rbs '-> Hash[String, String]?' method answering its Hash beside a nil under --share-strings: refused, or not the shared Strings)"; sed -n 1,5p "$$tmp/srhn.err"; ok=0; }; \
+	;; \
+	hash_nil_tail_seed) \
+	for fl in "" --share-strings; do \
+	$(SPINEL) test/rbs-seed/hash_nil_tail_seed.rb --rbs test/rbs-seed/sig $$fl -o "$$tmp/hnt" >/dev/null 2>"$$tmp/hnt.err" && \
+	  "$$tmp/hnt" > "$$tmp/hnt.out" 2>/dev/null && cmp -s "$$tmp/hnt.out" test/rbs-seed/hash_nil_tail_seed.expected && \
+	  SPINEL_GC_STRESS=1 "$$tmp/hnt" > "$$tmp/hnt.gc" 2>/dev/null && cmp -s "$$tmp/hnt.gc" test/rbs-seed/hash_nil_tail_seed.expected || { echo "rbs-seed-test: FAIL (an --rbs '-> Hash[String, String]?' method answering its Hash beside a nil$${fl:+ under $$fl}: refused, or its C does not build)"; sed -n 1,5p "$$tmp/hnt.err"; ok=0; }; \
+	rm -f "$$tmp/hnt"; \
+	done; \
+	;; \
 	boxed_hash_into_sym_seed) \
 	for fl in "" --share-strings; do \
 	$(SPINEL) test/rbs-seed/boxed_hash_into_sym_seed.rb --rbs test/rbs-seed/sig $$fl -o "$$tmp/bhs" >/dev/null 2>"$$tmp/bhs.err" && \
