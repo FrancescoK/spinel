@@ -1,0 +1,3 @@
+both spinning threads run
+the reader got "ready\n"
+[true, true]
