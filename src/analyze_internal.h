@@ -465,6 +465,7 @@ TyKind infer_sum_block_ty(Compiler *c, int block);
 TyKind infer_map_block_ty(Compiler *c, int id, int block);
 /* A call written `recv&.name` (analyze_infer_recv.c). */
 int call_is_safe_nav(const NodeTable *nt, int id);
+void step_kw_positional(Compiler *c, NodeTable *nt, int id, int args, int to_v, int by_v, int by_first);
 /* A range endpoint that is the infinite Float constant (analyze_infer.c). */
 int infer_end_is_float_inf(Compiler *c, int right);
 int propagate_prep_params(Compiler *c);

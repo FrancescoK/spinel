@@ -7362,6 +7362,24 @@ void emit_srange_member_param(Compiler *c, int block, const char *p0_orig, const
   else emit_iter_param_assign(c, block, p0_orig, p0, TY_STRING, elem, b, indent);
 }
 
+static int step_recv_hoists(Compiler *c, int id, int argc, const int *argv) {
+  int paren = 0;
+  for (int i = 0; i < argc && !paren; i++) paren = nt_kind(c->nt, argv[i]) == NK_ParenthesesNode;
+  return paren && g_pre && g_sn_skip != id;
+}
+
+static int step_bind_recv(Compiler *c, int id, int recv, const char *cty, void (*emit)(Compiler *, int, Buf *),
+                          int argc, const int *argv, Buf *b, int indent) {
+  int t = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb);
+  emit(c, recv, &rb);
+  Buf *to = step_recv_hoists(c, id, argc, argv) ? g_pre : b;
+  emit_indent(to, to == b ? indent : g_indent);
+  buf_printf(to, "%s _t%d = %s;\n", cty, t, rb.p ? rb.p : "0");
+  free(rb.p);
+  return t;
+}
+
 static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, id, "block");
@@ -7827,6 +7845,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
                    (nt_type(nt, sargv[0]) && sp_streq(nt_type(nt, sargv[0]), "NilNode"));
     if (no_limit && rt == TY_INT &&
         (sargc < 2 || comp_ntype(c, sargv[1]) != TY_FLOAT)) {
+      int tr = step_recv_hoists(c, id, sargc, sargv) ? step_bind_recv(c, id, recv, "sp_int", emit_int_expr, sargc, sargv, b, indent) : 0;
       int t = ++g_tmp, ts = ++g_tmp;
       emit_indent(b, indent); buf_printf(b, "sp_int _t%d = ", ts);
       if (sargc >= 2) emit_int_expr(c, sargv[1], b); else buf_puts(b, "1");
@@ -7834,7 +7853,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent);
       buf_printf(b, "if (_t%d == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");\n", ts);
       emit_indent(b, indent);
-      buf_printf(b, "for (sp_int _t%d = ", t); emit_int_expr(c, recv, b);
+      buf_printf(b, "for (sp_int _t%d = ", t); if (tr) buf_printf(b, "_t%d", tr); else emit_int_expr(c, recv, b);
       buf_printf(b, "; ; _t%d += _t%d) {\n", t, ts);
       if (p0) { char ts2[32]; snprintf(ts2, sizeof ts2, "_t%d", t); emit_iter_param_assign(c, block, p0_orig, p0, TY_INT, ts2, b, indent + 1); }
       { char rs_es[32]; snprintf(rs_es, sizeof rs_es, "_t%d", t);
@@ -7848,8 +7867,8 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     int is_float = (rt == TY_FLOAT) || comp_ntype(c, sargv[0]) == TY_FLOAT ||
                    (sargc >= 2 && comp_ntype(c, sargv[1]) == TY_FLOAT);
     if (!is_float) {
-      int t = ++g_tmp, tl = ++g_tmp, ts = ++g_tmp, tv = 0, tr = nt_kind(nt, recv) == NK_IntegerNode ? 0 : ++g_tmp;
-      if (tr) { emit_indent(b, indent); buf_printf(b, "sp_int _t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, ";\n"); }
+      int t = ++g_tmp, tl = ++g_tmp, ts = ++g_tmp, tv = 0;
+      int tr = nt_kind(nt, recv) == NK_IntegerNode ? 0 : step_bind_recv(c, id, recv, "sp_int", emit_expr, sargc, sargv, b, indent);
       if (comp_ntype(c, sargv[0]) == TY_POLY) {
         char tvs[32]; tv = ++g_tmp; snprintf(tvs, sizeof tvs, "_t%d", tv);
         emit_indent(b, indent); buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, sargv[0], b);
@@ -7904,12 +7923,11 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent); buf_puts(b, "}\n");
       return 1;
     }
-    int tb = ++g_tmp, tl = ++g_tmp, ts = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
+    int tb = step_bind_recv(c, id, recv, "sp_float", emit_float_expr, sargc, sargv, b, indent), tl = ++g_tmp, ts = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
     /* the limit and the step through the Float slot's conversion: a BOXED
        one (an Integer local under --int-overflow=promote, the argument of a
        boxed receiver's Float arm) unboxes, a typed Integer widens, and a
        non-Numeric is CRuby's TypeError rather than a C build error (#4774) */
-    emit_indent(b, indent); buf_printf(b, "sp_float _t%d = ", tb); emit_float_expr(c, recv, b); buf_puts(b, ";\n");
     emit_indent(b, indent); buf_printf(b, "sp_float _t%d = ", tl); emit_float_expr(c, sargv[0], b); buf_puts(b, ";\n");
     emit_indent(b, indent); buf_printf(b, "sp_float _t%d = ", ts);
     if (sargc >= 2) emit_float_expr(c, sargv[1], b); else buf_puts(b, "1.0");

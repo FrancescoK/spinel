@@ -10383,19 +10383,18 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
       int kwh = sav[sac - 1];
       int en = 0;
       const int *els = nt_arr(nt, kwh, "elements", &en);
-      int to_v = -1, by_v = -1, other = 0;
+      int to_v = -1, by_v = -1, other = 0, by_first = 0;
       for (int e = 0; e < en; e++) {
         int kk = nt_ref(nt, els[e], "key");
         const char *kn = (kk >= 0 && nt_type(nt, kk) && sp_streq(nt_type(nt, kk), "SymbolNode"))
                          ? nt_str(nt, kk, "value") : NULL;
         if (kn && sp_streq(kn, "to")) to_v = nt_ref(nt, els[e], "value");
-        else if (kn && sp_streq(kn, "by")) by_v = nt_ref(nt, els[e], "value");
+        else if (kn && sp_streq(kn, "by")) { by_v = nt_ref(nt, els[e], "value"); by_first = to_v < 0; }
         else other = 1;
       }
       if (sac == 2 && to_v < 0) to_v = sav[0];   /* step(limit, by: B) */
       if (!other && to_v >= 0 && by_v >= 0) {
-        int na[2]; na[0] = to_v; na[1] = by_v;
-        nt_node_set_arr(nt, sargs, "arguments", na, 2);
+        step_kw_positional(c, nt, id, sargs, to_v, by_v, by_first && sac == 1);
         *changed = 1;
         return 1;
       }
