@@ -4403,10 +4403,9 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
        boxed again were a new String. So is a String left a store lifts
        (poly_strbuf_lift: a seeded String method's tail `s || v`), boxed by
        the handle it publishes, not from its bytes. */
-    char lt_ref[1024];
     int lt_hbox = repr_share_rule(c) && res == TY_POLY &&
                   (lt == TY_STRBUF ||
-                   (lt == TY_STRING && (face_str_bang_call(c, left) || strbuf_var_handle(c, left, lt_ref, sizeof lt_ref) ||
+                   (lt == TY_STRING && (face_str_bang_call(c, left) || strbuf_var_handle(c, left, NULL) ||
                                         (repr_of(c, unwrap_parens(c, left)).poly_lift &&
                                          (repr_call_returns_handle(c, left) || logic_left_carries(c, left))))));
     if (lt_hbox) lt = TY_POLY;
