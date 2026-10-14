@@ -40,3 +40,9 @@ y = mk3([+"abc", 1][ARGV.size]); y.bytesplice(0, 1, "\xff".b); p y.encoding
 z = mk3(["ab\xff".b, 1][ARGV.size]); z.bytesplice(0, 1, "x"); p z.encoding
 p "ab".b.bytesplice(0, 1, "é").encoding
 p "abc".dup.bytesplice(0, 1, 2..3) rescue p $!
+p "hello".dup.bytesplice(..1, "Q"), "hello".dup.bytesplice(3.., "Q"), "hello".dup.bytesplice(0...-10, "!")
+begin; "hello".dup.bytesplice(0..1, 2, "abc", 0, 1); rescue => e; p e.class, e.message; end
+begin; "hello".dup.bytesplice(0, 1, "abc", 0..1, 1); rescue => e; p e.class, e.message; end
+begin; "abc".dup.bytesplice(9..10, 1); rescue => e; p e.class, e.message; end
+bn = mk3(["ab".b, 1][ARGV.size]); bn.bytesplice(0, 1, "é", 0, 2); p bn, bn.encoding == Encoding::UTF_8
+br = mk3(["ab".b, 1][ARGV.size]); br.bytesplice(0..0, "é"); p br, br.encoding == Encoding::UTF_8

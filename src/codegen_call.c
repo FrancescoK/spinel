@@ -6088,7 +6088,9 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
                tvB, tvB, tvB, tvB, tvB, tvB);
     char rs[48]; snprintf(rs, sizeof rs, "sp_String_cstr(_m%d)", tvB);
     emit_bytesplice_bytes(c, argv, argc, rs, b);
-    buf_printf(b, "; sp_String_set_bin_enc(_m%d, _n%d); _r%d = sp_box_str(_n%d); }\n"
+    /* the answer is the receiver itself, so a mutation through it
+       (`x.bytesplice(0, 1, "J") << "!"`) reaches x */
+    buf_printf(b, "; sp_String_set_bin_enc(_m%d, _n%d); _r%d = _t%d; }\n"
                   "else { sp_raise_nomethod(sp_nomethod_msg(\"bytesplice\", _t%d)); _r%d = sp_box_nil(); } _r%d; })",
                tvB, tvB, tvB, tvB, tvB, tvB, tvB);
     return 1;
