@@ -3618,10 +3618,11 @@ static int strbuf_slot_into(Compiler *c, int recv, Buf *b, size_t cap) {
   /* strbuf_handle_demand is the same demand carried without the type: a mark
      made after the node-type cache is finalized cannot move the type without
      moving the call off the surface that dispatches it (see compiler.h). */
-  /* (not a conversion over a String the rule shares: its String arm reads
-     the bytes, and its route answers the receiver's handle,
-     emit_strbuf_route) */
-  if (strbuf_call_reads_handle(c, recv) && !(repr_share_rule(c) && repr_string_conversion_operand(c, recv) >= 0)) {
+  /* (not a conversion over a String the rule shares, nor a boxed to_s: its
+     String arm reads the bytes, and its route answers the receiver's
+     handle, or the box's, emit_strbuf_route) */
+  if (strbuf_call_reads_handle(c, recv) &&
+      !(repr_share_rule(c) && (repr_string_conversion_operand(c, recv) >= 0 || repr_boxed_to_s_operand(c, recv) >= 0))) {
     if (!b) return 1;
     Buf rb2; memset(&rb2, 0, sizeof rb2);
     /* (--share-strings: what the read put ahead of the statement goes with
