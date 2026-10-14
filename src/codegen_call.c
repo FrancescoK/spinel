@@ -1608,7 +1608,10 @@ int poly_cls_value_cands(Compiler *c, int id, const char *name, int argc, const 
      class method of any other class is unreachable (Shellwords.split for a
      value that is a String or Integer), and its arm would put that method's
      answer into a slot typed for the others */
-  const char *cvals = poly_recv_class_values(c, id);
+  /* asked of the first candidate it can drop: the walk is the receiver's,
+     and a call with no class-method candidate (most) has nothing to drop */
+  int cv_asked = 0;
+  const char *cvals = NULL;
   for (int ki = 0; ki < ncc8; ki++) {
     int k = cc8[ki].cls;
     if (is_builtin_reopen(c->classes[k].name)) continue;
@@ -1621,6 +1624,7 @@ int poly_cls_value_cands(Compiler *c, int id, const char *name, int argc, const 
     int every_class = kn && ((kl == 5 && !strncmp(kn, "Class", 5)) || (kl == 6 && !strncmp(kn, "Module", 6)) ||
                              (kl == 6 && !strncmp(kn, "Object", 6)) || (kl == 11 && !strncmp(kn, "BasicObject", 11)) ||
                              (kl == 6 && !strncmp(kn, "Kernel", 6)));
+    if (!every_class && !cv_asked) { cvals = poly_recv_class_values(c, id); cv_asked = 1; }
     if (cvals && !every_class) {
       /* a value of the class or of a class under it (which inherits it) */
       int held = 0;
