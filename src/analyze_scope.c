@@ -3881,7 +3881,7 @@ static const char *alias_embedding_parent(Compiler *c, ClassInfo *cls) {
   int dn = cls->def_node;
   if (dn < 0 || nt_kind(c->nt, dn) != NK_ClassNode) return NULL;
   const char *par = builtin_value_superclass(c, nt_ref(c->nt, dn, "superclass"));
-  return par && (sp_streq(par, "Array") || sp_streq(par, "Hash")) ? par : NULL;
+  return par && (sp_streq(par, "Array") || sp_streq(par, "Hash") || sp_streq(par, "String")) ? par : NULL;
 }
 /* The Object / Kernel methods an alias in a program class can capture: a
    call through the alias runs the builtin's own (builtin_only), as CRuby's
@@ -3930,9 +3930,10 @@ static void alias_register(Compiler *c, ClassInfo *cls, const char *nw, const ch
      there yet names the builtin method: it keeps naming it when the class
      later defines or re-aliases that name (`alias_method :plus_without, :+`
      ahead of `alias_method :+, :plus_with`). */
-  /* So in an Array or Hash subclass, of a method of the builtin: its
+  /* So in an Array, Hash or String subclass, of a method of the builtin: its
      instance is the builtin's (`alias_method :regular_writer, :[]=` ahead of
-     its own `def []=`, as activesupport's HashWithIndifferentAccess has) */
+     its own `def []=`, as activesupport's HashWithIndifferentAccess has, or
+     `alias original_concat concat` ahead of SafeBuffer's own concat) */
   const char *ep = singleton ? NULL : alias_embedding_parent(c, cls);
   if (s >= 0 && cid >= 0 &&
       (singleton ? builtin_cmethod_known(cls->name, od) :
