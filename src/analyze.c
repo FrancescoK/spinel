@@ -3642,6 +3642,36 @@ static void qc_resolve_headers(Compiler *c) {
   qc_refuse_holder_headers(c);
 }
 
+/* Does the program have a `class` or `module` whose name ends in leaf?
+   (The classes are not registered yet when the constants are qualified.) */
+static int qc_program_defines_class(const NodeTable *nt, const char *leaf) {
+  static const NodeKind hk[] = { NK_ClassNode, NK_ModuleNode };
+  for (int h = 0; h < 2; h++)
+    NT_FOREACH_KIND(nt, hk[h], id) {
+      int cp = nt_ref(nt, id, "constant_path");
+      const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+      if (cn && sp_streq(cn, leaf)) return 1;
+    }
+  return 0;
+}
+/* A top-level path write's target `A::B::NAME`, as a write of NAME under
+   the module path A::B names from the top level (through an alias, `A =
+   Base`) -- when each segment of it is a class or module of the program. */
+static void qc_note_path_write(Compiler *c, int tgt, QCWrite **ws, int *n, int *cap) {
+  char chain[QC_MAXDEPTH + 1][64], mods[QC_MAXDEPTH + 1][64];
+  int abs = 0, cn = tgt >= 0 ? qc_read_chain(c->nt, tgt, chain, &abs) : 0;
+  if (cn < 2 || cn > QC_MAXDEPTH) return;
+  QCScope top = { chain, 0 };
+  int via, md = qc_alias_chain(&top, 1, chain, cn - 1, mods, &via);
+  if (md < 1 || qc_holder >= 0) return;
+  for (int i = 0; i < md; i++) if (!qc_program_defines_class(c->nt, mods[i])) return;
+  if (*n >= *cap) { *cap = *cap ? *cap * 2 : 16; *ws = realloc(*ws, sizeof(QCWrite) * (size_t)*cap); }
+  if (!*ws) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  QCWrite *w = &(*ws)[(*n)++];
+  w->node = tgt; w->depth = md; w->salt = 0; w->head[0] = 0;
+  for (int i = 0; i < md; i++) snprintf(w->path[i], 64, "%s", mods[i]);
+  snprintf(w->name, sizeof w->name, "%s", chain[cn - 1]);
+}
 void qc_collect_writes(Compiler *c, int node, char (*path)[64], int depth,
                               QCWrite **ws, int *n, int *cap) {
   const NodeTable *nt = c->nt;
@@ -3661,6 +3691,11 @@ void qc_collect_writes(Compiler *c, int node, char (*path)[64], int depth,
       snprintf(w->name, sizeof w->name, "%s", nm);
     }
   }
+  /* `Base::NAME = v` at the top level writes NAME under Base, as `NAME = v`
+     in Base's body does: the target is that write's node */
+  else if (depth == 0 && (sp_streq(ty, "ConstantPathWriteNode") || sp_streq(ty, "ConstantPathOrWriteNode") ||
+                          sp_streq(ty, "ConstantPathAndWriteNode") || sp_streq(ty, "ConstantPathOperatorWriteNode")))
+    qc_note_path_write(c, nt_ref(nt, node, "target"), ws, n, cap);
   int nr = nt_num_refs(nt, node);
   for (int i = 0; i < nr; i++) qc_collect_writes(c, nt_ref_at(nt, node, i), path, depth, ws, n, cap);
   int na = nt_num_arrs(nt, node);
