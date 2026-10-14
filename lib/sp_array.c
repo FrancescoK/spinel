@@ -1042,7 +1042,19 @@ sp_RbVal sp_FloatArray_rindex_poly(sp_FloatArray *a, sp_float v)  {SP_GC_ROOT(a)
 sp_RbVal sp_FloatArray_index_key(sp_FloatArray *a, sp_RbVal v)  {SP_GC_ROOT(a); if (v.tag == SP_TAG_FLT) return sp_FloatArray_index_poly(a, v.v.f); if (v.tag == SP_TAG_INT) return sp_FloatArray_index_poly(a, (sp_float)v.v.i); if (v.tag == SP_TAG_NIL) return sp_box_oint(sp_FloatArray_index_nil(a, 0)); return sp_box_nil(); }
 sp_RbVal sp_FloatArray_rindex_key(sp_FloatArray *a, sp_RbVal v) {SP_GC_ROOT(a); if (v.tag == SP_TAG_FLT) return sp_FloatArray_rindex_poly(a, v.v.f); if (v.tag == SP_TAG_INT) return sp_FloatArray_rindex_poly(a, (sp_float)v.v.i); if (v.tag == SP_TAG_NIL) return sp_box_oint(sp_FloatArray_index_nil(a, 1)); return sp_box_nil(); }
 sp_ofloat sp_FloatArray_delete_key(sp_FloatArray *a, sp_RbVal v) {SP_GC_ROOT(a); if (v.tag == SP_TAG_FLT) return sp_FloatArray_delete_o(a, v.v.f); if (v.tag == SP_TAG_INT) return sp_FloatArray_delete_o(a, (sp_float)v.v.i); if (v.tag == SP_TAG_NIL) { sp_FloatArray_delete_nil(a); return sp_ofloat_nil(); } return sp_ofloat_nil(); }
-const int64_t *sp_IntArray_ffi_data(sp_IntArray *a) { return a ? (const int64_t *)(a->data + a->start) : (const int64_t *)0; }
+/* An Integer Array's elements for an FFI :int_array (const int64_t *): its
+   own storage where sp_int is 64 bits; on a 32-bit target a widened copy,
+   made as sp_PolyArray_ffi_int_data makes its own (sp_gc_alloc_nogc). The
+   cast handed the C side 32-bit elements read two at a time as one. */
+const int64_t *sp_IntArray_ffi_data(sp_IntArray *a) {
+  if (!a) return (const int64_t *)0;
+  if (sizeof(sp_int) == sizeof(int64_t)) return (const int64_t *)(a->data + a->start);
+  if (a->len <= 0) return (const int64_t *)0;
+  SP_GC_ROOT(a);
+  int64_t *buf = (int64_t *)sp_gc_alloc_nogc((size_t)a->len * sizeof(int64_t), NULL, NULL);
+  for (sp_int i = 0; i < a->len; i++) buf[i] = (int64_t)a->data[a->start + i];
+  return buf;
+}
 const double  *sp_FloatArray_ffi_data(sp_FloatArray *a) { return a ? (const double *)a->data : (const double *)0; }
 sp_IntArray *sp_IntArray_concat(sp_IntArray *a, sp_IntArray *b) { SP_GC_ROOT(a); SP_GC_ROOT(b); sp_IntArray *r = sp_IntArray_new(); SP_GC_ROOT(r); if (a) for (sp_int i = 0; i < a->len; i++) sp_IntArray_push_o(r, sp_IntArray_oget(a, i)); if (b) for (sp_int i = 0; i < b->len; i++) sp_IntArray_push_o(r, sp_IntArray_oget(b, i)); return r; }
 sp_StrArray *sp_StrArray_concat(sp_StrArray *a, sp_StrArray *b) {SP_GC_ROOT(a);SP_GC_ROOT(b); sp_StrArray *r = sp_StrArray_new(); SP_GC_ROOT(r); if (a) for (sp_int i = 0; i < a->len; i++) sp_StrArray_push(r, sp_StrArray_get(a, i)); if (b) for (sp_int i = 0; i < b->len; i++) sp_StrArray_push(r, sp_StrArray_get(b, i)); return r; }
