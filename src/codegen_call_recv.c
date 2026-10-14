@@ -10949,7 +10949,7 @@ static int emit_object_kind_nil(Compiler *c, int id, Buf *b, const NodeTable *nt
    `nm` is the binding the lookup chose for the boxed argument. */
 static int emit_native_pattern_poly(Compiler *c, const char *name, int nm,
                                     int recv, int argc, const int *argv, Buf *b) {
-  if (argc != 1 || c->share_strings) return 0;
+  if (argc != 1) return 0;
   TyKind at = comp_ntype(c, argv[0]);
   if (at != TY_POLY && at != TY_UNKNOWN) return 0;
   NativeMethod *mre = NULL, *mstr = NULL;
