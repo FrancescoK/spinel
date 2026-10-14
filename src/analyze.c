@@ -12480,6 +12480,27 @@ static void oa_mark_subtree(const NodeTable *nt, int id, unsigned char *dead) {
     for (int k = 0; k < nd->a[j].n; k++) oa_mark_subtree(nt, nd->a[j].ids[k], dead);
 }
 
+/* Put back the pin this pass cleared on its way in, for a slot it did not
+   narrow this round. A pin the element-narrowing wrote goes back as it was
+   (#3781). This pass's OWN narrowing (a pointer-array kind) gets one round
+   of grace -- a slot can miss its decision for a round while the slots
+   around it catch up -- and is then dropped: the slot was reset to the poly
+   array at the top, and handing the withdrawn decision back as a pin had
+   infer_write_types re-assert it as the narrowed kind next round, only for
+   this pass to reset it again, every round to the cap (#4962). That holds
+   for a slot the evidence rejected (a boxed row, a comparator, an iterator)
+   as for one it reached no decision on. */
+static void oa_restore_pin(Compiler *c, OAS *sl) {
+  TyKind back = sl->old_pin;
+  unsigned char *grace = sl->lv ? &sl->lv->oa_grace : &c->scopes[sl->sidx].ret_oa_grace;
+  if (back == TY_INT_ARRAY_ARRAY || back == TY_FLOAT_ARRAY_ARRAY || ty_is_obj_array(back)) {
+    if (*grace) { back = TY_UNKNOWN; *grace = 0; }
+    else *grace = 1;
+  }
+  if (sl->lv) sl->lv->oa_pin = back;
+  else c->scopes[sl->sidx].ret_oa_pin = back;
+}
+
 static int narrow_object_arrays(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -13327,22 +13348,7 @@ static int narrow_object_arrays(Compiler *c) {
     if (!sl[r].alive || sl[r].cls == -1 || sl[r].cls == -2) {
       OA_DROP_SRC_STAMP();
       if (sl[i].ici >= 0) continue;   /* an ivar with no decision stays the poly array it was reset to */
-      /* This pass's OWN narrowing gets one round of grace: a slot can miss a
-         decision for a round while the slots around it catch up (a callee's
-         parameter that is not a candidate yet), and the pin carries it over.
-         A second round in a row means the evidence is really gone: the slot
-         was reset to the poly array at the top, and handing the withdrawn
-         decision back as a pin had infer_write_types re-narrow it next round,
-         only for this pass to reset it again, every round until the cap
-         (#4962). */
-      TyKind back = sl[i].old_pin;
-      unsigned char *grace = sl[i].lv ? &sl[i].lv->oa_grace : &c->scopes[sl[i].sidx].ret_oa_grace;
-      if (back == TY_INT_ARRAY_ARRAY || back == TY_FLOAT_ARRAY_ARRAY || ty_is_obj_array(back)) {
-        if (*grace) { back = TY_UNKNOWN; *grace = 0; }
-        else *grace = 1;
-      }
-      if (sl[i].lv) sl[i].lv->oa_pin = back;
-      else c->scopes[sl[i].sidx].ret_oa_pin = back;
+      oa_restore_pin(c, &sl[i]);
       continue;
     }
     /* A block iterator is kept for a numeric row, and for an object element
@@ -13360,8 +13366,7 @@ static int narrow_object_arrays(Compiler *c) {
            comp_method_in_chain(c, sl[r].cls, "each", NULL) >= 0)))) {
       OA_DROP_SRC_STAMP();
       if (sl[i].ici >= 0) continue;
-      if (sl[i].lv) sl[i].lv->oa_pin = sl[i].old_pin;
-      else c->scopes[sl[i].sidx].ret_oa_pin = sl[i].old_pin;
+      oa_restore_pin(c, &sl[i]);
       continue;
     }
     TyKind nty;
@@ -13376,8 +13381,7 @@ static int narrow_object_arrays(Compiler *c) {
       if (sl[r].needs_cmp || sl[r].poly_elem) {
         OA_DROP_SRC_STAMP();
         if (sl[i].ici >= 0) continue;
-        if (sl[i].lv) sl[i].lv->oa_pin = sl[i].old_pin;
-        else c->scopes[sl[i].sidx].ret_oa_pin = sl[i].old_pin;
+        oa_restore_pin(c, &sl[i]);
         continue;
       }
       nty = sl[r].cls == OA_CLS_IA ? TY_INT_ARRAY_ARRAY : TY_FLOAT_ARRAY_ARRAY;
@@ -13399,8 +13403,7 @@ static int narrow_object_arrays(Compiler *c) {
       if (sl[r].needs_cmp && comp_method_in_chain(c, sl[r].cls, "<=>", NULL) < 0) {
         OA_DROP_SRC_STAMP();
         if (sl[i].ici >= 0) continue;
-        if (sl[i].lv) sl[i].lv->oa_pin = sl[i].old_pin;
-        else c->scopes[sl[i].sidx].ret_oa_pin = sl[i].old_pin;
+        oa_restore_pin(c, &sl[i]);
         continue;
       }
       nty = ty_obj_array(sl[r].cls);
