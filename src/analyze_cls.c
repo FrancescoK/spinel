@@ -1715,9 +1715,11 @@ static void cf_node(CF *f, int v) {
     }
     const int *mis = s->is_cmethod ? b->cmi : b->mi;
     int nmis = s->is_cmethod ? b->ncm : b->n;
+    int others = 0;
     for (int i = 0; i < nmis; i++) {
       int t = mis[i];
       if (t == mi) continue;
+      others++;
       cf_unite(f, v, f->ret_el[t]);
       if (k == NK_SuperNode) cf_bind_args(f, t, argv2, argc2);
       else {
@@ -1733,10 +1735,14 @@ static void cf_node(CF *f, int v) {
         cf_unite(f, f->yval_el[mi], f->yval_el[t]);
       }
     }
-    if (nmis == 0 && !(s->is_cmethod && sp_streq(s->name, "new"))) {
+    /* not nmis: the method itself is among those of its name */
+    if (others == 0 && !(s->is_cmethod && sp_streq(s->name, "new"))) {
       /* a builtin ancestor's method (Exception#initialize, Array#push, a
-         Struct's): its value is its own, built from the arguments */
-      cf_builtin_rule(f, v, -1, argv2, argc2, blk, s->name);
+         Struct's): its value is its own, built from the arguments, and
+         self is its receiver, as for a bare builtin call (Object#freeze
+         answers it) */
+      int ik = s->is_cmethod ? -1 : cf_inst_class(f, mi);
+      cf_builtin_rule(f, v, ik >= 0 && !cf_selfless_fn(s->name) ? f->self_el[ik] : -1, argv2, argc2, blk, s->name);
     }
     return;
   }
