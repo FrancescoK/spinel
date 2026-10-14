@@ -14766,6 +14766,9 @@ static int infer_block_params_enum_arms(Compiler *c, const NodeTable *nt, int id
         }
         return changed | 2;
       }
+      /* a receiver known only at run time hands its elements boxed: an
+         earlier round's Array element type would unbox a nil one */
+      if (arr_t == TY_POLY && p0 && bp_widen(comp_scope_of(c, block), p0, TY_POLY)) changed = 1;
     }
     /* hash.each_value.with_index { |v, i| }: a value and its index. Left
        to the body, the value's `<<` typed it a String Array, and the
