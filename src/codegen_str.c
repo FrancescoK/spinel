@@ -298,14 +298,24 @@ static int str_render_ident(Compiler *c, int v, int form, StrForm *sf) {
       strbuf_slot_text(c, v, b);
       return SPF_HANDLE;
     }
-    if (bang_self_handle_has(c, v) && emit_bang_self_handle(c, v, b)) return SPF_HANDLE;
+    /* (the text of a handle these name is that handle: the marks of the
+       node's own expressions in it, read as bytes by the check, are no
+       read) */
+    size_t at = b->len;
+    if (bang_self_handle_has(c, v) && emit_bang_self_handle(c, v, b)) {
+      if (g_share_check) share_check_declare_reads(b, at, v);
+      return SPF_HANDLE;
+    }
     if (str_route_names_handle(c, v)) {
       Buf hb;
       memset(&hb, 0, sizeof hb);
       int named = emit_strbuf_route(c, v, &hb);
       if (named) buf_puts(b, hb.p ? hb.p : "NULL");
       free(hb.p);
-      if (named) return SPF_HANDLE;
+      if (named) {
+        if (g_share_check) share_check_declare_reads(b, at, v);
+        return SPF_HANDLE;
+      }
     }
   }
   sf->cty = r.as_ty == TY_STRBUF ? TY_STRBUF : r.as_ty == TY_POLY ? TY_POLY : TY_STRING;
