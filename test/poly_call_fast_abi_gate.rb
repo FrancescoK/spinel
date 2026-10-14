@@ -341,20 +341,20 @@ end
 _bm1_z = 100
 puts RenameSpell.new.method(:m).call(5, _bm1_z).inspect
 
-# A default-created local whose name overflows the rename table's source
-# buffer is left unrenamed in BOTH the declaration and the default (a longer
-# name used to declare lv_Bm1_<name> while the default read an undeclared
-# lv_<name> -- a C compile failure).
+# A default-created local with a long name is renamed in BOTH the
+# declaration and the default, as a short one is (a longer name used to
+# declare lv_Bm1_<name> while the default read an undeclared lv_<name> -- a
+# C compile failure).
 class LongLocal
   def m(a, c = (zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz = a + 1; zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz)) = [c]
 end
 puts LongLocal.new.method(:m).call(5).inspect
 
-# A PARAMETER name longer than the rename table's source buffer cannot ride the
-# alias registration that lets a default read an earlier parameter at the call
-# site. The old code truncated the source name but still declared the aliased
-# temp, so a default referencing the parameter emitted the undeclared
-# `lv_<name>` -- a C compile failure. Decline both routes instead.
+# A long PARAMETER name rides the alias registration that lets a default read
+# an earlier parameter at the call site, as a short one does. The rename
+# table once truncated the source name but still declared the aliased temp,
+# so a default referencing the parameter emitted the undeclared `lv_<name>`
+# -- a C compile failure -- and both routes were declined after that.
 class LongParam
   def m(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,
         b = aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa + 1) = [b]

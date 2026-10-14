@@ -21358,9 +21358,7 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
       int mark = sb_shim_args_first(c, id, &pre, indent + 1);
       int tH = ++g_tmp;
       Buf armb; memset(&armb, 0, sizeof armb);
-      snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", sbn);
-      snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_sb%d", tH);
-      g_nren++;
+      ren_push(sbn, "_sb%d", tH);
       SbShimSave sv_sh = sb_shim_enter(shlv);
       int handled = emit_array_mutate_stmt(c, id, &armb, indent + 1);
       sb_shim_leave(shlv, sv_sh);

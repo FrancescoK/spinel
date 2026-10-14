@@ -12245,11 +12245,11 @@ static int bs_strip_keywords(Compiler *c, int blk, int bp, int pn) {
   for (int i = 0; i < kn; i++) {
     const char *wn = nt_str(nt, kws[i], "name");
     if (block_param_is_renamed(wn)) { scope_local_intern(bs, wn); continue; }
-    char kname[160];
-    block_param_invent_name(c, kname, sizeof kname, wn, blk);
+    char *kname = block_param_invent_name(c, wn, blk);
     blkp_rewrite_refs(c, nbody, nt_str(nt, kws[i], "name"), kname);
     numbered_rename_locals_str(nt, blk, nt_str(nt, kws[i], "name"), kname);
     scope_local_intern(bs, kname);
+    free(kname);
   }
   if (krn && *krn) scope_local_intern(bs, krn);
   if (bln && *bln) scope_local_intern(bs, bln);
@@ -13951,14 +13951,18 @@ static int rbp_program_uses(const NodeTable *nt, int n0, const char *name) {
   return 0;
 }
 
-static void rbp_slot_name(const NodeTable *nt, int n0, const char *orig, char *buf, size_t n) {
+static char *rbp_slot_name(const NodeTable *nt, int n0, const char *orig) {
+  size_t n = strlen(orig) + 32;   /* "__bpin_<k>" */
+  char *buf = malloc(n);
+  if (!buf) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   snprintf(buf, n, "%s__bpin", orig);
   for (int k = 1; rbp_program_uses(nt, n0, buf); k++) snprintf(buf, n, "%s__bpin_%d", orig, k);
-  if (reassigned_param_written_len(buf) != strlen(buf)) return;
+  if (reassigned_param_written_len(buf) != strlen(buf)) return buf;
   rbp_slots.name = realloc(rbp_slots.name, sizeof(char *) * (size_t)(rbp_slots.n + 1));
   rbp_slots.len = realloc(rbp_slots.len, sizeof(size_t) * (size_t)(rbp_slots.n + 1));
   rbp_slots.name[rbp_slots.n] = strdup(buf);
   rbp_slots.len[rbp_slots.n++] = strlen(orig);
+  return buf;
 }
 
 int desugar_reassigned_block_params(Compiler *c) {
@@ -13981,9 +13985,9 @@ int desugar_reassigned_block_params(Compiler *c) {
       /* a parameter a nested block or lambda captures keeps its one cell per
          iteration, which only a block parameter has */
       if (rbp_captured(nt, body, pn, 0)) continue;
-      char orig[160], renamed[192];
-      snprintf(orig, sizeof orig, "%s", pn);
-      rbp_slot_name(nt, n0, orig, renamed, sizeof renamed);
+      char *orig = strdup(pn);   /* copy: nt_set_str frees pn's storage */
+      if (!orig) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      char *renamed = rbp_slot_name(nt, n0, orig);
       nt_set_str(nt, rq[i], "name", renamed);
       int w = fwd_new_node_like(nt, rq[i], "LocalVariableWriteNode");
       nt_node_set_str(nt, w, "name", orig);
@@ -13991,6 +13995,7 @@ int desugar_reassigned_block_params(Compiler *c) {
       int rd = fwd_new_node_like(nt, rq[i], "LocalVariableReadNode");
       nt_node_set_str(nt, rd, "name", renamed);
       nt_node_set_int(nt, rd, "depth", 0);
+      free(orig); free(renamed);
       nt_node_set_ref(nt, w, "value", rd);
       /* the iteration's setup, which a redo does not re-run
          (block_param_rebind_len) */

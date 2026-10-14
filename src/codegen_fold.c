@@ -331,8 +331,8 @@ static char *emit_hash_block_eval(Compiler *c, int block, Repr hr, const char *h
   int hb1 = hash_param_handle(c, p1_lv, p1_actual);
   int ns0 = !hb0 && p0_orig && p0_actual != TY_UNKNOWN && p0_decl != TY_UNKNOWN && p0_decl != p0_actual;
   int ns1 = !hb1 && p1_orig && p1_actual != TY_UNKNOWN && p1_decl != TY_UNKNOWN && p1_decl != p1_actual;
-  int st0 = -1, sri0 = -1, srn0 = 0; char sro0[112]; sro0[0] = '\0';
-  int st1 = -1, sri1 = -1, srn1 = 0; char sro1[112]; sro1[0] = '\0';
+  int st0 = -1, sri0 = -1, srn0 = 0; char *sro0 = NULL;
+  int st1 = -1, sri1 = -1, srn1 = 0; char *sro1 = NULL;
   /* p0 reads the key for a 2-param block, or for select-style solo binding. */
   int p0_is_key = p1_orig || !p0_solo_is_value;
 
@@ -343,14 +343,14 @@ static char *emit_hash_block_eval(Compiler *c, int block, Repr hr, const char *h
       buf_printf(g_pre, " lv__bp%d = ", st0);
       emit_hash_p0_rhs(c, hr, hn, trecv, ti, !p1_orig && p0_solo_is_value == 2, p0_is_key, 0);
       for (int ri = 0; ri < g_nren; ri++) {
-        if (sp_streq(g_ren_from[ri], p0_orig)) {
-          sri0 = ri; strncpy(sro0, g_ren_to[ri], sizeof sro0 - 1);
-          snprintf(g_ren_to[ri], sizeof g_ren_to[0], "_bp%d", st0); break;
+        if (sp_streq(g_ren_from[ri].p, p0_orig)) {
+          sri0 = ri; sro0 = strdup(g_ren_to[ri].p);
+          if (!sro0) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+          buf_setf(&g_ren_to[ri], "_bp%d", st0); break;
         }
       }
       if (sri0 < 0) { sri0 = g_nren; srn0 = 1;
-        snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", p0_orig);
-        snprintf(g_ren_to[g_nren++], sizeof g_ren_to[0], "_bp%d", st0);
+        ren_push(p0_orig, "_bp%d", st0);
       }
     }
     else if (hb0) {
@@ -375,14 +375,14 @@ static char *emit_hash_block_eval(Compiler *c, int block, Repr hr, const char *h
       else
         buf_printf(g_pre, " lv__bp%d = sp_%sHash_get(_t%d, _t%d->order[_t%d]);\n", st1, hn, trecv, trecv, ti);
       for (int ri = 0; ri < g_nren; ri++) {
-        if (sp_streq(g_ren_from[ri], p1_orig)) {
-          sri1 = ri; strncpy(sro1, g_ren_to[ri], sizeof sro1 - 1);
-          snprintf(g_ren_to[ri], sizeof g_ren_to[0], "_bp%d", st1); break;
+        if (sp_streq(g_ren_from[ri].p, p1_orig)) {
+          sri1 = ri; sro1 = strdup(g_ren_to[ri].p);
+          if (!sro1) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+          buf_setf(&g_ren_to[ri], "_bp%d", st1); break;
         }
       }
       if (sri1 < 0) { sri1 = g_nren; srn1 = 1;
-        snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", p1_orig);
-        snprintf(g_ren_to[g_nren++], sizeof g_ren_to[0], "_bp%d", st1);
+        ren_push(p1_orig, "_bp%d", st1);
       }
     }
     else if (hb1) {
@@ -437,8 +437,10 @@ static char *emit_hash_block_eval(Compiler *c, int block, Repr hr, const char *h
   g_bv_dest_oint = sv_bvo;
   if (ns0 && p0_lv) lv_set_type(p0_lv, p0_decl);
   if (ns1 && p1_lv) lv_set_type(p1_lv, p1_decl);
-  if (sri1 >= 0) { if (srn1) g_nren = sri1; else strncpy(g_ren_to[sri1], sro1, sizeof g_ren_to[0]-1); }
-  if (sri0 >= 0) { if (srn0) g_nren = sri0; else strncpy(g_ren_to[sri0], sro0, sizeof g_ren_to[0]-1); }
+  if (sri1 >= 0) { if (srn1) g_nren = sri1; else buf_setf(&g_ren_to[sri1], "%s", sro1); }
+  free(sro1);
+  if (sri0 >= 0) { if (srn0) g_nren = sri0; else buf_setf(&g_ren_to[sri0], "%s", sro0); }
+  free(sro0);
   if (out_bret) *out_bret = bret;
   Buf rv; memset(&rv, 0, sizeof rv); buf_puts(&rv, tvvb); return rv.p;
 }
@@ -10206,9 +10208,7 @@ void emit_pd_param_bind(Compiler *c, Scope *m, int i, int uid, const char *val, 
   /* Register the rename AFTER emitting temp i so param i+1's default reads
      it (rename_local rewrites the callee param name to the temp). */
   if (m->pnames[i] && g_nren < MAX_RENAME) {
-    snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", m->pnames[i]);
-    snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "%s", uniq);
-    g_nren++;
+    ren_push(m->pnames[i], "%s", uniq);
   }
   snprintf(name, cap, byref ? "_cell_%s" : "lv_%s", uniq);
 }
@@ -12907,9 +12907,7 @@ static void emit_dispatch_in(Compiler *c, int cid, const char *name,
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_PolyArray *lv__pd%d_%d = _t%d; (void)lv__pd%d_%d;\n",
                    pd_uid, k, atmp[k], pd_uid, k);
-        snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", pm->pnames[k]);
-        snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_pd%d_%d", pd_uid, k);
-        g_nren++;
+        ren_push(pm->pnames[k], "_pd%d_%d", pd_uid, k);
       }
     }
     else if (fwd_encl && fwd_base_d + k < fwd_encl->nparams) {
@@ -13037,9 +13035,7 @@ else {
           /* the lent address under the cell spelling a reading default emits */
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "%s *_cell__pd%d_%d = _t%d;\n", borrowed_string_type(p), pd_uid, k, atmp[k]);
-          snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", pm->pnames[k]);
-          snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_pd%d_%d", pd_uid, k);
-          g_nren++;
+          ren_push(pm->pnames[k], "_pd%d_%d", pd_uid, k);
         }
         continue;
       }
@@ -13082,9 +13078,7 @@ else {
         buf_printf(g_pre, " lv__pd%d_%d = _t%d; (void)lv__pd%d_%d;\n", pd_uid, k, atmp[k], pd_uid, k);
         char pdn[48]; snprintf(pdn, sizeof pdn, "_pd%d_%d", pd_uid, k);
         emit_pd_cell_alias(c, p, pdn);
-        snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", pm->pnames[k]);
-        snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_pd%d_%d", pd_uid, k);
-        g_nren++;
+        ren_push(pm->pnames[k], "_pd%d_%d", pd_uid, k);
       }
     }
     free(ab.p);

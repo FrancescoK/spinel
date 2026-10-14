@@ -1691,10 +1691,10 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
       Buf cb = expr_buf(c, bb[bn - 1]); g_indent = sv;
       emit_indent(g_pre, g_indent + 1);
       buf_printf(g_pre, "if (%s) { _t%d = ", cb.p ? cb.p : "0", tres);
-      { char eltxt[128];
-        if (bp) snprintf(eltxt, sizeof eltxt, "lv_%s", bp);
-        else snprintf(eltxt, sizeof eltxt, "sp_%sArray_get(_t%d, _t%d)", k, trecv, ti);
-        emit_boxed_text(c, et, eltxt, g_pre); }
+      { Buf eltxt; memset(&eltxt, 0, sizeof eltxt);
+        if (bp) buf_printf(&eltxt, "lv_%s", bp);
+        else buf_printf(&eltxt, "sp_%sArray_get(_t%d, _t%d)", k, trecv, ti);
+        emit_boxed_text(c, et, eltxt.p, g_pre); free(eltxt.p); }
       buf_printf(g_pre, "; _tf%d = 1; break; }\n", tfn);
       free(cb.p);
       emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
@@ -4824,9 +4824,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         int mark = sb_shim_args_first(c, id, &pre, g_indent);
         int tH = ++g_tmp;
         Buf armb; memset(&armb, 0, sizeof armb);
-        snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", sbn);
-        snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_sb%d", tH);
-        g_nren++;
+        ren_push(sbn, "_sb%d", tH);
         SbShimSave sv_sh = sb_shim_enter(shlv);
         int handled = emit_array_call(c, id, &armb);
         sb_shim_leave(shlv, sv_sh);
@@ -9879,9 +9877,7 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
         LocalVar *shlv = scope_local(shs, sbn);
         int tH = ++g_tmp;
         Buf armb; memset(&armb, 0, sizeof armb);
-        snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", sbn);
-        snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_sb%d", tH);
-        g_nren++;
+        ren_push(sbn, "_sb%d", tH);
         SbShimSave sv_sh = sb_shim_enter(shlv);
         int handled = emit_scalar_call(c, id, &armb);
         sb_shim_leave(shlv, sv_sh);

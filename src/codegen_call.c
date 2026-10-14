@@ -442,8 +442,8 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
       continue;
     }
     int pc = 0;
-    { char rn[128]; snprintf(rn, sizeof rn, "_y%d_%s", tag, m->pnames[i]);
-      pc = emit_inlined_param_target(c, m, m->pnames[i], rn, b); }
+    { Buf rn; memset(&rn, 0, sizeof rn); buf_printf(&rn, "_y%d_%s", tag, m->pnames[i]);
+      pc = emit_inlined_param_target(c, m, m->pnames[i], rn.p, b); free(rn.p); }
     /* A param past the rest binds by name, never positionally. */
     int provided = L.from[i] == ARG_NODE ? argv2[L.arg[i]] : L.from[i] == ARG_KWH ? kwh : -1;
     /* Only bind from the keyword hash when the param was not already filled
@@ -8369,9 +8369,7 @@ void emit_poly_arm_args(Compiler *c, Scope *m, Scope *ms, const ArgLayout *L,
         emit_pd_cell_alias_into(c, pv, pdn, pre, 0);
       }
       /* registered AFTER the binding so only a LATER default reads it */
-      snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", pnm);
-      snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_pd%d_%d", pd_uid, a);
-      g_nren++;
+      ren_push(pnm, "_pd%d_%d", pd_uid, a);
     }
     else buf_puts(cb, pa.p ? pa.p : "");
     free(pa.p);
@@ -10157,9 +10155,7 @@ void ctor_arm_arg(Compiler *c, Scope *is, int j, const char *val, int pd_uid,
   /* a captured parameter is read by a later default through its cell */
   char pdn[48]; snprintf(pdn, sizeof pdn, "_pd%d_%d", pd_uid, j);
   emit_pd_cell_alias_into(c, pv, pdn, pdpre, 0);
-  snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", pn);
-  snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_pd%d_%d", pd_uid, j);
-  g_nren++;
+  ren_push(pn, "_pd%d_%d", pd_uid, j);
 }
 
 /* Does an initialize take `argc` positional arguments? A required keyword
@@ -11758,9 +11754,9 @@ static void emit_super_new_forward(Compiler *c, int id, int ci, Scope *s,
   const char *kwn = s->kwrest_idx >= 0 ? s->pnames[s->kwrest_idx] : NULL;
   /* The wrapper's own rest and keyword-rest, spelled before any of the
      renames below can shadow them. */
-  char rest_c[128] = "", kw_c[128] = "";
-  if (restn) snprintf(rest_c, sizeof rest_c, "%s", rename_local(restn));
-  if (kwn) snprintf(kw_c, sizeof kw_c, "%s", rename_local(kwn));
+  Buf rest_c, kw_c; memset(&rest_c, 0, sizeof rest_c); memset(&kw_c, 0, sizeof kw_c);
+  buf_setf(&rest_c, "%s", restn ? rename_local(restn) : "");
+  buf_setf(&kw_c, "%s", kwn ? rename_local(kwn) : "");
   /* Each parameter is bound in order, as a call binds them, so a default
      that reads an earlier one -- `message: "#{old_const} is deprecated!"`,
      activesupport's DeprecatedConstantProxy -- reads that value. Spelled
@@ -11776,7 +11772,7 @@ static void emit_super_new_forward(Compiler *c, int id, int ci, Scope *s,
     Buf vb; memset(&vb, 0, sizeof vb);
     if (pn && callee_param_is_declared_kwarg(c, is, pn) && kwn) {
       buf_puts(&vb, "({ sp_bool _kwh; sp_RbVal _kwr = sp_poly_hash_probe(sp_box_obj(lv_");
-      buf_printf(&vb, "%s, %s), sp_box_sym(sp_sym_intern(\"%s\")), &_kwh); _kwh ? ", kw_c,
+      buf_printf(&vb, "%s, %s), sp_box_sym(sp_sym_intern(\"%s\")), &_kwh); _kwh ? ", kw_c.p,
                  kwrest_any_key(c, s) ? "SP_BUILTIN_POLY_POLY_HASH" : "SP_BUILTIN_SYM_POLY_HASH", pn);
       if (dt == TY_POLY) buf_puts(&vb, "_kwr");
       else emit_unbox_text(c, dt, "_kwr", &vb);
@@ -11791,16 +11787,16 @@ static void emit_super_new_forward(Compiler *c, int id, int ci, Scope *s,
       int pos = 0;
       for (int j = 0; j < i; j++)
         if (!(is->pnames && is->pnames[j] && callee_param_is_declared_kwarg(c, is, is->pnames[j]))) pos++;
-      char elem[256];
-      snprintf(elem, sizeof elem, "sp_PolyArray_get(lv_%s, %d)", rest_c, pos);
+      Buf elem; memset(&elem, 0, sizeof elem);
+      buf_printf(&elem, "sp_PolyArray_get(lv_%s, %d)", rest_c.p, pos);
       Buf db; memset(&db, 0, sizeof db);
       emit_arg_or_default(c, is, i, -1, &db);
       Buf eb; memset(&eb, 0, sizeof eb);
-      if (dt == TY_POLY) buf_puts(&eb, elem);
-      else emit_unbox_text(c, dt, elem, &eb);
+      if (dt == TY_POLY) buf_puts(&eb, elem.p);
+      else emit_unbox_text(c, dt, elem.p, &eb);
       buf_printf(&vb, "(sp_PolyArray_length(lv_%s) > %d ? %s : %s)",
-                 rest_c, pos, eb.p ? eb.p : "sp_box_nil()", db.p ? db.p : "0");
-      free(db.p); free(eb.p);
+                 rest_c.p, pos, eb.p ? eb.p : "sp_box_nil()", db.p ? db.p : "0");
+      free(db.p); free(eb.p); free(elem.p);
     }
     emit_ctype(c, dt, b);
     buf_printf(b, " lv__sn%d_%d = %s; ", uid, i, vb.p ? vb.p : "0");
@@ -11810,11 +11806,11 @@ static void emit_super_new_forward(Compiler *c, int id, int ci, Scope *s,
       if (ty_gc_rootable(c, dt)) { emit_gc_root_var(c, dt, ln, b); buf_puts(b, " "); } }
     free(vb.p);
     if (pn && g_nren < MAX_RENAME) {
-      snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", pn);
-      snprintf(g_ren_to[g_nren++], sizeof g_ren_to[0], "_sn%d_%d", uid, i);
+      ren_push(pn, "_sn%d_%d", uid, i);
     }
   }
   g_nren = ren_base;
+  free(rest_c.p); free(kw_c.p);
   buf_printf(b, "sp_%s_new(", k->c_name);
   for (int i = 0; i < is->nparams; i++) buf_printf(b, "%slv__sn%d_%d", i ? ", " : "", uid, i);
   /* the wrapper's own `&blk`, which a bare super forwards; emit_ctor_block_slot
@@ -11871,10 +11867,11 @@ static void emit_super_new_ctor(Compiler *c, int id, int ci, Buf *b) {
       TyKind st = sv ? sv->type : TY_POLY, dt = dv ? dv->type : TY_POLY;
       if (st == TY_UNKNOWN) st = TY_POLY;
       if (dt == TY_UNKNOWN) dt = TY_POLY;
-      char ln[300]; snprintf(ln, sizeof ln, "lv_%s", rename_local(s->pnames[i]));
-      if (dt == TY_POLY && st != TY_POLY) emit_boxed_text(c, st, ln, b);
-      else if (st == TY_POLY && dt != TY_POLY) emit_unbox_text(c, dt, ln, b);
-      else buf_puts(b, ln);
+      Buf ln; memset(&ln, 0, sizeof ln); buf_printf(&ln, "lv_%s", rename_local(s->pnames[i]));
+      if (dt == TY_POLY && st != TY_POLY) emit_boxed_text(c, st, ln.p, b);
+      else if (st == TY_POLY && dt != TY_POLY) emit_unbox_text(c, dt, ln.p, b);
+      else buf_puts(b, ln.p);
+      free(ln.p);
     }
     emit_ctor_block_slot(c, id, initm, inp > 0 ? ", " : "", b);
     buf_puts(b, ")");
@@ -26332,20 +26329,18 @@ int declare_default_locals(Compiler *c, Scope *m, int dnode) {
         unsupported_feature(c, dnode, "a parameter default that assigns a local the method body reads "
                                       "(the default is evaluated at the call site)");
     if (!uid) uid = ++g_tmp;
-    char rn[160];
-    snprintf(rn, sizeof rn, "_dl%d_%s", uid, lv->name);
     if (lv->type == TY_UNKNOWN) lv_set_type(lv, TY_POLY);
-    /* a name the rename table cannot hold is declared as the default spells
-       it, unrenamed */
-    if (g_nren >= MAX_RENAME || strlen(lv->name) >= sizeof g_ren_from[0] ||
-        strlen(rn) >= sizeof g_ren_to[0]) {
+    /* past the table's last entry the local is declared as the default
+       spells it, unrenamed */
+    if (g_nren >= MAX_RENAME) {
       emit_inlined_local_decl(c, lv, lv->name, g_pre, g_indent);
       continue;
     }
-    emit_inlined_local_decl(c, lv, rn, g_pre, g_indent);
-    snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", lv->name);
-    snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "%s", rn);
-    g_nren++;
+    Buf rn; memset(&rn, 0, sizeof rn);
+    buf_printf(&rn, "_dl%d_%s", uid, lv->name);
+    emit_inlined_local_decl(c, lv, rn.p, g_pre, g_indent);
+    ren_push(lv->name, "%s", rn.p);
+    free(rn.p);
   }
   return base;
 }
@@ -26354,20 +26349,16 @@ int declare_default_locals(Compiler *c, Scope *m, int dnode) {
    binding the arguments at the call site (emit_args_filled, and a
    Method#to_proc trampoline) aliases each parameter to a call-local
    (`_pd%d_%d` / `_a%d`) and registers the source name in the rename table, so a
-   default that reads an earlier parameter resolves at the call site. The
-   table's source buffer holds at most sizeof g_ren_from[0]-1 bytes of the Ruby
-   name; a longer parameter name would be TRUNCATED there, the default's
-   reference would not match, and it would emit the undeclared `lv_<name>` (a
-   C build failure). Only a frame that actually aliases parameters -- one whose
-   defaults read an earlier parameter -- is at risk, and a frame with more
-   aliases than the table holds is declined too. */
+   default that reads an earlier parameter resolves at the call site. A frame
+   with more aliases than the table has entries left would leave a parameter
+   unregistered, the default's reference would emit the undeclared
+   `lv_<name>` (a C build failure), so it is declined. Only a frame that
+   actually aliases parameters -- one whose defaults read an earlier
+   parameter -- is at risk. */
 static int callee_param_rename_overflow(Compiler *c, Scope *tm) {
   if (!tm || !tm->pnames) return 0;
   if (!default_refs_earlier_param(c, tm)) return 0;
-  if (g_nren + tm->nparams > MAX_RENAME) return 1;
-  for (int i = 0; i < tm->nparams; i++)
-    if (tm->pnames[i] && strlen(tm->pnames[i]) >= sizeof g_ren_from[0]) return 1;
-  return 0;
+  return g_nren + tm->nparams > MAX_RENAME;
 }
 
 /* Root a codegen temp by name after it has been assigned. Both bound-Method
@@ -26742,9 +26733,7 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
                        " sp_PolyArray_push(_a%d, sp_proc_arg(_i));\n", j, j, j, tail, j);
         if (tm->pnames[k] && g_nren < MAX_RENAME) {
           buf_printf(pb, "  sp_PolyArray *lv__a%d = _a%d;\n", j, j);
-          snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", tm->pnames[k]);
-          snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_a%d", j);
-          g_nren++;
+          ren_push(tm->pnames[k], "_a%d", j);
         }
         continue;
       }
@@ -26765,9 +26754,7 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
         buf_puts(pb, "\n");
         if (tm->pnames[k] && g_nren < MAX_RENAME) {
           buf_printf(pb, "  %s *lv__a%d = _a%d;\n", hk, j, j);
-          snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", tm->pnames[k]);
-          snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_a%d", j);
-          g_nren++;
+          ren_push(tm->pnames[k], "_a%d", j);
         }
         continue;
       }
@@ -26880,9 +26867,7 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
         buf_puts(pb, "  ");
         if (bm_param_nil_ok(pp, pt)) buf_puts(pb, oint_ctype(pt)); else emit_ctype(c, pt, pb);
         buf_printf(pb, " lv__a%d = _a%d;\n", j, j);
-        snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", tm->pnames[k]);
-        snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_a%d", j);
-        g_nren++;
+        ren_push(tm->pnames[k], "_a%d", j);
         /* A parameter a later default's nested proc closes over is read
            through a heap cell named for the RENAMED parameter; allocate
            it here and seed it from the alias, as the method prologue's
@@ -27731,7 +27716,7 @@ void emit_bound_method_call(Compiler *c, int id, int recv, int target, Buf *b) {
   int is_void = method_is_void(tm);
   /* A default that WRITES a method-scope local the body READS cannot be
      answered from the call site (default_writes_body_local), nor one reading
-     a parameter whose name the rename table cannot hold
+     a parameter past the rename table's last entry
      (callee_param_rename_overflow): the direct call refuses both at C compile
      time; a Method call raises when it runs. */
   if (default_writes_body_local(c, tm) || callee_param_rename_overflow(c, tm)) {

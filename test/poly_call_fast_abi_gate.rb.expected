@@ -78,8 +78,8 @@ default_body_local_call: 6
 default_body_local_toproc: 6
 [100]
 [6]
-long_param_call: NoMethodError
-long_param_toproc: NoMethodError
+long_param_call: no raise
+long_param_toproc: no raise
 kwrest_unmatched: no raise
 kwrest_positional_name: ArgumentError
 [1, {z: 2}]
