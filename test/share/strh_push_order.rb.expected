@@ -1,0 +1,8 @@
+["ab!", "x", "1", "x"]
+["ab!", "x", "n", "x", "2"]
+["x", "1", "ab!"]
+["ab!", "1", "x", "ab!"]
+["ab!?", "e", "f", "ab!-e", "ab!?"]
+true
+index 9 outside of array bounds: -2...2
+["ab!?", "g"]

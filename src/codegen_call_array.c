@@ -2709,6 +2709,14 @@ void emit_strh_elem(Compiler *c, int v, Buf *b) {
   buf_puts(b, ")");
 }
 
+/* Can the evaluation of argument a of an operation on a String Array of
+   handles change what the operation reads, the Array's variable or its
+   Strings? Only a String literal or a local's read cannot. */
+static int strh_arg_inert(const NodeTable *nt, int a) {
+  NodeKind k = nt_kind(nt, a);
+  return k == NK_StringNode || k == NK_LocalVariableReadNode;
+}
+
 /* --share-strings (#8328 step 5): an operation on a String Array of handles
    (TY_STRH_ARRAY, an sp_PtrArray of sp_String *), one of those its gate
    admits (strh_call_op). An element is the String itself: read where a
@@ -2747,9 +2755,20 @@ int emit_strh_call(Compiler *c, int id, Buf *b) {
     int tr = ++g_tmp;
     buf_printf(b, "({ sp_PtrArray *_t%d = ", tr); emit_expr(c, recv, b);
     buf_printf(b, "; SP_GC_ROOT(_t%d);", tr);
+    /* every argument is evaluated, and rooted, before the first is appended,
+       as CRuby does: a later one can read the Array */
+    int early = 0;
+    for (int a = 1; a < argc; a++) early |= !strh_arg_inert(nt, argv[a]);
+    if (early)
+      for (int a = 0; a < argc; a++) {
+        buf_printf(b, " sp_String *_t%d_%d = ", tr, a);
+        emit_strh_elem(c, argv[a], b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d_%d);", tr, a);
+      }
     for (int a = 0; a < argc; a++) {
       buf_printf(b, " sp_PtrArray_push(_t%d, ", tr);
-      emit_strh_elem(c, argv[a], b);
+      if (early) buf_printf(b, "_t%d_%d", tr, a);
+      else emit_strh_elem(c, argv[a], b);
       buf_puts(b, ");");
     }
     buf_printf(b, " _t%d; })", tr);
