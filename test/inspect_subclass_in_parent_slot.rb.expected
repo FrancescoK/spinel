@@ -1,0 +1,5 @@
+#<Root:X @parent=nil, @kids=[#<Node:X @parent=#<Root:X ...>, @kids=[#<Node:X @parent=#<Node:X ...>, @kids=[]>]>], @extra=1>
+#<Holder:X @n=#<Node:X @parent=nil, @kids=[]>>
+#<Holder:X @n=#<Root:X @parent=nil, @kids=[], @extra=1>>
+#<Holder:X @n=#<Root:X @parent=nil, @kids=[], @extra=1>>
+Root

@@ -11158,6 +11158,13 @@ static void emit_marshal_box_ivar_n(Compiler *c, TyKind t, const char *expr, con
     return;
   }
   if (t == TY_NIL)  { buf_puts(b, "sp_box_nil()"); return; }
+  /* an object a subclass's may be carries its own class id, as
+     emit_boxed_text stamps it: the static id named a Root held in a Node
+     slot a Node */
+  if (ty_is_object(t) && repr_dyn_cls(c, t) && !comp_ty_value_obj(c, t)) {
+    emit_boxed_text(c, t, expr, b);
+    return;
+  }
   if (ty_is_object(t)) {
     buf_printf(b, "(%s ? sp_box_obj(%s, %d) : sp_box_nil())", expr, expr, ty_object_class(t));
     return;
