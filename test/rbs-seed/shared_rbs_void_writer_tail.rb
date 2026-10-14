@@ -5,7 +5,6 @@
 # stores as a copy. The rule counted it as a kept value and refused it
 # ("an attribute assignment in value position ... would be a copy"), as it
 # refused every generated writer of a Rails application's models.
-# spinel: rbs-seed-check
 class ShrvwRec
   def raw
     @raw

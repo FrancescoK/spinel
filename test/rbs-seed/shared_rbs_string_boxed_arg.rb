@@ -8,7 +8,6 @@
 # an ivar's `||=` did the same. A boxed nil into a String? ivar is nil
 # (converted as a String, it raised TypeError). A multiple assignment into
 # such ivars takes the handle the same way.
-# spinel: rbs-seed-check
 class ShrbsbTake
   def take(a)
     a << "!"

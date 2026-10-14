@@ -8,7 +8,6 @@
 # of these ("that route cannot carry the shared handle yet: it would hand on
 # a copy"). The unboxing of such a tail now publishes the handle the box
 # holds, as a read of a shared String does.
-# spinel: rbs-seed-check
 module ShrsrConf
   class << self
     attr_accessor :secret_key_base

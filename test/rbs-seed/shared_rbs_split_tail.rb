@@ -16,7 +16,6 @@
 # hold), where an early `return x` stands beside a tail that reads an ivar
 # (the call is not the ivar's slot), and where the `return` is a `tap`
 # whose block parameter is the handle.
-# spinel: rbs-seed-check
 class ShstCols
   def initialize
     @where = []

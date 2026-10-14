@@ -11,7 +11,6 @@
 # the poly value the method answers, and the method that answers what it
 # returns follows it (its seed had kept the typed Hash and read the poly one
 # as that).
-# spinel: rbs-seed-check
 class ShhnRoute
   attr_reader :parts
   def initialize(parts)
