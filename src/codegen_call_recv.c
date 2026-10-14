@@ -4118,6 +4118,39 @@ static int emit_str_mut_recv_once(Compiler *c, int recv, int lvw, Buf *b) {
   return view_bind(recv, "_t%d", t);
 }
 
+/* String#bytesplice's new bytes over receiver bytes `rs` (an expression read
+   more than once): (start, len, str), (start, len, str, str_start, str_len),
+   (range, str) or (range, str, str_range). The arguments run in order, and
+   a range is measured against its own String as CRuby measures it. */
+void emit_bytesplice_bytes(Compiler *c, const int *argv, int argc, const char *rs, Buf *b) {
+  int rng = comp_ntype(c, argv[0]) == TY_RANGE;
+  int t = ++g_tmp;
+  buf_printf(b, "({ sp_int _b%d, _l%d, _vb%d = 0, _vl%d; ", t, t, t, t);
+  if (rng) { buf_printf(b, "sp_Range _r%d = ", t); emit_expr(c, argv[0], b); buf_puts(b, "; "); }
+  else {
+    buf_printf(b, "_b%d = ", t); emit_int_expr(c, argv[0], b);
+    buf_printf(b, "; _l%d = ", t); emit_int_expr(c, argv[1], b); buf_puts(b, "; ");
+  }
+  int si = rng ? 1 : 2;
+  buf_printf(b, "const char *_v%d = ", t); emit_str_expr(c, argv[si], b);
+  buf_printf(b, "; SP_GC_ROOT_STR(_v%d); _vl%d = _v%d ? (sp_int)sp_str_byte_len(_v%d) : 0; ", t, t, t, t);
+  if (argc == 5) {
+    buf_printf(b, "_vb%d = ", t); emit_int_expr(c, argv[3], b);
+    buf_printf(b, "; _vl%d = ", t); emit_int_expr(c, argv[4], b); buf_puts(b, "; ");
+  }
+  /* (range, str, n): CRuby's TypeError once the arguments have run */
+  if (rng && argc == 3 && comp_ntype(c, argv[2]) != TY_RANGE) {
+    buf_puts(b, "(void)("); emit_int_expr(c, argv[2], b);
+    buf_puts(b, "); sp_raise_cls(\"TypeError\", \"wrong argument type Integer (expected Range)\"); ");
+  }
+  else if (rng && argc == 3) { buf_printf(b, "sp_Range _vr%d = ", t); emit_expr(c, argv[2], b); buf_puts(b, "; "); }
+  /* the receiver's range is measured first, as CRuby does */
+  if (rng) buf_printf(b, "sp_range_beg_len(_r%d, (sp_int)sp_str_byte_len(%s), &_b%d, &_l%d); ", t, rs, t, t);
+  if (rng && argc == 3 && comp_ntype(c, argv[2]) == TY_RANGE)
+    buf_printf(b, "sp_range_beg_len(_vr%d, _vl%d, &_vb%d, &_vl%d); ", t, t, t, t);
+  buf_printf(b, "sp_str_bytesplice5(%s, _b%d, _l%d, _v%d, _vb%d, _vl%d); })", rs, t, t, t, t, t);
+}
+
 /* A String mutator: the value-form bangs, the in-place mutators, append_as_bytes, bytesplice (emit_array_call's arms, in their order) */
 static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int *out) {
   /* String value-form mutators: the expression yields the post-mutation
@@ -4475,46 +4508,6 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
     free(lb0.p); free(sref0.p);
     { *out = 1; return 1; }
   }
-  /* String#bytesplice(start, len, str): byte-range replace returning self
-     (value-semantics strings: the helper builds the new value and an lvalue
-     receiver is rebound to it). */
-  /* bytesplice(range, str): lower the Range index to (start, len) (#2396) */
-  if (rt == TY_STRING && sp_streq(name, "bytesplice") && argc == 2 && recv >= 0 &&
-      comp_ntype(c, argv[0]) == TY_RANGE) {
-    { Buf srefBR; memset(&srefBR, 0, sizeof srefBR);
-      Buf lbBR; memset(&lbBR, 0, sizeof lbBR);
-      int hrBR = strbuf_recv_handle_any(c, id, recv, &srefBR, &lbBR);
-      if (hrBR) {
-        int tm2 = ++g_tmp, tr3 = ++g_tmp, tn3 = ++g_tmp;
-        buf_printf(b, "({ sp_String *_t%d = %s;", tm2, lbBR.p ? lbBR.p : srefBR.p);
-        free(lbBR.p); free(srefBR.p);
-        emit_route_recv_root(c, hrBR, tm2, 0, NULL, TY_UNKNOWN, b);
-        buf_printf(b, " sp_Range _t%d = sp_range_ix(", tr3);
-        emit_expr(c, argv[0], b); buf_puts(b, ")");
-        buf_printf(b, "; const char *_t%d = sp_str_bytesplice(sp_String_cstr(_t%d),"
-                      " _t%d.first, _t%d.last - _t%d.first + (_t%d.excl ? 0 : 1), ",
-                   tn3, tm2, tr3, tr3, tr3, tr3);
-        emit_str_expr(c, argv[1], b);
-        buf_printf(b, "); sp_String_set_bin(_t%d, _t%d); _t%d; })", tm2, tn3, tn3);
-        { *out = 1; return 1; }
-      } }
-    if (hrecv) return 0;
-    int lvw9 = str_mut_var_recv(c, recv);
-    int tr9 = ++g_tmp, tn9 = ++g_tmp;
-    buf_puts(b, "({ ");
-    int rh9 = emit_str_mut_recv_once(c, recv, lvw9, b);
-    buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, "); ");
-    buf_printf(b, "sp_Range _t%d = sp_range_ix(", tr9); emit_expr(c, argv[0], b); buf_puts(b, ")");
-    buf_printf(b, "; const char *_t%d = sp_str_bytesplice(", tn9);
-    emit_expr(c, recv, b);
-    buf_printf(b, ", _t%d.first, _t%d.last - _t%d.first + (_t%d.excl ? 0 : 1), ", tr9, tr9, tr9, tr9);
-    emit_str_expr(c, argv[1], b); buf_puts(b, ")");
-    buf_puts(b, "; ");
-    emit_str_mut_writeback(c, recv, lvw9, tn9, b);
-    if (rh9 >= 0) view_unbind(rh9);
-    buf_printf(b, "_t%d; })", tn9);
-    { *out = 1; return 1; }
-  }
   /* append_as_bytes copies bytes without negotiating the receiver's encoding. */
   if (rt == TY_STRING && sp_streq(name, "append_as_bytes") && argc >= 1 && recv >= 0) {
     { Buf srefAB; memset(&srefAB, 0, sizeof srefAB);
@@ -4568,7 +4561,13 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
     buf_printf(b, "_t%d; })", tn9);
     { *out = 1; return 1; }
   }
-  if (rt == TY_STRING && sp_streq(name, "bytesplice") && argc == 3 && recv >= 0) {
+  /* String#bytesplice: a byte-range replace returning self (value-semantics
+     strings: the helper builds the new value and an lvalue receiver is
+     rebound to it), in each of its forms (emit_bytesplice_bytes). */
+  if (rt == TY_STRING && sp_streq(name, "bytesplice") && recv >= 0 &&
+      ((argc == 2 && comp_ntype(c, argv[0]) == TY_RANGE) || argc == 3 || argc == 5) &&
+      (argc != 3 || comp_ntype(c, argv[0]) != TY_RANGE || comp_ntype(c, argv[2]) == TY_RANGE ||
+       comp_ntype(c, argv[2]) == TY_INT)) {
     /* shared handle receiver: swap the buffer in place (#3227) */
     { Buf srefBS; memset(&srefBS, 0, sizeof srefBS);
       Buf lbBS; memset(&lbBS, 0, sizeof lbBS);
@@ -4578,11 +4577,10 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
         buf_printf(b, "({ sp_String *_t%d = %s;", tm2, lbBS.p ? lbBS.p : srefBS.p);
         free(lbBS.p); free(srefBS.p);
         emit_route_recv_root(c, hrBS, tm2, 0, NULL, TY_UNKNOWN, b);
-        buf_printf(b, " const char *_t%d = sp_str_bytesplice(sp_String_cstr(_t%d), ", tn3, tm2);
-        emit_int_expr(c, argv[0], b);
-        buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
-        buf_puts(b, ", "); emit_str_expr(c, argv[2], b);
-        buf_printf(b, "); sp_String_set_bin(_t%d, _t%d); _t%d; })", tm2, tn3, tn3);
+        char rs[48]; snprintf(rs, sizeof rs, "sp_String_cstr(_t%d)", tm2);
+        buf_printf(b, " const char *_t%d = ", tn3);
+        emit_bytesplice_bytes(c, argv, argc, rs, b);
+        buf_printf(b, "; sp_String_set_bin_enc(_t%d, _t%d); _t%d; })", tm2, tn3, tn3);
         { *out = 1; return 1; }
       } }
     if (hrecv) return 0;
@@ -4592,11 +4590,11 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
     buf_puts(b, "({ ");
     int rh2 = emit_str_mut_recv_once(c, recv, lvw, b);
     buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, "); ");
-    buf_printf(b, "const char *_t%d = sp_str_bytesplice(", tn2);
-    emit_expr(c, recv, b);
-    buf_puts(b, ", "); emit_int_expr(c, argv[0], b);
-    buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
-    buf_puts(b, ", "); emit_str_expr(c, argv[2], b); buf_puts(b, ")");
+    Buf rb2; memset(&rb2, 0, sizeof rb2);
+    emit_expr(c, recv, &rb2);
+    buf_printf(b, "const char *_t%d = ", tn2);
+    emit_bytesplice_bytes(c, argv, argc, rb2.p ? rb2.p : "NULL", b);
+    free(rb2.p);
     buf_puts(b, "; ");
     emit_str_mut_writeback(c, recv, lvw, tn2, b);
     if (rh2 >= 0) view_unbind(rh2);

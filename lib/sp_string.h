@@ -168,6 +168,14 @@ static inline void sp_String_set_bin(sp_String*s,const char*t){if(!s||!t)return;
    buffer becomes ASCII-8BIT, as CRuby's readpartial/sysread/read_nonblock
    leave it. */
 static inline void sp_String_set_read_bytes(sp_String*s,const char*t){if(!s||!t)return;sp_String_set_bin(s,t);s->binary=1;sp_fd_publish(s);}
+/* sp_String_set_bin taking t's encoding as well: a splice whose result
+   the compatibility rule made binary (or text) leaves the handle so */
+static inline void sp_String_set_bin_enc(sp_String*s,const char*t){
+  if(!s||!t)return;
+  sp_String_set_bin(s,t);
+  if(sp_str_is_binary(t)){s->binary=1;sp_fd_publish(s);}
+  else if(s->binary){s->binary=0;sp_str_as_text(s->data);sp_fd_publish(s);}
+}
 /* the first tl bytes of t: the append form of an interpolation (emit_interp_append) */
 static inline void sp_String_append_n(sp_String*s,const char*t,size_t tl){if(!s||!t)return;if(sp_String_is_frozen(s)){sp_raise_frozen_str(s->data);return;}sp_fd_append_len(s,t,(int64_t)tl);}
 /* append_as_bytes preserves the handle's encoding as well as embedded NULs. */

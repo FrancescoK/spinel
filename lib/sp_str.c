@@ -416,7 +416,43 @@ const char*sp_str_byteslice_range(const char*s,sp_int lo,sp_int hi,int excl,int 
    negative length raises, start is checked against the byte length with
    the original (pre-normalization) index in the message; an overlong span
    clamps to the end. */
-const char*sp_str_bytesplice(const char*s,sp_int start,sp_int len,const char*val){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(val);if(!s)sp_nil_recv("bytesplice");if(!val)val=&("\xff" "")[1];sp_int bl=(sp_int)sp_str_byte_len(s);if(len<0)sp_raise_cls("IndexError",sp_sprintf("negative length %lld",(long long)len));sp_int st=start<0?start+bl:start;if(st<0||st>bl)sp_raise_cls("IndexError",sp_sprintf("index %lld out of string",(long long)start));if(len>bl-st)len=bl-st;size_t vl=sp_str_byte_len(val);char*r=sp_str_alloc_raw((size_t)(bl-len)+vl+1);memcpy(r,s,(size_t)st);memcpy(r+st,val,vl);memcpy(r+st+vl,s+st+len,(size_t)(bl-st-len));r[(size_t)(bl-len)+vl]=0;sp_str_set_len(r,(size_t)(bl-len)+vl);return r;}
+/* CRuby's str_check_beg_len: a byte span of `s` checked and clipped as
+   bytesplice reads it -- a negative length, a start outside the String, and
+   in a String of characters either end inside one, each an IndexError. */
+static void sp_str_bsp_span(const char*s,sp_int*beg,sp_int*len){
+  sp_int sl=(sp_int)sp_str_byte_len(s);
+  if(*len<0)sp_raise_cls("IndexError",sp_sprintf("negative length %lld",(long long)*len));
+  if(sl<*beg||(*beg<0&&*beg+sl<0))sp_raise_cls("IndexError",sp_sprintf("index %lld out of string",(long long)*beg));
+  if(*beg<0)*beg+=sl;
+  if(sl<*beg+*len)*len=sl-*beg;
+  if(sp_str_is_binary(s))return;
+  sp_int at[2]={*beg,*beg+*len};
+  for(int k=0;k<2;k++)
+    if(at[k]>0&&at[k]<sl&&((unsigned char)s[at[k]]&0xC0)==0x80)
+      sp_raise_cls("IndexError",sp_sprintf("offset %lld does not land on character boundary",(long long)at[k]));
+}
+/* String#bytesplice(start, len, str, str_start, str_len): bytes start...start+len
+   of s replaced by bytes str_start...str_start+str_len of val. The result
+   takes the encoding the two are compatible in. */
+const char*sp_str_bytesplice5(const char*s,sp_int start,sp_int len,const char*val,sp_int vstart,sp_int vlen){
+  SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(val);
+  if(!s)sp_nil_recv("bytesplice");
+  if(!val)val=&("\xff" "")[1];
+  sp_str_bsp_span(s,&start,&len);sp_str_bsp_span(val,&vstart,&vlen);
+  /* rb_enc_check over the whole of both: high bytes in each, in different
+     encodings, cannot be joined */
+  if(sp_str_is_binary(s)!=sp_str_is_binary(val)&&!sp_str_ascii_only(s)&&!sp_str_ascii_only(val))
+    sp_raise_cls("Encoding::CompatibilityError",sp_str_is_binary(s)
+      ?"incompatible character encodings: BINARY (ASCII-8BIT) and UTF-8"
+      :"incompatible character encodings: UTF-8 and BINARY (ASCII-8BIT)");
+  sp_int bl=(sp_int)sp_str_byte_len(s);
+  char*r=sp_str_alloc_raw((size_t)(bl-len+vlen)+1);
+  memcpy(r,s,(size_t)start);memcpy(r+start,val+vstart,(size_t)vlen);memcpy(r+start+vlen,s+start+len,(size_t)(bl-start-len));
+  r[(size_t)(bl-len+vlen)]=0;sp_str_set_len(r,(size_t)(bl-len+vlen));
+  if(sp_str_cat_binary(s,val))sp_str_mark_binary(r);
+  return r;}
+const char*sp_str_bytesplice(const char*s,sp_int start,sp_int len,const char*val){
+  return sp_str_bytesplice5(s,start,len,val,0,val?(sp_int)sp_str_byte_len(val):0);}
 /* String#ascii_only?: 1 iff every byte is in the 7-bit ASCII range. */
 int sp_str_ascii_only(const char*s){sp_int bl=(sp_int)sp_str_byte_len(s);for(sp_int i=0;i<bl;i++){if((unsigned char)s[i]>=0x80)return 0;}return 1;}
 const char*sp_str_format_strarr(const char*fmt,sp_StrArray*a){SP_GC_ROOT_STR(fmt);size_t cap=strlen(fmt)+64;char*buf=(char*)malloc(cap);if(!buf){perror("malloc");exit(1);}size_t out=0;sp_int idx=0;const char*p=fmt;while(*p){if(*p=='%'){if(p[1]=='s'){const char*s=(idx<a->len)?a->data[idx]:"";size_t sl=sp_str_byte_len(s);   /* the byte length: an embedded NUL is a byte of the string (#4632) */if(out+sl>=cap){size_t nc=((out+sl)*2)+1;char*nb=(char*)realloc(buf,nc);if(!nb){free(buf);perror("realloc");exit(1);}buf=nb;cap=nc;}memcpy(buf+out,s,sl);out+=sl;idx++;p+=2;}

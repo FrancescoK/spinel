@@ -176,6 +176,19 @@ static inline sp_bool sp_range_eql(sp_Range a,sp_Range b){return (a.fe!=0)==(b.f
 sp_bool sp_range_include(sp_Range *r, sp_int x);
 sp_bool sp_range_cover_f(sp_Range *r, sp_float x);
 const char *sp_range_str(sp_Range r);
+/* CRuby's rb_range_beg_len over a sequence of `len` (bytesplice's span): a
+   beginless side from 0, an endless one to the end, a negative end from the
+   end, the end clipped to `len`, and a begin outside it a RangeError naming
+   the Range. */
+static inline void sp_range_beg_len(sp_Range r0, sp_int len, sp_int *bp, sp_int *lp){
+  sp_Range r=sp_range_ix(r0);
+  sp_int b=r.nobeg?0:r.first,e=r.noend?len:r.last;
+  if(b<0)b+=len;
+  if(b<0||b>len)sp_raise_cls("RangeError",sp_sprintf("%s out of range",sp_range_str(r0)));
+  if(!r.noend){if(e<0)e+=len;if(!r.excl)e++;}
+  if(e>len)e=len;
+  *bp=b;*lp=e-b<0?0:e-b;
+}
 const char *sp_range_inspect(sp_Range r);
 
 /* Float/String Range value-type ops -- 0 optcarrot uses, bodies in
