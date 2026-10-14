@@ -4263,6 +4263,43 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
            (with or without a block at this site) */
         if (initm >= 0 && c->scopes[initm].yields &&
             (emit_ctor_yield_inline(c, id, new_cls, b) || emit_ctor_new_with_proc(c, id, new_cls, b))) return 1;
+        /* A default reading the instance runs on the allocated object, as
+           the receiver `Klass.new(...)` path has it: spelled here it read
+           the class method's self, the class. A subclass the method may
+           receive (#5995, below) builds in an arm of its own, which spells
+           the arguments again: only arguments with no effect. */
+        {
+          int dargc = 0; const int *dargv = call_args(nt, id, &dargc);
+          if (initm >= 0 && ctor_needs_self_defaults_argv(c, initm, dargv, dargc) && !ncls->is_value_type) {
+            int subs = 0, plain = nt_ref(nt, id, "block") < 0;
+            for (int k = 0; k < c->nclasses; k++) {
+              if (k == new_cls || !is_descendant(c, k, new_cls)) continue;
+              ClassInfo *kc = &c->classes[k];
+              int ik = comp_method_in_chain(c, k, "initialize", NULL);
+              if (kc->is_value_type || kc->is_struct || kc->is_native_class || ik < 0 || c->scopes[ik].yields ||
+                  comp_cmethod_in_chain(c, k, "new", NULL) >= 0) plain = 0;
+              subs++;
+            }
+            for (int a = 0; subs && plain && a < dargc; a++)
+              if (subtree_has_side_effect(c, dargv[a])) plain = 0;
+            int arms = subs && plain && cmethod_takes_self_cls(c, (int)(encl - c->scopes)) && !(encl->yields && g_self);
+            if (!subs || arms) {
+              if (arms) {
+                buf_puts(b, "(");
+                for (int k = 0; k < c->nclasses; k++) {
+                  if (k == new_cls || !is_descendant(c, k, new_cls)) continue;
+                  buf_printf(b, "_sp_cls.cls_id == %d ? (sp_%s *)", k, ncls->c_name);
+                  emit_ctor_alloc_init(c, k, comp_method_in_chain(c, k, "initialize", NULL),
+                                       nt_ref(nt, id, "arguments"), id, b);
+                  buf_puts(b, " : ");
+                }
+              }
+              emit_ctor_alloc_init(c, new_cls, initm, nt_ref(nt, id, "arguments"), id, b);
+              if (arms) buf_puts(b, ")");
+              return 1;
+            }
+          }
+        }
         /* A class method a subclass inherits runs with self the subclass, so
            its bare `new` builds that subclass (#5995): a body that takes the
            receiving class picks the constructor by it. Each arm spells the
