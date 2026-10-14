@@ -11862,6 +11862,19 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
         ran_first_bind(argv[k], ht, ht);
         continue;
       }
+      /* --share-strings: a bang on a boxed receiver, or a conditional with
+         one on an arm, collected by the rest parameter runs as the handle it
+         hands on, which the rest's box takes (ran_first_handle): bound as
+         its bytes, the box rendered the arms again, a second bang */
+      if (repr_share_rule(c) && at == TY_STRING && m->rest_idx >= 0 && k >= m->rest_idx &&
+          strbuf_arg_bang_value(c, argv[k])) {
+        emit_strbuf_handle_of(c, argv[k], &hb);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", ht, hb.p, ht);
+        free(hb.p);
+        ran_first_bind(argv[k], ht, ht);
+        continue;
+      }
       /* --share-strings: a String Range's endpoint, or parentheses that end
          in one (strbuf_srange_tail), runs as emit_arg_temp runs it: the
          Range held, the handle it keeps taken, and the String read off it,

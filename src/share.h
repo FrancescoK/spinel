@@ -413,9 +413,6 @@ const char *share_plan_form_name(int form);
    node whose supply an SPK_SELF, SPK_OPERAND or SPK_SEQUENCE value hands
    on, the receiver whose box an SPK_BANG_BOX call answers, else -1. */
 int share_plan_producer(Compiler *c, int v, int *operand);
-/* Can a spliced block's value, or a yield's argument its block parameter
-   binds, hand on value a's handle (share_plan.c)? */
-int share_plan_splice_renders(Compiler *c, int a, int arms, int depth);
 const char *share_plan_role_name(int role);
 /* Is node v, a tail of a method whose value is a String, a box whose String
    the plan gives a taker as its handle (a taker needs the handle where its
