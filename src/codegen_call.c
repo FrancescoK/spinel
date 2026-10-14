@@ -7287,7 +7287,13 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
   BuiltinDefaultProbe pr = { name, argc, ret, bt, slot_o, 0 };
   Buf *nb = calloc(1, sizeof *nb);
   char *arm_pre = NULL;
+  /* a forwarded `&b` the builtin leaves unused is left out of its arm, whose
+     emitters take the call without one (an_builtin_answer asks the same) */
+  int dblk = nt_ref(nt, id, "block");
+  int drop_blk = dblk >= 0 && nt_kind(nt, dblk) == NK_BlockArgumentNode && builtin_read_ignores_block(name);
+  if (drop_blk) nt_node_set_ref((NodeTable *)nt, id, "block", -1);
   int ok = poly_arm_probe(c, id, builtin_default_probe_fn, &pr, nb, &arm_pre);
+  if (drop_blk) nt_node_set_ref((NodeTable *)nt, id, "block", dblk);
   box_o = pr.box_o;
   view_pop(c, vw);
   view_pop(c, va);
