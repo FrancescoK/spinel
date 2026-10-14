@@ -6,7 +6,14 @@
 # Hash, which no conversion keeps in its sp_StrIntHash * slot"), and a
 # seeded return emitted C that did not compile. Such a seed gives way, and
 # the slot takes the form inference gives it, so each holds the caller's
-# own Hash: a change through either name is seen through the other.
+# own Hash: a change through either name is seen through the other. A
+# Hash[Symbol, untyped] parameter and a return typed Hash[String, untyped]
+# or Hash[Symbol, untyped] converted such a Hash into a copy instead, so the
+# change was lost, and the parameter raised TypeError on a key that is not a
+# Symbol, where CRuby, which does not check signatures, takes it. An
+# instance variable seeded Hash[Symbol, untyped] that such a parameter (seeded
+# the same way, or not seeded at all) is stored into gives way too: it took
+# the box into a Symbol-keyed copy whose keys were not the Hash's.
 # spinel: rbs-seed-check
 class BkhTaker
   def take(h)
@@ -39,6 +46,39 @@ class BkhBox
   def get
     { @s => 1 }
   end
+end
+
+class BkhSymTaker
+  def take(h)
+    h[:z] = 1
+    h
+  end
+end
+
+class BkhKeep
+  def initialize(k)
+    @h = { k => 1 }
+  end
+
+  def h = @h
+  def g = @h
+end
+
+class BkhSymHold
+  def initialize(o)
+    @o = o
+  end
+
+  def keys = @o.keys
+  def get(k) = @o[k]
+end
+
+class BkhSymIvar
+  def initialize(o)
+    @o = o
+  end
+
+  def o = @o
 end
 
 BkhPoint = Struct.new(:x)
@@ -79,3 +119,28 @@ f = { u => 1 }
 dt = BkhData.new(x: f)
 f["d"] = 6
 p dt.x, dt.x.equal?(f)
+
+y = [:k, 1][0]
+h = { y => 2 }
+r = BkhSymTaker.new.take(h)
+p h, r.equal?(h)
+h = { u => 3 }
+r = BkhSymTaker.new.take(h)
+p h, r.equal?(h)
+
+ks = BkhKeep.new(u)
+ks.h["x"] = 2
+p ks.h
+ky = BkhKeep.new(y)
+ky.g[:w] = 3
+p ky.g, ky.g.equal?(ky.h)
+
+sh = BkhSymHold.new({ u => 5, "zz" => 6 })
+p sh.keys, sh.get("zz")
+sy = BkhSymHold.new({ k: 6 })
+p sy.keys, sy.get(:k)
+
+hh = { u => 7 }
+si = BkhSymIvar.new(hh)
+si.o["q"] = 8
+p hh, si.o.equal?(hh)

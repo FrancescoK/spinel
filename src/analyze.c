@@ -5299,10 +5299,20 @@ void class_unpin_ivar(ClassInfo *ci, const char *name) {
    conversion into a Hash the seed keys by one class (`Hash[String,
    Integer]`, an sp_StrIntHash): the store was refused, and a return did not
    compile. The seed of a slot such a Hash reaches gives way, and the slot
-   takes the form its values give it, as it does with no seed. A slot the
-   emitter converts such a Hash into keeps its seed (the callers say which). */
+   takes the form its values give it, as it does with no seed. Where the
+   emitter would convert such a Hash into the seed's (a Symbol-keyed
+   parameter, a poly-valued return), the conversion is a copy, so a change
+   through one name would not be seen through the other: those give way too. */
 static int seed_form_gives_way(TyKind seed, TyKind val) {
   return ty_is_hash(seed) && seed != TY_POLY_POLY_HASH && val == TY_POLY_POLY_HASH;
+}
+
+/* A box written into an ivar the seed keys by one class: the box may hold a
+   Hash with boxed keys (a parameter whose seed gave way to one), and the
+   store would unbox it into a copy of the seed's form, its keys read as the
+   seed's class whatever they are. The ivar takes the box instead. */
+static int seed_ivar_box_gives_way(TyKind seed, TyKind val) {
+  return ty_is_hash(seed) && seed != TY_POLY_POLY_HASH && val == TY_POLY;
 }
 
 /* Does ivar `name`'s pin hold against a write of `vt`? One that gives way
@@ -5310,29 +5320,27 @@ static int seed_form_gives_way(TyKind seed, TyKind val) {
 int class_ivar_pin_holds(ClassInfo *ci, const char *name, TyKind vt) {
   if (!class_ivar_pinned(ci, name)) return 0;
   int iv = comp_ivar_index(ci, name);
-  if (iv < 0 || !seed_form_gives_way(ci->ivar_types[iv], vt)) return 1;
+  if (iv < 0 || !(seed_form_gives_way(ci->ivar_types[iv], vt) || seed_ivar_box_gives_way(ci->ivar_types[iv], vt)))
+    return 1;
   class_unpin_ivar(ci, name);
   ci->ivar_types[iv] = TY_UNKNOWN;
   return 0;
 }
 
-/* The same for a parameter's seed against an argument of `at`. A
-   Symbol-keyed one converts the argument at the call (sp_seed_sym_hash_arg,
-   #3994). */
+/* The same for a parameter's seed against an argument of `at`. */
 int param_seed_holds(LocalVar *lv, TyKind at) {
   if (!lv->rbs_seeded) return 0;
-  if (lv->rbs_type == TY_SYM_POLY_HASH || !seed_form_gives_way(lv->rbs_type, at)) return 1;
+  if (!seed_form_gives_way(lv->rbs_type, at)) return 1;
   lv->rbs_seeded = 0;
   lv->rbs_type = TY_UNKNOWN;
   lv->type = TY_UNKNOWN;
   return 0;
 }
 
-/* And a return's against the value its body answers. A return of a
-   poly-valued Hash converts it (emit_hash_tail_conversion). */
+/* And a return's against the value its body answers. */
 int ret_seed_holds(Scope *s, TyKind r) {
   if (!s->ret_rbs_seeded) return 0;
-  if (s->ret == TY_SYM_POLY_HASH || s->ret == TY_STR_POLY_HASH || !seed_form_gives_way(s->ret, r)) return 1;
+  if (!seed_form_gives_way(s->ret, r)) return 1;
   s->ret_rbs_seeded = 0;
   s->ret_rbs_nilable = 0;
   return 0;

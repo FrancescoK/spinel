@@ -14,3 +14,16 @@ true
 true
 {"ab12" => 1, "d" => 6}
 true
+{k: 2, z: 1}
+true
+{"ab12" => 3, z: 1}
+true
+{"ab12" => 1, "x" => 2}
+{k: 1, w: 3}
+true
+["ab12", "zz"]
+6
+[:k]
+6
+{"ab12" => 7, "q" => 8}
+true

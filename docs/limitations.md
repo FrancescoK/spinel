@@ -1282,12 +1282,17 @@ encodings: `/[\x80]/` matches the byte 0x80, where CRuby refuses a UTF-8
 pattern with `invalid multibyte escape`. It reads the same byte inside a
 nested class or a `&&` intersection, where CRuby answers differently again.
 
-**An `--rbs` seed is enforced where a value crosses into it.** A parameter
-seeded `Hash[Symbol, untyped]` handed a hash whose keys the caller widened to
-any type converts at the call, and a key the declared type cannot hold raises
-`TypeError` there. CRuby ignores the signature, so a program whose keys really
-are Symbols agrees with it and one whose keys are not diverges: the seed is a
-claim about the program, and this is where the claim is checked.
+**An `--rbs` Hash type gives way to a Hash whose keys are boxed.** A
+parameter, instance variable, attribute, Struct or Data member, or return
+that a signature types as a Hash keyed by one class (`Hash[Symbol, untyped]`,
+`Hash[String, Integer]`) and that is handed a Hash whose keys inference holds
+boxed (a key read out of an Array of mixed values, say) takes that Hash as it
+is, as with no signature: the keys are not checked against the declared type,
+and the caller and the callee hold the same Hash, as in CRuby, which ignores
+the signature. The slot then compiles as one without a signature does, so the
+signature buys nothing there. An instance variable so typed also takes a boxed
+value stored into it as it is (a parameter that holds such a Hash, say), where
+it would otherwise have to rebuild the Hash in the declared form.
 
 **Regexp literals share one compiled object.** Each pattern is compiled once
 at startup and every textually-equal literal names that one object, so

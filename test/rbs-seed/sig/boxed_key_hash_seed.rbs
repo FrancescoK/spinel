@@ -21,3 +21,21 @@ end
 class BkhData
   attr_reader x: Hash[String, Integer]
 end
+
+class BkhSymTaker
+  def take: (Hash[Symbol, untyped] h) -> untyped
+end
+
+class BkhKeep
+  def h: () -> Hash[String, untyped]
+  def g: () -> Hash[Symbol, untyped]
+end
+
+class BkhSymHold
+  @o: Hash[Symbol, untyped]
+  def initialize: (Hash[Symbol, untyped] o) -> void
+end
+
+class BkhSymIvar
+  @o: Hash[Symbol, untyped]
+end
