@@ -223,15 +223,16 @@ int desugar_class_body_bare_new(Compiler *c) {
   return changed;
 }
 
-/* A receiverless `const_get(:K)` in a class method, or in the class body
-   itself, is sent to the class -- the implicit self there. It was left without
+/* A receiverless `const_get(:K)` or `const_defined?(:K)` in a class method,
+   or in the class body itself, is sent to the class -- the implicit self
+   there. It was left without
    a receiver, typed nothing, and the call on its value raised NoMethodError
    for "unknown" at run time (#4843). Give it self, as `self.const_get(:K)`,
    which already resolves. In an instance method self is an instance, which
    has no const_get, so that is left for the ordinary NoMethodError. */
 int desugar_bare_class_self_calls(Compiler *c) {
   static const struct { const char *name; int argc; } surf[] = {
-    { "const_get", -1 }, { "superclass", 0 }, { "ancestors", 0 }, { "subclasses", 0 },
+    { "const_get", -1 }, { "const_defined?", -1 }, { "superclass", 0 }, { "ancestors", 0 }, { "subclasses", 0 },
     { "include?", 1 }, { "to_s", 0 }, { "inspect", 0 }, { "frozen?", 0 },
     { "itself", 0 }, { "constants", -1 },
   };
