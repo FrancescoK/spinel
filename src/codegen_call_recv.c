@@ -4945,7 +4945,16 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           emit_expr(c, recv0, b);
           buf_printf(b, "); sp_RbVal _t%d = ", teq);
           emit_boxed(c, av0[0], b);
-          buf_printf(b, "; (sp_bool)(_t%d.tag == SP_TAG_OBJ && _t%d.v.p == _t%d); })", teq, teq, trq);
+          /* (a nil argument is the same object as an Array slot holding NULL) */
+          buf_printf(b, "; (sp_bool)(_t%d.tag == SP_TAG_OBJ ? _t%d.v.p == _t%d : _t%d.tag == SP_TAG_NIL && !_t%d); })",
+                     teq, teq, trq, teq, trq);
+        }
+        else if (at0 == TY_NIL) {
+          int trq = ++g_tmp;
+          buf_printf(b, "({ void *_t%d = (void *)(", trq);
+          emit_expr(c, recv0, b);
+          buf_puts(b, "); (void)("); emit_expr(c, av0[0], b);
+          buf_printf(b, "); (sp_bool)(_t%d == NULL); })", trq);
         }
         else {
           buf_puts(b, "((void)("); emit_expr(c, recv0, b);

@@ -7,3 +7,7 @@ module ShhnRouter
   def self.scan: (Array[ShhnRoute] routes, Array[String] path_parts) -> Hash[String, String]?
   def self.first: (Array[String] parts) -> Hash[String, String]?
 end
+module ShhnBoxed
+  def self.match: (untyped pat, untyped path) -> Hash[String, String]?
+  def self.scan: (untyped routes, untyped path) -> Hash[String, String]?
+end

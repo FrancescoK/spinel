@@ -6,7 +6,11 @@
 # Hash's form, so it no longer joins the Hash into a plain poly value that
 # keeps the seed's typed String Hash, which cannot hold the shared handle.
 # The same seed over a body building a String-poly Hash beside a nil
-# compiled to C that does not build in the default build.
+# compiled to C that does not build in the default build. When the Hash has
+# boxed keys (they come from untyped Arrays), the seed gives way instead, to
+# the poly value the method answers, and the method that answers what it
+# returns follows it (its seed had kept the typed Hash and read the poly one
+# as that).
 # spinel: rbs-seed-check
 class ShhnRoute
   attr_reader :parts
@@ -53,3 +57,27 @@ m = ShhnRouter.match_parts(["x"], parts)
 parts[1] << "0"
 p h, g, m, ShhnRouter.scan(routes, ["q", "r", "s"]), ShhnRouter.first(["q"])
 p h["id"].equal?(parts[1]), g["id"].equal?(parts[1])
+
+module ShhnBoxed
+  def self.match(pat, path)
+    return nil if pat.length != path.length
+    params = {}
+    pat.each_with_index { |k, i| params[k] = path[i] }
+    params
+  end
+
+  def self.scan(routes, path)
+    routes.each do |rt|
+      params = match(rt, path)
+      next unless params
+      return params
+    end
+    nil
+  end
+end
+bparts = ["a", +"7"]
+bh = ShhnBoxed.scan([["a"], ["x", "id"]], bparts)
+bn = ShhnBoxed.scan([["a"]], ["z", "y", "w"])
+bparts[1] << "0"
+bh["x"] = "y"
+p bh, bn, bh["id"].equal?(bparts[1])

@@ -5421,14 +5421,18 @@ int poly_pred_kind(const char *name, int argc) {
 }
 
 /* A class test (is_a?, kind_of?, instance_of?, Class ===) of an Integer,
-   Float or String value. Such a slot can hold nil (its nil flag, NULL for a
-   String), which the static type cannot say, so the test reads that nil
+   Float or String value, or of an Array or Hash that can be nil. Such a slot
+   can hold nil (its nil flag, NULL for a String), which the static type
+   cannot say, so the test reads that nil
    the way `nil?` does: nil is a NilClass and not an Integer, and only the
    universal classes hold for both. A literal is never nil and keeps the
    constant. Answers 0 (nothing emitted) for any other operand or class. */
 int emit_scalar_class_test(Compiler *c, int node, TyKind t, const char *cn, int exact, Buf *b) {
   const NodeTable *nt = c->nt;
-  if ((t != TY_INT && t != TY_FLOAT && t != TY_STRING) || !cn) return 0;
+  /* (a typed Array or Hash holds nil as NULL where the nil fact says it can
+     be nil: a seeded nilable return, an ivar set later) */
+  int ptr = (ty_is_array(t) || ty_is_hash(t)) && repr_of(c, node).may_nil;
+  if ((t != TY_INT && t != TY_FLOAT && t != TY_STRING && !ptr) || !cn) return 0;
   NodeKind nk = nt_kind(nt, node);
   if (nk == NK_IntegerNode || nk == NK_FloatNode || nk == NK_StringNode) return 0;
   int yes = ty_matches_class(t, cn, exact);
