@@ -37911,7 +37911,11 @@ void expand_static_splat_args(Compiler *c, int from, int count) {
          splat as it stands rather than refusing the program: Hash#slice's
          emitter iterates it, which is what the call means. */
       if (n < 0 && sp_streq(cnm, "slice")) continue;
-      if (n < 0 && (nt_int(nt, id, "dyn_arm", 0) || splat_user_method_rejects(c, cnm, n))) continue;
+      /* (a builtin alias's forwarder keeps its splat too: a call whose
+         receiver is known names the builtin's method instead,
+         desugar_builtin_alias_calls) */
+      if (n < 0 && (nt_int(nt, id, "dyn_arm", 0) || nt_int(nt, id, "alias_fwd", 0) ||
+                    splat_user_method_rejects(c, cnm, n))) continue;
       if (n < 0) {
         /* No arity to expand to (a name we list for its literal-splat form
            only). Say so here rather than letting the C compiler report it
@@ -43178,6 +43182,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= AN_PASS("desugar_include_math", desugar_include_math(c));             /* include Math: sqrt(x) -> Math.sqrt(x) */
     ch |= AN_PASS("desugar_bare_spawn", desugar_bare_spawn(c));               /* spawn(...) -> Process.spawn(...) */
     ch |= AN_PASS("desugar_kernel_recv", desugar_kernel_recv(c));              /* Kernel.puts x -> puts x */
+    ch |= AN_PASS("desugar_builtin_alias_calls", desugar_builtin_alias_calls(c)); /* Params#to_params_hash -> to_h */
     ch |= AN_PASS("desugar_std_stream_bare_output", desugar_std_stream_bare_output(c));  /* puts x -> $stdout.puts x, once $stdout can hold a StringIO */
     ch |= AN_PASS("desugar_std_stream_bare_warn", desugar_std_stream_bare_warn(c));  /* warn x -> $stderr.write(<x as warn renders it>), once $stderr can hold a program object with its own write */
     ch |= AN_PASS("desugar_class_literal_ctors", desugar_class_literal_ctors(c));      /* Array[a,b] -> [a,b]; Range.new -> (a..b) */
