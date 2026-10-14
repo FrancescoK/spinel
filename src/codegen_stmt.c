@@ -9701,7 +9701,29 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
           int inner = nt_ref(nt, conds[j], "expression");
           TyKind at = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
           int ta = ++g_tmp;
-          switch (at) {
+          /* a boxed subject (`case event["type"]` over a parsed JSON Hash)
+             against a typed array: each element's === answers false for a
+             value of another class, so the tag decides before the typed
+             include reads the payload. Passing the box itself was a C type
+             error. */
+          if (pt == TY_POLY && (at == TY_INT_ARRAY || at == TY_STR_ARRAY || at == TY_FLOAT_ARRAY)) {
+            int ts = ++g_tmp;
+            const char *ak = at == TY_INT_ARRAY ? "Int" : at == TY_STR_ARRAY ? "Str" : "Float";
+            buf_printf(b, "({ sp_%sArray *_t%d = ", ak, ta); emit_expr(c, inner, b);
+            buf_printf(b, "; sp_RbVal _t%d = sp_poly_strbuf_deref(_t%d); _t%d && ", ts, t, ta);
+            if (at == TY_STR_ARRAY)
+              buf_printf(b, "_t%d.tag == SP_TAG_STR && sp_StrArray_include(_t%d, _t%d.v.s); })", ts, ta, ts);
+            else if (at == TY_INT_ARRAY)
+              buf_printf(b, "(_t%d.tag == SP_TAG_INT ? sp_IntArray_include(_t%d, _t%d.v.i) : "
+                            "_t%d.tag == SP_TAG_FLT && _t%d.v.f == (double)(sp_int)_t%d.v.f && "
+                            "sp_IntArray_include(_t%d, (sp_int)_t%d.v.f)); })",
+                         ts, ta, ts, ts, ts, ts, ta, ts);
+            else
+              buf_printf(b, "(_t%d.tag == SP_TAG_FLT ? sp_FloatArray_include(_t%d, _t%d.v.f) : "
+                            "_t%d.tag == SP_TAG_INT && sp_FloatArray_include(_t%d, (double)_t%d.v.i)); })",
+                         ts, ta, ts, ts, ta, ts);
+          }
+          else switch (at) {
           case TY_INT_ARRAY:
             buf_printf(b, "({ sp_IntArray *_t%d = ", ta); emit_expr(c, inner, b);
             buf_printf(b, "; _t%d && sp_IntArray_include(_t%d, _t%d); })", ta, ta, t);

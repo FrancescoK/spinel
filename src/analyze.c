@@ -12219,6 +12219,28 @@ static int oa_branches_all_valued(const NodeTable *nt, int v) {
    `t = build_table(n)` names one storage location in two scopes, so the
    caller's local and the callee's value have to agree on one container type
    or the call would hand an unboxed sp_PtrArray* to a boxed reader. */
+/* Is `node` a read of a parameter of the method it sits in? */
+static int oa_read_is_param(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, node) != NK_LocalVariableReadNode) return 0;
+  const char *rn = nt_str(nt, node, "name");
+  Scope *sc = comp_scope_of(c, node);
+  if (!rn || !sc || sc->def_node < 0) return 0;
+  int pn = nt_ref(nt, sc->def_node, "parameters");
+  if (pn < 0) return 0;
+  static const char *const lists[] = { "requireds", "optionals", "posts", "keywords", NULL };
+  for (int l = 0; lists[l]; l++) {
+    int k = 0; const int *ps = nt_arr(nt, pn, lists[l], &k);
+    for (int i = 0; ps && i < k; i++) {
+      const char *nm = nt_str(nt, ps[i], "name");
+      if (nm && sp_streq(nm, rn)) return 1;
+    }
+  }
+  int rest = nt_ref(nt, pn, "rest");
+  const char *rnm = rest >= 0 ? nt_str(nt, rest, "name") : NULL;
+  return rnm && sp_streq(rnm, rn);
+}
+
 static void oa_classify_value(Compiler *c, OAS *sl, int n, const int *read_slot,
                               const int *call_ret, char *claimed, int S, int v) {
   const NodeTable *nt = c->nt;
@@ -13167,7 +13189,13 @@ static int narrow_object_arrays(Compiler *c) {
      `if block_given?`. That read is the method's value, the same table,
      not an escape. Unclaimed, it killed the table the arm walks, so a
      nested table rewritten onto the Ruby definition went back to a poly
-     array. The dead arm is the same shape. */
+     array. The dead arm is the same shape.
+     Only a read of a PARAMETER is claimed so: that storage came from the
+     caller, whose own slot vets what the caller does with the answer. A
+     local the method built (filter_map's `out`) leaves through the inlined
+     call's value, which no slot models, so it stays unclaimed and its
+     component dies -- claimed, `a = xs.filter_map { }` narrowed under an
+     `a.reject { }` no slot had vetted, and the call was refused. */
   for (int id = 0; id < nt->count; id++) {
     if (nt_kind(nt, id) != NK_IfNode) continue;
     int pred = nt_ref(nt, id, "predicate");
@@ -13181,7 +13209,7 @@ static int narrow_object_arrays(Compiler *c) {
     for (int a = 0; a < 2; a++) {
       int bn = 0; const int *bb = arms[a] >= 0 ? nt_arr(nt, arms[a], "body", &bn) : NULL;
       if (!bb || bn == 0 || bb[bn - 1] < 0 || bb[bn - 1] >= nc) continue;
-      if (read_slot[bb[bn - 1]] >= 0) claimed[bb[bn - 1]] = 1;
+      if (read_slot[bb[bn - 1]] >= 0 && oa_read_is_param(c, bb[bn - 1])) claimed[bb[bn - 1]] = 1;
     }
   }
 
@@ -42225,6 +42253,7 @@ static void an_phase_class_structure(Compiler *c) {
   register_prepends(c);
   rewrite_prepended_builtin_supers(c);   /* super in a module prepended into Range -> Range's own */
   desugar_method_added_hook(c);   /* def in a class body -> def; method_added(:name): needs the parents and extends, and runs before class methods are specialized per class */
+  desugar_reader_index_write(c);  /* all[k] = v through a reader of @all -> (all; @all[k] = v) */
   /* again, now that modules have put their methods in: an alias can take an
      inherited method an ancestor got from one */
   resolve_inherited_aliases(c);

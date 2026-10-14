@@ -18227,6 +18227,108 @@ static int ix_index_call(NodeTable *nt, const char *name, int recv, int a0, int 
   return call;
 }
 
+/* ---- `all[k] = v` through a reader of the receiver's own ivar ----------
+   A registry written as
+     class << self
+       def all = @all ||= {}
+       def register(addon) = all[addon.id] = addon
+     end
+   The Hash learns what it holds from the stores made into it, and the
+   store sites are indexed by the variable a store names: one made through
+   the reader call named none, so `@all` stayed an untyped Hash through the
+   whole inference, and every Enumerable call over it (`all.values.flat_map`)
+   was left without a definition. When the reader is one the same class
+   defines, answers the ivar itself (`@x`, `@x ||= v`, or attr_reader) and no
+   subclass overrides, the store is that ivar's:
+     all[k] = v   ->   (all; @all[k] = v)
+   the reader still called first, as Ruby evaluates the receiver first, and
+   the store then made into the object it answered. Arguments that write the
+   ivar themselves would make the two differ, and keep the call as written. */
+static const char *rdw_reader_ivar(Compiler *c, int cls, int cmeth, const char *mname) {
+  const NodeTable *nt = c->nt;
+  int mi = cmeth ? comp_cmethod_in_chain(c, cls, mname, NULL) : comp_method_in_chain(c, cls, mname, NULL);
+  if (mi < 0) {
+    if (cmeth) return NULL;
+    int def_cls = -1, mix = -1;
+    if (comp_resolve_member(c, cls, mname, 0, &def_cls, &mix) != SP_MEMBER_ATTR) return NULL;
+    static char ivb[128];
+    if (strlen(mname) >= sizeof ivb - 2) return NULL;
+    ivb[0] = '@'; strcpy(ivb + 1, mname);
+    return ivb;
+  }
+  Scope *m = &c->scopes[mi];
+  if (m->class_id != cls && !is_descendant(c, cls, m->class_id)) return NULL;
+  if (m->nparams > 0 || m->yields || (m->blk_param && m->blk_param[0]) || m->body < 0) return NULL;
+  /* no class below this one answers the name otherwise */
+  for (int k = 0; k < c->nclasses; k++) {
+    if (k == m->class_id || !is_descendant(c, k, m->class_id)) continue;
+    if ((cmeth ? comp_cmethod_in_class : comp_method_in_class)(c, k, mname) >= 0) return NULL;
+  }
+  int n = 0; const int *st = nt_arr(nt, m->body, "body", &n);
+  if (n != 1 || !st) return NULL;
+  NodeKind k = nt_kind(nt, st[0]);
+  if (k != NK_InstanceVariableReadNode && k != NK_InstanceVariableOrWriteNode) return NULL;
+  return nt_str(nt, st[0], "name");
+}
+static int rdw_writes_ivar(const NodeTable *nt, int n, const char *iv) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if ((k == NK_InstanceVariableWriteNode || k == NK_InstanceVariableOrWriteNode ||
+       k == NK_InstanceVariableAndWriteNode || k == NK_InstanceVariableOperatorWriteNode ||
+       k == NK_InstanceVariableTargetNode) && nt_str(nt, n, "name") && sp_streq(nt_str(nt, n, "name"), iv)) return 1;
+  if (k == NK_CallNode && nt_ref(nt, n, "receiver") < 0) return 1;   /* a self call may write it */
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) if (rdw_writes_ivar(nt, nt_ref_at(nt, n, i), iv)) return 1;
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) if (rdw_writes_ivar(nt, ids[j], iv)) return 1;
+  }
+  return 0;
+}
+int desugar_reader_index_write(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "block") >= 0) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "[]=")) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || nt_kind(nt, recv) != NK_CallNode || nt_ref(nt, recv, "receiver") >= 0 ||
+        nt_ref(nt, recv, "arguments") >= 0 || nt_ref(nt, recv, "block") >= 0) continue;
+    const char *rn = nt_str(nt, recv, "name");
+    Scope *sc = comp_scope_of(c, id);
+    if (!rn || !sc || sc->class_id < 0) continue;
+    const char *iv = rdw_reader_ivar(c, sc->class_id, sc->is_cmethod, rn);
+    if (!iv) continue;
+    char ivn[128]; snprintf(ivn, sizeof ivn, "%s", iv);
+    int args = nt_ref(nt, id, "arguments");
+    if (args < 0 || rdw_writes_ivar(nt, args, ivn)) continue;
+    int ivr = nt_new_node(nt, "InstanceVariableReadNode");
+    int w = nt_new_node(nt, "CallNode");
+    int body = nt_new_node(nt, "StatementsNode");
+    if (ivr < 0 || w < 0 || body < 0) break;
+    nt_node_set_str(nt, ivr, "name", ivn);
+    nt_node_set_str(nt, w, "name", "[]=");
+    nt_node_set_ref(nt, w, "receiver", ivr);
+    nt_node_set_ref(nt, w, "arguments", args);
+    nt_node_set_int(nt, w, "node_line", nt_int(nt, id, "node_line", 0));
+    nt_node_set_int(nt, w, "node_file", nt_int(nt, id, "node_file", 0));
+    int seq[2] = { recv, w };
+    nt_node_set_arr(nt, body, "body", seq, 2);
+    long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
+    nt_node_reset(nt, id, "ParenthesesNode");
+    nt_node_set_int(nt, id, "node_line", line);
+    nt_node_set_int(nt, id, "node_file", file);
+    nt_node_set_ref(nt, id, "body", body);
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    c->nscope[ivr] = encl; c->nscope[w] = encl; c->nscope[body] = encl;
+    changed = 1;
+  }
+  return changed;
+}
+
 /* Module#method_added: CRuby calls the class's `method_added(:name)` after each
    `def` in its body, which Thor relies on to attach the `desc` just read to the
    method that follows. Spinel defines methods at compile time and skipped the
