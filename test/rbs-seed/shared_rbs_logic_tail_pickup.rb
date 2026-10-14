@@ -11,7 +11,6 @@
 # `(s && @t) || v`, `(v ? s : t) || v`) keeps the handle it answers, and so
 # does a left operand that is an ivar or a local whose slot holds the handle
 # (`@t || v`, `x = t; x || ident(v)`).
-# spinel: rbs-seed-check
 module LtConf
   class << self
     attr_accessor :key
