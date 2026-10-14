@@ -806,7 +806,7 @@ static void cf_bind_block(CF *f, int mi, int blk) {
     int e = nt_ref(nt, blk, "expression");
     if (e >= 0 && nt_kind(nt, e) == NK_SymbolNode) {
       const char *sym = nt_str(nt, e, "value");
-      if (sym) { cf_dyn_add(f, sym); CFByName *b = cf_byname(f, sym); for (int i = 0; i < b->n; i++) cf_unite(f, f->yval_el[mi], f->ret_el[b->mi[i]]); }
+      if (sym) { CFByName *b = cf_byname(f, sym); for (int i = 0; i < b->n; i++) cf_unite(f, f->yval_el[mi], f->ret_el[b->mi[i]]); }
       if (!sym || sp_streq(sym, "new") || sp_streq(sym, "allocate") || cf_opaque_name(sym)) cf_all(f, f->yval_el[mi]);
     }
     else cf_unite(f, f->yval_el[mi], e);
@@ -922,15 +922,12 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
       if (e >= 0 && nt_kind(nt, e) == NK_SymbolNode) {
         const char *sym = nt_str(nt, e, "value");
         if (!sym || sp_streq(sym, "new") || sp_streq(sym, "allocate") || cf_opaque_name(sym)) cf_all(f, v);
-        else { cf_dyn_add(f, sym); CFByName *b = cf_byname(f, sym); for (int q = 0; q < b->n; q++) cf_unite(f, v, f->ret_el[b->mi[q]]); }
+        else { CFByName *b = cf_byname(f, sym); for (int q = 0; q < b->n; q++) cf_unite(f, v, f->ret_el[b->mi[q]]); }
       }
       else cf_unite(f, v, e);
       continue;
     }
     if (k == NK_SymbolNode) {
-      /* a Symbol a builtin takes may name a method it calls (`inject(:+)`,
-         `map(&:name)` is the block form above) */
-      cf_dyn_add(f, nt_str(nt, argv[i], "value"));
       /* `to_enum(:m)`: the Enumerator yields what m yields, so its values
          are m's yield arguments (as each's are, cf_protocol_returns) */
       if (i == 0 && (sp_streq(nm, "to_enum") || sp_streq(nm, "enum_for"))) {
@@ -953,7 +950,7 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
     if (e >= 0 && nt_kind(nt, e) == NK_SymbolNode) {
       const char *sym = nt_str(nt, e, "value");
       if (!sym || sp_streq(sym, "new") || sp_streq(sym, "allocate") || cf_opaque_name(sym)) cf_all(f, v);
-      else { cf_dyn_add(f, sym); CFByName *b = cf_byname(f, sym); for (int q = 0; q < b->n; q++) cf_unite(f, v, f->ret_el[b->mi[q]]); }
+      else { CFByName *b = cf_byname(f, sym); for (int q = 0; q < b->n; q++) cf_unite(f, v, f->ret_el[b->mi[q]]); }
     }
     else cf_unite(f, v, e);
   }
@@ -1776,6 +1773,19 @@ static void cf_collect_dyn(CF *f) {
     const char *cn = nt_str(nt, id, "name");
     if (!cn) continue;
     if (sp_streq(cn, "instance_variable_set") || sp_streq(cn, "instance_variable_get") || sp_streq(cn, "remove_instance_variable")) f->all_ivars = 1;
+    /* `inject(:m)`, `inject(init, :m)` and `each_with_object(x, &:m)` call m
+       with arguments the pass does not see: m takes any class */
+    {
+      int a0 = nt_ref(nt, id, "arguments"), n0 = 0;
+      const int *v0 = a0 >= 0 ? nt_arr(nt, a0, "arguments", &n0) : NULL;
+      int by_sym = sp_streq(cn, "inject") || sp_streq(cn, "reduce");
+      for (int i = 0; by_sym && i < n0; i++)
+        if (nt_kind(nt, v0[i]) == NK_SymbolNode) cf_dyn_add(f, nt_str(nt, v0[i], "value"));
+      int blk0 = nt_ref(nt, id, "block");
+      if ((by_sym || sp_streq(cn, "each_with_object")) && blk0 >= 0 &&
+          nt_kind(nt, blk0) == NK_BlockNode && nt_int(nt, blk0, "sym_proc_block", 0))
+        cf_dyn_add(f, nt_str(nt, blk0, "sym_proc"));
+    }
     if (!sp_streq(cn, "send") && !sp_streq(cn, "__send__") && !sp_streq(cn, "public_send") &&
         !sp_streq(cn, "method") && !sp_streq(cn, "public_method") && !sp_streq(cn, "instance_method") &&
         !sp_streq(cn, "define_method") && !sp_streq(cn, "define_singleton_method") &&
