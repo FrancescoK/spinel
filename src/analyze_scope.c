@@ -8518,6 +8518,8 @@ static int pivs_local_writes_ok(Compiler *c, int si, const char *vn) {
    it unbounded. With no parameter name, follow the same calls' receivers
    to bound a root method's boxed self. */
 static int pivs_param(Compiler *c, Scope *s, const char *pn, char *set, int depth) {
+  /* Compiled C dispatch supplies values without a Ruby AST call site. */
+  if (c->n_cext_extensions && s->def_node >= 0 && nt_int(c->nt, s->def_node, "cext_stub", 0)) return 0;
   const NodeTable *nt = c->nt;
   const char *mn = s->name;
   if (!mn || s->def_node < 0 || nt_kind(nt, s->def_node) != NK_DefNode) return 0;

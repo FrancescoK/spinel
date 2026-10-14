@@ -2776,7 +2776,7 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
 int strbuf_var_handle(Compiler *c, int n, char *out, size_t cap) {
   NodeKind k = n >= 0 ? nt_kind(c->nt, n) : NK_NONE;
   if (repr_self_shared(c, n)) return strbuf_slot_ref(c, n, out, cap);
-  return repr_share_rule(c) &&
+  return (repr_share_rule(c) || c->n_cext_extensions) &&
          (k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || repr_static_read_kind(k)) &&
          strbuf_slot_ref(c, n, out, cap);
 }

@@ -3637,7 +3637,7 @@ static int strbuf_slot_into(Compiler *c, int recv, Buf *b, size_t cap) {
     return fit;
   }
   /* a global or a constant holding the handle (--share-strings, #6765) */
-  if (repr_share_rule(c) && recv >= 0 && repr_static_read_kind(nt_kind(c->nt, recv))) {
+  if ((repr_share_rule(c) || c->n_cext_extensions) && recv >= 0 && repr_static_read_kind(nt_kind(c->nt, recv))) {
     /* inside the shim over it, the read is its plain shadow */
     if (sb_shadowed_reader(recv)) return 0;
     return holder_static_handle_buf(c, recv, b);

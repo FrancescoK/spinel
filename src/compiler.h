@@ -782,6 +782,7 @@ typedef struct { char *mod; char *val; } FfiCflag;   /* val: ;-separated cflags,
 typedef struct { char *mod; char *val; } FfiSource;  /* ffi_source inline C translation-unit fragment */
 
 typedef struct { char *name, *init; int slots, constants; } CextExtension;
+typedef struct { char *key; int kind, argc, node; } CextStub;
 typedef struct { char *path; int module, extension, allocator; } CextClass;
 
 /* One `native_func` declaration (typed static binding to carried C). Unlike
@@ -1133,6 +1134,8 @@ typedef struct {
   FfiSource *ffi_sources;
   int n_ffi_sources, c_ffi_sources;
 
+  CextStub *cext_stubs;
+  int n_cext_stubs;
   CextExtension *cext_extensions;
   int n_cext_extensions;
   CextClass *cext_classes;

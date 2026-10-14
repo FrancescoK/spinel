@@ -21,6 +21,8 @@ int sp_cext_register_address(VALUE *);
 int sp_cext_unwinding(void);
 void sp_cext_resume_unwind(void);
 extern void *sp_cext_current_block;
+/* Operation kinds: send, ivar read/write, constant read, literal eval. */
+extern sp_RbVal (*sp_cext_dispatch_fn)(int, const char *, sp_RbVal, int, const sp_RbVal *, sp_Proc *);
 sp_RbVal sp_cext_invoke(sp_cext_extension *, int, int, sp_RbVal, sp_PolyArray *, sp_Proc *);
 void *sp_cext_allocate(sp_cext_extension *, int, int);
 sp_RbVal sp_cext_duplicate(sp_RbVal, int);

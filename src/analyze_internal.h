@@ -733,4 +733,5 @@ int is_builtin_reopen(const char *name);
 char **dsend_candidates(Compiler *c, int *out_n);
 int exc_reopen_definers(Compiler *c, const char *mname, int *out, int max);
 
+int infer_cext_builtin_constant(Compiler *c, int node);
 #endif

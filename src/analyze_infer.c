@@ -7335,9 +7335,22 @@ static int chain_has_aliases(Compiler *c, int ci) {
 
 static TyKind infer_call_prelude(Compiler *c, int id) {
   if (c->n_cext_extensions) {
+    if (nt_int(c->nt, id, "cext_const_read", 0)) {
+      if (nt_int(c->nt, id, "cext_const_missing", 0)) return TY_POLY;
+      int value = nt_int(c->nt, id, "cext_const_node", 0) - 1;
+      if (value >= 0) {
+        TyKind type = infer_type(c, value);
+        return c->strbuf_box[id] && type == TY_STRING ? TY_STRBUF : type;
+      }
+      int recv = nt_ref(c->nt, id, "receiver"), argc = 0, an = nt_ref(c->nt, id, "arguments");
+      const int *argv = an >= 0 ? nt_arr(c->nt, an, "arguments", &argc) : NULL;
+      TyKind out = TY_POLY;
+      infer_universal_call(c, id, c->nt, "const_get", recv, argc, argv, TY_CLASS, TY_UNKNOWN, &out);
+      return out;
+    }
     const char *cn = nt_str(c->nt, id, "name");
     int synthetic = nt_int(c->nt, id, "cext_synthetic", 0);
-    if (synthetic && cn && (sp_streq(cn, "__cext_invoke") || sp_streq(cn, "__cext_constant_value"))) return TY_POLY;
+    if (synthetic && cn && (sp_streq(cn, "__cext_invoke") || sp_streq(cn, "__cext_constant_value") || sp_streq(cn, "__cext_box"))) return TY_POLY;
     if (synthetic && cn && sp_streq(cn, "__cext_init")) return TY_NIL;
     if (synthetic && cn && sp_streq(cn, "__cext_share_new_array")) return TY_POLY_ARRAY;
     if (cn && sp_streq(cn, "source_location")) {
@@ -8924,6 +8937,11 @@ static int infer_constant_path(Compiler *c, int id, const NodeTable *nt, NodeKin
   { *out = TY_UNKNOWN; return 1; }
   return 0;
 }
+int infer_cext_builtin_constant(Compiler *c, int node) {
+  TyKind out = TY_UNKNOWN;
+  return infer_constant_path(c, node, c->nt, NK_ConstantPathNode, &out) && out != TY_UNKNOWN && out != TY_VOID;
+}
+
 
 /* yield_value_diverges for `ymi`, computed on the first ask (*dv starts -1) */
 static int yvd_once(Compiler *c, int ymi, int *dv) {

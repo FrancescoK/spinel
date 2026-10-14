@@ -1010,8 +1010,8 @@ int repr_static_read_kind(NodeKind k) {
    class variable: its slot's (only the rule makes one the handle) */
 int repr_static_share(const Compiler *c, int node) {
   HolderRef h;
-  if (node < 0 || !c->share_strings || !holder_static_node(nt_kind(c->nt, node))) return 0;
-  return holder_of_node(c, node, &h) && h.r.share;
+  if (node < 0 || (!c->share_strings && !c->n_cext_extensions) || !holder_static_node(nt_kind(c->nt, node))) return 0;
+  return holder_of_node(c, node, &h) && (h.r.share || (c->n_cext_extensions && h.r.handle));
 }
 
 int repr_str_class_shares(unsigned flags, int holders) {

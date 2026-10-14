@@ -25,8 +25,8 @@ module CextRecord
     out
   end
 
-  def c_string(tokens)
-    raise Refusal, "rb_intern: method IDs must be literal C strings" unless !tokens.empty? && tokens.all? { |t| t.start_with?('"') }
+  def c_string(tokens, api = "rb_intern")
+    raise Refusal, "#{api}: method IDs must be literal C strings" unless !tokens.empty? && tokens.all? { |t| t.start_with?('"') }
     value = tokens.map do |t|
       t[1...-1].gsub(/\\(?:[0-7]{1,3}|x[0-9a-fA-F]+|.)/m) do |e|
         case e[1]
@@ -36,14 +36,14 @@ module CextRecord
         when "n" then "\n"
         when "r" then "\r"
         when "t" then "\t"
-        else raise Refusal, "rb_intern: unsupported C string escape #{e}"
+        else raise Refusal, "#{api}: unsupported C string escape #{e}"
         end
       end
     end.join
-    raise Refusal, "rb_intern: only printable ASCII IDs are supported" unless value.bytes.all? { |b| b >= 32 && b < 127 }
+    raise Refusal, "#{api}: only printable ASCII IDs are supported" unless value.bytes.all? { |b| (b >= 32 && b < 127) || (api == "rb_eval_string" && [9, 10, 13].include?(b)) }
     value
   rescue RangeError
-    raise Refusal, "rb_intern: C string escape is out of byte range"
+    raise Refusal, "#{api}: C string escape is out of byte range"
   end
 
   def source_only(text)
@@ -76,26 +76,56 @@ module CextRecord
     raise Refusal, "scanner: unterminated API call"
   end
 
+  SCANNED = %w[rb_intern rb_intern2 rb_funcall rb_funcallv rb_block_call
+               rb_iv_get rb_iv_set rb_ivar_get rb_ivar_set rb_const_get rb_eval_string].freeze
+  DYNAMIC_IDS = %w[rb_to_id rb_check_id rb_sym2id SYM2ID sp_cext_scanned_sym2id].freeze
+
   def scan(text)
     tokens = source_only(text).scan(TOKEN)
-    names = []; arities = []
+    names = []; arities = []; ivars = []; evals = []; constants = false
     tokens.each_with_index do |t, i|
       raise Refusal, "scanner: inline assembly is outside the recorder subset" if %w[asm __asm __asm__].include?(t)
-      next unless %w[rb_intern rb_funcall].include?(t)
+      raise Refusal, "#{t}: runtime-computed method IDs are unsupported" if DYNAMIC_IDS.include?(t)
+      next unless SCANNED.include?(t)
       raise Refusal, "#{t}: taking an API function address is outside the literal scanner subset" unless tokens[i+1] == "("
       args, = arguments(tokens, i+2)
-      if t == "rb_intern"
-        raise Refusal, "rb_intern: expected one literal argument" unless args.length == 1
-        names << c_string(args[0])
-      else
+      case t
+      when "rb_intern", "rb_intern2"
+        raise Refusal, "#{t}: invalid argument count" unless args.length == (t == "rb_intern2" ? 2 : 1)
+        value = c_string(args[0], t)
+        if t == "rb_intern2"
+          size = args[1]
+          raise Refusal, "rb_intern2: length must be a nonnegative integer literal" unless size.length == 1 && size[0] =~ /\A[0-9]+\z/
+          len = Integer(size[0], 10)
+          raise Refusal, "rb_intern2: length exceeds string literal" if len > value.bytesize
+          value = value.byteslice(0, len)
+        end
+        names << value
+      when "rb_funcall", "rb_funcallv", "rb_block_call"
         a = args[2]
-        raise Refusal, "rb_funcall: arity must be a nonnegative integer literal" unless a && a.length == 1 && a[0] =~ /\A[0-9]+\z/
+        raise Refusal, "#{t}: arity must be a nonnegative integer literal" unless a && a.length == 1 && a[0] =~ /\A[0-9]+\z/
         arity = Integer(a[0], 10)
-        raise Refusal, "rb_funcall: argument count does not match literal arity" unless args.length == 3 + arity
+        expected = t == "rb_funcall" ? 3 + arity : t == "rb_funcallv" ? 4 : 6
+        raise Refusal, "#{t}: argument count does not match literal arity" unless args.length == expected
         arities << arity
+      when "rb_iv_get", "rb_iv_set"
+        raise Refusal, "#{t}: invalid argument count" unless args.length == (t == "rb_iv_get" ? 2 : 3)
+        ivars << c_string(args[1], t)
+      when "rb_eval_string"
+        raise Refusal, "rb_eval_string: expected a literal string" unless args.length == 1
+        evals << c_string(args[0], t)
+      when "rb_const_get"
+        constants = true
       end
     end
-    [names.uniq.sort, arities.uniq.sort]
+    # ID-based ivar operations use the literal intern pool as well. Conservatively
+    # include every @name; their receiver is intentionally boxed and polymorphic.
+    ivars.concat(names.select { |n| n.start_with?("@") })
+    ivars.each do |name|
+      raise Refusal, "invalid literal instance variable #{name.inspect}" unless name =~ /\A@[A-Za-z_][A-Za-z_0-9]*\z/
+    end
+    [names.uniq.sort, arities.uniq.sort,
+     {"ivars" => ivars.uniq.sort, "evals" => evals.uniq.sort, "constant_reads" => constants}]
   end
 
   def write_atomic(path, bytes)
@@ -119,12 +149,14 @@ module CextRecord
     raise Refusal, "only -I, -D and -U recorder flags are supported" unless cflags.all? { |f| f =~ /\A-(?:I|D|U).+/ }
     Dir.mktmpdir("spinel-cext-record-") do |dir|
       flags = ["-std=c11", "-O0", "-DSP_CEXT_RECORDER", "-I#{ROOT}/include", *cflags]
-      objects = []; names = []; arities = []
+      objects = []; names = []; arities = []; ivars = []; evals = []; constant_reads = false
       sources.each_with_index do |source, i|
         source = File.expand_path(source)
         raise Refusal, "missing C source #{source}" unless File.file?(source)
-        ids, argc = scan(command(*compiler, *flags, "-E", source))
+        ids, argc, bridge = scan(command(*compiler, *flags, "-E", source))
         names.concat(ids); arities.concat(argc)
+        ivars.concat(bridge["ivars"]); evals.concat(bridge["evals"])
+        constant_reads ||= bridge["constant_reads"]
         obj = File.join(dir, "extension#{i}.o")
         command(*compiler, *flags, "-c", source, "-o", obj)
         objects << obj
@@ -167,6 +199,7 @@ module CextRecord
           wait.join; out.join; err.join
           raise Refusal, "#{init}: recorder exceeded 10 seconds"
         end
+        out.join; err.join
         unless wait.value.success?
           message = err.value.strip
           message = "#{init}: recorder exited with #{wait.value}" if message.empty?
@@ -176,7 +209,8 @@ module CextRecord
       end
       manifest = {"version" => 1, "extension" => name, "init" => init,
                   "definitions" => events, "literal_ids" => names.uniq.sort,
-                  "funcall_arities" => arities.uniq.sort}
+                  "funcall_arities" => arities.uniq.sort,
+                  "ivars" => ivars.uniq.sort, "evals" => evals.uniq.sort, "constant_reads" => constant_reads}
       ruby = render(manifest)
       if object_archive
         extension_archive = File.join(dir, "extension.a")
@@ -213,6 +247,21 @@ module CextRecord
     end
     manifest["literal_ids"].each { |id| lines << "__cext_literal_id(#{id.dump})" }
     manifest["funcall_arities"].each { |arity| lines << "__cext_funcall_arity(#{arity})" }
+    manifest.fetch("ivars", []).each { |ivar| lines << "__cext_ivar(#{ivar.dump})" }
+    manifest.fetch("evals", []).each { |code| lines << "__cext_eval(#{code.dump})" }
+    lines << "__cext_constant_reads()" if manifest["constant_reads"]
+    manifest["literal_ids"].each do |name|
+      next if name.start_with?("@")
+      manifest["funcall_arities"].each { |arity| lines << "__cext_stub(0, #{name.dump}, #{arity})" }
+      if manifest["constant_reads"] && name =~ /\A[A-Z][A-Za-z_0-9]*\z/
+        lines << "__cext_stub(3, #{name.dump}, 0)"
+      end
+    end
+    manifest.fetch("ivars", []).each do |name|
+      lines << "__cext_stub(1, #{name.dump}, 0)"
+      lines << "__cext_stub(2, #{name.dump}, 1)"
+    end
+    manifest.fetch("evals", []).each { |code| lines << "__cext_stub(4, #{code.dump}, 0)" }
     lines.join("\n") + "\n"
   end
 

@@ -302,3 +302,97 @@ sp_RbVal sp_cext_invoke(sp_cext_extension *ext,int slot,int arity,sp_RbVal self,
     sp_cext_arena_restore(mark);return value;
 }
 #endif
+
+#ifdef SP_CEXT
+sp_RbVal (*sp_cext_dispatch_fn)(int, const char *, sp_RbVal, int, const sp_RbVal *, sp_Proc *);
+static VALUE dispatch(int kind, const char *key, VALUE receiver, int argc, const VALUE *args, sp_Proc *block) {
+    if (!key) rb_raise(rb_eArgError, "unknown C extension dispatch name");
+    if (!sp_cext_dispatch_fn) rb_raise(rb_eRuntimeError, "C extension dispatch hook is missing");
+    if (argc < 0) rb_raise(rb_eArgError, "negative C extension call arity");
+    if (argc && !args) rb_raise(rb_eArgError, "missing C extension arguments");
+    sp_PolyArray *boxed = sp_PolyArray_new(); SP_GC_ROOT(boxed); SP_GC_ROOT(block);
+    for (int i = 0; i < argc; i++) sp_PolyArray_push(boxed, sp_cext_rbval(args[i]));
+    return sp_cext_value(sp_cext_dispatch_fn(kind, key, sp_cext_rbval(receiver), argc, boxed->data, block));
+}
+VALUE rb_funcallv(VALUE receiver, ID id, int argc, const VALUE *args) {
+    const char *name = rb_id2name(id);
+    if (!name) rb_raise(rb_eArgError, "unknown method ID");
+    return dispatch(0, name, receiver, argc, args, NULL);
+}
+VALUE rb_funcall(VALUE receiver, ID id, int argc, ...) {
+    if (argc < 0) rb_raise(rb_eArgError, "negative C extension call arity");
+    VALUE *args = argc ? sp_gc_alloc((size_t)argc * sizeof(VALUE), NULL, NULL) : NULL;
+    SP_GC_ROOT(args); va_list ap; va_start(ap, argc);
+    for (int i = 0; i < argc; i++) args[i] = va_arg(ap, VALUE);
+    va_end(ap); return rb_funcallv(receiver, id, argc, args);
+}
+VALUE rb_iv_get(VALUE receiver, const char *name) { return dispatch(1, name, receiver, 0, NULL, NULL); }
+VALUE rb_iv_set(VALUE receiver, const char *name, VALUE value) { return dispatch(2, name, receiver, 1, &value, NULL); }
+VALUE rb_ivar_get(VALUE receiver, ID id) { return rb_iv_get(receiver, rb_id2name(id)); }
+VALUE rb_ivar_set(VALUE receiver, ID id, VALUE value) { return rb_iv_set(receiver, rb_id2name(id), value); }
+VALUE rb_const_get(VALUE receiver, ID id) { (void)class_name(receiver); return dispatch(3, rb_id2name(id), receiver, 0, NULL, NULL); }
+VALUE rb_eval_string(const char *code) { return dispatch(4, code, Qnil, 0, NULL, NULL); }
+ID rb_intern2(const char *s, long len) {
+    if (len < 0) rb_raise(rb_eArgError, "negative symbol length");
+    char *name = malloc((size_t)len + 1);
+    if (!name) rb_raise(rb_eNoMemError, "symbol allocation failed");
+    memcpy(name, s, (size_t)len); name[len] = 0;
+    ID id = rb_intern(name); free(name); return id;
+}
+#endif
+
+#ifdef SP_CEXT
+typedef struct {
+    rb_block_call_func_t callback;
+    sp_RbVal data;
+    sp_Proc *outer;
+} CextCallback;
+static void callback_scan(void *p) {
+    sp_gc_mark(p);
+    CextCallback *cap = p;
+    sp_mark_rbval(cap->data);
+    sp_gc_mark(cap->outer);
+}
+static sp_int callback_trampoline(void *p, sp_int argc, sp_int *raw) {
+    (void)raw;
+    CextCallback *cap = p;
+    SP_GC_ROOT(cap);
+    if (argc < 0 || argc > SP_PROC_ARG_SLOTS) rb_raise(rb_eArgError, "too many callback arguments");
+    sp_cext_arena_mark mark = sp_cext_arena_enter();
+    sp_Proc *saved = current_block;
+    sp_cext_current_block = cap->outer;
+    const int roots = sp_gc_nroots;
+    jmp_buf frame;
+    if (setjmp(frame) != 0) {
+        int unwind = sp_cext_unwinding();
+        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
+        void *obj = sp_exc_cur_obj();
+        sp_exc_disarm(); sp_cext_arena_restore(mark); sp_gc_nroots = roots;
+        sp_cext_current_block = saved;
+        if (unwind) { sp_cext_resume_unwind(); abort(); }
+        sp_fiber_reraise(cls, msg, obj); abort();
+    }
+    sp_exc_arm(frame);
+    VALUE argv[SP_PROC_ARG_SLOTS];
+    for (int i = 0; i < argc; i++) argv[i] = sp_cext_value(_sp_proc_poly_args[i]);
+    VALUE yielded = argc ? argv[0] : Qnil;
+    VALUE result = cap->callback(yielded, sp_cext_value(cap->data), (int)argc, argv, Qnil);
+    sp_RbVal boxed = sp_cext_rbval(result);
+    sp_exc_disarm(); sp_cext_arena_restore(mark); sp_cext_current_block = saved;
+    _sp_proc_poly_ret = boxed;
+    return boxed.v.i;
+}
+VALUE rb_block_call(VALUE receiver, ID id, int argc, const VALUE *argv, rb_block_call_func_t fn, VALUE data) {
+    if (!fn) return rb_funcallv(receiver, id, argc, argv);
+    CextCallback *cap = sp_gc_alloc(sizeof(*cap), NULL, callback_scan);
+    SP_GC_ROOT(cap);
+    cap->callback = fn; cap->data = sp_cext_rbval(data); cap->outer = current_block;
+    sp_Proc *block = sp_proc_new_meta((void *)callback_trampoline, cap, callback_scan, -1, FALSE, 0, NULL, NULL);
+    SP_GC_ROOT(block);
+    return dispatch(0, rb_id2name(id), receiver, argc, argv, block);
+}
+#endif
+
+#ifdef SP_CEXT
+VALUE rb_str_intern(VALUE v) { return ID2SYM(rb_intern2(RSTRING_PTR(v), RSTRING_LEN(v))); }
+#endif
