@@ -2486,17 +2486,20 @@ static int bp_user_uses(const NodeTable *nt, const char *name) {
 }
 
 /* Invent the slot name for the parameter `written` of block `blk` and record
-   it, stepping past a name the program already uses. */
-void block_param_invent_name(Compiler *c, char *buf, size_t n,
-                             const char *written, int blk) {
+   it, stepping past a name the program already uses. The caller frees it. */
+char *block_param_invent_name(Compiler *c, const char *written, int blk) {
   const NodeTable *nt = c->nt;
   /* `x__bp12` for a program block, `x__bqmin_by_12` for a builtin's */
   const char *tag = comp_node_tag(c, blk);
   const char *p = tag[0] == 'q' ? "" : "p";
+  size_t n = strlen(written) + strlen(tag) + 32;   /* "__bp", "_<k>" */
+  char *buf = malloc(n);
+  if (!buf) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   snprintf(buf, n, "%s__b%s%s", written, p, tag);
   for (int k = 1; bp_user_uses(nt, buf); k++)
     snprintf(buf, n, "%s__b%s%s_%d", written, p, tag, k);
   bp_rename_record(buf, strlen(written));
+  return buf;
 }
 
 /* In a call-site KeywordHashNode (`k: 9, j: 2`), the value node bound to the
@@ -4649,11 +4652,11 @@ static void rename_shadowing_block_locals(Compiler *c, int L, int pn, int body,
   int changed = 0;
   char *save = NULL;
   for (char *tok = strtok_r(locs, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
-    char newn[176];
+    char *newn = NULL;
     const char *emit = tok;
     if (!params_bind_name(nt, pn, tok) &&
         name_written_outside(nt, tok, ix, inbody, gen)) {
-      block_param_invent_name(c, newn, sizeof newn, tok, L);
+      newn = block_param_invent_name(c, tok, L);
       blkp_rewrite_refs(c, body, tok, newn);
       emit = newn;
       changed = 1;
@@ -4665,13 +4668,14 @@ static void rename_shadowing_block_locals(Compiler *c, int L, int pn, int body,
     if (need > ocap) {
       ocap = need * 2;
       char *t = realloc(out, ocap);
-      if (!t) { free(out); free(locs); return; }
+      if (!t) { free(newn); free(out); free(locs); return; }
       out = t;
     }
     if (out_len > 0) out[out_len++] = ',';
     memcpy(out + out_len, emit, emit_len);
     out_len += emit_len;
     out[out_len] = '\0';
+    free(newn);
   }
   if (changed) nt_set_str((NodeTable *)nt, L, "locals", out);
   free(out);
@@ -5124,9 +5128,9 @@ void rename_shadowing_block_params(Compiler *c) {
         if (wn && sp_streq(wn, p)) collide = 1;
       }
       if (!collide) continue;
-      char oldn[160], newn[176];
-      snprintf(oldn, sizeof oldn, "%s", p);   /* copy: nt_set_str frees p's storage */
-      block_param_invent_name(c, newn, sizeof newn, oldn, L);
+      char *oldn = strdup(p);   /* copy: nt_set_str frees p's storage */
+      if (!oldn) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      char *newn = block_param_invent_name(c, oldn, L);
       /* `Proc#parameters` reports the name the program wrote, and the emitter
          recovers it by stripping this suffix -- but a stripped name that
          appears nowhere else is not in the generated symbol table, so interning
@@ -5140,6 +5144,7 @@ void rename_shadowing_block_params(Compiler *c) {
          param (`|a, b=a|`); those reads live under the ParametersNode, not
          the body, so rewrite there too */
       blkp_rewrite_refs(c, pn, oldn, newn);
+      free(oldn); free(newn);
     }
     if (have_locals)
       rename_shadowing_block_locals(c, L, pn, body, inbody, gen, &ix);

@@ -7500,13 +7500,14 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
      emitted can answer the body's own unrelated renamed name, or the bare
      source name once the body pushed fewer entries (`_cell_recv` instead of
      `_cell__y6_recv`, an undeclared identifier at the C level). */
-  char (*cap_rn)[112] = ncap > 0 ? (char (*)[112])malloc(sizeof(char[112]) * (size_t)ncap) : NULL;
+  char **cap_rn = ncap > 0 ? calloc((size_t)ncap, sizeof *cap_rn) : NULL;
   /* and the name of the cell: the shim's shadow rename names no cell */
-  char (*cap_cn)[112] = ncap > 0 ? (char (*)[112])malloc(sizeof(char[112]) * (size_t)ncap) : NULL;
-  if (ncap > 0 && !cap_cn) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  char **cap_cn = ncap > 0 ? calloc((size_t)ncap, sizeof *cap_cn) : NULL;
+  if (ncap > 0 && (!cap_rn || !cap_cn)) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int i = 0; i < ncap; i++) {
-    snprintf(cap_rn[i], sizeof cap_rn[0], "%s", rename_local(caps.v[i]));
-    snprintf(cap_cn[i], sizeof cap_cn[0], "%s", rename_local_cell(caps.v[i]));
+    cap_rn[i] = strdup(rename_local(caps.v[i]));
+    cap_cn[i] = strdup(rename_local_cell(caps.v[i]));
+    if (!cap_rn[i] || !cap_cn[i]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
 
   /* Capture self if the body accesses ivars or dispatches to self implicitly */
@@ -7962,6 +7963,7 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
       else
         buf_printf(g_pre, "_t%d->c_%s = lv_%s;\n", tc, caps.v[i], cap_rn[i]);
     }
+    for (int i = 0; i < ncap; i++) { free(cap_rn[i]); free(cap_cn[i]); }
     free(cap_rn);
     free(cap_cn);
     if (as_gen) {
@@ -8317,8 +8319,9 @@ void emit_inlined_local_decl(Compiler *c, LocalVar *lv, const char *rn, Buf *b, 
     /* two GC strings by value; see emit_local_decl */
     else if (lv->type == TY_STR_RANGE) {
       emit_indent(b, din); buf_printf(b, "SP_GC_ROOT_STR(lv_%s.first); SP_GC_ROOT_STR(lv_%s.last);", rn, rn);
-      char ref[160]; snprintf(ref, sizeof ref, "lv_%s", rn);
-      emit_srange_handle_roots(c, ref, b);
+      Buf ref; memset(&ref, 0, sizeof ref); buf_printf(&ref, "lv_%s", rn);
+      emit_srange_handle_roots(c, ref.p, b);
+      free(ref.p);
       buf_puts(b, "\n");
     }
     return;
@@ -8335,10 +8338,7 @@ void emit_inlined_locals(Compiler *c, Scope *m, int tag, Buf *b, int din) {
   for (int i = 0; i < m->nlocals; i++) {
     LocalVar *lv = &m->locals[i];
     if (m->blk_param && lv->name && sp_streq(lv->name, m->blk_param)) continue;
-    snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", lv->name);
-    snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_y%d_%s", tag, lv->name);
-    const char *rn = g_ren_to[g_nren];
-    g_nren++;
+    const char *rn = ren_push(lv->name, "_y%d_%s", tag, lv->name);
     emit_inlined_local_decl(c, lv, rn, b, din);
   }
 }
@@ -12854,23 +12854,25 @@ static int emit_zsuper_gather(Compiler *c, Scope *s, Scope *pm) {
     buf_printf(g_pre, "%s *_t%d = %s_new(); SP_GC_ROOT(_t%d);\n", hk, t, hk, t);
     if (own) {
       LocalVar *kv = scope_local(s, s->pnames[s->kwrest_idx]);
-      char txt[128]; snprintf(txt, sizeof txt, "lv_%s", rename_local(s->pnames[s->kwrest_idx]));
+      Buf txt; memset(&txt, 0, sizeof txt); buf_printf(&txt, "lv_%s", rename_local(s->pnames[s->kwrest_idx]));
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "%s(_t%d, ", any ? "sp_kw_merge_any" : "sp_kwrest_merge_poly", t);
-      if (kv && kv->type == TY_POLY) buf_puts(g_pre, txt);
-      else emit_boxed_text(c, kv ? kv->type : TY_SYM_POLY_HASH, txt, g_pre);
+      if (kv && kv->type == TY_POLY) buf_puts(g_pre, txt.p);
+      else emit_boxed_text(c, kv ? kv->type : TY_SYM_POLY_HASH, txt.p, g_pre);
       buf_puts(g_pre, ");\n");
+      free(txt.p);
     }
     for (int i = 0; i < s->nparams; i++) {
       if (i == s->kwrest_idx || !s->pnames[i] || !callee_param_is_declared_kwarg(c, s, s->pnames[i])) continue;
       LocalVar *kp = scope_local(s, s->pnames[i]);
-      char txt[128]; snprintf(txt, sizeof txt, "lv_%s", rename_local(s->pnames[i]));
+      Buf txt; memset(&txt, 0, sizeof txt); buf_printf(&txt, "lv_%s", rename_local(s->pnames[i]));
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, any ? "sp_PolyPolyHash_set(_t%d, sp_box_sym(sp_sym_intern(\"%s\")), "
                             : "sp_SymPolyHash_set(_t%d, sp_sym_intern(\"%s\"), ", t, s->pnames[i]);
-      if (kp && kp->type == TY_POLY) buf_puts(g_pre, txt);
-      else emit_boxed_text(c, kp ? kp->type : TY_POLY, txt, g_pre);
+      if (kp && kp->type == TY_POLY) buf_puts(g_pre, txt.p);
+      else emit_boxed_text(c, kp ? kp->type : TY_POLY, txt.p, g_pre);
       buf_puts(g_pre, ");\n");
+      free(txt.p);
     }
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "if (_t%d->len > 0) sp_PolyArray_push(_t%d, sp_box_obj(_t%d, %s));\n",
@@ -13101,8 +13103,8 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   for (int i = 0; is_forwarding && i < m->nparams; i++) {
     emit_indent(b, din);
     int pc = 0;
-    { char rn[128]; snprintf(rn, sizeof rn, "_y%d_%s", tag, m->pnames[i]);
-      pc = emit_inlined_param_target(c, m, m->pnames[i], rn, b); }
+    { Buf rn; memset(&rn, 0, sizeof rn); buf_printf(&rn, "_y%d_%s", tag, m->pnames[i]);
+      pc = emit_inlined_param_target(c, m, m->pnames[i], rn.p, b); free(rn.p); }
     emit_zsuper_param(c, s, m, &z, i, saved_nren, g_nren, b);
     buf_puts(b, pc ? ");\n" : ";\n");
   }
@@ -13273,8 +13275,9 @@ static void emit_struct_super_spread(Compiler *c, ClassInfo *cls, const int *arg
       sc->kwrest_idx >= 0 && sc->kwrest_idx < sc->nparams && sc->pnames[sc->kwrest_idx]) {
     const char *kr = sc->pnames[sc->kwrest_idx];
     LocalVar *kv = scope_local(sc, kr);
-    char src[64]; snprintf(src, sizeof src, "lv_%s", rename_local(kr));
-    emit_boxed_text(c, kv && kv->type != TY_UNKNOWN ? kv->type : TY_SYM_POLY_HASH, src, b);
+    Buf src; memset(&src, 0, sizeof src); buf_printf(&src, "lv_%s", rename_local(kr));
+    emit_boxed_text(c, kv && kv->type != TY_UNKNOWN ? kv->type : TY_SYM_POLY_HASH, src.p, b);
+    free(src.p);
   }
   else if (kwh >= 0) emit_boxed(c, kwh, b);
   else buf_puts(b, "sp_box_nil()");
@@ -13915,8 +13918,9 @@ void emit_super(Compiler *c, int id, Buf *b) {
         Buf kb; memset(&kb, 0, sizeof kb);
         if (fwd) {
           LocalVar *lv = scope_local(s, s->pnames[0]);
-          char pn[160]; snprintf(pn, sizeof pn, "lv_%s", rename_local(s->pnames[0]));
-          emit_boxed_text(c, lv && lv->type != TY_UNKNOWN ? lv->type : TY_POLY, pn, &kb);
+          Buf pn; memset(&pn, 0, sizeof pn); buf_printf(&pn, "lv_%s", rename_local(s->pnames[0]));
+          emit_boxed_text(c, lv && lv->type != TY_UNKNOWN ? lv->type : TY_POLY, pn.p, &kb);
+          free(pn.p);
         }
         else emit_boxed(c, sargv[0], &kb);
         Buf rb; memset(&rb, 0, sizeof rb);

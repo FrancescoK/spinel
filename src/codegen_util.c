@@ -551,6 +551,27 @@ void buf_erase(Buf *b, size_t off, size_t n) {
   b->len -= n;
   b->p[b->len] = '\0';
 }
+/* Replace `b`'s text with the formatted one, reusing its storage. */
+static void buf_vsetf(Buf *b, const char *fmt, va_list ap) {
+  va_list aq; va_copy(aq, ap);
+  int n = vsnprintf(NULL, 0, fmt, aq);
+  va_end(aq);
+  if (n < 0) n = 0;
+  if ((size_t)n + 1 > b->cap) {
+    size_t nc = b->cap ? b->cap : 256;
+    while (nc < (size_t)n + 1) nc *= 2;
+    char *p = realloc(b->p, nc);
+    if (!p) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    b->p = p; b->cap = nc;
+  }
+  vsnprintf(b->p, (size_t)n + 1, fmt, ap);
+  b->len = (size_t)n;
+}
+void buf_setf(Buf *b, const char *fmt, ...) {
+  va_list ap; va_start(ap, fmt);
+  buf_vsetf(b, fmt, ap);
+  va_end(ap);
+}
 void buf_printf(Buf *b, const char *fmt, ...) {
   char tmp[512];
   va_list ap; va_start(ap, fmt);
@@ -747,25 +768,61 @@ int subtree_may_write_ivar(Compiler *c, int id, const char *iv, int cls, int dep
   return 0;
 }
 int  g_tmp = 0;
-char g_ren_from[MAX_RENAME][96];
-char g_ren_to[MAX_RENAME][112];
+/* A rename-table slot keeps its Buf when the table is cut back below it,
+   and the next entry there rewrites it (buf_setf), so a name of any length
+   fits and no site that cuts g_nren back has anything to free. */
+Buf g_ren_from[MAX_RENAME];
+Buf g_ren_to[MAX_RENAME];
 int  g_nren = 0;
 int  g_block_id = -1;
 
+/* Push the entry renaming `from` to the formatted name; returns that name. */
+const char *ren_push(const char *from, const char *to_fmt, ...) {
+  buf_setf(&g_ren_from[g_nren], "%s", from);
+  va_list ap; va_start(ap, to_fmt);
+  buf_vsetf(&g_ren_to[g_nren], to_fmt, ap);
+  va_end(ap);
+  return g_ren_to[g_nren++].p;
+}
+
+/* Copy entries [from, from + n) aside, replacing an earlier copy in `k`
+   (a spliced block's parameters are copied out each time its body emits). */
+void ren_copy_out(RenCopy *k, int from, int n) {
+  if (n < 0) n = 0;
+  if (k->f && k->n != n) ren_copy_free(k);
+  if (!k->f && n > 0) {
+    k->f = calloc((size_t)n, sizeof *k->f);
+    k->t = calloc((size_t)n, sizeof *k->t);
+    if (!k->f || !k->t) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  k->n = n;
+  for (int i = 0; i < n; i++) {
+    free(k->f[i]); free(k->t[i]);
+    const char *f = g_ren_from[from + i].p, *t = g_ren_to[from + i].p;
+    k->f[i] = strdup(f ? f : "");
+    k->t[i] = strdup(t ? t : "");
+    if (!k->f[i] || !k->t[i]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+}
+/* Write the copied entries back into slots [from, from + k->n). */
+void ren_copy_in(const RenCopy *k, int from) {
+  for (int i = 0; i < k->n; i++) {
+    buf_setf(&g_ren_from[from + i], "%s", k->f[i]);
+    buf_setf(&g_ren_to[from + i], "%s", k->t[i]);
+  }
+}
+void ren_copy_free(RenCopy *k) {
+  for (int i = 0; i < k->n; i++) { free(k->f[i]); free(k->t[i]); }
+  free(k->f); free(k->t);
+  k->f = NULL; k->t = NULL; k->n = 0;
+}
+
 RenPark ren_park(int from) {
-  RenPark p = { g_nren, from, g_nren - from, NULL, NULL, -1 };
+  RenPark p = { g_nren, from, { NULL, NULL, 0 }, -1 };
   /* from 0: a C function body of its own, which cannot name the open
      splices' slots either (view_splice_next) */
   if (from == 0) p.fence = view_push_fn();
-  if (p.n > 0) {
-    p.f = (char (*)[96])malloc(sizeof(char[96]) * (size_t)p.n);
-    p.t = (char (*)[112])malloc(sizeof(char[112]) * (size_t)p.n);
-    if (p.f && p.t) {
-      memcpy(p.f, g_ren_from + from, sizeof(char[96]) * (size_t)p.n);
-      memcpy(p.t, g_ren_to + from, sizeof(char[112]) * (size_t)p.n);
-    }
-    else { free(p.f); free(p.t); p.f = NULL; p.t = NULL; }
-  }
+  ren_copy_out(&p.k, from, g_nren - from);
   g_nren = from;
   return p;
 }
@@ -773,11 +830,8 @@ RenPark ren_park(int from) {
 void ren_unpark(RenPark *p) {
   if (p->fence >= 0) view_pop(NULL, p->fence);
   g_nren = p->sv;
-  if (p->f && p->t) {
-    memcpy(g_ren_from + p->from, p->f, sizeof(char[96]) * (size_t)p->n);
-    memcpy(g_ren_to + p->from, p->t, sizeof(char[112]) * (size_t)p->n);
-  }
-  free(p->f); free(p->t);
+  ren_copy_in(&p->k, p->from);
+  ren_copy_free(&p->k);
 }
 /* comp_ntype's yield hook: while a literal block is spliced, a YieldNode's
    value is THAT block's tail, not the union the node cache holds over every
@@ -1661,8 +1715,8 @@ static void sb_shim_lifted(Compiler *c, int node, int delta) {
   Scope *sc = node >= 0 ? comp_scope_of(c, node) : NULL;
   if (!sc) return;
   for (int i = 0; i < g_nren; i++) {
-    if (!sb_shim_shadow(g_ren_from[i], g_ren_to[i])) continue;
-    LocalVar *lv = scope_local(sc, g_ren_from[i]);
+    if (!sb_shim_shadow(g_ren_from[i].p, g_ren_to[i].p)) continue;
+    LocalVar *lv = scope_local(sc, g_ren_from[i].p);
     if (!lv || lv->shim_ty == TY_UNKNOWN) continue;
     if (delta > 0) { if (lv->shim_lift++ == 0) lv_set_type(lv, lv->shim_ty); }
     else if (--lv->shim_lift == 0) lv_set_type(lv, TY_STRING);
@@ -3750,7 +3804,7 @@ int strbuf_slot_has(Compiler *c, int recv) { return strbuf_slot_into(c, recv, NU
    in keeps the name an enclosing inline gave it (or the source name). */
 const char *rename_local_cell(const char *nm) {
   for (int i = g_nren - 1; i >= 0; i--)
-    if (sp_streq(g_ren_from[i], nm) && !sb_shim_shadow(nm, g_ren_to[i])) return g_ren_to[i];
+    if (sp_streq(g_ren_from[i].p, nm) && !sb_shim_shadow(nm, g_ren_to[i].p)) return g_ren_to[i].p;
   return nm;
 }
 /* Hide the renames from `base` up while a caller's expression is emitted
@@ -3759,24 +3813,13 @@ const char *rename_local_cell(const char *nm) {
    hidden ones are kept aside and put back: truncating g_nren alone left an
    inner call's `r` where the outer default read its own (#8319). */
 void ren_hide(RenHide *h, int base) {
-  h->base = base; h->top = g_nren; h->from = NULL; h->to = NULL;
-  int n = h->top - base;
-  if (n > 0) {
-    h->from = malloc(sizeof *h->from * (size_t)n);
-    h->to = malloc(sizeof *h->to * (size_t)n);
-    if (!h->from || !h->to) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    memcpy(h->from, g_ren_from[base], sizeof *h->from * (size_t)n);
-    memcpy(h->to, g_ren_to[base], sizeof *h->to * (size_t)n);
-  }
+  h->base = base; h->top = g_nren; h->k = (RenCopy){ NULL, NULL, 0 };
+  ren_copy_out(&h->k, base, h->top - base);
   g_nren = base;
 }
 void ren_unhide(RenHide *h) {
-  int n = h->top - h->base;
-  if (n > 0) {
-    memcpy(g_ren_from[h->base], h->from, sizeof *h->from * (size_t)n);
-    memcpy(g_ren_to[h->base], h->to, sizeof *h->to * (size_t)n);
-  }
-  free(h->from); free(h->to);
+  ren_copy_in(&h->k, h->base);
+  ren_copy_free(&h->k);
   g_nren = h->top;
 }
 const char *rename_local(const char *nm) {
@@ -3786,7 +3829,7 @@ const char *rename_local(const char *nm) {
      mechanism bounds visibility by truncating g_nren, so a backward scan sees
      exactly the same entries. */
   for (int i = g_nren - 1; i >= 0; i--)
-    if (sp_streq(g_ren_from[i], nm)) return g_ren_to[i];
+    if (sp_streq(g_ren_from[i].p, nm)) return g_ren_to[i].p;
   return nm;
 }
 /* Report a feature spinel deliberately does not support (docs/limitations.md).

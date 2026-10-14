@@ -39,6 +39,7 @@ extern int g_inline_hot;
 extern int g_no_write_barrier;
 extern const char *g_ruby_description;
 void buf_printf(Buf *b, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+void buf_setf(Buf *b, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
 static inline void emit_indent(Buf *b, int n) { for (int i = 0; i < n; i++) buf_puts(b, "  "); }
 
@@ -108,9 +109,15 @@ extern int  g_tmp;
    block's body. g_block_id is the current BlockNode for yield (-1 if
    none). The rename map holds only the inlined method's locals. */
 #define MAX_RENAME 128
-extern char g_ren_from[MAX_RENAME][96];
-extern char g_ren_to[MAX_RENAME][112];
-typedef struct { int sv, from, n; char (*f)[96]; char (*t)[112]; int fence; } RenPark;
+extern Buf g_ren_from[MAX_RENAME];
+extern Buf g_ren_to[MAX_RENAME];
+const char *ren_push(const char *from, const char *to_fmt, ...) __attribute__((format(printf, 2, 3)));
+/* Entries copied aside while the table is cut back below them. */
+typedef struct { char **f, **t; int n; } RenCopy;
+void ren_copy_out(RenCopy *k, int from, int n);
+void ren_copy_in(const RenCopy *k, int from);
+void ren_copy_free(RenCopy *k);
+typedef struct { int sv, from; RenCopy k; int fence; } RenPark;
 RenPark ren_park(int from);
 void ren_unpark(RenPark *p);
 const char *strbuf_local_name(Compiler *c, int recv);
@@ -475,7 +482,7 @@ extern const char *g_block_owner_param_name;
 extern const char *g_yield_block_fallback_param_name;
 extern int  g_nren;
 /* hide the renames from base up and put them back (codegen_util.c) */
-typedef struct { int base, top; char (*from)[96]; char (*to)[112]; } RenHide;
+typedef struct { int base, top; RenCopy k; } RenHide;
 void ren_hide(RenHide *h, int base);
 void ren_unhide(RenHide *h);
 extern int  g_block_id;
