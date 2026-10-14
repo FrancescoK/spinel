@@ -390,6 +390,44 @@ const char *sp_StringScanner_getch(sp_StringScanner *sc) {SP_GC_ROOT(sc);
   return c;
 }
 
+/* #get_byte / #scan_byte: the byte at the pointer, taken (a one-byte
+   String, or its value), and #matched; nil at the end. #peek_byte reads it
+   without moving or matching. */
+const char *sp_StringScanner_get_byte(sp_StringScanner *sc) {SP_GC_ROOT(sc);
+  if (!sc) return NULL;
+  int64_t slen = (int64_t)sp_str_byte_len(sc->source);
+  if (sc->pos >= slen) {
+    sc->matched = sp_str_empty;
+    sc->matched_p = 0;
+    return NULL;
+  }
+  char *c = sc_substr(sc->source, sc->pos, 1);
+  sc->last_pos = sc->pos;
+  sc->match_start = sc->pos;
+  sc_set_matched(sc, c);
+  sc->matched_p = 1;
+  sc->pos += 1;
+  return c;
+}
+sp_RbVal sp_StringScanner_scan_byte(sp_StringScanner *sc) {SP_GC_ROOT(sc);
+  if (!sc) return sp_box_nil();
+  int64_t slen = (int64_t)sp_str_byte_len(sc->source);
+  if (sc->pos >= slen) {
+    sc->matched = sp_str_empty;
+    sc->matched_p = 0;
+    return sp_box_nil();
+  }
+  sp_int b = (unsigned char)sc->source[sc->pos];
+  sp_StringScanner_get_byte(sc);
+  return sp_box_int(b);
+}
+sp_RbVal sp_StringScanner_peek_byte(sp_StringScanner *sc) {
+  if (!sc) return sp_box_nil();
+  int64_t slen = (int64_t)sp_str_byte_len(sc->source);
+  if (sc->pos >= slen) return sp_box_nil();
+  return sp_box_int((unsigned char)sc->source[sc->pos]);
+}
+
 const char *sp_StringScanner_peek(sp_StringScanner *sc, sp_int n) {
   if (!sc) return sp_str_empty;
   int64_t slen = (int64_t)sp_str_byte_len(sc->source);
