@@ -2274,9 +2274,9 @@ static int emit_case_eq_identity(Compiler *c, int id, int recv, Buf *b) {
   /* a #== answering a boxed value is read for its truth, as rb_equal does */
   int boxed = c->scopes[mi].ret == TY_POLY;
   if (boxed) buf_puts(b, "sp_poly_truthy(");
-  nt_node_set_str((NodeTable *)nt, id, "name", "==");
+  char *sv_nm = nt_node_swap_str((NodeTable *)nt, id, "name", "==");
   emit_call(c, id, b);
-  nt_node_set_str((NodeTable *)nt, id, "name", "===");
+  nt_node_restore_str((NodeTable *)nt, id, "name", sv_nm);
   buf_puts(b, boxed ? "))" : ")");
   return 1;
 }
@@ -2478,9 +2478,9 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
       if (eac == 1 && ty_is_object(ert) &&
           comp_method_in_chain(c, ty_object_class(ert), "===", NULL) < 0) {
         if (emit_case_eq_identity(c, id, erecv, b)) return 1;
-        nt_node_set_str((NodeTable *)nt, id, "name", "==");
+        char *sv_nm = nt_node_swap_str((NodeTable *)nt, id, "name", "==");
         emit_call(c, id, b);
-        nt_node_set_str((NodeTable *)nt, id, "name", "===");
+        nt_node_restore_str((NodeTable *)nt, id, "name", sv_nm);
         return 1;
       }
     }

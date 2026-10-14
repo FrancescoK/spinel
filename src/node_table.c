@@ -348,6 +348,40 @@ void nt_node_set_str(NodeTable *nt, int id, const char *key, const char *val) {
   node_add_str(nd, key, klen, dup_n(val, vlen), vlen);
 }
 
+/* the replaced string is answered, not freed: a caller up the stack may hold
+   the pointer nt_str answered for it (node_table.h) */
+char *nt_node_swap_str(NodeTable *nt, int id, const char *key, const char *val) {
+  SpNode *nd = (SpNode *)node_at(nt, id);
+  if (!nd) return NULL;
+  nt->version++;
+  size_t vlen = strlen(val);
+  for (int j = 0; j < nd->ns; j++)
+    if (sp_streq(nd->s[j].key, key)) {
+      char *held = nd->s[j].val;
+      nd->s[j].val = dup_n(val, vlen); nd->s[j].val_len = vlen;
+      return held;
+    }
+  node_add_str(nd, key, strlen(key), dup_n(val, vlen), vlen);
+  return NULL;
+}
+
+void nt_node_restore_str(NodeTable *nt, int id, const char *key, char *held) {
+  SpNode *nd = (SpNode *)node_at(nt, id);
+  if (!nd) { free(held); return; }
+  nt->version++;
+  for (int j = 0; j < nd->ns; j++)
+    if (sp_streq(nd->s[j].key, key)) {
+      free(nd->s[j].val);
+      if (held) { nd->s[j].val = held; nd->s[j].val_len = strlen(held); return; }
+      /* the swap added the key: the node had none */
+      free(nd->s[j].key);
+      memmove(&nd->s[j], &nd->s[j + 1], (size_t)(nd->ns - j - 1) * sizeof nd->s[0]);
+      nd->ns--;
+      return;
+    }
+  if (held) node_add_str(nd, key, strlen(key), held, strlen(held));
+}
+
 void nt_node_set_int(NodeTable *nt, int id, const char *key, long long val) {
   SpNode *nd = (SpNode *)node_at(nt, id);
   if (!nd) return;

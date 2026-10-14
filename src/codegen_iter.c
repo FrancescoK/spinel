@@ -3937,12 +3937,9 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
          two agree over the text spinel carries); this receiver was not a
          String then, so the arm takes the same spelling for its emission */
       int graph = sp_streq(name, "each_grapheme_cluster");
-      if (graph) nt_node_set_str((NodeTable *)nt, id, "name", "each_char");
+      char *sv_nm = graph ? nt_node_swap_str((NodeTable *)nt, id, "name", "each_char") : NULL;
       emit_stmt(c, id, &ab, indent + 2);
-      if (graph) {
-        nt_node_set_str((NodeTable *)nt, id, "name", "each_grapheme_cluster");
-        name = nt_str(nt, id, "name");   /* the set replaced the string name read */
-      }
+      if (graph) nt_node_restore_str((NodeTable *)nt, id, "name", sv_nm);
       view_pop(c, v);
     }
     if (io_iter) {

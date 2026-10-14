@@ -7375,10 +7375,11 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
   int as_at = sp_streq(name, "at") && argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode &&
               nt_ref(nt, id, "block") < 0 && !nt_int(nt, id, "was_at", 0) &&
               at_ty != TY_RANGE && at_ty != TY_FLOAT_RANGE && at_ty != TY_STR_RANGE;
-  if (as_at) { nt_node_set_str((NodeTable *)nt, id, "name", "[]"); nt_node_set_int((NodeTable *)nt, id, "was_at", 1); }
+  char *sv_nm = NULL;
+  if (as_at) { sv_nm = nt_node_swap_str((NodeTable *)nt, id, "name", "[]"); nt_node_set_int((NodeTable *)nt, id, "was_at", 1); }
   int ok = poly_arm_probe(c, id, builtin_default_probe_fn, &pr, nb, &arm_pre);
   if (drop_blk) nt_node_set_ref((NodeTable *)nt, id, "block", dblk);
-  if (as_at) { nt_node_set_str((NodeTable *)nt, id, "name", "at"); nt_node_set_int((NodeTable *)nt, id, "was_at", 0); }
+  if (as_at) { nt_node_restore_str((NodeTable *)nt, id, "name", sv_nm); nt_node_set_int((NodeTable *)nt, id, "was_at", 0); }
   box_o = pr.box_o;
   view_pop(c, vw);
   view_pop(c, va);

@@ -317,6 +317,13 @@ int  nt_new_node(NodeTable *nt, const char *type);                 /* new id, -1
 void nt_node_set_type(NodeTable *nt, int id, const char *type);    /* retype in place */
 void nt_node_reset(NodeTable *nt, int id, const char *type);
 void nt_node_set_str(NodeTable *nt, int id, const char *key, const char *val);
+/* A temporary rename (an emitter re-entering under another spelling): the
+   swap sets key to a copy of val and answers the string it held, NULL when
+   the node had none, which the restore puts back. Unlike nt_node_set_str it
+   frees nothing a caller may still hold: a name read before the rename stays
+   valid through it and after. */
+char *nt_node_swap_str(NodeTable *nt, int id, const char *key, const char *val);
+void nt_node_restore_str(NodeTable *nt, int id, const char *key, char *held);
 void nt_node_set_int(NodeTable *nt, int id, const char *key, long long val);
 void nt_node_set_ref(NodeTable *nt, int id, const char *key, int child);
 void nt_node_set_arr(NodeTable *nt, int id, const char *key, const int *ids, int n);

@@ -21101,7 +21101,7 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
       Buf srefA; memset(&srefA, 0, sizeof srefA);
       if (strbuf_slot_text(c, recv, &srefA)) {
         int tbA = ++g_tmp;
-        nt_node_set_str((NodeTable *)nt, id, "name", abase);
+        char *sv_nm = nt_node_swap_str((NodeTable *)nt, id, "name", abase);
         emit_indent(b, indent);
         buf_printf(b, "{ sp_String *_t%d = %s; sp_String_set_bin(_t%d, ",
                    tbA, srefA.p, tbA);
@@ -21111,18 +21111,18 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
         /* the transform reads the handle's bytes; set_bin takes its answer back */
         if (g_share_check) share_check_declare_reads(b, wb_at, recv);
         buf_puts(b, "); }\n");
-        nt_node_set_str((NodeTable *)nt, id, "name", abang);
+        nt_node_restore_str((NodeTable *)nt, id, "name", sv_nm);
         return 1;
       }
     }
     if (abase && assignable2) {
       emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
-      nt_node_set_str((NodeTable *)nt, id, "name", abase);
+      char *sv_nm = nt_node_swap_str((NodeTable *)nt, id, "name", abase);
       emit_indent(b, indent);
       emit_expr(c, recv, b); buf_puts(b, " = ");
       emit_expr(c, id, b);
       buf_puts(b, ";\n");
-      nt_node_set_str((NodeTable *)nt, id, "name", abang);
+      nt_node_restore_str((NodeTable *)nt, id, "name", sv_nm);
       return 1;
     }
     if (sp_streq(name, "slice!") && assignable2) {
