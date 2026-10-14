@@ -1,0 +1,6 @@
+class BhsTaker
+  def take: (Hash[Symbol, untyped] h) -> untyped
+  def take_kw: (h: Hash[Symbol, untyped]) -> untyped
+  def put: (Hash[Symbol, untyped] h) -> untyped
+  def give: (untyped v) -> Hash[Symbol, untyped]
+end

@@ -5315,6 +5315,14 @@ static int seed_ivar_box_gives_way(TyKind seed, TyKind val) {
   return ty_is_hash(seed) && seed != TY_POLY_POLY_HASH && val == TY_POLY;
 }
 
+/* A box reaching a parameter or a return the seed keys by Symbols: the box
+   may hold a Hash with boxed keys (a Hash read out of an Array of mixed
+   values), and unboxing it into the seed's form would rebuild it reading
+   each key as a Symbol, whatever it is. The slot takes the box. */
+static int seed_symkey_box_gives_way(TyKind seed, TyKind val) {
+  return seed == TY_SYM_POLY_HASH && val == TY_POLY;
+}
+
 /* Does ivar `name`'s pin hold against a write of `vt`? One that gives way
    is dropped, and the slot re-derives from its writes. */
 int class_ivar_pin_holds(ClassInfo *ci, const char *name, TyKind vt) {
@@ -5330,7 +5338,7 @@ int class_ivar_pin_holds(ClassInfo *ci, const char *name, TyKind vt) {
 /* The same for a parameter's seed against an argument of `at`. */
 int param_seed_holds(LocalVar *lv, TyKind at) {
   if (!lv->rbs_seeded) return 0;
-  if (!seed_form_gives_way(lv->rbs_type, at)) return 1;
+  if (!seed_form_gives_way(lv->rbs_type, at) && !seed_symkey_box_gives_way(lv->rbs_type, at)) return 1;
   lv->rbs_seeded = 0;
   lv->rbs_type = TY_UNKNOWN;
   lv->type = TY_UNKNOWN;
@@ -5340,7 +5348,7 @@ int param_seed_holds(LocalVar *lv, TyKind at) {
 /* And a return's against the value its body answers. */
 int ret_seed_holds(Scope *s, TyKind r) {
   if (!s->ret_rbs_seeded) return 0;
-  if (!seed_form_gives_way(s->ret, r)) return 1;
+  if (!seed_form_gives_way(s->ret, r) && !seed_symkey_box_gives_way(s->ret, r)) return 1;
   s->ret_rbs_seeded = 0;
   s->ret_rbs_nilable = 0;
   return 0;

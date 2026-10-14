@@ -3038,6 +3038,14 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	rm -f "$$tmp/bkh"; \
 	done; \
 	;; \
+	boxed_hash_into_sym_seed) \
+	for fl in "" --share-strings; do \
+	$(SPINEL) test/rbs-seed/boxed_hash_into_sym_seed.rb --rbs test/rbs-seed/sig $$fl -o "$$tmp/bhs" >/dev/null 2>"$$tmp/bhs.err" && \
+	  "$$tmp/bhs" > "$$tmp/bhs.out" 2>/dev/null && cmp -s "$$tmp/bhs.out" test/rbs-seed/boxed_hash_into_sym_seed.expected && \
+	  SPINEL_GC_STRESS=1 "$$tmp/bhs" > "$$tmp/bhs.gc" 2>/dev/null && cmp -s "$$tmp/bhs.gc" test/rbs-seed/boxed_hash_into_sym_seed.expected || { echo "rbs-seed-test: FAIL (an --rbs Hash[Symbol, untyped] slot given a box: refused, or not the caller's Hash$${fl:+ under $$fl})"; sed -n 1,5p "$$tmp/bhs.err"; ok=0; }; \
+	rm -f "$$tmp/bhs"; \
+	done; \
+	;; \
 	boxed_key_hash_return_paths) \
 	for fl in "" --share-strings; do \
 	$(SPINEL) test/rbs-seed/boxed_key_hash_return_paths.rb --rbs test/rbs-seed/sig $$fl -o "$$tmp/bkr" >/dev/null 2>"$$tmp/bkr.err" && \
