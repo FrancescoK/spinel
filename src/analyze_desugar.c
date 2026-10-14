@@ -1510,6 +1510,17 @@ int desugar_dynamic_const_get_arms(Compiler *c) {
     if (ncand == candcap) { candcap = candcap ? candcap * 2 : 32; cand = (char **)realloc(cand, sizeof(char *) * (size_t)candcap); }
     cand[ncand++] = strdup(v);
   }
+  /* ...and each nested class or module by its whole path ("A::B"), which
+     the literal rule reads segment by segment (const_get_resolve) */
+  for (int k = 0; k < c->nclasses; k++) {
+    const char *qn = class_ruby_name(c, k);
+    if (!qn || !strstr(qn, "::")) continue;
+    int dup = 0;
+    for (int j = 0; j < ncand && !dup; j++) if (sp_streq(cand[j], qn)) dup = 1;
+    if (dup) continue;
+    if (ncand == candcap) { candcap = candcap ? candcap * 2 : 32; cand = (char **)realloc(cand, sizeof(char *) * (size_t)candcap); }
+    cand[ncand++] = strdup(qn);
+  }
   if (ncand > 512) { for (int k = 512; k < ncand; k++) free(cand[k]); ncand = 512; }
   for (int id = 0; id < n0 && ncand > 0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
