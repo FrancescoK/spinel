@@ -1,0 +1,7 @@
+#<struct for_lockfile="!">
+"!"
+#<struct a=1, b=2>
+#<struct x=3>
+#<struct z=4>
+#<data w=5>
+nil
