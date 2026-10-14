@@ -75,6 +75,7 @@ typedef struct sp_thread {
   double            readied_at;  /* SPINEL_SCHED_STATS=2: when it was last put on a run queue */
   struct sp_thread *rq_next;     /* run-queue link while RUNNABLE */
   struct sp_thread *joiners;     /* threads parked in #join/#value on this one */
+  sp_wlock          join_wl;     /* guards joiners: its death drains them under it (#8702) */
   sp_ev_waiter      ev0;         /* its entry in the per-DESCRIPTOR waiter list for io_fd: a
                                     readiness event names an fd, and every thread parked on
                                     that fd is woken from it (#4306) */
