@@ -320,6 +320,7 @@ test/share/share_strings_io_outbuf.rb	test/share/share_strings_io_outbuf.rb:26	C
 test/share/share_strings_io_outbuf.rb	test/share/share_strings_io_outbuf.rb:30	CallNode (read)	plan handle, C bytes (take, arm)
 test/share/share_strings_iter_untaken_break_receiver.rb	test/share/share_strings_iter_untaken_break_receiver.rb:62	LocalVariableReadNode (s8)	plan handle (live), C bytes (take, receiver)
 test/share/share_strings_method_values.rb	test/share/share_strings_method_values.rb:34	CallNode (fresh)	plan wrap, C bytes (take, receiver)
+test/share/share_strings_proc_answer_box.rb	test/share/share_strings_proc_answer_box.rb:24	YieldNode (-)	plan handle (live), C bytes (take, top)
 test/share/share_strings_read_nonblock_buffer.rb	test/share/share_strings_read_nonblock_buffer.rb:17	CallNode (call)	plan handle, C bytes (take, argument)
 test/share/share_strings_route_args.rb	test/share/share_strings_route_args.rb:34	CallNode (then)	plan wrap (live), C handle (take, argument)
 test/share/share_strings_route_args.rb	test/share/share_strings_route_args.rb:44	CallNode (grow)	plan handle, C bytes (take, block tail)
