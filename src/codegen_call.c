@@ -11920,6 +11920,8 @@ static void emit_ctor_block_value(Compiler *c, int id, Buf *b) {
   int blk = id >= 0 ? resolve_forwarded_block(c, nt_ref(nt, id, "block")) : -1;
   NodeKind bk = nt_kind(nt, blk);
   if (bk == NK_BlockNode) { emit_proc_literal(c, blk, b); return; }
+  Scope *bs = blk < 0 && (nt_kind(nt, id) == NK_SuperNode || nt_kind(nt, id) == NK_ForwardingSuperNode) ? comp_scope_of(c, id) : NULL;
+  if (bs && bs->blk_param && bs->blk_param[0]) { buf_printf(b, "lv_%s", rename_local(bs->blk_param)); return; }
   if (bk != NK_BlockArgumentNode) { buf_puts(b, "NULL"); return; }
   int bexpr = nt_ref(nt, blk, "expression");
   if (nt_kind(nt, bexpr) == NK_NilNode) { buf_puts(b, "NULL"); return; }
@@ -12884,14 +12886,14 @@ static void emit_super_new_ctor(Compiler *c, int id, int ci, Buf *b) {
        compiles. Fill the constructor from the rest array and the keyword-rest
        hash the wrapper is holding. Anything else mixed in (named parameters
        beside the splats) keeps the refusal: there is no one mapping then. */
-    int fwd_only = (s->rest_idx >= 0 || s->kwrest_idx >= 0 ||
-                    (s->blk_param && s->blk_param[0]));
+    int ob = s->blk_param && s->blk_param[0] && !sp_streq(s->blk_param, "__sblk__");
+    int fwd_only = (s->rest_idx >= 0 || s->kwrest_idx >= 0 || ob);
     if (fwd_only) {
       for (int i = 0; i < s->nparams; i++)
         if (i != s->rest_idx && i != s->kwrest_idx) { fwd_only = 0; break; }
     }
     if (fwd_only) { emit_super_new_forward(c, id, ci, s, initm, b); return; }
-    if (s->rest_idx >= 0 || s->kwrest_idx >= 0 || (s->blk_param && s->blk_param[0]))
+    if (s->rest_idx >= 0 || s->kwrest_idx >= 0 || ob)
       unsupported(c, id, "bare super in `self.new` with a rest, keyword-rest or block parameter");
     for (int i = 0; i < s->nparams; i++)
       if (s->pnames[i] && callee_param_is_declared_kwarg(c, s, s->pnames[i]))
