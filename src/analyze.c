@@ -7819,28 +7819,76 @@ static void desugar_enum_chain_shapes(Compiler *c) {
 enum { BAM_VARIADIC = -2 };
 static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int argc,
                                     int sp_at, int ex);
-static int bam_call_argc(Compiler *c, int mnode, int *passed) {
+/* The sites bam_call_argc counts, resolved once per desugar_builtin_method_obj
+   run: which Method nodes the receiver of each Method#call / #[] / #=== and
+   each block argument can hold (method_recv_nodes) does not depend on the
+   Method being sized, and asking it again per Method walked the program once
+   for each of them. A runtime name's send on a boxed receiver makes a Method
+   per name the program defines (desugar_dynamic_method), and every wrapper
+   made for one changed the tree, so each of those walks rebuilt the indexes
+   over it as well: one `public_send(*args)` in a Rails program took a
+   fixpoint round hours. Keyed by node: `site` chains a call site under each
+   Method node its receiver can hold and under the receiver itself (a
+   runtime-name Method's arms are matched by dyn_of), `passed` marks a Method
+   node a block argument can hold. Nodes made later in the run (the wrappers)
+   are no sites. */
+static struct { int n, cap, nodes; int *head, *next_e, *site, *passed; } bam_tab = { 0, 0, -1 };
+static void bam_tab_add(int key, int site) {
+  if (key < 0 || key >= bam_tab.nodes) return;
+  if (bam_tab.n == bam_tab.cap) {
+    bam_tab.cap = bam_tab.cap ? bam_tab.cap * 2 : 1024;
+    bam_tab.next_e = realloc(bam_tab.next_e, sizeof(int) * (size_t)bam_tab.cap);
+    bam_tab.site = realloc(bam_tab.site, sizeof(int) * (size_t)bam_tab.cap);
+    if (!bam_tab.next_e || !bam_tab.site) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  bam_tab.site[bam_tab.n] = site;
+  bam_tab.next_e[bam_tab.n] = bam_tab.head[key];
+  bam_tab.head[key] = bam_tab.n++;
+}
+static void bam_tab_free(void) {
+  free(bam_tab.head); free(bam_tab.next_e); free(bam_tab.site); free(bam_tab.passed);
+  memset(&bam_tab, 0, sizeof bam_tab);
+  bam_tab.nodes = -1;
+}
+static void bam_tab_build(Compiler *c) {
   const NodeTable *nt = c->nt;
-  int n = -1, vary = 0;
-  *passed = 0;
+  int nn = nt->count;
+  bam_tab.nodes = nn;
+  bam_tab.head = malloc(sizeof(int) * (size_t)(nn > 0 ? nn : 1));
+  bam_tab.passed = calloc((size_t)(nn > 0 ? nn : 1), 1);
+  if (!bam_tab.head || !bam_tab.passed) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = 0; i < nn; i++) bam_tab.head[i] = -1;
   NT_FOREACH_KIND(nt, NK_BlockArgumentNode, ba) {
     int ex = nt_ref(nt, ba, "expression");
     if (ex < 0) continue;
-    int *mns, nmn = method_recv_nodes(c, ex, &mns), holds = ex == mnode;
-    for (int j = 0; j < nmn && !holds; j++) holds = mns[j] == mnode;
+    int *mns, nmn = method_recv_nodes(c, ex, &mns);
+    if (ex < nn) ((char *)bam_tab.passed)[ex] = 1;
+    for (int j = 0; j < nmn; j++) if (mns[j] >= 0 && mns[j] < nn) ((char *)bam_tab.passed)[mns[j]] = 1;
     free(mns);
-    if (holds) { *passed = 1; break; }
   }
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !(sp_streq(nm, "call") || sp_streq(nm, "[]") || sp_streq(nm, "==="))) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;
-    /* a local re-written to several Methods may hold this one at the call */
-    int *mns, nmn = method_recv_nodes(c, recv, &mns), holds = recv == nt_int(nt, mnode, "dyn_of", -1);
-    for (int j = 0; j < nmn && !holds; j++) holds = mns[j] == mnode;
+    int *mns, nmn = method_recv_nodes(c, recv, &mns);
+    bam_tab_add(recv, id);
+    for (int j = 0; j < nmn; j++) if (mns[j] != recv) bam_tab_add(mns[j], id);
     free(mns);
-    if (!holds) continue;
+  }
+}
+static int bam_call_argc(Compiler *c, int mnode, int *passed) {
+  const NodeTable *nt = c->nt;
+  int n = -1, vary = 0;
+  if (bam_tab.nodes < 0) bam_tab_build(c);
+  *passed = mnode >= 0 && mnode < bam_tab.nodes && ((char *)bam_tab.passed)[mnode];
+  /* the sites whose receiver can hold this Method, and those whose receiver
+     is the runtime-name call it is an arm of (a site under both is counted
+     twice, which agrees with itself) */
+  int keys[2] = { mnode, nt_int(nt, mnode, "dyn_of", -1) };
+  for (int q = 0; q < 2; q++)
+  for (int e = keys[q] >= 0 && keys[q] < bam_tab.nodes ? bam_tab.head[keys[q]] : -1; e >= 0; e = bam_tab.next_e[e]) {
+    int id = bam_tab.site[e];
     if (nt_ref(nt, id, "block") >= 0) return -1;
     int argsn = nt_ref(nt, id, "arguments");
     int an = 0;
@@ -8166,6 +8214,7 @@ static int desugar_builtin_method_obj(Compiler *c) {
     if (an == 1 && av) nt_node_set_str(nt, av[0], "value", wname);
     changed = 1;
   }
+  bam_tab_free();
   return changed;
 }
 
