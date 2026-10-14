@@ -13,3 +13,17 @@ p @q, @j, k, @q.equal?(@j), @z
 @r ||= !c ? (@z = 2; @j) : +"n"
 @r << "?"
 p @r, @j, @r.equal?(@j), @z
+
+# the other outcome of the condition: each variable takes the other arm
+c = !c
+@j = +"j"
+k = @j
+@q = nil
+@z = nil
+@q ||= c ? (@z = 1; @j) : +"n"
+@q << "!"
+p @q, @j, k, @q.equal?(@j), @z
+@r = nil
+@r ||= !c ? (@z = 2; @j) : +"n"
+@r << "?"
+p @r, @j, @r.equal?(@j), @z
