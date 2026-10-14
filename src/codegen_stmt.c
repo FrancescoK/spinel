@@ -1687,10 +1687,16 @@ int strbuf_tail_plain(Compiler *c, int v) {
   if (strbuf_tail_self_mutator(c, v)) return 1;
   /* an exception's #message hands on the handle it holds too
      (strbuf_route_exc_message): `begin; raise s; rescue => e; e.message; end` */
+  char wref[1024];
   return k == NK_NilNode || k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
          repr_static_read_kind(k) || strbuf_cond_has_handle_leaf(c, v, 0) ||
          repr_call_returns_handle(c, v) || strbuf_route_exc_message(c, v) ||
          strbuf_assign_leaf(c, v) ||
+         /* a write whose slot holds the rule's handle (an ivar's, a global's,
+            a class variable's, an `||=`): the handle it stored, as
+            strbuf_value_carries takes it */
+         (k != NK_CallNode && repr_write_share(c, v)) || strbuf_gvar_write_handle(c, v, wref, sizeof wref) ||
+         strbuf_opwrite_handle(c, v, wref, sizeof wref) ||
          /* any route the handle face renders (a proc's answer, a `then`, a
             `loop`, an inlined call, a begin, a chain over a handle ...), but
             a yield: whose tail is asked by strbuf_route_yield, looping */

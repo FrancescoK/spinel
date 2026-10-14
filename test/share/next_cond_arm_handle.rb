@@ -11,8 +11,71 @@
 # the right of an assignment, each followed by more statements) leaves the
 # block from where it is, and a case/in is a conditional whose arms hand on
 # their Strings too, and so is a write the block or its `next` names (`next (u =
-# t)`, `next (@x = t)`, `next (h[:k] = t)`).
+# t)`, `next (@x = t)`, `next (h[:k] = t)`). The writes (an instance variable, a
+# global, a class variable, an attribute, a Hash element, a chained write, an
+# `||=`) are each the block's tail, a `next` operand and a ternary arm, at the
+# top level and in a method.
 def one(x) = x
+class OA
+  attr_accessor :a
+end
+$g = nil
+def y_t_ivar_tail(x) = yield(x)
+def y_m_ivar_tail(x) = yield(x)
+def y_t_ivar_next(x) = yield(x)
+def y_m_ivar_next(x) = yield(x)
+def y_t_ivar_tern(x) = yield(x)
+def y_m_ivar_tern(x) = yield(x)
+def y_t_ivar_tern_next(x) = yield(x)
+def y_m_ivar_tern_next(x) = yield(x)
+def y_t_gvar_tail(x) = yield(x)
+def y_m_gvar_tail(x) = yield(x)
+def y_t_gvar_next(x) = yield(x)
+def y_m_gvar_next(x) = yield(x)
+def y_t_gvar_tern(x) = yield(x)
+def y_m_gvar_tern(x) = yield(x)
+def y_t_gvar_tern_next(x) = yield(x)
+def y_m_gvar_tern_next(x) = yield(x)
+def y_t_cvar_tail(x) = yield(x)
+def y_m_cvar_tail(x) = yield(x)
+def y_t_cvar_next(x) = yield(x)
+def y_m_cvar_next(x) = yield(x)
+def y_t_cvar_tern(x) = yield(x)
+def y_m_cvar_tern(x) = yield(x)
+def y_t_cvar_tern_next(x) = yield(x)
+def y_m_cvar_tern_next(x) = yield(x)
+def y_t_attr_tail(x) = yield(x)
+def y_m_attr_tail(x) = yield(x)
+def y_t_attr_next(x) = yield(x)
+def y_m_attr_next(x) = yield(x)
+def y_t_attr_tern(x) = yield(x)
+def y_m_attr_tern(x) = yield(x)
+def y_t_attr_tern_next(x) = yield(x)
+def y_m_attr_tern_next(x) = yield(x)
+def y_t_hash_tail(x) = yield(x)
+def y_m_hash_tail(x) = yield(x)
+def y_t_hash_next(x) = yield(x)
+def y_m_hash_next(x) = yield(x)
+def y_t_hash_tern(x) = yield(x)
+def y_m_hash_tern(x) = yield(x)
+def y_t_hash_tern_next(x) = yield(x)
+def y_m_hash_tern_next(x) = yield(x)
+def y_t_chain_tail(x) = yield(x)
+def y_m_chain_tail(x) = yield(x)
+def y_t_chain_next(x) = yield(x)
+def y_m_chain_next(x) = yield(x)
+def y_t_chain_tern(x) = yield(x)
+def y_m_chain_tern(x) = yield(x)
+def y_t_chain_tern_next(x) = yield(x)
+def y_m_chain_tern_next(x) = yield(x)
+def y_t_orasg_tail(x) = yield(x)
+def y_m_orasg_tail(x) = yield(x)
+def y_t_orasg_next(x) = yield(x)
+def y_m_orasg_next(x) = yield(x)
+def y_t_orasg_tern(x) = yield(x)
+def y_m_orasg_tern(x) = yield(x)
+def y_t_orasg_tern_next(x) = yield(x)
+def y_m_orasg_tern_next(x) = yield(x)
 H2 = {}
 class H3
   attr_accessor :a
@@ -549,3 +612,548 @@ w_write_next_operand = y_write_next_operand(s_write_next_operand) { |t|
 }
 w_write_next_operand << "9"
 puts "write_next_operand: #{[s_write_next_operand, w_write_next_operand.equal?(s_write_next_operand)].inspect}"
+
+s_t_ivar_tail = +"abc"
+h_t_ivar_tail = {}
+o_t_ivar_tail = OA.new
+w_t_ivar_tail = y_t_ivar_tail(s_t_ivar_tail) { |t|
+  @x = t
+}
+w_t_ivar_tail << "9"
+puts "top ivar_tail: #{[s_t_ivar_tail, w_t_ivar_tail.equal?(s_t_ivar_tail)].inspect}"
+
+s_t_ivar_next = +"abc"
+h_t_ivar_next = {}
+o_t_ivar_next = OA.new
+w_t_ivar_next = y_t_ivar_next(s_t_ivar_next) { |t|
+  next (@x = t) if t.upcase!
+  +"zz"
+}
+w_t_ivar_next << "9"
+puts "top ivar_next: #{[s_t_ivar_next, w_t_ivar_next.equal?(s_t_ivar_next)].inspect}"
+
+s_t_ivar_tern = +"abc"
+h_t_ivar_tern = {}
+o_t_ivar_tern = OA.new
+w_t_ivar_tern = y_t_ivar_tern(s_t_ivar_tern) { |t|
+  t.upcase! ? (@x = t) : +"zz"
+}
+w_t_ivar_tern << "9"
+puts "top ivar_tern: #{[s_t_ivar_tern, w_t_ivar_tern.equal?(s_t_ivar_tern)].inspect}"
+
+s_t_ivar_tern_next = +"abc"
+h_t_ivar_tern_next = {}
+o_t_ivar_tern_next = OA.new
+w_t_ivar_tern_next = y_t_ivar_tern_next(s_t_ivar_tern_next) { |t|
+  t.upcase! ? (next (@x = t)) : +"zz"
+}
+w_t_ivar_tern_next << "9"
+puts "top ivar_tern_next: #{[s_t_ivar_tern_next, w_t_ivar_tern_next.equal?(s_t_ivar_tern_next)].inspect}"
+
+s_t_gvar_tail = +"abc"
+h_t_gvar_tail = {}
+o_t_gvar_tail = OA.new
+w_t_gvar_tail = y_t_gvar_tail(s_t_gvar_tail) { |t|
+  $g = t
+}
+w_t_gvar_tail << "9"
+puts "top gvar_tail: #{[s_t_gvar_tail, w_t_gvar_tail.equal?(s_t_gvar_tail)].inspect}"
+
+s_t_gvar_next = +"abc"
+h_t_gvar_next = {}
+o_t_gvar_next = OA.new
+w_t_gvar_next = y_t_gvar_next(s_t_gvar_next) { |t|
+  next ($g = t) if t.upcase!
+  +"zz"
+}
+w_t_gvar_next << "9"
+puts "top gvar_next: #{[s_t_gvar_next, w_t_gvar_next.equal?(s_t_gvar_next)].inspect}"
+
+s_t_gvar_tern = +"abc"
+h_t_gvar_tern = {}
+o_t_gvar_tern = OA.new
+w_t_gvar_tern = y_t_gvar_tern(s_t_gvar_tern) { |t|
+  t.upcase! ? ($g = t) : +"zz"
+}
+w_t_gvar_tern << "9"
+puts "top gvar_tern: #{[s_t_gvar_tern, w_t_gvar_tern.equal?(s_t_gvar_tern)].inspect}"
+
+s_t_gvar_tern_next = +"abc"
+h_t_gvar_tern_next = {}
+o_t_gvar_tern_next = OA.new
+w_t_gvar_tern_next = y_t_gvar_tern_next(s_t_gvar_tern_next) { |t|
+  t.upcase! ? (next ($g = t)) : +"zz"
+}
+w_t_gvar_tern_next << "9"
+puts "top gvar_tern_next: #{[s_t_gvar_tern_next, w_t_gvar_tern_next.equal?(s_t_gvar_tern_next)].inspect}"
+
+s_t_attr_tail = +"abc"
+h_t_attr_tail = {}
+o_t_attr_tail = OA.new
+w_t_attr_tail = y_t_attr_tail(s_t_attr_tail) { |t|
+  o_t_attr_tail.a = t
+}
+w_t_attr_tail << "9"
+puts "top attr_tail: #{[s_t_attr_tail, w_t_attr_tail.equal?(s_t_attr_tail)].inspect}"
+
+s_t_attr_next = +"abc"
+h_t_attr_next = {}
+o_t_attr_next = OA.new
+w_t_attr_next = y_t_attr_next(s_t_attr_next) { |t|
+  next (o_t_attr_next.a = t) if t.upcase!
+  +"zz"
+}
+w_t_attr_next << "9"
+puts "top attr_next: #{[s_t_attr_next, w_t_attr_next.equal?(s_t_attr_next)].inspect}"
+
+s_t_attr_tern = +"abc"
+h_t_attr_tern = {}
+o_t_attr_tern = OA.new
+w_t_attr_tern = y_t_attr_tern(s_t_attr_tern) { |t|
+  t.upcase! ? (o_t_attr_tern.a = t) : +"zz"
+}
+w_t_attr_tern << "9"
+puts "top attr_tern: #{[s_t_attr_tern, w_t_attr_tern.equal?(s_t_attr_tern)].inspect}"
+
+s_t_attr_tern_next = +"abc"
+h_t_attr_tern_next = {}
+o_t_attr_tern_next = OA.new
+w_t_attr_tern_next = y_t_attr_tern_next(s_t_attr_tern_next) { |t|
+  t.upcase! ? (next (o_t_attr_tern_next.a = t)) : +"zz"
+}
+w_t_attr_tern_next << "9"
+puts "top attr_tern_next: #{[s_t_attr_tern_next, w_t_attr_tern_next.equal?(s_t_attr_tern_next)].inspect}"
+
+s_t_hash_tail = +"abc"
+h_t_hash_tail = {}
+o_t_hash_tail = OA.new
+w_t_hash_tail = y_t_hash_tail(s_t_hash_tail) { |t|
+  h_t_hash_tail[:k] = t
+}
+w_t_hash_tail << "9"
+puts "top hash_tail: #{[s_t_hash_tail, w_t_hash_tail.equal?(s_t_hash_tail)].inspect}"
+
+s_t_hash_next = +"abc"
+h_t_hash_next = {}
+o_t_hash_next = OA.new
+w_t_hash_next = y_t_hash_next(s_t_hash_next) { |t|
+  next (h_t_hash_next[:k] = t) if t.upcase!
+  +"zz"
+}
+w_t_hash_next << "9"
+puts "top hash_next: #{[s_t_hash_next, w_t_hash_next.equal?(s_t_hash_next)].inspect}"
+
+s_t_hash_tern = +"abc"
+h_t_hash_tern = {}
+o_t_hash_tern = OA.new
+w_t_hash_tern = y_t_hash_tern(s_t_hash_tern) { |t|
+  t.upcase! ? (h_t_hash_tern[:k] = t) : +"zz"
+}
+w_t_hash_tern << "9"
+puts "top hash_tern: #{[s_t_hash_tern, w_t_hash_tern.equal?(s_t_hash_tern)].inspect}"
+
+s_t_hash_tern_next = +"abc"
+h_t_hash_tern_next = {}
+o_t_hash_tern_next = OA.new
+w_t_hash_tern_next = y_t_hash_tern_next(s_t_hash_tern_next) { |t|
+  t.upcase! ? (next (h_t_hash_tern_next[:k] = t)) : +"zz"
+}
+w_t_hash_tern_next << "9"
+puts "top hash_tern_next: #{[s_t_hash_tern_next, w_t_hash_tern_next.equal?(s_t_hash_tern_next)].inspect}"
+
+s_t_chain_tail = +"abc"
+h_t_chain_tail = {}
+o_t_chain_tail = OA.new
+w_t_chain_tail = y_t_chain_tail(s_t_chain_tail) { |t|
+  x = @y = t
+}
+w_t_chain_tail << "9"
+puts "top chain_tail: #{[s_t_chain_tail, w_t_chain_tail.equal?(s_t_chain_tail)].inspect}"
+
+s_t_chain_next = +"abc"
+h_t_chain_next = {}
+o_t_chain_next = OA.new
+w_t_chain_next = y_t_chain_next(s_t_chain_next) { |t|
+  next (x = @y = t) if t.upcase!
+  +"zz"
+}
+w_t_chain_next << "9"
+puts "top chain_next: #{[s_t_chain_next, w_t_chain_next.equal?(s_t_chain_next)].inspect}"
+
+s_t_chain_tern = +"abc"
+h_t_chain_tern = {}
+o_t_chain_tern = OA.new
+w_t_chain_tern = y_t_chain_tern(s_t_chain_tern) { |t|
+  t.upcase! ? (x = @y = t) : +"zz"
+}
+w_t_chain_tern << "9"
+puts "top chain_tern: #{[s_t_chain_tern, w_t_chain_tern.equal?(s_t_chain_tern)].inspect}"
+
+s_t_chain_tern_next = +"abc"
+h_t_chain_tern_next = {}
+o_t_chain_tern_next = OA.new
+w_t_chain_tern_next = y_t_chain_tern_next(s_t_chain_tern_next) { |t|
+  t.upcase! ? (next (x = @y = t)) : +"zz"
+}
+w_t_chain_tern_next << "9"
+puts "top chain_tern_next: #{[s_t_chain_tern_next, w_t_chain_tern_next.equal?(s_t_chain_tern_next)].inspect}"
+
+s_t_orasg_tail = +"abc"
+h_t_orasg_tail = {}
+o_t_orasg_tail = OA.new
+w_t_orasg_tail = y_t_orasg_tail(s_t_orasg_tail) { |t|
+  @x ||= t
+}
+w_t_orasg_tail << "9"
+puts "top orasg_tail: #{[s_t_orasg_tail, w_t_orasg_tail.equal?(s_t_orasg_tail)].inspect}"
+
+s_t_orasg_next = +"abc"
+h_t_orasg_next = {}
+o_t_orasg_next = OA.new
+w_t_orasg_next = y_t_orasg_next(s_t_orasg_next) { |t|
+  next (@x ||= t) if t.upcase!
+  +"zz"
+}
+w_t_orasg_next << "9"
+puts "top orasg_next: #{[s_t_orasg_next, w_t_orasg_next.equal?(s_t_orasg_next)].inspect}"
+
+s_t_orasg_tern = +"abc"
+h_t_orasg_tern = {}
+o_t_orasg_tern = OA.new
+w_t_orasg_tern = y_t_orasg_tern(s_t_orasg_tern) { |t|
+  t.upcase! ? (@x ||= t) : +"zz"
+}
+w_t_orasg_tern << "9"
+puts "top orasg_tern: #{[s_t_orasg_tern, w_t_orasg_tern.equal?(s_t_orasg_tern)].inspect}"
+
+s_t_orasg_tern_next = +"abc"
+h_t_orasg_tern_next = {}
+o_t_orasg_tern_next = OA.new
+w_t_orasg_tern_next = y_t_orasg_tern_next(s_t_orasg_tern_next) { |t|
+  t.upcase! ? (next (@x ||= t)) : +"zz"
+}
+w_t_orasg_tern_next << "9"
+puts "top orasg_tern_next: #{[s_t_orasg_tern_next, w_t_orasg_tern_next.equal?(s_t_orasg_tern_next)].inspect}"
+
+class KW
+  def initialize
+    @x = nil
+    @y = nil
+    @@c = nil
+  end
+  def ivar_tail
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_ivar_tail(s) { |t|
+      @x = t
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def ivar_next
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_ivar_next(s) { |t|
+      next (@x = t) if t.upcase!
+      +"zz"
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def ivar_tern
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_ivar_tern(s) { |t|
+      t.upcase! ? (@x = t) : +"zz"
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def ivar_tern_next
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_ivar_tern_next(s) { |t|
+      t.upcase! ? (next (@x = t)) : +"zz"
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def gvar_tail
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_gvar_tail(s) { |t|
+      $g = t
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def gvar_next
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_gvar_next(s) { |t|
+      next ($g = t) if t.upcase!
+      +"zz"
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def gvar_tern
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_gvar_tern(s) { |t|
+      t.upcase! ? ($g = t) : +"zz"
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def gvar_tern_next
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_gvar_tern_next(s) { |t|
+      t.upcase! ? (next ($g = t)) : +"zz"
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def cvar_tail
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_cvar_tail(s) { |t|
+      @@c = t
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def cvar_next
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_cvar_next(s) { |t|
+      next (@@c = t) if t.upcase!
+      +"zz"
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def cvar_tern
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_cvar_tern(s) { |t|
+      t.upcase! ? (@@c = t) : +"zz"
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def cvar_tern_next
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_cvar_tern_next(s) { |t|
+      t.upcase! ? (next (@@c = t)) : +"zz"
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def attr_tail
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_attr_tail(s) { |t|
+      o.a = t
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def attr_next
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_attr_next(s) { |t|
+      next (o.a = t) if t.upcase!
+      +"zz"
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def attr_tern
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_attr_tern(s) { |t|
+      t.upcase! ? (o.a = t) : +"zz"
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def attr_tern_next
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_attr_tern_next(s) { |t|
+      t.upcase! ? (next (o.a = t)) : +"zz"
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def hash_tail
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_hash_tail(s) { |t|
+      h[:k] = t
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def hash_next
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_hash_next(s) { |t|
+      next (h[:k] = t) if t.upcase!
+      +"zz"
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def hash_tern
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_hash_tern(s) { |t|
+      t.upcase! ? (h[:k] = t) : +"zz"
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def hash_tern_next
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_hash_tern_next(s) { |t|
+      t.upcase! ? (next (h[:k] = t)) : +"zz"
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def chain_tail
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_chain_tail(s) { |t|
+      x = @y = t
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def chain_next
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_chain_next(s) { |t|
+      next (x = @y = t) if t.upcase!
+      +"zz"
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def chain_tern
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_chain_tern(s) { |t|
+      t.upcase! ? (x = @y = t) : +"zz"
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def chain_tern_next
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_chain_tern_next(s) { |t|
+      t.upcase! ? (next (x = @y = t)) : +"zz"
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def orasg_tail
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_orasg_tail(s) { |t|
+      @x ||= t
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def orasg_next
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_orasg_next(s) { |t|
+      next (@x ||= t) if t.upcase!
+      +"zz"
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def orasg_tern
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_orasg_tern(s) { |t|
+      t.upcase! ? (@x ||= t) : +"zz"
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+  def orasg_tern_next
+    h = {}
+    o = OA.new
+    s = +"abc"
+    w = y_m_orasg_tern_next(s) { |t|
+      t.upcase! ? (next (@x ||= t)) : +"zz"
+    }
+    w << "9"
+    [s, w.equal?(s)]
+  end
+end
+puts "method ivar_tail: #{KW.new.ivar_tail.inspect}"
+puts "method ivar_next: #{KW.new.ivar_next.inspect}"
+puts "method ivar_tern: #{KW.new.ivar_tern.inspect}"
+puts "method ivar_tern_next: #{KW.new.ivar_tern_next.inspect}"
+puts "method gvar_tail: #{KW.new.gvar_tail.inspect}"
+puts "method gvar_next: #{KW.new.gvar_next.inspect}"
+puts "method gvar_tern: #{KW.new.gvar_tern.inspect}"
+puts "method gvar_tern_next: #{KW.new.gvar_tern_next.inspect}"
+puts "method cvar_tail: #{KW.new.cvar_tail.inspect}"
+puts "method cvar_next: #{KW.new.cvar_next.inspect}"
+puts "method cvar_tern: #{KW.new.cvar_tern.inspect}"
+puts "method cvar_tern_next: #{KW.new.cvar_tern_next.inspect}"
+puts "method attr_tail: #{KW.new.attr_tail.inspect}"
+puts "method attr_next: #{KW.new.attr_next.inspect}"
+puts "method attr_tern: #{KW.new.attr_tern.inspect}"
+puts "method attr_tern_next: #{KW.new.attr_tern_next.inspect}"
+puts "method hash_tail: #{KW.new.hash_tail.inspect}"
+puts "method hash_next: #{KW.new.hash_next.inspect}"
+puts "method hash_tern: #{KW.new.hash_tern.inspect}"
+puts "method hash_tern_next: #{KW.new.hash_tern_next.inspect}"
+puts "method chain_tail: #{KW.new.chain_tail.inspect}"
+puts "method chain_next: #{KW.new.chain_next.inspect}"
+puts "method chain_tern: #{KW.new.chain_tern.inspect}"
+puts "method chain_tern_next: #{KW.new.chain_tern_next.inspect}"
+puts "method orasg_tail: #{KW.new.orasg_tail.inspect}"
+puts "method orasg_next: #{KW.new.orasg_next.inspect}"
+puts "method orasg_tern: #{KW.new.orasg_tern.inspect}"
+puts "method orasg_tern_next: #{KW.new.orasg_tern_next.inspect}"
