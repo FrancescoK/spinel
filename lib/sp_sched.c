@@ -110,9 +110,12 @@ static SP_TLS int g_sched_held = 0;
 /* PoC: each worker's local run queue and its idle flag have a lock of their
    own, so a wake can push a thread to its home worker without the scheduler
    lock. Order: g_sched_lock -> a wait lock -> a run-queue lock. */
-static pthread_mutex_t g_rq_lock[SP_MAX_WORKERS] = { [0 ... SP_MAX_WORKERS - 1] = PTHREAD_MUTEX_INITIALIZER };
-#define RQ_LOCK(w)   pthread_mutex_lock(&g_rq_lock[w])
-#define RQ_UNLOCK(w) pthread_mutex_unlock(&g_rq_lock[w])
+/* One cache line each: packed, neighbouring workers' locks shared lines, and
+   every push and pop on one worker took its neighbours' lines away. */
+typedef struct { pthread_mutex_t m; } __attribute__((aligned(64))) sp_rq_lock;
+static sp_rq_lock g_rq_lock[SP_MAX_WORKERS] = { [0 ... SP_MAX_WORKERS - 1] = { PTHREAD_MUTEX_INITIALIZER } };
+#define RQ_LOCK(w)   pthread_mutex_lock(&g_rq_lock[w].m)
+#define RQ_UNLOCK(w) pthread_mutex_unlock(&g_rq_lock[w].m)
 /* A short spin, then a yield: with fewer cores than workers the holder can be
    descheduled inside its few instructions, and spinning on then only keeps it
    off the CPU (2 cores, 8 workers: a pool round 24% slower than master with a
@@ -544,7 +547,7 @@ typedef struct { pthread_t tid; sp_thread *cur; double since; int active;
                     it since it parked: an unpinned wake goes to a parked worker no
                     earlier wake has claimed (sched_wake_idle_helper). Both written
                     only under the lock. */
-                 int parked; int wake_sent; } sp_wslot;
+                 int parked; int wake_sent; } __attribute__((aligned(64))) sp_wslot;
 static sp_wslot   g_wslot[SP_MAX_WORKERS];   /* per-worker: the green thread it runs + when it started */
 static void sp_recompute_safepoint_flag(void) {   /* PRE: g_sched_lock held */
   SP_SAFEPOINT_SET(g_stw_active || g_npreempt > 0);
@@ -1007,7 +1010,9 @@ static SP_TLS sp_thread *g_current = NULL;   /* per-worker: the green thread thi
    g_runnable is the total parked-runnable count across every queue, for the
    quiescence/deadlock predicate. */
 SP_TLS int sp_worker_id = 0;       /* exported: sp_alloc.h indexes the per-worker string heaps */       /* this worker's run-queue slot (0 = main); both builds */
-typedef struct { sp_thread *head, *tail; } sp_runq;
+/* PoC: a line each, as each worker's queue is now pushed and popped without
+   the scheduler lock, concurrently with its neighbours'. */
+typedef struct { sp_thread *head, *tail; } __attribute__((aligned(64))) sp_runq;
 static sp_runq    g_grq;                 /* global run queue: spawned + woken threads */
 static sp_runq    g_lrq[SP_MAX_WORKERS]; /* per-worker local run queues (rerun locality) */
 static int        g_runnable = 0;        /* threads sitting in any run queue right now */
@@ -1469,6 +1474,11 @@ static sp_thread *sched_pick(int wid) {
 #ifdef SP_THREADS
   for (int i = 0; i < sp_active_workers; i++) {   /* steal one from a busier worker */
     if (i == wid) continue;
+    /* An empty queue is passed over without its lock: on a many-core box
+       that was a lock and an unlock of every other worker's queue, under the
+       scheduler lock, each time a worker found nothing to run. A thread
+       pushed after the look is not lost -- whoever pushed it woke its home. */
+    if (!SP_ATOMIC_LOAD(&g_lrq[i].head, __ATOMIC_RELAXED)) continue;
     /* Only an UNSTARTED thread may be stolen: a started one is pinned to its
        home worker's TLS (home_wid) and must not resume elsewhere. Unstarted
        spawns sit at most one-per-spawner ahead of pinned reruns, so scan the
@@ -3452,7 +3462,7 @@ static void *sp_worker_main(void *arg) {
     if (!g_lrq[wid].head) {
       g_wslot[wid].idle = 1;
       SCHED_UNLOCK();
-      pthread_cond_wait(&g_wslot[wid].cv, &g_rq_lock[wid]);   /* woken for work meant for us, or shutdown */
+      pthread_cond_wait(&g_wslot[wid].cv, &g_rq_lock[wid].m);   /* woken for work meant for us, or shutdown */
       g_wslot[wid].idle = 0;
       int work = g_lrq[wid].head != NULL;
       RQ_UNLOCK(wid);
