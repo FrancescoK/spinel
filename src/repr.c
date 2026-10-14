@@ -476,7 +476,10 @@ int repr_handle_apart(Compiler *c, int v, Repr r) {
    still dispatching as a String, which comp_recv_type answers for. That
    split is the whole point of the second array (#4363). */
 TyKind repr_stored_type(const Compiler *c, int id, TyKind t) {
-  if (t == TY_STRBUF) return c->strbuf_box[id] ? TY_STRBUF : TY_STRING;
+  /* (--share-strings: a value the analysis typed as the handle that is
+     demanded as one is stored as one, as any other demanded value is:
+     `{ |t| u = t }` spliced under a demand, the write of a handle local) */
+  if (t == TY_STRBUF) return c->strbuf_box[id] || (c->share_strings && c->strbuf_handle_demand[id]) ? TY_STRBUF : TY_STRING;
   if (c->strbuf_handle_demand[id]) return TY_STRBUF;
   return t;
 }

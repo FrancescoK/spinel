@@ -1828,7 +1828,7 @@ static int emit_boxed_cond_arms(Compiler *c, int node, Buf *b) {
   TyKind t = comp_ntype(c, node);
   /* The other String conditionals already have a handle-valued route:
      box its answer so ||, && and case keep the selected arm's String. */
-  if ((k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode) &&
+  if ((k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode || k == NK_CaseMatchNode) &&
       (t == TY_STRING || t == TY_STRBUF) && strbuf_value_carries(c, node)) {
     buf_puts(b, "sp_box_nullable_obj(");
     emit_strbuf_handle_of(c, node, b);
@@ -2404,6 +2404,18 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
   /* --share-strings: a String stored into a boxed slot the rule shares (an
      ivar that also holds nil) is boxed as its handle, which a later `<<`
      on the slot's box appends to in place (share_lift_poly_ivar_stores) */
+  /* --share-strings: a `next v` written anywhere but where the block's value
+     is (an operand, `x = c ? (next v) : w`) leaves the block from where it
+     is: the jump runs as a statement, and the boxed value after it is never
+     read. Boxed as the block's answer it left nothing and ran on. */
+  if (repr_share_rule(c) && node >= 0 && nt_kind(c->nt, node) == NK_NextNode && !next_is_block_value(c, node)) {
+    buf_puts(b, "({\n");
+    emit_stmt(c, node, b, g_indent + 1);
+    emit_indent(b, g_indent + 1);
+    buf_puts(b, "sp_box_nil(); })");
+    if (g_repr_check) repr_channel_boxed(c, node, frame);
+    return;
+  }
   /* --share-strings: a `next v` that is a block's boxed answer (a proc's
      tail) boxes v as a next does (emit_boxed_next_value) */
   if (repr_share_rule(c) && node >= 0 && nt_kind(c->nt, node) == NK_NextNode && nt_ref(c->nt, node, "arguments") >= 0) {

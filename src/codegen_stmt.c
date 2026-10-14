@@ -3051,7 +3051,7 @@ static int strbuf_cond_arm_any(Compiler *c, int v, int depth, int (*leaf)(Compil
     return strbuf_cond_arm_any(c, nt_ref(nt, v, "left"), depth + 1, leaf, deep) ||
            strbuf_cond_arm_any(c, nt_ref(nt, v, "right"), depth + 1, leaf, deep);
   case NK_AndNode: return strbuf_cond_arm_any(c, nt_ref(nt, v, "right"), depth + 1, leaf, deep);
-  case NK_CaseNode: {
+  case NK_CaseNode: case NK_CaseMatchNode: {
     int nw = 0; const int *whens = nt_arr(nt, v, "conditions", &nw);
     for (int w = 0; w < nw; w++)
       if (strbuf_cond_arm_any(c, nt_ref(nt, whens[w], "statements"), depth + 1, leaf, deep)) return 1;
@@ -3366,11 +3366,18 @@ int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth) {
              strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "right"), depth + 1);
     case NK_AndNode:
       return strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "right"), depth + 1);
-    case NK_CaseNode: {
+    case NK_CaseNode: case NK_CaseMatchNode: {
       int nw = 0; const int *whens = nt_arr(nt, v, "conditions", &nw);
       for (int w = 0; w < nw; w++)
         if (strbuf_cond_has_handle_leaf(c, nt_ref(nt, whens[w], "statements"), depth + 1)) return 1;
       return strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "else_clause"), depth + 1);
+    }
+    /* a `next v` written where the block's value is (next_is_block_value)
+       hands on what v does, as an arm of its own */
+    case NK_NextNode: {
+      int na = 0; const int *av = call_args(nt, v, &na);
+      return repr_share_rule(c) && na == 1 && next_is_block_value(c, v) &&
+             strbuf_cond_has_handle_leaf(c, av[0], depth ? depth : 1);
     }
     /* `+g` is g itself unless g is frozen (sp_String_uplus) */
     /* (--share-strings: any route over a handle, emit_strbuf_route) */
@@ -3440,11 +3447,16 @@ static void emit_strbuf_cond_value(Compiler *c, LocalVar *lv, int v, const char 
      starts again from it (emit_strbuf_value): read as nil, a deep arm's
      String was lost and its effects skipped */
   if (depth > 8 && (k == NK_IfNode || k == NK_UnlessNode || k == NK_OrNode || k == NK_AndNode ||
-                    k == NK_CaseNode)) {
+                    k == NK_CaseNode || k == NK_CaseMatchNode)) {
     buf_printf(b, "%s = ", dst);
     emit_strbuf_value(c, lv, v, b);
     buf_puts(b, ";");
     return;
+  }
+  /* a `next v` where the block's value is: the arm is v's */
+  if (k == NK_NextNode && repr_share_rule(c) && next_is_block_value(c, v)) {
+    int na = 0; const int *av = call_args(nt, v, &na);
+    if (na == 1) { emit_strbuf_cond_value(c, lv, av[0], dst, b, depth); return; }
   }
   switch (k) {
     case NK_ParenthesesNode:
@@ -3505,6 +3517,22 @@ static void emit_strbuf_cond_value(Compiler *c, LocalVar *lv, int v, const char 
       buf_printf(b, "%s = ", dst);
       emit_case_expr(c, v, b);
       buf_puts(b, ";");
+      g_strbuf_case_node = svn; g_strbuf_case_lv = svl;
+      return;
+    }
+    /* a `case`/`in` keeps its own matcher: each arm assigns the handle it
+       hands over into a temp (emit_pm_body_value), typed by the match's
+       result as a `case`'s is */
+    case NK_CaseMatchNode: {
+      int svn = g_strbuf_case_node;
+      LocalVar *svl = g_strbuf_case_lv;
+      g_strbuf_case_node = v; g_strbuf_case_lv = lv;
+      int cr = ++g_tmp;
+      buf_printf(b, "{ sp_String *_t%d = NULL; ", cr);
+      emit_gc_root_tmp(c, TY_STRBUF, cr, b);
+      buf_puts(b, "\n");
+      emit_case_match(c, v, b, 0, 0, cr);
+      buf_printf(b, "%s = _t%d; }", dst, cr);
       g_strbuf_case_node = svn; g_strbuf_case_lv = svl;
       return;
     }
@@ -7678,6 +7706,16 @@ static int g_pm_res_oint = 0;
 static void emit_pm_body_value(Compiler *c, int stmts, TyKind rt, int cr,
                                Buf *b, int indent) {
   const NodeTable *nt = c->nt;
+  /* an arm of a case/in into a shared String slot: the handle it hands over
+     (emit_strbuf_cond_value) */
+  if (rt == TY_STRBUF && g_strbuf_case_node >= 0) {
+    char dst[32];
+    snprintf(dst, sizeof dst, "_t%d", cr);
+    emit_indent(b, indent);
+    emit_strbuf_cond_arm(c, g_strbuf_case_lv, stmts, dst, b, 1);
+    buf_puts(b, "\n");
+    return;
+  }
   int res_o = g_pm_res_oint && oint_kind(rt);
   int n = 0;
   const int *bb = stmts >= 0 ? nt_arr(nt, stmts, "body", &n) : NULL;
@@ -8444,7 +8482,7 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
   int cn = 0;
   const int *conds = nt_arr(nt, id, "conditions", &cn);
   int else_clause = nt_ref(nt, id, "else_clause");
-  TyKind rt = value_cr >= 0 ? repr_of(c, id).as_ty : TY_UNKNOWN;
+  TyKind rt = value_cr < 0 ? TY_UNKNOWN : id == g_strbuf_case_node ? TY_STRBUF : repr_of(c, id).as_ty;
 
   int t = ++g_tmp;
   int lbl = ++g_tmp;
@@ -22825,7 +22863,7 @@ static int strbuf_flow_cond(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int
     return (nt_kind(nt, v) == NK_AndNode || strbuf_flow_cond(c, fm, ctx, l, depth + 1)) &&
            strbuf_flow_cond(c, fm, ctx, nt_ref(nt, v, "right"), depth + 1);
   }
-  case NK_CaseNode: {
+  case NK_CaseNode: case NK_CaseMatchNode: {
     int nw = 0; const int *whens = nt_arr(nt, v, "conditions", &nw);
     for (int w = 0; w < nw; w++)
       if (!strbuf_flow_cond(c, fm, ctx, nt_ref(nt, whens[w], "statements"), depth + 1)) return 0;
@@ -22863,11 +22901,16 @@ static int strbuf_flow_has_leaf(Compiler *c, StrbufFlowMemo *fm, int v, int dept
            strbuf_flow_has_leaf(c, fm, nt_ref(nt, v, "right"), depth + 1);
   case NK_AndNode:
     return strbuf_flow_has_leaf(c, fm, nt_ref(nt, v, "right"), depth + 1);
-  case NK_CaseNode: {
+  case NK_CaseNode: case NK_CaseMatchNode: {
     int nw = 0; const int *whens = nt_arr(nt, v, "conditions", &nw);
     for (int w = 0; w < nw; w++)
       if (strbuf_flow_has_leaf(c, fm, nt_ref(nt, whens[w], "statements"), depth + 1)) return 1;
     return strbuf_flow_has_leaf(c, fm, nt_ref(nt, v, "else_clause"), depth + 1);
+  }
+  case NK_NextNode: {
+    int na = 0; const int *av = call_args(nt, v, &na);
+    return repr_share_rule(c) && na == 1 && next_is_block_value(c, v) &&
+           strbuf_flow_has_leaf(c, fm, av[0], depth ? depth : 1);
   }
   case NK_CallNode:
     if (depth > 0 && repr_share_rule(c) && strbuf_bang_self_local(c, v)) return 1;
@@ -22949,7 +22992,7 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   /* A demanded tail uses emit_strbuf_handle_of, whose slot read takes
      the native answer's handle too. */
   if (ctx == SFC_TAIL && strbuf_native_answer(c, v)) return 1;
-  if (k == NK_IfNode || k == NK_UnlessNode || k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode ||
+  if (k == NK_IfNode || k == NK_UnlessNode || k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode || k == NK_CaseMatchNode ||
       k == NK_StatementsNode || k == NK_ElseNode || k == NK_ParenthesesNode) {
     /* A boxed sequence evaluates its statements and boxes its own tail,
        just as a conditional arm does (emit_boxed_sequence). */

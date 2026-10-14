@@ -318,7 +318,7 @@ static int share_plan_arms_ok(Compiler *c, int v, int depth) {
     return share_plan_arms_ok(c, nt_ref(nt, v, "left"), depth + 1) && share_plan_arms_ok(c, nt_ref(nt, v, "right"), depth + 1);
   case NK_AndNode:
     return share_plan_arms_ok(c, nt_ref(nt, v, "right"), depth + 1);
-  case NK_CaseNode: {
+  case NK_CaseNode: case NK_CaseMatchNode: {
     int nw = 0;
     const int *whens = nt_arr(nt, v, "conditions", &nw);
     for (int w = 0; w < nw; w++)
@@ -375,7 +375,7 @@ static int share_plan_tail_renders(Compiler *c, int a, int depth) {
     const int *bb = nt_arr(nt, a, "body", &n);
     return n == 0 || share_plan_tail_renders(c, bb[n - 1], depth + 1);
   }
-  case NK_CaseNode: {
+  case NK_CaseNode: case NK_CaseMatchNode: {
     int nw = 0;
     const int *whens = nt_arr(nt, a, "conditions", &nw);
     for (int w = 0; w < nw; w++)
