@@ -20757,6 +20757,114 @@ int desugar_time_singleton_bare_ctor(Compiler *c) {
   return changed;
 }
 
+/* ---- a builtin's class method from a class method of its reopening ----
+ *
+ *   class Integer
+ *     def self.root(n) = self.sqrt(n)    ->  Integer.sqrt(n)
+ *   end
+ *
+ * In a class method a reopening of a builtin class defines, self is the
+ * builtin class, so a call on it (or a bare one) that names one of the
+ * builtin's own class methods is that class method: the call is given the
+ * class's constant, which the builtin receivers are recognised by. Only
+ * where no class of the program is the builtin's subclass (self could be
+ * that subclass), and not for a name the program defines as a class method
+ * of the builtin. The walk stays out of blocks, which may run under another
+ * self. */
+typedef struct { const char *cls; const char *defs[256]; int nd; } BscmNames;
+static void bscm_collect(const NodeTable *nt, int body, int in_sg, BscmNames *t) {
+  int bn = 0; const int *bs = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+  for (int k = 0; k < bn; k++) {
+    int st = bs[k];
+    NodeKind sk = nt_kind(nt, st);
+    if (sk == NK_DefNode && (in_sg || nt_ref(nt, st, "receiver") >= 0) && t->nd < 256 && nt_str(nt, st, "name"))
+      t->defs[t->nd++] = nt_str(nt, st, "name");
+    else if (sk == NK_SingletonClassNode) bscm_collect(nt, nt_ref(nt, st, "body"), 1, t);
+  }
+}
+static int bscm_defined(const BscmNames *t, const char *nm) {
+  for (int i = 0; i < t->nd; i++) if (sp_streq(t->defs[i], nm)) return 1;
+  return 0;
+}
+static int bscm_walk(NodeTable *nt, int n, const BscmNames *t) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode || k == NK_DefNode ||
+      k == NK_BlockNode || k == NK_LambdaNode) return 0;
+  int changed = 0;
+  if (k == NK_CallNode) {
+    const char *nm = nt_str(nt, n, "name");
+    int r = nt_ref(nt, n, "receiver");
+    if (nm && (r < 0 || nt_kind(nt, r) == NK_SelfNode) && !sp_streq(nm, "new") && !sp_streq(nm, "allocate") &&
+        !bscm_defined(t, nm) && builtin_cmethod_known(t->cls, nm)) {
+      int cr = fwd_new_node_like(nt, n, "ConstantReadNode");
+      if (cr >= 0) {
+        nt_node_set_str(nt, cr, "name", t->cls);
+        nt_node_set_ref(nt, n, "receiver", cr);
+        changed = 1;
+      }
+    }
+  }
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) changed |= bscm_walk(nt, nt_ref_at(nt, n, i), t);
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, n, i, &cnt);
+    for (int j = 0; j < cnt; j++) changed |= bscm_walk(nt, ids[j], t);
+  }
+  return changed;
+}
+static int bscm_rewrite(NodeTable *nt, int body, int in_sg, const BscmNames *t) {
+  int changed = 0, bn = 0;
+  const int *bs = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+  for (int k = 0; k < bn; k++) {
+    int st = bs[k];
+    NodeKind sk = nt_kind(nt, st);
+    if (sk == NK_DefNode && (in_sg || (nt_ref(nt, st, "receiver") >= 0 &&
+                                       nt_kind(nt, nt_ref(nt, st, "receiver")) == NK_SelfNode)))
+      changed |= bscm_walk(nt, nt_ref(nt, st, "body"), t);
+    else if (sk == NK_SingletonClassNode && nt_kind(nt, nt_ref(nt, st, "expression")) == NK_SelfNode)
+      changed |= bscm_rewrite(nt, nt_ref(nt, st, "body"), 1, t);
+  }
+  return changed;
+}
+/* a class of the program names `cls` as its superclass */
+static int bscm_subclassed(const NodeTable *nt, const char *cls) {
+  NT_FOREACH_KIND(nt, NK_ClassNode, n) {
+    int sc = nt_ref(nt, n, "superclass");
+    if (sc >= 0 && (nt_kind(nt, sc) == NK_ConstantReadNode || nt_kind(nt, sc) == NK_ConstantPathNode) &&
+        nt_str(nt, sc, "name") && sp_streq(nt_str(nt, sc, "name"), cls)) return 1;
+  }
+  return 0;
+}
+int desugar_builtin_reopen_self_cmethods(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0, n0 = nt->count;
+  char *top = calloc((size_t)(n0 > 0 ? n0 : 1), 1);
+  if (!top) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  bsc_mark_toplevel(nt, nt->root_id, top);
+  for (int n = 0; n < n0; n++) {
+    if (nt_kind(nt, n) != NK_ClassNode || !top[n]) continue;
+    int cp = nt_ref(nt, n, "constant_path");
+    const char *cn = cp >= 0 && nt_kind(nt, cp) == NK_ConstantReadNode ? nt_str(nt, cp, "name") : NULL;
+    if (!cn || !builtin_class_id(cn) || bscm_subclassed(nt, cn)) continue;
+    BscmNames t; memset(&t, 0, sizeof t);
+    t.cls = cn;
+    /* every reopening's class methods, before any is rewritten */
+    for (int m = 0; m < n0; m++) {
+      if (nt_kind(nt, m) != NK_ClassNode || !top[m]) continue;
+      int mp = nt_ref(nt, m, "constant_path");
+      if (mp >= 0 && nt_kind(nt, mp) == NK_ConstantReadNode && nt_str(nt, mp, "name") &&
+          sp_streq(nt_str(nt, mp, "name"), cn))
+        bscm_collect(nt, nt_ref(nt, m, "body"), 0, &t);
+    }
+    changed |= bscm_rewrite(nt, nt_ref(nt, n, "body"), 0, &t);
+  }
+  free(top);
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 /* `class Rational < Numeric` -- a builtin reopened with its own superclass
    named, as the bigdecimal gem's util.rb writes it -- is the reopening
    `class Rational` is: Ruby accepts the superclass because it is the one the
