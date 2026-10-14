@@ -10929,6 +10929,46 @@ static int emit_object_kind_nil(Compiler *c, int id, Buf *b, const NodeTable *nt
   return 0;
 }
 
+/* A one-argument native method bound twice, for a Regexp pattern and for a
+   String (StringScanner#scan), called with a boxed argument that can be
+   either: the Regexp binding when the value is a Regexp at run time, else
+   the String one, whose String the argument must be (CRuby's TypeError).
+   `nm` is the binding the lookup chose for the boxed argument. */
+static int emit_native_pattern_poly(Compiler *c, const char *name, int nm,
+                                    int recv, int argc, const int *argv, Buf *b) {
+  if (argc != 1 || c->share_strings) return 0;
+  TyKind at = comp_ntype(c, argv[0]);
+  if (at != TY_POLY && at != TY_UNKNOWN) return 0;
+  NativeMethod *mre = NULL, *mstr = NULL;
+  for (int i = 0; i < c->n_native_methods; i++) {
+    NativeMethod *m = &c->native_methods[i];
+    if (m->class_id != c->native_methods[nm].class_id || m->kind != 0 || m->nargs != 1 ||
+        m->rest || !sp_streq(m->name, name)) continue;
+    if (sp_streq(m->args[0], "regexp")) mre = m;
+    else if (sp_streq(m->args[0], "string")) mstr = m;
+  }
+  if (!mre || !mstr || !sp_streq(mre->ret, mstr->ret) ||
+      sp_streq(mre->ret, "cstring") || sp_streq(mre->ret, "cbinstr")) return 0;
+  int tr = ++g_tmp, tp = ++g_tmp;
+  int wrap = sp_streq(mre->ret, "string?");
+  if (wrap) buf_puts(b, "sp_box_nullable_str(");
+  /* the receiver before the argument, as Ruby evaluates them */
+  Buf rb; memset(&rb, 0, sizeof rb);
+  emit_expr(c, recv, &rb);
+  const char *rx = rb.p ? rb.p : "";
+  buf_printf(b, "({ __typeof__(%s) _t%d = %s; ", rx, tr, rx);
+  emit_gc_root_tmp(c, comp_ntype(c, recv), tr, b);
+  free(rb.p);
+  buf_printf(b, " sp_RbVal _t%d = ", tp); emit_boxed(c, argv[0], b); buf_puts(b, "; ");
+  emit_gc_root_tmp(c, TY_POLY, tp, b);
+  buf_printf(b, " (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_REGEX)"
+                " ? %s(_t%d, (mrb_regexp_pattern *)_t%d.v.p)"
+                " : %s(_t%d, sp_poly_arg_str_chk(_t%d)); })",
+             tp, tp, mre->csym, tr, tp, mstr->csym, tr, tp);
+  if (wrap) buf_puts(b, ")");
+  return 1;
+}
+
 int emit_object_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -11345,6 +11385,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       int nta = argc < 8 ? argc : 8;
       for (int a = 0; a < nta; a++) natys[a] = comp_ntype(c, argv[a]);
       int nm = comp_native_method_find_typed(c, cid, name, argc, 0, nta == argc ? natys : NULL);
+      if (nm >= 0 && emit_native_pattern_poly(c, name, nm, recv, argc, argv, b)) return 1;
       if (nm >= 0) {
         /* a :regexp arg binds to a regex literal at the call site (it
            compiles to the generated sp_re_pat_<n> pattern) or to any value
