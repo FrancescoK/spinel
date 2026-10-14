@@ -8360,8 +8360,18 @@ static int fwd_record_class_named(const NodeTable *nt, const char *name) {
 static int fwd_target_shape(const NodeTable *nt, int def, int call, int is_super) {
   const char *name = is_super ? nt_str(nt, def, "name") : nt_str(nt, call, "name");
   if (!name) return -1;
-  if (!is_super && !sp_streq(name, "new"))
-    return fwd_any_def_named(nt, name) ? def_shape_union_by_name(nt, name) : FWD_BUILTIN;
+  if (!is_super && !sp_streq(name, "new")) {
+    if (!fwd_any_def_named(nt, name)) return FWD_BUILTIN;
+    int sh = def_shape_union_by_name(nt, name);
+    /* every def of the name a `...` forwarder (io-event's Timers::Handle
+       `def call(...) = @block.call(...)`, its own name): a name that takes
+       anything (a proc's call, a send) is forwarded as the builtin's, the
+       channels the callers use, which another such forwarder takes too */
+    if (sh < 0 && (sp_streq(name, "call") || sp_streq(name, "send") || sp_streq(name, "__send__") ||
+                   sp_streq(name, "public_send") || sp_streq(name, "instance_exec")))
+      return FWD_BUILTIN;
+    return sh;
+  }
   int recv = is_super ? -1 : nt_ref(nt, call, "receiver");
   int cls = fwd_enclosing_class(nt, def);
   char ctx[512] = "";
