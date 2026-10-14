@@ -2709,6 +2709,33 @@ void emit_strh_elem(Compiler *c, int v, Buf *b) {
   buf_puts(b, ")");
 }
 
+/* Can the evaluation of argument a of an operation on a String Array of
+   handles change what the operation reads, the Array's variable or its
+   Strings? Only a String literal or a local's read cannot. */
+static int strh_arg_inert(const NodeTable *nt, int a) {
+  NodeKind k = nt_kind(nt, a);
+  return k == NK_StringNode || k == NK_LocalVariableReadNode;
+}
+
+/* Opens a statement expression that evaluates the receiver of an operation
+   taking argument arg before the argument, and answers its temporary (0 when
+   the argument is inert and nothing is opened). C leaves the order of a
+   call's arguments open: gcc on x86-64 evaluates the argument first, where
+   the argument of `a.include?((a = other; "x"))` rebinds the receiver's
+   variable. */
+static int strh_recv_first(Compiler *c, int recv, int arg, Buf *b) {
+  if (arg < 0 || strh_arg_inert(c->nt, arg)) return 0;
+  int tr = ++g_tmp;
+  buf_printf(b, "({ sp_PtrArray *_t%d = ", tr); emit_expr(c, recv, b);
+  buf_printf(b, "; SP_GC_ROOT(_t%d); ", tr);
+  return tr;
+}
+/* The receiver where the operation names it: its temporary, or its text. */
+static void strh_recv_text(Compiler *c, int recv, int tr, Buf *b) {
+  if (tr) buf_printf(b, "_t%d", tr);
+  else emit_expr(c, recv, b);
+}
+
 /* --share-strings (#8328 step 5): an operation on a String Array of handles
    (TY_STRH_ARRAY, an sp_PtrArray of sp_String *), one of those its gate
    admits (strh_call_op). An element is the String itself: read where a
@@ -2747,9 +2774,20 @@ int emit_strh_call(Compiler *c, int id, Buf *b) {
     int tr = ++g_tmp;
     buf_printf(b, "({ sp_PtrArray *_t%d = ", tr); emit_expr(c, recv, b);
     buf_printf(b, "; SP_GC_ROOT(_t%d);", tr);
+    /* every argument is evaluated, and rooted, before the first is appended,
+       as CRuby does: a later one can read the Array */
+    int early = 0;
+    for (int a = 1; a < argc; a++) early |= !strh_arg_inert(nt, argv[a]);
+    if (early)
+      for (int a = 0; a < argc; a++) {
+        buf_printf(b, " sp_String *_t%d_%d = ", tr, a);
+        emit_strh_elem(c, argv[a], b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d_%d);", tr, a);
+      }
     for (int a = 0; a < argc; a++) {
       buf_printf(b, " sp_PtrArray_push(_t%d, ", tr);
-      emit_strh_elem(c, argv[a], b);
+      if (early) buf_printf(b, "_t%d_%d", tr, a);
+      else emit_strh_elem(c, argv[a], b);
       buf_puts(b, ");");
     }
     buf_printf(b, " _t%d; })", tr);
@@ -2767,20 +2805,26 @@ int emit_strh_call(Compiler *c, int id, Buf *b) {
   case STRH_SELF:
     emit_expr(c, recv, b);
     return 1;
-  case STRH_JOIN:
-    buf_puts(b, "sp_StrhArray_join("); emit_expr(c, recv, b); buf_puts(b, ", ");
+  case STRH_JOIN: {
+    int tr = strh_recv_first(c, recv, argc == 1 ? argv[0] : -1, b);
+    buf_puts(b, "sp_StrhArray_join("); strh_recv_text(c, recv, tr, b); buf_puts(b, ", ");
     if (argc == 1) emit_str_expr(c, argv[0], b);
     else buf_puts(b, "NULL");
-    buf_puts(b, ")");
+    buf_puts(b, tr ? "); })" : ")");
     return 1;
-  case STRH_INCLUDE:
-    buf_puts(b, "sp_StrhArray_include("); emit_expr(c, recv, b); buf_puts(b, ", ");
-    emit_str_expr_nilable(c, argv[0], b); buf_puts(b, ")");
+  }
+  case STRH_INCLUDE: {
+    int tr = strh_recv_first(c, recv, argv[0], b);
+    buf_puts(b, "sp_StrhArray_include("); strh_recv_text(c, recv, tr, b); buf_puts(b, ", ");
+    emit_str_expr_nilable(c, argv[0], b); buf_puts(b, tr ? "); })" : ")");
     return 1;
-  case STRH_EQ:
-    buf_puts(b, "sp_StrhArray_eq("); emit_expr(c, recv, b); buf_puts(b, ", ");
-    emit_expr(c, argv[0], b); buf_puts(b, ")");
+  }
+  case STRH_EQ: {
+    int tr = strh_recv_first(c, recv, argv[0], b);
+    buf_puts(b, "sp_StrhArray_eq("); strh_recv_text(c, recv, tr, b); buf_puts(b, ", ");
+    emit_expr(c, argv[0], b); buf_puts(b, tr ? "); })" : ")");
     return 1;
+  }
   case STRH_INSPECT:
     buf_puts(b, "sp_PtrArray_inspect_k("); emit_expr(c, recv, b); buf_puts(b, ")");
     return 1;

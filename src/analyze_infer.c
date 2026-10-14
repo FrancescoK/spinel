@@ -9557,6 +9557,9 @@ static TyKind infer_array_literal(Compiler *c, int id) {
     int strh_all = c->share_strings, strh_has = 0;
     for (int k = 0; k < n; k++) {
       TyKind et = infer_type(c, els[k]);
+      /* (a splat is the type of its Array's elements, but it spreads them:
+         the handle form pushes it as one element) */
+      if (nt_kind(nt, els[k]) == NK_SplatNode) strh_all = 0;
       if (et == TY_STRBUF) strh_has = 1;
       else if (et != TY_STRING) strh_all = 0;
       /* A nested container literal whose own type is still open (an empty
