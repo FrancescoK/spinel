@@ -7448,6 +7448,11 @@ static void desugar_enum_chain_shapes(Compiler *c) {
         /* both calls name the receiver node: the poly replace arm reads this
            to bind it once (codegen_call_recv.c) */
         nt_node_set_str(nt, id, "bang_splice", "1");
+        /* both are Hash's own, as CRuby's bang form is: a class deriving from
+           Hash answers neither with its own replace or transform_values
+           (rack's Headers#transform_values is `dup.transform_values!`) */
+        nt_node_set_int(nt, id, "builtin_only", 1);
+        nt_node_set_int(nt, inner, "builtin_only", 1);
         nt_node_set_ref(nt, id, "block", -1);
         nt_node_set_ref(nt, id, "arguments", rargs);
         comp_grow_node_arrays(c);
