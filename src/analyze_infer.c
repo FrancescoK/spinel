@@ -8458,6 +8458,18 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   { TyKind r; if (infer_exception_call(c, id, nt, name, recv, argc, rt, &r)) return r; }
 
+  /* `<lazy chain>.to_a` (`force`, `first`) is the Lazy's own: no class of
+     the program reaches a Lazy, so a `to_a` the program defines cannot
+     answer it, nor where the chain is held in a local. A boxed chain went to the poly operand rules below, which
+     typed the call poly for the program's `to_a`, while the emitter fused
+     the pipeline into an Array and an Array literal took it unboxed (#9137). */
+  if (rt == TY_POLY && recv >= 0 && argc <= 1 &&
+      (sp_streq(name, "to_a") || sp_streq(name, "force") || sp_streq(name, "first")) &&
+      (chain_is_lazy_valued(c, recv) ||
+       (nt_kind(nt, recv) == NK_LocalVariableReadNode && chain_is_lazy_valued(c, lazy_alias_chain(c, recv)))) &&
+      !an_user_recv_defines_method(c, "lazy"))
+    { TyKind r; if (infer_range_lazy_call(c, id, nt, name, recv, argc, argv, rt, &r)) return r; }
+
   { TyKind r; if (infer_poly_operand_call(c, id, nt, name, recv, argc, argv, rt, a0, &r)) return an_class_concrete(c, id, name, r); }
 
   /* symbol receiver methods */
