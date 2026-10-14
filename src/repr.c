@@ -355,6 +355,9 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
   const NodeTable *nt = c->nt;
   NodeKind k = nt_kind(nt, node);
   if (repr_self_shared(c, node)) return RS_HANDLE;
+  /* an element a String Array of handles reads or removes is the handle
+     the Array keeps, as a String Range's endpoint is (#8328 step 5) */
+  if ((t == TY_STRING || t == TY_STRBUF) && strh_handle_call(mc, node)) return RS_HANDLE;
   if (t == TY_STRING) {
     /* a global holding the handle (--share-strings): its read boxes it */
     if (repr_static_read_kind(k)) return repr_static_share(c, node) ? RS_HANDLE : RS_NONE;

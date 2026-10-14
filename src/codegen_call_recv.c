@@ -4644,6 +4644,7 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b);
 
 static void emit_strbuf_force_encoding(Compiler *c, const char *name, const char *ref, int hr, const int *argv, int argc, Buf *b);
 int emit_array_call(Compiler *c, int id, Buf *b) {
+  if (emit_strh_call(c, id, b)) return 1;
   if (emit_array_splat_mutator(c, id, b)) return 1;
   /* An array indexed by a String or a Symbol is CRuby's TypeError. A
      parameter can be typed that way by a call that never runs it -- one arm

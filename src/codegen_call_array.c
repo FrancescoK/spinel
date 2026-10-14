@@ -2696,3 +2696,96 @@ int emit_arysub_call_stmt(Compiler *c, int id, Buf *b, int indent) {
   arysub_view_close(c, &v);
   return 1;
 }
+
+/* Node v as the element a String Array of handles stores (#8328 step 5):
+   its handle. The value is boxed as the poly Arrays' elements are, which
+   hands over the handle of every producer the box knows (a variable's, a
+   route's, a call dispatched on a boxed receiver, a frozen literal's own),
+   and a fresh String is wrapped; the box is then unboxed
+   (sp_StrhArray_unbox). */
+void emit_strh_elem(Compiler *c, int v, Buf *b) {
+  buf_puts(b, "sp_StrhArray_unbox(");
+  emit_boxed(c, v, b);
+  buf_puts(b, ")");
+}
+
+/* --share-strings (#8328 step 5): an operation on a String Array of handles
+   (TY_STRH_ARRAY, an sp_PtrArray of sp_String *), one of those its gate
+   admits (strh_call_op). An element is the String itself: read where a
+   handle is wanted (a handle mark or demand on the call) as the handle, and
+   elsewhere as its bytes, as a variable's handle slot is read
+   (sp_strbuf_read_pub); a stored value is its handle in the String plan's
+   form (emit_strh_elem). Answers 0 for a call that is none of them. */
+int emit_strh_call(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver"), argc = 0;
+  int op = recv >= 0 ? strh_call_op(c, id, comp_recv_type(c, recv)) : STRH_NONE;
+  const int *argv = call_args(nt, id, &argc);
+  const char *nm = nt_str(nt, id, "name");
+  switch (op) {
+  case STRH_ELEM: case STRH_TAKE: {
+    Repr rp = repr_of(c, id);
+    int handle = rp.handle || rp.demand;
+    if (!handle) buf_puts(b, "sp_strbuf_read_pub(");
+    strh_elem_handle_text(c, id, b);
+    if (!handle) buf_puts(b, ")");
+    return 1;
+  }
+  case STRH_STORE: {
+    /* the receiver, the index, then the value, as CRuby evaluates them */
+    int tr = ++g_tmp, ti = ++g_tmp, tv = ++g_tmp;
+    buf_printf(b, "({ sp_PtrArray *_t%d = ", tr); emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); sp_int _t%d = ", tr, ti); emit_int_expr(c, argv[0], b);
+    buf_printf(b, "; sp_String *_t%d = ", tv); emit_strh_elem(c, argv[1], b);
+    buf_printf(b, "; sp_PtrArray_set_grow(_t%d, _t%d, _t%d); ", tr, ti, tv);
+    Repr rp = repr_of(c, id);
+    if (rp.handle || rp.demand || comp_value_dropped(c, id)) buf_printf(b, "_t%d; })", tv);
+    else buf_printf(b, "sp_strbuf_read_pub(_t%d); })", tv);
+    return 1;
+  }
+  case STRH_PUSH: {
+    int tr = ++g_tmp;
+    buf_printf(b, "({ sp_PtrArray *_t%d = ", tr); emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d);", tr);
+    for (int a = 0; a < argc; a++) {
+      buf_printf(b, " sp_PtrArray_push(_t%d, ", tr);
+      emit_strh_elem(c, argv[a], b);
+      buf_puts(b, ");");
+    }
+    buf_printf(b, " _t%d; })", tr);
+    return 1;
+  }
+  case STRH_LEN:
+    buf_puts(b, "sp_PtrArray_length("); emit_expr(c, recv, b); buf_puts(b, ")");
+    return 1;
+  case STRH_EMPTY:
+    buf_puts(b, "(sp_PtrArray_length("); emit_expr(c, recv, b); buf_puts(b, ") == 0)");
+    return 1;
+  case STRH_DUP:
+    buf_puts(b, "sp_StrhArray_dup("); emit_expr(c, recv, b); buf_puts(b, ")");
+    return 1;
+  case STRH_SELF:
+    emit_expr(c, recv, b);
+    return 1;
+  case STRH_JOIN:
+    buf_puts(b, "sp_StrhArray_join("); emit_expr(c, recv, b); buf_puts(b, ", ");
+    if (argc == 1) emit_str_expr(c, argv[0], b);
+    else buf_puts(b, "NULL");
+    buf_puts(b, ")");
+    return 1;
+  case STRH_INCLUDE:
+    buf_puts(b, "sp_StrhArray_include("); emit_expr(c, recv, b); buf_puts(b, ", ");
+    emit_str_expr_nilable(c, argv[0], b); buf_puts(b, ")");
+    return 1;
+  case STRH_EQ:
+    buf_puts(b, "sp_StrhArray_eq("); emit_expr(c, recv, b); buf_puts(b, ", ");
+    emit_expr(c, argv[0], b); buf_puts(b, ")");
+    return 1;
+  case STRH_INSPECT:
+    buf_puts(b, "sp_PtrArray_inspect_k("); emit_expr(c, recv, b); buf_puts(b, ")");
+    return 1;
+  default:
+    (void)nm;
+    return 0;
+  }
+}

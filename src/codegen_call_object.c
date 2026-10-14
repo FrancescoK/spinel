@@ -1661,7 +1661,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       return 1;
     }
     if (argc0 == 0 && !freeze_stateful && !ty_is_hash(recv_t) &&
-        !(is_dup_clone && (recv_t == TY_STRING || ty_is_array(recv_t) || recv_native))) {
+        !(is_dup_clone && (recv_t == TY_STRING || ty_is_array(recv_t) || recv_t == TY_STRH_ARRAY || recv_native))) {
       emit_expr(c, recv, b); return 1;
     }
     if (argc0 == 0 && recv_t == TY_STRING && is_dup_clone) {

@@ -14590,6 +14590,8 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
     }
+    /* a String Array of handles (--share-strings) compares by its Strings' bytes */
+    if (rt == TY_STRH_ARRAY && emit_strh_call(c, id, b)) return 1;
     if (rt == TY_POLY_ARRAY && a0 == TY_POLY_ARRAY) {
       buf_puts(b, eq ? "sp_PolyArray_eq(" : "(!sp_PolyArray_eq(");
       emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b);
@@ -21513,7 +21515,7 @@ int ty_runs_no_code(TyKind t) {
   switch (t) {
     case TY_NIL: case TY_INT: case TY_BIGINT: case TY_FLOAT: case TY_STRING:
     case TY_STRBUF: case TY_SYMBOL: case TY_BOOL: case TY_RANGE: case TY_FLOAT_RANGE:
-    case TY_STR_RANGE: case TY_INT_ARRAY: case TY_FLOAT_ARRAY: case TY_STR_ARRAY:
+    case TY_STR_RANGE: case TY_INT_ARRAY: case TY_FLOAT_ARRAY: case TY_STR_ARRAY: case TY_STRH_ARRAY:
       return 1;
     default:
       return 0;

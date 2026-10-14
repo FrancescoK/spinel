@@ -3013,7 +3013,7 @@ int emit_empty_container_for_slot(Compiler *c, int v, TyKind slot, Buf *b) {
     int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     if (sp_streq(rn, "Array") && an == 0) {
       if (slot == TY_POLY_ARRAY) { buf_puts(b, "sp_PolyArray_new()"); return 1; }
-      if (ty_is_ptr_array(slot)) { buf_puts(b, "sp_PtrArray_new()"); return 1; }
+      if (ty_is_ptr_array(slot)) { buf_puts(b, ptr_array_new_c(slot)); return 1; }
       if (array_kind(slot)) { buf_printf(b, "sp_%sArray_new()", array_kind(slot)); return 1; }
       return 0;
     }
@@ -3150,6 +3150,15 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
     buf_puts(b, "((sp_int)(uintptr_t)sp_poly_identity_ptr(");
     emit_exc_message_idbox(c, recv, b);
     buf_puts(b, "))");
+    return 1;
+  }
+  /* an element a String Array of handles reads or removes is that handle,
+     nil the nil's id (strh_elem_handle_text) */
+  if (strh_handle_call(c, recv)) {
+    Buf hb; memset(&hb, 0, sizeof hb);
+    strh_elem_handle_text(c, recv, &hb);
+    strbuf_nilable_id(c, hb.p, "SP_NIL_OBJECT_ID", b);
+    free(hb.p);
     return 1;
   }
   /* --share-strings: a String Range's begin / end is the String it holds,
@@ -3587,8 +3596,62 @@ const NativeMethod *strbuf_native_answer(Compiler *c, int n) {
    too long for its buffer, and with b NULL only the answer is given,
    nothing emitted (cap 0 too). The one place the paths are decided:
    strbuf_slot_ref, strbuf_slot_text and strbuf_slot_has are this. */
+/* --share-strings (#8328 step 5): the handle call v (an element read or a
+   pop or shift of a String Array of handles, strh_call_op) answers, as the
+   C expression of the sp_String * */
+void strh_elem_handle_text(Compiler *c, int v, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, v, "receiver"), argc = 0;
+  const int *argv = call_args(nt, v, &argc);
+  const char *nm = nt_str(nt, v, "name");
+  if (strh_call_op(c, v, comp_recv_type(c, recv)) == STRH_TAKE) {
+    int pop = sp_streq(nm, "pop");
+    buf_puts(b, pop ? "((sp_String *)sp_PtrArray_pop(" : "((sp_String *)sp_PtrArray_delete_at(");
+    emit_expr(c, recv, b);
+    buf_puts(b, pop ? "))" : ", 0))");
+    return;
+  }
+  buf_puts(b, "((sp_String *)sp_PtrArray_get(");
+  emit_expr(c, recv, b);
+  buf_puts(b, ", ");
+  if (argc == 1) emit_int_expr(c, argv[0], b);
+  else buf_puts(b, sp_streq(nm, "first") ? "0" : "-1");
+  buf_puts(b, "))");
+}
+/* Is v an element read, pop or shift of a String Array of handles, which
+   answers the String's handle (strh_elem_handle_text)? */
+int strh_handle_call(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  int recv = nt_ref(nt, v, "receiver");
+  int op = recv >= 0 ? strh_call_op(c, v, comp_recv_type(c, recv)) : STRH_NONE;
+  return op == STRH_ELEM || op == STRH_TAKE;
+}
+/* Is v an element read of a String Array of handles that reads like a
+   variable's slot: a local's Array at an index that is an Integer literal
+   or a local's read (share_strh_gate admits no other), so its handle text
+   can be read again where it is used? */
+int strh_elem_slot(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  int recv = nt_ref(nt, v, "receiver"), argc = 0;
+  const int *argv = call_args(nt, v, &argc);
+  if (recv < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode ||
+      strh_call_op(c, v, comp_recv_type(c, recv)) != STRH_ELEM) return 0;
+  return argc == 0 || nt_kind(nt, argv[0]) == NK_IntegerNode || nt_kind(nt, argv[0]) == NK_LocalVariableReadNode;
+}
 static int strbuf_slot_into(Compiler *c, int recv, Buf *b, size_t cap) {
   HolderRef h;
+  /* an element of a String Array of handles is a slot of the Array */
+  if (strh_elem_slot(c, recv)) {
+    if (!b) return 1;
+    Buf t; memset(&t, 0, sizeof t);
+    strh_elem_handle_text(c, recv, &t);
+    int fit = t.p && (!cap || strlen(t.p) < cap);
+    if (fit) buf_puts(b, t.p);
+    free(t.p);
+    return fit;
+  }
   if (repr_self_shared(c, recv)) {
     if (!g_self || (cap && strlen(g_self) >= cap)) return 0;
     if (b) buf_puts(b, g_self);
@@ -5005,11 +5068,16 @@ void emit_ctype(Compiler *c, TyKind t, Buf *b) {
 /* The element stamp a pointer array is boxed with (#4486): the runtime's one
    cls_id for pointer arrays is type-erased, so the box carries what the
    elements are for the poly paths to read them back. */
+/* The constructor of an empty pointer array of kind t: a String Array of
+   handles is stamped at birth, so what reads it before anything boxes it
+   (inspect) knows what it holds */
+const char *ptr_array_new_c(TyKind t) { return t == TY_STRH_ARRAY ? "sp_StrhArray_new()" : "sp_PtrArray_new()"; }
 const char *ptr_array_stamp(Compiler *c, TyKind t) {
   static char buf[64];
   (void)c;
   if (t == TY_INT_ARRAY_ARRAY)   return "SP_PTR_ELEM_INT_ROWS, -1";
   if (t == TY_FLOAT_ARRAY_ARRAY) return "SP_PTR_ELEM_FLT_ROWS, -1";
+  if (t == TY_STRH_ARRAY)        return "SP_PTR_ELEM_STRBUF, -1";
   snprintf(buf, sizeof buf, "SP_PTR_ELEM_OBJ, %d", ty_obj_array_class(t));
   return buf;
 }

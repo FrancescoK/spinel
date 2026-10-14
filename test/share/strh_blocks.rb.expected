@@ -1,0 +1,9 @@
+["s1", "t1", "u1"]
+"s1"
+["s1k", "t1k", "u1k"]
+3
+["s1k!", "t1k!", "u1k!"]
+s1k!:4:true
+t1k!:4:false
+u1k!:4:false
+["s1k!n", "t1k!n", "u1k!n"]

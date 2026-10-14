@@ -1,0 +1,21 @@
+nil
+nil
+"s"
+"s"
+["s", nil, nil, "s"]
+4
+["s", nil, nil, "s"]
+s---s
+s
+
+
+s
+nil
+nil
+nil
+nil
+true
+0
+["s!", nil, nil, "s!"]
+index -9 too small for array; minimum: -4
+["s!", nil, nil, "last"]

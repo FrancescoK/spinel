@@ -2120,7 +2120,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
        went into an sp_PolyArray *, sp_FloatArray * or sp_PtrArray * slot.
        Array.new's block emits its non-tail statements here, so
        `y = [] if i == 0` there stopped the C build. */
-    else if (lv && v_empty_array && ty_is_ptr_array(lv->type)) buf_puts(b, "sp_PtrArray_new()");
+    else if (lv && v_empty_array && ty_is_ptr_array(lv->type)) buf_puts(b, ptr_array_new_c(lv->type));
     else if (lv && v_empty_array && emit_empty_container_for_slot(c, v, lv->type, b)) { }
     else if (lv && lv->type == TY_POLY_ARRAY && ty_is_array(comp_ntype(c, v)) &&
              repr_of(c, v).elem != TY_POLY) {
@@ -2281,7 +2281,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     }
     else if (wk2 == 2 && civ_is_oint(c, wcid2, wiv2)) emit_oint_expr(c, v, ivt2, b);
     else if (oint_kind(ivt2) && node_may_be_nil(c, v)) refuse_nil_store(c, v, ivt2, "an instance variable write");
-    else if (v_empty_array2 && ty_is_ptr_array(ivt2)) buf_puts(b, "sp_PtrArray_new()");
+    else if (v_empty_array2 && ty_is_ptr_array(ivt2)) buf_puts(b, ptr_array_new_c(ivt2));
     else if (v_empty_array2 && ivt2 == TY_POLY_ARRAY) buf_puts(b, "sp_PolyArray_new()");
     else if (v_empty_array2 && array_kind(ivt2)) buf_printf(b, "sp_%sArray_new()", array_kind(ivt2));
     else if (v_empty_hash2 && ty_is_hash(ivt2)) {
