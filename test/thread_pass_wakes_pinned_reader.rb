@@ -4,6 +4,9 @@
 # Thread.pass loop did not, so main spinning on Thread.pass until such a
 # thread got its bytes spun for good (a test with two acceptors hung on
 # macOS about one run in forty).
+# One worker, so the reader is pinned to main's, the case at hand; set
+# before the first thread starts (CRuby ignores it).
+ENV["SPINEL_WORKERS"] = "1"
 rounds = 0
 20.times do
   r, w = IO.pipe
