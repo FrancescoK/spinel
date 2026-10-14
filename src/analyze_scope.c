@@ -10399,6 +10399,30 @@ static char *bc_join(const char *p, const char *leaf) {
   return s;
 }
 
+/* The standard library's top-level names: a program that requires one
+   reaches it from anywhere */
+static const char *const bc_stdlib_names[] = {
+  "Abbrev", "Addrinfo", "Base64", "BasicSocket", "Benchmark", "BigDecimal", "CGI", "CSV", "Coverage",
+  "DRb", "Date", "DateTime", "DelegateClass", "Delegator", "Digest", "ERB", "English", "Etc", "FFI",
+  "Fcntl", "Fiddle", "FileUtils", "Find", "Forwardable", "Gem", "GetoptLong", "IPAddr", "IPSocket",
+  "JSON", "Logger", "Matrix", "Minitest", "Monitor", "MonitorMixin", "Net", "Observable", "Open3",
+  "OpenSSL", "OpenStruct", "OptionParser", "PP", "PStore", "Prime", "Psych", "RbConfig", "Readline",
+  "Resolv", "Ripper", "SecureRandom", "Shellwords", "SimpleDelegator", "SingleForwardable", "Singleton",
+  "Socket", "StringIO", "StringScanner", "TCPServer", "TCPSocket", "TSort", "Tempfile", "Test", "Timeout",
+  "UDPSocket", "UNIXServer", "UNIXSocket", "URI", "Vector", "WeakRef", "YAML", "Zlib",
+  NULL
+};
+static int bc_stdlib_name(const char *n) {
+  for (int i = 0; bc_stdlib_names[i]; i++) if (sp_streq(bc_stdlib_names[i], n)) return 1;
+  return 0;
+}
+/* A standard library name no class or module of the runtime has: where
+   the program defines it, it does so from Ruby source (a package's). */
+int stdlib_name_from_source(const char *n) {
+  return n && bc_stdlib_name(n) && !builtin_class_id(n) && !is_builtin_class_name(n) &&
+         !is_builtin_module_name(n) && !is_builtin_exception_name(n);
+}
+
 /* A name CRuby (or a library spinel provides) answers at the top level. */
 static int bc_toplevel_known(const char *n) {
   static const char *const names[] = {
@@ -10416,20 +10440,11 @@ static int bc_toplevel_known(const char *n) {
     "SizedQueue", "StandardError", "StopIteration", "String", "Struct", "Symbol", "SyntaxError", "SystemCallError",
     "SystemExit", "SystemStackError", "TOPLEVEL_BINDING", "Thread", "ThreadError", "ThreadGroup", "Time", "TracePoint",
     "TrueClass", "TypeError", "UnboundMethod", "UncaughtThrowError", "UnicodeNormalize", "Warning", "ZeroDivisionError",
-    /* the standard library's top-level names: a program that requires one
-       reaches it from anywhere */
-    "Abbrev", "Addrinfo", "Base64", "BasicSocket", "Benchmark", "BigDecimal", "CGI", "CSV", "Coverage",
-    "DRb", "Date", "DateTime", "DelegateClass", "Delegator", "Digest", "ERB", "English", "Etc", "FFI",
-    "Fcntl", "Fiddle", "FileUtils", "Find", "Forwardable", "Gem", "GetoptLong", "IPAddr", "IPSocket",
-    "JSON", "Logger", "Matrix", "Minitest", "Monitor", "MonitorMixin", "Net", "Observable", "Open3",
-    "OpenSSL", "OpenStruct", "OptionParser", "PP", "PStore", "Prime", "Psych", "RbConfig", "Readline",
-    "Resolv", "Ripper", "SecureRandom", "Shellwords", "SimpleDelegator", "SingleForwardable", "Singleton",
-    "Socket", "StringIO", "StringScanner", "TCPServer", "TCPSocket", "TSort", "Tempfile", "Test", "Timeout",
-    "UDPSocket", "UNIXServer", "UNIXSocket", "URI", "Vector", "WeakRef", "YAML", "Zlib",
     NULL
   };
   if (!n) return 1;
   for (int i = 0; names[i]; i++) if (sp_streq(names[i], n)) return 1;
+  if (bc_stdlib_name(n)) return 1;
   return builtin_class_id(n) != 0 || is_builtin_class_name(n) || is_builtin_module_name(n) ||
          is_builtin_exception_name(n);
 }
