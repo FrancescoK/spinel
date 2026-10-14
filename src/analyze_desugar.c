@@ -233,7 +233,7 @@ int desugar_bare_class_self_calls(Compiler *c) {
   static const struct { const char *name; int argc; } surf[] = {
     { "const_get", -1 }, { "superclass", 0 }, { "ancestors", 0 }, { "subclasses", 0 },
     { "include?", 1 }, { "to_s", 0 }, { "inspect", 0 }, { "frozen?", 0 },
-    { "itself", 0 },
+    { "itself", 0 }, { "constants", -1 },
   };
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;

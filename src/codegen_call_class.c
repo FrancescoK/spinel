@@ -3222,6 +3222,23 @@ static int anon_struct_recv_ci(Compiler *c, int recv) {
   return ci >= 0 && ci < c->nclasses && c->classes[ci].is_anon_struct ? ci : -1;
 }
 
+/* Push class CI's constant names (its ancestors' too when INHERIT) onto the
+   PolyArray _t<TA>, as Module#constants lists them. */
+static void emit_class_constants_push(Compiler *c, int ci, int inherit, int ta, Buf *b) {
+  const char *names[128];
+  int n = collect_class_constants(c, ci, inherit, names, 128, 0, 0);
+  /* intern at runtime: a constant name is not otherwise a symbol in the
+     program, so comp_sym_intern here would come too late for the
+     generated name table and the symbol would render empty */
+  for (int k = 0; k < n; k++) {
+    /* a constant not assigned yet is not listed */
+    if (const_has_flag(comp_const(c, names[k]))) buf_printf(b, " if (cst_%s__set)", names[k]);
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", ta);
+    emit_str_literal(b, names[k]);
+    buf_puts(b, ")));");
+  }
+}
+
 int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* SomeClass.superclass -> the parent class as sp_Class value */
   if (recv >= 0 && argc == 0 && sp_streq(name, "superclass") &&
@@ -3652,27 +3669,39 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
                          sp_streq(nt_type(nt, recv), "ConstantPathNode"))
                         ? nt_str(nt, recv, "name") : NULL;
       int rci = rcn ? comp_class_index(c, rcn) : -1;
+      /* `self.constants` (a bare `constants` is given self by desugar): in a
+         class body self is that class; in a class method it is the class or
+         a subclass the method was called on, answered by a switch on its
+         class id */
+      int self_ci = -1;
+      if (!rcn && nt_kind(nt, recv) == NK_SelfNode && id < c->node_cap) {
+        Scope *s = comp_scope_of(c, id);
+        if (s && s->name && s->is_cmethod && s->class_id >= 0) self_ci = s->class_id;
+        else if (!s || !s->name) rci = c->node_cbody[id];
+      }
       int inherit = 1;
       if (argc == 1) {
         const char *aty = nt_type(nt, argv[0]);
         if (aty && sp_streq(aty, "FalseNode")) inherit = 0;
-        else if (!aty || !sp_streq(aty, "TrueNode")) rci = -1;  /* non-literal: leave it */
+        else if (!aty || !sp_streq(aty, "TrueNode")) rci = self_ci = -1;  /* non-literal: leave it */
       }
-      if (rci >= 0) {
-        const char *names[128];
-        int n = collect_class_constants(c, rci, inherit, names, 128, 0, 0);
+      if (rci >= 0 || self_ci >= 0) {
         int ta = ++g_tmp;
         buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
-        /* intern at runtime: a constant name is not otherwise a symbol in the
-           program, so comp_sym_intern here would come too late for the
-           generated name table and the symbol would render empty */
-        for (int k = 0; k < n; k++) {
-          /* a constant not assigned yet is not listed */
-          if (const_has_flag(comp_const(c, names[k]))) buf_printf(b, " if (cst_%s__set)", names[k]);
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", ta);
-          emit_str_literal(b, names[k]);
-          buf_puts(b, ")));");
+        if (self_ci >= 0) {
+          buf_puts(b, " switch (("); emit_expr(c, recv, b); buf_puts(b, ").cls_id) {");
+          for (int k = 0; k < c->nclasses; k++) {
+            if (k == self_ci || !is_descendant(c, k, self_ci)) continue;
+            buf_printf(b, " case %d:", k);
+            emit_class_constants_push(c, k, inherit, ta, b);
+            buf_puts(b, " break;");
+          }
+          buf_puts(b, " default:");
+          emit_class_constants_push(c, self_ci, inherit, ta, b);
+          buf_puts(b, " }");
         }
+        else
+          emit_class_constants_push(c, rci, inherit, ta, b);
         buf_printf(b, " _t%d; })", ta);
         return 1;
       }
