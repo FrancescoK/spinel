@@ -7366,7 +7366,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       const char *q0 = block_param_name(c, block, 0), *q1 = block_param_name(c, block, 1);
       Scope *bsc = comp_scope_of(c, block);
       int body = nt_ref(nt, block, "body");
-      int te = ++g_tmp, tf = ++g_tmp, ti = ++g_tmp, tv = ++g_tmp, ti2 = ++g_tmp;
+      int te = ++g_tmp, tf = ++g_tmp, ti = ++g_tmp, tv = ++g_tmp, ti2 = ++g_tmp, tbv = ++g_tmp;
       Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, er, &rb);
       emit_indent(b, indent);
       buf_printf(b, "{ sp_Enumerator *_t%d = %s; SP_GC_ROOT(_t%d);\n", te, rb.p ? rb.p : "NULL", te);
@@ -7387,15 +7387,19 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
                  tf, te, tf, tf, te);
       emit_indent(b, indent + 1);
       buf_printf(b, "sp_int _t%d = 0, _t%d = 0; sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", ti, ti2, tv, tv);
+      /* the block's value, which the generator's `y.yield` answers when the
+         fiber resumes */
+      emit_indent(b, indent + 1);
+      buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tbv, tbv);
       emit_indent(b, indent + 1);
       buf_puts(b, "for (;;) {\n");
       emit_indent(b, indent + 2);
       if (tres)
-        buf_printf(b, "if (_t%d) { if (!sp_Fiber_alive(_t%d)) break; _t%d = sp_Fiber_resume(_t%d, sp_box_nil()); if (!sp_Fiber_alive(_t%d)) { _t%d = _t%d; break; } }\n",
-                   tf, tf, tv, tf, tf, tres, tv);
+        buf_printf(b, "if (_t%d) { if (!sp_Fiber_alive(_t%d)) break; _t%d = sp_Fiber_resume(_t%d, _t%d); if (!sp_Fiber_alive(_t%d)) { _t%d = _t%d; break; } }\n",
+                   tf, tf, tv, tf, tbv, tf, tres, tv);
       else
-        buf_printf(b, "if (_t%d) { if (!sp_Fiber_alive(_t%d)) break; _t%d = sp_Fiber_resume(_t%d, sp_box_nil()); if (!sp_Fiber_alive(_t%d)) break; }\n",
-                   tf, tf, tv, tf, tf);
+        buf_printf(b, "if (_t%d) { if (!sp_Fiber_alive(_t%d)) break; _t%d = sp_Fiber_resume(_t%d, _t%d); if (!sp_Fiber_alive(_t%d)) break; }\n",
+                   tf, tf, tv, tf, tbv, tf);
       emit_indent(b, indent + 2);
       /* (a bytewise walk reads the String's byte at its cursor) */
       if (live_walk) {
@@ -7431,7 +7435,13 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
         else emit_unbox_text(c, lvq->type, vx, b);
         buf_puts(b, ";\n");
       }
-      emit_loop_body(c, body, b, indent + 2);
+      if (body >= 0) {
+        char dst[24]; snprintf(dst, sizeof dst, "_t%d", tbv);
+        Buf *sv_pre = g_pre; int sv_ind = g_indent;
+        g_pre = b; g_indent = indent + 2;
+        emit_block_value_into(c, block, dst, 1, indent + 2);
+        g_pre = sv_pre; g_indent = sv_ind;
+      }
       emit_indent(b, indent + 1);
       buf_puts(b, "}\n");
       if (tres) {
