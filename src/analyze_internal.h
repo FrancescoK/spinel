@@ -623,6 +623,7 @@ int desugar_symbol_to_proc_call(Compiler *c);
 int desugar_call_op_write(Compiler *c);
 int desugar_reopened_op_write(Compiler *c);
 int desugar_array_at(Compiler *c);
+int desugar_unused_block_arg(Compiler *c);
 int desugar_unpack_block(Compiler *c);
 int desugar_interp_reopened_to_s(Compiler *c);
 int desugar_array_first_last(Compiler *c);
