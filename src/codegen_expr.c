@@ -3205,38 +3205,19 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       if (sp_streq(nm, "BINARY") || sp_streq(nm, "ASCII_8BIT")) {
         buf_puts(b, "sp_box_encoding(sp_encoding_binary())"); return 1;
       }
+      /* The Unicode version the runtime's tables follow (lib/regexp/unicase.h
+         is generated from Unicode 17.0.0), a String as in CRuby */
+      if (sp_streq(nm, "UNICODE_VERSION")) { emit_str_literal(b, "17.0.0"); return 1; }
       /* Every other Encoding constant is a named Encoding value the runtime
          does not transcode to or from (String#encode leaves the bytes alone
-         for it). It used to be an undefined constant, which never showed
-         while `encode` ignored its argument; the CRuby name is the constant's
-         with `_` as `-`, except the handful CRuby spells otherwise. */
-      { static const char *const ENC[][2] = {
-          {"SHIFT_JIS","Shift_JIS"}, {"SJIS","Shift_JIS"}, {"WINDOWS_31J","Windows-31J"},
-          {"CP932","Windows-31J"}, {"EUC_JP","EUC-JP"}, {"EUCJP","EUC-JP"}, {"UTF_16","UTF-16"},
-          {"UTF_16BE","UTF-16BE"}, {"UTF_16LE","UTF-16LE"}, {"UTF_32","UTF-32"},
-          {"UTF_32BE","UTF-32BE"}, {"UTF_32LE","UTF-32LE"}, {"ISO_8859_1","ISO-8859-1"},
-          {"ISO8859_1","ISO-8859-1"}, {"WINDOWS_1252","Windows-1252"}, {"CP1252","Windows-1252"},
-          {"UTF_7","UTF-7"}, {"BIG5","Big5"}, {"GBK","GBK"}, {"GB18030","GB18030"},
-          {"EUC_KR","EUC-KR"}, {"KOI8_R","KOI8-R"}, {NULL,NULL} };
-        const char *ename = NULL;
-        for (int k = 0; ENC[k][0]; k++) if (sp_streq(nm, ENC[k][0])) { ename = ENC[k][1]; break; }
-        char dashed[96];
-        if (!ename) {
-          int ok = 1; size_t i = 0;
-          for (; nm[i] && i + 1 < sizeof dashed; i++) {
-            char ch = nm[i];
-            if (!((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_')) { ok = 0; break; }
-            dashed[i] = ch == '_' ? '-' : ch;
-          }
-          dashed[i] = 0;
-          if (ok && i > 0) ename = dashed;
-        }
-        if (ename) {
-          buf_puts(b, "sp_box_encoding((sp_Encoding){");
-          emit_str_literal(b, ename);   /* marker-framed, like every literal */
-          buf_puts(b, "})");
-          return 1;
-        }
+         for it), under the name CRuby gives the encoding the constant names.
+         A name that is no encoding's is left undefined, as in CRuby. */
+      const char *ename = encoding_const_name(nm);
+      if (ename) {
+        buf_puts(b, "sp_box_encoding((sp_Encoding){");
+        emit_str_literal(b, ename);   /* marker-framed, like every literal */
+        buf_puts(b, "})");
+        return 1;
       }
     }
     if (par_nmc && sp_streq(par_nmc, "File") && nm) {

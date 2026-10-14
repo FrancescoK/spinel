@@ -8945,13 +8945,11 @@ static int infer_constant_path(Compiler *c, int id, const NodeTable *nt, NodeKin
                sp_streq(nm, "NOENCODING"))) { *out = TY_INT; return 1; }
   }
   if (par_nm && sp_streq(par_nm, "Encoding") && nm) {
-    /* every ALL_CAPS Encoding constant is a boxed Encoding value: the two
-       the runtime transcodes and every other name it only carries (see the
-       codegen arm) */
-    int caps = 1;
-    for (const char *q = nm; *q; q++)
-      if (!((*q >= 'A' && *q <= 'Z') || (*q >= '0' && *q <= '9') || *q == '_')) { caps = 0; break; }
-    if (caps && *nm) { *out = TY_POLY; return 1; }
+    /* the Unicode version is a String; an encoding's name or alias is a
+       boxed Encoding value: the two the runtime transcodes and every other
+       name it only carries (see the codegen arm) */
+    if (sp_streq(nm, "UNICODE_VERSION")) { *out = TY_STRING; return 1; }
+    if (encoding_const_name(nm) || sp_streq(nm, "UTF8")) { *out = TY_POLY; return 1; }
   }
   if (par_nm && sp_streq(par_nm, "File")) {
     if (nm && (sp_streq(nm, "SEPARATOR") || sp_streq(nm, "PATH_SEPARATOR") ||

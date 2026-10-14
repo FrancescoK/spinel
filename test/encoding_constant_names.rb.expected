@@ -1,0 +1,9 @@
+"17.0.0"
+String
+#<Encoding:UTF-8>
+#<Encoding:BINARY (ASCII-8BIT)>
+#<Encoding:US-ASCII>
+["ISO-8859-1", "UTF-8", "Windows-31J", "Shift_JIS", "EUC-JP"]
+true
+true
+NameError
