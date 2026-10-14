@@ -20644,9 +20644,15 @@ static int share_lift_value(Compiler *c, int v) {
   if (k == NK_StringNode) return 0;
   /* a String-typed value, a conditional's included, is boxed whole */
   if (k != NK_BeginNode && infer_type(c, v) == TY_STRING) {
-    if (c->poly_strbuf_lift[v]) return 0;
-    c->poly_strbuf_lift[v] = 1;
-    return 1;
+    int changed = 0;
+    if (!c->poly_strbuf_lift[v]) { c->poly_strbuf_lift[v] = 1; changed = 1; }
+    /* a `||` or `&&` marked whole marks its operands too, as one of mixed
+       types does below: the box of each is what an enclosing logic node or
+       the return unboxes (an_boxed_logic_ok accepts them as it does). A
+       conditional's arms are lifted by its own box (emit_boxed_cond_arms) */
+    if (k == NK_OrNode || k == NK_AndNode)
+      changed |= share_lift_arms(c, nt_ref(nt, v, "left")) | share_lift_arms(c, nt_ref(nt, v, "right"));
+    return changed;
   }
   /* a conditional value of mixed types: each arm that can be a String (the
      boxed slot's value boxes each arm on its own). A `case`, `case`/`in`

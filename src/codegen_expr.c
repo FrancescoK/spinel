@@ -4284,6 +4284,15 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
   }
   return 0;
 }
+/* Is `left` a `||`, `&&` or conditional (parentheses aside) whose String
+   the rule hands on as a handle, so an enclosing chain holds it boxed by
+   that handle, as emit_boxed_cond_arms boxes it? */
+static int logic_left_carries(Compiler *c, int left) {
+  int u = unwrap_parens(c, left);
+  NodeKind k = u >= 0 ? nt_kind(c->nt, u) : NK_NONE;
+  if (k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode) return strbuf_value_carries(c, u);
+  return (k == NK_IfNode || k == NK_UnlessNode) && strbuf_cond_has_handle_leaf(c, u, 0);
+}
 
 /* And/or, a rescue modifier and a begin block in value position (emit_expr_node's arms, in their order) */
 static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
@@ -4378,10 +4387,12 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
        boxed again were a new String. So is a String left a store lifts
        (poly_strbuf_lift: a seeded String method's tail `s || v`), boxed by
        the handle it publishes, not from its bytes. */
+    char lt_ref[1024];
     int lt_hbox = repr_share_rule(c) && res == TY_POLY &&
                   (lt == TY_STRBUF ||
-                   (lt == TY_STRING && (face_str_bang_call(c, left) ||
-                                        (repr_of(c, left).poly_lift && repr_call_returns_handle(c, left)))));
+                   (lt == TY_STRING && (face_str_bang_call(c, left) || strbuf_var_handle(c, left, lt_ref, sizeof lt_ref) ||
+                                        (repr_of(c, unwrap_parens(c, left)).poly_lift &&
+                                         (repr_call_returns_handle(c, left) || logic_left_carries(c, left))))));
     if (lt_hbox) lt = TY_POLY;
     int t = ++g_tmp;
     int lt_falsy_const = (lt == TY_NIL || lt == TY_VOID);  /* a nil/void left has no C-typed value */

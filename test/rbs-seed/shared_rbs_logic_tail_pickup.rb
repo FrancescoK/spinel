@@ -6,7 +6,11 @@
 # not from its bytes, which held no handle and gave the caller a copy. The
 # tail was refused for that reason; a caller that changes the buffer after
 # the call sees the change through the answer (CRuby 4.0: the same object).
-# An operand that answers a new String is boxed as a new handle.
+# An operand that answers a new String is boxed as a new handle. An operand
+# nested in another `||` or `&&` or in a conditional (`(s || t) || v`,
+# `(s && @t) || v`, `(v ? s : t) || v`) keeps the handle it answers, and so
+# does a left operand that is an ivar or a local whose slot holds the handle
+# (`@t || v`, `x = t; x || ident(v)`).
 # spinel: rbs-seed-check
 module LtConf
   class << self
@@ -105,3 +109,70 @@ a = LtApp.new(b)
 y = pass(a.or_fresh(nil))
 b << "!"
 p [y, y.equal?(b)]
+
+class LtApp2
+  def initialize(s, t)
+    @s = s
+    @t = t
+  end
+
+  def s = @s
+  def t = @t
+  def falsev = false
+  def ident(x) = x
+
+  def nest_left(v)
+    (s || t) || v
+  end
+
+  def nest_and(v)
+    (s && @t) || v
+  end
+
+  def nest_or3
+    (s or @t or falsev)
+  end
+
+  def nest_swap(v)
+    (v && s) || t
+  end
+
+  def nest_cond(v)
+    (v ? s : t) || v
+  end
+
+  def ivar_left(v)
+    @t || v
+  end
+
+  def local_left(v)
+    x = t
+    x || ident(v)
+  end
+end
+
+def check2(label, a, b, o, y)
+  a << "!"
+  b << "@"
+  o << "#"
+  p [label, y, y.equal?(a), y.equal?(b), y.equal?(o)]
+end
+
+def run2(label)
+  a = +"ab"
+  a << "c"
+  b = +"pq"
+  b << "r"
+  o = +"oo"
+  o << "p"
+  y = yield LtApp2.new(a, b)
+  check2(label, a, b, o, y)
+end
+
+run2(:nest_left) { |app| pass(app.nest_left(nil)) }
+run2(:nest_and) { |app| pass(app.nest_and(nil)) }
+run2(:nest_or3) { |app| pass(app.nest_or3) }
+run2(:nest_swap) { |app| pass(app.nest_swap(1)) }
+run2(:nest_cond) { |app| pass(app.nest_cond(nil)) }
+run2(:ivar_left) { |app| pass(app.ivar_left(nil)) }
+run2(:local_left) { |app| pass(app.local_left(nil)) }
