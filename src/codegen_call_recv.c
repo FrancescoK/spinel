@@ -4178,7 +4178,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
              emitter hoists there. */
           int subm = sb_sub;
           if (subm) buf_puts(g_pre ? g_pre : b, "sp_re_sub_matched = 0; ");
-          nt_node_set_str((NodeTable *)nt, id, "name", sb_plain);
+          char *sv_nmB = nt_node_swap_str((NodeTable *)nt, id, "name", sb_plain);
           Buf nbB; memset(&nbB, 0, sizeof nbB);
           int vC = -1, nC = 0;
           if (rd_call) {
@@ -4214,7 +4214,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
             view_unbind(g_n_argov - 1);
             for (int k = nC - 1; k >= 0; k--) view_pop(c, vC + k);
           }
-          nt_node_set_str((NodeTable *)nt, id, "name", sb_bang);
+          nt_node_restore_str((NodeTable *)nt, id, "name", sv_nmB);
           /* The "did it change?" test has to run BEFORE the write: _tob is
              sp_String_cstr, a pointer INTO the buffer rather than a snapshot
              of it, so comparing after set_bin compared the new content with
@@ -4263,7 +4263,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_printf(b, "if (sp_str_is_frozen_val(_t%d)) sp_raise_frozen_str(_t%d); ", to, to);
       int subm2 = sb_sub;   /* gsub!/sub!: nil means no substitution, see above */
       if (subm2) buf_puts(g_pre ? g_pre : b, "sp_re_sub_matched = 0; ");
-      nt_node_set_str((NodeTable *)nt, id, "name", sb_plain);
+      char *sv_nm = nt_node_swap_str((NodeTable *)nt, id, "name", sb_plain);
       Buf nb; memset(&nb, 0, sizeof nb);
       int nbind = lvw || held || hbind >= 0 ? -1 : view_bind(recv, "_t%d", to);
       int sv_sb = g_sub_bang_id;   /* the wrapper or a block form's local, as above */
@@ -4278,7 +4278,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       else if (subm2) snprintf(sm, sizeof sm, " && !sp_re_sub_matched");
       if (nbind >= 0) view_unbind(nbind);
       if (hbind >= 0) view_unbind(hbind);
-      nt_node_set_str((NodeTable *)nt, id, "name", sb_bang);
+      nt_node_restore_str((NodeTable *)nt, id, "name", sv_nm);
       buf_printf(b, "const char *_t%d = %s; ", tn2, nb.p ? nb.p : "");
       free(nb.p);
       /* --share-strings: a write into a shared handle changes the
@@ -4887,11 +4887,11 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       /* (a block it is given goes unused: call_unused_block) */
       int blk0 = nt_ref(nt0, id, "block"), drop0 = blk0 >= 0 && call_unused_block(c, id) >= 0;
       if (recv0 >= 0 && an0 == 1 && ty_is_array(comp_ntype(c, recv0)) && (blk0 < 0 || drop0)) {
-        nt_node_set_str((NodeTable *)nt0, id, "name", "[]");
+        char *sv_nm0 = nt_node_swap_str((NodeTable *)nt0, id, "name", "[]");
         if (drop0) nt_node_set_ref((NodeTable *)nt0, id, "block", -1);
         int h = emit_array_call(c, id, b);
         if (drop0) nt_node_set_ref((NodeTable *)nt0, id, "block", blk0);
-        nt_node_set_str((NodeTable *)nt0, id, "name", "slice");
+        nt_node_restore_str((NodeTable *)nt0, id, "name", sv_nm0);
         if (h) return 1;
       }
     }
@@ -13259,7 +13259,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     /* the block form of each_with_index returns the RECEIVER hash in CRuby,
        not the pair array the redispatch iterates (#2417) */
     int ewi = svn && sp_streq(svn, "each_with_index") && nt_ref(c->nt, id, "block") >= 0;
-    if (fa) nt_node_set_str((NodeTable *)c->nt, id, "name", "select");
+    char *sv_nm = fa ? nt_node_swap_str((NodeTable *)c->nt, id, "name", "select") : NULL;
     if (ewi) {
       Buf db; memset(&db, 0, sizeof db);
       emit_call(c, id, &db);
@@ -13273,7 +13273,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "; })");
     }
     else emit_call(c, id, b);
-    if (fa) nt_node_set_str((NodeTable *)c->nt, id, "name", "find_all");
+    if (fa) nt_node_restore_str((NodeTable *)c->nt, id, "name", sv_nm);
     view_pop(c, v);
     view_unbind(g_n_argov - 1);
     return 1;
@@ -14205,7 +14205,7 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, int pub, Buf *
   view_bind(recv, "_t%d", tob);
   int v = view_push(c, recv, TY_STRING);
   int vb = boxed ? view_push(c, id, TY_STRING) : -1;
-  nt_node_set_str((NodeTable *)nt, id, "name", plain);
+  char *sv_nm = nt_node_swap_str((NodeTable *)nt, id, "name", plain);
   Buf nbb; memset(&nbb, 0, sizeof nbb); emit_call(c, id, &nbb);
   /* the transform read the receiver's bytes and sp_poly_str_become hands the
      result to its handle below: those reads are no copy. The answer of a bang
@@ -14213,7 +14213,7 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, int pub, Buf *
      makes a new String: only a dropped answer is declared, one answered
      as the receiver's box, and a method's tail that publishes it (pub). */
   if (g_share_check && (boxed || pub || share_node_transient(c, id))) share_check_declare_reads(&nbb, 0, recv);
-  nt_node_set_str((NodeTable *)nt, id, "name", bang);
+  nt_node_restore_str((NodeTable *)nt, id, "name", sv_nm);
   if (vb >= 0) view_pop(c, vb);
   view_pop(c, v);
   view_unbind(g_n_argov - 1);
@@ -14355,9 +14355,9 @@ int emit_boxed_class_aref(Compiler *c, int id, Buf *b) {
     Buf *sv_pre = g_pre;
     Buf npre; memset(&npre, 0, sizeof npre);
     g_pre = &npre;
-    nt_node_set_str((NodeTable *)nt, id, "name", "new");
+    char *sv_nm = nt_node_swap_str((NodeTable *)nt, id, "name", "new");
     Buf nb; memset(&nb, 0, sizeof nb); emit_call(c, id, &nb);
-    nt_node_set_str((NodeTable *)nt, id, "name", "[]");
+    nt_node_restore_str((NodeTable *)nt, id, "name", sv_nm);
     int sv_skip = g_aref_cls_skip;
     g_aref_cls_skip = id;
     Buf apre; memset(&apre, 0, sizeof apre);
@@ -16606,9 +16606,9 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
                  tsv, tsv, tsv, tsv, tsv);
       int rmark = g_n_argov;
       view_bind(recv, "_t%d", tsv);
-      nt_node_set_str((NodeTable *)nt, id, "name", "[]");
+      char *sv_nm = nt_node_swap_str((NodeTable *)nt, id, "name", "[]");
       Buf ib; memset(&ib, 0, sizeof ib); emit_call(c, id, &ib);
-      nt_node_set_str((NodeTable *)nt, id, "name", "slice");
+      nt_node_restore_str((NodeTable *)nt, id, "name", sv_nm);
       view_unbind(rmark);
       buf_puts(b, ib.p ? ib.p : "sp_box_nil()");
       free(ib.p);

@@ -908,9 +908,9 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        through a temporary rename of the call. */
     if (ty_is_hash(lrt)) {
       Buf eqb; memset(&eqb, 0, sizeof eqb);
-      nt_node_set_str((NodeTable *)nt, id, "name", "==");
+      char *sv_nm = nt_node_swap_str((NodeTable *)nt, id, "name", "==");
       emit_expr(c, id, &eqb);
-      nt_node_set_str((NodeTable *)nt, id, "name", "<=>");
+      nt_node_restore_str((NodeTable *)nt, id, "name", sv_nm);
       oint_open(c, id, TY_INT, b);
       buf_printf(b, "((%s) ? sp_oint_of(0) : sp_oint_nil())", eqb.p ? eqb.p : "0");
       oint_close(c, id, b);
