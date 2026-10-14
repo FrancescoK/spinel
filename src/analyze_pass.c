@@ -5370,6 +5370,44 @@ static int want_poly_hash(Compiler *c, int v) {
   return 1;
 }
 
+int method_value_leaves(Compiler *c, int mi, int *out, int cap);
+int backprop_call_target(Compiler *c, int call_id);
+static int method_has_other_body(Compiler *c, int mi);
+/* A call to a user method whose every answer is a hash literal builds a new
+   hash each time: those literals are built as the poly-keyed variant, for a
+   slot that holds keys of more than one kind. A method a subclass overrides,
+   or one defined again, answers any of its bodies' values: each body is held
+   to the same. Returns 1 on a change; -1 when the call is not such a
+   method's. */
+static int widen_returned_hashes(Compiler *c, int call) {
+  const NodeTable *nt = c->nt;
+  call = unwrap_parens(c, call);
+  if (call < 0 || nt_kind(nt, call) != NK_CallNode || nt_ref(nt, call, "block") >= 0) return -1;
+  int mi = backprop_call_target(c, call);
+  if (mi < 0) return -1;
+  Scope *m = &c->scopes[mi];
+  int other = method_has_other_body(c, mi);
+  int lits[64], nl = 0;
+  for (int t = other ? 1 : mi; t < (other ? c->nscopes : mi + 1); t++) {
+    Scope *o = &c->scopes[t];
+    if (t != mi && !(o->name && m->name && sp_streq(o->name, m->name) && o->is_cmethod == m->is_cmethod &&
+                     (o->class_id == m->class_id ||
+                      (o->class_id >= 0 && m->class_id >= 0 && is_descendant(c, o->class_id, m->class_id)))))
+      continue;
+    if (o->ret_rbs_seeded || o->ret_specialized || o->cs_synth || o->is_lowered_yield) return -1;
+    int lv[16];
+    int n = method_value_leaves(c, t, lv, 16);
+    if (n <= 0 || nl + n > 64) return -1;
+    for (int i = 0; i < n; i++) {
+      if (nt_kind(nt, lv[i]) != NK_HashNode) return -1;
+      lits[nl++] = lv[i];
+    }
+  }
+  int changed = 0;
+  for (int i = 0; i < nl; i++) changed |= want_poly_hash(c, lits[i]);
+  return changed;
+}
+
 /* A callee stores into the hash argument `arg` names what its variant cannot
    hold: the caller's own hash has to be the poly-keyed variant. Widens the
    hashes the argument's slot is built from, and the slot, where every write
@@ -5380,6 +5418,7 @@ static int widen_arg_hash(Compiler *c, int arg) {
   arg = unwrap_parens(c, arg);
   NodeKind ak = nt_kind(nt, arg);
   if (ak == NK_HashNode) return want_poly_hash(c, arg);
+  if (ak == NK_CallNode) { int w = widen_returned_hashes(c, arg); if (w >= 0) return w; }
   const char *an = nt_str(nt, arg, "name");
   Scope *asc = an ? comp_scope_of(c, arg) : NULL;
   if (!asc) return 0;
@@ -5392,6 +5431,13 @@ static int widen_arg_hash(Compiler *c, int arg) {
     if (al->is_param) {
       if (al->rbs_seeded) return 0;
       lv_set_type(al, TY_POLY_POLY_HASH); al->push_widened = 1;
+      /* its default builds the hash here: built as the same variant */
+      for (int pi = 0; pi < asc->nparams; pi++) {
+        if (!asc->pnames[pi] || !sp_streq(asc->pnames[pi], an) || asc->pdefault[pi] < 0) continue;
+        int dv = asc->pdefault[pi];
+        if (nt_kind(nt, dv) == NK_HashNode) want_poly_hash(c, dv);
+        else widen_returned_hashes(c, dv);
+      }
       return 1;
     }
     int si = (int)(asc - c->scopes), saw = 0;
@@ -7869,6 +7915,15 @@ int infer_default_param_types(Compiler *c) {
           continue;
         }
         if ((ty_is_array(w) || ty_is_obj_array(w)) && w != TY_POLY_ARRAY) { comp_set_arr_want(c, dv, TY_POLY_ARRAY); changed = 1; }
+      }
+      /* The body widened the parameter to the poly-keyed hash (a key of
+         another type stored into it): a hash literal default is created
+         here, so it is built as that variant, as a caller's literal is,
+         and so are the literals a method called for it answers. */
+      LocalVar *hp = scope_local(sc, sc->pnames[i]);
+      if (hp && !hp->rbs_seeded && hp->type == TY_POLY_POLY_HASH) {
+        if (nt_kind(c->nt, dv) == NK_HashNode) changed |= want_poly_hash(c, dv);
+        else if (widen_returned_hashes(c, dv) > 0) changed = 1;
       }
       TyKind dt = infer_type(c, dv);
       /* An empty hash `{}` default returns TY_UNKNOWN from infer_type; treat
