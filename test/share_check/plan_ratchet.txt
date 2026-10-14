@@ -59,8 +59,6 @@ test/share/share_strings_bang_args_run_first.rb	test/share/share_strings_bang_ar
 test/share/share_strings_bang_args_run_first.rb	test/share/share_strings_bang_args_run_first.rb:22	ParenthesesNode (-)	plan handle (live), C bytes (take, element)
 test/share/share_strings_bang_args_run_first.rb	test/share/share_strings_bang_args_run_first.rb:23	ParenthesesNode (-)	plan handle (live), C bytes (take, element)
 test/share/share_strings_bang_args_run_first.rb	test/share/share_strings_bang_args_run_first.rb:23	ParenthesesNode (-)	plan handle (live), C bytes (take, element)
-test/share/share_strings_bang_boxed_or.rb	test/share/share_strings_bang_boxed_or.rb:11	AndNode (-)	plan wrap (live), C handle (take, block tail)
-test/share/share_strings_bang_boxed_or.rb	test/share/share_strings_bang_boxed_or.rb:7	OrNode (-)	plan refuse, C handle (take, block tail)
 test/share/share_strings_bang_chain_safenav.rb	test/share/share_strings_bang_chain_safenav.rb:12	LocalVariableReadNode (s)	plan handle (live), C bytes (take, receiver)
 test/share/share_strings_bang_fresh_receiver.rb	test/share/share_strings_bang_fresh_receiver.rb:10	CallNode (pick)	plan wrap, C bytes (take, receiver)
 test/share/share_strings_bang_fresh_receiver.rb	test/share/share_strings_bang_fresh_receiver.rb:13	CallNode (pick)	plan wrap (live), C bytes (take, receiver)

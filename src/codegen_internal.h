@@ -211,6 +211,9 @@ int strbuf_value_kind(Compiler *c, int v, int *op);
 /* Kernel#loop with a literal block (its value a break's); the method a
    spliced yielding call v runs (codegen_stmt.c) */
 int strbuf_route_loop(Compiler *c, int v);
+/* --share-strings: is v a proc's answer read as a String, which the proc
+   hands back boxed (`pr.call`)? (codegen_stmt.c) */
+int strbuf_proc_call_box(Compiler *c, int v);
 int strbuf_inline_mi(Compiler *c, int v);
 const NativeMethod *strbuf_native_answer(Compiler *c, int n);
 int strbuf_io_outbuf(Compiler *c, int id);

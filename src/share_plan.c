@@ -169,7 +169,8 @@ static int share_plan_exc_super(Compiler *c, int v) {
      7. the route the analysis checks a carry against
         (share_node_carry_kind, which names each route by its kind: a
         callee that publishes the handle, a reader, a write, a value route
-        over an operand, a block's value, a conditional ...);
+        over an operand, a block's value, a conditional ...), and a `||` or
+        `&&` with a bang on a boxed receiver on an arm (SPK_COND);
      8. parentheses or statements: their last statement (SPK_SEQUENCE).
    Anything else has its bytes only (SPK_NONE). */
 static int share_plan_producer_at(Compiler *c, int v, int *op) {
@@ -198,6 +199,9 @@ static int share_plan_producer_at(Compiler *c, int v, int *op) {
   if (share_plan_exc_super(c, v)) return SPK_EXC_SUPER;
   int k = share_node_carry_kind(c, v, op);
   if (k != SPK_NONE) return k;
+  /* (a `||` or `&&` with a bang on a boxed receiver on an arm, which the
+     faces take arm by arm: strbuf_face_bang_cond) */
+  if (strbuf_face_bang_cond(c, v)) return SPK_COND;
   NodeKind nk = v >= 0 ? nt_kind(nt, v) : NK_NONE;
   if (nk == NK_ParenthesesNode || nk == NK_StatementsNode) {
     int b = nk == NK_ParenthesesNode ? nt_ref(nt, v, "body") : v, bn = 0;
