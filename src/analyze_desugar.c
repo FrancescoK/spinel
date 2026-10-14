@@ -7287,6 +7287,15 @@ int desugar_value_callable_forwards(Compiler *c) {
       arity = 1;
       pty[0] = rt;
     }
+    else if (sp_streq(name, "synchronize") && (rt == TY_MUTEX || rt == TY_POLY) &&
+             !recv_may_reach_program_method(c, rt, name)) {
+      /* Mutex#synchronize and Monitor#synchronize yield nothing and answer
+         the block's value. Their arm runs a literal block's body under the
+         lock and has no proc form, so `m.synchronize(&block)` locked, ran
+         nothing and answered nil (#9123). A boxed receiver (a Mutex read
+         out of an Array) takes the same arm through its runtime check. */
+      arity = 0;
+    }
     else {
       arity = ty_block_yield(rt, name, pty, 4);
       if (arity < 1) continue;  /* not a context-free iterator (or recv unresolved) */
