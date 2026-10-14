@@ -15,6 +15,7 @@ module CextRecord
             strcmp strncmp strcpy strncpy strcat strchr strrchr strstr
             __stack_chk_fail __stack_chk_guard __memcpy_chk __memmove_chk
             __memset_chk __strcpy_chk __strncpy_chk __strcat_chk].freeze
+  OUTLINE_ATOMICS = /\A__aarch64_(?:cas|swp|ld(?:add|clr|eor|set))(?:1|2|4|8|16)_(?:relax|acq|rel|acq_rel|sync)\z/
   # Match C tokens after preprocessing, not source-text strings/comments.
   TOKEN = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[A-Za-z_][A-Za-z_0-9]*|(?:0[xX][0-9a-fA-F]+|[0-9]+)[uUlL]*|[^\s]/m
   module_function
@@ -180,7 +181,7 @@ module CextRecord
           end
         end
       end
-      unknown = undefined.uniq - defined - LIBC
+      unknown = (undefined.uniq - defined - LIBC).grep_v(OUTLINE_ATOMICS)
       raise Refusal, "#{unknown.sort.join(', ')}: external API is outside the deterministic recorder subset" unless unknown.empty?
       main = File.join(dir, "main.c")
       File.write(main, "#include \"recorder.h\"\nvoid #{init}(void);\nint main(void) { sp_cext_record_begin(\"#{name}\"); #{init}(); sp_cext_record_finish(); return 0; }\n")
