@@ -3450,7 +3450,21 @@ else {
 static int body_stmt_assigns_civ(const NodeTable *nt, int n, const char *ivname) {
   if (n < 0) return 0;
   NodeKind k = nt_kind(nt, n);
-  if (k == NK_InstanceVariableWriteNode) return sp_streq(nt_str(nt, n, "name"), ivname);
+  if (k == NK_InstanceVariableWriteNode || k == NK_InstanceVariableTargetNode ||
+      k == NK_InstanceVariableOrWriteNode || k == NK_InstanceVariableAndWriteNode ||
+      k == NK_InstanceVariableOperatorWriteNode)
+    return nt_str(nt, n, "name") && sp_streq(nt_str(nt, n, "name"), ivname);
+  /* `@a, @b = 1, 2`: each target, nested ones too */
+  if (k == NK_MultiWriteNode || k == NK_MultiTargetNode) {
+    static const char *const parts[] = { "lefts", "rights", NULL };
+    for (int p = 0; parts[p]; p++) {
+      int m = 0; const int *t = nt_arr(nt, n, parts[p], &m);
+      for (int i = 0; i < m; i++) if (body_stmt_assigns_civ(nt, t[i], ivname)) return 1;
+    }
+    int rest = nt_ref(nt, n, "rest");
+    if (rest >= 0 && nt_kind(nt, rest) == NK_SplatNode) rest = nt_ref(nt, rest, "expression");
+    return body_stmt_assigns_civ(nt, rest, ivname);
+  }
   if (k == NK_StatementsNode) {
     int m = 0; const int *st = nt_arr(nt, n, "body", &m);
     for (int i = 0; i < m; i++) if (body_stmt_assigns_civ(nt, st[i], ivname)) return 1;
@@ -3579,12 +3593,8 @@ void register_attrs_body(Compiler *c, ClassInfo *cls, int body) {
                                                 : cls->sg_writers[j - cls->nsg_readers];
         char ivname[256];
         snprintf(ivname, sizeof ivname, "@%s", base);
-        for (int k2 = 0; k2 < n; k2++) {
-          const char *wty = nt_type(nt, stmts[k2]);
-          if (!wty || !sp_streq(wty, "InstanceVariableWriteNode")) continue;
-          const char *wnm = nt_str(nt, stmts[k2], "name");
-          if (wnm && sp_streq(wnm, ivname)) { comp_add_sg_civ(cls, base); break; }
-        }
+        for (int k2 = 0; k2 < n; k2++)
+          if (body_stmt_assigns_civ(nt, stmts[k2], ivname)) { comp_add_sg_civ(cls, base); break; }
         if (!comp_is_sg_civ(cls, base) && cmethod_names_ivar(c, (int)(cls - c->classes), ivname))
           comp_add_sg_civ(cls, base);
       }
