@@ -6573,13 +6573,16 @@ static int emit_pm_subcond_expr(Compiler *c, int spat, const char *elem, Buf *b)
    inside a condition. */
 static void pm_deconstructed(const char *v, Buf *b) {
   int t = ++g_tmp;
+  /* (a MatchData is asked for its captures, a no-match one being nil) */
   buf_printf(b, "({ sp_RbVal _t%d = %s;"
-                " if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id >= 0"
+                " if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_MATCHDATA && _t%d.v.p)"
+                " _t%d = sp_box_poly_array(sp_MatchData_captures((sp_MatchData *)_t%d.v.p));"
+                " else if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id >= 0"
                 " && !sp_poly_is_array_kind(_t%d.cls_id)"
                 " && (sp_obj_deconstruct_fn || sp_obj_to_a_fn))"
                 " _t%d = sp_obj_deconstruct_fn ? sp_obj_deconstruct_fn(_t%d)"
                 " : sp_obj_to_a_fn(_t%d); _t%d; })",
-             t, v, t, t, t, t, t, t, t);
+             t, v, t, t, t, t, t, t, t, t, t, t, t, t);
 }
 
 /* Recursive match condition for a (possibly nested) array pattern over the

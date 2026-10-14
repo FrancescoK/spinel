@@ -17493,6 +17493,10 @@ static sp_PolyPolyHash *sp_poly_as_pp_hash(sp_RbVal v, const char *nm) {
    other value as it is. Time was left as it is, so `in {year:}` never
    matched a Time read out of a container. */
 static sp_RbVal sp_poly_pat_keyed(sp_RbVal v) {
+  /* a MatchData read out of a box answers its named captures (a no-match
+     one is nil, which a hash pattern does not match) */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_MATCHDATA && v.v.p)
+    return sp_box_obj(sp_md_named_captures_sym((sp_MatchData *)v.v.p), SP_BUILTIN_SYM_POLY_HASH);
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_TIME && v.v.p)
     return sp_box_obj(sp_time_deconstruct_all(*(sp_Time *)v.v.p), SP_BUILTIN_SYM_POLY_HASH);
   if (v.tag == SP_TAG_OBJ && v.cls_id >= 0 && !sp_poly_is_hash_kind(v.cls_id) && sp_obj_to_h_fn)

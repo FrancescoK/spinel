@@ -788,6 +788,25 @@ def md_patterns(f)
    (case m; in {} then :h; in nil then :nil; else :else; end)]
 end
 
+# A MatchData-or-nil subject (a boxed one) that holds a real match, and an Array
+# of such elements, against the array and hash patterns.
+def md_or_nil(f) = f ? "xy".match(/(x)/) : nil
+
+def md_boxed(f)
+  m = md_or_nil(f)
+  [(case m; in nil then :nil; in [x] then x; end),
+   (case m; in nil then :nil; in {} then :h; end)]
+end
+
+def md_elements
+  ["a1", "bb", "c3"].map { |str| str.match(/([a-z])(\d)/) }.map do |m|
+    case m
+    in [l, d] then [l, d]
+    in nil then :nil
+    end
+  end
+end
+
 x = Holder.new
 a = x.all
 x.set
@@ -847,3 +866,6 @@ end
 puts "fiber raise set: #{fb.raise(mk_ex(true)).inspect}"
 puts "md nil: #{md_patterns(false).inspect}"
 puts "md set: #{md_patterns(true).inspect}"
+puts "md boxed set: #{md_boxed(true).inspect}"
+puts "md boxed nil: #{md_boxed(false).inspect}"
+puts "md elements: #{md_elements.inspect}"
