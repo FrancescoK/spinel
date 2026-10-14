@@ -199,6 +199,9 @@ typedef struct {
 } StrbufFlowMemo;
 int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int v);
 int strbuf_call_picks_up(Compiler *c, int id);
+/* ...and does every method such a pickup call v reaches publish its handle
+   (codegen_stmt.c)? */
+int strbuf_pickup_published(Compiler *c, int v);
 int strbuf_self_reader_slot(Compiler *c, int id);
 int strbuf_self_reader_handle(Compiler *c, int id);
 int strbuf_call_reads_handle(Compiler *c, int recv);
