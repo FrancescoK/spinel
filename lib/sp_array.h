@@ -172,6 +172,9 @@ static SP_NOINLINE SP_COLD void sp_IntArray_set_nil(sp_IntArray*a,sp_int i){if(!
 static inline void sp_IntArray_oset(sp_IntArray*a,sp_int i,sp_oint o){if(SP_UNLIKELY(o.nil))sp_IntArray_set_nil(a,i);else sp_IntArray_set(a,i,o.v);}
 static SP_NOINLINE SP_COLD void sp_IntArray_push_nil(sp_IntArray*a){sp_IntArray_push(a,0);if(a->frozen)return;if(!a->nilbits)SP_NILBITS_NEW_A(a);SP_NILBIT_SET_A(a, a->start+a->len-1);}
 static inline void sp_IntArray_push_o(sp_IntArray*a,sp_oint o){if(SP_UNLIKELY(o.nil))sp_IntArray_push_nil(a);else sp_IntArray_push(a,o.v);}
+/* the length cut to n in place (an in-place filter's compaction): the
+   slots past it lose their nil bits, so a later push does not read nil */
+static inline void sp_IntArray_cut(sp_IntArray*a,sp_int n){if(SP_UNLIKELY(a->nilbits)&&n<a->len)sp_nilbits_clear_range(a->nilbits,a->start+n,a->start+a->len);a->len=n;}
 /* The stores of a value that may be nil, as the emitter spelled them before
    the nil moved out of band: macros, not inline functions, since a large
    generated unit sits at gcc's inlining budget and a wrapper the inliner
@@ -359,6 +362,7 @@ static SP_NOINLINE SP_COLD void sp_FloatArray_set_nil(sp_FloatArray*a,sp_int i){
 static inline void sp_FloatArray_oset(sp_FloatArray*a,sp_int i,sp_ofloat o){if(SP_UNLIKELY(o.nil))sp_FloatArray_set_nil(a,i);else sp_FloatArray_set(a,i,o.v);}
 static SP_NOINLINE SP_COLD void sp_FloatArray_push_nil(sp_FloatArray*a){sp_FloatArray_push(a,0.0);if(a->frozen)return;if(!a->nilbits)SP_NILBITS_NEW_A(a);SP_NILBIT_SET_A(a, a->len-1);}
 static inline void sp_FloatArray_push_o(sp_FloatArray*a,sp_ofloat o){if(SP_UNLIKELY(o.nil))sp_FloatArray_push_nil(a);else sp_FloatArray_push(a,o.v);}
+static inline void sp_FloatArray_cut(sp_FloatArray*a,sp_int n){if(SP_UNLIKELY(a->nilbits)&&n<a->len)sp_nilbits_clear_range(a->nilbits,n,a->len);a->len=n;}
 /* The Float twins of the IntArray helpers above. */
 #define sp_FloatArray_push_nilable(a, o) sp_FloatArray_push_o((a), (o))
 #define sp_FloatArray_set_nilable(a, i, o) sp_FloatArray_oset((a), (i), (o))

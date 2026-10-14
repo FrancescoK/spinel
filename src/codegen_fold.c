@@ -1590,8 +1590,12 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
     if (bang) {
       int tm = ++g_tmp, tn = ++g_tmp;
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_int _t%d = _t%d->len; _t%d->len = 0; for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push%s(_t%d, sp_%sArray_%s(_t%d, _t%d));\n",
-                 tn, tres, trecv, tm, tm, tn, tm, rk, keep_nil ? "_o" : "", trecv, rk, keep_nil ? "oget" : "get", tres, tm);
+      buf_printf(g_pre, "sp_int _t%d = _t%d->len; ", tn, tres);
+      /* an Integer or Float receiver's nil bits are cut with its length */
+      if (sp_streq(rk, "Int") || sp_streq(rk, "Float")) buf_printf(g_pre, "sp_%sArray_cut(_t%d, 0);", rk, trecv);
+      else buf_printf(g_pre, "_t%d->len = 0;", trecv);
+      buf_printf(g_pre, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push%s(_t%d, sp_%sArray_%s(_t%d, _t%d));\n",
+                 tm, tm, tn, tm, rk, keep_nil ? "_o" : "", trecv, rk, keep_nil ? "oget" : "get", tres, tm);
       buf_printf(b, "_t%d", trecv);
     }
     else {
