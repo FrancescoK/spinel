@@ -1245,6 +1245,13 @@ int is_method_object_name(const char *n) {
 int is_marshal_const(const char *n) { return n && sp_streq(n, "Marshal"); }
 /* ENV, which answers a new String each read */
 int is_env_const(const char *n) { return n && sp_streq(n, "ENV"); }
+/* RUBY_DESCRIPTION and its siblings: a builtin constant that is a frozen
+   String (one object, read after read) */
+int is_engine_string_const(const char *n) {
+  return n && (sp_streq(n, "RUBY_DESCRIPTION") || sp_streq(n, "RUBY_VERSION") || sp_streq(n, "RUBY_PLATFORM") ||
+               sp_streq(n, "RUBY_ENGINE") || sp_streq(n, "RUBY_ENGINE_VERSION") ||
+               sp_streq(n, "RUBY_RELEASE_DATE") || sp_streq(n, "RUBY_REVISION") || sp_streq(n, "RUBY_COPYRIGHT"));
+}
 /* ARGV, whose Strings CRuby freezes */
 int is_argv_const(const char *n) { return n && sp_streq(n, "ARGV"); }
 /* to_proc curry: a proc made of a Symbol, a Method or a proc */

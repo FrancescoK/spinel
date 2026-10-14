@@ -1777,7 +1777,7 @@ int strbuf_yield_tail_held(Compiler *c) {
 }
 /* --share-strings: Kernel#loop with a literal block, whose value is what a
    `break` leaves it with. */
-static int strbuf_route_loop(Compiler *c, int v) {
+int strbuf_route_loop(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   v = unwrap_parens(c, v);
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
@@ -1801,7 +1801,7 @@ static int strbuf_has_return(const NodeTable *nt, int n) {
   }
   return 0;
 }
-static int strbuf_inline_mi(Compiler *c, int v) {
+int strbuf_inline_mi(Compiler *c, int v) {
   const CallPlan *p = cplan_user(c, v);
   if (p->via == UC_REOPEN && repr_self_handle(c, p->mi) && c->scopes[p->mi].yields) return p->mi;
   return call_user_yield_mi(c, v);
@@ -2367,6 +2367,70 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
     return strbuf_native_answer(c, v) || strbuf_call_reads_handle(c, v);
   return strbuf_slot_ref(c, v, ref, sizeof ref);
 }
+/* The String plan's producer kind (share.h's SPK_*) of route v, the arms
+   of strbuf_route_carries in its order, each named by the route it is; 0
+   (SPK_NONE) for a value that is none. *op is the node whose supply an
+   SPK_SELF or SPK_OPERAND route hands on, else -1. A route that answers
+   one of several operands (a String clamp) supplies what each of them
+   does: an SPK_OPERAND with *op -1, whose operands the plan asks
+   (share_plan.c). */
+int strbuf_route_kind(Compiler *c, int v, int *op) {
+  const NodeTable *nt = c->nt;
+  char ref[1024];
+  int ops[3], u = unwrap_parens(c, v);
+  *op = -1;
+  if (strbuf_route_clamp(c, v, ops)) return SPK_OPERAND;
+  /* (a Hash's default setter stores the handle it is given, a new String
+     wrapped as one, and answers it: the route's own) */
+  if (strbuf_hash_default_arg(c, v) >= 0) return SPK_OPERAND;
+  if (strbuf_route_proc_call(c, v)) return SPK_PROC_CALL;
+  if (strbuf_route_ivar_get(c, v)) return SPK_READER;
+  if (strbuf_route_begin(c, v)) return SPK_COND;
+  if (strbuf_route_yield(c, v)) return SPK_YIELD;
+  if (strbuf_route_inline_call(c, v)) return SPK_BLOCK_VALUE;
+  if (strbuf_route_reopen_pf(c, v)) return SPK_PROC_CALL;
+  if (strbuf_route_ie(c, v) || strbuf_route_loop(c, v)) return SPK_BLOCK_VALUE;
+  if (repr_call_returns_handle(c, v)) return SPK_PUBLISHED;
+  if (strbuf_route_exc_message(c, v) || strbuf_route_boxed_exc_message(c, v)) return SPK_EXC_MESSAGE;
+  if (strbuf_route_reader(c, v)) return SPK_READER;
+  if (strbuf_route_srange_kept(c, v)) return SPK_SLOT;
+  if (strbuf_assign_leaf(c, v)) return SPK_ASSIGN;
+  /* a bang on such a route, a receiver-answering call on a value route,
+     a chain over a leaf or a bang, or over a value route, or over freeze
+     on a leaf: each answers its receiver */
+  if (strbuf_bang_leaf(c, v) ||
+      (nt_kind(nt, u) == NK_CallNode && strbuf_route_operand(c, nt_ref(nt, u, "receiver")) >= 0 &&
+       strbuf_bang_self_local(c, u))) {
+    *op = unwrap_parens(c, nt_ref(nt, u, "receiver"));
+    return SPK_SELF;
+  }
+  { int cb = unwrap_parens(c, str_alias_chain_base(c, v)), args[32];
+    if ((cb != u && (strbuf_assign_leaf(c, cb) || strbuf_bang_chain(c, v)) && strbuf_chain_links(c, v, cb, args) > 0) ||
+        strbuf_chain_over_route(c, v, cb, 0)) {
+      *op = cb;
+      return SPK_SELF;
+    }
+    int ab = strbuf_append_base(c, v);
+    if (ab != u && strbuf_freeze_leaf(c, ab)) { *op = ab; return SPK_SELF; } }
+  int x = strbuf_route_operand(c, v);
+  /* then, inject, sum, an ENV store: what the call answers; tap: its
+     receiver */
+  if (x == u) {
+    if (is_tap_name(nt_str(nt, u, "name"))) { *op = unwrap_parens(c, nt_ref(nt, u, "receiver")); return SPK_OPERAND; }
+    return SPK_BLOCK_VALUE;
+  }
+  /* (an operand that hands on the handle, as strbuf_route_carries asks
+     it; one that does not leaves the route none) */
+  if (x >= 0) {
+    if (repr_of(c, x).kind != RK_BOXED && !strbuf_route_carries(c, x, 1) && !strbuf_cond_has_handle_leaf(c, x, 0))
+      return SPK_NONE;
+    *op = x;
+    return SPK_OPERAND;
+  }
+  if (v >= 0 && nt_kind(nt, v) == NK_CallNode)
+    return strbuf_native_answer(c, v) || strbuf_call_reads_handle(c, v) ? SPK_READER : SPK_NONE;
+  return strbuf_slot_ref(c, v, ref, sizeof ref) ? SPK_SLOT : SPK_NONE;
+}
 /* The handle a route (strbuf_route_operand) hands on, as an sp_String *:
    1, or 0 with nothing emitted when v is no route over a handle. Wrapped
    fresh around the route's String read, the holder it reached forked off
@@ -2839,6 +2903,44 @@ int strbuf_value_carries(Compiler *c, int v) {
      parenthesized one does (strbuf_cond_has_handle_leaf) */
   return strbuf_route_carries(c, v, 0) || strbuf_cond_has_handle_leaf(c, v, 0) || strbuf_opwrite_handle(c, v, ref, sizeof ref) ||
          (k != NK_CallNode && repr_write_share(c, v));
+}
+/* The String plan's producer kind (SPK_*) of value v by the arms of
+   strbuf_value_carries, in its order; *op as strbuf_route_kind's. */
+int strbuf_value_kind(Compiler *c, int v, int *op) {
+  char ref[1024];
+  NodeKind k = v >= 0 ? nt_kind(c->nt, v) : NK_NONE;
+  *op = -1;
+  if (!repr_share_rule(c)) return SPK_NONE;
+  if ((k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || repr_static_read_kind(k)) &&
+      strbuf_slot_ref(c, v, ref, sizeof ref))
+    return SPK_SLOT;
+  const char *nm = k == NK_CallNode ? nt_str(c->nt, v, "name") : NULL;
+  int recv = k == NK_CallNode ? unwrap_parens(c, nt_ref(c->nt, v, "receiver")) : -1;
+  if (nm && !is_append_concat(nm) && strbuf_plain_self_call(c, v)) { *op = recv; return SPK_SELF; }
+  if (nm && is_append_concat(nm)) {
+    const char *an = recv >= 0 && nt_kind(c->nt, recv) == NK_CallNode ? nt_str(c->nt, recv, "name") : NULL;
+    if (an && !is_append_concat(an) && strbuf_plain_self_call(c, v)) { *op = recv; return SPK_SELF; }
+    /* (a chain of appends over such a call: the base call's supply) */
+    if (an && is_append_concat(an)) {
+      int cur = v;
+      while (strbuf_append_link(c, cur)) {
+        int nx = unwrap_parens(c, nt_ref(c->nt, cur, "receiver"));
+        const char *nn = nx >= 0 && nt_kind(c->nt, nx) == NK_CallNode ? nt_str(c->nt, nx, "name") : NULL;
+        if (!nn || !is_append_concat(nn)) {
+          if (nx >= 0 && nt_kind(c->nt, nx) == NK_CallNode && strbuf_value_carries(c, nx)) { *op = nx; return SPK_SELF; }
+          return SPK_NONE;
+        }
+        cur = nx;
+      }
+    }
+  }
+  int cb = str_alias_chain_base(c, v);
+  if (cb != v && cb >= 0 && strbuf_var_handle(c, cb, ref, sizeof ref)) { *op = cb; return SPK_SELF; }
+  int rk = strbuf_route_kind(c, v, op);
+  if (rk != SPK_NONE) return rk;
+  if (strbuf_cond_has_handle_leaf(c, v, 0)) return SPK_COND;
+  if (strbuf_opwrite_handle(c, v, ref, sizeof ref) || (k != NK_CallNode && repr_write_share(c, v))) return SPK_WRITE;
+  return SPK_NONE;
 }
 /* --share-strings: does argument v hand a parameter that is the handle its
    String as that handle (emit_strbuf_handle_of answers it): a value route

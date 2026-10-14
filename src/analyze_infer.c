@@ -9869,10 +9869,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     /* `include Math` exposes bare PI/E as Float constants (#2600) */
     if (c->has_include_math && !lv && nm && (sp_streq(nm, "PI") || sp_streq(nm, "E")))
       return TY_FLOAT;
-    if (nm && (sp_streq(nm, "RUBY_DESCRIPTION") || sp_streq(nm, "RUBY_VERSION") ||
-               sp_streq(nm, "RUBY_PLATFORM") || sp_streq(nm, "RUBY_ENGINE") ||
-               sp_streq(nm, "RUBY_ENGINE_VERSION") || sp_streq(nm, "RUBY_RELEASE_DATE") ||
-               sp_streq(nm, "RUBY_REVISION") || sp_streq(nm, "RUBY_COPYRIGHT"))) return TY_STRING;
+    if (is_engine_string_const(nm)) return TY_STRING;
     if (nm && sp_streq(nm, "RUBY_PATCHLEVEL")) return TY_INT;
     if (nm && sp_streq(nm, "ARGV")) return TY_STR_ARRAY;
     if (nm && sp_streq(nm, "ARGF")) return TY_ARGF;

@@ -74,7 +74,8 @@
                where the check cannot follow it; or an identity the plan
                gives the handle, read as bytes the same way (an operand
                read ahead of a comparison of its slot's handle);
-     disagree  anything else, named per node with its consumer.
+     disagree  anything else, named per node with its consumer and its
+               producer's kind (share.h's SPK_*).
    Where the plan's memo can answer the need (the node read as itself), its
    answer is compared with the live one, and a contradiction is counted
    stale. A site where it cannot (a view, an arm, a splice, a node codegen
@@ -765,9 +766,11 @@ static void sk_plan_report(Compiler *c, struct ShareAgree *A) {
         continue;
       }
       if (sk_plan_agrees(form, e)) { agree++; continue; }
-      char what[160];
-      snprintf(what, sizeof what, "plan %s%s, C %s (%s, %s)", share_plan_form_name(form), live ? " (live)" : "",
-               en[e], share_plan_role_name(role), sk_consumer(c, v));
+      /* (and the producer's kind, asked here, after codegen, outside any
+         view or arm) */
+      char what[192];
+      snprintf(what, sizeof what, "plan %s%s, C %s (%s, %s) [%s]", share_plan_form_name(form), live ? " (live)" : "",
+               en[e], share_plan_role_name(role), sk_consumer(c, v), share_plan_kind_name(share_plan_producer(c, v, NULL)));
       sk_line(c, A, "plan: disagree", v, what);
     }
   qsort(A->line, (size_t)A->nline, sizeof(char *), sk_cmp_line);

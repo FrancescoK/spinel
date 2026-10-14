@@ -5431,14 +5431,17 @@ static int sh_poly_to_s_self(const Compiler *c, int u) {
   }
   return dflt && p->ret == TY_POLY;
 }
-/* share.h: does node n hand over the shared handle (or a box holding it),
-   not a copy of its bytes? With by_repr 0, a value represented as the
-   handle (repr_of's RK_STRBUF, or any strbuf_src) is not taken as one by
-   that alone: share_node_carries_route. */
-static int sh_carries(const Compiler *c, int n, int by_repr) {
+/* The kind (share.h's SPK_*) of the route by which node n hands over the
+   shared handle (or a box holding it), not a copy of its bytes, or
+   SPK_NONE: the carry share_node_carries_handle checks, arm by arm; *op as
+   share_plan_producer's. With by_repr 0, a value represented as the handle
+   (repr_of's RK_STRBUF, or any strbuf_src) is not taken as one by that
+   alone: the String plan reads the representation itself. */
+static int sh_carry_kind(const Compiler *c, int n, int by_repr, int *op) {
+  *op = -1;
   /* The return route takes the handle its callee publishes, including
      when a borrowed parameter is returned beside a method-owned String. */
-  if (repr_call_returns_handle((Compiler *)c, n)) return 1;
+  if (repr_call_returns_handle((Compiler *)c, n)) return SPK_PUBLISHED;
   /* freeze answers its receiver: it hands on the handle where its receiver
      does, and a new String's freeze is a String no other name holds */
   int u = an_unparen(c->nt, n);
@@ -5446,7 +5449,10 @@ static int sh_carries(const Compiler *c, int n, int by_repr) {
       call_plain_argc((Compiler *)c, u) == 0 && nt_ref(c->nt, u, "block") < 0 &&
       cplan_user((Compiler *)c, u)->dispatch == CP_NONE) {
     int r = nt_ref(c->nt, u, "receiver");
-    if (r >= 0 && (share_value_fresh((Compiler *)c, r, 0) || share_node_carries_handle(c, r))) return 1;
+    if (r >= 0 && (share_value_fresh((Compiler *)c, r, 0) || share_node_carries_handle(c, r))) {
+      *op = an_unparen(c->nt, r);
+      return SPK_SELF;
+    }
   }
   /* A call on a boxed receiver each of whose arms publishes its String's
      handle: an attr reader of a field that holds the handle (its arm reads
@@ -5464,7 +5470,7 @@ static int sh_carries(const Compiler *c, int n, int by_repr) {
       else if (a->kind == PA_USER) all = a->mi > 0 && scope_ret_handle((Compiler *)c, a->mi);
       else all = 0;
     }
-    if (all) return 1;
+    if (all) return SPK_POLY_ARMS;
   }
   /* An attr reader of a boxed field on a receiver of one class: a field
      whose class the rule shares stores its Strings as the handle
@@ -5481,28 +5487,28 @@ static int sh_carries(const Compiler *c, int n, int by_repr) {
       char ivn[260]; snprintf(ivn, sizeof ivn, "@%s", rn);
       ClassInfo *ci = &c->classes[kd >= 0 ? kd : ty_object_class(rt)];
       int ix = comp_ivar_index(ci, ivn);
-      if (ix >= 0 && ci->ivar_types[ix] == TY_POLY) return 1;
+      if (ix >= 0 && ci->ivar_types[ix] == TY_POLY) return SPK_READER;
     }
   }
   Repr r = repr_of(c, n);
   /* A boxed holder's read keeps what its incoming flows stored there. */
-  if (r.kind == RK_BOXED && strbuf_boxed_local((Compiler *)c, n)) return 1;
+  if (r.kind == RK_BOXED && strbuf_boxed_local((Compiler *)c, n)) return SPK_BOX;
   /* So does a boxed field's read through a receiverless attr reader,
      `self->iv_x` (implicit_self_is_field_read), as the arm above takes one
      with a receiver: a box allocates no copy. Its type can widen to the box
      after the route was recorded on a String. */
   if (r.kind == RK_BOXED && u >= 0 && nt_kind(c->nt, u) == NK_CallNode && nt_ref(c->nt, u, "receiver") < 0 &&
       implicit_self_is_field_read((Compiler *)c, u))
-    return 1;
+    return SPK_BOX;
   /* A boxed to_s answering a String receiver's own box carries what the
      receiver's box does. */
   if (r.kind == RK_BOXED && u >= 0 && sh_poly_to_s_self(c, u))
-    return share_node_carries_handle(c, nt_ref(c->nt, u, "receiver"));
+    return share_node_carries_handle(c, nt_ref(c->nt, u, "receiver")) ? SPK_BOX : SPK_NONE;
   /* The boxed unary-plus arm keeps a mutable String's handle and copies
      a frozen one, exactly as the typed value route does. */
   if (r.kind == RK_BOXED && nt_kind(c->nt, n) == NK_CallNode &&
       is_unary_plus(nt_str(c->nt, n, "name")) &&
-      cplan_user((Compiler *)c, n)->dispatch == CP_NONE) return 1;
+      cplan_user((Compiler *)c, n)->dispatch == CP_NONE) return SPK_BOX;
   /* A boxed append answers its receiver's box, appended in place: a chain
      over a base that carries (`(+v) << x`) keeps that base's handle. */
   if (r.kind == RK_BOXED && nt_kind(c->nt, n) == NK_CallNode) {
@@ -5511,19 +5517,28 @@ static int sh_carries(const Compiler *c, int n, int by_repr) {
            is_append_concat(nt_str(c->nt, cur, "name")) && call_plain_argc((Compiler *)c, cur) == 1 &&
            nt_ref(c->nt, cur, "block") < 0 && cplan_targets((Compiler *)c, cur, tg, CPT_MAX) == 0)
       cur = unwrap_parens((Compiler *)c, nt_ref(c->nt, cur, "receiver"));
-    if (cur >= 0 && cur != n && repr_of(c, cur).kind == RK_BOXED && share_node_carries_handle(c, cur)) return 1;
+    if (cur >= 0 && cur != n && repr_of(c, cur).kind == RK_BOXED && share_node_carries_handle(c, cur)) return SPK_BOX;
   }
   /* a bang method on a handle local: a write hands over the local's handle
      (emit_strbuf_value) */
-  return (by_repr && (r.kind == RK_STRBUF || r.strbuf_src != RS_NONE)) || sh_bang_self_slot(c, n) ||
-         /* a boxed variable's read lifted into the handle (poly_strbuf_lift) */
-         r.poly_lift ||
-         /* A yielding call's result and a receiver-returning expression
-            use the same handle routes as their eventual store. */
-         strbuf_value_carries((Compiler *)c, n);
+  if (by_repr && (r.kind == RK_STRBUF || r.strbuf_src != RS_NONE)) return SPK_SLOT;
+  if (sh_bang_self_slot(c, n)) {
+    *op = an_unparen(c->nt, nt_ref(c->nt, n, "receiver"));
+    return SPK_SELF;
+  }
+  /* a boxed variable's read lifted into the handle (poly_strbuf_lift) */
+  if (r.poly_lift) return SPK_LIFT;
+  /* A yielding call's result and a receiver-returning expression
+     use the same handle routes as their eventual store. */
+  return strbuf_value_kind((Compiler *)c, n, op);
 }
-int share_node_carries_handle(const Compiler *c, int n) { return sh_carries(c, n, 1); }
-int share_node_carries_route(const Compiler *c, int n) { return sh_carries(c, n, 0); }
+/* share.h: does node n hand over the shared handle (or a box holding it),
+   not a copy of its bytes? */
+int share_node_carries_handle(const Compiler *c, int n) {
+  int op;
+  return sh_carry_kind(c, n, 1, &op) != SPK_NONE;
+}
+int share_node_carry_kind(const Compiler *c, int n, int *op) { return sh_carry_kind(c, n, 0, op); }
 
 /* The class of node n's value (with elems, of its elements), or -1. */
 static int sh_node_root(const ShareFacts *F, int n, int elems) {
