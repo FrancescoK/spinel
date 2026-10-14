@@ -1604,9 +1604,21 @@ int poly_cls_value_cands(Compiler *c, int id, const char *name, int argc, const 
   for (int k = 0; A->argv && k < argc; k++)
     if (nt_kind(nt, A->argv[k]) == NK_SplatNode) splat = k;
   *wants_blk = 0;
+  /* the Class values the receiver can hold, when the walk bounds them: a
+     class method of any other class is unreachable (Shellwords.split for a
+     value that is a String or Integer), and its arm would put that method's
+     answer into a slot typed for the others */
+  const char *cvals = poly_recv_class_values(c, id);
   for (int ki = 0; ki < ncc8; ki++) {
     int k = cc8[ki].cls;
     if (is_builtin_reopen(c->classes[k].name)) continue;
+    if (cvals) {
+      /* a value of the class or of a class under it (which inherits it) */
+      int held = 0;
+      for (int v = 0; v < c->nclasses && !held; v++)
+        held = cvals[v] && (v == k || is_descendant(c, v, k));
+      if (!held) continue;
+    }
     int kmi = cc8[ki].mi;
     /* a yielding candidate is called through its proc form (#3399) */
     int kpf = scope_proc_form_of(c, kmi);

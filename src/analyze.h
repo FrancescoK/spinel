@@ -19,6 +19,10 @@ int poly_ivar_set_reaches(Compiler *c, int call, int k);
    of them, or NULL when the analysis cannot bound them (analyze_scope.c) */
 /* Kernel#String uses its argument as the conversion's implicit receiver. */
 const int *poly_recv_classes(Compiler *c, int call, int *n);
+/* The classes and modules the same receiver can be ITSELF, as a value (a
+   constant naming one, `{b: Integer}`), marked in a set over the class
+   table, or NULL when the walk cannot bound the receiver's values */
+const char *poly_recv_class_values(Compiler *c, int call);
 /* Can that receiver be a builtin value as well (nil, a literal, a builtin
    class's instance), which no class it lists stands for? 1 also when the
    walk cannot bound it. */
