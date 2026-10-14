@@ -24,7 +24,8 @@
    value -- keeps it, changes it, compares it, hands it on (SPR_TAKE); it
    reads its bytes and keeps nothing, as an interpolation does, or a
    freeze of a variable's String, which reaches the String through the
-   variable (SPR_READ); it only asks whether it is nil or false, as a predicate does (SPR_TEST);
+   variable, or a String iterator's Enumerator walked where it is made
+   (SPR_READ); it only asks whether it is nil or false, as a predicate does (SPR_TEST);
    or, for an element of the Array literal a multiple write splits (also
    through a splat, `a, b = *[s, t]`), the target the element is stored
    into takes it (SPR_STORE), where the literal is no container; or it
@@ -596,9 +597,14 @@ static int share_plan_freeze_read(Compiler *c, int n) {
 }
 
 /* The roles of the receivers that a builtin call only reads: a freeze of
-   a variable's String (share_plan_freeze_read). */
+   a variable's String (share_plan_freeze_read), and a blockless String
+   iterator whose Enumerator is walked where it is made
+   (str_each_enum_walked_here): the walk reads the String as it is there,
+   and the Enumerator's source box dies with the expression. One that
+   outlives it holds the handle, and its receiver stays a taker. */
 static void share_plan_reader_roles(Compiler *c, int n) {
-  if (share_plan_freeze_read(c, n)) share_plan_role_mark(c, nt_ref(c->nt, n, "receiver"), SPR_READ);
+  if (share_plan_freeze_read(c, n) || str_each_enum_walked_here(c, n))
+    share_plan_role_mark(c, nt_ref(c->nt, n, "receiver"), SPR_READ);
 }
 
 /* The roles other than a taker's, from the consumers that have them: an
