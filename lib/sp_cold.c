@@ -2621,7 +2621,7 @@ sp_int sp_file_write_perm(const char *path, const char *data, const char *mode, 
   size_t n = sp_str_byte_len(data ? data : sp_str_empty);
   size_t w = fwrite(data ? data : "", 1, n, f->fp);
   int err = (w < n || ferror(f->fp) || fflush(f->fp) != 0) ? (errno ? errno : EIO) : 0;
-  sp_File_close(f);
+  if (sp_File_close(f) != 0 && !err) err = errno ? errno : EIO;
   if (err) {
     errno = err;
     sp_raise_cls(err == ENOSPC ? "Errno::ENOSPC" : "SystemCallError",

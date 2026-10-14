@@ -640,8 +640,7 @@ sp_int sp_File_close(sp_File *f) {
        the FILE (see sp_File_fin); a for_fd wrapper holds a dup, so its
        fclose never reaches the caller's descriptor (#4208) */
     if (f->no_autoclose && !f->fno_plus1) { fflush(fp); return 0; }
-    fclose(fp);
-    return 0;
+    return fclose(fp) == 0 ? 0 : -1;
   }
   if (f && f->fp && !f->closed) sp_sched_ev_forget(fileno(f->fp));
   return 0;
