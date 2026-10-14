@@ -495,6 +495,20 @@ SharePlan share_plan_with_need(Compiler *c, int v, int role, int need) {
   return p;
 }
 
+/* Asked live, as the return walk runs before the memo exists. */
+int share_plan_return_box(Compiler *c, int v) {
+  if (!repr_share_rule(c) || !c->share || v < 0) return 0;
+  switch (nt_kind(c->nt, v)) {
+  case NK_IfNode: case NK_UnlessNode: case NK_CaseNode: case NK_CaseMatchNode: case NK_BeginNode:
+  case NK_ParenthesesNode: case NK_StatementsNode: case NK_OrNode: case NK_AndNode:
+  case NK_RescueModifierNode: case NK_WhileNode: case NK_UntilNode:
+    return 0;
+  default: break;
+  }
+  if (repr_of(c, v).kind != RK_BOXED) return 0;
+  return share_plan_with_need(c, v, SPR_TAKE, share_plan_need(c, v)).form == SPF_HANDLE;
+}
+
 const char *share_plan_role_name(int role) {
   static const char *const names[] = { "take", "read", "test", "store", "identity", "box" };
   return role >= SPR_TAKE && role <= SPR_BOX ? names[role] : "?";

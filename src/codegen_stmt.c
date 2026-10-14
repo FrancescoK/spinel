@@ -11678,11 +11678,20 @@ static int struct_ret_unboxes(TyKind t) {
   const TyTraits *tr = ty_traits_of(t);
   return tr && tr->struct_valued && tr->unbox;
 }
+/* Is node the last statement of a method no signature types, and a box
+   the plan gives as its handle (the tail an_ret_box_tail took)? */
+static int unbox_ret_box_tail(Compiler *c, int node, Scope *ms) {
+  return node == scope_body_last(c, (int)(ms - c->scopes)) && share_plan_return_box(c, node);
+}
 /* Does the String return unboxing a method's tail at node publishes the
-   box's handle (Scope.ret_handle of a method an --rbs seed types String)? */
-static int unbox_ret_pub(Compiler *c, TyKind t, int node) {
+   box's handle (Scope.ret_handle of a method an --rbs seed types String, or
+   a box tail of one no signature types)? */
+static int unbox_ret_pub_p(Compiler *c, TyKind t, int node) {
   Scope *ms = t == TY_STRING && !g_result_var && repr_share_rule(c) ? comp_scope_of(c, node) : NULL;
-  int pub = ms && ms->ret_handle && ms->ret_rbs_seeded;
+  return ms && ms->ret_handle && (ms->ret_rbs_seeded || unbox_ret_box_tail(c, node, ms));
+}
+static int unbox_ret_pub(Compiler *c, TyKind t, int node) {
+  int pub = unbox_ret_pub_p(c, t, node);
   if (pub && g_repr_check) {
     /* (an explicit `return`'s value has no frame of its own yet) */
     int frame = repr_channel_begin(c, node);
@@ -11729,8 +11738,14 @@ static void emit_unbox_ret_text(Compiler *c, TyKind t, const char *expr, Buf *b,
 }
 static void emit_unbox_node(Compiler *c, TyKind t, int node, Buf *b) {
   Buf src; memset(&src, 0, sizeof src);
+  /* (--repr-check: a published tail's frame opens before its expression,
+     whose own emitter then reuses it; opened after, the expression's closes
+     unobserved, a read of a variable noting no publication) */
+  int pub = unbox_ret_pub_p(c, t, node);
+  int frame = pub && g_repr_check ? repr_channel_begin(c, node) : -1;
   emit_expr(c, node, &src);
-  emit_unbox_ret_text(c, t, src.p ? src.p : "", b, unbox_ret_pub(c, t, node));
+  if (pub && g_repr_check) { repr_channel_note(c, node, RCH_PUBLISH); repr_channel_end(c, frame); }
+  emit_unbox_ret_text(c, t, src.p ? src.p : "", b, pub);
   free(src.p);
 }
 /* Whether emit_unbox_ret_text converts a poly value into slot type `t`. */

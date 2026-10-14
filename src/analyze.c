@@ -22205,6 +22205,22 @@ static int an_ret_handle_body(Compiler *c, RetHandles *R, int mi) {
   return !(m->def_node < 0 || (!R->fresh && !m->is_proc_form && (m->yields || m->is_lowered_yield)) ||
            (m->ret != TY_STRING && (!R->fresh || m->ret != TY_POLY)));
 }
+/* Is n, the last statement of a method no signature types (not an arm of
+   it, and no `return`, whose value may wait in an ensure's result slot,
+   which publishes nothing), a box whose String the plan gives as its
+   handle (share_plan_return_box)? The flag's late widening boxes a
+   parameter after the method's String value has settled, so the value is
+   a box its unboxing at the return publishes the handle of
+   (unbox_ret_pub), as a seeded method's is (an_tail_boxed_string); a box
+   with none (a new String, nil) clears the side channel, and it may answer
+   nil. */
+static int an_ret_box_tail(Compiler *c, RetHandles *R, int n, TailCount *tc) {
+  if (R->fresh || c->scopes[tc->mi].ret_rbs_seeded || !share_plan_return_box(c, n)) return 0;
+  if (g_repr_check) repr_channel_predict(c, n, tc->mi, RCH_PUBLISH);
+  tc->reads++;
+  tc->nils++;
+  return 1;
+}
 static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
   if (R->st[mi] != RH_UNSEEN) return R->st[mi] == RH_YES;
   Scope *m = &c->scopes[mi];
@@ -22225,7 +22241,7 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
   TailCount tc = { .fresh_ok = 1, .mi = mi, .param = -1 };
   if (last >= 0) {
     saw = 1;
-    ok = an_tail_handle(c, R, last, &tc);
+    ok = an_ret_box_tail(c, R, last, &tc) || an_tail_handle(c, R, last, &tc);
     /* The implicit append tail publishes its base's handle read too. */
     if (!ok && !R->fresh && an_tail_append_chain(c, last)) { tc.reads++; ok = 1; }
   }

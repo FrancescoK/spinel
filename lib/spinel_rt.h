@@ -18958,7 +18958,9 @@ static inline void sp_proc_fill(sp_int P, sp_int O, sp_int Q, int R, sp_int n, s
    family -- a pointer landing in a scalar slot and the reverse. */
 #ifdef SP_RBS_CHECK
 static sp_RbVal sp_rbs_check(sp_RbVal v, int want, const char *slot, const char *wantname) {
-  if (v.tag == want || v.tag == SP_TAG_NIL) return v;
+  /* (a box of a String changed in place holds its handle, sp_String *, and
+     is a String all the same: sp_poly_unbox_s reads it as one) */
+  if (v.tag == want || v.tag == SP_TAG_NIL || (want == SP_TAG_STR && sp_poly_is_strbuf(v))) return v;
   fprintf(stderr,
           "spinel: --rbs seed violated: %s is declared %s but holds %s\n"
           "  The signature is trusted and the emitted code reinterprets the value.\n"

@@ -2,4 +2,5 @@ class Row
   attr_accessor s: String?
   @n: Integer?
   def take: (Integer) -> Integer
+  def pick: (untyped) -> String
 end
