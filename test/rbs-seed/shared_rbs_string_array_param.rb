@@ -5,7 +5,6 @@
 # holds them. The rule refused each of these ("a typed String container
 # cannot hold the shared handle yet"), and Roundhouse's selector class
 # stopped at "--rbs seed contradicted".
-# spinel: rbs-seed-check
 class ShrbsaSelector
   def initialize(kind, excluded, keys, values, ops)
     @kind = kind

@@ -5,7 +5,6 @@
 # holds them. The rule refused each of these ("a typed String container
 # cannot hold the shared handle yet"), and a Rails application's cookie jar,
 # router and attribute hashes stopped there.
-# spinel: rbs-seed-check
 class ShrbshJar
   def initialize
     @out = {}

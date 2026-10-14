@@ -2913,6 +2913,10 @@ ifeq ($(wildcard $(RBS_INC)/rbs/parser.h),)
 rbs-seed-test:
 	@echo "rbs-seed-test: skipped (vendor/rbs not fetched; run 'make deps')"
 else
+# A program whose check is its output under --share-strings needs no arm here:
+# share-strings-test runs every test/rbs-seed program that has an .expected
+# with its signatures, plain and under GC stress 1. An arm is for a check
+# that output cannot express (a refusal, a diagnostic, the C).
 # contradicted_returns checks a group of refusal fixtures, not one program.
 RBS_SEED_CHECKS := $(patsubst test/rbs-seed/%.rb,%,$(shell grep -l '^\# spinel: rbs-seed-check$$' test/rbs-seed/*.rb)) contradicted_returns
 RBS_SEED_RUN_CHECKS := $(patsubst test/rbs-seed/%.rb,%,$(shell grep -l '^\# spinel: rbs-seed-run$$' test/rbs-seed/*.rb))
@@ -3052,11 +3056,6 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	  cmp -s "$$tmp/nr.out" test/rbs-seed/nilable_return.expected || { echo "rbs-seed-test: FAIL (#4250 nilable seed erased the nil arm)"; diff -u test/rbs-seed/nilable_return.expected "$$tmp/nr.out" || true; ok=0; }; \
 	else echo "rbs-seed-test: FAIL (#4250 nilable_return C did not compile)"; ok=0; fi; \
 	;; \
-	shared_rbs_string_param) \
-	$(SPINEL) test/rbs-seed/shared_rbs_string_param.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srsp" >/dev/null 2>"$$tmp/srsp.err" && \
-	  "$$tmp/srsp" > "$$tmp/srsp.out" 2>/dev/null && cmp -s "$$tmp/srsp.out" test/rbs-seed/shared_rbs_string_param.expected && \
-	  SPINEL_GC_STRESS=1 "$$tmp/srsp" > "$$tmp/srsp.gc" 2>/dev/null && cmp -s "$$tmp/srsp.gc" test/rbs-seed/shared_rbs_string_param.expected || { echo "rbs-seed-test: FAIL (#6765 an --rbs String parameter under --share-strings: refused, or not the shared handle)"; sed -n 1,5p "$$tmp/srsp.err"; ok=0; }; \
-	;; \
 	boxed_key_hash_seed) \
 	for fl in "" --share-strings; do \
 	$(SPINEL) test/rbs-seed/boxed_key_hash_seed.rb --rbs test/rbs-seed/sig $$fl -o "$$tmp/bkh" >/dev/null 2>"$$tmp/bkh.err" && \
@@ -3064,11 +3063,6 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	  SPINEL_GC_STRESS=1 "$$tmp/bkh" > "$$tmp/bkh.gc" 2>/dev/null && cmp -s "$$tmp/bkh.gc" test/rbs-seed/boxed_key_hash_seed.expected || { echo "rbs-seed-test: FAIL (an --rbs Hash[String, Integer] slot given a Hash with a boxed key$${fl:+ under $$fl}: refused, or not the caller's Hash)"; sed -n 1,5p "$$tmp/bkh.err"; ok=0; }; \
 	rm -f "$$tmp/bkh"; \
 	done; \
-	;; \
-	shared_rbs_hash_nil_tail) \
-	$(SPINEL) test/rbs-seed/shared_rbs_hash_nil_tail.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srhn" >/dev/null 2>"$$tmp/srhn.err" && \
-	  "$$tmp/srhn" > "$$tmp/srhn.out" 2>/dev/null && cmp -s "$$tmp/srhn.out" test/rbs-seed/shared_rbs_hash_nil_tail.expected && \
-	  SPINEL_GC_STRESS=1 "$$tmp/srhn" > "$$tmp/srhn.gc" 2>/dev/null && cmp -s "$$tmp/srhn.gc" test/rbs-seed/shared_rbs_hash_nil_tail.expected || { echo "rbs-seed-test: FAIL (#6765 an --rbs '-> Hash[String, String]?' method answering its Hash beside a nil under --share-strings: refused, or not the shared Strings)"; sed -n 1,5p "$$tmp/srhn.err"; ok=0; }; \
 	;; \
 	hash_nil_tail_seed) \
 	for fl in "" --share-strings; do \
@@ -3102,51 +3096,11 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	rm -f "$$tmp/mbs"; \
 	done; \
 	;; \
-	shared_rbs_string_array_param) \
-	$(SPINEL) test/rbs-seed/shared_rbs_string_array_param.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srsa" >/dev/null 2>"$$tmp/srsa.err" && \
-	  "$$tmp/srsa" > "$$tmp/srsa.out" 2>/dev/null && cmp -s "$$tmp/srsa.out" test/rbs-seed/shared_rbs_string_array_param.expected && \
-	  SPINEL_GC_STRESS=1 "$$tmp/srsa" > "$$tmp/srsa.gc" 2>/dev/null && cmp -s "$$tmp/srsa.gc" test/rbs-seed/shared_rbs_string_array_param.expected || { echo "rbs-seed-test: FAIL (#6765 an --rbs Array[String] parameter, reader or ivar under --share-strings: refused, or not the boxed handles)"; sed -n 1,5p "$$tmp/srsa.err"; ok=0; }; \
-	;; \
-	shared_rbs_string_hash) \
-	$(SPINEL) test/rbs-seed/shared_rbs_string_hash.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srsh" >/dev/null 2>"$$tmp/srsh.err" && \
-	  "$$tmp/srsh" > "$$tmp/srsh.out" 2>/dev/null && cmp -s "$$tmp/srsh.out" test/rbs-seed/shared_rbs_string_hash.expected && \
-	  SPINEL_GC_STRESS=1 "$$tmp/srsh" > "$$tmp/srsh.gc" 2>/dev/null && cmp -s "$$tmp/srsh.gc" test/rbs-seed/shared_rbs_string_hash.expected || { echo "rbs-seed-test: FAIL (#6765 an --rbs Hash[String, String] parameter, return or ivar under --share-strings: refused, or not the boxed handles)"; sed -n 1,5p "$$tmp/srsh.err"; ok=0; }; \
-	;; \
-	shared_rbs_void_writer_tail) \
-	$(SPINEL) test/rbs-seed/shared_rbs_void_writer_tail.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srvw" >/dev/null 2>"$$tmp/srvw.err" && \
-	  "$$tmp/srvw" > "$$tmp/srvw.out" 2>/dev/null && cmp -s "$$tmp/srvw.out" test/rbs-seed/shared_rbs_void_writer_tail.expected && \
-	  SPINEL_GC_STRESS=1 "$$tmp/srvw" > "$$tmp/srvw.gc" 2>/dev/null && cmp -s "$$tmp/srvw.gc" test/rbs-seed/shared_rbs_void_writer_tail.expected || { echo "rbs-seed-test: FAIL (#6765 an attribute assignment ending a --rbs '-> nil' writer under --share-strings: refused, or not shared)"; sed -n 1,5p "$$tmp/srvw.err"; ok=0; }; \
-	;; \
 	shared_rbs_string_return_refused) \
 	SP_COLLECT_ERRORS=1 $(SPINEL) test/rbs-seed/shared_rbs_string_return_refused.rb --rbs test/rbs-seed/sig --share-strings -c --no-line-map -o "$$tmp/srsf.c" >/dev/null 2>"$$tmp/srsf.err"; \
 	for m in ens_after ens_reader ens_tail ens_def ens_block; do \
 	  grep -q "the value of \`$$m\` hands on" "$$tmp/srsf.err" || { echo "rbs-seed-test: FAIL (#6765 a seeded String method's $$m was not refused: its tail does not publish the box's handle)"; ok=0; }; \
 	done; \
-	;; \
-	shared_rbs_string_return) \
-	$(SPINEL) test/rbs-seed/shared_rbs_string_return.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srsr" >/dev/null 2>"$$tmp/srsr.err" && \
-	  "$$tmp/srsr" > "$$tmp/srsr.out" 2>/dev/null && cmp -s "$$tmp/srsr.out" test/rbs-seed/shared_rbs_string_return.expected && \
-	  SPINEL_GC_STRESS=1 "$$tmp/srsr" > "$$tmp/srsr.gc" 2>/dev/null && cmp -s "$$tmp/srsr.gc" test/rbs-seed/shared_rbs_string_return.expected || { echo "rbs-seed-test: FAIL (#6765 an --rbs '-> String' method under --share-strings: refused, or not the shared String)"; sed -n 1,5p "$$tmp/srsr.err"; ok=0; }; \
-	;; \
-	shared_rbs_string_boxed_arg) \
-	$(SPINEL) test/rbs-seed/shared_rbs_string_boxed_arg.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srsb" >/dev/null 2>"$$tmp/srsb.err" && \
-	  "$$tmp/srsb" > "$$tmp/srsb.out" 2>/dev/null && cmp -s "$$tmp/srsb.out" test/rbs-seed/shared_rbs_string_boxed_arg.expected && \
-	  SPINEL_GC_STRESS=1 "$$tmp/srsb" > "$$tmp/srsb.gc" 2>/dev/null && cmp -s "$$tmp/srsb.gc" test/rbs-seed/shared_rbs_string_boxed_arg.expected || { echo "rbs-seed-test: FAIL (#6765 an --rbs String parameter or ivar given a boxed String under --share-strings: not the box's handle)"; sed -n 1,5p "$$tmp/srsb.err"; ok=0; }; \
-	;; \
-	shared_rbs_conversion_bytes) \
-	$(SPINEL) test/rbs-seed/shared_rbs_conversion_bytes.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srcb" >/dev/null 2>"$$tmp/srcb.err" && \
-	  "$$tmp/srcb" > "$$tmp/srcb.out" 2>/dev/null && cmp -s "$$tmp/srcb.out" test/rbs-seed/shared_rbs_conversion_bytes.expected && \
-	  SPINEL_GC_STRESS=1 "$$tmp/srcb" > "$$tmp/srcb.gc" 2>/dev/null && cmp -s "$$tmp/srcb.gc" test/rbs-seed/shared_rbs_conversion_bytes.expected || { echo "rbs-seed-test: FAIL (#6765 a String conversion over bytes pushed into a boxed Array under --share-strings: refused, or C that does not build)"; sed -n 1,5p "$$tmp/srcb.err"; ok=0; }; \
-	;; \
-	shared_rbs_string_to_s) \
-	$(SPINEL) test/rbs-seed/shared_rbs_string_to_s.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srts" >/dev/null 2>"$$tmp/srts.err" && \
-	  "$$tmp/srts" > "$$tmp/srts.out" 2>/dev/null && cmp -s "$$tmp/srts.out" test/rbs-seed/shared_rbs_string_to_s.expected && \
-	  SPINEL_GC_STRESS=1 "$$tmp/srts" > "$$tmp/srts.gc" 2>/dev/null && cmp -s "$$tmp/srts.gc" test/rbs-seed/shared_rbs_string_to_s.expected || { echo "rbs-seed-test: FAIL (#6765 an --rbs '(untyped) -> String' method answering its boxed parameter's to_s under --share-strings: refused, or not the shared String)"; sed -n 1,5p "$$tmp/srts.err"; ok=0; }; \
-	;; \
-	shared_rbs_split_tail) \
-	$(SPINEL) test/rbs-seed/shared_rbs_split_tail.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srst" >/dev/null 2>"$$tmp/srst.err" && \
-	  "$$tmp/srst" > "$$tmp/srst.out" 2>/dev/null && cmp -s "$$tmp/srst.out" test/rbs-seed/shared_rbs_split_tail.expected && \
-	  SPINEL_GC_STRESS=1 "$$tmp/srst" > "$$tmp/srst.gc" 2>/dev/null && cmp -s "$$tmp/srst.gc" test/rbs-seed/shared_rbs_split_tail.expected || { echo "rbs-seed-test: FAIL (#6765 an --rbs '-> String' method answering an element of a new String Array under --share-strings: refused, or not the shared String)"; sed -n 1,5p "$$tmp/srst.err"; ok=0; }; \
 	;; \
 	byref_string_param) \
 	$(SPINEL) test/rbs-seed/byref_string_param.rb --rbs test/rbs-seed/sig \

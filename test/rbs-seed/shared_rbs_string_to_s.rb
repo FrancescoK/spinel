@@ -6,7 +6,6 @@
 # box holds a String, and the method publishes it; before, such a user to_s
 # was read before its own answer was decided, the tail answered the box's
 # bytes, and every flow of the answer the rule shares was refused.
-# spinel: rbs-seed-check
 class ShrtsTagger
   def initialize
     @tags = []

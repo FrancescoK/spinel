@@ -9,7 +9,6 @@
 # `"#{key}.#{col}".split(".").last.to_s` into an ivar Array that two writes
 # make boxed). A conversion over a handle (a String parameter the method
 # keeps) still hands that handle on: the element is the caller's String.
-# spinel: rbs-seed-check
 class CvCols
   def initialize
     @cols = []
