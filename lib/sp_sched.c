@@ -965,6 +965,20 @@ static int        g_runnable = 0;        /* threads sitting in any run queue rig
 static int        g_nrunning = 0;        /* workers currently executing a green thread (quiescence) */
 static sp_thread *g_sleepers = NULL;     /* threads parked in Kernel#sleep, woken by deadline */
 static sp_thread *g_io_waiters = NULL;    /* threads parked on a fd, woken by the monitor's poll */
+/* The I/O waiter list is linked both ways (wait_next, io_prev): a server with
+   a thread per connection has one waiter per connection, and every readiness
+   event took its thread off by walking the list from the head, under the
+   scheduler lock -- at 2048 connections that walk was most of the run. */
+static void io_waiters_link(sp_thread *t) {
+  t->io_prev = NULL; t->wait_next = g_io_waiters;
+  if (g_io_waiters) g_io_waiters->io_prev = t;
+  g_io_waiters = t; t->wait_head = &g_io_waiters;
+}
+static void io_waiters_unlink(sp_thread *t) {
+  if (t->io_prev) t->io_prev->wait_next = t->wait_next; else g_io_waiters = t->wait_next;
+  if (t->wait_next) t->wait_next->io_prev = t->io_prev;
+  t->io_prev = NULL;
+}
 static struct pollfd *g_pfds = NULL;     /* monitor's poll set, rebuilt from g_io_waiters each tick */
 static sp_thread    **g_pths = NULL;     /* parallel to g_pfds: the thread waiting on each fd */
 static int            g_pcap = 0;        /* capacity of g_pfds / g_pths */
@@ -1208,8 +1222,7 @@ static int sp_ev_dispatch(int rfd, short rev, int only_home) {
     if (w->wait_head != &g_io_waiters) continue;
     if (only_home >= 0 && sp_ev_home_of(w) != only_home) continue;
     SP_STAT_ADD(g_mon_readied, 1);
-    for (sp_thread **pp = &g_io_waiters; *pp; pp = &(*pp)->wait_next)
-      if (*pp == w) { *pp = w->wait_next; break; }
+    io_waiters_unlink(w);
     sp_timer_cancel(w);
     sp_ev_drop(w);
     w->wait_next = NULL; w->wait_head = NULL;
@@ -2841,13 +2854,15 @@ static void *sp_sysmon_main(void *arg) {
        writes a byte to break us out of poll early), the rest are parked fds.
        Timed I/O waiters use the same timer heap as sleeps and timed condition
        waits; this list is only for readiness registration. */
+#ifdef SP_EV_BACKEND
+    /* the kernel holds the interest set: nothing to build, and have_io below
+       reads the list head, so the waiters need no walk to be counted */
+    if (g_ev_fd < 0)
+#endif
     for (sp_thread **wp = &g_io_waiters; *wp; ) {
       sp_thread *w = *wp;
       wp = &w->wait_next;
       nio++;
-#ifdef SP_EV_BACKEND
-      if (g_ev_fd >= 0) continue;   /* the kernel holds the interest set */
-#endif
       /* one slot per descriptor: the thread's own, or each of its set */
       int nslot = w->io_fd >= 0 ? 1 : w->io_nset;
       for (int si = 0; si < nslot; si++) {
@@ -2939,8 +2954,7 @@ static void *sp_sysmon_main(void *arg) {
           SP_STAT_ADD(g_mon_readied, 1);
           sp_thread *t = g_pths[i];
           if (t->wait_head != &g_io_waiters) continue;   /* unparked meanwhile (e.g. #kill) */
-          for (sp_thread **pp = &g_io_waiters; *pp; pp = &(*pp)->wait_next)
-            if (*pp == t) { *pp = t->wait_next; break; }
+          io_waiters_unlink(t);
           sp_timer_cancel(t);
           t->wait_next = NULL; t->wait_head = NULL; t->io_revents = g_pfds[i].revents; t->io_fd = -1;
           if (t == &g_main_thread) { SP_TH_SET_STATE(t, SP_TH_RUNNABLE); SCHED_WAKE_MAIN(); }
@@ -3135,7 +3149,7 @@ static int sp_sched_wait_io_impl(int fd, short events, struct pollfd *set, int n
   SP_TH_SET_STATE(self, SP_TH_BLOCKED);
   self->off_cpu = 0;
   self->wake_pending = 0;
-  self->wait_next = g_io_waiters; self->wait_head = &g_io_waiters; g_io_waiters = self;
+  io_waiters_link(self);
   SP_STAT_ADD(g_mon_regs, 1);
 #ifdef SP_EV_BACKEND
   int registered = 1;
@@ -3568,8 +3582,10 @@ static void sp_sched_unpark(sp_thread *t) {
 #ifdef SP_EV_BACKEND
   if (t->wait_head == &g_io_waiters) sp_ev_drop(t);
 #endif
-  for (sp_thread **pp = t->wait_head; *pp; pp = &(*pp)->wait_next)
-    if (*pp == t) { *pp = t->wait_next; break; }
+  if (t->wait_head == &g_io_waiters) io_waiters_unlink(t);
+  else
+    for (sp_thread **pp = t->wait_head; *pp; pp = &(*pp)->wait_next)
+      if (*pp == t) { *pp = t->wait_next; break; }
   t->wait_next = NULL;
   t->wait_head = NULL;
 }
