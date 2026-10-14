@@ -1,25 +1,26 @@
-# Spinel bundled `uri` -- the generic/HTTP/HTTPS half.
+# Spinel bundled `uri`.
 #
-# The spelling is CRuby's. What is here is what an HTTP client reaches:
-# `URI(str)`, the component readers, #request_uri and #to_s. What is not here
-# is absent the way a subset is absent things, and a program naming it fails
-# to compile rather than at run time:
+# The spelling is CRuby's. URI.parse answers the class of the scheme --
+# URI::HTTP, HTTPS, FTP, File, WS, WSS, MailTo -- or URI::Generic, with the
+# component readers and writers, #to_s, #request_uri, #merge, #normalize and
+# the rest a parsed URI is read with; URI.split, URI.join, the www-form and
+# URI-component codecs, and DEFAULT_PARSER. What is not here is absent the
+# way a subset is absent things, and a program naming it fails to compile
+# rather than at run time:
 #
-# * only http, https and a bare/relative form parse; there is no URI::FTP,
-#   URI::LDAP, URI::MailTo, URI::WS, or the scheme registry behind them
-# * userinfo, fragment and opaque are parsed and readable; #merge (and #+,
-#   URI.join) resolves a reference, but there is no #merge!, #route_to,
-#   #route_from, #normalize or #select
-# * an absent port reads as 0 when the scheme has no default, where CRuby
-#   answers nil; the other absent components are nil, as in CRuby
-# * URI.encode_www_form_component / .decode_www_form_component are here
-#   because a query builder needs them; the URI.escape family CRuby removed
-#   is not
+# * no URI::LDAP, and no scheme registry (URI.register_scheme,
+#   URI.scheme_list) to add a class to
+# * no #merge!, #route_to, #route_from, #select, #find_proxy, URI.extract or
+#   URI.regexp; the component writers do not validate what they are given
+# * the URI.escape family CRuby removed is not here either
 module URI
   class Error < StandardError
   end
 
   class InvalidURIError < Error
+  end
+
+  class InvalidComponentError < Error
   end
 
   class BadURIError < Error
@@ -116,12 +117,49 @@ module URI
       !@scheme.nil? && !@scheme.empty?
     end
 
+    # The port a scheme's class implies (nil for a scheme with none); a
+    # parsed URI with no port of its own takes it.
+    def self.default_port
+      nil
+    end
+
     def default_port
-      case @scheme
-      when "https" then 443
-      when "http" then 80
-      else 0
-      end
+      self.class.default_port
+    end
+
+    # `URI::Generic.build(scheme: "http", host: "x.com")`: a URI from its
+    # components, of this class whatever the scheme.
+    def self.build(scheme: nil, userinfo: nil, host: nil, port: nil, path: "", query: nil, fragment: nil, opaque: nil)
+      u = new(scheme, userinfo, host, port, path, query, fragment)
+      u.opaque = opaque
+      u
+    end
+
+    # The parts of the userinfo "user:password" either side of its first ":".
+    def user
+      return nil if @userinfo.nil?
+      i = @userinfo.index(":")
+      i ? @userinfo[0, i] : @userinfo
+    end
+
+    def password
+      return nil if @userinfo.nil?
+      i = @userinfo.index(":")
+      i ? @userinfo[(i + 1)..-1] : nil
+    end
+
+    def relative?
+      !absolute?
+    end
+
+    # A copy with the scheme and the host in lower case, and "/" for the
+    # empty path of a URI with a host.
+    def normalize
+      u = dup
+      u.scheme = @scheme.downcase unless @scheme.nil?
+      u.host = @host.downcase unless @host.nil?
+      u.path = "/" if @opaque.nil? && !@host.nil? && (@path.nil? || @path.empty?)
+      u
     end
 
     # What goes on the request line: the path with the query, and "/" when the
@@ -149,7 +187,7 @@ module URI
         s << "#{@userinfo}@" unless @userinfo.nil?
         s << @host.to_s
         # A cleared port (`uri.port = nil`) is omitted, as CRuby omits it.
-        s << ":#{@port}" if !@port.nil? && @port != default_port && @port > 0
+        s << ":#{@port}" if !@port.nil? && @port != default_port
         s << @path.to_s
         s << "?#{@query}" unless @query.nil?
       else
@@ -171,8 +209,7 @@ module URI
       raise BadURIError, "both URI are relative" unless absolute?
 
       base = dup
-      authority = !rel.userinfo.nil? || !rel.host.nil? ||
-                  (!rel.port.nil? && rel.port > 0)
+      authority = !rel.userinfo.nil? || !rel.host.nil? || !rel.port.nil?
 
       # Only a fragment (or nothing at all): this URI with that fragment.
       if (rel.path.nil? || rel.path.empty?) && !authority && rel.query.nil?
@@ -187,7 +224,7 @@ module URI
         # leaves out is the scheme's default, not the base's.
         base.userinfo = rel.userinfo
         base.host = rel.host
-        base.port = !rel.port.nil? && rel.port > 0 ? rel.port : base.default_port
+        base.port = rel.port.nil? ? base.default_port : rel.port
         base.path = rel.path.to_s
       elsif base.opaque.nil?
         base.path = merge_path(base.path.to_s, rel.path.to_s)
@@ -255,7 +292,7 @@ module URI
     public
 
     def inspect
-      "#<#{self.class}: #{self}>"
+      "#<#{self.class} #{self}>"
     end
 
     def ==(other)
@@ -267,17 +304,111 @@ module URI
   # its components rather than from a string. CRuby also takes an Array
   # of components in order, and validates each one; the keyword form is
   # the one an application writes, and validation is absent here the way
-  # it is for the component writers above. The port is left nil unless
-  # given, so #to_s leaves it off exactly as CRuby does for the default.
+  # it is for the component writers above. A port not given is the
+  # scheme's default, which #to_s leaves off, as CRuby does.
   class HTTP < Generic
+    def self.default_port
+      80
+    end
+
     def self.build(userinfo: nil, host: nil, port: nil, path: "", query: nil, fragment: nil)
-      HTTP.new("http", userinfo, host, port, path, query, fragment)
+      HTTP.new("http", userinfo, host, port || 80, path, query, fragment)
     end
   end
 
   class HTTPS < HTTP
+    def self.default_port
+      443
+    end
+
     def self.build(userinfo: nil, host: nil, port: nil, path: "", query: nil, fragment: nil)
-      HTTPS.new("https", userinfo, host, port, path, query, fragment)
+      HTTPS.new("https", userinfo, host, port || 443, path, query, fragment)
+    end
+  end
+
+  # An FTP URI's path is relative to the login directory: it is kept
+  # without the "/" that separates it from the authority, an absolute one
+  # is written with "%2F" in its place, and a trailing ";type=a|i|d" is
+  # its typecode.
+  class FTP < Generic
+    attr_reader :typecode
+
+    def self.default_port
+      21
+    end
+
+    def initialize(scheme, userinfo, host, port, path, query, fragment)
+      super
+      @typecode = nil
+      rel = @path.to_s
+      rel = rel[1..-1].to_s if rel.start_with?("/")
+      rel = "/#{rel[3..-1]}" if rel.start_with?("%2F")
+      ti = rel.index(";type=")
+      if ti
+        @typecode = rel[(ti + 6)..-1]
+        rel = rel[0, ti]
+      end
+      @path = rel
+    end
+
+    def to_s
+      s = String.new
+      s << "#{@scheme}://"
+      s << "#{@userinfo}@" unless @userinfo.nil?
+      s << @host.to_s
+      s << ":#{@port}" if !@port.nil? && @port != default_port
+      rel = @path.to_s
+      s << "/" << (rel.start_with?("/") ? "%2F#{rel[1..-1]}" : rel)
+      s << ";type=#{@typecode}" unless @typecode.nil?
+      s << "?#{@query}" unless @query.nil?
+      s << "##{@fragment}" unless @fragment.nil?
+      s
+    end
+  end
+
+  class File < Generic
+  end
+
+  class WS < Generic
+    def self.default_port
+      80
+    end
+  end
+
+  class WSS < WS
+    def self.default_port
+      443
+    end
+  end
+
+  # `mailto:to?hname=hvalue&...`: the addresses before the "?", and the
+  # headers after it as [name, value] pairs, both as written.
+  class MailTo < Generic
+    def to
+      o = @opaque.to_s
+      i = o.index("?")
+      i ? o[0, i] : o
+    end
+
+    def headers
+      o = @opaque.to_s
+      i = o.index("?")
+      return [] unless i
+      o[(i + 1)..-1].to_s.split("&").map { |h| h.split("=", 2) }
+    end
+  end
+
+  # The class a scheme's URI is parsed as.
+  def self.scheme_class(scheme)
+    case scheme
+    when "http" then HTTP
+    when "https" then HTTPS
+    when "ftp" then FTP
+    when "file" then File
+    when "ws" then WS
+    when "wss" then WSS
+    when "mailto" then MailTo
+    else Generic
     end
   end
 
@@ -309,12 +440,29 @@ module URI
   end
 
   def self.decode_www_form_component(str, enc = Encoding::UTF_8)
+    percent_decode(str, enc, true)
+  end
+
+  # `encode_www_form_component` with a space as "%20", as CRuby's
+  # URI.encode_uri_component answers.
+  def self.encode_uri_component(str)
+    encode_www_form_component(str).gsub("+", "%20")
+  end
+
+  # `decode_www_form_component` with "+" left as it is.
+  def self.decode_uri_component(str, enc = Encoding::UTF_8)
+    percent_decode(str, enc, false)
+  end
+
+  # Each "%" and two hex digits as that byte, and with +plus+ each "+" as a
+  # space; any other "%" is CRuby's ArgumentError.
+  def self.percent_decode(str, enc, plus)
     out = String.new
     s = str.to_s
     i = 0
     while i < s.length
       ch = s[i]
-      if ch == "+"
+      if plus && ch == "+"
         out << " "
         i += 1
       elsif ch == "%"
@@ -496,8 +644,10 @@ module URI
   # opaque part (a scheme followed by no "/", as in "urn:isbn:1") or a
   # hierarchical part -- an optional "//authority", the path, "?query" --
   # and "#fragment". With no scheme it is a relative reference: "c" and
-  # "../d" are paths, and only "//host/x" carries a host.
-  def self.parse(str)
+  # "../d" are paths, and only "//host/x" carries a host. The parts, as
+  # CRuby's URI.split answers them: scheme, userinfo, host, port (as
+  # written), registry, path, opaque, query, fragment.
+  def self.split(str)
     s = str.to_s
     raise InvalidURIError, "bad URI (is not URI?): #{s.inspect}" if invalid_char?(s)
 
@@ -508,7 +658,7 @@ module URI
       s = s[0, fi]
     end
 
-    scheme = ""
+    scheme = nil
     rest = s
     ci = s.index(":")
     if ci && ci > 0 && s[0, ci] =~ /\A[A-Za-z][A-Za-z0-9+\-.]*\z/
@@ -516,10 +666,8 @@ module URI
       rest = s[(ci + 1)..-1].to_s
     end
 
-    if !scheme.empty? && !rest.empty? && !rest.start_with?("/")
-      u = Generic.new(scheme, nil, nil, 0, "", nil, fragment)
-      u.opaque = rest
-      return u
+    if !scheme.nil? && !rest.empty? && !rest.start_with?("/")
+      return [scheme, nil, nil, nil, nil, nil, rest, nil, fragment]
     end
 
     query = nil
@@ -543,7 +691,7 @@ module URI
 
     userinfo = nil
     host = nil
-    port = 0
+    port = nil
     if authority
       ai = authority.index("@")
       if ai
@@ -554,22 +702,27 @@ module URI
       ci = authority.rindex(":")
       if ci && authority[(ci + 1)..-1].to_s =~ /\A[0-9]*\z/
         host = authority[0, ci]
-        port = authority[(ci + 1)..-1].to_i
+        port = authority[(ci + 1)..-1].to_s
       end
     end
+    [scheme, userinfo, host, port, nil, path, nil, query, fragment]
+  end
 
-    if port == 0
-      port = 443 if scheme == "https"
-      port = 80 if scheme == "http"
+  def self.parse(str)
+    scheme, userinfo, host, port, _registry, path, opaque, query, fragment = split(str)
+    klass = scheme_class(scheme)
+    if opaque
+      if klass == MailTo
+        to = opaque.index("?") ? opaque[0, opaque.index("?")] : opaque
+        bad = to.split(",", -1).any? { |a| a !~ /\A[^@\s?]+@[^@\s?]+\z/ }
+        raise InvalidComponentError, "unrecognised opaque part for mailtoURL: #{opaque}" if !to.empty? && bad
+      end
+      u = klass.new(scheme, nil, nil, nil, nil, nil, fragment)
+      u.opaque = opaque
+      return u
     end
-
-    if scheme == "https"
-      HTTPS.new(scheme, userinfo, host, port, path, query, fragment)
-    elsif scheme == "http"
-      HTTP.new(scheme, userinfo, host, port, path, query, fragment)
-    else
-      Generic.new(scheme, userinfo, host, port, path, query, fragment)
-    end
+    pn = port.nil? || port.empty? ? klass.default_port : port.to_i
+    klass.new(scheme, userinfo, host, pn, path, query, fragment)
   end
 
   # #merge's argument: a URI as it is, a String parsed.
@@ -648,6 +801,64 @@ module URI
   end
 
   RFC2396_PARSER = RFC2396_Parser.new
+
+  # The parser URI.parse is (URI::DEFAULT_PARSER): #parse, #split and #join
+  # answer as URI's own, and #escape / #unescape percent-encode what is
+  # neither reserved nor unreserved. #extract, #regexp and #make_regexp
+  # are absent.
+  class RFC3986_Parser
+    def split(uri)
+      URI.split(uri)
+    end
+
+    def parse(uri)
+      URI.parse(uri)
+    end
+
+    def join(*uris)
+      URI.join(*uris)
+    end
+
+    # Each byte of a character outside the unreserved and reserved sets as
+    # "%XX"; with +unsafe+, each match of it instead.
+    def escape(str, unsafe = nil)
+      out = String.new
+      if unsafe
+        str.to_s.gsub(unsafe) { |m| m.bytes.map { |b| format("%%%02X", b) }.join }
+      else
+        str.to_s.each_char do |ch|
+          if ch =~ /\A[\-_.!~*'()a-zA-Z\d;\/?:@&=+$,\[\]]\z/
+            out << ch
+          else
+            ch.bytes.each { |b| out << format("%%%02X", b) }
+          end
+        end
+        out
+      end
+    end
+
+    # Each "%" and two hex digits as that byte; any other "%" stays.
+    def unescape(str)
+      out = String.new
+      s = str.to_s
+      i = 0
+      while i < s.length
+        h1 = s[i] == "%" ? URI.hex_digit(s[i + 1]) : nil
+        h2 = h1 ? URI.hex_digit(s[i + 2]) : nil
+        if h1 && h2
+          out << (h1 * 16 + h2).chr
+          i += 3
+        else
+          out << s[i]
+          i += 1
+        end
+      end
+      out.force_encoding(Encoding::UTF_8)
+    end
+  end
+
+  RFC3986_PARSER = RFC3986_Parser.new
+  DEFAULT_PARSER = RFC3986_PARSER
 
   # `URI.join("http://example.com/a/", "b", "../c")`: the first argument
   # parsed, then each of the rest merged onto it in turn.
