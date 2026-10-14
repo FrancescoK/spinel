@@ -3698,8 +3698,7 @@ static int strh_plain_block_params(Compiler *c, int blk) {
   const NodeTable *nt = c->nt;
   int bp = nt_ref(nt, blk, "parameters");
   if (bp < 0) return 1;
-  const char *bpty = nt_type(nt, bp);
-  if (!bpty || !sp_streq(bpty, "BlockParametersNode")) return 0;
+  if (nt_kind(nt, bp) != NK_BlockParametersNode) return 0;
   int lc = 0;
   nt_arr(nt, bp, "locals", &lc);
   if (lc > 0) return 0;

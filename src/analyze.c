@@ -20978,16 +20978,17 @@ static int strh_value_ignored(Compiler *c, const int *par, int n) {
         /* (the iterators of a builtin receiver, not a user class's own
            `each` or one a reopening redefines; a receiver not typed yet is
            asked again, and refused for good, once it is) */
-        if (sp_streq(nm, "each") || sp_streq(nm, "reverse_each") || sp_streq(nm, "each_with_index"))
+        int owner = builtin_iter_owner(nm);
+        if (owner == BITER_ARRAY)
           return (rt == TY_UNKNOWN || ty_is_array(rt) || rt == TY_STRH_ARRAY || rt == TY_POLY_ARRAY) &&
                  !share_builtin_overridden(c, "Array", nm);
-        if (sp_streq(nm, "times") || sp_streq(nm, "upto") || sp_streq(nm, "downto"))
+        if (owner == BITER_INTEGER)
           return (rt == TY_UNKNOWN || rt == TY_INT) && !share_builtin_overridden(c, "Integer", nm);
-        if (sp_streq(nm, "each_char"))
+        if (owner == BITER_STRING)
           return (rt == TY_UNKNOWN || rt == TY_STRING || rt == TY_STRBUF) && !share_builtin_overridden(c, "String", nm);
         return 0;
       }
-      if (g >= 0 && sp_streq(nt_type(nt, g), "EnsureNode")) return 1;
+      if (g >= 0 && is_ensure_node_type(nt_type(nt, g))) return 1;
       if (gk != NK_IfNode && gk != NK_UnlessNode && gk != NK_ElseNode && gk != NK_BeginNode && gk != NK_RescueNode)
         return 0;
       n = g;
@@ -21029,12 +21030,10 @@ static int strh_elem_use_ok(Compiler *c, const int *par, int e) {
     if (!nm || share_builtin_overridden(c, "String", nm)) return 0;
     /* (a safe navigation skips a nil element, which a test of the handle
        would raise on) */
-    const char *cop = nt_str(nt, p, "call_operator");
-    if (cop && sp_streq(cop, "&.")) return 0;
+    if (call_is_safe_nav(nt, p)) return 0;
     /* (the element can be nil: nil answers a few of these as a String does,
        the rest raise the NoMethodError the element read tests for) */
-    if (is_nil_method(nm) && !sp_streq(nm, "nil?") && !sp_streq(nm, "equal?") && !sp_streq(nm, "==") &&
-        !sp_streq(nm, "!="))
+    if (is_nil_method(nm) && !is_nil_shared_name(nm))
       return 0;
     /* (an append lands in the Array's String where the read is a slot of it:
        a local's Array at an index) */
@@ -21044,19 +21043,19 @@ static int strh_elem_use_ok(Compiler *c, const int *par, int e) {
     }
     int own = bop_answers_self(TY_STRING, nm, argc, nt_ref(nt, p, "block") >= 0);
     return !bop_name_mutates(nm, 0) && !(own & (BOPF_SELF | BOPF_SELF_OR_NIL | BOPF_SELF_CLASS | BOPF_SELF_EXACT)) &&
-           !is_then_alias(nm) && !is_tap_name(nm) && !is_receiver_conversion(nm) && (!is_freeze_family(nm) || sp_streq(nm, "frozen?"));
+           !is_then_alias(nm) && !is_tap_name(nm) && !is_receiver_conversion(nm) && (!is_freeze_family(nm) || is_frozen_query(nm));
   }
-  if (sp_streq(nt_type(nt, p), "ArgumentsNode") && par[p] >= 0 && nt_kind(nt, par[p]) == NK_CallNode) {
+  if (is_arguments_node_type(nt_type(nt, p)) && par[p] >= 0 && nt_kind(nt, par[p]) == NK_CallNode) {
     int pc = par[p], pr = nt_ref(nt, pc, "receiver");
     const char *pn = nt_str(nt, pc, "name");
-    if (pr < 0 && pn && (sp_streq(pn, "p") || sp_streq(pn, "puts") || sp_streq(pn, "print")) &&
+    if (pr < 0 && pn && is_kernel_print_name(pn) &&
         !share_builtin_overridden(c, "Kernel", pn) && !share_builtin_overridden(c, "Object", pn))
       return 1;
     if (pr < 0 || !pn) return 0;
     TyKind rt = comp_ntype(c, pr);
     /* (the identity or equality of a String and an element, nil included) */
     if ((rt == TY_STRING || rt == TY_STRBUF) &&
-        (sp_streq(pn, "equal?") || sp_streq(pn, "==") || sp_streq(pn, "!=")) && !share_builtin_overridden(c, "String", pn))
+        is_identity_compare_name(pn) && !share_builtin_overridden(c, "String", pn))
       return 1;
     int op = rt == TY_STRH_ARRAY || rt == TY_UNKNOWN ? strh_call_op_in(c, pc, TY_STRH_ARRAY, 1) : STRH_NONE;
     return op == STRH_PUSH || op == STRH_STORE;
@@ -21099,10 +21098,10 @@ static int strh_use_ok(Compiler *c, const int *par, int n, int depth) {
   if (pk == NK_EmbeddedStatementsNode ||
       (pk == NK_StatementsNode && par[p] >= 0 && nt_kind(nt, par[p]) == NK_EmbeddedStatementsNode))
     return 1;
-  if (sp_streq(nt_type(nt, p), "ArgumentsNode") && par[p] >= 0 && nt_kind(nt, par[p]) == NK_CallNode) {
+  if (is_arguments_node_type(nt_type(nt, p)) && par[p] >= 0 && nt_kind(nt, par[p]) == NK_CallNode) {
     int pc = par[p], pr = nt_ref(nt, pc, "receiver");
     const char *pn = nt_str(nt, pc, "name");
-    if (pr < 0 && pn && (sp_streq(pn, "p") || sp_streq(pn, "puts") || sp_streq(pn, "print")) &&
+    if (pr < 0 && pn && is_kernel_print_name(pn) &&
         !share_builtin_overridden(c, "Kernel", pn) && !share_builtin_overridden(c, "Object", pn))
       return 1;
     if (pr >= 0 && (comp_ntype(c, pr) == TY_STRH_ARRAY || comp_ntype(c, pr) == TY_UNKNOWN) &&

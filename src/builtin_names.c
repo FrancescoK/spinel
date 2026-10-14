@@ -1315,6 +1315,8 @@ int is_arguments_node_type(const char *t) { return t && sp_streq(t, "ArgumentsNo
 
 int is_when_node_type(const char *t) { return t && sp_streq(t, "WhenNode"); }
 
+int is_ensure_node_type(const char *t) { return t && sp_streq(t, "EnsureNode"); }
+
 /* The encoding `Encoding::<nm>` names, or NULL. CRuby defines a constant
    for every encoding name and alias with `-` and `.` as `_`, as written and
    upcased (Encoding::Shift_JIS, Encoding::ISO_8859_1,
@@ -1360,3 +1362,29 @@ int strh_op(const char *n, int argc, int block) {
   if (argc == 0 && (sp_streq(n, "inspect") || sp_streq(n, "to_s"))) return STRH_INSPECT;
   return STRH_NONE;
 }
+
+int is_kernel_print_name(const char *n) {
+  return n && (sp_streq(n, "p") || sp_streq(n, "puts") || sp_streq(n, "print"));
+}
+
+int is_identity_compare_name(const char *n) {
+  return n && (sp_streq(n, "equal?") || sp_streq(n, "==") || sp_streq(n, "!="));
+}
+
+int is_nil_shared_name(const char *n) {
+  return n && (sp_streq(n, "nil?") || is_identity_compare_name(n));
+}
+
+int builtin_iter_owner(const char *n) {
+  if (!n) return BITER_NONE;
+  if (sp_streq(n, "each") || sp_streq(n, "reverse_each") || sp_streq(n, "each_with_index")) return BITER_ARRAY;
+  if (sp_streq(n, "times") || is_upto_name(n) || sp_streq(n, "downto")) return BITER_INTEGER;
+  if (sp_streq(n, "each_char")) return BITER_STRING;
+  return BITER_NONE;
+}
+
+int is_frozen_query(const char *n) { return n && sp_streq(n, "frozen?"); }
+
+int is_pop_name(const char *n) { return n && sp_streq(n, "pop"); }
+
+int is_first_name(const char *n) { return n && sp_streq(n, "first"); }
