@@ -1833,6 +1833,11 @@ static int fold_container_evidence(TyRef slot, int is_push, int is_splice,
     TyKind hv = ty_hash_of(TY_STRING, vt);
     if (hv == TY_UNKNOWN) hv = TY_STR_POLY_HASH;  /* mixed values */
     if (*slot != TY_UNKNOWN && !ty_is_hash(*slot)) return 0;
+    /* a Hash keyed by another class (a Symbol-keyed one's dup) holds both
+       keys only poly-keyed, as the int-key branch widens: retyping it
+       String-keyed left the value it was assigned no slot to land in, and
+       keeping it dropped the other key */
+    if (*slot != TY_UNKNOWN && ty_hash_key(*slot) != TY_STRING) { ty_ref_set(slot, TY_POLY_POLY_HASH); return 1; }
     /* a str-keyed hash that has seen >1 value type widens to StrPoly */
     if (*slot != TY_UNKNOWN && *slot != hv &&
         (*slot == TY_STR_INT_HASH || *slot == TY_STR_STR_HASH || *slot == TY_STR_POLY_HASH))
@@ -1842,6 +1847,8 @@ static int fold_container_evidence(TyRef slot, int is_push, int is_splice,
   else if (kt == TY_SYMBOL) {
     /* symbol key -> SymPolyHash (boxed values) */
     if (vt == TY_UNKNOWN) return 0;
+    /* into a Hash keyed by another class: poly-keyed, as above */
+    if (ty_is_hash(*slot) && *slot != TY_SYM_POLY_HASH) { ty_ref_set(slot, TY_POLY_POLY_HASH); return 1; }
     if (*slot != TY_UNKNOWN && *slot != TY_SYM_POLY_HASH) return 0;
     ty_ref_set(slot, TY_SYM_POLY_HASH);
   }
