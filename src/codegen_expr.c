@@ -1867,15 +1867,27 @@ static void emit_if_arm_value(Compiler *c, int last, TyKind res, int res_o, int 
    raises FrozenError and RUBY_VERSION.equal?(RUBY_VERSION) still holds. `lit`
    is the C source of a string literal (RUBY_PLATFORM's is the runtime's
    macros). `var` is named under sp_str_, a prefix the runtime owns, so a
-   user `def ruby_version` (sp_ruby_version) cannot take the same C name. */
-static void emit_engine_const_str(const char *var, const char *lit, Buf *b) {
+   user `def ruby_version` (sp_ruby_version) cannot take the same C name.
+   --share-strings: the header links to a literal slot of its own, as a
+   frozen literal's does (fzl_emit_defs), so the handle a shared slot
+   takes for the constant is its own one (sp_String_literal_handle), not
+   a new handle each read. */
+static void emit_engine_const_str(Compiler *c, const char *var, const char *lit, Buf *b) {
   char key[64];
   snprintf(key, sizeof key, " %s = {", var);
-  if (!g_proc_protos.p || !strstr(g_proc_protos.p, key))
-    buf_printf(&g_proc_protos,
-               "static struct { sp_str_hdr h; unsigned char m; char d[sizeof(%s)]; } %s = "
-               "{ { NULL, sizeof(%s) | SP_STR_SIZE_ASCII7, sizeof(%s) - 1, 0 }, 0xf1, %s };\n",
-               lit, var, lit, lit, lit);
+  if (!g_proc_protos.p || !strstr(g_proc_protos.p, key)) {
+    if (repr_share_rule(c))
+      buf_printf(&g_proc_protos,
+                 "static sp_StringLiteral %s_slot = { NULL, NULL };\n"
+                 "static struct { sp_str_hdr h; unsigned char m; char d[sizeof(%s)]; } %s = "
+                 "{ { (sp_str_hdr *)((char *)&%s_slot + 1), sizeof(%s) | SP_STR_SIZE_ASCII7, sizeof(%s) - 1, 0 }, 0xf1, %s };\n",
+                 var, lit, var, var, lit, lit, lit);
+    else
+      buf_printf(&g_proc_protos,
+                 "static struct { sp_str_hdr h; unsigned char m; char d[sizeof(%s)]; } %s = "
+                 "{ { NULL, sizeof(%s) | SP_STR_SIZE_ASCII7, sizeof(%s) - 1, 0 }, 0xf1, %s };\n",
+                 lit, var, lit, lit, lit);
+  }
   buf_printf(b, "((const char *)%s.d)", var);
 }
 
@@ -2975,17 +2987,17 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       char lit[256];
       snprintf(lit, sizeof lit, "\"%s [\" SP_RUBY_ARCH \"-\" SP_RUBY_OS \"]\"",
                g_ruby_description ? g_ruby_description : "spinel " SP_RUBY_VERSION);
-      emit_engine_const_str("sp_str_ruby_description", lit, b);
+      emit_engine_const_str(c, "sp_str_ruby_description", lit, b);
       return 1;
     }
-    if (nm && sp_streq(nm, "RUBY_VERSION"))     { emit_engine_const_str("sp_str_ruby_version", "\"" SP_RUBY_VERSION "\"", b); return 1; }
-    if (nm && sp_streq(nm, "RUBY_ENGINE"))      { emit_engine_const_str("sp_str_ruby_engine", "\"spinel\"", b); return 1; }
-    if (nm && sp_streq(nm, "RUBY_ENGINE_VERSION")) { emit_engine_const_str("sp_str_ruby_engine_version", "\"" SP_RUBY_VERSION "\"", b); return 1; }
-    if (nm && sp_streq(nm, "RUBY_PLATFORM"))    { emit_engine_const_str("sp_str_ruby_platform", "SP_RUBY_ARCH \"-\" SP_RUBY_OS", b); return 1; }
-    if (nm && sp_streq(nm, "RUBY_RELEASE_DATE")) { emit_engine_const_str("sp_str_ruby_release_date", "\"2026-09-15\"", b); return 1; }
-    if (nm && sp_streq(nm, "RUBY_REVISION"))    { emit_engine_const_str("sp_str_ruby_revision", "\"229531a6cfbf07e3caef30dbac24a2a3f3fed482\"", b); return 1; }
+    if (nm && sp_streq(nm, "RUBY_VERSION"))     { emit_engine_const_str(c, "sp_str_ruby_version", "\"" SP_RUBY_VERSION "\"", b); return 1; }
+    if (nm && sp_streq(nm, "RUBY_ENGINE"))      { emit_engine_const_str(c, "sp_str_ruby_engine", "\"spinel\"", b); return 1; }
+    if (nm && sp_streq(nm, "RUBY_ENGINE_VERSION")) { emit_engine_const_str(c, "sp_str_ruby_engine_version", "\"" SP_RUBY_VERSION "\"", b); return 1; }
+    if (nm && sp_streq(nm, "RUBY_PLATFORM"))    { emit_engine_const_str(c, "sp_str_ruby_platform", "SP_RUBY_ARCH \"-\" SP_RUBY_OS", b); return 1; }
+    if (nm && sp_streq(nm, "RUBY_RELEASE_DATE")) { emit_engine_const_str(c, "sp_str_ruby_release_date", "\"2026-09-15\"", b); return 1; }
+    if (nm && sp_streq(nm, "RUBY_REVISION"))    { emit_engine_const_str(c, "sp_str_ruby_revision", "\"229531a6cfbf07e3caef30dbac24a2a3f3fed482\"", b); return 1; }
     if (nm && sp_streq(nm, "RUBY_PATCHLEVEL"))  { buf_puts(b, "((sp_int)0)"); return 1; }
-    if (nm && sp_streq(nm, "RUBY_COPYRIGHT"))   { emit_engine_const_str("sp_str_ruby_copyright", "\"ruby - Copyright (C) 1993-2026 Yukihiro Matsumoto\"", b); return 1; }
+    if (nm && sp_streq(nm, "RUBY_COPYRIGHT"))   { emit_engine_const_str(c, "sp_str_ruby_copyright", "\"ruby - Copyright (C) 1993-2026 Yukihiro Matsumoto\"", b); return 1; }
     if (nm && sp_streq(nm, "ARGV")) { buf_puts(b, "sp_get_ARGV()"); return 1; }
     if (nm && sp_streq(nm, "ARGF")) { buf_puts(b, "(&sp_argf_obj)"); return 1; }
     if (nm && sp_streq(nm, "STDOUT")) { buf_puts(b, "sp_io_stdout()"); return 1; }

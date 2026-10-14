@@ -23117,15 +23117,19 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
     }
     break;
   case SHFL_ARG:
-    /* a bang on a handle or a box is that handle or nil, which the binder
-       takes (strbuf_arg_carries) */
-    if (strbuf_arg_bang(c, unwrap_parens(c, v))) return 1;
-    /* a boxed receiver's call of methods that each answer a String, a
-       handle or a new one, is bound as its box's handle, as a local takes
-       it above */
-    if (strbuf_poly_user_base(c, v) >= 0) return 1;
-    ctx = SFC_ARG;
-    break;
+    /* an argument is bound by the handle face (a parameter that is the
+       handle) or the box face (a boxed one), and each renders every
+       producer kind: it is carried where the String plan does not refuse
+       it (#8328) */
+  {
+    /* (a `||` or `&&` with a bang on a boxed receiver on an arm is taken
+       arm by arm by the box face alone, emit_boxed_self_answer_cond: a
+       parameter that is the handle takes it whole, as its bytes. This
+       goes when the handle face renders a conditional arm by arm too) */
+    SharePlan p = share_plan_of(c, v, SPR_TAKE, NULL);
+    if (p.form == SPF_HANDLE && strbuf_face_bang_cond(c, unwrap_parens(c, v))) return p.need != SPN_OBJECT;
+    return p.form != SPF_REFUSE;
+  }
   case SHFL_YIELD: {
     /* A receiver conversion keeps its handle in both the boxed yield
        and the typed block-parameter binder, and so does a String Range's
