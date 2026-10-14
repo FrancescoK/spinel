@@ -102,11 +102,25 @@ static void sc_shift_caps(int *caps, int ncap, int64_t pos) {
     if (caps[i] >= 0) caps[i] += (int)pos;
 }
 
+/* A String pattern (`lit`, with `pat` NULL) matches its bytes literally, as
+   CRuby's strscan does: the one group, the match itself. */
+static int sc_lit_at(const char *lit, const char *str, int64_t slen, int64_t at, int *caps) {
+  int64_t llen = (int64_t)sp_str_byte_len(lit);
+  if (at + llen > slen || memcmp(str + at, lit, (size_t)llen) != 0) return 0;
+  caps[0] = (int)at;
+  caps[1] = (int)(at + llen);
+  return 2;
+}
+
 /* Anchored match: succeed only when the match starts exactly at the scan
    pointer. Returns the length from the pointer to the match's end, or -1.
    A \K starts the match itself (caps[0], what `matched` reads) past the
    pointer; the text scan answers and steps over still starts at it. */
-static int64_t sc_match_at_pos(const mrb_regexp_pattern *pat, const char *str, int64_t slen, int64_t pos, int *caps, int *ncap_out) {
+static int64_t sc_match_at_pos(const mrb_regexp_pattern *pat, const char *lit, const char *str, int64_t slen, int64_t pos, int *caps, int *ncap_out) {
+  if (!pat) {
+    *ncap_out = sc_lit_at(lit, str, slen, pos, caps);
+    return *ncap_out ? caps[1] - pos : -1;
+  }
   int at;
   int n = re_exec_attempt(pat, str + pos, slen - pos, 0, caps, SP_SS_MAXCAP, 0, &at);
   *ncap_out = sc_clamp_ncaps(n);
@@ -117,7 +131,13 @@ static int64_t sc_match_at_pos(const mrb_regexp_pattern *pat, const char *str, i
 
 /* Forward-search match: returns the absolute offset of the first match at or
    after pos, and writes matched length to *mlen. -1 on miss. */
-static int64_t sc_match_forward(const mrb_regexp_pattern *pat, const char *str, int64_t slen, int64_t pos, int64_t *mlen, int *caps, int *ncap_out) {
+static int64_t sc_match_forward(const mrb_regexp_pattern *pat, const char *lit, const char *str, int64_t slen, int64_t pos, int64_t *mlen, int *caps, int *ncap_out) {
+  if (!pat) {
+    for (int64_t at = pos; at <= slen; at++)
+      if ((*ncap_out = sc_lit_at(lit, str, slen, at, caps))) { *mlen = caps[1] - caps[0]; return at; }
+    *ncap_out = 0;
+    return -1;
+  }
   int n = spinel_re_exec(pat, str + pos, slen - pos, 0, caps, SP_SS_MAXCAP, 0);
   *ncap_out = sc_clamp_ncaps(n);
   if (n <= 0 || caps[0] < 0) { *ncap_out = 0; return -1; }
@@ -159,10 +179,10 @@ static int64_t sc_char_len(const char *src, int64_t pos, int64_t len) {
   return i;
 }
 
-const char *sp_StringScanner_scan(sp_StringScanner *sc, mrb_regexp_pattern *pat) {SP_GC_ROOT(sc);
-  if (!sc || !pat) return NULL;
+static const char *sc_scan(sp_StringScanner *sc, const mrb_regexp_pattern *pat, const char *lit) {SP_GC_ROOT(sc);
+  if (!sc || (!pat && !lit)) return NULL;
   int64_t slen = (int64_t)sp_str_byte_len(sc->source);
-  int64_t mlen = sc_match_at_pos(pat, sc->source, slen, sc->pos, sc->caps, &sc->ncaps);
+  int64_t mlen = sc_match_at_pos(pat, lit, sc->source, slen, sc->pos, sc->caps, &sc->ncaps);
   if (mlen < 0) {
     sc->matched = sp_str_empty;
     sc->matched_p = 0;
@@ -179,10 +199,10 @@ const char *sp_StringScanner_scan(sp_StringScanner *sc, mrb_regexp_pattern *pat)
   return m;
 }
 
-const char *sp_StringScanner_check(sp_StringScanner *sc, mrb_regexp_pattern *pat) {SP_GC_ROOT(sc);
-  if (!sc || !pat) return NULL;
+static const char *sc_check(sp_StringScanner *sc, const mrb_regexp_pattern *pat, const char *lit) {SP_GC_ROOT(sc);
+  if (!sc || (!pat && !lit)) return NULL;
   int64_t slen = (int64_t)sp_str_byte_len(sc->source);
-  int64_t mlen = sc_match_at_pos(pat, sc->source, slen, sc->pos, sc->caps, &sc->ncaps);
+  int64_t mlen = sc_match_at_pos(pat, lit, sc->source, slen, sc->pos, sc->caps, &sc->ncaps);
   if (mlen < 0) {
     sc->matched = sp_str_empty;
     sc->matched_p = 0;
@@ -198,11 +218,11 @@ const char *sp_StringScanner_check(sp_StringScanner *sc, mrb_regexp_pattern *pat
   return m;
 }
 
-const char *sp_StringScanner_scan_until(sp_StringScanner *sc, mrb_regexp_pattern *pat) {SP_GC_ROOT(sc);
-  if (!sc || !pat) return sp_str_empty;
+static const char *sc_scan_until(sp_StringScanner *sc, const mrb_regexp_pattern *pat, const char *lit) {SP_GC_ROOT(sc);
+  if (!sc || (!pat && !lit)) return sp_str_empty;
   int64_t slen = (int64_t)sp_str_byte_len(sc->source);
   int64_t mlen = 0;
-  int64_t mstart = sc_match_forward(pat, sc->source, slen, sc->pos, &mlen, sc->caps, &sc->ncaps);
+  int64_t mstart = sc_match_forward(pat, lit, sc->source, slen, sc->pos, &mlen, sc->caps, &sc->ncaps);
   if (mstart < 0) {
     sc->matched = sp_str_empty;
     sc->matched_p = 0;
@@ -222,11 +242,11 @@ const char *sp_StringScanner_scan_until(sp_StringScanner *sc, mrb_regexp_pattern
 }
 
 /* StringScanner#check_until: scan_until without advancing the pointer. */
-const char *sp_StringScanner_check_until(sp_StringScanner *sc, mrb_regexp_pattern *pat) {SP_GC_ROOT(sc);
-  if (!sc || !pat) return NULL;
+static const char *sc_check_until(sp_StringScanner *sc, const mrb_regexp_pattern *pat, const char *lit) {SP_GC_ROOT(sc);
+  if (!sc || (!pat && !lit)) return NULL;
   int64_t slen = (int64_t)sp_str_byte_len(sc->source);
   int64_t mlen = 0;
-  int64_t mstart = sc_match_forward(pat, sc->source, slen, sc->pos, &mlen, sc->caps, &sc->ncaps);
+  int64_t mstart = sc_match_forward(pat, lit, sc->source, slen, sc->pos, &mlen, sc->caps, &sc->ncaps);
   if (mstart < 0) {
     sc->matched = sp_str_empty;
     sc->matched_p = 0;
@@ -244,10 +264,10 @@ const char *sp_StringScanner_check_until(sp_StringScanner *sc, mrb_regexp_patter
 
 /* StringScanner#match?: anchored like scan, records match state, returns the
    matched byte length without advancing (nil on miss). */
-sp_RbVal sp_StringScanner_match_q(sp_StringScanner *sc, mrb_regexp_pattern *pat) {SP_GC_ROOT(sc);
-  if (!sc || !pat) return sp_box_nil();
+static sp_RbVal sc_match_q(sp_StringScanner *sc, const mrb_regexp_pattern *pat, const char *lit) {SP_GC_ROOT(sc);
+  if (!sc || (!pat && !lit)) return sp_box_nil();
   int64_t slen = (int64_t)sp_str_byte_len(sc->source);
-  int64_t mlen = sc_match_at_pos(pat, sc->source, slen, sc->pos, sc->caps, &sc->ncaps);
+  int64_t mlen = sc_match_at_pos(pat, lit, sc->source, slen, sc->pos, sc->caps, &sc->ncaps);
   if (mlen < 0) {
     sc->matched = sp_str_empty;
     sc->matched_p = 0;
@@ -263,10 +283,10 @@ sp_RbVal sp_StringScanner_match_q(sp_StringScanner *sc, mrb_regexp_pattern *pat)
 
 /* StringScanner#skip: anchored like scan, advances, returns the matched byte
    length (nil on miss). */
-sp_RbVal sp_StringScanner_skip(sp_StringScanner *sc, mrb_regexp_pattern *pat) {SP_GC_ROOT(sc);
-  if (!sc || !pat) return sp_box_nil();
+static sp_RbVal sc_skip(sp_StringScanner *sc, const mrb_regexp_pattern *pat, const char *lit) {SP_GC_ROOT(sc);
+  if (!sc || (!pat && !lit)) return sp_box_nil();
   int64_t slen = (int64_t)sp_str_byte_len(sc->source);
-  int64_t mlen = sc_match_at_pos(pat, sc->source, slen, sc->pos, sc->caps, &sc->ncaps);
+  int64_t mlen = sc_match_at_pos(pat, lit, sc->source, slen, sc->pos, sc->caps, &sc->ncaps);
   if (mlen < 0) {
     sc->matched = sp_str_empty;
     sc->matched_p = 0;
@@ -283,11 +303,11 @@ sp_RbVal sp_StringScanner_skip(sp_StringScanner *sc, mrb_regexp_pattern *pat) {S
 
 /* StringScanner#exist?: forward search without advancing; returns the byte
    distance from the pointer to the END of the match (nil on miss). */
-sp_RbVal sp_StringScanner_exist_q(sp_StringScanner *sc, mrb_regexp_pattern *pat) {SP_GC_ROOT(sc);
-  if (!sc || !pat) return sp_box_nil();
+static sp_RbVal sc_exist_q(sp_StringScanner *sc, const mrb_regexp_pattern *pat, const char *lit) {SP_GC_ROOT(sc);
+  if (!sc || (!pat && !lit)) return sp_box_nil();
   int64_t slen = (int64_t)sp_str_byte_len(sc->source);
   int64_t mlen = 0;
-  int64_t mstart = sc_match_forward(pat, sc->source, slen, sc->pos, &mlen, sc->caps, &sc->ncaps);
+  int64_t mstart = sc_match_forward(pat, lit, sc->source, slen, sc->pos, &mlen, sc->caps, &sc->ncaps);
   if (mstart < 0) {
     sc->matched = sp_str_empty;
     sc->matched_p = 0;
@@ -303,11 +323,11 @@ sp_RbVal sp_StringScanner_exist_q(sp_StringScanner *sc, mrb_regexp_pattern *pat)
 
 /* StringScanner#skip_until: forward search, advances past the match, returns
    the consumed byte count (nil on miss). */
-sp_RbVal sp_StringScanner_skip_until(sp_StringScanner *sc, mrb_regexp_pattern *pat) {SP_GC_ROOT(sc);
-  if (!sc || !pat) return sp_box_nil();
+static sp_RbVal sc_skip_until(sp_StringScanner *sc, const mrb_regexp_pattern *pat, const char *lit) {SP_GC_ROOT(sc);
+  if (!sc || (!pat && !lit)) return sp_box_nil();
   int64_t slen = (int64_t)sp_str_byte_len(sc->source);
   int64_t mlen = 0;
-  int64_t mstart = sc_match_forward(pat, sc->source, slen, sc->pos, &mlen, sc->caps, &sc->ncaps);
+  int64_t mstart = sc_match_forward(pat, lit, sc->source, slen, sc->pos, &mlen, sc->caps, &sc->ncaps);
   if (mstart < 0) {
     sc->matched = sp_str_empty;
     sc->matched_p = 0;
@@ -322,6 +342,24 @@ sp_RbVal sp_StringScanner_skip_until(sp_StringScanner *sc, mrb_regexp_pattern *p
   sc->pos = mstart + mlen;
   return sp_box_int((sp_int)consumed);
 }
+
+/* The bindings: a Regexp pattern, or a String one matched literally. */
+const char *sp_StringScanner_scan(sp_StringScanner *sc, mrb_regexp_pattern *pat) { return sc_scan(sc, pat, NULL); }
+const char *sp_StringScanner_scan_str(sp_StringScanner *sc, const char *lit) { return sc_scan(sc, NULL, lit); }
+const char *sp_StringScanner_check(sp_StringScanner *sc, mrb_regexp_pattern *pat) { return sc_check(sc, pat, NULL); }
+const char *sp_StringScanner_check_str(sp_StringScanner *sc, const char *lit) { return sc_check(sc, NULL, lit); }
+const char *sp_StringScanner_scan_until(sp_StringScanner *sc, mrb_regexp_pattern *pat) { return sc_scan_until(sc, pat, NULL); }
+const char *sp_StringScanner_scan_until_str(sp_StringScanner *sc, const char *lit) { return sc_scan_until(sc, NULL, lit); }
+const char *sp_StringScanner_check_until(sp_StringScanner *sc, mrb_regexp_pattern *pat) { return sc_check_until(sc, pat, NULL); }
+const char *sp_StringScanner_check_until_str(sp_StringScanner *sc, const char *lit) { return sc_check_until(sc, NULL, lit); }
+sp_RbVal sp_StringScanner_match_q(sp_StringScanner *sc, mrb_regexp_pattern *pat) { return sc_match_q(sc, pat, NULL); }
+sp_RbVal sp_StringScanner_match_q_str(sp_StringScanner *sc, const char *lit) { return sc_match_q(sc, NULL, lit); }
+sp_RbVal sp_StringScanner_skip(sp_StringScanner *sc, mrb_regexp_pattern *pat) { return sc_skip(sc, pat, NULL); }
+sp_RbVal sp_StringScanner_skip_str(sp_StringScanner *sc, const char *lit) { return sc_skip(sc, NULL, lit); }
+sp_RbVal sp_StringScanner_exist_q(sp_StringScanner *sc, mrb_regexp_pattern *pat) { return sc_exist_q(sc, pat, NULL); }
+sp_RbVal sp_StringScanner_exist_q_str(sp_StringScanner *sc, const char *lit) { return sc_exist_q(sc, NULL, lit); }
+sp_RbVal sp_StringScanner_skip_until(sp_StringScanner *sc, mrb_regexp_pattern *pat) { return sc_skip_until(sc, pat, NULL); }
+sp_RbVal sp_StringScanner_skip_until_str(sp_StringScanner *sc, const char *lit) { return sc_skip_until(sc, NULL, lit); }
 
 /* StringScanner#[n] -- the nth capture group of the last scan/check.
    Group 0 is the whole match; a negative index counts back from the last
