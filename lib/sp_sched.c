@@ -1691,6 +1691,16 @@ static void reg_remove(sp_thread *t) {
    collected mid-run. Chained ahead of whatever globals hook was installed. */
 static void (*g_prev_globals_hook)(void) = NULL;
 static sp_Fiber *g_main_root = NULL;   /* worker 0's root fiber: the main thread's */
+/* The fiber a #raise aimed at t is queued on: a spawned thread's own, and for
+   the main thread the root fiber it runs on. */
+static sp_Fiber *sp_thread_inject_fiber(sp_thread *t) { return t == &g_main_thread ? g_main_root : t->fiber; }
+static int sp_thread_inject_pending(sp_thread *t) {
+  sp_Fiber *f = sp_thread_inject_fiber(t);
+  return f && sp_fiber_inject_pending(f);
+}
+/* The same for the running thread, for a delivery inside a Fiber it resumed
+   (sp_fiber_fire_inject_if_pending, lib/sp_fiber.c). */
+sp_Fiber *sp_thread_inject_home(void) { return g_current ? sp_thread_inject_fiber(g_current) : NULL; }
 static void sp_sched_globals_mark(void) {
   for (sp_thread *t = g_all; t; t = t->all_next) sp_gc_mark(t);
   /* The main thread is a static struct, not a registry entry, so nothing
@@ -1706,6 +1716,9 @@ static void sp_sched_globals_mark(void) {
   if (g_main_root) {
     if (g_main_root->storage) sp_gc_mark(g_main_root->storage);
     if (g_main_root->attrs) sp_gc_mark(g_main_root->attrs);
+    /* and a #raise queued on it from another thread, until main takes it */
+    if (g_main_root->inj_obj) sp_gc_mark(g_main_root->inj_obj);
+    if (g_main_root->inj_msg) sp_mark_string(g_main_root->inj_msg);
   }
 #ifdef SP_THREADS
   /* Mark each parked worker's published roots. Reaches the per-worker root fibers
@@ -2531,6 +2544,9 @@ static void sp_sched_pump(sp_thread *target, int may_wait) {
     if (g_stw_active) { sp_stw_park_locked(); continue; }   /* park main through STW too */
 #endif
     if (target && SP_TH_STATE(target) == SP_TH_DEAD) return;
+    /* main joining a thread: a #raise aimed at main ends the join (main is on
+       no wait list here, so nothing marks it RUNNABLE for it) */
+    if (target && sp_thread_inject_pending(&g_main_thread)) return;
 #ifdef SP_EV_BACKEND
     if (g_wslot[0].evfd > 0) sp_ev_worker_wait(0, 0);   /* see sp_worker_main */
 #endif
@@ -2701,6 +2717,7 @@ static void sp_thread_await(sp_thread *t) {
     sp_sched_pump(t, 1);
     int dead = (SP_TH_STATE(t) == SP_TH_DEAD);
     SCHED_UNLOCK();
+    sp_fiber_fire_inject_if_pending();   /* a #raise that ended the join */
     if (!dead) sp_raise_cls("ThreadError", "deadlock detected: no runnable thread");
   }
   else {
@@ -2786,6 +2803,7 @@ void sp_Thread_pass(void) {
   if (self == &g_main_thread) {
     sp_sched_pass();   /* one round-robin sweep, then main resumes (not a drain) */
     SCHED_UNLOCK();
+    sp_fiber_fire_inject_if_pending();   /* a #raise one of them aimed at main */
   }
   else {
     /* Yield but stay runnable. Do NOT enqueue ourselves here: a second worker
@@ -3196,7 +3214,7 @@ static int sp_sched_sleep_park(double seconds) {
   sp_thread *self = g_current;
   /* Same pending-inject check as sp_sched_block: a #kill/#raise that arrived
      while we were RUNNING must fire now, not after the full sleep. */
-  if (self != &g_main_thread && self->fiber && sp_fiber_inject_pending(self->fiber)) {
+  if (sp_thread_inject_pending(self)) {
     SCHED_UNLOCK();
     sp_fiber_fire_inject_if_pending();   /* raises; does not return */
     SCHED_LOCK();
@@ -3214,6 +3232,7 @@ static int sp_sched_sleep_park(double seconds) {
     sp_sched_pump(NULL, 1);   /* main waits (and pumps at N=1) until the monitor wakes it */
     woken = self->woken;
     SCHED_UNLOCK();
+    sp_fiber_fire_inject_if_pending();   /* a #raise delivered while sleeping */
   }
   else {
     /* Same exception-context snapshot as sp_sched_block: the symmetric transfer
@@ -3324,7 +3343,7 @@ static int sp_sched_wait_io_impl(int fd, short events, struct pollfd *set, int n
   SCHED_LOCK();
   sp_thread *self = g_current;
   /* Same pending-inject check as sp_sched_block. */
-  if (self != &g_main_thread && self->fiber && sp_fiber_inject_pending(self->fiber)) {
+  if (sp_thread_inject_pending(self)) {
     SCHED_UNLOCK();
     sp_fiber_fire_inject_if_pending();   /* raises; does not return */
     SCHED_LOCK();
@@ -3385,6 +3404,7 @@ static int sp_sched_wait_io_impl(int fd, short events, struct pollfd *set, int n
     int rev = self->io_revents; self->io_revents = 0; self->io_fd = -1;
     if (set) { free(self->ev_set); self->ev_set = NULL; self->io_set = NULL; self->io_nset = 0; }
     SCHED_UNLOCK();
+    sp_fiber_fire_inject_if_pending();   /* a #raise delivered while waiting on I/O */
     return rev ? 1 : 0;
   }
   /* Same exception-context snapshot as sp_sched_block/sleep: the symmetric
@@ -3732,7 +3752,7 @@ static void sp_sched_block(sp_thread **waitlist, int defer_inject) {   /* PRE/PO
      Parking now would sleep through it forever -- nobody will wake us. Fire it
      here instead (it raises out of the blocking call, ensures running). The
      deliver and this check both run under the sched lock, so no window. */
-  if (self != &g_main_thread && self->fiber && sp_fiber_inject_pending(self->fiber)) {
+  if (sp_thread_inject_pending(self)) {
     SCHED_UNLOCK();
     sp_fiber_fire_inject_if_pending();   /* raises; does not return */
     SCHED_LOCK();
@@ -3793,7 +3813,7 @@ static void sp_sched_block(sp_thread **waitlist, int defer_inject) {   /* PRE/PO
    takes the mutex next finds it there. */
 static void sp_sched_block_wl(sp_thread **waitlist, sp_wlock *wl, int defer_inject, sp_mutex *release) {
   sp_thread *self = g_current;
-  if (self != &g_main_thread && self->fiber && sp_fiber_inject_pending(self->fiber)) {
+  if (sp_thread_inject_pending(self)) {
     wl_unlock(wl);
     sp_fiber_fire_inject_if_pending();   /* raises; does not return */
     wl_lock(wl);
@@ -3841,7 +3861,7 @@ static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mute
     SCHED_UNLOCK();
     sp_raise_cls("ThreadError", "Attempt to unlock a mutex which is not locked");
   }
-  if (self != &g_main_thread && self->fiber && sp_fiber_inject_pending(self->fiber)) {
+  if (sp_thread_inject_pending(self)) {
     SCHED_UNLOCK();
     sp_fiber_fire_inject_if_pending();
     SCHED_LOCK();
@@ -3979,11 +3999,25 @@ static void sp_thread_deliver(sp_thread *t, int is_kill,
   }
   SCHED_LOCK();
   if (SP_TH_STATE(t) == SP_TH_DEAD) { SCHED_UNLOCK(); return; }   /* raced with its death: no-op */
-  /* #kill/#raise on the main thread from a sibling: main runs on the root
-     fiber (t->fiber == NULL), which has no inject delivery points, so this is
-     unsupported -- no-op rather than a NULL deref, matching the self-kill case
-     above. (CRuby delivers to main; see the Thread row in docs/limitations.md.) */
-  if (t == &g_main_thread || !t->fiber) { SCHED_UNLOCK(); return; }
+  /* #raise on the main thread from a sibling: queued on the root fiber main
+     runs on, and fired where any thread's is, at main's next wait or
+     Thread.pass; a main parked in one is woken for it, as #wakeup wakes it.
+     It was dropped, and a main waiting on a Queue the raiser was never going
+     to fill then deadlocked. #kill of main is still a no-op: CRuby ends the
+     process for it (see the Thread row in docs/limitations.md). */
+  if (t == &g_main_thread) {
+    if (!is_kill && g_main_root) {
+      sp_fiber_set_raise_inject(g_main_root, cls, msg, obj);
+      if (SP_TH_STATE(t) == SP_TH_BLOCKED) {
+        sp_sched_unpark(t);
+        SP_TH_SET_STATE(t, SP_TH_RUNNABLE);
+      }
+      SCHED_WAKE_MAIN();   /* a joining main pumps without being BLOCKED */
+    }
+    SCHED_UNLOCK();
+    return;
+  }
+  if (!t->fiber) { SCHED_UNLOCK(); return; }
   if (is_kill) sp_fiber_set_kill_inject(t->fiber);
   else sp_fiber_set_raise_inject(t->fiber, cls, msg, obj);
 #ifdef SP_CEXT
@@ -4458,7 +4492,7 @@ sp_RbVal sp_CondVar_wait(sp_condvar *cv, sp_mutex *m) {
      itself is ordered under the condvar's own (sp_sched_block_wl) */
   if (SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) != g_current)
     sp_raise_cls("ThreadError", "Attempt to unlock a mutex which is not locked");
-  if (g_current != &g_main_thread && g_current->fiber && sp_fiber_inject_pending(g_current->fiber))
+  if (sp_thread_inject_pending(g_current))
     sp_fiber_fire_inject_if_pending();
   double ct0 = sched_lat_enabled() ? sp_monotonic_now() : 0;
   /* on the condvar's list under its own lock, then the mutex released,
@@ -4537,8 +4571,7 @@ sp_RbVal sp_CondVar_wait_nb(sp_condvar *cv, sp_mutex *m) {
     SCHED_UNLOCK();
     sp_raise_cls("ThreadError", "Attempt to unlock a mutex which is not locked");
   }
-  if (g_current != &g_main_thread && g_current->fiber &&
-      sp_fiber_inject_pending(g_current->fiber)) {
+  if (sp_thread_inject_pending(g_current)) {
     SCHED_UNLOCK();
     sp_fiber_fire_inject_if_pending();
     SCHED_LOCK();

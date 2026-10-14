@@ -1,0 +1,6 @@
+sleep: rescued in sleep
+pop: rescued in pop
+join: rescued in join
+lock: rescued in lock
+read: rescued in read
+done

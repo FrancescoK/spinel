@@ -93,6 +93,7 @@ sp_RbVal sp_Fiber_resume(sp_Fiber *f, sp_RbVal val);
 sp_RbVal sp_Fiber_yield(sp_RbVal val);
 unsigned sp_thread_owner_id(void);   /* lib/sp_sched.c */
 sp_Fiber *sp_thread_main_fiber(void);   /* lib/sp_sched.c */
+sp_Fiber *sp_thread_inject_home(void);   /* lib/sp_sched.c: where a #raise of the running thread waits */
 /* The fiber a green thread switches back to: the one that ran it on this
    worker, else the worker's root. */
 sp_Fiber *sp_sched_home_fiber(void);   /* lib/sp_sched.c */

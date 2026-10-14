@@ -880,7 +880,7 @@ void sp_fiber_fire_inject_if_pending(void){sp_Fiber*f=sp_fiber_current;if(!f||f-
   /* A #kill/#raise of a thread that is inside a Fiber it resumed: it is
      delivered in that fiber, and a kill goes on up to the thread's own. */
   if(f->thread_main||f==&sp_fiber_root)return;
-  sp_Fiber*m=sp_thread_main_fiber();if(!m||!SP_INJECT_PEEK(m))return;
+  sp_Fiber*m=sp_thread_inject_home();if(!m||!SP_INJECT_PEEK(m))return;
   SP_GC_ROOT(m);int kind=sp_fiber_inject_lock(m);const char*cl=m->inj_cls;const char*ms=m->inj_msg;void*ob=m->inj_obj;m->inj_cls=NULL;m->inj_msg=NULL;m->inj_obj=NULL;sp_fiber_inject_unlock(m,0);
   if(kind==2)sp_raise_cls(SP_FIBER_KILL_CLS,(&("\xff" SP_FIBER_KILL_MAIN)[1]));else sp_fiber_reraise(cl,ms,ob);}
 /* Lock-free peek for the scheduler's pre-park checks (sp_sched_block etc.). */
