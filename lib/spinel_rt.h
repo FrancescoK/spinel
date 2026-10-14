@@ -16541,8 +16541,6 @@ void sp_exc_ctx_save(void *p) {            /* current globals -> ctx */
   if (n && !x->cext_marks) sp_oom_die();
   for (int i = 0; i < n; ++i) x->cext_marks[i] = sp_exc_cextmark[i];
   sp_cext_arena_context_save(&x->cext_arena);
-  x->cext_errinfo = rb_errinfo();
-  rb_gc_register_address(&x->cext_errinfo);
 #endif
   for (int i = 0; i < n; i++) { memcpy(x->es[i], sp_exc_stack[i], sizeof(jmp_buf));
     x->em[i] = sp_exc_msg[i]; x->ec[i] = sp_exc_cls[i]; x->eo[i] = sp_exc_obj[i];
@@ -16608,7 +16606,6 @@ void sp_exc_ctx_load(void *p) {            /* ctx -> current globals */
 #ifdef SP_CEXT
   for (int i = 0; i < x->en; ++i) sp_exc_cextmark[i] = x->cext_marks[i];
   sp_cext_arena_context_load(&x->cext_arena);
-  rb_set_errinfo(x->cext_errinfo);
 #endif
   for (int i = 0; i < x->en; i++) { memcpy(sp_exc_stack[i], x->es[i], sizeof(jmp_buf));
     sp_exc_msg[i] = x->em[i]; sp_exc_cls[i] = x->ec[i]; sp_exc_obj[i] = x->eo[i];

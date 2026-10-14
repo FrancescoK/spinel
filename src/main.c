@@ -492,11 +492,11 @@ static void work_report(void) { fprintf(stderr, "spinel-work: %llu\n", g_nt_work
 
 static const char *runtime_archive(const char *csrc, int threads, int wasi, int abort_exceptions, int *cext) {
   *cext = strstr(csrc, "/* SPINEL_USES_CEXT */") != NULL;
-  if (*cext && (threads || wasi || abort_exceptions)) {
-    fprintf(stderr, "spinel: C extensions currently require the native single-threaded exception runtime\n");
+  if (*cext && (wasi || abort_exceptions)) {
+    fprintf(stderr, "spinel: C extensions currently require the native exception runtime\n");
     return NULL;
   }
-  return *cext ? "libspinel_cext_rt.a" : threads ? "libspinel_rt_mt.a" : "libspinel_rt.a";
+  return *cext ? (threads ? "libspinel_cext_rt_mt.a" : "libspinel_cext_rt.a") : threads ? "libspinel_rt_mt.a" : "libspinel_rt.a";
 }
 
 static void runtime_includes(Str *cmd, Str *bi, const char *lib_dir, int uses_cext) {

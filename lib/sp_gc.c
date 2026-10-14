@@ -1413,6 +1413,16 @@ void sp_gc_collect(void){
   if(sp_gc_par_mark_on<0){ const char*e=getenv("SPINEL_GC_PAR_MARK"); sp_gc_par_mark_on=!(e&&*e=='0'); }
   int conc = sp_gc_conc_on && sp_gc_conc_sweep_hook && !sp_gc_verify && !sp_gc_verify_gen &&
              !sp_gc_age_on;
+#ifdef SP_CEXT
+  /* TypedData mark/free callbacks are extension code. Run them on the
+     collector under CXL, rather than on parallel marker/sweeper threads. */
+  conc = 0;
+  sp_gc_par_mark_on = 0;
+
+#ifdef SP_THREADS
+  sp_gc_par_sweep_hook = NULL;
+#endif
+#endif
   sp_gc_conc_promote = conc;
   sp_gc_mk_bytes = 0; sp_gc_mk_young_bytes = 0;
   sp_gc_mk_str_bytes = 0; sp_gc_mk_str_young_bytes = 0; sp_gc_mk_promo_bytes = 0;

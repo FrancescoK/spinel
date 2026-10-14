@@ -28,8 +28,10 @@ Dir.mktmpdir('spinel-cext-compiler-') do |tmp|
   refusal_source = File.join(tmp, 'runtime-refusal.rb')
   File.write(refusal_source, "require_relative 'sample'; CextBox.new; Thread.new { 1 }.join\n")
   scratch = File.join(tmp, 'driver-tmp'); FileUtils.mkdir_p(scratch)
-  out, err, status = Open3.capture3({'TMPDIR' => scratch}, File.join(ROOT, 'bin/spinel'), refusal_source, '-o', exe + '-refused')
-  raise "missing runtime refusal: #{out}#{err}" if status.success? || !err.include?('native single-threaded exception runtime')
+  sdk = File.join(tmp, 'wasi-sdk'); FileUtils.mkdir_p(File.join(sdk, 'bin'))
+  File.write(File.join(sdk, 'bin', 'clang'), '')
+  out, err, status = Open3.capture3({'TMPDIR' => scratch, 'WASI_SDK' => sdk}, File.join(ROOT, 'bin/spinel'), refusal_source, '--target=wasm32-wasi', '-o', exe + '-refused')
+  raise "missing runtime refusal: #{out}#{err}" if status.success? || !err.include?('native exception runtime')
   raise 'runtime refusal leaked generated C' unless Dir[File.join(scratch, 'spinel_out_*')].empty?
   actual = command(exe)
   command(File.join(ROOT, 'bin/spinel'), File.join(tmp, 'program.rb'), '--share-strings', '--link', File.join(tmp, 'sample.a'), '-o', exe + '-shared')

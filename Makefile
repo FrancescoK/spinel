@@ -665,13 +665,17 @@ build/cext/sp_cext_bridge.o: lib/sp_cext_bridge.c lib/sp_cext.h include/ruby.h $
 	@mkdir -p build/cext
 	$(CC) -c $(COPT) $(SEC_FLAGS) -DSP_CEXT -Iinclude -Ilib $< -o $@
 
+build/cext/sp_cext_thread.o: lib/sp_cext_thread.c lib/sp_cext.h include/ruby.h include/ruby/thread.h $(RT_HDRS)
+	@mkdir -p build/cext
+	$(CC) -c $(COPT) $(SEC_FLAGS) -DSP_CEXT -Iinclude -Ilib $< -o $@
+
 build/cext/sp_cext_exc.o: lib/sp_cext_exc.c lib/sp_cext.h include/ruby.h $(RT_HDRS)
 	@mkdir -p $(@D)
 	$(CC) -c $(COPT) $(SEC_FLAGS) -DSP_CEXT -Iinclude -Ilib $< -o $@
 build/cext/sp_exc.o: lib/sp_exc.c $(RT_HDRS) include/ruby.h
 	@mkdir -p $(@D)
 	$(CC) -c $(COPT) $(SEC_FLAGS) -DSP_CEXT -Iinclude -Ilib $< -o $@
-lib/libspinel_cext_rt.a: $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(filter-out sp_gc sp_exc sp_poly_cold,$(RT_MEMBERS)))) build/cext/sp_poly_cold.o build/cext/sp_gc.o build/cext/sp_exc.o build/cext/sp_cext.o build/cext/sp_cext_exc.o build/cext/sp_cext_bridge.o $(PLATFORM_OBJ)
+lib/libspinel_cext_rt.a: $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(filter-out sp_gc sp_exc sp_poly_cold,$(RT_MEMBERS)))) build/cext/sp_poly_cold.o build/cext/sp_gc.o build/cext/sp_exc.o build/cext/sp_cext.o build/cext/sp_cext_exc.o build/cext/sp_cext_bridge.o build/cext/sp_cext_thread.o $(PLATFORM_OBJ)
 	@rm -f $@
 	ar rcs $@ $^
 cext-gc-test: lib/libspinel_cext_rt.a
@@ -683,7 +687,7 @@ cext-gc-test: lib/libspinel_cext_rt.a
 # Step 4: standalone build-time recorder; no regular-runtime source changes.
 .PHONY: cext-recorder cext-recorder-test cext-recorder-oracle
 cext-recorder: lib/libspinel_cext_rec.a
-build/cext/recorder.o: tools/cext/recorder.c tools/cext/recorder.h include/ruby.h include/ruby/spinel_record.h
+build/cext/recorder.o: tools/cext/recorder.c tools/cext/recorder.h include/ruby.h include/ruby/thread.h include/ruby/spinel_record.h
 	@mkdir -p build/cext
 	$(CC) -std=c11 -O0 -DSP_CEXT_RECORDER -Iinclude -Itools/cext -c $< -o $@
 lib/libspinel_cext_rec.a: build/cext/recorder.o
@@ -1402,7 +1406,7 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 # `make test` always runs fresh: it wipes the prior `.ok` stamps first,
 # then runs the suite. (The old incremental `test` + `retest` split is
 # gone -- a stale `.ok` reading PASS was a recurring foot-gun.)
-test: lib/spinel_rt_responds_generated.h $(SPINEL_TIMEOUT) cext-header-test cext-gc-test cext-exceptions-test cext-recorder-test cext-compiler-test
+test: lib/spinel_rt_responds_generated.h $(SPINEL_TIMEOUT) cext-header-test cext-gc-test cext-exceptions-test cext-recorder-test cext-compiler-test cext-threads-test
 	@if [ -z "$(TIMEOUT_BIN)" ]; then \
 	  echo "WARNING: no 'timeout'/'gtimeout' on PATH -- tests run with NO time limit."; \
 	  echo "         A hanging test will hang this run until the CI job's own limit."; \
@@ -5404,3 +5408,18 @@ cext-compiler-test: $(SPINEL) lib/libspinel_rt.a lib/libspinel_cext_rt.a
 	RH=$$(ruby -rrbconfig -e 'print RbConfig::CONFIG["rubyhdrdir"]'); \
 	if [ ! -f "$$RH/ruby.h" ]; then echo "cext-compiler-test: skipped (no ruby.h)"; exit 0; fi; \
 	CC="$(CC)" ruby test/cext/compiler-test.rb && CC="$(CC)" ruby test/cext/send-test.rb
+
+# Threaded extensions are an opt-in runtime; ordinary MT objects stay unchanged.
+build/cext-mt/%.o: lib/%.c $(RT_HDRS) lib/sp_cext.h include/ruby.h include/ruby/thread.h
+	@mkdir -p $(@D)
+	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(MT_DEF) -DSP_CEXT -Iinclude -Ilib -Ilib/regexp -Ilib/regexp/shim $< -o $@
+
+CEXT_MT_MEMBERS = $(RT_MEMBERS) sp_cext sp_cext_exc sp_cext_bridge sp_cext_thread
+lib/libspinel_cext_rt_mt.a: $(RE_MT_OBJ) $(addprefix build/cext-mt/,$(addsuffix .o,$(CEXT_MT_MEMBERS))) $(PLATFORM_MT_OBJ)
+	ar rcs $@ $^
+
+.PHONY: cext-threads-test
+cext-threads-test: $(SPINEL) lib/libspinel_cext_rt.a lib/libspinel_cext_rt_mt.a
+	$(CC) -O2 -DSP_CEXT -DSP_THREADS -Iinclude -Ilib test/cext/threads/lock.c lib/sp_cext_thread.c -pthread -o build/cext/cxl-lock-test
+	./build/cext/cxl-lock-test
+	CC="$(CC)" ruby test/cext/threads-test.rb

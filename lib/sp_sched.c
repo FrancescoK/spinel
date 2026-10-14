@@ -5,6 +5,9 @@
 #define _GNU_SOURCE   /* sched_getaffinity / CPU_COUNT for the worker count */
 #endif
 #include "sp_sched.h"
+#ifdef SP_CEXT
+#include "sp_cext.h"
+#endif
 #include "sp_alloc.h"   /* sp_box_nil / sp_box_obj */
 #include "sp_exc.h"     /* sp_exc_cls_display / sp_exc_cls_unnamed (the thread report) */
 #include <stdlib.h>
@@ -644,6 +647,8 @@ static void sp_out_enter_locked(int wid, int how) {
     SP_ATOMIC_STORE(&g_native_out[wid], (unsigned char)how, __ATOMIC_RELEASE);
   }
   g_nnative++;
+  if (g_stw_active && g_nparked + g_nnative >= sp_active_workers - 1)
+    pthread_cond_signal(&g_stw_request);
 }
 /* Back in the world (PRE: sched lock held). A collection in progress counted
    this worker as out; it becomes a parker of this epoch and waits for the
@@ -853,9 +858,22 @@ static void sp_stw_collect_impl(int force) {
      (exclusive heap access), so just let that allocation proceed -- re-entering
      the barrier here would park the collector waiting on itself (deadlock). */
   if (g_collector_active) return;
+#ifdef SP_CEXT
+  /* Take CXL before requesting STW: a C loop need not poll, and an
+     allocation made by its owner may recursively become the collector. */
+  sp_cext_lock();
+#endif
   SCHED_LOCK();
-  if (g_stw_active) { sp_stw_park_locked(); SCHED_UNLOCK(); return; }
-  if (!force && !sp_gc_collection_wanted()) { SCHED_UNLOCK(); return; }  /* another worker just collected */
+  if (g_stw_active) { sp_stw_park_locked(); SCHED_UNLOCK();
+#ifdef SP_CEXT
+    sp_cext_unlock();
+#endif
+    return; }
+  if (!force && !sp_gc_collection_wanted()) { SCHED_UNLOCK();
+#ifdef SP_CEXT
+    sp_cext_unlock();
+#endif
+    return; }  /* another worker just collected */
   g_stw_active = 1;
   g_stw_epoch++;     /* new epoch; a previous collection's stragglers won't be counted */
   g_nparked = 0;     /* this collection's park count starts fresh */
@@ -908,6 +926,9 @@ static void sp_stw_collect_impl(int force) {
   /* the collector's own young lists, like every released worker's */
   if (SP_ATOMIC_LOAD(&g_cs_unclaimed, __ATOMIC_RELAXED) > 0) sp_cs_owner_run(sp_worker_id);
   if (g_cs_full && sp_slab_on > 0 && sp_cs_chunks_settled(sp_worker_id)) sp_slab_release_worker(sp_worker_id);
+#ifdef SP_CEXT
+  sp_cext_unlock();
+#endif
 #else
   (void)force;
   sp_gc_collect_retune();
@@ -2274,6 +2295,11 @@ static void run_thread_once(sp_thread *t) { sp_gc_wb((void*)t);   /* PRE/POST: s
    only times green threads it runs via run_thread_once), so this only ever
    preempts a spawned thread. PRE/POST: lock held. */
 static void sp_safepoint_preempt(void) {
+#ifdef SP_CEXT
+  /* Recursive ownership belongs to the worker, so do not run a different
+     green thread while this worker is executing extension code. */
+  if (sp_cext_lock_depth()) return;
+#endif
   sp_thread *self = g_current;
   if (!self || self == &g_main_thread || !self->preempt_request) return;
   self->preempt_request = 0;
@@ -3603,6 +3629,11 @@ static void sp_thread_deliver(sp_thread *t, int is_kill,
   if (t == &g_main_thread || !t->fiber) { SCHED_UNLOCK(); return; }
   if (is_kill) sp_fiber_set_kill_inject(t->fiber);
   else sp_fiber_set_raise_inject(t->fiber, cls, msg, obj);
+#ifdef SP_CEXT
+  /* UBF must only unblock native work; it must not call Ruby. Keeping the
+     registration locked prevents its data from expiring during delivery. */
+  if (t->cext_unblock) t->cext_unblock(t->cext_unblock_data);
+#endif
   if (t->state == SP_TH_BLOCKED) {
     sp_sched_unpark(t);
     /* runq_requeue, not rq_push: a STARTED thread is pinned to its home
@@ -3613,6 +3644,28 @@ static void sp_thread_deliver(sp_thread *t, int is_kill,
   /* RUNNABLE threads are already queued; the inject fires when they run. */
   SCHED_UNLOCK();
 }
+
+#if defined(SP_CEXT) && defined(SP_THREADS)
+int sp_cext_native_register(void (*unblock)(void *), void *data) {
+  SCHED_LOCK();
+  sp_thread *t = g_current;
+  int pending = t && t->fiber && sp_fiber_inject_pending(t->fiber);
+  if (t && !pending) {
+    t->cext_unblock = unblock;
+    t->cext_unblock_data = data;
+  }
+  SCHED_UNLOCK();
+  return !pending;
+}
+void sp_cext_native_unregister(void) {
+  SCHED_LOCK();
+  if (g_current) {
+    g_current->cext_unblock = NULL;
+    g_current->cext_unblock_data = NULL;
+  }
+  SCHED_UNLOCK();
+}
+#endif
 
 /* The DEAD check lives inside sp_thread_deliver, under the sched lock: t may be
    running on another worker and die concurrently, so an unlocked read here
