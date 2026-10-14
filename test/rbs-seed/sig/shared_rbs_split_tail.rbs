@@ -26,3 +26,6 @@ class ShstIv
   def initialize: () -> void
   def m: (String x) -> String
 end
+class ShstTap
+  def m: (String x) { (String) -> String } -> String
+end

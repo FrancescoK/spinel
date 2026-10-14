@@ -13,8 +13,9 @@
 # Array an Hash element holds, and where the method is one of a class and
 # its subclass (the dispatch boxes each arm's answer), and where it yields
 # its answer (the inlined call answers the handle its `return` and its tail
-# hold), and where an early `return x` stands beside a tail that reads an
-# ivar (the call is not the ivar's slot).
+# hold), where an early `return x` stands beside a tail that reads an ivar
+# (the call is not the ivar's slot), and where the `return` is a `tap`
+# whose block parameter is the handle.
 # spinel: rbs-seed-check
 class ShstCols
   def initialize
@@ -155,3 +156,19 @@ ir << +"a" << iv.m(iy) << iv.m(+"long")
 iy << "2"
 ir[3] << "!"
 p ir, iy, ir[0].equal?(iy), ir[2].equal?(iy), ir[3].equal?(iv.m(+"long"))
+
+class ShstTap
+  def m(x)
+    return x.tap { |t| t } if x.size > 2
+    yield x
+    +"tail"
+  end
+end
+
+tp = ShstTap.new
+ts = +"abc"
+tr = []
+tr << tp.m(ts) { |v| v }
+tr << tp.m(ts) { |v| v } << tp.m(+"ab") { |v| v }
+ts << "1"
+p tr, ts, tr[0].equal?(ts), tr[1].equal?(ts)

@@ -1722,15 +1722,20 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
      C build stopped -- the mixed case where one callee is reached with
      both a reader argument and a container element. */
   if (rp->strbuf_src == RS_DEMANDED) {
-    char sref_h[1024];
+    /* (the handle's text has no size to fit: an inlined call's is long,
+       and a fixed buffer that held it decided between the handle and a
+       copy of the String by how long the spliced body's text was) */
+    Buf sref_h; memset(&sref_h, 0, sizeof sref_h);
     int sv_mh = view_push_repr(c, node, VR_STRBUF_BOX, 1);
-    int got_h = strbuf_slot_ref(c, node, sref_h, sizeof sref_h);
+    int got_h = strbuf_slot_text(c, node, &sref_h);
     view_pop(c, sv_mh);
     if (got_h) {
-      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", sref_h);
+      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", sref_h.p ? sref_h.p : "");
+      free(sref_h.p);
       RC(RF_STRBUF_HANDLE, RW_NONE);
       return;
     }
+    free(sref_h.p);
   }
   if (emit_boxed_bang_self(c, node, b)) return;
   /* --share-strings: a variable that holds a handle the rule shares (a

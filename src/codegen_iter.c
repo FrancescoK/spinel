@@ -4503,7 +4503,11 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   int hparam = 0;
   if (et == TY_STRING && repr_share_rule(c) && p0) {
     Scope *hsc = comp_scope_of(c, block);
-    hparam = repr_of_slot(c, hsc ? scope_local(hsc, p0) : NULL).handle;
+    /* (an inlined method's parameter is renamed; its slot keeps the name it
+       was declared under) */
+    LocalVar *hlv = hsc ? scope_local(hsc, p0) : NULL;
+    if (!hlv && hsc) hlv = scope_local(hsc, block_param_name(c, block, 0));
+    hparam = repr_of_slot(c, hlv).handle;
   }
   /* the adopted empty-literal receiver materializes as a FRESH mutable container
      of the block-param type -- emit_expr would render `[]` as its own untyped
