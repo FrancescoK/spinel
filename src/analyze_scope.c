@@ -804,6 +804,18 @@ const char *const_alias_source(Compiler *c, const char *cname) {
   return NULL;
 }
 
+/* resolve_class_alias through a chain of aliases (`B = A`, `A = Shout`):
+   each link is followed (const_alias_source) until one names a class it
+   knows, at most once per constant, so a cycle ends. */
+const char *resolve_class_alias_chain(Compiler *c, const char *cname) {
+  for (int d = 0; cname && d <= c->nconsts; d++) {
+    const char *real = resolve_class_alias(c, cname);
+    if (real) return real;
+    cname = const_alias_source(c, cname);
+  }
+  return NULL;
+}
+
 /* compiler_state_* class macros: declare a bag of typed instance variables
    and auto-synthesize init/dump/set methods.
    The CRuby shim that would define these via define_method is dead code under
@@ -7184,6 +7196,21 @@ static int body_extends_module(Compiler *c, int cn, int mod_id) {
   return 0;
 }
 
+/* The class a `prepend` argument names: a constant naming a module of the
+   program, or one that aliases it (`Q = MM`, also through a chain of
+   them), as for `include`. -1 when it names none. */
+static int mixin_arg_class(Compiler *c, int arg) {
+  const NodeTable *nt = c->nt;
+  NodeKind ak = nt_kind(nt, arg);
+  const char *mn = ak == NK_ConstantReadNode || ak == NK_ConstantPathNode ? nt_str(nt, arg, "name") : NULL;
+  int k = mn ? comp_class_index(c, mn) : -1;
+  if (k < 0 && mn) {
+    const char *al = resolve_class_alias_chain(c, mn);
+    if (al) k = comp_class_index(c, al);
+  }
+  return k;
+}
+
 /* The modules a module prepends in its bodies, front first, as the
    module's ancestors list them: `prepend A, B` puts A before B, and a later
    `prepend C` goes in front of both. At most `max`; returns the count. */
@@ -7206,9 +7233,7 @@ static int module_prepend_list(Compiler *c, int mod_id, int *out, int max) {
       const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
       int add[64], na = 0;
       for (int j = 0; j < an && na < 64; j++) {
-        NodeKind ak = nt_kind(nt, args[j]);
-        const char *mn = ak == NK_ConstantReadNode || ak == NK_ConstantPathNode ? nt_str(nt, args[j], "name") : NULL;
-        int pm = mn ? comp_class_index(c, mn) : -1;
+        int pm = mixin_arg_class(c, args[j]);
         if (pm >= 0 && pm != mod_id) add[na++] = pm;
       }
       if (n + na > max) na = max - n;
@@ -7961,9 +7986,7 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
       int an = 0;
       const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
       for (int j = 0; j < an; j++) {
-        const char *aty = nt_type(nt, args[j]);
-        const char *mname = (aty && (sp_streq(aty, "ConstantReadNode") || sp_streq(aty, "ConstantPathNode"))) ? nt_str(nt, args[j], "name") : NULL;
-        int mod_id = mname ? comp_class_index(c, mname) : -1;
+        int mod_id = mixin_arg_class(c, args[j]);
         if (mod_id < 0) continue;
         /* Transplant each instance method of the module into class ci. */
         for (int ms = 0; ms < c->nscopes; ms++) {

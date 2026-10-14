@@ -1358,6 +1358,7 @@ void emit_scope_local_ref(Compiler *c, Scope *s, const char *name, Buf *b);
 void emit_typed_elem_value(Compiler *c, int node, TyKind et, Buf *b);
 void emit_block_locals_reset(Compiler *c, int blk, Buf *b, int indent);
 const char *resolve_class_alias(Compiler *c, const char *cname);
+const char *resolve_class_alias_chain(Compiler *c, const char *cname);
 /* Emit `sp_Proc *` reference to the synthetic __yblk__ param of a lowered
    self-recursive yield method.  If we are inside an inner proc literal that
    captures __yblk__ via a cell, cast back from the sp_int cell slot. */
