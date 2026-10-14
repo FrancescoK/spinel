@@ -1795,6 +1795,7 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
 /* An arm st of a conditional emit_boxed_cond_arms boxes: its statements,
    then its value boxed into _t<dst> (nil for an empty arm). */
 typedef struct { int dst, lift; } BoxedCondArm;
+static int emit_boxed_self_chain(Compiler *c, int node, Buf *b);
 static void emit_boxed_cond_body(Compiler *c, int st, Buf *b, void *ctx) {
   BoxedCondArm *a = ctx;
   const NodeTable *nt = c->nt;
@@ -1815,8 +1816,11 @@ static void emit_boxed_cond_body(Compiler *c, int st, Buf *b, void *ctx) {
              !strbuf_var_handle(c, st, NULL);
   if (lift) buf_puts(b, "sp_poly_strbuf_lift(");
   if (st < 0) buf_puts(b, "sp_box_nil()");
-  /* An arm can hand on a route's handle as well as a variable's. */
-  else emit_boxed_next_value(c, st, b);
+  /* (a chain of calls answering their receiver over a slot, where the
+     conditional is lifted, is the slot's handle's box) */
+  else if (!(a->lift && emit_boxed_self_chain(c, st, b)))
+    /* An arm can hand on a route's handle as well as a variable's. */
+    emit_boxed_next_value(c, st, b);
   if (lift) buf_puts(b, ")");
   buf_puts(b, ";");
 }
@@ -2439,11 +2443,33 @@ static int emit_boxed_lift_ran_first(Compiler *c, int node, Buf *b) {
   return 1;
 }
 
+/* --share-strings: a lifted chain of calls answering their receiver over a
+   slot that holds the handle (strbuf_self_chain_base, `@s.upcase!.itself`):
+   the box of that slot's handle where the chain answers a String, nil where
+   a bang in it answered nil. The chain runs as its bytes, for its effects. */
+static int emit_boxed_self_chain(Compiler *c, int node, Buf *b) {
+  int base = strbuf_self_chain_base(c, node);
+  if (base < 0) return 0;
+  Buf sb;
+  memset(&sb, 0, sizeof sb);
+  strbuf_slot_text(c, base, &sb);
+  int tb = ++g_tmp;
+  buf_printf(b, "({ const char *_t%d = ", tb);
+  int sv_b = view_push_repr(c, node, VR_STRBUF_BOX, 0);
+  emit_expr(c, node, b);
+  view_pop(c, sv_b);
+  buf_printf(b, "; _t%d ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil(); })", tb, sb.p ? sb.p : "");
+  free(sb.p);
+  RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
+  return 1;
+}
+
 /* emit_boxed's arms for a value that hands on a String's handle by a route
    of its own: 1, the box written, or 0 with nothing emitted. */
 static int emit_boxed_routes(Compiler *c, int node, Buf *b) {
   int lift = emit_boxed_lift(c, node);
   if (emit_boxed_cond_arms(c, node, b) || emit_boxed_sequence(c, node, b)) return 1;
+  if (lift && emit_boxed_self_chain(c, node, b)) return 1;
   /* --share-strings: a held chain's value (`id(x[0]).upcase!.itself`,
      strbuf_held_chain) is boxed as the handle it holds */
   if (repr_share_rule(c) && node >= 0 && strbuf_held_chain(c, node) && emit_boxed_bang_self(c, unwrap_parens(c, node), b))

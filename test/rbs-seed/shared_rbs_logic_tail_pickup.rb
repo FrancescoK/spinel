@@ -14,7 +14,9 @@
 # receiver (`@s.itself`, `@s.then { |x| x }`, `@s.tap { }`, a bang, `@s << x`),
 # also as an arm of a conditional, a `case` or a `begin` operand, beside the
 # calls that publish nothing (an element read, `fetch`): the chain was
-# refused for a builtin, and a conditional's arm was not looked at.
+# refused for a builtin, and a conditional's arm was not looked at. A chain
+# of such calls over the ivar (`@s.upcase!.itself`, `@s.itself.tap { }`)
+# answers the ivar's String too.
 module LtConf
   class << self
     attr_accessor :key
@@ -199,6 +201,8 @@ class LtApp3
   def b_bang(v) = @s.upcase! || v
   def b_append(v) = (@s << "") || v
   def b_and(v) = v && @s.itself
+  def b_chain_bang(v) = @s.upcase!.itself || v
+  def b_chain_tap(v) = @s.itself.tap {} || v
   def c_cond(v) = (v ? @s.itself : @t) || v
   def c_cond_tap(v) = (v ? @s.tap {} : @t) || v
   def c_case(v) = (case v when 1 then @s.itself else @t end) || v
@@ -226,6 +230,8 @@ run3(:b_tap) { |app| pass(app.b_tap(nil)) }
 run3(:b_bang) { |app| pass(app.b_bang(nil)) }
 run3(:b_append) { |app| pass(app.b_append(nil)) }
 run3(:b_and) { |app| pass(app.b_and(1)) }
+run3(:b_chain_bang) { |app| pass(app.b_chain_bang(nil)) }
+run3(:b_chain_tap) { |app| pass(app.b_chain_tap(nil)) }
 run3(:c_cond) { |app| pass(app.c_cond(true)) }
 run3(:c_cond_other) { |app| pass(app.c_cond(nil)) }
 run3(:c_cond_tap) { |app| pass(app.c_cond_tap(true)) }

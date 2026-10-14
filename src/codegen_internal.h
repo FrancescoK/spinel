@@ -303,6 +303,9 @@ void emit_strbuf_pickup(Compiler *c, int v, int box, Buf *b);
 /* --share-strings: a call on v's receiver chain that answers its receiver's
    handle by a route boxes cannot render (codegen_stmt.c) */
 int strbuf_box_unrendered(Compiler *c, int v);
+/* --share-strings: the slot a chain of calls answering their receiver ends
+   in, or -1 (codegen_stmt.c) */
+int strbuf_self_chain_base(Compiler *c, int v);
 /* --share-strings: does value v hand over a shared String as its handle
    (a variable, a route, a conditional with such an arm)? (codegen_stmt.c) */
 int strbuf_value_carries(Compiler *c, int v);

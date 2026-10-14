@@ -190,6 +190,11 @@ static int share_plan_producer_core(Compiler *c, int v, int *op, int unlifted) {
   if (strbuf_held_chain(c, an_unparen(nt, v))) return SPK_SELF;
   int rv = share_plan_self_recv(c, v);
   if (rv >= 0) { *op = rv; return SPK_SELF; }
+  /* a chain of calls answering their receiver over a slot that holds the
+     handle (`@s.upcase!.itself`): that slot's supply, the box of which
+     emit_boxed_self_chain renders */
+  { int cb = strbuf_self_chain_base(c, v);
+    if (cb >= 0) { *op = cb; return SPK_SELF; } }
   if (face_str_bang_call(c, v)) { *op = nt_ref(nt, v, "receiver"); return SPK_BANG_BOX; }
   /* a boxed receiver's call whose every arm answers a String, the handle it
      publishes or a new one (or a conversion of it a String answers with
@@ -751,6 +756,7 @@ static int share_plan_arms_unrendered(Compiler *c, int v, int depth) {
    a call whose route boxes cannot render (strbuf_box_unrendered, also on an
    arm of a conditional) boxes as it did, from its bytes. */
 int share_plan_box_handle(Compiler *c, int v) {
+  if (repr_share_rule(c) && c->share && v >= 0 && strbuf_self_chain_base(c, v) >= 0) return 1;
   if (!repr_share_rule(c) || !c->share || v < 0 || share_plan_arms_unrendered(c, v, 0) ||
       share_plan_with_need(c, v, SPR_BOX, SPN_OBJECT).form != SPF_HANDLE)
     return 0;

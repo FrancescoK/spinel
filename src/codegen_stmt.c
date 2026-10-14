@@ -1454,6 +1454,44 @@ static int strbuf_route_tap(Compiler *c, int v) {
   Scope *bsc = p0 ? comp_scope_of(c, blk) : NULL;
   return rt == TY_STRING && bsc && repr_of_slot(c, scope_local(bsc, rename_local(p0))).handle;
 }
+/* --share-strings: the slot read at the base of call v's receiver chain,
+   when v is two or more calls each of which answers its receiver or nil (a
+   bang, an iterator given a block such as `tap`, a mutator, `freeze`, a
+   conversion such as `itself`) over a variable or ivar whose slot holds the
+   handle, with no method of the program's own, splat or impure argument on
+   a link; else -1. Whatever the chain answers is that slot's String, so
+   its box is the slot's handle where the chain's value is not nil
+   (emit_boxed_self_chain). */
+static int call_takes_splat(const NodeTable *nt, int v);
+int strbuf_self_chain_base(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  int links = 0, tg[CPT_MAX];
+  if (!repr_share_rule(c)) return -1;
+  for (v = unwrap_parens(c, v); v >= 0 && nt_kind(nt, v) == NK_CallNode; v = unwrap_parens(c, nt_ref(nt, v, "receiver"))) {
+    const char *nm = nt_str(nt, v, "name");
+    int r = unwrap_parens(c, nt_ref(nt, v, "receiver")), blk = nt_ref(nt, v, "block"), argc = 0;
+    const int *av = call_args(nt, v, &argc);
+    if (!nm || r < 0 || is_then_alias(nm) || is_unary_plus(nm) || call_takes_splat(nt, v) || call_is_safe_nav(nt, v) ||
+        cplan_targets(c, v, tg, CPT_MAX) != 0 || (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode))
+      return -1;
+    if (!(bop_share_self_answer(nm, blk >= 0) || (bop_answers_self(TY_STRING, nm, argc, blk >= 0) & BOPF_SELF) ||
+          (is_receiver_conversion(nm) && argc == 0 && blk < 0)))
+      return -1;
+    for (int i = 0; i < argc; i++)
+      if (!subtree_is_pure_read(c, av[i]) && nt_kind(nt, av[i]) != NK_StringNode) return -1;
+    /* the chain's bytes are built from the inside out: a literal block over
+       a call runs ahead of the temps of the links around it, and a freeze
+       over a call freezes a copy, so they end the chain (the outermost
+       block, and a freeze straight on the slot, are fine) */
+    if (nt_kind(nt, r) == NK_CallNode && ((blk >= 0 && links > 0) || is_freeze_name(nm))) return -1;
+    links++;
+  }
+  NodeKind k = v >= 0 ? nt_kind(nt, v) : NK_NONE;
+  if (links < 2 || (k != NK_LocalVariableReadNode && k != NK_InstanceVariableReadNode && !repr_static_read_kind(k)) ||
+      !strbuf_slot_has(c, v))
+    return -1;
+  return v;
+}
 /* --share-strings: does call v, or a link of its receiver chain, answer its
    receiver's handle by a route that boxes cannot render? The plan reads a
    call that answers its receiver as handing on that receiver's handle, but
@@ -1466,6 +1504,7 @@ static int strbuf_route_tap(Compiler *c, int v) {
    (`(+(s << x))`, `s.freeze.itself`). */
 int strbuf_box_unrendered(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
+  if (strbuf_self_chain_base(c, v) >= 0) return 0;
   for (v = unwrap_parens(c, v); v >= 0 && nt_kind(nt, v) == NK_CallNode; v = unwrap_parens(c, nt_ref(nt, v, "receiver"))) {
     int r = unwrap_parens(c, nt_ref(nt, v, "receiver")), blk = nt_ref(nt, v, "block");
     if (r < 0 || nt_kind(nt, r) != NK_CallNode) continue;

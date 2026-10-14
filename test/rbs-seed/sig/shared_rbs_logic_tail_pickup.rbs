@@ -24,6 +24,8 @@ class LtApp3
   def b_bang: (untyped v) -> String
   def b_append: (untyped v) -> String
   def b_and: (untyped v) -> String
+  def b_chain_bang: (untyped v) -> String
+  def b_chain_tap: (untyped v) -> String
   def c_cond: (untyped v) -> String
   def c_cond_tap: (untyped v) -> String
   def c_case: (untyped v) -> String

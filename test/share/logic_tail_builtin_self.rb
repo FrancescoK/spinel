@@ -8,7 +8,9 @@
 # handle it publishes; the builtin is now boxed by the handle its receiver
 # is. The same holds for such a call in an arm of a conditional, a `case` or
 # a `begin` that is an operand. A call over an instance variable and over a
-# reader method are both covered, on either side of the `||` or `&&`.
+# reader method are both covered, on either side of the `||` or `&&`, and so
+# is a chain of such calls over an instance variable (`@s.upcase!.itself`,
+# `@s.itself.tap { }`), whose bytes built the box.
 class LtbApp
   def initialize(s, t)
     @s = s
@@ -39,6 +41,9 @@ class LtbApp
   def gs_bang(v) = gs.upcase! || v
 
   def chain_itself(v) = @s.itself.itself || v
+  def chain_bang(v) = @s.upcase!.itself || v
+  def chain_tap(v) = @s.itself.tap {} || v
+  def chain_cond(v) = (v ? @s.upcase!.itself : @t) || v
   def nested(v) = (@s.itself || @t) || v
 
   def cond_arm(v) = (v ? @s.itself : @t) || v
@@ -85,6 +90,9 @@ check(:gs_then) { |o| o.gs_then(1) }
 check(:gs_bang) { |o| o.gs_bang(1) }
 
 check(:chain_itself) { |o| o.chain_itself(1) }
+check(:chain_bang) { |o| o.chain_bang(1) }
+check(:chain_tap) { |o| o.chain_tap(1) }
+check(:chain_cond) { |o| o.chain_cond(true) }
 check(:nested) { |o| o.nested(1) }
 
 check(:cond_arm) { |o| o.cond_arm(true) }
