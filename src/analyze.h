@@ -356,6 +356,9 @@ int an_ary_viewed(Compiler *c, int id);
    other node, or when none is pinned. face_active() says whether one is. */
 TyKind face_of(int node);
 int face_active(void);
+/* how many codegen views are open (codegen_view.c): a view pins nodes'
+   types while an arm is emitted, 0 outside the emission */
+int view_depth(void);
 void an_face_push(int node, TyKind kind);
 void an_face_pop(void);
 int an_face_pinned(int node);
