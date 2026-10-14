@@ -1018,8 +1018,25 @@ SP_TLS int sp_worker_id = 0;       /* exported: sp_alloc.h indexes the per-worke
 typedef struct { sp_thread *head, *tail; } __attribute__((aligned(64))) sp_runq;
 static sp_runq    g_grq;                 /* global run queue: spawned + woken threads */
 static sp_runq    g_lrq[SP_MAX_WORKERS]; /* per-worker local run queues (rerun locality) */
-static int        g_runnable = 0;        /* threads sitting in any run queue right now */
-static int        g_nrunning = 0;        /* workers currently executing a green thread (quiescence) */
+/* g_runnable (threads sitting in any run queue right now) and g_nrunning
+   (workers executing a green thread) share one word, runnable in the low half
+   and running in the high half, so that a reader sees both at one instant.
+   Main's pump decides that nothing can wake it when both are zero, and since
+   #8702 the fast path moves a thread from one to the other without the
+   scheduler lock. Read one after the other, the two could each miss the same
+   thread -- running read before its worker counted it, runnable read after
+   the worker popped it -- and a join reported a deadlock that was not one.
+   Every move raises the count it goes to before lowering the one it leaves,
+   so a single load always counts a thread on its way between them. */
+static uint64_t   g_counts = 0;
+#define SP_COUNT_RUNNING_ONE ((uint64_t)1 << 32)
+#define RUNNABLE_INC() ((void)SP_ATOMIC_FETCH_ADD(&g_counts, (uint64_t)1, __ATOMIC_SEQ_CST))
+#define RUNNABLE_DEC() ((void)SP_ATOMIC_FETCH_SUB(&g_counts, (uint64_t)1, __ATOMIC_SEQ_CST))
+#define RUNNING_INC()  ((void)SP_ATOMIC_FETCH_ADD(&g_counts, SP_COUNT_RUNNING_ONE, __ATOMIC_SEQ_CST))
+#define RUNNING_DEC()  ((void)SP_ATOMIC_FETCH_SUB(&g_counts, SP_COUNT_RUNNING_ONE, __ATOMIC_SEQ_CST))
+#define COUNTS_NOW()         SP_ATOMIC_LOAD(&g_counts, __ATOMIC_SEQ_CST)
+#define COUNTS_RUNNABLE(c)   ((int)(uint32_t)(c))
+#define COUNTS_RUNNING(c)    ((int)((c) >> 32))
 static sp_thread *g_sleepers = NULL;     /* threads parked in Kernel#sleep, woken by deadline */
 static sp_thread *g_io_waiters = NULL;    /* threads parked on a fd, woken by the monitor's poll */
 /* The I/O waiter list is linked both ways (wait_next, io_prev): a server with
@@ -1402,14 +1419,14 @@ static void runq_push(sp_runq *q, sp_thread *t) {
   /* head is stored atomically: a stealing worker peeks at it without the
      queue's lock (sched_pick) */
   if (q->tail) q->tail->rq_next = t; else SP_ATOMIC_STORE(&q->head, t, __ATOMIC_RELAXED);
-  q->tail = t; SP_ATOMIC_FETCH_ADD(&g_runnable, 1, __ATOMIC_SEQ_CST);
+  q->tail = t; RUNNABLE_INC();
 #ifdef SP_THREADS
   if (q == &g_grq) sp_sched_maybe_grow();   /* one execution helper per live green thread, up to the cap */
 #endif
 }
 static sp_thread *runq_pop(sp_runq *q) {
   sp_thread *t = q->head;
-  if (t) { SP_ATOMIC_STORE(&q->head, t->rq_next, __ATOMIC_RELAXED); if (!q->head) q->tail = NULL; t->rq_next = NULL; SP_ATOMIC_FETCH_SUB(&g_runnable, 1, __ATOMIC_SEQ_CST); }
+  if (t) { SP_ATOMIC_STORE(&q->head, t->rq_next, __ATOMIC_RELAXED); if (!q->head) q->tail = NULL; t->rq_next = NULL; RUNNABLE_DEC(); }
   return t;
 }
 /* Spawn: the shared global queue (no worker affinity yet). */
@@ -1498,7 +1515,7 @@ static sp_thread *sched_pick(int wid) {
         g_lrq[i].tail = NULL;
         for (sp_thread *w = g_lrq[i].head; w; w = w->rq_next) g_lrq[i].tail = w;
       }
-      t->rq_next = NULL; SP_ATOMIC_FETCH_SUB(&g_runnable, 1, __ATOMIC_SEQ_CST);
+      t->rq_next = NULL; RUNNABLE_DEC();
       RQ_UNLOCK(i);
       return t;
     }
@@ -2309,7 +2326,7 @@ static void sp_sched_signal_if_quiescent(void) {
      helper to find, so waking the helpers here was pure cost -- and in a
      park-heavy program (every green thread blocked on I/O between hops) it
      fired on every hop, which is most of what adding workers cost (#4305). */
-  if (SP_ATOMIC_LOAD(&g_nrunning, __ATOMIC_SEQ_CST) == 0 && SP_ATOMIC_LOAD(&g_runnable, __ATOMIC_SEQ_CST) == 0) SCHED_WAKE_MAIN();
+  if (COUNTS_NOW() == 0) SCHED_WAKE_MAIN();   /* none running, none runnable */
 }
 
 /* The fiber a green thread switches back to when it yields, blocks or is
@@ -2345,7 +2362,7 @@ static void run_thread_once(sp_thread *t) { sp_gc_wb((void*)t);   /* PRE/POST: s
   }
   sp_thread *saved = g_current;
   g_current = t;
-  SP_ATOMIC_FETCH_ADD(&g_nrunning, 1, __ATOMIC_SEQ_CST);
+  RUNNING_INC();
   SP_TH_SET_STATE(t, SP_TH_RUNNING);
   SP_ATOMIC_STORE(&t->park, SP_PK_RUN, __ATOMIC_SEQ_CST);   /* on-cpu now */
   if (t->home_wid < 0) {   /* pin to this worker (TLS affinity) */
@@ -2427,7 +2444,7 @@ static void run_thread_once(sp_thread *t) { sp_gc_wb((void*)t);   /* PRE/POST: s
     sp_fiber_release_stack(t->fiber);   /* off its stack for good: the next thread's (sp_fiber.c) */
     sp_thread_wake_joiners(t);
     reg_remove(t);   /* collectable once no user reference remains */
-    SP_ATOMIC_FETCH_SUB(&g_nrunning, 1, __ATOMIC_SEQ_CST);
+    RUNNING_DEC();
     SCHED_WAKE_MAIN();  /* a main joining t waits for its death in the pump; joiners were woken above */
     if (do_report) { SCHED_UNLOCK(); sp_thread_report(t); SCHED_LOCK(); }
     if (!locked) SCHED_UNLOCK();
@@ -2457,10 +2474,10 @@ static void run_thread_once(sp_thread *t) { sp_gc_wb((void*)t);   /* PRE/POST: s
     runq_requeue(t);
     sched_wake_home(t->home_wid);   /* pinned to us: our own loop re-picks it */
   }
-  SP_ATOMIC_FETCH_SUB(&g_nrunning, 1, __ATOMIC_SEQ_CST);
+  RUNNING_DEC();
   /* this thread blocked/passed; if nothing else runs, wake a waiting main (whose pump looks under the lock) */
   if (locked) sp_sched_signal_if_quiescent();
-  else if (SP_ATOMIC_LOAD(&g_nrunning, __ATOMIC_SEQ_CST) == 0 && SP_ATOMIC_LOAD(&g_runnable, __ATOMIC_SEQ_CST) == 0)
+  else if (COUNTS_NOW() == 0)
     { SCHED_LOCK(); sp_sched_signal_if_quiescent(); SCHED_UNLOCK(); }
 }
 
@@ -2548,7 +2565,7 @@ static void sp_sched_pump(sp_thread *target, int may_wait) {
        broadcasts (sp_sched_signal_if_quiescent). Only when nothing runs and the
        queue is empty do we fall through -- drained, or a deadlock the caller
        observes. */
-    int outstanding = (SP_ATOMIC_LOAD(&g_nrunning, __ATOMIC_SEQ_CST) > 0 || SP_ATOMIC_LOAD(&g_runnable, __ATOMIC_SEQ_CST) > 0);
+    int outstanding = COUNTS_NOW() != 0;   /* one load: see g_counts */
     /* A timed wait or an I/O waiter is work that may yet become runnable, so an
        ordinary wait counts it. The exit drain does not: nothing is going to
        ask for it after main has returned. */
@@ -2584,7 +2601,7 @@ static void sp_sched_pass(void) {
   /* Snapshot the runnable count and run exactly that many: a thread that
      re-queues itself (its own Thread.pass) during the sweep lands beyond the
      snapshot and waits for the next sweep, so it cannot starve main. */
-  int n = SP_ATOMIC_LOAD(&g_runnable, __ATOMIC_SEQ_CST);
+  int n = COUNTS_RUNNABLE(COUNTS_NOW());
   while (n-- > 0) {
     sp_thread *t = sched_pick(sp_worker_id);
     if (!t) return;
@@ -2978,7 +2995,8 @@ static void *sp_sysmon_main(void *arg) {
         for (int k = 0; k < 32; k++) if (g_sched_lat_hist[k]) fprintf(stderr, " [%u]=%llu", 1u << k, g_sched_lat_hist[k]);
         fprintf(stderr, "\n");
         int busyw = 0; for (int i = 0; i < sp_active_workers; i++) if (g_wslot[i].active && SP_ATOMIC_LOAD(&g_wslot[i].cur, __ATOMIC_ACQUIRE)) busyw++;
-        fprintf(stderr, "[sched-lat] workers=%d busy=%d runnable=%d nrunning=%d\n", sp_active_workers, busyw, g_runnable, g_nrunning);
+        { uint64_t c = COUNTS_NOW();
+          fprintf(stderr, "[sched-lat] workers=%d busy=%d runnable=%d nrunning=%d\n", sp_active_workers, busyw, COUNTS_RUNNABLE(c), COUNTS_RUNNING(c)); }
         { int pinned[SP_MAX_WORKERS] = {0}; int unpinned = 0;
           for (sp_thread *a = g_all; a; a = a->all_next) { if (a->home_wid >= 0) pinned[a->home_wid]++; else unpinned++; }
           fprintf(stderr, "[sched-lat] pinned per worker:"); for (int i = 0; i < sp_active_workers; i++) fprintf(stderr, " %d", pinned[i]); fprintf(stderr, "  unpinned=%d\n", unpinned); }
@@ -3386,7 +3404,7 @@ int sp_sched_wait_io_set(struct pollfd *set, int n, double timeout_s) {
    anything. */
 #define SP_LOCAL_TURN 2
 static int sp_worker_run_local(int wid) {
-  SP_ATOMIC_FETCH_ADD(&g_nrunning, 1, __ATOMIC_SEQ_CST);
+  RUNNING_INC();
   RQ_LOCK(wid); sp_thread *ft = runq_pop(&g_lrq[wid]); RQ_UNLOCK(wid);
   int ran = ft != NULL;
   while (ft) {
@@ -3405,8 +3423,8 @@ static int sp_worker_run_local(int wid) {
 #endif
     RQ_LOCK(wid); ft = runq_pop(&g_lrq[wid]); RQ_UNLOCK(wid);
   }
-  SP_ATOMIC_FETCH_SUB(&g_nrunning, 1, __ATOMIC_SEQ_CST);
-  if (SP_ATOMIC_LOAD(&g_nrunning, __ATOMIC_SEQ_CST) == 0 && SP_ATOMIC_LOAD(&g_runnable, __ATOMIC_SEQ_CST) == 0)
+  RUNNING_DEC();
+  if (COUNTS_NOW() == 0)
     { SCHED_LOCK(); sp_sched_signal_if_quiescent(); SCHED_UNLOCK(); }
   return ran;
 }
@@ -3609,7 +3627,8 @@ static void sp_sched_spawn_helper(void) {
    runnable thread for -- a lone background thread brings up exactly one. */
 static void sp_sched_maybe_grow(void) {
   if (!g_workers_started || g_stw_active) return;
-  int live = SP_ATOMIC_LOAD(&g_runnable, __ATOMIC_SEQ_CST) + SP_ATOMIC_LOAD(&g_nrunning, __ATOMIC_SEQ_CST);
+  uint64_t c = COUNTS_NOW();
+  int live = COUNTS_RUNNABLE(c) + COUNTS_RUNNING(c);
   int want = live < g_worker_cap ? live : g_worker_cap;
   while (g_helpers_spawned < want) {
     int before = g_helpers_spawned;
