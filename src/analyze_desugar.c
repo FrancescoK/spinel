@@ -8736,6 +8736,88 @@ static int dmp_instance_method_alias(NodeTable *nt, int call, const char *cn, in
 }
 
 
+/* The one def of instance method `x` in the bodies of module `mod`, the one
+   module or class of the program its last segment names; -1 when there is
+   none, more than one, or the module is not that. */
+static int dmo_module_def(const NodeTable *nt, const char *mod, const char *x) {
+  int found = -1, mods = 0;
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_ModuleNode && k != NK_ClassNode) continue;
+    const char *mn = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
+    if (!mn || !sp_streq(mn, mod)) continue;
+    if (k != NK_ModuleNode) return -1;
+    mods++;
+    int body = nt_ref(nt, id, "body"), bn = 0;
+    const int *bv = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    for (int i = 0; i < bn; i++) {
+      if (nt_kind(nt, bv[i]) != NK_DefNode || nt_ref(nt, bv[i], "receiver") >= 0) continue;
+      const char *dn = nt_str(nt, bv[i], "name");
+      if (!dn || !sp_streq(dn, x)) continue;
+      if (found >= 0) return -1;
+      found = bv[i];
+    }
+  }
+  return mods ? found : -1;
+}
+
+/* Does def `d` name a constant module `mod` defines in its own body, or use
+   `super`? A copy elsewhere would resolve the constant from its new place,
+   and reach another method by super. */
+static int dmo_body_unmovable(const NodeTable *nt, int d, const char *mod) {
+  int hi = fwd_subtree_max(nt, d);
+  for (int s = d; s <= hi; s++) {
+    NodeKind k = nt_kind(nt, s);
+    if (k == NK_SuperNode || k == NK_ForwardingSuperNode) return 1;
+    if (k != NK_ConstantReadNode) continue;
+    const char *cn = nt_str(nt, s, "name");
+    for (int id = 0; cn && id < nt->count; id++) {
+      NodeKind mk = nt_kind(nt, id);
+      if (mk != NK_ModuleNode) continue;
+      const char *mn = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
+      if (!mn || !sp_streq(mn, mod)) continue;
+      int body = nt_ref(nt, id, "body"), bn = 0;
+      const int *bv = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+      for (int i = 0; i < bn; i++) {
+        NodeKind bk = nt_kind(nt, bv[i]);
+        const char *wn = bk == NK_ConstantWriteNode ? nt_str(nt, bv[i], "name") :
+                         bk == NK_ModuleNode || bk == NK_ClassNode ? nt_str(nt, nt_ref(nt, bv[i], "constant_path"), "name") : NULL;
+        if (wn && sp_streq(wn, cn)) return 1;
+      }
+    }
+  }
+  return 0;
+}
+
+/* `define_method(:m, M.instance_method(:x))` with M another module of the
+   program -> a copy of M's `def x` named m. Binding a module's method to any
+   object is allowed, and the method runs M's body on it. The call was left
+   for the run time, which has no UnboundMethod to give it, and m was never
+   defined. Returns the def that replaces the call, or -1. */
+static int dmo_copy_module_def(NodeTable *nt, int call, const char *cn, int src, int blk) {
+  if (!sp_streq(cn, "define_method") || blk >= 0 || nt_kind(nt, src) != NK_CallNode) return -1;
+  const char *sm = nt_str(nt, src, "name");
+  int recv = nt_ref(nt, src, "receiver");
+  if (!sm || !sp_streq(sm, "instance_method") || nt_ref(nt, src, "block") >= 0 || recv < 0) return -1;
+  NodeKind rk = nt_kind(nt, recv);
+  if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) return -1;
+  const char *mod = nt_str(nt, recv, "name");
+  int sargs = nt_ref(nt, src, "arguments"), sn = 0;
+  const int *sv = sargs >= 0 ? nt_arr(nt, sargs, "arguments", &sn) : NULL;
+  int args = nt_ref(nt, call, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (!mod || sn != 1 || nt_kind(nt, sv[0]) != NK_SymbolNode || an != 2) return -1;
+  const char *m = sym_or_str_literal(nt, av[0]);
+  int d = m ? dmo_module_def(nt, mod, nt_str(nt, sv[0], "value")) : -1;
+  if (d < 0 || dmo_body_unmovable(nt, d, mod)) return -1;
+  char name[256];
+  snprintf(name, sizeof name, "%s", m);
+  int copy = nt_clone_subtree(nt, d);
+  if (copy < 0) return -1;
+  nt_node_set_str(nt, copy, "name", name);
+  return copy;
+}
+
 /* The `next`s the block whose body is `id` owns: not the ones a loop or an
    inner block, lambda or def takes. With `retype` each becomes a `return`. */
 static int owned_next_walk(NodeTable *nt, int id, int depth, int retype) {
@@ -8846,6 +8928,20 @@ int desugar_define_method_proc_arg(Compiler *c) {
       else if (an == 1 && blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode)
         src = nt_ref(nt, blk, "expression");
       if (src < 0) continue;
+      if (bv[i] == id) {
+        int copy = dmo_copy_module_def(nt, id, cn, src, blk);
+        if (copy >= 0) {
+          int *nb = malloc(sizeof(int) * (size_t)bn);
+          if (!nb) continue;
+          memcpy(nb, bv, sizeof(int) * (size_t)bn);
+          nb[i] = copy;
+          nt_node_set_arr(nt, body, "body", nb, bn);
+          free(nb);
+          bv = nt_arr(nt, body, "body", &bn);
+          changed = 1;
+          continue;
+        }
+      }
       if (dmp_instance_method_alias(nt, id, cn, src, blk)) {
         changed = 1;
         if (bv[i] == id) continue;
