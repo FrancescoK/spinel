@@ -13399,6 +13399,9 @@ static int alias_forwarder_like(NodeTable *nt, int like, const char *nw, const c
   nt_node_set_ref(nt, d, "parameters", ps);
   nt_node_set_ref(nt, d, "body", bd);
   nt_node_set_ref(nt, d, "receiver", -1);
+  /* an alias, not a def: no visibility section applies to it
+     (resolve_inherited_aliases gives it the target's) */
+  nt_node_set_int(nt, d, "alias_forwarder", 1);
   return d;
 }
 
