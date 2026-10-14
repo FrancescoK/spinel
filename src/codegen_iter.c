@@ -535,9 +535,11 @@ int ivar_read_is_handle(Compiler *c, int a) {
 /* An iterator's element text `src` (of type `want`) bound to block
    parameter pv: a parameter that is the shared handle (--share-strings)
    takes a fresh handle of a String element, which keeps a frozen one
-   frozen, or the handle a boxed element holds; any other takes `src`. */
+   frozen, or the handle a boxed element holds; any other takes `src`.
+   Without the rule a parameter whose slot is a mutable String is bound
+   the same way: the element is no sp_String * either. */
 void emit_strbuf_param_bind(Compiler *c, const LocalVar *pv, TyKind want, const char *src, Buf *b) {
-  int h = repr_share_rule(c) && repr_of_slot(c, pv).kind == RK_STRBUF;
+  int h = repr_of_slot(c, pv).kind == RK_STRBUF;
   if (h && want == TY_STRING) buf_printf(b, "sp_String_new_shared(%s)", src);
   else if (h && want == TY_POLY) buf_printf(b, "sp_poly_as_strbuf(%s)", src);
   else buf_puts(b, src);

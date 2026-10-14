@@ -279,10 +279,13 @@ static void emit_hash_p0_rhs(Compiler *c, Repr hr, const char *hn,
   }
 }
 
-/* --share-strings: does a hash block's parameter slot lv hold a String
-   handle where the Hash hands it a String (`actual`)? */
+/* Does a hash block's parameter slot lv hold a String handle where the
+   Hash hands it a String (`actual`)? Under --share-strings the rule's
+   handle; without it a mutable String (one a caller appends to after a
+   `[]=` it feeds stores it). Either way the plain String is wrapped, not
+   bound as it is. */
 static int hash_param_handle(Compiler *c, LocalVar *lv, TyKind actual) {
-  return repr_share_rule(c) && lv && actual == TY_STRING && repr_of_slot(c, lv).kind == RK_STRBUF;
+  return lv && actual == TY_STRING && repr_of_slot(c, lv).kind == RK_STRBUF;
 }
 /* Bind a hash-iteration block's parameters to C locals for entry `ti` of the
    materialized hash temp `_t<trecv>` (held as hr, runtime cname hn), emit the
