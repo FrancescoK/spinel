@@ -28,7 +28,19 @@ threads = Array.new(n) do |i|
   end
 end
 n.times { arrived.pop }
-sleep 0.02
+# Started is not parked: wait until each waiter reports "sleep", which it does
+# once it is on the waiter list. A select may already have timed out.
+deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+loop do
+  parked = true
+  n.times do |k|
+    t = threads[k]
+    parked = false unless t.status == "sleep" || (k % 5 == 4 && !t.alive?)
+  end
+  break if parked
+  raise "the threads did not reach their I/O waits" if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+  sleep 0.001
+end
 (n - 1).downto(0) { |k| threads[k].kill if k % 5 == 3 }
 sleep 0.2
 order = (0...n).map { |k| (k * 17) % n }
