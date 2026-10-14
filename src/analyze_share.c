@@ -5300,6 +5300,12 @@ int share_value_fresh(Compiler *c, int n, int depth) {
       !share_builtin_overridden(c, "Array", nm)) sh = BSH_ELEM;
   return (sh == BSH_ELEM || sh == BSH_ELEM_N) && nt_ref(nt, n, "block") < 0 && sh_fresh_elems(c, recv, depth + 1);
 }
+int share_tail_fresh(Compiler *c, int n) {
+  if (share_node_fresh(c, n)) return 1;
+  if (!c->share || n < 0 || nt_kind(c->nt, n) != NK_CallNode) return 0;
+  TyKind t = c->ntype[n];
+  return (t == TY_STRING || t == TY_STRBUF) && share_value_fresh(c, n, 0);
+}
 
 unsigned share_node_flags(const Compiler *c, int n) {
   const ShareFacts *F = c->share;

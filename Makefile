@@ -3104,6 +3104,11 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	  "$$tmp/srts" > "$$tmp/srts.out" 2>/dev/null && cmp -s "$$tmp/srts.out" test/rbs-seed/shared_rbs_string_to_s.expected && \
 	  SPINEL_GC_STRESS=1 "$$tmp/srts" > "$$tmp/srts.gc" 2>/dev/null && cmp -s "$$tmp/srts.gc" test/rbs-seed/shared_rbs_string_to_s.expected || { echo "rbs-seed-test: FAIL (#6765 an --rbs '(untyped) -> String' method answering its boxed parameter's to_s under --share-strings: refused, or not the shared String)"; sed -n 1,5p "$$tmp/srts.err"; ok=0; }; \
 	;; \
+	shared_rbs_split_tail) \
+	$(SPINEL) test/rbs-seed/shared_rbs_split_tail.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srst" >/dev/null 2>"$$tmp/srst.err" && \
+	  "$$tmp/srst" > "$$tmp/srst.out" 2>/dev/null && cmp -s "$$tmp/srst.out" test/rbs-seed/shared_rbs_split_tail.expected && \
+	  SPINEL_GC_STRESS=1 "$$tmp/srst" > "$$tmp/srst.gc" 2>/dev/null && cmp -s "$$tmp/srst.gc" test/rbs-seed/shared_rbs_split_tail.expected || { echo "rbs-seed-test: FAIL (#6765 an --rbs '-> String' method answering an element of a new String Array under --share-strings: refused, or not the shared String)"; sed -n 1,5p "$$tmp/srst.err"; ok=0; }; \
+	;; \
 	byref_string_param) \
 	$(SPINEL) test/rbs-seed/byref_string_param.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/br.c" 2>/dev/null; \

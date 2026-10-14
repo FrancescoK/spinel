@@ -255,6 +255,13 @@ int share_builtin_fresh(Compiler *c, int call);
    element read of a temporary container of new Strings (an Array literal of
    them, `map(&:to_s)` over Symbols)? depth: 0 from a caller. */
 int share_value_fresh(Compiler *c, int n, int depth);
+/* Is return tail n a String no name holds, which the method's return
+   clears the side channel for (ret_pub_fresh, emit_tail_value): one the walk
+   found no identity in (share_node_fresh), or a String call
+   share_value_fresh proves new, such as an element read of a temporary
+   container of new Strings (`s.split(".").last`) or a conversion over one,
+   which the walk joins to the slot it reaches. */
+int share_tail_fresh(Compiler *c, int n);
 /* Is node n the frozen String literal itself (a literal, or a freeze, -@ or
    dedup of one)? Its handle is the literal's own, never a new one. */
 int share_frozen_literal(Compiler *c, int n);

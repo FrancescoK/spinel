@@ -1,0 +1,10 @@
+class ShstCols
+  @where: Array[Array[String]]
+  @cols: Array[String]
+  def initialize: () -> void
+  def name_of: (String col) -> String
+  def first_of: (String col) -> String?
+  def nth_of: (String col, Integer i) -> String
+  def push_cols: (Array[String] cols) -> ShstCols
+  def add: (Hash[String | Symbol, untyped] h) -> ShstCols
+end

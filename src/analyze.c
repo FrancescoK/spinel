@@ -22305,7 +22305,7 @@ static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount
       tc->bangs++;
     }
     if (g_repr_check && tc->mi > 0 && ok) repr_channel_predict(c, node, tc->mi, RCH_PUBLISH);
-    if (!ok && tc->fresh_ok && share_node_fresh(c, node)) {
+    if (!ok && tc->fresh_ok && share_tail_fresh(c, node)) {
       if (g_repr_check && tc->mi > 0) repr_channel_predict(c, node, tc->mi, RCH_CLEAR);
       tc->fresh++; ok = 1;
     }
