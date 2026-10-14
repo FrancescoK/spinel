@@ -703,6 +703,66 @@ int share_plan_return_box(Compiler *c, int v) {
   return share_plan_with_need(c, v, SPR_TAKE, share_plan_need(c, v)).form == SPF_HANDLE;
 }
 
+/* Does an arm of conditional (or begin, `||`, `&&`) v, or v itself where it
+   is a call, answer by a route boxes cannot render (strbuf_box_unrendered)?
+   The arms are those share_plan_arms_ok takes. */
+static int share_plan_arms_unrendered(Compiler *c, int v, int depth) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || depth > 16) return 0;
+  switch (nt_kind(nt, v)) {
+  case NK_ParenthesesNode:
+    return share_plan_arms_unrendered(c, nt_ref(nt, v, "body"), depth + 1);
+  case NK_StatementsNode: {
+    int n = 0;
+    const int *bb = nt_arr(nt, v, "body", &n);
+    return n > 0 && share_plan_arms_unrendered(c, bb[n - 1], depth + 1);
+  }
+  case NK_ElseNode:
+    return share_plan_arms_unrendered(c, nt_ref(nt, v, "statements"), depth + 1);
+  case NK_IfNode: case NK_UnlessNode:
+    return share_plan_arms_unrendered(c, nt_ref(nt, v, "statements"), depth + 1) ||
+           share_plan_arms_unrendered(c, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1);
+  case NK_OrNode: case NK_AndNode:
+    return share_plan_arms_unrendered(c, nt_ref(nt, v, "left"), depth + 1) ||
+           share_plan_arms_unrendered(c, nt_ref(nt, v, "right"), depth + 1);
+  case NK_CaseNode: {
+    int nw = 0;
+    const int *whens = nt_arr(nt, v, "conditions", &nw);
+    for (int w = 0; w < nw; w++)
+      if (share_plan_arms_unrendered(c, nt_ref(nt, whens[w], "statements"), depth + 1)) return 1;
+    return share_plan_arms_unrendered(c, nt_ref(nt, v, "else_clause"), depth + 1);
+  }
+  case NK_BeginNode: {
+    int el = nt_ref(nt, v, "else_clause");
+    if (share_plan_arms_unrendered(c, el >= 0 ? el : nt_ref(nt, v, "statements"), depth + 1)) return 1;
+    for (int rc = nt_ref(nt, v, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
+      if (share_plan_arms_unrendered(c, nt_ref(nt, rc, "statements"), depth + 1)) return 1;
+    return 0;
+  }
+  case NK_CallNode:
+    return strbuf_box_unrendered(c, v);
+  default:
+    return 0;
+  }
+}
+
+/* (see share.h) The plan names the handle as the form of a box of v's String
+   (SPR_BOX, the object a lift needs), but only where an emitter renders v so:
+   a call whose route boxes cannot render (strbuf_box_unrendered, also on an
+   arm of a conditional) boxes as it did, from its bytes. */
+int share_plan_box_handle(Compiler *c, int v) {
+  if (!repr_share_rule(c) || !c->share || v < 0 || share_plan_arms_unrendered(c, v, 0) ||
+      share_plan_with_need(c, v, SPR_BOX, SPN_OBJECT).form != SPF_HANDLE)
+    return 0;
+  /* ...and a route the emitters take: a value that hands on its handle, or
+     a bang or an iterator given a block on a slot (`@s.upcase!`, `@s.tap { }`),
+     whose handle form boxes that slot (emit_boxed_bang_self) */
+  int u = an_unparen(c->nt, v);
+  int r = u >= 0 && nt_kind(c->nt, u) == NK_CallNode ? an_unparen(c->nt, nt_ref(c->nt, u, "receiver")) : -1;
+  return strbuf_value_carries(c, u) ||
+         (r >= 0 && nt_kind(c->nt, r) != NK_CallNode && strbuf_bang_self_local(c, u) && strbuf_slot_has(c, r));
+}
+
 const char *share_plan_role_name(int role) {
   static const char *const names[] = { "take", "read", "test", "store", "identity", "box" };
   return role >= SPR_TAKE && role <= SPR_BOX ? names[role] : "?";

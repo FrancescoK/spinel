@@ -4402,12 +4402,15 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
        its box is the receiver's own (emit_boxed_bang_self), where the bytes
        boxed again were a new String. So is a String left a store lifts
        (poly_strbuf_lift: a seeded String method's tail `s || v`), boxed by
-       the handle it publishes, not from its bytes. */
+       the handle it publishes, or by the receiver's where it is a builtin
+       call answering its receiver (`s.itself || v`, share_plan_box_handle),
+       not from its bytes. */
     int lt_hbox = repr_share_rule(c) && res == TY_POLY &&
                   (lt == TY_STRBUF ||
                    (lt == TY_STRING && (face_str_bang_call(c, left) || strbuf_var_handle(c, left, NULL) ||
                                         (repr_of(c, unwrap_parens(c, left)).poly_lift &&
-                                         (repr_call_returns_handle(c, left) || logic_left_carries(c, left))))));
+                                         (repr_call_returns_handle(c, left) || logic_left_carries(c, left) ||
+                                          share_plan_box_handle(c, unwrap_parens(c, left)))))));
     if (lt_hbox) lt = TY_POLY;
     int t = ++g_tmp;
     int lt_falsy_const = (lt == TY_NIL || lt == TY_VOID);  /* a nil/void left has no C-typed value */

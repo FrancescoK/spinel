@@ -16,3 +16,20 @@ class LtApp2
   def ivar_left: (untyped v) -> String
   def local_left: (untyped v) -> String
 end
+
+class LtApp3
+  def b_itself: (untyped v) -> String
+  def b_then: (untyped v) -> String
+  def b_tap: (untyped v) -> String
+  def b_bang: (untyped v) -> String
+  def b_append: (untyped v) -> String
+  def b_and: (untyped v) -> String
+  def c_cond: (untyped v) -> String
+  def c_cond_tap: (untyped v) -> String
+  def c_case: (untyped v) -> String
+  def c_begin: (untyped v) -> String
+  def c_elem: (untyped v) -> String
+  def c_hash: (untyped v) -> String
+  def c_fetch: (untyped v) -> String
+  def c_user: (untyped v) -> String
+end

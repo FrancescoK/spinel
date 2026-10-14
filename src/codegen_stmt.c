@@ -1454,6 +1454,28 @@ static int strbuf_route_tap(Compiler *c, int v) {
   Scope *bsc = p0 ? comp_scope_of(c, blk) : NULL;
   return rt == TY_STRING && bsc && repr_of_slot(c, scope_local(bsc, rename_local(p0))).handle;
 }
+/* --share-strings: does call v, or a link of its receiver chain, answer its
+   receiver's handle by a route that boxes cannot render? The plan reads a
+   call that answers its receiver as handing on that receiver's handle, but
+   three shapes have no such emitter, and their box is a copy (or C that does
+   not build): a `tap` given a literal block that is no handle route
+   (strbuf_route_tap) over a call, whose block's statements run ahead of the
+   temp the handle is held in; a call over a bang or an iterator given a
+   block (`s.upcase!.itself`), which the held-chain form does not box; and
+   a call without a block over one that mutates or freezes its receiver
+   (`(+(s << x))`, `s.freeze.itself`). */
+int strbuf_box_unrendered(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  for (v = unwrap_parens(c, v); v >= 0 && nt_kind(nt, v) == NK_CallNode; v = unwrap_parens(c, nt_ref(nt, v, "receiver"))) {
+    int r = unwrap_parens(c, nt_ref(nt, v, "receiver")), blk = nt_ref(nt, v, "block");
+    if (r < 0 || nt_kind(nt, r) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, v, "name"), *rn = nt_str(nt, r, "name");
+    if (nm && is_tap_name(nm) && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && !strbuf_route_tap(c, v)) return 1;
+    if (rn && bop_share_self_answer(rn, nt_ref(nt, r, "block") >= 0)) return 1;
+    if (rn && blk < 0 && (bop_name_mutates(rn, 0) || is_freeze_name(rn))) return 1;
+  }
+  return 0;
+}
 /* A shared Hash default setter stores and answers the same argument.
    Its boxed value slot can keep the argument's String handle. */
 int strbuf_hash_default_arg(Compiler *c, int v) {

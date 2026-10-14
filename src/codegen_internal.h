@@ -300,6 +300,9 @@ int strbuf_route_box_operand(Compiler *c, int v);
 /* the deep-return pickup of a call publishing its handle: the handle
    (box 0) or a box of what the call answered (box 1) (codegen_stmt.c) */
 void emit_strbuf_pickup(Compiler *c, int v, int box, Buf *b);
+/* --share-strings: a call on v's receiver chain that answers its receiver's
+   handle by a route boxes cannot render (codegen_stmt.c) */
+int strbuf_box_unrendered(Compiler *c, int v);
 /* --share-strings: does value v hand over a shared String as its handle
    (a variable, a route, a conditional with such an arm)? (codegen_stmt.c) */
 int strbuf_value_carries(Compiler *c, int v);
