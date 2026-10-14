@@ -25218,6 +25218,35 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (env_args >= 0) view_unbind(env_args);
 }
 
+/* `require path` with one argument that is no String literal: its path is
+   known only at run time (sp_require_computed) */
+int require_is_computed(const NodeTable *nt, int id) {
+  const char *cn = nt_str(nt, id, "name");
+  if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "receiver") >= 0 || !cn || !sp_streq(cn, "require")) return 0;
+  int ac = 0; const int *av = call_args(nt, id, &ac);
+  return ac == 1 && nt_kind(nt, av[0]) != NK_StringNode && nt_kind(nt, av[0]) != NK_SplatNode;
+}
+/* ...and does the program have one, in a reachable scope? */
+static int require_is_computed_any(Compiler *c) {
+  NT_FOREACH_KIND(c->nt, NK_CallNode, id)
+    if (require_is_computed(c->nt, id) && !bare_call_class_owned(c, id)) {
+      Scope *s = comp_scope_of(c, id);
+      if (!s || s->reachable) return 1;
+    }
+  return 0;
+}
+/* the features the program was compiled with, which a require whose path
+   is known only at run time answers for (sp_require_computed), where the
+   program has one */
+void emit_required_features(Compiler *c, Buf *b) {
+  if (!require_is_computed_any(c)) return;
+  buf_puts(b, "static const char *const sp_required_features[] = {");
+  for (int i = 0; i < g_nrequired_features; i++) {
+    emit_str_literal(b, g_required_features[i]);
+    buf_puts(b, ", ");
+  }
+  buf_printf(b, "NULL };\nstatic const int sp_nrequired_features = %d;\n", g_nrequired_features);
+}
 /* emit_call past its wraps: the copy wrap emits its own call through here */
 static void emit_call_unwrapped(Compiler *c, int id, Buf *b) {
   { const char *pn = nt_str(c->nt, id, "name");
@@ -29453,6 +29482,18 @@ static void emit_call_body_ordinary(Compiler *c, int id, Buf *b) {
     const char *cn = nt_str(nt, id, "name");
     if (rcv < 0 && cn && !bare_call_class_owned(c, id) &&
         (sp_streq(cn, "require") || sp_streq(cn, "require_relative"))) {
+      /* a path known only at run time: a file the program was compiled
+         with is already loaded, any other is CRuby's LoadError (the
+         features each require named, g_required_features) */
+      if (require_is_computed(nt, id)) {
+        int ac = 0; const int *av = call_args(nt, id, &ac);
+        TyKind pt = comp_ntype(c, av[0]);
+        buf_puts(b, "(sp_require_computed(");
+        if (pt == TY_STRING) emit_expr(c, av[0], b);
+        else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, av[0], b); buf_puts(b, ")"); }
+        buf_puts(b, ", sp_required_features, sp_nrequired_features), 0)");
+        return;
+      }
       buf_puts(b, "0");
       return;
     }

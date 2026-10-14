@@ -3529,6 +3529,21 @@ static char *sp_rewrite_dead_requires(const char *source) {
    over: one in a string or in a comment sets the flag, and all that gives up
    is an optimisation. Declared extern in compiler.h. */
 int g_require_unread = 0;
+/* The features this program was compiled with, as each require and
+   require_relative names it: a require whose path is known only at run
+   time answers for these as already loaded, and raises LoadError for any
+   other (sp_require_computed). */
+const char **g_required_features = NULL;
+int g_nrequired_features = 0;
+static void sp_note_required_feature(const char *name) {
+  if (!name || !*name) return;
+  for (int i = 0; i < g_nrequired_features; i++)
+    if (strcmp(g_required_features[i], name) == 0) return;
+  const char **nf = realloc(g_required_features, sizeof(char *) * (size_t)(g_nrequired_features + 1));
+  if (!nf) return;
+  g_required_features = nf;
+  g_required_features[g_nrequired_features++] = strdup(name);
+}
 static int sp_req_written = 0, sp_req_resolved = 0;
 
 static int sp_req_word_at(const char *p, const char *w, size_t n) {
@@ -3880,6 +3895,14 @@ static char *resolve_requires(const char *source, const char *source_path,
       sp_req_hoist_splice(&result, &fsl, &fsl_n, &hit, "", cf, cn, val);
       free(cf);
       continue;
+    }
+    /* (a file it names that is not there stops the compile below) */
+    {
+      size_t rl = strlen(rel_path);
+      char rn[512];
+      snprintf(rn, sizeof rn, "%s", rel_path);
+      if (rl > 3 && strcmp(rn + rl - 3, ".rb") == 0) rn[rl - 3] = '\0';
+      sp_note_required_feature(rn[0] == '.' && rn[1] == '/' ? rn + 2 : rn);
     }
 
     /* Build full path */
@@ -4815,6 +4838,7 @@ else {
     /* Stub arms above leave cfsl NULL: their content is a one-line comment. */
     if (!cfsl) cfsl = sp_fsl_make(content, 0, &cfsl_n);
     if (sp_require_preloaded(lib_name)) req_val = "false";
+    if (strcmp(req_val, "nil") != 0) sp_note_required_feature(lib_name);
 
     /* Debug: marker-wrap so plain-require'd lib content doesn't corrupt the
        line map's accounting for code after the require. No-op without --debug. */

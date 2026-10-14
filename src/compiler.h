@@ -23,6 +23,8 @@ extern int g_require_gate;
 /* the program may load a file the compiler did not read (spinel_parse.c,
    above resolve_requires): what that file would define is not in the node table */
 extern int g_require_unread;
+extern const char **g_required_features;   /* spinel_parse.c */
+extern int g_nrequired_features;
 /* SPINEL_SHARE_STRINGS is on: set, not empty and not "0" (spinel_parse.c) */
 int sp_share_strings_env(void);
 void sp_feature_mark(const char *name);
