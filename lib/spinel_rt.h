@@ -8346,6 +8346,9 @@ static sp_PolyArray *sp_PolyArray_flatten_bang(sp_PolyArray *a) {sp_gc_wb((void*
 /* "%b"/"%B" binary formatting (definition in lib/sp_cold.c). */
 int sp_fmt_binary(const char *spec, size_t sl, char conv, long long val,
                   char *out, size_t osz);
+/* the same for a Bignum's digits in the base, a leading '-' for a negative one */
+int sp_fmt_binary_big(const char *spec, size_t sl, char conv, const char *mag,
+                      char *out, size_t osz);
 
 static sp_RbVal sp_fmt_named_ref(sp_PolyArray *a, const char *nm, char nclose, char *own);  /* defined after the hash structs */
 /* Splat arguments into the print builtins: puts(*a) / print(*a) / p(*a)
@@ -8575,6 +8578,18 @@ else {
                     : (conv == 'b' || conv == 'B') ? 2 : 10;
         const char *bs = sp_bigint_to_s_base((sp_Bigint *)v.v.p, base);
         if (!bs) bs = "0";
+        /* a non-decimal base goes through the binary formatter: a negative
+           one is shown as its two's complement, as an Integer's is */
+        if (base != 10) {
+          wn = sp_fmt_binary_big(spec, sl, conv, bs, tmp, sizeof(tmp));
+          for (size_t wsz = sizeof(tmp) * 2; wn >= (int)(wsz / 2) && wsz <= ((size_t)1 << 30); wsz *= 2) {
+            char *w2 = (char *)realloc(wide, wsz);
+            if (!w2) { wn = (int)sizeof(tmp); free(wide); wide = NULL; break; }
+            wide = w2;
+            wn = sp_fmt_binary_big(spec, sl, conv, bs, wide, wsz);
+          }
+        }
+        else {
         /* The sign and base flags belong to the digits, not to the %s that
            carries the width: compose them in, then keep only the width and
            left-justify flags in the spec printf sees. */
@@ -8609,6 +8624,7 @@ else {
           snprintf(wide, (size_t)wn + 1, bfmt, digits);
         else if (wn >= (int)sizeof(tmp)) wn = (int)sizeof(tmp) - 1;
         if (conv == 'X') for (char *q = wide ? wide : tmp; *q; q++) if (*q >= 'a' && *q <= 'f') *q -= 32;
+        }
       }
       else {
       if (v.tag == SP_TAG_FLT && !(v.v.f >= (sp_float)INTPTR_MIN && v.v.f < -(sp_float)INTPTR_MIN)) {

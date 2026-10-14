@@ -68,9 +68,15 @@ else{/* result didn't fit the stack temp; re-render at full width (sp_str_alloc 
 /* Integer#% / Kernel#format "%b"/"%B"/"%o"/"%x"/"%X": non-decimal formatting
    with Ruby's flag, width, precision, and two's-complement-for-negative rules.
    C's printf drops the '+' and ' ' flags on these conversions and has no
-   two's-complement form, so none of it can be delegated to libc. */
-int sp_fmt_binary(const char *spec, size_t sl, char conv, long long val,
-                  char *out, size_t osz) {
+   two's-complement form, so none of it can be delegated to libc.
+
+   fmt_binary_emit does the part after the digits: the precision, the sign
+   or the "..", the '#' prefix and the width. `digits` is the body: for a
+   two's-complement value (`twos`) the digits that differ from the infinite
+   run of sign digits plus one leading sign digit, else the magnitude (empty
+   for 0). It writes at most osz bytes and answers how many it wrote. */
+static int fmt_binary_emit(const char *spec, size_t sl, char conv, int neg, int nonzero,
+                           const char *digits0, int dn0, char *out, size_t osz) {
   int base = (conv == 'o') ? 8 : (conv == 'x' || conv == 'X') ? 16 : 2;
   int upper = (conv == 'X' || conv == 'B');
   char topd = (char)(base == 8 ? '7' : base == 2 ? '1' : (upper ? 'F' : 'f'));
@@ -92,16 +98,83 @@ int sp_fmt_binary(const char *spec, size_t sl, char conv, long long val,
     i++; prec = 0;
     for (; i < sl && spec[i] >= '0' && spec[i] <= '9'; i++) prec = (prec * 10) + (spec[i] - '0');
   }
+  int twos = neg && !f_plus && !f_space;
+  /* precision: minimum digit count. The ".." body counts as 2 toward it and pads
+     with sign digits; signed magnitude pads with 0. */
+  int t2 = 0;
+  char padc = twos ? topd : '0';
+  if (prec >= 0) {
+    int target = twos ? (prec - 2) : prec;
+    if (target - dn0 > 0) t2 = target - dn0;
+    f_zero = 0;  /* precision disables 0-flag for integer conversions */
+  }
+  /* octal's alternate form has no letter: it just guarantees a leading 0, so
+     it adds nothing to a body that already starts with one (and nothing at
+     all to the two's-complement form, where a 0 would misread) */
+  int oct_zero = 0;
+  char sign = twos ? 0 : (neg ? '-' : (f_plus ? '+' : (f_space ? ' ' : 0)));
+  char prefix0 = 0, prefix1 = 0;
+  if (f_hash && base == 8) {
+    if (!twos) {
+      if (dn0 + t2 == 0) oct_zero = 1;
+      else if ((t2 ? padc : digits0[0]) != '0') prefix0 = '0';
+    }
+  }
+  else if (f_hash && nonzero) {
+    prefix0 = '0';
+    prefix1 = (base == 2) ? (upper ? 'B' : 'b') : (upper ? 'X' : 'x');
+  }
+  int head = (sign ? 1 : 0) + (prefix0 ? (prefix1 ? 2 : 1) : 0) + (twos ? 2 : 0);
+  int bn = head + t2 + dn0 + oct_zero;
+  char *body = (char *)malloc((size_t)bn + 1);
+  if (!body) return 0;
+  int b = 0;
+  if (sign) body[b++] = sign;
+  if (prefix0) { body[b++] = prefix0; if (prefix1) body[b++] = prefix1; }
+  if (twos) { body[b++] = '.'; body[b++] = '.'; }
+  for (int k = 0; k < t2; k++) body[b++] = padc;
+  for (int k = 0; k < dn0; k++) body[b++] = digits0[k];
+  if (oct_zero) body[b++] = '0';
 
+  int o = 0;
+  int pad = width - bn;
+  if (pad > 0 && !f_minus && f_zero) {
+    /* zero-pad: emit sign/prefix/".." first, then fill, then the rest. A two's-
+       complement body fills with the sign digit; signed magnitude with 0. */
+    char fillc = twos ? topd : '0';
+    for (int k = 0; k < head && o < (int)osz; k++) out[o++] = body[k];
+    for (int k = 0; k < pad && o < (int)osz; k++) out[o++] = fillc;
+    for (int k = head; k < bn && o < (int)osz; k++) out[o++] = body[k];
+  }
+  else {
+    if (pad > 0 && !f_minus) for (int k = 0; k < pad && o < (int)osz; k++) out[o++] = ' ';
+    for (int k = 0; k < bn && o < (int)osz; k++) out[o++] = body[k];
+    if (pad > 0 && f_minus) for (int k = 0; k < pad && o < (int)osz; k++) out[o++] = ' ';
+  }
+  free(body);
+  return o;
+}
+
+int sp_fmt_binary(const char *spec, size_t sl, char conv, long long val,
+                  char *out, size_t osz) {
+  int base = (conv == 'o') ? 8 : (conv == 'x' || conv == 'X') ? 16 : 2;
+  int upper = (conv == 'X' || conv == 'B');
+  char topd = (char)(base == 8 ? '7' : base == 2 ? '1' : (upper ? 'F' : 'f'));
+  int f_plus = 0, f_space = 0;
+  for (size_t i = 1; i < sl; i++) {
+    if (spec[i] == '+') f_plus = 1;
+    else if (spec[i] == ' ') f_space = 1;
+    else if (spec[i] != '-' && spec[i] != '#' && spec[i] != '0') break;
+  }
   int neg = val < 0;
   /* Ruby shows the two's-complement ".." body only for a negative value with no
      sign flag; a + or space flag switches to signed magnitude ("-101"). */
   int twos = neg && !f_plus && !f_space;
-  char digits[256]; int dn = 0;
+  char digits[80]; int dn = 0;
   if (twos) {
     /* the digits that differ from the infinite run of sign digits, plus one
        leading sign digit: -255 in base 16 is "..f01" */
-    char t[80]; int tn = 0;
+    char t[72]; int tn = 0;
     long long w = val;
     while (w != -1 && tn < (int)sizeof t) {
       long long d = w % base;
@@ -113,69 +186,73 @@ int sp_fmt_binary(const char *spec, size_t sl, char conv, long long val,
     while (tn) digits[dn++] = t[--tn];
   }
   else {
-    /* signed magnitude: |val| in the base. 0 has no significant digits, so it
-       contributes a single '0' only when precision is not 0. */
+    /* signed magnitude: |val| in the base. 0 has no significant digits. */
     unsigned long long mag = neg ? (unsigned long long)(-(val + 1)) + 1 : (unsigned long long)val;
-    if (mag == 0) { if (prec != 0) digits[dn++] = '0'; }
-    else { char t[80]; int tn = 0;
-           while (mag) { int d = (int)(mag % (unsigned)base);
-                         t[tn++] = (char)(d < 10 ? '0' + d : (upper ? 'A' : 'a') + (d - 10));
-                         mag /= (unsigned)base; }
-           while (tn) digits[dn++] = t[--tn]; }
+    char t[72]; int tn = 0;
+    while (mag) { int d = (int)(mag % (unsigned)base);
+                  t[tn++] = (char)(d < 10 ? '0' + d : (upper ? 'A' : 'a') + (d - 10));
+                  mag /= (unsigned)base; }
+    while (tn) digits[dn++] = t[--tn];
   }
-  /* precision: minimum digit count. The ".." body counts as 2 toward it and pads
-     with sign digits; signed magnitude pads with 0. */
-  if (prec >= 0) {
-    int target = twos ? (prec - 2) : prec;
-    char padc = twos ? topd : '0';
-    int t2 = target - dn;
-    if (t2 > 0) {
-      /* clamp to the digits buffer (output is capped at osz anyway) */
-      if (t2 + dn >= (int)sizeof(digits)) t2 = (int)sizeof(digits) - dn - 1;
-      memmove(digits + t2, digits, (size_t)dn);  /* shift body right */
-      memset(digits, padc, (size_t)t2);           /* leading padding */
-      dn += t2;
-    }
-    f_zero = 0;  /* precision disables 0-flag for integer conversions */
+  /* 0 has no significant digits: a single '0' only where the precision is
+     not 0 */
+  if (dn == 0) {
+    int prec0 = 0;
+    for (size_t i = 1; i < sl; i++) if (spec[i] == '.') { prec0 = 1; for (size_t j = i + 1; j < sl && spec[j] >= '0' && spec[j] <= '9'; j++) if (spec[j] != '0') prec0 = 0; break; }
+    if (!prec0) digits[dn++] = '0';
   }
-  /* assemble sign/prefix + body, then apply width padding */
-  char body[300]; int bn = 0;
-  char sign = twos ? 0 : (neg ? '-' : (f_plus ? '+' : (f_space ? ' ' : 0)));
-  char prefix0 = 0, prefix1 = 0;
-  if (f_hash && base == 8) {
-    /* octal's alternate form has no letter: it just guarantees a leading 0,
-       so it adds nothing to a body that already starts with one (and nothing
-       at all to the two's-complement form, where a 0 would misread) */
-    if (!twos) {
-      if (dn == 0) digits[dn++] = '0';
-      else if (digits[0] != '0') prefix0 = '0';
-    }
-  }
-  else if (f_hash && val != 0) {
-    prefix0 = '0';
-    prefix1 = (base == 2) ? (upper ? 'B' : 'b') : (upper ? 'X' : 'x');
-  }
-  if (sign) body[bn++] = sign;
-  if (prefix0) { body[bn++] = prefix0; if (prefix1) body[bn++] = prefix1; }
-  if (twos) { body[bn++] = '.'; body[bn++] = '.'; }
-  for (int k = 0; k < dn; k++) body[bn++] = digits[k];
+  return fmt_binary_emit(spec, sl, conv, neg, val != 0, digits, dn, out, osz);
+}
 
-  int o = 0;
-  int pad = width - bn;
-  if (pad > 0 && !f_minus && f_zero) {
-    /* zero-pad: emit sign/prefix/".." first, then fill, then the rest. A two's-
-       complement body fills with the sign bit (1); signed magnitude with 0. */
-    int head = (sign ? 1 : 0) + (prefix0 ? (prefix1 ? 2 : 1) : 0) + (twos ? 2 : 0);
-    char fillc = twos ? topd : '0';
-    for (int k = 0; k < head && o < (int)osz; k++) out[o++] = body[k];
-    for (int k = 0; k < pad && o < (int)osz; k++) out[o++] = fillc;
-    for (int k = head; k < bn && o < (int)osz; k++) out[o++] = body[k];
+/* The same for a Bignum, `mag` its digits in the base with a leading '-'
+   for a negative one (sp_bigint_to_s_base). A negative one with no sign
+   flag shows its two's complement: the magnitude's digits complemented
+   and one added, over one more digit than the magnitude has, then the run
+   of leading sign digits taken down to one ("%o" % -(3 << 62) is
+   "..76400000000000000000000"). Done on the digits, so no digit straddles
+   a word of the number (mruby b9aa4d679). */
+int sp_fmt_binary_big(const char *spec, size_t sl, char conv, const char *mag,
+                      char *out, size_t osz) {
+  int base = (conv == 'o') ? 8 : (conv == 'x' || conv == 'X') ? 16 : 2;
+  int upper = (conv == 'X' || conv == 'B');
+  char topd = (char)(base == 8 ? '7' : base == 2 ? '1' : (upper ? 'F' : 'f'));
+  int neg = mag[0] == '-';
+  if (neg) mag++;
+  int f_plus = 0, f_space = 0;
+  for (size_t i = 1; i < sl; i++) {
+    if (spec[i] == '+') f_plus = 1;
+    else if (spec[i] == ' ') f_space = 1;
+    else if (spec[i] != '-' && spec[i] != '#' && spec[i] != '0') break;
+  }
+  int twos = neg && !f_plus && !f_space;
+  int ml = (int)strlen(mag);
+  char *d = (char *)malloc((size_t)ml + 2);
+  if (!d) return 0;
+  int dn = 0;
+  #define FB_VAL(ch) ((ch) >= 'a' ? (ch) - 'a' + 10 : (ch) >= 'A' ? (ch) - 'A' + 10 : (ch) - '0')
+  #define FB_DIG(v) ((char)((v) < 10 ? '0' + (v) : (upper ? 'A' : 'a') + ((v) - 10)))
+  if (twos) {
+    /* base^(ml+1) - |n|: complement each digit of the magnitude padded
+       with one leading 0, then add one */
+    int n = ml + 1;
+    for (int k = 0; k < n; k++) d[k] = (char)(base - 1 - (k == 0 ? 0 : FB_VAL(mag[k - 1])));
+    for (int k = n - 1; k >= 0; k--) {
+      if (d[k] == base - 1) { d[k] = 0; continue; }
+      d[k]++;
+      break;
+    }
+    int lead = 0;
+    while (lead + 1 < n && d[lead] == base - 1 && d[lead + 1] == base - 1) lead++;
+    for (int k = lead; k < n; k++) d[dn++] = FB_DIG(d[k]);
   }
   else {
-    if (pad > 0 && !f_minus) for (int k = 0; k < pad && o < (int)osz; k++) out[o++] = ' ';
-    for (int k = 0; k < bn && o < (int)osz; k++) out[o++] = body[k];
-    if (pad > 0 && f_minus) for (int k = 0; k < pad && o < (int)osz; k++) out[o++] = ' ';
+    for (int k = 0; k < ml; k++) d[dn++] = FB_DIG(FB_VAL(mag[k]));
   }
+  #undef FB_VAL
+  #undef FB_DIG
+  (void)topd;
+  int o = fmt_binary_emit(spec, sl, conv, neg, 1, d, dn, out, osz);
+  free(d);
   return o;
 }
 
