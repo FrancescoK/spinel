@@ -9623,6 +9623,25 @@ static void implicit_nil_writes_note(Compiler *c, NilWrites *w) {
     }
   }
   free(seeded.cls); free(seeded.nm);
+  /* A class-level ivar -- a class method's own `@x`, a module_function's --
+     has no constructor at all: its static is nil until a write. One a class
+     method reads is nil there, unless the class body writes it first. */
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_InstanceVariableReadNode, id) {
+    Scope *s = comp_scope_of(c, id);
+    const char *nm = nt_str(nt, id, "name");
+    if (!s || !s->is_cmethod || s->class_id < 0 || !nm) continue;
+    ClassInfo *ci = &c->classes[s->class_id];
+    int iv = comp_ivar_index(ci, nm);
+    if (iv < 0 || nil_write_type(ci->ivar_types[iv]) == ci->ivar_types[iv]) continue;
+    int seeded_body = 0;
+    NT_FOREACH_KIND(nt, NK_InstanceVariableWriteNode, wn) {
+      Scope *ws = comp_scope_of(c, wn);
+      if (ws && ws->class_id < 0 && c->node_cbody[wn] == s->class_id &&
+          sp_streq(nt_str(nt, wn, "name"), nm)) { seeded_body = 1; break; }
+    }
+    if (!seeded_body) nil_write_note(w, s->class_id, nm);
+  }
 }
 
 int class_has_subclass(Compiler *c, int ocid);
