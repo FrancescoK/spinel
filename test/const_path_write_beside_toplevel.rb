@@ -18,3 +18,13 @@ p Outer::Base::NAMES, NAMES, Outer::Base.const_get(:LIMIT)
 module Solo; end
 Solo::ONLY = 3
 p Solo::ONLY
+# ... and so is one written through an alias of the class
+class Held; def self.cap = CAP; end
+HeldAlias = Held
+HeldAlias::CAP = 4
+NestAlias = Outer::Base
+NestAlias::DEPTH ||= 2
+CAP = 0
+DEPTH = 9
+p Held::CAP, HeldAlias::CAP, Held.cap, CAP, Held.const_get(:CAP)
+p Outer::Base::DEPTH, NestAlias::DEPTH, DEPTH

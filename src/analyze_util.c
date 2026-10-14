@@ -1246,8 +1246,8 @@ static const char *const_value_owned_key(Compiler *c, const char *clsname, const
     const char *key = body >= 0 ? cn_body_const_key(nt, body, constname, 1) : NULL;
     if (key) return key;
   }
-  /* ... or a path write through it (`Base::N = v`), under the key the
-     constant qualifier gave it */
+  /* ... or a path write through it (`Base::N = v`, or through an alias of
+     it), under the key the constant qualifier gave it */
   static const NodeKind pw[] = { NK_ConstantPathWriteNode, NK_ConstantPathOrWriteNode,
                                  NK_ConstantPathAndWriteNode, NK_ConstantPathOperatorWriteNode };
   for (int i = 0; i < 4; i++)
@@ -1256,7 +1256,9 @@ static const char *const_value_owned_key(Compiler *c, const char *clsname, const
       const char *on = t >= 0 ? nt_str(nt, t, "qc_orig_name") : NULL;
       if (!on) on = t >= 0 ? nt_str(nt, t, "name") : NULL;
       const char *pn = par >= 0 ? nt_str(nt, par, "name") : NULL;
-      if (on && pn && sp_streq(on, constname) && sp_streq(pn, clsname)) return nt_str(nt, t, "name");
+      const char *ra = pn && !sp_streq(pn, clsname) ? resolve_class_alias(c, pn) : NULL;
+      if (on && pn && sp_streq(on, constname) && (sp_streq(pn, clsname) || (ra && sp_streq(ra, clsname))))
+        return nt_str(nt, t, "name");
     }
   return NULL;
 }

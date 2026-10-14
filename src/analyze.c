@@ -3601,17 +3601,21 @@ static int qc_program_defines_class(const NodeTable *nt, const char *leaf) {
   return 0;
 }
 /* A top-level path write's target `A::B::NAME`, as a write of NAME under
-   [A, B] -- when each of A, B is a class or module of the program. */
+   the module path A::B names from the top level (through an alias, `A =
+   Base`) -- when each segment of it is a class or module of the program. */
 static void qc_note_path_write(Compiler *c, int tgt, QCWrite **ws, int *n, int *cap) {
-  char chain[QC_MAXDEPTH + 1][64];
+  char chain[QC_MAXDEPTH + 1][64], mods[QC_MAXDEPTH + 1][64];
   int abs = 0, cn = tgt >= 0 ? qc_read_chain(c->nt, tgt, chain, &abs) : 0;
   if (cn < 2 || cn > QC_MAXDEPTH) return;
-  for (int i = 0; i < cn - 1; i++) if (!qc_program_defines_class(c->nt, chain[i])) return;
+  QCScope top = { chain, 0 };
+  int via, md = qc_alias_chain(&top, 1, chain, cn - 1, mods, &via);
+  if (md < 1 || qc_holder >= 0) return;
+  for (int i = 0; i < md; i++) if (!qc_program_defines_class(c->nt, mods[i])) return;
   if (*n >= *cap) { *cap = *cap ? *cap * 2 : 16; *ws = realloc(*ws, sizeof(QCWrite) * (size_t)*cap); }
   if (!*ws) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   QCWrite *w = &(*ws)[(*n)++];
-  w->node = tgt; w->depth = cn - 1; w->salt = 0; w->head[0] = 0;
-  for (int i = 0; i < cn - 1; i++) snprintf(w->path[i], 64, "%s", chain[i]);
+  w->node = tgt; w->depth = md; w->salt = 0; w->head[0] = 0;
+  for (int i = 0; i < md; i++) snprintf(w->path[i], 64, "%s", mods[i]);
   snprintf(w->name, sizeof w->name, "%s", chain[cn - 1]);
 }
 void qc_collect_writes(Compiler *c, int node, char (*path)[64], int depth,
