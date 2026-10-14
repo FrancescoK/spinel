@@ -348,6 +348,16 @@ int repr_env_store_operand(Compiler *c, int v) {
          (!(share_node_flags(c, argv[0]) & SHF_MUT) || repr_of(c, argv[0]).handle ||
           share_value_fresh(c, argv[0], 0) || !subtree_has_side_effect(c, argv[1])) ? argv[1] : -1;
 }
+/* Does string conversion `node` hand on a handle: the operand it ends in,
+   through further conversions, is a boxed value or a route that carries
+   one (strbuf_route_kind, the arms emit_strbuf_value takes the conversion
+   by)? */
+static int repr_conversion_hands_handle(Compiler *c, int node) {
+  int x = repr_string_conversion_operand(c, node), op, more;
+  while ((more = x >= 0 ? repr_string_conversion_operand(c, x) : -1) >= 0) x = more;
+  return x >= 0 && (repr_of(c, x).kind == RK_BOXED || strbuf_route_kind(c, x, &op) != SPK_NONE ||
+                    strbuf_cond_has_handle_leaf(c, x, 0));
+}
 /* Where the boxed form of a shared-mutable String comes from, as emit_boxed
    decides it for a node stored as (or holding) the handle. */
 static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
@@ -421,7 +431,12 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
   if (k == NK_CallNode) {
     /* A boxed receiver route keeps its handle beside fresh user answers. */
     if (repr_boxed_to_s_operand(mc, node) >= 0) return RS_HANDLE;
-    if (repr_string_conversion_operand(mc, node) >= 0) return RS_HANDLE;
+    /* A conversion keeps its operand's handle only where the operand has
+       one to hand on; over bytes (`split(".").last.to_s`,
+       `File.basename(p).to_s`) it is a String value, wrapped fresh where a
+       handle is demanded, as the operand alone would be. */
+    if (repr_string_conversion_operand(mc, node) >= 0)
+      return repr_conversion_hands_handle(mc, node) ? RS_HANDLE : RS_FRESH;
     int ops[3];
     if (strbuf_route_clamp(mc, node, ops)) return RS_HANDLE;
     if (repr_env_store_operand(mc, node) >= 0) return RS_HANDLE;

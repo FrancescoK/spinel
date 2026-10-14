@@ -3133,6 +3133,11 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	  "$$tmp/srsb" > "$$tmp/srsb.out" 2>/dev/null && cmp -s "$$tmp/srsb.out" test/rbs-seed/shared_rbs_string_boxed_arg.expected && \
 	  SPINEL_GC_STRESS=1 "$$tmp/srsb" > "$$tmp/srsb.gc" 2>/dev/null && cmp -s "$$tmp/srsb.gc" test/rbs-seed/shared_rbs_string_boxed_arg.expected || { echo "rbs-seed-test: FAIL (#6765 an --rbs String parameter or ivar given a boxed String under --share-strings: not the box's handle)"; sed -n 1,5p "$$tmp/srsb.err"; ok=0; }; \
 	;; \
+	shared_rbs_conversion_bytes) \
+	$(SPINEL) test/rbs-seed/shared_rbs_conversion_bytes.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srcb" >/dev/null 2>"$$tmp/srcb.err" && \
+	  "$$tmp/srcb" > "$$tmp/srcb.out" 2>/dev/null && cmp -s "$$tmp/srcb.out" test/rbs-seed/shared_rbs_conversion_bytes.expected && \
+	  SPINEL_GC_STRESS=1 "$$tmp/srcb" > "$$tmp/srcb.gc" 2>/dev/null && cmp -s "$$tmp/srcb.gc" test/rbs-seed/shared_rbs_conversion_bytes.expected || { echo "rbs-seed-test: FAIL (#6765 a String conversion over bytes pushed into a boxed Array under --share-strings: refused, or C that does not build)"; sed -n 1,5p "$$tmp/srcb.err"; ok=0; }; \
+	;; \
 	shared_rbs_string_to_s) \
 	$(SPINEL) test/rbs-seed/shared_rbs_string_to_s.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srts" >/dev/null 2>"$$tmp/srts.err" && \
 	  "$$tmp/srts" > "$$tmp/srts.out" 2>/dev/null && cmp -s "$$tmp/srts.out" test/rbs-seed/shared_rbs_string_to_s.expected && \
