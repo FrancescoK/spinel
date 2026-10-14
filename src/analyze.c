@@ -38116,6 +38116,13 @@ static const char *redef_class_name(const NodeTable *nt, int cls) {
    and those calls are marked with it; once their receivers are typed,
    desugar_redef_version_calls points the ones on the class at it. Calls in
    method bodies, which run whenever they are called, keep the last def. */
+typedef struct { const char *name; int at; } RedefClassAt;
+static int redef_class_at_cmp(const void *a, const void *b) {
+  const RedefClassAt *x = a, *y = b;
+  int r = strcmp(x->name, y->name);
+  return r ? r : x->at - y->at;
+}
+
 static void version_redefined_reopen_defs(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int body = nt_ref(nt, nt->root_id, "statements");
@@ -38123,11 +38130,26 @@ static void version_redefined_reopen_defs(Compiler *c) {
   const int *st0 = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
   if (!st0 || n < 2) return;
   int *st = malloc(sizeof(int) * (size_t)n);
-  if (!st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  /* reopened[i]: the next top-level statement reopening statement i's
+     class, or -1. Looking for it by a walk of the later statements from
+     each def made the pass quadratic in a program's classes. */
+  int *reopened = malloc(sizeof(int) * (size_t)n);
+  RedefClassAt *byname = malloc(sizeof(RedefClassAt) * (size_t)n);
+  if (!st || !reopened || !byname) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   memcpy(st, st0, sizeof(int) * (size_t)n);
+  int nb = 0;
+  for (int i = 0; i < n; i++) {
+    reopened[i] = -1;
+    const char *cn = nt_kind(nt, st[i]) == NK_ClassNode ? redef_class_name(nt, st[i]) : NULL;
+    if (cn) { byname[nb].name = cn; byname[nb].at = i; nb++; }
+  }
+  qsort(byname, (size_t)nb, sizeof(RedefClassAt), redef_class_at_cmp);
+  for (int i = 0; i + 1 < nb; i++)
+    if (strcmp(byname[i].name, byname[i + 1].name) == 0) reopened[byname[i].at] = byname[i + 1].at;
+  free(byname);
   int serial = 0;
   for (int i = 0; i < n; i++) {
-    if (nt_kind(nt, st[i]) != NK_ClassNode) continue;
+    if (reopened[i] < 0) continue;
     const char *cn = redef_class_name(nt, st[i]);
     int cb = nt_ref(nt, st[i], "body");
     int bn = 0; const int *bb0 = cn && cb >= 0 && nt_kind(nt, cb) == NK_StatementsNode ? nt_arr(nt, cb, "body", &bn) : NULL;
@@ -38138,18 +38160,21 @@ static void version_redefined_reopen_defs(Compiler *c) {
       char *nm = strdup(nt_str(nt, d1, "name"));
       if (!nm) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
       int j = -1;
-      for (int q = i + 1; q < n && j < 0; q++)
-        if (nt_kind(nt, st[q]) == NK_ClassNode && redef_class_name(nt, st[q]) &&
-            sp_streq(redef_class_name(nt, st[q]), cn) && redef_class_def(nt, st[q], nm) >= 0) j = q;
+      for (int q = reopened[i]; q >= 0 && j < 0; q = reopened[q])
+        if (redef_class_def(nt, st[q], nm) >= 0) j = q;
       int calls[256], nc = 0;
       for (int q = i + 1; j >= 0 && q < j; q++) nc = redef_collect_calls(nt, st[q], nm, calls, nc, 256, 0);
       if (j < 0 || nc == 0) { free(nm); continue; }
       char hidden[300];
       snprintf(hidden, sizeof hidden, "%s#redef%d", nm, ++serial);
       nt_set_str(nt, d1, "name", hidden);
+      int *rc = realloc(c->redef_calls, sizeof(int) * (size_t)(c->nredef_calls + nc));
+      if (!rc) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      c->redef_calls = rc;
       for (int q = 0; q < nc; q++) {
         nt_node_set_str(nt, calls[q], "redef_name", hidden);
         nt_node_set_str(nt, calls[q], "redef_class", cn);
+        c->redef_calls[c->nredef_calls++] = calls[q];
       }
       /* its own receiverless calls run while it is the definition */
       redef_rename_calls(nt, nt_ref(nt, d1, "body"), nm, hidden, 0);
@@ -38170,6 +38195,7 @@ static void version_redefined_reopen_defs(Compiler *c) {
     }
   }
   free(st);
+  free(reopened);
 }
 
 /* The calls version_redefined_reopen_defs marked, once their receivers are
@@ -38181,11 +38207,13 @@ int is_descendant(Compiler *c, int k, int anc);
 static int desugar_redef_version_calls(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
-  int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_CallNode) continue;
+  /* only the marked calls: a walk of every node each fixpoint round was
+     work the scale test counts against programs that redefine nothing */
+  for (int r = 0; r < c->nredef_calls; r++) {
+    int id = c->redef_calls[r];
+    if (id < 0) continue;
     const char *hid = nt_str(nt, id, "redef_name"), *cn = nt_str(nt, id, "redef_class");
-    if (!hid || !cn || nt_int(nt, id, "redef_done", 0)) continue;
+    if (!hid || !cn) continue;
     int recv = nt_ref(nt, id, "receiver");
     const char *nm = nt_str(nt, id, "name");
     int cid = comp_class_index(c, cn);
@@ -38211,7 +38239,7 @@ static int desugar_redef_version_calls(Compiler *c) {
           maybe = 1;
       }
     }
-    nt_node_set_int(nt, id, "redef_done", 1);
+    c->redef_calls[r] = -1;
     if (reaches) {
       /* the name a message says is the one the program wrote */
       nt_node_set_str(nt, id, "redef_shown", nm);

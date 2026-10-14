@@ -1290,6 +1290,11 @@ typedef struct {
   int pres_noinit;
   int **pres_ord;
   int pres_ord_n;
+  /* the calls version_redefined_reopen_defs marked for an earlier
+     definition, which desugar_redef_version_calls resolves once their
+     receivers are typed (-1 once resolved) */
+  int *redef_calls;
+  int nredef_calls;
 } Compiler;
 enum { PRES_UNMARKED = 1, PRES_REMOVED = 2 };
 
