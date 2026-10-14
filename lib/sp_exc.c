@@ -968,7 +968,7 @@ const char *sp_exc_parent_of_name(const char *cls) {
        let it through, as sp_exc_is_standard_error already said */
     {"LoadError",             "ScriptError"},
     {"RegexpError",           "StandardError"},
-    {"StringScanner_Error",   "StandardError"},
+    {"StringScanner::Error",  "StandardError"},
     /* the json package raises these by name; NestingError is what a document
        too deep to serialize raises, and `rescue JSON::ParserError` catches it
        in CRuby because it is a ParserError */

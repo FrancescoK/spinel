@@ -12872,9 +12872,9 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
       first = 0;
       const char *ename = nt_str(nt, exc[i], "name");
       /* A builtin namespaced exception (e.g. StringScanner::Error) is raised
-         under its flattened runtime name "StringScanner_Error". Map the path
-         to that form only when it names a known builtin exception, so user
-         classes like M::Err keep matching on their leaf name. */
+         under its qualified name. Map the path to that form only when it
+         names a known builtin exception, so user classes like M::Err keep
+         matching on their leaf name. */
       char enbuf[128];
       if (sp_streq(en, "ConstantPathNode")) {
         int par = nt_ref(nt, exc[i], "parent");
@@ -12882,14 +12882,8 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
                            sp_streq(nt_type(nt, par), "ConstantReadNode"))
                           ? nt_str(nt, par, "name") : NULL;
         if (pnm && ename) {
-          /* qualified form first (Math::DomainError), then the legacy
-             flattened form some package raisers still use */
           snprintf(enbuf, sizeof enbuf, "%s::%s", pnm, ename);
           if (is_exc_name(enbuf)) ename = enbuf;
-          else {
-            snprintf(enbuf, sizeof enbuf, "%s_%s", pnm, ename);
-            if (is_exc_name(enbuf)) ename = enbuf;
-          }
         }
       }
       /* A user exception class is raised under its QUALIFIED Ruby name

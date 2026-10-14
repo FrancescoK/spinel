@@ -405,8 +405,8 @@ const char *sp_sprintf(const char *fmt, ...);
 
 /* Math.* wrappers that raise Math::DomainError on out-of-domain input, per
    CRuby. The runtime exception name is the flattened "Math::DomainError"
-   (the codegen maps a `rescue Math::DomainError` path to that form, matching
-   the StringScanner::Error -> StringScanner_Error precedent). Only the
+   (the codegen maps a `rescue Math::DomainError` path to that form, as it
+   does StringScanner::Error). Only the
    domain-restricted methods get wrappers; cos/sin/tan/atan/sinh/cosh/tanh/
    asinh/exp/cbrt/erf/erfc/atan2/hypot accept all reals and call libc
    directly from codegen. log(0) is -Infinity in CRuby (no raise); only a
