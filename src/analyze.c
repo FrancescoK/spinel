@@ -17723,6 +17723,18 @@ static int array_call_store_values(Compiler *c, int w, StoreVals *sv) {
     int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
     if (bn > 0) store_vals_add(sv, bb[bn - 1]);
   }
+  /* under --share-strings the pushes chained on a push answer its
+     container too (`o << a << b`): their values are stored as a separate
+     `o << b` stores b, which the store walks otherwise never see for a
+     call whose receiver is not the container itself */
+  if (c->share_strings && is_push_unshift(wcn))
+    for (int p = comp_recv_parent(c, w); p >= 0 && nt_kind(nt, p) == NK_CallNode; p = comp_recv_parent(c, p)) {
+      const char *pn = nt_str(nt, p, "name");
+      if (!pn || !is_push_unshift(pn)) break;
+      int pa = nt_ref(nt, p, "arguments"), pan = 0;
+      const int *pav = pa >= 0 ? nt_arr(nt, pa, "arguments", &pan) : NULL;
+      for (int e = 0; e < pan; e++) store_vals_add(sv, pav[e]);
+    }
   return sv->n;
 }
 /* The values node `w` stores into container local (contn, conts): the

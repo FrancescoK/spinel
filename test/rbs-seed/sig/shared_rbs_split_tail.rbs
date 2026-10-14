@@ -5,6 +5,7 @@ class ShstCols
   def name_of: (String col) -> String
   def first_of: (String col) -> String?
   def nth_of: (String col, Integer i) -> String
+  def chain: (String a, String b) -> Array[String]
   def push_cols: (Array[String] cols) -> ShstCols
   def add: (Hash[String | Symbol, untyped] h) -> ShstCols
 end

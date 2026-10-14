@@ -7,6 +7,10 @@
 # for it. Before, the handle walk took only Strings its facts kept apart
 # (share_node_fresh), the element read joined the container's class, and
 # every store of the answer into a container the rule shares was refused.
+# The same method called as the second element of a chained `<<` stores
+# its handle too, as it does as a statement of its own (the store walk saw
+# only the first push of a chain): into a local Array, an ivar's and the
+# Array an Hash element holds.
 # spinel: rbs-seed-check
 class ShstCols
   def initialize
@@ -34,6 +38,12 @@ class ShstCols
     self
   end
 
+  def chain(a, b)
+    @chain = []
+    @chain << name_of(a) << name_of(b)
+    @chain
+  end
+
   def add(h)
     @cols = []
     h.each do |key, val|
@@ -59,3 +69,18 @@ r.where[0][4] << "2"
 r.where[0][5] << "3"
 p r.where, r.cols
 p r.cols.map { |s| s.equal?(r.where[0][r.cols.index(s)]) }
+
+k = +"plain"
+o = []
+o << r.name_of(+"x.y") << r.name_of(k)
+o[1] << "?"
+p o, k, o[1].equal?(k)
+j = +"other"
+c = r.chain(+"a.b", j)
+c[1] << "!"
+p c, j, c[1].equal?(j)
+q = +"third"
+h = { a: [] }
+h[:a] << r.name_of(+"m.n") << r.name_of(q)
+h[:a][1] << "#"
+p h, q
