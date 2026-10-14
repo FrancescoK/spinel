@@ -1366,7 +1366,10 @@ static int assign_value_dropped(Compiler *c, int id, const int *par) {
    of it. */
 /* Does the subtree at n change local `name` in place (a mutator called on
    its read; not freeze)? */
-static int subtree_changes_local(const NodeTable *nt, int n, const char *name) {
+/* (with share set, under --share-strings: a mutator called on a call that
+   is handed `name` (`px.pick(name) << x`) changes the String the dispatch
+   answers, which may be the one `name` holds) */
+static int subtree_changes_local(const NodeTable *nt, int n, const char *name, int share) {
   if (n < 0) return 0;
   NodeKind k = nt_kind(nt, n);
   if (k == NK_DefNode) return 0;
@@ -1376,12 +1379,15 @@ static int subtree_changes_local(const NodeTable *nt, int n, const char *name) {
     if (nm && r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && sp_streq(nt_str(nt, r, "name"), name) &&
         !is_freeze_family(nm) && (is_string_rebind_mutator(nm) || bop_name_mutates(nm, 0)))
       return 1;
+    if (share && nm && r >= 0 && nt_kind(nt, r) == NK_CallNode && !is_freeze_family(nm) &&
+        (is_string_rebind_mutator(nm) || bop_name_mutates(nm, 0)) && subtree_reads_local(nt, r, name))
+      return 1;
   }
   for (int i = 0; i < nt_num_refs(nt, n); i++)
-    if (subtree_changes_local(nt, nt_ref_at(nt, n, i), name)) return 1;
+    if (subtree_changes_local(nt, nt_ref_at(nt, n, i), name, share)) return 1;
   for (int i = 0; i < nt_num_arrs(nt, n); i++) {
     int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
-    for (int j = 0; j < m; j++) if (subtree_changes_local(nt, ids[j], name)) return 1;
+    for (int j = 0; j < m; j++) if (subtree_changes_local(nt, ids[j], name, share)) return 1;
   }
   return 0;
 }
@@ -1394,7 +1400,7 @@ int writers_change_param(Compiler *c, int id) {
   if (n < 0) return 1;
   for (int i = 0; i < n; i++) {
     const Scope *m = &c->scopes[mis[i]];
-    if (m->nparams != 1 || !m->pnames[0] || subtree_changes_local(c->nt, m->body, m->pnames[0])) return 1;
+    if (m->nparams != 1 || !m->pnames[0] || subtree_changes_local(c->nt, m->body, m->pnames[0], repr_share_rule(c))) return 1;
   }
   return 0;
 }

@@ -10691,7 +10691,20 @@ static int find_hoistable_strlen(Compiler *c, int root) {
 
 /* Whether `root`'s subtree mutates the local `name` (reassignment or an
    in-place mutating method on it). Mirrors legacy body_mutates_var?. */
+static int subtree_changes_local_syn(Compiler *c, int root, const char *name);
 static int subtree_changes_local(Compiler *c, int root, const char *name) {
+  if (root < 0) return 0;
+  /* --share-strings: a local that is the shared handle is changed through
+     any name that holds it, a call's parameter or a dispatch's result
+     (`px.pick(s) << x`): a subtree that runs code may change it */
+  if (repr_share_rule(c)) {
+    Scope *sc = comp_scope_of(c, root);
+    LocalVar *lv = sc && name ? scope_local(sc, name) : NULL;
+    if (lv && repr_of_slot(c, lv).handle && subtree_has_side_effect(c, root)) return 1;
+  }
+  return subtree_changes_local_syn(c, root, name);
+}
+static int subtree_changes_local_syn(Compiler *c, int root, const char *name) {
   if (root < 0) return 0;
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, root);
@@ -10715,11 +10728,11 @@ static int subtree_changes_local(Compiler *c, int root, const char *name) {
       return 1;
   }
   int nr = nt_num_refs(nt, root);
-  for (int i = 0; i < nr; i++) if (subtree_changes_local(c, nt_ref_at(nt, root, i), name)) return 1;
+  for (int i = 0; i < nr; i++) if (subtree_changes_local_syn(c, nt_ref_at(nt, root, i), name)) return 1;
   int na = nt_num_arrs(nt, root);
   for (int i = 0; i < na; i++) {
     int n = 0; const int *el = nt_arr_at(nt, root, i, &n);
-    for (int j = 0; j < n; j++) if (subtree_changes_local(c, el[j], name)) return 1;
+    for (int j = 0; j < n; j++) if (subtree_changes_local_syn(c, el[j], name)) return 1;
   }
   return 0;
 }
@@ -15212,6 +15225,10 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
       if (i == 0) {
         if (lpoly && st != TY_POLY) emit_boxed(c, value, b);
         else if (llv && slot_is_oint(llv)) emit_oint_expr(c, value, llv->type, b);   /* the slot's oint */
+        /* --share-strings: a String into a local that is the handle: its handle
+           (`|(q)|` over a String, desugared to `q, = __destr`) */
+        else if (llv && repr_share_rule(c) && repr_of_slot(c, llv).handle && (st == TY_STRING || st == TY_STRBUF))
+          emit_strbuf_handle_of(c, value, b);
         else emit_expr(c, value, b);
       }
       else if (lpoly) {
@@ -15868,10 +15885,11 @@ int masgn_face_elem(Compiler *c, int mw, int el) {
   if ((k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || repr_static_read_kind(k)) &&
       share_plan_emits_handle(c, el))
     return 0;
-  int en = 0, ln = 0;
+  int en = 0;
   const int *e = nt_arr(nt, nt_ref(nt, mw, "value"), "elements", &en);
-  nt_arr(nt, mw, "lefts", &ln);
-  for (int i = 0; i < en && i < ln; i++)
+  /* (a value past the targets is stored nowhere, and the Array a write used
+     as a value answers holds it) */
+  for (int i = 0; i < en; i++)
     if (e[i] == el) return share_plan_of(c, el, SPR_STORE, NULL).form == SPF_HANDLE;
   return 0;
 }
@@ -21514,20 +21532,29 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
     if (!got) got = emit_recv_route_handle(c, id, recv, &lb);
     if (got) {
       int tH = ++g_tmp;
+      /* the arguments that run code go ahead of the copy, after the
+         receiver's handle is taken (what the route put ahead is in g_pre),
+         as the other shims run them: one that changes the String through
+         another name would be undone by the write-back */
+      Buf apre; memset(&apre, 0, sizeof apre);
+      int fx = 0, rna = nt_ref(nt, id, "arguments"), rac = 0;
+      const int *rav = rna >= 0 ? nt_arr(nt, rna, "arguments", &rac) : NULL;
+      for (int ai = 0; ai < rac; ai++) fx |= subtree_has_side_effect(c, rav[ai]);
+      int mark0 = fx ? sb_shim_args_first(c, id, &apre, indent + 1) : g_n_argov;
       view_bind(recv, "lv__sb%d", tH);
       Buf armb; memset(&armb, 0, sizeof armb);
       int handled = emit_array_mutate_stmt(c, id, &armb, indent + 1);
-      view_unbind(g_n_argov - 1);
+      view_unbind(mark0);
       if (handled) {
         emit_indent(b, indent);
         buf_printf(b, "{ sp_String *_t%d = %s;", tH, lb.p ? lb.p : hb.p);
         free(lb.p); lb.p = NULL; free(hb.p);
         emit_route_recv_root(c, 2, tH, 0, NULL, TY_UNKNOWN, b);
         buf_puts(b, "\n");
-        Buf nopre; memset(&nopre, 0, sizeof nopre);   /* what the route put ahead is in g_pre */
-        emit_sb_shim_swap(b, indent, tH, &nopre, armb.p);
+        emit_sb_shim_swap(b, indent, tH, &apre, armb.p);
         return 1;
       }
+      free(apre.p);
       free(armb.p); free(lb.p); free(hb.p);
       /* what the route put ahead of the statement goes with it */
       if (pre && g_pre == pre && pre->len > pre_mark) { pre->len = pre_mark; pre->p[pre_mark] = '\0'; }

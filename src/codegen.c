@@ -2315,13 +2315,6 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     return;
   }
   if (t == TY_STRING) {
-    /* --share-strings: a String that ran ahead as its handle, read as that
-       handle's String (ran_first_bind_read), is boxed as the handle */
-    if (repr_share_rule(c) && ran_first_read_handle(node) >= 0) {
-      buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", ran_first_read_handle(node));
-      RC(RF_STRBUF_HANDLE, RW_RAN_FIRST);
-      return;
-    }
     /* --share-strings: the String plan's form for a box (SPR_BOX): a String
        the plan wraps is boxed as the new handle it is (sp_box_str_new), so
        the box's copies name one String; any other is boxed as its bytes,
@@ -2496,6 +2489,13 @@ static int emit_boxed_lift_ran_first(Compiler *c, int node, Buf *b) {
 /* emit_boxed's arms for a value that hands on a String's handle by a route
    of its own: 1, the box written, or 0 with nothing emitted. */
 static int emit_boxed_routes(Compiler *c, int node, Buf *b) {
+  /* --share-strings: a value that ran ahead as its handle, read as that
+     handle's String (ran_first_bind_read), is boxed as the handle */
+  if (repr_share_rule(c) && ran_first_handle(node) >= 0 &&
+      (ran_first_read_handle(node) >= 0 || comp_ntype(c, node) == TY_STRBUF)) {
+    buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", ran_first_handle(node));
+    return 1;
+  }
   int lift = emit_boxed_lift(c, node);
   if (emit_boxed_cond_arms(c, node, b) || emit_boxed_sequence(c, node, b)) return 1;
   /* --share-strings: a held chain's value (`id(x[0]).upcase!.itself`,

@@ -6023,7 +6023,11 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         buf_printf(g_pre, " _t%d = %s; ", t, vb.p ? vb.p : "");
         emit_gc_root_tmp(c, vt, t, g_pre);
         buf_puts(g_pre, "\n");
-        view_bind(v, "_t%d", t);
+        /* --share-strings: a handle held here is the one the value's Array
+           boxes (ran_first_handle), not its variable's, which the stores
+           may have rebound */
+        if (vt == TY_STRBUF && repr_share_rule(c)) ran_first_bind(v, t, t);
+        else view_bind(v, "_t%d", t);
       }
       free(vb.p);
       held++;
