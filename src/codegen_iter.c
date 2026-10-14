@@ -1986,7 +1986,9 @@ static int block_tail_needs_value_form(Compiler *c, int id) {
       LocalVar *rl = rs ? scope_local(rs, rn) : NULL;
       if (repr_of_slot(c, rl).kind == RK_STRBUF) return 1;
     } }
-  if (nt_ref(nt, id, "block") < 0) return 0;
+  /* a blockless call to a method that yields (one asking block_given?) is
+     spliced too, and its statement form is the same void compound */
+  if (nt_ref(nt, id, "block") < 0) return call_targets_yielding_method(c, id);
   if (is_tap_alias(nm))
     return nt_ref(nt, id, "receiver") >= 0;
   /* a block-driving call to a user method that yields is spliced inline;
