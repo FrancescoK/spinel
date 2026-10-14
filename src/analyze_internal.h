@@ -651,6 +651,7 @@ int desugar_inherited_aliases(Compiler *c);
 int desugar_reader_aliases_before_redef(Compiler *c);
 int desugar_reassigned_block_params(Compiler *c);
 int desugar_inline_struct_blocks(Compiler *c);
+int desugar_singleton_class_meta(Compiler *c);
 int desugar_class_new_blocks(Compiler *c);
 int desugar_included_hooks(Compiler *c);
 int desugar_class_body_object_acts(Compiler *c);

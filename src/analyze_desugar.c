@@ -14281,6 +14281,171 @@ int desugar_singleton_body_self(Compiler *c) {
   return changed;
 }
 
+/* ---- The singleton class of a class, told what to declare ----
+ *
+ *   Foo.singleton_class.attr_accessor :a                 class << Foo
+ *   Foo.singleton_class.send(:define_method, :m) { 42 }  ->  attr_accessor :a
+ *   Foo.singleton_class.class_eval { def h = 1 }           end ...
+ *
+ * A singleton class has no value of its own here, but a statement that only
+ * declares on it -- attr_*, define_method, alias_method, their send forms,
+ * and a class_eval block that reads no outer local -- is the body of a
+ * `class << Foo`. Only where it is a statement of the program's or a class
+ * or module body, so it runs where that body does, and only with a receiver
+ * known to be a class: a constant, or self (bare too) in a class or module
+ * body. Anything else stays refused (singleton_class, feature_limit). */
+static int scm_declarer(const char *nm) {
+  static const char *const D[] = { "attr_accessor", "attr_reader", "attr_writer", "attr", "define_method",
+                                   "alias_method", NULL };
+  for (int i = 0; nm && D[i]; i++) if (sp_streq(nm, D[i])) return 1;
+  return 0;
+}
+static int scm_class_receiver(const NodeTable *nt, int r, int in_body) {
+  if (nt_kind(nt, r) != NK_CallNode || !nt_str(nt, r, "name") || !sp_streq(nt_str(nt, r, "name"), "singleton_class") ||
+      nt_ref(nt, r, "arguments") >= 0 || nt_ref(nt, r, "block") >= 0) return -2;
+  int x = nt_ref(nt, r, "receiver");
+  NodeKind xk = x >= 0 ? nt_kind(nt, x) : NK_SelfNode;
+  if (xk == NK_ConstantReadNode || xk == NK_ConstantPathNode) return x;
+  return in_body && xk == NK_SelfNode ? -1 : -2;
+}
+/* the declaring statements statement `id` stands for in `class << X`, into
+   out[] (at most cap), or -1 */
+static int scm_body_stmts(NodeTable *nt, int id, int *out, int cap) {
+  const char *nm = nt_str(nt, id, "name");
+  int args = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+  int blk = nt_ref(nt, id, "block");
+  if (!nm || cap < 1) return -1;
+  if (scm_declarer(nm)) {
+    int call = fwd_new_node_like(nt, id, "CallNode");
+    nt_node_set_str(nt, call, "name", nm);
+    nt_node_set_ref(nt, call, "receiver", -1);
+    nt_node_set_ref(nt, call, "arguments", args);
+    nt_node_set_ref(nt, call, "block", blk);
+    out[0] = call;
+    return 1;
+  }
+  if ((sp_streq(nm, "send") || sp_streq(nm, "__send__") || sp_streq(nm, "public_send")) && ac >= 1 &&
+      nt_kind(nt, av[0]) == NK_SymbolNode && scm_declarer(nt_str(nt, av[0], "value"))) {
+    int call = fwd_new_node_like(nt, id, "CallNode");
+    nt_node_set_str(nt, call, "name", nt_str(nt, av[0], "value"));
+    nt_node_set_ref(nt, call, "receiver", -1);
+    if (ac > 1) {
+      int na = fwd_new_node_like(nt, id, "ArgumentsNode");
+      nt_node_set_arr(nt, na, "arguments", av + 1, ac - 1);
+      nt_node_set_ref(nt, call, "arguments", na);
+    }
+    else nt_node_set_ref(nt, call, "arguments", -1);
+    nt_node_set_ref(nt, call, "block", blk);
+    out[0] = call;
+    return 1;
+  }
+  if ((sp_streq(nm, "class_eval") || sp_streq(nm, "class_exec") || sp_streq(nm, "module_eval") ||
+       sp_streq(nm, "module_exec")) && ac == 0 && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode &&
+      nt_ref(nt, blk, "parameters") < 0) {
+    int body = nt_ref(nt, blk, "body");
+    if (body >= 0 && cn_reads_outer_local(nt, body, 0)) return -1;
+    int bn = 0; const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+    if (bn > cap) return -1;
+    for (int i = 0; i < bn; i++) out[i] = bb[i];
+    /* the statements leave the block, which no pass may read them in now */
+    nt_node_set_ref(nt, blk, "body", -1);
+    return bn;
+  }
+  return -1;
+}
+/* For self in a body, the declarations go where they stand, in the forms
+   the later passes take (desugar_singleton_attr, the define_method rewrite):
+   `singleton_class.attr_accessor :a`, `def self.h`; an alias in a
+   `class << self`. Into out[] (at most cap), or -1 for one of no such form. */
+static int scm_self_stmts(NodeTable *nt, int like, const int *in, int n, int *out, int cap) {
+  if (n > cap) return -1;
+  for (int i = 0; i < n; i++) {
+    int s = in[i];
+    NodeKind k = nt_kind(nt, s);
+    const char *nm = nt_str(nt, s, "name");
+    if (k == NK_DefNode && nt_ref(nt, s, "receiver") < 0) {
+      nt_node_set_ref(nt, s, "receiver", fwd_new_node_like(nt, like, "SelfNode"));
+      out[i] = s;
+    }
+    else if (k == NK_CallNode && nt_ref(nt, s, "receiver") < 0 && nm && sp_streq(nm, "alias_method")) {
+      int sc = fwd_new_node_like(nt, like, "SingletonClassNode");
+      int body = fwd_new_node_like(nt, like, "StatementsNode");
+      nt_node_set_arr(nt, body, "body", &s, 1);
+      nt_node_set_ref(nt, sc, "expression", fwd_new_node_like(nt, like, "SelfNode"));
+      nt_node_set_ref(nt, sc, "body", body);
+      out[i] = sc;
+    }
+    else if (k == NK_CallNode && nt_ref(nt, s, "receiver") < 0 && scm_declarer(nm)) {
+      int sc = fwd_new_node_like(nt, like, "CallNode");
+      nt_node_set_str(nt, sc, "name", "singleton_class");
+      nt_node_set_ref(nt, sc, "receiver", -1);
+      nt_node_set_ref(nt, sc, "arguments", -1);
+      nt_node_set_ref(nt, sc, "block", -1);
+      nt_node_set_ref(nt, s, "receiver", sc);
+      out[i] = s;
+    }
+    else return -1;
+  }
+  return n;
+}
+
+int desugar_singleton_class_meta(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int *parent = NULL, changed = 0, n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    int r = nt_ref(nt, id, "receiver");
+    if (r < 0 || nt_kind(nt, r) != NK_CallNode || !nt_str(nt, r, "name") ||
+        !sp_streq(nt_str(nt, r, "name"), "singleton_class")) continue;
+    if (!parent && !(parent = an_parent_map(nt))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    /* a statement of the program's body or of a class or module body */
+    int st = parent[id], owner = st >= 0 ? parent[st] : -1;
+    if (st < 0 || nt_kind(nt, st) != NK_StatementsNode) continue;
+    int top = st == nt_ref(nt, nt->root_id, "statements");
+    int in_body = owner >= 0 && (nt_kind(nt, owner) == NK_ClassNode || nt_kind(nt, owner) == NK_ModuleNode);
+    if (!top && !in_body) continue;
+    int x = scm_class_receiver(nt, r, in_body);
+    if (x == -2) continue;
+    /* self's direct attr_* / define_method is the later passes' already */
+    const char *nm = nt_str(nt, id, "name");
+    if (x == -1 && nm && scm_declarer(nm) && !sp_streq(nm, "alias_method")) continue;
+    int stmts[64], self_stmts[64];
+    int n = scm_body_stmts(nt, id, stmts, 64);
+    if (n < 0) continue;
+    if (x == -1) {
+      int m = scm_self_stmts(nt, id, stmts, n, self_stmts, 64);
+      if (m < 0) continue;
+      int bn = 0; const int *bb = nt_arr(nt, st, "body", &bn);
+      int *nb = malloc(sizeof(int) * (size_t)(bn + m));
+      if (!nb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      int o = 0;
+      for (int i = 0; i < bn; i++) {
+        if (bb[i] != id) { nb[o++] = bb[i]; continue; }
+        for (int j = 0; j < m; j++) nb[o++] = self_stmts[j];
+      }
+      nt_node_set_arr(nt, st, "body", nb, o);
+      free(nb);
+      nt_node_reset(nt, id, "NilNode");   /* out of the tree now */
+      free(parent); parent = NULL;   /* the body changed */
+      changed = 1;
+      continue;
+    }
+    int body = fwd_new_node_like(nt, id, "StatementsNode");
+    nt_node_set_arr(nt, body, "body", stmts, n);
+    long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
+    nt_node_reset(nt, id, "SingletonClassNode");
+    nt_node_set_int(nt, id, "node_line", line);
+    nt_node_set_int(nt, id, "node_file", file);
+    nt_node_set_ref(nt, id, "expression", x);
+    nt_node_set_ref(nt, id, "body", body);
+    changed = 1;
+  }
+  free(parent);
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 int desugar_class_new_blocks(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0, serial = 0;
