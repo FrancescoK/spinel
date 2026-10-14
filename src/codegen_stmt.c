@@ -367,7 +367,7 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "{ sp_StrRange _t%d = ", tv); emit_expr(c, arg, b);
     buf_printf(b, "; fputs(sp_srange_to_s(_t%d), stdout); }\n", tv);
   }
-  else if (ty_is_array(t) || ty_is_hash(t) || t == TY_EXCEPTION || t == TY_TIME) {
+  else if (ty_is_array(t) || t == TY_STRH_ARRAY || ty_is_hash(t) || t == TY_EXCEPTION || t == TY_TIME) {
     /* print of a collection renders its to_s (== inspect for Array/Hash);
        box once and go through the poly renderer. */
     int tv = ++g_tmp;

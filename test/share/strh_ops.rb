@@ -15,6 +15,9 @@ p d == c
 puts a.inspect
 puts a.to_s
 puts a
+print a
+puts
+print a, "\n"
 puts "#{a} #{a.size}"
 p a.to_a.size
 p a
