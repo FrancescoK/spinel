@@ -7384,6 +7384,41 @@ static int chain_has_aliases(Compiler *c, int ci) {
   return 0;
 }
 
+/* An Array or Hash reopen that defines a builtin's name owns it, as the
+   scalar reopens do: `class Array; def first = "arr"; end` makes
+   `[1, 2].first` answer "arr" in CRuby. The builtin rows answered the
+   element type, and codegen, which reached the reopen only for a name no
+   builtin arm takes, called the builtin. Only a method the reopen itself
+   defines: an Object reopen's `first` does not displace Array#first.
+   With a block too, for a name the builtin does not have at all (a
+   reopen's own `each_twice`): no builtin row types that call; and for a
+   builtin's name the reopen defines without yielding (`def each(*a) =
+   a.size`), which leaves the block unused, as codegen calls it
+   (reopen_override_block_ok). The reopen's method, or -1. */
+static int ty_array_or_hash(TyKind t) { return ty_is_array(t) || ty_is_obj_array(t) || ty_is_hash(t); }
+static int array_hash_reopen_owner(Compiler *c, int id, TyKind rt, const char *name) {
+  const char *cn = ty_is_hash(rt) ? "Hash" : "Array";
+  /* A block-carrying call of a builtin's name is the reopen's only when it
+     does not yield; asked first whether the program reopens the class at
+     all, counted again only as the class table grows (a lookup before the
+     table is frozen scans it, and most such calls are a plain `each`) */
+  if (nt_ref(c->nt, id, "block") >= 0 && builtin_method_known(cn, name)) {
+    static int ahr_n = -1, ahr_any = 0;
+    if (ahr_n != c->nclasses) {
+      ahr_n = c->nclasses;
+      ahr_any = comp_class_index(c, "Array") >= 0 || comp_class_index(c, "Hash") >= 0;
+    }
+    if (!ahr_any) return -1;
+  }
+  int aci = comp_class_index(c, cn);
+  int adc = -1, ami = aci >= 0 ? comp_method_in_chain(c, aci, name, &adc) : -1;
+  /* the reopen's own method under this very name: an alias taken before the
+     reopen (`alias orig_first first`) still names the builtin */
+  if (ami < 0 || adc != aci || !c->scopes[ami].name || !sp_streq(c->scopes[ami].name, name)) return -1;
+  if (nt_ref(c->nt, id, "block") >= 0 && builtin_method_known(cn, name) && c->scopes[ami].yields) return -1;
+  return ami;
+}
+
 static TyKind infer_call_prelude(Compiler *c, int id) {
   if (c->n_cext_extensions) {
     if (nt_int(c->nt, id, "cext_const_read", 0)) {
@@ -7826,23 +7861,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     }
     if (emi >= 0) return an_user_call(c, id, emi, UC_REOPEN, eci);
   }
-  /* An Array or Hash reopen that defines a builtin's name owns it, as the
-     scalar reopens do: `class Array; def first = "arr"; end` makes
-     `[1, 2].first` answer "arr" in CRuby. The builtin rows below answered the
-     element type, and codegen, which reached the reopen only for a name no
-     builtin arm takes, called the builtin. Only a method the reopen itself
-     defines: an Object reopen's `first` does not displace Array#first. */
-  /* With a block too, for a name the builtin does not have at all (a
-     reopen's own `each_twice`): no builtin row types that call */
-  if (recv >= 0 && name && (ty_is_array(rt) || ty_is_obj_array(rt) || ty_is_hash(rt)) &&
-      (nt_ref(nt, id, "block") < 0 || !builtin_method_known(ty_is_hash(rt) ? "Hash" : "Array", name)) &&
-      !bonly && !nt_int(nt, id, "builtin_only", 0)) {
-    int aci = comp_class_index(c, ty_is_hash(rt) ? "Hash" : "Array");
-    int adc = -1, ami = aci >= 0 ? comp_method_in_chain(c, aci, name, &adc) : -1;
-    /* the reopen's own method under this very name: an alias taken before the
-       reopen (`alias orig_first first`) still names the builtin */
-    if (ami >= 0 && adc == aci && c->scopes[ami].name && sp_streq(c->scopes[ami].name, name))
-      return an_user_call(c, id, ami, UC_REOPEN, aci);
+  if (recv >= 0 && name && ty_array_or_hash(rt) && !bonly && !nt_int(nt, id, "builtin_only", 0)) {
+    int ami = array_hash_reopen_owner(c, id, rt, name);
+    if (ami >= 0) return an_user_call(c, id, ami, UC_REOPEN, c->scopes[ami].class_id);
   }
   /* A boxed-value hash whose values are all one class: its value reads are
      that class (nil included, as a NULL pointer), and `values` an array of it

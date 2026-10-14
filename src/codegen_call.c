@@ -22354,6 +22354,21 @@ static void emit_utime_arg_bad(Compiler *c, int node, TyKind t, Buf *b) {
 int reopen_override_block_ok(Compiler *c, int id) {
   int blk = nt_ref(c->nt, id, "block");
   if (blk < 0) return 1;
+  /* An Array's, a Hash's or a Range's reopen of the name that does not
+     yield takes the call, block and all (emit_array_hash_reopen_call, the
+     scalar reopens' call below): one with a `&b` parameter is handed the
+     block as a proc, any other leaves it unused, as in CRuby. The analysis
+     types the call by the reopen the same way; the builtin arms answered
+     the builtin's loop. */
+  { int r = nt_ref(c->nt, id, "receiver");
+    const char *nm = nt_str(c->nt, id, "name");
+    TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+    if (nm && (ty_is_array(rt) || ty_is_obj_array(rt) || ty_is_hash(rt) || rt == TY_RANGE)) {
+      int aci = comp_class_index(c, ty_is_hash(rt) ? "Hash" : rt == TY_RANGE ? "Range" : "Array");
+      int adc = -1, ami = aci >= 0 ? comp_method_in_chain(c, aci, nm, &adc) : -1;
+      if (ami >= 0 && adc == aci && c->scopes[ami].name && sp_streq(c->scopes[ami].name, nm))
+        return !c->scopes[ami].yields;
+    } }
   if (!repr_share_rule(c) || nt_kind(c->nt, blk) != NK_BlockNode) return 0;
   const CallPlan *p = cplan_user(c, id);
   return p->via == UC_REOPEN && p->mi >= 0 && c->scopes[p->mi].yields &&
