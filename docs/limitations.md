@@ -1522,6 +1522,11 @@ not matched and raises. The call needs a class or module receiver, explicit
 or the implicit self of a class method or class body; in an instance method
 an instance has no `const_get`, and the call is refused where it is written.
 
+`const_defined?(name)` with a run-time name takes the same arms and answers
+`true` or `false` as the literal form would (`wrong constant name lower` for
+a name with no leading capital). Only the one-argument form is taken there:
+`const_defined?(name, false)` is refused.
+
 #### `defined?(@ivar)` and the other reads of ivar presence
 
 CRuby answers `defined?(@ivar)` from the object's runtime state: `nil` until

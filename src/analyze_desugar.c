@@ -1462,6 +1462,15 @@ int desugar_constant_path_self_alias(Compiler *c) {
   return changed;
 }
 
+/* Where desugar_dynamic_const_get_arms stashes the arms of a call named NM,
+   or NULL when it leaves the call alone (another name, or one the program
+   defines itself). */
+static const char *dyn_const_arms_stash(const char *nm, int user_get, int user_def) {
+  if (sp_streq(nm, "const_get")) return user_get ? NULL : "dyn_cget_arms";
+  if (sp_streq(nm, "const_defined?")) return user_def ? NULL : "dyn_cdef_arms";
+  return NULL;
+}
+
 /* `recv.const_get(name)` with a NAME known only at run time (a variable, a
    method result, an interpolated string -- activesupport's constantize is
    `Object.const_get(camel_cased_word)`). Every constant the program defines is
@@ -1472,21 +1481,28 @@ int desugar_constant_path_self_alias(Compiler *c) {
    codegen emits `name == :N1 ? arm1 : ... : NameError`. The candidate set is
    whole-program, so a runtime name matching none is genuinely undefined and
    the NameError is CRuby's, not a lowering gap. The arm ids are stashed on the
-   call under "dyn_cget_arms". A receiverless call in a class method or class
-   body was given `self` by desugar_bare_const_get first. */
+   call under "dyn_cget_arms". `recv.const_defined?(name)` gets the same arms
+   of `recv.const_defined?(:Name)`, under "dyn_cdef_arms", each answered at
+   compile time. A receiverless call in a class method or class body was
+   given `self` by desugar_bare_class_self_calls first. */
 int desugar_dynamic_const_get_arms(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
   int changed = 0;
-  /* a user-defined const_get resolves normally; don't intercept */
+  /* a user-defined const_get / const_defined? resolves normally; don't
+     intercept that name */
+  int user_get = 0, user_def = 0;
   for (int s = 0; s < c->nscopes; s++) { const char *sn = c->scopes[s].name;
-    if (sn && sp_streq(sn, "const_get")) return 0; }
+    if (sn && sp_streq(sn, "const_get")) user_get = 1;
+    if (sn && sp_streq(sn, "const_defined?")) user_def = 1; }
   int any = 0;
   for (int id = 0; id < n0 && !any; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, "const_get") || nt_ref(nt, id, "receiver") < 0) continue;
-    { int dn = 0; nt_arr(nt, id, "dyn_cget_arms", &dn); if (dn > 0) continue; }
+    if (!nm || nt_ref(nt, id, "receiver") < 0) continue;
+    const char *stash = dyn_const_arms_stash(nm, user_get, user_def);
+    if (!stash) continue;
+    { int dn = 0; nt_arr(nt, id, stash, &dn); if (dn > 0) continue; }
     int a = nt_ref(nt, id, "arguments"); if (a < 0) continue;
     int ac = 0; const int *av = nt_arr(nt, a, "arguments", &ac);
     if (ac < 1 || !av) continue;
@@ -1529,16 +1545,20 @@ int desugar_dynamic_const_get_arms(Compiler *c) {
   for (int id = 0; id < n0 && ncand > 0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, "const_get")) continue;
+    const char *stash = nm ? dyn_const_arms_stash(nm, user_get, user_def) : NULL;
+    if (!stash) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;
-    { int dn = 0; nt_arr(nt, id, "dyn_cget_arms", &dn); if (dn > 0) continue; }
+    { int dn = 0; nt_arr(nt, id, stash, &dn); if (dn > 0) continue; }
     int args = nt_ref(nt, id, "arguments");
     if (args < 0) continue;
     int argc = 0; const int *argv = nt_arr(nt, args, "arguments", &argc);
     if (argc < 1 || !argv) continue;
     NodeKind k0 = nt_kind(nt, argv[0]);
     if (k0 == NK_SymbolNode || k0 == NK_StringNode) continue;
+    /* a const_defined? arm that does not build is dropped, which would answer
+       false: only the one-argument form, whose arms all build, is taken */
+    if (sp_streq(nm, "const_defined?") && argc != 1) continue;
     int nrest = argc - 1;
     if (nrest > 8) continue;
     int rest[8]; for (int k = 0; k < nrest; k++) rest[k] = argv[k + 1];
@@ -1554,13 +1574,13 @@ int desugar_dynamic_const_get_arms(Compiler *c) {
       nt_node_set_arr(nt, na, "arguments", aa, nrest + 1);
       int call = nt_new_node(nt, "CallNode"); if (call < 0) break;
       nt_node_set_ref(nt, call, "receiver", recv);
-      nt_node_set_str(nt, call, "name", "const_get");
+      nt_node_set_str(nt, call, "name", nm);
       nt_node_set_int(nt, call, "dyn_arm", 1);
       nt_node_set_ref(nt, call, "arguments", na);
       nt_node_set_ref(nt, call, "block", -1);
       arms[narm++] = call;
     }
-    nt_node_set_arr(nt, id, "dyn_cget_arms", arms, narm);
+    nt_node_set_arr(nt, id, stash, arms, narm);
     free(arms);
     comp_grow_node_arrays(c);
     int encl = c->nscope[id];

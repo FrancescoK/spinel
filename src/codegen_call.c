@@ -4172,6 +4172,9 @@ static int emit_dynamic_respond_to(Compiler *c, int id, Buf *b) {
 static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   int narm = 0; const int *arms = nt_arr(nt, id, "dyn_cget_arms", &narm);
+  /* const_defined?: the arms are true or false, and a miss is false */
+  int def = 0;
+  if (narm <= 0) { arms = nt_arr(nt, id, "dyn_cdef_arms", &narm); def = 1; }
   if (narm <= 0) return 0;
   int args = nt_ref(nt, id, "arguments");
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
@@ -4184,7 +4187,7 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
   if (st == TY_STRING) emit_expr(c, sym, b);
   else if (st == TY_SYMBOL) { buf_puts(b, "sp_sym_to_s("); emit_expr(c, sym, b); buf_puts(b, ")"); }
   else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, sym, b); buf_puts(b, ")"); }
-  buf_printf(b, "; if (!_n%d) _n%d = sp_str_empty; sp_RbVal _r%d; ", t, t, t);
+  buf_printf(b, "; if (!_n%d) _n%d = sp_str_empty; %s _r%d; ", t, t, def ? "sp_bool" : "sp_RbVal", t);
   Buf *sv_pre = g_pre;
   for (int k = 0; k < narm; k++) {
     int arm = arms[k];
@@ -4226,7 +4229,9 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
       buf_printf(b, "if (strcmp(_n%d, \"", t); emit_c_escaped(b, nm); buf_puts(b, "\") == 0) { ");
       if (pre.p && pre.len) buf_puts(b, pre.p);
       buf_printf(b, "_r%d = ", t);
-      emit_boxed_text(c, at, body.p ? body.p : "0", b);
+      if (def && at == TY_BOOL) buf_printf(b, "(%s)", body.p ? body.p : "0");
+      else if (def) { buf_puts(b, "sp_poly_truthy("); emit_boxed_text(c, at, body.p ? body.p : "0", b); buf_puts(b, ")"); }
+      else emit_boxed_text(c, at, body.p ? body.p : "0", b);
       buf_puts(b, "; }\nelse ");
     }
     free(pre.p); free(body.p);
@@ -4235,6 +4240,11 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
   const char *rnm = (rvt && (sp_streq(rvt, "ConstantReadNode") || sp_streq(rvt, "ConstantPathNode")))
                     ? nt_str(nt, recv, "name") : NULL;
   if (rnm && sp_streq(rnm, "Object")) rnm = NULL;
+  if (def) {
+    buf_printf(b, "{ if (!(_n%d[0] >= 'A' && _n%d[0] <= 'Z')) sp_raise_cls(\"NameError\", sp_sprintf(\"wrong constant name %%s\", _n%d)); "
+                  "_r%d = 0; } _r%d; })", t, t, t, t, t);
+    return 1;
+  }
   buf_printf(b, "{ if (!(_n%d[0] >= 'A' && _n%d[0] <= 'Z')) sp_raise_cls(\"NameError\", sp_sprintf(\"wrong constant name %%s\", _n%d)); "
                 "else sp_raise_cls(\"NameError\", sp_sprintf(\"uninitialized constant %s%s%%s\", _n%d)); "
                 "_r%d = sp_box_nil(); } _r%d; })",
@@ -29486,7 +29496,7 @@ static void emit_call_body_ordinary(Compiler *c, int id, Buf *b) {
   if (emit_call_object_override_arms(c, id, b, nt)) return;
   if (emit_or_take_back(c, id, b, emit_dynamic_send)) return;   /* recv.send(runtime_name, args) static dispatch */
   if (emit_or_take_back(c, id, b, emit_dynamic_respond_to)) return;   /* recv.respond_to?(runtime_name) static dispatch */
-  if (emit_or_take_back(c, id, b, emit_dynamic_const_get)) return;   /* recv.const_get(runtime_name) static dispatch */
+  if (emit_or_take_back(c, id, b, emit_dynamic_const_get)) return;   /* recv.const_get / const_defined?(runtime_name) static dispatch */
   /* A program's own method on Range / Time / File / Class, ahead of the
      builtin emitters for those receivers (the inference twin sits at the top
      of infer_call_inner for the same reason: a reopen's name wins over the

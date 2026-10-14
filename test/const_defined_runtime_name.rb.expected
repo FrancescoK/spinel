@@ -1,0 +1,8 @@
+Sel::KQueue
+[:Select, true]
+["Select", true]
+[:LIMIT, true]
+[:URing, false]
+["Nope", false]
+[true, false]
+"wrong constant name lower"
