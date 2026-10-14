@@ -34714,6 +34714,18 @@ int nullable_int_value(Compiler *c, int v) {
     if (g && (g->nullable_int || g->type == TY_POLY)) return 1;
     return g && g->type == TY_FLOAT && !gvar_seeded_before_read(c, rn);
   }
+  /* A constant holds nil where a write of it can leave one: it is boxed so
+     only after inference (widen_nullable_keyed_hash_literals), and a
+     parameter it is the default of, or a method answering it, would keep
+     a plain Integer slot */
+  if (nt_kind(nt, v) == NK_ConstantReadNode) {
+    const char *cn = nt_str(nt, v, "name");
+    LocalVar *k = cn ? comp_const(c, cn) : NULL;
+    if (!k || (k->type != TY_INT && k->type != TY_FLOAT && k->type != TY_POLY)) return 0;
+    NT_FOREACH_KIND(nt, NK_ConstantWriteNode, w)
+      if (sp_streq(nt_str(nt, w, "name"), cn) && nullable_int_value(c, nt_ref(nt, w, "value"))) return 1;
+    return 0;
+  }
   /* `(e)` is e, and a parenthesized sequence `(y = a[i]; y)` is its last
      statement, as a block's body is: the arm above walks it. Only the
      one-statement form was read, so the sequence's nil left the local it was
@@ -36345,7 +36357,12 @@ static void widen_nullable_keyed_hash_literals(Compiler *c) {
     }
   }
   if (const_widened)
-    for (int si = 0; si < c->nscopes; si++) if (c->scopes[si].body >= 0) wnh_note(c->scopes[si].body);
+    for (int si = 0; si < c->nscopes; si++) {
+      if (c->scopes[si].body >= 0) wnh_note(c->scopes[si].body);
+      /* a parameter default is outside the body, and may read the box too */
+      for (int i = 0; c->scopes[si].pdefault && i < c->scopes[si].nparams; i++)
+        if (c->scopes[si].pdefault[i] >= 0) wnh_note(c->scopes[si].pdefault[i]);
+    }
   /* the expressions over a widened hash (its reads' `[]`, a call it is an
      argument of) re-infer against it */
   for (int i = 0; i < wnh_n; i++) infer_subtree(c, wnh_bodies[i]);
