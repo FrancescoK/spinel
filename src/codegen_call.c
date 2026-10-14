@@ -1612,7 +1612,16 @@ int poly_cls_value_cands(Compiler *c, int id, const char *name, int argc, const 
   for (int ki = 0; ki < ncc8; ki++) {
     int k = cc8[ki].cls;
     if (is_builtin_reopen(c->classes[k].name)) continue;
-    if (cvals) {
+    /* a method of Class, Module or the classes every class is an instance
+       of answers for any class value, a builtin's included: `class Class;
+       def greet` reached String.greet through a boxed receiver */
+    const char *kn = c->classes[k].name;
+    size_t kl = kn ? strlen(kn) : 0;
+    if (kl > 8 && strcmp(kn + kl - 8, "__reopen") == 0) kl -= 8;   /* `class Class` reopened */
+    int every_class = kn && ((kl == 5 && !strncmp(kn, "Class", 5)) || (kl == 6 && !strncmp(kn, "Module", 6)) ||
+                             (kl == 6 && !strncmp(kn, "Object", 6)) || (kl == 11 && !strncmp(kn, "BasicObject", 11)) ||
+                             (kl == 6 && !strncmp(kn, "Kernel", 6)));
+    if (cvals && !every_class) {
       /* a value of the class or of a class under it (which inherits it) */
       int held = 0;
       for (int v = 0; v < c->nclasses && !held; v++)
