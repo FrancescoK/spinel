@@ -7091,7 +7091,10 @@ static void extend_alias_refuse_own(Compiler *c, int mod_id, int ci, const char 
    the singleton's ancestors. CRuby ignores the extend for the lookup: the
    module stays behind the superclass, and it supersedes no earlier module's
    copy here. */
-static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited) {
+/* `prepend`: the module goes in front of the class's own class methods
+   (`singleton_class.prepend M`), as a later extend goes in front of an
+   earlier one's copy. */
+static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited, int prepend) {
   int did_clone = 0;
   int snap = c->nscopes;
   for (int ms = 0; ms < snap; ms++) {
@@ -7112,7 +7115,7 @@ static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited) {
        earlier. With no super there, nothing can reach the copy. */
     char *own_name = NULL;
     char behind[256] = "";
-    if (own >= 0 && !c->scopes[own].is_extend_copy) {
+    if (own >= 0 && !c->scopes[own].is_extend_copy && !prepend) {
       extend_alias_refuse_own(c, mod_id, ci, src->name);
       if (!scope_body_has_super(c, own)) continue;
       ClassInfo *cif = &c->classes[ci];
@@ -7135,7 +7138,8 @@ static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited) {
       /* An earlier extend put this name here. The later module comes first
          among the singleton's ancestors, so it supersedes: the earlier copy
          takes a shadow name, carrying its own super target with it, and a
-         super in this module's copy reaches it, as include does (#3731). */
+         super in this module's copy reaches it, as include does (#3731).
+         A prepended module supersedes the class's own method so. */
       ClassInfo *cif = &c->classes[ci];
       char shadow[256], key[320];
       snprintf(shadow, sizeof shadow, "__inc %d %s", cif->prep_shadow_count++, src->name);
@@ -7149,8 +7153,21 @@ static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited) {
         }
       free(c->scopes[own].name);
       c->scopes[own].name = strdup(shadow);
-      if (scope_body_has_super(c, ms)) comp_cprep_chain_add(cif, src->name, shadow);
-      else c->scopes[own].reachable = 0;   /* nothing can reach it now */
+      int reached = scope_body_has_super(c, ms);
+      if (reached) comp_cprep_chain_add(cif, src->name, shadow);
+      /* an earlier body of the name an alias captured, renamed to the alias
+         (alias_capture_earlier_def: activesupport's `alias
+         unwrapped_html_escape html_escape` ahead of its redefinition),
+         supers into the same method */
+      for (int as = 0; prepend && as < c->nscopes; as++) {
+        Scope *ac = &c->scopes[as];
+        if (ac->class_id != mod_id || ac->is_cmethod || !ac->name || sp_streq(ac->name, src->name) ||
+            ac->def_node < 0 || nt_kind(c->nt, ac->def_node) != NK_DefNode ||
+            !sp_streq(nt_str(c->nt, ac->def_node, "name"), src->name) || !scope_body_has_super(c, as)) continue;
+        comp_cprep_chain_add(cif, ac->name, shadow);
+        reached = 1;
+      }
+      if (!reached) c->scopes[own].reachable = 0;   /* nothing can reach it now */
       src = &c->scopes[ms];
     }
     /* Always a clone re-walked against `ci`, as include does: a shared
@@ -7432,17 +7449,17 @@ void register_extends(Compiler *c) {
         for (int p = c->classes[ci].parent; p >= 0 && !inherited; p = c->classes[p].parent)
           for (int bj = 0; bj < nbody && !inherited; bj++)
             if (body_cls[bj] == p) inherited = body_extends_module(c, body_node[bj], mod_id);
-        did_clone |= extend_class_with(c, ci, mod_id, inherited);
+        did_clone |= extend_class_with(c, ci, mod_id, inherited, (int)nt_int(nt, s, "sclass_prepend", 0));
       }
     }
    }
    if (cls_mod >= 0 && (ci == cls_mod || class_is_root(c, ci))) {
-     did_clone |= extend_class_with(c, ci, cls_mod, 0);
+     did_clone |= extend_class_with(c, ci, cls_mod, 0, 0);
      /* `class Class; prepend P; end`: P in front of the reopening, as an
         `extend` of it would put it (see desugar_module_prepends) */
      int pre[64];
      int np = module_prepend_list(c, cls_mod, pre, 64);
-     for (int q = np - 1; q >= 0; q--) did_clone |= extend_class_with(c, ci, pre[q], 0);
+     for (int q = np - 1; q >= 0; q--) did_clone |= extend_class_with(c, ci, pre[q], 0, 0);
    }
   }
   /* The cloned bodies introduced new local nodes, and register_locals ran
