@@ -1904,17 +1904,20 @@ static void emit_float_operand_expr(Compiler *c, int node, Buf *b) {
    value raise TypeError, as the ffi gem's NUM2INT / NUM2DBL do. */
 void emit_ffi_num_arg(Compiler *c, int arg, TyKind at, const char *spec, int dbl, Buf *b) {
   const char *ck = "";
+  /* a :bool takes true and false (sp_ffi_bool_of), and an Integer as before */
+  int isbool = !dbl && spec && sp_streq(spec, "bool");
+  const char *ct = isbool ? "_Bool" : ffi_c_type(spec);
   if (at == TY_NIL) {
     buf_puts(b, "((void)("); emit_expr(c, arg, b);
-    buf_printf(b, "), %s(), (%s)0)", dbl ? "sp_ffi_nil_dbl_raise" : "sp_ffi_nil_int_raise", ffi_c_type(spec));
+    buf_printf(b, "), %s(), (%s)0)", dbl ? "sp_ffi_nil_dbl_raise" : isbool ? "sp_ffi_nil_bool_raise" : "sp_ffi_nil_int_raise", ct);
     return;
   }
-  if (at == TY_POLY) ck = dbl ? "sp_ffi_dbl_of" : "sp_ffi_int_of";
+  if (at == TY_POLY) ck = dbl ? "sp_ffi_dbl_of" : isbool ? "sp_ffi_bool_of" : "sp_ffi_int_of";
   else if ((at == TY_INT || at == TY_FLOAT) && cmp_operand_may_be_nil(c, arg)) {
     if (at == TY_FLOAT) ck = dbl ? "sp_ffi_dbl_of_f" : "sp_ffi_int_of_f";
     else ck = dbl ? "sp_ffi_dbl_of_i" : "sp_ffi_int_of_i";
   }
-  buf_printf(b, "((%s)%s(", ffi_c_type(spec), ck);
+  buf_printf(b, "((%s)%s(", ct, ck);
   /* the _of_i / _of_f checks take the value with its nil */
   if ((at == TY_INT || at == TY_FLOAT) && *ck) emit_oint_expr(c, arg, at, b);
   else emit_expr(c, arg, b);
@@ -9239,6 +9242,33 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
   return 0;
 }
 
+/* A native binding's :float, :bool or :string? argument from a value of any
+   representation, as emit_ffi_num_arg converts an ffi_func's: a boxed value
+   is converted and checked, nil raises the TypeError the other specs raise
+   (a :string? takes it as NULL). A boxed value went in raw before and the C
+   did not compile; a nil was a silent 0.0 or false (#9092). 0 for any other
+   spec, which the caller emits as before. */
+int emit_native_value_arg(Compiler *c, const char *spec, int node, Buf *b) {
+  if (!spec) return 0;
+  TyKind at = comp_ntype(c, node);
+  if (sp_streq(spec, "float") || sp_streq(spec, "double")) {
+    emit_ffi_num_arg(c, node, at, "double", 1, b);
+    return 1;
+  }
+  if (sp_streq(spec, "bool")) {
+    if (at != TY_POLY && at != TY_NIL) return 0;
+    emit_ffi_num_arg(c, node, at, "bool", 0, b);
+    return 1;
+  }
+  if (sp_streq(spec, "string?")) {
+    if (at == TY_POLY) { buf_puts(b, "sp_poly_arg_str_or_null("); emit_expr(c, node, b); buf_puts(b, ")"); }
+    else if (at == TY_NIL) { buf_puts(b, "((void)("); emit_expr(c, node, b); buf_puts(b, "), (const char *)NULL)"); }
+    else emit_str_expr(c, node, b);
+    return 1;
+  }
+  return 0;
+}
+
 /* A native declaration's argument spec is a contract: the C symbol takes that
    representation and nothing converts to it at the call. An argument whose
    static type cannot be the declared one puts a pointer in a scalar slot (or
@@ -9360,6 +9390,7 @@ int emit_native_ctor(Compiler *c, int id, int ci, int argc, const int *argv, Buf
     else if (sp_streq(m->args[ai], "text")) emit_to_s_expr(c, argv[ai], b);
     /* the typed-slot emitters carry the implicit conversion protocol
        (poly unboxing, #to_str / #to_int on a user object) */
+    else if (emit_native_value_arg(c, m->args[ai], argv[ai], b)) ;
     else if (aw == TY_STRING) emit_str_expr(c, argv[ai], b);
     else if (aw == TY_INT) emit_int_expr(c, argv[ai], b);
     else emit_expr(c, argv[ai], b);

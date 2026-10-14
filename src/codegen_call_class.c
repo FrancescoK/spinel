@@ -1813,13 +1813,16 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
             if (ar.elem == TY_INT)        { buf_puts(&call_buf, "sp_IntArray_ffi_data(");   emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
             else if (ar.elem == TY_POLY)  { buf_puts(&call_buf, "sp_PolyArray_ffi_int_data("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
             else if (at == TY_POLY)        { buf_puts(&call_buf, "sp_ffi_int_array_data("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
-            else                           { buf_puts(&call_buf, "((const int64_t *)("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))"); }
+            /* anything else (an Array of another kind, nil) goes through the
+               run-time check, boxed: a Float Array was cast to the int64 data
+               pointer and its doubles read as integers (#9092) */
+            else                           { buf_puts(&call_buf, "sp_ffi_int_array_data("); emit_boxed(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
           }
           else if (sp_streq(spec, "float_array")) {
             if (ar.elem == TY_FLOAT)      { buf_puts(&call_buf, "sp_FloatArray_ffi_data(");  emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
             else if (ar.elem == TY_POLY)  { buf_puts(&call_buf, "sp_PolyArray_ffi_float_data("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
             else if (at == TY_POLY)        { buf_puts(&call_buf, "sp_ffi_float_array_data("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
-            else                           { buf_puts(&call_buf, "((const double *)("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))"); }
+            else                           { buf_puts(&call_buf, "sp_ffi_float_array_data("); emit_boxed(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
           }
           else {
             /* integer-like: int, uint32, size_t, long, etc. A nil raises
@@ -2036,7 +2039,11 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
             else { buf_puts(b, "(void *)(uintptr_t)("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
           }
           else if (rt2 == TY_STRING) { buf_puts(b, "("); emit_str_expr(c, argv[1], b); buf_puts(b, ")"); }
-          else if (rt2 == TY_FLOAT) { buf_puts(b, "("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+          /* a float and a bool member convert as an ffi_func argument does: a
+             boxed value checked, nil the TypeError (#9092: a boxed Float went
+             in raw, a boxed true was read as an Integer) */
+          else if (rt2 == TY_FLOAT) emit_ffi_num_arg(c, argv[1], comp_ntype(c, argv[1]), spec, 1, b);
+          else if (rt2 == TY_BOOL) emit_ffi_num_arg(c, argv[1], comp_ntype(c, argv[1]), spec, 0, b);
           else { buf_puts(b, "("); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
           buf_puts(b, ", sp_box_nil())");
           return 1;

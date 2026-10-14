@@ -5058,6 +5058,16 @@ void register_ffi_decls(Compiler *c) {
           const char *fn = ffi_arg_str(nt, pair[0]);
           const char *fs = ffi_arg_str(nt, pair[1]);
           if (!fn || !fs) continue;
+          /* a member's spec is an FFI type (ffi_spec.c); any other word had
+             no C type and the member was emitted as `void` (#9092: :string?,
+             the native DSL's spelling, which no ffi_struct member has) */
+          TyKind fty = ffi_spec_to_ty(fs);
+          if (fty == TY_UNKNOWN || fty == TY_NIL) {
+            char msg[256];
+            snprintf(msg, sizeof msg, "ffi_struct %s member :%s has type :%s, which is no FFI type "
+                     "(use :str for a C string, :ptr for a pointer)", sname, fn, fs);
+            ffi_decl_error(c, pair[1], msg);
+          }
           fields[nf].name = strdup(fn);
           fields[nf].spec = strdup(fs);
           nf++;

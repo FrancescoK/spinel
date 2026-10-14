@@ -4341,6 +4341,19 @@ static SP_UNUSED sp_float sp_ffi_dbl_of(sp_RbVal v) {
   return sp_poly_Float(v);
 }
 static SP_UNUSED sp_float sp_ffi_dbl_of_f(sp_ofloat v) { if (SP_UNLIKELY(v.nil)) sp_ffi_nil_dbl_raise(); return v.v; }
+/* A :bool slot (a C int/_Bool) from a boxed value: true and false as 1 and 0,
+   an Integer as it passed before (non-zero is true); anything else, nil
+   included, the ffi gem's TypeError (#9092: a boxed true read as an Integer
+   raised, and a nil was a silent false). */
+static SP_NOINLINE SP_COLD void sp_ffi_nil_bool_raise(void) { sp_raise_cls("TypeError", "wrong argument type nil (expected a boolean parameter)"); }
+static SP_UNUSED int sp_ffi_bool_of(sp_RbVal v) {
+  v = sp_poly_strbuf_deref(v);
+  if (SP_LIKELY(v.tag == SP_TAG_BOOL)) return v.v.b != 0;
+  if (v.tag == SP_TAG_INT) return v.v.i != 0;
+  if (v.tag == SP_TAG_NIL) sp_ffi_nil_bool_raise();
+  sp_raise_cls("TypeError", sp_sprintf("wrong argument type %s (expected a boolean parameter)", sp_poly_class_name(v)));
+  return 0;
+}
 static SP_UNUSED sp_int sp_ffi_dbl_of_i(sp_oint v) { if (SP_UNLIKELY(v.nil)) sp_ffi_nil_dbl_raise(); return v.v; }
 static SP_UNUSED sp_float sp_ffi_int_of_f(sp_ofloat v) { if (SP_UNLIKELY(v.nil)) sp_ffi_nil_int_raise(); return v.v; }
 static inline const char *sp_poly_to_s_or_nil(sp_RbVal v) { return v.tag == SP_TAG_NIL ? NULL : sp_poly_to_s(v); }

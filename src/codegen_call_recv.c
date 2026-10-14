@@ -11409,6 +11409,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           else if (sp_streq(m->args[ai], "regexp")) emit_expr(c, argv[ai], b);
           /* a write payload is the operand's #to_s, as IO#write takes it */
           else if (sp_streq(m->args[ai], "text")) emit_to_s_expr(c, argv[ai], b);
+          else if (emit_native_value_arg(c, m->args[ai], argv[ai], b)) ;
           /* the typed-slot emitters carry the implicit conversion protocol
              (poly unboxing, #to_str / #to_int on a user object) */
           else if (aw == TY_STRING) emit_str_expr(c, argv[ai], b);
