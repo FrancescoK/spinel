@@ -61,11 +61,11 @@ module FileUtils
         # and a plain file sitting in the way is an error CRuby also raises.
         begin
           Dir.mkdir(acc)
+          File.chmod(mode, acc) if mode
         rescue SystemCallError
           raise unless Dir.exist?(acc)
         end
       end
-      File.chmod(mode, path) if mode
     end
     fu_list(list)
   end
