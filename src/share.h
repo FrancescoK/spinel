@@ -225,6 +225,11 @@ int share_method_blocks(const Compiler *c, int mi, const int **blocks);
    The settled return-tail fact also admits fresh returns and a returned
    parameter bound to a fresh argument or omitted fresh default. */
 int share_call_fresh(Compiler *c, int call);
+/* Does parameter pj of method mi share its String with another holder (a
+   store of it, or a name the walk does not follow)? A method answering such
+   a parameter answers the String the other holder keeps, whatever its
+   argument. */
+int share_param_kept(Compiler *c, int mi, int pj);
 /* Can block node blk hand control back to the call that yields to it: does
    its body fall off its end, or hold a `next` of its own (not a nested
    block's, lambda's, method's or loop's)? A body whose last statement is a
