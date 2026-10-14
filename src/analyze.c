@@ -37234,8 +37234,15 @@ static int splat_builtin_range(const char *name, int *lo, int *hi, int *variadic
    method of this name, where they are few (find_index, assoc, casecmp,
    divmod), for a blockless call `id` the list above leaves out. 0 for a name no builtin has,
    or one taking any number, which keeps its splat call. */
-static int splat_builtin_spec_range(const NodeTable *nt, int id, const char *name, int *lo, int *hi) {
+static int splat_builtin_spec_range(Compiler *c, const NodeTable *nt, int id, const char *name, int *lo, int *hi) {
   int l, h;
+  /* a name the program defines may be its own method (`SplatPin#add`,
+     `succ`), which takes the splat as it stands: the builtin's counts are
+     not its counts, and a boxed scalar operand is no Array to measure */
+  for (int si = 1; si < c->nscopes; si++)
+    if (!c->scopes[si].is_cmethod && c->scopes[si].name && sp_streq(c->scopes[si].name, name)) return 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_reader_in_chain(c, k, name, NULL)) return 0;
   /* the tables are instance methods': a class's (`File.unlink(*paths)`)
      is no row of theirs */
   int r = nt_ref(nt, id, "receiver");
@@ -37646,7 +37653,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   else if (!splat_builtin_range(cnm, &lo, &hi, &variadic)) {
     if (splat_dyn_arm_range(c, id, cnm, blk >= 0, &lo, &hi, &variadic)) odyn = 1;
     /* another builtin name the list above leaves out */
-    else if (blk >= 0 || !splat_builtin_spec_range(nt, id, cnm, &lo, &hi)) return 0;
+    else if (blk >= 0 || !splat_builtin_spec_range(c, nt, id, cnm, &lo, &hi)) return 0;
     else variadic = 0;
   }
   /* A block goes on one arm only. The substitutions take it at one
@@ -38066,7 +38073,7 @@ void expand_static_splat_args(Compiler *c, int from, int count) {
     if (!listed && splat_constructor_arity(nt, id, cnm) < 0 &&
         !splat_builtin_range(cnm, NULL, NULL, NULL) &&
         !splat_dyn_arm_range(c, id, cnm, nt_ref(nt, id, "block") >= 0, NULL, NULL, NULL) &&
-        (nt_ref(nt, id, "block") >= 0 || !splat_builtin_spec_range(nt, id, cnm, NULL, NULL))) continue;
+        (nt_ref(nt, id, "block") >= 0 || !splat_builtin_spec_range(c, nt, id, cnm, NULL, NULL))) continue;
     /* ...but the name has to BE the builtin. A receiverless call to a
        top-level `def count(*args)` is the user's own variadic method, and
        expanding its splat to the builtin's arity handed it one element where
