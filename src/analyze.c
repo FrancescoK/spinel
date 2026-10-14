@@ -20972,9 +20972,20 @@ static int strh_value_ignored(Compiler *c, const int *par, int n) {
         int call = par[g];
         if (call < 0 || nt_kind(nt, call) != NK_CallNode || nt_ref(nt, call, "block") != g) return 0;
         const char *nm = nt_str(nt, call, "name");
-        return nm && (sp_streq(nm, "each") || sp_streq(nm, "each_with_index") || sp_streq(nm, "times") ||
-                      sp_streq(nm, "upto") || sp_streq(nm, "downto") || sp_streq(nm, "reverse_each") ||
-                      sp_streq(nm, "each_char"));
+        int r = an_unparen(nt, nt_ref(nt, call, "receiver"));
+        TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+        if (!nm || r < 0) return 0;
+        /* (the iterators of a builtin receiver, not a user class's own
+           `each` or one a reopening redefines; a receiver not typed yet is
+           asked again, and refused for good, once it is) */
+        if (sp_streq(nm, "each") || sp_streq(nm, "reverse_each") || sp_streq(nm, "each_with_index"))
+          return (rt == TY_UNKNOWN || ty_is_array(rt) || rt == TY_STRH_ARRAY || rt == TY_POLY_ARRAY) &&
+                 !share_builtin_overridden(c, "Array", nm);
+        if (sp_streq(nm, "times") || sp_streq(nm, "upto") || sp_streq(nm, "downto"))
+          return (rt == TY_UNKNOWN || rt == TY_INT) && !share_builtin_overridden(c, "Integer", nm);
+        if (sp_streq(nm, "each_char"))
+          return (rt == TY_UNKNOWN || rt == TY_STRING || rt == TY_STRBUF) && !share_builtin_overridden(c, "String", nm);
+        return 0;
       }
       if (gk != NK_IfNode && gk != NK_UnlessNode && gk != NK_ElseNode) return 0;
       n = g;

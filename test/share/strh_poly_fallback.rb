@@ -59,3 +59,17 @@ p n, s
 h = { k: [s, +"hv"] }
 h[:k] << +"third"
 p h
+
+# a user class's each, whose block's value the block's last statement is
+w = [s, +"t"]
+w2 = [s, +"t"]
+class Walker
+  def each
+    v = yield
+    v << "Y"
+    v
+  end
+end
+Walker.new.each { w[0] }
+Walker.new.each { w2.first }
+p w, w2, s
