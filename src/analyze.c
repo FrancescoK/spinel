@@ -38376,6 +38376,15 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
      subclass rewrites): a read of the block, which every arm shares */
   if (blk >= 0 && !subst && nt_kind(nt, blk) == NK_BlockArgumentNode && nt_int(nt, id, "builtin_only", 0))
     fwd_blk = 1;
+  /* ...and a method's own `&block` handed on to an element read, which
+     ignores a block (`def [](*args, &block) = expressions.[](*args, &block)`,
+     regexp_parser's forwarders): a read of a local, which every arm shares
+     too. A name a block changes (`index { }`) keeps its splat. */
+  if (blk >= 0 && !subst && nt_kind(nt, blk) == NK_BlockArgumentNode &&
+      (sp_streq(cnm, "[]") || sp_streq(cnm, "slice"))) {
+    int bx = nt_ref(nt, blk, "expression");
+    if (bx >= 0 && nt_kind(nt, bx) == NK_LocalVariableReadNode) fwd_blk = 1;
+  }
   if (blk >= 0 && !subst && !splat_binary_operator(cnm) && !odyn && !fwd_blk && ctor < 0) return 0;
   if (blk >= 0 && subst) lo = 1;
   /* insert(i, *objs) spreads at run time (emit_array_splat_mutator) */
