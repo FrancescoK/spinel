@@ -1379,6 +1379,17 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	   ! SPINEL_GC_STRESS=2 "$$tmp/cba" 2>&1 | cmp -s - "$$t.expected"; then \
 	  echo "share-strings-test: FAIL (a shared String's copy beside an allocating operand is not rooted, GC stress 2)"; ok=0; \
 	fi; \
+	for t in test/share/strh_*.rb; do \
+	  if ! $(SPINEL) --share-strings "$$t" -c --no-line-map -o "$$tmp/strh.c" >"$$tmp/out" 2>&1; then \
+	    echo "share-strings-test: FAIL $$t (refused)"; ok=0; \
+	  elif [ "$$t" = test/share/strh_poly_fallback.rb ]; then \
+	    ! grep -q 'sp_StrhArray_new' "$$tmp/strh.c" || \
+	      { echo "share-strings-test: FAIL $$t (an Array with a use the handle form does not answer took it)"; ok=0; }; \
+	  else \
+	    grep -q 'sp_StrhArray_new' "$$tmp/strh.c" || \
+	      { echo "share-strings-test: FAIL $$t (its Array of shared Strings is not held as their handles)"; ok=0; }; \
+	  fi; \
+	done; \
 	for t in test/share/refuse/*.rb; do \
 	  if $(SPINEL) --share-strings "$$t" -c -o "$$tmp/r.c" >"$$tmp/out" 2>&1; then \
 	    echo "share-strings-test: FAIL $$t (compiled)"; ok=0; \

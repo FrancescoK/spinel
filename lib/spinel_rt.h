@@ -2789,6 +2789,15 @@ static inline sp_String *sp_poly_as_strbuf(sp_RbVal v) {
   if (sp_poly_nil_p(v)) return NULL;
   return sp_String_new((&("\xff")[1]));
 }
+/* The String Array of handles (--share-strings, TY_STRH_ARRAY) element a
+   boxed String is: a handle as it is, a plain String as sp_String_new_shared
+   makes it (a frozen literal's own handle, here where
+   SP_SHARE_STRING_LITERALS is set, which lib/sp_array.c's copy of the
+   constructor never sees), nil as NULL. */
+static inline sp_String *sp_StrhArray_unbox(sp_RbVal v) {
+  if (v.tag == SP_TAG_NIL) return NULL;
+  return v.tag == SP_TAG_STR ? sp_String_new_shared(v.v.s) : (sp_String *)v.v.p;
+}
 /* The read face of a frozen handle: a copy that is frozen too (0xfa, a
    frozen heap String that is collected), so the String read through it,
    and a handle a consumer wraps around it, keep the frozen mark the
@@ -3811,6 +3820,13 @@ static const char *sp_poly_sym_id2name(sp_RbVal v) {
   return sp_sym_to_s_chilled((sp_sym)v.v.i);
 }
 static SP_UNUSED sp_RbVal sp_poly_nil_no_method(const char *m, sp_RbVal v) { sp_raise_nomethod(sp_nomethod_msg(m, v)); return sp_box_nil(); }
+/* An element of a String Array of handles (TY_STRH_ARRAY) that a method of
+   the String is called on: its handle, or CRuby's NoMethodError for a nil
+   one (a read past the end, a gap, an empty Array's pop). */
+static inline sp_String *sp_StrhArray_nn(sp_String *h, const char *m) {
+  if (SP_UNLIKELY(!h)) sp_raise_nomethod(sp_nomethod_msg(m, sp_box_nil()));
+  return h;
+}
 /* The bounds of `for i in lo..hi` read out of a box or an Integer slot that
    may hold nil: a nil end is an endless range (the loop runs until a break),
    and a nil beginning cannot be iterated (TypeError, as CRuby). */

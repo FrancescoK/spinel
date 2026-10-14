@@ -50,7 +50,8 @@ static ReprKind repr_kind_of_type(const Compiler *c, TyKind t) {
    same. A value with no type at all is RK_NONE, as a void one is; untyped
    tells them apart. */
 static void repr_layout(Repr *r, TyKind t) {
-  r->elem = ty_is_array(t) || ty_is_obj_array(t) ? ty_array_elem(t) : TY_UNKNOWN;
+  /* (a String Array of handles holds each String as its handle) */
+  r->elem = t == TY_STRH_ARRAY ? TY_STRBUF : ty_is_array(t) || ty_is_obj_array(t) ? ty_array_elem(t) : TY_UNKNOWN;
   r->key = ty_hash_key(t);
   r->val = ty_hash_val(t);
   r->range = t == TY_RANGE ? TY_INT : t == TY_FLOAT_RANGE ? TY_FLOAT
@@ -354,6 +355,9 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
   const NodeTable *nt = c->nt;
   NodeKind k = nt_kind(nt, node);
   if (repr_self_shared(c, node)) return RS_HANDLE;
+  /* an element a String Array of handles reads or removes is the handle
+     the Array keeps, as a String Range's endpoint is (#8328 step 5) */
+  if ((t == TY_STRING || t == TY_STRBUF) && strh_handle_call(mc, node)) return RS_HANDLE;
   if (t == TY_STRING) {
     /* a global holding the handle (--share-strings): its read boxes it */
     if (repr_static_read_kind(k)) return repr_static_share(c, node) ? RS_HANDLE : RS_NONE;

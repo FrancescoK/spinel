@@ -1618,6 +1618,14 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
     RC(RF_STRBUF_HANDLE, RW_NONE);
     return;
   }
+  /* an element a String Array of handles reads or removes: its handle */
+  if (rp->strbuf_src == RS_HANDLE && strh_handle_call(c, node)) {
+    buf_puts(b, "sp_box_nullable_obj(");
+    strh_elem_handle_text(c, node, b);
+    buf_puts(b, ", SP_BUILTIN_STRBUF)");
+    RC(RF_STRBUF_HANDLE, RW_NONE);
+    return;
+  }
   if (t == TY_STRING) {
     /* The node-type cache is finalized before the late handle passes run,
        so a local promoted to a shared handle still reads as String here
@@ -16234,7 +16242,9 @@ static void scan_prologue_features(Compiler *c) {
   g_emit_obj_dispatch = (c->nclasses > 0);
   {
     int polyish = 0, has_class = 0;
-#define SP_TT(t) do { TyKind _t = (t);       if (_t == TY_POLY || ty_is_array(_t) || ty_is_hash(_t)) polyish = 1;       else if (_t == TY_SYMBOL) g_emit_sym_rt = 1;       else if (_t == TY_CLASS) has_class = 1; } while (0)
+#define SP_TT(t) do { TyKind _t = (t);       if (_t == TY_POLY || ty_is_array(_t) || _t == TY_STRH_ARRAY || ty_is_hash(_t)) polyish = 1;       else if (_t == TY_SYMBOL) g_emit_sym_rt = 1;       else if (_t == TY_CLASS) has_class = 1; } while (0)
+    /* (a String Array of handles renders through the poly walkers, as a
+       boxed pointer array: TY_STRH_ARRAY is one) */
     /* a def's Symbol where nothing uses it is no value of the program's
        (an_phase_pre_fixpoint leaves its name out of the table too) */
     int *par = an_parent_map(nt);

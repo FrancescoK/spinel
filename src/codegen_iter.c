@@ -5498,6 +5498,46 @@ static int emit_shadow_save(Compiler *c, const LocalVar *lv, const char *name, B
 }
 
 static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent);
+/* Block parameter k of `block`, renamed `ren`, bound to String handle h (an
+   element of a String Array of handles): the handle itself where the
+   parameter is one, its box where it is boxed, else a copy of its bytes,
+   as a String parameter takes a handle's String */
+static void strh_param_bind(Compiler *c, int block, int k, const char *ren, const char *h, Buf *b, int indent) {
+  Scope *bs = comp_scope_of(c, block);
+  const char *orig = block_param_name(c, block, k);
+  LocalVar *lv = bs && orig ? scope_local(bs, orig) : NULL;
+  if (!lv || lv->type == TY_UNKNOWN) return;
+  emit_indent(b, indent);
+  if (lv->type == TY_POLY) buf_printf(b, "lv_%s = sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF);\n", ren, h);
+  else if (repr_of_slot(c, lv).kind == RK_STRBUF) buf_printf(b, "lv_%s = %s;\n", ren, h);
+  else buf_printf(b, "lv_%s = sp_strbuf_read(%s);\n", ren, h);
+}
+/* --share-strings (#8328 step 5): each over a String Array of handles
+   (strh_call_op): the element parameter binds the String itself, the Array
+   read live as the typed walks read theirs. Answers -1 for any other call. */
+static int iter_strh_arms(Compiler *c, int id, Buf *b, int indent, int block, int recv, int body,
+                          const char *p0, TyKind rt) {
+  if (rt != TY_STRH_ARRAY || strh_call_op(c, id, rt) != STRH_EACH) return -1;
+  Buf rb; memset(&rb, 0, sizeof rb);
+  emit_expr(c, recv, &rb);
+  hoist_loop_recv(c, rt, &rb, b, indent);
+  Scope *cs = comp_scope_of(c, id);
+  LocalVar *o0 = p0 && cs ? scope_local(cs, p0) : NULL;
+  int ts0 = o0 ? emit_shadow_save(c, o0, p0, b, indent) : 0;
+  int t = ++g_tmp;
+  emit_indent(b, indent);
+  buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_PtrArray_length(%s); _t%d++) {\n", t, t, rb.p ? rb.p : "NULL", t);
+  if (p0) {
+    char h[640];
+    snprintf(h, sizeof h, "((sp_String *)sp_PtrArray_get(%s, _t%d))", rb.p ? rb.p : "NULL", t);
+    strh_param_bind(c, block, 0, p0, h, b, indent + 1);
+  }
+  emit_loop_body(c, body, b, indent + 1);
+  emit_indent(b, indent); buf_puts(b, "}\n");
+  if (o0) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, ts0); }
+  free(rb.p);
+  return 1;
+}
 /* A `&.` iterator in statement or tail position (`v&.upto(3) { }`,
    `v&.times { }`) whose nil guard is pending (sn_guard_pending): the loop
    emitters never look at the operator, so they walked the nil -- upto and
@@ -7889,6 +7929,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     return 1;
   }
 
+  { int rv = iter_strh_arms(c, id, b, indent, block, recv, body, p0, rt); if (rv >= 0) return rv; }
   { int rv = iter_hash_arms(c, b, indent, block, name, recv, body, p0, rt); if (rv >= 0) return rv; }
 
   { int rv = iter_ewi_zip_poly_arms(c, id, b, indent, nt, block, name, recv, body, p0, rt); if (rv >= 0) return rv; }

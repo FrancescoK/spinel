@@ -318,6 +318,7 @@ int is_scan_name(const char *n); /* scan: a String's match iterator */
 int is_insert_name(const char *n); /* insert */
 int is_arguments_node_type(const char *t); /* ArgumentsNode */
 int is_when_node_type(const char *t);      /* WhenNode */
+int is_ensure_node_type(const char *t);    /* EnsureNode */
 int is_clear_name(const char *n); /* clear */
 int is_enumerator_with(const char *n); /* with_index with_object: an enumerator link */
 int is_lazy_name(const char *n);       /* lazy */
@@ -348,6 +349,38 @@ int is_untabled_native_class_name(const char *n);
 
 int is_define_method_name(const char *n); /* define_method */
 int is_alias_method_name(const char *n);  /* alias_method */
+/* --share-strings (#8328 step 5): the operations a String Array of handles
+   (TY_STRH_ARRAY) answers itself, by name, argument count and block (0
+   none, 1 a literal block, 2 a block argument). A container class one of
+   whose names takes any other stays in the poly form (share_strh_gate);
+   inference and codegen answer exactly these. */
+typedef enum {
+  STRH_NONE,
+  STRH_ELEM,     /* [](i), at(i), first, last: the element, a String */
+  STRH_STORE,    /* []=(i, v): stores v's String */
+  STRH_PUSH,     /* <<, push, append: stores each argument's String */
+  STRH_TAKE,     /* pop, shift: removes and answers the element */
+  STRH_LEN,      /* size, length */
+  STRH_EMPTY,    /* empty? */
+  STRH_EACH,     /* each { }: the receiver */
+  STRH_DUP,      /* dup: a new Array of the same Strings */
+  STRH_SELF,     /* to_a: the receiver */
+  STRH_JOIN,     /* join, join(sep) */
+  STRH_INCLUDE,  /* include?(v) */
+  STRH_EQ,       /* ==(other) */
+  STRH_INSPECT   /* inspect, to_s */
+} StrhOp;
+int strh_op(const char *n, int argc, int block);
+int is_kernel_print_name(const char *n);      /* p puts print */
+int is_identity_compare_name(const char *n);  /* equal? == != */
+int is_nil_shared_name(const char *n);        /* nil? equal? == !=: what nil answers as a String does */
+/* the receiver kind a block-taking iterator name belongs to */
+enum { BITER_NONE, BITER_ARRAY, BITER_INTEGER, BITER_STRING };
+int builtin_iter_owner(const char *n);        /* each reverse_each each_with_index / times upto downto / each_char */
+int is_frozen_query(const char *n);           /* frozen? */
+int is_pop_name(const char *n);               /* pop */
+int is_first_name(const char *n);             /* first */
+
 
 const char *encoding_const_name(const char *nm);  /* Encoding::NM's encoding name, or NULL */
 #endif

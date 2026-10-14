@@ -1,5 +1,6 @@
 #include "analyze_internal.h"
 #include "builtin_names.h"
+#include "share.h"
 #include <errno.h>
 #include <limits.h>
 
@@ -3668,3 +3669,78 @@ const char *time_strict_parser_call(Compiler *c, int id) {
   if (tci >= 0 && comp_cmethod_in_chain(c, tci, name, NULL) >= 0) return NULL;
   return fn;
 }
+
+/* The program's parent map (an_parent_map), kept on the Compiler as the
+   emitter's is (codegen_parents, the same fields) and rebuilt whenever the
+   node table changed, for an analysis that asks where a node sits on every
+   round (share_strh_gate). */
+const int *comp_parent_map(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  if (!c->cg_parent || c->cg_parent_n != nt->count || c->cg_parent_ver != nt->version) {
+    free(c->cg_parent);
+    c->cg_parent = an_parent_map(nt);
+    if (!c->cg_parent) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    c->cg_parent_n = nt->count; c->cg_parent_ver = nt->version;
+  }
+  return c->cg_parent;
+}
+
+/* Is argument n's type want, or (unknown_ok, for the gate's early rounds)
+   not settled yet? */
+static int strh_arg_ty_ok(const Compiler *c, int n, TyKind want, TyKind want2, int unknown_ok) {
+  TyKind t = comp_ntype(c, n);
+  return t == want || t == want2 || (unknown_ok && t == TY_UNKNOWN);
+}
+/* Does block blk take no parameter or one plain one, which binds the
+   element (not a destructuring `|(x, y)|`, a rest, a default, a keyword, a
+   block parameter or a block-local)? */
+static int strh_plain_block_params(Compiler *c, int blk) {
+  const NodeTable *nt = c->nt;
+  int bp = nt_ref(nt, blk, "parameters");
+  if (bp < 0) return 1;
+  if (nt_kind(nt, bp) != NK_BlockParametersNode) return 0;
+  int lc = 0;
+  nt_arr(nt, bp, "locals", &lc);
+  if (lc > 0) return 0;
+  int pn = nt_ref(nt, bp, "parameters");
+  if (pn < 0) return 1;
+  int n = 0;
+  const int *rq = nt_arr(nt, pn, "requireds", &n);
+  if (n > 1 || (n == 1 && !(nt_type(nt, rq[0]) && sp_streq(nt_type(nt, rq[0]), "RequiredParameterNode")))) return 0;
+  /* (a destructuring parameter is a hidden parameter and a read of its
+     elements by the time the walk runs) */
+  const char *pnm = n == 1 ? nt_str(nt, rq[0], "name") : NULL;
+  if (pnm && !strncmp(pnm, "__destr", 7)) return 0;
+  int k = 0;
+  nt_arr(nt, pn, "optionals", &k);
+  if (k > 0) return 0;
+  nt_arr(nt, pn, "posts", &k);
+  if (k > 0) return 0;
+  nt_arr(nt, pn, "keywords", &k);
+  if (k > 0) return 0;
+  return nt_ref(nt, pn, "rest") < 0 && nt_ref(nt, pn, "keyword_rest") < 0 && nt_ref(nt, pn, "block") < 0;
+}
+int strh_call_op_in(Compiler *c, int call, TyKind rt, int unknown_ok) {
+  const NodeTable *nt = c->nt;
+  if (rt != TY_STRH_ARRAY || call < 0 || nt_kind(nt, call) != NK_CallNode) return STRH_NONE;
+  const char *nm = nt_str(nt, call, "name");
+  int ca = nt_ref(nt, call, "arguments"), argc = 0, blk = nt_ref(nt, call, "block");
+  const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &argc) : NULL;
+  for (int k = 0; k < argc; k++) {
+    NodeKind ak = nt_kind(nt, av[k]);
+    if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return STRH_NONE;
+  }
+  int op = strh_op(nm, argc, blk < 0 ? 0 : nt_kind(nt, blk) == NK_BlockNode ? 1 : 2);
+  if (op == STRH_EACH && !strh_plain_block_params(c, blk)) return STRH_NONE;
+  if ((op == STRH_ELEM && argc == 1) || op == STRH_STORE)
+    for (int k = 0; k < (op == STRH_STORE ? 1 : argc); k++)
+      if (!strh_arg_ty_ok(c, av[k], TY_INT, TY_INT, unknown_ok)) return STRH_NONE;
+  /* (the other operand of == is another Array of handles) */
+  if (op == STRH_EQ && !strh_arg_ty_ok(c, av[0], TY_STRH_ARRAY, TY_STRH_ARRAY, unknown_ok)) return STRH_NONE;
+  /* (a separator or a needle that is a String) */
+  if ((op == STRH_JOIN || op == STRH_INCLUDE) && argc == 1 &&
+      !strh_arg_ty_ok(c, av[0], TY_STRING, TY_STRBUF, unknown_ok)) return STRH_NONE;
+  if (op != STRH_NONE && share_builtin_overridden(c, "Array", nm)) return STRH_NONE;
+  return op;
+}
+int strh_call_op(Compiler *c, int call, TyKind rt) { return strh_call_op_in(c, call, rt, 0); }

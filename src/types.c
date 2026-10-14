@@ -224,6 +224,7 @@ const char *ty_name(TyKind t) {
     case TY_POLY_ARRAY:  return "poly_array";
     case TY_INT_ARRAY_ARRAY: return "int_array_array";
     case TY_FLOAT_ARRAY_ARRAY: return "float_array_array";
+    case TY_STRH_ARRAY: return "strh_array";
     case TY_STR_INT_HASH: return "str_int_hash";
     case TY_STR_STR_HASH: return "str_str_hash";
     case TY_INT_INT_HASH: return "int_int_hash";
@@ -338,6 +339,7 @@ TyKind ty_array_elem(TyKind arr) {
     case TY_STR_ARRAY:       return TY_STRING;
     case TY_INT_ARRAY_ARRAY: return TY_INT_ARRAY;
     case TY_FLOAT_ARRAY_ARRAY: return TY_FLOAT_ARRAY;
+    case TY_STRH_ARRAY:      return TY_STRING;
     default:
       /* a narrowed object array holds one class, unboxed (#4846) */
       if (ty_is_obj_array(arr)) return ty_object(ty_obj_array_class(arr));
@@ -420,6 +422,14 @@ TyKind ty_unify(TyKind a, TyKind b) {
   /* a plain string value flows into a mutable-string (shared handle) slot
      losslessly: the write re-wraps it in the sp_String (#3227 phase 3) */
   if ((a == TY_STRBUF && b == TY_STRING) || (a == TY_STRING && b == TY_STRBUF)) return TY_STRBUF;
+  /* --share-strings: a String Array of handles (TY_STRH_ARRAY) that also
+     sees a String Array takes its Strings as handles: the typed side is a
+     new container nothing else holds (share_strh_gate keeps every named one
+     in one form), so taking it is no copy anyone sees */
+  if ((a == TY_STRH_ARRAY && b == TY_STR_ARRAY) || (a == TY_STR_ARRAY && b == TY_STRH_ARRAY)) return TY_STRH_ARRAY;
+  /* ...and one that also sees a poly Array is a poly Array, the form its
+     class takes when the gate finds the two names of one container */
+  if ((a == TY_STRH_ARRAY && b == TY_POLY_ARRAY) || (a == TY_POLY_ARRAY && b == TY_STRH_ARRAY)) return TY_POLY_ARRAY;
   /* A heap object reference that also sees nil stays the object type: the
      object pointer's NULL encodes nil (legacy's `ClassName?`), so a nullable
      single-class reference need not widen to poly. */
@@ -454,6 +464,9 @@ TyKind ty_unify(TyKind a, TyKind b) {
      (which would strip every array method from the result). */
   if (a == TY_NIL && b == TY_POLY_ARRAY) return b;
   if (b == TY_NIL && a == TY_POLY_ARRAY) return a;
+  /* so does a String Array of handles: the sp_PtrArray * NULL is nil */
+  if (a == TY_NIL && b == TY_STRH_ARRAY) return b;
+  if (b == TY_NIL && a == TY_STRH_ARRAY) return a;
   /* An exception reference that also sees nil stays TY_EXCEPTION: the
      sp_Exception* NULL encodes nil ($! outside a rescue is already nil), and
      the exception method arms NULL-guard (#2739). */
@@ -532,7 +545,7 @@ TyIterShape ty_iter_shape(const char *name) {
    is. */
 int ty_block_yield(TyKind recv, const char *name, TyKind *out, int max) {
   if (!name || max < 1) return 0;
-  TyKind fam = ty_is_array(recv) ? BOP_ANY_ARRAY
+  TyKind fam = ty_is_array(recv) || recv == TY_STRH_ARRAY ? BOP_ANY_ARRAY
              : ty_is_hash(recv) ? BOP_ANY_HASH
              : recv == TY_RANGE || recv == TY_INT || recv == TY_STRING ? recv
              : TY_UNKNOWN;

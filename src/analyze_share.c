@@ -4603,6 +4603,13 @@ int share_elem_holders(const Compiler *c, int e) {
   return sh_class_holders(F, e);
 }
 int share_elem_holder(const Compiler *c, int h) { return share_elem_holder_root(c, h); }
+int share_class_count(const Compiler *c) { return c->share ? c->share->n : 0; }
+int share_holder_class(const Compiler *c, int h) {
+  const ShareFacts *F = c->share;
+  return F && h >= 0 && h < F->nh ? sh_root_of_holder(F, h) : -1;
+}
+static int sh_node_root(const ShareFacts *F, int n, int elems);
+int share_node_class(const Compiler *c, int n) { return sh_node_root(c->share, n, 0); }
 
 
 static int sh_node_root(const ShareFacts *F, int n, int elems);

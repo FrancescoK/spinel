@@ -1758,6 +1758,12 @@ static int fold_container_evidence(TyKind *slot, int is_push, int is_splice,
        PolyArray (ty_unify would return TY_POLY scalar, so use array-aware
        widening instead). */
     if (vt == TY_UNKNOWN) return 0;
+    /* (a String Array of handles keeps a String; a value that may be
+       another class widens it, as it widens a String Array) */
+    if (*slot == TY_STRH_ARRAY) {
+      if (vt != TY_STRING && vt != TY_STRBUF) *slot = TY_POLY_ARRAY;
+      return 1;
+    }
     /* If a [] read already promoted this slot to a hash type, the push
        wins: a variable that is pushed to is an array, not a hash.
        Reset the slot so the array promotion below can fire. */
@@ -1767,6 +1773,12 @@ static int fold_container_evidence(TyKind *slot, int is_push, int is_splice,
     TyKind want = ty_array_of(vt);
     if (*slot != TY_UNKNOWN && want != *slot) want = TY_POLY_ARRAY;
     *slot = want;
+  }
+  else if (*slot == TY_STRH_ARRAY) {
+    /* a String Array of handles takes a String at an Integer index; any
+       other write widens it */
+    if (vt != TY_UNKNOWN && (is_splice || (kt != TY_INT && kt != TY_UNKNOWN) || (vt != TY_STRING && vt != TY_STRBUF)))
+      *slot = TY_POLY_ARRAY;
   }
   else if (is_splice) {
     /* arr[s,l] = rhs / arr[range] = rhs: a source whose elements the typed
@@ -3200,6 +3212,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
     /* fold into a local's type or an ivar's type (an empty `@buf=[]` filled by
        `@buf << x` infers its element type the same way a local does) */
     TyKind *slot = NULL;
+    LocalVar *slot_lv = NULL;   /* the local whose type slot is, if one */
     int slot_reset = 0;  /* slot is a plain local, reset+recomputed per iteration:
                             net change is the stash compare's job, not this site's */
     const char *watch_nm = NULL;  /* ivar name for SP_IVWATCH, NULL for locals */
@@ -3464,6 +3477,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
         if (table_row_alias(c, &lw_ix, rnm, lsc, 0)) continue;
       }
       slot = &lv->type;
+      slot_lv = lv;
       slot_reset = !lv->is_param && !lv->is_block_param && !lv->rbs_seeded;
     }
     else if (rty && sp_streq(rty, "InstanceVariableReadNode")) {
@@ -3688,6 +3702,13 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
     }
     TyKind before = *slot;
     int fits = fold_container_evidence(slot, is_push, is_splice, kt, vt);
+    /* --share-strings: a local Array of Strings a String's handle is pushed
+       into holds its Strings as handles (#8328 step 5), where its container
+       class can take that form (share_strh_gate marks it otherwise) */
+    if (c->share_strings && slot_lv && is_push && !slot_lv->strh_no && *slot == TY_POLY_ARRAY &&
+        (vt == TY_STRBUF || vt == TY_STRING) &&
+        (before == TY_UNKNOWN || before == TY_STR_ARRAY || before == TY_STRH_ARRAY))
+      *slot = TY_STRH_ARRAY;
     /* An ivar hash the write does not fit widens to the poly-keyed variant,
        with the literals the ivar is assigned, as a write through its getter
        does: other sites (a getter's `c[1] = 2`) settled the key, and the fold
@@ -4431,6 +4452,7 @@ static void lv_keep_decisions(LocalVar *lv, int stashed) {
       (lv->type == TY_STRING || lv->type == TY_STR_ARRAY)) lv->type = TY_STRBUF;
   /* --share-strings: a String Array the rule settled in its poly form
      keeps it (share_default_apply) */
+  if (lv->strh_form && lv->type == TY_STR_ARRAY) lv->type = TY_STRH_ARRAY;
   if (lv->elems_shared && lv->type == TY_STR_ARRAY) lv->type = TY_POLY_ARRAY;
 }
 

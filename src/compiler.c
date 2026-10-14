@@ -285,6 +285,9 @@ void comp_free(Compiler *c) {
   free(c->cg_parent);
   c->cg_parent = NULL;
   c->cg_parent_n = 0;
+  free(c->strh_no);
+  c->strh_no = NULL;
+  c->strh_no_cap = 0;
   free(c->lazy_hoist);
   c->lazy_hoist = NULL;
   c->lazy_hoist_n = 0;

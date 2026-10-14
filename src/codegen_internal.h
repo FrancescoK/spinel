@@ -439,6 +439,17 @@ void str_form_free(StrForm *sf);
 /* Node v into a slot that holds the shared handle (an ivar's store, its
    `||=`), in the plan's form: emit_str_form's handle face, settled. */
 void emit_str_form_handle(Compiler *c, int v, Buf *b);
+/* Node v as the element a String Array of handles (TY_STRH_ARRAY, #8328
+   step 5) stores: its handle (codegen_call_array.c) */
+void emit_strh_elem(Compiler *c, int v, Buf *b);
+/* The sp_String * an element read, pop or shift of a String Array of
+   handles answers (codegen_util.c), and whether an element read reads like
+   a variable's slot (a local's Array at a literal or local index) */
+void strh_elem_handle_text(Compiler *c, int v, Buf *b);
+int strh_elem_slot(Compiler *c, int v);
+int strh_handle_call(Compiler *c, int v);
+/* An operation on a String Array of handles (codegen_call_array.c) */
+int emit_strh_call(Compiler *c, int id, Buf *b);
 extern int g_block_nren;
 extern int g_yield_block_fallback_nren;
 /* Paired 1:1 with g_block_nren / g_yield_block_fallback_nren: the &block
@@ -1588,6 +1599,7 @@ int emit_native_count_mismatch(Compiler *c, int id, int cid, const char *name, i
                                int recv, int argc, const int *argv, Buf *b);
 void emit_ctype(Compiler *c, TyKind t, Buf *b);
 const char *ptr_array_stamp(Compiler *c, TyKind t);   /* "SP_PTR_ELEM_x, cls" for sp_box_ptr_array_k (#4486) */
+const char *ptr_array_new_c(TyKind t);   /* the empty pointer array of kind t: sp_StrhArray_new() for a String handle Array */
 /* "Int" / "Str" / "Float" for the sp_<K>Array_* runtime family. */
 const char *array_kind(TyKind t);
 /* "Poly" / "Ptr" / array_kind, for a loop that walks the container. "Ptr" is

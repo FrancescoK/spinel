@@ -191,6 +191,11 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
   else if (t == TY_POLY) {
     buf_puts(b, "sp_poly_puts("); emit_expr(c, arg, b); buf_puts(b, ");\n");
   }
+  /* a String Array of handles (--share-strings): its box, one String a
+     line as any Array's (sp_poly_puts' pointer array arm) */
+  else if (t == TY_STRH_ARRAY) {
+    buf_puts(b, "sp_poly_puts("); emit_boxed(c, arg, b); buf_puts(b, ");\n");
+  }
   else if (t == TY_POLY_ARRAY) {
     int ta = ++g_tmp, ti = ++g_tmp;
     Buf ab; memset(&ab, 0, sizeof ab); emit_expr(c, arg, &ab);
@@ -362,7 +367,7 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "{ sp_StrRange _t%d = ", tv); emit_expr(c, arg, b);
     buf_printf(b, "; fputs(sp_srange_to_s(_t%d), stdout); }\n", tv);
   }
-  else if (ty_is_array(t) || ty_is_hash(t) || t == TY_EXCEPTION || t == TY_TIME) {
+  else if (ty_is_array(t) || t == TY_STRH_ARRAY || ty_is_hash(t) || t == TY_EXCEPTION || t == TY_TIME) {
     /* print of a collection renders its to_s (== inspect for Array/Hash);
        box once and go through the poly renderer. */
     int tv = ++g_tmp;
@@ -1326,7 +1331,7 @@ int emit_ptr_array_build(Compiler *c, int v, TyKind want, Buf *b) {
        elements run in source order (ahead of the build,
        `[make_row, [read_state]]` read the state before make_row ran). */
     int t = ++g_tmp;
-    buf_printf(b, "({ sp_PtrArray *_t%d = sp_PtrArray_new(); SP_GC_ROOT(_t%d);", t, t);
+    buf_printf(b, "({ sp_PtrArray *_t%d = %s; SP_GC_ROOT(_t%d);", t, ptr_array_new_c(want), t);
     int en = 0; const int *el = nt_arr(c->nt, v, "elements", &en);
     int effect = 0;
     for (int e = 0; e < en; e++) {
@@ -1335,7 +1340,9 @@ int emit_ptr_array_build(Compiler *c, int v, TyKind want, Buf *b) {
       Buf *sv_pre = g_pre;
       if (e > 0 && effect) g_pre = &epre;
       Buf ev; memset(&ev, 0, sizeof ev);
-      emit_expr(c, el[e], &ev);
+      /* (a String Array of handles stores each String's handle) */
+      if (want == TY_STRH_ARRAY) emit_strh_elem(c, el[e], &ev);
+      else emit_expr(c, el[e], &ev);
       g_pre = sv_pre;
       if (epre.p && epre.p[0]) buf_printf(b, " %s", epre.p);
       buf_printf(b, " sp_PtrArray_push(_t%d, %s);", t, ev.p ? ev.p : "");
@@ -2879,8 +2886,10 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
 int strbuf_var_handle(Compiler *c, int n, char *out, size_t cap) {
   NodeKind k = n >= 0 ? nt_kind(c->nt, n) : NK_NONE;
   if (repr_self_shared(c, n)) return strbuf_slot_ref(c, n, out, cap);
+  /* (an element a String Array of handles reads is a slot of the Array) */
   return (repr_share_rule(c) || c->n_cext_extensions) &&
-         (k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || repr_static_read_kind(k)) &&
+         (k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || repr_static_read_kind(k) ||
+          strh_elem_slot(c, n)) &&
          strbuf_slot_ref(c, n, out, cap);
 }
 /* --share-strings: does value v hand over a String the rule shares as the
@@ -2904,6 +2913,9 @@ int strbuf_value_carries(Compiler *c, int v) {
   char ref[1024];
   NodeKind k = v >= 0 ? nt_kind(c->nt, v) : NK_NONE;
   if (!repr_share_rule(c)) return 0;
+  /* an element a String Array of handles reads or removes is its handle
+     (strh_elem_handle_text) */
+  if (strh_handle_call(c, v)) return 1;
   if ((k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || repr_static_read_kind(k)) &&
       strbuf_slot_ref(c, v, ref, sizeof ref))
     return 1;
@@ -4400,6 +4412,10 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
               share_value_fresh(c, v, 0);
   if (shared && !fresh && strbuf_slot_ref(c, v, srefV, sizeof srefV))
     buf_puts(b, srefV);
+  /* --share-strings: an element a String Array of handles reads or
+     removes is the String itself (#8328 step 5) */
+  else if (shared && strh_handle_call(c, v))
+    strh_elem_handle_text(c, v, b);
   /* `s2 = +s1`: the same handle, or a fresh one when s1 is frozen */
   /* (--share-strings: through the route, which raises for a nil s) */
   else if (shared && vplus >= 0 && repr_share_rule(c) && emit_strbuf_route(c, v, b)) { }
@@ -4851,7 +4867,7 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   else if (is_empty_array && lv && ty_is_ptr_array(lv->type)) {
     /* `a = []` for a narrowed object / int-array array: an sp_PtrArray whose
        elements are GC-marked as ordinary heap objects. */
-    buf_puts(b, "sp_PtrArray_new()");
+    buf_puts(b, ptr_array_new_c(lv->type));
   }
   else if (lv && ty_is_ptr_array(lv->type) && emit_ptr_array_build(c, v, lv->type, b)) {
     /* built in place at the slot's own container type */
@@ -4879,6 +4895,16 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
     else {
       buf_printf(b, "sp_%sHash_new()", hcn);
     }
+  }
+  else if (lv && lv->type == TY_STRH_ARRAY && comp_ntype(c, v) == TY_STR_ARRAY) {
+    /* --share-strings: a String Array no other name holds (the gate keeps
+       every named one in one form) taken as an Array of handles, each
+       String as a handle of its own. Over a READ it would be a copy of
+       storage something else holds (conv_reads_shared_storage) */
+    if (conv_reads_shared_storage(c, v))
+      unsupported(c, v, "widening a typed array READ from an object into a poly slot "
+                        "(the conversion copies, so writes would not be shared)");
+    buf_puts(b, "sp_StrhArray_from_strs("); emit_expr(c, v, b); buf_puts(b, ")");
   }
   else if (lv && lv->type == TY_POLY_ARRAY && ty_is_array(comp_ntype(c, v)) && comp_ntype(c, v) != TY_POLY_ARRAY) {
     /* widen typed array literal to PolyArray for this slot */
@@ -13761,7 +13787,7 @@ int emit_empty_literal_as(Compiler *c, int v, TyKind slot, Buf *b) {
   if (sp_streq(vty, "ArrayNode")) {
     nt_arr(nt, v, "elements", &n);
     if (n) return 0;
-    if (ty_is_ptr_array(slot))   { buf_puts(b, "sp_PtrArray_new()");  return 1; }
+    if (ty_is_ptr_array(slot))   { buf_puts(b, ptr_array_new_c(slot));  return 1; }
     if (slot == TY_POLY_ARRAY)   { buf_puts(b, "sp_PolyArray_new()"); return 1; }
     if (array_kind(slot)) { buf_printf(b, "sp_%sArray_new()", array_kind(slot)); return 1; }
     return 0;
@@ -13784,7 +13810,7 @@ int emit_empty_literal_as(Compiler *c, int v, TyKind slot, Buf *b) {
       return 1;
     }
     if (rn && sp_streq(rn, "Array")) {
-      if (ty_is_ptr_array(slot))   { buf_puts(b, "sp_PtrArray_new()");  return 1; }
+      if (ty_is_ptr_array(slot))   { buf_puts(b, ptr_array_new_c(slot));  return 1; }
       if (slot == TY_POLY_ARRAY)   { buf_puts(b, "sp_PolyArray_new()"); return 1; }
       if (array_kind(slot)) { buf_printf(b, "sp_%sArray_new()", array_kind(slot)); return 1; }
     }
@@ -16951,7 +16977,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
       emit_expr(c, v, b);
       view_pop(c, vw);
     }
-    else if (ty_is_ptr_array(ivt) && v_empty_array) buf_puts(b, "sp_PtrArray_new()");
+    else if (ty_is_ptr_array(ivt) && v_empty_array) buf_puts(b, ptr_array_new_c(ivt));
     /* `@t = [[..], [..]]` into a narrowed pointer-array ivar: build the
        sp_PtrArray with the unboxed element pointers, as the local write does. */
     else if (ty_is_ptr_array(ivt) && vty && sp_streq(vty, "ArrayNode")) {

@@ -561,5 +561,15 @@ int std_stream_assigned(Compiler *c, const char *nm);   /* ... or is assigned at
 int std_stream_value_classes(Compiler *c, char *set);   /* classes the streams' stores hold; 0: unbounded */
 int std_stream_foreign_writer(Compiler *c, const char *nm);   /* an object output cannot write to */
 int std_stream_bare_call_own(Compiler *c, int id, const char *nm);   /* bare nm reaches the program's own */
+/* --share-strings (#8328 step 5): the operation (StrhOp, builtin_names.h)
+   call node `call` is on a String Array of handles, given the receiver's
+   type rt: STRH_NONE unless rt is TY_STRH_ARRAY, the call's index
+   arguments are Integers, no argument is a splat, a keyword Hash or a block
+   argument, and no method of the program's own stands in for Array's. */
+int strh_call_op(Compiler *c, int call, TyKind rt);
+/* ...and the same for the gate's rounds, where an argument whose type is
+   not settled yet counts as the type asked (the gate runs again, and
+   refuses for good, once it is) */
+int strh_call_op_in(Compiler *c, int call, TyKind rt, int unknown_ok);
 
 #endif
