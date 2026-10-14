@@ -5503,11 +5503,17 @@ static int seed_field_param(const Scope *s, const char *list, int i, char *buf, 
   }
 }
 
-/* The type `list` seeds parameter `slot` of `s` with, "" when no field does. */
+/* The type `list` seeds parameter `slot` of `s` with, "" when no field does.
+   The last field naming the slot wins, as it does in seed_method, which
+   applies the fields in order. */
 static const char *seed_type_of_param(const Scope *s, const char *list, int slot, char *buf, size_t n) {
   int nf = seed_nfields(list);
-  for (int i = 0; i < nf; i++)
-    if (seed_field_param(s, list, i, buf, n) == slot) return buf;
+  int found = -1;
+  for (int i = 0; i < nf; i++) {
+    char probe[256];
+    if (seed_field_param(s, list, i, probe, sizeof probe) == slot) found = i;
+  }
+  if (found >= 0) { seed_field_param(s, list, found, buf, n); return buf; }
   buf[0] = '\0';
   return buf;
 }
