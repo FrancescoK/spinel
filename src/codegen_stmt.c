@@ -17366,25 +17366,44 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
            while this declaration line is half-written spliced those
            statements into the initializer -- `@result += sum(0)` with a
            widened sum came out as a declaration inside a declaration (#4204) */
+        const char *pnum = sp_streq(op, "+") ? "sp_poly_add" : sp_streq(op, "-") ? "sp_poly_sub"
+                         : sp_streq(op, "*") ? "sp_poly_mul" : sp_streq(op, "/") ? "sp_poly_div"
+                         : sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "|") ? "sp_poly_bor"
+                         : sp_streq(op, "&") ? "sp_poly_band" : sp_streq(op, "^") ? "sp_poly_bxor"
+                         : sp_streq(op, "<<") ? "sp_poly_shl" : sp_streq(op, ">>") ? "sp_poly_shr"
+                         : sp_streq(op, "**") ? "sp_poly_pow_recv" : NULL;
         Buf irv; memset(&irv, 0, sizeof irv);
         /* the temp is declared with the OPERATOR's parameter type, so the
            call-site value has to be converted into it (a raw sp_int landed
-           in an sp_RbVal slot, #3733) */
-        if (paramt == TY_POLY && rhst != TY_POLY) emit_boxed(c, ival, &irv);
-        else if (paramt != TY_POLY && rhst == TY_POLY) {
+           in an sp_RbVal slot, #3733). A value of another kind than the
+           parameter's -- an Integer where the user `+` takes a String by its
+           signature -- is held boxed instead: converted once, the other arm
+           (sp_poly_add) was handed the converted value, which did not
+           compile for an Integer and raised TypeError for a box (#9131).
+           The user arm unboxes it to its parameter, the other takes the box. */
+        TyKind tmpt = paramt;
+        if (paramt != TY_POLY && rhst != paramt && pnum) tmpt = TY_POLY;
+        if (tmpt == TY_POLY && rhst != TY_POLY) emit_boxed(c, ival, &irv);
+        else if (tmpt != TY_POLY && rhst == TY_POLY) {
           Buf rvb; memset(&rvb, 0, sizeof rvb); emit_expr(c, ival, &rvb);
           emit_unbox_text(c, paramt, rvb.p ? rvb.p : "sp_box_nil()", &irv);
           free(rvb.p);
         }
         else emit_expr(c, ival, &irv);
         emit_indent(g_pre, g_indent);
-        emit_ctype(c, paramt, g_pre);
+        emit_ctype(c, tmpt, g_pre);
         buf_printf(g_pre, " _t%d = %s;\n", iatmp, irv.p ? irv.p : "");
         free(irv.p);
-        if (paramt == TY_POLY) {
+        if (tmpt == TY_POLY) {
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", iatmp);
         }
+        /* the user arm's argument: the temp, or its box unboxed to the parameter */
+        char uarg[96];
+        if (tmpt == paramt) snprintf(uarg, sizeof uarg, "_t%d", iatmp);
+        else { char itn[24]; snprintf(itn, sizeof itn, "_t%d", iatmp);
+               Buf ub; memset(&ub, 0, sizeof ub); emit_unbox_text(c, paramt, itn, &ub);
+               snprintf(uarg, sizeof uarg, "%s", ub.p ? ub.p : itn); free(ub.p); }
         /* The operator method can `return nil` (a NULL reference); box a
            reference-type result via sp_box_nullable_obj so NULL becomes nil, not
            a truthy wrapper. A value-type class is never NULL, and its operator
@@ -17404,12 +17423,6 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
         /* ...the bit and shift operators as well: with one user `|` in the
            program an Integer slot was read as that class's object and the
            program crashed (#5469) */
-        const char *pnum = sp_streq(op, "+") ? "sp_poly_add" : sp_streq(op, "-") ? "sp_poly_sub"
-                         : sp_streq(op, "*") ? "sp_poly_mul" : sp_streq(op, "/") ? "sp_poly_div"
-                         : sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "|") ? "sp_poly_bor"
-                         : sp_streq(op, "&") ? "sp_poly_band" : sp_streq(op, "^") ? "sp_poly_bxor"
-                         : sp_streq(op, "<<") ? "sp_poly_shl" : sp_streq(op, ">>") ? "sp_poly_shr"
-                         : sp_streq(op, "**") ? "sp_poly_pow_recv" : NULL;
         if (pnum) buf_printf(b, "%s = ((%s).tag == SP_TAG_OBJ && (%s).cls_id == %d) ? ",
                              ref, ref, ref, poly_defcls);
         else buf_printf(b, "%s = ", ref);
@@ -17423,10 +17436,10 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
            object of another class was stamped with this one's id. Only a
            return inference left unknown keeps the object box. */
         Buf opc; memset(&opc, 0, sizeof opc);
-        buf_printf(&opc, "sp_%s_%s(%s(sp_%s *)(%s).v.p, _t%d)",
+        buf_printf(&opc, "sp_%s_%s(%s(sp_%s *)(%s).v.p, %s)",
                    c->classes[poly_defcls].c_name, mc(pms->name),
                    pval ? "*" : "",
-                   c->classes[poly_defcls].c_name, ref, iatmp);
+                   c->classes[poly_defcls].c_name, ref, uarg);
         if (pms->ret != TY_UNKNOWN) emit_boxed_ret_call(c, pms, opc.p, b);
         else {
           buf_printf(b, "%s%s", pbox, opc.p);
@@ -17438,7 +17451,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
           /* the OTHER runtime kind folds the SAME evaluated value: re-emitting
              the RHS ran its side effects twice (#4204) */
           buf_printf(b, " : %s(%s, ", pnum, ref);
-          if (paramt == TY_POLY) buf_printf(b, "_t%d", iatmp);
+          if (tmpt == TY_POLY) buf_printf(b, "_t%d", iatmp);
           else { char itn[24]; snprintf(itn, sizeof itn, "_t%d", iatmp);
                  emit_boxed_text(c, paramt, itn, b); }
           buf_puts(b, ")");
