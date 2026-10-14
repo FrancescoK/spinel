@@ -19,3 +19,16 @@ class Pt < Data.define(:x)
   def x = super + 1
 end
 p Pt.new(x: 1).x, Pt.new(x: 1)
+
+# A Data member has a reader only: super from a writer of that name finds
+# none, and the member keeps its value.
+class Frozen < Data.define(:x)
+  def x=(v)
+    super
+  rescue NoMethodError => e
+    puts e.message
+  end
+end
+f = Frozen.new(x: 1)
+f.x = 5
+p f.x
