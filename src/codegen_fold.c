@@ -7379,7 +7379,7 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
     }
     if (provided >= 0 && !arg_ran_first(provided, 0)) {
       const char *aty = nt_type(c->nt, provided);
-      char gref[256];
+      Buf gref; memset(&gref, 0, sizeof gref);
       if (aty && sp_streq(aty, "LocalVariableReadNode")) {
         const char *vn = nt_str(c->nt, provided, "name");
         if (emit_lent_local(vn ? scope_local(comp_scope_of(c, provided), vn) : NULL, vn, out))
@@ -7414,26 +7414,29 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
            read emitter's civ_ slot), a root every collection marks: its
            address is lent as an instance's slot is, with no owner to pin.
            Lent a temp, the callee's appends stayed in the copy. */
-        if (comp_ntype(c, provided) == TY_STRING && ivar_global_slot(c, provided, gref, sizeof gref)) {
-          refuse_lent_global_rebound(c, provided, gref, m->name, m->pnames[idx]);
-          buf_printf(out, "&%s", gref);
+        if (comp_ntype(c, provided) == TY_STRING && ivar_global_slot(c, provided, &gref)) {
+          refuse_lent_global_rebound(c, provided, gref.p, m->name, m->pnames[idx]);
+          buf_printf(out, "&%s", gref.p);
+          free(gref.p);
           return;
         }
       }
       /* a global variable's C global likewise, when the read is the plain
          gv_ slot (not a special global's runtime accessor) */
       if (aty && sp_streq(aty, "GlobalVariableReadNode") && comp_ntype(c, provided) == TY_STRING &&
-          gvar_global_slot(c, provided, gref, sizeof gref)) {
-        refuse_lent_global_rebound(c, provided, gref, m->name, m->pnames[idx]);
-        buf_printf(out, "&%s", gref);
+          gvar_global_slot(c, provided, &gref)) {
+        refuse_lent_global_rebound(c, provided, gref.p, m->name, m->pnames[idx]);
+        buf_printf(out, "&%s", gref.p);
+        free(gref.p);
         return;
       }
       /* a class variable's C global likewise: lent a temp, the callee's
          appends stayed in the copy */
       if (aty && sp_streq(aty, "ClassVariableReadNode") && comp_ntype(c, provided) == TY_STRING &&
-          cvar_global_slot(c, provided, gref, sizeof gref)) {
-        refuse_lent_global_rebound(c, provided, gref, m->name, m->pnames[idx]);
-        buf_printf(out, "&%s", gref);
+          cvar_global_slot(c, provided, &gref)) {
+        refuse_lent_global_rebound(c, provided, gref.p, m->name, m->pnames[idx]);
+        buf_printf(out, "&%s", gref.p);
+        free(gref.p);
         return;
       }
     }

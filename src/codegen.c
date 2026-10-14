@@ -6264,14 +6264,20 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
      on that proc rather than an inline splice (#3399). */
   const char *sv_ypr9 = g_yield_proc_ref;
   TyKind sv_yst9 = g_yield_slot_ty;
-  char ypr9[64];
+  /* (the parameter's C name is as long as its Ruby name: a fixed buffer cut
+     it, into a name nothing declares) */
+  Buf ypr9; memset(&ypr9, 0, sizeof ypr9);
   if (s->is_proc_form && s->blk_param) {
-    snprintf(ypr9, sizeof ypr9, "lv_%s", s->blk_param);
-    g_yield_proc_ref = ypr9;
+    buf_printf(&ypr9, "lv_%s", s->blk_param);
+    g_yield_proc_ref = ypr9.p;
     g_yield_slot_ty = TY_POLY;
   }
 
-  if (s->cs_synth) { emit_compiler_state_method(c, s, b); return; }
+  if (s->cs_synth) {
+    emit_compiler_state_method(c, s, b);
+    g_yield_proc_ref = sv_ypr9; g_yield_slot_ty = sv_yst9; free(ypr9.p);
+    return;
+  }
   /* a `def recv.m` on a receiver that is not one traced object: refused at
      the def statement (sg_refused_def), which is where the program would
      define it; its body, which has no singleton to belong to, is a stub, as
@@ -6295,6 +6301,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
       else buf_puts(b, default_value_from_compiler(c, s->ret));
       buf_puts(b, ";\n}\n");
     }
+    g_yield_proc_ref = sv_ypr9; g_yield_slot_ty = sv_yst9; free(ypr9.p);
     return;
   }
   inherit_transplant_locals(c, s);
@@ -6531,7 +6538,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   g_ret_seeded = saved_rseed;
   g_lowered_blk_name = saved_lbn;
   g_brk_ser_var = saved_bser; g_brk_skip_id = saved_bskip;
-  g_yield_proc_ref = sv_ypr9; g_yield_slot_ty = sv_yst9;
+  g_yield_proc_ref = sv_ypr9; g_yield_slot_ty = sv_yst9; free(ypr9.p);
   buf_puts(b, "}\n");
   if (g_share_check) share_check_harvest(c, b, gc_save_off);
   if (!g_no_root_elision) gc_roots_take_back(c, s, b, gc_save_off);

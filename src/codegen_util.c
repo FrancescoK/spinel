@@ -2832,48 +2832,43 @@ const char *ivar_write_mark(Compiler *c, int w, char *buf, size_t cap) {
 }
 /* The C global ivar read `node` lives in, by the read emitter's storage
    rule: a class method's ivar is the class's civ_ slot, a top-level one
-   (outside an instance_eval) the Toplevel's. Fills `out` and answers 1;
+   (outside an instance_eval) the Toplevel's. Appends it to `out` and answers 1;
    0 for an instance's field. */
-int ivar_global_slot(Compiler *c, int node, char *out, size_t cap) {
+int ivar_global_slot(Compiler *c, int node, Buf *out) {
   const char *nm = nt_str(c->nt, node, "name");
   Scope *cs = comp_scope_of(c, node);
   if (!nm || !cs || g_ie_nil_ivars) return 0;
   if (g_sb_iv_name && sp_streq(nm, g_sb_iv_name)) return 0;
   if (cs->is_cmethod && cs->class_id >= 0)
-    snprintf(out, cap, "civ_%s_%s", c->classes[cs->class_id].name, iv_c(nm + 1));
+    buf_printf(out, "civ_%s_%s", c->classes[cs->class_id].name, iv_c(nm + 1));
   else if (cs->class_id < 0 && g_ie_class_id < 0 && comp_class_index(c, "Toplevel") >= 0)
-    snprintf(out, cap, "civ_Toplevel_%s", iv_c(nm + 1));
+    buf_printf(out, "civ_Toplevel_%s", iv_c(nm + 1));
   else return 0;
   return 1;
 }
 /* The C global global-variable read `node` reads, when it is the plain
    gv_ slot rather than a special global's runtime accessor (`$0`, `$~`,
    `$stdout`, ...): the read emitter decides, so its own text is asked. */
-int gvar_global_slot(Compiler *c, int node, char *out, size_t cap) {
+int gvar_global_slot(Compiler *c, int node, Buf *out) {
   const char *gn = nt_str(c->nt, node, "name");
   const char *grn = gn && gn[0] == '$' ? comp_resolve_gvar(c, gn + 1) : NULL;
   if (!grn || !comp_gvar(c, grn)) return 0;
   Buf gb; memset(&gb, 0, sizeof gb);
   emit_expr(c, node, &gb);
-  int plain = gb.p && !strncmp(gb.p, "gv_", 3) && sp_streq(gb.p + 3, grn) &&
-              strlen(gb.p) < cap;
-  if (plain) snprintf(out, cap, "%s", gb.p);
+  int plain = gb.p && !strncmp(gb.p, "gv_", 3) && sp_streq(gb.p + 3, grn);
+  if (plain) buf_puts(out, gb.p);
   free(gb.p);
   return plain;
 }
 /* The C global a class variable read or write `node` names
    (cvar_<owner>_<name>), by the read emitter's rule: the method's class, or
    the class body the node is in, or the Toplevel, then the ancestor that
-   owns the class variable. Fills `out` and answers 1, or 0. */
-int cvar_global_slot(Compiler *c, int node, char *out, size_t cap) {
+   owns the class variable. Appends it to `out` and answers 1, or 0. */
+int cvar_global_slot(Compiler *c, int node, Buf *out) {
   const char *nm = nt_str(c->nt, node, "name");
   HolderRef h;
   if (!nm || nm[0] != '@' || nm[1] != '@' || !holder_of_node(c, node, &h) || h.kind != HK_CVAR) return 0;
-  Buf t; memset(&t, 0, sizeof t);
-  int ok = holder_slot_buf(c, &h, &t);
-  if (ok) snprintf(out, cap, "%s", t.p ? t.p : "");
-  free(t.p);
-  return ok;
+  return holder_slot_buf(c, &h, out);
 }
 /* The innermost block or lambda `node` is written in, within its method;
    -1 at the method's own level. */
@@ -2936,25 +2931,28 @@ int lent_global_slot_rebound(Compiler *c, int arg, const char *slot) {
   const NodeKind *ks = is_g ? gk : is_c ? ck : ik;
   Scope *as = comp_scope_of(c, arg);
   int ab = lent_enclosing_closure(c, arg);
+  Buf ws; memset(&ws, 0, sizeof ws);
   for (int k = 0; k < 5; k++)
     for (int w = comp_kind_first(c, ks[k]); w >= 0; w = comp_kind_next(c, w)) {
       if (nt_kind(nt, w) != ks[k]) continue;
-      char ws[256];
+      ws.len = 0;
+      if (ws.p) ws.p[0] = '\0';
       if (is_g) {
         const char *gn = nt_str(nt, w, "name");
         const char *grn = gn && gn[0] == '$' ? comp_resolve_gvar(c, gn + 1) : NULL;
         if (!grn) continue;
-        snprintf(ws, sizeof ws, "gv_%s", grn);
+        buf_printf(&ws, "gv_%s", grn);
       }
-      else if (is_c ? !cvar_global_slot(c, w, ws, sizeof ws) : !ivar_global_slot(c, w, ws, sizeof ws)) continue;
-      if (!sp_streq(ws, slot)) continue;
+      else if (is_c ? !cvar_global_slot(c, w, &ws) : !ivar_global_slot(c, w, &ws)) continue;
+      if (!ws.p || !sp_streq(ws.p, slot)) continue;
       /* the program's top level, outside any block or lambda, runs once and
          is never reentered, so it is never running during a call */
       Scope *ws2 = comp_scope_of(c, w);
       int wb = lent_enclosing_closure(c, w);
       if (wb < 0 && ws2 && !ws2->name && ws2->def_node < 0) continue;
-      if (ws2 != as || wb != ab) return w;
+      if (ws2 != as || wb != ab) { free(ws.p); return w; }
     }
+  free(ws.p);
   return -1;
 }
 /* Refuse lending `slot` at `arg` when lent_global_slot_rebound finds a
