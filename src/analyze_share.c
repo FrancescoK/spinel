@@ -5432,8 +5432,10 @@ static int sh_poly_to_s_self(const Compiler *c, int u) {
   return dflt && p->ret == TY_POLY;
 }
 /* share.h: does node n hand over the shared handle (or a box holding it),
-   not a copy of its bytes? */
-int share_node_carries_handle(const Compiler *c, int n) {
+   not a copy of its bytes? With by_repr 0, a value represented as the
+   handle (repr_of's RK_STRBUF, or any strbuf_src) is not taken as one by
+   that alone: share_node_carries_route. */
+static int sh_carries(const Compiler *c, int n, int by_repr) {
   /* The return route takes the handle its callee publishes, including
      when a borrowed parameter is returned beside a method-owned String. */
   if (repr_call_returns_handle((Compiler *)c, n)) return 1;
@@ -5513,13 +5515,15 @@ int share_node_carries_handle(const Compiler *c, int n) {
   }
   /* a bang method on a handle local: a write hands over the local's handle
      (emit_strbuf_value) */
-  return r.kind == RK_STRBUF || r.strbuf_src != RS_NONE || sh_bang_self_slot(c, n) ||
+  return (by_repr && (r.kind == RK_STRBUF || r.strbuf_src != RS_NONE)) || sh_bang_self_slot(c, n) ||
          /* a boxed variable's read lifted into the handle (poly_strbuf_lift) */
          r.poly_lift ||
          /* A yielding call's result and a receiver-returning expression
             use the same handle routes as their eventual store. */
          strbuf_value_carries((Compiler *)c, n);
 }
+int share_node_carries_handle(const Compiler *c, int n) { return sh_carries(c, n, 1); }
+int share_node_carries_route(const Compiler *c, int n) { return sh_carries(c, n, 0); }
 
 /* The class of node n's value (with elems, of its elements), or -1. */
 static int sh_node_root(const ShareFacts *F, int n, int elems) {

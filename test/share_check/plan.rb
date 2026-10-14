@@ -3,9 +3,9 @@
 # has no conversion that keeps the object (refuse), and the report counts
 # where the C does the same. The appends in Page#tag are emitted under the
 # views the append chain opens over its links, so their plan is computed
-# live, and it refuses them while the C keeps the handle: a disagreement.
-# The block given to at_exit boxes the bytes of a String another name
-# changes: the plan refuses it, and the C copies it.
+# live: each answers its receiver, whose handle the plan hands on, as the
+# C does. The block given to at_exit boxes the bytes of a String another
+# name changes: the plan refuses it, and the C copies it.
 class Page
   attr_reader :out
   def initialize = @out = +""
