@@ -38,7 +38,7 @@ static int trait_has_box_text(TyKind t) {
   case TY_SYMBOL: case TY_RANGE: case TY_FLOAT_RANGE: case TY_STR_RANGE: case TY_TMS:
   case TY_TIME: case TY_COMPLEX: case TY_RATIONAL: case TY_CLASS: case TY_INT_ARRAY:
   case TY_FLOAT_ARRAY: case TY_STR_ARRAY: case TY_POLY_ARRAY: case TY_OPENSTRUCT:
-  case TY_INT_ARRAY_ARRAY: case TY_FLOAT_ARRAY_ARRAY:
+  case TY_INT_ARRAY_ARRAY: case TY_FLOAT_ARRAY_ARRAY: case TY_STRH_ARRAY:
     return 1;
   default:
     return 0;
