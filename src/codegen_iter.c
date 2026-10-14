@@ -6814,7 +6814,9 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
         if (recv_poly) snprintf(src, sizeof src, "sp_poly_arr_get(%s, _t%d)", rb.p ? rb.p : "sp_box_nil()", t);
         else snprintf(src, sizeof src, "sp_%sArray_get(%s, _t%d)", k, rb.p ? rb.p : "NULL", t);
         emit_indent(b, indent + 1); buf_printf(b, "lv_%s = ", p0);
-        emit_zip_block_param(c, zlv0->type, et, src, b);
+        if (!recv_poly && oint_kind(et) && slot_is_oint(zlv0))
+          buf_printf(b, "sp_%sArray_oget(%s, _t%d)", k, rb.p ? rb.p : "NULL", t);
+        else emit_zip_block_param(c, zlv0->type, et, src, b);
         buf_puts(b, ";\n");
       }
       if (p1n && zlv1 && ob.p) {

@@ -36097,6 +36097,22 @@ static void mark_nullable_int_locals(Compiler *c) {
         plv->nullable_int = 1; changed = 1;
       }
     }
+    /* `a.zip(b) { |x, y| }`: x is an element of a, y one of b */
+    NT_FOREACH_KIND(nt, NK_CallNode, id) {
+      const char *znm = nt_str(nt, id, "name");
+      int blk = nt_ref(nt, id, "block"), recv = nt_ref(nt, id, "receiver");
+      if (!znm || !sp_streq(znm, "zip") || blk < 0 || recv < 0) continue;
+      int za = nt_ref(nt, id, "arguments"), zn = 0;
+      const int *zv = za >= 0 ? nt_arr(nt, za, "arguments", &zn) : NULL;
+      Scope *bsc = comp_scope_of(c, blk);
+      for (int pk = 0; pk <= zn; pk++) {
+        const char *pnm = block_param_name(c, blk, pk);
+        LocalVar *plv = pnm && bsc ? scope_local(bsc, pnm) : NULL;
+        if (!plv || (plv->type != TY_INT && plv->type != TY_FLOAT) || plv->nullable_int ||
+            !nullable_int_elem_expr(c, pk ? zv[pk - 1] : recv, 0)) continue;
+        plv->nullable_int = 1; changed = 1;
+      }
+    }
     /* a nil value stored into a typed Integer-valued Hash, and the walks that
        bind it (D3b-ii) */
     if (mark_hash_nil_values(c)) changed = 1;
