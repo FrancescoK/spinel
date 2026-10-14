@@ -22026,6 +22026,22 @@ static char *iow_guarded_rhs(Compiler *c, int v, int mode, Buf *b, int *open) {
   if (*open) buf_puts(b, "{ ");
   return iow_rhs(c, v, mode, *open ? b : NULL);
 }
+/* The same for a Hash slot's value, converted as `h[k] = v` stores it
+   (emit_hash_store_val): a boxed one unboxed to the Hash's value
+   representation, an Integer one that can be nil as an oint the `_oset`
+   keeps the nil of (`*oset` set) */
+static char *iow_guarded_hash_rhs(Compiler *c, int v, TyKind rt, Buf *b, int *open, int *oset) {
+  *oset = hash_store_oset(c, v, rt);
+  if (!*oset && repr_of(c, v).kind != RK_BOXED) return iow_guarded_rhs(c, v, IOW_RHS_EXPR, b, open);
+  *open = g_pre && subtree_has_side_effect(c, v);
+  if (*open) buf_puts(b, "{ ");
+  Buf rb; memset(&rb, 0, sizeof rb);
+  Buf *sv = g_pre;
+  if (*open) g_pre = b;
+  emit_hash_store_val(c, v, rt, &rb);
+  g_pre = sv;
+  return rb.p ? rb.p : strdup("");
+}
 static void iow_guard_close(char *rhs, int open, Buf *b) {
   if (open) buf_puts(b, "; }");
   free(rhs);
@@ -22488,9 +22504,9 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
       else buf_printf(b, "%s _t%d = sp_%sHash_get%s(_t%d, %s); if (", c_type_name(vt), tc, hn, rs, ta, rk);
       emit_slot_nil_test(c, vt, tc, is_or, b);
       buf_puts(b, ") ");
-      int open = 0;
-      char *rhs = iow_guarded_rhs(c, v, IOW_RHS_EXPR, b, &open);
-      buf_printf(b, "sp_%sHash_set(_t%d, %s, %s)", hn, ta, sk, rhs);
+      int open = 0, oset = 0;
+      char *rhs = iow_guarded_hash_rhs(c, v, rt, b, &open, &oset);
+      buf_printf(b, "sp_%sHash_%s(_t%d, %s, %s)", hn, oset ? "oset" : "set", ta, sk, rhs);
       iow_guard_close(rhs, open, b);
     }
     buf_puts(b, "; }\n");

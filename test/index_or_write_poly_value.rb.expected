@@ -1,0 +1,6 @@
+{"a" => "b", "TERM" => "xterm-256color"}
+{"a" => "xterm-256color", "TERM" => "xterm-256color"}
+{"x" => 3, "y" => 3}
+{"x" => 0.5, "y" => 1.5}
+{"x" => 1, "z" => nil}
+{"x" => 1, "z" => 5}
