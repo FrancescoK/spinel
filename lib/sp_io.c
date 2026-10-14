@@ -205,6 +205,7 @@ size_t sp_io_stdio_buffered(FILE *fp) {
    and re-tests the closed flag. */
 #define SP_IO_CLOSING 0x80000000u
 #define SP_IO_RETIRED 0x40000000u   /* with CLOSING: the FILE is released */
+#define SP_IO_REOPENING 0x20000000u /* with both: a #reopen is giving it a new one */
 /* The stream, with a use taken; NULL when a close has begun. */
 static FILE *sp_io_try_use(sp_File *f) {
   unsigned int u = SP_ATOMIC_LOAD(&f->uses, __ATOMIC_RELAXED);
@@ -2039,17 +2040,28 @@ sp_File *sp_File_reopen(sp_File *f, const char *path, const char *mode) {SP_GC_R
   }
   /* a closed handle carries the shared sentinel, which must not be
      reopened: it gets a fresh stream, once no thread is still inside a
-     read of the old one (sp_io_use), whose release would close the new */
+     read of the old one (sp_io_use), whose release would close the new.
+     The handle stays reserved until the new stream is in place, so no use
+     is taken of the sentinel meanwhile and no second #reopen starts, and
+     goes back to closed if the open fails: it was left with neither, and
+     every later #reopen of it raised */
+  int reserved = 0;
   if (f->closed) {
     unsigned int u = SP_IO_CLOSING | SP_IO_RETIRED;
-    if (!SP_ATOMIC_CAS(&f->uses, &u, 0, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
+    if (!SP_ATOMIC_CAS(&f->uses, &u, SP_IO_CLOSING | SP_IO_RETIRED | SP_IO_REOPENING, 0,
+                       __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
       sp_raise_cls("IOError", "stream closed in another thread");
+    reserved = 1;
   }
   FILE *nf = (f->closed || !f->fp) ? fopen(path ? path : "", om)
                                    : freopen(path ? path : "", om, f->fp);
-  if (!nf) sp_file_raise_errno("reopen", path ? path : "");
+  if (!nf) {
+    if (reserved) SP_ATOMIC_STORE(&f->uses, SP_IO_CLOSING | SP_IO_RETIRED, __ATOMIC_RELEASE);
+    sp_file_raise_errno("reopen", path ? path : "");
+  }
   SP_ATOMIC_STORE(&f->fp, nf, __ATOMIC_RELAXED);
   SP_ATOMIC_STORE(&f->closed, 0, __ATOMIC_RELAXED);
+  if (reserved) SP_ATOMIC_STORE(&f->uses, 0, __ATOMIC_RELEASE);
   f->path = path;
   /* a mode given replaces the handle's, as CRuby's does: an earlier
      #binmode or #set_encoding no longer decides what a read answers */
