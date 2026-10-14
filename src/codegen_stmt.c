@@ -10595,11 +10595,17 @@ static int subtree_changes_local(Compiler *c, int root, const char *name) {
    ivar, or a field read of a local, where the loop assigns neither the local
    nor the ivar. */
 enum { HC_INT, HC_FLOAT, HC_STR };
-typedef struct { char recv[200]; int kind; int nf; char guard[128]; } HcEntry;   /* nf: hc_array_nilfree asked;
+/* recv: the array's text, on the heap (a field read of a long-named local
+   is as long as its names: no length decides whether a loop is cached) */
+typedef struct { char *recv; int kind; int nf; Buf guard; } HcEntry;   /* nf: hc_array_nilfree asked;
                                                        guard: Float locals whose nil zeroes _hcn */
 typedef struct { int id; int n; HcEntry e[16]; NameSet wl, wi; char mark[32];
-                 char bi[64], ba[64]; } HcRegion;  /* bi/ba: see hc_bounded_index */
+                 const char *bi, *ba; } HcRegion;  /* bi/ba: see hc_bounded_index */
 static HcRegion *g_hc = NULL;
+static void hc_region_free(HcRegion *r) {
+  for (int i = 0; i < r->n; i++) { free(r->e[i].recv); free(r->e[i].guard.p); }
+  free(r->wl.v); free(r->wi.v);
+}
 /* the loops' own numbering: drawn from g_tmp, it would renumber every temp
    after a loop that qualifies and then caches nothing */
 static int g_hc_seq = 0;
@@ -10919,7 +10925,7 @@ static int hc_node_ok(Compiler *c, int id, int stmt, HcRegion *r) {
    before the loop as inside it: no temps, nothing the loop assigns. It is
    also read before the loop, where the loop's own read may never be reached,
    so a field read tests its object for nil first. */
-static int hc_recv_text(Compiler *c, int recv, int kind, char *out, size_t cap) {
+static int hc_recv_text(Compiler *c, int recv, int kind, Buf *out) {
   const NodeTable *nt = c->nt;
   Buf tb; memset(&tb, 0, sizeof tb);
   int ok = 0;
@@ -10968,8 +10974,8 @@ static int hc_recv_text(Compiler *c, int recv, int kind, char *out, size_t cap) 
   /* a temp is declared where the loop's own text runs, not ahead of it */
   for (const char *q = strstr(t, "_t"); ok && q; q = strstr(q + 2, "_t"))
     if (q[2] >= '0' && q[2] <= '9') ok = 0;
-  if (ok && (strstr(t, "({") || strlen(t) + 1 > cap)) ok = 0;
-  if (ok) snprintf(out, cap, "%s", t);
+  if (ok && strstr(t, "({")) ok = 0;
+  if (ok) buf_puts(out, t);
   free(tb.p);
   g_tmp = sv_tmp;
   return ok;
@@ -10977,15 +10983,15 @@ static int hc_recv_text(Compiler *c, int recv, int kind, char *out, size_t cap) 
 
 static int hc_entry(Compiler *c, int recv, int kind) {
   if (!g_hc || recv < 0) return -1;
-  char t[200];
-  if (!hc_recv_text(c, recv, kind, t, sizeof t)) return -1;
+  Buf t; memset(&t, 0, sizeof t);
+  if (!hc_recv_text(c, recv, kind, &t)) { free(t.p); return -1; }
   for (int i = 0; i < g_hc->n; i++)
-    if (g_hc->e[i].kind == kind && sp_streq(g_hc->e[i].recv, t)) return i;
-  if (g_hc->n >= (int)(sizeof g_hc->e / sizeof g_hc->e[0])) return -1;
-  snprintf(g_hc->e[g_hc->n].recv, sizeof g_hc->e[0].recv, "%s", t);
-  g_hc->e[g_hc->n].kind = kind;
-  g_hc->e[g_hc->n].nf = 0;
-  g_hc->e[g_hc->n].guard[0] = 0;
+    if (g_hc->e[i].kind == kind && sp_streq(g_hc->e[i].recv, t.p)) { free(t.p); return i; }
+  if (g_hc->n >= (int)(sizeof g_hc->e / sizeof g_hc->e[0])) { free(t.p); return -1; }
+  HcEntry *he = &g_hc->e[g_hc->n];
+  memset(he, 0, sizeof *he);
+  he->recv = t.p;
+  he->kind = kind;
   return g_hc->n++;
 }
 
@@ -11015,7 +11021,7 @@ void hc_read_len(const char *hd, char *out, size_t cap) {
    for none. Answers 2 when it took the guard, 1 without, 0 when not
    cached. */
 int hc_array_nilfree(Compiler *c, int recv, int guard, char *d, char *n, size_t cap) {
-  char gt[64] = "";
+  Buf gt; memset(&gt, 0, sizeof gt);
   const char *gn = guard >= 0 && g_hc && nt_kind(c->nt, guard) == NK_LocalVariableReadNode &&
                    comp_ntype(c, guard) == TY_FLOAT ? nt_str(c->nt, guard, "name") : NULL;
   if (gn && !nameset_has(&g_hc->wl, gn)) {
@@ -11023,27 +11029,27 @@ int hc_array_nilfree(Compiler *c, int recv, int guard, char *d, char *n, size_t 
     int sv_tmp = g_tmp;
     emit_expr(c, guard, &gb);
     g_tmp = sv_tmp;
-    int ok = gb.p && strlen(gb.p) < sizeof gt && !strstr(gb.p, "({");
+    int ok = gb.p && !strstr(gb.p, "({");
     for (const char *q = gb.p ? strstr(gb.p, "_t") : NULL; ok && q; q = strstr(q + 2, "_t"))
       if (q[2] >= '0' && q[2] <= '9') ok = 0;
-    if (ok) snprintf(gt, sizeof gt, "%s", gb.p);
+    if (ok) buf_puts(&gt, gb.p);
     free(gb.p);
   }
   int e = hc_entry(c, recv, HC_FLOAT);
-  if (e < 0) return 0;
+  if (e < 0) { free(gt.p); return 0; }
   g_hc->e[e].nf = 1;
   snprintf(d, cap, "_hcd%d_%d", g_hc->id, e);
   snprintf(n, cap, "_hcn%d_%d", g_hc->id, e);
-  if (!gt[0]) return 1;
-  char cond[160];
   /* the local holds its nil beside the value (an oint slot) or never */
-  { Scope *gsc = comp_scope_of(c, guard); LocalVar *glv = gsc ? scope_local(gsc, gn) : NULL;
-    if (!glv || !slot_is_oint(glv)) return 1; }
-  snprintf(cond, sizeof cond, " && !%s.nil", gt);
-  char *gd = g_hc->e[e].guard;
-  if (strstr(gd, cond)) return 2;
-  if (strlen(gd) + strlen(cond) >= sizeof g_hc->e[0].guard) return 1;
-  strcat(gd, cond);
+  Scope *gsc = gt.p ? comp_scope_of(c, guard) : NULL;
+  LocalVar *glv = gsc ? scope_local(gsc, gn) : NULL;
+  if (!glv || !slot_is_oint(glv)) { free(gt.p); return 1; }
+  Buf cond; memset(&cond, 0, sizeof cond);
+  buf_printf(&cond, " && !%s.nil", gt.p);
+  free(gt.p);
+  Buf *gd = &g_hc->e[e].guard;
+  if (!gd->p || !strstr(gd->p, cond.p)) buf_puts(gd, cond.p);
+  free(cond.p);
   return 2;
 }
 
@@ -11061,9 +11067,11 @@ const char *hc_mark(void) { return g_hc ? g_hc->mark : ""; }
    code, the loop assigns nothing it reads, and the loop itself runs none
    (hc_node_ok), so every read of it in one pass answers the same value. */
 int hc_recv_cached(Compiler *c, int recv) {
-  char t[200];
-  return g_hc && recv >= 0 &&
-         hc_recv_text(c, recv, comp_ntype(c, recv) == TY_STRING ? HC_STR : HC_INT, t, sizeof t);
+  if (!g_hc || recv < 0) return 0;
+  Buf t; memset(&t, 0, sizeof t);
+  int ok = hc_recv_text(c, recv, comp_ntype(c, recv) == TY_STRING ? HC_STR : HC_INT, &t);
+  free(t.p);
+  return ok;
 }
 
 /* The statement emit_stmts is emitting and the one before it in the same list,
@@ -11166,8 +11174,8 @@ static void hc_bounded_index(Compiler *c, int prev, int pred, int body, HcRegion
   for (int k = 0; k < bn - 1; k++) if (subtree_changes_local(c, bs[k], in)) return;
   if (subtree_changes_local(c, pred, in)) return;
   if ((g_uses_threads || g_uses_finalizers) && hc_subtree_loops(nt, body)) return;
-  snprintf(r->bi, sizeof r->bi, "%s", in);
-  snprintf(r->ba, sizeof r->ba, "%s", an);
+  r->bi = in;
+  r->ba = an;
 }
 
 int g_loop_polls_in_cond = 0;
@@ -11193,7 +11201,7 @@ static int hc_bounded_cond(Compiler *c, int pred, Buf *out) {
 /* Is `recv[idx]` the read hc_bounded_index proved in range for this loop? */
 int hc_index_in_range(Compiler *c, int recv, int idx) {
   const NodeTable *nt = c->nt;
-  if (!g_hc || !g_hc->bi[0] || recv < 0 || idx < 0) return 0;
+  if (!g_hc || !g_hc->bi || recv < 0 || idx < 0) return 0;
   return nt_kind(nt, recv) == NK_LocalVariableReadNode && nt_kind(nt, idx) == NK_LocalVariableReadNode &&
          nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), g_hc->ba) &&
          nt_str(nt, idx, "name") && sp_streq(nt_str(nt, idx, "name"), g_hc->bi);
@@ -11232,7 +11240,7 @@ static void hc_close(HcRegion *r, const char *loop, Buf *b, int indent) {
                    r->e[i].kind == HC_INT ? " + _a->start" : "", r->id, i, r->id, i, r->id, i,
                    r->e[i].kind == HC_INT ? "INT" : "FLOAT");
         if (r->e[i].nf)
-          buf_printf(b, "_hcn%d_%d = _a%s ? SP_%s_NILFREE_LEN(_a) : 0; ", r->id, i, r->e[i].guard,
+          buf_printf(b, "_hcn%d_%d = _a%s ? SP_%s_NILFREE_LEN(_a) : 0; ", r->id, i, r->e[i].guard.p ? r->e[i].guard.p : "",
                      r->e[i].kind == HC_INT ? "INT" : "FLOAT");
         buf_puts(b, "} ");
       }
@@ -11325,13 +11333,12 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
      (hc_bounded_index), in the region's slot, which an enclosing loop holding
      it cannot have proved; the slot is put back after it. */
   HcRegion *pr = use_hc ? &hcr : sv_hc;
-  char sv_bi[sizeof hcr.bi], sv_ba[sizeof hcr.ba];
+  const char *sv_bi = pr ? pr->bi : NULL, *sv_ba = pr ? pr->ba : NULL;
   if (pr) {
-    memcpy(sv_bi, pr->bi, sizeof sv_bi); memcpy(sv_ba, pr->ba, sizeof sv_ba);
-    pr->bi[0] = pr->ba[0] = 0;
+    pr->bi = pr->ba = NULL;
     if (!is_until) hc_bounded_index(c, prev_stmt, pred, body, pr);
   }
-  int proved = pr && pr->bi[0];
+  int proved = pr && pr->bi;
   /* Capture the predicate and any expression preludes it needs (method-call
      temps etc.) into local buffers. A loop condition like
      `advance while ident_continue_byte?(byte)` evaluates a method call
@@ -11351,7 +11358,7 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   /* a proved loop polls ahead of its test (hc_bounded_index); a condition with
      a prelude has no single test to put them ahead of, so it keeps its checks */
   int polls_in_cond = proved && !(cpre.p && cpre.p[0]) && (g_uses_threads || g_uses_finalizers);
-  if (proved && cpre.p && cpre.p[0]) { pr->bi[0] = 0; proved = 0; }
+  if (proved && cpre.p && cpre.p[0]) { pr->bi = NULL; proved = 0; }
   if (proved) {
     Buf hcc; memset(&hcc, 0, sizeof hcc);
     if (hc_bounded_cond(c, pred, &hcc)) { free(ccond.p); ccond = hcc; }
@@ -11389,13 +11396,13 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
     buf_puts(b, "}\n");
   }
   free(cpre.p); free(ccond.p);
-  if (pr) { memcpy(pr->bi, sv_bi, sizeof sv_bi); memcpy(pr->ba, sv_ba, sizeof sv_ba); }
+  if (pr) { pr->bi = sv_bi; pr->ba = sv_ba; }
   if (use_hc) {
     g_hc = sv_hc; b = hob;
     hc_close(&hcr, hlb.p ? hlb.p : "", b, indent);
     free(hlb.p);
   }
-  free(hcr.wl.v); free(hcr.wi.v);
+  hc_region_free(&hcr);
   g_hoist_len_var = sv_hvar; g_hoist_len_recv = sv_hrecv;
 }
 
@@ -11409,7 +11416,7 @@ void *hc_iter_begin(Compiler *c, int id, Buf **bp) {
   if (g_hc || !hc_block_loop(c, id)) return NULL;
   HcIter *h = calloc(1, sizeof *h);
   if (!h) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  if (!hc_block_loop_ok(c, id, &h->r)) { free(h->r.wl.v); free(h->r.wi.v); free(h); return NULL; }
+  if (!hc_block_loop_ok(c, id, &h->r)) { hc_region_free(&h->r); free(h); return NULL; }
   h->r.id = ++g_hc_seq;
   snprintf(h->r.mark, sizeof h->r.mark, "/*@HCR%d@*/", h->r.id);
   h->out = *bp;
@@ -11423,7 +11430,7 @@ void hc_iter_end(void *hv, Buf **bp, int indent, int keep) {
   HcIter *h = hv;
   g_hc = NULL; *bp = h->out;
   if (keep) hc_close(&h->r, h->buf.p ? h->buf.p : "", *bp, indent);
-  free(h->buf.p); free(h->r.wl.v); free(h->r.wi.v); free(h);
+  free(h->buf.p); hc_region_free(&h->r); free(h);
 }
 
 static void emit_for_poly_lefts(Compiler *c, int idx, int tv, int indent, Buf *b) {

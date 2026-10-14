@@ -2550,8 +2550,6 @@ static int arysub_bind(Compiler *c, int n, TyKind k) {
   NodeKind nk = nt_kind(c->nt, n);
   Buf rb; memset(&rb, 0, sizeof rb);
   emit_expr(c, n, &rb);
-  char cast[96];
-  snprintf(cast, sizeof cast, "((%s *)(%s))", at, rb.p ? rb.p : "NULL");
   /* a String subclass instance's String: boxed as its handle, or a copy of
      its bytes (comp_arysub_call) */
   if (comp_ary_is_str(c, cid)) {
@@ -2568,15 +2566,22 @@ static int arysub_bind(Compiler *c, int n, TyKind k) {
     }
     return view_bind(n, "sp_strbuf_read(_t%d)", t);
   }
+  /* a variable is read through the cast where the call reads it; one whose
+     cast is longer than a bound text holds (a long name: a fixed buffer cut
+     the cast and bound what was left) goes through a temp, as any other
+     receiver does, holding the same pointer */
   int slot;
-  if ((nk == NK_LocalVariableReadNode || nk == NK_SelfNode) && strlen(cast) < sizeof g_argov_text[0])
-    slot = view_bind(n, "%s", cast);
+  Buf cast; memset(&cast, 0, sizeof cast);
+  buf_printf(&cast, "((%s *)(%s))", at, rb.p ? rb.p : "NULL");
+  if ((nk == NK_LocalVariableReadNode || nk == NK_SelfNode) && cast.len < sizeof g_argov_text[0])
+    slot = view_bind(n, "%s", cast.p);
   else {
     int t = ++g_tmp;
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "%s *_t%d = (%s *)(%s); SP_GC_ROOT(_t%d);\n", at, t, at, rb.p ? rb.p : "NULL", t);
     slot = view_bind(n, "_t%d", t);
   }
+  free(cast.p);
   free(rb.p);
   return slot;
 }

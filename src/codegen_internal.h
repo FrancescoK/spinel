@@ -114,9 +114,9 @@ typedef struct { int sv, from, n; char (*f)[96]; char (*t)[112]; int fence; } Re
 RenPark ren_park(int from);
 void ren_unpark(RenPark *p);
 const char *strbuf_local_name(Compiler *c, int recv);
-int ivar_global_slot(Compiler *c, int node, char *out, size_t cap);
-int gvar_global_slot(Compiler *c, int node, char *out, size_t cap);
-int cvar_global_slot(Compiler *c, int node, char *out, size_t cap);
+int ivar_global_slot(Compiler *c, int node, Buf *out);
+int gvar_global_slot(Compiler *c, int node, Buf *out);
+int cvar_global_slot(Compiler *c, int node, Buf *out);
 int lent_global_slot_rebound(Compiler *c, int arg, const char *slot);
 void refuse_lent_global_rebound(Compiler *c, int arg, const char *slot, const char *target, const char *pname);
 int strbuf_ivar_owner(Compiler *c, int node);
