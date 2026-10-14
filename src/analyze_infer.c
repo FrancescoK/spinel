@@ -114,9 +114,10 @@ int an_poly_raw_argc(const char *name) {
    moved. Each pass and phase the analysis runs by name (AN_PASS, AN_PHASE)
    begins and ends with the memo emptied (infer_memo_boundary), so what came
    before it is never in doubt, only its own writes between two of its
-   queries, and those go through the setters. SPINEL_IMEMO=round keeps those
-   answers, SPINEL_IMEMO=shadow computes each afresh and reports where one
-   would have differed. */
+   queries, and those go through the setters. Those answers are kept;
+   SPINEL_IMEMO=tree keeps an answer for its own tree only, as before, and
+   SPINEL_IMEMO=shadow computes each kept one afresh and reports where it
+   would have differed (`make imemo-shadow-test`). */
 static unsigned g_imemo_gen = 0;
 static unsigned g_imemo_clean = 1;
 static unsigned long g_imemo_edits = 0;
@@ -132,8 +133,8 @@ static void imemo_shadow_report(void) {
 void infer_memo_boundary(void) { comp_ty_edits++; }
 static void imemo_mode_init(void) {
   const char *m = getenv("SPINEL_IMEMO");
-  g_imemo_mode = !m ? IMEMO_TREE : sp_streq(m, "round") ? IMEMO_ROUND :
-                 sp_streq(m, "shadow") ? IMEMO_SHADOW : IMEMO_TREE;
+  g_imemo_mode = !m ? IMEMO_ROUND : sp_streq(m, "tree") ? IMEMO_TREE :
+                 sp_streq(m, "shadow") ? IMEMO_SHADOW : IMEMO_ROUND;
   if (g_imemo_mode == IMEMO_SHADOW) atexit(imemo_shadow_report);
 }
 static int g_infer_depth = 0;

@@ -53,7 +53,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: ty-setter-check int-min-test all hooks share-strings-test gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
+.PHONY: ty-setter-check imemo-shadow-test int-min-test all hooks share-strings-test gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-test-shared gate-bench gc-phases-test gc-stress-test gc-str-major-test gc-str-budget-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot rubyboy gate-rubyboy scale-test clean install uninstall deps tools
@@ -5096,7 +5096,34 @@ test-corpus-shared-summary: test-corpus-results
 # under the gate's job server (they took 181 s one after another, the
 # longest of the gate's legs; spin-check alone is 72 s).
 gate-props:
-	+@$(MAKE) --no-print-directory alloc-report-test infer-test collect-errors-test spin-check diff-test scale-test traits-check-test ty-setter-check bop-arity-check-test bop-share-check-test poly-cold-test share-strings-test share-check-ratchet wrap-test
+	+@$(MAKE) --no-print-directory alloc-report-test infer-test collect-errors-test spin-check diff-test scale-test traits-check-test ty-setter-check imemo-shadow-test bop-arity-check-test bop-share-check-test poly-cold-test share-strings-test share-check-ratchet wrap-test
+
+# infer_type's answers kept across queries against fresh ones (#8852): a
+# write the setters do not count shows as a differing answer. The whole
+# corpus takes minutes (SPINEL_IMEMO=shadow on each program), so this runs a
+# sample, in the default build and with --share-strings: the scale programs,
+# optcarrot when `make optcarrot` has fetched it, and the programs the
+# corpus showed differing with one setter's count taken out. A local's type
+# uncounted differs in the first eight, a method's return type in the two
+# after them, a node's type in route_object_ivar.rb.
+IMEMO_SHADOW_PROGRAMS = test/proc_curry_arity_arg.rb test/issue_3071.rb \
+  test/string_receiver_snapshot_copy.rb test/issue_3069.rb test/to_set_forms.rb \
+  test/enumerator_produce_pair.rb test/issue_3174.rb test/set_comparator_block.rb \
+  test/builtin_singleton_alias_user.rb test/kw_only_positional_hash_sym_local.rb \
+  test/share/refuse/route_object_ivar.rb
+imemo-shadow-test: $(SPINEL)
+	@tmp=$$(mktemp -d /tmp/spinel-imemo.XXXXXX); ok=1; \
+	sh test/scale/gen.sh 100 > "$$tmp/g.rb"; sh test/scale/call_shapes.sh 25 > "$$tmp/s.rb"; \
+	sh test/scale/str_chain.sh 100 > "$$tmp/k.rb"; sh test/scale/hash_store_boxed.sh 64 > "$$tmp/h.rb"; \
+	set -- "$$tmp/g.rb" "$$tmp/s.rb" "$$tmp/k.rb" "$$tmp/h.rb" $(IMEMO_SHADOW_PROGRAMS); \
+	[ -f build/optcarrot-single.rb ] && set -- "$$@" build/optcarrot-single.rb; \
+	for f in "$$@"; do for fl in "" --share-strings; do \
+	  o=$$(SPINEL_IMEMO=shadow $(SPINEL) $$fl -c -o "$$tmp/o.c" "$$f" 2>&1); \
+	  r=$$(echo "$$o" | sed -n 's/^imemo-shadow: [0-9]* kept answers, \([0-9]*\) differ$$/\1/p'); \
+	  if [ "$$r" != 0 ]; then echo "imemo-shadow-test: FAIL ($$f $$fl: $${r:-no report})"; echo "$$o" | grep 'kept .*, fresh' | head -5; ok=0; fi; \
+	done; done; \
+	rm -rf "$$tmp"; \
+	if [ $$ok -eq 1 ]; then echo "imemo-shadow-test: pass"; else exit 1; fi
 
 # The tables infer_type reads are written only through setters that count
 # each change for its memo (#8852). Under SP_TY_GUARD their fields are const,
@@ -5213,6 +5240,12 @@ CALL_SHAPES_LIMIT ?= 4.5
 # plan's own work is about 0.02% of either count); the limit sits about 5%
 # above.
 SCALE_SHARE_LIMIT ?= 6.6
+# A String built by a chain of appends and another by a chain of bangs
+# (test/scale/str_chain.sh), analyzed at 100 and 400 links. A pass that asks
+# infer_type of every node re-inferred the chain below each one, and the
+# ratio read 16.04x until an answer could outlive its query (#8852); 4.38x
+# since. The limit sits about 5% above.
+STR_CHAIN_LIMIT ?= 4.6
 # A chain of forty bangs over a String a method answers, compiled to C with
 # --share-strings under a CPU-time limit, as the hash-literal fan-out is:
 # strbuf_bang_self_local asked each link once per path that reaches it,
@@ -5246,13 +5279,16 @@ scale-test: $(SPINEL_WORK)
 	  { rm -rf "$$tmp"; echo "scale-test: FAIL (the hash-literal source walk revisited call sites along every path)"; exit 1; }; \
 	( ulimit -t 20; $(SPINEL_WORK) --share-strings -c -o "$$tmp/bch.c" test/share/bang_chain_held_receiver.rb ) >/dev/null 2>&1 || \
 	  { rm -rf "$$tmp"; echo "scale-test: FAIL (a bang chain over a held receiver was asked once per path to each link, see strbuf_bang_self_local)"; exit 1; }; \
+	sh test/scale/str_chain.sh 100 > "$$tmp/k1.rb"; sh test/scale/str_chain.sh 400 > "$$tmp/k4.rb"; \
+	ka=$$(sw --emit-rbs -o "$$tmp/k1.rbs" "$$tmp/k1.rb") || { rm -rf "$$tmp"; exit 1; }; \
+	kb=$$(sw --emit-rbs -o "$$tmp/k4.rbs" "$$tmp/k4.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	sh test/scale/ie_forward_chain.sh 2 > "$$tmp/f2.rb"; sh test/scale/ie_forward_chain.sh 4 > "$$tmp/f4.rb"; \
 	fa=$$(sw -c -o "$$tmp/f2.c" "$$tmp/f2.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	fb=$$(sw -c -o "$$tmp/f4.c" "$$tmp/f4.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	rm -rf "$$tmp"; \
 	if [ -z "$$wa" ] || [ -z "$$wb" ] || [ -z "$$fa" ] || [ -z "$$fb" ] || [ -z "$$pa" ] || [ -z "$$pb" ] || \
 	   [ -z "$$ha" ] || [ -z "$$hb" ] || [ -z "$$ca" ] || [ -z "$$cb" ] || [ -z "$$sa" ] || [ -z "$$sb" ] || \
-	   [ -z "$$ga" ] || [ -z "$$gb" ]; then echo "scale-test: FAIL (the counting compiler reported no work count)"; exit 1; fi; \
+	   [ -z "$$ga" ] || [ -z "$$gb" ] || [ -z "$$ka" ] || [ -z "$$kb" ]; then echo "scale-test: FAIL (the counting compiler reported no work count)"; exit 1; fi; \
 	awk -v a="$$ha" -v b="$$hb" 'BEGIN { r = b / a; \
 	  printf "scale-test: boxed Hash store work at 2x the methods is %.2fx (limit 2.20)\n", r; exit (r > 2.20) }' || \
 	  { echo "scale-test: FAIL (a boxed Hash store rescanned unrelated method bodies)"; exit 1; }; \
@@ -5273,7 +5309,10 @@ scale-test: $(SPINEL_WORK)
 	  { echo "scale-test: FAIL (the --share-strings compile grew superlinearly: a share pass rescans per holder, flow or node; compare with the plain -c count)"; exit 1; }; \
 	awk -v a="$$sa" -v b="$$sb" -v lim="$(CALL_SHAPES_LIMIT)" 'BEGIN { r = b / a; \
 	  printf "scale-test: call-shape work at 4x the units, compiled to C, is %.2fx (linear 4.00, limit %.2f)\n", r, lim; exit (r > lim) }' || \
-	  { echo "scale-test: FAIL (a binding or block-typing pass grew superlinearly: it rescans per call site or argument, see test/scale/call_shapes.sh)"; exit 1; }
+	  { echo "scale-test: FAIL (a binding or block-typing pass grew superlinearly: it rescans per call site or argument, see test/scale/call_shapes.sh)"; exit 1; }; \
+	awk -v a="$$ka" -v b="$$kb" -v lim="$(STR_CHAIN_LIMIT)" 'BEGIN { r = b / a; \
+	  printf "scale-test: the analysis of a String chain at 4x the links is %.2fx (linear 4.00, limit %.2f)\n", r, lim; exit (r > lim) }' || \
+	  { echo "scale-test: FAIL (the analysis grew superlinearly in the length of a chain: infer_type re-inferred the chain per node, see infer_memo_boundary and SPINEL_IMEMO=shadow, #8852)"; exit 1; }
 
 .PHONY: bisect-test
 # `spinel bisect`, end to end. The search has its own corpus test
