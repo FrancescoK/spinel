@@ -898,6 +898,8 @@ int emit_ie_untraced(Compiler *c, int id, int recv, int blk, Buf *b) {
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   int exec = sp_streq(nt_str(nt, id, "name"), "instance_exec"), sv_nargov = g_n_argov;
   TyKind t = repr_of(c, id).as_ty;
+  Repr fr = repr_of(c, nt_ref(nt, blk, "expression"));
+  if (fr.as_ty != TY_PROC && fr.as_ty != TY_METHOD && fr.kind != RK_BOXED) return 0;
   Buf rb, pb, eb; memset(&rb, 0, sizeof rb); memset(&pb, 0, sizeof pb); memset(&eb, 0, sizeof eb);
   int tr = ++g_tmp, tp = ++g_tmp;
   emit_boxed(c, recv, &rb);
