@@ -1,0 +1,7 @@
+"x"
+:y
+nil
+"x"
+:y
+"no implicit conversion from nil to integer"
+"no implicit conversion of String into Integer"
