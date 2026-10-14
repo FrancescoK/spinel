@@ -36950,8 +36950,13 @@ static int splat_builtin_range(const char *name, int *lo, int *hi, int *variadic
    method of this name, where they are few (find_index, assoc, casecmp,
    divmod), for a blockless call `id` the list above leaves out. 0 for a name no builtin has,
    or one taking any number, which keeps its splat call. */
-static int splat_builtin_spec_range(const NodeTable *nt, int id, const char *name, int *lo, int *hi) {
+static int splat_builtin_spec_range(Compiler *c, int id, const char *name, int *lo, int *hi) {
+  const NodeTable *nt = c->nt;
   int l, h;
+  /* nor is a method of the program's own (a class's `add`) a builtin's:
+     its splat call reaches it as before */
+  for (int si = 0; si < c->nscopes; si++)
+    if (c->scopes[si].name && sp_streq(c->scopes[si].name, name)) return 0;
   /* the tables are instance methods': a class's (`File.unlink(*paths)`)
      is no row of theirs */
   int r = nt_ref(nt, id, "receiver");
@@ -37344,14 +37349,14 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   int blk = nt_ref(nt, id, "block");
   /* a dynamic send's arm (`public_send(*args)`) takes its counts from
      CRuby's tables, the block-carrying call's where there is a block */
-  int odyn = 0;
+  int odyn = 0, spec = 0;
   int ctor = splat_constructor_arity(nt, id, cnm);
   if (ctor >= 0) { lo = 0; hi = ctor; variadic = 0; }
   else if (!splat_builtin_range(cnm, &lo, &hi, &variadic)) {
     if (splat_dyn_arm_range(c, id, cnm, blk >= 0, &lo, &hi, &variadic)) odyn = 1;
     /* another builtin name the list above leaves out */
-    else if (blk >= 0 || !splat_builtin_spec_range(nt, id, cnm, &lo, &hi)) return 0;
-    else variadic = 0;
+    else if (blk >= 0 || !splat_builtin_spec_range(c, id, cnm, &lo, &hi)) return 0;
+    else { variadic = 0; spec = 1; }
   }
   /* A block goes on one arm only. The substitutions take it at one
      argument, the pattern alone (`s.gsub(*a) { |m| .. }`), and ignore it
@@ -37377,7 +37382,9 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   /* A splat of anything but a local -- a constant, a method's result -- is
      bound to a temporary as `[*ex]` (nil spreads to no arguments, a Range to
      its elements), in its turn among the arguments, and the arms read that. */
-  int ex_local = nt_kind(nt, ex) == NK_LocalVariableReadNode;
+  /* (a local splat into one of the names the lists leave out is bound so
+     too: the local need not hold an Array, `*n` spreads an Integer) */
+  int ex_local = !spec && nt_kind(nt, ex) == NK_LocalVariableReadNode;
   const char *anm = ex_local ? nt_str(nt, ex, "name") : NULL;
   if (ex_local && !anm) return 0;
   long long adepth = ex_local ? nt_int(nt, ex, "depth", 0) : 0;
@@ -37762,7 +37769,7 @@ void expand_static_splat_args(Compiler *c, int from, int count) {
     if (!listed && splat_constructor_arity(nt, id, cnm) < 0 &&
         !splat_builtin_range(cnm, NULL, NULL, NULL) &&
         !splat_dyn_arm_range(c, id, cnm, nt_ref(nt, id, "block") >= 0, NULL, NULL, NULL) &&
-        (nt_ref(nt, id, "block") >= 0 || !splat_builtin_spec_range(nt, id, cnm, NULL, NULL))) continue;
+        (nt_ref(nt, id, "block") >= 0 || !splat_builtin_spec_range(c, id, cnm, NULL, NULL))) continue;
     /* ...but the name has to BE the builtin. A receiverless call to a
        top-level `def count(*args)` is the user's own variadic method, and
        expanding its splat to the builtin's arity handed it one element where

@@ -19,3 +19,12 @@ p hk({a: 1}, 1), ha({a: 1}, :a), cy([1, 2]), sc("a1b2", /\d/), mt("abc", /b/)
 p cc("A", "a"), ch("ab\n"), ch("abx", "x"), mm([3, 1]), cl(5, 1, 3), dm(7, 2)
 x = [3, 1].find_index(*[1])
 p x
+# a local that holds no Array spreads as one argument, and a method of the
+# program's own under a builtin's name takes the splat as before
+n = [2, "x"][0]
+p [1, 2, 3].find_index(*n), 7.divmod(*n)
+class Tally
+  def add(a, b) = a + b
+end
+pair = [n, 5]
+p Tally.new.add(*pair), Tally.new.add(*n, 1)
