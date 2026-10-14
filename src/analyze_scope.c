@@ -3989,6 +3989,30 @@ void settle_object_builtin_aliases(Compiler *c) {
   }
 }
 
+/* Does a statement after stmts[k] declare the accessor `nw` -- a reader
+   (attr_reader / attr_accessor / attr), or for `x=` a writer
+   (attr_writer / attr_accessor)? It then replaces the alias of that name,
+   as the later definition does in CRuby. */
+static int alias_accessor_declared_after(const NodeTable *nt, const int *stmts, int n, int k, const char *nw) {
+  size_t nl = strlen(nw);
+  int wr = nl > 1 && nw[nl - 1] == '=';
+  for (int j = k + 1; j < n; j++) {
+    int s = stmts[j];
+    const char *cn = nt_kind(nt, s) == NK_CallNode && nt_ref(nt, s, "receiver") < 0 ? nt_str(nt, s, "name") : NULL;
+    if (!cn) continue;
+    int acc = sp_streq(cn, "attr_accessor");
+    if (wr ? !acc && !sp_streq(cn, "attr_writer")
+           : !acc && !sp_streq(cn, "attr_reader") && !sp_streq(cn, "attr")) continue;
+    int a = nt_ref(nt, s, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    for (int i = 0; i < an; i++) {
+      const char *v = nt_str(nt, av[i], "value");
+      if (v && strlen(v) == (wr ? nl - 1 : nl) && strncmp(v, nw, wr ? nl - 1 : nl) == 0) return 1;
+    }
+  }
+  return 0;
+}
+
 void register_aliases_body(Compiler *c, ClassInfo *cls, int body) {
   const NodeTable *nt = c->nt;
   int singleton = nt_int(nt, body, "singleton_body", 0);
@@ -4003,6 +4027,7 @@ void register_aliases_body(Compiler *c, ClassInfo *cls, int body) {
       int on = nt_ref(nt, s, "old_name");
       const char *nw = nn >= 0 ? nt_str(nt, nn, "value") : NULL;
       const char *od = on >= 0 ? nt_str(nt, on, "value") : NULL;
+      if (!singleton && nw && alias_accessor_declared_after(nt, stmts, n, k, nw)) continue;
       alias_register(c, cls, nw, od, s, singleton);
     }
     else if (sp_streq(sty, "CallNode")) {
@@ -4025,6 +4050,7 @@ void register_aliases_body(Compiler *c, ClassInfo *cls, int body) {
       if (an >= 2 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "SymbolNode") &&
           nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "SymbolNode"))
       { const char *anw = nt_str(nt, argv[0], "value"), *aod = nt_str(nt, argv[1], "value");
+        if (!singleton && anw && alias_accessor_declared_after(nt, stmts, n, k, anw)) continue;
         alias_register(c, cls, anw, aod, s, singleton); }
     }
     else if (sp_streq(sty, "SingletonClassNode")) {
