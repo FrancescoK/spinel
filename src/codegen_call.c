@@ -15181,6 +15181,7 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
   int tam_src = 0;   /* the source is the array an object's to_ary answered */
   int onum = elem == TY_INT || elem == TY_FLOAT;
   int poly_so = 0;   /* the boxed-RHS branch tracks its array source in _soN */
+  int voint = 0;     /* the value is the oint _t<ts>, answered as the consumer takes it */
   buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b); buf_puts(b, "; ");
   buf_printf(b, "%s_src%d; sp_int _srcn%d; ", srcty, ta, ta);
 
@@ -15297,6 +15298,17 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
       buf_printf(b, "else { _v%d = %s(_t%d); _src%d = &_v%d; _srcn%d = 1; } ",
                  ta, conv, ts, ta, ta, ta);
   }
+  else if (onum && rhsr.kind != RK_BOXED && (rhs_ty == elem || rhs_ty == TY_NIL) &&
+           nil_store_sfx(c, k, rhs_node)[0]) {
+    /* a number that can be nil: nil is spliced in as a one-element array
+       holding nil (splice_o), anything else as the element */
+    poly_so = voint = 1;
+    buf_printf(b, "%s _t%d = ", oint_ctype(elem), ts); emit_elem_store_value(c, k, rhs_node, b);
+    buf_printf(b, "; sp_%sArray *_so%d = NULL; sp_%sArray *_ca%d = NULL; SP_GC_ROOT(_ca%d); ", k, ta, k, ta, ta);
+    buf_printf(b, "if (_t%d.nil) { _ca%d = sp_%sArray_new(); sp_%sArray_push_nil(_ca%d); _so%d = _ca%d; }"
+                  " else { _src%d = &_t%d.v; _srcn%d = 1; } ",
+               ts, ta, k, k, ta, ta, ta, ta, ts, ta);
+  }
   else {
     /* scalar RHS: replace the slice with a single element */
     int scalar_ok = (elem == TY_INT    && rhs_ty == TY_INT) ||
@@ -15322,7 +15334,8 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
                ta, k, ta, ta, ta, ta, k, ta, ta, ta, ta, ta);
   else
     buf_printf(b, "sp_%sArray_splice(_t%d, _s%d, _l%d, _src%d, _srcn%d); ", k, ta, ta, ta, ta, ta);
-  buf_printf(b, "%s; })", valtmp);
+  if (voint && !node_is_oint(c, id)) buf_printf(b, "%s(%s); })", oint_arg(elem), valtmp);
+  else buf_printf(b, "%s; })", valtmp);
 }
 
 static int emit_array_arith_call(Compiler *c, int id, Buf *b) {

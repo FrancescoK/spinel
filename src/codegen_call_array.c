@@ -2285,7 +2285,9 @@ int aset_range_held(Compiler *c, TyKind rt, const int *argv) {
   /* a boxed value (promote's Integers) takes the same two arms: the
      splice unboxes it as an element, the store as it stores one */
   if (repr_of(c, argv[1]).kind == RK_BOXED) return 1;
-  return comp_ntype(c, argv[1]) == et && !nil_store_sfx(c, k, argv[1])[0];
+  /* an Integer or Float that can be nil splices and stores with its nil */
+  TyKind vt = comp_ntype(c, argv[1]);
+  return vt == et || (vt == TY_NIL && et != TY_STRING);
 }
 void emit_aset_range_held(Compiler *c, int id, int recv, TyKind rt, const int *argv, Buf *b) {
   buf_puts(b, "({ ");
