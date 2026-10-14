@@ -8,7 +8,9 @@
 # newline after it) are handled. Any other code in a tag needs eval, which
 # a compiled program does not have: it raises NotImplementedError naming
 # the tag, where the placeholder this replaces answered the template
-# unrendered. So does a trim_mode other than "-".
+# unrendered. So does a trim_mode other than "-". A template with no tag
+# is its own result, through result and run too, and ERB::Util's escapes
+# need no eval and answer as CRuby's.
 class ERB
   def initialize(input, trim_mode: nil, eoutvar: "_erbout")
     @input = input
@@ -19,9 +21,11 @@ class ERB
     end
     @trim = trim_mode == "-"
     @filename = ""
+    @lineno = 0
   end
 
   attr_reader :filename
+  attr_accessor :lineno
 
   def filename=(name)
     @filename = name
@@ -32,7 +36,13 @@ class ERB
   end
 
   def result(_binding = nil)
-    raise NotImplementedError, "ERB#result needs eval; render with result_with_hash"
+    raise NotImplementedError, "ERB#result needs eval; render with result_with_hash" if @input.include?("<%")
+    @input
+  end
+
+  def run(b = nil)
+    print result(b)
+    nil
   end
 
   def result_with_hash(vars)
@@ -106,5 +116,30 @@ class ERB
       end
     end
     out
+  end
+
+  module Util
+    HTML_ESCAPE = { "&" => "&amp;", "<" => "&lt;", ">" => "&gt;", "\"" => "&quot;", "'" => "&#39;" }
+
+    def html_escape(s)
+      s.to_s.gsub(/[&<>"']/) { |c| HTML_ESCAPE[c] }
+    end
+
+    def url_encode(s)
+      out = +""
+      s.to_s.each_byte do |b|
+        if (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) ||
+           b == 95 || b == 45 || b == 46 || b == 126
+          out << b.chr
+        else
+          out << format("%%%02X", b)
+        end
+      end
+      out
+    end
+
+    alias h html_escape
+    alias u url_encode
+    module_function :h, :html_escape, :u, :url_encode
   end
 end

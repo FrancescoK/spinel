@@ -1,0 +1,13 @@
+"&lt;a href=&#39;x&#39;&gt;&amp;&quot;&lt;/a&gt;"
+"5"
+"a%20b%2Fc~d-_.%C3%A9"
+"x%26y%3D1"
+"&lt;b&gt;"
+"a%20b"
+"plain text\n"
+"plain text\n"
+"no tags"
+"t.erb"
+3
+ran
+nil
