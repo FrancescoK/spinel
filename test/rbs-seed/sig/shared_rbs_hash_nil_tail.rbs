@@ -1,0 +1,9 @@
+class ShhnRoute
+  attr_reader parts: Array[String]
+  def initialize: (Array[String] parts) -> void
+end
+module ShhnRouter
+  def self.match_parts: (Array[String] pattern_parts, Array[String] path_parts) -> Hash[String, String]?
+  def self.scan: (Array[ShhnRoute] routes, Array[String] path_parts) -> Hash[String, String]?
+  def self.first: (Array[String] parts) -> Hash[String, String]?
+end
