@@ -1,0 +1,7 @@
+Admin::Panel
+Shop::Panel
+NameError: uninitialized constant Empty::Panel
+Empty
+NameError: uninitialized constant Panel
+Object
+[Admin::Panel, nil]

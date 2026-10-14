@@ -1413,6 +1413,10 @@ int const_get_class_index(Compiler *c, const char *rnm, const char *cgn) {
   const_get_resolve(c, rnm, cgn, &cls);
   return cls;
 }
+/* Both at once: the value's key, or NULL with *cls the class (-1 for none). */
+const char *const_get_lookup(Compiler *c, const char *rnm, const char *cgn, int *cls) {
+  return const_get_resolve(c, rnm, cgn, cls);
+}
 
 /* Does this receiver denote a Hash built by a blockless `Hash.new` (or an
    empty Hash literal)? Such a hash carries no default block. Traces a local's
