@@ -15248,10 +15248,9 @@ int desugar_class_body_object_acts(Compiler *c) {
        inside `module Foo`) */
     int cp = nt_ref(nt, cn, "constant_path");
     NodeKind cpk = cp >= 0 ? nt_kind(nt, cp) : NK_NilNode;
-    int top = cpk == NK_ConstantReadNode ? !engine_lexically_nested(nt, cn)
-            : cpk == NK_ConstantPathNode && nt_ref(nt, cp, "parent") < 0;
-    const char *cname = top ? nt_str(nt, cp, "name") : NULL;
-    int builtin = cname && (is_builtin_class_name(cname) || is_builtin_module_name(cname));
+    const char *cname = cpk == NK_ConstantReadNode || cpk == NK_ConstantPathNode ? nt_str(nt, cp, "name") : NULL;
+    int builtin = cname && (is_builtin_class_name(cname) || is_builtin_module_name(cname)) &&
+                  (cpk == NK_ConstantReadNode ? !engine_lexically_nested(nt, cn) : nt_ref(nt, cp, "parent") < 0);
     changed |= cb_give_self(nt, nt_ref(nt, cn, "body"), builtin ? cname : NULL);
   }
   if (changed) comp_grow_node_arrays(c);
