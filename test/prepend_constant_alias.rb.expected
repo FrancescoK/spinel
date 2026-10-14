@@ -6,3 +6,10 @@ true
 [Quiet, Shout]
 true
 "shout"
+"CROWD!"
+[Shout, Crowd]
+"MIXER!"
+[Party, Shout, Mixer]
+[Bag, Enumerable]
+true
+[2, 4]

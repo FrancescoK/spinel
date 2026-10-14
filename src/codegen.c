@@ -17307,10 +17307,11 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
             const char *mname2 = (aty2 && sp_streq(aty2, "ConstantReadNode")) ? nt_str(c->nt, aargs[j2], "name") : NULL;
             if (!mname2 && aty2 && sp_streq(aty2, "ConstantPathNode")) mname2 = nt_str(c->nt, aargs[j2], "name");
             int mid2 = mname2 ? comp_class_index(c, mname2) : -1;
-            /* a constant aliasing a module (`Loud = Shout`) names it */
+            /* a constant aliasing a module (`Loud = Shout`, `E = Enumerable`)
+               names it */
             if (mid2 < 0 && mname2) {
-              const char *al = resolve_class_alias(c, mname2);
-              if (al) mid2 = comp_class_index(c, al);
+              const char *al = resolve_class_alias_chain(c, mname2);
+              if (al) { mid2 = comp_class_index(c, al); mname2 = al; }
             }
             int is_builtin_mod = 0;
             /* a builtin module (Enumerable/Comparable/Kernel/Math) has no user

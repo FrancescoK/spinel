@@ -324,6 +324,7 @@ const char *builtin_class_of_type(TyKind t);
 /* Whether method `m` can take call `call_id`'s arguments (analyze_pass.c) */
 int method_takes_call_args(Compiler *c, Scope *m, int call_id);
 const char *resolve_class_alias(Compiler *c, const char *cname);
+const char *resolve_class_alias_chain(Compiler *c, const char *cname);
 const char *const_alias_source(Compiler *c, const char *cname);
 void walk_scope(Compiler *c, int id, int scope_idx, int class_id);
 int scope_own_defaults(Compiler *c, int di);

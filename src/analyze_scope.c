@@ -782,6 +782,18 @@ const char *const_alias_source(Compiler *c, const char *cname) {
   return NULL;
 }
 
+/* resolve_class_alias through a chain of aliases (`B = A`, `A = Shout`):
+   each link is followed (const_alias_source) until one names a class it
+   knows, at most once per constant, so a cycle ends. */
+const char *resolve_class_alias_chain(Compiler *c, const char *cname) {
+  for (int d = 0; cname && d <= c->nconsts; d++) {
+    const char *real = resolve_class_alias(c, cname);
+    if (real) return real;
+    cname = const_alias_source(c, cname);
+  }
+  return NULL;
+}
+
 /* compiler_state_* class macros: declare a bag of typed instance variables
    and auto-synthesize init/dump/set methods.
    The CRuby shim that would define these via define_method is dead code under
@@ -6960,15 +6972,15 @@ static int body_extends_module(Compiler *c, int cn, int mod_id) {
 }
 
 /* The class a `prepend` argument names: a constant naming a module of the
-   program, or one that aliases it (`Q = MM`), as for `include`. -1 when
-   it names none. */
+   program, or one that aliases it (`Q = MM`, also through a chain of
+   them), as for `include`. -1 when it names none. */
 static int mixin_arg_class(Compiler *c, int arg) {
   const NodeTable *nt = c->nt;
   NodeKind ak = nt_kind(nt, arg);
   const char *mn = ak == NK_ConstantReadNode || ak == NK_ConstantPathNode ? nt_str(nt, arg, "name") : NULL;
   int k = mn ? comp_class_index(c, mn) : -1;
   if (k < 0 && mn) {
-    const char *al = resolve_class_alias(c, mn);
+    const char *al = resolve_class_alias_chain(c, mn);
     if (al) k = comp_class_index(c, al);
   }
   return k;

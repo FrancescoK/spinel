@@ -26,3 +26,26 @@ class Quiet
   def greet_base = "q"
 end
 p Quiet.ancestors.take(2), Quiet.include?(Shout), Quiet.new.tag
+# through a chain of aliases, and an alias of a builtin module
+Louder = Loud
+class Crowd
+  prepend Louder
+  def greet = "crowd"
+end
+module Mixer
+  prepend Louder
+  def greet = "mixer"
+end
+class Party
+  include Mixer
+end
+p Crowd.new.greet, Crowd.ancestors.take(2), Party.new.greet, Party.ancestors.take(3)
+Enum = Enumerable
+class Bag
+  include Enum
+  def each
+    yield 1
+    yield 2
+  end
+end
+p Bag.ancestors.take(2), Bag.include?(Enumerable), Bag.new.map { |x| x * 2 }
