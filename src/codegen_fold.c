@@ -4692,7 +4692,7 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
      raise: NoMethodError for `sort_by` on an Array (#4061). */
   if (kt != TY_INT && kt != TY_FLOAT && kt != TY_STRING && kt != TY_POLY &&
       kt != TY_SYMBOL && kt != TY_VOID && kt != TY_NIL && kt != TY_BOOL &&
-      kt != TY_RATIONAL && kt != TY_BIGINT && !ty_is_array(kt)) return 0;
+      kt != TY_RATIONAL && kt != TY_BIGINT && kt != TY_TIME && !ty_is_array(kt)) return 0;
 
   /* Schwartzian transform: compute each element's sort key exactly once (CRuby
      semantics -- the old bubble sort re-ran the block per comparison), stable-sort
