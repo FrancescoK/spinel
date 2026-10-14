@@ -113,9 +113,24 @@ static SP_TLS int g_sched_held = 0;
 static pthread_mutex_t g_rq_lock[SP_MAX_WORKERS] = { [0 ... SP_MAX_WORKERS - 1] = PTHREAD_MUTEX_INITIALIZER };
 #define RQ_LOCK(w)   pthread_mutex_lock(&g_rq_lock[w])
 #define RQ_UNLOCK(w) pthread_mutex_unlock(&g_rq_lock[w])
+/* A short spin, then a yield: with fewer cores than workers the holder can be
+   descheduled inside its few instructions, and spinning on then only keeps it
+   off the CPU (2 cores, 8 workers: a pool round 24% slower than master with a
+   pure spin). macOS's sched_yield also lowers the caller's priority, so the
+   yield there is thread_switch. */
+#if defined(__APPLE__)
+#include <mach/thread_switch.h>
+#define SP_WL_YIELD() ((void)thread_switch(MACH_PORT_NULL, SWITCH_OPTION_NONE, 0))
+#else
+#define SP_WL_YIELD() sched_yield()
+#endif
 static inline void wl_lock(sp_wlock *l) {
+  int spins = 0;
   while (SP_ATOMIC_EXCHANGE(l, 1, __ATOMIC_ACQUIRE))
-    while (SP_ATOMIC_LOAD(l, __ATOMIC_RELAXED)) SP_CPU_RELAX();
+    while (SP_ATOMIC_LOAD(l, __ATOMIC_RELAXED)) {
+      if (++spins < 64) SP_CPU_RELAX();
+      else { spins = 0; SP_WL_YIELD(); }
+    }
 }
 static inline void wl_unlock(sp_wlock *l) { SP_ATOMIC_STORE(l, 0, __ATOMIC_RELEASE); }
 
@@ -3352,6 +3367,15 @@ static int sp_worker_run_local(int wid) {
     ft = NULL;
     if (SP_ATOMIC_LOAD(&g_stw_active, __ATOMIC_SEQ_CST) || SP_ATOMIC_LOAD(&g_shutdown, __ATOMIC_RELAXED)) break;
     if ((++g_pick_tick % 61u) == 0) break;
+#ifdef SP_EV_BACKEND
+    /* a descriptor of a thread pinned here is ready: its event waits in this
+       worker's own set, drained on the locked path, so go there now (the set
+       is readable while an event is pending) */
+    if (g_wslot[wid].evfd > 0) {
+      struct pollfd ep = { g_wslot[wid].evfd, POLLIN, 0 };
+      if (poll(&ep, 1, 0) > 0) break;
+    }
+#endif
     RQ_LOCK(wid); ft = runq_pop(&g_lrq[wid]); RQ_UNLOCK(wid);
   }
   SP_ATOMIC_FETCH_SUB(&g_nrunning, 1, __ATOMIC_SEQ_CST);
