@@ -21014,7 +21014,9 @@ static int strh_elem_use_ok(Compiler *c, const int *par, int e) {
   int p = e < c->nt->count ? par[e] : -1;
   if (p < 0) return 0;
   NodeKind pk = nt_kind(nt, p);
-  if (pk == NK_LocalVariableWriteNode) return an_unparen(nt, nt_ref(nt, p, "value")) == e;
+  /* (the write's own value is the String again: it is asked where it goes) */
+  if (pk == NK_LocalVariableWriteNode)
+    return an_unparen(nt, nt_ref(nt, p, "value")) == e && strh_value_ignored(c, par, p);
   if (pk == NK_EmbeddedStatementsNode ||
       (pk == NK_StatementsNode && par[p] >= 0 && nt_kind(nt, par[p]) == NK_EmbeddedStatementsNode))
     return 1;
@@ -21072,7 +21074,7 @@ static int strh_use_ok(Compiler *c, const int *par, int n, int depth) {
     int ca = nt_ref(nt, call, "arguments");
     const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &argc) : NULL;
     if ((op == STRH_ELEM || op == STRH_STORE) && argc >= 1 && !strh_pure_index(nt, av[0])) return 0;
-    if ((op == STRH_ELEM || op == STRH_TAKE) && !strh_elem_use_ok(c, par, call)) return 0;
+    if ((op == STRH_ELEM || op == STRH_TAKE || op == STRH_STORE) && !strh_elem_use_ok(c, par, call)) return 0;
     if ((op == STRH_EACH || op == STRH_SELF || op == STRH_PUSH || op == STRH_DUP) &&
         !strh_value_ignored(c, par, call))
       return strh_use_ok(c, par, call, depth + 1);

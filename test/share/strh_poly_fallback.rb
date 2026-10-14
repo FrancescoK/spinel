@@ -80,3 +80,30 @@ dd.each { |(x)| x << "D" }
 d2 = [s, +"d"]
 d2.each { |(x, y)| x << "E" }
 p dd, d2
+
+# a write or a store whose value is used
+def first_row
+  t = +"w"
+  rows = [t]
+  t << "!"
+  x = rows[0]
+end
+fr = first_row
+fr << "V"
+p fr
+def put_row
+  t = +"w"
+  rows = [t]
+  t << "!"
+  rows[0] = +"n"
+end
+pr = put_row
+pr << "V"
+p pr
+m1 = [s, +"t"]
+m1[0] = (m1[1] = +"q")
+m2 = [s, +"t"]
+m2 << (m2[1] = +"q")
+xv = (m2[0] = +"r")
+xv << "X"
+p m1, m2, s
