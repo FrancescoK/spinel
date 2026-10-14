@@ -1,0 +1,8 @@
+class LtApp
+  def or_right: (untyped v) -> String
+  def or_left: (untyped v) -> String
+  def or_paren: (untyped v) -> String
+  def and_right: (untyped v) -> String
+  def or_local: () -> String
+  def or_fresh: (untyped v) -> String
+end

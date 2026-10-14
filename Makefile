@@ -3119,7 +3119,7 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	;; \
 	shared_rbs_string_return_refused) \
 	SP_COLLECT_ERRORS=1 $(SPINEL) test/rbs-seed/shared_rbs_string_return_refused.rb --rbs test/rbs-seed/sig --share-strings -c --no-line-map -o "$$tmp/srsf.c" >/dev/null 2>"$$tmp/srsf.err"; \
-	for m in ens_after ens_reader ens_tail ens_def ens_block or_call and_call; do \
+	for m in ens_after ens_reader ens_tail ens_def ens_block; do \
 	  grep -q "the value of \`$$m\` hands on" "$$tmp/srsf.err" || { echo "rbs-seed-test: FAIL (#6765 a seeded String method's $$m was not refused: its tail does not publish the box's handle)"; ok=0; }; \
 	done; \
 	;; \
@@ -3137,6 +3137,11 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	$(SPINEL) test/rbs-seed/shared_rbs_conversion_bytes.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srcb" >/dev/null 2>"$$tmp/srcb.err" && \
 	  "$$tmp/srcb" > "$$tmp/srcb.out" 2>/dev/null && cmp -s "$$tmp/srcb.out" test/rbs-seed/shared_rbs_conversion_bytes.expected && \
 	  SPINEL_GC_STRESS=1 "$$tmp/srcb" > "$$tmp/srcb.gc" 2>/dev/null && cmp -s "$$tmp/srcb.gc" test/rbs-seed/shared_rbs_conversion_bytes.expected || { echo "rbs-seed-test: FAIL (#6765 a String conversion over bytes pushed into a boxed Array under --share-strings: refused, or C that does not build)"; sed -n 1,5p "$$tmp/srcb.err"; ok=0; }; \
+	;; \
+	shared_rbs_logic_tail_pickup) \
+	$(SPINEL) test/rbs-seed/shared_rbs_logic_tail_pickup.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srlt" >/dev/null 2>"$$tmp/srlt.err" && \
+	  "$$tmp/srlt" > "$$tmp/srlt.out" 2>/dev/null && cmp -s "$$tmp/srlt.out" test/rbs-seed/shared_rbs_logic_tail_pickup.expected && \
+	  SPINEL_GC_STRESS=1 "$$tmp/srlt" > "$$tmp/srlt.gc" 2>/dev/null && cmp -s "$$tmp/srlt.gc" test/rbs-seed/shared_rbs_logic_tail_pickup.expected || { echo "rbs-seed-test: FAIL (#6765 an --rbs '-> String' method whose tail is a boxed || or && over a call answering a shared String, under --share-strings: refused, or a copy)"; sed -n 1,5p "$$tmp/srlt.err"; ok=0; }; \
 	;; \
 	shared_rbs_string_to_s) \
 	$(SPINEL) test/rbs-seed/shared_rbs_string_to_s.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srts" >/dev/null 2>"$$tmp/srts.err" && \
