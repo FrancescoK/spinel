@@ -40349,6 +40349,56 @@ static void refuse_literal_element_aliases(Compiler *c) {
   }
 }
 
+/* `a = s.split(","); a[0].upcase!; p a`: an element read of a local bound
+   to the Array split, scan, lines or chars answers (an_local_string_array_
+   has_untracked_call_store) is a copy of the String the Array holds, in
+   the default build, so an in-place mutation of it -- straight on the read,
+   or through a local bound from it (`x = a.first; x.chomp!`) -- is lost to
+   the Array. Refused when the local is read again. --share-strings shares
+   the element. */
+static int sa_elem_read_of_fresh_local(Compiler *c, int v, int *recv) {
+  const NodeTable *nt = c->nt;
+  v = an_unparen(nt, v);
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode || !container_elem_read_p(nt, v) || nt_ref(nt, v, "block") >= 0)
+    return 0;
+  int r = an_unparen(nt, nt_ref(nt, v, "receiver"));
+  if (r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode || infer_type(c, r) != TY_STR_ARRAY) return 0;
+  const char *an = nt_str(nt, r, "name");
+  Scope *as = comp_scope_of(c, r);
+  if (!an || !as || !an_local_string_array_has_untracked_call_store(c, an, as)) return 0;
+  *recv = r;
+  return 1;
+}
+/* Is local read r's variable read anywhere else in its scope? */
+static int sa_local_read_elsewhere(Compiler *c, int r) {
+  const NodeTable *nt = c->nt;
+  const char *vn = nt_str(nt, r, "name");
+  Scope *vs = comp_scope_of(c, r);
+  NT_FOREACH_KIND(nt, NK_LocalVariableReadNode, o)
+    if (o != r && comp_scope_of(c, o) == vs && sp_streq(nt_str(nt, o, "name"), vn)) return 1;
+  return 0;
+}
+static void refuse_string_array_element_mutations(Compiler *c) {
+  if (c->share_strings) return;
+  const NodeTable *nt = c->nt;
+  static const char msg[] =
+    "an element read of a local String Array that split, scan, lines or chars answered is mutated in place "
+    "(a String is not yet shared by reference through such an Array's element read). Write the changed "
+    "String back into the Array (`a[i] = a[i].chomp`), or build the Array with map.";
+  int recv = -1;
+  NT_FOREACH_KIND(nt, NK_CallNode, m) {
+    const char *mn = nt_str(nt, m, "name");
+    if (!mn || !sp_str_mutator(mn, 0) || !sa_elem_read_of_fresh_local(c, nt_ref(nt, m, "receiver"), &recv)) continue;
+    if (sa_local_read_elsewhere(c, recv)) unsupported_feature(c, m, msg);
+  }
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sa_elem_read_of_fresh_local(c, nt_ref(nt, w, "value"), &recv) ||
+        !strbuf_any_str_mut(c, wn, comp_scope_of(c, w))) continue;
+    if (sa_local_read_elsewhere(c, recv)) unsupported_feature(c, w, msg);
+  }
+}
+
 /* String routes that copy where CRuby hands over the one object (#6179,
    #6765): two names come to hold the String, the analysis gives each its
    own copy, and an in-place mutation through one name is lost to the other.
@@ -47197,6 +47247,7 @@ static void an_phase_reconcile_check(Compiler *c) {
   refuse_lent_ivar_copies(c);
   refuse_hash_pair_string_mutations(c);
   refuse_literal_element_aliases(c);
+  refuse_string_array_element_mutations(c);
   refuse_string_alias_copies(c);
 
   /* Last: the capture pass again, on the settled types. a_block_is_lifted asks

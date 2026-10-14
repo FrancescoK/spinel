@@ -1602,6 +1602,10 @@ spinel: 1 refusal, nothing written
 == test/reject/string_lent_ivar_rebound.rb [promote] rc=1
 spinel: test/reject/string_lent_ivar_rebound.rb:10: `@x` is passed to gri's parameter `v`, which appends to it, and `@x` is assigned at line 8, where the assignment can run during the call: the append would then reach the newly assigned String instead of the one passed (a String held by a global, a class variable, or a top-level or class-level instance variable is not yet shared by reference). Pass a local and assign it back after the call.
 spinel: 1 refusal, nothing written
+== test/reject/string_lines_element_alias_mutation.rb [default] rc=1
+spinel: test/reject/string_lines_element_alias_mutation.rb:4: an element read of a local String Array that split, scan, lines or chars answered is mutated in place (a String is not yet shared by reference through such an Array's element read). Write the changed String back into the Array (`a[i] = a[i].chomp`), or build the Array with map.
+== test/reject/string_lines_element_alias_mutation.rb [promote] rc=1
+spinel: test/reject/string_lines_element_alias_mutation.rb:4: an element read of a local String Array that split, scan, lines or chars answered is mutated in place (a String is not yet shared by reference through such an Array's element read). Write the changed String back into the Array (`a[i] = a[i].chomp`), or build the Array with map.
 == test/reject/string_lines_local_each_mutation.rb [default] rc=1
 spinel: test/reject/string_lines_local_each_mutation.rb:7: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
 == test/reject/string_lines_local_each_mutation.rb [promote] rc=1
@@ -1714,6 +1718,10 @@ spinel: 1 refusal, nothing written
 == test/reject/string_splat_global_toplevel.rb [promote] rc=1
 spinel: test/reject/string_splat_global_toplevel.rb:8: a String is passed to `app`'s parameter `a` through a splat, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splat). Return the String from the method and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
+== test/reject/string_split_element_read_mutation.rb [default] rc=1
+spinel: test/reject/string_split_element_read_mutation.rb:6: an element read of a local String Array that split, scan, lines or chars answered is mutated in place (a String is not yet shared by reference through such an Array's element read). Write the changed String back into the Array (`a[i] = a[i].chomp`), or build the Array with map.
+== test/reject/string_split_element_read_mutation.rb [promote] rc=1
+spinel: test/reject/string_split_element_read_mutation.rb:6: an element read of a local String Array that split, scan, lines or chars answered is mutated in place (a String is not yet shared by reference through such an Array's element read). Write the changed String back into the Array (`a[i] = a[i].chomp`), or build the Array with map.
 == test/reject/string_split_local_each_in_loop.rb [default] rc=1
 spinel: test/reject/string_split_local_each_in_loop.rb:9: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
 == test/reject/string_split_local_each_in_loop.rb [promote] rc=1
