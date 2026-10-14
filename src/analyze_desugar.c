@@ -12125,6 +12125,11 @@ int desugar_reduce_splat_args(Compiler *c) {
     if (cls >= 0) nt_node_set_str(nt, cls, "name", "ArgumentError");
     int ra[2] = { cls, msg };
     int rz = bs_call(&b, -1, "raise", ra, 2);
+    /* the count, the reads of the gathered arguments and the message are
+       the builtins' own: a program that reopens Array#length or #[],
+       Integer#== or #>, or String#+ does not reach into them */
+    int own[13] = { len[0], len[1], len[2], len[3], eq2, gt2, eq1, ns, m1, msg, i0, i1, i2 };
+    for (int q = 0; q < 13; q++) if (own[q] >= 0) nt_node_set_int(nt, own[q], "builtin_only", 1);
     int if1 = bs_if(&b, eq1, &one, 1, &call, 1);
     int if2 = bs_if(&b, gt2, &rz, 1, &if1, 1);
     int if3 = bs_if(&b, eq2, &two, 1, &if2, 1);
