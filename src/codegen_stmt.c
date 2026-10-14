@@ -6422,6 +6422,10 @@ int emit_poly_class_when(Compiler *c, int cond_id, const char *tmp, Buf *b) {
     buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id == SP_BUILTIN_PROC)", tmp, tmp);
   else if (sp_streq(cn, "Time"))
     buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id == SP_BUILTIN_TIME)", tmp, tmp);
+  /* the runtime's OpenStruct (require "ostruct"); without the require the
+     name is a program class, matched by the class-table arm below */
+  else if (sp_streq(cn, "OpenStruct") && sp_feature_required("ostruct"))
+    buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id == SP_BUILTIN_OPENSTRUCT)", tmp, tmp);
   else if (sp_streq(cn, "Range"))
     buf_printf(b, "(%s.tag == SP_TAG_OBJ && (%s.cls_id == SP_BUILTIN_RANGE || %s.cls_id == SP_BUILTIN_STR_RANGE))", tmp, tmp, tmp);
   else if (sp_streq(cn, "Array"))

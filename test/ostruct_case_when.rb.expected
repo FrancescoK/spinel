@@ -1,0 +1,6 @@
+typed struct
+struct flat
+hash
+integer
+other
+object
