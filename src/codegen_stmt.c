@@ -5323,7 +5323,9 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
   const char *ffn = !fop ? NULL
                   : sp_streq(op, "**") ? "sp_float_pow"
                   : sp_streq(op, "%") ? (vt == TY_INT ? "sp_fmod_intdiv" : "sp_fmod") : NULL;
-  if (!fn && !bitop && !fop) return 0;
+  /* a Bignum's `<<=` / `>>=`: the binary shift's sp_bigint_shl / shr below */
+  int bshift = t == TY_BIGINT && is_shift_op(op);
+  if (!fn && !bitop && !fop && !bshift) return 0;
   /* `<<=` and `>>=` take the binary form's helpers (emit_call_compare_arms):
      a literal `<<`, and a literal `>>` count outside the word, go through
      sp_int_shl / sp_int_shr, whose overflow check is the only one there is;
@@ -5346,6 +5348,17 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
   const char *captured = src;
   if (onil) { snprintf(srcbuf, sizeof srcbuf, "%s(%s, \"%s\")", oint_val(t), src, op); src = srcbuf; }
   else if (bnil) { snprintf(srcbuf, sizeof srcbuf, "({ if (SP_UNLIKELY(%s)) sp_nil_recv(\"%s\"); %s; })", bnil, op, src); src = srcbuf; }
+  /* `n = n >> k` as the binary shift emits it: the count converted as it
+     converts it (emit_int_expr), the old value rooted across it */
+  if (bshift) {
+    int tr = ++g_tmp, tk = ++g_tmp;
+    buf_printf(b, "%s = ({ sp_Bigint *_t%d = %s; SP_GC_ROOT(_t%d); int64_t _t%d = (int64_t)(", lval, tr, src, tr, tk);
+    emit_int_expr(c, v, b);
+    buf_printf(b, "); %s(_t%d, _t%d); });", op[0] == '>' ? "sp_bigint_shr" : "sp_bigint_shl", tr, tk);
+    if (bclr) buf_printf(b, " %s;", bclr);
+    op_assign_slot_end(captured, lval, b);
+    return 1;
+  }
   if (is_shift && nt_kind(nt, v) == NK_IntegerNode) {
     long long vlit = nt_int(nt, v, "value", 0);
     if (sp_streq(op, "<<") || vlit < 0 || vlit >= 64) {
