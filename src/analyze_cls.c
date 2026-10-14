@@ -1174,11 +1174,9 @@ static void cf_call(CF *f, int v) {
       if (s->is_cmethod && (sp_streq(nm, "new") || sp_streq(nm, "allocate")) &&
           comp_cmethod_in_chain(c, s->class_id, nm, NULL) < 0) {
         cf_add_set(f, v, f->desc[s->class_id]);
-        if (sp_streq(nm, "new"))
-          for (int i = 0; i < ds->n; i++) {
-            int init = comp_method_in_chain(c, ds->cls[i], "initialize", NULL);
-            if (init >= 0) cf_user_target(f, -1, init, argv, argc, blk);
-          }
+        /* each class as `X.new` builds it: its initialize, or a Struct's
+           or Data's members, which have none */
+        for (int i = 0; i < ds->n; i++) cf_construct(f, -1, ds->cls[i], argv, argc, blk, nm);
         return;
       }
       if (s->is_cmethod) {
@@ -1321,11 +1319,7 @@ static void cf_call(CF *f, int v) {
       const ClsSet *ds = &f->pool[f->desc[s->class_id]];
       cf_add_set(f, v, f->desc[s->class_id]);
       if (ds->all) { for (int i = 0; i < argc; i++) cf_all(f, argv[i]); return; }
-      if (sp_streq(nm, "new"))
-        for (int i = 0; i < ds->n; i++) {
-          int init = comp_method_in_chain(c, ds->cls[i], "initialize", NULL);
-          if (init >= 0) cf_user_target(f, -1, init, argv, argc, blk);
-        }
+      for (int i = 0; i < ds->n; i++) cf_construct(f, -1, ds->cls[i], argv, argc, blk, nm);
       return;
     }
   }
