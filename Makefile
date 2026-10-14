@@ -4603,6 +4603,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	$(SPINEL) test/gc_root_hoisted_arg_once.rb -c --no-line-map -o "$$tmp/rha.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (gc_root_hoisted_arg_once: -c)"; ok=0; }; \
 	awk '/ sp_make_tree\(sp_int lv_depth\) \{/,/^}/' "$$tmp/rha.c" > "$$tmp/rha_mt.c"; \
 	grep -q 'sp_make_tree(' "$$tmp/rha_mt.c" && ! grep -Eq '_gcf\.v\[[0-9]+\] = _gcf\.v\[[0-9]+\];|_t[0-9]+ = _t[0-9]+;' "$$tmp/rha_mt.c" || { echo "infer-test: FAIL (an argument the call hoisted into a rooted temp is copied into a second rooted one)"; ok=0; }; \
+	$(SPINEL) --dump-repr test/append_hash_literal_through_untyped_index.rb > "$$tmp/ahl.repr" 2>/dev/null || { echo "infer-test: FAIL (append_hash_literal_through_untyped_index: --dump-repr)"; ok=0; }; \
+	grep -Fq 'ivar Jar @out: ptr ty=str_str_hash' "$$tmp/ahl.repr" || { echo "infer-test: FAIL (an append of a Hash literal through an untyped index made stored Strings handles)"; ok=0; }; \
 	if [ "$(FFI_AVAILABLE)" = yes ]; then \
 	  for flags in '' --share-strings; do \
 	    $(SPINEL) $$flags --dump-repr packages/fiddle/test/fiddle_importer.rb > "$$tmp/fi.repr" 2>/dev/null || { echo "infer-test: FAIL (fiddle_importer $$flags)"; ok=0; }; \
