@@ -137,13 +137,14 @@ static inline void wl_lock(sp_wlock *l) {
 }
 static inline void wl_unlock(sp_wlock *l) { SP_ATOMIC_STORE(l, 0, __ATOMIC_RELEASE); }
 /* PoC ablation switches (temporary): POC_NOFAST, POC_NOIDLE, POC_NOPLACE */
-static int g_poc_nofast = -1, g_poc_noidle = -1, g_poc_noplace = -1;
+static int g_poc_nofast = -1, g_poc_noidle = -1, g_poc_noplace = -1, g_poc_placeidle = -1;
 static void poc_switches(void) {
   if (g_poc_nofast >= 0) return;
   const char *e;
   g_poc_nofast = (e = getenv("POC_NOFAST")) && *e == '1';
   g_poc_noidle = (e = getenv("POC_NOIDLE")) && *e == '1';
   g_poc_noplace = (e = getenv("POC_NOPLACE")) && *e == '1';
+  g_poc_placeidle = (e = getenv("POC_PLACEIDLE")) && *e == '1';
 }
 
 /* ---- stop-the-world GC barrier (design 6.2) ----
@@ -2638,7 +2639,22 @@ sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
      which it runs without the scheduler lock. */
   if (g_current == &g_main_thread && g_worker_cap > 0) {
     poc_switches();
-    if (g_poc_noplace || !sched_place_unstarted(0, t)) { rq_push(t); SCHED_WAKE(); }
+    if (g_poc_placeidle) {
+      /* only onto a worker parked for work that no wake has claimed: it is
+         woken straight onto its own queue; otherwise the global queue, where
+         the first worker free takes it (and places it as before) */
+      int best = -1;
+      for (int i = 1; i < sp_active_workers; i++)
+        if (g_wslot[i].active && g_wslot[i].parked && !g_wslot[i].wake_sent && (best < 0 || g_wslot[i].pinned < g_wslot[best].pinned)) best = i;
+      if (best > 0) {
+        t->home_wid = (short)best; g_wslot[best].pinned++;
+        g_wslot[best].wake_sent = 1;
+        lrq_push(best, t);
+        sched_wake_home(best);
+      }
+      else { rq_push(t); SCHED_WAKE(); }
+    }
+    else if (g_poc_noplace || !sched_place_unstarted(0, t)) { rq_push(t); SCHED_WAKE(); }
   }
   else
 #endif
