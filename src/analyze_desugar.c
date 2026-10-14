@@ -1374,12 +1374,14 @@ int desugar_explicit_receiver_mixin(Compiler *c) {
 
 /* ---- `singleton_class.prepend(Mod)` in a class or module body ------------
    The statement adds Mod's methods to the class object -- what `extend Mod`
-   does, the precedence between Mod and the class's own singleton methods
-   aside (prepend puts Mod first; a static program has no such override to
-   arbitrate). activesupport's core_ext/enumerable.rb prepends a
-   const_missing hook onto Enumerable's singleton this way, and the whole
-   statement was refused as Object#singleton_class. `singleton_class.include`
-   is the same shape. */
+   does, but in front of the class's own singleton methods, where an extend
+   puts it behind them: the extend is marked `sclass_prepend`, and
+   extend_class_with lets Mod's method take the name and the class's own a
+   shadow its `super` reaches (activesupport's core_ext/erb/util.rb prepends
+   its html_escape onto ERB::Util's own so). activesupport's
+   core_ext/enumerable.rb prepends a const_missing hook onto Enumerable's
+   singleton this way, and the whole statement was refused as
+   Object#singleton_class. `singleton_class.include` is an extend. */
 int desugar_singleton_class_mixin(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
@@ -1406,6 +1408,7 @@ int desugar_singleton_class_mixin(Compiler *c) {
       for (int a = 0; a < an; a++)
         if (nt_kind(nt, av[a]) != NK_ConstantReadNode && nt_kind(nt, av[a]) != NK_ConstantPathNode) ok = 0;
       if (!ok) continue;
+      if (sp_streq(nm, "prepend")) nt_node_set_int(nt, st, "sclass_prepend", 1);
       nt_node_set_str(nt, st, "name", "extend");
       nt_node_set_ref(nt, st, "receiver", -1);
       nt_node_reset(nt, recv, "NilNode");
