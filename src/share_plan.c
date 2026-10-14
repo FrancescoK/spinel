@@ -149,18 +149,24 @@ static int share_plan_yield_supply(Compiler *c, int v, int depth);
         asked the rules below;
      3. a frozen String, whose handle is its own (SPK_FROZEN);
      4. a call that answers its String receiver (SPK_SELF; *op is that
-        receiver), a bang on a boxed receiver (SPK_BANG_BOX; *op the
-        receiver), a boxed receiver's call whose arms each answer a String,
-        read as a box whose handle is bound (SPK_POLY_ARMS);
+        receiver), or a chain whose base is held as its handle where a
+        mutator takes it (strbuf_held_chain: SPK_SELF with no operand), a
+        bang on a boxed receiver (SPK_BANG_BOX; *op the receiver), a boxed
+        receiver's call whose arms each answer a String, read as a box
+        whose handle is bound (SPK_POLY_ARMS);
      5. a new String (share_value_fresh), which has no handle to hand over,
         whatever a route says about whether its copy can be seen: none;
      6. super in an exception's text override (SPK_EXC_SUPER);
-     7. the route the analysis checks a carry against
+     7. a call whose answer the C picks up after it, the handle its targets
+        publish (SPK_PUBLISHED, strbuf_call_picks_up), whatever route the
+        call is besides;
+     8. the route the analysis checks a carry against
         (share_node_carry_kind, which names each route by its kind: a
         callee that publishes the handle, a reader, a write, a value route
-        over an operand, a block's value, a conditional ...), and a `||` or
-        `&&` with a bang on a boxed receiver on an arm (SPK_COND);
-     8. parentheses or statements: their last statement (SPK_SEQUENCE).
+        over an operand, a block's value, a conditional ...); a `||` or
+        `&&` with a bang on a boxed receiver on an arm (SPK_COND); a yield
+        a block splices, asked outside the splice (SPK_YIELD);
+     9. parentheses or statements: their last statement (SPK_SEQUENCE).
    Anything else has its bytes only (SPK_NONE). */
 static int share_plan_producer_core(Compiler *c, int v, int *op, int unlifted) {
   const NodeTable *nt = c->nt;
@@ -176,6 +182,9 @@ static int share_plan_producer_core(Compiler *c, int v, int *op, int unlifted) {
     }
   }
   if (share_frozen_string(c, v)) return SPK_FROZEN;
+  /* (a chain whose base is held as its handle where a mutator takes it,
+     strbuf_held_chain: that held handle, SPK_SELF with no operand) */
+  if (strbuf_held_chain(c, an_unparen(nt, v))) return SPK_SELF;
   int rv = share_plan_self_recv(c, v);
   if (rv >= 0) { *op = rv; return SPK_SELF; }
   if (face_str_bang_call(c, v)) { *op = nt_ref(nt, v, "receiver"); return SPK_BANG_BOX; }
@@ -186,6 +195,10 @@ static int share_plan_producer_core(Compiler *c, int v, int *op, int unlifted) {
   if (repr_share_rule(c) && strbuf_poly_user_base(c, v) >= 0) return SPK_POLY_ARMS;
   if (share_value_fresh(c, v, 0)) return SPK_NONE;
   if (share_plan_exc_super(c, v)) return SPK_EXC_SUPER;
+  /* (a call whose answer the C picks up after it, the handle its targets
+     publish: that pickup, whatever route the call is besides) */
+  { int u = an_unparen(nt, v);
+    if (u >= 0 && nt_kind(nt, u) == NK_CallNode && strbuf_call_picks_up(c, u)) return SPK_PUBLISHED; }
   int k = unlifted ? share_node_carry_kind_unlifted(c, v, op) : share_node_carry_kind(c, v, op);
   if (k != SPK_NONE) return k;
   /* (a yield a block splices, asked outside the splice: its method's
@@ -321,6 +334,13 @@ static int share_plan_arms_ok(Compiler *c, int v, int depth) {
       if (!share_plan_body_ok(c, nt_ref(nt, rc, "statements"), NK_NONE, 0, depth)) return 0;
     return el < 0 || share_plan_body_ok(c, nt_ref(nt, el, "statements"), NK_NONE, 0, depth);
   }
+  case NK_CallNode: {
+    /* `+g` answers g itself, or a new String where g is frozen */
+    const char *nm = nt_str(nt, v, "name");
+    int r = nt_ref(nt, v, "receiver");
+    if (nm && is_unary_plus(nm) && r >= 0 && nt_ref(nt, v, "arguments") < 0) return share_plan_arms_ok(c, r, depth + 1);
+    return share_plan_leaf_ok(c, v, 0, depth);
+  }
   default:
     return share_plan_leaf_ok(c, v, 0, depth);
   }
@@ -451,7 +471,15 @@ static int share_plan_supply_at(Compiler *c, int v, int *op, int depth) {
 static int share_plan_supply_kind(Compiler *c, int v, int k, int *op, int depth) {
   switch (k) {
   case SPK_NONE: return 0;
-  case SPK_SELF: case SPK_SEQUENCE: return -1;
+  case SPK_SELF: return *op >= 0 ? -1 : 1;
+  case SPK_SEQUENCE: return -1;
+  /* a call whose targets publish their handle: where it picks the handle
+     up after the call, only if every target publishes it on each path
+     (strbuf_pickup_published); else the pickup falls back to a new one */
+  case SPK_PUBLISHED: {
+    int u = an_unparen(c->nt, v);
+    return !(u >= 0 && nt_kind(c->nt, u) == NK_CallNode && strbuf_call_picks_up(c, u)) || strbuf_pickup_published(c, u);
+  }
   case SPK_OPERAND: {
     if (*op >= 0) return -1;
     /* a String clamp: each operand it can answer */
@@ -479,7 +507,7 @@ static int share_plan_supply_kind(Compiler *c, int v, int k, int *op, int depth)
     return share_plan_yield_supply(c, v, depth) != 0;
   case SPK_BOX: case SPK_SLOT: case SPK_DEMANDED: case SPK_ELEM: case SPK_SLOT_POLY: case SPK_FROZEN:
   case SPK_BANG_BOX: case SPK_PROC_CALL: case SPK_POLY_ARMS: case SPK_EXC_MESSAGE: case SPK_EXC_SUPER:
-  case SPK_PUBLISHED: case SPK_READER: case SPK_WRITE: case SPK_ASSIGN:
+  case SPK_READER: case SPK_WRITE: case SPK_ASSIGN:
     return 1;
   }
   return 0;

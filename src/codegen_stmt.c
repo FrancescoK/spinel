@@ -22881,7 +22881,7 @@ int strbuf_flow_unseen(Compiler *c, int v) {
    settled ret_handle)? A pickup marked while the types were still moving
    can reach a tail that publishes none, and the call then answers a copy.
    Targets the plan cannot list are left to the mark. */
-static int strbuf_pickup_published(Compiler *c, int v) {
+int strbuf_pickup_published(Compiler *c, int v) {
   int tg[CPT_MAX], n = cplan_targets(c, v, tg, CPT_MAX);
   for (int i = 0; i < n; i++)
     if (!scope_ret_handle(c, tg[i])) return 0;
@@ -23040,22 +23040,22 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
   int ctx = SFC_BOX;
   NodeKind sk = site >= 0 && kind != SHFL_LEND ? nt_kind(nt, site) : NK_NONE;
   switch (kind) {
-  case SHFL_WRITE: {
-    /* a boxed slot takes its value through emit_boxed, as an element does */
+  case SHFL_WRITE:
+    /* a variable's, an ivar's or an attribute's write takes its value by
+       the box face (a boxed slot) or as the handle a shared slot takes
+       (emit_strbuf_value), each by the String plan's producer kinds: it
+       is carried where the plan does not refuse what the store needs */
+  {
+    /* (a boxed slot takes the value as a box does) */
     HolderRef h;
-    if (holder_of_node(c, site, &h) && h.r.kind == RK_BOXED) ctx = SFC_ELEM;
-    else if (sk == NK_InstanceVariableWriteNode && repr_write_share(c, site) &&
-             strbuf_ivar_store_aliases(c, v)) ctx = SFC_ALIAS;
-    else ctx = sk == NK_LocalVariableWriteNode || sk == NK_GlobalVariableWriteNode || sk == NK_ClassVariableWriteNode ||
-               sk == NK_ConstantWriteNode || sk == NK_ConstantPathWriteNode ? SFC_ALIAS : SFC_SLOT;
-    /* a String bang on a boxed receiver written into a local's handle hands
-       on the receiver's handle (emit_strbuf_value) */
-    if (ctx == SFC_ALIAS && sk == NK_LocalVariableWriteNode && face_str_bang_call(c, unwrap_parens(c, v))) return 1;
-    /* so does a boxed receiver's call of methods that each answer a
-       String, the handle they publish or a new one: the local takes the
-       box's handle (strbuf_poly_user_base, emit_strbuf_value) */
-    if (ctx == SFC_ALIAS && sk == NK_LocalVariableWriteNode && strbuf_poly_user_base(c, v) >= 0) return 1;
-    break;
+    int boxed = holder_of_node(c, site, &h) && h.r.kind == RK_BOXED;
+    SharePlan p = share_plan_of(c, v, boxed ? SPR_BOX : SPR_STORE, NULL);
+    /* (a shared slot takes a `||` or `&&` with a bang on a boxed receiver
+       on an arm whole, as its bytes: the box face alone takes it arm by
+       arm. This goes when the handle face renders a conditional arm by arm
+       too) */
+    if (!boxed && p.form == SPF_HANDLE && strbuf_face_bang_cond(c, unwrap_parens(c, v))) return p.need != SPN_OBJECT;
+    return p.form != SPF_REFUSE;
   }
   case SHFL_MEMBER: case SHFL_PARAM: case SHFL_MUTATE: ctx = SFC_ALIAS; break;
   case SHFL_MULTI: ctx = SFC_SLOT; break;
