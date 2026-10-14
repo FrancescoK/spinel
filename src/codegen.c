@@ -8468,6 +8468,20 @@ static void emit_proc_scalar_param_bind(Buf *pb, TyKind pt, int k, int oint) {
   else buf_printf(pb, "args[%d];\n", k);
 }
 
+static void emit_proc_ie_self(Compiler *c, int ie_cls, int rself, int body, Buf *pb) {
+  if (ie_cls >= 0)
+    buf_printf(pb, "    sp_%s *self = (sp_%s *)_sp_ie_self; _sp_ie_self = NULL;\n"
+               "    if (!self) sp_raise_cls(\"NotImplementedError\", \"proc bound to instance_eval called without it\");\n",
+               c->classes[ie_cls].c_name, c->classes[ie_cls].c_name);
+  if (rself != 1) return;
+  Buf rb; memset(&rb, 0, sizeof rb);
+  g_ie_rself_on = 0;
+  emit_expr(c, (int)nt_int(c->nt, body, "ie_rself_at", 0) - 1, &rb);
+  buf_printf(pb, "    sp_RbVal _sp_rself = sp_ie_rself(%s); (void)_sp_rself;\n", rb.p ? rb.p : "sp_box_nil()");
+  free(rb.p);
+  g_ie_rself_on = 1;
+}
+
 static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *cty = nt_type(nt, create);
@@ -8839,7 +8853,7 @@ else if (orecv >= 0 && onm) {
      field. A class-method self has no instance and is left as-is. */
   int ie_mark = ie_class_of(c, body) == ie_class_of(c, create) ? -1 : ie_class_of(c, body);
   if (ie_mark < -1) unsupported(c, create, "proc run by instance_eval on more than one class");
-  int ie_cls = ie_mark >= 0 && proc_body_uses_self(c, body, ie_mark) ? ie_mark : -1;
+  int ie_cls = ie_mark >= 0 && proc_body_uses_self(c, body, ie_mark) ? ie_mark : -1, rself = ie_mark < 0 && body >= 0 ? (int)nt_int(nt, body, "ie_rself_lit", 0) : 0, sv_rself_on = g_ie_rself_on;
   int scls = g_ie_class_id >= 0 ? g_ie_class_id : bs && !bs->is_cmethod ? bs->class_id : -1;
   int cap_self = ie_cls < 0 && scls >= 0 &&
                  (proc_body_uses_self(c, body, scls) ||
@@ -9128,10 +9142,7 @@ else if (orecv >= 0 && onm) {
     buf_printf(pb, "    sp_Class _sp_cls = ((_proc_cap_%d *)_cap)->__self_cls;\n", pid);
     buf_puts(pb, "    (void)_sp_cls;\n");
   }
-  if (ie_cls >= 0)
-    buf_printf(pb, "    sp_%s *self = (sp_%s *)_sp_ie_self; _sp_ie_self = NULL;\n"
-               "    if (!self) sp_raise_cls(\"NotImplementedError\", \"proc bound to instance_eval called without it\");\n",
-               c->classes[ie_cls].c_name, c->classes[ie_cls].c_name);
+  emit_proc_ie_self(c, ie_cls, rself, body, pb);
   /* Lambda: strict arity -- requireds + trailing posts mandatory, optionals
      widen the max, a splat rest lifts it entirely. */
   int has_kwrest = 0, no_kw = 0;
@@ -9640,7 +9651,7 @@ else if (orecv >= 0 && onm) {
   g_block_param_name = sv_bpn; g_self = sv_self; g_result_var = sv_rv; g_ret_type = sv_rt; g_ret_oint = sv_rto;
   g_conv_hold = sv_conv_hold;
   g_self_deref = sv_deref;
-  g_ie_class_id = sv_iec;
+  g_ie_class_id = sv_iec; g_ie_rself_on = sv_rself_on;
   if (bs) { bs->class_id = sv_bcls; bs->is_cmethod = sv_bcm; }
   if (bs_moved) comp_scope_move_end();
   g_cap_struct = sv_cap_struct; g_cap_names = sv_cap_names; g_ensure_depth = sv_ensure_depth;
@@ -9654,7 +9665,7 @@ else if (orecv >= 0 && onm) {
   g_rescue_save_depth = sv_rsd;
   g_fn_pr_label = sv_fn_prl; g_fn_pr_var = sv_fn_prv; g_fn_ret_type = sv_fn_rt;
 
-  if (ie_mark >= 0) buf_puts(b, "({ sp_Proc *_pie = ");
+  if (ie_mark >= 0 || rself) buf_puts(b, "({ sp_Proc *_pie = ");
   if (ncap == 0 && !cap_self && !cap_cls && !ret_proc && !brk_blk) {
     buf_printf(b, "sp_proc_new_meta((void *)_proc_%d, NULL, NULL, %d, %s, %d, %s)",
                pid, meta_arity, is_lambda ? "TRUE" : "FALSE", meta_count, meta_args);
@@ -9710,7 +9721,7 @@ else if (orecv >= 0 && onm) {
     buf_printf(b, "sp_proc_new_meta((void *)_proc_%d, _capv_%d, _proc_cap_scan_%d, %d, %s, %d, %s)",
                pid, pid, pid, meta_arity, is_lambda ? "TRUE" : "FALSE", meta_count, meta_args);
   }
-  if (ie_mark >= 0) buf_printf(b, "; _pie->ie_cls = %d; _pie; })", ie_mark + 1);
+  if (ie_mark >= 0 || rself) buf_printf(b, "; _pie->ie_cls = %d; _pie; })", ie_mark >= 0 ? ie_mark + 1 : -rself);
 
   free(params.v); free(used.v); free(locals.v); free(caps.v);
 }

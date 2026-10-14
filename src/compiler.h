@@ -1822,6 +1822,7 @@ int        name_is_plain_setter(const char *name);
 int        call_is_setter_assign(const NodeTable *nt, int id);
 int        proc_parameters_lambda_mode(const NodeTable *nt, int argc, const int *argv);
 int        self_is_main(Compiler *c, int node);
+int        self_is_main_raw(Compiler *c, int node);
 int        self_class_body(Compiler *c, int node);
 int        attr_decl_call(Compiler *c, int id);
 enum { VIS_DECL_NIL = 1, VIS_DECL_SYM, VIS_DECL_ARRAY, VIS_DECL_SELF };

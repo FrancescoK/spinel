@@ -18975,6 +18975,18 @@ static inline void sp_proc_arg_set(sp_int k, sp_RbVal v) {
 SP_TLS sp_Proc *_sp_proc_blk;
 #endif
 static SP_TLS void *_sp_ie_self;
+static SP_TLS sp_RbVal _sp_ie_rself;
+static SP_TLS sp_bool _sp_ie_rself_on;
+static inline sp_Proc *sp_ie_bind(sp_Proc *p, sp_RbVal self) {
+  if (p->ie_cls == -1) { _sp_ie_rself = self; _sp_ie_rself_on = 1; }
+  else if (p->ie_cls) sp_raise_cls("NotImplementedError", "instance_exec of a proc whose self spinel cannot rebind");
+  return p;
+}
+static inline sp_RbVal sp_ie_rself(sp_RbVal dflt) {
+  if (!_sp_ie_rself_on) return dflt;
+  _sp_ie_rself_on = 0;
+  return _sp_ie_rself;
+}
 /* What the call site's trailing argument is: 1 a positional (a Hash passed
    as `pr.call(5, {k: 2})`), 2 keywords, 3 keywords that came to nothing
    (an empty `**h`, which passes no argument), 0 not said (a runtime path).

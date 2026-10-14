@@ -826,6 +826,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
        so resolve the BlockArgumentNode to it (as `inner(&block)` does). */
     if (blk >= 0 && nt_type(nt, blk) && sp_streq(nt_type(nt, blk), "BlockArgumentNode")) {
       if (emit_ie_proc(c, id, recv, ie_self_cls, blk, ie_direct ? 0 : ie_tramp, b)) return 1;
+      if (ie_direct && recv >= 0 && nt_int(nt, id, "ie_usite", 0) && emit_ie_untraced(c, id, recv, blk, b)) return 1;
       int is_exec = sp_streq(name, "instance_exec");
       if (g_block_id < 0 && ie_direct && recv < 0 && (is_exec || argc == 0) &&
           resolve_forwarded_block(c, blk) < 0 && !g_yield_proc_ref && !g_current_scope_is_lowered) {

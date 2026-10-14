@@ -5049,14 +5049,24 @@ static TyKind emit_paren_tail(Compiler *c, int paren, int tail, Buf *b) {
   else emit_expr(c, tail, b);
   return tt;
 }
+int g_ie_rself_on;
+static int g_ie_rself_raw;
 static void emit_self_expr(Compiler *c, int id, Buf *b) {
+  if (!g_ie_rself_raw && nt_int(c->nt, id, "ie_rself", 0)) {
+    if (g_ie_rself_on) { buf_puts(b, "_sp_rself"); return; }
+    Buf tb; memset(&tb, 0, sizeof tb);
+    g_ie_rself_raw = 1; emit_self_expr(c, id, &tb); g_ie_rself_raw = 0;
+    emit_boxed_text(c, an_self_node_type(c, id), tb.p ? tb.p : "", b);
+    free(tb.p);
+    return;
+  }
   /* a statement of a class or module body: the class object itself */
   { int cb = self_class_body(c, id);
     /* in a `class << X` body: X's singleton class */
     if (cb >= 0 && nt_int(c->nt, id, "sclass_value", 0)) { buf_printf(b, "((sp_Class){sp_sclass_id(%d)})", cb); return; }
     if (cb >= 0) { buf_printf(b, "((sp_Class){%d})", cb); return; } }
   /* top-level self is main, which no C scope holds (#4926) */
-  if (self_is_main(c, id)) { buf_puts(b, "sp_main_self()"); return; }
+  if (self_is_main_raw(c, id)) { buf_puts(b, "sp_main_self()"); return; }
   /* self inside a method added to Array (desugar_builtin_reopen_self_calls
      marks it): the method holds self boxed, read here as the poly array */
   if (nt_int(c->nt, id, "ary_self", 0) && g_self && sp_streq(g_self, "self") &&

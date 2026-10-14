@@ -645,6 +645,7 @@ extern int g_dm_subst_node;
 /* When inside an instance_eval block, the class id of the receiver (-1 outside).
    Used so InstanceVariableReadNode/WriteNode use g_self->iv_X instead of civ_Toplevel_X. */
 extern int g_ie_class_id;
+extern int g_ie_rself_on;
 /* Set while emitting an instance_eval/exec splice in statement position: the
    block's value is discarded, so the last statement emits as a statement
    (not coerced to an expression, which would fail for e.g. a trailing puts). */
