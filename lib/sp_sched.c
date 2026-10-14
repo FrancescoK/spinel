@@ -3783,6 +3783,11 @@ static void sp_sched_block(sp_thread **waitlist, int defer_inject) {   /* PRE/PO
       SCHED_UNLOCK();
       sp_raise_cls("ThreadError", "deadlock detected: all threads blocked");
     }
+    /* a #raise that woke main fires here, lock not held, as below */
+    if (defer_inject) sp_fiber_defer_inject();
+    SCHED_UNLOCK();
+    sp_fiber_fire_inject_if_pending();
+    SCHED_LOCK();
   }
   else {
     /* The symmetric fiber transfer's exc bookkeeping clobbers this thread's
@@ -3834,6 +3839,8 @@ static void sp_sched_block_wl(sp_thread **waitlist, sp_wlock *wl, int defer_inje
       sp_raise_cls("ThreadError", "deadlock detected: all threads blocked");
     }
     SCHED_UNLOCK();
+    if (defer_inject) sp_fiber_defer_inject();
+    sp_fiber_fire_inject_if_pending();   /* a #raise that woke main */
   }
   else {
     void *exc_snap = sp_exc_ctx_new();
@@ -3896,6 +3903,9 @@ static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mute
       SCHED_UNLOCK();
       sp_raise_cls("ThreadError", "deadlock detected: all threads blocked");
     }
+    /* a #raise that woke main fires here, or once its mutex is held again */
+    if (mutex) sp_fiber_defer_inject();
+    else { SCHED_UNLOCK(); sp_fiber_fire_inject_if_pending(); SCHED_LOCK(); }
   }
   else {
     void *exc_snap = sp_exc_ctx_new();

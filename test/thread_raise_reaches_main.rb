@@ -1,7 +1,9 @@
 # Thread#raise aimed at the main thread from another thread was dropped:
 # main runs on the scheduler's root fiber, which had no slot for it. A main
 # waiting in a Queue#pop that only the raise was going to end deadlocked.
-# The raise now lands in main at the wait it is in, as CRuby's does.
+# The raise now lands in main at the wait it is in, as CRuby's does,
+# including the timed ones; one that waits on a ConditionVariable is
+# raised once its mutex is held again.
 Thread.report_on_exception = false
 def try(label)
   yield
@@ -45,4 +47,31 @@ try("read") { r.read(1) }
 t.join
 w.close
 r.close
+
+hold = Queue.new
+other = Thread.new { hold.pop }
+t = Thread.new { sleep 0.05; main.raise "in join limit" }
+try("join limit") { other.join(5) }
+t.join
+hold << 1
+other.join
+
+q = Queue.new
+t = Thread.new { sleep 0.05; main.raise "in pop timeout" }
+try("pop timeout") { q.pop(timeout: 5) }
+t.join
+
+m = Mutex.new
+cv = ConditionVariable.new
+t = Thread.new { sleep 0.05; main.raise "in cv wait" }
+try("cv wait") { m.synchronize { cv.wait(m) } }
+t.join
+
+m2 = Mutex.new
+cv2 = ConditionVariable.new
+t = Thread.new { sleep 0.05; main.raise "in cv wait timeout" }
+try("cv wait timeout") { m2.synchronize { cv2.wait(m2, 5) } }
+t.join
+p m.locked?
+p m2.locked?
 puts "done"
