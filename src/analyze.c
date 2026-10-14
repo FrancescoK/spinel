@@ -20643,9 +20643,15 @@ static int share_lift_value(Compiler *c, int v) {
   if (k == NK_StringNode) return 0;
   /* a String-typed value, a conditional's included, is boxed whole */
   if (k != NK_BeginNode && infer_type(c, v) == TY_STRING) {
-    if (c->poly_strbuf_lift[v]) return 0;
-    c->poly_strbuf_lift[v] = 1;
-    return 1;
+    int changed = 0;
+    if (!c->poly_strbuf_lift[v]) { c->poly_strbuf_lift[v] = 1; changed = 1; }
+    /* a `||` or `&&` marked whole marks its operands too, as one of mixed
+       types does below: the box of each is what an enclosing logic node or
+       the return unboxes (an_boxed_logic_ok accepts them as it does). A
+       conditional's arms are lifted by its own box (emit_boxed_cond_arms) */
+    if (k == NK_OrNode || k == NK_AndNode)
+      changed |= share_lift_arms(c, nt_ref(nt, v, "left")) | share_lift_arms(c, nt_ref(nt, v, "right"));
+    return changed;
   }
   /* a conditional value of mixed types: each arm that can be a String (the
      boxed slot's value boxes each arm on its own). A `case`, `case`/`in`
@@ -22314,10 +22320,13 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc);
 static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *n, RetHandles *R);
 /* A box a seeded String method answers: its unboxing at the return
    publishes the handle the box holds (sp_poly_unbox_s_pub). */
-/* A boxed `x || y` / `x && y` builds its box from its operands: a String
-   call's operand is boxed from its bytes, which holds no handle, so such
-   an operand (the `s` of `k || s`, a reader of a shared String) keeps the
-   tail refused. A box, a variable or a literal operand is boxed whole. */
+/* A boxed `x || y` / `x && y` builds its box from its operands. A String
+   call's operand is boxed from the handle the call publishes (its pickup),
+   as an unseeded method's is (share_lift_seeded_tail marks it), where it
+   holds one, or lifted into a new handle where it answers a new String; any
+   other call's answer is boxed from its bytes, which holds no handle, so
+   that operand keeps the tail refused. A box, a variable or a literal
+   operand is boxed whole. */
 static int an_boxed_logic_ok(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   node = an_unparen(nt, node);
@@ -22325,7 +22334,8 @@ static int an_boxed_logic_ok(Compiler *c, int node) {
   NodeKind k = nt_kind(nt, node);
   if (k == NK_OrNode || k == NK_AndNode)
     return an_boxed_logic_ok(c, nt_ref(nt, node, "left")) && an_boxed_logic_ok(c, nt_ref(nt, node, "right"));
-  return k != NK_CallNode || c->ntype[node] == TY_POLY;
+  return k != NK_CallNode || c->ntype[node] == TY_POLY || repr_call_returns_handle(c, node) ||
+         share_value_fresh(c, node, 0);
 }
 static int an_tail_boxed_string(Compiler *c, int node, TailCount *tc) {
   int mi = tc->mi;
@@ -22333,7 +22343,13 @@ static int an_tail_boxed_string(Compiler *c, int node, TailCount *tc) {
       c->scopes[mi].ret != TY_STRING || node < 0 || c->ntype[node] != TY_POLY) return 0;
   /* the kinds whose unboxing at the return is the one that publishes */
   NodeKind k = nt_kind(c->nt, node);
-  if (k == NK_OrNode || k == NK_AndNode) return an_boxed_logic_ok(c, node);
+  if (k == NK_OrNode || k == NK_AndNode) {
+    if (!an_boxed_logic_ok(c, node)) return 0;
+    /* its call operands are boxed as an unseeded method's are (the lift
+       emit_boxed reads), a call by the handle it publishes */
+    share_lift_value(c, node);
+    return 1;
+  }
   return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_CallNode;
 }
 static int an_stmts_tail_shared(Compiler *c, int st, int nil_ok, TailCount *tc, RetHandles *R) {
