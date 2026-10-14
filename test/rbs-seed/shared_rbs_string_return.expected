@@ -13,3 +13,4 @@ elsifs: abc! abc!
 cased: abc! abc!
 looped: abc! abc!
 memo: abc! abc!
+orlocal: abc! abc! true

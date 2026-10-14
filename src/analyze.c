@@ -21821,19 +21821,32 @@ int an_tail_logic_op(Compiler *c, int node) {
 }
 /* The return walk's state: per method, how far it is decided (st), and
    how many decisions where an answer was asked (an_ret_settle) are open. */
-typedef struct RetHandles { unsigned char *st; int *ret_start, *ret_list; int fresh, settling; } RetHandles;
+typedef struct RetHandles { unsigned char *st; int *ret_start, *ret_list; int fresh, settling; int *par; } RetHandles;
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc);
 static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *n, RetHandles *R);
 /* A box a seeded String method answers: its unboxing at the return
    publishes the handle the box holds (sp_poly_unbox_s_pub). */
+/* A boxed `x || y` / `x && y` builds its box from its operands: a String
+   call's operand is boxed from its bytes, which holds no handle, so such
+   an operand (the `s` of `k || s`, a reader of a shared String) keeps the
+   tail refused. A box, a variable or a literal operand is boxed whole. */
+static int an_boxed_logic_ok(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  node = an_unparen(nt, node);
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_OrNode || k == NK_AndNode)
+    return an_boxed_logic_ok(c, nt_ref(nt, node, "left")) && an_boxed_logic_ok(c, nt_ref(nt, node, "right"));
+  return k != NK_CallNode || c->ntype[node] == TY_POLY;
+}
 static int an_tail_boxed_string(Compiler *c, int node, TailCount *tc) {
   int mi = tc->mi;
   if (!c->share_strings || tc->in_begin || mi <= 0 || !c->scopes[mi].ret_rbs_seeded ||
       c->scopes[mi].ret != TY_STRING || node < 0 || c->ntype[node] != TY_POLY) return 0;
   /* the kinds whose unboxing at the return is the one that publishes */
   NodeKind k = nt_kind(c->nt, node);
-  return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_CallNode ||
-         k == NK_OrNode || k == NK_AndNode;
+  if (k == NK_OrNode || k == NK_AndNode) return an_boxed_logic_ok(c, node);
+  return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_CallNode;
 }
 static int an_stmts_tail_shared(Compiler *c, int st, int nil_ok, TailCount *tc, RetHandles *R) {
   int n = 0; const int *b = st >= 0 && nt_kind(c->nt, st) == NK_StatementsNode ? nt_arr(c->nt, st, "body", &n) : NULL;
@@ -22169,6 +22182,20 @@ static int an_tail_append_chain(Compiler *c, int n) {
   return n >= 0 && nt_kind(c->nt, n) == NK_CallNode && str_append_chain(c, n, chain, &base) > 0 &&
          an_arg_is_shared_handle(c, base);
 }
+/* Is `return` node ret inside a begin with an ensure (a def's or a block's
+   own `ensure` is one)? Its value is held in a result slot until the ensure
+   has run, which does not publish a box's handle. */
+static int an_return_in_ensure(Compiler *c, RetHandles *R, int ret) {
+  const NodeTable *nt = c->nt;
+  if (!R->par) R->par = an_parent_map(nt);
+  if (!R->par) return 1;
+  for (int p = R->par[ret]; p >= 0; p = R->par[p]) {
+    NodeKind k = nt_kind(nt, p);
+    if (k == NK_DefNode) return 0;
+    if (k == NK_BeginNode && nt_ref(nt, p, "ensure_clause") >= 0) return 1;
+  }
+  return 0;
+}
 static int an_ret_handle_body(Compiler *c, RetHandles *R, int mi) {
   Scope *m = &c->scopes[mi];
   /* A String reopening's proc form reads the same incoming handle. */
@@ -22207,7 +22234,12 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
     int rn = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
     saw = 1;
     if (rn == 0) tc.nils++;
-    else ok = rn == 1 && an_tail_handle(c, R, rv[0], &tc);
+    else {
+      int ens = an_return_in_ensure(c, R, R->ret_list[r]);
+      tc.in_begin += ens;
+      ok = rn == 1 && an_tail_handle(c, R, rv[0], &tc);
+      tc.in_begin -= ens;
+    }
   }
   if (tc.nils && !R->fresh) m->ret_nil_pickup = 1;
   if (ok && tc.reads > 0 && tc.fresh) m->ret_pub_fresh = 1;
@@ -22236,7 +22268,7 @@ static void an_mark_handle_returns(Compiler *c) {
   R.fresh = 1;
   for (int mi = 1; mi < c->nscopes; mi++) an_ret_handle(c, &R, mi);
   c->ret_walk = NULL;
-  free(R.st); free(R.ret_start); free(R.ret_list);
+  free(R.st); free(R.ret_start); free(R.ret_list); free(R.par);
   /* A deep-return pickup marked while the types settled, on a call whose
      method answers a box after all (a parameter that settled poly): the
      box holds the String itself, and the pickup's String read of it would
