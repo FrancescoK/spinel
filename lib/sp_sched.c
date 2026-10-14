@@ -133,6 +133,15 @@ static inline void wl_lock(sp_wlock *l) {
     }
 }
 static inline void wl_unlock(sp_wlock *l) { SP_ATOMIC_STORE(l, 0, __ATOMIC_RELEASE); }
+/* PoC ablation switches (temporary): POC_NOFAST, POC_NOIDLE, POC_NOPLACE */
+static int g_poc_nofast = -1, g_poc_noidle = -1, g_poc_noplace = -1;
+static void poc_switches(void) {
+  if (g_poc_nofast >= 0) return;
+  const char *e;
+  g_poc_nofast = (e = getenv("POC_NOFAST")) && *e == '1';
+  g_poc_noidle = (e = getenv("POC_NOIDLE")) && *e == '1';
+  g_poc_noplace = (e = getenv("POC_NOPLACE")) && *e == '1';
+}
 
 /* ---- stop-the-world GC barrier (design 6.2) ----
  * All state guarded by g_sched_lock. g_stw_active is the authoritative
@@ -2618,7 +2627,8 @@ sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
      the picker would (sched_place_unstarted): onto that worker's own queue,
      which it runs without the scheduler lock. */
   if (g_current == &g_main_thread && g_worker_cap > 0) {
-    if (!sched_place_unstarted(0, t)) { rq_push(t); SCHED_WAKE(); }
+    poc_switches();
+    if (g_poc_noplace || !sched_place_unstarted(0, t)) { rq_push(t); SCHED_WAKE(); }
   }
   else
 #endif
@@ -3386,6 +3396,7 @@ static int sp_worker_run_local(int wid) {
 
 static void *sp_worker_main(void *arg) {
   int wid = (int)(intptr_t)arg;
+  poc_switches();
   sp_worker_id = wid;          /* TLS: read only by this worker */
   sp_fiber_worker_init();
   SCHED_LOCK();
@@ -3404,7 +3415,7 @@ static void *sp_worker_main(void *arg) {
        g_nrunning; main's pump reads both to decide that nothing can wake it,
        so the slot is held in g_nrunning across the pop. */
     {
-      RQ_LOCK(wid); int have = g_lrq[wid].head != NULL; RQ_UNLOCK(wid);
+      RQ_LOCK(wid); int have = !g_poc_nofast && g_lrq[wid].head != NULL; RQ_UNLOCK(wid);
       if (have) { SCHED_UNLOCK(); sp_worker_run_local(wid); SCHED_LOCK(); continue; }
     }
 #ifdef SP_EV_BACKEND
@@ -3450,7 +3461,7 @@ static void *sp_worker_main(void *arg) {
          The count drops before stop-the-world is read, and a collection seen
          then puts us back out and through the locked path, so a collector
          that counted us out never sees us run. */
-      if (work && !SP_ATOMIC_LOAD(&g_cs_unclaimed, __ATOMIC_RELAXED)) {
+      if (work && !g_poc_nofast && !g_poc_noidle && !SP_ATOMIC_LOAD(&g_cs_unclaimed, __ATOMIC_RELAXED)) {
         SP_ATOMIC_STORE(&g_native_out[wid], 0, __ATOMIC_RELEASE);
         SP_ATOMIC_FETCH_SUB(&g_nnative, 1, __ATOMIC_SEQ_CST);
         if (!SP_ATOMIC_LOAD(&g_stw_active, __ATOMIC_SEQ_CST)) {
