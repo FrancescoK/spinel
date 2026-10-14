@@ -141,7 +141,10 @@ and coercions; not every handwritten argument or element store uses it.
     `# spinel: wasm` selects the WASI smoke tests; `# spinel: decisions`
     selects the decision checks. In `test/rbs-seed/`, `# spinel: rbs-seed-run`
     selects an output check and `# spinel: rbs-seed-check` selects an existing
-    named assertion in the RBS harness.
+    named assertion in the RBS harness. Every `test/rbs-seed/` program with an
+    `.expected` also runs under `--share-strings` with its signatures in
+    `share-strings-test`; `# spinel: rbs-seed-no-share` keeps one out (say why
+    in its header).
     The other `reject-*` markers select the diagnostic assertion named in
     `reject-test`; `rbs-seed-contradicted-return` selects its grouped refusal
     check, and `infer-ivar-get` selects the boxed instance-variable read check.
