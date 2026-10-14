@@ -79,6 +79,7 @@ typedef struct sp_thread {
   int               io_nset;
   struct sp_thread *wait_next;   /* link within the wait list it is parked on */
   struct sp_thread **wait_head;  /* head of that wait list, so #kill/#raise can unpark it */
+  struct sp_thread *io_prev;     /* the waiter before it on the I/O waiter list, for an O(1) unlink */
   struct sp_thread *all_next, *all_prev;  /* registry of live threads (GC roots) */
   void             *tls;         /* thread-local storage (Thread#[] / #[]=); lazily allocated */
   sp_sched_timer   *timer;       /* active scheduler timer for this wait, if any */

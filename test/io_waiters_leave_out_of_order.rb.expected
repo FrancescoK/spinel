@@ -1,0 +1,41 @@
+0: read 0
+1: read 3
+2: read 6
+3: killed
+4: timed out
+5: read 15
+6: read 18
+7: read 21
+8: killed
+9: timed out
+10: read 30
+11: read 33
+12: read 36
+13: killed
+14: timed out
+15: read 45
+16: read 48
+17: read 51
+18: killed
+19: timed out
+20: read 60
+21: read 63
+22: read 66
+23: killed
+24: timed out
+25: read 75
+26: read 78
+27: read 81
+28: killed
+29: timed out
+30: read 90
+31: read 93
+32: read 96
+33: killed
+34: timed out
+35: read 105
+36: read 108
+37: read 111
+38: killed
+39: timed out
+join: deadlock reported
