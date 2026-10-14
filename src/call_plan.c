@@ -700,6 +700,21 @@ static int ct_resolve(Compiler *c, int id, int *out) {
   return n;
 }
 
+int cplan_target_binds(Compiler *c, int id, int mi) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || mi < 0 || mi >= c->nscopes || nt_kind(nt, id) != NK_CallNode) return 1;
+  int args = nt_ref(nt, id, "arguments"), argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  for (int a = 0; a < argc; a++) {
+    NodeKind k = nt_kind(nt, argv[a]);
+    if (k == NK_SplatNode || k == NK_KeywordHashNode || k == NK_ForwardingArgumentsNode ||
+        k == NK_BlockArgumentNode)
+      return 1;
+  }
+  char exp[256];
+  return poly_arm_count(c, &c->scopes[mi], -1, argc, -1, exp, sizeof exp) >= 0;
+}
+
 int cplan_targets(Compiler *c, int id, int *out, int cap) {
   if (id < 0 || id >= c->node_cap) return 0;
   if (g_ct_c != c || g_ct_cap < c->node_cap) {

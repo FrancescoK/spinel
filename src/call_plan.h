@@ -94,6 +94,12 @@ int cplan_initializers(Compiler *c, int id, int *out, int cap);
 enum { CPT_UNKNOWN = -1, CPT_MAX = 64 };
 int cplan_targets(Compiler *c, int id, int *out, int cap);
 void cplan_targets_drop(void);
+/* Can target method mi of call id bind the call's arguments? 0 only when
+   their count is known at compile time -- plain positional arguments, no
+   splat, keyword hash or `...` -- and mi's parameters refuse it
+   (poly_arm_count): that target can only raise ArgumentError, and answers
+   nothing. */
+int cplan_target_binds(Compiler *c, int id, int mi);
 int cplan_boxed_cmethod(Compiler *c, int id, const char *name);
 /* Object fallback behind a class-gated exception accessor, or -1. */
 int cplan_exc_object_method(Compiler *c, const char *name);
