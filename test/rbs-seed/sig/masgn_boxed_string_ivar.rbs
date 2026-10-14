@@ -1,0 +1,6 @@
+class MbsiHold
+  @z: String?
+  @w: String
+  @n: String?
+  @m: String
+end

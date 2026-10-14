@@ -6,7 +6,8 @@
 # ivar store wrapped a copy of the box's bytes, so the callee's change and
 # the caller's later change landed on two Strings, and equal? was false;
 # an ivar's `||=` did the same. A boxed nil into a String? ivar is nil
-# (converted as a String, it raised TypeError).
+# (converted as a String, it raised TypeError). A multiple assignment into
+# such ivars takes the handle the same way.
 # spinel: rbs-seed-check
 class ShrbsbTake
   def take(a)
@@ -53,6 +54,10 @@ class ShrbsbHold
   end
 
   def z = @z
+
+  def both(v, w)
+    @x, @z = v, w
+  end
 end
 
 class ShrbsbSrc
@@ -92,3 +97,15 @@ p [u, h.x, h.z, h.x.equal?(u), h.z.equal?(u)]
 h = ShrbsbHold.new([u, 1][0], [nil, 1][0])
 h.bump
 p [h.x, h.y]
+
+# a multiple assignment takes the box's handle as a single write does
+m = +"m"
+h = ShrbsbHold.new(+"x", +"y")
+h.both([m, 1][0], [nil, 1][0])
+h.bump
+m << "6"
+p [m, h.x, h.z, h.x.equal?(m)]
+n = +"n"
+h.both([+"p", 1][0], [n, 1][0])
+n << "7"
+p [h.x, h.z, h.z.equal?(n)]

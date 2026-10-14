@@ -3038,6 +3038,22 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	rm -f "$$tmp/bkh"; \
 	done; \
 	;; \
+	boxed_key_hash_return_paths) \
+	for fl in "" --share-strings; do \
+	$(SPINEL) test/rbs-seed/boxed_key_hash_return_paths.rb --rbs test/rbs-seed/sig $$fl -o "$$tmp/bkr" >/dev/null 2>"$$tmp/bkr.err" && \
+	  "$$tmp/bkr" > "$$tmp/bkr.out" 2>/dev/null && cmp -s "$$tmp/bkr.out" test/rbs-seed/boxed_key_hash_return_paths.expected && \
+	  SPINEL_GC_STRESS=1 "$$tmp/bkr" > "$$tmp/bkr.gc" 2>/dev/null && cmp -s "$$tmp/bkr.gc" test/rbs-seed/boxed_key_hash_return_paths.expected || { echo "rbs-seed-test: FAIL (an --rbs Hash[String, Integer] return with boxed keys on one of its paths: refused, or C that did not compile$${fl:+ under $$fl})"; sed -n 1,5p "$$tmp/bkr.err"; ok=0; }; \
+	rm -f "$$tmp/bkr"; \
+	done; \
+	;; \
+	masgn_boxed_string_ivar) \
+	for fl in "" --share-strings; do \
+	$(SPINEL) test/rbs-seed/masgn_boxed_string_ivar.rb --rbs test/rbs-seed/sig $$fl -o "$$tmp/mbs" >/dev/null 2>"$$tmp/mbs.err" && \
+	  "$$tmp/mbs" > "$$tmp/mbs.out" 2>/dev/null && cmp -s "$$tmp/mbs.out" test/rbs-seed/masgn_boxed_string_ivar.expected && \
+	  SPINEL_GC_STRESS=1 "$$tmp/mbs" > "$$tmp/mbs.gc" 2>/dev/null && cmp -s "$$tmp/mbs.gc" test/rbs-seed/masgn_boxed_string_ivar.expected || { echo "rbs-seed-test: FAIL (a multiple assignment of a boxed String into --rbs String or String? ivars: C that did not compile, or the wrong value$${fl:+ under $$fl})"; sed -n 1,5p "$$tmp/mbs.err"; ok=0; }; \
+	rm -f "$$tmp/mbs"; \
+	done; \
+	;; \
 	shared_rbs_string_array_param) \
 	$(SPINEL) test/rbs-seed/shared_rbs_string_array_param.rb --rbs test/rbs-seed/sig --share-strings -o "$$tmp/srsa" >/dev/null 2>"$$tmp/srsa.err" && \
 	  "$$tmp/srsa" > "$$tmp/srsa.out" 2>/dev/null && cmp -s "$$tmp/srsa.out" test/rbs-seed/shared_rbs_string_array_param.expected && \

@@ -6,3 +6,5 @@
 ["t!?3", "t!?3", "t!?3", true, true]
 ["u!4", "u!4", "u!4", true, true]
 ["u!4!", nil]
+["m!6", "m!6", nil, true]
+["p", "n7", true]
