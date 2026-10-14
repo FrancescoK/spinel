@@ -741,9 +741,9 @@ $(SP_RT_MT_LIB): $(RE_MT_OBJ) $(addprefix build/mt/,$(addsuffix .o,$(RT_MEMBERS)
 	ar rcs $@ $^
 
 # ---- ThreadSanitizer build of the threaded runtime (Phase 1 validation) ----
-# The single-threaded gate links the plain archive even for threaded tests
-# (test-run does its own cc), so it never exercises the mt archive's parallel
-# paths. This TSan-instrumented mt archive is the race-checking gate for the
+# The gate links a threaded test against the mt archive, as the driver does,
+# but uninstrumented, so a race shows only when it corrupts the output. This
+# TSan-instrumented mt archive is the race-checking gate for the
 # real-parallelism work: build a threaded program against it (see scripts/
 # tsan-run.sh) and run -- TSan flags any data race on the shared GC heap, the
 # thread registry, or the run queue. Not built by default (TSan slows the build

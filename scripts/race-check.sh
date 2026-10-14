@@ -1,9 +1,9 @@
 #!/bin/bash
 # race-check.sh -- run a threaded spinel program under a data-race detector.
 #
-# The normal test gate links the single-threaded archive even for threaded tests
-# (test-run does its own cc with libspinel_rt.a and no -DSP_THREADS), so it never
-# exercises the mt archive's parallel paths. This compiles the program through
+# The normal test gate links a threaded test against the threaded runtime, as
+# the driver does, but uninstrumented: a data race there only shows when it
+# happens to corrupt the output. This compiles the program through
 # the real spinel driver (so it links the threaded runtime, libspinel_rt_mt.a,
 # plus -lpthread) and runs it under Valgrind/Helgrind, which reports any data
 # race on the shared GC heap, the thread registry, or the run queue. This is the
