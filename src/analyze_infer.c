@@ -6096,8 +6096,12 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
     }
     { *out = rt; return 1; }
   }
-  /* then / yield_self: run block, return block result */
-  if (is_then_alias(name)) {
+  /* then / yield_self: run block, return block result -- the builtin's, not
+     a program class's own method of the name, which the user-call typing
+     answers (and the dispatch's, for a boxed receiver that may hold one) */
+  if (is_then_alias(name) &&
+      !(recv >= 0 && ty_is_object(rt) && comp_method_in_chain(c, ty_object_class(rt), name, NULL) >= 0) &&
+      !(recv >= 0 && rt == TY_POLY && an_user_defines_or_reads(c, name))) {
     int blk_id = nt_ref(nt, id, "block");
     /* with NO block it is an enumerator of one element, the receiver (#4028) */
     if (blk_id < 0 && nt_ref(nt, id, "arguments") < 0) { *out = TY_ENUMERATOR; return 1; }
