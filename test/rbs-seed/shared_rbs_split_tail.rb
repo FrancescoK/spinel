@@ -11,7 +11,9 @@
 # its handle too, as it does as a statement of its own (the store walk saw
 # only the first push of a chain): into a local Array, an ivar's and the
 # Array an Hash element holds, and where the method is one of a class and
-# its subclass (the dispatch boxes each arm's answer).
+# its subclass (the dispatch boxes each arm's answer), and where it yields
+# its answer (the inlined call answers the handle its `return` and its tail
+# hold).
 # spinel: rbs-seed-check
 class ShstCols
   def initialize
@@ -114,3 +116,21 @@ w = d.map { |e| e }
 w.each { |e| e << "!" }
 p d, w, objs.map(&:s), q, z
 p d.each_index.map { |i| d[i].equal?(w[i]) }
+
+class ShstYield
+  def m(col)
+    return col unless col.include?(".")
+    yield col.split(".").last
+  end
+end
+
+y = ShstYield.new
+kept = []
+yk = +"plain"
+yo = []
+yo << y.m(+"x.y") { |e| kept << e; e } << y.m(+"z.w") { |e| e.dup } << y.m(yk) { |e| e }
+yo << y.m(yk) { |e| e }
+yw = yo.map { |e| e }
+yw.each { |e| e << "!" }
+p yo, yw, kept, yk
+p yo[0].equal?(kept[0]), yo[2].equal?(yk), yo[3].equal?(yk)

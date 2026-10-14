@@ -18,3 +18,6 @@ end
 class ShstSub < ShstBase
   def m: (String col) -> String
 end
+class ShstYield
+  def m: (String col) { (String) -> String } -> String
+end

@@ -12508,7 +12508,10 @@ static void emit_return_1(Compiler *c, int id, Buf *b, int indent) {
       else if (n == 1) {
         buf_printf(b, "%s = ", g_method_pr_var);
         TyKind r0 = ret_arg_ntype(c, a[0]);
-        if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
+        /* (--share-strings: an inlined call read as the handle holds the
+           handle its `return` answers, as its tail does) */
+        if (g_ret_type == TY_STRBUF && repr_share_rule(c)) emit_strbuf_handle_of(c, a[0], b);
+        else if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
         else if (emit_ret_hash_widen_conv(c, g_ret_type, r0, a[0], b)) { }
         else if (emit_ret_poly_array_conv(c, g_ret_type, r0, a[0], b)) { }
         else if (tail_needs_unbox(r0, g_ret_type)) emit_unbox_node(c, g_ret_type, a[0], b);
