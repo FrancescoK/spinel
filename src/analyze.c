@@ -5439,9 +5439,67 @@ static int inline_pin_agrees(Compiler *c, Scope *s, int ci, const char *ivar, co
 static void inline_pin_record(Scope *s, int ci, const char *ivar, const char *ret,
                               const char *params, const char *where, const char *head);
 
+/* A seed parameter field is `type`, applied to the next positional slot, or
+   `name:type`, applied to the parameter of that name: a def orders its
+   keywords as it likes, so no position can stand for one. Splits the field;
+   returns the type and leaves the name (or "") in name. */
+static const char *seed_field_split(const char *field, char *name, size_t n) {
+  name[0] = '\0';
+  const char *colon = field ? strchr(field, ':') : NULL;
+  if (!colon) return field;
+  size_t l = (size_t)(colon - field);
+  if (l >= n) l = n - 1;
+  memcpy(name, field, l); name[l] = '\0';
+  return colon + 1;
+}
+
+static int seed_nfields(const char *list) {
+  if (!list || !*list || sp_streq(list, "-")) return 0;
+  int n = 1;
+  for (const char *q = list; *q; q++) n += *q == ',';
+  return n;
+}
+
+/* The index of the parameter the i-th field of `list` seeds: the slot of the
+   name a `name:type` field carries, or the next slot a plain field counts to
+   (empty fields count too, so a skipped middle parameter shifts nothing).
+   -1 past the end or for a name the scope has no parameter of. */
+static int seed_field_param(const Scope *s, const char *list, int i, char *buf, size_t n) {
+  if (!list || !*list || sp_streq(list, "-")) return -1;
+  int pos = 0;
+  const char *p = list;
+  for (int k = 0; ; k++) {
+    const char *e = strchr(p, ',');
+    size_t l = e ? (size_t)(e - p) : strlen(p);
+    if (l >= n) l = n - 1;
+    memcpy(buf, p, l); buf[l] = '\0';
+    char name[128];
+    const char *ty = seed_field_split(buf, name, sizeof name);
+    int slot = pos;
+    if (name[0]) {
+      slot = -1;
+      for (int j = 0; j < s->nparams; j++) if (s->pnames[j] && sp_streq(s->pnames[j], name)) { slot = j; break; }
+    }
+    else pos++;
+    if (k == i) { memmove(buf, ty, strlen(ty) + 1); return slot; }
+    if (!e) return -1;
+    p = e + 1;
+  }
+}
+
+/* The type `list` seeds parameter `slot` of `s` with, "" when no field does. */
+static const char *seed_type_of_param(const Scope *s, const char *list, int slot, char *buf, size_t n) {
+  int nf = seed_nfields(list);
+  for (int i = 0; i < nf; i++)
+    if (seed_field_param(s, list, i, buf, n) == slot) return buf;
+  buf[0] = '\0';
+  return buf;
+}
+
 /* Pin scope `s`'s return and each named parameter to its seeded type. ptypes
-   is a comma-separated, param-index-aligned list (empty fields preserved so a
-   skipped middle param doesn't shift the rest). */
+   is a comma-separated list: a plain field is aligned with the parameter
+   index (empty fields preserved so a skipped middle param doesn't shift the
+   rest), a `name:type` field with the parameter of that name. */
 static void seed_method(Compiler *c, Scope *s, const char *ret_tok, char *ptypes,
                          const char *where, const char *head, int from_rbs) {
   if (!s) return;
@@ -5487,14 +5545,14 @@ static void seed_method(Compiler *c, Scope *s, const char *ret_tok, char *ptypes
     }
   }
   if (!ptypes) return;
-  char *p = ptypes;
-  int pi = 0;
-  while (p && pi < s->nparams) {
-    char *comma = strchr(p, ',');
-    if (comma) *comma = '\0';
-    TyKind pt = parse_seed_type(c, p);
+  char field[256];
+  int nf = seed_nfields(ptypes);
+  for (int i = 0; i < nf; i++) {
+    int slot = seed_field_param(s, ptypes, i, field, sizeof field);
+    if (slot < 0 || slot >= s->nparams) continue;   /* a name the def has not */
+    TyKind pt = parse_seed_type(c, field);
     if (pt != TY_UNKNOWN) {
-      LocalVar *lv = scope_local(s, s->pnames[pi]);
+      LocalVar *lv = scope_local(s, s->pnames[slot]);
       if (lv) {
         lv->type = pt; lv->rbs_seeded = 1; lv->rbs_type = pt;
         /* a nilable int parameter can hold nil like any other: mark it so
@@ -5502,9 +5560,6 @@ static void seed_method(Compiler *c, Scope *s, const char *ret_tok, char *ptypes
         if (g_seed_nilable && (pt == TY_INT || pt == TY_FLOAT)) lv->nullable_int = 1;
       }
     }
-    pi++;
-    if (!comma) break;
-    p = comma + 1;
   }
 }
 
@@ -5635,13 +5690,6 @@ static int inline_tok_same(const char *a, const char *b) {
   return sp_streq(a, b);
 }
 
-static int inline_nfields(const char *list) {
-  if (!list || !*list || sp_streq(list, "-")) return 0;
-  int n = 1;
-  for (const char *q = list; *q; q++) n += *q == ',';
-  return n;
-}
-
 /* the i-th comma field of a parameter list into buf ("" past the end) */
 static const char *inline_field(const char *list, int i, char *buf, size_t n) {
   buf[0] = '\0';
@@ -5701,11 +5749,14 @@ static int inline_pin_agrees(Compiler *c, Scope *s, int ci, const char *ivar, co
         p->s->name && s->name && sp_streq(p->s->name, s->name)) {
       if (!inline_tok_same(p->ret, ret)) what = "the return type";
       else {
+        /* slot by slot: an --rbs seed names its keywords (`a:int`), an
+           annotation's fields follow the def; both resolve to a parameter */
         char fa[128], fb[128];
-        int nf = inline_nfields(p->params), nb = inline_nfields(params);
-        if (nb > nf) nf = nb;
-        for (int k = 0; k < nf && !what; k++) {
-          if (!inline_tok_same(inline_field(p->params, k, fa, sizeof fa), inline_field(params, k, fb, sizeof fb))) {
+        int nf = seed_nfields(p->params), nb = seed_nfields(params);
+        int nk = s->nparams > nf ? s->nparams : nf;
+        if (nb > nk) nk = nb;
+        for (int k = 0; k < nk && !what; k++) {
+          if (!inline_tok_same(seed_type_of_param(s, p->params, k, fa, sizeof fa), seed_type_of_param(s, params, k, fb, sizeof fb))) {
             if (k < s->nparams && s->pnames[k]) snprintf(wbuf, sizeof wbuf, "the type of parameter `%s`", s->pnames[k]);
             else snprintf(wbuf, sizeof wbuf, "the type of parameter %d", k + 1);
             what = wbuf;
@@ -5856,7 +5907,7 @@ static int inline_def_applicable(Compiler *c, const NodeTable *nt, int id, Scope
   if (how) { snprintf(bad, n, "%s", how); return INLINE_DEF_MIXED_IN; }
   const char *ret = nt_str(nt, id, "rbs_ret"), *params = nt_str(nt, id, "rbs_params");
   if (!inline_seed_tok_ok(c, ret)) { snprintf(bad, n, "%s", ret); return INLINE_DEF_BAD_TYPE; }
-  for (int f = 0; f < inline_nfields(params); f++)
+  for (int f = 0; f < seed_nfields(params); f++)
     if (!inline_seed_tok_ok(c, inline_field(params, f, bad, n))) return INLINE_DEF_BAD_TYPE;
   bad[0] = '\0';
   return INLINE_DEF_APPLIES;

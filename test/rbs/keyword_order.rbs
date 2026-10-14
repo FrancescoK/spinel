@@ -1,0 +1,11 @@
+# A keyword field carries its name (`a:int`): Ruby matches a keyword by
+# name, and a def lists its keywords in any order, so no position can
+# stand for one. The fields are written in the signature's source order,
+# required and optional keywords together (rbs keeps the two kinds in two
+# hashes). A positional before the keywords keeps a plain field in front
+# of them.
+class KeywordOrder
+  def opt_first: (?a: Integer, b: String) -> void
+  def req_first: (b: String, ?a: Integer) -> void
+  def mixed: (Integer x, ?a: Integer, b: String, ?c: Float) -> void
+end

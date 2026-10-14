@@ -1,2 +1,10 @@
 class DroppedTypes
+meth a - -
+meth b - -
+meth c - -
+meth d - -
+meth e - -
+meth f - int,string
+meth g - -
+meth h - -
 meth kept int int

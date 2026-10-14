@@ -1,9 +1,10 @@
-# Method signature shapes that take the whole method out of subset:
-# anything other than plain required positional params. `kept` confirms
-# emission resumes after each dropped method.
-#
-# (Keyword and block params are handled separately and are intentionally
-# NOT exercised here -- see the PR description.)
+# Parameter shapes beyond the required positionals. Each parameter takes
+# one field of the ptype list in the Ruby def's order: an optional
+# positional its type, the rest parameter an empty field (the analyzer
+# types it by construction), a trailing positional its type, `**rest`
+# none. Only a generic method still drops whole; `kept` confirms emission
+# resumes after it. Once every one of these dropped the whole signature,
+# which left `set_pixel(x, y, color = 1)` with no seed at all.
 class DroppedSigs
   def opt: (?String) -> void
   def rest: (*Integer) -> void
