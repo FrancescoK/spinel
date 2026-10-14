@@ -36124,11 +36124,21 @@ static void mark_nullable_int_locals(Compiler *c) {
        literal array it divides, with no parameter past n, has no nil. */
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
       const char *rn2 = nt_str(nt, id, "name");
-      int recv = nt_ref(nt, id, "receiver"), blk = nt_ref(nt, id, "block");
+      int recv = nt_ref(nt, id, "receiver"), blk = nt_ref(nt, id, "block"), win = id;
       if (!rn2 || recv < 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+      /* ... and so does an iteration over the rows it hands on
+         (`a.each_cons(2).map { |w, x| }`) */
+      if (strbuf_elem_first_iterator(rn2) && !sp_streq(rn2, "each_with_index") &&
+          !sp_streq(rn2, "each_with_object") && nt_kind(nt, recv) == NK_CallNode &&
+          nt_ref(nt, recv, "block") < 0 && nt_str(nt, recv, "name")) {
+        win = recv;
+        rn2 = nt_str(nt, win, "name");
+        recv = nt_ref(nt, win, "receiver");
+        if (recv < 0) continue;
+      }
       int cons = sp_streq(rn2, "each_cons");
       if (!cons && !sp_streq(rn2, "each_slice")) continue;
-      int ca = nt_ref(nt, id, "arguments");
+      int ca = nt_ref(nt, win, "arguments");
       int an = 0; const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
       if (an != 1) continue;
       int bp = nt_ref(nt, blk, "parameters");
