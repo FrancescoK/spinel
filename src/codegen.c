@@ -2315,6 +2315,13 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     return;
   }
   if (t == TY_STRING) {
+    /* --share-strings: a String that ran ahead as its handle, read as that
+       handle's String (ran_first_bind_read), is boxed as the handle */
+    if (repr_share_rule(c) && ran_first_read_handle(node) >= 0) {
+      buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", ran_first_read_handle(node));
+      RC(RF_STRBUF_HANDLE, RW_RAN_FIRST);
+      return;
+    }
     /* --share-strings: the String plan's form for a box (SPR_BOX): a String
        the plan wraps is boxed as the new handle it is (sp_box_str_new), so
        the box's copies name one String; any other is boxed as its bytes,

@@ -463,7 +463,10 @@ static int share_plan_supply_kind(Compiler *c, int v, int k, int *op, int depth)
 
 /* Is the base of the chain of self-answering calls and sequences that value
    v hands on (v itself included) a boxed receiver's call whose arms answer a
-   String (SPK_POLY_ARMS)? */
+   String (SPK_POLY_ARMS)? That call, or a sequence ending in one, is what
+   the faces render as a handle (strbuf_poly_user_base, emit_poly_arms_handle:
+   the same function the producer rule asks); a chain of calls over it is not
+   rendered, so it supplies no handle. */
 static int share_plan_poly_base(Compiler *c, int v) {
   for (int depth = 0; depth < 16; depth++) {
     int u = an_unparen(c->nt, v), o;

@@ -22041,6 +22041,11 @@ static int operand_reads_handle_late(Compiler *c, int v, const int *operand, int
    the variable's, which the handle form only reads again; an operand that
    ran already (a held shim's receiver) is its temp. */
 static int operand_binds_self_handle(Compiler *c, int v) {
+  /* (a boxed receiver's call whose arms answer a String, or a sequence
+     ending in one, is bound as its box's handle: strbuf_poly_user_base) */
+  if (repr_share_rule(c) && comp_ntype(c, v) == TY_STRING && !arg_ran_first(v, 0) &&
+      strbuf_poly_user_base(c, v) >= 0)
+    return 1;
   if (!repr_share_rule(c) || nt_kind(c->nt, v) != NK_CallNode || comp_ntype(c, v) != TY_STRING ||
       arg_ran_first(v, 0))
     return 0;

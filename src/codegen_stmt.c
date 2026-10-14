@@ -4467,6 +4467,29 @@ int emit_bang_self_handle(Compiler *c, int v, Buf *b) {
 
 /* The value a write hands a mutable-String slot `lv` (TY_STRBUF), as an
    sp_String *. */
+/* --share-strings: the handle of a boxed receiver's call whose arms answer
+   a String, or of a sequence ending in one (strbuf_poly_user_base): the
+   sequence's statements first, then the dispatch read as a box and that
+   box's handle. */
+void emit_poly_arms_handle(Compiler *c, int base, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, base) == NK_ParenthesesNode) {
+    int body = nt_ref(nt, base, "body");
+    int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+    if (n >= 1) {
+      Buf pre; memset(&pre, 0, sizeof pre);
+      for (int i = 0; i < n - 1; i++) emit_stmt(c, st[i], &pre, 0);
+      buf_printf(b, "({ %s", pre.p ? pre.p : "");
+      free(pre.p);
+      emit_poly_arms_handle(c, strbuf_poly_user_base(c, st[n - 1]), b);
+      buf_puts(b, "; })");
+      return;
+    }
+  }
+  buf_puts(b, "sp_poly_as_strbuf(");
+  emit_boxed(c, base, b);
+  buf_puts(b, ")");
+}
 void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
   if (g_share_check && repr_of_slot(c, lv).handle) share_check_mark(c, v, 'H', b);
   /* A shared-mutable alias (`s2 = s1`, both str_shared) copies the sp_String
@@ -4514,11 +4537,8 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
      slot takes that box's handle (a new one around a fresh String; NULL
      for nil). A conversion over it (`call.to_s`) answers the same String
      (strbuf_poly_user_base). */
-  else if (shared && repr_share_rule(c) && strbuf_poly_user_base(c, v) >= 0) {
-    buf_puts(b, "sp_poly_as_strbuf(");
-    emit_boxed(c, strbuf_poly_user_base(c, v), b);
-    buf_puts(b, ")");
-  }
+  else if (shared && repr_share_rule(c) && strbuf_poly_user_base(c, v) >= 0)
+    emit_poly_arms_handle(c, strbuf_poly_user_base(c, v), b);
   /* A chained assignment (`u = t = s`) whose inner target is the handle too:
      run the inner write, then alias ITS handle. Wrapping the write's value
      as a fresh String forked u off the object t and s share. */
@@ -15834,6 +15854,28 @@ static int masgn_fresh_stmt(Compiler *c, int id, const int *lefts, int ln, const
   return any && !masgn_program_may_own();
 }
 
+/* --share-strings: is element el of plain multiple write mw a value the
+   String plan gives as the handle that the write renders through the handle
+   face (emit_str_form_handle) into a temp, and holds there: any but a
+   read of a variable that emit_expr gives as the handle, which the write
+   stores as it reads (share_plan_multi_renders says which targets take
+   it)? */
+int masgn_face_elem(Compiler *c, int mw, int el) {
+  const NodeTable *nt = c->nt;
+  if (!c->share_plan || !share_masgn_plain(nt, mw)) return 0;
+  int u = unwrap_parens(c, el);
+  NodeKind k = u >= 0 ? nt_kind(nt, u) : NK_NONE;
+  if ((k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || repr_static_read_kind(k)) &&
+      share_plan_emits_handle(c, el))
+    return 0;
+  int en = 0, ln = 0;
+  const int *e = nt_arr(nt, nt_ref(nt, mw, "value"), "elements", &en);
+  nt_arr(nt, mw, "lefts", &ln);
+  for (int i = 0; i < en && i < ln; i++)
+    if (e[i] == el) return share_plan_of(c, el, SPR_STORE, NULL).form == SPF_HANDLE;
+  return 0;
+}
+
 /* A MultiWriteNode statement (a, b = ...) (emit_stmt_inner's arms, in their order) */
 static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, const char *ty) {
   g_masgn_notmps = 0;   /* the oint temps are this assignment's (temp numbers restart per function) */
@@ -16056,9 +16098,12 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
        says takes one (share_plan_multi_renders): the handle face renders it,
        whatever its producer, and the handle it makes is rooted while a later
        value is built (nothing else holds a new one) */
-    int hface = !hread && i < ln && c->share_plan && share_masgn_plain(nt, id) && !share_plan_emits_handle(c, els[i]) &&
-                share_plan_of(c, els[i], SPR_STORE, NULL).form == SPF_HANDLE;
-    if (hface) emit_str_form_handle(c, els[i], &hw);
+    /* (one that ran ahead as the handle, in a multiple write used as a value
+       -- emit_expr -- is that handle) */
+    int hran = ran_first_handle(els[i]);
+    int hface = hran >= 0 || (!hread && i < ln && masgn_face_elem(c, id, els[i]) && !share_plan_emits_handle(c, els[i]));
+    if (hran >= 0) buf_printf(&hw, "_t%d", hran);
+    else if (hface) emit_str_form_handle(c, els[i], &hw);
     int hwrite = hface || (hshared && elt != TY_STRBUF && !hread && emit_strbuf_write_handle(c, els[i], &hw));
     /* a route over such a handle (`t, u = s.then { |x| x }, 1`): the handle
        it hands on */
@@ -22949,6 +22994,14 @@ int strbuf_poly_user_boxes(Compiler *c, int v) {
    and no block, String's own); -1 for none. */
 int strbuf_poly_user_base(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
+  /* a sequence ending in such a call (`(1; px.pick(s))`) is read as a box
+     whole, its statements first (emit_boxed_sequence): it is that base */
+  if (v >= 0 && nt_kind(nt, v) == NK_ParenthesesNode && repr_share_rule(c)) {
+    int tail = paren_tail(nt, v);
+    if (tail >= 0 && tail != v && strbuf_poly_user_base(c, tail) >= 0 &&
+        nt_kind(nt, nt_ref(nt, v, "body")) == NK_StatementsNode)
+      return v;
+  }
   v = unwrap_parens(c, v);
   for (int d = 0; v >= 0 && d < 8; d++) {
     /* (an attribute assignment answers its right-hand side: its own route) */
