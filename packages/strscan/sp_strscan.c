@@ -443,7 +443,7 @@ sp_StringScanner *sp_StringScanner_unscan(sp_StringScanner *sc) {SP_GC_ROOT(sc);
      rewind to: a double unscan, or unscan before any successful scan.
      Guard before mutating state so a failed unscan leaves pos intact. */
   if (!sc->matched_p) {
-    sp_raise_cls("StringScanner_Error",
+    sp_raise_cls("StringScanner::Error",
                  "unscan failed: previous match record not exist");
   }
   sc->pos = sc->last_pos;

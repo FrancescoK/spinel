@@ -141,7 +141,7 @@ static const BuiltinClass BUILTIN_CLASSES[] = {
   { "ObjectSpace",                  0,     BC_CLASS | BC_MODULE },
   { "Process",                      0,     BC_CLASS | BC_MODULE },
   { "Random",                       0,     BC_CLASS },
-  { "StringScanner_Error",          0,     BC_EXCEPTION },
+  { "StringScanner::Error",         0,     BC_EXCEPTION },
   { "SystemCallError",              0,     BC_EXCEPTION },
   { "SystemStackError",             0,     BC_EXCEPTION },
   { "UnboundMethod",                0,     BC_CLASS },
