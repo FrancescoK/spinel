@@ -1515,6 +1515,7 @@ static inline int singleton_visible_ci(Compiler *c, int ci) {
   return c->classes[ci].is_singleton_of ? c->classes[ci].is_singleton_of - 1 : ci;
 }
 int        comp_class_anonymous(Compiler *c, int ci);
+int        comp_has_sclass_values(Compiler *c);
 const char *comp_class_display_fn(Compiler *c);
 int        class_var_static_ci(Compiler *c, int node);  /* local holding one class const */
 int        class_recv_static_ci(Compiler *c, int node); /* constant or local naming one class */

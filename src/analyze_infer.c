@@ -2431,6 +2431,17 @@ static int sg_accessor_type(Compiler *c, int ci, const char *name, TyKind *out) 
    a boxed value: invalid C, or `==` refused. A name the builtin class or
    Object's own surface has stays theirs, as the emitter keeps it. Returns 1
    with the type through `out`. */
+/* `k.singleton_class` on a class value k: the class's singleton class, a
+   class value of its own (sp_sclass_id); an object's is not modeled */
+int sclass_value_call(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode || !nt_str(nt, id, "name") ||
+      !sp_streq(nt_str(nt, id, "name"), "singleton_class") || nt_ref(nt, id, "arguments") >= 0 ||
+      nt_ref(nt, id, "block") >= 0) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  return recv >= 0 && infer_type(c, recv) == TY_CLASS;
+}
+
 int object_reopen_answers(Compiler *c, const char *cls, int call_id, TyKind *out) {
   const char *name = nt_str(c->nt, call_id, "name");
   if (!name || builtin_method_known(cls, name) || builtin_object_method_known(name)) return 0;
@@ -4904,6 +4915,7 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
     }
     if (argc == 0 && sp_streq(name, "nil?")) { *out = TY_BOOL; return 1; }
     if (argc == 0 && sp_streq(name, "singleton_class?")) { *out = TY_BOOL; return 1; }
+    if (argc == 0 && sp_streq(name, "singleton_class") && nt_ref(nt, id, "block") < 0) { *out = TY_CLASS; return 1; }
     if (argc == 0 && sp_streq(name, "frozen?")) { *out = TY_BOOL; return 1; }
     /* Module#constants -> sym array, recovered from the AST (#2674) */
     /* Class.const_set(:K, v) stores into the existing constant and yields the

@@ -17145,7 +17145,7 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
      sp_class_superclass (a reopened builtin) and sp_class_is_ancestor. */
   buf_puts(b, "static sp_Class sp_builtin_superclass(sp_Class c);\n");
   {
-    buf_puts(b, "static sp_Class sp_class_superclass(sp_Class c){\n");
+    buf_puts(b, "static sp_Class sp_class_superclass(sp_Class c){\n  sp_sclass_unmodeled(c);\n");
     /* A rescued exception's #class carries its name with cls_id 0, which would
        otherwise read as user class 0; resolve those by name first (#3031). */
     buf_puts(b, "  if(c.name){const char*_p=sp_exc_parent_of_name(c.name);"
@@ -17183,7 +17183,7 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
        the simple sp_class_le before modules. sp_class_le_mod (defined after
        sp_class_ancestors) supersedes it. Keep simple for non-module programs. */
     buf_puts(b, "static int sp_class_is_ancestor(sp_Class anc, sp_Class desc);\n");
-    buf_puts(b, "static int sp_class_is_ancestor(sp_Class anc, sp_Class desc){\n");
+    buf_puts(b, "static int sp_class_is_ancestor(sp_Class anc, sp_Class desc){\n  sp_sclass_unmodeled(anc); sp_sclass_unmodeled(desc);\n");
     buf_puts(b, "  sp_Class cur = desc;\n");
     int depth = c->nclasses + 40;
     buf_printf(b, "  for(int _i=0;_i<%d;_i++){\n", depth);
@@ -17218,7 +17218,7 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
     buf_puts(b, "  return 0;\n}\n");
   }
   /* Builtin superclass chain (simplified Ruby class hierarchy) */
-  buf_puts(b, "static sp_Class sp_builtin_superclass(sp_Class c){\n");
+  buf_puts(b, "static sp_Class sp_builtin_superclass(sp_Class c){\n  sp_sclass_unmodeled(c);\n");
   /* nil has no superclass: stay nil rather than falling to the Object default,
      which would resurrect a terminated chain into a cycle (#2654) */
   buf_puts(b, "  if(sp_class_nil_p(c))return SP_CLASS_NIL;\n");
@@ -17557,7 +17557,7 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
     buf_puts(b, "    cur=next;\n");
     buf_puts(b, "  }\n");
     buf_puts(b, "  return 0;\n}\n\n");
-    buf_puts(b, "static sp_PolyArray *sp_class_ancestors(sp_Class c){\n"
+    buf_puts(b, "static sp_PolyArray *sp_class_ancestors(sp_Class c){\n  sp_sclass_unmodeled(c);\n"
                 "  sp_PolyArray *a=sp_PolyArray_new();\n"
                 "  sp_class_anc_walk(c,SP_CLASS_NIL,a);\n"
                 "  return a;\n}\n\n");
@@ -17565,7 +17565,7 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
        ancestors are id-backed boxes (sp_box_class of a name-less sp_Class), so
        the cls_id rides the int slot. */
     buf_puts(b, "static sp_PolyArray *sp_class_included_modules(sp_Class c) SP_UNUSED;\n");
-    buf_puts(b, "static sp_PolyArray *sp_class_included_modules(sp_Class c){\n");
+    buf_puts(b, "static sp_PolyArray *sp_class_included_modules(sp_Class c){\n  sp_sclass_unmodeled(c);\n");
     buf_puts(b, "  sp_PolyArray *a=sp_class_ancestors(c); SP_GC_ROOT(a);\n");
     buf_puts(b, "  sp_PolyArray *r=sp_PolyArray_new(); SP_GC_ROOT(r);\n");
     /* the receiver itself is not one of the modules it includes: a module's
@@ -17575,7 +17575,7 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
     buf_puts(b, "    if(sp_class_is_module_val(m)) sp_PolyArray_push(r,a->data[i]); }\n");
     buf_puts(b, "  return r;\n}\n\n");
     /* Module-aware <= by the ancestors walk (replaces simpler versions). */
-    buf_puts(b, "static int sp_class_le_mod(sp_Class a,sp_Class b){\n");
+    buf_puts(b, "static int sp_class_le_mod(sp_Class a,sp_Class b){\n  sp_sclass_unmodeled(a); sp_sclass_unmodeled(b);\n");
     buf_puts(b, "  /* a<=b: b is an ancestor of a, so b must appear in a's ancestors */\n");
     buf_puts(b, "  if(sp_class_anc_walk(a,b,NULL))return 1;\n");
     /* User-class sp_class_ancestors stops before builtin parents.
@@ -18171,7 +18171,11 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
       if (comp_class_anonymous(c, i))
         buf_printf(b, "static const char *sp_class_assigned_name_%d;\n", i);
     buf_printf(b, "%s", g_ext_init_name ? "" : "static ");
-    buf_puts(b, "const char *sp_class_to_s(sp_Class c){if(sp_class_nil_p(c))return SPL(\"nil\");if(c.name)return c.name;switch(c.cls_id){");
+    buf_puts(b, "const char *sp_class_to_s(sp_Class c){if(sp_class_nil_p(c))return SPL(\"nil\");if(c.name)return c.name;");
+    /* a singleton class prints as its class does inside #<Class:...> */
+    buf_puts(b, "if(sp_class_sclass_p(c)){sp_Class _b={sp_sclass_base_id(c.cls_id),NULL};"
+                "return sp_sprintf(SPL(\"#<Class:%s>\"),sp_class_display_fn?sp_class_display_fn(_b):sp_class_to_s(_b));}");
+    buf_puts(b, "switch(c.cls_id){");
     for (int i = 0; i < c->nclasses; i++) {
       /* a reopened builtin's entry (`class Object; def m` gives Object one)
          is what its constant boxes to, and it prints the builtin's name;
@@ -18295,7 +18299,7 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
        address form sp_class_to_s renders. The static spelling
        (`Struct.new(:a).name`) has always answered nil; this is the same class
        reached through a value (`obj.class.name`) (#4031). */
-    buf_puts(b, "static const char *sp_class_name_or_nil(sp_Class c){");
+    buf_puts(b, "static const char *sp_class_name_or_nil(sp_Class c){if(sp_class_sclass_p(c))return NULL;");
     if (c->has_anonymous_classes) emit_anon_class_select(c, b);
     else buf_puts(b, "switch(c.cls_id){");
     for (int i = 0; i < c->nclasses; i++)

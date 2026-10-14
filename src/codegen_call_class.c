@@ -3389,6 +3389,16 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   /* TY_CLASS method dispatch */
   if (recv >= 0 && comp_ntype(c, recv) == TY_CLASS) {
     int _clt = ++g_tmp;
+    /* a class's singleton class: its id past the real ones (sp_sclass_id);
+       one known only by name, or a singleton class's own, is not modeled */
+    if (sclass_value_call(c, id)) {
+      buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
+      buf_printf(b, "; if (_cl%d.name || sp_class_sclass_p(_cl%d)) sp_raise_cls(\"NotImplementedError\", "
+                    "sp_sprintf(SPL(\"spinel: the singleton class of %%s is not modeled\"), %s(_cl%d))); "
+                    "(sp_Class){sp_sclass_id(_cl%d.cls_id), NULL}; })",
+                 _clt, _clt, comp_class_display_fn(c), _clt, _clt);
+      return 1;
+    }
     /* A user-defined singleton (def self.name / to_s / inspect) shadows the
        builtin stringification; a statically-named receiver falls through to
        the class-method dispatch below. */
@@ -3684,10 +3694,10 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         return 1;
       }
     }
-    /* a named class/module value is never a singleton class (spinel has no
-       singleton-class objects), so #singleton_class? is always false. */
+    /* a singleton class is one of the ids sp_sclass_id makes */
     if (sp_streq(name, "singleton_class?") && argc == 0) {
-      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
+      buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_class_sclass_p(_cl%d); })", _clt);
       return 1;
     }
     /* Module#include?(mod): mod must be a Module (a Class arg is a TypeError);
@@ -4525,7 +4535,8 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
   /* bare `name` inside a class method body -> the class name */
   if (argc == 0 && (recv < 0 ? sp_streq(name, "name") :
       (is_name_reader(name) &&
-       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode")))) {
+       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode") &&
+       !nt_int(nt, recv, "sclass_value", 0)))) {   /* a singleton class's is its own */
     Scope *encl = comp_scope_of(c, id);
     if (encl && encl->is_cmethod && encl->class_id >= 0 &&
         comp_cmethod_in_chain(c, encl->class_id, name, NULL) < 0) {
@@ -4859,7 +4870,7 @@ void emit_refl_method_defined(Compiler *c, Buf *b) {
     }
   }
   #undef REFL_ADD
-  buf_puts(b, "static int sp_refl_method_defined(sp_Class k, const char *name, int mask, int inherit) {\n");
+  buf_puts(b, "static int sp_refl_method_defined(sp_Class k, const char *name, int mask, int inherit) {\n  if (sp_class_sclass_p(k)) sp_raise_cls(\"NotImplementedError\", \"spinel: the methods of a singleton class held in a variable are not modeled\");\n");
   buf_puts(b, "  if (!strcmp(name, \"initialize\") || !strcmp(name, \"initialize_copy\") ||\n"
               "      !strcmp(name, \"initialize_clone\") || !strcmp(name, \"initialize_dup\")) return (mask & 4) != 0;\n");
   buf_puts(b, "  switch (k.cls_id) {\n");
@@ -4949,7 +4960,7 @@ int emit_refl_im_params_call(Compiler *c, int id, Buf *b) {
    of the method `name` resolves to in klass's chain, as Method#parameters
    builds it; CRuby's NameError when there is none. */
 void emit_refl_im_params(Compiler *c, Buf *b) {
-  buf_puts(b, "static sp_PolyArray *sp_refl_instance_method_parameters(sp_Class k, const char *name) {\n");
+  buf_puts(b, "static sp_PolyArray *sp_refl_instance_method_parameters(sp_Class k, const char *name) {\n  sp_sclass_unmodeled(k);\n");
   buf_puts(b, "  switch (k.cls_id) {\n");
   for (int k = 0; k < c->nclasses; k++) {
     Buf rows; memset(&rows, 0, sizeof rows);

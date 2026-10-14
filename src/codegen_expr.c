@@ -5030,6 +5030,8 @@ static TyKind emit_paren_tail(Compiler *c, int paren, int tail, Buf *b) {
 static void emit_self_expr(Compiler *c, int id, Buf *b) {
   /* a statement of a class or module body: the class object itself */
   { int cb = self_class_body(c, id);
+    /* in a `class << X` body: X's singleton class */
+    if (cb >= 0 && nt_int(c->nt, id, "sclass_value", 0)) { buf_printf(b, "((sp_Class){sp_sclass_id(%d)})", cb); return; }
     if (cb >= 0) { buf_printf(b, "((sp_Class){%d})", cb); return; } }
   /* top-level self is main, which no C scope holds (#4926) */
   if (self_is_main(c, id)) { buf_puts(b, "sp_main_self()"); return; }
