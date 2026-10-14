@@ -34,7 +34,6 @@ typedef struct {
 #ifdef SP_CEXT
   sp_cext_arena_mark *cext_marks;
   sp_cext_arena_context cext_arena;
-  VALUE cext_errinfo;
 #endif
   jmp_buf *es; const char **em; const char **ec; void **eo; int en, ecap;
   jmp_buf *cs; const char **ct; unsigned char *ctk; sp_RbVal *cv; int *cet;  int cn, ccap;

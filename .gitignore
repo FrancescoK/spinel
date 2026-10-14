@@ -42,3 +42,5 @@ CLAUDE.local.md
 *.gem
 .sccache/
 lib/win32/*.a
+
+/lib/libspinel_cext_rt_mt.a

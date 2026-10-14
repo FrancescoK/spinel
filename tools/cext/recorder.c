@@ -295,3 +295,9 @@ VALUE rb_block_call(VALUE v, ID id, int n, const VALUE *a, rb_block_call_func_t 
 
 ID sp_cext_scanned_sym2id(VALUE v) { return (ID)(v >> RUBY_SPECIAL_SHIFT); }
 VALUE rb_str_intern(VALUE v) { (void)v;DENIED("rb_str_intern"); }
+
+void *rb_thread_call_without_gvl(void *(*fn)(void *), void *data,
+                               void (*ubf)(void *), void *ubf_data) {
+    (void)fn; (void)data; (void)ubf; (void)ubf_data;
+    DENIED("rb_thread_call_without_gvl");
+}

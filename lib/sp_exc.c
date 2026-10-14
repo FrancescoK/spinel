@@ -1259,7 +1259,6 @@ SP_NORETURN SP_COLD void sp_stack_too_deep(void) {
 void *sp_exc_ctx_new(void) {
 #ifdef SP_CEXT
   sp_exc_ctx_t *ctx = calloc(1, sizeof(sp_exc_ctx_t));
-  if (ctx) ctx->cext_errinfo = Qnil;
   return ctx;
 #else
   return calloc(1, sizeof(sp_exc_ctx_t));
@@ -1269,7 +1268,6 @@ void sp_exc_ctx_free(void *p) {
   sp_exc_ctx_t *x = (sp_exc_ctx_t *)p;
   if (!x) return;
 #ifdef SP_CEXT
-  rb_gc_unregister_address(&x->cext_errinfo);
   sp_cext_arena_context_dispose(&x->cext_arena);
   free(x->cext_marks);
 #endif

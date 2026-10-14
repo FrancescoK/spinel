@@ -27,6 +27,39 @@ static size_t next_function, next_constant;
 typedef struct { VALUE **addresses; size_t count; } InitRoots;
 static volatile InitRoots *init_roots;
 #define current_block ((sp_Proc *)sp_cext_current_block)
+
+/* Ruby may yield or raise while the extension lock is suspended. Restore the
+ * complete recursive depth before propagating either kind of nonlocal exit. */
+static sp_RbVal call_ruby_unlocked(int kind, const char *key, sp_RbVal receiver,
+                                 int argc, const sp_RbVal *args, sp_Proc *block,
+                                 sp_int *raw) {
+    unsigned depth = sp_cext_lock_suspend();
+    const int roots = sp_gc_nroots;
+    jmp_buf frame;
+    if (setjmp(frame) != 0) {
+        int unwind = sp_cext_unwinding();
+        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
+        void *obj = sp_exc_cur_obj();
+        sp_exc_disarm(); sp_gc_nroots = roots;
+        sp_cext_lock_resume(depth);
+        if (unwind) sp_cext_resume_unwind();
+        else sp_fiber_reraise(cls, msg, obj);
+        abort();
+    }
+    sp_exc_arm(frame);
+    sp_RbVal result;
+    if (raw) {
+        _sp_proc_poly_ret = sp_box_nil();
+        sp_proc_call(block, argc, raw);
+        result = _sp_proc_poly_ret;
+    } else {
+        result = sp_cext_dispatch_fn(kind, key, receiver, argc, args, block);
+    }
+    SP_GC_ROOT_RBVAL(result);
+    sp_exc_disarm(); sp_cext_lock_resume(depth);
+    return result;
+}
+
 static const char *class_name(VALUE v) {
     sp_RbVal r = sp_cext_rbval(v);
     if (r.tag != SP_TAG_CLASS) sp_raise_cls("TypeError", "class or module expected");
@@ -71,7 +104,7 @@ void rb_define_const(VALUE o,const char *n,VALUE v) {
     VALUE *address=&binding->constants[next_constant++];
     if(sp_cext_register_address(address))init_roots->addresses[init_roots->count++]=address;
 }
-void sp_cext_init(sp_cext_extension *extension) {
+static void sp_cext_init_locked(sp_cext_extension *extension) {
     if (extension->initialized) return;
     sp_cext_exceptions_init();
 #define BUILTIN(var,name) do { var=lookup(name);rb_gc_register_address(&var); } while(0)
@@ -139,7 +172,7 @@ void *rb_check_typeddata(VALUE value,const rb_data_type_t *type) {
 }
 void *sp_cext_data_ptr(VALUE value) { return data_object(value)->cext_data; }
 const rb_data_type_t *sp_cext_data_type(VALUE value) { return data_object(value)->cext_type; }
-void *sp_cext_allocate(sp_cext_extension *ext,int slot,int cls) {
+static void *sp_cext_allocate_locked(sp_cext_extension *ext,int slot,int cls) {
     sp_cext_init(ext);sp_cext_arena_mark mark=sp_cext_arena_enter();
     sp_RbVal k={SP_TAG_CLASS,cls,{.i=cls}};
     VALUE obj=((VALUE (*)(VALUE))ext->functions[slot])(sp_cext_value(k));
@@ -241,8 +274,7 @@ VALUE rb_yield_values2(int argc,const VALUE *argv) {
         sp_RbVal v=sp_cext_rbval(argv[i]);_sp_proc_poly_args[i]=v;
         raw[i]=v.v.i;
     }
-    _sp_proc_poly_ret=sp_box_nil();sp_proc_call(current_block,argc,raw);
-    return sp_cext_value(_sp_proc_poly_ret);
+    return sp_cext_value(call_ruby_unlocked(0,NULL,sp_box_nil(),argc,NULL,current_block,raw));
 }
 VALUE rb_yield(VALUE v) { return rb_yield_values2(1,&v); }
 VALUE rb_yield_values(int argc,...) {
@@ -251,7 +283,7 @@ VALUE rb_yield_values(int argc,...) {
     for(int i=0;i<argc;i++)values[i]=va_arg(args,VALUE);va_end(args);
     return rb_yield_values2(argc,values);
 }
-sp_RbVal sp_cext_invoke(sp_cext_extension *ext,int slot,int arity,sp_RbVal self,sp_PolyArray *args,sp_Proc *block) {
+static sp_RbVal sp_cext_invoke_locked(sp_cext_extension *ext,int slot,int arity,sp_RbVal self,sp_PolyArray *args,sp_Proc *block) {
     sp_cext_init(ext);
     SP_GC_ROOT_RBVAL(self);SP_GC_ROOT(args);SP_GC_ROOT(block);
     sp_cext_arena_mark mark=sp_cext_arena_enter();
@@ -312,7 +344,7 @@ static VALUE dispatch(int kind, const char *key, VALUE receiver, int argc, const
     if (argc && !args) rb_raise(rb_eArgError, "missing C extension arguments");
     sp_PolyArray *boxed = sp_PolyArray_new(); SP_GC_ROOT(boxed); SP_GC_ROOT(block);
     for (int i = 0; i < argc; i++) sp_PolyArray_push(boxed, sp_cext_rbval(args[i]));
-    return sp_cext_value(sp_cext_dispatch_fn(kind, key, sp_cext_rbval(receiver), argc, boxed->data, block));
+    return sp_cext_value(call_ruby_unlocked(kind, key, sp_cext_rbval(receiver), argc, boxed->data, block, NULL));
 }
 VALUE rb_funcallv(VALUE receiver, ID id, int argc, const VALUE *args) {
     const char *name = rb_id2name(id);
@@ -353,7 +385,7 @@ static void callback_scan(void *p) {
     sp_mark_rbval(cap->data);
     sp_gc_mark(cap->outer);
 }
-static sp_int callback_trampoline(void *p, sp_int argc, sp_int *raw) {
+static sp_int callback_trampoline_locked(void *p, sp_int argc, sp_int *raw) {
     (void)raw;
     CextCallback *cap = p;
     SP_GC_ROOT(cap);
@@ -382,6 +414,25 @@ static sp_int callback_trampoline(void *p, sp_int argc, sp_int *raw) {
     _sp_proc_poly_ret = boxed;
     return boxed.v.i;
 }
+static sp_int callback_trampoline(void *p, sp_int argc, sp_int *raw) {
+    SP_GC_ROOT(p);
+    sp_cext_lock();
+    const int roots = sp_gc_nroots;
+    jmp_buf frame;
+    if (setjmp(frame) != 0) {
+        int unwind = sp_cext_unwinding();
+        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
+        void *obj = sp_exc_cur_obj();
+        sp_exc_disarm(); sp_gc_nroots = roots; sp_cext_unlock();
+        if (unwind) sp_cext_resume_unwind();
+        else sp_fiber_reraise(cls, msg, obj);
+        abort();
+    }
+    sp_exc_arm(frame);
+    sp_int result = callback_trampoline_locked(p, argc, raw);
+    sp_exc_disarm(); sp_cext_unlock();
+    return result;
+}
 VALUE rb_block_call(VALUE receiver, ID id, int argc, const VALUE *argv, rb_block_call_func_t fn, VALUE data) {
     if (!fn) return rb_funcallv(receiver, id, argc, argv);
     CextCallback *cap = sp_gc_alloc(sizeof(*cap), NULL, callback_scan);
@@ -395,4 +446,68 @@ VALUE rb_block_call(VALUE receiver, ID id, int argc, const VALUE *argv, rb_block
 
 #ifdef SP_CEXT
 VALUE rb_str_intern(VALUE v) { return ID2SYM(rb_intern2(RSTRING_PTR(v), RSTRING_LEN(v))); }
+#endif
+
+#ifdef SP_CEXT
+void sp_cext_init(sp_cext_extension *extension) {
+    sp_cext_lock();
+    const int roots = sp_gc_nroots;
+    jmp_buf frame;
+    if (setjmp(frame) != 0) {
+        int unwind = sp_cext_unwinding();
+        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
+        void *obj = sp_exc_cur_obj();
+        sp_exc_disarm(); sp_gc_nroots = roots; sp_cext_unlock();
+        if (unwind) sp_cext_resume_unwind();
+        else sp_fiber_reraise(cls, msg, obj);
+        abort();
+    }
+    sp_exc_arm(frame);
+    sp_cext_init_locked(extension);
+    sp_exc_disarm(); sp_cext_unlock();
+    return;
+}
+#endif
+
+#ifdef SP_CEXT
+void *sp_cext_allocate(sp_cext_extension *ext,int slot,int cls) {
+    sp_cext_lock();
+    const int roots = sp_gc_nroots;
+    jmp_buf frame;
+    if (setjmp(frame) != 0) {
+        int unwind = sp_cext_unwinding();
+        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
+        void *obj = sp_exc_cur_obj();
+        sp_exc_disarm(); sp_gc_nroots = roots; sp_cext_unlock();
+        if (unwind) sp_cext_resume_unwind();
+        else sp_fiber_reraise(cls, msg, obj);
+        abort();
+    }
+    sp_exc_arm(frame);
+    void * result = sp_cext_allocate_locked(ext,slot,cls);
+    sp_exc_disarm(); sp_cext_unlock();
+    return result;
+}
+#endif
+
+#ifdef SP_CEXT
+sp_RbVal sp_cext_invoke(sp_cext_extension *ext,int slot,int arity,sp_RbVal self,sp_PolyArray *args,sp_Proc *block) {
+    SP_GC_ROOT_RBVAL(self); SP_GC_ROOT(args); SP_GC_ROOT(block);
+    sp_cext_lock();
+    const int roots = sp_gc_nroots;
+    jmp_buf frame;
+    if (setjmp(frame) != 0) {
+        int unwind = sp_cext_unwinding();
+        const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
+        void *obj = sp_exc_cur_obj();
+        sp_exc_disarm(); sp_gc_nroots = roots; sp_cext_unlock();
+        if (unwind) sp_cext_resume_unwind();
+        else sp_fiber_reraise(cls, msg, obj);
+        abort();
+    }
+    sp_exc_arm(frame);
+    sp_RbVal result = sp_cext_invoke_locked(ext,slot,arity,self,args,block);
+    sp_exc_disarm(); sp_cext_unlock();
+    return result;
+}
 #endif

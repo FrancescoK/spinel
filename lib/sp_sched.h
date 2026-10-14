@@ -34,6 +34,10 @@ typedef struct sp_ev_waiter {
 typedef struct sp_sched_timer sp_sched_timer;
 
 typedef struct sp_thread {
+#ifdef SP_CEXT
+  void (*cext_unblock)(void *);
+  void *cext_unblock_data;
+#endif
   sp_Fiber         *fiber;       /* the green thread's coroutine; NULL for the main thread (root) */
   sp_Fiber         *at;          /* the Fiber it resumed and stopped inside, or NULL when it
                                     stopped in its own: run_thread_once switches back there */
@@ -209,6 +213,10 @@ void sp_safepoint(void);
    threaded runtime or before the worker pool exists. */
 #ifdef SP_THREADS
 void sp_native_enter(void);
+#ifdef SP_CEXT
+int sp_cext_native_register(void (*)(void *), void *);
+void sp_cext_native_unregister(void);
+#endif
 void sp_native_leave(void);
 #else
 static inline void sp_native_enter(void) {}

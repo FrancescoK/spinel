@@ -22,7 +22,7 @@ void sp_cext_exception_caught(void *);
 
 VALUE rb_eException, rb_eStandardError, rb_eRuntimeError, rb_eTypeError;
 VALUE rb_eArgError, rb_eRangeError, rb_eNoMemError, rb_eSystemCallError;
-static VALUE errinfo = Qnil;
+#define errinfo sp_cext_errinfo
 static int initialized;
 sp_RbVal (*sp_cext_exception_new_fn)(const char *, const char *) = NULL;
 
@@ -41,7 +41,6 @@ void sp_cext_exceptions_init(void) {
     rb_eRangeError = named_class(&("\xff" "RangeError")[1]);
     rb_eNoMemError = named_class(&("\xff" "NoMemoryError")[1]);
     rb_eSystemCallError = named_class(&("\xff" "SystemCallError")[1]);
-    rb_gc_register_address(&errinfo);
 }
 static const char *class_name(VALUE klass) {
     sp_RbVal v = sp_cext_rbval(klass);
@@ -95,14 +94,14 @@ void rb_raise(VALUE klass, const char *fmt, ...) {
 }
 void rb_exc_raise(VALUE value) {
     sp_Exception *e = exception(value);
-    errinfo = value;
+    sp_cext_set_errinfo(value);
     sp_fiber_reraise(e->cls_name, sp_exc_message(e), e);
     abort();
 }
 VALUE rb_errinfo(void) { return errinfo; }
 void rb_set_errinfo(VALUE value) {
     if (!NIL_P(value)) (void)exception(value);
-    errinfo = value;
+    sp_cext_set_errinfo(value);
 }
 VALUE rb_protect(VALUE (*body)(VALUE), VALUE argument, int *state) {
     sp_cext_exceptions_init();
@@ -128,7 +127,7 @@ VALUE rb_protect(VALUE (*body)(VALUE), VALUE argument, int *state) {
     SP_GC_ROOT(object);
     if (!object) object = sp_cext_rbval(new_exception(cls, message)).v.p;
     sp_cext_exception_caught(object);
-    errinfo = box_exception(object);
+    sp_cext_set_errinfo(box_exception(object));
     if (state) *state = !strcmp(cls, "fatal") ? 8 : 6; /* TAG_FATAL / TAG_RAISE */
     return Qnil;
 }
@@ -164,7 +163,7 @@ static VALUE rescue(VALUE (*body)(VALUE), VALUE arg, VALUE (*handler)(VALUE, VAL
         int handled = sp_cext_handled_push(e);
         result = handler ? handler(handler_arg, errinfo) : Qnil;
         sp_cext_handled_restore(handled);
-        errinfo = sp_cext_value(prior);
+        sp_cext_set_errinfo(sp_cext_value(prior));
         return result;
     }
     rb_jump_tag(state);
