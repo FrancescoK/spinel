@@ -10408,6 +10408,7 @@ static void emit_ctor_param_roots(Compiler *c, int init, Buf *b) {
     else if (needs_root(pt) && !comp_ty_value_obj(c, pt)) buf_printf(b, "  SP_GC_ROOT(lv_%s);\n", s->pnames[i]);
   }
 }
+static void anon_name_expr(char *out, size_t cap, int ci);
 
 void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   /* Native (C-backed) class: constructor + methods live in the package; nothing
@@ -10552,12 +10553,25 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
          itself. Stop at the object the render is already inside, as CRuby's
          #<struct S a=#<struct S:...>> does. Only a struct with members can be
          reached from inside itself, so a memberless one keeps its old body. */
-      if (ci->nmembers > 0)
+      /* a class its Struct.new / Data.define block runs in before the
+         constant names it (comp_class_anonymous) shows the name it has then */
+      int anon_now = comp_class_anonymous(c, cid);
+      if (anon_now) { char nx[96]; anon_name_expr(nx, sizeof nx, cid); buf_printf(b, "  const char *_anm = %s;\n", nx); }
+      if (ci->nmembers > 0 && anon_now)
+        buf_printf(b, "  if (sp_poly_recur_seen(SP_POLY_RECUR_INSPECT, self, NULL))\n"
+                      "    return sp_sprintf(SPL(\"#<%s %%s:...>\"), _anm ? _anm : sp_class_display((sp_Class){%d, NULL}));\n"
+                      "  int _rcm = sp_poly_recur_push(SP_POLY_RECUR_INSPECT, self, NULL);\n",
+                   ci->is_data ? "data" : "struct", cid);
+      else if (ci->nmembers > 0)
         buf_printf(b, "  if (sp_poly_recur_seen(SP_POLY_RECUR_INSPECT, self, NULL)) return \"#<%s %s:...>\";\n"
                       "  int _rcm = sp_poly_recur_push(SP_POLY_RECUR_INSPECT, self, NULL);\n",
                    ci->is_data ? "data" : "struct", ci->is_anon_struct ? "" : rn);
+      if (anon_now)
+        buf_printf(b, "  sp_String *s = sp_String_new(\"#<%s\"); SP_GC_ROOT(s);\n"
+                      "  if (_anm) { sp_String_append(s, \" \"); sp_String_append(s, _anm); }%s\n",
+                   ci->is_data ? "data" : "struct", ci->nmembers == 0 ? " else sp_String_append(s, \" \");" : "");
       /* an anonymous struct class has no name to show: #<struct a=1, b=2> */
-      if (ci->is_anon_struct)
+      else if (ci->is_anon_struct)
         /* the space that would precede the first member is CRuby's even when
            there is none to precede: `Struct.new.new.inspect` is "#<struct >" */
         buf_printf(b, "  sp_String *s = sp_String_new(\"#<%s%s\"); SP_GC_ROOT(s);\n",

@@ -42250,7 +42250,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_inline_struct_blocks(c);      /* Struct.new(:x) { .. } -> (__spinel_struct_1 = Struct.new(:x) { .. }) */
   desugar_singleton_class_meta(c);      /* Foo.singleton_class.attr_accessor :a -> class << Foo; attr_accessor :a; end */
   desugar_class_new_blocks(c);           /* X = Class.new(B) do..end -> class X < B; ..; end */
-  desugar_struct_block_name_reads(c);   /* Point = Struct.new do p self end -> refused */
+  desugar_struct_block_anonymous(c);    /* Point = Struct.new do p self end: anonymous until written */
   desugar_singleton_body_self(c);       /* class << X; p self; end -> refused */
   desugar_included_hooks(c);             /* include M / extend M -> M.included/extended(base)'s body */
   desugar_eval_method_block(c);          /* k.class_eval(&o.method(:m)) -> o.m(k) */

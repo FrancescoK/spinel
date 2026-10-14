@@ -1,0 +1,21 @@
+nil
+true
+true
+true
+#<struct x=1, y=2>
+"#<struct x=1, y=2>"
+"Point"
+Point
+Point
+true
+#<struct Point x=3, y=4>
+"Point(3, 4)"
+nil
+true
+#<data a=1>
+Pair
+#<data Pair a=2>
+true
+Note
+true
+#<struct Node nxt=nil>
