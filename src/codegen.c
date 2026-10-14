@@ -2383,6 +2383,8 @@ void emit_boxed_operand(Compiler *c, const int *argv, int argc, int k, Buf *b) {
   emit_boxed(c, argv[k], b);
 }
 
+static void emit_boxed_string(Compiler *c, int node, Buf *b);
+static int emit_boxed_by_kind(Compiler *c, int node, Buf *b);
 void emit_boxed(Compiler *c, int node, Buf *b) {
   if (b == g_pre) { emit_into_pre_line(c, emit_boxed, node); return; }
   if (g_share_check) share_check_mark(c, node, 'B', b);
@@ -2402,20 +2404,33 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
       return;
     }
   }
-  if (emit_boxed_cond_arms(c, node, b)) {
-    if (g_repr_check) repr_channel_boxed(c, node, frame);
-    return;
-  }
-  if (emit_boxed_sequence(c, node, b)) {
-    if (g_repr_check) repr_channel_boxed(c, node, frame);
-    return;
-  }
+  emit_boxed_string(c, node, b);
+  if (g_repr_check) repr_channel_boxed(c, node, frame);
+}
+
+/* The lift a String stored into a boxed slot the rule shares takes
+   (poly_strbuf_lift): its box is lifted into its handle. */
+static int emit_boxed_lift(Compiler *c, int node) {
+  return repr_share_rule(c) && node >= 0 && c->poly_strbuf_lift[node] && comp_ntype(c, node) == TY_STRING;
+}
+
+/* An argument that ran ahead as the handle it hands on (a lifted call
+   result): that handle's box; 0 with nothing emitted for any other. */
+static int emit_boxed_lift_ran_first(Compiler *c, int node, Buf *b) {
+  if (!emit_boxed_lift(c, node) || ran_first_handle(node) < 0) return 0;
+  buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", ran_first_handle(node));
+  return 1;
+}
+
+/* emit_boxed's arms for a value that hands on a String's handle by a route
+   of its own: 1, the box written, or 0 with nothing emitted. */
+static int emit_boxed_routes(Compiler *c, int node, Buf *b) {
+  int lift = emit_boxed_lift(c, node);
+  if (emit_boxed_cond_arms(c, node, b) || emit_boxed_sequence(c, node, b)) return 1;
   /* --share-strings: a held chain's value (`id(x[0]).upcase!.itself`,
      strbuf_held_chain) is boxed as the handle it holds */
-  if (repr_share_rule(c) && node >= 0 && strbuf_held_chain(c, node) && emit_boxed_bang_self(c, unwrap_parens(c, node), b)) {
-    if (g_repr_check) repr_channel_boxed(c, node, frame);
-    return;
-  }
+  if (repr_share_rule(c) && node >= 0 && strbuf_held_chain(c, node) && emit_boxed_bang_self(c, unwrap_parens(c, node), b))
+    return 1;
   /* --share-strings: a boxed receiver's call whose every target answers a
      String, a handle it publishes or a new one (strbuf_poly_user_boxes):
      the dispatch read as a box, each arm boxing its own answer
@@ -2428,10 +2443,8 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     emit_expr(c, node, b);
     view_pop(c, sd);
     view_pop(c, sv);
-    if (g_repr_check) repr_channel_boxed(c, node, frame);
-    return;
+    return 1;
   }
-  int lift = repr_share_rule(c) && node >= 0 && c->poly_strbuf_lift[node] && comp_ntype(c, node) == TY_STRING;
   /* a route that hands on a handle (`q ||= s.then { |v| v }`,
      emit_strbuf_route): that handle's box, not a new handle around a copy;
      a String Range's min / max (strbuf_route_srange_extreme) is the
@@ -2445,26 +2458,23 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
      boxed block parameter hands it on; any other answer is boxed as the
      String it is, as its read answers it, also where a store lifts it
      (a new handle over a copy was another String) */
-  if (strbuf_srange_tail(c, node) >= 0 && emit_srange_route_boxed(c, node, b)) {
-    if (g_repr_check) repr_channel_boxed(c, node, frame);
-    return;
-  }
-  /* an argument that ran ahead as the handle it hands on (a lifted call
-     result) */
-  if (lift && ran_first_handle(node) >= 0) {
-    buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", ran_first_handle(node));
-    if (g_repr_check) repr_channel_boxed(c, node, frame);
-    return;
-  }
+  if (strbuf_srange_tail(c, node) >= 0 && emit_srange_route_boxed(c, node, b)) return 1;
+  if (emit_boxed_lift_ran_first(c, node, b)) return 1;
   if (lift || (!arg_ran_first(node, 0) && (strbuf_route_reader(c, node) || strbuf_route_boxed_exc_message(c, node)))) {
     Buf hb; memset(&hb, 0, sizeof hb);
     if (emit_strbuf_route(c, node, &hb)) {
       buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
       free(hb.p);
-      if (g_repr_check) repr_channel_boxed(c, node, frame);
-      return;
+      return 1;
     }
   }
+  return 0;
+}
+
+/* ...and the value's box by its representation (emit_boxed_impl), lifted
+   into its handle where a store lifts it. */
+static void emit_boxed_by_repr(Compiler *c, int node, Buf *b) {
+  int lift = emit_boxed_lift(c, node);
   /* --share-strings: a boxed call's answer a container store lifts into a
      handle (strbuf_demand_store_leaf), so a mutation through the element
      changes the String the container keeps */
@@ -2476,7 +2486,60 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
   emit_boxed_impl(c, node, b);
   rc_depth--;
   if (lift) buf_puts(b, ")");
-  if (g_repr_check) repr_channel_boxed(c, node, frame);
+}
+
+/* The box of value node: under --share-strings, a String's by its
+   producer's kind (emit_boxed_by_kind); else the route arms, then the
+   representation's. */
+static void emit_boxed_string(Compiler *c, int node, Buf *b) {
+  if (c->share_plan && node >= 0 && emit_boxed_by_kind(c, node, b)) return;
+  if (emit_boxed_routes(c, node, b)) return;
+  emit_boxed_by_repr(c, node, b);
+}
+
+/* --share-strings: the box face (#8328) of a String value (or one the rule
+   holds as the handle), by its producer's kind (share.h's SPK_*), asked
+   where it is boxed; 0 with nothing emitted for any other value:
+     NONE, FROZEN  the value's box by its representation: its bytes boxed
+                   (sp_box_str, or the new handle sp_box_str_new where the
+                   plan wraps it), a new handle's box, a lift; one that ran
+                   first into a store's lift: the handle it took;
+     BOX           the box itself, by its representation (or as above);
+     PROC_CALL     a proc's answer: the box the proc hands back, the call
+                   emitted as a box (a catch's or a reopened method's
+                   answer: the route arms);
+     any other     the box of the handle the producer hands on, by the
+                   route arms, then the representation's (a variable's
+                   slot, a demanded read, a boxed element, a narrowed box,
+                   a bang off a handle, a box's to_s, a chain). */
+static int emit_boxed_by_kind(Compiler *c, int node, Buf *b) {
+  TyKind t = comp_ntype(c, node);
+  if (t != TY_STRING && t != TY_STRBUF) return 0;
+  int kind = share_plan_producer(c, node, NULL);
+  _Static_assert(SPK__COUNT == 23, "a box render for each producer kind");
+  switch (kind) {
+  case SPK_NONE: case SPK_FROZEN: case SPK_BOX:
+    if (!emit_boxed_lift_ran_first(c, node, b)) emit_boxed_by_repr(c, node, b);
+    return 1;
+  case SPK_PROC_CALL:
+    if (strbuf_proc_call_box(c, node) && !arg_ran_first(node, 0) && !emit_boxed_lift(c, node)) {
+      /* (a block literal the call splices answers its tail boxed, as
+         emit_strbuf_route's proc arm asks it) */
+      int v = unwrap_parens(c, node), sv = view_push(c, v, TY_POLY);
+      if (is_block_call(c, v)) emit_block_invoke(c, nt_ref(c->nt, v, "arguments"), b, 0, 1, TY_POLY);
+      else emit_expr(c, v, b);
+      view_pop(c, sv);
+      RC(RF_PASS, RW_HANDLE_ROUTE);
+      return 1;
+    }
+    return 0;
+  case SPK_SLOT: case SPK_DEMANDED: case SPK_ELEM: case SPK_SLOT_POLY: case SPK_SELF: case SPK_BANG_BOX:
+  case SPK_POLY_ARMS: case SPK_EXC_MESSAGE: case SPK_EXC_SUPER: case SPK_PUBLISHED: case SPK_READER: case SPK_WRITE:
+  case SPK_ASSIGN: case SPK_OPERAND: case SPK_BLOCK_VALUE: case SPK_YIELD: case SPK_COND: case SPK_SEQUENCE:
+  case SPK_LIFT:
+    return 0;
+  }
+  return 0;
 }
 
 /* `vol` makes the local volatile (required for locals live across a setjmp
