@@ -21202,3 +21202,84 @@ int desugar_builtin_reopen_named_superclass(Compiler *c) {
   }
   return changed;
 }
+
+/* The new and old names of alias statement `st` -- `alias n x` or
+   `alias_method :n, :x` with literal names -- or 0. */
+static int mfa_alias_names(const NodeTable *nt, int st, const char **nw, const char **od) {
+  if (nt_kind(nt, st) == NK_AliasMethodNode) {
+    *nw = sym_or_str_literal(nt, nt_ref(nt, st, "new_name"));
+    *od = sym_or_str_literal(nt, nt_ref(nt, st, "old_name"));
+    return *nw && *od;
+  }
+  if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "receiver") >= 0 || nt_ref(nt, st, "block") >= 0) return 0;
+  const char *cn = nt_str(nt, st, "name");
+  int args = nt_ref(nt, st, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (!cn || !sp_streq(cn, "alias_method") || an != 2) return 0;
+  *nw = sym_or_str_literal(nt, av[0]);
+  *od = sym_or_str_literal(nt, av[1]);
+  return *nw && *od;
+}
+
+/* Does a `module_function` statement of module body `body` name `n`? */
+static int mfa_named_module_function(const NodeTable *nt, const int *bv, int bn, const char *n) {
+  for (int i = 0; i < bn; i++) {
+    if (nt_kind(nt, bv[i]) != NK_CallNode || nt_ref(nt, bv[i], "receiver") >= 0) continue;
+    const char *cn = nt_str(nt, bv[i], "name");
+    if (!cn || !sp_streq(cn, "module_function")) continue;
+    int args = nt_ref(nt, bv[i], "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    for (int a = 0; a < an; a++) {
+      const char *v = sym_or_str_literal(nt, av[a]);
+      if (v && sp_streq(v, n)) return 1;
+    }
+  }
+  return 0;
+}
+
+/* An alias in a module body that a `module_function` names -> a copy of
+   the def it aliases, under the alias's name: `alias_method :n, :x` (or
+   `define_method(:n, instance_method(:x))`, desugared to that) beside
+   `module_function :n`, where x is not a module_function itself.
+   module_function makes a method of the module object from a def of the
+   name, and an alias has none, so `M.n` was never defined. An alias captures the body in effect where it stands,
+   which the copy of the last def of x ahead of it is. */
+int desugar_module_function_aliases(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0, n0 = nt->count;
+  for (int mod = 0; mod < n0; mod++) {
+    if (nt_kind(nt, mod) != NK_ModuleNode) continue;
+    int body = nt_ref(nt, mod, "body");
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int bn = 0; const int *bv = nt_arr(nt, body, "body", &bn);
+    for (int i = 0; i < bn; i++) {
+      const char *nw = NULL, *od = NULL;
+      /* a target the module_function names too already answers on the
+         module, and the alias with it */
+      if (!mfa_alias_names(nt, bv[i], &nw, &od) || !mfa_named_module_function(nt, bv, bn, nw) ||
+          mfa_named_module_function(nt, bv, bn, od)) continue;
+      int d = -1, own = 0;
+      for (int j = 0; j < bn; j++) {
+        if (nt_kind(nt, bv[j]) != NK_DefNode || nt_ref(nt, bv[j], "receiver") >= 0) continue;
+        const char *dn = nt_str(nt, bv[j], "name");
+        if (dn && sp_streq(dn, nw)) own = 1;
+        if (j < i && dn && sp_streq(dn, od)) d = bv[j];
+      }
+      if (d < 0 || own) continue;
+      char name[256];
+      snprintf(name, sizeof name, "%s", nw);
+      int copy = nt_clone_subtree(nt, d);
+      if (copy < 0) continue;
+      nt_node_set_str(nt, copy, "name", name);
+      int *nb = malloc(sizeof(int) * (size_t)bn);
+      if (!nb) continue;
+      memcpy(nb, bv, sizeof(int) * (size_t)bn);
+      nb[i] = copy;
+      nt_node_set_arr(nt, body, "body", nb, bn);
+      free(nb);
+      bv = nt_arr(nt, body, "body", &bn);
+      changed = 1;
+    }
+  }
+  return changed;
+}

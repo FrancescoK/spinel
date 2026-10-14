@@ -42851,6 +42851,7 @@ static void an_phase_desugar_register(Compiler *c) {
   scope_numbered_block_params(c);
   desugar_singleton_class_define_method(c); /* singleton_class.define_method -> define_singleton_method */
   desugar_define_method_proc_arg(c);     /* define_method(:m, -> { }) -> define_method(:m) { } */
+  desugar_module_function_aliases(c);    /* alias_method :n, :x + module_function :n -> def n (x's body) */
   desugar_define_method_captures(c);     /* class body local a define_method reads -> a global */
   desugar_define_method_keywords(c);     /* define_method(:m) { |k: 1| } -> def m(k: 1) */
   name_anon_block_kwrest(c);
