@@ -258,6 +258,9 @@ int share_value_fresh(Compiler *c, int n, int depth);
 /* Is node n the frozen String literal itself (a literal, or a freeze, -@ or
    dedup of one)? Its handle is the literal's own, never a new one. */
 int share_frozen_literal(Compiler *c, int n);
+/* ...or a read of a builtin String constant (RUBY_ENGINE ...), one frozen
+   object too (share_frozen_string) */
+int share_frozen_string(Compiler *c, int n);
 int share_return_owned(const Compiler *c, int n, int mi);
 /* Is node n a container literal a builtin only reads and keeps none of
    (`puts [a, b]`)? */
@@ -308,6 +311,9 @@ int share_node_carries_handle(const Compiler *c, int n);
    reads the representation itself); *op is the node whose supply an
    SPK_SELF or SPK_OPERAND route hands on, else -1. */
 int share_node_carry_kind(const Compiler *c, int n, int *op);
+/* ...asked as if no store lifted n into a handle (poly_strbuf_lift), the
+   lift being the store's: the route n hands the handle on by itself */
+int share_node_carry_kind_unlifted(const Compiler *c, int n, int *op);
 
 /* ---- the String plan (share_plan.c, #8328) ----
    For each String value under --share-strings, once the analysis is final:
@@ -400,6 +406,9 @@ const char *share_plan_form_name(int form);
    node whose supply an SPK_SELF, SPK_OPERAND or SPK_SEQUENCE value hands
    on, the receiver whose box an SPK_BANG_BOX call answers, else -1. */
 int share_plan_producer(Compiler *c, int v, int *operand);
+/* Can a spliced block's value, or a yield's argument its block parameter
+   binds, hand on value a's handle (share_plan.c)? */
+int share_plan_splice_renders(Compiler *c, int a, int arms, int depth);
 const char *share_plan_role_name(int role);
 /* Is node v, a tail of a method whose value is a String, a box whose String
    the plan gives a taker as its handle (a taker needs the handle where its

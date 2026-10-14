@@ -121,19 +121,6 @@ static int share_plan_self_recv(Compiler *c, int v) {
   return cplan_targets(c, v, tg, CPT_MAX) == 0 ? r : -1;
 }
 
-/* Is node v a frozen String: a literal (share_frozen_literal), or a read
-   of a builtin String constant no constant of the program's own shadows?
-   Its handle is its own, the one every read of it names. */
-static int share_plan_frozen(Compiler *c, int v) {
-  const NodeTable *nt = c->nt;
-  int u = an_unparen(nt, v);
-  if (u >= 0 && nt_kind(nt, u) == NK_ConstantReadNode) {
-    const char *nm = nt_str(nt, u, "name");
-    return is_engine_string_const(nm) && !comp_const(c, nm);
-  }
-  return share_frozen_literal(c, v);
-}
-
 /* Is node v super in an exception class's message or to_s that publishes
    the String it answers (scope_ret_handle) and inherits the builtin's
    (no ancestor of the program's own defines it): the message the
@@ -149,6 +136,8 @@ static int share_plan_exc_super(Compiler *c, int v) {
   int sup = c->classes[cls].parent;
   return scope_ret_handle(c, mi) && (sup < 0 || comp_method_in_chain(c, sup, sc->name, NULL) < 0);
 }
+
+static int share_plan_yield_supply(Compiler *c, int v, int depth);
 
 /* The producer of node v's handle (SPK_*, share.h), the first of these
    that names it:
@@ -173,7 +162,7 @@ static int share_plan_exc_super(Compiler *c, int v) {
         `&&` with a bang on a boxed receiver on an arm (SPK_COND);
      8. parentheses or statements: their last statement (SPK_SEQUENCE).
    Anything else has its bytes only (SPK_NONE). */
-static int share_plan_producer_at(Compiler *c, int v, int *op) {
+static int share_plan_producer_core(Compiler *c, int v, int *op, int unlifted) {
   const NodeTable *nt = c->nt;
   Repr r = repr_of(c, v);
   *op = -1;
@@ -186,7 +175,7 @@ static int share_plan_producer_at(Compiler *c, int v, int *op) {
     default: return SPK_SLOT;
     }
   }
-  if (share_plan_frozen(c, v)) return SPK_FROZEN;
+  if (share_frozen_string(c, v)) return SPK_FROZEN;
   int rv = share_plan_self_recv(c, v);
   if (rv >= 0) { *op = rv; return SPK_SELF; }
   if (face_str_bang_call(c, v)) { *op = nt_ref(nt, v, "receiver"); return SPK_BANG_BOX; }
@@ -197,8 +186,11 @@ static int share_plan_producer_at(Compiler *c, int v, int *op) {
   if (repr_share_rule(c) && strbuf_poly_user_base(c, v) >= 0) return SPK_POLY_ARMS;
   if (share_value_fresh(c, v, 0)) return SPK_NONE;
   if (share_plan_exc_super(c, v)) return SPK_EXC_SUPER;
-  int k = share_node_carry_kind(c, v, op);
+  int k = unlifted ? share_node_carry_kind_unlifted(c, v, op) : share_node_carry_kind(c, v, op);
   if (k != SPK_NONE) return k;
+  /* (a yield a block splices, asked outside the splice: its method's
+     blocks, share_plan_yield_supply) */
+  if (v >= 0 && nt_kind(nt, v) == NK_YieldNode && share_plan_yield_supply(c, v, 0) >= 0) return SPK_YIELD;
   /* (a `||` or `&&` with a bang on a boxed receiver on an arm, which the
      faces take arm by arm: strbuf_face_bang_cond) */
   if (strbuf_face_bang_cond(c, v)) return SPK_COND;
@@ -211,6 +203,8 @@ static int share_plan_producer_at(Compiler *c, int v, int *op) {
   }
   return SPK_NONE;
 }
+
+static int share_plan_producer_at(Compiler *c, int v, int *op) { return share_plan_producer_core(c, v, op, 0); }
 
 const char *share_plan_kind_name(int kind) {
   static const char *const names[] = { "none", "box", "slot", "demanded", "elem", "slot_poly", "frozen", "self",
@@ -338,11 +332,17 @@ static int share_plan_arms_ok(Compiler *c, int v, int depth) {
    that answers its yield), each `break` (loop)? A spliced call that
    answers a variable of its method hands on that slot, and a call whose
    value no block gives (sum, an ENV store) is the route's own. */
+int share_plan_splice_renders(Compiler *c, int a, int arms, int depth);
 static int share_plan_block_ok(Compiler *c, int v, int depth) {
   const NodeTable *nt = c->nt;
   int u = an_unparen(nt, v), blk = u >= 0 && nt_kind(nt, u) == NK_CallNode ? nt_ref(nt, u, "block") : -1;
   if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return 1;
   int body = nt_ref(nt, blk, "body");
+  /* (the block's tail is read where the block is spliced in, as a
+     demanded tail: a value the splice renders, share_plan_splice_renders) */
+  int bn = 0;
+  const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (!strbuf_route_loop(c, u) && bn > 0 && !share_plan_splice_renders(c, bb[bn - 1], 1, 0)) return 0;
   if (strbuf_route_loop(c, u)) return share_plan_jumps_ok(c, body, NK_BreakNode, 0, depth);
   if (strbuf_route_ie(c, u)) return share_plan_body_ok(c, body, NK_NONE, 1, depth);
   if (strbuf_route_inline_call(c, u)) {
@@ -354,11 +354,101 @@ static int share_plan_block_ok(Compiler *c, int v, int depth) {
   return share_plan_body_ok(c, body, NK_NextNode, 0, depth);
 }
 
+/* Can a spliced block's value, or a yield's argument its block parameter
+   binds, hand on value a's handle where a block is spliced in: the
+   splice reads the tail under a handle demand (emit_block_invoke), and
+   the block parameter's binder takes a route over the handle
+   (emit_strbuf_handle_of), neither of which renders a proc's answer, a
+   bang on a boxed receiver, a boxed receiver's dispatch, or a call
+   answering its own block's value other than instance_exec's and
+   instance_eval's splice? (A yield, which forwards the block one level
+   out, is the yield fact's, share_plan_yield_supply.) The value's other kinds and a chain over one
+   of these can, and with arms set (a tail, read under the demand arm by
+   arm) a conditional each of whose arms is one; without, a conditional
+   is bound arm by arm through the handle route, which renders them. */
+int share_plan_splice_renders(Compiler *c, int a, int arms, int depth) {
+  const NodeTable *nt = c->nt;
+  a = an_unparen(nt, a);
+  if (a < 0) return 1;
+  if (depth > 16) return 0;
+  switch (arms ? nt_kind(nt, a) : NK_NONE) {
+  case NK_IfNode: case NK_UnlessNode:
+    return share_plan_splice_renders(c, nt_ref(nt, a, "statements"), arms, depth + 1) &&
+           share_plan_splice_renders(c, nt_ref(nt, a, nt_kind(nt, a) == NK_IfNode ? "subsequent" : "else_clause"), arms, depth + 1);
+  case NK_OrNode: case NK_AndNode:
+    return share_plan_splice_renders(c, nt_ref(nt, a, "left"), arms, depth + 1) &&
+           share_plan_splice_renders(c, nt_ref(nt, a, "right"), arms, depth + 1);
+  case NK_ElseNode:
+    return share_plan_splice_renders(c, nt_ref(nt, a, "statements"), arms, depth + 1);
+  case NK_StatementsNode: {
+    int n = 0;
+    const int *bb = nt_arr(nt, a, "body", &n);
+    return n == 0 || share_plan_splice_renders(c, bb[n - 1], arms, depth + 1);
+  }
+  case NK_CaseNode: {
+    int nw = 0;
+    const int *whens = nt_arr(nt, a, "conditions", &nw);
+    for (int w = 0; w < nw; w++)
+      if (!share_plan_splice_renders(c, nt_ref(nt, whens[w], "statements"), arms, depth + 1)) return 0;
+    return share_plan_splice_renders(c, nt_ref(nt, a, "else_clause"), arms, depth + 1);
+  }
+  default: break;
+  }
+  /* (a bang on a boxed receiver, whatever its representation names it) */
+  if (face_str_bang_call(c, a)) return 0;
+  int o, k = share_plan_producer_at(c, a, &o);
+  if (k == SPK_LIFT) k = share_plan_producer_core(c, a, &o, 1);
+  switch (k) {
+  case SPK_PROC_CALL: case SPK_BANG_BOX: case SPK_POLY_ARMS:
+    return 0;
+  case SPK_BLOCK_VALUE:
+    return strbuf_route_ie(c, a);
+  case SPK_OPERAND: {
+    /* (tap answers its receiver through its own block) */
+    const char *nm = nt_kind(nt, a) == NK_CallNode ? nt_str(nt, a, "name") : NULL;
+    if (nm && is_tap_name(nm) && nt_ref(nt, a, "block") >= 0) return 0;
+    return o < 0 || share_plan_splice_renders(c, o, arms, depth + 1);
+  }
+  case SPK_SELF: case SPK_SEQUENCE:
+    return o < 0 || share_plan_splice_renders(c, o, arms, depth + 1);
+  default:
+    return 1;
+  }
+}
+
+/* Does yield v supply the handle where the seal asks, outside the splice
+   that renders it: does each block its method is given answer one in its
+   tail and each `next` (share_method_blocks, share_plan_body_ok), as
+   strbuf_route_yield takes a spliced block's, each a value the splice
+   renders (share_plan_splice_renders)? 1 or 0; -1 for a yield no
+   block splices (a lowered or proc-form method's, one of a method with a
+   &block parameter, a top-level one), which is no such route. A yield in
+   its own blocks' tails is asked no deeper than the plan's walks go. */
+static int share_plan_yield_supply(Compiler *c, int v, int depth) {
+  Scope *sc = v >= 0 && nt_kind(c->nt, v) == NK_YieldNode ? comp_scope_of(c, v) : NULL;
+  if (!sc || sc->def_node < 0 || sc->is_lowered_yield || sc->is_proc_form || sc->blk_param) return -1;
+  const int *blocks;
+  int n = share_method_blocks(c, (int)(sc - c->scopes), &blocks);
+  if (n < 0) return -1;
+  if (depth > 8) return 0;
+  for (int i = 0; i < n; i++) {
+    int body = nt_ref(c->nt, blocks[i], "body"), bn = 0;
+    const int *bb = body >= 0 && nt_kind(c->nt, body) == NK_StatementsNode ? nt_arr(c->nt, body, "body", &bn) : NULL;
+    if ((bn > 0 && !share_plan_splice_renders(c, bb[bn - 1], 1, 0)) ||
+        !share_plan_body_ok(c, body, NK_NextNode, 0, depth + 1))
+      return 0;
+  }
+  return 1;
+}
+
 /* The supply node v decides by itself (1 or 0), or -1 when it hands on its
    operand's (a call answering its receiver, a value route over an operand,
    a sequence's last statement): *op is then that node. */
+static int share_plan_supply_kind(Compiler *c, int v, int k, int *op, int depth);
 static int share_plan_supply_at(Compiler *c, int v, int *op, int depth) {
-  int k = share_plan_producer_at(c, v, op);
+  return share_plan_supply_kind(c, v, share_plan_producer_at(c, v, op), op, depth);
+}
+static int share_plan_supply_kind(Compiler *c, int v, int k, int *op, int depth) {
   switch (k) {
   case SPK_NONE: return 0;
   case SPK_SELF: case SPK_SEQUENCE: return -1;
@@ -373,9 +463,23 @@ static int share_plan_supply_at(Compiler *c, int v, int *op, int depth) {
   }
   case SPK_COND: return share_plan_arms_ok(c, an_unparen(c->nt, v), depth);
   case SPK_BLOCK_VALUE: return share_plan_block_ok(c, v, depth);
+  /* a String a store lifts into a handle (poly_strbuf_lift): the lift is
+     the store's, which no other consumer applies (an argument's binder
+     takes the String as it is); the value supplies what it does as the
+     String it is before the lift (share_node_carry_kind_unlifted), or a
+     box's to_s, the box's own String (strbuf_poly_to_s) */
+  case SPK_LIFT: {
+    int k2 = share_plan_producer_core(c, v, op, 1);
+    if (k2 == SPK_NONE) return strbuf_poly_to_s(c, v);
+    return k2 != SPK_LIFT && share_plan_supply_kind(c, v, k2, op, depth);
+  }
+  /* a yield: what its method's blocks answer (a spliced yield's route,
+     asked where the splice is, takes its own block's) */
+  case SPK_YIELD:
+    return share_plan_yield_supply(c, v, depth) != 0;
   case SPK_BOX: case SPK_SLOT: case SPK_DEMANDED: case SPK_ELEM: case SPK_SLOT_POLY: case SPK_FROZEN:
   case SPK_BANG_BOX: case SPK_PROC_CALL: case SPK_POLY_ARMS: case SPK_EXC_MESSAGE: case SPK_EXC_SUPER:
-  case SPK_PUBLISHED: case SPK_READER: case SPK_WRITE: case SPK_ASSIGN: case SPK_YIELD: case SPK_LIFT:
+  case SPK_PUBLISHED: case SPK_READER: case SPK_WRITE: case SPK_ASSIGN:
     return 1;
   }
   return 0;
@@ -494,7 +598,7 @@ SharePlan share_plan_with_need(Compiler *c, int v, int role, int need) {
   if (role == SPR_IDENTITY && p.supply == SPS_BYTES && exc_message_identity_operand(c, v)) p.supply = SPS_HANDLE;
   /* (an identity is the handle or the bytes' pointer; a frozen String's
      is its bytes' pointer, which every handle of it names too) */
-  int bytes_id = role == SPR_IDENTITY && (p.supply == SPS_BYTES || share_plan_frozen(c, v));
+  int bytes_id = role == SPR_IDENTITY && (p.supply == SPS_BYTES || share_frozen_string(c, v));
   p.form = (unsigned char)(bytes_id ? SPF_BYTES : share_plan_form(p.need, p.supply));
   return p;
 }

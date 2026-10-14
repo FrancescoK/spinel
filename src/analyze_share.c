@@ -5245,6 +5245,18 @@ int share_frozen_literal(Compiler *c, int n) {
       (bop_share_named(TY_STRING, nt_str(nt, n, "name")) != BSH_FROZEN && !is_freeze_name(nt_str(nt, n, "name")))) return 0;
   return share_frozen_literal(c, nt_ref(nt, n, "receiver"));
 }
+/* share.h: is node n a frozen String, a literal (share_frozen_literal) or
+   a read of a builtin String constant no constant of the program's own
+   shadows (is_engine_string_const)? */
+int share_frozen_string(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  int u = an_unparen(nt, n);
+  if (u >= 0 && nt_kind(nt, u) == NK_ConstantReadNode) {
+    const char *nm = nt_str(nt, u, "name");
+    return is_engine_string_const(nm) && !comp_const(c, nm);
+  }
+  return share_frozen_literal(c, n);
+}
 int share_value_fresh(Compiler *c, int n, int depth) {
   const NodeTable *nt = c->nt;
   n = an_unparen(nt, n);
@@ -5278,6 +5290,9 @@ int share_value_fresh(Compiler *c, int n, int depth) {
       return 1;
     if ((is_receiver_conversion(cn) || is_freeze_name(cn)) && call_plain_argc(c, n) == 0)
       return share_value_fresh(c, rcv, depth + 1);
+    /* `+` of a frozen String (a builtin String constant, share_frozen_string)
+       is a new String, as `+"lit"` is */
+    if (is_unary_plus(cn) && call_plain_argc(c, n) == 0 && share_frozen_string(c, rcv)) return 1;
     if (bop_share_self_answer(cn, 0)) return share_value_fresh(c, rcv, depth + 1);
     /* a proc, a lambda or a Method the walk bounds to literals */
     if (is_call_alias(cn) && sh_call_fresh(c, n, depth)) return 1;
@@ -5437,7 +5452,7 @@ static int sh_needs_handle(Compiler *c, int v, int litout) {
   TyKind t = c->ntype[v];
   if (t != TY_STRING && t != TY_STRBUF && t != TY_POLY) return SHN_NO;
   Scope *sc = comp_scope_of(c, v);
-  if (!sc || !sc->reachable || share_frozen_literal(c, v)) return SHN_NO;
+  if (!sc || !sc->reachable || share_frozen_string(c, v)) return SHN_NO;
   if (!F->into) sh_into_build(c);
   unsigned char bits = F->into[v];
   if (!share_node_shares(c, v) && !(bits & SHI_INTO)) return SHN_NO;
@@ -5512,8 +5527,10 @@ static int sh_poly_to_s_self(const Compiler *c, int u) {
    SPK_NONE: the carry share_node_carries_handle checks, arm by arm; *op as
    share_plan_producer's. With by_repr 0, a value represented as the handle
    (repr_of's RK_STRBUF, or any strbuf_src) is not taken as one by that
-   alone: the String plan reads the representation itself. */
-static int sh_carry_kind(const Compiler *c, int n, int by_repr, int *op) {
+   alone: the String plan reads the representation itself. With lift 0, a
+   String a store lifts into a handle (poly_strbuf_lift) is asked the
+   other routes, as the String it is before the store's lift. */
+static int sh_carry_kind(const Compiler *c, int n, int by_repr, int lift, int *op) {
   *op = -1;
   /* The return route takes the handle its callee publishes, including
      when a borrowed parameter is returned beside a method-owned String. */
@@ -5603,7 +5620,7 @@ static int sh_carry_kind(const Compiler *c, int n, int by_repr, int *op) {
     return SPK_SELF;
   }
   /* a boxed variable's read lifted into the handle (poly_strbuf_lift) */
-  if (r.poly_lift) return SPK_LIFT;
+  if (lift && r.poly_lift) return SPK_LIFT;
   /* A yielding call's result and a receiver-returning expression
      use the same handle routes as their eventual store. */
   return strbuf_value_kind((Compiler *)c, n, op);
@@ -5612,9 +5629,10 @@ static int sh_carry_kind(const Compiler *c, int n, int by_repr, int *op) {
    not a copy of its bytes? */
 int share_node_carries_handle(const Compiler *c, int n) {
   int op;
-  return sh_carry_kind(c, n, 1, &op) != SPK_NONE;
+  return sh_carry_kind(c, n, 1, 1, &op) != SPK_NONE;
 }
-int share_node_carry_kind(const Compiler *c, int n, int *op) { return sh_carry_kind(c, n, 0, op); }
+int share_node_carry_kind(const Compiler *c, int n, int *op) { return sh_carry_kind(c, n, 0, 1, op); }
+int share_node_carry_kind_unlifted(const Compiler *c, int n, int *op) { return sh_carry_kind(c, n, 0, 0, op); }
 
 /* The class of node n's value (with elems, of its elements), or -1. */
 static int sh_node_root(const ShareFacts *F, int n, int elems) {
