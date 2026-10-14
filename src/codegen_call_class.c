@@ -2461,6 +2461,23 @@ static int boxed_arg_wants_root(Compiler *c, int node) {
   return !((t == TY_POLY || needs_root(t)) && !arg_wants_root(c, t, node));
 }
 
+/* The members a Struct `new` arm leaves to nil, from `given` on: each one
+   with a nil byte (an Integer or Float member) has it set on the object in
+   `obj`, as the direct `S.new` with fewer arguments sets it. Answers the
+   statements, empty when no member needs one (#9093: the run-time switch's
+   arm left the byte clear and the member read 0 or 0.0, not nil). */
+void struct_nil_fill_stmts(Compiler *c, int ci, int given, const char *obj, Buf *out) {
+  ClassInfo *k = &c->classes[ci];
+  if (!k->is_struct) return;
+  for (int m = given < 0 ? 0 : given; m < k->nmembers; m++) {
+    char mvn[300]; snprintf(mvn, sizeof mvn, "@%s", k->readers[m]);
+    int iv = comp_ivar_index(k, mvn);
+    if (iv < 0 || !ivar_has_nilbit(c, ci, iv)) continue;
+    char set[160]; ivar_nilbit_set(c, ci, iv, obj, set, sizeof set);
+    buf_printf(out, "%s; ", set);
+  }
+}
+
 /* new and allocate on a Class value, a poly receiver, self's class or a constant, and Cls.exception */
 int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* .new WITH arguments on a Class value whose class is only known at run time.
@@ -2626,7 +2643,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
       g_pre = sv_pre;
       g_ctor_self = sv_cs; g_ctor_self_deref = sv_csd;
       emit_ctor_block_slot(c, id, initm, np > 0 ? ", " : "", &ab);
-      emit_ctor_arm_case(c, ci, rt2, self_t, pdpre.p, ab.p ? ab.p : "", b);
+      emit_ctor_arm_case(c, ci, rt2, self_t, pdpre.p, ab.p ? ab.p : "", is2 || kw_ctor ? -1 : argc, b);
       free(pdpre.p); free(ab.p);
     }
     /* A class the switch has no arm for is a program that cannot construct it,
@@ -2688,13 +2705,16 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
          nil box's cls_id 0 as a real class (#4048). */
       if (c->classes[ci].is_struct) {
         int nmem = c->classes[ci].nmembers;
-        buf_printf(b, "case %d: _t%d=sp_box_obj(sp_%s_new(", ci, rt2, c->classes[ci].c_name);
+        Buf fills; memset(&fills, 0, sizeof fills);
+        struct_nil_fill_stmts(c, ci, 0, "_s->", &fills);
+        buf_printf(b, "case %d: { sp_%s *_s = sp_%s_new(", ci, c->classes[ci].c_name, c->classes[ci].c_name);
         for (int mq = 0; mq < nmem; mq++) {
           if (mq) buf_puts(b, ", ");
           TyKind mt = c->classes[ci].ivar_types[mq];
           buf_puts(b, (mt == TY_POLY || mt == TY_UNKNOWN) ? "sp_box_nil()" : default_value_from_compiler(c, mt));
         }
-        buf_printf(b, "),%d);break;", ci);
+        buf_printf(b, "); %s_t%d=sp_box_obj(_s,%d); } break;", fills.p ? fills.p : "", rt2, ci);
+        free(fills.p);
         continue;
       }
       /* fill any optional constructor params with their defaults (an
@@ -2905,7 +2925,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
       g_pre = sv_pre;
       g_ctor_self = sv_cs; g_ctor_self_deref = sv_csd;
       emit_ctor_block_slot(c, id, initm, np > 0 ? ", " : "", &ab);
-      emit_ctor_arm_case(c, ci, rt2, self_t, pdpre.p, ab.p ? ab.p : "", b);
+      emit_ctor_arm_case(c, ci, rt2, self_t, pdpre.p, ab.p ? ab.p : "", is ? -1 : argc, b);
       free(pdpre.p); free(ab.p);
     }
     ctor_arity_emit(&aerr, b);

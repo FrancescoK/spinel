@@ -10222,8 +10222,19 @@ static void ctor_init_call(Compiler *c, int cid, int t, const char *args, Buf *b
    already allocated into `_t<self_t>` (a default reads it) and initialize
    runs on it. */
 void emit_ctor_arm_case(Compiler *c, int ci, int rt2, int self_t, const char *pre,
-                               const char *args, Buf *b) {
+                               const char *args, int given, Buf *b) {
   const char *cn = c->classes[ci].c_name;
+  /* a Struct built from `given` arguments: the members past them are nil,
+     their nil bytes set as the direct `S.new` sets them (#9093) */
+  Buf fills; memset(&fills, 0, sizeof fills);
+  if (given >= 0 && self_t < 0 && !c->classes[ci].is_value_type) struct_nil_fill_stmts(c, ci, given, "_s->", &fills);
+  if (fills.p) {
+    buf_printf(b, "case %d: { %ssp_%s *_s = sp_%s_new(%s); %s_t%d=sp_box_obj(_s,", ci, pre ? pre : "", cn, cn, args, fills.p, rt2);
+    arysub_box_id(c, ty_object(ci), b);
+    buf_puts(b, "); } break;");
+    free(fills.p);
+    return;
+  }
   buf_printf(b, "case %d: ", ci);
   if (pre) buf_printf(b, "{ %s", pre);
   Buf obj; memset(&obj, 0, sizeof obj);
@@ -11367,7 +11378,7 @@ void emit_raise_class_value(Compiler *c, int kn, int mn, Buf *b) {
     g_nren = pd_base;
     g_pre = sv_pre;
     if (ctor_init_takes_block(c, initm)) buf_puts(&ab, is->nparams > 0 ? ", NULL" : "NULL");
-    emit_ctor_arm_case(c, ci, rt, -1, pdpre.p, ab.p ? ab.p : "", b);
+    emit_ctor_arm_case(c, ci, rt, -1, pdpre.p, ab.p ? ab.p : "", -1, b);
     free(pdpre.p); free(ab.p);
   }
   ctor_arity_emit(&aerr, b);

@@ -1,0 +1,8 @@
+#<struct Victim a=nil, b=nil>
+nil
+nil
+#<struct Victim a=7, b=nil>
+nil
+#<struct Victim a=1, b=0.5>
+nil
+#<struct Single x=2.5>

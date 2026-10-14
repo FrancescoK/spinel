@@ -37157,8 +37157,18 @@ static void mark_nullable_int_locals(Compiler *c) {
         if (ns && ns->is_cmethod && ns->class_id >= 0) ks[nk++] = ns->class_id;
       }
       else nk = new_recv_classes(c, recv, ks, 8);
-      for (int q = 0; q < nk; q++) {
-      int k = ks[q];
+      /* a class value no analysis names (`Object.const_get(x).new`): the
+         run-time switch constructs any Struct of the program with the
+         arguments given and nil for the rest (#9093: a typed member got 0.0
+         where CRuby has nil) */
+      int every = 0;
+      if (nk == 0 && recv >= 0 && rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) {
+        TyKind rt = infer_type(c, recv);
+        every = rt == TY_CLASS || rt == TY_POLY;
+      }
+      int nloop = every ? c->nclasses : nk;
+      for (int q = 0; q < nloop; q++) {
+      int k = every ? q : ks[q];
       if (k < 0 || !(c->classes[k].is_struct || c->classes[k].is_data) ||
           comp_method_in_chain(c, k, "initialize", NULL) >= 0) continue;
       ClassInfo *ci = &c->classes[k];
@@ -37180,6 +37190,10 @@ static void mark_nullable_int_locals(Compiler *c) {
           const char *kv = nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
           if (kv && sp_streq(kv, ci->ivars[m] + 1)) vnode = nt_ref(nt, ke[e], "value");
         }
+        /* a class no analysis names: only the members its arguments leave
+           out (an argument's own nil reaches the member by the known
+           constructions, and asking it of every class widened them all) */
+        if (every && vnode >= 0) continue;
         if (vnode < 0 ? !ci->is_data : nullable_int_value(c, vnode)) {
           ci->ivar_nullable_int[m] = 1; changed = 1;
         }
