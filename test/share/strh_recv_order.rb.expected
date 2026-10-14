@@ -1,0 +1,10 @@
+"ab!-x"
+["z", "y"]
+true
+["k"]
+true
+["ab!?.", "x"]
+"ab!?.ab!?.d"
+false
+"ab!?.|e!"
+["ab!?.", "e!"]
