@@ -23,8 +23,8 @@ static VALUE held_constant;
 static VALUE constant(VALUE self) { (void)self;return held_constant; }
 static void define_box(VALUE cls) {
   rb_define_alloc_func(cls,alloc);
-  rb_define_method(cls,"store",RUBY_METHOD_FUNC(store),1);
-  rb_define_method(cls,"get",RUBY_METHOD_FUNC(get),0);
+  rb_define_method(cls,"store",store,1);
+  rb_define_method(cls,"get",get,0);
 }
 void Init_sample(void) {
   VALUE left=rb_define_module("CextLeft"),right=rb_define_module("CextRight");
@@ -36,27 +36,27 @@ void Init_sample(void) {
   VALUE cls=rb_define_class("CextBox",rb_cObject);
   rb_define_alloc_func(cls,alloc);
   extension_error=rb_define_class("CextCustomError",rb_eRuntimeError);
-  rb_define_method(cls,"custom_error",RUBY_METHOD_FUNC(custom_error),0);
+  rb_define_method(cls,"custom_error",custom_error,0);
   rb_define_attr(cls,"number",1,1);
   VALUE mod=rb_define_module("CextHelpers");
-  rb_define_module_function(mod,"from_module",RUBY_METHOD_FUNC(module_value),0);
+  rb_define_module_function(mod,"from_module",module_value,0);
   rb_include_module(cls,mod);
   rb_define_const(cls,"SYM",ID2SYM(rb_intern("entry")));
-  rb_define_method(cls,"buffer",RUBY_METHOD_FUNC(buffer),0);
-  rb_define_method(cls,"decorate_entry",RUBY_METHOD_FUNC(decorate_entry),1);
-  rb_define_method(cls,"nested",RUBY_METHOD_FUNC(nested),1);
-  rb_define_method(cls,"packed",RUBY_METHOD_FUNC(packed),-2);
+  rb_define_method(cls,"buffer",buffer,0);
+  rb_define_method(cls,"decorate_entry",decorate_entry,1);
+  rb_define_method(cls,"nested",nested,1);
+  rb_define_method(cls,"packed",packed,-2);
   held_constant=rb_str_freeze(rb_str_new_cstr("constant"));
   rb_define_const(cls,"ONE",held_constant);
   rb_define_const(cls,"TWO",held_constant);
-  rb_define_method(cls,"decorate",RUBY_METHOD_FUNC(decorate),1);
-  rb_define_method(cls,"push",RUBY_METHOD_FUNC(push),1);
-  rb_define_method(cls,"echo",RUBY_METHOD_FUNC(echo),1);
-  rb_define_method(cls,"explode",RUBY_METHOD_FUNC(explode),0);
-  rb_define_method(cls,"collect",RUBY_METHOD_FUNC(collect),0);
-  rb_define_method(cls,"constant",RUBY_METHOD_FUNC(constant),0);
-  rb_define_method(cls,"store",RUBY_METHOD_FUNC(store),1);
-  rb_define_method(cls,"get",RUBY_METHOD_FUNC(get),0);
+  rb_define_method(cls,"decorate",decorate,1);
+  rb_define_method(cls,"push",push,1);
+  rb_define_method(cls,"echo",echo,1);
+  rb_define_method(cls,"explode",explode,0);
+  rb_define_method(cls,"collect",collect,0);
+  rb_define_method(cls,"constant",constant,0);
+  rb_define_method(cls,"store",store,1);
+  rb_define_method(cls,"get",get,0);
   rb_define_alias(cls,"value","get");
-  rb_define_singleton_method(cls,"count",RUBY_METHOD_FUNC(count),-1);
+  rb_define_singleton_method(cls,"count",count,-1);
 }
