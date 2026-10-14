@@ -2602,6 +2602,21 @@ static void sp_sched_pass(void) {
      re-queues itself (its own Thread.pass) during the sweep lands beyond the
      snapshot and waits for the next sweep, so it cannot starve main. */
   int n = COUNTS_RUNNABLE(COUNTS_NOW());
+#ifdef SP_EV_BACKEND
+  /* Main's own readiness set holds the I/O of the threads pinned to main's
+     worker (a thread that first ran in one of these sweeps is), and only a
+     drain of it readies them. The pump drains it; a Thread.pass loop did not,
+     so main spinning on Thread.pass until such a thread got a connection
+     spun for good. A drain is a few syscalls (about 12 us on Darwin), and a
+     pass loop is often a busy wait at a few ns a sweep, so it is taken on
+     every 1024th sweep and only while some thread waits on I/O: the event
+     still arrives within microseconds of spinning. */
+  static unsigned pass_tick;   /* main's only: under the lock */
+  if (g_wslot[0].evfd > 0 && g_io_waiters && (++pass_tick & 1023u) == 0) {
+    sp_ev_worker_wait(0, 0);
+    n = COUNTS_RUNNABLE(COUNTS_NOW());
+  }
+#endif
   while (n-- > 0) {
     sp_thread *t = sched_pick(sp_worker_id);
     if (!t) return;
