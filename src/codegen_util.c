@@ -6455,6 +6455,7 @@ int ty_matches_class(TyKind t, const char *cn, int exact) {
   case TY_PROC: self_cls = "Proc"; break;
   case TY_RANDOM: self_cls = "Random"; break;
   case TY_IO: self_cls = "IO"; break;
+  case TY_OPENSTRUCT: self_cls = "OpenStruct"; break;
   default: break;
   }
   if (ty_is_array(t)) self_cls = "Array";
