@@ -2256,9 +2256,24 @@ static int resolve_symbol_list(Compiler *c, int node, const char **out, int cap,
     if (src < 0) return -1;
     return resolve_symbol_list(c, src, out, cap, depth + 1);
   }
+  /* a constant the program writes once (`KEYS = %i[a b].freeze`, regexp_parser's
+     `Token = Struct.new(*TOKEN_KEYS)`) resolves to its value, as a local does */
+  if (nt_kind(nt, node) == NK_ConstantReadNode) {
+    const char *cn = nt_str(nt, node, "name");
+    int src = -1;
+    for (int w = 0; cn && w < nt->count; w++) {
+      if (nt_kind(nt, w) != NK_ConstantWriteNode) continue;
+      const char *wn = nt_str(nt, w, "name");
+      if (!wn || !sp_streq(wn, cn)) continue;
+      if (src >= 0) return -1;
+      src = nt_ref(nt, w, "value");
+    }
+    if (src < 0) return -1;
+    return resolve_symbol_list(c, src, out, cap, depth + 1);
+  }
   /* a receiverless method on a resolvable symbol list that yields another
-     fixed symbol list: reverse (order flip), sort/sort_by/uniq (deterministic
-     reorder), rotate (fixed shift). The member NAMES and their order are all
+     fixed symbol list: freeze (the same list), reverse (order flip),
+     sort/sort_by/uniq (deterministic reorder), rotate (fixed shift). The member NAMES and their order are all
      compile-time known, so the Struct is still statically typed. */
   if (sp_streq(ty, "CallNode")) {
     int recv = nt_ref(nt, node, "receiver");
@@ -2269,6 +2284,7 @@ static int resolve_symbol_list(Compiler *c, int node, const char **out, int cap,
     int an = 0; if (args >= 0) nt_arr(nt, args, "arguments", &an);
     int n = resolve_symbol_list(c, recv, out, cap, depth + 1);
     if (n < 0) return -1;
+    if (sp_streq(mn, "freeze") && an == 0) return n;
     if (sp_streq(mn, "reverse") && an == 0) {
       for (int i = 0; i < n / 2; i++) { const char *t = out[i]; out[i] = out[n-1-i]; out[n-1-i] = t; }
       return n;

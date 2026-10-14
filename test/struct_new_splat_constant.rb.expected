@@ -1,0 +1,7 @@
+:literal
+"a"
+"literal:a"
+[:type, :token, :text]
+[:literal, :literal, "b"]
+#<data Point x=1, y=2>
+[:x, :y]
