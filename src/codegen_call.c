@@ -6062,20 +6062,23 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     if (wb) buf_puts(b, ")");
     return 1;
   }
-  /* String#bytesplice(i, len, str) on a poly value: in-place byte splice
-     on the shared handle (#3227). */
-  if (sp_streq(name, "bytesplice") && argc == 3) {
+  /* String#bytesplice on a poly value, in each of its forms
+     (emit_bytesplice_bytes): in-place byte splice on the shared handle
+     (#3227). */
+  if (sp_streq(name, "bytesplice") &&
+      ((argc == 2 && comp_ntype(c, argv[0]) == TY_RANGE) || argc == 3 || argc == 5) &&
+      (argc != 3 || comp_ntype(c, argv[0]) != TY_RANGE || comp_ntype(c, argv[2]) == TY_RANGE ||
+       comp_ntype(c, argv[2]) == TY_INT)) {
     int tvB = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", tvB);
     emit_expr(c, recv, b);
     buf_printf(b, "; sp_RbVal _r%d; if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STRBUF) {"
                   " sp_String *_m%d = (sp_String *)_t%d.v.p;"
-                  " const char *_n%d = sp_str_bytesplice(sp_String_cstr(_m%d), ",
-               tvB, tvB, tvB, tvB, tvB, tvB, tvB);
-    emit_int_expr(c, argv[0], b);
-    buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
-    buf_puts(b, ", "); emit_str_expr(c, argv[2], b);
-    buf_printf(b, "); sp_String_set_bin(_m%d, _n%d); _r%d = sp_box_str(_n%d); }\n"
+                  " const char *_n%d = ",
+               tvB, tvB, tvB, tvB, tvB, tvB);
+    char rs[48]; snprintf(rs, sizeof rs, "sp_String_cstr(_m%d)", tvB);
+    emit_bytesplice_bytes(c, argv, argc, rs, b);
+    buf_printf(b, "; sp_String_set_bin_enc(_m%d, _n%d); _r%d = sp_box_str(_n%d); }\n"
                   "else { sp_raise_nomethod(sp_nomethod_msg(\"bytesplice\", _t%d)); _r%d = sp_box_nil(); } _r%d; })",
                tvB, tvB, tvB, tvB, tvB, tvB, tvB);
     return 1;

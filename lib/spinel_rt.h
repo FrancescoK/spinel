@@ -10834,7 +10834,13 @@ static sp_RbVal sp_poly_pop(sp_RbVal v) {
    the typed emitter uses for the same case (frozen check, then the new
    string). */
 static sp_RbVal sp_poly_str_become(sp_RbVal v, const char *s) {
-  if (sp_poly_is_strbuf(v)) { sp_String_set_bin((sp_String *)v.v.p, s); return v; }
+  /* a binary result leaves the handle binary (bytesplice of binary bytes) */
+  if (sp_poly_is_strbuf(v)) {
+    sp_String *h = (sp_String *)v.v.p;
+    sp_String_set_bin(h, s);
+    if (sp_str_is_binary(s) && !h->binary) { h->binary = 1; sp_fd_publish(h); }
+    return v;
+  }
   sp_str_check_mutable(v.v.s);
   return sp_box_str(s);
 }

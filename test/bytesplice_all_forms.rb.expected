@@ -1,0 +1,44 @@
+"ab***cdef"
+"ab***cdef"
+#<Encoding:BINARY (ASCII-8BIT)>
+"hYZlo"
+"RSZlo"
+"Rab"
+"RZ"
+"d"
+[IndexError, "offset 2 does not land on character boundary"]
+[IndexError, "offset 2 does not land on character boundary"]
+"hxllo"
+"x"
+"héllox"
+[IndexError, "index 7 out of string"]
+[IndexError, "index -9 out of string"]
+[IndexError, "offset 1 does not land on character boundary"]
+[RangeError, "9..10 out of range"]
+[IndexError, "index 4 out of string"]
+[IndexError, "negative length -1"]
+"éb"
+#<Encoding:UTF-8>
+"\xFFb"
+#<Encoding:BINARY (ASCII-8BIT)>
+FrozenError
+"hYZlo"
+"RSZlo"
+"Rab"
+"!!ab"
+"!!ab"
+"xabc"
+Encoding::CompatibilityError
+"incompatible character encodings: UTF-8 and BINARY (ASCII-8BIT)"
+Encoding::CompatibilityError
+"incompatible character encodings: UTF-8 and BINARY (ASCII-8BIT)"
+Encoding::CompatibilityError
+"incompatible character encodings: BINARY (ASCII-8BIT) and UTF-8"
+RangeError
+"10..11 out of range"
+#<Encoding:BINARY (ASCII-8BIT)>
+"\xFFbc"
+#<Encoding:BINARY (ASCII-8BIT)>
+#<Encoding:BINARY (ASCII-8BIT)>
+#<Encoding:UTF-8>
+#<TypeError: no implicit conversion of Range into String>
