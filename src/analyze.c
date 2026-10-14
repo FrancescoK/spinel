@@ -18360,6 +18360,131 @@ static void refuse_stored_block_param(Compiler *c, int sn, int to) {
    (`each { |e| acc << e }` over a yielding each, inlined or taking its
    block as a proc), which hand over what they yield? A Struct's each is
    the compiler's own, over members the share facts do not follow. */
+/* ---- a block parameter every yield hands a new String ----
+   Storing such a parameter's String into a container stores a copy in the
+   default build, which the refusal below guards: a mutation through the
+   container would miss whatever else holds the String. Where every yield
+   that binds the parameter hands over a String nothing else holds -- a
+   literal that is not frozen, an interpolation, a builtin String method's new String, an
+   IO read, a local only ever assigned such, a
+   method of the program answering only such, or a block parameter of the
+   same kind -- the copy is the only holder, and storing it is what CRuby
+   does (Enumerable#to_a over rack's Files::BaseIterator#each). */
+static int yb_param_fresh(Compiler *c, const char *vn, Scope *vs, int depth);
+
+/* the YieldNodes of method body `n` (not of a def or class nested in it) */
+static void yb_yields(const NodeTable *nt, int n, int *out, int *no, int max) {
+  if (n < 0 || *no >= max) return;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return;
+  if (k == NK_YieldNode) out[(*no)++] = n;
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) yb_yields(nt, nt_ref_at(nt, n, i), out, no, max);
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) yb_yields(nt, ids[j], out, no, max);
+  }
+}
+
+static int yb_fresh(Compiler *c, int v, int depth);
+
+/* Does every value method `mi` answers come out new? */
+static int yb_method_answers_fresh(Compiler *c, int mi, int depth) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  if (m->def_node < 0 || !yb_fresh(c, scope_body_last(c, mi), depth + 1)) return 0;
+  NT_FOREACH_KIND(nt, NK_ReturnNode, r) {
+    if (c->nscope[r] != mi) continue;
+    int an = nt_ref(nt, r, "arguments"), n = 0;
+    const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
+    if (n != 1 || !yb_fresh(c, av[0], depth + 1)) return 0;
+  }
+  return 1;
+}
+
+static int yb_fresh(Compiler *c, int v, int depth) {
+  const NodeTable *nt = c->nt;
+  v = an_unparen(nt, v);
+  if (v < 0 || depth > 8) return 0;
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_NilNode) return 1;
+  /* a literal is new unless it is frozen (the `fzl` flag a frozen_string_literal
+     file stamps), where `<<` on it raises */
+  if (k == NK_StringNode) return !nt_int(nt, v, "fzl", 0);
+  if (k == NK_InterpolatedStringNode) return !(nt_int(nt, v, "fzl", 0) && interp_is_literal_fold(nt, v));
+  if (k == NK_LocalVariableReadNode) {
+    const char *ln = nt_str(nt, v, "name");
+    Scope *ls = comp_scope_of(c, v);
+    LocalVar *lv = ln && ls ? scope_local(ls, ln) : NULL;
+    if (!lv || lv->is_param) return 0;
+    if (lv->is_block_param) return yb_param_fresh(c, ln, ls, depth + 1);
+    /* a local every write of which is a plain `=` of something new (`part =
+       file.read(n)`), by the scope's write index */
+    int si = (int)(ls - c->scopes), writes = 0;
+    for (int w = comp_lvw_first_sc(c, si, ln); w >= 0; w = comp_lvw_next_sc(c, w)) {
+      if (c->nscope[w] != si || !sp_streq(nt_str(nt, w, "name"), ln)) continue;
+      if (nt_kind(nt, w) != NK_LocalVariableWriteNode) return 0;
+      if (!yb_fresh(c, nt_ref(nt, w, "value"), depth + 1)) return 0;
+      writes++;
+    }
+    return writes > 0;
+  }
+  if (k != NK_CallNode || nt_ref(nt, v, "block") >= 0) return 0;
+  const char *nm = nt_str(nt, v, "name");
+  int recv = nt_ref(nt, v, "receiver");
+  if (!nm) return 0;
+  /* a method of the program, on self */
+  if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
+    int mi = an_call_target_mi(c, v);
+    return mi >= 0 && yb_method_answers_fresh(c, mi, depth);
+  }
+  /* a builtin String method answering a new String: no program method of
+     the name, on a String; or an IO read with no buffer to fill */
+  TyKind rt = infer_type(c, recv);
+  if (rt == TY_IO && call_plain_argc(c, v) < 2 && bop_share_boxed(TY_IO, nm) == BSH_FILL1) {
+    /* the builtin answers on an IO, unless the program reopens IO or File
+       with a method of the name (other classes' `read` do not reach it) */
+    static const char *const io[] = { "IO", "File" };
+    for (int i = 0; i < 2; i++) {
+      int ci = comp_class_index(c, io[i]);
+      if (ci >= 0 && comp_method_in_class(c, ci, nm) >= 0) return 0;
+    }
+    return 1;
+  }
+  return (rt == TY_STRING || rt == TY_STRBUF) && an_any_scope_by_name(c, nm) < 0 &&
+         bop_share_named(TY_STRING, nm) == BSH_PURE;
+}
+
+static int yb_param_fresh(Compiler *c, const char *vn, Scope *vs, int depth) {
+  const NodeTable *nt = c->nt;
+  if (depth > 8) return 0;
+  int any = 0;
+  for (int w = comp_bcall_first(c, (int)(vs - c->scopes)); w >= 0; w = comp_bcall_next(c, w)) {
+    int blk = nt_ref(nt, w, "block");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || comp_scope_of(c, blk) != vs) continue;
+    int pos = -1;
+    for (int k = 0; k < 4 && pos < 0; k++) {
+      const char *bp = block_param_name(c, blk, k);
+      if (!bp) break;
+      if (sp_streq(bp, vn)) pos = k;
+    }
+    if (pos < 0) continue;
+    int mi = an_call_target_mi(c, w);
+    if (mi < 0 || c->scopes[mi].def_node < 0) return 0;
+    int ys[64], ny = 0;
+    yb_yields(nt, nt_ref(nt, c->scopes[mi].def_node, "body"), ys, &ny, 64);
+    if (ny == 0 || ny == 64) return 0;
+    for (int y = 0; y < ny; y++) {
+      int an = nt_ref(nt, ys[y], "arguments"), n = 0;
+      const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
+      if (pos < n && (nt_kind(nt, av[pos]) == NK_SplatNode || !yb_fresh(c, av[pos], depth + 1))) return 0;
+    }
+    any = 1;
+  }
+  return any;
+}
+
 static int block_param_user_yield_only(Compiler *c, const char *vn, Scope *vs) {
   const NodeTable *nt = c->nt;
   int any = 0;
@@ -18518,6 +18643,12 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
            that handle (`each { |e| acc << e }` over a yielding each) */
         int yo = block_param_user_yield_only(c, snm, sns);
         if (!yo) refuse_stored_block_param(c, sn, -1);
+        else if (!c->share_strings && yb_param_fresh(c, snm, sns, 0)) {
+          /* every yield hands over a new String: the element is a handle
+             over it, which nothing else holds */
+          if (!c->strbuf_box[sn]) { c->strbuf_box[sn] = 1; ch = 1; }
+          nt_node_set_int((NodeTable *)c->nt, sn, "fresh_yield_box", 1);
+        }
         else {
           /* what binds it hands over its handle: the route carries it */
           static const char ymsg[] =
