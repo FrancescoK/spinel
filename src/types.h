@@ -415,4 +415,16 @@ static inline const TyTraits *ty_traits_of(TyKind t) {
   return (int)t >= 0 && (int)t < TY_TRAITS_N ? &ty_traits[t] : (const TyTraits *)0;
 }
 
+/* A builtin kind held by a C pointer (a String handle, a Proc, a Regexp, an
+   Array or Hash variant, an Exception, ...): its ctype ends in `*`. Against
+   a different kind it is another C struct, a scalar, or an `sp_PtrArray *`
+   holding other elements, so neither passes as the other. A scalar, a by-value struct, a poly, a user object and an object
+   array (no row here) are not builtin pointer kinds. */
+static inline int ty_is_builtin_ptr(TyKind t) {
+  const TyTraits *tr = ty_traits_of(t);
+  if (!tr || !tr->ctype) return 0;
+  int n = 0; while (tr->ctype[n]) n++;
+  return n > 0 && tr->ctype[n - 1] == '*';
+}
+
 #endif

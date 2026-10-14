@@ -1570,8 +1570,14 @@ static int cpoly_native_conv(TyKind mret, TyKind ret, int is_setter_val) {
   return cpoly_conv(ret, mret);
 }
 
-/* Can user arm `ks` take the call's argument types (arm_key_incompat in
-   emit_poly_method_dispatch)? */
+/* Can user arm `ks` take the call's argument types? Two different concrete
+   kinds, either of them a builtin pointer kind (a Hash, an Exception, a Proc,
+   a Regexp, an Array variant), cannot be passed raw: the other is a different
+   C struct, a scalar, or an `sp_PtrArray *` holding other elements, so the
+   arm is dropped, in either direction. Two object arrays stay (one
+   `sp_PtrArray *`). The same test is
+   arm_key_incompat in poly_user_arm_n_replay (codegen_poly_plan.c); the two
+   must stay identical. */
 int cplan_arm_args_fit(Compiler *c, Scope *ks, const ArgLayout *L, int pos_argc,
                               const TyKind *atmp_ty, int kwall_any) {
   for (int a = 0; a < ks->nparams; a++) {
@@ -1592,7 +1598,7 @@ int cplan_arm_args_fit(Compiler *c, Scope *ks, const ArgLayout *L, int pos_argc,
           obj_class_unrelated(c, ty_object_class(pt0), ty_object_class(at0))) ||
          ty_is_struct_valued(pt0) || ty_is_struct_valued(at0) ||
          (pt0 == TY_BOOL) != (at0 == TY_BOOL) ||
-         (ty_is_hash(pt0) && ty_is_hash(at0)) || (ty_is_array(pt0) && ty_is_array(at0))))
+         (ty_is_builtin_ptr(pt0) || ty_is_builtin_ptr(at0))))
       return 0;
   }
   int kslot = L->kwh_slot;
