@@ -331,6 +331,12 @@ int strbuf_route_exc_message(Compiler *c, int v);
 int strbuf_route_boxed_exc_message(Compiler *c, int v);
 int strbuf_route_ie(Compiler *c, int v);
 int strbuf_yield_tail_held(Compiler *c);
+/* ...is a block's tail one the handle face renders as the handle (a route
+   it takes, strbuf_tail_plain), and is v a bang on a runtime element of a
+   container a builtin made, whose answer is a new String the container
+   never sees? */
+int strbuf_tail_plain(Compiler *c, int v);
+int face_bang_on_runtime_elems(Compiler *c, int v);
 int strbuf_route_srange_end(Compiler *c, int v);
 int strbuf_route_srange_extreme(Compiler *c, int v);
 int strbuf_route_srange_kept(Compiler *c, int v);

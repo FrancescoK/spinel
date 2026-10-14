@@ -348,23 +348,78 @@ static int share_plan_arms_ok(Compiler *c, int v, int depth) {
   }
 }
 
+/* Does the handle face render a spliced block's value a, a tail or a
+   `next`'s, as the handle it names, where the splice reads it under the
+   handle demand (emit_block_invoke)? Every producer kind but a few: a bang
+   on a runtime element of a container a builtin made, whose answer is a
+   new String the container never sees, and a call answering its own
+   block's value that is no route the face takes (strbuf_tail_plain). The
+   value's other kinds and a chain over one of these can, and a conditional
+   each of whose arms is one. */
+static int share_plan_tail_renders(Compiler *c, int a, int depth) {
+  const NodeTable *nt = c->nt;
+  a = an_unparen(nt, a);
+  if (a < 0) return 1;
+  if (depth > 16) return 0;
+  switch (nt_kind(nt, a)) {
+  case NK_IfNode: case NK_UnlessNode:
+    return share_plan_tail_renders(c, nt_ref(nt, a, "statements"), depth + 1) &&
+           share_plan_tail_renders(c, nt_ref(nt, a, nt_kind(nt, a) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1);
+  case NK_OrNode: case NK_AndNode:
+    return share_plan_tail_renders(c, nt_ref(nt, a, "left"), depth + 1) &&
+           share_plan_tail_renders(c, nt_ref(nt, a, "right"), depth + 1);
+  case NK_ElseNode:
+    return share_plan_tail_renders(c, nt_ref(nt, a, "statements"), depth + 1);
+  case NK_StatementsNode: {
+    int n = 0;
+    const int *bb = nt_arr(nt, a, "body", &n);
+    return n == 0 || share_plan_tail_renders(c, bb[n - 1], depth + 1);
+  }
+  case NK_CaseNode: {
+    int nw = 0;
+    const int *whens = nt_arr(nt, a, "conditions", &nw);
+    for (int w = 0; w < nw; w++)
+      if (!share_plan_tail_renders(c, nt_ref(nt, whens[w], "statements"), depth + 1)) return 0;
+    return share_plan_tail_renders(c, nt_ref(nt, a, "else_clause"), depth + 1);
+  }
+  default: break;
+  }
+  if (face_bang_on_runtime_elems(c, a)) return 0;
+  int o, k = share_plan_producer_at(c, a, &o);
+  if (k == SPK_LIFT) k = share_plan_producer_core(c, a, &o, 1);
+  switch (k) {
+  case SPK_BLOCK_VALUE:
+    return strbuf_tail_plain(c, a);
+  case SPK_OPERAND: {
+    /* (tap answers its receiver through its own block) */
+    const char *nm = nt_kind(nt, a) == NK_CallNode ? nt_str(nt, a, "name") : NULL;
+    if (nm && is_tap_name(nm) && nt_ref(nt, a, "block") >= 0) return 0;
+    return o < 0 || share_plan_tail_renders(c, o, depth + 1);
+  }
+  case SPK_SELF: case SPK_SEQUENCE:
+    return o < 0 || share_plan_tail_renders(c, o, depth + 1);
+  default:
+    return 1;
+  }
+}
+
 /* Does call v, which answers its literal block's value (SPK_BLOCK_VALUE),
    hand on what each value it answers supplies: the block's tail and each
    `next` (then, inject, instance_exec's splice, a spliced yielding call
    that answers its yield), each `break` (loop)? A spliced call that
    answers a variable of its method hands on that slot, and a call whose
    value no block gives (sum, an ENV store) is the route's own. */
-int share_plan_splice_renders(Compiler *c, int a, int arms, int depth);
 static int share_plan_block_ok(Compiler *c, int v, int depth) {
   const NodeTable *nt = c->nt;
   int u = an_unparen(nt, v), blk = u >= 0 && nt_kind(nt, u) == NK_CallNode ? nt_ref(nt, u, "block") : -1;
   if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return 1;
   int body = nt_ref(nt, blk, "body");
-  /* (the block's tail is read where the block is spliced in, as a
-     demanded tail: a value the splice renders, share_plan_splice_renders) */
+  /* (the block's tail is read where the block is spliced in, under the
+     handle demand: it supplies the handle only where the face renders it,
+     share_plan_tail_renders) */
   int bn = 0;
   const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
-  if (!strbuf_route_loop(c, u) && bn > 0 && !share_plan_splice_renders(c, bb[bn - 1], 1, 0)) return 0;
+  if (!strbuf_route_loop(c, u) && bn > 0 && !share_plan_tail_renders(c, bb[bn - 1], 0)) return 0;
   if (strbuf_route_loop(c, u)) return share_plan_jumps_ok(c, body, NK_BreakNode, 0, depth);
   if (strbuf_route_ie(c, u)) return share_plan_body_ok(c, body, NK_NONE, 1, depth);
   if (strbuf_route_inline_call(c, u)) {
@@ -376,73 +431,11 @@ static int share_plan_block_ok(Compiler *c, int v, int depth) {
   return share_plan_body_ok(c, body, NK_NextNode, 0, depth);
 }
 
-/* Can a spliced block's value, or a yield's argument its block parameter
-   binds, hand on value a's handle where a block is spliced in: the
-   splice reads the tail under a handle demand (emit_block_invoke), and
-   the block parameter's binder takes a route over the handle
-   (emit_strbuf_handle_of), neither of which renders a proc's answer, a
-   bang on a boxed receiver, a boxed receiver's dispatch, or a call
-   answering its own block's value other than instance_exec's and
-   instance_eval's splice? (A yield, which forwards the block one level
-   out, is the yield fact's, share_plan_yield_supply.) The value's other kinds and a chain over one
-   of these can, and with arms set (a tail, read under the demand arm by
-   arm) a conditional each of whose arms is one; without, a conditional
-   is bound arm by arm through the handle route, which renders them. */
-int share_plan_splice_renders(Compiler *c, int a, int arms, int depth) {
-  const NodeTable *nt = c->nt;
-  a = an_unparen(nt, a);
-  if (a < 0) return 1;
-  if (depth > 16) return 0;
-  switch (arms ? nt_kind(nt, a) : NK_NONE) {
-  case NK_IfNode: case NK_UnlessNode:
-    return share_plan_splice_renders(c, nt_ref(nt, a, "statements"), arms, depth + 1) &&
-           share_plan_splice_renders(c, nt_ref(nt, a, nt_kind(nt, a) == NK_IfNode ? "subsequent" : "else_clause"), arms, depth + 1);
-  case NK_OrNode: case NK_AndNode:
-    return share_plan_splice_renders(c, nt_ref(nt, a, "left"), arms, depth + 1) &&
-           share_plan_splice_renders(c, nt_ref(nt, a, "right"), arms, depth + 1);
-  case NK_ElseNode:
-    return share_plan_splice_renders(c, nt_ref(nt, a, "statements"), arms, depth + 1);
-  case NK_StatementsNode: {
-    int n = 0;
-    const int *bb = nt_arr(nt, a, "body", &n);
-    return n == 0 || share_plan_splice_renders(c, bb[n - 1], arms, depth + 1);
-  }
-  case NK_CaseNode: {
-    int nw = 0;
-    const int *whens = nt_arr(nt, a, "conditions", &nw);
-    for (int w = 0; w < nw; w++)
-      if (!share_plan_splice_renders(c, nt_ref(nt, whens[w], "statements"), arms, depth + 1)) return 0;
-    return share_plan_splice_renders(c, nt_ref(nt, a, "else_clause"), arms, depth + 1);
-  }
-  default: break;
-  }
-  /* (a bang on a boxed receiver, whatever its representation names it) */
-  if (face_str_bang_call(c, a)) return 0;
-  int o, k = share_plan_producer_at(c, a, &o);
-  if (k == SPK_LIFT) k = share_plan_producer_core(c, a, &o, 1);
-  switch (k) {
-  case SPK_PROC_CALL: case SPK_BANG_BOX: case SPK_POLY_ARMS:
-    return 0;
-  case SPK_BLOCK_VALUE:
-    return strbuf_route_ie(c, a);
-  case SPK_OPERAND: {
-    /* (tap answers its receiver through its own block) */
-    const char *nm = nt_kind(nt, a) == NK_CallNode ? nt_str(nt, a, "name") : NULL;
-    if (nm && is_tap_name(nm) && nt_ref(nt, a, "block") >= 0) return 0;
-    return o < 0 || share_plan_splice_renders(c, o, arms, depth + 1);
-  }
-  case SPK_SELF: case SPK_SEQUENCE:
-    return o < 0 || share_plan_splice_renders(c, o, arms, depth + 1);
-  default:
-    return 1;
-  }
-}
-
 /* Does yield v supply the handle where the seal asks, outside the splice
    that renders it: does each block its method is given answer one in its
    tail and each `next` (share_method_blocks, share_plan_body_ok), as
-   strbuf_route_yield takes a spliced block's, each a value the splice
-   renders (share_plan_splice_renders)? 1 or 0; -1 for a yield no
+   strbuf_route_yield takes a spliced block's, each a tail the face renders
+   (share_plan_tail_renders)? 1 or 0; -1 for a yield no
    block splices (a lowered or proc-form method's, one of a method with a
    &block parameter, a top-level one), which is no such route. A yield in
    its own blocks' tails is asked no deeper than the plan's walks go. */
@@ -456,8 +449,7 @@ static int share_plan_yield_supply(Compiler *c, int v, int depth) {
   for (int i = 0; i < n; i++) {
     int body = nt_ref(c->nt, blocks[i], "body"), bn = 0;
     const int *bb = body >= 0 && nt_kind(c->nt, body) == NK_StatementsNode ? nt_arr(c->nt, body, "body", &bn) : NULL;
-    if ((bn > 0 && !share_plan_splice_renders(c, bb[bn - 1], 1, 0)) ||
-        !share_plan_body_ok(c, body, NK_NextNode, 0, depth + 1))
+    if ((bn > 0 && !share_plan_tail_renders(c, bb[bn - 1], 0)) || !share_plan_body_ok(c, body, NK_NextNode, 0, depth + 1))
       return 0;
   }
   return 1;

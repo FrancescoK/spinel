@@ -1845,6 +1845,13 @@ static int emit_boxed_cond_arms(Compiler *c, int node, Buf *b) {
   if ((k != NK_IfNode && k != NK_UnlessNode) || (t != TY_STRING && t != TY_STRBUF) ||
       !strbuf_cond_has_handle_leaf(c, node, 0))
     return 0;
+  /* an argument that ran ahead as the handle it hands on (emit_arg_temp):
+     that handle's box, not the arms run again */
+  if (ran_first_handle(node) >= 0) {
+    buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", ran_first_handle(node));
+    RC(RF_STRBUF_HANDLE, RW_RAN_FIRST);
+    return 1;
+  }
   int dst = ++g_tmp;
   /* A lift on the whole conditional also applies to a plain String arm;
      a handle arm passes through the lift unchanged. */
