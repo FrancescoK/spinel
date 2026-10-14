@@ -61,7 +61,7 @@ typedef struct {
   unsigned version;
   /* Bumped by every edit of a node, an int, ref or array field's included,
      which version leaves out. infer_type keeps an earlier query's answers
-     only while it has not moved (#8852). */
+     only while neither it nor version has moved (#8852). */
   unsigned long edits;
 } NodeTable;
 

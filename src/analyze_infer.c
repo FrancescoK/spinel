@@ -10743,7 +10743,10 @@ TyKind infer_type(Compiler *c, int id) {
      the last look ends what the earlier generations hold: within this tree
      after its own answers, before it with them. */
   if (g_imemo_mode < 0) imemo_mode_init();
-  unsigned long edits = comp_ty_edits + c->nt->edits;
+  /* the node table's version too: an edit that bumps only it (a rename
+     added without its `edits`, #9179's temporary one) still ends what the
+     memo holds */
+  unsigned long edits = comp_ty_edits + c->nt->edits + c->nt->version;
   if (edits != g_imemo_edits) {
     g_imemo_edits = edits;
     /* the last generation stands for its own successor until the wrap */
