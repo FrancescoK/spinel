@@ -1558,6 +1558,16 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
             nt_type(nt, argv[1]) &&
             (sp_streq(nt_type(nt, argv[1]), "KeywordHashNode") ||
              sp_streq(nt_type(nt, argv[1]), "HashNode"))) {
+          /* object_class: OpenStruct (with ostruct required) makes every
+             parsed object an OpenStruct, deep, as CRuby's parser does;
+             symbolize_names then changes nothing, the members are symbols
+             either way. Another object_class is still not read. */
+          int ocv = struct_kwarg_value(c, argv[1], "object_class");
+          if (ocv >= 0 && nt_kind(nt, ocv) == NK_ConstantReadNode && nt_str(nt, ocv, "name") &&
+              sp_streq(nt_str(nt, ocv, "name"), "OpenStruct") && sp_feature_required("ostruct")) {
+            buf_printf(b, "sp_json_ostructify(%s(", nf->csym); emit_str_expr(c, argv[0], b); buf_puts(b, "))");
+            return 1;
+          }
           int symv = struct_kwarg_value(c, argv[1], "symbolize_names");
           if (symv >= 0) {
             const char *svty = nt_type(nt, symv);

@@ -14854,6 +14854,40 @@ static sp_RbVal sp_json_symbolize(sp_RbVal v) {
   }
   return v;
 }
+/* JSON.parse(object_class: OpenStruct): every parsed object becomes an
+   OpenStruct over its members. CRuby's parser makes one per object and
+   stores each pair with []=, which interns the key, so the keys are
+   symbolized first; each member table is the fresh hash the symbolizer
+   built, wrapped directly. Arrays recurse in place, scalars pass through. */
+static sp_RbVal sp_json_ostruct_walk(sp_RbVal v) {
+  if (v.tag != SP_TAG_OBJ) return v;
+  if (v.cls_id == SP_BUILTIN_SYM_POLY_HASH) {
+    sp_SymPolyHash *h = (sp_SymPolyHash *)v.v.p;
+    SP_GC_ROOT(h);
+    if (h) for (sp_int i = 0; i < h->len; i++) {
+      sp_sym k = h->order[i];
+      sp_RbVal mv = sp_json_ostruct_walk(sp_SymPolyHash_get(h, k));
+      SP_GC_ROOT_RBVAL(mv);
+      sp_SymPolyHash_set(h, k, mv);
+    }
+    return sp_box_openstruct(sp_OpenStruct_new_from(h));
+  }
+  if (v.cls_id == SP_BUILTIN_POLY_ARRAY) {
+    sp_PolyArray *a = (sp_PolyArray *)v.v.p;
+    SP_GC_ROOT(a);
+    /* the barrier after each recursion, which allocates (as above) */
+    if (a)
+      for (sp_int i = 0; i < a->len; i++) { sp_RbVal nv = sp_json_ostruct_walk(a->data[i]); sp_gc_wb((void *)a); a->data[i] = nv; }
+    return v;
+  }
+  return v;
+}
+static sp_RbVal sp_json_ostructify(sp_RbVal v) SP_UNUSED;
+static sp_RbVal sp_json_ostructify(sp_RbVal v) {
+  sp_RbVal s = sp_json_symbolize(v);
+  SP_GC_ROOT_RBVAL(s);
+  return sp_json_ostruct_walk(s);
+}
 /* A program with no poly, Array or Hash type anywhere (SP_TU_NO_POLY_RENDER,
    or SP_TU_NO_POLY_VALUES where it has classes or Symbols) holds no value
    for these hooks to walk or render, and JSON.parse and Marshal.load, which
