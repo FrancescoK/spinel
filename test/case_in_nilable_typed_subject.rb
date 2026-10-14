@@ -768,6 +768,26 @@ def exc_kind(f, k)
    v.is_a?(k), v.kind_of?(k), v.instance_of?(k), k === v, v.nil?]
 end
 
+# A raise of an Exception slot that holds nil, and a nil MatchData against the
+# array and hash patterns: TypeError, and no match.
+def raise_slot(f)
+  raise mk_ex(f)
+rescue TypeError => x
+  [x.class, x.message]
+rescue => x
+  [:other, x.class, x.message]
+end
+
+def md(f) = f ? "abc".match(/(b)/) : "abc".match(/z/)
+
+def md_patterns(f)
+  m = md(f)
+  [(case m; in [] then :empty; in nil then :nil; else :else; end),
+   (case m; in [*] then :any; in nil then :nil; else :else; end),
+   (case m; in [x] then x; in nil then :nil; else :else; end),
+   (case m; in {} then :h; in nil then :nil; else :else; end)]
+end
+
 x = Holder.new
 a = x.all
 x.set
@@ -808,3 +828,22 @@ puts "exc_kind NilClass nil: #{exc_kind(false, NilClass).inspect}"
 puts "exc_kind NilClass set: #{exc_kind(true, NilClass).inspect}"
 puts "exc_kind StandardError nil: #{exc_kind(false, StandardError).inspect}"
 puts "exc_kind StandardError set: #{exc_kind(true, StandardError).inspect}"
+puts "raise nil: #{raise_slot(false).inspect}"
+puts "raise set: #{raise_slot(true).inspect}"
+fb = Fiber.new do
+  begin
+    Fiber.yield 1
+    :done
+  rescue Exception => x
+    [x.class, x.message]
+  end
+end
+fb.resume
+begin
+  fb.raise(mk_ex(false))
+rescue TypeError => x
+  puts "fiber raise nil: #{[x.class, x.message].inspect}"
+end
+puts "fiber raise set: #{fb.raise(mk_ex(true)).inspect}"
+puts "md nil: #{md_patterns(false).inspect}"
+puts "md set: #{md_patterns(true).inspect}"

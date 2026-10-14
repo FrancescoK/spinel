@@ -7158,8 +7158,10 @@ static int re_case_eq_obj_subject(Compiler *c, TyKind pt) {
 /* emit_pm_cond over the subject node `subj` that temp `t` holds (the arm's
    own subject), or -1 where the temp is another value: the node's nil fact
    (Repr.may_nil) says whether a poly-array subject can be NULL. PM_SUBJ_FRESH
-   is a temp the arm built itself (a Struct's members, a MatchData's
-   captures): an array, never nil. */
+   is a temp the arm made from a live subject (a Struct's members, a
+   MatchData's captures, a #deconstruct answer, which CRuby requires to be
+   an Array): an array. A nil subject (a no-match MatchData, a nil object)
+   fails the arm before the temp is read (live_subject). */
 #define PM_SUBJ_FRESH (-2)
 static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, Buf *b);
 int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
@@ -8553,6 +8555,7 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
       char md[24]; snprintf(md, sizeof md, "_t%d", t);
       arm_t = emit_md_deconstruct_keys(b, indent + 1, md);
       arm_pt = TY_SYM_POLY_HASH;
+      live_subject = t;   /* a no-match MatchData is NULL: nil, which no pattern deconstructs */
     }
     /* a hash pattern asks a Time for #deconstruct_keys: its fields (#3702) */
     else if (pt == TY_TIME && sp_streq(pty, "HashPatternNode")) {
@@ -8569,6 +8572,7 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
       buf_printf(b, "sp_PolyArray *_t%d = sp_MatchData_captures(_t%d); SP_GC_ROOT(_t%d);\n",
                  arm_t, t, arm_t);
       arm_pt = TY_POLY_ARRAY;
+      live_subject = t;   /* ...and nil has no captures: the arm asks for the subject first */
     }
     /* A user object scrutinee is asked to deconstruct itself: #deconstruct for an
        array pattern, #deconstruct_keys for a hash pattern. Materialize the result

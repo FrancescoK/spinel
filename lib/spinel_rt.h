@@ -15820,7 +15820,8 @@ SP_NORETURN SP_COLD static void sp_abort_raise(const char *msg) {
 }
 static void sp_raise_exc(volatile sp_Exception *ve) {
   sp_Exception *e = (sp_Exception *)ve;
-  if (!e) sp_raise("(nil exception)");
+  /* `raise nil`, or a raise of an Exception slot that holds nil */
+  if (!e) sp_raise_cls("TypeError", "exception class/object expected");
   /* Carry the object so a user subclass keeps its ivars across the
      longjmp; sp_raise_cls moves it into the current frame's slot. */
   sp_pending_exc_obj = (void *)e;
