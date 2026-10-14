@@ -55,3 +55,29 @@ class H
   def tick(n) = -n
 end
 p H.new.tock(1), H.new.tick(1)
+
+# An alias of an alias names the module's method below both, whichever of
+# the names the class overrides; a def after the alias is what a later
+# alias names.
+module Chain
+  def base = "Chain#base"
+  alias_method :mid, :base
+  alias_method :top, :mid
+  def own = "Chain#own"
+  alias_method :own, :base
+  def own = "Chain#own again"
+  alias_method :own_top, :own
+end
+class ChainD
+  include Chain
+  def base = "ChainD#base"
+  def mid = "ChainD#mid"
+  def own = "ChainD#own"
+end
+class ChainE
+  include Chain
+  def mid = "ChainE#mid"
+end
+cd = ChainD.new
+p cd.base, cd.mid, cd.top, cd.own, cd.own_top
+p ChainE.new.top
