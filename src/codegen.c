@@ -4741,6 +4741,27 @@ static void inherit_transplant_locals(Compiler *c, Scope *s) {
   }
 }
 
+/* Is the line [i, le) a `#line` directive of the line map? */
+static int is_line_marker(const char *p, size_t i, size_t le) {
+  return (i == 0 || p[i - 1] == '\n') && le - i >= 6 && !strncmp(p + i, "#line ", 6);
+}
+/* Does [beg, end) (from the start of a line) hold s outside the line map's
+   `#line` lines? A directive names the program's file, and a path such as
+   test/setjmp_local_volatile.rb holding "setjmp" read as a setjmp in the
+   code, so the C differed with and without --no-line-map. */
+static int text_has_code(const char *p, size_t beg, size_t end, const char *s) {
+  size_t sl = strlen(s);
+  for (size_t i = beg; i < end; ) {
+    const char *nl = memchr(p + i, '\n', end - i);
+    size_t le = nl ? (size_t)(nl - p) : end;
+    if (!is_line_marker(p, i, le))
+      for (size_t k = i; k + sl <= le; k++)
+        if (p[k] == s[0] && !strncmp(p + k, s, sl)) return 1;
+    i = nl ? le + 1 : end;
+  }
+  return 0;
+}
+
 /* SP_GC_SAVE restores the root-stack depth on the way out. A function that
    registers no root of its own moved nothing to restore, so the save is dead
    weight -- and it is what stops the C compiler from leaving such a function
@@ -4753,9 +4774,9 @@ static void inherit_transplant_locals(Compiler *c, Scope *s) {
    back, whether or not it pushed anything itself. */
 static void gc_save_take_back(Buf *b, size_t off, size_t save_len, const char *site) {
   if (off + save_len > b->len) return;
-  const char *body = b->p + off + save_len;
-  if (strstr(body, "SP_GC_ROOT") || strstr(body, "setjmp") ||
-      strstr(body, "sp_gc_nroots")) return;
+  size_t from = off + save_len;
+  if (text_has_code(b->p, from, b->len, "SP_GC_ROOT") || text_has_code(b->p, from, b->len, "setjmp") ||
+      text_has_code(b->p, from, b->len, "sp_gc_nroots")) return;
   if (!decide_fn("gc-save", site, NULL)) return;
   buf_erase(b, off, save_len);
 }
@@ -4898,12 +4919,11 @@ static const char *gc_temp_arr_or_nil_ivar(Compiler *c, Scope *s, const char *fn
 static void gc_roots_take_back(Compiler *c, Scope *s, Buf *b, size_t fn_off) {
   if (fn_off >= b->len) return;
   /* straight-line functions only: with a backward edge the text order is not
-     the execution order, so "the last mention" says nothing about liveness. */
-  {
-    const char *fn = b->p + fn_off;
-    if (strstr(fn, "setjmp") || strstr(fn, "while (") || strstr(fn, "for (") ||
-        strstr(fn, "do {") || strstr(fn, "goto ")) return;
-  }
+     the execution order, so "the last mention" says nothing about liveness.
+     (Asked of the code, not of the line map's file names: text_has_code.) */
+  if (text_has_code(b->p, fn_off, b->len, "setjmp") || text_has_code(b->p, fn_off, b->len, "while (") ||
+      text_has_code(b->p, fn_off, b->len, "for (") || text_has_code(b->p, fn_off, b->len, "do {") ||
+      text_has_code(b->p, fn_off, b->len, "goto ")) return;
   for (int i = 0; i < s->nlocals; i++) {
     LocalVar *lv = &s->locals[i];
     if (!lv->arr_or_nil || lv->type != TY_POLY) continue;
@@ -5192,7 +5212,7 @@ static int gc_frame_build(Compiler *c, Buf *b, size_t ins, const char *site) {
   frame_collect(p, ins, end, &ts);
   int any = 0;
   for (int i = 0; i < ts.n; i++) if (frame_convertible(&ts.v[i])) { any = 1; break; }
-  if (!any && !strstr(p + ins, "SP_GC_ROOT")) { free(ts.v); free(ts.h); return 0; }
+  if (!any && !text_has_code(p, ins, end, "SP_GC_ROOT")) { free(ts.v); free(ts.h); return 0; }
 
   Buf nb; memset(&nb, 0, sizeof nb);
   int depth = 1, wm = 0, peak = 0, np = 0;
@@ -5296,9 +5316,25 @@ static int gc_frame_build(Compiler *c, Buf *b, size_t ins, const char *site) {
    file scope, where every part reaches the same storage, and the body keeps
    its initialisation and its root. Its root stays in the body's frame, which
    outlives every part. A program under the threshold, or with no setjmp at
-   its top level, is emitted as before. */
+   its top level, is emitted as before. The sizes count the code alone
+   (main_code_bytes): the line map's `#line` lines and the line breaks it
+   adds cost the C compiler nothing, and with them counted the parts were
+   cut elsewhere with and without --no-line-map. */
 #define MAIN_SPLIT_BYTES (64 * 1024)
 #define MAIN_PART_BYTES (32 * 1024)
+
+/* The bytes of [beg, end) that are code: not a line break, and not in a
+   `#line` line (beg starts a line or a statement) */
+static size_t main_code_bytes(const char *p, size_t beg, size_t end) {
+  size_t n = 0;
+  for (size_t i = beg; i < end; ) {
+    const char *nl = memchr(p + i, '\n', end - i);
+    size_t le = nl ? (size_t)(nl - p) : end;
+    if (!is_line_marker(p, i, le)) n += le - i;
+    i = nl ? le + 1 : end;
+  }
+  return n;
+}
 
 /* Does [beg, end) contain the word `w` outside literals and comments? */
 static int main_text_has_word(const char *p, size_t beg, size_t end, const char *w) {
@@ -5370,7 +5406,7 @@ static int main_body_split(Compiler *c, Buf *body, size_t open, size_t *frame_in
      moves with it */
   Scope *s0 = &c->scopes[0];
   size_t dend = nl > 0 ? decl_ends[nl - 1] : dbeg;
-  if (ncuts < 2 || end - sbeg < MAIN_SPLIT_BYTES || cuts[ncuts - 1] != end) return 0;
+  if (ncuts < 2 || cuts[ncuts - 1] != end || main_code_bytes(p, sbeg, end) < MAIN_SPLIT_BYTES) return 0;
   if (!main_text_has_word(p, sbeg, end, "setjmp")) return 0;
   /* a `return` at the top level returns from the body; out of a part it
      would only end the part. The body's other C returns are an ensure's
@@ -5381,9 +5417,11 @@ static int main_body_split(Compiler *c, Buf *body, size_t open, size_t *frame_in
 
   /* the parts: statements [first, last] each, closed once past the size */
   int *pend = (int *)malloc(sizeof(int) * (size_t)ncuts), np = 0;
-  size_t from = sbeg;
-  for (int k = 0; k < ncuts; k++)
-    if (cuts[k] - from >= MAIN_PART_BYTES || k == ncuts - 1) { pend[np++] = k; from = cuts[k]; }
+  size_t from = sbeg, code = 0;
+  for (int k = 0; k < ncuts; k++) {
+    code += main_code_bytes(p, k ? cuts[k - 1] : sbeg, cuts[k]);
+    if (code >= MAIN_PART_BYTES || k == ncuts - 1) { pend[np++] = k; code = 0; }
+  }
   if (np < 2) { free(pend); return 0; }
 
   /* which parts name each local */

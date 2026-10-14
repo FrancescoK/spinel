@@ -53,7 +53,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: ty-setter-check imemo-shadow-test int-min-test all hooks share-strings-test gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
+.PHONY: ty-setter-check imemo-shadow-test int-min-test all hooks share-strings-test line-map-check gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-test-shared gate-bench gc-phases-test gc-stress-test gc-str-major-test gc-str-budget-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot rubyboy gate-rubyboy scale-test clean install uninstall deps tools
@@ -5336,6 +5336,36 @@ scale-test: $(SPINEL_WORK)
 gate-props: run-scale-test gate-costs
 gate-costs: $(SPINEL)
 	@tools/gate_costs.sh
+
+# The generated C must not depend on the line map: a sample of the corpus
+# (every tenth program, the --share-strings programs and the --rbs one whose
+# handle once did not fit its buffer, #9115) compiled with and without
+# --no-line-map in both builds, compared with the line map taken out
+# (tools/line_map_check.sh). The corpus C diffs compile with --no-line-map
+# and cannot see such codegen. Two programs are also compiled from a
+# directory whose name holds the words the passes over the finished C look
+# for (a setjmp, a loop, a root): the directives carry the file's path, and
+# those passes read the code alone.
+LINE_MAP_SAMPLE = $(shell ls test/*.rb | awk 'NR % 10 == 0') test/setjmp_local_volatile.rb
+ifeq ($(wildcard $(RBS_INC)/rbs/parser.h),)
+LINE_MAP_RBS =
+else
+LINE_MAP_RBS = rbs-seed-extractor
+endif
+gate-props: line-map-check
+line-map-check: $(SPINEL) $(LINE_MAP_RBS)
+	@ok=1; \
+	tools/line_map_check.sh -j $(NPROC) $(LINE_MAP_SAMPLE) || ok=0; \
+	tools/line_map_check.sh -j $(NPROC) --share-strings $(LINE_MAP_SAMPLE) $(wildcard test/share/*.rb) || ok=0; \
+	if [ -n "$(LINE_MAP_RBS)" ]; then \
+	  tools/line_map_check.sh -j $(NPROC) --share-strings --rbs test/rbs-seed/sig test/rbs-seed/shared_rbs_split_tail.rb || ok=0; \
+	else echo "line-map-check: --rbs skipped (vendor/rbs not fetched; run 'make deps')"; fi; \
+	d=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-line-map.XXXXXX") || exit 2; \
+	w="$$d/setjmp goto for (while (do {SP_GC_ROOT sp_gc_nroots"; mkdir -p "$$w"; \
+	cp test/gc_root_elided_array_slot.rb test/setjmp_local_volatile.rb "$$w/"; \
+	tools/line_map_check.sh "$$w"/*.rb || ok=0; \
+	rm -rf "$${d:?}"; \
+	[ $$ok -eq 1 ]
 
 gate-props: bisect-test
 bisect-test: $(SPINEL) bin/spinel-bisect
