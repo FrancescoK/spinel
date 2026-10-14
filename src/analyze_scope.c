@@ -7647,6 +7647,40 @@ static const char *cls_call_name(Compiler *c, int id) {
    the inherited cls method into each calling subclass (the copy's class_id
    makes codegen's `new` resolve to that subclass). The defining-class source
    is DCE'd unless it is itself called directly. Covers #224 / #229 / #1451. */
+/* A class method `own` that calls super into its parent's method of the
+   name: super runs that method with self still own's class, so a
+   class-level @ivar it names is own's class's. The inherited copy above is
+   made only for a class that does not define the name; here the parent's
+   method is copied into own's class behind a shadow name, and own's super
+   reaches the copy (its prepend chain), as extend's copy behind a class's
+   own method is reached (extend_class_with). Only a parent's method with no
+   super of its own: the copy's super would start at own's class's parent,
+   which is that method again. */
+static void specialize_super_cmethod(Compiler *c, int own) {
+  Scope *os = &c->scopes[own];
+  int ci = os->class_id;
+  if (!os->is_cmethod || ci < 0 || !os->name || !scope_body_has_super(c, own) ||
+      comp_super_shadow(c, os)) return;
+  int par = comp_super_parent(c, ci, 1);
+  int pdef = -1;
+  int pm = par >= 0 ? comp_cmethod_in_chain(c, par, os->name, &pdef) : -1;
+  if (pm < 0 || pdef < 0 || scope_body_has_super(c, pm) || !cmethod_reaches_class_ivar(c, pm, pdef, 0)) return;
+  char behind[256];
+  snprintf(behind, sizeof behind, "__inc %d %s", c->classes[ci].prep_shadow_count++, os->name);
+  /* aside while the copy takes the name, then back */
+  char *own_name = os->name;
+  c->scopes[own].name = strdup("\x01own");
+  specialize_cmethod_for(c, pm, pdef, ci);
+  int cp = comp_cmethod_in_class(c, ci, own_name);
+  if (cp >= 0 && cp != own) {
+    free(c->scopes[cp].name);
+    c->scopes[cp].name = strdup(behind);
+    comp_cprep_chain_add(&c->classes[ci], own_name, behind);
+  }
+  free(c->scopes[own].name);
+  c->scopes[own].name = own_name;
+}
+
 void specialize_inherited_cls_new(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int snap = c->nscopes;
@@ -7789,6 +7823,8 @@ void specialize_inherited_cls_new(Compiler *c) {
       for (int t = 0; t < ntgt; t++) specialize_cmethod_for(c, mi, def_cls, tgt[t]);
     free(tgt);
   }
+  /* a class's own class method whose super reaches its parent's */
+  for (int own = 1; own < snap; own++) specialize_super_cmethod(c, own);
   did_clone = (c->nscopes > snap);
   /* Index of every CallNode with a constant receiver, built once: the
      called-direct check below otherwise rescans all nodes per shadowed cmethod
