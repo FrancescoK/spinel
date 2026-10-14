@@ -3345,6 +3345,17 @@ static int g_strbuf_case_node = -1;
 static LocalVar *g_strbuf_case_lv;
 /* Is a String local that is the shared handle one of the values conditional
    `v` can hand over (an_strbuf_alias_leaves' arms)? */
+/* Is a handle among the values begin v hands on: its body's (no else
+   follows it), each rescue's and its else's, an ensure's being dropped (the
+   values mark_value_nexts walks)? */
+static int strbuf_begin_arm_leaf(Compiler *c, int v, int depth) {
+  const NodeTable *nt = c->nt;
+  int el = nt_ref(nt, v, "else_clause");
+  if (el < 0 && strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "statements"), depth)) return 1;
+  for (int rc = nt_ref(nt, v, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
+    if (strbuf_cond_has_handle_leaf(c, nt_ref(nt, rc, "statements"), depth)) return 1;
+  return el >= 0 && strbuf_cond_has_handle_leaf(c, nt_ref(nt, el, "statements"), depth);
+}
 int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth) {
   const NodeTable *nt = c->nt;
   /* depth counts the conditionals the walk is inside (a wrapper adds none);
@@ -3378,6 +3389,11 @@ int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth) {
         if (strbuf_cond_has_handle_leaf(c, nt_ref(nt, whens[w], "statements"), depth + 1)) return 1;
       return strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "else_clause"), depth + 1);
     }
+    /* a begin among a conditional's arms hands on what its body, rescues and
+       else do (strbuf_begin_arm_leaf); on its own it is a route
+       (strbuf_route_begin), which emit_strbuf_value takes after this test */
+    case NK_BeginNode:
+      return depth > 0 && strbuf_begin_arm_leaf(c, v, depth);
     /* a `next v` written where the block's value is (next_is_block_value)
        hands on what v does, as an arm of its own */
     case NK_NextNode: {
@@ -19367,8 +19383,14 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
        into a new handle (sp_poly_strbuf_lift) for the box the caller keeps.
        Lift at the arms, so a frozen literal keeps its own identity. */
     int share_box = repr_share_rule(c) && (rt == TY_STRING || rt == TY_STRBUF) &&
-                    (g_result_var ? g_result_poly : g_ret_type == TY_POLY) && share_node_shares(c, id);
+                    (g_result_var ? g_result_poly : g_ret_type == TY_POLY) &&
+                    (share_node_shares(c, id) || strbuf_begin_arm_leaf(c, id, 1));
     if (share_box) rt = TY_POLY;
+    /* --share-strings: a begin whose value the slot it tails reads as the
+       handle (a spliced block's under the demand) holds its arms' values as
+       handles: the temp is the handle, each arm stores its own */
+    else if (repr_share_rule(c) && g_result_var && g_result_ty == TY_STRBUF && (rt == TY_STRING || rt == TY_STRBUF))
+      rt = TY_STRBUF;
     if (is_scalar_ret(rt)) {
       int t = ++g_tmp;
       char rv[32]; snprintf(rv, sizeof rv, "_t%d", t);
@@ -19489,6 +19511,9 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
          caller's deep-return pickup takes it (an_returns_shared_handles).
          Without the rule nothing picks it up, and the tail is as before. */
       int sb8 = it9 == TY_STRBUF && repr_write_share(c, id);
+      /* (a boxed result takes the handle itself, boxed as the local arm's
+         is: its String boxed was a copy) */
+      if (sb8 && (g_result_var ? g_result_poly : g_ret_type == TY_POLY)) sb8 = 0;
       if (sb8) it9 = TY_STRING;
       if (iidx9 >= 0 && tail_slot_reaches_ret(c, it9)) {
         emit_stmt(c, id, b, indent);
@@ -19568,7 +19593,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     LocalVar *gv9 = holder_of_node(c, id, &h9) ? h9.lv : NULL;
     TyKind gt9 = gv9 ? gv9->type : TY_UNKNOWN;
     /* a global holding the shared handle answers its String */
-    int sb9 = gv9 && h9.r.kind == RK_STRBUF;
+    int sb9 = gv9 && h9.r.kind == RK_STRBUF && !(g_result_var ? g_result_poly : g_ret_type == TY_POLY);
     if (sb9) gt9 = TY_STRING;
     int slot_ok = gv9 && tail_slot_reaches_ret(c, gt9);
     emit_stmt(c, id, b, indent);
@@ -22912,6 +22937,14 @@ static int strbuf_flow_has_leaf(Compiler *c, StrbufFlowMemo *fm, int v, int dept
     for (int w = 0; w < nw; w++)
       if (strbuf_flow_has_leaf(c, fm, nt_ref(nt, whens[w], "statements"), depth + 1)) return 1;
     return strbuf_flow_has_leaf(c, fm, nt_ref(nt, v, "else_clause"), depth + 1);
+  }
+  case NK_BeginNode: {
+    if (depth == 0) return 0;   /* (on its own a route, as strbuf_cond_has_handle_leaf has it) */
+    int el = nt_ref(nt, v, "else_clause");
+    if (el < 0 && strbuf_flow_has_leaf(c, fm, nt_ref(nt, v, "statements"), depth)) return 1;
+    for (int rc = nt_ref(nt, v, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
+      if (strbuf_flow_has_leaf(c, fm, nt_ref(nt, rc, "statements"), depth)) return 1;
+    return el >= 0 && strbuf_flow_has_leaf(c, fm, nt_ref(nt, el, "statements"), depth);
   }
   case NK_NextNode: {
     int na = 0; const int *av = call_args(nt, v, &na);

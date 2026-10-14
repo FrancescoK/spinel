@@ -14,8 +14,36 @@
 # t)`, `next (@x = t)`, `next (h[:k] = t)`). The writes (an instance variable, a
 # global, a class variable, an attribute, a Hash element, a chained write, an
 # `||=`) are each the block's tail, a `next` operand and a ternary arm, at the
-# top level and in a method.
+# top level and in a method. A begin (with a rescue, an else or an ensure) is the
+# block's value the same way, so is a local's `||=` and `&&=`, and the result held
+# as a box (a variable that was an Integer first, a proc's answer) takes the
+# handle as well.
 def one(x) = x
+def y_begin_next(x) = yield(x)
+def y_begin_next_stmt(x) = yield(x)
+def y_begin_ensure(x) = yield(x)
+def y_begin_rescue_body(x) = yield(x)
+def y_begin_rescue_arm(x) = yield(x)
+def y_begin_else(x) = yield(x)
+def y_begin_nested(x) = yield(x)
+def y_begin_assigned(x) = yield(x)
+def y_begin_unless(x) = yield(x)
+def y_begin_case(x) = yield(x)
+def y_or_write(x) = yield(x)
+def y_and_write(x) = yield(x)
+def y_bx_read(x) = yield(x)
+def p_bx_read(x) = yield(x)
+def y_bx_local_write(x) = yield(x)
+def p_bx_local_write(x) = yield(x)
+def y_bx_ivar_write(x) = yield(x)
+def p_bx_ivar_write(x) = yield(x)
+def y_bx_gvar_write(x) = yield(x)
+def p_bx_gvar_write(x) = yield(x)
+def y_bx_next_write(x) = yield(x)
+def p_bx_next_write(x) = yield(x)
+def y_bx_tern_write(x) = yield(x)
+def p_bx_tern_write(x) = yield(x)
+def y_c5(x) = yield(x)
 class OA
   attr_accessor :a
 end
@@ -1157,3 +1185,321 @@ puts "method orasg_tail: #{KW.new.orasg_tail.inspect}"
 puts "method orasg_next: #{KW.new.orasg_next.inspect}"
 puts "method orasg_tern: #{KW.new.orasg_tern.inspect}"
 puts "method orasg_tern_next: #{KW.new.orasg_tern_next.inspect}"
+
+u = nil
+s_begin_next = +"abc"
+w_begin_next = y_begin_next(s_begin_next) { |t|
+  begin
+    t.upcase! ? (next t) : +"zz"
+  end
+}
+w_begin_next << "9"
+puts "begin_next: #{[s_begin_next, w_begin_next.equal?(s_begin_next)].inspect}"
+
+u = nil
+s_begin_next_stmt = +"abc"
+w_begin_next_stmt = y_begin_next_stmt(s_begin_next_stmt) { |t|
+  begin
+    next t if t.upcase!
+    +"zz"
+  end
+}
+w_begin_next_stmt << "9"
+puts "begin_next_stmt: #{[s_begin_next_stmt, w_begin_next_stmt.equal?(s_begin_next_stmt)].inspect}"
+
+u = nil
+s_begin_ensure = +"abc"
+w_begin_ensure = y_begin_ensure(s_begin_ensure) { |t|
+  begin
+    t.upcase! ? (next t) : +"zz"
+  ensure
+    nil
+  end
+}
+w_begin_ensure << "9"
+puts "begin_ensure: #{[s_begin_ensure, w_begin_ensure.equal?(s_begin_ensure)].inspect}"
+
+u = nil
+s_begin_rescue_body = +"abc"
+w_begin_rescue_body = y_begin_rescue_body(s_begin_rescue_body) { |t|
+  begin
+    t.upcase! ? (next t) : +"zz"
+  rescue
+    +"yy"
+  end
+}
+w_begin_rescue_body << "9"
+puts "begin_rescue_body: #{[s_begin_rescue_body, w_begin_rescue_body.equal?(s_begin_rescue_body)].inspect}"
+
+u = nil
+s_begin_rescue_arm = +"abc"
+w_begin_rescue_arm = y_begin_rescue_arm(s_begin_rescue_arm) { |t|
+  begin
+    raise "x"
+  rescue
+    t.upcase! ? (next t) : +"zz"
+  end
+}
+w_begin_rescue_arm << "9"
+puts "begin_rescue_arm: #{[s_begin_rescue_arm, w_begin_rescue_arm.equal?(s_begin_rescue_arm)].inspect}"
+
+u = nil
+s_begin_else = +"abc"
+w_begin_else = y_begin_else(s_begin_else) { |t|
+  begin
+    t.size
+  rescue
+    +"yy"
+  else
+    t.upcase! ? (next t) : +"zz"
+  end
+}
+w_begin_else << "9"
+puts "begin_else: #{[s_begin_else, w_begin_else.equal?(s_begin_else)].inspect}"
+
+u = nil
+s_begin_nested = +"abc"
+w_begin_nested = y_begin_nested(s_begin_nested) { |t|
+  begin
+    begin
+      t.upcase! ? (next t) : +"zz"
+    end
+  end
+}
+w_begin_nested << "9"
+puts "begin_nested: #{[s_begin_nested, w_begin_nested.equal?(s_begin_nested)].inspect}"
+
+u = nil
+s_begin_assigned = +"abc"
+w_begin_assigned = y_begin_assigned(s_begin_assigned) { |t|
+  x = begin
+    t.upcase! ? (next t) : +"zz"
+  end
+  x
+}
+w_begin_assigned << "9"
+puts "begin_assigned: #{[s_begin_assigned, w_begin_assigned.equal?(s_begin_assigned)].inspect}"
+
+u = nil
+s_begin_unless = +"abc"
+w_begin_unless = y_begin_unless(s_begin_unless) { |t|
+  begin
+    unless t.upcase!
+      +"zz"
+    else
+      next t
+    end
+  end
+}
+w_begin_unless << "9"
+puts "begin_unless: #{[s_begin_unless, w_begin_unless.equal?(s_begin_unless)].inspect}"
+
+u = nil
+s_begin_case = +"abc"
+w_begin_case = y_begin_case(s_begin_case) { |t|
+  begin
+    case t.upcase!
+    when nil then +"zz"
+    else next t
+    end
+  end
+}
+w_begin_case << "9"
+puts "begin_case: #{[s_begin_case, w_begin_case.equal?(s_begin_case)].inspect}"
+
+u = nil
+s_or_write = +"abc"
+w_or_write = y_or_write(s_or_write) { |t|
+  u ||= t
+}
+w_or_write << "9"
+puts "or_write: #{[s_or_write, w_or_write.equal?(s_or_write)].inspect}"
+
+u = nil
+s_and_write = +"abc"
+w_and_write = y_and_write(s_and_write) { |t|
+  u = +"x"
+  u &&= t
+}
+w_and_write << "9"
+puts "and_write: #{[s_and_write, w_and_write.equal?(s_and_write)].inspect}"
+
+s_pb = +"abc"
+pb = proc { |t|
+  begin
+    t.upcase! ? (next t) : +"zz"
+  end
+}
+w_pb = pb.call(s_pb)
+w_pb << "9"
+puts "proc begin: #{[s_pb, w_pb.equal?(s_pb)].inspect}"
+
+s_pe = +"abc"
+pe = lambda { |t|
+  begin
+    t.upcase! ? (next t) : +"zz"
+  ensure
+    nil
+  end
+}
+w_pe = pe.call(s_pe)
+w_pe << "9"
+puts "lambda begin ensure: #{[s_pe, w_pe.equal?(s_pe)].inspect}"
+
+s_tb = +"abc"
+w_tb = s_tb.then { |t|
+  begin
+    t.upcase! ? (next t) : +"zz"
+  rescue
+    +"yy"
+  end
+}
+w_tb << "9"
+puts "then begin: #{[s_tb, w_tb.equal?(s_tb)].inspect}"
+
+u = nil
+s_bx_read = +"abc"
+w_bx_read = 5
+w_bx_read = y_bx_read(s_bx_read) { |t|
+  t
+}
+w_bx_read << "9"
+[u, @x, $g].each { |z| z << "!" if z }
+puts "bx_read: #{[s_bx_read, w_bx_read.equal?(s_bx_read), [u, @x, $g]].inspect}"
+
+u = nil
+@x = nil
+$g = nil
+s_pbx_read = +"abc"
+w_pbx_read = 5
+pr_bx_read = proc { |t|
+  t
+}
+w_pbx_read = pr_bx_read.call(s_pbx_read)
+w_pbx_read << "9"
+[u, @x, $g].each { |z| z << "!" if z }
+puts "proc bx_read: #{[s_pbx_read, w_pbx_read.equal?(s_pbx_read), [u, @x, $g]].inspect}"
+
+u = nil
+s_bx_local_write = +"abc"
+w_bx_local_write = 5
+w_bx_local_write = y_bx_local_write(s_bx_local_write) { |t|
+  u = t
+}
+w_bx_local_write << "9"
+[u, @x, $g].each { |z| z << "!" if z }
+puts "bx_local_write: #{[s_bx_local_write, w_bx_local_write.equal?(s_bx_local_write), [u, @x, $g]].inspect}"
+
+u = nil
+@x = nil
+$g = nil
+s_pbx_local_write = +"abc"
+w_pbx_local_write = 5
+pr_bx_local_write = proc { |t|
+  u = t
+}
+w_pbx_local_write = pr_bx_local_write.call(s_pbx_local_write)
+w_pbx_local_write << "9"
+[u, @x, $g].each { |z| z << "!" if z }
+puts "proc bx_local_write: #{[s_pbx_local_write, w_pbx_local_write.equal?(s_pbx_local_write), [u, @x, $g]].inspect}"
+
+u = nil
+s_bx_ivar_write = +"abc"
+w_bx_ivar_write = 5
+w_bx_ivar_write = y_bx_ivar_write(s_bx_ivar_write) { |t|
+  @x = t
+}
+w_bx_ivar_write << "9"
+[u, @x, $g].each { |z| z << "!" if z }
+puts "bx_ivar_write: #{[s_bx_ivar_write, w_bx_ivar_write.equal?(s_bx_ivar_write), [u, @x, $g]].inspect}"
+
+u = nil
+@x = nil
+$g = nil
+s_pbx_ivar_write = +"abc"
+w_pbx_ivar_write = 5
+pr_bx_ivar_write = proc { |t|
+  @x = t
+}
+w_pbx_ivar_write = pr_bx_ivar_write.call(s_pbx_ivar_write)
+w_pbx_ivar_write << "9"
+[u, @x, $g].each { |z| z << "!" if z }
+puts "proc bx_ivar_write: #{[s_pbx_ivar_write, w_pbx_ivar_write.equal?(s_pbx_ivar_write), [u, @x, $g]].inspect}"
+
+u = nil
+s_bx_gvar_write = +"abc"
+w_bx_gvar_write = 5
+w_bx_gvar_write = y_bx_gvar_write(s_bx_gvar_write) { |t|
+  $g = t
+}
+w_bx_gvar_write << "9"
+[u, @x, $g].each { |z| z << "!" if z }
+puts "bx_gvar_write: #{[s_bx_gvar_write, w_bx_gvar_write.equal?(s_bx_gvar_write), [u, @x, $g]].inspect}"
+
+u = nil
+@x = nil
+$g = nil
+s_pbx_gvar_write = +"abc"
+w_pbx_gvar_write = 5
+pr_bx_gvar_write = proc { |t|
+  $g = t
+}
+w_pbx_gvar_write = pr_bx_gvar_write.call(s_pbx_gvar_write)
+w_pbx_gvar_write << "9"
+[u, @x, $g].each { |z| z << "!" if z }
+puts "proc bx_gvar_write: #{[s_pbx_gvar_write, w_pbx_gvar_write.equal?(s_pbx_gvar_write), [u, @x, $g]].inspect}"
+
+u = nil
+s_bx_next_write = +"abc"
+w_bx_next_write = 5
+w_bx_next_write = y_bx_next_write(s_bx_next_write) { |t|
+  next (u = t) if t.upcase!
+  +"zz"
+}
+w_bx_next_write << "9"
+[u, @x, $g].each { |z| z << "!" if z }
+puts "bx_next_write: #{[s_bx_next_write, w_bx_next_write.equal?(s_bx_next_write), [u, @x, $g]].inspect}"
+
+u = nil
+@x = nil
+$g = nil
+s_pbx_next_write = +"abc"
+w_pbx_next_write = 5
+pr_bx_next_write = proc { |t|
+  next (u = t) if t.upcase!
+  +"zz"
+}
+w_pbx_next_write = pr_bx_next_write.call(s_pbx_next_write)
+w_pbx_next_write << "9"
+[u, @x, $g].each { |z| z << "!" if z }
+puts "proc bx_next_write: #{[s_pbx_next_write, w_pbx_next_write.equal?(s_pbx_next_write), [u, @x, $g]].inspect}"
+
+u = nil
+s_bx_tern_write = +"abc"
+w_bx_tern_write = 5
+w_bx_tern_write = y_bx_tern_write(s_bx_tern_write) { |t|
+  t.upcase! ? (u = t) : +"zz"
+}
+w_bx_tern_write << "9"
+[u, @x, $g].each { |z| z << "!" if z }
+puts "bx_tern_write: #{[s_bx_tern_write, w_bx_tern_write.equal?(s_bx_tern_write), [u, @x, $g]].inspect}"
+
+u = nil
+@x = nil
+$g = nil
+s_pbx_tern_write = +"abc"
+w_pbx_tern_write = 5
+pr_bx_tern_write = proc { |t|
+  t.upcase! ? (u = t) : +"zz"
+}
+w_pbx_tern_write = pr_bx_tern_write.call(s_pbx_tern_write)
+w_pbx_tern_write << "9"
+[u, @x, $g].each { |z| z << "!" if z }
+puts "proc bx_tern_write: #{[s_pbx_tern_write, w_pbx_tern_write.equal?(s_pbx_tern_write), [u, @x, $g]].inspect}"
+
+u = nil
+s_c5 = +"abc"
+w_c5 = y_c5(s_c5) { |t| u = t }
+u << "u"
+w_c5 << "w"
+puts "shared local write: #{[s_c5, u, w_c5].inspect}"

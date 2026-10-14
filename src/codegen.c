@@ -2557,9 +2557,40 @@ static int emit_boxed_by_kind(Compiler *c, int node, Buf *b) {
       return 1;
     }
     return 0;
+  /* a call with a literal block that the handle route splices (a yielding
+     call, `then`) and whose block's value the handle face renders
+     (a tail that is a write of a handle, a `next` of one): boxed as that
+     handle, as emit_strbuf_route reads the call, where the call's bytes
+     boxed whole were a const char * in a handle's place */
+  case SPK_BLOCK_VALUE:
+    if (nt_kind(c->nt, unwrap_parens(c, node)) == NK_CallNode && nt_ref(c->nt, unwrap_parens(c, node), "block") >= 0 &&
+        !arg_ran_first(node, 0) && !emit_boxed_lift(c, node) &&
+        share_plan_of(c, node, SPR_BOX, NULL).form == SPF_HANDLE) {
+      Buf hb; memset(&hb, 0, sizeof hb);
+      if (emit_strbuf_route(c, node, &hb)) {
+        buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
+        free(hb.p);
+        RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
+        return 1;
+      }
+      free(hb.p);
+    }
+    return 0;
+  /* a write whose slot holds the rule's handle (an ivar's, a global's, a
+     class variable's, an `||=`): the write runs, and its box is the handle
+     it stored */
+  case SPK_WRITE:
+    if (!arg_ran_first(node, 0) && !emit_boxed_lift(c, node) && strbuf_value_carries(c, node)) {
+      buf_puts(b, "sp_box_nullable_obj(");
+      emit_strbuf_handle_of(c, node, b);
+      buf_puts(b, ", SP_BUILTIN_STRBUF)");
+      RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
+      return 1;
+    }
+    return 0;
   case SPK_SLOT: case SPK_DEMANDED: case SPK_ELEM: case SPK_SLOT_POLY: case SPK_SELF: case SPK_BANG_BOX:
-  case SPK_POLY_ARMS: case SPK_EXC_MESSAGE: case SPK_EXC_SUPER: case SPK_PUBLISHED: case SPK_READER: case SPK_WRITE:
-  case SPK_ASSIGN: case SPK_OPERAND: case SPK_BLOCK_VALUE: case SPK_YIELD: case SPK_COND: case SPK_SEQUENCE:
+  case SPK_POLY_ARMS: case SPK_EXC_MESSAGE: case SPK_EXC_SUPER: case SPK_PUBLISHED: case SPK_READER:
+  case SPK_ASSIGN: case SPK_OPERAND: case SPK_YIELD: case SPK_COND: case SPK_SEQUENCE:
   case SPK_LIFT:
     return 0;
   }

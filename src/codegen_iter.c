@@ -1932,6 +1932,10 @@ static int block_tail_needs_value_form(Compiler *c, int id) {
      if-modifier) left the outer splice void (`{ |__fwd| yield __fwd }`, the
      forward of a named &block, handed on to a builtin). */
   if (nt_kind(nt, id) == NK_YieldNode) return 1;
+  /* a local's `||=` or `&&=`: the statement form is an if over the write,
+     whose value is void, and the block answers the local */
+  if (nt_kind(nt, id) == NK_LocalVariableOrWriteNode || nt_kind(nt, id) == NK_LocalVariableAndWriteNode ||
+      nt_kind(nt, id) == NK_MultiWriteNode) return 1;
   if (nt_kind(nt, id) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, id, "name");
   if (!nm) return 0;
@@ -3398,7 +3402,9 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   }
   else if (nx_own && as_expr && g_ie_next_var && bn3 > 0 &&
            (nt_kind(nt, bd3[bn3 - 1]) == NK_IfNode || nt_kind(nt, bd3[bn3 - 1]) == NK_UnlessNode ||
-            nt_kind(nt, bd3[bn3 - 1]) == NK_CaseNode)) {
+            nt_kind(nt, bd3[bn3 - 1]) == NK_CaseNode || nt_kind(nt, bd3[bn3 - 1]) == NK_BeginNode)) {
+    /* (a begin tail is the same: its body's and its rescues' values, `begin;
+       c ? (next v) : w; end`, were run and dropped) */
     /* A conditional tail after a `next` guard (`next unless ok; k if c`):
        emitted as a plain statement, its arms computed the value and dropped
        it, so the block answered the carrier's nil and filter_map/select kept
