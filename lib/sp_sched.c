@@ -1616,7 +1616,12 @@ static void sched_wake_unlinked(sp_thread *t) {
   if (t == &g_main_thread) {
     int had = g_sched_held;
     if (!had) SCHED_LOCK();
-    SP_TH_SET_STATE(t, SP_TH_RUNNABLE);
+    /* Only a main still BLOCKED: it was taken off its list before this lock,
+       and a #raise delivered in between (sp_thread_deliver) may have woken it
+       and let it run on. Marked RUNNABLE again then, a running main would make
+       its next pump -- the exit drain's, say -- return at once. Main sets
+       BLOCKED before it goes on any list, so a wake owed to it finds it so. */
+    if (SP_TH_STATE(t) == SP_TH_BLOCKED) SP_TH_SET_STATE(t, SP_TH_RUNNABLE);
     SCHED_WAKE_MAIN();
     if (!had) SCHED_UNLOCK();
     return;
