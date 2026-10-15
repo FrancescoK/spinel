@@ -966,11 +966,14 @@ void compute_instantiated(Compiler *c, int early) {
         if (ci >= 0 && (!encl || encl->reachable)) c->classes[ci].instantiated = 1;
         /* an unknown constant is a builtin (Array.new, ...) -- not a user arm */
       }
-      else if (early || comp_ntype(c, recv) == TY_CLASS || comp_ntype(c, recv) == TY_POLY) {
+      else if (early || comp_ntype(c, recv) == TY_CLASS || comp_ntype(c, recv) == TY_POLY ||
+               (comp_ntype(c, recv) == TY_UNKNOWN && (!comp_scope_of(c, id) || comp_scope_of(c, id)->reachable))) {
         /* `klass.new` on a dynamic Class value -- typed TY_CLASS, or a poly
            value that is a Class at run time (`REG["c"].new`, #2888): the class
            is unresolvable at compile time, so keep every class instantiated
-           (its constructor and methods must exist for the runtime dispatch). */
+           (its constructor and methods must exist for the runtime dispatch).
+           A reachable receiver whose type is not known yet may be one too: a
+           parameter seeded `untyped` that its call sites hand a Class (#9208). */
         disable = 1; break;
       }
     }
