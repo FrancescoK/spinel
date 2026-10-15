@@ -131,7 +131,10 @@ like `ffi`),
 `benchmark` (CRuby's own gem, unmodified),
 `bigdecimal` (a minimal subset, see `packages/bigdecimal/bigdecimal.rb`),
 `singleton` and `timeout` (compact implementations of their API; `Timeout.timeout`
-interrupts through `Thread#raise`, so not on the main thread yet)
+interrupts through `Thread#raise`, so not on the main thread yet),
+`psych` and `yaml` (`YAML = Psych`, as CRuby's yaml.rb: loading and dumping
+in Ruby with Psych's scalar rules and libyaml's emitter choices; what is
+left out is listed at the top of `packages/psych/psych.rb`)
 (plus the `stringio`/`strscan`/`json` marker shims for their C-backed
 features). `net/http` and `uri` are there, and so
 is `openssl` -- the one that is conditional: it is glue over the system libssl, so it exists only where those

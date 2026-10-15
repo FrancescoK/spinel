@@ -1,0 +1,25 @@
+RuntimeError
+Psych::Exception
+Psych::Exception
+Psych::BadAlias
+Psych::BadAlias
+Psych::Exception
+"a: b: c" Psych::SyntaxError: (<unknown>): mapping values are not allowed in this context at line 1 column 5
+"a: [1, 2" Psych::SyntaxError: (<unknown>): did not find expected ',' or ']' while parsing a flow sequence at line 1 column 4
+"a: [" Psych::SyntaxError: (<unknown>): did not find expected node content while parsing a flow node at line 2 column 1
+"{a: " Psych::SyntaxError: (<unknown>): did not find expected node content while parsing a flow node at line 2 column 1
+"a: {b: 1" Psych::SyntaxError: (<unknown>): did not find expected ',' or '}' while parsing a flow mapping at line 1 column 4
+"x: -\n" Psych::SyntaxError: (<unknown>): block sequence entries are not allowed in this context at line 1 column 4
+"a: 1\n b: 2\n" Psych::SyntaxError: (<unknown>): mapping values are not allowed in this context at line 2 column 3
+"- a\nb: 1\n" Psych::SyntaxError: (<unknown>): did not find expected '-' indicator while parsing a block collection at line 1 column 1
+"\ta: 1\n" Psych::SyntaxError: (<unknown>): found character that cannot start any token while scanning for the next token at line 1 column 1
+"a: \"unterminated\n" Psych::SyntaxError: (<unknown>): found unexpected end of stream while scanning a quoted scalar at line 1 column 4
+"a: |x\n  y\n" Psych::SyntaxError: (<unknown>): did not find expected comment or line break while scanning a block scalar at line 1 column 4
+":sym" Psych::DisallowedClass: Tried to load unspecified class: Symbol
+"a: 2024-01-01\n" Psych::DisallowedClass: Tried to load unspecified class: Date
+"t: 2024-01-01 10:00:00\n" Psych::DisallowedClass: Tried to load unspecified class: Time
+"a: &x 1\nb: *x\n" Psych::AliasesNotEnabled: Alias parsing was not enabled. To enable it, pass `aliases: true` to `Psych::load` or `Psych::safe_load`.
+"a: !ruby/object:Foo {}\n" Psych::DisallowedClass: Tried to load unspecified class: Foo
+"a: !!set {x: }\n" Psych::DisallowedClass: Tried to load unspecified class: Psych::Set
+Psych::AnchorNotDefined: An alias referenced an unknown anchor: nope
+["cfg.yml", 2, 1, "did not find expected node content", "while parsing a flow node"]

@@ -1,0 +1,10 @@
+YAML dates (Date) are not supported in Spinel's psych
+YAML timestamps (Time) are not supported in Spinel's psych
+loading a Regexp from YAML is not supported in Spinel's psych
+loading a Foo from YAML is not supported in Spinel's psych
+loading a Psych::Set from YAML is not supported in Spinel's psych
+YAML tag !ruby/encoding (an Encoding) is not supported in Spinel's psych
+YAML tag !!omap (a Psych::Omap) is not supported in Spinel's psych
+Psych.safe_load(freeze: true) is not supported in Spinel's psych
+a collection as a mapping key is not supported in Spinel's psych dump
+Psych.dump of a Range is not supported in Spinel's psych

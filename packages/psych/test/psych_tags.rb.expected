@@ -1,0 +1,46 @@
+"a: ! 3" => {"a" => 3}
+"a: ! '3'" => {"a" => 3}
+"a: !!int '2'" => {"a" => 2}
+"! '': nil key" => {nil => "nil key"}
+"a: !!str 1" => {"a" => "1"}
+"a: !<tag:yaml.org,2002:str> 1" => {"a" => "1"}
+"[!!str 1, !!int '4', !!float 2, !ruby/foo 1, !custom 1]" => ["1", 4, 2.0, 1, 1]
+"a: !!null x" => {"a" => "x"}
+"a: !!bool x" => {"a" => "x"}
+"a: !!int x" => {"a" => "x"}
+"a: !!int" => {"a" => nil}
+"a: !!str" => {"a" => ""}
+"a: !!binary aGk=" => {"a" => "hi"}
+"a: !!timestamp x" => {"a" => "x"}
+"a: !!foo {b: 1}" => {"a" => {"b" => 1}}
+"a: !!seq {b: 1}" => {"a" => {"b" => 1}}
+"a: !!map [1]" => {"a" => [1]}
+"a: !!pairs [b: 1, c: 2]" => {"a" => [{"b" => 1}, {"c" => 2}]}
+"a: !!set [x]" => {"a" => ["x"]}
+"a: !!str {str: x}" => {"a" => "x"}
+"a: !!str {}" => {"a" => nil}
+"a: !ruby/object:Hash {b: 1}" => {"a" => {"b" => 1}}
+"a: !!str |\n  x\n" => {"a" => "x\n"}
+"a: !!int |\n  2\n" => {"a" => "2\n"}
+"&k key: v\nother: *k\n" => {"key" => "v", "other" => "key"}
+"- !!str 1: x\n" => [{"1" => "x"}]
+"a: !!float x" ArgumentError: invalid value for Float(): "x"
+"a: !!float ~" TypeError: can't convert nil into Float
+"a: !!float true" TypeError: can't convert true into Float
+"a: !!str {b: 1}" FrozenError: can't modify frozen NilClass: nil
+"a: !ruby/regexp /x/" Psych::DisallowedClass: Tried to load unspecified class: Regexp
+"a: !ruby/range 1..2" Psych::DisallowedClass: Tried to load unspecified class: Range
+"a: !ruby/class String" Psych::DisallowedClass: Tried to load unspecified class: String
+"a: !ruby/object {}" Psych::DisallowedClass: Tried to load unspecified class: Object
+"a: !ruby/object:Foo {}" Psych::DisallowedClass: Tried to load unspecified class: Foo
+"a: !ruby/struct {b: 1}" Psych::DisallowedClass: Tried to load unspecified class: Struct
+"a: !ruby/struct:Foo {}" Psych::DisallowedClass: Tried to load unspecified class: Foo
+"a: !ruby/exception {}" Psych::DisallowedClass: Tried to load unspecified class: Exception
+"a: !ruby/array:Foo []" Psych::DisallowedClass: Tried to load unspecified class: Foo
+"a: !ruby/hash:Foo {}" Psych::DisallowedClass: Tried to load unspecified class: Foo
+"a: !ruby/string:Foo x" Psych::DisallowedClass: Tried to load unspecified class: Foo
+"a: !ruby/object:Complex x" Psych::DisallowedClass: Tried to load unspecified class: Complex
+"a: !!set {x: }" Psych::DisallowedClass: Tried to load unspecified class: Psych::Set
+"a: !!omap {b: 1}" Psych::DisallowedClass: Tried to load unspecified class: Psych::Omap
+"a: !!timestamp 2024-01-01" Psych::DisallowedClass: Tried to load unspecified class: Date
+"a: !ruby/sym x" Psych::DisallowedClass: Tried to load unspecified class: Symbol

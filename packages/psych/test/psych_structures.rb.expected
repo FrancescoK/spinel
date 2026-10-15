@@ -1,0 +1,19 @@
+{"a" => 1, "b" => [1, "two", 3.0], "c" => {"x" => "y"}}
+["a", {"b" => 1, "c" => 2}, ["x"], ["y", "z"]]
+{"a" => [1, 2], "b" => [3], "c" => 4}
+{"a" => {"b" => {"c" => "d"}, "e" => "f"}, "g" => "h"}
+{"empty" => nil, "next" => 1, "nil_item" => [nil, 2]}
+{"k" => "l1\nl2\n", "strip" => "x", "keep" => "y\n\n", "fold" => "a b\nc\n", "more" => "a\n b\nc"}
+[" indented\nbase\n", "\nlead\n"]
+{"s" => "multi line", "d" => "a\nb", "plain" => "multi word", "cont" => "ab"}
+{"url" => "http://a.b/c?d=e#f", "hash" => "a#b", "quoted key" => 1, "double" => 2}
+["a", ["b", "c"], {"d" => "e"}, "f g"]
+{"a" => [1, 2], "b" => {"c" => "d"}, "e" => nil, "f" => nil}
+[{"a" => 1}, "b"]
+{"base" => {"x" => 1, "y" => 2}, "derived" => {"x" => 1, "y" => 3}}
+{"a" => 1}
+"literal root\n"
+1
+{"first" => "b"}
+{"a" => "1", "b" => 2, "c" => 3, "d" => nil, nil => "nil key", "e" => "x", "f" => "hello"}
+{"complex" => "v", "two\nlines" => "w"}
