@@ -5859,7 +5859,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     const char *sop = nt_str(nt, id, "binary_operator");
     /* a `+=` on an ivar the rule holds as the shared handle answers the
        String it built, read from the handle as the ivar's own read is */
-    if (repr_share_rule(c) && svt == TY_STRBUF && sop && sp_streq(sop, "+")) {
+    if (repr_share_rule(c) && svt == TY_STRBUF && sop && is_plus_op(sop)) {
       if (g_pre) {
         emit_stmt(c, id, g_pre, g_indent);
         buf_printf(b, "sp_strbuf_read_pub(%s)", ref);

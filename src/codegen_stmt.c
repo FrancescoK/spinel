@@ -1484,7 +1484,7 @@ int strbuf_self_chain_base(Compiler *c, int v) {
       return -1;
     for (int i = 0; i < argc; i++)
       if (!subtree_is_pure_read(c, av[i]) && nt_kind(nt, av[i]) != NK_StringNode) return -1;
-    conv[links] = is_receiver_conversion(nm) && !sp_streq(nm, "itself");
+    conv[links] = is_receiver_conversion(nm) && !is_itself_name(nm);
     nilable[links] = (ans & BOPF_SELF_OR_NIL) != 0;
     any_blk |= blk >= 0;
     links++;
@@ -1516,7 +1516,7 @@ int strbuf_self_chain_base(Compiler *c, int v) {
   if (any_blk)
     for (int w = start; w >= 0 && nt_kind(nt, w) == NK_CallNode; w = unwrap_parens(c, nt_ref(nt, w, "receiver"))) {
       const char *wn = nt_str(nt, w, "name");
-      if (nt_ref(nt, w, "block") >= 0 && !(wn && (is_tap_name(wn) || sp_streq(wn, "each_char")))) return -1;
+      if (nt_ref(nt, w, "block") >= 0 && !(wn && (is_tap_name(wn) || is_each_char_name(wn)))) return -1;
     }
   /* a conversion to a String (`to_s`) turns a nil into "": the chain is no
      longer the slot's String where the slot or a link below it can be nil
@@ -17429,7 +17429,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     }
     /* a slot the rule makes the shared handle: `@s += x` is `@s = @s + x`, a new
        String made from the handle's bytes, as the plain write emits it */
-    else if (repr_share_rule(c) && vt == TY_STRBUF && op && sp_streq(op, "+")) {
+    else if (repr_share_rule(c) && vt == TY_STRBUF && op && is_plus_op(op)) {
       buf_printf(b, "%s = ", ref);
       emit_strbuf_ivar_plus(c, nt_ref(nt, id, "value"), ref, b);
       buf_puts(b, ";\n");
