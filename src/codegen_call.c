@@ -5681,6 +5681,11 @@ int emit_poly_pred_value(Compiler *c, int id, const char *tvref,
    Emitted as a runtime tag/cls_id check; declined when a user class defines the
    name so the general dispatch (which then has arms) wins. (#3162) */
 static int reopened_owns(Compiler *c, const char *cls, const char *name);   /* below */
+int base_arg_may_gc(Compiler *c, int arg) {
+  NodeKind k = nt_kind(c->nt, arg);
+  return comp_ntype(c, arg) != TY_INT || (k != NK_IntegerNode && k != NK_LocalVariableReadNode);
+}
+
 void emit_base_arg(Compiler *c, int arg, int t, char *bv, size_t n, Buf *b) {
   int ib = comp_ntype(c, arg) == TY_INT;
   snprintf(bv, n, ib ? "_t%d" : "sp_poly_arg_int_chk(_t%d)", t);
@@ -6092,7 +6097,7 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     int tv = ++g_tmp, tb = ++g_tmp;
     char bv[48];
     buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
-    if (comp_ntype(c, argv[0]) != TY_INT) buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d)", tv);
+    if (base_arg_may_gc(c, argv[0])) buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d)", tv);
     emit_base_arg(c, argv[0], tb, bv, sizeof bv, b);
     buf_printf(b, "; _t%d.tag == SP_TAG_INT ? sp_int_to_s_base(_t%d.v.i, %s)"
                   " : _t%d.tag == SP_TAG_BIGINT ? sp_bigint_to_s_base(sp_poly_as_bigint(_t%d), %s)"
