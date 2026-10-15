@@ -1,0 +1,84 @@
+"<a/>" => "<a/>" root=a text=nil size=0 attrs=[]
+"<a></a>" => "<a/>" root=a text=nil size=0 attrs=[]
+"<a> </a>" => "<a> </a>" root=a text=" " size=1 attrs=[]
+"<a>x</a>\n" => "<a>x</a>" root=a text="x" size=1 attrs=[]
+"\n\n<a/>\n\n" => "\n\n<a/>" root=a text=nil size=0 attrs=[]
+"<?xml version='1.0'?><a/>" => "<?xml version='1.0'?><a/>" root=a text=nil size=0 attrs=[]
+"<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<a/>" => "<?xml version='1.0' encoding='UTF-8'?>\n<a/>" root=a text=nil size=0 attrs=[]
+"<?xml version='1.1' encoding='UTF-8' standalone='no'?><a/>" => "<?xml version='1.1' encoding='UTF-8' standalone='no'?><a/>" root=a text=nil size=0 attrs=[]
+"<?xml version='1.0' standalone='maybe'?><a/>" !! REXML::ParseException: Malformed XML: XML declaration standalone is not yes or no : <maybe>
+"<?xml?><a/>" !! REXML::ParseException: Malformed XML: XML declaration misses spaces before version
+"<?xml version='1.0'><a/>" !! REXML::ParseException: Malformed XML: Unclosed XML declaration
+"<a/><?xml version='1.0'?>" !! REXML::ParseException: Malformed XML: XML declaration is not at the start
+" <?xml version='1.0'?><a/>" => "<?xml version='1.0'?> <a/>" root=a text=nil size=0 attrs=[]
+"<?xml version='1.0'?><?xml version='1.0'?><a/>" !! REXML::ParseException: Malformed XML: XML declaration is duplicated
+"<p:a/>" !! REXML::UndefinedNamespaceException: Undefined prefix p found
+"<a p:b='1'/>" !! REXML::UndefinedNamespaceException: Undefined prefix p found
+"<a xmlns:p='u'><p:b/></a>" => "<a xmlns:p='u'><p:b/></a>" root=a text=nil size=1 attrs=[["xmlns:p", "u", "u"]]
+"<a xmlns='u'><b/></a>" => "<a xmlns='u'><b/></a>" root=a text=nil size=1 attrs=[["xmlns", "u", "u"]]
+"<a xmlns:xml='x'/>" !! REXML::ParseException: The 'xml' prefix must not be bound to any other namespace (http://www.w3.org/TR/REC-xml-names/#ns-decl)
+"<a xmlns:xmlns='x'/>" !! REXML::ParseException: The 'xmlns' prefix must not be declared (http://www.w3.org/TR/REC-xml-names/#ns-decl)
+"<a xml:lang='en'/>" => "<a xml:lang='en'/>" root=a text=nil size=0 attrs=[["xml:lang", "en", "en"]]
+"<a b='1' b='2'/>" !! REXML::ParseException: Duplicate attribute "b"
+"<a b='1'c='2'/>" => "<a b='1' c='2'/>" root=a text=nil size=0 attrs=[["b", "1", "1"], ["c", "2", "2"]]
+"<a b = \"1\" />" => "<a b='1'/>" root=a text=nil size=0 attrs=[["b", "1", "1"]]
+"<a b='1' />" => "<a b='1'/>" root=a text=nil size=0 attrs=[["b", "1", "1"]]
+"<a b/>" !! REXML::ParseException: Missing attribute equal: <b>
+"<a b=/>" !! REXML::ParseException: Missing attribute value start quote: <b>
+"<a b='1/>" !! REXML::ParseException: Missing attribute value end quote: <b>: <'>
+"<a 1b='x'/>" !! REXML::ParseException: Invalid attribute name: <1b='x'>
+"<a\n  b='x'\n/>" => "<a b='x'/>" root=a text=nil size=0 attrs=[["b", "x", "x"]]
+"<a>&amp;&lt;&gt;&quot;&apos;</a>" => "<a>&amp;&lt;&gt;&quot;&apos;</a>" root=a text="&<>\"'" size=1 attrs=[]
+"<a>&nbsp;</a>" => "<a>&nbsp;</a>" root=a text="&nbsp;" size=1 attrs=[]
+"<a>& b</a>" !! REXML::ParseException: #<RuntimeError: Illegal character "&" in raw string "& b">
+"<a>&#0;</a>" !! REXML::ParseException: #<RuntimeError: Illegal character "&#0;" in raw string "&#0;">
+"<a>&#x110000;</a>" !! REXML::ParseException: #<RuntimeError: Illegal character "&#x110000;" in raw string "&#x110000;">
+"<a b='&nbsp;'/>" => "<a b='&nbsp;'/>" root=a text=nil size=0 attrs=[["b", "&nbsp;", "&nbsp;"]]
+"<a b='a & b'/>" !! REXML::ParseException: #<RuntimeError: Illegal character "&" in raw string "a & b">
+"<a b='&amp;'/>" => "<a b='&amp;'/>" root=a text=nil size=0 attrs=[["b", "&", "&amp;"]]
+"<a b='x&#10;y'/>" => "<a b='x&#10;y'/>" root=a text=nil size=0 attrs=[["b", "x\ny", "x&#10;y"]]
+"<a b='x\ny'/>" => "<a b='x\ny'/>" root=a text=nil size=0 attrs=[["b", "x\ny", "x\ny"]]
+"<a b='x\ty'/>" => "<a b='x\ty'/>" root=a text=nil size=0 attrs=[["b", "x\ty", "x\ty"]]
+"<a>]]></a>" => "<a>]]></a>" root=a text="]]>" size=1 attrs=[]
+"<a><![CDATA[]]></a>" => "<a><![CDATA[]]></a>" root=a text="" size=1 attrs=[]
+"<a><![CDATA[x</a>" !! REXML::ParseException: Malformed CDATA: Missing end ']]>'
+"<a><!DOCTYPE x></a>" !! REXML::ParseException: Malformed node: Started with '<!' but not a comment nor CDATA
+"<a><!foo></a>" !! REXML::ParseException: Malformed node: Started with '<!' but not a comment nor CDATA
+"<a><!-- x -- y --></a>" !! REXML::ParseException: Malformed comment
+"<a><!-- x ---></a>" !! REXML::ParseException: Malformed comment
+"<a><!-- x </a>" !! REXML::ParseException: Unclosed comment: Missing end '-->'
+"<a><!----></a>" => "<a><!----></a>" root=a text=nil size=1 attrs=[]
+"<a><?pi?></a>" => "<a><?pi?></a>" root=a text=nil size=1 attrs=[]
+"<a><?pi  spaced  ?></a>" => "<a><?pi spaced?></a>" root=a text=nil size=1 attrs=[]
+"<a><?pi x</a>" !! REXML::ParseException: Malformed XML: Unclosed processing instruction: <pi>
+"<?pi top?><a/>" => "<?pi top?><a/>" root=a text=nil size=0 attrs=[]
+"<a><?xml-stylesheet href='x'?></a>" => "<a><?xml-stylesheet href='x'?></a>" root=a text=nil size=1 attrs=[]
+"<a><b></b></a>" => "<a><b/></a>" root=a text=nil size=1 attrs=[]
+"<a><b/><c></c></a>" => "<a><b/><c/></a>" root=a text=nil size=2 attrs=[]
+"</a>" !! REXML::ParseException: Unexpected top-level end tag (got 'a')
+"<a></a></a>" !! REXML::ParseException: Unexpected top-level end tag (got 'a')
+"<a><b></c></a>" !! REXML::ParseException: Missing end tag for 'b' (got 'c')
+"<a><b>" !! REXML::ParseException: Missing end tag for '/a/b'
+"<a/><b/>" !! REXML::ParseException: #<RuntimeError: attempted adding second root element to document>
+"<a/>  <!-- c -->  " => "<a/><!-- c -->" root=a text=nil size=0 attrs=[]
+"x<a/>" !! REXML::ParseException: Malformed XML: Content at the start of the document (got 'x')
+"<a/>x" !! REXML::ParseException: Malformed XML: Extra content at the end of the document (got 'x')
+"" => ""
+"<" !! REXML::ParseException: malformed XML: missing tag start
+"<a" !! REXML::ParseException: Invalid attribute name: <>
+"<a " !! REXML::ParseException: Invalid attribute name: <>
+"<a>text" !! REXML::ParseException: Missing end tag for '/a'
+"<>" !! REXML::ParseException: malformed XML: missing tag start
+"< a/>" !! REXML::ParseException: malformed XML: missing tag start
+"<a></ a>" !! REXML::ParseException: Missing end tag for 'a'
+"<a></a >" => "<a/>" root=a text=nil size=0 attrs=[]
+"<a:b:c/>" !! REXML::ParseException: Invalid attribute name: <:c>
+"<_a.b-c/>" => "<_a.b-c/>" root=_a.b-c text=nil size=0 attrs=[]
+"<a-/>" => "<a-/>" root=a- text=nil size=0 attrs=[]
+"<é/>" => "<é/>" root=é text=nil size=0 attrs=[]
+"<a>é&#233;</a>" => "<a>é&#233;</a>" root=a text="éé" size=1 attrs=[]
+"<a>\r\nx\ry\r\n</a>" => "<a>\nx\ny\n</a>" root=a text="\nx\ny\n" size=1 attrs=[]
+"<a>\t</a>" => "<a>\t</a>" root=a text="\t" size=1 attrs=[]
+"<a>tab\there</a>" => "<a>tab\there</a>" root=a text="tab\there" size=1 attrs=[]
+"<a>x<!--c-->y</a>" => "<a>x<!--c-->y</a>" root=a text="x" size=3 attrs=[]
+"<a>x<b/>y</a>" => "<a>x<b/>y</a>" root=a text="x" size=3 attrs=[]

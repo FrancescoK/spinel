@@ -130,6 +130,7 @@ like `ffi`),
 `fileutils`, `tmpdir`, `zlib`, `logger` (a compact implementation of its API),
 `benchmark` (CRuby's own gem, unmodified),
 `bigdecimal` (a minimal subset, see `packages/bigdecimal/bigdecimal.rb`),
+`rexml` (`require "rexml/document"`: REXML's parser and tree API without DOCTYPE or XPath beyond child paths; see `packages/rexml/rexml/document.rb`),
 `singleton` and `timeout` (compact implementations of their API; `Timeout.timeout`
 interrupts through `Thread#raise`, so not on the main thread yet)
 (plus the `stringio`/`strscan`/`json` marker shims for their C-backed

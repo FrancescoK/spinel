@@ -1,0 +1,32 @@
+"abcDEF123-test_key"
+"127.0.0.1:8384"
+false
+nil
+"laptop & co"
+"AAAAAAA"
+<configuration version='37'>
+    <folder fsWatcherEnabled='true' id='default' label='Default Folder' path='/home/user/Sync' rescanIntervalS='3600' type='sendreceive'>
+        <filesystemType>basic</filesystemType>
+        <device id='AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH' introducedBy=''>
+            <encryptionPassword/>
+        </device>
+        <minDiskFree unit='%'>1</minDiskFree>
+    </folder>
+    <device compression='metadata' id='AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH' introducer='false' name='laptop &amp; co'>
+        <address>dynamic</address>
+        <paused>false</paused>
+    </device>
+    <gui debugging='false' enabled='true' tls='false'>
+        <address>127.0.0.1:8384</address>
+        <apikey>abcDEF123-test_key</apikey>
+        <theme>default</theme>
+    </gui>
+    <!-- options follow -->
+    <options>
+        <listenAddress>default</listenAddress>
+        <globalAnnounceEnabled>false</globalAnnounceEnabled>
+        <relaysEnabled>false</relaysEnabled>
+        <urAccepted>-1</urAccepted>
+    <localAnnounceEnabled>true</localAnnounceEnabled><natEnabled>false</natEnabled><crashReportingEnabled>false</crashReportingEnabled></options>
+</configuration>
+<configuration><gui><address>127.0.0.1:8384</address></gui></configuration>
