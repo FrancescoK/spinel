@@ -35,7 +35,7 @@ claims_files.each do |claims|
   # a claim the file lists as true must have been reached and checked
   unreached = rep["claims"].select { |c| c["check"] != "none" && !c["reached"] }.map { |c| "#{c["kind"]} #{c["site"]}" }
   unreached -= rep["unprobed"].map { |i, _| "#{rep["claims"][i]["kind"]} #{rep["claims"][i]["site"]}" } if rep["unprobed"]
-  failures << "#{name}: claims never reached: #{unreached.first(3).inspect}" if %w[true_and_false_claims unkept_claims walk_robustness].include?(name) && !unreached.empty?
+  failures << "#{name}: claims never reached: #{unreached.first(3).inspect}" if %w[true_and_false_claims unkept_claims walk_robustness unshared_claims frozen_claims].include?(name) && !unreached.empty?
 end
 
 # the kinds are read as data: one with no check, and one with a check the
