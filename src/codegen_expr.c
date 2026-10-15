@@ -3717,6 +3717,12 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
           res = "constant";
       }
     }
+    else if (sp_streq(vt, "ConstantPathNode") && nt_kind(nt, nt_ref(nt, v, "parent")) == NK_ConstantReadNode &&
+             sp_streq(nt_str(nt, nt_ref(nt, v, "parent"), "name"), "Socket") && sp_feature_required("socket")) {
+      /* Socket's constants are the system's: the run time asks its table */
+      buf_printf(b, "(sp_sock_const(\"%s\") >= 0 ? SPL(\"constant\") : NULL)", nt_str(nt, v, "name"));
+      return 1;
+    }
     else if (sp_streq(vt, "ConstantPathNode")) {
       /* a fully-resolved qualified path answers "constant"; any unresolved
          segment leaves nil (the segment walk lives in the guard helpers). A

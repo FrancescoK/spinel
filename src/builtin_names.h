@@ -221,6 +221,7 @@ int is_initialize_name(const char *n); /* initialize */
 int is_initialize_family(const char *n); /* initialize initialize_copy */
 
 int is_iso8601_alias(const char *n); /* iso8601 xmlschema */
+int sock_const_always(const char *n); /* Socket constants every platform defines */
 int is_exception_message(const char *n); /* message to_s */
 int is_socket_pair_alias(const char *n); /* pair socketpair */
 int is_partition_family(const char *n); /* partition rpartition */

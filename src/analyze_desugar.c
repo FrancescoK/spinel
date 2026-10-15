@@ -3846,6 +3846,23 @@ static int engine_absent(NodeTable *nt, int e, int in) {
     return cls && m && !is_builtin_class_name(cls) && !is_builtin_module_name(cls) &&
            me_body_defines(nt, cls, m, in) ? 0 : -1;
   }
+  /* Socket.const_defined?(:X) / defined?(Socket::X): the constants every
+     platform defines are there; the rest only the run time knows */
+  {
+    int sr = -1; const char *sx = NULL;
+    if (en && sp_streq(en, "const_defined?")) {
+      int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, e, "arguments"), "arguments", &ac);
+      sr = nt_ref(nt, e, "receiver");
+      if (ac == 1 && nt_kind(nt, av[0]) == NK_SymbolNode) sx = nt_str(nt, av[0], "value");
+    }
+    else if (nt_kind(nt, e) == NK_DefinedNode && nt_kind(nt, nt_ref(nt, e, "value")) == NK_ConstantPathNode) {
+      sr = nt_ref(nt, nt_ref(nt, e, "value"), "parent");
+      sx = nt_str(nt, nt_ref(nt, e, "value"), "name");
+    }
+    if (sr >= 0 && nt_kind(nt, sr) == NK_ConstantReadNode && sp_streq(nt_str(nt, sr, "name"), "Socket") &&
+        sp_feature_required("socket"))
+      return sock_const_always(sx) ? 0 : -1;
+  }
   if (nt_kind(nt, e) == NK_DefinedNode) {
     int v = nt_ref(nt, e, "value"), below = -1;
     while (nt_kind(nt, v) == NK_ConstantPathNode && nt_ref(nt, v, "parent") >= 0) {
