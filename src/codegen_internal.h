@@ -430,6 +430,9 @@ typedef struct {
 enum { SPX_ID, SPX_HANDLE, SPX_IDENT };
 enum { SFD_OWN = 1 };
 int emit_str_form(Compiler *c, int v, int role, int face, unsigned dest, StrForm *sf);
+/* Node v, a String, boxed in the plan's form for the taker of a dispatch's
+   answer (codegen_str.c): the handle's box where the plan gives the handle. */
+void emit_str_form_box(Compiler *c, int v, Buf *b);
 /* A write in value position (a local's whose slot is a String buffer, any
    other whose slot holds the shared handle) as the handle it writes, into
    out; 0, writing nothing, for any other node. */
@@ -2068,6 +2071,8 @@ int exc_message_boxed_call(Compiler *c, int v);
 void emit_exc_text_handle(Compiler *c, int v, const char *e, Buf *b);
 void emit_boxed_operand(Compiler *c, const int *argv, int argc, int k, Buf *b);
 int operand_may_change_string(Compiler *c, int n);
+/* Does the program give a Hash a default block anywhere? Only such a Hash runs code on a missing key. */
+int prog_has_hash_default_block(Compiler *c);
 int call_publishes_shared_handle(Compiler *c, int v);
 int emit_reader_override_handle(Compiler *c, int id, int cid, const char *name, const char *selfptr,
                                 const char *reader, int boxed, Buf *b);

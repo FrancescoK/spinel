@@ -201,14 +201,19 @@ static int str_handle_by_kind(Compiler *c, int v, int form, unsigned dest, StrFo
    (strbuf_self_route_slot), an attribute assignment the rule shares or a
    bang or freeze over one (strbuf_assign_route), a String clamp
    (strbuf_route_clamp), a spliced yield whose block's tail is held
-   (strbuf_yield_tail_held)? Any other route makes a handle around a
-   String that has none where it runs, which would be another object. */
+   (strbuf_yield_tail_held), a String that answers an empty receiver itself
+   and else a new one (BSH_EMPTY_SELF: capitalize)? Any other route makes a
+   handle around a String that has none where it runs, which would be
+   another object. */
 static int str_route_names_handle(Compiler *c, int v) {
   Buf ref; memset(&ref, 0, sizeof ref);
   int up = 0, ops[3];
   int named = strbuf_self_route_slot(c, v, &up, &ref);
   free(ref.p);
-  return named || strbuf_assign_route(c, v) ||
+  int w = unwrap_parens(c, v);
+  int empty_self = w >= 0 && nt_kind(c->nt, w) == NK_CallNode && nt_str(c->nt, w, "name") &&
+                   bop_share_named(TY_STRING, nt_str(c->nt, w, "name")) == BSH_EMPTY_SELF && strbuf_value_route(c, w);
+  return empty_self || named || strbuf_assign_route(c, v) ||
          strbuf_route_clamp(c, v, ops) ||
          (nt_kind(c->nt, unwrap_parens(c, v)) == NK_YieldNode && strbuf_yield_tail_held(c));
 }
@@ -386,6 +391,49 @@ static void str_identity_operand_form(Compiler *c, int v, StrForm *sf) {
 static void str_identity_box_text(const StrForm *sf, const char *e, Buf *b) {
   if (sf->cty == TY_POLY) buf_puts(b, e);
   else buf_printf(b, sf->cty == TY_STRBUF ? "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)" : "sp_box_str(%s)", e);
+}
+
+/* Node v, a String, as the box a dispatch answers it in (an arm of a
+   dynamic send, whose answer the caller keeps): where the plan gives the
+   handle for the taker, the box of what its producer holds, as the
+   identity face renders it (emit_str_form's SPX_IDENT: the handle a
+   target holds or publishes, a call's published handle else its String);
+   any other form is emit_boxed's. The handle's box is the String itself,
+   so a change through the answer reaches the String the target holds,
+   where its bytes boxed were a copy. */
+void emit_str_form_box(Compiler *c, int v, Buf *b) {
+  TyKind t = comp_ntype(c, v);
+  /* (a reader's handle is taken by emit_boxed's route for it: the
+     identity face has no arm for a field read) */
+  if (!c->share_plan || (t != TY_STRING && t != TY_STRBUF) || share_plan_of(c, v, share_plan_role(c, v), NULL).form != SPF_HANDLE ||
+      (share_plan_producer(c, v, NULL) == SPK_READER ||
+       share_plan_producer(c, v, NULL) == SPK_POLY_ARMS)) {
+    emit_boxed(c, v, b);
+    return;
+  }
+  StrForm sf;
+  Buf e;
+  memset(&e, 0, sizeof e);
+  /* (`tap` and `then` with a literal block hand on a handle, which the
+     identity face would take for a box: the handle face, boxed here) */
+  const NodeTable *nt = c->nt;
+  int u = unwrap_parens(c, v), blk = u >= 0 && nt_kind(nt, u) == NK_CallNode ? nt_ref(nt, u, "block") : -1;
+  const char *nm = blk >= 0 ? nt_str(nt, u, "name") : NULL;
+  if (nm && nt_kind(nt, blk) == NK_BlockNode && (is_then_alias(nm) || is_tap_name(nm))) {
+    emit_str_form(c, v, share_plan_role(c, v), SPX_HANDLE, 0, &sf);
+    str_form_settle(c, &sf, &e);
+    buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", e.p ? e.p : "NULL");
+    str_form_close(&sf, b);
+    str_form_free(&sf);
+    free(e.p);
+    return;
+  }
+  emit_str_form(c, v, share_plan_role(c, v), SPX_IDENT, 0, &sf);
+  str_form_settle(c, &sf, &e);
+  str_identity_box_text(&sf, e.p ? e.p : "NULL", b);
+  str_form_close(&sf, b);
+  str_form_free(&sf);
+  free(e.p);
 }
 
 /* --share-strings: `x.equal?(y)` where a side is a String: both operands

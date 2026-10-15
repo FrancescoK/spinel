@@ -1566,7 +1566,7 @@ int strbuf_self_route_slot(Compiler *c, int v, int *uplus, Buf *out) {
      too. Ask the builtin's return fact before accepting a freeze-family
      name; frozen? returns a Boolean. */
   int recv = nt_ref(nt, v, "receiver");
-  if (x < 0 && recv >= 0 && argc == 0 && nt_ref(nt, v, "block") < 0 &&
+  if (x < 0 && recv >= 0 && argc == 0 && (nt_ref(nt, v, "block") < 0 || nt_int(nt, v, "dyn_arm", 0)) &&
       comp_recv_type(c, recv) == TY_STRING && cplan_user(c, v)->dispatch == CP_NONE &&
       (is_receiver_conversion(nm) ||
        (is_freeze_family(nm) && (bop_answers_self(TY_STRING, nm, 0, 0) & BOPF_SELF)))) {

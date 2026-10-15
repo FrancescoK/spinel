@@ -330,7 +330,7 @@ int repr_string_conversion_operand(Compiler *c, int v) {
   if (!repr_share_rule(c) || v < 0 || nt_kind(c->nt, v) != NK_CallNode) return -1;
   int r = nt_ref(c->nt, v, "receiver");
   return r >= 0 && is_receiver_conversion(nt_str(c->nt, v, "name")) &&
-         call_plain_argc(c, v) == 0 && nt_ref(c->nt, v, "block") < 0 &&
+         call_plain_argc(c, v) == 0 && (nt_ref(c->nt, v, "block") < 0 || nt_int(c->nt, v, "dyn_arm", 0)) &&
          comp_recv_type(c, r) == TY_STRING && cplan_user(c, v)->dispatch == CP_NONE ? r : -1;
 }
 /* ENV copies its stored bytes, but a store answers its value operand.

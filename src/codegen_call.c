@@ -3996,6 +3996,10 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
   int args = nt_ref(nt, id, "arguments");
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   if (argc < 1 || !argv) return 0;
+  /* a `&.` send answers nil for a nil receiver: its guard
+     (emit_call_safe_nav_arms) passes the call on past the nil test, and the
+     dispatch is emitted then */
+  if (sn_guard_pending(c, id)) return 0;
   /* An arm that reaches a yielding method expands it here, and that body
      may hold this very send (`def fwd(m, &blk) = send(m, &blk)` naming
      fwd among its candidates): the expansion re-entered this dispatch
@@ -4009,21 +4013,66 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
   int t = ++g_tmp, recv = nt_ref(nt, id, "receiver"), sv_nargov = g_n_argov;
   TyKind rt = recv >= 0 ? repr_of(c, recv).as_ty : TY_UNKNOWN;
   buf_puts(b, "({ ");
+  int recv_held = 0;
+  /* a receiver evaluated into a local for the arms (desugar_dynamic_send)
+     runs first inside this expression, then the name, and the statements
+     either puts ahead of its value stay here: left in the statement ahead of
+     this one, they ran where the send does not, or out of order */
+  int dsr = g_pre && nt_int(nt, recv, "dsr_recv", 0);
+  Buf *outer_pre = g_pre, rpre, npre, nb;
+  memset(&rpre, 0, sizeof rpre); memset(&npre, 0, sizeof npre); memset(&nb, 0, sizeof nb);
   if (rt != TY_UNKNOWN && rt != TY_VOID && subtree_has_side_effect(c, recv) && g_n_argov < MAX_ARG_OVERRIDE) {
     int tr = ++g_tmp;
+    recv_held = 1;
+    Buf hb;
+    memset(&hb, 0, sizeof hb);
+    Buf *hd = dsr ? &hb : b;
+    if (dsr) g_pre = &rpre;
     /* a receiver that can be nil is held with its nil: an arm then raises
        nil's NoMethodError, not the unwrap's TypeError */
     if (oint_kind(rt) && node_is_oint(c, recv)) {
-      buf_printf(b, "%s _t%d = ", oint_ctype(rt), tr); emit_oint_expr(c, recv, rt, b); buf_puts(b, "; ");
+      buf_printf(hd, "%s _t%d = ", oint_ctype(rt), tr); emit_oint_expr(c, recv, rt, hd); buf_puts(hd, "; ");
       view_bind_o(recv, "_t%d", tr);
     }
     else {
-      emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, "; "); emit_gc_root_tmp(c, rt, tr, b);
+      emit_ctype(c, rt, hd); buf_printf(hd, " _t%d = ", tr);
+      size_t hat = hd->len;
+      emit_expr(c, recv, hd);
+      /* (the sequence that set the local the arms read: the receiver ran
+         once, and this value only names it in a NoMethodError) */
+      if (g_share_check && dsr) share_check_declare_reads(hd, hat, recv);
+      buf_puts(hd, "; "); emit_gc_root_tmp(c, rt, tr, hd);
       view_bind(recv, "_t%d", tr);
     }
+    g_pre = outer_pre;
+    if (dsr) {
+      if (rpre.p) buf_puts(b, rpre.p);
+      buf_puts(b, hb.p ? hb.p : "");
+    }
+    free(hb.p);
   }
-  buf_printf(b, "sp_sym _t%d = ", t);
-  emit_dyn_name_sym(c, sym, b);
+  /* (a sequence that is not held still sets the local the arms read) */
+  if (dsr && !recv_held) {
+    Buf eb;
+    memset(&eb, 0, sizeof eb);
+    g_pre = &rpre;
+    emit_expr(c, recv, &eb);
+    g_pre = outer_pre;
+    if (rpre.p) buf_puts(b, rpre.p);
+    buf_printf(b, "(void)(%s); ", eb.p ? eb.p : "0");
+    free(eb.p);
+    free(rpre.p);
+    memset(&rpre, 0, sizeof rpre);
+  }
+  if (dsr) g_pre = &npre;
+  else buf_printf(b, "sp_sym _t%d = ", t);
+  emit_dyn_name_sym(c, sym, dsr ? &nb : b);
+  g_pre = outer_pre;
+  if (dsr) {
+    if (npre.p) buf_puts(b, npre.p);
+    buf_printf(b, "sp_sym _t%d = %s", t, nb.p ? nb.p : "(sp_sym)-1");
+  }
+  free(rpre.p); free(npre.p); free(nb.p);
   buf_printf(b, "; sp_RbVal _r%d; ", t);
   Buf *sv_pre = g_pre;
   for (int k = 0; k < narm; k++) {
@@ -4073,9 +4122,19 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
     /* an arm answering an Integer or Float that may be nil boxes its oint:
        unwrapped first, its nil raised TypeError where the send answers nil */
     int arm_oint = !self_ret && oint_kind(at) && node_may_be_nil(c, arm);
+    /* --share-strings: an arm answering a String the plan gives the handle
+       is boxed as that handle (the one the target holds or publishes), as
+       a direct call of the method is: its bytes boxed were a copy, and a
+       change through the answer missed the target's String. One the plan
+       wraps (a new String, a literal) is boxed as the new handle it is, so
+       the answer's copies name one String. */
+    int arm_form = !self_ret && c->share_plan && (at == TY_STRING || at == TY_STRBUF)
+                   ? share_plan_of(c, arm, share_plan_role(c, arm), NULL).form : SPF_BYTES;
+    int arm_str = arm_form == SPF_HANDLE || arm_form == SPF_WRAP;
     if (setjmp(g_unsup_recover) == 0) {
       if (self_ret) emit_strbuf_handle_of(c, arm, &body);
       else if (arm_oint) emit_oint_expr(c, arm, at, &body);
+      else if (arm_str) emit_str_form_box(c, arm, &body);
       else emit_expr(c, arm, &body);
       ok = 1;
     }
@@ -4086,6 +4145,10 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
     g_unsup_probe = sv_probe;
     memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
     g_pre = sv_pre;
+    /* the receiver's bytes an arm that does not answer its String reads
+       are a read, not a copy: one node stands for the receiver of every arm,
+       and the check would report the first arm that reads it */
+    if (ok && g_share_check && !arm_str && body.p) share_check_declare_reads(&body, 0, nt_ref(nt, arm, "receiver"));
     if (ok) {
       /* the arm's name as the compile-time symbol it is, the way a literal
          `:name` is emitted: interning it here cost a table probe per arm per
@@ -4094,6 +4157,7 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
       if (pre.p && pre.len) buf_puts(b, pre.p);
       buf_printf(b, "_r%d = ", t);
       if (arm_oint) buf_printf(b, "%s(%s)", oint_box(at), body.p ? body.p : "sp_oint_nil()");
+      else if (arm_str) buf_puts(b, body.p ? body.p : "sp_box_nil()");
       else emit_boxed_text(c, self_ret ? TY_STRBUF : at, body.p ? body.p : "0", b);
       buf_puts(b, "; }\nelse ");
     }
@@ -4101,7 +4165,13 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
   }
   if (mo) {
     buf_printf(b, "{ sp_raise_cls(\"NameError\", sp_sprintf(\"undefined method '%%s' for class '%%s'\", sp_sym_to_s(_t%d), sp_poly_class_name(", t);
-    emit_boxed(c, recv, b);
+    if (recv_held) {
+      /* (the receiver is named in the message only: its bytes are a read) */
+      size_t at = b->len;
+      emit_boxed(c, recv, b);
+      if (g_share_check) share_check_declare_reads(b, at, recv);
+    }
+    else emit_str_form_box(c, recv, b);
     buf_printf(b, "))); _r%d = sp_box_nil(); } _r%d; })", t, t);
   }
   /* a name no candidate answers is CRuby's NoMethodError naming the
@@ -4109,7 +4179,13 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
      a receiver with side effects was read once into its temp above */
   else if (recv >= 0) {
     buf_printf(b, "{ sp_raise_nomethod(sp_nomethod_msg(sp_sym_to_s(_t%d), ", t);
-    emit_boxed(c, recv, b);
+    if (recv_held) {
+      /* (the receiver is named in the message only: its bytes are a read) */
+      size_t at = b->len;
+      emit_boxed(c, recv, b);
+      if (g_share_check) share_check_declare_reads(b, at, recv);
+    }
+    else emit_str_form_box(c, recv, b);
     buf_printf(b, ")); _r%d = sp_box_nil(); } _r%d; })", t, t);
   }
   else buf_printf(b, "{ sp_raise_cls(\"NoMethodError\", sp_sprintf(\"undefined method '%%s'\", sp_sym_to_s(_t%d))); _r%d = sp_box_nil(); } _r%d; })", t, t, t);
@@ -21534,7 +21610,7 @@ int subtree_is_plain_value(Compiler *c, int id) {
 
 /* Does the program give a Hash a default block anywhere (`Hash.new { }`,
    `default_proc=`)? Only such a Hash runs code on a missing key. */
-static int prog_has_hash_default_block(Compiler *c) {
+int prog_has_hash_default_block(Compiler *c) {
   static const Compiler *memo_c; static int memo;
   if (memo_c == c) return memo;
   memo_c = c; memo = 0;
@@ -22021,6 +22097,10 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   if (repr_share_rule(c) && sn_guard_pending(c, id) && nt_ref(nt, id, "receiver") >= 0 &&
       strbuf_self_route(c, nt_ref(nt, id, "receiver")))
     return 0;
+  /* a `&.` send tests its receiver for nil ahead of the name and the
+     arguments, which the guard (emit_call_safe_nav_arms) orders inside it
+     when it passes the call on */
+  { int dn = 0; nt_arr(nt, id, "dyn_send_arms", &dn); if (dn > 0 && sn_guard_pending(c, id)) return 0; }
   int hroute = 0;
   if (harg < 0 && repr_share_rule(c)) {
     int sr = nt_ref(nt, id, "receiver");

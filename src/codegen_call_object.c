@@ -1844,6 +1844,156 @@ static int emit_safe_nav_route_hold(Compiler *c, int id, int recv, const char *n
   free(vb.p);
   return 1;
 }
+/* Does subtree n provably run no code of the program's, and assign no
+   variable named `nm` of the kind of read node `rk` (any local, instance,
+   class or global variable)? A whitelist: literals, variable reads, the
+   statements, conditions and array literals around them, an interpolation of
+   plain values, and a call of a builtin on plain values -- a receiver and
+   arguments that pass ty_runs_no_code, no block, no name the program
+   defines, none that dispatches by name (send, method, the reflective
+   setters). Anything else may run a user method (to_s, ===, ==, <=>, inspect,
+   a setter, method_missing, a proc) that reassigns a variable with no
+   assignment in sight. */
+static int sn_reflective_name(const char *nm) {
+  static const char *const names[] = {
+    "send", "public_send", "__send__", "method", "public_method", "instance_variable_set",
+    "class_variable_set", "instance_eval", "instance_exec", "class_eval", "module_eval", "class_exec",
+    "module_exec", "eval", "binding", "define_method", "const_set", "set_trace_func", "tap", "then",
+    "yield_self", "extend", NULL };
+  for (int i = 0; names[i]; i++) if (sp_streq(nm, names[i])) return 1;
+  return 0;
+}
+/* Does the program give a builtin class, or Object, Kernel or Comparable, a
+   method named nm? A call of a builtin on plain values runs it then. */
+static int sn_builtin_reopened_defines(Compiler *c, const char *nm) {
+  for (int k = 0; k < c->nclasses; k++) {
+    const char *cn = c->classes[k].name;
+    if (!cn || !(is_builtin_reopen(cn) || is_builtin_method_host_name(cn))) continue;
+    if (comp_method_in_chain(c, k, nm, NULL) >= 0 || comp_reader_in_chain(c, k, nm, NULL)) return 1;
+  }
+  return 0;
+}
+static int sn_runs_no_code(Compiler *c, int n, NodeKind rk, const char *nm, int *wrote) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 1;
+  switch (nt_kind(nt, n)) {
+    case NK_NilNode: case NK_TrueNode: case NK_FalseNode: case NK_IntegerNode: case NK_FloatNode:
+    case NK_SymbolNode: case NK_StringNode: case NK_SelfNode: case NK_LocalVariableReadNode:
+    case NK_InstanceVariableReadNode: case NK_ClassVariableReadNode: case NK_GlobalVariableReadNode:
+    case NK_ConstantReadNode:
+      return 1;
+    case NK_StatementsNode: case NK_ParenthesesNode: case NK_IfNode: case NK_UnlessNode:
+    case NK_ElseNode: case NK_AndNode: case NK_OrNode: case NK_ArrayNode:
+      break;
+    case NK_LocalVariableWriteNode: case NK_LocalVariableOperatorWriteNode: case NK_LocalVariableOrWriteNode:
+    case NK_LocalVariableAndWriteNode:
+    case NK_InstanceVariableWriteNode: case NK_InstanceVariableOperatorWriteNode: case NK_InstanceVariableOrWriteNode:
+    case NK_ClassVariableWriteNode: case NK_ClassVariableOperatorWriteNode: case NK_ClassVariableOrWriteNode:
+    case NK_GlobalVariableWriteNode: case NK_GlobalVariableOperatorWriteNode: case NK_GlobalVariableOrWriteNode: {
+      /* (a write of the receiver's own variable: the read is not the String the call has) */
+      const char *wn = nt_str(nt, n, "name");
+      NodeKind wk = nt_kind(nt, n);
+      int same = rk == NK_LocalVariableReadNode ? (wk == NK_LocalVariableWriteNode || wk == NK_LocalVariableOperatorWriteNode ||
+                                                   wk == NK_LocalVariableOrWriteNode || wk == NK_LocalVariableAndWriteNode)
+               : rk == NK_InstanceVariableReadNode ? (wk == NK_InstanceVariableWriteNode || wk == NK_InstanceVariableOperatorWriteNode ||
+                                                      wk == NK_InstanceVariableOrWriteNode)
+               : rk == NK_ClassVariableReadNode ? (wk == NK_ClassVariableWriteNode || wk == NK_ClassVariableOperatorWriteNode ||
+                                                   wk == NK_ClassVariableOrWriteNode)
+               : (wk == NK_GlobalVariableWriteNode || wk == NK_GlobalVariableOperatorWriteNode ||
+                  wk == NK_GlobalVariableOrWriteNode);
+      if (same && (!wn || !nm || sp_streq(wn, nm))) { *wrote = 1; return 0; }
+      break;
+    }
+    case NK_InterpolatedStringNode: {
+      int pn = 0; const int *ps = nt_arr(nt, n, "parts", &pn);
+      for (int i = 0; i < pn; i++) {
+        if (nt_kind(nt, ps[i]) == NK_StringNode) continue;
+        if (nt_kind(nt, ps[i]) != NK_EmbeddedStatementsNode) return 0;
+        int body = nt_ref(nt, ps[i], "statements"), bn = 0;
+        const int *bv = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+        if (!sn_runs_no_code(c, body, rk, nm, wrote) || bn < 1 || !ty_runs_no_code(comp_ntype(c, bv[bn - 1]))) return 0;
+      }
+      return 1;
+    }
+    case NK_CallNode: {
+      const char *cn = nt_str(nt, n, "name");
+      int recv = nt_ref(nt, n, "receiver"), alloc = 0;
+      if (nt_ref(nt, n, "block") >= 0) return 0;
+      /* (an element read of a variable or constant, `names[0]`, runs the program's
+         `[]` or a Hash's default block only when there is one) */
+      int plain = call_is_scalar_op(c, n) || call_is_field_read(c, n, &alloc) ||
+                  (cn && is_aref_name(cn) && recv >= 0 &&
+                   (nt_kind(nt, recv) == NK_LocalVariableReadNode || nt_kind(nt, recv) == NK_InstanceVariableReadNode ||
+                    nt_kind(nt, recv) == NK_GlobalVariableReadNode || nt_kind(nt, recv) == NK_ConstantReadNode) &&
+                   !any_class_defines(c, "[]") && !prog_has_hash_default_block(c));
+      if (!plain && (!cn || recv < 0 || sn_reflective_name(cn) || !ty_runs_no_code(comp_ntype(c, recv)) ||
+                     comp_method_index(c, cn) >= 0 || sn_builtin_reopened_defines(c, cn)))
+        return 0;
+      int a = nt_ref(nt, n, "arguments"), ac = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+      if (!sn_runs_no_code(c, recv, rk, nm, wrote)) return 0;
+      for (int i = 0; i < ac; i++) {
+        NodeKind ak = nt_kind(nt, av[i]);
+        if (!plain && (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode ||
+                       !ty_runs_no_code(comp_ntype(c, av[i]))))
+          return 0;
+        if (!sn_runs_no_code(c, av[i], rk, nm, wrote)) return 0;
+      }
+      return 1;
+    }
+    default:
+      return 0;
+  }
+  for (int i = 0; i < nt_num_refs(nt, n); i++)
+    if (!sn_runs_no_code(c, nt_ref_at(nt, n, i), rk, nm, wrote)) return 0;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) if (!sn_runs_no_code(c, ids[j], rk, nm, wrote)) return 0;
+  }
+  return 1;
+}
+
+/* The String receiver `recv` of the `&.` call id, whose arguments can change
+   a String in place (operand_may_change_string, or a proc): CRuby evaluates
+   the receiver first, and the call sees the change. When the receiver is a
+   variable and the arguments provably run no code of the program's and do
+   not assign it (sn_runs_no_code), the result is 1: the call reads the
+   variable again after them, where the guard's bytes were read before. Code
+   that does run (a to_s, a setter, a proc) can reassign the variable with no
+   assignment in sight, and then the call keeps the guard's bytes, as it did;
+   a computed-name send is left to the operand order it had before its guard
+   (3): that binds a state read ahead of an argument that can reassign it, and
+   reads a local after a method that changes its parameter in place. 2 under --share-strings when the
+   receiver is a call publishing a shared handle: the guard holds that handle,
+   which is the receiver whatever the arguments run, and the call reads its
+   String after them. Otherwise 0 (in the default build a call's String answer
+   has no variable to read again). */
+static int sn_args_run_late(Compiler *c, int id, int recv) {
+  const NodeTable *nt = c->nt;
+  int argc = 0;
+  const int *argv = call_args(nt, id, &argc);
+  int chg = 0, nd = 0;
+  nt_arr(nt, id, "dyn_send_arms", &nd);
+  for (int i = 0; i < argc; i++) {
+    if (nt_kind(nt, argv[i]) == NK_BlockArgumentNode) continue;
+    /* (a proc an argument calls can change it; a send's name is a symbol
+       read, which runs none unless it changes a String itself) */
+    chg |= operand_may_change_string(c, argv[i]) || (!(nd && i == 0) && subtree_may_run_proc(c, argv[i]));
+  }
+  if (!chg) return 0;
+  NodeKind k = nt_kind(nt, recv);
+  if (k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_ClassVariableReadNode ||
+      k == NK_GlobalVariableReadNode) {
+    const char *vn = nt_str(nt, recv, "name");
+    int plain = 1, wrote = 0;
+    for (int i = 0; i < argc && plain; i++) plain = sn_runs_no_code(c, argv[i], k, vn, &wrote);
+    if (plain) return 1;
+    /* (an assignment the arguments make themselves leaves the call on the
+       String it had) */
+    return nd && !wrote ? 3 : 0;
+  }
+  return repr_share_rule(c) && call_publishes_shared_handle(c, recv) ? 2 : 0;
+}
 /* safe navigation (&.): a nil receiver answers nil, any other the call, guarded by a nil test */
 int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv) {
   /* Safe navigation &. : nil receiver -> return nil/0; non-nil -> emit conditional */
@@ -2106,9 +2256,26 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
            receiver again */
         int sn_hold = repr_share_rule(c) && rrt == TY_STRING && !sn_obj && !sn_scalar && !sn_cont &&
                       strbuf_self_route(c, recv);
+        /* arguments that run code, which a String receiver's change in
+           place must reach (sn_args_run_late) */
+        int sn_late = rrt == TY_STRING && !sn_obj && !sn_scalar && !sn_cont && !sn_hold ? sn_args_run_late(c, id, recv) : 0;
         int tsh = -1;
         Buf rsn; memset(&rsn, 0, sizeof rsn);
-        if (sn_hold) {
+        if (sn_late == 2) {
+          /* the handle the receiver publishes, run once here and read
+             after the arguments */
+          Buf hb; memset(&hb, 0, sizeof hb);
+          if (emit_strbuf_route(c, recv, &hb)) {
+            tsh = ++g_tmp;
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", tsh, hb.p, tsh);
+            buf_printf(&rsn, "_t%d ? sp_strbuf_read_pub(_t%d) : (const char *)NULL", tsh, tsh);
+          }
+          else sn_late = 0;
+          free(hb.p);
+        }
+        if (sn_late == 2) {}
+        else if (sn_hold) {
           tsh = ++g_tmp;
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "sp_String *_t%d = ", tsh);
@@ -2160,7 +2327,15 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           /* the guard proved the scalar non-nil: the re-entry reads its plain
              value (a view-bound node takes no oint wrapper either way) */
           int slot2 = g_n_argov;
-          if (sn_hold) ran_first_bind(recv, tsb, tsh);
+          /* the arguments that run code run first, into their temps, and
+             the receiver is read after them: a variable again, a held
+             handle as its String */
+          int sn_base = g_n_argov, sn_argc = 0;
+          const int *sn_argv = call_args(nt, id, &sn_argc);
+          if (sn_late == 1 || sn_late == 2) emit_args_before(c, sn_argv, sn_argc, NULL, 0, &preb2);
+          if (sn_late == 2) ran_first_bind_read(recv, tsh);
+          else if (sn_late) {}
+          else if (sn_hold) ran_first_bind(recv, tsb, tsh);
           else slot2 = sn_scalar ? view_bind(recv, "_snv%d", tsn2) : view_bind(recv, "_sn%d", tsn2);
           int sv_skip = g_sn_skip; g_sn_skip = id;
           /* infer_type widened a C bool answer to poly so the nil arm has
@@ -2176,7 +2351,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           if (oint_kind(ret2)) emit_oint_expr(c, id, ret2, &vb); else emit_expr(c, id, &vb);
           if (vw >= 0) view_pop(c, vw);
           g_sn_skip = sv_skip;
-          view_unbind(g_n_argov - 1);
+          view_unbind(sn_base);
           if (sn_box) emit_boxed_text(c, nat2, vb.p ? vb.p : "", &vbs);
           else buf_puts(&vbs, vb.p ? vb.p : "");
           free(vb.p);

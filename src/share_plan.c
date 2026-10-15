@@ -721,6 +721,15 @@ static void share_plan_role_mark(Compiler *c, int n, int role) {
   while (n >= 0 && n < c->share_plan_n) {
     c->share_plan[n] = (unsigned char)((c->share_plan[n] & SPM_NEED) | (role << SPM_ROLE_SHIFT));
     NodeKind k = nt_kind(nt, n);
+    /* a dynamic send's value is the value of the arm the name selects: the
+       arms have the send's consumer */
+    if (k == NK_CallNode) {
+      int na = 0;
+      const int *arms = nt_arr(nt, n, "dyn_send_arms", &na);
+      for (int i = 0; i < na; i++)
+        if (arms[i] >= 0 && arms[i] < c->share_plan_n)
+          c->share_plan[arms[i]] = (unsigned char)((c->share_plan[arms[i]] & SPM_NEED) | (role << SPM_ROLE_SHIFT));
+    }
     if (k == NK_ParenthesesNode) n = nt_ref(nt, n, "body");
     else if (k == NK_StatementsNode) {
       int bn = 0;
@@ -921,6 +930,12 @@ static int share_plan_box_kept(Compiler *c, int v) {
       v = p;
       continue;
     }
+    /* an arm of a dynamic send (dyn_send_arms) is the send's value when
+       the name selects it: its consumer decides */
+    case NK_CallNode:
+      if (!nt_int(nt, v, "dyn_arm", 0)) return 0;
+      v = p;
+      continue;
     default:
       return 0;
     }
