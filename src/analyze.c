@@ -17443,13 +17443,14 @@ static int strbuf_promote_ivar(Compiler *c, int cid, const char *nm) {
   tc->ivar_str_shared[ti] = 1;
   ivar_set_type(ci, iv, TY_STRBUF);
   ci->ivar_str_shared[iv] = 1;
-  /* Under the share rule the inherited field has this representation in
-     every descendant, including one with no ivar node of its own (and so
-     no share holder). sh_ivar already joins a child's holder to its
-     ancestor's; carry the promotion to the passive copies of that slot.
-     Below an ancestor the promotion reached, every build does: the
-     classes beside cid inherit the ancestor's layout. */
-  if (c->share_strings || top != cid) {
+  /* The inherited field has this representation in every descendant,
+     including one with no ivar node of its own (and so no share holder):
+     the ancestor's methods reach it through their own struct, in either
+     build. sh_ivar already joins a child's holder to its ancestor's; carry
+     the promotion to the passive copies of that slot. A subclass
+     constructed alone (`B.new(buf)` with A's methods appending to the
+     slot) was left a value slot and its layout refused. */
+  {
     int nk = 0;
     const int *ks = comp_descendants(c, top, &nk);
     for (int k = 0; k < nk; k++) {
@@ -24780,7 +24781,7 @@ static void an_call_targets_of(Compiler *c, int u, ACallTargets *t) {
   /* asked of THIS class, not the whole program: a dynamic `new` elsewhere only
      matters where its shape could construct this one */
   if (an_class_dynamic_new_risk(c, cid)) return;
-  int mi = comp_method_in_class(c, cid, "initialize");
+  int mi = comp_method_in_chain(c, cid, "initialize", NULL);
   if (mi < 0 || mi >= c->nscopes) return;
   Scope *m2 = &c->scopes[mi];
   if (!m2->name || m2->class_id < 0 || m2->is_cmethod) return;
@@ -25436,7 +25437,7 @@ static int an_call_targets_scope(Compiler *c, int u, int mi2, Scope *m2) {
   /* the same per-class question an_call_targets_of asks, at the same point:
      the two answer for the same set or the index and the predicate diverge */
   if (an_class_dynamic_new_risk(c, cid)) return 0;
-  return comp_method_in_class(c, cid, "initialize") == mi2;
+  return comp_method_in_chain(c, cid, "initialize", NULL) == mi2;
 }
 
 /* The parameter twin of narrow_locals_from_arrays.
