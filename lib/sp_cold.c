@@ -1664,7 +1664,7 @@ sp_int sp_file_write(const char *path, const char *data) {SP_GC_ROOT_STR(path);S
    Kernel#system's is. */
 const char *sp_backtick(const char *cmd) {SP_GC_ROOT_STR(cmd);
   int fds[2];
-  if (pipe(fds) != 0) { sp_last_status = -1; return sp_str_empty; }
+  if (sp_io_make_pipe(fds) != 0) { sp_last_status = -1; return sp_str_empty; }
   fflush(NULL);
 #if defined(_WIN32)
   /* posix_spawn where there is no fork (see sp_process.c) */
@@ -1685,6 +1685,7 @@ const char *sp_backtick(const char *cmd) {SP_GC_ROOT_STR(cmd);
   if (pid == 0) {
     close(fds[0]);
     if (fds[1] != 1) { dup2(fds[1], 1); close(fds[1]); }
+    else fcntl(1, F_SETFD, 0);
     execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
     _exit(127);
   }
