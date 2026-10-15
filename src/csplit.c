@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include "csplit.h"
 
 typedef enum { IT_HDR, IT_FN, IT_VAR, IT_PROTO, IT_MARK } ItemKind;
@@ -670,8 +671,17 @@ int c_split(const char *pre_path, const char *out_dir, int nparts,
         break;
     }
   }
-  fclose(h);
-  for (int p = 0; p < nparts; p++) fclose(pf[p]);
+  /* a write that failed (a full disk) leaves a truncated header or part,
+     which would compile into errors that name no cause: the split is
+     abandoned instead, saying why (#9267) */
+  int bad = ferror(h) | (fclose(h) != 0);
+  const char *bad_path = bad ? hdr_path : NULL;
+  for (int p = 0; p < nparts; p++)
+    if ((ferror(pf[p]) | (fclose(pf[p]) != 0)) && !bad_path) bad_path = part_paths[p];
   free(op); free(pf); free(t); free(it); free(inl);
+  if (bad_path) {
+    fprintf(stderr, "spinel: writing %s failed (%s); compiling the C as one unit instead\n", bad_path, strerror(errno));
+    return -1;
+  }
   return nparts;
 }

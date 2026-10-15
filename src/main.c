@@ -345,7 +345,11 @@ static int refuse_log_overwrite(const char *path) {
 static int cc_split_build(const char *cmd, size_t src_at, size_t src_end,
                           const char *c_path, int jobs) {
   if (jobs > 64) jobs = 64;
-  char dir[] = "/tmp/spinel_split_XXXXXX";
+  /* the scratch goes where TMPDIR says, /tmp by default: a large program's
+     preprocessed unit and parts take several GB (#9267) */
+  const char *tmpd = getenv("TMPDIR");
+  char dir[4096];
+  snprintf(dir, sizeof dir, "%s/spinel_split_XXXXXX", tmpd && *tmpd ? tmpd : "/tmp");
   if (!mkdtemp(dir)) return -1;
   char flags[16384];
   if (src_at >= sizeof flags) return -1;
