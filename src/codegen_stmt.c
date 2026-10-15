@@ -20281,7 +20281,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
   else if (g_result_var && !g_result_poly && !is_subst && vty == TY_UNKNOWN &&
            (ty_is_array(g_result_ty) || ty_is_hash(g_result_ty)) &&
            emit_empty_container_for_slot(c, id, g_result_ty, b)) { }
-  /* A boxed call value feeding a typed result slot (an inlined method whose
+  /* A boxed value feeding a typed result slot (an inlined method whose
      tail forwards its block into a builtin answering boxed) is unboxed into
      it, as a return slot's is, not dropped for the slot's nil below. So is a
      boxed yield into a literal block whose own value is boxed: the block's
@@ -20290,8 +20290,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
      with a concrete value splices it as that type, and a forwarded proc's
      yield answers the slot's type already.) */
   else if (g_result_var && !g_result_poly && !is_subst && vty == TY_POLY &&
-           (sp_streq(ty, "CallNode") ||
-            (sp_streq(ty, "YieldNode") && yield_block_value_boxed(c))) &&
+           (!sp_streq(ty, "YieldNode") || yield_block_value_boxed(c)) &&
            g_result_ty != TY_UNKNOWN &&
            g_result_ty != TY_VOID && g_result_ty != TY_NIL)
     emit_unbox_node(c, g_result_ty, id, b);
