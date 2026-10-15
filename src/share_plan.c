@@ -427,7 +427,7 @@ static int share_plan_block_ok(Compiler *c, int v, int depth) {
     int mi = strbuf_inline_mi(c, u), last = mi > 0 ? scope_body_last(c, mi) : -1;
     int bl = block_given_tail_then_last(c, last);
     if (bl >= 0) last = bl;
-    if (last >= 0 && nt_kind(nt, last) != NK_YieldNode) return 1;
+    if (last >= 0 && !strbuf_tail_answers_block(c, mi, last, 0)) return 1;
   }
   return share_plan_body_ok(c, body, NK_NextNode, 0, depth);
 }
