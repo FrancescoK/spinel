@@ -8101,7 +8101,19 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      class-typed receiver. */
   if (recv >= 0 && argc == 1 && rt == TY_POLY && infer_type(c, argv[0]) == TY_CLASS &&
       (is_cmp_op(name) || sp_streq(name, "<=>"))) return TY_POLY;
-  { TyKind rr; if (infer_poly_call(c, id, rt, &rr)) return an_class_concrete(c, id, name, rr); }
+  /* A class method of the name reachable through a Class value the box
+     holds meets the builtin's Array answer in the boxed Array, which the
+     dispatch's builtin arm fills (#9192). Any other disagreement leaves the
+     answer as it is: the String shortcuts a boxed receiver takes
+     (`sp_str_sub(sp_poly_recv_s(...))`) build no class arm, and a call they
+     answered as a String was widened to a box they did not fill
+     (campfire's `options.fetch(:protocol, "http").sub("://", "")` beside a
+     seeded `Params.sub`). */
+  { TyKind rr;
+    if (infer_poly_call(c, id, rt, &rr)) {
+      TyKind w = an_class_concrete(c, id, name, rr);
+      return w == TY_POLY_ARRAY && ty_is_array(rr) ? w : rr;
+    } }
   /* bool/nil <=> : 0 for an equal immediate pair, nil otherwise (#2733) */
   if (recv >= 0 && argc == 1 && sp_streq(name, "<=>") &&
       (rt == TY_BOOL || rt == TY_NIL)) return TY_POLY;
