@@ -210,6 +210,8 @@ int is_self_copy(const char *n) {
          sp_streq(n, "itself");
 }
 
+int is_step_call(const char *n) { return sp_streq(n, "step"); }
+
 int is_int_step(const char *n) {
   return sp_streq(n, "times") || sp_streq(n, "upto") || sp_streq(n, "downto");
 }

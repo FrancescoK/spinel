@@ -319,7 +319,7 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
      same store once the value is seen to be an exception, the NoMethodError
      otherwise. Not where a program class defines the name. */
   if (argc == 1 && sp_streq(name, "set_backtrace") && recv >= 0 &&
-      comp_ntype(c, recv) == TY_POLY && nt_ref(nt, id, "block") < 0) {
+      repr_of(c, recv).as_ty == TY_POLY && nt_ref(nt, id, "block") < 0) {
     int pu = 0;
     for (int k = 0; k < c->nclasses && !pu; k++)
       if (comp_method_in_class(c, k, name) >= 0) pu = 1;
@@ -341,13 +341,14 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
      class defines the name (which would need the poly method dispatch)
      (#3120, #3122). That dispatch's builtin default arm, for a receiver
      none of those classes own, lands here too. */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_POLY && argc == 0 &&
+  if (recv >= 0 && argc == 0 &&
       nt_ref(nt, id, "block") < 0 &&
       (sp_streq(name, "message") || sp_streq(name, "result") ||
        sp_streq(name, "errno") ||
        sp_streq(name, "key") || sp_streq(name, "receiver") ||
        sp_streq(name, "backtrace") || sp_streq(name, "cause") ||
-       sp_streq(name, "full_message") || sp_streq(name, "detailed_message"))) {
+       is_exception_full_message(name)) &&
+      repr_of(c, recv).as_ty == TY_POLY) {
     int pu = 0;
     for (int k = 0; k < c->nclasses && !pu; k++)
       if (comp_method_in_class(c, k, name) >= 0 ||
@@ -663,7 +664,7 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       /* ...or a Class value (`e.is_a?(klass)`), by the name the class
          carries; a value that is no Class or Module (nil, or a boxed
          String) is CRuby's TypeError */
-      TyKind kt = comp_ntype(c, argv[0]);
+      TyKind kt = repr_of(c, argv[0]).as_ty;
       if (cn || kt == TY_CLASS || kt == TY_POLY) {
         Buf rb = {0}, kb = {0};
         if (cn) {
