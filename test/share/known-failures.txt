@@ -1,9 +1,3 @@
 # SPINEL_SHARE_STRINGS=1, OPT=-O1, macOS, Apple clang 21.
 # Names are those printed by make test; remove an entry when it passes.
 # Every corpus program passes with sharing on master; add an entry only for a known failure.
-# A String from rexml's Element#text collected into an Array (`.map(&:text)`)
-# is refused under --share-strings: "the String the value of `text` hands on
-# as a block's value a container keeps is shared with another name and
-# changed in place" (#6765).
-pkg.rexml.rexml_elements
-pkg.rexml.rexml_namespaces

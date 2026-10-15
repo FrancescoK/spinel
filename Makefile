@@ -1153,6 +1153,15 @@ endif
 # that breaks one must fail here, not at package-publish time. Targets are
 # namespaced pkg.<package>.<test>.ok to avoid colliding with test/ names.
 PKG_TESTS := $(wildcard packages/*/test/*.rb)
+# Packages whose tests run on demand (`make pkg-ondemand-test`), not in
+# `make test` and so not in the gate or its --share-strings corpus: a large
+# package written in Ruby whose tests would weigh on every gate run (#9199).
+# Run them when the package, or the compiler surface it leans on, changes.
+# Under --share-strings two of rexml's are refused today (#6765: a String of
+# Element#text collected with `.map(&:text)` and changed in place).
+PKG_ONDEMAND := rexml
+PKG_ONDEMAND_TESTS := $(foreach p,$(PKG_ONDEMAND),$(wildcard packages/$(p)/test/*.rb))
+PKG_TESTS := $(filter-out $(PKG_ONDEMAND_TESTS),$(PKG_TESTS))
 # The openssl package is glue over the SYSTEM libssl, so its tests only exist
 # where the headers do -- the object drops out of BUNDLED_NATIVE_OBJS on the
 # same probe, and `require "openssl"` is then an unsatisfiable require.
@@ -1175,6 +1184,12 @@ endif
 endif
 pkg_of = $(word 2,$(subst /, ,$(1)))
 PKG_TEST_TARGETS := $(foreach t,$(PKG_TESTS),$(TEST_RESULT_DIR)/pkg.$(call pkg_of,$(t)).$(notdir $(t:.rb=)).ok)
+PKG_ONDEMAND_TARGETS := $(foreach t,$(PKG_ONDEMAND_TESTS),$(TEST_RESULT_DIR)/pkg.$(call pkg_of,$(t)).$(notdir $(t:.rb=)).ok)
+pkg-ondemand-test: $(PKG_ONDEMAND_TARGETS)
+	@bad=$$(grep -L '^PASS$$' $(PKG_ONDEMAND_TARGETS)); \
+	if [ -n "$$bad" ]; then echo "pkg-ondemand-test: not passing: $$bad"; exit 1; fi; \
+	echo "pkg-ondemand-test: $(words $(PKG_ONDEMAND_TARGETS)) pass ($(PKG_ONDEMAND))"
+.PHONY: pkg-ondemand-test
 
 # Warnings the generated-C -Werror check should not gate on. clang enables
 # -Wunused-value by default (gcc only under -Wall, which the build disables),
