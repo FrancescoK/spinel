@@ -268,7 +268,7 @@ static pthread_cond_t g_stw_release = PTHREAD_COND_INITIALIZER;  /* parked worke
 static pthread_cond_t g_sysmon_cv = PTHREAD_COND_INITIALIZER;    /* the monitor thread waits here */
 static pthread_t      g_sysmon;                                  /* monitor: wakes sleepers + preempts */
 static int            g_sysmon_started = 0;
-static int            g_sysmon_idle = 0; /* monitor is parked on g_sysmon_cv (signal it to start ticking) */
+static int            g_sysmon_idle = 0; /* monitor parked on g_sysmon_cv: 1 with nothing to time (a thread that starts running must signal it), 2 in a timed wait of at most a tick (it notices a running thread itself) */
 static int            g_sysmon_pipe[2] = { -1, -1 };  /* self-pipe: wake the monitor out of poll() */
 int sp_io_make_pipe(int fds[2]);   /* lib/sp_io.c: a close-on-exec pipe */
 static void sp_sched_report_stats(void);   /* SPINEL_SCHED_STATS, below */
@@ -2428,9 +2428,15 @@ static void run_thread_once(sp_thread *t) { sp_gc_wb((void*)t);   /* PRE/POST: s
      ticking. */
   wslot_set_since(sp_worker_id, sp_monotonic_now());
   SP_ATOMIC_STORE(&g_wslot[sp_worker_id].cur, t, __ATOMIC_RELEASE);
-  /* an idle monitor waits on the scheduler lock's condvar: signal it under that lock */
-  if (!locked && SP_ATOMIC_LOAD(&g_sysmon_idle, __ATOMIC_SEQ_CST)) { SCHED_LOCK(); sp_sysmon_wake(); SCHED_UNLOCK(); }
-  else sp_sysmon_wake();
+  /* A monitor with nothing to time waits untimed: signal it under the lock its
+     condvar uses, so it starts ticking. One in a timed wait comes round within
+     a tick and sees this worker busy then; nudging it here as well cost every
+     thread start the scheduler lock (condvar) or a write to its pipe (poll). */
+  if (SP_ATOMIC_LOAD(&g_sysmon_idle, __ATOMIC_SEQ_CST) == 1) {
+    if (!locked) SCHED_LOCK();
+    sp_sysmon_wake();
+    if (!locked) SCHED_UNLOCK();
+  }
 #endif
   int raised = 0;
   const char *ec = NULL, *em = NULL;
@@ -3229,10 +3235,21 @@ static void *sp_sysmon_main(void *arg) {
       double dt = busy ? SP_PREEMPT_TICK : (nearest != 0.0 ? nearest - now : 0.05);
       if (nearest != 0.0 && nearest - now < dt) dt = nearest - now;
       if (dt > 0.05) dt = 0.05;
-      if (dt < 0.0005) dt = 0.0005;
+      /* A thread that starts running does not signal a monitor in a timed wait
+         (run_thread_once), so the wait is no longer than the tick at which it
+         checks timeslices: it finds the thread running within a tick. */
+      if (dt > SP_PREEMPT_TICK) dt = SP_PREEMPT_TICK;
+      /* A floor keeps a deadline already due from becoming a zero wait; it is
+         small, since a sleep's lateness is whatever is left above it. */
+      if (dt < 0.00001) dt = 0.00001;
       int tmo = (int)(dt * 1000.0); if (tmo < 1) tmo = 1;
 #ifdef SP_EV_BACKEND
-      if (g_ev_fd > 0) {
+      /* Waiting in poll() is for descriptors, and it counts in whole
+         milliseconds: with none to watch but its own wake pipe -- a program
+         that has not waited on I/O yet -- the monitor rounded every deadline
+         under 1 ms up to 1 ms, so `sleep 0.0002` took about 1.2 ms. Timing
+         alone, it waits on the condvar too. */
+      if (g_ev_fd > 0 || npf == 1) {
         /* The descriptors are in the WORKERS' sets now, so the monitor has no
            fds of its own to watch: it is a timer, for deadlines and the
            timeslice, and a condvar is the right thing to wait on. Its own wake
@@ -3248,7 +3265,7 @@ static void *sp_sysmon_main(void *arg) {
         ts.tv_nsec += (long)((dt - (double)(time_t)dt) * 1e9);
         if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
         SP_STAT_ADD(g_mon_polls, 1);
-        SP_ATOMIC_STORE(&g_sysmon_idle, 1, __ATOMIC_SEQ_CST);
+        SP_ATOMIC_STORE(&g_sysmon_idle, 2, __ATOMIC_SEQ_CST);
         pthread_cond_timedwait(&g_sysmon_cv, &g_sched_lock, &ts);
         SP_ATOMIC_STORE(&g_sysmon_idle, 0, __ATOMIC_SEQ_CST);
         continue;
