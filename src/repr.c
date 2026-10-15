@@ -251,8 +251,22 @@ int repr_call_returns_handle(Compiler *c, int v) {
   if (recv < 0 && is_string_class_name(nm) && comp_method_index(c, nm) < 0 && !bare_call_class_owned(c, v)) {
     int ac = 0;
     const int *av = call_args(nt, v, &ac);
-    if (ac != 1 || nt_ref(nt, v, "block") >= 0 || repr_of(c, av[0]).kind != RK_BOXED) return 0;
-    const int *ks = poly_recv_classes(c, v, &n);
+    if (ac != 1 || nt_ref(nt, v, "block") >= 0) return 0;
+    /* a boxed argument's classes, or an object's own and its subclasses'
+       (the class alone for a `K.new`, which builds exactly K) */
+    TyKind at = comp_ntype(c, av[0]);
+    int ocid = repr_share_rule(c) && ty_is_object(at) ? ty_object_class(at) : -1;
+    if (ocid < 0 && repr_of(c, av[0]).kind != RK_BOXED) return 0;
+    int own[CPT_MAX];
+    const int *ks = ocid >= 0 ? own : poly_recv_classes(c, v, &n);
+    if (ocid >= 0) {
+      n = 0;
+      for (int k = 0; k < c->nclasses; k++)
+        if (k == ocid || (share_exact_new_class(c, av[0]) != ocid && is_descendant(c, k, ocid))) {
+          if (n == CPT_MAX) return 0;
+          own[n++] = k;
+        }
+    }
     if (!ks || n <= 0 || n > CPT_MAX) return 0;
     for (int i = 0; i < n; i++) {
       /* (ret_nil_pickup is decided with ret_handle) */
