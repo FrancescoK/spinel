@@ -60,6 +60,10 @@ class NoF < Numeric; end
   show("#{c} typed 2.5.quo") { 2.5.quo(box(x)) }
   show("#{c} typed 2.5.fdiv") { 2.5.fdiv(box(x)) }
 end
+# a nested one is named by its path, beside a top-level one of that name too
+module Mod; class NoF < Numeric; end; end
+show("Mod::NoF 7.div") { box(7).div(box(Mod::NoF.new)) }
+show("Mod::NoF 2.5.quo") { box(2.5).quo(box(Mod::NoF.new)) }
 
 # A Complex with a Rational, a Bignum or a big Rational divides as a Complex,
 # and quo is `/` for one
@@ -76,6 +80,13 @@ show("2.5.quo Complex") { parts(box(2.5).quo(box(Complex(1, 2)))) }
 show("Complex / 0r") { box(Complex(4, 8)) / box(Rational(0, 1)) }
 show("Complex.quo 0r") { box(Complex(4, 8)).quo(box(Rational(0, 1))) }
 show("Float Complex / 0r") { box(Complex(4.0, 8.0)) / box(Rational(0, 1)) }
+# a zero Rational of Bignum parts is the same zero
+z = Rational(2**70, 3) - Rational(2**70, 3)
+show("Complex / big 0r") { box(Complex(1, 2)) / box(z) }
+show("Complex.quo big 0r") { box(Complex(1, 2)).quo(box(z)) }
+show("Complex / 0r over 2**70") { box(Complex(1, 2)) / box(Rational(0, 2**70)) }
+show("typed Complex / big 0r") { Complex(1, 2) / box(z) }
+show("Float Complex / big 0r") { box(Complex(1.0, 2.0)) / box(z) }
 show("Complex / Rational") { box(Complex(1, 2)) / box(Rational(1, 3)) }
 show("Float Complex / Rational") { box(Complex(1.0, 2.0)) / box(Rational(1, 10)) }
 show("Float Complex / 2**600") { box(Complex(1.0, 2.0)) / box(2**600) }

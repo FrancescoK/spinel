@@ -132,6 +132,8 @@ NoF typed 2.5.div: TypeError: can't convert NoF into Float
 NoF typed 2.5.modulo: TypeError: can't convert NoF into Float
 NoF typed 2.5.quo: TypeError: can't convert NoF into Float
 NoF typed 2.5.fdiv: TypeError: can't convert NoF into Float
+Mod::NoF 7.div: TypeError: can't convert Mod::NoF into Float
+Mod::NoF 2.5.quo: TypeError: can't convert Mod::NoF into Float
 Rational / Complex: ["1.000000e-01", "-2.000000e-01"]
 Rational.quo Complex: ["1.000000e-01", "-2.000000e-01"]
 Complex / Rational: ["8.000000e+00", "1.600000e+01"]
@@ -149,6 +151,11 @@ Complex.quo Rational: ["2.541099e-21", "5.082198e-21"]
 Complex / 0r: ZeroDivisionError: divided by 0
 Complex.quo 0r: ZeroDivisionError: divided by 0
 Float Complex / 0r: (Infinity+Infinity*i)
+Complex / big 0r: ZeroDivisionError: divided by 0
+Complex.quo big 0r: ZeroDivisionError: divided by 0
+Complex / 0r over 2**70: ZeroDivisionError: divided by 0
+typed Complex / big 0r: ZeroDivisionError: divided by 0
+Float Complex / big 0r: (Infinity+Infinity*i)
 Complex / Rational: (3+6i)
 Float Complex / Rational: (10.0+20.0i)
 Float Complex / 2**600: (2.409919865102884e-181+4.819839730205768e-181i)
