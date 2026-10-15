@@ -2238,6 +2238,8 @@ const char *sp_file_realpath(const char *path);
 const char *sp_file_read_len(const char *path, sp_int n);
 const char *sp_file_read_at(const char *path, sp_int n, sp_int off);
 const char *sp_file_read_from(const char *path, sp_int off);
+const char *sp_file_read_o(const char *path, sp_oint n);
+const char *sp_file_read_at_o(const char *path, sp_oint n, sp_int off);
 sp_int sp_file_chmod(sp_int mode, const char *path);
 sp_int sp_file_truncate(const char *path, sp_int n);
 sp_int sp_file_write_at(const char *path, const char *data, sp_int off);
@@ -2566,12 +2568,18 @@ sp_int sp_file_chown(const char *path, sp_int uid, sp_int gid) {SP_GC_ROOT_STR(p
     sp_raise_cls("Errno::ENOENT", sp_sprintf("No such file or directory - %s", path ? path : ""));
   return 1;
 }
+static void sp_file_read_refuse_dir(FILE *fp, const char *path) {
+  if (!sp_file_directory(path)) return;
+  fclose(fp);
+  sp_raise_cls("Errno::EISDIR", sp_sprintf("Is a directory @ io_fread - %s", path));
+}
 const char *sp_file_read_len(const char *path, sp_int n) {SP_GC_ROOT_STR(path);
   FILE *fp = fopen(path ? path : "", "rb");
   if (!fp)
     sp_raise_cls("Errno::ENOENT",
                  sp_sprintf("No such file or directory @ rb_sysopen - %s", path ? path : ""));
   if (n < 0) n = 0;
+  sp_file_read_refuse_dir(fp, path);
   char *r = sp_str_alloc(n);
   size_t got = fread(r, 1, (size_t)n, fp);
   fclose(fp);
@@ -2595,6 +2603,7 @@ const char *sp_file_read_at(const char *path, sp_int n, sp_int off) {SP_GC_ROOT_
     fclose(fp);
     sp_raise_cls("ArgumentError", sp_sprintf("negative length %lld given", (long long)n));
   }
+  sp_file_read_refuse_dir(fp, path);
   char *r = sp_str_alloc(n);
   size_t got = fread(r, 1, (size_t)n, fp);
   fclose(fp);
@@ -2604,9 +2613,16 @@ const char *sp_file_read_at(const char *path, sp_int n, sp_int off) {SP_GC_ROOT_
 }
 const char *sp_file_read_from(const char *path, sp_int off) {SP_GC_ROOT_STR(path);
   FILE *fp = sp_file_open_at(path, off);
+  sp_file_read_refuse_dir(fp, path);
   const char *r = sp_slurp_stream(fp);
   fclose(fp);
   return r;
+}
+const char *sp_file_read_o(const char *path, sp_oint n) {
+  return n.nil ? sp_file_read(path) : sp_file_read_len(path, n.v);
+}
+const char *sp_file_read_at_o(const char *path, sp_oint n, sp_int off) {
+  return n.nil ? sp_file_read_from(path, off) : sp_file_read_at(path, n.v, off);
 }
 sp_int sp_file_chmod(sp_int mode, const char *path) {SP_GC_ROOT_STR(path);
   if (chmod(path ? path : "", (mode_t)mode) != 0)

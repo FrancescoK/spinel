@@ -1,0 +1,11 @@
+"0123456789"
+"3456789"
+#<Encoding:BINARY (ASCII-8BIT)>
+"0123"
+"3456"
+#<Encoding:BINARY (ASCII-8BIT)>
+Errno::EISDIR
+Errno::EISDIR
+Errno::EISDIR
+Errno::EISDIR
+[:path, :length, :offset, :path, :length, :offset, :path, :length, :path, :no_length, :offset]
