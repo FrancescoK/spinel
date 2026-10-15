@@ -27875,8 +27875,11 @@ static int dyn_any_appender(Compiler *c) {
          Only the builtin: a user method of the same name hands its second
          parameter whatever it likes (a String it yields), and clearing the
          bit for it would drop a real appender, so a copy would lose the
-         append silently. */
-      if (dyn_memo_is_container(c, n, nm) && an_any_scope_by_name(c, nm) < 0) bits &= ~2u;
+         append silently. The Enumerable desugar's own specialization
+         (`__enum_each_with_object__N`, builtins/enumerable.rb) is a scope
+         too, but it is the builtin: its memo is the call's last argument. */
+      if (dyn_memo_is_container(c, n, nm) &&
+          (strncmp(nm, "__enum_each_with_object", 23) == 0 || an_any_scope_by_name(c, nm) < 0)) bits &= ~2u;
       if (!bits && !dyn_lit_post_app(c, b)) continue;
       int nk = dyn_block_targets(c, n, tg);
       for (int e = 0; e < nk && !g_dyn.any; e++) {
