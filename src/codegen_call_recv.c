@@ -3048,6 +3048,26 @@ static int emit_array_operand_misfit(Compiler *c, int id, const char *name, int 
 }
 
 /* A typed Array receiver (emit_array_call's arms, in their order) */
+/* The element bsearch / bsearch_index hands its block, into the parameter
+   `bp` (renamed): a slot that holds its nil (slot_is_oint, a number array
+   whose elements can be nil) takes the element with it, where a plain read
+   wrote an sp_int into the sp_oint (#9204). */
+static void emit_bsearch_param(Compiler *c, int block, const char *bp, const char *k, TyKind rt,
+                               int trecv, int tmid) {
+  Scope *bsc = comp_scope_of(c, block);
+  LocalVar *lv = bsc ? scope_local(bsc, block_param_name(c, block, 0)) : NULL;
+  TyKind et = rt == TY_POLY_ARRAY ? TY_POLY : ty_array_elem(rt);
+  emit_indent(g_pre, g_indent + 1);
+  if (lv && oint_kind(lv->type) && slot_is_oint(lv)) {
+    if (rt == TY_POLY_ARRAY)
+      buf_printf(g_pre, "lv_%s = %s(sp_PolyArray_get(_t%d, _t%d));\n", bp, oint_unbox(lv->type), trecv, tmid);
+    else if (oint_kind(et))
+      buf_printf(g_pre, "lv_%s = sp_%sArray_oget(_t%d, _t%d);\n", bp, k, trecv, tmid);
+    else buf_printf(g_pre, "lv_%s = %s(sp_%sArray_get(_t%d, _t%d));\n", bp, oint_of(lv->type), k, trecv, tmid);
+    return;
+  }
+  buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, tmid);
+}
 static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0, TyKind res, int *out) {
   if (!(recv >= 0 && ty_is_array(rt))) return 0;
   if (emit_scalar_array_conversion(c, id, recv, rt, name, argc, b)) { *out = 1; return 1; }
@@ -3807,7 +3827,7 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
         buf_printf(g_pre, "while (_t%d <= _t%d) {\n", tlo, thi);
         emit_indent(g_pre, g_indent + 1);
         buf_printf(g_pre, "sp_int _t%d = _t%d + (_t%d - _t%d) / 2;\n", tmid, tlo, thi, tlo);
-        if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, tmid); }
+        if (bp) emit_bsearch_param(c, block, bp, k, rt, trecv, tmid);
         IterStep st; emit_iter_step_open(c, block, 0, g_indent + 1, &st);
         int sv = g_indent; g_indent++;
         Buf cb; memset(&cb, 0, sizeof cb);
@@ -3933,7 +3953,7 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
         buf_printf(g_pre, "while (_t%d <= _t%d) {\n", tlo, thi);
         emit_indent(g_pre, g_indent + 1);
         buf_printf(g_pre, "sp_int _t%d = _t%d + (_t%d - _t%d) / 2;\n", tmid, tlo, thi, tlo);
-        if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, bk, trecv, tmid); }
+        if (bp) emit_bsearch_param(c, block, bp, bk, rt, trecv, tmid);
         IterStep st; emit_iter_step_open(c, block, comp_ntype(c, bb[bn - 1]) != TY_INT, g_indent + 1, &st);
         int sv = g_indent; g_indent++;
         /* The block value is the search predicate: route through emit_cond so a
