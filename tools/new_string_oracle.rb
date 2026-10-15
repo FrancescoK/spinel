@@ -34,30 +34,45 @@
 #                   it twice
 #   check=param     (with param=NAME) a method answers parameter NAME's
 #                   object, as passed, or one that passes `new`
+#   check=unkept    (with param=NAME) the method keeps no reference to
+#                   parameter NAME's String: once it returns, no name
+#                   holds the object that did not hold it when it was
+#                   called
 #   check=none      listed, not checked
 #
-# A claim on a def node is about the method's answers, checked at its
-# return (TracePoint); any other claim is about an expression, checked by
+# A claim on a def node is about the method (its answers, its parameters),
+# checked at its call and return (TracePoint); param and unkept only make
+# sense there. Any other claim is about an expression, checked by
 # wrapping it, `::SpOracle.v(id, (expr))`, in a rewritten copy of the program
 # evaluated under the original path. A kind that states no check, or one this
 # tool does not know, is reported and checked by the `new` rule.
+#
+# unkept compares who can reach the argument at the call with who can at the
+# return, by the same walk. A holder at the return that was not one at the
+# call disproves the claim, whoever put the object there: the method, or a
+# block it yielded to or called. (The claim is about the call. The share
+# analysis itself counts a yield, a block call and any argument handed on as
+# keeping, so a method it calls unkept gives the String to no block.) Not
+# holders: the method's own frame, whose locals die with it; the caller's
+# locals and every other holder that already held the object at the call; the
+# return value, which no name holds yet. An argument that is nil, frozen or
+# no String is not checked (no name can tell it from another).
 #
 # A run whose stdout or exit status differs from the plain run's is
 # "perturbed" and its alarms are not counted. Exit status: 1 when a claim is
 # disproved, 2 when a program could not be checked, else 0.
 
-require "json"
+# (the program under test runs in the same process as the oracle's child, so
+# the child loads only what it needs: json, for one, adds an ancestor to
+# Object that a program may print. A run that still differs from the plain one
+# is reported as perturbed.)
 require "objspace"
-require "open3"
-require "optparse"
 require "prism"
-require "rbconfig"
-require "shellwords"
-require "tmpdir"
 
 module SpOracle
   ORACLE_FILE = File.expand_path(__FILE__)
-  CHECKS = %w[new one-name elems param none].freeze
+  CHECKS = %w[new one-name elems param unkept none].freeze
+  METHOD_CHECKS = %w[param unkept].freeze
 
   # ---- the run (child process) ----
   class Runner
@@ -71,6 +86,7 @@ module SpOracle
       @results = Hash.new { |h, k| h[k] = { "checked" => 0, "disproved" => 0, "witness" => nil } }
       @stacks = {}.compare_by_identity  # Fiber => [frame]
       @busy = false
+      @serial = 0
       @boot_modules = {}.compare_by_identity
       ObjectSpace.each_object(Module) { |m| @boot_modules[m] = true }
       @touched = {}.compare_by_identity
@@ -82,8 +98,14 @@ module SpOracle
 
     def stack = (@stacks[Fiber.current] ||= [])
 
-    # pending: [[claim id, the parameter's object at the call]]
-    Frame = Struct.new(:binding, :pending, :label, :names)
+    # pending: [[claim id, the parameter's object at the call, who held that
+    # object at the call (unkept only)]]; serial tells two frames of one
+    # method apart
+    Frame = Struct.new(:binding, :pending, :label, :names, :serial)
+    # who refers to an object: root names (key => chain) and objects
+    # (identity => chain); a chain runs from a root name through the objects
+    # between it and the holder
+    Holders = Struct.new(:names, :objs)
 
     # The local names a block (or lambda) starting at path:line reads or
     # writes, its parameters among them: the names of its environment it can
@@ -129,23 +151,30 @@ module SpOracle
           b = (t.binding rescue nil)
           pending = []
           if t.event == :call && (ids = @rets[[t.path, t.lineno, t.method_id.to_s]])
-            ids.each do |id|
-              pn = @claims[id]["param"]
-              arg = pn && b ? (b.local_variable_get(pn.to_sym) rescue nil) : nil
-              pending << [id, arg]
+            @busy = true
+            begin
+              ids.each do |id|
+                pn = @claims[id]["param"]
+                arg = pn && b ? (b.local_variable_get(pn.to_sym) rescue nil) : nil
+                pending << [id, arg, @claims[id]["check"] == "unkept" ? holders_at_call(id, arg) : nil]
+              end
+            rescue StandardError => e
+              @results["oracle-error"]["witness"] ||= "#{e.class}: #{e.message}"
+            ensure
+              @busy = false
             end
           end
           @busy = true
           @touched[t.self] = true if t.event == :class
           @busy = false
           names = t.event == :b_call ? block_names(t.path, t.lineno) : nil
-          stack << Frame.new(b, pending, "#{t.event} #{t.method_id || "block"} #{File.basename(t.path || "")}:#{t.lineno}", names)
+          stack << Frame.new(b, pending, "#{t.event} #{t.method_id || "block"} #{File.basename(t.path || "")}:#{t.lineno}", names, @serial += 1)
         else
           fr = stack.pop
           if fr && !fr.pending.empty? && t.event == :return
             @busy = true
             begin
-              fr.pending.each { |id, arg| check_ret(id, fr, arg, t.return_value) }
+              fr.pending.each { |id, arg, before| check_ret(id, fr, arg, t.return_value, before) }
             rescue StandardError => e
               @results["oracle-error"]["witness"] ||= "#{e.class}: #{e.message}"
             ensure
@@ -179,10 +208,34 @@ module SpOracle
       val
     end
 
-    def check_ret(id, frame, arg, val)
+    def check_ret(id, frame, arg, val, before)
+      if @claims[id]["check"] == "unkept"
+        # (counted, and skipped when the argument is no one's concern, at the call)
+        tally(id, unkept_witness(@claims[id], arg, frame, before)) if before
+        return
+      end
       return if @seen[id] >= @max
       @seen[id] += 1
       tally(id, check_value(@claims[id], val, frame, arg))
+    end
+
+    # The argument of an unkept claim at the method's call: who holds it, or
+    # nil where there is nothing to check (nil, frozen, no String, or the
+    # claim's evaluations are used up). The method's own frame is not on the
+    # stack yet.
+    def holders_at_call(id, arg)
+      return nil unless arg.is_a?(String) && !arg.frozen? && @seen[id] < @max
+      @seen[id] += 1
+      holders(arg, nil)
+    end
+
+    # nil when no name holds the argument that did not at the call; else the
+    # first new holder's chain
+    def unkept_witness(claim, arg, frame, before)
+      after = holders(arg, frame)
+      fresh = after.names.reject { |k, _| before.names.key?(k) }.values +
+              after.objs.reject { |k, _| before.objs.key?(k) }.values
+      fresh.empty? ? nil : "#{arg.inspect[0, 40]} (parameter #{claim["param"]}) kept, reachable: #{fresh.first}"
     end
 
     def tally(id, witness)
@@ -216,7 +269,8 @@ module SpOracle
     # at most one name holds o (the holder the value is read from, or none)
     def one_name_witness(o, exclude_frame)
       return nil unless o.is_a?(String) && !o.frozen?
-      refs = referrers(o, exclude_frame)
+      h = holders(o, exclude_frame)
+      refs = h.names.values + h.objs.values
       refs.size > 1 ? "#{o.inspect[0, 40]} held by #{refs.size} names: #{refs.first(3).join("; ")}" : nil
     end
 
@@ -244,26 +298,33 @@ module SpOracle
 
     def roots_of(exclude_frame)
       out = []
-      out << ["TOPLEVEL self", TOPLEVEL_BINDING.receiver]
+      listed = Hash.new { |h, k| h[k] = [] }  # local name => [[binding, value]] listed
+      out << ["TOPLEVEL self", TOPLEVEL_BINDING.receiver, "TOPLEVEL self"]
       TOPLEVEL_BINDING.local_variables.each do |v|
-        out << ["toplevel local #{v}", TOPLEVEL_BINDING.local_variable_get(v)]
+        val = TOPLEVEL_BINDING.local_variable_get(v)
+        listed[v] << [TOPLEVEL_BINDING, val]
+        out << ["toplevel local #{v}", val, "toplevel local #{v}"]
       end
       @stacks.each_value do |st|
         st.each do |fr|
           next if fr.equal?(exclude_frame) || fr.binding.nil?
           b = fr.binding
-          out << ["self of #{fr.label}", b.receiver]
+          out << ["self of #{fr.label}", b.receiver, [fr.serial, :self]]
           b.local_variables.each do |v|
             next if fr.names && !fr.names[v]
             val = (b.local_variable_get(v) rescue nil)
-            out << ["local #{v} of #{fr.label}", val]
+            # (a block's binding shows the locals of the frames around it: one
+            # variable is one name)
+            next if fr.label.start_with?("b_call") && listed[v].any? { |b2, val2| val2.equal?(val) && same_variable?(b, b2, v, val) }
+            listed[v] << [b, val]
+            out << ["local #{v} of #{fr.label}", val, [fr.serial, v]]
           end
         end
       end
       global_variables.each do |g|
         next if g == :$_ || g == :$~ || g == :$! || g == :$@ || g.to_s.start_with?("$SpOracle")
         val = (eval(g.to_s) rescue nil) # rubocop:disable Security/Eval
-        out << [g.to_s, val]
+        out << [g.to_s, val, g.to_s]
       end
       mods = []
       ObjectSpace.each_object(Module) { |m| mods << m if !@boot_modules[m] || @touched[m] }
@@ -275,19 +336,38 @@ module SpOracle
           next if m.autoload?(k)
           val = (m.const_get(k, false) rescue nil)
           # (TOPLEVEL_BINDING's locals are the toplevel locals, roots above)
-          out << ["constant #{m}::#{k}", val] unless val.is_a?(Module) || val.equal?(TOPLEVEL_BINDING)
+          out << ["constant #{m}::#{k}", val, "constant #{m}::#{k}"] unless val.is_a?(Module) || val.equal?(TOPLEVEL_BINDING)
         end
-        m.instance_variables.each { |iv| out << ["#{m} #{iv}", m.instance_variable_get(iv)] }
-        (m.class_variables(false) rescue []).each { |cv| out << ["#{m} #{cv}", (m.class_variable_get(cv) rescue nil)] }
+        m.instance_variables.each { |iv| out << ["#{m} #{iv}", m.instance_variable_get(iv), "#{m} #{iv}"] }
+        (m.class_variables(false) rescue []).each { |cv| out << ["#{m} #{cv}", (m.class_variable_get(cv) rescue nil), "#{m} #{cv}"] }
       end
       Warning[:deprecated] = saved
       out
     end
 
+    # (no method of the program's objects is called on the way: `==` and
+    # `is_a?` may be theirs, and a `==` that reads its argument's ivars
+    # raises on `true`)
+    # Do bindings b and b2 name one variable by v? Set it through b and read
+    # it through b2, then put it back.
+    def same_variable?(b, b2, v, val)
+      mark = Object.new
+      b.local_variable_set(v, mark)
+      b2.local_variable_get(v).equal?(mark)
+    rescue NameError
+      false
+    ensure
+      b.local_variable_set(v, val)
+    end
+
     def leaf?(x)
-      x.nil? || x == true || x == false || x.is_a?(Symbol) || x.is_a?(Numeric) || x.is_a?(String) ||
-        x.is_a?(Module) || x.is_a?(ObjectSpace::InternalObjectWrapper) || x.is_a?(Thread) || x.is_a?(Fiber) ||
-        x.is_a?(TracePoint) || x.is_a?(Runner) || x.is_a?(Frame)
+      case x
+      when NilClass, TrueClass, FalseClass, Symbol, Numeric, String, Module, ObjectSpace::InternalObjectWrapper,
+           Thread, Fiber, TracePoint, Runner, Frame
+        true
+      else
+        false
+      end
     end
 
     def edges(x)
@@ -305,35 +385,45 @@ module SpOracle
       end
     end
 
-    # every name and reachable object that refers to o directly
-    def referrers(o, exclude_frame)
-      seen = {}.compare_by_identity
+    # every name and reachable object that refers to o directly, each with
+    # the chain from the name that reaches it
+    def holders(o, exclude_frame)
+      seen = {}.compare_by_identity   # object => [name or class, parent]
       queue = []
-      refs = []
-      refs_from = {}.compare_by_identity
-      roots(exclude_frame).each do |label, v|
-        refs << label if v.equal?(o)
+      names = {}
+      objs = {}.compare_by_identity
+      roots(exclude_frame).each do |label, v, key|
+        names[key] ||= label if v.equal?(o)
         next if leaf?(v) || seen[v]
-        seen[v] = true
+        seen[v] = [label, nil]
         queue << v
       end
       until queue.empty?
         x = queue.shift
         edges(x).each do |y|
-          refs << "a #{x.class}" if y.equal?(o) && !refs_from[x]
-          refs_from[x] = true if y.equal?(o)
+          objs[x] ||= chain_of(seen, x) if y.equal?(o)
           next if leaf?(y) || seen[y]
-          seen[y] = true
+          seen[y] = ["#{y.class}", x]
           queue << y
         end
       end
-      refs
+      Holders.new(names, objs)
+    end
+
+    def chain_of(seen, x)
+      chain = []
+      while x
+        lab, par = seen[x]
+        chain.unshift(lab || x.class.to_s)
+        x = par
+      end
+      chain.join(" -> ")
     end
 
     def holder_path(o, exclude_frame)
       seen = {}.compare_by_identity
       queue = []
-      roots(exclude_frame).each do |label, v|
+      roots(exclude_frame).each do |label, v, _|
         return label if v.equal?(o)
         next if leaf?(v) || seen[v]
         seen[v] = [label, nil]
@@ -342,16 +432,7 @@ module SpOracle
       until queue.empty?
         x = queue.shift
         edges(x).each do |y|
-          if y.equal?(o)
-            chain = []
-            z = x
-            while z
-              lab, par = seen[z]
-              chain.unshift(lab || z.class.to_s)
-              z = par
-            end
-            return chain.join(" -> ")
-          end
+          return chain_of(seen, x) if y.equal?(o)
           next if leaf?(y) || seen[y]
           seen[y] = ["#{y.class}", x]
           queue << y
@@ -475,7 +556,7 @@ module SpOracleDriver
   end
 
   def not_cruby?(prog)
-    File.foreach(prog).first(12).any? { |l| l.match?(/\A#\s*spinel:\s*not-cruby\b/) }
+    File.foreach(prog, encoding: "BINARY").first(12).any? { |l| l.match?(/\A#\s*spinel:\s*not-cruby\b/) }
   end
 
   # Check one program. Returns a report hash: "status" is "checked", "skipped"
@@ -522,6 +603,10 @@ module SpOracleDriver
           rets[[c.path, c.sl, c.name]] = (rets[[c.path, c.sl, c.name]] || []) << i
           next
         end
+        if SpOracle::METHOD_CHECKS.include?(o["check"])
+          rep["unprobed"] << [i, "#{o["check"]} claim on no method"]
+          next
+        end
         if c.path != prog
           rep["unprobed"] << [i, "other file"]
           next
@@ -557,7 +642,7 @@ module SpOracleDriver
               "rets" => rets.map { |(path, line, name), v| { "path" => path, "line" => line, "name" => name, "ids" => v } },
               "max" => opts[:max], "path" => prog }
       File.write(File.join(d, "prog.rb"), rewritten)
-      File.write(File.join(d, "claims.json"), JSON.dump(cfg))
+      File.binwrite(File.join(d, "claims"), Marshal.dump(cfg))
       args = File.exist?("#{prog}.args") ? Shellwords.split(File.read("#{prog}.args")) : []
       stdin = File.exist?("#{prog}.stdin") ? "#{prog}.stdin" : File::NULL
       ruby = RbConfig.ruby
@@ -567,8 +652,9 @@ module SpOracleDriver
                                         env: { "SP_ORACLE_DIR" => d }, stdin: stdin, timeout: opts[:timeout] * 3)
       res_file = File.join(d, "results")
       if oexp || !File.exist?(res_file)
-        return rep.merge("status" => oexp ? "skipped" : "error",
-                         "notes" => rep["notes"] + [oexp ? "the oracle run timed out" : "the oracle run wrote no results: #{o_err.lines.last&.strip}"])
+        # (a program that execs never runs the oracle's at_exit: nothing to read)
+        why = oexp ? "the oracle run timed out" : "the oracle run wrote no results: #{o_err.lines.last&.strip}"
+        return rep.merge("status" => oexp || o_err.empty? ? "skipped" : "error", "notes" => rep["notes"] + [why])
       end
       res = Marshal.load(File.binread(res_file))
       if plain_out != o_out || pst.exitstatus != ost.exitstatus
@@ -637,6 +723,7 @@ module SpOracleDriver
   end
 
   def run(argv)
+    %w[json optparse rbconfig shellwords tmpdir].each { |lib| require lib }
     opts = { spinel: File.expand_path("../bin/spinel", __dir__), max: 20, jobs: 2, timeout: 60 }
     json = false
     report = nil
@@ -686,7 +773,7 @@ end
 # the oracle's must not be among them)
 def SpOracle.child_main
   dir = ENV.fetch("SP_ORACLE_DIR")
-  cfg = JSON.parse(File.read(File.join(dir, "claims.json")))
+  cfg = Marshal.load(File.binread(File.join(dir, "claims")))
   runner = SpOracle::Runner.new(cfg["sites"].transform_keys(&:to_i), cfg["claims"].transform_keys(&:to_i), cfg["max"])
   cfg["rets"].each { |c| runner.add_ret(c["path"], c["line"], c["name"], c["ids"]) }
   SpOracle.runner = runner
