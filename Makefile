@@ -4405,6 +4405,30 @@ respond-to-audit: $(SPINEL) $(SP_RT_LIB)
 cls-fact-check: $(SPINEL)
 	@sh tools/cls_fact_check.sh $(TESTS)
 
+# The "new String" claims (#9135) held against CRuby. Under --share-strings
+# the share facts claim that some values are new Strings no other name holds
+# (SPINEL_NEW_CLAIMS=FILE lists them; the C is the same with it set). Each
+# program in ORACLE_TESTS (default: test/share and the oracle's own
+# fixtures) runs under CRuby with its claims checked where they are made;
+# a claim whose object a live name can still reach is disproved, and any
+# disproved claim fails the target (exit 1). The report goes to
+# ORACLE_REPORT. The self-test feeds the tool hand-written claims, a true and
+# a false one for each check it knows, and the claims past compilers made for
+# three programs they got wrong. Neither is part of `make gate`: a soundness
+# tool, run when the freshness predicates change and on demand. It needs
+# Ruby 4.0 (GATE_RUBY or PATH).
+ORACLE_TESTS ?= $(wildcard test/share/*.rb test/new-string-oracle/*.rb)
+ORACLE_JOBS ?= 2
+ORACLE_REPORT ?= build/new-string-oracle.txt
+.PHONY: new-string-oracle new-string-oracle-selftest
+new-string-oracle-selftest:
+	@r=$$(sh tools/gate-ruby) || { echo "new-string-oracle-selftest: needs Ruby 4.0 or later (set GATE_RUBY)"; exit 1; }; \
+	"$$r" tools/new_string_oracle_test.rb
+new-string-oracle: $(SPINEL) new-string-oracle-selftest
+	@r=$$(sh tools/gate-ruby) || exit 1; \
+	mkdir -p $(dir $(ORACLE_REPORT)); \
+	"$$r" tools/new_string_oracle.rb --spinel $(SPINEL) --jobs $(ORACLE_JOBS) --report $(ORACLE_REPORT) $(ORACLE_TESTS)
+
 # Inference properties the stdout comparison cannot see: a boxed slot still
 # prints the right answer, so a type regression here is invisible to `make
 # test`. Assert the emitted C signature directly, the way rbs-seed-test does
