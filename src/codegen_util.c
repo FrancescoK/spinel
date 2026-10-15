@@ -3622,12 +3622,12 @@ void strh_elem_handle_text(Compiler *c, int v, Buf *b) {
   if (strh_call_op(c, v, comp_recv_type(c, recv)) == STRH_TAKE) {
     int pop = is_pop_name(nm);
     buf_puts(b, pop ? "((sp_String *)sp_PtrArray_pop(" : "((sp_String *)sp_PtrArray_delete_at(");
-    emit_expr(c, recv, b);
+    strh_emit_recv(c, v, recv, b);
     buf_puts(b, pop ? "))" : ", 0))");
   }
   else {
     buf_puts(b, "((sp_String *)sp_PtrArray_get(");
-    emit_expr(c, recv, b);
+    strh_emit_recv(c, v, recv, b);
     buf_puts(b, ", ");
     if (argc == 1) emit_int_expr(c, argv[0], b);
     else buf_puts(b, is_first_name(nm) ? "0" : "-1");

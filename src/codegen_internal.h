@@ -458,6 +458,7 @@ void emit_strh_elem(Compiler *c, int v, Buf *b);
    handles answers (codegen_util.c), and whether an element read reads like
    a variable's slot (a local's Array at a literal or local index) */
 void strh_elem_handle_text(Compiler *c, int v, Buf *b);
+void strh_emit_recv(Compiler *c, int id, int recv, Buf *b);   /* the receiver of an operation on the Array of handles, nil-checked */
 int strh_elem_slot(Compiler *c, int v);
 int strh_handle_call(Compiler *c, int v);
 /* An operation on a String Array of handles (codegen_call_array.c) */

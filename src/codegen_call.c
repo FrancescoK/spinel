@@ -1023,7 +1023,7 @@ int sn_guard_pending(Compiler *c, int id) {
       /* an Integer / Float receiver only when it can be nil (its oint form):
          `3&.fdiv(2)` has no guard and no nil to answer */
       ((rt == TY_INT || rt == TY_FLOAT) && node_has_oint_form(c, recv)) ||
-      ty_is_array(rt) || ty_is_hash(rt))
+      ty_is_array(rt) || rt == TY_STRH_ARRAY || ty_is_hash(rt))
     return 1;
   /* a link after a pending one (`v&.each_with_index&.to_a`): a chain
      emitter fusing from this terminal would read past the inner guard */

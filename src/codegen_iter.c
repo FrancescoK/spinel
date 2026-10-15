@@ -5533,7 +5533,7 @@ static int iter_strh_arms(Compiler *c, int id, Buf *b, int indent, int block, in
                           const char *p0, TyKind rt) {
   if (rt != TY_STRH_ARRAY || strh_call_op(c, id, rt) != STRH_EACH) return -1;
   Buf rb; memset(&rb, 0, sizeof rb);
-  emit_expr(c, recv, &rb);
+  strh_emit_recv(c, id, recv, &rb);
   hoist_loop_recv(c, rt, &rb, b, indent);
   Scope *cs = comp_scope_of(c, id);
   LocalVar *o0 = p0 && cs ? scope_local(cs, p0) : NULL;

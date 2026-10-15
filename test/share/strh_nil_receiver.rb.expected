@@ -1,0 +1,16 @@
+["t!", "x"]
+nil
+nme push
+nme size
+nme each
+nme index
+nil
+true
+2
+2
+nme take
+nme add
+nme bang
+nil
+["u!"]
+"u!"

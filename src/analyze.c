@@ -21392,12 +21392,91 @@ static int strh_reads_ok(Compiler *c, const int *par, NodeKind rk, const char *n
   }
   return 1;
 }
+/* The names a program reaches by a name it computes or a block that rebinds
+   self (share_strh_gate): an instance variable, a class variable or a
+   constant named to instance_variable_get and its kin, or used inside an
+   instance_eval, instance_exec, class_eval or module_eval block. A holder so
+   reached has uses no read node stands for, so its class keeps the poly
+   form. `all`: some name is not a literal, so every holder is reached. */
+typedef struct { const char **n; int cnt, cap, all, locals; } StrhReflect;
+static void strh_reflect_add(StrhReflect *r, const char *nm) {
+  if (!nm) { r->all = 1; return; }
+  if (r->cnt == r->cap) {
+    r->cap = r->cap ? r->cap * 2 : 16;
+    r->n = realloc(r->n, sizeof(char *) * (size_t)r->cap);
+    if (!r->n) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  r->n[r->cnt++] = nm;
+}
+static int strh_reflect_has(const StrhReflect *r, const char *nm) {
+  if (r->all) return 1;
+  if (nm && nm[0] == ':' && nm[1] == ':') nm += 2;
+  for (int i = 0; i < r->cnt; i++) if (sp_streq(r->n[i], nm)) return 1;
+  return 0;
+}
+/* the name a literal Symbol or String argument spells, or NULL */
+static const char *strh_lit_name(const NodeTable *nt, int a) {
+  if (a < 0) return NULL;
+  NodeKind k = nt_kind(nt, a);
+  if (k == NK_SymbolNode) return nt_str(nt, a, "value") ? nt_str(nt, a, "value") : nt_str(nt, a, "unescaped");
+  if (k == NK_StringNode) return nt_str(nt, a, "content");
+  return NULL;
+}
+/* every variable read, written or targeted in the subtree of node n */
+static void strh_reflect_vars(const NodeTable *nt, int n, StrhReflect *r, int depth) {
+  if (n < 0 || depth > 200) return;
+  const char *ty = nt_type(nt, n);
+  if (ty && (!strncmp(ty, "InstanceVariable", 16) || !strncmp(ty, "ClassVariable", 13))) {
+    const char *nm = nt_str(nt, n, "name");
+    if (nm) strh_reflect_add(r, nm);
+  }
+  for (int i = 0; i < nt_num_refs(nt, n); i++) strh_reflect_vars(nt, nt_ref_at(nt, n, i), r, depth + 1);
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) strh_reflect_vars(nt, ids[j], r, depth + 1);
+  }
+}
+static void strh_reflect_scan(Compiler *c, StrhReflect *r) {
+  const NodeTable *nt = c->nt;
+  for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n)) {
+    const char *nm = nt_str(nt, n, "name");
+    if (!nm) continue;
+    int ca = nt_ref(nt, n, "arguments"), argc = 0, blk = nt_ref(nt, n, "block");
+    const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &argc) : NULL;
+    int first = 0;
+    if (is_send_family(nm)) {
+      /* `send(:instance_variable_get, :@l)`: the name asked is the second */
+      const char *m = argc >= 1 ? strh_lit_name(nt, av[0]) : NULL;
+      if (!m) { strh_reflect_add(r, NULL); continue; }
+      nm = m;
+      first = 1;
+    }
+    if (sp_streq(nm, "instance_variable_get") || sp_streq(nm, "instance_variable_set") ||
+        sp_streq(nm, "class_variable_get") || sp_streq(nm, "class_variable_set") ||
+        sp_streq(nm, "const_get") || sp_streq(nm, "const_set") || sp_streq(nm, "remove_instance_variable") ||
+        sp_streq(nm, "remove_class_variable") || sp_streq(nm, "remove_const"))
+      strh_reflect_add(r, argc > first ? strh_lit_name(nt, av[first]) : NULL);
+    else if (sp_streq(nm, "instance_variables") || sp_streq(nm, "class_variables") || sp_streq(nm, "constants"))
+      strh_reflect_add(r, NULL);
+    else if (sp_streq(nm, "eval") || sp_streq(nm, "binding") || sp_streq(nm, "local_variable_get") ||
+             sp_streq(nm, "local_variable_set") || sp_streq(nm, "local_variables")) {
+      strh_reflect_add(r, NULL);
+      r->locals = 1;
+    }
+    else if (sp_streq(nm, "instance_eval") || sp_streq(nm, "instance_exec") || sp_streq(nm, "class_eval") ||
+             sp_streq(nm, "class_exec") || sp_streq(nm, "module_eval") || sp_streq(nm, "module_exec")) {
+      if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && !first) strh_reflect_vars(nt, blk, r, 0);
+      else strh_reflect_add(r, NULL);
+    }
+  }
+}
 /* Can the ivar, global, constant or class variable of holder sh, a name of a
    candidate class, take the form in this stage: String Array or handle Array
    in every class that holds it, no mark against it, no attribute method
    reaching it (a reader's call is a value no read of the slot stands for),
    and every read used as strh_use_ok has it? */
-static int strh_static_ok(Compiler *c, const int *par, const ShareHolder *sh) {
+static int strh_static_ok(Compiler *c, const int *par, const ShareHolder *sh, const StrhReflect *rf) {
+  if (sh->kind != SHK_GVAR && strh_reflect_has(rf, sh->name)) return 0;
   if (sh->kind == SHK_IVAR) {
     int top, nk = 0;
     const int *ks = strh_ivar_family(c, sh->cid, sh->name, &top, &nk);
@@ -21607,6 +21686,9 @@ static int share_strh_gate(Compiler *c) {
   }
   if (!any) { free(st); return 0; }
   const int *par = comp_parent_map(c);
+  StrhReflect rf;
+  memset(&rf, 0, sizeof rf);
+  strh_reflect_scan(c, &rf);
   for (int h = 0; h < nh; h++) {
     const ShareHolder *sh = share_holder(c, h);
     int r = share_holder_class(c, h);
@@ -21623,13 +21705,13 @@ static int share_strh_gate(Compiler *c) {
       continue;
     }
     if (sh->kind == SHK_IVAR || sh->kind == SHK_GVAR || sh->kind == SHK_CONST || sh->kind == SHK_CVAR) {
-      if (!strh_static_ok(c, par, sh)) st[r] |= STRH_BAD;
+      if (!strh_static_ok(c, par, sh, &rf)) st[r] |= STRH_BAD;
       continue;
     }
     if (sh->kind != SHK_LOCAL) { st[r] |= STRH_BAD; continue; }
     LocalVar *lv = &c->scopes[sh->scope].locals[sh->local];
     if (lv->type == TY_UNKNOWN) continue;
-    if ((lv->type != TY_STR_ARRAY && lv->type != TY_STRH_ARRAY) || !strh_local_ok(c, par, sh->scope, lv))
+    if ((lv->type != TY_STR_ARRAY && lv->type != TY_STRH_ARRAY) || rf.locals || !strh_local_ok(c, par, sh->scope, lv))
       st[r] |= STRH_BAD;
   }
   /* a user method's answer is read where its call is. The class of the call
@@ -21669,7 +21751,10 @@ static int share_strh_gate(Compiler *c) {
       if (nt_ref(nt, n, "receiver") < 0 && cnm && is_kernel_print_name(cnm)) continue;
       /* (a receiver's value is asked where the call it is the receiver of goes) */
       int rcv = par[n] >= 0 && nt_kind(nt, par[n]) == NK_CallNode && an_unparen(nt, nt_ref(nt, par[n], "receiver")) == n;
-      if (ct == TY_POLY_ARRAY || (ct == TY_STR_ARRAY && !rcv && (par[n] < 0 || nt_kind(nt, par[n]) != NK_LocalVariableWriteNode)))
+      /* (a call typed as the form that is no row of it, a reflective read
+         say, has a use no typed row answers) */
+      if (ct == TY_POLY_ARRAY || ct == TY_STRH_ARRAY ||
+          (ct == TY_STR_ARRAY && !rcv && (par[n] < 0 || nt_kind(nt, par[n]) != NK_LocalVariableWriteNode)))
         st[r] |= STRH_BAD;
       continue;
     }
@@ -21733,6 +21818,7 @@ static int share_strh_gate(Compiler *c) {
       changed = 1;
     }
   }
+  free(rf.n);
   free(st);
   return changed;
 }
