@@ -29622,6 +29622,13 @@ static int emit_deep_return_pickup(Compiler *c, int id, Buf *b) {
       repr_boxed_to_s_operand(c, id) < 0)
     return emit_strbuf_route(c, id, b);
   if (!strbuf_call_picks_up(c, id)) return 0;
+  emit_published_pickup(c, id, b);
+  return 1;
+}
+/* The call id run with its return channel cleared, then the handle its
+   target published, or a new one over the bytes it answered where none
+   did. */
+void emit_published_pickup(Compiler *c, int id, Buf *b) {
   int tvD = ++g_tmp;
   buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", tvD);
   int vs = view_push_repr(c, id, VR_STRBUF_BOX, 0);
@@ -29637,7 +29644,6 @@ static int emit_deep_return_pickup(Compiler *c, int id, Buf *b) {
   if (g_repr_check) repr_channel_pickup(c, id, strbuf_pickup_answers_nil(c, id));
   buf_printf(b, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf"
                 " : sp_String_new_shared(_v%d); })", tvD);
-  return 1;
 }
 
 static int emit_const_user_call(Compiler *c, int id, Buf *b) {

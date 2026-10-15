@@ -2730,8 +2730,30 @@ static int emit_boxed_by_kind(Compiler *c, int node, Buf *b) {
       return 1;
     }
     return 0;
+  /* a call whose targets publish their handle, where the plan boxes that
+     handle but no store marked the call for its pickup (a block's value
+     that map collects, read through a typed receiver's reader): the
+     pickup, boxed, where the bytes boxed whole were a copy that a later
+     change to the String through the receiver never reached */
+  case SPK_PUBLISHED: {
+    /* only a call to user methods, each publishing on its return: a builtin
+       (ENV.fetch with a default) never clears or sets the channel, so the
+       pickup could take a handle an earlier call left there */
+    int u = unwrap_parens(c, node), tg[CPT_MAX];
+    if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && !strbuf_call_picks_up(c, u) &&
+        nt_ref(c->nt, u, "block") < 0 && comp_ntype(c, u) != TY_POLY && repr_call_returns_handle(c, u) &&
+        cplan_targets(c, u, tg, CPT_MAX) > 0 && strbuf_pickup_published(c, u) && !arg_ran_first(node, 0) &&
+        !emit_boxed_lift(c, node) && share_plan_of(c, node, SPR_BOX, NULL).form == SPF_HANDLE) {
+      buf_puts(b, "sp_box_nullable_obj(");
+      emit_published_pickup(c, u, b);
+      buf_puts(b, ", SP_BUILTIN_STRBUF)");
+      RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
+      return 1;
+    }
+    return 0;
+  }
   case SPK_SLOT: case SPK_DEMANDED: case SPK_ELEM: case SPK_SLOT_POLY: case SPK_SELF: case SPK_BANG_BOX:
-  case SPK_POLY_ARMS: case SPK_EXC_MESSAGE: case SPK_EXC_SUPER: case SPK_PUBLISHED: case SPK_READER:
+  case SPK_POLY_ARMS: case SPK_EXC_MESSAGE: case SPK_EXC_SUPER: case SPK_READER:
   case SPK_ASSIGN: case SPK_OPERAND: case SPK_YIELD: case SPK_COND: case SPK_SEQUENCE:
   case SPK_LIFT:
     return 0;

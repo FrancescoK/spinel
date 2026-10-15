@@ -210,6 +210,9 @@ int masgn_face_elem(Compiler *c, int mw, int el);
 /* ...the handle of a boxed receiver's call whose arms answer a String, or of a sequence ending in one */
 void emit_poly_arms_handle(Compiler *c, int base, Buf *b);
 int strbuf_call_picks_up(Compiler *c, int id);
+/* ...the call run, then the handle its target published, or a new one
+   over its bytes (codegen_call.c) */
+void emit_published_pickup(Compiler *c, int id, Buf *b);
 /* ...and does every method such a pickup call v reaches publish its handle
    (codegen_stmt.c)? */
 int strbuf_pickup_published(Compiler *c, int v);
