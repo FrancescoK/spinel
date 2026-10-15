@@ -1,0 +1,121 @@
+"<a><b></a>": REXML::ParseException line=1 position=10
+Missing end tag for 'b' (got 'a')
+Line: 1
+Position: 10
+Last 80 unconsumed characters:
+"<a></b>": REXML::ParseException line=1 position=7
+Missing end tag for 'a' (got 'b')
+Line: 1
+Position: 7
+Last 80 unconsumed characters:
+"<a/>junk": REXML::ParseException line=1 position=8
+Malformed XML: Extra content at the end of the document (got 'junk')
+Line: 1
+Position: 8
+Last 80 unconsumed characters:
+"<a b=1/>": REXML::ParseException line=1 position=8
+Missing attribute value start quote: <b>
+Line: 1
+Position: 8
+Last 80 unconsumed characters:
+1/>
+"   ": REXML::ParseException line=1 position=3
+Malformed XML: No root element
+Line: 1
+Position: 3
+Last 80 unconsumed characters:
+"<a>": REXML::ParseException line=1 position=3
+Missing end tag for '/a'
+Line: 1
+Position: 3
+Last 80 unconsumed characters:
+"</a>": REXML::ParseException line=1 position=4
+Unexpected top-level end tag (got 'a')
+Line: 1
+Position: 4
+Last 80 unconsumed characters:
+"<a>\n  <b x='1'\n</a>": REXML::ParseException line=3 position=19
+Invalid attribute name: <<>
+Line: 3
+Position: 19
+Last 80 unconsumed characters:
+</a>
+"<r>\n<a/>\n</r>\nzz yy": REXML::ParseException line=4 position=19
+Malformed XML: Extra content at the end of the document (got '
+zz yy')
+Line: 4
+Position: 19
+Last 80 unconsumed characters:
+"<a b='1/>": REXML::ParseException line=1 position=9
+Missing attribute value end quote: <b>: <'>
+Line: 1
+Position: 9
+Last 80 unconsumed characters:
+1/>
+"x<a/>": REXML::ParseException line=1 position=5
+Malformed XML: Content at the start of the document (got 'x')
+Line: 1
+Position: 5
+Last 80 unconsumed characters:
+<a/>
+"<a b='1' b='2'/>": REXML::ParseException line=1 position=16
+Duplicate attribute "b"
+Line: 1
+Position: 16
+Last 80 unconsumed characters:
+/>
+"<a 1b='x'/>": REXML::ParseException line=1 position=11
+Invalid attribute name: <1b='x'>
+Line: 1
+Position: 11
+Last 80 unconsumed characters:
+1b='x'/>
+"<a><!-- x -- y --></a>": REXML::ParseException line=1 position=22
+Malformed comment
+Line: 1
+Position: 22
+Last 80 unconsumed characters:
+</a>
+"<a><![CDATA[x</a>": REXML::ParseException line=1 position=17
+Malformed CDATA: Missing end ']]>'
+Line: 1
+Position: 17
+Last 80 unconsumed characters:
+"<?xml version='1.0' standalone='maybe'?><a/>": REXML::ParseException line=1 position=40
+Malformed XML: XML declaration standalone is not yes or no : <maybe>
+Line: 1
+Position: 40
+Last 80 unconsumed characters:
+?>
+"<a/><?xml version='1.0'?>": REXML::ParseException line=1 position=25
+Malformed XML: XML declaration is not at the start
+Line: 1
+Position: 25
+Last 80 unconsumed characters:
+ version='1.0'?>
+"<a xmlns:xml='x'/>": REXML::ParseException line=1 position=18
+The 'xml' prefix must not be bound to any other namespace (http://www.w3.org/TR/REC-xml-names/#ns-decl)
+Line: 1
+Position: 18
+Last 80 unconsumed characters:
+/>
+"<z:a z:b='1' xmlns:z='u' b='2'/>": REXML::ParseException line=1 position=32
+Namespace conflict in adding attribute "b": Prefix "z" = "" and prefix "" = ""
+Line: 1
+Position: 32
+Last 80 unconsumed characters:
+/>
+"<a z:b='1' b='2' xmlns:z='u'/>": REXML::ParseException line=1 position=30
+Namespace conflict in adding attribute "b": Prefix "z" = "" and prefix "" = ""
+Line: 1
+Position: 30
+Last 80 unconsumed characters:
+xmlns:z='u'/>
+"<p:a/>": REXML::UndefinedNamespaceException Undefined prefix p found
+"<a p:b='1'/>": REXML::UndefinedNamespaceException Undefined prefix p found
+"<a b='<'/>": REXML::ParseException #<RuntimeError: Illegal character "<" in raw string "<">
+"<a>& b</a>": REXML::ParseException #<RuntimeError: Illegal character "&" in raw string "& b">
+"<a>&#0;</a>": REXML::ParseException #<RuntimeError: Illegal character "&#0;" in raw string "&#0;">
+"<a/><b/>": REXML::ParseException #<RuntimeError: attempted adding second root element to document>
+[REXML::ParseException, RuntimeError, StandardError]
+REXML::ParseException

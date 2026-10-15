@@ -1,0 +1,68 @@
+"2"
+"3"
+"2"
+4
+4
+["b", "a", "z"]
+["b", "1"]
+["a", "2"]
+["z:a", "3"]
+["xmlns:z", "u"]
+["b", "1"]
+["a", "2"]
+["z:a", "3"]
+["xmlns:z", "u"]
+"b"
+"a"
+"z:a"
+"xmlns:z"
+"<a b='1' a='2' z:a='3' xmlns:z='u'/>"
+"<a a='2' z:a='3' b='1' xmlns:z='u'/>"
+"z"
+"a"
+""
+REXML::Element
+"<a z:a='3' b='1' xmlns:z='u'/>"
+"UNDEFINED"
+"<UNDEFINED/>"
+"<y/>"
+"<y k='v'> ... </>"
+"<y k='v'>t</y>"
+"<z/>"
+"<y k='v'> ... </>"
+RuntimeError
+"index (0) must be >= 1"
+RuntimeError
+RuntimeError
+"attempted adding second root element to document"
+"1.0"
+"UTF-8"
+REXML::XMLDecl
+""
+"1.1"
+"UTF-8"
+""
+""
+["a", "c"]
+REXML::Text
+"a"
+"<r>Z<b/>c</r>"
+"<r>Z<b/>cq</r>"
+"<r>Zcq</r>"
+2
+"a<b"
+REXML::CData
+"<r><![CDATA[a<b]]></r>"
+"<r><![CDATA[a<bx]]></r>"
+"<r><s/></r>"
+"<r m='a&apos;b&quot;c' n='5'/>"
+"5"
+["n='5'", "m='a&apos;b&quot;c'", "o='x'"]
+true
+false
+true
+REXML::Document
+"q"
+1
+1
+false

@@ -1,0 +1,46 @@
+"<?xml version='1.0' encoding='UTF-8'?>\n<a x='1'><b/><c>t &lt; 2</c></a>"
+nil
+[["x", "1", "1"]]
+"<?xml version='1.0' standalone='yes'?><a/>"
+nil
+[]
+"<a q='he said \"hi\"' r='it&apos;s' s='1 &lt; 2 &amp; 3 &gt; 0' t='a&#39;b'/>"
+nil
+[["q", "he said \"hi\"", "he said \"hi\""], ["r", "it's", "it's"], ["s", "1 < 2 & 3 > 0", "1 &lt; 2 &amp; 3 &gt; 0"], ["t", "a'b", "a&#39;b"]]
+"<a>raw > gt and &quot;q&quot; and &#65;&#x42; and &apos; and &unknown;</a>"
+"raw > gt and \"q\" and AB and ' and &unknown;"
+[]
+"<a><![CDATA[x < y & z]]></a>"
+"x < y & z"
+[]
+"<a>\n  <b c='1' d='2'/>\n</a>"
+"\n  "
+[]
+"<!-- top --><a/><!-- after -->"
+nil
+[]
+"<a><?pi some data?><?bare?></a>"
+nil
+[]
+"<a a='2' z:a='3' b='1' xmlns:z='u'/>"
+nil
+[["b", "1", "1"], ["a", "2", "2"], ["z:a", "3", "3"], ["xmlns:z", "u", "u"]]
+"<a>\n line\n</a>"
+"\n line\n"
+[]
+"<a>é ż &#x17C;</a>"
+"é ż ż"
+[]
+" <a/>"
+nil
+[]
+"<a><b>x&quot;y&apos;z&amp;&lt;&gt;</b>tail<b>2</b><c/></a>"
+"x\"y'z&<>"
+"<a><b>x&quot;y&apos;z&amp;&lt;&gt;</b>new<b>2</b><c/></a>"
+"a&b"
+"<a><b>a&amp;amp;b</b>new<b>2</b><c/></a>"
+"<d k='v&apos;&quot;&lt;&amp;&gt;'/>"
+"v'\"<&>"
+"v&apos;&quot;&lt;&amp;&gt;"
+"<d/>"
+"<a><b/>new<b>2</b><c/><d/></a>"
