@@ -1,0 +1,21 @@
+"192.168.1.10"
+"::1"
+true
+false
+24
+"192.168.0.0"
+true
+true
+true
+true
+3232235786
+"10.1.168.192.in-addr.arpa"
+true
+-1
+"192.168.0.0"
+"::ffff:1.2.3.4"
+[IPAddr::AddressFamilyError, "address family mismatch"]
+[IPAddr::InvalidAddressError, "invalid address: "]
+[IPAddr::AddressFamilyError, "address family mismatch"]
+[IPAddr::InvalidAddressError, "invalid address: "]
+[IPAddr::InvalidAddressError, "invalid address: 300.1.1.1"]
