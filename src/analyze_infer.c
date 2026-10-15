@@ -5110,6 +5110,14 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
         comp_method_in_chain(c, s->class_id, name, NULL) < 0)
       { *out = TY_BOOL; return 1; }
   }
+  /* `require path` with a path known only at run time (sp_require_computed):
+     a feature the program was compiled with is loaded already, which CRuby
+     answers false, and any other raises LoadError -- a Boolean, so
+     `if require(backend)` (metrics' Config#require_backend) is a condition */
+  if (recv < 0 && argc == 1 && sp_streq(name, "require") && nt_kind(c->nt, argv[0]) != NK_StringNode &&
+      nt_kind(c->nt, argv[0]) != NK_SplatNode && comp_method_index(c, name) < 0 &&
+      !an_bare_call_class_owned(c, id))
+    { *out = TY_BOOL; return 1; }
 
   /* x.class -> a first-class Class value for every known receiver kind
      (name-backed for builtins, id-backed for user objects) */
