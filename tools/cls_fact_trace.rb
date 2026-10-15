@@ -8,7 +8,9 @@
 # (`<internal:kernel>`'s #class, #tap, ...). A call a C method of CRuby
 # makes back into the program (Array#== calling an element's #==) is
 # recorded with the callee file prefixed by "callback:": its receiver is
-# not the receiver of the call written on the line.
+# not the receiver of the call written on the line. The method is the name
+# the call was written with (callee_id), not the one an alias names
+# (method_id): the facts are keyed by the written name.
 out = File.open(ENV.fetch("CLS_FACT_TRACE_OUT"), "a")
 out.sync = true
 seen = {}
@@ -38,10 +40,10 @@ TracePoint.new(:call) do |tp|
   name = (mod ? recv : k_class.bind_call(recv)).name
   next unless name
   shown = mod ? "Class(#{name})" : name
-  key = [path, loc.lineno, tp.method_id, shown, tp.path]
+  key = [path, loc.lineno, tp.callee_id, shown, tp.path]
   next if seen[key]
   seen[key] = true
   src = (Object.const_source_location(name) rescue nil)&.first || ""
   callee = c_method.(loc.label) ? "callback:#{tp.path}" : tp.path
-  out.puts [path, loc.lineno, tp.method_id, shown, src, callee].join("\t")
+  out.puts [path, loc.lineno, tp.callee_id, shown, src, callee].join("\t")
 end.enable
