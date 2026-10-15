@@ -27,6 +27,7 @@
 #include <openssl/objects.h>
 #include <openssl/evp.h>
 #include <openssl/ecdsa.h>
+#include <openssl/rsa.h>
 #include <string.h>
 #include <fcntl.h>
 
@@ -934,4 +935,73 @@ sp_int sp_ec_check_point(const char *curve, const char *pub) {
   EC_GROUP_free(g);
   if (!pt) { sp_ssl_note("public key is not a point on this curve"); return 0; }
   return 1;
+}
+
+/* RSA signature verification over a public key given as its two halves, the
+   big-endian modulus and exponent bytes: the form every protocol that names
+   an RSA key carries it in (a COSE key's n and e, a JWK's). `md_name` is the
+   digest name ("SHA256", "sha384", ...) and the data is hashed here.
+   `pss` 0 is PKCS#1 v1.5; 1 is PSS with MGF1 over `mgf1_name` and the salt
+   length `saltlen` (-2 read from the signature, -1 the digest's length, else
+   that many bytes), which is CRuby's
+   `verify_pss(md, sig, data, salt_length:, mgf1_hash:)`.
+   Answers 1 for a good signature, 0 otherwise (the reason in last_error),
+   -1 for an unknown digest and -2 for an unknown MGF1 digest. */
+sp_int sp_rsa_verify(const char *n_bytes, const char *e_bytes, const char *md_name,
+                     const char *data, const char *sig, sp_int pss,
+                     const char *mgf1_name, sp_int saltlen) {
+  const EVP_MD *md = EVP_get_digestbyname(md_name);
+  const EVP_MD *mgf1 = pss ? EVP_get_digestbyname(mgf1_name) : md;
+  BIGNUM *n = NULL, *e = NULL;
+  RSA *rsa = NULL;
+  EVP_PKEY *pkey = NULL;
+  EVP_MD_CTX *ctx = NULL;
+  EVP_PKEY_CTX *pctx = NULL;
+  int rc = 0;
+
+  sp_ssl_errbuf[0] = 0;
+  if (!md) { sp_ssl_note("unsupported digest"); return -1; }
+  if (!mgf1) { sp_ssl_note("unsupported MGF1 digest"); return -2; }
+  n = BN_bin2bn((const unsigned char *)n_bytes, (int)sp_str_byte_len(n_bytes), NULL);
+  e = BN_bin2bn((const unsigned char *)e_bytes, (int)sp_str_byte_len(e_bytes), NULL);
+  if (!n || !e || BN_is_zero(n) || BN_is_zero(e)) {
+    BN_free(n); BN_free(e);
+    sp_ssl_note("RSA key needs a modulus and an exponent");
+    return 0;
+  }
+#if defined(__GNUC__) || defined(__clang__)
+# pragma GCC diagnostic push
+# pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+  /* RSA_set0_key takes ownership of n and e on success. */
+  if ((rsa = RSA_new()) && RSA_set0_key(rsa, n, e, NULL)) {
+    n = NULL; e = NULL;
+    if ((pkey = EVP_PKEY_new()) && EVP_PKEY_assign_RSA(pkey, rsa)) rsa = NULL;
+  }
+#if defined(__GNUC__) || defined(__clang__)
+# pragma GCC diagnostic pop
+#endif
+  if (pkey && !rsa && (ctx = EVP_MD_CTX_new()) &&
+      EVP_DigestVerifyInit(ctx, &pctx, md, NULL, pkey) == 1 &&
+      (!pss || (EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_PSS_PADDING) > 0 &&
+                EVP_PKEY_CTX_set_rsa_pss_saltlen(pctx, (int)saltlen) > 0 &&
+                EVP_PKEY_CTX_set_rsa_mgf1_md(pctx, mgf1) > 0))) {
+    rc = EVP_DigestVerify(ctx, (const unsigned char *)sig, sp_str_byte_len(sig),
+                          (const unsigned char *)data, sp_str_byte_len(data)) == 1;
+  }
+  EVP_MD_CTX_free(ctx);
+  EVP_PKEY_free(pkey);
+#if defined(__GNUC__) || defined(__clang__)
+# pragma GCC diagnostic push
+# pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+  RSA_free(rsa);
+#if defined(__GNUC__) || defined(__clang__)
+# pragma GCC diagnostic pop
+#endif
+  BN_free(n);
+  BN_free(e);
+  ERR_clear_error();
+  if (!rc) sp_ssl_note("signature did not verify");
+  return rc;
 }
