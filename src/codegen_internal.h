@@ -307,6 +307,8 @@ int strbuf_box_unrendered(Compiler *c, int v);
    in, or -1 (codegen_stmt.c) */
 int strbuf_self_chain_base(Compiler *c, int v);
 int strbuf_chain_has_block(Compiler *c, int v);
+/* --share-strings: `@s + x` as a new String for an ivar held as the shared handle (codegen_stmt.c) */
+void emit_strbuf_ivar_plus(Compiler *c, int value, const char *ref, Buf *b);
 /* --share-strings: does value v hand over a shared String as its handle
    (a variable, a route, a conditional with such an arm)? (codegen_stmt.c) */
 int strbuf_value_carries(Compiler *c, int v);

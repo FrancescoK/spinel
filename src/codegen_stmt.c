@@ -5738,6 +5738,16 @@ static void emit_str_op_assign_concat(Compiler *c, const char *slot, int v, Buf 
   buf_printf(b, "({ const char *_t%d = %s; SP_GC_ROOT_STR(_t%d); sp_str_concat(_t%d, ", tr, slot, tr, tr);
   emit_op_assign_str_rhs(c, v, 0, b); buf_puts(b, "); })");
 }
+/* `@s + x` for an ivar the rule holds as the shared handle (`ref`), as a new
+   String: the handle's bytes and the operand are each a copy that publishes
+   nothing (sp_strbuf_read), and each is rooted, as the other's read and the
+   concatenation allocate. */
+void emit_strbuf_ivar_plus(Compiler *c, int value, const char *ref, Buf *b) {
+  int ta = ++g_tmp, tb = ++g_tmp;
+  buf_printf(b, "({ const char *_t%d = sp_strbuf_read(%s); SP_GC_ROOT_STR(_t%d); const char *_t%d = ", ta, ref, ta, tb);
+  emit_op_assign_str_rhs(c, value, 1, b);   /* (strict: a non-String operand raises TypeError, as `+` does) */
+  buf_printf(b, "; SP_GC_ROOT_STR(_t%d); sp_String_new_fresh(sp_str_plus(_t%d, _t%d)); })", tb, ta, tb);
+}
 static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
                               const char *lval) {
   const NodeTable *nt = c->nt;
@@ -17419,12 +17429,10 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     }
     /* a slot the rule makes the shared handle: `@s += x` is `@s = @s + x`, a new
        String made from the handle's bytes, as the plain write emits it */
-    else if (vt == TY_STRBUF && op && sp_streq(op, "+")) {
-      char hread[320];
-      snprintf(hread, sizeof hread, "sp_strbuf_read_pub(%s)", ref);
-      buf_printf(b, "%s = sp_String_new_fresh(", ref);
-      emit_str_op_assign_concat(c, hread, nt_ref(nt, id, "value"), b);
-      buf_puts(b, ");\n");
+    else if (repr_share_rule(c) && vt == TY_STRBUF && op && sp_streq(op, "+")) {
+      buf_printf(b, "%s = ", ref);
+      emit_strbuf_ivar_plus(c, nt_ref(nt, id, "value"), ref, b);
+      buf_puts(b, ";\n");
     }
     else if (op && sp_streq(op, "+") && ty_is_array(vt)) {
       /* `@arr += other` = `@arr = @arr + other` (#3289), mirroring the

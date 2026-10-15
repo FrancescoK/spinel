@@ -5854,6 +5854,25 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     }
     else
       snprintf(ref, sizeof ref, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
+    TyKind svt = TY_UNKNOWN;
+    if (sc >= 0) { int iv = comp_ivar_index(&c->classes[sc], nm); if (iv >= 0) svt = c->classes[sc].ivar_types[iv]; }
+    const char *sop = nt_str(nt, id, "binary_operator");
+    /* a `+=` on an ivar the rule holds as the shared handle answers the
+       String it built, read from the handle as the ivar's own read is */
+    if (repr_share_rule(c) && svt == TY_STRBUF && sop && sp_streq(sop, "+")) {
+      if (g_pre) {
+        emit_stmt(c, id, g_pre, g_indent);
+        buf_printf(b, "sp_strbuf_read_pub(%s)", ref);
+      }
+      else {
+        char mk[300];
+        const char *m = ivar_write_mark(c, id, mk, sizeof mk);
+        buf_printf(b, "({ %s = ", ref);
+        emit_strbuf_ivar_plus(c, nt_ref(nt, id, "value"), ref, b);
+        buf_printf(b, "; %s%ssp_strbuf_read_pub(%s); })", m ? m : "", m ? " " : "", ref);
+      }
+      return;
+    }
     if (g_pre) {
       emit_stmt(c, id, g_pre, g_indent);
       buf_puts(b, ref);
