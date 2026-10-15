@@ -43,6 +43,8 @@ class LtbApp
   def chain_itself(v) = @s.itself.itself || v
   def chain_bang(v) = @s.upcase!.itself || v
   def chain_tap(v) = @s.itself.tap {} || v
+  def chain_freeze(v) = @s.itself.freeze || v
+  def chain_tap_mid(v) = @s.tap {}.tap { |z| z << "" }.itself || v
   def chain_cond(v) = (v ? @s.upcase!.itself : @t) || v
   def nested(v) = (@s.itself || @t) || v
 
@@ -92,6 +94,8 @@ check(:gs_bang) { |o| o.gs_bang(1) }
 check(:chain_itself) { |o| o.chain_itself(1) }
 check(:chain_bang) { |o| o.chain_bang(1) }
 check(:chain_tap) { |o| o.chain_tap(1) }
+check(:chain_freeze) { |o| o.chain_freeze(1) }
+check(:chain_tap_mid) { |o| o.chain_tap_mid(1) }
 check(:chain_cond) { |o| o.chain_cond(true) }
 check(:nested) { |o| o.nested(1) }
 

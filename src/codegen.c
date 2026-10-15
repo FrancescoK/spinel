@@ -2458,6 +2458,16 @@ static int emit_boxed_self_chain(Compiler *c, int node, Buf *b) {
   int sv_b = view_push_repr(c, node, VR_STRBUF_BOX, 0);
   emit_expr(c, node, b);
   view_pop(c, sv_b);
+  /* (a freeze over a call freezes the bytes it was given, not the handle:
+     the slot's is frozen once the chain has run, as a freeze straight on
+     the slot does) */
+  int frz = 0;
+  for (int n = unwrap_parens(c, node); n >= 0 && nt_kind(c->nt, n) == NK_CallNode;
+       n = unwrap_parens(c, nt_ref(c->nt, n, "receiver"))) {
+    const char *nm = nt_str(c->nt, n, "name");
+    if (nm && is_freeze_name(nm)) frz = 1;
+  }
+  if (frz) buf_printf(b, "; if (_t%d) sp_String_freeze(%s)", tb, sb.p ? sb.p : "");
   buf_printf(b, "; _t%d ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil(); })", tb, sb.p ? sb.p : "");
   free(sb.p);
   RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);

@@ -1479,11 +1479,6 @@ int strbuf_self_chain_base(Compiler *c, int v) {
       return -1;
     for (int i = 0; i < argc; i++)
       if (!subtree_is_pure_read(c, av[i]) && nt_kind(nt, av[i]) != NK_StringNode) return -1;
-    /* the chain's bytes are built from the inside out: a literal block over
-       a call runs ahead of the temps of the links around it, and a freeze
-       over a call freezes a copy, so they end the chain (the outermost
-       block, and a freeze straight on the slot, are fine) */
-    if (nt_kind(nt, r) == NK_CallNode && ((blk >= 0 && links > 0) || is_freeze_name(nm))) return -1;
     links++;
   }
   NodeKind k = v >= 0 ? nt_kind(nt, v) : NK_NONE;
@@ -1495,13 +1490,13 @@ int strbuf_self_chain_base(Compiler *c, int v) {
 /* --share-strings: does call v, or a link of its receiver chain, answer its
    receiver's handle by a route that boxes cannot render? The plan reads a
    call that answers its receiver as handing on that receiver's handle, but
-   three shapes have no such emitter, and their box is a copy (or C that does
-   not build): a `tap` given a literal block that is no handle route
-   (strbuf_route_tap) over a call, whose block's statements run ahead of the
-   temp the handle is held in; a call over a bang or an iterator given a
-   block (`s.upcase!.itself`), which the held-chain form does not box; and
+   three shapes have no such emitter, and their box is a copy: a `tap`
+   given a literal block that is no handle route (strbuf_route_tap) over a
+   call that is no chain over a slot (`gs.tap { }`); a call over a bang or
+   an iterator given a block (`s.upcase!.itself`) that is no such chain
+   either, which the held-chain form does not box; and
    a call without a block over one that mutates or freezes its receiver
-   (`(+(s << x))`, `s.freeze.itself`). */
+   (`(+(s << x))`, `gs.freeze.itself`). */
 int strbuf_box_unrendered(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   if (strbuf_self_chain_base(c, v) >= 0) return 0;
@@ -3801,6 +3796,17 @@ static int emit_self_mutator_stmt(Compiler *c, int v, Buf *b) {
   free(st.p);
   return 1;
 }
+/* Is v a `tap` given a literal block, whose statements run in the statement's
+   prelude (emit_tap_then_expr) and read the receiver's handle? That handle
+   is held there too, ahead of them (emit_bang_held_open): declared inside
+   the value expression it was named by statements that run before it. A
+   safe-navigation call keeps its handle inside its nil guard
+   (emit_bang_on_held), which holds the block's statements as well. */
+static int tap_block_hoists(Compiler *c, int v) {
+  const char *nm = nt_str(c->nt, v, "name");
+  int blk = nt_ref(c->nt, v, "block");
+  return g_pre && nm && is_tap_name(nm) && blk >= 0 && nt_kind(c->nt, blk) == NK_BlockNode && !call_is_safe_nav(c->nt, v);
+}
 /* The receiver handle of bang v held in _t<th> and rooted, opened as `({
    sp_String *_t<th> = <handle>; ...` in b: ahead of the statement instead
    (g_pre) when v is gsub!/sub!'s block form, whose loop runs there and
@@ -3810,7 +3816,7 @@ static int emit_self_mutator_stmt(Compiler *c, int v, Buf *b) {
    there (emit_bang_on_held). */
 static void emit_bang_held_open(Compiler *c, int v, int th, const char *href, int nonnil, int check_first,
                                 Buf *b) {
-  Buf *hb = sb_block_hoists(c, v) ? g_pre : b;
+  Buf *hb = sb_block_hoists(c, v) || tap_block_hoists(c, v) ? g_pre : b;
   int check = !nonnil && !call_is_safe_nav(c->nt, v);
   buf_puts(b, "({ ");
   size_t at = hb->len;
