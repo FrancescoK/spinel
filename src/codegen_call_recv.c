@@ -15136,16 +15136,18 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
        those, and stringifying it would answer the bytes of its #inspect. A
        Struct member or attr_reader called `bytes` hit exactly that (#3364);
        the `chars` arm below has carried this guard since #2909. */
-    if (!user_defines_or_reads(c, name)) {
+    if (!user_defines_or_reads(c, name) && !poly_cls_value_owns(c, id, name)) {
       emit_poly_str_array_call(c, id, recv, sp_streq(name, "bytes") ? "sp_str_bytes" : "sp_str_codepoints",
                                name, TY_INT_ARRAY, b);
       { *out = 1; return 1; }
     }
   }
   /* poly.chars -> TY_STR_ARRAY: a String read out of a container or
-     destructured from a pair (`|a, b|`) reaches here poly-typed (#2909). */
+     destructured from a pair (`|a, b|`) reaches here poly-typed (#2909).
+     A class method `chars` on a Class value the receiver holds is the
+     dispatch's to answer, beside the String's (`{a: "x", b: M}`). */
   if (sp_streq(name, "chars") && argc == 0 && nt_ref(nt, id, "block") < 0) {
-    if (!user_defines_or_reads(c, "chars")) {
+    if (!user_defines_or_reads(c, "chars") && !poly_cls_value_owns(c, id, "chars")) {
       emit_poly_str_array_call(c, id, recv, "sp_str_chars", "chars", TY_STR_ARRAY, b);
       { *out = 1; return 1; }
     }

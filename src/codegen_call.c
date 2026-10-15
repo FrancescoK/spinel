@@ -2372,6 +2372,19 @@ int user_defines_or_reads(Compiler *c, const char *name) {
   return 0;
 }
 
+/* A class method of `name` on one of the Class values the boxed receiver of
+   call `id` holds, as far as the walk bounds them (poly_cls_value_reaches):
+   the String face then answers only part of the call. No when the walk
+   leaves the values unbounded. */
+int poly_cls_value_owns(Compiler *c, int id, const char *name) {
+  if (!poly_recv_class_values(c, id)) return 0;
+  int n = 0;
+  const PolyCand *cc = comp_cmethod_candidates(c, name, &n);
+  for (int i = 0; i < n; i++)
+    if (!is_builtin_reopen(c->classes[cc[i].cls].name) && poly_cls_value_reaches(c, id, cc[i].cls)) return 1;
+  return 0;
+}
+
 /* BasicObject's own instance methods (the spinel-relevant surface). */
 int basicobject_own_method(const char *n) {
   static const char *const B[] = { "==", "!=", "!", "equal?", "instance_eval",
