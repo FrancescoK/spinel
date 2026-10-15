@@ -7872,9 +7872,9 @@ static int bi_generic_fn(Compiler *c, int id, const char *name) {
   int sc = c->nscope[id];
   /* the parameters are no locals of the site's scope: a read the inference
      asks answers boxed through the read's own narrowing */
-  c->ntype[self] = TY_POLY; c->nilnarrow[self] = TY_POLY; c->nscope[self] = sc; c->nscope[call] = sc;
+  comp_set_ntype(c, self, TY_POLY); comp_set_nilnarrow(c, self, TY_POLY); c->nscope[self] = sc; c->nscope[call] = sc;
   for (int k = 0; k < BI_GENERIC_MAX; k++) {
-    c->ntype[el[k]] = TY_POLY; c->nilnarrow[el[k]] = TY_POLY; c->nscope[el[k]] = sc;
+    comp_set_ntype(c, el[k], TY_POLY); comp_set_nilnarrow(c, el[k], TY_POLY); c->nscope[el[k]] = sc;
   }
   for (int n = 0; n <= BI_GENERIC_MAX; n++) c->nscope[an[n]] = sc;
   int tv = ++g_tmp, tr = ++g_tmp;
