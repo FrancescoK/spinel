@@ -3946,10 +3946,26 @@ static void sp_sched_block(sp_thread **waitlist, int defer_inject) {   /* PRE/PO
    takes the mutex next finds it there. */
 static void sp_sched_block_wl(sp_thread **waitlist, sp_wlock *wl, int defer_inject, sp_mutex *release) {
   sp_thread *self = g_current;
-  if (sp_thread_inject_pending(self)) {
-    wl_unlock(wl);
-    sp_fiber_fire_inject_if_pending();   /* raises; does not return */
-    wl_lock(wl);
+  /* A pending #kill/#raise is checked, and the park published, with the
+     thread's inject slot held (sp_fiber_inject_hold). sp_thread_deliver sets
+     the inject under the scheduler lock, which this does not take, and reads
+     the state after it: checked under `wl` alone, a delivery could land
+     between the check and the publication, find the thread running and leave
+     the inject for it to notice, while it went on to park until the list's
+     next wake -- forever, for a Queue#pop nothing will push to. Under the
+     slot's lock it lands before the check, and the thread raises, or after
+     the publication, and it is unparked. */
+  sp_Fiber *inj = sp_thread_inject_fiber(self);
+  int held = 0;
+  if (inj) {
+    int ik = sp_fiber_inject_hold(inj);
+    if (ik) {
+      sp_fiber_inject_release(inj, ik);
+      wl_unlock(wl);
+      sp_fiber_fire_inject_if_pending();   /* raises; does not return */
+      wl_lock(wl);
+    }
+    else held = 1;
   }
   SP_TH_SET_STATE(self, SP_TH_BLOCKED);
   SP_ATOMIC_STORE(&self->park, SP_PK_PARKING, __ATOMIC_SEQ_CST);
@@ -3957,6 +3973,7 @@ static void sp_sched_block_wl(sp_thread **waitlist, sp_wlock *wl, int defer_inje
   SP_ATOMIC_STORE(&self->wait_lock, wl, __ATOMIC_RELEASE);
   if (self->repark_front) { self->repark_front = 0; self->wait_next = *waitlist; *waitlist = self; }
   else { self->wait_next = NULL; sp_thread **pp = waitlist; while (*pp) pp = &(*pp)->wait_next; *pp = self; }
+  if (held) sp_fiber_inject_release(inj, 0);
   wl_unlock(wl);
   if (release) { SP_ATOMIC_STORE(&release->owner, NULL, __ATOMIC_SEQ_CST); sp_mutex_wake_waiter(release); }
   if (self == &g_main_thread) {

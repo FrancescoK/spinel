@@ -873,6 +873,16 @@ static void sp_fiber_consume_inject(sp_Fiber*f){SP_GC_ROOT(f);int kind=sp_fiber_
    the thread's next suspension point (sp_sched_block / sleep / Thread.pass /
    yield) delivers it inside the body, where its rescue/ensure can see it. */
 void sp_fiber_set_raise_inject(sp_Fiber*f,const char*cls,const char*msg,void*obj){SP_GC_ROOT(f);SP_GC_ROOT_STR(msg);sp_fiber_inject_publish(f,3,cls,msg,obj);}
+/* (#8702) The slot held across a step of the scheduler's own. A thread that
+   parks under a lock other than the scheduler's checks for a pending inject
+   and publishes itself BLOCKED with its slot held. sp_thread_deliver publishes
+   the inject under the same lock and reads the target's state after it, so a
+   delivery lands wholly before the check, and the thread raises, or after the
+   park is published, and it is unparked. Hold answers the kind pending;
+   release with that kind leaves the slot as it was. The holder takes no lock
+   while it holds the slot. */
+int sp_fiber_inject_hold(sp_Fiber*f){return sp_fiber_inject_lock(f);}
+void sp_fiber_inject_release(sp_Fiber*f,int kind){sp_fiber_inject_unlock(f,kind);}
 void sp_fiber_set_kill_inject(sp_Fiber*f){SP_GC_ROOT(f);sp_fiber_inject_publish(f,2,NULL,NULL,NULL);}
 void sp_fiber_defer_inject(void){sp_Fiber*f=sp_fiber_current;if(f)f->inject_defer++;}
 void sp_fiber_undefer_inject(void){sp_Fiber*f=sp_fiber_current;if(f&&f->inject_defer)f->inject_defer--;}
