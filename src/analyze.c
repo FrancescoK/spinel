@@ -37687,6 +37687,16 @@ static void mark_nullable_int_locals(Compiler *c) {
             changed |= mark_nullable_params_of_call(c, id, imeth[k].mi);
       }
       else if (mi >= 0) changed |= mark_nullable_params_of_call(c, id, mi);
+      /* a bare call where self is main reaches the method of a module the
+         top level includes, a copy of its own where that module took it
+         from another (`include IM` in M, `include M` at the top): the first
+         method of the name, which the line above marks, is not that copy,
+         and the nil reached a parameter the call never binds (#9193) */
+      if (recv < 0 && cn && nt_ref(nt, id, "arguments") >= 0 && self_is_main(c, id))
+        for (int k = 0; k < c->ntoplevel_includes; k++) {
+          int tmi = comp_method_in_chain(c, c->toplevel_includes[k], cn, NULL);
+          if (tmi >= 0 && tmi != mi) changed |= mark_nullable_params_of_call(c, id, tmi);
+        }
       /* a class value, boxed or not (`[Q, R].each { |o| o.cm(k: nil) }`),
          binds the class method of the name any class has */
       else if (recv >= 0 && cn && nt_ref(nt, id, "arguments") >= 0 &&
