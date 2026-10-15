@@ -8954,6 +8954,34 @@ int desugar_body_local_scopes(Compiler *c) {
 /* `singleton_class.define_method(:m) { }` (or `self.singleton_class.`) in a
    class or module body -> `define_singleton_method(:m) { }`: self is the
    class there, so its singleton class is the class's own. */
+/* `{}.compare_by_identity` -> `Hash.new.compare_by_identity`: the two make
+   the same empty hash, and the hash the later key writes type is the one
+   `Hash.new` hands on; the empty literal keeps the String-keyed default it
+   has with no key of its own (#9171). */
+int desugar_empty_hash_compare_by_identity(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0, n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int r = nt_ref(nt, id, "receiver");
+    if (!nm || !sp_streq(nm, "compare_by_identity") || r < 0 || nt_kind(nt, r) != NK_HashNode) continue;
+    int en = 0; nt_arr(nt, r, "elements", &en);
+    if (en != 0) continue;
+    int k = nt_new_node(nt, "ConstantReadNode");
+    if (k < 0) continue;
+    nt_node_set_str(nt, k, "name", "Hash");
+    nt_node_reset(nt, r, "CallNode");
+    nt_node_set_str(nt, r, "name", "new");
+    nt_node_set_ref(nt, r, "receiver", k);
+    nt_node_set_ref(nt, r, "arguments", -1);
+    nt_node_set_ref(nt, r, "block", -1);
+    changed = 1;
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 int desugar_singleton_class_define_method(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;

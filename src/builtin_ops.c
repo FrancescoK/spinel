@@ -1933,7 +1933,7 @@ static const BuiltinOp bop_rows[] = {
                        BOP_K(TY_POLY_POLY_HASH) | BOP_K(TY_INT_ARRAY) | BOP_K(TY_FLOAT_ARRAY) | \
                        BOP_K(TY_STR_ARRAY) | BOP_K(TY_POLY_ARRAY) | BOP_K(TY_INT_ARRAY_ARRAY) | \
                        BOP_K(TY_FLOAT_ARRAY_ARRAY))
-  { BOP_ANY_HASH, "compare_by_identity?", 0, 0, BF_ANY,  TY_BOOL,        BOPE_TEMPLATE, "((void)($r), 0)" },  /* always false; the receiver still runs */
+  { BOP_ANY_HASH, "compare_by_identity?", 0, 0, BF_ANY,  TY_BOOL,        BOPE_TEMPLATE, "sp_hash_ident_p($r)" },  /* set only on a PolyPoly or SymPoly hash (#9171) */
   { BOP_ANY_HASH, "equal?",           1,   1, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "((void *)($r) == (void *)($e0))", HASH_OR_ARRAY },  /* pointer identity */
   /* nil is the NULL a Hash slot holds when it can be nil (a seeded
      `Hash[...]?` answer, an ivar set later), the same object as nil */

@@ -8,6 +8,7 @@
 #include "holder.h"
 #include "builtin_ops.h"
 #include "share.h"
+static const char *cbi_identity_refusal(Compiler *c, int id, int recv, TyKind rt);
 
 /* ---- nil out of band: an emitter whose C result is an sp_oint / sp_ofloat
    leaves it bare when the node is one (node_is_oint: the dispatcher's
@@ -6203,6 +6204,54 @@ static void emit_str_poly_merge(Compiler *c, TyKind rt, TyKind at, int recv, int
   buf_puts(b, th ? "); })" : ")");
 }
 
+/* Hash#compare_by_identity on a typed hash (#9171): the identity variant's
+   call, or a refusal naming why (cbi_identity_refusal). */
+static int emit_hash_compare_by_identity(Compiler *c, int id, int recv, TyKind rt, int argc, Buf *b) {
+  const NodeTable *nt = c->nt;
+  /* `x = Hash.new(...).compare_by_identity`: the fresh hash is the one
+     x holds, so it takes x's variant -- the key writes type x, not the
+     `Hash.new` in front of the call */
+  int cp = -1;
+  { int *par = an_parent_map(nt); if (par) { cp = par[id]; free(par); } }
+  TyKind ht = cp >= 0 ? comp_ntype(c, cp) : TY_UNKNOWN;
+  int fresh = nt_kind(nt, recv) == NK_CallNode && sp_streq(nt_str(nt, recv, "name"), "new") &&
+              nt_kind(nt, nt_ref(nt, recv, "receiver")) == NK_ConstantReadNode &&
+              sp_streq(nt_str(nt, nt_ref(nt, recv, "receiver"), "name"), "Hash") &&
+              nt_ref(nt, recv, "block") < 0;
+  if (fresh && ty_is_hash(ht) && ht != rt) {
+    int fa = 0; const int *fv = call_args(nt, recv, &fa);
+    const char *why = cbi_identity_refusal(c, id, recv, ht);
+    if (!why && fa > 1) why = "Hash.new takes one default here";
+    if (!why && fa == 1 && ht != TY_POLY_POLY_HASH && ht != TY_SYM_POLY_HASH) why = "its keys are Strings, Integers or Floats";
+    if (why) {
+      char msg[256];
+      snprintf(msg, sizeof msg, "Hash#compare_by_identity (identity-keyed hashing): %s", why);
+      unsupported(c, id, msg);
+    }
+    buf_printf(b, "sp_%sHash_compare_by_identity(", ty_hash_cname(ht));
+    if (fa == 1) {
+      buf_printf(b, "sp_%sHash_new_with_default(", ty_hash_cname(ht));
+      emit_boxed(c, fv[0], b);
+      buf_puts(b, ")");
+    }
+    else buf_printf(b, "sp_%sHash_new()", ty_hash_cname(ht));
+    buf_puts(b, ")");
+    return 1;
+  }
+  const char *why = argc ? "it takes no argument" : cbi_identity_refusal(c, id, recv, rt);
+  if (why) {
+    char msg[256];
+    snprintf(msg, sizeof msg, "Hash#compare_by_identity (identity-keyed hashing): %s", why);
+    unsupported(c, id, msg);
+  }
+  /* a Symbol-keyed hash already finds a key by its identity: a Symbol is
+     its own value. Only the predicate tells the two apart. */
+  buf_printf(b, "sp_%sHash_compare_by_identity(", ty_hash_cname(rt));
+  emit_expr(c, recv, b);
+  buf_puts(b, ")");
+  return 1;
+}
+
 int emit_hash_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -6225,8 +6274,7 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "merge") && argc == 1 && nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockArgumentNode &&
         repr_hash_is(repr_of(c, id), TY_POLY, TY_POLY) && emit_merge_any_block_boxed(c, id, recv, argv[0], b))
       return 1;
-    if (sp_streq(name, "compare_by_identity"))  /* any arity: identity hashing is unsupported */
-      unsupported(c, id, "Hash#compare_by_identity (identity-keyed hashing)");
+    if (sp_streq(name, "compare_by_identity")) return emit_hash_compare_by_identity(c, id, recv, rt, argc, b);
     const char *hn = ty_hash_cname(rt);
     if (hn) {
       /* select! / filter! / reject! / keep_if / delete_if { |k, v| cond } in
@@ -16902,6 +16950,128 @@ static void emit_poly_encoding_mutator(Compiler *c, const char *name, int recv, 
   buf_puts(b, "sp_box_str(");
   emit_str_force_encoding_held(c, name, rv, argv, argc, ta, b);
   buf_puts(b, "); })");
+}
+
+
+/* Hash#compare_by_identity (#9171). CRuby then finds a key by equal?.
+   Spinel can do that only where identity is the same here as there: a key
+   that is an object compared by pointer (a program class's instance that is
+   not laid out by value, an Array, a Hash, an IO, a Proc, ...) or a Symbol,
+   nil, true or false. A String may be one object here where CRuby has two
+   (the frozen literal pool), an Integer or a Float is held by value where a
+   Bignum or a non-flonum is a new object each time in CRuby, so a hash
+   that may see such a key stays refused. The hash has to be held in one
+   local or ivar whose every use the compiler sees: each a call on it of a
+   kind that takes no new hash out of it (those keep identity in CRuby), its
+   keys of the kinds above. The answer is NULL when it is accepted, else the
+   reason. */
+static int cbi_key_ok(Compiler *c, int k) {
+  TyKind t = comp_ntype(c, k);
+  if (ty_is_object(t)) {
+    int oc = ty_object_class(t);
+    return oc >= 0 && !c->classes[oc].is_value_type;
+  }
+  return ty_is_array(t) || ty_is_hash(t) || t == TY_SYMBOL || t == TY_NIL || t == TY_BOOL ||
+         t == TY_PROC || t == TY_METHOD || t == TY_IO || t == TY_THREAD || t == TY_MUTEX ||
+         t == TY_QUEUE || t == TY_EXCEPTION || t == TY_DIR || t == TY_CLASS;
+}
+static const char *cbi_use_ok(Compiler *c, int use, const int *par) {
+  const NodeTable *nt = c->nt;
+  int call = par[use];
+  NodeKind ck = call >= 0 ? nt_kind(nt, call) : NK_NONE;
+  /* `h[k] += 1`, `h[k] ||= v`: an index write reads and stores key k */
+  if ((ck == NK_IndexOperatorWriteNode || ck == NK_IndexOrWriteNode || ck == NK_IndexAndWriteNode) &&
+      nt_ref(nt, call, "receiver") == use) {
+    int an = 0; const int *av = call_args(nt, call, &an);
+    return an == 1 && cbi_key_ok(c, av[0]) ? NULL : "a key may be a String, an Integer, a Float or a boxed value";
+  }
+  if (ck != NK_CallNode || nt_ref(nt, call, "receiver") != use)
+    return "the hash is used other than as a receiver";
+  const char *m = nt_str(nt, call, "name");
+  static const char *const keyed[] = { "[]", "[]=", "store", "fetch", "key?", "has_key?", "include?",
+                                       "member?", "delete", "dig", NULL };
+  static const char *const plain[] = { "each", "each_pair", "each_key", "each_value", "keys", "values",
+                                       "size", "length", "count", "empty?", "any?", "none?", "all?",
+                                       "delete_if", "keep_if", "reject!", "select!", "filter!", "clear",
+                                       "compare_by_identity", "compare_by_identity?", "freeze", "frozen?",
+                                       "to_a", "map", "flat_map", "each_with_object", "sum", "min_by",
+                                       "max_by", "sort_by", "find", "detect", "default", "nil?", NULL };
+  for (int i = 0; plain[i]; i++) if (m && sp_streq(m, plain[i])) return NULL;
+  for (int i = 0; keyed[i]; i++) {
+    if (!m || !sp_streq(m, keyed[i])) continue;
+    int an = 0; const int *av = call_args(nt, call, &an);
+    if (an < 1 || !cbi_key_ok(c, av[0])) return "a key may be a String, an Integer, a Float or a boxed value";
+    /* `h[k] ||= v` and the like read the key the same way */
+    return NULL;
+  }
+  return "a method that answers another hash, or one the compiler cannot follow, is called on it";
+}
+static const char *cbi_identity_refusal(Compiler *c, int id, int recv, TyKind rt) {
+  const NodeTable *nt = c->nt;
+  if (rt != TY_POLY_POLY_HASH && rt != TY_SYM_POLY_HASH) return "its keys are Strings, Integers or Floats";
+  int *par = an_parent_map(nt);
+  if (!par) return "out of memory";
+  /* the holder: `x = <hash>.compare_by_identity`, `@x = ...`, `@x ||= ...`,
+     or `x.compare_by_identity` on the holder itself */
+  int holder_kind = -1; const char *hname = NULL; int hcls = -1; Scope *hsc = NULL;
+  NodeKind rk = nt_kind(nt, recv);
+  int p = par[id];
+  NodeKind pk = p >= 0 ? nt_kind(nt, p) : NK_NONE;
+  if (rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode) {
+    holder_kind = rk; hname = nt_str(nt, recv, "name");
+  } else if (pk == NK_LocalVariableWriteNode || pk == NK_InstanceVariableWriteNode ||
+             pk == NK_InstanceVariableOrWriteNode || pk == NK_LocalVariableOrWriteNode) {
+    holder_kind = (pk == NK_LocalVariableWriteNode || pk == NK_LocalVariableOrWriteNode)
+                  ? NK_LocalVariableReadNode : NK_InstanceVariableReadNode;
+    hname = nt_str(nt, p, "name");
+  }
+  const char *why = NULL;
+  /* its answer is the hash again: one more name the uses below do not see,
+     unless it is the holder's write or nothing reads it */
+  if (rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode) {
+    if (pk != NK_StatementsNode) why = "its answer is used as another name for the hash";
+  }
+  if (!why && !hname) why = "the hash is not held in a local or an instance variable";
+  else if (holder_kind == NK_InstanceVariableReadNode) hcls = comp_ivar_owner(c, rk == NK_InstanceVariableReadNode ? recv : p);
+  else hsc = comp_scope_of(c, id);
+  for (int n = 0; !why && n < nt->count; n++) {
+    NodeKind k = nt_kind(nt, n);
+    const char *nn = nt_str(nt, n, "name");
+    if (!nn || !sp_streq(nn, hname)) continue;
+    int same = holder_kind == NK_InstanceVariableReadNode ? comp_ivar_owner(c, n) == hcls
+                                                          : comp_scope_of(c, n) == hsc;
+    if (!same) continue;
+    if (k == holder_kind) { why = cbi_use_ok(c, n, par); continue; }
+    /* every value stored into the holder is this hash, a new empty one made
+       identity the same way, or nil */
+    int isw = holder_kind == NK_InstanceVariableReadNode
+              ? (k == NK_InstanceVariableWriteNode || k == NK_InstanceVariableOrWriteNode ||
+                 k == NK_InstanceVariableOperatorWriteNode || k == NK_InstanceVariableAndWriteNode)
+              : (k == NK_LocalVariableWriteNode || k == NK_LocalVariableOrWriteNode ||
+                 k == NK_LocalVariableOperatorWriteNode || k == NK_LocalVariableAndWriteNode ||
+                 k == NK_LocalVariableTargetNode);
+    if (!isw) continue;
+    int v = nt_ref(nt, n, "value");
+    if (n == p || (v >= 0 && nt_kind(nt, v) == NK_NilNode)) continue;
+    /* a hash made right there, which no other name holds: `{...}` (its keys
+       of the kinds above), `Hash.new(...)`, `... .compare_by_identity` */
+    const char *vn = v >= 0 && nt_kind(nt, v) == NK_CallNode ? nt_str(nt, v, "name") : NULL;
+    int vr = vn ? nt_ref(nt, v, "receiver") : -1;
+    if (vn && sp_streq(vn, "compare_by_identity")) continue;
+    if (vn && sp_streq(vn, "new") && vr >= 0 && nt_kind(nt, vr) == NK_ConstantReadNode &&
+        sp_streq(nt_str(nt, vr, "name"), "Hash")) continue;
+    if (v >= 0 && nt_kind(nt, v) == NK_HashNode) {
+      int en = 0; const int *ev = nt_arr(nt, v, "elements", &en);
+      for (int e = 0; e < en && !why; e++) {
+        int key = nt_kind(nt, ev[e]) == NK_AssocNode ? nt_ref(nt, ev[e], "key") : -1;
+        if (key < 0 || !cbi_key_ok(c, key)) why = "a key may be a String, an Integer, a Float or a boxed value";
+      }
+      continue;
+    }
+    why = "the variable holding it is also given another value";
+  }
+  free(par);
+  return why;
 }
 
 int emit_poly_call(Compiler *c, int id, Buf *b) {
