@@ -2,6 +2,7 @@
 #include "repr.h"
 #include "share.h"
 #include "holder.h"
+#include "call_plan.h"
 
 /* defined? support: does this subtree reference a constant the compiler
    cannot resolve? Any such reference makes the whole defined? answer nil
@@ -97,10 +98,109 @@ static void interp_plan_free(InterpPlan *pl) {
    them ran (`"#{x.change} #{x.change}"`); its bytes taken as the part ran,
    the result kept the String as it was then. */
 static int interp_part_reads_late(Compiler *c, const int *parts, int n, int k, int expr) {
-  if (!call_publishes_shared_handle(c, expr)) return 0;
+  /* (a call publishing the handle of a String the rule shares, a read of a
+     slot that is the handle, a boxed receiver's call whose arms answer one:
+     any value the String plan can hand over as the handle) */
+  int u = unwrap_parens(c, expr);
+  int holds = call_publishes_shared_handle(c, expr);
+  if (!holds && u >= 0 && repr_share_rule(c) && comp_ntype(c, u) == TY_STRING && !arg_ran_first(u, 0))
+    holds = share_node_shares(c, u) && share_plan_with_need(c, u, SPR_TAKE, SPN_OBJECT).form == SPF_HANDLE &&
+            share_plan_producer(c, u, NULL) != SPK_NONE;
+  if (!holds) return 0;
   for (int j = k + 1; j < n; j++)
     if (operand_may_change_string(c, parts[j])) return 1;
   return 0;
+}
+
+/* --share-strings: what the subtree at n does to the variable v reads (a
+   local, an instance variable or a global of that name): bit 1, a String
+   mutator called on it; bit 2, a write that rebinds it. */
+static int interp_changes_var(Compiler *c, int n, NodeKind vk, const char *vn) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  int bits = 0;
+  if (k == NK_CallNode && vn) {
+    int r = nt_ref(nt, n, "receiver");
+    const char *nm = nt_str(nt, n, "name");
+    if (r >= 0 && nt_kind(nt, r) == vk && nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), vn) && nm &&
+        (is_string_rebind_mutator(nm) || bop_name_mutates(nm, 0)))
+      bits |= 1;
+  }
+  if (vn && nt_str(nt, n, "name") && sp_streq(nt_str(nt, n, "name"), vn) &&
+      ((vk == NK_LocalVariableReadNode && (k == NK_LocalVariableWriteNode || k == NK_LocalVariableOperatorWriteNode ||
+                                           k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode ||
+                                           k == NK_LocalVariableTargetNode)) ||
+       (vk == NK_InstanceVariableReadNode && (k == NK_InstanceVariableWriteNode || k == NK_InstanceVariableOperatorWriteNode ||
+                                              k == NK_InstanceVariableOrWriteNode || k == NK_InstanceVariableAndWriteNode ||
+                                              k == NK_InstanceVariableTargetNode)) ||
+       (vk == NK_GlobalVariableReadNode && (k == NK_GlobalVariableWriteNode || k == NK_GlobalVariableOperatorWriteNode ||
+                                            k == NK_GlobalVariableOrWriteNode || k == NK_GlobalVariableAndWriteNode ||
+                                            k == NK_GlobalVariableTargetNode))))
+    bits |= 2;
+  /* a method of the program's own handed the variable (`f(s)`) may change
+     it in place through its parameter, and one called on self may change an
+     instance variable */
+  if (k == NK_CallNode && cplan_user(c, n)->mi >= 0) {
+    int args = nt_ref(nt, n, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    for (int i = 0; i < an; i++)
+      if (nt_kind(nt, av[i]) == vk && nt_str(nt, av[i], "name") && vn && sp_streq(nt_str(nt, av[i], "name"), vn)) bits |= 1;
+    int r = nt_ref(nt, n, "receiver");
+    Scope *sc = comp_scope_of(c, n);
+    if (vk == NK_InstanceVariableReadNode && (r < 0 || nt_kind(nt, r) == NK_SelfNode) && vn && sc &&
+        subtree_may_write_ivar(c, n, vn, sc->class_id, 0))
+      bits |= 1;
+  }
+  for (int i = 0; i < nt_num_refs(nt, n); i++) bits |= interp_changes_var(c, nt_ref_at(nt, n, i), vk, vn);
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) bits |= interp_changes_var(c, ids[j], vk, vn);
+  }
+  return bits;
+}
+/* ...the instance variable a call to a method of the program's own that
+   answers it (`def m = @s`, an attr_reader) reads: its name, or NULL */
+static const char *interp_reader_var(Compiler *c, int call, char *buf, size_t cap) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, call) != NK_CallNode) return NULL;
+  const CallPlan *p = cplan_user(c, call);
+  if (p->mi >= 0 && p->dispatch == CP_DIRECT) {
+    int body = c->scopes[p->mi].body, n = 0;
+    const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+    int last = n == 1 ? st[0] : (body >= 0 && nt_kind(nt, body) == NK_InstanceVariableReadNode ? body : -1);
+    return last >= 0 && nt_kind(nt, last) == NK_InstanceVariableReadNode ? nt_str(nt, last, "name") : NULL;
+  }
+  /* an attr_reader of the class the call is made in (self) */
+  const char *nm = nt_str(nt, call, "name");
+  int r = nt_ref(nt, call, "receiver");
+  Scope *sc = comp_scope_of(c, call);
+  if (p->mi < 0 && nm && (r < 0 || nt_kind(nt, r) == NK_SelfNode) && nt_ref(nt, call, "arguments") < 0 &&
+      nt_ref(nt, call, "block") < 0 && sc && sc->class_id >= 0 && !sc->is_cmethod &&
+      comp_reader_in_chain(c, sc->class_id, nm, NULL)) {
+    snprintf(buf, cap, "@%s", nm);
+    return buf;
+  }
+  return NULL;
+}
+/* ...is part k, a read of a variable that holds its bytes (no handle), changed
+   in place by a later part and rebound by none? CRuby reads the String after
+   the last part ran, so the variable is read there (a rebinding write keeps
+   the String the part named). */
+static int interp_var_read_late(Compiler *c, const int *parts, int n, int k, int expr) {
+  const NodeTable *nt = c->nt;
+  int u = unwrap_parens(c, expr);
+  if (!repr_share_rule(c) || u < 0) return 0;
+  /* (a call that answers an instance variable is a read of it) */
+  char rvb[96];
+  const char *rv = interp_reader_var(c, u, rvb, sizeof rvb);
+  NodeKind uk = rv ? NK_InstanceVariableReadNode : nt_kind(nt, u);
+  const char *un = rv ? rv : nt_str(nt, u, "name");
+  if (uk != NK_LocalVariableReadNode && uk != NK_InstanceVariableReadNode && uk != NK_GlobalVariableReadNode) return 0;
+  if (!un || comp_ntype(c, u) != TY_STRING || arg_ran_first(u, 0)) return 0;
+  int bits = 0;
+  for (int j = k + 1; j < n; j++) bits |= interp_changes_var(c, parts[j], uk, un);
+  return bits == 1;
 }
 
 static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
@@ -463,6 +563,8 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         if (bn == 1 && t == TY_STRING && !vexpr[0] && strbuf_read_copies(c, expr))
           for (int k2 = k + 1; k2 < n && !defer; k2++)
             defer = nt_kind(nt, parts[k2]) == NK_EmbeddedStatementsNode && subtree_has_side_effect(c, parts[k2]);
+        /* --share-strings: a variable that holds its bytes, changed in place by a later part */
+        if (!defer && bn == 1 && t == TY_STRING && !vexpr[0]) defer = interp_var_read_late(c, parts, n, k, expr);
         buf_printf(defer ? &late : &decls, "const char *_t%d = %s; SP_GC_ROOT(_t%d); size_t _l%d = sp_str_byte_len(_t%d); ",
                    tv2, conv.p ? conv.p : "sp_str_empty", tv2, tv2, tv2);
       }
