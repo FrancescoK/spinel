@@ -51,3 +51,9 @@ nil
 3
 100000
 100000
+[9, 8, 7, 6]
+#<Enumerator: 1:upto(5.5)>
+#<Enumerator: 9:downto(2)>
+15
+[3, 4]
+[]

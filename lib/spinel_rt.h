@@ -4616,11 +4616,14 @@ static sp_int sp_poly_size_n(sp_RbVal v, sp_bool *none) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STR_RANGE) { *none = TRUE; return 0; }
   if (v.tag == SP_TAG_BIGINT) return sp_bigint_int_size((sp_Bigint *)v.v.p);
   /* an Enumerator's size is its own (#size), not a length: a boxed
-     each_slice(2) enumerator answered 0. A size that is not a count (nil, an
-     infinite one) reads as nil. */
+     each_slice(2) enumerator answered 0. A nil size reads as nil; one this
+     Integer-or-nil answer cannot hold (Infinity, a Bignum) raises rather
+     than read as nil. */
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_ENUMERATOR) {
     sp_RbVal es = sp_Enumerator_size_p(v.v.p);
     if (es.tag == SP_TAG_INT) return es.v.i;
+    if (es.tag == SP_TAG_FLT || es.tag == SP_TAG_BIGINT)
+      sp_raise_cls("NotImplementedError", sp_sprintf("Enumerator#size: %s on a boxed Enumerator is not an Integer this call can hold", sp_poly_inspect(es)));
     *none = TRUE; return 0;
   }
   /* String#size is String#length: characters, not bytes (#4251) */
@@ -18245,42 +18248,85 @@ static sp_Enumerator *sp_poly_blockless_enum(sp_RbVal v, const char *m) {
    "downto" with `lim` the limit as written, or NULL for times. */
 /* A long or endless count is walked as far as it is read, as CRuby walks
    it, rather than laid out: `1.upto(Float::INFINITY)` and `(10**12).times`
-   (`left` < 0 is endless) */
-typedef struct { sp_int first; sp_int step; sp_int left; sp_int recv; } sp_int_step_cap;
+   (`left` < 0 is endless). A Bignum `lim` the walk heads toward ends it
+   instead of a count. A walk past the Integer word steps as Integer#+ does
+   in the build's overflow mode, so promote mode goes on into Bignums as
+   CRuby does, and a step is taken only when another member is read. */
+typedef struct { sp_int first; sp_int step; sp_int left; sp_int recv; sp_RbVal lim; } sp_int_step_cap;
+static void sp_int_step_cap_scan(void *p) { sp_mark_rbval(((sp_int_step_cap *)p)->lim); }
 static void sp_int_step_gen(sp_Fiber *f) {
   sp_int_step_cap *cap = (sp_int_step_cap *)f->user_data;
-  sp_int v = cap->first;
-  for (sp_int n = cap->left; n != 0; n--) { sp_Fiber_yield(sp_box_int(v)); v += cap->step; }
+  sp_RbVal v = sp_box_int(cap->first);
+  SP_GC_ROOT_RBVAL(v);
+  sp_bool bounded = cap->lim.tag == SP_TAG_BIGINT;
+  for (sp_int n = cap->left; n != 0; n--) {
+    if (bounded && (cap->step > 0 ? sp_poly_gt(v, cap->lim) : sp_poly_lt(v, cap->lim))) break;
+    sp_Fiber_yield(v);
+    if (n == 1) break;
+    v = sp_poly_add(v, sp_box_int(cap->step));
+  }
   f->yielded_value = sp_box_int(cap->recv);   /* the walk answers the receiver */
 }
 #define SP_INT_STEP_ENUM_LAYOUT_MAX 65536
 /* A boxed limit of #upto (`up`) or #downto as the bound its walk stops at:
-   a Float floors or ceils, a Bignum is past every Integer the walk can reach */
+   a Float floors or ceils; a Bignum is past every Integer the walk can
+   reach, ahead of it (the word's end) or behind it (the word's other end,
+   which leaves the walk empty unless it starts there: the Enumerator walk,
+   sp_int_step_enum, reads the Bignum itself) */
 static sp_int sp_int_step_lim(sp_RbVal v, int up) {
   if (v.tag == SP_TAG_INT) return v.v.i;
   if (v.tag == SP_TAG_FLT) return sp_flt_range_bound(v.v.f, up);
-  if (v.tag == SP_TAG_BIGINT) return sp_bigint_sign(sp_poly_as_bigint(v)) > 0 ? INTPTR_MAX : INTPTR_MIN + 1;
+  if (v.tag == SP_TAG_BIGINT) return sp_bigint_sign(sp_poly_as_bigint(v)) > 0 ? INTPTR_MAX : INTPTR_MIN;
   sp_raise_cls("ArgumentError", sp_sprintf("comparison of Integer with %s failed", sp_poly_cmp_err_repr(v)));
   return 0;
+}
+/* The Range a blockless #upto (`up`) or #downto from `recv` with a boxed
+   limit stands for where its chain keeps it: a Bignum away from the walk
+   leaves it empty, and one toward it would walk past the Integer word, which
+   a Range of words cannot hold, so that is refused here rather than cut
+   short */
+static sp_Range sp_int_step_range(sp_int recv, sp_RbVal lim, int up) {
+  if (lim.tag == SP_TAG_BIGINT) {
+    if ((sp_bigint_sign(sp_poly_as_bigint(lim)) > 0) == (up != 0))
+      sp_raise_cls("NotImplementedError", sp_sprintf("Integer#%s toward a Bignum limit is not supported in this call chain", up ? "upto" : "downto"));
+    return (sp_Range){ .first = 0, .last = 0, .excl = 1 };
+  }
+  sp_int l = sp_int_step_lim(lim, up);
+  return up ? (sp_Range){ .first = recv, .last = l, .excl = 0 } : sp_range_new_step(recv, l, 0, -1LL);
 }
 static sp_Enumerator *sp_int_step_enum(sp_Range rng, sp_int recv, const char *op, sp_RbVal lim) {
   SP_GC_ROOT_RBVAL(lim);
   sp_int st = rng.step ? rng.step : 1;
   sp_bool endless = lim.tag == SP_TAG_FLT && isinf(lim.v.f) && (st > 0) == (lim.v.f > 0);
-  sp_int n = endless ? 0 : sp_range_count(rng);
+  /* a Bignum limit: the walk heads toward it, past the word, or is empty */
+  sp_bool big = lim.tag == SP_TAG_BIGINT;
+  sp_bool toward = big && (sp_bigint_sign(sp_poly_as_bigint(lim)) > 0) == (st > 0);
+  if (big && !toward) rng = (sp_Range){ .first = 0, .last = 0, .excl = 1 };
+  sp_int n = endless || toward ? 0 : sp_range_count(rng);
   sp_Enumerator *e;
-  if (endless || n > SP_INT_STEP_ENUM_LAYOUT_MAX) {
-    sp_int_step_cap *cap = (sp_int_step_cap *)sp_gc_alloc(sizeof *cap, NULL, NULL);
+  if (endless || toward || n > SP_INT_STEP_ENUM_LAYOUT_MAX) {
+    sp_int_step_cap *cap = (sp_int_step_cap *)sp_gc_alloc(sizeof *cap, NULL, sp_int_step_cap_scan);
     SP_GC_ROOT(cap);
-    cap->first = rng.first; cap->step = st; cap->left = endless ? -1 : n; cap->recv = recv;
-    e = sp_Enumerator_new_gen(sp_int_step_gen, cap, endless ? sp_box_float(INFINITY) : sp_box_int(n));
+    cap->first = rng.first; cap->step = st; cap->left = endless || toward ? -1 : n; cap->recv = recv;
+    cap->lim = toward ? lim : sp_box_nil();
+    /* toward a Bignum: |lim - recv| + 1 members */
+    sp_RbVal size = endless ? sp_box_float(INFINITY) : sp_box_int(n);
+    if (toward) {
+      SP_GC_ROOT_RBVAL(size);
+      size = st > 0 ? sp_poly_sub(lim, sp_box_int(recv)) : sp_poly_sub(sp_box_int(recv), lim);
+      size = sp_poly_add(size, sp_box_int(1));
+    }
+    e = sp_Enumerator_new_gen(sp_int_step_gen, cap, size);
   }
   else e = sp_Enumerator_new_from(sp_box_range(rng));
   SP_GC_ROOT(e);
+  /* the label is built before the store, whose barrier it must follow */
+  const char *m = SPL("times");
+  SP_GC_ROOT_STR(m);
+  if (op) { const char *li = sp_poly_inspect(lim); SP_GC_ROOT_STR(li); m = sp_sprintf("%s(%s)", op, li); }
   sp_gc_wb((void *)e);
   e->source = sp_box_int(recv); e->has_src = TRUE;
-  if (!op) e->meth = SPL("times");
-  else { const char *li = sp_poly_inspect(lim); e->meth = sp_sprintf("%s(%s)", op, li); }
+  e->meth = m;
   return e;
 }
 /* A blockless #upto / #downto (`op`) over members laid out ahead (a String's
@@ -18289,10 +18335,16 @@ static sp_Enumerator *sp_int_step_enum(sp_Range rng, sp_int recv, const char *op
    #<Enumerator: "a":upto("c", true)> */
 static sp_Enumerator *sp_enum_step_labeled(sp_Enumerator *e, sp_RbVal src, const char *op, const sp_RbVal *lims, int n) {
   SP_GC_ROOT(e); SP_GC_ROOT_RBVAL(src);
+  /* the label is built before the stores, whose barrier it must follow */
+  const char *a = sp_poly_inspect(lims[0]);
+  SP_GC_ROOT_STR(a);
+  const char *b2 = n == 2 ? sp_poly_inspect(lims[1]) : NULL;
+  SP_GC_ROOT_STR(b2);
+  const char *m = n == 2 ? sp_sprintf("%s(%s, %s)", op, a, b2) : sp_sprintf("%s(%s)", op, a);
+  SP_GC_ROOT_STR(m);
   sp_gc_wb((void *)e);
   e->source = src; e->has_src = TRUE;
-  const char *a = sp_poly_inspect(lims[0]);
-  e->meth = n == 2 ? sp_sprintf("%s(%s, %s)", op, a, sp_poly_inspect(lims[1])) : sp_sprintf("%s(%s)", op, a);
+  e->meth = m;
   return e;
 }
 static sp_Enumerator *sp_Enumerator_new_from_rev(sp_RbVal arr) {

@@ -14167,18 +14167,20 @@ static int emit_poly_str_upto(Compiler *c, int id, Buf *b) {
   buf_printf(g_pre, "sp_RbVal _t%d = _t%d; SP_GC_ROOT_RBVAL(_t%d);\n", tc, tr, tc);
   if (block < 0) {
     /* the Enumerator over the String's, the Integer's or the Bignum's
-       members, labeled with the call */
+       members, labeled with the call; an Integer's walks as far as it is
+       read, to a Bignum limit too (sp_int_step_enum), and a Bignum's is
+       laid out ahead */
     int tb = ++g_tmp;
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_PolyArray *_t%d = NULL; SP_GC_ROOT(_t%d);\n", tb, tb);
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "if (_t%d == 3) { _t%d = sp_PolyArray_new(); while (sp_poly_cmp_ck(_t%d, _t%d[0]) <= 0)"
+    buf_printf(g_pre, "if (_t%d == 3 && _t%d.tag == SP_TAG_BIGINT) { _t%d = sp_PolyArray_new(); while (sp_poly_cmp_ck(_t%d, _t%d[0]) <= 0)"
                       " { sp_PolyArray_push(_t%d, _t%d); _t%d = sp_poly_add(_t%d, sp_box_int(1)); } }\n",
-               tx, tb, tc, tl, tb, tc, tc, tc);
+               tx, tr, tb, tc, tl, tb, tc, tc, tc);
     buf_printf(b, "sp_box_nullable_obj((void *)(_t%d == 1 ? sp_enum_step_labeled(sp_Enumerator_new_from(sp_box_nullable_obj((void *)_t%d, SP_BUILTIN_STR_ARRAY)), _t%d, \"upto\", _t%d, %d)"
-                  " : _t%d == 3 ? sp_enum_step_labeled(sp_Enumerator_new_from(sp_box_poly_array(_t%d)), _t%d, \"upto\", _t%d, %d)"
+                  " : _t%d == 3 && _t%d.tag == SP_TAG_BIGINT ? sp_enum_step_labeled(sp_Enumerator_new_from(sp_box_poly_array(_t%d)), _t%d, \"upto\", _t%d, %d)"
                   " : sp_int_step_enum((sp_Range){ .first = _t%d.v.i, .last = _t%d, .excl = 0 }, _t%d.v.i, \"upto\", _t%d[0])), SP_BUILTIN_ENUMERATOR)",
-               tx, ts, tr, tl, argc, tx, tb, tr, tl, argc, tr, th, tr, tl);
+               tx, ts, tr, tl, argc, tx, tr, tb, tr, tl, argc, tr, th, tr, tl);
     return 1;
   }
   const char *p0o = block_param_name(c, block, 0);

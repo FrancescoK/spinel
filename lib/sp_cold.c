@@ -3731,9 +3731,10 @@ sp_RbVal sp_Enumerator_feed(sp_Enumerator *e, sp_RbVal v) {SP_GC_ROOT_RBVAL(v);S
   return sp_box_nil();
 }
 sp_PolyArray *sp_Enumerator_take(sp_Enumerator *e, sp_int n) {SP_GC_ROOT(e);
+  if (n < 0) sp_raise_cls("ArgumentError", "attempt to take negative size");
   sp_PolyArray *r = sp_PolyArray_new();
   SP_GC_ROOT(r);
-  if (n <= 0) return r;
+  if (n == 0) return r;
   if (e->gen) {
     sp_Fiber *f = sp_Fiber_new(e->gen);
     SP_GC_ROOT(f);
