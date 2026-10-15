@@ -492,14 +492,17 @@ void compute_reachable(Compiler *c, int typed) {
   int   *sc_n        = calloc((size_t)c->nscopes, sizeof(int));
   int   *sc_cap      = calloc((size_t)c->nscopes, sizeof(int));
   for (int s = 0; s < c->nscopes; s++) {
+    const Scope *sc = &c->scopes[s];
+    int instance_self = sc->name && !sc->is_cmethod && sc->class_id >= 0 &&
+                        !comp_class_is_module(c, &c->classes[sc->class_id]);
     if (c->scopes[s].body >= 0)
-      cr_collect_calls(c, c->nt, c->scopes[s].body, &scope_calls[s], &sc_n[s], &sc_cap[s]);
+      cr_collect_calls(c, c->nt, c->scopes[s].body, &scope_calls[s], &sc_n[s], &sc_cap[s], instance_self);
     /* Also scan parameter defaults (e.g. def foo(opt = bar)) -- these emit calls
        within the method scope but live in the DefNode parameters subtree. */
     if (c->scopes[s].def_node >= 0) {
       int pn = nt_ref(c->nt, c->scopes[s].def_node, "parameters");
       if (pn >= 0)
-        cr_collect_calls(c, c->nt, pn, &scope_calls[s], &sc_n[s], &sc_cap[s]);
+        cr_collect_calls(c, c->nt, pn, &scope_calls[s], &sc_n[s], &sc_cap[s], instance_self);
     }
   }
 
@@ -582,8 +585,9 @@ void compute_reachable(Compiler *c, int typed) {
      "\x01<scope>" marks one resolved scope. "\x02<name>" is a runtime-name
      send's arm: the method of that name in every class's chain, and a
      top-level def of it, a private method of Object every receiver has.
-     "\x03<name>" is a call on a known instance (`K.new.m`): every scope of
-     the name but the class methods, which no instance can reach. */
+     "\x03<name>" is a call on a known instance (`K.new.m`, or a receiverless
+     or `self.` call in a class's instance method): every scope of the name
+     but the class methods, which no instance can reach. */
   #define MARK_NAME(NM) do { const char *_mn=(NM); if(_mn && _mn[0]=='\x01'){ int _t=atoi(_mn+1); \
       if(_t>=0 && _t<c->nscopes && !c->scopes[_t].reachable){ c->scopes[_t].reachable=1; queue[qtail++]=_t; \
         if(cr_scope_has_super(c, _t)) for(int _u=SN_FIRST(c->scopes[_t].name);_u>=0;_u=sn_link[_u]) \

@@ -17010,18 +17010,18 @@ static int cr_method_value_queried(const NodeTable *nt, int id) {
    `method` call itself (a program may define its own), its receiver and its
    name argument, but not the method the name names. */
 static void cr_collect_method_operands(Compiler *c, const NodeTable *nt, int m,
-                                       char ***out, int *n, int *cap) {
+                                       char ***out, int *n, int *cap, int instance_self) {
   cr_add_name(out, n, cap, nt_str(nt, m, "name"));   /* a program's own `method` */
-  cr_collect_calls(c, nt, nt_ref(nt, m, "receiver"), out, n, cap);
+  cr_collect_calls(c, nt, nt_ref(nt, m, "receiver"), out, n, cap, instance_self);
   int ma = nt_ref(nt, m, "arguments");
-  if (ma >= 0) cr_collect_calls(c, nt, ma, out, n, cap);
+  if (ma >= 0) cr_collect_calls(c, nt, ma, out, n, cap, instance_self);
 }
 
 /* Collect CallNode names in the subtree rooted at `id`, stopping at nested
    DefNodes (which are separate method scopes). `out` / `n` / `cap` are
    the dynamic string array to append to. */
 void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
-                              char ***out, int *n, int *cap) {
+                              char ***out, int *n, int *cap, int instance_self) {
   if (id < 0) return;
   const char *ty = nt_type(nt, id);
   if (!ty) return;
@@ -17030,11 +17030,11 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
      (and never emitted -- see emit_if), so collecting its calls would mark
      genuinely unemittable methods live. Only walk the live side. */
   if (sp_streq(ty, "IfNode") && comp_defined_guard_false(c, nt_ref(nt, id, "predicate"))) {
-    cr_collect_calls(c, nt, nt_ref(nt, id, "subsequent"), out, n, cap);
+    cr_collect_calls(c, nt, nt_ref(nt, id, "subsequent"), out, n, cap, instance_self);
     return;
   }
   if (sp_streq(ty, "UnlessNode") && comp_defined_guard_false(c, nt_ref(nt, id, "predicate"))) {
-    cr_collect_calls(c, nt, nt_ref(nt, id, "statements"), out, n, cap);
+    cr_collect_calls(c, nt, nt_ref(nt, id, "statements"), out, n, cap, instance_self);
     return;
   }
   /* A respond_to? probe (desugar_respond_to_probe) is analysis-only: it asks
@@ -17049,7 +17049,7 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
   const char *nm = NULL;
   if (sp_streq(ty, "CallNode") && cr_method_value_queried(nt, id)) {
     cr_add_name(out, n, cap, nt_str(nt, id, "name"));
-    cr_collect_method_operands(c, nt, nt_ref(nt, id, "receiver"), out, n, cap);
+    cr_collect_method_operands(c, nt, nt_ref(nt, id, "receiver"), out, n, cap, instance_self);
     return;
   }
   if (sp_streq(ty, "CallNode")) {
@@ -17140,6 +17140,17 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
       }
     }
   }
+  /* A receiverless or `self.` call in a class's instance method runs on an
+     instance, so it reaches no class method. Not in a block or a lambda,
+     whose self instance_eval and similar calls rebind, and not in a module's
+     method, which extend runs with a class as self (compute_reachable). */
+  if (instance_self && k0 == NK_CallNode && nm && names[0] == nm) {
+    int r = nt_ref(nt, id, "receiver");
+    if (r < 0 || nt_kind(nt, r) == NK_SelfNode) {
+      snprintf(inst_name, sizeof inst_name, "\x03%s", nm);
+      names[0] = inst_name;
+    }
+  }
   if (k0 == NK_IndexOperatorWriteNode || k0 == NK_IndexOrWriteNode || k0 == NK_IndexAndWriteNode) {
     names[1] = "[]"; names[2] = "[]=";
   }
@@ -17152,10 +17163,11 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
       (*out)[(*n)++] = strdup(names[j]);
     }
   }
+  int inner_self = instance_self && k0 != NK_BlockNode && k0 != NK_LambdaNode;
   int nr = nt_num_refs(nt, id);
-  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, id, i); if (ch >= 0) cr_collect_calls(c, nt, ch, out, n, cap); }
+  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, id, i); if (ch >= 0) cr_collect_calls(c, nt, ch, out, n, cap, inner_self); }
   int na = nt_num_arrs(nt, id);
-  for (int i = 0; i < na; i++) { int nn = 0; const int *ids = nt_arr_at(nt, id, i, &nn); for (int k = 0; k < nn; k++) if (ids[k] >= 0) cr_collect_calls(c, nt, ids[k], out, n, cap); }
+  for (int i = 0; i < na; i++) { int nn = 0; const int *ids = nt_arr_at(nt, id, i, &nn); for (int k = 0; k < nn; k++) if (ids[k] >= 0) cr_collect_calls(c, nt, ids[k], out, n, cap, inner_self); }
 }
 
 /* Mark each method scope reachable via transitive call-graph BFS.
