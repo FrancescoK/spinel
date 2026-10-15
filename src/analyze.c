@@ -32116,6 +32116,15 @@ static int pf_wanted(Compiler *c, const char *name) {
     if (!nm || !sp_streq(nm, name)) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv >= 0 && infer_type(c, recv) == TY_POLY) return 1;
+    /* a parameter typed one class so far may turn out boxed (handed a
+       module method's self), and a dispatch with a block reaches an
+       inherited yielding method only through its clone (#9261) */
+    if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && nt_kind(nt, recv) == NK_LocalVariableReadNode &&
+        ty_is_object(infer_type(c, recv))) {
+      Scope *rs = comp_scope_of(c, recv);
+      LocalVar *lv = rs ? scope_local(rs, nt_str(nt, recv, "name")) : NULL;
+      if (lv && lv->is_param) return 1;
+    }
     /* a Class value known only at run time dispatches the same way */
     if (recv >= 0 && infer_type(c, recv) == TY_CLASS && class_recv_is_dynamic(c, recv)) return 1;
     /* an Array, Hash or Numeric reopening's method on a receiver of that
