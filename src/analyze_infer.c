@@ -2190,15 +2190,22 @@ TyKind an_class_concrete(Compiler *c, int id, const char *name, TyKind t) {
   int targets[CPT_MAX];
   int n = cplan_targets(c, id, targets, CPT_MAX);
   if (n == CPT_UNKNOWN) return TY_POLY;
+  TyKind j = t;
   for (int i = 0; i < n; i++) {
     Scope *s = &c->scopes[targets[i]];
     if (!s->is_cmethod) continue;
+    /* a class method no Class value the receiver holds reaches has no arm
+       (poly_cls_value_cands): Shellwords.split beside `{b: Integer}` */
+    if (!poly_cls_value_reaches(c, id, s->class_id)) continue;
     TyKind r = (TyKind)s->ret;
-    if (r == t || r == TY_UNKNOWN || r == TY_VOID) continue;
-    if (r == TY_NIL && an_ty_holds_nil(t)) continue;
+    if (r == j || r == TY_UNKNOWN || r == TY_VOID) continue;
+    if (r == TY_NIL && an_ty_holds_nil(j)) continue;
+    /* two Arrays meet in the boxed Array, which holds either: a String's
+       split beside a module's `def self.split = [1, s]` */
+    if (ty_is_array(r) && ty_is_array(j)) { j = TY_POLY_ARRAY; continue; }
     return TY_POLY;
   }
-  return t;
+  return j;
 }
 
 int an_bare_call_class_owned(Compiler *c, int id) {
@@ -8085,7 +8092,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      class-typed receiver. */
   if (recv >= 0 && argc == 1 && rt == TY_POLY && infer_type(c, argv[0]) == TY_CLASS &&
       (is_cmp_op(name) || sp_streq(name, "<=>"))) return TY_POLY;
-  { TyKind rr; if (infer_poly_call(c, id, rt, &rr)) return rr; }
+  { TyKind rr; if (infer_poly_call(c, id, rt, &rr)) return an_class_concrete(c, id, name, rr); }
   /* bool/nil <=> : 0 for an equal immediate pair, nil otherwise (#2733) */
   if (recv >= 0 && argc == 1 && sp_streq(name, "<=>") &&
       (rt == TY_BOOL || rt == TY_NIL)) return TY_POLY;
