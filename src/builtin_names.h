@@ -58,6 +58,9 @@ int is_eval_exec_family(const char *n);   /* class/module/instance eval and exec
 int is_key_query(const char *n);      /* key? has_key? include? member?: Hash/ENV membership aliases */
 int is_hash_key_lookup(const char *n); /* [] fetch delete and is_key_query: a Hash call that only compares its key */
 int is_receiver_conversion(const char *n); /* to_s to_str itself: conversions a String answers with itself */
+int is_string_conversion(const char *n);   /* to_s to_str +@: conversions that turn a nil receiver into a String */
+int is_string_self_answer(const char *n);   /* to_s to_str itself +@: names a String answers itself to */
+int is_rebinding_reach_call(const char *n); /* call () send instance_variable_set instance_eval yield...: code the walk cannot see */
 int is_to_s_name(const char *n);
 int is_message_name(const char *n);
 int is_range_membership(const char *n); /* cover? include? member? ===: Range membership predicates */

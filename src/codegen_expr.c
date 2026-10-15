@@ -121,7 +121,7 @@ static int interp_part_reads_late(Compiler *c, const int *parts, int n, int k, i
 /* ...is nm, called with argc arguments on a String, a conversion (to_s,
    to_str, +@) that turns a nil receiver into a String? */
 static int interp_nil_conversion(const char *nm, int argc) {
-  return argc == 0 && (sp_streq(nm, "to_s") || sp_streq(nm, "to_str") || sp_streq(nm, "+@"));
+  return argc == 0 && is_string_conversion(nm);
 }
 /* ...is nm a String method that answers its receiver or nil (`upcase!`,
    `sub!`, `strip!`)? */
@@ -171,10 +171,7 @@ static int interp_changes_var(Compiler *c, int n, NodeKind vk, const char *vn) {
   {
     const char *nm = k == NK_CallNode ? nt_str(nt, n, "name") : NULL;
     int has_blk = k == NK_CallNode && nt_ref(nt, n, "block") >= 0;
-    int callish = nm && (sp_streq(nm, "call") || sp_streq(nm, "()") || sp_streq(nm, "send") ||
-                         sp_streq(nm, "public_send") || sp_streq(nm, "__send__") ||
-                         sp_streq(nm, "instance_variable_set") || sp_streq(nm, "instance_eval") ||
-                         sp_streq(nm, "instance_exec") || sp_streq(nm, "yield"));
+    int callish = nm && is_rebinding_reach_call(nm);
     int user = k == NK_CallNode && (cplan_user(c, n)->mi >= 0 || cplan_user(c, n)->dispatch != CP_NONE);
     int opaque = user || has_blk || callish || k == NK_YieldNode || k == NK_SuperNode || k == NK_ForwardingSuperNode ||
                  k == NK_LambdaNode;
@@ -242,8 +239,7 @@ static int interp_var_read_late(Compiler *c, const int *parts, int n, int k, int
     int r = unwrap_parens(c, nt_ref(nt, b, "receiver")), argc = call_plain_argc(c, b);
     if (!nm || r < 0 || comp_ntype(c, r) != TY_STRING || cplan_user(c, b)->mi >= 0) break;
     int self = (bop_answers_self(TY_STRING, nm, argc, nt_ref(nt, b, "block") >= 0) & (BOPF_SELF | BOPF_SELF_OR_NIL)) ||
-               (argc == 0 && (sp_streq(nm, "itself") || sp_streq(nm, "to_s") || sp_streq(nm, "to_str") ||
-                              sp_streq(nm, "+@")));
+               (argc == 0 && is_string_self_answer(nm));
     if (!self) break;
     /* (a nil from a bang below a conversion reads as "" there, not as the variable) */
     if (nil_converted && interp_link_nilable(nm, argc, nt_ref(nt, b, "block") >= 0)) return 0;
