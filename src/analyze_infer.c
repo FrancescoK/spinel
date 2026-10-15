@@ -893,6 +893,32 @@ int loop_never_completes(Compiler *c, int node) {
    bare C `break` does not compile, so it needs the wrapper too. Receiverless
    NON-methods (loop / catch / proc / lambda literals) run their own scopes
    and stay excluded, as does instance_exec/eval (handled inline). */
+/* Whether the program's own `kept` (Range or Array), Enumerator or
+   Enumerable defines `name`: the kept value would then answer the
+   program's method, not the Enumerator's. */
+static int kept_enum_reopen_defines(Compiler *c, const char *kept, const char *name) {
+  const char *const CLS[] = { kept, "Enumerator", "Enumerable", NULL };
+  for (int i = 0; CLS[i]; i++) {
+    int ci = comp_class_index(c, CLS[i]);
+    int dc = -1;
+    if (ci >= 0 && comp_method_in_chain(c, ci, name, &dc) >= 0 && dc == ci) return 1;
+  }
+  return 0;
+}
+static int range_enum_reopen_defines(Compiler *c, const char *name) {
+  return kept_enum_reopen_defines(c, "Range", name);
+}
+/* The walks with a block, and the argless readers, whose answer over the
+   members laid out ahead is the Enumerator's answer */
+static const char *const KEPT_WALK[] = {
+  "map", "collect", "flat_map", "collect_concat", "select", "filter",
+  "reject", "filter_map", "find", "detect", "find_index", "any?", "all?",
+  "none?", "one?", "sum", "count", "min_by", "max_by", "minmax_by", "sort_by",
+  "group_by", "partition", "each_with_object", "inject", "reduce",
+  "take_while", "drop_while", "uniq", "min", "max", "minmax", "sort", NULL };
+static const char *const KEPT_READ0[] = {
+  "to_a", "entries", "sum", "count", "min", "max", "minmax", "sort",
+  "tally", "uniq", "any?", "all?", "none?", "one?", NULL };
 /* A blockless `n.times` / `a.upto(b)` / `b.downto(a)` answers an Enumerator
    (#<Enumerator: 7:times>). It keeps the counted Range it was built as only
    where it is the receiver of a call whose answer is the same over the
@@ -904,17 +930,6 @@ int loop_never_completes(Compiler *c, int node) {
    `with_object` and `each_with_index` stay, and `each { }` whose value is
    dropped: the desugars rewrite them on the Range (desugar_enum_named_call,
    desugar_int_enum_with_index). */
-/* Whether the program's own Range, Enumerator or Enumerable defines `name`:
-   the Range would then answer the program's method, not the Enumerator's. */
-static int range_enum_reopen_defines(Compiler *c, const char *name) {
-  static const char *const CLS[] = { "Range", "Enumerator", "Enumerable", NULL };
-  for (int i = 0; CLS[i]; i++) {
-    int ci = comp_class_index(c, CLS[i]);
-    int dc = -1;
-    if (ci >= 0 && comp_method_in_chain(c, ci, name, &dc) >= 0 && dc == ci) return 1;
-  }
-  return 0;
-}
 int an_int_step_range_chain(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int p = comp_recv_parent(c, id);
@@ -955,21 +970,12 @@ int an_int_step_range_chain(Compiler *c, int id) {
   if (sp_streq(pn, "each") && pblk >= 0 && nt_kind(nt, pblk) == NK_BlockNode)
     return comp_value_dropped(c, p);
   if (pblk >= 0 && nt_kind(nt, pblk) == NK_BlockNode) {
-    static const char *const WALK[] = {
-      "map", "collect", "flat_map", "collect_concat", "select", "filter",
-      "reject", "filter_map", "find", "detect", "find_index", "any?", "all?",
-      "none?", "one?", "sum", "count", "min_by", "max_by", "minmax_by", "sort_by",
-      "group_by", "partition", "each_with_object", "inject", "reduce",
-      "take_while", "drop_while", "uniq", "min", "max", "minmax", "sort", NULL };
-    for (int i = 0; WALK[i]; i++) if (sp_streq(pn, WALK[i])) return 1;
+    for (int i = 0; KEPT_WALK[i]; i++) if (sp_streq(pn, KEPT_WALK[i])) return 1;
     return 0;
   }
   if (pblk >= 0) return 0;   /* a block argument (&blk) */
-  static const char *const READ0[] = {
-    "to_a", "entries", "sum", "count", "min", "max", "minmax", "sort",
-    "tally", "uniq", "any?", "all?", "none?", "one?", NULL };
   if (pac == 0) {
-    for (int i = 0; READ0[i]; i++) if (sp_streq(pn, READ0[i])) return 1;
+    for (int i = 0; KEPT_READ0[i]; i++) if (sp_streq(pn, KEPT_READ0[i])) return 1;
     return 0;
   }
   /* first(n) / drop(n) answer an Array; inject(:+) its total. take(n)
@@ -983,6 +989,63 @@ int an_int_step_range_chain(Compiler *c, int id) {
   if (pac == 1 && (sp_streq(pn, "first") || sp_streq(pn, "drop") ||
                    sp_streq(pn, "inject") || sp_streq(pn, "reduce"))) return 1;
   return 0;
+}
+
+/* A blockless combination, permutation or their repeated forms on a boxed
+   or poly Array answers an Enumerator (#<Enumerator: [3, 1, 2]:combination(2)>).
+   It keeps the Array of tuples it lays out only where it is the receiver
+   of a call whose answer is the same over that Array as over the
+   Enumerator, as an_int_step_range_chain keeps a Range: a walk with a
+   block that does not answer its receiver, a reader (`size` and `take(n)`
+   too, which an Array answers alike), and `each { }` or
+   `each_with_index { }` whose value is dropped. A blockless map or select
+   (which the Enumerator has no blockless form of), `each(&blk)`, and an
+   `each { |x, y| }` whose value is read keep the Array as before. */
+int an_blockless_tuples_kept(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int p = comp_recv_parent(c, id);
+  if (p < 0 || nt_kind(nt, p) != NK_CallNode || an_unparen(nt, nt_ref(nt, p, "receiver")) != id ||
+      call_is_safe_nav(nt, p)) return 0;
+  const char *pn = nt_str(nt, p, "name");
+  /* nor is a `to_a` a desugar puts under a walk (made_to_a): the walk
+     reads the Enumerator through it and may answer its source */
+  if (!pn || nt_str(nt, p, "enum_recv") || nt_int(nt, p, "made_to_a", 0) ||
+      kept_enum_reopen_defines(c, "Array", pn)) return 0;
+  int pblk = nt_ref(nt, p, "block");
+  int pac = 0; { int pa = nt_ref(nt, p, "arguments"); if (pa >= 0) nt_arr(nt, pa, "arguments", &pac); }
+  int each = sp_streq(pn, "each"), ewi = sp_streq(pn, "each_with_index");
+  if (pblk >= 0 && nt_kind(nt, pblk) == NK_BlockNode) {
+    if (each || ewi) {
+      if (comp_value_dropped(c, p)) return 1;
+      /* `each { |x, y| }` over the Enumerator is rewritten to the call's
+         block form after its parameters are shaped for the Array's walk:
+         only a block taking one value, or none, is kept off the Array */
+      int bp = nt_ref(nt, pblk, "parameters");
+      const char *bpt = bp >= 0 ? nt_type(nt, bp) : NULL;
+      int plain = bp < 0 || (bpt && sp_streq(bpt, "BlockParametersNode") &&
+                             block_param_name(c, pblk, 0) && !block_param_name(c, pblk, 1) &&
+                             !block_opt_name(c, pblk, 0) && !block_post_name(c, pblk, 0) &&
+                             !block_rest_marker(c, pblk));
+      return each && !plain;
+    }
+    for (int i = 0; KEPT_WALK[i]; i++) if (sp_streq(pn, KEPT_WALK[i])) return 1;
+    return 0;
+  }
+  /* a block argument (`each(&blk)`): only the Array's walk takes one */
+  if (pblk >= 0) return each || ewi;
+  if (pac == 0) {
+    if (sp_streq(pn, "size")) return 1;
+    for (int i = 0; KEPT_READ0[i]; i++) if (sp_streq(pn, KEPT_READ0[i])) return 1;
+    /* a blockless map or select, which the Enumerator has no blockless
+       form of: `combination(2).map.with_index { }` */
+    return sp_streq(pn, "map") || sp_streq(pn, "collect") || sp_streq(pn, "select") ||
+           sp_streq(pn, "filter") || sp_streq(pn, "reject") || sp_streq(pn, "flat_map") ||
+           sp_streq(pn, "collect_concat") || sp_streq(pn, "filter_map");
+  }
+  return pac == 1 && (sp_streq(pn, "first") || sp_streq(pn, "take") || sp_streq(pn, "drop") ||
+                      sp_streq(pn, "inject") || sp_streq(pn, "reduce") ||
+                      sp_streq(pn, "any?") || sp_streq(pn, "all?") ||
+                      sp_streq(pn, "none?") || sp_streq(pn, "one?"));
 }
 
 /* `poly.upto(lim [, exclusive])` whose receiver may be a String at run

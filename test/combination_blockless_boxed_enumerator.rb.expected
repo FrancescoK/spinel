@@ -1,0 +1,31 @@
+#<Enumerator: [3, "a", :b]:combination(2)>
+#<Enumerator: [3, "a", :b]:permutation>
+#<Enumerator: [3, 1, 2]:combination(2)>
+#<Enumerator: [3, 1, 2]:repeated_permutation(1)>
+#<Enumerator: [3, 1, 2]:repeated_combination(2)>
+#<Enumerator: [3, 1, 2]:permutation(2)>
+[3, 1]
+[3, 2]
+3
+Enumerator
+[3, 1]
+[[3, 1], [3, 2], [1, 2]]
+[["a", 3], [:b, 3], [:b, "a"]]
+6
+[3, 1, 3, 2, 1, 2]
+[[3, 1], [3, 2]]
+[[3, 1]]
+[[3, 1], [3, 2]]
+3
+[3, 1, 2]
+[3, 1, 2]
+[3, "a", :b]
+[[[3, 1], 0], [[3, 2], 1], [[1, 2], 2]]
+[[[3, 1], 0], [[3, 2], 1], [[1, 2], 2]]
+true
+[3, "a"]
+[3, :b]
+["a", :b]
+[3, "a"]
+[3, :b]
+["a", :b]
