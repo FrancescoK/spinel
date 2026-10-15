@@ -5270,6 +5270,12 @@ STR_CHAIN_LIMIT ?= 4.6
 # flattens, is compiled the same way: repr_of of each outer link asked
 # repr_of of the one below twice, so the compile doubled per link (more than
 # a minute at 65; a fraction of a second now).
+# A chain of sixty `concat` calls is compiled the same way, in both builds:
+# emit_recv_snapshot rendered each link's receiver (the whole chain below it)
+# to see whether its slot could be named, though that only matters when an
+# argument rebinds the receiver, and the call was then emitted with the
+# receiver again, so the compile doubled per link (ten seconds at 20 links,
+# more than a minute at 25; a fraction of a second now).
 # Each count is taken only from a compile that succeeded (sw): spinel-work
 # prints its count from an atexit handler, also when the compile fails, so
 # reading it alone would accept the ratio of a program that did not build.
@@ -5300,6 +5306,10 @@ scale-test: $(SPINEL_WORK)
 	  { rm -rf "$$tmp"; echo "scale-test: FAIL (a bang chain over a held receiver was asked once per path to each link, see strbuf_bang_self_local)"; exit 1; }; \
 	( ulimit -t 20; $(SPINEL_WORK) --share-strings -c -o "$$tmp/acl.c" test/string_append_chain_long.rb ) >/dev/null 2>&1 || \
 	  { rm -rf "$$tmp"; echo "scale-test: FAIL (repr_of of a link of an append chain asked repr_of of the link below it twice, see repr_recv_boxed and strh_handle_call)"; exit 1; }; \
+	( ulimit -t 20; $(SPINEL_WORK) -c -o "$$tmp/ccl.c" test/string_concat_chain_long.rb ) >/dev/null 2>&1 || \
+	  { rm -rf "$$tmp"; echo "scale-test: FAIL (a concat chain's receiver was emitted twice per link, see emit_recv_snapshot)"; exit 1; }; \
+	( ulimit -t 20; $(SPINEL_WORK) --share-strings -c -o "$$tmp/ccs.c" test/string_concat_chain_long.rb ) >/dev/null 2>&1 || \
+	  { rm -rf "$$tmp"; echo "scale-test: FAIL (a concat chain's receiver was emitted twice per link under --share-strings, see emit_recv_snapshot)"; exit 1; }; \
 	sh test/scale/str_chain.sh 100 > "$$tmp/k1.rb"; sh test/scale/str_chain.sh 400 > "$$tmp/k4.rb"; \
 	ka=$$(sw --emit-rbs -o "$$tmp/k1.rbs" "$$tmp/k1.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	kb=$$(sw --emit-rbs -o "$$tmp/k4.rbs" "$$tmp/k4.rb") || { rm -rf "$$tmp"; exit 1; }; \

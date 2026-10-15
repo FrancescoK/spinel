@@ -23770,10 +23770,14 @@ static int emit_recv_snapshot(Compiler *c, int id, Buf *b) {
   /* A concat's slot can be rebound by an argument. Keep the existing
      handle before operand ordering runs those arguments.
      Its root spans the rebind's sp_str_uplus/sp_String_new_shared and
-     later argument allocations such as sp_str_repeat. */
+     later argument allocations such as sp_str_repeat.
+     (Whether an argument rebinds the receiver is asked first: naming the
+     slot renders the receiver, the whole chain below a link, and the call
+     is emitted with it again, so asking it for every link of a chain of
+     concat calls doubled the compile per link.) */
   Buf ref; memset(&ref, 0, sizeof ref);
   if (recv >= 0 && args >= 0 && is_concat_name(nt_str(nt, id, "name")) &&
-      !arg_ran_first(recv, 0) && strbuf_slot_text(c, recv, &ref) && read_rebound_by(c, recv, args)) {
+      !arg_ran_first(recv, 0) && read_rebound_by(c, recv, args) && strbuf_slot_text(c, recv, &ref)) {
     int th = ++g_tmp, mark = g_n_argov;
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, ref.p, th);
