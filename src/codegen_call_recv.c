@@ -16786,6 +16786,21 @@ static void emit_poly_str_transform(Compiler *c, int recv, int argc, const int *
   view_unbind(mark);
 }
 
+/* emit_poly_str_transform's String, boxed when the call is typed poly: a
+   class method of the name that some boxed Class value reaches widens the
+   call (an_class_concrete, #9192), and its slot takes no bare String. */
+static void emit_poly_str_transform_answer(Compiler *c, int id, int recv, int argc, const int *argv,
+                                           const char *name, const char *fn, Buf *b) {
+  if (comp_ntype(c, id) != TY_POLY) {
+    emit_poly_str_transform(c, recv, argc, argv, name, fn, 0, b);
+    return;
+  }
+  Buf tb; memset(&tb, 0, sizeof tb);
+  emit_poly_str_transform(c, recv, argc, argv, name, fn, 0, &tb);
+  emit_boxed_text(c, TY_STRING, tb.p ? tb.p : "", b);
+  free(tb.p);
+}
+
 /* Does a program definition of `name` take the match arm's call away? A
    boxed receiver may be an instance of any class that defines or reads the
    name. A typed String receiver is a String: a program class's own match? is
@@ -17110,16 +17125,16 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 &&
       !user_defines_or_reads(c, name)) {
     if (sp_streq(name, "squeeze") && argc == 1) {
-      emit_poly_str_transform(c, recv, argc, argv, name, "squeeze_chars", 0, b);
+      emit_poly_str_transform_answer(c, id, recv, argc, argv, name, "squeeze_chars", b);
       return 1;
     }
     if (sp_streq(name, "tr") && argc == 2) {
-      emit_poly_str_transform(c, recv, argc, argv, name, "tr", 0, b);
+      emit_poly_str_transform_answer(c, id, recv, argc, argv, name, "tr", b);
       return 1;
     }
     if ((is_substitution(name)) && argc == 2 &&
         comp_ntype(c, argv[0]) == TY_STRING && comp_ntype(c, argv[1]) == TY_STRING) {
-      emit_poly_str_transform(c, recv, argc, argv, name, name, 0, b);
+      emit_poly_str_transform_answer(c, id, recv, argc, argv, name, name, b);
       return 1;
     }
   }
@@ -17340,7 +17355,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       (sp_streq(name, "delete_prefix") || sp_streq(name, "delete_suffix")) &&
       !user_defines_or_reads(c, name)) {
     /* the inference rule answers TY_STRING, so hand back the raw const char * */
-    emit_poly_str_transform(c, recv, argc, argv, name, name, 0, b);
+    emit_poly_str_transform_answer(c, id, recv, argc, argv, name, name, b);
     return 1;
   }
   /* `dig` on a receiver that stayed poly: the arms above are per container
