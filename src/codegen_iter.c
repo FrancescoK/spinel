@@ -6180,8 +6180,11 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
    row to the parameter's array representation before binding it. */
 static void emit_poly_combination_param(Compiler *c, int block, const char *pn,
                                         int tc, int ti, int indent, Buf *b) {
+  /* (pn is the C name, renamed where a yield inlined the block; the scope
+     knows the parameter by its own name) */
   Scope *sc = comp_scope_of(c, block);
-  LocalVar *lv = sc ? scope_local(sc, pn) : NULL;
+  const char *own = block_param_name(c, block, 0);
+  LocalVar *lv = sc && own ? scope_local(sc, own) : NULL;
   TyKind pt = lv ? lv->type : TY_UNKNOWN;
   emit_indent(b, indent);
   if (pt == TY_POLY_ARRAY)
@@ -6232,7 +6235,7 @@ static int iter_combination_cons_arms(Compiler *c, int id, Buf *b, int indent, c
     emit_indent(b, indent + 1); buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, tc, ti);
     if (p0) {
       Scope *cbsc = comp_scope_of(c, block);
-      LocalVar *clv = cbsc ? scope_local(cbsc, p0) : NULL;
+      LocalVar *clv = cbsc ? scope_local(cbsc, block_param_name(c, block, 0)) : NULL;
       TyKind cpt = clv ? clv->type : TY_UNKNOWN;
       emit_indent(b, indent + 2);
       if (cpt == TY_POLY || cpt == TY_UNKNOWN)
@@ -6298,7 +6301,7 @@ static int iter_combination_cons_arms(Compiler *c, int id, Buf *b, int indent, c
     emit_indent(b, indent + 1); buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, tc, ti);
     if (p0) {
       Scope *cbsc = comp_scope_of(c, block);
-      LocalVar *clv = cbsc ? scope_local(cbsc, p0) : NULL;
+      LocalVar *clv = cbsc ? scope_local(cbsc, block_param_name(c, block, 0)) : NULL;
       TyKind cpt = clv ? clv->type : TY_UNKNOWN;
       emit_indent(b, indent + 2);
       if (cpt == TY_FLOAT_ARRAY)

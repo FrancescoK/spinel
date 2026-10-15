@@ -15018,9 +15018,22 @@ static int infer_block_params_enum_arms(Compiler *c, const NodeTable *nt, int id
     }
   }
 
-  /* array.combination(k)/permutation(k) { |c| } binds the k-element sub-array */
+  /* array.combination(k)/permutation(k) { |c| } binds the k-element sub-array;
+     `{ |x, y| }` spreads it, each parameter an element (the block an
+     Enumerator's `each { |x, y| }` hands over before its parameters are
+     shaped) */
   if ((sp_streq(name, "combination") || sp_streq(name, "permutation")) && ty_is_array(rt)) {
-    if (bp_widen(comp_scope_of(c, block), p0, rt)) changed = 1;
+    Scope *cs = comp_scope_of(c, block);
+    int np = 0; while (block_param_name(c, block, np)) np++;
+    if (np >= 2 || block_opt_name(c, block, 0) || block_post_name(c, block, 0) ||
+        block_rest_marker(c, block)) {
+      TyKind et = ty_array_elem(rt);
+      const char *pn;
+      for (int pj = 0; (pn = block_param_name(c, block, pj)); pj++) if (bp_widen(cs, pn, et)) changed = 1;
+      for (int pj = 0; (pn = block_opt_name(c, block, pj)); pj++) if (bp_widen(cs, pn, et)) changed = 1;
+      for (int pj = 0; (pn = block_post_name(c, block, pj)); pj++) if (bp_widen(cs, pn, et)) changed = 1;
+    }
+    else if (bp_widen(cs, p0, rt)) changed = 1;
     return changed | 2;
   }
 
