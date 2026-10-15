@@ -485,7 +485,8 @@ const char *sp_exc_class_name(volatile sp_Exception *ve) {
   static struct kept_name *kept = NULL;   /* guarded by the heap lock */
   static size_t n = 0, cap = 0;           /* cap is a power of two; open addressing */
   const char *name, *r = NULL;
-  if (!e || !e->cls_name) return SPL("RuntimeError");
+  if (!e) return SPL("NilClass");   /* a slot that holds nil (the callers that print it test the pointer first) */
+  if (!e->cls_name) return SPL("RuntimeError");
   name = e->cls_name;
   /* A name with no header is a literal, or a copy kept here: its address
      names it, and the table is keyed by address. A heap name (a class
@@ -1215,7 +1216,11 @@ SP_NORETURN void sp_raise_kw_error(const char *kind, sp_int count, const char *n
 /* Exception#is_a?(ClassName): checks class name and known hierarchy. */
 sp_int sp_exc_is_a(volatile sp_Exception *ve, const char *cn) {
   sp_Exception *e = (sp_Exception *)ve;
-  if (!e || !cn) return 0;
+  if (!cn) return 0;
+  /* a slot that holds nil (a NULL pointer) is a NilClass and an Object, a
+     BasicObject and a Kernel, and answers no other class */
+  if (!e)
+    return !strcmp(cn, "NilClass") || !strcmp(cn, "Object") || !strcmp(cn, "BasicObject") || !strcmp(cn, "Kernel");
   /* one authority for "does this level answer to cn", modules included: the
      matcher rescue arms use. Without it #is_a?(SomeModule) said false where
      `rescue SomeModule` said yes (#3366 follow-up). */

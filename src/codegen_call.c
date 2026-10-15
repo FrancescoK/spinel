@@ -4436,7 +4436,14 @@ void emit_concurrency_raise(Compiler *c, const char *rtext, int argc, const int 
     int t = ++g_tmp;
     buf_printf(b, "({ %s *_%cr%d = %s", ctype, pfx, t, rtext);
     buf_printf(b, "; sp_Exception *_%ce%d = (sp_Exception *)(", pfx, t); emit_expr(c, argv[0], b);
-    buf_printf(b, "); %s(_%cr%d, sp_exc_class_name(_%ce%d), sp_exc_message(_%ce%d), _%ce%d); })",
+    /* an Exception slot that holds nil (a NULL pointer) is no exception, and
+       the caller gets CRuby's TypeError; a constructor call holds none */
+    int ctor = nt_kind(nt, unwrap_parens(c, argv[0])) == NK_CallNode &&
+               nt_str(nt, unwrap_parens(c, argv[0]), "name") && sp_streq(nt_str(nt, unwrap_parens(c, argv[0]), "name"), "new") &&
+               nt_ref(nt, unwrap_parens(c, argv[0]), "receiver") >= 0;
+    if (ctor) buf_puts(b, "); ");
+    else buf_printf(b, "); if (!_%ce%d) sp_raise_cls(\"TypeError\", \"exception class/object expected\"); ", pfx, t);
+    buf_printf(b, "%s(_%cr%d, sp_exc_class_name(_%ce%d), sp_exc_message(_%ce%d), _%ce%d); })",
                fn, pfx, t, pfx, t, pfx, t, pfx, t);
     return;
   }
