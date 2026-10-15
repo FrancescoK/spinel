@@ -800,6 +800,16 @@ static inline sp_ofloat sp_poly_as_float_or_nil(sp_RbVal v) {
    boxed element read goes through here. */
 static inline sp_RbVal sp_box_oint(sp_oint o)     { return o.nil ? sp_box_nil() : sp_box_int(o.v); }
 static inline sp_RbVal sp_box_ofloat(sp_ofloat o) { return o.nil ? sp_box_nil() : sp_box_float(o.v); }
+/* A generic builtin entry's arm whose answer the analysis types boxed but
+   whose emitter writes it unboxed (Integer#gcd on a boxed receiver): boxed
+   by the C type the arm's value has. Expanded only in a program's own C,
+   after every type it names is declared. */
+static inline sp_RbVal sp_bi_box_id(sp_RbVal v) { return v; }
+static inline sp_RbVal sp_bi_box_mstr(char *v) { return sp_box_str(v); }
+#define SP_BI_BOX(x) _Generic((x), sp_RbVal: sp_bi_box_id, sp_int: sp_box_int, sp_float: sp_box_float, \
+  sp_bool: sp_box_bool, const char *: sp_box_str, char *: sp_bi_box_mstr, sp_oint: sp_box_oint, \
+  sp_ofloat: sp_box_ofloat, sp_PolyArray *: sp_box_poly_array, \
+  sp_FloatArray *: sp_box_float_array, sp_StrArray *: sp_box_str_array)(x)
 /* The value of a nullable slot used where CRuby's nil would raise. The three
    raisers live in lib/sp_str.c and lib/sp_cold.c; SP_COLD, so a check in a
    hot function keeps its raise path out of the way (optcarrot's CPU#fetch

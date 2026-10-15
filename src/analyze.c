@@ -275,8 +275,8 @@ static const struct { const char *nm; int how; } an_by_name[] = {
   { "include", AN_MIX }, { "prepend", AN_MIX }, { "extend", AN_MIX },
   { "append_features", AN_MIX_HOOK }, { "prepend_features", AN_MIX_HOOK }, { "extend_object", AN_MIX_HOOK },
   { "load", AN_WORD }, { "autoload", AN_WORD }, { "ERB", AN_WORD }, { NULL, 0 } };
-static ANameHash g_written, g_written_twice, g_by_name_words;
-static int g_written_by_value;
+static ANameHash g_written, g_written_twice, g_by_name_words, g_symbol_names;
+static int g_written_by_value, g_meta_by_value;
 static void an_written_add(ANameHash *st, const char *nm) {
   if (nm && !anh_has(st, nm)) anh_add(st, strdup(nm));
 }
@@ -353,6 +353,7 @@ static void an_note_written_names(const NodeTable *nt) {
       }
       case NK_SymbolNode: {
         const char *nm = nt_str(nt, id, "value");
+        an_written_add(&g_symbol_names, nm);
         an_written_add(&g_written, nm);
         an_written_add(&g_written_twice, nm);
         if (an_mixes(nm)) by_value = 1;
@@ -397,6 +398,8 @@ static void an_note_written_names(const NodeTable *nt) {
         int an = 0, blk = nt_ref(nt, id, "block");
         const int *av = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &an);
         int lit_blk = nt_kind(nt, blk) == NK_BlockNode;
+        int by_value_before = by_value;
+        by_value = 0;
         if (how == AN_SITE || how == AN_MIX_HOOK) by_value = 1;
         else if (how == AN_MIX) { for (int i = 0; i < an; i++) if (!an_mix_literal(nt, av[i])) by_value = 1; }
         else if (how == AN_EVAL) { if (an > 0 || !lit_blk) by_value = 1; }
@@ -418,6 +421,8 @@ static void an_note_written_names(const NodeTable *nt) {
             if (ak != NK_SymbolNode || (how == AN_RENAMES && i > 0 && !an_name_spelled(nt, av[i]))) by_value = 1;
           }
         }
+        if (by_value && (how == AN_GIVES || how == AN_GIVES_ALL || how == AN_RENAMES || how == AN_VIS)) g_meta_by_value = 1;
+        by_value |= by_value_before;
         break;
       }
       default: break;
@@ -432,6 +437,12 @@ static void an_note_written_names(const NodeTable *nt) {
    the text does not spell. */
 int an_prog_never_gives(const char *nm, int defs) {
   return !g_written_by_value && !anh_has(defs ? &g_written_twice : &g_written, nm);
+}
+/* Does the program name a method `nm` by a Symbol (an alias, an undef, a
+   visibility or define_method call, a send), or define, rename, remove or
+   hide a method by a name it computes? */
+int an_prog_names_method(const char *nm) {
+  return g_meta_by_value || anh_has(&g_symbol_names, nm);
 }
 
 static int cr_class_is_ancestor(Compiler *c, int sup, int cls) {

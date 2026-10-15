@@ -30,6 +30,10 @@ enum {
 };
 int bop_name_has_reader(const char *name, unsigned surface);
 int bop_name_mutates(const char *name, unsigned sites);
+/* Whether a lone splat into `name` on a boxed receiver reaches the builtin
+   through its generic entry (an_bi_generic_splat, bi_generic_fn), and up to
+   how many arguments (*most, -1 for every count the builtin takes). */
+int bop_generic_entry(const char *name, int *most);
 
 /* The runtime call behind a zero-argument IO/String row. Boxed dispatch
    owns its tag and result-slot guards; it shares the call facts with the
