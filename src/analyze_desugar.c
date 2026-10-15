@@ -5744,6 +5744,81 @@ int desugar_interp_reopened_to_s(Compiler *c) {
   return changed;
 }
 
+/* Is part p of an interpolation a literal with no text: an empty String
+   node (what a line continuation leaves), or `#{""}`? */
+static int interp_empty_part(const NodeTable *nt, int p) {
+  if (nt_kind(nt, p) == NK_EmbeddedStatementsNode) {
+    int st = nt_ref(nt, p, "statements"), bn = 0;
+    const int *body = st >= 0 ? nt_arr(nt, st, "body", &bn) : NULL;
+    return bn == 1 && nt_kind(nt, body[0]) == NK_StringNode && interp_empty_part(nt, body[0]);
+  }
+  return nt_kind(nt, p) == NK_StringNode && nt_str_len(nt, p, "content") == 0;
+}
+
+/* A dynamic part followed by nothing but empty literals (`"#{x}\<newline>"`,
+   `"#{x}#{""}"`) is not built: CRuby drops the empty literals and the
+   string is the part's own conversion, which for a String is that String,
+   handed back as it stands. It is `<part>.to_s`: a String's to_s is its
+   receiver, which the walk, the plan and the codegen answer, and a nil
+   part, which a String slot may hold, answers "" as `"#{nil}"` does. The
+   interpolation was taken as always building a new String, which a method
+   answering it also gave out as new while another name held the part's
+   String. Only a part statically a String that is no literal (CRuby builds
+   a literal part's String afresh: the static fold) is rewritten; any other
+   type converts by a method (an Integer's, an object's to_s) whose answer
+   is not always a String, and keeps being built. So does an interpolation
+   that is itself a part of another (adjacent literals: `"#{x}\<newline>"
+   "tail"`), a `yield` part, and any interpolation in a program that
+   reopens String#to_s (CRuby does not call it on a String part). The
+   rewrite cannot be taken back, so it waits for settled types.
+   --share-strings only: a build without it copies in every case. */
+int desugar_interp_elided_to_s(Compiler *c) {
+  if (g_infer_optimistic || !c->share_strings) return 0;
+  int sc = comp_class_index(c, "String");
+  if (sc >= 0 && comp_method_in_chain(c, sc, "to_s", NULL) >= 0) return 0;
+  NodeTable *nt = (NodeTable *)c->nt;
+  unsigned char *nested = calloc((size_t)(nt->count > 0 ? nt->count : 1), 1);
+  if (!nested) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  NT_FOREACH_KIND(nt, NK_InterpolatedStringNode, id) {
+    int pn = 0;
+    const int *parts = nt_arr(nt, id, "parts", &pn);
+    for (int k = 0; k < pn; k++) if (nt_kind(nt, parts[k]) == NK_InterpolatedStringNode) nested[parts[k]] = 1;
+  }
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_InterpolatedStringNode, id) {
+    int pn = 0;
+    const int *parts = nt_arr(nt, id, "parts", &pn);
+    if (id >= nt->count || nested[id] || pn < 2 || nt_kind(nt, parts[0]) != NK_EmbeddedStatementsNode) continue;
+    int tail = 1;
+    for (int k = 1; k < pn && tail; k++) tail = interp_empty_part(nt, parts[k]);
+    if (!tail) continue;
+    int st = nt_ref(nt, parts[0], "statements"), bn = 0;
+    const int *body = st >= 0 ? nt_arr(nt, st, "body", &bn) : NULL;
+    if (bn < 1) continue;
+    int last = an_unparen(nt, body[bn - 1]);
+    NodeKind lk = last >= 0 ? nt_kind(nt, last) : NK_NONE;
+    if (lk == NK_YieldNode || lk == NK_StringNode || lk == NK_InterpolatedStringNode) continue;
+    TyKind t = infer_type(c, body[bn - 1]);
+    if (t != TY_STRING && t != TY_STRBUF) continue;
+    int recv = body[bn - 1];
+    if (bn > 1) {
+      recv = nt_new_node(nt, "ParenthesesNode");
+      if (recv < 0) continue;
+      nt_node_set_ref(nt, recv, "body", st);
+      comp_grow_node_arrays(c);
+      c->nscope[recv] = c->nscope[id];
+    }
+    nt_node_set_type(nt, id, "CallNode");
+    nt_node_set_str(nt, id, "name", "to_s");
+    nt_node_set_ref(nt, id, "receiver", recv);
+    nt_node_set_ref(nt, id, "arguments", -1);
+    nt_node_set_ref(nt, id, "block", -1);
+    changed = 1;
+  }
+  free(nested);
+  return changed;
+}
+
 /* A block handed to an Array's, a Hash's or a String's read that leaves it
    unused (`def size(*a, &b) = @a.size(*a, &b)`) is no part of the call: CRuby
    runs the read and never the block. The rows type such a read only without

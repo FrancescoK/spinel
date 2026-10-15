@@ -642,6 +642,7 @@ int desugar_array_at(Compiler *c);
 int desugar_unused_block_arg(Compiler *c);
 int desugar_unpack_block(Compiler *c);
 int desugar_interp_reopened_to_s(Compiler *c);
+int desugar_interp_elided_to_s(Compiler *c);
 int desugar_array_first_last(Compiler *c);
 int desugar_enum_iter_splat_args(Compiler *c);
 int desugar_iter_splat_args(Compiler *c);

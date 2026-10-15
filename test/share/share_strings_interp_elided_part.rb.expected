@@ -1,0 +1,15 @@
+["joined", "ab!", "ab!", true]
+["tail", "c!", "c!", true]
+["two", "d!", "d!", true]
+["multi", "e!", "e!", true]
+"f!"
+"f2tail"
+"f2-x"
+["h?", "h?", true]
+["prefixed", "ai!", "i", false]
+["nil tail", "j!", "j", false]
+["lead empty", "k!", "k", false]
+""
+""
+"z"
+"litx"

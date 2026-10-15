@@ -76,6 +76,16 @@ typedef struct ShareFacts {
      proc is handed (sh_key; -1 none) */
   int *key;
   int *parent, *elem, *nhold, *nmem, *nelem, *hidx, *owner;
+  /* alt: the elements a value may be one of, a second union-find that only
+     sh_join feeds (the arms of a conditional, `a || b`, a fetch's default
+     beside the elements): unlike the classes above it does not take a
+     parameter and the method's answer, or the arguments of two calls, into
+     one. share_param_kept asks it which parameter a stored value may be. */
+  int *alt;
+  /* the values handed to a place that keeps them with no flow to show for it
+     (an argument of a call the walk does not follow, an exception's
+     message): share_param_kept counts a read of a parameter among them */
+  int *kp_e, nkp, ckp;
   /* per root: the method scope every holder of the class is a plain local
      of (no parameter, no captured local), or -1 none yet, or -2 when some
      member is anything else */
@@ -262,6 +272,32 @@ static int sh_find(ShareFacts *F, int x) {
   return x;
 }
 
+/* ShareFacts.alt's root of element x */
+static int sh_alt_find(ShareFacts *F, int x) {
+  while (F->alt[x] != x) {
+    F->alt[x] = F->alt[F->alt[x]];
+    x = F->alt[x];
+  }
+  return x;
+}
+
+/* Elements a and b are alternatives of one value (ShareFacts.alt). */
+static void sh_alt_union(ShareFacts *F, int a, int b) {
+  if (a < 0 || b < 0) return;
+  F->alt[sh_alt_find(F, b)] = sh_alt_find(F, a);
+}
+
+/* Value v goes to a place that keeps it and shows no flow (kp_e). */
+static void sh_keeps(ShareFacts *F, int v) {
+  if (v < 0) return;
+  if (F->nkp >= F->ckp) {
+    F->ckp = F->ckp ? F->ckp * 2 : 64;
+    F->kp_e = realloc(F->kp_e, sizeof(int) * (size_t)F->ckp);
+    if (!F->kp_e) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  F->kp_e[F->nkp++] = v;
+}
+
 static int sh_storing_kind(int k) {
   if (k == SHK_SELF) return 1;
   return k == SHK_LOCAL || k == SHK_IVAR || k == SHK_GVAR || k == SHK_CVAR ||
@@ -272,6 +308,7 @@ static int sh_new(ShareFacts *F, int kind) {
   if (F->n >= F->cap) {
     int nc = F->cap ? F->cap * 2 : 1024;
     F->parent = realloc(F->parent, sizeof(int) * (size_t)nc);
+    F->alt = realloc(F->alt, sizeof(int) * (size_t)nc);
     F->elem = realloc(F->elem, sizeof(int) * (size_t)nc);
     F->key = realloc(F->key, sizeof(int) * (size_t)nc);
     F->nhold = realloc(F->nhold, sizeof(int) * (size_t)nc);
@@ -283,12 +320,13 @@ static int sh_new(ShareFacts *F, int kind) {
     F->kind = realloc(F->kind, (size_t)nc);
     F->flags = realloc(F->flags, (size_t)nc);
     F->own = realloc(F->own, (size_t)nc);
-    if (!F->parent || !F->elem || !F->key || !F->nhold || !F->nmem || !F->nelem || !F->hidx || !F->owner ||
+    if (!F->parent || !F->alt || !F->elem || !F->key || !F->nhold || !F->nmem || !F->nelem || !F->hidx || !F->owner ||
         !F->lsc || !F->kind || !F->flags || !F->own) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     F->cap = nc;
   }
   int e = F->n++;
   F->parent[e] = e;
+  F->alt[e] = e;
   F->elem[e] = -1;
   F->key[e] = -1;
   F->nhold[e] = sh_storing_kind(kind);
@@ -782,6 +820,7 @@ static int sh_join(ShareFacts *F, int a, int b) {
   if (F->kind[a] == SHK_SELF) F->own[a] |= SHE_IDENTITY;
   if (F->kind[b] == SHK_SELF) F->own[b] |= SHE_IDENTITY;
   sh_union(F, a, b);
+  sh_alt_union(F, a, b);
   return a;
 }
 
@@ -1043,7 +1082,10 @@ static void sh_block_params(ShareFacts *F, Compiler *c, int blk, int v, int deep
   if (blk < 0 || v < 0) return;
   int bp = nt_ref(nt, blk, "parameters");
   if (bp < 0) return;
-  if (nt_kind(nt, bp) != NK_BlockParametersNode) {
+  /* a lambda's parameters hang from it directly, a block's from a
+     BlockParametersNode (--share-strings reads the lambda's too) */
+  int direct = c->share_strings && nt_kind(nt, bp) == NK_ParametersNode;
+  if (!direct && nt_kind(nt, bp) != NK_BlockParametersNode) {
     /* `_1` / `it`: the parameters by name */
     for (int i = 0; ; i++) {
       const char *pn = block_param_name(c, blk, i);
@@ -1052,7 +1094,7 @@ static void sh_block_params(ShareFacts *F, Compiler *c, int blk, int v, int deep
     }
     return;
   }
-  int pn = nt_ref(nt, bp, "parameters");
+  int pn = direct ? bp : nt_ref(nt, bp, "parameters");
   if (pn < 0) return;
   int nreq = 0; const int *reqs = nt_arr(nt, pn, "requireds", &nreq);
   int nopt = 0; nt_arr(nt, pn, "optionals", &nopt);
@@ -1829,7 +1871,10 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
   case BSH_EXEC:
     if (!lit_blk) return sh_unknown_call(F, c, n, blk);
     sh_block_params(F, c, blk, F->unknown, 1);
-    for (int i = 0; i < nv; i++) sh_union(F, vals[i], F->unknown);
+    for (int i = 0; i < nv; i++) {
+      sh_union(F, vals[i], F->unknown);
+      sh_keeps(F, vals[i]);
+    }
     return bv;
   default:
     return -1;
@@ -2121,6 +2166,7 @@ static int sh_unknown_call(ShareFacts *F, Compiler *c, int n, int blk) {
     /* A proc handed self can keep or mutate that receiver. */
     if (vals[i] >= 0 && F->kind[vals[i]] == SHK_SELF) F->own[vals[i]] |= SHE_IDENTITY | SHE_COMPARED;
     sh_union(F, vals[i], F->unknown);
+    sh_keeps(F, vals[i]);
   }
   if (blk >= 0 && nt_kind(c->nt, blk) == NK_BlockNode) {
     sh_block_params(F, c, blk, F->unknown, 1);
@@ -2167,7 +2213,10 @@ static int sh_exc_text(ShareFacts *F, Compiler *c) {
 static void sh_exc_args(ShareFacts *F, Compiler *c, int n) {
   int vals[64];
   int nv = sh_args_vals(F, c, n, vals, 64);
-  for (int k = 0; k < nv; k++) sh_union(F, vals[k], sh_exc(F));
+  for (int k = 0; k < nv; k++) {
+    sh_union(F, vals[k], sh_exc(F));
+    sh_keeps(F, vals[k]);
+  }
 }
 
 /* `Array.new(n, s)`, `Hash.new { }`, `Enumerator.new { |y| }`,
@@ -3588,6 +3637,10 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
     int r = sh_new(F, SHK_VALUE);
     sh_union(F, sh_elem(F, r), l);
     sh_union(F, sh_elem(F, r), rr);
+    if (c->share_strings) {
+      sh_flow(F, SHFL_ELEM, n, nt_ref(nt, n, "left"), sh_elem_peek(F, r));
+      sh_flow(F, SHFL_ELEM, n, nt_ref(nt, n, "right"), sh_elem_peek(F, r));
+    }
     return r;
   }
   case NK_MultiWriteNode: {
@@ -4203,7 +4256,7 @@ static void sh_settle_any_new(ShareFacts *F, Compiler *c) {
 static void sh_free(ShareFacts *F) {
   if (!F) return;
   for (int i = 0; i < F->nh; i++) free((char *)F->h[i].name);
-  free(F->parent); free(F->elem); free(F->nhold); free(F->nmem); free(F->nelem); free(F->hidx);
+  free(F->parent); free(F->alt); free(F->kp_e); free(F->elem); free(F->nhold); free(F->nmem); free(F->nelem); free(F->hidx);
   free(F->owner); free(F->hcount); free(F->pkept); free(F->anchored); free(F->rt_elems); free(F->mconst);
   free(F->mut_n); free(F->mut_v);
   free(F->aj_v); free(F->aj_s); free(F->aj_done);
@@ -4505,8 +4558,12 @@ static void sh_jumps(ShareFacts *F, Compiler *c) {
   for (int i = 0; i < F->nnodes; i++) F->jump[i] = -1;
   for (int i = 0; i < J.np; i++)
     if (J.t[i] >= 0 && F->jump[J.t[i]] < 0) F->jump[J.t[i]] = sh_new(F, SHK_VALUE);
-  for (int i = 0; i < J.np; i++)
-    sh_union(F, J.t[i] >= 0 ? F->jump[J.t[i]] : F->unknown, sh_jump_val(F, c, J.n[i]));
+  for (int i = 0; i < J.np; i++) {
+    int to = J.t[i] >= 0 ? F->jump[J.t[i]] : F->unknown, v = sh_jump_val(F, c, J.n[i]);
+    sh_union(F, to, v);
+    /* (a break's value is one of the alternatives of the construct's) */
+    sh_alt_union(F, to, v);
+  }
   free(J.t);
   free(J.n);
 }
@@ -5277,22 +5334,30 @@ int share_builtin_fresh(Compiler *c, int call) {
    A method answering such a parameter answers the String that slot keeps,
    however new the argument is. These are the flows (sh_flow) from reads of
    the parameter, not those of the names the caller gives the answer, and
-   an in-place change of it keeps nothing. */
+   an in-place change of it keeps nothing. Under --share-strings a read also
+   counts that is one of the alternatives of a value a flow takes (`$g = c ?
+   t : s`, `H.fetch(k, s)`: ShareFacts.alt), or that goes to a place with no
+   flow to show for it (a call the walk does not follow, an exception's
+   message: ShareFacts.kp_e). */
 int share_param_kept(Compiler *c, int mi, int pj) {
   ShareFacts *F = c->share;
   Scope *m = &c->scopes[mi];
   LocalVar *lv = pj >= 0 && pj < m->nparams && m->pnames[pj] ? scope_local(m, m->pnames[pj]) : NULL;
   int h = lv && F ? share_local_holder(c, mi, (int)(lv - m->locals)) : -1;
   if (h < 0) return 1;
+  /* (a build without the flag asks the elements themselves, as it always
+     has: the alternatives and the keeps below are the share rule's) */
+  int alt = c->share_strings;
   if (!F->pkept) {
     F->pkept = calloc((size_t)(F->n > 0 ? F->n : 1), 1);
     if (!F->pkept) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     for (int i = 0; i < F->nfl; i++) {
       int e = F->fl_val[i] >= 0 && F->fl_val[i] < F->nnodes ? F->nval[F->fl_val[i]] : -1;
-      if (e >= 0 && F->fl_kind[i] != SHFL_MUTATE) F->pkept[e] = 1;
+      if (e >= 0 && F->fl_kind[i] != SHFL_MUTATE) F->pkept[alt ? sh_alt_find(F, e) : e] = 1;
     }
+    for (int i = 0; alt && i < F->nkp; i++) F->pkept[sh_alt_find(F, F->kp_e[i])] = 1;
   }
-  return F->pkept[F->helem[h]] || lv->cell_outlives;
+  return F->pkept[alt ? sh_alt_find(F, F->helem[h]) : F->helem[h]] || lv->cell_outlives;
 }
 static int sh_user_call_fresh(Compiler *c, int call, int depth) {
   const ShareFacts *F = c->share;
