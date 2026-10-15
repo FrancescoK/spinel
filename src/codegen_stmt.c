@@ -1,4 +1,5 @@
 #include "codegen_internal.h"
+static int emit_strbuf_boxed_store(Compiler *c, int v, Buf *b);
 #include "repr.h"
 #include "holder.h"
 #include "share.h"
@@ -4724,6 +4725,10 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
            (nt_kind(c->nt, v) != NK_CallNode || strbuf_marked_yields_handle(c, v))) {
     emit_expr(c, v, b);
   }
+  /* a box written to the slot: its nil is the slot's NULL (a String? slot
+     takes nil), and only another value takes the String argument's strict
+     conversion (#9278) */
+  else if (rpv.as_ty == TY_STRBUF && emit_strbuf_boxed_store(c, v, b)) { }
   else if (rpv.as_ty == TY_STRBUF) {
     int sv = view_push_repr(c, v, VR_STRBUF_BOX, 0);
     buf_printf(b, "%s(", strbuf_new_func(c, v));
@@ -11513,6 +11518,19 @@ static void hc_bounded_index(Compiler *c, int prev, int pred, int body, HcRegion
   r->ba = an;
 }
 
+/* A box stored into a shared String slot (a variable's or an ivar's
+   write, which can hold nil): its nil is the slot's NULL, and only
+   another value takes a String argument's strict conversion, as
+   str_handle_new does (#9278). 0 for a value that is not boxed. */
+static int emit_strbuf_boxed_store(Compiler *c, int v, Buf *b) {
+  if (repr_of(c, v).kind != RK_BOXED) return 0;
+  int t = ++g_tmp;
+  buf_puts(b, "({ ");
+  t = hold_operand(c, v, TY_POLY, 0, t, 1, " ", b);
+  buf_printf(b, "sp_poly_nil_p(_t%d) ? (sp_String *)NULL : %s(sp_poly_arg_str_chk(_t%d)); })",
+             t, strbuf_new_func(c, v), t);
+  return 1;
+}
 int g_loop_polls_in_cond = 0;
 
 /* The test of a loop hc_bounded_index proved, against the cached length: the
@@ -17431,7 +17449,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
          handle (`@x: String` seeded over a poly argument), where a copy of
          its bytes forked the ivar off the caller's String */
       else if (c->share_plan) emit_str_form_handle(c, v, b);
-      else {
+      else if (!emit_strbuf_boxed_store(c, v, b)) {
         buf_printf(b, "%s(", strbuf_new_func(c, v));
         emit_str_expr(c, v, b);
         buf_puts(b, ")");
