@@ -10,7 +10,13 @@
 # nested in another `||` or `&&` or in a conditional (`(s || t) || v`,
 # `(s && @t) || v`, `(v ? s : t) || v`) keeps the handle it answers, and so
 # does a left operand that is an ivar or a local whose slot holds the handle
-# (`@t || v`, `x = t; x || ident(v)`).
+# (`@t || v`, `x = t; x || ident(v)`). So does a builtin call answering its
+# receiver (`@s.itself`, `@s.then { |x| x }`, `@s.tap { }`, a bang, `@s << x`),
+# also as an arm of a conditional, a `case` or a `begin` operand, beside the
+# calls that publish nothing (an element read, `fetch`): the chain was
+# refused for a builtin, and a conditional's arm was not looked at. A chain
+# of such calls over the ivar (`@s.upcase!.itself`, `@s.itself.tap { }`)
+# answers the ivar's String too.
 module LtConf
   class << self
     attr_accessor :key
@@ -175,3 +181,63 @@ run2(:nest_swap) { |app| pass(app.nest_swap(1)) }
 run2(:nest_cond) { |app| pass(app.nest_cond(nil)) }
 run2(:ivar_left) { |app| pass(app.ivar_left(nil)) }
 run2(:local_left) { |app| pass(app.local_left(nil)) }
+
+run2(:nest_cond_s) { |app| pass(app.nest_cond(true)) }
+
+class LtApp3
+  def initialize(s, t)
+    @s = s
+    @t = t
+    @arr = [s]
+    @h = { "k" => s }
+  end
+
+  def s = @s
+  def t = @t
+
+  def b_itself(v) = @s.itself || v
+  def b_then(v) = @s.then { |x| x } || v
+  def b_tap(v) = @s.tap {} || v
+  def b_bang(v) = @s.upcase! || v
+  def b_append(v) = (@s << "") || v
+  def b_and(v) = v && @s.itself
+  def b_chain_bang(v) = @s.upcase!.itself || v
+  def b_chain_tap(v) = @s.itself.tap {} || v
+  def c_cond(v) = (v ? @s.itself : @t) || v
+  def c_cond_tap(v) = (v ? @s.tap {} : @t) || v
+  def c_case(v) = (case v when 1 then @s.itself else @t end) || v
+  def c_begin(v) = (begin; @s.itself; end) || v
+  def c_elem(v) = (v ? @arr[0] : @t) || v
+  def c_hash(v) = (v ? @h["k"] : @t) || v
+  def c_fetch(v) = (v ? @arr.fetch(0) : @t) || v
+  def c_user(v) = (v ? s : t) || v
+end
+
+def run3(label)
+  a = +"ab"
+  a << "c"
+  b = +"pq"
+  b << "r"
+  y = yield LtApp3.new(a, b)
+  a << "!"
+  b << "@"
+  p [label, y, y.equal?(a), y.equal?(b)]
+end
+
+run3(:b_itself) { |app| pass(app.b_itself(nil)) }
+run3(:b_then) { |app| pass(app.b_then(nil)) }
+run3(:b_tap) { |app| pass(app.b_tap(nil)) }
+run3(:b_bang) { |app| pass(app.b_bang(nil)) }
+run3(:b_append) { |app| pass(app.b_append(nil)) }
+run3(:b_and) { |app| pass(app.b_and(1)) }
+run3(:b_chain_bang) { |app| pass(app.b_chain_bang(nil)) }
+run3(:b_chain_tap) { |app| pass(app.b_chain_tap(nil)) }
+run3(:c_cond) { |app| pass(app.c_cond(true)) }
+run3(:c_cond_other) { |app| pass(app.c_cond(nil)) }
+run3(:c_cond_tap) { |app| pass(app.c_cond_tap(true)) }
+run3(:c_case) { |app| pass(app.c_case(1)) }
+run3(:c_begin) { |app| pass(app.c_begin(nil)) }
+run3(:c_elem) { |app| pass(app.c_elem(true)) }
+run3(:c_hash) { |app| pass(app.c_hash(true)) }
+run3(:c_fetch) { |app| pass(app.c_fetch(true)) }
+run3(:c_user) { |app| pass(app.c_user(true)) }

@@ -23091,7 +23091,7 @@ static int an_boxed_logic_ok(Compiler *c, int node) {
   if (k == NK_OrNode || k == NK_AndNode)
     return an_boxed_logic_ok(c, nt_ref(nt, node, "left")) && an_boxed_logic_ok(c, nt_ref(nt, node, "right"));
   return k != NK_CallNode || c->ntype[node] == TY_POLY || repr_call_returns_handle(c, node) ||
-         share_value_fresh(c, node, 0);
+         share_value_fresh(c, node, 0) || share_plan_box_handle(c, node);
 }
 static int an_tail_boxed_string(Compiler *c, int node, TailCount *tc) {
   int mi = tc->mi;

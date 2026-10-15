@@ -4602,12 +4602,15 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
        its box is the receiver's own (emit_boxed_bang_self), where the bytes
        boxed again were a new String. So is a String left a store lifts
        (poly_strbuf_lift: a seeded String method's tail `s || v`), boxed by
-       the handle it publishes, not from its bytes. */
+       the handle it publishes, or by the receiver's where it is a builtin
+       call answering its receiver (`s.itself || v`, share_plan_box_handle),
+       not from its bytes. */
     int lt_hbox = repr_share_rule(c) && res == TY_POLY &&
                   (lt == TY_STRBUF ||
                    (lt == TY_STRING && (face_str_bang_call(c, left) || strbuf_var_handle(c, left, NULL) ||
                                         (repr_of(c, unwrap_parens(c, left)).poly_lift &&
-                                         (repr_call_returns_handle(c, left) || logic_left_carries(c, left))))));
+                                         (repr_call_returns_handle(c, left) || logic_left_carries(c, left) ||
+                                          share_plan_box_handle(c, unwrap_parens(c, left)))))));
     if (lt_hbox) lt = TY_POLY;
     int t = ++g_tmp;
     int lt_falsy_const = (lt == TY_NIL || lt == TY_VOID);  /* a nil/void left has no C-typed value */
@@ -6069,6 +6072,25 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     }
     else
       snprintf(ref, sizeof ref, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
+    TyKind svt = TY_UNKNOWN;
+    if (sc >= 0) { int iv = comp_ivar_index(&c->classes[sc], nm); if (iv >= 0) svt = c->classes[sc].ivar_types[iv]; }
+    const char *sop = nt_str(nt, id, "binary_operator");
+    /* a `+=` on an ivar the rule holds as the shared handle answers the
+       String it built, read from the handle as the ivar's own read is */
+    if (repr_share_rule(c) && svt == TY_STRBUF && sop && is_plus_op(sop)) {
+      if (g_pre) {
+        emit_stmt(c, id, g_pre, g_indent);
+        buf_printf(b, "sp_strbuf_read_pub(%s)", ref);
+      }
+      else {
+        char mk[300];
+        const char *m = ivar_write_mark(c, id, mk, sizeof mk);
+        buf_printf(b, "({ %s = ", ref);
+        emit_strbuf_ivar_plus(c, nt_ref(nt, id, "value"), ref, b);
+        buf_printf(b, "; %s%ssp_strbuf_read_pub(%s); })", m ? m : "", m ? " " : "", ref);
+      }
+      return;
+    }
     if (g_pre) {
       emit_stmt(c, id, g_pre, g_indent);
       buf_puts(b, ref);

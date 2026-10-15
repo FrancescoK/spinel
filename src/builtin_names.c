@@ -129,6 +129,14 @@ int is_tap_name(const char *n) {
   return sp_streq(n, "tap");
 }
 
+int is_itself_name(const char *n) {
+  return sp_streq(n, "itself");
+}
+
+int is_each_char_name(const char *n) {
+  return sp_streq(n, "each_char");
+}
+
 int is_tap_alias(const char *n) {
   return sp_streq(n, "tap") || sp_streq(n, "then") || sp_streq(n, "yield_self");
 }

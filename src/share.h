@@ -437,6 +437,11 @@ const char *share_plan_role_name(int role);
    a case, a begin, a sequence, `||` / `&&`, a rescue modifier, a loop) is
    emitted arm by arm, each arm a value of its own: it is none. */
 int share_plan_return_box(Compiler *c, int v);
+/* Is node v, a String call a store lifts into a handle (poly_strbuf_lift),
+   boxed by the handle its producer supplies (the plan's SPR_BOX form
+   with the object a lift needs), not from its bytes? A call whose route
+   boxes cannot render (strbuf_box_unrendered) is not. Asked live. */
+int share_plan_box_handle(Compiler *c, int v);
 /* Is node n an explicit writer's attribute assignment whose value the facts
    keep apart from its right-hand side's String (nothing observes them as one
    object)? */

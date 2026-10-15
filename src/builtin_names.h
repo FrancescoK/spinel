@@ -48,6 +48,8 @@ int is_range_member_walk(const char *n); /* each each_entry step: a Range's bloc
 int is_stop_walk(const char *n); /* find detect take_while find_index each_with_index: walks that stop at the block's answer */
 int is_each_walk(const char *n);      /* each each_entry reverse_each */
 int is_index_query(const char *n);    /* find_index index rindex */
+int is_itself_name(const char *n);    /* itself */
+int is_each_char_name(const char *n);  /* each_char */
 int is_self_copy(const char *n);      /* freeze dup clone itself: the receiver, or a copy of it */
 int is_int_step(const char *n);       /* times upto downto: Integer's counting iterators */
 int is_equality_name(const char *n);  /* equal? eql? == */

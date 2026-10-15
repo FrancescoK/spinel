@@ -1825,6 +1825,7 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
 /* An arm st of a conditional emit_boxed_cond_arms boxes: its statements,
    then its value boxed into _t<dst> (nil for an empty arm). */
 typedef struct { int dst, lift; } BoxedCondArm;
+static int emit_boxed_self_chain(Compiler *c, int node, Buf *b);
 static void emit_boxed_cond_body(Compiler *c, int st, Buf *b, void *ctx) {
   BoxedCondArm *a = ctx;
   const NodeTable *nt = c->nt;
@@ -1845,8 +1846,11 @@ static void emit_boxed_cond_body(Compiler *c, int st, Buf *b, void *ctx) {
              !strbuf_var_handle(c, st, NULL);
   if (lift) buf_puts(b, "sp_poly_strbuf_lift(");
   if (st < 0) buf_puts(b, "sp_box_nil()");
-  /* An arm can hand on a route's handle as well as a variable's. */
-  else emit_boxed_next_value(c, st, b);
+  /* (a chain of calls answering their receiver over a slot, where the
+     conditional is lifted, is the slot's handle's box) */
+  else if (!(a->lift && emit_boxed_self_chain(c, st, b)))
+    /* An arm can hand on a route's handle as well as a variable's. */
+    emit_boxed_next_value(c, st, b);
   if (lift) buf_puts(b, ")");
   buf_puts(b, ";");
 }
@@ -2495,6 +2499,87 @@ static int emit_boxed_lift_ran_first(Compiler *c, int node, Buf *b) {
   return 1;
 }
 
+/* --share-strings: a lifted chain of calls answering their receiver over a
+   slot that holds the handle (strbuf_self_chain_base, `@s.upcase!.itself`):
+   the box of that slot's handle where the chain answers a String, nil where
+   a bang in it answered nil. The chain runs as its bytes, for its effects. */
+static int emit_boxed_self_chain(Compiler *c, int node, Buf *b) {
+  int base = strbuf_self_chain_base(c, node);
+  if (base < 0) return 0;
+  Buf sb;
+  memset(&sb, 0, sizeof sb);
+  strbuf_slot_text(c, base, &sb);
+  /* A block on a link runs in the statement's prelude, ahead of the chain,
+     and may assign the variable the chain is over (`s.tap { s = +"zz" }`):
+     the slot's handle is read into a temp ahead of it, and the chain, the
+     box and the freeze take that temp, never the variable read after the
+     block ran. */
+  int th = -1, mark = g_n_argov, sv_h = -1, bound = 0;
+  size_t pre_at = g_pre ? g_pre->len : 0, b_at = b->len;
+  if (g_pre && strbuf_chain_has_block(c, node)) {
+    th = ++g_tmp;
+    size_t at = g_pre->len;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, sb.p ? sb.p : "NULL", th);
+    /* (the base's read held ahead of the statement is its handle, as
+       emit_bang_held_open declares the receiver reads it holds there) */
+    if (g_share_check) share_check_declare_reads(g_pre, at, base);
+    /* (the chain runs over the held handle, whatever its blocks assign, a
+       method they call included; a tap takes it as the handle, an each_char
+       as its String) */
+    {
+      int first = unwrap_parens(c, node), next = -1;
+      while (first >= 0 && unwrap_parens(c, nt_ref(c->nt, first, "receiver")) != base) {
+        next = first;
+        first = unwrap_parens(c, nt_ref(c->nt, first, "receiver"));
+      }
+      const char *fn = first >= 0 ? nt_str(c->nt, first, "name") : NULL;
+      const char *xn = next >= 0 ? nt_str(c->nt, next, "name") : NULL;
+      bound = 1;
+      /* (a tap whose answer a bang takes as its receiver is the handle; any
+         other tap, a String read) */
+      if (fn && is_tap_name(fn) && xn && (bop_name_mutates(xn, 0) || bop_share_self_answer(xn, nt_ref(c->nt, next, "block") >= 0))) {
+        sv_h = view_push_repr(c, base, VR_STRBUF_BOX, 1);
+        ran_first_bind(base, th, th);
+      }
+      else ran_first_bind_read(base, th);
+    }
+  }
+  char held[24];
+  snprintf(held, sizeof held, "_t%d", th);
+  const char *slot = th >= 0 ? held : sb.p ? sb.p : "";
+  int tb = ++g_tmp;
+  buf_printf(b, "({ const char *_t%d = ", tb);
+  int sv_b = view_push_repr(c, node, VR_STRBUF_BOX, 0);
+  emit_expr(c, node, b);
+  view_pop(c, sv_b);
+  if (bound) { view_unbind(mark); if (sv_h >= 0) view_pop(c, sv_h); }
+  /* (a freeze over a call freezes the bytes it was given, not the handle:
+     the slot's is frozen once the chain has run, as a freeze straight on
+     the slot does) */
+  int frz = 0;
+  for (int n = unwrap_parens(c, node); n >= 0 && nt_kind(c->nt, n) == NK_CallNode;
+       n = unwrap_parens(c, nt_ref(c->nt, n, "receiver"))) {
+    const char *nm = nt_str(c->nt, n, "name");
+    if (nm && is_freeze_name(nm)) frz = 1;
+  }
+  if (frz) buf_printf(b, "; if (_t%d) sp_String_freeze(%s)", tb, slot);
+  buf_printf(b, "; _t%d ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil(); })", tb, slot);
+  /* (the chain runs over the handle held ahead of its blocks: the reads
+     its links make of that handle, in the prelude and here, are no copy) */
+  if (g_share_check && bound) {
+    for (int n = unwrap_parens(c, node); n >= 0 && nt_kind(c->nt, n) == NK_CallNode; n = unwrap_parens(c, nt_ref(c->nt, n, "receiver"))) {
+      if (g_pre) share_check_declare_reads(g_pre, pre_at, n);
+      share_check_declare_reads(b, b_at, n);
+    }
+    if (g_pre) share_check_declare_reads(g_pre, pre_at, base);
+    share_check_declare_reads(b, b_at, base);
+  }
+  free(sb.p);
+  RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
+  return 1;
+}
+
 /* emit_boxed's arms for a value that hands on a String's handle by a route
    of its own: 1, the box written, or 0 with nothing emitted. */
 static int emit_boxed_routes(Compiler *c, int node, Buf *b) {
@@ -2507,6 +2592,7 @@ static int emit_boxed_routes(Compiler *c, int node, Buf *b) {
   }
   int lift = emit_boxed_lift(c, node);
   if (emit_boxed_cond_arms(c, node, b) || emit_boxed_sequence(c, node, b)) return 1;
+  if (lift && emit_boxed_self_chain(c, node, b)) return 1;
   /* --share-strings: a held chain's value (`id(x[0]).upcase!.itself`,
      strbuf_held_chain) is boxed as the handle it holds */
   if (repr_share_rule(c) && node >= 0 && strbuf_held_chain(c, node) && emit_boxed_bang_self(c, unwrap_parens(c, node), b))
