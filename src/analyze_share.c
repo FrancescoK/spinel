@@ -2283,6 +2283,71 @@ static int sh_native_call(ShareFacts *F, Compiler *c, int n, int cid, const char
   return sh & NSH_ANSWERS ? sh_elem(F, rv) : u;
 }
 
+/* The class that `K.new(...)` (through parentheses) builds, whatever else
+   the program has for the class to be: the instance of exactly K, when K is
+   a class of the program's and no `def self.new` stands between. -1 for any
+   other node. */
+int share_exact_new_class(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  n = an_unparen(nt, n);
+  if (n < 0 || nt_kind(nt, n) != NK_CallNode || !sp_streq(nt_str(nt, n, "name"), "new")) return -1;
+  int r = nt_ref(nt, n, "receiver");
+  if (r < 0 || (nt_kind(nt, r) != NK_ConstantReadNode && nt_kind(nt, r) != NK_ConstantPathNode)) return -1;
+  int k = comp_class_index(c, nt_str(nt, r, "name"));
+  return k >= 0 && comp_cmethod_in_chain(c, k, "new", NULL) < 0 ? k : -1;
+}
+/* Kernel#String(x) answers x for a String, and for any other value what its
+   #to_str answers, or with none its #to_s. A method of the program answers
+   a String it holds as it is, so `String(obj) << "?"` changes the obj's own
+   String, however new the call looks (sh_builtin's BSH_ARGS row sees only
+   the argument). The #to_str and #to_s that a value of argument arg's type
+   can run, as method indexes (-1 for an attr_reader of the name): an
+   object's class and its subclasses' (the class alone for a `K.new`, which
+   builds exactly K), and a boxed value's classes, each less the classes the
+   class facts rule out (cls_fact_excludes). 0 for an argument of any other type, whose
+   conversion is the builtin's; more than cap when they do not fit. */
+static int sh_string_conv_methods(Compiler *c, int arg, int *mis, int cap) {
+  TyKind at = c->ntype[arg];
+  int obj = ty_is_object(at), ocid = obj ? ty_object_class(at) : -1, n = 0;
+  int exact = obj && share_exact_new_class(c, arg) == ocid;
+  if (!c->share_strings || (!obj && at != TY_POLY && at != TY_UNKNOWN)) return 0;
+  for (int j = 0; j < 2; j++) {
+    int np = 0;
+    const PolyCand *pc = comp_poly_candidates(c, j ? "to_s" : "to_str", &np);
+    for (int i = 0; i < np; i++) {
+      int k = pc[i].cls;
+      if ((obj && k != ocid && (exact || !is_descendant(c, k, ocid))) || cls_fact_excludes(c, arg, k)) continue;
+      /* (Kernel#String asks #to_str first: a class with one never runs its #to_s) */
+      if (j && comp_method_in_chain(c, k, "to_str", NULL) >= 0) continue;
+      if (pc[i].native) continue;
+      if (n < cap) mis[n] = pc[i].mi;
+      n++;
+    }
+  }
+  return n;
+}
+/* Is call n a Kernel#String of one plain argument, which the program does
+   not define itself? Its argument, or -1. */
+static int sh_string_conv_arg(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, n, "name");
+  if (!c->share_strings || !nm || !is_string_class_name(nm) || nt_ref(nt, n, "receiver") >= 0 ||
+      nt_ref(nt, n, "block") >= 0) return -1;
+  int argc = 0;
+  const int *argv = call_args(nt, n, &argc);
+  if (argc != 1 || nt_kind(nt, argv[0]) == NK_SplatNode || nt_kind(nt, argv[0]) == NK_KeywordHashNode ||
+      nt_kind(nt, argv[0]) == NK_BlockArgumentNode || sh_has_targets(c, n)) return -1;
+  return argv[0];
+}
+/* The holder of what the conversions Kernel#String(arg) can run answer, -1
+   for none */
+static int sh_string_conv_answers(ShareFacts *F, Compiler *c, int arg) {
+  int mis[64], n = sh_string_conv_methods(c, arg, mis, 64), r = -1;
+  if (n > 64) return F->unknown;
+  for (int i = 0; i < n; i++) r = sh_join(F, r, mis[i] >= 0 ? sh_scope_holder(F, SHK_RET, mis[i]) : F->unknown);
+  return r;
+}
+
 /* The native class whose binding a boxed receiver's call n takes, as its
    `native_share` rows declare: the receiver can hold one native class's
    objects, whose binding of the name declares its share, and other classes'
@@ -3224,7 +3289,11 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     if (!s && cls_self && bop_share_named(TY_CLASS, name) && !sh_self_singleton_accessor(F, c, n, name))
       s = bop_share_named(TY_CLASS, name);
     if (!s) s = bop_share_named(BOP_ANY_RECV, name);
-    return s ? sh_builtin(F, c, n, s, rv, blk, 0) : sh_unknown_call(F, c, n, blk);
+    if (!s) return sh_unknown_call(F, c, n, blk);
+    int r = sh_builtin(F, c, n, s, rv, blk, 0);
+    /* Kernel#String hands on what the argument's own #to_str or #to_s answers */
+    int conv = sh_string_conv_arg(c, n);
+    return conv >= 0 ? sh_join(F, r, sh_string_conv_answers(F, c, conv)) : r;
   }
   if (rt == TY_POLY || rt == TY_UNKNOWN) {
     /* String#to_s returns the receiver; Exception#to_s its message.
@@ -5507,6 +5576,17 @@ int share_value_fresh(Compiler *c, int n, int depth) {
   /* a call the walk found answers no String any name holds (a share row's
      new or frozen String) */
   if (k == NK_CallNode && c->share && n < c->share->nnodes && c->share->nval[n] == -1) return 1;
+  /* Kernel#String of a value whose #to_str or #to_s the program defines: a
+     new String when each of them answers one */
+  int conv = k == NK_CallNode && c->share ? sh_string_conv_arg(c, n) : -1, mis[64];
+  int nconv = conv >= 0 ? sh_string_conv_methods(c, conv, mis, 64) : 0;
+  if (nconv > 0) {
+    for (int i = 0; nconv <= 64 && i < nconv; i++)
+      if (mis[i] < 0 || scope_ret_param(c, mis[i]) >= 0 || (c->share->ret_joined[mis[i]] && !scope_ret_fresh(c, mis[i])))
+        return 0;
+    /* (a boxed argument may be a String, which Kernel#String answers itself) */
+    return nconv <= 64 && (ty_is_object(c->ntype[conv]) || share_value_fresh(c, conv, depth + 1));
+  }
   if (k == NK_YieldNode) {
     int mi = sh_method_index(c, n);
     return mi >= 0 && sh_blocks_fresh(c, mi, depth + 1);

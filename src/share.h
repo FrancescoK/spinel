@@ -237,6 +237,10 @@ int share_method_blocks(const Compiler *c, int mi, const int **blocks);
    The settled return-tail fact also admits fresh returns and a returned
    parameter bound to a fresh argument or omitted fresh default. */
 int share_call_fresh(Compiler *c, int call);
+/* The class that `K.new(...)` (through parentheses) builds exactly: a class
+   of the program's with no `def self.new` in its chain. -1 for any other
+   node. */
+int share_exact_new_class(Compiler *c, int n);
 /* Does parameter pj of method mi share its String with another holder (a
    store of it, or a name the walk does not follow)? A method answering such
    a parameter answers the String the other holder keeps, whatever its
