@@ -7067,6 +7067,17 @@ else {
             buf_printf(b, "); sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into Hash\"); (%s)0; })", mcn, c_type_name(rt));
             return 1;
           }
+          /* a kind whose class only the value knows (an exception is
+             whichever subclass was raised) or that conv_cls_name_of does
+             not name (IO, MatchData): the same TypeError, worded from the
+             boxed value. Falling through passed it raw into the
+             receiver-layout helper, and the C did not build. */
+          int tv = ++g_tmp;
+          buf_puts(b, "({ (void)("); emit_expr(c, recv, b);
+          buf_printf(b, "); sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
+          buf_printf(b, "; sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %%s into Hash\","
+                        " sp_convert_src_name(_t%d))); (%s)0; })", tv, c_type_name(rt));
+          return 1;
         }
         /* a str_poly receiver may be merged with a concrete str-keyed hash;
            coerce the argument to the receiver's variant first */
