@@ -1835,6 +1835,9 @@ int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int argc,
                    cb.p ? cb.p : "NULL");
         pconv = PC_BOX;
       }
+      /* (a slot that holds the oint takes a boxed answer with its nil:
+         emit_unbox_text answers the plain scalar) */
+      else if (ret != TY_POLY && kr == TY_POLY && so) { buf_printf(b, "%s(%s)", oint_unbox(ret), cb.p ? cb.p : "sp_box_nil()"); pconv = PC_UNBOX; }
       else if (ret != TY_POLY && kr == TY_POLY) { emit_unbox_text(c, ret, cb.p ? cb.p : "", b); pconv = PC_UNBOX; }
       else if (ko && !so) buf_printf(b, "%s(%s)", oint_arg(kr), cb.p ? cb.p : "");
       else if (!ko && so && oint_kind(kr)) buf_printf(b, "%s(%s)", oint_of(kr), cb.p ? cb.p : "");
