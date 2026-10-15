@@ -39,3 +39,18 @@ p n.size, n.next, n.first(2), n.map { |i| i }.size
 def count_up(lo, hi) = lo.upto(hi)
 p count_up(2, 4), count_up(2, 4).to_a
 p [2.times]
+
+# each { } answers its receiver, and first the first member or nil
+p 1.upto(3).each { }, 0.times.first, 5.downto(7).first, 3.times.first
+x = 3.downto(1).each { |i| i }
+p x
+p 5.times.map.with_index { |v, i| v * i }, 5.times.select.with_index { |v, i| i.even? }
+
+# a boxed limit is labeled as it is
+p 3.downto(box(1.5)), 3.downto(box(1.5)).to_a, 3.upto(box(5)).to_a
+
+# a stored one walked with a block answers the receiver
+s = 3.times
+p s.with_index { }, s.each { }
+l = 100_000.times
+p l.each_with_index { }, l.each { }

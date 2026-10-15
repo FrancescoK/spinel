@@ -630,6 +630,15 @@ int emit_call_iter_expr_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       else buf_printf(b, "; sp_int_step_enum(sp_range_new_step(_t%d, sp_flt_range_bound(_t%d, 0), 0, -1LL)", tr, tl);
       buf_printf(b, ", _t%d, \"%s\", sp_box_float(_t%d)); })", tr, name, tl);
     }
+    else if (comp_ntype(c, argv[0]) == TY_POLY) {
+      /* a boxed limit is labeled as it is, and bounds the walk by its kind */
+      int tv = ++g_tmp;
+      buf_printf(b, "sp_RbVal _t%d = ", tv); emit_expr(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_int _t%d = sp_int_step_lim(_t%d, %d)", tv, tl, tv, up);
+      if (up) buf_printf(b, "; sp_int_step_enum((sp_Range){ .first = _t%d, .last = _t%d, .excl = 0 }", tr, tl);
+      else buf_printf(b, "; sp_int_step_enum(sp_range_new_step(_t%d, _t%d, 0, -1LL)", tr, tl);
+      buf_printf(b, ", _t%d, \"%s\", _t%d); })", tr, name, tv);
+    }
     else {
       buf_printf(b, "sp_int _t%d = ", tl); emit_int_expr(c, argv[0], b);
       if (up) buf_printf(b, "; sp_int_step_enum((sp_Range){ .first = _t%d, .last = _t%d, .excl = 0 }", tr, tl);
@@ -654,6 +663,8 @@ int emit_call_iter_expr_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       buf_puts(b, "(sp_Range){ .first = "); emit_upto_recv(c, recv, argv[0], b);
       buf_puts(b, ", .last = ");
       if (lf) { buf_puts(b, "sp_flt_range_bound("); emit_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
+      /* a boxed one bounds it by its kind, a boxed Float as a Float */
+      else if (comp_ntype(c, argv[0]) == TY_POLY) { buf_puts(b, "sp_int_step_lim("); emit_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
       else emit_int_expr(c, argv[0], b);
       buf_puts(b, ", .excl = 0 }");
       return 1;
@@ -666,6 +677,8 @@ int emit_call_iter_expr_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       buf_puts(b, "sp_range_new_step("); emit_int_recv_named(c, recv, name, b);
       buf_puts(b, ", ");
       if (lf) { buf_puts(b, "sp_flt_range_bound("); emit_expr(c, argv[0], b); buf_puts(b, ", 0)"); }
+      /* a boxed one bounds it by its kind, a boxed Float as a Float */
+      else if (comp_ntype(c, argv[0]) == TY_POLY) { buf_puts(b, "sp_int_step_lim("); emit_expr(c, argv[0], b); buf_puts(b, ", 0)"); }
       else emit_int_expr(c, argv[0], b);
       buf_puts(b, ", 0, -1LL)");
       return 1;

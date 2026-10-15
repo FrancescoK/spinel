@@ -3351,7 +3351,10 @@ static int sp_enum_returns_source(sp_Enumerator *e) {
                strncmp(m, "cycle(", 6) == 0 || strncmp(m, "combination(", 12) == 0 ||
                strcmp(m, "permutation") == 0 || strncmp(m, "permutation(", 12) == 0 ||
                strncmp(m, "repeated_combination(", 21) == 0 ||
-               strncmp(m, "repeated_permutation(", 21) == 0);
+               strncmp(m, "repeated_permutation(", 21) == 0 ||
+               /* Integer#times / #upto / #downto (and a String's #upto) */
+               strcmp(m, "times") == 0 || strncmp(m, "upto(", 5) == 0 ||
+               strncmp(m, "downto(", 7) == 0);
 }
 sp_RbVal sp_enum_with_index_value(sp_Enumerator *e) {SP_GC_ROOT(e);
   if (sp_enum_returns_source(e))

@@ -897,11 +897,24 @@ int loop_never_completes(Compiler *c, int node) {
    (#<Enumerator: 7:times>). It keeps the counted Range it was built as only
    where it is the receiver of a call whose answer is the same over the
    Range as over the Enumerator: a walk with a block whose answer is not its
-   receiver, or a reader that answers no Enumerator. Elsewhere -- a value
-   kept, printed, compared or walked with #next -- the Range showed through.
-   `each { }`, `with_index`, `with_object` and `each_with_index` stay: the
-   desugars rewrite them on the Range (desugar_enum_named_call,
+   receiver, or a reader that answers no Enumerator (not argless `first`:
+   an empty Range answers its begin), and neither one the program defines
+   on Range or Enumerator. Elsewhere -- a value kept, printed, compared or
+   walked with #next -- the Range showed through. `with_index`,
+   `with_object` and `each_with_index` stay, and `each { }` whose value is
+   dropped: the desugars rewrite them on the Range (desugar_enum_named_call,
    desugar_int_enum_with_index). */
+/* Whether the program's own Range, Enumerator or Enumerable defines `name`:
+   the Range would then answer the program's method, not the Enumerator's. */
+static int range_enum_reopen_defines(Compiler *c, const char *name) {
+  static const char *const CLS[] = { "Range", "Enumerator", "Enumerable", NULL };
+  for (int i = 0; CLS[i]; i++) {
+    int ci = comp_class_index(c, CLS[i]);
+    int dc = -1;
+    if (ci >= 0 && comp_method_in_chain(c, ci, name, &dc) >= 0 && dc == ci) return 1;
+  }
+  return 0;
+}
 int an_int_step_range_chain(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int p = comp_recv_parent(c, id);
@@ -910,14 +923,35 @@ int an_int_step_range_chain(Compiler *c, int id) {
   const char *pn = nt_str(nt, p, "name");
   /* the `to_a` hop a desugar puts under an Enumerator's walk (enum_recv)
      is not a reader: the walk answers this receiver */
-  if (!pn || nt_str(nt, p, "enum_recv")) return 0;
+  if (!pn || nt_str(nt, p, "enum_recv") || range_enum_reopen_defines(c, pn)) return 0;
   int pblk = nt_ref(nt, p, "block");
   int pac = 0; { int pa = nt_ref(nt, p, "arguments"); if (pa >= 0) nt_arr(nt, pa, "arguments", &pac); }
   if (sp_streq(pn, "with_index") || sp_streq(pn, "with_object") ||
       sp_streq(pn, "each_with_index")) return 1;
+  /* a blockless map or select under one of those, or read out whole:
+     `n.times.map.with_index { }`, whose Enumerator has no blockless map */
+  if (pblk < 0 && pac == 0 && (sp_streq(pn, "map") || sp_streq(pn, "collect") ||
+                               sp_streq(pn, "select") || sp_streq(pn, "filter") ||
+                               sp_streq(pn, "reject") || sp_streq(pn, "flat_map") ||
+                               sp_streq(pn, "filter_map"))) {
+    int g = comp_recv_parent(c, p);
+    if (g < 0 || nt_kind(nt, g) != NK_CallNode || an_unparen(nt, nt_ref(nt, g, "receiver")) != p ||
+        call_is_safe_nav(nt, g)) return 0;
+    const char *gn = nt_str(nt, g, "name");
+    int gblk = nt_ref(nt, g, "block");
+    if (!gn || range_enum_reopen_defines(c, gn)) return 0;
+    if ((sp_streq(gn, "with_index") || sp_streq(gn, "each_with_index") ||
+         sp_streq(gn, "with_object") || sp_streq(gn, "each_with_object")) &&
+        gblk >= 0 && nt_kind(nt, gblk) == NK_BlockNode) return 1;
+    return gblk < 0 && nt_ref(nt, g, "arguments") < 0 &&
+           (sp_streq(gn, "to_a") || sp_streq(gn, "entries"));
+  }
+  /* `each { }` answers its receiver: the Range only where that is dropped */
+  if (sp_streq(pn, "each") && pblk >= 0 && nt_kind(nt, pblk) == NK_BlockNode)
+    return comp_value_dropped(c, p);
   if (pblk >= 0 && nt_kind(nt, pblk) == NK_BlockNode) {
     static const char *const WALK[] = {
-      "each", "map", "collect", "flat_map", "collect_concat", "select", "filter",
+      "map", "collect", "flat_map", "collect_concat", "select", "filter",
       "reject", "filter_map", "find", "detect", "find_index", "any?", "all?",
       "none?", "one?", "sum", "count", "min_by", "max_by", "minmax_by", "sort_by",
       "group_by", "partition", "each_with_object", "inject", "reduce",
@@ -927,7 +961,7 @@ int an_int_step_range_chain(Compiler *c, int id) {
   }
   if (pblk >= 0) return 0;   /* a block argument (&blk) */
   static const char *const READ0[] = {
-    "to_a", "entries", "sum", "count", "min", "max", "minmax", "sort", "first",
+    "to_a", "entries", "sum", "count", "min", "max", "minmax", "sort",
     "tally", "uniq", "any?", "all?", "none?", "one?", NULL };
   if (pac == 0) {
     for (int i = 0; READ0[i]; i++) if (sp_streq(pn, READ0[i])) return 1;

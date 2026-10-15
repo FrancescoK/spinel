@@ -18244,13 +18244,23 @@ static sp_Enumerator *sp_poly_blockless_enum(sp_RbVal v, const char *m) {
 /* A long or endless count is walked as far as it is read, as CRuby walks
    it, rather than laid out: `1.upto(Float::INFINITY)` and `(10**12).times`
    (`left` < 0 is endless) */
-typedef struct { sp_int first; sp_int step; sp_int left; } sp_int_step_cap;
+typedef struct { sp_int first; sp_int step; sp_int left; sp_int recv; } sp_int_step_cap;
 static void sp_int_step_gen(sp_Fiber *f) {
   sp_int_step_cap *cap = (sp_int_step_cap *)f->user_data;
   sp_int v = cap->first;
   for (sp_int n = cap->left; n != 0; n--) { sp_Fiber_yield(sp_box_int(v)); v += cap->step; }
+  f->yielded_value = sp_box_int(cap->recv);   /* the walk answers the receiver */
 }
 #define SP_INT_STEP_ENUM_LAYOUT_MAX 65536
+/* A boxed limit of #upto (`up`) or #downto as the bound its walk stops at:
+   a Float floors or ceils, a Bignum is past every Integer the walk can reach */
+static sp_int sp_int_step_lim(sp_RbVal v, int up) {
+  if (v.tag == SP_TAG_INT) return v.v.i;
+  if (v.tag == SP_TAG_FLT) return sp_flt_range_bound(v.v.f, up);
+  if (v.tag == SP_TAG_BIGINT) return sp_bigint_sign(sp_poly_as_bigint(v)) > 0 ? INTPTR_MAX : INTPTR_MIN + 1;
+  sp_raise_cls("ArgumentError", sp_sprintf("comparison of Integer with %s failed", sp_poly_cmp_err_repr(v)));
+  return 0;
+}
 static sp_Enumerator *sp_int_step_enum(sp_Range rng, sp_int recv, const char *op, sp_RbVal lim) {
   SP_GC_ROOT_RBVAL(lim);
   sp_int st = rng.step ? rng.step : 1;
@@ -18260,7 +18270,7 @@ static sp_Enumerator *sp_int_step_enum(sp_Range rng, sp_int recv, const char *op
   if (endless || n > SP_INT_STEP_ENUM_LAYOUT_MAX) {
     sp_int_step_cap *cap = (sp_int_step_cap *)sp_gc_alloc(sizeof *cap, NULL, NULL);
     SP_GC_ROOT(cap);
-    cap->first = rng.first; cap->step = st; cap->left = endless ? -1 : n;
+    cap->first = rng.first; cap->step = st; cap->left = endless ? -1 : n; cap->recv = recv;
     e = sp_Enumerator_new_gen(sp_int_step_gen, cap, endless ? sp_box_float(INFINITY) : sp_box_int(n));
   }
   else e = sp_Enumerator_new_from(sp_box_range(rng));
