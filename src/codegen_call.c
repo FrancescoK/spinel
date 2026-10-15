@@ -21451,6 +21451,16 @@ int emit_poly_isa_test(Compiler *c, const char *cn, const char *v, int exact, Bu
           else buf_printf(b, "%s%s.cls_id == %d", first ? "" : " || ", v, k);
           first = 0;
         }
+      /* a rescued exception boxes under SP_BUILTIN_EXCEPTION, not its
+         class's index (see emit_user_exc_dispatch), so the index tests above
+         never match it: ask the exception's own class name */
+      if (class_is_exc_subclass(c, cid)) {
+        const char *qn = class_ruby_name(c, cid);
+        buf_printf(b, "%s(%s.cls_id == SP_BUILTIN_EXCEPTION && %s.v.p && ", first ? "" : " || ", v, v);
+        if (exact) buf_printf(b, "strcmp(((sp_Exception *)%s.v.p)->cls_name, \"%s\") == 0)", v, qn);
+        else buf_printf(b, "sp_exc_is_a((volatile sp_Exception *)%s.v.p, \"%s\"))", v, qn);
+        first = 0;
+      }
       if (first) buf_puts(b, "0");
       buf_puts(b, "))");
       if (ext) {
