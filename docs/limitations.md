@@ -408,7 +408,7 @@ still missing, so `ancestors` diverges past `IO`.)
 
 **Constructors.** `TCPServer.new(port)` / `TCPServer.new(host, port)`,
 `TCPSocket.new(host, port)`, `UDPSocket.new`, `UNIXServer.new(path)`,
-`UNIXSocket.new(path)`.
+`UNIXSocket.new(path)`. Each class's `.open` without a block is its `.new`.
 
 **Methods.** `#accept`, `#addr`, `#peeraddr`, `#local_address`,
 `#remote_address`, `#bind`, `#connect`, `#send`, `#recv`, `#recvfrom`,
@@ -462,7 +462,8 @@ still works.
   `exception: false` forms) is supported.
 - `SOCKSSocket` does not exist (CRuby only defines it when built with the
   SOCKS library, so a program cannot rely on it either).
-- Missing class methods: `.open`, `.gethostbyname`, `IPSocket.getaddress`.
+- Missing class methods: `.open` with a block (which closes the socket when
+  the block returns), `.gethostbyname`, `IPSocket.getaddress`.
 - `TCPServer.new` takes no backlog argument (the listen backlog is fixed);
   `TCPSocket.new` has no four-argument local-address form.
 - A class Spinel recognizes but has not implemented reports the missing
