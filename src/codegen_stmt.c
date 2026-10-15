@@ -1454,6 +1454,40 @@ static int strbuf_route_tap(Compiler *c, int v) {
   Scope *bsc = p0 ? comp_scope_of(c, blk) : NULL;
   return rt == TY_STRING && bsc && repr_of_slot(c, scope_local(bsc, rename_local(p0))).handle;
 }
+/* Does the subtree id assign a variable of the kind whose Prism node type
+   starts with `prefix` (LocalVariable, InstanceVariable, GlobalVariable,
+   ClassVariable) named nm? */
+static int subtree_writes_var(Compiler *c, int id, const char *prefix, const char *nm) {
+  const NodeTable *nt = c->nt;
+  if (id < 0) return 0;
+  const char *ty = nt_type(nt, id);
+  if (ty && !strncmp(ty, prefix, strlen(prefix)) && (strstr(ty, "Write") || strstr(ty, "Target"))) {
+    const char *wn = nt_str(nt, id, "name");
+    if (wn && sp_streq(wn, nm)) return 1;
+  }
+  for (int i = 0; i < nt_num_refs(nt, id); i++)
+    if (subtree_writes_var(c, nt_ref_at(nt, id, i), prefix, nm)) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, id); i++) {
+    int n = 0;
+    const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++)
+      if (subtree_writes_var(c, ids[j], prefix, nm)) return 1;
+  }
+  return 0;
+}
+/* Does a block on a link of call v's receiver chain assign the variable
+   `base` (the chain's base read)? The block runs ahead of the chain. */
+int strbuf_chain_rebinds_base(Compiler *c, int v, int base) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, base);
+  const char *prefix = k == NK_LocalVariableReadNode ? "LocalVariable" : k == NK_InstanceVariableReadNode ? "InstanceVariable"
+                     : k == NK_GlobalVariableReadNode ? "GlobalVariable" : k == NK_ClassVariableReadNode ? "ClassVariable" : NULL;
+  const char *nm = nt_str(nt, base, "name");
+  if (!prefix || !nm) return 0;
+  for (v = unwrap_parens(c, v); v >= 0 && nt_kind(nt, v) == NK_CallNode; v = unwrap_parens(c, nt_ref(nt, v, "receiver")))
+    if (nt_ref(nt, v, "block") >= 0 && subtree_writes_var(c, nt_ref(nt, v, "block"), prefix, nm)) return 1;
+  return 0;
+}
 /* --share-strings: the slot read at the base of call v's receiver chain,
    when v is two or more calls each of which answers its receiver or nil (a
    bang, an iterator given a block such as `tap`, a mutator, `freeze`, a
@@ -1465,27 +1499,66 @@ static int strbuf_route_tap(Compiler *c, int v) {
 static int call_takes_splat(const NodeTable *nt, int v);
 int strbuf_self_chain_base(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
-  int links = 0, tg[CPT_MAX];
+  enum { MAX_LINKS = 16 };
+  int links = 0, tg[CPT_MAX], any_blk = 0;
+  /* per link, outermost first: a conversion that makes a String of nil, a
+     link that can answer nil, a freeze */
+  char conv[MAX_LINKS], nilable[MAX_LINKS], frz[MAX_LINKS];
   if (!repr_share_rule(c)) return -1;
-  for (v = unwrap_parens(c, v); v >= 0 && nt_kind(nt, v) == NK_CallNode; v = unwrap_parens(c, nt_ref(nt, v, "receiver"))) {
+  int start = unwrap_parens(c, v);
+  for (v = start; v >= 0 && nt_kind(nt, v) == NK_CallNode; v = unwrap_parens(c, nt_ref(nt, v, "receiver"))) {
     const char *nm = nt_str(nt, v, "name");
     int r = unwrap_parens(c, nt_ref(nt, v, "receiver")), blk = nt_ref(nt, v, "block"), argc = 0;
     const int *av = call_args(nt, v, &argc);
-    if (!nm || r < 0 || is_then_alias(nm) || is_unary_plus(nm) || call_takes_splat(nt, v) || call_is_safe_nav(nt, v) ||
-        cplan_targets(c, v, tg, CPT_MAX) != 0 || (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode))
+    if (!nm || r < 0 || links >= MAX_LINKS || is_then_alias(nm) || is_unary_plus(nm) || call_takes_splat(nt, v) ||
+        call_is_safe_nav(nt, v) || cplan_targets(c, v, tg, CPT_MAX) != 0 || (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode))
       return -1;
-    if (!(bop_share_self_answer(nm, blk >= 0) || (bop_answers_self(TY_STRING, nm, argc, blk >= 0) & BOPF_SELF) ||
-          (is_receiver_conversion(nm) && argc == 0 && blk < 0)))
+    int ans = bop_answers_self(TY_STRING, nm, argc, blk >= 0);
+    if (!(bop_share_self_answer(nm, blk >= 0) || (ans & BOPF_SELF) || (is_receiver_conversion(nm) && argc == 0 && blk < 0)))
       return -1;
     for (int i = 0; i < argc; i++)
       if (!subtree_is_pure_read(c, av[i]) && nt_kind(nt, av[i]) != NK_StringNode) return -1;
+    conv[links] = is_receiver_conversion(nm) && !sp_streq(nm, "itself");
+    nilable[links] = (ans & BOPF_SELF_OR_NIL) != 0;
+    frz[links] = is_freeze_name(nm);
+    any_blk |= blk >= 0;
     links++;
   }
   NodeKind k = v >= 0 ? nt_kind(nt, v) : NK_NONE;
   if (links < 2 || (k != NK_LocalVariableReadNode && k != NK_InstanceVariableReadNode && !repr_static_read_kind(k)) ||
       !strbuf_slot_has(c, v))
     return -1;
+  /* a conversion to a String (`to_s`) turns a nil into "": the chain is no
+     longer the slot's String where the slot or a link below it can be nil
+     (a bang answers nil); and a freeze below a block that assigns the
+     variable runs after the block's statements, which are placed ahead of
+     the chain */
+  /* (a block that assigns the variable the chain is over is run with the
+     chain over the handle held before it, for a tap and an each_char; any
+     other iterator has no form over a held handle) */
+  int rebinds = any_blk && strbuf_chain_rebinds_base(c, start, v);
+  if (rebinds) {
+    for (int w = start; w >= 0 && nt_kind(nt, w) == NK_CallNode; w = unwrap_parens(c, nt_ref(nt, w, "receiver"))) {
+      const char *wn = nt_str(nt, w, "name");
+      if (nt_ref(nt, w, "block") >= 0 && !(wn && (is_tap_name(wn) || sp_streq(wn, "each_char")))) return -1;
+    }
+  }
+  for (int i = 0; i < links; i++) {
+    if (conv[i]) {
+      if (repr_of(c, v).may_nil) return -1;
+      for (int j = i + 1; j < links; j++)
+        if (nilable[j]) return -1;
+    }
+    if (rebinds && frz[i] && i > 0) return -1;
+  }
   return v;
+}
+/* Does a link of call v's receiver chain take a literal block? */
+int strbuf_chain_has_block(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  for (v = unwrap_parens(c, v); v >= 0 && nt_kind(nt, v) == NK_CallNode; v = unwrap_parens(c, nt_ref(nt, v, "receiver")))
+    if (nt_ref(nt, v, "block") >= 0) return 1;
+  return 0;
 }
 /* --share-strings: does call v, or a link of its receiver chain, answer its
    receiver's handle by a route that boxes cannot render? The plan reads a
@@ -3817,7 +3890,9 @@ static int tap_block_hoists(Compiler *c, int v) {
 static void emit_bang_held_open(Compiler *c, int v, int th, const char *href, int nonnil, int check_first,
                                 Buf *b) {
   Buf *hb = sb_block_hoists(c, v) || tap_block_hoists(c, v) ? g_pre : b;
-  int check = !nonnil && !call_is_safe_nav(c->nt, v);
+  /* (nil has a tap of its own: it hands the block nil and answers nil) */
+  const char *vn = nt_str(c->nt, v, "name");
+  int check = !nonnil && !call_is_safe_nav(c->nt, v) && !(vn && is_tap_name(vn));
   buf_puts(b, "({ ");
   size_t at = hb->len;
   if (hb != b) emit_indent(hb, g_indent);

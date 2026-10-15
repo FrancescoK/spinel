@@ -3690,7 +3690,7 @@ static int strbuf_slot_into(Compiler *c, int recv, Buf *b) {
   /* (--share-strings: a value route over a handle, `(+s)`, whose handle
      already ran into a temp (emit_bang_self_handle): that temp holds it,
      as a variable's slot does) */
-  if (repr_share_rule(c) && recv >= 0 && nt_kind(c->nt, recv) == NK_CallNode && ran_first_read_handle(recv) >= 0) {
+  if (repr_share_rule(c) && recv >= 0 && ran_first_read_handle(recv) >= 0) {
     if (b) buf_printf(b, "_t%d", ran_first_read_handle(recv));
     return 1;
   }

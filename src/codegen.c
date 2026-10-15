@@ -2453,11 +2453,40 @@ static int emit_boxed_self_chain(Compiler *c, int node, Buf *b) {
   Buf sb;
   memset(&sb, 0, sizeof sb);
   strbuf_slot_text(c, base, &sb);
+  /* A block on a link runs in the statement's prelude, ahead of the chain,
+     and may assign the variable the chain is over (`s.tap { s = +"zz" }`):
+     the slot's handle is read into a temp ahead of it, and the chain, the
+     box and the freeze take that temp, never the variable read after the
+     block ran. */
+  int th = -1, mark = g_n_argov, sv_h = -1, bound = 0;
+  if (g_pre && strbuf_chain_has_block(c, node)) {
+    th = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, sb.p ? sb.p : "NULL", th);
+    /* (a block that assigns the variable: the chain runs over the held
+       handle; a tap takes it as the handle, an each_char as its String) */
+    if (strbuf_chain_rebinds_base(c, node, base)) {
+      int first = unwrap_parens(c, node);
+      while (first >= 0 && unwrap_parens(c, nt_ref(c->nt, first, "receiver")) != base)
+        first = unwrap_parens(c, nt_ref(c->nt, first, "receiver"));
+      const char *fn = first >= 0 ? nt_str(c->nt, first, "name") : NULL;
+      bound = 1;
+      if (fn && is_tap_name(fn)) {
+        sv_h = view_push_repr(c, base, VR_STRBUF_BOX, 1);
+        ran_first_bind(base, th, th);
+      }
+      else ran_first_bind_read(base, th);
+    }
+  }
+  char held[24];
+  snprintf(held, sizeof held, "_t%d", th);
+  const char *slot = th >= 0 ? held : sb.p ? sb.p : "";
   int tb = ++g_tmp;
   buf_printf(b, "({ const char *_t%d = ", tb);
   int sv_b = view_push_repr(c, node, VR_STRBUF_BOX, 0);
   emit_expr(c, node, b);
   view_pop(c, sv_b);
+  if (bound) { view_unbind(mark); if (sv_h >= 0) view_pop(c, sv_h); }
   /* (a freeze over a call freezes the bytes it was given, not the handle:
      the slot's is frozen once the chain has run, as a freeze straight on
      the slot does) */
@@ -2467,8 +2496,8 @@ static int emit_boxed_self_chain(Compiler *c, int node, Buf *b) {
     const char *nm = nt_str(c->nt, n, "name");
     if (nm && is_freeze_name(nm)) frz = 1;
   }
-  if (frz) buf_printf(b, "; if (_t%d) sp_String_freeze(%s)", tb, sb.p ? sb.p : "");
-  buf_printf(b, "; _t%d ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil(); })", tb, sb.p ? sb.p : "");
+  if (frz) buf_printf(b, "; if (_t%d) sp_String_freeze(%s)", tb, slot);
+  buf_printf(b, "; _t%d ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil(); })", tb, slot);
   free(sb.p);
   RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
   return 1;
