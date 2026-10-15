@@ -7,7 +7,8 @@
 # element, a Hash value, an instance variable, a pushed or stored element, it
 # is the String the block named, shared with that name, and changed in place
 # through either: a String the block makes new, or hands on from a frozen
-# literal, is a String of its own.
+# literal, is a String of its own. A call the C dispatches on the receiver's
+# class is another matter (test/share/refuse/dispatched_*).
 def bc(a, i, &b) = b.call(a[i])
 def sc(a, i, &b) = b&.call(a[i])
 def yf(a, i); yield a[i]; end
@@ -64,3 +65,15 @@ p n, t, n[1].equal?(t), n[0].frozen?
 s << "z"
 t << "z"
 p a, h, b, c, n
+
+class K
+  def bc(&b) = b.call
+  def go(s) = [bc { s }]
+end
+class Other < K
+  def other = 1
+end
+q = +"qq"
+k = Other.new.go(q)
+k[0] << "!"
+p k, q, k[0].equal?(q)

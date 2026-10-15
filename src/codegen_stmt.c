@@ -1839,7 +1839,8 @@ int strbuf_tail_answers_block(Compiler *c, int mi, int last, int depth) {
   const NodeTable *nt = c->nt;
   if (last < 0) return 0;
   if (nt_kind(nt, last) == NK_YieldNode || is_blk_param_call(c, last, mi)) return 1;
-  if (depth >= 4 || nt_kind(nt, last) != NK_CallNode || !call_forwards_own_block(c, last)) return 0;
+  if (depth >= 4 || nt_kind(nt, last) != NK_CallNode || !call_forwards_own_block(c, last) ||
+      cplan_user(c, last)->dispatch == CP_SWITCH || cplan_user(c, last)->dispatch == CP_PER_ARM) return 0;
   int m2 = call_user_yield_mi(c, last), l2 = m2 > 0 ? scope_body_last(c, m2) : -1;
   int bl = block_given_tail_then_last(c, l2);
   return l2 >= 0 && !strbuf_has_return(nt, c->scopes[m2].body) &&
@@ -1863,7 +1864,10 @@ int strbuf_route_inline_call(Compiler *c, int v) {
     if (!encl || !encl->yields || encl->is_lowered_yield || encl->is_proc_form || !call_forwards_own_block(c, v))
       return 0;
   }
-  if (call_breaks(c, v)) return 0;
+  /* (a call the C dispatches on the receiver's class runs the clone of
+     whichever method answers, which strbuf_inline_mi cannot name) */
+  if (call_breaks(c, v) || cplan_user(c, v)->dispatch == CP_SWITCH || cplan_user(c, v)->dispatch == CP_PER_ARM)
+    return 0;
   int mi = strbuf_inline_mi(c, v);
   int last = mi > 0 ? scope_body_last(c, mi) : -1;
   if (last < 0) return 0;

@@ -34,3 +34,6 @@ true
 ["tee?2#z", "src!s?13hi$cz"]
 [1, "src!s?13hi$cz"]
 ["lit", "tee?2#!", "new!"]
+["qq!"]
+"qq!"
+true
