@@ -999,8 +999,8 @@ int an_int_step_range_chain(Compiler *c, int id) {
    block that does not answer its receiver, a reader (`size` and `take(n)`
    too, which an Array answers alike), and `each { }` or
    `each_with_index { }` whose value is dropped. A blockless map or select
-   (which the Enumerator has no blockless form of), `each(&blk)`, and an
-   `each { |x, y| }` whose value is read keep the Array as before. */
+   (which the Enumerator has no blockless form of) and `each(&blk)` keep the
+   Array as before. */
 int an_blockless_tuples_kept(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int p = comp_recv_parent(c, id);
@@ -1017,16 +1017,7 @@ int an_blockless_tuples_kept(Compiler *c, int id) {
   if (pblk >= 0 && nt_kind(nt, pblk) == NK_BlockNode) {
     if (each || ewi) {
       if (comp_value_dropped(c, p)) return 1;
-      /* `each { |x, y| }` over the Enumerator is rewritten to the call's
-         block form after its parameters are shaped for the Array's walk:
-         only a block taking one value, or none, is kept off the Array */
-      int bp = nt_ref(nt, pblk, "parameters");
-      const char *bpt = bp >= 0 ? nt_type(nt, bp) : NULL;
-      int plain = bp < 0 || (bpt && sp_streq(bpt, "BlockParametersNode") &&
-                             block_param_name(c, pblk, 0) && !block_param_name(c, pblk, 1) &&
-                             !block_opt_name(c, pblk, 0) && !block_post_name(c, pblk, 0) &&
-                             !block_rest_marker(c, pblk));
-      return each && !plain;
+      return 0;
     }
     for (int i = 0; KEPT_WALK[i]; i++) if (sp_streq(pn, KEPT_WALK[i])) return 1;
     return 0;
