@@ -240,6 +240,26 @@ int is_receiver_conversion(const char *n) {
   return sp_streq(n, "to_s") || sp_streq(n, "to_str") || sp_streq(n, "itself");
 }
 int is_to_s_name(const char *n) { return n && sp_streq(n, "to_s"); }
+
+/* The conversions that turn a nil receiver into a String ("" for to_s) and
+   answer a String receiver itself: to_s to_str +@. */
+int is_string_conversion(const char *n) {
+  return sp_streq(n, "to_s") || sp_streq(n, "to_str") || sp_streq(n, "+@");
+}
+
+/* The names a String answers itself to: to_s to_str itself +@. */
+int is_string_self_answer(const char *n) {
+  return is_receiver_conversion(n) || sp_streq(n, "+@");
+}
+
+/* A call that can run code of the program's own the walk does not see, and
+   so rebind a variable through it: a proc's call, a send, a reflective
+   write or eval, a yield. */
+int is_rebinding_reach_call(const char *n) {
+  return sp_streq(n, "call") || sp_streq(n, "()") || is_send_family(n) ||
+         sp_streq(n, "instance_variable_set") || is_instance_eval_family(n) || sp_streq(n, "yield");
+}
+
 int is_message_name(const char *n) { return n && sp_streq(n, "message"); }
 
 int is_range_membership(const char *n) {
