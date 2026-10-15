@@ -1867,6 +1867,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a called class method's provable NoMethodError compiled)"; ok=0; \
 	else grep -q "undefined method '\[\]=' for a Class" "$$tmp/nrc.out" || \
 	  { echo "reject-test: FAIL (a called class method's NoMethodError rejected without saying why)"; sed -n 1,5p "$$tmp/nrc.out"; ok=0; }; fi; \
+	t=test/reject/self_call_in_block_still_reaches_class_method.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/scb.c" >"$$tmp/scb.out" 2>&1; then \
+	  echo "reject-test: FAIL (a class method a block's self call reaches compiled its provable NoMethodError)"; ok=0; \
+	else grep -q "undefined method '\[\]=' for a Class" "$$tmp/scb.out" || \
+	  { echo "reject-test: FAIL (a block's self call into a class method rejected without saying why)"; sed -n 1,5p "$$tmp/scb.out"; ok=0; }; fi; \
 	t=test/reject/new_receiver_class_chain_still_reached.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/ncc.c" >"$$tmp/ncc.out" 2>&1; then \
 	  echo "reject-test: FAIL (a called class-side super chain's provable NoMethodError compiled)"; ok=0; \
