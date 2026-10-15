@@ -509,9 +509,11 @@ spinel: test/reject/def_delegators_splat.rb:10: def_delegators with arguments ot
 == test/reject/def_delegators_splat.rb [promote] rc=1
 spinel: test/reject/def_delegators_splat.rb:10: def_delegators with arguments other than a literal symbol list is not supported (write the names as symbols: `def_delegators :@target, :name, ...`)
 == test/reject/define_method_handed_block.rb [default] rc=1
-spinel: test/reject/define_method_handed_block.rb:7: Module#define_method with a block or Proc the method is handed (`&block`, a parameter) is not supported: the defined method's body is the caller's block, known only at run time. Pass a block literal to define_method instead
+spinel: test/reject/define_method_handed_block.rb:7: Module#define_method with `&` of a block or Proc that is not a literal (`&block`, a parameter, a constant, a call's result) is not supported: the defined method's body is known only at run time. Pass a block literal to define_method instead
+spinel: 1 refusal, nothing written
 == test/reject/define_method_handed_block.rb [promote] rc=1
-spinel: test/reject/define_method_handed_block.rb:7: Module#define_method with a block or Proc the method is handed (`&block`, a parameter) is not supported: the defined method's body is the caller's block, known only at run time. Pass a block literal to define_method instead
+spinel: test/reject/define_method_handed_block.rb:7: Module#define_method with `&` of a block or Proc that is not a literal (`&block`, a parameter, a constant, a call's result) is not supported: the defined method's body is known only at run time. Pass a block literal to define_method instead
+spinel: 1 refusal, nothing written
 == test/reject/define_method_implicit_rescue_captured_values.rb [default] rc=1
 spinel: test/reject/define_method_implicit_rescue_captured_values.rb:9: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
 spinel: test/reject/define_method_implicit_rescue_captured_values.rb:46: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
@@ -593,6 +595,18 @@ spinel: test/reject/define_method_name_self.rb:4: Module#define_method with a no
 spinel: 1 refusal, nothing written
 == test/reject/define_method_name_self.rb [promote] rc=1
 spinel: test/reject/define_method_name_self.rb:4: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/define_method_proc_ref_constant.rb [default] rc=1
+spinel: test/reject/define_method_proc_ref_constant.rb:6: Module#define_method with `&` of a block or Proc that is not a literal (`&block`, a parameter, a constant, a call's result) is not supported: the defined method's body is known only at run time. Pass a block literal to define_method instead
+spinel: 1 refusal, nothing written
+== test/reject/define_method_proc_ref_constant.rb [promote] rc=1
+spinel: test/reject/define_method_proc_ref_constant.rb:6: Module#define_method with `&` of a block or Proc that is not a literal (`&block`, a parameter, a constant, a call's result) is not supported: the defined method's body is known only at run time. Pass a block literal to define_method instead
+spinel: 1 refusal, nothing written
+== test/reject/define_method_proc_ref_in_method.rb [default] rc=1
+spinel: test/reject/define_method_proc_ref_in_method.rb:8: Module#define_method with `&` of a block or Proc that is not a literal (`&block`, a parameter, a constant, a call's result) is not supported: the defined method's body is known only at run time. Pass a block literal to define_method instead
+spinel: 1 refusal, nothing written
+== test/reject/define_method_proc_ref_in_method.rb [promote] rc=1
+spinel: test/reject/define_method_proc_ref_in_method.rb:8: Module#define_method with `&` of a block or Proc that is not a literal (`&block`, a parameter, a constant, a call's result) is not supported: the defined method's body is known only at run time. Pass a block literal to define_method instead
 spinel: 1 refusal, nothing written
 == test/reject/defined_super_builtin_singleton.rb [default] rc=1
 spinel: test/reject/defined_super_builtin_singleton.rb:6: unsupported defined?(super) where the method super reaches is not known at compile time: node N (DefinedNode)
