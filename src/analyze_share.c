@@ -2638,23 +2638,90 @@ static int sh_args_refuse_string(Compiler *c, int n, const char *name) {
   return 0;
 }
 
-/* Can the box call n is made on hold a proc or a Method? Not where the
-   boxed-receiver walk bounds the receiver (poly_recv_classes: a proc is no
-   class it lists), nor in a program that makes none (found once per build) */
-static int sh_box_may_be_callable(ShareFacts *F, Compiler *c, int n) {
+/* Does a callable made at node v (or read from a block parameter there)
+   end where it is made: the receiver of a call that reads it (call, [],
+   ===, yield, arity, ...), a condition, an `&` hand-off to a call (a block
+   parameter there is asked on its own), the left of an `&&`, or a dropped
+   statement? Anything else may put it in a box. par is the parent map. */
+static int sh_callable_ends(const NodeTable *nt, const int *par, int v) {
+  int p = par[v];
+  if (p < 0) return 0;
+  switch (nt_kind(nt, p)) {
+  case NK_CallNode: {
+    if (nt_ref(nt, p, "receiver") != v) return 0;
+    const char *nm = nt_str(nt, p, "name");
+    static const char *const reads[] = { "call", "[]", "===", "yield", "arity", "lambda?", "parameters",
+                                         "nil?", "!", NULL };
+    for (int i = 0; nm && reads[i]; i++) if (sp_streq(nm, reads[i])) return 1;
+    return 0;
+  }
+  case NK_BlockArgumentNode:
+    /* the callee's block parameter is asked on its own; a maker it is
+       handed (proc(&b), Proc.new(&b)) makes a callable asked as any other */
+    return 1;
+  case NK_IfNode: case NK_UnlessNode: case NK_WhileNode: case NK_UntilNode:
+    return nt_ref(nt, p, "predicate") == v;
+  case NK_AndNode:
+    return nt_ref(nt, p, "left") == v;
+  case NK_StatementsNode: {
+    int bn = 0; const int *bv = nt_arr(nt, p, "body", &bn);
+    return bn > 0 && bv[bn - 1] != v;
+  }
+  default:
+    return 0;
+  }
+}
+
+/* Can a callable reach a box anywhere in the program? A proc or a Method
+   made and called on the spot (`lambda { }.call`), or a block parameter
+   only called, tested or handed on with `&`, never does (#9230). */
+static int sh_program_boxes_callable(Compiler *c) {
   const NodeTable *nt = c->nt;
-  if (F->any_callable < 0) {
-    F->any_callable = 0;
-    for (int k = 0; k < nt->count && !F->any_callable; k++) {
-      NodeKind kk = nt_kind(nt, k);
-      const char *nm = kk == NK_CallNode ? nt_str(nt, k, "name") : NULL;
-      int r = nm ? nt_ref(nt, k, "receiver") : -1;
-      const char *rn = r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode ? nt_str(nt, r, "name") : NULL;
-      F->any_callable = kk == NK_LambdaNode || kk == NK_BlockParameterNode ||
-                        (nm && (is_proc_constructor(nm) || is_proc_conversion_name(nm) ||
-                                is_object_receiver_handoff(nm) || is_proc_new(rn, nm)));
+  int *par = malloc((size_t)(nt->count > 0 ? nt->count : 1) * sizeof(int));
+  if (!par) return 1;
+  for (int k = 0; k < nt->count; k++) par[k] = -1;
+  for (int k = 0; k < nt->count; k++) {
+    int nr = nt_num_refs(nt, k);
+    for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, k, i); if (ch >= 0 && ch < nt->count) par[ch] = k; }
+    int na = nt_num_arrs(nt, k);
+    for (int i = 0; i < na; i++) {
+      int an = 0; const int *av = nt_arr_at(nt, k, i, &an);
+      for (int j = 0; j < an; j++) if (av[j] >= 0 && av[j] < nt->count) par[av[j]] = k;
     }
   }
+  int boxes = 0;
+  for (int k = 0; k < nt->count && !boxes; k++) {
+    NodeKind kk = nt_kind(nt, k);
+    if (kk == NK_LambdaNode) { boxes = !sh_callable_ends(nt, par, k); continue; }
+    if (kk == NK_BlockParameterNode) {
+      const char *bn = nt_str(nt, k, "name");
+      Scope *sc = comp_scope_of(c, k);
+      if (!bn || !sc) { boxes = 1; continue; }
+      NT_FOREACH_KIND(nt, NK_LocalVariableReadNode, r) {
+        if (comp_scope_of(c, r) != sc) continue;
+        const char *rn = nt_str(nt, r, "name");
+        if (rn && sp_streq(rn, bn) && !sh_callable_ends(nt, par, r)) { boxes = 1; break; }
+      }
+      continue;
+    }
+    if (kk != NK_CallNode) continue;
+    const char *nm = nt_str(nt, k, "name");
+    int r = nm ? nt_ref(nt, k, "receiver") : -1;
+    const char *rn = r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode ? nt_str(nt, r, "name") : NULL;
+    if (nm && (is_proc_constructor(nm) || is_proc_conversion_name(nm) || is_object_receiver_handoff(nm) ||
+               is_proc_new(rn, nm)))
+      boxes = !sh_callable_ends(nt, par, k);
+  }
+  free(par);
+  return boxes;
+}
+
+/* Can the box call n is made on hold a proc or a Method? Not where the
+   boxed-receiver walk bounds the receiver (poly_recv_classes: a proc is no
+   class it lists), nor in a program where no callable reaches a box
+   (found once per build) */
+static int sh_box_may_be_callable(ShareFacts *F, Compiler *c, int n) {
+  if (F->any_callable < 0) F->any_callable = sh_program_boxes_callable(c);
   int nk;
   return F->any_callable && !poly_recv_classes(c, n, &nk);
 }
