@@ -6079,10 +6079,7 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
   /* String#bytesplice on a poly value, in each of its forms
      (emit_bytesplice_bytes): in-place byte splice on the shared handle
      (#3227). */
-  if (sp_streq(name, "bytesplice") &&
-      ((argc == 2 && comp_ntype(c, argv[0]) == TY_RANGE) || argc == 3 || argc == 5) &&
-      (argc != 3 || comp_ntype(c, argv[0]) != TY_RANGE || comp_ntype(c, argv[2]) == TY_RANGE ||
-       comp_ntype(c, argv[2]) == TY_INT)) {
+  if (sp_streq(name, "bytesplice") && bytesplice_form_ok(c, argv, argc)) {
     int tvB = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", tvB);
     emit_expr(c, recv, b);
@@ -6092,7 +6089,9 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
                tvB, tvB, tvB, tvB, tvB, tvB);
     char rs[48]; snprintf(rs, sizeof rs, "sp_String_cstr(_m%d)", tvB);
     emit_bytesplice_bytes(c, argv, argc, rs, b);
-    buf_printf(b, "; sp_String_set_bin_enc(_m%d, _n%d); _r%d = sp_box_str(_n%d); }\n"
+    /* the answer is the receiver itself, so a mutation through it
+       (`x.bytesplice(0, 1, "J") << "!"`) reaches x */
+    buf_printf(b, "; sp_String_set_bin_enc(_m%d, _n%d); _r%d = _t%d; }\n"
                   "else { sp_raise_nomethod(sp_nomethod_msg(\"bytesplice\", _t%d)); _r%d = sp_box_nil(); } _r%d; })",
                tvB, tvB, tvB, tvB, tvB, tvB, tvB);
     return 1;

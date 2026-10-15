@@ -42,3 +42,27 @@ RangeError
 #<Encoding:BINARY (ASCII-8BIT)>
 #<Encoding:UTF-8>
 #<TypeError: no implicit conversion of Range into String>
+"Qllo"
+"helQ"
+"!hello"
+TypeError
+"no implicit conversion of Range into Integer"
+TypeError
+"no implicit conversion of Range into Integer"
+RangeError
+"9..10 out of range"
+"éb"
+true
+"éb"
+true
+RangeError
+"9..10 out of range"
+to_str
+"zzc"
+RangeError
+"9..10 out of range"
+TypeError
+"wrong argument type Float (expected Range)"
+RangeError
+"float -Inf out of range of integer"
+"hxlo"

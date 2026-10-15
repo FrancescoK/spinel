@@ -726,6 +726,7 @@ int cmethod_takes_self_cls(Compiler *c, int si);
 const char *emit_cmethod_self_cls_arg(Compiler *c, int mi, int recv_cls, Buf *b);
 int reopen_self_defaults(Compiler *c, int mi);
 int ctor_needs_self_defaults(Compiler *c, int initm, int argc);
+int bytesplice_form_ok(Compiler *c, const int *argv, int argc);
 void emit_bytesplice_bytes(Compiler *c, const int *argv, int argc, const char *rs, Buf *b);
 void emit_ctor_alloc_init(Compiler *c, int cid, int initm, int argsNode, int call_id, Buf *b);
 int ctor_needs_self_defaults_argv(Compiler *c, int initm, const int *argv, int argc);

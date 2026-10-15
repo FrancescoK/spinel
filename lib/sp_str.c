@@ -424,7 +424,7 @@ static void sp_str_bsp_span(const char*s,sp_int*beg,sp_int*len){
   if(*len<0)sp_raise_cls("IndexError",sp_sprintf("negative length %lld",(long long)*len));
   if(sl<*beg||(*beg<0&&*beg+sl<0))sp_raise_cls("IndexError",sp_sprintf("index %lld out of string",(long long)*beg));
   if(*beg<0)*beg+=sl;
-  if(sl<*beg+*len)*len=sl-*beg;
+  if(*len>sl-*beg)*len=sl-*beg;   /* never *beg+*len: a huge length overflows it */
   if(sp_str_is_binary(s))return;
   sp_int at[2]={*beg,*beg+*len};
   for(int k=0;k<2;k++)

@@ -75,6 +75,7 @@ enum {
   PF_ARGS_OWN = 1 << 13, /* the arguments must be of the owner's own kind (concat) */
   PF_VAL_SELF = 1 << 14, /* a mutator whose value is the receiver: the box itself, or for a String the box its variable holds after the write */
   PF_SAME_OK  = 1 << 16, /* ... and contents that are the receiver's own mean no write, so no frozen check (scrub!) */
+  PF_ENC      = 1 << 17, /* ... and the new contents carry the result's encoding, which a shared handle takes, binary or text (bytesplice) */
   PF_LAST     = 1 << 15  /* answers only once no poly-receiver emitter of its own has claimed the name */
 };
 typedef struct {

@@ -4122,32 +4122,85 @@ static int emit_str_mut_recv_once(Compiler *c, int recv, int lvw, Buf *b) {
    more than once): (start, len, str), (start, len, str, str_start, str_len),
    (range, str) or (range, str, str_range). The arguments run in order, and
    a range is measured against its own String as CRuby measures it. */
+/* The call shapes emit_bytesplice_bytes takes: (range, str), three
+   arguments whose third is a Range or an Integer when the first is a Range,
+   and five. Anything else stays the NoMethodError it was. */
+int bytesplice_form_ok(Compiler *c, const int *argv, int argc) {
+  if (argc == 2) return comp_ntype(c, argv[0]) == TY_RANGE;
+  if (argc == 3)
+    return comp_ntype(c, argv[0]) != TY_RANGE || comp_ntype(c, argv[2]) == TY_RANGE ||
+           comp_ntype(c, argv[2]) == TY_INT;
+  return argc == 5;
+}
+
 void emit_bytesplice_bytes(Compiler *c, const int *argv, int argc, const char *rs, Buf *b) {
-  int rng = comp_ntype(c, argv[0]) == TY_RANGE;
+  /* five arguments are always (start, len, str, str_start, str_len) */
+  int rng = argc != 5 && comp_ntype(c, argv[0]) == TY_RANGE;
   int t = ++g_tmp;
-  buf_printf(b, "({ sp_int _b%d, _l%d, _vb%d = 0, _vl%d; ", t, t, t, t);
-  if (rng) { buf_printf(b, "sp_Range _r%d = ", t); emit_expr(c, argv[0], b); buf_puts(b, "; "); }
-  else {
+  buf_puts(b, "({ ");
+  /* three arguments whose first is no Integer take the range form, where a
+     first that is no Range either is CRuby's TypeError */
+  TyKind t0 = comp_ntype(c, argv[0]);
+  const char *t0n = t0 == TY_FLOAT ? "Float" : t0 == TY_STRING ? "String" : t0 == TY_NIL ? "nil" :
+                    t0 == TY_SYMBOL ? "Symbol" : NULL;
+  if (argc == 3 && t0n) {
+    for (int j = 0; j < argc; j++) { buf_puts(b, "(void)("); emit_expr(c, argv[j], b); buf_puts(b, "); "); }
+    buf_printf(b, "sp_raise_cls(\"TypeError\", \"wrong argument type %s (expected Range)\"); "
+                  "(const char *)NULL; })", t0n);
+    return;
+  }
+  /* an Integer slot holding a Range: CRuby's NUM2LONG TypeError, once the
+     arguments have run and the slots ahead of it converted */
+  if (!rng) {
+    static const int islot[4] = {0, 1, 3, 4};
+    for (int k = 0; k < (argc == 5 ? 4 : 2); k++) {
+      int a = islot[k];
+      if (comp_ntype(c, argv[a]) != TY_RANGE) continue;
+      for (int j = 0; j < argc; j++) {
+        buf_puts(b, "(void)(");
+        if (j >= a) emit_expr(c, argv[j], b);
+        else if (j == 2) emit_str_expr(c, argv[j], b);
+        else emit_int_expr(c, argv[j], b);
+        buf_puts(b, "); ");
+      }
+      buf_puts(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion of Range into Integer\"); "
+                  "(const char *)NULL; })");
+      return;
+    }
+  }
+  buf_printf(b, "sp_int _b%d, _l%d, _vb%d = 0, _vl%d; ", t, t, t, t);
+  if (!rng) {
     buf_printf(b, "_b%d = ", t); emit_int_expr(c, argv[0], b);
     buf_printf(b, "; _l%d = ", t); emit_int_expr(c, argv[1], b); buf_puts(b, "; ");
+    buf_printf(b, "const char *_v%d = ", t); emit_str_expr(c, argv[2], b);
+    buf_printf(b, "; SP_GC_ROOT_STR(_v%d); _vl%d = _v%d ? (sp_int)sp_str_byte_len(_v%d) : 0; ", t, t, t, t);
+    if (argc == 5) {
+      buf_printf(b, "_vb%d = ", t); emit_int_expr(c, argv[3], b);
+      buf_printf(b, "; _vl%d = ", t); emit_int_expr(c, argv[4], b); buf_puts(b, "; ");
+    }
+    buf_printf(b, "sp_str_bytesplice5(%s, _b%d, _l%d, _v%d, _vb%d, _vl%d); })", rs, t, t, t, t, t);
+    return;
   }
-  int si = rng ? 1 : 2;
-  buf_printf(b, "const char *_v%d = ", t); emit_str_expr(c, argv[si], b);
-  buf_printf(b, "; SP_GC_ROOT_STR(_v%d); _vl%d = _v%d ? (sp_int)sp_str_byte_len(_v%d) : 0; ", t, t, t, t);
-  if (argc == 5) {
-    buf_printf(b, "_vb%d = ", t); emit_int_expr(c, argv[3], b);
-    buf_printf(b, "; _vl%d = ", t); emit_int_expr(c, argv[4], b); buf_puts(b, "; ");
+  /* (range, str[, str_range]): every argument runs, then, as CRuby orders
+     it, the receiver's range is measured, the new string converted (an
+     operand that may not be a String is held unconverted until then) and
+     its range measured. A range is measured against its own String. */
+  buf_printf(b, "sp_Range _r%d = ", t); emit_expr(c, argv[0], b); buf_puts(b, "; ");
+  TyKind vt = comp_ntype(c, argv[1]);
+  int held = vt != TY_STRING && vt != TY_STRBUF ? hold_operand(c, argv[1], TY_POLY, 1, ++g_tmp, 1, " ", b) : -1;
+  if (held < 0) {
+    buf_printf(b, "const char *_v%d = ", t); emit_str_expr(c, argv[1], b);
+    buf_printf(b, "; SP_GC_ROOT_STR(_v%d); ", t);
   }
-  /* (range, str, n): CRuby's TypeError once the arguments have run */
-  if (rng && argc == 3 && comp_ntype(c, argv[2]) != TY_RANGE) {
-    buf_puts(b, "(void)("); emit_int_expr(c, argv[2], b);
-    buf_puts(b, "); sp_raise_cls(\"TypeError\", \"wrong argument type Integer (expected Range)\"); ");
-  }
-  else if (rng && argc == 3) { buf_printf(b, "sp_Range _vr%d = ", t); emit_expr(c, argv[2], b); buf_puts(b, "; "); }
-  /* the receiver's range is measured first, as CRuby does */
-  if (rng) buf_printf(b, "sp_range_beg_len(_r%d, (sp_int)sp_str_byte_len(%s), &_b%d, &_l%d); ", t, rs, t, t);
-  if (rng && argc == 3 && comp_ntype(c, argv[2]) == TY_RANGE)
-    buf_printf(b, "sp_range_beg_len(_vr%d, _vl%d, &_vb%d, &_vl%d); ", t, t, t, t);
+  int vrng = argc == 3 && comp_ntype(c, argv[2]) == TY_RANGE;
+  if (vrng) { buf_printf(b, "sp_Range _vr%d = ", t); emit_expr(c, argv[2], b); buf_puts(b, "; "); }
+  else if (argc == 3) { buf_puts(b, "(void)("); emit_expr(c, argv[2], b); buf_puts(b, "); "); }
+  buf_printf(b, "sp_range_beg_len(_r%d, (sp_int)sp_str_byte_len(%s), &_b%d, &_l%d); ", t, rs, t, t);
+  if (held >= 0) buf_printf(b, "const char *_v%d = sp_poly_arg_str_chk(_t%d); SP_GC_ROOT_STR(_v%d); ", t, held, t);
+  buf_printf(b, "_vl%d = _v%d ? (sp_int)sp_str_byte_len(_v%d) : 0; ", t, t, t);
+  /* (range, str, n): CRuby's TypeError once the new string has converted */
+  if (argc == 3 && !vrng) buf_puts(b, "sp_raise_cls(\"TypeError\", \"wrong argument type Integer (expected Range)\"); ");
+  if (vrng) buf_printf(b, "sp_range_beg_len(_vr%d, _vl%d, &_vb%d, &_vl%d); ", t, t, t, t);
   buf_printf(b, "sp_str_bytesplice5(%s, _b%d, _l%d, _v%d, _vb%d, _vl%d); })", rs, t, t, t, t, t);
 }
 
@@ -4564,10 +4617,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
   /* String#bytesplice: a byte-range replace returning self (value-semantics
      strings: the helper builds the new value and an lvalue receiver is
      rebound to it), in each of its forms (emit_bytesplice_bytes). */
-  if (rt == TY_STRING && sp_streq(name, "bytesplice") && recv >= 0 &&
-      ((argc == 2 && comp_ntype(c, argv[0]) == TY_RANGE) || argc == 3 || argc == 5) &&
-      (argc != 3 || comp_ntype(c, argv[0]) != TY_RANGE || comp_ntype(c, argv[2]) == TY_RANGE ||
-       comp_ntype(c, argv[2]) == TY_INT)) {
+  if (rt == TY_STRING && sp_streq(name, "bytesplice") && recv >= 0 && bytesplice_form_ok(c, argv, argc)) {
     /* shared handle receiver: swap the buffer in place (#3227) */
     { Buf srefBS; memset(&srefBS, 0, sizeof srefBS);
       Buf lbBS; memset(&lbBS, 0, sizeof lbBS);
@@ -13686,12 +13736,13 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
       if (var) {
         emit_expr(c, recv, &wb); buf_puts(&wb, " = ");
         if (flags & PF_SAME_OK) buf_printf(&wb, "sp_poly_str_is_own(_t%d, _t%d) ? _t%d : ", box, nv, box);
-        buf_printf(&wb, "sp_poly_str_become(_t%d, _t%d)", box, nv);
+        buf_printf(&wb, "sp_poly_str_become%s(_t%d, _t%d)", flags & PF_ENC ? "_enc" : "", box, nv);
       }
       else {
         const char *np = nv == t ? tp : "_t";
         if (flags & PF_SAME_OK) buf_printf(&wb, "if (!sp_poly_str_is_own(_t%d, %s%d)) ", box, np, nv);
-        buf_printf(&wb, "sp_poly_str_become_handle(_t%d, %s%d, \"%s\")", box, np, nv, name);
+        buf_printf(&wb, "sp_poly_str_become_handle%s(_t%d, %s%d, \"%s\")", flags & PF_ENC ? "_enc" : "",
+                   box, np, nv, name);
       }
     }
     if (!has_val) buf_printf(val, "({ (void)(%s); %s; })", call, wb.p);
