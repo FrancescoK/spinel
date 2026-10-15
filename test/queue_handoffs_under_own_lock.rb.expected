@@ -1,0 +1,6 @@
+producers and consumers: 8000 values, sum right
+sized queue: [0, 1, 2, 3, 4, 5], 0 waiting
+close: [nil]
+clear: [:pushed, :pushed, :pushed], then [1, 2, 3]
+timed: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], 10 timed out, 0 left
+after a kill: :for_a, 0 waiting
