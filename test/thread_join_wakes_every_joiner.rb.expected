@@ -1,0 +1,7 @@
+joins racing the death: 200/200
+150 joiners: [:done]
+after a kill: [7, 7], the killed one false
+timed out: nil
+then: 9
+raised: ["boom", "boom", "boom"]
+join: deadlock reported
