@@ -104,7 +104,7 @@ by scheme, but there is no URI::LDAP and no scheme registry to add a class
 to (`URI.register_scheme`, `URI.scheme_list`). `#route_to`/`#route_from`,
 `URI.extract`, `URI.regexp` and `#find_proxy` are absent, and the component
 writers do not validate what they are given. An https request needs the
-`openssl` package below.
+`openssl` package below; `require "net/https"` loads both, as in CRuby.
 
 **TLS / `openssl`.** The `openssl` package binds the system libssl and
 provides `OpenSSL::SSL` only: `SSLContext`, `SSLSocket`, `SSLError` and the
