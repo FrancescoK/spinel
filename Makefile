@@ -1167,7 +1167,8 @@ PKG_TESTS := $(filter-out $(PKG_ONDEMAND_TESTS),$(PKG_TESTS))
 # where the headers do -- the object drops out of BUNDLED_NATIVE_OBJS on the
 # same probe, and `require "openssl"` is then an unsatisfiable require.
 ifneq ($(OPENSSL_AVAILABLE),yes)
-PKG_TESTS := $(filter-out packages/openssl/test/%.rb,$(PKG_TESTS))
+PKG_TESTS := $(filter-out packages/openssl/test/%.rb \
+               $(shell grep -lE '^require .(openssl|net/https).' packages/*/test/*.rb),$(PKG_TESTS))
 endif
 ifneq ($(FFI_AVAILABLE),yes)
 PKG_TESTS := $(filter-out packages/ffi/test/%.rb packages/fiddle/test/%.rb,$(PKG_TESTS))
