@@ -4431,7 +4431,13 @@ int next_is_block_value(Compiler *c, int next) {
 /* Emit a loop body, prefixing a `_redo_N:` label (and pushing it on the redo
    stack) when the body contains a `redo` that targets this loop. The label
    sits at the body top so `redo` re-runs the body without advancing. */
+/* A loop that may not end (loop, an unproved while) polls for a delivered
+   signal at its back-edge; a counted one only when no loop of its function
+   encloses it, so an inner counted loop keeps no poll in its body (#9222) */
+int g_loop_uncounted = 0, g_poll_loop_nest = 0;
 void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
+  int poll_uncounted = g_loop_uncounted; g_loop_uncounted = 0;
+  int poll_nest = ++g_poll_loop_nest;
   /* break/next inside this body exit THIS C loop: record the live
      begin/rescue frame depth at loop entry so their emission can pop the
      frames opened inside the body (mirrors emit_return's accounting). */
@@ -4472,9 +4478,12 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
      the cache reloads after one runs, as after a safepoint. */
   if (polls_here && g_uses_finalizers) { emit_indent(b, indent); buf_printf(b, "if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_fin_pending_flag, __ATOMIC_RELAXED))) sp_fin_run_pending()%s;\n", hc_mark()); }
   /* and for a delivered Signal.trap, Ruby code as a finalizer is */
-  if (polls_here && g_uses_traps) { emit_indent(b, indent); buf_printf(b, "if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_sig_pending_flag, __ATOMIC_RELAXED))) sp_sig_run_pending()%s;\n", hc_mark()); }
+  if (polls_here && sig_polls() && (poll_uncounted || poll_nest == 1) && !poll_in_pure(c, body)) {
+    emit_indent(b, indent); buf_printf(b, "%s%s;\n", sig_poll_stmt(), hc_mark());
+  }
   emit_stmts(c, body, b, indent);
   if (has_redo) g_redo_depth--;
+  g_poll_loop_nest--;
   g_c_loop_depth--;
   g_ie_next_var = sv_nxv; g_ie_next_ty = sv_nxt;
   g_loop_exc_base = sv_lexc; g_loop_rescue_base = sv_lexc_rb;
@@ -7615,6 +7624,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
        accounting the handler stack grew by one per call and eventually wrote
        past its end (#3781). */
     g_exc_frame_depth++;
+    g_loop_uncounted = 1;
     emit_loop_body(c, lbody, b, indent + 2);
     g_exc_frame_depth--;
     emit_indent(b, indent + 1); buf_puts(b, "}\n");

@@ -11547,6 +11547,79 @@ static void emit_ivar_lhs_otext(Compiler *c, int cid, int iv, const char *ivn, c
   emit_ivar_text_nilbit(c, cid, iv, ipfx, otext, b);
 }
 int g_loop_polls_in_cond = 0;
+static int poll_while_counted(Compiler *c, int pred, int body);
+/* Does `while v < bound` (or <=, >, >=) end on its own:
+   its body steps the Integer local v toward the bound by a literal, once, at
+   its top level, writes v nowhere else, and makes no call that could run
+   the program's code (so the bound's variables and ivars stay as they are)?
+   Such a loop ends on its own, and polls for a delivered signal only where
+   no loop of its function encloses it (#9222). A loop it holds must be one
+   too. */
+static int poll_subtree_bad(Compiler *c, int n, const char *v, int step, int *steps) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_YieldNode || k == NK_SuperNode || k == NK_ForwardingSuperNode || k == NK_UntilNode) return 1;
+  if (k == NK_WhileNode) {
+    if (!poll_while_counted(c, nt_ref(nt, n, "predicate"), nt_ref(nt, n, "statements"))) return 1;
+    return poll_subtree_bad(c, nt_ref(nt, n, "statements"), v, step, steps);
+  }
+  if (comp_is_local_write(k) || k == NK_LocalVariableOperatorWriteNode) {
+    const char *nm = nt_str(nt, n, "name");
+    if (nm && sp_streq(nm, v)) { if (n != step) return 1; (*steps)++; }
+  }
+  if (k == NK_CallNode) {
+    const char *nm = nt_str(nt, n, "name");
+    if (!nm || nt_ref(nt, n, "block") >= 0 || poll_is_method_name(c, nm)) return 1;
+  }
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) if (poll_subtree_bad(c, nt_ref_at(nt, n, i), v, step, steps)) return 1;
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) if (poll_subtree_bad(c, av[j], v, step, steps)) return 1;
+  }
+  return 0;
+}
+static int poll_while_counted(Compiler *c, int pred, int body) {
+  const NodeTable *nt = c->nt;
+  if (pred < 0 || body < 0 || nt_kind(nt, pred) != NK_CallNode) return 0;
+  const char *op = nt_str(nt, pred, "name");
+  int up = op && (sp_streq(op, "<") || sp_streq(op, "<=")), down = op && (sp_streq(op, ">") || sp_streq(op, ">="));
+  int recv = nt_ref(nt, pred, "receiver");
+  if ((!up && !down) || recv < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode || c->ntype[recv] != TY_INT) return 0;
+  const char *v = nt_str(nt, recv, "name");
+  int bn = 0; const int *bv = nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+  int step = -1;
+  for (int i = 0; i < bn && step < 0; i++) {
+    int w = bv[i];
+    NodeKind wk = nt_kind(nt, w);
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, v)) continue;
+    int val = nt_ref(nt, w, "value");
+    if (wk == NK_LocalVariableOperatorWriteNode) {
+      const char *bo = nt_str(nt, w, "binary_operator");
+      if (bo && val >= 0 && nt_kind(nt, val) == NK_IntegerNode && nt_int(nt, val, "value", 0) > 0 &&
+          ((up && sp_streq(bo, "+")) || (down && sp_streq(bo, "-")))) step = w;
+    }
+    else if (wk == NK_LocalVariableWriteNode && val >= 0 && nt_kind(nt, val) == NK_CallNode) {
+      const char *cn = nt_str(nt, val, "name");
+      int r = nt_ref(nt, val, "receiver");
+      if (r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode || !sp_streq(nt_str(nt, r, "name"), v)) continue;
+      if (up && cn && sp_streq(cn, "succ")) step = w;
+      int a = nt_ref(nt, val, "arguments"), ac = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+      if (cn && ac == 1 && nt_kind(nt, av[0]) == NK_IntegerNode && nt_int(nt, av[0], "value", 0) > 0 &&
+          ((up && sp_streq(cn, "+")) || (down && sp_streq(cn, "-")))) step = w;
+    }
+  }
+  if (step < 0) return 0;
+  int steps = 0;
+  if (poll_subtree_bad(c, body, v, step, &steps) || steps != 1) return 0;
+  int a = nt_ref(nt, pred, "arguments"); int ac = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  int dummy = 0;
+  return ac == 1 && !poll_subtree_bad(c, av[0], v, -1, &dummy);
+}
+
 
 /* The test of a loop hc_bounded_index proved, against the cached length: the
    cache holds the array's current header wherever the test runs -- nothing in
@@ -11630,7 +11703,19 @@ static void hc_close(HcRegion *r, const char *loop, Buf *b, int indent) {
   }
 }
 
+static void emit_while_loop(Compiler *c, int id, Buf *b, int indent, int is_until);
+/* A pure loop (poll_pure_loop) outside a pure region is marked around: a
+   signal while it runs is raised where it lands, and it carries no poll
+   (#9222) */
 void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
+  Scope *sc = comp_scope_of(c, id);
+  int si = sc ? (int)(sc - c->scopes) : -1;
+  int wrap = g_pure_region == 0 && !(si >= 0 && poll_pure_method(c, si)) && poll_pure_loop(c, id);
+  if (wrap) { emit_indent(b, indent); buf_puts(b, "sp_sig_async_ok++;\n"); g_pure_region++; }
+  emit_while_loop(c, id, b, indent, is_until);
+  if (wrap) { g_pure_region--; emit_indent(b, indent); buf_puts(b, "sp_sig_async_ok--;\n"); }
+}
+static void emit_while_loop(Compiler *c, int id, Buf *b, int indent, int is_until) {
   const NodeTable *nt = c->nt;
   int prev_stmt = g_stmt_cur == id ? g_stmt_prev : -1;
   int pred = nt_ref(nt, id, "predicate");
@@ -11641,6 +11726,7 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   if (post_test) {
     emit_indent(b, indent);
     buf_puts(b, "do {\n");
+    g_loop_uncounted = 1;
     emit_loop_body(c, body, b, indent + 1);
     /* The guard's preludes (see below) run with it after every pass, inside
        the condition, where a `next` (a C continue) lands too. Routed through
@@ -11725,7 +11811,7 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   g_pre = sv_pre; g_indent = sv_ind;
   /* a proved loop polls ahead of its test (hc_bounded_index); a condition with
      a prelude has no single test to put them ahead of, so it keeps its checks */
-  int polls_in_cond = proved && !(cpre.p && cpre.p[0]) && (g_uses_threads || g_uses_finalizers || g_uses_traps);
+  int polls_in_cond = proved && !(cpre.p && cpre.p[0]) && (g_uses_threads || g_uses_finalizers || sig_polls());
   if (proved && cpre.p && cpre.p[0]) { pr->bi = NULL; proved = 0; }
   if (proved) {
     Buf hcc; memset(&hcc, 0, sizeof hcc);
@@ -11741,6 +11827,7 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
     buf_puts(b, ccond.p ? ccond.p : "0");
     if (!is_until) buf_puts(b, ")");
     buf_puts(b, ") break;\n");
+    g_loop_uncounted = 1;
     emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
   }
@@ -11752,8 +11839,9 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
       if (g_uses_threads) buf_printf(b, "if (SP_UNLIKELY(SP_SAFEPOINT_POLL())) sp_safepoint()%s; ", hc_mark());
       if (g_uses_finalizers)
         buf_printf(b, "if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_fin_pending_flag, __ATOMIC_RELAXED))) sp_fin_run_pending()%s; ", hc_mark());
-      if (g_uses_traps)
-        buf_printf(b, "if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_sig_pending_flag, __ATOMIC_RELAXED))) sp_sig_run_pending()%s; ", hc_mark());
+      /* (a counted loop another loop of its function encloses keeps none) */
+      if (sig_polls() && g_poll_loop_nest == 0 && !poll_in_pure(c, id))
+        buf_printf(b, "%s%s; ", sig_poll_stmt(), hc_mark());
     }
     if (is_until) buf_puts(b, "!(");
     buf_puts(b, ccond.p ? ccond.p : "");
@@ -11761,6 +11849,7 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
     if (polls_in_cond) buf_puts(b, "; })");
     buf_puts(b, ") {\n");
     g_loop_polls_in_cond = polls_in_cond;
+    g_loop_uncounted = !proved && !(sig_polls() && !is_until && poll_while_counted(c, pred, body));
     emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent);
     buf_puts(b, "}\n");

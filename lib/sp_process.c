@@ -549,7 +549,7 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
   close(err_pipe[1]);
   close_owned(owned);
   int fail[2] = { 0, 0 };
-  ssize_t got = read(err_pipe[0], fail, sizeof fail);
+  ssize_t got = SP_SIG_BLOCKING(read(err_pipe[0], fail, sizeof fail));
   close(err_pipe[0]);
   free(argv);
   if (got > 0) {
@@ -564,7 +564,7 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
        The polling arm would put a scheduler yield inside a half-finished
        spawn instead. */
     { int st = 0; pid_t r;
-      do { r = waitpid(pid, &st, 0); } while (r < 0 && errno == EINTR);
+      do { r = SP_SIG_BLOCKING(waitpid(pid, &st, 0)); } while (r < 0 && errno == EINTR);
       /* the reaped child is the last one waited for, so $? reads its
          exit 127, as it does under CRuby */
       if (r == pid) { sp_last_status = st; sp_last_pid = (int)pid; } }

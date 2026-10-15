@@ -309,4 +309,13 @@ typedef struct{sp_int*keys;sp_int*vals;sp_int*order;sp_bool*used;sp_int len;sp_i
    and the trap machinery in lib/sp_cold.c. */
 #define SP_SIG_MAX 65
 
+/* The default SIGINT / SIGTERM (#9222) raises where it arrives only inside a
+   blocking call the runtime marks with SP_SIG_BLOCKING (a read, a wait, a
+   sleep: nothing of the runtime is half-updated there, and the program would
+   otherwise wait on). Anywhere else the handler records the signal, and the
+   compiler's safe points and the runtime's waits raise it. */
+extern volatile int sp_sig_async_ok;
+#define SP_SIG_BLOCKING(expr) \
+  __extension__ ({ sp_sig_async_ok++; __typeof__(expr) _sp_sb_r = (expr); sp_sig_async_ok--; _sp_sb_r; })
+
 #endif

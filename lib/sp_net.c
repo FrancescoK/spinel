@@ -55,9 +55,9 @@ static int sp_net_socket_cloexec(int domain, int type, int protocol) {
 }
 static int sp_net_accept_cloexec(int sfd, struct sockaddr *addr, socklen_t *len) {
 #if defined(__linux__)
-    return accept4(sfd, addr, len, SOCK_CLOEXEC);
+    return SP_SIG_BLOCKING(accept4(sfd, addr, len, SOCK_CLOEXEC));
 #else
-    return sp_net_set_cloexec(accept(sfd, addr, len));
+    return sp_net_set_cloexec(SP_SIG_BLOCKING(accept(sfd, addr, len)));
 #endif
 }
 
@@ -357,7 +357,7 @@ int sp_net_accept_unless(int sfd, const unsigned char *cancel) {
             pfds[1].fd = sp_net_sigpipe[0]; pfds[1].events = POLLIN; pfds[1].revents = 0;
             npfd = 2;
         }
-        int pr = poll(pfds, npfd, -1);
+        int pr = SP_SIG_BLOCKING(poll(pfds, npfd, -1));
         if (sp_net_term_flag) return -1;
         if (pr < 0) {
             if (errno == EINTR) continue;
@@ -430,7 +430,7 @@ int sp_net_udp_connect(int fd, const char *host, int port) {SP_GC_ROOT_STR(host)
     struct addrinfo *head = NULL;
     struct addrinfo *ai = sp_net_udp_resolve(fd, host, port, 0, &head);
     if (!ai) return -1;
-    int rc = connect(fd, ai->ai_addr, ai->ai_addrlen);
+    int rc = SP_SIG_BLOCKING(connect(fd, ai->ai_addr, ai->ai_addrlen));
     freeaddrinfo(head);
     return rc;
 }
@@ -451,7 +451,7 @@ int sp_net_udp_recv_from(int fd, char *buf, int cap, char *ipbuf, int ipcap, int
     struct sockaddr_storage ss;
     socklen_t sl = sizeof ss;
     ssize_t n;
-    do { n = recvfrom(fd, buf, (size_t)cap, 0, (struct sockaddr *)&ss, &sl); }
+    do { n = SP_SIG_BLOCKING(recvfrom(fd, buf, (size_t)cap, 0, (struct sockaddr *)&ss, &sl)); }
     while (n < 0 && errno == EINTR);
     if (n < 0) return -1;
     if (ipbuf && ipcap > 0) {
@@ -499,7 +499,7 @@ int sp_net_unix_connect(const char *path) {SP_GC_ROOT_STR(path);
     signal(SIGPIPE, SIG_IGN);
     int fd = sp_net_socket_cloexec(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return -1;
-    if (connect(fd, (struct sockaddr *)&sa, sizeof sa) != 0) { close(fd); return -1; }
+    if (SP_SIG_BLOCKING(connect(fd, (struct sockaddr *)&sa, sizeof sa)) != 0) { close(fd); return -1; }
     return fd;
 }
 /* The bound path of a UNIX socket (empty for an unnamed peer). */
@@ -604,13 +604,13 @@ static int sp_net_connect_wait(int fd, const struct sockaddr *sa, socklen_t len)
 #ifdef SP_THREADS
     sp_net_set_nonblock(fd);
 #endif
-    if (connect(fd, sa, len) == 0) return 0;
+    if (SP_SIG_BLOCKING(connect(fd, sa, len)) == 0) return 0;
     if (errno != EINPROGRESS && errno != EINTR) return -1;
 #ifdef SP_THREADS
     if (!sp_sched_wait_io(fd, POLLOUT)) return -1;
 #else
     struct pollfd pf = { fd, POLLOUT, 0 };
-    while (poll(&pf, 1, -1) < 0) if (errno != EINTR) return -1;
+    while (SP_SIG_BLOCKING(poll(&pf, 1, -1)) < 0) if (errno != EINTR) return -1;
 #endif
     int err = 0;
     socklen_t elen = sizeof err;
@@ -690,7 +690,7 @@ static int sp_net_wait_io(int fd, short events) {
         if (sp_net_term_flag) return 0;
         struct pollfd pf;
         pf.fd = fd; pf.events = events; pf.revents = 0;
-        int pr = poll(&pf, 1, 1000);
+        int pr = SP_SIG_BLOCKING(poll(&pf, 1, 1000));
         if (pr > 0) return 1;
         if (pr == 0) continue;            /* timeout: recheck term, keep waiting */
         if (errno == EINTR) continue;
@@ -774,7 +774,7 @@ const char *sp_net_recv_some(int fd, int maxlen) {
             sp_net_recv_buf[0] = '\0';
             return sp_net_recv_buf;
         }
-        n = recv(fd, sp_net_recv_buf, (size_t)maxlen, 0);
+        n = SP_SIG_BLOCKING(recv(fd, sp_net_recv_buf, (size_t)maxlen, 0));
         if (n >= 0) break;
         if (errno == EINTR) continue;   /* e.g. SIGCHLD in a prefork server */
         /* Non-blocking fd would-block: wait for readability and retry rather
@@ -797,7 +797,7 @@ const char *sp_net_recv_all(int fd, int max_bytes) {
     int total = 0;
     while (total < max_bytes) {
         if (sp_net_term_flag) break;
-        ssize_t n = recv(fd, sp_net_recv_all_buf + total, (size_t)(max_bytes - total), 0);
+        ssize_t n = SP_SIG_BLOCKING(recv(fd, sp_net_recv_all_buf + total, (size_t)(max_bytes - total), 0));
         if (n < 0) {
             if (errno == EINTR) continue;   /* retry rather than truncate */
             if ((errno == EAGAIN || errno == EWOULDBLOCK) && sp_net_wait_io(fd, POLLIN)) continue;
@@ -866,7 +866,7 @@ int sp_net_poll_run(int timeout_ms) {
         /* Don't retry into a pending shutdown -- surface it as -1 so a
          * blocked scheduler tick can break and run shutdown hooks. */
         if (sp_net_term_flag) return -1;
-        r = poll(sp_net_poll_set, sp_net_poll_n, timeout_ms);
+        r = SP_SIG_BLOCKING(poll(sp_net_poll_set, sp_net_poll_n, timeout_ms));
         if (r >= 0) return r;
         if (errno == EINTR) {
             if (sp_net_term_flag) return -1;
@@ -996,7 +996,7 @@ int sp_net_poll_wait(int timeout_ms) {
         /* Don't retry into a pending shutdown -- surface it as -1 so a blocked
          * tick can break and run shutdown hooks, as sp_net_poll_run does. */
         if (sp_net_term_flag) return -1;
-        r = poll(sp_net_reg, (nfds_t)sp_net_reg_n, timeout_ms);
+        r = SP_SIG_BLOCKING(poll(sp_net_reg, (nfds_t)sp_net_reg_n, timeout_ms));
         if (r >= 0) break;
         if (errno == EINTR) {
             if (sp_net_term_flag) return -1;
@@ -1059,7 +1059,7 @@ const char *sp_net_shell_capture(const char *cmd, int max_bytes) {
     if (!fp) return sp_net_shell_buf;
     size_t total = 0;
     while (total < (size_t)max_bytes) {
-        size_t n = fread(sp_net_shell_buf + total, 1, (size_t)max_bytes - total, fp);
+        size_t n = SP_SIG_BLOCKING(fread(sp_net_shell_buf + total, 1, (size_t)max_bytes - total, fp));
         if (n == 0) break;
         total += n;
     }

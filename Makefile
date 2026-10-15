@@ -4588,7 +4588,7 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	$(SPINEL) test/loop_bounded_index_read.rb -c --no-line-map -o "$$tmp/lbi.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (loop_bounded_index_read: -c)"; ok=0; }; \
 	grep -qE '_hcd[0-9]+_[0-9]+\[lv_i\]' "$$tmp/lbi.c" && grep -qE '_hcd[0-9]+_[0-9]+\[lv_j\]' "$$tmp/lbi.c" || { echo "infer-test: FAIL (a read bounded by its loop's own i < a.length test still tests its index)"; ok=0; }; \
 	grep -qE '_hcd[0-9]+_[0-9]+\[lv_(m|q|r|w|x|y|z)\]' "$$tmp/lbi.c" && { echo "infer-test: FAIL (a read whose index the loop does not keep in range lost its bounds test)"; ok=0; }; \
-	grep -qE 'while \(\(lv_i < _hcl[0-9]+_[0-9]+\)\)' "$$tmp/lbi.c" || { echo "infer-test: FAIL (a loop that reads a[i] untested does not test i against the cached length)"; ok=0; }; \
+	grep -qE 'while \((\(\{ .*; )?\(lv_i < _hcl[0-9]+_[0-9]+\)' "$$tmp/lbi.c" || { echo "infer-test: FAIL (a loop that reads a[i] untested does not test i against the cached length)"; ok=0; }; \
 	grep -qE 'lv_(m|q|r|w|y|z) < _hcl' "$$tmp/lbi.c" && { echo "infer-test: FAIL (a loop whose index is not kept in range tests it against the cached length)"; ok=0; }; \
 	$(SPINEL) test/loop_bounded_index_polls.rb -c --no-line-map -o "$$tmp/lbp.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (loop_bounded_index_polls: -c)"; ok=0; }; \
 	grep -F 'while (({ if (SP_UNLIKELY(SP_SAFEPOINT_POLL())) sp_safepoint(), _SP_HCR' "$$tmp/lbp.c" | grep -qF 'sp_fin_run_pending(), _SP_HCR' && grep -qE '_hcd[0-9]+_[0-9]+\[lv_i\]' "$$tmp/lbp.c" || { echo "infer-test: FAIL (a loop that reads a[i] untested does not poll ahead of its i < a.length test)"; ok=0; }; \
@@ -4982,8 +4982,29 @@ signal-default-test: $(SPINEL)
 	  [ "$$rc" -eq 130 ] || { echo "signal-default-test: FAIL (exit $$rc, want 130: ended by SIGINT)"; ok=0; }; \
 	  [ "$$(cat "$$tmp/out")" = "ensure ran" ] || { echo "signal-default-test: FAIL (the ensure did not run, or the program went on)"; ok=0; }; \
 	fi; \
+	$(SPINEL) test/signal/interrupt_tight_loop.rb -o "$$tmp/tl" >/dev/null 2>&1 || { echo "signal-default-test: FAIL (compile tight loop)"; ok=0; }; \
+	if [ $$ok -eq 1 ]; then \
+	  [ "$$(timeout 10 "$$tmp/tl" 2>/dev/null)" = "loop interrupted" ] || { echo "signal-default-test: FAIL (a SIGINT did not reach a loop with no call: #9222's poll)"; ok=0; }; \
+	fi; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "signal-default-test: pass"; else exit 1; fi
+
+# #9222, on demand (a run whose outcome is down to where a signal lands is not
+# a gate's): the reporter's allocating loop, 20 times, has to answer as CRuby
+# every time; a SIGINT reaches a program blocked in gets on a pipe.
+signal-safe-test: $(SPINEL)
+	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-sigsafe.XXXXXX"); ok=1; \
+	$(SPINEL) test/signal/interrupt_allocating.rb -o "$$tmp/ia" >/dev/null 2>&1 || { echo "signal-safe-test: FAIL (compile)"; ok=0; }; \
+	if [ $$ok -eq 1 ]; then for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
+	  [ "$$(timeout 20 "$$tmp/ia" 2>&1 | tr '\n' ' ')" = "rescued 5001 ensure 4892 " ] || { echo "signal-safe-test: FAIL (run $$i)"; ok=0; break; }; \
+	done; fi; \
+	printf 'begin; gets; rescue Interrupt; puts "gets interrupted"; end\n' > "$$tmp/g.rb"; \
+	$(SPINEL) "$$tmp/g.rb" -o "$$tmp/g" >/dev/null 2>&1 && mkfifo "$$tmp/ff" && \
+	{ sleep 30 > "$$tmp/ff" & w=$$!; "$$tmp/g" < "$$tmp/ff" > "$$tmp/g.out" 2>&1 & p=$$!; sleep 0.3; kill -INT $$p; \
+	  for k in 1 2 3 4 5 6 7 8 9 10; do kill -0 $$p 2>/dev/null || break; sleep 0.2; done; kill -9 $$p 2>/dev/null; kill $$w 2>/dev/null; \
+	  [ "$$(cat "$$tmp/g.out")" = "gets interrupted" ] || { echo "signal-safe-test: FAIL (a SIGINT did not leave a gets blocked on a pipe)"; ok=0; }; }; \
+	rm -rf "$$tmp"; \
+	if [ $$ok -eq 1 ]; then echo "signal-safe-test: pass"; else exit 1; fi
 
 timing-test: $(SPINEL)
 	@tools/timing_check.sh

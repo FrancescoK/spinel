@@ -922,12 +922,12 @@ sp_int sp_IOBuffer_read_io(sp_IOBuffer *b, sp_RbVal io, sp_int length, sp_int of
   size_t pend = sp_io_stdio_buffered(f->fp);
   if (pend > 0) {
     size_t want = (size_t)length < pend ? (size_t)length : pend;
-    return (sp_int)fread(at, 1, want, f->fp);
+    return (sp_int)SP_SIG_BLOCKING(fread(at, 1, want, f->fp));
   }
   sp_io_wait_readable(f);
   at = iob_io_span(b, &length, offset, 1);   /* the park can raise, never move a locked buffer */
   ssize_t n;
-  do { n = read(fileno(f->fp), at, (size_t)length); } while (n < 0 && errno == EINTR);
+  do { n = SP_SIG_BLOCKING(read(fileno(f->fp), at, (size_t)length)); } while (n < 0 && errno == EINTR);
   return n < 0 ? -(sp_int)errno : (sp_int)n;
 }
 sp_int sp_IOBuffer_write_io(sp_IOBuffer *b, sp_RbVal io, sp_int length, sp_int offset) {

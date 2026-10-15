@@ -1013,7 +1013,7 @@ sp_StrArray *sp_file_readlines(const char *path) {SP_GC_ROOT_STR(path);
   char *_buf = NULL;
   size_t _cap = 0;
   ssize_t _n;
-  while ((_n = getline(&_buf, &_cap, _fp)) >= 0) {
+  while ((_n = SP_SIG_BLOCKING(getline(&_buf, &_cap, _fp))) >= 0) {
     size_t _l = (size_t)_n;
     char *_r = sp_str_alloc_raw(_l + 1);
     memcpy(_r, _buf, _l); _r[_l] = '\0';
@@ -1034,7 +1034,7 @@ sp_StrArray *sp_file_readlines_chomp(const char *path) {SP_GC_ROOT_STR(path);
   char *_buf = NULL;
   size_t _cap = 0;
   ssize_t _n;
-  while ((_n = getline(&_buf, &_cap, _fp)) >= 0) {
+  while ((_n = SP_SIG_BLOCKING(getline(&_buf, &_cap, _fp))) >= 0) {
     size_t _l = (size_t)_n;
     if (_l > 0 && _buf[_l-1] == '\n') { _buf[--_l] = '\0'; }
     if (_l > 0 && _buf[_l-1] == '\r') { _buf[--_l] = '\0'; }
@@ -1110,7 +1110,7 @@ const char *sp_slurp_stream(FILE *fp) {
       if (!nb) { free(buf); return &("\xff" "")[1]; }
       buf = nb; cap = ncap;
     }
-    size_t got = fread(buf + len, 1, cap - len - 1, fp);
+    size_t got = SP_SIG_BLOCKING(fread(buf + len, 1, cap - len - 1, fp));
     len += got;
     if (got == 0) break;
   }
@@ -1139,7 +1139,7 @@ const char *sp_slurp_stream_parked(sp_File *f) {SP_GC_ROOT(f);
   if (!buf) return &("\xff" "")[1];
   for (;;) {
     sp_io_wait_readable(f);
-    int ch = fgetc(f->fp);
+    int ch = SP_SIG_BLOCKING(fgetc(f->fp));
     if (ch == EOF) break;
     if (len + 2 >= cap) {
       char *nb = (char *)realloc(buf, cap * 2);
@@ -1154,7 +1154,7 @@ const char *sp_slurp_stream_parked(sp_File *f) {SP_GC_ROOT(f);
         if (!nb) { free(buf); return &("\xff" "")[1]; }
         buf = nb; cap *= 2;
       }
-      size_t got = fread(buf + len, 1, avail, f->fp);
+      size_t got = SP_SIG_BLOCKING(fread(buf + len, 1, avail, f->fp));
       len += got;
       if (got == 0) break;
     }
@@ -1313,7 +1313,7 @@ sp_IntArray *sp_file_binread_bytes(const char *path) {SP_GC_ROOT_STR(path);
   if (buf && sz > 0) {
     /* Use fread's actual byte count, not the raw file size -- a
        partial read otherwise pushes uninitialized memory. */
-    size_t r = fread(buf, 1, (size_t)sz, f);
+    size_t r = SP_SIG_BLOCKING(fread(buf, 1, (size_t)sz, f));
     for (size_t i = 0; i < r; i++) sp_IntArray_push(a, (sp_int)buf[i]);
   }
   free(buf);
@@ -1700,7 +1700,7 @@ const char *sp_backtick(const char *cmd) {SP_GC_ROOT_STR(cmd);
       buf = nb; cap *= 2;
     }
     sp_io_wait_fd_readable(fds[0]);
-    ssize_t got = read(fds[0], buf + len, cap - len - 1);
+    ssize_t got = SP_SIG_BLOCKING(read(fds[0], buf + len, cap - len - 1));
     if (got < 0 && errno == EINTR) continue;
     if (got <= 0) break;
     len += (size_t)got;
@@ -2086,7 +2086,7 @@ static void sp_bt_lines(void **buf, int n, int *lines, char **files) {
   FILE *p = popen(cmd, "r");
   if (!p) return;
   char line[2048];
-  for (int i = 0; i < n && fgets(line, sizeof line, p); i++) {
+  for (int i = 0; i < n && SP_SIG_BLOCKING(fgets(line, sizeof line, p)); i++) {
     char *c = strrchr(line, ':');
     if (c && c[1] >= '1' && c[1] <= '9') {
       lines[i] = atoi(c + 1);
@@ -2116,7 +2116,7 @@ static void sp_bt_lines(void **buf, int n, int *lines, char **files) {
   FILE *p = popen(cmd, "r");
   if (!p) return;
   char line[2048];
-  for (int i = 0; i < n && fgets(line, sizeof line, p); i++) {
+  for (int i = 0; i < n && SP_SIG_BLOCKING(fgets(line, sizeof line, p)); i++) {
     char *close = strrchr(line, ')');
     char *open = close ? strrchr(line, '(') : NULL;
     char *c = open ? strrchr(open, ':') : NULL;
@@ -2318,7 +2318,7 @@ const char *sp_File_gets_sep(sp_File *f, const char *sep, sp_int limit, sp_bool 
   if (sl == 1 && sep[0] == '\n' && limit <= 0) {
     char *buf = NULL;
     size_t bcap = 0;
-    ssize_t got = getline(&buf, &bcap, f->fp);
+    ssize_t got = SP_SIG_BLOCKING(getline(&buf, &bcap, f->fp));
     if (got < 0) { free(buf); return NULL; }
     size_t n = (size_t)got;
     /* chomp takes the "\r\n" of a line as well as its "\n" */
@@ -2336,12 +2336,12 @@ const char *sp_File_gets_sep(sp_File *f, const char *sep, sp_int limit, sp_bool 
   int ch;
   /* a paragraph does not start with blank lines */
   if (para) {
-    while ((ch = fgetc(f->fp)) == '\n') { }
+    while ((ch = SP_SIG_BLOCKING(fgetc(f->fp))) == '\n') { }
     if (ch != EOF) ungetc(ch, f->fp);
   }
   int ended = 0, extra = 16;
   sp_int lim = limit;
-  while ((ch = fgetc(f->fp)) != EOF) {
+  while ((ch = SP_SIG_BLOCKING(fgetc(f->fp))) != EOF) {
     if (len + 2 > cap) { cap *= 2; char *nb = (char *)realloc(buf, cap); if (!nb) { free(buf); return NULL; } buf = nb; }
     buf[len++] = (char)ch;
     /* as CRuby's getline: a byte that ends the separator is not checked
@@ -2362,7 +2362,7 @@ const char *sp_File_gets_sep(sp_File *f, const char *sep, sp_int limit, sp_bool 
   }
   /* and the blank lines after one are not part of the next */
   if (para && ended) {
-    while ((ch = fgetc(f->fp)) == '\n') { }
+    while ((ch = SP_SIG_BLOCKING(fgetc(f->fp))) == '\n') { }
     if (ch != EOF) ungetc(ch, f->fp);
   }
   if (len == 0) { free(buf); return NULL; }
@@ -2399,7 +2399,7 @@ const char *sp_File_readline_sep(sp_File *f, const char *sep, sp_int limit, sp_b
 const char *sp_File_getc(sp_File *f) {SP_GC_ROOT(f);
   SP_IO_OPEN(f);
   sp_io_wait_readable(f);
-  int ch = fgetc(f->fp);
+  int ch = SP_SIG_BLOCKING(fgetc(f->fp));
   if (ch == EOF) return NULL;
   /* A binary handle (a socket, a File opened "rb", one put in binmode or
      given ASCII-8BIT by set_encoding) has one-byte characters: reading on after a byte that looks like a UTF-8
@@ -2411,7 +2411,7 @@ const char *sp_File_getc(sp_File *f) {SP_GC_ROOT(f);
   size_t n = 0;
   r[n++] = (char)ch;
   for (int i = 0; i < extra; i++) {
-    int c2 = fgetc(f->fp);
+    int c2 = SP_SIG_BLOCKING(fgetc(f->fp));
     if (c2 == EOF) break;
     r[n++] = (char)c2;
   }
@@ -2428,7 +2428,7 @@ const char *sp_File_readchar(sp_File *f) {SP_GC_ROOT(f);
 sp_oint sp_File_getbyte(sp_File *f) {
   SP_IO_OPEN(f);
   sp_io_wait_readable(f);
-  int ch = fgetc(f->fp);
+  int ch = SP_SIG_BLOCKING(fgetc(f->fp));
   return ch == EOF ? sp_oint_nil() : sp_oint_of((sp_int)ch);
 }
 sp_RbVal sp_File_ungetc(sp_File *f, sp_RbVal v) {
@@ -2582,7 +2582,7 @@ const char *sp_file_read_len(const char *path, sp_int n) {SP_GC_ROOT_STR(path);
   if (n < 0) n = 0;
   sp_file_read_refuse_dir(fp, path);
   char *r = sp_str_alloc(n);
-  size_t got = fread(r, 1, (size_t)n, fp);
+  size_t got = SP_SIG_BLOCKING(fread(r, 1, (size_t)n, fp));
   fclose(fp);
   r[got] = 0;
   sp_str_set_len(r, got);
@@ -2606,7 +2606,7 @@ const char *sp_file_read_at(const char *path, sp_int n, sp_int off) {SP_GC_ROOT_
   }
   sp_file_read_refuse_dir(fp, path);
   char *r = sp_str_alloc(n);
-  size_t got = fread(r, 1, (size_t)n, fp);
+  size_t got = SP_SIG_BLOCKING(fread(r, 1, (size_t)n, fp));
   fclose(fp);
   r[got] = 0;
   sp_str_set_len(r, got);
@@ -2721,7 +2721,7 @@ static int sp_open_fifo_aware(const char *path, int fl, mode_t perm) {
     sp_Thread_pass();
     /* nothing else runnable: do not spin the worker. nanosleep rather than a
        zero-fd poll, which is not portable to macOS. */
-    { struct timespec ts; ts.tv_sec = 0; ts.tv_nsec = 1000000; nanosleep(&ts, NULL); }
+    { struct timespec ts; ts.tv_sec = 0; ts.tv_nsec = 1000000; SP_SIG_BLOCKING(nanosleep(&ts, NULL)); }
   }
 }
 sp_File *sp_File_open_flags_perm(const char *path, sp_int fl, sp_oint perm) {SP_GC_ROOT_STR(path);
@@ -3617,7 +3617,7 @@ sp_int sp_io_copy_stream(const char *src, const char *dst) {SP_GC_ROOT_STR(src);
   if (!out) { fclose(in); sp_raise_cls("Errno::ENOENT",
                  sp_sprintf("No such file or directory @ rb_sysopen - %s", dst ? dst : "")); }
   char buf[8192]; size_t got; sp_int total = 0;
-  while ((got = fread(buf, 1, sizeof buf, in)) > 0) { fwrite(buf, 1, got, out); total += (sp_int)got; }
+  while ((got = SP_SIG_BLOCKING(fread(buf, 1, sizeof buf, in))) > 0) { fwrite(buf, 1, got, out); total += (sp_int)got; }
   fclose(in); fclose(out);
   return total;
 }
@@ -3797,6 +3797,22 @@ sp_PolyArray *sp_Enumerator_to_a(sp_Enumerator *e) {
    atomics and the write(2) is called from the handler. */
 static int sp_sig_pending[SP_SIG_MAX];
 volatile int sp_sig_pending_flag;
+/* #9222: the default SIGINT / SIGTERM's handler records a signal that
+   arrives outside a blocking call (sp_sig_async_ok, sp_types.h) in
+   sp_sig_default_pending, and the raise it makes is the generated program's
+   (sp_sig_default_raiser, set by sp_sig_install_defaults) */
+volatile int sp_sig_async_ok;
+volatile int sp_sig_default_pending;
+void (*sp_sig_default_raiser)(int);
+/* A safe point of a program that sets no trap: the recorded default signal
+   is raised. Never returns. */
+void sp_sig_poll_raise(void) {
+  int no = sp_sig_default_pending;
+  sp_sig_default_pending = 0;
+  SP_ATOMIC_STORE(&sp_sig_pending_flag, 0, __ATOMIC_RELAXED);
+  if (no && sp_sig_default_raiser) sp_sig_default_raiser(no);
+  abort();
+}
 #ifdef SP_THREADS
 static int sp_sig_wake[2] = { -1, -1 };
 #endif
@@ -3819,6 +3835,12 @@ void sp_sig_c_handler(int no) {
    leaves by a raise or a throw. */
 void sp_sig_run_pending(void) {
   SP_ATOMIC_STORE(&sp_sig_pending_flag, 0, __ATOMIC_RELAXED);
+  /* a recorded default SIGINT / SIGTERM first: its raise leaves */
+  if (sp_sig_default_pending && sp_sig_default_raiser) {
+    int no = sp_sig_default_pending;
+    sp_sig_default_pending = 0;
+    sp_sig_default_raiser(no);
+  }
   for (int no = 1; no < SP_SIG_MAX; no++) {
     if (!SP_ATOMIC_LOAD(&sp_sig_pending[no], __ATOMIC_RELAXED)) continue;
     if (!SP_ATOMIC_EXCHANGE(&sp_sig_pending[no], 0, __ATOMIC_ACQUIRE)) continue;
@@ -3843,7 +3865,7 @@ static void sp_sig_thread_body(sp_Fiber *f) {
   for (;;) {
     sp_io_wait_fd_readable(sp_sig_wake[0]);
     char buf[64];
-    while (read(sp_sig_wake[0], buf, sizeof buf) > 0) {}
+    while (SP_SIG_BLOCKING(read(sp_sig_wake[0], buf, sizeof buf)) > 0) {}
     sp_sig_thread_dispatch();
   }
 }
@@ -4431,7 +4453,7 @@ const char *sp_argf_gets(void) {
   static size_t cap = 0;
   for (;;) {
     if (!sp_argf_ensure()) return NULL;
-    ssize_t n = getline(&line, &cap, sp_argf_obj.cur);
+    ssize_t n = SP_SIG_BLOCKING(getline(&line, &cap, sp_argf_obj.cur));
     if (n >= 0) {
       char *r = sp_str_alloc_raw((size_t)n + 1);
       memcpy(r, line, (size_t)n); r[n] = '\0';
@@ -5290,7 +5312,7 @@ sp_File *sp_io_wait_events(sp_File *f, double timeout, sp_int kind) {SP_GC_ROOT(
                         (kind == 1 || kind == 3 ? POLLOUT : 0));
     int ms = timeout < 0.0 ? -1 : (int)(timeout * 1000.0 + 0.5);
     int n;
-    do { n = poll(&pf, 1, ms); } while (n < 0 && errno == EINTR);
+    do { n = SP_SIG_BLOCKING(poll(&pf, 1, ms)); } while (n < 0 && errno == EINTR);
     if (n < 0) sp_raise_cls("IOError", "select failed");
     return n > 0 ? f : NULL;
   }
@@ -5301,7 +5323,7 @@ sp_File *sp_io_wait_events(sp_File *f, double timeout, sp_int kind) {SP_GC_ROOT(
   struct timeval tv, *tvp;
   sp_io_sel_timeout(timeout, &tv, &tvp);
   int n;
-  do { n = select(fd + 1, &rs, &ws, &es, tvp); } while (n < 0 && errno == EINTR);
+  do { n = SP_SIG_BLOCKING(select(fd + 1, &rs, &ws, &es, tvp)); } while (n < 0 && errno == EINTR);
   if (n < 0) sp_raise_cls("IOError", "select failed");
   return n > 0 ? f : NULL;
 }
@@ -5397,14 +5419,14 @@ sp_RbVal sp_io_select(sp_PolyArray *rd, sp_PolyArray *wr, sp_PolyArray *er, doub
         double left = timeout < 0.0 ? -1.0 : until - sp_io_now();
         if (timeout >= 0.0 && left < 0.0) left = 0.0;
         if (!sp_sched_wait_io_set(pfs, (int)nfd, left)) { pn = 0; break; }
-        do { pn = poll(pfs, (nfds_t)nfd, 0); } while (pn < 0 && errno == EINTR);
+        do { pn = SP_SIG_BLOCKING(poll(pfs, (nfds_t)nfd, 0)); } while (pn < 0 && errno == EINTR);
         if (pn != 0) break;   /* ready (or an error to report): read back below */
         if (timeout >= 0.0 && sp_io_now() >= until) break;   /* woken at the deadline */
       }
     }
     else
 #endif
-    do { pn = poll(pfs, (nfds_t)nfd, ms); } while (pn < 0 && errno == EINTR);
+    do { pn = SP_SIG_BLOCKING(poll(pfs, (nfds_t)nfd, ms)); } while (pn < 0 && errno == EINTR);
     if (pn < 0) { free(pfs); sp_raise_cls("IOError", "select failed"); }
     if (pn == 0 && !pending) { free(pfs); return sp_box_nil(); }
     /* Read back by DESCRIPTOR, not by entry. One IO can appear twice in a call
@@ -5476,7 +5498,7 @@ sp_RbVal sp_io_select(sp_PolyArray *rd, sp_PolyArray *wr, sp_PolyArray *er, doub
   struct timeval tv, *tvp;
   sp_io_sel_timeout(timeout, &tv, &tvp);
   int n;
-  do { n = select(maxfd + 1, &sets[0], &sets[1], &sets[2], tvp); } while (n < 0 && errno == EINTR);
+  do { n = SP_SIG_BLOCKING(select(maxfd + 1, &sets[0], &sets[1], &sets[2], tvp)); } while (n < 0 && errno == EINTR);
   if (n < 0) sp_raise_cls("IOError", "select failed");
   if (n == 0 && !pending) return sp_box_nil();
   sp_PolyArray *out = sp_PolyArray_new();
@@ -5533,7 +5555,7 @@ void sp_sleep(sp_float s) {
   if (req.tv_nsec < 0) req.tv_nsec = 0;
   if (req.tv_nsec >= 1000000000L) req.tv_nsec = 999999999L;
   /* a trap delivered meanwhile runs, and the sleep goes on, as CRuby's does */
-  while (nanosleep(&req, &req) == -1 && errno == EINTR)
+  while (SP_SIG_BLOCKING(nanosleep(&req, &req)) == -1 && errno == EINTR)
     if (SP_ATOMIC_LOAD(&sp_sig_pending_flag, __ATOMIC_ACQUIRE)) sp_sig_run_pending();
 #endif
 }
@@ -5544,7 +5566,7 @@ void sp_sleep_forever(void) {
 #ifdef SP_THREADS
   sp_sched_sleep_forever();
 #else
-  for (;;) pause();
+  for (;;) SP_SIG_BLOCKING(pause());
 #endif
 }
 

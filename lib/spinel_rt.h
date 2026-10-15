@@ -933,8 +933,8 @@ static inline sp_int sp_int_clamp_range_ck(sp_int v, sp_Range r) {
 /* `:name`, or `:"name"` when the name needs quoting -- shares the
    name-string predicates in lib/sp_str_cold.c with the hash-key short form. */
 const char *sp_sym_inspect(sp_sym id);
-static const char*sp_gets(void){char buf[4096];if(!fgets(buf,sizeof(buf),stdin))return NULL;size_t l=strlen(buf);char*r=sp_str_alloc_raw(l+1);memcpy(r,buf,l+1);return r;}
-static sp_StrArray*sp_readlines(void){sp_StrArray*a=sp_StrArray_new();SP_GC_ROOT(a);char buf[4096];while(fgets(buf,sizeof(buf),stdin)){size_t l=strlen(buf);char*r=sp_str_alloc_raw(l+1);memcpy(r,buf,l+1);sp_StrArray_push(a,r);}return a;}
+static const char*sp_gets(void){char buf[4096];if(!SP_SIG_BLOCKING(fgets(buf,sizeof(buf),stdin)))return NULL;size_t l=strlen(buf);char*r=sp_str_alloc_raw(l+1);memcpy(r,buf,l+1);return r;}
+static sp_StrArray*sp_readlines(void){sp_StrArray*a=sp_StrArray_new();SP_GC_ROOT(a);char buf[4096];while(SP_SIG_BLOCKING(fgets(buf,sizeof(buf),stdin))){size_t l=strlen(buf);char*r=sp_str_alloc_raw(l+1);memcpy(r,buf,l+1);sp_StrArray_push(a,r);}return a;}
 /* sp_sprintf lives in libspinel_rt.a (lib/sp_cold.c); declared above. */
 /* Use a temp pointer for realloc so the original buffer is not leaked
    on allocation failure. Match the perror+exit pattern used elsewhere
@@ -1208,7 +1208,7 @@ static inline const char *sp_File_gets(sp_File *f) {
      fiber stack holds none of the line. */
   char *buf = NULL;
   size_t cap = 0;
-  ssize_t got = getline(&buf, &cap, f->fp);
+  ssize_t got = SP_SIG_BLOCKING(getline(&buf, &cap, f->fp));
   if (got < 0) { free(buf); return NULL; }
   size_t n = (size_t)got;
   char *r = sp_str_alloc(n);
@@ -1223,7 +1223,7 @@ static inline const char *sp_File_gets(sp_File *f) {
 static inline const char *sp_File_gets_buf(sp_File *f, char *buf, int size) {
   if (!f || !f->fp || f->closed) return NULL;
   sp_io_wait_readable(f);
-  if (!fgets(buf, size, f->fp)) return NULL;
+  if (!SP_SIG_BLOCKING(fgets(buf, size, f->fp))) return NULL;
   return buf;
 }
 /* Like gets_buf, but into a reusable HEAP line string: the buffer carries a
@@ -1234,7 +1234,7 @@ static inline const char *sp_File_gets_buf(sp_File *f, char *buf, int size) {
 static inline const char *sp_File_gets_into(sp_File *f, char *s, int cap) {
   if (!f || !f->fp || f->closed) return NULL;
   sp_io_wait_readable(f);
-  if (!fgets(s, cap, f->fp)) return NULL;
+  if (!SP_SIG_BLOCKING(fgets(s, cap, f->fp))) return NULL;
   sp_str_set_len(s, strlen(s));
   f->lineno++;
   return s;
@@ -1330,7 +1330,7 @@ static inline const char *sp_File_read_n(sp_File *f, sp_int n) {
   sp_io_wait_readable(f);
   if (n == 0) return sp_str_empty_binary();
   char *r = sp_str_alloc((size_t)n);
-  size_t got = fread(r, 1, (size_t)n, f->fp);
+  size_t got = SP_SIG_BLOCKING(fread(r, 1, (size_t)n, f->fp));
   if (got == 0) return NULL;
   /* record the byte count read: without it an embedded NUL truncated every
      later length/slice, which read the bytes back through strlen (#3540) */
@@ -15531,6 +15531,9 @@ static SP_INLINE void *sp_exc_implicit_cause(void *c, void *obj) {
 # define SP_EXC_UNWINDS 1
 #endif
 SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
+  /* a raise leaves any region a signal may be raised in at once (#9222):
+     what follows allocates */
+  sp_sig_async_ok = 0;
   /* Launder the message onto the string heap and root the copy before anything
      below allocates. `msg` is the caller's own pointer and comes in one of two
      shapes, neither of which survives a collection here. A raiser that formats
@@ -16076,6 +16079,7 @@ SP_NORETURN SP_COLD static void sp_abort_raise(const char *msg) {
   exit(sp_at_exit_run(1));
 }
 static void sp_raise_exc(volatile sp_Exception *ve) {
+  sp_sig_async_ok = 0;   /* see sp_raise_cls */
   sp_Exception *e = (sp_Exception *)ve;
   /* `raise nil`, or a raise of an Exception slot that holds nil */
   if (!e) sp_raise_cls("TypeError", "exception class/object expected");
@@ -19791,14 +19795,32 @@ void sp_sig_thread_dispatch(void) {
    by a program that starts no thread: the signal may arrive on any OS thread of a
    scheduler, and the raise has to land in the main Ruby thread (#7202). */
 #ifndef SPINEL_EXT_HOST
-static SP_UNUSED void sp_sig_default_handler(int no) {
-  sp_sig_unblock(no, 0);
+extern volatile int sp_sig_pending_flag;
+extern volatile int sp_sig_default_pending;
+extern void (*sp_sig_default_raiser)(int);
+SP_NORETURN void sp_sig_poll_raise(void);
+static SP_UNUSED SP_NORETURN void sp_sig_default_raise(int no) {
+  sp_sig_async_ok = 0;
   if (no == SIGINT) sp_raise_cls("Interrupt", sp_exc_no_msg);   /* the message is empty, as the interrupt CRuby raises for the signal */
   sp_pending_exc_obj = sp_signal_exc_new(sp_box_int((sp_int)no));
   sp_raise_cls("SignalException", "SIGTERM");
 }
+/* Raised at once only inside a blocking call (SP_SIG_BLOCKING): anywhere
+   else the program may be inside malloc, the collector or stdio, whose state
+   a raise would leave half-updated (#9222), so the signal is recorded for
+   the next safe point (sp_sig_poll_raise, sp_sig_run_pending). */
+static SP_UNUSED void sp_sig_default_handler(int no) {
+  if (!sp_sig_async_ok) {
+    sp_sig_default_pending = no;
+    SP_ATOMIC_STORE(&sp_sig_pending_flag, 1, __ATOMIC_RELEASE);
+    return;
+  }
+  sp_sig_unblock(no, 0);
+  sp_sig_default_raise(no);
+}
 static SP_UNUSED void sp_sig_install_defaults(void) {
   static const int sigs[] = { SIGINT, SIGTERM };
+  sp_sig_default_raiser = sp_sig_default_raise;
   for (int i = 0; i < 2; i++) {
     int no = sigs[i];
     if (sp_trap_proc[no] || sp_trap_state[no]) continue;

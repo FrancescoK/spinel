@@ -1,5 +1,354 @@
 #include <limits.h>
 #include "codegen_internal.h"
+
+/* The program's methods by name, sorted (built once per compile): a call's
+   targets taken by name, without a pass over every scope per call. */
+typedef struct { const char *name; int scope; } PollName;
+static PollName *g_poll_names;
+static int g_poll_nnames, g_poll_names_n = -1;
+static int poll_name_cmp(const void *a, const void *b) {
+  const PollName *x = a, *y = b;
+  int r = strcmp(x->name, y->name);
+  return r ? r : x->scope - y->scope;
+}
+static void poll_names_build(Compiler *c) {
+  if (g_poll_names_n == c->nscopes) return;
+  free(g_poll_names);
+  g_poll_names = malloc(sizeof(PollName) * (size_t)(c->nscopes + 1));
+  g_poll_nnames = 0;
+  for (int t = 0; t < c->nscopes; t++)
+    if (c->scopes[t].name && c->scopes[t].def_node >= 0)
+      g_poll_names[g_poll_nnames++] = (PollName){ c->scopes[t].name, t };
+  qsort(g_poll_names, (size_t)g_poll_nnames, sizeof(PollName), poll_name_cmp);
+  g_poll_names_n = c->nscopes;
+}
+/* The first of the methods named nm in g_poll_names, and how many (*n) */
+static int poll_names_of(Compiler *c, const char *nm, int *n) {
+  poll_names_build(c);
+  int lo = 0, hi = g_poll_nnames;
+  while (lo < hi) { int m = (lo + hi) / 2; if (strcmp(g_poll_names[m].name, nm) < 0) lo = m + 1; else hi = m; }
+  int e = lo;
+  while (e < g_poll_nnames && sp_streq(g_poll_names[e].name, nm)) e++;
+  *n = e - lo;
+  return lo;
+}
+int poll_is_method_name(Compiler *c, const char *nm) {
+  int n;
+  poll_names_of(c, nm, &n);
+  return n > 0;
+}
+
+/* Is method scope si on a cycle of the call graph, taken by name (a call
+   reaches every method of its name; a dynamic send, a yield, a block's or a
+   proc's call reaches every method)? Only such a method polls at its entry
+   for a delivered signal (#9222): a call chain that ends returns to a loop
+   or a method that polls. A method is on one when its strongly connected
+   component has two methods or calls itself, or when it reaches a call that
+   may reach any method. Found once per compile, in time linear in the
+   calls. */
+static unsigned char *g_poll_cyc;
+static int g_poll_cyc_n = -1;
+int poll_scope_on_cycle(Compiler *c, int si) {
+  if (g_poll_cyc_n != c->nscopes) {
+    int ns = c->nscopes;
+    const NodeTable *nt = c->nt;
+    free(g_poll_cyc); g_poll_cyc = calloc((size_t)ns + 1, 1); g_poll_cyc_n = ns;
+    unsigned char *dyn = calloc((size_t)ns + 1, 1);
+    int cap = 1024, ne = 0; int *ef = malloc(cap * sizeof(int)), *et = malloc(cap * sizeof(int));
+    NT_FOREACH_KIND(nt, NK_CallNode, n) {
+      int from = c->nscope[n];
+      if (from < 0 || from >= ns) continue;
+      const char *nm = nt_str(nt, n, "name");
+      if (!nm) continue;
+      if (sp_streq(nm, "send") || sp_streq(nm, "__send__") || sp_streq(nm, "public_send") || sp_streq(nm, "method") ||
+          sp_streq(nm, "instance_exec") || sp_streq(nm, "instance_eval") || sp_streq(nm, "define_method") ||
+          sp_streq(nm, "call") || nt_ref(nt, n, "block") >= 0) { dyn[from] = 1; continue; }
+      int cnt, first = poll_names_of(c, nm, &cnt);
+      for (int k = 0; k < cnt; k++) {
+        if (ne == cap) { cap *= 2; ef = realloc(ef, cap * sizeof(int)); et = realloc(et, cap * sizeof(int)); }
+        ef[ne] = from; et[ne] = g_poll_names[first + k].scope; ne++;
+        if (et[ne - 1] == from) g_poll_cyc[from] = 1;   /* calls itself */
+      }
+    }
+    NT_FOREACH_KIND(nt, NK_YieldNode, n) { int f = c->nscope[n]; if (f >= 0 && f < ns) dyn[f] = 1; }
+    NT_FOREACH_KIND(nt, NK_SuperNode, n) { int f = c->nscope[n]; if (f >= 0 && f < ns) dyn[f] = 1; }
+    NT_FOREACH_KIND(nt, NK_ForwardingSuperNode, n) { int f = c->nscope[n]; if (f >= 0 && f < ns) dyn[f] = 1; }
+    /* the edges by source (CSR), and their reverse */
+    int *off = calloc((size_t)ns + 2, sizeof(int)), *adj = malloc(sizeof(int) * (size_t)(ne + 1));
+    int *roff = calloc((size_t)ns + 2, sizeof(int)), *radj = malloc(sizeof(int) * (size_t)(ne + 1));
+    for (int e = 0; e < ne; e++) { off[ef[e] + 1]++; roff[et[e] + 1]++; }
+    for (int v = 0; v < ns; v++) { off[v + 1] += off[v]; roff[v + 1] += roff[v]; }
+    int *fill = calloc((size_t)ns + 1, sizeof(int)), *rfill = calloc((size_t)ns + 1, sizeof(int));
+    for (int e = 0; e < ne; e++) { adj[off[ef[e]] + fill[ef[e]]++] = et[e]; radj[roff[et[e]] + rfill[et[e]]++] = ef[e]; }
+    /* Tarjan's components, without recursion */
+    int *idx = malloc(sizeof(int) * (size_t)(ns + 1)), *low = malloc(sizeof(int) * (size_t)(ns + 1));
+    int *stk = malloc(sizeof(int) * (size_t)(ns + 1)), *cs = malloc(sizeof(int) * (size_t)(ns + 1));
+    int *ci = malloc(sizeof(int) * (size_t)(ns + 1));
+    unsigned char *on = calloc((size_t)ns + 1, 1);
+    for (int v = 0; v < ns; v++) idx[v] = -1;
+    int counter = 0, sp = 0;
+    for (int r = 0; r < ns; r++) {
+      if (idx[r] >= 0) continue;
+      int csp = 0;
+      cs[csp] = r; ci[csp] = off[r]; csp++;
+      idx[r] = low[r] = counter++; stk[sp++] = r; on[r] = 1;
+      while (csp > 0) {
+        int v = cs[csp - 1];
+        if (ci[csp - 1] < off[v + 1]) {
+          int w = adj[ci[csp - 1]++];
+          if (idx[w] < 0) {
+            idx[w] = low[w] = counter++; stk[sp++] = w; on[w] = 1;
+            cs[csp] = w; ci[csp] = off[w]; csp++;
+          }
+          else if (on[w] && idx[w] < low[v]) low[v] = idx[w];
+          continue;
+        }
+        if (low[v] == idx[v]) {
+          int size = 0, top = sp;
+          do { int w = stk[--top]; size++; (void)w; } while (stk[top] != v);
+          while (1) { int w = stk[--sp]; on[w] = 0; if (size > 1) g_poll_cyc[w] = 1; if (w == v) break; }
+        }
+        csp--;
+        if (csp > 0) { int u = cs[csp - 1]; if (low[v] < low[u]) low[u] = low[v]; }
+      }
+    }
+    /* a method that reaches a call that may reach any method */
+    int *q = malloc(sizeof(int) * (size_t)(ns + 1)), qh = 0, qt = 0;
+    unsigned char *seen = calloc((size_t)ns + 1, 1);
+    for (int v = 0; v < ns; v++) if (dyn[v]) { seen[v] = 1; q[qt++] = v; }
+    while (qh < qt) {
+      int v = q[qh++];
+      g_poll_cyc[v] = 1;
+      for (int k = roff[v]; k < roff[v + 1]; k++) if (!seen[radj[k]]) { seen[radj[k]] = 1; q[qt++] = radj[k]; }
+    }
+    free(q); free(seen); free(idx); free(low); free(stk); free(cs); free(ci); free(on);
+    free(off); free(adj); free(roff); free(radj); free(fill); free(rfill);
+    free(ef); free(et); free(dyn);
+  }
+  return si >= 0 && si < g_poll_cyc_n ? g_poll_cyc[si] : 1;
+}
+
+/* ---- pure regions (#9222) ----
+   A method or a loop that only computes on Integers, Floats and booleans,
+   reads locals and instance variables, writes scalar ones and calls such
+   methods touches nothing of the runtime: no allocation, no collector, no
+   stdio, no write barrier. Its only way into the runtime is a raise
+   (overflow, a zero division: sp_raise_cls, which leaves the region first).
+   A signal there can be raised where it lands, so such code carries no poll:
+   a pure method is entered through a wrapper that marks the region
+   (sp_sig_async_ok), a pure loop is marked around it, and the C compiler
+   keeps the code it would fold or vectorize without the polls. */
+static int poll_scalar_ty(TyKind t) { return t == TY_INT || t == TY_FLOAT || t == TY_BOOL; }
+static int poll_pure_op(const char *nm) {
+  static const char *const ops[] = { "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "==", "!=", "<=>", "&", "|",
+                                     "^", "<<", ">>", "-@", "+@", "!", "~", "abs", "succ", "pred", "even?", "odd?",
+                                     "zero?", "positive?", "negative?", "to_f", "to_i", "floor", "ceil", NULL };
+  for (int i = 0; ops[i]; i++) if (sp_streq(nm, ops[i])) return 1;
+  return 0;
+}
+static unsigned char *g_pure_cand;
+static int g_pure_n = -1;
+int g_pure_region = 0;   /* inside a marked pure loop being emitted */
+static int poll_pure_node(Compiler *c, int n, int ret_ok);
+static int poll_pure_kids(Compiler *c, int n, int ret_ok) {
+  const NodeTable *nt = c->nt;
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, n, i); if (ch >= 0 && !poll_pure_node(c, ch, ret_ok)) return 0; }
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) if (av[j] >= 0 && !poll_pure_node(c, av[j], ret_ok)) return 0;
+  }
+  return 1;
+}
+/* Is a call of nm reaching only pure methods (every method of the name)? */
+static int poll_pure_targets(Compiler *c, const char *nm) {
+  int cnt, first = poll_names_of(c, nm, &cnt);
+  if (cnt == 0) return 0;
+  for (int k = 0; k < cnt; k++) if (!g_pure_cand[g_poll_names[first + k].scope]) return 0;
+  return 1;
+}
+static int poll_pure_node(Compiler *c, int n, int ret_ok) {
+  const NodeTable *nt = c->nt;
+  switch (nt_kind(nt, n)) {
+  case NK_IntegerNode: return !nt_str(nt, n, "bigval");
+  case NK_FloatNode: case NK_TrueNode: case NK_FalseNode: case NK_NilNode: case NK_SelfNode:
+  case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode:
+    return 1;
+  case NK_LocalVariableWriteNode: case NK_LocalVariableOperatorWriteNode:
+  case NK_InstanceVariableWriteNode: case NK_InstanceVariableOperatorWriteNode:
+    return poll_scalar_ty(c->ntype[n]) && poll_pure_node(c, nt_ref(nt, n, "value"), ret_ok);
+  case NK_StatementsNode: case NK_ParenthesesNode: case NK_IfNode: case NK_UnlessNode: case NK_ElseNode:
+  case NK_AndNode: case NK_OrNode: case NK_WhileNode: case NK_UntilNode: case NK_BreakNode: case NK_NextNode:
+    return poll_pure_kids(c, n, ret_ok);
+  case NK_ReturnNode:
+    return ret_ok && poll_pure_kids(c, n, ret_ok);
+  case NK_CallNode: {
+    const char *nm = nt_str(nt, n, "name");
+    if (!nm || nt_ref(nt, n, "block") >= 0) return 0;
+    int recv = nt_ref(nt, n, "receiver"), args = nt_ref(nt, n, "arguments");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    for (int i = 0; i < an; i++) {
+      NodeKind ak = nt_kind(nt, av[i]);
+      if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 0;
+      if (!poll_pure_node(c, av[i], ret_ok)) return 0;
+    }
+    if (recv >= 0 && poll_scalar_ty(c->ntype[recv]) && poll_pure_op(nm))
+      return an <= 1 && poll_pure_node(c, recv, ret_ok) && (an == 0 || poll_scalar_ty(c->ntype[av[0]]));
+    if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode && nt_kind(nt, recv) != NK_ConstantReadNode &&
+        !poll_pure_node(c, recv, ret_ok)) return 0;
+    if (!poll_scalar_ty(c->ntype[n])) return 0;
+    if (poll_pure_targets(c, nm)) return 1;
+    /* an attribute reader of a scalar instance variable */
+    TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
+    if (an == 0 && recv >= 0 && ty_is_object(rt)) {
+      int cid = ty_object_class(rt);
+      int cnt; poll_names_of(c, nm, &cnt);
+      return cnt == 0 && cid >= 0 && cid < c->nclasses && comp_is_reader(&c->classes[cid], nm);
+    }
+    return 0;
+  }
+  default: {
+    const char *ty = nt_type(nt, n);
+    return ty && sp_streq(ty, "ArgumentsNode") && poll_pure_kids(c, n, ret_ok);
+  }
+  }
+}
+static int poll_pure_shape(Compiler *c, int si) {
+  Scope *s = &c->scopes[si];
+  if (s->def_node < 0 || !s->name || s->body < 0 || s->yields || s->is_proc_form || s->blk_param) return 0;
+  if (s->rest_idx >= 0 || s->kwrest_idx >= 0 || s->nrequired != s->nparams) return 0;
+  if (s->ret != TY_INT && s->ret != TY_FLOAT && s->ret != TY_BOOL) return 0;
+  if (method_is_void(s) || sp_streq(s->name, "initialize")) return 0;   /* the wrapper returns the value */
+  if (scope_has_begin(c, si) || cmethod_takes_self_cls(c, si)) return 0;
+  if (s->class_id >= 0 && !s->is_cmethod) {
+    const ClassInfo *ci = &c->classes[s->class_id];
+    if (ci->is_value_type || ci->is_struct || ci->is_native_class) return 0;
+    const char *cn = ci->c_name;
+    if (is_string_class_name(cn) || sp_streq(cn, "Integer") || sp_streq(cn, "Float") || sp_streq(cn, "Symbol") ||
+        sp_streq(cn, "Array") || sp_streq(cn, "Hash") || sp_streq(cn, "Object") || sp_streq(cn, "Numeric") ||
+        sp_streq(cn, "Range") || sp_streq(cn, "Time") || sp_streq(cn, "Thread") || sp_streq(cn, "Fiber") ||
+        sp_streq(cn, "Class") || is_immediate_class_name(cn)) return 0;
+  }
+  for (int i = 0; i < s->nparams; i++) {
+    LocalVar *p = scope_local(s, s->pnames[i]);
+    if (!p || p->byref_out || p->is_cell || !poll_scalar_ty(p->type)) return 0;
+  }
+  return 1;
+}
+int poll_pure_method(Compiler *c, int si) {
+  if (g_promote_mode || !sig_polls()) return 0;
+  if (g_pure_n != c->nscopes) {
+    int ns = c->nscopes;
+    free(g_pure_cand); g_pure_cand = calloc((size_t)ns + 1, 1); g_pure_n = ns;
+    for (int t = 0; t < ns; t++) g_pure_cand[t] = (unsigned char)poll_pure_shape(c, t);
+    for (int changed = 1; changed; ) {
+      changed = 0;
+      for (int t = 0; t < ns; t++)
+        if (g_pure_cand[t] && !poll_pure_node(c, c->scopes[t].body, 1)) { g_pure_cand[t] = 0; changed = 1; }
+    }
+  }
+  return si >= 0 && si < g_pure_n && g_pure_cand[si];
+}
+/* Does node n hold a while / until loop? */
+static int poll_has_loop(const NodeTable *nt, int n) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_WhileNode || k == NK_UntilNode) return 1;
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) if (poll_has_loop(nt, nt_ref_at(nt, n, i))) return 1;
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) if (poll_has_loop(nt, av[j])) return 1;
+  }
+  return 0;
+}
+/* A pure method that may run long: on a call cycle or holding a loop. Only
+   such a one is entered through the region-marking wrapper; a short one is
+   left as it is (it never polled, and a wrapper per call costs more than it
+   runs). */
+int poll_pure_wrapped(Compiler *c, int si) {
+  return poll_pure_method(c, si) && (poll_scope_on_cycle(c, si) || poll_has_loop(c->nt, c->scopes[si].body));
+}
+/* Is a while / until loop pure: its condition and body (no return) */
+int poll_pure_loop(Compiler *c, int id) {
+  if (g_promote_mode || !sig_polls()) return 0;
+  (void)poll_pure_method(c, 0);
+  const NodeTable *nt = c->nt;
+  return poll_pure_node(c, nt_ref(nt, id, "predicate"), 0) && poll_pure_node(c, nt_ref(nt, id, "statements"), 0);
+}
+/* After pure method si was emitted at body[at..]: its C function becomes
+   <name>__pure, its calls of pure methods call their __pure functions, and
+   <name> is a wrapper that marks the region around the call (#9222). */
+static int poll_is_ident(char ch) { return ch == '_' || (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z'); }
+void poll_pure_split(Compiler *c, int si, Buf *body, size_t at) {
+  Scope *s = &c->scopes[si];
+  Buf nb; memset(&nb, 0, sizeof nb); emit_method_cname(c, s, &nb);
+  if (!nb.p) return;
+  const char *text = body->p + at;
+  size_t tl = body->len - at;
+  /* the signature's name: the first `<name>(` */
+  const char *sig = NULL;
+  size_t nl = strlen(nb.p);
+  for (const char *q = text; (q = strstr(q, nb.p)) && q < text + tl; q++)
+    if (q[nl] == '(' && (q == text || !poll_is_ident(q[-1]))) { sig = q; break; }
+  if (!sig) { free(nb.p); return; }
+  Buf out; memset(&out, 0, sizeof out);
+  buf_putn(&out, text, (size_t)(sig - text) + nl);
+  buf_puts(&out, "__pure");
+  /* the rest, with each pure method's `<cname>(` taken to its __pure */
+  const char *r = sig + nl, *end = text + tl;
+  while (r < end) {
+    if (poll_is_ident(*r) && (r == text || !poll_is_ident(r[-1]))) {
+      const char *e = r; while (e < end && poll_is_ident(*e)) e++;
+      int hit = 0;
+      if (e < end && *e == '(' && e - r > 3 && strncmp(r, "sp_", 3) == 0) {
+        for (int t = 0; t < g_pure_n && !hit; t++) {
+          if (!g_pure_cand[t] || !poll_pure_wrapped(c, t)) continue;
+          Buf tb; memset(&tb, 0, sizeof tb); emit_method_cname(c, &c->scopes[t], &tb);
+          if (tb.p && strlen(tb.p) == (size_t)(e - r) && strncmp(tb.p, r, (size_t)(e - r)) == 0) hit = 1;
+          free(tb.p);
+        }
+      }
+      buf_putn(&out, r, (size_t)(e - r));
+      if (hit) buf_puts(&out, "__pure");
+      r = e;
+      continue;
+    }
+    buf_putn(&out, r, 1); r++;
+  }
+  /* the wrapper under the method's own name */
+  Buf w; memset(&w, 0, sizeof w);
+  emit_method_signature(c, s, &w);
+  buf_puts(&w, " {\n    sp_sig_async_ok++;\n    ");
+  emit_method_ret_ctype(c, s, &w);
+  buf_printf(&w, " _sp_pr = %s__pure(", nb.p);
+  int wrote = 0;
+  if (s->class_id >= 0 && !s->is_cmethod) { buf_puts(&w, "self"); wrote = 1; }
+  for (int i = 0; i < s->nparams; i++) buf_printf(&w, "%slv_%s", wrote++ ? ", " : "", s->pnames[i]);
+  buf_puts(&w, ");\n    sp_sig_async_ok--;\n    return _sp_pr;\n}\n");
+  body->len = at;
+  buf_putn(body, out.p ? out.p : "", out.len);
+  buf_putn(body, w.p ? w.p : "", w.len);
+  free(out.p); free(w.p); free(nb.p);
+}
+/* The prototype of pure method si's __pure function */
+void poll_pure_proto(Compiler *c, int si, Buf *b) {
+  Scope *s = &c->scopes[si];
+  Buf sg; memset(&sg, 0, sizeof sg); emit_method_signature(c, s, &sg);
+  Buf nb; memset(&nb, 0, sizeof nb); emit_method_cname(c, s, &nb);
+  const char *q = sg.p && nb.p ? strstr(sg.p, nb.p) : NULL;
+  size_t nl = nb.p ? strlen(nb.p) : 0;
+  while (q && !(q[nl] == '(' && (q == sg.p || !poll_is_ident(q[-1])))) q = strstr(q + 1, nb.p);
+  if (q) {
+    buf_putn(b, sg.p, (size_t)(q - sg.p) + nl);
+    buf_puts(b, "__pure");
+    buf_puts(b, q + nl);
+    buf_puts(b, ";\n");
+  }
+  free(sg.p); free(nb.p);
+}
 #include "call_plan.h"
 #include "repr.h"
 #include "share.h"
@@ -6585,7 +6934,8 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   /* a method's entry is a safe point for pending finalizers (sp_gc.h) */
   if (g_uses_finalizers) buf_puts(b, "    SP_FIN_POLL();\n");
   /* and for a delivered Signal.trap */
-  if (g_uses_traps) buf_puts(b, "    if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_sig_pending_flag, __ATOMIC_RELAXED))) sp_sig_run_pending();\n");
+  if (sig_polls() && poll_scope_on_cycle(c, (int)(s - c->scopes)) && !poll_pure_method(c, (int)(s - c->scopes)))
+    buf_printf(b, "    %s;\n", sig_poll_stmt());
   TyKind saved_rt = g_ret_type;
   int saved_ed = g_ensure_depth; g_ensure_depth = 0;
   /* the body's own ensure regions reuse the stack from index 0: keep the
@@ -19438,7 +19788,7 @@ char *codegen_program(const NodeTable *nt) {
   /* A proc form is named only by a poly dispatch, which is emitted later, so
      the reachability pass cannot see it. Emit it and let the C compiler drop
      it if no arm ends up calling it (#3399). */
-  for (int s = 1; s < c->nscopes; s++) { if (c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || (c->scopes[s].is_transplanted_source && !scope_toplevel_included(c, s))) continue; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); }
+  for (int s = 1; s < c->nscopes; s++) { if (c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || (c->scopes[s].is_transplanted_source && !scope_toplevel_included(c, s))) continue; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); if (poll_pure_wrapped(c, s)) poll_pure_proto(c, s, &b); }
 
   emit_cext_dispatch(c, &b);
   emit_user_exc_dispatch(c, &b);
@@ -19790,8 +20140,10 @@ char *codegen_program(const NodeTable *nt) {
     int ndiag0 = g_ndiags, ndefer0 = g_stmt_deferrals;
     int orphan = scope_is_orphan_method(c, s);
     if (orphan) g_unsup_quiet = 1;
+    size_t pm_at = body->len;
     EMIT_COLLECT_UNIT(emit_method(c, &c->scopes[s], body));
     g_unsup_quiet = 0;
+    if (g_ndiags == ndiag0 && poll_pure_wrapped(c, s)) poll_pure_split(c, s, body, pm_at);
     /* An instance method of a class no instance of which is ever built is
        reachable by its name alone (another class's method of that name is
        called), and its argument types come from callers that never reach

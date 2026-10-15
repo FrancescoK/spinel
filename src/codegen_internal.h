@@ -963,6 +963,29 @@ extern int g_uses_argv;
 extern int g_uses_threads;
 extern int g_uses_finalizers;
 extern int g_uses_traps;
+/* #9222: the program polls for a delivered signal at its safe points (a
+   method on a call cycle, a loop that may not end or that no loop of its
+   function encloses): one that sets a trap runs the trap's proc there
+   (sp_sig_run_pending), one with no thread raises the default SIGINT or
+   SIGTERM there (sp_sig_poll_raise, which never returns) */
+static inline int sig_polls(void) { return g_uses_traps || !g_uses_threads; }
+static inline const char *sig_poll_stmt(void) {
+  return g_uses_traps ? "if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_sig_pending_flag, __ATOMIC_RELAXED))) sp_sig_run_pending()"
+                      : "if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_sig_pending_flag, __ATOMIC_RELAXED))) sp_sig_poll_raise()";
+}
+int poll_scope_on_cycle(Compiler *c, int si);
+int poll_is_method_name(Compiler *c, const char *nm);
+int poll_pure_method(Compiler *c, int si);
+int poll_pure_loop(Compiler *c, int id);
+int poll_pure_wrapped(Compiler *c, int si);
+extern int g_pure_region;
+/* inside a marked pure loop, or in a pure method's body: no poll */
+static inline int poll_in_pure(Compiler *c, int n) {
+  if (g_pure_region > 0) return 1;
+  Scope *sc = n >= 0 ? comp_scope_of(c, n) : NULL;
+  return sc && poll_pure_method(c, (int)(sc - c->scopes));
+}
+extern int g_loop_uncounted, g_poll_loop_nest;
 extern int g_uses_ensure;   /* the program holds an ensure clause: only then is an exception ever in flight (sp_inflight_cause) */
 extern int g_has_user_cmp;
 extern int g_has_user_binop;
