@@ -589,7 +589,9 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "{ sp_%s *_t%d = (sp_%s *)(", cn, pv, cn); emit_expr(c, arg, b);
     buf_puts(b, "); ");
     if (!expr_is_held_ref(c, arg)) buf_printf(b, "SP_GC_ROOT(_t%d); ", pv);
-    buf_printf(b, "sp_puts_line(_t%d ? sp_%s_%s(_t%d) : \"nil\"); }\n", pv, cn, obj_str_mname(c, ty_object_class(t), 1), pv);
+    int rp = obj_str_ret_poly(c, ty_object_class(t), 1);
+    buf_printf(b, "sp_puts_line(_t%d ? %ssp_%s_%s(_t%d)%s : \"nil\"); }\n", pv, rp ? "sp_poly_to_s(" : "", cn,
+               obj_str_mname(c, ty_object_class(t), 1), pv, rp ? ")" : "");
   }
   else if (t == TY_PROC) {
     buf_puts(b, "{ sp_Proc *_pp = ("); emit_expr(c, arg, b);
@@ -667,16 +669,18 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     int cid = ty_object_class(t);
     const char *icn = obj_str_cname(c, cid, 1);
     if (icn && expr_is_held_ref(c, arg)) {
-      buf_printf(b, "{ const char *_pi = sp_%s_%s((sp_%s *)(", icn, obj_str_mname(c, cid, 1), icn);
+      int rp = obj_str_ret_poly(c, cid, 1);
+      buf_printf(b, "{ const char *_pi = %ssp_%s_%s((sp_%s *)(", rp ? "sp_poly_to_s(" : "", icn, obj_str_mname(c, cid, 1), icn);
       emit_expr(c, arg, b);
-      buf_puts(b, ")); sp_puts_line(_pi ? _pi : \"nil\"); }\n");
+      buf_printf(b, "))%s; sp_puts_line(_pi ? _pi : \"nil\"); }\n", rp ? ")" : "");
     }
     else if (icn) {
       /* the receiver rooted across its #inspect, as in the arm above */
       int pv = ++g_tmp;
       buf_printf(b, "{ sp_%s *_t%d = (sp_%s *)(", icn, pv, icn); emit_expr(c, arg, b);
-      buf_printf(b, "); SP_GC_ROOT(_t%d); const char *_pi = sp_%s_%s(_t%d);"
-                    " sp_puts_line(_pi ? _pi : \"nil\"); }\n", pv, icn, obj_str_mname(c, cid, 1), pv);
+      int rp = obj_str_ret_poly(c, cid, 1);
+      buf_printf(b, "); SP_GC_ROOT(_t%d); const char *_pi = %ssp_%s_%s(_t%d)%s;"
+                    " sp_puts_line(_pi ? _pi : \"nil\"); }\n", pv, rp ? "sp_poly_to_s(" : "", icn, obj_str_mname(c, cid, 1), pv, rp ? ")" : "");
     }
     else {
       buf_printf(b, "{ void *_po = (void *)("); emit_expr(c, arg, b);
