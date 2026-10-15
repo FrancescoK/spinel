@@ -9593,6 +9593,15 @@ int poly_cls_value_reaches(Compiler *c, int call, int k) {
     if (cvals[v] && (v == k || is_descendant(c, v, k))) return 1;
   return 0;
 }
+/* See analyze.h. */
+int poly_recv_cls_method_owns(Compiler *c, int call, const char *name) {
+  if (!poly_recv_class_values(c, call)) return 0;
+  int n = 0;
+  const PolyCand *cc = comp_cmethod_candidates(c, name, &n);
+  for (int i = 0; i < n; i++)
+    if (!is_builtin_reopen(c->classes[cc[i].cls].name) && poly_cls_value_reaches(c, call, cc[i].cls)) return 1;
+  return 0;
+}
 const char *poly_recv_class_values(Compiler *c, int call) {
   if (call < 0 || call >= c->nt->count) return NULL;
   (void)pivs_call_set(c, call, NULL, NULL, 0);

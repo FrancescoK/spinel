@@ -28,6 +28,11 @@ const char *poly_recv_class_values(Compiler *c, int call);
    the receiver's Class values is k or under it; 1 when the walk cannot
    bound them. Shared by the dispatch's arms and the call's type. */
 int poly_cls_value_reaches(Compiler *c, int call, int k);
+/* A class method of `name` on one of the Class values the boxed receiver of
+   `call` holds, as far as the walk bounds them (poly_cls_value_reaches): a
+   String face then answers only part of the call, and the call's type meets
+   the class method's answer. No when the walk leaves the values unbounded. */
+int poly_recv_cls_method_owns(Compiler *c, int call, const char *name);
 /* Can that receiver be a builtin value as well (nil, a literal, a builtin
    class's instance), which no class it lists stands for? 1 also when the
    walk cannot bound it. */

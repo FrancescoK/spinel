@@ -7846,8 +7846,18 @@ static TyKind infer_call_inner(Compiler *c, int id) {
        slot "the wider question of #2024". promote mode is where the answer
        is already promised, so it widens there and nowhere else (#4688). */
     if (g_promote_mode && argc == 0 && sp_streq(name, "to_i")) return TY_POLY;
+    /* (a class method of the name on a Class value the box holds is the
+       dispatch's to answer beside the String's: an Array answer meets it in
+       the boxed Array, as on infer_poly_call's path) */
     for (int q = 0; AN_POLY_RAW[q].n; q++)
-      if (AN_POLY_RAW[q].ac == argc && sp_streq(name, AN_POLY_RAW[q].n)) return AN_POLY_RAW[q].t;
+      if (AN_POLY_RAW[q].ac == argc && sp_streq(name, AN_POLY_RAW[q].n)) {
+        TyKind t = AN_POLY_RAW[q].t;
+        if (ty_is_array(t) && poly_recv_cls_method_owns(c, id, name)) {
+          TyKind w = an_class_concrete(c, id, name, t);
+          if (w == TY_POLY_ARRAY) return w;
+        }
+        return t;
+      }
     /* the exception accessors the emitter answers on a poly receiver
        through sp_poly_exc_acc (a rescued exception in a union-typed local, a
        `case msg when ::Exception` subject): a boxed value each, nil when
