@@ -10715,11 +10715,10 @@ static int subtree_changes_local_syn(Compiler *c, int root, const char *name) {
       if (mn && recv >= 0 && nt_type(nt, recv) &&
           sp_streq(nt_type(nt, recv), "LocalVariableReadNode") &&
           nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), name)) {
-        static const char *const mut[] = {"push","pop","shift","unshift","<<","[]=","delete",
-          "delete_at","clear","insert","replace","concat","sort!","sort_by!","reverse!","compact!","uniq!",
-          "merge!","store","update","fill","prepend","gsub!","sub!","upcase!","downcase!",
-          "strip!","chomp!","slice!","squeeze!","force_encoding","bytesplice", NULL};
-        for (int i = 0; mut[i]; i++) if (sp_streq(mn, mut[i])) return 1;
+        /* any String mutator, by the table the share analysis reads
+           (bop_name_mutates), and the ones that rebind
+           (is_string_rebind_mutator); freezing changes no bytes */
+        if (!is_freeze_family(mn) && (bop_name_mutates(mn, 0) || is_string_rebind_mutator(mn))) return 1;
       }
     }
     if ((sp_streq(ty, "LocalVariableWriteNode") || sp_streq(ty, "LocalVariableOperatorWriteNode") ||
