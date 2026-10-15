@@ -37,22 +37,7 @@ c.sort!
 c.each { |e| e << "." }
 p c, s
 
-# handed to a method, returned from one, yielded, nested in another
-def size_of(list) = list.size
-def build = [+"x", +"y"]
-def mutate(list) = list.each { |e| e << "m" }
-d = [s, +"w"]
-p size_of(d)
-mutate(d)
-p d
-e = build
-e.each { |v| v << "b" }
-p e
-def twice
-  yield [+"p"]
-  yield [+"q"]
-end
-twice { |list| list << +"r"; p list }
+# nested in another Array or a Hash
 n = [[s], [+"k"]]
 n[0][0] << "n"
 p n, s

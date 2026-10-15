@@ -1,0 +1,22 @@
+#<Plain:X @l=["s!", "t!"]>
+#<Plain:X>
+#<Plain:X>
+{k: #<Plain:X @l=["s!", "t!"]>}
+[#<Plain:X @l=["s!", "t!"]>]
+#<Plain:X @l=["s!", "t!"]>
+#<Named:X @l=["s!", "u"]>
+#<Named:X>
+true
+true
+true
+#<Plain:X @l=["s!", "t!", "c"]>
+#<Plain:X @l=["s!", "t!", "c"]>
+#<Plain:X @l=["s!", "t!", "c"]>
+true
+false
+true
+false
+true
+true
+false
+#<Plain:X @l=["s!?", "t!", "c"]>

@@ -542,9 +542,20 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         if (vexpr[0]) buf_puts(&ivb, vexpr);
         else if (iv_pre) buf_puts(&ivb, iv_pre);
         else emit_expr(c, expr, &ivb);
-        buf_puts(&conv, "sp_poly_inspect(");
-        emit_boxed_text(c, t, ivb.p ? ivb.p : "NULL", &conv);
-        buf_puts(&conv, ")");
+        if (t == TY_STRH_ARRAY && repr_of(c, expr).may_nil) {
+          /* (a nil of the form interpolates as the empty string, as nil does) */
+          int ta = ++g_tmp;
+          buf_printf(&conv, "({ sp_PtrArray *_t%d = %s; SP_GC_ROOT(_t%d); _t%d ? sp_poly_inspect(", ta, ivb.p ? ivb.p : "NULL", ta, ta);
+          char tn[32];
+          snprintf(tn, sizeof tn, "_t%d", ta);
+          emit_boxed_text(c, t, tn, &conv);
+          buf_puts(&conv, ") : sp_str_empty; })");
+        }
+        else {
+          buf_puts(&conv, "sp_poly_inspect(");
+          emit_boxed_text(c, t, ivb.p ? ivb.p : "NULL", &conv);
+          buf_puts(&conv, ")");
+        }
         free(ivb.p);
       }
       else if (t == TY_CLASS) {
@@ -1551,7 +1562,7 @@ void emit_slot_orw_value_o(Compiler *c, TyKind t, int elems_handle, const char *
        when NULL, so `@x ||= v` is `if (!@x) @x = v` and `@x &&= v` is
        `if (@x) @x = v`. Falling through to a bare read dropped the init when
        this or-write was the RHS of a poly-receiver setter switch (#1447). */
-    else if (ty_is_object(t) || ty_is_array(t) || ty_is_hash(t) || t == TY_BIGINT ||
+    else if (ty_is_object(t) || ty_is_array(t) || t == TY_STRH_ARRAY || ty_is_hash(t) || t == TY_BIGINT ||
              t == TY_FIBER || t == TY_THREAD || t == TY_QUEUE || t == TY_MUTEX || t == TY_CONDVAR || t == TY_PROC || t == TY_IO ||
              t == TY_MATCHDATA || t == TY_EXCEPTION || t == TY_REGEX) {
       snprintf(condb, sizeof condb, "%s%s", is_or ? "!" : "", ref);

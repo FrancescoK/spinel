@@ -3677,12 +3677,12 @@ void strh_elem_handle_text(Compiler *c, int v, Buf *b) {
   if (strh_call_op(c, v, comp_recv_type(c, recv)) == STRH_TAKE) {
     int pop = is_pop_name(nm);
     buf_puts(b, pop ? "((sp_String *)sp_PtrArray_pop(" : "((sp_String *)sp_PtrArray_delete_at(");
-    emit_expr(c, recv, b);
+    strh_emit_recv(c, v, recv, b);
     buf_puts(b, pop ? "))" : ", 0))");
   }
   else {
     buf_puts(b, "((sp_String *)sp_PtrArray_get(");
-    emit_expr(c, recv, b);
+    strh_emit_recv(c, v, recv, b);
     buf_puts(b, ", ");
     if (argc == 1) emit_int_expr(c, argv[0], b);
     else buf_puts(b, is_first_name(nm) ? "0" : "-1");
@@ -3704,7 +3704,7 @@ int strh_handle_call(Compiler *c, int v) {
   return op == STRH_ELEM || op == STRH_TAKE;
 }
 /* Is v an element read of a String Array of handles that reads like a
-   variable's slot: a local's Array at an index that is an Integer literal
+   variable's slot: a variable's Array at an index that is an Integer literal
    or a local's read (share_strh_gate admits no other), so its handle text
    can be read again where it is used? */
 int strh_elem_slot(Compiler *c, int v) {
@@ -3712,7 +3712,7 @@ int strh_elem_slot(Compiler *c, int v) {
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
   int recv = nt_ref(nt, v, "receiver"), argc = 0;
   const int *argv = call_args(nt, v, &argc);
-  if (recv < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode ||
+  if (recv < 0 || !strh_var_read(nt, recv) ||
       strh_call_op(c, v, comp_recv_type(c, recv)) != STRH_ELEM) return 0;
   return argc == 0 || nt_kind(nt, argv[0]) == NK_IntegerNode || nt_kind(nt, argv[0]) == NK_LocalVariableReadNode;
 }

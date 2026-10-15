@@ -2730,12 +2730,32 @@ void emit_strh_elem(Compiler *c, int v, Buf *b) {
   buf_puts(b, ")");
 }
 
+/* The receiver of an operation on a String Array of handles: its text, or
+   CRuby's NoMethodError for a nil one where the nil fact says it can be
+   (a method that answers the Array or nil, a parameter some call gives nil,
+   an instance variable not set yet). A safe navigation guards it itself. */
+/* Can the receiver be nil, and is the call no safe navigation (which guards
+   it itself)? */
+static int strh_recv_nilable(Compiler *c, int id, int recv) {
+  return !call_is_safe_nav(c->nt, id) && repr_of(c, recv).may_nil;
+}
+void strh_emit_recv(Compiler *c, int id, int recv, Buf *b) {
+  const char *nm = nt_str(c->nt, id, "name");
+  int nilable = nm && !is_nil_method(nm) && strh_recv_nilable(c, id, recv);
+  if (nilable) buf_printf(b, "sp_StrhArray_rnn(");
+  emit_expr(c, recv, b);
+  if (nilable) buf_printf(b, ", \"%s\")", nm);
+}
 /* Can the evaluation of argument a of an operation on a String Array of
    handles change what the operation reads, the Array's variable or its
-   Strings? Only a String literal or a local's read cannot. */
-static int strh_arg_inert(const NodeTable *nt, int a) {
+   Strings? A String literal cannot. A local's read cannot change them, but
+   the receiver, evaluated first, can change the local when it is a call
+   (a parameter's or a method's Array, whose block rebinds it): a read is
+   inert beside a receiver that is itself a variable's read (recv, -1 when
+   the receiver is evaluated already). */
+static int strh_arg_inert(const NodeTable *nt, int recv, int a) {
   NodeKind k = nt_kind(nt, a);
-  return k == NK_StringNode || k == NK_LocalVariableReadNode;
+  return k == NK_StringNode || (k == NK_LocalVariableReadNode && (recv < 0 || strh_var_read(nt, recv)));
 }
 
 /* Opens a statement expression that evaluates the receiver of an operation
@@ -2744,17 +2764,17 @@ static int strh_arg_inert(const NodeTable *nt, int a) {
    call's arguments open: gcc on x86-64 evaluates the argument first, where
    the argument of `a.include?((a = other; "x"))` rebinds the receiver's
    variable. */
-static int strh_recv_first(Compiler *c, int recv, int arg, Buf *b) {
-  if (arg < 0 || strh_arg_inert(c->nt, arg)) return 0;
+static int strh_recv_first(Compiler *c, int id, int recv, int arg, Buf *b) {
+  if (arg < 0 || strh_arg_inert(c->nt, recv, arg)) return 0;
   int tr = ++g_tmp;
-  buf_printf(b, "({ sp_PtrArray *_t%d = ", tr); emit_expr(c, recv, b);
+  buf_printf(b, "({ sp_PtrArray *_t%d = ", tr); strh_emit_recv(c, id, recv, b);
   buf_printf(b, "; SP_GC_ROOT(_t%d); ", tr);
   return tr;
 }
 /* The receiver where the operation names it: its temporary, or its text. */
-static void strh_recv_text(Compiler *c, int recv, int tr, Buf *b) {
+static void strh_recv_text(Compiler *c, int id, int recv, int tr, Buf *b) {
   if (tr) buf_printf(b, "_t%d", tr);
-  else emit_expr(c, recv, b);
+  else strh_emit_recv(c, id, recv, b);
 }
 
 /* --share-strings (#8328 step 5): an operation on a String Array of handles
@@ -2782,7 +2802,7 @@ int emit_strh_call(Compiler *c, int id, Buf *b) {
   case STRH_STORE: {
     /* the receiver, the index, then the value, as CRuby evaluates them */
     int tr = ++g_tmp, ti = ++g_tmp, tv = ++g_tmp;
-    buf_printf(b, "({ sp_PtrArray *_t%d = ", tr); emit_expr(c, recv, b);
+    buf_printf(b, "({ sp_PtrArray *_t%d = ", tr); strh_emit_recv(c, id, recv, b);
     buf_printf(b, "; SP_GC_ROOT(_t%d); sp_int _t%d = ", tr, ti); emit_int_expr(c, argv[0], b);
     buf_printf(b, "; sp_String *_t%d = ", tv); emit_strh_elem(c, argv[1], b);
     buf_printf(b, "; sp_PtrArray_set_grow(_t%d, _t%d, _t%d); ", tr, ti, tv);
@@ -2793,12 +2813,12 @@ int emit_strh_call(Compiler *c, int id, Buf *b) {
   }
   case STRH_PUSH: {
     int tr = ++g_tmp;
-    buf_printf(b, "({ sp_PtrArray *_t%d = ", tr); emit_expr(c, recv, b);
+    buf_printf(b, "({ sp_PtrArray *_t%d = ", tr); strh_emit_recv(c, id, recv, b);
     buf_printf(b, "; SP_GC_ROOT(_t%d);", tr);
     /* every argument is evaluated, and rooted, before the first is appended,
        as CRuby does: a later one can read the Array */
     int early = 0;
-    for (int a = 1; a < argc; a++) early |= !strh_arg_inert(nt, argv[a]);
+    for (int a = 1; a < argc; a++) early |= !strh_arg_inert(nt, -1, argv[a]);
     if (early)
       for (int a = 0; a < argc; a++) {
         buf_printf(b, " sp_String *_t%d_%d = ", tr, a);
@@ -2815,39 +2835,60 @@ int emit_strh_call(Compiler *c, int id, Buf *b) {
     return 1;
   }
   case STRH_LEN:
-    buf_puts(b, "sp_PtrArray_length("); emit_expr(c, recv, b); buf_puts(b, ")");
+    buf_puts(b, "sp_PtrArray_length("); strh_emit_recv(c, id, recv, b); buf_puts(b, ")");
     return 1;
   case STRH_EMPTY:
-    buf_puts(b, "(sp_PtrArray_length("); emit_expr(c, recv, b); buf_puts(b, ") == 0)");
+    buf_puts(b, "(sp_PtrArray_length("); strh_emit_recv(c, id, recv, b); buf_puts(b, ") == 0)");
     return 1;
+  /* The operations nil answers itself (dup, to_a, to_s, inspect; == is
+     sp_StrhArray_eq's), for a receiver that can be nil: what nil answers. */
   case STRH_DUP:
-    buf_puts(b, "sp_StrhArray_dup("); emit_expr(c, recv, b); buf_puts(b, ")");
+    if (strh_recv_nilable(c, id, recv)) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_PtrArray *_t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); _t%d ? sp_StrhArray_dup(_t%d) : (sp_PtrArray *)NULL; })", t, t, t);
+      return 1;
+    }
+    buf_puts(b, "sp_StrhArray_dup("); strh_emit_recv(c, id, recv, b); buf_puts(b, ")");
     return 1;
   case STRH_SELF:
-    emit_expr(c, recv, b);
+    if (strh_recv_nilable(c, id, recv)) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_PtrArray *_t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); _t%d ? _t%d : sp_StrhArray_new(); })", t, t, t);
+      return 1;
+    }
+    strh_emit_recv(c, id, recv, b);
     return 1;
   case STRH_JOIN: {
-    int tr = strh_recv_first(c, recv, argc == 1 ? argv[0] : -1, b);
-    buf_puts(b, "sp_StrhArray_join("); strh_recv_text(c, recv, tr, b); buf_puts(b, ", ");
+    int tr = strh_recv_first(c, id, recv, argc == 1 ? argv[0] : -1, b);
+    buf_puts(b, "sp_StrhArray_join("); strh_recv_text(c, id, recv, tr, b); buf_puts(b, ", ");
     if (argc == 1) emit_str_expr(c, argv[0], b);
     else buf_puts(b, "NULL");
     buf_puts(b, tr ? "); })" : ")");
     return 1;
   }
   case STRH_INCLUDE: {
-    int tr = strh_recv_first(c, recv, argv[0], b);
-    buf_puts(b, "sp_StrhArray_include("); strh_recv_text(c, recv, tr, b); buf_puts(b, ", ");
+    int tr = strh_recv_first(c, id, recv, argv[0], b);
+    buf_puts(b, "sp_StrhArray_include("); strh_recv_text(c, id, recv, tr, b); buf_puts(b, ", ");
     emit_str_expr_nilable(c, argv[0], b); buf_puts(b, tr ? "); })" : ")");
     return 1;
   }
   case STRH_EQ: {
-    int tr = strh_recv_first(c, recv, argv[0], b);
-    buf_puts(b, "sp_StrhArray_eq("); strh_recv_text(c, recv, tr, b); buf_puts(b, ", ");
+    int tr = strh_recv_first(c, id, recv, argv[0], b);
+    buf_puts(b, "sp_StrhArray_eq("); strh_recv_text(c, id, recv, tr, b); buf_puts(b, ", ");
     emit_expr(c, argv[0], b); buf_puts(b, tr ? "); })" : ")");
     return 1;
   }
   case STRH_INSPECT:
-    buf_puts(b, "sp_PtrArray_inspect_k("); emit_expr(c, recv, b); buf_puts(b, ")");
+    if (strh_recv_nilable(c, id, recv)) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_PtrArray *_t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); _t%d ? sp_PtrArray_inspect_k(_t%d) : %s; })", t, t, t,
+                 is_to_s_name(nm) ? "sp_str_empty" : "\"nil\"");
+      return 1;
+    }
+    buf_puts(b, "sp_PtrArray_inspect_k("); strh_emit_recv(c, id, recv, b); buf_puts(b, ")");
     return 1;
   default:
     (void)nm;

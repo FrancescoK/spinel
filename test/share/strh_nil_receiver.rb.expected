@@ -1,0 +1,28 @@
+["t!", "x"]
+nil
+nme push
+nme size
+nme each
+nme index
+nil
+2
+2
+nme take
+nme add
+nme bang
+nil
+["u!"]
+"u!"
+""
+"[\"t!\"]"
+"nil"
+"[\"t!\"]"
+nil
+["t!"]
+[]
+["t!"]
+<>
+<["t!"]>
+nil
+["t!"]
+"|[\"t!\"]"

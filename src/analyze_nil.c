@@ -1956,7 +1956,7 @@ void an_nil_facts(Compiler *c) {
 
 int nil_fact_tracked(TyKind t) {
   return ty_is_object(t) || t == TY_STRING || ty_is_array(t) || ty_is_obj_array(t) ||
-         ty_is_hash(t) || t == TY_IO;
+         t == TY_STRH_ARRAY || ty_is_hash(t) || t == TY_IO;
 }
 
 int nil_fact_node(const Compiler *c, int node) {

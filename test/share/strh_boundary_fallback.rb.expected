@@ -1,0 +1,22 @@
+["t", "o", "k"]
+["t", "o", "k"]
+["pr", "qr"]
+"t"
+["txx", "o", "k"]
+["txx!", "u", "w"]
+2
+{k: ["txx!", "u", "w"]}
+"txx!"
+["u", "w"]
+"txx!"
+["txx!?", "y"]
+"txx!?"
+["k!", "txx!?"]
+"txx!?"
+["txx!?", "txx!?", 1, nil]
+"txx!?"
+["txx!?xx", "txx!?xx", 1, nil]
+["d.", "txx!?xx.", "m."]
+"txx!?xx."
+["txx!?xx..", "o.", "p."]
+"txx!?xx.."

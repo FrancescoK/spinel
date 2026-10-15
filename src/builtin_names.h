@@ -89,6 +89,9 @@ int is_minmax_pair(const char *n); /* minmax: both extrema in one answer */
 int is_endpoint_query(const char *n); /* first last: collection or Range endpoints */
 int is_map_alias(const char *n); /* map collect: Enumerable transformation aliases */
 int is_instance_eval_family(const char *n); /* instance_eval instance_exec */
+int is_reflective_access(const char *n); /* instance_variable_get/set, class_variable_get/set, const_get/set, remove_* */
+int is_reflective_listing(const char *n); /* instance_variables class_variables constants */
+int is_local_reflection(const char *n); /* eval binding local_variable_get/set local_variables */
 int is_find_alias(const char *n); /* find detect: Enumerable search aliases */
 
 int is_text_conversion(const char *n); /* inspect to_s */

@@ -12382,6 +12382,9 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
         buf_printf(b, "(%s ? sp_%sArray_inspect(%s) : \"nil\")", expr, array_kind(ivt), expr);
       else if (ivt == TY_POLY_ARRAY)
         buf_printf(b, "(%s ? sp_PolyArray_inspect(%s) : \"nil\")", expr, expr);
+      /* --share-strings: an Array of handles renders as the pointer Array it is */
+      else if (ivt == TY_STRH_ARRAY)
+        buf_printf(b, "(%s ? sp_PtrArray_inspect_k(%s) : \"nil\")", expr, expr);
       else if (ty_is_hash(ivt) && ty_hash_cname(ivt))
         buf_printf(b, "(%s ? sp_%sHash_inspect(%s) : \"nil\")", expr, ty_hash_cname(ivt), expr);
       /* an Integer / Float ivar boxes by its nil bit */
