@@ -9915,6 +9915,17 @@ static int emit_when_typed_test(Compiler *c, int cond, int t, TyKind pt, Buf *b)
     else { buf_puts(b, "sp_re_case_eq("); emit_expr(c, cond, b); buf_puts(b, ", "); }
     emit_boxed_text(c, pt, sref, b); buf_puts(b, ")");
   }
+  /* Regexp#=== answers false for a number, true, false or nil: there is no
+     String to match. Left to the equality below, a literal's pattern pointer
+     was compared with the Integer (`case 5 when /\d/`), C the compiler
+     warns about and -Werror refuses. */
+  else if ((reidx >= 0 || comp_ntype(c, cond) == TY_REGEX) &&
+           (pt == TY_INT || pt == TY_FLOAT || pt == TY_BOOL || pt == TY_NIL ||
+            pt == TY_BIGINT || pt == TY_RATIONAL)) {
+    buf_printf(b, "((void)_t%d, ", t);
+    if (reidx < 0) { buf_puts(b, "(void)("); emit_expr(c, cond, b); buf_puts(b, "), "); }
+    buf_puts(b, "0)");
+  }
   /* a Regexp value that is no literal (built by interpolation, held in a
      constant or a variable) matches as the literal does, through its pattern:
      the family check below took it for a non-String and answered false */
