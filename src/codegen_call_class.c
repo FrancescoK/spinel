@@ -972,12 +972,12 @@ static int ffi_held_obj_read(Compiler *c, int node) {
   int a = nt_ref(nt, id, "arguments"), ac = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
   if (!nm || recv < 0 || nt_ref(nt, id, "block") >= 0) return 0;
-  TyKind at = comp_ntype(c, recv);
+  TyKind at = repr_of(c, recv).as_ty;
   if (!ty_is_obj_array(at)) return ffi_arg_plain_reader(c, id);
-  if (!(ac == 1 ? is_element_at_alias(nm) && comp_ntype(c, av[0]) == TY_INT && subtree_is_pure_read(c, av[0])
+  if (!(ac == 1 ? is_element_at_alias(nm) && repr_of(c, av[0]).as_ty == TY_INT && subtree_is_pure_read(c, av[0])
                 : ac == 0 && is_endpoint_query(nm)))
     return 0;
-  return comp_recv_type(c, recv) == at && comp_ntype(c, id) == ty_object(ty_obj_array_class(at)) &&
+  return comp_recv_type(c, recv) == at && repr_of(c, id).as_ty == ty_object(ty_obj_array_class(at)) &&
          ffi_held_obj_read(c, recv);
 }
 
@@ -2109,8 +2109,8 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           /* a float and a bool member convert as an ffi_func argument does: a
              boxed value checked, nil the TypeError (#9092: a boxed Float went
              in raw, a boxed true was read as an Integer) */
-          else if (rt2 == TY_FLOAT) emit_ffi_num_arg(c, argv[1], comp_ntype(c, argv[1]), spec, 1, b);
-          else if (rt2 == TY_BOOL) emit_ffi_num_arg(c, argv[1], comp_ntype(c, argv[1]), spec, 0, b);
+          else if (rt2 == TY_FLOAT) emit_ffi_num_arg(c, argv[1], repr_of(c, argv[1]).as_ty, spec, 1, b);
+          else if (rt2 == TY_BOOL) emit_ffi_num_arg(c, argv[1], repr_of(c, argv[1]).as_ty, spec, 0, b);
           else { buf_puts(b, "("); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
           buf_puts(b, ", sp_box_nil())");
           return 1;
@@ -3501,7 +3501,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   if (recv >= 0 && argc == 1 && (is_cmp_op(name) || sp_streq(name, "<=>")) &&
       repr_of(c, id).kind == RK_BOXED) {
     Repr crr = repr_of(c, recv);
-    TyKind crt = crr.as_ty, cat = comp_ntype(c, argv[0]);
+    TyKind crt = crr.as_ty, cat = repr_of(c, argv[0]).as_ty;
     int own_op = 0;
     if (crt == TY_CLASS) {
       int oci = class_recv_static_ci(c, recv);
@@ -3782,7 +3782,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     /* `equal?` joins them: a class is one object per name, so identity and
        equality are the same question here (#4271). */
     if (is_equality_name(name) && argc == 1) {
-      TyKind at = comp_ntype(c, argv[0]);
+      TyKind at = repr_of(c, argv[0]).as_ty;
       if (at == TY_CLASS) {
         buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
         buf_printf(b, "; sp_Class _cl%da = ", _clt); emit_expr(c, argv[0], b);
@@ -3791,7 +3791,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       }
     }
     if (sp_streq(name, "!=" ) && argc == 1) {
-      TyKind at = comp_ntype(c, argv[0]);
+      TyKind at = repr_of(c, argv[0]).as_ty;
       if (at == TY_CLASS) {
         buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
         buf_printf(b, "; sp_Class _cl%da = ", _clt); emit_expr(c, argv[0], b);
@@ -3801,7 +3801,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     }
     if ((sp_streq(name, "<") || sp_streq(name, "<=") || sp_streq(name, ">") ||
          sp_streq(name, ">=") || sp_streq(name, "<=>")) && argc == 1) {
-      TyKind at = comp_ntype(c, argv[0]);
+      TyKind at = repr_of(c, argv[0]).as_ty;
       if (at == TY_CLASS) {
         /* CRuby returns nil (not false) when the classes are unrelated, so the
            tri-state helpers yield a boxed true/false/nil (or -1/0/1/nil for
