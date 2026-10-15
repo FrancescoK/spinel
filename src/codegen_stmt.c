@@ -14701,6 +14701,21 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
     int cdef = -1;
     int wmi = comp_method_in_chain(c, crc, nm, &cdef);
     emit_indent(b, indent);
+    /* a writer a native class binds (`native_method :x=, [:float], ...`):
+       its C function on the struct, the element converted to the argument
+       its spec names (#9202) */
+    int nwi = wmi < 0 ? comp_native_method_find(c, crc, nm, 1, 0) : -1;
+    if (nwi >= 0 && c->classes[crc].c_struct) {
+      const NativeMethod *nw = &c->native_methods[nwi];
+      const char *spec = nw->nargs == 1 && !nw->rest ? nw->args[0] : NULL;
+      TyKind aw = !spec || sp_streq(spec, "any") ? TY_POLY : sp_streq(spec, "text") ? TY_STRING : ffi_spec_to_ty(spec);
+      if (!spec || aw == TY_UNKNOWN) { unsupported(c, id, "multiple assignment call target native writer"); return 1; }
+      buf_printf(b, "%s((%s *)", nw->csym, c->classes[crc].c_struct);
+      emit_node_or_tmp(c, crecv, recv_tmp, b); buf_puts(b, ", ");
+      masgn_conv(c, id, aw, vt, val, b);
+      buf_puts(b, ");\n");
+      return 1;
+    }
     if (wmi >= 0 && cdef >= 0) {
       LocalVar *wp = c->scopes[wmi].nparams >= 1 ? scope_local(&c->scopes[wmi], c->scopes[wmi].pnames[0]) : NULL;
       buf_printf(b, "sp_%s_%s((sp_%s *)", c->classes[cdef].c_name, mc(c->scopes[wmi].name), c->classes[cdef].c_name);
@@ -16244,9 +16259,10 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       char base2[256]; memcpy(base2, setnm, snlen - 1); base2[snlen - 1] = '\0';
       int rc2 = ty_object_class(rt2);
       if (!comp_writer_in_chain(c, rc2, base2, NULL)) {
-        /* a writer defined with `def x=` runs as a call */
+        /* a writer defined with `def x=`, or bound with `native_method :x=`,
+           runs as a call */
         char rv[32]; snprintf(rv, sizeof rv, "_t%d", tmps[i]);
-        if (comp_method_in_chain(c, rc2, setnm, NULL) < 0)
+        if (comp_method_in_chain(c, rc2, setnm, NULL) < 0 && comp_native_method_find(c, rc2, setnm, 1, 0) < 0)
           unsupported(c, id, "multiple assignment call target no writer");
         else masgn_store(c, id, lefts[i], masgn_nil_el(c, els[i]) ? NULL : rv, tmpts[i], ttr[i], ttk[i], indent, b);
         continue;
