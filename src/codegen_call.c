@@ -26652,7 +26652,8 @@ static int emit_numeric_coerce_call(Compiler *c, int id, Buf *b) {
   }
 
   if (argc != 1) return 0;
-  if (!coercing_object_arg(c, argv[0])) return 0;
+  if (!coercing_object_arg(c, argv[0]) &&
+      !(is_cmp_op(name) && ty_is_object(comp_ntype(c, argv[0])))) return 0;
   TyKind answers;
   const char *fn = numeric_coerce_fn(name, &answers);
   if (!fn) return 0;
