@@ -924,6 +924,11 @@ int an_int_step_range_chain(Compiler *c, int id) {
   /* the `to_a` hop a desugar puts under an Enumerator's walk (enum_recv)
      is not a reader: the walk answers this receiver */
   if (!pn || nt_str(nt, p, "enum_recv") || range_enum_reopen_defines(c, pn)) return 0;
+  /* a Bignum limit walks past the Integer word, which a Range of words
+     cannot hold: the Enumerator walks it (a boxed one that is a Bignum at
+     run time is read by sp_int_step_range) */
+  { int ia = nt_ref(nt, id, "arguments"), ac = 0; const int *av = ia >= 0 ? nt_arr(nt, ia, "arguments", &ac) : NULL;
+    if (ac == 1 && infer_type(c, av[0]) == TY_BIGINT) return 0; }
   int pblk = nt_ref(nt, p, "block");
   int pac = 0; { int pa = nt_ref(nt, p, "arguments"); if (pa >= 0) nt_arr(nt, pa, "arguments", &pac); }
   if (sp_streq(pn, "with_index") || sp_streq(pn, "with_object") ||
@@ -967,8 +972,15 @@ int an_int_step_range_chain(Compiler *c, int id) {
     for (int i = 0; READ0[i]; i++) if (sp_streq(pn, READ0[i])) return 1;
     return 0;
   }
-  /* first(n) / take(n) / drop(n) answer an Array; inject(:+) its total */
-  if (pac == 1 && (sp_streq(pn, "first") || sp_streq(pn, "take") || sp_streq(pn, "drop") ||
+  /* first(n) / drop(n) answer an Array; inject(:+) its total. take(n)
+     lays its Range out whole, where the Enumerator reads n members, and so
+     does first(n) under a boxed limit, which may be a Bignum the Range
+     cannot hold. */
+  int boxed_lim = 0;
+  { int ia = nt_ref(nt, id, "arguments"), ac = 0; const int *av = ia >= 0 ? nt_arr(nt, ia, "arguments", &ac) : NULL;
+    boxed_lim = ac == 1 && infer_type(c, av[0]) == TY_POLY; }
+  if (pac == 1 && sp_streq(pn, "first") && boxed_lim) return 0;
+  if (pac == 1 && (sp_streq(pn, "first") || sp_streq(pn, "drop") ||
                    sp_streq(pn, "inject") || sp_streq(pn, "reduce"))) return 1;
   return 0;
 }

@@ -54,3 +54,11 @@ s = 3.times
 p s.with_index { }, s.each { }
 l = 100_000.times
 p l.each_with_index { }, l.each { }
+
+# A boxed limit is read by its kind wherever the walk goes: a Float is not
+# truncated, and the call keeps its label. take(n) reads n members of a long
+# walk rather than laying it out.
+fl = [5.5, "x"][0]
+lo = [2, "x"][0]
+p 9.downto(fl).to_a, 1.upto(fl), 9.downto(lo), 1.upto(fl).sum
+p 3.upto(10**9).take(2), 3.upto(lo).take(2)
