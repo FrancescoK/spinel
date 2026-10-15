@@ -118,6 +118,24 @@ static int interp_part_reads_late(Compiler *c, const int *parts, int n, int k, i
   return 0;
 }
 
+/* ...is nm, called with argc arguments on a String, a conversion (to_s,
+   to_str, +@) that turns a nil receiver into a String? */
+static int interp_nil_conversion(const char *nm, int argc) {
+  return argc == 0 && (sp_streq(nm, "to_s") || sp_streq(nm, "to_str") || sp_streq(nm, "+@"));
+}
+/* ...is nm a String method that answers its receiver or nil (`upcase!`,
+   `sub!`, `strip!`)? */
+static int interp_link_nilable(const char *nm, int argc, int has_blk) {
+  return (bop_answers_self(TY_STRING, nm, argc, has_blk) & BOPF_SELF_OR_NIL) != 0;
+}
+/* ...is n a writer of the instance variable iv, an attr_writer's or a
+   `def s=` (`o.s = x`, `o.s, y = ...`), on any receiver, self among them? */
+static int interp_is_ivar_writer(const NodeTable *nt, int n, const char *iv) {
+  NodeKind k = nt_kind(nt, n);
+  const char *nm = k == NK_CallNode || k == NK_CallTargetNode ? nt_str(nt, n, "name") : NULL;
+  size_t l = nm ? strlen(nm) : 0;
+  return l > 1 && nm[l - 1] == '=' && iv[0] == '@' && strlen(iv + 1) == l - 1 && !strncmp(nm, iv + 1, l - 1);
+}
 /* --share-strings: what the subtree at n does to the variable v reads (a
    local, an instance variable or a global of that name): bit 1, a String
    mutator called on it; bit 2, a write that rebinds it. */
@@ -133,6 +151,7 @@ static int interp_changes_var(Compiler *c, int n, NodeKind vk, const char *vn) {
         (is_string_rebind_mutator(nm) || bop_name_mutates(nm, 0)))
       bits |= 1;
   }
+  if (vk == NK_InstanceVariableReadNode && vn && interp_is_ivar_writer(nt, n, vn)) bits |= 2;
   if (vn && nt_str(nt, n, "name") && sp_streq(nt_str(nt, n, "name"), vn) &&
       ((vk == NK_LocalVariableReadNode && (k == NK_LocalVariableWriteNode || k == NK_LocalVariableOperatorWriteNode ||
                                            k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode ||
@@ -213,7 +232,7 @@ static int interp_var_read_late(Compiler *c, const int *parts, int n, int k, int
   const NodeTable *nt = c->nt;
   int u = unwrap_parens(c, expr);
   if (!repr_share_rule(c) || u < 0) return 0;
-  int kind = 1, b = u;
+  int kind = 1, b = u, nil_converted = 0;
   /* a String method that answers its receiver, or nil (`s << "a"`,
      `s.upcase!`, `s.itself`, `s.to_s`, `+s`, `s&.itself`), over a variable: the
      part is the variable's String itself, the call run where it stands and the
@@ -226,6 +245,9 @@ static int interp_var_read_late(Compiler *c, const int *parts, int n, int k, int
                (argc == 0 && (sp_streq(nm, "itself") || sp_streq(nm, "to_s") || sp_streq(nm, "to_str") ||
                               sp_streq(nm, "+@")));
     if (!self) break;
+    /* (a nil from a bang below a conversion reads as "" there, not as the variable) */
+    if (nil_converted && interp_link_nilable(nm, argc, nt_ref(nt, b, "block") >= 0)) return 0;
+    if (interp_nil_conversion(nm, argc)) nil_converted = 1;
     kind = 2;
     b = r;
   }
@@ -250,11 +272,13 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
   int *flat = NULL, fcap = 0, *own = NULL;
   interp_flatten_own(nt, id, &flat, &own, &n, &fcap);
   const int *parts = flat;
-  /* (each adjacent literal is built on its own: a part is held only until
-     the end of its segment, sn[k] parts in) */
+  /* (under --share-strings each adjacent literal is built on its own: a part
+     is held only until the end of its segment, sn[k] parts in; without it,
+     to the end of the string, as before) */
   int *sn = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
   if (!sn) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  for (int k = n - 1; k >= 0; k--) sn[k] = k + 1 < n && own[k + 1] == own[k] ? sn[k + 1] : k + 1;
+  for (int k = n - 1; k >= 0; k--)
+    sn[k] = !c->share_strings ? n : k + 1 < n && own[k + 1] == own[k] ? sn[k + 1] : k + 1;
   WPart *wp = malloc(sizeof(WPart) * (size_t)(n > 0 ? n : 1));
   if (!wp) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   int nwp = 0, ndyn_or_scalar = 0;
@@ -271,7 +295,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
     int pid = parts[k];
     const char *pty = nt_type(nt, pid);
     /* a segment's held parts are read where it ends */
-    if (k > 0 && own[k] != own[k - 1] && late.p) { buf_puts(&decls, late.p); late.len = 0; late.p[0] = '\0'; }
+    if (c->share_strings && k > 0 && own[k] != own[k - 1] && late.p) { buf_puts(&decls, late.p); late.len = 0; late.p[0] = '\0'; }
     if (pty && sp_streq(pty, "StringNode")) {
       const char *content = nt_str(nt, pid, "content");
       int off = lits.len;

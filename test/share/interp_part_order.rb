@@ -128,3 +128,36 @@ t1 = +"b"
 p "#{t1 << "1"; t1}-#{t1 << "2"}"
 t2 = +"a"
 p "#{x = 1; t2 << "!"; t2}-#{x}-#{t2 << "?"}"
+
+# a bang that answers nil, then a conversion: the part is "" and no longer
+# the String (the later change does not reach it)
+n1 = +"ABC"
+p "#{n1.upcase!.to_s}-#{n1 << "x"}"
+n2 = +"abc"
+p "#{n2.downcase!.to_s}-#{n2 << "1"}"
+n3 = +"abc"
+p "#{n3.chomp!.to_s}-#{n3 << "3"}"
+n4 = +"abc"
+p "#{n4.sub!("q", "r").to_s}-#{n4 << "4"}"
+n5 = +"abc"
+p "#{n5.strip!.to_s}-#{n5.concat("5")}"
+n6 = +"ABC"
+p "#{n6.upcase!.to_s.itself}-#{n6 << "y"}"
+n7 = +"ABC"
+p "#{n7.upcase!.to_s.to_s}-#{n7 << "z"}"
+class NilBang
+  def initialize = @s = +"IV"
+  def go = "#{@s.upcase!.to_s}|#{@s << "!"}"
+end
+p NilBang.new.go
+$nb = +"G"
+p "#{$nb.upcase!.to_s}|#{$nb << "?"}"
+
+# an instance variable rebound through its writer, on an object that is self
+class WriterAlias
+  attr_writer :s
+  def initialize = @s = +"iv"
+  def go(o) = "#{@s}-#{o.s = +"other"; @s << "!"}"
+end
+wa = WriterAlias.new
+p wa.go(wa)
