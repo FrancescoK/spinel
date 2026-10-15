@@ -27904,12 +27904,29 @@ static void dyn_fold(DynReach *r, unsigned bits, int k, int bound, int open, TyK
   if (!reads_box && (k >= 14 || (bits & (1u << (16 + k))))) r->keeps = 1;
 }
 
+/* Is method mi the wrapper a Method of one of Kernel's printers was
+   retargeted at (`method(:p)`, `method(:puts)`: its def's bam_sym), with
+   no method of that name in the program and no String#inspect or #to_s of
+   its own? Such a Method neither changes nor keeps the String it is
+   handed (#9207). */
+static int dyn_method_prints(Compiler *c, int mi) {
+  int dn = mi >= 0 && mi < c->nscopes ? c->scopes[mi].def_node : -1;
+  const char *sym = dn >= 0 ? nt_str(c->nt, dn, "bam_sym") : NULL;
+  static const char *const printers[] = { "p", "pp", "puts", "print", "warn", NULL };
+  int printer = 0;
+  for (int i = 0; sym && printers[i]; i++) if (sp_streq(sym, printers[i])) printer = 1;
+  if (!printer || comp_method_index(c, sym) >= 0) return 0;
+  int si = comp_class_index(c, "String");
+  return si < 0 || (comp_method_in_chain(c, si, "inspect", NULL) < 0 && comp_method_in_chain(c, si, "to_s", NULL) < 0);
+}
+
 static void dyn_reach_method_node(Compiler *c, int mn, int k, DynReach *r) {
   const NodeTable *nt = c->nt;
   /* an UnboundMethod (`instance_method(:m)`, bound later with `bind` or
      called with `bind_call`) names its method as a Method does */
   int mi = method_obj_target_mi(c, mn);
   if (mi < 0) { r->unknown = 1; return; }
+  if (dyn_method_prints(c, mi)) return;
   /* a bound builtin's wrapper (`"ab".method(:center)`, `a.method(:push)`)
      may keep what it is handed (push stores it) */
   if (method_call_param_shift(c, mn, mi)) { r->keeps = 1; return; }
