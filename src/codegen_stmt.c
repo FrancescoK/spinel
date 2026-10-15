@@ -6671,6 +6671,9 @@ int emit_poly_class_when(Compiler *c, int cond_id, const char *tmp, Buf *b) {
     buf_printf(b, "%s.tag == SP_TAG_FLT", tmp);
   else if (sp_streq(cn, "Symbol"))
     buf_printf(b, "%s.tag == SP_TAG_SYM", tmp);
+  /* an Encoding boxes as its own tag, with no class-table entry */
+  else if (sp_streq(cn, "Encoding"))
+    buf_printf(b, "%s.tag == SP_TAG_ENCODING", tmp);
   else if (sp_streq(cn, "NilClass"))
     buf_printf(b, "%s.tag == SP_TAG_NIL", tmp);
   else if (sp_streq(cn, "TrueClass"))

@@ -29,3 +29,10 @@ case e
 when Encoding::ASCII_8BIT then puts "binary"
 when Encoding::UTF_8 then puts "utf-8"
 end
+
+# `when Encoding` tests the class of a boxed Encoding.
+r = case e
+    when Encoding then :an_encoding
+    else :no
+    end
+p r
