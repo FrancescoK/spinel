@@ -94,6 +94,11 @@ typedef enum {
 void share_facts_build(Compiler *c);
 void share_facts_free(Compiler *c);
 
+/* Is multiple write n a plain one (`a, b = x, y`): an Array literal value
+   with no splat, and no rest or post target -- each target takes its own
+   value (SHFL_MULTI)? */
+int share_masgn_plain(const NodeTable *nt, int n);
+
 /* The holders, by index 0..share_holder_count-1. */
 int share_holder_count(const Compiler *c);
 const ShareHolder *share_holder(const Compiler *c, int h);
@@ -381,6 +386,14 @@ enum { SPK_NONE, SPK_BOX, SPK_SLOT, SPK_DEMANDED, SPK_ELEM, SPK_SLOT_POLY, SPK_F
        SPK_PROC_CALL, SPK_POLY_ARMS, SPK_EXC_MESSAGE, SPK_EXC_SUPER, SPK_PUBLISHED, SPK_READER, SPK_WRITE,
        SPK_ASSIGN, SPK_OPERAND, SPK_BLOCK_VALUE, SPK_YIELD, SPK_COND, SPK_SEQUENCE, SPK_LIFT, SPK__COUNT };
 const char *share_plan_kind_name(int kind);
+/* Can a store's target take value v as a handle (share_plan.c)? */
+int share_plan_store_renders(Compiler *c, int v);
+/* ...which, for an element of multiple write mw, the seal asks of the write */
+int share_plan_multi_renders(Compiler *c, int mw, int e);
+/* ...and emit_expr gives it as the handle already (share_plan.c)? */
+int share_plan_emits_handle(Compiler *c, int e);
+/* ...and does an in-place change's receiver path render its base's handle? */
+int share_plan_recv_renders(Compiler *c, int call, int base);
 typedef struct {
   unsigned char need, supply, form;
   unsigned char kind;   /* SPK_*, which share_plan_of fills where the supply

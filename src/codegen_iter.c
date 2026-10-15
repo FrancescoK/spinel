@@ -5706,11 +5706,22 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     /* a receiver that can be nil is held as its oint, the parameter's nil
        (emit_tap_then_expr) */
     int ro = oint_kind(et) && node_is_oint(c, recv);
+    /* --share-strings: a block parameter that is the shared handle is bound
+       to the receiver's own String, as the expression form binds it
+       (emit_tap_then_expr) */
+    int hparam = 0;
+    if (et == TY_STRING && repr_share_rule(c) && p0) {
+      LocalVar *hlv = tsc ? scope_local(tsc, p0) : NULL;
+      if (!hlv && tsc) hlv = scope_local(tsc, p0_orig);
+      hparam = hlv && repr_of_slot(c, hlv).handle;
+    }
     Buf rb; memset(&rb, 0, sizeof rb);
-    if (ro) emit_oint_expr(c, recv, et, &rb); else emit_expr(c, recv, &rb);
+    if (hparam) { emit_strbuf_handle_of(c, recv, &rb); et = TY_STRBUF; use_shadow_t = tlv0 && tlv0->type != et; }
+    else if (ro) emit_oint_expr(c, recv, et, &rb); else emit_expr(c, recv, &rb);
     emit_indent(b, indent);
     if (ro) buf_puts(b, oint_ctype(et)); else emit_ctype(c, et, b);
     buf_printf(b, " _t%d = %s;\n", tr, rb.p ? rb.p : ""); free(rb.p);
+    if (hparam) { emit_indent(b, indent); emit_gc_root_tmp(c, et, tr, b); buf_puts(b, "\n"); }
     /* An OBJECT-receiver tap whose param widened to poly (it escaped through
        yield(_1) / a store) cannot be shadowed with a concrete object slot;
        box the receiver into the poly param instead (#3140). An array/hash

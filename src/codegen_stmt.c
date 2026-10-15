@@ -3315,8 +3315,16 @@ int emit_recv_route_handle(Compiler *c, int id, int recv, Buf *b) {
   else {
     free(hb.p); memset(&hb, 0, sizeof hb);
     if (pre && g_pre == pre && pre->len > pre_mark) { pre->len = pre_mark; pre->p[pre_mark] = '\0'; }
-    if (!strbuf_self_route(c, recv)) return 0;
-    emit_strbuf_handle_of(c, unwrap_parens(c, recv), &hb);
+    if (c->share_plan && share_plan_producer(c, recv, NULL) == SPK_POLY_ARMS) {
+      /* a boxed receiver's call whose arms each answer a String is read as
+         a box whose handle is bound: the handle face renders it */
+      emit_str_form_handle(c, recv, &hb);
+      nonnil = 1;
+    }
+    else {
+      if (!strbuf_self_route(c, recv)) return 0;
+      emit_strbuf_handle_of(c, unwrap_parens(c, recv), &hb);
+    }
   }
   /* a `&.` call skips a nil receiver, which the raise below would not:
      its guard takes the receiver (emit_call_safe_nav_arms) */
@@ -4459,6 +4467,29 @@ int emit_bang_self_handle(Compiler *c, int v, Buf *b) {
 
 /* The value a write hands a mutable-String slot `lv` (TY_STRBUF), as an
    sp_String *. */
+/* --share-strings: the handle of a boxed receiver's call whose arms answer
+   a String, or of a sequence ending in one (strbuf_poly_user_base): the
+   sequence's statements first, then the dispatch read as a box and that
+   box's handle. */
+void emit_poly_arms_handle(Compiler *c, int base, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, base) == NK_ParenthesesNode) {
+    int body = nt_ref(nt, base, "body");
+    int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+    if (n >= 1) {
+      Buf pre; memset(&pre, 0, sizeof pre);
+      for (int i = 0; i < n - 1; i++) emit_stmt(c, st[i], &pre, 0);
+      buf_printf(b, "({ %s", pre.p ? pre.p : "");
+      free(pre.p);
+      emit_poly_arms_handle(c, strbuf_poly_user_base(c, st[n - 1]), b);
+      buf_puts(b, "; })");
+      return;
+    }
+  }
+  buf_puts(b, "sp_poly_as_strbuf(");
+  emit_boxed(c, base, b);
+  buf_puts(b, ")");
+}
 void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
   if (g_share_check && repr_of_slot(c, lv).handle) share_check_mark(c, v, 'H', b);
   /* A shared-mutable alias (`s2 = s1`, both str_shared) copies the sp_String
@@ -4506,11 +4537,8 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
      slot takes that box's handle (a new one around a fresh String; NULL
      for nil). A conversion over it (`call.to_s`) answers the same String
      (strbuf_poly_user_base). */
-  else if (shared && repr_share_rule(c) && strbuf_poly_user_base(c, v) >= 0) {
-    buf_puts(b, "sp_poly_as_strbuf(");
-    emit_boxed(c, strbuf_poly_user_base(c, v), b);
-    buf_puts(b, ")");
-  }
+  else if (shared && repr_share_rule(c) && strbuf_poly_user_base(c, v) >= 0)
+    emit_poly_arms_handle(c, strbuf_poly_user_base(c, v), b);
   /* A chained assignment (`u = t = s`) whose inner target is the handle too:
      run the inner write, then alias ITS handle. Wrapping the write's value
      as a fresh String forked u off the object t and s share. */
@@ -10663,7 +10691,20 @@ static int find_hoistable_strlen(Compiler *c, int root) {
 
 /* Whether `root`'s subtree mutates the local `name` (reassignment or an
    in-place mutating method on it). Mirrors legacy body_mutates_var?. */
+static int subtree_changes_local_syn(Compiler *c, int root, const char *name);
 static int subtree_changes_local(Compiler *c, int root, const char *name) {
+  if (root < 0) return 0;
+  /* --share-strings: a local that is the shared handle is changed through
+     any name that holds it, a call's parameter or a dispatch's result
+     (`px.pick(s) << x`): a subtree that runs code may change it */
+  if (repr_share_rule(c)) {
+    Scope *sc = comp_scope_of(c, root);
+    LocalVar *lv = sc && name ? scope_local(sc, name) : NULL;
+    if (lv && repr_of_slot(c, lv).handle && subtree_has_side_effect(c, root)) return 1;
+  }
+  return subtree_changes_local_syn(c, root, name);
+}
+static int subtree_changes_local_syn(Compiler *c, int root, const char *name) {
   if (root < 0) return 0;
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, root);
@@ -10674,11 +10715,10 @@ static int subtree_changes_local(Compiler *c, int root, const char *name) {
       if (mn && recv >= 0 && nt_type(nt, recv) &&
           sp_streq(nt_type(nt, recv), "LocalVariableReadNode") &&
           nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), name)) {
-        static const char *const mut[] = {"push","pop","shift","unshift","<<","[]=","delete",
-          "delete_at","clear","insert","replace","concat","sort!","sort_by!","reverse!","compact!","uniq!",
-          "merge!","store","update","fill","prepend","gsub!","sub!","upcase!","downcase!",
-          "strip!","chomp!","slice!","squeeze!","force_encoding","bytesplice", NULL};
-        for (int i = 0; mut[i]; i++) if (sp_streq(mn, mut[i])) return 1;
+        /* any String mutator, by the table the share analysis reads
+           (bop_name_mutates), and the ones that rebind
+           (is_string_rebind_mutator); freezing changes no bytes */
+        if (!is_freeze_family(mn) && (bop_name_mutates(mn, 0) || is_string_rebind_mutator(mn))) return 1;
       }
     }
     if ((sp_streq(ty, "LocalVariableWriteNode") || sp_streq(ty, "LocalVariableOperatorWriteNode") ||
@@ -10687,11 +10727,11 @@ static int subtree_changes_local(Compiler *c, int root, const char *name) {
       return 1;
   }
   int nr = nt_num_refs(nt, root);
-  for (int i = 0; i < nr; i++) if (subtree_changes_local(c, nt_ref_at(nt, root, i), name)) return 1;
+  for (int i = 0; i < nr; i++) if (subtree_changes_local_syn(c, nt_ref_at(nt, root, i), name)) return 1;
   int na = nt_num_arrs(nt, root);
   for (int i = 0; i < na; i++) {
     int n = 0; const int *el = nt_arr_at(nt, root, i, &n);
-    for (int j = 0; j < n; j++) if (subtree_changes_local(c, el[j], name)) return 1;
+    for (int j = 0; j < n; j++) if (subtree_changes_local_syn(c, el[j], name)) return 1;
   }
   return 0;
 }
@@ -15184,6 +15224,10 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
       if (i == 0) {
         if (lpoly && st != TY_POLY) emit_boxed(c, value, b);
         else if (llv && slot_is_oint(llv)) emit_oint_expr(c, value, llv->type, b);   /* the slot's oint */
+        /* --share-strings: a String into a local that is the handle: its handle
+           (`|(q)|` over a String, desugared to `q, = __destr`) */
+        else if (llv && repr_share_rule(c) && repr_of_slot(c, llv).handle && (st == TY_STRING || st == TY_STRBUF))
+          emit_strbuf_handle_of(c, value, b);
         else emit_expr(c, value, b);
       }
       else if (lpoly) {
@@ -15826,6 +15870,29 @@ static int masgn_fresh_stmt(Compiler *c, int id, const int *lefts, int ln, const
   return any && !masgn_program_may_own();
 }
 
+/* --share-strings: is element el of plain multiple write mw a value the
+   String plan gives as the handle that the write renders through the handle
+   face (emit_str_form_handle) into a temp, and holds there: any but a
+   read of a variable that emit_expr gives as the handle, which the write
+   stores as it reads (share_plan_multi_renders says which targets take
+   it)? */
+int masgn_face_elem(Compiler *c, int mw, int el) {
+  const NodeTable *nt = c->nt;
+  if (!c->share_plan || !share_masgn_plain(nt, mw)) return 0;
+  int u = unwrap_parens(c, el);
+  NodeKind k = u >= 0 ? nt_kind(nt, u) : NK_NONE;
+  if ((k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || repr_static_read_kind(k)) &&
+      share_plan_emits_handle(c, el))
+    return 0;
+  int en = 0;
+  const int *e = nt_arr(nt, nt_ref(nt, mw, "value"), "elements", &en);
+  /* (a value past the targets is stored nowhere, and the Array a write used
+     as a value answers holds it) */
+  for (int i = 0; i < en; i++)
+    if (e[i] == el) return share_plan_of(c, el, SPR_STORE, NULL).form == SPF_HANDLE;
+  return 0;
+}
+
 /* A MultiWriteNode statement (a, b = ...) (emit_stmt_inner's arms, in their order) */
 static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, const char *ty) {
   g_masgn_notmps = 0;   /* the oint temps are this assignment's (temp numbers restart per function) */
@@ -16043,7 +16110,18 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
     /* a write whose slot holds the rule's handle (--share-strings): that
        handle, as a local's read hands over its own */
     Buf hw; memset(&hw, 0, sizeof hw);
-    int hwrite = hshared && elt != TY_STRBUF && !hread && emit_strbuf_write_handle(c, els[i], &hw);
+    /* --share-strings: a value the String plan gives as the handle that
+       emit_expr does not (share_plan_emits_handle), into a target the plan
+       says takes one (share_plan_multi_renders): the handle face renders it,
+       whatever its producer, and the handle it makes is rooted while a later
+       value is built (nothing else holds a new one) */
+    /* (one that ran ahead as the handle, in a multiple write used as a value
+       -- emit_expr -- is that handle) */
+    int hran = ran_first_handle(els[i]);
+    int hface = hran >= 0 || (!hread && i < ln && masgn_face_elem(c, id, els[i]) && !share_plan_emits_handle(c, els[i]));
+    if (hran >= 0) buf_printf(&hw, "_t%d", hran);
+    else if (hface) emit_str_form_handle(c, els[i], &hw);
+    int hwrite = hface || (hshared && elt != TY_STRBUF && !hread && emit_strbuf_write_handle(c, els[i], &hw));
     /* a route over such a handle (`t, u = s.then { |x| x }, 1`): the handle
        it hands on */
     hwrite = hwrite || (hshared && elt != TY_STRBUF && !hread && emit_strbuf_route(c, els[i], &hw));
@@ -16053,7 +16131,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       else buf_printf(b, hup >= 0 ? "sp_String * _t%d = sp_String_uplus(%s);" : "sp_String * _t%d = %s;", tmps[i], hsrc.p);
       free(hw.p); free(hsrc.p);
       if (tmpts) tmpts[i] = TY_STRBUF;
-      int later_alloc_h = store_alloc || fresh_stmt;
+      int later_alloc_h = store_alloc || fresh_stmt || (hface && i + 1 < en);
       for (int j = i + 1; j < en && !later_alloc_h; j++) later_alloc_h = masgn_part_allocates(c, els[j]);
       if (later_alloc_h) masgn_root(c, TY_STRBUF, tmps[i], b);
       buf_puts(b, "\n");
@@ -21453,20 +21531,29 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
     if (!got) got = emit_recv_route_handle(c, id, recv, &lb);
     if (got) {
       int tH = ++g_tmp;
+      /* the arguments that run code go ahead of the copy, after the
+         receiver's handle is taken (what the route put ahead is in g_pre),
+         as the other shims run them: one that changes the String through
+         another name would be undone by the write-back */
+      Buf apre; memset(&apre, 0, sizeof apre);
+      int fx = 0, rna = nt_ref(nt, id, "arguments"), rac = 0;
+      const int *rav = rna >= 0 ? nt_arr(nt, rna, "arguments", &rac) : NULL;
+      for (int ai = 0; ai < rac; ai++) fx |= subtree_has_side_effect(c, rav[ai]);
+      int mark0 = fx ? sb_shim_args_first(c, id, &apre, indent + 1) : g_n_argov;
       view_bind(recv, "lv__sb%d", tH);
       Buf armb; memset(&armb, 0, sizeof armb);
       int handled = emit_array_mutate_stmt(c, id, &armb, indent + 1);
-      view_unbind(g_n_argov - 1);
+      view_unbind(mark0);
       if (handled) {
         emit_indent(b, indent);
         buf_printf(b, "{ sp_String *_t%d = %s;", tH, lb.p ? lb.p : hb.p);
         free(lb.p); lb.p = NULL; free(hb.p);
         emit_route_recv_root(c, 2, tH, 0, NULL, TY_UNKNOWN, b);
         buf_puts(b, "\n");
-        Buf nopre; memset(&nopre, 0, sizeof nopre);   /* what the route put ahead is in g_pre */
-        emit_sb_shim_swap(b, indent, tH, &nopre, armb.p);
+        emit_sb_shim_swap(b, indent, tH, &apre, armb.p);
         return 1;
       }
+      free(apre.p);
       free(armb.p); free(lb.p); free(hb.p);
       /* what the route put ahead of the statement goes with it */
       if (pre && g_pre == pre && pre->len > pre_mark) { pre->len = pre_mark; pre->p[pre_mark] = '\0'; }
@@ -22933,6 +23020,14 @@ int strbuf_poly_user_boxes(Compiler *c, int v) {
    and no block, String's own); -1 for none. */
 int strbuf_poly_user_base(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
+  /* a sequence ending in such a call (`(1; px.pick(s))`) is read as a box
+     whole, its statements first (emit_boxed_sequence): it is that base */
+  if (v >= 0 && nt_kind(nt, v) == NK_ParenthesesNode && repr_share_rule(c)) {
+    int tail = paren_tail(nt, v);
+    if (tail >= 0 && tail != v && strbuf_poly_user_base(c, tail) >= 0 &&
+        nt_kind(nt, nt_ref(nt, v, "body")) == NK_StatementsNode)
+      return v;
+  }
   v = unwrap_parens(c, v);
   for (int d = 0; v >= 0 && d < 8; d++) {
     /* (an attribute assignment answers its right-hand side: its own route) */
@@ -23290,10 +23385,8 @@ static int face_bang_cond_on_runtime_elems(Compiler *c, int v) {
          strbuf_cond_arm_any(c, v, 0, face_bang_on_runtime_elems, 1);
 }
 /* repr.c's flow check asks this (codegen_internal.h). */
-int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int v) {
+int strbuf_flow_carries(Compiler *c, int kind, int site, int v) {
   const NodeTable *nt = c->nt;
-  int ctx;
-  NodeKind sk = site >= 0 && kind != SHFL_LEND ? nt_kind(nt, site) : NK_NONE;
   switch (kind) {
   case SHFL_WRITE:
     /* a variable's, an ivar's or an attribute's write takes its value by
@@ -23311,8 +23404,24 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
       return p.need != SPN_OBJECT;
     return p.form != SPF_REFUSE;
   }
-  case SHFL_MEMBER: case SHFL_PARAM: case SHFL_MUTATE: ctx = SFC_ALIAS; break;
-  case SHFL_MULTI: ctx = SFC_SLOT; break;
+  case SHFL_MEMBER: case SHFL_MULTI: {
+    /* an attribute's, a Struct member's or a multiple write's target takes
+       the value as a store does (SPR_STORE): the handle where the plan
+       gives it, which a multiple write's target takes only where
+       emit_multi_write renders one into it (share_plan_multi_renders; the
+       plan asks the same of the element's parents) */
+    SharePlan p = share_plan_of(c, v, SPR_STORE, NULL);
+    if (kind == SHFL_MULTI && p.form == SPF_HANDLE && !share_plan_multi_renders(c, site, v))
+      return p.need != SPN_OBJECT;
+    return p.form != SPF_REFUSE;
+  }
+  case SHFL_PARAM: case SHFL_MUTATE:
+    /* a block's parameter an iterator binds its receiver to, and a String
+       mutator's receiver, take the value as a taker does (a mutator's
+       receiver path renders the producers the handle face does but one
+       chain base: share_plan_recv_renders) */
+    if (kind == SHFL_MUTATE && !share_plan_recv_renders(c, site, v)) return 0;
+    return share_plan_of(c, v, SPR_TAKE, NULL).form != SPF_REFUSE;
   /* a lent parameter takes the address of a variable's slot (a
      parenthesized one's too; a local's write lends the local it writes);
      any other argument is lent a temporary copy (the binder's byref arm) */
@@ -23375,5 +23484,4 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
   }
   default: return 0;
   }
-  return strbuf_flow_value(c, fm, ctx, v, 0);
 }

@@ -204,7 +204,11 @@ typedef struct {
   signed char *yield_ok;   /* per method scope: its yields carry the handle
                               (1), do not (0), not asked yet (-1) */
 } StrbufFlowMemo;
-int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int v);
+int strbuf_flow_carries(Compiler *c, int kind, int site, int v);
+/* --share-strings: is element el of plain multiple write mw rendered through the handle face into a held temp? */
+int masgn_face_elem(Compiler *c, int mw, int el);
+/* ...the handle of a boxed receiver's call whose arms answer a String, or of a sequence ending in one */
+void emit_poly_arms_handle(Compiler *c, int base, Buf *b);
 int strbuf_call_picks_up(Compiler *c, int id);
 /* ...and does every method such a pickup call v reaches publish its handle
    (codegen_stmt.c)? */

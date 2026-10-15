@@ -8896,6 +8896,10 @@ int ran_first_read_handle(int node) {
 static int arg_temp_conversion(Compiler *c, int v, TyKind at) {
   if (at != TY_STRING) return 0;
   if (strbuf_poly_to_s(c, v) || strbuf_srange_tail(c, v) >= 0) return 1;
+  /* --share-strings: so does a boxed receiver's call whose arms answer a
+     String (or a sequence ending in one): the handle its box holds is
+     taken where the call runs */
+  if (repr_share_rule(c) && strbuf_poly_user_base(c, v) >= 0) return 1;
   /* So does a call result lifted into the handle for a boxed parameter: the
      handle its method publishes is taken where the call runs. */
   if (repr_share_rule(c) && c->poly_strbuf_lift[v] && strbuf_value_carries(c, v)) return 1;

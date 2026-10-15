@@ -5996,6 +5996,20 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         continue;
       TyKind vt = vk == NK_SplatNode ? TY_POLY_ARRAY : repr_of(c, v).as_ty;
       if (vt == TY_UNKNOWN) continue;
+      /* --share-strings: an element the String plan gives as the handle is
+         rendered through the handle face into a rooted handle temp, which the
+         write stores and whose String the value reads (ran_first_bind_read) */
+      if (i >= 0 && masgn_face_elem(c, id, v)) {
+        Buf hw; memset(&hw, 0, sizeof hw);
+        emit_str_form_handle(c, v, &hw);
+        int th = ++g_tmp;
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, hw.p ? hw.p : "NULL", th);
+        free(hw.p);
+        ran_first_bind_read(v, th);
+        held++;
+        continue;
+      }
       Buf vb; memset(&vb, 0, sizeof vb);
       emit_expr(c, v, &vb);
       emit_indent(g_pre, g_indent);
@@ -6009,7 +6023,11 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         buf_printf(g_pre, " _t%d = %s; ", t, vb.p ? vb.p : "");
         emit_gc_root_tmp(c, vt, t, g_pre);
         buf_puts(g_pre, "\n");
-        view_bind(v, "_t%d", t);
+        /* --share-strings: a handle held here is the one the value's Array
+           boxes (ran_first_handle), not its variable's, which the stores
+           may have rebound */
+        if (vt == TY_STRBUF && repr_share_rule(c)) ran_first_bind(v, t, t);
+        else view_bind(v, "_t%d", t);
       }
       free(vb.p);
       held++;

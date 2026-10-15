@@ -22702,8 +22702,13 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     }
     if (!bindable && unb < 0) unb = i;
     int fr = operand[i] != harg && operand[i] != recv && operand_fresh_str(c, operand[i]);
-    int bsh = operand[i] != harg && (operand_binds_self_handle(c, operand[i]) ||
-                                     operand_binds_boxed_to_s(c, id, operand[i]));
+    /* (a mutator's receiver that is a boxed receiver's call whose arms answer
+       a String, or a sequence ending in one, is bound as its box's handle:
+       strbuf_poly_user_base. An argument is read as its bytes) */
+    int bsh = operand[i] != harg &&
+              (operand_binds_self_handle(c, operand[i]) || operand_binds_boxed_to_s(c, id, operand[i]) ||
+               (operand[i] == recv && repr_share_rule(c) && comp_ntype(c, operand[i]) == TY_STRING &&
+                !arg_ran_first(operand[i], 0) && strbuf_poly_user_base(c, operand[i]) >= 0));
     int bfb = bsh || operand[i] == harg ? 0
             : operand_binds_face_box(c, operand[i]) ? 1
             : operand_binds_identity_box(c, id, operand[i]) || operand_binds_user_box(c, operand[i]) ? 2 : 0;

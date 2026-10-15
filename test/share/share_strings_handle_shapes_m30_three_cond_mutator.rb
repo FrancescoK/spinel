@@ -1,0 +1,8 @@
+# Under --share-strings the String stays one object under every name the
+# program gives it: a change through one name shows through the others, and
+# equal? holds.
+c = ARGV.size == 0
+s = +"abc"
+x, y, z = s, (c ? s : +"q"), s.upcase!
+y << "!"
+p s, x, y, z, y.equal?(s)

@@ -1248,10 +1248,6 @@ static void repr_flow_refuse(Compiler *c, int u, int kind) {
 static void repr_share_flows_check(Compiler *c, const char *stats) {
   int nf = share_flow_count(c);
   int bad = -1, bad_kind = 0;
-  StrbufFlowMemo fm;
-  fm.yield_ok = malloc((size_t)(c->nscopes > 0 ? c->nscopes : 1));
-  if (!fm.yield_ok) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  memset(fm.yield_ok, -1, (size_t)(c->nscopes > 0 ? c->nscopes : 1));
   for (int i = 0; i < nf; i++) {
     int site, v;
     int kind = share_flow_at(c, i, &site, &v);
@@ -1266,7 +1262,7 @@ static void repr_share_flows_check(Compiler *c, const char *stats) {
     /* a flow in an unreachable scope is never emitted (bad_lit's rule) */
     if (v < 0 || !comp_scope_of(c, v)->reachable || !repr_flow_checked(c, v)) continue;
     int u = unwrap_parens(c, v);
-    int ok = strbuf_flow_carries(c, &fm, kind, site, v);
+    int ok = strbuf_flow_carries(c, kind, site, v);
     if (stats && stats[0] == '2') {
       char rn[160];
       repr_flow_route_name(c, u, rn, sizeof rn);
@@ -1279,7 +1275,6 @@ static void repr_share_flows_check(Compiler *c, const char *stats) {
     if (!ok && collect_emit_anyway()) repr_flow_refuse(c, u, kind);
     else if (!ok && bad < 0) { bad = u; bad_kind = kind; }
   }
-  free(fm.yield_ok);
   if (bad >= 0) repr_flow_refuse(c, bad, bad_kind);
 }
 
