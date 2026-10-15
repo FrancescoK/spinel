@@ -1,4 +1,5 @@
 #include "codegen_internal.h"
+static void emit_ivar_lhs_otext(Compiler *c, int cid, int iv, const char *ivn, const char *lhs, const char *otext, Buf *b);
 static int emit_strbuf_boxed_store(Compiler *c, int v, Buf *b);
 #include "repr.h"
 #include "holder.h"
@@ -11531,6 +11532,20 @@ static int emit_strbuf_boxed_store(Compiler *c, int v, Buf *b) {
              t, strbuf_new_func(c, v), t);
   return 1;
 }
+/* An Integer or Float value with its nil (an sp_oint / sp_ofloat text) into
+   the ivar whose C lvalue is lhs: a field (`<obj>->iv_<name>`) takes the
+   value and keeps its nil bit in step; a class-level or top-level ivar is a
+   static of the oint type, which carries its own nil (#9289). */
+static void emit_ivar_lhs_otext(Compiler *c, int cid, int iv, const char *ivn, const char *lhs,
+                                const char *otext, Buf *b) {
+  const char *ic = iv_c(ivn[0] == '@' ? ivn + 1 : ivn);
+  size_t ivl = strlen(ic) + 3, ll = strlen(lhs);
+  int field = ll > ivl + 1 && strncmp(lhs + ll - ivl, "iv_", 3) == 0 &&
+              ((ll >= ivl + 2 && strncmp(lhs + ll - ivl - 2, "->", 2) == 0) || lhs[ll - ivl - 1] == '.');
+  if (!field) { buf_puts(b, otext); return; }
+  char ipfx[320]; snprintf(ipfx, sizeof ipfx, "%.*s", (int)(ll - ivl), lhs);
+  emit_ivar_text_nilbit(c, cid, iv, ipfx, otext, b);
+}
 int g_loop_polls_in_cond = 0;
 
 /* The test of a loop hc_bounded_index proved, against the cached length: the
@@ -14808,9 +14823,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
       /* the field's nil bit kept in step with the element's nil */
       Buf ot; memset(&ot, 0, sizeof ot);
       masgn_conv_o(c, c->classes[cid].ivar_types[ix], vt, val, &ot);
-      size_t pn = strlen(lhs) - strlen(iv_c(nm + 1)) - 3;
-      char ipfx[320]; snprintf(ipfx, sizeof ipfx, "%.*s", (int)pn, lhs);
-      emit_ivar_text_nilbit(c, cid, ix, ipfx, ot.p ? ot.p : "", b);
+      emit_ivar_lhs_otext(c, cid, ix, nm, lhs, ot.p ? ot.p : "", b);
       free(ot.p);
     }
     else {
@@ -15572,9 +15585,7 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
           char og[96];
           if (sp_streq(k, "Poly")) snprintf(og, sizeof og, "%s(%s)", oint_unbox(ivt), get_expr);
           else snprintf(og, sizeof og, "sp_%sArray_oget(_t%d, %dLL)", k, tarr, i);
-          size_t pn = strlen(iv_lhs) - strlen(iv_c(ivnm + 1)) - 3;
-          char ipfx[300]; snprintf(ipfx, sizeof ipfx, "%.*s", (int)pn, iv_lhs);
-          emit_ivar_text_nilbit(c, iv_home_cid, iv_rt, ipfx, og, b);
+          emit_ivar_lhs_otext(c, iv_home_cid, iv_rt, ivnm, iv_lhs, og, b);
         }
         /* a boxed field from a number array: past the end (or a nil
            element) is nil, boxed with it, as for a local */
@@ -15719,9 +15730,7 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
         else if ((sp_streq(k, "Int") || sp_streq(k, "Float")) && iv_rt2 >= 0 && ivar_has_nilbit(c, iv_home_cid, iv_rt2)) {
           /* the element with its nil into the field's nil bit */
           char og2[160]; snprintf(og2, sizeof og2, "sp_%sArray_oget(_t%d, _t%d)", k, tarr, tix);
-          size_t pn = strlen(iv_lhs) - strlen(iv_c(ivnm2 + 1)) - 3;
-          char ipfx[300]; snprintf(ipfx, sizeof ipfx, "%.*s", (int)pn, iv_lhs);
-          emit_ivar_text_nilbit(c, iv_home_cid, iv_rt2, ipfx, og2, b);
+          emit_ivar_lhs_otext(c, iv_home_cid, iv_rt2, ivnm2, iv_lhs, og2, b);
         }
         else if (sp_streq(k, "Int") || sp_streq(k, "Float")) buf_puts(b, get_expr2);
         else {
@@ -15813,9 +15822,8 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
            or refused for a plain field */
         if (ck && oint_kind(ivt) && ivar_has_nilbit(c, iv_home_cid, iv_rt)) {
           char og[200], ipfx[300]; snprintf(og, sizeof og, "%s(%s, \"%s\")", ck, get_expr, ivnm);
-          size_t pn = strlen(iv_lhs) - strlen(iv_c(ivnm + 1)) - 3;
-          snprintf(ipfx, sizeof ipfx, "%.*s", (int)pn, iv_lhs);
-          emit_ivar_text_nilbit(c, iv_home_cid, iv_rt, ipfx, og, b);
+          (void)ipfx;
+          emit_ivar_lhs_otext(c, iv_home_cid, iv_rt, ivnm, iv_lhs, og, b);
         }
         else if (ck && oint_kind(ivt)) buf_printf(b, "%s(%s(%s, \"%s\"))", oint_arg(ivt), ck, get_expr, ivnm);
         else if (ck) buf_printf(b, "%s(%s, \"%s\")", ck, get_expr, ivnm);
