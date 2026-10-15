@@ -1008,6 +1008,13 @@ int is_object_base_name(const char *n) {
   return sp_streq(n, "Object") || sp_streq(n, "BasicObject");
 }
 
+/* A class or module besides the builtin classes (is_builtin_reopen) whose
+   methods every builtin value may run: Object, BasicObject, Kernel,
+   Comparable, Enumerable, Module. */
+int is_builtin_method_host_name(const char *n) {
+  return is_object_root(n) || sp_streq(n, "Comparable") || sp_streq(n, "Enumerable") || sp_streq(n, "Module");
+}
+
 int is_queue_class_name(const char *n) {
   return sp_streq(n, "Queue") || sp_streq(n, "SizedQueue");
 }

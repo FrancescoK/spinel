@@ -2905,6 +2905,14 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     if (c->share_strings && sc && !sc->reachable) return -1;
     const char *lit = argc >= 1 ? sh_lit_name(nt, argv[0]) : NULL;
     sh_dyn_name(F, lit);
+    /* what an arm answers (desugar_dynamic_send's `recv.m(args)` for each
+       name the receiver can take) is what the send answers: the receiver's
+       String for `to_s`, `itself` or a bang, a field's for a reader, a
+       parameter's for a method handing it back. The answer is read after
+       the call, so it joins what the walk does not follow. */
+    int na = 0;
+    const int *arms = nt_arr(nt, n, "dyn_send_arms", &na);
+    for (int k = 0; k < na; k++) sh_union(F, sh_val(F, c, arms[k]), F->unknown);
     return sh_unknown_call(F, c, n, blk);
   }
   /* a C function the program binds (ffi_func, a package's native_func):

@@ -4690,6 +4690,77 @@ int desugar_dynamic_send(Compiler *c) {
   dsn_memo_free();
   return changed;
 }
+/* Is receiver recv one a dynamic send evaluates once into a local its arms
+   read (under --share-strings): code that runs, whose every value is a
+   String or an object some method of the program answers or a variable
+   holds, none of which is a typed container's miss? That miss is the
+   element type's own C nil (`h["zz"]` on a Hash of Strings is a NULL
+   pointer), which a receiver temp keeps the guards of and a local does not.
+   Answers 0 for a receiver that is only a variable, self, a constant or a
+   literal, which needs no local. *runs is set when code runs. */
+static int dsend_recv_local_ok(Compiler *c, const NodeTable *nt, int n, int *runs) {
+  if (n < 0) return 0;
+  switch (nt_kind(nt, n)) {
+  case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode: case NK_GlobalVariableReadNode:
+  case NK_ClassVariableReadNode: case NK_ConstantReadNode: case NK_ConstantPathNode: case NK_SelfNode:
+  case NK_IntegerNode: case NK_FloatNode: case NK_SymbolNode: case NK_StringNode: case NK_NilNode:
+  case NK_TrueNode: case NK_FalseNode:
+    return 1;
+  case NK_CallNode: {
+    const char *nm = nt_str(nt, n, "name");
+    *runs = 1;
+    return nm && comp_method_index(c, nm) >= 0;
+  }
+  case NK_ParenthesesNode: case NK_StatementsNode: {
+    int body = nt_kind(nt, n) == NK_ParenthesesNode ? nt_ref(nt, n, "body") : n;
+    if (body < 0) return 0;
+    if (nt_kind(nt, body) != NK_StatementsNode) return dsend_recv_local_ok(c, nt, body, runs);
+    int bn = 0;
+    const int *bv = nt_arr(nt, body, "body", &bn);
+    *runs = 1;
+    return bn > 0 && dsend_recv_local_ok(c, nt, bv[bn - 1], runs);
+  }
+  case NK_IfNode: case NK_UnlessNode: {
+    int els = nt_ref(nt, n, nt_kind(nt, n) == NK_IfNode ? "subsequent" : "else_clause");
+    int st = nt_ref(nt, n, "statements");
+    *runs = 1;
+    if (els < 0 || st < 0) return 0;
+    if (nt_kind(nt, els) == NK_ElseNode) els = nt_ref(nt, els, "statements");
+    return dsend_recv_local_ok(c, nt, st, runs) && dsend_recv_local_ok(c, nt, els, runs);
+  }
+  case NK_AndNode: case NK_OrNode:
+    *runs = 1;
+    return dsend_recv_local_ok(c, nt, nt_ref(nt, n, "left"), runs) && dsend_recv_local_ok(c, nt, nt_ref(nt, n, "right"), runs);
+  default:
+    return 0;
+  }
+}
+
+/* Can the name or an argument of a send (argv[0..argc)) change the variable
+   its receiver recv reads: a local one writes, an instance, class or
+   global variable one that runs code or writes it? The receiver is the
+   value it held when it was evaluated, ahead of them. */
+static int dsend_recv_rebound(Compiler *c, const NodeTable *nt, int recv, const int *argv, int argc) {
+  NodeKind k = nt_kind(nt, recv);
+  const char *nm = nt_str(nt, recv, "name");
+  if (!nm) return 0;
+  for (int i = 0; i < argc; i++) {
+    if (k == NK_LocalVariableReadNode) {
+      if (subtree_writes_local(c, argv[i], nm)) return 1;
+      /* ...or a proc that assigns it through its cell, which anything that
+         may run one calls */
+      if (subtree_may_run_proc(c, argv[i])) {
+        for (int n = 0; n < nt->count; n++)
+          if ((nt_kind(nt, n) == NK_LambdaNode || nt_kind(nt, n) == NK_BlockNode) && subtree_writes_local(c, n, nm)) return 1;
+      }
+    }
+    else if (k == NK_InstanceVariableReadNode || k == NK_ClassVariableReadNode || k == NK_GlobalVariableReadNode) {
+      if (subtree_may_reassign_state(c, argv[i])) return 1;
+    }
+  }
+  return 0;
+}
+
 static int desugar_dynamic_send_inner(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
@@ -4972,6 +5043,16 @@ static int desugar_dynamic_send_inner(Compiler *c) {
        forwarded `&blk` or the block written at the send (the arms are
        emitted one per branch, so one node serves them all) */
     int sblk = nt_ref(nt, id, "block");
+    /* (the type is asked ahead of the nodes this lowering makes) */
+    int drun = 0;
+    /* (an argument that splats code: the arm that answers the receiver is
+       lowered through the splat's statements and takes no route, which the
+       send answered a C error for; it keeps that) */
+    int dsplat = 0;
+    for (int k = 1; k < argc; k++)
+      if (nt_kind(nt, argv[k]) == NK_SplatNode && subtree_has_side_effect(c, argv[k])) dsplat = 1;
+    TyKind drt = c->share_strings && !dsplat && dsend_recv_local_ok(c, nt, recv, &drun) &&
+                 (drun || dsend_recv_rebound(c, nt, recv, argv, argc)) ? infer_type(c, recv) : TY_VOID;
     int base = nt->count;
     if (splat_src >= 0) {
       int r0 = nt_clone_subtree(nt, splat_src); if (r0 < 0) continue;
@@ -5020,8 +5101,15 @@ static int desugar_dynamic_send_inner(Compiler *c) {
       /* not for a builtin receiver's arms: another class's `empty?(x)` says
          nothing about String#empty? */
       if (splat_src < 0 && !rest_variadic && !builtin_recv && dsend_defined_arity_excludes(c, use[k], nrest)) continue;
-      int na = nt_new_node(nt, "ArgumentsNode"); if (na < 0) break;
-      if (nrest) nt_node_set_arr(nt, na, "arguments", rest, nrest);
+      /* (under --share-strings an arm with no argument has no arguments
+         node, as the literal call it stands for has none: the String
+         routes ask for the absence of one, and an empty node made a reader
+         arm no field read and `+@` no unary plus) */
+      int na = -1;
+      if (nrest || !c->share_strings) {
+        na = nt_new_node(nt, "ArgumentsNode"); if (na < 0) break;
+        if (nrest) nt_node_set_arr(nt, na, "arguments", rest, nrest);
+      }
       int call = nt_new_node(nt, "CallNode"); if (call < 0) break;
       nt_node_set_ref(nt, call, "receiver", recv);
       if (sblk >= 0) nt_node_set_ref(nt, call, "block", sblk);
@@ -5032,7 +5120,7 @@ static int desugar_dynamic_send_inner(Compiler *c) {
          unreachable and the send raises. Mark them as owned. */
       nt_node_set_int(nt, call, "dyn_arm", 1);
       nt_node_set_str(nt, call, "dyn_name", use[k]);
-      nt_node_set_ref(nt, call, "arguments", na);
+      if (na >= 0) nt_node_set_ref(nt, call, "arguments", na);
       if (computed && nt_ref(nt, id, "block") >= 0) nt_node_set_ref(nt, call, "block", nt_ref(nt, id, "block"));
       /* public_send arms enforce visibility at the dispatch site */
       if (sp_streq(nm, "public_send")) nt_node_set_str(nt, call, "vis_enforce", "1");
@@ -5040,6 +5128,32 @@ static int desugar_dynamic_send_inner(Compiler *c) {
       arms[narm++] = call;
     }
     nt_node_set_arr(nt, id, "dyn_send_arms", arms, narm);
+    /* --share-strings: a receiver that runs code (a call, a conditional, a
+       sequence) is evaluated once into a local the arms read, as `x = recv;
+       x.send(name)` has it: every arm then sees a variable's read, and the
+       String routes that take a variable's handle take it. The send's own
+       receiver becomes the sequence that sets the local, run ahead of the
+       name and the arguments. A receiver whose type is known not to be a
+       String or boxed takes none (its arms take no handle from it); one
+       not yet typed does. */
+    if (narm > 0 && (drt == TY_STRING || drt == TY_STRBUF || drt == TY_POLY || drt == TY_UNKNOWN)) {
+      char tname[64]; snprintf(tname, sizeof tname, "__dsr_%s", comp_node_tag(c, id));
+      int tw = nt_new_node(nt, "LocalVariableWriteNode"), tp = nt_new_node(nt, "LocalVariableReadNode");
+      int ta = nt_new_node(nt, "LocalVariableReadNode");
+      int st = nt_new_node(nt, "StatementsNode"), pr = nt_new_node(nt, "ParenthesesNode");
+      if (tw >= 0 && tp >= 0 && ta >= 0 && st >= 0 && pr >= 0) {
+        nt_node_set_str(nt, tw, "name", tname); nt_node_set_int(nt, tw, "depth", 0);
+        nt_node_set_ref(nt, tw, "value", recv);
+        nt_node_set_str(nt, tp, "name", tname); nt_node_set_int(nt, tp, "depth", 0);
+        nt_node_set_str(nt, ta, "name", tname); nt_node_set_int(nt, ta, "depth", 0);
+        { int two[2] = { tw, tp }; nt_node_set_arr(nt, st, "body", two, 2); }
+        nt_node_set_ref(nt, pr, "body", st);
+        nt_node_set_int(nt, pr, "dsr_recv", 1);
+        scope_local_intern(comp_scope_of(c, id), tname);
+        for (int k = 0; k < narm; k++) nt_node_set_ref(nt, arms[k], "receiver", ta);
+        nt_node_set_ref(nt, id, "receiver", pr);
+      }
+    }
     free(arms);
     if (computed) nt_node_set_int(nt, id, "dyn_send_complete", 1);
     for (int k = 0; k < nown; k++) free(own[k]);
