@@ -5227,6 +5227,10 @@ STR_CHAIN_LIMIT ?= 4.6
 # strbuf_bang_self_local asked each link once per path that reaches it,
 # exponential in the chain's length (25 links took more than ten minutes;
 # 40 take a fraction of a second once each link is answered once per query).
+# A chain of a hundred String appends, past the 64 links one emission
+# flattens, is compiled the same way: repr_of of each outer link asked
+# repr_of of the one below twice, so the compile doubled per link (more than
+# a minute at 65; a fraction of a second now).
 # Each count is taken only from a compile that succeeded (sw): spinel-work
 # prints its count from an atexit handler, also when the compile fails, so
 # reading it alone would accept the ratio of a program that did not build.
@@ -5255,6 +5259,8 @@ scale-test: $(SPINEL_WORK)
 	  { rm -rf "$$tmp"; echo "scale-test: FAIL (the hash-literal source walk revisited call sites along every path)"; exit 1; }; \
 	( ulimit -t 20; $(SPINEL_WORK) --share-strings -c -o "$$tmp/bch.c" test/share/bang_chain_held_receiver.rb ) >/dev/null 2>&1 || \
 	  { rm -rf "$$tmp"; echo "scale-test: FAIL (a bang chain over a held receiver was asked once per path to each link, see strbuf_bang_self_local)"; exit 1; }; \
+	( ulimit -t 20; $(SPINEL_WORK) --share-strings -c -o "$$tmp/acl.c" test/string_append_chain_long.rb ) >/dev/null 2>&1 || \
+	  { rm -rf "$$tmp"; echo "scale-test: FAIL (repr_of of a link of an append chain asked repr_of of the link below it twice, see repr_recv_boxed and strh_handle_call)"; exit 1; }; \
 	sh test/scale/str_chain.sh 100 > "$$tmp/k1.rb"; sh test/scale/str_chain.sh 400 > "$$tmp/k4.rb"; \
 	ka=$$(sw --emit-rbs -o "$$tmp/k1.rbs" "$$tmp/k1.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	kb=$$(sw --emit-rbs -o "$$tmp/k4.rbs" "$$tmp/k4.rb") || { rm -rf "$$tmp"; exit 1; }; \

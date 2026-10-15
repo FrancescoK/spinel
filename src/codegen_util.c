@@ -3696,7 +3696,11 @@ int strh_handle_call(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
   int recv = nt_ref(nt, v, "receiver");
-  int op = recv >= 0 ? strh_call_op(c, v, comp_recv_type(c, recv)) : STRH_NONE;
+  /* (comp_ntype, not comp_recv_type: that one only turns a String buffer
+     into a String or an empty literal into a Poly container, never into a
+     String Array of handles, and for a buffer it asks repr_of of the
+     receiver, which asks this of its own receiver, down a chain) */
+  int op = recv >= 0 ? strh_call_op(c, v, comp_ntype(c, recv)) : STRH_NONE;
   return op == STRH_ELEM || op == STRH_TAKE;
 }
 /* Is v an element read of a String Array of handles that reads like a
