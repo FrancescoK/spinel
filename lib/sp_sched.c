@@ -2427,7 +2427,9 @@ static void run_thread_once(sp_thread *t) { sp_gc_wb((void*)t);   /* PRE/POST: s
      this to enforce the timeslice. Nudge the monitor if it is idle so it starts
      ticking. */
   wslot_set_since(sp_worker_id, sp_monotonic_now());
-  SP_ATOMIC_STORE(&g_wslot[sp_worker_id].cur, t, __ATOMIC_RELEASE);
+  /* sequentially consistent, as is the read of g_sysmon_idle below: see the
+     monitor's untimed wait (sp_sysmon_main) for why the pair cannot both miss */
+  SP_ATOMIC_STORE(&g_wslot[sp_worker_id].cur, t, __ATOMIC_SEQ_CST);
   /* A monitor with nothing to time waits untimed: signal it under the lock its
      condvar uses, so it starts ticking. One in a timed wait comes round within
      a tick and sees this worker busy then; nudging it here as well cost every
@@ -3226,7 +3228,16 @@ static void *sp_sysmon_main(void *arg) {
       /* nothing to time or watch: sleep until a thread sleeps / waits on I/O /
          is picked up by a worker (a registrant signals g_sysmon_cv). */
       SP_ATOMIC_STORE(&g_sysmon_idle, 1, __ATOMIC_SEQ_CST);
-      pthread_cond_wait(&g_sysmon_cv, &g_sched_lock);
+      /* A worker starts a thread without the scheduler lock: it publishes the
+         thread in its slot and then reads this flag (run_thread_once), and
+         signals only if it reads 1. Here the flag goes up first and the slots
+         are read again after it, so of the two one sees the other: the worker
+         sees 1 and signals under the lock, which it can take only once this
+         wait has released it, or this sees the thread and does not wait. */
+      int started = 0;
+      for (int i = 0; i < sp_active_workers; i++)
+        if (g_wslot[i].active && SP_ATOMIC_LOAD(&g_wslot[i].cur, __ATOMIC_SEQ_CST)) { started = 1; break; }
+      if (!started) pthread_cond_wait(&g_sysmon_cv, &g_sched_lock);
       SP_ATOMIC_STORE(&g_sysmon_idle, 0, __ATOMIC_SEQ_CST);
     }
     else {
