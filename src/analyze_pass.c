@@ -6385,6 +6385,90 @@ static int widen_proc_call_args(Compiler *c, int lit, const char *pn, TyKind ele
 static int widen_proc_call_hash_args(Compiler *c, int lit, const char *pn, TyKind hk, TyKind hv) {
   return widen_proc_call_args_m(c, lit, pn, TY_UNKNOWN, 0, 1, hk, hv);
 }
+/* The calls that may run proc literal `lit`, as widen_proc_call_args_m
+   reads them: each a run of ints `u, ms, pj, n, cands[n]`, where ms is -1
+   for a call whose receiver carries the literal, else the method whose
+   parameter pj the receiver reads, and cands its candidate callers that pass
+   the literal somewhere. All of it is names and writes, no inferred type,
+   and the walk asked it for each literal at every visit, scanning every call
+   of the program: kept per literal until the table is edited. Whether a
+   candidate resolves to the method is a type question, asked at the visit. */
+static const NodeTable *pcs_nt;
+static unsigned pcs_ver;
+static int pcs_cnt, pcs_nsc, pcs_cap, *pcs_off, *pcs_pool, pcs_pn, pcs_pcap;
+static void pcs_push(int v) {
+  if (pcs_pn == pcs_pcap) {
+    pcs_pcap = pcs_pcap ? pcs_pcap * 2 : 1024;
+    pcs_pool = realloc(pcs_pool, sizeof(int) * (size_t)pcs_pcap);
+    if (!pcs_pool) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  pcs_pool[pcs_pn++] = v;
+}
+/* the entry for `lit`, copied out (the walk the caller runs may ask for
+   another literal, or edit the table); *n its length. The caller frees it. */
+static int *proc_call_sites(Compiler *c, int lit, int *n) {
+  const NodeTable *nt = c->nt;
+  *n = 0;
+  if (lit < 0 || lit >= nt->count) return NULL;
+  if (pcs_nt != nt || pcs_ver != nt->version || pcs_cnt != nt->count || pcs_nsc != c->nscopes) {
+    if (pcs_cap < nt->count) {
+      pcs_cap = nt->count * 2;
+      pcs_off = realloc(pcs_off, sizeof(int) * (size_t)pcs_cap);
+      if (!pcs_off) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    memset(pcs_off, -1, sizeof(int) * (size_t)nt->count);
+    pcs_pn = 0;
+    pcs_nt = nt; pcs_ver = nt->version; pcs_cnt = nt->count; pcs_nsc = c->nscopes;
+  }
+  if (pcs_off[lit] < 0) {
+    int at = pcs_pn;
+    pcs_push(0);
+    NT_FOREACH_KIND(nt, NK_CallNode, u) {
+      int r = nt_ref(nt, u, "receiver");
+      if (r < 0 || !proc_call_name(nt_str(nt, u, "name"))) continue;
+      if (proc_lit_carrier(c, r, lit)) {
+        pcs_push(u); pcs_push(-1); pcs_push(-1); pcs_push(0);
+        pcs_pool[at]++;
+        continue;
+      }
+      /* a method's parameter its callers hand the literal in */
+      if (nt_kind(nt, r) != NK_LocalVariableReadNode) continue;
+      const char *rnm = nt_str(nt, r, "name");
+      Scope *ms = comp_scope_of(c, r);
+      int pj = -1;
+      for (int i = 0; ms && ms->name && i < ms->nparams && pj < 0; i++)
+        if (ms->pnames[i] && sp_streq(ms->pnames[i], rnm)) pj = i;
+      if (pj < 0) continue;
+      pcs_push(u); pcs_push((int)(ms - c->scopes)); pcs_push(pj);
+      int nat = pcs_pn;
+      pcs_push(0);
+      /* the method's callers, among the calls that can name it, that pass
+         the literal somewhere: resolving every call of the program for
+         each `.call` on a parameter was most of a fixpoint round */
+      int nc2 = 0;
+      int *c2 = an_scope_call_candidates(c, ms, &nc2);
+      for (int i = 0; i < nc2; i++) {
+        int u2 = c2[i];
+        if (nt_kind(nt, u2) != NK_CallNode) continue;
+        int a2 = nt_ref(nt, u2, "arguments"), ac2 = 0;
+        const int *av2 = a2 >= 0 ? nt_arr(nt, a2, "arguments", &ac2) : NULL;
+        int passes = 0;
+        for (int q = 0; q < ac2 && !passes; q++) passes = proc_lit_carrier(c, av2[q], lit);
+        if (passes) { pcs_push(u2); pcs_pool[nat]++; }
+      }
+      free(c2);
+      pcs_pool[at]++;
+    }
+    pcs_off[lit] = at;
+  }
+  int at = pcs_off[lit], end = at + 1;
+  for (int r = 0; r < pcs_pool[at]; r++) end += 4 + pcs_pool[end + 3];
+  *n = end - at - 1;
+  int *cp = malloc(sizeof(int) * (size_t)(*n > 0 ? *n : 1));
+  if (!cp) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memcpy(cp, pcs_pool + at + 1, sizeof(int) * (size_t)*n);
+  return cp;
+}
 static int widen_proc_call_args_m(Compiler *c, int lit, const char *pn, TyKind elem, int depth,
                                   int hash, TyKind hk, TyKind hv) {
   const NodeTable *nt = c->nt;
@@ -6393,11 +6477,10 @@ static int widen_proc_call_args_m(Compiler *c, int lit, const char *pn, TyKind e
   int k = -1;
   for (int i = 0; i < rn && k < 0; i++) if (sp_streq(nt_str(nt, rq[i], "name"), pn)) k = i;
   if (k < 0 || depth > 6) return 0;
-  int ch = 0;
-  NT_FOREACH_KIND(nt, NK_CallNode, u) {
-    const char *un = nt_str(nt, u, "name");
-    int r = nt_ref(nt, u, "receiver");
-    if (r < 0 || !proc_call_name(un)) continue;
+  int ch = 0, ns = 0;
+  int *sites = proc_call_sites(c, lit, &ns);
+  for (int x = 0; x < ns; x += 4 + sites[x + 3]) {
+    int u = sites[x], msi = sites[x + 1], pj = sites[x + 2], nc2 = sites[x + 3];
     int a = nt_ref(nt, u, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
     if (k >= ac) continue;
@@ -6405,35 +6488,19 @@ static int widen_proc_call_args_m(Compiler *c, int lit, const char *pn, TyKind e
     for (int q = 0; q <= k && plain; q++)
       plain = nt_kind(nt, av[q]) != NK_SplatNode && nt_kind(nt, av[q]) != NK_KeywordHashNode;
     if (!plain) continue;
-    if (proc_lit_carrier(c, r, lit)) {
-      ch |= hash ? widen_hash_arg_for_store(c, av[k], hk, hv) : widen_boxed_array_sources(c, av[k], elem, depth + 1);
-      continue;
-    }
-    /* a method's parameter its callers hand the literal in */
-    if (nt_kind(nt, r) != NK_LocalVariableReadNode) continue;
-    const char *rnm = nt_str(nt, r, "name");
-    Scope *ms = comp_scope_of(c, r);
-    int pj = -1;
-    for (int i = 0; ms && ms->name && i < ms->nparams && pj < 0; i++)
-      if (ms->pnames[i] && sp_streq(ms->pnames[i], rnm)) pj = i;
-    if (pj < 0) continue;
-    /* the method's callers, among the calls that can name it: resolving
-       every call of the program, for each `.call` on a parameter at every
-       depth of the walk, was most of a fixpoint round on a large program */
-    int hands = 0, nc2 = 0;
-    int *c2 = an_scope_call_candidates(c, ms, &nc2);
+    int hands = msi < 0;
     for (int i = 0; i < nc2 && !hands; i++) {
-      int u2 = c2[i];
-      if (nt_kind(nt, u2) != NK_CallNode || backprop_call_target(c, u2) != (int)(ms - c->scopes)) continue;
+      int u2 = sites[x + 4 + i];
+      if (backprop_call_target(c, u2) != msi) continue;
       int a2 = nt_ref(nt, u2, "arguments"), ac2 = 0;
       const int *av2 = a2 >= 0 ? nt_arr(nt, a2, "arguments", &ac2) : NULL;
-      int arg = call_param_arg(c, ms, av2, ac2, pj);
+      int arg = call_param_arg(c, &c->scopes[msi], av2, ac2, pj);
       hands = arg >= 0 && proc_lit_carrier(c, arg, lit);
     }
-    free(c2);
     if (hands)
       ch |= hash ? widen_hash_arg_for_store(c, av[k], hk, hv) : widen_boxed_array_sources(c, av[k], elem, depth + 1);
   }
+  free(sites);
   return ch;
 }
 /* The walk follows every write of a local, to depth 6, and the writes of
