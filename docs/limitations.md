@@ -410,7 +410,8 @@ as in CRuby).
 
 `Socket::` constants (`SOL_SOCKET`, `SO_REUSEADDR`, `AF_INET`, `SOCK_DGRAM`,
 `SHUT_RDWR`, `TCP_NODELAY`, ...) resolve at run time from the system headers,
-so they carry the right platform-specific values.
+so they carry the right platform-specific values. `Socket.const_defined?(:X)`
+and `defined?(Socket::X)` ask the same table.
 
 **Class methods.** `Socket.gethostname`, `Socket.getaddrinfo`, `Socket.pair` /
 `.socketpair`, `Socket.new(domain, type, protocol)`,
