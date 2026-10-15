@@ -10390,6 +10390,8 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
                    sp_streq(nt_type(nt, frc), "ArrayNode");
     if (ty_is_array(frt) || frt == TY_RANGE || frt_open) {
       nt_node_set_str(nt, id, "name", "select");
+      /* a blockless one's Enumerator still says find_all */
+      if (nt_ref(nt, id, "block") < 0) nt_node_set_str(nt, id, "enum_label", "find_all");
       *changed = 1;
       return 1;
     }
