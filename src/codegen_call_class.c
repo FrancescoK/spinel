@@ -893,6 +893,11 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         return 1;
       }
       const char *cd_rnm = nt_str(nt, recv, "name");
+      /* Socket's constants are the system's: the run time asks its table */
+      if (cd_rnm && sp_streq(cd_rnm, "Socket") && sp_feature_required("socket")) {
+        buf_printf(b, "(sp_sock_const(\"%s\") >= 0)", qm);
+        return 1;
+      }
       int yes = const_defined_known(c, cd_rnm, qm);
       /* const_defined?(name, false) restricts the search to the receiver's own
          constants, so an inherited one does not count (#3762) */
@@ -3626,6 +3631,11 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           return 1;
         }
         const NodeKind rk0 = nt_kind(nt, recv);
+        if (rk0 == NK_ConstantReadNode && sp_streq(nt_str(nt, recv, "name"), "Socket") &&
+            sp_feature_required("socket")) {
+          buf_printf(b, "(sp_sock_const(\"%s\") >= 0)", cn0);
+          return 1;
+        }
         int yes = const_defined_known(c, rk0 == NK_ConstantReadNode || rk0 == NK_ConstantPathNode ? nt_str(nt, recv, "name") : NULL, cn0);
         buf_printf(b, "((void)("); emit_expr(c, recv, b);
         /* a constant not assigned yet is not defined: asked at run time */

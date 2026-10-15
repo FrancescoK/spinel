@@ -937,6 +937,17 @@ int is_local_time(const char *n) {
   return sp_streq(n, "localtime") || sp_streq(n, "getlocal");
 }
 
+/* The Socket constants sp_sock_const (lib/sp_io.c) answers on every
+   platform -- the entries of its table outside any #ifdef. The others are
+   the system's to define, so only the run time knows them. */
+int sock_const_always(const char *n) {
+  static const char *const names[] = {
+    "AF_INET", "AF_INET6", "AF_UNIX", "PF_INET", "PF_INET6", "PF_UNIX",
+    "SOCK_STREAM", "SOCK_DGRAM", "SHUT_RD", "SHUT_WR", "SHUT_RDWR", NULL
+  };
+  for (int i = 0; n && names[i]; i++) if (sp_streq(names[i], n)) return 1;
+  return 0;
+}
 int is_iso8601_alias(const char *n) {
   return sp_streq(n, "iso8601") || sp_streq(n, "xmlschema");
 }
