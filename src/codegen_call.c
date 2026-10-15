@@ -6092,6 +6092,7 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     int tv = ++g_tmp, tb = ++g_tmp;
     char bv[48];
     buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
+    if (comp_ntype(c, argv[0]) != TY_INT) buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d)", tv);
     emit_base_arg(c, argv[0], tb, bv, sizeof bv, b);
     buf_printf(b, "; _t%d.tag == SP_TAG_INT ? sp_int_to_s_base(_t%d.v.i, %s)"
                   " : _t%d.tag == SP_TAG_BIGINT ? sp_bigint_to_s_base(sp_poly_as_bigint(_t%d), %s)"
