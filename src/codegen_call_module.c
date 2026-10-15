@@ -488,6 +488,29 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         buf_printf(b, "sp_File *lv_%s = _t%d; ", frn, tf);
         emit_param_cell_publish(c, block, fp, b, 0);
       }
+      int wrap = ie_body_has_break_next(c, bbody);
+      const char *sv_nx = g_ie_next_var, *sv_brk = g_loop_break_var, *sv_ser = g_brk_ser_var;
+      int sv_poly = g_ie_res_poly, sv_oint = g_ie_next_oint;
+      TyKind sv_ty = g_ie_next_ty;
+      int sv_exc = g_loop_exc_base, sv_rescue = g_loop_rescue_base, sv_ensure = g_loop_ensure_base;
+      Buf *sv_pre = g_pre; int sv_indent = g_indent;
+      char result[32];
+      if (wrap) {
+        snprintf(result, sizeof result, "_t%d", rv);
+        if (scalar) {
+          emit_ctype(c, res, b); buf_printf(b, " %s = ", result);
+          buf_puts(b, res == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, res));
+          buf_puts(b, "; ");
+          emit_gc_root_tmp_refs(c, res, rv, b);
+        }
+        g_ie_next_var = g_loop_break_var = scalar ? result : NULL;
+        g_ie_res_poly = res == TY_POLY; g_ie_next_ty = res; g_ie_next_oint = 0;
+        g_brk_ser_var = NULL;
+        g_loop_exc_base = g_exc_frame_depth; g_loop_rescue_base = g_rescue_save_depth;
+        g_loop_ensure_base = g_ensure_depth;
+        g_pre = b; g_indent = 0;
+        buf_puts(b, "do { "); g_c_loop_depth++;
+      }
       for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);
       if (bn > 0) {
         TyKind lty = repr_of(c, bb[bn-1]).as_ty;
@@ -511,20 +534,28 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
           else emit_expr(c, bb[bn-1], &fval);
           g_pre = sv_fp; g_indent = sv_fi;
           if (fpre.p) buf_puts(b, fpre.p);
-          emit_ctype(c, res, b); buf_printf(b, " _t%d = ", rv);
+          if (!wrap) emit_ctype(c, res, b);
+          buf_printf(b, " _t%d = ", rv);
           buf_puts(b, fval.p ? fval.p : "0");
           buf_puts(b, "; ");
           free(fpre.p); free(fval.p);
         }
         else {
           emit_stmt(c, bb[bn-1], b, 0);
-          if (scalar) {
+          if (scalar && !wrap) {
             emit_ctype(c, res, b); buf_printf(b, " _t%d = ", rv);
             if (res == TY_POLY) buf_puts(b, "sp_box_nil()");
             else buf_puts(b, default_value_from_compiler(c, res));
             buf_puts(b, "; ");
           }
         }
+      }
+      if (wrap) {
+        buf_puts(b, "} while (0); "); g_c_loop_depth--;
+        g_ie_next_var = sv_nx; g_loop_break_var = sv_brk; g_brk_ser_var = sv_ser;
+        g_ie_res_poly = sv_poly; g_ie_next_ty = sv_ty; g_ie_next_oint = sv_oint;
+        g_loop_exc_base = sv_exc; g_loop_rescue_base = sv_rescue; g_loop_ensure_base = sv_ensure;
+        g_pre = sv_pre; g_indent = sv_indent;
       }
       buf_printf(b, "sp_File_close(_t%d); ", tf);
       /* The value of the whole statement-expression has to fit the slot the
