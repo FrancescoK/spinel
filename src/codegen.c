@@ -1606,6 +1606,20 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
 /* A shared-mutable String's box, by where its handle comes from
    (repr_of's strbuf_src). */
 static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, Buf *b) {
+  /* a block parameter every yield hands a new String (yb_param_fresh):
+     the element is a new handle over its bytes, which nothing else holds */
+  Scope *fys = nt_int(c->nt, node, "fresh_yield_box", 0) ? comp_scope_of(c, node) : NULL;
+  LocalVar *fyv = fys ? scope_local(fys, nt_str(c->nt, node, "name")) : NULL;
+  if (c->strbuf_box[node] && (t == TY_STRING || t == TY_STRBUF) && fyv && fyv->type == TY_STRING) {
+    char ref[1024];
+    Buf rb; memset(&rb, 0, sizeof rb);
+    emit_local_ref(c, node, nt_str(c->nt, node, "name"), &rb);
+    snprintf(ref, sizeof ref, "%s", rb.p ? rb.p : "NULL");
+    free(rb.p);
+    buf_printf(b, "(%s ? sp_box_nullable_obj(sp_String_new(%s), SP_BUILTIN_STRBUF) : sp_box_nil())", ref, ref);
+    RC(RF_STRBUF_HANDLE, RW_NONE);
+    return;
+  }
   /* a demanded `s.to_s` over a local holding the handle: the conversion
      answers s's String, so the box is s's handle (an_str_conversion_local) */
   if (c->strbuf_box[node]) {
