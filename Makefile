@@ -694,6 +694,11 @@ lib/libspinel_cext_rec.a: build/cext/recorder.o
 	$(AR) rcs $@ $<
 cext-recorder-test:
 	@CC="$(CC)" ruby test/cext/recorder-test.rb
+# The extension builder (`spin` with [cext.*] recipes, a gem's extconf.rb run
+# through the host CRuby): on demand, not a prerequisite of `make test`. It
+# needs a CRuby whose RbConfig flags the builder knows, and the gate stays
+# the weight it was. Run it when tools/cext-*.rb, tools/spin.rb or the
+# extension runtime changes.
 cext-build-test: bin/spin
 	@CC="$(CC)" ruby test/cext/build-test.rb
 	@CC="$(CC)" ruby test/cext/extconf-test.rb
@@ -1428,7 +1433,7 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 # `make test` always runs fresh: it wipes the prior `.ok` stamps first,
 # then runs the suite. (The old incremental `test` + `retest` split is
 # gone -- a stale `.ok` reading PASS was a recurring foot-gun.)
-test: lib/spinel_rt_responds_generated.h $(SPINEL_TIMEOUT) cext-header-test cext-gc-test cext-exceptions-test cext-recorder-test cext-compiler-test cext-threads-test cext-build-test
+test: lib/spinel_rt_responds_generated.h $(SPINEL_TIMEOUT) cext-header-test cext-gc-test cext-exceptions-test cext-recorder-test cext-compiler-test cext-threads-test
 	@if [ -z "$(TIMEOUT_BIN)" ]; then \
 	  echo "WARNING: no 'timeout'/'gtimeout' on PATH -- tests run with NO time limit."; \
 	  echo "         A hanging test will hang this run until the CI job's own limit."; \
