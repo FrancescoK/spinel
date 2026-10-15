@@ -1160,6 +1160,18 @@ static void cf_call(CF *f, int v) {
       cf_send_writers(f, v, r);
     return;
   }
+  /* an alias that captured a builtin (`alias old_dup dup`, #8914) calls the
+     builtin: not the method the class defines of the name after it, whose
+     answer is not the receiver */
+  if (nt_int(nt, v, "builtin_only", 0)) {
+    int recv_el = r;
+    if (r < 0) {
+      int ik = cf_inst_class(f, cf_scope_of(f, v));
+      recv_el = ik >= 0 && !cf_selfless_fn(nm) ? f->self_el[ik] : -1;
+    }
+    cf_builtin_rule(f, v, recv_el, argv, argc, blk, nm);
+    return;
+  }
   if (r < 0) {
     /* a call on self: the method of self's class, or of a subclass whose
        instance runs this code; else the top-level def; else Kernel's */
