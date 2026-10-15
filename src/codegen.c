@@ -12081,8 +12081,9 @@ static void emit_kconv_bridge(Compiler *c, Buf *b) {
          Numeric#coerce's beside a Float (a division by it) */
       else if (comp_method_in_chain(c, i, "to_f", NULL) < 0) {
         if (rows++ == 0) buf_printf(b, "    case %d: switch (which) {\n", i);
+        const char *rn = class_ruby_name(c, i);
         buf_printf(b, "      case 4: sp_raise_cls(\"TypeError\", \"can't convert %s into Float\"); return 0;\n",
-                   c->classes[i].name);
+                   rn ? rn : c->classes[i].name);
       }
     }
     if (kconv_row_wanted(c, 5)) emit_kconv_row(c, i, 5, &rows, b);

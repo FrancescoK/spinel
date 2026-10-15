@@ -6097,7 +6097,7 @@ static sp_Complex sp_complex_div_poly(sp_Complex a, sp_RbVal b) {
   if (b.tag == SP_TAG_INT) return sp_complex_div_int(a, b.v.i);
   if (b.tag == SP_TAG_FLT) return sp_complex_div_real(a, b.v.f);
   if (b.tag == SP_TAG_BIGINT || sp_poly_is_rat_kind(b)) {
-    if (sp_poly_is_rational(b) && ((sp_Rational *)b.v.p)->num == 0 &&
+    if (sp_poly_zero_p(b) &&
         (a.fl & (SP_CPLX_RE_F | SP_CPLX_IM_F)) != (SP_CPLX_RE_F | SP_CPLX_IM_F))
       sp_raise_cls("ZeroDivisionError", "divided by 0");
     sp_Complex c = sp_complex_div_real(a, sp_poly_to_f_with_rational(b));
