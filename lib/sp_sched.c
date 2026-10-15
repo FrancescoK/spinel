@@ -1603,7 +1603,7 @@ static sp_thread *wl_take_one(sp_thread **waitlist) {
   sp_thread *t = *waitlist;
   if (!t) return NULL;
   *waitlist = t->wait_next;
-  t->wait_next = NULL; t->wait_head = NULL; t->wait_lock = NULL;
+  t->wait_next = NULL; t->wait_head = NULL; SP_ATOMIC_STORE(&t->wait_lock, NULL, __ATOMIC_RELEASE);
   return t;
 }
 /* Make a waiter that is off its list runnable; no wait lock held. Main waits
@@ -2774,7 +2774,7 @@ static void sp_thread_await(sp_thread *t) {
   }
   SP_TH_SET_STATE(self, SP_TH_BLOCKED);
   self->wait_head = &t->joiners;
-  self->wait_lock = &t->join_wl;
+  SP_ATOMIC_STORE(&self->wait_lock, &t->join_wl, __ATOMIC_RELEASE);
   self->wait_next = NULL;
   { sp_thread **pp = &t->joiners; while (*pp) pp = &(*pp)->wait_next; *pp = self; }
   wl_unlock(&t->join_wl);
@@ -2796,7 +2796,7 @@ static void sp_thread_await(sp_thread *t) {
       sp_thread **pp = &t->joiners;
       while (*pp && *pp != self) pp = &(*pp)->wait_next;
       if (*pp) *pp = self->wait_next;
-      self->wait_next = NULL; self->wait_head = NULL; self->wait_lock = NULL;
+      self->wait_next = NULL; self->wait_head = NULL; SP_ATOMIC_STORE(&self->wait_lock, NULL, __ATOMIC_RELEASE);
     }
     wl_unlock(&t->join_wl);
     if (taken) { SCHED_LOCK(); sp_sched_pump(NULL, 1); SCHED_UNLOCK(); }
@@ -3868,7 +3868,7 @@ static void sp_sched_block(sp_thread **waitlist, int defer_inject) {   /* PRE/PO
      was 4 ms. The walk is O(waiters) under the scheduler lock, which is what
      one park already costs. */
   self->wait_head = waitlist;   /* so #kill/#raise can unlink it */
-  self->wait_lock = NULL;       /* this list is under the scheduler lock */
+  SP_ATOMIC_STORE(&self->wait_lock, NULL, __ATOMIC_RELEASE);       /* this list is under the scheduler lock */
   if (self->repark_front) {   /* a mutex waiter that lost the race after its wake: keep its turn */
     self->repark_front = 0;
     self->wait_next = *waitlist; *waitlist = self;
@@ -3926,7 +3926,7 @@ static void sp_sched_block_wl(sp_thread **waitlist, sp_wlock *wl, int defer_inje
   SP_TH_SET_STATE(self, SP_TH_BLOCKED);
   SP_ATOMIC_STORE(&self->park, SP_PK_PARKING, __ATOMIC_SEQ_CST);
   self->wait_head = waitlist;
-  self->wait_lock = wl;
+  SP_ATOMIC_STORE(&self->wait_lock, wl, __ATOMIC_RELEASE);
   if (self->repark_front) { self->repark_front = 0; self->wait_next = *waitlist; *waitlist = self; }
   else { self->wait_next = NULL; sp_thread **pp = waitlist; while (*pp) pp = &(*pp)->wait_next; *pp = self; }
   wl_unlock(wl);
@@ -3991,7 +3991,7 @@ static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mute
     return 1;
   }
   self->wait_head = waitlist;
-  self->wait_lock = wl;
+  SP_ATOMIC_STORE(&self->wait_lock, wl, __ATOMIC_RELEASE);
   if (self->repark_front) {
     self->repark_front = 0;
     self->wait_next = *waitlist;
@@ -4056,10 +4056,10 @@ static void sp_sched_unpark(sp_thread *t) {
      checked again once held. */
   sp_wlock *wl;
   for (;;) {
-    wl = t->wait_lock;
+    wl = SP_ATOMIC_LOAD(&t->wait_lock, __ATOMIC_ACQUIRE);
     if (!wl) break;
     wl_lock(wl);
-    if (t->wait_lock == wl) break;
+    if (SP_ATOMIC_LOAD(&t->wait_lock, __ATOMIC_ACQUIRE) == wl) break;
     wl_unlock(wl);
   }
   if (!t->wait_head) { if (wl) wl_unlock(wl); return; }
@@ -4075,7 +4075,7 @@ static void sp_sched_unpark(sp_thread *t) {
       if (*pp == t) { *pp = t->wait_next; break; }
   t->wait_next = NULL;
   t->wait_head = NULL;
-  t->wait_lock = NULL;
+  SP_ATOMIC_STORE(&t->wait_lock, NULL, __ATOMIC_RELEASE);
   if (wl) wl_unlock(wl);
 }
 
