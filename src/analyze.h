@@ -337,6 +337,7 @@ int loop_never_completes(Compiler *c, int node);
    value on break, so its result type widens to poly. */
 int call_breaks(Compiler *c, int id);
 int an_poly_str_upto(Compiler *c, int id);   /* a boxed upto a String receiver may take */
+int an_int_step_range_chain(Compiler *c, int id); /* a blockless times/upto/downto kept as its Range */
 /* Scope of an inline-able yielding user method a block-bearing CallNode
    resolves to (its literal block is spliced at yield sites), else -1. */
 int call_user_yield_mi(Compiler *c, int id);

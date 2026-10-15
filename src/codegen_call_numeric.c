@@ -132,15 +132,24 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       buf_printf(b, "sp_bigint_mul(%s, %s)", r, r); free(rs.p); return 1;   /* (#2424) */
     }
     /* Bignum#downto(hi)/#upto(hi) with no block: materialize the Bignum sequence
-       as a poly array (a Bignum range has no lazy Enumerator type) (#2305). */
+       as a poly array (a Bignum range has no lazy Enumerator type) (#2305),
+       and answer it as the call's Enumerator unless it is kept as the
+       array for the call on it (an_int_step_range_chain) */
     if ((is_bounded_int_step(name)) && argc == 1 &&
         nt_ref(nt, id, "block") < 0) {
       int up = sp_streq(name, "upto");
-      buf_printf(b, "sp_bigint_range_array(%s, ", r);
+      int en = comp_ntype(c, id) == TY_ENUMERATOR;
+      int tr = ++g_tmp, tl = ++g_tmp;
+      buf_printf(b, "({ sp_Bigint *_t%d = %s; SP_GC_ROOT(_t%d); sp_Bigint *_t%d = ", tr, r, tr, tl);
       Repr ar = repr_of(c, argv[0]);
       if (ar.big) emit_expr(c, argv[0], b);
       else { buf_puts(b, "sp_bigint_new_int("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-      buf_printf(b, ", %d)", up);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); ", tl);
+      if (en)
+        buf_printf(b, "sp_RbVal _t%d_l[1] = { sp_box_bigint(_t%d) }; SP_GC_ROOT_RBVAL(_t%d_l[0]); "
+                      "sp_enum_step_labeled(sp_Enumerator_new_from(sp_box_poly_array(sp_bigint_range_array(_t%d, _t%d, %d))), sp_box_bigint(_t%d), \"%s\", _t%d_l, 1); })",
+                   tl, tl, tl, tr, tl, up, tr, name, tl);
+      else buf_printf(b, "sp_bigint_range_array(_t%d, _t%d, %d); })", tr, tl, up);
       free(rs.p); return 1;
     }
     /* Integer query / reflection on a Bignum receiver (#2318) */
@@ -597,6 +606,47 @@ int emit_call_iter_expr_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     if (bound) view_unbind(g_n_argov - 1);
     return 1;
   }
+  /* ...and where the blockless form is not kept as its Range for the call
+     on it (an_int_step_range_chain), the Enumerator CRuby answers, over the
+     same Integers, with the receiver read once */
+  if (recv >= 0 && nt_ref(nt, id, "block") < 0 && comp_ntype(c, id) == TY_ENUMERATOR &&
+      (comp_ntype(c, recv) == TY_INT || comp_ntype(c, recv) == TY_POLY) &&
+      ((sp_streq(name, "times") && argc == 0) || (is_bounded_int_step(name) && argc == 1))) {
+    int tr = ++g_tmp;
+    buf_printf(b, "({ sp_int _t%d = ", tr);
+    if (sp_streq(name, "upto")) emit_upto_recv(c, recv, argv[0], b);
+    else emit_int_recv_named(c, recv, name, b);
+    buf_puts(b, "; ");
+    if (sp_streq(name, "times")) {
+      buf_printf(b, "sp_int_step_enum((sp_Range){ .first = 0, .last = _t%d, .excl = 1 }, _t%d, NULL, sp_box_nil()); })", tr, tr);
+      return 1;
+    }
+    int up = sp_streq(name, "upto");
+    int tl = ++g_tmp;
+    if (comp_ntype(c, argv[0]) == TY_FLOAT) {
+      /* a Float limit is not truncated: upto floors it, downto ceils it */
+      buf_printf(b, "sp_float _t%d = ", tl); emit_expr(c, argv[0], b);
+      if (up) buf_printf(b, "; sp_int_step_enum((sp_Range){ .first = _t%d, .last = sp_flt_range_bound(_t%d, 1), .excl = 0 }", tr, tl);
+      else buf_printf(b, "; sp_int_step_enum(sp_range_new_step(_t%d, sp_flt_range_bound(_t%d, 0), 0, -1LL)", tr, tl);
+      buf_printf(b, ", _t%d, \"%s\", sp_box_float(_t%d)); })", tr, name, tl);
+    }
+    else if (comp_ntype(c, argv[0]) == TY_POLY) {
+      /* a boxed limit is labeled as it is, and bounds the walk by its kind */
+      int tv = ++g_tmp;
+      buf_printf(b, "sp_RbVal _t%d = ", tv); emit_expr(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_int _t%d = sp_int_step_lim(_t%d, %d)", tv, tl, tv, up);
+      if (up) buf_printf(b, "; sp_int_step_enum((sp_Range){ .first = _t%d, .last = _t%d, .excl = 0 }", tr, tl);
+      else buf_printf(b, "; sp_int_step_enum(sp_range_new_step(_t%d, _t%d, 0, -1LL)", tr, tl);
+      buf_printf(b, ", _t%d, \"%s\", _t%d); })", tr, name, tv);
+    }
+    else {
+      buf_printf(b, "sp_int _t%d = ", tl); emit_int_expr(c, argv[0], b);
+      if (up) buf_printf(b, "; sp_int_step_enum((sp_Range){ .first = _t%d, .last = _t%d, .excl = 0 }", tr, tl);
+      else buf_printf(b, "; sp_int_step_enum(sp_range_new_step(_t%d, _t%d, 0, -1LL)", tr, tl);
+      buf_printf(b, ", _t%d, \"%s\", sp_box_int(_t%d)); })", tr, name, tl);
+    }
+    return 1;
+  }
   /* n.times / lo.upto(hi) / hi.downto(lo) without block: produce sp_Range for chaining */
   /* A boxed receiver (an Integer parameter under promote mode) is unboxed
      with the argument conversion, which is what the block forms do. */
@@ -613,6 +663,8 @@ int emit_call_iter_expr_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       buf_puts(b, "(sp_Range){ .first = "); emit_upto_recv(c, recv, argv[0], b);
       buf_puts(b, ", .last = ");
       if (lf) { buf_puts(b, "sp_flt_range_bound("); emit_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
+      /* a boxed one bounds it by its kind, a boxed Float as a Float */
+      else if (comp_ntype(c, argv[0]) == TY_POLY) { buf_puts(b, "sp_int_step_lim("); emit_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
       else emit_int_expr(c, argv[0], b);
       buf_puts(b, ", .excl = 0 }");
       return 1;
@@ -625,6 +677,8 @@ int emit_call_iter_expr_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       buf_puts(b, "sp_range_new_step("); emit_int_recv_named(c, recv, name, b);
       buf_puts(b, ", ");
       if (lf) { buf_puts(b, "sp_flt_range_bound("); emit_expr(c, argv[0], b); buf_puts(b, ", 0)"); }
+      /* a boxed one bounds it by its kind, a boxed Float as a Float */
+      else if (comp_ntype(c, argv[0]) == TY_POLY) { buf_puts(b, "sp_int_step_lim("); emit_expr(c, argv[0], b); buf_puts(b, ", 0)"); }
       else emit_int_expr(c, argv[0], b);
       buf_puts(b, ", 0, -1LL)");
       return 1;

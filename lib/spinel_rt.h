@@ -18236,6 +18236,63 @@ static sp_Enumerator *sp_poly_blockless_enum(sp_RbVal v, const char *m) {
   if (v.cls_id >= 0) return sp_Enumerator_new_from(sp_box_poly_array(sp_poly_to_a_arr_as(v, m, 0)));
   return sp_Enumerator_new_from(v);
 }
+/* Integer#times / #upto / #downto without a block: an Enumerator over the
+   Integers the counted Range `rng` walks, labeled as CRuby labels it, with
+   the receiver as its source and the call as its method:
+   #<Enumerator: 7:times>, #<Enumerator: 7:downto(1)>. `op` is "upto" or
+   "downto" with `lim` the limit as written, or NULL for times. */
+/* A long or endless count is walked as far as it is read, as CRuby walks
+   it, rather than laid out: `1.upto(Float::INFINITY)` and `(10**12).times`
+   (`left` < 0 is endless) */
+typedef struct { sp_int first; sp_int step; sp_int left; sp_int recv; } sp_int_step_cap;
+static void sp_int_step_gen(sp_Fiber *f) {
+  sp_int_step_cap *cap = (sp_int_step_cap *)f->user_data;
+  sp_int v = cap->first;
+  for (sp_int n = cap->left; n != 0; n--) { sp_Fiber_yield(sp_box_int(v)); v += cap->step; }
+  f->yielded_value = sp_box_int(cap->recv);   /* the walk answers the receiver */
+}
+#define SP_INT_STEP_ENUM_LAYOUT_MAX 65536
+/* A boxed limit of #upto (`up`) or #downto as the bound its walk stops at:
+   a Float floors or ceils, a Bignum is past every Integer the walk can reach */
+static sp_int sp_int_step_lim(sp_RbVal v, int up) {
+  if (v.tag == SP_TAG_INT) return v.v.i;
+  if (v.tag == SP_TAG_FLT) return sp_flt_range_bound(v.v.f, up);
+  if (v.tag == SP_TAG_BIGINT) return sp_bigint_sign(sp_poly_as_bigint(v)) > 0 ? INTPTR_MAX : INTPTR_MIN + 1;
+  sp_raise_cls("ArgumentError", sp_sprintf("comparison of Integer with %s failed", sp_poly_cmp_err_repr(v)));
+  return 0;
+}
+static sp_Enumerator *sp_int_step_enum(sp_Range rng, sp_int recv, const char *op, sp_RbVal lim) {
+  SP_GC_ROOT_RBVAL(lim);
+  sp_int st = rng.step ? rng.step : 1;
+  sp_bool endless = lim.tag == SP_TAG_FLT && isinf(lim.v.f) && (st > 0) == (lim.v.f > 0);
+  sp_int n = endless ? 0 : sp_range_count(rng);
+  sp_Enumerator *e;
+  if (endless || n > SP_INT_STEP_ENUM_LAYOUT_MAX) {
+    sp_int_step_cap *cap = (sp_int_step_cap *)sp_gc_alloc(sizeof *cap, NULL, NULL);
+    SP_GC_ROOT(cap);
+    cap->first = rng.first; cap->step = st; cap->left = endless ? -1 : n; cap->recv = recv;
+    e = sp_Enumerator_new_gen(sp_int_step_gen, cap, endless ? sp_box_float(INFINITY) : sp_box_int(n));
+  }
+  else e = sp_Enumerator_new_from(sp_box_range(rng));
+  SP_GC_ROOT(e);
+  sp_gc_wb((void *)e);
+  e->source = sp_box_int(recv); e->has_src = TRUE;
+  if (!op) e->meth = SPL("times");
+  else { const char *li = sp_poly_inspect(lim); e->meth = sp_sprintf("%s(%s)", op, li); }
+  return e;
+}
+/* A blockless #upto / #downto (`op`) over members laid out ahead (a String's
+   or a Bignum's), labeled as CRuby labels it: the receiver as its source and
+   the call with its arguments (`n` of `lims`): #<Enumerator: "a":upto("c")>,
+   #<Enumerator: "a":upto("c", true)> */
+static sp_Enumerator *sp_enum_step_labeled(sp_Enumerator *e, sp_RbVal src, const char *op, const sp_RbVal *lims, int n) {
+  SP_GC_ROOT(e); SP_GC_ROOT_RBVAL(src);
+  sp_gc_wb((void *)e);
+  e->source = src; e->has_src = TRUE;
+  const char *a = sp_poly_inspect(lims[0]);
+  e->meth = n == 2 ? sp_sprintf("%s(%s, %s)", op, a, sp_poly_inspect(lims[1])) : sp_sprintf("%s(%s)", op, a);
+  return e;
+}
 static sp_Enumerator *sp_Enumerator_new_from_rev(sp_RbVal arr) {
   SP_GC_ROOT_RBVAL(arr);   /* published into the enumerator below, after several allocations */
   sp_PolyArray *items = sp_enum_items_from(arr);
