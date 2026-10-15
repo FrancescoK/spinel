@@ -715,6 +715,12 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       *out = TY_POLY_ARRAY;
       return 1;
     }
+    /* a poly Array's blockless combination & co.: its tuples laid out only
+       where the call on them answers alike, else the Enumerator */
+    if (rt == TY_POLY_ARRAY && block < 0 && is_combination_family(name) &&
+        (argc == 1 || (argc == 0 && sp_streq(name, "permutation"))) &&
+        !an_blockless_tuples_kept(c, id))
+      { *out = TY_ENUMERATOR; return 1; }
     /* builtin-op rows (builtin_ops.c) */
     {
       const BuiltinOp *op = an_bop_find(c, id, BOP_ANY_ARRAY, name, argc, block >= 0);
@@ -1782,8 +1788,9 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     int has_blk = nt_ref(nt, id, "block") >= 0;
     if (!has_blk && argc == 0 && sp_streq(name, "minmax")) { *out = TY_POLY_ARRAY; return 1; }
     if (!has_blk && sp_streq(name, "product")) { *out = TY_POLY_ARRAY; return 1; }
+    /* the tuples laid out only where the call on them answers alike */
     if (!has_blk && is_combination_family(name))
-      { *out = TY_POLY_ARRAY; return 1; }
+      { *out = an_blockless_tuples_kept(c, id) ? TY_POLY_ARRAY : TY_ENUMERATOR; return 1; }
     /* the repeated pair's block form answers the receiver, which the
        re-dispatch hands back boxed */
     if (has_blk && argc == 1 &&

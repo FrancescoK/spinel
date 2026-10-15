@@ -1303,8 +1303,21 @@ int emit_op_array_combination(Compiler *c, const BopCtx *x, Buf *b) {
                          : sp_streq(name, "repeated_permutation") ? "sp_PolyArray_repeated_permutation"
                          : "sp_PolyArray_repeated_combination";
       int ta = ++g_tmp;
-      /* a poly-array receiver keeps materializing the tuples: an Enumerator
-         here would reach chain sites that read the array directly */
+      /* a poly-array receiver materializes the tuples where the call on them
+         answers alike (an_blockless_tuples_kept); elsewhere it answers the
+         Enumerator over them, labeled with the receiver and the call */
+      if (comp_ntype(c, id) == TY_ENUMERATOR) {
+        int tn = ++g_tmp, te = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_expr(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_int _t%d = ", ta, tn);
+        if (argc == 1) emit_int_expr(c, argv[0], b);
+        else buf_printf(b, "_t%d ? _t%d->len : 0", ta, ta);
+        buf_printf(b, "; sp_Enumerator *_t%d = sp_Enumerator_new_from(sp_box_poly_array(%s(_t%d, _t%d)));", te, combfn, ta, tn);
+        buf_printf(b, " SP_GC_ROOT(_t%d); sp_enum_with_src(_t%d, sp_box_poly_array(_t%d), ", te, te, ta);
+        emit_combinator_enum_label(name, argc, tn, b);
+        buf_puts(b, "); })");
+        return 1;
+      }
       buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_expr(c, recv, b);
       buf_printf(b, "; SP_GC_ROOT(_t%d); %s(_t%d, ", ta, combfn, ta);
       if (argc == 1) emit_int_expr(c, argv[0], b);
