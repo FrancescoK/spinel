@@ -2459,10 +2459,15 @@ static int emit_boxed_self_chain(Compiler *c, int node, Buf *b) {
      box and the freeze take that temp, never the variable read after the
      block ran. */
   int th = -1, mark = g_n_argov, sv_h = -1, bound = 0;
+  size_t pre_at = g_pre ? g_pre->len : 0, b_at = b->len;
   if (g_pre && strbuf_chain_has_block(c, node)) {
     th = ++g_tmp;
+    size_t at = g_pre->len;
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, sb.p ? sb.p : "NULL", th);
+    /* (the base's read held ahead of the statement is its handle, as
+       emit_bang_held_open declares the receiver reads it holds there) */
+    if (g_share_check) share_check_declare_reads(g_pre, at, base);
     /* (a block that assigns the variable: the chain runs over the held
        handle; a tap takes it as the handle, an each_char as its String) */
     if (strbuf_chain_rebinds_base(c, node, base)) {
@@ -2498,6 +2503,16 @@ static int emit_boxed_self_chain(Compiler *c, int node, Buf *b) {
   }
   if (frz) buf_printf(b, "; if (_t%d) sp_String_freeze(%s)", tb, slot);
   buf_printf(b, "; _t%d ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil(); })", tb, slot);
+  /* (the chain runs over the handle held ahead of its blocks: the reads
+     its links make of that handle, in the prelude and here, are no copy) */
+  if (g_share_check && bound) {
+    for (int n = unwrap_parens(c, node); n >= 0 && nt_kind(c->nt, n) == NK_CallNode; n = unwrap_parens(c, nt_ref(c->nt, n, "receiver"))) {
+      if (g_pre) share_check_declare_reads(g_pre, pre_at, n);
+      share_check_declare_reads(b, b_at, n);
+    }
+    if (g_pre) share_check_declare_reads(g_pre, pre_at, base);
+    share_check_declare_reads(b, b_at, base);
+  }
   free(sb.p);
   RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
   return 1;
