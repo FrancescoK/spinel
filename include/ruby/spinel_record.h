@@ -13,6 +13,7 @@
 extern VALUE rb_cObject, rb_cBasicObject, rb_cClass, rb_cModule;
 extern VALUE rb_cString, rb_cArray, rb_cHash, rb_cInteger, rb_cFloat, rb_cIO;
 VALUE rb_define_class(const char *, VALUE);
+VALUE rb_obj_alloc(VALUE);
 VALUE rb_define_class_under(VALUE, const char *, VALUE);
 VALUE rb_define_module(const char *);
 VALUE rb_define_module_under(VALUE, const char *);

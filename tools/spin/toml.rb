@@ -154,4 +154,12 @@ class TomlDoc
     return [] if joined == ""
     joined.split("\n")
   end
+
+  def tables(prefix)
+    names = []
+    @keys.each_key do |table|
+      names.push(table) if table.start_with?(prefix + ".")
+    end
+    names.sort
+  end
 end

@@ -3,6 +3,7 @@
 # design record: docs/internals/spin.md.
 
 require_relative "spin/toml"
+require "tmpdir"
 require "spin_version"   # build/spin_version.rb: the release and revision this spin was built from
 
 $spin_hasher = ""   # memoized content-hasher command (native_hasher)
@@ -488,13 +489,19 @@ def native_sources(dir, excl)
     end
     $spin_empty_source_glob += g + "\n" if hits == 0
   end
+  extension_sources = ""
+  toml.tables("cext").each do |table|
+    toml.get_array(table, "sources").split("\n").each do |pattern|
+      Dir.glob(File.expand_path(pattern, dir)).each { |path| extension_sources += path + "\n" }
+    end
+  end
   # Everything else in the tree is named rather than dropped in silence. The
   # banner check runs here too: an emitted file needs its own message whether or
   # not a glob happened to reach it, because it may be sitting on top of the
   # source it overwrote and "not declared" would be the wrong thing to say.
   collect_c(dir, excl).split("\n").each do |c|
     next if c == ""
-    next if path_in_list?(c, out) || path_in_list?(c, $spin_emitted_c)
+    next if path_in_list?(c, out) || path_in_list?(c, extension_sources) || path_in_list?(c, $spin_emitted_c)
     if spinel_emitted_c?(c)
       $spin_emitted_c += c + "\n"
     else
@@ -590,11 +597,38 @@ def native_objs_for(name, dir, version)
     $stderr.puts "spin: " + name + ": [package] sources entry \"" + g + "\" matched no .c file."
   end
   return [] if cs == ""
+  package_flags = ""
+  manifest = File.join(dir,"spin.toml")
+  if File.file?(manifest)
+    native_doc = TomlDoc.parse(File.read(manifest))
+    native_doc.get_array("native","pkg_config").split("\n").each do |library|
+      next if library == ""
+      spin_die("invalid native pkg-config name: " + library) unless library_name?(library)
+      Dir.mktmpdir("spin-native-flags-") do |scratch|
+        output = File.join(scratch,"flags")
+        found = false
+        begin
+          pid = Process.spawn("pkg-config","--cflags",library,out:output,err:File::NULL)
+          _, status = Process.waitpid2(pid)
+          found = status.success?
+        rescue SystemCallError
+          found = false
+        end
+        if found
+          pkg_config_words(File.read(output)).each { |flag| package_flags += " " + sh_single_quote(flag) }
+        else
+          $stderr.puts "spin: " + name + ": pkg-config has no " + library + "; compiling without its flags"
+        end
+      end
+    end
+  end
   # The cache key names a DIRECTORY, so the compiler part of it has to be
   # spellable as one. A CC of "sccache gcc" or "ccache cc" -- what CI and most
   # developer setups use -- put a space in the path, and the unquoted -o
   # argument below then split into two words at it.
   odir = native_cache_dir(name + "-" + version + "-" + cc_cache_key)
+  flags_file = File.join(odir,"pkg-config.flags")
+  flags_changed = !File.file?(flags_file) || File.read(flags_file) != package_flags
   hdr = spinel_hdr_dir
   hnew = newest_native_input(dir, 0, excl)
   cs.split("\n").each do |c|
@@ -629,8 +663,8 @@ def native_objs_for(name, dir, version)
     [["", ""], ["_mt", " -DSP_THREADS -ftls-model=initial-exec"]].each do |suffix, flags|
       o = File.join(odir, base + suffix + ".o")
       mkdir_p_path(File.dirname(o)) if rel.include?("/")
-      if !File.exist?(o) || File.mtime(o).to_i < hnew || ENV["SPIN_NO_NATIVE_CACHE"].to_s != ""
-        cmd = native_cc + " -O2" + flags + " -c '#{c}' -I '#{dir}'"
+      if flags_changed || !File.exist?(o) || File.mtime(o).to_i < hnew || ENV["SPIN_NO_NATIVE_CACHE"].to_s != ""
+        cmd = native_cc + " -O2" + flags + package_flags + " -c '#{c}' -I '#{dir}'"
         cmd += " -I '#{hdr}'" if hdr != ""
         cmd += " -o '#{o}'"
         spin_die("native compile failed: " + rel + " (" + name + ")") unless run_command(cmd)
@@ -652,6 +686,7 @@ def native_objs_for(name, dir, version)
       objs.push(o) if suffix == ""
     end
   end
+  File.write(flags_file,package_flags)
   objs
 end
 
@@ -772,7 +807,7 @@ end
 # Entries gated on `features` run only when every named feature is in the
 # package's own `[features] default` set (consumer-side enablement is a
 # later slice); a lib entry whose artifact was feature-skipped is dropped.
-def native_build_libs_for(name, dir, version, consumer_feats)
+def native_build_libs_for(name, dir, version, consumer_feats, output_dirs = nil)
   mf = File.join(dir, "spin.toml")
   return "" unless File.exist?(mf)
   toml = TomlDoc.parse(File.read(mf))
@@ -814,6 +849,7 @@ def native_build_libs_for(name, dir, version, consumer_feats)
   key = native_hash_pipe("cat " + keyf)[0..15]
   File.delete(keyf)
   out = native_out_dir(name, version, key)
+  output_dirs << out if output_dirs
 
   i = 0
   while i < n
@@ -1264,6 +1300,46 @@ class Project
     libs
   end
 
+  # The helper is self-hosted, so an explicit extension recipe needs no
+  # host CRuby. Only projects declaring extensions execute a recorder.
+  def cext_flags
+    return @cext_flags if @cext_flags != nil
+    flags = ""
+    @dep_srcs.split("\n").each do |record|
+      fields = record.split("\t")
+      manifest = File.join(fields[1], "spin.toml")
+      doc = File.file?(manifest) ? TomlDoc.parse(File.read(manifest)) : TomlDoc.new
+      next if doc.tables("cext").empty? && Dir.glob(File.join(fields[1], "ext/**/extconf.rb")).empty?
+      compiler = spinel_bin
+      compiler = which(compiler) unless compiler.include?("/")
+      helper = File.join(File.dirname(compiler), "spinel-cext-build")
+      spin_die("C extension builder is missing: " + helper) unless File.executable?(helper)
+      cache = native_cache_dir("cext-" + fields[0] + "-" + fields[2])
+      output_dirs = []
+      native_build_libs_for(fields[0],fields[1],fields[2],@dep_features[fields[0]] || "", output_dirs)
+      build_output = output_dirs.empty? ? "" : output_dirs[0]
+      Dir.mktmpdir("spin-cext-") do |scratch|
+        output = File.join(scratch, "flags")
+        pid = Process.spawn({"SPIN_CEXT_BUILD_OUT" => build_output}, helper, "--flags", fields[1], cache, native_cc, out: output)
+        _, status = Process.waitpid2(pid)
+        spin_die("C extension build failed: " + fields[0]) unless status.success?
+        File.read(output).split("\n").each do |line|
+          pair = line.split("\t", 2)
+          spin_die("invalid C extension build output") unless pair.length == 2
+          if pair[0] == "include"
+            flags += " -I " + sh_single_quote(pair[1])
+          elsif pair[0] == "link"
+            flags += " --link " + sh_single_quote(pair[1])
+          else
+            spin_die("invalid C extension build output: " + pair[0])
+          end
+        end
+      end
+    end
+    @cext_flags = flags
+    flags
+  end
+
   def dep_records
     @dep_records
   end
@@ -1320,7 +1396,7 @@ def toolchain_deps
   dir = File.expand_path("..", sb)
   rt = File.join(dir, "lib")
   rt = File.expand_path("../lib", dir) unless File.file?(File.join(rt, "libspinel_rt.a"))
-  ["libspinel_rt.a", "libspinel_rt_mt.a"].each do |name|
+  ["libspinel_rt.a", "libspinel_rt_mt.a", "libspinel_cext_rt.a", "libspinel_cext_rt_mt.a"].each do |name|
     path = File.join(rt, name)
     deps << path if File.file?(path)
   end
@@ -1372,6 +1448,7 @@ def spin_flags(prj)
   end
   # Reading these compiles any carried C and runs any declared native build
   # that is not already cached, which is what makes the --link paths real.
+  f += prj.cext_flags
   prj.native_objs.each { |o| f += " --link #{o}" }
   prj.native_build_libs.split("\n").each { |l| f += " --link #{l}" if l != "" }
   # The allocator the manifest asked for, as an ordinary link input. Declared

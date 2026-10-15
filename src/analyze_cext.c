@@ -117,7 +117,14 @@ void desugar_cext_decls(Compiler *c) {
       buf_printf(&b, "__cext_init(%d)", ext);
     } else {
       if (ext < 0) unsupported_feature(c, site, "C extension declaration precedes its manifest header");
-      if (sp_streq(name, "__cext_class") || sp_streq(name, "__cext_module")) {
+      if (sp_streq(name, "__cext_reference")) {
+        need(c, site, ac, 1);
+        const char *cn=text(c,site,av[0]);path(c,site,cn);
+        int q=c->n_cext_classes++;
+        c->cext_classes=realloc(c->cext_classes,sizeof(CextClass)*(size_t)c->n_cext_classes);
+        c->cext_classes[q]=(CextClass){strdup(cn),0,-1,-1};
+        buf_printf(&b,"%s\n",cn);
+      } else if (sp_streq(name, "__cext_class") || sp_streq(name, "__cext_module")) {
         int mod = sp_streq(name, "__cext_module"); need(c, site, ac, mod ? 1 : 2);
         const char *cn = text(c, site, av[0]); path(c, site, cn);
         const char *parent = mod ? NULL : text(c, site, av[1]); if (parent) path(c, site, parent);
@@ -304,7 +311,7 @@ static void lower_constant_stub(Compiler *c, int mi) {
   for (int k = 0; k < c->nclasses; k++) {
     const char *cn = class_ruby_name(c, k);
     if (!cn) continue;
-    buf_printf(&body, "%s r == %s\n__cext_box(%s.const_get(", opened++ ? "elsif" : "if", cn, cn);
+    buf_printf(&body, "%s r == __cext_class_key(\"%s\")\n__cext_box(%s.const_get(", opened++ ? "elsif" : "if", cn, cn);
     symbol(&body, key); buf_puts(&body, "))\n");
   }
   static const char *const core[] = {"Object", "BasicObject", "Class", "Module", "String", "Array", "Hash", "Integer", "Float", "IO", NULL};
@@ -342,7 +349,7 @@ static void lower_constant_stub(Compiler *c, int mi) {
       builtin_constant_read(c, id, mi);
     }
     if (nt_kind(c->nt, id) == NK_CallNode && nt_str(c->nt, id, "name") &&
-        sp_streq(nt_str(c->nt, id, "name"), "__cext_box"))
+        (sp_streq(nt_str(c->nt, id, "name"), "__cext_box") || sp_streq(nt_str(c->nt, id, "name"), "__cext_class_key")))
       nt_node_set_int((NodeTable *)c->nt, id, "cext_synthetic", 1);
   }
 }

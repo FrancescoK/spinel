@@ -7,7 +7,7 @@ ENV["SPINEL_CEXT_STAGE6_ENV"] = "from literal eval"
 ROOT = File.expand_path('../..', __dir__)
 def command(*args, env: {}, chdir: ROOT)
   out, err, status = Open3.capture3(env, *args, chdir: chdir)
-  raise "#{args.join(' ')}\n#{out}#{err}" unless status.success?
+  raise "#{args.join(' ')} (#{status})\n#{out}#{err}" unless status.success?
   out
 end
 Dir.mktmpdir('spinel-cext-send-') do |tmp|

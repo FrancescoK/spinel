@@ -1,11 +1,19 @@
 #include "sp_cext.h"
 #include <pthread.h>
 #include <assert.h>
+#include <ruby.h>
+#include <stdlib.h>
 /* This unit tests CXL without booting the scheduler. Scheduler/GC integration
  * is exercised separately by compiled Ruby extension tests. */
 void sp_native_enter(void) {}
 void sp_native_leave(void) {}
-int sp_cext_native_register(void (*f)(void *), void *p) { (void)f; (void)p; return 1; }
+int sp_cext_native_register(void (*f)(void *), void *p, int repeat) { (void)f; (void)p; (void)repeat; return 1; }
+/* I/O and Ruby error paths belong to the integration fixture. */
+VALUE rb_eArgError, rb_eNoMemError, rb_eRuntimeError;
+void rb_raise(VALUE klass, const char *format, ...) { (void)klass; (void)format; abort(); }
+void *sp_cext_allocv(VALUE *handle, size_t size, size_t count) {
+    (void)handle; (void)size; (void)count; abort();
+}
 void sp_cext_native_unregister(void) {}
 void sp_fiber_fire_inject_if_pending(void) {}
 static int total;

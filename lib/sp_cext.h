@@ -4,6 +4,9 @@
 #include "sp_gc.h"
 #include "sp_alloc.h"
 #include "sp_proc.h"
+sp_RbVal sp_cext_hash_new(void);
+sp_RbVal sp_cext_plain_object_new(void);
+void sp_cext_hash_set(sp_RbVal, sp_RbVal, sp_RbVal);
 
 /* Internal bridge. The compiler/recorder will use this only for opted-in
  * extensions; an ordinary generated translation unit never includes it. */

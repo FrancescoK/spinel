@@ -314,7 +314,7 @@ static int poly_user_arm0_decide(Compiler *c, int id, const char *name, int argc
    the deep-return pickup, so an earlier publication cannot replace them.
    A fresh result a builtin only reads, or the caller drops, keeps no alias. */
 void emit_poly_user_box(Compiler *c, int id, Scope *m, const char *call, Buf *b) {
-  if (!repr_share_rule(c) || m->ret != TY_STRING ||
+  if ((!repr_share_rule(c) && !c->n_cext_extensions) || m->ret != TY_STRING ||
       (!m->ret_handle && !(m->ret_fresh && share_node_shares(c, id) && !share_node_transient(c, id)))) {
     emit_boxed_ret_call(c, m, call, b);   /* an oint return boxes with its nil */
     return;
@@ -1394,6 +1394,12 @@ int emit_poly_user_arm_n(Compiler *c, int id, int k, const char *call, TyKind mr
   else {
     buf_printf(b, "_t%d = ", tr);
     if (ret == TY_POLY && mret != TY_POLY) { emit_poly_user_box(c, id, ms, call, b); conv = PC_BOX; }
+    else if (c->n_cext_extensions && ret == TY_STRBUF && mret == TY_STRING) {
+      int temp = ++g_tmp;
+      buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = %s; !_v%d ? NULL : ", temp, call, temp);
+      if (ms && ms->ret_handle) buf_puts(b, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : ");
+      buf_printf(b, "sp_String_new_shared(_v%d); })", temp);
+    }
     else if (ret != TY_POLY && mret == TY_POLY) {
       plan_put_boxed(c, so, is_scalar_ret(ret) ? ret : TY_INT, call, b);
       conv = PC_UNBOX;

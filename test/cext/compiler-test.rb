@@ -26,13 +26,17 @@ Dir.mktmpdir('spinel-cext-compiler-') do |tmp|
   build_recipe = command(File.join(ROOT, 'bin/spinel'), File.join(tmp, 'program.rb'), '--print-build', '--link', File.join(tmp, 'sample.a'), '-o', exe)
   raise 'print-build omitted the extension headers' unless build_recipe.lines.any? { |line| line.start_with?('include ') && File.expand_path(line.delete_prefix('include ').strip) == File.join(ROOT, 'include') }
   refusal_source = File.join(tmp, 'runtime-refusal.rb')
-  File.write(refusal_source, "require_relative 'sample'; CextBox.new; Thread.new { 1 }.join\n")
+  File.write(refusal_source, "class CextRubyOwner; class Failure < StandardError; end; end; require_relative 'sample'; CextBox.new; Thread.new { 1 }.join\n")
   scratch = File.join(tmp, 'driver-tmp'); FileUtils.mkdir_p(scratch)
   sdk = File.join(tmp, 'wasi-sdk'); FileUtils.mkdir_p(File.join(sdk, 'bin'))
   File.write(File.join(sdk, 'bin', 'clang'), '')
   out, err, status = Open3.capture3({'TMPDIR' => scratch, 'WASI_SDK' => sdk}, File.join(ROOT, 'bin/spinel'), refusal_source, '--target=wasm32-wasi', '-o', exe + '-refused')
   raise "missing runtime refusal: #{out}#{err}" if status.success? || !err.include?('native exception runtime')
   raise 'runtime refusal leaked generated C' unless Dir[File.join(scratch, 'spinel_out_*')].empty?
+  missing_reference = File.join(tmp, 'missing-reference.rb')
+  File.write(missing_reference, "require_relative 'sample'; CextBox.new\n")
+  out, err, status = Open3.capture3(File.join(ROOT, 'bin/spinel'), '-c', missing_reference, '-o', File.join(tmp, 'missing-reference.c'))
+  raise "missing external class reference accepted: #{out}#{err}" if status.success? || !err.include?('C extension class was not registered')
   actual = command(exe)
   command(File.join(ROOT, 'bin/spinel'), File.join(tmp, 'program.rb'), '--share-strings', '--link', File.join(tmp, 'sample.a'), '-o', exe + '-shared')
   shared = command(exe + '-shared')

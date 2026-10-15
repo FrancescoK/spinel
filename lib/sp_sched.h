@@ -40,6 +40,7 @@ typedef struct sp_thread {
 #ifdef SP_CEXT
   void (*cext_unblock)(void *);
   void *cext_unblock_data;
+  int cext_repeat_unblock;
 #endif
   sp_Fiber         *fiber;       /* the green thread's coroutine; NULL for the main thread (root) */
   sp_Fiber         *at;          /* the Fiber it resumed and stopped inside, or NULL when it
@@ -224,7 +225,7 @@ void sp_safepoint(void);
 #ifdef SP_THREADS
 void sp_native_enter(void);
 #ifdef SP_CEXT
-int sp_cext_native_register(void (*)(void *), void *);
+int sp_cext_native_register(void (*)(void *), void *, int);
 void sp_cext_native_unregister(void);
 #endif
 void sp_native_leave(void);

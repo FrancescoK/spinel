@@ -1,9 +1,73 @@
 # frozen_string_literal: true
+class CextRubyOwner
+  class Failure < StandardError
+  end
+end
 require_relative 'sample'
 class CextBox
   attr_accessor :ruby_value
 end
 box = CextBox.new
+raise 'external Ruby superclass was lost' unless CextRubyFailure.superclass == CextRubyOwner::Failure
+class CextReplyBuffer
+  def initialize(value)
+    @value = value
+  end
+  def read
+    @value
+  end
+end
+def cext_frozen_reply(buffer)
+  value = buffer.read
+  value.freeze
+  value
+end
+reply = 'reply'.dup
+box.store(cext_frozen_reply(CextReplyBuffer.new(reply)))
+GC.start
+raise 'C boundary lost returned String identity' unless box.get.equal?(reply)
+raise 'C boundary lost returned String freeze' unless box.get.frozen?
+sentinel = box.sentinel
+raise 'C plain Object allocation' unless sentinel.class == Object
+GC.start
+raise 'C registered Object identity' unless sentinel.equal?(box.sentinel)
+begin
+  box.external_error
+  raise 'C external class reference failed'
+rescue CextRubyOwner::Failure => error
+  raise 'C external error message' unless error.message == 'external Ruby error'
+end
+raise 'C array operations' unless box.array_operations == 9
+raise 'C integer conversion' unless box.number_operations(-7) == -7
+raise 'C float conversion' unless box.number_operations(1.75) == 1
+raise 'C large integer' unless box.large_integer == 9223372036854775807
+raise 'C floating number' unless box.floating_number == 1.25
+native_hash = box.hash_operations
+raise 'C hash string key' unless native_hash['answer'] == 9
+raise 'C hash integer key' unless native_hash[3] == 'three'
+raise 'C hash overwrite' unless native_hash.size == 2
+raise 'C string type check' unless box.check_string('hello') == 'hello'
+raise 'C UTF-8 response' unless box.response_string("żółw").encoding == Encoding::UTF_8
+raise 'C binary response' unless box.response_string("\xff".b).encoding == Encoding::ASCII_8BIT
+raise 'C response embedded NUL' unless box.response_string("a\x00b").bytesize == 3
+raise 'C temporary buffer across GC' unless box.temporary_buffer == 31
+raise 'C dynamic fdset and timeout' unless box.fdset_operations
+raise 'C response invalid UTF-8 after NUL' unless box.response_string("a\x00\xff".b).encoding == Encoding::ASCII_8BIT
+begin
+  box.c_string("a\x00b")
+  raise 'C string accepted embedded NUL'
+rescue ArgumentError
+end
+begin
+  box.check_string(7)
+  raise 'C string type check accepted integer'
+rescue TypeError
+end
+begin
+  box.number_operations(2147483648)
+  raise 'C numeric overflow accepted'
+rescue RangeError
+end
 box.store(42)
 box.ruby_value = 7
 p box.get

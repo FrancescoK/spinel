@@ -2,6 +2,9 @@
 name = "openssl"
 sources = ["sp_openssl.c"]   # carried C is declared, not discovered (#4362)
 
+[native]
+pkg_config = ["openssl"]
+
 # Pre-installed spin package: ships with the compiler, versioned with it.
 # Glue over the system libssl (sp_openssl.c) plus the CRuby-shaped namespace
 # in openssl.rb. Spinel implements no TLS itself and bundles no trust

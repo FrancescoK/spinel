@@ -4146,7 +4146,7 @@ static int sp_require_tolerated(const char *name) {
      nothing to load and nothing to warn about -- CRuby satisfies them
      silently for the same reason (#3455). */
   static const char *const tolerated[] = { "thread", "enumerator", "fiber", "ffi",
-                                           "rational", "complex", NULL };
+                                           "rational", "complex", "io/wait", NULL };
   for (int i = 0; tolerated[i]; i++) {
     if (strcmp(name, tolerated[i]) == 0) return 1;
   }

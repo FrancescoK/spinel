@@ -61,6 +61,12 @@ static inline SIGNED_VALUE sp_cext_fix2long(VALUE v) {
 #define LONG2FIX INT2FIX
 #define FIX2LONG(v) sp_cext_fix2long((VALUE)(v))
 #define FIX2INT(v) ((int)FIX2LONG(v))
+int rb_num2int(VALUE);
+VALUE rb_ll2inum(long long);
+VALUE rb_float_new(double);
+#define NUM2INT(v) rb_num2int((VALUE)(v))
+#define LL2NUM(v) rb_ll2inum((long long)(v))
+#define DBL2NUM(v) rb_float_new((double)(v))
 #define ID2SYM(id) (((VALUE)(id) << RUBY_SPECIAL_SHIFT) | RUBY_SYMBOL_FLAG)
 #ifdef SP_CEXT_RECORDER
 /* Keep this ID-producing operation visible in preprocessed extension source. */
@@ -70,6 +76,14 @@ ID sp_cext_scanned_sym2id(VALUE);
 #define SYM2ID(v) ((ID)((VALUE)(v) >> RUBY_SPECIAL_SHIFT))
 #endif
 #define RB_GC_GUARD(v) (v)
+#define RUBY_FUNC_EXPORTED
+void ruby_xfree(void *);
+#define xfree ruby_xfree
+void *sp_cext_allocv(VALUE *, size_t, size_t);
+#define RB_ALLOCV_N(type,handle,count) ((type *)sp_cext_allocv(&(handle),sizeof(type),(size_t)(count)))
+enum { T_STRING = 5, T_ARRAY = 7 };
+void rb_check_type(VALUE, int);
+#define Check_Type(value,type) rb_check_type((VALUE)(value),(type))
 
 void rb_gc_mark(VALUE);
 void rb_gc_mark_movable(VALUE);
@@ -111,6 +125,9 @@ char *sp_cext_string_ptr(VALUE);
 long sp_cext_string_len(VALUE);
 #define RSTRING_PTR(v) sp_cext_string_ptr(v)
 #define RSTRING_LEN(v) sp_cext_string_len(v)
+char *sp_cext_string_cstr(VALUE);
+#define StringValuePtr(v) sp_cext_string_ptr((v))
+#define StringValueCStr(v) sp_cext_string_cstr((v))
 VALUE rb_str_cat(VALUE, const char *, long);
 VALUE rb_str_cat_cstr(VALUE, const char *);
 int rb_block_given_p(void);
@@ -121,7 +138,13 @@ VALUE rb_yield_values2(int, const VALUE *);
 void rb_gc_start(void);
 
 VALUE rb_ary_new(void);
+VALUE rb_hash_new(void);
+VALUE rb_hash_new_capa(long);
+VALUE rb_hash_aset(VALUE, VALUE, VALUE);
+VALUE rb_ary_new_capa(long);
 VALUE rb_ary_push(VALUE, VALUE);
+VALUE rb_ary_pop(VALUE);
+void rb_ary_store(VALUE, long, VALUE);
 VALUE rb_ary_entry(VALUE, long);
 long sp_cext_array_len(VALUE);
 #define RARRAY_LEN(v) sp_cext_array_len(v)

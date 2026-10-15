@@ -1,6 +1,7 @@
 #include <ruby.h>
 #include <ruby/thread.h>
 #include <stdlib.h>
+#include <poll.h>
 static int active, violation;
 static void *pause_native(void *data) {
     (void)data;
@@ -19,6 +20,10 @@ static VALUE unlocked(VALUE self) {
     rb_thread_call_without_gvl(pause_native, NULL, NULL, NULL);
     return INT2FIX(2);
 }
+static VALUE io_unlocked(VALUE self) {
+    (void)self;rb_thread_call_without_gvl(pause_native,NULL,RUBY_UBF_IO,NULL);
+    return INT2FIX(2);
+}
 static VALUE callback(VALUE self) { (void)self; return rb_yield(INT2FIX(3)); }
 static VALUE protected_yield(VALUE unused) { (void)unused; return rb_yield(INT2FIX(1)); }
 static VALUE protected_callback(VALUE self) {
@@ -33,6 +38,19 @@ static VALUE protected_callback(VALUE self) {
     return result;
 }
 static int waiting, interrupted;
+static void *io_wait_native(void *data) {
+    (void)data;__atomic_store_n(&waiting,1,__ATOMIC_RELEASE);
+    poll(NULL,0,-1);return NULL;
+}
+static VALUE wait_io(VALUE self) {
+    (void)self;rb_thread_call_without_gvl(io_wait_native,NULL,RUBY_UBF_IO,NULL);
+    return Qnil;
+}
+static VALUE wait_select(VALUE self) {
+    (void)self;__atomic_store_n(&waiting,1,__ATOMIC_RELEASE);
+    rb_thread_fd_select(0,NULL,NULL,NULL,NULL);
+    return Qnil;
+}
 static void unblock(void *data) {
     (void)data;
     __atomic_store_n(&interrupted, 1, __ATOMIC_RELEASE);
@@ -92,9 +110,12 @@ void Init_cxl_sample(void) {
     rb_define_singleton_method(module, "gc_callbacks", gc_callbacks, 0);
     rb_define_singleton_method(module, "protected_callback", protected_callback, 0);
     rb_define_singleton_method(module, "wait_interrupt", wait_interrupt, 0);
+    rb_define_singleton_method(module, "wait_select", wait_select, 0);
+    rb_define_singleton_method(module, "wait_io", wait_io, 0);
     rb_define_singleton_method(module, "waiting?", waiting_p, 0);
     rb_define_singleton_method(module, "reset", reset, 0);
     rb_define_singleton_method(module, "serialized", serialized, 0);
     rb_define_singleton_method(module, "unlocked", unlocked, 0);
+    rb_define_singleton_method(module, "io_unlocked", io_unlocked, 0);
     rb_define_singleton_method(module, "callback", callback, 0);
 }

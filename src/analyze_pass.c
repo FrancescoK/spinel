@@ -7202,6 +7202,14 @@ static int cext_widen_containers(Compiler *c, int v, CextWalk *seen) {
     if (pi >= 0) NT_FOREACH_KIND(nt, NK_CallNode, call) {
       int targets[CPT_MAX], n = cplan_targets(c, call, targets, CPT_MAX), reaches = 0;
       for (int q = 0; q < n; q++) reaches |= targets[q] == si;
+      if(!reaches && scope->name && sp_streq(scope->name,"initialize") &&
+         nt_str(nt,call,"name") && sp_streq(nt_str(nt,call,"name"),"new")) {
+        int receiver=nt_ref(nt,call,"receiver");
+        int klass=receiver>=0 ? class_recv_static_ci(c,receiver) : -1;
+        if(klass<0 && receiver>=0 && (nt_kind(nt,receiver)==NK_ConstantReadNode || nt_kind(nt,receiver)==NK_ConstantPathNode))
+          klass=comp_class_index(c,nt_str(nt,receiver,"name"));
+        reaches=klass>=0 && comp_method_in_chain(c,klass,"initialize",NULL)==si;
+      }
       if (!reaches) continue;
       int arg = nt_ref(nt, call, "arguments"), ac = 0;
       const int *av = arg >= 0 ? nt_arr(nt, arg, "arguments", &ac) : NULL;
@@ -7224,6 +7232,14 @@ static int cext_widen_containers(Compiler *c, int v, CextWalk *seen) {
       free(ivar);
     }
     int targets[CPT_MAX], n = cplan_targets(c, v, targets, CPT_MAX);
+    if(n<=0 && name) {
+      int receiver=nt_ref(nt,v,"receiver");
+      TyKind receiver_type=receiver>=0 ? infer_type(c,receiver) : TY_UNKNOWN;
+      if(ty_is_object(receiver_type)) {
+        int method=comp_method_in_chain(c,ty_object_class(receiver_type),name,NULL);
+        if(method>0) { targets[0]=method;n=1; }
+      }
+    }
     if (!n && is_fresh_array(c, v)) changed |= cext_pin_array_producer(c, v);
     for (int q = 0; q < n; q++) {
       int *leaves = cext_walk_values(c);
@@ -7244,6 +7260,14 @@ static int cext_widen_containers(Compiler *c, int v, CextWalk *seen) {
         if (block >= 0 && nt_kind(nt, block) == NK_BlockNode)
           changed |= cext_widen_containers(c, nt_ref(nt, block, "body"), seen);
       }
+    }
+  } else if(kind==NK_InstanceVariableReadNode) {
+    const char *name=nt_str(nt,v,"name");Scope *scope=comp_scope_of(c,v);
+    NT_FOREACH_KIND(nt,NK_InstanceVariableWriteNode,write) {
+      Scope *writer=comp_scope_of(c,write);
+      const char *written=nt_str(nt,write,"name");
+      if(scope && writer && scope->class_id==writer->class_id && name && written && sp_streq(name,written))
+        changed|=cext_widen_containers(c,nt_ref(nt,write,"value"),seen);
     }
   } else if (kind == NK_GlobalVariableReadNode || kind == NK_ClassVariableReadNode ||
              kind == NK_ConstantReadNode || kind == NK_InstanceVariableReadNode) {
@@ -16559,6 +16583,7 @@ static int irt_scope(Compiler *c, int s, IrtCtx *x) {
      claims, so a return that re-derives UNKNOWN for any other reason still
      corrects downward. */
   if (r == TY_UNKNOWN && sc->ret == TY_POLY && scope_tail_unresolved_call(c, s)) return ch;
+  if (c->n_cext_extensions && r == TY_STRBUF) r = TY_STRING;
   if (r != sc->ret) {
     if (ty_degraded(r) && !ty_degraded(sc->ret)) {
       /* the value that degraded the return: the body's tail if its type

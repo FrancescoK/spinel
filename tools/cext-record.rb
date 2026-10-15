@@ -7,7 +7,17 @@ require "shellwords"
 
 module CextRecord
   class Refusal < StandardError; end
-  ROOT = File.expand_path("..", __dir__)
+  def self.sdk_root
+    program = File.expand_path($PROGRAM_NAME)
+    program = File.realpath(program) if File.file?(program)
+    dir = File.dirname(program)
+    candidates = [dir, File.dirname(dir), File.expand_path("..", __dir__)]
+    candidates.each do |candidate|
+      return candidate if File.file?(File.join(candidate, "include/ruby.h")) && File.file?(File.join(candidate, "tools/cext/recorder.c"))
+    end
+    File.expand_path("..", __dir__)
+  end
+  ROOT = sdk_root
   # Only deterministic libc helpers are allowed in this initial subset. In
   # particular getenv/environ, files, clocks, dynamic loading and process APIs
   # cannot be reached even through a local helper in Init.
@@ -137,7 +147,102 @@ module CextRecord
     File.delete(temp) if temp && File.exist?(temp)
   end
 
-  def record(name:, init:, sources:, output:, declarations: nil, object_archive: nil, cflags: [], cc: ENV.fetch("CC", "cc"))
+  def validate_flags(flags)
+    safe = /\A(?:-(?:I|D|U).+|-std=(?:c|gnu)(?:89|90|99|11|17|18|23)|-O[0-3sg]|-g(?:gdb)?[0-3]?|-pipe|-pthread|-f(?:PIC|pic|no-common|no-fast-math|declspec|stack-protector-strong|stack-clash-protection|cf-protection(?:=(?:full|branch|return|none))?|(?:file|debug|macro)-prefix-map=.+|no-strict-aliasing|no-strict-overflow|wrapv|no-omit-frame-pointer|visibility=(?:hidden|default))|-W[A-Za-z0-9_=,.-]+)\z/
+    raise Refusal, "unsupported C extension compiler flag" unless flags.all? { |flag| flag.match?(safe) }
+    flags
+  end
+
+  # Rename undefined symbols in a recorder-only copy. Retained runtime
+  # objects and their preprocessor decisions stay exactly as compiled.
+  def redirect_imports(input, output, replacements)
+    bytes=File.binread(input)
+    if bytes.byteslice(0,4)=="\xcf\xfa\xed\xfe".b
+      offset=32; symtab=nil
+      bytes.byteslice(16,4).unpack1('V').times do
+        kind,size=bytes.byteslice(offset,8).unpack('V2')
+        symtab=offset if kind==2
+        offset+=size
+      end
+      raise Refusal,'recorder object has no symbol table' unless symtab
+      symbols,count,strings,length=bytes.byteslice(symtab+8,16).unpack('V4')
+      names=bytes.byteslice(strings,length)
+      count.times do |index|
+        entry=symbols+index*16
+        next unless bytes.getbyte(entry+4)&0x0e==0
+        position=bytes.byteslice(entry,4).unpack1('V')
+        name=names.byteslice(position..).split("\0",2).first
+        replacement=replacements[name.delete_prefix('_')]
+        next unless replacement
+        bytes[entry,4]=[names.bytesize].pack('V')
+        names << '_'+replacement+"\0"
+      end
+      bytes[symtab+16,8]=[bytes.bytesize,names.bytesize].pack('V2')
+      bytes << names
+    elsif bytes.byteslice(0,6)=="\x7fELF\x02\x01".b
+      sections=bytes.byteslice(40,8).unpack1('Q<')
+      size=bytes.byteslice(58,2).unpack1('v')
+      count=bytes.byteslice(60,2).unpack1('v')
+      count.times do |index|
+        section=sections+index*size
+        next unless bytes.byteslice(section+4,4).unpack1('V')==2
+        strings_section=sections+bytes.byteslice(section+40,4).unpack1('V')*size
+        strings=bytes.byteslice(strings_section+24,8).unpack1('Q<')
+        length=bytes.byteslice(strings_section+32,8).unpack1('Q<')
+        names=bytes.byteslice(strings,length)
+        symbols=bytes.byteslice(section+24,8).unpack1('Q<')
+        symbol_bytes=bytes.byteslice(section+32,8).unpack1('Q<')
+        stride=bytes.byteslice(section+56,8).unpack1('Q<')
+        (symbol_bytes/stride).times do |slot|
+          entry=symbols+slot*stride
+          next unless bytes.byteslice(entry+6,2).unpack1('v')==0
+          position=bytes.byteslice(entry,4).unpack1('V')
+          replacement=replacements[names.byteslice(position..).split("\0",2).first]
+          next unless replacement
+          bytes[entry,4]=[names.bytesize].pack('V');names << replacement+"\0"
+        end
+        bytes[strings_section+24,16]=[bytes.bytesize,names.bytesize].pack('Q<2')
+        bytes << names
+      end
+    else
+      raise Refusal,'native recorder imports require a little-endian ELF64 or Mach-O64 object'
+    end
+    File.binwrite(output,bytes)
+  end
+
+  def callable_symbols(tokens)
+    names = []
+    tokens.each_with_index do |token, index|
+      names << token if tokens[index + 1] == '(' && token.match?(/\A[A-Za-z_][A-Za-z_0-9]*\z/)
+      # glibc redirects some function declarations with an assembler name,
+      # e.g. strerror_r(...) __asm__("" "__xpg_strerror_r"). A data
+      # declaration, including a function pointer, has no function name
+      # immediately before the balanced argument list.
+      next unless %w[__asm__ __asm asm].include?(token) && tokens[index - 1] == ')'
+      position = index - 2
+      depth = 1
+      while position >= 0 && depth > 0
+        depth += 1 if tokens[position] == ')'
+        depth -= 1 if tokens[position] == '('
+        position -= 1
+      end
+      function = position >= 0 ? tokens[position] : ''
+      next unless depth == 0 && names.include?(function) && !%w[__attribute__ __attribute].include?(function)
+      next unless tokens[index + 1] == '('
+      position = index + 2
+      symbol = ''
+      while position < tokens.length && tokens[position].match?(/\A"[A-Za-z_0-9]*"\z/)
+        symbol += tokens[position][1...-1]
+        position += 1
+      end
+      next unless tokens[position] == ')' && symbol.match?(/\A[A-Za-z_][A-Za-z_0-9]*\z/)
+      symbol = symbol.delete_prefix('_') if RUBY_PLATFORM.include?('darwin')
+      names << symbol
+    end
+    names
+  end
+
+  def record(name:, init:, sources:, output:, declarations: nil, object_archive: nil, cflags: [], cc: ENV.fetch("CC", "cc"), threaded: false, libs: nil, init_imports: [])
     raise Refusal, "invalid extension name" unless name =~ /\A[A-Za-z_][A-Za-z_0-9]*\z/
     raise Refusal, "invalid Init symbol" unless init =~ /\AInit_[A-Za-z_0-9]+\z/
     raise Refusal, "at least one C source is required" if sources.empty?
@@ -147,14 +252,20 @@ module CextRecord
     raise Refusal, "empty C compiler command" if compiler.empty?
     # Instrumentation/LTO obscure the import check; build the recorder from
     # ordinary objects. User flags cannot replace its header or compiler action.
-    raise Refusal, "only -I, -D and -U recorder flags are supported" unless cflags.all? { |f| f =~ /\A-(?:I|D|U).+/ }
+    validate_flags(cflags)
+    raise Refusal,'invalid native initializer import' unless init_imports.all? { |symbol| symbol.match?(/\A[A-Za-z_][A-Za-z_0-9]*\z/) }
+    raise Refusal,'native initializer imports require explicit libraries' if !init_imports.empty? && (libs.nil? || libs.empty?)
     Dir.mktmpdir("spinel-cext-record-") do |dir|
       flags = ["-std=c11", "-O0", "-DSP_CEXT_RECORDER", "-I#{ROOT}/include", *cflags]
-      objects = []; names = []; arities = []; ivars = []; evals = []; constant_reads = false
+      flags += ["-DSP_THREADS", "-ftls-model=initial-exec"] if threaded
+      objects = []; names = []; arities = []; ivars = []; evals = []; constant_reads = false; callable = []
       sources.each_with_index do |source, i|
         source = File.expand_path(source)
         raise Refusal, "missing C source #{source}" unless File.file?(source)
-        ids, argc, bridge = scan(command(*compiler, *flags, "-E", source))
+        preprocessed=command(*compiler,*flags,"-E",source)
+        tokens=preprocessed.scan(TOKEN)
+        callable.concat(callable_symbols(tokens))
+        ids, argc, bridge = scan(preprocessed)
         names.concat(ids); arities.concat(argc)
         ivars.concat(bridge["ivars"]); evals.concat(bridge["evals"])
         constant_reads ||= bridge["constant_reads"]
@@ -182,32 +293,56 @@ module CextRecord
         end
       end
       unknown = (undefined.uniq - defined - LIBC).grep_v(OUTLINE_ATOMICS)
-      raise Refusal, "#{unknown.sort.join(', ')}: external API is outside the deterministic recorder subset" unless unknown.empty?
+      imports=[]; links=[]; record_objects=objects
+      unless unknown.empty?
+        raise Refusal, "#{unknown.sort.join(', ')}: external API is outside the deterministic recorder subset" if libs.nil?
+        invalid=unknown-callable
+        raise Refusal,"#{invalid.sort.join(', ')}: imported native data is outside the recorder subset" unless invalid.empty?
+        links=libs.map { |lib| lib.start_with?('-') || File.file?(lib) ? lib : '-l'+lib }
+        probe=File.join(dir,'import-probe.c')
+        probe_declarations=unknown.map { |symbol| "extern void #{symbol}(void);" }.join("\n")
+        File.write(probe,probe_declarations+"\nvoid (*volatile imports[])(void)={"+unknown.join(',')+"};\nint main(void){return imports[0]==0;}\n")
+        command(*compiler,probe,*links,'-o',File.join(dir,'import-probe'))
+        stub=File.join(dir,'imports.c')
+        replacements={}
+        (unknown-init_imports).each_with_index { |symbol,index| replacements[symbol]="sp_cext_native_import_#{index}" }
+        record_objects=objects.each_with_index.map do |object,index|
+          copy=File.join(dir,"record-extension#{index}.o")
+          redirect_imports(object,copy,replacements);copy
+        end
+        File.write(stub,"#include \"recorder.h\"\n"+replacements.map { |symbol,replacement| "void #{replacement}(void){sp_cext_record_external(\"#{symbol}\");}" }.join("\n"))
+        object=File.join(dir,'imports.o')
+        command(*compiler,'-I'+ROOT+'/tools/cext','-c',stub,'-o',object)
+        imports << object
+      end
       main = File.join(dir, "main.c")
       File.write(main, "#include \"recorder.h\"\nvoid #{init}(void);\nint main(void) { sp_cext_record_begin(\"#{name}\"); #{init}(); sp_cext_record_finish(); return 0; }\n")
       exe = File.join(dir, "record")
       archive = File.join(dir, "libspinel_cext_rec.a")
       command("ar", "rcs", archive, rec)
-      command(*compiler, *flags, "-I#{ROOT}/tools/cext", main, *objects, archive, "-o", exe)
-      # A hung Init must not hang the build. Kill the child (capture3's block
-      # otherwise waits for it) and keep the previous artifact on failure.
-      events = []
-      Open3.popen3(exe, pgroup: true) do |stdin, stdout, stderr, wait|
-        stdin.close
-        out = Thread.new { stdout.read }; err = Thread.new { stderr.read }
-        unless wait.join(10)
-          Process.kill("KILL", -wait.pid)
-          wait.join; out.join; err.join
-          raise Refusal, "#{init}: recorder exceeded 10 seconds"
+      command(*compiler, *flags, "-I#{ROOT}/tools/cext", main, *record_objects, *imports, archive, *(init_imports.empty? ? [] : links), "-o", exe)
+      # Files keep capture bounded by the child timeout without depending on
+      # Open3's streaming API, which the self-hosted project tool does not have.
+      out_path = File.join(dir, "events.jsonl")
+      err_path = File.join(dir, "events.err")
+      pid = Process.spawn(exe, pgroup: true, in: File::NULL, out: out_path, err: err_path)
+      wait = Thread.new { Process.waitpid2(pid)[1] }
+      unless wait.join(10)
+        begin
+          Process.kill("KILL", -pid)
+        rescue Errno::ESRCH
+          # The child finished between the timeout and the signal.
         end
-        out.join; err.join
-        unless wait.value.success?
-          message = err.value.strip
-          message = "#{init}: recorder exited with #{wait.value}" if message.empty?
-          raise Refusal, message
-        end
-        events = out.value.lines.map { |line| JSON.parse(line) }
+        wait.join
+        raise Refusal, "#{init}: recorder exceeded 10 seconds"
       end
+      status = wait.value
+      unless status.success?
+        message = File.read(err_path).strip
+        message = "#{init}: recorder exited with #{status}" if message.empty?
+        raise Refusal, message
+      end
+      events = File.readlines(out_path).map { |line| JSON.parse(line) }
       manifest = {"version" => 1, "extension" => name, "init" => init,
                   "definitions" => events, "literal_ids" => names.uniq.sort,
                   "funcall_arities" => arities.uniq.sort,
@@ -233,6 +368,7 @@ module CextRecord
       args = case d["kind"]
              when "class" then [d["path"], d["superclass"]]
              when "module" then [d["path"]]
+             when "reference" then [d["path"]]
              when "method" then d.values_at("owner", "name", "scope", "visibility", "arity", "function")
              when "allocator" then d.values_at("owner", "function")
              when "alias" then d.values_at("owner", "name", "original")

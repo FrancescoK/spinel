@@ -1183,7 +1183,7 @@ static void emit_str_expr_ex(Compiler *c, int node, int strict, Buf *b) {
      String, with the mark lifted, as emit_boxed_strbuf reads it: this slot
      takes its bytes, and the marked form is the handle, which no
      conversion keeps in a const char * slot */
-  if (repr_share_rule(c) && node >= 0 && c->strbuf_box[node] && store_value_kind(c, node) == TY_STRBUF) {
+  if ((repr_share_rule(c) || c->n_cext_extensions) && node >= 0 && c->strbuf_box[node] && store_value_kind(c, node) == TY_STRBUF) {
     int sv = view_push_repr(c, node, VR_STRBUF_BOX, 0);
     emit_str_expr_ex(c, node, strict, b);
     view_pop(c, sv);
@@ -2406,6 +2406,20 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
   if (b == g_pre) { emit_into_pre_line(c, emit_boxed, node); return; }
   if (g_share_check) share_check_mark(c, node, 'B', b);
   int frame = g_repr_check ? repr_channel_begin(c, node) : -1;
+  if (c->n_cext_extensions && ran_first_handle(node) >= 0) {
+    buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", ran_first_handle(node));
+    if (g_repr_check) repr_channel_boxed(c, node, frame);
+    return;
+  }
+  if(c->n_cext_extensions && node>=0 &&
+     nt_kind(c->nt,node)==NK_CallNode && comp_ntype(c,node)==TY_STRING && repr_call_returns_handle(c,node)) {
+    int temp=++g_tmp;
+    buf_printf(b,"({ _sp_ret_strbuf = NULL; const char *_cext_string%d = ",temp);
+    emit_expr(c,node,b);
+    buf_printf(b,"; _sp_ret_strbuf ? sp_box_obj(_sp_ret_strbuf, SP_BUILTIN_STRBUF) : _cext_string%d ? sp_box_str(_cext_string%d) : sp_box_nil(); })",temp,temp);
+    if(g_repr_check)repr_channel_boxed(c,node,frame);
+    return;
+  }
   /* --share-strings: a String stored into a boxed slot the rule shares (an
      ivar that also holds nil) is boxed as its handle, which a later `<<`
      on the slot's box appends to in place (share_lift_poly_ivar_stores) */
