@@ -139,6 +139,10 @@ void sp_fiber_defer_inject(void);
 void sp_fiber_undefer_inject(void);
 void sp_fiber_fire_inject_if_pending(void);
 int  sp_fiber_inject_pending(sp_Fiber *f);   /* lock-free acquire peek */
+/* The slot held across a park's publication or a delivery's look at its
+   target (#8702, see lib/sp_fiber.c). */
+int  sp_fiber_inject_hold(sp_Fiber *f);
+void sp_fiber_inject_release(sp_Fiber *f, int kind);
 SP_NORETURN void sp_fiber_raise_kill_self(void);
 
 /* A C stack that ran out is CRuby's SystemStackError, and a program that

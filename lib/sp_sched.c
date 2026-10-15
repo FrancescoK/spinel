@@ -3575,12 +3575,26 @@ static int sp_sched_wait_io_impl(int fd, short events, struct pollfd *set, int n
       return sp_poll_plain(set ? set : &(struct pollfd){.fd = fd, .events = events},
                            set ? (nfds_t)n : 1, timeout_s);
     }
+    /* Checked again with the thread's inject slot held until it is published
+       BLOCKED: sp_thread_deliver sets the inject and reads the state with the
+       slot held, and without the scheduler lock here a #kill or #raise could
+       land between the check above and the publication, find the thread
+       running, and leave it to park with no deadline. */
+    sp_Fiber *inj = sp_thread_inject_fiber(self);
+    int ik = inj ? sp_fiber_inject_hold(inj) : 0;
+    if (ik) {
+      sp_fiber_inject_release(inj, ik);
+      if (timed) sp_timer_cancel(self);
+      free(es); wl_unlock(wl); if (timed) SCHED_UNLOCK();
+      sp_fiber_fire_inject_if_pending();   /* raises; does not return */
+    }
     if (set) { self->io_fd = -1; self->io_events = 0; self->io_set = set; self->io_nset = n; self->ev_set = es; }
     else { self->io_fd = fd; self->io_events = events; }
     self->io_revents = 0;
     SP_TH_SET_STATE(self, SP_TH_BLOCKED);
     SP_ATOMIC_STORE(&self->park, SP_PK_PARKING, __ATOMIC_SEQ_CST);   /* on a list, still on its stack */
     wio_link(home, self);
+    if (inj) sp_fiber_inject_release(inj, 0);
     SP_STAT_ADD(g_mon_regs, 1);
     if (set) { for (int i = 0; i < n; i++) (void)sp_ev_park_entry_w(home, &self->ev_set[i], set[i].fd); }
     else { self->ev0.t = self; self->ev0.idx = -1; (void)sp_ev_park_entry_w(home, &self->ev0, fd); }
@@ -4304,6 +4318,11 @@ static void sp_thread_deliver(sp_thread *t, int is_kill,
     return;
   }
   if (!t->fiber) { SCHED_UNLOCK(); return; }
+  /* Published under the inject slot's lock, and the state read after it: a
+     thread parking under a lock of its own (an I/O wait) checks for the
+     inject and publishes itself BLOCKED with that slot held
+     (sp_fiber_inject_hold), so this finds it either not yet checked, and it
+     raises, or BLOCKED and on its list. */
   if (is_kill) sp_fiber_set_kill_inject(t->fiber);
   else sp_fiber_set_raise_inject(t->fiber, cls, msg, obj);
 #ifdef SP_CEXT
