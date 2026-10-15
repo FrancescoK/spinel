@@ -41585,6 +41585,15 @@ static int sa_bang_receiver(Compiler *c, int call, int *plain) {
   int r = nt_ref(nt, call, "receiver");
   size_t len = nm ? strlen(nm) : 0;
   int argc = call_plain_argc(c, call);
+  /* a keyword hash is one more argument (encode!'s options; a Hash to a
+     method that takes no keywords): a count is known without a splat or a
+     block argument */
+  if (argc < 0) {
+    int a = nt_ref(nt, call, "arguments");
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &argc) : NULL;
+    for (int i = 0; i < argc; i++)
+      if (nt_kind(nt, av[i]) == NK_SplatNode || nt_kind(nt, av[i]) == NK_BlockArgumentNode) { argc = -1; break; }
+  }
   if (r < 0 || len < 2) return -1;
   int unfollowed = !c->share_strings &&
                    (sp_streq(nm, "bytesplice") || sp_streq(nm, "append_as_bytes") ||

@@ -1,0 +1,238 @@
+dst Integer: TypeError: no implicit conversion of Integer into String
+src Integer: TypeError: no implicit conversion of Integer into String
+boxed dst Integer: TypeError: no implicit conversion of Integer into String
+dst Symbol: TypeError: no implicit conversion of Symbol into String
+src Symbol: TypeError: no implicit conversion of Symbol into String
+boxed dst Symbol: TypeError: no implicit conversion of Symbol into String
+dst Array: TypeError: no implicit conversion of Array into String
+src Array: TypeError: no implicit conversion of Array into String
+boxed dst Array: TypeError: no implicit conversion of Array into String
+dst NilClass: TypeError: no implicit conversion of nil into String
+src NilClass: "x" UTF-8
+boxed dst NilClass: TypeError: no implicit conversion of nil into String
+dst TrueClass: TypeError: no implicit conversion of true into String
+src TrueClass: TypeError: no implicit conversion of true into String
+boxed dst TrueClass: TypeError: no implicit conversion of true into String
+dst Float: TypeError: no implicit conversion of Float into String
+src Float: TypeError: no implicit conversion of Float into String
+boxed dst Float: TypeError: no implicit conversion of Float into String
+dst Plain: TypeError: no implicit conversion of Plain into String
+src Plain: TypeError: no implicit conversion of Plain into String
+boxed dst Plain: TypeError: no implicit conversion of Plain into String
+unknown dst: Encoding::ConverterNotFoundError: code converter not found (UTF-8 to l)
+unknown src: Encoding::ConverterNotFoundError: code converter not found (l to UTF-8)
+unknown both: Encoding::ConverterNotFoundError: code converter not found (o to l)
+same unknown: "x" ASCII-8BIT
+utf8: Encoding::ConverterNotFoundError: code converter not found (UTF-8 to utf8)
+external: "x" UTF-8
+Encoding, unknown src: Encoding::ConverterNotFoundError: code converter not found (l to UTF-8)
+to_str dst: "x" ASCII-8BIT
+to_str unknown: Encoding::ConverterNotFoundError: code converter not found (UTF-8 to l)
+boxed unknown: Encoding::ConverterNotFoundError: code converter not found (UTF-8 to l)
+invalid: :x: ArgumentError: unknown value for invalid character option
+undef: 1: ArgumentError: unknown value for undefined character option
+replace: 1: TypeError: no implicit conversion of Integer into String
+utf-8 as utf-8: "x" UTF-8
+binary as binary: "x" ASCII-8BIT
+dst Integer: TypeError: no implicit conversion of Integer into String
+src Integer: TypeError: no implicit conversion of Integer into String
+boxed dst Integer: TypeError: no implicit conversion of Integer into String
+dst Symbol: TypeError: no implicit conversion of Symbol into String
+src Symbol: TypeError: no implicit conversion of Symbol into String
+boxed dst Symbol: TypeError: no implicit conversion of Symbol into String
+dst Array: TypeError: no implicit conversion of Array into String
+src Array: TypeError: no implicit conversion of Array into String
+boxed dst Array: TypeError: no implicit conversion of Array into String
+dst NilClass: TypeError: no implicit conversion of nil into String
+src NilClass: "héllo" UTF-8
+boxed dst NilClass: TypeError: no implicit conversion of nil into String
+dst TrueClass: TypeError: no implicit conversion of true into String
+src TrueClass: TypeError: no implicit conversion of true into String
+boxed dst TrueClass: TypeError: no implicit conversion of true into String
+dst Float: TypeError: no implicit conversion of Float into String
+src Float: TypeError: no implicit conversion of Float into String
+boxed dst Float: TypeError: no implicit conversion of Float into String
+dst Plain: TypeError: no implicit conversion of Plain into String
+src Plain: TypeError: no implicit conversion of Plain into String
+boxed dst Plain: TypeError: no implicit conversion of Plain into String
+unknown dst: Encoding::ConverterNotFoundError: code converter not found (UTF-8 to l)
+unknown src: Encoding::ConverterNotFoundError: code converter not found (l to UTF-8)
+unknown both: Encoding::ConverterNotFoundError: code converter not found (o to l)
+same unknown: "h\xC3\xA9llo" ASCII-8BIT
+utf8: Encoding::ConverterNotFoundError: code converter not found (UTF-8 to utf8)
+external: "héllo" UTF-8
+Encoding, unknown src: Encoding::ConverterNotFoundError: code converter not found (l to UTF-8)
+to_str dst: Encoding::UndefinedConversionError: U+00E9 from UTF-8 to ASCII-8BIT
+to_str unknown: Encoding::ConverterNotFoundError: code converter not found (UTF-8 to l)
+boxed unknown: Encoding::ConverterNotFoundError: code converter not found (UTF-8 to l)
+invalid: :x: ArgumentError: unknown value for invalid character option
+undef: 1: ArgumentError: unknown value for undefined character option
+replace: 1: TypeError: no implicit conversion of Integer into String
+utf-8 as utf-8: "héllo" UTF-8
+binary as binary: "h\xC3\xA9llo" ASCII-8BIT
+options only, binary: "\xFF" ASCII-8BIT
+options only, UTF-8: "h�llo" UTF-8
+encode! non-ASCII to binary: Encoding::UndefinedConversionError: U+00E9 from UTF-8 to ASCII-8BIT
+["héllo", "UTF-8"]
+[true, "hello", "ASCII-8BIT"]
+encode! binary byte to UTF-8: Encoding::UndefinedConversionError: "\xFF" from ASCII-8BIT to UTF-8
+["\xFF", "ASCII-8BIT"]
+["é", "UTF-8"]
+encode! Integer: TypeError: no implicit conversion of Integer into String
+encode! Symbol: TypeError: no implicit conversion of Symbol into String
+encode! NilClass: TypeError: no implicit conversion of nil into String
+encode! Plain: TypeError: no implicit conversion of Plain into String
+encode! unknown: Encoding::ConverterNotFoundError: code converter not found (UTF-8 to l)
+encode! unknown src: Encoding::ConverterNotFoundError: code converter not found (l to UTF-8)
+encode! frozen, bad argument: FrozenError: can't modify frozen String: "x"
+encode! frozen: FrozenError: can't modify frozen String: "x"
+boxed encode! non-ASCII: Encoding::UndefinedConversionError: U+00E9 from UTF-8 to ASCII-8BIT
+boxed encode! bad: TypeError: no implicit conversion of Integer into String
+boxed encode! retagged: "hello" ASCII-8BIT
+beside a user encode 1: TypeError: no implicit conversion of Integer into String
+beside a user encode "l": Encoding::ConverterNotFoundError: code converter not found (UTF-8 to l)
+beside a user encode nil: TypeError: no implicit conversion of nil into String
+beside a user encode 1: :u
+beside a user encode "l": :u
+beside a user encode nil: :u
+["ASCII-8BIT", "ASCII-8BIT"]
+["ASCII-8BIT", "ASCII-8BIT"]
+"ASCII-8BIT"
+US-ASCII source: Encoding::InvalidByteSequenceError: "\xC3" on US-ASCII
+US-ASCII source, replaced: "h�llo"
+US-ASCII source to binary: Encoding::InvalidByteSequenceError: "\xC3" on US-ASCII
+US-ASCII source to binary, replaced: "h?llo"
+US-ASCII to itself, replaced: "h?llo"
+US-ASCII to itself, *: "h*llo"
+to US-ASCII: Encoding::UndefinedConversionError: U+00E9 from UTF-8 to US-ASCII
+to US-ASCII, replaced: "h?llo"
+to US-ASCII, *: "h*llo"
+binary to US-ASCII: Encoding::UndefinedConversionError: "\xFF" to UTF-8 in conversion from ASCII-8BIT to UTF-8 to US-ASCII
+binary to US-ASCII, replaced: "h?llo"
+ASCII to US-ASCII: "hello"
+broken 0 to BINARY: Encoding::InvalidByteSequenceError: "\xC3" followed by "l" on UTF-8
+broken 0 to BINARY, invalid replaced: "h?llo"
+broken 0 to BINARY, undef replaced: Encoding::InvalidByteSequenceError: "\xC3" followed by "l" on UTF-8
+broken 0 to BINARY, both: "h*llo"
+broken 0 to US-ASCII: Encoding::InvalidByteSequenceError: "\xC3" followed by "l" on UTF-8
+broken 0 to US-ASCII, invalid replaced: "h?llo"
+broken 0 to US-ASCII, undef replaced: Encoding::InvalidByteSequenceError: "\xC3" followed by "l" on UTF-8
+broken 0 to US-ASCII, both: "h*llo"
+broken 1 to BINARY: Encoding::InvalidByteSequenceError: "\xFF" on UTF-8
+broken 1 to BINARY, invalid replaced: "h?llo"
+broken 1 to BINARY, undef replaced: Encoding::InvalidByteSequenceError: "\xFF" on UTF-8
+broken 1 to BINARY, both: "h*llo"
+broken 1 to US-ASCII: Encoding::InvalidByteSequenceError: "\xFF" on UTF-8
+broken 1 to US-ASCII, invalid replaced: "h?llo"
+broken 1 to US-ASCII, undef replaced: Encoding::InvalidByteSequenceError: "\xFF" on UTF-8
+broken 1 to US-ASCII, both: "h*llo"
+broken 2 to BINARY: Encoding::InvalidByteSequenceError: incomplete "\xE3\x81" on UTF-8
+broken 2 to BINARY, invalid replaced: "h?"
+broken 2 to BINARY, undef replaced: Encoding::InvalidByteSequenceError: incomplete "\xE3\x81" on UTF-8
+broken 2 to BINARY, both: "h*"
+broken 2 to US-ASCII: Encoding::InvalidByteSequenceError: incomplete "\xE3\x81" on UTF-8
+broken 2 to US-ASCII, invalid replaced: "h?"
+broken 2 to US-ASCII, undef replaced: Encoding::InvalidByteSequenceError: incomplete "\xE3\x81" on UTF-8
+broken 2 to US-ASCII, both: "h*"
+broken 3 to BINARY: Encoding::InvalidByteSequenceError: "\xE3\x81" followed by "l" on UTF-8
+broken 3 to BINARY, invalid replaced: "h?llo"
+broken 3 to BINARY, undef replaced: Encoding::InvalidByteSequenceError: "\xE3\x81" followed by "l" on UTF-8
+broken 3 to BINARY, both: "h*llo"
+broken 3 to US-ASCII: Encoding::InvalidByteSequenceError: "\xE3\x81" followed by "l" on UTF-8
+broken 3 to US-ASCII, invalid replaced: "h?llo"
+broken 3 to US-ASCII, undef replaced: Encoding::InvalidByteSequenceError: "\xE3\x81" followed by "l" on UTF-8
+broken 3 to US-ASCII, both: "h*llo"
+broken 4 to BINARY: Encoding::InvalidByteSequenceError: "\xC3" followed by "\"" on UTF-8
+broken 4 to BINARY, invalid replaced: "?\""
+broken 4 to BINARY, undef replaced: Encoding::InvalidByteSequenceError: "\xC3" followed by "\"" on UTF-8
+broken 4 to BINARY, both: "*\""
+broken 4 to US-ASCII: Encoding::InvalidByteSequenceError: "\xC3" followed by "\"" on UTF-8
+broken 4 to US-ASCII, invalid replaced: "?\""
+broken 4 to US-ASCII, undef replaced: Encoding::InvalidByteSequenceError: "\xC3" followed by "\"" on UTF-8
+broken 4 to US-ASCII, both: "*\""
+broken 5 to BINARY: Encoding::InvalidByteSequenceError: "\xC3" followed by "\n" on UTF-8
+broken 5 to BINARY, invalid replaced: "?\n"
+broken 5 to BINARY, undef replaced: Encoding::InvalidByteSequenceError: "\xC3" followed by "\n" on UTF-8
+broken 5 to BINARY, both: "*\n"
+broken 5 to US-ASCII: Encoding::InvalidByteSequenceError: "\xC3" followed by "\n" on UTF-8
+broken 5 to US-ASCII, invalid replaced: "?\n"
+broken 5 to US-ASCII, undef replaced: Encoding::InvalidByteSequenceError: "\xC3" followed by "\n" on UTF-8
+broken 5 to US-ASCII, both: "*\n"
+broken 6 to BINARY: Encoding::InvalidByteSequenceError: "\xED" followed by "\xA0" on UTF-8
+broken 6 to BINARY, invalid replaced: "???"
+broken 6 to BINARY, undef replaced: Encoding::InvalidByteSequenceError: "\xED" followed by "\xA0" on UTF-8
+broken 6 to BINARY, both: "***"
+broken 6 to US-ASCII: Encoding::InvalidByteSequenceError: "\xED" followed by "\xA0" on UTF-8
+broken 6 to US-ASCII, invalid replaced: "???"
+broken 6 to US-ASCII, undef replaced: Encoding::InvalidByteSequenceError: "\xED" followed by "\xA0" on UTF-8
+broken 6 to US-ASCII, both: "***"
+broken 7 to BINARY: Encoding::UndefinedConversionError: U+00E9 from UTF-8 to ASCII-8BIT
+broken 7 to BINARY, invalid replaced: Encoding::UndefinedConversionError: U+00E9 from UTF-8 to ASCII-8BIT
+broken 7 to BINARY, undef replaced: Encoding::InvalidByteSequenceError: "\xFF" on UTF-8
+broken 7 to BINARY, both: "**"
+broken 7 to US-ASCII: Encoding::UndefinedConversionError: U+00E9 from UTF-8 to US-ASCII
+broken 7 to US-ASCII, invalid replaced: Encoding::UndefinedConversionError: U+00E9 from UTF-8 to US-ASCII
+broken 7 to US-ASCII, undef replaced: Encoding::InvalidByteSequenceError: "\xFF" on UTF-8
+broken 7 to US-ASCII, both: "**"
+broken replacement: ArgumentError: replacement string is broken: "\xFF" as UTF-8
+broken replacement, same encoding: ArgumentError: replacement string is broken: "\xFF" as UTF-8
+é into binary, not put in: "hello"
+é into binary: Encoding::ConverterNotFoundError: code converter not found (UTF-8 to ASCII-8BIT)
+é into UTF-8: "héllo"
+binary byte into UTF-8: Encoding::ConverterNotFoundError: code converter not found (ASCII-8BIT to UTF-8)
+ASCII binary into UTF-8: "habllo"
+binary é scrubbing UTF-8: Encoding::CompatibilityError
+binary é, nothing to scrub: "hllo"
+é scrubbing US-ASCII: Encoding::CompatibilityError
+empty replacement: "hllo"
+☃ scrubbing clean US-ASCII: Encoding::CompatibilityError
+replace: alone: "h*llo"
+replace: alone, broken byte: Encoding::InvalidByteSequenceError: "\xFF" on UTF-8
+replace: alone, from binary: "h*llo"
+replace: alone, same encoding: "h\xFFllo"
+replace: with invalid:: Encoding::UndefinedConversionError: U+00E9 from UTF-8 to ASCII-8BIT
+replacement converted first: Encoding::ConverterNotFoundError: code converter not found (UTF-8 to ASCII-8BIT)
+replacement converted first, broken: Encoding::ConverterNotFoundError: code converter not found (UTF-8 to US-ASCII)
+replacement on ASCII text: "hello"
+binary replacement on ASCII text: "hello"
+bad invalid, bad encoding: ArgumentError: unknown value for invalid character option
+bad undef, unknown encoding: ArgumentError: unknown value for undefined character option
+bad replace, bad encoding: TypeError: no implicit conversion of Integer into String
+ran "BINARY"
+ran "*"
+ran :replace
+ran 1
+order: "h*llo"
+String key: Encoding::UndefinedConversionError: U+00E9 from UTF-8 to ASCII-8BIT
+ran "UTF-8"
+ran "x"
+three positionals: ArgumentError: wrong number of arguments (given 3, expected 0..2)
+Hash positional: TypeError: no implicit conversion of Hash into String
+ran "x"
+three positionals on a Hash value: ArgumentError: wrong number of arguments (given 3, expected 0..2)
+ran "x"
+three positionals, boxed: ArgumentError: wrong number of arguments (given 3, expected 0..2)
+argument appends to the receiver: "hellox"
+argument rebinds the receiver: "abc"
+"zzz"
+argument appends to an ivar receiver: "hi!"
+["hellox", "ASCII-8BIT"]
+ASCII to ISO-8859-1: "hello"
+ASCII from ISO-8859-1: "hello" UTF-8
+ASCII binary to Shift_JIS: "hello"
+empty to UTF-32LE: ""
+empty from UTF-16BE: ""
+** options: "h*llo"
+literal after **: "h#llo"
+** after literal: "h*llo"
+** String key: Encoding::UndefinedConversionError: U+00E9 from UTF-8 to ASCII-8BIT
+** bad invalid: ArgumentError: unknown value for invalid character option
+send encode: "h?llo"
+send encode, source: "h?llo"
+send encode!, retag: "hello"
+splat: "h?llo"
+splat of two: "h?llo"
+splat of three: ArgumentError: wrong number of arguments (given 3, expected 0..2)
+empty splat: "héllo"
+splat, then a positional: "h�llo"
+splat of nil: "hello"

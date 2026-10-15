@@ -123,6 +123,7 @@ static const BuiltinClass BUILTIN_CLASSES[] = {
   { "JSON::NestingError",           0,     BC_EXCEPTION },
   { "JSON::GeneratorError",         0,     BC_EXCEPTION },
   { "Encoding::CompatibilityError",        0, BC_EXCEPTION },
+  { "Encoding::ConverterNotFoundError",    0, BC_EXCEPTION },
   { "Encoding::InvalidByteSequenceError",  0, BC_EXCEPTION },
   { "Encoding::UndefinedConversionError",  0, BC_EXCEPTION },
   { "Errno::ENOENT",                0,     BC_EXCEPTION },

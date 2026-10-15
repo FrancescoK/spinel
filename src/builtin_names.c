@@ -700,6 +700,10 @@ int is_encoding_mutator(const char *n) {
   return sp_streq(n, "force_encoding") || sp_streq(n, "encode!");
 }
 
+int encoding_mutator_max_argc(const char *n) {
+  return sp_streq(n, "encode!") ? 3 : 2;
+}
+
 int is_socket_address(const char *n) {
   return sp_streq(n, "addr") || sp_streq(n, "peeraddr");
 }

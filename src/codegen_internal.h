@@ -1840,6 +1840,7 @@ void emit_obj_upcast_prefix(Compiler *c, TyKind slot, TyKind val, Buf *b);
 /* Value node for keyword `name` inside a KeywordHashNode, the last when the
    key is written twice, or -1. */
 int kwh_lookup(const NodeTable *nt, int kwh, const char *kname);
+const char *encode_opt_unread(const NodeTable *nt, const int *els, int en);   /* codegen_call_recv.c */
 int callee_has_kwarg(Compiler *c, Scope *m, const char *name);
 int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
 int rest_packable_arm(Compiler *c, Scope *s);
@@ -1975,6 +1976,11 @@ int kw_splat_raises(Compiler *c, int node);
    evaluates the `**` operand `node` into `b` and checks it there, for a
    site that evaluates its arguments in its own order. */
 void emit_kw_splat_operand_inline(Compiler *c, int node, Buf *b);
+/* The `**` element `el` of a keyword hash as the value that binds
+   (sp_kw_splat_conv's: nil or a Hash, CRuby's TypeError for anything
+   else), into `b`; an anonymous `**` is the enclosing method's kwrest. 0
+   with nothing emitted when there is no such kwrest. */
+int emit_kw_splat_value(Compiler *c, int el, Buf *b);
 void emit_ds_kwarg_check(Compiler *c, Scope *m, int kwh, int ds_hash_tmp, TyKind ds_hash_type);
 void emit_kwhash_verify(Compiler *c, Scope *m, int hash_tmp, TyKind hash_type, Buf *out);
 void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,

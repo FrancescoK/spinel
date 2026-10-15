@@ -4829,6 +4829,14 @@ sp_RbVal sp_box_encoding(sp_Encoding e) { sp_RbVal r; r.tag = SP_TAG_ENCODING; r
 static const char *const sp_encoding_names[][2] = {
 #include "sp_encoding_names.h"
   { NULL, NULL } };
+/* The encoding a name or alias names (case-insensitively, as CRuby), with
+   "external" / "locale" / "filesystem" UTF-8; NULL for a name no encoding has */
+static const char *sp_encoding_canon(const char *n) {
+  if (!strcasecmp(n, "external") || !strcasecmp(n, "locale") || !strcasecmp(n, "filesystem")) return "UTF-8";
+  for (int i = 0; sp_encoding_names[i][0]; i++)
+    if (!strcasecmp(n, sp_encoding_names[i][0])) return sp_encoding_names[i][1];
+  return NULL;
+}
 sp_RbVal sp_encoding_find(sp_RbVal v) {
   v = sp_rbval_str(v);
   if (v.tag == SP_TAG_ENCODING) return v;
@@ -4839,11 +4847,9 @@ sp_RbVal sp_encoding_find(sp_RbVal v) {
     sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into String", cn));
   }
   const char *n = v.v.s;
-  if (!strcasecmp(n, "external") || !strcasecmp(n, "locale") || !strcasecmp(n, "filesystem"))
-    return sp_box_encoding((sp_Encoding){ "UTF-8" });
   if (!strcasecmp(n, "internal")) return sp_box_nil();
-  for (int i = 0; sp_encoding_names[i][0]; i++)
-    if (!strcasecmp(n, sp_encoding_names[i][0])) return sp_box_encoding((sp_Encoding){ sp_encoding_names[i][1] });
+  const char *cn = sp_encoding_canon(n);
+  if (cn) return sp_box_encoding((sp_Encoding){ cn });
   sp_raise_cls("ArgumentError", sp_sprintf("unknown encoding name - %s", n));
   return sp_box_nil();
 }
@@ -4878,9 +4884,7 @@ static int sp_io_enc_side(sp_RbVal v, const char *s, const char **nm) {
   const char *n = NULL;
   if (s) {
     if (!strncasecmp(s, "BOM|", 4)) { *nm = s; return -2; }
-    if (!strcasecmp(s, "external") || !strcasecmp(s, "locale") || !strcasecmp(s, "filesystem")) n = "UTF-8";
-    for (int i = 0; !n && sp_encoding_names[i][0]; i++)
-      if (!strcasecmp(s, sp_encoding_names[i][0])) n = sp_encoding_names[i][1];
+    n = sp_encoding_canon(s);
     if (!n) { *nm = s; return 0; }
   }
   else if (v.tag == SP_TAG_NIL) n = "UTF-8";
@@ -5930,83 +5934,278 @@ SP_NORETURN void sp_raise_cannot_freeze(const char *cls, void *p) {
 }
 
 /* ---- String#encode(dst [, src] [, invalid:, undef:, replace:]) ----
-   The runtime models two encodings, UTF-8 and ASCII-8BIT (docs: the encoding
-   model), so a transcode is one of four pairs. Same-encoding: the bytes,
-   scrubbed only under invalid: :replace, as CRuby does. Binary to UTF-8, and
-   UTF-8 to binary: every byte >= 0x80 (every non-ASCII character) has no
-   mapping, which is Encoding::UndefinedConversionError naming the byte or the
-   code point, or the replacement under undef: :replace. The replacement
-   defaults to U+FFFD for a UTF-8 target and "?" otherwise, as CRuby's does.
-   A name the model does not know (ISO-8859-1, UTF-16) is left as the bytes,
-   which is what every earlier spinel answered for the whole method (#4439). */
-static int sp_enc_kind(sp_RbVal e, int dflt) {   /* 1 UTF-8, 2 binary, 0 unknown */
-  e = sp_rbval_str(e);
-  const char *n = NULL;
-  if (e.tag == SP_TAG_STR || e.tag == SP_TAG_ENCODING) n = e.v.s;
-  else return dflt;
-  if (!n) return dflt;
-  if (!strcasecmp(n, "UTF-8") || !strcasecmp(n, "UTF8")) return 1;
-  if (!strcasecmp(n, "ASCII-8BIT") || !strcasecmp(n, "BINARY")) return 2;
+   The runtime models UTF-8 and ASCII-8BIT, and US-ASCII as UTF-8 that holds
+   only ASCII (docs: the encoding model), so a transcode moves between those
+   three, as CRuby's does: the ASCII bytes carry over and nothing else does.
+   A sequence the source cannot hold (broken UTF-8, any byte >= 0x80 read as
+   US-ASCII) is invalid, Encoding::InvalidByteSequenceError; a character the
+   destination lacks (any non-ASCII one into ASCII-8BIT or US-ASCII, any
+   byte >= 0x80 out of ASCII-8BIT) is undefined,
+   Encoding::UndefinedConversionError; invalid: or undef: :replace puts the
+   replacement there instead, U+FFFD into UTF-8 and "?" otherwise. The same
+   encoding on both sides is the bytes, scrubbed under invalid: :replace. An
+   encoding the model does not have (ISO-8859-1, UTF-16) leaves the bytes,
+   which is what every earlier spinel answered for the whole method (#4439).
+   The arguments are read as CRuby reads them, the options first. `npos` is
+   how many positional ones the call passed: a destination passed as nil, or
+   either one that is no Encoding and no String (nor converts to one through
+   #to_str), is the TypeError; a name no encoding has is
+   Encoding::ConverterNotFoundError, unless both name the same; an invalid:
+   or undef: other than nil or :replace, a replace: that is no String or is
+   broken UTF-8, raise as CRuby's options do. They were not read before:
+   `s.encode(1)` and `s.encode("l")` answered the String unchanged. */
+static int sp_enc_kind(const char *n) {   /* 1 UTF-8, 2 binary, 3 US-ASCII, 0 another */
+  if (!strcmp(n, "UTF-8")) return 1;
+  if (!strcmp(n, "ASCII-8BIT")) return 2;
+  if (!strcmp(n, "US-ASCII")) return 3;
   return 0;
+}
+/* CRuby's Encoding#ascii_compatible?, for the encodings it answers false */
+static int sp_enc_ascii_compat(const char *n) {
+  static const char *const NOT[] = { "UTF-16", "UTF-16BE", "UTF-16LE", "UTF-32", "UTF-32BE", "UTF-32LE",
+                                     "UTF-7", "IBM037", "ISO-2022-JP", "ISO-2022-JP-2", "ISO-2022-JP-KDDI",
+                                     "CP50220", "CP50221", NULL };
+  for (int i = 0; NOT[i]; i++) if (!strcmp(n, NOT[i])) return 0;
+  return 1;
 }
 static int sp_enc_kw_replace(sp_RbVal v) {   /* `invalid: :replace` / `undef: :replace` */
   return v.tag == SP_TAG_SYM && sp_sym_name_fn && sp_sym_name_fn((sp_sym)v.v.i) &&
          !strcmp(sp_sym_name_fn((sp_sym)v.v.i), "replace");
 }
-const char *sp_str_encode(const char *s, sp_RbVal dst, sp_RbVal src,
+const char *sp_poly_class_name(sp_RbVal v);   /* lib/sp_poly_cold.c */
+/* A String argument as CRuby's StringValue takes it: a String, a shared
+   String's bytes, or a user object's #to_str; anything else is the TypeError */
+static const char *sp_enc_str_arg(sp_RbVal v) {
+  if (v.tag == SP_TAG_STR && v.v.s) return v.v.s;
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p)
+    return sp_String_cstr((sp_String *)v.v.p);
+  if (v.tag == SP_TAG_OBJ && v.cls_id >= 0 && v.v.p && sp_obj_to_str_fn) {
+    SP_GC_ROOT_RBVAL(v);   /* across the user #to_str */
+    const char *r = sp_obj_to_str_fn((int)v.cls_id, v.v.p);
+    if (r) return r;
+  }
+  sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into String",
+                                       v.tag == SP_TAG_NIL || v.tag == SP_TAG_STR ? "nil"
+                                       : v.tag == SP_TAG_BOOL ? (v.v.b ? "true" : "false")
+                                       : sp_poly_class_name(v)));
+  return NULL;
+}
+/* The encoding an encode argument names, by its own name, or the name as
+   given where no encoding has it (*known 0) */
+static const char *sp_enc_arg(sp_RbVal v, int *known) {
+  int enc = v.tag == SP_TAG_ENCODING && v.v.s;
+  const char *n = enc ? v.v.s : sp_enc_str_arg(v);
+  const char *cn = sp_encoding_canon(n);
+  *known = cn || enc;
+  return cn ? cn : n;
+}
+static void sp_enc_opt_check(sp_RbVal v, const char *what) {
+  if (v.tag != SP_TAG_NIL && !sp_enc_kw_replace(v))
+    sp_raise_cls("ArgumentError", sp_sprintf("unknown value for %s character option", what));
+}
+/* n bytes at p, quoted as a conversion error shows them (String#dump of
+   binary bytes) */
+static const char *sp_enc_bytes_desc(const char *p, size_t n) {
+  char *out = sp_str_alloc_raw(n * 4 + 3);
+  size_t o = 0;
+  out[o++] = '"';
+  for (size_t k = 0; k < n; k++) {
+    unsigned char c = (unsigned char)p[k];
+    const char *e = c == '"' ? "\\\"" : c == '\\' ? "\\\\" : c == '\n' ? "\\n" : c == '\t' ? "\\t"
+                  : c == '\r' ? "\\r" : c == '\f' ? "\\f" : c == '\v' ? "\\v" : c == '\a' ? "\\a"
+                  : c == '\b' ? "\\b" : c == 27 ? "\\e" : NULL;
+    if (e) { memcpy(out + o, e, 2); o += 2; }
+    else if (c < 0x20 || c >= 0x7F) o += (size_t)sprintf(out + o, "\\x%02X", c);
+    else out[o++] = (char)c;
+  }
+  out[o++] = '"';
+  out[o] = 0;
+  sp_str_set_len(out, o);
+  return out;
+}
+/* The UTF-8 character at p (w bytes) as U+XXXX */
+static const char *sp_enc_cp_desc(const unsigned char *p, size_t w) {
+  unsigned cp = p[0];
+  if (w == 2) cp = ((p[0] & 0x1Fu) << 6) | (p[1] & 0x3Fu);
+  else if (w == 3) cp = ((p[0] & 0x0Fu) << 12) | ((p[1] & 0x3Fu) << 6) | (p[2] & 0x3Fu);
+  else if (w == 4) cp = ((p[0] & 0x07u) << 18) | ((p[1] & 0x3Fu) << 12) | ((p[2] & 0x3Fu) << 6) | (p[3] & 0x3Fu);
+  return sp_sprintf("U+%04X", cp);
+}
+static int sp_enc_repl_kind(const char *r) { return sp_str_is_binary(r) ? 2 : 1; }
+/* The conversion error at s[i] (w bytes, of bl): the bytes quoted, or the
+   character as U+XXXX, rooted while the message is built */
+static void sp_enc_raise_at(const char *s, size_t i, size_t w, size_t bl, int bad, int from, int to,
+                            const char *sn, const char *dn) {
+  unsigned char b = (unsigned char)s[i];
+  const char *d = !bad && from == 1 ? sp_enc_cp_desc((const unsigned char *)s + i, w)
+                : sp_enc_bytes_desc(s + i, bad && from == 1 ? w : 1);
+  SP_GC_ROOT_STR(d);
+  const char *msg;
+  if (bad && from == 3) msg = sp_sprintf("%s on US-ASCII", d);
+  else if (bad) {
+    /* a lead byte cut short names what cut it, or that the String ended */
+    int lead = b >= 0xC2 && b <= 0xF4;
+    if (!lead) msg = sp_sprintf("%s on UTF-8", d);
+    else if (i + w >= bl) msg = sp_sprintf("incomplete %s on UTF-8", d);
+    else {
+      const char *nx = sp_enc_bytes_desc(s + i + w, 1);
+      SP_GC_ROOT_STR(nx);
+      msg = sp_sprintf("%s followed by %s on UTF-8", d, nx);
+    }
+  } else if (from == 2 && to == 3)
+    msg = sp_sprintf("%s to UTF-8 in conversion from ASCII-8BIT to UTF-8 to US-ASCII", d);
+  else
+    msg = sp_sprintf("%s from %s to %s", d, sn, dn);
+  sp_raise_cls(bad ? "Encoding::InvalidByteSequenceError" : "Encoding::UndefinedConversionError", msg);
+}
+const char *sp_str_encode(const char *s, int npos, sp_RbVal dst, sp_RbVal src,
                           sp_RbVal invalid, sp_RbVal undef, sp_RbVal replace) {
   SP_GC_ROOT_STR(s); SP_GC_ROOT_RBVAL(dst); SP_GC_ROOT_RBVAL(src); SP_GC_ROOT_RBVAL(replace);
   replace = sp_rbval_str(replace);
   if (!s) sp_nil_recv("encode");
-  int from = sp_enc_kind(src, sp_str_is_binary(s) ? 2 : 1);
-  int to = sp_enc_kind(dst, 1);
-  /* encode answers a new String even where nothing changes, as CRuby's */
-  if (!from || !to) return sp_str_dup(s);
-  const char *repl = (replace.tag == SP_TAG_STR && replace.v.s) ? replace.v.s : NULL;
+  sp_enc_opt_check(invalid, "invalid");
+  sp_enc_opt_check(undef, "undefined");
+  const char *repl = replace.tag == SP_TAG_NIL ? NULL : sp_enc_str_arg(replace);
   SP_GC_ROOT_STR(repl);
-  if (from == to) {
-    if (from == 1 && sp_enc_kw_replace(invalid)) return sp_str_scrub_utf8(s, repl);
-    return sp_str_dup(s);
+  sp_int bad_len;
+  if (repl && !sp_str_is_binary(repl) &&
+      sp_str_scrub_bad(repl, (sp_int)sp_str_byte_len(repl), 0, &bad_len) < (sp_int)sp_str_byte_len(repl))
+    sp_raise_cls("ArgumentError", sp_sprintf("replacement string is broken: %s as UTF-8", sp_str_dump(repl)));
+  const char *own = sp_str_is_binary(s) ? "ASCII-8BIT" : "UTF-8";
+  int dk = 1, sk = 1;
+  /* no destination is the default internal encoding, nil, which keeps the
+     String's own */
+  const char *dn = npos >= 1 ? sp_enc_arg(dst, &dk) : own;
+  SP_GC_ROOT_STR(dn);
+  const char *sn = npos >= 2 && src.tag != SP_TAG_NIL ? sp_enc_arg(src, &sk) : own;
+  SP_GC_ROOT_STR(sn);
+  if (!dk || !sk) {
+    /* the same name twice converts nothing; CRuby answers the bytes, as binary */
+    if (!strcasecmp(dn, sn)) return sp_str_as_binary(sp_str_dup(s));
+    sp_raise_cls("Encoding::ConverterNotFoundError",
+                 sp_sprintf("code converter not found (%s to %s)", sn, dn));
   }
-  /* binary <-> UTF-8: the ASCII bytes carry over, nothing else does */
+  int from = sp_enc_kind(sn), to = sp_enc_kind(dn);
+  /* a replace: without invalid: :replace puts the replacement in for an
+     undefined character too, as CRuby's option reading does */
+  int inv_rep = sp_enc_kw_replace(invalid), undef_rep = sp_enc_kw_replace(undef) || (repl && !inv_rep);
+  /* An encoding the model does not have: the bytes are the answer only for
+     ASCII between two encodings that hold it as ASCII. Anything else needs
+     that encoding's tables, and answering the bytes unchanged (as every
+     spinel before this did) was a wrong answer: "hé".encode("ISO-8859-1")
+     is "h\xE9" in CRuby, and even one encoding named twice reads the bytes
+     as that encoding's characters, which are not UTF-8's. encode answers a
+     new String even where nothing changes, tagged as a known destination
+     names it. */
+  if (!from || !to) {
+    /* (an empty String has no bytes in any encoding) */
+    int empty = !sp_str_byte_len(s) && (!repl || sp_str_ascii_only(repl));
+    if (!empty && !(sp_str_ascii_only(s) && sp_enc_ascii_compat(sn) && sp_enc_ascii_compat(dn)))
+      sp_raise_cls("NotImplementedError",
+                   sp_sprintf("String#encode from %s to %s: spinel has UTF-8, ASCII-8BIT and "
+                              "US-ASCII only", sn, dn));
+    const char *t = sp_str_dup(s);
+    return to == 2 ? sp_str_as_binary(t) : to ? sp_str_as_text(t) : t;
+  }
   size_t bl = sp_str_byte_len(s);
-  int undef_replace = sp_enc_kw_replace(undef);
-  const char *dflt = to == 1 ? "\xEF\xBF\xBD" : "?";
-  const char *r = repl ? repl : dflt;
+  sp_int nlen = 0, nb = from == 1 ? sp_str_scrub_bad(s, (sp_int)bl, 0, &nlen) : (sp_int)bl;
+  if (from == to) {
+    /* the bytes, tagged as the encoding they are named in (a binary
+       "\xC3\xA9" encoded from UTF-8 to UTF-8 is U+00E9); invalid: :replace
+       scrubs them. Its replacement has to suit that encoding, which CRuby
+       looks at unless the String is already clean in it: when there is
+       something to replace, or the String is tagged otherwise */
+    int dirty = from == 1 ? nb < (sp_int)bl : from == 3 && !sp_str_ascii_only(s);
+    /* (a String spinel holds is never tagged US-ASCII, so CRuby looks at a
+       US-ASCII one's replacement always) */
+    if (inv_rep && repl && !sp_str_ascii_only(repl) && sp_enc_repl_kind(repl) != from &&
+        (dirty || from == 3 || from != (sp_str_is_binary(s) ? 2 : 1)))
+      sp_raise_cls("Encoding::CompatibilityError",
+                   sp_sprintf("incompatible character encodings: %s and %s",
+                              from == 2 ? "BINARY (ASCII-8BIT)" : sn,
+                              sp_str_is_binary(repl) ? "BINARY (ASCII-8BIT)" : "UTF-8"));
+    /* CRuby tags the bytes US-ASCII as they are, a broken String spinel's
+       US-ASCII (ASCII in UTF-8) cannot hold */
+    if (from == 3 && dirty && !inv_rep)
+      sp_raise_cls("NotImplementedError",
+                   "String#encode from US-ASCII to US-ASCII of non-ASCII text: spinel's US-ASCII "
+                   "holds ASCII only");
+    if (!inv_rep || !dirty) {
+      const char *t = sp_str_dup(s);
+      return to == 2 ? sp_str_as_binary(t) : sp_str_as_text(t);
+    }
+    if (from == 1) return sp_str_as_text(sp_str_scrub_utf8(s, repl));
+    /* US-ASCII scrubs each byte >= 0x80, in the walk below */
+  }
+  const char *r = repl ? repl : to == 1 ? "\xEF\xBF\xBD" : "?";
   size_t rl = repl ? sp_str_byte_len(repl) : strlen(r);
+  /* a replacement goes in as the destination holds it, which only ASCII
+     does across encodings; CRuby converts it as it opens the converter,
+     which ASCII text between these encodings never needs */
+  if (from != to && repl && !sp_str_ascii_only(repl) && sp_enc_repl_kind(repl) != to &&
+      !sp_str_ascii_only(s))
+    sp_raise_cls("Encoding::ConverterNotFoundError",
+                 sp_sprintf("code converter not found (%s to %s)", sn, dn));
   size_t cap = bl + 1, o = 0;
   char *out = (char *)malloc(cap);
   if (!out) sp_oom_die();
   for (size_t i = 0; i < bl; ) {
     unsigned char b = (unsigned char)s[i];
-    size_t w = 1;
     if (b < 0x80) { if (o + 1 >= cap) { cap *= 2; out = (char *)realloc(out, cap); if (!out) sp_oom_die(); } out[o++] = (char)b; i++; continue; }
-    if (from == 1) { w = (size_t)sp_utf8_advance(s + i); if (w == 0 || i + w > bl) w = 1; }
-    if (!undef_replace) {
-      char what[64];
-      if (from == 2) snprintf(what, sizeof what, "\"\\x%02X\"", b);
-      else {
-        unsigned cp = 0;
-        if (w == 1) cp = b;
-        else if (w == 2) cp = ((b & 0x1Fu) << 6) | ((unsigned char)s[i+1] & 0x3Fu);
-        else if (w == 3) cp = ((b & 0x0Fu) << 12) | (((unsigned char)s[i+1] & 0x3Fu) << 6) | ((unsigned char)s[i+2] & 0x3Fu);
-        else cp = ((b & 0x07u) << 18) | (((unsigned char)s[i+1] & 0x3Fu) << 12) | (((unsigned char)s[i+2] & 0x3Fu) << 6) | ((unsigned char)s[i+3] & 0x3Fu);
-        snprintf(what, sizeof what, "U+%04X", cp);
-      }
+    size_t w = 1;
+    int bad = from == 3;   /* a high byte read as US-ASCII is no character */
+    if (from == 1) {
+      bad = (sp_int)i == nb;
+      w = bad ? (size_t)nlen : (size_t)sp_utf8_advance(s + i);
+    }
+    if (bad ? !inv_rep : !undef_rep) {
       free(out);
-      sp_raise_cls("Encoding::UndefinedConversionError",
-                   sp_sprintf("%s from %s to %s", what, from == 2 ? "ASCII-8BIT" : "UTF-8",
-                              to == 2 ? "ASCII-8BIT" : "UTF-8"));
+      sp_enc_raise_at(s, i, w, bl, bad, from, to, sn, dn);
     }
     while (o + rl + 1 >= cap) { cap *= 2; out = (char *)realloc(out, cap); if (!out) sp_oom_die(); }
     memcpy(out + o, r, rl); o += rl;
     i += w;
+    if (from == 1 && (sp_int)i > nb) nb = sp_str_scrub_bad(s, (sp_int)bl, (sp_int)i, &nlen);
   }
   char *res = sp_str_alloc_raw(o + 1);
   memcpy(res, out, o); res[o] = 0; sp_str_set_len(res, o);
   free(out);
-  if (to == 2) sp_str_mark_binary(res);
-  return res;
+  return to == 2 ? sp_str_as_binary(res) : sp_str_as_text(res);
+}
+/* String#encode! on `s`, given the String encode answered for it (`t`). The
+   same bytes retag `s` in place, which every name for the String sees, and
+   answer it. New bytes (a replacement under invalid: or undef:) would have
+   to move into the String, and a String that is not shared by reference
+   (--share-strings) has no place to put them that its other names would
+   see: that is NotImplementedError rather than an answer only one name
+   holds (under --share-strings such a String is a handle, or has one slot
+   that takes the bytes back: sp_str_encode_slot). A String in an encoding
+   the model does not have keeps its tag, as force_encoding to one does. */
+const char *sp_str_encode_into(const char *s, const char *t) {
+  size_t n = sp_str_byte_len(s);
+  if (n != sp_str_byte_len(t) || memcmp(s, t, n))
+    sp_raise_cls("NotImplementedError",
+                 "String#encode! that replaces characters is not supported on this String "
+                 "(--share-strings supports it on a variable); write `s = s.encode(...)`");
+  if (sp_str_is_binary(t)) sp_str_as_binary(s); else sp_str_as_text(s);
+  return s;
+}
+/* The same for a String the one slot holding it takes back (a String
+   --share-strings leaves unshared: no other name sees it): the String,
+   retagged, or the new bytes */
+const char *sp_str_encode_slot(const char *s, const char *t) {
+  size_t n = sp_str_byte_len(s);
+  if (n != sp_str_byte_len(t) || memcmp(s, t, n)) return t;
+  if (sp_str_is_binary(t)) sp_str_as_binary(s); else sp_str_as_text(s);
+  return s;
+}
+/* The same on a shared String handle, which takes new bytes itself */
+void sp_String_encode_into(sp_String *h, const char *t) {
+  SP_GC_ROOT(h); SP_GC_ROOT_STR(t);
+  const char *s = sp_String_cstr(h);
+  size_t n = sp_str_byte_len(t);
+  if (n != sp_str_byte_len(s) || memcmp(s, t, n)) sp_String_set_bin(h, t);
+  sp_String_force_encoding(h, sp_str_is_binary(t) ? 1 : 0);
 }
 
 /* ---- Warning module: category flags (Warning[] / Warning[]=) ----

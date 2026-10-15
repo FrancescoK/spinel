@@ -157,6 +157,9 @@ int is_unary_minus(const char *n); /* -@ */
 int is_casecmp_family(const char *n); /* casecmp casecmp? */
 int is_hash_key_value_each(const char *n); /* each_key each_value */
 int is_encoding_mutator(const char *n); /* encode! force_encoding */
+/* the most arguments the arms serve: force_encoding's one (two read as a
+   refusal), encode!'s two encodings and its option hash */
+int encoding_mutator_max_argc(const char *n);
 int is_range_end_reader(const char *n); /* end last */
 int is_raise_alias(const char *n); /* fail raise */
 int is_exc_message_name(const char *n); /* message full_message detailed_message */

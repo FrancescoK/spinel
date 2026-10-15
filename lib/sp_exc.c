@@ -965,6 +965,7 @@ const char *sp_exc_parent_of_name(const char *cls) {
     {"Encoding::UndefinedConversionError", "EncodingError"},
     {"Encoding::InvalidByteSequenceError", "EncodingError"},
     {"Encoding::CompatibilityError",       "EncodingError"},
+    {"Encoding::ConverterNotFoundError",   "EncodingError"},
     /* a LoadError is a ScriptError: `rescue StandardError` and `rescue => e`
        let it through, as sp_exc_is_standard_error already said */
     {"LoadError",             "ScriptError"},

@@ -1,0 +1,15 @@
+["h?llo", "h?llo", "ASCII-8BIT", true]
+"h?llo!"
+["ab*", "ASCII-8BIT"]
+["xy?", "ASCII-8BIT"]
+["h�llo", "h�llo", "UTF-8"]
+["h?llo", "h?llo", "UTF-8"]
+["h*llo", "h*llo", "ASCII-8BIT"]
+["h?llo", "h?llo", "ASCII-8BIT"]
+["h?llo!", true]
+"h?llo"
+"h?"
+"h?llo"
+"h?llo"
+"h?llo"
+"h?llo"
