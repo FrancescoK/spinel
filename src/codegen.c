@@ -16962,6 +16962,32 @@ static void reject_define_method_early(Compiler *c) {
                                  "that method runs (see docs/limitations.md)");
 }
 
+/* define_method(:m, &blk) or define_method(:m, blk) in a method's body,
+   where blk is a parameter of that method (its &block, or a Proc it is
+   handed): the method's body is whatever block a caller passes, known
+   only at run time. It was laid out with no parameters and raised
+   ArgumentError when called (#9268); refuse it where it is written. */
+static void reject_define_method_runtime_block(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || (!sp_streq(nm, "define_method") && !sp_streq(nm, "define_singleton_method"))) continue;
+    Scope *sc = comp_scope_of(c, id);
+    if (!sc || sc->def_node < 0 || !sc->reachable) continue;
+    int args = nt_ref(nt, id, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    int blk = nt_ref(nt, id, "block"), src = -1;
+    if (an == 2 && blk < 0) src = av[1];
+    else if (an == 1 && blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode) src = nt_ref(nt, blk, "expression");
+    if (src < 0 || nt_kind(nt, src) != NK_LocalVariableReadNode) continue;
+    LocalVar *lv = scope_local(sc, nt_str(nt, src, "name"));
+    if (!lv || !lv->is_param) continue;
+    unsupported_feature(c, id, "Module#define_method with a block or Proc the method is handed (`&block`, a "
+                               "parameter) is not supported: the defined method's body is the caller's block, "
+                               "known only at run time. Pass a block literal to define_method instead");
+  }
+}
+
 static void reject_runtime_send(Compiler *c) {
   if (defer_refusals()) return;   /* refused where it is emitted (refuse_prepass_at_emit) */
   NT_FOREACH_KIND(c->nt, NK_CallNode, id) refuse_from_plan(c, id, CRF_SEND, "refuse-send");
@@ -19219,6 +19245,7 @@ char *codegen_program(const NodeTable *nt) {
   reject_binding(c);
   reject_time_parse(c);
   reject_define_method_early(c);
+  reject_define_method_runtime_block(c);
 
   Buf b; memset(&b, 0, sizeof b);
   memset(&g_procs, 0, sizeof g_procs);
