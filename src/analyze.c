@@ -8010,7 +8010,23 @@ static int desugar_builtin_method_obj(Compiler *c) {
       if (!ksym || !ksym[0] || ksym[0] == '_') continue;
       int kknown = 0;
       for (int k = 0; KFN0[k]; k++) if (sp_streq(ksym, KFN0[k])) { kknown = 1; break; }
-      if (!kknown) continue;
+      /* in a class method, self is the class: `method(:const_get)` binds
+         Module#const_get to it, which regexp_parser hands on as a block
+         (`constants.grep(re).flat_map(&method(:const_get))`). The wrapper
+         names the class: `def __bam_N(__bam_r) = K.const_get(__bam_r)`. */
+      int kcls = -1;
+      if (!kknown && (sp_streq(ksym, "const_get") || sp_streq(ksym, "const_defined?"))) {
+        int ks = c->nscope[id];
+        /* only where self can be no other class: a subclass calling the
+           inherited class method is its own self */
+        int kd = 0;
+        if (ks >= 0 && ks < c->nscopes && c->scopes[ks].is_cmethod && c->scopes[ks].class_id >= 0 &&
+            comp_cmethod_in_chain(c, c->scopes[ks].class_id, ksym, NULL) < 0 &&
+            (comp_descendants(c, c->scopes[ks].class_id, &kd), kd == 0))
+          kcls = c->scopes[ks].class_id;
+        if (kcls < 0) continue;
+      }
+      else if (!kknown) continue;
       if (comp_method_index(c, ksym) >= 0) continue;   /* a user def wins */
       char kwname[48];
       snprintf(kwname, sizeof kwname, "__bam_%s", comp_node_tag(c, id));
@@ -8038,6 +8054,11 @@ static int desugar_builtin_method_obj(Compiler *c) {
       int kcall = nt_new_node(nt, "CallNode");
       nt_node_set_str(nt, kcall, "name", ksym);
       nt_node_set_ref(nt, kcall, "arguments", kargs);
+      if (kcls >= 0) {
+        int krecv = nt_new_node(nt, "ConstantReadNode");
+        nt_node_set_str(nt, krecv, "name", c->classes[kcls].name);
+        nt_node_set_ref(nt, kcall, "receiver", krecv);
+      }
       int kbody = nt_new_node(nt, "StatementsNode");
       nt_node_set_arr(nt, kbody, "body", &kcall, 1);
       int kdef = nt_new_node(nt, "DefNode");
