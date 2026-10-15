@@ -77,4 +77,26 @@ Dir.mktmpdir('spinel-cext-compiler-') do |tmp|
   expected = command(RbConfig.ruby, File.join(native, 'program.rb'))
   raise "CRuby differs\nexpected:\n#{expected}\nactual:\n#{actual}" unless actual == expected
 end
+Dir.mktmpdir('spinel-cext-display-') do |tmp|
+  CextRecord.record(name: 'display', init: 'Init_display',
+    sources: [File.join(ROOT, 'test/cext/compiler/display.c')],
+    output: File.join(tmp, 'display.json'), declarations: File.join(tmp, 'display.rb'),
+    object_archive: File.join(tmp, 'display.a'))
+  FileUtils.cp(File.join(ROOT, 'test/cext/compiler/display.rb'), File.join(tmp, 'program.rb'))
+  exe = File.join(tmp, 'program')
+  command(File.join(ROOT, 'bin/spinel'), File.join(tmp, 'program.rb'), '--link', File.join(tmp, 'display.a'), '-o', exe)
+  actual = command(exe)
+  command(File.join(ROOT, 'bin/spinel'), File.join(tmp, 'program.rb'), '--share-strings', '--link', File.join(tmp, 'display.a'), '-o', exe + '-shared')
+  raise 'shared String mode changed the display output' unless command(exe + '-shared') == actual
+  stressed = command(exe, env: {'SPINEL_GC_STRESS' => '1', 'SPINEL_GC_VERIFY_GEN' => '1'})
+  raise 'GC stress changed the display output' unless stressed == actual
+  native = File.join(tmp, 'cruby')
+  FileUtils.mkdir_p(native)
+  FileUtils.cp(File.join(ROOT, 'test/cext/compiler/display.c'), File.join(native, 'display.c'))
+  FileUtils.cp(File.join(ROOT, 'test/cext/compiler/display.rb'), File.join(native, 'program.rb'))
+  command(RbConfig.ruby, '-rmkmf', '-e', 'create_makefile("display")', chdir: native)
+  command('make', chdir: native)
+  expected = command(RbConfig.ruby, File.join(native, 'program.rb'))
+  raise "CRuby differs\nexpected:\n#{expected}\nactual:\n#{actual}" unless actual == expected
+end
 puts 'C extension compiler bridge: CRuby oracle and GC modes passed'

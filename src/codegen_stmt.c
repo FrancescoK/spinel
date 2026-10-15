@@ -43,7 +43,7 @@ static void emit_obj_to_s(Compiler *c, int arg, TyKind t, Buf *b) {
     if (!comp_ty_value_obj(c, t)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tt); }
     buf_printf(b, "_t%d", tt);
   }
-  buf_puts(b, "))");
+  buf_printf(b, "%s))", obj_str_blockarg(c, ty_object_class(t), 0));
 }
 
 static int emit_splat_io(Compiler *c, int arg, const char *fn, Buf *b, int indent) {
@@ -590,8 +590,8 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "); ");
     if (!expr_is_held_ref(c, arg)) buf_printf(b, "SP_GC_ROOT(_t%d); ", pv);
     int rp = obj_str_ret_poly(c, ty_object_class(t), 1);
-    buf_printf(b, "sp_puts_line(_t%d ? %ssp_%s_%s(_t%d)%s : \"nil\"); }\n", pv, rp ? "sp_poly_to_s(" : "", cn,
-               obj_str_mname(c, ty_object_class(t), 1), pv, rp ? ")" : "");
+    buf_printf(b, "sp_puts_line(_t%d ? %ssp_%s_%s(_t%d%s)%s : \"nil\"); }\n", pv, rp ? "sp_poly_to_s(" : "", cn,
+               obj_str_mname(c, ty_object_class(t), 1), pv, obj_str_blockarg(c, ty_object_class(t), 1), rp ? ")" : "");
   }
   else if (t == TY_PROC) {
     buf_puts(b, "{ sp_Proc *_pp = ("); emit_expr(c, arg, b);
@@ -672,15 +672,16 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
       int rp = obj_str_ret_poly(c, cid, 1);
       buf_printf(b, "{ const char *_pi = %ssp_%s_%s((sp_%s *)(", rp ? "sp_poly_to_s(" : "", icn, obj_str_mname(c, cid, 1), icn);
       emit_expr(c, arg, b);
-      buf_printf(b, "))%s; sp_puts_line(_pi ? _pi : \"nil\"); }\n", rp ? ")" : "");
+      buf_printf(b, ")%s)%s; sp_puts_line(_pi ? _pi : \"nil\"); }\n", obj_str_blockarg(c, cid, 1), rp ? ")" : "");
     }
     else if (icn) {
       /* the receiver rooted across its #inspect, as in the arm above */
       int pv = ++g_tmp;
       buf_printf(b, "{ sp_%s *_t%d = (sp_%s *)(", icn, pv, icn); emit_expr(c, arg, b);
       int rp = obj_str_ret_poly(c, cid, 1);
-      buf_printf(b, "); SP_GC_ROOT(_t%d); const char *_pi = %ssp_%s_%s(_t%d)%s;"
-                    " sp_puts_line(_pi ? _pi : \"nil\"); }\n", pv, rp ? "sp_poly_to_s(" : "", icn, obj_str_mname(c, cid, 1), pv, rp ? ")" : "");
+      buf_printf(b, "); SP_GC_ROOT(_t%d); const char *_pi = %ssp_%s_%s(_t%d%s)%s;"
+                    " sp_puts_line(_pi ? _pi : \"nil\"); }\n", pv, rp ? "sp_poly_to_s(" : "", icn, obj_str_mname(c, cid, 1), pv,
+                    obj_str_blockarg(c, cid, 1), rp ? ")" : "");
     }
     else {
       buf_printf(b, "{ void *_po = (void *)("); emit_expr(c, arg, b);

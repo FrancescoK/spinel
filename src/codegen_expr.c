@@ -522,7 +522,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
           const char *tsm = obj_str_mname(c, ty_object_class(t), 0);
           if (comp_ty_value_obj(c, t)) buf_printf(&conv, "sp_%s_%s(", cn, tsm);
           else buf_printf(&conv, "sp_%s_%s((sp_%s *)", cn, tsm, cn);
-          EMIT_IV(); buf_puts(&conv, ")");
+          EMIT_IV(); buf_printf(&conv, "%s)", obj_str_blockarg(c, ty_object_class(t), 0));
         }
         else {
           /* rooted: the part may be a fresh object (`"#{C.new}"`) held
@@ -532,8 +532,8 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
           EMIT_IV();
           buf_printf(&conv, "); SP_GC_ROOT(_t%d); ", to);
           if (part_nil) buf_printf(&conv, "_t%d ? ", to);
-          buf_printf(&conv, "sp_%s_%s(_t%d)%s; })", cn, obj_str_mname(c, ty_object_class(t), 0), to,
-                     part_nil ? " : sp_str_empty" : "");
+          buf_printf(&conv, "sp_%s_%s(_t%d%s)%s; })", cn, obj_str_mname(c, ty_object_class(t), 0), to,
+                     obj_str_blockarg(c, ty_object_class(t), 0), part_nil ? " : sp_str_empty" : "");
         }
         if (ret_poly) buf_puts(&conv, ")");
       }

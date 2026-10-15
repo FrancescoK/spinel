@@ -12071,6 +12071,13 @@ static int bridge_has_blk(Compiler *c, int mi) {
 }
 static const char *bridge_blk_param(Compiler *c, int mi) { return bridge_has_blk(c, mi) ? ", sp_Proc *blk" : ""; }
 static const char *bridge_blk_arg(Compiler *c, int mi)   { return bridge_has_blk(c, mi) ? ", NULL" : ""; }
+/* The block argument a direct call of a class's #to_s or #inspect passes:
+   a C extension method always takes one. */
+const char *obj_str_blockarg(Compiler *c, int cid, int want_inspect) {
+  if (cid < 0 || cid >= c->nclasses) return "";
+  int mi = display_method_scope(c, cid, want_inspect, NULL);
+  return mi >= 0 ? bridge_blk_arg(c, mi) : "";
+}
 
 static void emit_conv_bridge(Compiler *c, Buf *b, const char *mname, TyKind want,
                              const char *rett, const char *sig, int with_ok,
@@ -12269,14 +12276,15 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
        default past the user's #to_s. */
     if (comp_ty_value_obj(c, ty_object(i))) {
       if (tsok && tdef == i)
-        buf_printf(b, "    case %d: return %ssp_%s_%s(*(sp_%s *)p)%s;\n",
-                   i, tspoly ? "sp_poly_to_s(" : "", tci->c_name, mc(c->scopes[tmi].name), tci->c_name, tspoly ? ")" : "");
+        buf_printf(b, "    case %d: return %ssp_%s_%s(*(sp_%s *)p%s)%s;\n",
+                   i, tspoly ? "sp_poly_to_s(" : "", tci->c_name, mc(c->scopes[tmi].name), tci->c_name,
+                   bridge_blk_arg(c, tmi), tspoly ? ")" : "");
       continue;
     }
     if (tsok) {
-      buf_printf(b, "    case %d: return %ssp_%s_%s((sp_%s *)p)%s;\n",
+      buf_printf(b, "    case %d: return %ssp_%s_%s((sp_%s *)p%s)%s;\n",
                  i, tspoly ? "sp_poly_to_s(" : "", c->classes[tdef].c_name, mc(c->scopes[tmi].name),
-                 c->classes[tdef].c_name, tspoly ? ")" : "");
+                 c->classes[tdef].c_name, bridge_blk_arg(c, tmi), tspoly ? ")" : "");
       continue;
     }
     /* Struct/Data #to_s IS #inspect in CRuby, and they have a generated one
@@ -12347,9 +12355,9 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
       int vpoly = vmi >= 0 && c->scopes[vmi].ret == TY_POLY;
       if (vmi >= 0 && vdef == i && c->scopes[vmi].reachable &&
           (c->scopes[vmi].ret == TY_STRING || vpoly) && c->scopes[vmi].nparams == 0)
-        buf_printf(b, "    case %d: return %ssp_%s_%s(*(sp_%s *)p)%s;\n",
+        buf_printf(b, "    case %d: return %ssp_%s_%s(*(sp_%s *)p%s)%s;\n",
                    i, vpoly ? "sp_poly_to_s(" : "", c->classes[i].c_name, mc(c->scopes[vmi].name),
-                   c->classes[i].c_name, vpoly ? ")" : "");
+                   c->classes[i].c_name, bridge_blk_arg(c, vmi), vpoly ? ")" : "");
       if (vmi >= 0) continue;
     }
     if (!class_inspectable(c, i)) continue;
@@ -12363,9 +12371,9 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
     int uipoly = uimi >= 0 && c->scopes[uimi].ret == TY_POLY;
     if (uimi >= 0 && c->scopes[uimi].reachable && (c->scopes[uimi].ret == TY_STRING || uipoly) &&
         c->scopes[uimi].nparams == 0) {
-      buf_printf(b, "    case %d: return %ssp_%s_%s((sp_%s *)p)%s;\n",
+      buf_printf(b, "    case %d: return %ssp_%s_%s((sp_%s *)p%s)%s;\n",
                  i, uipoly ? "sp_poly_to_s(" : "", c->classes[uidef].c_name, mc(c->scopes[uimi].name),
-                 c->classes[uidef].c_name, uipoly ? ")" : "");
+                 c->classes[uidef].c_name, bridge_blk_arg(c, uimi), uipoly ? ")" : "");
       continue;
     }
     /* Struct/Data have a generated #inspect (#<struct Name a=1> / #<data ...>);
@@ -14287,6 +14295,7 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
     else {
       continue;
     }
+    strncat(argbuf, bridge_blk_arg(c, mi), sizeof argbuf - strlen(argbuf) - 1);
     /* the callee and its self, as the class's own methods take them */
     char callee[200], selfarg[200];
     if (bcase) {
@@ -14880,11 +14889,11 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
     const char *slf = c->classes[defcls].is_value_type ? "*" : "";
     buf_printf(b, "    case %d: ", comp_class_index(c, c->classes[k].name));
     if (m->ret == TY_INT && method_ret_is_oint(m))   /* a nil hash: TypeError */
-      buf_printf(b, "return sp_oint_arg(sp_%s_%s(%s(sp_%s *)p));\n", dcn, mc(m->name), slf, dcn);
+      buf_printf(b, "return sp_oint_arg(sp_%s_%s(%s(sp_%s *)p%s));\n", dcn, mc(m->name), slf, dcn, bridge_blk_arg(c, mi));
     else if (m->ret == TY_INT)
-      buf_printf(b, "return (sp_int)sp_%s_%s(%s(sp_%s *)p);\n", dcn, mc(m->name), slf, dcn);
+      buf_printf(b, "return (sp_int)sp_%s_%s(%s(sp_%s *)p%s);\n", dcn, mc(m->name), slf, dcn, bridge_blk_arg(c, mi));
     else
-      buf_printf(b, "return sp_rbval_hash_key(sp_%s_%s(%s(sp_%s *)p));\n", dcn, mc(m->name), slf, dcn);
+      buf_printf(b, "return sp_rbval_hash_key(sp_%s_%s(%s(sp_%s *)p%s));\n", dcn, mc(m->name), slf, dcn, bridge_blk_arg(c, mi));
   }
   /* Struct/Data value keys: hash is the running combination of member hashes. */
   for (int k = 0; k < c->nclasses; k++) {
@@ -14930,6 +14939,7 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
     else {
       snprintf(argbuf, sizeof argbuf, "sp_box_obj(b_, cls_id)");
     }
+    strncat(argbuf, bridge_blk_arg(c, mi), sizeof argbuf - strlen(argbuf) - 1);
     const char *dcn = c->classes[defcls].c_name;
     const char *slf = c->classes[defcls].is_value_type ? "*" : "";
     buf_printf(b, "    case %d: ", comp_class_index(c, c->classes[k].name));
