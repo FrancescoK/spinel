@@ -18646,7 +18646,7 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
         else if (!c->share_strings && yb_param_fresh(c, snm, sns, 0)) {
           /* every yield hands over a new String: the element is a handle
              over it, which nothing else holds */
-          if (!c->strbuf_box[sn]) { c->strbuf_box[sn] = 1; ch = 1; }
+          if (!c->strbuf_box[sn]) { comp_set_strbuf_box(c, sn, 1); ch = 1; }
           nt_node_set_int((NodeTable *)c->nt, sn, "fresh_yield_box", 1);
         }
         else {
