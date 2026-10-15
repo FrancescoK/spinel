@@ -1,0 +1,16 @@
+"ab"
+"cdef"
+[:reader, [1, 2]]
+"  ab  "
+"**ab**"
+4
+[:reader, []]
+"aaabccc"
+[:reader, ["ab", "bc"]]
+[1, 2]
+[:a, 1]
+[1, 2]
+[1]
+"wrong number of arguments (given 1, expected 0)"
+"wrong number of arguments (given 0, expected 1..2)"
+:center

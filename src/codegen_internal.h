@@ -1997,6 +1997,10 @@ int local_all_writes_empty_array(Compiler *c, Scope *sc, const char *name);
 TyKind an_builtin_answer(Compiler *c, int id);
 int builtin_read_ignores_block(const char *nm);
 TyKind infer_call(Compiler *c, int id);
+int an_bi_generic_splat(Compiler *c, int id);
+int builtin_recv_arity_span(const char *name, int *lo, int *hi);
+int builtin_recv_owner_classes(const char *name, const char **out, int cap);
+int poly_splat_keyed(const char *name);
 int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out);
 int node_is_empty_container(const NodeTable *nt, int node);
 int an_empty_container_kind(Compiler *c, int b);
@@ -2547,6 +2551,7 @@ void emit_str_expr_sep(Compiler *c, int node, Buf *b);
 /* strict with CRuby's rb_convert_type wording ("of nil into Integer") */
 void emit_int_expr_conv(Compiler *c, int node, Buf *b);
 void emit_to_int_expr(Compiler *c, int node, Buf *b);
+void emit_seed_expr(Compiler *c, int node, Buf *b);
 void emit_int_expr_offt(Compiler *c, int node, Buf *b);
 int emit_unresolved_coerced(Compiler *c, int node, TyKind target, Buf *b);
 int emit_unresolved_coerced_text(Compiler *c, int node, TyKind target, const char *txt, Buf *b);

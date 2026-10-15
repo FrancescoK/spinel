@@ -2713,6 +2713,65 @@ const BuiltinOp *an_bop_find(Compiler *c, int id, TyKind rt, const char *name,
   return op;
 }
 
+/* Does the program give a builtin class or module (String, Comparable,
+   Kernel, Object ...) an instance method of its own, by a def in it or a
+   module it includes or prepends? Shape alone, so asked once per scope
+   count. */
+static int an_prog_extends_builtin(Compiler *c) {
+  static const Compiler *seen_c;
+  static int seen_n = -1, ans;
+  if (seen_c == c && seen_n == c->nscopes) return ans;
+  seen_c = c; seen_n = c->nscopes; ans = 0;
+  for (int k = 0; k < c->nclasses && !ans; k++)
+    if (c->classes[k].is_builtin_const && (c->classes[k].nincluded_mods > 0 || c->classes[k].nprep_chain > 0)) ans = 1;
+  for (int s = 0; s < c->nscopes && !ans; s++) {
+    int k = c->scopes[s].class_id;
+    if (k >= 0 && k < c->nclasses && c->classes[k].is_builtin_const && !c->scopes[s].is_cmethod && c->scopes[s].name) ans = 1;
+  }
+  return ans;
+}
+
+/* A call on a boxed receiver whose only argument is a splat, of a name a
+   builtin answers when called with a receiver: where a user class also
+   owns the name, the class-id dispatch's builtin default cannot read the
+   list (its emitters take typed arguments of a fixed count), so it calls
+   the builtin's generic entry instead (bi_generic_fn), which takes the list
+   as (argc, argv) and answers boxed. Object's own methods, and the names
+   whose builtin default reads a splat itself (poly_splat_keyed), keep the
+   arms they have. */
+int an_bi_generic_splat(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "block") >= 0) return 0;
+  if (nt_ref(nt, id, "receiver") < 0 || call_is_safe_nav(nt, id)) return 0;
+  const char *name = nt_str(nt, id, "name");
+  if (!name) return 0;
+  int an = nt_ref(nt, id, "arguments"), n = 0;
+  const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
+  if (n != 1 || nt_kind(nt, av[0]) != NK_SplatNode) return 0;
+  if (object_public_method_name(name) || poly_splat_keyed(name) || !bop_generic_entry(name, NULL)) return 0;
+  /* a name that may change a String in place (String's mutators and any
+     name ending in `!`, on any receiver, which the call site does not know):
+     the default build hands a boxed String to it as a copy, which the
+     written-out call loses the change of too, so only a build that shares
+     Strings by reference takes the entry */
+  if (!repr_share_rule(c) && an_str_mutator_name(name)) return 0;
+  /* a name every value answers (an Object row), or one the program defines
+     in a subclass of Array, Hash or String, which the dispatch reads as its
+     builtin: the entry would run the builtin's own method instead */
+  const char *own[64];
+  if (builtin_recv_owner_classes(name, own, 64) < 0) return 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (c->classes[k].ary_root > 0 && comp_method_in_chain(c, k, name, NULL) >= 0) return 0;
+  /* a name the program aliases, undefines, hides or defines by a Symbol
+     (`alias center ljust`, `private :center`), and any name in a program
+     that gives a builtin class or module a method of its own (String,
+     Comparable, Kernel ...): CRuby's builtin then answers through that
+     method (an Integer's own `<=>`), which the entry's arms do not call */
+  if (an_prog_names_method(name) || an_prog_extends_builtin(c)) return 0;
+  int lo, hi;
+  return builtin_recv_arity_span(name, &lo, &hi);
+}
+
 /* A boxed receiver or a boxed first operand (infer_call_inner's rules, in their order) */
 static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0, TyKind *out) {
   /* poly receiver / poly operand: result type of operations on sp_RbVal */
@@ -3174,6 +3233,10 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
          The builtin answer's own shape is recorded for codegen, which emits
          the builtin arm by re-entering the ordinary emission and has to know
          whether that produces an array pointer or a boxed value. */
+      /* a splat the dispatch hands to a builtin's generic entry: its answer
+         is boxed, whatever the count the list has at run time */
+      if (found && !an_builtin_only && rt == TY_POLY && an_bi_generic_splat(c, id))
+        { *out = TY_POLY; return 1; }
       if (found && !an_builtin_only && poly_container_read_p(name) &&
           nt_ref(nt, id, "block") < 0 && poly_expr_flows_container(c, recv)) {
         { *out = an_poly_concrete(c, name, TY_POLY); return 1; }

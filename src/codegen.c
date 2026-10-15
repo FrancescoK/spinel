@@ -1024,6 +1024,15 @@ void emit_to_int_expr(Compiler *c, int node, Buf *b) {
   else emit_int_expr_conv(c, node, b);
 }
 
+/* Random.new's and srand's seed: a boxed Bignum folds to its low word, as
+   the typed seed does (sp_poly_seed_arg), where a C long slot raises. */
+void emit_seed_expr(Compiler *c, int node, Buf *b) {
+  if (repr_of(c, node).kind == RK_BOXED) {
+    buf_puts(b, "sp_poly_seed_arg("); emit_boxed(c, node, b); buf_puts(b, ")");
+  }
+  else emit_to_int_expr(c, node, b);
+}
+
 /* Strict, with NUM2OFFT's wording ("from nil"): an IO offset -- seek,
    sysseek, pos=, truncate, and pread's and pwrite's offset. */
 void emit_int_expr_offt(Compiler *c, int node, Buf *b) {

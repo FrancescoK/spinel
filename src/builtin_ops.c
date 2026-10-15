@@ -35,6 +35,69 @@ int bop_name_mutates(const char *name, unsigned sites) {
   return 0;
 }
 
+/* The names a lone splat on a boxed receiver reaches through the generic
+   entry (an_bi_generic_splat, bi_generic_fn), and the most arguments it
+   takes them with (-1: every count it writes out). Each was run on every
+   builtin receiver class that has it, and on those that lack it, with no,
+   one, two and three arguments of each builtin kind (Integer, a Bignum,
+   Float, String, Symbol, Regexp, Array, Hash, nil), and answered as CRuby
+   does or raised, leaving the receiver and $~ as CRuby leaves them. A name
+   some count of which answers otherwise stops below that count; a name the
+   written-out call answers wrong for is left out (fill, utc, assoc ...), as
+   is a name whose blockless form answers an Enumerator and any other name:
+   their splat raises NoMethodError, as before. Sorted by name (strcmp). */
+typedef struct { const char *name; int most; } BopGenericRow;
+static const BopGenericRow bop_generic_rows[] = {
+  { "abs", -1 }, { "abs2", -1 }, { "angle", -1 }, { "arg", -1 }, { "ascii_only?", -1 }, { "asctime", -1 },
+  { "at", -1 }, { "b", -1 }, { "between?", -1 }, { "bit_length", -1 }, { "bytesize", -1 },
+  { "byteslice", -1 }, { "capitalize", -1 }, { "capitalize!", -1 }, { "captures", -1 }, { "casecmp", -1 },
+  { "casecmp?", -1 }, { "ceil", 0 }, { "center", -1 }, { "chars", -1 }, { "chomp", -1 }, { "chomp!", -1 },
+  { "chop", -1 }, { "chop!", -1 }, { "chr", -1 }, { "clamp", -1 }, { "close", -1 }, { "closed?", -1 },
+  { "codepoints", -1 }, { "coerce", -1 }, { "compact", -1 }, { "compare_by_identity?", -1 },
+  { "concat", 0 }, { "conj", -1 }, { "conjugate", -1 }, { "ctime", -1 }, { "day", -1 },
+  { "deconstruct_keys", -1 }, { "default", -1 }, { "delete!", -1 }, { "delete_at", -1 },
+  { "delete_prefix", -1 }, { "delete_prefix!", -1 }, { "delete_suffix", -1 }, { "delete_suffix!", -1 },
+  { "denominator", -1 }, { "difference", -1 }, { "div", -1 }, { "divmod", -1 }, { "downcase", -1 },
+  { "downcase!", -1 }, { "drop", -1 }, { "dst?", -1 }, { "dump", -1 }, { "encode", 0 }, { "encoding", -1 },
+  { "entries", -1 }, { "eof?", -1 }, { "exclude_end?", -1 }, { "fdiv", -1 }, { "finite?", -1 },
+  { "flatten!", -1 }, { "floor", 0 }, { "friday?", -1 }, { "gcd", -1 }, { "getgm", -1 }, { "getlocal", -1 },
+  { "getutc", -1 }, { "gmt?", -1 }, { "gmt_offset", -1 }, { "gmtoff", -1 }, { "has_value?", -1 },
+  { "hex", -1 }, { "hour", -1 }, { "id2name", -1 }, { "imag", -1 }, { "imaginary", -1 },
+  { "infinite?", -1 }, { "integer?", -1 }, { "intern", -1 }, { "intersection", -1 }, { "isdst", -1 },
+  { "keys", -1 }, { "lcm", -1 }, { "ljust", -1 }, { "lstrip", -1 }, { "lstrip!", 0 }, { "magnitude", -1 },
+  { "mday", -1 }, { "members", -1 }, { "merge", -1 }, { "merge!", -1 }, { "min", -1 }, { "modulo", -1 },
+  { "mon", -1 }, { "monday?", -1 }, { "month", -1 }, { "nan?", -1 }, { "negative?", -1 }, { "next", -1 },
+  { "next!", -1 }, { "next_float", -1 }, { "next_values", -1 }, { "nonzero?", -1 }, { "nsec", -1 },
+  { "numerator", -1 }, { "oct", -1 }, { "offset", -1 }, { "ord", -1 }, { "pack", -1 }, { "peek", -1 },
+  { "peek_values", -1 }, { "phase", -1 }, { "polar", -1 }, { "pop", -1 }, { "positive?", -1 },
+  { "post_match", -1 }, { "pre_match", -1 }, { "prepend", -1 }, { "prev_float", -1 }, { "read", 1 },
+  { "real", -1 }, { "real?", -1 }, { "rect", -1 }, { "rectangular", -1 }, { "regexp", -1 },
+  { "replace", -1 }, { "reverse", -1 }, { "reverse!", -1 }, { "rjust", -1 }, { "rotate!", -1 },
+  { "round", 0 }, { "rstrip", -1 }, { "rstrip!", 0 }, { "saturday?", -1 }, { "scan", -1 }, { "scrub", -1 },
+  { "scrub!", -1 }, { "sec", -1 }, { "shift", -1 }, { "sort", -1 }, { "sort!", -1 }, { "split", -1 },
+  { "squeeze", -1 }, { "squeeze!", -1 }, { "store", -1 }, { "strip", -1 }, { "strip!", 0 }, { "sub", -1 },
+  { "sub!", -1 }, { "subsec", -1 }, { "succ", -1 }, { "succ!", -1 }, { "sum", -1 }, { "sunday?", -1 },
+  { "swapcase", -1 }, { "swapcase!", -1 }, { "sync", -1 }, { "take", -1 }, { "thursday?", -1 },
+  { "to_ary", -1 }, { "to_f", -1 }, { "to_hash", -1 }, { "to_str", -1 }, { "to_sym", -1 }, { "tr", -1 },
+  { "tr_s", -1 }, { "tr_s!", -1 }, { "truncate", 0 }, { "tuesday?", -1 }, { "tv_nsec", -1 },
+  { "tv_sec", -1 }, { "tv_usec", -1 }, { "union", -1 }, { "uniq", -1 }, { "uniq!", -1 }, { "unpack", -1 },
+  { "unpack1", -1 }, { "upcase", -1 }, { "upcase!", -1 }, { "update", -1 }, { "usec", -1 }, { "utc?", -1 },
+  { "utc_offset", -1 }, { "valid_encoding?", -1 }, { "value?", -1 }, { "values", -1 }, { "wday", -1 },
+  { "wednesday?", -1 }, { "yday", -1 }, { "year", -1 }, { "zero?", -1 }, { "zone", -1 }
+};
+
+static int bop_generic_cmp(const void *k, const void *r) {
+  return strcmp((const char *)k, *(const char *const *)r);
+}
+
+int bop_generic_entry(const char *name, int *most) {
+  if (!name) return 0;
+  const BopGenericRow *r = bsearch(name, bop_generic_rows, sizeof bop_generic_rows / sizeof bop_generic_rows[0],
+            sizeof bop_generic_rows[0], bop_generic_cmp);
+  if (r && most) *most = r->most;
+  return r != NULL;
+}
+
 static const BuiltinZeroOp bop_zero_ops[] = {
 #define BZ_IO(name, fn, ret, max, mode, poly_ret, tail) \
   { TY_IO, name, #fn, poly_ret, tail },
