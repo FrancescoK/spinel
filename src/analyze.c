@@ -14993,33 +14993,38 @@ static unsigned hash_key_write_bits(Compiler *c, int id, const Scope **sc, const
    method (`def parse(arg) = parse_hash(arg.dup)`). A copy has its source's
    variant, so the widening lands on the source literal; without this a
    Symbol stored into a dup'ed String-keyed hash raised, and into a dup'ed
-   Integer-keyed one landed as INT64_MIN (#4540). Appends to `out`, up to
+   Integer-keyed one landed as INT64_MIN (#4540). Fills `out`, up to
    `cap`; answers the count. */
 /* The walk fans out -- a parameter to every call of its method, whose
    arguments are parameters in turn -- and meets the same nodes by many
-   paths: each node is walked once per query, at the shallowest depth it is
-   reached (a generation stamp, so no clearing between queries). */
-static int *hls_gen, *hls_depth, hls_cap, hls_cur;
-static int hash_literal_sources(Compiler *c, int val, int depth, int *out, int cap, int n) {
+   paths, from one query and from the next: the key sites ask it for every
+   local each round. What a node at a depth reaches does not depend on the
+   query that got there, so each (node, depth) is answered once while the
+   table stands, as a list of at most 32 sources in walk order; a parent
+   joins its children's lists in order, dropping repeats, which is the order
+   the walk met them in. Taking the first 32 of each list loses nothing a
+   parent keeps: a child whose list is full fills the parent's. */
+#define HLS_CAP 32
+static const NodeTable *hlm_nt;
+static unsigned hlm_ver;
+static int hlm_cnt, hlm_nsc;
+static int *hlm_key, *hlm_off, hlm_hcap, hlm_used;   /* (node * 8 + depth) -> pool offset */
+static int *hlm_pool, hlm_pn, hlm_pcap;
+static int hls_get(Compiler *c, int val, int depth);
+static int hls_join(int *buf, int n, int off) {
+  for (int i = 0; i < hlm_pool[off] && n < HLS_CAP; i++) {
+    int s = hlm_pool[off + 1 + i], dup = 0;
+    for (int j = 0; j < n && !dup; j++) dup = buf[j] == s;
+    if (!dup) buf[n++] = s;
+  }
+  return n;
+}
+static int hls_compute(Compiler *c, int val, int depth, int *out) {
   const NodeTable *nt = c->nt;
-  if (val < 0 || depth > 6 || n >= cap) return n;
-  if (depth == 0) {
-    if (hls_cap < nt->count) {
-      int nc = nt->count * 2;
-      hls_gen = realloc(hls_gen, sizeof(int) * (size_t)nc);
-      hls_depth = realloc(hls_depth, sizeof(int) * (size_t)nc);
-      memset(hls_gen + hls_cap, 0, sizeof(int) * (size_t)(nc - hls_cap));
-      hls_cap = nc;
-    }
-    hls_cur++;
-  }
-  if (val < hls_cap) {
-    if (hls_gen[val] == hls_cur && hls_depth[val] <= depth) return n;
-    hls_gen[val] = hls_cur; hls_depth[val] = depth;
-  }
+  int n = 0;
   const char *vt = nt_type(nt, val);
-  if (!vt) return n;
-  if (sp_streq(vt, "HashNode")) { out[n++] = val; return n; }
+  if (!vt) return 0;
+  if (sp_streq(vt, "HashNode")) { out[0] = val; return 1; }
   if (sp_streq(vt, "CallNode")) {
     const char *cn = nt_str(nt, val, "name");
     int recv = nt_ref(nt, val, "receiver");
@@ -15031,22 +15036,22 @@ static int hash_literal_sources(Compiler *c, int val, int depth, int *out, int c
       int a = nt_ref(nt, val, "arguments"), ac = 0;
       const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
       int en = 0; const int *el = nt_arr(nt, recv, "elements", &en);
-      if (ac != 1 || nt_kind(nt, av[0]) != NK_IntegerNode) return n;
+      if (ac != 1 || nt_kind(nt, av[0]) != NK_IntegerNode) return 0;
       long long i = nt_int(nt, av[0], "value", -1);
       if (i < 0) i += en;
-      if (i < 0 || i >= en) return n;
-      for (int e = 0; e <= i; e++) if (nt_kind(nt, el[e]) == NK_SplatNode) return n;
-      if (nt_kind(nt, el[i]) != NK_LocalVariableReadNode) return n;
-      return hash_literal_sources(c, el[i], depth + 1, out, cap, n);
+      if (i < 0 || i >= en) return 0;
+      for (int e = 0; e <= i; e++) if (nt_kind(nt, el[e]) == NK_SplatNode) return 0;
+      if (nt_kind(nt, el[i]) != NK_LocalVariableReadNode) return 0;
+      return hls_join(out, 0, hls_get(c, el[i], depth + 1));
     }
-    if (!cn || (!sp_streq(cn, "dup") && !sp_streq(cn, "clone"))) return n;
-    if (nt_ref(nt, val, "arguments") >= 0 || nt_ref(nt, val, "block") >= 0) return n;
-    return hash_literal_sources(c, recv, depth + 1, out, cap, n);
+    if (!cn || (!sp_streq(cn, "dup") && !sp_streq(cn, "clone"))) return 0;
+    if (nt_ref(nt, val, "arguments") >= 0 || nt_ref(nt, val, "block") >= 0) return 0;
+    return hls_join(out, 0, hls_get(c, recv, depth + 1));
   }
   if (sp_streq(vt, "LocalVariableReadNode")) {
     const char *ln = nt_str(nt, val, "name");
     const Scope *ls = comp_scope_of(c, val);
-    if (!ln || !ls) return n;
+    if (!ln || !ls) return 0;
     int pidx = -1;
     for (int p = 0; p < ls->nparams; p++)
       if (ls->pnames[p] && sp_streq(ls->pnames[p], ln)) { pidx = p; break; }
@@ -15055,28 +15060,87 @@ static int hash_literal_sources(Compiler *c, int val, int depth, int *out, int c
          through the calls-by-name index -- a walk of the whole table for
          each parameter reached made a program with a key operation on a
          copy of a parameter in each of its methods quadratic */
-      for (int id = an_calls_named_first(c, ls->name); id >= 0 && n < cap; id = an_calls_named_next(id)) {
+      for (int id = an_calls_named_first(c, ls->name); id >= 0 && n < HLS_CAP; id = an_calls_named_next(id)) {
         if (nt_kind(nt, id) != NK_CallNode) continue;
         const char *cn = nt_str(nt, id, "name");
         if (!cn || !sp_streq(cn, ls->name)) continue;
         int ca = nt_ref(nt, id, "arguments"); int cc = 0;
         const int *cv = ca >= 0 ? nt_arr(nt, ca, "arguments", &cc) : NULL;
         if (!cv || pidx >= cc) continue;
-        n = hash_literal_sources(c, cv[pidx], depth + 1, out, cap, n);
+        n = hls_join(out, n, hls_get(c, cv[pidx], depth + 1));
       }
       return n;
     }
     /* the local's writes through the (scope, name) index, not a walk of
        the whole table per read */
     int lsi = (int)(ls - c->scopes);
-    for (int w = comp_lvw_first_sc(c, lsi, ln); w >= 0 && n < cap; w = comp_lvw_next_sc(c, w)) {
+    for (int w = comp_lvw_first_sc(c, lsi, ln); w >= 0 && n < HLS_CAP; w = comp_lvw_next_sc(c, w)) {
       if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
       const char *wn = nt_str(nt, w, "name");
       if (!wn || !sp_streq(wn, ln) || comp_scope_of(c, w) != ls) continue;
-      n = hash_literal_sources(c, nt_ref(nt, w, "value"), depth + 1, out, cap, n);
+      n = hls_join(out, n, hls_get(c, nt_ref(nt, w, "value"), depth + 1));
     }
     return n;
   }
+  return 0;
+}
+/* the pool offset of (val, depth)'s list; offset 0 is the empty list */
+static int hls_get(Compiler *c, int val, int depth) {
+  const NodeTable *nt = c->nt;
+  if (hlm_nt != nt || hlm_ver != nt->version || hlm_cnt != nt->count || hlm_nsc != c->nscopes) {
+    if (hlm_hcap) memset(hlm_key, -1, sizeof(int) * (size_t)hlm_hcap);
+    hlm_used = 0;
+    if (!hlm_pcap) {
+      hlm_pcap = 4096;
+      hlm_pool = malloc(sizeof(int) * (size_t)hlm_pcap);
+      if (!hlm_pool) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    hlm_pool[0] = 0; hlm_pn = 1;
+    hlm_nt = nt; hlm_ver = nt->version; hlm_cnt = nt->count; hlm_nsc = c->nscopes;
+  }
+  if (val < 0 || depth > 6) return 0;
+  if (2 * (hlm_used + 1) > hlm_hcap) {
+    int ocap = hlm_hcap, *okey = hlm_key, *ooff = hlm_off;
+    hlm_hcap = ocap ? ocap * 2 : 4096;
+    hlm_key = malloc(sizeof(int) * (size_t)hlm_hcap);
+    hlm_off = malloc(sizeof(int) * (size_t)hlm_hcap);
+    if (!hlm_key || !hlm_off) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memset(hlm_key, -1, sizeof(int) * (size_t)hlm_hcap);
+    for (int i = 0; i < ocap; i++) {
+      if (okey[i] < 0) continue;
+      unsigned h = ((unsigned)okey[i] * 2654435761u) & (unsigned)(hlm_hcap - 1);
+      while (hlm_key[h] >= 0) h = (h + 1) & (unsigned)(hlm_hcap - 1);
+      hlm_key[h] = okey[i]; hlm_off[h] = ooff[i];
+    }
+    free(okey); free(ooff);
+  }
+  int key = val * 8 + depth;
+  unsigned h = ((unsigned)key * 2654435761u) & (unsigned)(hlm_hcap - 1);
+  while (hlm_key[h] >= 0 && hlm_key[h] != key) h = (h + 1) & (unsigned)(hlm_hcap - 1);
+  if (hlm_key[h] == key) return hlm_off[h];
+  int buf[HLS_CAP], nb = hls_compute(c, val, depth, buf);
+  /* the children may have grown the table: find the slot again */
+  h = ((unsigned)key * 2654435761u) & (unsigned)(hlm_hcap - 1);
+  while (hlm_key[h] >= 0 && hlm_key[h] != key) h = (h + 1) & (unsigned)(hlm_hcap - 1);
+  int off = 0;
+  if (nb > 0) {
+    if (hlm_pn + nb + 1 > hlm_pcap) {
+      while (hlm_pn + nb + 1 > hlm_pcap) hlm_pcap *= 2;
+      hlm_pool = realloc(hlm_pool, sizeof(int) * (size_t)hlm_pcap);
+      if (!hlm_pool) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    off = hlm_pn;
+    hlm_pool[hlm_pn++] = nb;
+    memcpy(hlm_pool + hlm_pn, buf, sizeof(int) * (size_t)nb);
+    hlm_pn += nb;
+  }
+  hlm_key[h] = key; hlm_off[h] = off; hlm_used++;
+  return off;
+}
+static int hash_literal_sources(Compiler *c, int val, int *out, int cap) {
+  int off = hls_get(c, val, 0), n = hlm_pool[off];
+  if (n > cap) n = cap;
+  memcpy(out, hlm_pool + off + 1, sizeof(int) * (size_t)n);
   return n;
 }
 /* widen `lit` to the boxed variant when the key classes written into it
@@ -15144,7 +15208,7 @@ static void mark_mixed_key_hash_locals(Compiler *c) {
     /* a copy of a literal (`{...}.dup`, `g.dup` with g a literal or a
        parameter) takes the literal's variant: widen the literals (#4540) */
     if (!hash_new && !(vt && sp_streq(vt, "HashNode"))) {
-      int srcs[32]; int ns = hash_literal_sources(c, val, 0, srcs, 32, 0);
+      int srcs[32]; int ns = hash_literal_sources(c, val, srcs, 32);
       for (int q = 0; q < ns; q++) hash_literal_widen_if_mixed(c, srcs[q], mask);
       continue;
     }
@@ -15179,7 +15243,7 @@ static void mark_mixed_key_hash_locals(Compiler *c) {
       if (!cv || pidx >= cc) continue;
       /* the literal in that position, or what a dup/clone/local/parameter
          there copies from (#4540) */
-      int srcs[32]; int ns = hash_literal_sources(c, cv[pidx], 0, srcs, 32, 0);
+      int srcs[32]; int ns = hash_literal_sources(c, cv[pidx], srcs, 32);
       for (int q = 0; q < ns; q++) hash_literal_widen_if_mixed(c, srcs[q], uses[k].bits);
     }
   }
@@ -15473,7 +15537,7 @@ static int mark_empty_hash_key_ctx(Compiler *c) {
     int is_param = 0;
     for (int pi = 0; pi < sc->nparams && !is_param; pi++) is_param = sc->pnames[pi] && sp_streq(sc->pnames[pi], ln);
     if (!all_empty && !is_param) {
-      int srcs[32], ns = hash_literal_sources(c, recv, 0, srcs, 32, 0);
+      int srcs[32], ns = hash_literal_sources(c, recv, srcs, 32);
       for (int q = 0; q < ns; q++) {
         int en = 0; nt_arr(nt, srcs[q], "elements", &en);
         if (en != 0 || srcs[q] >= c->node_cap) continue;
