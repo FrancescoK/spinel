@@ -893,6 +893,52 @@ int loop_never_completes(Compiler *c, int node) {
    bare C `break` does not compile, so it needs the wrapper too. Receiverless
    NON-methods (loop / catch / proc / lambda literals) run their own scopes
    and stay excluded, as does instance_exec/eval (handled inline). */
+/* A blockless `n.times` / `a.upto(b)` / `b.downto(a)` answers an Enumerator
+   (#<Enumerator: 7:times>). It keeps the counted Range it was built as only
+   where it is the receiver of a call whose answer is the same over the
+   Range as over the Enumerator: a walk with a block whose answer is not its
+   receiver, or a reader that answers no Enumerator. Elsewhere -- a value
+   kept, printed, compared or walked with #next -- the Range showed through.
+   `each { }`, `with_index`, `with_object` and `each_with_index` stay: the
+   desugars rewrite them on the Range (desugar_enum_named_call,
+   desugar_int_enum_with_index). */
+int an_int_step_range_chain(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int p = comp_recv_parent(c, id);
+  if (p < 0 || nt_kind(nt, p) != NK_CallNode || an_unparen(nt, nt_ref(nt, p, "receiver")) != id ||
+      call_is_safe_nav(nt, p)) return 0;
+  const char *pn = nt_str(nt, p, "name");
+  /* the `to_a` hop a desugar puts under an Enumerator's walk (enum_recv)
+     is not a reader: the walk answers this receiver */
+  if (!pn || nt_str(nt, p, "enum_recv")) return 0;
+  int pblk = nt_ref(nt, p, "block");
+  int pac = 0; { int pa = nt_ref(nt, p, "arguments"); if (pa >= 0) nt_arr(nt, pa, "arguments", &pac); }
+  if (sp_streq(pn, "with_index") || sp_streq(pn, "with_object") ||
+      sp_streq(pn, "each_with_index")) return 1;
+  if (pblk >= 0 && nt_kind(nt, pblk) == NK_BlockNode) {
+    static const char *const WALK[] = {
+      "each", "map", "collect", "flat_map", "collect_concat", "select", "filter",
+      "reject", "filter_map", "find", "detect", "find_index", "any?", "all?",
+      "none?", "one?", "sum", "count", "min_by", "max_by", "minmax_by", "sort_by",
+      "group_by", "partition", "each_with_object", "inject", "reduce",
+      "take_while", "drop_while", "uniq", "min", "max", "minmax", "sort", NULL };
+    for (int i = 0; WALK[i]; i++) if (sp_streq(pn, WALK[i])) return 1;
+    return 0;
+  }
+  if (pblk >= 0) return 0;   /* a block argument (&blk) */
+  static const char *const READ0[] = {
+    "to_a", "entries", "sum", "count", "min", "max", "minmax", "sort", "first",
+    "tally", "uniq", "any?", "all?", "none?", "one?", NULL };
+  if (pac == 0) {
+    for (int i = 0; READ0[i]; i++) if (sp_streq(pn, READ0[i])) return 1;
+    return 0;
+  }
+  /* first(n) / take(n) / drop(n) answer an Array; inject(:+) its total */
+  if (pac == 1 && (sp_streq(pn, "first") || sp_streq(pn, "take") || sp_streq(pn, "drop") ||
+                   sp_streq(pn, "inject") || sp_streq(pn, "reduce"))) return 1;
+  return 0;
+}
+
 /* `poly.upto(lim [, exclusive])` whose receiver may be a String at run
    time: a limit that is a String or boxed, or the exclusive flag only
    String#upto takes. Its own emitter tests the receiver's tag
@@ -4849,9 +4895,11 @@ static int infer_operator_call(Compiler *c, int id, const NodeTable *nt, const c
     if (sp_streq(name, "coerce") && argc == 1) { *out = TY_POLY_ARRAY; return 1; }
     if (sp_streq(name, "clamp") && argc == 2) { *out = TY_BIGINT; return 1; }
     if ((sp_streq(name, "magnitude") || sp_streq(name, "abs2")) && argc == 0) { *out = TY_BIGINT; return 1; }  /* (#2418/#2424) */
-    /* Bignum#downto/#upto with no block: materialized poly array of Bignums (#2305) */
+    /* Bignum#downto/#upto with no block: its Enumerator over the Bignums,
+       laid out ahead, or the poly array of them (#2305) where the call on
+       it answers the same over that (an_int_step_range_chain) */
     if ((is_bounded_int_step(name)) && argc == 1 &&
-        nt_ref(nt, id, "block") < 0) { *out = TY_POLY_ARRAY; return 1; }
+        nt_ref(nt, id, "block") < 0) { *out = an_int_step_range_chain(c, id) ? TY_POLY_ARRAY : TY_ENUMERATOR; return 1; }
     if (sp_streq(name, "to_s") && argc == 1) { *out = TY_STRING; return 1; }
     if (sp_streq(name, "digits") && argc <= 1) { *out = TY_INT_ARRAY; return 1; }   /* face-table fallback only, see codegen_call.c */
     /* #2318 / #2319: query + reflection on a Bignum */
@@ -7153,8 +7201,9 @@ static int infer_block_iter_call(Compiler *c, int id, const NodeTable *nt, const
   if (recv >= 0 && nt_ref(nt, id, "block") < 0 &&
       ((argc == 0 && sp_streq(name, "times")) ||
        (argc == 1 && (is_bounded_int_step(name)))) &&
-      infer_type(c, recv) == TY_POLY && !an_user_defines_or_reads(c, name))
-    { *out = TY_RANGE; return 1; }
+      ((infer_type(c, recv) == TY_POLY && !an_user_defines_or_reads(c, name)) ||
+       infer_type(c, recv) == TY_INT))
+    { *out = an_int_step_range_chain(c, id) ? TY_RANGE : TY_ENUMERATOR; return 1; }
   /* `poly.find { }` / `detect { }` answer the winning ELEMENT, boxed. Without
      an arm here they fell through to the last-resort Hash face below, which
      types them as the winning [k, v] pair -- and the emitter, which answers

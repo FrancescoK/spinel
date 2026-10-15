@@ -1,0 +1,39 @@
+#<Enumerator: 7:downto(1)>
+#<Enumerator: 7:times>
+#<Enumerator: 3:upto(5)>
+#<Enumerator: 7:downto(5)>
+#<Enumerator: 7:times>
+#<Enumerator: 7:upto(9)>
+#<Enumerator: 7:upto(9)>
+#<Enumerator: "a":upto("c")>
+#<Enumerator: "a":upto("c", true)>
+7
+6
+3
+Enumerator
+[0, 2, 4, 6]
+[0, 1, 2, 3]
+[0, 1]
+0
+#<Enumerator: 7:times>
+#<Enumerator: 5:times>
+[[0, 1], [2, 3], [4]]
+[1, 2, 3]
+[1, 2, 3]
+[9, 7]
+6
+[[0, 1], [1, 2], [2, 3], [3, 4]]
+4
+#<Enumerator: 7:downto(1.5)>
+[1, 2, 3]
+Infinity
+[1, 2, 3]
+[[1, 10], [2, 11]]
+[[:a, 0], [:b, 1]]
+100000
+0
+[0, 1]
+100000
+#<Enumerator: 2:upto(4)>
+[2, 3, 4]
+[#<Enumerator: 2:times>]

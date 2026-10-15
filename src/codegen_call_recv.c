@@ -762,6 +762,15 @@ static void emit_zip_args(Compiler *c, const int *argv, int nargs, const int *tb
       at[j] = TY_INT_ARRAY;
       continue;
     }
+    /* ...and an Enumerator is read as far, by a run of its own:
+       `[1, 2].zip(10.upto(Float::INFINITY))` once that answers one */
+    if (at[j] == TY_ENUMERATOR) {
+      buf_printf(b, " sp_PolyArray *_t%d = sp_Enumerator_take(", tb[j]);
+      emit_expr(c, argv[j], b);
+      buf_printf(b, ", %s); SP_GC_ROOT(_t%d);", rlen, tb[j]);
+      at[j] = TY_POLY_ARRAY;
+      continue;
+    }
     /* A scalar argument responds to no :each at all, which is CRuby's
        TypeError naming its class. Read as a container regardless, a nil
        became a column of nils, silently, and an Integer or a String
@@ -14099,9 +14108,9 @@ static int face_probe_arm(Compiler *c, int id, unsigned kind, unsigned flags, in
    members sp_StrArray_from_string_range lists, or Integer#upto, counting
    (a Bignum boxed); any other value is NoMethodError. With a block one
    walk binds each member boxed to the parameter and the call answers the
-   receiver; without one it answers the String's or the Bignum's members
-   as an Enumerator, or the Integer's Range, boxed. The receiver and the
-   arguments are held first, in order. */
+   receiver; without one it answers the Enumerator over the members, boxed,
+   labeled with the receiver and the call (#<Enumerator: 7:upto(9)>). The
+   receiver and the arguments are held first, in order. */
 static int emit_poly_str_upto(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   /* a block that breaks reaches here inside its break wrapper
@@ -14140,7 +14149,7 @@ static int emit_poly_str_upto(Compiler *c, int id, Buf *b) {
   if (argc == 2) buf_puts(g_pre, " sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 2, expected 1)\");");
   buf_printf(g_pre, " if (_t%d[0].tag == SP_TAG_BIGINT) _t%d = 3;", tl, tx);
   buf_printf(g_pre, " else if (_t%d[0].tag == SP_TAG_INT) _t%d = _t%d[0].v.i;"
-                    " else if (_t%d[0].tag == SP_TAG_FLT) _t%d = (sp_int)floor(_t%d[0].v.f);"
+                    " else if (_t%d[0].tag == SP_TAG_FLT) _t%d = sp_flt_range_bound(_t%d[0].v.f, 1);"
                     " else sp_raise_cls(\"ArgumentError\", sp_sprintf(\"comparison of Integer with %%s failed\", sp_poly_cmp_err_repr(_t%d[0]))); }\n",
              tl, th, tl, tl, th, tl, tl);
   /* a Bignum counts boxed, compared by value (a limit that is no number
@@ -14157,8 +14166,8 @@ static int emit_poly_str_upto(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_RbVal _t%d = _t%d; SP_GC_ROOT_RBVAL(_t%d);\n", tc, tr, tc);
   if (block < 0) {
-    /* the String's members as its Enumerator, the Integer's Range, a
-       Bignum's members as theirs */
+    /* the Enumerator over the String's, the Integer's or the Bignum's
+       members, labeled with the call */
     int tb = ++g_tmp;
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_PolyArray *_t%d = NULL; SP_GC_ROOT(_t%d);\n", tb, tb);
@@ -14166,13 +14175,10 @@ static int emit_poly_str_upto(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "if (_t%d == 3) { _t%d = sp_PolyArray_new(); while (sp_poly_cmp_ck(_t%d, _t%d[0]) <= 0)"
                       " { sp_PolyArray_push(_t%d, _t%d); _t%d = sp_poly_add(_t%d, sp_box_int(1)); } }\n",
                tx, tb, tc, tl, tb, tc, tc, tc);
-    buf_printf(b, "(_t%d == 1 ? sp_box_nullable_obj((void *)sp_Enumerator_new_from(sp_box_nullable_obj((void *)_t%d, SP_BUILTIN_STR_ARRAY)), SP_BUILTIN_ENUMERATOR)"
-                  " : _t%d == 3 ? sp_box_nullable_obj((void *)sp_Enumerator_new_from(sp_box_poly_array(_t%d)), SP_BUILTIN_ENUMERATOR) : ",
-               tx, ts, tx, tb);
-    char rg[128];
-    snprintf(rg, sizeof rg, "(sp_Range){ .first = _t%d.v.i, .last = _t%d, .excl = 0 }", tr, th);
-    emit_boxed_text(c, TY_RANGE, rg, b);
-    buf_puts(b, ")");
+    buf_printf(b, "sp_box_nullable_obj((void *)(_t%d == 1 ? sp_enum_step_labeled(sp_Enumerator_new_from(sp_box_nullable_obj((void *)_t%d, SP_BUILTIN_STR_ARRAY)), _t%d, \"upto\", _t%d, %d)"
+                  " : _t%d == 3 ? sp_enum_step_labeled(sp_Enumerator_new_from(sp_box_poly_array(_t%d)), _t%d, \"upto\", _t%d, %d)"
+                  " : sp_int_step_enum((sp_Range){ .first = _t%d.v.i, .last = _t%d, .excl = 0 }, _t%d.v.i, \"upto\", _t%d[0])), SP_BUILTIN_ENUMERATOR)",
+               tx, ts, tr, tl, argc, tx, tb, tr, tl, argc, tr, th, tr, tl);
     return 1;
   }
   const char *p0o = block_param_name(c, block, 0);
