@@ -347,6 +347,23 @@ int is_map_alias(const char *n) {
 int is_instance_eval_family(const char *n) {
   return sp_streq(n, "instance_eval") || sp_streq(n, "instance_exec");
 }
+/* The reflective reads and writes of a variable by the name it is given: the
+   ivar, class variable and constant accessors and removers */
+int is_reflective_access(const char *n) {
+  return sp_streq(n, "instance_variable_get") || sp_streq(n, "instance_variable_set") ||
+         sp_streq(n, "class_variable_get") || sp_streq(n, "class_variable_set") ||
+         sp_streq(n, "const_get") || sp_streq(n, "const_set") || sp_streq(n, "remove_instance_variable") ||
+         sp_streq(n, "remove_class_variable") || sp_streq(n, "remove_const");
+}
+/* The reflective listings of a kind of variable */
+int is_reflective_listing(const char *n) {
+  return sp_streq(n, "instance_variables") || sp_streq(n, "class_variables") || sp_streq(n, "constants");
+}
+/* The calls that reach a local by a name or a string of code */
+int is_local_reflection(const char *n) {
+  return sp_streq(n, "eval") || sp_streq(n, "binding") || sp_streq(n, "local_variable_get") ||
+         sp_streq(n, "local_variable_set") || sp_streq(n, "local_variables");
+}
 
 int is_find_alias(const char *n) {
   return sp_streq(n, "find") || sp_streq(n, "detect");

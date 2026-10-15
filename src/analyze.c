@@ -21271,7 +21271,7 @@ static int strh_arg_ok(Compiler *c, int n, int pc) {
   int mis[CPT_MAX], cnt = cplan_targets(c, pc, mis, CPT_MAX), r = share_node_class(c, n);
   /* (`Klass.new(...)` reaches the class's initialize) */
   const char *pn = nt_str(c->nt, pc, "name");
-  if (cnt == 0 && pn && sp_streq(pn, "new")) {
+  if (cnt == 0 && is_new_name(pn)) {
     mis[0] = cplan_initialize(c, pc);
     cnt = mis[0] >= 0;
   }
@@ -21451,25 +21451,19 @@ static void strh_reflect_scan(Compiler *c, StrhReflect *r) {
       nm = m;
       first = 1;
     }
-    if (sp_streq(nm, "instance_variable_get") || sp_streq(nm, "instance_variable_set") ||
-        sp_streq(nm, "class_variable_get") || sp_streq(nm, "class_variable_set") ||
-        sp_streq(nm, "const_get") || sp_streq(nm, "const_set") || sp_streq(nm, "remove_instance_variable") ||
-        sp_streq(nm, "remove_class_variable") || sp_streq(nm, "remove_const"))
-    {
+    if (is_reflective_access(nm)) {
       /* (a constant named by a path, `H::L` or `::L`, is no name this reads:
          every constant is reached) */
       const char *rn = argc > first ? strh_lit_name(nt, av[first]) : NULL;
       strh_reflect_add(r, rn && strstr(rn, "::") ? NULL : rn);
     }
-    else if (sp_streq(nm, "instance_variables") || sp_streq(nm, "class_variables") || sp_streq(nm, "constants"))
+    else if (is_reflective_listing(nm))
       strh_reflect_add(r, NULL);
-    else if (sp_streq(nm, "eval") || sp_streq(nm, "binding") || sp_streq(nm, "local_variable_get") ||
-             sp_streq(nm, "local_variable_set") || sp_streq(nm, "local_variables")) {
+    else if (is_local_reflection(nm)) {
       strh_reflect_add(r, NULL);
       r->locals = 1;
     }
-    else if (sp_streq(nm, "instance_eval") || sp_streq(nm, "instance_exec") || sp_streq(nm, "class_eval") ||
-             sp_streq(nm, "class_exec") || sp_streq(nm, "module_eval") || sp_streq(nm, "module_exec")) {
+    else if (is_eval_exec_family(nm)) {
       if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && !first) strh_reflect_vars(nt, blk, r, 0);
       else strh_reflect_add(r, NULL);
     }

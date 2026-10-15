@@ -2724,8 +2724,7 @@ void emit_strh_elem(Compiler *c, int v, Buf *b) {
 /* Can the receiver be nil, and is the call no safe navigation (which guards
    it itself)? */
 static int strh_recv_nilable(Compiler *c, int id, int recv) {
-  const char *op = nt_str(c->nt, id, "call_operator");
-  return !(op && sp_streq(op, "&.")) && repr_of(c, recv).may_nil;
+  return !call_is_safe_nav(c->nt, id) && repr_of(c, recv).may_nil;
 }
 void strh_emit_recv(Compiler *c, int id, int recv, Buf *b) {
   const char *nm = nt_str(c->nt, id, "name");
@@ -2873,7 +2872,7 @@ int emit_strh_call(Compiler *c, int id, Buf *b) {
       int t = ++g_tmp;
       buf_printf(b, "({ sp_PtrArray *_t%d = ", t); emit_expr(c, recv, b);
       buf_printf(b, "; SP_GC_ROOT(_t%d); _t%d ? sp_PtrArray_inspect_k(_t%d) : %s; })", t, t, t,
-                 sp_streq(nm, "to_s") ? "sp_str_empty" : "\"nil\"");
+                 is_to_s_name(nm) ? "sp_str_empty" : "\"nil\"");
       return 1;
     }
     buf_puts(b, "sp_PtrArray_inspect_k("); strh_emit_recv(c, id, recv, b); buf_puts(b, ")");

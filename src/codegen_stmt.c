@@ -16985,7 +16985,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     else if (ty_is_ptr_array(ivt) && v_empty_array) buf_puts(b, ptr_array_new_c(ivt));
     /* `@t = [[..], [..]]` into a narrowed pointer-array ivar: build the
        sp_PtrArray with the unboxed element pointers, as the local write does. */
-    else if (ty_is_ptr_array(ivt) && ivt != TY_STRH_ARRAY && vty && sp_streq(vty, "ArrayNode")) {
+    else if (ty_is_ptr_array(ivt) && ivt != TY_STRH_ARRAY && v >= 0 && nt_kind(nt, v) == NK_ArrayNode) {
       int tpa = ++g_tmp;
       buf_printf(b, "({ sp_PtrArray *_t%d = sp_PtrArray_new(); SP_GC_ROOT(_t%d);", tpa, tpa);
       int pen = 0; const int *pel = nt_arr(nt, v, "elements", &pen);
