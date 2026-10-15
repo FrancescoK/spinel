@@ -3370,7 +3370,10 @@ static int sp_enum_returns_source(sp_Enumerator *e) {
                strncmp(m, "repeated_permutation(", 21) == 0 ||
                /* Integer#times / #upto / #downto (and a String's #upto) */
                strcmp(m, "times") == 0 || strncmp(m, "upto(", 5) == 0 ||
-               strncmp(m, "downto(", 7) == 0);
+               strncmp(m, "downto(", 7) == 0 ||
+               /* a Hash's own walks, labeled only where the Hash is the source */
+               strcmp(m, "each_pair") == 0 || strcmp(m, "each_key") == 0 ||
+               strcmp(m, "each_value") == 0);
 }
 sp_RbVal sp_enum_with_index_value(sp_Enumerator *e) {SP_GC_ROOT(e);
   if (sp_enum_returns_source(e))

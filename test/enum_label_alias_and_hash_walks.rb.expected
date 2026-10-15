@@ -1,0 +1,29 @@
+#<Enumerator: [3, 1, 2]:collect>
+#<Enumerator: [3, 1, 2]:find_all>
+#<Enumerator: [3, 1, 2]:collect>
+#<Enumerator: [3, 1, 2]:find_all>
+[3, 2, 4]
+[1]
+#<Enumerator: {a: 1, b: 2}:each_key>
+#<Enumerator: {a: 1, b: 2}:each_value>
+#<Enumerator: {a: 1, b: 2}:each_pair>
+#<Enumerator: {a: 1, b: 2}:each>
+#<Enumerator: {a: 1, b: 2}:each_slice(1)>
+#<Enumerator: {a: 1, b: 2}:each_cons(2)>
+#<Enumerator: {a: 1, b: 2}:each_key>
+#<Enumerator: {a: 1, b: 2}:each_pair>
+#<Enumerator: {a: 1, b: 2}:each_slice(1)>
+:a
+2
+[:a, :b]
+true
+[[1, 1], [2, 2]]
+true
+3
+true
+[[:a, 1], [:b, 2]]
+[[[:a, 1]], [[:b, 2]]]
+2
+true
+[[[:a, 1], [:b, 2]]]
+true

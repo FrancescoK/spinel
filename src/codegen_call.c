@@ -19182,8 +19182,7 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     int te = ++g_tmp;
     buf_printf(b, "({ sp_Enumerator *_t%d = sp_poly_blockless_enum(", te);
     emit_boxed(c, recv, b);
-    buf_printf(b, ", \"%s\"); _t%d->meth = SPL(\"%s\"); _t%d; })", name, te,
-               sp_streq(name, "collect") ? "map" : sp_streq(name, "find_all") ? "select" : name, te);
+    buf_printf(b, ", \"%s\"); _t%d->meth = SPL(\"%s\"); _t%d; })", name, te, name, te);
     return 1;
   }
   if (recv >= 0 && argc <= sp_streq(name, "find") && nt_ref(nt, id, "block") < 0 &&
@@ -19215,9 +19214,8 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
       /* rindex walks from the back, and its Enumerator yields that way */
       buf_printf(b, "sp_Enumerator *_t%d = sp_Enumerator_new_from%s(", te, sp_streq(name, "rindex") ? "_rev" : "");
       emit_boxed(c, recv, b);
-      buf_printf(b, "); _t%d->meth = SPL(\"%s\"); _t%d; })", te,
-                 sp_streq(name, "collect") ? "map" :
-                 sp_streq(name, "find_all") ? "select" : name, te);
+      const char *lab = nt_str(nt, id, "enum_label");
+      buf_printf(b, "); _t%d->meth = SPL(\"%s\"); _t%d; })", te, lab ? lab : name, te);
       return 1;
     }
     buf_printf(b, "sp_Enumerator_new_from%s(", sp_streq(name, "reverse_each") ? "_rev" : "");
@@ -19344,6 +19342,21 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     free(eb.p); free(nb.p);
     return 1;
   }
+  /* A Hash's, through the to_a hop a desugar put under it: the same
+     Enumerator over its [key, value] pairs, labeled with the Hash, as
+     CRuby's #<Enumerator: {a: 1}:each_slice(1)> */
+  if (recv >= 0 && argc == 1 && nt_ref(nt, id, "block") < 0 && is_each_window(name) &&
+      nt_kind(nt, recv) == NK_CallNode && nt_int(nt, recv, "made_to_a", 0) &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "to_a") &&
+      nt_ref(nt, recv, "receiver") >= 0 && ty_is_hash(comp_ntype(c, nt_ref(nt, recv, "receiver")))) {
+    int th = ++g_tmp, te = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", th); emit_boxed(c, nt_ref(nt, recv, "receiver"), b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_Enumerator *_t%d = sp_Enumerator_new_%s(_t%d, ", th, te,
+               sp_streq(name, "each_slice") ? "slices" : "cons", th);
+    emit_int_expr(c, argv[0], b);
+    buf_printf(b, "); sp_enum_with_src(_t%d, _t%d, _t%d->meth); })", te, th, te);
+    return 1;
+  }
   /* arr.each_slice(n) / arr.each_cons(n) with no block -> a materialized
      Enumerator over the slices (non-overlapping, last may be short) or the
      sliding windows of length n. */
@@ -19410,7 +19423,7 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
        answer other classes, the receiver cast to a Hash there) takes the
        Enumerator boxed (#7279) */
     Buf eb; memset(&eb, 0, sizeof eb);
-    if (is_each_or_pair(name)) {
+    if (sp_streq(name, "each")) {
       buf_puts(&eb, "sp_Enumerator_new_from(");
       emit_boxed(c, recv, &eb); buf_puts(&eb, ")");
     }
@@ -19433,10 +19446,12 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       ty_is_hash(comp_ntype(c, recv)) &&
       (is_hash_key_value_each(name))) {
+    /* labeled with the Hash, as CRuby's #<Enumerator: {a: 1}:each_key> */
     Buf eb; memset(&eb, 0, sizeof eb);
-    buf_printf(&eb, "sp_Enumerator_new_from_items(sp_enum_hash_side(");
-    emit_boxed(c, recv, &eb);
-    buf_printf(&eb, ", %d))", sp_streq(name, "each_key") ? 1 : 0);
+    int th = ++g_tmp;
+    buf_printf(&eb, "({ sp_RbVal _t%d = ", th); emit_boxed(c, recv, &eb);
+    buf_printf(&eb, "; SP_GC_ROOT_RBVAL(_t%d); sp_enum_with_src(sp_Enumerator_new_from_items(sp_enum_hash_side(_t%d, %d)), _t%d, SPL(\"%s\")); })",
+               th, th, sp_streq(name, "each_key") ? 1 : 0, th, name);
     if (repr_of(c, id).kind == RK_BOXED) emit_boxed_text(c, TY_ENUMERATOR, eb.p, b);
     else buf_puts(b, eb.p);
     free(eb.p);

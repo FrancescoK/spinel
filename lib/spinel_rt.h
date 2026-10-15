@@ -18854,9 +18854,14 @@ static sp_Enumerator *sp_poly_regroup(sp_RbVal v, sp_int n, sp_bool cons) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p &&
       ((sp_Range *)v.v.p)->noend)
     return sp_Enumerator_regroup(sp_Enumerator_new_from(v), n, cons);
+  SP_GC_ROOT_RBVAL(v);
   sp_RbVal a = v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE ? v
              : sp_box_poly_array(sp_poly_to_a_arr_as(v, cons ? "each_cons" : "each_slice", 0));
-  return cons ? sp_Enumerator_new_cons(a, n) : sp_Enumerator_new_slices(a, n);
+  sp_Enumerator *e = cons ? sp_Enumerator_new_cons(a, n) : sp_Enumerator_new_slices(a, n);
+  /* labeled with the receiver, not the members laid out from it (a Hash's
+     pairs): #<Enumerator: {a: 1}:each_slice(1)> */
+  if (a.v.p != v.v.p) sp_enum_with_src(e, v, e->meth);
+  return e;
 }
 static sp_Enumerator *sp_Enumerator_ewi(sp_Enumerator *e) SP_UNUSED;
 static sp_Enumerator *sp_Enumerator_ewi(sp_Enumerator *e) {
