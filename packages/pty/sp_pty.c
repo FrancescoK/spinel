@@ -82,6 +82,8 @@ static SP_NORETURN void sp_pty_raise_errno(int e, const char *what) {
   sp_raise_cls(sp_pty_errno_class(e), msg);
 }
 
+int sp_io_make_pipe(int fds[2]);   /* lib/sp_io.c: a close-on-exec pipe */
+
 /* `fd`, moved above 2 if it is a standard slot, close-on-exec either way;
    -1 (errno set, `fd` closed) if the move fails. */
 static int sp_pty_above_std(int fd) {
@@ -99,7 +101,13 @@ static int sp_pty_above_std(int fd) {
 
 /* A new master, close-on-exec and above 2, its slave unlocked. */
 sp_int sp_pty_open_master(void) {
+  /* POSIX defines only O_RDWR and O_NOCTTY for posix_openpt; Linux also
+     takes O_CLOEXEC, and elsewhere sp_pty_above_std sets the flag below */
+#ifdef __linux__
+  int m = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
+#else
   int m = posix_openpt(O_RDWR | O_NOCTTY);
+#endif
   if (m < 0) sp_pty_raise_errno(errno, "/dev/ptmx");
   if (grantpt(m) < 0 || unlockpt(m) < 0) {
     int e = errno;
@@ -313,7 +321,7 @@ sp_int sp_pty_spawn_child(sp_int master, sp_int writer, sp_RbVal env, sp_RbVal a
   if (pn) { strncpy(slave, pn, sizeof slave - 1); slave[sizeof slave - 1] = 0; }
   else { fail = errno; fail_what = "ptsname"; }
 #endif
-  if (!fail && pipe(err_pipe) < 0) { fail = errno; fail_what = "pipe"; err_pipe[0] = err_pipe[1] = -1; }
+  if (!fail && sp_io_make_pipe(err_pipe) < 0) { fail = errno; fail_what = "pipe"; err_pipe[0] = err_pipe[1] = -1; }
   if (!fail) {
     err_pipe[0] = sp_pty_above_std(err_pipe[0]);
     if (err_pipe[0] < 0) {

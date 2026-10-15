@@ -475,10 +475,12 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
   /* Pre-exec error pipe: the child writes the exec errno here if execve
      fails, so the parent can raise the matching Errno (CRuby raises
      Errno::ENOENT for "no such file or directory" instead of returning
-     a dead pid). FD_CLOEXEC on the write end so a successful execvp
-     closes it; the parent then sees a zero-byte read and no raise. */
+     a dead pid). Both ends are close-on-exec from creation, so a
+     successful execvp closes the write end and the parent sees a
+     zero-byte read and no raise. */
+  extern int sp_io_make_pipe(int fds[2]);
   int err_pipe[2];
-  if (pipe(err_pipe) < 0) {
+  if (sp_io_make_pipe(err_pipe) < 0) {
     free(argv);
     free(envp);
     sp_process_spawn_fail(owned, "SystemCallError", sp_errf_errno("pipe failed", errno));
@@ -502,7 +504,6 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
        because the exit code is the same regardless of exec failure
        reason. */
     close(err_pipe[0]);
-    if (fcntl(err_pipe[1], F_SETFD, FD_CLOEXEC) < 0) { _exit(126); }
     if (chdir_to) {
       if (chdir(chdir_to) != 0) {
         int fail[2] = { errno, 1 };
