@@ -4217,7 +4217,7 @@ static void sp_builtin_names_from(const char *content) {
 typedef struct {
   const char *src;            /* the text this was read from, NULL for none */
   size_t *com; int com_n;     /* each comment's start and end offset, in order */
-  int brk, fin, evals;
+  int brk, fin, evals, popen;
 } SpSrcLex;
 static SpSrcLex sp_src_lex;
 
@@ -4232,6 +4232,8 @@ static void sp_src_lex_token(void *data, pm_parser_t *parser, pm_token_t *tok) {
   if (tok->type == PM_TOKEN_KEYWORD_BREAK) lx->brk = 1;
   if (tok->type != PM_TOKEN_IDENTIFIER) return;
   if (sp_src_tok_is(tok, "define_finalizer")) lx->fin = 1;
+  if (sp_src_tok_is(tok, "popen") && tok->start - (const uint8_t *)lx->src >= 3 && !memcmp(tok->start - 3, "IO.", 3) &&
+      (tok->start - (const uint8_t *)lx->src == 3 || !sp_req_ident_char((char)tok->start[-4]))) lx->popen = 1;
   if (sp_src_tok_is(tok, "eval") || sp_src_tok_is(tok, "class_eval") ||
       sp_src_tok_is(tok, "module_eval") || sp_src_tok_is(tok, "instance_eval")) lx->evals = 1;
 }
@@ -4444,6 +4446,7 @@ static char *sp_splice_foreach_first(char *source, const char *exe_path,
 static char *sp_splice_io_popen(char *source, const char *exe_path,
                                 unsigned char **fsl, size_t *fsl_n) {
   if (!strstr(source, "IO.popen")) return source;
+  { SpSrcLex *lx = sp_src_lex_of(source); if (!lx->popen && !lx->evals) return source; }
   return sp_prepend_require(source, exe_path, "require \"builtins/io_popen\"\n", fsl, fsl_n);
 }
 
