@@ -79,3 +79,52 @@ p %I[#{z} #{z << "6"}]
 def one(str) = str
 j = +"j"
 p "#{one(j)}-#{j << "8"}"
+
+# a later part that rebinds an instance variable through a method keeps the
+# String the earlier part named
+class R
+  def initialize = @s = +"iv"
+  def s=(v)
+    @s = v
+  end
+  def reset = (@s = +"z")
+  def go = "#{@s}-#{reset}"
+  def go2 = "#{@s}-#{self.s = +"new"}"
+  def go3(o) = "#{@s}-#{o.reset}"
+  def go4 = "#{@s}-#{send(:reset)}"
+end
+p R.new.go, R.new.go2, R.new.go3(R.new), R.new.go4
+
+# adjacent literals are built one at a time
+a1 = +"s"
+p "#{a1}" "-#{a1 << "!"}"
+a2 = +"t"
+p "a#{a2}" "-#{a2 << "!"}" "#{a2}"
+
+# a part that is the String itself through a method answering its receiver
+m1 = +"x"
+p "#{m1 << "a"}-#{m1 << "b"}"
+m2 = +"y"
+p "#{m2.concat("1")}|#{m2.concat("2")}"
+m3 = +"u"
+p "#{m3.replace("U")}#{m3 << "!"}"
+m4 = +"b"
+p "#{m4.itself}-#{m4 << "!"}"
+m5 = +"c"
+p "#{m5.to_s}-#{m5 << "?"}"
+m6 = +"d"
+p "#{m6.to_str}-#{m6 << "?"}"
+m7 = +"e"
+p "#{+m7}-#{m7 << "?"}"
+m8 = +"f"
+p "#{m8&.itself}-#{m8 << "?"}"
+m9 = +"G"
+p "#{m9.upcase!}|#{m9 << "h"}"
+m10 = +"g"
+p "#{m10.upcase!}|#{m10 << "h"}"
+
+# a part of several statements that ends in the String
+t1 = +"b"
+p "#{t1 << "1"; t1}-#{t1 << "2"}"
+t2 = +"a"
+p "#{x = 1; t2 << "!"; t2}-#{x}-#{t2 << "?"}"

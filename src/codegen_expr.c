@@ -35,24 +35,30 @@ static int subtree_has_unresolved_const(Compiler *c, int id) {
    InterpolatedStringNodes. Flatten the part tree into one list of leaf parts
    (StringNode / EmbeddedStatementsNode) so the format/arg assembly below sees a
    single flat sequence and emits one sp_sprintf call. */
-static void interp_flatten(const NodeTable *nt, int id, int **out, int *n, int *cap) {
+static void interp_flatten_own(const NodeTable *nt, int id, int **out, int **own, int *n, int *cap) {
   int pn = 0;
   const int *parts = nt_arr(nt, id, "parts", &pn);
   for (int k = 0; k < pn; k++) {
     int pid = parts[k];
     const char *pty = nt_type(nt, pid);
     if (pty && sp_streq(pty, "InterpolatedStringNode")) {
-      interp_flatten(nt, pid, out, n, cap);
+      interp_flatten_own(nt, pid, out, own, n, cap);
       continue;
     }
     if (*n >= *cap) {
       int ncap = *cap ? *cap * 2 : 8;
       int *grown = realloc(*out, (size_t)ncap * sizeof(int));
-      if (!grown) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-      *out = grown; *cap = ncap;
+      int *og = own ? realloc(*own, (size_t)ncap * sizeof(int)) : NULL;
+      if (!grown || (own && !og)) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      *out = grown; if (own) *own = og;
+      *cap = ncap;
     }
+    if (own) (*own)[*n] = id;
     (*out)[(*n)++] = pid;
   }
+}
+static void interp_flatten(const NodeTable *nt, int id, int **out, int *n, int *cap) {
+  interp_flatten_own(nt, id, out, NULL, n, cap);
 }
 
 /* Does the InterpolatedStringNode id fold to one literal: every leaf part of
@@ -138,19 +144,35 @@ static int interp_changes_var(Compiler *c, int n, NodeKind vk, const char *vn) {
                                             k == NK_GlobalVariableOrWriteNode || k == NK_GlobalVariableAndWriteNode ||
                                             k == NK_GlobalVariableTargetNode))))
     bits |= 2;
-  /* a method of the program's own handed the variable (`f(s)`) may change
-     it in place through its parameter, and one called on self may change an
-     instance variable */
-  if (k == NK_CallNode && cplan_user(c, n)->mi >= 0) {
-    int args = nt_ref(nt, n, "arguments"), an = 0;
-    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    for (int i = 0; i < an; i++)
-      if (nt_kind(nt, av[i]) == vk && nt_str(nt, av[i], "name") && vn && sp_streq(nt_str(nt, av[i], "name"), vn)) bits |= 1;
-    int r = nt_ref(nt, n, "receiver");
-    Scope *sc = comp_scope_of(c, n);
-    if (vk == NK_InstanceVariableReadNode && (r < 0 || nt_kind(nt, r) == NK_SelfNode) && vn && sc &&
-        subtree_may_write_ivar(c, n, vn, sc->class_id, 0))
-      bits |= 1;
+  /* code the walk cannot see into: a method of the program's own, a dispatch,
+     a send, a proc's call, a block, a yield, a super. It may change the
+     String in place through a parameter it is handed (`f(s)`), and it may
+     rebind a global or an instance variable (`def reset = (@s = +"z")`), or a
+     local a proc captured: the part then keeps the String it named. */
+  {
+    const char *nm = k == NK_CallNode ? nt_str(nt, n, "name") : NULL;
+    int has_blk = k == NK_CallNode && nt_ref(nt, n, "block") >= 0;
+    int callish = nm && (sp_streq(nm, "call") || sp_streq(nm, "()") || sp_streq(nm, "send") ||
+                         sp_streq(nm, "public_send") || sp_streq(nm, "__send__") ||
+                         sp_streq(nm, "instance_variable_set") || sp_streq(nm, "instance_eval") ||
+                         sp_streq(nm, "instance_exec") || sp_streq(nm, "yield"));
+    int user = k == NK_CallNode && (cplan_user(c, n)->mi >= 0 || cplan_user(c, n)->dispatch != CP_NONE);
+    int opaque = user || has_blk || callish || k == NK_YieldNode || k == NK_SuperNode || k == NK_ForwardingSuperNode ||
+                 k == NK_LambdaNode;
+    if (opaque && vn) {
+      if (user) {
+        int args = nt_ref(nt, n, "arguments"), an = 0;
+        const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+        for (int i = 0; i < an; i++)
+          if (nt_kind(nt, av[i]) == vk && nt_str(nt, av[i], "name") && sp_streq(nt_str(nt, av[i], "name"), vn)) bits |= 1;
+      }
+      Scope *sc = comp_scope_of(c, n);
+      if (vk == NK_LocalVariableReadNode) {
+        if (has_blk || callish || k == NK_YieldNode || k == NK_LambdaNode) bits |= 2;
+      }
+      else if (vk != NK_InstanceVariableReadNode || !sc || subtree_may_write_ivar(c, n, vn, sc->class_id, 0))
+        bits |= 2;
+    }
   }
   for (int i = 0; i < nt_num_refs(nt, n); i++) bits |= interp_changes_var(c, nt_ref_at(nt, n, i), vk, vn);
   for (int i = 0; i < nt_num_arrs(nt, n); i++) {
@@ -187,28 +209,52 @@ static const char *interp_reader_var(Compiler *c, int call, char *buf, size_t ca
    in place by a later part and rebound by none? CRuby reads the String after
    the last part ran, so the variable is read there (a rebinding write keeps
    the String the part named). */
-static int interp_var_read_late(Compiler *c, const int *parts, int n, int k, int expr) {
+static int interp_var_read_late(Compiler *c, const int *parts, int n, int k, int expr, int *base) {
   const NodeTable *nt = c->nt;
   int u = unwrap_parens(c, expr);
   if (!repr_share_rule(c) || u < 0) return 0;
+  int kind = 1, b = u;
+  /* a String method that answers its receiver, or nil (`s << "a"`,
+     `s.upcase!`, `s.itself`, `s.to_s`, `+s`, `s&.itself`), over a variable: the
+     part is the variable's String itself, the call run where it stands and the
+     String read after the last part */
+  while (b >= 0 && nt_kind(nt, b) == NK_CallNode) {
+    const char *nm = nt_str(nt, b, "name");
+    int r = unwrap_parens(c, nt_ref(nt, b, "receiver")), argc = call_plain_argc(c, b);
+    if (!nm || r < 0 || comp_ntype(c, r) != TY_STRING || cplan_user(c, b)->mi >= 0) break;
+    int self = (bop_answers_self(TY_STRING, nm, argc, nt_ref(nt, b, "block") >= 0) & (BOPF_SELF | BOPF_SELF_OR_NIL)) ||
+               (argc == 0 && (sp_streq(nm, "itself") || sp_streq(nm, "to_s") || sp_streq(nm, "to_str") ||
+                              sp_streq(nm, "+@")));
+    if (!self) break;
+    kind = 2;
+    b = r;
+  }
+  if (kind == 2 && (nt_kind(nt, b) == NK_CallNode)) kind = 1, b = u;
   /* (a call that answers an instance variable is a read of it) */
   char rvb[96];
-  const char *rv = interp_reader_var(c, u, rvb, sizeof rvb);
-  NodeKind uk = rv ? NK_InstanceVariableReadNode : nt_kind(nt, u);
-  const char *un = rv ? rv : nt_str(nt, u, "name");
+  const char *rv = kind == 1 ? interp_reader_var(c, b, rvb, sizeof rvb) : NULL;
+  NodeKind uk = rv ? NK_InstanceVariableReadNode : nt_kind(nt, b);
+  const char *un = rv ? rv : nt_str(nt, b, "name");
   if (uk != NK_LocalVariableReadNode && uk != NK_InstanceVariableReadNode && uk != NK_GlobalVariableReadNode) return 0;
-  if (!un || comp_ntype(c, u) != TY_STRING || arg_ran_first(u, 0)) return 0;
+  if (!un || comp_ntype(c, u) != TY_STRING || comp_ntype(c, b) != TY_STRING || arg_ran_first(u, 0)) return 0;
   int bits = 0;
   for (int j = k + 1; j < n; j++) bits |= interp_changes_var(c, parts[j], uk, un);
-  return bits == 1;
+  if (bits != 1) return 0;
+  if (base) *base = b;
+  return kind;
 }
 
 static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
   const NodeTable *nt = c->nt;
   int n = 0;
-  int *flat = NULL, fcap = 0;
-  interp_flatten(nt, id, &flat, &n, &fcap);
+  int *flat = NULL, fcap = 0, *own = NULL;
+  interp_flatten_own(nt, id, &flat, &own, &n, &fcap);
   const int *parts = flat;
+  /* (each adjacent literal is built on its own: a part is held only until
+     the end of its segment, sn[k] parts in) */
+  int *sn = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+  if (!sn) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = n - 1; k >= 0; k--) sn[k] = k + 1 < n && own[k + 1] == own[k] ? sn[k + 1] : k + 1;
   WPart *wp = malloc(sizeof(WPart) * (size_t)(n > 0 ? n : 1));
   if (!wp) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   int nwp = 0, ndyn_or_scalar = 0;
@@ -224,6 +270,8 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
   for (int k = 0; k < n; k++) {
     int pid = parts[k];
     const char *pty = nt_type(nt, pid);
+    /* a segment's held parts are read where it ends */
+    if (k > 0 && own[k] != own[k - 1] && late.p) { buf_puts(&decls, late.p); late.len = 0; late.p[0] = '\0'; }
     if (pty && sp_streq(pty, "StringNode")) {
       const char *content = nt_str(nt, pid, "content");
       int off = lits.len;
@@ -297,7 +345,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
       }
       /* --share-strings: such a part's handle is taken here, in order, and
          read as the String it holds after every part ran (late) */
-      if (!vexpr[0] && bn == 1 && interp_part_reads_late(c, parts, n, k, expr)) {
+      if (!vexpr[0] && bn == 1 && interp_part_reads_late(c, parts, sn[k], k, expr)) {
         Buf hb; memset(&hb, 0, sizeof hb);
         emit_strbuf_handle_of(c, expr, &hb);
         int hv = ++g_tmp, tv3 = ++g_tmp;
@@ -311,6 +359,9 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         ndyn_or_scalar++;
         continue;
       }
+      /* --share-strings: a call answering its receiver, over a variable that a
+         later part changes in place, is run here and its String read late */
+      int late_call = t == TY_STRING && !vexpr[0] && interp_var_read_late(c, parts, sn[k], k, expr, NULL) == 2;
       /* Build this part's conversion expression. Bounded scalars keep their
          native C type (written digit-by-digit later); everything else
          converts to a marker-carrying string whose byte length is summed. */
@@ -356,8 +407,10 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         EMIT_IV();
       }
       else if (t == TY_STRING) {
-        /* a nullable string (NULL) interpolates as the empty string */
-        buf_puts(&conv, "sp_str_or_empty("); EMIT_IV(); buf_puts(&conv, ")");
+        /* a nullable string (NULL) interpolates as the empty string (a part
+           read after the last part keeps its nil, to read nothing then) */
+        if (late_call) EMIT_IV();
+        else { buf_puts(&conv, "sp_str_or_empty("); EMIT_IV(); buf_puts(&conv, ")"); }
       }
       else if (t == TY_FLOAT) {
         /* and a nullable Float holding nil writes nothing too */
@@ -561,10 +614,23 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
       else {
         int defer = 0;
         if (bn == 1 && t == TY_STRING && !vexpr[0] && strbuf_read_copies(c, expr))
-          for (int k2 = k + 1; k2 < n && !defer; k2++)
+          for (int k2 = k + 1; k2 < sn[k] && !defer; k2++)
             defer = nt_kind(nt, parts[k2]) == NK_EmbeddedStatementsNode && subtree_has_side_effect(c, parts[k2]);
         /* --share-strings: a variable that holds its bytes, changed in place by a later part */
-        if (!defer && bn == 1 && t == TY_STRING && !vexpr[0]) defer = interp_var_read_late(c, parts, n, k, expr);
+        int late_base = -1;
+        if (!defer && t == TY_STRING && !vexpr[0]) defer = interp_var_read_late(c, parts, sn[k], k, expr, &late_base);
+        if (defer == 2) {
+          /* the call runs here, its String is read after the last part
+             (nil, a bang that changed nothing, reads as nothing) */
+          int tr = ++g_tmp;
+          Buf rd; memset(&rd, 0, sizeof rd);
+          emit_expr(c, late_base, &rd);
+          buf_printf(&decls, "const char *_t%d = %s; SP_GC_ROOT(_t%d); ", tr, conv.p ? conv.p : "NULL", tr);
+          buf_printf(&late, "const char *_t%d = _t%d ? sp_str_or_empty(%s) : sp_str_empty; SP_GC_ROOT(_t%d); "
+                     "size_t _l%d = sp_str_byte_len(_t%d); ", tv2, tr, rd.p ? rd.p : "sp_str_empty", tv2, tv2, tv2);
+          free(rd.p);
+        }
+        else
         buf_printf(defer ? &late : &decls, "const char *_t%d = %s; SP_GC_ROOT(_t%d); size_t _l%d = sp_str_byte_len(_t%d); ",
                    tv2, conv.p ? conv.p : "sp_str_empty", tv2, tv2, tv2);
       }
@@ -583,6 +649,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
   }
   if (late.p) buf_puts(&decls, late.p);
   free(late.p);
+  free(own); free(sn);
   pl->wp = wp; pl->nwp = nwp; pl->ndyn_or_scalar = ndyn_or_scalar;
   pl->lits = lits; pl->decls = decls; pl->fixed_cap = fixed_cap; pl->flat = flat;
 }
