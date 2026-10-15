@@ -73,34 +73,23 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       if (bin_r) buf_puts(b, ")");
       return 1;
     }
-    /* File.read(path, length) -> the first length bytes (#2776); a nil
-       length is "the whole file", as CRuby */
-    if ((sp_streq(name, "read") || sp_streq(name, "binread")) && argc == 2) {
-      if (comp_ntype(c, argv[1]) == TY_NIL) {
-        buf_puts(b, "({ (void)("); emit_expr(c, argv[1], b);
-        buf_puts(b, "); sp_file_read("); emit_path_expr(c, argv[0], b); buf_puts(b, "); })");
-        return 1;
+    /* File.read(path, length) -> the first length bytes (#2776), and
+       File.read(path, length, offset) -> length bytes from offset; a nil
+       length is "the rest of the file", as CRuby. The arguments are
+       evaluated into temporaries in source order: C leaves the order of
+       a call's arguments unspecified. */
+    if ((sp_streq(name, "read") || sp_streq(name, "binread")) && (argc == 2 || argc == 3)) {
+      int bin_r = sp_streq(name, "binread");
+      int tp = ++g_tmp, tl = ++g_tmp, to = ++g_tmp;
+      if (bin_r) buf_puts(b, "sp_str_as_binary(");
+      buf_printf(b, "({ const char *_t%d = ", tp); emit_path_expr(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT_STR(_t%d); sp_oint _t%d = ", tp, tl); emit_oint_expr(c, argv[1], TY_INT, b);
+      if (argc == 3) {
+        buf_printf(b, "; sp_int _t%d = ", to); emit_int_expr(c, argv[2], b);
+        buf_printf(b, "; sp_file_read_at_o(_t%d, _t%d, _t%d); })", tp, tl, to);
       }
-      { int bin_r2 = sp_streq(name, "binread");
-        if (bin_r2) buf_puts(b, "sp_str_as_binary(");
-        buf_puts(b, "sp_file_read_len("); emit_path_expr(c, argv[0], b); buf_puts(b, ", ");
-        emit_int_expr(c, argv[1], b); buf_puts(b, ")");
-        if (bin_r2) buf_puts(b, ")"); }
-      return 1;
-    }
-    if ((sp_streq(name, "read") || sp_streq(name, "binread")) && argc == 3) {
-      int bin_r3 = sp_streq(name, "binread");
-      if (bin_r3) buf_puts(b, "sp_str_as_binary(");
-      if (comp_ntype(c, argv[1]) == TY_NIL) {
-        buf_puts(b, "({ (void)("); emit_expr(c, argv[1], b);
-        buf_puts(b, "); sp_file_read_from("); emit_path_expr(c, argv[0], b); buf_puts(b, ", ");
-        emit_int_expr(c, argv[2], b); buf_puts(b, "); })");
-      }
-      else {
-        buf_puts(b, "sp_file_read_at("); emit_path_expr(c, argv[0], b); buf_puts(b, ", ");
-        emit_int_expr(c, argv[1], b); buf_puts(b, ", "); emit_int_expr(c, argv[2], b); buf_puts(b, ")");
-      }
-      if (bin_r3) buf_puts(b, ")");
+      else buf_printf(b, "; sp_file_read_o(_t%d, _t%d); })", tp, tl);
+      if (bin_r) buf_puts(b, ")");
       return 1;
     }
     /* the stat/predicate family (#2775) */
