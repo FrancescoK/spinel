@@ -106,4 +106,5 @@ def cruby_oracle(name)
   end
 end
 cruby_oracle('display')
+cruby_oracle('dispatch')
 puts 'C extension compiler bridge: CRuby oracle and GC modes passed'

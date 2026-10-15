@@ -47,4 +47,15 @@ VALUE rb_ivar_get(VALUE, ID);
 VALUE rb_ivar_set(VALUE, ID, VALUE);
 VALUE rb_const_get(VALUE, ID);
 VALUE rb_eval_string(const char *);
+
+/* CRuby answers these by calling the Ruby method, so they are rb_funcall with
+ * a literal name: the scanner records the name, and an override answers as it
+ * does in CRuby. The same object is equal without a call, as in CRuby. */
+#define rb_equal(a, b) ({ VALUE sp_eq_a_ = (a), sp_eq_b_ = (b); \
+  sp_eq_a_ == sp_eq_b_ || RTEST(rb_funcall(sp_eq_a_, rb_intern("=="), 1, sp_eq_b_)) ? Qtrue : Qfalse; })
+#define rb_eql(a, b) ({ VALUE sp_eql_a_ = (a), sp_eql_b_ = (b); \
+  sp_eql_a_ == sp_eql_b_ || RTEST(rb_funcall(sp_eql_a_, rb_intern("eql?"), 1, sp_eql_b_)); })
+#define rb_respond_to(obj, id) RTEST(rb_funcall((obj), rb_intern("respond_to?"), 1, ID2SYM(id)))
+#define rb_obj_respond_to(obj, id, priv) \
+  RTEST(rb_funcall((obj), rb_intern("respond_to?"), 2, ID2SYM(id), (priv) ? Qtrue : Qfalse))
 #endif
