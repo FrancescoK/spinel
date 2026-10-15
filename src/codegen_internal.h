@@ -1889,6 +1889,7 @@ void emit_obj_upcast_prefix(Compiler *c, TyKind slot, TyKind val, Buf *b);
    key is written twice, or -1. */
 int kwh_lookup(const NodeTable *nt, int kwh, const char *kname);
 const char *encode_opt_unread(const NodeTable *nt, const int *els, int en);   /* codegen_call_recv.c */
+int enc_const_path(const NodeTable *nt, int n);   /* Encoding::X (codegen_call_recv.c) */
 int callee_has_kwarg(Compiler *c, Scope *m, const char *name);
 int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
 int rest_packable_arm(Compiler *c, Scope *s);
