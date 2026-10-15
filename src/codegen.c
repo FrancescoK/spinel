@@ -1103,7 +1103,14 @@ void emit_float_expr(Compiler *c, int node, Buf *b) {
    conversion slot's "can't convert X into Float". */
 void emit_float_coerce_expr(Compiler *c, int node, Buf *b) {
   TyKind t = comp_ntype(c, node);
-  if (t == TY_INT || t == TY_BIGINT || t == TY_FLOAT || t == TY_POLY || t == TY_UNKNOWN ||
+  /* a boxed value: the runtime asks the same of its class */
+  if (t == TY_POLY) {
+    buf_puts(b, "sp_poly_float_operand(");
+    emit_boxed(c, node, b);
+    buf_puts(b, ")");
+    return;
+  }
+  if (t == TY_INT || t == TY_BIGINT || t == TY_FLOAT || t == TY_UNKNOWN ||
       t == TY_RATIONAL) {
     emit_float_expr(c, node, b);
     return;
@@ -12012,6 +12019,13 @@ static void emit_kconv_bridge(Compiler *c, Buf *b) {
         buf_puts(b, "      case 4: if (out) *out = ");
         emit_boxed_ret_call(c, &c->scopes[tmi], call, b);
         buf_puts(b, "; return 1;\n");
+      }
+      /* one with no #to_f at all is rb_to_float's TypeError, which is also
+         Numeric#coerce's beside a Float (a division by it) */
+      else if (comp_method_in_chain(c, i, "to_f", NULL) < 0) {
+        if (rows++ == 0) buf_printf(b, "    case %d: switch (which) {\n", i);
+        buf_printf(b, "      case 4: sp_raise_cls(\"TypeError\", \"can't convert %s into Float\"); return 0;\n",
+                   c->classes[i].name);
       }
     }
     if (kconv_row_wanted(c, 5)) emit_kconv_row(c, i, 5, &rows, b);

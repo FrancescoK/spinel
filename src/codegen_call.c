@@ -5095,8 +5095,10 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         emit_float_expr(c, argv[0], b); buf_puts(b, "))");
         return 1;
       }
-      /* a Bignum divisor: the boxed quotient, a Rational of Bignums */
-      if (comp_ntype(c, argv[0]) == TY_BIGINT) {
+      /* a quo the analysis typed boxed: by a Rational, a Bignum or a value
+         known only at run time, which the cast below read as an Integer (a C
+         error, or a Bignum's address as the denominator) */
+      if (comp_ntype(c, id) == TY_POLY) {
         buf_puts(b, "sp_poly_quo(sp_box_int(");
         emit_expr(c, recv, b); buf_puts(b, "), ");
         emit_boxed(c, argv[0], b); buf_puts(b, ")");
