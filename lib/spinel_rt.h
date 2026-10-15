@@ -18668,6 +18668,21 @@ static sp_PolyArray *sp_poly_to_a_call(sp_RbVal v) {
   sp_PolyArray_push(a, sp_box_str_new(sp_time_zone(t)));
   return a;
 }
+/* to_a of a boxed value as the hop a block of map and its kin reads
+   (enum_yield_view): an Enumerator's items as the block binds them
+   (sp_Enumerator_to_a_yielded), and any other value's elements each as one
+   value, packed for a lone `|*r|` in a new Array (#9271). */
+static sp_PolyArray *sp_poly_to_a_yielded(sp_RbVal v, sp_bool as_args) SP_UNUSED;
+static sp_PolyArray *sp_poly_to_a_yielded(sp_RbVal v, sp_bool as_args) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p)
+    return sp_Enumerator_to_a_yielded((sp_Enumerator *)v.v.p, as_args);
+  sp_PolyArray *items = sp_poly_to_a_call(v);
+  if (!as_args || !items) return items;
+  SP_GC_ROOT(items);
+  sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
+  for (sp_int i = 0; i < items->len; i++) sp_PolyArray_push(r, sp_box_poly_array(sp_yielded_args(0, items->data[i])));
+  return r;
+}
 /* to_a / to_ary on a boxed value, answered boxed: an Array of any
    representation is itself, as CRuby's Array#to_a is; to_a on anything
    else materializes as sp_poly_to_a_call does, and to_ary is Array's alone. */

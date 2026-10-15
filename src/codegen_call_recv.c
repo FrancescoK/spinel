@@ -14742,6 +14742,14 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
   if ((sp_streq(name, "to_a") || sp_streq(name, "deconstruct")) && argc == 0 &&
       nt_ref(nt, id, "block") < 0) {
     if (!poly_name_user_claimed(c, name, argc)) {
+      /* the hop a block of map and its kin reads over a boxed Enumerator
+         (desugar's enum_hop_yield_view) */
+      const char *view = sp_streq(name, "to_a") ? nt_str(nt, id, "enum_yield_view") : NULL;
+      if (view) {
+        buf_puts(b, "sp_poly_to_a_yielded("); emit_expr(c, recv, b);
+        buf_printf(b, ", %d)", sp_streq(view, "args"));
+        { *out = 1; return 1; }
+      }
       /* to_a itself also answers a Time's fields (sp_poly_to_a_call) */
       buf_puts(b, sp_streq(name, "to_a") ? "sp_poly_to_a_call(" : "sp_poly_to_a_arr(");
       emit_expr(c, recv, b); buf_puts(b, ")");
