@@ -9675,6 +9675,14 @@ static void emit_when_splat_test(Compiler *c, int cond, int t, TyKind pt, Buf *b
    the static type cannot say, so the arm reads it as is_a? does (#7049). The
    universal classes hold for nil as well and keep the constant (answers 0,
    nothing emitted). */
+/* A qualified constant of a builtin that holds a value, not a class
+   (`Socket::AF_INET`, `File::SEPARATOR`, `Float::INFINITY`). */
+static int when_builtin_value_const(Compiler *c, int cond) {
+  if (nt_kind(c->nt, cond) != NK_ConstantPathNode) return 0;
+  TyKind ct = comp_ntype(c, cond);
+  return ct == TY_INT || ct == TY_FLOAT || ct == TY_STRING;
+}
+
 static int emit_when_scalar_class(TyKind pt, const char *cn, int t, Buf *b) {
   if (pt != TY_INT && pt != TY_FLOAT && pt != TY_STRING) return 0;
   int yes = ty_matches_class(pt, cn, 0);
@@ -10083,6 +10091,9 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
            rather than the constant one: read as a class name the arm folded
            to a constant false and the branch was never taken. */
         if (cn2 && comp_ffi_const_at(c, conds[j], NULL)) cn2 = NULL;
+        /* ...and so is a builtin's value constant (`Socket::AF_INET`,
+           `File::SEPARATOR`): typed a number or a String, not a class */
+        if (cn2 && when_builtin_value_const(c, conds[j])) cn2 = NULL;
           if (cn2 && pt == TY_POLY) {
             char tmp[32]; snprintf(tmp, sizeof tmp, "_t%d", t);
             if (!emit_poly_class_when(c, conds[j], tmp, b))
@@ -10524,6 +10535,9 @@ static void emit_case_expr_in(Compiler *c, int id, Buf *b) {
            rather than the constant one: read as a class name the arm folded
            to a constant false and the branch was never taken. */
         if (cn2 && comp_ffi_const_at(c, conds[j], NULL)) cn2 = NULL;
+        /* ...and so is a builtin's value constant (`Socket::AF_INET`,
+           `File::SEPARATOR`): typed a number or a String, not a class */
+        if (cn2 && when_builtin_value_const(c, conds[j])) cn2 = NULL;
         if (cn2 && pt == TY_POLY) {
           char tmp[32]; snprintf(tmp, sizeof tmp, "_t%d", t);
           if (!emit_poly_class_when(c, conds[j], tmp, b)) buf_puts(b, "0");
