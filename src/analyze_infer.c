@@ -3,6 +3,7 @@
 #include "call_plan.h"
 #include "repr.h"
 #include "holder.h"
+#include "share.h"
 #include "builtin_names.h"
 #include <stdint.h>
 #include <limits.h>
@@ -2197,11 +2198,19 @@ TyKind an_class_concrete(Compiler *c, int id, const char *name, TyKind t) {
     /* a class method no Class value the receiver holds reaches has no arm
        (poly_cls_value_cands): Shellwords.split beside `{b: Integer}` */
     if (!poly_cls_value_reaches(c, id, s->class_id)) continue;
+    /* nor one whose class no box can hold, a module the program only
+       calls (share_target_reachable): `Params.sub` beside a String's sub, */
+    if (!share_target_reachable(c, id, targets[i])) continue;
+    /* nor one that cannot take the call's arguments: it only raises
+       (cplan_target_binds), `def self.split(s, keys, values, present)` */
+    if (!cplan_target_binds(c, id, targets[i])) continue;
     TyKind r = (TyKind)s->ret;
     if (r == j || r == TY_UNKNOWN || r == TY_VOID) continue;
     if (r == TY_NIL && an_ty_holds_nil(j)) continue;
     /* two Arrays meet in the boxed Array, which holds either: a String's
-       split beside a module's `def self.split = [1, s]` */
+       split beside a module's `def self.split = [1, s]` (under
+       --share-strings a String Array moves in as its handles,
+       sp_StrArray_to_poly_handles) */
     if (ty_is_array(r) && ty_is_array(j)) { j = TY_POLY_ARRAY; continue; }
     return TY_POLY;
   }

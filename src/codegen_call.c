@@ -1829,7 +1829,9 @@ int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int argc,
          another's mixed one */
       else if (ret == TY_POLY_ARRAY && (kr == TY_INT_ARRAY || kr == TY_STR_ARRAY || kr == TY_FLOAT_ARRAY)) {
         buf_printf(b, "%s(%s)", kr == TY_INT_ARRAY ? "sp_IntArray_to_poly" :
-                                kr == TY_STR_ARRAY ? "sp_StrArray_to_poly_fmt" : "sp_FloatArray_to_poly",
+                                kr == TY_STR_ARRAY ? (repr_share_rule(c) ? "sp_StrArray_to_poly_handles"
+                                                                         : "sp_StrArray_to_poly_fmt") :
+                                "sp_FloatArray_to_poly",
                    cb.p ? cb.p : "NULL");
         pconv = PC_BOX;
       }
@@ -7343,7 +7345,11 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
   /* (and a String answer where the dispatch answers a handle is wrapped
      below, an exception's #message as the handle it keeps) */
   int wrap_h = ret == TY_STRBUF && bt == TY_STRING && tr >= 0;
-  if (ret != TY_POLY && bt != ret && !(tr < 0 && repr_share_rule(c)) && !wrap_h) return 0;
+  /* a typed Array answer into the boxed Array the call joined it in
+     (an_class_concrete): a String's split(sep, limit) beside a module's
+     `def self.split(s, n) = [1, s]` */
+  const char *to_pa = ret == TY_POLY_ARRAY && tr >= 0 ? array_to_poly_fn(bt) : NULL;
+  if (ret != TY_POLY && bt != ret && !(tr < 0 && repr_share_rule(c)) && !wrap_h && !to_pa) return 0;
   /* the result slot's form, as the dispatch seeded it: an Integer / Float
      answer that can be nil is held as the oint */
   int slot_o = oint_kind(ret) && node_is_oint(c, id);
@@ -7413,6 +7419,8 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
       buf_printf(&ib, ", SP_BUILTIN_STRBUF) : sp_poly_exc_acc(_t%d, \"message\"))", tv);
     }
     else if (ret == TY_POLY && bt != TY_POLY && !is_raise) emit_boxed_text(c, bt, nb->p, &ib);
+    else if (to_pa && !is_raise)
+      buf_printf(&ib, "%s(%s)", bt == TY_STR_ARRAY && repr_share_rule(c) ? "sp_StrArray_to_poly_handles" : to_pa, nb->p);
     else if (wrap_h && !is_raise && argc == 0 && is_message_name(name) && repr_share_rule(c) &&
              !exc_has_nonstring_msg_override(c)) {
       char e[48];

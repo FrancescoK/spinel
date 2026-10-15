@@ -2939,6 +2939,28 @@ static inline sp_RbVal sp_poly_literal_identity(sp_RbVal v) {
 static inline const void *sp_poly_identity_ptr(sp_RbVal v) {
   return sp_poly_literal_identity(v).v.p;
 }
+/* --share-strings: a String Array moved into a boxed Array with each
+   element as the handle a change through another name reaches. A
+   handle's own bytes box that handle (sp_poly_literal_identity), a frozen
+   String stays its plain box (no change reaches it), and any other String
+   becomes a new handle, a box of its text being one `<<` would replace
+   rather than change. sp_StrArray_to_poly_fmt boxed every element as its
+   text, so a String read out of the boxed Array and kept under another
+   name did not see a change made through the first. */
+static inline sp_PolyArray *sp_StrArray_to_poly_handles(sp_StrArray *a) {
+  SP_GC_ROOT(a);
+  sp_PolyArray *r = sp_PolyArray_new();
+  SP_GC_ROOT(r);
+  if (!a) return r;
+  for (sp_int i = 0; i < a->len; i++) {
+    const char *s = a->data[i];
+    sp_RbVal v = sp_box_str(s);
+    if (s && ((const unsigned char *)s)[-1] == 0xfd) v = sp_poly_literal_identity(v);
+    else if (s && !sp_str_is_frozen_val(s)) v = sp_box_obj(sp_String_new_shared(s), SP_BUILTIN_STRBUF);
+    sp_PolyArray_push(r, v);
+  }
+  return r;
+}
 /* A POLY variable's value as it is handed to a parameter the callee appends
    to in place: a plain String becomes the shared handle, boxed, and the
    caller stores it back into the variable before the call, so the callee's
