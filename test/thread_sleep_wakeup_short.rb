@@ -2,8 +2,13 @@
 #
 # The scheduler's monitor fires sleep timers. With no descriptor of its own to
 # watch it waited in poll(), which counts in whole milliseconds, so a sleep of
-# 0.2 ms woke after at least 1 ms, every time. The median of 50 such sleeps is
-# now well under 1 ms (about 0.3 ms); CRuby's is about the same.
+# 0.2 ms woke at least 1 ms after it began, every time. It now wakes about
+# 0.1 ms after its deadline.
+#
+# The fastest of 50 such sleeps is what is checked, not a typical one: a busy
+# machine can only delay a thread's resumption, so it pushes slow sleeps up but
+# leaves the fastest near what the monitor gives. The old poll() put even the
+# fastest above 1 ms; now it is about 0.25 ms, well under the 0.6 ms asked here.
 def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
 took = []
@@ -15,7 +20,6 @@ t = Thread.new do
   end
 end
 t.join
-median = took.sort[took.size / 2]
 puts "50 sleeps of 0.2 ms"
 puts "none woke early: #{took.min >= 0.0002}"
-puts "median under 1 ms: #{median < 0.001}"
+puts "the fastest woke within 0.6 ms: #{took.min < 0.0006}"
