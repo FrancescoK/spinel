@@ -1,0 +1,5 @@
+module HkNokogiri
+  class Element
+    def []=: (untyped _key, String _value) -> String
+  end
+end

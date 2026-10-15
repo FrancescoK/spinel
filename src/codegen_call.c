@@ -6318,6 +6318,17 @@ void emit_kwh_pos_hash(Compiler *c, const PolyKw *kw, int boxed, Buf *out) {
   if (boxed) buf_puts(out, ", SP_BUILTIN_SYM_POLY_HASH)");
 }
 
+/* Keyword `e` (a String value, held as its bytes in `tn`) into an arm's
+   keyword parameter that is a shared handle: the handle its String variable
+   had when the value ran (kwhtmp), as a direct call's binder passes the
+   slot's handle itself so the callee's appends land in the caller's String;
+   any other value is wrapped in a handle of its own (a frozen literal's is
+   its own). */
+static void emit_poly_kw_handle(const PolyKw *kw, int e, const char *tn, Buf *pa) {
+  if (kw->kwhtmp && kw->kwhtmp[e]) buf_printf(pa, "_t%d", kw->kwhtmp[e]);
+  else buf_printf(pa, "sp_String_new_shared(%s)", tn);
+}
+
 static int emit_poly_kw_param(Compiler *c, Scope *ms, int a, const PolyKw *kw,
                               const char *selfp, Buf *pa) {
   const NodeTable *nt = c->nt;
@@ -6371,6 +6382,9 @@ static int emit_poly_kw_param(Compiler *c, Scope *ms, int a, const PolyKw *kw,
     /* a plain number into a keyword slot that holds its nil: lifted */
     else if (oint_kind(kpt) && kpv && slot_is_oint(kpv) && at == kpt) buf_printf(pa, "%s(%s)", oint_of(kpt), tn);
     else if (oint_kind(kpt) && kpv && slot_is_oint(kpv) && at == TY_NIL) buf_puts(pa, oint_nil(kpt));
+    /* a String keyword the arm holds as the shared handle */
+    else if (at == TY_STRING && repr_share_rule(c) && kpv && repr_of_slot(c, kpv).handle)
+      emit_poly_kw_handle(kw, e_found, tn, pa);
     else { emit_obj_upcast_prefix(c, kpt, at, pa); buf_puts(pa, tn); }
   }
   else emit_arg_or_default(c, ms, a, -1, pa);
@@ -7751,6 +7765,16 @@ static void emit_poly_route_arg(Compiler *c, int node, TyKind ty, int th, int tn
   Buf *sv_pre = g_pre;
   if (ran && subtree_has_side_effect(c, node)) g_pre = &pre;
   emit_strbuf_handle_of(c, node, &val);
+  /* An argument an operand-order rewrite already ran into a String temp
+     took no handle there (ran_first_handle), and its route, run again,
+     read that temp as the handle. It is held as the String, so the handle
+     takes it as a new one, as any value with none to hand on does. */
+  if (repr_share_rule(c) && val.p && ran_first_read(c, node, val.p) >= 0) {
+    Buf wrap; memset(&wrap, 0, sizeof wrap);
+    buf_printf(&wrap, "sp_String_new_shared(%s)", val.p);
+    free(val.p);
+    val = wrap;
+  }
   g_pre = sv_pre;
   if (pre.p) buf_puts(b, pre.p);
   buf_printf(b, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d); ", th, val.p ? val.p : "NULL", th);
@@ -9122,7 +9146,7 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       /* keyword values, evaluated once like the positionals; matched to each
          arm's keyword params by name below (#3268) */
       int kwn = 0; const int *kwels = NULL;
-      int *kwtmp = NULL; TyKind *kwty = NULL;
+      int *kwtmp = NULL, *kwhtmp = NULL; TyKind *kwty = NULL;
       int kwall = -1, kwmark = g_n_argov;
       if (kw_ds && bop_share_named(BOP_ANY_ARRAY, name) == BSH_PACK)
         emit_args_in_source_order(c, &kwh, 1, b);
@@ -9140,7 +9164,9 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         for (int e = kwn - 1; e >= 0 && kw_live < 0; e--)
           if (!poly_inert(c, nt_ref(nt, kwels[e], "value"))) kw_live = e;
         kwtmp = malloc(sizeof(int) * (size_t)(kwn > 0 ? kwn : 1));
+        kwhtmp = calloc((size_t)(kwn > 0 ? kwn : 1), sizeof(int));
         kwty  = malloc(sizeof(TyKind) * (size_t)(kwn > 0 ? kwn : 1));
+        if (!kwtmp || !kwhtmp || !kwty) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
         for (int e = 0; e < kwn; e++) {
           int val = nt_ref(nt, kwels[e], "value");
           kwtmp[e] = ++g_tmp;
@@ -9152,6 +9178,22 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           }
           else {
             kwty[e] = at;
+            /* --share-strings: a String variable that is the shared handle,
+               given to a keyword some arm takes as the handle, is taken
+               where the value runs, as a positional's is (htmp): the temp
+               holds its String value, which that arm wraps in a handle of
+               its own where no slot is read (emit_poly_kw_handle) */
+            Buf ksref; memset(&ksref, 0, sizeof ksref);
+            NodeKind vk = nt_kind(nt, val);
+            if (at == TY_STRING && repr_share_rule(c) &&
+                (vk == NK_LocalVariableReadNode || vk == NK_InstanceVariableReadNode) &&
+                (takes_handle >= 0 ? takes_handle : (takes_handle = poly_name_takes_handle(c, name))) &&
+                strbuf_slot_text(c, val, &ksref)) {
+              kwhtmp[e] = ++g_tmp;
+              buf_printf(b, "sp_String *_t%d = %s; ", kwhtmp[e], ksref.p);
+              emit_gc_root_tmp(c, TY_STRBUF, kwhtmp[e], b); buf_puts(b, " ");
+            }
+            free(ksref.p);
             kwtmp[e] = emit_poly_arg_temp(c, val, at, 0, kwtmp[e], ran, b);
           }
           if (val >= 0) ran |= subtree_has_side_effect(c, val);
@@ -9181,7 +9223,7 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           buf_printf(b, "; SP_GC_ROOT(_t%d); ", atmp[pos_argc]);
         }
       }
-      PolyKw kw = { kwh, kwn, kwall, kwels, kwtmp, kwty, kwall_any };
+      PolyKw kw = { kwh, kwn, kwall, kwels, kwtmp, kwty, kwall_any, kwhtmp };
       int stk = -1;
       if (splat_last && kwh >= 0) {
         stk = ++g_tmp;
@@ -9328,6 +9370,7 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       free(atmp_ty);
       free(htmp);
       free(kwtmp);
+      free(kwhtmp);
       free(kwty);
       view_unbind(kwmark);
       c->args_in_call = recv;

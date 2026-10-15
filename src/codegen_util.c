@@ -5813,8 +5813,12 @@ static void emit_hash_key_value(Compiler *c, int key, TyKind kt, Buf *b) {
   }
   /* a read marked to hand out a shared String's handle (a dynamic call's
      argument the read also is, at another round) keys a String-keyed hash by
-     a copy of its bytes, which publishes nothing on the side channel */
-  if (kt == TY_STRING && comp_ntype(c, key) == TY_STRBUF && repr_of(c, key).handle) {
+     a copy of its bytes, which publishes nothing on the side channel. A key
+     whose handle is formed apart from its String (a literal a rest
+     parameter's earlier round marked, repr_handle_apart) is the String
+     already: emit_expr answers its bytes, which are the key as they are. */
+  Repr kr = repr_of(c, key);
+  if (kt == TY_STRING && comp_ntype(c, key) == TY_STRBUF && kr.handle && !repr_handle_apart(c, key, kr)) {
     int t = ++g_tmp;
     buf_printf(b, "({ sp_String *_t%d = ", t);
     emit_expr(c, key, b);
