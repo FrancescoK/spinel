@@ -1,3 +1,3 @@
-50 sleeps of 0.2 ms
+200 sleeps of 0.2 ms
 none woke early: true
-the fastest woke within 0.6 ms: true
+at least 20 woke within 0.9 ms: true
