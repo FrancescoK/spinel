@@ -814,6 +814,11 @@ void share_check_report(Compiler *c) {
      check=unkept    (with param=NAME, index=J) once the method returns, no
                      name holds that parameter's String that did not hold
                      it when the method was called;
+     check=unshared  (a lifetime claim) no String of the value's class is
+                     changed in place while a second name can reach it: the
+                     tool records the objects the expression answers and
+                     checks each change of one;
+     check=frozen    the object is frozen;
      check=none      listed, not checked.
    The kinds today:
      value     share_value_fresh: the value is a new String, or nil;
@@ -868,8 +873,8 @@ void share_claims_report(Compiler *c) {
     if (share_value_needs_handle(c, n) != SHN_FRESH) continue;
     if (fresh || node) sk_claim(f, c, "need-new", "new", n, -1, NULL);
     else if (share_node_one_name(c, n)) sk_claim(f, c, "need-one-name", "one-name", n, -1, NULL);
-    else if (!share_node_shares(c, n)) sk_claim(f, c, "need-unshared", "none", n, -1, NULL);
-    else sk_claim(f, c, "need-argv-env", "none", n, -1, NULL);
+    else if (!share_node_shares(c, n)) sk_claim(f, c, "need-unshared", "unshared", n, -1, NULL);
+    else sk_claim(f, c, "need-argv-env", "frozen", n, -1, NULL);
   }
   for (int n = 0; n < nt->count; n++)
     if (nt_int(nt, n, "node_line", 0) > 0 && share_node_fresh_elems(c, n)) sk_claim(f, c, "elems", "elems", n, -1, NULL);

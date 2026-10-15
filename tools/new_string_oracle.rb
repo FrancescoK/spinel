@@ -38,6 +38,13 @@
 #                   parameter NAME's String: once it returns, no name
 #                   holds the object that did not hold it when it was
 #                   called
+#   check=unshared  the object is never changed in place while a second
+#                   name can reach it (a lifetime claim: the plan copied
+#                   the value because the share rule does not share its
+#                   class, and the rule says no String of that class is
+#                   changed while another name holds it)
+#   check=frozen    the object is frozen (an ARGV or ENV String, which a
+#                   copy cannot be told from)
 #   check=none      listed, not checked
 #
 # A claim on a def node is about the method (its answers, its parameters),
@@ -46,6 +53,19 @@
 # wrapping it, `::SpOracle.v(id, (expr))`, in a rewritten copy of the program
 # evaluated under the original path. A kind that states no check, or one this
 # tool does not know, is reported and checked by the `new` rule.
+#
+# unshared is checked where the object is changed, not where it is made: the
+# probe only records the objects the claimed expression answers (the first
+# max evaluations per claim); a TracePoint on :c_call then watches the String
+# methods that change the receiver in place (MUTATORS), and at each change of
+# a recorded object (the first max per source line and method) searches for
+# its holders by the same walk. The claim is disproved when two names hold it
+# at that moment; the report gives both chains. Not names: a frame of the
+# standard library, the `self` of a String method (the receiver the caller
+# names), a Proc's capture of a variable a frame already names, and a local
+# its method does not read again (a name is live if its next occurrence at or
+# after the current line is a read; the caller of a call in progress needs a
+# later line).
 #
 # unkept compares who can reach the argument at the call with who can at the
 # return, by the same walk. A holder at the return that was not one at the
@@ -68,11 +88,22 @@
 # is reported as perturbed.)
 require "objspace"
 require "prism"
+require "rbconfig"
 
 module SpOracle
   ORACLE_FILE = File.expand_path(__FILE__)
-  CHECKS = %w[new one-name elems param unkept none].freeze
+  CHECKS = %w[new one-name elems param unkept unshared frozen none].freeze
   METHOD_CHECKS = %w[param unkept].freeze
+  # The String methods that change the receiver in place (unshared)
+  MUTATORS = %i[
+    << concat replace insert prepend []= slice! clear force_encoding setbyte append_as_bytes bytesplice
+    encode! unicode_normalize! scrub! succ! next! reverse! upcase! downcase! capitalize! swapcase!
+    strip! lstrip! rstrip! chomp! chop! squeeze! delete! delete_prefix! delete_suffix! sub! gsub!
+    tr! tr_s! initialize_copy initialize
+  ].to_h { |m| [m, true] }.freeze
+  # (the standard library's frames, default gems among them, hold Strings only while they run)
+  MODULE_NAME = Module.instance_method(:name)
+  STD_PATHS = [RbConfig::CONFIG["rubylibprefix"], "<internal:"].freeze
 
   # ---- the run (child process) ----
   class Runner
@@ -83,7 +114,10 @@ module SpOracle
       @rets = {}                  # [path, line, name] => [claim id]
       @max = max
       @seen = Hash.new(0)
-      @results = Hash.new { |h, k| h[k] = { "checked" => 0, "disproved" => 0, "witness" => nil } }
+      @results = Hash.new { |h, k| h[k] = { "checked" => 0, "disproved" => 0, "witness" => nil, "mutations" => 0 } }
+      @recorded = {}.compare_by_identity  # unshared: object => [claim id]
+      @mut_seen = Hash.new(0)             # [path, line, method] => changes checked
+      @prog_path = nil
       @stacks = {}.compare_by_identity  # Fiber => [frame]
       @busy = false
       @serial = 0
@@ -93,6 +127,7 @@ module SpOracle
       @touched[Object] = true
     end
     attr_reader :results
+    attr_writer :prog_path
 
     def add_ret(path, line, name, ids) = (@rets[[path, line, name]] = ids)
 
@@ -101,7 +136,7 @@ module SpOracle
     # pending: [[claim id, the parameter's object at the call, who held that
     # object at the call (unkept only)]]; serial tells two frames of one
     # method apart
-    Frame = Struct.new(:binding, :pending, :label, :names, :serial)
+    Frame = Struct.new(:binding, :pending, :label, :names, :serial, :kind, :path, :lineno, :meth, :std)
     # who refers to an object: root names (key => chain) and objects
     # (identity => chain); a chain runs from a root name through the objects
     # between it and the holder
@@ -132,8 +167,9 @@ module SpOracle
           open = false
           walk = lambda do |n|
             return unless n
-            k = n.class.name.split("::").last
-            names[n.name] = true if (k.start_with?("LocalVariable") || k.end_with?("ParameterNode")) && n.respond_to?(:name) && n.name
+            # (a program that reopens Array or Integer must not be asked of its own: no split, no last)
+            k = n.type
+            names[n.name] = true if (k.start_with?("local_variable") || k.end_with?("parameter_node")) && n.respond_to?(:name) && n.name
             open = true if n.is_a?(Prism::CallNode) && %i[binding eval local_variables].include?(n.name)
             n.compact_child_nodes.each { |ch| walk.(ch) }
           end
@@ -150,7 +186,7 @@ module SpOracle
         when :call, :b_call, :class
           b = (t.binding rescue nil)
           pending = []
-          if t.event == :call && (ids = @rets[[t.path, t.lineno, t.method_id.to_s]])
+          if t.event == :call && (ids = @rets[[t.path, t.lineno, t.method_id.name]])
             @busy = true
             begin
               ids.each do |id|
@@ -168,7 +204,9 @@ module SpOracle
           @touched[t.self] = true if t.event == :class
           @busy = false
           names = t.event == :b_call ? block_names(t.path, t.lineno) : nil
-          stack << Frame.new(b, pending, "#{t.event} #{t.method_id || "block"} #{File.basename(t.path || "")}:#{t.lineno}", names, @serial += 1)
+          path = t.path || ""
+          stack << Frame.new(b, pending, "#{t.event} #{t.method_id || "block"} #{File.basename(path)}:#{t.lineno}", names, @serial += 1,
+                             t.event, path, t.lineno, t.method_id, STD_PATHS.any? { |d| path.start_with?(d) })
         else
           fr = stack.pop
           if fr && !fr.pending.empty? && t.event == :return
@@ -184,7 +222,162 @@ module SpOracle
         end
       end
       tp.enable
+      mutation_trace if @claims.values.any? { |c| c["check"] == "unshared" }
       tp
+    end
+
+    # ---- unshared: a recorded object is changed in place ----
+    def mutation_trace
+      tp = TracePoint.new(:c_call) do |t|
+        next if @busy || !MUTATORS[t.method_id]
+        o = t.self
+        next unless String === o
+        ids = @recorded[o]
+        next unless ids
+        next if (@mut_seen[[t.path, t.lineno, t.method_id]] += 1) > @max
+        @busy = true
+        begin
+          w = mutation_witness(o, t)
+          ids.each do |id|
+            r = @results[id]
+            r["mutations"] += 1
+            next unless w
+            r["disproved"] += 1
+            r["witness"] ||= w
+          end
+        rescue StandardError => e
+          @results["oracle-error"]["witness"] ||= "#{e.class}: #{e.message}"
+        ensure
+          @busy = false
+        end
+      end
+      tp.enable
+      tp
+    end
+
+    # nil when at most one name holds o as it is changed; else both chains
+    def mutation_witness(o, t)
+      lines = frame_lines
+      frames = {}
+      @stacks.each_value { |st| st.each { |fr| frames[fr.serial] = fr } }
+      keep = lambda do |key|
+        if key.is_a?(Array)
+          fr = frames[key[0]]
+          # (a frame's `self` is kept: its String is dropped below)
+          next false if fr.nil? || fr.std
+          next true if key[1] == :self
+          next local_live?(fr.path, fr.kind, fr.lineno, key[1], lines[fr.serial], !lines[:below].key?(fr.serial))
+        end
+        next true unless key.is_a?(String) && key.start_with?("toplevel local ")
+        local_live?(@prog_path, :program, 0, key.delete_prefix("toplevel local ").to_sym, lines[:main], !lines[:below].key?(:main))
+      end
+      h = holders(o, nil, keep)
+      names = h.names.reject { |k, _| k.is_a?(Array) && k[1] == :self }
+      objs = h.objs.reject { |x, _| (Proc === x || Binding === x) && captured_by_a_frame?(x, o) }
+      refs = names.values + objs.values
+      return nil if refs.size < 2
+      "#{o.inspect[0, 40]} changed by String##{t.method_id} at #{File.basename(t.path || "")}:#{t.lineno} while held by #{refs.size} names: " \
+        "#{refs[0, 3].join("; ")}#{refs.size > 3 ? "; ..." : ""}"
+    end
+
+    # frame serial (or :main for the program's toplevel) => the line it is at
+    # now, by matching the stack to the backtrace; :below holds the frames
+    # that are waiting on a call (their line is the call's, so a read on it
+    # is not a later one). Other fibers' frames have no line.
+    def frame_lines
+      bt = (Thread.current.backtrace_locations || []).reject { |l| l.absolute_path == ORACLE_FILE }
+      lines = { below: {} }
+      ptr = 0
+      stack.reverse.each_with_index do |fr, depth|
+        i = (ptr...bt.size).find { |k| frame_matches?(fr, bt[k]) }
+        next unless i
+        lines[fr.serial] = bt[i].lineno
+        lines[:below][fr.serial] = true if depth > 0
+        ptr = i + 1
+      end
+      m = (ptr...bt.size).find { |k| bt[k].label == "<main>" }
+      if m
+        lines[:main] = bt[m].lineno
+        lines[:below][:main] = true unless stack.empty?
+      end
+      lines
+    end
+
+    def frame_matches?(fr, loc)
+      return false unless loc.path == fr.path
+      case fr.kind
+      when :call then loc.base_label == fr.meth.name && !loc.label.start_with?("block ")
+      when :b_call then loc.label.start_with?("block ")
+      else loc.label.start_with?("<class:", "<module:", "singleton class")
+      end
+    end
+
+    # Does the local v still matter to its scope? Its next occurrence at or
+    # after the current line (after it, for a frame waiting on a call) is a
+    # read. nil lines (a frame we cannot place) and unknown scopes: not a name.
+    def local_live?(path, kind, line, v, cur, inclusive)
+      return false unless cur
+      occ = []
+      scope_nodes(path, kind, line).each { |n| local_occurrences(n, v, occ, true) }
+      occ.sort_by! { |l, c, _| [l, c] }
+      nxt = occ.find { |l, _, _| inclusive ? l >= cur : l > cur }
+      nxt ? nxt[2] : false
+    end
+
+    def scope_nodes(path, kind, line)
+      @scopes ||= {}
+      @scopes[[path, kind, line]] ||= begin
+        @parsed ||= {}
+        tree = (@parsed[path] ||= (Prism.parse_file(path).value rescue nil))
+        out = []
+        if tree && kind == :program
+          out << tree
+        elsif tree
+          want = case kind
+                 when :call then [Prism::DefNode]
+                 when :b_call then [Prism::BlockNode, Prism::LambdaNode]
+                 else [Prism::ClassNode, Prism::ModuleNode, Prism::SingletonClassNode]
+                 end
+          find = lambda do |n|
+            return unless n
+            out << n if want.any? { |k| n.is_a?(k) } && n.location.start_line == line
+            n.compact_child_nodes.each { |ch| find.(ch) }
+          end
+          find.(tree)
+        end
+        out
+      end
+    end
+
+    # [line, column, read?] of every occurrence of local v in node n, not
+    # entering a nested def or class (its locals are its own). A parameter
+    # is no occurrence: it is bound before the body, whatever line it is on.
+    def local_occurrences(n, v, occ, root)
+      return unless n
+      unless root
+        return if n.is_a?(Prism::DefNode) || n.is_a?(Prism::ClassNode) || n.is_a?(Prism::ModuleNode) || n.is_a?(Prism::SingletonClassNode)
+      end
+      if n.respond_to?(:name) && n.name == v
+        loc = n.location
+        case n
+        when Prism::LocalVariableReadNode, Prism::LocalVariableOperatorWriteNode, Prism::LocalVariableOrWriteNode,
+             Prism::LocalVariableAndWriteNode
+          occ << [loc.start_line, loc.start_column, true]
+        when Prism::LocalVariableWriteNode, Prism::LocalVariableTargetNode
+          occ << [loc.start_line, loc.start_column, false]
+        end
+      end
+      n.compact_child_nodes.each { |ch| local_occurrences(ch, v, occ, false) }
+    end
+
+    # A Proc or Binding that holds o through a variable some live frame also
+    # names holds the same name, not a second one.
+    def captured_by_a_frame?(x, o)
+      b = Binding === x ? x : (x.binding rescue nil)
+      return false unless b
+      vars = b.local_variables.select { |v| (b.local_variable_get(v) rescue nil).equal?(o) }
+      bindings = [TOPLEVEL_BINDING] + @stacks.values.flat_map { |st| st.filter_map(&:binding) }
+      vars.any? { |v| bindings.any? { |b2| !b2.equal?(b) && b2.local_variable_defined?(v) && same_variable?(b2, b, v, o) } }
     end
 
     # A probe: an expression claim's value has just been made.
@@ -197,7 +390,11 @@ module SpOracle
         ids.each do |id|
           next if @seen[id] >= @max
           @seen[id] += 1
-          tally(id, check_value(@claims[id], val, nil, nil))
+          if @claims[id]["check"] == "unshared"
+            record(id, val)
+          else
+            tally(id, check_value(@claims[id], val, nil, nil))
+          end
         end
       rescue StandardError => e
         # (the oracle's own failure never changes the program's run)
@@ -216,6 +413,7 @@ module SpOracle
       end
       return if @seen[id] >= @max
       @seen[id] += 1
+      return record(id, val) if @claims[id]["check"] == "unshared"
       tally(id, check_value(@claims[id], val, frame, arg))
     end
 
@@ -224,7 +422,7 @@ module SpOracle
     # claim's evaluations are used up). The method's own frame is not on the
     # stack yet.
     def holders_at_call(id, arg)
-      return nil unless arg.is_a?(String) && !arg.frozen? && @seen[id] < @max
+      return nil unless String === arg && !arg.frozen? && @seen[id] < @max
       @seen[id] += 1
       holders(arg, nil)
     end
@@ -235,7 +433,15 @@ module SpOracle
       after = holders(arg, frame)
       fresh = after.names.reject { |k, _| before.names.key?(k) }.values +
               after.objs.reject { |k, _| before.objs.key?(k) }.values
-      fresh.empty? ? nil : "#{arg.inspect[0, 40]} (parameter #{claim["param"]}) kept, reachable: #{fresh.first}"
+      fresh.empty? ? nil : "#{arg.inspect[0, 40]} (parameter #{claim["param"]}) kept, reachable: #{fresh[0]}"
+    end
+
+    # unshared: the object is checked where it is changed (mutation_trace)
+    def record(id, val)
+      @results[id]["checked"] += 1
+      (Array === val ? val : [val]).each do |e|
+        (@recorded[e] ||= []) << id if String === e && !e.frozen?
+      end
     end
 
     def tally(id, witness)
@@ -253,6 +459,7 @@ module SpOracle
       case claim["check"]
       when "one-name" then one_name_witness(o, exclude_frame)
       when "elems" then elems_witness(o, exclude_frame)
+      when "frozen" then String === o && !o.frozen? ? "#{o.inspect[0, 40]} is not frozen" : nil
       when "param" then claim["param"] && o.equal?(arg) ? nil : witness(o, exclude_frame)
       else witness(o, exclude_frame)
       end
@@ -261,24 +468,24 @@ module SpOracle
     # nil when object o is a new String no other name holds (or no String,
     # nil, or frozen); else a description of the name that reaches it.
     def witness(o, exclude_frame)
-      return nil unless o.is_a?(String) && !o.frozen?
+      return nil unless String === o && !o.frozen?
       path = holder_path(o, exclude_frame)
       path && "#{o.inspect[0, 40]} reachable: #{path}"
     end
 
     # at most one name holds o (the holder the value is read from, or none)
     def one_name_witness(o, exclude_frame)
-      return nil unless o.is_a?(String) && !o.frozen?
+      return nil unless String === o && !o.frozen?
       h = holders(o, exclude_frame)
       refs = h.names.values + h.objs.values
-      refs.size > 1 ? "#{o.inspect[0, 40]} held by #{refs.size} names: #{refs.first(3).join("; ")}" : nil
+      refs.size > 1 ? "#{o.inspect[0, 40]} held by #{refs.size} names: #{refs[0, 3].join("; ")}" : nil
     end
 
     def elems_witness(a, exclude_frame)
-      return nil unless a.is_a?(Array)
+      return nil unless Array === a
       ids = {}.compare_by_identity
       a.each_with_index do |e, i|
-        next unless e.is_a?(String) && !e.frozen?
+        next unless String === e && !e.frozen?
         return "element #{i} #{e.inspect[0, 40]} appears twice" if ids[e]
         ids[e] = true
         w = witness(e, exclude_frame)
@@ -322,7 +529,7 @@ module SpOracle
         end
       end
       global_variables.each do |g|
-        next if g == :$_ || g == :$~ || g == :$! || g == :$@ || g.to_s.start_with?("$SpOracle")
+        next if g == :$_ || g == :$~ || g == :$! || g == :$@ || g.start_with?("$SpOracle")
         val = (eval(g.to_s) rescue nil) # rubocop:disable Security/Eval
         out << [g.to_s, val, g.to_s]
       end
@@ -331,7 +538,9 @@ module SpOracle
       saved = Warning[:deprecated]
       Warning[:deprecated] = false
       mods.each do |m|
-        next if m == SpOracle || (m.name && m.name.start_with?("SpOracle"))
+        # (a module may redefine its own `name`)
+        nm = MODULE_NAME.bind_call(m)
+        next if m == SpOracle || (nm && nm.start_with?("SpOracle"))
         m.constants(false).each do |k|
           next if m.autoload?(k)
           val = (m.const_get(k, false) rescue nil)
@@ -387,12 +596,13 @@ module SpOracle
 
     # every name and reachable object that refers to o directly, each with
     # the chain from the name that reaches it
-    def holders(o, exclude_frame)
+    def holders(o, exclude_frame, keep = nil)
       seen = {}.compare_by_identity   # object => [name or class, parent]
       queue = []
       names = {}
       objs = {}.compare_by_identity
       roots(exclude_frame).each do |label, v, key|
+        next if keep && !keep.(key)
         names[key] ||= label if v.equal?(o)
         next if leaf?(v) || seen[v]
         seen[v] = [label, nil]
@@ -589,7 +799,7 @@ module SpOracleDriver
       sites = {}      # [start, end] => [claim index]
       rets = {}       # [path, line, name] => [claim index]
       out = claims.map { |c| { "kind" => c.kind, "check" => c.check || "new", "stated" => !c.check.nil?, "site" => nil, "reached" => false,
-                               "checked" => 0, "disproved" => 0, "witness" => nil, "param" => c.fields["param"] } }
+                               "checked" => 0, "disproved" => 0, "witness" => nil, "mutations" => 0, "param" => c.fields["param"] } }
       ids.each do |i|
         c = claims[i]
         o = out[i]
@@ -617,6 +827,9 @@ module SpOracleDriver
           next
         end
         n = value_node(n)
+        # (the Strings of `*list` are the elements of the list: an unshared
+        # claim on the splat is recorded on each)
+        n = n.expression if n.is_a?(Prism::SplatNode) && o["check"] == "unshared" && n.expression
         if n.nil?
           rep["unprobed"] << [i, "no value (jump or empty)"]
           next
@@ -667,7 +880,8 @@ module SpOracleDriver
       ids.each do |i|
         r = res[i]
         next unless r
-        out[i].merge!("reached" => r["checked"] > 0, "checked" => r["checked"], "disproved" => r["disproved"], "witness" => r["witness"])
+        out[i].merge!("reached" => r["checked"] > 0, "checked" => r["checked"], "disproved" => r["disproved"], "witness" => r["witness"],
+                      "mutations" => r["mutations"])
       end
       rep["claims"] = out
       rep["child_stderr"] = o_err.empty? ? nil : (o_err[-2000..] || o_err)
@@ -706,6 +920,9 @@ module SpOracleDriver
     kinds.sort_by { |k, _| k }.each do |k, v|
       lines << format("  %-16s %-9s %8d %8d %8d %9d", k, v["check"], v["listed"], v["sites"], v["reached"], v["disproved"])
     end
+    uns = done.flat_map { |r| r["claims"].select { |c| c["check"] == "unshared" && c["reached"] } }
+    lines << "  unshared: #{uns.size} claims recorded an object, #{uns.count { |c| c["mutations"] > 0 }} had one changed in place " \
+             "(#{uns.sum { |c| c["mutations"] }} changes checked)" unless uns.empty?
     unstated = kinds.select { |_, v| v["unstated"] > 0 }.keys
     lines << "  kinds with no stated check (checked as new): #{unstated.sort.join(", ")}" unless unstated.empty?
     un = done.flat_map { |r| r["unprobed"].map { |_, why| why } }.tally
@@ -775,6 +992,7 @@ def SpOracle.child_main
   dir = ENV.fetch("SP_ORACLE_DIR")
   cfg = Marshal.load(File.binread(File.join(dir, "claims")))
   runner = SpOracle::Runner.new(cfg["sites"].transform_keys(&:to_i), cfg["claims"].transform_keys(&:to_i), cfg["max"])
+  runner.prog_path = cfg["path"]
   cfg["rets"].each { |c| runner.add_ret(c["path"], c["line"], c["name"], c["ids"]) }
   SpOracle.runner = runner
   src = File.read(File.join(dir, "prog.rb"), encoding: "UTF-8")

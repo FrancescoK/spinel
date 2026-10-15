@@ -732,7 +732,10 @@ end_col PrismKind name [key=value ...]`, the node's source range and what
 to check. The kind is a label for the report; the `check` field says what
 holds: `new`, `one-name` (at most one name holds the object), `elems` (an
 Array of new Strings, none twice), `param` (a method answers parameter
-`param=NAME`'s object or a new one) or `none` (listed, not checked). A kind
+`param=NAME`'s object or a new one), `unkept` (a method keeps no reference
+to parameter `param=NAME`'s String), `unshared` (the object is never changed
+in place while a second name can reach it), `frozen` (the object is frozen)
+or `none` (listed, not checked). A kind
 that states no check, or one the tool does not know, is reported and
 checked as `new`, so a kind renamed or added by the compiler needs no
 change here. `--claims FILE` reads a hand-written file instead of asking
@@ -740,7 +743,15 @@ the compiler (one program).
 
 An expression claim is probed by rewriting the program (a Prism rewrite
 wraps the claimed node, `::SpOracle.v(id, (expr))`) and a claim on a def
-node is checked at the method's return. A run whose output or exit status
+node is checked at the method's return. An `unshared` claim is checked where
+the object is changed, not where it is made: the probe records the objects
+the expression answers, and a TracePoint on `:c_call` checks each in-place
+change of one by a String method (the list is `MUTATORS` in the tool, the
+first `--max` per source line and method) with the same search for names. It
+is disproved when two names hold the object then; the report gives both
+chains. A frame of the standard library, the `self` of a String method, a
+Proc's capture of a variable a frame already names, and a local its method
+does not read again are not names. A run whose output or exit status
 differs from the plain run's is reported as perturbed and its alarms are
 not counted. It sees only what the run reaches (the first `--max`
 evaluations of each claim), claims on values in a file the program loads
