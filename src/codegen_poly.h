@@ -23,6 +23,9 @@ typedef struct {
   const int *kwels, *kwtmp;
   const TyKind *kwty;
   int kwall_any;   /* kwall is a PolyPolyHash: a `**` may carry a key that is no Symbol */
+  /* per keyword, the temp holding the handle its String variable had when
+     the value ran, or 0 (emit_poly_kw_handle) */
+  const int *kwhtmp;
 } PolyKw;
 /* The call's arguments as a poly-dispatch arm reads them: each positional
    evaluated once into a temp ahead of the switch (a splat's temp the array
