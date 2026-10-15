@@ -1,0 +1,6 @@
+[package]
+name = "ipaddr"
+
+# Pre-installed spin package: ships with the compiler, versioned with it.
+# `require "ipaddr"` -- CRuby's ipaddr.rb (the ipaddr gem 1.2.8, Ruby 4.0.6's
+# default gem), unchanged. See README.md.
