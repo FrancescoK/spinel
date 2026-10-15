@@ -1,0 +1,10 @@
+[a, b, c]
+[alpha,
+ beta,
+ gamma,
+ delta,
+ epsilon]
+call(
+  first_argument,
+  second)
+[x, y]

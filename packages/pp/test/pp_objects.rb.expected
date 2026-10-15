@@ -1,0 +1,12 @@
+#<Node:0xADDR @kids=[], @name="leaf">
+#<Node:0xADDR
+ @kids=
+  [#<Node:0xADDR @kids=[], @name="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa">,
+   #<Node:0xADDR
+    @kids=[],
+    @name="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb">],
+ @name="root">
+#<Custom!>
+<P body>
+#<Bare:0xADDR>
+[<P body>, #<Custom!>]

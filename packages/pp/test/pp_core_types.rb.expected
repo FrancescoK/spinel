@@ -1,0 +1,61 @@
+1
+2.5
+:sym
+nil
+true
+[1, [2, [3, nil]], "s"]
+{name: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+ items:
+  [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+ nested:
+  {k: "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+   list: ["alpha", "beta", "gamma", "delta", "epsilon"]}}
+{"string key" => 1, "quoted-sym": 2, sym: [3, 4], 5 => nil, a?: 6}
+#<struct Point x=1, y=2>
+#<struct Point
+ x="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+ y="yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy">
+#<data Coord lat=1.5, lng=-2.25>
+1..10
+1...
+"a".."z"
+"line one\n" + "line two\n" + "line three"
+[1, 2, [...]]
+{k: 1, self: {...}}
+42
+42
+1
+2
+[1, 2]
+nil
+[1, 2, 3]
+[1,
+ 2,
+ 3,
+ 4,
+ 5,
+ 6,
+ 7,
+ 8,
+ 9,
+ 10,
+ 11,
+ 12,
+ 13,
+ 14,
+ 15,
+ 16,
+ 17,
+ 18,
+ 19,
+ 20,
+ 21,
+ 22,
+ 23,
+ 24,
+ 25,
+ 26,
+ 27,
+ 28,
+ 29,
+ 30]
