@@ -1607,14 +1607,29 @@ as the object's own class does.
 
 #### `Hash#compare_by_identity`
 
-`compare_by_identity` is rejected at compile time (never silently ignored).
-Spinel's hashes are typed storage variants keyed by VALUE -- string keys hash
-and compare by content, and string literals are shared through a frozen pool.
-Identity-keyed comparison cannot be honored on that representation: two
-equal-content String keys may be the *same* object in Spinel where CRuby sees
-two distinct ones, so even a dedicated identity mode would diverge from CRuby
-on the exact programs that need it. Restructure identity-keyed lookups to use
-an explicit unique key (an Integer id, a Symbol) instead.
+`compare_by_identity` is accepted where Spinel's identity is CRuby's: every
+key the hash can see is an object compared by pointer (an instance of a
+program class that is not laid out by value, an Array, a Hash, an IO, a
+Proc, a Method, a Thread, a Mutex, a Queue, an exception, a Dir, a Class) or
+a Symbol, nil, true or false (#9171). Keys are then found by `equal?`: two
+instances whose `eql?` and `hash` agree are two keys, and an Array or a Hash
+key is its object, not its content. A hash that already holds entries is
+rebuilt, and `compare_by_identity?` answers true.
+
+It stays refused at compile time, naming why, where a key may be a String
+(equal-content Strings may be one object here, through the frozen literal
+pool, where CRuby has two), an Integer or a Float (held by value here, where
+CRuby makes a new object of each Bignum and non-flonum Float), a Rational, a
+Complex, or a boxed value that may hold any of them. The hash also has to be
+held in one local or instance variable that is given no other hash (nil or a
+new one is fine), every use of it a call on it the compiler follows: `[]`,
+`[]=`, `store`, `fetch`, `key?` and its kin, `delete`, `dig`, an index
+operator write (`h[k] += 1`), and the iterations and queries that hand no
+new hash out (`each`, `keys`, `delete_if`, `size`, `map`, ...). A call that
+answers another hash (`select`, `merge`, `dup`, `slice`, ...) is refused:
+CRuby's answer keeps the identity, and its keys would no longer be followed.
+So is using the hash as an argument or a value, or the answer of
+`compare_by_identity` as another name for it.
 
 #### `String#equal?` and literal identity
 

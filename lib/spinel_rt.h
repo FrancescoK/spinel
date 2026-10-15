@@ -10019,10 +10019,10 @@ static sp_StrPolyHash*sp_StrPolyHash_from_str_int_hash(sp_StrIntHash*h){SP_GC_RO
 /* dproc holds a Hash.new{} default block (symbol-keyed), lowered to a C fn
    with a typed sp_sym key param. Called by _get on a miss. */
 typedef sp_RbVal (*sp_sympoly_dproc_t)(sp_SymPolyHash *, sp_sym, void *);
-typedef struct sp_SymPolyHash{sp_sym*keys;sp_RbVal*vals;sp_sym*order;sp_int len;sp_int cap;sp_int mask;sp_RbVal default_v;sp_sympoly_dproc_t dproc;void *dproc_self;}sp_SymPolyHash;
+typedef struct sp_SymPolyHash{sp_sym*keys;sp_RbVal*vals;sp_sym*order;sp_int len;sp_int cap;sp_int mask;sp_RbVal default_v;sp_sympoly_dproc_t dproc;void *dproc_self;sp_bool ident;}sp_SymPolyHash;
 static void sp_SymPolyHash_fin(void*p){sp_SymPolyHash*h=(sp_SymPolyHash*)p;sp_pl_free(h->keys);sp_pl_free(h->vals);sp_pl_free(h->order);}
 static void sp_SymPolyHash_scan(void*p){sp_SymPolyHash*h=(sp_SymPolyHash*)p;for(sp_int i=0;i<h->cap;i++){if(h->keys[i]>=0)sp_mark_rbval(h->vals[i]);}sp_mark_rbval(h->default_v);if(h->dproc_self)sp_gc_mark(h->dproc_self);}
-static void sp_SymPolyHash_init_embedded(sp_SymPolyHash*h){h->cap=16;h->mask=15;h->keys=(sp_sym*)sp_pl_alloc(sizeof(sp_sym)*(size_t)h->cap);for(sp_int i=0;i<h->cap;i++)h->keys[i]=-1;h->vals=(sp_RbVal*)sp_pl_zalloc((size_t)h->cap*sizeof(sp_RbVal));h->order=(sp_sym*)sp_pl_alloc(sizeof(sp_sym)*(size_t)h->cap);h->len=0;h->default_v=sp_box_nil();}
+static void sp_SymPolyHash_init_embedded(sp_SymPolyHash*h){h->cap=16;h->mask=15;h->keys=(sp_sym*)sp_pl_alloc(sizeof(sp_sym)*(size_t)h->cap);for(sp_int i=0;i<h->cap;i++)h->keys[i]=-1;h->vals=(sp_RbVal*)sp_pl_zalloc((size_t)h->cap*sizeof(sp_RbVal));h->order=(sp_sym*)sp_pl_alloc(sizeof(sp_sym)*(size_t)h->cap);h->len=0;h->default_v=sp_box_nil();h->ident=FALSE;}
 static sp_SymPolyHash*sp_SymPolyHash_new(void){sp_SymPolyHash*h=(sp_SymPolyHash*)sp_gc_alloc(sizeof(sp_SymPolyHash),sp_SymPolyHash_fin,sp_SymPolyHash_scan);sp_SymPolyHash_init_embedded(h);return h;}
 static sp_SymPolyHash*sp_SymPolyHash_new_with_default(sp_RbVal d){SP_GC_ROOT_RBVAL(d);sp_SymPolyHash*h=sp_SymPolyHash_new();h->default_v=d;return h;}
 static sp_SymPolyHash*sp_SymPolyHash_new_dproc(sp_sympoly_dproc_t fn,void*self){sp_SymPolyHash*h=sp_SymPolyHash_new();h->dproc=fn;h->dproc_self=self;return h;}
@@ -10695,10 +10695,10 @@ static sp_bool sp_rbval_eql_key(sp_RbVal a, sp_RbVal b) {
 /* dproc holds a Hash.new{} default block (arbitrary keys), lowered to a C fn
    with a boxed sp_RbVal key param. Called by _get on a miss. */
 typedef sp_RbVal (*sp_polypoly_dproc_t)(sp_PolyPolyHash *, sp_RbVal, void *);
-typedef struct sp_PolyPolyHash{sp_RbVal*keys;sp_RbVal*vals;sp_int*hs;sp_int*order;sp_bool*occ;sp_int len;sp_int cap;sp_int mask;sp_RbVal default_v;sp_polypoly_dproc_t dproc;void *dproc_self;}sp_PolyPolyHash;
+typedef struct sp_PolyPolyHash{sp_RbVal*keys;sp_RbVal*vals;sp_int*hs;sp_int*order;sp_bool*occ;sp_int len;sp_int cap;sp_int mask;sp_RbVal default_v;sp_polypoly_dproc_t dproc;void *dproc_self;sp_bool ident;}sp_PolyPolyHash;
 static void sp_PolyPolyHash_fin(void*p){sp_PolyPolyHash*h=(sp_PolyPolyHash*)p;sp_pl_free(h->keys);sp_pl_free(h->vals);sp_pl_free(h->hs);sp_pl_free(h->order);sp_pl_free(h->occ);}
 static void sp_PolyPolyHash_scan(void*p){sp_PolyPolyHash*h=(sp_PolyPolyHash*)p;for(sp_int i=0;i<h->cap;i++){if(h->occ[i]){sp_mark_rbval(h->keys[i]);sp_mark_rbval(h->vals[i]);}}sp_mark_rbval(h->default_v);if(h->dproc_self)sp_gc_mark(h->dproc_self);}
-static void sp_PolyPolyHash_init_embedded(sp_PolyPolyHash*h){h->cap=16;h->mask=15;h->keys=(sp_RbVal*)sp_pl_zalloc((size_t)h->cap*sizeof(sp_RbVal));h->vals=(sp_RbVal*)sp_pl_zalloc((size_t)h->cap*sizeof(sp_RbVal));h->hs=(sp_int*)sp_pl_alloc(sizeof(sp_int)*(size_t)h->cap);h->order=(sp_int*)sp_pl_alloc(sizeof(sp_int)*(size_t)h->cap);h->occ=(sp_bool*)sp_pl_zalloc((size_t)h->cap*sizeof(sp_bool));h->len=0;h->default_v=sp_box_nil();}
+static void sp_PolyPolyHash_init_embedded(sp_PolyPolyHash*h){h->cap=16;h->mask=15;h->keys=(sp_RbVal*)sp_pl_zalloc((size_t)h->cap*sizeof(sp_RbVal));h->vals=(sp_RbVal*)sp_pl_zalloc((size_t)h->cap*sizeof(sp_RbVal));h->hs=(sp_int*)sp_pl_alloc(sizeof(sp_int)*(size_t)h->cap);h->order=(sp_int*)sp_pl_alloc(sizeof(sp_int)*(size_t)h->cap);h->occ=(sp_bool*)sp_pl_zalloc((size_t)h->cap*sizeof(sp_bool));h->len=0;h->default_v=sp_box_nil();h->ident=FALSE;}
 static sp_PolyPolyHash*sp_PolyPolyHash_new(void){sp_PolyPolyHash*h=(sp_PolyPolyHash*)sp_gc_alloc(sizeof(sp_PolyPolyHash),sp_PolyPolyHash_fin,sp_PolyPolyHash_scan);sp_PolyPolyHash_init_embedded(h);return h;}
 static sp_PolyPolyHash*sp_PolyPolyHash_new_with_default(sp_RbVal d){SP_GC_ROOT_RBVAL(d);sp_PolyPolyHash*h=sp_PolyPolyHash_new();h->default_v=d;return h;}
 static sp_PolyPolyHash*sp_PolyPolyHash_new_dproc(sp_polypoly_dproc_t fn,void*self){sp_PolyPolyHash*h=sp_PolyPolyHash_new();h->dproc=fn;h->dproc_self=self;return h;}
@@ -10713,8 +10713,30 @@ static void sp_PolyPolyHash_grow(sp_PolyPolyHash*h){ sp_gc_wb((void*)h);sp_RbVal
 /* Miss path returns default_v, which is nil unless set via Hash.new(d) /
    Hash#default= -- so plain {} hashes keep surfacing Ruby nil (#801). */
 /* miss path cold+noinline, same reason as sp_SymPolyHash_miss above. */
+/* Hash#compare_by_identity: a hash with `ident` set finds a key by
+   equal?, as CRuby's does, and hashes it by what equal? compares -- the
+   pointer of a heap value, the value of an immediate. The compiler accepts
+   compare_by_identity only where every key is an object compared by pointer
+   or a Symbol, nil, true or false (#9171). */
+static sp_bool sp_poly_equal(sp_RbVal a, sp_RbVal b);
+static inline sp_int sp_rbval_ident_hash(sp_RbVal v) {
+  uint64_t x;
+  switch (v.tag) {
+    case SP_TAG_INT: case SP_TAG_SYM: x = (uint64_t)v.v.i; break;
+    case SP_TAG_BOOL: x = (uint64_t)v.v.b; break;
+    case SP_TAG_NIL: x = 0; break;
+    case SP_TAG_FLT: memcpy(&x, &v.v.f, sizeof x); break;
+    case SP_TAG_CLASS: return sp_rbval_hash_key(v);
+    default: x = (uint64_t)(uintptr_t)v.v.p; break;
+  }
+  x ^= (uint64_t)(unsigned)v.tag * 0x9E3779B97F4A7C15ULL;
+  x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33;
+  return (sp_int)(x & 0x3fffffffffffffffULL);
+}
+static inline sp_int sp_pph_hash_key(const sp_PolyPolyHash*h,sp_RbVal k){return h->ident?sp_rbval_ident_hash(k):sp_rbval_hash_key(k);}
+static inline sp_bool sp_pph_eql_key(const sp_PolyPolyHash*h,sp_RbVal a,sp_RbVal b){return h->ident?sp_poly_equal(a,b):sp_rbval_eql_key(a,b);}
 static SP_NOINLINE sp_RbVal sp_PolyPolyHash_miss(sp_PolyPolyHash*h,sp_RbVal k){if(h->dproc)return h->dproc(h,k,h->dproc_self);return h->default_v;}
-static sp_RbVal sp_PolyPolyHash_get(sp_PolyPolyHash*h,sp_RbVal k){if(!h)return sp_box_nil();SP_GC_ROOT(h);SP_GC_ROOT_RBVAL(k);sp_int hs=sp_hash_slot(sp_rbval_hash_key(k));sp_int idx=(sp_int)(hs&h->mask);while(h->occ[idx]){if(h->hs[idx]==hs&&sp_rbval_eql_key(h->keys[idx],k))return h->vals[idx];idx=(idx+1)&h->mask;}return sp_PolyPolyHash_miss(h,k);}
+static sp_RbVal sp_PolyPolyHash_get(sp_PolyPolyHash*h,sp_RbVal k){if(!h)return sp_box_nil();SP_GC_ROOT(h);SP_GC_ROOT_RBVAL(k);sp_int hs=sp_hash_slot(sp_pph_hash_key(h,k));sp_int idx=(sp_int)(hs&h->mask);while(h->occ[idx]){if(h->hs[idx]==hs&&sp_pph_eql_key(h,h->keys[idx],k))return h->vals[idx];idx=(idx+1)&h->mask;}return sp_PolyPolyHash_miss(h,k);}
 static sp_bool sp_PolyPolyHash_has_value(sp_PolyPolyHash*h,sp_RbVal v){if(!h)return FALSE;for(sp_int i=0;i<h->len;i++)if(sp_poly_rb_equal(h->vals[h->order[i]],v))return TRUE;return FALSE;}
 /* defined with the curry machinery below; the key-typed reads and the cold
    index path all apply a curried receiver through it */
@@ -10820,7 +10842,7 @@ static sp_RbVal sp_poly_to_h_subject(sp_RbVal v) {
   }
   return v;
 }
-static void sp_PolyPolyHash_set(sp_PolyPolyHash*h,sp_RbVal k,sp_RbVal v){sp_gc_wb((void*)h); SP_GC_ROOT(h);SP_GC_ROOT_RBVAL(k);SP_GC_ROOT_RBVAL(v);sp_int hs=sp_hash_slot(sp_rbval_hash_key(k));if(h->len*2>=h->cap)sp_PolyPolyHash_grow(h);sp_int idx=(sp_int)(hs&h->mask);while(h->occ[idx]){if(h->hs[idx]==hs&&sp_rbval_eql_key(h->keys[idx],k)){h->vals[idx]=v;return;}idx=(idx+1)&h->mask;}if(k.tag==SP_TAG_STR&&k.v.s)k.v.s=sp_hash_key_str(k.v.s);else if(sp_poly_is_strbuf(k))k=sp_box_str(sp_hash_key_str(sp_String_cstr((sp_String*)k.v.p)));sp_gc_wb((void*)h);h->keys[idx]=k;h->vals[idx]=v;h->hs[idx]=hs;h->occ[idx]=TRUE;h->order[h->len]=idx;h->len++;}
+static void sp_PolyPolyHash_set(sp_PolyPolyHash*h,sp_RbVal k,sp_RbVal v){sp_gc_wb((void*)h); SP_GC_ROOT(h);SP_GC_ROOT_RBVAL(k);SP_GC_ROOT_RBVAL(v);sp_int hs=sp_hash_slot(sp_pph_hash_key(h,k));if(h->len*2>=h->cap)sp_PolyPolyHash_grow(h);sp_int idx=(sp_int)(hs&h->mask);while(h->occ[idx]){if(h->hs[idx]==hs&&sp_pph_eql_key(h,h->keys[idx],k)){h->vals[idx]=v;return;}idx=(idx+1)&h->mask;}if(k.tag==SP_TAG_STR&&k.v.s)k.v.s=sp_hash_key_str(k.v.s);else if(sp_poly_is_strbuf(k))k=sp_box_str(sp_hash_key_str(sp_String_cstr((sp_String*)k.v.p)));sp_gc_wb((void*)h);h->keys[idx]=k;h->vals[idx]=v;h->hs[idx]=hs;h->occ[idx]=TRUE;h->order[h->len]=idx;h->len++;}
 /* Marshal.dump/load hash vtable slots (sp_marshal_v.hash_new/hash_set):
    kept here (not moved to lib/sp_cold.c with the rest of the sp_marv_*
    vtable fns) since they'd otherwise force sp_PolyPolyHash_new/set --
@@ -10868,14 +10890,26 @@ static SP_UNUSED void sp_marv_any_push(sp_RbVal a, sp_RbVal v) { (void)sp_poly_s
 /* order[] holds slot indices (not keys), so iterate keys/vals by the stored
    index; merge inherits the LEFT receiver's default per CRuby. */
 sp_PolyPolyHash*sp_PolyPolyHash_merge(sp_PolyPolyHash*a,sp_PolyPolyHash*b);
-static sp_bool sp_PolyPolyHash_has_key(sp_PolyPolyHash*h,sp_RbVal k){if(!h)return FALSE;SP_GC_ROOT(h);SP_GC_ROOT_RBVAL(k);sp_int hs=sp_hash_slot(sp_rbval_hash_key(k));sp_int idx=(sp_int)(hs&h->mask);while(h->occ[idx]){if(h->hs[idx]==hs&&sp_rbval_eql_key(h->keys[idx],k))return TRUE;idx=(idx+1)&h->mask;}return FALSE;}
+static sp_bool sp_PolyPolyHash_has_key(sp_PolyPolyHash*h,sp_RbVal k){if(!h)return FALSE;SP_GC_ROOT(h);SP_GC_ROOT_RBVAL(k);sp_int hs=sp_hash_slot(sp_pph_hash_key(h,k));sp_int idx=(sp_int)(hs&h->mask);while(h->occ[idx]){if(h->hs[idx]==hs&&sp_pph_eql_key(h,h->keys[idx],k))return TRUE;idx=(idx+1)&h->mask;}return FALSE;}
 /* Hash#rehash: a key changed since it was stored is under the hash it was
    stored with. Every entry is stored anew into a fresh table, in order,
    which asks each key again and folds keys that have become eql? into the
    first of them with the last value, as CRuby's does; the arrays are then
    swapped in whole, so a hook that raises leaves the hash as it was. The
    shell they came in is emptied for its finalizer. */
-static sp_PolyPolyHash*sp_PolyPolyHash_rehash(sp_PolyPolyHash*h){if(!h)return h;if(sp_gc_is_frozen(h))sp_raise_frozen_hash_at(h,SP_BUILTIN_POLY_POLY_HASH);sp_gc_wb((void*)h);SP_GC_ROOT(h);sp_PolyPolyHash*t=sp_PolyPolyHash_new();SP_GC_ROOT(t);for(sp_int i=0;i<h->len;i++){sp_int oi=h->order[i];sp_PolyPolyHash_set(t,h->keys[oi],h->vals[oi]);}sp_pl_free(h->keys);sp_pl_free(h->vals);sp_pl_free(h->hs);sp_pl_free(h->order);sp_pl_free(h->occ);h->keys=t->keys;h->vals=t->vals;h->hs=t->hs;h->order=t->order;h->occ=t->occ;h->len=t->len;h->cap=t->cap;h->mask=t->mask;t->keys=NULL;t->vals=NULL;t->hs=NULL;t->order=NULL;t->occ=NULL;t->len=0;t->cap=0;return h;}
+static sp_PolyPolyHash*sp_PolyPolyHash_rehash(sp_PolyPolyHash*h){if(!h)return h;if(sp_gc_is_frozen(h))sp_raise_frozen_hash_at(h,SP_BUILTIN_POLY_POLY_HASH);sp_gc_wb((void*)h);SP_GC_ROOT(h);sp_PolyPolyHash*t=sp_PolyPolyHash_new();SP_GC_ROOT(t);t->ident=h->ident;for(sp_int i=0;i<h->len;i++){sp_int oi=h->order[i];sp_PolyPolyHash_set(t,h->keys[oi],h->vals[oi]);}sp_pl_free(h->keys);sp_pl_free(h->vals);sp_pl_free(h->hs);sp_pl_free(h->order);sp_pl_free(h->occ);h->keys=t->keys;h->vals=t->vals;h->hs=t->hs;h->order=t->order;h->occ=t->occ;h->len=t->len;h->cap=t->cap;h->mask=t->mask;t->keys=NULL;t->vals=NULL;t->hs=NULL;t->order=NULL;t->occ=NULL;t->len=0;t->cap=0;return h;}
+/* A Symbol is its own value, so a Symbol-keyed hash already finds its keys
+   by identity; compare_by_identity only sets what the predicate answers. */
+static sp_SymPolyHash*sp_SymPolyHash_compare_by_identity(sp_SymPolyHash*h){if(!h||h->ident)return h;if(sp_gc_is_frozen(h))sp_raise_frozen_hash_at(h,SP_BUILTIN_SYM_POLY_HASH);h->ident=TRUE;return h;}
+static sp_bool sp_PolyPolyHash_ident_p(sp_PolyPolyHash*h){return h&&h->ident;}
+static sp_bool sp_SymPolyHash_ident_p(sp_SymPolyHash*h){return h&&h->ident;}
+static sp_bool sp_hash_never_ident_p(const void*h){(void)h;return FALSE;}
+#define sp_hash_ident_p(h) _Generic((h), sp_PolyPolyHash*: sp_PolyPolyHash_ident_p, sp_SymPolyHash*: sp_SymPolyHash_ident_p, default: sp_hash_never_ident_p)(h)
+/* Hash#compare_by_identity: from now on keys are found by equal?. A hash
+   that already holds entries is rebuilt under the identity hash, as CRuby
+   rehashes it; entries whose keys are eql? but not equal? stay apart from
+   then on, and none merge (a hash holds no two eql? keys before). */
+static sp_PolyPolyHash*sp_PolyPolyHash_compare_by_identity(sp_PolyPolyHash*h){if(!h||h->ident)return h;if(sp_gc_is_frozen(h))sp_raise_frozen_hash_at(h,SP_BUILTIN_POLY_POLY_HASH);h->ident=TRUE;if(h->len>0)sp_PolyPolyHash_rehash(h);return h;}
 /* Hash#delete in place: the backward shift the other hash kinds delete
    with, closing the hole the entry leaves so a probe that ran through it
    still reaches what lies beyond. order[] holds slot indexes here, not keys,
@@ -10888,10 +10922,10 @@ static void sp_PolyPolyHash_delete(sp_PolyPolyHash*h,sp_RbVal k){
   if(!h)return;
   sp_gc_wb((void*)h);
   SP_GC_ROOT(h);SP_GC_ROOT_RBVAL(k);
-  sp_int hs=sp_hash_slot(sp_rbval_hash_key(k));
+  sp_int hs=sp_hash_slot(sp_pph_hash_key(h,k));
   sp_int idx=(sp_int)(hs&h->mask);
   while(h->occ[idx]){
-    if(h->hs[idx]==hs&&sp_rbval_eql_key(h->keys[idx],k)){
+    if(h->hs[idx]==hs&&sp_pph_eql_key(h,h->keys[idx],k)){
       for(sp_int oi=0;oi<h->len;oi++)if(h->order[oi]==idx){h->len--;memmove(h->order+oi,h->order+oi+1,sizeof(sp_int)*(size_t)(h->len-oi));break;}
       h->occ[idx]=FALSE;h->keys[idx]=sp_box_nil();h->vals[idx]=sp_box_nil();
       sp_int j=(idx+1)&h->mask;
@@ -14942,7 +14976,7 @@ static sp_PolyArray *sp_poly_values(sp_RbVal v) {
   sp_raise_cls("NoMethodError", "undefined method 'values'");
   return NULL;  /* unreachable: sp_raise_cls is noreturn */
 }
-static sp_PolyPolyHash*sp_PolyPolyHash_replace(sp_PolyPolyHash*h,sp_PolyPolyHash*o){if(!h||h==o)return h;SP_GC_ROOT(h);SP_GC_ROOT(o);for(sp_int i=0;i<h->cap;i++)h->occ[i]=FALSE;h->len=0;if(o)for(sp_int i=0;i<o->len;i++)sp_PolyPolyHash_set(h,o->keys[o->order[i]],o->vals[o->order[i]]);return h;}
+static sp_PolyPolyHash*sp_PolyPolyHash_replace(sp_PolyPolyHash*h,sp_PolyPolyHash*o){if(!h||h==o)return h;SP_GC_ROOT(h);SP_GC_ROOT(o);for(sp_int i=0;i<h->cap;i++)h->occ[i]=FALSE;h->len=0;h->ident=o?o->ident:FALSE;if(o)for(sp_int i=0;i<o->len;i++)sp_PolyPolyHash_set(h,o->keys[o->order[i]],o->vals[o->order[i]]);return h;}
 sp_PolyPolyHash*sp_PolyPolyHash_dup(sp_PolyPolyHash*h);
 /* Issue #738: poly_poly_hash inspect using sp_poly_inspect on each
    k,v. Output mirrors Ruby's `{k => v, ...}` for non-symbol keys and

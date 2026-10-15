@@ -551,6 +551,7 @@ int desugar_multi_value_jump(Compiler *c);
 int desugar_forwarding_to_rest_callee(Compiler *c);
 int desugar_anon_block_param(Compiler *c);
 int desugar_singleton_class_define_method(Compiler *c);
+int desugar_empty_hash_compare_by_identity(Compiler *c);
 int desugar_define_method_proc_arg(Compiler *c);
 int desugar_module_function_aliases(Compiler *c);
 int method_body_next_to_return(NodeTable *nt, int id);
