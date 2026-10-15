@@ -17417,6 +17417,15 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
       splice_store_close(c, id, sk, b);
       buf_puts(b, ";\n");
     }
+    /* a slot the rule makes the shared handle: `@s += x` is `@s = @s + x`, a new
+       String made from the handle's bytes, as the plain write emits it */
+    else if (vt == TY_STRBUF && op && sp_streq(op, "+")) {
+      char hread[320];
+      snprintf(hread, sizeof hread, "sp_strbuf_read_pub(%s)", ref);
+      buf_printf(b, "%s = sp_String_new_fresh(", ref);
+      emit_str_op_assign_concat(c, hread, nt_ref(nt, id, "value"), b);
+      buf_puts(b, ");\n");
+    }
     else if (op && sp_streq(op, "+") && ty_is_array(vt)) {
       /* `@arr += other` = `@arr = @arr + other` (#3289), mirroring the
          local-variable arm: same-kind concat, empty-literal rhs is a no-op
