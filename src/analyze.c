@@ -25795,8 +25795,18 @@ static int param_borrow_targets(Compiler *c, int n, int *out, int cap) {
    (an object's to_s, ==, hash), an in-place String change, a write of a
    variable that can hold a String. Deliberately coarse: a callee that does
    any of it keeps the copy. */
+static int param_borrow_loud_ex(Compiler *c, int n, int *tg, int *ntg);
 static int param_borrow_loud(Compiler *c, int n) {
+  int tg[64], ntg = 0;
+  return param_borrow_loud_ex(c, n, tg, &ntg) || ntg != 0;
+}
+
+/* ... a user call is not loud by itself when its targets resolve: they go
+   into tg (*ntg of them, at most 64), and the call is as loud as the
+   loudest of them (settled over the call graph by the caller). */
+static int param_borrow_loud_ex(Compiler *c, int n, int *tg, int *ntg) {
   const NodeTable *nt = c->nt;
+  *ntg = 0;
   switch (nt_kind(nt, n)) {
   case NK_YieldNode: case NK_SuperNode: case NK_ForwardingSuperNode: case NK_LambdaNode:
   case NK_ClassVariableWriteNode: case NK_ClassVariableOrWriteNode:
@@ -25827,8 +25837,9 @@ static int param_borrow_loud(Compiler *c, int n) {
   case NK_CallNode: {
     const char *name = nt_str(nt, n, "name");
     if (!name) return 1;
-    int tg[64];
-    if (param_borrow_targets(c, n, tg, 64) != 0) return 1;
+    int k = param_borrow_targets(c, n, tg, 64);
+    if (k < 0) return 1;
+    *ntg = k;
     if (is_opaque_reaching_call(name)) return 1;
     int recv = nt_ref(nt, n, "receiver");
     TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
@@ -25923,21 +25934,80 @@ static int an_ruby_runs_unseen(Compiler *c) {
   return 0;
 }
 
+/* Is local p of method m a parameter that may take a borrowed buffer, as
+   far as its own slot goes? */
+static int param_borrow_slot_ok(const LocalVar *p) {
+  return p->is_param && !p->is_block_param && !p->is_cell && !p->cell_outlives &&
+         !p->byref_out && !p->str_shared && !p->rbs_seeded && p->type == TY_STRING;
+}
+
+/* The parameter of target method m that argument a of call n binds, or NULL
+   (a rest, a keyword rest, a spread or no parameter at all). */
+static LocalVar *param_borrow_bound(Compiler *c, Scope *m, int n, int a) {
+  int spread = -1, pj = -1;
+  for (int j = 0; j < m->nparams && pj < 0; j++)
+    if (arg_layout_param_node(c, m, n, j, &spread) == a) pj = j;
+  return pj >= 0 && m->pnames[pj] && pj != m->rest_idx && pj != m->kwrest_idx
+         ? scope_local(m, m->pnames[pj]) : NULL;
+}
+
+/* Does call n hand its arguments over with nothing evaluated beside them
+   that could run code: no block, its targets known, every operand plain? */
+static int param_borrow_plain_call(Compiler *c, int n, int *tg, int *ntg) {
+  const NodeTable *nt = c->nt;
+  *ntg = 0;
+  if (nt_ref(nt, n, "block") >= 0) return 0;
+  int k = param_borrow_targets(c, n, tg, 64);
+  if (k <= 0 || !param_borrow_plain_operand(c, nt_ref(nt, n, "receiver"))) return 0;
+  int args = nt_ref(nt, n, "arguments");
+  int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  for (int i = 0; i < argc; i++)
+    if (!param_borrow_handle_read(c, argv[i]) && !param_borrow_plain_operand(c, argv[i])) return 0;
+  *ntg = k;
+  return 1;
+}
+
+/* A method is loud when it does something loud itself or calls a method that
+   is (a least fixpoint over the call graph: a quiet cycle stays quiet). A
+   parameter takes a borrowed buffer when its slot can, its method is quiet,
+   and its every use reads through it (an accessor's receiver) or hands it on
+   to a parameter that takes one too (a greatest fixpoint: a cycle of
+   hand-offs that reads nothing else keeps the borrow). #9229 */
 static int mark_param_read_only_operands(Compiler *c) {
   const NodeTable *nt = c->nt;
   if (an_ruby_runs_unseen(c)) return 0;
   int ns = c->nscopes;
   unsigned char *loud = calloc((size_t)(ns > 0 ? ns : 1), 1);
   int **other = calloc((size_t)(ns > 0 ? ns : 1), sizeof(int *));
+  unsigned char **safe = calloc((size_t)(ns > 0 ? ns : 1), sizeof(unsigned char *));
   int marked = 0;
+  /* the call graph's edges (caller scope, callee scope), and the hand-offs
+     (scope, local, call, argument) */
+  int ne = 0, ce = 0, *ef = NULL, *et = NULL;
+  int nh = 0, chh = 0, *hs = NULL, *hl = NULL, *hn = NULL, *ha = NULL;
   for (int s = 0; s < ns; s++)
-    if (c->scopes[s].def_node >= 0) other[s] = calloc((size_t)(c->scopes[s].nlocals + 1), sizeof(int));
-  /* one pass: which methods are loud, and how many uses of each local are
-     anything but an accessor's receiver (a block shares its method's scope) */
+    if (c->scopes[s].def_node >= 0) {
+      other[s] = calloc((size_t)(c->scopes[s].nlocals + 1), sizeof(int));
+      safe[s] = calloc((size_t)(c->scopes[s].nlocals + 1), 1);
+    }
+  /* one pass: which methods are loud by themselves and whom they call, and
+     how many uses of each local are anything but an accessor's receiver or
+     a hand-off (a block shares its method's scope) */
   for (int n = 0; n < nt->count; n++) {
     int si = c->nscope[n];
     if (si < 0 || si >= ns || !other[si]) continue;
-    if (!loud[si] && param_borrow_loud(c, n)) loud[si] = 1;
+    if (!loud[si]) {
+      int tg[64], ntg = 0;
+      if (param_borrow_loud_ex(c, n, tg, &ntg)) loud[si] = 1;
+      else
+        for (int t = 0; t < ntg; t++) {
+          if (ne == ce) {
+            ce = ce ? ce * 2 : 64;
+            ef = realloc(ef, (size_t)ce * sizeof(int)); et = realloc(et, (size_t)ce * sizeof(int));
+          }
+          ef[ne] = si; et[ne] = tg[t]; ne++;
+        }
+    }
     NodeKind k = nt_kind(nt, n);
     const char *ln = NULL;
     int weight = 0;
@@ -25950,44 +26020,74 @@ static int mark_param_read_only_operands(Compiler *c) {
           an_str_read_only_accessor(nm) && nt_ref(nt, n, "block") < 0) {
         ln = nt_str(nt, recv, "name"); weight = -1;
       }
+      int tg[64], ntg = 0;
+      if (param_borrow_plain_call(c, n, tg, &ntg)) {
+        int args = nt_ref(nt, n, "arguments");
+        int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+        for (int i = 0; i < argc; i++) {
+          if (nt_kind(nt, argv[i]) != NK_LocalVariableReadNode) continue;
+          LocalVar *a = scope_local(&c->scopes[si], nt_str(nt, argv[i], "name"));
+          if (!a || !a->is_param) continue;
+          if (nh == chh) {
+            chh = chh ? chh * 2 : 64;
+            hs = realloc(hs, (size_t)chh * sizeof(int)); hl = realloc(hl, (size_t)chh * sizeof(int));
+            hn = realloc(hn, (size_t)chh * sizeof(int)); ha = realloc(ha, (size_t)chh * sizeof(int));
+          }
+          int li = (int)(a - c->scopes[si].locals);
+          hs[nh] = si; hl[nh] = li; hn[nh] = n; ha[nh] = argv[i]; nh++;
+          other[si][li]--;
+        }
+      }
     }
     LocalVar *lv = ln ? scope_local(&c->scopes[si], ln) : NULL;
     if (lv) other[si][lv - c->scopes[si].locals] += weight;
   }
+  for (int changed = 1; changed; ) {
+    changed = 0;
+    for (int e = 0; e < ne; e++)
+      if (loud[et[e]] && !loud[ef[e]]) { loud[ef[e]] = 1; changed = 1; }
+  }
+  for (int s = 0; s < ns; s++) {
+    if (!safe[s] || loud[s]) continue;
+    Scope *m = &c->scopes[s];
+    for (int j = 0; j < m->nlocals; j++)
+      safe[s][j] = other[s][j] == 0 && param_borrow_slot_ok(&m->locals[j]);
+  }
+  for (int changed = 1; changed; ) {
+    changed = 0;
+    for (int h = 0; h < nh; h++) {
+      if (!safe[hs[h]][hl[h]]) continue;
+      int tg[64], ntg = param_borrow_targets(c, hn[h], tg, 64), ok = ntg > 0;
+      for (int t = 0; t < ntg && ok; t++) {
+        Scope *m = &c->scopes[tg[t]];
+        LocalVar *p = safe[tg[t]] ? param_borrow_bound(c, m, hn[h], ha[h]) : NULL;
+        ok = p && safe[tg[t]][p - m->locals];
+      }
+      if (!ok) { safe[hs[h]][hl[h]] = 0; changed = 1; }
+    }
+  }
   NT_FOREACH_KIND(nt, NK_CallNode, n) {
-    if (nt_ref(nt, n, "block") >= 0) continue;
     int args = nt_ref(nt, n, "arguments");
     int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
     int any = 0;
     for (int i = 0; i < argc && !any; i++) any = param_borrow_handle_read(c, argv[i]);
     if (!any) continue;
-    int tg[64];
-    int ntg = param_borrow_targets(c, n, tg, 64);
-    if (ntg <= 0 || !param_borrow_plain_operand(c, nt_ref(nt, n, "receiver"))) continue;
-    int plain = 1;
-    for (int i = 0; i < argc && plain; i++)
-      plain = param_borrow_handle_read(c, argv[i]) || param_borrow_plain_operand(c, argv[i]);
-    if (!plain) continue;
+    int tg[64], ntg = 0;
+    if (!param_borrow_plain_call(c, n, tg, &ntg)) continue;
     for (int i = 0; i < argc; i++) {
       if (!param_borrow_handle_read(c, argv[i])) continue;
       int ok = 1;
       for (int t = 0; t < ntg && ok; t++) {
         Scope *m = &c->scopes[tg[t]];
-        int spread = -1, pj = -1;
-        for (int j = 0; j < m->nparams && pj < 0; j++)
-          if (arg_layout_param_node(c, m, n, j, &spread) == argv[i]) pj = j;
-        LocalVar *p = pj >= 0 && m->pnames[pj] && pj != m->rest_idx && pj != m->kwrest_idx
-                      ? scope_local(m, m->pnames[pj]) : NULL;
-        ok = p && !loud[tg[t]] && other[tg[t]] && other[tg[t]][p - m->locals] == 0 &&
-             p->is_param && !p->is_block_param && !p->is_cell && !p->cell_outlives &&
-             !p->byref_out && !p->str_shared && !p->rbs_seeded && p->type == TY_STRING;
+        LocalVar *p = safe[tg[t]] ? param_borrow_bound(c, m, n, argv[i]) : NULL;
+        ok = p && safe[tg[t]][p - m->locals];
       }
       if (ok) { c->strbuf_read_raw[argv[i]] = 1; marked++; }
     }
   }
-  for (int s = 0; s < ns; s++) free(other[s]);
-  free(other);
-  free(loud);
+  for (int s = 0; s < ns; s++) { free(other[s]); free(safe[s]); }
+  free(other); free(safe); free(loud);
+  free(ef); free(et); free(hs); free(hl); free(hn); free(ha);
   return marked;
 }
 

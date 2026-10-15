@@ -2,9 +2,11 @@
 # with a second name that is changed in place is a shared handle, and a
 # handle passed to a `const char *` parameter was copied in full at every
 # call. A parameter whose every use is a read-only accessor (getbyte,
-# bytesize, length, size, empty?) in a callee that runs no other code takes
-# the live buffer; a parameter kept, matched or changed, or a callee that
-# calls further, still gets its own copy. Every answer is CRuby's.
+# bytesize, length, size, empty?), or a hand-off to such a parameter, in a
+# callee that runs nothing loud itself or through what it calls, takes the
+# live buffer (#9229); a parameter kept, matched or changed, or a callee that
+# calls a loud method, still gets its own copy. Every answer is
+# CRuby's.
 
 class Buf
   attr_reader :kept
@@ -40,9 +42,17 @@ class Buf
   # copy: the callee makes a dynamic call
   def self.dyn(s) = s.size + [1, 2].send(ARGV.empty? ? :size : :first)
 
-  # copy: the callee calls another method
+  # borrow: the callee calls a quiet method
   def self.nested(s) = s.size + helper
   def self.helper = 1
+
+  # borrow: the parameter is handed on to a read-only parameter
+  def self.fwd(s, i) = byte(s, i)
+  def self.fwd2(s, i) = fwd(s, i) + len(s)
+
+  # copy: the parameter is handed on to one that changes it
+  def self.fwd_grow(s) = grow(s).size
+
 
   # copy: the callee changes the String through another name, after the
   # parameter's last read
@@ -63,10 +73,14 @@ class Buf
     r << keep(@buf)
     r << Buf.dyn(@buf)
     r << Buf.nested(@buf)
+    r << Buf.fwd(@buf, 2)
+    r << Buf.fwd2(@buf, 1)
     r << read_then_grow(@buf)
     r << @buf.size
     Buf.grow(@buf)
     r << @buf[-1]
+    r << Buf.fwd_grow(@buf)
+    r << @buf
     r
   end
 end
