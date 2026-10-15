@@ -89,7 +89,14 @@ typedef struct sp_thread {
   struct sp_thread *io_prev;     /* the waiter before it on the I/O waiter list, for an O(1) unlink */
   struct sp_thread *all_next, *all_prev;  /* registry of live threads (GC roots) */
   void             *tls;         /* thread-local storage (Thread#[] / #[]=); lazily allocated */
-  sp_sched_timer   *timer;       /* active scheduler timer for this wait, if any */
+  sp_sched_timer   *timer;       /* active scheduler timer for this wait, if any (under the
+                                    timer lock; read without it atomically) */
+  sp_wlock          sleep_wl;    /* (#8702) a sleep is a list of one, under this lock: no list
+                                    of sleepers is shared, so sleeping threads contend on none */
+  struct sp_thread *sleep_slot;  /* that list's head: the thread itself while it sleeps */
+  sp_sched_timer   *wait_timer;  /* the timer the wait it is parked in was published with,
+                                    set under that wait's list lock and cleared when it runs
+                                    again: a timer that fires late ends only its own wait */
   unsigned char     timer_expired; /* set when a generic timed wait reaches its deadline */
   unsigned char     woken;         /* Thread#wakeup ended its sleep early */
   int               io_fd;       /* fd this thread is parked on for I/O (-1 = none, scheduler-aware I/O) */
