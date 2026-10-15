@@ -51,3 +51,20 @@ srand(big)
 x1 = rand(1000)
 srand(big)
 t("srand") { x1 == rand(1000) }
+
+# typed: a value the analysis types Bignum, a local or the literal itself
+tbig = 2**70
+tsmall = 2**70
+tsmall = tsmall >> 69
+ta = [:x, :y, :z]
+t("typed delete_at") { ta.delete_at(tbig) }
+p ta
+t("typed literal") { [:x, :y].delete_at(2**70) }
+t("typed take") { [1, 2, 3].take(tbig) }
+t("typed center") { "ab".center(tbig) }
+t("typed index") { [1, 2, 3][tbig] }
+t("typed round") { 5.round(-tbig) }
+t("typed take, fits") { [1, 2, 3].take(tsmall) }
+t("typed any Integer") { [5.anybits?(tbig), 5[tbig], 5.pow(2, tbig), Integer.sqrt(tbig), 5.digits(tbig)] }
+s1 = Random.new(tbig).rand(1000)
+t("typed seed") { s1 == Random.new(tbig).rand(1000) }

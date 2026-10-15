@@ -3218,6 +3218,14 @@ static SP_UNUSED sp_int sp_bigint_shift_count(sp_Bigint *b) {
   if (sp_bigint_fits_int(b)) return (sp_int)sp_bigint_to_int(b);
   return sp_bigint_sign(b) < 0 ? (sp_int)(INTPTR_MIN + 1) : (sp_int)INTPTR_MAX;
 }
+/* A value typed Bignum in a C long argument (an index, a count, a width):
+   one the slot cannot hold is CRuby's RangeError, as a boxed one is
+   (sp_poly_arg_int_chk_slow). Its low word deleted a[0] for
+   `a.delete_at(2**70)`. */
+static SP_UNUSED sp_int sp_bigint_arg_int_chk(sp_Bigint *b) {
+  if (!sp_bigint_fits_int(b)) sp_raise_cls("RangeError", "bignum too big to convert into 'long'");
+  return (sp_int)sp_bigint_to_int(b);
+}
 static SP_NOINLINE sp_int sp_poly_to_i_cold(sp_RbVal v) {
   v = sp_poly_strbuf_deref(v);   /* a shared String handle reads as its String (#7263) */
   if (v.tag == SP_TAG_BIGINT) return sp_i64_to_int(sp_bigint_to_int((sp_Bigint *)v.v.p));   /* a 32-bit sp_int refuses what does not fit (RangeError); 64-bit keeps its wrap */
