@@ -303,7 +303,38 @@ static int sh_new(ShareFacts *F, int kind) {
   return e;
 }
 
+static int g_dbg_watch = -1, g_dbg_done = 0; static Compiler *g_dbg_c;
+static void sh_union_real(ShareFacts *F, int a, int b);
+static int g_dbg_n = 0;
+static void sh_dbg_desc(ShareFacts *F, int e, char *out, size_t cap) {
+  int h = e >= 0 ? F->hidx[e] : -1;
+  if (h < 0) { snprintf(out, cap, "%d(kind %d)", e, e >= 0 ? (int)F->kind[e] : -1); return; }
+  ShareHolder *H = &F->h[h];
+  snprintf(out, cap, "%d(kind %d scope %s name %s node %d line %d)", e, (int)H->kind,
+           H->scope >= 0 ? g_dbg_c->scopes[H->scope].name : "-", H->name ? H->name : "-", H->node,
+           H->node >= 0 ? (int)nt_int(g_dbg_c->nt, H->node, "line", -1) : -1);
+}
 static void sh_union(ShareFacts *F, int a, int b) {
+  if (g_dbg_watch >= 0 && !g_dbg_done && a >= 0 && b >= 0 && g_dbg_n < 40) {
+    int rw = sh_find(F, g_dbg_watch), ra = sh_find(F, a), rb = sh_find(F, b);
+    if (ra != rb && (ra == rw || rb == rw)) {
+      char da[200], db[200]; sh_dbg_desc(F, ra == rw ? b : a, da, sizeof da); sh_dbg_desc(F, ra == rw ? a : b, db, sizeof db);
+      fprintf(stderr, "GROW %d: watch-side %s  other %s\n", g_dbg_n++, db, da);
+    }
+  }
+  int before = 0;
+  if (g_dbg_watch >= 0 && !g_dbg_done && F->unknown >= 0 && a >= 0 && b >= 0)
+    before = sh_find(F, g_dbg_watch) == sh_find(F, F->unknown);
+  sh_union_real(F, a, b);
+  if (g_dbg_watch >= 0 && !g_dbg_done && F->unknown >= 0 && !before && sh_find(F, g_dbg_watch) == sh_find(F, F->unknown)) {
+    g_dbg_done = 1;
+    { int ha = F->hidx[a], hb = F->hidx[b];
+      fprintf(stderr, "JOINED-UNKNOWN a=%d(kind %d scope %s) b=%d(kind %d scope %s node %d)\n", a, (int)F->kind[a],
+              ha >= 0 && F->h[ha].scope >= 0 ? g_dbg_c->scopes[F->h[ha].scope].name : "-", b, (int)F->kind[b],
+              hb >= 0 && F->h[hb].scope >= 0 ? g_dbg_c->scopes[F->h[hb].scope].name : "-", hb >= 0 ? F->h[hb].node : -1); }
+  }
+}
+static void sh_union_real(ShareFacts *F, int a, int b) {
   if (a < 0 || b < 0) return;
   int sp = 0;
   if (F->union_stack_cap < 64) {
@@ -740,6 +771,8 @@ static void sh_read_site(ShareFacts *F, int n) {
 /* ---- node values ---- */
 
 static int sh_val(ShareFacts *F, Compiler *c, int n);
+static int sh_if_narrows_off_string(Compiler *c, int n);
+static int sh_method_answers_no_string(Compiler *c, int mi);
 static int sh_const_read(ShareFacts *F, Compiler *c, int n);
 static void sh_mark_unused(ShareFacts *F, const NodeTable *nt, int n, unsigned char bit);
 
@@ -1302,8 +1335,13 @@ int share_target_reachable(Compiler *c, int call, int mi) {
     return 1;
   int ncc = 0;
   const PolyCand *ccs = comp_cmethod_candidates(c, c->scopes[mi].name, &ncc);
+  /* and only a class this receiver can hold, as the dispatch arms it
+     (poly_cls_value_reaches): `options.fetch(:protocol, "http").sub(...)`
+     on a Hash of Strings never reaches `Params.sub`, though Params is a
+     value elsewhere (campfire's ActiveStorage::Current.base_url) */
   for (int i = 0; i < ncc; i++)
-    if (ccs[i].mi == mi && comp_class_may_be_value(c, ccs[i].cls)) return 1;
+    if (ccs[i].mi == mi && comp_class_may_be_value(c, ccs[i].cls) && poly_cls_value_reaches(c, call, ccs[i].cls))
+      return 1;
   return 0;
 }
 /* does a call reach a user method (sh_targets != 0), without listing them */
@@ -1901,8 +1939,13 @@ static int sh_boxed_string_row_composable(ShareFacts *F, Compiler *c, int n,
   int argc = 0, args = nt_ref(nt, n, "arguments");
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   /* A user arm may reach a helper that reads a published singleton-accessor
-     value even when that accessor is not in this call's dispatch plan. */
-  if (!name || family != TY_STRING || F->ostruct || F->singleton_accessors || blk >= 0 ||
+     value even when that accessor is not in this call's dispatch plan --
+     unless the call is typed as a String and no user arm answers one
+     (sh_method_answers_no_string: campfire's `Params.sub` beside a boxed
+     String's `sub`). */
+  int user_no_str = ntg > 0 && (c->ntype[n] == TY_STRING || c->ntype[n] == TY_STRBUF);
+  for (int i = 0; user_no_str && i < ntg; i++) user_no_str = sh_method_answers_no_string(c, tg[i]);
+  if (!name || family != TY_STRING || F->ostruct || (F->singleton_accessors && !user_no_str) || blk >= 0 ||
       !poly_string_read_p(name) ||
       container != 1 || share != bop_share_boxed(TY_STRING, name) ||
       !nt_call_args_plain(nt, n)) return 0;
@@ -2942,11 +2985,20 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   }
   if (ntg > 0) {
     int r = -1;
+    int str_call = c->ntype[n] == TY_STRING || c->ntype[n] == TY_STRBUF;
     for (int i = 0; i < ntg; i++) {
       sh_bind(F, c, n, tg[i]);
       /* (a target that cannot bind the arguments raises ArgumentError and
          answers nothing: cplan_target_binds) */
-      if (cplan_target_binds(c, n, tg[i])) r = sh_join(F, r, sh_scope_holder(F, SHK_RET, tg[i]));
+      /* (a call typed as a String, its value the String's own, takes
+         nothing from a target that answers no String -- a Hash or an
+         Array, nil, a value narrowed off String by `is_a?`: campfire's
+         `Params.sub` beside a boxed String's `sub`, whose return joined
+         every caller's local into the String's class) */
+      if (cplan_target_binds(c, n, tg[i])) {
+        if (!(str_call && sh_method_answers_no_string(c, tg[i])))
+          r = sh_join(F, r, sh_scope_holder(F, SHK_RET, tg[i]));
+      }
       if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) sh_block_to_method(F, c, blk, tg[i]);
       else if (blk >= 0) sh_block_value_to(F, c, n, blk, tg[i]);
       /* a block passed as a value (`&proc`, `&method(:m)`): what the method
@@ -3493,11 +3545,112 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
   }
 }
 
+/* `if x.is_a?(K) then x ...`: is the then-branch's value that same local,
+   read once with nothing before it, under a class K no String is (Hash,
+   Array, a number, Symbol, a class of the program's own)? Then the branch
+   answers x only when x is no String (campfire's `Params.sub`:
+   `value.is_a?(Hash) ? value : {}`). */
+static int sh_if_narrows_off_string(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  int pr = nt_ref(nt, n, "predicate");
+  while (pr >= 0 && nt_kind(nt, pr) == NK_ParenthesesNode) {
+    int b = nt_ref(nt, pr, "body"), bn = 0; const int *bb = b >= 0 ? nt_arr(nt, b, "body", &bn) : NULL;
+    pr = bn == 1 ? bb[0] : -1;
+  }
+  if (pr < 0 || nt_kind(nt, pr) != NK_CallNode) return 0;
+  const char *pm = nt_str(nt, pr, "name");
+  if (!pm || !(sp_streq(pm, "is_a?") || sp_streq(pm, "kind_of?") || sp_streq(pm, "instance_of?"))) return 0;
+  int x = nt_ref(nt, pr, "receiver");
+  int a = nt_ref(nt, pr, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  if (x < 0 || nt_kind(nt, x) != NK_LocalVariableReadNode || ac != 1 || nt_ref(nt, pr, "block") >= 0) return 0;
+  NodeKind kk = nt_kind(nt, av[0]);
+  const char *kn = kk == NK_ConstantReadNode || kk == NK_ConstantPathNode ? nt_str(nt, av[0], "name") : NULL;
+  if (!kn) return 0;
+  static const char *const off[] = { "Hash", "Array", "Integer", "Float", "Numeric", "Symbol", "Range",
+                                     "Regexp", "Proc", "NilClass", "TrueClass", "FalseClass", "Rational",
+                                     "Complex", "Time", NULL };
+  int ok = 0;
+  for (int i = 0; off[i] && !ok; i++) ok = sp_streq(kn, off[i]);
+  if (!ok) {
+    /* a class of the program's own: not a module (String could include
+       one), not String's reopening */
+    int ci = comp_class_index(c, kn);
+    ok = ci >= 0 && !is_builtin_reopen(c->classes[ci].name) && !comp_class_is_module(c, &c->classes[ci]);
+  }
+  if (!ok) return 0;
+  int st = nt_ref(nt, n, "statements"), sn = 0;
+  const int *sb = st >= 0 ? nt_arr(nt, st, "body", &sn) : NULL;
+  return sn == 1 && nt_kind(nt, sb[0]) == NK_LocalVariableReadNode &&
+         sp_streq(nt_str(nt, sb[0], "name"), nt_str(nt, x, "name")) && comp_scope_of(c, sb[0]) == comp_scope_of(c, x);
+}
+/* Can value node n answer no String: nil, a container or a number literal,
+   a node typed as a container or as a type that holds no String, a branch
+   narrowed off String (sh_if_narrows_off_string), or a conditional all of
+   whose arms are such? */
+static int sh_value_no_string(Compiler *c, int n, int depth) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 1;
+  if (depth > 16) return 0;
+  switch (nt_kind(nt, n)) {
+  case NK_NilNode: case NK_HashNode: case NK_ArrayNode: case NK_IntegerNode: case NK_FloatNode:
+  case NK_SymbolNode: case NK_TrueNode: case NK_FalseNode:
+    return 1;
+  case NK_StatementsNode: {
+    int bn = 0; const int *bb = nt_arr(nt, n, "body", &bn);
+    return bn == 0 || sh_value_no_string(c, bb[bn - 1], depth + 1);
+  }
+  case NK_ParenthesesNode: return sh_value_no_string(c, nt_ref(nt, n, "body"), depth + 1);
+  case NK_ElseNode: return sh_value_no_string(c, nt_ref(nt, n, "statements"), depth + 1);
+  case NK_IfNode:
+    return (sh_if_narrows_off_string(c, n) || sh_value_no_string(c, nt_ref(nt, n, "statements"), depth + 1)) &&
+           sh_value_no_string(c, nt_ref(nt, n, "subsequent"), depth + 1);
+  case NK_UnlessNode:
+    return sh_value_no_string(c, nt_ref(nt, n, "statements"), depth + 1) &&
+           sh_value_no_string(c, nt_ref(nt, n, "else_clause"), depth + 1);
+  default: {
+    TyKind t = n < c->nt->count ? c->ntype[n] : TY_UNKNOWN;
+    return t != TY_UNKNOWN && t != TY_POLY && (ty_is_hash(t) || ty_is_array(t) || !sh_may_hold(c, t));
+  }
+  }
+}
+/* Does method mi answer no String (sh_value_no_string of its body), with no
+   `return` anywhere in it that could answer something else? */
+static int sh_method_answers_no_string(Compiler *c, int mi) {
+  if (mi < 0 || mi >= c->nscopes) return 0;
+  Scope *m = &c->scopes[mi];
+  if (m->body < 0 || m->def_node < 0) return 0;
+  const NodeTable *nt = c->nt;
+  int stack[256], sp = 0, ok = 1;
+  stack[sp++] = m->body;
+  while (sp > 0 && ok) {
+    int u = stack[--sp];
+    if (nt_kind(nt, u) == NK_ReturnNode) { ok = 0; break; }
+    int nr = nt_num_refs(nt, u);
+    for (int i = 0; i < nr && sp < 255; i++) { int ch = nt_ref_at(nt, u, i); if (ch >= 0) stack[sp++] = ch; }
+    int na = nt_num_arrs(nt, u);
+    for (int i = 0; i < na; i++) {
+      int k = 0; const int *ids = nt_arr_at(nt, u, i, &k);
+      for (int j = 0; j < k; j++) { if (sp >= 255) { ok = 0; break; } if (ids[j] >= 0) stack[sp++] = ids[j]; }
+    }
+  }
+  if (getenv("DBGNS") && m->name && sp_streq(m->name, "sub")) {
+    int bn = 0; const int *bb = nt_arr(nt, m->body, "body", &bn);
+    fprintf(stderr, "NS sub ok=%d body=%s nlast=%s val=%d\n", ok, nt_type(nt, m->body), bn ? nt_type(nt, bb[bn-1]) : "-", sh_value_no_string(c, m->body, 0));
+    if (bn && nt_kind(nt, bb[bn-1]) == NK_IfNode) { int pr = nt_ref(nt, bb[bn-1], "predicate"); fprintf(stderr, "  pred=%s %s narrows=%d\n", nt_type(nt, pr), nt_str(nt, pr, "name") ? nt_str(nt, pr, "name") : "-", sh_if_narrows_off_string(c, bb[bn-1])); }
+  }
+  return ok && sh_value_no_string(c, m->body, 0);
+}
 static int sh_val(ShareFacts *F, Compiler *c, int n) {
   if (n < 0 || n >= F->nnodes) return -1;
   if (F->nval[n] != -2) return F->nval[n];
   F->nval[n] = -1;
   int v = sh_val_compute(F, c, n);
+  if (getenv("DBGU") && n == atoi(getenv("DBGU")) && v >= 0) { g_dbg_watch = v; g_dbg_done = 0; g_dbg_c = c; }
+  if (getenv("DBGU") && nt_kind(c->nt, n) == NK_CallNode && nt_str(c->nt, n, "name") && sp_streq(nt_str(c->nt, n, "name"), "sub")) {
+    int rv = nt_ref(c->nt, n, "receiver");
+    fprintf(stderr, "SUBV n=%d v=%d recvkind=%s recvname=%s unknown=%d ntype=%d\n", n, v, rv >= 0 ? nt_type(c->nt, rv) : "-", rv >= 0 && nt_str(c->nt, rv, "name") ? nt_str(c->nt, rv, "name") : "-", v >= 0 && F->unknown >= 0 && sh_find(F, v) == sh_find(F, F->unknown), (int)c->ntype[n]);
+  }
   /* a value whose type holds no String is none, whatever it flowed
      through (a write's target is still unified above) */
   if (v >= 0 && c->ntype[n] != TY_UNKNOWN && !sh_may_hold(c, c->ntype[n]) &&
@@ -4471,6 +4624,11 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
   sh_settle_peeks(F, c);
   sh_finalize(F);
   sh_index_blocks(F, c);
+  if (getenv("DBGU")) for (int n = 0; n < F->nnodes; n++) {
+    if (F->nval[n] < 0 || nt_kind(c->nt, n) != NK_CallNode || !nt_str(c->nt, n, "name") || !sp_streq(nt_str(c->nt, n, "name"), "sub")) continue;
+    int r = sh_find(F, F->nval[n]);
+    fprintf(stderr, "SUBEND n=%d root=%d flags=%d unkroot=%d\n", n, r, (int)F->flags[r], F->unknown >= 0 ? sh_find(F, F->unknown) : -1);
+  }
   return F;
 }
 

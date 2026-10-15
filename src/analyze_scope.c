@@ -9435,6 +9435,11 @@ static int pivs_value_uncached(Compiler *c, int v, char *set, int depth) {
            sp_streq(un, "max")) && ac == 0) || ((sp_streq(un, "fetch") || sp_streq(un, "at")) && ac == 1))
         return (sp_streq(un, "fetch") && nt_ref(nt, v, "block") >= 0)
                  ? 0 : pivs_elems(c, r, set, depth + 1);
+      /* fetch with a default: an element, or the default itself */
+      if (sp_streq(un, "fetch") && ac == 2 && nt_ref(nt, v, "block") < 0) {
+        const int *fa = nt_arr(nt, a, "arguments", &ac);
+        return pivs_elems(c, r, set, depth + 1) && pivs_value(c, fa[1], set, depth + 1);
+      }
       if ((sp_streq(un, "itself") || sp_streq(un, "dup") || sp_streq(un, "clone")) && ac == 0)
         return pivs_value(c, r, set, depth + 1);
       return 0;
