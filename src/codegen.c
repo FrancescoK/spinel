@@ -2468,15 +2468,21 @@ static int emit_boxed_self_chain(Compiler *c, int node, Buf *b) {
     /* (the base's read held ahead of the statement is its handle, as
        emit_bang_held_open declares the receiver reads it holds there) */
     if (g_share_check) share_check_declare_reads(g_pre, at, base);
-    /* (a block that assigns the variable: the chain runs over the held
-       handle; a tap takes it as the handle, an each_char as its String) */
-    if (strbuf_chain_rebinds_base(c, node, base)) {
-      int first = unwrap_parens(c, node);
-      while (first >= 0 && unwrap_parens(c, nt_ref(c->nt, first, "receiver")) != base)
+    /* (the chain runs over the held handle, whatever its blocks assign, a
+       method they call included; a tap takes it as the handle, an each_char
+       as its String) */
+    {
+      int first = unwrap_parens(c, node), next = -1;
+      while (first >= 0 && unwrap_parens(c, nt_ref(c->nt, first, "receiver")) != base) {
+        next = first;
         first = unwrap_parens(c, nt_ref(c->nt, first, "receiver"));
+      }
       const char *fn = first >= 0 ? nt_str(c->nt, first, "name") : NULL;
+      const char *xn = next >= 0 ? nt_str(c->nt, next, "name") : NULL;
       bound = 1;
-      if (fn && is_tap_name(fn)) {
+      /* (a tap whose answer a bang takes as its receiver is the handle; any
+         other tap, a String read) */
+      if (fn && is_tap_name(fn) && xn && (bop_name_mutates(xn, 0) || bop_share_self_answer(xn, nt_ref(c->nt, next, "block") >= 0))) {
         sv_h = view_push_repr(c, base, VR_STRBUF_BOX, 1);
         ran_first_bind(base, th, th);
       }

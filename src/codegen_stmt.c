@@ -1454,40 +1454,6 @@ static int strbuf_route_tap(Compiler *c, int v) {
   Scope *bsc = p0 ? comp_scope_of(c, blk) : NULL;
   return rt == TY_STRING && bsc && repr_of_slot(c, scope_local(bsc, rename_local(p0))).handle;
 }
-/* Does the subtree id assign a variable of the kind whose Prism node type
-   starts with `prefix` (LocalVariable, InstanceVariable, GlobalVariable,
-   ClassVariable) named nm? */
-static int subtree_writes_var(Compiler *c, int id, const char *prefix, const char *nm) {
-  const NodeTable *nt = c->nt;
-  if (id < 0) return 0;
-  const char *ty = nt_type(nt, id);
-  if (ty && !strncmp(ty, prefix, strlen(prefix)) && (strstr(ty, "Write") || strstr(ty, "Target"))) {
-    const char *wn = nt_str(nt, id, "name");
-    if (wn && sp_streq(wn, nm)) return 1;
-  }
-  for (int i = 0; i < nt_num_refs(nt, id); i++)
-    if (subtree_writes_var(c, nt_ref_at(nt, id, i), prefix, nm)) return 1;
-  for (int i = 0; i < nt_num_arrs(nt, id); i++) {
-    int n = 0;
-    const int *ids = nt_arr_at(nt, id, i, &n);
-    for (int j = 0; j < n; j++)
-      if (subtree_writes_var(c, ids[j], prefix, nm)) return 1;
-  }
-  return 0;
-}
-/* Does a block on a link of call v's receiver chain assign the variable
-   `base` (the chain's base read)? The block runs ahead of the chain. */
-int strbuf_chain_rebinds_base(Compiler *c, int v, int base) {
-  const NodeTable *nt = c->nt;
-  NodeKind k = nt_kind(nt, base);
-  const char *prefix = k == NK_LocalVariableReadNode ? "LocalVariable" : k == NK_InstanceVariableReadNode ? "InstanceVariable"
-                     : k == NK_GlobalVariableReadNode ? "GlobalVariable" : k == NK_ClassVariableReadNode ? "ClassVariable" : NULL;
-  const char *nm = nt_str(nt, base, "name");
-  if (!prefix || !nm) return 0;
-  for (v = unwrap_parens(c, v); v >= 0 && nt_kind(nt, v) == NK_CallNode; v = unwrap_parens(c, nt_ref(nt, v, "receiver")))
-    if (nt_ref(nt, v, "block") >= 0 && subtree_writes_var(c, nt_ref(nt, v, "block"), prefix, nm)) return 1;
-  return 0;
-}
 /* --share-strings: the slot read at the base of call v's receiver chain,
    when v is two or more calls each of which answers its receiver or nil (a
    bang, an iterator given a block such as `tap`, a mutator, `freeze`, a
@@ -1502,8 +1468,8 @@ int strbuf_self_chain_base(Compiler *c, int v) {
   enum { MAX_LINKS = 16 };
   int links = 0, tg[CPT_MAX], any_blk = 0;
   /* per link, outermost first: a conversion that makes a String of nil, a
-     link that can answer nil, a freeze */
-  char conv[MAX_LINKS], nilable[MAX_LINKS], frz[MAX_LINKS];
+     link that can answer nil */
+  char conv[MAX_LINKS], nilable[MAX_LINKS];
   if (!repr_share_rule(c)) return -1;
   int start = unwrap_parens(c, v);
   for (v = start; v >= 0 && nt_kind(nt, v) == NK_CallNode; v = unwrap_parens(c, nt_ref(nt, v, "receiver"))) {
@@ -1520,7 +1486,6 @@ int strbuf_self_chain_base(Compiler *c, int v) {
       if (!subtree_is_pure_read(c, av[i]) && nt_kind(nt, av[i]) != NK_StringNode) return -1;
     conv[links] = is_receiver_conversion(nm) && !sp_streq(nm, "itself");
     nilable[links] = (ans & BOPF_SELF_OR_NIL) != 0;
-    frz[links] = is_freeze_name(nm);
     any_blk |= blk >= 0;
     links++;
   }
@@ -1528,28 +1493,40 @@ int strbuf_self_chain_base(Compiler *c, int v) {
   if (links < 2 || (k != NK_LocalVariableReadNode && k != NK_InstanceVariableReadNode && !repr_static_read_kind(k)) ||
       !strbuf_slot_has(c, v))
     return -1;
-  /* a conversion to a String (`to_s`) turns a nil into "": the chain is no
-     longer the slot's String where the slot or a link below it can be nil
-     (a bang answers nil); and a freeze below a block that assigns the
-     variable runs after the block's statements, which are placed ahead of
-     the chain */
-  /* (a block that assigns the variable the chain is over is run with the
-     chain over the handle held before it, for a tap and an each_char; any
-     other iterator has no form over a held handle) */
-  int rebinds = any_blk && strbuf_chain_rebinds_base(c, start, v);
-  if (rebinds) {
+  /* (a block that names the base variable as its own local, `|;s|`, shadows
+     it: its name is bound to the receiver as a block parameter is, typed as
+     bytes, which the held handle has no form for) */
+  if (any_blk && k == NK_LocalVariableReadNode && nt_str(nt, v, "name")) {
+    const char *bn = nt_str(nt, v, "name");
+    size_t bl = strlen(bn);
+    for (int w = start; w >= 0 && nt_kind(nt, w) == NK_CallNode; w = unwrap_parens(c, nt_ref(nt, w, "receiver"))) {
+      int wb = nt_ref(nt, w, "block");
+      const char *ls = wb >= 0 ? nt_str(nt, wb, "locals") : NULL;
+      for (const char *q = ls; q && *q; ) {
+        const char *e = strchr(q, ',');
+        size_t n = e ? (size_t)(e - q) : strlen(q);
+        if (n >= bl && !strncmp(q, bn, bl) && (n == bl || !strncmp(q + bl, "__bp", 4))) return -1;   /* (renamed apart: s__bp30) */
+        q = e ? e + 1 : q + n;
+      }
+    }
+  }
+  /* a chain with a block runs over the handle held ahead of the block,
+     whatever the block assigns (emit_boxed_self_chain); a tap and an
+     each_char have a form over a held handle, any other iterator none */
+  if (any_blk)
     for (int w = start; w >= 0 && nt_kind(nt, w) == NK_CallNode; w = unwrap_parens(c, nt_ref(nt, w, "receiver"))) {
       const char *wn = nt_str(nt, w, "name");
       if (nt_ref(nt, w, "block") >= 0 && !(wn && (is_tap_name(wn) || sp_streq(wn, "each_char")))) return -1;
     }
-  }
+  /* a conversion to a String (`to_s`) turns a nil into "": the chain is no
+     longer the slot's String where the slot or a link below it can be nil
+     (a bang answers nil) */
   for (int i = 0; i < links; i++) {
     if (conv[i]) {
       if (repr_of(c, v).may_nil) return -1;
       for (int j = i + 1; j < links; j++)
         if (nilable[j]) return -1;
     }
-    if (rebinds && frz[i] && i > 0) return -1;
   }
   return v;
 }
@@ -3420,7 +3397,9 @@ int emit_recv_route_handle(Compiler *c, int id, int recv, Buf *b) {
     if (pre && g_pre == pre && pre->len > pre_mark) { pre->len = pre_mark; pre->p[pre_mark] = '\0'; }
     return 0;
   }
-  if (nonnil) buf_puts(b, hb.p);
+  /* (nil answers tap, itself and the like itself: no raise) */
+  const char *rn = nt_str(c->nt, id, "name");
+  if (nonnil || (rn && is_nil_method(rn))) buf_puts(b, hb.p);
   else {
     /* unrooted: nothing allocates between the read and the value but the
        raise, where the temp holds nil, and a root here would end with this
@@ -3805,7 +3784,9 @@ static int emit_strbuf_route_chain(Compiler *c, int v, int base, Buf *b) {
   int t = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb);
   buf_printf(&rb, "({ sp_String *_t%d = %s; SP_GC_ROOT(_t%d); ", t, hb.p, t);
-  if (!strbuf_route_nonnil(c, base))
+  /* (the first link answers a nil receiver nil where nil defines it: tap, itself) */
+  const char *fln = first >= 0 ? nt_str(nt, first, "name") : NULL;
+  if (!strbuf_route_nonnil(c, base) && !(fln && is_nil_method(fln)))
     buf_printf(&rb, "if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ", t,
                first >= 0 && nt_str(nt, first, "name") ? nt_str(nt, first, "name") : "<<");
   buf_printf(&rb, "_t%d; })", t);
@@ -3890,9 +3871,9 @@ static int tap_block_hoists(Compiler *c, int v) {
 static void emit_bang_held_open(Compiler *c, int v, int th, const char *href, int nonnil, int check_first,
                                 Buf *b) {
   Buf *hb = sb_block_hoists(c, v) || tap_block_hoists(c, v) ? g_pre : b;
-  /* (nil has a tap of its own: it hands the block nil and answers nil) */
+  /* (nil has a tap and an itself of its own: they answer nil) */
   const char *vn = nt_str(c->nt, v, "name");
-  int check = !nonnil && !call_is_safe_nav(c->nt, v) && !(vn && is_tap_name(vn));
+  int check = !nonnil && !call_is_safe_nav(c->nt, v) && !(vn && is_nil_method(vn));
   buf_puts(b, "({ ");
   size_t at = hb->len;
   if (hb != b) emit_indent(hb, g_indent);
@@ -4013,6 +3994,9 @@ static void emit_held_handle(Compiler *c, int r, Buf *b) {
 static int emit_held_self_answer_shim(Compiler *c, int id, int r, TyKind ty, Buf *b,
                                       int (*emit)(Compiler *, int, Buf *)) {
   int tH = ++g_tmp, sn = call_is_safe_nav(c->nt, id);
+  /* (a nil receiver is answered nil, not raised on, by `&.` and by a method nil has: tap, itself) */
+  const char *shn = nt_str(c->nt, id, "name");
+  int nilok = sn || (shn && is_nil_method(shn));
   Buf hb, pre, apre, armb;
   memset(&hb, 0, sizeof hb); memset(&pre, 0, sizeof pre); memset(&apre, 0, sizeof apre);
   memset(&armb, 0, sizeof armb);
@@ -4038,7 +4022,7 @@ static int emit_held_self_answer_shim(Compiler *c, int id, int r, TyKind ty, Buf
     /* `&.` answers nil for a nil receiver, where any other call raises */
     buf_printf(b, "({ sp_String *_t%d = %s; ", tH, hb.p);
     emit_ctype(c, ty, b);
-    if (sn) buf_printf(b, " _res%d = 0; if (_t%d) {", tH, tH);
+    if (nilok) buf_printf(b, " _res%d = 0; if (_t%d) {", tH, tH);
     else buf_printf(b, " _res%d; if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));",
                     tH, tH, nt_str(c->nt, id, "name"));
     buf_printf(b, " SP_GC_ROOT(_t%d);%s const char *lv__sh%d = sp_strbuf_read(_t%d); SP_GC_ROOT(lv__sh%d);",
@@ -4051,7 +4035,7 @@ static int emit_held_self_answer_shim(Compiler *c, int id, int r, TyKind ty, Buf
     buf_printf(b, "\n%s _res%d = %s;", apre.p ? apre.p : "", tH, armb.p ? armb.p : "0");
     if (blk) buf_printf(b, " if (!sp_str_eq(sp_String_cstr(_t%d), _o%d)) sp_raise_cls(\"RuntimeError\", \"string modified\");",
                         tH, tH);
-    buf_printf(b, " sp_String_set_bin(_t%d, lv__sh%d);%s ", tH, tH, sn ? " }" : "");
+    buf_printf(b, " sp_String_set_bin(_t%d, lv__sh%d);%s ", tH, tH, nilok ? " }" : "");
   }
   free(hb.p); free(pre.p); free(apre.p); free(armb.p);
   return handled ? tH : 0;
@@ -4269,6 +4253,8 @@ static int route_block_rebinds_base(Compiler *c, int v) {
   int base = unwrap_parens(c, nt_ref(nt, v, "receiver"));
   while (base >= 0 && nt_kind(nt, base) == NK_CallNode) base = unwrap_parens(c, nt_ref(nt, base, "receiver"));
   if (base < 0 || nt_kind(nt, base) != NK_LocalVariableReadNode) return 0;
+  /* (a chain run over the handle held ahead of its blocks reads that temp, whatever its blocks assign) */
+  if (ran_first_handle(base) >= 0) return 0;
   const char *nm = nt_str(nt, base, "name");
   if (!nm) return 0;
   for (int n = v; n >= 0 && nt_kind(nt, n) == NK_CallNode; n = unwrap_parens(c, nt_ref(nt, n, "receiver"))) {

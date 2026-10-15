@@ -307,7 +307,6 @@ int strbuf_box_unrendered(Compiler *c, int v);
    in, or -1 (codegen_stmt.c) */
 int strbuf_self_chain_base(Compiler *c, int v);
 int strbuf_chain_has_block(Compiler *c, int v);
-int strbuf_chain_rebinds_base(Compiler *c, int v, int base);
 /* --share-strings: does value v hand over a shared String as its handle
    (a variable, a route, a conditional with such an arm)? (codegen_stmt.c) */
 int strbuf_value_carries(Compiler *c, int v);

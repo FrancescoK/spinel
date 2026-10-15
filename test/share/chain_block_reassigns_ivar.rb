@@ -1,6 +1,5 @@
-# Under --share-strings (#6765), a chain of calls answering their receiver that
-# a boxed || or && takes answers what CRuby 4.0 does; a block that assigns
-# the variable the chain is over leaves the chain on the String it started from.
+# Under --share-strings (#6765): A tap block that assigns the ivar the chain is over, then a bang, as a boxed ||
+# operand and as an arm.
 # a tap block reassigning the ivar, then a bang, as an || operand and an arm
 class App
   def initialize(s) = (@s = s)
