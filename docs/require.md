@@ -127,6 +127,7 @@ Some stdlib ships with Spinel as Ruby source and is spliced when required --
 wasm32-wasi, which has no fork), `fiddle` (where libffi is,
 like `ffi`),
 `benchmark` (CRuby's own gem, unmodified), `shellwords` (likewise), `find` (likewise, but for one line; see its note),
+`getoptlong` (the bundled gem, unmodified; pinned in `packages/getoptlong/README.md`),
 `fileutils`, `tmpdir`, `zlib`, `logger` (a compact implementation of its API),
 `benchmark` (CRuby's own gem, unmodified),
 `bigdecimal` (a minimal subset, see `packages/bigdecimal/bigdecimal.rb`),

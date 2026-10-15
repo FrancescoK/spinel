@@ -1156,11 +1156,12 @@ PKG_TESTS := $(wildcard packages/*/test/*.rb)
 # Packages whose tests run on demand (`make pkg-ondemand-test`), not in
 # `make test` and so not in the gate or its --share-strings corpus: a large
 # package written in Ruby whose tests would weigh on every gate run (rexml
-# #9199, psych and yaml #9209, date #9255).
+# #9199, psych and yaml #9209, date #9255), and a library vendored unchanged
+# from its upstream release (getoptlong).
 # Run them when the package, or the compiler surface it leans on, changes.
 # Under --share-strings two of rexml's are refused today (#6765: a String of
 # Element#text collected with `.map(&:text)` and changed in place).
-PKG_ONDEMAND := rexml psych yaml date
+PKG_ONDEMAND := rexml psych yaml date getoptlong
 PKG_ONDEMAND_TESTS := $(foreach p,$(PKG_ONDEMAND),$(wildcard packages/$(p)/test/*.rb))
 PKG_TESTS := $(filter-out $(PKG_ONDEMAND_TESTS),$(PKG_TESTS))
 # The openssl package is glue over the SYSTEM libssl, so its tests only exist

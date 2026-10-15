@@ -1,0 +1,33 @@
+[GetoptLong::InvalidOption, GetoptLong::Error, "unrecognized option `--bogus'", [["--verbose", ""]], ["x"]]
+[GetoptLong::InvalidOption, GetoptLong::InvalidOption, "unrecognized option `--bogus'", nil, false]
+"an error has occurred"
+[GetoptLong::InvalidOption, GetoptLong::Error, "invalid option -- q", [], []]
+[GetoptLong::InvalidOption, GetoptLong::InvalidOption, "invalid option -- q", nil, false]
+"an error has occurred"
+[GetoptLong::InvalidOption, GetoptLong::Error, "invalid option -- q", [["--verbose", ""]], []]
+[GetoptLong::InvalidOption, GetoptLong::InvalidOption, "invalid option -- q", nil, false]
+"an error has occurred"
+[GetoptLong::AmbiguousOption, GetoptLong::Error, "option `--ver' is ambiguous between --verbose, --version", [], []]
+[GetoptLong::AmbiguousOption, GetoptLong::AmbiguousOption, "option `--ver' is ambiguous between --verbose, --version", nil, false]
+"an error has occurred"
+[:ok, [["--version", ""]], []]
+[GetoptLong::MissingArgument, GetoptLong::Error, "option `--name' requires an argument", [], []]
+[GetoptLong::MissingArgument, GetoptLong::MissingArgument, "option `--name' requires an argument", nil, false]
+"an error has occurred"
+[GetoptLong::MissingArgument, GetoptLong::Error, "option requires an argument -- n", [], []]
+[GetoptLong::MissingArgument, GetoptLong::MissingArgument, "option requires an argument -- n", nil, false]
+"an error has occurred"
+[GetoptLong::MissingArgument, GetoptLong::Error, "option `--name' requires an argument", [["--verbose", ""]], []]
+[GetoptLong::MissingArgument, GetoptLong::MissingArgument, "option `--name' requires an argument", nil, false]
+"an error has occurred"
+[GetoptLong::NeedlessArgument, GetoptLong::Error, "option `--verbose' doesn't allow an argument", [], []]
+[GetoptLong::NeedlessArgument, GetoptLong::NeedlessArgument, "option `--verbose' doesn't allow an argument", nil, false]
+"an error has occurred"
+[GetoptLong::NeedlessArgument, GetoptLong::Error, "option `--version' doesn't allow an argument", [], []]
+[GetoptLong::NeedlessArgument, GetoptLong::NeedlessArgument, "option `--version' doesn't allow an argument", nil, false]
+"an error has occurred"
+[GetoptLong::AmbiguousOption, GetoptLong::Error, StandardError]
+[GetoptLong::Error, GetoptLong::Error, GetoptLong::Error]
+true
+true
+false

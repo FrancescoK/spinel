@@ -1,0 +1,19 @@
+1
+0
+2
+[0, 1, 2]
+[1, [["--verbose", ""], ["--name", "n"]], ["a", "b", "c", "-v", "d"]]
+[1, [["--verbose", ""], ["--name", "n"]], ["a", "b", "c", "-v", "d"]]
+[0, [], ["a", "-v", "b", "--name", "n", "c", "--", "-v", "d"]]
+[2, [["", "a"], ["--verbose", ""], ["", "b"], ["--name", "n"], ["", "c"]], ["-v", "d"]]
+[0, [["--verbose", ""]], ["a", "b"]]
+[2, [["", "a"], ["", "b"]], []]
+[0, [], ["a", "-v", "b", "--name", "n", "c", "--", "-v", "d"]]
+[0, [], ["a", "-v", "b", "--name", "n", "c", "--", "-v", "d"]]
+[1, [["--verbose", ""], ["--name", "n"]], ["a", "b", "c", "-v", "d"]]
+ArgumentError
+"invalid ordering `99'"
+ArgumentError
+"argument error"
+ArgumentError
+"argument error"

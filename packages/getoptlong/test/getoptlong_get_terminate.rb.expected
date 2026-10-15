@@ -1,0 +1,20 @@
+false
+["--verbose", ""]
+false
+["--name", "x"]
+nil
+true
+["a", "b", "c"]
+nil
+["--verbose", ""]
+true
+true
+["a", "b", "--name", "x", "c"]
+nil
+nil
+0
+[["--verbose", ""], ["--name", "first"]]
+["second"]
+nil
+true
+[]
