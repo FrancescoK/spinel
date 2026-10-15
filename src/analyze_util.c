@@ -2278,6 +2278,18 @@ int an_user_defines_method(Compiler *c, const char *name) {
     return comp_method_index(c, name) >= 0;
   }
   unsigned gen = comp_scope_index_gen();
+  /* A frozen index only grows: the builtins' rewrites add a method per
+     site, each followed by an ask. A new method can make a name defined,
+     never undefined, so its name joins the set and only the "no" answers
+     are asked again -- clearing everything per method made the rewrite
+     pass quadratic in the methods it added. */
+  if (gen == udm_gen && c->nclasses == udm_nclasses && c->nscopes > udm_nscopes && udm_nscopes >= 0) {
+    for (int s = udm_nscopes; s < c->nscopes && !udm_sets_stale; s++)
+      if (c->scopes[s].class_id >= 0 && !c->scopes[s].is_cmethod && c->scopes[s].name)
+        udm_set_add(&udm_defined_set, c->scopes[s].name);
+    for (int i = 0; i < udm_n; i++) if (udm_ans[i] == 0) udm_ans[i] = -1;
+    udm_nscopes = c->nscopes;
+  }
   if (gen != udm_gen || c->nscopes != udm_nscopes || c->nclasses != udm_nclasses) {
     for (int i = 0; i < udm_n; i++) free(udm_names[i]);
     udm_n = 0;
@@ -2294,9 +2306,14 @@ int an_user_defines_method(Compiler *c, const char *name) {
     udm_sets_stale = 1;
   }
   unsigned b = udm_cap ? sp_strhash(name) & (unsigned)(udm_cap - 1) : 0;
+  int again = -1;
   if (udm_cap)
     for (int i = udm_head[b]; i >= 0; i = udm_next[i])
-      if (sp_streq(udm_names[i], name)) return udm_ans[i];
+      if (sp_streq(udm_names[i], name)) {
+        if (udm_ans[i] >= 0) return udm_ans[i];
+        again = i;
+        break;
+      }
   int ans = 0;
   if (udm_aliased_name(c, name)) {
     /* the name is an alias source somewhere: per-class resolution can redirect
@@ -2311,6 +2328,7 @@ int an_user_defines_method(Compiler *c, const char *name) {
     ans = udm_defined_name(c, name);
   }
   if (!ans) ans = comp_method_index(c, name) >= 0;
+  if (again >= 0) { udm_ans[again] = (signed char)ans; return ans; }
   if (udm_cap && udm_n < udm_cap) {
     udm_names[udm_n] = strdup(name);
     if (udm_names[udm_n]) {
