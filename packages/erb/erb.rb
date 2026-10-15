@@ -118,6 +118,16 @@ class ERB
     out
   end
 
+  # ERB::Escape, as `require "erb/escape"` gives it: html_escape alone,
+  # which erubi and roda's erb_h take with
+  # `define_method(:h, ERB::Escape.instance_method(:html_escape))`.
+  module Escape
+    def html_escape(s)
+      s.to_s.gsub(/[&<>"']/) { |c| Util::HTML_ESCAPE[c] }
+    end
+    module_function :html_escape
+  end
+
   module Util
     HTML_ESCAPE = { "&" => "&amp;", "<" => "&lt;", ">" => "&gt;", "\"" => "&quot;", "'" => "&#39;" }
 

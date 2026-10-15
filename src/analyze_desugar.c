@@ -3785,6 +3785,40 @@ static int engine_source_lib(NodeTable *nt, const char *h) {
   return 0;
 }
 
+/* The index in the program's top-level statements of the one that is or
+   holds `id`, or -1. */
+static int engine_root_index(NodeTable *nt, int id) {
+  int n = 0; const int *st = nt->root_id < 0 ? NULL : nt_arr(nt, nt_ref(nt, nt->root_id, "statements"), "body", &n);
+  for (int i = 0; i < n; i++) if (st[i] == id || subtree_has(nt, st[i], id)) return i;
+  return -1;
+}
+
+/* Does library `h`, defined from source, define `X` as a class or module in
+   its body before guard `in` runs? Then `defined?(h::X)` is "constant": the
+   library's top-level class (its require spliced at the top level) defines
+   X unconditionally, every writer of `h` is such a top-level class, and
+   nothing removes a constant. */
+static int engine_source_lib_defines(NodeTable *nt, const char *h, const char *x, int in) {
+  int gi = engine_root_index(nt, in), li = -1, rn = 0;
+  if (gi < 0) return 0;
+  const int *rs = nt_arr(nt, nt_ref(nt, nt->root_id, "statements"), "body", &rn);
+  for (int id = 0; id < nt->count; id++) {
+    const char *nm = nt_kind(nt, id) == NK_CallNode ? nt_str(nt, id, "name") : NULL;
+    if (nm && sp_streq(nm, "remove_const")) return 0;
+    const char *wn = engine_written(nt, id);
+    if (!wn || !sp_streq(wn, h)) continue;
+    int ri = engine_root_index(nt, id);
+    int cp = nt_kind(nt, id) == NK_ClassNode || nt_kind(nt, id) == NK_ModuleNode ? nt_ref(nt, id, "constant_path") : -1;
+    if (ri < 0 || rs[ri] != id || cp < 0 || nt_kind(nt, cp) != NK_ConstantReadNode) return 0;
+    int bn = 0; const int *b = nt_arr(nt, nt_ref(nt, id, "body"), "body", &bn);
+    for (int i = 0; i < bn && li < 0; i++) {
+      int bp = nt_kind(nt, b[i]) == NK_ClassNode || nt_kind(nt, b[i]) == NK_ModuleNode ? nt_ref(nt, b[i], "constant_path") : -1;
+      if (bp >= 0 && nt_kind(nt, bp) == NK_ConstantReadNode && sp_streq(nt_str(nt, bp, "name"), x)) li = ri;
+    }
+  }
+  return li >= 0 && li < gi;
+}
+
 static int engine_absent(NodeTable *nt, int e, int in) {
   const char *x = NULL;
   const char *en = nt_kind(nt, e) == NK_CallNode && nt_ref(nt, e, "block") < 0 ? nt_str(nt, e, "name") : NULL;
@@ -3800,6 +3834,18 @@ static int engine_absent(NodeTable *nt, int e, int in) {
       for (int id = 0; id < nt->count; id++) if (me_stmt_defines(nt, id, m) && !subtree_has(nt, in, id)) return -1;
     return a;
   }
+  /* `L::X.instance_method(:m)` of a module the program defines with that
+     method answers an UnboundMethod, which is true; absent, it raises
+     NameError rather than answering false, so only presence folds */
+  if (en && sp_streq(en, "instance_method")) {
+    int r = nt_ref(nt, e, "receiver"), ac = 0;
+    const int *av = nt_arr(nt, nt_ref(nt, e, "arguments"), "arguments", &ac);
+    const char *cls = r >= 0 && (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode)
+                      ? nt_str(nt, r, "name") : NULL;
+    const char *m = ac == 1 && nt_kind(nt, av[0]) == NK_SymbolNode ? nt_str(nt, av[0], "value") : NULL;
+    return cls && m && !is_builtin_class_name(cls) && !is_builtin_module_name(cls) &&
+           me_body_defines(nt, cls, m, in) ? 0 : -1;
+  }
   if (nt_kind(nt, e) == NK_DefinedNode) {
     int v = nt_ref(nt, e, "value"), below = -1;
     while (nt_kind(nt, v) == NK_ConstantPathNode && nt_ref(nt, v, "parent") >= 0) {
@@ -3809,8 +3855,11 @@ static int engine_absent(NodeTable *nt, int e, int in) {
     if (nt_kind(nt, v) == NK_ConstantReadNode || nt_kind(nt, v) == NK_ConstantPathNode) x = nt_str(nt, v, "name");
     /* under a library the program defines from source (`ERB::Escape`), the
        question is the name the source would define in it */
-    if (x && below >= 0 && nt_kind(nt, v) == NK_ConstantReadNode && engine_source_lib(nt, x))
+    if (x && below >= 0 && nt_kind(nt, v) == NK_ConstantReadNode && engine_source_lib(nt, x)) {
+      const char *lib = x;
       x = nt_str(nt, below, "name");
+      if (below == nt_ref(nt, e, "value") && engine_source_lib_defines(nt, lib, x, in)) return 0;
+    }
   }
   else if (en && sp_streq(en, "const_defined?") && (nt_kind(nt, nt_ref(nt, e, "receiver")) == NK_ConstantReadNode ||
                                                      nt_kind(nt, nt_ref(nt, e, "receiver")) == NK_ConstantPathNode)) {
