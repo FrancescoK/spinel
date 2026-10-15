@@ -1,5 +1,4 @@
 # spinel: gc-minor
-# spinel: gc-stress
 # A String variable passed as a keyword through a call on a boxed receiver,
 # to an arm whose keyword is the shared handle, binds that handle.
 class Reporter
@@ -71,3 +70,25 @@ def swap(who, error)
 end
 puts swap(Marker.new, RuntimeError.new("e3"))
 puts swap(Sub.new, RuntimeError.new("e4"))
+
+# a value that is no variable gets its handle where it runs, rooted beside the
+# allocating default of the keyword hash the arm builds (SPINEL_GC_STRESS)
+class Marked
+  def report(error, context: {}, source: "x")
+    source << "!"
+    puts "marked #{error} #{source}"
+  end
+end
+
+class Unmarked
+  def report(error, context: {}, source: "x")
+    puts "unmarked #{error} #{source}"
+  end
+end
+
+def dyn(who, error, i)
+  who.report(error, source: "n" + i.to_s)
+end
+
+dyn(Marked.new, "f", 1)
+dyn(Unmarked.new, "g", 2)

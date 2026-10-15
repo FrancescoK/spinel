@@ -3,3 +3,8 @@ module HkNokogiri
     def []=: (untyped _key, String _value) -> String
   end
 end
+
+class HkSetter
+  def []=: (String key, String value) -> String
+  def dump: () -> String
+end

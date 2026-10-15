@@ -1,11 +1,12 @@
-# spinel: rbs-seed-run
-# A key that is a boxed value's to_s, given to a setter on a receiver the
-# compiler cannot resolve (`out` is bound nowhere, so the call never runs:
-# the params are empty) beside a value that runs a program method, is
-# hoisted into a String temp ahead of the call. The poly dispatch's arm for
-# a signature-declared untyped key then asked the key's route again, which
-# read the temp as its handle under --share-strings: the C passed a
-# `const char *` where an `sp_String *` was wanted.
+# A key that is a boxed value's to_s, given to a setter beside a value that
+# runs a program method, is hoisted into a String temp ahead of the call. The
+# poly dispatch's arm for a signature-declared parameter then asked the key's
+# route again, which read the temp as its handle under --share-strings: the C
+# passed a `const char *` where an `sp_String *` was wanted. The key is the
+# receiver's own String when it is one, so a setter that changes the key
+# changes that String (`a` and `b` below end as "a!" and "b!"); the unresolved
+# receiver of from_json (`out` is bound nowhere, so the call never runs) is the
+# shape the compiler first met it in.
 module HkNokogiri
   class Attr
     def to_s
@@ -27,6 +28,8 @@ module HkBuilder
     end
   end
 
+  def self.label(i) = "v" + i.to_s
+
   def self.normalize_json(value)
     if value.is_a?(Hash)
       out = {}
@@ -38,5 +41,44 @@ module HkBuilder
   end
 end
 
+class HkName
+  def initialize(n)
+    @n = n
+  end
+
+  def to_s
+    "name:#{@n}"
+  end
+end
+
+class HkSetter
+  def initialize
+    @pairs = []
+  end
+
+  def []=(key, value)
+    key << "!"
+    @pairs << [key, value]
+    value
+  end
+
+  def dump = @pairs.inspect
+end
+
+def hk_target(flag) = flag ? HkSetter.new : {}
+
+def hk_store(keys, flag)
+  out = hk_target(flag)
+  keys.each_with_index do |k, i|
+    out[k.to_s] = HkBuilder.label(i)
+  end
+  out
+end
+
 req = ARGV.empty? ? {} : []
 p HkBuilder.from_json(req)
+a = +"a"
+b = +"b"
+puts hk_store([a, :s, HkName.new(1), b], true).dump
+puts a, b
+p hk_store([a, :s], false)

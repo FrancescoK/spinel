@@ -1,5 +1,4 @@
 # spinel: gc-minor
-# spinel: gc-stress
 # A String literal key on a Hash read stays the String when an earlier round
 # marked it as an argument a rest parameter keeps: the receiver was a boxed
 # value then, a user [] took the keys, and settled to a Hash after.

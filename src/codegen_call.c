@@ -6319,11 +6319,12 @@ void emit_kwh_pos_hash(Compiler *c, const PolyKw *kw, int boxed, Buf *out) {
 }
 
 /* Keyword `e` (a String value, held as its bytes in `tn`) into an arm's
-   keyword parameter that is a shared handle: the handle its String variable
-   had when the value ran (kwhtmp), as a direct call's binder passes the
-   slot's handle itself so the callee's appends land in the caller's String;
-   any other value is wrapped in a handle of its own (a frozen literal's is
-   its own). */
+   keyword parameter that is a shared handle: the handle taken where the
+   value ran (kwhtmp: the handle its String variable had, as a direct call's
+   binder passes the slot's handle itself so the callee's appends land in the
+   caller's String, or a new one around any other value; a frozen literal's
+   is its own). Every such keyword has one; the wrap is for a keyword the
+   dispatch did not hold. */
 static void emit_poly_kw_handle(const PolyKw *kw, int e, const char *tn, Buf *pa) {
   if (kw->kwhtmp && kw->kwhtmp[e]) buf_printf(pa, "_t%d", kw->kwhtmp[e]);
   else buf_printf(pa, "sp_String_new_shared(%s)", tn);
@@ -7765,16 +7766,6 @@ static void emit_poly_route_arg(Compiler *c, int node, TyKind ty, int th, int tn
   Buf *sv_pre = g_pre;
   if (ran && subtree_has_side_effect(c, node)) g_pre = &pre;
   emit_strbuf_handle_of(c, node, &val);
-  /* An argument an operand-order rewrite already ran into a String temp
-     took no handle there (ran_first_handle), and its route, run again,
-     read that temp as the handle. It is held as the String, so the handle
-     takes it as a new one, as any value with none to hand on does. */
-  if (repr_share_rule(c) && val.p && ran_first_read(c, node, val.p) >= 0) {
-    Buf wrap; memset(&wrap, 0, sizeof wrap);
-    buf_printf(&wrap, "sp_String_new_shared(%s)", val.p);
-    free(val.p);
-    val = wrap;
-  }
   g_pre = sv_pre;
   if (pre.p) buf_puts(b, pre.p);
   buf_printf(b, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d); ", th, val.p ? val.p : "NULL", th);
@@ -9169,6 +9160,7 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         if (!kwtmp || !kwhtmp || !kwty) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
         for (int e = 0; e < kwn; e++) {
           int val = nt_ref(nt, kwels[e], "value");
+          int kwrooted = 0;
           kwtmp[e] = ++g_tmp;
           TyKind at = val >= 0 ? repr_of(c, val).as_ty : TY_NIL;
           if (at == TY_NIL || at == TY_VOID || at == TY_UNKNOWN) {
@@ -9178,16 +9170,18 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           }
           else {
             kwty[e] = at;
-            /* --share-strings: a String variable that is the shared handle,
-               given to a keyword some arm takes as the handle, is taken
-               where the value runs, as a positional's is (htmp): the temp
-               holds its String value, which that arm wraps in a handle of
-               its own where no slot is read (emit_poly_kw_handle) */
+            /* --share-strings: a String given to a keyword some arm takes as
+               the handle has that handle taken where the value runs, as a
+               positional's is (htmp): the handle a String variable has, or
+               a new one around any other value, rooted here; the arm would
+               otherwise build it inside the call's argument list, beside
+               an allocating default of its own. The temp holds the String
+               value the other arms take. */
             Buf ksref; memset(&ksref, 0, sizeof ksref);
             NodeKind vk = nt_kind(nt, val);
-            if (at == TY_STRING && repr_share_rule(c) &&
-                (vk == NK_LocalVariableReadNode || vk == NK_InstanceVariableReadNode) &&
-                (takes_handle >= 0 ? takes_handle : (takes_handle = poly_name_takes_handle(c, name))) &&
+            int kwneeds = at == TY_STRING && repr_share_rule(c) &&
+                          (takes_handle >= 0 ? takes_handle : (takes_handle = poly_name_takes_handle(c, name)));
+            if (kwneeds && (vk == NK_LocalVariableReadNode || vk == NK_InstanceVariableReadNode) &&
                 strbuf_slot_text(c, val, &ksref)) {
               kwhtmp[e] = ++g_tmp;
               buf_printf(b, "sp_String *_t%d = %s; ", kwhtmp[e], ksref.p);
@@ -9195,11 +9189,21 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             }
             free(ksref.p);
             kwtmp[e] = emit_poly_arg_temp(c, val, at, 0, kwtmp[e], ran, b);
+            if (kwneeds && !kwhtmp[e]) {
+              /* the value is rooted before the handle around it is made */
+              if (kwtmp[e] != head_held_temp(c, val)) {
+                emit_gc_root_tmp_refs(c, kwty[e], kwtmp[e], b); buf_puts(b, " ");
+                kwrooted = 1;
+              }
+              kwhtmp[e] = ++g_tmp;
+              buf_printf(b, "sp_String *_t%d = sp_String_new_shared(_t%d); ", kwhtmp[e], kwtmp[e]);
+              emit_gc_root_tmp(c, TY_STRBUF, kwhtmp[e], b); buf_puts(b, " ");
+            }
           }
           if (val >= 0) ran |= subtree_has_side_effect(c, val);
           /* rooted as a positional's temp is: an arm allocates its keyword
              hash before it stores this value into it */
-          if (val >= 0 && ty_gc_holds_refs(c, kwty[e]) && kwtmp[e] != head_held_temp(c, val) &&
+          if (val >= 0 && !kwrooted && ty_gc_holds_refs(c, kwty[e]) && kwtmp[e] != head_held_temp(c, val) &&
               (!poly_arg_held(c, val, kwty[e]) || e < kw_live ||
                (arm_runs >= 0 ? arm_runs : (arm_runs = poly_arm_runs_code(c, name, pos_argc, has_splat_arg, kwh))))) {
             emit_gc_root_tmp_refs(c, kwty[e], kwtmp[e], b); buf_puts(b, " ");
@@ -22018,6 +22022,26 @@ static int operand_binds_self_handle(Compiler *c, int v) {
   return r >= 0 && nt_kind(c->nt, r) == NK_CallNode && strbuf_bang_emits(c, v);
 }
 
+/* --share-strings: is operand v of call id a `to_s` of a boxed receiver
+   beside program classes that define their own (repr_boxed_to_s_operand),
+   whose route answers the receiver's own String when it is one (`k.to_s` of
+   a String is k) and a class's fresh answer otherwise (emit_strbuf_route),
+   given to a call on a boxed receiver that a method taking its parameter as
+   the handle may answer (poly_name_takes_handle)? Bound as its bytes, the
+   poly dispatch's route argument found its operand held as the String and
+   read the temp as the handle; a callee that changes the String it was
+   given (`def []=(key, value) = key << "!"`) changed a copy. It is bound as
+   the handle the route answers, run once, and read as that handle's String
+   (ran_first_bind_read). */
+static int operand_binds_boxed_to_s(Compiler *c, int id, int v) {
+  int recv = nt_ref(c->nt, id, "receiver");
+  const char *name = nt_str(c->nt, id, "name");
+  return repr_share_rule(c) && nt_kind(c->nt, v) == NK_CallNode && comp_ntype(c, v) == TY_STRING &&
+         !arg_ran_first(v, 0) && v != recv && recv >= 0 && repr_of(c, recv).kind == RK_BOXED &&
+         repr_boxed_to_s_operand(c, v) >= 0 && cplan_user(c, v)->dispatch != CP_NONE &&
+         poly_name_takes_handle(c, name);
+}
+
 /* --share-strings: is operand v a String bang on a boxed receiver
    (face_str_bang_call: `($a[0] << x).upcase!`), whose answer as a box is
    the receiver's own box, or nil? Bound as its bytes, a reader that wants
@@ -22245,7 +22269,8 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     }
     if (!bindable && unb < 0) unb = i;
     int fr = operand[i] != harg && operand[i] != recv && operand_fresh_str(c, operand[i]);
-    int bsh = operand[i] != harg && operand_binds_self_handle(c, operand[i]);
+    int bsh = operand[i] != harg && (operand_binds_self_handle(c, operand[i]) ||
+                                     operand_binds_boxed_to_s(c, id, operand[i]));
     int bfb = bsh || operand[i] == harg ? 0
             : operand_binds_face_box(c, operand[i]) ? 1
             : operand_binds_identity_box(c, id, operand[i]) || operand_binds_user_box(c, operand[i]) ? 2 : 0;
