@@ -38,6 +38,16 @@ static ReprKind repr_kind_of_type(const Compiler *c, TyKind t) {
   return RK_PTR;
 }
 
+/* Is the node recv held boxed (repr_of(recv).kind == RK_BOXED)? Only a
+   Poly-typed node is, or a local read whose slot settled poly
+   (RS_SLOT_POLY); any other node answers no without repr_of's walk, which
+   asks the node's own receiver in turn, so asking it of every link of a
+   chain (`s << a << b << ...`) re-walked the chain below each link. */
+static int repr_recv_boxed(const Compiler *c, int recv) {
+  if (comp_ntype(c, recv) != TY_POLY && nt_kind(c->nt, recv) != NK_LocalVariableReadNode) return 0;
+  return repr_of(c, recv).kind == RK_BOXED;
+}
+
 /* The layout of a value stored as t that its type names and its kind does
    not: every Array and Hash is a pointer, and which container it points to
    -- what an Array holds its elements as (ty_array_elem), what a Hash
@@ -167,7 +177,7 @@ const NativeMethod *repr_native_arm_handle(Compiler *c, int v, int k) {
 static int repr_boxed_native_handle(Compiler *c, int v) {
   int recv = nt_ref(c->nt, v, "receiver");
   const char *nm = nt_str(c->nt, v, "name");
-  if (recv < 0 || !nm || repr_of(c, recv).kind != RK_BOXED) return 0;
+  if (recv < 0 || !nm || !repr_recv_boxed(c, recv)) return 0;
   const PolyPlan *p = cplan_poly_arms(c, v);
   int nk = 0, any = 0;
   const int *ks = poly_recv_classes(c, v, &nk);
@@ -277,7 +287,7 @@ int repr_boxed_reader_handle(Compiler *c, int v) {
       nt_ref(nt, v, "block") >= 0 ||
       nt_ref(nt, v, "arguments") >= 0) return 0;
   int recv = nt_ref(nt, v, "receiver");
-  if (recv < 0 || repr_of(c, recv).kind != RK_BOXED ||
+  if (recv < 0 || !repr_recv_boxed(c, recv) ||
       ty_poly_face_owners(nt_str(nt, v, "name"), 0, 0, 1, 1)) return 0;
   const PolyPlan *p = cplan_poly_arms(c, v);
   if (p->n == 0) return 0;
