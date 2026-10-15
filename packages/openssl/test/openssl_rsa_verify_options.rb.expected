@@ -1,0 +1,18 @@
+true
+true
+true
+true
+false
+false
+true
+true
+false
+false
+true
+false
+OpenSSL::Digest::DigestError
+OpenSSL::Digest::DigestError
+no implicit conversion of Symbol into Integer
+true
+false
+true
