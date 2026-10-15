@@ -1,0 +1,7 @@
+[package]
+name = "pp"
+
+# Pre-installed spin package: ships with the compiler, versioned with it.
+# `require "pp"` -- PP over the prettyprint package, and Kernel#pp and
+# #pretty_inspect through it. See pp.rb for what CRuby's pp has that this one
+# leaves out.

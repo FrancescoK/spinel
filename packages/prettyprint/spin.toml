@@ -1,0 +1,6 @@
+[package]
+name = "prettyprint"
+
+# Pre-installed spin package: ships with the compiler, versioned with it.
+# prettyprint.rb is CRuby's own (the prettyprint gem 0.2.0, Ruby's license /
+# BSD-2-Clause), unchanged: the layout algorithm `pp` lays its output out by.
