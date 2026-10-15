@@ -3568,6 +3568,12 @@ static SP_NOINLINE sp_int sp_poly_arg_int_chk_slow(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id >= 0) return sp_poly_arg_int_obj(v);
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p)
     return sp_complex_to_int(*(sp_Complex *)v.v.p);
+  /* a Bignum the slot cannot hold is CRuby's RangeError, not its low word:
+     `a.delete_at(2**70)` deleted a[0] */
+  if (v.tag == SP_TAG_BIGINT && v.v.p) {
+    if (sp_bigint_fits_int((sp_Bigint *)v.v.p)) return (sp_int)sp_bigint_to_int((sp_Bigint *)v.v.p);
+    sp_raise_cls("RangeError", "bignum too big to convert into 'long'");
+  }
   return sp_poly_to_i(v);
 }
 /* The arguments of a bound-Method THUNK (#4542): a Method called out of a
@@ -5358,6 +5364,37 @@ static sp_bool sp_poly_int_bits_test(sp_RbVal v, sp_RbVal m, int which) {
   sp_Bigint *x = sp_bigint_and(a, b); SP_GC_ROOT(x);
   return which == 0 ? sp_bigint_cmp(x, b) == 0 : which == 1 ? sp_bigint_sign(x) != 0 : sp_bigint_sign(x) == 0;
 }
+/* The same on an Integer receiver, with a mask known only at run time: a
+   Bignum mask tests in the Bignum, where the word converted to a C long is
+   CRuby's RangeError but anybits?/nobits?/allbits? take any Integer. */
+static SP_UNUSED SP_INLINE sp_bool sp_int_bits_test_arg(sp_int r, sp_RbVal m, int which) {
+  if (m.tag == SP_TAG_BIGINT) return sp_poly_int_bits_test(sp_box_int(r), m, which);
+  sp_int mm = sp_poly_arg_int_chk(m), x = r & mm;
+  return which == 0 ? x == mm : which == 1 ? x != 0 : x == 0;
+}
+/* Integer#pow(exp, mod) and Integer.sqrt in a call typed Integer, with the
+   modulus or the argument known only at run time: a Bignum runs in the
+   Bignum, as their typed Bignum forms do, and answers the word it fits in;
+   an answer past a word is one this call cannot hold. */
+static SP_UNUSED sp_int sp_powmod_arg(sp_int b, sp_int e, sp_RbVal m) {
+  if (m.tag != SP_TAG_BIGINT || !m.v.p) return sp_powmod(b, e, sp_poly_arg_int_chk(m));
+  SP_GC_ROOT_RBVAL(m);
+  sp_Bigint *bb = sp_bigint_new_int(b); SP_GC_ROOT(bb);
+  sp_Bigint *r = sp_bigint_powmod(bb, e, (sp_Bigint *)m.v.p);
+  if (!sp_bigint_fits_int(r))
+    sp_raise_cls("NotImplementedError", "Integer#pow with this Bignum modulus answers a Bignum, which this Integer-typed call cannot hold");
+  return (sp_int)sp_bigint_to_int(r);
+}
+static SP_UNUSED sp_int sp_int_sqrt_arg(sp_RbVal v) {
+  if (v.tag != SP_TAG_BIGINT || !v.v.p) return sp_int_sqrt(sp_poly_arg_int_chk(v));
+  if (sp_bigint_sign((sp_Bigint *)v.v.p) < 0)
+    sp_raise_cls("Math::DomainError", "Numerical argument is out of domain - \"isqrt\"");
+  SP_GC_ROOT_RBVAL(v);
+  sp_Bigint *r = sp_bigint_isqrt((sp_Bigint *)v.v.p);
+  if (!sp_bigint_fits_int(r))
+    sp_raise_cls("NotImplementedError", "Integer.sqrt of this Bignum answers a Bignum, which this Integer-typed call cannot hold");
+  return (sp_int)sp_bigint_to_int(r);
+}
 static sp_RbVal sp_poly_int_gcd(sp_RbVal v, sp_RbVal o) {
   if (v.tag != SP_TAG_INT && v.tag != SP_TAG_BIGINT) sp_raise_poly_nomethod("gcd", v);
   if (v.tag == SP_TAG_INT && o.tag == SP_TAG_INT) return sp_box_int(sp_gcd(v.v.i, o.v.i));
@@ -5385,15 +5422,25 @@ static sp_int sp_poly_to_int_arg(sp_RbVal v) {
   if (v.tag == SP_TAG_FLT) return sp_float_to_i_checked(v.v.f);
   return sp_poly_arg_int_chk_w(v, 1);
 }
-/* A word-sized receiver's single bit index may itself be a Bignum.
-   Clamp finite Floats to the same sign-bit/negative-index cases. */
+/* A word-sized receiver's single bit index may itself be a Bignum: past the
+   word it reads the sign fill, below it 0. Clamp finite Floats to the same
+   sign-bit/negative-index cases. */
 static sp_int sp_poly_bit_index_arg(sp_RbVal v) {
+  if (v.tag == SP_TAG_BIGINT && v.v.p && !sp_bigint_fits_int((sp_Bigint *)v.v.p))
+    return sp_bigint_sign((sp_Bigint *)v.v.p) > 0 ? INTPTR_MAX : INTPTR_MIN + 1;
   if (v.tag == SP_TAG_FLT) {
     sp_poly_flo_domain_ck(v.v.f);
     if (v.v.f >= -(sp_float)INTPTR_MIN) return INTPTR_MAX;
     if (v.v.f <= (sp_float)INTPTR_MIN) return INTPTR_MIN + 1;
     return (sp_int)v.v.f;
   }
+  return sp_poly_to_int_arg(v);
+}
+/* Random.new's and srand's seed: a Bignum folds to its low 64 bits, as the
+   typed Random.new(2**70) does (the PRNG state holds 64 bits of seed); any
+   other value converts as an Integer argument does. */
+static SP_UNUSED sp_int sp_poly_seed_arg(sp_RbVal v) {
+  if (v.tag == SP_TAG_BIGINT && v.v.p) return (sp_int)sp_bigint_to_int((sp_Bigint *)v.v.p);
   return sp_poly_to_int_arg(v);
 }
 static sp_IntArray *sp_poly_int_digits(sp_RbVal v, sp_int base) {

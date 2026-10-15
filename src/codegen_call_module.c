@@ -1004,6 +1004,10 @@ int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       buf_puts(b, "sp_bigint_isqrt("); emit_expr(c, argv[0], b); buf_puts(b, ")");  /* (#2420) */
       return 1;
     }
+    if (repr_of(c, argv[0]).kind == RK_BOXED) {
+      buf_puts(b, "sp_int_sqrt_arg("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      return 1;
+    }
     buf_puts(b, "sp_int_sqrt("); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
     return 1;
   }
@@ -2020,7 +2024,7 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     }
     if (sp_streq(name, "srand")) {                    /* #2525 (returns previous seed) */
       if (argc == 0) { buf_puts(b, "sp_kernel_srand((sp_int)time(NULL))"); return 1; }
-      buf_puts(b, "sp_kernel_srand("); emit_to_int_expr(c, argv[0], b); buf_puts(b, ")");
+      buf_puts(b, "sp_kernel_srand("); emit_seed_expr(c, argv[0], b); buf_puts(b, ")");
       return 1;
     }
   }
