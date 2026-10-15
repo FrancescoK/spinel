@@ -214,6 +214,19 @@ void anh_add(ANameHash *st, const char *nm) {
     st->key = realloc(st->key, sizeof(char *) * (size_t)st->cap);
     st->next = realloc(st->next, sizeof(int) * (size_t)st->cap);
   }
+  /* the buckets grow with the names: a fixed count let a program's every
+     method name (tens of thousands) chain behind each bucket, and every ask
+     walked the chain. Rehashed in add order, so each chain still answers its
+     most recent add first. */
+  if (st->n >= st->nb * 2) {
+    st->nb *= 4;
+    st->head = realloc(st->head, sizeof(int) * (size_t)st->nb);
+    for (int b = 0; b < st->nb; b++) st->head[b] = -1;
+    for (int i = 0; i < st->n; i++) {
+      unsigned b = sp_strhash(st->key[i]) % (unsigned)st->nb;
+      st->next[i] = st->head[b]; st->head[b] = i;
+    }
+  }
   unsigned b = sp_strhash(nm) % (unsigned)st->nb;
   st->key[st->n] = nm; st->next[st->n] = st->head[b]; st->head[b] = st->n; st->n++;
 }
@@ -25123,21 +25136,44 @@ static int act_has_override(Compiler *c, int cid, const char *un, int cm) {
   return 0;
 }
 
-/* Is `nm` a name some class aliases a method under? Hashed once per alias
-   table generation, since the question is asked for every call site. */
-static int an_alias_name(Compiler *c, const char *nm) {
+/* The classes that alias a method under `nm`, as a list in class order:
+   the first entry, or -1, then al_next[e]; al_cls[e] is the class. Hashed
+   once per alias table generation, since the question is asked for every
+   call site, and a scan of every class's aliases per site was most of a
+   large program's late passes. */
+static int *al_cls, *al_next;
+static int an_alias_first(Compiler *c, const char *nm) {
   static ANameHash names;
-  static int stamp_nc = -1;
+  static int *first, *last, stamp_nc = -1;
   static unsigned stamp_gen;
   if (stamp_nc != c->nclasses || stamp_gen != comp_table_gen) {
     anh_free(&names); memset(&names, 0, sizeof names);
+    free(first); free(last); free(al_cls); free(al_next);
+    first = last = al_cls = al_next = NULL;
+    int ne = 0, cap = 0;
     for (int k = 0; k < c->nclasses; k++)
-      for (int a = 0; a < c->classes[k].naliases; a++)
-        if (!anh_has(&names, c->classes[k].alias_new[a])) anh_add(&names, c->classes[k].alias_new[a]);
+      for (int a = 0; a < c->classes[k].naliases; a++) {
+        const char *an = c->classes[k].alias_new[a];
+        int h = anh_find(&names, an);
+        if (h >= 0 && al_cls[last[h]] == k) continue;   /* this class has it */
+        if (ne == cap) {
+          cap = cap ? cap * 2 : 64;
+          first = realloc(first, sizeof(int) * (size_t)cap); last = realloc(last, sizeof(int) * (size_t)cap);
+          al_cls = realloc(al_cls, sizeof(int) * (size_t)cap); al_next = realloc(al_next, sizeof(int) * (size_t)cap);
+        }
+        al_cls[ne] = k; al_next[ne] = -1;
+        if (h >= 0) { al_next[last[h]] = ne; last[h] = ne; }
+        else { h = names.n; anh_add(&names, an); first[h] = last[h] = ne; }
+        ne++;
+      }
     stamp_nc = c->nclasses; stamp_gen = comp_table_gen;
   }
-  return nm && names.n > 0 && anh_has(&names, nm);
+  int h = nm && names.n > 0 ? anh_find(&names, nm) : -1;
+  return h >= 0 ? first[h] : -1;
 }
+
+/* Is `nm` a name some class aliases a method under? */
+static int an_alias_name(Compiler *c, const char *nm) { return an_alias_first(c, nm) >= 0; }
 
 /* The scopes a call on name `un`, defined by more than one method or reached
    under an alias, can reach.
@@ -25221,12 +25257,10 @@ static void an_call_targets_nonunique(Compiler *c, int u, const char *un, ACallT
   else
     for (int k = first; k >= 0 && t->want < 0; k = an_same_name_next(c, k)) act_add(t, k);
   /* and every method a class aliases under the name */
-  for (int k = 0; aliased && k < c->nclasses; k++)
-    for (int a = 0; a < c->classes[k].naliases; a++) {
-      if (!sp_streq(c->classes[k].alias_new[a], un)) continue;
-      act_add(t, comp_method_in_chain(c, k, un, NULL));
-      act_add(t, comp_cmethod_in_chain(c, k, un, NULL));
-    }
+  for (int e = aliased ? an_alias_first(c, un) : -1; e >= 0; e = al_next[e]) {
+    act_add(t, comp_method_in_chain(c, al_cls[e], un, NULL));
+    act_add(t, comp_cmethod_in_chain(c, al_cls[e], un, NULL));
+  }
 }
 
 /* Which scopes does CallNode `u` statically call? The forward form of
