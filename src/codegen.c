@@ -781,9 +781,10 @@ static void emit_int_expr_ex(Compiler *c, int node, int strict, Buf *b) {
   }
   /* A value the analysis widened to Bignum (a doubling counter, a masked
      accumulator) used where an integer is wanted -- an array index, a repeat
-     count -- is a pointer, not a number: convert it. */
+     count -- is a pointer, not a number: convert it. In a strict slot one
+     that does not fit is CRuby's RangeError, not its low word. */
   if (repr_of(c, node).big) {
-    buf_puts(b, "sp_bigint_to_int("); emit_expr(c, node, b); buf_puts(b, ")");
+    buf_puts(b, strict ? "sp_bigint_arg_int_chk(" : "sp_bigint_to_int("); emit_expr(c, node, b); buf_puts(b, ")");
     return;
   }
   /* A Float in an sp_int slot (a mixed Range literal like `0.5..5`, which is
@@ -1024,11 +1025,15 @@ void emit_to_int_expr(Compiler *c, int node, Buf *b) {
   else emit_int_expr_conv(c, node, b);
 }
 
-/* Random.new's and srand's seed: a boxed Bignum folds to its low word, as
-   the typed seed does (sp_poly_seed_arg), where a C long slot raises. */
+/* Random.new's and srand's seed: a Bignum folds to its low word, boxed
+   (sp_poly_seed_arg) or typed, where a C long slot raises. */
 void emit_seed_expr(Compiler *c, int node, Buf *b) {
-  if (repr_of(c, node).kind == RK_BOXED) {
+  Repr r = repr_of(c, node);
+  if (r.kind == RK_BOXED) {
     buf_puts(b, "sp_poly_seed_arg("); emit_boxed(c, node, b); buf_puts(b, ")");
+  }
+  else if (r.big) {
+    buf_puts(b, "sp_bigint_to_int("); emit_expr(c, node, b); buf_puts(b, ")");
   }
   else emit_to_int_expr(c, node, b);
 }

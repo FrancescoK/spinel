@@ -18,3 +18,13 @@ sqrt: [34359738368, 34359738368]
 sqrt, negative: Math::DomainError
 seed: true
 srand: true
+typed delete_at: RangeError
+[:x, :y, :z]
+typed literal: RangeError
+typed take: RangeError
+typed center: RangeError
+typed index: RangeError
+typed round: RangeError
+typed take, fits: [1, 2]
+typed any Integer: [false, 0, 25, 34359738368, [5]]
+typed seed: true
