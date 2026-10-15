@@ -369,9 +369,20 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         if (vexpr[0]) buf_puts(&ivb, vexpr);
         else if (iv_pre) buf_puts(&ivb, iv_pre);
         else emit_expr(c, expr, &ivb);
-        buf_puts(&conv, "sp_poly_inspect(");
-        emit_boxed_text(c, t, ivb.p ? ivb.p : "NULL", &conv);
-        buf_puts(&conv, ")");
+        if (t == TY_STRH_ARRAY && repr_of(c, expr).may_nil) {
+          /* (a nil of the form interpolates as the empty string, as nil does) */
+          int ta = ++g_tmp;
+          buf_printf(&conv, "({ sp_PtrArray *_t%d = %s; SP_GC_ROOT(_t%d); _t%d ? sp_poly_inspect(", ta, ivb.p ? ivb.p : "NULL", ta, ta);
+          char tn[32];
+          snprintf(tn, sizeof tn, "_t%d", ta);
+          emit_boxed_text(c, t, tn, &conv);
+          buf_puts(&conv, ") : sp_str_empty; })");
+        }
+        else {
+          buf_puts(&conv, "sp_poly_inspect(");
+          emit_boxed_text(c, t, ivb.p ? ivb.p : "NULL", &conv);
+          buf_puts(&conv, ")");
+        }
         free(ivb.p);
       }
       else if (t == TY_CLASS) {

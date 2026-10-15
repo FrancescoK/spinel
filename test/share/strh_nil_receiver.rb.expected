@@ -5,7 +5,6 @@ nme size
 nme each
 nme index
 nil
-true
 2
 2
 nme take
@@ -14,3 +13,16 @@ nme bang
 nil
 ["u!"]
 "u!"
+""
+"[\"t!\"]"
+"nil"
+"[\"t!\"]"
+nil
+["t!"]
+[]
+["t!"]
+<>
+<["t!"]>
+nil
+["t!"]
+"|[\"t!\"]"

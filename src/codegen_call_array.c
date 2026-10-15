@@ -2721,10 +2721,15 @@ void emit_strh_elem(Compiler *c, int v, Buf *b) {
    CRuby's NoMethodError for a nil one where the nil fact says it can be
    (a method that answers the Array or nil, a parameter some call gives nil,
    an instance variable not set yet). A safe navigation guards it itself. */
+/* Can the receiver be nil, and is the call no safe navigation (which guards
+   it itself)? */
+static int strh_recv_nilable(Compiler *c, int id, int recv) {
+  const char *op = nt_str(c->nt, id, "call_operator");
+  return !(op && sp_streq(op, "&.")) && repr_of(c, recv).may_nil;
+}
 void strh_emit_recv(Compiler *c, int id, int recv, Buf *b) {
   const char *nm = nt_str(c->nt, id, "name");
-  const char *op = nt_str(c->nt, id, "call_operator");
-  int nilable = nm && !is_nil_method(nm) && !(op && sp_streq(op, "&.")) && repr_of(c, recv).may_nil;
+  int nilable = nm && !is_nil_method(nm) && strh_recv_nilable(c, id, recv);
   if (nilable) buf_printf(b, "sp_StrhArray_rnn(");
   emit_expr(c, recv, b);
   if (nilable) buf_printf(b, ", \"%s\")", nm);
@@ -2823,10 +2828,24 @@ int emit_strh_call(Compiler *c, int id, Buf *b) {
   case STRH_EMPTY:
     buf_puts(b, "(sp_PtrArray_length("); strh_emit_recv(c, id, recv, b); buf_puts(b, ") == 0)");
     return 1;
+  /* The operations nil answers itself (dup, to_a, to_s, inspect; == is
+     sp_StrhArray_eq's), for a receiver that can be nil: what nil answers. */
   case STRH_DUP:
+    if (strh_recv_nilable(c, id, recv)) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_PtrArray *_t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); _t%d ? sp_StrhArray_dup(_t%d) : (sp_PtrArray *)NULL; })", t, t, t);
+      return 1;
+    }
     buf_puts(b, "sp_StrhArray_dup("); strh_emit_recv(c, id, recv, b); buf_puts(b, ")");
     return 1;
   case STRH_SELF:
+    if (strh_recv_nilable(c, id, recv)) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_PtrArray *_t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); _t%d ? _t%d : sp_StrhArray_new(); })", t, t, t);
+      return 1;
+    }
     strh_emit_recv(c, id, recv, b);
     return 1;
   case STRH_JOIN: {
@@ -2850,6 +2869,13 @@ int emit_strh_call(Compiler *c, int id, Buf *b) {
     return 1;
   }
   case STRH_INSPECT:
+    if (strh_recv_nilable(c, id, recv)) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_PtrArray *_t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); _t%d ? sp_PtrArray_inspect_k(_t%d) : %s; })", t, t, t,
+                 sp_streq(nm, "to_s") ? "sp_str_empty" : "\"nil\"");
+      return 1;
+    }
     buf_puts(b, "sp_PtrArray_inspect_k("); strh_emit_recv(c, id, recv, b); buf_puts(b, ")");
     return 1;
   default:

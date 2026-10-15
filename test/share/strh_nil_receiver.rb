@@ -34,7 +34,7 @@ begin
 rescue NoMethodError
   puts "nme index"
 end
-p n&.size, n.nil?, r&.size
+p n&.size, r&.size
 def take(a, s)
   a << s
   a.size
@@ -70,3 +70,14 @@ l.init
 l.add(u)
 l.bang
 p l.rows, u
+
+# the operations nil answers itself, on a nil and on an Array
+m = mk(false)
+q = mk(true)
+p m.to_s, q.to_s
+p m.inspect, q.inspect
+p m.dup, q.dup
+p m.to_a, q.to_a
+puts "<#{m}>", "<#{q}>"
+p m, q
+p "#{m}|#{q}"

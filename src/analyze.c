@@ -21455,7 +21455,12 @@ static void strh_reflect_scan(Compiler *c, StrhReflect *r) {
         sp_streq(nm, "class_variable_get") || sp_streq(nm, "class_variable_set") ||
         sp_streq(nm, "const_get") || sp_streq(nm, "const_set") || sp_streq(nm, "remove_instance_variable") ||
         sp_streq(nm, "remove_class_variable") || sp_streq(nm, "remove_const"))
-      strh_reflect_add(r, argc > first ? strh_lit_name(nt, av[first]) : NULL);
+    {
+      /* (a constant named by a path, `H::L` or `::L`, is no name this reads:
+         every constant is reached) */
+      const char *rn = argc > first ? strh_lit_name(nt, av[first]) : NULL;
+      strh_reflect_add(r, rn && strstr(rn, "::") ? NULL : rn);
+    }
     else if (sp_streq(nm, "instance_variables") || sp_streq(nm, "class_variables") || sp_streq(nm, "constants"))
       strh_reflect_add(r, NULL);
     else if (sp_streq(nm, "eval") || sp_streq(nm, "binding") || sp_streq(nm, "local_variable_get") ||
