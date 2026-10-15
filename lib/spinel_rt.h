@@ -20044,7 +20044,9 @@ enum {
 /* Call `blk` with one element. Both channels are filled, as every other
    proc-driving site does: a poly parameter reads the boxed side-channel, a
    concrete-typed one reads the sp_int slot -- as a pointer for a heap value,
-   since its truncated int projection would be garbage (#2650). */
+   since its truncated int projection would be garbage (#2650). A Float's slot
+   is dead (its parameter reads the boxed side channel), so a Float past the
+   word does not raise here (sp_poly_slot_arg, #9298). */
 static sp_RbVal sp_penum_call2(sp_Proc *blk, sp_RbVal v, sp_RbVal w);
 static sp_RbVal sp_penum_call1(sp_Proc *blk, sp_RbVal v) {
   /* Autosplat, as a block (never a lambda) does: a 2-parameter block over a
@@ -20054,7 +20056,7 @@ static sp_RbVal sp_penum_call1(sp_Proc *blk, sp_RbVal v) {
     return sp_penum_call2(blk, sp_poly_arr_get(v, 0), sp_poly_arr_get(v, 1));
   sp_int a[16] = {0};
   a[0] = (v.tag == SP_TAG_OBJ || v.tag == SP_TAG_STR) ? (sp_int)(uintptr_t)v.v.p
-                                                      : sp_poly_to_i(v);
+                                                      : sp_poly_slot_arg(v);
   _sp_proc_poly_args[0] = v;
   _sp_proc_poly_ret = sp_box_nil();
   sp_proc_call(blk, 1, a);
@@ -20063,9 +20065,9 @@ static sp_RbVal sp_penum_call1(sp_Proc *blk, sp_RbVal v) {
 static sp_RbVal sp_penum_call2(sp_Proc *blk, sp_RbVal v, sp_RbVal w) {
   sp_int a[16] = {0};
   a[0] = (v.tag == SP_TAG_OBJ || v.tag == SP_TAG_STR) ? (sp_int)(uintptr_t)v.v.p
-                                                      : sp_poly_to_i(v);
+                                                      : sp_poly_slot_arg(v);
   a[1] = (w.tag == SP_TAG_OBJ || w.tag == SP_TAG_STR) ? (sp_int)(uintptr_t)w.v.p
-                                                      : sp_poly_to_i(w);
+                                                      : sp_poly_slot_arg(w);
   _sp_proc_poly_args[0] = v;
   _sp_proc_poly_args[1] = w;
   _sp_proc_poly_ret = sp_box_nil();
@@ -20130,9 +20132,9 @@ static sp_RbVal sp_poly_hash_merge_blk(sp_RbVal recv, sp_RbVal other, sp_Proc *b
       sp_RbVal old = sp_poly_index_poly(recv, k);
       SP_GC_ROOT_RBVAL(old);
       sp_int a[16] = {0};
-      a[0] = (k.tag == SP_TAG_OBJ || k.tag == SP_TAG_STR) ? (sp_int)(uintptr_t)k.v.p : sp_poly_to_i(k);
-      a[1] = (old.tag == SP_TAG_OBJ || old.tag == SP_TAG_STR) ? (sp_int)(uintptr_t)old.v.p : sp_poly_to_i(old);
-      a[2] = (v.tag == SP_TAG_OBJ || v.tag == SP_TAG_STR) ? (sp_int)(uintptr_t)v.v.p : sp_poly_to_i(v);
+      a[0] = (k.tag == SP_TAG_OBJ || k.tag == SP_TAG_STR) ? (sp_int)(uintptr_t)k.v.p : sp_poly_slot_arg(k);
+      a[1] = (old.tag == SP_TAG_OBJ || old.tag == SP_TAG_STR) ? (sp_int)(uintptr_t)old.v.p : sp_poly_slot_arg(old);
+      a[2] = (v.tag == SP_TAG_OBJ || v.tag == SP_TAG_STR) ? (sp_int)(uintptr_t)v.v.p : sp_poly_slot_arg(v);
       _sp_proc_poly_args[0] = k; _sp_proc_poly_args[1] = old; _sp_proc_poly_args[2] = v;
       _sp_proc_poly_ret = sp_box_nil();
       sp_proc_call(blk, 3, a);
@@ -20704,7 +20706,7 @@ static SP_NOINLINE void sp_proc_call_spread_wide(sp_Proc *p, sp_Proc *blk, sp_Rb
     sp_RbVal e = sp_poly_arr_get(arr, i);
     sp_proc_arg_set(i, e);
     slots[i] = (e.tag == SP_TAG_OBJ || e.tag == SP_TAG_STR)
-             ? (sp_int)(uintptr_t)e.v.p : sp_poly_to_i(e);
+             ? (sp_int)(uintptr_t)e.v.p : sp_poly_slot_arg(e);
   }
   _sp_proc_kwpos = kwpos;
   sp_proc_call_blk(p, blk, n, slots);
@@ -20718,7 +20720,7 @@ static void sp_proc_call_spread_blk(sp_Proc *p, sp_Proc *blk, sp_RbVal arr, int 
     sp_RbVal e = sp_poly_arr_get(arr, i);
     _sp_proc_poly_args[i] = e;
     slots[i] = (e.tag == SP_TAG_OBJ || e.tag == SP_TAG_STR)
-             ? (sp_int)(uintptr_t)e.v.p : sp_poly_to_i(e);
+             ? (sp_int)(uintptr_t)e.v.p : sp_poly_slot_arg(e);
   }
   _sp_proc_kwpos = kwpos;
   sp_proc_call_blk(p, blk, n, slots);
@@ -20788,7 +20790,7 @@ static sp_int sp_proc_compose_fn(void *cap, sp_int argc, sp_int *args) {
      parameter reads it there, so a heap value (string/array/object) must pass
      as its pointer, not its truncated int projection (#2650). */
   outer_args[0] = (mid.tag == SP_TAG_OBJ || mid.tag == SP_TAG_STR)
-                ? (sp_int)(uintptr_t)mid.v.p : sp_poly_to_i(mid);
+                ? (sp_int)(uintptr_t)mid.v.p : sp_poly_slot_arg(mid);
   _sp_proc_poly_args[0] = mid;
   /* the outer proc publishes the composed result into the slot; our own raw
      return is unread (the call site reads the slot). */
