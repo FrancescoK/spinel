@@ -10446,6 +10446,7 @@ TyKind infer_uncached(Compiler *c, int id) {
        other arm makes the answer boxed; `if u then Rel.new else [] end` built
        an sp_IntArray into an sp_Rel slot (#4938). */
     { int tk = an_empty_container_kind(c, then_b), ek = an_empty_container_kind(c, else_b);
+      if (tk && ek && tk != ek) return TY_POLY;
       if (tt == TY_UNKNOWN && tk && ek == 0 && an_empty_container_disagrees(tk, et)) return TY_POLY;
       if (et == TY_UNKNOWN && ek && tk == 0 && an_empty_container_disagrees(ek, tt)) return TY_POLY;
       /* ...and against an arm that settles on no type at all (a call nothing
