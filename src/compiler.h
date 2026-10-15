@@ -1248,7 +1248,7 @@ typedef struct {
      builtin def (or top-level statement) it was spliced in: per base id, the
      count so far and the text it is named by. */
   int *node_ord, *node_base;
-  int node_ord_n, node_ord_prog, node_ord_parsed;
+  int node_ord_n, node_ord_cap, node_ord_prog, node_ord_parsed;
   int *bi_base_cnt;
   char **bi_base_key;
   int bi_base_cap;

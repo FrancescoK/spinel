@@ -189,10 +189,15 @@ static void comp_node_ord_assign(Compiler *c, int k) {
 int comp_node_ord(Compiler *c, int id, int *builtin) {
   const NodeTable *nt = c->nt;
   if (nt->count > c->node_ord_n) {
-    int *g = realloc(c->node_ord, sizeof(int) * (size_t)nt->count);
-    int *gb = realloc(c->node_base, sizeof(int) * (size_t)nt->count);
-    if (!g || !gb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    c->node_ord = g; c->node_base = gb;
+    /* by doubling: the rewrites append a few nodes between asks, and a
+       resize to the count each time copied the arrays per append */
+    if (nt->count > c->node_ord_cap) {
+      int cap = nt->count > 2 * c->node_ord_cap ? nt->count : 2 * c->node_ord_cap;
+      int *g = realloc(c->node_ord, sizeof(int) * (size_t)cap);
+      int *gb = g ? realloc(c->node_base, sizeof(int) * (size_t)cap) : NULL;
+      if (!g || !gb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      c->node_ord = g; c->node_base = gb; c->node_ord_cap = cap;
+    }
     for (int k = c->node_ord_n; k < nt->count; k++) {
       c->node_ord[k] = -1;
       if (!c->node_ord_parsed) comp_node_ord_assign(c, k);
@@ -942,7 +947,7 @@ static unsigned sm_hash(int class_id, const char *name, int is_cm) {
   h ^= (unsigned)(is_cm ? 0x9e3779b9u : 0);
   return h;
 }
-static int sm_nscopes = -1, sm_buckets = 0, sm_frozen = 0;
+static int sm_nscopes = -1, sm_buckets = 0, sm_frozen = 0, sm_cap = 0;
 static int *sm_next = NULL, *sm_head = NULL;
 /* Parallel index for top-level methods (class_id < 0), keyed by name. Built in
    descending scope order so the chain head is the lowest scope index -- matching
@@ -961,33 +966,54 @@ static unsigned sm_gen = 0;
 void comp_scope_index_set_frozen(int f) { if (sm_frozen != f) sm_gen++; sm_frozen = f; sm_nscopes = -1; ci_frozen = f; ci_nclasses = -1; }
 int comp_scope_index_is_frozen(void) { return sm_frozen; }
 unsigned comp_scope_index_gen(void) { return sm_gen; }
-static void sm_build(Compiler *c) {
-  int ns = c->nscopes;
-  free(sm_next); free(sm_head); free(tm_next); free(tm_head);
-  sm_buckets = ns > 0 ? ns : 1;
-  sm_next = malloc((size_t)(ns > 0 ? ns : 1) * sizeof(int));
-  sm_head = malloc((size_t)sm_buckets * sizeof(int));
-  tm_next = malloc((size_t)(ns > 0 ? ns : 1) * sizeof(int));
-  tm_head = malloc((size_t)sm_buckets * sizeof(int));
-  sm_nscopes = ns;
-  if (!sm_next || !sm_head || !tm_next || !tm_head) { sm_buckets = 0; return; }
-  for (int i = 0; i < sm_buckets; i++) { sm_head[i] = -1; tm_head[i] = -1; }
-  for (int s = 0; s < ns; s++) {
+/* Scopes from `from` on into the chains, ascending so the highest scope
+   index ends at the head: a redefined method is its LAST def, for a class
+   and at the top level alike */
+static void sm_add(Compiler *c, int from, int ns) {
+  for (int s = from; s < ns; s++) {
     if (!c->scopes[s].name) continue;
     int cm, cls = comp_scope_own_class(c, s, &cm);
     if (cls >= 0) {
       unsigned b = sm_hash(cls, c->scopes[s].name, cm) % (unsigned)sm_buckets;
       sm_next[s] = sm_head[b]; sm_head[b] = s;
     }
+    else {
+      unsigned b = sm_hash(-1, c->scopes[s].name, 0) % (unsigned)sm_buckets;
+      tm_next[s] = tm_head[b]; tm_head[b] = s;
+    }
   }
-  /* top-level methods: ascending so the highest scope index ends at the head.
-     A redefined top-level method is its LAST def, as for a class (the
-     class buckets above are built the same way) */
-  for (int s = 0; s < ns; s++) {
-    if (comp_scope_own_class(c, s, NULL) >= 0 || !c->scopes[s].name) continue;
-    unsigned b = sm_hash(-1, c->scopes[s].name, 0) % (unsigned)sm_buckets;
-    tm_next[s] = tm_head[b]; tm_head[b] = s;
+  sm_nscopes = ns;
+}
+static void sm_build(Compiler *c) {
+  int ns = c->nscopes;
+  /* While the index is frozen a scope is only ever appended -- the builtins'
+     rewrites add a method per site, each followed by a lookup -- and the
+     scopes already indexed keep their names and classes: the new ones go
+     onto the chains. Rebuilt from nothing when the table was reset, shrank,
+     or outgrew twice its buckets. */
+  if (sm_nscopes >= 0 && sm_buckets > 0 && ns > sm_nscopes && ns <= 2 * sm_buckets) {
+    if (ns > sm_cap) {
+      int cap = 2 * sm_buckets;
+      int *n1 = realloc(sm_next, (size_t)cap * sizeof(int)), *n2 = n1 ? realloc(tm_next, (size_t)cap * sizeof(int)) : NULL;
+      if (n1) sm_next = n1;
+      if (n2) tm_next = n2;
+      if (!n1 || !n2) { sm_buckets = 0; sm_nscopes = ns; return; }
+      sm_cap = cap;
+    }
+    sm_add(c, sm_nscopes, ns);
+    return;
   }
+  free(sm_next); free(sm_head); free(tm_next); free(tm_head);
+  sm_buckets = ns > 0 ? ns : 1;
+  sm_cap = sm_buckets;
+  sm_next = malloc((size_t)sm_cap * sizeof(int));
+  sm_head = malloc((size_t)sm_buckets * sizeof(int));
+  tm_next = malloc((size_t)sm_cap * sizeof(int));
+  tm_head = malloc((size_t)sm_buckets * sizeof(int));
+  sm_nscopes = ns;
+  if (!sm_next || !sm_head || !tm_next || !tm_head) { sm_buckets = 0; return; }
+  for (int i = 0; i < sm_buckets; i++) { sm_head[i] = -1; tm_head[i] = -1; }
+  sm_add(c, 0, ns);
 }
 static int sm_lookup(Compiler *c, int class_id, const char *name, int is_cm) {
   if (!name) return -1;
