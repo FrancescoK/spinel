@@ -9459,7 +9459,9 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     if (is_div_name(name) && argc == 1 && repr_of(c, id).kind == RK_BOXED) {
       int tx = ++g_tmp, ty = ++g_tmp;
       buf_printf(b, "({ sp_float _t%d = (%s); sp_float _t%d = ", tx, r, ty);
-      emit_float_expr(c, argv[0], b);
+      /* a boxed argument that is no number fails as Float#div's coercion
+         does, as the raise mode's row does (sp_poly_float_operand) */
+      emit_float_coerce_expr(c, argv[0], b);
       buf_printf(b, "; sp_float_div_v(_t%d, _t%d); })", tx, ty);
     }
     /* the arms that read only the receiver and the arguments: builtin-op
