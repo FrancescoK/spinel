@@ -2752,7 +2752,7 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
                     (comp_ntype(c, argv[0]) == TY_STRING ||
                      comp_ntype(c, argv[0]) == TY_NIL ||
                      comp_ntype(c, argv[0]) == TY_REGEX);
-  int is_pred = nt_ref(nt, id, "block") < 0 && poly_pred_kind(name, argc);
+  int is_pred = poly_pred_kind(name, argc);
   /* String#encode when a user class also owns `encode`: the TAG_STR receiver
      needs a pre-arm, or a genuine String falls to the switch's raising
      default -- `content.encode("UTF-8", "binary", invalid: :replace, ...)`
