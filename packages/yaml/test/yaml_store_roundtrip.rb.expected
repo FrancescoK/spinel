@@ -1,0 +1,26 @@
+true
+---
+sites:
+  blog:
+    root: "/srv/www/blog"
+  '2024':
+    root: "/x"
+hosts:
+  db.example.com: AB12CD3-EF45GH6-IJ78KLM
+true
+---
+name: worker
+retention_days: 30
+paused: false
+note:
+since: '2026-10-09T07:00:00Z'
+true
+---
+- name: a b
+  target: "/home/u/.ssh/id"
+  archived: true
+- name: 'yes'
+  target: "~"
+true
+--- {}
+true
