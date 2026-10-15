@@ -2933,12 +2933,16 @@ void sp_Thread_set_priority(sp_thread *t, sp_int p) {
 }
 
 /* Thread.list enumeration: the main thread followed by every live spawned
-   thread (dead ones are off the registry). The generated TU builds the array
-   over these accessors since it owns sp_PolyArray. */
+   thread. A dead one leaves the registry a moment after it stores DEAD and
+   wakes its joiners, which no longer wait for the scheduler lock (#9216):
+   a joiner that runs at once must not count it, so DEAD is skipped here
+   too. The generated TU builds the array over these accessors since it
+   owns sp_PolyArray. */
+static int thread_listed(sp_thread *t) { return !t->internal && SP_TH_STATE(t) != SP_TH_DEAD; }
 sp_int sp_Thread_list_count(void) {
   sp_int n = 1;   /* the main thread */
   REG_LOCK();
-  for (sp_thread *t = g_all; t; t = t->all_next) if (!t->internal) n++;
+  for (sp_thread *t = g_all; t; t = t->all_next) if (thread_listed(t)) n++;
   REG_UNLOCK();
   return n;
 }
@@ -2946,8 +2950,8 @@ sp_thread *sp_Thread_list_at(sp_int i) {
   if (i <= 0) return &g_main_thread;
   REG_LOCK();
   sp_thread *t = g_all;
-  while (t && t->internal) t = t->all_next;
-  for (sp_int k = 1; t && k < i; k++) do t = t->all_next; while (t && t->internal);
+  while (t && !thread_listed(t)) t = t->all_next;
+  for (sp_int k = 1; t && k < i; k++) do t = t->all_next; while (t && !thread_listed(t));
   REG_UNLOCK();
   return t ? t : &g_main_thread;
 }
