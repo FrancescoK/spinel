@@ -16983,7 +16983,9 @@ static void reject_define_method_early(Compiler *c) {
    where blk is a parameter of that method (its &block, or a Proc it is
    handed): the method's body is whatever block a caller passes, known
    only at run time. It was laid out with no parameters and raised
-   ArgumentError when called (#9268); refuse it where it is written. */
+   ArgumentError when called (#9268); refuse it where it is written. The
+   `&blk` form no longer reaches here: walk_scope turns any `&` that is not
+   a literal into a refusal --defer-refusals can defer. */
 static void reject_define_method_runtime_block(Compiler *c) {
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {

@@ -1523,13 +1523,19 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
         (dm_recv < 0 || nt_kind(c->nt, dm_recv) == NK_SelfNode)) {
       int an = nt_ref(c->nt, id, "arguments"), ac = 0;
       const int *av = an >= 0 ? nt_arr(c->nt, an, "arguments", &ac) : NULL;
-      if (ac > 0 && nt_kind(c->nt, av[0]) != NK_SymbolNode && nt_kind(c->nt, av[0]) != NK_StringNode &&
+      /* `&` of a Proc that desugar_define_method_proc_arg did not turn into
+         the call's block (a constant, a parameter, a call's result): the
+         body is a value only the run time holds */
+      int bk = nt_ref(c->nt, id, "block");
+      int bx = bk >= 0 && nt_kind(c->nt, bk) == NK_BlockArgumentNode ? nt_ref(c->nt, bk, "expression") : -2;
+      int proc_ref = ac == 1 && bx != -2 && (bx < 0 || nt_kind(c->nt, bx) != NK_SymbolNode);
+      if (ac > 0 && (proc_ref || (nt_kind(c->nt, av[0]) != NK_SymbolNode && nt_kind(c->nt, av[0]) != NK_StringNode)) &&
           !an_user_define_method(c)) {
         NodeTable *nt = (NodeTable *)c->nt;
         int ds = detached_scope(c);
         file_detached(c, nt_ref(nt, id, "block"), ds, 0);
         file_detached(c, an, ds, 0);
-        nt_node_set_int(nt, id, "define_method_name", 1);
+        nt_node_set_int(nt, id, "define_method_name", proc_ref ? 2 : 1);
         nt_node_set_str(nt, id, "name", "raise");
         nt_node_set_ref(nt, id, "receiver", -1);
         nt_node_set_ref(nt, id, "block", -1);
