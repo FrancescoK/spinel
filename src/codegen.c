@@ -19988,6 +19988,7 @@ char *codegen_program(const NodeTable *nt) {
     { const char *keep = getenv("SPINEL_EMIT_TYPES_KEEP_C");
       if (!(keep && *keep)) { free(b.p); b.p = NULL; } }
   }
+  share_claims_report(c);
   if (g_ndiags > 0 && defer_refusals())
     fprintf(stderr, "spinel: %d refusal%s deferred to run time\n", g_ndiags, g_ndiags == 1 ? "" : "s");
   if (g_ndiags > 0 && !collect_emit_anyway() && !defer_refusals()) {

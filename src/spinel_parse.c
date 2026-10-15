@@ -5242,7 +5242,8 @@ static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
     g_emit_line = on ? 1 : 0;
     const char *et = getenv("SPINEL_EMIT_TYPES");
     const char *ww = getenv("SPINEL_WARN_WIDEN");
-    g_emit_end = (on && ((et && *et) || (ww && *ww))) ? 1 : 0;
+    const char *nc = getenv("SPINEL_NEW_CLAIMS");
+    g_emit_end = (on && ((et && *et) || (ww && *ww) || (nc && *nc))) ? 1 : 0;
   }
 
   /* Resolve require_relative and plain require */

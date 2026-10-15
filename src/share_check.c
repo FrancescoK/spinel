@@ -795,3 +795,88 @@ void share_check_report(Compiler *c) {
   if (!c->share_strings) return;
   sk_plan_report(c, sk_state(c));
 }
+
+/* SPINEL_NEW_CLAIMS=FILE (report-only): every "new String" claim the final
+   share facts make, for tools/new_string_oracle.rb to check under CRuby.
+   Asked once codegen is done, so asking changes nothing the compile wrote;
+   a refused unit lists its claims too. One line per claim, tab separated:
+   the kind, the node's file, line, column, end line, end column, Prism kind
+   and name (a method's def node for a claim about its answers), then
+   key=value fields. The kind is a label for people: the tool reads what to
+   check from the check field, so a kind can be renamed or added without the
+   tool changing.
+     check=new       no name but the one receiving the value can reach the
+                     object where the claim is made;
+     check=one-name  at most one name holds it;
+     check=elems     an Array whose Strings are each new, none twice;
+     check=param     (with param=NAME, index=J) a method's answers are that
+                     parameter's object, as passed, or new;
+     check=none      listed, not checked.
+   The kinds today:
+     value     share_value_fresh: the value is a new String, or nil;
+     node      share_node_fresh: the walk found no identity in it;
+     need-*    the plan's SPN_NEW (share_value_needs_handle answers
+               SHN_FRESH): a copy is fine because the String is new
+               (need-new), its class has one holder (need-one-name), the
+               rule does not share its class (need-unshared), or it is
+               ARGV's or ENV's (need-argv-env, both frozen in CRuby);
+     elems     share_node_fresh_elems: a new Array of new Strings;
+     ret-new   scope_ret_fresh, no ret_param: the method answers a new
+               String or nil;
+     ret-param scope_ret_param: it answers that parameter's String or a new
+               one;
+     unkept    !share_param_kept: the method keeps no reference to that
+               parameter's String. */
+static void sk_claim(FILE *f, Compiler *c, const char *kind, const char *check, int n, int j, const char *pn) {
+  const NodeTable *nt = c->nt;
+  const char *fp = nt_file_path(nt, (int)nt_int(nt, n, "node_file", 0));
+  const char *nm = nt_str(nt, n, "name");
+  fprintf(f, "%s\t%s\t%d\t%d\t%d\t%d\t%s\t%s\tcheck=%s", kind, fp && *fp ? fp : "?", (int)nt_int(nt, n, "node_line", 0),
+          (int)nt_int(nt, n, "node_col", 0), (int)nt_int(nt, n, "node_end_line", 0),
+          (int)nt_int(nt, n, "node_end_col", 0), nt_type(nt, n) ? nt_type(nt, n) : "?", nm ? nm : "-", check);
+  if (pn) fprintf(f, "\tparam=%s\tindex=%d", pn, j);
+  fputc('\n', f);
+}
+void share_claims_report(Compiler *c) {
+  const char *path = getenv("SPINEL_NEW_CLAIMS");
+  if (!path || !*path || !c->share_strings || !c->share) return;
+  FILE *f = fopen(path, "w");
+  if (!f) { fprintf(stderr, "spinel: cannot write %s\n", path); return; }
+  const NodeTable *nt = c->nt;
+  for (int n = 0; n < nt->count; n++) {
+    NodeKind k = nt_kind(nt, n);
+    TyKind t = c->ntype[n];
+    Scope *sc = comp_scope_of(c, n);
+    if (!sc || !sc->reachable || nt_int(nt, n, "node_line", 0) <= 0) continue;
+    if (k == NK_NilNode || k == NK_StringNode || k == NK_InterpolatedStringNode) continue;
+    if (t != TY_STRING && t != TY_STRBUF && t != TY_POLY) continue;
+    /* (a value that is dropped, or only read by a builtin that keeps none
+       of it (SHU_PEEK), is no name's: the walk gives it no identity and
+       share_value_fresh reads that as new, but no consumer asks, so it is
+       no claim) */
+    int transient = share_node_transient(c, n);
+    int fresh = share_value_fresh(c, n, 0), node = share_node_fresh(c, n);
+    if (fresh && !transient) sk_claim(f, c, "value", "new", n, -1, NULL);
+    if (node && !transient) sk_claim(f, c, "node", "new", n, -1, NULL);
+    /* the plan's SPN_NEW, by the reason strbuf_flow_unseen gives: a new
+       String; a class that one holder alone names; a class the rule does
+       not share; ARGV's or ENV's (both frozen in CRuby) */
+    if (share_value_needs_handle(c, n) != SHN_FRESH) continue;
+    if (fresh || node) sk_claim(f, c, "need-new", "new", n, -1, NULL);
+    else if (share_node_one_name(c, n)) sk_claim(f, c, "need-one-name", "one-name", n, -1, NULL);
+    else if (!share_node_shares(c, n)) sk_claim(f, c, "need-unshared", "none", n, -1, NULL);
+    else sk_claim(f, c, "need-argv-env", "none", n, -1, NULL);
+  }
+  for (int n = 0; n < nt->count; n++)
+    if (nt_int(nt, n, "node_line", 0) > 0 && share_node_fresh_elems(c, n)) sk_claim(f, c, "elems", "elems", n, -1, NULL);
+  for (int mi = 1; mi < c->nscopes; mi++) {
+    Scope *m = &c->scopes[mi];
+    if (!m->reachable || m->def_node < 0 || nt_kind(nt, m->def_node) != NK_DefNode) continue;
+    int rp = scope_ret_param(c, mi);
+    if (rp >= 0) sk_claim(f, c, "ret-param", "param", m->def_node, rp, rp < m->nparams && m->pnames[rp] ? m->pnames[rp] : "?");
+    else if (scope_ret_fresh(c, mi)) sk_claim(f, c, "ret-new", "new", m->def_node, -1, NULL);
+    for (int j = 0; j < m->nparams; j++)
+      if (!share_param_kept(c, mi, j)) sk_claim(f, c, "unkept", "none", m->def_node, j, m->pnames[j] ? m->pnames[j] : "?");
+  }
+  fclose(f);
+}

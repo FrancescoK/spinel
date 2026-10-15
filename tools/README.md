@@ -715,6 +715,45 @@ calls): repr_diff reports `ivar Holder @buf: c=const char * -> c=sp_String
 *`, c_costs a new snapshot copy inside the loop of `sp_Holder_run`, and
 alloc_diff the bytes going from 1,000,091 to 202,000,123.
 
+## new_string_oracle
+
+`ruby tools/new_string_oracle.rb [--spinel BIN] [--claims FILE] [--max N]
+[--jobs N] [--report FILE] [--json] PROG.rb...` holds the "new String"
+claims of `--share-strings` (#9135) against CRuby. Where the share facts
+call a value new (a copy of it, or a handle wrapped around it, is
+unobservable because no other name reaches the object), the tool runs the
+program under `ruby --enable-frozen-string-literal` and checks, where the
+value is made, that no name the program can still read reaches the object:
+a live frame's local or `self`, a global, a constant, a class's own
+variables, or anything reachable from those. `SPINEL_NEW_CLAIMS=FILE` makes
+the compiler list its claims (report-only; the generated C is the same with
+it set); each is one tab-separated line, `kind file line col end_line
+end_col PrismKind name [key=value ...]`, the node's source range and what
+to check. The kind is a label for the report; the `check` field says what
+holds: `new`, `one-name` (at most one name holds the object), `elems` (an
+Array of new Strings, none twice), `param` (a method answers parameter
+`param=NAME`'s object or a new one) or `none` (listed, not checked). A kind
+that states no check, or one the tool does not know, is reported and
+checked as `new`, so a kind renamed or added by the compiler needs no
+change here. `--claims FILE` reads a hand-written file instead of asking
+the compiler (one program).
+
+An expression claim is probed by rewriting the program (a Prism rewrite
+wraps the claimed node, `::SpOracle.v(id, (expr))`) and a claim on a def
+node is checked at the method's return. A run whose output or exit status
+differs from the plain run's is reported as perturbed and its alarms are
+not counted. It sees only what the run reaches (the first `--max`
+evaluations of each claim), claims on values in a file the program loads
+are listed unprobed, and a reference held only by a C method in progress is
+no name. The exit status is 1 when a claim is disproved and 2 when a
+program could not be checked. `make new-string-oracle` runs it over
+`test/share` and `test/new-string-oracle` (`ORACLE_TESTS=...` to choose,
+`ORACLE_JOBS`, `ORACLE_REPORT`); `make new-string-oracle-selftest` feeds it
+hand-written claims, a true and a false one for each check, and the claims
+past compilers made for programs they got wrong (#9080, #9081 and a
+parameter returned and stored), which it must disprove. Neither is part of
+`make gate`.
+
 ## Adding a tool
 
 Drop `tools/<name>.rb` (subset Ruby, `require_relative "tool_common"`
