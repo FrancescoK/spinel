@@ -1839,7 +1839,7 @@ static int emit_boxed_cond_arms(Compiler *c, int node, Buf *b) {
   TyKind t = comp_ntype(c, node);
   /* The other String conditionals already have a handle-valued route:
      box its answer so ||, && and case keep the selected arm's String. */
-  if ((k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode) &&
+  if ((k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode || k == NK_CaseMatchNode) &&
       (t == TY_STRING || t == TY_STRBUF) && strbuf_value_carries(c, node)) {
     buf_puts(b, "sp_box_nullable_obj(");
     emit_strbuf_handle_of(c, node, b);
@@ -2430,6 +2430,18 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
   /* --share-strings: a String stored into a boxed slot the rule shares (an
      ivar that also holds nil) is boxed as its handle, which a later `<<`
      on the slot's box appends to in place (share_lift_poly_ivar_stores) */
+  /* --share-strings: a `next v` written anywhere but where the block's value
+     is (an operand, `x = c ? (next v) : w`) leaves the block from where it
+     is: the jump runs as a statement, and the boxed value after it is never
+     read. Boxed as the block's answer it left nothing and ran on. */
+  if (repr_share_rule(c) && node >= 0 && nt_kind(c->nt, node) == NK_NextNode && !next_is_block_value(c, node)) {
+    buf_puts(b, "({\n");
+    emit_stmt(c, node, b, g_indent + 1);
+    emit_indent(b, g_indent + 1);
+    buf_puts(b, "sp_box_nil(); })");
+    if (g_repr_check) repr_channel_boxed(c, node, frame);
+    return;
+  }
   /* --share-strings: a `next v` that is a block's boxed answer (a proc's
      tail) boxes v as a next does (emit_boxed_next_value) */
   if (repr_share_rule(c) && node >= 0 && nt_kind(c->nt, node) == NK_NextNode && nt_ref(c->nt, node, "arguments") >= 0) {
@@ -2571,9 +2583,40 @@ static int emit_boxed_by_kind(Compiler *c, int node, Buf *b) {
       return 1;
     }
     return 0;
+  /* a call with a literal block that the handle route splices (a yielding
+     call, `then`) and whose block's value the handle face renders
+     (a tail that is a write of a handle, a `next` of one): boxed as that
+     handle, as emit_strbuf_route reads the call, where the call's bytes
+     boxed whole were a const char * in a handle's place */
+  case SPK_BLOCK_VALUE:
+    if (nt_kind(c->nt, unwrap_parens(c, node)) == NK_CallNode && nt_ref(c->nt, unwrap_parens(c, node), "block") >= 0 &&
+        !arg_ran_first(node, 0) && !emit_boxed_lift(c, node) &&
+        share_plan_of(c, node, SPR_BOX, NULL).form == SPF_HANDLE) {
+      Buf hb; memset(&hb, 0, sizeof hb);
+      if (emit_strbuf_route(c, node, &hb)) {
+        buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
+        free(hb.p);
+        RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
+        return 1;
+      }
+      free(hb.p);
+    }
+    return 0;
+  /* a write whose slot holds the rule's handle (an ivar's, a global's, a
+     class variable's, an `||=`): the write runs, and its box is the handle
+     it stored */
+  case SPK_WRITE:
+    if (!arg_ran_first(node, 0) && !emit_boxed_lift(c, node) && strbuf_value_carries(c, node)) {
+      buf_puts(b, "sp_box_nullable_obj(");
+      emit_strbuf_handle_of(c, node, b);
+      buf_puts(b, ", SP_BUILTIN_STRBUF)");
+      RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
+      return 1;
+    }
+    return 0;
   case SPK_SLOT: case SPK_DEMANDED: case SPK_ELEM: case SPK_SLOT_POLY: case SPK_SELF: case SPK_BANG_BOX:
-  case SPK_POLY_ARMS: case SPK_EXC_MESSAGE: case SPK_EXC_SUPER: case SPK_PUBLISHED: case SPK_READER: case SPK_WRITE:
-  case SPK_ASSIGN: case SPK_OPERAND: case SPK_BLOCK_VALUE: case SPK_YIELD: case SPK_COND: case SPK_SEQUENCE:
+  case SPK_POLY_ARMS: case SPK_EXC_MESSAGE: case SPK_EXC_SUPER: case SPK_PUBLISHED: case SPK_READER:
+  case SPK_ASSIGN: case SPK_OPERAND: case SPK_YIELD: case SPK_COND: case SPK_SEQUENCE:
   case SPK_LIFT:
     return 0;
   }

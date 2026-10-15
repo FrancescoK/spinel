@@ -1935,6 +1935,20 @@ static int block_tail_needs_value_form(Compiler *c, int id) {
      if-modifier) left the outer splice void (`{ |__fwd| yield __fwd }`, the
      forward of a named &block, handed on to a builtin). */
   if (nt_kind(nt, id) == NK_YieldNode) return 1;
+  /* a variable's `||=`, `&&=` or `op=` (a local's, an instance, global or
+     class variable's, a constant's) or a multiple write: the statement form is
+     an if over the write, whose value is void, and the block answers the
+     variable */
+  { NodeKind wk = nt_kind(nt, id);
+    if (wk == NK_LocalVariableOrWriteNode || wk == NK_LocalVariableAndWriteNode || wk == NK_MultiWriteNode ||
+        wk == NK_InstanceVariableOrWriteNode || wk == NK_InstanceVariableAndWriteNode ||
+        wk == NK_InstanceVariableOperatorWriteNode ||
+        wk == NK_GlobalVariableOrWriteNode || wk == NK_GlobalVariableAndWriteNode ||
+        wk == NK_GlobalVariableOperatorWriteNode ||
+        wk == NK_ClassVariableOrWriteNode || wk == NK_ClassVariableAndWriteNode ||
+        wk == NK_ClassVariableOperatorWriteNode ||
+        wk == NK_ConstantOrWriteNode || wk == NK_ConstantAndWriteNode || wk == NK_ConstantOperatorWriteNode)
+      return 1; }
   if (nt_kind(nt, id) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, id, "name");
   if (!nm) return 0;
@@ -3339,6 +3353,15 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       else if (proc_slot_is_ptr(nx_bt)) {
         emit_ctype(c, nx_bt, b); buf_printf(b, " _t%d = NULL; ", nx_tmp);
       }
+      /* a Float, a Range, a Rational ...: the carrier is the value's own C
+         type, not the sp_int it was declared as (a Float next truncated, a
+         Range one did not build) */
+      else if (nx_bt != TY_UNKNOWN && nx_bt != TY_VOID && nx_bt != TY_NIL && nx_bt != TY_POLY && is_scalar_ret(nx_bt) &&
+               (nx_bt == TY_FLOAT || nx_bt == TY_RANGE || nx_bt == TY_FLOAT_RANGE || nx_bt == TY_STR_RANGE ||
+                nx_bt == TY_RATIONAL || nx_bt == TY_COMPLEX || nx_bt == TY_TIME)) {
+        emit_ctype(c, nx_bt, b);
+        buf_printf(b, " _t%d = %s; ", nx_tmp, res_zero(c, nx_bt, 0));
+      }
       else {
         /* type-opaque tail (e.g. the body IS the `next`): ride a plain
            sp_int carrier starting at 0; the next-var stays active so a
@@ -3404,7 +3427,9 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   }
   else if (nx_own && as_expr && g_ie_next_var && bn3 > 0 &&
            (nt_kind(nt, bd3[bn3 - 1]) == NK_IfNode || nt_kind(nt, bd3[bn3 - 1]) == NK_UnlessNode ||
-            nt_kind(nt, bd3[bn3 - 1]) == NK_CaseNode)) {
+            nt_kind(nt, bd3[bn3 - 1]) == NK_CaseNode || nt_kind(nt, bd3[bn3 - 1]) == NK_BeginNode)) {
+    /* (a begin tail is the same: its body's and its rescues' values, `begin;
+       c ? (next v) : w; end`, were run and dropped) */
     /* A conditional tail after a `next` guard (`next unless ok; k if c`):
        emitted as a plain statement, its arms computed the value and dropped
        it, so the block answered the carrier's nil and filter_map/select kept
