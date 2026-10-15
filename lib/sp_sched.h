@@ -252,6 +252,7 @@ typedef struct sp_queue {
   struct sp_thread *pop_waiters;  /* threads blocked in #pop on an empty queue */
   struct sp_thread *push_waiters; /* threads blocked in #push on a full SizedQueue */
   int               closed;
+  sp_wlock          wl;           /* (#8702) guards all of the above */
 } sp_queue;
 
 sp_queue  *sp_Queue_new(void);

@@ -1603,7 +1603,7 @@ static sp_thread *wl_take_one(sp_thread **waitlist) {
   sp_thread *t = *waitlist;
   if (!t) return NULL;
   *waitlist = t->wait_next;
-  t->wait_next = NULL; t->wait_head = NULL; t->wait_lock = NULL;
+  t->wait_next = NULL; t->wait_head = NULL; SP_ATOMIC_STORE(&t->wait_lock, NULL, __ATOMIC_RELEASE);
   return t;
 }
 /* Make a waiter that is off its list runnable; no wait lock held. Main waits
@@ -2338,7 +2338,7 @@ static void       sp_sched_block(sp_thread **waitlist, int defer_inject);
 static sp_thread *sp_sched_wake_one(sp_thread **waitlist);
 static void       sp_sched_block_wl(sp_thread **waitlist, sp_wlock *wl, int defer_inject, sp_mutex *release);
 #ifdef SP_THREADS
-static int        sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mutex *mutex, sp_wlock *wl, sp_thread *unless_dead);
+static int        sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mutex *mutex, sp_wlock *wl, int (*no_wait)(void *), void *no_wait_arg);
 #endif
 
 /* A finished thread's parked joiners become runnable again, main among them
@@ -2774,7 +2774,7 @@ static void sp_thread_await(sp_thread *t) {
   }
   SP_TH_SET_STATE(self, SP_TH_BLOCKED);
   self->wait_head = &t->joiners;
-  self->wait_lock = &t->join_wl;
+  SP_ATOMIC_STORE(&self->wait_lock, &t->join_wl, __ATOMIC_RELEASE);
   self->wait_next = NULL;
   { sp_thread **pp = &t->joiners; while (*pp) pp = &(*pp)->wait_next; *pp = self; }
   wl_unlock(&t->join_wl);
@@ -2796,7 +2796,7 @@ static void sp_thread_await(sp_thread *t) {
       sp_thread **pp = &t->joiners;
       while (*pp && *pp != self) pp = &(*pp)->wait_next;
       if (*pp) *pp = self->wait_next;
-      self->wait_next = NULL; self->wait_head = NULL; self->wait_lock = NULL;
+      self->wait_next = NULL; self->wait_head = NULL; SP_ATOMIC_STORE(&self->wait_lock, NULL, __ATOMIC_RELEASE);
     }
     wl_unlock(&t->join_wl);
     if (taken) { SCHED_LOCK(); sp_sched_pump(NULL, 1); SCHED_UNLOCK(); }
@@ -2825,6 +2825,7 @@ sp_thread *sp_Thread_join(sp_thread *t) {
    finish, answering the thread when it does and NULL (nil) on timeout.
    Same return type as the no-arg join so one variable can hold either
    call's result. */
+static int sp_thread_is_dead(void *t) { return SP_TH_STATE((sp_thread *)t) == SP_TH_DEAD; }
 sp_thread *sp_Thread_join_timeout(sp_thread *t, double seconds) {
   sp_thread_check_join_target(t);
   SCHED_LOCK();
@@ -2839,7 +2840,7 @@ sp_thread *sp_Thread_join_timeout(sp_thread *t, double seconds) {
   }
 
 #ifdef SP_THREADS
-  int woken = sp_sched_block_timeout(&t->joiners, sp_monotonic_now() + seconds, NULL, &t->join_wl, t);
+  int woken = sp_sched_block_timeout(&t->joiners, sp_monotonic_now() + seconds, NULL, &t->join_wl, sp_thread_is_dead, t);
   if (woken < 0) {
     SCHED_UNLOCK();
     sp_raise_cls("NoMemoryError", "failed to schedule thread join timeout");
@@ -3867,7 +3868,7 @@ static void sp_sched_block(sp_thread **waitlist, int defer_inject) {   /* PRE/PO
      was 4 ms. The walk is O(waiters) under the scheduler lock, which is what
      one park already costs. */
   self->wait_head = waitlist;   /* so #kill/#raise can unlink it */
-  self->wait_lock = NULL;       /* this list is under the scheduler lock */
+  SP_ATOMIC_STORE(&self->wait_lock, NULL, __ATOMIC_RELEASE);       /* this list is under the scheduler lock */
   if (self->repark_front) {   /* a mutex waiter that lost the race after its wake: keep its turn */
     self->repark_front = 0;
     self->wait_next = *waitlist; *waitlist = self;
@@ -3925,7 +3926,7 @@ static void sp_sched_block_wl(sp_thread **waitlist, sp_wlock *wl, int defer_inje
   SP_TH_SET_STATE(self, SP_TH_BLOCKED);
   SP_ATOMIC_STORE(&self->park, SP_PK_PARKING, __ATOMIC_SEQ_CST);
   self->wait_head = waitlist;
-  self->wait_lock = wl;
+  SP_ATOMIC_STORE(&self->wait_lock, wl, __ATOMIC_RELEASE);
   if (self->repark_front) { self->repark_front = 0; self->wait_next = *waitlist; *waitlist = self; }
   else { self->wait_next = NULL; sp_thread **pp = waitlist; while (*pp) pp = &(*pp)->wait_next; *pp = self; }
   wl_unlock(wl);
@@ -3960,11 +3961,12 @@ static void sp_sched_block_wl(sp_thread **waitlist, sp_wlock *wl, int defer_inje
    pending until the caller reacquires it. Other waiters such as Queue#pop pass
    NULL. Returns -1 if timer storage could not be allocated,
    0 if the deadline expired, or 1 if another event woke the thread. The caller
-   holds the scheduler lock on return. A join passes its target as
-   `unless_dead`: the joiners list is drained at death under its wait lock
-   without the scheduler lock, so the target is looked at again under `wl`,
-   and a target found dead there ends the wait at once (woken). */
-static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mutex *mutex, sp_wlock *wl, sp_thread *unless_dead) {
+   holds the scheduler lock on return. A list under a wait lock is woken
+   without the scheduler lock, so a caller that looked at what it waits for
+   before taking the scheduler lock passes that look as `no_wait`: it is taken
+   again under `wl`, and a true answer there ends the wait at once (woken)
+   rather than at the deadline -- a join's target dead, a Queue's item there. */
+static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mutex *mutex, sp_wlock *wl, int (*no_wait)(void *), void *no_wait_arg) {
   sp_thread *self = g_current;
   if (mutex && SP_ATOMIC_LOAD(&mutex->owner, __ATOMIC_SEQ_CST) != self) {
     SCHED_UNLOCK();
@@ -3981,7 +3983,7 @@ static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mute
   SP_TH_SET_STATE(self, SP_TH_BLOCKED);
   SP_ATOMIC_STORE(&self->park, SP_PK_PARKING, __ATOMIC_SEQ_CST);   /* on a list, still on its stack */
   if (wl) wl_lock(wl);   /* a ConditionVariable's list is under its own lock */
-  if (unless_dead && SP_TH_STATE(unless_dead) == SP_TH_DEAD) {
+  if (no_wait && no_wait(no_wait_arg)) {
     if (wl) wl_unlock(wl);
     sp_timer_cancel(self);
     SP_ATOMIC_STORE(&self->park, SP_PK_RUN, __ATOMIC_SEQ_CST);
@@ -3989,7 +3991,7 @@ static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mute
     return 1;
   }
   self->wait_head = waitlist;
-  self->wait_lock = wl;
+  SP_ATOMIC_STORE(&self->wait_lock, wl, __ATOMIC_RELEASE);
   if (self->repark_front) {
     self->repark_front = 0;
     self->wait_next = *waitlist;
@@ -4054,10 +4056,10 @@ static void sp_sched_unpark(sp_thread *t) {
      checked again once held. */
   sp_wlock *wl;
   for (;;) {
-    wl = t->wait_lock;
+    wl = SP_ATOMIC_LOAD(&t->wait_lock, __ATOMIC_ACQUIRE);
     if (!wl) break;
     wl_lock(wl);
-    if (t->wait_lock == wl) break;
+    if (SP_ATOMIC_LOAD(&t->wait_lock, __ATOMIC_ACQUIRE) == wl) break;
     wl_unlock(wl);
   }
   if (!t->wait_head) { if (wl) wl_unlock(wl); return; }
@@ -4073,7 +4075,7 @@ static void sp_sched_unpark(sp_thread *t) {
       if (*pp == t) { *pp = t->wait_next; break; }
   t->wait_next = NULL;
   t->wait_head = NULL;
-  t->wait_lock = NULL;
+  SP_ATOMIC_STORE(&t->wait_lock, NULL, __ATOMIC_RELEASE);
   if (wl) wl_unlock(wl);
 }
 
@@ -4207,6 +4209,7 @@ sp_queue *sp_Queue_new(void) {
   q->pop_waiters = NULL;
   q->push_waiters = NULL;
   q->closed = 0;
+  q->wl = 0;
   q->buf = (sp_RbVal *)malloc(sizeof(sp_RbVal) * q->cap);
   if (!q->buf) sp_raise_cls("NoMemoryError", "failed to allocate queue");
   return q;
@@ -4226,6 +4229,33 @@ void sp_Queue_push_options_check(sp_queue *q, int has_non_block, int has_timeout
   if (has_non_block || has_timeout) sp_raise_cls("ArgumentError", "wrong number of arguments (given 2, expected 1)");
 }
 
+/* (#8702) A Queue's buffer, its closed flag and its two waiter lists are
+   guarded by the queue's own wait lock (q->wl), not the scheduler lock, as a
+   Mutex's and a ConditionVariable's are: a push that hands a value to a
+   parked popper, and the pop that frees a slot for a parked pusher, touch
+   nothing global. A waiter parks with sp_sched_block_wl under q->wl after
+   looking at the queue under it, and a waker takes it off its list under
+   q->wl and wakes it after dropping the lock (sched_wake_unlinked), so a
+   wake is not lost and the scheduler lock is taken only where the wake needs
+   it (main, a timed waiter's timer). A timed wait keeps the scheduler lock
+   for its timer and looks at the queue again under q->wl before it parks. */
+static int sp_queue_has_room(void *p) { sp_queue *q = (sp_queue *)p; return q->closed || q->max <= 0 || q->len < q->max; }
+static int sp_queue_has_item(void *p) { sp_queue *q = (sp_queue *)p; return q->closed || q->len > 0; }
+/* Wake every waiter on `*list`, a list under q->wl (held on entry, dropped on
+   return): collected under the lock and woken after it, as
+   ConditionVariable#broadcast does, since a woken thread can run and park
+   again at once. */
+static void sp_queue_wake_all(sp_queue *q, sp_thread **list) {
+  for (;;) {
+    sp_thread *ts[64]; int n = 0;
+    for (sp_thread *w; n < 64 && (w = wl_take_one(list)) != NULL; ) ts[n++] = w;
+    wl_unlock(&q->wl);
+    for (int i = 0; i < n; i++) sched_wake_unlinked(ts[i]);
+    if (n < 64) return;
+    wl_lock(&q->wl);
+  }
+}
+
 static int sp_queue_push_impl(sp_queue *q, sp_RbVal v, int non_block,
                               int timed, double seconds) {
   /* On a full SizedQueue, block until a #pop frees a slot. Root v across the
@@ -4235,50 +4265,48 @@ static int sp_queue_push_impl(sp_queue *q, sp_RbVal v, int non_block,
   SP_GC_ROOT(q);
   /* A negative timeout is already expired (CRuby): no ArgumentError. */
   double deadline = timed ? sp_monotonic_now() + seconds : 0.0;
-  SCHED_LOCK();
+  wl_lock(&q->wl);
   for (;;) {
-    if (q->closed) { SCHED_UNLOCK(); sp_raise_cls("ClosedQueueError", "queue closed"); }
+    if (q->closed) { wl_unlock(&q->wl); sp_raise_cls("ClosedQueueError", "queue closed"); }
     if (q->max <= 0 || q->len < q->max) break;
-    if (non_block) { SCHED_UNLOCK(); sp_raise_cls("ThreadError", "queue full"); }
-    if (timed && !(seconds > 0.0)) { SCHED_UNLOCK(); return 0; }
+    if (non_block) { wl_unlock(&q->wl); sp_raise_cls("ThreadError", "queue full"); }
+    if (timed && !(seconds > 0.0)) { wl_unlock(&q->wl); return 0; }
     if (timed) {
+      wl_unlock(&q->wl);
 #ifdef SP_THREADS
       if (!g_sysmon_started) {
         /* Before the first Thread, no green thread can free a slot. There is
            no monitor to fire a timer, so wait directly and check the queue. */
-        SCHED_UNLOCK();
         double remaining = deadline - sp_monotonic_now();
         if (remaining > 0.0) sp_sched_sleep(remaining);
-        SCHED_LOCK();
-        if (q->max > 0 && q->len >= q->max) { SCHED_UNLOCK(); return 0; }
+        wl_lock(&q->wl);
+        if (q->max > 0 && q->len >= q->max && !q->closed) { wl_unlock(&q->wl); return 0; }
+        continue;
       }
-      else {
-        int woken = sp_sched_block_timeout(&q->push_waiters, deadline, NULL, NULL, NULL);
-        if (woken < 0) {
-          SCHED_UNLOCK();
-          sp_raise_cls("NoMemoryError", "failed to schedule queue timeout");
-        }
-        if (!woken) { SCHED_UNLOCK(); return 0; }
-      }
-#else
+      SCHED_LOCK();
+      int woken = sp_sched_block_timeout(&q->push_waiters, deadline, NULL, &q->wl, sp_queue_has_room, q);
       SCHED_UNLOCK();
+      if (woken < 0) sp_raise_cls("NoMemoryError", "failed to schedule queue timeout");
+      wl_lock(&q->wl);
+      if (!woken && !sp_queue_has_room(q)) { wl_unlock(&q->wl); return 0; }
+#else
       double remaining = deadline - sp_monotonic_now();
       if (remaining > 0.0) sp_sleep((sp_float)remaining);
-      SCHED_LOCK();
-      if (q->max > 0 && q->len >= q->max) { SCHED_UNLOCK(); return 0; }
+      wl_lock(&q->wl);
+      if (q->max > 0 && q->len >= q->max && !q->closed) { wl_unlock(&q->wl); return 0; }
 #endif
     }
-    else sp_sched_block(&q->push_waiters, 0); /* releases+reacquires lock around transfer */
+    else sp_sched_block_wl(&q->push_waiters, &q->wl, 0, NULL);   /* q->wl held again on return */
   }
   if (q->len == q->cap) {
     sp_int nc = q->cap * 2;
     sp_RbVal *nb = (sp_RbVal *)malloc(sizeof(sp_RbVal) * nc);
-    if (!nb) { SCHED_UNLOCK(); sp_raise_cls("NoMemoryError", "failed to grow queue"); }
+    if (!nb) { wl_unlock(&q->wl); sp_raise_cls("NoMemoryError", "failed to grow queue"); }
     for (sp_int i = 0; i < q->len; i++) nb[i] = q->buf[(q->head + i) % q->cap];
     free(q->buf);
     q->buf = nb; q->cap = nc; q->head = 0;
   }
-  /* The barrier goes here, with the store, under the scheduler lock. At the
+  /* The barrier goes here, with the store, under the queue's lock. At the
      top of the function, before the lock, two threads pushing onto one old
      queue raced on its header word, one reading the dirty bit while the
      other set it (ThreadSanitizer: sp_gc_wb against sp_gc_wb_slow). It also
@@ -4288,8 +4316,9 @@ static int sp_queue_push_impl(sp_queue *q, sp_RbVal v, int non_block,
   sp_gc_wb((void *)q);
   q->buf[(q->head + q->len) % q->cap] = v;
   q->len++;
-  sp_sched_wake_one(&q->pop_waiters);   /* hand the new value to a waiting popper */
-  SCHED_UNLOCK();
+  sp_thread *w = wl_take_one(&q->pop_waiters);   /* hand the new value to a waiting popper */
+  wl_unlock(&q->wl);
+  if (w) sched_wake_unlinked(w);
   return 1;
 }
 
@@ -4305,107 +4334,103 @@ sp_bool sp_Queue_push_timeout(sp_queue *q, sp_RbVal v, double seconds) {
   return sp_queue_push_impl(q, v, 0, 1, seconds);
 }
 
+/* Take the head item; q->wl held on entry, dropped on return. A SizedQueue's
+   freed slot goes to a parked pusher. */
+static sp_RbVal sp_queue_take(sp_queue *q) {
+  sp_RbVal v = q->buf[q->head];
+  q->head = (q->head + 1) % q->cap;
+  q->len--;
+  sp_thread *w = q->max > 0 ? wl_take_one(&q->push_waiters) : NULL;   /* a slot freed up */
+  wl_unlock(&q->wl);
+  if (w) sched_wake_unlinked(w);
+  return v;
+}
+
 sp_RbVal sp_Queue_pop(sp_queue *q) {
   /* Block until an element is available. A closed, drained queue returns nil
      rather than blocking forever (CRuby behaviour). */
   SP_GC_ROOT(q);
-  SCHED_LOCK();
+  wl_lock(&q->wl);
   while (q->len == 0) {
-    if (q->closed) { SCHED_UNLOCK(); return sp_box_nil(); }
-    sp_sched_block(&q->pop_waiters, 0);
+    if (q->closed) { wl_unlock(&q->wl); return sp_box_nil(); }
+    sp_sched_block_wl(&q->pop_waiters, &q->wl, 0, NULL);   /* q->wl held again on return */
   }
-  sp_RbVal v = q->buf[q->head];
-  q->head = (q->head + 1) % q->cap;
-  q->len--;
-  if (q->max > 0) sp_sched_wake_one(&q->push_waiters);   /* a slot freed up */
-  SCHED_UNLOCK();
-  return v;
+  return sp_queue_take(q);
 }
 
 sp_RbVal sp_Queue_pop_timeout(sp_queue *q, double seconds) {
   SP_GC_ROOT(q);
   /* A negative timeout is already expired (CRuby): no ArgumentError. */
   double deadline = sp_monotonic_now() + seconds;
-  SCHED_LOCK();
+  wl_lock(&q->wl);
   while (q->len == 0) {
-    if (q->closed || !(seconds > 0.0)) { SCHED_UNLOCK(); return sp_box_nil(); }
+    if (q->closed || !(seconds > 0.0)) { wl_unlock(&q->wl); return sp_box_nil(); }
+    wl_unlock(&q->wl);
 #ifdef SP_THREADS
     if (!g_sysmon_started) {
       /* Before the first Thread, no green thread can add an item. */
-      SCHED_UNLOCK();
       double remaining = deadline - sp_monotonic_now();
       if (remaining > 0.0) sp_sched_sleep(remaining);
-      SCHED_LOCK();
-      if (q->len == 0) { SCHED_UNLOCK(); return sp_box_nil(); }
+      wl_lock(&q->wl);
+      if (q->len == 0) { wl_unlock(&q->wl); return sp_box_nil(); }
+      continue;
     }
-    else {
-      int woken = sp_sched_block_timeout(&q->pop_waiters, deadline, NULL, NULL, NULL);
-      if (woken < 0) {
-        SCHED_UNLOCK();
-        sp_raise_cls("NoMemoryError", "failed to schedule queue timeout");
-      }
-      if (!woken) { SCHED_UNLOCK(); return sp_box_nil(); }
-    }
-#else
+    SCHED_LOCK();
+    int woken = sp_sched_block_timeout(&q->pop_waiters, deadline, NULL, &q->wl, sp_queue_has_item, q);
     SCHED_UNLOCK();
+    if (woken < 0) sp_raise_cls("NoMemoryError", "failed to schedule queue timeout");
+    wl_lock(&q->wl);
+    if (!woken && !sp_queue_has_item(q)) { wl_unlock(&q->wl); return sp_box_nil(); }
+#else
     double remaining = deadline - sp_monotonic_now();
     if (remaining > 0.0) sp_sleep((sp_float)remaining);
-    SCHED_LOCK();
-    if (q->len == 0) { SCHED_UNLOCK(); return sp_box_nil(); }
+    wl_lock(&q->wl);
+    if (q->len == 0) { wl_unlock(&q->wl); return sp_box_nil(); }
 #endif
   }
-  sp_RbVal v = q->buf[q->head];
-  q->head = (q->head + 1) % q->cap;
-  q->len--;
-  if (q->max > 0) sp_sched_wake_one(&q->push_waiters);
-  SCHED_UNLOCK();
-  return v;
+  return sp_queue_take(q);
 }
 
 sp_RbVal sp_Queue_pop_nb(sp_queue *q) {
   /* Queue#pop(truthy): no_wait. Raise ThreadError on an empty queue, return
      the value otherwise. A closed queue returns nil. */
-  SCHED_LOCK();
+  wl_lock(&q->wl);
   if (q->len == 0) {
-    if (q->closed) { SCHED_UNLOCK(); return sp_box_nil(); }
-    SCHED_UNLOCK();
+    int closed = q->closed;
+    wl_unlock(&q->wl);
+    if (closed) return sp_box_nil();
     sp_raise_cls("ThreadError", "queue empty");
   }
-  sp_RbVal v = q->buf[q->head];
-  q->head = (q->head + 1) % q->cap;
-  q->len--;
-  if (q->max > 0) sp_sched_wake_one(&q->push_waiters);
-  SCHED_UNLOCK();
-  return v;
+  return sp_queue_take(q);
 }
 
-sp_int  sp_Queue_size(sp_queue *q)   { SCHED_LOCK(); sp_int n = q->len;       SCHED_UNLOCK(); return n; }
-sp_bool sp_Queue_empty(sp_queue *q)  { SCHED_LOCK(); sp_bool e = q->len == 0;  SCHED_UNLOCK(); return e; }
-sp_int  sp_Queue_max(sp_queue *q)    { SCHED_LOCK(); sp_int m = q->max;        SCHED_UNLOCK(); return m; }
-sp_bool sp_Queue_closed(sp_queue *q) { SCHED_LOCK(); sp_bool c = q->closed != 0; SCHED_UNLOCK(); return c; }
+sp_int  sp_Queue_size(sp_queue *q)   { wl_lock(&q->wl); sp_int n = q->len;          wl_unlock(&q->wl); return n; }
+sp_bool sp_Queue_empty(sp_queue *q)  { wl_lock(&q->wl); sp_bool e = q->len == 0;     wl_unlock(&q->wl); return e; }
+sp_int  sp_Queue_max(sp_queue *q)    { wl_lock(&q->wl); sp_int m = q->max;          wl_unlock(&q->wl); return m; }
+sp_bool sp_Queue_closed(sp_queue *q) { wl_lock(&q->wl); sp_bool c = q->closed != 0; wl_unlock(&q->wl); return c; }
 /* Threads parked in #pop, plus in #push on a full SizedQueue. */
 sp_int  sp_Queue_num_waiting(sp_queue *q) {
-  SCHED_LOCK();
+  wl_lock(&q->wl);
   sp_int n = 0;
   for (sp_thread *t = q->pop_waiters; t; t = t->wait_next) n++;
   for (sp_thread *t = q->push_waiters; t; t = t->wait_next) n++;
-  SCHED_UNLOCK();
+  wl_unlock(&q->wl);
   return n;
 }
 void     sp_Queue_clear(sp_queue *q)  {
-  SCHED_LOCK();
+  wl_lock(&q->wl);
   q->head = q->len = 0;
-  if (q->max > 0) while (sp_sched_wake_one(&q->push_waiters)) { }   /* all slots free */
-  SCHED_UNLOCK();
+  if (q->max > 0) sp_queue_wake_all(q, &q->push_waiters);   /* all slots free; drops q->wl */
+  else wl_unlock(&q->wl);
 }
 
 void sp_Queue_close(sp_queue *q) {
-  SCHED_LOCK();
+  wl_lock(&q->wl);
   q->closed = 1;
   /* wake every blocked popper (they return nil) and pusher (they raise) */
-  while (sp_sched_wake_one(&q->pop_waiters)) { }
-  while (sp_sched_wake_one(&q->push_waiters)) { }
-  SCHED_UNLOCK();
+  sp_queue_wake_all(q, &q->pop_waiters);   /* drops q->wl */
+  wl_lock(&q->wl);
+  sp_queue_wake_all(q, &q->push_waiters);
 }
 
 /* ---- Mutex ----
@@ -4665,7 +4690,7 @@ sp_RbVal sp_CondVar_wait_timeout(sp_condvar *cv, sp_mutex *m, double seconds) {
   time_t beg = time(NULL);
   SCHED_LOCK();
   double ct0 = sched_lat_enabled() ? sp_monotonic_now() : 0;
-  int woken = sp_sched_block_timeout(&cv->waiters, sp_monotonic_now() + seconds, m, &cv->wl, NULL);
+  int woken = sp_sched_block_timeout(&cv->waiters, sp_monotonic_now() + seconds, m, &cv->wl, NULL, NULL);
   if (woken < 0) {
     SCHED_UNLOCK();
     sp_raise_cls("NoMemoryError", "failed to schedule condition variable timeout");
