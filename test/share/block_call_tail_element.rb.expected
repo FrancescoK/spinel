@@ -1,0 +1,39 @@
+[1, "src!"]
+"src!"
+true
+[1, "src!s"]
+["src!s?", "tee?"]
+"src!s?"
+"tee?"
+true
+true
+["src!s?13", "tee?2", "src!s?13"]
+"src!s?13"
+"tee?2"
+true
+true
+true
+{k: "src!s?13h", j: "src!s?13h"}
+"src!s?13h"
+true
+[0, "src!s?13hi"]
+"src!s?13hi"
+["tee?2#", "src!s?13hi$"]
+"src!s?13hi$"
+"tee?2#"
+true
+true
+[1, "src!s?13hi$c"]
+"src!s?13hi$c"
+["lit", "tee?2#!", "new!"]
+"tee?2#"
+false
+true
+["src!s?13hi$cz", "tee?2#z", "src!s?13hi$cz"]
+{k: "src!s?13hi$cz", j: "src!s?13hi$cz"}
+["tee?2#z", "src!s?13hi$cz"]
+[1, "src!s?13hi$cz"]
+["lit", "tee?2#!", "new!"]
+["qq!"]
+"qq!"
+true

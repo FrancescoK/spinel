@@ -1734,11 +1734,12 @@ static int strbuf_route_begin(Compiler *c, int v) {
 int strbuf_yield_tail_held(Compiler *c);
 /* --share-strings: a `yield` to a literal block spliced in here whose
    value is a variable's String (`yield` under `o.set { s }`): the splice
-   answers its handle (emit_block_invoke). */
+   answers its handle (emit_block_invoke). A call of the method's own block
+   parameter (`blk.call(x)`) is spliced the same way. */
 static int strbuf_route_yield(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   v = unwrap_parens(c, v);
-  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_YieldNode || g_block_id < 0 ||
+  if (!repr_share_rule(c) || v < 0 || (nt_kind(nt, v) != NK_YieldNode && !is_block_call(c, v)) || g_block_id < 0 ||
       g_current_scope_is_lowered || g_yield_proc_ref) return 0;
   int body = nt_ref(nt, g_block_id, "body");
   int n = 0;
@@ -1833,6 +1834,23 @@ int strbuf_inline_mi(Compiler *c, int v) {
   if (p->via == UC_REOPEN && repr_self_handle(c, p->mi) && c->scopes[p->mi].yields) return p->mi;
   return call_user_yield_mi(c, v);
 }
+/* Does the last statement `last` of spliced method mi answer the value of
+   the block its call is given: a `yield`, a call of the method's own block
+   parameter (`blk.call(x)`, `blk&.call(x)`, which the splice binds as a
+   yield), or a call that forwards that block (`&blk`, `...`) to another
+   spliced method whose tail does? The callee is spliced with the same
+   literal block, so its value is the block's. */
+int strbuf_tail_answers_block(Compiler *c, int mi, int last, int depth) {
+  const NodeTable *nt = c->nt;
+  if (last < 0) return 0;
+  if (nt_kind(nt, last) == NK_YieldNode || is_blk_param_call(c, last, mi)) return 1;
+  if (depth >= 4 || nt_kind(nt, last) != NK_CallNode || !call_forwards_own_block(c, last) ||
+      cplan_user(c, last)->dispatch == CP_SWITCH || cplan_user(c, last)->dispatch == CP_PER_ARM) return 0;
+  int m2 = call_user_yield_mi(c, last), l2 = m2 > 0 ? scope_body_last(c, m2) : -1;
+  int bl = block_given_tail_then_last(c, l2);
+  return l2 >= 0 && !strbuf_has_return(nt, c->scopes[m2].body) &&
+         strbuf_tail_answers_block(c, m2, bl >= 0 ? bl : l2, depth + 1);
+}
 /* --share-strings: a call of a yielding method spliced in here with its
    literal block, whose value is what it yields or a variable's String
    (`def f = yield`, `r = f { s }`), and that leaves by no `return` or
@@ -1843,7 +1861,18 @@ int strbuf_route_inline_call(Compiler *c, int v) {
   v = unwrap_parens(c, v);
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
   int blk = nt_ref(nt, v, "block");
-  if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || call_breaks(c, v)) return 0;
+  /* (a call that hands on the block its spliced method was given, `&blk`
+     or `...`, runs the callee with that literal block: the outer call's
+     block, whose values the outer call checks) */
+  if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) {
+    Scope *encl = comp_scope_of(c, v);
+    if (!encl || !encl->yields || encl->is_lowered_yield || encl->is_proc_form || !call_forwards_own_block(c, v))
+      return 0;
+  }
+  /* (a call the C dispatches on the receiver's class runs the clone of
+     whichever method answers, which strbuf_inline_mi cannot name) */
+  if (call_breaks(c, v) || cplan_user(c, v)->dispatch == CP_SWITCH || cplan_user(c, v)->dispatch == CP_PER_ARM)
+    return 0;
   int mi = strbuf_inline_mi(c, v);
   int last = mi > 0 ? scope_body_last(c, mi) : -1;
   if (last < 0) return 0;
@@ -1852,8 +1881,8 @@ int strbuf_route_inline_call(Compiler *c, int v) {
   if (bl >= 0) last = bl;
   NodeKind k = nt_kind(nt, last);
   if (repr_self_shared(c, last)) return !strbuf_has_return(nt, c->scopes[mi].body);
-  return (k == NK_YieldNode || k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
-          repr_static_read_kind(k)) &&
+  return (strbuf_tail_answers_block(c, mi, last, 0) || k == NK_LocalVariableReadNode ||
+          k == NK_InstanceVariableReadNode || repr_static_read_kind(k)) &&
          !strbuf_has_return(nt, c->scopes[mi].body);
 }
 /* --share-strings: a call of a String reopening's yielding method with a
@@ -2692,7 +2721,7 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   }
   /* the box as the proc (or the proc-form clone) handed it back: its
      handle, a plain String's new one, or nil */
-  if (strbuf_route_proc_call(c, v) || strbuf_route_reopen_pf(c, v)) {
+  if ((strbuf_route_proc_call(c, v) && !strbuf_route_yield(c, v)) || strbuf_route_reopen_pf(c, v)) {
     int t = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", t);
     emit_strbuf_route_box(c, v, b);
@@ -22949,7 +22978,7 @@ static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
     if (bl >= 0) last = bl;
     /* a method that answers its own variable hands on that slot; one that
        answers its yield, the block's value */
-    if (last >= 0 && nt_kind(nt, last) != NK_YieldNode) return 1;
+    if (last >= 0 && !strbuf_tail_answers_block(c, mi, last, 0)) return 1;
     return strbuf_flow_body(c, fm, SFC_TAIL, nt_ref(nt, nt_ref(nt, v, "block"), "body"), NK_NextNode, depth);
   }
   /* (the proc-form clone's box: its block's values checked as boxed) */

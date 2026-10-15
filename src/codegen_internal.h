@@ -225,6 +225,7 @@ int strbuf_route_loop(Compiler *c, int v);
    hands back boxed (`pr.call`)? (codegen_stmt.c) */
 int strbuf_proc_call_box(Compiler *c, int v);
 int strbuf_inline_mi(Compiler *c, int v);
+int strbuf_tail_answers_block(Compiler *c, int mi, int last, int depth);
 const NativeMethod *strbuf_native_answer(Compiler *c, int n);
 int strbuf_io_outbuf(Compiler *c, int id);
 int emit_io_read_nonblock_outbuf(Compiler *c, int id, Buf *b);
