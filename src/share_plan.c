@@ -111,15 +111,20 @@ const char *share_plan_form_name(int form) {
 }
 
 /* The String receiver call v answers (a String method that answers self,
-   or self or nil, and no program method of the name), or -1. */
+   or self or nil, and no program method of the name), or -1. itself, and
+   tap with its block, answer any receiver, so a boxed one (a bang's String
+   or nil) is handed on as it is too. */
 static int share_plan_self_recv(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   if (v < 0 || nt_kind(nt, v) != NK_CallNode) return -1;
   const char *nm = nt_str(nt, v, "name");
   int r = unwrap_parens(c, nt_ref(nt, v, "receiver")), tg[CPT_MAX];
-  if (!nm || r < 0 || (c->ntype[r] != TY_STRING && c->ntype[r] != TY_STRBUF)) return -1;
-  if (!(bop_answers_self(TY_STRING, nm, call_plain_argc(c, v), nt_ref(nt, v, "block") >= 0) &
-        (BOPF_SELF | BOPF_SELF_OR_NIL)))
+  int any_recv = nm && ((sp_streq(nm, "itself") && call_plain_argc(c, v) == 0 && nt_ref(nt, v, "block") < 0) ||
+                        (is_tap_name(nm) && nt_ref(nt, v, "block") >= 0));
+  if (!nm || r < 0 || (c->ntype[r] != TY_STRING && c->ntype[r] != TY_STRBUF && !(any_recv && c->ntype[r] == TY_POLY)))
+    return -1;
+  if (!any_recv && !(bop_answers_self(TY_STRING, nm, call_plain_argc(c, v), nt_ref(nt, v, "block") >= 0) &
+                     (BOPF_SELF | BOPF_SELF_OR_NIL)))
     return -1;
   return cplan_targets(c, v, tg, CPT_MAX) == 0 ? r : -1;
 }
