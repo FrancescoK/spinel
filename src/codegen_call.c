@@ -6027,9 +6027,12 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
   /* Hash#merge(other): fold both hashes into a general PolyPoly hash; a
      receiver that is no Hash (nil included) raises NoMethodError */
   if (sp_streq(name, "merge") && argc >= 1) {
+    int boxed = repr_of(c, id).kind == RK_BOXED;
+    if (boxed) buf_puts(b, "sp_box_nullable_obj((void *)(");
     if (argc == 1) {
       buf_puts(b, "sp_poly_hash_merge_m("); emit_boxed(c, recv, b);
       buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      if (boxed) buf_puts(b, "), SP_BUILTIN_POLY_POLY_HASH)");
       return 1;
     }
     int tm = g_tmp + 1;
@@ -6043,6 +6046,7 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     for (int i = 2; i <= argc; i++)
       buf_printf(b, " _t%d = sp_box_obj(sp_poly_hash_merge(_t%d, sp_poly_hash_merge_arg(_t%d)), SP_BUILTIN_POLY_POLY_HASH);", tm, tm, tm + i);
     buf_printf(b, " (sp_PolyPolyHash *)_t%d.v.p; })", tm);
+    if (boxed) buf_puts(b, "), SP_BUILTIN_POLY_POLY_HASH)");
     return 1;
   }
   /* String#start_with? / #end_with? on a poly value (a `string?` param widened
