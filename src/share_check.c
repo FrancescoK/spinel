@@ -811,6 +811,9 @@ void share_check_report(Compiler *c) {
      check=elems     an Array whose Strings are each new, none twice;
      check=param     (with param=NAME, index=J) a method's answers are that
                      parameter's object, as passed, or new;
+     check=unkept    (with param=NAME, index=J) once the method returns, no
+                     name holds that parameter's String that did not hold
+                     it when the method was called;
      check=none      listed, not checked.
    The kinds today:
      value     share_value_fresh: the value is a new String, or nil;
@@ -826,7 +829,8 @@ void share_check_report(Compiler *c) {
      ret-param scope_ret_param: it answers that parameter's String or a new
                one;
      unkept    !share_param_kept: the method keeps no reference to that
-               parameter's String. */
+               parameter's String (a store, an argument handed on, a yield
+               or a captured local all count as keeping). */
 static void sk_claim(FILE *f, Compiler *c, const char *kind, const char *check, int n, int j, const char *pn) {
   const NodeTable *nt = c->nt;
   const char *fp = nt_file_path(nt, (int)nt_int(nt, n, "node_file", 0));
@@ -871,12 +875,13 @@ void share_claims_report(Compiler *c) {
     if (nt_int(nt, n, "node_line", 0) > 0 && share_node_fresh_elems(c, n)) sk_claim(f, c, "elems", "elems", n, -1, NULL);
   for (int mi = 1; mi < c->nscopes; mi++) {
     Scope *m = &c->scopes[mi];
-    if (!m->reachable || m->def_node < 0 || nt_kind(nt, m->def_node) != NK_DefNode) continue;
+    /* (a method the compiler writes itself has no source position) */
+    if (!m->reachable || m->def_node < 0 || nt_kind(nt, m->def_node) != NK_DefNode || nt_int(nt, m->def_node, "node_line", 0) <= 0) continue;
     int rp = scope_ret_param(c, mi);
     if (rp >= 0) sk_claim(f, c, "ret-param", "param", m->def_node, rp, rp < m->nparams && m->pnames[rp] ? m->pnames[rp] : "?");
     else if (scope_ret_fresh(c, mi)) sk_claim(f, c, "ret-new", "new", m->def_node, -1, NULL);
     for (int j = 0; j < m->nparams; j++)
-      if (!share_param_kept(c, mi, j)) sk_claim(f, c, "unkept", "none", m->def_node, j, m->pnames[j] ? m->pnames[j] : "?");
+      if (!share_param_kept(c, mi, j)) sk_claim(f, c, "unkept", "unkept", m->def_node, j, m->pnames[j] ? m->pnames[j] : "?");
   }
   fclose(f);
 }

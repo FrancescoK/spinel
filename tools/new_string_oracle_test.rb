@@ -28,12 +28,14 @@ claims_files.each do |claims|
   end
   failures << "#{name}: status #{rep["status"]} #{rep["notes"].inspect}" unless rep["status"] == "checked"
   failures << "#{name}: perturbed (#{rep["perturbed"]})" if rep["perturbed"]
+  failures << "#{name}: the oracle failed itself (#{rep["oracle_error"]})" if rep["oracle_error"]
   got = rep["claims"].select { |c| c["disproved"] > 0 }.map { |c| c["site"].split(" ").first.split(":")[1, 2].join(":").then { |lc| "#{c["kind"]} #{lc}" } }.sort
   failures << "#{name}: disproved #{got.inspect}, want #{want.inspect}" unless got == want
   failures << "#{name}: exit status #{st.exitstatus}, want #{want.empty? ? 0 : 1}" unless st.exitstatus == (want.empty? ? 0 : 1)
   # a claim the file lists as true must have been reached and checked
   unreached = rep["claims"].select { |c| c["check"] != "none" && !c["reached"] }.map { |c| "#{c["kind"]} #{c["site"]}" }
-  failures << "#{name}: claims never reached: #{unreached.first(3).inspect}" if name == "true_and_false_claims" && !unreached.empty?
+  unreached -= rep["unprobed"].map { |i, _| "#{rep["claims"][i]["kind"]} #{rep["claims"][i]["site"]}" } if rep["unprobed"]
+  failures << "#{name}: claims never reached: #{unreached.first(3).inspect}" if %w[true_and_false_claims unkept_claims walk_robustness].include?(name) && !unreached.empty?
 end
 
 # the kinds are read as data: one with no check, and one with a check the
@@ -43,6 +45,11 @@ out, = Open3.capture3(RbConfig.ruby, "--enable-frozen-string-literal", tool, "--
 failures << "an unstated check is not reported" unless out.include?("kinds with no stated check (checked as new): mystery")
 failures << "an unknown check is not reported" unless out.include?('claim kind odd: unknown check "weird"')
 failures << "a check=none claim was checked" unless out.match?(/^\s+skipped\s+none\s+1\s+0\s+0\s+0$/)
+
+# unkept is a method check: on a call it is reported, not run
+out, = Open3.capture3(RbConfig.ruby, "--enable-frozen-string-literal", tool, "--claims", File.join(dir, "unkept_claims.claims"),
+                      File.join(dir, "unkept_claims.rb"))
+failures << "an unkept claim on a call is not reported" unless out.include?("unprobed: 1 unkept claim on no method")
 
 if failures.empty?
   puts "new-string-oracle-selftest: pass (#{claims_files.size} fixtures)"
