@@ -6569,20 +6569,32 @@ static int emit_pm_subcond_expr(Compiler *c, int spat, const char *elem, Buf *b)
 
 /* The boxed value `v` as an array pattern reads it: a user object (a Struct,
    a Data, a class with its own #deconstruct) as what its #deconstruct
-   answers, anything else as itself. A statement-expression, so it stays
-   inside a condition. */
-static void pm_deconstructed(const char *v, Buf *b) {
+   answers, a MatchData as its captures (a no-match one is nil, and no array),
+   anything else as itself. A statement-expression, so it stays inside a
+   condition. may_md is 0 for a box the arm builds itself from a typed Array
+   (sp_box_poly_array of a poly array), which holds an Array and nothing
+   else; 1 for a box that is a slot, a call's answer or an element read from
+   a container. */
+static void pm_deconstructed(const char *v, int may_md, Buf *b) {
   int t = ++g_tmp;
-  /* (a MatchData is asked for its captures, a no-match one being nil) */
-  buf_printf(b, "({ sp_RbVal _t%d = %s;"
-                " if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_MATCHDATA && _t%d.v.p)"
-                " _t%d = sp_box_poly_array(sp_MatchData_captures((sp_MatchData *)_t%d.v.p));"
-                " else if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id >= 0"
-                " && !sp_poly_is_array_kind(_t%d.cls_id)"
-                " && (sp_obj_deconstruct_fn || sp_obj_to_a_fn))"
-                " _t%d = sp_obj_deconstruct_fn ? sp_obj_deconstruct_fn(_t%d)"
-                " : sp_obj_to_a_fn(_t%d); _t%d; })",
-             t, v, t, t, t, t, t, t, t, t, t, t, t, t);
+  if (may_md)
+    buf_printf(b, "({ sp_RbVal _t%d = %s;"
+                  " if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_MATCHDATA && _t%d.v.p)"
+                  " _t%d = sp_box_poly_array(sp_MatchData_captures((sp_MatchData *)_t%d.v.p));"
+                  " else if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id >= 0"
+                  " && !sp_poly_is_array_kind(_t%d.cls_id)"
+                  " && (sp_obj_deconstruct_fn || sp_obj_to_a_fn))"
+                  " _t%d = sp_obj_deconstruct_fn ? sp_obj_deconstruct_fn(_t%d)"
+                  " : sp_obj_to_a_fn(_t%d); _t%d; })",
+               t, v, t, t, t, t, t, t, t, t, t, t, t, t);
+  else
+    buf_printf(b, "({ sp_RbVal _t%d = %s;"
+                  " if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id >= 0"
+                  " && !sp_poly_is_array_kind(_t%d.cls_id)"
+                  " && (sp_obj_deconstruct_fn || sp_obj_to_a_fn))"
+                  " _t%d = sp_obj_deconstruct_fn ? sp_obj_deconstruct_fn(_t%d)"
+                  " : sp_obj_to_a_fn(_t%d); _t%d; })",
+               t, v, t, t, t, t, t, t, t);
 }
 
 /* Recursive match condition for a (possibly nested) array pattern over the
@@ -6590,7 +6602,7 @@ static void pm_deconstructed(const char *v, Buf *b) {
    length and every required/post element matches its sub-pattern (a literal,
    class, alternation, range, or nested container -- anything the general
    sub-pattern matcher checks). */
-static void emit_pm_array_cond(Compiler *c, int pat, const char *arr, int check_const, Buf *b) {
+static void emit_pm_array_cond(Compiler *c, int pat, const char *arr, int check_const, int may_md, Buf *b) {
   const NodeTable *nt = c->nt;
   /* the deconstructed temp's name is read by every element accessor below, so
      it lives as long as this call -- and per call, since this recurses */
@@ -6622,7 +6634,7 @@ static void emit_pm_array_cond(Compiler *c, int pat, const char *arr, int check_
   int kn = check_const ? nt_ref(nt, pat, "constant") : -1;
   int has_k = kn >= 0 && emit_pm_subcond_expr(c, kn, arr, &kb) && kb.p;
   Buf dbuf; memset(&dbuf, 0, sizeof dbuf);
-  pm_deconstructed(arr, &dbuf);
+  pm_deconstructed(arr, may_md, &dbuf);
   int tda = ++g_tmp;
   buf_printf(b, "({ sp_RbVal _t%d = %s; ", tda, dbuf.p ? dbuf.p : arr);
   free(dbuf.p);
@@ -6766,7 +6778,7 @@ static int emit_pm_subcond_expr(Compiler *c, int spat, const char *elem, Buf *b)
     return 0;
   if (sp_streq(pty, "CapturePatternNode"))
     return emit_pm_subcond_expr(c, nt_ref(nt, spat, "value"), elem, b);
-  if (sp_streq(pty, "ArrayPatternNode")) { emit_pm_array_cond(c, spat, elem, 1, b); return 1; }
+  if (sp_streq(pty, "ArrayPatternNode")) { emit_pm_array_cond(c, spat, elem, 1, 1, b); return 1; }
   if (sp_streq(pty, "HashPatternNode")) { emit_pm_hash_cond_poly(c, spat, elem, b); return 1; }
   if (sp_streq(pty, "FindPatternNode")) { emit_pm_find_cond_poly(c, spat, elem, b); return 1; }
   int tn = ++g_tmp;
@@ -7370,7 +7382,7 @@ static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, B
           snprintf(arr, sizeof arr, "sp_box_poly_array(_t%d)", t);
         else emit_boxed_text(c, pt, arr, &boxed);
       }
-      emit_pm_array_cond(c, pat, boxed.p ? boxed.p : arr, pt == TY_POLY, b);
+      emit_pm_array_cond(c, pat, boxed.p ? boxed.p : arr, pt == TY_POLY, pt != TY_POLY_ARRAY, b);
       free(boxed.p);
       return 1;
     }
@@ -7806,7 +7818,7 @@ static void emit_pm_typed_assign(Compiler *c, Scope *sc, const char *lnm,
    CapturePatternNode binds the whole element and recurses if its inner pattern
    is an array; a trailing `*rest` slices the tail. `sc` is the case scope, used
    to type each bound local. */
-static void emit_pm_bind_poly(Compiler *c, int pat, const char *arr, int indent, Buf *b, Scope *sc);
+static void emit_pm_bind_poly(Compiler *c, int pat, const char *arr, int may_md, int indent, Buf *b, Scope *sc);
 static void emit_pm_bind_hash_poly(Compiler *c, int pat, const char *hexpr, int indent, Buf *b, Scope *sc);
 static void emit_pm_bind_find_poly(Compiler *c, int pat, const char *aexpr, int indent, Buf *b, Scope *sc);
 
@@ -7825,7 +7837,7 @@ static int emit_pm_bind_container_poly(Compiler *c, int spat, const char *src,
   char se[24]; snprintf(se, sizeof se, "_t%d", sub);
   if (sp_streq(sty, "HashPatternNode")) emit_pm_bind_hash_poly(c, spat, se, indent, b, sc);
   else if (sp_streq(sty, "FindPatternNode")) emit_pm_bind_find_poly(c, spat, se, indent, b, sc);
-  else emit_pm_bind_poly(c, spat, se, indent, b, sc);
+  else emit_pm_bind_poly(c, spat, se, 1, indent, b, sc);
   return 1;
 }
 
@@ -7850,13 +7862,13 @@ void emit_pm_bind_pattern(Compiler *c, int pat, const char *src_poly, int indent
   emit_pm_bind_container_poly(c, pat, src_poly, indent, b, sc);
 }
 
-static void emit_pm_bind_poly(Compiler *c, int pat, const char *arr0, int indent, Buf *b, Scope *sc) {
+static void emit_pm_bind_poly(Compiler *c, int pat, const char *arr0, int may_md, int indent, Buf *b, Scope *sc) {
   const NodeTable *nt = c->nt;
   /* read the elements from what the value deconstructs to, as the condition
      did: a user object has no [] of its own to index */
   int td = ++g_tmp;
   Buf db; memset(&db, 0, sizeof db);
-  pm_deconstructed(arr0, &db);
+  pm_deconstructed(arr0, may_md, &db);
   emit_indent(b, indent);
   buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", td, db.p ? db.p : arr0, td);
   free(db.p);
@@ -8306,7 +8318,7 @@ static void emit_pm_diag(Compiler *c, int pat, const char *v, PmDiag *d, int ind
   }
   else {
     Buf db; memset(&db, 0, sizeof db);
-    pm_deconstructed(v, &db);
+    pm_deconstructed(v, 1, &db);
     int ta = ++g_tmp;
     emit_indent(b, ind);
     buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", ta, db.p, ta);
@@ -9149,7 +9161,7 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
         char te[48];
         if (arm_pt == TY_POLY_ARRAY) snprintf(te, sizeof te, "sp_box_poly_array(_t%d)", arm_t);
         else                         snprintf(te, sizeof te, "_t%d", arm_t);
-        emit_pm_bind_poly(c, array_pat, te, body_indent, b, comp_scope_of(c, id));
+        emit_pm_bind_poly(c, array_pat, te, arm_pt != TY_POLY_ARRAY, body_indent, b, comp_scope_of(c, id));
       }
       else {
       TyKind arr_t = arm_pt;
