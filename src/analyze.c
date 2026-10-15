@@ -1094,12 +1094,14 @@ void a_collect_used(Compiler *c, int id, ANameSet *out) {
   const char *ty = nt_type(c->nt, id);
   if (!ty) return;
   if (a_is_local_node(ty)) aname_add(out, nt_str(c->nt, id, "name"));
-  /* A yield in a lowered method reads the forwarded block, but through a
-     YieldNode rather than a variable read, so the capture scan walked past it
-     and a lifted body calling the block had nothing to capture (#3355). */
-  if (sp_streq(ty, "YieldNode")) {
+  /* Yield and block_given? read the forwarded block without a local read,
+     so a lifted body needs an explicit capture of that parameter. */
+  if (sp_streq(ty, "YieldNode") ||
+      (nt_kind(c->nt, id) == NK_CallNode && nt_str(c->nt, id, "name") &&
+       sp_streq(nt_str(c->nt, id, "name"), "block_given?") &&
+       (nt_ref(c->nt, id, "receiver") < 0 || nt_kind(c->nt, nt_ref(c->nt, id, "receiver")) == NK_SelfNode))) {
     Scope *ys = comp_scope_of(c, id);
-    if (ys && ys->is_lowered_yield && ys->blk_param && ys->blk_param[0])
+    if (ys && (ys->is_lowered_yield || ys->is_proc_form) && ys->blk_param && ys->blk_param[0])
       aname_add(out, ys->blk_param);
   }
   int zs = sp_streq(ty, "ForwardingSuperNode");

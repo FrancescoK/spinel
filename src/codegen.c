@@ -6930,9 +6930,11 @@ void proc_collect_used(Compiler *c, int id, NameSet *out) {
       sp_streq(ty, "LocalVariableTargetNode") || sp_streq(ty, "LocalVariableOperatorWriteNode") ||
       sp_streq(ty, "LocalVariableOrWriteNode") || sp_streq(ty, "LocalVariableAndWriteNode"))
     nameset_add(out, nt_str(c->nt, id, "name"));
-  /* a yield in a lowered method calls the forwarded block, so a lifted body
-     containing one captures that block even though no variable read says so */
-  if (sp_streq(ty, "YieldNode")) {
+  /* yield and block_given? need the forwarded block even without a local read */
+  if (sp_streq(ty, "YieldNode") ||
+      (nt_kind(c->nt, id) == NK_CallNode && nt_str(c->nt, id, "name") &&
+       sp_streq(nt_str(c->nt, id, "name"), "block_given?") &&
+       (nt_ref(c->nt, id, "receiver") < 0 || nt_kind(c->nt, nt_ref(c->nt, id, "receiver")) == NK_SelfNode))) {
     Scope *ys = comp_scope_of(c, id);
     if (ys && (ys->is_lowered_yield || ys->is_proc_form) && ys->blk_param && ys->blk_param[0])
       nameset_add(out, ys->blk_param);
