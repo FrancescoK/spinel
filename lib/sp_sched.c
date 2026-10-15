@@ -1462,6 +1462,8 @@ void sp_sched_ev_forget(int fd) {
 }
 #else
 void sp_sched_ev_forget(int fd) { (void)fd; }
+/* no worker parks a thread on I/O without the event backend (Windows) */
+static int g_nio = 0;
 #endif
 
 static unsigned   g_next_id = 1;
