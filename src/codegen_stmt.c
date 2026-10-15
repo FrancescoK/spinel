@@ -11905,6 +11905,12 @@ static void emit_unbox_ret_text(Compiler *c, TyKind t, const char *expr, Buf *b,
      -- under promote the parameter widens to poly, the call answers boxed,
      and the return slot stays Rational. */
   case TY_RATIONAL: buf_printf(b, "sp_poly_as_rational(%s)", v); break;
+  /* A Symbol is an sp_sym by value, neither a pointer nor a struct, so the
+     default arm below handed the box back through the sp_sym signature and
+     the C did not build: `h["k"] || :fallback` under a `-> Symbol` seed. It
+     unboxes through its traits row, as a seeded String or object does (the
+     seed is trusted; -DSP_RBS_CHECK asserts the tag first). */
+  case TY_SYMBOL:   emit_unbox_text(c, t, v, b); break;
   default: {
     const char *cn = c_type_name(t);
     if (pub && t == TY_STRING) buf_printf(b, "sp_poly_unbox_s_pub(%s)", v);
