@@ -2768,6 +2768,7 @@ GC_MINOR_TESTS := $(shell grep -l '^\# spinel: gc-minor$$' test/*.rb test/share/
 # only expose by luck.
 GC_MINOR_RESULTS := $(patsubst test/%.rb,build/gc-minor-results/%.res,$(GC_MINOR_TESTS)) \
                     build/gc-minor-results/byref_param_store.chk \
+                    build/gc-minor-results/byref_param_cond_store.chk \
                     build/gc-minor-results/never_young_store.chk
 gc-minor-test: $(GC_MINOR_RESULTS)
 	@ok=1; for r in $(GC_MINOR_RESULTS); do [ "$$(cat $$r)" = 1 ] || ok=0; done; \
@@ -2815,6 +2816,16 @@ build/gc-minor-results/byref_param_store.chk: FORCE | $(SPINEL) $(SP_RT_LIB) $(S
 	sed -n '/^[^ ].* sp_emit(const char \* \*_cell_io) {$$/,/^}$$/p' "$$tmp/bp.c" > "$$tmp/bp.emit"; \
 	if [ ! -s "$$tmp/bp.emit" ] || grep -q sp_gc_wb "$$tmp/bp.emit"; then \
 	  echo "gc-minor-test: FAIL (a by-reference parameter's store took a cell barrier: it reads a header off the caller's stack)"; ok=0; fi; \
+	rm -rf "$$tmp"; echo $$ok > $@
+# The same, past a condition whose C breaks over lines, one starting at
+# column 0 and ending with `{` (#9197): the function runs to the next
+# `static` line, not to the first `}` at column 0.
+build/gc-minor-results/byref_param_cond_store.chk: FORCE | $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
+	@mkdir -p $(@D); tmp=$$(mktemp -d /tmp/spinel-gcminor.XXXXXX); ok=1; \
+	$(SPINEL) test/gc_minor_byref_param_cond_store.rb --no-line-map -c -o "$$tmp/bc.c" >/dev/null 2>&1; \
+	awk '/^[^ ].* sp_layout_into\(const char \* \*_cell_io, .*\) \{$$/ { f = 1; print; next } f && /^static / { exit } f' "$$tmp/bc.c" > "$$tmp/bc.into"; \
+	if [ ! -s "$$tmp/bc.into" ] || ! grep -q '_cell_io' "$$tmp/bc.into" || grep -q sp_gc_wb "$$tmp/bc.into"; then \
+	  echo "gc-minor-test: FAIL (a by-reference parameter's store after a multi-line condition took a cell barrier on the caller's stack)"; ok=0; fi; \
 	rm -rf "$$tmp"; echo $$ok > $@
 build/gc-minor-results/never_young_store.chk: FORCE | $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	@mkdir -p $(@D); tmp=$$(mktemp -d /tmp/spinel-gcminor.XXXXXX); ok=1; \

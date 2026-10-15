@@ -5769,7 +5769,16 @@ static int wb_is_fn_header(const Buf *b, size_t bol) {
   static const char *kw[] = { "if ", "if(", "else", "while", "for ", "for(", "switch", "do ", "do{" };
   for (size_t k = 0; k < sizeof kw / sizeof *kw; k++)
     if (!strncmp(b->p + bol, kw[k], strlen(kw[k]))) return 0;
-  return memchr(b->p + bol, '(', e - bol) != NULL;
+  const char *lp = memchr(b->p + bol, '(', e - bol);
+  if (!lp) return 0;
+  /* A statement that a long expression's line break left at column 0
+     (`_t5 = f(x); } _t5; })) {`) is no header: a header has no `;`, and no
+     `=` before its parameter list. Taken as one, it hid the function's own
+     `*_cell_x` parameters from gc_wb_cells, which then put a barrier on a
+     by-reference String parameter that points at the caller's stack local
+     (#9197). */
+  if (memchr(b->p + bol, ';', e - bol) || memchr(b->p + bol, '=', (size_t)(lp - (b->p + bol)))) return 0;
+  return 1;
 }
 /* The enclosing function's header for position `at`: the nearest header line
    before it. `*last_at` and `*last_h` carry the previous answer, so a scan
