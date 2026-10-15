@@ -22,12 +22,12 @@ class Pathname
   SEPARATOR = "/"
 
   def initialize(path)
-    # Interpolation rather than a conditional #to_s: it accepts a String, a
-    # Pathname or anything else with a #to_s, and pins @path to a String no
-    # matter which, so every File/Dir call below gets a path and not a boxed
-    # value.
-    @path = "#{path}"
-    raise ArgumentError, "pathname contains null byte" if @path.include?("\0")
+    # File.path checks #to_path, then #to_str.
+    # Keep a copy so changing the caller's String cannot change the path.
+    @path = File.path(path).dup
+    raise ArgumentError, "path name contains null byte" if @path.include?("\0")
+  rescue TypeError => e
+    raise e.class, "Pathname.new requires a String, #to_path or #to_str", cause: nil
   end
 
   # The working directory, as a Pathname.
