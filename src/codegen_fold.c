@@ -30,6 +30,32 @@ static int bv_value_may_be_nil(Compiler *c, int block, TyKind t) {
   if (body >= 0 && block_next_may_be_nil(c, body, 0)) return 1;
   return bn > 0 && node_is_oint(c, bb[bn - 1]);
 }
+/* Does a `next v` of the block (not one of a block nested in it) answer a
+   boxed value, while its tail is a typed t? The block's value slot is then
+   the box (#9300). */
+static int bv_next_boxed_walk(Compiler *c, int n, int depth) {
+  const NodeTable *nt = c->nt;
+  if (n < 0 || depth > 64) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_BlockNode || k == NK_LambdaNode || k == NK_DefNode) return 0;
+  if (k == NK_NextNode) {
+    int args = nt_ref(nt, n, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an == 1 && (repr_of(c, av[0]).kind == RK_BOXED || repr_of(c, av[0]).as_ty == TY_POLY)) return 1;
+  }
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) if (bv_next_boxed_walk(c, nt_ref_at(nt, n, i), depth + 1)) return 1;
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) if (bv_next_boxed_walk(c, av[j], depth + 1)) return 1;
+  }
+  return 0;
+}
+static int bv_next_boxed(Compiler *c, int block, TyKind t) {
+  if (block < 0 || t == TY_POLY) return 0;
+  return bv_next_boxed_walk(c, nt_ref(c->nt, block, "body"), 0);
+}
 /* the step slots emit_iter_step_open declared as an oint (a ring: a slot
    is read back by its tail right after the step opened) */
 static int g_oint_slots[32], g_oint_slot_n = 0;
@@ -4562,7 +4588,8 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
     if (bt == TY_UNKNOWN) bt = TY_INT;
     /* a number that can be nil is carried boxed, so its nil reads falsy */
     int vpoly = (bt == TY_POLY || bt == TY_NIL || (oint_kind(bt) && bn > 0 && node_has_oint_form(c, bb[bn - 1])) ||
-                 bv_value_may_be_nil(c, block, bt));   /* a `next nil` too */
+                 bv_value_may_be_nil(c, block, bt) ||   /* a `next nil` too */
+                 bv_next_boxed(c, block, bt));          /* and a boxed `next v` */
     int tv = ++g_tmp; char tvb[24]; snprintf(tvb, sizeof tvb, "_t%d", tv);
     emit_indent(g_pre, din);
     if (vpoly) buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil();\n", tv);
