@@ -1,0 +1,8 @@
+[:method, true]
+[:lambda, "1"]
+[:proc, true]
+true
+Usage: t
+        --method                     With a method
+        --lambda=V
+    -p
