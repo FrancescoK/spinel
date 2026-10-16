@@ -999,29 +999,12 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
     else { buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), TRUE)"); }
     return 1;
   }
-  /* Regexp.compile is an alias for Regexp.new */
+  /* Regexp.compile is an alias for Regexp.new, and compiles as it does: a
+     String source held boxed is read as a String, a Regexp is copied */
   if (recv >= 0 && argc >= 1 && sp_streq(name, "compile") &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
-    /* given a Regexp, the pattern is copied: hand back the pattern itself
-       rather than reading its pointer as a source string (#3686) */
-    if (comp_ntype(c, argv[0]) == TY_REGEX) { emit_expr(c, argv[0], b); return 1; }
-    int tp = ++g_tmp, ts = ++g_tmp;
-    /* See the Regexp.new path: emit the pattern into a local buffer so an
-       interpolated arg's embedded-call arg roots land in g_pre as whole
-       statements before this temp's decl, not inside its initializer. */
-    Buf pv; memset(&pv, 0, sizeof pv);
-    emit_expr(c, argv[0], &pv);
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "const char *_t%d = %s;\n", ts, pv.p ? pv.p : "\"\"");
-    free(pv.p);
-    Buf flagbuf; memset(&flagbuf, 0, sizeof flagbuf);
-    emit_re_opts_flags(c, argc, argv, &flagbuf);   /* (#3055) */
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "mrb_regexp_pattern *_t%d = re_compile(_t%d, (int64_t)(_t%d ? sp_str_byte_len(_t%d) : 0), %s);\n",
-               tp, ts, ts, ts, flagbuf.p ? flagbuf.p : "0");
-    free(flagbuf.p);
-    buf_printf(b, "_t%d", tp);
+    emit_regexp_new(c, argc, argv, b);
     return 1;
   }
   return 0;
