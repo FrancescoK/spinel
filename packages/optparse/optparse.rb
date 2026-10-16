@@ -2455,8 +2455,6 @@ XXX
   end
 end
 
-# ARGV is arguable by OptionParser
-ARGV.extend(OptionParser::Arguable)
 
 # An alias for OptionParser.
 OptParse = OptionParser  # :nodoc:
