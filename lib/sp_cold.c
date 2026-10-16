@@ -5739,7 +5739,7 @@ void sp_marv_raise(const char *cls, const char *msg) {SP_GC_ROOT_STR(msg); sp_ra
  * hash; the value (if present) is the replacement, otherwise the
  * matched substring is dropped (CRuby returns "", not the match).
  * Used by html_escape / json_escape idioms (gsub(/[&<>]/, ESCAPES)). */
-const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h) {SP_GC_ROOT_STR(str);SP_GC_ROOT(h);
+static const char *re_gsub_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h, sp_PolyPolyHash *ph) {SP_GC_ROOT_STR(str);SP_GC_ROOT(h);SP_GC_ROOT(ph);
   int64_t slen = (int64_t)sp_str_byte_len(str);
  /* malloc scratch (realloc-safe); exact-sized string emitted below. */
   /* a short subject (an attribute being escaped, the common call) builds on
@@ -5769,8 +5769,11 @@ const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp
     key[mlen] = 0;
     /* A miss takes the hash's DEFAULT, not the empty string: CRuby looks the
        match up with #[], so `Hash.new("?")` substitutes "?" (#3555). The
-       default is nil for a plain hash, which renders empty as before. */
-    const char *rep = sp_StrStrHash_get(h, memchr(key, 0, (size_t)mlen) ? sp_str_from_bytes(key, (size_t)mlen) : key);
+       default is nil for a plain hash, which renders empty as before. A Hash
+       of any keys is read with its #[] on the match as a String, so a default
+       proc runs and may store it. */
+    const char *rep = ph ? sp_PolyPolyHash_repl(ph, sp_str_from_bytes(key, (size_t)mlen))
+                         : sp_StrStrHash_get(h, memchr(key, 0, (size_t)mlen) ? sp_str_from_bytes(key, (size_t)mlen) : key);
     if (!rep) rep = &("\xff" "")[1];
     size_t rlen = sp_str_byte_len(rep);
     if (olen + before + rlen >= cap) GSH_GROW(((olen + before + rlen) * 2) + 64);
@@ -5802,9 +5805,15 @@ else {
   if (out != out_sb) free(out);
   return res;
 }
+const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h) {
+  return re_gsub_hash(pat, str, h, NULL);
+}
+const char *sp_re_gsub_poly_hash(mrb_regexp_pattern *pat, const char *str, sp_PolyPolyHash *h) {
+  return re_gsub_hash(pat, str, NULL, h);
+}
 /* Issue #910: sub(regex, hash) -- same lookup semantics as
    sp_re_gsub_str_str_hash but only the first match. */
-const char *sp_re_sub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h) {SP_GC_ROOT(h);SP_GC_ROOT_STR(str);
+static const char *re_sub_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h, sp_PolyPolyHash *ph) {SP_GC_ROOT(h);SP_GC_ROOT(ph);SP_GC_ROOT_STR(str);
   int64_t slen = (int64_t)sp_str_byte_len(str);
   int caps[64];
   int n = spinel_re_exec(pat, str, slen, 0, caps, 64, 0);
@@ -5820,8 +5829,11 @@ const char *sp_re_sub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_
   key[mlen] = 0;
   /* a missing key answers the hash's DEFAULT, which is what Hash.new("?")
      exists for; hard-coding "" dropped it (#3824) */
-  const char *rep = h ? sp_StrStrHash_get(h, memchr(key, 0, (size_t)mlen) ? sp_str_from_bytes(key, (size_t)mlen) : key) : &("\xff" "")[1];
+  const char *rep = ph ? sp_PolyPolyHash_repl(ph, sp_str_from_bytes(key, (size_t)mlen))
+                  : h ? sp_StrStrHash_get(h, memchr(key, 0, (size_t)mlen) ? sp_str_from_bytes(key, (size_t)mlen) : key) : &("\xff" "")[1];
   if (!rep) rep = &("\xff" "")[1];
+  /* a value's to_s is a new String, held across the allocations below */
+  SP_GC_ROOT_STR(rep);
   size_t rlen = sp_str_byte_len(rep);
   size_t rest = slen - caps[1];
   size_t total = caps[0] + rlen + rest;
@@ -5834,6 +5846,12 @@ const char *sp_re_sub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_
   sp_str_set_len(out, total);
   if (kbuf != keybuf) free(kbuf);
   return out;
+}
+const char *sp_re_sub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h) {
+  return re_sub_hash(pat, str, h, NULL);
+}
+const char *sp_re_sub_poly_hash(mrb_regexp_pattern *pat, const char *str, sp_PolyPolyHash *h) {
+  return re_sub_hash(pat, str, NULL, h);
 }
 /* msg: an explicit second argument overrides the SIG<name> message (only the
    Integer-signal form accepts one, matching CRuby); NULL keeps the default. */

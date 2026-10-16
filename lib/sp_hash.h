@@ -161,6 +161,12 @@ const char *sp_str_gsub_str_str_hash(const char *str, const char *pat, sp_StrStr
    (sp_re.h, included by lib/sp_cold.c already). ---- */
 const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h);
 const char *sp_re_sub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h);
+/* The same with a Hash of any keys, read with its #[] (a default proc runs)
+   on each match as a String, the value as its to_s (sp_poly_cold.c). */
+typedef struct sp_PolyPolyHash sp_PolyPolyHash;
+const char *sp_re_gsub_poly_hash(mrb_regexp_pattern *pat, const char *str, sp_PolyPolyHash *h);
+const char *sp_re_sub_poly_hash(mrb_regexp_pattern *pat, const char *str, sp_PolyPolyHash *h);
+const char *sp_PolyPolyHash_repl(sp_PolyPolyHash *h, const char *key);
 
 /* ---- sp_IntStrHash_clear: missed in the original CRUD batch
    (present for the other 3 hash types, overlooked for this one). ---- */

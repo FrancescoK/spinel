@@ -552,6 +552,15 @@ sp_StrStrHash *sp_StrPolyHash_to_s_values(sp_StrPolyHash *h)
   return r;
 }
 
+/* The text sub/gsub put in for a match a Hash of any keys maps: the value
+   #[] reads for it (a default proc runs, and may store the key), as its
+   to_s, nil's "" included */
+const char *sp_PolyPolyHash_repl(sp_PolyPolyHash *h, const char *key)
+{
+  SP_GC_ROOT(h);
+  return sp_poly_to_s(sp_PolyPolyHash_get(h, sp_box_str(key)));
+}
+
 sp_SymPolyHash*sp_SymPolyHash_merge(sp_SymPolyHash*a,sp_SymPolyHash*b)
 {SP_GC_ROOT(a);SP_GC_ROOT(b);sp_SymPolyHash*r=sp_SymPolyHash_new();r->default_v=a->default_v;r->dproc=a->dproc;r->dproc_self=a->dproc_self;for(sp_int i=0;i<a->len;i++)sp_SymPolyHash_set(r,a->order[i],sp_SymPolyHash_get(a,a->order[i]));for(sp_int i=0;i<b->len;i++)sp_SymPolyHash_set(r,b->order[i],sp_SymPolyHash_get(b,b->order[i]));return r;}
 
