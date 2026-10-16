@@ -2717,6 +2717,7 @@ static void sp_thread_report(sp_thread *t) {
 static void       sp_sched_block(sp_thread **waitlist, int defer_inject);
 static sp_thread *sp_sched_wake_one(sp_thread **waitlist);
 static void       sp_sched_block_wl(sp_thread **waitlist, sp_wlock *wl, int defer_inject, sp_mutex *release);
+static int        sched_main_leave_deadlocked_wait(sp_thread *self);
 #ifdef SP_THREADS
 static int        sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mutex *mutex, sp_wlock *wl, int (*no_wait)(void *), void *no_wait_arg);
 #endif
@@ -4547,10 +4548,13 @@ static void sp_sched_block(sp_thread **waitlist, int defer_inject) {   /* PRE/PO
     sp_thread **pp = waitlist; while (*pp) pp = &(*pp)->wait_next; *pp = self;
   }
   if (self == &g_main_thread) {
-    sp_sched_pump(NULL, 1);   /* returns (lock held) once a waker marks main RUNNABLE */
-    if (SP_TH_STATE(self) != SP_TH_RUNNING) {
-      SCHED_UNLOCK();
-      sp_raise_cls("ThreadError", "deadlock detected: all threads blocked");
+    for (;;) {
+      sp_sched_pump(NULL, 1);   /* returns (lock held) once a waker marks main RUNNABLE */
+      if (SP_TH_STATE(self) == SP_TH_RUNNING) break;
+      if (sched_main_leave_deadlocked_wait(self)) {
+        SCHED_UNLOCK();
+        sp_raise_cls("ThreadError", "deadlock detected: all threads blocked");
+      }
     }
     /* a #raise that woke main fires here, lock not held, as below */
     if (defer_inject) sp_fiber_defer_inject();
@@ -4619,10 +4623,13 @@ static void sp_sched_block_wl(sp_thread **waitlist, sp_wlock *wl, int defer_inje
   if (release) { SP_ATOMIC_STORE(&release->owner, NULL, __ATOMIC_SEQ_CST); sp_mutex_wake_waiter(release); }
   if (self == &g_main_thread) {
     SCHED_LOCK();
-    sp_sched_pump(NULL, 1);   /* returns once a waker marks main RUNNABLE */
-    if (SP_TH_STATE(self) != SP_TH_RUNNING) {
-      SCHED_UNLOCK();
-      sp_raise_cls("ThreadError", "deadlock detected: all threads blocked");
+    for (;;) {
+      sp_sched_pump(NULL, 1);   /* returns once a waker marks main RUNNABLE */
+      if (SP_TH_STATE(self) == SP_TH_RUNNING) break;
+      if (sched_main_leave_deadlocked_wait(self)) {
+        SCHED_UNLOCK();
+        sp_raise_cls("ThreadError", "deadlock detected: all threads blocked");
+      }
     }
     SCHED_UNLOCK();
     if (defer_inject) sp_fiber_defer_inject();
@@ -4716,8 +4723,12 @@ static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mute
   }
   if (self == &g_main_thread) {
     SCHED_LOCK();
-    sp_sched_pump(NULL, 1);
-    int running = SP_TH_STATE(self) == SP_TH_RUNNING;
+    int running;
+    for (;;) {
+      sp_sched_pump(NULL, 1);
+      running = SP_TH_STATE(self) == SP_TH_RUNNING;
+      if (running || sched_main_leave_deadlocked_wait(self)) break;
+    }
     SCHED_UNLOCK();
     SP_ATOMIC_STORE(&self->wait_timer, 0, __ATOMIC_RELEASE);
     NTIMED_DEC();   /* running again */
@@ -4802,6 +4813,19 @@ static int sp_sched_unpark_only(sp_thread *t, uint64_t only) {
   return 1;
 }
 static int sp_sched_unpark(sp_thread *t) { return sp_sched_unpark_only(t, 0); }
+/* Main found nothing left that could wake it from a wait (its pump came back
+   with main not running): it leaves the wait before it raises the deadlock,
+   off the list and running again, so a program that rescues the error and
+   uses the object again does not find main still waiting on it -- the next
+   push or signal went to that stale entry. Answers 0 when a waker took main
+   off the list first: its wake is on the way, and main pumps again.
+   PRE: sched lock held (the order is the scheduler lock, then a wait lock). */
+static int sched_main_leave_deadlocked_wait(sp_thread *self) {
+  if (!sp_sched_unpark(self)) return 0;
+  SP_ATOMIC_STORE(&self->park, SP_PK_RUN, __ATOMIC_SEQ_CST);
+  SP_TH_SET_STATE(self, SP_TH_RUNNING);
+  return 1;
+}
 
 #ifdef SP_THREADS
 static void sp_sched_timer_expire(const sp_tm_ent *timer, double now) {
