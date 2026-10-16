@@ -43804,6 +43804,67 @@ static int lcg_defined(const NodeTable *nt, const char *nm) {
    name whose every segment the program defines is that constant, `R::Cam`:
    read as the call, a `new` or `[]` on it took a switch over every class of
    the program, whose arms typed the members of every Struct (#9093) */
+/* Does the subtree at id name the local `nm`, read or written? */
+static int tvw_names_local(const NodeTable *nt, int id, const char *nm, int depth) {
+  if (id < 0 || depth > 200) return 0;
+  const char *ty = nt_type(nt, id);
+  if (ty && strncmp(ty, "LocalVariable", 13) == 0) {
+    const char *n = nt_str(nt, id, "name");
+    if (n && sp_streq(n, nm)) return 1;
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++)
+    if (tvw_names_local(nt, nt_ref_at(nt, id, i), nm, depth + 1)) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++)
+      if (tvw_names_local(nt, ids[j], nm, depth + 1)) return 1;
+  }
+  return 0;
+}
+/* --share-strings: `x = E.tap { |t| ... }` is `x = (x = E).tap { ... }`
+   when the block names no x: tap answers its receiver, so x is E's object
+   either way, and the block runs before the outer write as before. Written
+   that way, the receiver is a variable, whose handle the block parameter
+   and the write share; the value of a tap over a new String handed on as
+   a variable's write was refused (#9258). */
+static void desugar_tap_value_write(Compiler *c) {
+  if (!c->share_strings) return;
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
+    const char *x = nt_str(nt, id, "name");
+    int v = nt_ref(nt, id, "value");
+    if (!x || v < 0 || nt_kind(nt, v) != NK_CallNode || !sp_streq(nt_str(nt, v, "name"), "tap") ||
+        nt_ref(nt, v, "arguments") >= 0 || call_is_safe_nav(nt, v)) continue;
+    int blk = nt_ref(nt, v, "block"), r = nt_ref(nt, v, "receiver");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || r < 0) continue;
+    NodeKind rk = nt_kind(nt, unwrap_parens(c, r));
+    if (rk == NK_LocalVariableReadNode || rk == NK_SelfNode || rk == NK_NilNode ||
+        rk == NK_LocalVariableWriteNode || tvw_names_local(nt, blk, x, 0) || tvw_names_local(nt, r, x, 0)) continue;
+    long long line = nt_int(nt, r, "node_line", 0), file = nt_int(nt, r, "node_file", 0);
+    int scope_of = c->nscope[id];
+    int w = nt_new_node(nt, "LocalVariableWriteNode");
+    int st = w >= 0 ? nt_new_node(nt, "StatementsNode") : -1;
+    int par = st >= 0 ? nt_new_node(nt, "ParenthesesNode") : -1;
+    if (par < 0) continue;
+    nt_node_set_str(nt, w, "name", x);
+    nt_node_set_int(nt, w, "depth", nt_int(nt, id, "depth", 0));
+    nt_node_set_ref(nt, w, "value", r);
+    nt_node_set_arr(nt, st, "body", &w, 1);
+    nt_node_set_ref(nt, par, "body", st);
+    int made[3] = { w, st, par };
+    comp_grow_node_arrays(c);
+    for (int k = 0; k < 3; k++) {
+      nt_node_set_int(nt, made[k], "node_line", line);
+      nt_node_set_int(nt, made[k], "node_file", file);
+      c->nscope[made[k]] = scope_of;
+    }
+    nt_node_set_ref(nt, v, "receiver", par);
+  }
+}
 static void desugar_literal_const_get(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
@@ -44142,7 +44203,8 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_class_body_object_acts(c);     /* class B; tap { } -> self.tap { } */
   desugar_nil_block_arg(c);
   desugar_literal_const_get(c);          /* Object.const_get("A::B") -> A::B */
-  desugar_self_const_get(c);             /* const_get(:X) / self::X in a class method -> per subclass */
+  desugar_tap_value_write(c);            /* x = E.tap { } -> x = (x = E).tap { } (--share-strings) */
+  desugar_self_const_get(c);            /* const_get(:X) / self::X in a class method -> per subclass */
   desugar_dynamic_const_get(c);          /* M.const_get(expr) -> a table of M's constants */
   desugar_builtin_reopen_self_calls(c);  /* class Hash; def m = each {..} -> self.each */
   desugar_builtin_ivars(c);              /* class Array; def m = @x -> self.__bivar_get(:@x) */

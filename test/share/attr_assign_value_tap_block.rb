@@ -1,5 +1,5 @@
 # An attribute assignment's value passed through `tap` with a block and then
-# appended to: the block's temp is declared where the value is not yet read.
+# appended to is the String the attribute holds (#9258).
 class K
   attr_accessor :a
 end
