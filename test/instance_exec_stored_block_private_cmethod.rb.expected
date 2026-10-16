@@ -1,0 +1,3 @@
+["base:a", "base:b"]
+["ctl:a", "ctl:b"]
+private method 'slug' called for class Base

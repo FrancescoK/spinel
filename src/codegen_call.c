@@ -21053,6 +21053,9 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
                 int caller = (cs && cs->is_cmethod) ? cs->class_id : -1;
                 if (caller >= 0 && vowner >= 0 && is_descendant(c, caller, vowner)) vis = SP_VIS_PUBLIC;
               }
+              /* ...but self may call its own private methods: a boxed self
+                 (a kept block's, which instance_exec may rebind) as well */
+              if (nt_kind(nt, recv) == NK_SelfNode) vis = SP_VIS_PUBLIC;
               if (vis != SP_VIS_PUBLIC) {
                 const char *vrn = class_ruby_name(c, ccls[k]) ? class_ruby_name(c, ccls[k]) : c->classes[ccls[k]].name;
                 int is_mod = nt_kind(nt, c->classes[ccls[k]].def_node) == NK_ModuleNode;
