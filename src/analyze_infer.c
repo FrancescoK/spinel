@@ -2361,6 +2361,23 @@ TyKind an_class_concrete(Compiler *c, int id, const char *name, TyKind t) {
     if (ty_is_array(r) && ty_is_array(j)) { j = TY_POLY_ARRAY; continue; }
     return TY_POLY;
   }
+  /* the plan lists the call's target, but the dispatch arms every class
+     method of the name the receiver may hold (poly_cls_value_cands): one the
+     plan does not name (Splitter.split beside Shellwords.split, with a Class
+     value the walk cannot name in the receiver) shares the slot as well */
+  int ncc = 0;
+  const PolyCand *cc = comp_cmethod_candidates(c, name, &ncc);
+  for (int i = 0; i < ncc; i++) {
+    int k = cc[i].cls, mi = cc[i].mi;
+    if (mi < 0 || mi >= c->nscopes || is_builtin_reopen(c->classes[k].name)) continue;
+    if (!poly_cls_value_reaches(c, id, k) || !share_target_reachable(c, id, mi) ||
+        !cplan_target_binds(c, id, mi)) continue;
+    TyKind r = (TyKind)c->scopes[mi].ret;
+    if (r == j || r == TY_UNKNOWN || r == TY_VOID) continue;
+    if (r == TY_NIL && an_ty_holds_nil(j)) continue;
+    if (ty_is_array(r) && ty_is_array(j)) { j = TY_POLY_ARRAY; continue; }
+    return TY_POLY;
+  }
   return j;
 }
 
