@@ -1,0 +1,5 @@
+#<struct B b="s">
+#<struct R::Cam t=1.5, z=nil>
+#<struct B b="q">
+#<struct R::Cam t=2.5, z=3>
+5.5

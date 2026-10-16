@@ -785,7 +785,9 @@ int class_var_static_ci(Compiler *c, int node) {
     if (!local_write_binds_value(nt_kind(nt, w))) return -1;
     int val = nt_ref(nt, w, "value");
     const char *vty = val >= 0 ? nt_type(nt, val) : NULL;
-    int ci = (vty && sp_streq(vty, "ConstantReadNode"))
+    /* a constant, or a path to one by its leaf (`k = Outer::Foo`), as
+       class_recv_static_ci reads a receiver */
+    int ci = (vty && (sp_streq(vty, "ConstantReadNode") || sp_streq(vty, "ConstantPathNode")))
              ? comp_class_index(c, nt_str(nt, val, "name")) : -1;
     /* k = Struct.new(:a, :b): resolve to the anonymous struct class that
        register_structs synthesized for this write (keyed by def_node) */

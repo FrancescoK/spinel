@@ -43781,6 +43781,88 @@ static int struct_subclass_maker(const NodeTable *nt, const char *k, int depth) 
   return found;
 }
 
+/* Is `nm` a constant the program defines: a class or module body, or a
+   constant write, of that name? */
+static int lcg_defined(const NodeTable *nt, const char *nm) {
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    const char *n = NULL;
+    if (k == NK_ClassNode || k == NK_ModuleNode) {
+      int cp = nt_ref(nt, id, "constant_path");
+      n = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    }
+    else if (k == NK_ConstantWriteNode) n = nt_str(nt, id, "name");
+    else if (k == NK_ConstantPathWriteNode) {
+      int t = nt_ref(nt, id, "target");
+      n = t >= 0 ? nt_str(nt, t, "name") : NULL;
+    }
+    if (n && sp_streq(n, nm)) return 1;
+  }
+  return 0;
+}
+/* `Object.const_get("R::Cam")` / `Object.const_get(:Cam)` with a literal
+   name whose every segment the program defines is that constant, `R::Cam`:
+   read as the call, a `new` or `[]` on it took a switch over every class of
+   the program, whose arms typed the members of every Struct (#9093) */
+static void desugar_literal_const_get(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode || !sp_streq(nt_str(nt, id, "name"), "const_get") ||
+        nt_ref(nt, id, "block") >= 0) continue;
+    int rv = nt_ref(nt, id, "receiver");
+    if (rv < 0 || nt_kind(nt, rv) != NK_ConstantReadNode || !sp_streq(nt_str(nt, rv, "name"), "Object")) continue;
+    int an = nt_ref(nt, id, "arguments"), ac = 0;
+    const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+    if (ac != 1) continue;
+    NodeKind ak = nt_kind(nt, av[0]);
+    const char *lit = ak == NK_SymbolNode ? nt_str(nt, av[0], "value")
+                    : ak == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
+    if (!lit || !*lit || strlen(lit) >= 256) continue;
+    char path[256];
+    snprintf(path, sizeof path, "%s", lit[0] == ':' && lit[1] == ':' ? lit + 2 : lit);
+    /* each segment a constant name the program defines */
+    char *segs[16];
+    int ns = 0, ok = 1;
+    for (char *p = path; ok && *p; ) {
+      if (ns == 16 || !(*p >= 'A' && *p <= 'Z')) { ok = 0; break; }
+      segs[ns++] = p;
+      char *q = p;
+      while (*q && *q != ':') {
+        if (!((*q >= 'A' && *q <= 'Z') || (*q >= 'a' && *q <= 'z') || (*q >= '0' && *q <= '9') || *q == '_')) ok = 0;
+        q++;
+      }
+      if (!*q) break;
+      if (q[1] != ':' || !q[2]) { ok = 0; break; }
+      *q = 0;
+      p = q + 2;
+    }
+    for (int i = 0; ok && i < ns; i++) ok = lcg_defined(nt, segs[i]);
+    if (!ok || ns == 0) continue;
+    long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
+    int scope_of = c->nscope[id];
+    /* the prefix as a chain of reads; this node becomes the last segment */
+    int par = -1;
+    for (int i = 0; i < ns - 1 && ok; i++) {
+      int nn = nt_new_node(nt, i == 0 ? "ConstantReadNode" : "ConstantPathNode");
+      if (nn < 0) { ok = 0; break; }
+      nt_node_set_str(nt, nn, "name", segs[i]);
+      if (i > 0) nt_node_set_ref(nt, nn, "parent", par);
+      nt_node_set_int(nt, nn, "node_line", line);
+      nt_node_set_int(nt, nn, "node_file", file);
+      comp_grow_node_arrays(c);
+      c->nscope[nn] = scope_of;
+      par = nn;
+    }
+    if (!ok) continue;
+    nt_node_reset(nt, id, ns == 1 ? "ConstantReadNode" : "ConstantPathNode");
+    nt_node_set_str(nt, id, "name", segs[ns - 1]);
+    if (ns > 1) nt_node_set_ref(nt, id, "parent", par);
+    nt_node_set_int(nt, id, "node_line", line);
+    nt_node_set_int(nt, id, "node_file", file);
+  }
+}
+
 static void an_phase_desugar_register(Compiler *c) {
   comp_poly_candidates_reset();
   comp_descendants_reset();
@@ -44059,6 +44141,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_static_class_eval(c);
   desugar_class_body_object_acts(c);     /* class B; tap { } -> self.tap { } */
   desugar_nil_block_arg(c);
+  desugar_literal_const_get(c);          /* Object.const_get("A::B") -> A::B */
   desugar_self_const_get(c);             /* const_get(:X) / self::X in a class method -> per subclass */
   desugar_dynamic_const_get(c);          /* M.const_get(expr) -> a table of M's constants */
   desugar_builtin_reopen_self_calls(c);  /* class Hash; def m = each {..} -> self.each */
