@@ -8931,7 +8931,9 @@ int poly_native_arm_fits(Compiler *c, int k, const char *name, int n, const int 
                          const TyKind *atmp_ty, TyKind *mret) {
   /* by the argument types too: puts(Array) takes the [:any] binding, not
      the [:string] one declared first */
-  int nmi = comp_native_method_find_typed(c, k, name, n, 0, atmp_ty);
+  /* a subclass of a native class takes the class's bindings (#9269) */
+  int nk = comp_native_binding_class(c, k, name);
+  int nmi = comp_native_method_find_typed(c, nk >= 0 ? nk : k, name, n, 0, atmp_ty);
   if (nmi < 0 || !native_takes(&c->native_methods[nmi], n)) return -1;
   NativeMethod *nmet = &c->native_methods[nmi];
   for (int ai = 0; ai < nmet->nargs; ai++) {
@@ -8963,7 +8965,7 @@ int poly_native_arm_call(Compiler *c, int k, const char *name, int n, const int 
      (`native_share ... "keeps"`), handed a shared handle or a box that holds
      one, keeps that handle through its handle form; its plain form would
      keep the handle's bytes, which move as the String grows */
-  const char *cs = c->classes[k].c_struct, *hs = nmet->share_csym;
+  const char *cs = c->classes[nmet->class_id].c_struct, *hs = nmet->share_csym;
   if (repr_share_rule(c) && nmet->kind == 0 && (nmet->share & NSH_KEEPS) && hs && nmet->nargs == 1 && !nmet->rest &&
       n == 1 && (atmp_ty[0] == TY_STRBUF || atmp_ty[0] == TY_POLY)) {
     int a = atmp[0];
@@ -8973,7 +8975,7 @@ int poly_native_arm_call(Compiler *c, int k, const char *name, int n, const int 
     *mret = TY_STRING;
     return 1;
   }
-  buf_printf(cb, "%s((%s *)_t%d.v.p", nmet->csym, c->classes[k].c_struct, tv);
+  buf_printf(cb, "%s((%s *)_t%d.v.p", nmet->csym, cs, tv);
   int ok = 1;
   for (int ai = 0; ai < nmet->nargs && ok; ai++) {
     const char *spec = nmet->args[ai];
@@ -9836,6 +9838,16 @@ void emit_native_rest_args(Compiler *c, const NativeMethod *m, int argc, const i
    String is in, or with no argument making a String of its own. A String
    no variable holds (a literal, a call's answer) has no other name: the
    plain form's copy of it is what the program can see. 0 otherwise. */
+/* A subclass's construction (#9269): the native class's constructor runs
+   as its in-place twin (`_new` read `_init`) on this object, an expression
+   of the subclass's type, which keeps the class it was given */
+const char *g_native_into = NULL;
+static void emit_native_ctor_head(Compiler *c, const char *csym, int ci, Buf *b) {
+  const char *nw = g_native_into ? strstr(csym, "_new") : NULL;
+  if (!nw) { buf_printf(b, "%s(%d", csym, ci); return; }
+  buf_printf(b, "%.*s_init%s((%s *)(%s), (%s)->cls_id", (int)(nw - csym), csym, nw + 4,
+             c->classes[ci].c_struct, g_native_into, g_native_into);
+}
 static int emit_native_share_ctor(Compiler *c, int id, int ci, const NativeMethod *m, int argc, const int *argv,
                                   Buf *b) {
   if (!repr_share_rule(c) || !(m->share & NSH_KEEPS) || !m->share_csym || m->rest ||
@@ -9843,7 +9855,7 @@ static int emit_native_share_ctor(Compiler *c, int id, int ci, const NativeMetho
     return 0;
   Buf hb; memset(&hb, 0, sizeof hb);
   if (m->nargs > 0 && (argc < 1 || !emit_handle_var_ref(c, argv[0], &hb))) { free(hb.p); return 0; }
-  buf_printf(b, "%s(%d", m->share_csym, ci);
+  emit_native_ctor_head(c, m->share_csym, ci, b);
   for (int ai = 0; ai < m->nargs && ai < argc; ai++) {
     buf_puts(b, ", ");
     if (ai == 0) buf_puts(b, hb.p);
@@ -9882,7 +9894,7 @@ int emit_native_ctor(Compiler *c, int id, int ci, int argc, const int *argv, Buf
   NativeMethod *m = &c->native_methods[nn];
   native_arg_check(c, id, "native constructor", m, argc, argv);
   if (emit_native_share_ctor(c, id, ci, m, argc, argv, b)) return 1;
-  buf_printf(b, "%s(%d", m->csym, ci);
+  emit_native_ctor_head(c, m->csym, ci, b);
   for (int ai = 0; ai < m->nargs && ai < argc; ai++) {
     buf_puts(b, ", ");
     TyKind aw = ffi_spec_to_ty(m->args[ai]);
@@ -13517,6 +13529,25 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         emit_ctor_block_slot(c, id, ucnew, ctor_blk_lead(b), b);
         buf_puts(b, ")");
         { *out = 1; return 1; }
+      }
+      /* a subclass of a native class with no initialize of the program's
+         (#9269): allocated, then set up by the in-place twin of the native
+         constructor the arguments select */
+      if (c->classes[ci].nsub_root > 0 && comp_method_in_chain(c, ci, "initialize", NULL) < 0) {
+        int t = ++g_tmp;
+        char tn[32]; snprintf(tn, sizeof tn, "_t%d", t);
+        Buf ib; memset(&ib, 0, sizeof ib);
+        const char *sv = g_native_into;
+        g_native_into = tn;
+        int ok = emit_native_ctor(c, id, c->classes[ci].nsub_root - 1, argc, argv, &ib);
+        g_native_into = sv;
+        if (ok) {
+          const char *cn = c->classes[ci].c_name;
+          buf_printf(b, "({ sp_%s *%s = sp_%s_new(); SP_GC_ROOT(%s); %s; %s; })", cn, tn, cn, tn, ib.p, tn);
+          free(ib.p);
+          { *out = 1; return 1; }
+        }
+        free(ib.p);
       }
       /* Extra/missing positional args to a fixed-arity initialize raise
          ArgumentError at the .new site, as in MRI; the check emits the raise
@@ -18473,7 +18504,7 @@ void emit_wrong_count(Compiler *c, int id, const char *exp, int eval_recv, int g
 static int splat_binding_call(Compiler *c, NativeMethod *m, int cid, int kind, int tv, int ta,
                               Buf *cb) {
   memset(cb, 0, sizeof *cb);
-  if (kind) buf_printf(cb, "%s(%d", m->csym, cid);
+  if (kind) emit_native_ctor_head(c, m->csym, cid, cb);
   else buf_printf(cb, "%s((%s *)_t%d.v.p", m->csym, c->classes[cid].c_struct, tv);
   for (int a = 0; a < m->nargs; a++) {
     const char *spec = m->args[a];
@@ -28682,6 +28713,8 @@ static int obj_responds_answer(Compiler *c, int cid, const char *qm) {
               (is_wr && comp_writer_in_chain(c, cid, wbase, NULL));
   /* an Array (Hash) subclass instance answers Array's (Hash's) names (#7449) */
   if (!found && comp_ty_ary_root(c, ty_object(cid)) >= 0 && comp_arysub_builtin_name(c, cid, qm)) return 2;
+  /* a subclass of a native class answers the class's bindings (#9269) */
+  if (!found && c->classes[cid].nsub_root > 0 && comp_native_method_find(c, cid, qm, 0, 0) >= 0) return 2;
   /* the names the class answers without a method-table entry: an
      Enumerable includer's, a Comparable's, a Struct's or a Data's
      core names (#2663) */

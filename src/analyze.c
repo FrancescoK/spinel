@@ -4751,7 +4751,9 @@ static int give_native_self_calls_a_receiver(Compiler *c) {
     Scope *osc = comp_scope_of(c, id);
     int ocid = osc ? osc->class_id : -1;
     if (ocid < 0 || osc->is_cmethod) continue;
-    if (ocid >= c->nclasses || !c->classes[ocid].is_native_class) continue;
+    /* and in a subclass of a native class, which answers with its bindings
+       (#9269) */
+    if (ocid >= c->nclasses || (!c->classes[ocid].is_native_class && c->classes[ocid].nsub_root <= 0)) continue;
     if (comp_method_in_chain(c, ocid, nm, NULL) >= 0) continue;   /* the class's own Ruby method */
     int argc = 0;
     { int an = nt_ref(nt, id, "arguments");

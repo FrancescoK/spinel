@@ -8,16 +8,23 @@
 # the declared symbols. Constructors receive the assigned cls_id first.
 #
 #   native_struct "Name", "c_struct"[, "finalizer"]
+#   native_subclass "header", "scan"           (the class may be subclassed)
 #   native_new    [arg_specs], "csym"          (arity-keyed; several allowed)
 #   native_method :name, [arg_specs], ret, "csym"
 #   specs: any | string | string? (nil-able) | int | float | bool | nil
 #   a trailing rest takes every further argument, boxed: the C symbol gets a
 #   count and an sp_RbVal array after the fixed arguments
+#   native_subclass lets the program subclass the class: an instance of the
+#   subclass embeds the struct, which the header defines, ahead of its own
+#   instance variables; its scan calls the package's first, and each
+#   constructor has an in-place twin (its name with `_new` read `_init`,
+#   taking the object first) that the subclass's `super` in initialize calls
 module StringIOPackage
   native_lib "stringio"
   native_obj "packages/stringio/sp_stringio.o"
 
   native_struct "StringIO", "sp_StringIO", "sp_StringIO_free"
+  native_subclass "packages/stringio/sp_stringio.h", "sp_StringIO_scan_gc"
   native_new [],                 "sp_StringIO_new"
   native_new [:string],          "sp_StringIO_new_s"
   native_new [:string, :string], "sp_StringIO_new_sm"

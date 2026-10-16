@@ -1,0 +1,27 @@
+"one\ntwothree"
+Plain
+true
+12
+"seed"
+true
+"t:abc"
+:t
+"ab"
+"c"
+"line1\n"
+"line2\n"
+2
+"ab"
+2
+["x\n", "y\n"]
+"sio 12"
+"sio 3"
+"counter 2"
+"sio 2"
+"one\ntwothree"
+"abc"
+"ab"
+"q"
+true
+true
+true

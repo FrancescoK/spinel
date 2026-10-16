@@ -10974,7 +10974,10 @@ void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b) {
      so a pointer to the instance is a pointer to the Array every Array
      emitter and the runtime take, and cls_id follows it. */
   if (ci->ary_root > 0) buf_printf(b, "  %s ary;\n", arysub_array_ctype(c, cid));
-  buf_puts(b, "  sp_int cls_id;\n");
+  /* A subclass of a native class (#9269) embeds the native object, whose
+     own first field is its cls_id */
+  if (ci->nsub_root > 0) buf_printf(b, "  union { %s nbase; sp_int cls_id; };\n", c->classes[ci->nsub_root - 1].c_struct);
+  else buf_puts(b, "  sp_int cls_id;\n");
   if (ci->cext_layout) buf_puts(b, "  void *cext_data;\n  const rb_data_type_t *cext_type;\n");  /* runtime class tag for virtual dispatch */
   /* the nil bytes of the Integer / Float ivars that can hold nil (byte i:
      ivar i is nil); sized for the whole hierarchy so the fields after it
@@ -11047,6 +11050,7 @@ static void emit_ivar_renumber_dispatch(Compiler *c, Buf *b) {
 int class_needs_scan(ClassInfo *ci) {
   if (ci->cext_layout) return 1;
   if (ci->ary_root > 0) return 1;   /* its own scan names its class (#7449) */
+  if (ci->nsub_root > 0) return 1;  /* the embedded native object's (#9269) */
   for (int i = 0; i < ci->nivars; i++) {
     if (needs_root(ci->ivar_types[i]) || ci->ivar_types[i] == TY_STR_RANGE) return 1;
   }
@@ -11068,6 +11072,8 @@ void emit_class_scan(Compiler *c, ClassInfo *ci, Buf *b) {
   buf_printf(b, "static void sp_%s__gc_scan(void *p) {\n", ci->c_name);
   buf_printf(b, "  sp_%s *o = (sp_%s *)p;\n", ci->c_name, ci->c_name);
   if (ci->cext_layout) buf_puts(b, "  sp_cext_data_scan(p);\n");
+  /* the embedded native object, as its package's scan marks it (#9269) */
+  if (ci->nsub_root > 0) buf_printf(b, "  %s(p);\n", c->classes[ci->nsub_root - 1].native_sub_scan);
   /* the embedded Array's elements, as its own kind's scan marks them */
   if (ci->ary_root > 0) {
     const char *at = arysub_array_ctype(c, cid);
@@ -11519,7 +11525,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
      the pool instead of free()ing them, and sp_X_new reuses them -- this
      removes the malloc/free churn of allocation-heavy workloads. Exception
      subclasses use sp_exc_new_sub storage, so they are not pooled. */
-  if (!class_is_exc_subclass(c, cid) && ci->ary_root <= 0) buf_printf(b, "SP_POOL_DEFINE(%s)\n", ci->c_name);
+  if (!class_is_exc_subclass(c, cid) && ci->ary_root <= 0 && ci->nsub_root <= 0) buf_printf(b, "SP_POOL_DEFINE(%s)\n", ci->c_name);
   int init_pf = ctor_init_proc_form(c, cid);
   buf_printf(b, "static sp_%s *sp_%s_new%s(", ci->c_name, ci->c_name, init_pf >= 0 ? "_noinit" : "");
   emit_ctor_params(c, init, init_has_blk, b);
@@ -11572,6 +11578,13 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   if (ci->cext_extension)
     buf_printf(b, "  sp_%s *self = (sp_%s *)sp_cext_allocate(&_sp_cext_%d, %d, %d);\n",
                ci->c_name, ci->c_name, ci->cext_extension - 1, ci->cext_allocator, cid);
+  /* a subclass of a native class (#9269): not pooled, since the native
+     object's finalizer frees what it holds */
+  else if (ci->nsub_root > 0) {
+    const char *fin = c->classes[ci->nsub_root - 1].native_free;
+    buf_printf(b, "  sp_%s *self = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), %s, sp_%s__gc_scan);\n",
+               ci->c_name, ci->c_name, ci->c_name, fin ? fin : "NULL", ci->c_name);
+  }
   else {
   buf_printf(b, "  sp_%s *self = SP_POOL_NEW(%s, %s%s%s);\n",
             ci->c_name, ci->c_name,
@@ -14270,6 +14283,33 @@ void emit_super(Compiler *c, int id, Buf *b) {
     if (!served) { mi = omi; defcls = odef; }
   }
   if (g_plan_check && mi >= 0) ucall_observe(c, id, mi, defcls, 0);
+  /* a subclass of a native class (#9269): super reaches the native class's
+     constructor, as its in-place twin on self, or its binding on self */
+  if (mi < 0 && uname && c->classes[s->class_id].nsub_root > 0 && ty && sp_streq(ty, "SuperNode")) {
+    int root = c->classes[s->class_id].nsub_root - 1;
+    int sa = nt_ref(c->nt, id, "arguments"), sac = 0;
+    const int *sav = sa >= 0 ? nt_arr(c->nt, sa, "arguments", &sac) : NULL;
+    if (sp_streq(uname, "initialize")) {
+      const char *sv = g_native_into;
+      g_native_into = g_self;
+      Buf ib; memset(&ib, 0, sizeof ib);
+      int ok = emit_native_ctor(c, id, root, sac, sav, &ib);
+      g_native_into = sv;
+      if (ok) {
+        buf_printf(b, "((void)(%s), %s)", ib.p, default_value_from_compiler(c, repr_of(c, id).as_ty));
+        free(ib.p);
+        return;
+      }
+      free(ib.p);
+    }
+    else {
+      TyKind natys[8];
+      int nta = sac < 8 ? sac : 8;
+      for (int a = 0; a < nta; a++) natys[a] = comp_ntype(c, sav[a]);
+      int nm = comp_native_method_find_typed(c, root, uname, sac, 0, nta == sac ? natys : NULL);
+      if (nm >= 0) { emit_native_super_call(c, id, nm, sac, sav, b); return; }
+    }
+  }
   if (mi < 0) {
     /* super(msg) in exception subclass initialize: capture msg into self->msg */
     if ((class_is_exc_subclass(c, s->class_id) || class_is_exc_reopen(c, s->class_id)) &&
@@ -18824,6 +18864,15 @@ static void emit_ffi_decls(Compiler *c, Buf *b) {
       }
       if (cf->native_funcs[nvi].nargs == 0) buf_puts(b, "void");
       buf_puts(b, ");\n");
+    }
+    /* a native class the program subclasses (#9269): its package's header
+       defines the struct the subclass embeds, named from the runtime's
+       directory on the include path, which packages/ sits beside */
+    for (int nci = 0; nci < cf->nclasses; nci++) {
+      if (!cf->classes[nci].is_native_class || !cf->classes[nci].native_sub_header) continue;
+      int used = 0;
+      for (int k = 0; k < cf->nclasses && !used; k++) used = cf->classes[k].nsub_root == nci + 1;
+      if (used) buf_printf(b, "#include \"../%s\"\n", cf->classes[nci].native_sub_header);
     }
     /* forward-declare each native class's package struct (incomplete: the TU
        holds only pointers) so the method externs below can name it. */

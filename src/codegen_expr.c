@@ -1908,6 +1908,11 @@ static int ivar_class_body_slot(Compiler *c, int id, Scope *s, char *out, size_t
 void emit_slot_expr(Compiler *c, int id, Buf *b) {
   emit_expr_node(c, id, b);
 }
+/* The receiver of a native class's binding called on an instance of a
+   subclass of the class (#9269), and that class's C struct: the pointer is
+   the native object's, cast where the receiver is emitted */
+int g_nsub_cast_node = -1;
+const char *g_nsub_cast_type = NULL;
 void emit_expr(Compiler *c, int id, Buf *b) {
   if (b == g_pre && g_pre) { emit_into_pre_line(c, emit_expr, id); return; }
   /* an argument of a call re-emitted as its builtin sees the reopenings */
@@ -1915,6 +1920,14 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     g_io_skip_reopen = 0;
     emit_expr(c, id, b);
     g_io_skip_reopen = 1;
+    return;
+  }
+  if (id == g_nsub_cast_node) {
+    g_nsub_cast_node = -1;
+    buf_printf(b, "((%s *)(", g_nsub_cast_type);
+    emit_expr(c, id, b);
+    buf_puts(b, "))");
+    g_nsub_cast_node = id;
     return;
   }
   if (g_repr_check) repr_check_ask(c, id);

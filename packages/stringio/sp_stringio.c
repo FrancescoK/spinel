@@ -64,7 +64,7 @@ static int64_t sio_write(sp_StringIO *sio, const char *d, int64_t dl) { sio_sync
 /* the bytes of a shared handle (s->str) are the handle's: it keeps them
    alive and frees them */
 void sp_StringIO_free(void *p) { sp_StringIO *s = (sp_StringIO *)p; if (!s->borrowed && !s->str) free(s->buf); s->buf = NULL; }
-static void sp_StringIO_scan_gc(void *p) { sp_StringIO *s = (sp_StringIO *)p; if (s->borrowed && s->buf) sp_mark_string(s->buf); if (s->str) sp_gc_mark((void *)s->str); }
+void sp_StringIO_scan_gc(void *p) { sp_StringIO *s = (sp_StringIO *)p; if (s->borrowed && s->buf) sp_mark_string(s->buf); if (s->str) sp_gc_mark((void *)s->str); }
 sp_StringIO *sp_StringIO_new(sp_int cls_id) { sp_StringIO *s = (sp_StringIO *)sp_gc_alloc(sizeof(sp_StringIO), sp_StringIO_free, sp_StringIO_scan_gc); memset(s, 0, sizeof *s); s->cls_id = cls_id; s->buf = (char *)calloc(1, 64); if (!s->buf) sp_oom_die(); s->cap = 63; return s; }
 /* Adopt the incoming GC string without copying so #string keeps identity
    with the constructor argument; the first mutation copies (sio_own). */
@@ -82,6 +82,36 @@ sp_StringIO *sp_StringIO_new_sm(sp_int cls_id, const char *init, const char *mod
   sp_StringIO *s = sp_StringIO_new_s(cls_id, init);
   if (m0 == 'a') s->pos = s->len;
   return s;
+}
+/* The in-place twins of the constructors (`_new` -> `_init`), for a
+   subclass of StringIO (`class Buffer < StringIO`), whose instance the
+   program allocates with its own instance variables after the StringIO:
+   its initialize's `super(...)` sets the StringIO part up here. A second
+   initialize starts over, freeing the buffer the first one owned. The
+   object may be old by then, so the barrier records what it now holds. */
+static void sio_init_clear(sp_StringIO *s, sp_int cls_id) {
+  if (s->buf && !s->borrowed && !s->str) free(s->buf);
+  memset(s, 0, sizeof *s);
+  s->cls_id = cls_id;
+}
+void sp_StringIO_init(sp_StringIO *s, sp_int cls_id) {
+  sio_init_clear(s, cls_id);
+  s->buf = (char *)calloc(1, 64); if (!s->buf) sp_oom_die(); s->cap = 63;
+}
+void sp_StringIO_init_s(sp_StringIO *s, sp_int cls_id, const char *init) {SP_GC_ROOT(s);SP_GC_ROOT_STR(init);
+  if (!init) sp_raise_cls("TypeError", "no implicit conversion of nil into String");
+  sio_init_clear(s, cls_id);
+  int64_t l = (int64_t)sp_str_byte_len(init);
+  s->buf = (char *)init; s->len = l; s->cap = l; s->borrowed = 1; s->ro = sp_str_is_frozen_val(init);
+  sp_gc_wb(s);
+}
+void sp_StringIO_init_sm(sp_StringIO *s, sp_int cls_id, const char *init, const char *mode) {SP_GC_ROOT(s);SP_GC_ROOT_STR(init);SP_GC_ROOT_STR(mode);
+  if (!init) sp_raise_cls("TypeError", "no implicit conversion of nil into String");
+  if (!mode || !mode[0]) { sp_StringIO_init_s(s, cls_id, init); return; }
+  sio_mode_check(sp_str_is_frozen_val(init), mode);
+  if (mode[0] == 'w') { sp_StringIO_init(s, cls_id); return; }
+  sp_StringIO_init_s(s, cls_id, init);
+  if (mode[0] == 'a') s->pos = s->len;
 }
 /* #string returns the buffer as a spinel String. A borrowed buffer already IS
    a spinel string (a valid sp_str_hdr precedes it), so it can be handed back
@@ -503,6 +533,25 @@ sp_StringIO *sp_StringIO_new_hm(sp_int cls_id, sp_String *str, const char *mode)
 /* StringIO.new: over a String of its own, which #string answers */
 sp_StringIO *sp_StringIO_new_hn(sp_int cls_id) {
   return sp_StringIO_new_h(cls_id, sp_String_new_fresh(sp_str_empty));
+}
+/* the in-place twins of the three above, for a subclass (sp_StringIO_init) */
+void sp_StringIO_init_h(sp_StringIO *s, sp_int cls_id, sp_String *str) {SP_GC_ROOT(s);SP_GC_ROOT(str);
+  if (!str) sp_raise_cls("TypeError", "no implicit conversion of nil into String");
+  sio_init_clear(s, cls_id);
+  s->str = str;
+  s->ro = sp_String_is_frozen(str);
+  sio_sync(s);
+  sp_gc_wb(s);
+}
+void sp_StringIO_init_hm(sp_StringIO *s, sp_int cls_id, sp_String *str, const char *mode) {SP_GC_ROOT(s);SP_GC_ROOT(str);SP_GC_ROOT_STR(mode);
+  sio_mode_check(str && sp_String_is_frozen(str), mode);
+  sp_StringIO_init_h(s, cls_id, str);
+  char m0 = mode ? mode[0] : 0;
+  if (m0 == 'w') sp_StringIO_truncate(s, 0);
+  if (m0 == 'a') s->pos = s->len;
+}
+void sp_StringIO_init_hn(sp_StringIO *s, sp_int cls_id) {SP_GC_ROOT(s);
+  sp_StringIO_init_h(s, cls_id, sp_String_new_fresh(sp_str_empty));
 }
 /* #string=: the StringIO keeps that String from now on, read from its start
    (a frozen one takes no write, nor one opened on a frozen String); the

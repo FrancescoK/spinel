@@ -4869,6 +4869,16 @@ void register_ffi_decls(Compiler *c) {
         continue;
       }
 
+      /* native_subclass "header", "scan": the class may be subclassed (#9269) */
+      if (sp_streq(dname, "native_subclass") && native_cid >= 0) {
+        const char *hdr = an >= 1 ? ffi_arg_str(nt, args[0]) : NULL;
+        const char *scan = an >= 2 ? ffi_arg_str(nt, args[1]) : NULL;
+        if (!hdr || !scan) continue;
+        ClassInfo *nc = &c->classes[native_cid];
+        free(nc->native_sub_header); nc->native_sub_header = strdup(hdr);
+        free(nc->native_sub_scan); nc->native_sub_scan = strdup(scan);
+        continue;
+      }
       /* native_obj_reflect: the package consumes the generic object->hash
          reflection (sp_obj_to_hash); codegen installs it when Structs exist. */
       if (sp_streq(dname, "native_obj_reflect")) { c->native_obj_reflect = 1; continue; }
@@ -6024,6 +6034,8 @@ static void check_builtin_subclasses(Compiler *c) {
       if (sk != NK_ConstantReadNode && sk != NK_ConstantPathNode) continue;
       int p = comp_class_index(c, nt_str(nt, sc, "name"));
       if (p < 0 || !c->classes[p].is_native_class) continue;
+      /* a native class whose package declares native_subclass (#9269) */
+      if (c->classes[p].native_sub_header) continue;
       par = c->classes[p].name;
     }
     char what[300];
@@ -6213,6 +6225,82 @@ void resolve_parents(Compiler *c) {
     }
   }
   mark_array_subclasses(c);
+  /* A class whose chain reaches a native class that may be subclassed
+     (native_subclass, #9269): its instances embed that class's struct */
+  for (int i = 0; i < c->nclasses; i++) {
+    if (c->classes[i].is_native_class) continue;
+    for (int k = c->classes[i].parent, g = 0; k >= 0 && g < 256; k = c->classes[k].parent, g++) {
+      if (c->classes[k].is_native_class) {
+        if (c->classes[k].native_sub_header) c->classes[i].nsub_root = k + 1;
+        break;
+      }
+      if (k == c->classes[k].parent) break;
+    }
+  }
+  /* An initialize of such a class that never calls super leaves the native
+     object unset, which CRuby's first use answers with IOError
+     ("uninitialized stream"); here it would be an empty one */
+  for (int i = 0; i < c->nclasses; i++) {
+    if (c->classes[i].nsub_root <= 0) continue;
+    int im = comp_method_in_class(c, i, "initialize");
+    if (im < 0 || c->scopes[im].def_node < 0) continue;
+    int dn = c->scopes[im].def_node, has_super = 0;
+    /* the def's own body, not a def nested in it */
+    int stack[256], sp = 0;
+    stack[sp++] = nt_ref(c->nt, dn, "body");
+    while (sp > 0 && !has_super) {
+      int n = stack[--sp];
+      if (n < 0) continue;
+      NodeKind k = nt_kind(c->nt, n);
+      if (k == NK_SuperNode || k == NK_ForwardingSuperNode) { has_super = 1; break; }
+      if (k == NK_DefNode) continue;
+      int nr = nt_num_refs(c->nt, n);
+      for (int r = 0; r < nr && sp < 256; r++) stack[sp++] = nt_ref_at(c->nt, n, r);
+      int na = nt_num_arrs(c->nt, n);
+      for (int a = 0; a < na; a++) {
+        int an = 0; const int *av = nt_arr_at(c->nt, n, a, &an);
+        for (int j = 0; j < an && sp < 256; j++) stack[sp++] = av[j];
+      }
+    }
+    if (has_super) continue;
+    char msg[400];
+    snprintf(msg, sizeof msg, "%s#initialize does not call super: the %s it is would be left unset, where CRuby "
+             "raises IOError (uninitialized stream) on its first use; call super in initialize",
+             c->classes[i].name, c->classes[c->classes[i].nsub_root - 1].name);
+    unsupported_feature(c, dn, msg);
+  }
+  /* A bare `super` in an instance method of such a class that reaches the
+     native class: its arguments written out, the method's positional
+     parameters, as the native constructor's and binding's emitters take
+     argument nodes. A method with a rest, keyword or block parameter keeps
+     its bare super. */
+  {
+    NodeTable *ntw = (NodeTable *)c->nt;
+    int n0 = ntw->count;
+    for (int id = 0; id < n0; id++) {
+      if (nt_kind(ntw, id) != NK_ForwardingSuperNode || nt_ref(ntw, id, "block") >= 0) continue;
+      Scope *s = comp_scope_of(c, id);
+      if (!s || s->class_id < 0 || !s->name || s->is_cmethod || c->classes[s->class_id].nsub_root <= 0) continue;
+      int par = c->classes[s->class_id].parent;
+      if (par >= 0 && comp_method_in_chain(c, par, s->name, NULL) >= 0) continue;
+      int pnd = s->def_node >= 0 ? nt_ref(ntw, s->def_node, "parameters") : -1, nkw = 0;
+      if (pnd >= 0) (void)nt_arr(ntw, pnd, "keywords", &nkw);
+      if (s->rest_idx >= 0 || s->kwrest_idx >= 0 || nkw > 0 || s->blk_param || s->nparams > 64) continue;
+      int ids[64];
+      for (int i = 0; i < s->nparams; i++) {
+        ids[i] = nt_new_node(ntw, "LocalVariableReadNode");
+        nt_node_set_str(ntw, ids[i], "name", s->pnames[i]);
+        nt_node_set_int(ntw, ids[i], "depth", 0);
+      }
+      int an = nt_new_node(ntw, "ArgumentsNode");
+      comp_grow_node_arrays(c);
+      for (int i = 0; i < s->nparams; i++) c->nscope[ids[i]] = c->nscope[id];
+      c->nscope[an] = c->nscope[id];
+      nt_node_set_arr(ntw, an, "arguments", ids, s->nparams);
+      nt_node_set_type(ntw, id, "SuperNode");
+      nt_node_set_ref(ntw, id, "arguments", an);
+    }
+  }
   /* A `class << self; attr_accessor :x` is a method of the singleton class,
      and a subclass's singleton class inherits it: the accessor answers
      through the subclass, on the subclass's own slot (nil until assigned),

@@ -1,0 +1,15 @@
+| a
+| b
+| c
+"| "
+true
+Buffer
+12
+12
+"x\nyz"
+nil
+"| via\n"
+"via\n"
+19
+5
+"#<Buffer:X @prefix=\"| \">"

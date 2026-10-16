@@ -10654,6 +10654,19 @@ TyKind infer_uncached(Compiler *c, int id) {
        chain (the instance chain would miss `def self.x` entirely). */
     int mi = s->is_cmethod ? comp_cmethod_in_chain(c, p, uname, NULL)
                            : comp_method_in_chain(c, p, uname, NULL);
+    /* a subclass of a native class (#9269): super reaches the native
+       class's constructor (initialize) or binding */
+    if (mi < 0 && !s->is_cmethod && uname && c->classes[s->class_id].nsub_root > 0) {
+      int root = c->classes[s->class_id].nsub_root - 1;
+      if (sp_streq(uname, "initialize")) return TY_NIL;
+      int sa = nk == NK_SuperNode ? nt_ref(nt, id, "arguments") : -1, sac = 0;
+      if (sa >= 0) (void)nt_arr(nt, sa, "arguments", &sac);
+      if (nk == NK_ForwardingSuperNode) sac = s->nparams;
+      int nm = comp_native_method_find(c, root, uname, sac, 0);
+      if (nm >= 0)
+        return sp_streq(c->native_methods[nm].ret, "self") ? ty_object(s->class_id)
+                                                           : native_spec_to_ty(c->native_methods[nm].ret);
+    }
     if (mi < 0) return none;
     an_user_call_record(c, id, mi, UC_SUPER, p);
     return super_target_ret(c, s, mi, id);

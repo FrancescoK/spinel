@@ -1514,7 +1514,7 @@ static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, 
   for (int ki = 0; ki < nks; ki++) {
     int k = ks[ki];
     if (!c->classes[k].instantiated && !class_is_prim_reopen(c, k)) continue;
-    if (c->classes[k].is_native_class) {
+    if (comp_native_binding_class(c, k, name) >= 0) {
       int nmi = comp_native_method_find(c, k, name, 0, 0);
       if (nmi >= 0 && native_takes(&c->native_methods[nmi], 0)) {
         TyKind mret = native_spec_to_ty(c->native_methods[nmi].ret);
@@ -1811,12 +1811,13 @@ static void cpoly_user_arms_n(Compiler *c, int id, const char *name, int argc, c
       cpoly_add(p, &cap, PA_STRUCT_SET, k, -1, ret, PC_SAME);
       continue;
     }
-    if (c->classes[k].is_native_class) {
+    int nk = comp_native_binding_class(c, k, name);
+    if (nk >= 0) {
       if (kw_pos && has_splat_arg && argc == 1 && splat_a == 0 && kwh < 0 && c->classes[k].instantiated) {
         const NativeMethod *rm = NULL;
         for (int i = 0; i < c->n_native_methods && !rm; i++) {
           const NativeMethod *m = &c->native_methods[i];
-          if (m->class_id == k && m->kind == 0 && m->rest && m->nargs == 0 && sp_streq(m->name, name))
+          if (m->class_id == nk && m->kind == 0 && m->rest && m->nargs == 0 && sp_streq(m->name, name))
             rm = m;
         }
         if (!rm) continue;

@@ -11156,6 +11156,191 @@ static int emit_native_pattern_poly(Compiler *c, const char *name, int nm,
   return 1;
 }
 
+/* The call of binding m on the receiver node recv, or on the C text
+   self_text when given (a `super` reaching a native class's binding from
+   a subclass of it, #9269), with its arguments converted to their specs
+   and its value to the call's. */
+static void emit_native_call_on(Compiler *c, const NativeMethod *m, int recv, const char *self_text,
+                                int argc, const int *argv, Buf *b) {
+  int wrap = sp_streq(m->ret, "string?");
+  /* The two borrowed-buffer return modes, which the native_func arm
+     (codegen_call.c) has carried since they were introduced and this
+     one never did: a `cstring` is the callee's own storage, clobbered
+     by its next call, so it is duplicated onto the GC string heap
+     before it escapes into Ruby; a `cbinstr` is the same buffer
+     holding raw BYTES, so exactly the count the callee published in
+     sp_ffi_bin_len is copied -- strlen stops at the first NUL, and a
+     PNG came back as the 8 bytes of its signature (#4821). The result
+     is tagged binary for the reason the other arm states: declaring
+     this return mode is the callee saying its answer is bytes. */
+  int cstr_ret = sp_streq(m->ret, "cstring");
+  int bin_ret = sp_streq(m->ret, "cbinstr");
+  int bin_tmp = bin_ret ? ++g_tmp : 0;
+  if (wrap) buf_puts(b, "sp_box_nullable_str(");
+  if (cstr_ret) buf_puts(b, "sp_str_dup_external(");
+  /* Sequence the call before the sp_ffi_bin_len read: C leaves
+     argument evaluation order unspecified. */
+  if (bin_ret) buf_printf(b, "({ const char *_t%d = ", bin_tmp);
+  buf_puts(b, m->csym); buf_puts(b, "(");
+  if (self_text) buf_puts(b, self_text);
+  else emit_expr(c, recv, b);
+  for (int ai = 0; ai < m->nargs && ai < argc; ai++) {
+    buf_puts(b, ", ");
+    TyKind aw = ffi_spec_to_ty(m->args[ai]);
+    if (sp_streq(m->args[ai], "any")) emit_boxed(c, argv[ai], b);
+    else if (sp_streq(m->args[ai], "regexp") && re_lit_index(c, argv[ai]) >= 0)
+      buf_printf(b, "sp_re_pat_%d", re_lit_index(c, argv[ai]));
+    else if (sp_streq(m->args[ai], "regexp")) emit_expr(c, argv[ai], b);
+    /* a write payload is the operand's #to_s, as IO#write takes it */
+    else if (sp_streq(m->args[ai], "text")) emit_to_s_expr(c, argv[ai], b);
+    else if (emit_native_value_arg(c, m->args[ai], argv[ai], b)) ;
+    /* the typed-slot emitters carry the implicit conversion protocol
+       (poly unboxing, #to_str / #to_int on a user object) */
+    else if (aw == TY_STRING) emit_str_expr(c, argv[ai], b);
+    else if (aw == TY_INT) emit_int_expr(c, argv[ai], b);
+    else emit_expr(c, argv[ai], b);
+  }
+  emit_native_rest_args(c, m, argc, argv, b);
+  buf_puts(b, ")");
+  if (cstr_ret) buf_puts(b, ")");
+  if (bin_ret)
+    buf_printf(b, "; sp_str_as_binary(sp_str_from_bytes(_t%d, (size_t)(sp_ffi_bin_len < 0 ? 0 : sp_ffi_bin_len))); })",
+               bin_tmp);
+  if (wrap) buf_puts(b, ")");
+}
+/* `super(args)` in a method of a subclass of a native class that reaches
+   the class's binding nm (#9269): the binding on self, cast to the
+   native object */
+void emit_native_super_call(Compiler *c, int id, int nm, int argc, const int *argv, Buf *b) {
+  NativeMethod *m = &c->native_methods[nm];
+  native_arg_check(c, id, "native method", m, argc, argv);
+  char st[192];
+  snprintf(st, sizeof st, "((%s *)%s)", c->classes[m->class_id].c_struct, g_self);
+  emit_native_call_on(c, m, -1, st, argc, argv, b);
+}
+
+/* A call of a native class's binding on an instance of class cid (the
+   native class, or a subclass of it, #9269, whose receiver the caller casts):
+   emits it and answers 1, or answers 0 with nothing emitted. */
+static int emit_native_binding_call(Compiler *c, int id, int cid, const char *name, int recv,
+                                    int argc, const int *argv, Buf *b) {
+  const NodeTable *nt = c->nt;
+  /* IO::Buffer fast path: get_value/set_value with a LITERAL type symbol
+     lowers to the typed accessor (sp_IOBuffer_get_i and friends) --
+     no symbol decode, and no boxing the typed slot can hold. The
+     wasm-memory / binary-protocol access pattern this class exists for
+     is exactly this shape, in a hot loop. The OFFSET need not be
+     statically int: emit_int_expr routes a boxed one through
+     sp_poly_arg_int_chk, and under --int-overflow=promote every int
+     local is boxed, so requiring it lost the lowering everywhere.
+     Conditions mirror the analyzer's special-case
+     (analyze_infer_recv.c); any declined shape falls through to the
+     generic boxed binding below. */
+  if (c->classes[cid].c_struct && sp_streq(c->classes[cid].c_struct, "sp_IOBuffer") &&
+      argc >= 2 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "SymbolNode") &&
+      (comp_ntype(c, argv[1]) == TY_INT || comp_ntype(c, argv[1]) == TY_POLY)) {
+    int it = comp_iob_sym_type(nt_str(nt, argv[0], "value"));
+    if (it >= 0 && sp_streq(name, "get_value") && argc == 2) {
+      if (comp_iob_ty_is_64(it)) {
+        buf_puts(b, "sp_IOBuffer_get_x(");
+        emit_expr(c, recv, b);
+        buf_printf(b, ", %d, ", it);
+      }
+      else {
+        buf_printf(b, "sp_IOBuffer_get_%s(", comp_iob_ty_is_float(it) ? "f" : "i");
+        emit_expr(c, recv, b);
+        buf_printf(b, ", %d, ", it);
+      }
+      emit_int_expr(c, argv[1], b);
+      buf_puts(b, ")");
+      return 1;
+    }
+    if (it >= 0 && sp_streq(name, "set_value") && argc == 3) {
+      TyKind vt = comp_ntype(c, argv[2]);
+      int f = comp_iob_ty_is_float(it);
+      if ((f && (vt == TY_FLOAT || vt == TY_INT)) || (!f && vt == TY_INT)) {
+        buf_printf(b, "sp_IOBuffer_set_%s(", f ? "f" : "i");
+        emit_expr(c, recv, b);
+        buf_printf(b, ", %d, ", it);
+        emit_int_expr(c, argv[1], b);
+        buf_puts(b, ", ");
+        if (f) emit_float_expr(c, argv[2], b);
+        else emit_int_expr(c, argv[2], b);
+        buf_puts(b, ")");
+        return 1;
+      }
+      /* A boxed value keeps the lowering but not the typed setter: an
+         integer type takes a Float, and u64/s64 take a Bignum, neither of
+         which survives sp_int. sp_IOBuffer_set_v hands the value to the
+         same core the generic binding would, without the symbol decode. */
+      if (vt == TY_POLY) {
+        buf_puts(b, "sp_IOBuffer_set_v(");
+        emit_expr(c, recv, b);
+        buf_printf(b, ", %d, ", it);
+        emit_int_expr(c, argv[1], b);
+        buf_puts(b, ", ");
+        emit_boxed(c, argv[2], b);
+        buf_puts(b, ")");
+        return 1;
+      }
+    }
+  }
+  if (emit_native_splat_call(c, id, cid, name, recv, argc, argv, b)) return 1;
+  TyKind natys[8];
+  int nta = argc < 8 ? argc : 8;
+  for (int a = 0; a < nta; a++) natys[a] = comp_ntype(c, argv[a]);
+  int nm = comp_native_method_find_typed(c, cid, name, argc, 0, nta == argc ? natys : NULL);
+  if (nm >= 0 && emit_native_pattern_poly(c, name, nm, recv, argc, argv, b)) return 1;
+  if (nm >= 0) {
+    /* a :regexp arg binds to a regex literal at the call site (it
+       compiles to the generated sp_re_pat_<n> pattern) or to any value
+       typed Regexp, which is the same pattern pointer: a parameter or a
+       constant holding one (`@s.scan(pat)`, Crass's RE_WHITESPACE,
+       #5360); anything else falls through to the generic paths. */
+    NativeMethod *mre = &c->native_methods[nm];
+    for (int ai = 0; ai < mre->nargs && ai < argc; ai++) {
+      if (!sp_streq(mre->args[ai], "regexp") || re_lit_index(c, argv[ai]) >= 0 ||
+          comp_ntype(c, argv[ai]) == TY_REGEX) continue;
+      /* a nil / true / false where the binding wants a pattern is CRuby's
+         TypeError (StringScanner accepts String patterns, so its wording
+         is the String one), not a missing method */
+      TyKind pat = comp_ntype(c, argv[ai]);
+      if (pat == TY_NIL || pat == TY_BOOL) {
+        TyKind nrty = repr_of(c, id).as_ty;
+        int nrb = ++g_tmp;
+        buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); ");
+        /* every argument evaluates in order before the raise */
+        for (int na = 0; na < argc; na++) {
+          if (na == ai && pat == TY_BOOL) {
+            buf_printf(b, "int _t%d = (", nrb); emit_expr(c, argv[na], b); buf_puts(b, "); ");
+          }
+          else {
+            buf_puts(b, "(void)("); emit_boxed(c, argv[na], b); buf_puts(b, "); ");
+          }
+        }
+        if (pat == TY_NIL)
+          buf_puts(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into String\");");
+        else
+          buf_printf(b, "sp_raise_cls(\"TypeError\", _t%d"
+                        " ? \"no implicit conversion of true into String\""
+                        " : \"no implicit conversion of false into String\");", nrb);
+        buf_printf(b, " %s; })", raise_tail_c(c, id, nrty));
+        return 1;
+      }
+      nm = -1; break;
+    }
+  }
+  if (nm >= 0 && emit_native_count_mismatch(c, id, cid, name, 0, recv, argc, argv, b)) return 1;
+  if (nm >= 0) {
+    NativeMethod *m = &c->native_methods[nm];
+    native_arg_check(c, id, "native method", m, argc, argv);
+    if (emit_native_share_keeps(c, recv, m, argc, argv, b)) return 1;
+    emit_native_call_on(c, m, recv, NULL, argc, argv, b);
+    return 1;
+  }
+  return 0;
+}
+
 int emit_object_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -11506,162 +11691,17 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
     /* native (C-backed) class: dispatch a declared instance method to its C
        symbol, receiver first. `string?` returns are wrapped nil-safe. Overload
        selection is type-keyed (putc(65) vs putc("A")). */
-    if (c->classes[cid].is_native_class) {
-      /* IO::Buffer fast path: get_value/set_value with a LITERAL type symbol
-         lowers to the typed accessor (sp_IOBuffer_get_i and friends) --
-         no symbol decode, and no boxing the typed slot can hold. The
-         wasm-memory / binary-protocol access pattern this class exists for
-         is exactly this shape, in a hot loop. The OFFSET need not be
-         statically int: emit_int_expr routes a boxed one through
-         sp_poly_arg_int_chk, and under --int-overflow=promote every int
-         local is boxed, so requiring it lost the lowering everywhere.
-         Conditions mirror the analyzer's special-case
-         (analyze_infer_recv.c); any declined shape falls through to the
-         generic boxed binding below. */
-      if (c->classes[cid].c_struct && sp_streq(c->classes[cid].c_struct, "sp_IOBuffer") &&
-          argc >= 2 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "SymbolNode") &&
-          (comp_ntype(c, argv[1]) == TY_INT || comp_ntype(c, argv[1]) == TY_POLY)) {
-        int it = comp_iob_sym_type(nt_str(nt, argv[0], "value"));
-        if (it >= 0 && sp_streq(name, "get_value") && argc == 2) {
-          if (comp_iob_ty_is_64(it)) {
-            buf_puts(b, "sp_IOBuffer_get_x(");
-            emit_expr(c, recv, b);
-            buf_printf(b, ", %d, ", it);
-          }
-          else {
-            buf_printf(b, "sp_IOBuffer_get_%s(", comp_iob_ty_is_float(it) ? "f" : "i");
-            emit_expr(c, recv, b);
-            buf_printf(b, ", %d, ", it);
-          }
-          emit_int_expr(c, argv[1], b);
-          buf_puts(b, ")");
-          return 1;
-        }
-        if (it >= 0 && sp_streq(name, "set_value") && argc == 3) {
-          TyKind vt = comp_ntype(c, argv[2]);
-          int f = comp_iob_ty_is_float(it);
-          if ((f && (vt == TY_FLOAT || vt == TY_INT)) || (!f && vt == TY_INT)) {
-            buf_printf(b, "sp_IOBuffer_set_%s(", f ? "f" : "i");
-            emit_expr(c, recv, b);
-            buf_printf(b, ", %d, ", it);
-            emit_int_expr(c, argv[1], b);
-            buf_puts(b, ", ");
-            if (f) emit_float_expr(c, argv[2], b);
-            else emit_int_expr(c, argv[2], b);
-            buf_puts(b, ")");
-            return 1;
-          }
-          /* A boxed value keeps the lowering but not the typed setter: an
-             integer type takes a Float, and u64/s64 take a Bignum, neither of
-             which survives sp_int. sp_IOBuffer_set_v hands the value to the
-             same core the generic binding would, without the symbol decode. */
-          if (vt == TY_POLY) {
-            buf_puts(b, "sp_IOBuffer_set_v(");
-            emit_expr(c, recv, b);
-            buf_printf(b, ", %d, ", it);
-            emit_int_expr(c, argv[1], b);
-            buf_puts(b, ", ");
-            emit_boxed(c, argv[2], b);
-            buf_puts(b, ")");
-            return 1;
-          }
-        }
-      }
-      if (emit_native_splat_call(c, id, cid, name, recv, argc, argv, b)) return 1;
-      TyKind natys[8];
-      int nta = argc < 8 ? argc : 8;
-      for (int a = 0; a < nta; a++) natys[a] = comp_ntype(c, argv[a]);
-      int nm = comp_native_method_find_typed(c, cid, name, argc, 0, nta == argc ? natys : NULL);
-      if (nm >= 0 && emit_native_pattern_poly(c, name, nm, recv, argc, argv, b)) return 1;
-      if (nm >= 0) {
-        /* a :regexp arg binds to a regex literal at the call site (it
-           compiles to the generated sp_re_pat_<n> pattern) or to any value
-           typed Regexp, which is the same pattern pointer: a parameter or a
-           constant holding one (`@s.scan(pat)`, Crass's RE_WHITESPACE,
-           #5360); anything else falls through to the generic paths. */
-        NativeMethod *mre = &c->native_methods[nm];
-        for (int ai = 0; ai < mre->nargs && ai < argc; ai++) {
-          if (!sp_streq(mre->args[ai], "regexp") || re_lit_index(c, argv[ai]) >= 0 ||
-              comp_ntype(c, argv[ai]) == TY_REGEX) continue;
-          /* a nil / true / false where the binding wants a pattern is CRuby's
-             TypeError (StringScanner accepts String patterns, so its wording
-             is the String one), not a missing method */
-          TyKind pat = comp_ntype(c, argv[ai]);
-          if (pat == TY_NIL || pat == TY_BOOL) {
-            TyKind nrty = repr_of(c, id).as_ty;
-            int nrb = ++g_tmp;
-            buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); ");
-            /* every argument evaluates in order before the raise */
-            for (int na = 0; na < argc; na++) {
-              if (na == ai && pat == TY_BOOL) {
-                buf_printf(b, "int _t%d = (", nrb); emit_expr(c, argv[na], b); buf_puts(b, "); ");
-              }
-              else {
-                buf_puts(b, "(void)("); emit_boxed(c, argv[na], b); buf_puts(b, "); ");
-              }
-            }
-            if (pat == TY_NIL)
-              buf_puts(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into String\");");
-            else
-              buf_printf(b, "sp_raise_cls(\"TypeError\", _t%d"
-                            " ? \"no implicit conversion of true into String\""
-                            " : \"no implicit conversion of false into String\");", nrb);
-            buf_printf(b, " %s; })", raise_tail_c(c, id, nrty));
-            return 1;
-          }
-          nm = -1; break;
-        }
-      }
-      if (nm >= 0 && emit_native_count_mismatch(c, id, cid, name, 0, recv, argc, argv, b)) return 1;
-      if (nm >= 0) {
-        NativeMethod *m = &c->native_methods[nm];
-        native_arg_check(c, id, "native method", m, argc, argv);
-        if (emit_native_share_keeps(c, recv, m, argc, argv, b)) return 1;
-        int wrap = sp_streq(m->ret, "string?");
-        /* The two borrowed-buffer return modes, which the native_func arm
-           (codegen_call.c) has carried since they were introduced and this
-           one never did: a `cstring` is the callee's own storage, clobbered
-           by its next call, so it is duplicated onto the GC string heap
-           before it escapes into Ruby; a `cbinstr` is the same buffer
-           holding raw BYTES, so exactly the count the callee published in
-           sp_ffi_bin_len is copied -- strlen stops at the first NUL, and a
-           PNG came back as the 8 bytes of its signature (#4821). The result
-           is tagged binary for the reason the other arm states: declaring
-           this return mode is the callee saying its answer is bytes. */
-        int cstr_ret = sp_streq(m->ret, "cstring");
-        int bin_ret = sp_streq(m->ret, "cbinstr");
-        int bin_tmp = bin_ret ? ++g_tmp : 0;
-        if (wrap) buf_puts(b, "sp_box_nullable_str(");
-        if (cstr_ret) buf_puts(b, "sp_str_dup_external(");
-        /* Sequence the call before the sp_ffi_bin_len read: C leaves
-           argument evaluation order unspecified. */
-        if (bin_ret) buf_printf(b, "({ const char *_t%d = ", bin_tmp);
-        buf_puts(b, m->csym); buf_puts(b, "("); emit_expr(c, recv, b);
-        for (int ai = 0; ai < m->nargs && ai < argc; ai++) {
-          buf_puts(b, ", ");
-          TyKind aw = ffi_spec_to_ty(m->args[ai]);
-          if (sp_streq(m->args[ai], "any")) emit_boxed(c, argv[ai], b);
-          else if (sp_streq(m->args[ai], "regexp") && re_lit_index(c, argv[ai]) >= 0)
-            buf_printf(b, "sp_re_pat_%d", re_lit_index(c, argv[ai]));
-          else if (sp_streq(m->args[ai], "regexp")) emit_expr(c, argv[ai], b);
-          /* a write payload is the operand's #to_s, as IO#write takes it */
-          else if (sp_streq(m->args[ai], "text")) emit_to_s_expr(c, argv[ai], b);
-          else if (emit_native_value_arg(c, m->args[ai], argv[ai], b)) ;
-          /* the typed-slot emitters carry the implicit conversion protocol
-             (poly unboxing, #to_str / #to_int on a user object) */
-          else if (aw == TY_STRING) emit_str_expr(c, argv[ai], b);
-          else if (aw == TY_INT) emit_int_expr(c, argv[ai], b);
-          else emit_expr(c, argv[ai], b);
-        }
-        emit_native_rest_args(c, m, argc, argv, b);
-        buf_puts(b, ")");
-        if (cstr_ret) buf_puts(b, ")");
-        if (bin_ret)
-          buf_printf(b, "; sp_str_as_binary(sp_str_from_bytes(_t%d, (size_t)(sp_ffi_bin_len < 0 ? 0 : sp_ffi_bin_len))); })",
-                     bin_tmp);
-        if (wrap) buf_puts(b, ")");
-        return 1;
-      }
+    /* a native class's binding, also on a subclass of the class that does
+       not answer the name itself (#9269): its pointer is the native
+       object's, cast where the receiver is emitted */
+    int ncid = comp_native_answer_class(c, cid, name);
+    if (ncid >= 0) {
+      int sv_node = g_nsub_cast_node;
+      const char *sv_type = g_nsub_cast_type;
+      if (ncid != cid) { g_nsub_cast_node = recv; g_nsub_cast_type = c->classes[ncid].c_struct; }
+      int done = emit_native_binding_call(c, id, ncid, name, recv, argc, argv, b);
+      g_nsub_cast_node = sv_node; g_nsub_cast_type = sv_type;
+      if (done) return 1;
     }
     /* undef'd method: raise NoMethodError */
     if (comp_is_undeffed_in_chain(c, cid, name)) {

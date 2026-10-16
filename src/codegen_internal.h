@@ -2740,6 +2740,10 @@ int block_next_may_be_nil(Compiler *c, int id, int depth);
 /* Struct.new / Data.new of class ci with call id's arguments: the members,
    and the nil bits of members left nil (codegen_call.c) */
 int emit_struct_new_call(Compiler *c, int id, int ci, int argc, const int *argv, Buf *b);
+extern int g_nsub_cast_node;
+void emit_native_super_call(Compiler *c, int id, int nm, int argc, const int *argv, Buf *b);
+extern const char *g_native_into;
+extern const char *g_nsub_cast_type;
 /* member i of class ci read as `expr` through `objprefix` ("_t3->"), boxed
    with its nil: an Integer / Float member by its nil bit (codegen.c) */
 void emit_member_boxed_text(Compiler *c, ClassInfo *ci, int i, const char *objprefix, const char *expr, Buf *b);

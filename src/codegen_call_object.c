@@ -1452,7 +1452,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       int cid = ty_object_class(drt);
       /* native-bound classes have no generated pool/struct copy; their dup
          dispatches to a declared native_method instead */
-      if (!class_is_exc_subclass(c, cid) && !c->classes[cid].is_native_class) {
+      if (!class_is_exc_subclass(c, cid) && !c->classes[cid].is_native_class && c->classes[cid].nsub_root <= 0) {
         /* #dup drops the singleton methods, so the copy is an instance of the
            class Ruby sees (#3739). It keeps the singleton struct, whose
            layout is a superset of that class's: an instance variable only
@@ -1578,7 +1578,8 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     TyKind recv_t = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
     int is_dup_clone = is_copy_alias(name);
     int recv_native = ty_is_object(recv_t) &&
-                      c->classes[ty_object_class(recv_t)].is_native_class;
+                      (c->classes[ty_object_class(recv_t)].is_native_class ||
+                       c->classes[ty_object_class(recv_t)].nsub_root > 0);   /* #9269 */
     /* freeze on a user instance or a boxed value has real state (the GC
        header bit / string marker) -- served by the receiver arms, not the
        identity shortcut. A concurrency handle is a heap instance too, so its

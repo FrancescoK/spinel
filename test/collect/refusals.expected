@@ -1914,6 +1914,10 @@ spinel: 1 refusal, nothing written
 == test/reject/string_yield_splat_captured.rb [promote] rc=1
 spinel: test/reject/string_yield_splat_captured.rb:11: a String is passed to a block's parameter `q` through a splat into a yield, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splat into a yield). Return the String from the proc and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
+== test/reject/stringio_subclass_initialize_no_super.rb [default] rc=1
+spinel: test/reject/stringio_subclass_initialize_no_super.rb:7: NoSuper#initialize does not call super: the StringIO it is would be left unset, where CRuby raises IOError (uninitialized stream) on its first use; call super in initialize
+== test/reject/stringio_subclass_initialize_no_super.rb [promote] rc=1
+spinel: test/reject/stringio_subclass_initialize_no_super.rb:7: NoSuper#initialize does not call super: the StringIO it is would be left unset, where CRuby raises IOError (uninitialized stream) on its first use; call super in initialize
 == test/reject/struct_masgn_string_member.rb [default] rc=1
 spinel: test/reject/struct_masgn_string_member.rb:11: unsupported multiple assignment index target non-array/hash: node N (MultiWriteNode)
 spinel: 1 refusal, nothing written
@@ -1950,10 +1954,6 @@ spinel: test/reject/subclass_hash_class_new.rb:5: Class.new(Hash) without a bloc
 spinel: test/reject/subclass_range.rb:3: class Span < Range: subclassing Range is not supported yet (a subclass would answer differently from CRuby); wrap a Range in an instance variable instead
 == test/reject/subclass_range.rb [promote] rc=1
 spinel: test/reject/subclass_range.rb:3: class Span < Range: subclassing Range is not supported yet (a subclass would answer differently from CRuby); wrap a Range in an instance variable instead
-== test/reject/subclass_stringio.rb [default] rc=1
-spinel: test/reject/subclass_stringio.rb:6: class Buffer < StringIO: subclassing StringIO is not supported yet (a subclass would answer differently from CRuby); wrap a StringIO in an instance variable instead
-== test/reject/subclass_stringio.rb [promote] rc=1
-spinel: test/reject/subclass_stringio.rb:6: class Buffer < StringIO: subclassing StringIO is not supported yet (a subclass would answer differently from CRuby); wrap a StringIO in an instance variable instead
 == test/reject/subclass_thread_queue.rb [default] rc=1
 spinel: test/reject/subclass_thread_queue.rb:3: class Jobs < Queue: subclassing Queue is not supported yet (a subclass would answer differently from CRuby); wrap a Queue in an instance variable instead
 == test/reject/subclass_thread_queue.rb [promote] rc=1

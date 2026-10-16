@@ -2143,6 +2143,29 @@ int comp_native_method_find(Compiler *c, int class_id, const char *name, int arg
   return comp_native_method_find_typed(c, class_id, name, argc, kind, NULL);
 }
 
+/* The class whose bindings serve class k's arm for `name`: k itself for a
+   native class, the native class a subclass of one reaches (#9269) where
+   that class binds the name and no method of the program's in k's chain
+   answers it first. -1 for an arm of the program's methods. */
+int comp_native_binding_class(Compiler *c, int k, const char *name) {
+  if (k < 0 || k >= c->nclasses) return -1;
+  if (c->classes[k].is_native_class) return k;
+  int r = comp_native_answer_class(c, k, name);
+  return r >= 0 && comp_native_method_find(c, r, name, 0, 0) >= 0 ? r : -1;
+}
+/* The native class whose binding answers `name` on an instance of class
+   cid: cid itself for a native class, and for a subclass of one (#9269)
+   the native class its chain reaches, where no method or reader of the
+   program's in the chain answers the name first. -1 otherwise. */
+int comp_native_answer_class(Compiler *c, int cid, const char *name) {
+  if (cid < 0 || cid >= c->nclasses) return -1;
+  if (c->classes[cid].is_native_class) return cid;
+  int r = c->classes[cid].nsub_root - 1;
+  if (r < 0 || !name) return -1;
+  if (comp_method_in_chain(c, cid, name, NULL) >= 0 || comp_reader_in_chain(c, cid, name, NULL)) return -1;
+  return r;
+}
+
 /* Whether class `k` contributes a poly-dispatch arm for instance calls of
    `name`. A native class contributes only through its declared BINDINGS
    (#4504): a Ruby-side def on it (IO::Buffer#values, StringIO#each_line) is
@@ -2153,8 +2176,9 @@ int comp_native_method_find(Compiler *c, int class_id, const char *name, int arg
    define this name" loop that feeds the poly dispatch asks through here so
    the analyzer, the emitters, and the switch count the same arms. */
 int comp_poly_arm_defines(Compiler *c, int k, const char *name) {
-  if (c->classes[k].is_native_class)
-    return comp_native_method_find(c, k, name, 0, 0) >= 0;
+  int nk = comp_native_binding_class(c, k, name);
+  if (nk >= 0)
+    return comp_native_method_find(c, nk, name, 0, 0) >= 0;
   return comp_method_in_chain(c, k, name, NULL) >= 0;
 }
 
@@ -2166,8 +2190,9 @@ int comp_poly_arm_defines(Compiler *c, int k, const char *name) {
    `getbyte` binding otherwise counted for `s.getbyte(i)` on a poly String
    and stood the builtin arm down again (#4432). */
 int comp_poly_arm_defines_n(Compiler *c, int k, const char *name, int argc) {
-  if (c->classes[k].is_native_class) {
-    int nmi = comp_native_method_find(c, k, name, argc, 0);
+  int nk = comp_native_binding_class(c, k, name);
+  if (nk >= 0) {
+    int nmi = comp_native_method_find(c, nk, name, argc, 0);
     return nmi >= 0 && native_takes(&c->native_methods[nmi], argc);
   }
   return comp_method_in_chain(c, k, name, NULL) >= 0;
@@ -2204,6 +2229,12 @@ int comp_iob_ty_is_64(int t) {
 int comp_native_method_find_typed(Compiler *c, int class_id, const char *name, int argc, int kind,
                                   const TyKind *argtys) {
   if (class_id < 0 || !name) return -1;
+  /* a subclass of a native class answers with the class's bindings where
+     no method of the program's in its chain answers the name (#9269) */
+  if (class_id < c->nclasses && !c->classes[class_id].is_native_class && c->classes[class_id].nsub_root > 0) {
+    class_id = comp_native_answer_class(c, class_id, name);
+    if (class_id < 0) return -1;
+  }
   int arity_match = -1, loose = -1, typed = -1, rest_match = -1;
   for (int i = 0; i < c->n_native_methods; i++) {
     NativeMethod *m = &c->native_methods[i];
@@ -2297,6 +2328,9 @@ static void pc_build(Compiler *c, const char *name, PolyCand **out, int *n_out) 
     PolyCand pc; pc.cls = k; pc.rdcls = -1; pc.native = c->classes[k].is_native_class;
     int mdc = -1, rdc = -1;
     pc.mi = comp_method_in_chain(c, k, name, &mdc);
+    /* a subclass of a native class that answers the name with the class's
+       binding (#9269) */
+    if (!pc.native && c->classes[k].nsub_root > 0 && comp_native_binding_class(c, k, name) >= 0) pc.native = 1;
     /* a reader the chain declares below the method answers in its place:
        a subclass's attr_reader overrides the def it inherits, as the
        dispatch's arm does */

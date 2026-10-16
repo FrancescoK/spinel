@@ -212,8 +212,9 @@ static int poly_user_arm0_decide(Compiler *c, int id, const char *name, int argc
   if (!c->classes[k].instantiated && !class_is_prim_reopen(c, k)) return 0;
   /* native (C-backed) class arm: dispatch a declared no-arg method to its
      C symbol on the cast receiver, coercing the result into the slot. */
-  if (c->classes[k].is_native_class) {
-    int nmi = comp_native_method_find(c, k, name, 0, 0);
+  int nk = comp_native_binding_class(c, k, name);
+  if (nk >= 0) {
+    int nmi = comp_native_method_find(c, nk, name, 0, 0);
     /* only a binding that takes no argument: the lookup falls back to
        any arity, and StringScanner#peek(len) beside two user `peek`s
        got an arm calling it with none, which C refused (#5359). A
@@ -384,7 +385,8 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
   int k = a->key, mi = a->mi;
   int so = plan_slot_oint(c, id, ret);
   if (a->kind == PA_NATIVE || (a->kind == PA_ARITY && mi < 0)) {
-    int nmi = comp_native_method_find(c, k, name, 0, 0);
+    int nk = comp_native_binding_class(c, k, name);
+    int nmi = comp_native_method_find(c, nk >= 0 ? nk : k, name, 0, 0);
     if (a->kind == PA_NATIVE) {
       NativeMethod *nmet = &c->native_methods[nmi];
       char nbuf[300], cbuf[240];
@@ -394,9 +396,9 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
          handle, read through its handle form (repr_native_arm_handle), as
          a method arm's tail read does: the call's pickup takes it */
       if (repr_native_arm_handle(c, id, k) && share_node_shares(c, id))
-        snprintf(cbuf, sizeof cbuf, "sp_strbuf_read_pub(%s((%s *)_t%d.v.p))", nmet->share_csym, c->classes[k].c_struct, tv);
+        snprintf(cbuf, sizeof cbuf, "sp_strbuf_read_pub(%s((%s *)_t%d.v.p))", nmet->share_csym, c->classes[nmet->class_id].c_struct, tv);
       else
-        snprintf(cbuf, sizeof cbuf, "%s((%s *)_t%d.v.p%s)", nmet->csym, c->classes[k].c_struct, tv, rest0);
+        snprintf(cbuf, sizeof cbuf, "%s((%s *)_t%d.v.p%s)", nmet->csym, c->classes[nmet->class_id].c_struct, tv, rest0);
       if (sp_streq(nmet->ret, "string?"))
         snprintf(nbuf, sizeof nbuf, "sp_box_nullable_str(%s)", cbuf);
       else
@@ -790,14 +792,15 @@ static int poly_user_arm_n_replay(Compiler *c, int id, const char *name, const P
      poly slot answered NoMethodError for every call with an argument
      while its zero-arg calls dispatched (#4504). Positional calls
      only: a binding declares no keywords and no splat. */
-  if (c->classes[k].is_native_class) {
+  int nk = comp_native_binding_class(c, k, name);
+  if (nk >= 0) {
     /* a lone splat goes whole to a binding that is all :rest */
     if (kw_pos && has_splat_arg && argc == 1 && splat_a == 0 && kwh < 0 &&
         c->classes[k].instantiated) {
       const NativeMethod *rm = NULL;
       for (int i = 0; i < c->n_native_methods && !rm; i++) {
         const NativeMethod *m = &c->native_methods[i];
-        if (m->class_id == k && m->kind == 0 && m->rest && m->nargs == 0 && sp_streq(m->name, name))
+        if (m->class_id == nk && m->kind == 0 && m->rest && m->nargs == 0 && sp_streq(m->name, name))
           rm = m;
       }
       if (!rm) return 0;
@@ -805,7 +808,7 @@ static int poly_user_arm_n_replay(Compiler *c, int id, const char *name, const P
       int sp = stk >= 0 ? stk : atmp[0];
       if (sp_streq(rm->ret, "string?")) buf_puts(&cb, "sp_box_nullable_str(");
       buf_printf(&cb, "%s((%s *)_t%d.v.p, _t%d->len, _t%d->data)",
-                 rm->csym, c->classes[k].c_struct, tv, sp, sp);
+                 rm->csym, c->classes[nk].c_struct, tv, sp, sp);
       if (sp_streq(rm->ret, "string?")) buf_puts(&cb, ")");
       TyKind mret = sp_streq(rm->ret, "self") ? ty_object(k) : native_spec_to_ty(rm->ret);
       buf_printf(b, " case %d: ", k);
@@ -1112,7 +1115,7 @@ static void emit_poly_user_arm_n_plan(Compiler *c, int id, const char *name, con
   (void)nt; (void)argc; (void)kwall; (void)kwall_any; (void)kw_pos; (void)has_splat_arg; (void)stk;
   int k = a->key;
   if (a->kind == PA_STRUCT_SET) { emit_poly_struct_set(c, id, U, k, b); return; }
-  if (c->classes[k].is_native_class) { poly_user_arm_n_replay(c, id, name, U, k, b); return; }
+  if (comp_native_binding_class(c, k, name) >= 0) { poly_user_arm_n_replay(c, id, name, U, k, b); return; }
   int mi = a->mi;
   if (a->kind == PA_ARITY) {
     char arm_exp[600];
@@ -1262,14 +1265,15 @@ static int poly_user_arm_n_decide(Compiler *c, const char *name, const PolyUserA
     a->kind = PA_STRUCT_SET; a->vty = (unsigned char)ret;
     return 1;
   }
-  if (c->classes[k].is_native_class) {
+  int nk = comp_native_binding_class(c, k, name);
+  if (nk >= 0) {
     TyKind mret = TY_UNKNOWN;
     if (U->kw_pos && U->has_splat_arg && U->argc == 1 && U->splat_a == 0 && U->kwh < 0 &&
         c->classes[k].instantiated) {
       const NativeMethod *rm = NULL;
       for (int i = 0; i < c->n_native_methods && !rm; i++) {
         const NativeMethod *m = &c->native_methods[i];
-        if (m->class_id == k && m->kind == 0 && m->rest && m->nargs == 0 && sp_streq(m->name, name)) rm = m;
+        if (m->class_id == nk && m->kind == 0 && m->rest && m->nargs == 0 && sp_streq(m->name, name)) rm = m;
       }
       if (!rm) return 0;
       mret = sp_streq(rm->ret, "self") ? ty_object(k) : native_spec_to_ty(rm->ret);
@@ -2795,11 +2799,14 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
   int ncand = 0;
   for (int k = 0; k < c->nclasses; k++) {
     if (!has_splat_arg && kwh < 0 && cplan_struct_aset(c, k, name, argc)) { ncand++; continue; }
-    /* a native class's methods are its declared bindings (#4504) */
-    if (c->classes[k].is_native_class) {
+    /* a native class's methods are its declared bindings (#4504), as
+       are those of a subclass of one where it does not answer the name
+       itself (#9269) */
+    int nk = comp_native_binding_class(c, k, name);
+    if (nk >= 0) {
       if (kw_pos && !has_splat_arg && c->classes[k].instantiated) {
         for (int n = pos_argc; n <= argc; n++) {
-          int nmi = comp_native_method_find(c, k, name, n, 0);
+          int nmi = comp_native_method_find(c, nk, name, n, 0);
           if (nmi >= 0 && native_takes(&c->native_methods[nmi], n)) { ncand++; break; }
         }
       }

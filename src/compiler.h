@@ -740,6 +740,14 @@ typedef struct {
   int ary_str;
   char *c_struct;      /* e.g. "sp_StringIO", or NULL */
   char *native_free;   /* finalizer C symbol, or NULL */
+  /* native_subclass "header", "scan": the class may be subclassed (#9269);
+     the header defines c_struct, and scan is what a subclass's scan calls */
+  char *native_sub_header;
+  char *native_sub_scan;
+  /* A subclass of such a class: 1 + the native class its chain reaches. Its
+     instances embed that class's struct ahead of their own ivars, so a
+     pointer to one is a pointer to the native object */
+  int nsub_root;
   int freeze_observed; /* freeze/frozen? reaches instances of this class: codegen
                           guards its ivar stores with the GC-header frozen bit */
   int computed_ivar_set; /* an instance_variable_set with a computed name can reach
@@ -1559,6 +1567,8 @@ int ffi_struct_method(Compiler *c, const char *mod, const char *method, int *si,
 int comp_native_find(Compiler *c, const char *mod, const char *name);
 int comp_scope_native_twin(Compiler *c, int mi);
 int comp_native_method_find(Compiler *c, int class_id, const char *name, int argc, int kind);
+int comp_native_answer_class(Compiler *c, int cid, const char *name);
+int comp_native_binding_class(Compiler *c, int k, const char *name);
 int comp_native_method_find_typed(Compiler *c, int class_id, const char *name, int argc, int kind,
                                   const TyKind *argtys);
 int comp_poly_arm_defines(Compiler *c, int k, const char *name);
