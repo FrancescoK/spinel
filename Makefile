@@ -4480,6 +4480,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	  ! grep -q 'sp_PolyPolyHash_new' "$$tmp/hbu.c" || { echo "infer-test: FAIL (an unbounded boxed store widened a known Hash)"; ok=0; }; \
 	  $(SPINEL) $$flags test/index_read_unsettled_local.rb -c --no-line-map -o "$$tmp/iru.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (index_read_unsettled_local: -c)"; ok=0; }; \
 	  ! grep -q 'sp_RbVal lv_line\b' "$$tmp/iru.c" || { echo "infer-test: FAIL (an index read guessed a settling local a Hash and boxed a block parameter)"; ok=0; }; \
+	  $(SPINEL) $$flags test/range_index_unbounded_receiver.rb -c --no-line-map -o "$$tmp/riu.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (range_index_unbounded_receiver: -c)"; ok=0; }; \
+	  ! grep -q 'sp_RbVal sp_Regs__lb_rb(' "$$tmp/riu.c" || { echo "infer-test: FAIL (a Range on a receiver of no known class boxed every [] method's element read)"; ok=0; }; \
 	  $(SPINEL) $$flags -e 'def run = 0' -e 'p run' -c --no-line-map -o "$$tmp/dfn.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (a statement def: -c)"; ok=0; }; \
 	  grep -q 'SP_TU_NO_POLY_RENDER' "$$tmp/dfn.c" || { echo "infer-test: FAIL (a statement def made its name a Symbol of the program)"; ok=0; }; \
 	  $(SPINEL) $$flags test/no_poly_values_unrun_code.rb -c --no-line-map -o "$$tmp/npu.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (no_poly_values_unrun_code: -c)"; ok=0; }; \

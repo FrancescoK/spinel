@@ -1021,6 +1021,9 @@ typedef struct {
                        set of user classes its value can hold (analyze_cls.c,
                        #8530); 0 is every class. Read through cls_fact_node. */
   ClsSet *cls_pool; int ncls_pool, cls_fact_n;
+  int range_unheld; /* while the arguments of a call on a receiver of no known
+                       class bind to every method of the name: a Range among
+                       them makes no parameter range_held (slot_set) */
   /* an_send_name_is_computed's memo of the parameters a caller hands a
      computed name (#8592): one byte per (scope, parameter) slot, 0 unknown,
      1 no, 2 yes; rebuilt when the node table grew */
