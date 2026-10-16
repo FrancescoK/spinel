@@ -1621,8 +1621,13 @@ int poly_cls_value_cands(Compiler *c, int id, const char *name, int argc, const 
        (comp_class_may_be_value): the analysis leaves its answer out of the
        call's type (share_target_reachable), so its arm would put that answer
        into a slot typed for the others -- Shellwords.split beside a String's
-       split in a lambda's parameter */
-    if (!comp_class_may_be_value(c, k)) continue;
+       split in a lambda's parameter. A builtin's reopening is not one: a
+       reopened Class's methods are every class value's (`class Class; def
+       descendants`), whatever its own constant is read as) */
+    { const char *kn = c->classes[k].name;
+      size_t kl = kn ? strlen(kn) : 0;
+      int reopen = kl > 8 && strcmp(kn + kl - 8, "__reopen") == 0;
+      if (!reopen && !comp_class_may_be_value(c, k)) continue; }
     int kmi = cc8[ki].mi;
     /* a yielding candidate is called through its proc form (#3399) */
     int kpf = scope_proc_form_of(c, kmi);
