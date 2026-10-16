@@ -23255,11 +23255,26 @@ static int strbuf_flow_begin(Compiler *c, StrbufFlowMemo *fm, int v, int depth) 
   return el < 0 || strbuf_flow_body(c, fm, SFC_TAIL, nt_ref(nt, el, "statements"), NK_NONE, depth);
 }
 
+/* Does method mi answer only String literals, as its last value and
+   through each `return`? A literal is frozen: boxed as its bytes, no name
+   changes it, and it reads no publication. */
+static int scope_ret_frozen_lit(Compiler *c, int mi) {
+  const NodeTable *nt = c->nt;
+  int last = unwrap_parens(c, scope_body_last(c, mi));
+  if (last < 0 || nt_kind(nt, last) != NK_StringNode) return 0;
+  for (int u = comp_ret_first(c, mi); u >= 0; u = comp_ret_next(c, u)) {
+    if (nt_kind(nt, u) != NK_ReturnNode || comp_scope_of(c, u) != &c->scopes[mi]) continue;
+    int ra = nt_ref(nt, u, "arguments"), rn = 0;
+    const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
+    if (rn != 1 || nt_kind(nt, unwrap_parens(c, rv[0])) != NK_StringNode) return 0;
+  }
+  return 1;
+}
 /* --share-strings: is v a call on a boxed receiver, of a name no builtin
    answers, whose dispatch has a method arm for each class the receiver can
    hold, each answering a String that is either a handle it publishes
-   (Scope.ret_handle) or a new String (ret_fresh), and one of them
-   publishing?
+   (Scope.ret_handle), a new String (ret_fresh) or a literal
+   (scope_ret_frozen_lit), and one of them publishing?
    Boxed, the dispatch boxes each arm's own answer (emit_poly_user_box): the
    published handle, or a new handle around a fresh String, which reads no
    earlier publication. */
@@ -23277,16 +23292,17 @@ int strbuf_poly_user_boxes(Compiler *c, int v) {
   const PolyPlan *p = cplan_poly_arms(c, v);
   int nk = 0;
   const int *ks = poly_recv_classes(c, v, &nk);
-  if (p->n <= 0 || !ks || nk <= 0) return 0;
+  if (p->n <= 0) return 0;
   int pub = 0;
   for (int i = 0; i < p->n; i++) {
-    /* (an arm of a class the receiver never holds is never taken) */
-    int held = 0;
+    /* (an arm of a class the receiver never holds is never taken; with the
+       classes unknown, every arm may be) */
+    int held = !ks || nk <= 0;
     for (int j = 0; j < nk && !held; j++) held = p->arm[i].key == ks[j];
     if (!held) continue;
     int ami = p->arm[i].mi;
     if (p->arm[i].kind != PA_USER || ami < 0 || c->scopes[ami].ret != TY_STRING ||
-        (!scope_ret_handle(c, ami) && !scope_ret_fresh(c, ami))) return 0;
+        (!scope_ret_handle(c, ami) && !scope_ret_fresh(c, ami) && !scope_ret_frozen_lit(c, ami))) return 0;
     pub |= scope_ret_handle(c, ami);
   }
   /* (with no arm publishing, the call's String is a new one, which the
@@ -23738,7 +23754,11 @@ int strbuf_flow_carries(Compiler *c, int kind, int site, int v) {
          reader is not (strbuf_route_reader) */
       SharePlan p = share_plan_of(c, v, SPR_BOX, NULL);
       int u = unwrap_parens(c, v);
-      if (p.form == SPF_HANDLE && p.kind == SPK_READER && !strbuf_route_reader(c, u)) return p.need != SPN_OBJECT;
+      /* (a boxed receiver's call whose every arm answers a String it
+         publishes or a new one is boxed arm by arm, each its own handle:
+         strbuf_poly_user_boxes, emit_boxed) */
+      if (p.form == SPF_HANDLE && p.kind == SPK_READER && !strbuf_route_reader(c, u) && !strbuf_poly_user_boxes(c, u))
+        return p.need != SPN_OBJECT;
       return p.form != SPF_REFUSE;
     }
   case SHFL_ARG:
