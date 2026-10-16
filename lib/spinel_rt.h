@@ -8180,7 +8180,8 @@ static sp_PolyArray *sp_PolyArray_permutation(sp_PolyArray *a, sp_int k) {
   sp_poly_permutation_recur(a, k, used, acc, out);
   return out;
 }
-static sp_PolyArray *sp_PolyArray_dup(sp_PolyArray *a) { SP_GC_ROOT(a); sp_PolyArray *b = sp_PolyArray_new(); for (sp_int i = 0; i < a->len; i++) sp_PolyArray_push(b, a->data[i]); return b; }
+/* A nil-held Array slot is NULL, and nil.dup is nil (#9347). */
+static sp_PolyArray *sp_PolyArray_dup(sp_PolyArray *a) { if (!a) return NULL; SP_GC_ROOT(a); sp_PolyArray *b = sp_PolyArray_new(); for (sp_int i = 0; i < a->len; i++) sp_PolyArray_push(b, a->data[i]); return b; }
 static sp_PolyArray *sp_PolyArray_replace(sp_PolyArray *dst, sp_PolyArray *src) { if (!dst || !src) return dst; if (dst == src) return dst; if (dst->frozen) { sp_raise_frozen_array_at(dst, SP_BUILTIN_POLY_ARRAY); return dst; } dst->len = 0; for (sp_int i = 0; i < src->len; i++) sp_PolyArray_push(dst, src->data[i]); return dst; }
 /* Array#replace where the SOURCE is of another kind -- `[1, 2].replace(["x"])`
    is ordinary Ruby, and the receiver becomes a copy of whatever the source

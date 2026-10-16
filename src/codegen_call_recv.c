@@ -2449,7 +2449,7 @@ else {
       int ts = ++g_tmp, td = ++g_tmp;
       buf_printf(b, "({ sp_%sArray *_t%d = ", k, ts); emit_expr(c, recv, b);
       buf_printf(b, "; sp_%sArray *_t%d = sp_%sArray_dup(_t%d); ", k, td, k, ts);
-      if (fz == -2) buf_printf(b, "_t%d->frozen = _t%d ? _t%d->frozen : 0; ", td, ts, ts);
+      if (fz == -2) buf_printf(b, "if (_t%d) _t%d->frozen = _t%d->frozen; ", ts, td, ts);
       else buf_printf(b, "_t%d->frozen = %d; ", td, fz);
       buf_printf(b, "_t%d; })", td);
       { *out = 1; return 1; }
