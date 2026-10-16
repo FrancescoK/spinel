@@ -10,7 +10,10 @@
 # to a parameter another call site gives a number, a String or a Hash it
 # widens the parameter (a C error, or 0 where the Array was), and as the
 # receiver of `freeze`, `dup`, `to_a`, `itself` or `compact`, or the value of
-# a conditional, it is an Array (it was nil). The same for `([])`.
+# a conditional, it is an Array (it was nil). The same for `([])`, which is
+# also an operand, a receiver, an interpolation, a multiple assignment's value
+# and a proc call's argument as `[]` is, and for the last statement of an arm
+# of a conditional with several statements, `else` as much as `then`.
 module EmptyArgDefault
   def self.arr(a, b = Array.new)
     b << a
@@ -140,3 +143,63 @@ p(flag ? ([]) : nil)
 p(flag ? ({}) : nil)
 p(flag ? nil : ([]))
 p(flag ? Array.new : nil)
+
+# the last statement of a multi-statement arm, then and else, if / unless / elsif
+yes = ARGV.size == 0
+no = ARGV.size > 0
+sel = ARGV.size
+arm1 = if yes then 1; [] else 2; Array.new end
+p arm1
+arm1 << 1
+p arm1
+arm2 = if no then 1; [] else 2; Array.new end
+p arm2
+arm2 << 1
+p arm2
+arm3 = if no then 1; Array.new else 2; [] end
+p arm3
+arm4 = if no then 1; ({}) else 2; Hash.new end
+p arm4
+arm4[:a] = 1
+p arm4
+arm5 = if no then 1; ([]) else 2; ([]) end
+p arm5
+arm5 << 2
+p arm5
+arm6 = unless yes then 1; [] else 2; Array.new end
+p arm6
+arm7 = if sel == 1 then 1; [1] elsif sel == 2 then 2; {} else 3; Array.new end
+p arm7
+arm8 = if sel == 1 then 1; [1] elsif sel == 0 then 2; 3; Array.new else 4; [] end
+p arm8
+arm9 = if no then 1; 2 else 3; Array.new end
+p arm9
+arm10 = if no then 1; Array.new end
+p arm10
+arm11 = if no then 1; 2 else 3; [] end
+p arm11
+
+# an empty container in parentheses as an operand, a receiver and an argument
+p(([]).frozen?)
+p((Array.new).size)
+p(([]) + [1])
+p([1] + ([]))
+p([1].concat(([])))
+p([1] == ([]))
+p(([]) <=> [1])
+y = ([])
+y << 1
+p y
+p((Array.new).dup)
+p((Array.new).class)
+p((Array.new).push(1))
+p((Array.new).map { 1 })
+p("#{([])}")
+a, b = ([])
+p [a, b]
+l = ->(v) { v.size }
+p l.call([])
+p l.call(([]))
+p l.call(Array.new)
+p l.call((Array.new))
+p l.([1])
