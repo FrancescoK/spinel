@@ -12146,7 +12146,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
    ASCII-8BIT, 0 for UTF-8, -1 for any other or a computed one, which only
    checks that the receiver may change. */
 /* Encoding::X or ::Encoding::X; a user constant (M::E) is a value */
-static int enc_const_path(const NodeTable *nt, int n) {
+int enc_const_path(const NodeTable *nt, int n) {
   const char *at = nt_type(nt, n);
   if (!at || !sp_streq(at, "ConstantPathNode")) return 0;
   int p = nt_ref(nt, n, "parent");

@@ -6810,6 +6810,9 @@ int emit_poly_class_when(Compiler *c, int cond_id, const char *tmp, Buf *b) {
     buf_printf(b, "%s.tag == SP_TAG_FLT", tmp);
   else if (sp_streq(cn, "Symbol"))
     buf_printf(b, "%s.tag == SP_TAG_SYM", tmp);
+  /* an Encoding boxes as its own tag, with no class-table entry */
+  else if (sp_streq(cn, "Encoding"))
+    buf_printf(b, "%s.tag == SP_TAG_ENCODING", tmp);
   else if (sp_streq(cn, "NilClass"))
     buf_printf(b, "%s.tag == SP_TAG_NIL", tmp);
   else if (sp_streq(cn, "TrueClass"))
@@ -10025,11 +10028,13 @@ static void emit_when_splat_test(Compiler *c, int cond, int t, TyKind pt, Buf *b
    universal classes hold for nil as well and keep the constant (answers 0,
    nothing emitted). */
 /* A qualified constant of a builtin that holds a value, not a class
-   (`Socket::AF_INET`, `File::SEPARATOR`, `Float::INFINITY`). */
+   (`Socket::AF_INET`, `File::SEPARATOR`, `Float::INFINITY`), or an
+   Encoding (`Encoding::UTF_8`), which is a boxed value. */
 static int when_builtin_value_const(Compiler *c, int cond) {
   if (nt_kind(c->nt, cond) != NK_ConstantPathNode) return 0;
   TyKind ct = comp_ntype(c, cond);
-  return ct == TY_INT || ct == TY_FLOAT || ct == TY_STRING;
+  if (ct == TY_INT || ct == TY_FLOAT || ct == TY_STRING) return 1;
+  return ct == TY_POLY && enc_const_path(c->nt, cond);
 }
 
 static int emit_when_scalar_class(TyKind pt, const char *cn, int t, Buf *b) {
