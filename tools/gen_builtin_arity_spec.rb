@@ -40,6 +40,21 @@
 # accepts 0 args where the bare call wants a limit; Array#fill drops to 0..2).
 # Each row holds both quartets; an unprovable side is the -1 sentinel quartet.
 
+# The libraries below add methods of their own, and a newer gem than the one
+# CRuby ships changes them (json's generic to_json and parse arities, time's
+# rfc3339), so the tables would depend on what else is installed. Activate the
+# default versions first; stop when one cannot be, rather than probe whatever
+# loads.
+%w[json time].each do |name|
+  spec = Gem::Specification.find_all_by_name(name).find(&:default_gem?)
+  abort "#{name}: the default gem of this CRuby is not installed" unless spec
+  begin
+    gem name, spec.version.to_s
+  rescue Gem::LoadError => e
+    abort "#{name}: cannot activate the default gem: #{e.message}"
+  end
+end
+
 require "timeout"
 require "fileutils"
 require "set"
