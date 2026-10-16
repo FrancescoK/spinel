@@ -837,6 +837,26 @@ const char *sp_FloatArray_pack(sp_FloatArray *arr, const char *fmt) {
   return r;
 }
 
+/* p: a count of elements, each a String's address (nil's NULL), a
+   pointer-sized J as CRuby packs it; P: one, its count the length of what
+   it points to (#9349). A boxed element wrote nothing. */
+static void pk_ptr_poly(char spec, int64_t count, sp_PolyArray *arr, sp_int *idx, char **buf, size_t *len,
+                        size_t *cap) {
+  int64_t n = spec == 'P' ? (count == 0 ? 0 : 1) : count < 0 ? arr->len - *idx : count;
+  for (int64_t k = 0; k < n; k++) {
+    if (*idx >= arr->len) pk_too_few(*buf);
+    sp_RbVal e = arr->data[(*idx)++];
+    const char *s = NULL;
+    if (e.tag == SP_TAG_STR) s = e.v.s;
+    else if (e.tag == SP_TAG_OBJ && e.cls_id == SP_BUILTIN_STRBUF && e.v.p) s = ((sp_String *)e.v.p)->data;
+    else if (e.tag != SP_TAG_NIL) {
+      free(*buf);
+      sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into String", pk_conv_name(e)));
+    }
+    pk_int_directive('J', (int64_t)(intptr_t)s, 0, buf, len, cap);
+  }
+}
+
 const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {SP_GC_ROOT(arr);
   if (!arr || !fmt) return sp_str_empty;
   size_t cap = 64;
@@ -867,6 +887,10 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {SP_GC_ROOT(ar
         if (idx >= arr->len) pk_too_few(buf);
         pk_ber_poly(arr->data[idx++], &buf, &len, &cap);
       }
+      continue;
+    }
+    if (spec == 'p' || spec == 'P') {
+      pk_ptr_poly(spec, count, arr, &idx, &buf, &len, &cap);
       continue;
     }
     if (count < 0) count = arr->len - idx;
@@ -934,6 +958,10 @@ const char *sp_PolyArray_pack_buffer(sp_PolyArray *arr, const char *fmt, const c
       }
       continue;
     }
+    if (spec == 'p' || spec == 'P') {
+      pk_ptr_poly(spec, count, arr, &idx, &buf, &len, &cap);
+      continue;
+    }
     if (count < 0) count = arr->len - idx;
     if (count < 0) count = 0;
     if (pk_is_flt_spec(spec)) {
@@ -994,10 +1022,21 @@ const char *sp_StrArray_pack(sp_StrArray *arr, const char *fmt) {
       continue;
     }
     if (count == 0 || (count < 0 && idx == arr->len)) continue;
+    /* `p` takes a count of elements, each its string's address, a
+       pointer-sized J as CRuby packs it (nil, NULL); `P`'s count is the
+       length of the one structure it points to (#9349) */
+    if (spec == 'p') {
+      int64_t n = count < 0 ? arr->len - idx : count;
+      for (int64_t k = 0; k < n; k++) {
+        if (idx >= arr->len) pk_too_few(buf);
+        pk_int_directive('J', (int64_t)(intptr_t)sp_StrArray_get(arr, idx), 0, &buf, &len, &cap);
+        idx++;
+      }
+      continue;
+    }
     if (idx >= arr->len) pk_too_few(buf);
     idx++;
-    if (spec == 'p' || spec == 'P') {
-      /* the string's address, a pointer-sized J as CRuby packs it */
+    if (spec == 'P') {
       pk_int_directive('J', (int64_t)(intptr_t)sp_StrArray_get(arr, idx - 1), 0, &buf, &len, &cap);
     }
     else if (strchr("cCsSlLqQnNvVjJiIfdeEgGUw", spec)) {

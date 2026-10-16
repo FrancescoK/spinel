@@ -1,0 +1,13 @@
+n=1 pointers=1
+n=2 pointers=2
+n=3 pointers=3
+2
+2
+1
+1
+2
+0
+2
+0
+too few arguments
+no implicit conversion of Integer into String
