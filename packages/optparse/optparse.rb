@@ -1135,7 +1135,7 @@ XXX
   # method.
   #
   def self.with(*args, &block)
-    opts = new(*args)
+    opts = self.new(*args)
     opts.instance_eval(&block)
     opts
   end
