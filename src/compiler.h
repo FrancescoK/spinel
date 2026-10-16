@@ -1290,6 +1290,7 @@ typedef struct {
   int *lazy_hoist;
   int lazy_hoist_n;
   int share_strings;
+  int has_cm_builtin_alias;   /* a singleton alias captured a builtin's class method (alias_builtin 2) */
   /* the scope + 1 whose block a yield under emit_proc_yield hands its
      arguments to (a proc form, or a method with a `&blk` it calls), or 0 */
   int proc_arg_src;
@@ -1883,6 +1884,8 @@ int         comp_resolve_member(Compiler *c, int class_id, const char *name, int
 const char *comp_resolve_alias(Compiler *c, int class_id, const char *name);
 const char *comp_resolve_alias_at(Compiler *c, int class_id, const char *name, int *start_cls);
 const char *comp_resolve_cm_alias_at(Compiler *c, int class_id, const char *name, int *start_cls);
+void rewrite_builtin_cm_alias_call(Compiler *c, int id);   /* analyze.c */
+const char *comp_resolve_cm_alias_ex(Compiler *c, int class_id, const char *name, int *builtin);
 int comp_name_is_sg_alias_only(Compiler *c, int class_id, const char *name);
 const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin);
 

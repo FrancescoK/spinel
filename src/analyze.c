@@ -35957,7 +35957,7 @@ static int sg_civ_reader_call(Compiler *c, int v) {
   }
   if (ci < 0) return 0;
   ClassInfo *cls = &c->classes[ci];
-  const char *rn = comp_resolve_alias(c, ci, nm);
+  const char *rn = comp_resolve_cm_alias_at(c, ci, nm, NULL);
   if (!rn) rn = nm;
   if (!comp_is_sg_reader(cls, rn) || !comp_is_sg_civ(cls, rn)) return 0;
   char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", rn);
@@ -41604,6 +41604,134 @@ static void rewrite_prepended_builtin_supers(Compiler *c) {
    Spelled as one -- self as the receiver, the builtin's name, marked so the
    class's own method of that name does not take it -- since a receiverless
    `+` is a call of the class's own `+`, which by then is plus_with. */
+/* The class side: a call of a singleton alias that captured a builtin's
+   class method (`class << Time; alias_method :stamp, :now; end`, then
+   `Time.stamp`, `::Time.stamp`, or `stamp` / `self.stamp` in a class method
+   of Time) is the builtin's call of its own name through the constant,
+   `Time.now`, marked so a class method the program defines of that name
+   does not take it. */
+/* a class some class of the program inherits from: `self.mk` or a bare `mk`
+   in its class methods runs for the subclass too, which a rewrite to the
+   constant would not */
+static int cm_alias_has_subclass(Compiler *c, int ci) {
+  for (int k = 0; k < c->nclasses; k++) {
+    int dn = c->classes[k].def_node;
+    int sc = dn >= 0 && k != ci ? nt_ref(c->nt, dn, "superclass") : -1;
+    const char *sn = sc >= 0 ? nt_str(c->nt, sc, "name") : NULL;
+    if (sn && sp_streq(sn, c->classes[ci].name)) return 1;
+  }
+  return 0;
+}
+/* does call id run before the singleton alias `nm` of class ci is made: code
+   of the program's top level or of a class body that comes ahead of the alias
+   statement? (A def's body runs when it is called.) An alias binds for the
+   whole program here, so such a call would find the alias where CRuby raises
+   NoMethodError: it stays unrenamed, and refused (alias_refuse_early_call is
+   the instance side's) */
+static int cm_alias_call_precedes(Compiler *c, int ci, int id, const char *nm) {
+  const NodeTable *nt = c->nt;
+  int si = c->nscope[id];
+  if (si >= 0 && c->scopes[si].def_node >= 0) return 0;
+  for (int i = c->classes[ci].naliases - 1; i >= 0; i--) {
+    int an = c->classes[ci].alias_node[i];
+    if (!c->classes[ci].alias_sg[i] || an < 0 || !sp_streq(c->classes[ci].alias_new[i], nm)) continue;
+    /* a call a desugar made has no line of its own (0): it is not ahead */
+    long long cl = nt_int(nt, id, "node_line", 0);
+    return cl > 0 && nt_int(nt, id, "node_file", 0) == nt_int(nt, an, "node_file", 0) &&
+           cl < nt_int(nt, an, "node_line", 0);
+  }
+  return 0;
+}
+void rewrite_builtin_cm_alias_call(Compiler *c, int id) {
+  if (!c->has_cm_builtin_alias) return;
+  NodeTable *nt = (NodeTable *)c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver"), ci = -1;
+  if (!nm || nt_int(nt, id, "builtin_only", 0)) return;
+  if (recv >= 0 && (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode))
+    ci = comp_class_index(c, nt_str(nt, recv, "name"));
+  else if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
+    int si = c->nscope[id];
+    ci = si >= 0 && c->scopes[si].is_cmethod ? c->scopes[si].class_id : -1;
+  }
+  if (ci < 0 || !c->classes[ci].name || c->classes[ci].naliases == 0) return;
+  int bi = 0;
+  const char *rn = comp_resolve_cm_alias_ex(c, ci, nm, &bi);
+  if (bi != 2 || !rn || sp_streq(rn, nm)) return;
+  if ((recv < 0 || nt_kind(nt, recv) == NK_SelfNode) && cm_alias_has_subclass(c, ci)) return;
+  if (nt_int(nt, id, "cm_alias_unsure", 0)) {
+    char msg[300];
+    snprintf(msg, sizeof msg, "%s.%s: a call that may run before the singleton alias of a builtin's class method is made "
+             "(written in a block, on the alias's line, or beside an alias that is not plain class-body code) is not "
+             "supported; see docs/limitations.md", c->classes[ci].name, nm);
+    unsupported_feature(c, id, msg);
+  }
+  if (cm_alias_call_precedes(c, ci, id, nm)) return;
+  char *target = strdup(rn);
+  if (!target) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  if (recv < 0) {
+    recv = nt_new_node(nt, "ConstantReadNode");
+    comp_grow_node_arrays(c);
+    c->nscope[recv] = c->nscope[id];
+    nt_node_set_ref(nt, id, "receiver", recv);
+  }
+  else if (nt_kind(nt, recv) == NK_SelfNode) nt_node_reset(nt, recv, "ConstantReadNode");
+  if (nt_kind(nt, recv) == NK_ConstantReadNode) nt_node_set_str(nt, recv, "name", c->classes[ci].name);
+  nt_node_set_str(nt, id, "name", target);
+  nt_node_set_int(nt, id, "builtin_only", 1);
+  free(target);
+}
+/* Can the program's order not prove that call id runs after the singleton
+   alias statement an? A call written in a block, lambda or proc ahead of the
+   alias (or on its line) may run after it, one on the alias's line has no
+   order, and an alias in a loop or a conditional may not run at all. Such a
+   call is refused: renamed, it would answer where CRuby may raise, and left
+   alone, raise where CRuby may answer. */
+static int cm_alias_order_unproven(Compiler *c, const int *par, int id, int an) {
+  const NodeTable *nt = c->nt;
+  for (int n = par[an]; n >= 0 && n != nt->root_id; n = par[n]) {
+    NodeKind k = nt_kind(nt, n);
+    if (k != NK_StatementsNode && k != NK_ClassNode && k != NK_ModuleNode && k != NK_SingletonClassNode) return 1;
+  }
+  long long cl = nt_int(nt, id, "node_line", 0), al = nt_int(nt, an, "node_line", 0);
+  if (cl <= 0 || nt_int(nt, id, "node_file", 0) != nt_int(nt, an, "node_file", 0)) return 0;
+  if (cl == al) return 1;
+  if (cl > al) return 0;
+  for (int n = par[id]; n >= 0; n = par[n]) {
+    NodeKind k = nt_kind(nt, n);
+    if (k == NK_DefNode) return 0;
+    if (k == NK_BlockNode || k == NK_LambdaNode) return 1;
+  }
+  return 0;
+}
+static void rewrite_builtin_cm_alias_calls(Compiler *c) {
+  if (!c->has_cm_builtin_alias) return;
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, nal = 0;
+  for (int k = 0; k < c->nclasses; k++)
+    for (int i = 0; i < c->classes[k].naliases; i++)
+      if (c->classes[k].alias_sg[i] && c->classes[k].alias_node[i] >= 0) nal++;
+  struct { const char *name; int node; } *als = malloc(sizeof *als * (size_t)(nal ? nal : 1));
+  if (!als) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  nal = 0;
+  for (int k = 0; k < c->nclasses; k++)
+    for (int i = 0; i < c->classes[k].naliases; i++)
+      if (c->classes[k].alias_sg[i] && c->classes[k].alias_node[i] >= 0) {
+        als[nal].name = c->classes[k].alias_new[i]; als[nal++].node = c->classes[k].alias_node[i];
+      }
+  const int *par = comp_parent_map(c);
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    for (int a = 0; nm && a < nal; a++)
+      if (sp_streq(als[a].name, nm) && cm_alias_order_unproven(c, par, id, als[a].node)) {
+        nt_node_set_int(nt, id, "cm_alias_unsure", 1);
+        break;
+      }
+    rewrite_builtin_cm_alias_call(c, id);
+  }
+  free(als);
+}
 static void rewrite_builtin_alias_self_calls(Compiler *c, int settled) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
@@ -44584,6 +44712,7 @@ static void an_phase_desugar_register(Compiler *c) {
   register_undefs(c);
   register_globals_consts(c);
   rewrite_const_alias_receivers(c);
+  rewrite_builtin_cm_alias_calls(c);   /* Time.stamp -> Time.now, the builtin's */
   desugar_env_values(c);
   register_ffi_decls(c);
   register_cext_layouts(c);

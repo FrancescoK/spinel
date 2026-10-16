@@ -17234,7 +17234,7 @@ void refl_class_singleton_methods(Compiler *c, int ci, int all, ReflNames *r) {
     for (int i = 0; i < kc->naliases; i++) {
       const char *an = kc->alias_new[i];
       if (!an || name_is_synth_method(c, an) || comp_cmethod_vis_declared(c, k, an, NULL) == SP_VIS_PRIVATE) continue;
-      const char *od = comp_resolve_alias(c, k, an);
+      const char *od = comp_resolve_cm_alias_at(c, k, an, NULL);
       if ((kc->alias_sg && kc->alias_sg[i]) ||
           (comp_cmethod_in_chain(c, k, od, NULL) >= 0 && comp_method_in_chain(c, k, od, NULL) < 0))
         refl_note(r, an, 1);
@@ -28203,7 +28203,7 @@ int emit_sg_accessor(Compiler *c, int id, int ci, const char *cn, const char *na
   }
   /* getter -- through the alias table, so `class << self; alias_method
      :shown?, :shown; end` reaches the reader it renames (#3776) */
-  const char *rn = comp_resolve_alias(c, ci, name);
+  const char *rn = comp_resolve_cm_alias_at(c, ci, name, NULL);
   if (!rn) rn = name;
   if (!comp_is_sg_reader(cls, rn)) return 0;
   if (comp_is_sg_civ(cls, rn)) {

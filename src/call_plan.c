@@ -1006,16 +1006,6 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
   }
 
   int recv = nt_ref(nt, id, "receiver");
-  if ((nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode) &&
-      !nt_int(nt, id, "builtin_only", 0)) {
-    int ci = comp_class_index(c, nt_str(nt, recv, "name")), builtin = 0;
-    const char *target = ci >= 0 && c->classes[ci].naliases > 0
-                           ? comp_resolve_alias_ex(c, ci, name, NULL, &builtin) : NULL;
-    if (builtin == 2) {
-      snprintf(buf, cap, "%s.%s: calling an alias of a builtin singleton method is not supported; see docs/limitations.md", c->classes[ci].name, target);
-      return buf;
-    }
-  }
   if (is_then_alias(name)) {
     int blk = nt_ref(nt, id, "block"), recv = nt_ref(nt, id, "receiver");
     TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;

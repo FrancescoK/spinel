@@ -3213,7 +3213,7 @@ static int emit_cls_value_sg_accessor(Compiler *c, int id, int recv, const char 
   int any = 0;
   for (int k = 0; k < c->nclasses && !any; k++) {
     if (is_builtin_reopen(c->classes[k].name)) continue;
-    const char *rn = setter ? base : comp_resolve_alias(c, k, name);
+    const char *rn = setter ? base : comp_resolve_cm_alias_at(c, k, name, NULL);
     any = setter ? comp_is_sg_writer(&c->classes[k], base) : comp_is_sg_reader(&c->classes[k], rn ? rn : name);
   }
   if (!any) return 0;
@@ -3225,7 +3225,7 @@ static int emit_cls_value_sg_accessor(Compiler *c, int id, int recv, const char 
   for (int k = 0; k < c->nclasses; k++) {
     if (is_builtin_reopen(c->classes[k].name)) continue;
     ClassInfo *cls = &c->classes[k];
-    const char *rn = setter ? base : comp_resolve_alias(c, k, name);
+    const char *rn = setter ? base : comp_resolve_cm_alias_at(c, k, name, NULL);
     if (!rn) rn = name;
     if (setter ? !comp_is_sg_writer(cls, base) : !comp_is_sg_reader(cls, rn)) continue;
     buf_printf(b, "%sif (_t%d.cls_id == %d) { ", first ? "" : "else ", tk, k);

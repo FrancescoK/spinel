@@ -3885,8 +3885,10 @@ static int are_enclosing_class(Compiler *c, int n) {
 /* An alias binds for the whole program, because the method tables are static.
    Class-body code that runs between a `def a` and a later `alias a b` meets the
    def in CRuby and would meet the alias here, silently: a call of `a` made in the
-   class body before the alias is refused (#7690). */
-static void alias_refuse_early_call(Compiler *c, ClassInfo *cls, const char *nw, int alias_node) {
+   class body before the alias is refused (#7690). A singleton alias (cm)
+   rebinds a class method, so it meets the `def self.name` before it, and an
+   instance `def` of the name is none of its business. */
+static void alias_refuse_early_call(Compiler *c, ClassInfo *cls, const char *nw, int alias_node, int cm) {
   if (!nw || alias_node < 0 || !cls->name) return;
   const NodeTable *nt = c->nt;
   int cid = comp_class_index(c, cls->name);
@@ -3894,7 +3896,7 @@ static void alias_refuse_early_call(Compiler *c, ClassInfo *cls, const char *nw,
   int defn = -1;
   for (int si = 1; si < c->nscopes; si++) {
     Scope *sc = &c->scopes[si];
-    if (sc->class_id != cid || sc->is_cmethod || sc->is_proc_form || sc->def_node < 0 ||
+    if (sc->class_id != cid || !sc->is_cmethod != !cm || sc->is_proc_form || sc->def_node < 0 ||
         nt_kind(nt, sc->def_node) != NK_DefNode) continue;
     const char *dn = nt_str(nt, sc->def_node, "name");
     if (dn && sp_streq(dn, nw) && sc->def_node < alias_node && sc->def_node > defn) defn = sc->def_node;
@@ -3953,10 +3955,13 @@ static void alias_mark_sg(ClassInfo *cls, int s, int singleton) {
     if (cls->alias_node[i] == s) { cls->alias_sg[i] = 1; comp_class_shape_changed(); }
 }
 static void alias_register(Compiler *c, ClassInfo *cls, const char *nw, const char *od, int s, int singleton) {
-  alias_refuse_early_call(c, cls, nw, s);
+  alias_refuse_early_call(c, cls, nw, s, singleton);
   int cid = cls->name ? comp_class_index(c, cls->name) : -1;
   if (singleton && cid >= 0) {
-    if (builtin_cmethod_known(cls->name, od) &&
+    /* Kernel's module functions are not called through the constant as a
+       builtin: a def of the name later in the module takes the aliased
+       call too, which then calls itself */
+    if (is_kernel_module_name(cls->name) && builtin_cmethod_known(cls->name, od) &&
         comp_cmethod_in_class(c, cid, od) >= 0 &&
         !alias_target_defined_before(c, cls, cid, od, s, 1)) {
       char msg[512];
@@ -3974,7 +3979,21 @@ static void alias_register(Compiler *c, ClassInfo *cls, const char *nw, const ch
      where it read the instance methods, and an instance method of the new
      name defined later ended the alias (`class << self; alias_method :snake,
      :Camel; end` beside `def snake`, #9177) */
-  if (alias_capture_earlier_def(c, cls, nw, od, s, singleton)) { alias_mark_sg(cls, s, singleton); return; }
+  if (alias_capture_earlier_def(c, cls, nw, od, s, singleton)) {
+    alias_mark_sg(cls, s, singleton);
+    /* an alias of an alias whose own name the class defines again later
+       (`alias stamp now; alias stamp2 stamp; def stamp`) took the builtin
+       the first named */
+    for (int i = cls->naliases - 1; singleton && s >= 0 && cid >= 0 && i >= 0; i--)
+      if (cls->alias_node[i] == s && sp_streq(cls->alias_new[i], nw)) {
+        if (builtin_cmethod_known(cls->name, cls->alias_old[i]) &&
+            !alias_target_defined_before(c, cls, cid, cls->alias_old[i], s, 1)) {
+          cls->alias_builtin[i] = 2; c->has_cm_builtin_alias = 1; comp_class_shape_changed();
+        }
+        break;
+      }
+    return;
+  }
   comp_add_alias_from(cls, nw, od, s);
   alias_mark_sg(cls, s, singleton);
   /* In a reopened primitive, an alias of a name the program has not defined
@@ -3991,7 +4010,7 @@ static void alias_register(Compiler *c, ClassInfo *cls, const char *nw, const ch
        alias_prim_class(cls->name) || (ep && builtin_instance_method_known(ep, od))) &&
       !alias_target_defined_before(c, cls, cid, od, s, singleton)) {
     for (int i = cls->naliases - 1; i >= 0; i--)
-      if (cls->alias_node[i] == s && sp_streq(cls->alias_new[i], nw)) { cls->alias_builtin[i] = singleton ? 2 : 1; comp_class_shape_changed(); break; }
+      if (cls->alias_node[i] == s && sp_streq(cls->alias_new[i], nw)) { cls->alias_builtin[i] = singleton ? 2 : 1; c->has_cm_builtin_alias |= singleton; comp_class_shape_changed(); break; }
   }
   /* In a program class, of an Object / Kernel method it has not defined
      there yet: the builtin's, unless an ancestor or a module turns out to

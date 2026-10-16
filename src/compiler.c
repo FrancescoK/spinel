@@ -1129,11 +1129,10 @@ static int chain_lookup(Compiler *c, int class_id, const char *name, int *def_cl
     return a[2 * class_id];
   }
   int start = class_id, mi = -1, dc = -1, bi = 0;
-  const char *rn = is_cm ? comp_resolve_cm_alias_at(c, class_id, name, &start)
-                         : resolve_alias_side(c, class_id, name, &start, &bi, 2);
+  const char *rn = resolve_alias_side(c, class_id, name, &start, &bi, is_cm ? 1 : 2);
   /* an alias that captured a builtin's method names no method of the
      program's, whatever the class defines of that name later */
-  if (bi && !is_cm && !sp_streq(rn, name)) start = -1;
+  if (bi && !sp_streq(rn, name)) start = -1;
   for (int cid = start; cid >= 0; cid = c->classes[cid].parent) {
     int m = is_cm ? comp_cmethod_in_class(c, cid, rn) : comp_method_in_class(c, cid, rn);
     if (m >= 0) { mi = m; dc = cid; break; }
@@ -1989,17 +1988,24 @@ int comp_resolve_member(Compiler *c, int class_id, const char *name, int want_wr
   return SP_MEMBER_METHOD;
 }
 
+/* An instance method's lookup reads the instance aliases only: a singleton
+   alias (`class << self; alias_method :stamp, :now`) names a class method,
+   and an instance call of the same name must not take it. */
 const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin) {
-  return resolve_alias_side(c, class_id, name, start_cls, builtin, 0);
+  return resolve_alias_side(c, class_id, name, start_cls, builtin, 2);
 }
 /* The class-method side of a class reads its singleton aliases
    (`class << self; alias a b`) and those of the modules it extends: an
    instance one names no class method (`alias name cop_name` made a class
-   method's Module#name call the class method cop_name). An instance
-   method's lookup reads the instance aliases, and a module's side every
-   alias. */
+   method's Module#name call the class method cop_name), and a module's side
+   reads the instance ones too. */
 const char *comp_resolve_cm_alias_at(Compiler *c, int class_id, const char *name, int *start_cls) {
   return resolve_alias_side(c, class_id, name, start_cls, NULL, 1);
+}
+/* ... and, for the builtin an alias captured (2: a builtin singleton method),
+   the name of it, as comp_resolve_alias_ex answers for the instance side */
+const char *comp_resolve_cm_alias_ex(Compiler *c, int class_id, const char *name, int *builtin) {
+  return resolve_alias_side(c, class_id, name, NULL, builtin, 1);
 }
 static const char *resolve_alias_side(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin, int sg) {
   if (builtin) *builtin = 0;
@@ -2020,8 +2026,7 @@ static const char *resolve_alias_side(Compiler *c, int class_id, const char *nam
          instance ones too: a module's instance alias can be a module
          function as well (`alias shellwords shellsplit; module_function
          :shellwords`, or `extend self`). An instance method's lookup (2)
-         reads the instance aliases only; the other callers (0) read every
-         alias, as they always have. */
+         reads the instance aliases only. */
       /* ... but not over a class method the module defines itself */
       int mod = ci->def_node >= 0 && nt_kind(c->nt, ci->def_node) == NK_ModuleNode &&
                 !(sg == 1 && comp_cmethod_in_class(c, cid, name) >= 0);
@@ -2749,7 +2754,7 @@ int comp_method_overridden(Compiler *c, int cid, const char *name, int cmeth) {
   for (int i = 0; i < nd; i++) {
     int k = ds[i];
     if (k == cid) continue;
-    if (!sp_streq(comp_resolve_alias(c, k, name), name) ||
+    if (!sp_streq(cmeth ? comp_resolve_cm_alias_at(c, k, name, NULL) : comp_resolve_alias(c, k, name), name) ||
         (cmeth ? comp_cmethod_in_class(c, k, name) : comp_method_in_class(c, k, name)) >= 0) {
       overridden = 1;
       break;
@@ -3482,7 +3487,10 @@ int comp_method_index(Compiler *c, const char *name) {
   {
     int tl = name ? comp_class_index(c, "Toplevel") : -1;
     if (tl >= 0) {
+      /* ... its instance aliases, and the main object's singleton ones
+         (`class << self; alias d c; end` at the top level) */
       const char *res = comp_resolve_alias(c, tl, name);
+      if (res && sp_streq(res, name)) res = comp_resolve_cm_alias_at(c, tl, name, NULL);
       if (res && !sp_streq(res, name)) return comp_method_index_direct(c, res);
     }
   }
