@@ -1,5 +1,6 @@
 #include <limits.h>
 #include "codegen_internal.h"
+#include "call_plan.h"
 
 /* The program's methods by name, sorted (built once per compile): a call's
    targets taken by name, without a pass over every scope per call. */
@@ -54,11 +55,14 @@ static void poll_block_edges(Compiler *c, int n, int t, int **ef, int **et, int 
                sp_streq(nm, "call") || sp_streq(nm, "instance_exec") || sp_streq(nm, "instance_eval")))
       dyn[t] = 1;
     else if (nm) {
-      int cnt, first = poll_names_of(c, nm, &cnt);
+      int tg[CPT_MAX], cnt, first = 0, ntg = cplan_targets(c, n, tg, CPT_MAX);
+      if (ntg >= 0) cnt = ntg;
+      else first = poll_names_of(c, nm, &cnt);
       for (int i = 0; i < cnt; i++) {
+        int to = ntg >= 0 ? tg[i] : g_poll_names[first + i].scope;
         if (*ne == *cap) { *cap *= 2; *ef = realloc(*ef, *cap * sizeof(int)); *et = realloc(*et, *cap * sizeof(int)); }
-        (*ef)[*ne] = t; (*et)[*ne] = g_poll_names[first + i].scope; (*ne)++;
-        if (g_poll_names[first + i].scope == t) g_poll_cyc[t] = 1;
+        (*ef)[*ne] = t; (*et)[*ne] = to; (*ne)++;
+        if (to == t) g_poll_cyc[t] = 1;
       }
     }
   }
@@ -71,9 +75,11 @@ static void poll_block_edges(Compiler *c, int n, int t, int **ef, int **et, int 
     for (int j = 0; j < an; j++) poll_block_edges(c, av[j], t, ef, et, ne, cap, dyn, depth + 1);
   }
 }
-/* Is method scope si on a cycle of the call graph, taken by name (a call
-   reaches every method of its name; a dynamic send, a yield, a block's or a
-   proc's call reaches every method)? Only such a method polls at its entry
+/* Is method scope si on a cycle of the call graph: a call reaches the
+   methods its plan names where the receiver's type settles them
+   (cplan_targets: a builtin receiver's call reaches none, #9377), else
+   every method of its name; a dynamic send, a yield, a block's or a
+   proc's call reaches every method? Only such a method polls at its entry
    for a delivered signal (#9222): a call chain that ends returns to a loop
    or a method that polls. A method is on one when its strongly connected
    component has two methods or calls itself, or when it reaches a call that
@@ -108,18 +114,19 @@ int poll_scope_on_cycle(Compiler *c, int si) {
       /* a literal block runs inside each method of the name that yields: an
          edge from that method to what the block's body calls (its calls are
          the caller's edges too, as the block shares its scope) */
+      int tg[CPT_MAX], cnt, first = 0, ntg = cplan_targets(c, n, tg, CPT_MAX);
+      if (ntg >= 0) cnt = ntg;
+      else first = poll_names_of(c, nm, &cnt);
       if (bk >= 0) {
-        int cnt0, first0 = poll_names_of(c, nm, &cnt0);
-        for (int k = 0; k < cnt0; k++) {
-          int t = g_poll_names[first0 + k].scope;
+        for (int k = 0; k < cnt; k++) {
+          int t = ntg >= 0 ? tg[k] : g_poll_names[first + k].scope;
           if (!c->scopes[t].yields) continue;
           poll_block_edges(c, nt_ref(nt, bk, "body"), t, &ef, &et, &ne, &cap, dyn, 0);
         }
       }
-      int cnt, first = poll_names_of(c, nm, &cnt);
       for (int k = 0; k < cnt; k++) {
         if (ne == cap) { cap *= 2; ef = realloc(ef, cap * sizeof(int)); et = realloc(et, cap * sizeof(int)); }
-        ef[ne] = from; et[ne] = g_poll_names[first + k].scope; ne++;
+        ef[ne] = from; et[ne] = ntg >= 0 ? tg[k] : g_poll_names[first + k].scope; ne++;
         if (et[ne - 1] == from) g_poll_cyc[from] = 1;   /* calls itself */
       }
     }
