@@ -7418,7 +7418,15 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
                                      int label, Buf *b) {
   const NodeTable *nt = c->nt;
   if (recv < 0 || !name) return 0;
-  if (nt_ref(nt, id, "block") >= 0 && argc == 0) return 0;
+  /* a `&b` forwarding the block of an inlined body whose caller passed none
+     (resolve_forwarded_block, and no real proc the inline was handed): the
+     call is blockless here, and its builtin answers as one (a Hash's
+     each_pair its Enumerator) */
+  int nil_fwd = 0;
+  { int fb0 = nt_ref(nt, id, "block");
+    nil_fwd = fb0 >= 0 && nt_kind(nt, fb0) == NK_BlockArgumentNode &&
+              resolve_forwarded_block(c, fb0) < 0 && !forwarded_real_proc(fb0, -1); }
+  if (nt_ref(nt, id, "block") >= 0 && argc == 0 && !nil_fwd) return 0;
   if (g_pd_skip == id || g_n_argov + argc + 1 > MAX_ARG_OVERRIDE) return 0;
   if (argc > 0 && (!atmp || !atmp_ty)) return 0;
   /* a splat's temp is the flattened list, which no builtin emitter reads
@@ -7453,7 +7461,7 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
         (rereads || (repr_of(c, argv[a]).as_ty != atmp_ty[a] && !held_h)))
       return 0;
   }
-  TyKind bt = (c->poly_builtin_ty && id < c->node_cap && !g_bi_count_arm)
+  TyKind bt = (c->poly_builtin_ty && id < c->node_cap && !g_bi_count_arm && !nil_fwd)
                 ? c->poly_builtin_ty[id] : TY_UNKNOWN;
   /* `to_s` / `inspect` answer a String on every builtin receiver, with or
      without an argument (Integer#to_s(base)); the analysis types them by the
@@ -7463,6 +7471,12 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
   /* respond_to? is every value's: a class overriding it gets an arm, and
      any other value the answer the program would give without the override */
   if (bt == TY_UNKNOWN && argc >= 1 && argc <= 2 && sp_streq(name, "respond_to?")) bt = TY_BOOL;
+  if (bt == TY_UNKNOWN && nil_fwd) {
+    int fb1 = nt_ref(nt, id, "block");
+    nt_node_set_ref((NodeTable *)nt, id, "block", -1);
+    bt = an_builtin_answer(c, id);
+    nt_node_set_ref((NodeTable *)nt, id, "block", fb1);
+  }
   if (bt == TY_UNKNOWN) bt = an_builtin_answer(c, id);
   /* a writer's arm run for its effect (tr < 0), whose value is its
      argument's temp: the synthesized writers take the argument as it is,
@@ -7513,7 +7527,7 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
   /* a forwarded `&b` the builtin leaves unused is left out of its arm, whose
      emitters take the call without one (an_builtin_answer asks the same) */
   int dblk = nt_ref(nt, id, "block");
-  int drop_blk = dblk >= 0 && nt_kind(nt, dblk) == NK_BlockArgumentNode && builtin_read_ignores_block(name);
+  int drop_blk = dblk >= 0 && nt_kind(nt, dblk) == NK_BlockArgumentNode && (builtin_read_ignores_block(name) || nil_fwd);
   if (drop_blk) nt_node_set_ref((NodeTable *)nt, id, "block", -1);
   /* Array#at, kept by name where a program class owns it (desugar_array_at),
      is the index read that checks its receiver is an Array (an index, never
