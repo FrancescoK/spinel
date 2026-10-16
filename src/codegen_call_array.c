@@ -2565,7 +2565,7 @@ typedef struct { int bound, vr, vf, vi, nv, views[16]; TyKind nat; int copy, cop
 /* Bind node n, an Array subclass instance, to its Array -- the same pointer
    cast -- evaluating anything but a variable once, ahead of the call. */
 static int arysub_bind(Compiler *c, int n, TyKind k) {
-  int cid = ty_object_class(comp_ntype(c, n));
+  int cid = ty_object_class(repr_of(c, n).as_ty);
   const char *at = arysub_array_ctype(c, cid);
   NodeKind nk = nt_kind(c->nt, n);
   Buf rb; memset(&rb, 0, sizeof rb);
@@ -2642,10 +2642,10 @@ static int arysub_view_open(Compiler *c, int id, ArysubView *v) {
   int args = nt_ref(nt, id, "arguments"), an = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   int want = 0;
-  for (int i = 0; i < an; i++) want |= comp_ty_ary_root(c, comp_ntype(c, av[i])) >= 0;
+  for (int i = 0; i < an; i++) want |= comp_ty_ary_root(c, repr_of(c, av[i]).as_ty) >= 0;
   if (want && comp_arysub_args_viewed(c, id, rt)) {
     for (int i = 0; i < an && v->nv < 16; i++) {
-      TyKind at = comp_ntype(c, av[i]);
+      TyKind at = repr_of(c, av[i]).as_ty;
       if (comp_ty_ary_root(c, at) < 0) continue;
       TyKind ak = comp_ary_kind(c, ty_object_class(at));
       if (ak == TY_STRBUF) ak = TY_STRING;
@@ -2667,9 +2667,9 @@ static void arysub_view_close(Compiler *c, ArysubView *v) {
 int emit_arysub_call(Compiler *c, int id, Buf *b) {
   if (!c->has_arysub) return 0;
   int ka = comp_arysub_kernel_array(c, id);
-  if (ka >= 0 && comp_ty_ary_root(c, comp_ntype(c, ka)) >= 0) { emit_expr(c, ka, b); return 1; }
+  if (ka >= 0 && comp_ty_ary_root(c, repr_of(c, ka).as_ty) >= 0) { emit_expr(c, ka, b); return 1; }
   int recv = nt_ref(c->nt, id, "receiver");
-  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  TyKind rt = recv >= 0 ? repr_of(c, recv).as_ty : TY_UNKNOWN;
   /* the view below retypes the call as the Array's own: a name that answers
      its oint there (last, pop, ...) is plain to the consumer outside the
      view, which sees the subclass receiver, so the answer is unwrapped */
