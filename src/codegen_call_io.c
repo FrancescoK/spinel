@@ -615,6 +615,37 @@ static int emit_io_socket_opt_call(Compiler *c, const NodeTable *nt, const char 
   return 0;
 }
 
+/* The socket reads emit_io_socket_recv_call answers, at the arity it does */
+static int socket_recv_call(const char *name, int argc) {
+  return (sp_streq(name, "recv") || sp_streq(name, "recvfrom")) && argc == 1;
+}
+
+/* recv and recvfrom of the socket in C expression r, up to the length node
+   len: the typed arm's, and a socket a block or a thread takes as its
+   parameter (a boxed handle) answers the same way. */
+static void emit_io_socket_recv_call(Compiler *c, const char *name, const char *r, int len, Buf *b) {
+  if (sp_streq(name, "recv")) {
+    buf_printf(b, "sp_sock_recv(%s, ", r); emit_int_expr(c, len, b); buf_puts(b, ")");
+    return;
+  }
+  /* recvfrom -> [payload, ["AF_INET", port, ip, ip]]; the payload and
+     the peer's address are new Strings, held while the Arrays are made */
+  int tp = ++g_tmp, ti = ++g_tmp, to = ++g_tmp, ta = ++g_tmp, tw = ++g_tmp;
+  buf_printf(b, "({ const char *_t%d = NULL; sp_int _t%d = 0;"
+                " const char *_t%d = sp_sock_recvfrom(%s, ", ti, tp, to, r);
+  emit_int_expr(c, len, b);
+  buf_printf(b, ", &_t%d, &_t%d); SP_GC_ROOT(_t%d); SP_GC_ROOT(_t%d);"
+                " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                " sp_PolyArray_push(_t%d, sp_box_str(strchr(_t%d, ':') ? SPL(\"AF_INET6\") : SPL(\"AF_INET\")));"
+                " sp_PolyArray_push(_t%d, sp_box_int(_t%d));"
+                " sp_PolyArray_push(_t%d, sp_box_str(_t%d));"
+                " sp_PolyArray_push(_t%d, sp_box_str(_t%d));"
+                " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                " sp_PolyArray_push(_t%d, sp_box_str(_t%d));"
+                " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); _t%d; })",
+             ti, tp, ti, to, ta, ta, ta, ti, ta, tp, ta, ti, ta, ti, tw, tw, tw, to, tw, ta, tw);
+}
+
 /* accept_nonblock as the boxed arm takes it: bare, or with a literal
    `exception: false` alone; any other keyword stays with the general
    dispatch, which words it */
@@ -708,6 +739,10 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        /* and its shutdown, which WEBrick calls on each listener it kept in
           an Array when a signal stops the server */
        (sp_feature_required("socket") && sp_streq(name, "shutdown") && argc <= 1 &&
+        !call_has_splat_arg(nt, argv, argc)) ||
+       /* and its reads: a socket a block or Thread.new takes as its parameter
+          is a boxed handle, as an Array element is */
+       (sp_feature_required("socket") && socket_recv_call(name, argc) &&
         !call_has_splat_arg(nt, argv, argc)) ||
        /* the readiness family: a lambda's parameter is boxed, so a handle
           passed through one reached `wait_readable` with no emitter, and in
@@ -1030,6 +1065,11 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         buf_printf(b, "sp_sock_shutdown(_t%d, ", tio2);
         if (argc == 1) emit_int_expr(c, argv[0], b); else buf_puts(b, "2");
         buf_puts(b, "); })");
+      }
+      else if (socket_recv_call(name, argc)) {
+        buf_printf(b, "SP_GC_ROOT(_t%d); ", tio2);
+        emit_io_socket_recv_call(c, name, tio, argv[0], b);
+        buf_puts(b, "; })");
       }
       /* the same answers the typed arm gives: `exception: false` swaps
          IO::EAGAINWaitReadable for the :wait_readable marker */
@@ -1573,27 +1613,8 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         buf_puts(b, "); })");
         free(rb.p); return 1;
       }
-      if (sp_streq(name, "recv") && argc == 1) {
-        buf_printf(b, "sp_sock_recv(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
-        free(rb.p); return 1;
-      }
-      /* recvfrom -> [payload, ["AF_INET", port, ip, ip]]; the payload and
-         the peer's address are new Strings, held while the Arrays are made */
-      if (sp_streq(name, "recvfrom") && argc == 1) {
-        int tp = ++g_tmp, ti = ++g_tmp, to = ++g_tmp, ta = ++g_tmp, tw = ++g_tmp;
-        buf_printf(b, "({ const char *_t%d = NULL; sp_int _t%d = 0;"
-                      " const char *_t%d = sp_sock_recvfrom(%s, ", ti, tp, to, r);
-        emit_int_expr(c, argv[0], b);
-        buf_printf(b, ", &_t%d, &_t%d); SP_GC_ROOT(_t%d); SP_GC_ROOT(_t%d);"
-                      " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
-                      " sp_PolyArray_push(_t%d, sp_box_str(strchr(_t%d, ':') ? SPL(\"AF_INET6\") : SPL(\"AF_INET\")));"
-                      " sp_PolyArray_push(_t%d, sp_box_int(_t%d));"
-                      " sp_PolyArray_push(_t%d, sp_box_str(_t%d));"
-                      " sp_PolyArray_push(_t%d, sp_box_str(_t%d));"
-                      " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
-                      " sp_PolyArray_push(_t%d, sp_box_str(_t%d));"
-                      " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); _t%d; })",
-                   ti, tp, ti, to, ta, ta, ta, ti, ta, tp, ta, ti, ta, ti, tw, tw, tw, to, tw, ta, tw);
+      if (socket_recv_call(name, argc)) {
+        emit_io_socket_recv_call(c, name, r, argv[0], b);
         free(rb.p); return 1;
       }
       if (sp_streq(name, "shutdown") && argc <= 1) {
