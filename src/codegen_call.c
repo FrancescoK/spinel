@@ -23606,11 +23606,15 @@ static int nil_target_operands(Compiler *c, int id, int boxed, int *node, TyKind
   NodeKind rk = nt_kind(nt, r);
   int a = nt_ref(nt, id, "arguments"), an = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-  /* a user object in a local an argument or the block reassigns
-     (`l.m((l = nil; x))`): the receiver Ruby read first is held, where the
-     slot would be tested after the write */
+  /* a user object, Array or Hash in a local (or a parameter) an argument or
+     the block reassigns (`l.m((l = nil; x))`): the receiver Ruby read first
+     is held, where the slot would be tested after the write. A String is
+     tested in its slot, where a mutator writes back. */
   int rebound = 0;
-  if (rk == NK_LocalVariableReadNode && ty_is_object(repr_of(c, r).as_ty)) {
+  TyKind rty = rk == NK_LocalVariableReadNode ? repr_of(c, r).as_ty : TY_UNKNOWN;
+  if (rk == NK_LocalVariableReadNode &&
+      (ty_is_object(rty) || ty_is_array(rty) || ty_is_obj_array(rty) || ty_is_hash(rty) || rty == TY_STRH_ARRAY ||
+       rty == TY_IO)) {
     const char *ln = nt_str(nt, r, "name");
     int blk = nt_ref(nt, id, "block");
     for (int i = 0; ln && i < an && !rebound; i++) rebound = subtree_writes_local(c, av[i], ln);

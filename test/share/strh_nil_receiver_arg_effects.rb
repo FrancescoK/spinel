@@ -77,3 +77,14 @@ rescue NoMethodError
   puts "nme"
 end
 report
+
+# an argument that reassigns the receiver's variable, a local:
+# the call is made and tested on the Array Ruby read first
+j1 = mk(true)
+p j1.join((j1 = nil; +","))
+j2 = mk(false)
+begin
+  p j2.join((j2 = mk(true); +","))
+rescue NoMethodError
+  puts "nme"
+end
