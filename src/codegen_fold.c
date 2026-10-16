@@ -1840,7 +1840,7 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
   /* the SUBJECT's length bounds the scan, and strlen stops at an embedded
      NUL: `"a\0b".gsub(/./m) { }` walked one character and stopped. */
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_int _t%d = (sp_int)sp_str_byte_len(_t%d);\n", tslen, ts);
-  emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_String *_t%d = sp_String_new(\"\"); SP_GC_ROOT(_t%d);\n", tout, tout);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_String *_t%d = sp_String_new(\"\"); _t%d->binary = sp_str_is_binary(_t%d); SP_GC_ROOT(_t%d);\n", tout, tout, ts, tout);
   int tnd = 0, tnl = 0, tre = 0;
   if (polypat) {
     int tp = ++g_tmp;
