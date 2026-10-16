@@ -2957,10 +2957,17 @@ static int emit_chunk_family_runs(Compiler *c, int ck) {
 
   int ta = ++g_tmp, tout = ++g_tmp, tcur = ++g_tmp, ti = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb);
-  if (!pr_empty_lit) emit_expr(c, pr, &rb);
+  /* (--share-strings: a new String Array whose Strings the rule shares is
+     walked as the Array of their handles, so a run holds the Strings
+     themselves: iter_src_as_handles) */
+  int src_handles = !pr_empty_lit && prr.elem == TY_STRING && prr.kind != RK_BOXED && iter_src_as_handles(c, pr);
+  if (src_handles) emit_str_array_handles(c, pr, &rb);
+  else if (!pr_empty_lit) emit_expr(c, pr, &rb);
   emit_indent(g_pre, g_indent);
   if (pr_empty_lit)
     buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", ta, ta);
+  else if (src_handles)
+    buf_printf(g_pre, "sp_PolyArray *_t%d = %s; SP_GC_ROOT(_t%d);\n", ta, rb.p ? rb.p : "", ta);
   else if (prr.elem == TY_POLY)
     buf_printf(g_pre, "sp_PolyArray *_t%d = %s; SP_GC_ROOT(_t%d);\n", ta, rb.p ? rb.p : "", ta);
   /* A boxed receiver (a container-read row, a boxed Hash) walks the elements

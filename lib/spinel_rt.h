@@ -2806,6 +2806,14 @@ static inline sp_String *sp_StrhArray_unbox(sp_RbVal v) {
   if (v.tag == SP_TAG_NIL) return NULL;
   return v.tag == SP_TAG_STR ? sp_String_new_shared(v.v.s) : (sp_String *)v.v.p;
 }
+/* --share-strings: element i of a String Array boxed as a handle of its
+   own, for a row a builtin builds out of a new Array whose Strings the rule
+   shares (zip): a change through the row reaches the String; nil past the
+   end, as a zip row is padded */
+static inline sp_RbVal sp_StrArray_box_handle(sp_StrArray *a, sp_int i) {
+  const char *s = sp_StrArray_get(a, i);
+  return s ? sp_box_nullable_obj(sp_String_new_shared(s), SP_BUILTIN_STRBUF) : sp_box_nil();
+}
 /* The read face of a frozen handle: a copy that is frozen too (0xfa, a
    frozen heap String that is collected), so the String read through it,
    and a handle a consumer wraps around it, keep the frozen mark the

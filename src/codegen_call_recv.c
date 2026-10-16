@@ -717,8 +717,12 @@ static int emit_array_block_index(Compiler *c, int id, int recv, TyKind rt, cons
    too -- the nil CRuby pads a zip row with), or NULL for any other kind.
    `*tnf` is 0: the bitmap rides in the array, no flag is read ahead. */
 static const char *typed_elem_box_or_null(Compiler *c, int node, TyKind ty, int t, int *tnf, Buf *b) {
-  (void)c; (void)node; (void)t; (void)b;
+  (void)t; (void)b;
   *tnf = 0;
+  /* (--share-strings: a new String Array whose Strings the rule shares
+     gives each row its element's handle, as the Array of handles a local's
+     becomes would: iter_src_as_handles) */
+  if (ty == TY_STR_ARRAY && iter_src_as_handles(c, node)) return "sp_StrArray_box_handle";
   return ty == TY_INT_ARRAY ? "sp_IntArray_box_elem" : ty == TY_FLOAT_ARRAY ? "sp_FloatArray_box_elem" : NULL;
 }
 
@@ -735,8 +739,10 @@ static void emit_poly_push_elem(Buf *b, int tpair, TyKind ty, int t, int ti, con
     if (box) buf_printf(b, " sp_PolyArray_push(_t%d, %s(_t%d, _t%d));", tpair, box, t, ti);
     else buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_IntArray_get(_t%d, _t%d)));", tpair, t, ti);
   }
-  else if (ty == TY_STR_ARRAY)
-    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_StrArray_get(_t%d, _t%d)));", tpair, t, ti);
+  else if (ty == TY_STR_ARRAY) {
+    if (box) buf_printf(b, " sp_PolyArray_push(_t%d, %s(_t%d, _t%d));", tpair, box, t, ti);
+    else buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_StrArray_get(_t%d, _t%d)));", tpair, t, ti);
+  }
   else if (ty == TY_FLOAT_ARRAY) {
     if (box) buf_printf(b, " sp_PolyArray_push(_t%d, %s(_t%d, _t%d));", tpair, box, t, ti);
     else buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_float(sp_FloatArray_get(_t%d, _t%d)));", tpair, t, ti);
@@ -2473,7 +2479,9 @@ else {
     buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new();", tpair);
     emit_poly_push_elem(b, tpair, rt, ta, ti, rbox, tnf);
     for (int j = 0; j < nargs; j++)
-      emit_poly_push_elem(b, tpair, at[j], tb[j], ti, zip_pad_box(at[j]), 0);
+      emit_poly_push_elem(b, tpair, at[j], tb[j], ti,
+                          at[j] == TY_STR_ARRAY && iter_src_as_handles(c, argv[j]) ? "sp_StrArray_box_handle"
+                                                                                   : zip_pad_box(at[j]), 0);
     buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));", tr, tpair);
     buf_printf(b, " } _t%d; })", tr);
     { *out = 1; return 1; }
@@ -2538,13 +2546,30 @@ else {
     free(ra.p); free(rb2.p);
     int tnfa, tnfb;
     const char *boxa = typed_elem_box_or_null(c, recv, rt, ta, &tnfa, b), *boxb = typed_elem_box_or_null(c, argv[0], at, tb, &tnfb, b);
+    /* (an element every row of its turn holds is one String: a String
+       Array whose elements are boxed as handles is converted once, and the
+       rows take the same box, sp_StrArray_box_handle making a new handle
+       each time it is asked) */
+    int ha = -1, hb = -1;
+    int *hs[2] = { &ha, &hb }; const char **bx[2] = { &boxa, &boxb }; int src[2] = { ta, tb };
+    for (int q = 0; q < 2; q++) {
+      if (!*bx[q] || strcmp(*bx[q], "sp_StrArray_box_handle") != 0) continue;
+      int th = ++g_tmp, tk = ++g_tmp;
+      buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                    " for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++)"
+                    " sp_PolyArray_push(_t%d, sp_StrArray_box_handle(_t%d, _t%d));",
+                 th, th, tk, tk, src[q], tk, th, src[q], tk);
+      *hs[q] = th;
+    }
     buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr, tr);
     buf_printf(b, " sp_PolyArray *_t%d = NULL;", tpair);
     buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {", ti, ti, k, ta, ti);
     buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {", tj, tj, kb, tb, tj);
     buf_printf(b, " _t%d = sp_PolyArray_new();", tpair);
-    emit_poly_push_elem(b, tpair, rt, ta, ti, boxa, tnfa);
-    emit_poly_push_elem(b, tpair, at, tb, tj, boxb, tnfb);
+    if (ha >= 0) emit_poly_push_elem(b, tpair, TY_POLY_ARRAY, ha, ti, NULL, 0);
+    else emit_poly_push_elem(b, tpair, rt, ta, ti, boxa, tnfa);
+    if (hb >= 0) emit_poly_push_elem(b, tpair, TY_POLY_ARRAY, hb, tj, NULL, 0);
+    else emit_poly_push_elem(b, tpair, at, tb, tj, boxb, tnfb);
     buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));", tr, tpair);
     buf_printf(b, " } } _t%d; })", tr);
     { *out = 1; return 1; }
