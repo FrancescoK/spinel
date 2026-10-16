@@ -1223,11 +1223,12 @@ sp_int sp_sock_send(sp_File *f, const char *data, sp_int len, const char *host, 
 }
 static long sp_io_buffered(FILE *fp);
 /* #recv reads one datagram (or up to `len` stream bytes) as a String;
-   #recvfrom pairs it with the sender's address, CRuby's 4-element form. */
+   #recvfrom pairs it with the sender's address, CRuby's 4-element form.
+   The payload is BINARY in every shape, as CRuby answers it. */
 const char *sp_sock_recv(sp_File *f, sp_int len) {SP_GC_ROOT(f);
   extern int sp_net_udp_recv_from(int fd, char *buf, int cap, char *ipbuf, int ipcap, int *port_out);
   sp_sock_require(f, "recv");
-  if (len <= 0) return sp_str_from_bytes("", 0);
+  if (len <= 0) return sp_str_empty_binary();
   /* bytes a read on the stream already pulled into stdio's buffer are the
      peer's next ones: served first, as readpartial does, or recv stepped
      over them (#7195) */
@@ -1240,6 +1241,7 @@ const char *sp_sock_recv(sp_File *f, sp_int len) {SP_GC_ROOT(f);
     sp_io_unuse(f);
     r[got] = 0;
     sp_str_set_len(r, got);
+    sp_str_mark_binary(r);
     return r;
   }
   /* park until the peer writes, as readpartial does: a close from another
@@ -1262,8 +1264,9 @@ const char *sp_sock_recv(sp_File *f, sp_int len) {SP_GC_ROOT(f);
   errno = e;
   if (n < 0) { free(buf); sp_file_raise_errno("recv", ""); }
   if (eof) { free(buf); return NULL; }
-  const char *s = sp_str_from_bytes(buf, (size_t)n);
+  char *s = (char *)sp_str_from_bytes(buf, (size_t)n);
   free(buf);
+  sp_str_mark_binary(s);
   return s;
 }
 /* Fills the caller's address slots; returns the payload. */
@@ -1273,7 +1276,7 @@ const char *sp_sock_recvfrom(sp_File *f, sp_int len, const char **ip_out, sp_int
   char ipbuf[64];
   int port = 0;
   if (len <= 0) {
-    const char *s = sp_str_from_bytes("", 0); SP_GC_ROOT_STR(s);   /* across the address's copy */
+    const char *s = sp_str_empty_binary(); SP_GC_ROOT_STR(s);   /* across the address's copy */
     *ip_out = sp_str_from_bytes("", 0);
     *port_out = 0;
     return s;
@@ -1286,8 +1289,9 @@ const char *sp_sock_recvfrom(sp_File *f, sp_int len, const char **ip_out, sp_int
   int n = sp_net_udp_recv_from(fileno(fp), buf, (int)len, ipbuf, (int)sizeof ipbuf, &port);
   { int e = errno; sp_io_unuse(f); errno = e; }
   if (n < 0) { free(buf); sp_file_raise_errno("recvfrom", ""); }
-  const char *s = sp_str_from_bytes(buf, (size_t)n); SP_GC_ROOT_STR(s);   /* across the address's copy */
+  char *s = (char *)sp_str_from_bytes(buf, (size_t)n); SP_GC_ROOT_STR(s);   /* across the address's copy */
   free(buf);
+  sp_str_mark_binary(s);
   *ip_out = sp_str_from_bytes(ipbuf, strlen(ipbuf));
   *port_out = (sp_int)port;
   return s;
