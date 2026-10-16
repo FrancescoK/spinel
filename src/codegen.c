@@ -3794,12 +3794,29 @@ int cmethod_takes_self_cls(Compiler *c, int si) {
 /* Emit the receiving-class argument for such a call: the class the call names,
    which every call site knows statically (a constant receiver, or one arm of a
    cls_id cascade). Returns the separator the rest of the arguments need. */
+/* The receiving-class token the last call of a class method taking one
+   passed (emit_cmethod_self_cls_arg): a parameter default of that method is
+   spelled at the call site, after it, where the method's own `_sp_cls` is
+   not declared (cmethod_cls_token). */
+static int g_cls_tok_mi = -1;
+static char g_cls_tok[64];
+
 const char *emit_cmethod_self_cls_arg(Compiler *c, int mi, int recv_cls, Buf *b) {
   if (!cmethod_takes_self_cls(c, mi)) return "";
   int rc = recv_cls >= 0 || recv_cls <= -100 ? recv_cls : c->scopes[mi].class_id;
   if (rc == c->scopes[mi].class_id && class_reopen_cmethod(c, -1, c->scopes[mi].name) == mi) rc = builtin_class_id("Class");
   buf_printf(b, "((sp_Class){%d, NULL})", rc);
+  g_cls_tok_mi = mi;
+  snprintf(g_cls_tok, sizeof g_cls_tok, "((sp_Class){%d, NULL})", rc);
   return ", ";
+}
+
+/* The receiving class of class method `encl`, as C: its `_sp_cls`
+   parameter, or, in a default of its parameter spelled at its call site,
+   the class that call passed. */
+const char *cmethod_cls_token(Compiler *c, Scope *encl) {
+  if (encl && open_default_method() == encl && g_cls_tok_mi == (int)(encl - c->scopes)) return g_cls_tok;
+  return "_sp_cls";
 }
 
 /* The mangled C name: sp_<name> for free functions, sp_<Class>_<name>
