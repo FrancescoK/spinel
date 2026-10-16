@@ -7708,6 +7708,14 @@ static int cmethod_reaches_class_ivar_walk(Compiler *c, int mi, int def_cls, uns
     if (k == NK_InstanceVariableReadNode || k == NK_InstanceVariableWriteNode ||
         k == NK_InstanceVariableOperatorWriteNode || k == NK_InstanceVariableOrWriteNode ||
         k == NK_InstanceVariableAndWriteNode || k == NK_InstanceVariableTargetNode) return 1;
+    /* a super runs the parent's method of the name with self the same
+       class: its @ivars are the calling class's as well */
+    if ((k == NK_SuperNode || k == NK_ForwardingSuperNode) && c->scopes[mi].is_cmethod &&
+        c->scopes[mi].name && def_cls >= 0) {
+      int par = comp_super_parent(c, def_cls, 1), pdef = -1;
+      int pm = par >= 0 ? comp_cmethod_in_chain(c, par, c->scopes[mi].name, &pdef) : -1;
+      if (pm >= 0 && pdef >= 0 && cmethod_reaches_class_ivar_walk(c, pm, pdef, seen)) return 1;
+    }
   }
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     if (c->nscope[id] != mi) continue;
@@ -7928,12 +7936,19 @@ static const char *cls_call_name(Compiler *c, int id) {
    own method is reached (extend_class_with). Only a parent's method with no
    super of its own: the copy's super would start at own's class's parent,
    which is that method again. */
-static void specialize_super_cmethod(Compiler *c, int own) {
+static void specialize_super_cmethod(Compiler *c, int own, int snap) {
   Scope *os = &c->scopes[own];
   int ci = os->class_id;
   if (!os->is_cmethod || ci < 0 || !os->name || !scope_body_has_super(c, own) ||
       comp_super_shadow(c, os)) return;
-  int par = comp_super_parent(c, ci, 1);
+  /* A copy this pass made of an inherited method for a subclass that calls
+     it (own >= snap): its super starts above the class that wrote the
+     method, not above the subclass, and still runs with self the subclass */
+  int from = ci;
+  if (own >= snap)
+    for (int o = 1; o < snap; o++)
+      if (c->scopes[o].def_node == os->def_node && c->scopes[o].is_cmethod) { from = c->scopes[o].class_id; break; }
+  int par = comp_super_parent(c, from, 1);
   int pdef = -1;
   int pm = par >= 0 ? comp_cmethod_in_chain(c, par, os->name, &pdef) : -1;
   if (pm < 0 || pdef < 0 || scope_body_has_super(c, pm) || !cmethod_reaches_class_ivar(c, pm, pdef, 0)) return;
@@ -8096,7 +8111,9 @@ void specialize_inherited_cls_new(Compiler *c) {
     free(tgt);
   }
   /* a class's own class method whose super reaches its parent's */
-  for (int own = 1; own < snap; own++) specialize_super_cmethod(c, own);
+  /* (the copies made above for subclasses as well: each copy's super runs
+     on its own class) */
+  for (int own = 1, end = c->nscopes; own < end; own++) specialize_super_cmethod(c, own, snap);
   did_clone = (c->nscopes > snap);
   /* Index of every CallNode with a constant receiver, built once: the
      called-direct check below otherwise rescans all nodes per shadowed cmethod
