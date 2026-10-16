@@ -2010,6 +2010,8 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
   }
   Buf sb; memset(&sb, 0, sizeof sb);
   strbuf_slot_text(c, r, &sb);
+  /* (read ahead of a block's prelude where it can rebind the slot) */
+  strbuf_hold_slot(c, node, unwrap_parens(c, r), &sb);
   int tb = ++g_tmp;
   buf_printf(b, "({ const char *_t%d = ", tb);
   int sv_b = view_push_repr(c, node, VR_STRBUF_BOX, 0);

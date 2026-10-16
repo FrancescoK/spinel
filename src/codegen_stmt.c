@@ -4111,14 +4111,14 @@ static int tap_block_hoists(Compiler *c, int v) {
 }
 /* The receiver handle of bang v held in _t<th> and rooted, opened as `({
    sp_String *_t<th> = <handle>; ...` in b: ahead of the statement instead
-   (g_pre) when v is gsub!/sub!'s block form, whose loop runs there and
-   reads it (sb_block_hoists). A receiver that can be nil raises
+   (g_pre) when v is gsub!/sub!'s or scan's block form, whose loop runs
+   there and reads it (sb_block_hoists, scan_block_hoists). A receiver that can be nil raises
    NoMethodError for v (checked ahead of the root when check_first),
    unless v is a safe-navigation call (`g(s)&.upcase!`), which answers nil
    there (emit_bang_on_held). */
 static void emit_bang_held_open(Compiler *c, int v, int th, const char *href, int nonnil, int check_first,
                                 Buf *b) {
-  Buf *hb = sb_block_hoists(c, v) || tap_block_hoists(c, v) ? g_pre : b;
+  Buf *hb = sb_block_hoists(c, v) || scan_block_hoists(c, v) || tap_block_hoists(c, v) ? g_pre : b;
   /* (nil has a tap and an itself of its own: they answer nil) */
   const char *vn = nt_str(c->nt, v, "name");
   int check = !nonnil && !call_is_safe_nav(c->nt, v) && !(vn && is_nil_method(vn));
@@ -4507,11 +4507,14 @@ static int route_block_rebinds_base(Compiler *c, int v) {
   if (!nm) return 0;
   for (int n = v; n >= 0 && nt_kind(nt, n) == NK_CallNode; n = unwrap_parens(c, nt_ref(nt, n, "receiver"))) {
     int blk = nt_ref(nt, n, "block");
+    /* (an argument that rebinds it is no reason, nor a literal block of v
+       on the variable itself, where the statement has a prelude: the slot
+       forms read the handle strbuf_hold_slot held ahead of them, the
+       receiver's own String, where the value form answered a copy of it) */
+    if (n == v && g_pre && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode &&
+        unwrap_parens(c, nt_ref(nt, v, "receiver")) == base)
+      continue;
     if (blk >= 0 && subtree_writes_local(c, blk, nm)) return 1;
-    /* (an argument runs after the receiver is read too: `t.scan((t = +"x";
-       re)) { }` answers the String t named before) */
-    int args = nt_ref(nt, n, "arguments");
-    if (args >= 0 && subtree_writes_local(c, args, nm)) return 1;
   }
   return 0;
 }
@@ -4627,6 +4630,35 @@ static int bang_self_form(Compiler *c, int v, int pub) {
   if (args >= 0 && read_rebound_by(c, r, args)) return BSF_SLOT_REBOUND;
   return nt_kind(c->nt, r) != NK_CallNode ? BSF_SLOT_VAR : BSF_SLOT_CALL;
 }
+/* --share-strings: call v with a literal block runs in the statement's
+   prelude, with its arguments: where those (`t.scan((t = +"xy"; /./)) { }`),
+   or a method the block or an argument calls, can assign the variable r is
+   a read of, the read of r's slot after the prelude names another String.
+   Then r's handle is read into a rooted temp in the prelude first, as
+   emit_boxed_self_chain holds its base, and *sb, r's slot text, becomes the
+   temp. An instance variable, a global, a class variable or a constant can
+   be assigned by any method called, so a block is enough; a local only by
+   what the arguments or the block run (read_rebound_by: a write, or a call
+   of a proc that assigns it). */
+void strbuf_hold_slot(Compiler *c, int v, int r, Buf *sb) {
+  const NodeTable *nt = c->nt;
+  NodeKind rk = r >= 0 ? nt_kind(nt, r) : NK_NONE;
+  int blk = nt_ref(nt, v, "block");
+  if (!g_pre || blk < 0 || nt_kind(nt, blk) != NK_BlockNode || unwrap_parens(c, nt_ref(nt, v, "receiver")) != r ||
+      (rk != NK_LocalVariableReadNode && rk != NK_InstanceVariableReadNode && !repr_static_read_kind(rk)))
+    return;
+  /* (a read already held ahead, a chain's base, is that temp) */
+  if (ran_first_handle(r) >= 0) return;
+  if (rk == NK_LocalVariableReadNode && !read_rebound_by(c, r, nt_ref(nt, v, "arguments")) && !read_rebound_by(c, r, blk))
+    return;
+  int th = ++g_tmp;
+  size_t at = g_pre->len;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, sb->p ? sb->p : "NULL", th);
+  if (g_share_check) share_check_declare_reads(g_pre, at, r);
+  sb->len = 0;
+  buf_printf(sb, "_t%d", th);
+}
 /* Bang v's handle in the form bang_self_form decides; 0 with nothing
    emitted where it has none. */
 static int emit_bang_self_handle_1(Compiler *c, int v, int pub, Buf *b) {
@@ -4638,6 +4670,12 @@ static int emit_bang_self_handle_1(Compiler *c, int v, int pub, Buf *b) {
   memset(&sb, 0, sizeof sb);
   int slot = form >= BSF_SLOT_REBOUND || (form == BSF_FREEZE && strbuf_slot_has(c, r));
   if (slot) strbuf_slot_text(c, r, &sb);
+  /* (the slot's handle held ahead of a block's prelude: strbuf_hold_slot;
+     the form for an argument that rebinds the slot holds it there itself
+     for gsub!'s, scan's and tap's block forms, emit_bang_held_open) */
+  int held_open = form == BSF_SLOT_REBOUND &&
+                  (sb_block_hoists(c, v) || scan_block_hoists(c, v) || tap_block_hoists(c, v));
+  if (slot && !held_open) strbuf_hold_slot(c, v, unwrap_parens(c, r), &sb);
   const char *sref = sb.p ? sb.p : "";
   switch (form) {
   case BSF_FREEZE: {
@@ -4679,7 +4717,7 @@ static int emit_bang_self_handle_1(Compiler *c, int v, int pub, Buf *b) {
        temps the call reads (sb_shim_args_first) */
     int late = 0, amark = g_n_argov;
     Buf apre; memset(&apre, 0, sizeof apre);
-    if (!nonnil && !call_is_safe_nav(c->nt, v) && !sb_block_hoists(c, v)) {
+    if (!nonnil && !call_is_safe_nav(c->nt, v) && !sb_block_hoists(c, v) && !scan_block_hoists(c, v)) {
       int ac = 0;
       const int *av = call_args(c->nt, v, &ac);
       for (int i = 0; i < ac && !late; i++) {
@@ -4726,7 +4764,13 @@ static int emit_bang_self_handle_1(Compiler *c, int v, int pub, Buf *b) {
       break;
     }
     buf_printf(b, "const char *_t%d = ", tr);
-    ran_first_bind(r, th, th);
+    /* (an iterator given a block reads its receiver as the String: its reads
+       are the held handle's, sp_strbuf_read_pub, as emit_boxed_self_chain
+       binds an each_char's; bound as the handle itself, `t.each_line((t =
+       +"q"; "\n")) { }` read an sp_String * as its bytes, a C error) */
+    int iter = nt_ref(c->nt, v, "block") >= 0 && nt_kind(c->nt, nt_ref(c->nt, v, "block")) == NK_BlockNode;
+    if (iter) ran_first_bind_read(r, th);
+    else ran_first_bind(r, th, th);
     emit_bang_on_held(c, v, th, b);
     view_unbind(mark);
     { char hn[24]; snprintf(hn, sizeof hn, "_t%d", th); emit_bang_answer_end(b, tr, hn, pub); }
