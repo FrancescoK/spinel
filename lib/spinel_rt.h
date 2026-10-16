@@ -5846,6 +5846,7 @@ static sp_RbVal sp_poly_div(sp_RbVal a, sp_RbVal b);   /* fwd: defined with the 
 static sp_RbVal sp_poly_div_m(sp_RbVal a, sp_RbVal b);   /* fwd: Integer#div, defined below */
 static sp_RbVal sp_poly_neg(sp_RbVal a);
 sp_Bigint *sp_bigint_powmod(sp_Bigint *base, sp_int exp, sp_Bigint *mod);
+sp_Bigint *sp_bigint_powmod_big(sp_Bigint *base, sp_Bigint *exp, sp_Bigint *mod);
 sp_Bigint *sp_bigint_shr(sp_Bigint *a, int64_t n);
 static sp_int sp_poly_bit_length(sp_RbVal v) { if (v.tag == SP_TAG_INT) return sp_int_bit_length(v.v.i); if (v.tag == SP_TAG_BIGINT) return sp_bigint_bit_length((sp_Bigint *)v.v.p); sp_raise_poly_nomethod("bit_length", v); }
 static sp_RbVal sp_poly_int_pred(sp_RbVal v) {
@@ -5871,14 +5872,21 @@ static SP_UNUSED sp_RbVal sp_poly_int_pow(sp_RbVal v, sp_RbVal e) {
   }
   return sp_poly_pow(v, e);
 }
+static SP_UNUSED void sp_powmod_args_chk(sp_RbVal e, sp_RbVal m) {
+  if (e.tag != SP_TAG_INT && e.tag != SP_TAG_BIGINT) sp_raise_cls("TypeError", "Integer#pow() 2nd argument not allowed unless a 1st argument is integer");
+  if (e.tag == SP_TAG_INT ? e.v.i < 0 : sp_bigint_sign((sp_Bigint *)e.v.p) < 0) sp_raise_cls("RangeError", "Integer#pow() 1st argument cannot be negative when 2nd argument specified");
+  if (m.tag != SP_TAG_INT && m.tag != SP_TAG_BIGINT) sp_raise_cls("TypeError", "Integer#pow() 2nd argument not allowed unless all arguments are integers");
+}
 static sp_RbVal sp_poly_int_powmod(sp_RbVal v, sp_RbVal e, sp_RbVal m) {
   if (v.tag != SP_TAG_INT && v.tag != SP_TAG_BIGINT) sp_raise_poly_nomethod("pow", v);
+  sp_powmod_args_chk(e, m);
   if (v.tag == SP_TAG_INT && e.tag == SP_TAG_INT && m.tag == SP_TAG_INT) return sp_box_int(sp_powmod(v.v.i, e.v.i, m.v.i));
-  sp_int ei = sp_poly_to_i(e);
-  if (ei < 0) sp_raise_cls("RangeError", "Integer#pow() 1st argument cannot be negative when 2nd argument specified");
   sp_Bigint *base = sp_poly_int_operand(v, "pow"); SP_GC_ROOT(base);
   sp_Bigint *mod = sp_poly_int_operand(m, "pow"); SP_GC_ROOT(mod);
   if (sp_bigint_sign(mod) == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+  if (e.tag == SP_TAG_BIGINT) return sp_box_bigint(sp_bigint_powmod_big(base, (sp_Bigint *)e.v.p, mod));
+  sp_int ei = sp_poly_to_i(e);
+  if (ei < 0) sp_raise_cls("RangeError", "Integer#pow() 1st argument cannot be negative when 2nd argument specified");
   return sp_box_bigint(sp_bigint_powmod(base, ei, mod));
 }
 /* Integer#pow(e, m) on a boxed receiver: any other value is CRuby's
@@ -5932,6 +5940,7 @@ static SP_UNUSED SP_INLINE sp_bool sp_int_bits_test_arg(sp_int r, sp_RbVal m, in
    Bignum, as their typed Bignum forms do, and answers the word it fits in;
    an answer past a word is one this call cannot hold. */
 static SP_UNUSED sp_int sp_powmod_arg(sp_int b, sp_int e, sp_RbVal m) {
+  sp_powmod_args_chk(sp_box_int(e), m);
   if (m.tag != SP_TAG_BIGINT || !m.v.p) return sp_powmod(b, e, sp_poly_arg_int_chk(m));
   SP_GC_ROOT_RBVAL(m);
   sp_Bigint *bb = sp_bigint_new_int(b); SP_GC_ROOT(bb);
@@ -5939,6 +5948,22 @@ static SP_UNUSED sp_int sp_powmod_arg(sp_int b, sp_int e, sp_RbVal m) {
   if (!sp_bigint_fits_int(r))
     sp_raise_cls("NotImplementedError", "Integer#pow with this Bignum modulus answers a Bignum, which this Integer-typed call cannot hold");
   return (sp_int)sp_bigint_to_int(r);
+}
+static SP_UNUSED sp_int sp_powmod_box(sp_int b, sp_RbVal e, sp_RbVal m) {
+  sp_powmod_args_chk(e, m);
+  if (e.tag != SP_TAG_BIGINT) return sp_powmod_arg(b, sp_poly_arg_int_chk(e), m);
+  SP_GC_ROOT_RBVAL(m);
+  sp_Bigint *bb = sp_bigint_new_int(b); SP_GC_ROOT(bb);
+  sp_Bigint *mb = m.tag == SP_TAG_BIGINT ? (sp_Bigint *)m.v.p : sp_bigint_new_int(m.v.i); SP_GC_ROOT(mb);
+  sp_Bigint *r = sp_bigint_powmod_big(bb, (sp_Bigint *)e.v.p, mb);
+  if (!sp_bigint_fits_int(r))
+    sp_raise_cls("NotImplementedError", "Integer#pow with this Bignum modulus answers a Bignum, which this Integer-typed call cannot hold");
+  return (sp_int)sp_bigint_to_int(r);
+}
+static SP_UNUSED sp_Bigint *sp_bigint_powmod_arg(sp_Bigint *base, sp_RbVal e, sp_Bigint *mod) {
+  if (e.tag != SP_TAG_INT && e.tag != SP_TAG_BIGINT) sp_raise_cls("TypeError", "Integer#pow() 2nd argument not allowed unless a 1st argument is integer");
+  if (e.tag == SP_TAG_BIGINT) return sp_bigint_powmod_big(base, (sp_Bigint *)e.v.p, mod);
+  return sp_bigint_powmod(base, e.v.i, mod);
 }
 static SP_UNUSED sp_int sp_int_sqrt_arg(sp_RbVal v) {
   if (v.tag != SP_TAG_BIGINT || !v.v.p) return sp_int_sqrt(sp_poly_arg_int_chk(v));
@@ -22185,6 +22210,7 @@ sp_Bigint *sp_bigint_div(sp_Bigint *a, sp_Bigint *b);
 sp_Bigint *sp_bigint_mod(sp_Bigint *a, sp_Bigint *b);
 sp_Bigint *sp_bigint_remainder(sp_Bigint *a, sp_Bigint *b);
 sp_Bigint *sp_bigint_powmod(sp_Bigint *base, sp_int exp, sp_Bigint *mod);
+sp_Bigint *sp_bigint_powmod_big(sp_Bigint *base, sp_Bigint *exp, sp_Bigint *mod);
 sp_Bigint *sp_bigint_pow(sp_Bigint *base, int64_t exp);
 sp_Bigint *sp_bigint_round_prec(sp_Bigint *b, int64_t ndigits, int mode);
 int sp_bigint_cmp(sp_Bigint *a, sp_Bigint *b);
@@ -22260,6 +22286,7 @@ sp_Bigint *sp_bigint_div(sp_Bigint *a, sp_Bigint *b);
 sp_Bigint *sp_bigint_mod(sp_Bigint *a, sp_Bigint *b);
 sp_Bigint *sp_bigint_remainder(sp_Bigint *a, sp_Bigint *b);
 sp_Bigint *sp_bigint_powmod(sp_Bigint *base, sp_int exp, sp_Bigint *mod);
+sp_Bigint *sp_bigint_powmod_big(sp_Bigint *base, sp_Bigint *exp, sp_Bigint *mod);
 sp_Bigint *sp_bigint_pow(sp_Bigint *base, int64_t exp);
 sp_Bigint *sp_bigint_round_prec(sp_Bigint *b, int64_t ndigits, int mode);
 int sp_bigint_cmp(sp_Bigint *a, sp_Bigint *b);
