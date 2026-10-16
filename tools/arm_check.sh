@@ -31,7 +31,7 @@ PARTS=$(mktemp -d "${TMPDIR:-/tmp}/spinel-arm-check-parts.XXXXXX")
     rm -f "$3/$k.on.c" "$3/$k.off.c" "$3/$k.err"
   ' _ {} "$SP" "$PARTS"
 find "$PARTS" -name '*.log' -type f -exec cat {} + > "$OUT"
-ndiff=$(find "$PARTS" -name '*.cdiff' | wc -l)
+ndiff=$(find "$PARTS" -name '*.cdiff' | wc -l | tr -d ' ')
 find "$PARTS" -name '*.cdiff' -exec cat {} + | head -10
 rm -rf "$PARTS"
 [ "${1-}" = "-v" ] && cat "$OUT"

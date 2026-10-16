@@ -13,7 +13,7 @@ trap 'rm -rf "$tmp"' EXIT
 xargs -P "$JOBS" -I{} sh -c 'f="$1"; k=$(printf "%s" "$f" | tr / _);
   SP_SHADOW_GEN=1 timeout 120 "$2" -c --no-line-map "$f" -o "$3/$k.c" >/dev/null 2>"$3/$k.err"; rm -f "$3/$k.c"' \
   _ {} "$SPINEL" "$tmp" < "$tmp/list"
-n=$(wc -l < "$tmp/list")
+n=$(wc -l < "$tmp/list" | tr -d ' ')
 bad=$(cat "$tmp"/*.err | grep 'spinel-shadow: violation .* LISTED' | sort | uniq -c)
 if [ -n "$bad" ]; then echo "shadow-check: FAIL (a listed tree-only pass changed something)"; echo "$bad"; exit 1; fi
 echo "shadow-check: pass ($n programs)"
