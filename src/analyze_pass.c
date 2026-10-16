@@ -5764,6 +5764,9 @@ static int widen_nested_literals(Compiler *c, int recv, int is_push, int is_spli
       if (lt == TY_POLY_ARRAY || vt == TY_UNKNOWN || vt == TY_POLY) continue;
       if (!is_push && kt != TY_INT && kt != TY_POLY) continue;
       if (ty_is_array(lt) && vt == ty_array_elem(lt)) continue;
+      /* (a String fits an Array of Strings, which --share-strings holds as
+         their handles: a TY_STRH_ARRAY, a String handle's value a TY_STRBUF) */
+      if ((lt == TY_STR_ARRAY || lt == TY_STRH_ARRAY) && (vt == TY_STRING || vt == TY_STRBUF)) continue;
       if (!c->arr_want || l >= c->node_cap || c->arr_want[l] == TY_POLY_ARRAY) continue;
       comp_set_arr_want(c, l, TY_POLY_ARRAY);
       changed = 1;
