@@ -1127,7 +1127,7 @@ int attr_assign_slot(Compiler *c, int id, int *cid, int *iv) {
       nt_kind(nt, argv[0]) == NK_SplatNode || nt_kind(nt, argv[0]) == NK_KeywordHashNode ||
       nt_kind(nt, argv[0]) == NK_BlockArgumentNode)
     return 0;
-  TyKind rt = comp_ntype(c, recv);
+  TyKind rt = repr_of(c, recv).as_ty;
   size_t ln = strlen(name);
   char base[256], ivn[258];
   if (ln - 1 >= sizeof base) return 0;
@@ -1171,7 +1171,7 @@ int user_assign_handle(Compiler *c, int id) {
   /* a boxed receiver is dispatched on its class, and its arms answer the
      handle the call was given (a safe-navigation link answers nil for a nil
      receiver) */
-  TyKind rty = comp_ntype(c, recv);
+  TyKind rty = repr_of(c, recv).as_ty;
   if (rty == TY_POLY || rty == TY_UNKNOWN) {
     /* ...when user classes have the writer, through a safe-navigation
        link or a plain one: each arm stores the handle the call holds (an
