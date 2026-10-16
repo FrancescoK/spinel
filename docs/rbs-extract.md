@@ -204,11 +204,12 @@ the field layouts coincide by construction.
 | `Hash[String, Integer]`                | `str_int_hash`                        |
 | `Hash[String, String]`                 | `str_str_hash`                        |
 | `Hash[String, <other>]`                | `str_poly_hash`                       |
-| `Hash[Symbol, Integer]`                | `sym_int_hash`                        |
-| `Hash[Symbol, String]`                 | `sym_str_hash`                        |
-| `Hash[Symbol, <other>]`                | `sym_poly_hash`                       |
+| `Hash[Symbol, <any>]`                  | `sym_poly_hash`                       |
 | `T?`                                   | `<T>?`  (recursive)                   |
 | `T \| nil` / `nil \| T`                | `<T>?`                                |
+
+The analyzer has one Symbol-keyed Hash kind, the poly-valued one, so every
+`Hash[Symbol, V]` maps to it and the values stay boxed.
 
 ### `Array[Array[Integer]]` and `Array[Array[Float]]` on an instance variable
 

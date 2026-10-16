@@ -1313,7 +1313,9 @@ value stored into it as it is (a parameter that holds such a Hash, say), where
 it would otherwise have to rebuild the Hash in the declared form. A parameter,
 keyword or return typed `Hash[Symbol, untyped]` likewise takes a boxed value
 as it is, where the Hash read out of an Array of mixed values may have keys
-that are not Symbols.
+that are not Symbols. A Symbol-keyed Hash signature keeps no value type:
+`Hash[Symbol, Integer]` and `Hash[Symbol, String]` type the slot as
+`Hash[Symbol, untyped]` does, with the values boxed.
 
 **Regexp literals share one compiled object.** Each pattern is compiled once
 at startup and every textually-equal literal names that one object, so
