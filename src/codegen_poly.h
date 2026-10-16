@@ -130,6 +130,18 @@ void emit_poly_last_default(Compiler *c, int id, int recv, const char *name, int
 int emit_poly_default_blk_arm(Compiler *c, int id, const char *name, int argc, const int *argv, const int *atmp, const TyKind *atmp_ty, int tv, int tr, int blk_tmp2, Buf *b);
 int emit_poly_aset_default(Compiler *c, const char *name, int argc, const int *atmp, const TyKind *atmp_ty, TyKind ret, int tv, int tr, Buf *b);
 void emit_kwh_pos_hash(Compiler *c, const PolyKw *kw, int boxed, Buf *out);
+/* May an arm whose parameter of type `kpt` receives the collapsed keyword
+   hash stay in the dispatch? The hash is the dispatch's own kind (a
+   PolyPolyHash for a key of any kind, a SymPolyHash otherwise); a String-keyed
+   Integer / String valued parameter is rebuilt from it at the call
+   (sp_StrIntHash_from_poly_hash). Any other hash kind drops the arm. The
+   three tests -- cplan_arm_args_fit, poly_cls_value_cands and the poly plan's
+   arm_key_incompat -- must stay identical. */
+static inline int kwh_param_fits(TyKind kpt, int kwall_any) {
+  if (!ty_is_hash(kpt)) return 1;
+  if (kpt == (kwall_any ? TY_POLY_POLY_HASH : TY_SYM_POLY_HASH)) return 1;
+  return kwall_any && (kpt == TY_STR_INT_HASH || kpt == TY_STR_STR_HASH);
+}
 int poly_call_blk_proc(Compiler *c, int id, int have);
 int  emit_poly_callable_spread_prearm(Compiler *c, const char *name, int sa, const int *atmp,
                                       const TyKind *atmp_ty, int st, int tv, int tr, TyKind ret, Buf *b);

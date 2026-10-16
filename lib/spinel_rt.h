@@ -11677,6 +11677,30 @@ static sp_PolyPolyHash *sp_PolyPolyHash_from_poly(sp_RbVal src) {
   if (sp_gc_is_frozen(src.v.p)) sp_gc_freeze(h);   /* a widened copy of a frozen Hash is frozen */
   return h;
 }
+/* A braceless String-keyed hash argument reaching a parameter the analysis
+   typed as a concrete Hash[String, Integer] / Hash[String, String]: the
+   dispatch collects such a hash as a PolyPolyHash, so it is rebuilt here.
+   An entry whose key or value is not of the parameter's kind is a TypeError. */
+static sp_StrIntHash *sp_StrIntHash_from_poly_hash(sp_PolyPolyHash *src) {
+  SP_GC_ROOT(src);
+  sp_StrIntHash *h = sp_StrIntHash_new(); SP_GC_ROOT(h);
+  for (sp_int i = 0; src && i < src->len; i++) {
+    sp_RbVal k = src->keys[src->order[i]], v = sp_PolyPolyHash_get(src, k);
+    if (k.tag != SP_TAG_STR || v.tag != SP_TAG_INT) { sp_raise_cls("TypeError", "wrong Hash entry type for the parameter"); return h; }
+    sp_StrIntHash_set(h, k.v.s, v.v.i);
+  }
+  return h;
+}
+static sp_StrStrHash *sp_StrStrHash_from_poly_hash(sp_PolyPolyHash *src) {
+  SP_GC_ROOT(src);
+  sp_StrStrHash *h = sp_StrStrHash_new(); SP_GC_ROOT(h);
+  for (sp_int i = 0; src && i < src->len; i++) {
+    sp_RbVal k = src->keys[src->order[i]], v = sp_PolyPolyHash_get(src, k);
+    if (k.tag != SP_TAG_STR || v.tag != SP_TAG_STR) { sp_raise_cls("TypeError", "wrong Hash entry type for the parameter"); return h; }
+    sp_StrStrHash_set(h, k.v.s, v.v.s);
+  }
+  return h;
+}
 /* A boxed hash entering a slot of a CONCRETE variant. The variants are
    separate C structs, so the pointer cast that served here reinterpreted one
    as another: a Hash[String, String] read as a Hash[String, poly] kept its

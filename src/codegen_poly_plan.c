@@ -980,7 +980,7 @@ static int poly_user_arm_n_replay(Compiler *c, int id, const char *name, const P
     if (kslot >= 0 && L.from[kslot] != ARG_BY_NAME && ks->pnames && ks->pnames[kslot]) {
       LocalVar *kpv9 = scope_local(ks, ks->pnames[kslot]);
       TyKind kpt9 = kpv9 ? kpv9->type : TY_UNKNOWN;
-      if (ty_is_hash(kpt9) && kpt9 != (kwall_any ? TY_POLY_POLY_HASH : TY_SYM_POLY_HASH))
+      if (!kwh_param_fits(kpt9, kwall_any))
         arm_key_incompat = 1;
     } }
   if (arm_key_incompat) { arg_layout_free(&L); return 0; }

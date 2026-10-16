@@ -1614,7 +1614,7 @@ int cplan_arm_args_fit(Compiler *c, Scope *ks, const ArgLayout *L, int pos_argc,
   if (kslot >= 0 && L->from[kslot] != ARG_BY_NAME && ks->pnames && ks->pnames[kslot]) {
     LocalVar *kpv = scope_local(ks, ks->pnames[kslot]);
     TyKind kpt = kpv ? kpv->type : TY_UNKNOWN;
-    if (ty_is_hash(kpt) && kpt != (kwall_any ? TY_POLY_POLY_HASH : TY_SYM_POLY_HASH)) return 0;
+    if (!kwh_param_fits(kpt, kwall_any)) return 0;
   }
   return 1;
 }
