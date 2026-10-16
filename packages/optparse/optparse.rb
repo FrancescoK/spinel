@@ -7,6 +7,7 @@
 #
 # See OptionParser for documentation.
 #
+require 'shellwords'
 
 #--
 # == Developer Documentation (not for RDoc output)
@@ -2079,7 +2080,6 @@ XXX
   #
   def environment(env = File.basename($0, '.*'), **keywords)
     env = ENV[env] || ENV[env.upcase] or return
-    require 'shellwords'
     parse(*Shellwords.shellwords(env), **keywords)
   end
 
