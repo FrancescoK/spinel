@@ -15648,6 +15648,17 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
   /* A killed main fiber (Fiber#kill, lib/sp_fiber.c) ends the program with
      status 1 after the at_exit hooks, as CRuby does. */
   if (strcmp(cls, "FiberKillSignal") == 0) exit(sp_at_exit_run(1));
+  /* CRuby's report prints what #message answers, so an exception class that
+     defines its own #message (or #to_s, which the default #message calls)
+     prints that text rather than the one stored at #new. A `raise Class`
+     carries no object, so one is made to ask. Ask before the hooks run: once
+     they allocate, nothing roots the pending object. */
+  if (sp_user_exc_message_fn) {
+    sp_Exception *e = sp_pending_exc_obj ? (sp_Exception *)sp_pending_exc_obj : sp_exc_new(cls, msg);
+    SP_GC_ROOT(e);
+    const char *own = sp_user_exc_message_fn(e);
+    if (own) { msg = sp_msg_heapify(own); SP_GC_ROOT_STR(msg); }
+  }
   /* An uncaught exception prints its text AFTER the hooks have run, which is
      the order CRuby prints them in, and the status is theirs to change (a hook
      that calls `exit 5` makes an uncaught raise exit 5, still printing the
