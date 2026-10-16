@@ -1,0 +1,29 @@
+[:plain, ["PLAIN", "LOGIN", "XOAUTH2"]]
+[:login, ["PLAIN", "LOGIN", "XOAUTH2"]]
+[:xoauth2, ["PLAIN", "LOGIN", "XOAUTH2"]]
+Net::SMTPAuthenticationError
+"535 5.7.8 bad credentials\n"
+"535"
+true
+true
+"wrong authentication type nope"
+"SMTP-AUTH requested but missing secret phrase"
+-- connection 1
+EHLO client.example
+AUTH PLAIN AHVzZXIAc2VjcmV0
+QUIT
+-- connection 2
+EHLO client.example
+AUTH LOGIN
+  user dXNlcg==
+  pass c2VjcmV0
+QUIT
+-- connection 3
+EHLO client.example
+AUTH XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIHNlY3JldAEB
+QUIT
+-- connection 4
+EHLO client.example
+AUTH LOGIN
+  user dXNlcg==
+  pass d3Jvbmc=

@@ -1,0 +1,55 @@
+true
+true
+true
+["PLAIN", "LOGIN"]
+false
+Net::SMTP::Response
+"250"
+"250 2.0.0 queued\n"
+true
+"250"
+false
+true
+"250"
+false
+false
+"250"
+-- connection 1
+EHLO client.example
+MAIL FROM:<a@example.com>
+RCPT TO:<b@example.com>
+RCPT TO:<c@example.com>
+DATA
+  | "Subject: hi\r\n"
+  | "To: b@example.com\r\n"
+  | "\r\n"
+  | "body\r\n"
+  | "..leading dot\r\n"
+QUIT
+-- connection 2
+EHLO client.example
+MAIL FROM:<a@example.com>
+RCPT TO:<d@example.com>
+DATA
+  | "Subject: stream\r\n"
+  | "\r\n"
+  | "one line\r\n"
+  | "two\r\n"
+  | "three\r\n"
+QUIT
+-- connection 3
+EHLO client.example
+MAIL FROM:<a@example.com>
+RCPT TO:<e@example.com>
+DATA
+  | "x\r\n"
+QUIT
+-- connection 4
+EHLO client.example
+HELO client.example
+MAIL FROM:<a@example.com>
+RCPT TO:<f@example.com>
+DATA
+  | "y\r\n"
+QUIT
+25
