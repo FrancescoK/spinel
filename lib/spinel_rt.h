@@ -12343,6 +12343,7 @@ static sp_RbVal sp_poly_delete_key(sp_RbVal recv, sp_RbVal key) {
      here whenever the value only turns out to be a string at run time. */
   if (recv.tag == SP_TAG_STR || sp_poly_is_strbuf(recv)) {
     sp_RbVal s = sp_poly_strbuf_deref(recv);
+    key = sp_poly_strbuf_deref(key);  /* a shared String's handle is that String */
     if (key.tag != SP_TAG_STR) sp_raise_cls("TypeError", "no implicit conversion into String");
     return sp_box_str_new(sp_str_delete(s.v.s ? s.v.s : sp_str_empty, key.v.s ? key.v.s : sp_str_empty));
   }
