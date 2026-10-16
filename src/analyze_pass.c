@@ -4067,6 +4067,16 @@ static int infer_write_multi_assign(Compiler *c, const NodeTable *nt) {
           if (rin_p >= 0 && nt_kind(nt, rin_p) == NK_LocalVariableTargetNode)
             changed |= masgn_poly_local(c, ms_poly, rin_p, TY_POLY_ARRAY, value);
         }
+        /* nothing known of the value (a call on a receiver nothing typed):
+           a local rest target is still an Array, of boxed values. Left
+           untyped, it settled boxed, and each `rest[i]` and `*rest` read of
+           it went through every class's `[]` and constructor */
+        else if (st == TY_UNKNOWN) {
+          int rest_u = nt_ref(nt, id, "rest");
+          int rin_u = rest_u >= 0 && nt_kind(nt, rest_u) == NK_SplatNode ? nt_ref(nt, rest_u, "expression") : -1;
+          if (rin_u >= 0 && nt_kind(nt, rin_u) == NK_LocalVariableTargetNode)
+            changed |= masgn_poly_local(c, comp_scope_of(c, id), rin_u, TY_POLY_ARRAY, value);
+        }
         if (ty_is_array(st)) {
           TyKind elem = ty_array_elem(st);
           int rn2 = 0;
