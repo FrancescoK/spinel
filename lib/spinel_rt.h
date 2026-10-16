@@ -2044,6 +2044,15 @@ static const char *sp_enum_class_name(void *e);   /* fwd: a boxed enumerator's #
 /* Class name of a boxed value, for `x.class` where x is poly. Returns a
    .rodata or names-table string (never GC-managed). */
 const char *sp_poly_class_name(sp_RbVal v);
+/* A boxed value read into a Time slot (an argument a dynamic call boxed, an
+   --rbs Time parameter): the Time it holds, or CRuby's TypeError for a
+   value of another class, as sp_poly_unbox_cls checks an object's (#9381).
+   The plain unbox reads the box's payload as a Time whatever it holds. */
+static inline sp_Time sp_poly_as_time_chk(sp_RbVal v) {
+  if (SP_LIKELY(v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_TIME && v.v.p)) return *(sp_Time *)v.v.p;
+  sp_raise_cls("TypeError", sp_sprintf("wrong argument type %s (expected Time)", sp_poly_class_name(v)));
+  return (sp_Time){0};
+}
 /* A zone given as a value whose type is known only at run time (`in:`,
    Time.new's 7th positional, localtime / getlocal's argument): a String as
    sp_time_zone_arg_off spells it; an Integer, or a Float or Rational holding

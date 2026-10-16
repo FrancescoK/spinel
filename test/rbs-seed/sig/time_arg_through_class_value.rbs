@@ -1,0 +1,6 @@
+class TimeArgDispatchProbe
+  SLOTS: Array[Class]
+  def self.selected: () -> Class
+  def self.take_time: (Time value) -> Time
+  def self.shift: (Time value, Integer by) -> Time
+end

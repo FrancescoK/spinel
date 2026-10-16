@@ -4628,11 +4628,13 @@ void emit_coerce(Compiler *c, int node, TyKind slot, int how, const char *what, 
   case CF_CHECKED_UNBOX: {
     /* a container, an object or a Bignum through the checked unbox, which
        converts or raises for a value of another class rather than reading
-       its memory, and a Class from its boxed form. A struct-valued or other
-       handle slot has no checked unbox, and is refused below. */
+       its memory, a Class from its boxed form, and a Time through its own
+       (sp_poly_as_time_chk, #9381). Another struct-valued or handle slot
+       has no checked unbox, and is refused below. */
     Buf vb; memset(&vb, 0, sizeof vb);
     emit_expr(c, node, &vb);
-    emit_unbox_nilable_text(c, slot, vb.p ? vb.p : "sp_box_nil()", b);
+    if (slot == TY_TIME) buf_printf(b, "sp_poly_as_time_chk(%s)", vb.p ? vb.p : "sp_box_nil()");
+    else emit_unbox_nilable_text(c, slot, vb.p ? vb.p : "sp_box_nil()", b);
     free(vb.p);
     RCC(CF_CHECKED_UNBOX);
     return;

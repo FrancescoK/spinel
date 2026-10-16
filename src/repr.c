@@ -808,7 +808,7 @@ int repr_coerce_plan(Compiler *c, int node, TyKind slot, int how, TyKind *from_o
   if (from == TY_POLY && how == CO_HOLD) {
     if (repr_poly_rhs_ok(slot)) return CF_POLY_RHS;
     if (ty_is_array(slot) || ty_is_ptr_array(slot) || ty_is_hash(slot) || slot == TY_BIGINT ||
-        slot == TY_STRBUF || slot == TY_CLASS || (ty_is_object(slot) && !repr_value_obj(c, slot)))
+        slot == TY_STRBUF || slot == TY_CLASS || slot == TY_TIME || (ty_is_object(slot) && !repr_value_obj(c, slot)))
       return CF_CHECKED_UNBOX;
   }
   return repr_coerce_text_form(c, node, from, slot, how);

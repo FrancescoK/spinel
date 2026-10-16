@@ -26,6 +26,3 @@ spinel: 1 refusal, nothing written
 == test/poly_dispatch_default_reads_param.rb [promote] rc=1
 spinel: test/poly_dispatch_default_reads_param.rb:25: a parameter default given a Array, which no conversion keeps in its sp_IntArray * slot
 spinel: 1 refusal, nothing written
-== test/time_operator_assignment.rb [promote] rc=1
-spinel: test/time_operator_assignment.rb:15: the operand of an `op=` given a value of any class, which no conversion keeps in its sp_Time slot
-spinel: 1 refusal, nothing written
