@@ -17235,7 +17235,8 @@ sp_bool sp_dir_empty(const char *path);
 const char *sp_dir_home_user(const char *user);
 const char *sp_dir_home_user(const char *user);
 /* Dir.glob([pat, ...]): each pattern globbed in order, results concatenated
-   (#2828). */
+   (#2828). A pattern is a String's box or, under --share-strings, a
+   handle's. */
 static sp_PolyArray *sp_enum_items_from(sp_RbVal v);   /* defined below */
 static sp_StrArray *sp_dir_glob_multi(sp_RbVal pats) SP_UNUSED;
 static sp_StrArray *sp_dir_glob_multi(sp_RbVal pats) {
@@ -17245,8 +17246,9 @@ static sp_StrArray *sp_dir_glob_multi(sp_RbVal pats) {
   SP_GC_ROOT(ps);
   for (sp_int i = 0; ps && i < ps->len; i++) {
     sp_RbVal pv = ps->data[i];
-    if (pv.tag != SP_TAG_STR || !pv.v.s) continue;
-    sp_StrArray *one = sp_dir_glob(pv.v.s);
+    const char *pat = pv.tag == SP_TAG_STR ? pv.v.s : sp_poly_is_strbuf(pv) ? sp_poly_unbox_s(pv) : NULL;
+    if (!pat) continue;
+    sp_StrArray *one = sp_dir_glob(pat);
     SP_GC_ROOT(one);
     for (sp_int j = 0; one && j < one->len; j++)
       sp_StrArray_push(out, sp_StrArray_get(one, j));
