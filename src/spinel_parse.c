@@ -4217,7 +4217,7 @@ static void sp_builtin_names_from(const char *content) {
 typedef struct {
   const char *src;            /* the text this was read from, NULL for none */
   size_t *com; int com_n;     /* each comment's start and end offset, in order */
-  int brk, fin, evals, popen;
+  int brk, fin, evals, popen, popen_str;
 } SpSrcLex;
 static SpSrcLex sp_src_lex;
 
@@ -4226,14 +4226,22 @@ static int sp_src_tok_is(const pm_token_t *tok, const char *word) {
   return (size_t)(tok->end - tok->start) == wl && memcmp(tok->start, word, wl) == 0;
 }
 
+static int sp_src_top_io(const uint8_t *src, const uint8_t *p) {
+  size_t off = (size_t)(p - src);
+  if (off >= 2 && p[-1] == ':' && p[-2] == ':') return off == 2 || !sp_req_ident_char((char)p[-3]);
+  return off == 0 || (p[-1] != ':' && !sp_req_ident_char((char)p[-1]));
+}
+
 static void sp_src_lex_token(void *data, pm_parser_t *parser, pm_token_t *tok) {
   SpSrcLex *lx = (SpSrcLex *)data;
   (void)parser;
   if (tok->type == PM_TOKEN_KEYWORD_BREAK) lx->brk = 1;
+  for (const uint8_t *q = tok->start; tok->type == PM_TOKEN_STRING_CONTENT && q + 8 <= tok->end; q++)
+    if (!memcmp(q, "IO.popen", 8)) lx->popen_str = 1;
   if (tok->type != PM_TOKEN_IDENTIFIER) return;
   if (sp_src_tok_is(tok, "define_finalizer")) lx->fin = 1;
   if (sp_src_tok_is(tok, "popen") && tok->start - (const uint8_t *)lx->src >= 3 && !memcmp(tok->start - 3, "IO.", 3) &&
-      (tok->start - (const uint8_t *)lx->src == 3 || !sp_req_ident_char((char)tok->start[-4]))) lx->popen = 1;
+      sp_src_top_io((const uint8_t *)lx->src, tok->start - 3)) lx->popen = 1;
   if (sp_src_tok_is(tok, "eval") || sp_src_tok_is(tok, "class_eval") ||
       sp_src_tok_is(tok, "module_eval") || sp_src_tok_is(tok, "instance_eval")) lx->evals = 1;
 }
@@ -4446,7 +4454,7 @@ static char *sp_splice_foreach_first(char *source, const char *exe_path,
 static char *sp_splice_io_popen(char *source, const char *exe_path,
                                 unsigned char **fsl, size_t *fsl_n) {
   if (!strstr(source, "IO.popen")) return source;
-  { SpSrcLex *lx = sp_src_lex_of(source); if (!lx->popen && !lx->evals) return source; }
+  { SpSrcLex *lx = sp_src_lex_of(source); if (!lx->popen && !(lx->evals && lx->popen_str)) return source; }
   return sp_prepend_require(source, exe_path, "require \"builtins/io_popen\"\n", fsl, fsl_n);
 }
 
