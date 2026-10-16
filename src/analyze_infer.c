@@ -2345,9 +2345,10 @@ TyKind an_class_concrete(Compiler *c, int id, const char *name, TyKind t) {
     /* a class method no Class value the receiver holds reaches has no arm
        (poly_cls_value_cands): Shellwords.split beside `{b: Integer}` */
     if (!poly_cls_value_reaches(c, id, s->class_id)) continue;
-    /* nor one whose class no box can hold, a module the program only
-       calls (share_target_reachable): `Params.sub` beside a String's sub, */
-    if (!share_target_reachable(c, id, targets[i])) continue;
+    /* nor one the dispatch leaves out, a module's own class method no box
+       can hold or reach (poly_cls_arm_left_out): `Params.sub` beside a
+       String's sub */
+    if (poly_cls_arm_left_out(c, id, s->class_id, targets[i])) continue;
     /* nor one that cannot take the call's arguments: it only raises
        (cplan_target_binds), `def self.split(s, keys, values, present)` */
     if (!cplan_target_binds(c, id, targets[i])) continue;
@@ -2370,7 +2371,7 @@ TyKind an_class_concrete(Compiler *c, int id, const char *name, TyKind t) {
   for (int i = 0; i < ncc; i++) {
     int k = cc[i].cls, mi = cc[i].mi;
     if (mi < 0 || mi >= c->nscopes || is_builtin_reopen(c->classes[k].name)) continue;
-    if (!poly_cls_value_reaches(c, id, k) || !share_target_reachable(c, id, mi) ||
+    if (!poly_cls_value_reaches(c, id, k) || poly_cls_arm_left_out(c, id, k, mi) ||
         !cplan_target_binds(c, id, mi)) continue;
     TyKind r = (TyKind)c->scopes[mi].ret;
     if (r == j || r == TY_UNKNOWN || r == TY_VOID) continue;
