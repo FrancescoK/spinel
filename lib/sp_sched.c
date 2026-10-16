@@ -1101,8 +1101,10 @@ static sp_runq    g_lrq[SP_MAX_WORKERS]; /* per-worker local run queues (rerun l
    sums are what mean anything. Readers that need them exact read every slot
    twice, and take the sums only when no slot changed in between
    (counts_quiet): the slots were then all as read at one instant between
-   the passes. */
-typedef struct { unsigned seq; long long runnable, running, timed, nio; } __attribute__((aligned(64))) sp_cnt_slot;
+   the passes. The counts are words: on a 32-bit target a long long's
+   atomic load and store are calls into libatomic, which the runtime does
+   not link. */
+typedef struct { unsigned seq; intptr_t runnable, running, timed, nio; } __attribute__((aligned(64))) sp_cnt_slot;
 #define SP_CNT_SLOTS (SP_MAX_WORKERS + 2)
 #define SP_CNT_MON   SP_MAX_WORKERS          /* the monitor's */
 #define SP_CNT_OTHER (SP_MAX_WORKERS + 1)    /* any other thread's, under g_cnt_other_wl */
