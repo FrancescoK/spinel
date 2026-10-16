@@ -1114,16 +1114,6 @@ XXX
   #
   Officious['version'] = proc do |parser|
     Switch::OptionalArgument.new do |pkg|
-      if pkg
-        begin
-          require_relative 'optparse/version'
-        rescue LoadError
-        else
-          show_version(*pkg.split(/,/)) or
-            abort("#{parser.program_name}: no version found in package #{pkg}")
-          exit
-        end
-      end
       v = parser.ver or abort("#{parser.program_name}: version unknown")
       puts v
       exit
