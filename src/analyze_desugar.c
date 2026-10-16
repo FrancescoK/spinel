@@ -15717,6 +15717,11 @@ static int incl_find_hook_at(const NodeTable *nt, const int *parent, char *const
     snprintf(target, sizeof target, "%s::%s", qn[a], path);
     int h = incl_find_hook_named(nt, target, qn, n0, param, hook_name, mod_out);
     if (h >= 0) return h;
+    /* the constant resolves here, to a module without the hook: neither an
+       outer namespace's module of the name nor another of its last name is
+       the one included */
+    for (int m = 0; m < n0; m++)
+      if (qn[m] && nt_kind(nt, m) == NK_ModuleNode && sp_streq(qn[m], target)) return -1;
   }
   int h = incl_find_hook_named(nt, path, qn, n0, param, hook_name, mod_out);
   if (h >= 0) return h;
