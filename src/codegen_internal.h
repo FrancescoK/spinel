@@ -334,6 +334,8 @@ int strbuf_arg_bang_value(Compiler *c, int v);
 int strbuf_builtin_tail(Compiler *c, int v);
 int strbuf_bang_tail(Compiler *c, int v);
 int strbuf_iter_box_tail(Compiler *c, int v);
+int strbuf_yield_proc_box(Compiler *c, int v);
+int strbuf_narrowed_box_conversion(Compiler *c, int v);
 int emit_bang_self_pub(Compiler *c, int v, Buf *b);
 int emit_face_str_bang_pub(Compiler *c, int id, Buf *b);
 int strbuf_hash_default_arg(Compiler *c, int v);

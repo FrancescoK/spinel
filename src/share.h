@@ -234,6 +234,13 @@ int share_flow_dest_shares(const Compiler *c, int i);
    their count, or -1 when a block the walk does not list reaches its
    yields (a block passed as a value, a zsuper's, a dynamic call's). */
 int share_method_blocks(const Compiler *c, int mi, const int **blocks);
+/* The literal blocks that can reach method scope mi's yields: its own
+   and, through each method that hands mi the block it was given (`&blk`),
+   that method's, each method once, into out (at most cap): their count, or
+   -1 when a zsuper's or a dynamic call's block reaches one of them, or
+   there are more than cap. Any other block that reaches them is a proc
+   the yield calls. */
+int share_method_reaching_blocks(const Compiler *c, int mi, int *out, int cap);
 /* Is call node `call`'s String one no other name holds: each user method
    it reaches answers only Strings its returns did not join to its value
    (sh_settle_rets: built in its own locals, which die with the call)?

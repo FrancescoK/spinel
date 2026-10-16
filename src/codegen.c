@@ -3182,7 +3182,17 @@ static int emit_boxed_by_kind(Compiler *c, int node, Buf *b) {
   }
   case SPK_SLOT: case SPK_DEMANDED: case SPK_ELEM: case SPK_SLOT_POLY: case SPK_SELF: case SPK_BANG_BOX:
   case SPK_POLY_ARMS: case SPK_EXC_MESSAGE: case SPK_EXC_SUPER: case SPK_READER:
-  case SPK_ASSIGN: case SPK_OPERAND: case SPK_YIELD: case SPK_COND: case SPK_SEQUENCE:
+  /* a yield that calls the block's proc: the box the proc answered */
+  case SPK_YIELD:
+    if (!strbuf_yield_proc_box(c, node)) return 0;
+    {
+      int v = unwrap_parens(c, node), sv = view_push(c, v, TY_POLY);
+      emit_expr(c, v, b);
+      view_pop(c, sv);
+      RC(RF_PASS, RW_HANDLE_ROUTE);
+    }
+    return 1;
+  case SPK_ASSIGN: case SPK_OPERAND: case SPK_COND: case SPK_SEQUENCE:
   case SPK_LIFT:
     return 0;
   }

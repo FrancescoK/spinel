@@ -117,6 +117,11 @@ const char *share_plan_form_name(int form) {
 static int share_plan_self_recv(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   if (v < 0 || nt_kind(nt, v) != NK_CallNode) return -1;
+  /* (a String's conversion of a boxed local an is_a? guard narrows to a
+     String answers the box's String: the slot takes the local's handle,
+     strbuf_narrowed_box_conversion) */
+  int nb = strbuf_narrowed_box_conversion(c, v);
+  if (nb >= 0) return nb;
   const char *nm = nt_str(nt, v, "name");
   int r = unwrap_parens(c, nt_ref(nt, v, "receiver")), tg[CPT_MAX];
   int any_recv = nm && ((sp_streq(nm, "itself") && call_plain_argc(c, v) == 0 && nt_ref(nt, v, "block") < 0) ||
@@ -441,16 +446,30 @@ static int share_plan_block_ok(Compiler *c, int v, int depth) {
    that renders it: does each block its method is given answer one in its
    tail and each `next` (share_method_blocks, share_plan_body_ok), as
    strbuf_route_yield takes a spliced block's, each a tail the face renders
-   (share_plan_tail_renders)? 1 or 0; -1 for a yield no
-   block splices (a lowered or proc-form method's, one of a method with a
-   &block parameter, a top-level one), which is no such route. A yield in
+   (share_plan_tail_renders)? 1 or 0; -1 for a yield that is no such
+   route: a lowered method's, a top-level one, one a zsuper's or a dynamic
+   call's block reaches, or the last statement of a method a block passed
+   as a value reaches. A yield in
    its own blocks' tails is asked no deeper than the plan's walks go. */
 static int share_plan_yield_supply(Compiler *c, int v, int depth) {
   Scope *sc = v >= 0 && nt_kind(c->nt, v) == NK_YieldNode ? comp_scope_of(c, v) : NULL;
-  if (!sc || sc->def_node < 0 || sc->is_lowered_yield || sc->is_proc_form || sc->blk_param) return -1;
-  const int *blocks;
-  int n = share_method_blocks(c, (int)(sc - c->scopes), &blocks);
-  if (n < 0) return -1;
+  if (!sc || sc->def_node < 0 || sc->is_lowered_yield) return -1;
+  int mi = (int)(sc - c->scopes), reach[64];
+  const int *blocks = NULL;
+  int n = sc->is_proc_form || sc->blk_param ? -1 : share_method_blocks(c, mi, &blocks);
+  /* (a block passed as a value reaches the yields: where it is a proc, the
+     yield calls it and answers the proc's box, whose handle the route takes
+     (strbuf_yield_proc_box); where a method hands on the literal block it
+     was given, that block splices in, as a literal one does. Not the
+     method's last statement, which an inlined call unboxes to its return
+     slot) */
+  if (n < 0) {
+    int last = scope_body_last(c, mi);
+    if (last == v || block_given_tail_then_last(c, last) == v) return -1;
+    n = share_method_reaching_blocks(c, mi, reach, 64);
+    if (n < 0) return -1;
+    blocks = reach;
+  }
   if (depth > 8) return 0;
   for (int i = 0; i < n; i++) {
     int body = nt_ref(c->nt, blocks[i], "body"), bn = 0;

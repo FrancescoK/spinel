@@ -1862,6 +1862,20 @@ static int strbuf_route_yield(Compiler *c, int v) {
             String: the splice hands that block's handle on) */
          (n > 0 && nt_kind(nt, unwrap_parens(c, bb[n - 1])) == NK_YieldNode && strbuf_yield_tail_held(c));
 }
+/* --share-strings: a yield that calls the block's proc here (a method
+   inlined with a forwarded proc, or emitted as a function), typed as a
+   String and not its method's last statement: the proc hands its answer
+   back boxed, and the route takes that box's handle
+   (share_plan_yield_supply asks the same of every block that reaches it). */
+int strbuf_yield_proc_box(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_YieldNode || !g_yield_proc_ref) return 0;
+  TyKind vt = comp_ntype(c, v);
+  Scope *sc = comp_scope_of(c, v);
+  int mi = sc ? (int)(sc - c->scopes) : -1, last = mi > 0 ? scope_body_last(c, mi) : -1;
+  return (vt == TY_STRING || vt == TY_STRBUF) && mi > 0 && last != v && block_given_tail_then_last(c, last) != v;
+}
 /* The tail of the literal block spliced here, past each tail that is
    itself a yield, or -1. */
 static int strbuf_site_tail(Compiler *c) {
@@ -1964,6 +1978,16 @@ int strbuf_tail_answers_block(Compiler *c, int mi, int last, int depth) {
   return l2 >= 0 && !strbuf_has_return(nt, c->scopes[m2].body) &&
          strbuf_tail_answers_block(c, m2, bl >= 0 ? bl : l2, depth + 1);
 }
+/* --share-strings: the boxed local whose read conversion v converts, where
+   an is_a? guard narrows that read to a String (`v.to_s` under `v.is_a?(String)`),
+   or -1. Its box holds the String's handle (strbuf_boxed_local). */
+int strbuf_narrowed_box_conversion(Compiler *c, int v) {
+  int x = repr_string_conversion_operand(c, v);
+  if (x < 0) return -1;
+  x = unwrap_parens(c, x);
+  return nt_kind(c->nt, x) == NK_LocalVariableReadNode && strbuf_boxed_local(c, x) &&
+         (repr_of(c, x).narrowed == TY_STRING || repr_of(c, x).narrowed == TY_STRBUF) ? x : -1;
+}
 /* Does tail t of spliced method mi hand its call's result slot what it
    holds: what the block answers, a variable's String, or under a
    conditional each arm's (a missing arm's nil, a new String the slot
@@ -1978,7 +2002,15 @@ static int strbuf_inline_tail_ok(Compiler *c, int mi, int t, int depth) {
     return 1;
   if (depth == 0) return 0;
   if (k == NK_NilNode || share_value_fresh(c, t, 0)) return 1;
-  return 0;
+  /* (a frozen literal is its own handle; a String's conversion answers
+     the String, whose handle the slot takes as emit_strbuf_value takes the
+     route's: `v.is_a?(String) ? v.to_s : ""`, over a String v or a boxed
+     local the guard narrows, whose box the slot lifts) */
+  if (share_frozen_literal(c, t)) return 1;
+  if (strbuf_narrowed_box_conversion(c, t) >= 0) return 1;
+  int x = repr_string_conversion_operand(c, t);
+  return x >= 0 && repr_of(c, x).kind != RK_BOXED && comp_ntype(c, x) != TY_POLY && !strbuf_boxed_local(c, x) &&
+         strbuf_inline_tail_ok(c, mi, x, depth + 1);
 }
 static int strbuf_inline_arms_ok(Compiler *c, int mi, int t, int depth) {
   const NodeTable *nt = c->nt;
@@ -2031,14 +2063,19 @@ int strbuf_route_inline_call(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   v = unwrap_parens(c, v);
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
-  int blk = nt_ref(nt, v, "block");
+  int blk = nt_ref(nt, v, "block"), fwd_proc = 0;
   /* (a call that hands on the block its spliced method was given, `&blk`
      or `...`, runs the callee with that literal block: the outer call's
-     block, whose values the outer call checks) */
+     block, whose values the outer call checks. One that hands on the proc
+     a method keeps as `&blk` splices the callee with that proc, whose
+     yields answer its box (strbuf_yield_proc_box)) */
   if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) {
     Scope *encl = comp_scope_of(c, v);
-    if (!encl || !encl->yields || encl->is_lowered_yield || encl->is_proc_form || !call_forwards_own_block(c, v))
-      return 0;
+    if (!encl || encl->is_lowered_yield || encl->is_proc_form || !call_forwards_own_block(c, v)) return 0;
+    if (!encl->yields) {
+      if (!encl->blk_param) return 0;
+      fwd_proc = 1;
+    }
   }
   /* (a call the C dispatches on the receiver's class runs the clone of
      whichever method answers, which strbuf_inline_mi cannot name) */
@@ -2050,6 +2087,9 @@ int strbuf_route_inline_call(Compiler *c, int v) {
   /* A literal block selects this existing call-specific tail. */
   int bl = block_given_tail_then_last(c, last);
   if (bl >= 0) last = bl;
+  /* (a tail that is what the proc answers is unboxed to the slot's type
+     there: no handle) */
+  if (fwd_proc && strbuf_tail_answers_block(c, mi, last, 0)) return 0;
   if (repr_self_shared(c, last)) return !strbuf_has_return(nt, c->scopes[mi].body);
   /* (beside a `return`, a tail that is a new String or nil is one more
      value the slot takes, as an arm's) */
@@ -2888,6 +2928,15 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     buf_puts(b, "sp_srange_extreme_h(");
     emit_expr(c, nt_ref(nt, v, "receiver"), b);
     buf_printf(b, ", %d)", sx == 2);
+    return 1;
+  }
+  /* ...and a yield that calls the block's proc: the box the proc answered */
+  if (strbuf_yield_proc_box(c, v)) {
+    int t = ++g_tmp, u = unwrap_parens(c, v), sv = view_push(c, u, TY_POLY);
+    buf_printf(b, "({ sp_RbVal _t%d = ", t);
+    emit_expr(c, u, b);
+    view_pop(c, sv);
+    buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? (sp_String *)NULL : sp_poly_as_strbuf(_t%d); })", t, t);
     return 1;
   }
   /* the box as the proc (or the proc-form clone) handed it back: its
@@ -4851,6 +4900,16 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
   else if (repr_share_rule(c) && shared && strbuf_boxed_local(c, v)) {
     Buf lvb; memset(&lvb, 0, sizeof lvb);
     emit_local_ref(c, v, nt_str(c->nt, v, "name"), &lvb);
+    buf_printf(b, "sp_poly_as_strbuf((%s = sp_poly_strbuf_lift(%s)))", lvb.p, lvb.p);
+    free(lvb.p);
+  }
+  /* ...and a String's conversion of one an is_a? guard narrows to a String
+     (`v.is_a?(String) ? v.to_s : ""`): the conversion answers that String,
+     so the slot takes the local's handle the same way */
+  else if (repr_share_rule(c) && shared && strbuf_narrowed_box_conversion(c, v) >= 0) {
+    int x = strbuf_narrowed_box_conversion(c, v);
+    Buf lvb; memset(&lvb, 0, sizeof lvb);
+    emit_local_ref(c, x, nt_str(c->nt, x, "name"), &lvb);
     buf_printf(b, "sp_poly_as_strbuf((%s = sp_poly_strbuf_lift(%s)))", lvb.p, lvb.p);
     free(lvb.p);
   }

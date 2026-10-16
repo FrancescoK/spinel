@@ -109,7 +109,7 @@ typedef struct ShareFacts {
      pairs, then once built, per method scope its run (mb_start..mb_start+1)
      of mb_blk; blk_dyn per method scope: a block the walk does not list
      reaches its yields (a block passed as a value, a zsuper's, a dynamic
-     call's) */
+     call's), bit 2 set for the last two */
   int *mb_m, *mb_b, nmb, cmb;
   int *mb_start, *mb_blk;
   unsigned char *blk_dyn;
@@ -3205,7 +3205,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
       /* a block passed as a value (`&proc`, `&method(:m)`): what the method
          yields goes where the walk does not follow */
       if (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode && c->scopes[tg[i]].yields) {
-        F->blk_dyn[tg[i]] = 1;
+        F->blk_dyn[tg[i]] |= 1;
         sh_union(F, sh_scope_holder(F, SHK_YIELD, tg[i]), F->unknown);
         sh_union(F, sh_scope_holder(F, SHK_BLKRET, tg[i]), F->unknown);
       }
@@ -3447,7 +3447,7 @@ static int sh_super(ShareFacts *F, Compiler *c, int n) {
             sh_union(F, a, m->pnames[k] ? sh_local_of(F, c, m, m->pnames[k], n) : -1);
       }
       sh_union(F, sh_scope_holder(F, SHK_YIELD, cur), sh_scope_holder(F, SHK_YIELD, tg[i]));
-      F->blk_dyn[tg[i]] = 1;
+      F->blk_dyn[tg[i]] |= 3;
       sh_fwd_edge(F, cur, tg[i]);
       sh_union(F, sh_scope_holder(F, SHK_BLKRET, cur), sh_scope_holder(F, SHK_BLKRET, tg[i]));
     }
@@ -4826,7 +4826,7 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
     F->ret_joined[mi] = 1;
     F->blk_unk[mi] = 1;
     if (m->yields) {
-      F->blk_dyn[mi] = 1;
+      F->blk_dyn[mi] |= 3;
       sh_union(F, sh_scope_holder(F, SHK_YIELD, mi), F->unknown);
       sh_union(F, sh_scope_holder(F, SHK_BLKRET, mi), F->unknown);
     }
@@ -5138,6 +5138,29 @@ int share_method_blocks(const Compiler *c, int mi, const int **blocks) {
   if (!F || !F->mb_start || mi < 0 || mi >= c->nscopes || F->blk_dyn[mi]) return -1;
   *blocks = F->mb_blk + F->mb_start[mi];
   return F->mb_start[mi + 1] - F->mb_start[mi];
+}
+int share_method_reaching_blocks(const Compiler *c, int mi, int *out, int cap) {
+  const ShareFacts *F = c->share;
+  if (!F || !F->mb_start || mi < 0 || mi >= c->nscopes) return -1;
+  int qcap = 64, qn = 0, n = 0, q[64];
+  q[qn++] = mi;
+  for (int h = 0; h < qn; h++) {
+    int m = q[h];
+    if (F->blk_dyn[m] & 2) return -1;
+    for (int i = F->mb_start[m]; i < F->mb_start[m + 1]; i++) {
+      if (n >= cap) return -1;
+      out[n++] = F->mb_blk[i];
+    }
+    for (int e = 0; e < F->nfw; e++) {
+      if (F->fw_to[e] != m) continue;
+      int seen = 0;
+      for (int k = 0; k < qn && !seen; k++) seen = q[k] == F->fw_from[e];
+      if (seen) continue;
+      if (qn >= qcap) return -1;
+      q[qn++] = F->fw_from[e];
+    }
+  }
+  return n;
 }
 /* Native classes can appear in comp_poly_candidates as placeholders even
    when they have no binding. Skip only those empty native rows; preserve
