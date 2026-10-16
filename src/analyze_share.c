@@ -5943,6 +5943,21 @@ static int sh_poly_to_s_self(const Compiler *c, int u) {
   }
   return dflt && p->ret == TY_POLY;
 }
+/* Is call u's one target a `def m = @iv` reader of an instance method,
+   its whole body that read, of a slot its class keeps boxed? */
+static int sh_def_reader_box(const Compiler *c, int u) {
+  const NodeTable *nt = c->nt;
+  int tg[CPT_MAX];
+  if (cplan_targets((Compiler *)c, u, tg, CPT_MAX) != 1 || tg[0] <= 0) return 0;
+  const Scope *m = &c->scopes[tg[0]];
+  if (m->is_cmethod || m->class_id < 0 || m->class_id >= c->nclasses || m->nparams != 0) return 0;
+  int n = 0;
+  const int *st = m->body >= 0 && nt_kind(nt, m->body) == NK_StatementsNode ? nt_arr(nt, m->body, "body", &n) : NULL;
+  if (n != 1 || nt_kind(nt, st[0]) != NK_InstanceVariableReadNode) return 0;
+  const ClassInfo *ci = &c->classes[m->class_id];
+  int ix = comp_ivar_index((ClassInfo *)ci, nt_str(nt, st[0], "name"));
+  return ix >= 0 && ci->ivar_types[ix] == TY_POLY;
+}
 /* The kind (share.h's SPK_*) of the route by which node n hands over the
    shared handle (or a box holding it), not a copy of its bytes, or
    SPK_NONE: the carry share_node_carries_handle checks, arm by arm; *op as
@@ -6003,6 +6018,9 @@ static int sh_carry_kind(const Compiler *c, int n, int by_repr, int lift, int *o
       int ix = comp_ivar_index(ci, ivn);
       if (ix >= 0 && ci->ivar_types[ix] == TY_POLY) return SPK_READER;
     }
+    /* ...and so does a `def m = @iv` reader, the one method the call
+       reaches, whose whole body reads the slot: it returns the box */
+    if (rn && ty_is_object(rt) && sh_def_reader_box(c, u)) return SPK_READER;
   }
   Repr r = repr_of(c, n);
   /* A boxed holder's read keeps what its incoming flows stored there. */
