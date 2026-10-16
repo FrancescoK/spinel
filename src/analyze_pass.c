@@ -2839,6 +2839,17 @@ static int push_chain_base(Compiler *c, int recv) {
 }
 
 static int value_leaves(Compiler *c, int n, int *out, int nout, int cap);
+enum { VL_NIL = 1, VL_BEGIN = 2 };
+static int value_leaves_ex(Compiler *c, int n, int *out, int nout, int cap, int nil_ok);
+/* Is one of the values `n` can answer, through parentheses, a plain begin
+   body and the arms of a conditional (an arm left out answers nil), an
+   element read out of an Array of shared Strings (share_str_elem_read)? */
+static int share_str_value_leaves(Compiler *c, int n) {
+  int lv[8], cnt = value_leaves_ex(c, n, lv, 0, 8, VL_NIL | VL_BEGIN);
+  for (int i = 0; i < cnt; i++)
+    if (share_str_elem_read(c, lv[i])) return 1;
+  return 0;
+}
 static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb, int *fb, LWIndex lw_ix, LWIndex ivw_ix) {
   int changed = 0;
   /* Fold container usage into the local type so an empty `[]` / `{}` gets
@@ -3221,7 +3232,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
        run-time kind, the typed store raised TypeError (#9258). An empty
        or String array keeps the boxed reading. */
     if (c->share_strings && vt == TY_POLY && vnode >= 0 && (is_push || is_idx_write) &&
-        share_str_elem_read(c, vnode)) {
+        share_str_value_leaves(c, vnode)) {
       TyKind rt0 = infer_type(c, recv);
       if (ty_is_array(rt0) && rt0 != TY_POLY_ARRAY && rt0 != TY_STR_ARRAY && rt0 != TY_STRH_ARRAY)
         vt = TY_STRING;
@@ -5745,8 +5756,9 @@ static int widen_nested_literals(Compiler *c, int recv, int is_push, int is_spli
    through parentheses, the last statement, and each arm of an `if`,
    `unless` or `case`. Answers the new count, or -1 when a path has no
    such expression (an arm left out answers nil) or out[] is full. */
-/* With `nil_ok`, a path that answers nil (an arm left out, an empty body, a
-   bare `return`) adds no expression instead of answering -1. */
+/* With `nil_ok` (VL_NIL), a path that answers nil (an arm left out, an empty
+   body, a bare `return`) adds no expression instead of answering -1. VL_BEGIN
+   also reads through a plain begin; the flag is for the one caller that asks. */
 static int value_leaves_ex(Compiler *c, int n, int *out, int nout, int cap, int nil_ok) {
   const NodeTable *nt = c->nt;
   if (nout < 0) return -1;
@@ -5759,6 +5771,11 @@ static int value_leaves_ex(Compiler *c, int n, int *out, int nout, int cap, int 
   }
   if (k == NK_ParenthesesNode) return value_leaves_ex(c, nt_ref(nt, n, "body"), out, nout, cap, nil_ok);
   if (k == NK_ElseNode) return value_leaves_ex(c, nt_ref(nt, n, "statements"), out, nout, cap, nil_ok);
+  /* with VL_BEGIN, a begin without rescue, else or ensure answers its
+     body's value */
+  if ((nil_ok & VL_BEGIN) && k == NK_BeginNode && nt_ref(nt, n, "rescue_clause") < 0 &&
+      nt_ref(nt, n, "else_clause") < 0 && nt_ref(nt, n, "ensure_clause") < 0)
+    return value_leaves_ex(c, nt_ref(nt, n, "statements"), out, nout, cap, nil_ok);
   if (k == NK_IfNode || k == NK_UnlessNode) {
     int alt = nt_ref(nt, n, k == NK_IfNode ? "subsequent" : "else_clause");
     nout = value_leaves_ex(c, nt_ref(nt, n, "statements"), out, nout, cap, nil_ok);
