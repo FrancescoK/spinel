@@ -243,6 +243,13 @@ int strbuf_ivar_alias_value(const NodeTable *nt, int v);
 /* Infer (and cache) the type of node `id`. Used during analysis; codegen
    reads the cached results via comp_ntype. */
 TyKind infer_type(Compiler *c, int id);
+/* Does a receiver of type `rt` have a real method named `name`, among the
+   per-call-site-cloned generic Enumerable names (analyze_desugar.c's
+   builtin_enum_name_index list) or transform_keys!/transform_values!?
+   Used by rt_probe_answer (codegen_call.c) for a respond_to? probe on
+   one of these names, which the one-shot rewrites that actually type
+   them never reach (K-026 cause A). */
+int enum_builtin_responds(Compiler *c, const char *name, TyKind rt);
 /* empty infer_type's memo of earlier queries' answers: the start or end of
    a pass whose writes are not all counted (#8852) */
 void infer_memo_boundary(void);
