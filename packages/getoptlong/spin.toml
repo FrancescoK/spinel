@@ -1,0 +1,6 @@
+[package]
+name = "getoptlong"
+
+# Pre-installed spin package: ships with the compiler, versioned with it.
+# `require "getoptlong"` -- ruby/getoptlong's GetoptLong, vendored unchanged
+# at the release README.md names.
