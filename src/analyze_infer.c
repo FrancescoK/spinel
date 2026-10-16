@@ -2212,6 +2212,12 @@ int an_class_singleton_methods_listable(Compiler *c, int cid) {
   return 1;
 }
 
+int an_singleton_methods_foldable(Compiler *c, const char *cn) {
+  int ci = comp_class_index(c, cn);
+  if (builtin_class_id(cn)) return ci < 0 || comp_cmethod_in_chain(c, ci, "singleton_methods", NULL) < 0;
+  return an_class_singleton_methods_listable(c, ci);
+}
+
 /* Does the program build Method objects (`method(:x)` / `instance_method(:x)`)?
    Only then can a boxed value answering #name be a Method (#3692). */
 int an_program_builds_methods(Compiler *c) {
@@ -5658,7 +5664,7 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
                       sp_streq(name, "protected_instance_methods"))) { *out = TY_POLY; return 1; }
     if (argc <= 1 && sp_streq(name, "singleton_methods") &&
         nt_kind(nt, recv) == NK_ConstantReadNode &&
-        an_class_singleton_methods_listable(c, comp_class_index(c, nt_str(nt, recv, "name"))))
+        an_singleton_methods_foldable(c, nt_str(nt, recv, "name")))
       { *out = TY_POLY; return 1; }
     /* a user class method on a Class-typed value carried in a plain variable
        (`model.table_name`): unify the return types of every user class

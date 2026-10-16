@@ -18997,6 +18997,24 @@ int builtin_cmethod_known(const char *cls, const char *name) {
           (builtin_method_known(cls, name) || is_kernel_module_function(name)));
 }
 
+static void refl_builtin_cls_rows(const char *k, const char *skip, ReflNames *r) {
+  int own_new = sp_streq(k, "IO") || sp_streq(k, "Array") || sp_streq(k, "String") || sp_streq(k, "StringIO");
+  for (int i = 0; sp_builtin_cmeth_arity_spec_tbl[i].cls; i++) {
+    const char *m = sp_builtin_cmeth_arity_spec_tbl[i].m;
+    if (sp_streq(sp_builtin_cmeth_arity_spec_tbl[i].cls, k) && (own_new || !sp_streq(m, "new")) &&
+        !(skip && builtin_cmethod_known(skip, m)))
+      refl_note(r, m, 1);
+  }
+}
+
+void refl_builtin_singleton_methods(const char *cls, int all, ReflNames *r) {
+  int bid = builtin_class_id(cls);
+  const char *par = bid && builtin_class_parent_id(bid) == builtin_class_id("IO") ? "IO" : NULL;
+  if (!bid) return;
+  refl_builtin_cls_rows(cls, all ? NULL : par, r);
+  if (all && par) refl_builtin_cls_rows(par, NULL, r);
+}
+
 int builtin_super_cmethod_known(const char *cls, const char *name) {
   if (is_kernel_module_name(cls) && builtin_cmethod_known(cls, name)) return 1;
   int bid = builtin_class_id(cls);

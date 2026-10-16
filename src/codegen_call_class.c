@@ -4161,10 +4161,11 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
                         ? nt_str(nt, recv, "name") : NULL;
       int ci2 = cn2 ? comp_class_index(c, cn2) : -1;
       int all = argc == 0 || nt_kind(nt, argv[0]) == NK_TrueNode;
-      if (ci2 >= 0 && (argc == 0 || all || nt_kind(nt, argv[0]) == NK_FalseNode) &&
-          an_class_singleton_methods_listable(c, ci2)) {
+      if (cn2 && (argc == 0 || all || nt_kind(nt, argv[0]) == NK_FalseNode) &&
+          an_singleton_methods_foldable(c, cn2)) {
         ReflNames r = {0};
-        refl_class_singleton_methods(c, ci2, all, &r);
+        refl_builtin_singleton_methods(cn2, all, &r);
+        if (ci2 >= 0) refl_class_singleton_methods(c, ci2, all, &r);
         buf_puts(b, "sp_box_poly_array(");
         refl_emit_sym_array(c, -1, &r, b);
         buf_puts(b, ")");

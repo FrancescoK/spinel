@@ -491,6 +491,7 @@ int an_object_methods_all_arg(Compiler *c, int cid, int argc, const int *argv);
 const char *an_value_methods_class(Compiler *c, int recv, TyKind rt, const char *name, int argc,
                                    const int *argv);
 int an_class_singleton_methods_listable(Compiler *c, int cid);
+int an_singleton_methods_foldable(Compiler *c, const char *cn);
 int ewo_memo_passed_to_callable_at(Compiler *c, int callid, int pidx);
 
 /* Class index when a receiverless instance_eval/exec resolves to self, else -1. */
