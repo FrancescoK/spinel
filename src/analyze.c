@@ -23607,14 +23607,28 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   /* A raising arm contributes no String. A user override still returns. */
   if (R->fresh && cnt == 0 && isa_node_diverges(c, n) && !bare_call_class_owned(c, n)) return 1;
   if (cnt <= 0) return 0;
+  /* (the handle walk: a target answering only new Strings, as the fresh
+     walk settled, beside targets that publish a handle, clears the return
+     channel at its tails, ret_pub_fresh, so the pickup wraps its String) */
+  int fresh_t[CPT_MAX], nfresh = 0, npub = 0;
   for (int i = 0; i < cnt; i++) {
     /* (a target that cannot bind the arguments only raises) */
     if (R->fresh && !cplan_target_binds(c, n, mis[i])) continue;
     /* (a class method no box can reach) */
     if (R->fresh && !share_target_reachable(c, n, mis[i])) continue;
-    if (!an_ret_handle(c, R, mis[i])) return 0;
     Scope *m = &c->scopes[mis[i]];
+    if (!an_ret_handle(c, R, mis[i])) {
+      if (R->fresh || !m->ret_fresh || m->ret != TY_STRING) return 0;
+      fresh_t[nfresh++] = mis[i];
+      continue;
+    }
+    npub++;
     if (R->fresh && !m->ret_fresh && !an_tail_param_arg(c, R, n, mis[i], tc)) return 0;
+  }
+  if (nfresh > 0) {
+    if (npub == 0) return 0;
+    for (int i = 0; i < nfresh; i++) c->scopes[fresh_t[i]].ret_pub_fresh = 1;
+    tc->fresh++;
   }
   tc->reads++;
   if (g_repr_check && !R->fresh) repr_channel_predict(c, n, tc->mi, RCH_PUBLISH);
