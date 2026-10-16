@@ -1379,6 +1379,11 @@ static int erm_rewrite_stmt(Compiler *c, int st, const char *self_leaf) {
   const char *leaf = nt_str(nt, recv, "name");
   if (!leaf || sp_streq(leaf, "Object")) return st;
   int decl = erm_declared_as(nt, leaf);
+  /* Fiber and Thread take a mixin in a reopening (fiber-annotation's
+     `Fiber.prepend(Fiber::Annotation)`); their attr_* have a pass of
+     their own */
+  if (!decl && !attr && nt_kind(nt, recv) == NK_ConstantReadNode &&
+      (sp_streq(leaf, "Fiber") || sp_streq(leaf, "Thread"))) decl = 1;
   if (!decl) return st;
   int args = nt_ref(nt, st, "arguments"), an = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
