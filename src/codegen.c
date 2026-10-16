@@ -17391,12 +17391,16 @@ static void reject_define_method_early(Compiler *c) {
    only at run time. It was laid out with no parameters and raised
    ArgumentError when called (#9268); refuse it where it is written. The
    `&blk` form no longer reaches here: walk_scope turns any `&` that is not
-   a literal into a refusal --defer-refusals can defer. */
+   a literal into a refusal --defer-refusals can defer. An arm of a
+   runtime-name send's dispatch (dyn_arm) is no such call: the program
+   spelling :define_method somewhere gives `obj.__send__(m, *args, &blk)`
+   an arm of that name, which nothing wrote. */
 static void reject_define_method_runtime_block(Compiler *c) {
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm || (!sp_streq(nm, "define_method") && !sp_streq(nm, "define_singleton_method"))) continue;
+    if (nt_int(nt, id, "dyn_arm", 0)) continue;
     Scope *sc = comp_scope_of(c, id);
     if (!sc || sc->def_node < 0 || !sc->reachable) continue;
     int args = nt_ref(nt, id, "arguments"), an = 0;
