@@ -38,6 +38,8 @@ void emit_bm_self_arg(const char *sct, const char *self, Buf *b) {
 }
 
 static int g_pp_hash_node = -1;
+/* ...and whether that face boxes the call's value itself (its hbox) */
+static int g_pp_hash_boxes = 0;
 /* Recursion guard for the boxed-handle face re-entry, the same shape as
    g_pp_hash_node: the re-emission asks the inference again, and a type cache
    is not a recursion guard. */
@@ -19971,9 +19973,9 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
       buf_printf(&eb, "; SP_GC_ROOT_RBVAL(_t%d); sp_enum_with_src(sp_Enumerator_new_from(_t%d), _t%d, SPL(\"%s\")); })",
                  ts, ts, ts, name);
     }
-    /* ...unless the dispatch's Hash face is emitting it, which boxes the
-       call's value itself */
-    if (repr_of(c, id).kind == RK_BOXED && g_pp_hash_node != id) emit_boxed_text(c, TY_ENUMERATOR, eb.p, b);
+    /* ...unless the dispatch's Hash face is emitting it and boxes the
+       call's value itself (g_pp_hash_boxes) */
+    if (repr_of(c, id).kind == RK_BOXED && !(g_pp_hash_node == id && g_pp_hash_boxes)) emit_boxed_text(c, TY_ENUMERATOR, eb.p, b);
     else buf_puts(b, eb.p);
     free(eb.p);
     return 1;
@@ -19989,7 +19991,7 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     buf_printf(&eb, "({ sp_RbVal _t%d = ", th); emit_boxed(c, recv, &eb);
     buf_printf(&eb, "; SP_GC_ROOT_RBVAL(_t%d); sp_enum_with_src(sp_Enumerator_new_from_items(sp_enum_hash_side(_t%d, %d)), _t%d, SPL(\"%s\")); })",
                th, th, sp_streq(name, "each_key") ? 1 : 0, th, name);
-    if (repr_of(c, id).kind == RK_BOXED && g_pp_hash_node != id) emit_boxed_text(c, TY_ENUMERATOR, eb.p, b);
+    if (repr_of(c, id).kind == RK_BOXED && !(g_pp_hash_node == id && g_pp_hash_boxes)) emit_boxed_text(c, TY_ENUMERATOR, eb.p, b);
     else buf_puts(b, eb.p);
     free(eb.p);
     return 1;
@@ -20918,8 +20920,10 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
          user `slice`): the Hash emitters answer their own type, boxed here */
       TyKind hft = repr_of(c, id).as_ty == TY_POLY ? an_builtin_answer(c, id) : TY_POLY;
       int hbox = hft != TY_POLY && hft != TY_UNKNOWN && hft != TY_VOID;
+      int sv_ppb = g_pp_hash_boxes; g_pp_hash_boxes = hbox;
       Buf hcb; memset(&hcb, 0, sizeof hcb);
       emit_call(c, id, &hcb);
+      g_pp_hash_boxes = sv_ppb;
       Buf hval; memset(&hval, 0, sizeof hval);
       if (hbox) emit_boxed_text(c, hft, hcb.p ? hcb.p : "", &hval);
       else buf_puts(&hval, hcb.p ? hcb.p : "");
