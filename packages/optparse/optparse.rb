@@ -1312,7 +1312,7 @@ XXX
   # Release code
   #
   def release
-    @release || (defined?(::Release) && ::Release) || (defined?(::RELEASE) && ::RELEASE)
+    @release || (defined?(::Release) ? ::Release : nil) || (defined?(::RELEASE) ? ::RELEASE : nil)
   end
 
   #
