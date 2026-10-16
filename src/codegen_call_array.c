@@ -1630,6 +1630,11 @@ int emit_op_array_concat(Compiler *c, const BopCtx *x, Buf *b) {
            that is no Array is CRuby's TypeError, not an empty list */
         buf_puts(b, "sp_poly_set_operand("); emit_boxed(c, argv[ai], b); buf_puts(b, ")");
       }
+      else if (comp_ntype(c, argv[ai]) == TY_VOID) {
+        /* an argument that never returns (a method that only raises):
+           run it for its raise; the empty array after it is never read */
+        buf_puts(b, "((void)("); emit_expr(c, argv[ai], b); buf_puts(b, "), sp_PolyArray_new())");
+      }
       else emit_expr(c, argv[ai], b);   /* already a poly array */
       buf_printf(b, "; SP_GC_ROOT(_t%d);", base + ai);
     }
