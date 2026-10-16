@@ -453,6 +453,12 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
   /* a reader call (or a call answering its receiver) that renders the
      handle itself */
   if (k == NK_CallNode) {
+    /* A demanded `s.to_s` over a local holding the handle boxes that
+       handle, as emit_boxed_strbuf does (an_str_conversion_local). */
+    if (c->strbuf_box[node]) {
+      int cr = an_str_conversion_local(mc, node);
+      if (cr >= 0 && comp_ntype(c, cr) == TY_STRBUF) return RS_HANDLE;
+    }
     /* A boxed receiver route keeps its handle beside fresh user answers. */
     if (repr_boxed_to_s_operand(mc, node) >= 0) return RS_HANDLE;
     /* A conversion keeps its operand's handle only where the operand has
@@ -650,9 +656,9 @@ ReprForm repr_box_form(const Compiler *c, Repr r) {
   (void)c;
   if (t == TY_STRING) return RF_STR;
   if (r.big) return RF_BIGINT;
-  /* an Array of pointers (objects, nested Arrays) is stamped with what its
-     elements are */
-  if (ty_is_object(r.elem) || ty_is_array(r.elem)) return RF_PTR_ARRAY;
+  /* an Array of pointers (objects, nested Arrays, a String Array's handles)
+     is stamped with what its elements are */
+  if (ty_is_object(r.elem) || ty_is_array(r.elem) || t == TY_STRH_ARRAY) return RF_PTR_ARRAY;
   if (ty_is_object(t)) return r.dyn_cls ? RF_NULLABLE_DYN : RF_NULLABLE;
   return RF_NULLABLE;
 }

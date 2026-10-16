@@ -43,7 +43,7 @@ PARTS=$(mktemp -d "${TMPDIR:-/tmp}/spinel-repr-check-parts.XXXXXX")
     rm -f "$3/$k.on.c" "$3/$k.off.c" "$3/$k.err"
   ' _ {} "$SP" "$PARTS"
 find "$PARTS" -name '*.log' -type f -exec cat {} + > "$OUT"
-ndiff=$(find "$PARTS" -name '*.cdiff' | wc -l)
+ndiff=$(find "$PARTS" -name '*.cdiff' | wc -l | tr -d ' ')
 find "$PARTS" -name '*.cdiff' -exec cat {} + | head -10
 rm -rf "$PARTS"
 count() { grep -c ": repr-check: $1:" "$OUT"; }
