@@ -1973,6 +1973,13 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
   /* a bang on a boxed receiver: the box the write-back answers, the
      receiver's own, read as one (emit_face_str_bang) */
   if (face_str_bang_call(c, node)) {
+    /* (an argument that ran ahead as the handle it hands on is that
+       handle's box, the bang not run again) */
+    if (ran_first_handle(node) >= 0) {
+      buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", ran_first_handle(node));
+      RC(RF_STRBUF_HANDLE, RW_RAN_FIRST);
+      return 1;
+    }
     int v = view_push(c, node, TY_POLY);
     emit_expr(c, node, b);
     view_pop(c, v);
@@ -2275,6 +2282,22 @@ static int emit_boxed_cond_arms(Compiler *c, int node, Buf *b) {
   if (!repr_share_rule(c) || node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
   TyKind t = comp_ntype(c, node);
+  /* A String Range's endpoint on an arm of a `||`, `&&`, case, begin or
+     rescue modifier is boxed by the Range's own test, arm by arm
+     (strbuf_srange_arm), not handed on as the handle route's new String
+     around its bytes: a `||` or `&&` as emit_boxed_self_answer_cond boxes
+     it, a case, begin or rescue modifier read as a box with each arm boxed
+     into it */
+  if ((k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode || k == NK_CaseMatchNode || k == NK_BeginNode ||
+       k == NK_RescueModifierNode) &&
+      (t == TY_STRING || t == TY_STRBUF) && strbuf_srange_arm(c, node) && !arg_ran_first(node, 0)) {
+    if (k == NK_OrNode || k == NK_AndNode) return emit_boxed_self_answer_cond(c, node, b);
+    int sv = view_push(c, node, TY_POLY);
+    emit_expr(c, node, b);
+    view_pop(c, sv);
+    RC(RF_SPECIAL, RW_HANDLE_ROUTE);
+    return 1;
+  }
   /* The other String conditionals already have a handle-valued route:
      box its answer so ||, && and case keep the selected arm's String. */
   if ((k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode || k == NK_CaseMatchNode) &&
@@ -2470,6 +2493,14 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     /* --share-strings: a block whose value is a String a holder keeps as
        the handle answers that handle (strbuf_route_yield): boxed as its
        bytes, the box held a copy */
+    /* ...but a String Range's endpoint is boxed by the Range's own test for
+       the handle it keeps, else the endpoint's own String, as a `next` of it
+       is (emit_boxed_next_value): the splice yields the box */
+    if (repr_share_rule(c) && (bt == TY_STRING || bt == TY_STRBUF) && strbuf_yield_tail_srange(c)) {
+      emit_block_invoke(c, nt_ref(c->nt, node, "arguments"), b, 0, 1, TY_POLY);
+      RC(RF_YIELD, RW_YIELD);
+      return;
+    }
     if (repr_share_rule(c) && (bt == TY_STRING || bt == TY_STRBUF) && strbuf_yield_tail_held(c)) {
       Buf hb; memset(&hb, 0, sizeof hb);
       if (emit_strbuf_route(c, node, &hb)) {
@@ -8557,6 +8588,20 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
         emit_stmt(c, last, pb, 1);
         buf_puts(pb, "    _fb->yielded_value = sp_box_nil();\n");
       }
+      /* --share-strings: a String Range's endpoint, as the last statement or
+         as a `next`, boxes as the endpoint is boxed: the handle the Range
+         keeps, else the endpoint's own String (emit_boxed_next_value), where
+         a handle around its bytes was another object */
+      else if ((lty == TY_STRING || lty == TY_STRBUF) && strbuf_srange_arm(c, last)) {
+        Buf pre2 = {0}, vb = {0};
+        Buf *sv2 = g_pre; int sv2i = g_indent;
+        g_pre = &pre2; g_indent = 1;
+        emit_boxed(c, last, &vb);
+        g_pre = sv2; g_indent = sv2i;
+        if (pre2.p) buf_puts(pb, pre2.p);
+        buf_printf(pb, "    _fb->yielded_value = %s;\n", vb.p ? vb.p : "sp_box_nil()");
+        free(pre2.p); free(vb.p);
+      }
       /* --share-strings: a String the rule shares is the thread's value
          itself (`Thread.new { s }.value << x` changes s): its handle, boxed */
       else if ((lty == TY_STRING || lty == TY_STRBUF) && strbuf_var_handle(c, last, &sref_fb)) {
@@ -8564,7 +8609,8 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
         free(sref_fb.p);
       }
       /* a route over one, or a conditional with such an arm (`c ? s : nil`) */
-      else if ((lty == TY_STRING || lty == TY_STRBUF) && strbuf_value_carries(c, last)) {
+      else if ((lty == TY_STRING || lty == TY_STRBUF) && strbuf_value_carries(c, last) &&
+               strbuf_value_handleish(c, last)) {
         Buf pre2 = {0}, vb = {0};
         Buf *sv2 = g_pre; int sv2i = g_indent;
         g_pre = &pre2; g_indent = 1;

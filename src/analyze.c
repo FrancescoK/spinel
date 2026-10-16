@@ -22070,6 +22070,7 @@ static int strh_static_apply(Compiler *c, const ShareHolder *sh, int ok) {
         ivar_set_type(kc, ki, to);
         kc->ivar_elems_shared[ki] |= ok ? ELEMS_STRH : ELEMS_POLY;
         changed = 1;
+        c->strh_demoted |= !ok;
       }
       else if (ok && kc->ivar_types[ki] == to) kc->ivar_elems_shared[ki] |= ELEMS_STRH;
     }
@@ -22084,6 +22085,7 @@ static int strh_static_apply(Compiler *c, const ShareHolder *sh, int ok) {
         cvar_set_type(kc, ki, to);
         kc->cvar_elems_shared[ki] |= ok ? ELEMS_STRH : ELEMS_POLY;
         changed = 1;
+        c->strh_demoted |= !ok;
       }
       else if (ok && kc->cvar_types[ki] == to) kc->cvar_elems_shared[ki] |= ELEMS_STRH;
     }
@@ -22098,6 +22100,7 @@ static int strh_static_apply(Compiler *c, const ShareHolder *sh, int ok) {
       if (ok) gv->strh_form = 1;
       else gv->elems_shared = 1;
       changed = 1;
+      c->strh_demoted |= !ok;
     }
   }
   return changed;
@@ -22377,7 +22380,7 @@ static int share_strh_gate(Compiler *c) {
     if (st[r] & STRH_BAD) {
       if (!lv->strh_no) { lv->strh_no = 1; changed = 1; }
       lv->strh_form = 0;
-      if (lv->type == TY_STRH_ARRAY) { lv_set_type(lv, TY_POLY_ARRAY); lv->elems_shared = 1; changed = 1; }
+      if (lv->type == TY_STRH_ARRAY) { lv_set_type(lv, TY_POLY_ARRAY); lv->elems_shared = 1; changed = c->strh_demoted = 1; }
     }
     else if (lv->type == TY_STR_ARRAY) {
       lv_set_type(lv, TY_STRH_ARRAY);
@@ -22401,13 +22404,13 @@ static int strh_sweep_slots(Compiler *c) {
       if (kc->ivar_types[i] == TY_STRH_ARRAY && !(kc->ivar_elems_shared[i] & ELEMS_STRH)) {
         ivar_set_type(kc, i, TY_POLY_ARRAY);
         kc->ivar_elems_shared[i] |= ELEMS_POLY | ELEMS_STRH_NO;
-        changed = 1;
+        changed = c->strh_demoted = 1;
       }
     for (int i = 0; i < kc->ncvars; i++)
       if (kc->cvar_types[i] == TY_STRH_ARRAY && !(kc->cvar_elems_shared[i] & ELEMS_STRH)) {
         cvar_set_type(kc, i, TY_POLY_ARRAY);
         kc->cvar_elems_shared[i] |= ELEMS_POLY | ELEMS_STRH_NO;
-        changed = 1;
+        changed = c->strh_demoted = 1;
       }
   }
   return changed;
@@ -48506,6 +48509,7 @@ static void an_phase_storage(Compiler *c) {
     for (int s = 0; s < c->nscopes; s++) strh_ret0[s] = c->scopes[s].ret == TY_STRH_ARRAY;
   }
   HandleArgTab hat;
+  c->strh_demoted = 0;
   /* The refresh below moves node types the rule's facts are built from: a
      variable an expression over a widened read joins can only now meet a
      String the rule shares. Under the rule the loop runs again while the
@@ -48559,6 +48563,10 @@ static void an_phase_storage(Compiler *c) {
     int strh_moved = 0;
     for (int s = 0; strh_ret0 && s < c->nscopes; s++)
       if ((c->scopes[s].ret == TY_STRH_ARRAY) != strh_ret0[s]) { late_widened = strh_moved = 1; strh_ret0[s] ^= 1; }
+    /* (a slot the gate gave up the Array of handles for moves the nodes
+       typed from it: an operation on it, a proc's answer) */
+    int strh_gave_up = c->strh_demoted;
+    if (strh_gave_up) { late_widened = 1; c->strh_demoted = 0; }
     if (late_widened)
       for (int id = 0; id < c->nt->count; id++) infer_type(c, id);
     else if (conv0) {
@@ -48579,6 +48587,17 @@ static void an_phase_storage(Compiler *c) {
     for (int again = 0; strh_moved && again < 4; again++) {
       int rm = infer_return_types(c);
       if (!rm) break;
+      for (int id = 0; id < c->nt->count; id++) infer_type(c, id);
+    }
+    /* ...and what is derived from the tails after the gate gave a slot up
+       follows it: a proc's answer and a proc local's recorded return (the
+       proc-return phase, which ran before the gate), then the returns of the
+       methods whose tail is such a call, which can answer a proc in turn.
+       Each pass re-infers every node; a slot the next round's gate gives up
+       starts this again, and a slot leaves the form only once */
+    for (int again = 0; strh_gave_up && again < 8; again++) {
+      an_phase_proc_returns(c);
+      if (!infer_return_types(c)) break;
       for (int id = 0; id < c->nt->count; id++) infer_type(c, id);
     }
     if (!c->share_strings || round >= 4 || !memcmp(nt0, c->ntype, sizeof(TyKind) * (size_t)c->nt->count)) break;
