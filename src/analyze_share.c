@@ -1565,6 +1565,10 @@ static void sh_settle_peeks(ShareFacts *F, Compiler *c) {
 
 static int sh_answers_elems_run(int share, int argc);
 /* container: 1 an Array's (or a poly receiver's) row, 2 a Hash's */
+static int sh_new_str_array(Compiler *c, int n, int share, int argc, int blk) {
+  return (share == BSH_PURE || share == BSH_ITER_FRESH_RECV || (share == BSH_LINE && argc == 0)) && blk < 0 &&
+         c->ntype[n] == TY_STR_ARRAY;
+}
 static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int blk, int container) {
   const NodeTable *nt = c->nt;
   int args = nt_ref(nt, n, "arguments");
@@ -1576,8 +1580,7 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
   /* a String's (or Kernel's) builtin answering a new String Array without
      a block (`s.split`, `s.scan(re)`): its elements are new Strings, held
      as a local's Array holds them, in a class of its own */
-  if ((share == BSH_PURE || share == BSH_ITER_FRESH_RECV || (share == BSH_LINE && argc == 0)) && !container && blk < 0 &&
-      c->ntype[n] == TY_STR_ARRAY) {
+  if (!container && sh_new_str_array(c, n, share, argc, blk)) {
     F->fresh_cont[n] = 1;
     return sh_new(F, SHK_VALUE);
   }
@@ -3367,9 +3370,9 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     }
     /* any receiver it may be: an Array's or a Hash's row (a String's keeps
        its arguments least), or the container default */
-    int s = 0, container = 1;
-    if (sh_boxed_builtin_row(F, c, n, &s, NULL, &container))
-      return sh_builtin(F, c, n, s, rv, blk, container);
+    int s = 0, family = 0, container = 1;
+    if (sh_boxed_builtin_row(F, c, n, &s, &family, &container))
+      return sh_builtin(F, c, n, s, rv, blk, family == TY_STRING && sh_new_str_array(c, n, s, argc, blk) ? 0 : container);
     if (sh_boxed_pure_name(F, c, n)) return sh_builtin(F, c, n, BSH_PURE, rv, blk, 0);
     return sh_container_default(F, c, n, rv, blk);
   }
