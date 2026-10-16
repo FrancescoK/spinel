@@ -1,0 +1,3 @@
+[:plain, "abc!", true]
+[:par, "abc!", true]
+[:bang, "ABC!", true]

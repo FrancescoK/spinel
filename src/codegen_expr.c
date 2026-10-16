@@ -4626,7 +4626,8 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
        not from its bytes. */
     int lt_hbox = repr_share_rule(c) && res == TY_POLY &&
                   (lt == TY_STRBUF ||
-                   (lt == TY_STRING && (face_str_bang_call(c, left) || strbuf_var_handle(c, left, NULL) ||
+                   (lt == TY_STRING && (face_str_bang_call(c, unwrap_parens(c, left)) ||
+                                        strbuf_var_handle(c, unwrap_parens(c, left), NULL) ||
                                         (repr_of(c, unwrap_parens(c, left)).poly_lift &&
                                          (repr_call_returns_handle(c, left) || logic_left_carries(c, left) ||
                                           share_plan_box_handle(c, unwrap_parens(c, left)))))));
