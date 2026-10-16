@@ -676,10 +676,10 @@ class OptionParser
         # "(-x -c -r)-l[left justify]"
         if /\A--\[no-\](.+)$/ =~ opt
           o = $1
-          yield("--#{o}", desc.join(""))
-          yield("--no-#{o}", desc.join(""))
+          yield("--#{o}", desc.join("").dup)
+          yield("--no-#{o}", desc.join("").dup)
         else
-          yield("#{opt}", desc.join(""))
+          yield("#{opt}", desc.join("").dup)
         end
       end
     end
