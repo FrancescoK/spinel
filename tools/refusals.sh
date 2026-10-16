@@ -15,7 +15,7 @@
 # (#7100, CP_REFUSE) must leave this file byte-identical.
 #
 # Normalized: this tree's root (so lib/ paths are relative) and the node id
-# in the internal "unsupported WHAT: node N" dump, which changes with any
+# in the internal "...: node N (Kind ...)" dump, which changes with any
 # change to the node table. Programs are sorted; each program's lines keep
 # the order the compiler printed them in.
 #
@@ -54,7 +54,7 @@ run() {
       rm -f "$out/$key.$m.c"
       { printf "== %s [%s] rc=%s\n" "$f" "$m" "$rc"
         grep "^spinel: " "$out/$key.$m.err" | sed -e "s|$root/||g" \
-          -e "s/\(unsupported [^:]*: node \)[0-9][0-9]*/\1N/"
+          -e "s/: node [0-9][0-9]* (/: node N (/g"
       } > "$out/$key.$m.rec"
       rm -f "$out/$key.$m.err"
       # the corpus lists only the programs that refuse
