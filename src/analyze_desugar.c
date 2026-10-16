@@ -7722,7 +7722,7 @@ int desugar_value_callable_forwards(Compiler *c) {
     int own = anon || (nt_kind(nt, ex) == NK_LocalVariableReadNode && fms && fms->blk_param &&
                        nt_str(nt, ex, "name") && sp_streq(nt_str(nt, ex, "name"), fms->blk_param));
     int blockless_form = rt == TY_STRING || rt == TY_IO ||
-                         ((ty_is_array(rt) || ty_is_hash(rt) || rt == TY_RANGE) &&
+                         ((ty_is_array(rt) || ty_is_hash(rt) || rt == TY_RANGE || rt == TY_POLY) &&
                           builtin_enum_name_index(name) < 0);
     if (own && blockless_form && fwd_method_called_blockless(c, fms))
       fwd_branch_on_block_given(c, id);
