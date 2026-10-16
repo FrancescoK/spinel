@@ -47639,6 +47639,15 @@ static void an_phase_proc_returns(Compiler *c) {
         for (int s = 1; s < c->nscopes; s++) {
           Scope *sc = &c->scopes[s];
           if (!sc->name || sc->nparams <= 0) continue;
+          /* only a typed-array parameter widens: a method with none has no
+             call to resolve (an_call_targets_scope, asked per call of the
+             name, was most of this pass on a large program) */
+          int any_arr = 0;
+          for (int j = 0; j < sc->nparams && !any_arr; j++) {
+            LocalVar *pv = sc->pnames[j] ? scope_local(sc, sc->pnames[j]) : NULL;
+            any_arr = pv && PW_TYPED_ARR(pv->type);
+          }
+          if (!any_arr) continue;
           int nk = prci_calls_for(&ix, sc->name);
           for (int q = 0; q < nk; q++) {
             int u = ix.calls[ix.buf[q]];
