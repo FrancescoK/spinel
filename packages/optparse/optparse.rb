@@ -447,10 +447,10 @@ class OptionParser
       Regexp.new('\A' + Regexp.quote(key).gsub(/\w+\b/, '\&\w*'), icase)
     end
 
-    def self.candidate(key, icase = false, pat = nil, &block)
+    def self.candidate(key, icase = false, pat = nil, entries = nil)
       pat ||= Completion.regexp(key, icase)
       candidates = []
-      block.call do |k, *v|
+      entries.each do |k, *v|
         (if Regexp === k
            kn = ""
            k === key
@@ -469,11 +469,11 @@ class OptionParser
     end
 
     def candidate(key, icase = false, pat = nil, &_)
-      Completion.candidate(key, icase, pat, &method(:each))
+      Completion.candidate(key, icase, pat, self)
     end
 
     def complete(key, icase = false, pat = nil)
-      candidates = candidate(key, icase, pat, &method(:each)).sort_by {|k, v, kn| kn.size}
+      candidates = Completion.candidate(key, icase, pat, self).sort_by {|k, v, kn| kn.size}
       if candidates.size == 1
         canon, sw, * = candidates[0]
       elsif candidates.size > 1
@@ -2014,7 +2014,7 @@ XXX
     visit(:each_option) do |opt|
       next unless Switch === opt
       opts = (long ? opt.long : []) + (short ? opt.short : [])
-      opts = Completion.candidate(word, true, pat, &opts.method(:each)).map(&:first) if pat
+      opts = Completion.candidate(word, true, pat, opts).map(&:first) if pat
       if /\A=/ =~ opt.arg
         opts.map! {|sw| sw + "="}
         if arg and CompletingHash === opt.pattern
