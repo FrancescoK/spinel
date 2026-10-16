@@ -13467,6 +13467,50 @@ static int array_fill_held_only_here(Compiler *c, int fill, int fh, const char *
   if (fh) return 1;
   return !is_numeric_literal_tag(k) && operand_allocates_beside(c, fill);
 }
+
+/* Regexp.new(src [, opts]), and Regexp.compile, its alias: the pattern
+   into a temp, its source handed over by length */
+void emit_regexp_new(Compiler *c, int argc, const int *argv, Buf *b) {
+  int tp = ++g_tmp, ts = ++g_tmp;
+  /* Regexp.new(/re/): copying an existing Regexp reuses its source text and
+     options (a second arg is ignored by CRuby in that case). Reading the
+     source via sp_re_source avoids treating the pattern pointer as a
+     C string (which yielded a garbage source, #2528). */
+  if (comp_ntype(c, argv[0]) == TY_REGEX) {
+    Buf rv; memset(&rv, 0, sizeof rv);
+    emit_expr(c, argv[0], &rv);
+    /* the pattern once, and its source by its length: the source is the
+       engine's own C string, with no tag byte for sp_str_byte_len to
+       read, and one holding a NUL was cut there */
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "void *_t%d = (void *)(%s);\n", ts, rv.p ? rv.p : "0");
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "mrb_regexp_pattern *_t%d = re_compile(sp_re_source(_t%d), (int64_t)sp_re_source_len(_t%d), sp_re_raw_flags(_t%d));\n",
+               tp, ts, ts, ts);
+    free(rv.p);
+    buf_printf(b, "_t%d", tp);
+    return;
+  }
+  /* Emit the pattern value into a local buffer first: an interpolated arg
+     whose embedded call roots its own args pushes those decls to g_pre,
+     which must land as whole statements BEFORE this temp's decl line, not
+     inside its initializer. */
+  Buf pv; memset(&pv, 0, sizeof pv);
+  emit_str_expr(c, argv[0], &pv);   /* Regexp.new(nil) is CRuby's TypeError */
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "const char *_t%d = %s;\n", ts, pv.p ? pv.p : "\"\"");
+  free(pv.p);
+  /* the option arg (Integer bits, or a truthy value == IGNORECASE) maps to
+     the internal flag bits (#3055) */
+  Buf flagbuf; memset(&flagbuf, 0, sizeof flagbuf);
+  emit_re_opts_flags(c, argc, argv, &flagbuf);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "mrb_regexp_pattern *_t%d = re_compile(_t%d, (int64_t)(_t%d ? sp_str_byte_len(_t%d) : 0), %s);\n",
+             tp, ts, ts, ts, flagbuf.p ? flagbuf.p : "0");
+  free(flagbuf.p);
+  buf_printf(b, "_t%d", tp);
+}
+
 static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, int *out) {
   if (!(recv >= 0 && (is_hash_constructor(name)))) return 0;
   const char *rty = nt_type(nt, recv);
@@ -14074,47 +14118,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       else buf_printf(b, "sp_PolyPolyHash_new_dproc(_sp_hash_dproc_%d, NULL)", dn);
       { *out = 1; return 1; }
     }
-    if (cn && sp_streq(cn, "Regexp") && argc >= 1) {
-      int tp = ++g_tmp, ts = ++g_tmp;
-      /* Regexp.new(/re/): copying an existing Regexp reuses its source text and
-         options (a second arg is ignored by CRuby in that case). Reading the
-         source via sp_re_source avoids treating the pattern pointer as a
-         C string (which yielded a garbage source, #2528). */
-      if (comp_ntype(c, argv[0]) == TY_REGEX) {
-        Buf rv; memset(&rv, 0, sizeof rv);
-        emit_expr(c, argv[0], &rv);
-        /* the pattern once, and its source by its length: the source is the
-           engine's own C string, with no tag byte for sp_str_byte_len to
-           read, and one holding a NUL was cut there */
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "void *_t%d = (void *)(%s);\n", ts, rv.p ? rv.p : "0");
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "mrb_regexp_pattern *_t%d = re_compile(sp_re_source(_t%d), (int64_t)sp_re_source_len(_t%d), sp_re_raw_flags(_t%d));\n",
-                   tp, ts, ts, ts);
-        free(rv.p);
-        buf_printf(b, "_t%d", tp);
-        { *out = 1; return 1; }
-      }
-      /* Emit the pattern value into a local buffer first: an interpolated arg
-         whose embedded call roots its own args pushes those decls to g_pre,
-         which must land as whole statements BEFORE this temp's decl line, not
-         inside its initializer. */
-      Buf pv; memset(&pv, 0, sizeof pv);
-      emit_str_expr(c, argv[0], &pv);   /* Regexp.new(nil) is CRuby's TypeError */
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "const char *_t%d = %s;\n", ts, pv.p ? pv.p : "\"\"");
-      free(pv.p);
-      /* the option arg (Integer bits, or a truthy value == IGNORECASE) maps to
-         the internal flag bits (#3055) */
-      Buf flagbuf; memset(&flagbuf, 0, sizeof flagbuf);
-      emit_re_opts_flags(c, argc, argv, &flagbuf);
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "mrb_regexp_pattern *_t%d = re_compile(_t%d, (int64_t)(_t%d ? sp_str_byte_len(_t%d) : 0), %s);\n",
-                 tp, ts, ts, ts, flagbuf.p ? flagbuf.p : "0");
-      free(flagbuf.p);
-      buf_printf(b, "_t%d", tp);
-      { *out = 1; return 1; }
-    }
+    if (cn && sp_streq(cn, "Regexp") && argc >= 1) { emit_regexp_new(c, argc, argv, b); *out = 1; return 1; }
     if (cn && sp_streq(cn, "Array") && argc == 0 && nt_ref(nt, id, "block") < 0) {
       buf_puts(b, "sp_PolyArray_new()"); { *out = 1; return 1; }
     }
