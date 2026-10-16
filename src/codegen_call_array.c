@@ -2488,36 +2488,26 @@ int emit_call_array_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
   return 0;
 }
 
-/* methods on an array literal whose type never settled (an empty [] or an argument-less Array.new), answered against an empty poly array */
-int emit_call_untyped_array_arms(Buf *b, const NodeTable *nt, const char *name, int recv, int argc, TyKind rt) {
-  /* an empty array literal as a receiver: its node type is unknown (element
-     type is usage-folded, but a bare literal has no usage). Handle the common
-     methods directly against an empty (poly) array. */
-  if (recv >= 0 && rt == TY_UNKNOWN) {
-    const char *rty = nt_type(nt, recv);
-    int empty_recv = 0;
-    if (rty && sp_streq(rty, "ArrayNode")) {
-      int en = 0; nt_arr(nt, recv, "elements", &en);
-      empty_recv = (en == 0);
-    }
+/* methods on an empty array literal or an argument-less Array.new, answered
+   against an empty poly array. The receiver's type is unknown when it never
+   settled; one whose use gave it a kind (a marked receiver, mark_empty_array_operands)
+   answers the counts, empty?, frozen? and class the same way, since it
+   is the same empty container whatever its inferred type. */
+int emit_call_untyped_array_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, TyKind rt) {
+  /* the common methods, answered directly against an empty (poly) array */
+  if (recv >= 0 && (rt == TY_UNKNOWN || ty_is_array(rt))) {
     /* an argument-less `Array.new` is the same empty array, and carries the
        same unknown element type (#3613) */
-    else if (rty && sp_streq(rty, "CallNode") && nt_str(nt, recv, "name") &&
-             sp_streq(nt_str(nt, recv, "name"), "new") && nt_ref(nt, recv, "block") < 0) {
-      int arn = nt_ref(nt, recv, "receiver");
-      int aa = nt_ref(nt, recv, "arguments");
-      int aac = 0; if (aa >= 0) nt_arr(nt, aa, "arguments", &aac);
-      if (aac == 0 && arn >= 0 && nt_type(nt, arn) &&
-          sp_streq(nt_type(nt, arn), "ConstantReadNode") &&
-          nt_str(nt, arn, "name") && sp_streq(nt_str(nt, arn, "name"), "Array"))
-        empty_recv = 1;
-    }
+    int empty_recv = node_is_empty_container(nt, recv) && an_empty_container_kind(c, recv) == 1;
+    /* a receiver typed for its use answers only what no type changes */
+    int typed = rt != TY_UNKNOWN;
     {
       if (empty_recv) {
         if (is_count_alias(name) && argc == 0) { buf_puts(b, "0"); return 1; }
         if (sp_streq(name, "empty?") && argc == 0) { buf_puts(b, "1"); return 1; }
         if (sp_streq(name, "frozen?") && argc == 0) { buf_puts(b, "0"); return 1; }
         if (sp_streq(name, "class") && argc == 0) { buf_puts(b, "((sp_Class){(sp_int)-1, SPL(\"Array\")})"); return 1; }
+        if (typed) return 0;
         /* first/last type poly (boxed nil, printable as nil); min/max/pop/
            shift answer the Integer slot's nil */
         if ((is_endpoint_query(name)) && argc == 0) { buf_puts(b, "sp_box_nil()"); return 1; }

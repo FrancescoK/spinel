@@ -718,6 +718,7 @@ int repr_store_fits(Compiler *c, TyKind from, TyKind to) {
    a constructor for. */
 static int repr_empty_lit_as(Compiler *c, int v, TyKind slot) {
   const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
   const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
   if (!vty) return 0;
   int n = 0;

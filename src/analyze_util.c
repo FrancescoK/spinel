@@ -636,6 +636,7 @@ int an_unparen(const NodeTable *nt, int n) {
    the value unified to the handler's Integer and the array pointer went into
    an sp_int slot (#3495, #3496). */
 int node_is_empty_container(const NodeTable *nt, int node) {
+  node = an_unparen(nt, node);   /* `([])` is as empty as `[]` */
   if (node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_ArrayNode || k == NK_HashNode || k == NK_KeywordHashNode) {

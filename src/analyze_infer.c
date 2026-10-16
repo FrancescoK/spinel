@@ -1288,6 +1288,7 @@ static int an_elems_int_rows(Compiler *c, int arr, int *saw) {
   return 1;
 }
 
+static TyKind infer_empty_array_kind(Compiler *c, int id);
 static int an_settled_int(Compiler *c, int n, int depth);
 
 /* Whether every write of constant `name` is a plain `NAME = v` whose value
@@ -3773,8 +3774,9 @@ static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *
           }
         }
         /* a bare `Array.new` carries no element type; leave it UNKNOWN (like an
-           empty `[]`) so the push-promotion pass can narrow it from `<<`/push. */
-        if (argc == 0 && blk < 0) { *out = TY_UNKNOWN; return 1; }
+           empty `[]`) so the push-promotion pass can narrow it from `<<`/push,
+           and give it the kind its use fixes, as `[]` has. */
+        if (argc == 0 && blk < 0) { *out = infer_empty_array_kind(c, id); return 1; }
         /* Array.new(array) is a copy of the array, of its own kind (#7449).
            An argument not typed yet may still turn out to be one. */
         if (argc == 1 && blk < 0) {
@@ -9035,6 +9037,8 @@ static TyKind an_empty_container_tail(Compiler *c, int stmts) {
   int n = 0;
   const int *bb = nt_arr(nt, stmts, "body", &n);
   int tail = (bb && n > 0) ? bb[n - 1] : stmts;
+  tail = an_unparen(nt, tail);   /* `([])` is `[]` */
+  if (tail < 0) return TY_UNKNOWN;
   const char *ty = nt_type(nt, tail);
   int len = 0;
   if (ty && sp_streq(ty, "ArrayNode")) {
@@ -9106,7 +9110,7 @@ static TyKind an_paren_ty(Compiler *c, int id) {
 int an_or_empty_hash_fallback(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   if (node < 0 || nt_kind(nt, node) != NK_OrNode) return -1;
-  int r = nt_ref(nt, node, "right");
+  int r = an_unparen(nt, nt_ref(nt, node, "right"));   /* `x || ({})` is `x || {}` */
   if (r < 0 || nt_kind(nt, r) == NK_ArrayNode || !node_is_empty_container(nt, r)) return -1;
   if (nt_kind(nt, r) == NK_CallNode && an_empty_container_new(c, r) != 2) return -1;
   TyKind lt = infer_type(c, nt_ref(nt, node, "left"));
@@ -9808,6 +9812,25 @@ static int range_indexes_seq(Compiler *c, int id) {
   return ty_is_array(rt) || rt == TY_STRING || rt == TY_STRBUF;
 }
 
+/* The kind of an empty `[]`, or of a bare `Array.new`, which carries no
+   element type either, from the use that fixes it (mark_empty_array_operands),
+   else UNKNOWN. */
+static TyKind infer_empty_array_kind(Compiler *c, int id) {
+  /* A SPECIFIC kind fixed by the use context outranks the generic poly
+     layout: the row of an `Array.new(n) { [] }` table is a block tail
+     (marked as a receiver-style empty) and is built as an sp_FloatArray
+     once narrow_object_arrays has decided the table's kind (#4484). */
+  if (c->arr_want && id < c->node_cap && ty_is_array(c->arr_want[id]) &&
+      c->arr_want[id] != TY_POLY_ARRAY)
+    return c->arr_want[id];
+  if (c->empty_arr_recv && id < c->node_cap && c->empty_arr_recv[id])
+    return TY_POLY_ARRAY;
+  /* kind fixed by the use context (mark_empty_array_operands) */
+  if (c->arr_want && id < c->node_cap && ty_is_array(c->arr_want[id]))
+    return c->arr_want[id];
+  return infer_empty_array_reopen(c, id);  /* empty: element type comes from usage */
+}
+
 static TyKind infer_array_literal(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
     if (nt_int(nt, id, "cext_args", 0)) return TY_POLY_ARRAY;
@@ -9818,19 +9841,7 @@ static TyKind infer_array_literal(Compiler *c, int id) {
          writes to infer from, so mark_empty_array_operands types it as a poly
          array. An argument may instead take a specific layout through arr_want.
          Elsewhere it stays UNKNOWN so `x = []; x << 1` can back-fill its kind. */
-      /* A SPECIFIC kind fixed by the use context outranks the generic poly
-         layout: the row of an `Array.new(n) { [] }` table is a block tail
-         (marked as a receiver-style empty) and is built as an sp_FloatArray
-         once narrow_object_arrays has decided the table's kind (#4484). */
-      if (c->arr_want && id < c->node_cap && ty_is_array(c->arr_want[id]) &&
-          c->arr_want[id] != TY_POLY_ARRAY)
-        return c->arr_want[id];
-      if (c->empty_arr_recv && id < c->node_cap && c->empty_arr_recv[id])
-        return TY_POLY_ARRAY;
-      /* kind fixed by the use context (mark_empty_array_operands) */
-      if (c->arr_want && id < c->node_cap && ty_is_array(c->arr_want[id]))
-        return c->arr_want[id];
-      return infer_empty_array_reopen(c, id);  /* empty: element type comes from usage */
+      return infer_empty_array_kind(c, id);
     }
     /* A callee stores elements of another kind into the literal it is
        passed (widen_arg_array). */

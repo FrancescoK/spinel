@@ -445,6 +445,9 @@ int node_may_be_null_nil(Compiler *c, int node) {
     case NK_InterpolatedRegularExpressionNode: case NK_IntegerNode:
     case NK_LambdaNode: case NK_SelfNode:
       return 0;
+    /* a bare Array.new / Hash.new is as fresh as the literal */
+    case NK_CallNode:
+      return !node_is_empty_container(c->nt, node);
     default:
       return 1;
   }
@@ -2518,16 +2521,9 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
      narrow it), and its handler emits a sp_PolyArray *. When it is never pushed
      and lands in a poly slot, box that array -- otherwise the fallback below
      evaluates it for side effect and yields nil, dropping the array. */
-  if (tr.untyped && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "CallNode")) {
-    const char *nm = nt_str(c->nt, node, "name");
-    int rc = nt_ref(c->nt, node, "receiver");
-    const char *rcn = rc >= 0 ? nt_str(c->nt, rc, "name") : NULL;
-    int an = 0; int aN = nt_ref(c->nt, node, "arguments");
-    if (aN >= 0) nt_arr(c->nt, node, "arguments", &an);
-    if (nm && sp_streq(nm, "new") && rcn && sp_streq(rcn, "Array") &&
-        an == 0 && nt_ref(c->nt, node, "block") < 0) {
-      buf_puts(b, "sp_box_poly_array("); emit_expr(c, node, b); buf_puts(b, ")"); RC(RF_SPECIAL, RW_LITERAL); return;
-    }
+  if ((tr.untyped || tr.as_ty == TY_POLY_ARRAY) && nt_kind(c->nt, node) == NK_CallNode &&
+      node_is_empty_container(c->nt, node) && an_empty_container_kind(c, node) == 1) {
+    buf_puts(b, "sp_box_poly_array("); emit_expr(c, node, b); buf_puts(b, ")"); RC(RF_SPECIAL, RW_LITERAL); return;
   }
   /* an empty hash literal {} has TY_UNKNOWN; box it as an empty PolyPolyHash */
   if (tr.untyped && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "HashNode")) {

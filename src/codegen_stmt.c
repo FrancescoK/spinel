@@ -14256,6 +14256,7 @@ void emit_stmt_tail(Compiler *c, int id, Buf *b, int indent) {
    (#4111). Returns 1 when it emitted the literal. */
 int emit_empty_literal_as(Compiler *c, int v, TyKind slot, Buf *b) {
   const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);   /* `([])` is as empty as `[]` (repr_empty_lit_as asks the same) */
   const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
   if (!vty) return 0;
   int n = 0;

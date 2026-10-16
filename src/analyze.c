@@ -14556,18 +14556,26 @@ static int is_empty_array_literal(const NodeTable *nt, int id, int cap) {
   int en = 0; nt_arr(nt, id, "elements", &en);
   return en == 0;
 }
+/* An empty `[]`, or a bare `Array.new`, which carries no element type either
+   and is as much an operand as the literal. */
+static int is_empty_array_operand(Compiler *c, int id) {
+  if (id < 0 || id >= c->node_cap) return 0;
+  NodeKind k = nt_kind(c->nt, id);
+  return (k == NK_ArrayNode || k == NK_CallNode) && node_is_empty_container(c->nt, id) &&
+         an_empty_container_kind(c, id) == 1;
+}
 static void mark_empty_array_operands(Compiler *c) {
   if (!c->empty_arr_recv || !c->arr_want) return;
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_EmbeddedStatementsNode, es) {
     int st = nt_ref(nt, es, "statements");
     int bn = 0; const int *bb = st >= 0 ? nt_arr(nt, st, "body", &bn) : NULL;
-    if (bn == 1 && is_empty_array_literal(nt, bb[0], c->node_cap)) comp_set_empty_arr_recv(c, bb[0], 1);
+    if (bn == 1 && is_empty_array_operand(c, bb[0])) comp_set_empty_arr_recv(c, bb[0], 1);
   }
   /* `a, b = []` answers its right-hand side, which no write can back-fill */
   NT_FOREACH_KIND(nt, NK_MultiWriteNode, mw) {
     int v = nt_ref(nt, mw, "value");
-    if (is_empty_array_literal(nt, v, c->node_cap)) comp_set_empty_arr_recv(c, v, 1);
+    if (is_empty_array_operand(c, v)) comp_set_empty_arr_recv(c, v, 1);
   }
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
@@ -14575,7 +14583,7 @@ static void mark_empty_array_operands(Compiler *c) {
     if (recv < 0 || recv >= c->node_cap) continue;
     int anode = nt_ref(nt, id, "arguments");
     int an = 0; const int *av = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
-    int recv_empty = is_empty_array_literal(nt, recv, c->node_cap);
+    int recv_empty = is_empty_array_operand(c, recv);
     /* an inject / each_with_object seed is written through the block param
        and back-fills like a local: leave it */
     int seed = nt_ref(nt, id, "block") >= 0 && nm &&
@@ -14590,7 +14598,7 @@ static void mark_empty_array_operands(Compiler *c) {
         is_call_or_yield(nm) &&
         infer_type(c, recv) == TY_PROC) {
       for (int k = 0; k < an; k++) {
-        if (is_empty_array_literal(nt, av[k], c->node_cap) && c->arr_want[av[k]] == TY_UNKNOWN)
+        if (is_empty_array_operand(c, av[k]) && c->arr_want[av[k]] == TY_UNKNOWN)
           comp_set_arr_want(c, av[k], TY_POLY_ARRAY);
         /* the same for `{}`: the proc-call argument emitter asks the node's
            type to decide whether the value is storable, and an untyped empty
@@ -14612,7 +14620,7 @@ static void mark_empty_array_operands(Compiler *c) {
         TyKind want = (ty_is_array(rt) && rt != TY_POLY_ARRAY && empty_arr_same_kind_method(nm))
                       ? rt : TY_POLY_ARRAY;
         for (int k = 0; k < an; k++)
-          if (is_empty_array_literal(nt, av[k], c->node_cap) && c->arr_want[av[k]] == TY_UNKNOWN)
+          if (is_empty_array_operand(c, av[k]) && c->arr_want[av[k]] == TY_UNKNOWN)
             comp_set_arr_want(c, av[k], want);
       }
     }
@@ -14629,7 +14637,7 @@ static void mark_empty_array_operands(Compiler *c) {
        their existing back-fill behavior through the block parameter. */
     if (!seed) {
       for (int k = 0; k < an; k++)
-        if (is_empty_array_literal(nt, av[k], c->node_cap) && c->arr_want[av[k]] == TY_UNKNOWN)
+        if (is_empty_array_operand(c, av[k]) && c->arr_want[av[k]] == TY_UNKNOWN)
           comp_set_arr_want(c, av[k], TY_POLY_ARRAY);
     }
     /* ... any other bare `[]` receiver is an empty poly array */
