@@ -1490,8 +1490,12 @@ XXX
       end
 
       # anything others
+      if o.is_a?(Method)
+        block = notwice(o, block, 'block')
+        next
+      end
       case o
-      when Proc, Method
+      when Proc
         block = notwice(o, block, 'block')
       when Array, Hash, Set
         if Array === o
