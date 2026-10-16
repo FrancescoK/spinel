@@ -2744,7 +2744,7 @@ void emit_strh_elem(Compiler *c, int v, Buf *b) {
 /* Can the receiver be nil, and is the call no safe navigation (which guards
    it itself)? */
 static int strh_recv_nilable(Compiler *c, int id, int recv) {
-  return !call_is_safe_nav(c->nt, id) && repr_of(c, recv).may_nil;
+  return !call_is_safe_nav(c->nt, id) && repr_of(c, recv).may_nil && !repr_of(c, recv).nil_tested;
 }
 void strh_emit_recv(Compiler *c, int id, int recv, Buf *b) {
   const char *nm = nt_str(c->nt, id, "name");

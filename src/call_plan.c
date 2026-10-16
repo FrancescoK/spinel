@@ -2298,9 +2298,12 @@ void cplan_poly_free(PolyPlan *p) {
 
 /* the receivers whose nil target the plan decides: a typed pointer whose
    NULL is nil, a builtin's or a user object's (repr_of says which object
-   is held as a pointer; a by-value one has no nil) */
+   is held as a pointer; a by-value one has no nil), an Array of shared
+   Strings' handles (TY_STRH_ARRAY) included, whose arguments then run
+   ahead of the nil test (emit_nil_target_head) */
 static int cplan_nil_family(TyKind t) {
-  return t == TY_STRING || ty_is_array(t) || ty_is_obj_array(t) || ty_is_hash(t) || t == TY_IO || ty_is_object(t);
+  return t == TY_STRING || ty_is_array(t) || t == TY_STRH_ARRAY || ty_is_obj_array(t) || ty_is_hash(t) ||
+         t == TY_IO || ty_is_object(t);
 }
 
 /* Does the program give nil a method `name` of its own: on NilClass,
