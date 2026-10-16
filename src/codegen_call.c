@@ -1676,8 +1676,7 @@ int poly_cls_value_cands(Compiler *c, int id, const char *name, int argc, const 
         LocalVar *pp = kpn ? scope_local(ks, kpn) : NULL;
         TyKind pt = pp ? pp->type : TY_POLY;
         int kwh_arg = L.from[a] == ARG_KWH || (L.from[a] == ARG_NODE && L.arg[a] >= argc);
-        if (kwh_arg && ty_is_hash(pt) &&
-            pt != (kw->kwall_any ? TY_POLY_POLY_HASH : TY_SYM_POLY_HASH))
+        if (kwh_arg && !kwh_param_fits(pt, kw->kwall_any))
           incompat8 = 1;
         if (L.from[a] != ARG_NODE || kwh_arg || !atmp_ty) continue;
         TyKind at0 = atmp_ty[L.arg[a]];
@@ -8701,6 +8700,11 @@ static void emit_poly_arm_param(Compiler *c, Scope *ms, int a, const ArgLayout *
     }
     /* fall through */
   case ARG_KWH:
+    if (A->kw->kwall_any && (pt == TY_STR_INT_HASH || pt == TY_STR_STR_HASH)) {
+      /* a String-keyed braceless hash into a concrete Hash parameter */
+      buf_printf(pa, "sp_%sHash_from_poly_hash(_t%d)", pt == TY_STR_INT_HASH ? "StrInt" : "StrStr", A->kw->kwall);
+      return;
+    }
     emit_kwh_pos_hash(c, A->kw, pt == TY_POLY, pa);
     return;
   case ARG_REST:
