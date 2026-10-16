@@ -15769,8 +15769,10 @@ int infer_block_params(Compiler *c) {
          storage and the body still reads the parameter. Poly holds it. The
          `then` / `yield_self` arm further down already says this; without it
          here the two arms typed the same parameter differently on every round
-         and the fixpoint ran to its cap (#4116). */
-      if (rt == TY_NIL) rt = TY_POLY;
+         and the fixpoint ran to its cap (#4116). A receiver with no value
+         (void: a method answering nothing usable, or one that always raises)
+         yields nil the same way. */
+      if (rt == TY_NIL || rt == TY_VOID) rt = TY_POLY;
     }
     else {
       if (!ty_is_object(rt)) continue;
@@ -15987,7 +15989,7 @@ int infer_block_params(Compiler *c) {
       Scope *bs = comp_scope_of(c, block);
       LocalVar *plv = scope_local(bs, p0);
       if (plv && lv_is_handle_of(c, plv, rt)) continue;
-      if (bp_widen(bs, p0, rt == TY_NIL ? TY_POLY : rt)) changed = 1;
+      if (bp_widen(bs, p0, rt == TY_NIL || rt == TY_VOID ? TY_POLY : rt)) changed = 1;
       continue;
     }
 

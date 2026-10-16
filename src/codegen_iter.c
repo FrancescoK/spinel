@@ -4526,9 +4526,11 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
     }
   }
   if (et == TY_UNKNOWN) return 0;
-  /* a nil receiver (`nil.tap { }`) has no scalar C type: carry it boxed */
-  int et_nil = (et == TY_NIL);
-  if (et_nil) et = TY_POLY;
+  /* a nil receiver (`nil.tap { }`) has no scalar C type: carry it boxed.
+     A receiver with no value (void: a method answering nothing usable, or
+     one that always raises) is run as a statement and yields nil. */
+  int et_nil = (et == TY_NIL), et_void = (et == TY_VOID);
+  if (et_nil || et_void) et = TY_POLY;
   int body = nt_ref(nt, block, "body");
   int bn = 0;
   const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
@@ -4563,8 +4565,15 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   /* a receiver that can be nil is held as its oint: the parameter gets
      the nil (`x = nil; x.then { |y| y.nil? }`), and unwrapping it here
      raised before the block ran */
-  int ro = !empty_arr_adopt && !hparam && !et_nil && oint_kind(et) && node_is_oint(c, recv);
+  int ro = !empty_arr_adopt && !hparam && !et_nil && !et_void && oint_kind(et) && node_is_oint(c, recv);
   if (empty_arr_adopt || hparam) ;
+  else if (et_void) {
+    Buf vb; memset(&vb, 0, sizeof vb);
+    emit_expr(c, recv, &vb);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "%s;\n", vb.p ? vb.p : ""); free(vb.p);
+    buf_puts(&rb, "sp_box_nil()");
+  }
   else if (ro) emit_oint_expr(c, recv, et, &rb);
   else if (et_nil) emit_boxed(c, recv, &rb); else emit_expr(c, recv, &rb);
   emit_indent(g_pre, g_indent);
@@ -5705,8 +5714,12 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
   if (sp_streq(name, "tap") && recv >= 0) {
     TyKind et = repr_of(c, recv).as_ty;
     /* a receiver of no type -- a call proven to raise NoMethodError -- is
-       the raise's sp_RbVal; `void _t` did not compile (#6213) */
-    if (et == TY_UNKNOWN || et == TY_VOID) et = TY_POLY;
+       the raise's sp_RbVal; `void _t` did not compile (#6213). A receiver
+       with no value (nil, or void: a method answering nothing usable, or
+       one that always raises) may be a void C call: it is run as a
+       statement, and the block gets nil. */
+    int no_value = et == TY_NIL || et == TY_VOID;
+    if (et == TY_UNKNOWN || no_value) et = TY_POLY;
     Scope *tsc = p0_orig ? comp_scope_of(c, block) : NULL;
     LocalVar *tlv0 = (tsc && p0_orig) ? scope_local(tsc, p0_orig) : NULL;
     TyKind tsaved0 = tlv0 ? tlv0->type : TY_UNKNOWN;
@@ -5725,7 +5738,14 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
       hparam = hlv && repr_of_slot(c, hlv).handle;
     }
     Buf rb; memset(&rb, 0, sizeof rb);
-    if (hparam) { emit_strbuf_handle_of(c, recv, &rb); et = TY_STRBUF; use_shadow_t = tlv0 && tlv0->type != et; }
+    if (no_value) {
+      emit_expr(c, recv, &rb);
+      emit_indent(b, indent);
+      buf_printf(b, "%s;\n", rb.p ? rb.p : ""); free(rb.p);
+      memset(&rb, 0, sizeof rb);
+      buf_puts(&rb, "sp_box_nil()");
+    }
+    else if (hparam) { emit_strbuf_handle_of(c, recv, &rb); et = TY_STRBUF; use_shadow_t = tlv0 && tlv0->type != et; }
     else if (ro) emit_oint_expr(c, recv, et, &rb); else emit_expr(c, recv, &rb);
     emit_indent(b, indent);
     if (ro) buf_puts(b, oint_ctype(et)); else emit_ctype(c, et, b);
