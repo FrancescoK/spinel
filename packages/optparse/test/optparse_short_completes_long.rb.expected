@@ -1,0 +1,25 @@
+[:color, true]
+[]
+[:size, 5]
+["x"]
+[:size, 5]
+[]
+[OptionParser::MissingArgument, "missing argument: -s", []]
+:verbose
+:dry_run
+[]
+:dry_run
+:verbose
+[]
+[OptionParser::AmbiguousOption, "ambiguous option: -d", []]
+[OptionParser::AmbiguousOption, "ambiguous option: -dr", []]
+[OptionParser::InvalidOption, "invalid option: -z", []]
+:verbose
+[OptionParser::InvalidOption, "invalid option: -z", []]
+[OptionParser::NeedlessArgument, "needless argument: -v=1", []]
+Usage: t
+    -n, --dry-run
+        --draft
+        --size=N
+        --[no-]color
+        --verbose
