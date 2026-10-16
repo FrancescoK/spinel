@@ -5402,6 +5402,13 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "encoding"))
     { *out = TY_STRING; return 1; }
 
+  /* Module#constants on a boxed value that is a class answers its names
+     (codegen's emit_class_value_constants), as on a typed class value */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "constants") && nt_ref(nt, id, "block") < 0 &&
+      (argc == 0 || (argc == 1 && (nt_kind(nt, argv[0]) == NK_TrueNode || nt_kind(nt, argv[0]) == NK_FalseNode))) &&
+      !an_user_defines_method(c, name))
+    { *out = TY_POLY_ARRAY; return 1; }
+
   /* Module.singleton_writer= / Module.singleton_reader */
   if (recv >= 0 && nt_type(nt, recv) &&
       (sp_streq(nt_type(nt, recv), "ConstantReadNode") ||
