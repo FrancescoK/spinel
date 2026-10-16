@@ -13725,21 +13725,94 @@ void mark_match_ranges(Compiler *c) {
   }
 }
 
-/* `|_, _, offset|` / `def m(_, _)`: Ruby lets an underscore-prefixed name
-   repeat in one parameter list (the body reads the first), and each
-   repetition still binds a slot. Give the repeats names of their own, or they
-   became two declarations of one C local. */
+/* `|_, _, offset|` / `def m(_, *_)`: Ruby lets an underscore-prefixed name
+   repeat in one parameter list, whatever the kind of the repeat (required,
+   optional, post, rest, keyword rest or block), and each repetition still
+   binds a slot. Prism marks the repeats; give each its own name, or they
+   became two declarations of one C local. The body reads the first, and a
+   supplied argument never reaches the name. Only a repeated optional
+   parameter's default assigns it (the first's local), so `def m(_a, _a = 5)
+   = _a` answers 5 when called with one argument: that default becomes a
+   write of the first's name (and nil, which is what the repeat's own slot
+   holds), when something reads the name or a bare `super` passes it. A keyword parameter
+   keeps its name, which is also its label. */
 static int dup_param_taken(char **names, int n, const char *nm) {
   for (int q = 0; q < n; q++) if (sp_streq(names[q], nm)) return 1;
   return 0;
 }
 
+/* Does anything under `id` read the local `nm`? (A nested def or class is
+   another scope.) */
+static int dup_param_read(const NodeTable *nt, int id, const char *nm) {
+  if (id < 0) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return 0;
+  if (k == NK_LocalVariableReadNode || k == NK_LocalVariableOrWriteNode ||
+      k == NK_LocalVariableAndWriteNode || k == NK_LocalVariableOperatorWriteNode) {
+    const char *rn = nt_str(nt, id, "name");
+    if (rn && sp_streq(rn, nm)) return 1;
+  }
+  if (k == NK_ForwardingSuperNode) return 1;   /* a bare `super` passes the parameters */
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++)
+    if (dup_param_read(nt, nt_ref_at(nt, id, i), nm)) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n2 = 0; const int *ids = nt_arr_at(nt, id, i, &n2);
+    for (int q = 0; q < n2; q++) if (dup_param_read(nt, ids[q], nm)) return 1;
+  }
+  return 0;
+}
+
+static int dup_param_read_in(const NodeTable *nt, int owner, const char *nm) {
+  return dup_param_read(nt, nt_ref(nt, owner, "parameters"), nm) ||
+         dup_param_read(nt, nt_ref(nt, owner, "body"), nm);
+}
+
+/* Rename the repeat `p` of the parameter list `owner` declares (a keyword
+   parameter is never passed here); an optional one's default is routed
+   through a write of the original name when `owner` reads that name. A
+   write nothing reads is left out: a default filled in at the call site has
+   no local of the callee's to write. */
+static int rename_repeated_param(Compiler *c, NodeTable *nt, int owner, int p, char ***names,
+                                 int *na, int *cap, int *serial) {
+  const char *nm = nt_str(nt, p, "name");
+  if (!nm || !nt_param_repeated(nt, p)) return 0;
+  char nn[160];
+  do snprintf(nn, sizeof nn, "%s__dup%d", nm, ++*serial);
+  while (dup_param_taken(*names, *na, nn));
+  if (*na == *cap) { *cap *= 2; *names = realloc(*names, sizeof(char *) * (size_t)*cap); }
+  (*names)[(*na)++] = strdup(nn);
+  if (nt_kind(nt, p) == NK_OptionalParameterNode && dup_param_read_in(nt, owner, nm)) {
+    int w = nt_new_node(nt, "LocalVariableWriteNode"), nl = nt_new_node(nt, "NilNode");
+    int st = nt_new_node(nt, "StatementsNode"), par = nt_new_node(nt, "ParenthesesNode");
+    if (w >= 0 && nl >= 0 && st >= 0 && par >= 0) {
+      /* `(_a = default; nil)`: the repeat's own slot stays nil, as CRuby
+         leaves it, which a bare `super` passes on */
+      int body[2] = { w, nl };
+      nt_node_set_str(nt, w, "name", nm);
+      nt_node_set_ref(nt, w, "value", nt_ref(nt, p, "value"));
+      nt_node_set_arr(nt, st, "body", body, 2);
+      nt_node_set_ref(nt, par, "body", st);
+      nt_node_set_ref(nt, p, "value", par);
+      comp_grow_node_arrays(c);
+    }
+  }
+  nt_set_str(nt, p, "name", nn);
+  return 1;
+}
+
 int desugar_duplicate_underscore_params(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int changed = 0, serial = 0;
-  NT_FOREACH_KIND(nt, NK_ParametersNode, pn) {
-    static const char *const lists[] = { "requireds", "optionals", "posts", "keywords" };
-    static const char *const refs[] = { "rest", "keyword_rest", "block" };
+  int changed = 0, serial = 0, n0 = nt->count;
+  static const char *const lists[] = { "requireds", "optionals", "posts", "keywords" };
+  static const char *const refs[] = { "rest", "keyword_rest", "block" };
+  for (int owner = 0; owner < n0; owner++) {
+    NodeKind ok = nt_kind(nt, owner);
+    if (ok != NK_DefNode && ok != NK_BlockNode && ok != NK_LambdaNode) continue;
+    int pn = nt_ref(nt, owner, "parameters");
+    if (pn >= 0 && nt_kind(nt, pn) == NK_BlockParametersNode) pn = nt_ref(nt, pn, "parameters");
+    if (pn < 0 || nt_kind(nt, pn) != NK_ParametersNode) continue;
     /* every name the list binds, so a generated one is fresh */
     int cap = 8, na = 0;
     char **names = malloc(sizeof(char *) * (size_t)cap);
@@ -13759,25 +13832,15 @@ int desugar_duplicate_underscore_params(Compiler *c) {
       if (na == cap) { cap *= 2; names = realloc(names, sizeof(char *) * (size_t)cap); }
       names[na++] = strdup(nm);
     }
-    int nseen = 0;   /* the underscore names met so far */
-    char **seen = malloc(sizeof(char *) * (size_t)(na ? na : 1));
     for (int li = 0; li < 3; li++) {
       int n = 0; const int *ids = nt_arr(nt, pn, lists[li], &n);
-      for (int k = 0; k < n; k++) {
-        const char *nm = nt_str(nt, ids[k], "name");
-        if (!nm || nm[0] != '_') continue;
-        if (!dup_param_taken(seen, nseen, nm)) { seen[nseen++] = strdup(nm); continue; }
-        char nn[160];
-        do snprintf(nn, sizeof nn, "%s__dup%d", nm, ++serial);
-        while (dup_param_taken(names, na, nn));
-        if (na == cap) { cap *= 2; names = realloc(names, sizeof(char *) * (size_t)cap); }
-        names[na++] = strdup(nn);
-        nt_set_str(nt, ids[k], "name", nn);
-        changed = 1;
-      }
+      for (int k = 0; k < n; k++)
+        changed |= rename_repeated_param(c, nt, owner, ids[k], &names, &na, &cap, &serial);
     }
-    for (int q = 0; q < nseen; q++) free(seen[q]);
-    free(seen);
+    for (int r = 0; r < 3; r++) {
+      int x = nt_ref(nt, pn, refs[r]);
+      if (x >= 0) changed |= rename_repeated_param(c, nt, owner, x, &names, &na, &cap, &serial);
+    }
     for (int q = 0; q < na; q++) free(names[q]);
     free(names);
   }

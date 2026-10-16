@@ -1860,6 +1860,9 @@ void mark_proc_captures(Compiler *c) {
       }
     }
     if (pn >= 0) { int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn); for (int k = 0; k < rn; k++) aname_add(&params, nt_str(nt, reqs[k], "name")); }
+    /* an optional is the proc's own too: a later default that writes it
+       (`|a = 1, b = (a = 4)|`) is no capture of an enclosing local */
+    if (pn >= 0) { int on = 0; const int *opts = nt_arr(nt, pn, "optionals", &on); for (int k = 0; k < on; k++) aname_add(&params, nt_str(nt, opts[k], "name")); }
     a_collect_used(c, body, &used);
     a_collect_alias_used(c, body, &used, 0);
     /* an optional or keyword default is evaluated in the proc's frame */
@@ -37021,6 +37024,24 @@ static int mark_nullable_params_of_call(Compiler *c, int id, int mi) {
   return changed;
 }
 
+/* A bare `super` hands each parameter of the method on as the argument of
+   the parent's matching one, so a parameter that can hold nil (`b = nil`)
+   makes the parent's Integer or Float slot hold its nil too, as the same
+   call spelled `super(a, b)` does through mark_nullable_params_of_call. */
+static int mark_nullable_params_of_zsuper(Compiler *c, int id, int mi) {
+  Scope *s = comp_scope_of(c, id), *m = &c->scopes[mi];
+  int changed = 0;
+  for (int k = 0; k < m->nparams; k++) {
+    int own = zsuper_param_source(c, s, m, k);
+    LocalVar *src = own >= 0 && s->pnames[own] ? scope_local(s, s->pnames[own]) : NULL;
+    LocalVar *p = m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
+    if (!src || !src->nullable_int || !p || (p->type != TY_INT && p->type != TY_FLOAT) ||
+        p->nullable_int || param_strict(c, mi, k, NULL, NULL)) continue;
+    p->nullable_int = 1; changed = 1;
+  }
+  return changed;
+}
+
 /* Mark the int locals that can hold nil, so codegen gives them a nil flag (an
    oint) and boxes them as nil rather than as a number. Boxing every int
    through the nil check costs ~8% on optcarrot -- every pixel goes through
@@ -38709,6 +38730,12 @@ static void mark_nullable_int_locals(Compiler *c) {
       if (!sn) continue;
       int smi = ss->is_cmethod ? comp_cmethod_in_chain(c, sp, sn, NULL) : comp_method_in_chain(c, sp, sn, NULL);
       if (smi >= 0) changed |= mark_nullable_params_of_call(c, id, smi);
+    }
+    NT_FOREACH_KIND(nt, NK_ForwardingSuperNode, id) {
+      Scope *ss = comp_scope_of(c, id);
+      if (!ss || ss->class_id < 0 || !ss->name || comp_super_is_class_new(c, id)) continue;
+      int smi = a_super_target(c, ss);
+      if (smi >= 0) changed |= mark_nullable_params_of_zsuper(c, id, smi);
     }
     /* A BLOCK parameter bound from such a value: the sites that bind the
        block -- each yield of the method the call reaches, or an

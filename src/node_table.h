@@ -365,6 +365,13 @@ static inline long long nt_int(const NodeTable *nt, int id, const char *key, lon
     if (nd->i[j].disc == d && sp_streq(nd->i[j].key, key)) return nd->i[j].val;
   return dflt;
 }
+/* PM_PARAMETER_FLAGS_REPEATED_PARAMETER (bit 2 of a parameter node's
+   "flags"): the node repeats a name an earlier parameter of the same list
+   bound, which Ruby allows for an underscore-prefixed name. */
+#define NT_PARAM_REPEATED 4
+static inline int nt_param_repeated(const NodeTable *nt, int id) {
+  return (nt_int(nt, id, "flags", 0) & NT_PARAM_REPEATED) != 0;
+}
 static inline int nt_ref(const NodeTable *nt, int id, const char *key) {
   NT_WORK();
   if (id < 0 || id >= nt->count) return -1;
