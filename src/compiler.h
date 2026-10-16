@@ -1341,6 +1341,7 @@ typedef struct {
   struct SbArgIndex *sb_args; /* settled parameter sources, built once for storage */
   unsigned share_sig;   /* the types the facts were last applied over */
   unsigned share_in_sig;   /* the types the last application started from */
+  int strh_demoted;   /* a slot left the String handle Array form after the proc-return re-derivation (share_strh_gate); an_phase_storage re-derives them again */
   /* the methods compute_byref_out_params let take a lent slot
      (an_byref_eligible_scopes), kept for the share facts built after it
      (nbyref_elig scopes; NULL before it runs) */

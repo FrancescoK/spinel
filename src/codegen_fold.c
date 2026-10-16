@@ -8948,6 +8948,13 @@ static int arg_temp_conversion(Compiler *c, int v, TyKind at) {
 
 /* The value `v` evaluated into a rooted temp in g_pre, pushed onto the
    g_argov overrides so its uses read the temp. */
+/* --share-strings: is v a bang (`s.upcase!`) on a handle, which answers that
+   handle or nil? */
+static int arg_bang_on_handle(Compiler *c, int v) {
+  int u = unwrap_parens(c, v);
+  const char *nm = u >= 0 && nt_kind(c->nt, u) == NK_CallNode ? nt_str(c->nt, u, "name") : NULL;
+  return nm && nm[0] && nm[strlen(nm) - 1] == '!' && strbuf_bang_self_local(c, u);
+}
 static void emit_arg_temp(Compiler *c, int v) {
   Repr r = repr_of(c, v);
   int fresh = repr_handle_apart(c, v, r);
@@ -8992,7 +8999,8 @@ static void emit_arg_temp(Compiler *c, int v) {
     view_bind(recv, "_t%d", tr);
   }
   Buf hw; memset(&hw, 0, sizeof hw);
-  if (conversion) emit_strbuf_handle_of(c, srange ? stail : v, &hw);
+  if (conversion && arg_bang_on_handle(c, v)) emit_bang_self_handle(c, unwrap_parens(c, v), &hw);
+  else if (conversion) emit_strbuf_handle_of(c, srange ? stail : v, &hw);
   else if (wshare) emit_strbuf_write_handle(c, v, &hw);
   wshare |= conversion;
   if (wshare || ((vk == NK_LocalVariableReadNode || vk == NK_InstanceVariableReadNode ||
@@ -9018,6 +9026,14 @@ static void emit_arg_temp(Compiler *c, int v) {
     size_t arm_at = hb.len;
     emit_expr(c, stail, &hb);
     if (g_share_check) share_check_declare_reads(&hb, arm_at, stail);
+  }
+  /* a bang (or a conditional with one on an arm) ran for its handle, which is
+     the String's or nil: its bytes are the handle's read, where the node's
+     Repr says handle */
+  else if (conversion && at == TY_STRING &&
+           (arg_bang_on_handle(c, v) || face_str_bang_call(c, unwrap_parens(c, v)) ||
+            (strbuf_arg_bang_value(c, v) && !strbuf_arg_bang(c, v)))) {
+    buf_printf(&hb, "sp_strbuf_read_pub(_t%d)", th);
   }
   else if (wshare) {
     char thr[24]; snprintf(thr, sizeof thr, "_t%d", th);
@@ -11948,12 +11964,13 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
         ran_first_bind(argv[k], ht, ht);
         continue;
       }
-      /* --share-strings: a bang on a boxed receiver, or a conditional with
-         one on an arm, collected by the rest parameter runs as the handle it
-         hands on, which the rest's box takes (ran_first_handle): bound as
-         its bytes, the box rendered the arms again, a second bang */
+      /* --share-strings: a conditional with a bang on an arm, collected by
+         the rest parameter, runs as the handle it hands on, which the rest's
+         box takes (ran_first_handle): bound as its bytes, the box rendered
+         the arms again, a second bang. A bang alone stays bound as its
+         bytes, which the rest's box takes as its receiver's own box */
       if (repr_share_rule(c) && at == TY_STRING && m->rest_idx >= 0 && k >= m->rest_idx &&
-          strbuf_arg_bang_value(c, argv[k])) {
+          strbuf_arg_bang_value(c, argv[k]) && !strbuf_bang_self_local(c, argv[k])) {
         emit_strbuf_handle_of(c, argv[k], &hb);
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", ht, hb.p, ht);
