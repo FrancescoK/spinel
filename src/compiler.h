@@ -1508,6 +1508,7 @@ int    comp_method_index(Compiler *c, const char *name); /* -1 if none */
    top-level def (a private Object method, and so last in every ancestry) only
    as the fallback. See analyze_util.c. */
 int    comp_self_call_mi(Compiler *c, int call_node, const char *name);
+int    comp_class_self_inst_mi(Compiler *c, int class_id, const char *name);
 int    comp_cbody_call_mi(Compiler *c, int call_node, const char *name);
 /* Does the receiver of a retargeted `recv.send(:name)` (send_blind) answer
    name itself -- an instance's method or reader, a class constant's class
