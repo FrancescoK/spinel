@@ -144,12 +144,12 @@ class Logger
     if logdev.is_a?(String)
       new_logdev = File.open(logdev.to_s, "a")
       new_logdev.sync = true
-      close
+      close if @own
       @logdev = new_logdev
       @own = true
       @filename = logdev
     else
-      close
+      close if @own
       @logdev = logdev
       @own = false
       @filename = nil
@@ -158,6 +158,8 @@ class Logger
   end
 
   def close
-    @logdev.close if @own && @logdev
+    @logdev.close if @logdev
+  rescue StandardError
+    nil
   end
 end

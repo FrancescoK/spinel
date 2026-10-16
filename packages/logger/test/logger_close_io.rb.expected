@@ -1,0 +1,8 @@
+explicit close: true
+repeated close: true
+original after reopen: false
+replacement after close: true
+received file after close: true
+original after reopen to file: false
+close error ignored
+no device: nil
