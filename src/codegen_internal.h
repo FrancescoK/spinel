@@ -242,6 +242,7 @@ int emit_bang_self_handle(Compiler *c, int v, Buf *b);
 int face_str_bang_call(Compiler *c, int id);
 int face_str_bang_sn_call(Compiler *c, int id);
 int sb_block_hoists(Compiler *c, int id);
+int scan_block_hoists(Compiler *c, int id);
 int strbuf_held_chain(const Compiler *c, int r);
 int sb_held_shadow(int node);
 int strbuf_held_self_answer(Compiler *c, int r);
@@ -1984,6 +1985,7 @@ int emit_args_before_binding(Compiler *c, Scope *m, const int *argv, int argc, B
    instance, global or class variable by any effect. A value built of reads
    (`[x, 2]`) asks it of each; a block reads when it runs. */
 int read_rebound_by(Compiler *c, int x, int after);
+void strbuf_hold_slot(Compiler *c, int v, int r, Buf *sb);
 /* Whether the key or value of `x[key] = val` may give the local or instance
    variable `x` reads another value (read_rebound_by) and cannot mutate it,
    so a store reads the receiver first and leaves the new binding; 0 for

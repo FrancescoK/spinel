@@ -14530,6 +14530,17 @@ int sb_block_hoists(Compiler *c, int id) {
   const char *name = nt_str(c->nt, id, "name");
   return g_pre && nt_ref(c->nt, id, "block") >= 0 && name && is_substitution_bang(name);
 }
+/* Is call id scan's block form on a String receiver, whose loop runs ahead
+   of the statement too (the value-form scan arm above)? */
+int scan_block_hoists(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int argc = 0;
+  const int *argv = call_args(nt, id, &argc);
+  if (!g_pre || !name || !is_scan_name(name) || argc != 1 || nt_ref(nt, id, "block") < 0) return 0;
+  TyKind at = comp_ntype(c, argv[0]);
+  return re_lit_index(c, argv[0]) >= 0 || at == TY_STRING || at == TY_REGEX || at == TY_POLY;
+}
 
 /* Does call id take the face table's String bang (emit_face_str_bang)?
    emit_poly_call's test, for a caller that asks for the bang's answer as
