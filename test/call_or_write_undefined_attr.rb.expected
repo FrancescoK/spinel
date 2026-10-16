@@ -1,0 +1,4 @@
+protect: undefined method 'token' for an instance of Guard
+keep: undefined method 'token' for an instance of Guard
+value: undefined method 'token' for an instance of Guard
+0
