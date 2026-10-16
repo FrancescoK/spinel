@@ -5643,6 +5643,9 @@ static int container_literals(Compiler *c, int n, int *out, int nout, int cap, i
     if (a >= 0) nt_arr(nt, a, "arguments", &an);
     int elem_read = (sp_streq(nm, "[]") && an == 1) || (sp_streq(nm, "fetch") && an >= 1) ||
                     ((is_endpoint_query(nm)) && an == 0);
+    /* a copy is built as the container it copies: the two widen together */
+    if (r >= 0 && an == 0 && nt_ref(nt, n, "block") < 0 && (sp_streq(nm, "dup") || sp_streq(nm, "clone")))
+      return container_literals(c, r, out, nout, cap, depth + 1);
     if (r < 0 || !elem_read || nt_ref(nt, n, "block") >= 0) return nout;
     int outer[32];
     int no = container_literals(c, r, outer, 0, 32, depth + 1);
@@ -5725,9 +5728,26 @@ static int widen_nested_literals(Compiler *c, int recv, int is_push, int is_spli
     int leaf = -1;
     if (value_leaves(c, r, &leaf, 0, 1) == 1) { r = leaf; seq = 1; }
   }
-  if (r < 0 || !(nt_kind(nt, r) == NK_CallNode || (seq && nt_kind(nt, r) == NK_ArrayNode))) return 0;
-  int lits[32];
-  int nl = container_literals(c, r, lits, 0, 32, 0);
+  int lits[32], nl = 0;
+  if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode) {
+    /* a local an element read or a copy of one wrote (`r = b[:attrs].dup;
+       r["y"] = v`): the literals those calls reach, the nested one in a
+       caller's argument too. A local a literal wrote is its own slot's. */
+    const char *rn = nt_str(nt, r, "name");
+    Scope *rs = rn ? comp_scope_of(c, r) : NULL;
+    int si = rs ? (int)(rs - c->scopes) : -1;
+    for (int q = si >= 0 ? lw_shared_first(c, rn, si) : -1; q >= 0 && nl < 32; q = lw_shared_next(q)) {
+      int w = lw_shared_node(q);
+      if (nt_kind(nt, w) != NK_LocalVariableWriteNode || comp_scope_of(c, w) != rs ||
+          !sp_streq(nt_str(nt, w, "name"), rn)) continue;
+      int wv = unwrap_parens(c, nt_ref(nt, w, "value"));
+      if (wv >= 0 && nt_kind(nt, wv) == NK_CallNode) nl = container_literals(c, wv, lits, nl, 32, 0);
+    }
+  }
+  else {
+    if (r < 0 || !(nt_kind(nt, r) == NK_CallNode || (seq && nt_kind(nt, r) == NK_ArrayNode))) return 0;
+    nl = container_literals(c, r, lits, 0, 32, 0);
+  }
   int changed = 0;
   for (int q = 0; q < nl; q++) {
     int l = lits[q];
