@@ -649,7 +649,7 @@ class OptionParser
 
     def add_banner(to)  # :nodoc:
       unless @short or @long
-        s = desc.join
+        s = desc.join.dup
         to << " [" + s + "]..." unless s.empty?
       end
       to
