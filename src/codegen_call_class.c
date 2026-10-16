@@ -4323,7 +4323,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
                 buf_puts(b, "(");
                 for (int k = 0; k < c->nclasses; k++) {
                   if (k == new_cls || !is_descendant(c, k, new_cls)) continue;
-                  buf_printf(b, "_sp_cls.cls_id == %d ? (sp_%s *)", k, ncls->c_name);
+                  buf_printf(b, "%s.cls_id == %d ? (sp_%s *)", cmethod_cls_token(c, encl), k, ncls->c_name);
                   emit_ctor_alloc_init(c, k, comp_method_in_chain(c, k, "initialize", NULL),
                                        nt_ref(nt, id, "arguments"), id, b);
                   buf_puts(b, " : ");
@@ -4362,7 +4362,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
             for (int k = 0; k < c->nclasses; k++) {
               if (k == new_cls || !is_descendant(c, k, new_cls)) continue;
               int ik = comp_method_in_chain(c, k, "initialize", NULL);
-              buf_printf(b, "_sp_cls.cls_id == %d ? (sp_%s *)sp_%s_new(", k, ncls->c_name, c->classes[k].c_name);
+              buf_printf(b, "%s.cls_id == %d ? (sp_%s *)sp_%s_new(", cmethod_cls_token(c, encl), k, ncls->c_name, c->classes[k].c_name);
               if (ik >= 0) emit_args_filled(c, ik, nt_ref(nt, id, "arguments"), "", b);
               buf_puts(b, ") : ");
             }
@@ -4393,7 +4393,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
         const char *lead2 = "";
         if (cmethod_takes_self_cls(c, smi)) {
           if (cmethod_takes_self_cls(c, (int)(encl - c->scopes))) {
-            buf_puts(&cb, encl->yields && g_self ? g_self : "_sp_cls");
+            buf_puts(&cb, encl->yields && g_self ? g_self : cmethod_cls_token(c, encl));
             lead2 = ", ";
           }
           else lead2 = emit_cmethod_self_cls_arg(c, smi, new_cls, &cb);

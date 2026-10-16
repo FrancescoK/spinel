@@ -7110,6 +7110,8 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
 enum { OPEN_DEFAULTS_MAX = 256 };
 static struct { Scope *m; int idx; } g_open_default[OPEN_DEFAULTS_MAX];
 int g_open_defaults = 0;
+/* the method whose parameter default is being spelled innermost, or NULL */
+Scope *open_default_method(void) { return g_open_defaults > 0 ? g_open_default[g_open_defaults - 1].m : NULL; }
 
 static void emit_arg_or_default_at(Compiler *c, Scope *m, int idx, int provided, Buf *out) {
   if (provided >= 0 || !m->pdefault || m->pdefault[idx] < 0) {

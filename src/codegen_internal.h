@@ -745,6 +745,8 @@ extern const char *g_method_pr_var;
 extern const char *g_proc_return_home;
 int cmethod_takes_self_cls(Compiler *c, int si);
 const char *emit_cmethod_self_cls_arg(Compiler *c, int mi, int recv_cls, Buf *b);
+const char *cmethod_cls_token(Compiler *c, Scope *encl);
+Scope *open_default_method(void);
 int reopen_self_defaults(Compiler *c, int mi);
 int ctor_needs_self_defaults(Compiler *c, int initm, int argc);
 int bytesplice_form_ok(Compiler *c, const int *argv, int argc);
