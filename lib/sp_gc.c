@@ -614,6 +614,7 @@ unsigned sp_gc_mark_gen = 0;
 int sp_gc_minor = 0;
 int sp_gc_minor_on = 1;   /* the constructor above reads SPINEL_GC_MINOR=0 */
 int sp_gc_verify_gen = 0;
+
 int sp_gc_verify_gen_fail = 0;
 int sp_gc_verify_probe_on = 0, sp_gc_verify_probe_hit = 0;
 /* Armed after a minor's sweep to ask each remembered holder whether it still
@@ -926,6 +927,29 @@ static void sp_gc_vg_cand_cb(void *hp,void *arg){
 /* The generational check, out of line: it is off unless SPINEL_GC_VERIFY_GEN
    is set, and inline it added 1.8KB to the middle of the collector -- code
    the common cycle walks past on its way to the sweep. */
+static unsigned sp_gc_vg_from, sp_gc_vg_to;
+static void sp_gc_vg_restamp_cb(void *hp, void *arg) {
+  (void)arg;
+  sp_gc_hdr *h = (sp_gc_hdr *)hp;
+  if (!h->old && h->marked == sp_gc_vg_from) h->marked = sp_gc_vg_to;
+}
+static void sp_gc_vg_restamp_all(unsigned from, unsigned to) {
+  sp_gc_vg_from = from; sp_gc_vg_to = to;
+  sp_slab_each_object(1,0,sp_gc_vg_restamp_cb,NULL);
+#ifdef SP_THREADS
+  { int w=sp_active_workers; if(w<1)w=1; if(w>SP_MAX_WORKERS)w=SP_MAX_WORKERS;
+    for(int i=0;i<w;i++) for(sp_gc_hdr*h=sp_gc_wslot[i].young;h;h=h->next) sp_gc_vg_restamp_cb(h,NULL); }
+#endif
+}
+static void sp_gc_vg_holder_cb(void *hp, void *arg) {
+  (void)arg;
+  sp_gc_hdr *h = (sp_gc_hdr *)hp;
+  if (h->dirty || h->pinned || !h->scan) return;
+  sp_gc_verify_probe_hit=0; sp_gc_verify_probe=sp_gc_mark_gen; sp_gc_verify_probe_on=1;
+  h->scan((char*)h+sizeof(sp_gc_hdr));
+  sp_gc_verify_probe_on=0;
+  if(sp_gc_verify_probe_hit) fprintf(stderr,"spinel:   slab holder scan=%p size=%zu\n",(void*)h->scan,h->size);
+}
 static SP_NOINLINE void sp_gc_verify_gen_run(void) {
     /* Snapshot the young objects the minor did NOT reach, then mark whole-heap
        and see which of them the full mark does: each one is held only through
@@ -1016,6 +1040,8 @@ static SP_NOINLINE void sp_gc_verify_gen_run(void) {
       for(size_t i=0;i<n;i++) leaked_flag[i] = (cand[i]->marked==sp_gc_mark_gen);
 #ifndef SP_THREADS
       for(sp_gc_hdr*h=sp_gc_heap;h;h=h->next) if(h->marked==sp_gc_mark_gen) h->marked=other;
+#else
+      sp_gc_vg_restamp_all(sp_gc_mark_gen, other);
 #endif
       for(size_t i=0;i<n;i++) if(leaked_flag[i]) cand[i]->marked = sp_gc_mark_gen;
       for(sp_gc_hdr*h=sp_gc_old_heap;h;h=h->next){
@@ -1025,8 +1051,11 @@ static SP_NOINLINE void sp_gc_verify_gen_run(void) {
         sp_gc_verify_probe_on=0;
         if(sp_gc_verify_probe_hit) fprintf(stderr,"spinel:   holder scan=%p\n",(void*)h->scan);
       }
+      sp_slab_each_object(0,1,sp_gc_vg_holder_cb,NULL);
 #ifndef SP_THREADS
       for(sp_gc_hdr*h=sp_gc_heap;h;h=h->next) if(h->marked==other) h->marked=sp_gc_mark_gen;
+#else
+      sp_gc_vg_restamp_all(other, sp_gc_mark_gen);
 #endif
       free(leaked_flag);
       sp_gc_verify_gen_fail = 1;
