@@ -30,6 +30,7 @@ hunks, each in its own commit with the reason:
 | the yes/no table | String keys only | one Symbol key stored and removed | lets a value Hash with Symbol keys be given to `on` |
 | `environment` | `require 'shellwords'` inside the method | `require 'shellwords'` at the top of the file | the in-method require hid the program's own Shellwords |
 | `Switch#summarize` | `left = [sopts.join(', ')]` | `left = [sopts.join(', ').dup]` | refused under `--share-strings`: the String is changed in place through the Array |
+| `Switch#add_banner`, `Switch#compsys` | `desc.join` | `desc.join.dup` | refused under `--share-strings`: the String is handed on and could change in place |
 | `OptionParser.with` | `new(*args)` | `self.new(*args)` | a bare `new` in a class method was compiled as the instance method `new` |
 | `ParseError` | `alias to_s message` | `def to_s; message; end` | the alias left no `to_s` (a link error) |
 | end of the file | `ARGV.extend(OptionParser::Arguable)` | removed | `extend` on one object is refused |
