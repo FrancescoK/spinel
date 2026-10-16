@@ -1,0 +1,9 @@
+:deliver
+:update
+["mail a", "lambda a"]
+1
+3
+:update
+3
+["mail a", "lambda a", "mail update b", "lambda b"]
+2
