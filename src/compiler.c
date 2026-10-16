@@ -2286,7 +2286,8 @@ int comp_reader_in_chain(Compiler *c, int class_id, const char *name, int *def_c
   return 0;
 }
 int comp_writer_in_chain(Compiler *c, int class_id, const char *name, int *def_class) {
-  name = comp_resolve_alias(c, class_id, name);
+  /* `name` is the attribute's base, and an alias of it is the reader's:
+     `alias to_s name` defines no `to_s=`, so it is not followed here */
   for (int cid = class_id; cid >= 0; cid = c->classes[cid].parent)
     if (comp_is_writer(&c->classes[cid], name)) { if (def_class) *def_class = cid; return 1; }
   return 0;
