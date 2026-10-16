@@ -6656,6 +6656,8 @@ static void gc_wb_insert_seg(Compiler *c, Buf *b, size_t fn_off) {
     else if (!wb_field_is_ref(c, b->p + f, e - f)) continue;
     /* already wrapped (a nested store re-scanned) */
     if (st >= 7 && !strncmp(b->p + st - 7, "SP_WBO(", 7)) continue;
+    /* the store a value-position rewrite below made (`_wbN->f = _wvN;`) */
+    if (i - st > 3 && !strncmp(b->p + st, "_wb", 3) && q + 4 < b->len && !strncmp(b->p + q + 1, " _wv", 4)) continue;
     if (st >= 14 && !strncmp(b->p + st - 14, "sp_gc_wb((void ", 15 - 1)) continue;
     size_t bare_end = wb_value_never_young(b, q);
     if (bare_end) { i = bare_end - 1; continue; }
@@ -6757,6 +6759,60 @@ static void gc_wb_insert_seg(Compiler *c, Buf *b, size_t fn_off) {
       i = st + ins.len;
       free(ins.p);
       continue;
+    }
+    /* A store that is a statement expression's value, or sits inside a
+       larger expression, cannot take a block after it. It still has to run
+       its barrier AFTER the value is computed: the barrier SP_WBO puts in
+       front of the store runs before a right-hand side that may allocate and
+       collect, and an object promoted by that collection then holds the new
+       young value unrecorded (#9277: a Connection's current_user, set by
+       `self.current_user = find_verified_user` as a method's last statement,
+       was freed by the next minor). Where the value's extent is known (it
+       ends at the group's closer or at the statement's `;`, with no comma at
+       its own depth), the store becomes a statement expression that computes
+       the value, stores it, then runs the barrier, and answers the value. */
+    {
+      size_t se = wb_expr_end(b, q);
+      int ok = se < b->len && (b->p[se] == ';' || b->p[se] == ')');
+      if (ok) {
+        size_t k = q + 1, d = 0; int str = 0, chq = 0;
+        for (; k < se && ok; k++) {
+          char x = b->p[k];
+          if (str) { if (x == '\\') k++; else if (x == '"') str = 0; continue; }
+          if (chq) { if (x == '\\') k++; else if (x == '\'') chq = 0; continue; }
+          if (x == '"') { str = 1; continue; }
+          if (x == '\'') { chq = 1; continue; }
+          if (x == '(' || x == '[' || x == '{') d++;
+          else if (x == ')' || x == ']' || x == '}') d--;
+          else if (x == ',' && !d) ok = 0;
+          else if (x == '?' && !d) ok = 0;   /* a ternary's arm: the store's value is not the whole rest */
+        }
+      }
+      if (ok) {
+        int wid = ++g_tmp;
+        buf_printf(&ins, "({ __typeof__(");
+        buf_putn(&ins, b->p + st, i - st);
+        buf_printf(&ins, ") _wb%d = ", wid);
+        buf_putn(&ins, b->p + st, i - st);
+        buf_printf(&ins, "; __typeof__(_wb%d->", wid);
+        buf_putn(&ins, b->p + f, e - f);
+        buf_printf(&ins, ") _wv%d = (", wid);
+        buf_putn(&ins, b->p + q + 1, se - (q + 1));
+        buf_printf(&ins, "); _wb%d->", wid);
+        buf_putn(&ins, b->p + f, e - f);
+        buf_printf(&ins, " = _wv%d; sp_gc_wb((void *)_wb%d); _wv%d; })", wid, wid, wid);
+        size_t old_len = se - st;
+        if (ins.len > old_len) { size_t grow = ins.len - old_len; for (size_t g = 0; g < grow; g++) buf_putn(b, "\0", 1); }
+        size_t tail = b->len - se - (ins.len > old_len ? ins.len - old_len : 0);
+        if (ins.len >= old_len) memmove(b->p + st + ins.len, b->p + se, tail);
+        else { memmove(b->p + st + ins.len, b->p + se, b->len - se); b->len -= old_len - ins.len; }
+        memcpy(b->p + st, ins.p, ins.len);
+        b->p[b->len] = '\0';
+        /* rescan inside the value: it can hold stores of its own */
+        i = st + 1;
+        free(ins.p);
+        continue;
+      }
     }
     if (0) {
       buf_puts(&ins, "sp_gc_wb((void *)");

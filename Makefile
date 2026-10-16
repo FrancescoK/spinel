@@ -2780,7 +2780,8 @@ GC_MINOR_TESTS := $(shell grep -l '^\# spinel: gc-minor$$' test/*.rb test/share/
 GC_MINOR_RESULTS := $(patsubst test/%.rb,build/gc-minor-results/%.res,$(GC_MINOR_TESTS)) \
                     build/gc-minor-results/byref_param_store.chk \
                     build/gc-minor-results/byref_param_cond_store.chk \
-                    build/gc-minor-results/never_young_store.chk
+                    build/gc-minor-results/never_young_store.chk \
+                    build/gc-minor-results/store_value_after_collect.chk
 gc-minor-test: $(GC_MINOR_RESULTS)
 	@ok=1; for r in $(GC_MINOR_RESULTS); do [ "$$(cat $$r)" = 1 ] || ok=0; done; \
 	if [ $$ok -eq 1 ]; then echo "gc-minor-test: pass"; else exit 1; fi
@@ -2821,6 +2822,19 @@ build/gc-minor-results/%.res: test/%.rb FORCE | $(SPINEL) $(SP_RT_LIB) $(SP_RT_M
 	  fi; \
 	} > "$$tmp/log" 2>&1; \
 	cat "$$tmp/log"; rm -rf "$$tmp"; echo $$ok > $@
+# A store whose value collects and promotes its holder (#9277): under the
+# generational verifier with minors from the allocation threshold, which is
+# the order that loses the record (stress collects at every allocation and
+# does not), no holder may go unrecorded.
+build/gc-minor-results/store_value_after_collect.chk: FORCE | $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
+	@mkdir -p $(@D); tmp=$$(mktemp -d /tmp/spinel-gcminor.XXXXXX); ok=1; \
+	$(SPINEL) test/gc_minor_store_value_after_collect.rb -o "$$tmp/sv" >/dev/null 2>&1 || { echo "gc-minor-test: FAIL (store_value_after_collect: compile)"; ok=0; }; \
+	if [ $$ok -eq 1 ]; then \
+	  SPINEL_GC_VERIFY_GEN=1 SPINEL_GC_THRESHOLD_KB=64 $(TIMEOUT60) "$$tmp/sv" > "$$tmp/out" 2>&1; \
+	  if grep -q 'generational check' "$$tmp/out"; then \
+	    echo "gc-minor-test: FAIL (a store whose value collects left its promoted holder unrecorded: #9277)"; grep 'generational check' "$$tmp/out" | head -2; ok=0; fi; \
+	fi; \
+	rm -rf "$$tmp"; echo $$ok > $@
 build/gc-minor-results/byref_param_store.chk: FORCE | $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	@mkdir -p $(@D); tmp=$$(mktemp -d /tmp/spinel-gcminor.XXXXXX); ok=1; \
 	$(SPINEL) test/gc_minor_byref_param_same_name_cell.rb --no-line-map -c -o "$$tmp/bp.c" >/dev/null 2>&1; \
