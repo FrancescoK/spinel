@@ -1771,7 +1771,14 @@ static void runq_push(sp_runq *q, sp_thread *t) {
 static SP_TLS int g_run_taken = 0;
 static sp_thread *runq_take(sp_runq *q) {
   sp_thread *t = q->head;
-  if (t) { SP_ATOMIC_STORE(&q->head, t->rq_next, __ATOMIC_RELAXED); if (!q->head) q->tail = NULL; t->rq_next = NULL; }
+  if (t) { SP_ATOMIC_STORE(&q->head, t->rq_next, __ATOMIC_RELAXED); if (!q->head) q->tail = NULL; t->rq_next = NULL;
+#ifdef SP_THREADS
+    /* an unstarted thread a thread spawned onto this worker's own queue
+       (sp_Thread_spawn_fiber): without this the count stayed up, and every
+       idle worker scanned the queues and never waited */
+    if (q != &g_grq && t->home_wid < 0) SP_ATOMIC_FETCH_SUB(&g_lrq_unstarted, 1, __ATOMIC_RELAXED);
+#endif
+  }
   return t;
 }
 static sp_thread *runq_pop(sp_runq *q) {
