@@ -1144,6 +1144,20 @@ static void io_waiters_unlink(sp_thread *t) {
   if (t->wait_next) t->wait_next->io_prev = t->io_prev;
   t->io_prev = NULL;
 }
+#ifdef SP_THREADS
+/* A thread has parked on g_io_waiters: from then on a close visits the list
+   (sp_sched_ev_forget). Set once, and never with the event backend up. */
+static int g_io_polled = 0;
+static void sched_make_runnable(sp_thread *t);   /* below */
+/* Ready t, parked on g_io_waiters, with `rev` as its result. PRE: sched lock held. */
+static void io_waiter_ready(sp_thread *t, short rev) {
+  io_waiters_unlink(t);
+  sp_timer_cancel(t);
+  t->wait_next = NULL; t->wait_head = NULL; t->io_revents = rev; t->io_fd = -1;
+  if (t == &g_main_thread) { SP_TH_SET_STATE(t, SP_TH_RUNNABLE); SCHED_WAKE_MAIN(); }
+  else sched_make_runnable(t);
+}
+#endif
 static struct pollfd *g_pfds = NULL;     /* monitor's poll set, rebuilt from g_io_waiters each tick */
 static sp_thread    **g_pths = NULL;     /* parallel to g_pfds: the thread waiting on each fd */
 static int            g_pcap = 0;        /* capacity of g_pfds / g_pths */
@@ -1535,6 +1549,26 @@ void sp_sched_ev_forget(int fd) {
       wl_unlock(&g_wslot[w].io_wl);
       sp_ev_wake_out(out, n);
     } while (n == SP_EV_OUT);
+  }
+  /* Without the event backend (SPINEL_SCHED_POLL, or a set that could not be
+     made) a waiter on the descriptor is on g_io_waiters, for the monitor's
+     poll(), and no event comes for it: a close leaves the descriptor open
+     while a thread still uses the stream, so poll() does not find it invalid
+     either, and an accept waiting for the next connection waited for good.
+     Ready it under the scheduler lock that list is under. The park raises
+     g_io_polled and then reads the handle's closed flag; this wrote the flag,
+     fenced, and reads g_io_polled: so the park sees the flag and does not
+     wait, or this takes the lock, which the park holds from its look at the
+     flag until it is on the list. */
+  if (SP_ATOMIC_LOAD(&g_io_polled, __ATOMIC_SEQ_CST)) {
+    SCHED_LOCK();
+    for (sp_thread *t = g_io_waiters, *nx; t; t = nx) {
+      nx = t->wait_next;
+      int hit = t->io_fd == fd;
+      for (int i = 0; !hit && t->io_fd < 0 && i < t->io_nset; i++) hit = t->io_set[i].fd == fd;
+      if (hit) io_waiter_ready(t, POLLIN | POLLOUT);
+    }
+    SCHED_UNLOCK();
   }
 }
 #else
@@ -3474,12 +3508,8 @@ static void *sp_sysmon_main(void *arg) {
           if (!g_pfds[i].revents) continue;
           SP_STAT_ADD(g_mon_readied, 1);
           sp_thread *t = g_pths[i];
-          if (t->wait_head != &g_io_waiters) continue;   /* unparked meanwhile (e.g. #kill) */
-          io_waiters_unlink(t);
-          sp_timer_cancel(t);
-          t->wait_next = NULL; t->wait_head = NULL; t->io_revents = g_pfds[i].revents; t->io_fd = -1;
-          if (t == &g_main_thread) { SP_TH_SET_STATE(t, SP_TH_RUNNABLE); SCHED_WAKE_MAIN(); }
-          else sched_make_runnable(t);
+          if (t->wait_head != &g_io_waiters) continue;   /* unparked meanwhile (e.g. #kill, a close) */
+          io_waiter_ready(t, g_pfds[i].revents);
         }
       }
     }
@@ -3762,7 +3792,11 @@ static int sp_sched_wait_io_impl(int fd, short events, struct pollfd *set, int n
   }
 #endif
   /* Without the event backend: the monitor polls the waiters on g_io_waiters,
-     under the scheduler lock. */
+     under the scheduler lock. A close visits that list once this is up, and
+     it goes up before the closed flag is read below (see sp_sched_ev_forget). */
+#ifdef SP_THREADS
+  SP_ATOMIC_STORE(&g_io_polled, 1, __ATOMIC_SEQ_CST);
+#endif
   SCHED_LOCK();
   /* Same pending-inject check as sp_sched_block. */
   if (sp_thread_inject_pending(self)) {
@@ -3777,7 +3811,7 @@ static int sp_sched_wait_io_impl(int fd, short events, struct pollfd *set, int n
      itself. Without this the registration went in after the forget (or the
      kernel dropped it at the close that followed) and a read with no
      deadline waited forever: the #4546 test hung on one macOS run in three. */
-  if (cancel && SP_ATOMIC_LOAD(cancel, __ATOMIC_RELAXED)) { SCHED_UNLOCK(); return 1; }
+  if (cancel && SP_ATOMIC_LOAD(cancel, __ATOMIC_SEQ_CST)) { SCHED_UNLOCK(); return 1; }
   sp_ev_waiter *es = NULL;
   if (set) {
     es = (sp_ev_waiter *)malloc(sizeof(sp_ev_waiter) * (size_t)n);
