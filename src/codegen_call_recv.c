@@ -1074,9 +1074,11 @@ static const char *repl_hash_to_s_fn(Repr hr) {
        : repr_hash_is(hr, TY_STRING, TY_INT) ? "sp_StrIntHash_to_s_values" : NULL;
 }
 /* The suffix of the sub/gsub overload a Hash replacement takes: one that is
-   (or reads as) String-to-String; NULL for a String replacement */
+   (or reads as) String-to-String, or one of any keys, read with its #[] so a
+   default proc runs; NULL for a String replacement */
 static const char *repl_hash_suffix(Repr hr) {
-  return repr_hash_is(hr, TY_STRING, TY_STRING) || repl_hash_to_s_fn(hr) ? "_str_str_hash" : NULL;
+  if (repr_hash_is(hr, TY_STRING, TY_STRING) || repl_hash_to_s_fn(hr)) return "_str_str_hash";
+  return repr_hash_is(hr, TY_POLY, TY_POLY) ? "_poly_hash" : NULL;
 }
 /* The replacement argument of sub/gsub, as that overload takes it */
 static void emit_repl_arg(Compiler *c, int arg, Buf *b) {
