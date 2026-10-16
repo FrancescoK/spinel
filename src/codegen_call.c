@@ -17333,8 +17333,16 @@ int rt_probe_answer(Compiler *c, int id, int *yes) {
   int pn = 0; const int *probes = nt_arr(c->nt, id, "rt_probes", &pn);
   if (!probes || pn <= 0) return 0;
   *yes = 0;
-  for (int p = 0; p < pn; p++)
+  for (int p = 0; p < pn; p++) {
     if (!repr_of(c, probes[p]).untyped) { *yes = 1; break; }
+    /* the probe itself never got the per-call-site rewrite that would
+       type it (K-026 cause A, enum_builtin_responds's comment): ask the
+       same receiver-type question that rewrite's gate would have. */
+    int precv = nt_ref(c->nt, probes[p], "receiver");
+    if (precv >= 0 && enum_builtin_responds(c, nt_str(c->nt, probes[p], "name"), infer_type(c, precv))) {
+      *yes = 1; break;
+    }
+  }
   return 1;
 }
 /* A receiver whose class defines respond_to? itself answers through it: the

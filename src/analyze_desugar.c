@@ -11057,6 +11057,34 @@ int desugar_builtin_splat_forward(Compiler *c) {
   return changed;
 }
 
+/* Does a receiver of type `rt` have a real method named `name`, among the
+   generic Enumerable-sourced names this file clones per call site
+   (builtin_enum_name_index, consumed by desugar_builtin_enum_calls below)
+   or transform_keys!/transform_values! (desugar_enum_chain_shapes's bang
+   rewrite)? Both rewrites run exactly once, in a pre-pass before any
+   scope exists, so they never reach a respond_to? probe
+   (desugar_respond_to_probe), which is synthesized later, during the
+   analyzer's fixpoint: the probe's own inferred type stays at
+   bop_rows's placeholder TY_UNKNOWN row forever (K-026 cause A). Used by
+   rt_probe_answer (codegen_call.c) to answer those probes from the same
+   receiver-type test desugar_builtin_enum_calls's "ok" gate uses below,
+   which is the question respond_to? actually asks -- does the TYPE have
+   this method -- not whether this one analysis-only probe happens to
+   have been rewritten. */
+int enum_builtin_responds(Compiler *c, const char *name, TyKind rt) {
+  if (!name) return 0;
+  if ((sp_streq(name, "transform_keys!") || sp_streq(name, "transform_values!")) && ty_is_hash(rt)) return 1;
+  if (builtin_enum_name_index(name) < 0) return 0;
+  if (ty_is_array(rt) || ty_is_hash(rt) || rt == TY_RANGE || rt == TY_FLOAT_RANGE ||
+      rt == TY_STR_RANGE || rt == TY_ENUMERATOR) return 1;
+  if (ty_is_object(rt)) {
+    int ci = ty_object_class(rt);
+    return (an_class_includes_enumerable(c, ci) || comp_ary_root(c, ci) >= 0) &&
+           comp_method_in_chain(c, ci, name, NULL) < 0;
+  }
+  return 0;
+}
+
 int desugar_builtin_enum_calls(Compiler *c) {
   if (sp_builtin_enum_names_n == 0) return 0;
   NodeTable *nt = (NodeTable *)c->nt;
