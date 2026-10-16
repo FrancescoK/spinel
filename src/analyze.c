@@ -18924,6 +18924,14 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
   }
   if (st2 != TY_STRING && st2 != TY_STRBUF) return 0;
   comp_set_strbuf_box(c, sn, 1);
+  /* --share-strings: the box is emitted for the node inside a one-statement
+     parenthesis (emit_boxed_impl unwraps it; a desugared store's value can
+     come wrapped in one, as `a[i] = begin ... end`'s does), which boxes the
+     handle the route hands on: marked on the parenthesis alone,
+     `r << (x.inspect)` stored a plain box of the bytes, and a change through
+     the element went to a copy. (The default build has no route to box: a
+     mark there wraps a fresh handle over a copy of a variable's String.) */
+  if (c->share_strings && snu >= 0 && snu != sn) comp_set_strbuf_box(c, snu, 1);
   return 1;
 }
 static int strbuf_store_leaf(Compiler *c, int sn, int depth, int mode) {
