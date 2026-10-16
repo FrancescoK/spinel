@@ -2316,13 +2316,21 @@ static int emit_boxed_cond_arms(Compiler *c, int node, Buf *b) {
 /* A parenthesized sequence keeps the final value's box, as a conditional
    arm does. Receiver snapshots introduce these sequences too. */
 static int emit_boxed_sequence(Compiler *c, int node, Buf *b) {
-  if (!repr_share_rule(c) || node < 0 || nt_kind(c->nt, node) != NK_ParenthesesNode ||
-      arg_ran_first(node, 0)) return 0;
+  if (!repr_share_rule(c) || node < 0 || arg_ran_first(node, 0)) return 0;
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, node);
+  /* a plain `begin ... end` (no rescue, else or ensure) is the same
+     sequence: boxed whole, it held a copy of its last value (#9258) */
+  int plain_begin = k == NK_BeginNode && nt_ref(nt, node, "rescue_clause") < 0 &&
+                    nt_ref(nt, node, "else_clause") < 0 && nt_ref(nt, node, "ensure_clause") < 0;
+  if (k != NK_ParenthesesNode && !plain_begin) return 0;
   TyKind t = repr_of(c, node).as_ty;
-  if ((t != TY_STRING && t != TY_STRBUF) || !strbuf_cond_has_handle_leaf(c, node, 0)) return 0;
-  int body = nt_ref(c->nt, node, "body"), n = 0;
-  if (body >= 0) nt_arr(c->nt, body, "body", &n);
+  int body = nt_ref(nt, node, plain_begin ? "statements" : "body"), n = 0;
+  if ((t != TY_STRING && t != TY_STRBUF) || body < 0 ||
+      !strbuf_cond_has_handle_leaf(c, plain_begin ? body : node, 0)) return 0;
+  nt_arr(nt, body, "body", &n);
   if (n < 2) return 0;
+  if (plain_begin) node = body;
   int dst = ++g_tmp;
   BoxedCondArm a = { dst, t == TY_STRING && repr_of(c, node).poly_lift };
   buf_printf(b, "({ sp_RbVal _t%d; ", dst);
