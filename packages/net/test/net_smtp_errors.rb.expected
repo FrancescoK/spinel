@@ -1,0 +1,44 @@
+Net::SMTPServerBusy
+"450 4.2.1 mailbox busy\n"
+"450"
+false
+false
+true
+Net::SMTPSyntaxError
+"500 5.5.1 command unrecognized\n"
+"500"
+false
+false
+true
+Net::SMTPFatalError
+"550 5.1.1 no such user\n"
+"550"
+false
+false
+true
+Net::SMTPUnknownError
+"650 what is this\n"
+"650"
+false
+false
+true
+-- connection 1
+EHLO client.example
+MAIL FROM:<a@example.com>
+RCPT TO:<b@example.com>
+QUIT
+-- connection 2
+EHLO client.example
+MAIL FROM:<a@example.com>
+RCPT TO:<b@example.com>
+QUIT
+-- connection 3
+EHLO client.example
+MAIL FROM:<a@example.com>
+RCPT TO:<b@example.com>
+QUIT
+-- connection 4
+EHLO client.example
+MAIL FROM:<a@example.com>
+RCPT TO:<b@example.com>
+QUIT
