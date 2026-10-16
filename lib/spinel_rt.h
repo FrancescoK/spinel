@@ -5670,6 +5670,9 @@ static SP_NOINLINE sp_bool sp_poly_eq_slow(sp_RbVal a, sp_RbVal b) {
      other operators now do; the field-wise hook below stays the default for
      a class that does not define one (#3501) */
   { sp_RbVal _u; if (sp_poly_user_cmp("==", a, b, &_u)) return sp_poly_truthy(_u); }
+  /* a number hands a program object back to it, so `3 == obj` answers
+     `obj == 3` as a boolean; an object without its own == is not equal */
+  { sp_RbVal _u; if (sp_poly_tower_p(a) && sp_poly_is_user_obj(b) && sp_poly_user_cmp("==", b, a, &_u)) return sp_poly_truthy(_u); }
   if (a.tag == SP_TAG_OBJ && b.tag == SP_TAG_OBJ && a.v.p && b.v.p) {
     if (a.cls_id == SP_BUILTIN_RANGE && b.cls_id == SP_BUILTIN_FLOAT_RANGE)
       return sp_range_frange_eq(*(sp_Range *)a.v.p, *(sp_FloatRange *)b.v.p);

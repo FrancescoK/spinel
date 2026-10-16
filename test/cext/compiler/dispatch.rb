@@ -17,6 +17,7 @@ loose = Loose.new
 p CextDispatch.equal(1, 1.0), CextDispatch.equal("a", "a"), CextDispatch.equal([1], [2])
 p CextDispatch.equal(nan, nan), nan == nan
 p CextDispatch.equal(loose, 3), CextDispatch.equal("a", loose)
+p CextDispatch.equal(3, loose), CextDispatch.equal(2.5, loose)
 p CextDispatch.eql(1, 1.0), CextDispatch.eql("a", "a"), CextDispatch.eql(loose, Loose.new)
 p CextDispatch.eql(nan, nan), CextDispatch.eql(loose, 3)
 p CextDispatch.responds("abc"), CextDispatch.responds(5), CextDispatch.responds(loose)
