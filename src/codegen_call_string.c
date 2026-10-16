@@ -69,6 +69,28 @@ static void emit_re_subject_at(Compiler *c, const char *fn, const char *pat, int
   emit_int_expr(c, pos, b); buf_puts(b, "); })");
 }
 
+/* The body of a match block, inside its hit arm with m bound: each
+   statement's setup (an Array literal's pushes, an argument's temp) lands
+   beside it rather than hoisted before the match, where it read m's nil;
+   the last statement's value goes boxed into _t<tr>. */
+static void emit_match_block_body(Compiler *c, const int *body, int n, int tr, Buf *b) {
+  for (int j = 0; j < n; j++) {
+    Buf spre; memset(&spre, 0, sizeof spre);
+    Buf sval; memset(&sval, 0, sizeof sval);
+    Buf *saved_pre = g_pre; g_pre = &spre;
+    if (j + 1 < n) emit_stmt(c, body[j], &sval, 0);
+    else {
+      buf_printf(&sval, "_t%d = ", tr);
+      emit_boxed(c, body[j], &sval);
+      buf_puts(&sval, "; ");
+    }
+    g_pre = saved_pre;
+    if (spre.p) buf_puts(b, spre.p);
+    if (sval.p) buf_puts(b, sval.p);
+    free(spre.p); free(sval.p);
+  }
+}
+
 int emit_call_regexp_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0) {
   /* regex literal match predicates (bool-returning, no MatchData/globals):
      /re/.match?(str[, pos])  and  str.match?(/re/[, pos]) */
@@ -344,12 +366,7 @@ no_gsub_enum:
       buf_printf(b, "); sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d); if (_t%d) { ",
                  tr2, tr2, tm);
       if (mp0r) buf_printf(b, "lv_%s = _t%d; ", mp0r, tm);
-      for (int j = 0; j + 1 < mbn; j++) { emit_stmt(c, mbb[j], b, 0); }
-      if (mbn > 0) {
-        buf_printf(b, "_t%d = ", tr2);
-        emit_boxed(c, mbb[mbn - 1], b);
-        buf_puts(b, "; ");
-      }
+      emit_match_block_body(c, mbb, mbn, tr2, b);
       buf_printf(b, "} _t%d; })", tr2);
       return 1;
     }
@@ -405,12 +422,7 @@ no_gsub_enum:
       buf_printf(b, "); sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d); if (_t%d) { ",
                  tr2, tr2, tm);
       if (mp0r) buf_printf(b, "lv_%s = _t%d; ", mp0r, tm);
-      for (int j = 0; j + 1 < mbn; j++) { emit_stmt(c, mbb[j], b, 0); }
-      if (mbn > 0) {
-        buf_printf(b, "_t%d = ", tr2);
-        emit_boxed(c, mbb[mbn - 1], b);
-        buf_puts(b, "; ");
-      }
+      emit_match_block_body(c, mbb, mbn, tr2, b);
       buf_printf(b, "} _t%d; })", tr2);
       return 1;
     }
@@ -652,8 +664,7 @@ no_gsub_enum:
             buf_printf(b, "); sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d); if (_t%d) { ",
                        tr2, tr2, tm);
             if (mp0r) buf_printf(b, "lv_%s = _t%d; ", mp0r, tm);
-            for (int j = 0; j + 1 < mbn; j++) { emit_stmt(c, mbb[j], b, 0); }
-            if (mbn > 0) { buf_printf(b, "_t%d = ", tr2); emit_boxed(c, mbb[mbn - 1], b); buf_puts(b, "; "); }
+            emit_match_block_body(c, mbb, mbn, tr2, b);
             buf_printf(b, "} _t%d; })", tr2);
             free(rp.p); return 1;
           }

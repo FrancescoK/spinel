@@ -1,0 +1,9 @@
+[:y, #<MatchData "c" 1:"c">]
+nil
+["b", "a"]
+"val/key"
+1
+[12, 24]
+[:lit, "c"]
+[:var, "d", "x"]
+nil
