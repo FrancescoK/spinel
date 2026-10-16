@@ -122,7 +122,7 @@ A few `require`s name a capability Spinel already provides as core, and are
 ### Pre-installed packages (the carved-out stdlib)
 
 Some stdlib ships with Spinel as Ruby source and is spliced when required --
-`set`, `forwardable`, `optparse`, `erb`, `csv`, `pathname`, `digest`, `base64`,
+`set`, `forwardable`, `optparse` (the bundled release with a few hunks; see `packages/optparse/README.md`), `erb`, `csv`, `pathname`, `digest`, `base64`,
 `fileutils`, `tmpdir`, `zlib`, `open3` (the capture forms), `pty` (`PTY.spawn`; not on
 wasm32-wasi, which has no fork), `fiddle` (where libffi is,
 like `ffi`),
