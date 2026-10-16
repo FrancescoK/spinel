@@ -2465,6 +2465,12 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
      The two conditions are exhaustive over is_lowered_yield, which is why the
      per-call-site arm below no longer names it. */
   if (c->scopes[mi].is_lowered_yield) return c->scopes[mi].ret;
+  /* A tail that calls the &block param of a method that also uses the
+     block as a value (`@last = block; block.call`): nothing splices the
+     block, the call site passes a proc and reads what the one function
+     returns, which sites with blocks of different types box */
+  if (!is_yield && c->scopes[mi].blk_param_value_use && is_blk_param_call(c, last, mi))
+    return c->scopes[mi].ret;
   /* A yield-tailed inlined method, or a tail that calls the &block param:
      the block is spliced per call site, so use that site's block body type. */
   if (is_yield || is_blk_param_call(c, last, mi)) {
