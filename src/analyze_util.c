@@ -3032,15 +3032,29 @@ else {
    free functions FIRST, so a same-named top-level def stood in for the real
    callee -- and since it is typed by its own body, the real callee's
    parameters never saw the call's argument types (#4106, #4130). */
+/* The instance method a class's own self reaches by `name`, or -1: a class
+   is an instance of Class, so of the instance methods on its chain only one
+   Object, BasicObject, Kernel, Module or Class gives it is the class's; the
+   rest (an included module's, the class's own) are its instances'. */
+int comp_class_self_inst_mi(Compiler *c, int class_id, const char *name) {
+  static const char *const OBJ_SIDE[] = { "Object", "BasicObject", "Kernel", "Module", "Class", NULL };
+  int dc = -1;
+  int mi = comp_method_in_chain(c, class_id, name, &dc);
+  return mi >= 0 && dc >= 0 && c->classes[dc].name && str_in(c->classes[dc].name, OBJ_SIDE) ? mi : -1;
+}
 int comp_self_call_mi(Compiler *c, int id, const char *name) {
   if (!name) return -1;
   Scope *self = comp_scope_of(c, id);
   int mi = -1;
   if (self && self->class_id >= 0) {
     /* inside a class method self IS the class, so a bare call reaches sibling
-       class methods; inside an instance method it does not */
-    if (self->is_cmethod) mi = comp_cmethod_in_chain(c, self->class_id, name, NULL);
-    if (mi < 0) mi = comp_method_in_chain(c, self->class_id, name, NULL);
+       class methods, not the class's instance methods; inside an instance
+       method it does not reach class methods */
+    if (self->is_cmethod) {
+      mi = comp_cmethod_in_chain(c, self->class_id, name, NULL);
+      if (mi < 0) mi = comp_class_self_inst_mi(c, self->class_id, name);
+    }
+    else mi = comp_method_in_chain(c, self->class_id, name, NULL);
   }
   if (mi < 0) mi = comp_method_index(c, name);
   return mi;

@@ -5007,6 +5007,11 @@ int emit_call_implicit_self_arms(Compiler *c, int id, Buf *b, const NodeTable *n
        overrides are found correctly. */
     int dispatch_cid = (g_ie_class_id >= 0) ? g_ie_class_id
                      : (g_emitting_class_id >= 0) ? g_emitting_class_id : self->class_id;
+    /* in a class method self is the class: its instances' methods are not
+       its own, only one Object or Module gives every class */
+    if (dispatch_cid >= 0 && self->is_cmethod && g_ie_class_id < 0 &&
+        comp_class_self_inst_mi(c, dispatch_cid, name) < 0)
+      dispatch_cid = -1;
     if (dispatch_cid >= 0) {
       if (emit_or_take_back(c, id, b, emit_implicit_self_member)) return 1;
       /* the method is the call's plan for self of dispatch_cid

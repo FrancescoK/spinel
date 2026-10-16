@@ -5582,7 +5582,10 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
       /* bare `new` inside a class method returns an instance of self's class */
       if (self->is_cmethod && sp_streq(name, "new"))
         { *out = ty_object(self->class_id); return 1; }
-      int mi = comp_method_in_chain(c, self->class_id, name, NULL);
+      /* a class method's self is the class: of the instance methods on its
+         chain only Object's and Module's are its own (comp_self_call_mi) */
+      int mi = self->is_cmethod ? comp_class_self_inst_mi(c, self->class_id, name)
+                                : comp_method_in_chain(c, self->class_id, name, NULL);
       if (mi < 0 && self->is_cmethod)
         mi = comp_cmethod_in_chain(c, self->class_id, name, NULL);
       if (mi >= 0) { *out = an_self_call_ret(c, self, name, mi, id); return 1; }
