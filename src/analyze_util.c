@@ -209,7 +209,8 @@ static int body_writes_const(const NodeTable *nt, int n, const char *nm) {
 static int const_path_is(const NodeTable *nt, int node, const char *pn, const char *nm) {
   if (node < 0 || !sp_streq(nt_str(nt, node, "name"), nm)) return 0;
   int par = nt_ref(nt, node, "parent");
-  return par >= 0 && sp_streq(nt_str(nt, par, "name"), pn);
+  const char *qn = par >= 0 ? nt_str(nt, par, "name") : NULL;   /* none for `self::nm` */
+  return qn && sp_streq(qn, pn);
 }
 /* Does the program write the constant nm into the class or module named pn:
    in a body of it, or through the path `pn::nm = v`? */
@@ -230,6 +231,158 @@ static int program_writes_const_in(Compiler *c, const char *pn, const char *nm) 
   NT_FOREACH_KIND(nt, NK_ConstantPathTargetNode, t)
     if (const_path_is(nt, t, pn, nm)) return 1;
   return 0;
+}
+/* The Ruby leaf of a class's name: a name qualify_colliding_classes gave
+   (`Cache__Coder`) carries its path, and its leaf is the last component. */
+static const char *class_leaf_name(const char *n) {
+  const char *l = n;
+  for (const char *p = n; (p = strstr(p, "__")) != NULL; p += 2) l = p + 2;
+  return l;
+}
+/* May NAME be a constant of program class or module k, by its own
+   definitions or its ancestors' (a superclass, an included module)? A class
+   or module the program nests in k, a constant it writes in a body of k or
+   through `k::NAME = v`, or one a write the analysis cannot place may
+   define (a path written through a dynamic parent, const_set). *sub is the
+   class or module the member is, -1 when it is a value or unknown. */
+static int class_may_have_const(Compiler *c, int k, const char *nm, int *sub, int depth) {
+  if (k < 0 || k >= c->nclasses || depth > 32) return 0;
+  ClassInfo *ki = &c->classes[k];
+  if (!ki->name) return 1;
+  for (int j = 0; j < c->nclasses; j++)
+    if (c->classes[j].enclosing_class == k && c->classes[j].name &&
+        (sp_streq(class_leaf_name(c->classes[j].name), nm) || sp_streq(c->classes[j].name, nm))) {
+      *sub = j;
+      return 1;
+    }
+  /* a class declared under a qualified name (native_struct "M::Leaf") is
+     keyed by its leaf, with no enclosing link to check */
+  size_t nl = strlen(nm);
+  for (int j = 0; j < c->nclasses; j++) {
+    const char *rn = c->classes[j].enclosing_class < 0 ? c->classes[j].ruby_name_cache : NULL;
+    size_t rl = rn ? strlen(rn) : 0;
+    if (rl > nl + 2 && sp_streq(rn + rl - nl, nm) && !strncmp(rn + rl - nl - 2, "::", 2)) { *sub = j; return 1; }
+  }
+  const char *kl = class_leaf_name(ki->name);
+  if (program_writes_const_in(c, ki->name, nm) || (kl != ki->name && program_writes_const_in(c, kl, nm))) {
+    *sub = comp_class_index(c, nm);
+    return 1;
+  }
+  if (class_may_have_const(c, ki->parent, nm, sub, depth + 1)) return 1;
+  for (int i = 0; i < ki->nincluded_mods; i++)
+    if (class_may_have_const(c, ki->included_mods[i], nm, sub, depth + 1)) return 1;
+  return 0;
+}
+/* Can the program define constants where no class body or `P::NAME = v`
+   path shows them: through const_set, or a path whose parent is not a
+   constant (`self::NAME = v`, `klass::NAME = v`)? */
+static int places_consts_dynamically(Compiler *c);
+static int program_places_consts_dynamically(Compiler *c) {
+  /* a walk over the program, asked once per defined? path: once per tree */
+  static long long memo_ver = -1; static int memo;
+  if (c->nt->version != memo_ver) { memo = places_consts_dynamically(c); memo_ver = c->nt->version; }
+  return memo;
+}
+static int places_consts_dynamically(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, id)
+    if (sp_streq(nt_str(nt, id, "name"), "const_set")) return 1;
+  static const NodeKind writes[] = { NK_ConstantPathWriteNode, NK_ConstantPathOrWriteNode,
+                                     NK_ConstantPathAndWriteNode, NK_ConstantPathOperatorWriteNode };
+  for (int i = 0; i < 4; i++)
+    NT_FOREACH_KIND(nt, writes[i], w) {
+      int t = nt_ref(nt, w, "target"), q = t >= 0 ? nt_ref(nt, t, "parent") : -1;
+      if (q >= 0 && nt_kind(nt, q) != NK_ConstantReadNode && nt_kind(nt, q) != NK_ConstantPathNode) return 1;
+    }
+  NT_FOREACH_KIND(nt, NK_ConstantPathTargetNode, t) {
+    int q = nt_ref(nt, t, "parent");
+    if (q >= 0 && nt_kind(nt, q) != NK_ConstantReadNode && nt_kind(nt, q) != NK_ConstantPathNode) return 1;
+  }
+  return 0;
+}
+int const_seg_builtin(Compiler *c, int id);
+/* The scope a constant path segment names, for defined?: a class or module
+   of the program (its index), or -1 for one whose constants are not the
+   program's to list (a builtin, the top level, a value, a dynamic parent).
+   *missing is set when a segment is provably no member of its parent. */
+static int const_path_scope(Compiler *c, int seg, int *missing) {
+  const NodeTable *nt = c->nt;
+  NodeKind sk = nt_kind(nt, seg);
+  const char *nm = nt_str(nt, seg, "name");
+  if (!nm) return -1;
+  if (sk == NK_ConstantReadNode) {
+    int k = comp_class_index(c, nm);
+    return k >= 0 && !c->classes[k].is_builtin_const && !comp_const(c, nm) ? k : -1;
+  }
+  if (sk != NK_ConstantPathNode) return -1;
+  int par = nt_ref(nt, seg, "parent");
+  int pk;
+  if (par < 0) {                                  /* `::NAME`: the top level */
+    int k = comp_class_index(c, nm);
+    return k >= 0 && c->classes[k].enclosing_class < 0 && !c->classes[k].is_builtin_const &&
+           !comp_const(c, nm) ? k : -1;
+  }
+  NodeKind pkk = nt_kind(nt, par);
+  if (pkk != NK_ConstantReadNode && pkk != NK_ConstantPathNode) return -1;
+  pk = const_path_scope(c, par, missing);
+  if (*missing || pk < 0) {
+    /* a builtin, the top level, a value: the leaf decides, by its name */
+    int k = comp_class_index(c, nm);
+    return !*missing && k >= 0 && !c->classes[k].is_builtin_const && !comp_const(c, nm) ? k : -1;
+  }
+  int sub = -1;
+  if (class_may_have_const(c, pk, nm, &sub, 0)) return sub >= 0 && !c->classes[sub].is_builtin_const ? sub : -1;
+  if (program_places_consts_dynamically(c)) return -1;
+  /* a member the runtime gives a program module: a builtin exception
+     (JSON::ParserError) or an FFI constant */
+  const char *pn = nt_str(nt, par, "name");
+  if (const_seg_builtin(c, seg)) return -1;
+  for (int i = 0; pn && i < c->n_ffi_consts; i++)
+    if (sp_streq(c->ffi_consts[i].mod, pn) && sp_streq(c->ffi_consts[i].name, nm)) return -1;
+  *missing = 1;
+  return -1;
+}
+/* `P::...::NAME` where some segment names a class or module of the program
+   that holds no such constant: the path names nothing, though each segment
+   resolves by its own name (JSON::Coder, with only Cache::Coder defined). */
+int const_path_misses_member(Compiler *c, int id) {
+  if (nt_kind(c->nt, id) != NK_ConstantPathNode) return 0;
+  int missing = 0;
+  const_path_scope(c, id, &missing);
+  return missing;
+}
+/* The class or module of the program a constant path names, by the
+   membership walk above (A::B where two modules each nest a B, renamed
+   apart): -1 when it names none, or one the walk cannot list. */
+int const_path_class(Compiler *c, int id) {
+  if (nt_kind(c->nt, id) != NK_ConstantPathNode) return -1;
+  int missing = 0;
+  int k = const_path_scope(c, id, &missing);
+  return missing ? -1 : k;
+}
+/* Does the constant or constant path segment name a builtin: a builtin
+   class, module or exception (Encoding, Thread::Mutex, Errno::ENOENT), or a
+   constant of a builtin class or module the compiler reads (Float::INFINITY,
+   File::SEPARATOR, Encoding::UTF_8)? Defined, though nothing the program
+   writes has the name. */
+static int builtin_const_name(const char *n) {
+  return n && (sp_streq(n, "Errno") || is_builtin_class_name(n) || is_builtin_module_name(n) || is_builtin_exception_name(n));
+}
+int const_seg_builtin(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, id);
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm || (k != NK_ConstantReadNode && k != NK_ConstantPathNode)) return 0;
+  int par = k == NK_ConstantPathNode ? nt_ref(nt, id, "parent") : -1;
+  if (par < 0) return builtin_const_name(nm);
+  NodeKind pk = nt_kind(nt, par);
+  if (pk != NK_ConstantReadNode && pk != NK_ConstantPathNode) return 0;
+  const char *pn = nt_str(nt, par, "name");
+  if (!pn) return 0;
+  char qn[256];
+  snprintf(qn, sizeof qn, "%s::%s", pn, nm);
+  if (builtin_const_name(qn)) return 1;
+  return builtin_const_name(pn) && infer_cext_builtin_constant(c, id);
 }
 /* Does the program define a class or module whose own name is `leaf`, nested
    in another (Frame::JSON::Encoding)? Inside it, `leaf::X` can name it. */

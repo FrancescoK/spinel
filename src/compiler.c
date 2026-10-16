@@ -1686,6 +1686,13 @@ static int const_name_resolves(Compiler *c, const char *cn) {
   if (comp_is_wellknown_const(cn)) return 1;
   return 0;
 }
+/* A constant (path) segment that resolves: by its name, as a builtin
+   class, module or builtin class's constant (Encoding::UTF_8), or as a
+   program class the path names (A::B, renamed apart from an X::B) */
+static int const_seg_resolves(Compiler *c, int seg) {
+  return const_name_resolves(c, nt_str(c->nt, seg, "name")) || const_seg_builtin(c, seg) ||
+         const_path_class(c, seg) >= 0;
+}
 
 /* Statically-false `defined?(Const)` guard: the predicate is a DefinedNode
    (or a `defined?(Const) && ...` AndNode, whose left arm short-circuits the
@@ -1712,17 +1719,20 @@ int comp_defined_guard_false(Compiler *c, int pred) {
   if (v < 0) return 0;
   const char *vt = nt_type(nt, v);
   if (vt && sp_streq(vt, "ConstantReadNode"))
-    return !const_name_resolves(c, nt_str(nt, v, "name"));
+    return !const_seg_resolves(c, v);
   if (vt && sp_streq(vt, "ConstantPathNode")) {
+    /* a leaf no member of the program class its parent names is missing,
+       though a constant of that name lives elsewhere (JSON::Coder) */
+    if (const_path_misses_member(c, v)) return 1;
     /* Walk tail-to-root; any unresolved segment kills the whole path. */
     for (int seg = v; ; ) {
-      if (!const_name_resolves(c, nt_str(nt, seg, "name"))) return 1;
+      if (!const_seg_resolves(c, seg)) return 1;
       int par = nt_ref(nt, seg, "parent");
-      if (par < 0) return !const_name_resolves_top_level(c, nt_str(nt, seg, "name"));
+      if (par < 0) return !const_name_resolves_top_level(c, nt_str(nt, seg, "name")) && !const_seg_builtin(c, seg);
       const char *pty = nt_type(nt, par);
       if (pty && sp_streq(pty, "ConstantPathNode")) { seg = par; continue; }
       if (pty && sp_streq(pty, "ConstantReadNode"))
-        return !const_name_resolves(c, nt_str(nt, par, "name"));
+        return !const_seg_resolves(c, par);
       return 0;                                  /* dynamic parent: no fold */
     }
   }
@@ -1743,9 +1753,12 @@ static int defined_path_keys(Compiler *c, int pred, const char **early, int cap)
   if (v < 0) return -1;
   NodeKind vk = nt_kind(nt, v);
   if (vk != NK_ConstantReadNode && vk != NK_ConstantPathNode) return -1;
+  /* each leaf must be a member of what its parent names, not only resolve
+     by its own name somewhere in the program */
+  if (vk == NK_ConstantPathNode && const_path_misses_member(c, v)) return -1;
   for (int seg = v; ; ) {
     const char *nm = nt_str(nt, seg, "name");
-    if (!const_name_resolves(c, nm)) return -1;
+    if (!const_seg_resolves(c, seg)) return -1;
     LocalVar *lv = comp_const(c, nm);
     if (lv && lv->const_early && ne < cap) early[ne++] = lv->name;
     else if (lv && lv->const_early) return -1;
@@ -1753,11 +1766,11 @@ static int defined_path_keys(Compiler *c, int pred, const char **early, int cap)
     int par = nt_ref(nt, seg, "parent");
     /* `::Root` anchor: the root must be defined at the TOP level, not
        through a same-named nested module (#3320) */
-    if (par < 0) return const_name_resolves_top_level(c, nm) ? ne : -1;
+    if (par < 0) return const_name_resolves_top_level(c, nm) || const_seg_builtin(c, seg) ? ne : -1;
     if (nt_kind(nt, par) == NK_ConstantPathNode) { seg = par; continue; }
     if (nt_kind(nt, par) == NK_ConstantReadNode) {
       const char *pn = nt_str(nt, par, "name");
-      if (!const_name_resolves(c, pn)) return -1;
+      if (!const_seg_resolves(c, par)) return -1;
       LocalVar *plv = comp_const(c, pn);
       if (plv && plv->const_early && ne < cap) early[ne++] = plv->name;
       else if (plv && plv->const_early) return -1;

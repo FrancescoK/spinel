@@ -1598,6 +1598,12 @@ int comp_defined_guard_false(Compiler *c, int pred);
 /* the dual: statically-true defined?(Const / Const::Path) guard */
 int comp_defined_guard_true(Compiler *c, int pred);
 int comp_defined_early(Compiler *c, int pred, const char **early, int cap);
+/* a constant path whose leaf is no member of the class or module its parent
+   names (analyze_util.c) */
+int const_path_misses_member(Compiler *c, int id);
+int const_path_class(Compiler *c, int id);
+/* a segment naming a builtin class, module or constant (analyze_util.c) */
+int const_seg_builtin(Compiler *c, int id);
 
 /* Classes. */
 ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node);
