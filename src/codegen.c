@@ -2356,6 +2356,20 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       if (pbn == 1) { emit_boxed(c, pbd[0], b); return; }
     }
   }
+  /* --share-strings: a new String Array whose elements the rule shares (a
+     builtin's answer stored straight into a container, `h = { k: s.split }`
+     with `h[:k][0] << x`) is boxed as the PolyArray of handles a local's
+     Array becomes (emit_str_array_handles); boxed as its bytes, a change
+     through an element went to a copy (#9258) */
+  if (repr_share_rule(c) && node >= 0 && comp_ntype(c, node) == TY_STR_ARRAY && !arg_ran_first(node, 0)) {
+    int u = unwrap_parens(c, node);
+    if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && share_node_fresh_elems(c, u)) {
+      buf_puts(b, "sp_box_nullable_obj((void *)");
+      emit_str_array_handles(c, node, b);
+      buf_puts(b, ", SP_BUILTIN_POLY_ARRAY)");
+      return;
+    }
+  }
   Repr tr = repr_of(c, node);
   if (nt_kind(c->nt, node) == NK_LocalVariableReadNode && tr.as_ty == TY_STRING && tr.poly_lift)
     unsupported_feature(c, node, "a String is not yet shared by reference through a narrowed boxed iterator element into an appending parameter");
