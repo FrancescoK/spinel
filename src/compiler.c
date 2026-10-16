@@ -849,6 +849,19 @@ int comp_cvar_owner(const Compiler *c, int cid, const char *name) {
   if (cid < 0 || !name) return cid;
   for (int p = c->classes[cid].parent; p >= 0; p = c->classes[p].parent)
     if (comp_cvar_index(&c->classes[p], name) >= 0) owner = p;
+  if (owner != cid || comp_cvar_index(&c->classes[cid], name) >= 0) return owner;
+  /* No class in the chain declares it: a module included along it may. A
+     module's method is copied into each class including it, and a class
+     variable it reads (a parameter default `x = @@x`) is the module's,
+     which the copy's own class does not name (the most recent include
+     first, as Ruby's ancestors run) */
+  for (int p = cid; p >= 0; p = c->classes[p].parent) {
+    const ClassInfo *ci = &c->classes[p];
+    for (int i = ci->nincluded_mods - 1; i >= 0; i--) {
+      int m = ci->included_mods[i];
+      if (m >= 0 && m < c->nclasses && comp_cvar_index(&c->classes[m], name) >= 0) return m;
+    }
+  }
   return owner;
 }
 
