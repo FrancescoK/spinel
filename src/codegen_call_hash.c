@@ -73,7 +73,7 @@ int emit_op_hash_pattern_all(Compiler *c, const BopCtx *x, Buf *b) {
   buf_printf(b, "; sp_RbVal _t%d = ", tpat); emit_boxed(c, argv[0], b);
   buf_printf(b, "; sp_int _t%d = 0;", tc);
   buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)", ti, ti, tp, ti);
-  if (comp_ntype(c, argv[0]) == TY_CLASS)
+  if (repr_of(c, argv[0]).as_ty == TY_CLASS)
     buf_printf(b, " if (sp_poly_is_a(_t%d->data[_t%d], (sp_Class){(sp_int)_t%d.v.i, NULL})) _t%d++;", tp, ti, tpat, tc);
   else
     buf_printf(b, " if (sp_poly_rb_equal(_t%d->data[_t%d], _t%d)) _t%d++;", tp, ti, tpat, tc);
