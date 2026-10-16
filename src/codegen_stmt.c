@@ -1964,6 +1964,64 @@ int strbuf_tail_answers_block(Compiler *c, int mi, int last, int depth) {
   return l2 >= 0 && !strbuf_has_return(nt, c->scopes[m2].body) &&
          strbuf_tail_answers_block(c, m2, bl >= 0 ? bl : l2, depth + 1);
 }
+/* Does tail t of spliced method mi hand its call's result slot what it
+   holds: what the block answers, a variable's String, or under a
+   conditional each arm's (a missing arm's nil, a new String the slot
+   takes as a new handle)? */
+static int strbuf_inline_tail_ok(Compiler *c, int mi, int t, int depth) {
+  const NodeTable *nt = c->nt;
+  t = unwrap_parens(c, t);
+  if (t < 0 || depth > 8) return 0;
+  NodeKind k = nt_kind(nt, t);
+  if (strbuf_tail_answers_block(c, mi, t, 0) || k == NK_LocalVariableReadNode ||
+      k == NK_InstanceVariableReadNode || repr_static_read_kind(k))
+    return 1;
+  if (depth == 0) return 0;
+  if (k == NK_NilNode || share_value_fresh(c, t, 0)) return 1;
+  return 0;
+}
+static int strbuf_inline_arms_ok(Compiler *c, int mi, int t, int depth) {
+  const NodeTable *nt = c->nt;
+  t = unwrap_parens(c, t);
+  if (t < 0 || depth > 8) return 0;
+  NodeKind k = nt_kind(nt, t);
+  if (k == NK_IfNode || k == NK_UnlessNode) {
+    int arms[2] = { nt_ref(nt, t, "statements"), nt_ref(nt, t, k == NK_IfNode ? "subsequent" : "else_clause") };
+    for (int i = 0; i < 2; i++) {
+      int a = arms[i];
+      if (a >= 0 && nt_kind(nt, a) == NK_ElseNode) a = nt_ref(nt, a, "statements");
+      if (a < 0) continue;
+      if (nt_kind(nt, a) == NK_IfNode) { if (!strbuf_inline_arms_ok(c, mi, a, depth + 1)) return 0; continue; }
+      int n = 0; const int *st = nt_kind(nt, a) == NK_StatementsNode ? nt_arr(nt, a, "body", &n) : NULL;
+      if (n == 0 || !strbuf_inline_arms_ok(c, mi, st[n - 1], depth + 1)) return 0;
+    }
+    return 1;
+  }
+  return strbuf_inline_tail_ok(c, mi, t, depth);
+}
+/* Does each `return` in subtree n of spliced method mi hand the result
+   slot what strbuf_inline_tail_ok takes (a bare one nil)? The splice
+   funnels it into the slot as its handle (emit_return's TY_STRBUF arm). A
+   `return` in a block or a nested method leaves something else. */
+static int strbuf_inline_returns_ok(Compiler *c, int mi, int n) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 1;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode) return 1;
+  if (k == NK_BlockNode || k == NK_LambdaNode) return !strbuf_has_return(nt, n);
+  if (k == NK_ReturnNode) {
+    int args = nt_ref(nt, n, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    return an == 0 || (an == 1 && strbuf_inline_tail_ok(c, mi, av[0], 1));
+  }
+  for (int i = 0; i < nt_num_refs(nt, n); i++)
+    if (!strbuf_inline_returns_ok(c, mi, nt_ref_at(nt, n, i))) return 0;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) if (!strbuf_inline_returns_ok(c, mi, ids[j])) return 0;
+  }
+  return 1;
+}
 /* --share-strings: a call of a yielding method spliced in here with its
    literal block, whose value is what it yields or a variable's String
    (`def f = yield`, `r = f { s }`), and that leaves by no `return` or
@@ -1992,11 +2050,11 @@ int strbuf_route_inline_call(Compiler *c, int v) {
   /* A literal block selects this existing call-specific tail. */
   int bl = block_given_tail_then_last(c, last);
   if (bl >= 0) last = bl;
-  NodeKind k = nt_kind(nt, last);
   if (repr_self_shared(c, last)) return !strbuf_has_return(nt, c->scopes[mi].body);
-  return (strbuf_tail_answers_block(c, mi, last, 0) || k == NK_LocalVariableReadNode ||
-          k == NK_InstanceVariableReadNode || repr_static_read_kind(k)) &&
-         !strbuf_has_return(nt, c->scopes[mi].body);
+  /* (beside a `return`, a tail that is a new String or nil is one more
+     value the slot takes, as an arm's) */
+  int body = c->scopes[mi].body;
+  return strbuf_inline_arms_ok(c, mi, last, strbuf_has_return(nt, body)) && strbuf_inline_returns_ok(c, mi, body);
 }
 /* --share-strings: a call of a String reopening's yielding method with a
    literal block, which emit_reopen_primitive_call runs through the
