@@ -6,13 +6,14 @@ class Own
   def initialize(n) = (@n = n)
   def to_s = @n
 end
+def same(x) = x
 def tidy(o)
   s = o.to_s
   s << "!"
   [s, o.to_s]
 end
 b = +"b"
-p tidy(Own.new(+"a")), tidy(b.itself), b
+p tidy(Own.new(+"a")), tidy(same(b)), b
 class Object
   def label = @label
 end

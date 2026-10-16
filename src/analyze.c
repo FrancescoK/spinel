@@ -43823,6 +43823,60 @@ static int tvw_names_local(const NodeTable *nt, int id, const char *nm, int dept
   }
   return 0;
 }
+/* --share-strings: `x.itself` is `x` for a variable x where the program
+   defines no itself of its own: the builtin answers its receiver. Each
+   route a value takes then sees the variable itself; through the call, a
+   String a block parameter held was pushed or answered as a copy, or
+   refused (#9258). */
+static void desugar_itself_receiver(Compiler *c) {
+  if (!c->share_strings) return;
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    const char *nm = NULL;
+    if (k == NK_DefNode) nm = nt_str(nt, id, "name");
+    else if (k == NK_AliasMethodNode) {
+      int nn = nt_ref(nt, id, "new_name");
+      nm = nn >= 0 ? nt_str(nt, nn, "value") : NULL;
+    }
+    else if (k == NK_CallNode && (sp_streq(nt_str(nt, id, "name"), "define_method") ||
+                                  sp_streq(nt_str(nt, id, "name"), "alias_method"))) {
+      int an = nt_ref(nt, id, "arguments"), ac = 0;
+      const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+      if (ac < 1) continue;
+      NodeKind ak = nt_kind(nt, av[0]);
+      nm = ak == NK_SymbolNode ? nt_str(nt, av[0], "value") : ak == NK_StringNode ? nt_str(nt, av[0], "content") : "?";
+    }
+    if (nm && sp_streq(nm, "itself")) return;
+  }
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode || !sp_streq(nt_str(nt, id, "name"), "itself") ||
+        nt_ref(nt, id, "arguments") >= 0 || nt_ref(nt, id, "block") >= 0 || call_is_safe_nav(nt, id)) continue;
+    int r = nt_ref(nt, id, "receiver");
+    if (r < 0) continue;
+    long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
+    /* (a chain of them is its base: `@s.itself.itself`, whichever link is
+       rewritten first) */
+    for (int d = 0; d < 16 && r >= 0 && nt_kind(nt, r) == NK_CallNode && sp_streq(nt_str(nt, r, "name"), "itself") &&
+                    nt_ref(nt, r, "arguments") < 0 && nt_ref(nt, r, "block") < 0 && !call_is_safe_nav(nt, r);
+         d++)
+      r = nt_ref(nt, r, "receiver");
+    if (r < 0) continue;
+    /* a variable's read becomes that read; any other receiver keeps the
+       call, whose routes the String plan already takes */
+    NodeKind rk = nt_kind(nt, r);
+    if (rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode) {
+      const char *vn = nt_str(nt, r, "name");
+      long long depth = nt_int(nt, r, "depth", 0);
+      nt_node_reset(nt, id, rk == NK_LocalVariableReadNode ? "LocalVariableReadNode" : "InstanceVariableReadNode");
+      nt_node_set_str(nt, id, "name", vn);
+      if (rk == NK_LocalVariableReadNode) nt_node_set_int(nt, id, "depth", depth);
+      nt_node_set_int(nt, id, "node_line", line);
+      nt_node_set_int(nt, id, "node_file", file);
+    }
+  }
+}
 /* --share-strings: `x = E.tap { |t| ... }` is `x = (x = E).tap { ... }`
    when the block names no x: tap answers its receiver, so x is E's object
    either way, and the block runs before the outer write as before. Written
@@ -44203,6 +44257,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_class_body_object_acts(c);     /* class B; tap { } -> self.tap { } */
   desugar_nil_block_arg(c);
   desugar_literal_const_get(c);          /* Object.const_get("A::B") -> A::B */
+  desugar_itself_receiver(c);           /* x.itself -> x (--share-strings) */
   desugar_tap_value_write(c);            /* x = E.tap { } -> x = (x = E).tap { } (--share-strings) */
   desugar_self_const_get(c);            /* const_get(:X) / self::X in a class method -> per subclass */
   desugar_dynamic_const_get(c);          /* M.const_get(expr) -> a table of M's constants */
