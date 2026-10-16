@@ -347,15 +347,35 @@ int repr_self_shared(const Compiler *c, int node) {
   return s && repr_self_handle(c, (int)(s - c->scopes));
 }
 
-/* A builtin receiver conversion on a String keeps its handle. The seal,
-   the route emitter and boxed-form prediction use the same fact. */
+/* Is every method call v reaches a String reopening's `def m = self` (no
+   parameter, and the self read its whole body)? Such a method answers its
+   receiver untouched, as the builtin conversion of its name does. */
+static int repr_user_answers_self(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  int tg[CPT_MAX], n = cplan_targets(c, v, tg, CPT_MAX);
+  if (n <= 0) return 0;
+  for (int i = 0; i < n; i++) {
+    const Scope *m = &c->scopes[tg[i]];
+    int body = m->body, nb = 1;
+    if (body >= 0 && nt_kind(nt, body) == NK_StatementsNode) nt_arr(nt, body, "body", &nb);
+    int last = scope_body_last(c, tg[i]);
+    if (m->def_node < 0 || m->nparams != 0 || nb != 1 || last < 0 || nt_kind(nt, last) != NK_SelfNode ||
+        share_self_holder(c, tg[i]) < 0)
+      return 0;
+  }
+  return 1;
+}
+/* A builtin receiver conversion on a String keeps its handle, and so does
+   a reopening's conversion that answers self. The seal, the route emitter
+   and boxed-form prediction use the same fact. */
 int repr_string_conversion_operand(Compiler *c, int v) {
   v = unwrap_parens(c, v);
   if (!repr_share_rule(c) || v < 0 || nt_kind(c->nt, v) != NK_CallNode) return -1;
   int r = nt_ref(c->nt, v, "receiver");
   return r >= 0 && is_receiver_conversion(nt_str(c->nt, v, "name")) &&
          call_plain_argc(c, v) == 0 && (nt_ref(c->nt, v, "block") < 0 || nt_int(c->nt, v, "dyn_arm", 0)) &&
-         comp_recv_type(c, r) == TY_STRING && cplan_user(c, v)->dispatch == CP_NONE ? r : -1;
+         comp_recv_type(c, r) == TY_STRING &&
+         (cplan_user(c, v)->dispatch == CP_NONE || repr_user_answers_self(c, v)) ? r : -1;
 }
 /* ENV copies its stored bytes, but a store answers its value operand.
    A boxed operand can still hold plain bytes: an observable alias stays
