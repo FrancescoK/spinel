@@ -23582,8 +23582,13 @@ static int nil_target_operand(Compiler *c, int v, int a, int boxed, int *node, T
   if (k == NK_SplatNode) return nil_target_operand(c, nt_ref(nt, v, "expression"), a, boxed, node, ty, n, max);
   Repr tr = repr_of(c, v);
   TyKind t = tr.as_ty;
+  /* a String the store wraps in a handle of its own (`+"x"` pushed where the
+     element is a handle, a Range's endpoint: repr_handle_apart) renders as
+     its bytes where its stored type is the handle, so no temp of that type
+     holds it: it runs in the call */
   if (*n >= max ||
-      (!read && !nil_target_bindable(k, boxed)) || tr.untyped || t == TY_VOID || comp_ty_value_obj(c, t))
+      (!read && !nil_target_bindable(k, boxed)) || tr.untyped || t == TY_VOID || comp_ty_value_obj(c, t) ||
+      repr_handle_apart(c, v, tr))
     return 0;
   node[*n] = v; ty[*n] = t; (*n)++;
   return 1;
@@ -23674,7 +23679,9 @@ static void emit_nil_target_rest(Compiler *c, int v, const int *node, int n, Buf
   if (k == NK_AssocSplatNode) { emit_nil_target_rest(c, nt_ref(nt, v, "value"), node, n, b); return; }
   if (k == NK_SplatNode) { emit_nil_target_rest(c, nt_ref(nt, v, "expression"), node, n, b); return; }
   Buf ob, op;
-  render_operand(c, v, 0, 0, 0, &ob, &op);
+  /* (a String the store wraps in a handle of its own runs as the String it
+     is: nothing here keeps its handle) */
+  render_operand(c, v, operand_fresh_str(c, v), 0, 0, &ob, &op);
   if (op.p) buf_puts(b, op.p);
   buf_printf(b, "(void)(%s); ", ob.p ? ob.p : "0");
   free(ob.p); free(op.p);

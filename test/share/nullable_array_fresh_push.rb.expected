@@ -1,0 +1,42 @@
+["t!", "x"]
+nil
+nme tern
+["t!", "x"]
+nil
+nme cond
+["t!", "x"]
+nil
+nme kase
+["t!", "x"]
+nil
+nme andor
+["t!", "x"]
+nil
+nme guard
+["t!", "x"]
+nil
+nme bare
+["t!", "x"]
+nil
+nme orelse
+["z", "t!", "i", "p", "c", "s"]
+nme push
+nme concat
+nme insert
+nme unshift
+nme aset
+["t!", "a"]
+nme param
+["t!", "i", "j", "k"]
+["t!", "x"]
+true
+["t!", "x", "y", "z"]
+nme value
+["t!", 1, "ab", "yz", "w"]
+nil
+[1]
+nme range
+nme append
+nme effect
+[1, 2]
+["t!.", "q?"]
