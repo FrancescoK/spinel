@@ -141,6 +141,19 @@ typedef enum {
   BOPE_ARRAY_SLICE_GROUPS, /* Array#slice_before / slice_after without a block (stage 3) */
   BOPE_ARRAY_JOIN_STR,    /* Array#* with a String (stage 4) */
   BOPE_ARRAY_PRED_CLASS,  /* Array#any? / all? / none? / one? with a Class (stage 5) */
+  /* Method and Proc (codegen_call_method.c) */
+  BOPE_METHOD_UNBIND,     /* Method#unbind */
+  BOPE_METHOD_SUPER_METHOD, /* Method#super_method */
+  BOPE_METHOD_BIND,       /* UnboundMethod#bind(obj) */
+  BOPE_METHOD_TO_PROC,    /* Method#to_proc */
+  BOPE_METHOD_ORIGINAL_NAME, /* Method#original_name */
+  BOPE_METHOD_SOURCE_LOCATION, /* Method#source_location */
+  BOPE_METHOD_PARAMETERS, /* Method#parameters (stage 1) */
+  BOPE_METHOD_OWNER,      /* Method#owner */
+  BOPE_METHOD_RECEIVER,   /* Method#receiver */
+  BOPE_METHOD_ARITY,      /* Method#arity */
+  BOPE_PROC_PARAMETERS,   /* Proc#parameters, #parameters(lambda: ...) */
+  BOPE_PROC_SOURCE_LOCATION, /* Proc#source_location */
   BOPE_IVAR_REFLECTION,   /* reflection on a builtin value without ivar slots */
   BOPE_FLOAT_RATIONALIZE,
   BOPE_STRING_SCAN_CHECKED,
@@ -225,6 +238,13 @@ typedef struct BuiltinOp {
    call, a guarded row is not found by a lookup without the arguments'
    kinds, and they cover only the first two arguments. */
 #define BOPF_ARGS_BUILTIN 64
+/* The row's result is TY_UNKNOWN because inference types the call in a rule
+   of its own (Method#receiver is the type of the Method's bound receiver,
+   which a result kind cannot say), and the row only gives codegen its
+   emitter. --plan-check expects inference to have answered such a call
+   without a row, as long as the call was typed; a TY_UNKNOWN row without
+   the flag is a call the table does not type yet. */
+#define BOPF_INFERRED 128
 
 /* A row's recv may name a family of kinds rather than one; a caller looks
    the family up with the family's value. Not a TyKind any value has. */
