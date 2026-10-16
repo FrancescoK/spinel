@@ -7948,21 +7948,30 @@ static void specialize_super_cmethod(Compiler *c, int own, int snap) {
   if (own >= snap)
     for (int o = 1; o < snap; o++)
       if (c->scopes[o].def_node == os->def_node && c->scopes[o].is_cmethod) { from = c->scopes[o].class_id; break; }
-  int par = comp_super_parent(c, from, 1);
-  int pdef = -1;
-  int pm = par >= 0 ? comp_cmethod_in_chain(c, par, os->name, &pdef) : -1;
-  if (pm < 0 || pdef < 0 || scope_body_has_super(c, pm) || !cmethod_reaches_class_ivar(c, pm, pdef, 0)) return;
-  char behind[256];
-  snprintf(behind, sizeof behind, "__inc %d %s", c->classes[ci].prep_shadow_count++, os->name);
-  /* aside while the copy takes the name, then back */
+  /* aside while each copy takes the name, then back */
   char *own_name = os->name;
   c->scopes[own].name = strdup("\x01own");
-  specialize_cmethod_for(c, pm, pdef, ci);
-  int cp = comp_cmethod_in_class(c, ci, own_name);
-  if (cp >= 0 && cp != own) {
+  /* Up the chain: each parent's method is copied behind the one whose super
+     reaches it, and a parent's own super reaches the next copy, so every
+     method of the chain runs with self ci (Rails' LogSubscriber.attach_to
+     supers into Subscriber's, and a subclass's own supers into it). */
+  int cur = own;
+  for (int depth = 0; depth < 32; depth++) {
+    int par = comp_super_parent(c, from, 1);
+    int pdef = -1;
+    int pm = par >= 0 ? comp_cmethod_in_chain(c, par, own_name, &pdef) : -1;
+    if (pm < 0 || pdef < 0 || !cmethod_reaches_class_ivar(c, pm, pdef, 0)) break;
+    char behind[256];
+    snprintf(behind, sizeof behind, "__inc %d %s", c->classes[ci].prep_shadow_count++, own_name);
+    specialize_cmethod_for(c, pm, pdef, ci);
+    int cp = comp_cmethod_in_class(c, ci, own_name);
+    if (cp < 0 || cp == own || cp == cur) break;
     free(c->scopes[cp].name);
     c->scopes[cp].name = strdup(behind);
-    comp_cprep_chain_add(&c->classes[ci], own_name, behind);
+    comp_cprep_chain_add(&c->classes[ci], cur == own ? own_name : c->scopes[cur].name, behind);
+    if (!scope_body_has_super(c, pm)) break;
+    cur = cp;
+    from = pdef;
   }
   free(c->scopes[own].name);
   c->scopes[own].name = own_name;
