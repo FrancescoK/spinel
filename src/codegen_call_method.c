@@ -136,42 +136,40 @@ void emit_method_parameters_pushes(Compiler *c, int pn4, int tr4, Buf *b) {
 
 
 /* "#<Method: Owner#name(a, b=..., *r)>" -- CRuby's Method#inspect
-   rendering, built at compile time from the target scope; " file:line" is
-   appended when positions were stamped (--line-map). Keyword parameters
-   are not rendered (they live outside pnames). */
-#define BUILD_METHOD_DESC(mi_, sym_, unbound_, out_) do { \
-  Scope *_m = &c->scopes[(mi_)]; \
-  const char *_ow = "Object"; char _sep = '#'; \
-  int _owci = _m->origin_module_ci ? _m->origin_module_ci - 1 : _m->class_id; \
-  if (_owci >= 0) { \
-    const char *_rn = class_ruby_name(c, _owci); \
-    _ow = _rn ? _rn : c->classes[_owci].name; \
-    if (_m->is_cmethod) _sep = '.'; \
-  } \
-  size_t _off = 0, _cap = sizeof (out_); \
-  _off += (size_t)snprintf((out_), _cap, "#<%s: %s%c%s(", \
-                           (unbound_) ? "UnboundMethod" : "Method", _ow, _sep, \
-                           (sym_) ? (sym_) : (_m->name ? _m->name : "?")); \
-  for (int _i = 0; _i < _m->nparams && _off < _cap; _i++) { \
-    if (!_m->pnames[_i]) continue; \
-    if (_i) _off += (size_t)snprintf((out_) + _off, _cap - _off, ", "); \
-    if (_i == _m->rest_idx) \
-      _off += (size_t)snprintf((out_) + _off, _cap - _off, "*%s", _m->pnames[_i]); \
-    else if (_i == _m->kwrest_idx) \
-      _off += (size_t)snprintf((out_) + _off, _cap - _off, "**%s", _m->pnames[_i]); \
-    else if (_m->pdefault[_i] >= 0) \
-      _off += (size_t)snprintf((out_) + _off, _cap - _off, "%s=...", _m->pnames[_i]); \
-    else /* a define_method block's assigned parameter: the name written, not its slot */ \
-      _off += (size_t)snprintf((out_) + _off, _cap - _off, "%.*s", \
-                               (int)reassigned_param_written_len(_m->pnames[_i]), _m->pnames[_i]); \
-  } \
-  if (_off < _cap) _off += (size_t)snprintf((out_) + _off, _cap - _off, ")"); \
-  { int _ln = scope_def_line(c, _m); \
-    if (_ln > 0 && _off < _cap) \
-      _off += (size_t)snprintf((out_) + _off, _cap - _off, " %s:%d", \
-                               scope_def_file(c, _m), _ln); } \
-  if (_off < _cap) snprintf((out_) + _off, _cap - _off, ">"); \
-} while (0)
+   rendering, built at compile time from the target scope and emitted as a
+   C string literal; " file:line" is appended when positions were stamped
+   (--line-map). Keyword parameters are not rendered (they live outside
+   pnames). The text grows with the parameter names, so it is built in a
+   Buf: a fixed array cut it off, and wrote past its end once the names
+   filled it. */
+static void emit_method_desc_literal(Compiler *c, int mi, const char *sym, int unbound, Buf *b) {
+  Scope *m = &c->scopes[mi];
+  const char *ow = "Object"; char sep = '#';
+  int owci = m->origin_module_ci ? m->origin_module_ci - 1 : m->class_id;
+  if (owci >= 0) {
+    const char *rn = class_ruby_name(c, owci);
+    ow = rn ? rn : c->classes[owci].name;
+    if (m->is_cmethod) sep = '.';
+  }
+  Buf d; memset(&d, 0, sizeof d);
+  buf_printf(&d, "#<%s: %s%c%s(", unbound ? "UnboundMethod" : "Method", ow, sep,
+             sym ? sym : (m->name ? m->name : "?"));
+  for (int i = 0; i < m->nparams; i++) {
+    if (!m->pnames[i]) continue;
+    if (i) buf_puts(&d, ", ");
+    if (i == m->rest_idx) buf_printf(&d, "*%s", m->pnames[i]);
+    else if (i == m->kwrest_idx) buf_printf(&d, "**%s", m->pnames[i]);
+    else if (m->pdefault[i] >= 0) buf_printf(&d, "%s=...", m->pnames[i]);
+    else /* a define_method block's assigned parameter: the name written, not its slot */
+      buf_printf(&d, "%.*s", (int)reassigned_param_written_len(m->pnames[i]), m->pnames[i]);
+  }
+  buf_puts(&d, ")");
+  int ln = scope_def_line(c, m);
+  if (ln > 0) buf_printf(&d, " %s:%d", scope_def_file(c, m), ln);
+  buf_puts(&d, ">");
+  emit_str_literal(b, d.p);
+  free(d.p);
+}
 
 /* Proc#parameters. parameters() follows the receiver's own nature; an explicit
    `lambda:` keyword forces the view (the body's comment). Any other argument
@@ -261,8 +259,7 @@ int emit_op_method_unbind(Compiler *c, const BopCtx *x, Buf *b) {
   emit_expr(c, recv, b);
   buf_printf(b, "; sp_bm_set_unbound(sp_bm_set_abi(sp_bound_method_new_d(NULL, SP_BM_SELF_NONE, _t%d->fn, _t%d->name, _t%d->arity, ", tvu, tvu, tvu);
   if (tmu >= 0) {
-    char _db[512]; BUILD_METHOD_DESC(tmu, method_sym_arg(c, mnu), 1, _db);
-    emit_str_literal(b, _db);
+    emit_method_desc_literal(c, tmu, method_sym_arg(c, mnu), 1, b);
   }
   else buf_puts(b, "NULL");
   buf_printf(b, "), 0, _t%d->legacy_int_abi, _t%d->legacy_sig, _t%d->legacy_fixed, _t%d->legacy_rest, _t%d->legacy_ret, _t%d->poly_abi, _t%d->poly_fixed)); })", tvu, tvu, tvu, tvu, tvu, tvu, tvu);
@@ -297,9 +294,8 @@ int emit_op_method_super_method(Compiler *c, const BopCtx *x, Buf *b) {
     buf_puts(b, ", ");
     emit_str_literal(b, c->scopes[pmip].name ? c->scopes[pmip].name : "?");
     { int ar; if (method_scope_arity(c, pmip, &ar)) buf_printf(b, ", (sp_int)%d", ar); else buf_puts(b, ", (sp_int)-1"); }
-    { char _db[512];
-      BUILD_METHOD_DESC(pmip, c->scopes[pmip].name, sup_unb, _db);
-      buf_puts(b, ", "); emit_str_literal(b, _db); }
+    buf_puts(b, ", ");
+    emit_method_desc_literal(c, pmip, c->scopes[pmip].name, sup_unb, b);
     buf_puts(b, ")");
     { char _s[8 * 64 + 1]; int _fx = 0, _rs = 0, _rt = 0, _pf = 0, _prt = 0;
       int _ab = method_legacy_int_abi(c, pmip, !sup_unb, _s, sizeof _s, &_fx, &_rs, &_rt);
@@ -353,8 +349,8 @@ int emit_op_method_bind(Compiler *c, const BopCtx *x, Buf *b) {
     buf_puts(b, ", ");
     emit_str_literal(b, method_sym_arg(c, mn2));
     { int ar; if (method_scope_arity(c, t2, &ar)) buf_printf(b, ", (sp_int)%d", ar); else buf_puts(b, ", (sp_int)-1"); }
-    { char _db[512]; BUILD_METHOD_DESC(t2, method_sym_arg(c, mn2), 0, _db);
-      buf_puts(b, ", "); emit_str_literal(b, _db); }
+    buf_puts(b, ", ");
+    emit_method_desc_literal(c, t2, method_sym_arg(c, mn2), 0, b);
     buf_puts(b, ")");
     { char _s[8 * 64 + 1]; int _fx = 0, _rs = 0, _rt = 0, _pf = 0, _prt = 0;
       int _ab = method_legacy_int_abi(c, t2, 1, _s, sizeof _s, &_fx, &_rs, &_rt);
@@ -1514,8 +1510,8 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       buf_puts(b, ", ");
       emit_str_literal(b, method_sym_arg(c, id));
       { int ar; if (method_scope_arity(c, umi, &ar)) buf_printf(b, ", (sp_int)%d", ar); else buf_puts(b, ", (sp_int)-1"); }
-      { char _db[512]; BUILD_METHOD_DESC(umi, method_sym_arg(c, id), 1, _db);
-        buf_puts(b, ", "); emit_str_literal(b, _db); }
+      buf_puts(b, ", ");
+      emit_method_desc_literal(c, umi, method_sym_arg(c, id), 1, b);
       buf_puts(b, ")");
       { char _s[8 * 64 + 1]; int _fx = 0, _rs = 0, _rt = 0, _pf = 0, _prt = 0;
         int _ab = method_legacy_int_abi(c, umi, 0, _s, sizeof _s, &_fx, &_rs, &_rt);
@@ -1867,8 +1863,8 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       }
       else buf_puts(b, ", (sp_int)-1"); }
     if (mi >= 0) {
-      char _db[512]; BUILD_METHOD_DESC(mi, disp, 0, _db);
-      buf_puts(b, ", "); emit_str_literal(b, _db);
+      buf_puts(b, ", ");
+      emit_method_desc_literal(c, mi, disp, 0, b);
     }
     buf_puts(b, ")");
     { char _rbb[16]; snprintf(_rbb, sizeof _rbb, "%d", recv_bound);
