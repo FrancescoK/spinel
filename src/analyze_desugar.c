@@ -9647,6 +9647,22 @@ static int fwd_rest_callee_pass(Compiler *c, int wait) {
     /* ...and so does one that takes only a block (`def y = yield 1`):
        its shape says the block and nothing else */
     if (ok && !(shape & (3 | FWD_BUILTIN))) shape |= 3;
+    /* A `...` the body hands nowhere (`def call(...) = nil`, console's
+       Output::Null) takes anything, as CRuby's does: def m(a, *, **, &).
+       Left to the __fwd_N model, it took one slot per argument a caller
+       passed, and a splat into it -- from a boxed receiver's dispatch or a
+       direct `m(*args)` -- had no parameter to land in. */
+    if (ok && !ncalls && !nfwd_args) {
+      int rp = fwd_new_node_like(nt, pn, "RestParameterNode");
+      int kp = fwd_new_node_like(nt, pn, "KeywordRestParameterNode");
+      int bp = fwd_new_node_like(nt, pn, "BlockParameterNode");
+      if (rp < 0 || kp < 0 || bp < 0) continue;
+      nt_node_set_ref(nt, pn, "rest", rp);
+      nt_node_set_ref(nt, pn, "keyword_rest", kp);
+      nt_node_set_ref(nt, pn, "block", bp);
+      changed = 1;
+      continue;
+    }
     if (!ok || !ncalls || nfwd_args != ncalls || !(shape & (3 | FWD_BUILTIN))) continue;
     /* the block rides along as an anonymous `&` */
     int fwd_block = (shape & 4) || any_call_passes_block(nt, dname);
