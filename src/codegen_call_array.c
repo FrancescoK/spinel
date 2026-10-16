@@ -499,7 +499,7 @@ static int emit_setop_fold_poly(Compiler *c, int id, int recv, TyKind rt, const 
   int argc; const int *argv = call_args(c->nt, id, &argc);
   Buf chk; memset(&chk, 0, sizeof chk);
   int ok = setop_poly_operand(rt, "", &chk);
-  for (int j = 0; j < argc && ok; j++) ok = setop_poly_operand(comp_ntype(c, argv[j]), "", &chk);
+  for (int j = 0; j < argc && ok; j++) ok = setop_poly_operand(repr_of(c, argv[j]).as_ty, "", &chk);
   free(chk.p);
   if (!ok || rt == TY_POLY || rt == TY_UNKNOWN) return 0;
   int t = ++g_tmp, t0 = g_tmp + 1;
@@ -507,7 +507,7 @@ static int emit_setop_fold_poly(Compiler *c, int id, int recv, TyKind rt, const 
   buf_puts(b, "({ ");
   for (int j = -1; j < argc; j++) {
     int n = j < 0 ? recv : argv[j];
-    TyKind at = j < 0 ? rt : comp_ntype(c, n);
+    TyKind at = j < 0 ? rt : repr_of(c, n).as_ty;
     if (at == TY_UNKNOWN) continue;
     char v[24]; snprintf(v, sizeof v, "_t%d", j < 0 ? t : t0 + j);
     emit_ctype(c, at, b); buf_printf(b, " %s = ", v); emit_expr(c, n, b);
@@ -520,7 +520,7 @@ static int emit_setop_fold_poly(Compiler *c, int id, int recv, TyKind rt, const 
   for (int j = 0; j < argc; j++) {
     snprintf(v, sizeof v, "_t%d", t0 + j);
     buf_printf(b, " _t%d = sp_PolyArray_%s(_t%d, ", ta, fn, ta);
-    setop_poly_operand(comp_ntype(c, argv[j]), v, b);
+    setop_poly_operand(repr_of(c, argv[j]).as_ty, v, b);
     buf_puts(b, ");");
   }
   buf_printf(b, " _t%d; })", ta);
@@ -1815,6 +1815,13 @@ static void emit_poly_shl_call(Compiler *c, int id, const int *argv, int t, cons
   free(arms.p);
 }
 
+/* Is an operand an Array, a Hash or an object, which an Integer, Float or
+   String array's element store refuses? */
+static int container_or_object_operand(Compiler *c, int node) {
+  TyKind t = repr_of(c, node).as_ty;
+  return ty_is_array(t) || ty_is_obj_array(t) || ty_is_hash(t) || ty_is_object(t);
+}
+
 /* << and push on a poly or array receiver, a splat into an Array mutator, and their poly element stores */
 int emit_call_append_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* `poly_val << x`: runtime dispatch via sp_poly_shl. For an array receiver it
@@ -1941,7 +1948,7 @@ int emit_call_append_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
      (statement position is handled earlier by emit_array_mutate_stmt). */
   if (recv >= 0 && emit_array_splat_mutator(c, id, b)) return 1;
   if (recv >= 0 && is_push_alias(name) &&
-      argc >= 1 && ty_is_array(comp_ntype(c, recv))) {
+      argc >= 1 && ty_is_array(repr_of(c, recv).as_ty)) {
     Repr arr = repr_of(c, recv);
     TyKind art = arr.as_ty;
     /* A narrowed pointer array (int-array-array): push the element pointer
@@ -2035,8 +2042,7 @@ int emit_call_append_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
          array is refused at run time, as the statement form refuses it
          (the plain store here unwraps the oint the refusal never answers) */
       else if ((elem == TY_INT || elem == TY_FLOAT || elem == TY_STRING) &&
-               (ty_is_array(comp_ntype(c, argv[a])) || ty_is_obj_array(comp_ntype(c, argv[a])) ||
-                ty_is_hash(comp_ntype(c, argv[a])) || ty_is_object(comp_ntype(c, argv[a])))) {
+               container_or_object_operand(c, argv[a])) {
         if (oint_kind(elem)) buf_printf(b, "%s(", oint_arg(elem));
         buf_puts(b, elem == TY_INT ? "sp_poly_elem_i(" : elem == TY_FLOAT ? "sp_poly_elem_f(" : "sp_poly_elem_s(");
         emit_boxed(c, argv[a], b); buf_puts(b, ")");
@@ -2293,7 +2299,7 @@ int emit_array_random_kw(Compiler *c, int id, Buf *b, const NodeTable *nt, const
    take: a Range splices, anything else stores. Read as an Integer, a Range
    stored at index 0. */
 int aset_range_held(Compiler *c, TyKind rt, const int *argv) {
-  if (comp_ntype(c, argv[0]) != TY_POLY || !value_may_be_range(c, argv[0])) return 0;
+  if (repr_of(c, argv[0]).as_ty != TY_POLY || !value_may_be_range(c, argv[0])) return 0;
   if (rt == TY_POLY_ARRAY) return 1;
   const char *k = array_kind(rt);
   TyKind et = ty_array_elem(rt);
@@ -2336,10 +2342,11 @@ void emit_aset_range_held(Compiler *c, int id, int recv, TyKind rt, const int *a
     view_unbind(vbind);
     view_unbind(rbind);
     buf_puts(b, "; } ");
-    TyKind et = ty_array_elem(rt), it = comp_ntype(c, id);
+    Repr ir = repr_of(c, id);
+    TyKind et = ty_array_elem(rt), it = ir.as_ty;
     char tn[32]; snprintf(tn, sizeof tn, "_t%d", tv);
     if (oint_kind(et) && node_is_oint(c, id)) buf_printf(b, "%s(%s)", oint_unbox(et), tn);
-    else if (it == TY_POLY || it == TY_UNKNOWN || repr_of(c, id).kind == RK_BOXED) buf_puts(b, tn);
+    else if (it == TY_POLY || it == TY_UNKNOWN || ir.kind == RK_BOXED) buf_puts(b, tn);
     else emit_unbox_text(c, it, tn, b);
     buf_puts(b, "; })");
     return;
@@ -2380,7 +2387,7 @@ int emit_call_array_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
   if (recv >= 0 && ty_is_array(rt) && sp_streq(name, "[]=") && argc == 2) {
     const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
     /* arr[range] = rhs : a splice over the range's (start, length). */
-    if (k && comp_ntype(c, argv[0]) == TY_RANGE) {
+    if (k && repr_of(c, argv[0]).range == TY_INT) {
       emit_array_splice(c, id, recv, rt, -1, -1, argv[0], argv[1], b);
       return 1;
     }
@@ -2669,9 +2676,9 @@ int emit_arysub_call(Compiler *c, int id, Buf *b) {
   int outer_o = node_is_oint(c, id);
   ArysubView v;
   if (!arysub_view_open(c, id, &v)) return 0;
-  int inner_o = node_is_oint(c, id) && oint_kind(comp_ntype(c, id)) && !outer_o;
+  int inner_o = node_is_oint(c, id) && oint_kind(repr_of(c, id).as_ty) && !outer_o;
   const char *cn = recv >= 0 && ty_is_object(rt) ? c->classes[ty_object_class(rt)].c_name : NULL;
-  if (inner_o) buf_printf(b, "%s(", oint_arg(comp_ntype(c, id)));
+  if (inner_o) buf_printf(b, "%s(", oint_arg(repr_of(c, id).as_ty));
   if (v.vi >= 0 && v.nat == TY_POLY) {
     int t = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", t);

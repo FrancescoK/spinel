@@ -234,9 +234,9 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       int arecv = mn >= 0 ? nt_ref(nt, mn, "receiver") : -1;
       const char *asym = mn >= 0 ? method_sym_arg(c, mn) : NULL;
       TyKind at = (arecv >= 0 && asym)
-                    ? method_obj_adapter_ret(comp_ntype(c, arecv), asym) : TY_UNKNOWN;
+                    ? method_obj_adapter_ret(repr_of(c, arecv).as_ty, asym) : TY_UNKNOWN;
       if (at != TY_UNKNOWN) {
-        adapter_ty = comp_ntype(c, arecv);
+        adapter_ty = repr_of(c, arecv).as_ty;
         if (!g_promote_mode) tret = at;
         adapter_argc = sp_streq(asym, "[]=") ? 2 : 1;
         adapter_push = sp_streq(asym, "push");

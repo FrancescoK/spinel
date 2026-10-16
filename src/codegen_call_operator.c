@@ -18,7 +18,7 @@
    oint producer, applied here because this emitter decides the form. */
 /* A call the analysis typed nil or void (`:s <=> 3`) has no number to
    unwrap: its oint is left bare, discarded or boxed as nil by the consumer. */
-static int oint_unwrap_wanted(Compiler *c, int id) { return !node_is_oint(c, id) && oint_kind(comp_ntype(c, id)); }
+static int oint_unwrap_wanted(Compiler *c, int id) { return !node_is_oint(c, id) && oint_kind(repr_of(c, id).as_ty); }
 static void oint_open(Compiler *c, int id, TyKind t, Buf *b) { if (oint_unwrap_wanted(c, id)) buf_printf(b, "%s(", oint_arg(t)); }
 static void oint_close(Compiler *c, int id, Buf *b) { if (oint_unwrap_wanted(c, id)) buf_puts(b, ")"); }
 /* A plain answer where the call's consumer wants its oint form (the
@@ -144,10 +144,10 @@ static int cmp_elem_read(Compiler *c, int node, TyKind t, int *arr, int *idx) {
   int r = nt_ref(nt, node, "receiver"), ac = 0;
   int an = nt_ref(nt, node, "arguments");
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
-  if (r < 0 || ac != 1 || comp_ntype(c, av[0]) != TY_INT) return 0;
-  TyKind rt = comp_ntype(c, r);
-  if (!(t == TY_FLOAT ? rt == TY_FLOAT_ARRAY : rt == TY_INT_ARRAY)) return 0;
-  if (repr_of(c, r).kind == RK_BOXED || cplan_user(c, node)->dispatch != CP_NONE) return 0;
+  if (r < 0 || ac != 1 || repr_of(c, av[0]).as_ty != TY_INT) return 0;
+  Repr rr = repr_of(c, r);
+  if (rr.elem != (t == TY_FLOAT ? TY_FLOAT : TY_INT)) return 0;
+  if (rr.kind == RK_BOXED || cplan_user(c, node)->dispatch != CP_NONE) return 0;
   *arr = r; *idx = av[0];
   return 1;
 }
@@ -188,7 +188,7 @@ static int g_cmp_reopen_id = -1;
 static int emit_nil_aware_num_eq(Compiler *c, int id, const char *name, int recv, int argc, const int *argv, TyKind rt, Buf *b) {
   if (recv < 0 || argc != 1 || !(sp_streq(name, "==") || sp_streq(name, "!="))) return 0;
   if (!oint_kind(rt)) return 0;
-  TyKind at = comp_ntype(c, argv[0]);
+  TyKind at = repr_of(c, argv[0]).as_ty;
   int a_num = oint_kind(at), a_poly = at == TY_POLY || at == TY_UNKNOWN;
   if (!a_num && !a_poly) return 0;
   if (!node_has_oint_form(c, recv) && !(a_num && node_has_oint_form(c, argv[0]))) return 0;
@@ -207,10 +207,10 @@ static int emit_nil_aware_num_eq(Compiler *c, int id, const char *name, int recv
              && nt_ref(nt, recv, "block") < 0 ? nt_ref(nt, recv, "receiver") : -1;
     int ea = nt_ref(nt, recv, "arguments"), ean = 0;
     const int *eav = er >= 0 && ea >= 0 ? nt_arr(nt, ea, "arguments", &ean) : NULL;
-    TyKind ert = er >= 0 ? comp_ntype(c, er) : TY_UNKNOWN;
+    TyKind ert = er >= 0 ? repr_of(c, er).elem : TY_UNKNOWN;
     char hd[48], hl[48], hw[48];
-    if (eav && ean == 1 && ert == (rt == TY_INT ? TY_INT_ARRAY : TY_FLOAT_ARRAY) &&
-        (comp_ntype(c, eav[0]) == TY_INT || hc_promoted_int(c, eav[0])) && !node_has_oint_form(c, eav[0]) &&
+    if (eav && ean == 1 && ert == rt &&
+        (repr_of(c, eav[0]).as_ty == TY_INT || hc_promoted_int(c, eav[0])) && !node_has_oint_form(c, eav[0]) &&
         !repr_of(c, er).nil_cold &&
         hc_array(c, er, rt == TY_FLOAT, hd, hl, hw, sizeof hd)) {
       char hr[48]; hc_read_len(hd, hr, sizeof hr);
@@ -967,7 +967,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     if ((rt == TY_BIGINT || repr_of(c, argv[0]).big) &&
         emit_float_bigint_cmp(c, recv, argv[0], name, b)) return 1;
     if ((rt == TY_BIGINT || repr_of(c, argv[0]).big) &&
-        bigint_cmp_operand_ok(rt) && bigint_cmp_operand_ok(comp_ntype(c, argv[0]))) {
+        bigint_cmp_operand_ok(rt) && bigint_cmp_operand_ok(repr_of(c, argv[0]).as_ty)) {
       buf_printf(b, "(sp_bigint_cmp(");
       emit_bigint_operand(c, recv, b);
       buf_puts(b, ", ");
@@ -1112,7 +1112,8 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         return 1;
       }
       /* a poly operand is a Time or not at run time (#4465) */
-      if (repr_of(c, argv[0]).kind == RK_BOXED || comp_ntype(c, argv[0]) == TY_UNKNOWN) {
+      Repr tar = repr_of(c, argv[0]);
+      if (tar.kind == RK_BOXED || tar.untyped) {
         int tt = ++g_tmp, tu = ++g_tmp;
         buf_puts(b, "({ sp_Time _t"); buf_printf(b, "%d = ", tt); emit_expr(c, recv, b);
         buf_printf(b, "; sp_RbVal _t%d = ", tu); emit_boxed(c, argv[0], b);
@@ -1159,7 +1160,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     /* Hash subset/superset: < <= > >= over any hash-variant pairing. An empty
        `{}` literal operand (TY_UNKNOWN) is an empty hash all the same (#2399). */
     {
-      TyKind h_rt = rt, h_a0 = comp_ntype(c, argv[0]);
+      TyKind h_rt = rt, h_a0 = repr_of(c, argv[0]).as_ty;
       if (h_rt == TY_UNKNOWN && nt_type(nt, recv) &&
           (sp_streq(nt_type(nt, recv), "HashNode") || sp_streq(nt_type(nt, recv), "KeywordHashNode")) &&
           ({ int _n = 0; nt_arr(nt, recv, "elements", &_n); _n == 0; })) h_rt = TY_STR_POLY_HASH;
@@ -1238,7 +1239,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
                    rt != TY_VOID && rt != TY_EXCEPTION && rt != TY_IO;
   if (recv >= 0 && (rt == TY_POLY || builtin_rt) && argc == 1 &&
       is_kind_query(name) && !kind_query_to_dispatch(c, id, name, rt) &&
-      (comp_ntype(c, argv[0]) == TY_CLASS || repr_of(c, argv[0]).kind == RK_BOXED) &&
+      (repr_of(c, argv[0]).as_ty == TY_CLASS || repr_of(c, argv[0]).kind == RK_BOXED) &&
       !(nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode"))) {
     int t = ++g_tmp, k = ++g_tmp;
     /* the call typed as a box (a program class's own kind query may answer

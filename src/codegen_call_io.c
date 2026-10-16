@@ -596,7 +596,7 @@ static int emit_io_socket_opt_call(Compiler *c, const NodeTable *nt, const char 
     emit_int_expr(c, argv[1], b); buf_puts(b, ", ");
     /* the value is an Integer, true/false (1/0) or the option's packed
        bytes, as CRuby takes it; only an Integer converts directly */
-    TyKind vty = comp_ntype(c, argv[2]);
+    TyKind vty = repr_of(c, argv[2]).as_ty;
     if (vty == TY_INT) emit_int_expr(c, argv[2], b);
     else {
       buf_puts(b, "sp_sock_optval(");
@@ -629,7 +629,7 @@ static int boxed_accept_nb_ok(const NodeTable *nt, const char *name, int argc, c
 /* winsize= as the typed arm takes it: one Integer Array */
 static int boxed_winsize_set(Compiler *c, const char *name, int argc, const int *argv) {
   return sp_streq(name, "winsize=") && argc == 1 && sp_feature_enabled("io/console") &&
-         comp_ntype(c, argv[0]) == TY_INT_ARRAY;
+         repr_of(c, argv[0]).elem == TY_INT;
 }
 
 /* the IO methods on a poly receiver that may hold a stream (write, read, gets, puts, print, ...) */
@@ -638,7 +638,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   /* IO instance methods on a poly-carried handle (an IO.pipe element): unbox
      and dispatch, unless a user class defines the name (then the general poly
      dispatch owns it). */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_POLY &&
+  if (recv >= 0 && repr_of(c, recv).as_ty == TY_POLY &&
       (sp_streq(name, "write") || sp_streq(name, "read") || sp_streq(name, "gets") ||
        sp_streq(name, "readline") || sp_streq(name, "close") || sp_streq(name, "flush") ||
        sp_streq(name, "fileno") ||
@@ -789,7 +789,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       for (size_t o = 0; o < sizeof owners / sizeof owners[0]; o++)
         if (!builtin_arity_admits(owners[o].cls, name, argc)) buf_printf(b, " || _t%d.cls_id == %s", tv, owners[o].id);
       buf_printf(b, "))) (void)sp_poly_as_io(_t%d, \"%s\"); sp_raise_cls(\"ArgumentError\", \"%s\"); %s; })",
-                 tv, name, msg, raise_tail_value(comp_ntype(c, id)));
+                 tv, name, msg, raise_tail_value(repr_of(c, id).as_ty));
       return 1;
     }
     /* rewind on a boxed value: an Enumerator rewinds and answers itself,
@@ -875,7 +875,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           buf_printf(b, "); SP_GC_ROOT_STR(_t%d); ", tadv);
         }
         for (int ai = first_int; ai < argc; ai++) {
-          TyKind ak = comp_ntype(c, argv[ai]);
+          TyKind ak = repr_of(c, argv[ai]).as_ty;
           targ[ai] = ++g_tmp;
           if (ak == TY_INT || ak == TY_FLOAT) {
             buf_printf(b, "sp_int _t%d = ", targ[ai]);
@@ -1955,7 +1955,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
            converted value) and hands both pointer and count to
            sp_File_syswrite, so a poly operand takes that path here rather
            than being routed through sp_File_write_poly. */
-        if (is_sw && comp_ntype(c, argv[0]) == TY_POLY) {
+        if (is_sw && repr_of(c, argv[0]).as_ty == TY_POLY) {
           int sl = ++g_tmp;
           /* The operand's class is only known at run time, so the length is
              chosen by its TAG rather than off the pointer: a marked String
@@ -1972,7 +1972,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
                      "sp_int _r%d = sp_File_syswrite(%s, _s%d, _l%d); _r%d; })",
                      sl, sl, sl, sl, sl, sl, sl, sl, sl, r, sl, sl, sl);
         }
-        else if (comp_ntype(c, argv[0]) == TY_POLY) {
+        else if (repr_of(c, argv[0]).as_ty == TY_POLY) {
           buf_printf(b, "sp_File_write_poly(%s, ", r);
           emit_boxed(c, argv[0], b);
           buf_puts(b, ")");
@@ -2009,7 +2009,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
            interleaves them, so each write is its own held unit rather than
            the call's */
         for (int k = 0; k < argc; k++) {
-          if (is_sw && comp_ntype(c, argv[k]) == TY_POLY) {
+          if (is_sw && repr_of(c, argv[k]).as_ty == TY_POLY) {
             /* syswrite sizes the operand itself and routes through
                sp_File_syswrite, so a poly operand takes that path here
                rather than being routed through sp_File_write_poly. */
@@ -2019,7 +2019,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
                        "sp_File_syswrite(%s, _s, _l); _r; })", r);
             continue;
           }
-          if (comp_ntype(c, argv[k]) == TY_POLY) {   /* see the one-argument form */
+          if (repr_of(c, argv[k]).as_ty == TY_POLY) {   /* see the one-argument form */
             buf_printf(b, " _t%d += sp_File_write_poly(%s, ", tw, r);
             emit_boxed(c, argv[k], b);
             buf_puts(b, ");");
@@ -2058,7 +2058,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
          (`io << a << b`). Hold the handle in a temp, write, yield the handle. */
       int t = ++g_tmp;
       int sk = repr_of(c, argv[0]).as_ty == TY_STRING;
-      int pk = comp_ntype(c, argv[0]) == TY_POLY;
+      int pk = repr_of(c, argv[0]).as_ty == TY_POLY;
       buf_printf(b, "({ sp_File *_t%d = %s; %s(_t%d, ", t, r,
                  pk ? "sp_File_write_poly" : sk ? "sp_File_write_bin" : "sp_File_write", t);
       if (pk) emit_boxed(c, argv[0], b);
@@ -2078,7 +2078,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
        every caller writes. Any other operand is left to the refusal below,
        rather than guessed into a size. */
     if (sp_streq(name, "winsize=") && argc == 1 && sp_feature_enabled("io/console") &&
-        comp_ntype(c, argv[0]) == TY_INT_ARRAY) {
+        repr_of(c, argv[0]).elem == TY_INT) {
       Buf ab = {0};
       emit_expr(c, argv[0], &ab);
       buf_printf(b, "sp_File_set_winsize(%s, %s)", r, ab.p ? ab.p : "NULL");
@@ -2212,13 +2212,13 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         /* an Integer argument is the limit (gets_sep_arg_texts), and 0 is
            CRuby's ArgumentError, where sp_File_gets_sep reads it as none */
         for (int k = 0; k < argc; k++)
-          if (comp_ntype(c, argv[k]) == TY_INT) {
+          if (repr_of(c, argv[k]).as_ty == TY_INT) {
             buf_printf(b, " if (_t%d == 0) sp_raise_cls(\"ArgumentError\", \"invalid limit: 0 for each_line\");", ll);
             break;
           }
           /* a boxed variable read is the limit when it holds an Integer (an
              Integer local under --int-overflow=promote): its 0 raises too */
-          else if (comp_ntype(c, argv[k]) == TY_POLY && nt_kind(c->nt, argv[k]) == NK_LocalVariableReadNode) {
+          else if (repr_of(c, argv[k]).as_ty == TY_POLY && nt_kind(c->nt, argv[k]) == NK_LocalVariableReadNode) {
             int tz = ++g_tmp;
             buf_printf(b, " { sp_RbVal _t%d = ", tz);
             emit_expr(c, argv[k], b);

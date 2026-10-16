@@ -321,7 +321,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
          through the runtime's Kernel#Integer path, nil for every failure */
       if (ty_is_object(at0) || at0 == TY_POLY || (at0 == TY_FLOAT && ac == 1)) {
         /* the runtime answers an sp_oint for an Integer-typed call */
-        int ko = comp_ntype(c, id) == TY_INT;
+        int ko = repr_of(c, id).as_ty == TY_INT;
         if (ko) oint_open(c, id, TY_INT, b);
         emit_kconv_call(c, id, av, ac, 0, b);
         if (ko) oint_close(c, id, b);
@@ -395,7 +395,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
          #to_int or #to_i answers a Bignum types the call as one */
       else if (ty_is_object(at)) {
         /* the strict form never answers nil: its sp_oint unwrapped */
-        int ko = comp_ntype(c, id) == TY_INT;
+        int ko = repr_of(c, id).as_ty == TY_INT;
         if (ko) buf_puts(b, "sp_oint_arg(");
         emit_kconv_call(c, id, av, ac, 1, b);
         if (ko) buf_puts(b, ")");
@@ -425,7 +425,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
          #to_str -- the runtime decides, raising CRuby's ArgumentError for
          anything else (#2515) */
       else {
-        int ko = comp_ntype(c, id) == TY_INT;
+        int ko = repr_of(c, id).as_ty == TY_INT;
         if (ko) buf_puts(b, "sp_oint_arg(");
         emit_kconv_call(c, id, av, ac, 1, b);
         if (ko) buf_puts(b, ")");
@@ -464,7 +464,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
          the runtime as CRuby judges it */
       else if (ty_is_object(at)) {
         /* the strict form never answers nil: its sp_ofloat unwrapped */
-        int fo = comp_ntype(c, id) == TY_FLOAT;
+        int fo = repr_of(c, id).as_ty == TY_FLOAT;
         if (fo) buf_puts(b, "sp_ofloat_arg(");
         buf_puts(b, "sp_poly_Float_ex("); emit_boxed(c, av[0], b); buf_puts(b, ", 1)");
         if (fo) buf_puts(b, ")");
@@ -687,7 +687,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         }
         /* either bound a Float draws a Float; an Integer begin keeps the end
            as written (sp_range_end_num) */
-        int is_float = (lo >= 0 && comp_ntype(c, lo) == TY_FLOAT) || (hi >= 0 && comp_ntype(c, hi) == TY_FLOAT);
+        int is_float = (lo >= 0 && repr_of(c, lo).as_ty == TY_FLOAT) || (hi >= 0 && repr_of(c, hi).as_ty == TY_FLOAT);
         /* a statically empty/reversed int range -> nil (#2519) */
         if (islit && !is_float && lo >= 0 && hi >= 0 &&
             nt_type(nt, lo) && sp_streq(nt_type(nt, lo), "IntegerNode") &&
@@ -731,7 +731,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
          a non-finite bound (Infinity/NaN) raises FloatDomainError rather than
          casting garbage to an integer (#3049); evaluate into a double first so
          the finiteness check precedes the narrowing cast. */
-      if (comp_ntype(c, av[0]) == TY_FLOAT) {
+      if (repr_of(c, av[0]).as_ty == TY_FLOAT) {
         int tf = ++g_tmp, tn = ++g_tmp;
         buf_printf(b, "({ double _t%d = ", tf); emit_float_expr(c, av[0], b);
         buf_printf(b, "; if (!isfinite(_t%d)) sp_raise_cls(\"FloatDomainError\","
@@ -1005,8 +1005,8 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       int left = nt_ref(c->nt, rid, "left");
       int right = nt_ref(c->nt, rid, "right");
       int excl = (int)(nt_int(c->nt, rid, "flags", 0) & 4) ? 1 : 0;
-      TyKind lty = left >= 0 ? comp_ntype(c, left) : TY_UNKNOWN;
-      TyKind rty = right >= 0 ? comp_ntype(c, right) : TY_UNKNOWN;
+      TyKind lty = left >= 0 ? repr_of(c, left).as_ty : TY_UNKNOWN;
+      TyKind rty = right >= 0 ? repr_of(c, right).as_ty : TY_UNKNOWN;
       /* A boxed endpoint (a value out of a poly slot; under
          --int-overflow=promote every Integer local and method answer)
          is read through the checked unbox, which raises CRuby's TypeError
@@ -1035,7 +1035,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     }
     /* Non-literal Range argument: compile error instead of a runtime
        crash with "no implicit conversion of Range into Integer". */
-    if (argc >= 1 && comp_ntype(c, argv[0]) == TY_RANGE)
+    if (argc >= 1 && repr_of(c, argv[0]).range == TY_INT)
       unsupported_feature(c, id,
         "caller(Range) only supports Range literals with integer endpoints "
         "(e.g. caller(0..5)); pass start and length instead: caller(start, len)");

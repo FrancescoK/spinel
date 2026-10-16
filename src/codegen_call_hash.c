@@ -491,7 +491,7 @@ int emit_op_hash_replace(Compiler *c, const BopCtx *x, Buf *b) {
     return 1;
   }
   /* any Hash, or a boxed value, which sp_poly_hash_replace checks is one */
-  TyKind ot = comp_ntype(c, argv[0]);
+  TyKind ot = repr_of(c, argv[0]).as_ty;
   if (rt == TY_POLY_POLY_HASH && (ty_is_hash(ot) || ot == TY_POLY)) {
     int th = ++g_tmp;
     buf_printf(b, "({ sp_PolyPolyHash *_t%d = ", th); emit_expr(c, recv, b);

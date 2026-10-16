@@ -818,13 +818,13 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         return 1;
       }
       if (mult > 0) {
-        TyKind st = comp_ntype(c, argv[0]);
+        TyKind st = repr_of(c, argv[0]).as_ty;
         int ts = ++g_tmp;
         buf_printf(b, "({ sp_Time _t%d = ", ts);
         if (st == TY_FLOAT) { buf_puts(b, "sp_time_at_float("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         else { buf_puts(b, "sp_time_at_int("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
         buf_printf(b, "; _t%d = sp_time_add_nsec(_t%d, (int64_t)(", ts, ts);
-        TyKind ut = comp_ntype(c, argv[1]);
+        TyKind ut = repr_of(c, argv[1]).as_ty;
         if (ut == TY_FLOAT) { buf_puts(b, "("); emit_expr(c, argv[1], b); buf_printf(b, ") * %ld.0", mult); }
         else if (ut == TY_RATIONAL) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, argv[1], b); buf_printf(b, ") * %ld.0", mult); }
         else { buf_puts(b, "((int64_t)("); emit_int_expr(c, argv[1], b); buf_printf(b, ")) * %ld", mult); }
@@ -838,14 +838,14 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     if (sp_streq(name, "at") && argc == 2 &&
         !(nt_type(nt, argv[1]) && (sp_streq(nt_type(nt, argv[1]), "KeywordHashNode") ||
                                    sp_streq(nt_type(nt, argv[1]), "HashNode")))) {
-      TyKind st = comp_ntype(c, argv[0]);
+      TyKind st = repr_of(c, argv[0]).as_ty;
       int ts = ++g_tmp;
       buf_printf(b, "({ sp_Time _t%d = ", ts);
       if (st == TY_FLOAT) { buf_puts(b, "sp_time_at_float("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (st == TY_POLY || st == TY_UNKNOWN) { buf_puts(b, "sp_time_at_float(sp_poly_to_f("); emit_boxed(c, argv[0], b); buf_puts(b, "))"); }
       else { buf_puts(b, "sp_time_at_int("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       buf_printf(b, "; _t%d = sp_time_add_nsec(_t%d, (int64_t)(", ts, ts);
-      TyKind ut = comp_ntype(c, argv[1]);
+      TyKind ut = repr_of(c, argv[1]).as_ty;
       if (ut == TY_FLOAT) { emit_expr(c, argv[1], b); buf_puts(b, " * 1000.0"); }
       else if (ut == TY_RATIONAL) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, argv[1], b); buf_puts(b, ") * 1000.0"); }
       else { buf_puts(b, "((int64_t)("); emit_int_expr(c, argv[1], b); buf_puts(b, ")) * 1000"); }
@@ -1613,7 +1613,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
     if (tcn && sp_streq(tcn, "Signal") && sp_streq(name, "signame") && argc == 1) {
       /* signame takes an Integer; a statically non-Integer argument is a
          TypeError, not a bogus name or a compile abort (#3075, #3076) */
-      TyKind sa0 = comp_ntype(c, argv[0]);
+      TyKind sa0 = repr_of(c, argv[0]).as_ty;
       if (sa0 != TY_INT && sa0 != TY_BIGINT && sa0 != TY_FLOAT &&
           sa0 != TY_POLY && sa0 != TY_UNKNOWN) {
         buf_puts(b, "((void)("); emit_boxed(c, argv[0], b);
@@ -1664,7 +1664,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
          argument list, not the options. */
       int last_is_opts = 0;
       if (extra >= 1 && nt_kind(nt, argv[argc - 1]) != NK_SplatNode) {
-        TyKind ltk = comp_ntype(c, argv[argc - 1]);
+        TyKind ltk = repr_of(c, argv[argc - 1]).as_ty;
         if (ltk == TY_SYM_POLY_HASH || ltk == TY_STR_POLY_HASH ||
             ltk == TY_POLY_POLY_HASH || ltk == TY_UNKNOWN ||
             ltk == TY_POLY) {
@@ -1725,7 +1725,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
          it; through a splat or a boxed value it is told apart only at run
          time, so the test is made there */
       int tenv = 0;
-      TyKind tfirst = nt_kind(nt, argv[0]) == NK_SplatNode ? TY_POLY : comp_ntype(c, argv[0]);
+      TyKind tfirst = nt_kind(nt, argv[0]) == NK_SplatNode ? TY_POLY : repr_of(c, argv[0]).as_ty;
       if (!is_exec && (ty_is_hash(tfirst) || tfirst == TY_POLY || tfirst == TY_UNKNOWN)) {
         tenv = ++g_tmp;
         buf_printf(b, " sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);", tenv, tenv);
@@ -2008,7 +2008,7 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Random")) {
     if (sp_streq(name, "rand")) {
-      if (argc >= 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
+      if (argc >= 1 && repr_of(c, argv[0]).as_ty == TY_FLOAT) {
         buf_puts(b, "sp_Random_rand_float_bound(sp_random_default_get(), ");
         emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
@@ -2019,7 +2019,7 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       }
       /* a Range of either kind, or a boxed argument, draws as Random#rand
          does (sp_rand_poly), answered in the call's own type */
-      else if (argc >= 1 && (comp_ntype(c, argv[0]) == TY_RANGE || comp_ntype(c, argv[0]) == TY_FLOAT_RANGE ||
+      else if (argc >= 1 && (repr_of(c, argv[0]).range == TY_INT || repr_of(c, argv[0]).range == TY_FLOAT ||
                              repr_of(c, argv[0]).kind == RK_BOXED)) {
         Buf rv; memset(&rv, 0, sizeof rv);
         buf_puts(&rv, "sp_rand_poly(sp_random_default_get(), "); emit_boxed(c, argv[0], &rv); buf_puts(&rv, ", 0)");
@@ -2100,7 +2100,7 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   if (recv >= 0 && comp_ntype(c, recv) == TY_RANDOM) {
     if (emit_builtin_op(c, id, recv, TY_RANDOM, name, b)) return 1;
     if (sp_streq(name, "rand")) {
-      if (argc >= 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
+      if (argc >= 1 && repr_of(c, argv[0]).as_ty == TY_FLOAT) {
         buf_puts(b, "sp_Random_rand_float_bound("); emit_expr(c, recv, b); buf_puts(b, ", ");
         emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
@@ -2123,7 +2123,7 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           return 1;
         }
         /* either bound a Float draws a Float, up to the end as written */
-        int is_float = (lo >= 0 && comp_ntype(c, lo) == TY_FLOAT) || (hi >= 0 && comp_ntype(c, hi) == TY_FLOAT);
+        int is_float = (lo >= 0 && repr_of(c, lo).as_ty == TY_FLOAT) || (hi >= 0 && repr_of(c, hi).as_ty == TY_FLOAT);
         if (is_float) {
           int tr = ++g_tmp;
           buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, argv[0], b);
