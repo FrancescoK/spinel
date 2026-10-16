@@ -38,6 +38,39 @@ int poll_is_method_name(Compiler *c, const char *nm) {
   return n > 0;
 }
 
+static unsigned char *g_poll_cyc;
+/* Edges from method t to what the calls in block body n reach (a block
+   nested in it runs inside the method it is handed to, which the caller's
+   own walk accounts for). */
+static void poll_block_edges(Compiler *c, int n, int t, int **ef, int **et, int *ne, int *cap,
+                             unsigned char *dyn, int depth) {
+  const NodeTable *nt = c->nt;
+  if (n < 0 || depth > 200) return;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode || k == NK_LambdaNode) return;
+  if (k == NK_CallNode) {
+    const char *nm = nt_str(nt, n, "name");
+    if (nm && (sp_streq(nm, "send") || sp_streq(nm, "__send__") || sp_streq(nm, "public_send") ||
+               sp_streq(nm, "call") || sp_streq(nm, "instance_exec") || sp_streq(nm, "instance_eval")))
+      dyn[t] = 1;
+    else if (nm) {
+      int cnt, first = poll_names_of(c, nm, &cnt);
+      for (int i = 0; i < cnt; i++) {
+        if (*ne == *cap) { *cap *= 2; *ef = realloc(*ef, *cap * sizeof(int)); *et = realloc(*et, *cap * sizeof(int)); }
+        (*ef)[*ne] = t; (*et)[*ne] = g_poll_names[first + i].scope; (*ne)++;
+        if (g_poll_names[first + i].scope == t) g_poll_cyc[t] = 1;
+      }
+    }
+  }
+  if (k == NK_YieldNode || k == NK_SuperNode || k == NK_ForwardingSuperNode) dyn[t] = 1;
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) poll_block_edges(c, nt_ref_at(nt, n, i), t, ef, et, ne, cap, dyn, depth + 1);
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) poll_block_edges(c, av[j], t, ef, et, ne, cap, dyn, depth + 1);
+  }
+}
 /* Is method scope si on a cycle of the call graph, taken by name (a call
    reaches every method of its name; a dynamic send, a yield, a block's or a
    proc's call reaches every method)? Only such a method polls at its entry
@@ -62,7 +95,27 @@ int poll_scope_on_cycle(Compiler *c, int si) {
       if (!nm) continue;
       if (sp_streq(nm, "send") || sp_streq(nm, "__send__") || sp_streq(nm, "public_send") || sp_streq(nm, "method") ||
           sp_streq(nm, "instance_exec") || sp_streq(nm, "instance_eval") || sp_streq(nm, "define_method") ||
-          sp_streq(nm, "call") || nt_ref(nt, n, "block") >= 0) { dyn[from] = 1; continue; }
+          sp_streq(nm, "call")) { dyn[from] = 1; continue; }
+      /* a block that is not a literal (`&blk`) may be any proc: the caller
+         and every method of the name, which may yield to it */
+      int bk = nt_ref(nt, n, "block");
+      if (bk >= 0 && nt_kind(nt, bk) != NK_BlockNode) {
+        dyn[from] = 1;
+        int cn2, f2 = poll_names_of(c, nm, &cn2);
+        for (int k = 0; k < cn2; k++) dyn[g_poll_names[f2 + k].scope] = 1;
+        continue;
+      }
+      /* a literal block runs inside each method of the name that yields: an
+         edge from that method to what the block's body calls (its calls are
+         the caller's edges too, as the block shares its scope) */
+      if (bk >= 0) {
+        int cnt0, first0 = poll_names_of(c, nm, &cnt0);
+        for (int k = 0; k < cnt0; k++) {
+          int t = g_poll_names[first0 + k].scope;
+          if (!c->scopes[t].yields) continue;
+          poll_block_edges(c, nt_ref(nt, bk, "body"), t, &ef, &et, &ne, &cap, dyn, 0);
+        }
+      }
       int cnt, first = poll_names_of(c, nm, &cnt);
       for (int k = 0; k < cnt; k++) {
         if (ne == cap) { cap *= 2; ef = realloc(ef, cap * sizeof(int)); et = realloc(et, cap * sizeof(int)); }
@@ -70,7 +123,6 @@ int poll_scope_on_cycle(Compiler *c, int si) {
         if (et[ne - 1] == from) g_poll_cyc[from] = 1;   /* calls itself */
       }
     }
-    NT_FOREACH_KIND(nt, NK_YieldNode, n) { int f = c->nscope[n]; if (f >= 0 && f < ns) dyn[f] = 1; }
     NT_FOREACH_KIND(nt, NK_SuperNode, n) { int f = c->nscope[n]; if (f >= 0 && f < ns) dyn[f] = 1; }
     NT_FOREACH_KIND(nt, NK_ForwardingSuperNode, n) { int f = c->nscope[n]; if (f >= 0 && f < ns) dyn[f] = 1; }
     /* the edges by source (CSR), and their reverse */
