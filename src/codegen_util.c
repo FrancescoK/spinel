@@ -1737,7 +1737,12 @@ void emit_scope_local_ref(Compiler *c, Scope *s, const char *name, Buf *b) {
     buf_printf(b, "lv_%s", rn);
     return;
   }
-  if (g_cap_struct && g_cap_names && nameset_has(g_cap_names, name)) {
+  /* A name renamed inside the proc body is the renaming's local, not the
+     capture: a proc body starts with no renames (ren_park), so a rename
+     here is one the body pushed, such as a default argument's binding of
+     the callee's parameter (`text v.to_s` in a block that captured an
+     outer `obj`, where text's default is `obj.length`, #9263) */
+  if (g_cap_struct && g_cap_names && rn == name && nameset_has(g_cap_names, name)) {
     /* A TY_PROC capture is stored as (sp_int)(uintptr_t)sp_Proc* in the cell.
        Cast it back to sp_Proc* so call sites work. A heap-object cell is a real
        typed pointer, so its deref is already the right lvalue (no cast). */
