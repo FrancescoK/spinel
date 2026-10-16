@@ -16159,6 +16159,23 @@ static int masgn_fresh_stmt(Compiler *c, int id, const int *lefts, int ln, const
    read of a variable that emit_expr gives as the handle, which the write
    stores as it reads (share_plan_multi_renders says which targets take
    it)? */
+/* --share-strings: does index target t (of a multiple write) store into a
+   container that holds boxes -- a general Array or Hash, or one typed at
+   run time -- and is value e a parenthesized sequence or a conditional
+   whose String emit_boxed gives as its handle (emit_boxed_sequence,
+   emit_boxed_cond_arms)? The write holds such a value as that box. */
+int masgn_boxed_index_keeps(Compiler *c, int t, int e) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c) || t < 0 || nt_kind(nt, t) != NK_IndexTargetNode || e < 0) return 0;
+  int r = nt_ref(nt, t, "receiver");
+  TyKind rt = r >= 0 ? c->ntype[r] : TY_UNKNOWN;
+  if (rt != TY_POLY_ARRAY && rt != TY_POLY && rt != TY_SYM_POLY_HASH && rt != TY_STR_POLY_HASH && rt != TY_POLY_POLY_HASH)
+    return 0;
+  TyKind et = c->ntype[e];
+  NodeKind ek = nt_kind(nt, e);
+  return (et == TY_STRING || et == TY_STRBUF) &&
+         (ek == NK_ParenthesesNode || ek == NK_IfNode || ek == NK_UnlessNode) && strbuf_cond_has_handle_leaf(c, e, 0);
+}
 int masgn_face_elem(Compiler *c, int mw, int el) {
   const NodeTable *nt = c->nt;
   if (!c->share_plan || !share_masgn_plain(nt, mw)) return 0;
@@ -16401,7 +16418,10 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
     /* (one that ran ahead as the handle, in a multiple write used as a value
        -- emit_expr -- is that handle) */
     int hran = ran_first_handle(els[i]);
-    int hface = hran >= 0 || (!hread && i < ln && masgn_face_elem(c, id, els[i]) && !share_plan_emits_handle(c, els[i]));
+    /* (a sequence or a conditional into an index of a container that holds
+       boxes is held as its box, which keeps its handle: masgn_boxed_index_keeps) */
+    int hbox = hran < 0 && !hread && i < ln && masgn_boxed_index_keeps(c, lefts[i], els[i]);
+    int hface = hran >= 0 || (!hread && !hbox && i < ln && masgn_face_elem(c, id, els[i]) && !share_plan_emits_handle(c, els[i]));
     if (hran >= 0) buf_printf(&hw, "_t%d", hran);
     else if (hface) emit_str_form_handle(c, els[i], &hw);
     int hwrite = hface || (hshared && elt != TY_STRBUF && !hread && emit_strbuf_write_handle(c, els[i], &hw));
@@ -16422,9 +16442,14 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
     }
     /* an element with no C type of its own (an unresolved call, which
        raises) is held boxed: `void _tN` is no declaration */
-    int boxed_el = !nilish && !c_type_name(elt) && !ty_is_object(elt);
+    int boxed_el = (!nilish && !c_type_name(elt) && !ty_is_object(elt)) || hbox;
     int fresh_str = fresh_stmt && elt == TY_STRBUF && masgn_el_fresh_str(c, els[i]) &&
                     masgn_plain_element_target(c, lefts[i]);
+    /* (a new String the plan holds as a handle, `(+"x") * 3`, is its bytes
+       to emit_expr: it is wrapped as the handle, as fresh_str is; held in
+       an sp_String * bare, the C did not build) */
+    if (!fresh_str && !boxed_el && !nilish && elt == TY_STRBUF && share_value_fresh(c, els[i], 0))
+      fresh_str = 1;
     emit_ctype(c, nilish || boxed_el ? TY_POLY : elt, b);
     buf_printf(b, " _t%d = ", tmps[i]);
     if (nilish) {
@@ -16481,7 +16506,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
        it is rooted while a later value or a store can collect. */
     int later_alloc = store_alloc || fresh_stmt;
     for (int j = i + 1; j < en && !later_alloc; j++) later_alloc = masgn_part_allocates(c, els[j]);
-    if (!nilish && !masgn_rodata(c, els[i]) && later_alloc) masgn_root(c, elt, tmps[i], b);
+    if (!nilish && !masgn_rodata(c, els[i]) && later_alloc) masgn_root(c, boxed_el ? TY_POLY : elt, tmps[i], b);
     buf_puts(b, "\n");
   }
   /* assign lefts */

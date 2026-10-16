@@ -760,7 +760,9 @@ int share_plan_multi_renders(Compiler *c, int mw, int e) {
     return 0;
   if (share_plan_emits_handle(c, e)) return 1;
   int kind_ok = share_plan_emits_handle_kind(c, e);
-  if (k == NK_IndexTargetNode) return kind_ok;
+  /* (an index of a container that holds boxes takes a sequence or a
+     conditional as its box, which keeps the handle: masgn_boxed_index_keeps) */
+  if (k == NK_IndexTargetNode) return kind_ok || masgn_boxed_index_keeps(c, lefts[ti], e);
   int target = k == NK_LocalVariableTargetNode || k == NK_InstanceVariableTargetNode ||
                k == NK_GlobalVariableTargetNode || k == NK_CallTargetNode;
   return target && (!nested || !subtree_has_side_effect(c, e) || kind_ok);
