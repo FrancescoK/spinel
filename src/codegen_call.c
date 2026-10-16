@@ -20175,6 +20175,23 @@ int emit_vis_refusal(Compiler *c, int id, Buf *b) {
   if (r && g_plan_check) ucall_refused(id);
   return r;
 }
+/* The class index a builtin-typed receiver's OWN class reopening declares
+   name's visibility at, when the program reopened it with an explicit
+   `private`/`protected` (or inherited one from a module it included) --
+   -1 when the type has no builtin class, the class was never reopened, or
+   the reopening never touched this name (comp_method_vis_declared answers
+   SP_VIS_PUBLIC by default, the same as an ordinary unreopened builtin
+   method). Mirrors the ConstantReadNode/class-method branch of
+   respond_to_static_answer, which already consults this table for
+   `Array.foo`; this lets the instance form (`[1].foo`) and the plain
+   direct-call check below share it too. */
+static int builtin_reopen_vis_class(Compiler *c, TyKind rt, const char *name) {
+  if (!name || ty_is_object(rt)) return -1;
+  const char *bcls = builtin_class_of_type(rt);
+  int bci = bcls ? comp_class_index(c, bcls) : -1;
+  if (bci < 0) return -1;
+  return comp_method_vis_declared(c, bci, name, NULL) == SP_VIS_PUBLIC ? -1 : bci;
+}
 static int emit_vis_refusal_x(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   int vrecv = nt_ref(nt, id, "receiver");
@@ -20189,6 +20206,7 @@ static int emit_vis_refusal_x(Compiler *c, int id, Buf *b) {
   if (vrecv >= 0) {
     TyKind vrt = comp_ntype(c, vrecv);
     if (ty_is_object(vrt)) vcid = ty_object_class(vrt);
+    else vcid = builtin_reopen_vis_class(c, vrt, vnm);
     if (plain && emit_object_reopen_vis_refusal(c, id, vrecv, vrt, vcid, vnm, b)) return 1;
   }
   else {
@@ -29269,6 +29287,17 @@ int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const cha
        folding a flat false (#3619) */
     else if (rt == TY_POLY || rt == TY_UNKNOWN) return -1;
     else {
+      /* the program's own `private`/`protected` reopening of this exact
+         builtin method name (`class Array; private :first; end`) answers
+         the same fold the ConstantReadNode/class-method branch above
+         already applies for `Array.foo`, rather than reaching the probe
+         below -- which only knows whether spinel can dispatch the call,
+         not what visibility the program gave it (K-028, kilau
+         docs/CATALOG.md). */
+      if (builtin_reopen_vis_class(c, rt, qm) >= 0) {
+        if (!foldable) return -1;
+        resolved = 1; yes = include_all;
+      }
       /* primitive/builtin receiver (String/Integer/Array/...): consult the
          analyze-time probe -- a synthesized `recv.<qm>` call whose inferred
          type says whether spinel can actually dispatch the method. This
@@ -29276,7 +29305,7 @@ int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const cha
          so it never drifts from what a real `recv.qm` would compile to. A
          poly/unknown receiver with no user protocol method falls through
          here (the builtin probe answer) rather than a possibly-wrong false. */
-      if (rt_probe_answer(c, id, &yes)) {
+      else if (rt_probe_answer(c, id, &yes)) {
         /* a class value that answers yes is the site's to emit: nil responds
            to nothing, so the answer is the value's non-nilness, not a fold */
         if (yes && rt == TY_CLASS && recv >= 0) return -1;
