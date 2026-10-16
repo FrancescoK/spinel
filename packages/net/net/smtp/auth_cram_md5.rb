@@ -20,14 +20,14 @@ class Net::SMTP
 
     # CRAM-MD5: [RFC2195]
     def cram_md5_response(secret, challenge)
-      tmp = digest_class::MD5.digest(cram_secret(secret, IMASK) + challenge)
-      digest_class::MD5.hexdigest(cram_secret(secret, OMASK) + tmp)
+      tmp = md5_class.digest(cram_secret(secret, IMASK) + challenge)
+      md5_class.hexdigest(cram_secret(secret, OMASK) + tmp)
     end
 
     CRAM_BUFSIZE = 64
 
     def cram_secret(secret, mask)
-      secret = digest_class::MD5.digest(secret) if secret.size > CRAM_BUFSIZE
+      secret = md5_class.digest(secret) if secret.size > CRAM_BUFSIZE
       buf = secret.ljust(CRAM_BUFSIZE, "\0")
       0.upto(buf.size - 1) do |i|
         buf[i] = (buf[i].ord ^ mask).chr
@@ -35,14 +35,14 @@ class Net::SMTP
       buf
     end
 
-    def digest_class
-      @digest_class ||= if defined?(OpenSSL::Digest)
-                          OpenSSL::Digest
-                        elsif defined?(::Digest)
-                          ::Digest
-                        else
-                          raise '"openssl" or "digest" library is required'
-                        end
+    def md5_class
+      @md5_class ||= if defined?(OpenSSL::Digest)
+                       OpenSSL::Digest::MD5
+                     elsif defined?(::Digest)
+                       ::Digest::MD5
+                     else
+                       raise '"openssl" or "digest" library is required'
+                     end
     end
   end
 end

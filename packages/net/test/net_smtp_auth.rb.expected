@@ -1,6 +1,8 @@
-[:plain, ["PLAIN", "LOGIN", "XOAUTH2"]]
-[:login, ["PLAIN", "LOGIN", "XOAUTH2"]]
-[:xoauth2, ["PLAIN", "LOGIN", "XOAUTH2"]]
+[:plain, ["PLAIN", "LOGIN", "XOAUTH2", "CRAM-MD5"]]
+[:login, ["PLAIN", "LOGIN", "XOAUTH2", "CRAM-MD5"]]
+[:xoauth2, ["PLAIN", "LOGIN", "XOAUTH2", "CRAM-MD5"]]
+[:cram_md5, ["PLAIN", "LOGIN", "XOAUTH2", "CRAM-MD5"]]
+:cram_md5_long_secret
 Net::SMTPAuthenticationError
 "535 5.7.8 bad credentials\n"
 "535"
@@ -23,6 +25,16 @@ EHLO client.example
 AUTH XOAUTH2 dXNlcj11c2VyAWF1dGg9QmVhcmVyIHNlY3JldAEB
 QUIT
 -- connection 4
+EHLO client.example
+AUTH CRAM-MD5
+  response user abb7de49c58da1416866bbc566b7e585
+QUIT
+-- connection 5
+EHLO client.example
+AUTH CRAM-MD5
+  response user 2088c27bd21c27713d32166396ad6c4b
+QUIT
+-- connection 6
 EHLO client.example
 AUTH LOGIN
   user dXNlcg==

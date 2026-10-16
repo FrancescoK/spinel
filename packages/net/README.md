@@ -18,14 +18,22 @@ ships:
 - License: Ruby's (`COPYING`) or the 2-clause BSD license (`BSDL`), both
   copied from those commits (the two gems ship the same files).
 
-They are unchanged except for one hunk at the end of `net/smtp.rb`: upstream
-loads the authenticators with `Dir.glob("#{__dir__}/smtp/auth_*.rb")` and a
-`require_relative` of each match, which a compiled program cannot do, since
-every require is resolved at compile time. Here the four are required by name,
-in the order the glob gives them.
+They are unchanged except for two hunks:
 
-To update, replace these files with a newer release's `lib/`, carry the hunk
+- At the end of `net/smtp.rb`, upstream loads the authenticators with
+  `Dir.glob("#{__dir__}/smtp/auth_*.rb")` and a `require_relative` of each
+  match, which a compiled program cannot do, since every require is resolved
+  at compile time. Here the four are required by name, in the order the glob
+  gives them.
+- In `net/smtp/auth_cram_md5.rb`, upstream picks `OpenSSL::Digest` or
+  `::Digest` at run time and names `MD5` under it (`digest_class::MD5`).
+  Both define an `MD5`, and Spinel resolves a constant under a receiver
+  known only at run time by its name alone, so here the method picks the MD5
+  class itself (`md5_class`).
+
+To update, replace these files with a newer release's `lib/`, carry the hunks
 above over, and update the commits.
 
 The `net_smtp_*` tests in `test/` run on demand, not in the gate:
-`make pkg-ondemand-test`.
+`make pkg-ondemand-test`. They talk to a plain-text server, so STARTTLS and
+SMTPS, which go through the `openssl` package, are not covered.
