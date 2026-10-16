@@ -556,6 +556,8 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       int body = nt_ref(nt, block, "body");
       int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
       TyKind nvt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
+      TyKind nx = block_next_value_ty(c, body);
+      if (nx != TY_UNKNOWN) nvt = nvt == TY_UNKNOWN ? nx : ty_unify(nvt, nx);
       TyKind kt = ty_hash_key(rt);
       TyKind r = ty_hash_of(kt, nvt);
       if (r != TY_UNKNOWN) { *out = r; return 1; }

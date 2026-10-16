@@ -1032,6 +1032,8 @@ int emit_transform_hash_expr(Compiler *c, int id, Buf *b) {
     }
   }
   TyKind bret = repr_of(c, bb[bn - 1]).as_ty;
+  TyKind nx = block_next_value_ty(c, body);
+  if (nx != TY_UNKNOWN) bret = bret == TY_UNKNOWN ? nx : ty_unify(bret, nx);
   Buf vb; memset(&vb, 0, sizeof vb);
   /* the block's value carries its nil into a result whose values may be nil:
      an oint-formed value is emitted as its oint, a boxed one unboxed with it */
