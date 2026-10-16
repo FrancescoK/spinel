@@ -1064,10 +1064,6 @@ XXX
       rescue Errno::EPIPE
         # pager terminated
       end
-      if Process.respond_to?(:fork) and false
-        IO.popen("-") {|f| f ? Process.exec(*args, in: f) : print.call($stdout)}
-        # unreachable
-      end
       IO.popen(*args, &print)
     else
       puts help
