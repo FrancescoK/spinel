@@ -2610,7 +2610,7 @@ static int sg_accessor_type(Compiler *c, int ci, const char *name, TyKind *out) 
   else {
     /* an accessor backed by the class-level ivar reads that slot's type;
        the alias table maps a renamed accessor onto it (#3776) */
-    rn = comp_resolve_alias(c, ci, name);
+    rn = comp_resolve_cm_alias_at(c, ci, name, NULL);
     if (!rn) rn = name;
     if (!comp_is_sg_reader(cls, rn)) return 0;
   }
@@ -5139,7 +5139,7 @@ static int cls_value_sg_accessor_any(Compiler *c, const char *name, int argc) {
   snprintf(base, sizeof base, "%.*s", setter ? nlen - 1 : nlen, name);
   for (int k = 0; k < c->nclasses; k++) {
     if (is_builtin_reopen(c->classes[k].name)) continue;
-    const char *rn = setter ? base : comp_resolve_alias(c, k, name);
+    const char *rn = setter ? base : comp_resolve_cm_alias_at(c, k, name, NULL);
     if (setter ? comp_is_sg_writer(&c->classes[k], base) : comp_is_sg_reader(&c->classes[k], rn ? rn : name))
       return 1;
   }

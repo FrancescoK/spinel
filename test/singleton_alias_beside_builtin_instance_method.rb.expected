@@ -1,0 +1,37 @@
+:inst_stamp
+[:inst_stamp, :inst_stamp]
+:inst_stamp2
+:inst_stamp3
+:inst_stamp4
+7
+:inst_stamp5
+8
+:inst_mk
+[:inst_mk, :inst_mk]
+:inst_mk
+[:inst_mk, :inst_mk]
+:inst_mk
+[:inst_stamp, :inst_stamp]
+:cls_mk
+:mk
+:mk
+:inst_stamp
+:mk
+:own_before
+:inst_y
+:own_z
+:own_after
+:own_z
+:inst
+:inst_y
+:inst_z
+:own_earlier
+:own_defmod
+:own_singmod
+:inst_a
+:cls_c
+:inst_b
+:cls_b
+[:inst_a, :inst_a]
+3
+1

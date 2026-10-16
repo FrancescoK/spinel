@@ -7784,7 +7784,7 @@ static int node_is_oint_asked(Compiler *c, int node) {
       }
       if (sgc >= 0 && an2 == 0 && comp_method_in_chain(c, sgc, nm, NULL) < 0) {
         ClassInfo *sgi = &c->classes[sgc];
-        const char *rn = comp_resolve_alias(c, sgc, nm);
+        const char *rn = comp_resolve_cm_alias_at(c, sgc, nm, NULL);
         if (!rn) rn = nm;
         if (comp_is_sg_reader(sgi, rn) && comp_is_sg_civ(sgi, rn)) {
           char ivb[300]; snprintf(ivb, sizeof ivb, "@%s", rn);

@@ -3885,8 +3885,10 @@ static int are_enclosing_class(Compiler *c, int n) {
 /* An alias binds for the whole program, because the method tables are static.
    Class-body code that runs between a `def a` and a later `alias a b` meets the
    def in CRuby and would meet the alias here, silently: a call of `a` made in the
-   class body before the alias is refused (#7690). */
-static void alias_refuse_early_call(Compiler *c, ClassInfo *cls, const char *nw, int alias_node) {
+   class body before the alias is refused (#7690). A singleton alias (cm)
+   rebinds a class method, so it meets the `def self.name` before it, and an
+   instance `def` of the name is none of its business. */
+static void alias_refuse_early_call(Compiler *c, ClassInfo *cls, const char *nw, int alias_node, int cm) {
   if (!nw || alias_node < 0 || !cls->name) return;
   const NodeTable *nt = c->nt;
   int cid = comp_class_index(c, cls->name);
@@ -3894,7 +3896,7 @@ static void alias_refuse_early_call(Compiler *c, ClassInfo *cls, const char *nw,
   int defn = -1;
   for (int si = 1; si < c->nscopes; si++) {
     Scope *sc = &c->scopes[si];
-    if (sc->class_id != cid || sc->is_cmethod || sc->is_proc_form || sc->def_node < 0 ||
+    if (sc->class_id != cid || !sc->is_cmethod != !cm || sc->is_proc_form || sc->def_node < 0 ||
         nt_kind(nt, sc->def_node) != NK_DefNode) continue;
     const char *dn = nt_str(nt, sc->def_node, "name");
     if (dn && sp_streq(dn, nw) && sc->def_node < alias_node && sc->def_node > defn) defn = sc->def_node;
@@ -3953,7 +3955,7 @@ static void alias_mark_sg(ClassInfo *cls, int s, int singleton) {
     if (cls->alias_node[i] == s) { cls->alias_sg[i] = 1; comp_class_shape_changed(); }
 }
 static void alias_register(Compiler *c, ClassInfo *cls, const char *nw, const char *od, int s, int singleton) {
-  alias_refuse_early_call(c, cls, nw, s);
+  alias_refuse_early_call(c, cls, nw, s, singleton);
   int cid = cls->name ? comp_class_index(c, cls->name) : -1;
   if (singleton && cid >= 0) {
     if (builtin_cmethod_known(cls->name, od) &&

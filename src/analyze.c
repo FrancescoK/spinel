@@ -35729,7 +35729,7 @@ static int sg_civ_reader_call(Compiler *c, int v) {
   }
   if (ci < 0) return 0;
   ClassInfo *cls = &c->classes[ci];
-  const char *rn = comp_resolve_alias(c, ci, nm);
+  const char *rn = comp_resolve_cm_alias_at(c, ci, nm, NULL);
   if (!rn) rn = nm;
   if (!comp_is_sg_reader(cls, rn) || !comp_is_sg_civ(cls, rn)) return 0;
   char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", rn);
