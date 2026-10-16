@@ -23705,8 +23705,33 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
    rows, split's Strings: share_node_runtime_elems)? The bang answers a new
    String the container never sees, where the box a holder made holds the
    String's handle (sp_box_str_new) and the bang answers that box. */
+/* (Not an element read out of a variable whose slot holds its Strings as
+   boxed handles, which the builtin's Array became where it was written,
+   `a = s.split`: the box the read answers is the slot's own element, and
+   the bang's box is that element.) */
+static int face_bang_elem_of_handle_slot(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0 || !container_elem_read_p(nt, recv)) return 0;
+  int x = unwrap_parens(c, nt_ref(nt, recv, "receiver"));
+  NodeKind xk = x >= 0 ? nt_kind(nt, x) : NK_NONE;
+  if (xk == NK_LocalVariableReadNode) {
+    const char *nm = nt_str(nt, x, "name");
+    Scope *sc = nm ? comp_scope_of(c, x) : NULL;
+    LocalVar *lv = sc ? scope_local(sc, nm) : NULL;
+    return lv && repr_of_slot(c, lv).elems_handle;
+  }
+  if (xk == NK_InstanceVariableReadNode) {
+    const char *nm = nt_str(nt, x, "name");
+    int cid = nm ? strbuf_ivar_owner(c, x) : -1;
+    int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
+    return iv >= 0 && repr_of_ivar(c, cid, iv).elems_handle;
+  }
+  return 0;
+}
 int face_bang_on_runtime_elems(Compiler *c, int v) {
-  return face_str_bang_call(c, v) && share_node_runtime_elems(c, unwrap_parens(c, nt_ref(c->nt, v, "receiver")));
+  if (!face_str_bang_call(c, v)) return 0;
+  int recv = unwrap_parens(c, nt_ref(c->nt, v, "receiver"));
+  return share_node_runtime_elems(c, recv) && !face_bang_elem_of_handle_slot(c, recv);
 }
 /* ...and is v a conditional (`||`, `&&`, `if`, `case`) with such a bang on
    an arm, which the handle face takes arm by arm? */
