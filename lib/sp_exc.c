@@ -1183,6 +1183,7 @@ const char *sp_exc_inspect(void *p) {
 }
 
 const char *(*sp_user_exc_to_s_fn)(sp_Exception *) = NULL;
+const char *(*sp_user_exc_message_fn)(sp_Exception *) = NULL;
 const char *sp_exc_to_s_text(sp_Exception *e) {
   return sp_user_exc_to_s_fn ? sp_user_exc_to_s_fn(e) : sp_exc_message(e);
 }
