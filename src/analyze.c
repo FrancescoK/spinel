@@ -2966,6 +2966,11 @@ static int ie_param_literals(Compiler *c, int blk, int cls) {
   return traced;
 }
 
+static int ie_builtin_recv(Compiler *c, int recv) {
+  TyKind t = infer_type(c, recv);
+  return t != TY_UNKNOWN && t != TY_POLY && t != TY_VOID && t != TY_CLASS && !ty_is_object(t);
+}
+
 static int ie_untraced_site(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int blk = nt_ref(nt, id, "block");
@@ -2977,11 +2982,12 @@ static int ie_untraced_site(Compiler *c, int id) {
     Scope *sc = comp_scope_of(c, x);
     const char *pn = nt_str(nt, x, "name");
     int params = sc && sc->def_node >= 0 ? nt_ref(nt, sc->def_node, "parameters") : -1;
-    if (!pn || (sc && sc->blk_param && sp_streq(sc->blk_param, pn)) || ie_block_body(c, blk) >= 0) return 0;
+    if (!pn || (sc && sc->blk_param && sp_streq(sc->blk_param, pn))) return 0;
+    if (ie_block_body(c, blk) >= 0) return ie_builtin_recv(c, nt_ref(nt, id, "receiver"));
     static const char *const lists[] = { "requireds", "optionals", "keywords" };
     for (int l = 0; l < 3 && params >= 0; l++) {
       int n = 0; const int *ps = nt_arr(nt, params, lists[l], &n);
-      for (int i = 0; i < n; i++) if (sp_streq(nt_str(nt, ps[i], "name"), pn)) return 0;
+      for (int i = 0; i < n; i++) if (sp_streq(nt_str(nt, ps[i], "name"), pn)) return ie_builtin_recv(c, nt_ref(nt, id, "receiver"));
     }
     return 1;
   }
@@ -3098,11 +3104,18 @@ static int ie_new_takes_block(Compiler *c, int recv) {
   return mi >= 0 && c->scopes[mi].blk_param;
 }
 
+static void ie_rself_mark_literals(Compiler *c);
 static void mark_ie_rebindable_literals(Compiler *c) {
   const NodeTable *nt = c->nt;
   int any = 0;
   NT_FOREACH_KIND(nt, NK_CallNode, id) if (ie_untraced_site(c, id)) { nt_node_set_int((NodeTable *)nt, id, "ie_usite", 1); any = 1; }
-  if (!any) return;
+  if (any) ie_rself_mark_literals(c);
+}
+
+static void ie_rself_mark_literals(Compiler *c) {
+  static int done;
+  const NodeTable *nt = c->nt;
+  if (done++) return;
   NT_FOREACH_KIND(nt, NK_LambdaNode, l) ie_rself_literal(c, l);
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     int blk = nt_ref(nt, id, "block"), r = nt_ref(nt, id, "receiver");
@@ -3135,6 +3148,7 @@ void build_ie_map(Compiler *c) {
   memset(g_ie_nonobj, 0, (size_t)g_ie_node_class_cap);
   int *pend = malloc(sizeof(int) * (size_t)nt->count);
   if (!pend) return;
+  int pend_n = nt->count;
   ie_forward_memo_reset();
   g_ief_ready = 0;
   for (int i = 0; i < nt->count; i++) g_ie_node_class[i] = pend[i] = -1;
@@ -3168,6 +3182,10 @@ void build_ie_map(Compiler *c) {
           (sp_streq(nm, "instance_eval") || sp_streq(nm, "instance_exec")) &&
           nt_kind(nt, blk) == NK_BlockNode)
         mark_ie_nonobj(c, blk);
+      if (cls == -1 && !pass && !nt_int(nt, id, "ie_usite", 0) && ie_untraced_site(c, id)) {
+        nt_node_set_int((NodeTable *)nt, id, "ie_usite", 1);
+        ie_rself_mark_literals(c);
+      }
       if (cls == -1) continue;
       if (ty_is_object(rt) && !sp_streq(nm, "instance_eval") && !sp_streq(nm, "instance_exec")) {
         /* not a direct instance_eval/exec: maybe a trampoline method on `cls`? */
@@ -3186,7 +3204,7 @@ void build_ie_map(Compiler *c) {
     if (pass) pend[body] = pend[body] == -1 || pend[body] == cls ? cls : -2 - id;
     mark_ie_subtree(c, body, pass ? pend[body] : cls);
   }
-  for (int i = 0; i < nt->count; i++) if (pend[i] != -1) mark_ie_subtree(c, i, pend[i]);
+  for (int i = 0; i < pend_n; i++) if (pend[i] != -1) mark_ie_subtree(c, i, pend[i]);
   for (int i = 0; i < ie_param_n; i++) mark_ie_subtree(c, ie_param_marks[i][0], ie_param_marks[i][1]);
   ie_param_n = 0;
   free(pend);
