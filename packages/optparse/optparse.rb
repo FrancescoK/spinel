@@ -1947,7 +1947,15 @@ XXX
   #
   private def visit(id, *args, &block) # :nodoc:
     @stack.reverse_each do |el|
-      el.__send__(id, *args, &block)
+      case id
+      when :search then el.search(*args, &block)
+      when :complete then el.complete(*args, &block)
+      when :summarize then el.summarize(*args, &block)
+      when :each_option then el.each_option(&block)
+      when :get_candidates then el.get_candidates(*args, &block)
+      when :add_banner then el.add_banner(*args)
+      when :compsys then el.compsys(*args, &block)
+      end
     end
     nil
   end
