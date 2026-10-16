@@ -2915,6 +2915,45 @@ static int ie_rself_name_selfish(Compiler *c, const char *nm) {
   return 0;
 }
 
+/* A call whose receiver is the block's self though no SelfNode spells it: a
+   receiverless call to a name only a class method answers, or a class body's
+   `self.m` / `m` the body desugar gave its class as the receiver. It rebinds
+   with the block's self, so it takes a `self.` receiver before marking. */
+static int ie_rself_cmethod_call(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, n) != NK_CallNode) return 0;
+  int r = nt_ref(nt, n, "receiver");
+  if (r >= 0) return nt_int(nt, n, "self_call", 0) &&
+                     (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode);
+  const char *nm = nt_str(nt, n, "name");
+  if (!nm || is_kernel_module_function(nm) || comp_method_index(c, nm) >= 0) return 0;
+  for (int s = 0; s < c->nscopes; s++)
+    if (c->scopes[s].name && c->scopes[s].class_id >= 0 && c->scopes[s].is_cmethod && sp_streq(c->scopes[s].name, nm)) return 1;
+  return 0;
+}
+
+static void ie_rself_give_self(Compiler *c, int n) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  if (n < 0) return;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_BlockNode || k == NK_LambdaNode) return;
+  if (ie_rself_cmethod_call(c, n)) {
+    int sn = nt_new_node(nt, "SelfNode");
+    if (sn >= 0) {
+      comp_grow_node_arrays(c);
+      c->nscope[sn] = c->nscope[n];
+      if (c->node_cbody && n < c->node_cap && sn < c->node_cap) c->node_cbody[sn] = c->node_cbody[n];
+      nt_node_set_ref(nt, n, "receiver", sn);
+      nt_node_set_int(nt, n, "vcall", 0);
+    }
+  }
+  for (int i = 0, nr = nt_num_refs(nt, n); i < nr; i++) ie_rself_give_self(c, nt_ref_at(nt, n, i));
+  for (int i = 0, na = nt_num_arrs(nt, n); i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) { ie_rself_give_self(c, ids[j]); ids = nt_arr_at(nt, n, i, &m); }
+  }
+}
+
 static int ie_rself_use(Compiler *c, int n, int nested) {
   const NodeTable *nt = c->nt;
   if (n < 0) return 0;
@@ -2925,6 +2964,7 @@ static int ie_rself_use(Compiler *c, int n, int nested) {
       (ty && !strncmp(ty, "InstanceVariable", 16))) return 2;
   if (k == NK_CallNode && nt_ref(nt, n, "receiver") < 0 && nt_str(nt, n, "name") &&
       ie_rself_name_selfish(c, nt_str(nt, n, "name"))) return 2;
+  if (ie_rself_cmethod_call(c, n)) return nested ? 2 : 1;
   int in = nested || k == NK_BlockNode || k == NK_LambdaNode, r = 0;
   for (int i = 0, nr = nt_num_refs(nt, n); i < nr; i++) r |= ie_rself_use(c, nt_ref_at(nt, n, i), in);
   for (int i = 0, na = nt_num_arrs(nt, n); i < na; i++) {
@@ -2955,6 +2995,7 @@ static void ie_rself_literal(Compiler *c, int lit) {
   if (body < 0 || !u) return;
   nt_node_set_int(nt, body, "ie_rself_lit", u & 2 ? 2 : 1);
   if (u & 2) return;
+  ie_rself_give_self(c, params); ie_rself_give_self(c, body);
   int at = ie_rself_mark(nt, params), bt = ie_rself_mark(nt, body);
   nt_node_set_int(nt, body, "ie_rself_at", (at >= 0 ? at : bt) + 1);
 }
@@ -9987,7 +10028,8 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
   {
     int srecv = nt_ref(nt, id, "receiver");
     if (nm && srecv >= 0 && nt_type(nt, srecv) &&
-        sp_streq(nt_type(nt, srecv), "SelfNode") && nm[0]) {
+        sp_streq(nt_type(nt, srecv), "SelfNode") && nm[0] &&
+        !nt_int(nt, srecv, "ie_rself", 0)) {   /* a rebindable block's self is whatever instance_exec binds */
       Scope *ssc = comp_scope_of(c, id);
       if (ssc && ssc->is_cmethod && ssc->class_id >= 0 &&
           comp_cmethod_in_chain(c, ssc->class_id, nm, NULL) >= 0) {

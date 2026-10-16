@@ -9269,7 +9269,7 @@ static void emit_proc_ie_self(Compiler *c, int ie_cls, int rself, int body, Buf 
   if (rself != 1) return;
   Buf rb; memset(&rb, 0, sizeof rb);
   g_ie_rself_on = 0;
-  emit_expr(c, (int)nt_int(c->nt, body, "ie_rself_at", 0) - 1, &rb);
+  emit_boxed(c, (int)nt_int(c->nt, body, "ie_rself_at", 0) - 1, &rb);
   buf_printf(pb, "    sp_RbVal _sp_rself = sp_ie_rself(%s); (void)_sp_rself;\n", rb.p ? rb.p : "sp_box_nil()");
   free(rb.p);
   g_ie_rself_on = 1;
