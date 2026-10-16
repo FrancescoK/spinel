@@ -393,7 +393,12 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         !comp_reader_in_chain(c, ty_object_class(rt), "hash", NULL) &&
         /* structs keep their dedicated value-based hash arm below */
         !c->classes[ty_object_class(rt)].is_struct))) {
+    /* The key is never nil, but a user #hash that may answer nil types every
+       boxed receiver's #hash as a nullable Integer, and the consumer of such
+       a call reads an oint: lift the key into one there. */
+    if (node_is_oint(c, id)) buf_puts(b, "sp_oint_of(");
     buf_puts(b, "sp_rbval_hash_key("); emit_boxed(c, recv, b); buf_puts(b, ")");
+    if (node_is_oint(c, id)) buf_puts(b, ")");
     return 1;
   }
 
