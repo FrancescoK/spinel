@@ -7339,15 +7339,14 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
   /* An empty `[]` argument carries no element type of its own and otherwise
      falls back to an IntArray, which mismatches a parameter typed from another
      call site (`P.new(deps: ["d1"])` then `P.new(deps: [])`). Build it at the
-     parameter's type instead, the way the ternary arms already do (#3359). */
-  if (provided >= 0 && ty_is_array(pt) && !ty_is_obj_array(pt) &&
-      nt_kind(c->nt, provided) == NK_ArrayNode) {
-    int en = 0; nt_arr(c->nt, provided, "elements", &en);
-    if (en == 0) {
-      const char *k = (pt == TY_POLY_ARRAY) ? "Poly" : array_kind(pt);
-      if (k) { buf_printf(out, "sp_%sArray_new()", k); return; }
-    }
-  }
+     parameter's type instead, the way the ternary arms already do (#3359). A
+     bare `Array.new` is as empty, an empty `{}` or `Hash.new` is the same for
+     a Hash parameter, and parentheses around any of them do not change it
+     (emit_empty_literal_as sees through them). One the call ran ahead of the
+     binding is its temp, below. */
+  if (provided >= 0 && (ty_is_array(pt) || pt == TY_STRH_ARRAY || ty_is_hash(pt)) &&
+      !arg_ran_first(provided, 0) && emit_empty_literal_as(c, provided, pt, out))
+    return;
   /* Byref string out-param: pass the caller's slot (const char**) so the
      callee's mutation lands in the caller's variable. A plain string local
      passes its address; an already-celled local (captured, or itself a byref

@@ -30497,6 +30497,8 @@ static void emit_call_body_ordinary(Compiler *c, int id, Buf *b) {
   if (emit_call_class_method_arms(c, id, b, nt, name, recv, argc, argv)) return;
   if (emit_call_regexp_class_arms(c, id, b, nt, name, recv, argc, argv)) return;
 
+  if (recv >= 0 && emit_call_untyped_array_arms(c, b, nt, name, recv, argc, comp_ntype(c, recv))) return;
+
   if (emit_call_class_value_arms(c, id, b, nt, name, recv, argc, argv)) return;
 
   if (emit_call_freeze_dup_arms(c, id, b, nt, name, recv, argc)) return;
@@ -30521,8 +30523,6 @@ static void emit_call_body_ordinary(Compiler *c, int id, Buf *b) {
   TyKind res = repr_of(c, id).as_ty;
 
   if (emit_call_regexp_arms(c, id, b, nt, name, recv, argc, argv, rt, a0)) return;
-
-  if (emit_call_untyped_array_arms(b, nt, name, recv, argc, rt)) return;
 
   if (emit_call_reflection_arms(c, id, b, nt, name, recv, argc, argv, rt)) return;
 

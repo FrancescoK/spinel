@@ -718,7 +718,9 @@ int subtree_has_side_effect(Compiler *c, int id) {
   if (sp_streq(ty, "SuperNode") || sp_streq(ty, "ForwardingSuperNode") ||
       sp_streq(ty, "YieldNode") || strstr(ty, "WriteNode"))
     return 1;
-  if (sp_streq(ty, "CallNode") && !call_is_scalar_op(c, id)) return 1;
+  /* a bare Array.new / Hash.new is as empty and as unobservable as the
+     literal `[]` / `{}`, which is no effect */
+  if (sp_streq(ty, "CallNode") && !call_is_scalar_op(c, id) && !node_is_empty_container(nt, id)) return 1;
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++)
     if (subtree_has_side_effect(c, nt_ref_at(nt, id, i))) return 1;

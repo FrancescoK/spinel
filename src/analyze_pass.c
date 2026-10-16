@@ -7593,23 +7593,18 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
        parameter that no other call site typed, as an (empty) poly array so
        the callee's array methods dispatch. Never during the fixpoint -- a
        concrete kind from another call site must win the unification. */
-    if (g_final_bind_pass && p->type == TY_UNKNOWN && at == TY_UNKNOWN &&
-        apty && sp_streq(apty, "ArrayNode")) {
-      int en0 = 0; nt_arr(nt, anode, "elements", &en0);
-      if (en0 == 0) { slot_rule(c, p, TY_POLY_ARRAY, anode, "an empty `[]` argument and no other call site typing it: the parameter is the untyped array"); changed = 1; continue; }
+    int empty_kind = at == TY_UNKNOWN && node_is_empty_container(nt, anode) ? an_empty_container_kind(c, anode) : 0;
+    if (g_final_bind_pass && p->type == TY_UNKNOWN && empty_kind == 1) {
+      slot_rule(c, p, TY_POLY_ARRAY, anode, "an empty `[]` argument and no other call site typing it: the parameter is the untyped array"); changed = 1; continue;
     }
     /* An empty `{}` / `[]` literal carries no type of its own, so it is skipped
        by the unification below. When ANOTHER call site typed the parameter as
        the other container, though, the two cannot share one slot: the empty
        literal still emits as its own kind and the C assignment is ill-typed.
        Widen to poly, which holds either. */
-    if (at == TY_UNKNOWN && apty && p->type != TY_UNKNOWN && p->type != TY_POLY) {
-      int cross = (sp_streq(apty, "HashNode") && !ty_is_hash(p->type)) ||
-                  (sp_streq(apty, "ArrayNode") && !ty_is_array(p->type));
-      if (cross) {
-        int en1 = 0; nt_arr(nt, anode, "elements", &en1);
-        if (en1 == 0) { slot_rule(c, p, TY_POLY, anode, "an empty literal argument of one container kind where another call site passed the other: only the boxed slot holds both"); changed = 1; continue; }
-      }
+    if (empty_kind && p->type != TY_UNKNOWN && p->type != TY_POLY &&
+        ((empty_kind == 2 && !ty_is_hash(p->type)) || (empty_kind == 1 && !ty_is_array(p->type)))) {
+      slot_rule(c, p, TY_POLY, anode, "an empty literal argument of one container kind where another call site passed the other: only the boxed slot holds both"); changed = 1; continue;
     }
     /* A void arg (`sink(always_raising_method)`) is nil-ish in value position:
        bind the param poly so it is declarable; the arg is emitted via

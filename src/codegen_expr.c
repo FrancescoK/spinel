@@ -1034,6 +1034,7 @@ static void emit_ternary_arm(Compiler *c, int nd, TyKind res, Buf *b) {
    arm is its oint form, a nil arm its nil */
 static void emit_ternary_arm_o(Compiler *c, int nd, TyKind res, int res_o, Buf *b) {
   const NodeTable *nt = c->nt;
+  if (node_is_empty_container(nt, nd)) nd = unwrap_parens(c, nd);   /* `([])` is `[]` */
   const char *bty = nt_type(nt, nd);
   if (res_o && oint_kind(res)) { emit_oint_expr(c, nd, res, b); return; }
   if (res == TY_POLY && repr_of(c, nd).kind != RK_BOXED) { emit_boxed(c, nd, b); return; }
@@ -4330,10 +4331,8 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
          the result's array kind as the unfolded pair gives it: emitted raw
          it was the default Integer array, stored into a poly array slot */
       int fempty = 0;
-      if (ln == 1 && ty_is_array(fres) && nt_kind(nt, lb[0]) == NK_ArrayNode) {
-        int fen = 0; nt_arr(nt, lb[0], "elements", &fen);
-        fempty = fen == 0;
-      }
+      if (ln == 1 && ty_is_array(fres) && node_is_empty_container(nt, lb[0]))
+        fempty = an_empty_container_kind(c, lb[0]) == 1;
       if (ln == 1) {
         if (fbox || fempty) emit_ternary_arm(c, lb[0], fres, b); else emit_expr(c, lb[0], b);
         return 1;
@@ -4463,11 +4462,7 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
          one. Running it for effect leaves the slot at its default, which
          is how `if c then [] end` answered nil where CRuby answers [].
          emit_ternary_arm already builds it against a result type. */
-      int elen = 0;
-      const char *ety = nt_type(nt, last_then);
-      int empty_lit = lt == TY_UNKNOWN && ety &&
-                      (sp_streq(ety, "ArrayNode") || sp_streq(ety, "HashNode")) &&
-                      (nt_arr(nt, last_then, "elements", &elen), elen == 0);
+      int empty_lit = lt == TY_UNKNOWN && node_is_empty_container(nt, last_then);
       if (empty_lit) {
         Buf le; memset(&le, 0, sizeof le);
         emit_ternary_arm(c, last_then, res, &le);

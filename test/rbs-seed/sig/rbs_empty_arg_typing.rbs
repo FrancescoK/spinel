@@ -1,0 +1,43 @@
+module RbsEmptyArgStr
+  def self.pos: (Array[String] a, Array[String] b) -> Integer
+  def self.req: (Array[String] a, b: Array[String]) -> Integer
+  def self.opt: (Array[String] a, ?b: Array[String]) -> Integer
+  def self.dflt: (Array[String] a, ?Array[String] b) -> Integer
+  def self.dflt_paren: (Array[String] a, ?Array[String] b) -> Integer
+  def self.dflt_new: (Array[String] a, ?Array[String] b) -> Integer
+  def self.kw_new: (Array[String] a, ?b: Array[String]) -> Integer
+end
+class RbsEmptyArgStrK
+  def initialize: (Array[String] a, ?Array[String] b, ?c: Array[String]) -> void
+  def show: () -> void
+end
+
+module RbsEmptyArgInt
+  def self.pos: (Array[Integer] a, Array[Integer] b) -> Integer
+  def self.req: (Array[Integer] a, b: Array[Integer]) -> Integer
+  def self.opt: (Array[Integer] a, ?b: Array[Integer]) -> Integer
+  def self.dflt: (Array[Integer] a, ?Array[Integer] b) -> Integer
+  def self.dflt_paren: (Array[Integer] a, ?Array[Integer] b) -> Integer
+  def self.dflt_new: (Array[Integer] a, ?Array[Integer] b) -> Integer
+  def self.kw_new: (Array[Integer] a, ?b: Array[Integer]) -> Integer
+end
+class RbsEmptyArgIntK
+  def initialize: (Array[Integer] a, ?Array[Integer] b, ?c: Array[Integer]) -> void
+  def show: () -> void
+end
+
+module RbsEmptyArgHash
+  def self.pos: (String a, Hash[String, Integer] h) -> Integer
+  def self.req: (String a, h: Hash[String, Integer]) -> Integer
+  def self.opt: (String a, ?h: Hash[String, Integer]) -> Integer
+  def self.dflt: (String a, ?Hash[String, Integer] h) -> Integer
+  def self.dflt_new: (String a, ?Hash[String, Integer] h) -> Integer
+end
+class RbsEmptyArgHashK
+  def initialize: (String a, ?Hash[String, Integer] h, ?g: Hash[String, Integer]) -> void
+  def show: () -> void
+end
+
+module RbsEmptyArgArm
+  def self.pos: (Array[String] a, Array[String] b) -> Integer
+end
