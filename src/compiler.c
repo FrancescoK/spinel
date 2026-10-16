@@ -1106,11 +1106,10 @@ static int chain_lookup(Compiler *c, int class_id, const char *name, int *def_cl
     return a[2 * class_id];
   }
   int start = class_id, mi = -1, dc = -1, bi = 0;
-  const char *rn = is_cm ? comp_resolve_cm_alias_at(c, class_id, name, &start)
-                         : resolve_alias_side(c, class_id, name, &start, &bi, 2);
+  const char *rn = resolve_alias_side(c, class_id, name, &start, &bi, is_cm ? 1 : 2);
   /* an alias that captured a builtin's method names no method of the
      program's, whatever the class defines of that name later */
-  if (bi && !is_cm && !sp_streq(rn, name)) start = -1;
+  if (bi && !sp_streq(rn, name)) start = -1;
   for (int cid = start; cid >= 0; cid = c->classes[cid].parent) {
     int m = is_cm ? comp_cmethod_in_class(c, cid, rn) : comp_method_in_class(c, cid, rn);
     if (m >= 0) { mi = m; dc = cid; break; }
@@ -1979,6 +1978,11 @@ const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, i
    reads the instance ones too. */
 const char *comp_resolve_cm_alias_at(Compiler *c, int class_id, const char *name, int *start_cls) {
   return resolve_alias_side(c, class_id, name, start_cls, NULL, 1);
+}
+/* ... and, for the builtin an alias captured (2: a builtin singleton method),
+   the name of it, as comp_resolve_alias_ex answers for the instance side */
+const char *comp_resolve_cm_alias_ex(Compiler *c, int class_id, const char *name, int *builtin) {
+  return resolve_alias_side(c, class_id, name, NULL, builtin, 1);
 }
 static const char *resolve_alias_side(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin, int sg) {
   if (builtin) *builtin = 0;

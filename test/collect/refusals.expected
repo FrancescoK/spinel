@@ -84,24 +84,26 @@ spinel: 1 refusal, nothing written
 == test/reject/builtin_reopen_bare_instance_method.rb [promote] rc=1
 spinel: test/reject/builtin_reopen_bare_instance_method.rb:6: unsupported call: node N (CallNode `instance_method`) recv=-/ty-1 argc=1 arg0ty8
 spinel: 1 refusal, nothing written
-== test/reject/builtin_singleton_alias_call.rb [default] rc=1
-spinel: test/reject/builtin_singleton_alias_call.rb:8: File.basename: calling an alias of a builtin singleton method is not supported; see docs/limitations.md
-spinel: 1 refusal, nothing written
-== test/reject/builtin_singleton_alias_call.rb [promote] rc=1
-spinel: test/reject/builtin_singleton_alias_call.rb:8: File.basename: calling an alias of a builtin singleton method is not supported; see docs/limitations.md
-spinel: 1 refusal, nothing written
+== test/reject/builtin_singleton_alias_call_unordered_block.rb [default] rc=1
+spinel: test/reject/builtin_singleton_alias_call_unordered_block.rb:3: Time.stamp: a call that may run before the singleton alias of a builtin's class method is made (written in a block, on the alias's line, or beside an alias that is not plain class-body code) is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_alias_call_unordered_block.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_alias_call_unordered_block.rb:3: Time.stamp: a call that may run before the singleton alias of a builtin's class method is made (written in a block, on the alias's line, or beside an alias that is not plain class-body code) is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_alias_call_unordered_conditional.rb [default] rc=1
+spinel: test/reject/builtin_singleton_alias_call_unordered_conditional.rb:5: Time.stamp: a call that may run before the singleton alias of a builtin's class method is made (written in a block, on the alias's line, or beside an alias that is not plain class-body code) is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_alias_call_unordered_conditional.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_alias_call_unordered_conditional.rb:5: Time.stamp: a call that may run before the singleton alias of a builtin's class method is made (written in a block, on the alias's line, or beside an alias that is not plain class-body code) is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_alias_call_unordered_proc.rb [default] rc=1
+spinel: test/reject/builtin_singleton_alias_call_unordered_proc.rb:3: Time.stamp: a call that may run before the singleton alias of a builtin's class method is made (written in a block, on the alias's line, or beside an alias that is not plain class-body code) is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_alias_call_unordered_proc.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_alias_call_unordered_proc.rb:3: Time.stamp: a call that may run before the singleton alias of a builtin's class method is made (written in a block, on the alias's line, or beside an alias that is not plain class-body code) is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_alias_call_unordered_same_line.rb [default] rc=1
+spinel: test/reject/builtin_singleton_alias_call_unordered_same_line.rb:3: Time.stamp: a call that may run before the singleton alias of a builtin's class method is made (written in a block, on the alias's line, or beside an alias that is not plain class-body code) is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_alias_call_unordered_same_line.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_alias_call_unordered_same_line.rb:3: Time.stamp: a call that may run before the singleton alias of a builtin's class method is made (written in a block, on the alias's line, or beside an alias that is not plain class-body code) is not supported; see docs/limitations.md
 == test/reject/builtin_singleton_alias_chain.rb [default] rc=1
 spinel: test/reject/builtin_singleton_alias_chain.rb:7: Time.at: rebinding a builtin singleton method captured by an alias is not supported; see docs/limitations.md
 == test/reject/builtin_singleton_alias_chain.rb [promote] rc=1
 spinel: test/reject/builtin_singleton_alias_chain.rb:7: Time.at: rebinding a builtin singleton method captured by an alias is not supported; see docs/limitations.md
-== test/reject/builtin_singleton_alias_method_redefine.rb [default] rc=1
-spinel: test/reject/builtin_singleton_alias_method_redefine.rb:4: File.basename: alias of a builtin singleton method that is later overridden is not supported; see docs/limitations.md
-== test/reject/builtin_singleton_alias_method_redefine.rb [promote] rc=1
-spinel: test/reject/builtin_singleton_alias_method_redefine.rb:4: File.basename: alias of a builtin singleton method that is later overridden is not supported; see docs/limitations.md
-== test/reject/builtin_singleton_alias_redefine.rb [default] rc=1
-spinel: test/reject/builtin_singleton_alias_redefine.rb:5: File.basename: alias of a builtin singleton method that is later overridden is not supported; see docs/limitations.md
-== test/reject/builtin_singleton_alias_redefine.rb [promote] rc=1
-spinel: test/reject/builtin_singleton_alias_redefine.rb:5: File.basename: alias of a builtin singleton method that is later overridden is not supported; see docs/limitations.md
 == test/reject/builtin_singleton_kernel_alias.rb [default] rc=1
 spinel: test/reject/builtin_singleton_kernel_alias.rb:5: Kernel.sleep: alias of a builtin singleton method that is later overridden is not supported; see docs/limitations.md
 == test/reject/builtin_singleton_kernel_alias.rb [promote] rc=1

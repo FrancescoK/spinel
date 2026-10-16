@@ -2479,6 +2479,9 @@ static int yield_recv_builtin_every_site(Compiler *c, int call) {
 }
 
 TyKind infer_call(Compiler *c, int id) {
+  /* a receiver that folded to a constant after the early rewrite of a
+     singleton alias of a builtin's class method (`k = Integer; k.root(25)`) */
+  if (c->has_cm_builtin_alias && !an_pure_reads && nt_ref(c->nt, id, "receiver") >= 0) rewrite_builtin_cm_alias_call(c, id);
   /* a builtin call a desugar built (desugar_builtin, beside builtin_only)
      answers what the builtin alone answers, as it is emitted: a reopened
      class's own method of the name is no candidate */
