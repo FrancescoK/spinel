@@ -1618,6 +1618,12 @@ int poly_cls_value_cands(Compiler *c, int id, const char *name, int argc, const 
        candidate it can drop; the walk is memoized per call. */
     if (!poly_cls_value_reaches(c, id, k)) continue;
     int kmi = cc8[ki].mi;
+    /* nor a class no box can hold (a module the program only calls), which
+       the call's type leaves out too (share_target_reachable, in
+       an_class_concrete): with a Class value the walk cannot name in the
+       receiver (`1.class`, a Struct.new), Shellwords.split's arm put its
+       Array into the slot typed for String#split's */
+    if (!share_target_reachable(c, id, kmi)) continue;
     /* a yielding candidate is called through its proc form (#3399) */
     int kpf = scope_proc_form_of(c, kmi);
     if (kpf >= 0 && !proc_form_live(c, kpf)) kpf = -1;
