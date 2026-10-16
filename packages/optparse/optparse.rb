@@ -2306,7 +2306,7 @@ XXX
       "#{reason}: #{args.join(' ')}#{additional[@arg0] if additional}"
     end
 
-    alias to_s message
+    def to_s; message; end
   end
 
   #
