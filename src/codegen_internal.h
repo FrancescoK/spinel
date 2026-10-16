@@ -2256,6 +2256,19 @@ int emit_op_fiber_transfer(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_fiber_raise(Compiler *c, const BopCtx *x, Buf *b);
 /* Complex and Rational row emitters (codegen_call_numeric.c) */
 int emit_op_rational_round(Compiler *c, const BopCtx *x, Buf *b);
+/* Method and Proc row emitters (codegen_call_method.c) */
+int emit_op_method_unbind(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_method_super_method(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_method_bind(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_method_to_proc(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_method_original_name(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_method_source_location(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_method_parameters(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_method_owner(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_method_receiver(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_method_arity(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_proc_parameters(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_proc_source_location(Compiler *c, const BopCtx *x, Buf *b);
 /* String row emitters (codegen_call_recv.c) */
 int emit_op_str_set_n(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_str_affix_any(Compiler *c, const BopCtx *x, Buf *b);
