@@ -578,6 +578,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       /* (a shift count saturates instead: sp_bigint_shift_count) */
       buf_puts(b, is_shift ? "sp_bigint_shift_count(" : "sp_bigint_to_int("); emit_expr(c, argv[0], b); buf_puts(b, ")");
     }
+    else if (at0 == TY_UNKNOWN || at0 == TY_VOID) emit_int_expr(c, argv[0], b);
     else emit_expr(c, argv[0], b);
     if (shl_neg_safe) buf_puts(b, ")");
     buf_puts(b, ")");
