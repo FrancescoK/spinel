@@ -6179,6 +6179,14 @@ void resolve_parents(Compiler *c) {
   const NodeTable *nt = c->nt;
   for (int i = 0; i < c->nclasses; i++) {
     int sc = nt_ref(nt, c->classes[i].def_node, "superclass");
+    /* `class R < Options.new(:a)` / `R = Options.new(:a)`: the Struct.new
+       class's parent is Options (#9292) */
+    const char *spn = c->classes[i].def_node >= 0 ? nt_str(nt, c->classes[i].def_node, "struct_parent") : NULL;
+    if (spn) {
+      int p = comp_class_index(c, spn);
+      if (p >= 0 && p != i) { c->classes[i].parent = p; comp_class_shape_changed(); }
+      continue;
+    }
     if (sc < 0) continue;
     const char *sty = nt_type(nt, sc);
     /* A module-qualified superclass (`class Child < M::Handler`) is a
@@ -6832,7 +6840,16 @@ void register_includes(Compiler *c) {
      like an include into the root of each record class (a subclass reaches
      it through its parent). The class's own methods still win. */
   for (int ci = 0; ci < c->nclasses; ci++) {
-    if (!c->classes[ci].is_struct || c->classes[ci].parent >= 0) continue;
+    if (!c->classes[ci].is_struct) continue;
+    int par = c->classes[ci].parent;
+    if (par >= 0 && c->classes[par].is_struct) continue;
+    /* the Struct.new class below a class of the program that is a Struct
+       (#9292): what that class and the classes up to Struct define is
+       answered with this class's members, as a reopening of Struct is */
+    for (int k = par, g = 0; k >= 0 && g < 64; k = c->classes[k].parent, g++) {
+      include_module_methods(c, ci, k);
+      if (k == c->classes[k].parent) break;
+    }
     int base = comp_class_index(c, c->classes[ci].is_data ? "Data" : "Struct");
     if (base >= 0 && base != ci && !c->classes[base].is_struct)
       include_module_methods(c, ci, base);

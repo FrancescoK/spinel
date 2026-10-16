@@ -183,6 +183,17 @@ At top level or in a class body outside a method, loop or block, omitting
 the block with a constant superclass is equivalent to an empty block.
 No-block calls in a method, loop or block retain their existing handling;
 this lowering does not give them fresh class identity on each evaluation. A local holding a class is still not a supported superclass expression.
+
+Besides `Class.new(Constant)`, a superclass written as a call may be
+`Struct.new(...)`, `Data.define(...)`, or the `new` of a Struct subclass of
+the program (`class RetryOptions < Options.new(:max, :interval)`, or
+`RetryOptions = Options.new(:max, :interval)`, after `class Options < Struct`,
+where no class from Options up to Struct defines its own `new`): the class is
+a Struct with those members below Options, and Options' methods answer with
+its members. As with `class S < Struct.new(:a)`, its `superclass` and
+`ancestors` are refused, since no class object stands for the anonymous
+Struct between. Any other call, such as a class method that builds the class
+at run time (`class Logger < Filter[debug: 0, info: 1]`), is refused.
 For example, the first assignment works, but the second is unsupported:
 
 ```ruby

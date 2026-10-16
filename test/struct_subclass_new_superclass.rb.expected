@@ -1,0 +1,33 @@
+2
+0.5
+[[:max, 2], [:interval, 0.5]]
+3
+true
+true
+true
+RetryOptions
+#<struct RetryOptions max=2, interval=0.5>
+60
+[[:timeout, nil], [:open_timeout, 5]]
+[[:timeout, 10], [:open_timeout, 5]]
+false
+true
+"ssl SSLOptions({verify: false, ca_file: \"ca.pem\"})"
+[[:verify, false], [:ca_file, "ca.pem"]]
+[[:a, 1], [:b, 2]]
+"KwOptions({a: 1, b: 2})"
+:sub
+[[:timeout, 3], [:open_timeout, 4]]
+true
+true
+[[:uri, "http://proxy"], [:user, "me"]]
+true
+[[:uri, "u"], [:user, nil]]
+["RetryOptions", 2, true]
+["RequestOptions", 2, true]
+["SSLOptions", 2, true]
+["KwOptions", 2, true]
+["SubRequest", 2, true]
+["ProxyOptions", 2, true]
+[[:verify, nil], [:ca_file, nil]]
+[:timeout, :open_timeout]

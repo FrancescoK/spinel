@@ -429,9 +429,9 @@ spinel: test/reject/class_subclasses_monitor.rb:5: class A::Monitor < Monitor: s
 == test/reject/class_subclasses_monitor.rb [promote] rc=1
 spinel: test/reject/class_subclasses_monitor.rb:5: class A::Monitor < Monitor: subclassing Monitor is not supported yet (a subclass would answer differently from CRuby); wrap a Monitor in an instance variable instead
 == test/reject/class_superclass_method_call.rb [default] rc=1
-spinel: test/reject/class_superclass_method_call.rb:10: unsupported superclass expression (a call other than Struct.new, Data.define or a blockless Class.new(Constant)): write the superclass as a constant
+spinel: test/reject/class_superclass_method_call.rb:10: unsupported superclass expression (a call other than Struct.new, Data.define, a Struct subclass's new or a blockless Class.new(Constant)): write the superclass as a constant
 == test/reject/class_superclass_method_call.rb [promote] rc=1
-spinel: test/reject/class_superclass_method_call.rb:10: unsupported superclass expression (a call other than Struct.new, Data.define or a blockless Class.new(Constant)): write the superclass as a constant
+spinel: test/reject/class_superclass_method_call.rb:10: unsupported superclass expression (a call other than Struct.new, Data.define, a Struct subclass's new or a blockless Class.new(Constant)): write the superclass as a constant
 == test/reject/class_then_module.rb [default] rc=1
 spinel: test/reject/class_then_module.rb:6: Thing is not a module (the first declaration, at line 3, is a class)
 == test/reject/class_then_module.rb [promote] rc=1
@@ -1926,6 +1926,10 @@ spinel: 1 refusal, nothing written
 == test/reject/struct_member_block_param_store.rb [promote] rc=1
 spinel: test/reject/struct_member_block_param_store.rb:6: a String variable is stored into a Struct member or through an attribute writer into an instance variable that is mutated in place through another name (a String is not yet shared by reference through this variable). Store a String no variable keeps, or mutate it through the variable.
 spinel: 1 refusal, nothing written
+== test/reject/struct_subclass_own_new_superclass.rb [default] rc=1
+spinel: test/reject/struct_subclass_own_new_superclass.rb:7: unsupported superclass expression (a call other than Struct.new, Data.define, a Struct subclass's new or a blockless Class.new(Constant)): write the superclass as a constant
+== test/reject/struct_subclass_own_new_superclass.rb [promote] rc=1
+spinel: test/reject/struct_subclass_own_new_superclass.rb:7: unsupported superclass expression (a call other than Struct.new, Data.define, a Struct subclass's new or a blockless Class.new(Constant)): write the superclass as a constant
 == test/reject/subclass_array_builtin_alias_recv.rb [default] rc=1
 spinel: test/reject/subclass_array_builtin_alias_recv.rb:11: calling `raw_size`, an alias of Array#size in Log, on a receiver is not supported yet (it would run the class's own `size`); call it without a receiver inside the class
 == test/reject/subclass_array_builtin_alias_recv.rb [promote] rc=1

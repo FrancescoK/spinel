@@ -43730,6 +43730,48 @@ static void desugar_explicit_initialize_calls(Compiler *c) {
   }
 }
 
+/* Does constant `k` name a class of the program whose chain of superclass
+   constants, through the program's own classes, reaches the builtin Struct,
+   none of them defining a `new` of its own (#9292)? Its `new(:a, :b)` makes
+   a Struct class below it, as Struct.new does below Struct. */
+static int struct_subclass_maker(const NodeTable *nt, const char *k, int depth) {
+  if (!k || depth > 16 || sp_streq(k, "Struct")) return 0;
+  int found = 0;
+  NT_FOREACH_KIND(nt, NK_ClassNode, id) {
+    int cp = nt_ref(nt, id, "constant_path");
+    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (!cn || !sp_streq(cn, k)) continue;
+    int sc = nt_ref(nt, id, "superclass");
+    if (sc >= 0) {
+      NodeKind sk = nt_kind(nt, sc);
+      if (sk != NK_ConstantReadNode && sk != NK_ConstantPathNode) return 0;
+      const char *sn = nt_str(nt, sc, "name");
+      if (!sn || !(sp_streq(sn, "Struct") || struct_subclass_maker(nt, sn, depth + 1))) return 0;
+      found = 1;
+    }
+    /* `def self.new` / `class << self; def new` in a body of k */
+    int body = nt_ref(nt, id, "body"), bn = 0;
+    const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+    for (int j = 0; j < bn; j++) {
+      int st = bb[j];
+      if (nt_kind(nt, st) == NK_DefNode && sp_streq(nt_str(nt, st, "name"), "new") && nt_ref(nt, st, "receiver") >= 0) return 0;
+      if (nt_kind(nt, st) == NK_SingletonClassNode) {
+        int sb = nt_ref(nt, st, "body"), sn2 = 0;
+        const int *ss = sb >= 0 && nt_kind(nt, sb) == NK_StatementsNode ? nt_arr(nt, sb, "body", &sn2) : NULL;
+        for (int q = 0; q < sn2; q++)
+          if (nt_kind(nt, ss[q]) == NK_DefNode && sp_streq(nt_str(nt, ss[q], "name"), "new")) return 0;
+      }
+    }
+  }
+  /* `def K.new` anywhere */
+  NT_FOREACH_KIND(nt, NK_DefNode, id) {
+    int rv = nt_ref(nt, id, "receiver");
+    if (rv >= 0 && nt_kind(nt, rv) == NK_ConstantReadNode && sp_streq(nt_str(nt, rv, "name"), k) &&
+        sp_streq(nt_str(nt, id, "name"), "new")) return 0;
+  }
+  return found;
+}
+
 static void an_phase_desugar_register(Compiler *c) {
   comp_poly_candidates_reset();
   comp_descendants_reset();
@@ -43873,6 +43915,29 @@ static void an_phase_desugar_register(Compiler *c) {
       }
     }
   }
+  /* `RetryOptions = Options.new(:max, :interval)` where Options < Struct:
+     the Struct.new class below Options, as in superclass position below */
+  {
+    NodeTable *ntc = (NodeTable *)c->nt;
+    int n0 = ntc->count;
+    for (int id = 0; id < n0; id++) {
+      if (nt_kind(ntc, id) != NK_ConstantWriteNode) continue;
+      int v = nt_ref(ntc, id, "value");
+      if (v < 0 || nt_kind(ntc, v) != NK_CallNode || !sp_streq(nt_str(ntc, v, "name"), "new")) continue;
+      int rv = nt_ref(ntc, v, "receiver");
+      if (rv < 0 || (nt_kind(ntc, rv) != NK_ConstantReadNode && nt_kind(ntc, rv) != NK_ConstantPathNode)) continue;
+      if (!struct_subclass_maker(ntc, nt_str(ntc, rv, "name"), 0)) continue;
+      char kbuf[256];
+      snprintf(kbuf, sizeof kbuf, "%s", nt_str(ntc, rv, "name"));
+      int st = nt_new_node(ntc, "ConstantReadNode");
+      if (st < 0) continue;
+      nt_node_set_str(ntc, st, "name", "Struct");
+      comp_grow_node_arrays(c);
+      c->nscope[st] = c->nscope[rv];
+      nt_node_set_ref(ntc, v, "receiver", st);
+      nt_node_set_str(ntc, id, "struct_parent", kbuf);
+    }
+  }
   {
     NodeTable *ntc = (NodeTable *)c->nt;
     for (int id = 0; id < ntc->count; id++) {
@@ -43886,6 +43951,23 @@ static void an_phase_desugar_register(Compiler *c) {
         if (is_struct_call(c, sc)) continue;
         int rv = nt_ref(ntc, sc, "receiver");
         const char *mn = nt_str(ntc, sc, "name");
+        /* `class RetryOptions < Options.new(:max, :interval)` where Options <
+           Struct: the Struct.new class below Options, which becomes its
+           parent (#9292) */
+        if (rv >= 0 && (nt_kind(ntc, rv) == NK_ConstantReadNode || nt_kind(ntc, rv) == NK_ConstantPathNode) &&
+            mn && sp_streq(mn, "new") && struct_subclass_maker(ntc, nt_str(ntc, rv, "name"), 0)) {
+          char kbuf[256];
+          snprintf(kbuf, sizeof kbuf, "%s", nt_str(ntc, rv, "name"));
+          int st = nt_new_node(ntc, "ConstantReadNode");
+          if (st >= 0) {
+            nt_node_set_str(ntc, st, "name", "Struct");
+            comp_grow_node_arrays(c);
+            c->nscope[st] = c->nscope[rv];
+            nt_node_set_ref(ntc, sc, "receiver", st);
+            nt_node_set_str(ntc, id, "struct_parent", kbuf);
+            continue;
+          }
+        }
         int ca = nt_ref(ntc, sc, "arguments"), ac = 0;
         const int *av = ca >= 0 ? nt_arr(ntc, ca, "arguments", &ac) : NULL;
         if (rv >= 0 && nt_kind(ntc, rv) == NK_ConstantReadNode &&
@@ -43901,7 +43983,7 @@ static void an_phase_desugar_register(Compiler *c) {
             continue;
           }
         }
-        what = "a call other than Struct.new, Data.define or a blockless Class.new(Constant)";
+        what = "a call other than Struct.new, Data.define, a Struct subclass's new or a blockless Class.new(Constant)";
       }
       int ln = (int)nt_int(ntc, id, "node_line", 0);
       const char *file = nt_file_path(ntc, (int)nt_int(ntc, id, "node_file", 0));
