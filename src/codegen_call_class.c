@@ -2980,6 +2980,12 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
 
   if (recv >= 0 && sp_streq(name, "new") && self_class_static_ci(c, recv) >= 0) {
     int cid = self_class_static_ci(c, recv);
+    /* a Struct's `self.class.new(*a)` or keywords: spread and bound as
+       `S.new(*a)` is, where each was passed as one argument */
+    if (c->classes[cid].is_struct && comp_method_in_chain(c, cid, "initialize", NULL) < 0 &&
+        (call_has_splat_arg(nt, argv, argc) || (argc >= 1 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode)) &&
+        emit_struct_new_call(c, id, cid, argc, argv, b))
+      return 1;
     buf_printf(b, "sp_%s_new(", c->classes[cid].c_name);
     /* the arguments converted to initialize's parameter types, as
        `V.new(...)` does: an `x.to_i` narrowed to sp_int passed raw into a
