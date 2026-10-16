@@ -1,0 +1,6 @@
+#<MatchData "12" 1:"12">
+:miss
+[:mapped, "\\A(\\d+)"]
+#<MatchData "b">
+true
+[:mapped, "b"]

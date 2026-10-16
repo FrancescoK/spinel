@@ -330,6 +330,9 @@ no_gsub_enum:
       buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
       return 1;
     }
+    /* a program class answers match itself: the boxed dispatch has its arm,
+       and the String one beside it, as for match? above */
+    if (are >= 0 && sp_streq(name, "match") && rpoly && poly_name_user_claimed(c, name, argc)) return 0;
     if (are >= 0 && sp_streq(name, "match") && nt_ref(nt, id, "block") >= 0) {
       /* match(re) { |m| body }: yield the MatchData on a hit, evaluate to the
          block's value; nil (block not run) on a miss */
