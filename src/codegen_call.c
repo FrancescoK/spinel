@@ -1617,24 +1617,21 @@ int poly_cls_value_cands(Compiler *c, int id, const char *name, int argc, const 
        method's answer into a slot typed for the others. Asked of a
        candidate it can drop; the walk is memoized per call. */
     if (!poly_cls_value_reaches(c, id, k)) continue;
-    /* nor a class no box can hold, one the program only calls by name
-       (comp_class_may_be_value): the analysis leaves its answer out of the
-       call's type (share_target_reachable), so its arm would put that answer
-       into a slot typed for the others -- Shellwords.split beside a String's
-       split in a lambda's parameter. A builtin's reopening is not one: a
-       reopened Class's methods are every class value's (`class Class; def
-       descendants`), whatever its own constant is read as) */
-    const char *kn = c->classes[k].name;
-    size_t kl = kn ? strlen(kn) : 0;
-    int reopen = kl > 8 && strcmp(kn + kl - 8, "__reopen") == 0;
-    if (!reopen && !comp_class_may_be_value(c, k)) continue;
     int kmi = cc8[ki].mi;
-    /* nor a class no box can hold (a module the program only calls), which
-       the call's type leaves out too (share_target_reachable, in
-       an_class_concrete): with a Class value the walk cannot name in the
-       receiver (`1.class`, a Struct.new), Shellwords.split's arm put its
-       Array into the slot typed for String#split's */
-    if (!reopen && !share_target_reachable(c, id, kmi)) continue;
+    /* nor a module's own `def self.x` when no box can hold the module, one
+       the program only calls by name (comp_class_may_be_value), or no box
+       reaches the method (share_target_reachable): the analysis leaves its
+       answer out of the call's type (an_class_concrete), so its arm would put
+       that answer into a slot typed for the others -- Shellwords.split beside
+       a String's split in a lambda's parameter, or beside a Class value the
+       walk cannot name (`1.class`, a Struct.new). A class keeps its arms, and
+       so does a reopened builtin (`class Class`, registered as Class__reopen)
+       or a method copied in from elsewhere (a module mixed into Class):
+       every class answers those. */
+    int own_module_cmethod = kmi >= 0 && kmi < c->nscopes && c->scopes[kmi].is_cmethod &&
+                             c->scopes[kmi].class_id == k && !c->scopes[kmi].origin_module_ci &&
+                             !strstr(c->classes[k].name, "__reopen") && comp_class_is_module(c, &c->classes[k]);
+    if (own_module_cmethod && (!comp_class_may_be_value(c, k) || !share_target_reachable(c, id, kmi))) continue;
     /* a yielding candidate is called through its proc form (#3399) */
     int kpf = scope_proc_form_of(c, kmi);
     if (kpf >= 0 && !proc_form_live(c, kpf)) kpf = -1;
