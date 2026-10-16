@@ -19317,7 +19317,9 @@ static void refuse_callee_container_store(Compiler *c, int l, int a) {
   ShareRoute q = share_route(l, l, 0);
   q.to = a;
   q.to_elems = 1;
-  q.carry = l;
+  /* (a frozen String, a literal's, is its own handle: no change reaches
+     it through any name, as the plan's SPK_FROZEN) */
+  q.carry = c->share_strings && share_frozen_string(c, l) ? SHARE_CARRY_NONE : l;
   if (!share_route_defer(c, &q, msg)) unsupported_feature(c, l, msg);
 }
 static void refuse_callee_container_stores(Compiler *c, const char *vn, Scope *vs) {

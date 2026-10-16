@@ -1,0 +1,4 @@
+{"id" => "70", "x" => "y"}
+true
+FrozenError
+{"id" => "70", "x" => "y"}
