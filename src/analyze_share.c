@@ -2945,6 +2945,7 @@ static int sh_freeze_recv_assign(const Compiler *c, int n, int depth) {
   }
 }
 
+static int sh_uplus_copies(Compiler *c, int n);
 static int sh_call(ShareFacts *F, Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, n, "name");
@@ -3389,6 +3390,13 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   if (rt == TY_STR_RANGE && blk < 0 && c->ntype[n] == TY_STR_ARRAY && !is_minmax_pair(name) &&
       !share_builtin_overridden(c, "Range", name))
     return sh_builtin(F, c, n, BSH_PURE, rv, blk, 0);
+  /* `+` of a builtin String constant or of a freeze's answer (frozen,
+     sh_uplus_copies) is a new String, as `+"lit"` is, not its receiver:
+     share_value_fresh says the same. Taken as its receiver, a change to the copy marked the constant's
+     class changed, and a conditional reading the constant was refused. */
+  if (name && is_unary_plus(name) && blk < 0 && call_plain_argc(c, n) == 0 && !sh_has_targets(c, n) &&
+      sh_uplus_copies(c, nt_ref(nt, n, "receiver")))
+    return -1;
   TyKind fam = sh_family(rt);
   /* an iterator that keeps none of its block's values drops the block's
      own: a call there hands its method's value to no caller. (An
@@ -5622,6 +5630,17 @@ int share_frozen_literal(Compiler *c, int n) {
 /* share.h: is node n a frozen String, a literal (share_frozen_literal) or
    a read of a builtin String constant no constant of the program's own
    shadows (is_engine_string_const)? */
+/* Is unary `+` of n a new String: n a builtin String constant
+   (share_frozen_string), or what the builtin freeze answers, frozen
+   whatever its receiver (`+RUBY_ENGINE.freeze`, `+s.freeze`)? */
+static int sh_uplus_copies(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  int u = an_unparen(nt, n);
+  if (u >= 0 && nt_kind(nt, u) == NK_CallNode && is_freeze_name(nt_str(nt, u, "name")) && call_plain_argc(c, u) == 0 &&
+      nt_ref(nt, u, "receiver") >= 0 && nt_ref(nt, u, "block") < 0 && !sh_has_targets(c, u))
+    return 1;
+  return share_frozen_string(c, n);
+}
 int share_frozen_string(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   int u = an_unparen(nt, n);
@@ -5677,7 +5696,7 @@ int share_value_fresh(Compiler *c, int n, int depth) {
       return share_value_fresh(c, rcv, depth + 1);
     /* `+` of a frozen String (a builtin String constant, share_frozen_string)
        is a new String, as `+"lit"` is */
-    if (is_unary_plus(cn) && call_plain_argc(c, n) == 0 && share_frozen_string(c, rcv)) return 1;
+    if (is_unary_plus(cn) && call_plain_argc(c, n) == 0 && sh_uplus_copies(c, rcv)) return 1;
     if (bop_share_self_answer(cn, 0)) return share_value_fresh(c, rcv, depth + 1);
     /* a proc, a lambda or a Method the walk bounds to literals */
     if (is_call_alias(cn) && sh_call_fresh(c, n, depth)) return 1;
