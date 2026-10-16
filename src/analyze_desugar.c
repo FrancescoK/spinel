@@ -9653,6 +9653,7 @@ static int fwd_rest_callee_pass(Compiler *c, int wait) {
        passed, and a splat into it -- from a boxed receiver's dispatch or a
        direct `m(*args)` -- had no parameter to land in. */
     if (ok && !ncalls && !nfwd_args) {
+      int pbase = nt->count;
       int rp = fwd_new_node_like(nt, pn, "RestParameterNode");
       int kp = fwd_new_node_like(nt, pn, "KeywordRestParameterNode");
       int bp = fwd_new_node_like(nt, pn, "BlockParameterNode");
@@ -9660,6 +9661,9 @@ static int fwd_rest_callee_pass(Compiler *c, int wait) {
       nt_node_set_ref(nt, pn, "rest", rp);
       nt_node_set_ref(nt, pn, "keyword_rest", kp);
       nt_node_set_ref(nt, pn, "block", bp);
+      /* the per-node arrays grow over the new parameters, as below */
+      comp_grow_node_arrays(c);
+      for (int j = pbase; j < nt->count; j++) c->nscope[j] = c->nscope[def];
       changed = 1;
       continue;
     }
