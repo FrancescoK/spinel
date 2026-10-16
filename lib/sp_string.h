@@ -301,6 +301,9 @@ static inline sp_RbVal sp_box_str_new(const char *v) {
   if (v) {
     unsigned char m = ((const unsigned char *)v)[-1];
     if (m == 0xfe || m == 0xfc) return sp_box_obj(sp_String_new_fresh(v), SP_BUILTIN_STRBUF);
+    /* the runtime's empty answer is static, but stands for the new empty
+       String the call made (`"" * 2`): nil.to_s's frozen one is not this */
+    if (v == sp_str_empty) return sp_box_obj(sp_String_new_fresh(v), SP_BUILTIN_STRBUF);
   }
 #endif
   return sp_box_str(v);
