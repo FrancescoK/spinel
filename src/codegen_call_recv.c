@@ -13956,6 +13956,23 @@ static int face_srange_sym_value(Compiler *c, int id, int t, const char *call, T
   }
   return 0;
 }
+/* A Range argument that indexes the call's receiver (index_of) takes its
+   kind from the receiver's: boxed beside a boxed receiver, an Integer Range
+   under an Array or String face. Each such argument is viewed as its type
+   under the face, so the arm's row and emitter read the Range the face
+   indexes with. Answers how many views it opened. */
+static int face_view_index_ranges(Compiler *c, int id, int *toks, int cap) {
+  int argc, n = 0;
+  const int *argv = call_args(c->nt, id, &argc);
+  for (int i = 0; i < argc && n < cap; i++) {
+    int a = argv[i];
+    if (nt_kind(c->nt, a) != NK_RangeNode || nt_int(c->nt, a, "index_of", 0) - 1 != id) continue;
+    TyKind at = cg_natural_type(c, a);
+    if (at != comp_ntype(c, a)) toks[n++] = view_push(c, a, at);
+  }
+  return n;
+}
+
 static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, int box, Buf *val) {
   const NodeTable *nt = c->nt;
   /* The re-entered emitter may rename the node for its own re-entry (a
@@ -14044,6 +14061,7 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
   TyKind as = ty_poly_face_kind(kind);
   int v = view_push(c, recv, as);
   int fv = view_push_face(recv, as);
+  int av[2], an = face_view_index_ranges(c, id, av, 2);
   TyKind nat = cg_natural_type(c, id);
   if (kind == PF_HASH && repr_of(c, id).demand && strbuf_hash_default_arg(c, id) >= 0) nat = TY_STRBUF;
   /* A numeric iterator with a block answers its receiver, and the arm's
@@ -14097,6 +14115,7 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
     else { buf_printf(&ob, "%s(%s)", oint_arg(got_o), cb.p ? cb.p : ""); nat = got_o; }
     free(cb.p); cb = ob;
   }
+  while (an > 0) view_pop(c, av[--an]);
   view_pop(c, fv);
   view_pop(c, v);
   view_unbind(g_n_argov - 1);
