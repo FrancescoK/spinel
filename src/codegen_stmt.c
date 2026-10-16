@@ -4418,6 +4418,28 @@ static int route_block_rebinds_base(Compiler *c, int v) {
   }
   return 0;
 }
+/* --share-strings: the receiver of method tail v, a String iterator given a
+   block that answers its receiver (`s.scan(re) { }`, `s.each_char { }`; not
+   a bang, which can answer nil), called on a boxed local whose box the plan
+   gives a taker as the handle, with no method of the program's own of the
+   name, no break out of the block and no write to the local in the call.
+   The call answers the String in the box, so reading the box after it
+   publishes the handle the method answers (sp_poly_unbox_s_pub); a box
+   holding no String raises NoMethodError in the call. -1 for any other
+   node. */
+int strbuf_iter_box_tail(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c) || !c->share || v < 0 || nt_kind(nt, v) != NK_CallNode) return -1;
+  const char *nm = nt_str(nt, v, "name");
+  int blk = nt_ref(nt, v, "block"), r = unwrap_parens(c, nt_ref(nt, v, "receiver")), tg[CPT_MAX];
+  size_t n = nm ? strlen(nm) : 0;
+  if (n == 0 || nm[n - 1] == '!' || blk < 0 || nt_kind(nt, blk) != NK_BlockNode || !bop_share_self_answer(nm, 1) ||
+      r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode || comp_ntype(c, v) != TY_STRING ||
+      repr_of(c, r).kind != RK_BOXED || call_takes_splat(nt, v) || call_breaks(c, v) ||
+      cplan_targets(c, v, tg, CPT_MAX) != 0 || route_block_rebinds_base(c, v))
+    return -1;
+  return share_plan_with_need(c, r, SPR_TAKE, SPN_OBJECT).form == SPF_HANDLE ? r : -1;
+}
 
 /* The end of a bang's handle form: _t<tr> holds the bang's answer, its
    bytes or NULL, and h the receiver's handle. The form answers h or NULL;
@@ -12587,6 +12609,20 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
     buf_puts(b, "sp_strbuf_read_pub(");
     emit_strbuf_handle_of(c, node, b);
     buf_puts(b, ")");
+    if (g_repr_check) { repr_channel_note(c, node, RCH_PUBLISH); repr_channel_end(c, frame); }
+    return;
+  }
+  /* an iterator over a boxed local answering its receiver, the method's
+     last statement (strbuf_iter_box_tail): the call runs, then the box
+     publishes its handle and answers its bytes */
+  int ibox = ts && ts->ret_handle && !ts->ret_rbs_seeded && !g_result_var &&
+             node == scope_body_last(c, (int)(ts - c->scopes)) ? strbuf_iter_box_tail(c, node) : -1;
+  if (ibox >= 0) {
+    buf_puts(b, "({ (void)(");
+    emit_expr(c, node, b);
+    buf_puts(b, "); sp_poly_unbox_s_pub(");
+    emit_expr(c, ibox, b);
+    buf_puts(b, "); })");
     if (g_repr_check) { repr_channel_note(c, node, RCH_PUBLISH); repr_channel_end(c, frame); }
     return;
   }
