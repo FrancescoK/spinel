@@ -4083,13 +4083,21 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
     buf_printf(b, "sp_sym _t%d = %s", t, nb.p ? nb.p : "(sp_sym)-1");
   }
   free(rpre.p); free(npre.p); free(nb.p);
-  buf_printf(b, "; sp_RbVal _r%d; ", t);
+  /* a switch over the name's symbol, not an `if ... else if` chain: one arm
+     per method name the program defines, and a chain of thousands nested
+     each `else` a level deeper, past what clang's parser has stack for */
+  buf_printf(b, "; sp_RbVal _r%d; switch (_t%d) { ", t, t);
   Buf *sv_pre = g_pre;
+  int *seen = calloc((size_t)(narm > 0 ? narm : 1), sizeof(int)), nseen = 0;
   for (int k = 0; k < narm; k++) {
     int arm = arms[k];
     TyKind at = repr_of(c, arm).as_ty;
     const char *nm = nt_str(nt, arm, "dyn_name");
     if (!nm) continue;
+    /* the first arm of a name is the one taken: a later one is no case */
+    { int sid = comp_sym_intern(c, nm), dup = 0;
+      for (int q = 0; q < nseen && !dup; q++) dup = seen[q] == sid;
+      if (dup) continue; }
     if (at == TY_UNKNOWN || at == TY_VOID) {
       if (!dsend_name_diverges(c, nm)) continue;     /* did not resolve on this receiver/arity */
       at = TY_NIL;
@@ -4100,9 +4108,10 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
        (check_seed_contradictions, #6672). */
     { const char *se = nt_str(nt, arm, "seed_type_error");
       if (se) {
-        buf_printf(b, "if (_t%d == (sp_sym)%d) { sp_raise_cls(\"TypeError\", \"", t, comp_sym_intern(c, nm));
+        buf_printf(b, "case %d: { sp_raise_cls(\"TypeError\", \"", comp_sym_intern(c, nm));
         emit_c_escaped(b, se);
-        buf_printf(b, "\"); _r%d = sp_box_nil(); }\nelse ", t);
+        buf_printf(b, "\"); _r%d = sp_box_nil(); break; }\n", t);
+        seen[nseen++] = comp_sym_intern(c, nm);
         continue;
       } }
     /* Emit the arm into private buffers under a silent probe: a method that
@@ -4163,16 +4172,19 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
       /* the arm's name as the compile-time symbol it is, the way a literal
          `:name` is emitted: interning it here cost a table probe per arm per
          call (#4854). A name interned at run time resolves to the same id. */
-      buf_printf(b, "if (_t%d == (sp_sym)%d) { ", t, comp_sym_intern(c, nm));
+      buf_printf(b, "case %d: { ", comp_sym_intern(c, nm));
       if (pre.p && pre.len) buf_puts(b, pre.p);
       buf_printf(b, "_r%d = ", t);
       if (arm_oint) buf_printf(b, "%s(%s)", oint_box(at), body.p ? body.p : "sp_oint_nil()");
       else if (arm_str) buf_puts(b, body.p ? body.p : "sp_box_nil()");
       else emit_boxed_text(c, self_ret ? TY_STRBUF : at, body.p ? body.p : "0", b);
-      buf_puts(b, "; }\nelse ");
+      buf_puts(b, "; break; }\n");
+      seen[nseen++] = comp_sym_intern(c, nm);
     }
     free(pre.p); free(body.p);
   }
+  free(seen);
+  buf_puts(b, "default: ");
   if (mo) {
     buf_printf(b, "{ sp_raise_cls(\"NameError\", sp_sprintf(\"undefined method '%%s' for class '%%s'\", sp_sym_to_s(_t%d), sp_poly_class_name(", t);
     if (recv_held) {
@@ -4182,7 +4194,7 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
       if (g_share_check) share_check_declare_reads(b, at, recv);
     }
     else emit_str_form_box(c, recv, b);
-    buf_printf(b, "))); _r%d = sp_box_nil(); } _r%d; })", t, t);
+    buf_printf(b, "))); _r%d = sp_box_nil(); } } _r%d; })", t, t);
   }
   /* a name no candidate answers is CRuby's NoMethodError naming the
      receiver ("undefined method 'with' for true"), as a literal send's is;
@@ -4196,9 +4208,9 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
       if (g_share_check) share_check_declare_reads(b, at, recv);
     }
     else emit_str_form_box(c, recv, b);
-    buf_printf(b, ")); _r%d = sp_box_nil(); } _r%d; })", t, t);
+    buf_printf(b, ")); _r%d = sp_box_nil(); } } _r%d; })", t, t);
   }
-  else buf_printf(b, "{ sp_raise_cls(\"NoMethodError\", sp_sprintf(\"undefined method '%%s'\", sp_sym_to_s(_t%d))); _r%d = sp_box_nil(); } _r%d; })", t, t, t);
+  else buf_printf(b, "{ sp_raise_cls(\"NoMethodError\", sp_sprintf(\"undefined method '%%s'\", sp_sym_to_s(_t%d))); _r%d = sp_box_nil(); } } _r%d; })", t, t, t);
   g_dsend_depth--;
   view_unbind(sv_nargov);
   return 1;
@@ -4219,8 +4231,10 @@ static int emit_dynamic_respond_to(Compiler *c, int id, Buf *b) {
   int t = ++g_tmp;
   buf_printf(b, "({ sp_sym _t%d = ", t);
   emit_dyn_name_sym(c, sym, b);
-  buf_printf(b, "; sp_bool _r%d = 0; ", t);
+  /* a switch over the symbol, as the dynamic send's (emit_dynamic_send) */
+  buf_printf(b, "; sp_bool _r%d = 0; switch (_t%d) { ", t, t);
   Buf *sv_pre = g_pre;
+  int *seen = calloc((size_t)(narm > 0 ? narm : 1), sizeof(int)), nseen = 0;
   for (int k = 0; k < narm; k++) {
     int arm = arms[k];
     TyKind at = repr_of(c, arm).as_ty;
@@ -4229,6 +4243,9 @@ static int emit_dynamic_respond_to(Compiler *c, int id, Buf *b) {
     int aac = 0; const int *aav = aargs >= 0 ? nt_arr(nt, aargs, "arguments", &aac) : NULL;
     const char *nm = (aac >= 1 && aav) ? nt_str(nt, aav[0], "value") : NULL;
     if (!nm) continue;
+    { int sid = comp_sym_intern(c, nm), dup = 0;
+      for (int q = 0; q < nseen && !dup; q++) dup = seen[q] == sid;
+      if (dup) continue; }
     Buf pre = {0, 0, 0}, body = {0, 0, 0};
     g_pre = &pre;
     int sv_probe = g_unsup_probe; g_unsup_probe = 1;
@@ -4255,16 +4272,18 @@ static int emit_dynamic_respond_to(Compiler *c, int id, Buf *b) {
     memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
     g_pre = sv_pre;
     if (ok) {
-      buf_printf(b, "if (_t%d == (sp_sym)%d) { ", t, comp_sym_intern(c, nm));
+      buf_printf(b, "case %d: { ", comp_sym_intern(c, nm));
       if (pre.p && pre.len) buf_puts(b, pre.p);
       buf_printf(b, "_r%d = ", t);
       if (at == TY_BOOL) buf_printf(b, "(%s)", body.p ? body.p : "0");
       else { buf_puts(b, "sp_poly_truthy("); emit_boxed_text(c, at, body.p ? body.p : "0", b); buf_puts(b, ")"); }
-      buf_puts(b, "; }\nelse ");
+      buf_puts(b, "; break; }\n");
+      seen[nseen++] = comp_sym_intern(c, nm);
     }
     free(pre.p); free(body.p);
   }
-  buf_printf(b, "{ _r%d = 0; } _r%d; })", t, t);
+  free(seen);
+  buf_printf(b, "default: _r%d = 0; } _r%d; })", t, t);
   return 1;
 }
 
