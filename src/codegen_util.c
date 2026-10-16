@@ -3573,6 +3573,14 @@ static int strbuf_bang_self_local_at(const Compiler *c, int v) {
     int ct[CPT_MAX];
     return cplan_targets((Compiler *)c, v, ct, CPT_MAX) == 0 && strbuf_held_chain(c, r);
   }
+  /* ...and `itself` of a variable holding the handle answers that String:
+     a block's value `{ |q| q.itself }` was boxed as a copy (#9258) */
+  if (repr_share_rule(c) && is_itself_name(nt_str(nt, v, "name")) && call_plain_argc((Compiler *)c, v) == 0 &&
+      nt_ref(nt, v, "block") < 0 && !call_is_safe_nav(nt, v) && nt_kind(nt, r) == NK_LocalVariableReadNode &&
+      repr_of(c, r).kind == RK_STRBUF) {
+    int ct[CPT_MAX];
+    return cplan_targets((Compiler *)c, v, ct, CPT_MAX) == 0;
+  }
   /* a `concat` given nothing, over an attribute assignment's handle, reads its receiver as bytes */
   if (is_append_concat(nt_str(nt, v, "name")) && call_plain_argc((Compiler *)c, v) == 0 && strbuf_assign_leaf((Compiler *)c, r))
     return 0;
