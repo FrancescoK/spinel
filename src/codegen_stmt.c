@@ -22040,6 +22040,22 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     return 1;
   }
   TyKind rt = comp_ntype(c, recv);
+  /* a safe navigation on an Array or a Hash that can be nil, or a push on a
+     boxed value, takes the value form, which tests the receiver before it
+     runs the arguments and skips both on a nil: the statement arms below
+     append to the receiver at once, and raised, or ran the arguments, for a
+     nil one */
+  if (call_is_safe_nav(nt, id) &&
+      ((rt == TY_POLY && is_push_alias(name)) ||
+       ((ty_is_array(rt) || rt == TY_STRH_ARRAY || ty_is_hash(rt)) && repr_of(c, recv).may_nil))) {
+    TyKind st = repr_of(c, id).as_ty;
+    emit_indent(b, indent);
+    buf_puts(b, "(void)(");
+    /* (an Integer answer is read as the `&.`'s nil-able form) */
+    if (oint_kind(st) && repr_of(c, id).kind != RK_BOXED) emit_oint_expr(c, id, st, b); else emit_expr(c, id, b);
+    buf_puts(b, ");\n");
+    return 1;
+  }
   int args = nt_ref(nt, id, "arguments");
   int argc = 0;
   const int *argv = NULL;

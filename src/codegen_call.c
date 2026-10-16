@@ -22609,6 +22609,9 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   if (emit_or_take_back(c, id, b, emit_str_append_chain_handle)) return 1;
   const NodeTable *nt = c->nt;
   if (id == g_operand_order_node) return 0;
+  /* a `&.` call orders its operands inside its guard (emit_call_safe_nav_arms),
+     after the nil test that skips them */
+  if (sn_guard_pending(c, id)) return 0;
   /* --share-strings: a String mutator's receiver that is a call answering
      its receiver over a handle (`id(s).upcase!.sub!(x, y())`) is held as
      that handle, run once: the mutator takes it from the temp
