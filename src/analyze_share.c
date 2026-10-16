@@ -1626,9 +1626,14 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     return rv;
   case BSH_ELEM:
     if (container && nv >= 1) sh_lookup_key(F, rv, vals[0]);
-    /* `a[i, n]`, `a[r]`: a run of elements */
-    if (argc >= 2 || (argc == 1 && nt_kind(nt, argv[0]) == NK_RangeNode))
+    /* `a[i, n]`, `a[r]`: a run of elements, an Array of the receiver's own
+       as BSH_SUB answers. A receiver that may be another container (a
+       Hash a Range keys) may answer an element too. */
+    if (argc >= 2 || (argc == 1 && nt_kind(nt, argv[0]) == NK_RangeNode)) {
+      TyKind art = rcv >= 0 ? c->ntype[rcv] : TY_UNKNOWN;
+      if (ty_is_array(art) || art == TY_STRH_ARRAY) return rv;
       return sh_join(F, rv, sh_elem(F, rv));
+    }
     return sh_elem(F, rv);
   case BSH_ELEM_N:
     return argc >= 1 ? sh_join(F, rv, sh_elem(F, rv)) : sh_elem(F, rv);
