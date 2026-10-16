@@ -28,6 +28,8 @@ hunks, each in its own commit with the reason:
 | short switches in `parse_in_order` | `argv.unshift(opt)` | `argv.unshift(opt.dup)` | the String is stored, then the local reused |
 | long switches in `parse_in_order` | `sw.parse(rest, argv)` | `sw.parse(rest ? rest : nil, argv)` | a nil `rest` crashed a switch with an optional value |
 | the yes/no table | String keys only | one Symbol key stored and removed | lets a value Hash with Symbol keys be given to `on` |
+| `environment` | `require 'shellwords'` inside the method | `require 'shellwords'` at the top of the file | the in-method require hid the program's own Shellwords |
+| `Switch#summarize` | `left = [sopts.join(', ')]` | `left = [sopts.join(', ').dup]` | refused under `--share-strings`: the String is changed in place through the Array |
 | `ParseError` | `alias to_s message` | `def to_s; message; end` | the alias left no `to_s` (a link error) |
 | end of the file | `ARGV.extend(OptionParser::Arguable)` | removed | `extend` on one object is refused |
 
