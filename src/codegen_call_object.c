@@ -1176,6 +1176,8 @@ static void emit_obj_struct_copy(Compiler *c, int cid, int to, int td, Buf *b) {
         !is_descendant(c, k, cid) || comp_class_is_module(c, kc)) continue;
     if (!any) buf_printf(b, "switch (_t%d->cls_id) { ", to);
     any = 1;
+    /* in a proc body, written ahead of the subclass's pool (emit_pool_fwd) */
+    emit_pool_fwd(c, k);
     buf_printf(b, "case %d: { sp_%s *_n = SP_POOL_NEW(%s, %s%s%s); *_n = *(sp_%s *)_t%d; _t%d = (sp_%s *)_n; break; } ",
                k, kc->c_name, kc->c_name, class_needs_scan(kc) ? "sp_" : "", class_needs_scan(kc) ? kc->c_name : "NULL",
                class_needs_scan(kc) ? "__gc_scan" : "", kc->c_name, to, td, cn);
