@@ -504,7 +504,10 @@ TyKind repr_stored_type(const Compiler *c, int id, TyKind t) {
      demanded as one is stored as one, as any other demanded value is:
      `{ |t| u = t }` spliced under a demand, the write of a handle local) */
   if (t == TY_STRBUF) return c->strbuf_box[id] || (c->share_strings && c->strbuf_handle_demand[id]) ? TY_STRBUF : TY_STRING;
-  if (c->strbuf_handle_demand[id]) return TY_STRBUF;
+  /* (a boxed value is held in its box whatever is asked of it: a reader
+     whose ivar widened past a String answers the box, which a handle's
+     slot did not take, and the C did not build) */
+  if (c->strbuf_handle_demand[id] && t != TY_POLY) return TY_STRBUF;
   return t;
 }
 
