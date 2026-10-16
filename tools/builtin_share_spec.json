@@ -1,5 +1,5 @@
 {
-  "ruby": "ruby 4.0.7",
+  "ruby": "CRuby 4.0",
   "origins": {"receiver":1,"element":2,"arg0":4,"arg1":8,"arg2":16,"block":32},
   "rows": [
     {"class":"String","method":"!","family":"TY_STRING","opaque_reads":[],"cases":[{"argc":0,"block":false,"marker":"String","ok":7,"origins":3,"wrapped":0,"effects":[0,0,0,0]},{"argc":0,"block":true,"marker":"String","ok":7,"origins":35,"wrapped":0,"effects":[0,0,0,0]},{"argc":0,"block":false,"marker":"Object","ok":7,"origins":3,"wrapped":0,"effects":[0,0,0,0]},{"argc":0,"block":true,"marker":"Object","ok":7,"origins":35,"wrapped":0,"effects":[0,0,0,0]}],"ok":28,"attempts":1288,"errors":{"ArgumentError":1260},"effects":[0,0,0,0],"witnesses":{},"receiver_return":false,"receiver_mutated":false},

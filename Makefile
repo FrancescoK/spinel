@@ -5242,8 +5242,9 @@ share-spec-check:
 
 # The arity tables in codegen_call.c against the CRuby they were generated
 # from: regenerates them in memory and fails on any drift. It probes for
-# about 90 s, so it stays out of the gate; run it with the reference Ruby,
-# `make arity-spec-check ARITY_RUBY=~/.rbenv/versions/4.0.4/bin/ruby`.
+# about 90 s, so it stays out of the gate. It needs a CRuby 4.0 with its
+# default json and time gems (the generator activates them), any patch
+# release; point it at one with `make arity-spec-check ARITY_RUBY=/path/to/ruby`.
 ARITY_RUBY ?= ruby
 arity-spec-check:
 	@$(ARITY_RUBY) tools/gen_builtin_arity_spec.rb --check
