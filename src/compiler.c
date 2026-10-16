@@ -862,6 +862,16 @@ int comp_cvar_owner(const Compiler *c, int cid, const char *name) {
       if (m >= 0 && m < c->nclasses && comp_cvar_index(&c->classes[m], name) >= 0) return m;
     }
   }
+  /* and the modules it extends, whose methods `extend` copies in as the
+     class's class methods (`class Template; extend Handlers`): they read
+     the module's variable as well */
+  for (int p = cid; p >= 0; p = c->classes[p].parent) {
+    const ClassInfo *ci = &c->classes[p];
+    for (int i = ci->nextended_mods - 1; i >= 0; i--) {
+      int m = ci->extended_mods[i];
+      if (m >= 0 && m < c->nclasses && comp_cvar_index(&c->classes[m], name) >= 0) return m;
+    }
+  }
   return owner;
 }
 
