@@ -12,6 +12,7 @@
 
 const char *sp_json_str(const char *s);   /* quote + escape a string */
 const char *sp_json_val(sp_RbVal v);      /* serialize any boxed value */
+const char *sp_json_dump(sp_RbVal v, sp_int limit); /* JSON.dump: its limit, NaN allowed */
 const char *sp_json_pretty(sp_RbVal v);   /* two-space-indented serialization */
 sp_RbVal sp_json_parse(const char *s);    /* parse JSON text into a boxed value */
 /* An object serializes as CRuby's json does, which is method dispatch: a class

@@ -1,0 +1,13 @@
+"[[[[1]]]]"
+[ArgumentError, "exceed depth limit"]
+"NaN"
+"[Infinity,-Infinity]"
+"{\"a\":1}"
+"\"x\""
+"null"
+"1"
+true
+"[1,\"two\"]"
+JSON::GeneratorError
+"{\"a\":[1,2]}"
+"fallback: exceed depth limit"
