@@ -13316,6 +13316,12 @@ static sp_RbVal sp_poly_str_aset_key(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
   if (sp_poly_is_strbuf(key)) key = sp_poly_strbuf_deref(key);
   int re = key.tag == SP_TAG_OBJ && key.cls_id == SP_BUILTIN_REGEX && key.v.p;
   int rng = key.tag == SP_TAG_OBJ && key.cls_id == SP_BUILTIN_RANGE && key.v.p;
+  /* an Integer index into an Array widens a typed one for a value of
+     another kind, as the store with an unboxed index does
+     (sp_poly_arr_widen_and_set; a boxed index is how --int-overflow=promote
+     holds every Integer), and answers the Array the caller stores back */
+  if (key.tag == SP_TAG_INT && v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id))
+    return sp_poly_arr_widen_and_set(v, key.v.i, val);
   if (!(v.tag == SP_TAG_STR || sp_poly_is_strbuf(v)) || !(key.tag == SP_TAG_STR || key.tag == SP_TAG_INT || re || rng)) {
     if (key.tag == SP_TAG_STR) sp_poly_set_str(v, key.v.s ? key.v.s : sp_str_empty, val);
     else sp_poly_set_poly(v, key, val);
