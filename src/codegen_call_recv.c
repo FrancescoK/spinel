@@ -1073,6 +1073,19 @@ static const char *repl_hash_to_s_fn(Repr hr) {
   return repr_hash_is(hr, TY_STRING, TY_POLY) ? "sp_StrPolyHash_to_s_values"
        : repr_hash_is(hr, TY_STRING, TY_INT) ? "sp_StrIntHash_to_s_values" : NULL;
 }
+/* The suffix of the sub/gsub overload a Hash replacement takes: one that is
+   (or reads as) String-to-String; NULL for a String replacement */
+static const char *repl_hash_suffix(Repr hr) {
+  return repr_hash_is(hr, TY_STRING, TY_STRING) || repl_hash_to_s_fn(hr) ? "_str_str_hash" : NULL;
+}
+/* The replacement argument of sub/gsub, as that overload takes it */
+static void emit_repl_arg(Compiler *c, int arg, Buf *b) {
+  Repr hr = repr_of(c, arg);
+  const char *hconv = repl_hash_to_s_fn(hr);
+  if (hconv) { buf_printf(b, "%s(", hconv); emit_expr(c, arg, b); buf_puts(b, ")"); }
+  else if (repl_hash_suffix(hr)) emit_expr(c, arg, b);
+  else emit_str_expr(c, arg, b);
+}
 static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind a0, const char *r);
 void emit_lines_sep(Compiler *c, int a, Buf *b) {
   if (comp_ntype(c, a) == TY_STRING) { emit_expr(c, a, b); return; }
@@ -8409,29 +8422,21 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   }
   /* string methods taking a regex-literal argument route to the engine */
   else if ((is_substitution(name)) && argc == 2 && re_lit_index(c, argv[0]) >= 0) {
-    Repr hr = repr_of(c, argv[1]);
-    int str_pairs = repr_hash_is(hr, TY_STRING, TY_STRING);
-    const char *hconv = repl_hash_to_s_fn(hr);
-    const char *suf = (str_pairs || hconv) ? "_str_str_hash" : g_sub_bang_id == id ? "_own" : "";
+    const char *hs = repl_hash_suffix(repr_of(c, argv[1]));
+    const char *suf = hs ? hs : g_sub_bang_id == id ? "_own" : "";
     buf_printf(b, "sp_re_%s%s(sp_re_pat_%d, %s, ", name, suf, re_lit_index(c, argv[0]), r);
-    if (str_pairs) emit_expr(c, argv[1], b);
-    else if (hconv) { buf_printf(b, "%s(", hconv); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
-    else emit_str_expr(c, argv[1], b);
+    emit_repl_arg(c, argv[1], b);
     buf_puts(b, ")");
   }
   else if ((is_substitution(name)) && argc == 2 &&
            nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "InterpolatedRegularExpressionNode")) {
     /* a Hash replacement takes the Hash overload, as with a literal pattern */
-    Repr hr = repr_of(c, argv[1]);
-    int str_pairs = repr_hash_is(hr, TY_STRING, TY_STRING);
-    const char *hconv = repl_hash_to_s_fn(hr);
-    const char *suf = (str_pairs || hconv) ? "_str_str_hash" : g_sub_bang_id == id ? "_own" : "";
+    const char *hs = repl_hash_suffix(repr_of(c, argv[1]));
+    const char *suf = hs ? hs : g_sub_bang_id == id ? "_own" : "";
     Buf rp; memset(&rp, 0, sizeof rp);
     emit_regex_pat_to_buf(c, argv[0], &rp);
     buf_printf(b, "sp_re_%s%s(%s, %s, ", name, suf, rp.p ? rp.p : "NULL", r);
-    if (str_pairs) emit_expr(c, argv[1], b);
-    else if (hconv) { buf_printf(b, "%s(", hconv); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
-    else emit_str_expr(c, argv[1], b);
+    emit_repl_arg(c, argv[1], b);
     buf_puts(b, ")");
     free(rp.p);
   }
@@ -8440,15 +8445,11 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     /* pattern held in a regex-typed value (e.g. a local bound to an
        interpolated /.../); dispatch to the compiled-pattern overload
        rather than the string-pattern one. */
-    Repr hr = repr_of(c, argv[1]);
-    int str_pairs = repr_hash_is(hr, TY_STRING, TY_STRING);
-    const char *hconv = repl_hash_to_s_fn(hr);
-    const char *suf = (str_pairs || hconv) ? "_str_str_hash" : g_sub_bang_id == id ? "_own" : "";
+    const char *hs = repl_hash_suffix(repr_of(c, argv[1]));
+    const char *suf = hs ? hs : g_sub_bang_id == id ? "_own" : "";
     buf_printf(b, "sp_re_%s%s(", name, suf);
     emit_expr(c, argv[0], b); buf_printf(b, ", %s, ", r);
-    if (str_pairs) emit_expr(c, argv[1], b);
-    else if (hconv) { buf_printf(b, "%s(", hconv); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
-    else emit_str_expr(c, argv[1], b);
+    emit_repl_arg(c, argv[1], b);
     buf_puts(b, ")");
   }
   else if ((is_substitution(name)) && argc == 2 &&
@@ -18102,19 +18103,15 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     /* the replacement as the TY_STRING receiver's arm takes it: a boxed one
        (`String.new(s, encoding: e)` or a user object) converts as a String
        argument does */
-    Repr hr = repr_of(c, argv[1]);
-    int str_pairs = repr_hash_is(hr, TY_STRING, TY_STRING);
-    const char *hconv = repl_hash_to_s_fn(hr);
-    const char *suf = (str_pairs || hconv) ? "_str_str_hash" : "";
+    const char *hs = repl_hash_suffix(repr_of(c, argv[1]));
+    const char *suf = hs ? hs : "";
     /* A user method sharing the name can type the call poly (#8102):
        the String answer is boxed for that slot. */
     int boxed = comp_ntype(c, id) == TY_POLY;
     if (boxed) buf_puts(b, "sp_box_str(");
     buf_printf(b, "sp_re_%s%s(sp_re_pat_%d, sp_poly_to_s(", name, suf, re_lit_index(c, argv[0]));
     emit_expr(c, recv, b); buf_puts(b, "), ");
-    if (str_pairs) emit_expr(c, argv[1], b);
-    else if (hconv) { buf_printf(b, "%s(", hconv); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
-    else emit_str_expr(c, argv[1], b);
+    emit_repl_arg(c, argv[1], b);
     buf_puts(b, ")");
     if (boxed) buf_puts(b, ")");
     return 1;
