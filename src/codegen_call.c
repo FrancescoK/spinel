@@ -9430,7 +9430,8 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            print `void`); hold it as a boxed poly so it can flow into a poly
            param slot. So is an `equal?` operand that keeps a handle's
            identity only boxed (poly_identity_operand). */
-        if (at == TY_NIL || at == TY_VOID || at == TY_UNKNOWN || poly_identity_operand(c, name, pos_argc, argv[a], at)) {
+        if (at == TY_NIL || at == TY_VOID || at == TY_UNKNOWN || poly_identity_operand(c, name, pos_argc, argv[a], at) ||
+            (is_setter_val && a == 0 && oint_kind(at) && node_has_oint_form(c, argv[a]))) {
           atmp_ty[a] = TY_POLY;
           atmp[a] = emit_poly_arg_temp(c, argv[a], TY_POLY, 1, atmp[a], ran, b);
         }
@@ -9731,6 +9732,14 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         char sref[32]; snprintf(sref, sizeof sref, "_t%d", atmp[0]);
         buf_puts(b, " ");
         emit_strbuf_node_read(c, id, sref, b);
+        buf_puts(b, "; })");
+      }
+      else if (!pd_done && is_setter_val && oint_kind(ret) && (trn_o || atmp_ty[0] == TY_POLY)) {
+        char sref[32]; snprintf(sref, sizeof sref, "_t%d", atmp[0]);
+        buf_puts(b, " ");
+        if (atmp_ty[0] == TY_POLY && trn_o) buf_printf(b, "%s(%s)", oint_unbox(ret), sref);
+        else if (atmp_ty[0] == TY_POLY) emit_unbox_text(c, ret, sref, b);
+        else buf_printf(b, "%s(%s)", oint_of(ret), sref);
         buf_puts(b, "; })");
       }
       else buf_printf(b, " _t%d; })", pd_done || !is_setter_val ? tr : atmp[0]);
