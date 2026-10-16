@@ -3271,6 +3271,24 @@ static void emit_class_constants_push(Compiler *c, int ci, int inherit, int ta, 
   }
 }
 
+/* Module#constants of the class value CV (a C expression of sp_Class): a
+   switch on its class id over the program's classes and modules, each
+   listing its own (its ancestors' too when INHERIT), as for a constant
+   receiver. A builtin class lists constants the program does not see, so it
+   raises rather than answer short. The answer is a PolyArray. */
+void emit_class_value_constants(Compiler *c, const char *cv, int inherit, Buf *b) {
+  int ta = ++g_tmp;
+  buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); switch ((%s).cls_id) {", ta, ta, cv);
+  for (int k = 0; k < c->nclasses; k++) {
+    if (c->classes[k].is_native_class) continue;
+    buf_printf(b, " case %d:", k);
+    emit_class_constants_push(c, k, inherit, ta, b);
+    buf_puts(b, " break;");
+  }
+  buf_printf(b, " default: sp_raise_cls(\"NotImplementedError\", sp_sprintf(\"Module#constants of %%s: a builtin class's constants are not listed\", sp_class_val_name(sp_box_class(%s)))); }", cv);
+  buf_printf(b, " _t%d; })", ta);
+}
+
 int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* SomeClass.superclass -> the parent class as sp_Class value */
   if (recv >= 0 && argc == 0 && sp_streq(name, "superclass") &&
@@ -3716,11 +3734,26 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         if (s && s->name && s->is_cmethod && s->class_id >= 0) self_ci = s->class_id;
         else if (!s || !s->name) rci = c->node_cbody[id];
       }
+      /* a class held in a value (a parameter, a local, an ivar, a method's
+         answer): a switch on its class id over the program's classes and
+         modules, each listing its own; a builtin class lists constants the
+         program does not see, and raises rather than answer short */
+      int any_ci = !rcn && rci < 0 && self_ci < 0 && nt_kind(nt, recv) != NK_SelfNode &&
+                   comp_ntype(c, recv) == TY_CLASS;
       int inherit = 1;
       if (argc == 1) {
         const char *aty = nt_type(nt, argv[0]);
         if (aty && sp_streq(aty, "FalseNode")) inherit = 0;
-        else if (!aty || !sp_streq(aty, "TrueNode")) rci = self_ci = -1;  /* non-literal: leave it */
+        else if (!aty || !sp_streq(aty, "TrueNode")) rci = self_ci = any_ci = -1;  /* non-literal: leave it */
+      }
+      if (any_ci > 0) {
+        int tc = ++g_tmp;
+        buf_printf(b, "({ sp_Class _cl%d = ", tc); emit_expr(c, recv, b);
+        buf_puts(b, "; ");
+        char cv[32]; snprintf(cv, sizeof cv, "_cl%d", tc);
+        emit_class_value_constants(c, cv, inherit, b);
+        buf_puts(b, "; })");
+        return 1;
       }
       if (rci >= 0 || self_ci >= 0) {
         int ta = ++g_tmp;

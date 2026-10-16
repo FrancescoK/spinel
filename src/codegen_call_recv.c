@@ -17158,6 +17158,24 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_POLY &&
       sp_streq(name, "compare_by_identity"))  /* any arity: identity hashing is unsupported */
     unsupported(c, id, "Hash#compare_by_identity (identity-keyed hashing)");
+  /* Module#constants on a boxed value that is a class: the switch a typed
+     class value takes (emit_class_value_constants); anything else is the
+     NoMethodError CRuby raises */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "constants") && nt_ref(nt, id, "block") < 0 &&
+      (argc == 0 || (argc == 1 && (nt_kind(nt, argv[0]) == NK_TrueNode || nt_kind(nt, argv[0]) == NK_FalseNode))) &&
+      !user_defines_or_reads(c, "constants")) {
+    int tv = ++g_tmp, ta = ++g_tmp;
+    TyKind ct = comp_ntype(c, id);
+    buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); if (_t%d.tag != SP_TAG_CLASS) sp_raise_nomethod(sp_nomethod_msg(\"constants\", _t%d));", tv, tv, tv);
+    char cv[48]; snprintf(cv, sizeof cv, "sp_unbox_class(_t%d)", tv);
+    buf_printf(b, " sp_PolyArray *_t%d = ", ta);
+    emit_class_value_constants(c, cv, !(argc == 1 && nt_kind(nt, argv[0]) == NK_FalseNode), b);
+    /* the answer: the array, boxed where the call is typed boxed */
+    if (ct == TY_POLY_ARRAY) buf_printf(b, "; _t%d; })", ta);
+    else buf_printf(b, "; sp_box_poly_array(_t%d); })", ta);
+    return 1;
+  }
   /* #slice on a boxed receiver is two different methods: Hash#slice(*keys)
      answers a sub-Hash, while String#slice / Array#slice is exactly #[]. Only
      the runtime value tells them apart, so branch on it and hand the non-hash
