@@ -30,10 +30,12 @@ hunks, each in its own commit with the reason:
 | the yes/no table | String keys only | one Symbol key stored and removed | lets a value Hash with Symbol keys be given to `on` |
 | `environment` | `require 'shellwords'` inside the method | `require 'shellwords'` at the top of the file | the in-method require hid the program's own Shellwords |
 | `Switch#summarize` | `left = [sopts.join(', ')]` | `left = [sopts.join(', ').dup]` | refused under `--share-strings`: the String is changed in place through the Array |
+| `OptionParser.with` | `new(*args)` | `self.new(*args)` | a bare `new` in a class method was compiled as the instance method `new` |
 | `ParseError` | `alias to_s message` | `def to_s; message; end` | the alias left no `to_s` (a link error) |
 | end of the file | `ARGV.extend(OptionParser::Arguable)` | removed | `extend` on one object is refused |
 
-So `ARGV.options`, `ARGV.parse!` and `ARGV.getopts` are not available, and
+So `ARGV.options`, `ARGV.parse!` and `ARGV.getopts` are not available,
+`OptionParser#getopts` and `OptionParser.getopts` do not work yet, and
 `--version=pkg` prints the program's own version. Everything else the gem's
 documentation shows works as in CRuby, `accept`, Regexp and Range patterns,
 `optparse/date`, `optparse/time`, `optparse/uri` and `optparse/shellwords`
