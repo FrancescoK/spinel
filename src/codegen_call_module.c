@@ -46,6 +46,37 @@ static void emit_file_realdirpath2(Compiler *c, const int *argv, Buf *b) {
 }
 
 /* the class methods of File / FileTest, Dir and Time */
+/* A `File.read` options hash that only names UTF-8 as the encoding
+   (`encoding:`, `external_encoding:`, `internal_encoding:` with
+   Encoding::UTF_8 or "UTF-8"): Spinel's text is UTF-8 already, so it reads
+   as the call without it does. */
+static int kwh_utf8_only(const NodeTable *nt, int kwh) {
+  if (kwh < 0 || nt_kind(nt, kwh) != NK_KeywordHashNode) return 0;
+  int en = 0; const int *els = nt_arr(nt, kwh, "elements", &en);
+  if (en == 0) return 0;
+  for (int i = 0; i < en; i++) {
+    if (nt_kind(nt, els[i]) != NK_AssocNode) return 0;
+    int k = nt_ref(nt, els[i], "key"), v = nt_ref(nt, els[i], "value");
+    const char *kn = k >= 0 && nt_kind(nt, k) == NK_SymbolNode ? nt_str(nt, k, "value") : NULL;
+    if (!kn || (!sp_streq(kn, "encoding") && !sp_streq(kn, "external_encoding") &&
+                !sp_streq(kn, "internal_encoding"))) return 0;
+    if (v < 0) return 0;
+    NodeKind vk = nt_kind(nt, v);
+    if (vk == NK_StringNode) {
+      const char *sv = nt_str(nt, v, "content");
+      if (!sv || strcasecmp(sv, "UTF-8") != 0) return 0;
+    }
+    else if (vk == NK_ConstantPathNode) {
+      int par = nt_ref(nt, v, "parent");
+      const char *cn = nt_str(nt, v, "name");
+      if (!cn || !sp_streq(cn, "UTF_8") || par < 0 || nt_kind(nt, par) != NK_ConstantReadNode ||
+          !sp_streq(nt_str(nt, par, "name"), "Encoding")) return 0;
+    }
+    else return 0;
+  }
+  return 1;
+}
+
 int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* File class methods -> runtime helpers (the runtime has long carried
      these; only the dispatch was missing). FileTest shares File's predicate
@@ -65,6 +96,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_puts(b, "sp_file_basename2("); emit_path_expr(c, argv[0], b); buf_puts(b, ", ");
       emit_str_expr(c, argv[1], b); buf_puts(b, ")"); return 1;
     }
+    if (sp_streq(name, "read") && argc >= 2 && kwh_utf8_only(nt, argv[argc - 1])) argc--;
     if ((sp_streq(name, "read") || sp_streq(name, "binread")) && argc == 1) {
       /* binread answers BYTES (CRuby names them ASCII-8BIT); read answers text */
       int bin_r = sp_streq(name, "binread");
