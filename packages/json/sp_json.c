@@ -41,6 +41,10 @@ const char *sp_poly_to_s(sp_RbVal v);                   /* the runtime archive (
 typedef struct {
   char *p; size_t len, cap;
   char *heap;   /* NULL while p is malloc'd; == p once moved, and the rooted slot */
+  /* JSON.dump's options, zero for generate: a nesting limit of the
+     caller's (0: none) in place of generate's 100, and NaN / Infinity
+     written out rather than refused */
+  int dump, dump_limit;
 } jbuf;
 /* A moved buffer's grow, out of line: jb_add is inlined into loops that append
    a byte at a time, and a second allocator inside its body stops that. With
@@ -198,8 +202,18 @@ SP_COLD static SP_NOINLINE SP_NORETURN void sp_json_too_deep(jbuf *b) {
      One it has already moved onto the GC heap needs nothing: the collector
      takes that with the root the landing frame drops. */
   if (!b->heap) free(b->p);
+  if (b->dump && b->dump_limit > 0) sp_raise_cls("ArgumentError", "exceed depth limit");
+  if (b->dump) sp_raise_cls("SystemStackError", "stack level too deep");
   sp_raise_cls("JSON::NestingError",
                "nesting of 100 is too deep. Did you try to serialize objects with circular references?");
+}
+/* The deepest container a walk enters: generate's 100, a JSON.dump limit,
+   or for a dump with none a guard on the C stack, past which CRuby's own
+   recursion overflows too */
+#define SP_JSON_DUMP_GUARD 10000
+static int sp_json_max_depth(const jbuf *b) {
+  if (!b->dump) return SP_JSON_MAX_NESTING;
+  return b->dump_limit > 0 ? b->dump_limit : SP_JSON_DUMP_GUARD;
 }
 /* A Float as the json generator writes it (its vendored fpconv): the
    shortest digits that read back as the value, then a whole number with a
@@ -258,14 +272,17 @@ static const char *sp_json_float(double d) {
 }
 
 /* Everything but a container: the leaf arms, answering one GC string. */
-static const char *sp_json_scalar(sp_RbVal v) {
+static const char *sp_json_scalar_o(sp_RbVal v, int allow_nan) {
   v = sp_rbval_str(v);
   switch (v.tag) {
     case SP_TAG_INT:  return sp_int_to_s(v.v.i);
     case SP_TAG_BIGINT: return sp_bigint_to_s((sp_Bigint *)v.v.p);
     case SP_TAG_FLT:
       /* Infinity and NaN are not JSON: CRuby refuses them rather than write
-         a document no parser reads back */
+         a document no parser reads back -- except JSON.dump, which writes
+         them (its allow_nan) */
+      if (allow_nan && isnan(v.v.f)) return JSPL("NaN");
+      if (allow_nan && isinf(v.v.f)) return v.v.f > 0 ? JSPL("Infinity") : JSPL("-Infinity");
       if (isinf(v.v.f))
         sp_raise_cls("JSON::GeneratorError", v.v.f > 0 ? "Infinity not allowed in JSON" : "-Infinity not allowed in JSON");
       if (isnan(v.v.f)) sp_raise_cls("JSON::GeneratorError", "NaN not allowed in JSON");
@@ -277,6 +294,7 @@ static const char *sp_json_scalar(sp_RbVal v) {
     default: return JSPL("null");
   }
 }
+static const char *sp_json_scalar(sp_RbVal v) { return sp_json_scalar_o(v, 0); }
 static void sp_json_val_b(jbuf *b, sp_RbVal v, int depth);
 /* A compact document is appended into ONE buffer for the whole walk, as the
    pretty form below already does, so the walk has exactly one allocation to
@@ -295,13 +313,26 @@ const char *sp_json_val(sp_RbVal v) {
   sp_json_val_b(&b, v, 0);
   return jb_finish(&b);
 }
+/* JSON.dump(obj[, limit]): generate with dump's options -- no nesting cap
+   but the caller's LIMIT (0 for none; past it, ArgumentError "exceed depth
+   limit"), and NaN / Infinity written out */
+const char *sp_json_dump(sp_RbVal v, sp_int limit) {
+  if (v.tag != SP_TAG_OBJ) return sp_json_scalar_o(v, 1);
+  SP_GC_ROOT_RBVAL(v);
+  jbuf b; memset(&b, 0, sizeof b);
+  b.dump = 1;
+  b.dump_limit = limit > 0 ? (int)(limit > SP_JSON_DUMP_GUARD ? SP_JSON_DUMP_GUARD : limit) : 0;
+  SP_GC_ROOT_STR(b.heap);
+  sp_json_val_b(&b, v, 0);
+  return jb_finish(&b);
+}
 /* `depth` counts the containers already entered, so a container reached at
    depth 100 would be the 101st level. */
 static void sp_json_val_b(jbuf *b, sp_RbVal v, int depth) {
-  if (v.tag != SP_TAG_OBJ) { const char *sc = sp_json_scalar(v); jb_gcs(b, sc, strlen(sc)); return; }
+  if (v.tag != SP_TAG_OBJ) { const char *sc = sp_json_scalar_o(v, b->dump); jb_gcs(b, sc, strlen(sc)); return; }
   int kind = sp_json_kind_fn ? sp_json_kind_fn(v) : 0;
   if (kind == 1) {  /* array */
-    if (depth >= SP_JSON_MAX_NESTING) sp_json_too_deep(b);
+    if (depth >= sp_json_max_depth(b)) sp_json_too_deep(b);
     sp_int n = sp_json_len_fn(v);
     jb_c(b, '[');
     for (sp_int i = 0; i < n; i++) {
@@ -312,7 +343,7 @@ static void sp_json_val_b(jbuf *b, sp_RbVal v, int depth) {
     return;
   }
   if (kind == 2) {  /* hash */
-    if (depth >= SP_JSON_MAX_NESTING) sp_json_too_deep(b);
+    if (depth >= sp_json_max_depth(b)) sp_json_too_deep(b);
     sp_int n = sp_json_len_fn(v);
     jb_c(b, '{');
     for (sp_int i = 0; i < n; i++) {
