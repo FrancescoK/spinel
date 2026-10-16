@@ -1,0 +1,13 @@
+false
+:dry_run
+:dry_run
+[:color, false]
+[]
+[OptionParser::InvalidOption, "invalid option: --dry-ru", []]
+[OptionParser::InvalidOption, "invalid option: --Dry-run", []]
+[OptionParser::InvalidOption, "invalid option: --no-col", []]
+[OptionParser::InvalidOption, "invalid option: -d", []]
+[OptionParser::InvalidOption, "invalid option: --he", []]
+:dry_run
+[:color, true]
+[]
