@@ -108,12 +108,6 @@ to (`URI.register_scheme`, `URI.scheme_list`). `#route_to`/`#route_from`,
 writers do not validate what they are given. An https request needs the
 `openssl` package below; `require "net/https"` loads both, as in CRuby.
 
-**`net/smtp`.** ruby/net-smtp, vendored (`packages/net/README.md`): sending
-with `send_message` / `open_message_stream`, EHLO and the HELO retry, AUTH
-PLAIN, LOGIN, XOAUTH2 and CRAM-MD5, the read timeout and the SMTP error
-classes answer as CRuby's. STARTTLS and SMTPS go through the `openssl`
-package and are not covered by the package's tests.
-
 **TLS / `openssl`.** The `openssl` package binds the system libssl and
 provides `OpenSSL::SSL` only: `SSLContext`, `SSLSocket`, `SSLError` and the
 `VERIFY_*` constants, which is what an outbound HTTPS client reaches.

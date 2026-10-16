@@ -35,4 +35,5 @@ To update, replace these files with a newer release's `lib/`, carry the hunks
 above over, and update the commits.
 
 The `net_smtp_*` tests in `test/` run on demand, not in the gate:
-`make pkg-ondemand-test`.
+`make pkg-ondemand-test`. They talk to a plain-text server, so STARTTLS and
+SMTPS, which go through the `openssl` package, are not covered.
