@@ -1757,7 +1757,10 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
      the runtime tag. Truncating first answered every |v| < 1 as zero (0.004
      came back zero? -> true, positive? -> false), read a bigint through a
      wrapped int64, and hid a user class's own zero?. */
-  if (recv >= 0 && rt == TY_POLY && argc == 0 &&
+  /* ...when the call answers a bool: one typed boxed has a program class's
+     even?/odd? beside the Integer's, which the boxed dispatch reaches (its
+     Integer arm views the call as bool and comes back here) */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 && repr_of(c, id).as_ty != TY_POLY &&
       (sp_streq(name, "even?") || sp_streq(name, "odd?"))) {
     int t = ++g_tmp;
     buf_printf(b, "({ sp_int _t%d = sp_poly_recv_i(\"%s\", ", t, name); emit_expr(c, recv, b); buf_puts(b, "); ");
