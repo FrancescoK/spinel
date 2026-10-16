@@ -21298,27 +21298,82 @@ static int share_static_container(Compiler *c, int kind, const char *name) {
       changed |= strbuf_container_source_walk(c, nt_ref(nt, comp_vsite_node(c, e), "value"), 1, SB_DEMAND);
   return changed | strbuf_static_store_walk(c, rk, grn, 1);
 }
-/* Does method mi answer an Array or Hash literal of typed Strings (`const
-   char *` elements, which cannot hold the shared handle), as its last
-   value or through a `return`? */
-static int share_ret_literal(const NodeTable *nt, int v) {
+/* Collects into out[] the Array and Hash literals method value v can be:
+   v itself, a `return`'s argument, the last statement of a list, the arms of
+   an `if`, `unless` or `case`, and the body, rescues and else of a `begin`.
+   Answers the new count, which counts what out[] (cap long) had no room for. */
+static int share_ret_literals(const NodeTable *nt, int v, int *out, int n, int cap, int depth) {
   v = an_unparen(nt, v);
-  if (v >= 0 && nt_kind(nt, v) == NK_ReturnNode) {
-    int ra = nt_ref(nt, v, "arguments"), rn = 0;
-    const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
-    v = rn == 1 ? an_unparen(nt, rv[0]) : -1;
+  if (v < 0 || depth > 64) return n;
+  switch (nt_kind(nt, v)) {
+    case NK_ArrayNode: case NK_HashNode:
+      if (n < cap) out[n] = v;
+      return n + 1;
+    case NK_ReturnNode: {
+      int ra = nt_ref(nt, v, "arguments"), rn = 0;
+      const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
+      return rn == 1 ? share_ret_literals(nt, rv[0], out, n, cap, depth + 1) : n;
+    }
+    case NK_StatementsNode: {
+      int bn = 0; const int *b = nt_arr(nt, v, "body", &bn);
+      return bn > 0 ? share_ret_literals(nt, b[bn - 1], out, n, cap, depth + 1) : n;
+    }
+    case NK_ElseNode:
+      return share_ret_literals(nt, nt_ref(nt, v, "statements"), out, n, cap, depth + 1);
+    case NK_IfNode: case NK_UnlessNode: {
+      /* (the `elsif` links of a chain are followed in a loop, as the rescues
+         of a begin are, so a long chain costs no depth) */
+      for (int d = 0; v >= 0 && d < 64; d++) {
+        n = share_ret_literals(nt, nt_ref(nt, v, "statements"), out, n, cap, depth + 1);
+        int sub = nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause");
+        if (sub >= 0 && nt_kind(nt, sub) == NK_IfNode) { v = sub; continue; }
+        return share_ret_literals(nt, sub, out, n, cap, depth + 1);
+      }
+      return n;
+    }
+    case NK_BeginNode:
+      n = share_ret_literals(nt, nt_ref(nt, v, "statements"), out, n, cap, depth + 1);
+      n = share_ret_literals(nt, nt_ref(nt, v, "else_clause"), out, n, cap, depth + 1);
+      for (int rc = nt_ref(nt, v, "rescue_clause"), d = 0; rc >= 0 && d < 64; rc = nt_ref(nt, rc, "subsequent"), d++)
+        n = share_ret_literals(nt, nt_ref(nt, rc, "statements"), out, n, cap, depth + 1);
+      return n;
+    case NK_CaseNode: case NK_CaseMatchNode: {
+      int wn = 0; const int *w = nt_arr(nt, v, "conditions", &wn);
+      for (int k = 0; k < wn; k++) n = share_ret_literals(nt, nt_ref(nt, w[k], "statements"), out, n, cap, depth + 1);
+      return share_ret_literals(nt, nt_ref(nt, v, "else_clause"), out, n, cap, depth + 1);
+    }
+    default:
+      return n;
   }
-  return v >= 0 && (nt_kind(nt, v) == NK_ArrayNode || nt_kind(nt, v) == NK_HashNode);
 }
-static int share_ret_typed_str_literal(Compiler *c, int mi) {
+/* The literals of typed Strings (`const char *` elements, which cannot hold
+   the shared handle) method mi answers, as its last value or through a
+   `return` (`return [@s] if ...`); none unless its value is a typed String
+   Array or Hash. */
+static int share_ret_typed_str_literals(Compiler *c, int mi, int *out, int cap) {
   TyKind t = c->scopes[mi].ret;
   if (!(ty_is_array(t) && ty_array_elem(t) == TY_STRING) && !(ty_is_hash(t) && ty_hash_val(t) == TY_STRING)) return 0;
-  /* its last value, or any `return` (`return [@s] if ...`) */
-  if (share_ret_literal(c->nt, scope_body_last(c, mi))) return 1;
+  int n = share_ret_literals(c->nt, scope_body_value(c, mi), out, 0, cap, 0);
   for (int u = comp_ret_first(c, mi); u >= 0; u = comp_ret_next(c, u))
-    if (nt_kind(c->nt, u) == NK_ReturnNode && comp_scope_of(c, u) == &c->scopes[mi] && share_ret_literal(c->nt, u))
-      return 1;
-  return 0;
+    if (nt_kind(c->nt, u) == NK_ReturnNode && comp_scope_of(c, u) == &c->scopes[mi])
+      n = share_ret_literals(c->nt, u, out, n, cap, 0);
+  return n;
+}
+static int share_ret_typed_str_literal(Compiler *c, int mi) {
+  return share_ret_typed_str_literals(c, mi, NULL, 0) > 0;
+}
+/* The Strings of each such literal are demanded as handles: the walk of a
+   method's value follows an `if`'s arms, and this reaches the literals under
+   a `case` and a `begin` as well. Answers whether anything changed. */
+static int share_ret_demand_literals(Compiler *c, int mi) {
+  int changed = 0, n = share_ret_typed_str_literals(c, mi, NULL, 0);
+  if (n <= 0) return 0;
+  int *lits = malloc(sizeof(int) * (size_t)n);
+  if (!lits) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  share_ret_typed_str_literals(c, mi, lits, n);
+  for (int k = 0; k < n; k++) changed |= strbuf_container_source_walk(c, lits[k], 1, SB_DEMAND);
+  free(lits);
+  return changed;
 }
 /* A share-demanded return may be widened at its construction site when its
    only producer is an empty Hash literal or a blockless Hash.new. These
@@ -22031,6 +22086,24 @@ static int strh_local_ok(Compiler *c, const int *par, int si, LocalVar *lv) {
   return 1;
 }
 enum { STRH_CAND = 1, STRH_BAD = 2 };
+/* Is node n an empty container (`[]`, Array.new) bound to a parameter of a
+   method of the program's own (strh_arg_ok's targets), as an argument or a
+   keyword's value? Nothing types it (its elements settle nothing), and the
+   emitter builds it in the type the parameter has, which has no constructor
+   for the form: a seed that gives the parameter Array[String] must not make
+   it the form, so the class keeps the general Array. */
+static int strh_empty_arg(Compiler *c, const int *par, int n) {
+  const NodeTable *nt = c->nt;
+  if (c->ntype[n] != TY_UNKNOWN || !node_is_empty_container(nt, n)) return 0;
+  int p = par[n];
+  if (p >= 0 && nt_kind(nt, p) == NK_AssocNode && nt_ref(nt, p, "value") == n && par[p] >= 0 &&
+      nt_kind(nt, par[p]) == NK_KeywordHashNode)
+    p = par[par[p]];
+  int pc = p >= 0 ? par[p] : -1;
+  if (pc < 0 || nt_kind(nt, pc) != NK_CallNode || !is_arguments_node_type(nt_type(nt, p))) return 0;
+  int mis[1];
+  return cplan_targets(c, pc, mis, 1) > 0 || (is_new_name(nt_str(nt, pc, "name")) && cplan_initialize(c, pc) >= 0);
+}
 /* Decide the form for every container class with a candidate (a local
    String Array whose Strings the rule shares, or an Array literal inference
    gave the form, infer_array_literal) and apply it: a class whose names all
@@ -22085,8 +22158,7 @@ static int share_strh_gate(Compiler *c) {
     if (sh->kind == SHK_YIELD) continue;
     if (sh->kind == SHK_RET) {
       TyKind rt = c->scopes[sh->scope].ret;
-      if ((rt != TY_STR_ARRAY && rt != TY_STRH_ARRAY && rt != TY_UNKNOWN) || !strh_method_open(&c->scopes[sh->scope]) ||
-          c->scopes[sh->scope].ret_rbs_seeded)
+      if ((rt != TY_STR_ARRAY && rt != TY_STRH_ARRAY && rt != TY_UNKNOWN) || !strh_method_open(&c->scopes[sh->scope]))
         st[r] |= STRH_BAD;
       continue;
     }
@@ -22157,6 +22229,13 @@ static int share_strh_gate(Compiler *c) {
     if (lt == TY_POLY_ARRAY || p < 0 || (nt_kind(nt, p) != NK_LocalVariableWriteNode && !strh_static_write(nt, p, n)))
       st[r] |= STRH_BAD;
   }
+  /* an empty container (`[]`, Array.new) bound to a method's parameter is typed by
+     nothing for the pass above to refuse: its class keeps the general Array */
+  for (int k = 0; k < 2; k++)
+    for (int n = comp_kind_first(c, k ? NK_CallNode : NK_ArrayNode); n >= 0; n = comp_kind_next(c, n)) {
+      int r = share_node_class(c, n);
+      if (r >= 0 && (st[r] & STRH_CAND) && !(st[r] & STRH_BAD) && strh_empty_arg(c, par, n)) st[r] |= STRH_BAD;
+    }
   /* a literal no variable holds stays the general Array: nothing is read from
      it twice, and its elements bind a block's parameter as boxes */
   for (int n = comp_kind_first(c, NK_ArrayNode); n >= 0; n = comp_kind_next(c, n)) {
@@ -22386,7 +22465,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     }
     else if (sh->kind == SHK_RET && repr_str_elems_share(c, h) &&
              (share_ret_typed_str_literal(c, sh->scope) || share_pattern_method(&c->scopes[sh->scope])))
-      changed |= strbuf_method_ret_source_walk(c, sh->scope, -1, 0, SB_DEMAND);
+      changed |= strbuf_method_ret_source_walk(c, sh->scope, -1, 0, SB_DEMAND) | share_ret_demand_literals(c, sh->scope);
     /* a method answering a box the rule shares: the Strings it answers are
        boxed as handles (share_lift_poly_returns) */
     else if (sh->kind == SHK_RET && c->scopes[sh->scope].ret == TY_POLY && repr_str_shares(c, h))
@@ -47577,8 +47656,7 @@ static void an_phase_proc_returns(Compiler *c) {
            block arm: that arm is what a call with a block receives, and the
            if's own type unifies it with the blockless Enumerator arm. */
         if (sc->body >= 0) {
-          int bn = 0; const int *bb = nt_arr(nt, sc->body, "body", &bn);
-          int tail = bn > 0 ? bb[bn - 1] : -1;
+          int tail = scope_body_value(c, s);
           for (int guard = 0; tail >= 0 && guard < 4 && nt_kind(nt, tail) == NK_IfNode; guard++) {
             int pred = nt_ref(nt, tail, "predicate");
             const char *pnm = pred >= 0 && nt_kind(nt, pred) == NK_CallNode ? nt_str(nt, pred, "name") : NULL;
@@ -47601,7 +47679,7 @@ static void an_phase_proc_returns(Compiler *c) {
         for (int id = comp_kind_first(c, NK_ReturnNode); id >= 0 && br != TY_POLY_ARRAY; id = comp_kind_next(c, id)) {
           if (nt_kind(nt, id) == NK_ReturnNode && comp_scope_of(c, id) == sc) {
             int a = nt_ref(nt, id, "arguments"); int an = 0;
-            const int *av = a >= 0 ? nt_arr(nt, id, "arguments", &an) : NULL;
+            const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
             if (an == 1 && infer_type(c, av[0]) == TY_POLY_ARRAY) br = TY_POLY_ARRAY;
           }
         }

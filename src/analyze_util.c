@@ -1513,6 +1513,12 @@ int scope_body_last(Compiler *c, int mi) {
   int n = 0; const int *bb = nt_arr(c->nt, body, "body", &n);
   return n > 0 ? bb[n - 1] : -1;
 }
+/* The node whose value a scope's body answers: its last statement, or the
+   begin that is the body of a def with a rescue of its own; -1 if none. */
+int scope_body_value(Compiler *c, int mi) {
+  int last = scope_body_last(c, mi), body = c->scopes[mi].body;
+  return last < 0 && body >= 0 && nt_kind(c->nt, body) == NK_BeginNode ? body : last;
+}
 /* The ivar a memoizing reader hands out: method `mi`'s value is `@x ||= v`,
    bare or in parentheses, and so is the ivar's slot itself. NULL for any
    other body. */
@@ -3716,12 +3722,14 @@ const int *comp_parent_map(Compiler *c) {
   return c->cg_parent;
 }
 
-/* Is the value of method m only ever taken where a call node reads it? A
-   method the runtime or a protocol calls (deconstruct, to_s, an extension
-   entry, a proc form) has it taken where no node does. */
+/* Is the value of method m only ever taken where a call node reads it, and
+   its type free to be the form? A method the runtime or a protocol calls
+   (deconstruct, to_s, an extension entry, a proc form) has it taken where no
+   node does; one an --rbs seed gave its return (`-> Array[String]`) has the
+   seed's C type, which no handle Array converts into. */
 int strh_method_open(const Scope *m) {
   return m->name && !method_name_implicitly_invoked(m->name) && !(m->class_id >= 0 && (sp_streq(m->name, "deconstruct") || sp_streq(m->name, "deconstruct_keys"))) && !m->is_ext_entry &&
-         !m->is_proc_form && !m->is_lowered_yield;
+         !m->is_proc_form && !m->is_lowered_yield && !m->ret_rbs_seeded;
 }
 /* Is node n, a read of an Array of handles, the value its method answers: the
    body's last statement (an `if`'s arm, a begin's body and parentheses

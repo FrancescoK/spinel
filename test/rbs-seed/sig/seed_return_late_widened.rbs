@@ -1,0 +1,5 @@
+module SeedLate
+  def self.early: (Integer f) -> Array[String]
+  def self.own_rescue: (Integer f) -> Array[String]
+  def self.only: (Integer f) -> Array[String]
+end
