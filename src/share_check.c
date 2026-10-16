@@ -584,6 +584,15 @@ static void sk_read_mark(Compiler *c, struct ShareAgree *A, Buf *b, const char *
   if (!end || v >= c->nt->count) return;
   A->marks++;
   if (face == 'e') { A->declared++; return; }
+  /* Parentheses box as their one statement does (emit_boxed_impl): the
+     box of the parentheses is the mark of that statement right after it,
+     which the check reads in its place */
+  if (face == 'B' && nt_kind(c->nt, (int)v) == NK_ParenthesesNode) {
+    int body = nt_ref(c->nt, (int)v, "body"), bn = 0;
+    const int *bd = body >= 0 ? nt_arr(c->nt, body, "body", &bn) : NULL;
+    long nv = -1;
+    if (bn == 1 && sk_mark_at(end, &nv, NULL, NULL, NULL, NULL) && nv == bd[0]) return;
+  }
   char tmp[32], what[256];
   /* a deep-return pickup (`_sp_ret_strbuf = NULL; const char *_vN = X;
      _sp_ret_strbuf ? that handle : a new one`) over X that is no call (an
