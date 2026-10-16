@@ -11241,6 +11241,52 @@ static int desugar_thread_start(Compiler *c) {
   return changed;
 }
 
+static int is_socket_constructor_class(const char *n) {
+  return n && (sp_streq(n, "TCPSocket") || sp_streq(n, "TCPServer") ||
+               sp_streq(n, "UDPSocket") || sp_streq(n, "UNIXSocket") ||
+               sp_streq(n, "UNIXServer") || sp_streq(n, "Socket"));
+}
+
+/* TCPSocket.open(host, port) and the other socket classes' open without a
+   block -> .new: the same constructor by another name, which otherwise
+   reached the private Kernel#open. The block form, which also closes the
+   socket when the block returns, keeps its call. A program defining a
+   class method named open on a class of its own with one of these names
+   keeps its call too. */
+static int desugar_socket_open(Compiler *c) {
+  if (!sp_feature_required("socket")) return 0;
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, own = 0, changed = 0;
+  for (int id = 0; id < n0 && !own; id++) {
+    if (nt_kind(nt, id) != NK_DefNode) continue;
+    const char *dn = nt_str(nt, id, "name");
+    if (dn && nt_ref(nt, id, "receiver") >= 0 && sp_streq(dn, "open")) own = 1;
+  }
+  if (own) {
+    own = 0;
+    for (int id = 0; id < n0 && !own; id++) {
+      if (nt_kind(nt, id) != NK_ClassNode) continue;
+      int cp = nt_ref(nt, id, "constant_path");
+      if (cp >= 0 && is_socket_constructor_class(nt_str(nt, cp, "name"))) own = 1;
+    }
+    if (own) return 0;
+  }
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "open") || nt_ref(nt, id, "block") >= 0) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0) continue;
+    int rk = nt_kind(nt, recv);
+    const char *rn = (rk == NK_ConstantReadNode || (rk == NK_ConstantPathNode && nt_ref(nt, recv, "parent") < 0))
+                     ? nt_str(nt, recv, "name") : NULL;
+    if (!is_socket_constructor_class(rn)) continue;
+    nt_node_set_str(nt, id, "name", "new");
+    changed = 1;
+  }
+  return changed;
+}
+
 /* system(cmd, ..., out: File::NULL) -> __sp_system_spawn(cmd, ..., out: ...):
    CRuby's system is a spawn and a wait, and Process.spawn already takes the
    options, so a call with keyword arguments goes to builtins/system_spawn.rb,
@@ -43993,6 +44039,7 @@ static void an_phase_desugar_register(Compiler *c) {
   /* `m(&nil)` is the blockless call */
   desugar_nil_block_arg(c);
   desugar_thread_start(c);               /* Thread.start / .fork -> Thread.new */
+  desugar_socket_open(c);                /* TCPSocket.open(h, p) -> TCPSocket.new(h, p) */
   desugar_system_options(c);             /* system(..., out:) -> spawn + wait */
   desugar_io_popen_block(c);             /* IO.popen(cmd) { } -> pipe + spawn + wait */
   desugar_literal_undef_method(c);       /* undef_method :a in a body -> undef a */
