@@ -2684,6 +2684,17 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       RC(RF_PASS, RW_HANDLE_ROUTE);
       return;
     }
+    /* --share-strings: so is an itself, a to_str, a unary + or a
+       Kernel#String of a variable that holds the handle, or a chain of
+       conversions over one (strbuf_var_conversion): boxed as the bytes,
+       `x.then { |q| q.itself }` answered a copy */
+    if (t == TY_STRING && strbuf_var_conversion(c, node)) {
+      buf_puts(b, "sp_box_nullable_obj(");
+      emit_var_conversion_handle(c, node, b);
+      buf_puts(b, ", SP_BUILTIN_STRBUF)");
+      RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
+      return;
+    }
     /* --share-strings: a String value that hands on a variable's handle (an
        append chain over it, `a << x`, or over a bang on it): that handle,
        boxed as it */
