@@ -2005,6 +2005,10 @@ int aset_recv_may_mutate(Compiler *c, int recv, int key, int val);
 /* The receiver of such a store, read into a rooted temp in g_pre, ahead of
    any prelude its key or value moves there (1); inline without g_pre (0). */
 int emit_aset_recv_read(Compiler *c, int recv, Buf *b);
+/* The slot a boxed receiver's store-back writes: under --share-strings the
+   variable itself for a local held in a temp (the call ran on the held
+   value), any other receiver as it is read. */
+void emit_recv_slot(Compiler *c, int recv, Buf *b);
 int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type);
 /* The TypeError CRuby raises for a `**` operand that is neither a Hash, nil
    nor convertible with #to_hash, emitted into g_pre ahead of any keyword

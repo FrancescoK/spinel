@@ -4077,7 +4077,7 @@ static int emit_str_mut_writeback(Compiler *c, int recv, int lvw, int tn, Buf *b
   }
   else if (comp_ntype(c, base) == TY_STRING) { emit_expr(c, base, b); buf_printf(b, " = _t%d; ", tn); }
   else if (comp_ntype(c, base) == TY_POLY) {
-    emit_expr(c, base, b); buf_puts(b, " = sp_poly_str_become(");
+    emit_recv_slot(c, base, b); buf_puts(b, " = sp_poly_str_become(");
     emit_expr(c, base, b); buf_printf(b, ", _t%d); ", tn);
   }
   return 0;
@@ -13850,6 +13850,17 @@ int emit_aset_recv_read(Compiler *c, int recv, Buf *b) {
   buf_printf(b, "_t%d", tn);
   return 1;
 }
+/* See codegen_internal.h. */
+void emit_recv_slot(Compiler *c, int recv, Buf *b) {
+  int rv = unwrap_parens(c, recv);
+  const char *rn = rv >= 0 && nt_kind(c->nt, rv) == NK_LocalVariableReadNode ? nt_str(c->nt, rv, "name") : NULL;
+  Scope *sc = rn ? comp_scope_of(c, rv) : NULL;
+  LocalVar *lv = sc ? scope_local(sc, rn) : NULL;
+  /* (a local whose slot is boxed: a typed local viewed as a box is not one) */
+  if (lv && repr_share_rule(c) && arg_ran_first(rv, 0) && repr_of_slot(c, lv).kind == RK_BOXED)
+    emit_local_ref(c, rv, rn, b);
+  else emit_expr(c, recv, b);
+}
 /* The store for poly_aset_rebound: the receiver into a temp ahead of the
    key and the value, even of a prelude the key moves ahead of the statement
    (emit_aset_recv_read), then the key and the value, the store on the temp,
@@ -13887,9 +13898,14 @@ static void emit_poly_aset_rebound(Compiler *c, int recv, const int *argv, Buf *
     buf_printf(b, "sp_RbVal _t%d = SP_UNLIKELY(_t%d.nil) ? (sp_poly_set_poly(_t%d, sp_box_nil(), _t%d), _t%d) : %s(_t%d, _t%d.v, _t%d); if (",
                to, tk, tr, tv, tr, store, tr, tk, tv);
   else buf_printf(b, "sp_RbVal _t%d = %s(_t%d, _t%d, _t%d); if (", to, store, tr, tk, tv);
-  emit_expr(c, recv, b); buf_printf(b, ".tag == _t%d.tag && ", tr);
-  emit_expr(c, recv, b); buf_printf(b, ".v.p == _t%d.v.p) ", tr);
-  emit_expr(c, recv, b); buf_printf(b, " = _t%d; _t%d; })", to, tv);
+  /* (the variable's own slot, not the temp the receiver is held in: the
+     call ran on the held value, and the answer goes to the variable if it
+     still holds that object) */
+  Buf sb; memset(&sb, 0, sizeof sb);
+  emit_recv_slot(c, recv, &sb);
+  buf_printf(b, "%s.tag == _t%d.tag && %s.v.p == _t%d.v.p) %s = _t%d; _t%d; })", sb.p ? sb.p : "", tr,
+             sb.p ? sb.p : "", tr, sb.p ? sb.p : "", to, tv);
+  free(sb.p);
 }
 
 /* Is the receiver a variable? A String mutator's new contents go back into
@@ -15418,7 +15434,7 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
        promotion survives: assign to a local/ivar lvalue, or write to outer's slot
        for a computed `outer[idx]` receiver; otherwise splice in place. */
     if (recv_is_lvalue) {
-      emit_expr(c, recv, b); buf_puts(b, " = sp_poly_splice("); emit_expr(c, recv, b);
+      emit_recv_slot(c, recv, b); buf_puts(b, " = sp_poly_splice("); emit_expr(c, recv, b);
       buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
     }
     else if (splice_recv_index_slot(c, recv, &outer, &oidx)) {
@@ -15564,7 +15580,7 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       else { buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[1], b); buf_puts(b, "; "); }
       buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d); ", tv);
       if (recv_is_lvalue) {
-        emit_expr(c, recv, b); buf_puts(b, " = sp_poly_splice_range("); emit_expr(c, recv, b);
+        emit_recv_slot(c, recv, b); buf_puts(b, " = sp_poly_splice_range("); emit_expr(c, recv, b);
         buf_puts(b, ", "); emit_expr(c, argv[0], b);
       }
       else if (splice_recv_index_slot(c, recv, &outer, &oidx)) {
@@ -15605,13 +15621,13 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       else { buf_printf(b, "sp_RbVal _t%d = ", tk); emit_boxed(c, argv[0], b); }
       buf_puts(b, "; if ("); emit_expr(c, recv, b); buf_puts(b, ".tag == SP_TAG_STR || sp_poly_is_strbuf(");
       emit_expr(c, recv, b); buf_puts(b, ")) ");
-      emit_expr(c, recv, b);
+      emit_recv_slot(c, recv, b);
       buf_puts(b, " = sp_poly_str_aset_key("); emit_expr(c, recv, b);
       buf_printf(b, at == TY_STRING ? ", sp_box_str(_t%d), _t%d);\nelse " : ", _t%d, _t%d);\nelse ", tk, tv);
       /* a boxed key that is an Integer at run time widens a typed Array
          as the Integer index does (sp_poly_aset_back), stored back */
       if (at == TY_STRING) buf_puts(b, "sp_poly_set_str(");
-      else { emit_expr(c, recv, b); buf_puts(b, " = sp_poly_aset_back("); }
+      else { emit_recv_slot(c, recv, b); buf_puts(b, " = sp_poly_aset_back("); }
       emit_expr(c, recv, b);
       buf_printf(b, ", _t%d", tk);
     }
@@ -15646,7 +15662,7 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
                                      sp_streq(rcvty, "InstanceVariableReadNode"));
       int outer, oidx;
       if (recv_is_lvalue) {
-        emit_expr(c, recv, b);
+        emit_recv_slot(c, recv, b);
         buf_puts(b, " = sp_poly_arr_widen_and_set("); emit_expr(c, recv, b);
         buf_puts(b, ", "); emit_int_expr(c, argv[0], b);
       }

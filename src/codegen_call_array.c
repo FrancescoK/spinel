@@ -2737,9 +2737,13 @@ void emit_strh_elem(Compiler *c, int v, Buf *b) {
    (a method that answers the Array or nil, a parameter some call gives nil,
    an instance variable not set yet). A safe navigation guards it itself. */
 /* Can the receiver be nil, and is the call no safe navigation (which guards
-   it itself)? */
+   it itself) and its receiver not tested already? A receiver the call plan
+   tests ahead of the call (emit_nil_target_head: cplan_nil, the arguments
+   run first) is seen as tested (nil_tested) and read bare; any other, such
+   as an instance variable the plan leaves untested, is read through
+   sp_StrhArray_rnn. */
 static int strh_recv_nilable(Compiler *c, int id, int recv) {
-  return !call_is_safe_nav(c->nt, id) && repr_of(c, recv).may_nil;
+  return !call_is_safe_nav(c->nt, id) && repr_of(c, recv).may_nil && !repr_of(c, recv).nil_tested;
 }
 void strh_emit_recv(Compiler *c, int id, int recv, Buf *b) {
   const char *nm = nt_str(c->nt, id, "name");

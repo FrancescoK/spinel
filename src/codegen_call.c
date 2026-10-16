@@ -22648,6 +22648,9 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   if (emit_or_take_back(c, id, b, emit_str_append_chain_handle)) return 1;
   const NodeTable *nt = c->nt;
   if (id == g_operand_order_node) return 0;
+  /* a `&.` call orders its operands inside its guard (emit_call_safe_nav_arms),
+     after the nil test that skips them */
+  if (sn_guard_pending(c, id)) return 0;
   /* --share-strings: a String mutator's receiver that is a call answering
      its receiver over a handle (`id(s).upcase!.sub!(x, y())`) is held as
      that handle, run once: the mutator takes it from the temp
@@ -23621,8 +23624,13 @@ static int nil_target_operand(Compiler *c, int v, int a, int boxed, int *node, T
   if (k == NK_SplatNode) return nil_target_operand(c, nt_ref(nt, v, "expression"), a, boxed, node, ty, n, max);
   Repr tr = repr_of(c, v);
   TyKind t = tr.as_ty;
+  /* a String the store wraps in a handle of its own (`+"x"` pushed where the
+     element is a handle, a Range's endpoint: repr_handle_apart) renders as
+     its bytes where its stored type is the handle, so no temp of that type
+     holds it: it runs in the call */
   if (*n >= max ||
-      (!read && !nil_target_bindable(k, boxed)) || tr.untyped || t == TY_VOID || comp_ty_value_obj(c, t))
+      (!read && !nil_target_bindable(k, boxed)) || tr.untyped || t == TY_VOID || comp_ty_value_obj(c, t) ||
+      repr_handle_apart(c, v, tr))
     return 0;
   node[*n] = v; ty[*n] = t; (*n)++;
   return 1;
@@ -23640,11 +23648,19 @@ static int nil_target_operands(Compiler *c, int id, int boxed, int *node, TyKind
   NodeKind rk = nt_kind(nt, r);
   int a = nt_ref(nt, id, "arguments"), an = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-  /* a user object in a local an argument or the block reassigns
-     (`l.m((l = nil; x))`): the receiver Ruby read first is held, where the
-     slot would be tested after the write */
+  /* a user object, Array or Hash in a local (or a parameter) an argument or
+     the block reassigns (`l.m((l = nil; x))`): the receiver Ruby read first
+     is held, where the slot would be tested after the write. A String is
+     tested in its slot, where a mutator writes back. */
   int rebound = 0;
-  if (rk == NK_LocalVariableReadNode && ty_is_object(repr_of(c, r).as_ty)) {
+  TyKind rty = rk == NK_LocalVariableReadNode ? repr_of(c, r).as_ty : TY_UNKNOWN;
+  /* (a boxed local too under --share-strings, where a boxed String is a
+     handle: the held box sees an in-place change as the slot does; without
+     it a boxed String is a copy written back to the slot, and the held one
+     would be stale) */
+  if (rk == NK_LocalVariableReadNode &&
+      (ty_is_object(rty) || ty_is_array(rty) || ty_is_obj_array(rty) || ty_is_hash(rty) || rty == TY_STRH_ARRAY ||
+       rty == TY_IO || (rty == TY_POLY && repr_share_rule(c)))) {
     const char *ln = nt_str(nt, r, "name");
     int blk = nt_ref(nt, id, "block");
     for (int i = 0; ln && i < an && !rebound; i++) rebound = subtree_writes_local(c, av[i], ln);
@@ -23713,7 +23729,9 @@ static void emit_nil_target_rest(Compiler *c, int v, const int *node, int n, Buf
   if (k == NK_AssocSplatNode) { emit_nil_target_rest(c, nt_ref(nt, v, "value"), node, n, b); return; }
   if (k == NK_SplatNode) { emit_nil_target_rest(c, nt_ref(nt, v, "expression"), node, n, b); return; }
   Buf ob, op;
-  render_operand(c, v, 0, 0, 0, &ob, &op);
+  /* (a String the store wraps in a handle of its own runs as the String it
+     is: nothing here keeps its handle) */
+  render_operand(c, v, operand_fresh_str(c, v), 0, 0, &ob, &op);
   if (op.p) buf_puts(b, op.p);
   buf_printf(b, "(void)(%s); ", ob.p ? ob.p : "0");
   free(ob.p); free(op.p);
@@ -23737,7 +23755,8 @@ static int poly_target_call(Compiler *c, int id) {
   const char *nm = nt_str(nt, id, "name");
   if (r < 0 || a < 0 || !nm || sn_guard_pending(c, id) || c->ntype[r] != TY_POLY ||
       comp_ntype(c, r) != TY_POLY || !subtree_has_side_effect(c, a) ||
-      comp_method_index(c, nm) >= 0 || any_class_defines(c, nm) || nil_target_read_rebound(c, r, a))
+      comp_method_index(c, nm) >= 0 || any_class_defines(c, nm) ||
+      (nil_target_read_rebound(c, r, a) && !(repr_share_rule(c) && nt_kind(nt, r) == NK_LocalVariableReadNode)))
     return 0;
   for (int k = 0; k < c->nclasses; k++)
     if (comp_cmethod_in_chain(c, k, nm, NULL) >= 0) return 0;
