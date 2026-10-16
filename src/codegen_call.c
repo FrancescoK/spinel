@@ -15289,8 +15289,12 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
     /* bigint == / != */
     if ((rt == TY_BIGINT || a0 == TY_BIGINT) &&
         emit_float_bigint_cmp(c, recv, argv[0], eq ? "==" : "!=", b)) return 1;
+    /* ...a C int, so not where a boxed operand's comparison is itself
+       boxed (a program class's == answers more than a bool): the poly
+       arm below answers that one through sp_poly_eq_value */
     if ((rt == TY_BIGINT || a0 == TY_BIGINT) &&
-        bigint_cmp_operand_ok(rt) && bigint_cmp_operand_ok(a0)) {
+        bigint_cmp_operand_ok(rt) && bigint_cmp_operand_ok(a0) &&
+        !((rt == TY_POLY || a0 == TY_POLY) && repr_of(c, id).kind == RK_BOXED)) {
       buf_printf(b, "(sp_bigint_cmp(");
       emit_bigint_operand(c, recv, b);
       buf_puts(b, ", ");
