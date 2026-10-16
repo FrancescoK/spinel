@@ -32965,7 +32965,20 @@ int file_stat_nil_call(Compiler *c, int v) {
    constant, or a class value chosen at run time -- each branch of a `?:` or
    an `if`, a parenthesized one, or an element of a literal Array of them
    (`[A, B][i]`). Up to cap of them, in *out; answers the count. */
-static int new_recv_classes(Compiler *c, int recv, int *out, int cap) {
+/* Is a `new` on recv a run-time switch over every class of the program: a
+   class value no analysis names (`Object.const_get(x).new`, `o.class.new`),
+   not a constant, self, an inline `Struct.new(...)`, a `self.class` naming
+   one class or a local holding one? (#9093) */
+int new_recv_every_class(Compiler *c, int recv) {
+  if (recv < 0) return 0;
+  NodeKind rk = nt_kind(c->nt, recv);
+  if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode || rk == NK_SelfNode) return 0;
+  if (rk == NK_CallNode && is_struct_call(c, recv)) return 0;
+  if (self_class_static_ci(c, recv) >= 0 || class_var_static_ci(c, recv) >= 0) return 0;
+  TyKind rt = infer_type(c, recv);
+  return rt == TY_CLASS || rt == TY_POLY;
+}
+int new_recv_classes(Compiler *c, int recv, int *out, int cap) {
   const NodeTable *nt = c->nt;
   if (recv < 0 || cap <= 0) return 0;
   NodeKind rk = nt_kind(nt, recv);
@@ -38280,12 +38293,10 @@ static void mark_nullable_int_locals(Compiler *c) {
       /* a class value no analysis names (`Object.const_get(x).new`): the
          run-time switch constructs any Struct of the program with the
          arguments given and nil for the rest (#9093: a typed member got 0.0
-         where CRuby has nil) */
-      int every = 0;
-      if (nk == 0 && recv >= 0 && rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) {
-        TyKind rt = infer_type(c, recv);
-        every = rt == TY_CLASS || rt == TY_POLY;
-      }
+         where CRuby has nil); an argument that may be nil makes its member
+         nullable there too, as the arguments' types reach the members
+         (struct_new_types_members_at) */
+      int every = nk == 0 && new_recv_every_class(c, recv);
       int nloop = every ? c->nclasses : nk;
       for (int q = 0; q < nloop; q++) {
       int k = every ? q : ks[q];
@@ -38310,10 +38321,6 @@ static void mark_nullable_int_locals(Compiler *c) {
           const char *kv = nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
           if (kv && sp_streq(kv, ci->ivars[m] + 1)) vnode = nt_ref(nt, ke[e], "value");
         }
-        /* a class no analysis names: only the members its arguments leave
-           out (an argument's own nil reaches the member by the known
-           constructions, and asking it of every class widened them all) */
-        if (every && vnode >= 0) continue;
         if (vnode < 0 ? !ci->is_data : nullable_int_value(c, vnode)) {
           ci->ivar_nullable_int[m] = 1; changed = 1;
         }

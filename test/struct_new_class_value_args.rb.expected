@@ -1,0 +1,10 @@
+#<struct B b="s">
+#<struct V v=0.5, w=1>
+#<struct B b=7>
+#<struct B b=8>
+#<struct B b=[1]>
+#<struct V v=2.5, w=nil>
+#<struct V v="x", w=nil>
+#<struct B b=9>
+#<struct A a=9>
+[1, 2]

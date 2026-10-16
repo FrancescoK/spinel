@@ -8792,7 +8792,13 @@ static int struct_with_types_members(Compiler *c, int id, int ci) {
   return changed;
 }
 
+/* given_only: only the members the call's arguments supply (a `new` on a
+   class value, whose omitted members the nullable pass makes nil) */
+static int struct_new_types_members_at(Compiler *c, int id, int ci, int given_only);
 static int struct_new_types_members(Compiler *c, int id, int ci) {
+  return struct_new_types_members_at(c, id, ci, 0);
+}
+static int struct_new_types_members_at(Compiler *c, int id, int ci, int given_only) {
   const NodeTable *nt = c->nt;
   int changed = 0;
   ClassInfo *cls = &c->classes[ci];
@@ -8849,6 +8855,7 @@ static int struct_new_types_members(Compiler *c, int id, int ci) {
       }
     }
     else if (a < an) vnode = argv[a];
+    if (given_only && vnode < 0 && !(splat_at >= 0 && a >= splat_at) && !kw_splat) continue;
     if (class_ivar_pin_holds(cls, cls->ivars[a], vnode >= 0 ? infer_type(c, vnode) : TY_NIL)) continue;
     if ((splat_at >= 0 && a >= splat_at) || (kw_splat && (vnode < 0 || splat_after) && (!kwf || a == 0))) {
       TyKind sm = ty_unify(cls->ivar_types[a], TY_POLY);
@@ -9749,6 +9756,26 @@ static int infer_param_types_ex(Compiler *c, int settle) {
         Scope *ss = comp_scope_of(c, id);
         if (ss && ss->is_cmethod && ss->class_id >= 0 && c->classes[ss->class_id].is_struct)
           changed |= struct_new_types_members(c, id, ss->class_id);
+      }
+      /* `new` on a class value (`[A, B][i].new(v)`, `Object.const_get(x).new(v)`):
+         the run-time switch builds each Struct the value can be, or any
+         Struct of the program where no analysis names the class, with the
+         arguments given, as a direct `S.new` is built (#9093: a String member
+         was handed an Integer it could not hold, and the program faulted). A
+         class with an initialize binds them as a call (bind_call_params);
+         the members the call leaves out are nil, which the nullable pass
+         marks without widening them. */
+      if (sp_streq(name, "new") && rty && lci < 0 && !sp_streq(rty, "ConstantReadNode") &&
+          !sp_streq(rty, "ConstantPathNode") && !sp_streq(rty, "SelfNode")) {
+        int ks[8], nk = new_recv_classes(c, recv, ks, 8);
+        int every = nk == 0 && new_recv_every_class(c, recv);
+        int nloop = every ? c->nclasses : nk;
+        for (int q = 0; q < nloop; q++) {
+          int k = every ? q : ks[q];
+          if (k < 0 || k >= c->nclasses || !c->classes[k].is_struct ||
+              comp_method_in_chain(c, k, "initialize", NULL) >= 0) continue;
+          changed |= struct_new_types_members_at(c, id, k, 1);
+        }
       }
       /* `new` on an INSTANCE whose class defines an instance method `new`
          is an ordinary method call, not a constructor: bind its params.

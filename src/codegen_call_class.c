@@ -2899,6 +2899,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
       int pd_uid = is && default_refs_earlier_param(c, is) ? ++g_tmp : 0, pd_base = g_nren;
       Buf pdpre; memset(&pdpre, 0, sizeof pdpre);
       Buf ab; memset(&ab, 0, sizeof ab);
+      Buf afill; memset(&afill, 0, sizeof afill);   /* nil bytes of given members (#9093) */
       /* a default reading the instance: allocate first, then run initialize
          on the object with self bound to it, as emit_ctor_alloc_init does */
       const char *sv_cs = g_ctor_self, *sv_csd = g_ctor_self_deref;
@@ -2921,15 +2922,25 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
           continue;
         }
         TyKind pt = TY_POLY;
+        int mvi = -1;
         /* a generated member constructor takes the member's own slot type */
         if (gen_ctor) {
           char mvn[300]; snprintf(mvn, sizeof mvn, "@%s", c->classes[ci].readers[j]);
-          int mvi = comp_ivar_index(&c->classes[ci], mvn);
+          mvi = comp_ivar_index(&c->classes[ci], mvn);
           if (mvi >= 0 && c->classes[ci].ivar_types[mvi] != TY_UNKNOWN)
             pt = c->classes[ci].ivar_types[mvi];
         }
         if (j >= argc) { buf_puts(&ab, default_value_from_compiler(c, pt)); continue; }   /* a nil-filled member */
         char tn[24]; snprintf(tn, sizeof tn, "_t%d", atmp[j]);
+        /* an Integer or Float member that can hold nil takes the argument's
+           value, and its nil byte where the argument is nil, as the direct
+           `S.new(x, nil)` sets it (#9093) */
+        if (mvi >= 0 && oint_kind(pt) && ivar_has_nilbit(c, ci, mvi) && !c->classes[ci].is_value_type) {
+          buf_printf(&ab, "%s(%s).v", oint_unbox(pt), tn);
+          char set[200]; ivar_nilbit_set(c, ci, mvi, "_s->", set, sizeof set);
+          buf_printf(&afill, "if (%s(%s).nil) %s; ", oint_unbox(pt), tn, set);
+          continue;
+        }
         emit_unbox_text(c, pt, tn, &ab);
       }
       arg_layout_free(&L);
@@ -2937,8 +2948,10 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
       g_pre = sv_pre;
       g_ctor_self = sv_cs; g_ctor_self_deref = sv_csd;
       emit_ctor_block_slot(c, id, initm, np > 0 ? ", " : "", &ab);
+      g_arm_member_fills = afill.p;
       emit_ctor_arm_case(c, ci, rt2, self_t, pdpre.p, ab.p ? ab.p : "", is ? -1 : argc, b);
-      free(pdpre.p); free(ab.p);
+      g_arm_member_fills = NULL;
+      free(pdpre.p); free(ab.p); free(afill.p);
     }
     ctor_arity_emit(&aerr, b);
     emit_builtin_new_arms(c, argc, atmp, rt2, kt, 1, b);

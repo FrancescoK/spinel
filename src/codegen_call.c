@@ -10735,6 +10735,9 @@ static void ctor_init_call(Compiler *c, int cid, int t, const char *args, Buf *b
    bindings, which put the arm in a block. With `self_t` >= 0 the object was
    already allocated into `_t<self_t>` (a default reads it) and initialize
    runs on it. */
+/* The nil bytes a Struct arm sets for the arguments it was given that turn
+   out nil (`k.new("x", nil)`), statements on `_s` (emit_ctor_arm_case) */
+const char *g_arm_member_fills = NULL;
 void emit_ctor_arm_case(Compiler *c, int ci, int rt2, int self_t, const char *pre,
                                const char *args, int given, Buf *b) {
   const char *cn = c->classes[ci].c_name;
@@ -10742,6 +10745,8 @@ void emit_ctor_arm_case(Compiler *c, int ci, int rt2, int self_t, const char *pr
      their nil bytes set as the direct `S.new` sets them (#9093) */
   Buf fills; memset(&fills, 0, sizeof fills);
   if (given >= 0 && self_t < 0 && !c->classes[ci].is_value_type) struct_nil_fill_stmts(c, ci, given, "_s->", &fills);
+  if (g_arm_member_fills && g_arm_member_fills[0] && self_t < 0 && !c->classes[ci].is_value_type)
+    buf_puts(&fills, g_arm_member_fills);
   if (fills.p) {
     buf_printf(b, "case %d: { %ssp_%s *_s = sp_%s_new(%s); %s_t%d=sp_box_obj(_s,", ci, pre ? pre : "", cn, cn, args, fills.p, rt2);
     arysub_box_id(c, ty_object(ci), b);
