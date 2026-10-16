@@ -1596,14 +1596,11 @@ void emit_slot_orw_value_o(Compiler *c, TyKind t, int elems_handle, const char *
   free(vpre.p); free(vval.p);
 }
 
-/* NoMethodError for a non-public half of an `||=` / `&&=` pair, as an
-   ordinary call's visibility refusal raises it: the receiver (recv, of type
-   rt) rides it as NoMethodError#receiver. */
-static void emit_orw_vis_raise(Compiler *c, int vis, const char *nm, int cid, TyKind rt,
-                               const char *recv, Buf *b) {
-  char head[400];
-  snprintf(head, sizeof head, "%s method '%s' called for an instance of ",
-           vis == SP_VIS_PRIVATE ? "private" : "protected", nm);
+/* NoMethodError for a half of an `||=` / `&&=` pair, as an ordinary call
+   raises it -- head is the message up to the class name: the receiver
+   (recv, of type rt) rides it as NoMethodError#receiver. */
+static void emit_orw_raise(Compiler *c, const char *head, int cid, TyKind rt,
+                           const char *recv, Buf *b) {
   buf_puts(b, "(sp_exc_stage_recv("); emit_boxed_text(c, rt, recv, b);
   buf_puts(b, "), sp_raise_cls(\"NoMethodError\", ");
   if (anon_class_text(c, cid, head, b)) buf_puts(b, "))");
@@ -1611,6 +1608,15 @@ static void emit_orw_vis_raise(Compiler *c, int vis, const char *nm, int cid, Ty
     const char *rn = class_ruby_name(c, cid) ? class_ruby_name(c, cid) : c->classes[cid].name;
     buf_printf(b, "(&(\"\\xff\" \"%s%s\")[1])))", head, rn);
   }
+}
+
+/* ...for a non-public half */
+static void emit_orw_vis_raise(Compiler *c, int vis, const char *nm, int cid, TyKind rt,
+                               const char *recv, Buf *b) {
+  char head[400];
+  snprintf(head, sizeof head, "%s method '%s' called for an instance of ",
+           vis == SP_VIS_PRIVATE ? "private" : "protected", nm);
+  emit_orw_raise(c, head, cid, rt, recv, b);
 }
 
 int emit_call_or_write_via_methods(Compiler *c, int id, int is_or, Buf *b) {
@@ -1634,6 +1640,20 @@ int emit_call_or_write_via_methods(Compiler *c, int id, int is_or, Buf *b) {
   int self_recv = nt_kind(nt, recv) == NK_SelfNode;
   int rvis = self_recv ? SP_VIS_PUBLIC : method_vis_for_caller(c, id, cid, attr);
   int wvis = self_recv ? SP_VIS_PUBLIC : method_vis_for_caller(c, id, cid, wn);
+  /* No reader at all -- no method, no attribute, no method_missing to
+     answer it -- is the reader call's NoMethodError, raised before the
+     value runs. The field-store way below has no ivar to store into. */
+  if (rk == SP_MEMBER_NONE && comp_method_in_chain(c, cid, "method_missing", NULL) < 0) {
+    TyKind want = repr_of(c, id).as_ty;
+    if (want == TY_UNKNOWN || want == TY_VOID) want = TY_POLY;
+    int trv = ++g_tmp; char rv[32]; snprintf(rv, sizeof rv, "_t%d", trv);
+    char head[400]; snprintf(head, sizeof head, "undefined method '%s' for an instance of ", attr);
+    buf_puts(b, "({ "); emit_ctype(c, rt, b); buf_printf(b, " %s = ", rv); emit_expr(c, recv, b); buf_puts(b, "; ");
+    emit_orw_raise(c, head, cid, rt, rv, b);
+    buf_printf(b, "; %s; })", oint_kind(want) && node_is_oint(c, id) ? oint_nil(want)
+                                                                    : default_value_from_compiler(c, want));
+    return 1;
+  }
   if (rk != SP_MEMBER_METHOD && wk != SP_MEMBER_METHOD &&
       rvis == SP_VIS_PUBLIC && wvis == SP_VIS_PUBLIC) return 0;
   /* a method half takes the class that defines it, an ancestor of the
