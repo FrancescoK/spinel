@@ -245,12 +245,37 @@ static int program_nests_class_named(Compiler *c, const char *leaf) {
   }
   return 0;
 }
+/* Is class j's own (leaf) name `leaf`? A nested class may carry its path
+   (`Frame::JSON::Encoding`, or `Frame__JSON__Encoding` once qualified). */
+static int class_leaf_is(Compiler *c, int j, const char *leaf) {
+  size_t ll = strlen(leaf);
+  const char *n = c->classes[j].name;
+  size_t l = n ? strlen(n) : 0;
+  if (l == ll && sp_streq(n, leaf)) return 1;
+  if (l > ll + 2 && sp_streq(n + l - ll, leaf) && !strncmp(n + l - ll - 2, "::", 2)) return 1;
+  n = c->classes[j].c_name;
+  l = n ? strlen(n) : 0;
+  return l > ll + 2 && sp_streq(n + l - ll, leaf) && !strncmp(n + l - ll - 2, "__", 2);
+}
+/* Does node `id` sit inside a namespace that holds its own class or module
+   `leaf` (in AS::JSON, or a class nested in it, `Encoding` is
+   AS::JSON::Encoding)? The enclosing body and the classes around it stand
+   for the lexical scopes. Without the class-body map, any nested `leaf`
+   counts. */
+static int lexically_sees_nested(Compiler *c, int id, const char *leaf) {
+  if (!c->node_cbody || id >= c->node_cap) return program_nests_class_named(c, leaf);
+  int d = 0;
+  for (int k = c->node_cbody[id]; k >= 0 && k < c->nclasses && d < 64; k = c->classes[k].enclosing_class, d++)
+    for (int j = 0; j < c->nclasses; j++)
+      if (c->classes[j].enclosing_class == k && class_leaf_is(c, j, leaf)) return 1;
+  return 0;
+}
 /* `P::NAME` where P is a builtin class or module: NAME is P's own constant,
    never a program constant that shares the leaf name (the leaf-keyed table
    answered M::Flags::BINARY for Encoding::BINARY), unless the program writes
    NAME into P. Object is not one: its constants are the top-level ones. Nor
-   is a P the program also defines nested somewhere, which the path may
-   name lexically. */
+   is a P the path names lexically: one nested in a namespace the path is
+   written in. */
 int const_path_in_closed_builtin(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, id) != NK_ConstantPathNode) return 0;
@@ -278,7 +303,7 @@ int const_path_in_closed_builtin(Compiler *c, int id) {
     memo_ver = nt->version; memo_ncls = c->nclasses;
   }
   if (memo[id] < 0)
-    memo[id] = (signed char)(!program_nests_class_named(c, pn) && !program_writes_const_in(c, pn, nm));
+    memo[id] = (signed char)(!lexically_sees_nested(c, id, pn) && !program_writes_const_in(c, pn, nm));
   return memo[id];
 }
 /* Can the path write `t` (`Q::NAME = v`) define NAME where a lookup
