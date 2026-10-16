@@ -23615,9 +23615,13 @@ static int nil_target_operands(Compiler *c, int id, int boxed, int *node, TyKind
      tested in its slot, where a mutator writes back. */
   int rebound = 0;
   TyKind rty = rk == NK_LocalVariableReadNode ? repr_of(c, r).as_ty : TY_UNKNOWN;
+  /* (a boxed local too under --share-strings, where a boxed String is a
+     handle: the held box sees an in-place change as the slot does; without
+     it a boxed String is a copy written back to the slot, and the held one
+     would be stale) */
   if (rk == NK_LocalVariableReadNode &&
       (ty_is_object(rty) || ty_is_array(rty) || ty_is_obj_array(rty) || ty_is_hash(rty) || rty == TY_STRH_ARRAY ||
-       rty == TY_IO)) {
+       rty == TY_IO || (rty == TY_POLY && repr_share_rule(c)))) {
     const char *ln = nt_str(nt, r, "name");
     int blk = nt_ref(nt, id, "block");
     for (int i = 0; ln && i < an && !rebound; i++) rebound = subtree_writes_local(c, av[i], ln);
@@ -23712,7 +23716,8 @@ static int poly_target_call(Compiler *c, int id) {
   const char *nm = nt_str(nt, id, "name");
   if (r < 0 || a < 0 || !nm || sn_guard_pending(c, id) || c->ntype[r] != TY_POLY ||
       comp_ntype(c, r) != TY_POLY || !subtree_has_side_effect(c, a) ||
-      comp_method_index(c, nm) >= 0 || any_class_defines(c, nm) || nil_target_read_rebound(c, r, a))
+      comp_method_index(c, nm) >= 0 || any_class_defines(c, nm) ||
+      (nil_target_read_rebound(c, r, a) && !(repr_share_rule(c) && nt_kind(nt, r) == NK_LocalVariableReadNode)))
     return 0;
   for (int k = 0; k < c->nclasses; k++)
     if (comp_cmethod_in_chain(c, k, nm, NULL) >= 0) return 0;

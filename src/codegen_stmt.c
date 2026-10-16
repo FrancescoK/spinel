@@ -23117,7 +23117,7 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
       /* written back only while the variable still holds the receiver read
          first: a key or right-hand side that rebinds it keeps the rebinding */
       buf_puts(b, " ");
-      emit_expr(c, recv, b);
+      emit_recv_slot(c, recv, b);
       buf_printf(b, " = %s(", kt == TY_INT ? "sp_poly_arr_widen_and_set_to" : "sp_poly_aset_back_to");
       emit_expr(c, recv, b);
       buf_printf(b, ", _t%d, _t%d, %s); }\n", ta, tb, nv);
