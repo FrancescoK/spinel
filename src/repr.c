@@ -653,9 +653,9 @@ ReprForm repr_box_form(const Compiler *c, Repr r) {
   (void)c;
   if (t == TY_STRING) return RF_STR;
   if (r.big) return RF_BIGINT;
-  /* an Array of pointers (objects, nested Arrays) is stamped with what its
-     elements are */
-  if (ty_is_object(r.elem) || ty_is_array(r.elem)) return RF_PTR_ARRAY;
+  /* an Array of pointers (objects, nested Arrays, a String Array's handles)
+     is stamped with what its elements are */
+  if (ty_is_object(r.elem) || ty_is_array(r.elem) || t == TY_STRH_ARRAY) return RF_PTR_ARRAY;
   if (ty_is_object(t)) return r.dyn_cls ? RF_NULLABLE_DYN : RF_NULLABLE;
   return RF_NULLABLE;
 }
