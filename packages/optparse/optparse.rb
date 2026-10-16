@@ -2191,6 +2191,7 @@ XXX
   %w[- no false].each {|el| yesno[el] = false}
   %w[+ yes true].each {|el| yesno[el] = true}
   yesno['nil'] = false          # should be nil?
+  yesno[:nil] = false; yesno.delete(:nil)   # Spinel: lets every CompletingHash take Symbol keys
   accept(TrueClass, yesno) {|arg, val| val == nil or val}
   #
   # Similar to TrueClass, but defaults to false.
