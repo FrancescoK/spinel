@@ -1,0 +1,3 @@
+module Widget
+  def self.run: (untyped name, untyped klass) -> untyped
+end

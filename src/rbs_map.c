@@ -192,8 +192,12 @@ static const char *hash_tag_for_kv(const char *k, const char *v) {
         return "str_poly_hash";
     }
     if (strcmp(k, "symbol") == 0) {
-        if (strcmp(v, "int") == 0)    return "sym_int_hash";
-        if (strcmp(v, "string") == 0) return "sym_str_hash";
+        /* The analyzer has one Symbol-keyed Hash kind, the poly-valued one.
+         * `sym_int_hash` and `sym_str_hash` named kinds it does not have, so
+         * its parser dropped the seed and the slot fell to poly: a box the
+         * analysis does not even take for a Hash (`h.keys` on it resolves
+         * to no method). A `Hash[Symbol, Integer]` is a Symbol-keyed Hash
+         * whose values are boxed, as `Hash[Symbol, untyped]` is. */
         return "sym_poly_hash";
     }
     if (strcmp(k, "int") == 0) {

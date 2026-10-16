@@ -759,6 +759,18 @@ static inline sp_RbVal sp_box_int(sp_int v)    { sp_RbVal r; r.tag = SP_TAG_INT;
    carries SP_TAG_STR and fails tag-keyed comparisons -- `defined?(x).should
    == nil` compared STR(NULL) against NIL and answered false. */
 static inline sp_RbVal sp_box_str(const char *v){ sp_RbVal r; if (!v) { r.tag = SP_TAG_NIL; r.cls_id = 0; r.v.s = NULL; return r; } r.tag = SP_TAG_STR;  r.cls_id = 0; r.v.s = v; return r; }
+/* A boxed value as the String it holds, for a reader that takes a String
+   by its tag: a shared String's handle (SP_BUILTIN_STRBUF) reads as a box
+   of its bytes, the handle's first field (sp_String.data); any other value
+   is itself. */
+static inline sp_RbVal sp_rbval_str(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p) {
+    v.tag = SP_TAG_STR;
+    v.cls_id = 0;
+    v.v.s = *(const char **)v.v.p;
+  }
+  return v;
+}
 /* A String mutator's value from a poly arm, which answers the box or the
    unboxed String by mutator: boxed either way (a NULL String is nil). */
 static inline sp_RbVal sp_box_same(sp_RbVal v){ return v; }
@@ -788,6 +800,16 @@ static inline sp_ofloat sp_poly_as_float_or_nil(sp_RbVal v) {
    boxed element read goes through here. */
 static inline sp_RbVal sp_box_oint(sp_oint o)     { return o.nil ? sp_box_nil() : sp_box_int(o.v); }
 static inline sp_RbVal sp_box_ofloat(sp_ofloat o) { return o.nil ? sp_box_nil() : sp_box_float(o.v); }
+/* A generic builtin entry's arm whose answer the analysis types boxed but
+   whose emitter writes it unboxed (Integer#gcd on a boxed receiver): boxed
+   by the C type the arm's value has. Expanded only in a program's own C,
+   after every type it names is declared. */
+static inline sp_RbVal sp_bi_box_id(sp_RbVal v) { return v; }
+static inline sp_RbVal sp_bi_box_mstr(char *v) { return sp_box_str(v); }
+#define SP_BI_BOX(x) _Generic((x), sp_RbVal: sp_bi_box_id, sp_int: sp_box_int, sp_float: sp_box_float, \
+  sp_bool: sp_box_bool, const char *: sp_box_str, char *: sp_bi_box_mstr, sp_oint: sp_box_oint, \
+  sp_ofloat: sp_box_ofloat, sp_PolyArray *: sp_box_poly_array, \
+  sp_FloatArray *: sp_box_float_array, sp_StrArray *: sp_box_str_array)(x)
 /* The value of a nullable slot used where CRuby's nil would raise. The three
    raisers live in lib/sp_str.c and lib/sp_cold.c; SP_COLD, so a check in a
    hot function keeps its raise path out of the way (optcarrot's CPU#fetch

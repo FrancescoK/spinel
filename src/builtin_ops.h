@@ -30,6 +30,10 @@ enum {
 };
 int bop_name_has_reader(const char *name, unsigned surface);
 int bop_name_mutates(const char *name, unsigned sites);
+/* Whether a lone splat into `name` on a boxed receiver reaches the builtin
+   through its generic entry (an_bi_generic_splat, bi_generic_fn), and up to
+   how many arguments (*most, -1 for every count the builtin takes). */
+int bop_generic_entry(const char *name, int *most);
 
 /* The runtime call behind a zero-argument IO/String row. Boxed dispatch
    owns its tag and result-slot guards; it shares the call facts with the
@@ -148,7 +152,7 @@ typedef enum {
 /* A set of argument kinds, one bit per TyKind: BOP_K(TY_INT) | BOP_K(TY_FLOAT) */
 typedef unsigned long long BopKinds;
 #define BOP_K(k) (1ULL << (k))
-_Static_assert(TY_FLOAT_ARRAY_ARRAY < 64, "a BopKinds set holds a bit per TyKind");
+_Static_assert(TY_STRH_ARRAY < 64, "a BopKinds set holds a bit per TyKind");
 
 typedef struct BuiltinOp {
   TyKind recv;            /* receiver kind the row applies to */
@@ -397,6 +401,13 @@ typedef enum {
    family's default row's when the name has none, or 0 when the family has
    no default either. */
 int bop_share(TyKind fam, const char *name);
+/* Does every builtin kind that has `name` at this call shape (argc
+   arguments, a block when has_block) answer it keeping none of the Strings
+   it is handed and answering none it was handed: is each row of the name a
+   family's whose methods do so (a String, an IO, a scalar) with that
+   family's share fact BSH_PURE, and no Object or Kernel row the name's?
+   A receiver of any other builtin kind then has no such method. */
+int bop_share_pure_anywhere(const char *name, int argc, int has_block);
 int builtin_ops_share_check(void);
 /* Exact name lookup, including iterator contracts. */
 int bop_share_named(TyKind fam, const char *name);

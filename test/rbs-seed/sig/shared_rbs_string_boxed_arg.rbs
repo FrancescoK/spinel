@@ -1,0 +1,19 @@
+class ShrbsbTake
+  def take: (String a) -> untyped
+  def kw: (a: String) -> untyped
+  def optkw: (?a: String) -> untyped
+end
+
+module ShrbsbMod
+  def self.f: (String? a) -> untyped
+end
+
+class ShrbsbHold
+  @x: String
+  @z: String?
+  attr_reader y: String?
+end
+
+class ShrbsbSrc
+  def v: () -> untyped
+end

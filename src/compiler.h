@@ -23,6 +23,8 @@ extern int g_require_gate;
 /* the program may load a file the compiler did not read (spinel_parse.c,
    above resolve_requires): what that file would define is not in the node table */
 extern int g_require_unread;
+extern const char **g_required_features;   /* spinel_parse.c */
+extern int g_nrequired_features;
 /* SPINEL_SHARE_STRINGS is on: set, not empty and not "0" (spinel_parse.c) */
 int sp_share_strings_env(void);
 void sp_feature_mark(const char *name);
@@ -46,6 +48,25 @@ enum { SP_VIS_PUBLIC = 0, SP_VIS_PRIVATE = 1, SP_VIS_PROTECTED = 2 };
    which a call dispatches to class methods. `bv`: the value may also be a
    builtin (a container, a Proc), whose own methods then answer too. */
 #define CLS_SET_MAX 16
+/* The tables infer_type reads are written only through setters that count
+   each change in comp_ty_edits, so that its memo can tell whether an
+   earlier query's answer still holds (#8852). Their fields are const under
+   SP_TY_GUARD (`make ty-setter-check`), so a direct write does not compile
+   there. */
+#ifdef SP_TY_GUARD
+#define SP_TY_FIELD const
+#else
+#define SP_TY_FIELD
+#endif
+extern unsigned long comp_ty_edits;
+/* One of those fields, for code that picks the slot first and writes it
+   after: written through ty_ref_set. */
+typedef SP_TY_FIELD TyKind *TyRef;
+static inline TyKind ty_ref_set(TyRef r, TyKind t) {
+  if (*r != t) { *(TyKind *)r = t; comp_ty_edits++; }
+  return t;
+}
+
 typedef struct { unsigned char all, n, bv; int cls[CLS_SET_MAX]; } ClsSet;
 
 typedef struct {
@@ -61,13 +82,13 @@ typedef struct {
 
 typedef struct {
   char *name;       /* Ruby local name (without sigil) */
-  TyKind type;      /* inferred type */
+  SP_TY_FIELD TyKind type; /* inferred type, written by lv_set_type */
   SlotWhy why;      /* how `type` came to be untyped, if it is */
   int last_src;     /* the node whose value last set `type` while it was concrete; -1 = none */
   int gc_root;      /* scratch during analysis; rooting is type-derived in codegen */
   int is_param;     /* declared as a method parameter (C function param) */
   int is_block_param; /* bound by a block; typed by block-param inference */
-  int proc_ret;     /* when type==TY_PROC: the proc's body return type (TyKind),
+  SP_TY_FIELD int proc_ret;    /* when type==TY_PROC: the proc's body return type (TyKind),
                        TY_UNKNOWN if not statically known */
   int is_cell;      /* captured by an escaping proc: lives in a heap cell
                        (sp_int *_cell_<name>) so the closure and the enclosing
@@ -165,9 +186,9 @@ typedef struct {
                        retracted when that parameter stops being a general Array */
   int widen_from_scope;
   unsigned char widen_blocked; /* (params) retracted once: the reverse binding does not widen it again */
-  unsigned char range_held; /* an Integer Range was written into it (slot_set),
-                       or the value of a slot that held one: a boxed index
-                       read from it may be a Range at run time */
+  unsigned char range_held; /* a value that may be a Range was written into it
+                       (slot_set, value_may_be_range): a boxed index read
+                       from it may be a Range at run time */
   int push_widened; /* (params) a push through this parameter carried an element
                        its bound type could not hold, so it must stay the POLY
                        ARRAY: the call-site unification would otherwise collapse
@@ -235,6 +256,12 @@ typedef struct {
                        the rule shares settled in its poly form, and its
                        elements are boxed handles (repr_of_slot's
                        elems_handle) */
+  unsigned char strh_form; /* --share-strings: a String Array the rule
+                       settled as an Array of the Strings' handles
+                       (TY_STRH_ARRAY, share_strh_gate) */
+  unsigned char strh_no; /* ...and one whose container class cannot take that
+                       form yet: it keeps the poly form, for good (the mark
+                       is never cleared, so the fixpoint ends) */
   int str_shared;   /* (TY_STRBUF) a shared-mutable string: it is aliased
                        (`s2 = s1`) AND mutated in place, so the whole alias set
                        holds the one sp_String* handle -- reads hand out the live
@@ -313,6 +340,15 @@ typedef struct {
                         infer_write_types last folded the writes; TY_UNKNOWN when
                         nothing does */
 } LocalVar;
+
+static inline TyKind lv_set_type(LocalVar *lv, TyKind t) {
+  if (lv->type != t) { *(TyKind *)&lv->type = t; comp_ty_edits++; }
+  return t;
+}
+static inline int lv_set_proc_ret(LocalVar *lv, int t) {
+  if (lv->proc_ret != t) { *(int *)&lv->proc_ret = t; comp_ty_edits++; }
+  return t;
+}
 #define POLY_LIFT_APPENDED 1
 #define POLY_LIFT_ZSUPER   2
 /* Compiler.poly_strbuf_lift's mark for a boxed call's new String a
@@ -401,19 +437,19 @@ typedef struct {
   int fwd_target1;  /* a `def m(...)` the __fwd_N model binds (#1288): the
                        scope its `...` reaches, plus one; 0 if none */
 
-  TyKind ret;       /* inferred return type */
+  SP_TY_FIELD TyKind ret;     /* inferred return type */
   SlotWhy ret_why;  /* how `ret` came to be untyped, if it is */
   int ret_poly_ctr; /* the return value can be a builtin Array/Hash even
                        though `ret` collapsed to poly (see LocalVar.poly_ctr) */
   int ret_specialized; /* ret was set by specialization (inherited-cls-new copy);
                           don't overwrite it from the shared body in the fixpoint */
-  TyKind ret_noblock;  /* a yielding method's value when called WITHOUT a block:
+  SP_TY_FIELD TyKind ret_noblock;  /* a yielding method's value when called WITHOUT a block:
                           the type of its `return x unless block_given?`
                           returns, kept out of `ret` so a call with a block
                           (which the inliner specializes, folding the guard
                           away) reads the value of the body proper. UNKNOWN
                           when the method has no such guard. */
-  TyKind ret_withblock; /* a method whose `ret` was pinned to the Enumerator
+  SP_TY_FIELD TyKind ret_withblock; /* a method whose `ret` was pinned to the Enumerator
                           its `return enum_for(:m) unless block_given?`
                           answers, and whose body ends in `self`: the value
                           of a call WITH a block, the receiver's class.
@@ -473,15 +509,38 @@ typedef struct {
                           their typed kinds, and a new array of another kind
                           (`Array.new(n, 0)`) is converted where it is
                           returned, which nothing else holds to notice. */
-  int ret_proc_ret; /* when ret==TY_PROC: the returned proc's body return type
+  unsigned char ret_range; /* a Range can be the method's value: its tail or a
+                       `return` (value_may_be_range), set by the return pass */
+  SP_TY_FIELD int ret_proc_ret; /* when ret==TY_PROC: the returned proc's body return type
                        (TyKind), so a caller's `m.call` knows the result type */
-  int blk_ret;      /* for a method with a &block param: the unified value type
+  SP_TY_FIELD int blk_ret;     /* for a method with a &block param: the unified value type
                        its block yields across all call sites, so blocks passed
                        to it are emitted returning that (common) type */
 
   LocalVar *locals; /* params + body locals */
   int nlocals, clocals;
 } Scope;
+
+static inline TyKind scope_set_ret(Scope *s, TyKind t) {
+  if (s->ret != t) { *(TyKind *)&s->ret = t; comp_ty_edits++; }
+  return t;
+}
+static inline TyKind scope_set_ret_noblock(Scope *s, TyKind t) {
+  if (s->ret_noblock != t) { *(TyKind *)&s->ret_noblock = t; comp_ty_edits++; }
+  return t;
+}
+static inline TyKind scope_set_ret_withblock(Scope *s, TyKind t) {
+  if (s->ret_withblock != t) { *(TyKind *)&s->ret_withblock = t; comp_ty_edits++; }
+  return t;
+}
+static inline int scope_set_ret_proc_ret(Scope *s, int t) {
+  if (s->ret_proc_ret != t) { *(int *)&s->ret_proc_ret = t; comp_ty_edits++; }
+  return t;
+}
+static inline int scope_set_blk_ret(Scope *s, int t) {
+  if (s->blk_ret != t) { *(int *)&s->blk_ret = t; comp_ty_edits++; }
+  return t;
+}
 
 typedef struct {
   char *name;          /* class name ("Point"); also drives semantic checks
@@ -493,7 +552,7 @@ typedef struct {
   int def_node;        /* ClassNode id */
   int parent;          /* superclass index, or -1 */
   char **ivars;        /* instance variable names, incl. leading '@' */
-  TyKind *ivar_types;
+  SP_TY_FIELD TyKind *ivar_types;
   unsigned char *ivar_str_shared; /* (#3227) the slot is a shared-mutable
                                      string handle (sp_String *): survives
                                      re-clears; post-fixpoint reasserts it */
@@ -564,7 +623,7 @@ typedef struct {
                            fixpoint must not widen their type */
   int n_rbs_pin_ivars, c_rbs_pin_ivars;
   char **cvars;        /* class variable names, incl. leading '@@' */
-  TyKind *cvar_types;
+  SP_TY_FIELD TyKind *cvar_types;
   unsigned char *cvar_nullable_int; /* the Integer or Float class variable can
                                        hold nil (an oint), as
                                        ivar_nullable_int for an ivar */
@@ -619,6 +678,8 @@ typedef struct {
                           even when this class redefines the name), or -1 */
   int   *alias_node;   /* the alias statement's node id, so the pass that runs
                           once superclasses are wired can fill alias_cls */
+  int   *alias_sg;       /* 1: the alias is a singleton one (`class << self; alias a b`):
+                            only these name class methods (chain_lookup) */
   int   *alias_builtin; /* 1: the alias captured the builtin method of a
                            reopened primitive, which the class had not
                            defined where the alias appeared.
@@ -653,6 +714,9 @@ typedef struct {
      declared C symbols instead of generated bodies. c_struct is the carried C
      struct name; free_sym its optional finalizer. Method bindings live in the
      compiler's native_methods registry, keyed by this class's index. */
+  int cext_layout; /* a TypedData family has this prefix, including ancestors */
+  int cext_extension; /* +1 extension index for a TypedData allocator */
+  int cext_allocator; /* recorder registration slot */
   int is_native_class;
   int is_builtin_const; /* builtin class/module name, classified at registration */
   /* --share-strings: a native class whose binding declares that its object
@@ -676,6 +740,14 @@ typedef struct {
   int ary_str;
   char *c_struct;      /* e.g. "sp_StringIO", or NULL */
   char *native_free;   /* finalizer C symbol, or NULL */
+  /* native_subclass "header", "scan": the class may be subclassed (#9269);
+     the header defines c_struct, and scan is what a subclass's scan calls */
+  char *native_sub_header;
+  char *native_sub_scan;
+  /* A subclass of such a class: 1 + the native class its chain reaches. Its
+     instances embed that class's struct ahead of their own ivars, so a
+     pointer to one is a pointer to the native object */
+  int nsub_root;
   int freeze_observed; /* freeze/frozen? reaches instances of this class: codegen
                           guards its ivar stores with the GC-header frozen bit */
   int computed_ivar_set; /* an instance_variable_set with a computed name can reach
@@ -745,6 +817,22 @@ typedef struct {
   int ncs, ccs;
 } ClassInfo;
 
+/* The bits of ClassInfo.ivar_elems_shared and cvar_elems_shared */
+enum {
+  ELEMS_POLY = 1,     /* the TY_POLY_ARRAY slot holds its Strings as handles */
+  ELEMS_STRH = 2,     /* the slot is a String Array of handles (TY_STRH_ARRAY) */
+  ELEMS_STRH_NO = 4   /* ...and a container class that cannot take that form,
+                         for good (share_strh_gate) */
+};
+static inline TyKind ivar_set_type(ClassInfo *ci, int k, TyKind t) {
+  if (ci->ivar_types[k] != t) { ((TyKind *)ci->ivar_types)[k] = t; comp_ty_edits++; }
+  return t;
+}
+static inline TyKind cvar_set_type(ClassInfo *ci, int k, TyKind t) {
+  if (ci->cvar_types[k] != t) { ((TyKind *)ci->cvar_types)[k] = t; comp_ty_edits++; }
+  return t;
+}
+
 /* One `ffi_func` declaration. ret: "ptr"/"int"/"float"/"double"/"str"/"void"/
    "size_t"/"long"/"bool". args: malloc'd array of arg specs. */
 typedef struct {
@@ -775,6 +863,10 @@ enum { FFI_SM_NONE = 0, FFI_SM_NEW, FFI_SM_GET, FFI_SM_SET };
 typedef struct { char *mod; char *names; } FfiLib;   /* names: ;-separated lib names, or "" */
 typedef struct { char *mod; char *val; } FfiCflag;   /* val: ;-separated cflags, or "" */
 typedef struct { char *mod; char *val; } FfiSource;  /* ffi_source inline C translation-unit fragment */
+
+typedef struct { char *name, *init; int slots, constants; } CextExtension;
+typedef struct { char *key; int kind, argc, node; } CextStub;
+typedef struct { char *path; int module, extension, allocator; } CextClass;
 
 /* One `native_func` declaration (typed static binding to carried C). Unlike
    FfiFunc, arg/ret specs are the spinel type language ("any"/"string"/"int"/
@@ -842,12 +934,12 @@ typedef struct { int mi; short owner_ci; unsigned char via; } UCallInf;
 
 typedef struct {
   const NodeTable *nt;
-  TyKind *ntype;    /* [node_cap] node id -> inferred type */
+  SP_TY_FIELD TyKind *ntype;    /* [node_cap] node id -> inferred type */
   int *norigin;     /* [node_cap] node id -> where its degraded type came from: the
                        child (or the slot's why.node, for a read) that carried the
                        poly in, itself when the poly was born here, -1 when the
                        type is not degraded. Set where ntype is, in infer_type. */
-  unsigned char *strbuf_box; /* [node_cap] LocalVariableReadNode of a shared-
+  SP_TY_FIELD unsigned char *strbuf_box; /* [node_cap] LocalVariableReadNode of a shared-
                           mutable string in a container-store position: the
                           read yields the sp_String* HANDLE (typed TY_STRBUF,
                           boxed SP_BUILTIN_STRBUF), not the demoted cstr
@@ -901,7 +993,7 @@ typedef struct {
                           (VR_HEAD_HELD) around the call's own emission,
                           where an arm that holds the operand reads that
                           temp (hold_operand) */
-  TyKind *nilnarrow; /* [node_cap] param-read narrowed by a `return .. if p.nil?`
+  SP_TY_FIELD TyKind *nilnarrow; /* [node_cap] param-read narrowed by a `return .. if p.nil?`
                         guard: the read's non-nil type (codegen unboxes the poly
                         slot at the read site); TY_UNKNOWN = not narrowed */
   /* What a statement binds, for codegen's question whether anything in the
@@ -935,9 +1027,9 @@ typedef struct {
   unsigned char *send_param_memo; int send_param_memo_n, send_param_memo_nodes;
   int *nscope;      /* [node_cap] node id -> owning scope index */
   int *node_cbody;  /* [node_cap] node id -> enclosing class/module-body class id, or -1 */
-  char *empty_arr_recv; /* [node_cap] empty `[]` used as a direct receiver/interpolation -> TY_POLY_ARRAY */
-  char *empty_hash_recv; /* [node_cap] empty `{}` used as a direct receiver/interpolation -> TY_STR_POLY_HASH */
-  char *empty_hash_arg;  /* [node_cap] empty `{}` passed as a user-method arg -> TY_POLY_POLY_HASH */
+  SP_TY_FIELD char *empty_arr_recv; /* [node_cap] empty `[]` used as a direct receiver/interpolation -> TY_POLY_ARRAY */
+  SP_TY_FIELD char *empty_hash_recv; /* [node_cap] empty `{}` used as a direct receiver/interpolation -> TY_STR_POLY_HASH */
+  SP_TY_FIELD char *empty_hash_arg;  /* [node_cap] empty `{}` passed as a user-method arg -> TY_POLY_POLY_HASH */
   char *store_misfit_arg; /* [node_cap] a typed array passed to a boxed parameter
                           the method stores an element into that the array
                           cannot hold: codegen refuses it unless the binding
@@ -948,8 +1040,8 @@ typedef struct {
                           of another kind into it: widen_ivars_from_pushed_params
                           widens the ivar to the general Array, after the
                           fixpoint, as it does one passed directly */
-  TyKind *hash_want; /* [node_cap] variant a hash literal should take from its use context (#3040) */
-  TyKind *arr_want;  /* [node_cap] array kind a node takes from its use context
+  SP_TY_FIELD TyKind *hash_want; /* [node_cap] variant a hash literal should take from its use context (#3040) */
+  SP_TY_FIELD TyKind *arr_want;  /* [node_cap] array kind a node takes from its use context
                         rather than from its own contents: an empty `[]`
                         literal, or a `map` that narrow_object_arrays decided
                         builds a table of rows */
@@ -957,7 +1049,7 @@ typedef struct {
                         the slot was last joined with it (infer_write_types,
                         rejoin_local_writes). A write whose value reads
                         differently since is what a late re-join follows. */
-  TyKind *poly_builtin_ty; /* [node_cap] for a container read on a poly receiver a
+  SP_TY_FIELD TyKind *poly_builtin_ty; /* [node_cap] for a container read on a poly receiver a
                               user class also owns: the type the builtin surface
                               alone would give, so codegen can shape its arm (#3459) */
   const struct BuiltinOp **bop_inf; /* [node_cap] the builtin-op row inference
@@ -1125,6 +1217,13 @@ typedef struct {
   FfiSource *ffi_sources;
   int n_ffi_sources, c_ffi_sources;
 
+  CextStub *cext_stubs;
+  int n_cext_stubs;
+  CextExtension *cext_extensions;
+  int n_cext_extensions;
+  CextClass *cext_classes;
+  int n_cext_classes;
+
   /* native-binding registry: native_func declarations (Path B) */
   NativeFunc *native_funcs;
   int n_native_funcs, c_native_funcs;
@@ -1164,7 +1263,7 @@ typedef struct {
      builtin def (or top-level statement) it was spliced in: per base id, the
      count so far and the text it is named by. */
   int *node_ord, *node_base;
-  int node_ord_n, node_ord_prog, node_ord_parsed;
+  int node_ord_n, node_ord_cap, node_ord_prog, node_ord_parsed;
   int *bi_base_cnt;
   char **bi_base_key;
   int bi_base_cap;
@@ -1209,6 +1308,34 @@ typedef struct {
      unchanged (share_plan_sup_valid) */
   struct SharePlanSup *share_sup;
   int share_sup_n;
+  /* --share-strings: the walk deciding the methods' answers while
+     an_mark_handle_returns runs (analyze.c), else NULL: a method's answer
+     asked meanwhile is decided where it is asked (scope_ret_handle,
+     scope_ret_fresh, scope_ret_param) */
+  struct RetHandles *ret_walk;
+  /* per class, whether its class object can be a value
+     (comp_class_may_be_value), built for the node and class counts kept */
+  unsigned char *cls_value;
+  int cls_value_n, cls_value_nodes;
+  /* --share-strings: each node's parent at seal, for where a new String is
+     boxed (share_plan_box_plain) */
+  int *share_parent;
+  int share_parent_n;
+  /* --share-strings: per node, an Array literal or a call answering a new
+     Array whose container class cannot take the String handle Array form
+     (share_strh_gate): it keeps the poly form, as the holders of its class
+     do. Grown on demand; never cleared */
+  unsigned char *strh_no;
+  int strh_no_cap;
+  /* strbuf_bang_self_local's answers within one outermost query
+     (codegen_util.c): per node, the query it was answered in and the
+     answer. Its recursion over a receiver chain reaches each link by
+     several paths; within a query nothing it reads changes. A refusal
+     closes an open query before it unwinds (strbuf_bang_query_close). */
+  unsigned *bsl_gen;
+  unsigned char *bsl_val;
+  int bsl_n, bsl_depth;
+  unsigned bsl_cur;
   struct HandleArgTab *share_args; /* final callers, while sealing share facts */
   struct SbArgIndex *sb_args; /* settled parameter sources, built once for storage */
   unsigned share_sig;   /* the types the facts were last applied over */
@@ -1259,6 +1386,15 @@ typedef struct {
   int pres_noinit;
   int **pres_ord;
   int pres_ord_n;
+  /* the calls version_redefined_reopen_defs marked for an earlier
+     definition, which desugar_redef_version_calls resolves once their
+     receivers are typed (-1 once resolved) */
+  int *redef_calls;
+  int nredef_calls;
+  /* the operand-local reads splat_dispatch_on_length marked splat_view,
+     which desugar_splat_view_scalars rewrites once typed (-1 once seen) */
+  int *splat_views;
+  int nsplat_views;
 } Compiler;
 enum { PRES_UNMARKED = 1, PRES_REMOVED = 2 };
 
@@ -1399,6 +1535,7 @@ LocalVar *scope_local(Scope *s, const char *name);
    degrades. slot_set is the same with the merged type already decided. */
 int slot_take(Compiler *c, LocalVar *lv, TyKind t, int node);
 int local_range_held(Compiler *c, int node);
+int value_may_be_range(Compiler *c, int node);
 int slot_set(Compiler *c, LocalVar *lv, TyKind merged, TyKind t, int node);
 /* A rule sets the slot to `t` and says why in its own words, with `node`
    its subject (a default's expression, an argument) or -1. The why is
@@ -1430,6 +1567,8 @@ int ffi_struct_method(Compiler *c, const char *mod, const char *method, int *si,
 int comp_native_find(Compiler *c, const char *mod, const char *name);
 int comp_scope_native_twin(Compiler *c, int mi);
 int comp_native_method_find(Compiler *c, int class_id, const char *name, int argc, int kind);
+int comp_native_answer_class(Compiler *c, int cid, const char *name);
+int comp_native_binding_class(Compiler *c, int k, const char *name);
 int comp_native_method_find_typed(Compiler *c, int class_id, const char *name, int argc, int kind,
                                   const TyKind *argtys);
 int comp_poly_arm_defines(Compiler *c, int k, const char *name);
@@ -1473,6 +1612,7 @@ static inline int singleton_visible_ci(Compiler *c, int ci) {
   return c->classes[ci].is_singleton_of ? c->classes[ci].is_singleton_of - 1 : ci;
 }
 int        comp_class_anonymous(Compiler *c, int ci);
+int        comp_has_sclass_values(Compiler *c);
 const char *comp_class_display_fn(Compiler *c);
 int        class_var_static_ci(Compiler *c, int node);  /* local holding one class const */
 int        class_recv_static_ci(Compiler *c, int node); /* constant or local naming one class */
@@ -1522,6 +1662,7 @@ const char *const_get_recv_name(Compiler *c, int call, int recv);
 int        const_get_takes_value(Compiler *c, const char *rnm, const char *cgn);
 const char *const_get_value_key(Compiler *c, const char *rnm, const char *cgn);
 int        const_get_class_index(Compiler *c, const char *rnm, const char *cgn);
+const char *const_get_lookup(Compiler *c, const char *rnm, const char *cgn, int *cls);
 int        const_defined_known(Compiler *c, const char *rnm, const char *cgn);
 int        qc_const_qualified(const char *qn);
 int        qc_leaf_qualified(const char *leaf);
@@ -1586,6 +1727,8 @@ int        io_family_descends(Compiler *c, int k, int owner);
 /* Like comp_method_in_class but walks the superclass chain. On success,
    *def_class (if non-NULL) is set to the class that defines the method. */
 int        comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_class);
+int        send_def_just_supers(Compiler *c, int mi);          /* analyze_desugar.c */
+int        send_family_program_owns(Compiler *c, const char *name);
 /* Array subclasses (#7449, ClassInfo.ary_root): the root of class cid's
    Array chain or -1; the same for an object type (-1 for any other type);
    the kind of the Array the chain's instances embed, TY_POLY_ARRAY once the
@@ -1676,6 +1819,11 @@ void comp_poly_candidates_reset(void);
    each with the scope comp_cmethod_in_chain gives (`cls`, `mi`; the other
    fields unused). Memoized under the same stamps as comp_poly_candidates. */
 const PolyCand *comp_cmethod_candidates(Compiler *c, const char *name, int *n);
+/* Can class `k`'s class object be a value: held by a variable, a box or a
+   container, so that a call on a receiver of no fixed class may reach its
+   class methods? Not when the program only ever names it to call it, define
+   it or test against it (see compiler.c). */
+int comp_class_may_be_value(Compiler *c, int k);
 /* Every proper descendant of class `cid`, ascending; fixed once classes are
    collected. See comp_descendants. */
 const int *comp_descendants(Compiler *c, int cid, int *n);
@@ -1691,6 +1839,7 @@ int        name_is_plain_setter(const char *name);
 int        call_is_setter_assign(const NodeTable *nt, int id);
 int        proc_parameters_lambda_mode(const NodeTable *nt, int argc, const int *argv);
 int        self_is_main(Compiler *c, int node);
+int        self_is_main_raw(Compiler *c, int node);
 int        self_class_body(Compiler *c, int node);
 int        attr_decl_call(Compiler *c, int id);
 enum { VIS_DECL_NIL = 1, VIS_DECL_SYM, VIS_DECL_ARRAY, VIS_DECL_SELF };
@@ -1733,6 +1882,8 @@ int         comp_resolve_member(Compiler *c, int class_id, const char *name, int
                                 int *def_class, int *method_index);
 const char *comp_resolve_alias(Compiler *c, int class_id, const char *name);
 const char *comp_resolve_alias_at(Compiler *c, int class_id, const char *name, int *start_cls);
+const char *comp_resolve_cm_alias_at(Compiler *c, int class_id, const char *name, int *start_cls);
+int comp_name_is_sg_alias_only(Compiler *c, int class_id, const char *name);
 const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin);
 
 /* Set by codegen while a block is spliced: answers the type the block being
@@ -1740,6 +1891,44 @@ const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, i
    YieldNode, one entry, many call sites -- #3784). Returns 0 when the node is
    not a yield in a spliced context. */
 extern int (*sp_yield_site_type_hook)(const Compiler *c, int id, TyKind *out);
+
+/* A node's type: see comp_ty_edits. */
+static inline TyKind comp_set_ntype(Compiler *c, int id, TyKind t) {
+  if (c->ntype[id] != t) { ((TyKind *)c->ntype)[id] = t; comp_ty_edits++; }
+  return t;
+}
+static inline char comp_set_empty_arr_recv(Compiler *c, int id, char v) {
+  if (c->empty_arr_recv[id] != v) { ((char *)c->empty_arr_recv)[id] = v; comp_ty_edits++; }
+  return v;
+}
+static inline char comp_set_empty_hash_recv(Compiler *c, int id, char v) {
+  if (c->empty_hash_recv[id] != v) { ((char *)c->empty_hash_recv)[id] = v; comp_ty_edits++; }
+  return v;
+}
+static inline char comp_set_empty_hash_arg(Compiler *c, int id, char v) {
+  if (c->empty_hash_arg[id] != v) { ((char *)c->empty_hash_arg)[id] = v; comp_ty_edits++; }
+  return v;
+}
+static inline TyKind comp_set_hash_want(Compiler *c, int id, TyKind v) {
+  if (c->hash_want[id] != v) { ((TyKind *)c->hash_want)[id] = v; comp_ty_edits++; }
+  return v;
+}
+static inline TyKind comp_set_arr_want(Compiler *c, int id, TyKind v) {
+  if (c->arr_want[id] != v) { ((TyKind *)c->arr_want)[id] = v; comp_ty_edits++; }
+  return v;
+}
+static inline TyKind comp_set_poly_builtin_ty(Compiler *c, int id, TyKind v) {
+  if (c->poly_builtin_ty[id] != v) { ((TyKind *)c->poly_builtin_ty)[id] = v; comp_ty_edits++; }
+  return v;
+}
+static inline unsigned char comp_set_strbuf_box(Compiler *c, int id, unsigned char v) {
+  if (c->strbuf_box[id] != v) { ((unsigned char *)c->strbuf_box)[id] = v; comp_ty_edits++; }
+  return v;
+}
+static inline TyKind comp_set_nilnarrow(Compiler *c, int id, TyKind t) {
+  if (c->nilnarrow[id] != t) { ((TyKind *)c->nilnarrow)[id] = t; comp_ty_edits++; }
+  return t;
+}
 
 /* Swap a node's cached type for the duration of one re-entered emission and
    answer the old one, so the caller can restore it. `x&.pred?` is inferred
@@ -1750,7 +1939,7 @@ extern int (*sp_yield_site_type_hook)(const Compiler *c, int id, TyKind *out);
 static inline TyKind comp_sn_retype(Compiler *c, int id, TyKind t) {
   if (id < 0 || id >= c->nt->count) return t;
   TyKind old = c->ntype[id];
-  c->ntype[id] = t;
+  comp_set_ntype(c, id, t);
   return old;
 }
 

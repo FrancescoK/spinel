@@ -1,0 +1,113 @@
+holder nil 0: :nil
+holder nil 1: :nil
+holder nil 2: :nilclass
+holder nil 3: :obj
+holder nil 4: :nil
+holder nil 5: :nil
+holder nil 6: :nil
+holder nil 7: :nil
+holder nil 8: :nil
+holder nil 9: :nil
+holder nil 10: :nil
+holder nil 11: :nil
+holder nil 12: :nil
+holder nil 13: :nil
+holder nil 14: :nil
+holder nil 15: :nil
+holder nil 16: :nil
+holder nil 17: :nil
+holder nil 18: :nil
+holder nil 19: :nil
+holder nil 20: :nil
+holder nil 21: :nil
+holder nil 22: :nil
+holder nil 23: :nil
+holder nil 24: :nil
+holder nil 25: :nil
+holder nil 26: :nilclass
+holder nil 27: :nil_or_arr
+holder nil 28: :nil_or_str
+holder nil 29: :nil_or_hash
+holder nil 30: :nil
+holder nil 31: :nil
+holder nil 32: :nil
+holder nil 33: :nomatch
+holder nil 34: [false, true, false, true, false, true, false, true]
+holder set 0: [:hash, 1]
+holder set 1: :hash
+holder set 2: :hash
+holder set 3: :obj
+holder set 4: :some
+holder set 5: :other
+holder set 6: [:hash, 1]
+holder set 7: [:hash, 1]
+holder set 8: :a1
+holder set 9: :one_two
+holder set 10: :found
+holder set 11: :arr
+holder set 12: 2
+holder set 13: :xy
+holder set 14: :found
+holder set 15: :lit
+holder set 16: :str
+holder set 17: :pt3
+holder set 18: :pt
+holder set 19: :x3
+holder set 20: :a3
+holder set 21: :hash
+holder set 22: :hash
+holder set 23: :arr
+holder set 24: :str
+holder set 25: :pt
+holder set 26: :hash
+holder set 27: :hash
+holder set 28: :arr
+holder set 29: :arr
+holder set 30: [1, 2]
+holder set 31: [:hash, 1]
+holder set 32: [:hash, 1]
+holder set 33: 1
+holder set 34: [true, false, true, false, true, false, true, false]
+ia nil: [:nil, :nil, :nilclass, :alt, true, false, :wnil, :wnilclass, :nil]
+ia set: [:cls, :cls, :obj, :alt, false, true, :wcls, :wobj, :find]
+fa nil: [:nil, :nil, :nilclass, :alt, true, false, :wnil, :wnilclass, :nil]
+fa set: [:cls, :cls, :obj, :alt, false, true, :wcls, :wobj, :two]
+sa nil: [:nil, :nil, :nilclass, :alt, true, false, :wnil, :wnilclass, :nil]
+sa set: [:cls, :cls, :obj, :alt, false, true, :wcls, :wobj, :two]
+pa nil: [:nil, :nil, :nilclass, :alt, true, false, :wnil, :wnilclass, :nil]
+pa set: [:cls, :cls, :obj, :alt, false, true, :wcls, :wobj, :find]
+oa nil: [:nil, :nil, :nilclass, :alt, true, false, :wnil, :wnilclass, :nil]
+oa set: [:cls, :cls, :obj, :alt, false, true, :wcls, :wobj, :other]
+sih nil: [:nil, :nil, :nilclass, :alt, true, false, :wnil, :wnilclass, :nil]
+sih set: [:cls, :cls, :obj, :alt, false, true, :wcls, :wobj, :other]
+ssh nil: [:nil, :nil, :nilclass, :alt, true, false, :wnil, :wnilclass, :nil]
+ssh set: [:cls, :cls, :obj, :alt, false, true, :wcls, :wobj, :other]
+iih nil: [:nil, :nil, :nilclass, :alt, true, false, :wnil, :wnilclass, :nil]
+iih set: [:cls, :cls, :obj, :alt, false, true, :wcls, :wobj, :other]
+syh nil: [:nil, :nil, :nilclass, :alt, true, false, :wnil, :wnilclass, :nil]
+syh set: [:cls, :cls, :obj, :alt, false, true, :wcls, :wobj, :other]
+sph nil: [:nil, :nil, :nilclass, :alt, true, false, :wnil, :wnilclass, :nil]
+sph set: [:cls, :cls, :obj, :alt, false, true, :wcls, :wobj, :other]
+ex nil: [:nil, :nil, :nilclass, :alt, true, false, :wnil, :wnilclass, :nil]
+ex set: [:cls, :cls, :obj, :alt, false, true, :wcls, :wobj, :other]
+pr nil: [:nil, :nil, :nilclass, :alt, true, false, :wnil, :wnilclass, :nil]
+pr set: [:cls, :cls, :obj, :alt, false, true, :wcls, :wobj, :other]
+re nil: [:nil, :nil, :nilclass, :alt, true, false, :wnil, :wnilclass, :nil]
+re set: [:cls, :cls, :obj, :alt, false, true, :wcls, :wobj, :other]
+exc_kind RuntimeError nil: [true, true, true, true, true, true, true, true, false, false, false, false, false, false, false, false, true]
+exc_kind RuntimeError set: [false, false, false, false, true, true, true, true, true, true, true, false, true, true, true, true, false]
+exc_kind Object nil: [true, true, true, true, true, true, true, true, false, false, false, false, true, true, false, true, true]
+exc_kind Object set: [false, false, false, false, true, true, true, true, true, true, true, false, true, true, false, true, false]
+exc_kind NilClass nil: [true, true, true, true, true, true, true, true, false, false, false, false, true, true, true, true, true]
+exc_kind NilClass set: [false, false, false, false, true, true, true, true, true, true, true, false, false, false, false, false, false]
+exc_kind StandardError nil: [true, true, true, true, true, true, true, true, false, false, false, false, false, false, false, false, true]
+exc_kind StandardError set: [false, false, false, false, true, true, true, true, true, true, true, false, true, true, false, true, false]
+raise nil: [TypeError, "exception class/object expected"]
+raise set: [:other, RuntimeError, "e"]
+fiber raise nil: [TypeError, "exception class/object expected"]
+fiber raise set: [RuntimeError, "e"]
+md nil: [:nil, :nil, :nil, :nil]
+md set: [:else, :any, "b", :h]
+md boxed set: ["x", :h]
+md boxed nil: [:nil, :nil]
+md elements: [["a", "1"], :nil, ["c", "3"]]

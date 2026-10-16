@@ -50,6 +50,29 @@ static void emit_io_readlines_args(Compiler *c, const char *r, const int *pos, i
              ts, tr, tr, tn, tn, tf, ts, tl, tl, tc, tr, tn, tr);
 }
 
+/* The block body of an IO-style C loop (each_line, each_char/byte, ARGF,
+   Dir#each_child): one iteration per pass, so it is where a `next` lands.
+   The loop is entered at the current exception-frame and ensure depths, so
+   a `next` leaves only the frames and ensures opened inside the body -- not
+   a `begin`..`ensure` around the call, which it used to jump to as if the
+   whole block were done (`x = parse(line) rescue next` under an ensure
+   stopped the loop at the first bad line). The iterator discards the
+   block's value, so a `next` value has no slot here either. The block
+   parameter `pname` (bound by the caller in its plain slot) is published
+   into its cell first when a proc captures it. */
+static void emit_io_loop_body(Compiler *c, int blk, const char *pname, const int *stmts, int n, Buf *b) {
+  if (pname) emit_param_cell_publish(c, blk, pname, b, 0);
+  const char *sv_nx = g_ie_next_var;
+  int sv_lexc = g_loop_exc_base, sv_lens = g_loop_ensure_base;
+  g_ie_next_var = NULL;
+  g_loop_exc_base = g_exc_frame_depth; g_loop_ensure_base = g_ensure_depth;
+  g_c_loop_depth++;
+  for (int k = 0; k < n; k++) emit_stmt(c, stmts[k], b, 0);
+  g_c_loop_depth--;
+  g_loop_exc_base = sv_lexc; g_loop_ensure_base = sv_lens;
+  g_ie_next_var = sv_nx;
+}
+
 /* A line loop's block parameter `pn` of call `id`, declared in the loop and
    bound to the fresh line in _t<lt>: a parameter that is the shared handle
    (--share-strings) wraps it in a handle of its own. */
@@ -239,14 +262,15 @@ static int emit_io_read_outbuf(Compiler *c, int id, const char *name, const char
                                int nint, int ob, int rest, Buf *b) {
   TyKind bt = comp_ntype(c, ob);
   int boxed = repr_of(c, ob).kind == RK_BOXED;
-  char ref[1024];
+  Buf ref; memset(&ref, 0, sizeof ref);
   /* The default build already has handle slots, including unshared
      accumulators. Fill that slot, and answer its handle under a demand.
      Its rooted box keeps the old bytes alive across the read. */
-  int handle = !repr_share_rule(c) && strbuf_slot_ref(c, ob, ref, sizeof ref);
+  int handle = !repr_share_rule(c) && strbuf_slot_text(c, ob, &ref);
   if (!boxed && !handle && (bt == TY_STRING || bt == TY_STRBUF)) return 0;
   emit_io_read_buffer(c, name, fn, r, argv, nint, ob, rest, boxed || handle,
-                      handle && repr_of(c, id).demand, handle ? ref : NULL, b);
+                      handle && repr_of(c, id).demand, handle ? ref.p : NULL, b);
+  free(ref.p);
   return 1;
 }
 
@@ -321,8 +345,7 @@ static void emit_io_read_nonblock_value(Compiler *c, int id, Buf *b) {
   if (exc < 0 || !boxed[3]) buf_puts(b, "NULL");
   else buf_printf(b, "&_t%d", held[3]);
   buf_printf(b, ", &_e%d); ", eof);
-  char hr[1024];
-  if (nt_kind(nt, argv[1]) == NK_LocalVariableReadNode && !strbuf_slot_ref(c, argv[1], hr, sizeof hr)) {
+  if (nt_kind(nt, argv[1]) == NK_LocalVariableReadNode && !strbuf_slot_has(c, argv[1])) {
     buf_printf(b, "if (!sp_poly_nil_p(_t%d) && (_t%d || _e%d)) { ", held[2], tr, eof);
     if (rebound) buf_printf(b, "if (_t%d) { ", update);
     emit_local_ref(c, argv[1], nt_str(nt, argv[1], "name"), b);
@@ -353,7 +376,7 @@ static void emit_io_read_nonblock_buffer(Compiler *c, int id, int handle, Buf *b
   g_pre = b;
   tr = hold_operand(c, recv, TY_POLY, 1, tr, 1, " ", b);
   for (int i = 0; i < argc; i++) {
-    char hr[1024];
+    Buf hr; memset(&hr, 0, sizeof hr);
     if (i == 1 && shared && strbuf_boxed_local(c, argv[i])) {
       held[i] = ++g_tmp;
       Buf lv = {0};
@@ -362,10 +385,11 @@ static void emit_io_read_nonblock_buffer(Compiler *c, int id, int handle, Buf *b
                  held[i], lv.p, lv.p, held[i]);
       free(lv.p);
     }
-    else if (i == 1 && strbuf_slot_ref(c, argv[i], hr, sizeof hr)) {
+    else if (i == 1 && strbuf_slot_text(c, argv[i], &hr)) {
       held[i] = ++g_tmp;
       buf_printf(b, "sp_RbVal _t%d = sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF); SP_GC_ROOT_RBVAL(_t%d); ",
-                 held[i], hr, held[i]);
+                 held[i], hr.p, held[i]);
+      free(hr.p);
     }
     else {
       int arg = i == 2 ? kwh_lookup(nt, argv[i], "exception") : argv[i];
@@ -397,8 +421,7 @@ static void emit_io_read_nonblock_buffer(Compiler *c, int id, int handle, Buf *b
   buf_printf(b, "if (_t%d && (_t%d || _e%d)) { _t%d = sp_poly_str_become(_t%d, _t%d ? _t%d : sp_str_empty); ",
              ts, tb, eof, held[1], held[1], tb, tb);
   if (nt_kind(nt, argv[1]) == NK_LocalVariableReadNode) {
-    char hr[1024];
-    if (!strbuf_slot_ref(c, argv[1], hr, sizeof hr) && !(shared && strbuf_boxed_local(c, argv[1]))) {
+    if (!strbuf_slot_has(c, argv[1]) && !(shared && strbuf_boxed_local(c, argv[1]))) {
       int rebound = argc == 3 && read_rebound_by(c, argv[1], argv[2]);
       if (rebound) {
         buf_puts(b, "if (sp_poly_unbox_s("); emit_boxed(c, argv[1], b);
@@ -573,7 +596,7 @@ static int emit_io_socket_opt_call(Compiler *c, const NodeTable *nt, const char 
     emit_int_expr(c, argv[1], b); buf_puts(b, ", ");
     /* the value is an Integer, true/false (1/0) or the option's packed
        bytes, as CRuby takes it; only an Integer converts directly */
-    TyKind vty = comp_ntype(c, argv[2]);
+    TyKind vty = repr_of(c, argv[2]).as_ty;
     if (vty == TY_INT) emit_int_expr(c, argv[2], b);
     else {
       buf_puts(b, "sp_sock_optval(");
@@ -606,7 +629,7 @@ static int boxed_accept_nb_ok(const NodeTable *nt, const char *name, int argc, c
 /* winsize= as the typed arm takes it: one Integer Array */
 static int boxed_winsize_set(Compiler *c, const char *name, int argc, const int *argv) {
   return sp_streq(name, "winsize=") && argc == 1 && sp_feature_enabled("io/console") &&
-         comp_ntype(c, argv[0]) == TY_INT_ARRAY;
+         repr_of(c, argv[0]).elem == TY_INT;
 }
 
 /* the IO methods on a poly receiver that may hold a stream (write, read, gets, puts, print, ...) */
@@ -615,7 +638,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   /* IO instance methods on a poly-carried handle (an IO.pipe element): unbox
      and dispatch, unless a user class defines the name (then the general poly
      dispatch owns it). */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_POLY &&
+  if (recv >= 0 && repr_of(c, recv).as_ty == TY_POLY &&
       (sp_streq(name, "write") || sp_streq(name, "read") || sp_streq(name, "gets") ||
        sp_streq(name, "readline") || sp_streq(name, "close") || sp_streq(name, "flush") ||
        sp_streq(name, "fileno") ||
@@ -631,6 +654,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        sp_streq(name, "tty?") || sp_streq(name, "isatty") ||
        (sp_streq(name, "winsize") && sp_feature_enabled("io/console")) ||
        (boxed_winsize_set(c, name, argc, argv)) ||
+       ((sp_streq(name, "__sp_tty_mode") || sp_streq(name, "__sp_tty_restore")) && argc == 1) ||
        sp_streq(name, "readlines") || sp_streq(name, "rewind") ||
        sp_streq(name, "readpartial") ||
        /* a socket read back out of a container: its non-blocking connect and
@@ -765,7 +789,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       for (size_t o = 0; o < sizeof owners / sizeof owners[0]; o++)
         if (!builtin_arity_admits(owners[o].cls, name, argc)) buf_printf(b, " || _t%d.cls_id == %s", tv, owners[o].id);
       buf_printf(b, "))) (void)sp_poly_as_io(_t%d, \"%s\"); sp_raise_cls(\"ArgumentError\", \"%s\"); %s; })",
-                 tv, name, msg, raise_tail_value(comp_ntype(c, id)));
+                 tv, name, msg, raise_tail_value(repr_of(c, id).as_ty));
       return 1;
     }
     /* rewind on a boxed value: an Enumerator rewinds and answers itself,
@@ -851,7 +875,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           buf_printf(b, "); SP_GC_ROOT_STR(_t%d); ", tadv);
         }
         for (int ai = first_int; ai < argc; ai++) {
-          TyKind ak = comp_ntype(c, argv[ai]);
+          TyKind ak = repr_of(c, argv[ai]).as_ty;
           targ[ai] = ++g_tmp;
           if (ak == TY_INT || ak == TY_FLOAT) {
             buf_printf(b, "sp_int _t%d = ", targ[ai]);
@@ -987,6 +1011,10 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       else if (sp_streq(name, "tty?") || sp_streq(name, "isatty"))
         buf_printf(b, "sp_File_tty_p(_t%d); })", tio2);
       else if (sp_streq(name, "winsize")) buf_printf(b, "sp_File_winsize(_t%d); })", tio2);
+      else if (sp_streq(name, "__sp_tty_mode") || sp_streq(name, "__sp_tty_restore")) {
+        buf_printf(b, "%s(_t%d, ", sp_streq(name, "__sp_tty_mode") ? "sp_File_tty_mode" : "sp_File_tty_restore", tio2);
+        emit_int_expr(c, argv[0], b); buf_puts(b, "); })");
+      }
       else if (is_socket_address(name) && argc == 1) {
         buf_printf(b, "SP_GC_ROOT(_t%d); sp_sock_addr_rl(_t%d, %d, sp_sock_rl_flag(", tio2, tio2,
                    sp_streq(name, "peeraddr") ? 1 : 0);
@@ -1229,12 +1257,13 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           emit_int_expr(c, argv[0], b);
           buf_puts(b, ")");
           if (argc >= 2) {
-            { char hr[1024];
+            { Buf hr; memset(&hr, 0, sizeof hr);
             /* a buffer that is also appended to is a mutable String handle:
                replace its contents, where assigning the bytes to the handle
                did not compile (#7314) */
-            if (sbp && strbuf_slot_ref(c, argv[1], hr, sizeof hr)) buf_printf(b, "; sp_String_set_read_bytes(%s, _t%d ? _t%d : sp_str_empty)", hr, tsp, tsp);
-            else if (sbp) { buf_puts(b, "; "); emit_local_ref(c, argv[1], sbp, b); buf_printf(b, " = _t%d ? _t%d : sp_str_empty", tsp, tsp); } }
+            if (sbp && strbuf_slot_text(c, argv[1], &hr)) buf_printf(b, "; sp_String_set_read_bytes(%s, _t%d ? _t%d : sp_str_empty)", hr.p, tsp, tsp);
+            else if (sbp) { buf_puts(b, "; "); emit_local_ref(c, argv[1], sbp, b); buf_printf(b, " = _t%d ? _t%d : sp_str_empty", tsp, tsp); }
+            free(hr.p); }
             buf_printf(b, "; if (!_t%d) sp_raise_cls(\"EOFError\", \"end of file reached\"); _t%d", tsp, tsp);
           }
           buf_puts(b, "; })");
@@ -1548,13 +1577,14 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         buf_printf(b, "sp_sock_recv(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
         free(rb.p); return 1;
       }
-      /* recvfrom -> [payload, ["AF_INET", port, ip, ip]] */
+      /* recvfrom -> [payload, ["AF_INET", port, ip, ip]]; the payload and
+         the peer's address are new Strings, held while the Arrays are made */
       if (sp_streq(name, "recvfrom") && argc == 1) {
         int tp = ++g_tmp, ti = ++g_tmp, to = ++g_tmp, ta = ++g_tmp, tw = ++g_tmp;
         buf_printf(b, "({ const char *_t%d = NULL; sp_int _t%d = 0;"
                       " const char *_t%d = sp_sock_recvfrom(%s, ", ti, tp, to, r);
         emit_int_expr(c, argv[0], b);
-        buf_printf(b, ", &_t%d, &_t%d);"
+        buf_printf(b, ", &_t%d, &_t%d); SP_GC_ROOT(_t%d); SP_GC_ROOT(_t%d);"
                       " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
                       " sp_PolyArray_push(_t%d, sp_box_str(strchr(_t%d, ':') ? SPL(\"AF_INET6\") : SPL(\"AF_INET\")));"
                       " sp_PolyArray_push(_t%d, sp_box_int(_t%d));"
@@ -1563,7 +1593,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
                       " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
                       " sp_PolyArray_push(_t%d, sp_box_str(_t%d));"
                       " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); _t%d; })",
-                   ti, tp, ta, ta, ta, ti, ta, tp, ta, ti, ta, ti, tw, tw, tw, to, tw, ta, tw);
+                   ti, tp, ti, to, ta, ta, ta, ti, ta, tp, ta, ti, ta, ti, tw, tw, tw, to, tw, ta, tw);
         free(rb.p); return 1;
       }
       if (sp_streq(name, "shutdown") && argc <= 1) {
@@ -1697,17 +1727,18 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         /* (len, outbuf): the buffer takes the bytes read, as readpartial's
            does; the argument was read past and the buffer left as it was */
         int ob = (argc >= 2 && argv[1] != kwh8 && nt_kind(nt, argv[1]) == NK_LocalVariableReadNode) ? argv[1] : -1;
-        char obset[1200]; obset[0] = 0;
+        Buf obset; memset(&obset, 0, sizeof obset);
         int tob = ++g_tmp;
         if (ob >= 0) {
-          char hr[1024];
-          if (strbuf_slot_ref(c, ob, hr, sizeof hr)) snprintf(obset, sizeof obset, "sp_String_set_read_bytes(%s, _t%d); ", hr, tob);
+          Buf hr; memset(&hr, 0, sizeof hr);
+          if (strbuf_slot_text(c, ob, &hr)) buf_printf(&obset, "sp_String_set_read_bytes(%s, _t%d); ", hr.p, tob);
           else {
             Buf lb; memset(&lb, 0, sizeof lb);
             emit_local_ref(c, ob, nt_str(nt, ob, "name"), &lb);
-            snprintf(obset, sizeof obset, "%s = _t%d; ", lb.p ? lb.p : "", tob);
+            buf_printf(&obset, "%s = _t%d; ", lb.p ? lb.p : "", tob);
             free(lb.p);
           }
+          free(hr.p);
         }
         if (no_exc8) {
           int te = ++g_tmp;
@@ -1716,7 +1747,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
           buf_printf(b, "sp_bool _e%d; const char *_t%d = sp_sock_read_nb(%s, ", te, tob, r);
           emit_int_expr(c, argv[0], b);
           buf_printf(b, ", 0, 0, &_e%d); ", te);
-          if (ob >= 0) buf_printf(b, "if (_t%d) { %s} ", tob, obset);
+          if (ob >= 0) buf_printf(b, "if (_t%d) { %s} ", tob, obset.p ? obset.p : "");
           buf_printf(b, "_t%d ? sp_box_str(_t%d)"
                         " : (_e%d ? sp_box_nil() : sp_box_sym(sp_sym_intern(\"wait_readable\"))); })",
                      tob, tob, te);
@@ -1724,12 +1755,13 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         else if (ob >= 0) {
           buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, ob, b);
           buf_printf(b, "); const char *_t%d = sp_sock_read_nb(%s, ", tob, r); emit_int_expr(c, argv[0], b);
-          buf_printf(b, ", 1, 0, NULL); %s_t%d; })", obset, tob);
+          buf_printf(b, ", 1, 0, NULL); %s_t%d; })", obset.p ? obset.p : "", tob);
         }
         else {
           buf_printf(b, "sp_sock_read_nb(%s, ", r); emit_int_expr(c, argv[0], b);
           buf_puts(b, ", 1, 0, NULL)");
         }
+        free(obset.p);
       }
       else {
         /* String operand -> the _bin entry (header length, so an embedded NUL
@@ -1770,12 +1802,13 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       }
       buf_printf(b, "%s(%s, ", argc >= 2 ? "sp_File_readpartial_or_nil" : "sp_File_readpartial", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
       if (argc >= 2) {
-        { char hr[1024];
+        { Buf hr; memset(&hr, 0, sizeof hr);
           /* a buffer that is also appended to is a mutable String handle:
              replace its contents, where assigning the bytes to the handle
              did not compile (#7314) */
-          if (sbn && strbuf_slot_ref(c, argv[1], hr, sizeof hr)) buf_printf(b, "; sp_String_set_read_bytes(%s, _t%d ? _t%d : sp_str_empty)", hr, tsr, tsr);
-          else if (sbn) { buf_puts(b, "; "); emit_local_ref(c, argv[1], sbn, b); buf_printf(b, " = _t%d ? _t%d : sp_str_empty", tsr, tsr); } }
+          if (sbn && strbuf_slot_text(c, argv[1], &hr)) buf_printf(b, "; sp_String_set_read_bytes(%s, _t%d ? _t%d : sp_str_empty)", hr.p, tsr, tsr);
+          else if (sbn) { buf_puts(b, "; "); emit_local_ref(c, argv[1], sbn, b); buf_printf(b, " = _t%d ? _t%d : sp_str_empty", tsr, tsr); }
+          free(hr.p); }
         buf_printf(b, "; if (!_t%d) sp_raise_cls(\"EOFError\", \"end of file reached\"); _t%d; })", tsr, tsr);
       }
       free(rb.p); return 1;
@@ -1840,7 +1873,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         buf_printf(b, " %s lv_%s = _t%d;", (is_byte || is_cp) ? "sp_int" : "const char *", bpn2, lt2);
         if (!is_byte && !is_cp) buf_printf(b, " SP_GC_ROOT_STR(lv_%s);", bpn2);
       }
-      for (int k = 0; k < bbn2; k++) emit_stmt(c, bbb2[k], b, 0);
+      emit_io_loop_body(c, blk2, bp2, bbb2, bbn2, b);
       buf_printf(b, " } (sp_File *)_t%d; })", rf2);
       free(rb.p); return 1;
     }
@@ -1922,7 +1955,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
            converted value) and hands both pointer and count to
            sp_File_syswrite, so a poly operand takes that path here rather
            than being routed through sp_File_write_poly. */
-        if (is_sw && comp_ntype(c, argv[0]) == TY_POLY) {
+        if (is_sw && repr_of(c, argv[0]).as_ty == TY_POLY) {
           int sl = ++g_tmp;
           /* The operand's class is only known at run time, so the length is
              chosen by its TAG rather than off the pointer: a marked String
@@ -1939,7 +1972,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
                      "sp_int _r%d = sp_File_syswrite(%s, _s%d, _l%d); _r%d; })",
                      sl, sl, sl, sl, sl, sl, sl, sl, sl, r, sl, sl, sl);
         }
-        else if (comp_ntype(c, argv[0]) == TY_POLY) {
+        else if (repr_of(c, argv[0]).as_ty == TY_POLY) {
           buf_printf(b, "sp_File_write_poly(%s, ", r);
           emit_boxed(c, argv[0], b);
           buf_puts(b, ")");
@@ -1976,7 +2009,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
            interleaves them, so each write is its own held unit rather than
            the call's */
         for (int k = 0; k < argc; k++) {
-          if (is_sw && comp_ntype(c, argv[k]) == TY_POLY) {
+          if (is_sw && repr_of(c, argv[k]).as_ty == TY_POLY) {
             /* syswrite sizes the operand itself and routes through
                sp_File_syswrite, so a poly operand takes that path here
                rather than being routed through sp_File_write_poly. */
@@ -1986,7 +2019,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
                        "sp_File_syswrite(%s, _s, _l); _r; })", r);
             continue;
           }
-          if (comp_ntype(c, argv[k]) == TY_POLY) {   /* see the one-argument form */
+          if (repr_of(c, argv[k]).as_ty == TY_POLY) {   /* see the one-argument form */
             buf_printf(b, " _t%d += sp_File_write_poly(%s, ", tw, r);
             emit_boxed(c, argv[k], b);
             buf_puts(b, ");");
@@ -2025,7 +2058,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
          (`io << a << b`). Hold the handle in a temp, write, yield the handle. */
       int t = ++g_tmp;
       int sk = repr_of(c, argv[0]).as_ty == TY_STRING;
-      int pk = comp_ntype(c, argv[0]) == TY_POLY;
+      int pk = repr_of(c, argv[0]).as_ty == TY_POLY;
       buf_printf(b, "({ sp_File *_t%d = %s; %s(_t%d, ", t, r,
                  pk ? "sp_File_write_poly" : sk ? "sp_File_write_bin" : "sp_File_write", t);
       if (pk) emit_boxed(c, argv[0], b);
@@ -2036,11 +2069,16 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
     if (sp_streq(name, "winsize") && sp_feature_enabled("io/console")) {
       buf_printf(b, "sp_File_winsize(%s)", r); free(rb.p); return 1;
     }
+    /* IO#raw / IO#noecho's mode switch and restore (desugar_io_console_modes) */
+    if ((sp_streq(name, "__sp_tty_mode") || sp_streq(name, "__sp_tty_restore")) && argc == 1) {
+      buf_printf(b, "%s(%s, ", sp_streq(name, "__sp_tty_mode") ? "sp_File_tty_mode" : "sp_File_tty_restore", r);
+      emit_int_expr(c, argv[0], b); buf_puts(b, ")"); free(rb.p); return 1;
+    }
     /* IO#winsize= [rows, cols(, xpixel, ypixel)]: an Integer Array, the shape
        every caller writes. Any other operand is left to the refusal below,
        rather than guessed into a size. */
     if (sp_streq(name, "winsize=") && argc == 1 && sp_feature_enabled("io/console") &&
-        comp_ntype(c, argv[0]) == TY_INT_ARRAY) {
+        repr_of(c, argv[0]).elem == TY_INT) {
       Buf ab = {0};
       emit_expr(c, argv[0], &ab);
       buf_printf(b, "sp_File_set_winsize(%s, %s)", r, ab.p ? ab.p : "NULL");
@@ -2174,13 +2212,13 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         /* an Integer argument is the limit (gets_sep_arg_texts), and 0 is
            CRuby's ArgumentError, where sp_File_gets_sep reads it as none */
         for (int k = 0; k < argc; k++)
-          if (comp_ntype(c, argv[k]) == TY_INT) {
+          if (repr_of(c, argv[k]).as_ty == TY_INT) {
             buf_printf(b, " if (_t%d == 0) sp_raise_cls(\"ArgumentError\", \"invalid limit: 0 for each_line\");", ll);
             break;
           }
           /* a boxed variable read is the limit when it holds an Integer (an
              Integer local under --int-overflow=promote): its 0 raises too */
-          else if (comp_ntype(c, argv[k]) == TY_POLY && nt_kind(c->nt, argv[k]) == NK_LocalVariableReadNode) {
+          else if (repr_of(c, argv[k]).as_ty == TY_POLY && nt_kind(c->nt, argv[k]) == NK_LocalVariableReadNode) {
             int tz = ++g_tmp;
             buf_printf(b, " { sp_RbVal _t%d = ", tz);
             emit_expr(c, argv[k], b);
@@ -2194,7 +2232,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       if (bpn && file_block_param_poly(c, id, bpn))
         buf_printf(b, " sp_RbVal lv_%s = sp_box_str(_t%d); SP_GC_ROOT_RBVAL(lv_%s);", bpn, lt, bpn);
       else if (bpn) emit_line_param_decl(c, id, bpn, lt, b);
-      for (int k = 0; k < bbn; k++) emit_stmt(c, bbb[k], b, 0);
+      emit_io_loop_body(c, blk, bp, bbb, bbn, b);
       buf_printf(b, " } (sp_File *)_t%d; })", rf);
       return 1;
     }
@@ -2242,7 +2280,7 @@ int emit_call_handle_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       buf_printf(b, "const char *_t%d = NULL; SP_GC_ROOT_STR(_t%d);"
                     " while ((_t%d = sp_argf_gets()) != NULL) {", lt, lt, lt);
       if (bpn) emit_line_param_decl(c, id, bpn, lt, b);
-      for (int k = 0; k < bbn; k++) emit_stmt(c, bbb[k], b, 0);
+      emit_io_loop_body(c, blk, bp, bbb, bbn, b);
       buf_puts(b, " } (&sp_argf_obj); })");
       return 1;
     }
@@ -2313,7 +2351,7 @@ int emit_call_handle_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         buf_printf(b, " if (sp_str_eq(_t%d, (&(\"\\xff\" \".\")[1])) ||"
                       " sp_str_eq(_t%d, (&(\"\\xff\" \"..\")[1]))) continue;", tdn, tdn);
       if (dbpn) emit_line_param_decl(c, id, dbpn, tdn, b);
-      for (int k = 0; k < dbbn; k++) emit_stmt(c, dbbb[k], b, 0);
+      emit_io_loop_body(c, dblk2, dbp, dbbb, dbbn, b);
       buf_printf(b, " } (sp_Dir *)_t%d; })", tdh);
       return 1;
     }

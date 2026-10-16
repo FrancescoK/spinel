@@ -1,0 +1,6 @@
+[package]
+name = "date"
+
+# Pre-installed spin package: ships with the compiler, versioned with it.
+# `require "date"` -- Date and DateTime, ruby/date's pure-Ruby implementation
+# (ruby/date#155), vendored unchanged at the commit README.md names.

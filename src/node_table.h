@@ -51,6 +51,7 @@ typedef struct {
   int count;           /* number of allocated node slots */
   int node_cap;        /* capacity of `nodes`; >= count (for append growth) */
   int root_id;
+  int has_cext_decls; /* syntactic opt-in; avoids a declaration scan in ordinary programs */
   char *source_file;   /* SOURCE_FILE path (unescaped), NULL if none */
   char **files;        /* FILE id -> path (unescaped); for multi-file #line maps */
   int nfiles;          /* length of `files` */
@@ -58,6 +59,10 @@ typedef struct {
      exactly the edits that can change which node carries which name. Caches
      keyed on node identity or name can revalidate against it. */
   unsigned version;
+  /* Bumped by every edit of a node, an int, ref or array field's included,
+     which version leaves out. infer_type keeps an earlier query's answers
+     only while neither it nor version has moved (#8852). */
+  unsigned long edits;
 } NodeTable;
 
 
@@ -312,6 +317,13 @@ int  nt_new_node(NodeTable *nt, const char *type);                 /* new id, -1
 void nt_node_set_type(NodeTable *nt, int id, const char *type);    /* retype in place */
 void nt_node_reset(NodeTable *nt, int id, const char *type);
 void nt_node_set_str(NodeTable *nt, int id, const char *key, const char *val);
+/* A temporary rename (an emitter re-entering under another spelling): the
+   swap sets key to a copy of val and answers the string it held, NULL when
+   the node had none, which the restore puts back. Unlike nt_node_set_str it
+   frees nothing a caller may still hold: a name read before the rename stays
+   valid through it and after. */
+char *nt_node_swap_str(NodeTable *nt, int id, const char *key, const char *val);
+void nt_node_restore_str(NodeTable *nt, int id, const char *key, char *held);
 void nt_node_set_int(NodeTable *nt, int id, const char *key, long long val);
 void nt_node_set_ref(NodeTable *nt, int id, const char *key, int child);
 void nt_node_set_arr(NodeTable *nt, int id, const char *key, const int *ids, int n);

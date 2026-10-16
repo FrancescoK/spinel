@@ -51,6 +51,17 @@ static void emit_bm_legacy_casts_boxed(Compiler *c, int tr, int eargc, const int
 void emit_method_parameters_pushes(Compiler *c, int pn4, int tr4, Buf *b) {
   const NodeTable *nt = c->nt;
   if (pn4 >= 0) {
+    int ca = nt_int(nt, pn4, "cext_arity", -99);
+    if (ca != -99) {
+      int count = ca < 0 ? 1 : ca;
+      for (int i = 0; i < count; i++) {
+        int tp = ++g_tmp;
+        buf_printf(b, " { sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", tp, tp, tp);
+        emit_str_literal(b, ca < 0 ? "rest" : "req");
+        buf_printf(b, "))); sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }", tr4, tp);
+      }
+      return;
+    }
     /* CRuby order: req, opt, rest, post-req, key(req), keyrest, block */
     static const struct { const char *arr; const char *kind; const char *optkind; } PKINDS[] = {
       { "requireds", "req", NULL }, { "optionals", "opt", NULL },
@@ -223,9 +234,9 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       int arecv = mn >= 0 ? nt_ref(nt, mn, "receiver") : -1;
       const char *asym = mn >= 0 ? method_sym_arg(c, mn) : NULL;
       TyKind at = (arecv >= 0 && asym)
-                    ? method_obj_adapter_ret(comp_ntype(c, arecv), asym) : TY_UNKNOWN;
+                    ? method_obj_adapter_ret(repr_of(c, arecv).as_ty, asym) : TY_UNKNOWN;
       if (at != TY_UNKNOWN) {
-        adapter_ty = comp_ntype(c, arecv);
+        adapter_ty = repr_of(c, arecv).as_ty;
         if (!g_promote_mode) tret = at;
         adapter_argc = sp_streq(asym, "[]=") ? 2 : 1;
         adapter_push = sp_streq(asym, "push");
@@ -1518,6 +1529,9 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     int tg4 = mn4 >= 0 ? method_obj_target_mi(c, mn4) : -1;
     int dn4 = tg4 >= 0 ? c->scopes[tg4].def_node : -1;
     int ln4 = dn4 >= 0 ? (int)nt_int(nt, dn4, "node_line", 0) : 0;
+    if (dn4 >= 0 && nt_int(nt, dn4, "cext_extension", 0)) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)"); return 1;
+    }
     /* a boxed receiver's wrapper (bam_poly) has no position of its own: the
        method is the one the receiver's run-time class answers by the name,
        whose def gives the pair */
@@ -1931,7 +1945,7 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_printf(b, "; _t%d.cls_id == SP_BUILTIN_METHOD ? ", t);
       /* a Class.new class has no name until a constant names it: nil */
       char cls_arm[120];
-      snprintf(cls_arm, sizeof cls_arm, c->has_anonymous_classes
+      snprintf(cls_arm, sizeof cls_arm, c->has_anonymous_classes || comp_has_sclass_values(c)
                ? "sp_box_nullable_str(sp_class_name_or_nil(sp_unbox_class(_t%d)))"
                : "sp_box_str(sp_class_val_name(_t%d))", t);
       if (sp_streq(name, "name"))
@@ -1997,12 +2011,11 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       if ((umi >= 0 && argc >= c->scopes[umi].nrequired) || (argc == 0 && comp_reader_in_chain(c, _k, name, NULL)))
         has_user_call = 1;
     }
-    /* The callable ABI packs at most 16 positional args into sp_int[16];
-       beyond that the publish loop writes _sp_proc_poly_args[16] out of
-       bounds and the compound literal has 17+ initializers (a hard -Werror
-       failure). Decline to the general dispatch for a wider call, matching
-       the shadowed pre-arm (#4395). */
-    if (!has_user_call && argc <= 16) {
+    /* A call of any count: the slots are sized for it, and an argument past
+       the channel's slots is published into the call's wide store, opened
+       for it (sp_proc_wide_open). A call of more than 16 declined to the
+       general dispatch, which raised NoMethodError. */
+    if (!has_user_call) {
       int t = ++g_tmp;
       /* Render first, then write the line. emit_expr may need g_pre lines of
          its own -- a container literal builds itself there -- and writing
@@ -2065,6 +2078,7 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       Buf pubs; memset(&pubs, 0, sizeof pubs);
       if (aptmp) {
         g_needs_proc_poly_argslot = 1;
+        if (argc > SP_PROC_ARG_SLOTS) buf_printf(&pubs, "sp_proc_wide_open(%d), ", argc);
         for (int k = 0; k < argc; k++) {
           TyKind at = repr_of(c, argv[k]).as_ty;
           int storable = ty_is_object(at) || c_type_name(at) != NULL;
@@ -2097,10 +2111,11 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
              immediately in front of the call, which is the shape
              emit_proc_call_args already uses for the same reason (#4059).
              The temps stay in the prelude: they are what the roots are on. */
-          buf_printf(&pubs, "_sp_proc_poly_args[%d] = ", k);
+          if (k < SP_PROC_ARG_SLOTS) buf_printf(&pubs, "_sp_proc_poly_args[%d] = ", k);
+          else buf_printf(&pubs, "sp_proc_arg_set(%d, ", k);
           { char tn[24]; snprintf(tn, sizeof tn, "_t%d", aptmp[k]);
             if (storable) emit_proc_arg_boxed(c, at, tn, hold, &pubs); else buf_puts(&pubs, "sp_box_nil()"); }
-          buf_puts(&pubs, ", ");
+          buf_puts(&pubs, k < SP_PROC_ARG_SLOTS ? ", " : "), ");
           free(inner.p); free(valb.p);
         }
       }
@@ -2223,7 +2238,7 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
          single type. */
       /* through the callable helper, so a curried Proc in the slot takes its
          arguments instead of being read as an sp_Proc (#3885) */
-      buf_printf(b, " : sp_poly_callable_call_kw(_t%d, %d, (sp_int[16]){", t, argc);
+      buf_printf(b, " : sp_poly_callable_call_kw(_t%d, %d, (sp_int[%d]){", t, argc, argc > 16 ? argc : 16);
       pc_conv = "sp_poly_slot_arg";
       for (int k = 0; k < argc; k++) {
         if (k) buf_puts(b, ", ");

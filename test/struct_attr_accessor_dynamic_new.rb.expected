@@ -1,0 +1,5 @@
+Tok
+Plain
+[:lit, "a", 1]
+[:lit, "a"]
+"struct size differs"

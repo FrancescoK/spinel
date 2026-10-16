@@ -5,8 +5,10 @@
 # was "contradicted" and the build stopped. A method Time does not have
 # answers nothing the seed could disagree with.
 #
-# Not a snapshot test -- the Makefile builds it with --defer-refusals.
+# Not a snapshot test -- the Makefile builds it with --defer-refusals, so
+# share-strings-test (which compiles without it) leaves it out.
 # spinel: rbs-seed-check
+# spinel: rbs-seed-no-share
 class TUnkDate
   def initialize(y) = @y = y
 end

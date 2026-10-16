@@ -71,6 +71,12 @@ module OpenSSL
     native_func :ecdsa_verify,  [:string, :string, :string, :string], :int,     "sp_ecdsa_verify"
     native_func :ec_check_point, [:string, :string],                  :int,     "sp_ec_check_point"
 
+    # RSA verify over a public key given as its modulus and exponent bytes:
+    # n, e, digest, data, signature, then PSS (1) or PKCS#1 v1.5 (0), and for
+    # PSS the MGF1 digest and the salt length. See openssl/pkey.rb.
+    native_func :rsa_verify, [:string, :string, :string, :string, :string, :int, :string, :int],
+                :int, "sp_rsa_verify"
+
     ffi_lib "ssl"
     ffi_lib "crypto"
 

@@ -168,6 +168,14 @@ static inline void sp_String_set_bin(sp_String*s,const char*t){if(!s||!t)return;
    buffer becomes ASCII-8BIT, as CRuby's readpartial/sysread/read_nonblock
    leave it. */
 static inline void sp_String_set_read_bytes(sp_String*s,const char*t){if(!s||!t)return;sp_String_set_bin(s,t);s->binary=1;sp_fd_publish(s);}
+/* sp_String_set_bin taking t's encoding as well: a splice whose result
+   the compatibility rule made binary (or text) leaves the handle so */
+static inline void sp_String_set_bin_enc(sp_String*s,const char*t){
+  if(!s||!t)return;
+  sp_String_set_bin(s,t);
+  if(sp_str_is_binary(t)){s->binary=1;sp_fd_publish(s);}
+  else if(s->binary){s->binary=0;sp_str_as_text(s->data);sp_fd_publish(s);}
+}
 /* the first tl bytes of t: the append form of an interpolation (emit_interp_append) */
 static inline void sp_String_append_n(sp_String*s,const char*t,size_t tl){if(!s||!t)return;if(sp_String_is_frozen(s)){sp_raise_frozen_str(s->data);return;}sp_fd_append_len(s,t,(int64_t)tl);}
 /* append_as_bytes preserves the handle's encoding as well as embedded NULs. */
@@ -281,6 +289,25 @@ static inline sp_String*sp_String_force_encoding(sp_String*s,int mode){
 static inline const char*sp_String_cstr(sp_String*s){return s->data;}
 static inline int64_t sp_String_length(sp_String*s){return s->len;}
 
+/* A String no other name holds, boxed for something that keeps the box:
+   --share-strings (SP_SHARE_BOX_HANDLES, which a program built with it
+   defines) boxes a mutable heap String as a new handle over its bytes,
+   which sp_String_new_fresh copies before it allocates, so every copy of
+   the box names the one String. A frozen or static String is boxed as
+   itself, as nothing can change it and its identity is its bytes'; so is
+   any String otherwise (sp_box_str). */
+static inline sp_RbVal sp_box_str_new(const char *v) {
+#ifdef SP_SHARE_BOX_HANDLES
+  if (v) {
+    unsigned char m = ((const unsigned char *)v)[-1];
+    if (m == 0xfe || m == 0xfc) return sp_box_obj(sp_String_new_fresh(v), SP_BUILTIN_STRBUF);
+  }
+#endif
+  return sp_box_str(v);
+}
+
+/* encode! on a handle, given the String encode answered for it (lib/sp_cold.c) */
+void sp_String_encode_into(sp_String *h, const char *t);
 /* Cold in-place mutators (compiled once in lib/sp_string.c). */
 void sp_String_prepend(sp_String*s,const char*t);
 void sp_String_insert(sp_String*s,int64_t idx,const char*t);

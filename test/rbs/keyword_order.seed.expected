@@ -1,0 +1,4 @@
+class KeywordOrder
+meth opt_first - a:int,b:string
+meth req_first - b:string,a:int
+meth mixed - int,a:int,b:string,c:float

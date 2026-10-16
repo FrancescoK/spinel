@@ -1,0 +1,12 @@
+N(1,0)
+[:inspect, :to_s]
+[:inspect, :to_s]
+[:initialize]
+false
+false
+[:inspect, :to_s]
+false
+false
+[:__noarg_inspect]
+true
+"own"

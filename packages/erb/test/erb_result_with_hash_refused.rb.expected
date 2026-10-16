@@ -1,0 +1,6 @@
+ERB tag <%= 1 + 1 %> needs eval; a compiled program renders <%= name %> from result_with_hash only
+ERB tag <% if ok %> needs eval; a compiled program renders <%= name %> from result_with_hash only
+ERB tag <%= name.upcase %> needs eval; a compiled program renders <%= name %> from result_with_hash only
+ERB tag <%-# c %> is Ruby code, not a comment tag
+ERB trim_mode "<>": only "-" is supported
+ERB#result needs eval; render with result_with_hash

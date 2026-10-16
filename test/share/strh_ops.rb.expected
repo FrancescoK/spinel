@@ -1,0 +1,25 @@
+"s!tu"
+"s!|t|u"
+"s!, t, u"
+true
+false
+true
+false
+false
+true
+false
+true
+["s!", "t", "u"]
+["s!", "t", "u"]
+s!
+t
+u
+["s!", "t", "u"]
+["s!", "t", "u"]
+["s!", "t", "u"] 3
+3
+["s!", "t", "u"]
+"é-日本"
+2
+"[\"é\", \"日本\"]"
+"x"

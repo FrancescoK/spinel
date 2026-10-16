@@ -1,0 +1,23 @@
+recv
+idx
+2
+recv
+idx
+nil
+recv
+idx
+no implicit conversion of Range into Integer
+recv
+idx
+no implicit conversion from nil to integer
+"b"
+:x
+no implicit conversion of Range into Integer
+undefined method 'at' for an instance of Hash
+no implicit conversion of String into Integer
+66
+no implicit conversion of Range into Integer
+10
+[99]
+1
+nil

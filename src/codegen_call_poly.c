@@ -16,13 +16,21 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
      `runs.map { |r| r.sum }` over chunk_while runs). The runtime helper switches
      on the element's cls_id. Skipped when a user class defines the same method
      (it falls through to the general poly dispatch below). */
-  /* inject/reduce(:op) on a container-read poly iterable (#3234) */
+  /* inject/reduce(:op) on a container-read poly iterable (#3234). An operator
+     not typed a Symbol is asked at run time (sp_poly_inject_op: a String's
+     Symbol, or CRuby's TypeError), the receiver read first */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
-      (is_reduce_alias(name)) &&
-      comp_ntype(c, argv[0]) == TY_SYMBOL) {
+      (is_reduce_alias(name)) && comp_ntype(c, argv[0]) != TY_UNKNOWN) {
     if (!poly_name_user_claimed(c, name, argc)) {
-      buf_puts(b, "sp_poly_inject_sym("); emit_expr(c, recv, b); buf_puts(b, ", ");
-      emit_expr(c, argv[0], b); buf_puts(b, ")");
+      if (comp_ntype(c, argv[0]) == TY_SYMBOL) {
+        buf_puts(b, "sp_poly_inject_sym("); emit_expr(c, recv, b); buf_puts(b, ", ");
+        emit_expr(c, argv[0], b); buf_puts(b, ")");
+        return 1;
+      }
+      int tr = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tr); emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_poly_inject_sym(_t%d, sp_poly_inject_op(", tr, tr);
+      emit_boxed(c, argv[0], b); buf_puts(b, ")); })");
       return 1;
     }
   }

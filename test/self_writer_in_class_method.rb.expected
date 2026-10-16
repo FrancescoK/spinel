@@ -1,0 +1,8 @@
+Base.table_name= bases
+User.table_name= users
+Post's own writer
+"bases"
+"users"
+"posts_table"
+2
+nil

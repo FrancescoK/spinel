@@ -1,0 +1,15 @@
+string: "a/b"
+empty: ""
+pathname: "a/b"
+to_path first: "from_path"
+to_str: "from_str"
+nil: TypeError: Pathname.new requires a String, #to_path or #to_str
+integer: TypeError: Pathname.new requires a String, #to_path or #to_str
+true: TypeError: Pathname.new requires a String, #to_path or #to_str
+false: TypeError: Pathname.new requires a String, #to_path or #to_str
+to_s only: TypeError: Pathname.new requires a String, #to_path or #to_str
+invalid to_path: TypeError: Pathname.new requires a String, #to_path or #to_str
+invalid to_str: TypeError: Pathname.new requires a String, #to_path or #to_str
+raising to_path: PathConversionError: Pathname.new requires a String, #to_path or #to_str
+null byte: ArgumentError: path name contains null byte
+copied: original

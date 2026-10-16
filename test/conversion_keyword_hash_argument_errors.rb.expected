@@ -1,0 +1,31 @@
+nil.to_s ArgumentError: wrong number of arguments (given 1, expected 0)
+nil.inspect ArgumentError: wrong number of arguments (given 1, expected 0)
+true.to_s ArgumentError: wrong number of arguments (given 1, expected 0)
+true.inspect ArgumentError: wrong number of arguments (given 1, expected 0)
+false.to_s ArgumentError: wrong number of arguments (given 1, expected 0)
+false.inspect ArgumentError: wrong number of arguments (given 1, expected 0)
+7.to_s TypeError: no implicit conversion of Hash into Integer
+7.inspect TypeError: no implicit conversion of Hash into Integer
+2.5.to_s ArgumentError: wrong number of arguments (given 1, expected 0)
+2.5.inspect ArgumentError: wrong number of arguments (given 1, expected 0)
+"s".to_s ArgumentError: wrong number of arguments (given 1, expected 0)
+"s".inspect ArgumentError: wrong number of arguments (given 1, expected 0)
+:y.to_s ArgumentError: wrong number of arguments (given 1, expected 0)
+:y.inspect ArgumentError: wrong number of arguments (given 1, expected 0)
+nil.to_i ArgumentError: wrong number of arguments (given 1, expected 0)
+nil.to_f ArgumentError: wrong number of arguments (given 1, expected 0)
+7.to_i ArgumentError: wrong number of arguments (given 1, expected 0)
+7.to_f ArgumentError: wrong number of arguments (given 1, expected 0)
+2.5.to_i ArgumentError: wrong number of arguments (given 1, expected 0)
+2.5.to_f ArgumentError: wrong number of arguments (given 1, expected 0)
+"12".to_i TypeError: no implicit conversion of Hash into Integer
+"12".to_f ArgumentError: wrong number of arguments (given 1, expected 0)
+base ok "111" ok 255
+nil.to_s ArgumentError: wrong number of arguments (given 1, expected 0)
+pow TypeError: Hash can't be coerced into Integer
+fdiv TypeError: Hash can't be coerced into Float
+div TypeError: Hash can't be coerced into Integer
+digits TypeError: no implicit conversion of Hash into Integer
+floor TypeError: no implicit conversion of Hash into Integer
+upto ArgumentError: comparison of Integer with Hash failed
+round ok 2

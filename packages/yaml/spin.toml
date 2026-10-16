@@ -1,0 +1,5 @@
+[package]
+name = "yaml"
+
+# Pre-installed spin package: ships with the compiler, versioned with it.
+# `require "yaml"` is Psych under its other name, as in CRuby.

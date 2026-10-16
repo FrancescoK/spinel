@@ -191,6 +191,16 @@ typedef struct{sp_int cls_id;const char *name;}sp_Class;
 #define SP_CLASS_NIL_ID ((sp_int)-900)
 #define sp_class_nil_p(c) ((c).name == NULL && (c).cls_id == SP_CLASS_NIL_ID)
 #define SP_CLASS_NIL ((sp_Class){SP_CLASS_NIL_ID, NULL})
+/* The singleton class of class id `id` (`Foo.singleton_class`, self in a
+   `class << Foo` body): the id moved past every real one, a user class's up
+   by SP_SCLASS_OFF and a builtin's down by it, so it stays clear of
+   SP_CLASS_NIL_ID and SP_CLASS_BY_NAME and fits a 32-bit sp_int. */
+#define SP_SCLASS_OFF ((sp_int)1 << 20)
+#define sp_sclass_id(id) ((id) >= 0 ? (id) + SP_SCLASS_OFF : (id) - SP_SCLASS_OFF)
+#define sp_sclass_id_p(id) (((id) >= SP_SCLASS_OFF && (id) < 2 * SP_SCLASS_OFF) || \
+                            ((id) <= -SP_SCLASS_OFF && (id) > -2 * SP_SCLASS_OFF))
+#define sp_sclass_base_id(id) ((id) >= 0 ? (id) - SP_SCLASS_OFF : (id) + SP_SCLASS_OFF)
+#define sp_class_sclass_p(c) ((c).name == NULL && sp_sclass_id_p((c).cls_id))
 /* A class known only by name (see sp_box_class_name in sp_alloc.h): marks a
    boxed SP_TAG_CLASS value whose v.s carries the name instead of a resolved
    cls_id. */
@@ -280,6 +290,7 @@ typedef struct{void**data;sp_int len;sp_int cap;void(*scan_elem)(void*);sp_int f
 #define SP_PTR_ELEM_OBJ      1   /* user objects, elem_cls = the static class (-1: read each object's own) */
 #define SP_PTR_ELEM_INT_ROWS 2   /* sp_IntArray rows (Array[Array[Integer]]) */
 #define SP_PTR_ELEM_FLT_ROWS 3   /* sp_FloatArray rows (Array[Array[Float]]) */
+#define SP_PTR_ELEM_STRBUF   4   /* sp_String handles: a String Array whose Strings are shared (--share-strings) */
 typedef struct{const char**data;sp_int len;sp_int cap;sp_int frozen;const char*inline_data[SP_STRARR_INLINE];}sp_StrArray;
 
 /* ---- Non-poly typed hashes ---- */
@@ -297,5 +308,14 @@ typedef struct{sp_int*keys;sp_int*vals;sp_int*order;sp_bool*used;sp_int len;sp_i
 /* Signal table bound (0..64): shared by the trap state in the generated TU
    and the trap machinery in lib/sp_cold.c. */
 #define SP_SIG_MAX 65
+
+/* The default SIGINT / SIGTERM (#9222) raises where it arrives only inside a
+   blocking call the runtime marks with SP_SIG_BLOCKING (a read, a wait, a
+   sleep: nothing of the runtime is half-updated there, and the program would
+   otherwise wait on). Anywhere else the handler records the signal, and the
+   compiler's safe points and the runtime's waits raise it. */
+extern volatile int sp_sig_async_ok;
+#define SP_SIG_BLOCKING(expr) \
+  __extension__ ({ sp_sig_async_ok++; __typeof__(expr) _sp_sb_r = (expr); sp_sig_async_ok--; _sp_sb_r; })
 
 #endif

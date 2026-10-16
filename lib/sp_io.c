@@ -17,6 +17,9 @@
 #include <unistd.h>   /* pipe, isatty */
 #include <sys/stat.h> /* stat() for the File predicates */
 #include <sys/ioctl.h> /* TIOCGWINSZ for #winsize */
+#if !defined(__wasi__) && !defined(_WIN32)
+#include <termios.h>   /* io/console's IO#raw / IO#noecho */
+#endif
 #include <sys/socket.h> /* the Socket:: constants */
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -189,18 +192,73 @@ size_t sp_io_stdio_buffered(FILE *fp) {
 #endif
 }
 
+/* A thread reading or writing a handle's descriptor while another thread
+   closes it (#4546's shape: a connection's two pumps, either of which may
+   close both ends). The close used to fclose at once, and a reader that had
+   loaded the FILE just before it then read the freed FILE's buffer pointers,
+   or called read(2) on a descriptor number the next accept or open had
+   already been given. So the reads and writes that go to the descriptor
+   take a use of the handle around it (sp_io_use .. sp_io_unuse); the close
+   marks the handle, and the FILE is released by whichever of the closer
+   and those users leaves last. A use spans no park but accept's, which the
+   close cancels: a parked thread is woken by the close (sp_sched_ev_forget)
+   and re-tests the closed flag. */
+#define SP_IO_CLOSING 0x80000000u
+#define SP_IO_RETIRED 0x40000000u   /* with CLOSING: the FILE is released */
+#define SP_IO_REOPENING 0x20000000u /* with both: a #reopen is giving it a new one */
+/* The stream, with a use taken; NULL when a close has begun. */
+static FILE *sp_io_try_use(sp_File *f) {
+  unsigned int u = SP_ATOMIC_LOAD(&f->uses, __ATOMIC_RELAXED);
+  do {
+    if (u & SP_IO_CLOSING) return NULL;
+  } while (!SP_ATOMIC_CAS(&f->uses, &u, u + 1, 1, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED));
+  return SP_ATOMIC_LOAD(&f->fp, __ATOMIC_RELAXED);
+}
+/* The same, raising CRuby's IOError for a close from another thread. */
+static FILE *sp_io_use(sp_File *f) {
+  FILE *fp = sp_io_try_use(f);
+  if (!fp) sp_raise_cls("IOError", "stream closed in another thread");
+  return fp;
+}
+/* Release the FILE of a closed handle: from here on the handle carries the
+   /dev/null sentinel (see sp_File.closed). */
+static int sp_io_retire(sp_File *f) {
+  FILE *fp = SP_ATOMIC_LOAD(&f->fp, __ATOMIC_RELAXED);
+  SP_ATOMIC_STORE(&f->fp, sp_io_closed_sentinel(), __ATOMIC_RELAXED);
+  /* autoclose=false on an IO that wraps the fd itself: flush and abandon
+     the FILE (see sp_File_fin); a for_fd wrapper holds a dup, so its
+     fclose never reaches the caller's descriptor (#4208) */
+  if (f->no_autoclose && !f->fno_plus1) { fflush(fp); return 0; }
+  return fclose(fp) == 0 ? 0 : -1;
+}
+/* Drop a use. The last one out of a closed handle releases the FILE and
+   answers fclose's result; errno is the caller's to keep. */
+static int sp_io_unuse(sp_File *f) {
+  if (SP_ATOMIC_SUB_FETCH(&f->uses, 1, __ATOMIC_ACQ_REL) != SP_IO_CLOSING) return 0;
+  int r = sp_io_retire(f);
+  /* only now may #reopen give the handle a new stream (sp_File_reopen) */
+  SP_ATOMIC_STORE(&f->uses, SP_IO_CLOSING | SP_IO_RETIRED, __ATOMIC_RELEASE);
+  return r;
+}
+
 /* Can this handle's I/O block indefinitely? Asked once per handle, from an
    fstat on first use: a FIFO, a socket and a character device can; a regular
-   file is always ready. */
+   file is always ready. A handle closed before it was ever asked answers yes,
+   so the caller goes on to the park or the use that raises. */
 static int sp_io_parkable(sp_File *f) {
-  if (!f->park) {
+  unsigned char k = SP_ATOMIC_LOAD(&f->park, __ATOMIC_RELAXED);
+  if (!k) {
+    FILE *fp = sp_io_try_use(f);
+    if (!fp) return 1;
     struct stat st;
-    int pfd = fileno(f->fp);
-    f->park = (f->is_sock ||
-               (pfd >= 0 && fstat(pfd, &st) == 0 &&
-                (S_ISFIFO(st.st_mode) || S_ISSOCK(st.st_mode) || S_ISCHR(st.st_mode)))) ? 2 : 1;
+    int pfd = fileno(fp);
+    k = (f->is_sock ||
+         (pfd >= 0 && fstat(pfd, &st) == 0 &&
+          (S_ISFIFO(st.st_mode) || S_ISSOCK(st.st_mode) || S_ISCHR(st.st_mode)))) ? 2 : 1;
+    sp_io_unuse(f);
+    SP_ATOMIC_STORE(&f->park, k, __ATOMIC_RELAXED);
   }
-  return f->park == 2;
+  return k == 2;
 }
 
 /* Park until the descriptor can take bytes. A write into a full pipe or socket
@@ -211,16 +269,17 @@ static int sp_io_parkable(sp_File *f) {
    spinel marks sync and leaves unbuffered). A file and the standard streams
    keep their plain path, and their write cost with it. */
 void sp_io_wait_writable(sp_File *f) {SP_GC_ROOT(f);
-  if (!f || !f->fp || !sp_io_parkable(f)) return;
-  int wfd = fileno(f->fp);
+  if (!f || !SP_ATOMIC_LOAD(&f->fp, __ATOMIC_RELAXED) || !sp_io_parkable(f)) return;
+  int wfd = fileno(sp_io_use(f));
+  sp_io_unuse(f);
   if (wfd < 0) return;
   { struct pollfd wp; wp.fd = wfd; wp.events = POLLOUT; wp.revents = 0;
-    if (poll(&wp, 1, 0) > 0) return; }   /* room already: no park */
+    if (SP_SIG_BLOCKING(poll(&wp, 1, 0)) > 0) return; }   /* room already: no park */
 #ifdef SP_THREADS
   {
     extern int sp_sched_wait_io_unless(int fd, short events, const unsigned char *cancel);
     sp_sched_wait_io_unless(wfd, POLLOUT, &f->closed);
-    if (f->closed) sp_raise_cls("IOError", "stream closed in another thread");   /* see sp_io_wait_readable */
+    if (SP_ATOMIC_LOAD(&f->closed, __ATOMIC_RELAXED)) sp_raise_cls("IOError", "stream closed in another thread");   /* see sp_io_wait_readable */
   }
 #else
   {
@@ -229,7 +288,7 @@ void sp_io_wait_writable(sp_File *f) {SP_GC_ROOT(f);
     p.fd = wfd; p.events = POLLOUT;
     for (;;) {
       p.revents = 0;
-      int r = poll(&p, 1, 1);
+      int r = SP_SIG_BLOCKING(poll(&p, 1, 1));
       if (r > 0 || (r < 0 && errno != EINTR && errno != EAGAIN)) return;
       sp_Thread_pass();
     }
@@ -250,7 +309,7 @@ static void sp_io_park_fd_readable(int fd, const unsigned char *closed) {
      paying that when the bytes are already there is most of the cost in the
      shape that reads right after an IO.select says the fd is ready. */
   { struct pollfd rp; rp.fd = fd; rp.events = POLLIN; rp.revents = 0;
-    if (poll(&rp, 1, 0) > 0) return; }
+    if (SP_SIG_BLOCKING(poll(&rp, 1, 0)) > 0) return; }
 #ifdef SP_THREADS
   {
     extern int sp_sched_wait_io_unless(int fd, short events, const unsigned char *cancel);
@@ -268,7 +327,7 @@ static void sp_io_park_fd_readable(int fd, const unsigned char *closed) {
     p.events = POLLIN;
     for (;;) {
       p.revents = 0;
-      int r = poll(&p, 1, 1);
+      int r = SP_SIG_BLOCKING(poll(&p, 1, 1));
       if (r > 0 || (r < 0 && errno != EINTR && errno != EAGAIN)) return;
       sp_Thread_pass();
     }
@@ -279,20 +338,25 @@ static void sp_io_park_fd_readable(int fd, const unsigned char *closed) {
    backtick's child): the same park, on the bare fd. */
 void sp_io_wait_fd_readable(int fd) { sp_io_park_fd_readable(fd, NULL); }
 void sp_io_wait_readable(sp_File *f) {SP_GC_ROOT(f);
-  if (!f || !f->fp) return;
+  if (!f || !SP_ATOMIC_LOAD(&f->fp, __ATOMIC_RELAXED)) return;
   if (!sp_io_parkable(f)) return;
-  if (sp_io_stdio_buffered(f->fp) > 0) return;
-  sp_io_park_fd_readable(fileno(f->fp), &f->closed);
+  FILE *fp = sp_io_use(f);
+  size_t buffered = sp_io_stdio_buffered(fp);
+  int fd = fileno(fp);
+  sp_io_unuse(f);
+  if (buffered > 0) return;
+  sp_io_park_fd_readable(fd, &f->closed);
   /* woken by a close from another thread: the handle is gone, and a read
      would touch a descriptor that is closed or already someone else's */
-  if (f->closed) sp_raise_cls("IOError", "stream closed in another thread");
+  if (SP_ATOMIC_LOAD(&f->closed, __ATOMIC_RELAXED)) sp_raise_cls("IOError", "stream closed in another thread");
 }
 
 /* The socket write path: straight to the descriptor, looping over short
    writes. The stdio stream is never written through, so there is nothing to
    flush and no read/write switching hazard on the shared FILE*. */
 static sp_int sp_sock_write(sp_File *f, const char *s, size_t n) {
-  int fd = fileno(f->fp);
+  /* the descriptor under a use (sp_io_use), let go only across the parks */
+  int fd = fileno(sp_io_use(f));
   size_t off = 0;
   /* A pipe's WRITE end is write-only -- nothing reads through its stream -- so
      it can be O_NONBLOCK, and then a write that would block says so instead of
@@ -317,7 +381,11 @@ static sp_int sp_sock_write(sp_File *f, const char *s, size_t n) {
   while (off < n) {
     ssize_t put;
     size_t want = n - off;
-    if (!nb) sp_io_wait_writable(f);   /* frees the worker while the buffer is full */
+    if (!nb) {   /* frees the worker while the buffer is full */
+      sp_io_unuse(f);
+      sp_io_wait_writable(f);
+      fd = fileno(sp_io_use(f));
+    }
     if (f->is_sock) {
       /* A datagram or seqpacket send is one message: shortening it would
          deliver two where the caller wrote one, and would hide the EMSGSIZE
@@ -350,11 +418,20 @@ static sp_int sp_sock_write(sp_File *f, const char *s, size_t n) {
     }
     if (put < 0) {
       if (errno == EINTR) continue;
-      if ((nb || f->is_sock) && (errno == EAGAIN || errno == EWOULDBLOCK)) { sp_io_wait_writable(f); continue; }
+      if ((nb || f->is_sock) && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        sp_io_unuse(f);
+        sp_io_wait_writable(f);
+        fd = fileno(sp_io_use(f));
+        continue;
+      }
+      int e = errno;
+      sp_io_unuse(f);
+      errno = e;
       sp_file_raise_errno("write", f->is_sock ? "socket" : "pipe");
     }
     off += (size_t)put;
   }
+  sp_io_unuse(f);
   return (sp_int)n;
 }
 
@@ -472,6 +549,62 @@ sp_IntArray *sp_File_winsize(sp_File *f) {
   return a;
 }
 
+/* io/console's IO#raw { } and IO#noecho { }, which the analysis turns into
+   `s = io.__sp_tty_mode(kind); begin ... ensure io.__sp_tty_restore(s) end`.
+   The terminal's settings are saved and the mode set as CRuby's console.c
+   sets it (set_rawmode: cfmakeraw, then ECHOE and ECHOK off; set_noecho:
+   ECHO, ECHOE, ECHOK and ECHONL off), applied with TCSANOW. A handle that is
+   not a terminal raises tcgetattr's Errno (ENOTTY), as CRuby's does. Answers
+   the slot the saved settings sit in, for the restore; nested modes take a
+   slot each. */
+#if defined(__wasi__) || defined(_WIN32)
+/* No termios: no handle is a terminal whose mode can be set. */
+sp_int sp_File_tty_mode(sp_File *f, sp_int kind) {
+  (void)kind;
+  SP_IO_OPEN(f);
+  sp_raise_cls(sp_errno_class_name(ENOTTY), strerror(ENOTTY));
+  return 0;
+}
+sp_int sp_File_tty_restore(sp_File *f, sp_int slot) { (void)f; (void)slot; return 0; }
+#else
+#define SP_TTY_SLOTS 16
+static struct termios sp_tty_saved[SP_TTY_SLOTS];
+static int sp_tty_saved_fd[SP_TTY_SLOTS];
+static int sp_tty_saved_used[SP_TTY_SLOTS];
+sp_int sp_File_tty_mode(sp_File *f, sp_int kind) {
+  SP_IO_OPEN(f);
+  int fd = (int)sp_File_fileno(f);
+  struct termios t;
+  if (tcgetattr(fd, &t) != 0) { int e = errno; sp_raise_cls(sp_errno_class_name(e), strerror(e)); }
+  int slot = -1;
+  for (int i = 0; i < SP_TTY_SLOTS; i++) if (!sp_tty_saved_used[i]) { slot = i; break; }
+  if (slot < 0) sp_raise_cls("RuntimeError", "io/console: terminal modes nested too deep");
+  sp_tty_saved[slot] = t;
+  sp_tty_saved_fd[slot] = fd;
+  sp_tty_saved_used[slot] = 1;
+  if (kind == 1) {
+    cfmakeraw(&t);
+    t.c_lflag &= ~(tcflag_t)(ECHOE | ECHOK);
+  } else {
+    t.c_lflag &= ~(tcflag_t)(ECHO | ECHOE | ECHOK | ECHONL);
+  }
+  if (tcsetattr(fd, TCSANOW, &t) != 0) {
+    int e = errno;
+    sp_tty_saved_used[slot] = 0;
+    sp_raise_cls(sp_errno_class_name(e), strerror(e));
+  }
+  return (sp_int)slot;
+}
+/* The settings slot `slot` saved, back on the terminal they came from. */
+sp_int sp_File_tty_restore(sp_File *f, sp_int slot) {
+  (void)f;
+  if (slot < 0 || slot >= SP_TTY_SLOTS || !sp_tty_saved_used[slot]) return 0;
+  tcsetattr(sp_tty_saved_fd[slot], TCSANOW, &sp_tty_saved[slot]);
+  sp_tty_saved_used[slot] = 0;
+  return 0;
+}
+#endif
+
 /* IO#winsize= [rows, cols] or [rows, cols, xpixel, ypixel], as CRuby's
    io/console: any other length is ArgumentError, and a handle that is not a
    terminal raises the ioctl's Errno (ENOTTY) rather than answering quietly,
@@ -550,6 +683,26 @@ sp_File *sp_io_freeze(sp_File *f) { if (f) f->frozen = 1; return f; }
    self-contained); the single-threaded build gets the no-op definition. */
 void sp_sched_ev_forget(int fd);
 
+/* The close itself, once the handle is known not to be a standard stream. */
+static int sp_io_close_handle(sp_File *f) {
+  /* made now, so the release below never has to open it */
+  (void)sp_io_closed_sentinel();
+  /* Two threads closing one handle at once both passed the caller's check
+     and both fclosed the FILE: a double free (two pumps of a connection
+     closing it from their ensures, #8205's test). The one that sets the
+     closing bit owns the close; the other finds it already taken. The owner
+     takes a use of its own, so a user leaving meanwhile cannot release the
+     FILE under it. */
+  unsigned int u = SP_ATOMIC_LOAD(&f->uses, __ATOMIC_RELAXED);
+  do {
+    if (u & SP_IO_CLOSING) return 0;
+  } while (!SP_ATOMIC_CAS(&f->uses, &u, (u + 1) | SP_IO_CLOSING, 1, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED));
+  SP_ATOMIC_STORE(&f->closed, 1, __ATOMIC_RELAXED);
+  sp_sched_ev_forget(fileno(SP_ATOMIC_LOAD(&f->fp, __ATOMIC_RELAXED)));
+  /* a thread still inside a read or write releases the FILE when it leaves */
+  return sp_io_unuse(f);
+}
+
 sp_int sp_File_close(sp_File *f) {
   /* never fclose the shared stdout/stderr handles (sp_io_stdout/sp_io_stderr):
      closing the process's standard streams would corrupt the singleton and any
@@ -560,40 +713,26 @@ sp_int sp_File_close(sp_File *f) {
      one -- a raw close behind our back, exec, a dup we did not make -- is left
      to the self-healing arm, which re-adds on ENOENT (#4306). */
   /* The handle reads as closed BEFORE the parked readers are woken and the
-     descriptor is closed, and what it carries from then on is the /dev/null
-     sentinel, not the freed FILE: a reader readied by the forget below
-     retries on another worker and raises on the flag; one already past its
-     check reads EOF from the sentinel instead of dereferencing NULL or the
-     connection the next accept gave that number (#4546). */
-  if (f && f->fp && !f->closed && f->fp != stdout && f->fp != stderr && f->fp != stdin) {
-    /* Two threads closing one handle at once both passed the check above
-       and both fclosed the FILE: a double free (two pumps of a connection
-       closing it from their ensures, #8205's test). The one that swaps the
-       sentinel in owns the close; the other finds it already taken. */
-    FILE *fp = f->fp;
-    FILE *sentinel = sp_io_closed_sentinel();
-    if (fp == sentinel || !SP_ATOMIC_CAS(&f->fp, &fp, sentinel, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
-      return 0;
-    int fd = fileno(fp);
-    f->closed = 1;
-    sp_sched_ev_forget(fd);
-    /* autoclose=false on an IO that wraps the fd itself: flush and abandon
-       the FILE (see sp_File_fin); a for_fd wrapper holds a dup, so its
-       fclose never reaches the caller's descriptor (#4208) */
-    if (f->no_autoclose && !f->fno_plus1) { fflush(fp); return 0; }
-    fclose(fp);
-    return 0;
-  }
-  if (f && f->fp && !f->closed) sp_sched_ev_forget(fileno(f->fp));
+     descriptor is closed, and what it carries once the FILE is released is
+     the /dev/null sentinel, not the freed FILE: a reader readied by the
+     forget retries on another worker and raises on the flag; one that loads
+     the stream later reads EOF from the sentinel instead of dereferencing
+     NULL. One inside a descriptor read holds a use, so the FILE and the
+     number stay its own until it leaves (#4546). */
+  FILE *fp = f ? SP_ATOMIC_LOAD(&f->fp, __ATOMIC_RELAXED) : NULL;
+  if (fp && !SP_ATOMIC_LOAD(&f->closed, __ATOMIC_RELAXED) && fp != stdout && fp != stderr && fp != stdin)
+    return sp_io_close_handle(f);
+  if (fp && !SP_ATOMIC_LOAD(&f->closed, __ATOMIC_RELAXED)) sp_sched_ev_forget(fileno(fp));
   return 0;
 }
 
 sp_bool sp_File_closed_p(sp_File *f) {
-  return !f || !f->fp || f->closed;
+  return !f || !SP_ATOMIC_LOAD(&f->fp, __ATOMIC_RELAXED) || SP_ATOMIC_LOAD(&f->closed, __ATOMIC_RELAXED);
 }
 FILE *sp_io_closed_sentinel(void) {
   static FILE *sentinel = NULL;
-  if (!sentinel) {
+  /* acquire: a thread that finds the stream another one opened reads it whole */
+  if (!SP_ATOMIC_LOAD(&sentinel, __ATOMIC_ACQUIRE)) {
     FILE *s = fopen("/dev/null", "r+");
     if (!s) s = fopen("/dev/null", "r");
 #ifdef __wasi__
@@ -604,9 +743,12 @@ FILE *sp_io_closed_sentinel(void) {
     if (!s) { static char none[1]; if ((s = fmemopen(none, sizeof none, "r"))) fseek(s, 0, SEEK_END); }
 #endif
     if (!s) sp_raise_cls("IOError", "cannot open /dev/null");
+#if !defined(_WIN32) && !defined(__wasi__)
+    fcntl(fileno(s), F_SETFD, fcntl(fileno(s), F_GETFD) | FD_CLOEXEC);
+#endif
     if (!SP_ATOMIC_CAS(&sentinel, &(FILE *){NULL}, s, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) fclose(s);
   }
-  return sentinel;
+  return SP_ATOMIC_LOAD(&sentinel, __ATOMIC_ACQUIRE);
 }
 
 /* The Ruby class a handle presents as, for the NoMethodError texts and #inspect.
@@ -890,6 +1032,7 @@ sp_File *sp_sock_pair_end(sp_int domain, sp_int type, sp_int proto, sp_int which
    without its AF_ / SOCK_ prefix, as CRuby reads it. An unknown name is CRuby's
    SocketError. */
 sp_int sp_sock_addrinfo_hint(sp_RbVal v, sp_int is_family) {
+  v = sp_rbval_str(v);
   if (v.tag == SP_TAG_NIL) return 0;
   if (v.tag == SP_TAG_INT) return v.v.i;
   const char *name = NULL;
@@ -921,8 +1064,9 @@ sp_PolyArray *sp_sock_getaddrinfo(const char *host, sp_int port, sp_int family, 
     if (sp_net_getaddrinfo_at(host, (int)port, (int)family, (int)socktype, i, &fam, &stype, &proto,
                               ip, (int)sizeof ip, &p) != 0) break;
     const char *ips = sp_str_from_bytes(ip, strlen(ip));
+    SP_GC_ROOT_STR(ips);   /* held across the row's allocation */
     sp_PolyArray *row = sp_PolyArray_new();
-    sp_PolyArray_push(row, sp_box_str(fam == AF_INET6 ? "AF_INET6" : "AF_INET"));
+    sp_PolyArray_push(row, sp_box_str(fam == AF_INET6 ? SPL("AF_INET6") : SPL("AF_INET")));
     sp_PolyArray_push(row, sp_box_int((sp_int)p));
     sp_PolyArray_push(row, sp_box_str(ips));
     sp_PolyArray_push(row, sp_box_str(ips));
@@ -1077,7 +1221,7 @@ sp_int sp_sock_send(sp_File *f, const char *data, sp_int len, const char *host, 
   if (n < 0) sp_file_raise_errno("send", host ? host : "");
   return (sp_int)n;
 }
-static long sp_io_buffered(sp_File *f);
+static long sp_io_buffered(FILE *fp);
 /* #recv reads one datagram (or up to `len` stream bytes) as a String;
    #recvfrom pairs it with the sender's address, CRuby's 4-element form. */
 const char *sp_sock_recv(sp_File *f, sp_int len) {SP_GC_ROOT(f);
@@ -1087,11 +1231,13 @@ const char *sp_sock_recv(sp_File *f, sp_int len) {SP_GC_ROOT(f);
   /* bytes a read on the stream already pulled into stdio's buffer are the
      peer's next ones: served first, as readpartial does, or recv stepped
      over them (#7195) */
-  long pend = sp_io_buffered(f);
+  long pend = sp_io_buffered(sp_io_use(f));
+  sp_io_unuse(f);
   if (pend > 0) {
     size_t want = (size_t)len < (size_t)pend ? (size_t)len : (size_t)pend;
     char *r = sp_str_alloc(want);
-    size_t got = fread(r, 1, want, f->fp);
+    size_t got = SP_SIG_BLOCKING(fread(r, 1, want, sp_io_use(f)));
+    sp_io_unuse(f);
     r[got] = 0;
     sp_str_set_len(r, got);
     return r;
@@ -1103,14 +1249,19 @@ const char *sp_sock_recv(sp_File *f, sp_int len) {SP_GC_ROOT(f);
   sp_io_wait_readable(f);
   char *buf = (char *)malloc((size_t)len);
   if (!buf) sp_raise_cls("NoMemoryError", "recv");
-  int n = sp_net_udp_recv_from(fileno(f->fp), buf, (int)len, NULL, 0, NULL);
-  if (n < 0) { free(buf); sp_file_raise_errno("recv", ""); }
+  FILE *fp = sp_io_try_use(f);
+  if (!fp) { free(buf); sp_raise_cls("IOError", "stream closed in another thread"); }
+  int fd = fileno(fp);
+  int n = sp_net_udp_recv_from(fd, buf, (int)len, NULL, 0, NULL);
+  int e = errno;
   /* a stream socket at EOF answers nil (Ruby 3.3 and later); an empty
      datagram is still "" */
-  if (n == 0) {
-    int st = 0; socklen_t sl = sizeof st;
-    if (getsockopt(fileno(f->fp), SOL_SOCKET, SO_TYPE, &st, &sl) == 0 && st == SOCK_STREAM) { free(buf); return NULL; }
-  }
+  int st = 0; socklen_t sl = sizeof st;
+  int eof = n == 0 && getsockopt(fd, SOL_SOCKET, SO_TYPE, &st, &sl) == 0 && st == SOCK_STREAM;
+  sp_io_unuse(f);
+  errno = e;
+  if (n < 0) { free(buf); sp_file_raise_errno("recv", ""); }
+  if (eof) { free(buf); return NULL; }
   const char *s = sp_str_from_bytes(buf, (size_t)n);
   free(buf);
   return s;
@@ -1121,13 +1272,21 @@ const char *sp_sock_recvfrom(sp_File *f, sp_int len, const char **ip_out, sp_int
   sp_sock_require(f, "recvfrom");
   char ipbuf[64];
   int port = 0;
-  if (len <= 0) { *ip_out = sp_str_from_bytes("", 0); *port_out = 0; return sp_str_from_bytes("", 0); }
+  if (len <= 0) {
+    const char *s = sp_str_from_bytes("", 0); SP_GC_ROOT_STR(s);   /* across the address's copy */
+    *ip_out = sp_str_from_bytes("", 0);
+    *port_out = 0;
+    return s;
+  }
   sp_io_wait_readable(f);   /* as sp_sock_recv (#7555) */
   char *buf = (char *)malloc((size_t)len);
   if (!buf) sp_raise_cls("NoMemoryError", "recvfrom");
-  int n = sp_net_udp_recv_from(fileno(f->fp), buf, (int)len, ipbuf, (int)sizeof ipbuf, &port);
+  FILE *fp = sp_io_try_use(f);
+  if (!fp) { free(buf); sp_raise_cls("IOError", "stream closed in another thread"); }
+  int n = sp_net_udp_recv_from(fileno(fp), buf, (int)len, ipbuf, (int)sizeof ipbuf, &port);
+  { int e = errno; sp_io_unuse(f); errno = e; }
   if (n < 0) { free(buf); sp_file_raise_errno("recvfrom", ""); }
-  const char *s = sp_str_from_bytes(buf, (size_t)n);
+  const char *s = sp_str_from_bytes(buf, (size_t)n); SP_GC_ROOT_STR(s);   /* across the address's copy */
   free(buf);
   *ip_out = sp_str_from_bytes(ipbuf, strlen(ipbuf));
   *port_out = (sp_int)port;
@@ -1142,6 +1301,8 @@ sp_int sp_sock_shutdown(sp_File *f, sp_int how) {SP_GC_ROOT(f);
 /* A setsockopt value as the int the option takes: an Integer, true/false as
    1/0, or the option's packed bytes ([1].pack("i")), as CRuby accepts it. */
 sp_int sp_sock_optval(sp_RbVal v) {
+  /* a shared String handle reads as its bytes (sp_String's first field) */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p) { v.tag = SP_TAG_STR; v.v.s = *(const char **)v.v.p; }
   if (v.tag == SP_TAG_INT) return v.v.i;
   if (v.tag == SP_TAG_BOOL) return v.v.i != 0;
   if (v.tag == SP_TAG_STR && v.v.s) {
@@ -1184,14 +1345,14 @@ sp_int sp_sock_listen(sp_File *f, sp_int backlog) {SP_GC_ROOT(f);
 /* Bytes stdio already buffered for this handle. A #gets followed by a
    #read_nonblock must see them: the raw read(2) below goes straight to the
    descriptor and would skip the buffer. Same platform probe sp_io_wait_readable
-   uses. */
-static long sp_io_buffered(sp_File *f) {
+   uses. The stream is one the caller holds a use of (sp_io_use). */
+static long sp_io_buffered(FILE *fp) {
 #if defined(__GLIBC__)
-  return (long)(f->fp->_IO_read_end - f->fp->_IO_read_ptr);
+  return (long)(fp->_IO_read_end - fp->_IO_read_ptr);
 #elif defined(__APPLE__)
-  return (long)f->fp->_r;
+  return (long)fp->_r;
 #else
-  return (long)__freadahead(f->fp);
+  return (long)__freadahead(fp);
 #endif
 }
 /* O_NONBLOCK is set for the duration of one call and put back: leaving it on
@@ -1262,15 +1423,17 @@ const char *sp_File_readpartial_or_nil(sp_File *f, sp_int n) {SP_GC_ROOT(f);
   sp_io_wait_readable(f);
   char *r = sp_str_alloc((size_t)n);
   ssize_t got;
-  long pend = sp_io_buffered(f);
+  FILE *fp = sp_io_use(f);
+  long pend = sp_io_buffered(fp);
   if (pend > 0) {
     size_t want = (size_t)n < (size_t)pend ? (size_t)n : (size_t)pend;
-    got = (ssize_t)fread(r, 1, want, f->fp);
+    got = (ssize_t)SP_SIG_BLOCKING(fread(r, 1, want, fp));
   }
   else {
-    do { got = read(fileno(f->fp), r, (size_t)n); } while (got < 0 && errno == EINTR);
-    if (got < 0) sp_file_raise_errno("read", "");
+    do { got = SP_SIG_BLOCKING(read(fileno(fp), r, (size_t)n)); } while (got < 0 && errno == EINTR);
   }
+  { int e = errno; sp_io_unuse(f); errno = e; }
+  if (got < 0) sp_file_raise_errno("read", "");
   if (got == 0) return NULL;
   r[got] = 0;
   sp_str_set_len(r, (size_t)got);
@@ -1294,18 +1457,21 @@ const char *sp_sock_read_nb(sp_File *f, sp_int len, sp_bool exc, sp_bool is_recv
   char *buf = (char *)malloc((size_t)len);
   if (!buf) sp_raise_cls("NoMemoryError", "read_nonblock");
   ssize_t n;
-  long pend = sp_io_buffered(f);
+  FILE *fp = sp_io_try_use(f);
+  if (!fp) { free(buf); sp_raise_cls("IOError", "stream closed in another thread"); }
+  long pend = sp_io_buffered(fp);
   if (pend > 0) {   /* serve what stdio already holds, as CRuby does */
     size_t want = (size_t)len < (size_t)pend ? (size_t)len : (size_t)pend;
-    n = (ssize_t)fread(buf, 1, want, f->fp);
+    n = (ssize_t)SP_SIG_BLOCKING(fread(buf, 1, want, fp));
   }
   else {
     int saved = sp_io_nb_begin(f);
-    do { n = read(fileno(f->fp), buf, (size_t)len); } while (n < 0 && errno == EINTR);
+    do { n = SP_SIG_BLOCKING(read(fileno(fp), buf, (size_t)len)); } while (n < 0 && errno == EINTR);
     int e = errno;
     sp_io_nb_end(f, saved);
     errno = e;
   }
+  { int e = errno; sp_io_unuse(f); errno = e; }
   if (n > 0) { char *s = (char *)sp_str_from_bytes(buf, (size_t)n); free(buf); sp_str_mark_binary(s); return s; }
   if (n == 0) {
     free(buf);
@@ -1399,7 +1565,7 @@ sp_oint sp_sock_connect_nb_sa(sp_File *f, const char *sa, sp_int salen, sp_bool 
   struct sockaddr_storage aligned_sa;
   memcpy(&aligned_sa, sa, (size_t)salen);
   int saved = sp_io_nb_begin(f);
-  int rc = connect(fileno(f->fp), (const struct sockaddr *)&aligned_sa, (socklen_t)salen);
+  int rc = SP_SIG_BLOCKING(connect(fileno(f->fp), (const struct sockaddr *)&aligned_sa, (socklen_t)salen));
   int ce = errno;
   sp_io_nb_end(f, saved);
   errno = ce;
@@ -1420,13 +1586,19 @@ sp_oint sp_sock_connect_nb_sa(sp_File *f, const char *sa, sp_int salen, sp_bool 
    blocking accept would stall the whole green-thread scheduler -- then wrap the
    new descriptor. Only a socket handle answers it. */
 sp_File *sp_sock_accept(sp_File *f) {SP_GC_ROOT(f);
-  extern int sp_net_accept(int sfd);
+  extern int sp_net_accept_unless(int sfd, const unsigned char *cancel);
   if (!f || !f->is_sock)
     sp_raise_cls("NoMethodError",
                  sp_sprintf("undefined method 'accept' for an instance of %s", sp_io_kind_name(f)));
   SP_IO_OPEN(f);
   sp_io_wait_readable(f);
-  return sp_io_fdopen_sock(sp_net_accept(fileno(f->fp)), SPL("tcp"));
+  /* the one use that spans a park: another acceptor can take the pending
+     connection first, and the accept then waits for the next one, a wait
+     the close cancels */
+  int fd = sp_net_accept_unless(fileno(sp_io_use(f)), &f->closed);
+  { int e = errno; sp_io_unuse(f); errno = e; }
+  if (fd < 0 && SP_ATOMIC_LOAD(&f->closed, __ATOMIC_RELAXED)) sp_raise_cls("IOError", "stream closed in another thread");
+  return sp_io_fdopen_sock(fd, SPL("tcp"));
 }
 
 /* `#<File:/etc/passwd>` for a path-backed handle, `#<IO:<STDOUT>>` for a
@@ -1489,7 +1661,7 @@ sp_int sp_File_flush(sp_File *f) {
 sp_bool sp_File_eof_p(sp_File *f) {
   SP_IO_OPEN(f);
   sp_io_wait_readable(f);
-  int c = fgetc(f->fp);
+  int c = SP_SIG_BLOCKING(fgetc(f->fp));
   if (c == EOF) return TRUE;
   ungetc(c, f->fp);
   return FALSE;
@@ -1659,7 +1831,7 @@ void sp_file_rename(const char *from, const char *to) {SP_GC_ROOT_STR(from);SP_G
 sp_int sp_File_readbyte(sp_File *f) {
   SP_IO_OPEN(f);
   sp_io_wait_readable(f);
-  int ch = fgetc(f->fp);
+  int ch = SP_SIG_BLOCKING(fgetc(f->fp));
   if (ch == EOF) sp_raise_cls("EOFError", "end of file reached");
   return (sp_int)(unsigned char)ch;
 }
@@ -1850,7 +2022,7 @@ void sp_File_close_half(sp_File *f, sp_bool reading) {SP_GC_ROOT(f);
   if (reading ? writable : readable)
     sp_raise_cls("IOError", reading ? "closing non-duplex IO for reading"
                                     : "closing non-duplex IO for writing");
-  if (f && f->fp && !f->closed) { FILE *fp = f->fp; f->closed = 1; f->fp = sp_io_closed_sentinel(); fclose(fp); }
+  if (f && f->fp && !f->closed) sp_io_close_handle(f);
 }
 /* IO#reopen(path, mode): rebind the handle to another file. */
 sp_File *sp_File_reopen(sp_File *f, const char *path, const char *mode) {SP_GC_ROOT(f);SP_GC_ROOT_STR(path);SP_GC_ROOT_STR(mode); sp_gc_wb((void*)f);
@@ -1867,12 +2039,29 @@ sp_File *sp_File_reopen(sp_File *f, const char *path, const char *mode) {SP_GC_R
     om = km;
   }
   /* a closed handle carries the shared sentinel, which must not be
-     reopened: it gets a fresh stream */
+     reopened: it gets a fresh stream, once no thread is still inside a
+     read of the old one (sp_io_use), whose release would close the new.
+     The handle stays reserved until the new stream is in place, so no use
+     is taken of the sentinel meanwhile and no second #reopen starts, and
+     goes back to closed if the open fails: it was left with neither, and
+     every later #reopen of it raised */
+  int reserved = 0;
+  if (f->closed) {
+    unsigned int u = SP_IO_CLOSING | SP_IO_RETIRED;
+    if (!SP_ATOMIC_CAS(&f->uses, &u, SP_IO_CLOSING | SP_IO_RETIRED | SP_IO_REOPENING, 0,
+                       __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
+      sp_raise_cls("IOError", "stream closed in another thread");
+    reserved = 1;
+  }
   FILE *nf = (f->closed || !f->fp) ? fopen(path ? path : "", om)
                                    : freopen(path ? path : "", om, f->fp);
-  if (!nf) sp_file_raise_errno("reopen", path ? path : "");
-  f->fp = nf;
-  f->closed = 0;
+  if (!nf) {
+    if (reserved) SP_ATOMIC_STORE(&f->uses, SP_IO_CLOSING | SP_IO_RETIRED, __ATOMIC_RELEASE);
+    sp_file_raise_errno("reopen", path ? path : "");
+  }
+  SP_ATOMIC_STORE(&f->fp, nf, __ATOMIC_RELAXED);
+  SP_ATOMIC_STORE(&f->closed, 0, __ATOMIC_RELAXED);
+  if (reserved) SP_ATOMIC_STORE(&f->uses, 0, __ATOMIC_RELEASE);
   f->path = path;
   /* a mode given replaces the handle's, as CRuby's does: an earlier
      #binmode or #set_encoding no longer decides what a read answers */

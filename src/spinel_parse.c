@@ -515,6 +515,19 @@ static size_t sp_plain_sym(const pm_node_t *n, const char **s) {
   *s = (const char *)y->value_loc.start;
   return (size_t)(y->value_loc.end - y->value_loc.start);
 }
+/* The text of a quoted Symbol with no interpolation or escape
+   (`:'Faraday::Utils'`, `:"Utils"`), as the receiver of def_delegators names
+   a constant path; 0 for any other node. */
+static size_t sp_quoted_recv_sym(const pm_node_t *n, const char **s) {
+  if (!n || PM_NODE_TYPE(n) != PM_SYMBOL_NODE) return 0;
+  const pm_symbol_node_t *y = (const pm_symbol_node_t *)n;
+  if (!y->opening_loc.start || y->opening_loc.end - y->opening_loc.start != 2 ||
+      y->opening_loc.start[0] != ':' || (y->opening_loc.start[1] != '"' && y->opening_loc.start[1] != '\'') ||
+      !y->closing_loc.start || !y->value_loc.start) return 0;
+  for (const uint8_t *p = y->value_loc.start; p < y->value_loc.end; p++) if (*p == '\\' || *p == '#') return 0;
+  *s = (const char *)y->value_loc.start;
+  return (size_t)(y->value_loc.end - y->value_loc.start);
+}
 static int sp_word_char(char ch) {
   return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_';
 }
@@ -554,6 +567,26 @@ static pm_node_t *sp_sym_proc_block(pm_node_t *node) {
    object (a vcall unless it ends in `?` or `!`). A new node per read; NULL
    for any other spelling. */
 static pm_node_t *sp_fw_recv(const char *s, size_t n, const pm_node_t *at) {
+  /* a constant path (`:'Faraday::Utils'`): the last segment a constant
+     name, on the path before it */
+  size_t last = 0;
+  for (size_t k = 1; k + 1 < n; k++) if (s[k] == ':' && s[k + 1] == ':') last = k;
+  if (last) {
+    const char *t = s + last + 2;
+    size_t tl = n - last - 2;
+    if (tl == 0 || t[0] < 'A' || t[0] > 'Z') return NULL;
+    for (size_t j = 0; j < tl; j++) if (!sp_word_char(t[j])) return NULL;
+    pm_node_t *parent = sp_fw_recv(s, last, at);
+    if (!parent) return NULL;
+    if (PM_NODE_TYPE(parent) != PM_CONSTANT_READ_NODE && PM_NODE_TYPE(parent) != PM_CONSTANT_PATH_NODE) {
+      pm_node_destroy((pm_parser_t *)g_parser, parent);
+      return NULL;
+    }
+    pm_constant_path_node_t *cp = sp_made(PM_CONSTANT_PATH_NODE, sizeof *cp, at);
+    cp->parent = parent;
+    cp->name = sp_made_id(t, tl);
+    return &cp->base;
+  }
   size_t i = s[0] == '@' ? 1 : 0, e = n;
   if (i == 0 && n > 1 && (s[n - 1] == '?' || s[n - 1] == '!')) e = n - 1;
   if (i >= e || (s[i] >= '0' && s[i] <= '9')) return NULL;
@@ -575,14 +608,15 @@ static pm_node_t *sp_fw_recv(const char *s, size_t n, const pm_node_t *at) {
 }
 
 /* One forwarding def, `als` delegating to `meth` of the receiver:
-   `def als(*_fw_a) = _fw_a.length == 0 ? R.meth : R.meth(*_fw_a)`. The arity
+   `def als(*_fw_a) = _fw_a.length == 0 ? R.meth : R.meth(*_fw_a)`; for an
+   `each` / `each_*` target the caller's block too, as `&_fw_b` where one
+   was given. The arity
    split keeps a zero-argument delegation off the splat path (a builtin
    target's optional-argument arm would otherwise see the empty rest array
    as an argument). A setter alias (`:timer_a=`) is
    `def als(_fw_v); R.target = _fw_v; end`, the target written as the
    assignment the delegate would make, whether or not `meth` is itself a
-   setter (#4518). `def self.als` under def_single_delegator(s). Block
-   forwarding is not written (a known forwarding gap). */
+   setter (#4518). `def self.als` under def_single_delegator(s). */
 static pm_node_t *sp_fw_def(const char *r, size_t rl, const char *meth, size_t ml, const char *als, size_t al,
                             int single, const pm_node_t *at) {
   pm_def_node_t *d = sp_made(PM_DEF_NODE, sizeof *d, at);
@@ -606,17 +640,53 @@ static pm_node_t *sp_fw_def(const char *r, size_t rl, const char *meth, size_t m
     pm_rest_parameter_node_t *rest = sp_made(PM_REST_PARAMETER_NODE, sizeof *rest, at);
     rest->name = sp_made_id("_fw_a", 5);
     d->parameters->rest = &rest->base;
-    pm_integer_node_t *zero = sp_made(PM_INTEGER_NODE, sizeof *zero, at);
-    pm_node_t *len = sp_made_call(sp_made_lvar("_fw_a", at), sp_made_id("length", 6), NULL, 0, at);
-    pm_if_node_t *f = sp_made(PM_IF_NODE, sizeof *f, at);
-    f->predicate = sp_made_call(len, sp_made_id("==", 2), &zero->base, 0, at);
-    f->statements = sp_made_stmts(sp_made_call(sp_fw_recv(r, rl, at), sp_made_id(meth, ml), NULL, 0, at), at);
-    pm_splat_node_t *all = sp_made(PM_SPLAT_NODE, sizeof *all, at);
-    all->expression = sp_made_lvar("_fw_a", at);
-    pm_else_node_t *e = sp_made(PM_ELSE_NODE, sizeof *e, at);
-    e->statements = sp_made_stmts(sp_made_call(sp_fw_recv(r, rl, at), sp_made_id(meth, ml), &all->base, 0, at), at);
-    f->subsequent = &e->base;
-    body = &f->base;
+    /* The caller's block goes on to an each target: `def_delegators :@a,
+       :each` with `include Enumerable` reaches each with Enumerable's
+       block, and without it every Enumerable method answered empty. Only
+       an each, whose target is an iterator too: another name may be a
+       builtin that takes no block, which has no arm for one. */
+    int blk = (ml == 4 && !memcmp(meth, "each", 4)) || (ml > 5 && !memcmp(meth, "each_", 5));
+    if (blk) {
+      pm_block_parameter_node_t *bp = sp_made(PM_BLOCK_PARAMETER_NODE, sizeof *bp, at);
+      bp->name = sp_made_id("_fw_b", 5);
+      d->parameters->block = bp;
+    }
+    /* `block_given? ? <split with &_fw_b> : <split without>`: a call with
+       no block hands the target none, and each answers its Enumerator */
+    pm_node_t *arm[2] = { NULL, NULL };
+    for (int wb = 0; wb < 1 + blk; wb++) {
+      pm_integer_node_t *zero = sp_made(PM_INTEGER_NODE, sizeof *zero, at);
+      pm_node_t *len = sp_made_call(sp_made_lvar("_fw_a", at), sp_made_id("length", 6), NULL, 0, at);
+      pm_if_node_t *f = sp_made(PM_IF_NODE, sizeof *f, at);
+      f->predicate = sp_made_call(len, sp_made_id("==", 2), &zero->base, 0, at);
+      pm_node_t *c0 = sp_made_call(sp_fw_recv(r, rl, at), sp_made_id(meth, ml), NULL, 0, at);
+      f->statements = sp_made_stmts(c0, at);
+      pm_splat_node_t *all = sp_made(PM_SPLAT_NODE, sizeof *all, at);
+      all->expression = sp_made_lvar("_fw_a", at);
+      pm_else_node_t *e = sp_made(PM_ELSE_NODE, sizeof *e, at);
+      pm_node_t *c1 = sp_made_call(sp_fw_recv(r, rl, at), sp_made_id(meth, ml), &all->base, 0, at);
+      e->statements = sp_made_stmts(c1, at);
+      f->subsequent = &e->base;
+      if (wb) {
+        pm_node_t *cs[2] = { c0, c1 };
+        for (int k = 0; k < 2; k++) {
+          pm_block_argument_node_t *ba = sp_made(PM_BLOCK_ARGUMENT_NODE, sizeof *ba, at);
+          ba->expression = sp_made_lvar("_fw_b", at);
+          ((pm_call_node_t *)cs[k])->block = &ba->base;
+        }
+      }
+      arm[wb] = &f->base;
+    }
+    if (blk) {
+      pm_if_node_t *g = sp_made(PM_IF_NODE, sizeof *g, at);
+      g->predicate = sp_made_call(NULL, sp_made_id("block_given?", 12), NULL, 1, at);
+      g->statements = sp_made_stmts(arm[1], at);
+      pm_else_node_t *ge = sp_made(PM_ELSE_NODE, sizeof *ge, at);
+      ge->statements = sp_made_stmts(arm[0], at);
+      g->subsequent = &ge->base;
+      body = &g->base;
+    }
+    else body = arm[0];
   }
   d->body = &sp_made_stmts(body, at)->base;
   return &d->base;
@@ -650,6 +720,7 @@ static int sp_lower_delegators(pm_node_t *stmt, pm_node_list_t *out) {
   pm_node_list_t *args = &c->arguments->arguments;
   const char *r;
   size_t rl = sp_plain_sym(args->nodes[0], &r);
+  if (!rl) rl = sp_quoted_recv_sym(args->nodes[0], &r);
   pm_node_t *probe = rl ? sp_fw_recv(r, rl, stmt) : NULL;
   if (!probe) return 0;
   pm_node_destroy((pm_parser_t *)g_parser, probe);
@@ -721,6 +792,55 @@ static int sp_lower_body(const pm_node_list_t *body, pm_node_list_t *out, pm_nod
 /* The builtin node the names invented from the node being flattened count
    from (`node_bi`, comp_node_ord): its enclosing def, or, outside every def,
    its top-level statement. -1 outside builtins/. */
+/* `def m(a, ...)` in a class that inherits Hash or Array, whose `...`
+   only a bare `super` uses (faraday's Headers#fetch): the method is
+   `def m(a, *__fwd_r, &__fwd_b)`, which the super into the builtin passes
+   on whole. The `...` model binds one slot per argument some caller of the
+   name passes, so `fetch(k)` beside a `fetch(k, default)` handed the
+   builtin a nil default. A builtin method of these takes no keywords, and
+   initialize (Hash.new's capacity:) keeps its own path. */
+static bool sp_fwd_uses(const pm_node_t *node, void *data) {
+  int *u = data;
+  if (PM_NODE_TYPE(node) == PM_FORWARDING_SUPER_NODE) u[0]++;
+  else if (PM_NODE_TYPE(node) == PM_FORWARDING_ARGUMENTS_NODE) u[1]++;
+  else if (PM_NODE_TYPE(node) == PM_DEF_NODE) u[2]++;
+  return true;
+}
+static int sp_builtin_coll_super(const pm_node_t *sup) {
+  if (!sup) return 0;
+  pm_constant_id_t nm;
+  if (PM_NODE_TYPE(sup) == PM_CONSTANT_READ_NODE) nm = ((const pm_constant_read_node_t *)sup)->name;
+  else if (PM_NODE_TYPE(sup) == PM_CONSTANT_PATH_NODE && !((const pm_constant_path_node_t *)sup)->parent)
+    nm = ((const pm_constant_path_node_t *)sup)->name;
+  else return 0;
+  const pm_constant_t *k = &g_parser->constant_pool.constants[nm - 1];
+  return (k->length == 4 && !memcmp(k->start, "Hash", 4)) || (k->length == 5 && !memcmp(k->start, "Array", 5));
+}
+static void sp_fwd_super_to_rest(pm_class_node_t *cls, const pm_node_t *sup) {
+  if (!sp_builtin_coll_super(sup) || !cls->body || PM_NODE_TYPE(cls->body) != PM_STATEMENTS_NODE) return;
+  pm_node_list_t *body = &((pm_statements_node_t *)cls->body)->body;
+  for (size_t i = 0; i < body->size; i++) {
+    if (PM_NODE_TYPE(body->nodes[i]) != PM_DEF_NODE) continue;
+    pm_def_node_t *d = (pm_def_node_t *)body->nodes[i];
+    pm_parameters_node_t *ps = d->parameters;
+    if (d->receiver || !ps || !ps->keyword_rest || PM_NODE_TYPE(ps->keyword_rest) != PM_FORWARDING_PARAMETER_NODE) continue;
+    if (ps->rest || ps->block || ps->keywords.size || ps->posts.size) continue;
+    const pm_constant_t *k = &g_parser->constant_pool.constants[d->name - 1];
+    if (k->length == 10 && !memcmp(k->start, "initialize", 10)) continue;
+    int u[3] = { 0, 0, 0 };
+    if (d->body) pm_visit_node(d->body, sp_fwd_uses, u);
+    if (!u[0] || u[1] || u[2]) continue;
+    pm_node_destroy((pm_parser_t *)g_parser, ps->keyword_rest);
+    ps->keyword_rest = NULL;
+    pm_rest_parameter_node_t *r = sp_made(PM_REST_PARAMETER_NODE, sizeof *r, &d->base);
+    r->name = sp_made_id("__fwd_r", 7);
+    ps->rest = &r->base;
+    pm_block_parameter_node_t *b = sp_made(PM_BLOCK_PARAMETER_NODE, sizeof *b, &d->base);
+    b->name = sp_made_id("__fwd_b", 7);
+    ps->block = b;
+  }
+}
+
 static int g_bi_base = -1;
 static int flatten_node(pm_node_t *node);
 static int flatten(pm_node_t *node) {
@@ -730,6 +850,8 @@ static int flatten(pm_node_t *node) {
   if (made) node = made;
   /* the node's inline RBS facts, under the id flatten_node gives it next */
   if (node) sp_inline_rbs_emit(node, node_counter);
+  if (node && PM_NODE_TYPE(node) == PM_CLASS_NODE)
+    sp_fwd_super_to_rest((pm_class_node_t *)node, ((pm_class_node_t *)node)->superclass);
   int id = flatten_node(node);
   if (made) pm_node_destroy((pm_parser_t *)g_parser, made);
   g_bi_base = saved;
@@ -3492,6 +3614,21 @@ static char *sp_rewrite_dead_requires(const char *source) {
    over: one in a string or in a comment sets the flag, and all that gives up
    is an optimisation. Declared extern in compiler.h. */
 int g_require_unread = 0;
+/* The features this program was compiled with, as each require and
+   require_relative names it: a require whose path is known only at run
+   time answers for these as already loaded, and raises LoadError for any
+   other (sp_require_computed). */
+const char **g_required_features = NULL;
+int g_nrequired_features = 0;
+static void sp_note_required_feature(const char *name) {
+  if (!name || !*name) return;
+  for (int i = 0; i < g_nrequired_features; i++)
+    if (strcmp(g_required_features[i], name) == 0) return;
+  const char **nf = realloc(g_required_features, sizeof(char *) * (size_t)(g_nrequired_features + 1));
+  if (!nf) return;
+  g_required_features = nf;
+  g_required_features[g_nrequired_features++] = strdup(name);
+}
 static int sp_req_written = 0, sp_req_resolved = 0;
 
 static int sp_req_word_at(const char *p, const char *w, size_t n) {
@@ -3844,6 +3981,14 @@ static char *resolve_requires(const char *source, const char *source_path,
       free(cf);
       continue;
     }
+    /* (a file it names that is not there stops the compile below) */
+    {
+      size_t rl = strlen(rel_path);
+      char rn[512];
+      snprintf(rn, sizeof rn, "%s", rel_path);
+      if (rl > 3 && strcmp(rn + rl - 3, ".rb") == 0) rn[rl - 3] = '\0';
+      sp_note_required_feature(rn[0] == '.' && rn[1] == '/' ? rn + 2 : rn);
+    }
 
     /* Build full path */
     char full_path[1024];
@@ -4001,7 +4146,7 @@ static int sp_require_tolerated(const char *name) {
      nothing to load and nothing to warn about -- CRuby satisfies them
      silently for the same reason (#3455). */
   static const char *const tolerated[] = { "thread", "enumerator", "fiber", "ffi",
-                                           "rational", "complex", NULL };
+                                           "rational", "complex", "io/wait", NULL };
   for (int i = 0; tolerated[i]; i++) {
     if (strcmp(name, tolerated[i]) == 0) return 1;
   }
@@ -4072,7 +4217,7 @@ static void sp_builtin_names_from(const char *content) {
 typedef struct {
   const char *src;            /* the text this was read from, NULL for none */
   size_t *com; int com_n;     /* each comment's start and end offset, in order */
-  int brk, fin, evals;
+  int brk, fin, evals, popen, popen_str;
 } SpSrcLex;
 static SpSrcLex sp_src_lex;
 
@@ -4081,12 +4226,22 @@ static int sp_src_tok_is(const pm_token_t *tok, const char *word) {
   return (size_t)(tok->end - tok->start) == wl && memcmp(tok->start, word, wl) == 0;
 }
 
+static int sp_src_top_io(const uint8_t *src, const uint8_t *p) {
+  size_t off = (size_t)(p - src);
+  if (off >= 2 && p[-1] == ':' && p[-2] == ':') return off == 2 || !sp_req_ident_char((char)p[-3]);
+  return off == 0 || (p[-1] != ':' && !sp_req_ident_char((char)p[-1]));
+}
+
 static void sp_src_lex_token(void *data, pm_parser_t *parser, pm_token_t *tok) {
   SpSrcLex *lx = (SpSrcLex *)data;
   (void)parser;
   if (tok->type == PM_TOKEN_KEYWORD_BREAK) lx->brk = 1;
+  for (const uint8_t *q = tok->start; tok->type == PM_TOKEN_STRING_CONTENT && q + 8 <= tok->end; q++)
+    if (!memcmp(q, "IO.popen", 8)) lx->popen_str = 1;
   if (tok->type != PM_TOKEN_IDENTIFIER) return;
   if (sp_src_tok_is(tok, "define_finalizer")) lx->fin = 1;
+  if (sp_src_tok_is(tok, "popen") && tok->start - (const uint8_t *)lx->src >= 3 && !memcmp(tok->start - 3, "IO.", 3) &&
+      sp_src_top_io((const uint8_t *)lx->src, tok->start - 3)) lx->popen = 1;
   if (sp_src_tok_is(tok, "eval") || sp_src_tok_is(tok, "class_eval") ||
       sp_src_tok_is(tok, "module_eval") || sp_src_tok_is(tok, "instance_eval")) lx->evals = 1;
 }
@@ -4255,6 +4410,54 @@ static char *sp_splice_process_detach(char *source, const char *exe_path,
   return sp_prepend_require(source, exe_path, "require \"builtins/process_detach\"\n", fsl, fsl_n);
 }
 
+/* builtins/system_spawn.rb: Kernel#system with an options or environment
+   Hash, for a program that calls system with a keyword argument (the
+   analysis renames those calls to it, desugar_system_options) */
+static int sp_src_system_call_has_keyword(const char *source) {
+  for (const char *p = strstr(source, "system"); p; p = strstr(p + 6, "system")) {
+    if (p > source && (isalnum((unsigned char)p[-1]) || p[-1] == '_' || p[-1] == '.' ||
+                       p[-1] == ':' || p[-1] == '@' || p[-1] == '$')) continue;
+    const char *q = p + 6;
+    if (*q != '(' && *q != ' ') continue;
+    /* the call's text: to the end of its line, and on through a line that
+       ends inside the argument list (a trailing comma or open parenthesis) */
+    for (; *q; q++) {
+      if (*q == '\n') {
+        const char *e = q;
+        while (e > p && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r')) e--;
+        if (e > p && (e[-1] == ',' || e[-1] == '(')) continue;
+        break;
+      }
+      /* `name:` and not `Name::` -- a keyword argument */
+      if (*q == ':' && q[1] != ':' && (isalnum((unsigned char)q[-1]) || q[-1] == '_')) return 1;
+    }
+  }
+  return 0;
+}
+
+static char *sp_splice_system_spawn(char *source, const char *exe_path,
+                                    unsigned char **fsl, size_t *fsl_n) {
+  if (!sp_src_system_call_has_keyword(source)) return source;
+  return sp_prepend_require(source, exe_path, "require \"builtins/system_spawn\"\n", fsl, fsl_n);
+}
+
+/* builtins/file_foreach_first.rb: File.foreach(path).first(n), for a program
+   that writes `foreach(` and `.first(` (desugar_dir_surface renames the call) */
+static char *sp_splice_foreach_first(char *source, const char *exe_path,
+                                     unsigned char **fsl, size_t *fsl_n) {
+  if (!strstr(source, "foreach(") || !strstr(source, ".first(")) return source;
+  return sp_prepend_require(source, exe_path, "require \"builtins/file_foreach_first\"\n", fsl, fsl_n);
+}
+
+/* builtins/io_popen.rb: IO.popen with a block, for a program that calls
+   IO.popen (the analysis renames the block form to it, desugar_io_popen_block) */
+static char *sp_splice_io_popen(char *source, const char *exe_path,
+                                unsigned char **fsl, size_t *fsl_n) {
+  if (!strstr(source, "IO.popen")) return source;
+  { SpSrcLex *lx = sp_src_lex_of(source); if (!lx->popen && !(lx->evals && lx->popen_str)) return source; }
+  return sp_prepend_require(source, exe_path, "require \"builtins/io_popen\"\n", fsl, fsl_n);
+}
+
 static char *sp_splice_builtins(char *source, const char *exe_path,
                                 unsigned char **fsl, size_t *fsl_n) {
   if (getenv("SPINEL_NO_BUILTINS")) return source;   /* the A/B switch: the C emitters alone */
@@ -4326,7 +4529,9 @@ static char *sp_splice_builtins(char *source, const char *exe_path,
   for (int i = 0; i < sp_builtin_enum_names_n && !any; i++)
     if (sp_source_mentions_method(source, sp_builtin_enum_names[i])) any = 1;
   /* the spellings the analyzer rewrites onto a builtin's name */
-  static const char *const aliases[][2] = { { "with_object", "each_with_object" }, { "collect_concat", "flat_map" }, { "detect", "find" }, { NULL, NULL } };
+  static const char *const aliases[][2] = { { "with_object", "each_with_object" }, { "collect_concat", "flat_map" }, { "detect", "find" },
+    /* Array#index with a block and no argument (desugar_builtin_enum_calls) */
+    { "index", "find_index" }, { NULL, NULL } };
   for (int k = 0; aliases[k][0] && !any; k++) {
     int known = 0;
     for (int i = 0; i < sp_builtin_enum_names_n; i++) if (strcmp(sp_builtin_enum_names[i], aliases[k][1]) == 0) known = 1;
@@ -4729,6 +4934,7 @@ else {
     /* Stub arms above leave cfsl NULL: their content is a one-line comment. */
     if (!cfsl) cfsl = sp_fsl_make(content, 0, &cfsl_n);
     if (sp_require_preloaded(lib_name)) req_val = "false";
+    if (strcmp(req_val, "nil") != 0) sp_note_required_feature(lib_name);
 
     /* Debug: marker-wrap so plain-require'd lib content doesn't corrupt the
        line map's accounting for code after the require. No-op without --debug. */
@@ -5047,7 +5253,8 @@ static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
     g_emit_line = on ? 1 : 0;
     const char *et = getenv("SPINEL_EMIT_TYPES");
     const char *ww = getenv("SPINEL_WARN_WIDEN");
-    g_emit_end = (on && ((et && *et) || (ww && *ww))) ? 1 : 0;
+    const char *nc = getenv("SPINEL_NEW_CLAIMS");
+    g_emit_end = (on && ((et && *et) || (ww && *ww) || (nc && *nc))) ? 1 : 0;
   }
 
   /* Resolve require_relative and plain require */
@@ -5074,6 +5281,9 @@ static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
   source = sp_splice_named_builtin(source, argv0, "ThreadGroup", "builtins/thread_group", &fsl, &fsl_n);
   source = sp_splice_object_space(source, argv0, &fsl, &fsl_n);
   source = sp_splice_process_detach(source, argv0, &fsl, &fsl_n);
+  source = sp_splice_system_spawn(source, argv0, &fsl, &fsl_n);
+  source = sp_splice_io_popen(source, argv0, &fsl, &fsl_n);
+  source = sp_splice_foreach_first(source, argv0, &fsl, &fsl_n);
   /* CRuby provides Set (3.2+) and IO::Buffer without a require wherever
      they are used, in a required file as well (activesupport's
      notifications/fanout.rb; #6740 for IO::Buffer). Ask over the resolved

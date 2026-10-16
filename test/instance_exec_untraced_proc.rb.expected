@@ -1,0 +1,16 @@
+Obj
+Object
+Obj
+Object
+[1]
+[1, 2, 3]
+[4, 5]
+true
+true
+true
+7
+true
+7
+true
+[LocalJumpError, "no block given"]
+[ArgumentError, "wrong number of arguments (given 1, expected 2)"]

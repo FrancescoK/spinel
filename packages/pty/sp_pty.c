@@ -82,6 +82,8 @@ static SP_NORETURN void sp_pty_raise_errno(int e, const char *what) {
   sp_raise_cls(sp_pty_errno_class(e), msg);
 }
 
+int sp_io_make_pipe(int fds[2]);   /* lib/sp_io.c: a close-on-exec pipe */
+
 /* `fd`, moved above 2 if it is a standard slot, close-on-exec either way;
    -1 (errno set, `fd` closed) if the move fails. */
 static int sp_pty_above_std(int fd) {
@@ -99,7 +101,13 @@ static int sp_pty_above_std(int fd) {
 
 /* A new master, close-on-exec and above 2, its slave unlocked. */
 sp_int sp_pty_open_master(void) {
+  /* POSIX defines only O_RDWR and O_NOCTTY for posix_openpt; Linux also
+     takes O_CLOEXEC, and elsewhere sp_pty_above_std sets the flag below */
+#ifdef __linux__
+  int m = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
+#else
   int m = posix_openpt(O_RDWR | O_NOCTTY);
+#endif
   if (m < 0) sp_pty_raise_errno(errno, "/dev/ptmx");
   if (grantpt(m) < 0 || unlockpt(m) < 0) {
     int e = errno;
@@ -126,6 +134,23 @@ sp_int sp_pty_dup(sp_int fd) {
 
 /* Is `v` a boxed String? */
 static int sp_pty_is_str(sp_RbVal v) { return v.tag == SP_TAG_STR; }
+/* A String the program holds as the shared handle (--share-strings)
+   arrives boxed as that handle: it reads as the String it holds, the
+   handle's first field, as a spawn's arguments do (sp_spawn_str). */
+static sp_RbVal sp_pty_str(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p) {
+    v.tag = SP_TAG_STR;
+    v.v.s = *(const char **)v.v.p;
+  }
+  return v;
+}
+/* the command's argument i, and the environment's pair k, read so */
+static sp_RbVal sp_pty_arg(sp_RbVal args, sp_int i) { return sp_pty_str(sp_json_aref_fn(args, i)); }
+static void sp_pty_env_pair(sp_RbVal env, sp_int k, sp_RbVal *key, sp_RbVal *val) {
+  sp_json_hpair_fn(env, k, key, val);
+  *key = sp_pty_str(*key);
+  *val = sp_pty_str(*val);
+}
 
 /* Does an `env` key name this `NAME=value` entry of environ? */
 static int sp_pty_env_names(const char *entry, const char *name) {
@@ -181,6 +206,7 @@ static const char *sp_pty_login_shell(void) {
    Answers the child's pid. `master` and `writer` are
    closed here if it raises. */
 sp_int sp_pty_spawn_child(sp_int master, sp_int writer, sp_RbVal env, sp_RbVal args, sp_RbVal chdir_to) {
+  chdir_to = sp_pty_str(chdir_to);
   int m = (int)master, wfd = (int)writer;
 
   /* every argument checked before anything is allocated or opened */
@@ -190,7 +216,7 @@ sp_int sp_pty_spawn_child(sp_int master, sp_int writer, sp_RbVal env, sp_RbVal a
   }
   sp_int na = sp_json_len_fn(args);
   for (sp_int i = 0; i < na; i++)
-    if (!sp_pty_is_str(sp_json_aref_fn(args, i))) {
+    if (!sp_pty_is_str(sp_pty_arg(args, i))) {
       sp_pty_close2(m, wfd);
       sp_raise_cls("TypeError", "no implicit conversion into String (command argument)");
     }
@@ -203,7 +229,7 @@ sp_int sp_pty_spawn_child(sp_int master, sp_int writer, sp_RbVal env, sp_RbVal a
     ne = sp_json_len_fn(env);
     for (sp_int k = 0; k < ne; k++) {
       sp_RbVal key, val;
-      sp_json_hpair_fn(env, k, &key, &val);
+      sp_pty_env_pair(env, k, &key, &val);
       if (!sp_pty_is_str(key) || !(val.tag == SP_TAG_NIL || sp_pty_is_str(val))) {
         sp_pty_close2(m, wfd);
         sp_raise_cls("TypeError", "no implicit conversion into String (environment)");
@@ -217,13 +243,13 @@ sp_int sp_pty_spawn_child(sp_int master, sp_int writer, sp_RbVal env, sp_RbVal a
   const char *dir = chdir_to.tag == SP_TAG_NIL ? NULL : chdir_to.v.s;
 
   /* the program's path, searched on the PATH the child will have */
-  const char *first = na > 0 ? sp_json_aref_fn(args, 0).v.s : sp_pty_login_shell();
+  const char *first = na > 0 ? sp_pty_arg(args, 0).v.s : sp_pty_login_shell();
   int via_shell = na <= 1 && strpbrk(first, " \t\n*?{}[]<>()~&|\\$;'`\"#=%") != NULL;
   const char *prog = via_shell ? "/bin/sh" : first;
   const char *path = getenv("PATH");
   for (sp_int k = 0; k < ne; k++) {
     sp_RbVal key, val;
-    sp_json_hpair_fn(env, k, &key, &val);
+    sp_pty_env_pair(env, k, &key, &val);
     if (strcmp(key.v.s, "PATH") == 0) path = val.tag == SP_TAG_NIL ? NULL : val.v.s;
   }
   char exe[4096];
@@ -240,7 +266,7 @@ sp_int sp_pty_spawn_child(sp_int master, sp_int writer, sp_RbVal env, sp_RbVal a
   int ai = 0;
   if (via_shell) { argv[ai++] = (char *)"/bin/sh"; argv[ai++] = (char *)"-c"; }
   if (na == 0) argv[ai++] = (char *)first;
-  for (sp_int i = 0; i < na; i++) argv[ai++] = (char *)sp_json_aref_fn(args, i).v.s;
+  for (sp_int i = 0; i < na; i++) argv[ai++] = (char *)sp_pty_arg(args, i).v.s;
   argv[ai] = NULL;
   sh_argv[0] = (char *)"sh";
   sh_argv[1] = exe;
@@ -262,14 +288,14 @@ sp_int sp_pty_spawn_child(sp_int master, sp_int writer, sp_RbVal env, sp_RbVal a
       int shadowed = 0;
       for (sp_int k = 0; k < ne && !shadowed; k++) {
         sp_RbVal key, val;
-        sp_json_hpair_fn(env, k, &key, &val);
+        sp_pty_env_pair(env, k, &key, &val);
         shadowed = sp_pty_env_names(environ[i], key.v.s);
       }
       if (!shadowed) built[ei++] = environ[i];
     }
     for (sp_int k = 0; k < ne; k++) {
       sp_RbVal key, val;
-      sp_json_hpair_fn(env, k, &key, &val);
+      sp_pty_env_pair(env, k, &key, &val);
       if (val.tag == SP_TAG_NIL) continue;
       size_t len = strlen(key.v.s) + strlen(val.v.s) + 2;
       char *entry = malloc(len);
@@ -295,7 +321,7 @@ sp_int sp_pty_spawn_child(sp_int master, sp_int writer, sp_RbVal env, sp_RbVal a
   if (pn) { strncpy(slave, pn, sizeof slave - 1); slave[sizeof slave - 1] = 0; }
   else { fail = errno; fail_what = "ptsname"; }
 #endif
-  if (!fail && pipe(err_pipe) < 0) { fail = errno; fail_what = "pipe"; err_pipe[0] = err_pipe[1] = -1; }
+  if (!fail && sp_io_make_pipe(err_pipe) < 0) { fail = errno; fail_what = "pipe"; err_pipe[0] = err_pipe[1] = -1; }
   if (!fail) {
     err_pipe[0] = sp_pty_above_std(err_pipe[0]);
     if (err_pipe[0] < 0) {

@@ -1,0 +1,16 @@
+abc
+k1
+abcd
+xyz
+xyz
+"2026-10-13!"
+"0012"
+ifs: abc! abc!
+ternary: abc! abc!
+orop: abc! abc!
+early: abc! abc!
+elsifs: abc! abc!
+cased: abc! abc!
+looped: abc! abc!
+memo: abc! abc!
+orlocal: abc! abc! true

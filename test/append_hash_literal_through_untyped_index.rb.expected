@@ -1,0 +1,3 @@
+{"a" => "v"}
+{"devices" => [{"deviceID" => "A"}, {"deviceID" => "B"}]}
+["xy"]

@@ -19,6 +19,20 @@ int poly_ivar_set_reaches(Compiler *c, int call, int k);
    of them, or NULL when the analysis cannot bound them (analyze_scope.c) */
 /* Kernel#String uses its argument as the conversion's implicit receiver. */
 const int *poly_recv_classes(Compiler *c, int call, int *n);
+/* The classes and modules the same receiver can be ITSELF, as a value (a
+   constant naming one, `{b: Integer}`), marked in a set over the class
+   table, or NULL when the walk cannot bound the receiver's values */
+const char *poly_recv_class_values(Compiler *c, int call);
+/* Can a class method of class k be reached through that receiver: k is a
+   class every class value answers for (Class, Module, ...), or one of
+   the receiver's Class values is k or under it; 1 when the walk cannot
+   bound them. Shared by the dispatch's arms and the call's type. */
+int poly_cls_value_reaches(Compiler *c, int call, int k);
+/* A class method of `name` on one of the Class values the boxed receiver of
+   `call` holds, as far as the walk bounds them (poly_cls_value_reaches): a
+   String face then answers only part of the call, and the call's type meets
+   the class method's answer. No when the walk leaves the values unbounded. */
+int poly_recv_cls_method_owns(Compiler *c, int call, const char *name);
 /* Can that receiver be a builtin value as well (nil, a literal, a builtin
    class's instance), which no class it lists stands for? 1 also when the
    walk cannot bound it. */
@@ -134,6 +148,7 @@ void analyze_program(Compiler *c);
 /* The program as written gives no class a method named `nm`, beyond `defs`
    (0 or 1) defs of that name: read ahead of the desugars, by absence. */
 int an_prog_never_gives(const char *nm, int defs);
+int an_prog_names_method(const char *nm);
 /* True if a regex source contains a capturing group: an unescaped '(' that
    isn't the start of a non-capturing/extension group '(?...'. scan returns
    nested arrays for capturing patterns, which the str_array path can't model. */
@@ -143,6 +158,15 @@ int an_re_has_captures(const char *src);
    pickup of a call to it then answers the call's nil as nil
    (an_tail_is_shared_handle). */
 int an_tail_answers_nil(Compiler *c, int mi);
+/* --share-strings: does method mi answer a shared String's handle it
+   publishes (Scope.ret_handle, with its ret_nil_pickup, ret_pub_fresh and
+   ret_pub_bang), or a new String or a parameter on every path
+   (Scope.ret_fresh, ret_param)? While an_mark_handle_returns decides them,
+   a method not decided yet is decided where it is asked, whatever order
+   the methods are defined in; after it, the facts as decided. */
+int scope_ret_handle(Compiler *c, int mi);
+int scope_ret_fresh(Compiler *c, int mi);
+int scope_ret_param(Compiler *c, int mi);
 /* A String `||` or `&&` over a String left operand: a tail whose operands
    are its arms (an_tail_is_shared_handle, emit_tail_value). */
 int an_tail_logic_op(Compiler *c, int node);
@@ -219,6 +243,9 @@ int strbuf_ivar_alias_value(const NodeTable *nt, int v);
 /* Infer (and cache) the type of node `id`. Used during analysis; codegen
    reads the cached results via comp_ntype. */
 TyKind infer_type(Compiler *c, int id);
+/* empty infer_type's memo of earlier queries' answers: the start or end of
+   a pass whose writes are not all counted (#8852) */
+void infer_memo_boundary(void);
 /* A pure read of the settled analysis (repr_of) asks its questions between
    an_pure_read_begin and an_pure_read_end. infer_type answers as usual but
    records nothing it derives: not the node-type cache, a poly call's
@@ -316,6 +343,8 @@ int loop_never_completes(Compiler *c, int node);
    value on break, so its result type widens to poly. */
 int call_breaks(Compiler *c, int id);
 int an_poly_str_upto(Compiler *c, int id);   /* a boxed upto a String receiver may take */
+int an_int_step_range_chain(Compiler *c, int id); /* a blockless times/upto/downto kept as its Range */
+int an_blockless_tuples_kept(Compiler *c, int id); /* a blockless combination & co. kept as its Array */
 /* Scope of an inline-able yielding user method a block-bearing CallNode
    resolves to (its literal block is spliced at yield sites), else -1. */
 int call_user_yield_mi(Compiler *c, int id);
@@ -340,6 +369,9 @@ int an_ary_viewed(Compiler *c, int id);
    other node, or when none is pinned. face_active() says whether one is. */
 TyKind face_of(int node);
 int face_active(void);
+/* how many codegen views are open (codegen_view.c): a view pins nodes'
+   types while an arm is emitted, 0 outside the emission */
+int view_depth(void);
 void an_face_push(int node, TyKind kind);
 void an_face_pop(void);
 int an_face_pinned(int node);
@@ -418,8 +450,7 @@ int ie_call_kwhash(Compiler *c, int id);
 size_t block_param_written_len(const char *name);
 size_t reassigned_param_written_len(const char *name);
 int block_param_is_renamed(const char *name);
-void block_param_invent_name(Compiler *c, char *buf, size_t n,
-                             const char *written, int blk);
+char *block_param_invent_name(Compiler *c, const char *written, int blk);
 int ie_kwhash_value(Compiler *c, int kwhash, const char *name);
 TyKind ie_kwhash_computed_type(Compiler *c, int kwhash);
 
@@ -552,5 +583,17 @@ int std_stream_assigned(Compiler *c, const char *nm);   /* ... or is assigned at
 int std_stream_value_classes(Compiler *c, char *set);   /* classes the streams' stores hold; 0: unbounded */
 int std_stream_foreign_writer(Compiler *c, const char *nm);   /* an object output cannot write to */
 int std_stream_bare_call_own(Compiler *c, int id, const char *nm);   /* bare nm reaches the program's own */
+/* --share-strings (#8328 step 5): the operation (StrhOp, builtin_names.h)
+   call node `call` is on a String Array of handles, given the receiver's
+   type rt: STRH_NONE unless rt is TY_STRH_ARRAY, the call's index
+   arguments are Integers, no argument is a splat, a keyword Hash or a block
+   argument, and no method of the program's own stands in for Array's. */
+int strh_call_op(Compiler *c, int call, TyKind rt);
+/* ...and the same for the gate's rounds, where an argument whose type is
+   not settled yet counts as the type asked (the gate runs again, and
+   refuses for good, once it is) */
+int strh_call_op_in(Compiler *c, int call, TyKind rt, int unknown_ok);
+int strh_literal_held(Compiler *c, int n);   /* an Array literal a variable of any kind is written */
+int strh_var_read(const NodeTable *nt, int n);   /* a variable's read, whatever its kind of variable */
 
 #endif

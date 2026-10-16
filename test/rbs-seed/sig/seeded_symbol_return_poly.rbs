@@ -1,0 +1,8 @@
+class ModePicker
+  def pick: () -> Symbol
+  def pick_missing: () -> Symbol
+end
+
+class ModeApplier
+  def apply: (Hash[String, untyped] opts) -> Symbol
+end

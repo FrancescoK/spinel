@@ -711,12 +711,18 @@ void *sp_slab_alloc_obj(size_t need, void (*fin)(void *), void (*scn)(void *)) {
    case tail-calls the full form below). It runs when the slab is on and
    nothing wants a look at each allocation (the verifier, the report, the
    stress switch not yet read): sp_gc_alloc_fast_ok, recomputed by the full
-   form and dropped by whoever turns one of those on. */
+   form and dropped by whoever turns one of those on. Every allocation that
+   takes the full form stores it, beside the others reading it here, so it is
+   stored and read through SP_GC_CTR_SET/GET, atomic in the threaded build:
+   plainly it was a data race (ThreadSanitizer: sp_gc_alloc against
+   sp_gc_alloc_full, and sp_gc_alloc_full against itself). Relaxed is enough:
+   the stores all write the same value until one of the switches changes, and
+   a switch turns on once, at start-up or in the first SPINEL_GC_VERIFY cycle. */
 int sp_gc_alloc_fast_ok = 0;
 static void *sp_gc_alloc_full(size_t sz, void (*fin)(void *), void (*scn)(void *));
 void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
   size_t need = sizeof(sp_gc_hdr) + sz;
-  if (SP_EXPECT(!sp_gc_alloc_fast_ok || need > 256, 0)) return sp_gc_alloc_full(sz, fin, scn);
+  if (SP_EXPECT(!SP_GC_CTR_GET(sp_gc_alloc_fast_ok) || need > 256, 0)) return sp_gc_alloc_full(sz, fin, scn);
   if (SP_EXPECT(SP_GC_CTR_GET(sp_gc_bytes) > SP_GC_CTR_GET(sp_gc_threshold), 0)) return sp_gc_alloc_full(sz, fin, scn);
   int cls = sp_slab_cls_of[(need + 15) >> 4];
   sp_slab_worker *wk = &sp_slab_wk[SP_SLAB_WID()];
@@ -742,7 +748,7 @@ void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
    into them. Whatever sp_gc_alloc hands to the full form, this does too. */
 static SP_INLINE void *sp_gc_alloc_lean(size_t need, void (*scn)(void *), unsigned csize) {
   int cls = (int)(csize - 32) >> 4;
-  if (SP_EXPECT(!sp_gc_alloc_fast_ok, 0)) return sp_gc_alloc_full(need - sizeof(sp_gc_hdr), NULL, scn);
+  if (SP_EXPECT(!SP_GC_CTR_GET(sp_gc_alloc_fast_ok), 0)) return sp_gc_alloc_full(need - sizeof(sp_gc_hdr), NULL, scn);
   if (SP_EXPECT(SP_GC_CTR_GET(sp_gc_bytes) > SP_GC_CTR_GET(sp_gc_threshold), 0)) return sp_gc_alloc_full(need - sizeof(sp_gc_hdr), NULL, scn);
   sp_slab_worker *wk = &sp_slab_wk[SP_SLAB_WID()];
   char *p = wk->rnext[0][cls];
@@ -786,7 +792,15 @@ static SP_NOINLINE void *sp_gc_alloc_full(size_t sz, void (*fin)(void *), void (
   if (SP_EXPECT(sp_alloc_report_on, 0)) sp_alloc_report_count((void *)scn, sz);
   SP_GC_HEAP_PUSH(h); sp_gc_bytes_add(need);
   if (SP_EXPECT(sp_slab_verify_on, 0)) sp_slab_note(h, 1);
-  sp_gc_alloc_fast_ok = sp_gc_stress_checked && sp_slab_on > 0 && !sp_slab_verify_on && !sp_alloc_report_on;
+  /* Stored only when it changes, which is once. Every lean allocation on
+     every worker reads the flag, and the line it sits on holds the slab's other
+     switches the allocation paths read (sp_slab_verify_on, sp_slab_epoch), so
+     an unconditional store here took that line away from all of them on each
+     allocation that came this way -- one past 256 bytes, a run that ran dry,
+     a collection due -- and their next allocations missed on it. The byte
+     count was made per-worker for the same reason (sp_gc_bytes_add). */
+  { int ok = sp_gc_stress_checked && sp_slab_on > 0 && !sp_slab_verify_on && !sp_alloc_report_on;
+    if (SP_GC_CTR_GET(sp_gc_alloc_fast_ok) != ok) SP_GC_CTR_SET(sp_gc_alloc_fast_ok, ok); }
   return (char *)h + sizeof(sp_gc_hdr);
 #else
   SP_HEAP_LOCK();
@@ -803,7 +817,7 @@ static SP_NOINLINE void *sp_gc_alloc_full(size_t sz, void (*fin)(void *), void (
   if (SP_EXPECT(sp_alloc_report_on, 0)) sp_alloc_report_count((void *)scn, sz);
   SP_GC_HEAP_PUSH(h); sp_gc_bytes_add(need);
   if (SP_EXPECT(sp_slab_verify_on, 0)) sp_slab_note(h, 1);
-  sp_gc_alloc_fast_ok = sp_gc_stress_checked && sp_slab_on > 0 && !sp_slab_verify_on && !sp_alloc_report_on;
+  SP_GC_CTR_SET(sp_gc_alloc_fast_ok, sp_gc_stress_checked && sp_slab_on > 0 && !sp_slab_verify_on && !sp_alloc_report_on);
   SP_HEAP_UNLOCK();
   return (char *)h + sizeof(sp_gc_hdr);
 #endif
@@ -1007,7 +1021,7 @@ void sp_slab_history(const void *p) {
 }
 void sp_slab_verify_all(void) {
   if (sp_slab_on <= 0) return;
-  sp_slab_verify_on = 1; sp_gc_alloc_fast_ok = 0;
+  sp_slab_verify_on = 1; SP_GC_CTR_SET(sp_gc_alloc_fast_ok, 0);
   for (uintptr_t a = sp_slab_base; a < sp_slab_brk; a += SP_SLAB_ARENA) {
     sp_slab_arena *ar = (sp_slab_arena *)a;
     for (int i = SP_SLAB_FIRST; i < (int)SP_SLAB_NCHUNK; i++) {

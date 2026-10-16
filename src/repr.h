@@ -116,7 +116,9 @@ typedef struct {
 /* Where a shared-mutable String's boxed form comes from. */
 typedef enum {
   RS_NONE,
-  RS_HANDLE,     /* a variable's own handle: a local, an ivar, an ivar write */
+  RS_HANDLE,     /* a variable's own handle: a local, an ivar, an ivar
+                    write; or the one a route hands on (a String
+                    conversion, a String Range's endpoint) */
   RS_DEMANDED,   /* a call that renders the handle itself (a reader, a call
                     answering its receiver) under a handle mark or demand */
   RS_FRESH,      /* a String value wrapped in a fresh handle where one is
@@ -136,8 +138,17 @@ typedef enum {
                     the caller's variable for its duration */
 } ReprCell;
 
+/* Is value v (of representation r) typed as the handle while its own text
+   is its String's bytes, the handle formed apart from that text: a fresh
+   one, wrapped around the bytes where it is stored (RS_FRESH), or the
+   handle a String Range keeps for its endpoint (strbuf_srange_tail), read
+   off the Range? An operand or an argument held ahead of its call is
+   held as the String, and the handle taken as its route takes it. */
+int repr_handle_apart(Compiler *c, int v, Repr r);
 /* Does a call's settled return route hand back a shared String handle? */
 int repr_call_returns_handle(Compiler *c, int v);
+/* The native binding whose handle a boxed call's arm for class k publishes. */
+const NativeMethod *repr_native_arm_handle(Compiler *c, int v, int k);
 /* A builtin receiver conversion's String operand, or -1. */
 int repr_string_conversion_operand(Compiler *c, int v);
 /* An ENV store's value operand whose identity the result can keep, or -1. */

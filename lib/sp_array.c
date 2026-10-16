@@ -1042,7 +1042,19 @@ sp_RbVal sp_FloatArray_rindex_poly(sp_FloatArray *a, sp_float v)  {SP_GC_ROOT(a)
 sp_RbVal sp_FloatArray_index_key(sp_FloatArray *a, sp_RbVal v)  {SP_GC_ROOT(a); if (v.tag == SP_TAG_FLT) return sp_FloatArray_index_poly(a, v.v.f); if (v.tag == SP_TAG_INT) return sp_FloatArray_index_poly(a, (sp_float)v.v.i); if (v.tag == SP_TAG_NIL) return sp_box_oint(sp_FloatArray_index_nil(a, 0)); return sp_box_nil(); }
 sp_RbVal sp_FloatArray_rindex_key(sp_FloatArray *a, sp_RbVal v) {SP_GC_ROOT(a); if (v.tag == SP_TAG_FLT) return sp_FloatArray_rindex_poly(a, v.v.f); if (v.tag == SP_TAG_INT) return sp_FloatArray_rindex_poly(a, (sp_float)v.v.i); if (v.tag == SP_TAG_NIL) return sp_box_oint(sp_FloatArray_index_nil(a, 1)); return sp_box_nil(); }
 sp_ofloat sp_FloatArray_delete_key(sp_FloatArray *a, sp_RbVal v) {SP_GC_ROOT(a); if (v.tag == SP_TAG_FLT) return sp_FloatArray_delete_o(a, v.v.f); if (v.tag == SP_TAG_INT) return sp_FloatArray_delete_o(a, (sp_float)v.v.i); if (v.tag == SP_TAG_NIL) { sp_FloatArray_delete_nil(a); return sp_ofloat_nil(); } return sp_ofloat_nil(); }
-const int64_t *sp_IntArray_ffi_data(sp_IntArray *a) { return a ? (const int64_t *)(a->data + a->start) : (const int64_t *)0; }
+/* An Integer Array's elements for an FFI :int_array (const int64_t *): its
+   own storage where sp_int is 64 bits; on a 32-bit target a widened copy,
+   made as sp_PolyArray_ffi_int_data makes its own (sp_gc_alloc_nogc). The
+   cast handed the C side 32-bit elements read two at a time as one. */
+const int64_t *sp_IntArray_ffi_data(sp_IntArray *a) {
+  if (!a) return (const int64_t *)0;
+  if (sizeof(sp_int) == sizeof(int64_t)) return (const int64_t *)(a->data + a->start);
+  if (a->len <= 0) return (const int64_t *)0;
+  SP_GC_ROOT(a);
+  int64_t *buf = (int64_t *)sp_gc_alloc_nogc((size_t)a->len * sizeof(int64_t), NULL, NULL);
+  for (sp_int i = 0; i < a->len; i++) buf[i] = (int64_t)a->data[a->start + i];
+  return buf;
+}
 const double  *sp_FloatArray_ffi_data(sp_FloatArray *a) { return a ? (const double *)a->data : (const double *)0; }
 sp_IntArray *sp_IntArray_concat(sp_IntArray *a, sp_IntArray *b) { SP_GC_ROOT(a); SP_GC_ROOT(b); sp_IntArray *r = sp_IntArray_new(); SP_GC_ROOT(r); if (a) for (sp_int i = 0; i < a->len; i++) sp_IntArray_push_o(r, sp_IntArray_oget(a, i)); if (b) for (sp_int i = 0; i < b->len; i++) sp_IntArray_push_o(r, sp_IntArray_oget(b, i)); return r; }
 sp_StrArray *sp_StrArray_concat(sp_StrArray *a, sp_StrArray *b) {SP_GC_ROOT(a);SP_GC_ROOT(b); sp_StrArray *r = sp_StrArray_new(); SP_GC_ROOT(r); if (a) for (sp_int i = 0; i < a->len; i++) sp_StrArray_push(r, sp_StrArray_get(a, i)); if (b) for (sp_int i = 0; i < b->len; i++) sp_StrArray_push(r, sp_StrArray_get(b, i)); return r; }
@@ -1141,5 +1153,78 @@ sp_PtrArray *sp_PtrArray_slice_bang(sp_PtrArray *a, sp_int from, sp_int n) {SP_G
   for (sp_int i = 0; i < n; i++) sp_PtrArray_push(r, a->data[from + i]);
   for (sp_int i = from; i + n < a->len; i++) a->data[i] = a->data[i + n];
   a->len -= n;
+  return r;
+}
+
+/* ---- String Arrays of handles (--share-strings, TY_STRH_ARRAY) ---- */
+void *sp_StrhArray_str_elem(const char *s) { return sp_String_new_shared(s); }
+sp_PtrArray *sp_StrhArray_new(void) {
+  sp_PtrArray *a = sp_PtrArray_new();
+  a->elem_kind = SP_PTR_ELEM_STRBUF;
+  return a;
+}
+/* a new Array of the same Strings (dup): stamped as its source is, which
+   sp_PtrArray_dup leaves to the boxing */
+sp_PtrArray *sp_StrhArray_dup(sp_PtrArray *a) {
+  SP_GC_ROOT(a);
+  sp_PtrArray *b = sp_StrhArray_new();
+  SP_GC_ROOT(b);
+  for (sp_int i = 0; a && i < a->len; i++) sp_PtrArray_push(b, a->data[i]);
+  return b;
+}
+/* an Array of String bytes no other name holds (a split, a literal of
+   frozen Strings), each element taken as a handle: a frozen literal's own
+   handle, else a new one, so no name sees a copy */
+sp_PtrArray *sp_StrhArray_from_strs(sp_StrArray *a) {
+  SP_GC_ROOT(a);
+  sp_PtrArray *b = sp_StrhArray_new();
+  SP_GC_ROOT(b);
+  for (sp_int i = 0; a && i < a->len; i++) sp_PtrArray_push(b, a->data[i] ? sp_String_new_shared(a->data[i]) : NULL);
+  return b;
+}
+/* the bytes of element e, nil's NULL kept */
+static const char *sp_str_h_bytes(void *e) { return e ? ((sp_String *)e)->data : NULL; }
+sp_bool sp_StrhArray_include(sp_PtrArray *a, const char *v) {
+  SP_GC_ROOT(a); SP_GC_ROOT_STR(v);
+  for (sp_int i = 0; a && i < a->len; i++) {
+    const char *e = sp_str_h_bytes(a->data[i]);
+    if (e ? v && sp_str_eq(e, v) : !v) return TRUE;
+  }
+  return FALSE;
+}
+sp_bool sp_StrhArray_eq(sp_PtrArray *a, sp_PtrArray *b) {
+  if (a == b) return TRUE;
+  if (!a || !b || a->len != b->len) return FALSE;
+  for (sp_int i = 0; i < a->len; i++) {
+    const char *x = sp_str_h_bytes(a->data[i]), *y = sp_str_h_bytes(b->data[i]);
+    if (x ? !y || !sp_str_eq(x, y) : y != NULL) return FALSE;
+  }
+  return TRUE;
+}
+/* join with sp_StrArray_join's rules: nil joins as "", and the result's
+   encoding is picked part by part as CRuby picks it (sp_str_enc_step) */
+const char *sp_StrhArray_join(sp_PtrArray *a, const char *sep) {
+  if (!sep) sep = "";
+  if (!a) return sp_str_empty;
+  SP_GC_ROOT(a); SP_GC_ROOT_STR(sep);
+  size_t sl = sp_str_byte_len(sep), len = 0;
+  for (sp_int i = 0; i < a->len; i++) {
+    const char *e = sp_str_h_bytes(a->data[i]);
+    len += (i > 0 ? sl : 0) + (e ? sp_str_byte_len(e) : 0);
+  }
+  char *r = sp_str_alloc(len);
+  size_t off = 0;
+  int st = -1, sb = sp_str_is_binary(sep);
+  for (sp_int i = 0; i < a->len; i++) {
+    if (i > 0) { memcpy(r + off, sep, sl); st = sp_str_enc_step(st, r, off, sep, sl, sb); off += sl; }
+    const char *e = sp_str_h_bytes(a->data[i]);
+    size_t el = e ? sp_str_byte_len(e) : 0;
+    if (el) memcpy(r + off, e, el);
+    st = sp_str_enc_step(st, r, off, e ? e : "", el, e && sp_str_is_binary(e));
+    off += el;
+  }
+  r[len] = 0;
+  sp_str_set_len(r, len);
+  if (st == 1) sp_str_mark_binary(r);
   return r;
 }

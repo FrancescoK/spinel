@@ -1,0 +1,11 @@
+class Plotter
+  def initialize: () -> void
+  attr_reader marks: Integer
+  def self.fresh: () -> self
+  def put: (Integer x, Integer y, ?Integer color) -> Integer
+  def tail: (Integer x, *Integer xs, String s) -> String
+  def mark: (Integer x) -> self
+  def tag: (?pre: String, n: Integer) -> String
+  def rev: (?a: Integer, b: String) -> String
+  def far: (Integer a, ?Integer b) -> Integer
+end

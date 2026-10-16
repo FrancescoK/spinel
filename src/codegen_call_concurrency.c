@@ -25,7 +25,11 @@ int emit_op_thread_raise(Compiler *c, const BopCtx *x, Buf *b) {
   int argc;
   const int *argv = call_args(c->nt, x->id, &argc);
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+  /* Thread#raise answers nil (the thread raises, or a dead one does not),
+     as the boxed receiver's arm does */
+  buf_puts(b, "((void)(");
   emit_concurrency_raise(c, rb.p ? rb.p : "NULL", argc, argv, "sp_thread", 't', "sp_Thread_raise", b);
+  buf_puts(b, "), sp_box_nil())");
   free(rb.p);
   return 1;
 }
@@ -63,7 +67,7 @@ int emit_op_mutex_sleep(Compiler *c, const BopCtx *x, Buf *b) {
   int recv = x->recv;
   int argc;
   const int *argv = call_args(c->nt, x->id, &argc);
-  TyKind st = argc == 1 ? comp_ntype(c, argv[0]) : TY_NIL;
+  TyKind st = argc == 1 ? repr_of(c, argv[0]).as_ty : TY_NIL;
   int tm = ++g_tmp;
   buf_printf(b, "({ sp_mutex *_t%d = ", tm); emit_expr(c, recv, b);
   buf_printf(b, "; SP_GC_ROOT(_t%d); ", tm);   /* it may be the only reference while we park */
@@ -103,6 +107,7 @@ int emit_op_condvar_wait(Compiler *c, const BopCtx *x, Buf *b) {
     /* argv[0] is the mutex, argv[1] is the timeout */
     int to_arg = argv[1];
     const char *aty = nt_type(c->nt, to_arg);
+    Repr tr = repr_of(c, to_arg);
     if (aty && sp_streq(aty, "IntegerNode") &&
         (int)nt_int(c->nt, to_arg, "value", 0) == 0) {
       buf_printf(b, "; sp_CondVar_wait_nb(_t%d, ", t); emit_expr(c, argv[0], b);
@@ -112,7 +117,7 @@ int emit_op_condvar_wait(Compiler *c, const BopCtx *x, Buf *b) {
       buf_printf(b, "; sp_CondVar_wait(_t%d, ", t); emit_expr(c, argv[0], b);
       buf_puts(b, "); })");
     }
-    else if (comp_ntype(c, to_arg) == TY_NIL) {
+    else if (tr.as_ty == TY_NIL) {
       /* A non-literal nil expression (for example, a method returning
          nil) still has to run for its side effects, then means no timeout. */
       int m = ++g_tmp;
@@ -123,7 +128,7 @@ int emit_op_condvar_wait(Compiler *c, const BopCtx *x, Buf *b) {
     else {
       int m = ++g_tmp;
       buf_printf(b, "; sp_mutex *_m%d = ", m); emit_expr(c, argv[0], b);
-      if (comp_ntype(c, to_arg) == TY_POLY || comp_ntype(c, to_arg) == TY_UNKNOWN) {
+      if (tr.as_ty == TY_POLY || tr.untyped) {
         int timeout = ++g_tmp;
         buf_printf(b, "; sp_RbVal _timeout%d = ", timeout); emit_boxed(c, to_arg, b);
         buf_printf(b, "; _timeout%d.tag == SP_TAG_NIL ? sp_CondVar_wait(_t%d, _m%d) "
@@ -132,9 +137,9 @@ int emit_op_condvar_wait(Compiler *c, const BopCtx *x, Buf *b) {
       }
       /* an Integer or Float timeout that can be nil: nil waits with no
          timeout, as a boxed nil does */
-      else if (oint_kind(comp_ntype(c, to_arg)) && node_has_oint_form(c, to_arg)) {
+      else if (tr.nil_scalar) {
         int timeout = ++g_tmp;
-        TyKind tk = comp_ntype(c, to_arg);
+        TyKind tk = tr.as_ty;
         buf_printf(b, "; %s _timeout%d = ", oint_ctype(tk), timeout); emit_oint_expr(c, to_arg, tk, b);
         buf_printf(b, "; _timeout%d.nil ? sp_CondVar_wait(_t%d, _m%d) "
                       ": sp_CondVar_wait_timeout(_t%d, _m%d, (double)_timeout%d.v); })",
@@ -292,7 +297,7 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     int blk = nt_ref(nt, id, "block");
     int bdy = nt_ref(nt, blk, "body");
     int bbn = 0; const int *bbb = bdy >= 0 ? nt_arr(nt, bdy, "body", &bbn) : NULL;
-    TyKind res = comp_ntype(c, id);
+    TyKind res = repr_of(c, id).as_ty;
     int scalar = is_scalar_ret(res) && res != TY_VOID && res != TY_NIL && res != TY_UNKNOWN;
     int rv = ++g_tmp;
     /* A real Mutex#synchronize takes the lock around the block and releases it
@@ -313,7 +318,7 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
        whenever the static type could not see the Mutex (campfire's fragment
        cache shards, a hash corrupted under concurrent writes). The check
        raises CRuby's NoMethodError for a value that is not a Mutex. */
-    TyKind rty = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+    TyKind rty = recv >= 0 ? repr_of(c, recv).as_ty : TY_UNKNOWN;
     int is_mx = recv >= 0 && (rty == TY_MUTEX || rty == TY_POLY) && g_ensure_depth < MAX_ENSURE_DEPTH;
     int mtmp = 0, eid = 0, has_retval = 0;
     buf_puts(b, "({ ");
@@ -374,7 +379,7 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     }
     for (int k = 0; !via_next && k < bbn - 1; k++) emit_stmt(c, bbb[k], b, 0);
     if (bbn > 0 && !via_next) {
-      TyKind lty = comp_ntype(c, bbb[bbn-1]);
+      TyKind lty = repr_of(c, bbb[bbn-1]).as_ty;
       const char *lnty = nt_type(nt, bbb[bbn-1]);
       int nil_lit = (lty == TY_NIL && lnty && sp_streq(lnty, "NilNode"));
       int can_expr = (lty != TY_VOID && lty != TY_UNKNOWN && (lty != TY_NIL || nil_lit));

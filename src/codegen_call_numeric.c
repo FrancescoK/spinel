@@ -132,15 +132,24 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       buf_printf(b, "sp_bigint_mul(%s, %s)", r, r); free(rs.p); return 1;   /* (#2424) */
     }
     /* Bignum#downto(hi)/#upto(hi) with no block: materialize the Bignum sequence
-       as a poly array (a Bignum range has no lazy Enumerator type) (#2305). */
+       as a poly array (a Bignum range has no lazy Enumerator type) (#2305),
+       and answer it as the call's Enumerator unless it is kept as the
+       array for the call on it (an_int_step_range_chain) */
     if ((is_bounded_int_step(name)) && argc == 1 &&
         nt_ref(nt, id, "block") < 0) {
       int up = sp_streq(name, "upto");
-      buf_printf(b, "sp_bigint_range_array(%s, ", r);
+      int en = comp_ntype(c, id) == TY_ENUMERATOR;
+      int tr = ++g_tmp, tl = ++g_tmp;
+      buf_printf(b, "({ sp_Bigint *_t%d = %s; SP_GC_ROOT(_t%d); sp_Bigint *_t%d = ", tr, r, tr, tl);
       Repr ar = repr_of(c, argv[0]);
       if (ar.big) emit_expr(c, argv[0], b);
       else { buf_puts(b, "sp_bigint_new_int("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-      buf_printf(b, ", %d)", up);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); ", tl);
+      if (en)
+        buf_printf(b, "sp_RbVal _t%d_l[1] = { sp_box_bigint(_t%d) }; SP_GC_ROOT_RBVAL(_t%d_l[0]); "
+                      "sp_enum_step_labeled(sp_Enumerator_new_from(sp_box_poly_array(sp_bigint_range_array(_t%d, _t%d, %d))), sp_box_bigint(_t%d), \"%s\", _t%d_l, 1); })",
+                   tl, tl, tl, tr, tl, up, tr, name, tl);
+      else buf_printf(b, "sp_bigint_range_array(_t%d, _t%d, %d); })", tr, tl, up);
       free(rs.p); return 1;
     }
     /* Integer query / reflection on a Bignum receiver (#2318) */
@@ -175,8 +184,8 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
        parsed, nil's TypeError), where pushing the operand and the Bignum
        unchanged answered [2.5, 1180591620717411303424]. */
     if (sp_streq(name, "coerce") && argc == 1) {
-      if (comp_ntype(c, argv[0]) != TY_INT && comp_ntype(c, argv[0]) != TY_BIGINT &&
-          !repr_of(c, argv[0]).big) {
+      Repr cr = repr_of(c, argv[0]);
+      if (cr.as_ty != TY_INT && !cr.big) {
         int tcr = ++g_tmp, tco = ++g_tmp;
         buf_printf(b, "({ sp_RbVal _t%d = sp_box_bigint(%s); SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ",
                    tcr, r, tcr, tco);
@@ -307,7 +316,7 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
        raises FloatDomainError for a NaN or an infinite one). The Bignum arms below
        took the Float through sp_bigint_new_int, which truncated it:
        (2**64).div(1.5) divided by 1. */
-    if (argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT &&
+    if (argc == 1 && repr_of(c, argv[0]).as_ty == TY_FLOAT &&
         (sp_streq(name, "modulo") || sp_streq(name, "%") || sp_streq(name, "remainder") ||
          sp_streq(name, "div") || sp_streq(name, "divmod"))) {
       if (sp_streq(name, "div")) {
@@ -352,7 +361,7 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
        operand form read a Rational as 0 */
     if ((is_divmod_name(name) || is_modulo_alias(name)) && argc == 1 &&
         repr_of(c, argv[0]).kind == RK_BOXED &&
-        (is_divmod_name(name) ? comp_ntype(c, id) == TY_POLY_ARRAY : repr_of(c, id).kind == RK_BOXED)) {
+        (is_divmod_name(name) ? repr_of(c, id).elem == TY_POLY : repr_of(c, id).kind == RK_BOXED)) {
       int tr = ++g_tmp;
       buf_printf(b, "({ sp_Bigint *_t%d = %s; SP_GC_ROOT(_t%d); %s(sp_box_bigint(_t%d), ", tr, r, tr,
                  is_divmod_name(name) ? "sp_poly_to_poly_array(sp_poly_divmod"
@@ -449,7 +458,7 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     /* Bignum#div(Rational): the floor of the exact quotient. The Bignum
        operand form below has no conversion for a Rational and refused it,
        and Integer#ceildiv(Rational) divides with it (builtins/integer.rb). */
-    if (is_div_name(name) && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {
+    if (is_div_name(name) && argc == 1 && repr_of(c, argv[0]).as_ty == TY_RATIONAL) {
       int tr = ++g_tmp, ta = ++g_tmp;
       buf_printf(b, "({ sp_Bigint *_t%d = %s; SP_GC_ROOT(_t%d); sp_Rational _t%d = ", tr, r, tr, ta);
       emit_expr(c, argv[0], b);
@@ -512,8 +521,14 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     if ((is_to_rational(name)) && argc == 0) {
       buf_printf(b, "sp_brat_from_bigint(%s)", r); free(rs.p); return 1;
     }
+    /* quo divides as the boxed one does, exactly or as a Float: the
+       operand read as a Bignum made a Float or a Rational a truncated
+       Integer (sp_poly_as_bigint), and a zero one a (1/0) */
     if (sp_streq(name, "quo") && argc == 1) {
-      buf_printf(b, "sp_box_brat(%s, ", r); emit_bigint_operand(c, argv[0], b); buf_puts(b, ")");
+      int t = ++g_tmp, ta = ++g_tmp;
+      buf_printf(b, "({ sp_Bigint *_t%d = %s; SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", t, r, t, ta);
+      emit_boxed(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_poly_quo(sp_box_bigint(_t%d), _t%d); })", ta, t, ta);
       free(rs.p); return 1;
     }
     free(rs.p);
@@ -533,7 +548,7 @@ int emit_call_range_literal_arms(Compiler *c, Buf *b, const NodeTable *nt, const
       sp_streq(nt_type(nt, unwrap_parens(c, recv)), "RangeNode")) {
     int rnode = unwrap_parens(c, recv);
     int lo = nt_ref(nt, rnode, "left"), hi = nt_ref(nt, rnode, "right");
-    if (lo >= 0 && hi >= 0 && comp_ntype(c, lo) == TY_STRING && comp_ntype(c, hi) == TY_STRING) {
+    if (lo >= 0 && hi >= 0 && repr_of(c, lo).as_ty == TY_STRING && repr_of(c, hi).as_ty == TY_STRING) {
       int excl = (int)(nt_int(nt, rnode, "flags", 0) & 4) ? 1 : 0;
       if (is_range_membership(name) && argc == 1) {
         if (a0 != TY_STRING) {
@@ -559,13 +574,25 @@ int emit_call_range_literal_arms(Compiler *c, Buf *b, const NodeTable *nt, const
   return 0;
 }
 
+/* Is the receiver of a times / upto / downto form held as an sp_int, or boxed
+   (an Integer parameter under promote mode)? */
+static int int_or_boxed_operand(Compiler *c, int node) {
+  TyKind t = repr_of(c, node).as_ty;
+  return t == TY_INT || t == TY_POLY;
+}
+
+/* Is a limit a boxed or Bignum value, which the step forms read by its kind? */
+static int boxed_or_big_operand(Compiler *c, int node) {
+  Repr r = repr_of(c, node);
+  return r.as_ty == TY_POLY || r.big;
+}
+
 /* the Integer and Range iterators in expression position: range.step(n) { }, times / upto / downto / step with a block (answering the receiver), and the blockless forms that answer a Range */
 int emit_call_iter_expr_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* range.step(n) { } in expression position: run the loop, evaluate to the
      receiver range (Ruby returns self) (#2415) */
-  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 &&
-      (comp_ntype(c, recv) == TY_RANGE || comp_ntype(c, recv) == TY_FLOAT_RANGE) &&
-      sp_streq(name, "step")) {
+  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && is_step_call(name) &&
+      (repr_of(c, recv).range == TY_INT || repr_of(c, recv).range == TY_FLOAT)) {
     buf_puts(b, "({ ");
     emit_iteration_stmt(c, id, b, 0);
     emit_expr(c, recv, b); buf_puts(b, "; })");
@@ -575,13 +602,13 @@ int emit_call_iter_expr_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
      (lowered to a statement) and evaluate to the receiver (Ruby returns self).
      A Rational receiver only steps. */
   if (recv >= 0 && nt_ref(nt, id, "block") >= 0 &&
-      ((comp_ntype(c, recv) == TY_INT &&
-        (is_integer_iteration(name))) ||
+      (((is_integer_iteration(name)) &&
+        repr_of(c, recv).as_ty == TY_INT) ||
        /* a Float steps too, and a boxed receiver's Float arm re-enters here
           in expression position (#4763) */
-       ((comp_ntype(c, recv) == TY_RATIONAL || comp_ntype(c, recv) == TY_FLOAT ||
-         comp_ntype(c, recv) == TY_BIGINT) &&
-        sp_streq(name, "step")))) {
+       (is_step_call(name) &&
+        (repr_of(c, recv).as_ty == TY_RATIONAL || repr_of(c, recv).as_ty == TY_FLOAT ||
+         repr_of(c, recv).big)))) {
     /* the receiver is read twice, by the loop and as the answer: one that
        acts (`next_n.times { }`) is bound once */
     int bound = iter_recv_bind_once(c, recv);
@@ -591,19 +618,70 @@ int emit_call_iter_expr_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     if (bound) view_unbind(g_n_argov - 1);
     return 1;
   }
+  /* ...and where the blockless form is not kept as its Range for the call
+     on it (an_int_step_range_chain), the Enumerator CRuby answers, over the
+     same Integers, with the receiver read once */
+  if (recv >= 0 && nt_ref(nt, id, "block") < 0 && comp_ntype(c, id) == TY_ENUMERATOR &&
+      int_or_boxed_operand(c, recv) &&
+      ((sp_streq(name, "times") && argc == 0) || (is_bounded_int_step(name) && argc == 1))) {
+    int tr = ++g_tmp;
+    buf_printf(b, "({ sp_int _t%d = ", tr);
+    if (sp_streq(name, "upto")) emit_upto_recv(c, recv, argv[0], b);
+    else emit_int_recv_named(c, recv, name, b);
+    buf_puts(b, "; ");
+    if (sp_streq(name, "times")) {
+      buf_printf(b, "sp_int_step_enum((sp_Range){ .first = 0, .last = _t%d, .excl = 1 }, _t%d, NULL, sp_box_nil()); })", tr, tr);
+      return 1;
+    }
+    int up = sp_streq(name, "upto");
+    int tl = ++g_tmp;
+    if (repr_of(c, argv[0]).as_ty == TY_FLOAT) {
+      /* a Float limit is not truncated: upto floors it, downto ceils it */
+      buf_printf(b, "sp_float _t%d = ", tl); emit_expr(c, argv[0], b);
+      if (up) buf_printf(b, "; sp_int_step_enum((sp_Range){ .first = _t%d, .last = sp_flt_range_bound(_t%d, 1), .excl = 0 }", tr, tl);
+      else buf_printf(b, "; sp_int_step_enum(sp_range_new_step(_t%d, sp_flt_range_bound(_t%d, 0), 0, -1LL)", tr, tl);
+      buf_printf(b, ", _t%d, \"%s\", sp_box_float(_t%d)); })", tr, name, tl);
+    }
+    else if (boxed_or_big_operand(c, argv[0])) {
+      /* a boxed or Bignum limit is labeled as it is, and bounds the walk by
+         its kind */
+      int tv = ++g_tmp;
+      buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_int _t%d = sp_int_step_lim(_t%d, %d)", tv, tl, tv, up);
+      if (up) buf_printf(b, "; sp_int_step_enum((sp_Range){ .first = _t%d, .last = _t%d, .excl = 0 }", tr, tl);
+      else buf_printf(b, "; sp_int_step_enum(sp_range_new_step(_t%d, _t%d, 0, -1LL)", tr, tl);
+      buf_printf(b, ", _t%d, \"%s\", _t%d); })", tr, name, tv);
+    }
+    else {
+      buf_printf(b, "sp_int _t%d = ", tl); emit_int_expr(c, argv[0], b);
+      if (up) buf_printf(b, "; sp_int_step_enum((sp_Range){ .first = _t%d, .last = _t%d, .excl = 0 }", tr, tl);
+      else buf_printf(b, "; sp_int_step_enum(sp_range_new_step(_t%d, _t%d, 0, -1LL)", tr, tl);
+      buf_printf(b, ", _t%d, \"%s\", sp_box_int(_t%d)); })", tr, name, tl);
+    }
+    return 1;
+  }
   /* n.times / lo.upto(hi) / hi.downto(lo) without block: produce sp_Range for chaining */
   /* A boxed receiver (an Integer parameter under promote mode) is unboxed
      with the argument conversion, which is what the block forms do. */
   if (recv >= 0 && nt_ref(nt, id, "block") < 0 &&
-      (comp_ntype(c, recv) == TY_INT || comp_ntype(c, recv) == TY_POLY) &&
+      int_or_boxed_operand(c, recv) &&
       repr_of(c, id).range == TY_INT) {
     if (sp_streq(name, "times")) {
       buf_puts(b, "(sp_Range){ .first = 0, .last = "); emit_int_recv_named(c, recv, name, b); buf_puts(b, ", .excl = 1 }");
       return 1;
     }
+    /* a boxed or Bignum limit is read by its kind (sp_int_step_range) */
+    if ((sp_streq(name, "upto") || sp_streq(name, "downto")) && argc == 1 &&
+        boxed_or_big_operand(c, argv[0])) {
+      int up = sp_streq(name, "upto");
+      buf_puts(b, "sp_int_step_range(");
+      if (up) emit_upto_recv(c, recv, argv[0], b); else emit_int_recv_named(c, recv, name, b);
+      buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_printf(b, ", %d)", up);
+      return 1;
+    }
     if (sp_streq(name, "upto") && argc == 1) {
       /* a Float limit is not truncated: n.upto(2.5) stops at 2, i.e. floor. */
-      int lf = comp_ntype(c, argv[0]) == TY_FLOAT;
+      int lf = repr_of(c, argv[0]).as_ty == TY_FLOAT;
       buf_puts(b, "(sp_Range){ .first = "); emit_upto_recv(c, recv, argv[0], b);
       buf_puts(b, ", .last = ");
       if (lf) { buf_puts(b, "sp_flt_range_bound("); emit_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
@@ -615,7 +693,7 @@ int emit_call_iter_expr_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       /* descending: first=hi(recv), last=lo(arg), step=-1 -- an ascending range
          cannot carry the direction, which its .to_a would lose. A Float limit
          is not truncated: n.downto(1.5) stops at 2, i.e. ceil. */
-      int lf = comp_ntype(c, argv[0]) == TY_FLOAT;
+      int lf = repr_of(c, argv[0]).as_ty == TY_FLOAT;
       buf_puts(b, "sp_range_new_step("); emit_int_recv_named(c, recv, name, b);
       buf_puts(b, ", ");
       if (lf) { buf_puts(b, "sp_flt_range_bound("); emit_expr(c, argv[0], b); buf_puts(b, ", 0)"); }
@@ -635,7 +713,7 @@ int emit_op_float_rationalize(Compiler *c, const BopCtx *x, Buf *b) {
   /* The epsilon must reach sp_float_rationalize as a float. emit_float_expr
      casts a Rational arg with (sp_float)(<struct>), which the C compiler
      rejects; convert it through sp_rational_to_f instead (#3224). */
-  TyKind et = comp_ntype(c, arg);
+  TyKind et = repr_of(c, arg).as_ty;
   /* an epsilon that is no number: CRuby asks it for its #abs, which
      it does not answer -- NoMethodError, not a conversion's TypeError */
   if (et != TY_RATIONAL && et != TY_COMPLEX && et != TY_INT && et != TY_FLOAT && et != TY_BIGINT && et != TY_POLY &&

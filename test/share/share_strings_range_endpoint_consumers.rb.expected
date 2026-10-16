@@ -1,0 +1,23 @@
+[true, true, true, true, true, true]
+[true, true, true, true, true]
+[true, true]
+"a12"
+"cx3"
+"a12".."cx3"
+[true, true]
+"a125"
+true
+true
+"cx346"
+[true, true]
+"a1257"
+true
+true
+"a12578".."cx3469"
+true
+true
+"cx3469!"
+"a125780".."cx3469!"
+["x", "x", "z"]
+true
+true

@@ -1,3 +1,4 @@
+# spinel: gc-stress
 # A C stack that runs out is CRuby's SystemStackError, and a program that
 # rescues it goes on running. Spinel died on SIGSEGV instead: the fault was
 # read as an ordinary segfault, and nothing named the stack. The fault handler
@@ -5,6 +6,9 @@
 # -- it runs on the alternate signal stack, so the raise touches none of the
 # memory the overflow just ran off the end of, and it allocates nothing (the
 # allocator is not safe to re-enter from a signal).
+# The same under SPINEL_GC_STRESS=2 or SPINEL_GC_VERIFY=1: the verifier's
+# fault report, installed first, kept the handler from being installed, and
+# the report ran on the stack that had run out and died of SIGILL.
 def deep(n) = n < 0 ? 0 : 1 + deep(n + 1)
 def a(n) = n < 0 ? 0 : 1 + b(n + 1)
 def b(n) = n < 0 ? 0 : 1 + a(n + 1)

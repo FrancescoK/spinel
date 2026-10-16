@@ -1,0 +1,39 @@
+["ab!", "x"]
+true
+true
+true
+"ab!?"
+2
+2
+false
+["r0\n", "r1\n", "r2\n", "t\n\n", "t\n\n"]
+"t\n\n"
+true
+true
+"r0\n0"
+"r0\n0|r1\n|r2\n|t\n\n|t\n\n"
+true
+false
+["ab!?", "x"] 2
+ab!?
+x
+true
+["AB!?", "X"]
+["ab!?", "ab!?", nil, "t\n\n"]
+nil
+"ab!?#"
+true
+"t\n\np"
+["ab!?#"]
+"ab!?#s"
+[]
+true
+5
+6
+"r0\n0D"
+true
+"r1\nR"
+true
+"ab!?#sF"
+5
+"g"

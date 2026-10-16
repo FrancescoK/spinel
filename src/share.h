@@ -94,6 +94,11 @@ typedef enum {
 void share_facts_build(Compiler *c);
 void share_facts_free(Compiler *c);
 
+/* Is multiple write n a plain one (`a, b = x, y`): an Array literal value
+   with no splat, and no rest or post target -- each target takes its own
+   value (SHFL_MULTI)? */
+int share_masgn_plain(const NodeTable *nt, int n);
+
 /* The holders, by index 0..share_holder_count-1. */
 int share_holder_count(const Compiler *c);
 const ShareHolder *share_holder(const Compiler *c, int h);
@@ -105,6 +110,13 @@ int share_self_used(const Compiler *c, int holder);
 /* The element of holder h's containers' elements, or -1 (not a holder:
    read it with share_elem_flags / share_elem_holders). */
 int share_elem_holder(const Compiler *c, int h);
+/* The class a value belongs to, as an index below share_class_count: holder
+   h's, or node n's (-1 when the walk gave n no value). Two names one
+   container flows between have one class; it is the unit the String handle
+   Array form is decided for (share_strh_gate, #8328 step 5). */
+int share_class_count(const Compiler *c);
+int share_holder_class(const Compiler *c, int h);
+int share_node_class(const Compiler *c, int n);
 
 /* The facts of holder h's class. */
 unsigned share_class_flags(const Compiler *c, int h);
@@ -160,6 +172,14 @@ ShareRoute share_route(int site, int value, int elems);
 int share_node_fresh(const Compiler *c, int n);
 /* Does the rule share the elements of node n's value (a container)? */
 int share_node_elems_share(const Compiler *c, int n);
+/* ...or is their class proven to keep its Strings to itself: it exists,
+   the rule does not share it, and it meets nothing the walk does not
+   follow? */
+int share_node_elems_local(const Compiler *c, int n);
+/* Can node n's String be an element of a container a builtin call made (its
+   class is, or the facts do not place it)? The runtime boxes such an
+   element as its bytes, never as its handle. */
+int share_node_runtime_elems(Compiler *c, int n);
 /* Is node n a blockless builtin's new Array of new Strings whose elements
    the rule shares? Its one evaluation is the only source of those Strings,
    so where it is consumed each can be wrapped as a handle of its own. */
@@ -217,6 +237,20 @@ int share_method_blocks(const Compiler *c, int mi, const int **blocks);
    The settled return-tail fact also admits fresh returns and a returned
    parameter bound to a fresh argument or omitted fresh default. */
 int share_call_fresh(Compiler *c, int call);
+/* The class that `K.new(...)` (through parentheses) builds exactly: a class
+   of the program's with no `def self.new` in its chain. -1 for any other
+   node. */
+int share_exact_new_class(Compiler *c, int n);
+/* Does parameter pj of method mi share its String with another holder (a
+   store of it, or a name the walk does not follow)? A method answering such
+   a parameter answers the String the other holder keeps, whatever its
+   argument. */
+int share_param_kept(Compiler *c, int mi, int pj);
+/* Can call `call` reach its target `mi`? Not a class method a boxed
+   receiver's call lists for the class objects a box may hold, where no
+   class reaching it by that name can be a value (comp_class_may_be_value):
+   no box ever holds that class object. */
+int share_target_reachable(Compiler *c, int call, int mi);
 /* Can block node blk hand control back to the call that yields to it: does
    its body fall off its end, or hold a `next` of its own (not a nested
    block's, lambda's, method's or loop's)? A body whose last statement is a
@@ -230,9 +264,19 @@ int share_builtin_fresh(Compiler *c, int call);
    element read of a temporary container of new Strings (an Array literal of
    them, `map(&:to_s)` over Symbols)? depth: 0 from a caller. */
 int share_value_fresh(Compiler *c, int n, int depth);
+/* Is return tail n a String no name holds, which the method's return
+   clears the side channel for (ret_pub_fresh, emit_tail_value): one the walk
+   found no identity in (share_node_fresh), or a String call
+   share_value_fresh proves new, such as an element read of a temporary
+   container of new Strings (`s.split(".").last`) or a conversion over one,
+   which the walk joins to the slot it reaches. */
+int share_tail_fresh(Compiler *c, int n);
 /* Is node n the frozen String literal itself (a literal, or a freeze, -@ or
    dedup of one)? Its handle is the literal's own, never a new one. */
 int share_frozen_literal(Compiler *c, int n);
+/* ...or a read of a builtin String constant (RUBY_ENGINE ...), one frozen
+   object too (share_frozen_string) */
+int share_frozen_string(Compiler *c, int n);
 int share_return_owned(const Compiler *c, int n, int mi);
 /* Is node n a container literal a builtin only reads and keeps none of
    (`puts [a, b]`)? */
@@ -257,6 +301,8 @@ int share_node_shares(const Compiler *c, int n);
    with it. */
 extern int g_share_check;
 void share_check_free(Compiler *c);
+/* SPINEL_NEW_CLAIMS=FILE: list the "new String" claims (share_check.c) */
+void share_claims_report(Compiler *c);
 /* Is node v the receiver of an in-place String change the walk recorded, or
    a link of the chain of self-answering calls down to it? */
 int share_node_mutated(Compiler *c, int v);
@@ -278,22 +324,84 @@ int share_store_needs_handle(Compiler *c, int v);
    (share_route_defer), and the String plan's supply for a value held as
    bytes. */
 int share_node_carries_handle(const Compiler *c, int n);
+/* ... the kind (SPK_*) of the route it hands it over by, SPK_NONE for
+   none, not counting a value represented as the handle (the String plan
+   reads the representation itself); *op is the node whose supply an
+   SPK_SELF or SPK_OPERAND route hands on, else -1. */
+int share_node_carry_kind(const Compiler *c, int n, int *op);
+/* ...asked as if no store lifted n into a handle (poly_strbuf_lift), the
+   lift being the store's: the route n hands the handle on by itself */
+int share_node_carry_kind_unlifted(const Compiler *c, int n, int *op);
 
 /* ---- the String plan (share_plan.c, #8328) ----
    For each String value under --share-strings, once the analysis is final:
    what its consumer needs, what its producer supplies, and the form those
-   give. No emitter reads it yet; --share-check compares it with the
-   conversion each emitted site has. */
+   give. A consumer asks for a String in the plan's form through
+   emit_str_form (codegen_internal.h); --share-check compares the plan with
+   the conversion each emitted site has. */
 enum { SPN_BYTES, SPN_NEW, SPN_OBJECT };              /* need */
 enum { SPS_BYTES, SPS_HANDLE };                       /* supply */
 enum { SPF_BYTES, SPF_HANDLE, SPF_WRAP, SPF_REFUSE }; /* form */
 /* the role of a value's consumer: it takes the value (keeps, changes,
    compares or hands it on), reads its bytes, tests it for nil or false,
    stores it into a multiple write's target, or asks its identity (equal?,
-   object_id, __id__) */
-enum { SPR_TAKE, SPR_READ, SPR_TEST, SPR_STORE, SPR_IDENTITY };
+   object_id, __id__); or it boxes the value (a poly slot, a container's
+   element, a poly argument), the role a box's emitter asks for (SPR_BOX),
+   which the memo never holds */
+enum { SPR_TAKE, SPR_READ, SPR_TEST, SPR_STORE, SPR_IDENTITY, SPR_BOX };
+/* the producer that supplies a value's handle (share_plan_producer), one
+   kind per route codegen hands a String on by; each face renders each
+   kind (codegen_str.c):
+     NONE         its bytes only;
+     BOX          a box, which hands over itself;
+     SLOT         a variable's or a write's slot that holds the handle, a
+                  String Range's kept endpoint (repr_of's RS_HANDLE);
+     DEMANDED     a reader or receiver call that renders the handle under a
+                  handle mark or demand (RS_DEMANDED);
+     ELEM         a boxed container's element, a box of the handle (RS_ELEM);
+     SLOT_POLY    a narrowed box's slot (RS_SLOT_POLY);
+     FROZEN       a frozen String: a literal (share_frozen_literal) or a
+                  builtin String constant, its own handle;
+     SELF         a call that answers its String receiver, whose supply is
+                  that receiver's (the operand);
+     BANG_BOX     a bang on a boxed receiver: the receiver's box or nil;
+     PROC_CALL    a proc's (or a catch's) answer, which comes back boxed;
+     POLY_ARMS    a boxed receiver's call whose every arm answers a handle
+                  it publishes or a new String, boxed arm by arm;
+     EXC_MESSAGE  an exception's message, the handle it keeps;
+     EXC_SUPER    super in an exception's message or to_s override that
+                  hands on the builtin's: the kept message's handle;
+     PUBLISHED    a call whose targets publish their handle (the return
+                  pickup), a spliced call answering a variable;
+     READER       a reader of a slot that holds the handle;
+     WRITE        a write in value position whose slot holds the handle;
+     ASSIGN       an attribute assignment's value, the handle it stores;
+     OPERAND      a route that answers the String it is handed (`+s`,
+                  String(s), tap, a conversion): the operand's supply;
+     BLOCK_VALUE  a call answering its block's value (then, inject, loop,
+                  instance_exec's splice, a spliced yielding call): each
+                  value the block answers;
+     YIELD        a yield spliced with a literal block: the block's value;
+     COND         a conditional or begin taken arm by arm: each arm;
+     SEQUENCE     parentheses or statements: the last statement (the
+                  operand);
+     LIFT         a box codegen lifts into its handle (poly_strbuf_lift) */
+enum { SPK_NONE, SPK_BOX, SPK_SLOT, SPK_DEMANDED, SPK_ELEM, SPK_SLOT_POLY, SPK_FROZEN, SPK_SELF, SPK_BANG_BOX,
+       SPK_PROC_CALL, SPK_POLY_ARMS, SPK_EXC_MESSAGE, SPK_EXC_SUPER, SPK_PUBLISHED, SPK_READER, SPK_WRITE,
+       SPK_ASSIGN, SPK_OPERAND, SPK_BLOCK_VALUE, SPK_YIELD, SPK_COND, SPK_SEQUENCE, SPK_LIFT, SPK__COUNT };
+const char *share_plan_kind_name(int kind);
+/* Can a store's target take value v as a handle (share_plan.c)? */
+int share_plan_store_renders(Compiler *c, int v);
+/* ...which, for an element of multiple write mw, the seal asks of the write */
+int share_plan_multi_renders(Compiler *c, int mw, int e);
+/* ...and emit_expr gives it as the handle already (share_plan.c)? */
+int share_plan_emits_handle(Compiler *c, int e);
+/* ...and does an in-place change's receiver path render its base's handle? */
+int share_plan_recv_renders(Compiler *c, int call, int base);
 typedef struct {
   unsigned char need, supply, form;
+  unsigned char kind;   /* SPK_*, which share_plan_of fills where the supply
+                           was asked (a need above bytes) */
 } SharePlan;
 /* the form a need and a supply give */
 int share_plan_form(int need, int supply);
@@ -319,7 +427,25 @@ SharePlan share_plan_with_need(Compiler *c, int v, int role, int need);
 int share_plan_role(Compiler *c, int v);
 int share_plan_second_role(Compiler *c, int v);
 const char *share_plan_form_name(int form);
+/* The producer of node v's handle where codegen is (SPK_*), asked live as
+   the supply is, whatever a consumer needs; *operand (may be NULL) is the
+   node whose supply an SPK_SELF, SPK_OPERAND or SPK_SEQUENCE value hands
+   on, the receiver whose box an SPK_BANG_BOX call answers, else -1. */
+int share_plan_producer(Compiler *c, int v, int *operand);
 const char *share_plan_role_name(int role);
+/* Is node v, a tail of a method whose value is a String, a box whose String
+   the plan gives a taker as its handle (a taker needs the handle where its
+   facts say a name of the String must see the same object, and a box
+   supplies its own)? Such a tail publishes that handle for the caller's
+   pickup (sp_poly_unbox_s_pub). A value that is control flow (a conditional,
+   a case, a begin, a sequence, `||` / `&&`, a rescue modifier, a loop) is
+   emitted arm by arm, each arm a value of its own: it is none. */
+int share_plan_return_box(Compiler *c, int v);
+/* Is node v, a String call a store lifts into a handle (poly_strbuf_lift),
+   boxed by the handle its producer supplies (the plan's SPR_BOX form
+   with the object a lift needs), not from its bytes? A call whose route
+   boxes cannot render (strbuf_box_unrendered) is not. Asked live. */
+int share_plan_box_handle(Compiler *c, int v);
 /* Is node n an explicit writer's attribute assignment whose value the facts
    keep apart from its right-hand side's String (nothing observes them as one
    object)? */

@@ -25,6 +25,8 @@ typedef struct sp_StringIO_s {
      and cap mirror it, read again on each entry since a change to the
      String through another name moves them. NULL otherwise. */
   sp_String *str;
+  int ro;              /* no write: 1 opened on a frozen String (even after
+                          #string=), 2 handed one by #string= */
 } sp_StringIO;
 
 sp_StringIO *sp_StringIO_new(sp_int cls_id);
@@ -83,11 +85,21 @@ void sp_StringIO_puts_va(sp_StringIO *s, sp_int n, sp_RbVal *v);
 sp_int sp_StringIO_write_va(sp_StringIO *s, sp_int n, sp_RbVal *v);
 const char *sp_StringIO_read_va(sp_StringIO *s, sp_int n, sp_RbVal *v);
 void sp_StringIO_free(void *p);             /* GC finalizer: frees buf */
+void sp_StringIO_scan_gc(void *p);          /* GC scan: what a subclass's scan marks first */
+/* a subclass's `super(...)` in initialize: the constructors' in-place twins */
+void sp_StringIO_init(sp_StringIO *s, sp_int cls_id);
+void sp_StringIO_init_s(sp_StringIO *s, sp_int cls_id, const char *init);
+void sp_StringIO_init_sm(sp_StringIO *s, sp_int cls_id, const char *init, const char *mode);
 /* --share-strings: the forms over the String as its shared handle (the
    binding's `native_share`): opened on it, with a mode, or on a String of
    its own; and #string answering that handle itself */
 sp_StringIO *sp_StringIO_new_h(sp_int cls_id, sp_String *str);
 sp_StringIO *sp_StringIO_new_hm(sp_int cls_id, sp_String *str, const char *mode);
 sp_StringIO *sp_StringIO_new_hn(sp_int cls_id);
+void sp_StringIO_init_h(sp_StringIO *s, sp_int cls_id, sp_String *str);
+void sp_StringIO_init_hm(sp_StringIO *s, sp_int cls_id, sp_String *str, const char *mode);
+void sp_StringIO_init_hn(sp_StringIO *s, sp_int cls_id);
 sp_String *sp_StringIO_string_h(sp_StringIO *s);
+const char *sp_StringIO_set_string(sp_StringIO *s, const char *str);
+sp_String *sp_StringIO_set_string_h(sp_StringIO *s, sp_String *str);
 #endif /* SP_STRINGIO_H */

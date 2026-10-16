@@ -143,44 +143,39 @@ Repr repr_of_holder(const Compiler *c, const HolderRef *h) {
   return r;
 }
 
-int holder_slot_text(Compiler *c, const HolderRef *h, char *out, size_t cap) {
+int holder_slot_buf(Compiler *c, const HolderRef *h, Buf *b) {
   switch (h->kind) {
-  case HK_LOCAL: {
+  case HK_LOCAL:
     /* via emit_local_ref: a celled or captured local derefs its cell */
-    Buf rb; memset(&rb, 0, sizeof rb);
-    emit_local_ref(c, h->node, h->name, &rb);
-    snprintf(out, cap, "%s", rb.p ? rb.p : "");
-    free(rb.p);
+    if (b) emit_local_ref(c, h->node, h->name, b);
     return 1;
-  }
   case HK_IVAR:
-    if (h->cls_slot) snprintf(out, cap, "civ_%s_%s", c->classes[h->cid].name, iv_c(h->name + 1));
-    else snprintf(out, cap, "%s%siv_%s", g_self, g_self_deref, iv_c(h->name + 1));
+    if (!b) return 1;
+    if (h->cls_slot) buf_printf(b, "civ_%s_%s", c->classes[h->cid].name, iv_c(h->name + 1));
+    else buf_printf(b, "%s%siv_%s", g_self, g_self_deref, iv_c(h->name + 1));
     return 1;
   case HK_GVAR:
-    snprintf(out, cap, "gv_%s", h->lv->name);
+    if (b) buf_printf(b, "gv_%s", h->lv->name);
     return 1;
   case HK_CONST: {
     /* a constant not assigned yet is a NameError at the read; the text stays an lvalue */
-    Buf rb; memset(&rb, 0, sizeof rb);
+    if (!b) return 1;
     int cptr = (int)nt_int(c->nt, h->node, "const_ptr", 0);   /* its slot, held by emit_const_recv_wrap */
-    if (cptr) buf_printf(&rb, "(*_p%d)", cptr);
-    else emit_const_slot_read(c, h->node, h->lv, h->lv->name, 0, 0, &rb);
-    snprintf(out, cap, "%s", rb.p ? rb.p : "");
-    free(rb.p);
+    if (cptr) buf_printf(b, "(*_p%d)", cptr);
+    else emit_const_slot_read(c, h->node, h->lv, h->lv->name, 0, 0, b);
     return 1;
   }
   case HK_CVAR:
-    snprintf(out, cap, "cvar_%s_%s", c->classes[h->cid].name, h->name + 2);
+    if (b) buf_printf(b, "cvar_%s_%s", c->classes[h->cid].name, h->name + 2);
     return 1;
   default:
     return 0;
   }
 }
 
-int holder_static_handle_text(Compiler *c, int node, char *out, size_t cap) {
+int holder_static_handle_buf(Compiler *c, int node, Buf *b) {
   HolderRef h;
-  if (!c->share_strings || !holder_static_node(nt_kind(c->nt, node)) || !holder_of_node(c, node, &h) || !h.r.share)
+  if ((!c->share_strings && !c->n_cext_extensions) || !holder_static_node(nt_kind(c->nt, node)) || !holder_of_node(c, node, &h) || (!h.r.share && !(c->n_cext_extensions && h.r.handle)))
     return 0;
-  return holder_slot_text(c, &h, out, cap);
+  return holder_slot_buf(c, &h, b);
 }

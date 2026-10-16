@@ -16,14 +16,24 @@
  *     float_array / sym_array / obj_X_ptr_array / poly_array
  *   - Array[Array[Integer]] / Array[Array[Float]] → int_array_array /
  *     float_array_array (a request the narrowing pass answers, not a pin)
- *   - Hash[K, V] → str_int_hash / sym_str_hash / str_poly_hash etc.
+ *   - Hash[K, V] → str_int_hash / str_str_hash / str_poly_hash, and
+ *     sym_poly_hash for every Symbol-keyed Hash (the analyzer has no
+ *     other Symbol-keyed kind)
  *   - Optional T (T?) → <subset>?    (recursive)
- *   - Union T | nil → T?    (any other union → skip)
+ *   - Union T | nil → T?    (any other union → poly)
+ *   - An `instance` return in a class, and a `self` return in its
+ *     instance method → obj_<QualifiedName>; `self` in its singleton
+ *     method → class
  *
- * Dropped: generics with variables, overloaded methods, blocks,
- * proc types, intersections, records, tuples, interfaces, literal
- * types, type aliases, self / instance / class / top / bottom /
- * any types.
+ * Parameters: required, optional and trailing positionals each take one
+ * field of the ptype list, in the Ruby def's order; a keyword takes a
+ * `name:type` field, applied by name; the rest parameter takes an empty field (the
+ * analyzer types it by construction), `**rest` none. A parameter whose
+ * type is outside the subset takes an empty field, and a return outside
+ * it reads "-": the method keeps the seeds of everything else.
+ *
+ * Dropped whole: generics with variables, overloaded methods, proc and
+ * untyped function types.
  *
  * Usage:
  *   spinel_rbs_extract [--positions] DIR [DIR ...]
@@ -141,6 +151,11 @@ static void collect_overloaded(rbs_parser_t *p, rbs_node_list_t *members, const 
 
 /* ---- emit one method signature ----------------------------- */
 
+/* Whether the declaration whose members are being emitted is a class
+ * (true) or a module (false): a `self` return names an instance of the
+ * former and nothing nameable of the latter. */
+static bool g_self_scope_is_class = false;
+
 /* Pick the seed-line keyword from rbs's method-definition kind.
  * `meth` lands in the instance table (@cls_meth_*), `cmeth` in the
  * class table (@cls_cmeth_*). SINGLETON_INSTANCE (def self?.foo)
@@ -168,45 +183,46 @@ static void emit_method(rbs_parser_t *p, rbs_ast_members_method_definition_t *m,
     }
     rbs_types_function_t *fn = (rbs_types_function_t *) mt->type;
 
-    /* Out-of-subset shapes: rest-positional / rest-keyword / optional
-     * or trailing positionals. These break the fixed-arity contract
-     * the seed format expects (one ptype slot per Ruby def param).
-     * Required + optional keywords ARE handled -- we walk them in
-     * insertion order (head/next linked list; rbs_hash_set appends
-     * to tail, matching RBS source order) and append the value types
-     * to the ptype list after the required positionals. The arity
-     * lines up with the Ruby def order spinel's collect_all sees.
+    /* One ptype field per parameter of the Ruby def, in the order the
+     * analyzer's collect_def_params stores them: required positionals,
+     * optional positionals, the rest parameter, trailing positionals,
+     * then the keywords, each as `name:type` since a def orders its
+     * keywords as it likes and seed_method applies them by name (the
+     * required and the optional ones together, in the signature's source
+     * order). A `**rest` is the analyzer's last slot and
+     * gets no field. A field is empty where the seed has nothing to say:
+     * the rest parameter (the analyzer types it a poly array by
+     * construction), and a parameter whose type is outside the subset.
+     * seed_method reads an empty field as "leave this one alone" and
+     * keeps the index aligned, so one such parameter no longer drops the
+     * whole signature (every other parameter was losing its seed with it).
      *
      * NOTE: rbs_hash_t.length is not incremented by rbs_hash_set
      * (upstream rbs/ast.c#rbs_hash_set inserts into head/tail without
      * updating length). Detect emptiness via `head == NULL`, not via
-     * `length`. Same applies in the walking code below.
-     *
-     * Positional rbs_node_list_t.length IS maintained by rbs_node_list_
-     * append -- so the optional/trailing positional checks below use
-     * `head == NULL` as the safer cross-cutting "is empty" predicate. */
-    if ((fn->optional_positionals != NULL && fn->optional_positionals->head != NULL)
-        || fn->rest_positionals != NULL
-        || (fn->trailing_positionals != NULL && fn->trailing_positionals->head != NULL)
-        || fn->rest_keywords != NULL) {
-        return;
-    }
-
-    /* Map every required positional. If any maps as out-of-subset,
-     * skip the whole signature -- the analyzer can't act on a
-     * partially-typed method (would need a sentinel for "leave
-     * alone" per-param, which the seed format doesn't have today). */
+     * `length`. */
     sbuf_t ptypes;
     sbuf_init(&ptypes);
     bool first_p = true;
-    if (fn->required_positionals != NULL) {
-        rbs_node_list_node_t *cur = fn->required_positionals->head;
+    bool any_type = false;
+    const rbs_node_list_t *pos_lists[] = { fn->required_positionals, fn->optional_positionals, NULL, fn->trailing_positionals };
+    for (size_t li = 0; li < sizeof(pos_lists)/sizeof(pos_lists[0]); li++) {
+        if (li == 2) {   /* the rest parameter's slot */
+            if (fn->rest_positionals == NULL) continue;
+            if (!first_p) sbuf_append_cstr(&ptypes, ",");
+            first_p = false;
+            continue;
+        }
+        const rbs_node_list_t *list = pos_lists[li];
+        if (list == NULL) continue;
+        rbs_node_list_node_t *cur = list->head;
         while (cur != NULL) {
             if (cur->node->type != RBS_TYPES_FUNCTION_PARAM) { sbuf_free(&ptypes); return; }
             rbs_types_function_param_t *pp = (rbs_types_function_param_t *) cur->node;
             sbuf_t t;
             sbuf_init(&t);
-            if (!map_type(p, pp->type, enclosing_scope, &t)) { sbuf_free(&t); sbuf_free(&ptypes); return; }
+            if (!map_type(p, pp->type, enclosing_scope, &t)) sbuf_set(&t, "", 0);
+            if (t.len > 0) any_type = true;
             if (!first_p) sbuf_append_cstr(&ptypes, ",");
             sbuf_append(&ptypes, t.buf, t.len);
             first_p = false;
@@ -214,49 +230,86 @@ static void emit_method(rbs_parser_t *p, rbs_ast_members_method_definition_t *m,
             cur = cur->next;
         }
     }
-
-    /* Required + optional keywords. Both are stored as rbs_hash
-     * mapping name-Symbol → function_param. The hash is insertion-
-     * ordered (head/tail linked list); RBS's parser inserts kwargs in
-     * source order. We walk required then optional, mapping each
-     * param's value type. The arity adds up to (positionals +
-     * required_kwargs + optional_kwargs), matching Ruby's def in
-     * source-order -- same shape collect_all sees. Optionality is an
-     * arity-affecting source property and doesn't change the type
-     * slot the seed targets. */
+    /* The keywords. Ruby matches a keyword argument by name, and a def
+     * lists its keywords in any order (`def m(b:, a: 1)`), so no order of
+     * the fields can stand for the def's: a keyword field carries its
+     * name, `a:int`, and seed_method applies it to the parameter of that
+     * name. The fields are written in the order the signature writes the
+     * keywords (rbs keeps the required and the optional ones in two
+     * hashes; the key's byte offset in the source restores the order), so
+     * the seed file reads as the signature does. */
     const rbs_hash_t *kw_hashes[] = { fn->required_keywords, fn->optional_keywords };
+    rbs_hash_node_t *kws[64];
+    size_t nkw = 0;
     for (size_t ki = 0; ki < sizeof(kw_hashes)/sizeof(kw_hashes[0]); ki++) {
         const rbs_hash_t *hash = kw_hashes[ki];
         if (hash == NULL) continue;
-        rbs_hash_node_t *cur = hash->head;
-        while (cur != NULL) {
+        for (rbs_hash_node_t *cur = hash->head; cur != NULL; cur = cur->next) {
             /* Defensive: an upstream rbs change adding a different
-             * value-node type would land here. Skipping the whole
-             * signature (rather than producing a partial seed) keeps
-             * the analyzer consistent -- apply_rbs_seeds overwrites a
-             * method's ptype list wholesale, so a half-populated entry
-             * is worse than no entry. Same policy as the positional
-             * loop above and the existing out-of-subset early-return. */
-            if (cur->value == NULL || cur->value->type != RBS_TYPES_FUNCTION_PARAM) {
+             * value-node type would land here; the signature is dropped
+             * rather than misaligned. So is one with more keywords than
+             * the table holds. */
+            if (cur->value == NULL || cur->value->type != RBS_TYPES_FUNCTION_PARAM
+                || cur->key == NULL || nkw == sizeof(kws)/sizeof(kws[0])) {
                 sbuf_free(&ptypes); return;
             }
-            rbs_types_function_param_t *pp = (rbs_types_function_param_t *) cur->value;
-            sbuf_t t;
-            sbuf_init(&t);
-            if (!map_type(p, pp->type, enclosing_scope, &t)) { sbuf_free(&t); sbuf_free(&ptypes); return; }
-            if (!first_p) sbuf_append_cstr(&ptypes, ",");
-            sbuf_append(&ptypes, t.buf, t.len);
-            first_p = false;
-            sbuf_free(&t);
-            cur = cur->next;
+            /* insertion sort by source offset: a few keywords at most */
+            size_t at = nkw;
+            while (at > 0 && kws[at - 1]->key->location.start_byte > cur->key->location.start_byte) {
+                kws[at] = kws[at - 1];
+                at--;
+            }
+            kws[at] = cur;
+            nkw++;
         }
     }
+    for (size_t i = 0; i < nkw; i++) {
+        rbs_types_function_param_t *pp = (rbs_types_function_param_t *) kws[i]->value;
+        sbuf_t t;
+        sbuf_init(&t);
+        if (!map_type(p, pp->type, enclosing_scope, &t)) sbuf_set(&t, "", 0);
+        if (t.len > 0) any_type = true;
+        sbuf_t kname;
+        sbuf_init(&kname);
+        name_of_symbol(p, (rbs_ast_symbol_t *) kws[i]->key, &kname);
+        if (!first_p) sbuf_append_cstr(&ptypes, ",");
+        sbuf_append(&ptypes, kname.buf, kname.len);
+        sbuf_append_cstr(&ptypes, ":");
+        sbuf_append(&ptypes, t.buf, t.len);
+        first_p = false;
+        sbuf_free(&kname);
+        sbuf_free(&t);
+    }
 
-    if (ptypes.len == 0) sbuf_append_cstr(&ptypes, "-");
+    /* No field with a type (no parameters, or none the seed can type)
+     * reads as the one field "-": nothing to pin. */
+    if (!any_type) sbuf_set(&ptypes, "-", 1);
 
+    /* The return. `instance` in a class is an instance of that class, and
+     * so is `self` in an instance method; `self` in a singleton method
+     * (`def self.make: () -> self`) is the class object, which the seed
+     * spells `class` as it does `singleton(K)`. A `def self?.x` is both an
+     * instance and a singleton method, so its `self` is two types and
+     * pins nothing. In a module `self` and `instance` are the including
+     * object, which the seed cannot name. Any other type outside the
+     * subset pins nothing ("-", as void does) and leaves the parameters'
+     * seeds in place: a tuple or a record return used to drop the whole
+     * signature. */
     sbuf_t ret;
     sbuf_init(&ret);
-    if (!map_type(p, fn->return_type, enclosing_scope, &ret)) { sbuf_free(&ret); sbuf_free(&ptypes); return; }
+    rbs_node_t *rt = fn->return_type;
+    bool self_in_class = rt != NULL && g_self_scope_is_class && g_self_scope != NULL && g_self_scope[0] != '\0';
+    if (self_in_class && (rt->type == RBS_TYPES_BASES_INSTANCE
+                          || (rt->type == RBS_TYPES_BASES_SELF && m->kind == RBS_METHOD_DEFINITION_KIND_INSTANCE))) {
+        sbuf_set(&ret, "obj_", 4);
+        sbuf_append_cstr(&ret, g_self_scope);
+    }
+    else if (self_in_class && rt->type == RBS_TYPES_BASES_SELF && m->kind == RBS_METHOD_DEFINITION_KIND_SINGLETON) {
+        sbuf_set(&ret, "class", 5);
+    }
+    else if (!map_type(p, rt, enclosing_scope, &ret)) {
+        sbuf_set(&ret, "-", 1);
+    }
 
     sbuf_t mname;
     sbuf_init(&mname);
@@ -328,12 +381,14 @@ static void emit_attr_member(rbs_parser_t *p, rbs_ast_symbol_t *name, rbs_node_t
  * single-level fallback covers the common case without a symbol
  * table. */
 static void traverse_members(rbs_parser_t *p, rbs_node_list_t *members,
-                             const char *qualified_scope,
+                             const char *qualified_scope, bool is_class,
                              const char *lookup_scope, FILE *out) {
     if (members == NULL || members->length == 0) return;
     fprintf(out, "class %s\n", qualified_scope);
     const char *sv_self_scope = g_self_scope;
+    bool sv_is_class = g_self_scope_is_class;
     g_self_scope = qualified_scope;
+    g_self_scope_is_class = is_class;
     rbs_node_list_node_t *cur = members->head;
     while (cur != NULL) {
         rbs_node_t *n = cur->node;
@@ -376,6 +431,7 @@ static void traverse_members(rbs_parser_t *p, rbs_node_list_t *members,
         cur = cur->next;
     }
     g_self_scope = sv_self_scope;
+    g_self_scope_is_class = sv_is_class;
 }
 
 /* Pre-pass: collect every Class/Module declaration's qualified name
@@ -466,7 +522,7 @@ else {
     }
     sbuf_append(&qualified, leaf.buf, leaf.len);
 
-    traverse_members(p, members, qualified.buf, parent_scope, out);
+    traverse_members(p, members, qualified.buf, node->type == RBS_AST_DECLARATIONS_CLASS, parent_scope, out);
 
     /* Recurse into nested declarations. */
     if (members != NULL) {

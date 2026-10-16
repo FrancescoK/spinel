@@ -38,7 +38,7 @@ static int trait_has_box_text(TyKind t) {
   case TY_SYMBOL: case TY_RANGE: case TY_FLOAT_RANGE: case TY_STR_RANGE: case TY_TMS:
   case TY_TIME: case TY_COMPLEX: case TY_RATIONAL: case TY_CLASS: case TY_INT_ARRAY:
   case TY_FLOAT_ARRAY: case TY_STR_ARRAY: case TY_POLY_ARRAY: case TY_OPENSTRUCT:
-  case TY_INT_ARRAY_ARRAY: case TY_FLOAT_ARRAY_ARRAY:
+  case TY_INT_ARRAY_ARRAY: case TY_FLOAT_ARRAY_ARRAY: case TY_STRH_ARRAY:
     return 1;
   default:
     return 0;
@@ -70,7 +70,7 @@ static TyTraits trait_from_functions(Compiler *c, TyKind t) {
   r.unbox_rhs = poly_rhs_unbox_fn(t);
   r.unbox_sink = poly_sink_unbox_fn(t);
   r.unbox_token = token_unbox_fmt(t);
-  { LocalVar lv; memset(&lv, 0, sizeof lv); lv.type = t;
+  { LocalVar lv; memset(&lv, 0, sizeof lv); lv_set_type(&lv, t);
     Buf b; memset(&b, 0, sizeof b);
     if (local_nil_test(c, &lv, "$e", &b)) r.nil_test_local = b.p ? b.p : strdup("");
     else free(b.p); }

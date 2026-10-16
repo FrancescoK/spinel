@@ -1,0 +1,17 @@
+6
+60
+"wrong number of arguments (given 0, expected 1..2)"
+"wrong number of arguments (given 3, expected 1..2)"
+-4
+4
+16
+"wrong number of arguments (given 3, expected 0..2)"
+6
+60
+24
+48
+13
+"abc"
+"zabc"
+6
+6

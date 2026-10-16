@@ -52,12 +52,15 @@ void sp_fiber_stack_hint(size_t bytes);
 #define SP_TSAN 1
 #endif
 
-typedef struct sp_Fiber{sp_fiber_ctx ctx;sp_fiber_ctx caller_ctx;char*stack;size_t stack_size;int state;int transferred;sp_RbVal yielded_value;sp_RbVal resumed_value;void(*body)(struct sp_Fiber*);void*user_data;int saved_exc_top;int saved_catch_top;void*exc_ctx;int raised;const char*raised_cls;const char*raised_msg;void*raised_obj;int inject;int inject_defer;const char*inj_cls;const char*inj_msg;void*inj_obj;void*storage;void*attrs;/* per-fiber attributes (Fiber.attr_accessor): a table of the fiber's own, never copied into a new fiber as `storage` is */void***saved_roots;int saved_nroots;int saved_roots_cap;struct sp_Fiber*fiber_next;struct sp_Fiber*fiber_prev;struct sp_Fiber*resumer;/* the fiber suspended inside #resume of this one, until it returns: the chain from the running fiber back to the root is what the collector roots; every other suspended fiber lives by reference (#4525) */const char*birth_file;sp_int birth_line;int pass_argc;unsigned owner;/* id + 1 of the thread that made it (#6110); 0: no owner */struct sp_Fiber*return_to;/* where it goes if it ends after a transfer: the innermost fiber still inside a resume (NULL: the thread's main fiber) */unsigned char thread_main;/* a Thread's own fiber (its main fiber) */unsigned char blocking;/* Fiber.new(blocking: true), or inside Fiber.blocking { } *//* how many values the first resume passed (-1: not known), so |a| can tell resume(1, 2) from resume([1, 2]) *//* the Fiber.new site, for #inspect */
+typedef struct sp_Fiber{sp_fiber_ctx ctx;sp_fiber_ctx caller_ctx;char*stack;size_t stack_size;int state;int transferred;sp_RbVal yielded_value;sp_RbVal resumed_value;void(*body)(struct sp_Fiber*);void*user_data;int saved_exc_top;int saved_catch_top;void*exc_ctx;int raised;const char*raised_cls;const char*raised_msg;void*raised_obj;int inject;int inject_defer;const char*inj_cls;const char*inj_msg;void*inj_obj;void*storage;void*attrs;/* per-fiber attributes (Fiber.attr_accessor): a table of the fiber's own, never copied into a new fiber as `storage` is */void***saved_roots;int saved_nroots;int saved_roots_cap;struct sp_Fiber*fiber_next;struct sp_Fiber*fiber_prev;struct sp_Fiber*resumer;/* the fiber suspended inside #resume of this one, until it returns: the chain from the running fiber back to the root is what the collector roots; every other suspended fiber lives by reference (#4525) */const char*birth_file;sp_int birth_line;int pass_argc;unsigned owner;/* id + 1 of the thread that made it (#6110); 0: no owner */struct sp_Fiber*return_to;/* where it goes if it ends after a transfer: the innermost fiber still inside a resume (NULL: the thread's main fiber) */unsigned char thread_main;/* a Thread's own fiber (its main fiber) */unsigned char blocking;/* Fiber.new(blocking: true), or inside Fiber.blocking { } */unsigned char stack_released;/* its stack went back to the cache when its thread ended (sp_fiber_release_stack) *//* how many values the first resume passed (-1: not known), so |a| can tell resume(1, 2) from resume([1, 2]) *//* the Fiber.new site, for #inspect */
 #ifdef SP_TSAN
   void *tsan_fiber;                 /* __tsan fiber handle for this coroutine */
   struct sp_Fiber *caller_fiber;    /* who switched into us (the swap-out target) */
 #endif
 }sp_Fiber;
+/* A thread's fiber is done with its stack once its body has returned and the
+   worker has switched off it: the stack goes back to the cache (sp_fiber.c). */
+void sp_fiber_release_stack(sp_Fiber *f);
 
 /* The currently-running fiber; the generated TU reads it directly for
    `Fiber.current` and as the implicit receiver of Fiber operations. Per-worker
@@ -90,6 +93,7 @@ sp_RbVal sp_Fiber_resume(sp_Fiber *f, sp_RbVal val);
 sp_RbVal sp_Fiber_yield(sp_RbVal val);
 unsigned sp_thread_owner_id(void);   /* lib/sp_sched.c */
 sp_Fiber *sp_thread_main_fiber(void);   /* lib/sp_sched.c */
+sp_Fiber *sp_thread_inject_home(void);   /* lib/sp_sched.c: where a #raise of the running thread waits */
 /* The fiber a green thread switches back to: the one that ran it on this
    worker, else the worker's root. */
 sp_Fiber *sp_sched_home_fiber(void);   /* lib/sp_sched.c */
@@ -135,6 +139,10 @@ void sp_fiber_defer_inject(void);
 void sp_fiber_undefer_inject(void);
 void sp_fiber_fire_inject_if_pending(void);
 int  sp_fiber_inject_pending(sp_Fiber *f);   /* lock-free acquire peek */
+/* The slot held across a park's publication or a delivery's look at its
+   target (#8702, see lib/sp_fiber.c). */
+int  sp_fiber_inject_hold(sp_Fiber *f);
+void sp_fiber_inject_release(sp_Fiber *f, int kind);
 SP_NORETURN void sp_fiber_raise_kill_self(void);
 
 /* A C stack that ran out is CRuby's SystemStackError, and a program that

@@ -1,0 +1,4 @@
+0.5
+0.5
+true
+nil -> no implicit conversion to float from nil

@@ -1,0 +1,42 @@
+"r"
+3
+["a", "b", "a"]
+"a"
+"2"
+nil
+"1"
+"a"
+"1"
+"y"
+nil
+nil
+a b a 
+1 2 
+2
+["1", "2"]
+aba
+"text"
+true
+true
+false
+"<c k='v'/>"
+"r"
+REXML::Document
+"r"
+REXML::Document
+true
+"one two"
+"<c k='v'>one two</c>"
+"b"
+"<r><a id='1'><x>1</x></a><a id='2'><x>2</x><y/></a>text<c k='v'>one two</c></r>"
+"<z q='1'>hi</z>"
+"1"
+"z"
+""
+"a"
+"p"
+"p:a"
+"1"
+nil
+""
+"<root v='1'/>"

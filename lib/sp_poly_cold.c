@@ -21,6 +21,21 @@
 #define sp_sym_intern sp_poly_cold_sym_intern
 #include "spinel_rt.h"
 
+#ifdef SP_CEXT
+sp_RbVal sp_cext_plain_object_new(void) {
+  return sp_box_obj(sp_Object_new(),SP_BUILTIN_OBJECT);
+}
+sp_RbVal sp_cext_hash_new(void) {
+  return sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH);
+}
+void sp_cext_hash_set(sp_RbVal hash, sp_RbVal key, sp_RbVal value) {
+  if(hash.tag != SP_TAG_OBJ || hash.cls_id != SP_BUILTIN_POLY_POLY_HASH)
+    sp_raise_cls("TypeError", "expected a widened Hash");
+  if(sp_gc_is_frozen(hash.v.p))sp_raise_frozen_hash_at(hash.v.p,SP_BUILTIN_POLY_POLY_HASH);
+  sp_PolyPolyHash_set(hash.v.p,key,value);
+}
+#endif
+
 const char *(*sp_class_name_fn)(sp_Class);
 const char *(*sp_class_display_fn)(sp_Class);
 /* the hooks the generated unit installs for this unit (SP_INSTALL_HOOK) */
@@ -513,7 +528,7 @@ sp_StrPolyHash*sp_StrPolyHash_merge(sp_StrPolyHash*a,sp_StrPolyHash*b)
 {SP_GC_ROOT(a);SP_GC_ROOT(b);sp_StrPolyHash*r=sp_StrPolyHash_new();r->default_v=a->default_v;r->dproc=a->dproc;r->dproc_self=a->dproc_self;for(sp_int i=0;i<a->len;i++)sp_StrPolyHash_set(r,a->order[i],sp_StrPolyHash_get(a,a->order[i]));for(sp_int i=0;i<b->len;i++)sp_StrPolyHash_set(r,b->order[i],sp_StrPolyHash_get(b,b->order[i]));return r;}
 
 sp_StrPolyHash*sp_StrPolyHash_dup(sp_StrPolyHash*h)
-{sp_StrPolyHash*r=sp_StrPolyHash_new();r->default_v=h->default_v;r->dproc=h->dproc;r->dproc_self=h->dproc_self;for(sp_int i=0;i<h->len;i++)sp_StrPolyHash_set(r,h->order[i],sp_StrPolyHash_get(h,h->order[i]));return r;}
+{SP_GC_ROOT(h);sp_StrPolyHash*r=sp_StrPolyHash_new();r->default_v=h->default_v;r->dproc=h->dproc;r->dproc_self=h->dproc_self;for(sp_int i=0;i<h->len;i++)sp_StrPolyHash_set(r,h->order[i],sp_StrPolyHash_get(h,h->order[i]));return r;}
 
 void sp_StrPolyHash_clear(sp_StrPolyHash*h)
 { sp_gc_wb((void*)h);if(!h)return;for(sp_int i=0;i<h->cap;i++)h->keys[i]=NULL;h->len=0;}
@@ -620,6 +635,9 @@ sp_RbVal sp_poly_clear(sp_RbVal v)
 
 sp_RbVal sp_poly_slice_or_call(sp_RbVal v, sp_RbVal a, sp_RbVal b)
 {
+  /* a shared String handle receiver reads as its bytes; a capture name
+     does below, while a callable's argument stays the String itself */
+  if (sp_poly_is_strbuf(v)) v = sp_poly_strbuf_deref(v);
   /* `s[/re/, n]` on a boxed String: capture n of the first match, nil when
      there is none -- the form the typed emitter answers inline. Read as a
      two-integer slice, the Regexp operand raised TypeError (campfire's
@@ -635,7 +653,8 @@ sp_RbVal sp_poly_slice_or_call(sp_RbVal v, sp_RbVal a, sp_RbVal b)
   /* `s[/(?<x>..)/, "x"]` or `, :x`: the named capture of the first match,
      nil when there is none, as the typed emitter answers it */
   if (v.tag == SP_TAG_STR && a.tag == SP_TAG_OBJ && a.v.p && a.cls_id == SP_BUILTIN_REGEX &&
-      (b.tag == SP_TAG_STR || b.tag == SP_TAG_SYM)) {
+      (b.tag == SP_TAG_STR || b.tag == SP_TAG_SYM || sp_poly_is_strbuf(b))) {
+    if (sp_poly_is_strbuf(b)) b = sp_poly_strbuf_deref(b);
     const char *nm = b.tag == SP_TAG_SYM ? sp_sym_to_s((sp_sym)b.v.i) : (b.v.s ? b.v.s : "");
     if (sp_re_match((mrb_regexp_pattern *)a.v.p, v.v.s ? v.v.s : "") < 0) return sp_box_nil();
     return sp_box_nullable_str(sp_re_named_capture((mrb_regexp_pattern *)a.v.p, nm));
@@ -656,6 +675,10 @@ sp_RbVal sp_poly_slice_or_call(sp_RbVal v, sp_RbVal a, sp_RbVal b)
 
 sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen)
 {
+#ifdef SP_CEXT
+  if (v.tag == SP_TAG_OBJ && v.cls_id >= 0 && sp_cext_data_class_fn && sp_cext_data_class_fn(v.cls_id))
+    return sp_cext_duplicate(v, keep_frozen);
+#endif
   if (sp_bsub_dup_hook && v.tag == SP_TAG_OBJ && v.v.p) {
     sp_bool handled = FALSE;
     sp_RbVal r = sp_bsub_dup_hook(v, keep_frozen, &handled);
@@ -772,6 +795,7 @@ sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen)
     if (v.cls_id == SP_BUILTIN_OBJECT && ((sp_Object *)n)->ivars) {
       SP_GC_ROOT(n);
       sp_SymPolyHash *t = sp_SymPolyHash_dup(((sp_Object *)n)->ivars);
+      sp_gc_wb(n);   /* the copy can collect and promote the rooted object */
       ((sp_Object *)n)->ivars = t;
     }
     if (sp_user_init_copy_hook) { SP_GC_ROOT(n); sp_RbVal r = v; r.v.p = n; sp_user_init_copy_hook(r, v); }
@@ -1020,7 +1044,7 @@ void sp_kw_merge_any(sp_PolyPolyHash *dst, sp_RbVal h)
 }
 
 sp_PolyPolyHash*sp_PolyPolyHash_dup(sp_PolyPolyHash*h)
-{SP_GC_ROOT(h);sp_PolyPolyHash*r=sp_PolyPolyHash_new();SP_GC_ROOT(r);r->default_v=h->default_v;r->dproc=h->dproc;r->dproc_self=h->dproc_self;for(sp_int i=0;i<h->len;i++)sp_PolyPolyHash_set(r,h->keys[h->order[i]],h->vals[h->order[i]]);return r;}
+{SP_GC_ROOT(h);sp_PolyPolyHash*r=sp_PolyPolyHash_new();SP_GC_ROOT(r);r->default_v=h->default_v;r->dproc=h->dproc;r->dproc_self=h->dproc_self;r->ident=h->ident;for(sp_int i=0;i<h->len;i++)sp_PolyPolyHash_set(r,h->keys[h->order[i]],h->vals[h->order[i]]);return r;}
 
 const char*sp_PolyPolyHash_inspect(sp_PolyPolyHash*h)
 {return h?sp_inspect_container(sp_box_obj(h,SP_BUILTIN_POLY_POLY_HASH)):SPL("nil");}
@@ -1058,6 +1082,7 @@ sp_PolyPolyHash *sp_poly_hash_merge(sp_RbVal a, sp_RbVal b)
           sizeof(*ctx), NULL, sp_poly_hash_dproc_ctx_scan);
       ctx->source = a;
       r->dproc = sp_poly_hash_dproc_bridge;
+      sp_gc_wb((void *)r);   /* the context's allocation can promote the rooted hash */
       r->dproc_self = ctx;
     }
   }

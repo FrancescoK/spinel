@@ -1,0 +1,30 @@
+delete_at: RangeError
+[:x, :y, :z]
+take: RangeError
+drop: RangeError
+center: RangeError
+byteslice: RangeError
+offset: RangeError
+boxed take: RangeError
+boxed take, fits: [1, 2]
+take, fits: [1, 2]
+delete_at, fits: :z
+anybits?: [false, true, true, false]
+nobits?: [true, false, false, true]
+allbits?: [false, true, true]
+bit: [0, 0, 1, 0]
+pow: [25, 125]
+sqrt: [34359738368, 34359738368]
+sqrt, negative: Math::DomainError
+seed: true
+srand: true
+typed delete_at: RangeError
+[:x, :y, :z]
+typed literal: RangeError
+typed take: RangeError
+typed center: RangeError
+typed index: RangeError
+typed round: RangeError
+typed take, fits: [1, 2]
+typed any Integer: [false, 0, 25, 34359738368, [5]]
+typed seed: true

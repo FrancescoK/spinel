@@ -1,0 +1,5 @@
+class CvCols
+  def add: (untyped h) -> CvCols
+  def conv: (String s) -> CvCols
+  def keep: (String s) -> CvCols
+end

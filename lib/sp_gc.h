@@ -453,6 +453,10 @@ extern int sp_slab_on;
 
 /* ---- Collector entry points (defined in lib/sp_gc.c) ---- */
 int  sp_gc_verify_on(void);   /* SPINEL_GC_VERIFY is set (diagnostics only) */
+/* the verifier's SIGSEGV/SIGBUS report, installed before main under
+   SPINEL_GC_VERIFY or SPINEL_GC_STRESS=2; the stack guard (sp_fiber.c) hands
+   it every fault that is not a stack overflow */
+void sp_gc_fault_report(int sig);
 extern const char *sp_gc_dbg_phase;   /* which root group the mark walk is in */
 extern void *sp_gc_dbg_ctx;
 void sp_gc_mark(void *obj);

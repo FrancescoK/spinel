@@ -1,5 +1,9 @@
 # A value-type receiver in a poly dispatch arm: its defaults read ivars and
 # `self` off the dereferenced value, which is what the callee takes.
+# spinel: gc-stress
+# (Such a value held in a temp, R's default `sep = self` among them, is a
+# struct by value: its String fields are rooted, not the struct, which the
+# mark walk read as a heap pointer and faulted on under SPINEL_GC_STRESS=2.)
 class P
   def initialize(b)
     @b = b

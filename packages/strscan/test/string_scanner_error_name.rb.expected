@@ -1,0 +1,6 @@
+StringScanner::Error
+#<StringScanner::Error: unscan failed: previous match record not exist>
+StringScanner::Error
+true
+StringScanner::Error: unscan failed: previous match record not exist
+StringScanner::Error

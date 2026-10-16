@@ -1,0 +1,17 @@
+class ShrbshJar
+  @out: Hash[String, String]
+  @flags: Hash[String, String]
+  def initialize: () -> void
+  def set: (String k, String v) -> void
+  def flag: (String k) -> Hash[String, String]
+  def pending: () -> Hash[String, String]
+end
+
+module ShrbshRouter
+  def self.decode_captures: (Hash[String, String] params) -> Hash[String, String]
+  def self.captures: (String path) -> Hash[String, String]
+end
+
+class Object
+  def shrbsh_merge: (Hash[String, String] base, Hash[String, String] extra) -> Hash[String, String]
+end

@@ -1,0 +1,4 @@
+class AppPath
+  def initialize: (String s) -> void
+  def +: (String other) -> AppPath
+end

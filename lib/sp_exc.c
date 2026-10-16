@@ -461,6 +461,7 @@ sp_Exception *sp_exc_exception(sp_Exception *e, const char *msg) {SP_GC_ROOT(e);
     if (msg == sp_exc_no_msg_frozen) ((unsigned char *)n->msg)[-1] = 0xfa;
   }
   n->msg_h = NULL;   /* the new message, not the receiver's handle */
+  sp_gc_wb((void *)n);   /* for the message: the ivar copy below can allocate and promote n first */
   if (sp_exc_bivar_copy_fn) sp_exc_bivar_copy_fn(e, n);   /* a copy takes the receiver's ivars */
   sp_gc_wb((void *)n);   /* same reason as sp_exc_new_sub_sized */
   return n;
@@ -484,7 +485,8 @@ const char *sp_exc_class_name(volatile sp_Exception *ve) {
   static struct kept_name *kept = NULL;   /* guarded by the heap lock */
   static size_t n = 0, cap = 0;           /* cap is a power of two; open addressing */
   const char *name, *r = NULL;
-  if (!e || !e->cls_name) return SPL("RuntimeError");
+  if (!e) return SPL("NilClass");   /* a slot that holds nil (the callers that print it test the pointer first) */
+  if (!e->cls_name) return SPL("RuntimeError");
   name = e->cls_name;
   /* A name with no header is a literal, or a copy kept here: its address
      names it, and the table is keyed by address. A heap name (a class
@@ -963,11 +965,12 @@ const char *sp_exc_parent_of_name(const char *cls) {
     {"Encoding::UndefinedConversionError", "EncodingError"},
     {"Encoding::InvalidByteSequenceError", "EncodingError"},
     {"Encoding::CompatibilityError",       "EncodingError"},
+    {"Encoding::ConverterNotFoundError",   "EncodingError"},
     /* a LoadError is a ScriptError: `rescue StandardError` and `rescue => e`
        let it through, as sp_exc_is_standard_error already said */
     {"LoadError",             "ScriptError"},
     {"RegexpError",           "StandardError"},
-    {"StringScanner_Error",   "StandardError"},
+    {"StringScanner::Error",  "StandardError"},
     /* the json package raises these by name; NestingError is what a document
        too deep to serialize raises, and `rescue JSON::ParserError` catches it
        in CRuby because it is a ParserError */
@@ -1214,7 +1217,11 @@ SP_NORETURN void sp_raise_kw_error(const char *kind, sp_int count, const char *n
 /* Exception#is_a?(ClassName): checks class name and known hierarchy. */
 sp_int sp_exc_is_a(volatile sp_Exception *ve, const char *cn) {
   sp_Exception *e = (sp_Exception *)ve;
-  if (!e || !cn) return 0;
+  if (!cn) return 0;
+  /* a slot that holds nil (a NULL pointer) is a NilClass and an Object, a
+     BasicObject and a Kernel, and answers no other class */
+  if (!e)
+    return !strcmp(cn, "NilClass") || !strcmp(cn, "Object") || !strcmp(cn, "BasicObject") || !strcmp(cn, "Kernel");
   /* one authority for "does this level answer to cn", modules included: the
      matcher rescue arms use. Without it #is_a?(SomeModule) said false where
      `rescue SomeModule` said yes (#3366 follow-up). */
@@ -1258,7 +1265,6 @@ SP_NORETURN SP_COLD void sp_stack_too_deep(void) {
 void *sp_exc_ctx_new(void) {
 #ifdef SP_CEXT
   sp_exc_ctx_t *ctx = calloc(1, sizeof(sp_exc_ctx_t));
-  if (ctx) ctx->cext_errinfo = Qnil;
   return ctx;
 #else
   return calloc(1, sizeof(sp_exc_ctx_t));
@@ -1268,7 +1274,6 @@ void sp_exc_ctx_free(void *p) {
   sp_exc_ctx_t *x = (sp_exc_ctx_t *)p;
   if (!x) return;
 #ifdef SP_CEXT
-  rb_gc_unregister_address(&x->cext_errinfo);
   sp_cext_arena_context_dispose(&x->cext_arena);
   free(x->cext_marks);
 #endif

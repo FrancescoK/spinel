@@ -1,0 +1,6 @@
+class ShrtsTagger
+  @tags: Array[String]
+  def initialize: () -> void
+  def tagged: (untyped message) -> String
+  def tag: (untyped message) -> String
+end

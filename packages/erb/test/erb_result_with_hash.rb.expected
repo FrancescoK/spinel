@@ -1,0 +1,10 @@
+#!/bin/sh
+
+ORIGIN=https://example.com
+NAME=web1
+a
+  42b <% literal %%>
+x
+y z
+string key!
+NameError

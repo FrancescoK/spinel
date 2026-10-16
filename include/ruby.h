@@ -61,9 +61,29 @@ static inline SIGNED_VALUE sp_cext_fix2long(VALUE v) {
 #define LONG2FIX INT2FIX
 #define FIX2LONG(v) sp_cext_fix2long((VALUE)(v))
 #define FIX2INT(v) ((int)FIX2LONG(v))
+int rb_num2int(VALUE);
+VALUE rb_ll2inum(long long);
+VALUE rb_float_new(double);
+#define NUM2INT(v) rb_num2int((VALUE)(v))
+#define LL2NUM(v) rb_ll2inum((long long)(v))
+#define DBL2NUM(v) rb_float_new((double)(v))
 #define ID2SYM(id) (((VALUE)(id) << RUBY_SPECIAL_SHIFT) | RUBY_SYMBOL_FLAG)
+#ifdef SP_CEXT_RECORDER
+/* Keep this ID-producing operation visible in preprocessed extension source. */
+ID sp_cext_scanned_sym2id(VALUE);
+#define SYM2ID(v) sp_cext_scanned_sym2id((v))
+#else
 #define SYM2ID(v) ((ID)((VALUE)(v) >> RUBY_SPECIAL_SHIFT))
+#endif
 #define RB_GC_GUARD(v) (v)
+#define RUBY_FUNC_EXPORTED
+void ruby_xfree(void *);
+#define xfree ruby_xfree
+void *sp_cext_allocv(VALUE *, size_t, size_t);
+#define RB_ALLOCV_N(type,handle,count) ((type *)sp_cext_allocv(&(handle),sizeof(type),(size_t)(count)))
+enum { T_STRING = 5, T_ARRAY = 7 };
+void rb_check_type(VALUE, int);
+#define Check_Type(value,type) rb_check_type((VALUE)(value),(type))
 
 void rb_gc_mark(VALUE);
 void rb_gc_mark_movable(VALUE);
@@ -90,6 +110,45 @@ typedef struct rb_data_type_struct {
 #define RUBY_TYPED_NEVER_FREE ((RUBY_DATA_FUNC)0)
 #define RUBY_TYPED_FREE_IMMEDIATELY ((VALUE)1)
 #define RUBY_TYPED_WB_PROTECTED ((VALUE)32)
+
+VALUE rb_data_typed_object_wrap(VALUE, void *, const rb_data_type_t *);
+void *rb_data_typed_object_zalloc(VALUE, size_t, const rb_data_type_t *, VALUE *);
+void *rb_check_typeddata(VALUE, const rb_data_type_t *);
+void *sp_cext_data_ptr(VALUE);
+const rb_data_type_t *sp_cext_data_type(VALUE);
+#define TypedData_Wrap_Struct(k,t,p) rb_data_typed_object_wrap((k),(p),(t))
+#define TypedData_Make_Struct(k,T,t,p) ({ VALUE _v; (p)=(T *)rb_data_typed_object_zalloc((k),sizeof(T),(t),&_v); _v; })
+#define TypedData_Get_Struct(v,T,t,p) ((p)=(T *)rb_check_typeddata((v),(t)))
+#define DATA_PTR(v) sp_cext_data_ptr(v)
+#define RTYPEDDATA_TYPE(v) sp_cext_data_type(v)
+char *sp_cext_string_ptr(VALUE);
+long sp_cext_string_len(VALUE);
+#define RSTRING_PTR(v) sp_cext_string_ptr(v)
+#define RSTRING_LEN(v) sp_cext_string_len(v)
+char *sp_cext_string_cstr(VALUE);
+#define StringValuePtr(v) sp_cext_string_ptr((v))
+#define StringValueCStr(v) sp_cext_string_cstr((v))
+VALUE rb_str_cat(VALUE, const char *, long);
+VALUE rb_str_cat_cstr(VALUE, const char *);
+int rb_block_given_p(void);
+VALUE rb_block_proc(void);
+VALUE rb_yield(VALUE);
+VALUE rb_yield_values(int, ...);
+VALUE rb_yield_values2(int, const VALUE *);
+void rb_gc_start(void);
+
+VALUE rb_ary_new(void);
+VALUE rb_hash_new(void);
+VALUE rb_hash_new_capa(long);
+VALUE rb_hash_aset(VALUE, VALUE, VALUE);
+VALUE rb_ary_new_capa(long);
+VALUE rb_ary_push(VALUE, VALUE);
+VALUE rb_ary_pop(VALUE);
+void rb_ary_store(VALUE, long, VALUE);
+VALUE rb_ary_entry(VALUE, long);
+long sp_cext_array_len(VALUE);
+#define RARRAY_LEN(v) sp_cext_array_len(v)
+#define RARRAY_AREF(v,i) rb_ary_entry((v),(i))
 
 extern VALUE rb_eException, rb_eStandardError, rb_eRuntimeError, rb_eTypeError;
 extern VALUE rb_eArgError, rb_eRangeError, rb_eNoMemError, rb_eSystemCallError;
@@ -125,7 +184,7 @@ void *sp_cext_no_layout(VALUE) SP_CEXT_REFUSED("CRuby object layout is not provi
 #define RBASIC(v) sp_cext_no_layout(v)
 #define ROBJECT(v) sp_cext_no_layout(v)
 #define RSTRUCT(v) sp_cext_no_layout(v)
-#ifdef SP_CEXT_RECORDER
+#if defined(SP_CEXT_RECORDER) || defined(SP_CEXT)
 #include "ruby/spinel_record.h"
 #else
 VALUE rb_eval_string(const char *) SP_CEXT_REFUSED("Ruby eval requires the C extension literal scanner");

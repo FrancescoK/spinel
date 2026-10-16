@@ -1,2 +1,6 @@
 class DroppedSigs
+meth opt - string
+meth rest - -
+meth trailing - int,string,int
+meth restkw - -
 meth kept int int

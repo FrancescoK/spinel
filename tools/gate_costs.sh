@@ -61,8 +61,8 @@ T=$(mktemp -d "${TMPDIR:-/tmp}/spinel-gate-costs.XXXXXX") || exit 2
 trap 'rm -rf "$T"' EXIT
 printf '%s\n' $PROGS | xargs -P "$JOBS" -I{} sh -c '
   k=$(printf %s "$1" | tr / _)
-  "$2" -S --no-line-map "$1" > "$4/$k.ref.c" 2>/dev/null || rm -f "$4/$k.ref.c"
-  "$3" -S --no-line-map "$1" > "$4/$k.new.c" 2>/dev/null || rm -f "$4/$k.new.c"
+  timeout 120 "$2" -S --no-line-map "$1" > "$4/$k.ref.c" 2>/dev/null || rm -f "$4/$k.ref.c"
+  timeout 120 "$3" -S --no-line-map "$1" > "$4/$k.new.c" 2>/dev/null || rm -f "$4/$k.new.c"
   if [ -f "$4/$k.ref.c" ] && [ -f "$4/$k.new.c" ]; then
     if cmp -s "$4/$k.ref.c" "$4/$k.new.c"; then rm -f "$4/$k.ref.c" "$4/$k.new.c"
     else printf "%s %s %s\n" "$1" "$4/$k.ref.c" "$4/$k.new.c" > "$4/$k.pair"; fi

@@ -105,15 +105,17 @@ static const char *jb_finish(jbuf *b) {
 }
 
 /* An object's #to_s, the way sp_poly_to_s renders it: the class's own method
-   through the generated dispatcher, and otherwise CRuby's default form. The
-   generated TU's renderer is a static inline in spinel_rt.h, which this TU
-   deliberately does not include (see the note at the top), so the two arms are
-   reached through the hooks the generated program installs. */
+   through the generated dispatcher, a built-in object's (a Time) through
+   sp_poly_to_s, and otherwise CRuby's default form. The generated TU's
+   renderer is a static inline in spinel_rt.h, which this TU deliberately does
+   not include (see the note at the top), so these arms are reached through
+   the hooks the generated program installs. */
 static const char *sp_json_obj_to_s(sp_RbVal v) {
   if (v.cls_id >= 0 && sp_obj_to_s_fn) {
     const char *us = sp_obj_to_s_fn(v.cls_id, v.v.p);
     if (us) return us;
   }
+  if (v.cls_id < 0 && sp_poly_to_s_fn) return sp_poly_to_s_fn(v);
   return sp_sprintf("#<%s:0x%016llx>",
                     sp_obj_cls_name_fn ? sp_obj_cls_name_fn(v.cls_id) : "Object",
                     (unsigned long long)(uintptr_t)v.v.p);
@@ -141,6 +143,7 @@ const char *sp_json_str(const char *s) {
 }
 
 static const char *sp_json_key(sp_RbVal k) {
+  k = sp_rbval_str(k);
   if (k.tag == SP_TAG_STR)  return sp_json_str(k.v.s);
   if (k.tag == SP_TAG_SYM)  return sp_json_str(sp_sym_name_fn ? sp_sym_name_fn((sp_sym)k.v.i) : "");
   if (k.tag == SP_TAG_INT)  return sp_json_str(sp_int_to_s(k.v.i));
@@ -256,6 +259,7 @@ static const char *sp_json_float(double d) {
 
 /* Everything but a container: the leaf arms, answering one GC string. */
 static const char *sp_json_scalar(sp_RbVal v) {
+  v = sp_rbval_str(v);
   switch (v.tag) {
     case SP_TAG_INT:  return sp_int_to_s(v.v.i);
     case SP_TAG_BIGINT: return sp_bigint_to_s((sp_Bigint *)v.v.p);

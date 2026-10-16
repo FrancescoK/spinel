@@ -142,3 +142,78 @@ module OpenSSL
     end
   end
 end
+
+module OpenSSL
+  module PKey
+    # CRuby's openssl 4.0 has no class of its own here: RSAError is the
+    # constant PKeyError, so `rescue OpenSSL::PKey::RSAError` and
+    # `rescue OpenSSL::PKey::PKeyError` catch the same errors.
+    RSAError = PKeyError
+
+    # OpenSSL::PKey::RSA, public keys only: what a verifier holds. Built from
+    # the modulus and exponent bytes, the halves a COSE key or a JWK names it
+    # by. There is no CRuby spelling for that (CRuby builds one from DER or
+    # PEM, which this package parses neither of), so the constructor has its
+    # own name, as EC.from_public_bytes does. Verifying uses CRuby's names and
+    # arguments, and answers what CRuby answers.
+    class RSA
+      attr_reader :n_bytes
+      attr_reader :e_bytes
+
+      def self.from_public_components(n_bytes, e_bytes)
+        new(n_bytes, e_bytes)
+      end
+
+      def initialize(n_bytes, e_bytes)
+        raise PKeyError, "an RSA public key needs a modulus and an exponent" if n_bytes.empty? || e_bytes.empty?
+        @n_bytes = n_bytes
+        @e_bytes = e_bytes
+      end
+
+      def public?
+        true
+      end
+
+      def private?
+        false
+      end
+
+      # PKCS#1 v1.5 over the named digest of the data: true or false, and
+      # DigestError for an algorithm OpenSSL does not know, as in CRuby.
+      def verify(digest, signature, data)
+        md = digest_name(digest)
+        answer(Native.rsa_verify(@n_bytes, @e_bytes, md, data, signature, 0, md, 0), md, md)
+      end
+
+      # PSS with MGF1. Both keywords are required, as in CRuby. salt_length
+      # is :auto (read from the signature), :digest (the digest's length) or
+      # an Integer; anything else is CRuby's TypeError.
+      def verify_pss(digest, signature, data, salt_length:, mgf1_hash:)
+        salt = case salt_length
+               when :auto then -2   # RSA_PSS_SALTLEN_AUTO
+               when :digest then -1 # RSA_PSS_SALTLEN_DIGEST
+               when Integer then salt_length
+               else raise TypeError, "no implicit conversion of #{salt_length.class} into Integer"
+               end
+        md = digest_name(digest)
+        mgf1 = digest_name(mgf1_hash)
+        answer(Native.rsa_verify(@n_bytes, @e_bytes, md, data, signature, 1, mgf1, salt), md, mgf1)
+      end
+
+      private
+
+      # CRuby takes the algorithm as its name or as an OpenSSL::Digest.
+      def digest_name(digest)
+        digest.is_a?(OpenSSL::Digest) ? digest.name : digest.to_s
+      end
+
+      # The native call answers 1 for a good signature, 0 for a bad one, -1
+      # when the digest name resolves to nothing and -2 for the MGF1 one.
+      def answer(rc, md, mgf1)
+        raise OpenSSL::Digest::DigestError, "unsupported digest algorithm: #{md}" if rc == -1
+        raise OpenSSL::Digest::DigestError, "unsupported digest algorithm: #{mgf1}" if rc == -2
+        rc == 1
+      end
+    end
+  end
+end

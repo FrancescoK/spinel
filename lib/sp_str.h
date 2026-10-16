@@ -116,6 +116,7 @@ const char*sp_str_byteslice(const char*s,sp_int start,sp_int len);
 const char*sp_str_byteslice1(const char*s,sp_int i);
 const char*sp_str_byteslice_range(const char*s,sp_int lo,sp_int hi,int excl,int lo_none,int hi_none);
 const char*sp_str_bytesplice(const char*s,sp_int start,sp_int len,const char*val);
+const char*sp_str_bytesplice5(const char*s,sp_int start,sp_int len,const char*val,sp_int vstart,sp_int vlen);
 int sp_str_ascii_only(const char*s);
 int sp_str_enc_step(int state, const char *acc, size_t acc_len, const char *part, size_t part_len, int part_bin);
 /* the common step inline: a part in the encoding so far keeps it */
@@ -203,7 +204,9 @@ const char *sp_str_scrub(const char *s, const char *repl);
 const char *sp_str_scrub_utf8(const char *s, const char *repl);
 sp_int sp_str_scrub_bad(const char *s, sp_int bl, sp_int from, sp_int *len);
 const char *sp_str_scrub_repl(const char *r);
-const char *sp_str_encode(const char *s, sp_RbVal dst, sp_RbVal src, sp_RbVal invalid, sp_RbVal undef, sp_RbVal replace);
+const char *sp_str_encode(const char *s, int npos, sp_RbVal dst, sp_RbVal src, sp_RbVal invalid, sp_RbVal undef, sp_RbVal replace);
+const char *sp_str_encode_into(const char *s, const char *t);
+const char *sp_str_encode_slot(const char *s, const char *t);
 const char *sp_str_scrub_bang(const char *s, const char *repl);
 const char*sp_str_ljust(const char*s,sp_int w);
 const char*sp_str_rjust(const char*s,sp_int w);

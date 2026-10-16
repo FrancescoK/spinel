@@ -31,6 +31,12 @@ sp_StrArray *sp_get_ARGV(void);
    globals, as ARGV's array is. */
 extern sp_StrArray *sp_loaded_features_cache;
 sp_StrArray *sp_get_loaded_features(void);
+/* `require path` with a path known only at run time: a feature the program
+   was compiled with (the table the compiler emits) is already loaded, and
+   anything else raises CRuby's LoadError. A path matches a feature as
+   written or as the end of a longer path (`File.join(__dir__, "x")`), with
+   or without its ".rb". */
+void sp_require_computed(const char *path, const char *const *features, int n);
 
 /* $LOAD_PATH (`$:`, `$-I`): an Array of Strings the program reads and
    changes. It starts empty: requires are resolved when the program is

@@ -131,8 +131,9 @@ sp_int sp_method_proc_tramp(void *cap, sp_int argc, sp_int *args) {
      decline (#4542). A count outside its range is CRuby's ArgumentError,
      raised by the thunk in CRuby's words. The generated call arms try their
      stamped casts first and reach this trampoline only when those decline,
-     so the thunk is the general lane, not the hot one. */
-  if (m->thunk && !m->unbound && argc <= SP_PROC_ARG_SLOTS)
+     so the thunk is the general lane, not the hot one. It reads an argument
+     past the channel's slots from the call's wide store. */
+  if (m->thunk && !m->unbound)
     return ((sp_int (*)(void *, sp_int, sp_int *))(uintptr_t)m->thunk)(cap, argc, args);
   /* A poly-ABI target (every slot an sp_RbVal; stamped at bind time) takes
      the boxed side-channel values directly -- the same values the scalar
@@ -393,6 +394,7 @@ sp_int sp_method_proc_tramp(void *cap, sp_int argc, sp_int *args) {
   #undef SP_BM_TRAMP_RET
 }
 sp_Proc *sp_method_to_proc(sp_BoundMethod *m) {
+  SP_GC_ROOT(m);   /* `&method(:m)` hands over a Method nothing else holds */
   return sp_proc_new_meta((void *)sp_method_proc_tramp, m, sp_bm_cap_scan, 1, TRUE, 0, NULL, NULL);
 }
 /* Bound Method object: `obj.method(:foo)` / `method(:foo)`. `self` is the

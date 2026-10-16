@@ -1,0 +1,11 @@
+class Plotter
+meth mark obj_Plotter int
+meth fresh obj_Plotter -
+cmeth make obj_Plotter int
+cmeth build class -
+meth flip - int
+cmeth flip - int
+class Plotter_Pen
+meth lift obj_Plotter_Pen -
+class Movable
+meth shift - int

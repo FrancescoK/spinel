@@ -1,0 +1,7 @@
+"text/html?"
+["a"]
+"a?"
+["z"]
+"c?"
+"wrong number of arguments (given 2, expected 4)"
+["buf!", "text/html?", "a?", "c?", "e?"]

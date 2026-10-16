@@ -1,0 +1,16 @@
+"plain"
+"plain?"
+"a\\+b#"
+"no Rec "
+"Rec"
+true
+"Rec"
+"Sub"
+true
+["Rec"]
+true
+"buf!"
+"own?"
+"mine?"
+"lab?"
+["buf!", "plain?", "a\\+b#", "Rec", "Rec", "Sub", "Rec", "own?", "mine?", "lab?"]

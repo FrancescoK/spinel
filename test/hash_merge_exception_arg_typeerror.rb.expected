@@ -1,0 +1,6 @@
+TypeError: no implicit conversion of StandardError into Hash
+TypeError: no implicit conversion of ArgumentError into Hash
+TypeError: no implicit conversion of RuntimeError into Hash
+TypeError: no implicit conversion of IO into Hash
+TypeError: no implicit conversion of MatchData into Hash
+{kind: "w", id: 1}

@@ -1,0 +1,43 @@
+[URI::HTTP, "http", "x.com", 80, "/a", nil, nil, "http://x.com/a"]
+[URI::HTTPS, "https", "x.com", 443, "", nil, nil, "https://x.com"]
+[URI::FTP, "ftp", "x.com", 21, "a/b", nil, nil, "ftp://u:p@x.com/a/b;type=i"]
+[URI::File, "file", "", nil, "/etc/hosts", nil, nil, "file:///etc/hosts"]
+[URI::WS, "ws", "x.com", 80, "/chat", nil, nil, "ws://x.com/chat"]
+[URI::WSS, "wss", "x.com", 8443, "/chat", nil, nil, "wss://x.com:8443/chat"]
+[URI::MailTo, "mailto", nil, nil, nil, "a@b.c?subject=hi&body=x", nil, "mailto:a@b.c?subject=hi&body=x"]
+[URI::Generic, "foo", "x.com", nil, "/y", nil, nil, "foo://x.com/y"]
+[URI::Generic, "urn", nil, nil, nil, "isbn:1", nil, "urn:isbn:1"]
+[URI::Generic, nil, nil, nil, "/a", nil, "q", "/a?q"]
+[URI::Generic, nil, "h", nil, "/p", nil, nil, "//h/p"]
+["a/b", "i", "u", "p", "ftp://u:p@x.com/a/b;type=i"]
+"ftp://x.com:2121/pub"
+["ftp://x/", "/etc", "ftp://x/%2Fetc", "ftp://x/a?b"]
+"ftp://x/%2Fabs"
+[21, 80, nil]
+[80, 443, 21, 80, 443, nil, nil, nil]
+[80, nil, nil, nil]
+["a@b.c", [["subject", "hi"], ["body", "x"]], "a@b.c?subject=hi&body=x", nil, nil]
+["", [["x"]], "a@b,c@d"]
+[URI::InvalidComponentError, "unrecognised opaque part for mailtoURL: x"]
+["u", "pw", nil, nil]
+["http://x.com/", "http://x.com/A?B", "foo://x/", "mailto:A@B"]
+[true, false, nil]
+#<URI::HTTP http://x.com/a>
+#<URI::MailTo mailto:a@b>
+[URI::Generic, "foo://x.com/y?q", nil]
+[80, "http://x"]
+["http", "u", "x", "1", nil, "/a", nil, "q", "f"]
+["mailto", nil, nil, nil, nil, nil, "a@b", nil, nil]
+[nil, nil, nil, nil, nil, "/a", nil, "q", nil]
+["http", nil, "x", "", nil, "/", nil, nil, nil]
+"a%20b%2Bc%2F%C3%A9*%7E"
+"a+b cé"
+"invalid %-encoding (a+%zz)"
+[URI::RFC3986_Parser, true]
+"a%20b/%C3%A9?%23%25[]"
+"a%20b"
+"a b+/c%zzé"
+["http", nil, "x", nil, nil, "/a", nil, nil, nil]
+URI::FTP
+"http://x/a/b"
+[0, "http://x:0/", "http://c:0/d"]

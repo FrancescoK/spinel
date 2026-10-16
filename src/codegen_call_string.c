@@ -755,9 +755,9 @@ no_gsub_enum:
     if (at == TY_UNKNOWN && emit_str_format_untyped_array(c, recv, argv[0], fck, b)) return 1;
     /* a single non-array scalar argument formats as a one-element array
        (nil renders empty for %s; Rational/Complex coerce inside the
-       formatter's numeric directives) */
+       formatter's numeric directives; a Bignum is boxed as one) */
     if (at == TY_INT || at == TY_FLOAT || at == TY_STRING || at == TY_SYMBOL ||
-        at == TY_NIL || at == TY_BOOL || at == TY_RATIONAL || at == TY_COMPLEX) {
+        at == TY_NIL || at == TY_BOOL || at == TY_RATIONAL || at == TY_COMPLEX || at == TY_BIGINT) {
       const char *fend = emit_str_format_held(c, recv, argv[0], -1, b);
       if (!fend) { buf_puts(b, "sp_str_format_polyarr("); emit_expr(c, recv, b); }
       /* the one-element list is held by `_fa` alone while an argument that
@@ -775,9 +775,13 @@ no_gsub_enum:
         emit_boxed(c, argv[0], &vb);
         char *val = NULL;
         const char *fn = vb.p ? boxed_number_value(vb.p, at, &val) : NULL;
+        /* a value that can be nil is boxed from its oint / ofloat, so the
+           temp holding it has that type */
+        const char *vty = at == TY_INT ? "sp_int" : "sp_float";
+        if (fn && fn == ty_box_nil_fn(at)) vty = at == TY_INT ? "sp_oint" : "sp_ofloat";
         if (fn)
           buf_printf(b, ", ({ %s _fv = %s; sp_PolyArray *_fa = sp_PolyArray_new(); sp_PolyArray_push(_fa, %s(_fv)); _fa; })%s",
-                     at == TY_INT ? "sp_int" : "sp_float", val, fn, fend ? fend : ")");
+                     vty, val, fn, fend ? fend : ")");
         else
           buf_printf(b, ", ({ sp_PolyArray *_fa = sp_PolyArray_new(); SP_GC_ROOT(_fa); sp_PolyArray_push(_fa, %s); _fa; })%s",
                      vb.p ? vb.p : "sp_box_nil()", fend ? fend : ")");
@@ -1128,13 +1132,13 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
       }
       /* a separator argument splits on it, the way the blockless enumerator
          form already does (#3594) */
-      int eline_sep = (argc >= 1 && argv && argv[0] != kwh && comp_ntype(c, argv[0]) == TY_STRING) ? argv[0] : -1;
+      int eline_sep = (argc >= 1 && argv && argv[0] != kwh && lines_sep_ty(c, argv[0])) ? argv[0] : -1;
       if (eline_sep >= 0) {
         buf_printf(b, "sp_StrArray *_t%d = ", tl);
         if (eline_chomp < 0) { emit_kw_flag(c, cv, b); buf_puts(b, " ? "); }
-        if (eline_chomp != 0) { buf_printf(b, "sp_str_lines_sep_chomp(_t%d, ", ts); emit_expr(c, eline_sep, b); buf_puts(b, ")"); }
+        if (eline_chomp != 0) { buf_printf(b, "sp_str_lines_sep_chomp(_t%d, ", ts); emit_lines_sep(c, eline_sep, b); buf_puts(b, ")"); }
         if (eline_chomp < 0) buf_puts(b, " : ");
-        if (eline_chomp != 1) { buf_printf(b, "sp_str_lines_sep(_t%d, ", ts); emit_expr(c, eline_sep, b); buf_puts(b, ")"); }
+        if (eline_chomp != 1) { buf_printf(b, "sp_str_lines_sep(_t%d, ", ts); emit_lines_sep(c, eline_sep, b); buf_puts(b, ")"); }
         buf_puts(b, "; ");
       }
       else if (eline_chomp < 0) {
@@ -1322,11 +1326,10 @@ int emit_str_append_chain_handle(Compiler *c, int id, Buf *b) {
     links[nlinks++] = cur; calls++;
     cur = nt_ref(nt, cur, "receiver");
   }
-  char ref[1024];
   if (!calls || cur < 0 ||
       (nt_kind(nt, cur) != NK_LocalVariableReadNode &&
        nt_kind(nt, cur) != NK_InstanceVariableReadNode) ||
-      !strbuf_slot_ref(c, cur, ref, sizeof ref)) return 0;
+      !strbuf_slot_has(c, cur)) return 0;
   int sv[64], st[64];
   for (int i = 0; i < nlinks; i++) {
     sv[i] = view_push_repr(c, links[i], VR_STRBUF_BOX, 1);
@@ -1373,11 +1376,12 @@ int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int
      including when an outer call has held the receiver as a handle. */
   if (repr_share_rule(c) && argc == 0 && is_string_append_or_prepend(name) &&
       bop_answers_self(TY_STRING, name, argc, 0) == BOPF_SELF) {
-    char ref[1024];
-    if (strbuf_recv_handle(c, id, unwrap_parens(c, recv), ref, sizeof ref)) {
+    Buf ref; memset(&ref, 0, sizeof ref);
+    if (strbuf_recv_handle(c, id, unwrap_parens(c, recv), &ref)) {
       int t = ++g_tmp;
       buf_printf(b, "({ sp_String *_t%d = %s; if (sp_String_is_frozen(_t%d)) "
-                    "sp_raise_frozen_str(sp_String_cstr(_t%d)); ", t, ref, t, t);
+                    "sp_raise_frozen_str(sp_String_cstr(_t%d)); ", t, ref.p, t, t);
+      free(ref.p);
       if (repr_of(c, id).handle) buf_printf(b, "_t%d; })", t);
       else buf_printf(b, "sp_String_cstr(_t%d); })", t);
       return 1;
@@ -1388,28 +1392,25 @@ int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int
        form sp_String_cstr(lv) is not an lvalue, so the generic write-back
        below would emit an invalid assignment (#2020). prepend replaces the
        buffer with args-then-contents, keeping the handle stable (#3227). */
-    /* (room for a route whose text is long: a boxed #message's override
-       pickup beside its fallback read; cut short, the route was dropped and
-       the append went to a copy) */
-    { char sref0[16384];
+    { Buf sref0; memset(&sref0, 0, sizeof sref0);
       int sr = unwrap_parens(c, recv);
       const char *sn = nt_kind(nt, sr) == NK_CallNode ? nt_str(nt, sr, "name") : NULL;
       Repr rp = repr_of(c, sr);
       int chain_handle = sn && is_append_concat(sn) && rp.handle && rp.kind == RK_STRBUF;
       /* or a route over a handle (`(+s) << x`, --share-strings), which
          appends to the String it hands on */
-      int hr0 = chain_handle ? 0 : strbuf_recv_handle(c, id, sr, sref0, sizeof sref0);
-      /* a long route over a handle (a chain of calls answering their
-         receiver over one, `id(s).concat(x).insert(0, y) << z`) is emitted
-         whole, where its text outgrows the slot buffer */
+      int hr0 = chain_handle ? 0 : strbuf_recv_handle(c, id, sr, &sref0);
+      /* a route over a handle (a chain of calls answering their receiver
+         over one, `id(s).concat(x).insert(0, y) << z`) that
+         strbuf_recv_handle did not take is emitted whole */
       Buf lb; memset(&lb, 0, sizeof lb);
       if (!chain_handle && !hr0 && emit_recv_route_handle(c, id, sr, &lb)) hr0 = 2;
       if (chain_handle || hr0) {
         int tb2 = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = ", tb2);
         if (chain_handle) emit_expr(c, sr, b);
-        else buf_puts(b, lb.p ? lb.p : sref0);
-        free(lb.p);
+        else buf_puts(b, lb.p ? lb.p : sref0.p);
+        free(lb.p); free(sref0.p);
         buf_puts(b, ";");
         /* (prepend builds its text with sp_str_concat, which allocates) */
         emit_route_recv_root(c, hr0, tb2, argc, is_append_concat(name) ? argv : NULL, TY_STRING, b);

@@ -1,0 +1,4 @@
+class SeedKeysSelector
+  def initialize: (Array[String] keys) -> void
+  def keys: () -> Array[String]
+end

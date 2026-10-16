@@ -700,6 +700,21 @@ static int ct_resolve(Compiler *c, int id, int *out) {
   return n;
 }
 
+int cplan_target_binds(Compiler *c, int id, int mi) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || mi < 0 || mi >= c->nscopes || nt_kind(nt, id) != NK_CallNode) return 1;
+  int args = nt_ref(nt, id, "arguments"), argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  for (int a = 0; a < argc; a++) {
+    NodeKind k = nt_kind(nt, argv[a]);
+    if (k == NK_SplatNode || k == NK_KeywordHashNode || k == NK_ForwardingArgumentsNode ||
+        k == NK_BlockArgumentNode)
+      return 1;
+  }
+  char exp[256];
+  return poly_arm_count(c, &c->scopes[mi], -1, argc, -1, exp, sizeof exp) >= 0;
+}
+
 int cplan_targets(Compiler *c, int id, int *out, int cap) {
   if (id < 0 || id >= c->node_cap) return 0;
   if (g_ct_c != c || g_ct_cap < c->node_cap) {
@@ -940,9 +955,34 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
   if (!name) return NULL;
   if (is_raise_alias(name) && nt_int(nt, id, "class_new_capture", 0) && cplan_reachable(c, id))
     return "Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md";
+  if (is_raise_alias(name) && nt_int(nt, id, "cond_def_class_new", 0) && cplan_reachable(c, id))
+    return "a def under a condition only the run time decides, in a Class.new, Module.new, "
+           "Struct.new or Data.define block, is not supported: write the class with `class`; "
+           "see docs/limitations.md";
+  if (is_raise_alias(name) && nt_int(nt, id, "cond_def_override", 0) && cplan_reachable(c, id))
+    return "a def under a condition only the run time decides, of a name another method answers "
+           "(a builtin's, another def's or an accessor's), is not supported: which one answers when the branch did "
+           "not run is not known at compile time; see docs/limitations.md";
+  if (is_raise_alias(name) && nt_int(nt, id, "cond_def_reflect", 0) && cplan_reachable(c, id))
+    return "a method defined under a condition only the run time decides is not answered for by "
+           "respond_to?, method_defined?, instance_methods and their kin (it would answer as if "
+           "the branch had run); see docs/limitations.md";
+  if (is_raise_alias(name) && nt_int(nt, id, "sclass_self", 0) && cplan_reachable(c, id))
+    return "the ancestry and the method table of a singleton class are not modeled: its name, "
+           "identity, instance_methods(false) and method_defined? are; see docs/limitations.md";
   if (is_raise_alias(name) && nt_int(nt, id, "class_new_superclass", 0) && cplan_reachable(c, id))
     return "Class.new with a non-constant superclass is not supported; "
            "use a constant superclass (see docs/limitations.md)";
+  if (nt_int(nt, id, "attr_splat", 0) && cplan_reachable(c, id)) {
+    snprintf(buf, cap, "%s with a splat of anything but a constant Array literal of Symbols or Strings "
+             "(written once, ahead of the call, and never changed) is not supported; "
+             "name the attributes (see docs/limitations.md)", name);
+    return buf;
+  }
+  if (nt_int(nt, id, "define_method_name", 0) == 2 && cplan_reachable(c, id))
+    return "Module#define_method with `&` of a block or Proc that is not a literal (`&block`, a parameter, "
+           "a constant, a call's result) is not supported: the defined method's body is known only at run "
+           "time. Pass a block literal to define_method instead";
   if (nt_int(nt, id, "define_method_name", 0) && cplan_reachable(c, id))
     return "Module#define_method with a non-literal name is not supported; "
            "use a literal Symbol or String (see docs/limitations.md)";
@@ -1056,6 +1096,9 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
   };
   int hit = -1;
   for (int k = 0; tbl[k].m; k++) if (sp_streq(name, tbl[k].m)) { hit = k; break; }
+  /* a class's singleton class is a value of its own (sp_sclass_id); an
+     object's is not modeled */
+  if (hit >= 0 && sp_streq(name, "singleton_class") && sclass_value_call(c, id)) hit = -1;
 
   /* The receiver's constant name, for the limits that are keyed on it. */
   const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
@@ -1221,11 +1264,52 @@ static const char *cplan_binding_what(Compiler *c, int id) {
          "in-scope name is)";
 }
 
+/* `instance_eval(str)`: dropped on any receiver, as a String class_eval was
+   skipped as a class-body declaration (a class-body String class_eval or
+   module_eval is now emitted as a statement, refused there as any
+   unsupported call is). Not where the call reaches a method of the
+   program's own. */
+/* Does call id reach a method `name` the program defines: on self's class
+   (or the top level), on a program object's class, or as a class method of
+   a class named by a constant? A receiver of any other kind does not. */
+static int cplan_eval_reaches_own(Compiler *c, int id, const char *name) {
+  const NodeTable *nt = c->nt;
+  int r = nt_ref(nt, id, "receiver");
+  if (r < 0 || nt_kind(nt, r) == NK_SelfNode) {
+    Scope *s = comp_scope_of(c, id);
+    int k = s ? s->class_id : -1;
+    if (k < 0 && c->node_cbody && id < c->node_cap) k = c->node_cbody[id];
+    if (comp_method_index(c, name) >= 0) return 1;
+    if (k < 0) return 0;
+    /* in a class body or a class method self is the class */
+    int on_class = (s && s->is_cmethod) || (c->node_cbody && id < c->node_cap && c->node_cbody[id] >= 0 && s && !s->name);
+    return on_class ? comp_cmethod_in_chain(c, k, name, NULL) >= 0 : comp_method_in_chain(c, k, name, NULL) >= 0;
+  }
+  TyKind rt = comp_ntype(c, r);
+  if (ty_is_object(rt)) return comp_method_in_chain(c, ty_object_class(rt), name, NULL) >= 0;
+  if (nt_kind(nt, r) == NK_ConstantReadNode) {
+    int k = comp_class_index(c, nt_str(nt, r, "name"));
+    return k >= 0 && comp_cmethod_in_chain(c, k, name, NULL) >= 0;
+  }
+  return 0;
+}
+static const char *cplan_eval_text_what(Compiler *c, int id, const char *name) {
+  const NodeTable *nt = c->nt;
+  if (!sp_streq(name, "instance_eval")) return NULL;
+  int args = nt_ref(nt, id, "arguments"), argc = 0;
+  if (args >= 0) nt_arr(nt, args, "arguments", &argc);
+  if (argc < 1 || nt_ref(nt, id, "block") >= 0) return NULL;
+  /* the program's own instance_eval only where this call reaches it: an
+     unrelated class's method of the name left every other call unrefused */
+  if (cplan_eval_reaches_own(c, id, name)) return NULL;
+  return "instance_eval of a String is not supported by AOT compilation (pass a block instead)";
+}
 static const char *cplan_eval_what(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, id) != NK_CallNode) return NULL;
   const char *name = nt_str(nt, id, "name");
-  if (!name || !sp_streq(name, "eval")) return NULL;
+  if (!name) return NULL;
+  if (!sp_streq(name, "eval")) return cplan_eval_text_what(c, id, name);
   int args = nt_ref(nt, id, "arguments");
   int argc = 0;
   if (args >= 0) nt_arr(nt, args, "arguments", &argc);
@@ -1430,7 +1514,7 @@ static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, 
   for (int ki = 0; ki < nks; ki++) {
     int k = ks[ki];
     if (!c->classes[k].instantiated && !class_is_prim_reopen(c, k)) continue;
-    if (c->classes[k].is_native_class) {
+    if (comp_native_binding_class(c, k, name) >= 0) {
       int nmi = comp_native_method_find(c, k, name, 0, 0);
       if (nmi >= 0 && native_takes(&c->native_methods[nmi], 0)) {
         TyKind mret = native_spec_to_ty(c->native_methods[nmi].ret);
@@ -1484,7 +1568,13 @@ static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, 
       char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", rn);
       int ivx = comp_ivar_index(&c->classes[rdcls], ivn);
       TyKind ivt = ivx >= 0 ? c->classes[rdcls].ivar_types[ivx] : TY_INT;
-      int conv = ret == TY_POLY && ivt == TY_INT ? PC_BOX_OR_NIL
+      /* an Integer or Float ivar with a nil bit goes with its nil into a
+         boxed result or a result slot that holds one (an sp_oint), as the
+         arm emitter writes it; one without a nil bit holds no nil, and
+         a boxed result takes its plain box */
+      int nilbit = ivx >= 0 && oint_kind(ivt) && ivar_has_nilbit(c, rdcls, ivx);
+      int slot_oint = is_scalar_ret(ret) && oint_kind(ret) && node_is_oint(c, id);
+      int conv = nilbit && (ret == TY_POLY || slot_oint) ? PC_BOX_OR_NIL
                : ivt == TY_STRBUF && ret == TY_STRING && cpoly_conv(ret, ivt) == PC_SAME ? PC_COPY
                : cpoly_conv(ret, ivt);
       cpoly_add(p, &cap, PA_READER, k, -1, ivt, conv);
@@ -1499,8 +1589,14 @@ static int cpoly_native_conv(TyKind mret, TyKind ret, int is_setter_val) {
   return cpoly_conv(ret, mret);
 }
 
-/* Can user arm `ks` take the call's argument types (arm_key_incompat in
-   emit_poly_method_dispatch)? */
+/* Can user arm `ks` take the call's argument types? Two different concrete
+   kinds, either of them a builtin pointer kind (a Hash, an Exception, a Proc,
+   a Regexp, an Array variant), cannot be passed raw: the other is a different
+   C struct, a scalar, or an `sp_PtrArray *` holding other elements, so the
+   arm is dropped, in either direction. Two object arrays stay (one
+   `sp_PtrArray *`). The same test is
+   arm_key_incompat in poly_user_arm_n_replay (codegen_poly_plan.c); the two
+   must stay identical. */
 int cplan_arm_args_fit(Compiler *c, Scope *ks, const ArgLayout *L, int pos_argc,
                               const TyKind *atmp_ty, int kwall_any) {
   for (int a = 0; a < ks->nparams; a++) {
@@ -1521,7 +1617,7 @@ int cplan_arm_args_fit(Compiler *c, Scope *ks, const ArgLayout *L, int pos_argc,
           obj_class_unrelated(c, ty_object_class(pt0), ty_object_class(at0))) ||
          ty_is_struct_valued(pt0) || ty_is_struct_valued(at0) ||
          (pt0 == TY_BOOL) != (at0 == TY_BOOL) ||
-         (ty_is_hash(pt0) && ty_is_hash(at0)) || (ty_is_array(pt0) && ty_is_array(at0))))
+         (ty_is_builtin_ptr(pt0) || ty_is_builtin_ptr(at0))))
       return 0;
   }
   int kslot = L->kwh_slot;
@@ -1641,10 +1737,9 @@ static void cpoly_prearms_n(Compiler *c, int id, const char *name, int argc, con
   cpoly_cls_value_arms(c, id, name, pos_argc, &A, ret, !is_setter_val, p, cap);
   free(kwty);
   int callable = is_call_alias(name);
-  if (callable &&
-      (ps.kw_pos && !ps.has_splat_arg ? (ps.kw_ds ? pos_argc : argc) <= SP_PROC_ARG_SLOTS
-       : kwh >= 0 && !ps.has_splat_arg ? argc <= SP_PROC_ARG_SLOTS
-       : splat_last))
+  /* (of any argument count: one past the channel's slots rides the call's
+     wide store) */
+  if (callable && ((!ps.has_splat_arg && (ps.kw_pos || kwh >= 0)) || splat_last))
     cpoly_family(p, cap, PB_CALLABLE);
   if (ps.kw_pos && ps.straset) cpoly_family(p, cap, PB_STR_ASET);
   if (ps.kw_pos && !ps.has_splat_arg && cpoly_str_trial(c, id, name, argc, argv, atmp_ty, ret, p))
@@ -1716,12 +1811,13 @@ static void cpoly_user_arms_n(Compiler *c, int id, const char *name, int argc, c
       cpoly_add(p, &cap, PA_STRUCT_SET, k, -1, ret, PC_SAME);
       continue;
     }
-    if (c->classes[k].is_native_class) {
+    int nk = comp_native_binding_class(c, k, name);
+    if (nk >= 0) {
       if (kw_pos && has_splat_arg && argc == 1 && splat_a == 0 && kwh < 0 && c->classes[k].instantiated) {
         const NativeMethod *rm = NULL;
         for (int i = 0; i < c->n_native_methods && !rm; i++) {
           const NativeMethod *m = &c->native_methods[i];
-          if (m->class_id == k && m->kind == 0 && m->rest && m->nargs == 0 && sp_streq(m->name, name))
+          if (m->class_id == nk && m->kind == 0 && m->rest && m->nargs == 0 && sp_streq(m->name, name))
             rm = m;
         }
         if (!rm) continue;
@@ -1905,6 +2001,7 @@ static void cpoly_prearms0_blk(Compiler *c, int id, const char *name, const Poly
   int blk = nt_ref(c->nt, id, "block");
   int live_blk = blk >= 0 && resolve_forwarded_block(c, blk) >= 0;
   if (live_blk && poly_enum_op_for(name)) cpoly_family(p, cap, PB_ENUM_PROC);
+  if (live_blk && sp_streq(name, "each_index")) cpoly_family(p, cap, PB_ENUM_PROC);
   if (live_blk && sp_streq(name, "synchronize")) cpoly_family(p, cap, PB_SYNC);
   if (is_call_alias(name)) cpoly_family(p, cap, PB_CALLABLE);
   PolyArgs none = { NULL, 0, NULL, NULL, NULL, NULL };
@@ -1946,8 +2043,9 @@ static void cpoly_defaults0(Compiler *c, int id, const char *name, const PolySpe
   else if (blockless && (sp_streq(name, "any?") || sp_streq(name, "none?"))) fam = PB_D_ANY_NONE;
   else if (sp_streq(name, "to_h") && blockless && ret == TY_POLY) fam = PB_D_TO_H;
   else if (sp_streq(name, "display") && blockless) fam = PB_D_DISPLAY;
+  else if (sp_streq(name, "hash") && blockless && (ret == TY_INT || ret == TY_POLY)) fam = PB_D_HASH;
   if (fam >= 0) cpoly_family(p, cap, fam);
-  if (is_indexed_each(name)) cpoly_family(p, cap, PB_N_EACH_INDEX);
+  if (blockless && is_indexed_each(name)) cpoly_family(p, cap, PB_N_EACH_INDEX);
   if (sp_streq(name, "join")) cpoly_family(p, cap, PB_N_JOIN);
   if (sp_streq(name, "alive?")) cpoly_family(p, cap, PB_N_ALIVE);
   if (sp_streq(name, "kill")) cpoly_family(p, cap, PB_N_KILL);
@@ -2007,7 +2105,7 @@ static void cpoly_resolve(Compiler *c, int id, PolyPlan *p, int full) {
     /* a default written by now (the Object reopening's, a builtin one), or
        the builtin surface's, and the raise when it declines */
     int done = n1 > n0;
-    for (int f = PB_D_ENUM_EACH; f <= PB_D_DISPLAY; f++) done |= cpoly_has_family(p, f);
+    for (int f = PB_D_ENUM_EACH; f <= PB_D_HASH; f++) done |= cpoly_has_family(p, f);
     if (cpoly_has_family(p, PB_D_ARRAY_TRANSFORM)) cpoly_trial(p, &cap, PT_ARRAY_FALLBACK);
     if (!done) cpoly_trial(p, &cap, PT_DEFAULT0);
   }
@@ -2222,11 +2320,18 @@ int cplan_nil_written(int why) {
   return why == NFW_NIL || why == NFW_NO_ELSE || why == NFW_SAFE_NAV || why == NFW_UNSET || why == NFW_ELEM_NIL;
 }
 
+/* The name call id was written as: an alias of a reader is renamed to the
+   reader (infer_call_inner), but nil answers the name the program called. */
+const char *cplan_call_name(const NodeTable *nt, int id) {
+  const char *wn = nt_kind(nt, id) == NK_CallNode ? nt_str(nt, id, "written_name") : NULL;
+  return wn ? wn : nt_str(nt, id, "name");
+}
+
 int cplan_nil(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (id < 0 || id >= nt->count || nt_kind(nt, id) != NK_CallNode) return CN_NONE;
   int r = nt_ref(nt, id, "receiver");
-  const char *nm = nt_str(nt, id, "name");
+  const char *nm = cplan_call_name(nt, id);
   const char *op = nt_str(nt, id, "call_operator");
   if (r < 0 || !nm || (op && sp_streq(op, "&."))) return CN_NONE;
   /* the receiver as settled, not as a view retypes it: a poly arm's

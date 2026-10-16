@@ -3,6 +3,9 @@
 "no implicit conversion of Symbol into String"
 "no implicit conversion of nil into String"
 "no implicit conversion of true into String"
+"no implicit conversion of Class into String"
+"no implicit conversion of Encoding into String"
+"no implicit conversion of Range into String"
 ["ab", "cd"]
 "no implicit conversion of Integer into String"
 {k: "ef"}

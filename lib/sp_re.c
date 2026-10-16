@@ -743,11 +743,15 @@ static void split_push_slice(sp_StrArray *arr, const char *str, int64_t from, in
   char *m = sp_str_alloc_raw(len + 1);
   memcpy(m, str + from, len); m[len] = 0;
   sp_str_set_len(m, (size_t)len);
-  sp_StrArray_push(arr, m);
+  sp_StrArray_push(arr, sp_str_bin_like(str, m));
 }
 
 sp_StrArray *sp_re_split_limit(mrb_regexp_pattern *pat, const char *str, sp_int limit) {SP_GC_ROOT_STR(str);if(!str)sp_nil_recv("split");
+  /* every field is a new String, so the array is held across each field's
+     allocation: unrooted, a collection there freed it with the fields
+     already pushed */
   sp_StrArray *arr = sp_StrArray_new();
+  SP_GC_ROOT(arr);
   int64_t slen = (int64_t)sp_str_byte_len(str);
 
   /* limit == 1: the whole string is the single field; "" splits to []. */
@@ -771,7 +775,7 @@ sp_StrArray *sp_re_split_limit(mrb_regexp_pattern *pat, const char *str, sp_int 
       /* zero-width: advance past one whole character so multibyte text is
          not split between bytes. */
       if (match_end < slen) {
-        search_pos = match_end + re_utf8_charlen(str + match_end, str + slen);
+        search_pos = match_end + (sp_str_is_binary(str) ? 1 : re_utf8_charlen(str + match_end, str + slen));
       }
       else {
         search_pos = match_end + 1;

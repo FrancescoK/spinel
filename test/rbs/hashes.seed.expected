@@ -2,6 +2,6 @@ class Hashes
 meth si str_int_hash str_int_hash
 meth ss str_str_hash str_str_hash
 meth sp str_poly_hash str_poly_hash
-meth yi sym_int_hash sym_int_hash
-meth ys sym_str_hash sym_str_hash
+meth yi sym_poly_hash sym_poly_hash
+meth ys sym_poly_hash sym_poly_hash
 meth yp sym_poly_hash sym_poly_hash

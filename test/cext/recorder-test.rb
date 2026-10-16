@@ -7,6 +7,42 @@ ROOT = File.expand_path("../..", __dir__)
 def check(ok, message)
   raise message unless ok
 end
+# The bridge scan runs over preprocessed extension tokens, including helper
+# functions that Init does not execute.
+ids, arities, bridge = CextRecord.scan(<<~C)
+  rb_intern("strip"); rb_intern2("split_extra", 5);
+  rb_funcallv(obj, id, 2, argv);
+  rb_block_call(obj, id, 1, argv, callback, data);
+  rb_iv_get(obj, "@flags"); rb_iv_set(obj, "@paths", value);
+  rb_ivar_get(obj, rb_intern("@other"));
+  rb_const_get(klass, rb_intern("Error"));
+  rb_eval_string("ENV['FLAG']");
+C
+check(ids == %w[@other Error split strip], "bridge literal IDs")
+check(arities == [1, 2], "vector/block-call arities")
+check(bridge == {"ivars" => %w[@flags @other @paths], "evals" => ["ENV['FLAG']"], "constant_reads" => true}, "bridge scan operations")
+{
+  'rb_intern2(name, 2)' => "rb_intern",
+  'rb_intern2("abc", size)' => "length",
+  'rb_intern2("abc", 4)' => "exceeds",
+  'rb_funcallv(obj, id, argc, argv)' => "arity",
+  'rb_block_call(obj, id, 1, argv)' => "argument count",
+  'rb_iv_get(obj, name)' => "literal",
+  'rb_iv_set(obj, "@@bad", value)' => "instance variable",
+  'rb_eval_string(code)' => "literal",
+  'rb_to_id(value)' => "runtime-computed",
+  'rb_check_id(&value)' => "runtime-computed",
+  'rb_sym2id(value)' => "runtime-computed",
+  'SYM2ID(value)' => "runtime-computed"
+}.each do |source, diagnostic|
+  begin
+    CextRecord.scan(source)
+    raise "scanner unexpectedly accepted #{source}"
+  rescue CextRecord::Refusal => e
+    check(e.message.include?(diagnostic), "scanner wrong diagnostic: #{e.message}")
+  end
+end
+
 Dir.mktmpdir("cext-recorder-test-") do |dir|
   manifest = File.join(dir, "manifest.json")
   ruby = File.join(dir, "declarations.rb")
@@ -35,13 +71,17 @@ Dir.mktmpdir("cext-recorder-test-") do |dir|
 
   refusals = {
     "Ruby execution" => ['rb_funcall(rb_cObject, rb_intern("name"), 0);', "rb_funcall"],
-    "constant lookup" => ['rb_const_get(rb_cObject, rb_intern("ENV"));', "rb_const_get"],
+    "invalid constant lookup" => ['rb_const_get(rb_cObject, rb_intern("lower"));', "ASCII constant names"],
     "eval" => ['rb_eval_string("ENV[\\\"HOME\\\"]");', "rb_eval_string"],
     "runtime state" => ['rb_errinfo();', "rb_errinfo"],
     "environment" => ['getenv("HOME");', "getenv"],
     "clock" => ['time(0);', "time"],
     "file" => ['fopen("forbidden", "r");', "fopen"],
     "dynamic ID" => ['const char *name = "strip"; rb_intern(name);', "rb_intern"],
+    "computed symbol ID" => ['SYM2ID(rb_str_intern(rb_str_new_cstr("name")));', "runtime-computed"],
+    "dynamic eval" => ['const char *code = "1"; rb_eval_string(code);', "literal"],
+    "dynamic ivar" => ['const char *name = "@x"; rb_iv_get(rb_cObject, name);', "literal"],
+    "vector call during Init" => ['rb_funcallv(rb_cObject, rb_intern("name"), 0, 0);', "rb_funcallv"],
     "API address" => ['ID (*intern)(const char *) = rb_intern; intern("strip");', "rb_intern"],
     "dynamic arity" => ['int argc = 0; rb_funcall(rb_cObject, rb_intern("name"), argc);', "rb_funcall"],
     "layout" => ['RBASIC(rb_cObject);', "object layout"],
@@ -82,6 +122,6 @@ Dir.mktmpdir("cext-recorder-test-") do |dir|
 
   # A macro-produced literal survives preprocessing; comments do not create IDs.
   text = "# 1 \"fixture.c\"\nrb_intern(\"str\" \"ip\"); rb_funcall(v, id, 1, (a,b));"
-  check(CextRecord.scan(text) == [["strip"], [1]], "nested argument tokenization")
+  check(CextRecord.scan(text).first(2) == [["strip"], [1]], "nested argument tokenization")
   puts "cext-recorder-test: pass"
 end

@@ -1,0 +1,22 @@
+[:x]
+true
+Struct
+nil
+true
+nil
+[:x]
+Struct
+nil
+true
+true
+#<struct x=1>
+nil
+#<struct x=2>
+true
+[[:a], nil, true]
+nil
+#<data a=3>
+[nil, [:z]]
+#<struct z=1>
+true
+#<struct w=5>

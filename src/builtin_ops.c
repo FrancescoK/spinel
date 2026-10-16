@@ -35,6 +35,69 @@ int bop_name_mutates(const char *name, unsigned sites) {
   return 0;
 }
 
+/* The names a lone splat on a boxed receiver reaches through the generic
+   entry (an_bi_generic_splat, bi_generic_fn), and the most arguments it
+   takes them with (-1: every count it writes out). Each was run on every
+   builtin receiver class that has it, and on those that lack it, with no,
+   one, two and three arguments of each builtin kind (Integer, a Bignum,
+   Float, String, Symbol, Regexp, Array, Hash, nil), and answered as CRuby
+   does or raised, leaving the receiver and $~ as CRuby leaves them. A name
+   some count of which answers otherwise stops below that count; a name the
+   written-out call answers wrong for is left out (fill, utc, assoc ...), as
+   is a name whose blockless form answers an Enumerator and any other name:
+   their splat raises NoMethodError, as before. Sorted by name (strcmp). */
+typedef struct { const char *name; int most; } BopGenericRow;
+static const BopGenericRow bop_generic_rows[] = {
+  { "abs", -1 }, { "abs2", -1 }, { "angle", -1 }, { "arg", -1 }, { "ascii_only?", -1 }, { "asctime", -1 },
+  { "at", -1 }, { "b", -1 }, { "between?", -1 }, { "bit_length", -1 }, { "bytesize", -1 },
+  { "byteslice", -1 }, { "capitalize", -1 }, { "capitalize!", -1 }, { "captures", -1 }, { "casecmp", -1 },
+  { "casecmp?", -1 }, { "ceil", 0 }, { "center", -1 }, { "chars", -1 }, { "chomp", -1 }, { "chomp!", -1 },
+  { "chop", -1 }, { "chop!", -1 }, { "chr", -1 }, { "clamp", -1 }, { "close", -1 }, { "closed?", -1 },
+  { "codepoints", -1 }, { "coerce", -1 }, { "compact", -1 }, { "compare_by_identity?", -1 },
+  { "concat", 0 }, { "conj", -1 }, { "conjugate", -1 }, { "ctime", -1 }, { "day", -1 },
+  { "deconstruct_keys", -1 }, { "default", -1 }, { "delete!", -1 }, { "delete_at", -1 },
+  { "delete_prefix", -1 }, { "delete_prefix!", -1 }, { "delete_suffix", -1 }, { "delete_suffix!", -1 },
+  { "denominator", -1 }, { "difference", -1 }, { "div", -1 }, { "divmod", -1 }, { "downcase", -1 },
+  { "downcase!", -1 }, { "drop", -1 }, { "dst?", -1 }, { "dump", -1 }, { "encode", 0 }, { "encoding", -1 },
+  { "entries", -1 }, { "eof?", -1 }, { "exclude_end?", -1 }, { "fdiv", -1 }, { "finite?", -1 },
+  { "flatten!", -1 }, { "floor", 0 }, { "friday?", -1 }, { "gcd", -1 }, { "getgm", -1 }, { "getlocal", -1 },
+  { "getutc", -1 }, { "gmt?", -1 }, { "gmt_offset", -1 }, { "gmtoff", -1 }, { "has_value?", -1 },
+  { "hex", -1 }, { "hour", -1 }, { "id2name", -1 }, { "imag", -1 }, { "imaginary", -1 },
+  { "infinite?", -1 }, { "integer?", -1 }, { "intern", -1 }, { "intersection", -1 }, { "isdst", -1 },
+  { "keys", -1 }, { "lcm", -1 }, { "ljust", -1 }, { "lstrip", -1 }, { "lstrip!", 0 }, { "magnitude", -1 },
+  { "mday", -1 }, { "members", -1 }, { "merge", -1 }, { "merge!", -1 }, { "min", -1 }, { "modulo", -1 },
+  { "mon", -1 }, { "monday?", -1 }, { "month", -1 }, { "nan?", -1 }, { "negative?", -1 }, { "next", -1 },
+  { "next!", -1 }, { "next_float", -1 }, { "next_values", -1 }, { "nonzero?", -1 }, { "nsec", -1 },
+  { "numerator", -1 }, { "oct", -1 }, { "offset", -1 }, { "ord", -1 }, { "pack", -1 }, { "peek", -1 },
+  { "peek_values", -1 }, { "phase", -1 }, { "polar", -1 }, { "pop", -1 }, { "positive?", -1 },
+  { "post_match", -1 }, { "pre_match", -1 }, { "prepend", -1 }, { "prev_float", -1 }, { "read", 1 },
+  { "real", -1 }, { "real?", -1 }, { "rect", -1 }, { "rectangular", -1 }, { "regexp", -1 },
+  { "replace", -1 }, { "reverse", -1 }, { "reverse!", -1 }, { "rjust", -1 }, { "rotate!", -1 },
+  { "round", 0 }, { "rstrip", -1 }, { "rstrip!", 0 }, { "saturday?", -1 }, { "scan", -1 }, { "scrub", -1 },
+  { "scrub!", -1 }, { "sec", -1 }, { "shift", -1 }, { "sort", -1 }, { "sort!", -1 }, { "split", -1 },
+  { "squeeze", -1 }, { "squeeze!", -1 }, { "store", -1 }, { "strip", -1 }, { "strip!", 0 }, { "sub", -1 },
+  { "sub!", -1 }, { "subsec", -1 }, { "succ", -1 }, { "succ!", -1 }, { "sum", -1 }, { "sunday?", -1 },
+  { "swapcase", -1 }, { "swapcase!", -1 }, { "sync", -1 }, { "take", -1 }, { "thursday?", -1 },
+  { "to_ary", -1 }, { "to_f", -1 }, { "to_hash", -1 }, { "to_str", -1 }, { "to_sym", -1 }, { "tr", -1 },
+  { "tr_s", -1 }, { "tr_s!", -1 }, { "truncate", 0 }, { "tuesday?", -1 }, { "tv_nsec", -1 },
+  { "tv_sec", -1 }, { "tv_usec", -1 }, { "union", -1 }, { "uniq", -1 }, { "uniq!", -1 }, { "unpack", -1 },
+  { "unpack1", -1 }, { "upcase", -1 }, { "upcase!", -1 }, { "update", -1 }, { "usec", -1 }, { "utc?", -1 },
+  { "utc_offset", -1 }, { "valid_encoding?", -1 }, { "value?", -1 }, { "values", -1 }, { "wday", -1 },
+  { "wednesday?", -1 }, { "yday", -1 }, { "year", -1 }, { "zero?", -1 }, { "zone", -1 }
+};
+
+static int bop_generic_cmp(const void *k, const void *r) {
+  return strcmp((const char *)k, *(const char *const *)r);
+}
+
+int bop_generic_entry(const char *name, int *most) {
+  if (!name) return 0;
+  const BopGenericRow *r = bsearch(name, bop_generic_rows, sizeof bop_generic_rows / sizeof bop_generic_rows[0],
+            sizeof bop_generic_rows[0], bop_generic_cmp);
+  if (r && most) *most = r->most;
+  return r != NULL;
+}
+
 static const BuiltinZeroOp bop_zero_ops[] = {
 #define BZ_IO(name, fn, ret, max, mode, poly_ret, tail) \
   { TY_IO, name, #fn, poly_ret, tail },
@@ -1048,7 +1111,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_THREAD, "exit",      0, BOP_ARGC_ANY, BF_ANY, TY_THREAD, BOPE_NONE },
   { TY_THREAD, "terminate", 0, 0,            BF_ANY, TY_THREAD, BOPE_TEMPLATE, "sp_Thread_kill($r)" },
   { TY_THREAD, "terminate", 0, BOP_ARGC_ANY, BF_ANY, TY_THREAD, BOPE_NONE },
-  { TY_THREAD, "raise",     0, BOP_ARGC_ANY, BF_ANY, TY_THREAD, BOPE_THREAD_RAISE },
+  { TY_THREAD, "raise",     0, BOP_ARGC_ANY, BF_ANY, TY_NIL,    BOPE_THREAD_RAISE },  /* nil, as CRuby answers */
   { TY_THREAD, "wakeup",    0, 0,            BF_ANY, TY_THREAD, BOPE_TEMPLATE, "sp_Thread_wakeup($r)" },
   { TY_THREAD, "wakeup",    0, BOP_ARGC_ANY, BF_ANY, TY_THREAD, BOPE_NONE },
   { TY_THREAD, "run",       0, 0,            BF_ANY, TY_THREAD, BOPE_TEMPLATE, "sp_Thread_run($r)" },
@@ -1392,6 +1455,16 @@ static const BuiltinOp bop_rows[] = {
   { TY_SYMBOL, "==",          0, 127, BF_ANY, TY_BOOL,    BOPE_NONE },
   { TY_SYMBOL, "!=",              1, 127, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "(!($r == $e0))", 0 },
   { TY_SYMBOL, "!=",          0, 127, BF_ANY, TY_BOOL,    BOPE_NONE },
+  /* Symbol#eql? and #equal? are identity: another Symbol by its id, a boxed
+     value by its tag and id, any other kind never */
+  { TY_SYMBOL, "eql?",            1,   1, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "($r == $e0)", BOP_K(TY_SYMBOL) },
+  { TY_SYMBOL, "eql?",            1,   1, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE,
+    "({ sp_sym _t$t = $r; sp_RbVal _t$u = $b0; (sp_bool)(_t$u.tag == SP_TAG_SYM && (sp_sym)_t$u.v.i == _t$t); })", BOP_K(TY_POLY) },
+  { TY_SYMBOL, "eql?",            1,   1, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "((void)($r), (void)($b0), (sp_bool)0)", 0 },
+  { TY_SYMBOL, "equal?",          1,   1, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "($r == $e0)", BOP_K(TY_SYMBOL) },
+  { TY_SYMBOL, "equal?",          1,   1, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE,
+    "({ sp_sym _t$t = $r; sp_RbVal _t$u = $b0; (sp_bool)(_t$u.tag == SP_TAG_SYM && (sp_sym)_t$u.v.i == _t$t); })", BOP_K(TY_POLY) },
+  { TY_SYMBOL, "equal?",          1,   1, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "((void)($r), (void)($b0), (sp_bool)0)", 0 },
   { TY_SYMBOL, "[]",              2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_sub_range(sp_sym_to_s($r), $i0, $i1)", 0 },
   { TY_SYMBOL, "[]",          1,   2, BF_ANY, TY_STRING,  BOPE_NONE },
   { TY_SYMBOL, "slice",           2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_sub_range(sp_sym_to_s($r), $i0, $i1)", 0 },
@@ -1575,7 +1648,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_FLOAT, "integer?",    0, 127, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "((void)($r), FALSE)" },
   { TY_FLOAT, "real?",       0, 127, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "((void)($r), TRUE)" },
   { TY_FLOAT, "nonzero?",    0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "(($r) != 0.0 ? sp_box_float($r) : sp_box_nil())" },  /* self or nil */
-  { TY_FLOAT, "div",         1,   1, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "sp_float_div_i($r, $f0)" },
+  { TY_FLOAT, "div",         1,   1, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "sp_float_div_i($r, $F0)" },
   { TY_FLOAT, "abs2",        0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "(($r) * ($r))" },
   { TY_FLOAT, "real",        0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "($r)" },
   { TY_FLOAT, "conj",        0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "($r)" },
@@ -1586,7 +1659,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_FLOAT, "magnitude",   0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "fabs($r)" },
   { TY_FLOAT, "modulo",      1,   1, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "sp_fmod($r, $F0)" },
   { TY_FLOAT, "modulo",      0, 127, BF_ANY,      TY_FLOAT,       BOPE_NONE },
-  { TY_FLOAT, "remainder",   1,   1, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "sp_fremainder($r, $f0)" },
+  { TY_FLOAT, "remainder",   1,   1, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "sp_fremainder($r, $F0)" },
   { TY_FLOAT, "remainder",   0, 127, BF_ANY,      TY_FLOAT,       BOPE_NONE },
   { TY_FLOAT, "to_f",        0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "({ sp_ofloat _t$t = $N; _t$t.nil ? 0.0 : _t$t.v; })" },
   { TY_FLOAT, "imag",        0, 127, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "((void)($r), (sp_int)0)" },
@@ -1860,11 +1933,15 @@ static const BuiltinOp bop_rows[] = {
                        BOP_K(TY_POLY_POLY_HASH) | BOP_K(TY_INT_ARRAY) | BOP_K(TY_FLOAT_ARRAY) | \
                        BOP_K(TY_STR_ARRAY) | BOP_K(TY_POLY_ARRAY) | BOP_K(TY_INT_ARRAY_ARRAY) | \
                        BOP_K(TY_FLOAT_ARRAY_ARRAY))
-  { BOP_ANY_HASH, "compare_by_identity?", 0, 0, BF_ANY,  TY_BOOL,        BOPE_TEMPLATE, "((void)($r), 0)" },  /* always false; the receiver still runs */
+  { BOP_ANY_HASH, "compare_by_identity?", 0, 0, BF_ANY,  TY_BOOL,        BOPE_TEMPLATE, "sp_hash_ident_p($r)" },  /* set only on a PolyPoly or SymPoly hash (#9171) */
   { BOP_ANY_HASH, "equal?",           1,   1, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "((void *)($r) == (void *)($e0))", HASH_OR_ARRAY },  /* pointer identity */
-  /* a boxed operand can hold this very Hash; anything else is another
-     object, the operand still evaluated for its effects */
-  { BOP_ANY_HASH, "equal?",           1,   1, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "({ sp_RbVal _t$t = $b0; (sp_bool)(_t$t.tag == SP_TAG_OBJ && _t$t.v.p == (void *)($h)); })", BOP_K(TY_POLY) },
+  /* nil is the NULL a Hash slot holds when it can be nil (a seeded
+     `Hash[...]?` answer, an ivar set later), the same object as nil */
+  { BOP_ANY_HASH, "equal?",           1,   1, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "({ void *_t$t = (void *)($r); (void)($e0); (sp_bool)(_t$t == NULL); })", BOP_K(TY_NIL) },
+  /* a boxed operand can hold this very Hash, or nil beside a Hash slot
+     that is NULL; anything else is another object, the operand still
+     evaluated for its effects */
+  { BOP_ANY_HASH, "equal?",           1,   1, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "({ sp_RbVal _t$t = $b0; (sp_bool)(_t$t.tag == SP_TAG_OBJ ? _t$t.v.p == (void *)($h) : _t$t.tag == SP_TAG_NIL && !($h)); })", BOP_K(TY_POLY) },
   { BOP_ANY_HASH, "equal?",           1,   1, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "((void)($r), (void)($e0), (sp_bool)0)" },
   { BOP_ANY_HASH, "length",           0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "sp_$HHash_length($r)" },
   { BOP_ANY_HASH, "size",             0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "sp_$HHash_length($r)" },
@@ -2243,7 +2320,7 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "dig",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "$<sp_$AArray_get$O($h, $i0)$>" },  /* one step: arr[i]; an Integer or Float element with its nil (sp_IntArray_get_o) */
   { BOP_ANY_ARRAY, "slice!",                1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SLICE_BANG_RANGE, NULL, BOP_K(TY_RANGE) },
   { BOP_ANY_ARRAY, "slice!",                1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "$<sp_$AArray_delete_at$O($h, $i0)$>" },  /* the element, or nil */
-  { BOP_ANY_ARRAY, "uniq!",                 0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_TEMPLATE, "sp_$AArray_uniq_bangq($r)", 0, 0, BOPF_SELF_OR_NIL },
+  { BOP_ANY_ARRAY, "uniq!",                 0,   0, BF_REQUIRED, TY_POLY,       BOPE_TEMPLATE, "sp_$AArray_uniq_bangq($r)", 0, 0, BOPF_SELF_OR_NIL },
   { BOP_ANY_ARRAY, "reverse!",              0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "({ sp_$AArray *_t$t = $r; sp_$AArray_reverse_bang(_t$t); _t$t; })", 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "shuffle!",              0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "({ sp_$AArray *_t$t = $r; sp_$AArray_shuffle_bang(_t$t); _t$t; })", 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "sort!",                 0,   0, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_SORT_BANG, NULL, 0, 0, BOPF_SELF },
@@ -2697,6 +2774,7 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_ANY_ARRAY, "member?",   BSH_PURE },
   { BOP_ANY_ARRAY, "index",     BSH_QUERY },
   { BOP_ANY_ARRAY, "find_index", BSH_QUERY },
+  { BOP_ANY_ARRAY, "bsearch_index", BSH_QUERY },   /* an index, or without a block an Enumerator over the receiver */
   { BOP_ANY_ARRAY, "rindex",    BSH_QUERY },
   { BOP_ANY_ARRAY, "count",     BSH_PURE },
   { BOP_ANY_ARRAY, "size",      BSH_PURE },
@@ -2805,6 +2883,10 @@ static const BopShareRow bop_share_rows[] = {
   { TY_CLASS,       "waitpid2", BSH_PURE },
   { TY_CLASS,       "pid", BSH_PURE },
   { TY_CLASS,       "allocate", BSH_PURE },
+  /* Regexp.escape and its alias quote answer a new String, also for a
+     String with nothing to escape */
+  { TY_CLASS,       "escape", BSH_PURE },
+  { TY_CLASS,       "quote", BSH_PURE },
 
   /* An OpenStruct's fields are its elements; a field's reader and writer
      (`os.name`, `os.name = s`) are read as `[]` and `[]=` (analyze_share.c
@@ -3103,8 +3185,8 @@ static const BopShareRow bop_share_rows[] = {
      chunk_while), cycle, find, detect, min_by and max_by with an argument,
      the seedless inject, product without an argument or zip with other
      than one. ty_block_yield reads none of the in-place filters and
-     maps, uniq, uniq!, sort_by!, inject, each_with_object, each_index,
-     fill, the comparators, cycle, or the run and tuple iterators but
+     maps, uniq, uniq!, sort_by!, inject, each_with_object, fill, the
+     comparators, cycle, or the run and tuple iterators but
      each_slice and each_cons. Neither reads slice_before or slice_after:
      only the share analysis does.
    - Hash. The share analysis does not read each_entry, reverse_each,
@@ -3207,7 +3289,7 @@ static const IterRow iter_rows[] = {
   { BOP_ANY_ARRAY, "reduce",          1, 1, 2, { YS_MEMO, YS_ELEM }, IA_MEMO, IRF_GAP_FWD },
   { BOP_ANY_ARRAY, "reduce",          0, 0, 2, { YS_MEMO, YS_ELEM }, IA_MEMO, IRF_GAP_SHAPE | IRF_GAP_FWD },
   { BOP_ANY_ARRAY, "each_with_object", 1, 1, 2, { YS_ELEM, YS_MEMO }, IA_MEMO, IRF_GAP_FWD },
-  { BOP_ANY_ARRAY, "each_index",      0, 0, 1, { YS_INDEX }, IA_RECV, IRF_GAP_FWD | IRF_SHAPE_BOXED },
+  { BOP_ANY_ARRAY, "each_index",      0, 0, 1, { YS_INDEX }, IA_RECV, IRF_SHAPE_BOXED },
   { BOP_ANY_ARRAY, "fill",            0, 2, 1, { YS_INDEX }, IA_BLOCKVALS_INPLACE, IRF_GAP_FWD | IRF_SHAPE_BOXED },
   { BOP_ANY_ARRAY, "cycle",           0, 1, 1, { YS_ELEM }, IA_OTHER, IRF_GAP_SHAPE | IRF_GAP_FWD },
   { BOP_ANY_ARRAY, "min",             0, 0, 2, { YS_ELEM, YS_ELEM }, IA_ONE, IRF_GAP_SHAPE | IRF_GAP_FWD },
@@ -3215,7 +3297,8 @@ static const IterRow iter_rows[] = {
   { BOP_ANY_ARRAY, "max",             0, 0, 2, { YS_ELEM, YS_ELEM }, IA_ONE, IRF_GAP_SHAPE | IRF_GAP_FWD },
   { BOP_ANY_ARRAY, "max",             1, 1, 2, { YS_ELEM, YS_ELEM }, IA_SOME, IRF_GAP_SHAPE | IRF_GAP_FWD },
   { BOP_ANY_ARRAY, "minmax",          0, 0, 2, { YS_ELEM, YS_ELEM }, IA_PARTS, IRF_GAP_SHAPE | IRF_GAP_FWD },
-  { BOP_ANY_ARRAY, "bsearch",         0, 0, 1, { YS_ELEM }, IA_ONE, IRF_GAP_SHAPE | IRF_GAP_FWD },
+  { BOP_ANY_ARRAY, "bsearch",         0, 0, 1, { YS_ELEM }, IA_ONE, IRF_GAP_SHAPE },
+  { BOP_ANY_ARRAY, "bsearch_index",   0, 0, 1, { YS_ELEM }, IA_OTHER, IRF_GAP_SHAPE },
   { BOP_ANY_ARRAY, "sort",            0, 0, 2, { YS_ELEM, YS_ELEM }, IA_SOME, IRF_GAP_SHAPE | IRF_GAP_FWD },
   { BOP_ANY_ARRAY, "sort!",           0, 0, 2, { YS_ELEM, YS_ELEM }, IA_RECV, IRF_GAP_SHAPE | IRF_GAP_FWD },
   { BOP_ANY_ARRAY, "slice_when",      0, 0, 2, { YS_ELEM, YS_ELEM }, IA_PARTS, IRF_GAP_SHAPE | IRF_GAP_FWD },
@@ -3520,6 +3603,41 @@ int bop_share(TyKind fam, const char *name) {
   int s = bop_share_find(fam, name);
   if (!s && bop_share_pure_family(fam) && !bop_share_reflective(name)) s = BSH_PURE;
   return s;
+}
+
+/* The first index of the sorted rows at or after lo whose receiver kind is
+   past rk (rk's rows run up to it), or, with name, whose (kind, name) is not
+   below (rk, name) */
+static int bop_index_bound(int lo, int hi, TyKind rk, const char *name) {
+  while (lo < hi) {
+    int mid = lo + (hi - lo) / 2;
+    const BuiltinOp *r = &bop_rows[bop_index[mid]];
+    if (name ? bop_cmp_key(rk, name, r) > 0 : r->recv <= rk) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+int bop_share_pure_anywhere(const char *name, int argc, int has_block) {
+  if (!name || bop_share_find(BOP_ANY_RECV, name) || bop_share_find(BOP_KERNEL, name)) return 0;
+  if (!bop_indexed) bop_build_index();
+  /* each receiver kind's rows of the name, a search in the kind's run */
+  for (int lo = 0; lo < BOP_NROWS;) {
+    TyKind rk = bop_rows[bop_index[lo]].recv;
+    int end = bop_index_bound(lo, BOP_NROWS, rk, NULL);
+    for (int i = bop_index_bound(lo, end, rk, name); i < end && sp_streq(bop_rows[bop_index[i]].name, name); i++) {
+      const BuiltinOp *r = &bop_rows[bop_index[i]];
+      /* (a boxed emitter's own row re-enters the kinds it serves, read here
+         by their rows) */
+      if (rk == TY_POLY || !bop_row_fits(r, argc, has_block)) continue;
+      TyKind fam = rk == TY_STRBUF ? TY_STRING : rk;
+      if (!bop_share_pure_family(fam) || bop_share(fam, name) != BSH_PURE) return 0;
+      if (fam == TY_STRING && (r->flags & (BOPF_SELF | BOPF_SELF_OR_NIL | BOPF_SELF_CLASS | BOPF_SELF_EXACT)))
+        return 0;
+    }
+    lo = end;
+  }
+  return 1;
 }
 
 TyKind iter_yield_kind(const IterRow *r, int k, TyKind rt) {

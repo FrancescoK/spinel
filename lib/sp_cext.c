@@ -13,10 +13,24 @@ typedef struct {
     size_t pins;
     unsigned marked;
 } sp_cext_handle;
+static void handle_pin(sp_cext_handle *h) {
+    SP_ATOMIC_FETCH_ADD(&h->pins, (size_t)1, __ATOMIC_RELAXED);
+}
+static void handle_unpin(sp_cext_handle *h) {
+    SP_ATOMIC_FETCH_SUB(&h->pins, (size_t)1, __ATOMIC_RELAXED);
+}
+SP_TLS void *sp_cext_current_block;
+SP_TLS VALUE sp_cext_errinfo = Qnil;
+void sp_cext_set_errinfo(VALUE value) {
+    if (!SPECIAL_CONST_P(value)) handle_pin((sp_cext_handle *)(uintptr_t)value);
+    if (!SPECIAL_CONST_P(sp_cext_errinfo)) handle_unpin((sp_cext_handle *)(uintptr_t)sp_cext_errinfo);
+    sp_cext_errinfo = value;
+}
+int (*sp_cext_data_class_fn)(int);
 static sp_cext_handle **table;
 static size_t capacity, count;
-static sp_cext_handle **arena;
-static size_t arena_n, arena_cap, arena_depth;
+static SP_TLS sp_cext_handle **arena;
+static SP_TLS size_t arena_n, arena_cap, arena_depth;
 static VALUE **globals;
 static size_t globals_n, globals_cap;
 static void install_hooks(void) {
@@ -67,10 +81,12 @@ static void pin(sp_cext_handle *h) {
         if (arena_n) memcpy(next, arena, arena_n * sizeof(*next));
         free(arena); arena = next; arena_cap = n;
     }
-    arena[arena_n++] = h; ++h->pins;
+    arena[arena_n++] = h; handle_pin(h);
 }
 VALUE sp_cext_value(sp_RbVal v) {
     install_hooks();
+    if (v.tag == SP_TAG_OBJ && v.v.p && v.cls_id >= 0 && sp_cext_data_class_fn && sp_cext_data_class_fn(v.cls_id))
+        v.cls_id = (int)((sp_cext_data *)v.v.p)->cls_id;
     if (v.tag == SP_TAG_NIL) return Qnil;
     if (v.tag == SP_TAG_BOOL) return v.v.b ? Qtrue : Qfalse;
     if (v.tag == SP_TAG_INT && v.v.i >= RUBY_FIXNUM_MIN && v.v.i <= RUBY_FIXNUM_MAX)
@@ -108,7 +124,7 @@ sp_cext_arena_mark sp_cext_arena_snapshot(void) {
 }
 void sp_cext_arena_restore(sp_cext_arena_mark mark) {
     if (mark.depth > arena_depth || mark.handles > arena_n) abort();
-    while (arena_n > mark.handles) --arena[--arena_n]->pins;
+    while (arena_n > mark.handles) handle_unpin(arena[--arena_n]);
     arena_depth = mark.depth;
 }
 size_t sp_cext_handle_count(void) { return count; }
@@ -121,9 +137,9 @@ void rb_gc_mark(VALUE v) {
 }
 void rb_gc_mark_movable(VALUE v) { rb_gc_mark(v); }
 VALUE rb_gc_location(VALUE v) { return v; }
-void rb_gc_register_address(VALUE *address) {
+int sp_cext_register_address(VALUE *address) {
     install_hooks();
-    for (size_t i = 0; i < globals_n; ++i) if (globals[i] == address) return;
+    for (size_t i = 0; i < globals_n; ++i) if (globals[i] == address) return 0;
     if (globals_n == globals_cap) {
         size_t n = globals_cap ? globals_cap * 2 : 16;
         VALUE **next = allocate(n * sizeof(*next));
@@ -131,7 +147,9 @@ void rb_gc_register_address(VALUE *address) {
         free(globals); globals = next; globals_cap = n;
     }
     globals[globals_n++] = address;
+    return 1;
 }
+void rb_gc_register_address(VALUE *address) { (void)sp_cext_register_address(address); }
 void rb_global_variable(VALUE *address) { rb_gc_register_address(address); }
 void rb_gc_unregister_address(VALUE *address) {
     for (size_t i = 0; i < globals_n; ++i) if (globals[i] == address) {
@@ -141,20 +159,21 @@ void rb_gc_unregister_address(VALUE *address) {
 void sp_cext_mark_roots(void) {
     /* Pins belong to active AND suspended fiber arenas. */
     for (size_t i = 0; i < capacity; ++i)
-        if (table[i] && table[i]->pins) rb_gc_mark((VALUE)(uintptr_t)table[i]);
+        if (table[i] && SP_ATOMIC_LOAD(&table[i]->pins, __ATOMIC_RELAXED)) rb_gc_mark((VALUE)(uintptr_t)table[i]);
     for (size_t i = 0; i < globals_n; ++i) rb_gc_mark(*globals[i]);
 }
 void sp_cext_arena_context_save(sp_cext_arena_context *ctx) {
     ctx->entries = arena; ctx->length = arena_n;
-    ctx->capacity = arena_cap; ctx->depth = arena_depth;
+    ctx->capacity = arena_cap; ctx->depth = arena_depth;ctx->block=sp_cext_current_block;ctx->errinfo=sp_cext_errinfo;
 }
 void sp_cext_arena_context_load(const sp_cext_arena_context *ctx) {
     arena = ctx->entries; arena_n = ctx->length;
-    arena_cap = ctx->capacity; arena_depth = ctx->depth;
+    arena_cap = ctx->capacity; arena_depth = ctx->depth;sp_cext_current_block=ctx->block;sp_cext_errinfo=ctx->errinfo?ctx->errinfo:Qnil;
 }
 void sp_cext_arena_context_dispose(sp_cext_arena_context *ctx) {
     sp_cext_handle **entries = ctx->entries;
-    for (size_t i = 0; i < ctx->length; ++i) --entries[i]->pins;
+    for (size_t i = 0; i < ctx->length; ++i) handle_unpin(entries[i]);
+    if (ctx->errinfo && !SPECIAL_CONST_P(ctx->errinfo)) handle_unpin((sp_cext_handle *)(uintptr_t)ctx->errinfo);
     free(entries); memset(ctx, 0, sizeof(*ctx));
 }
 /* Called after the mark drains, before either object or string sweep can
@@ -162,7 +181,7 @@ void sp_cext_arena_context_dispose(sp_cext_arena_context *ctx) {
  * a C root; the table itself must never keep those objects alive. */
 static int live(sp_cext_handle *h, int full) {
     sp_RbVal v = h->value;
-    if (h->pins) return 1;
+    if (SP_ATOMIC_LOAD(&h->pins, __ATOMIC_RELAXED) || (v.tag == SP_TAG_CLASS && v.cls_id != SP_CLASS_BY_NAME)) return 1;
     if ((v.tag == SP_TAG_OBJ && v.cls_id != SP_BUILTIN_FOREIGN_PTR &&
         v.cls_id != SP_BUILTIN_REGEX && v.cls_id != SP_BUILTIN_ARGF) || v.tag == SP_TAG_BIGINT) {
         if (!v.v.p) return 0;

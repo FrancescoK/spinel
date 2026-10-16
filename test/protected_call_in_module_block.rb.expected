@@ -1,0 +1,5 @@
+N
+N
+[:secret]
+protected method 'secret' called for an instance of N
+protected method 'secret' called for an instance of Other

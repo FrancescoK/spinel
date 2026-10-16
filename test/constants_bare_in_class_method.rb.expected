@@ -1,0 +1,9 @@
+[:GET, :POST]
+[:GET, :POST]
+get GET
+post POST
+[:A, :SO_FAR]
+[:B, :OWN_SO_FAR, :A, :SO_FAR]
+[:B, :OWN_SO_FAR]
+[:A]
+[:B]

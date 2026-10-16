@@ -1,0 +1,41 @@
+class BkhTaker
+  def take: (Hash[String, Integer] h) -> Hash[String, Integer]
+  def take_kw: (h: Hash[String, Integer]) -> Hash[String, Integer]
+end
+
+class BkhHolder
+  @x: Hash[String, Integer]
+  attr_writer w: Hash[String, Integer]
+  def x: () -> Hash[String, Integer]
+  def w: () -> Hash[String, Integer]
+end
+
+class BkhBox
+  def get: () -> Hash[String, Integer]
+end
+
+class BkhPoint
+  attr_accessor x: Hash[String, Integer]
+end
+
+class BkhData
+  attr_reader x: Hash[String, Integer]
+end
+
+class BkhSymTaker
+  def take: (Hash[Symbol, untyped] h) -> untyped
+end
+
+class BkhKeep
+  def h: () -> Hash[String, untyped]
+  def g: () -> Hash[Symbol, untyped]
+end
+
+class BkhSymHold
+  @o: Hash[Symbol, untyped]
+  def initialize: (Hash[Symbol, untyped] o) -> void
+end
+
+class BkhSymIvar
+  @o: Hash[Symbol, untyped]
+end

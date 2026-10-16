@@ -129,6 +129,14 @@ int is_tap_name(const char *n) {
   return sp_streq(n, "tap");
 }
 
+int is_itself_name(const char *n) {
+  return sp_streq(n, "itself");
+}
+
+int is_each_char_name(const char *n) {
+  return sp_streq(n, "each_char");
+}
+
 int is_tap_alias(const char *n) {
   return sp_streq(n, "tap") || sp_streq(n, "then") || sp_streq(n, "yield_self");
 }
@@ -202,6 +210,8 @@ int is_self_copy(const char *n) {
          sp_streq(n, "itself");
 }
 
+int is_step_call(const char *n) { return sp_streq(n, "step"); }
+
 int is_int_step(const char *n) {
   return sp_streq(n, "times") || sp_streq(n, "upto") || sp_streq(n, "downto");
 }
@@ -240,6 +250,26 @@ int is_receiver_conversion(const char *n) {
   return sp_streq(n, "to_s") || sp_streq(n, "to_str") || sp_streq(n, "itself");
 }
 int is_to_s_name(const char *n) { return n && sp_streq(n, "to_s"); }
+
+/* The conversions that turn a nil receiver into a String ("" for to_s) and
+   answer a String receiver itself: to_s to_str +@. */
+int is_string_conversion(const char *n) {
+  return sp_streq(n, "to_s") || sp_streq(n, "to_str") || sp_streq(n, "+@");
+}
+
+/* The names a String answers itself to: to_s to_str itself +@. */
+int is_string_self_answer(const char *n) {
+  return is_receiver_conversion(n) || sp_streq(n, "+@");
+}
+
+/* A call that can run code of the program's own the walk does not see, and
+   so rebind a variable through it: a proc's call, a send, a reflective
+   write or eval, a yield. */
+int is_rebinding_reach_call(const char *n) {
+  return sp_streq(n, "call") || sp_streq(n, "()") || is_send_family(n) ||
+         sp_streq(n, "instance_variable_set") || is_instance_eval_family(n) || sp_streq(n, "yield");
+}
+
 int is_message_name(const char *n) { return n && sp_streq(n, "message"); }
 
 int is_range_membership(const char *n) {
@@ -346,6 +376,23 @@ int is_map_alias(const char *n) {
 
 int is_instance_eval_family(const char *n) {
   return sp_streq(n, "instance_eval") || sp_streq(n, "instance_exec");
+}
+/* The reflective reads and writes of a variable by the name it is given: the
+   ivar, class variable and constant accessors and removers */
+int is_reflective_access(const char *n) {
+  return sp_streq(n, "instance_variable_get") || sp_streq(n, "instance_variable_set") ||
+         sp_streq(n, "class_variable_get") || sp_streq(n, "class_variable_set") ||
+         sp_streq(n, "const_get") || sp_streq(n, "const_set") || sp_streq(n, "remove_instance_variable") ||
+         sp_streq(n, "remove_class_variable") || sp_streq(n, "remove_const");
+}
+/* The reflective listings of a kind of variable */
+int is_reflective_listing(const char *n) {
+  return sp_streq(n, "instance_variables") || sp_streq(n, "class_variables") || sp_streq(n, "constants");
+}
+/* The calls that reach a local by a name or a string of code */
+int is_local_reflection(const char *n) {
+  return sp_streq(n, "eval") || sp_streq(n, "binding") || sp_streq(n, "local_variable_get") ||
+         sp_streq(n, "local_variable_set") || sp_streq(n, "local_variables");
 }
 
 int is_find_alias(const char *n) {
@@ -497,6 +544,50 @@ int is_visibility_or_module_function(const char *n) {
 
 int is_mixin_call(const char *n) {
   return sp_streq(n, "include") || sp_streq(n, "extend") || sp_streq(n, "prepend");
+}
+
+int is_class_plain_query(const char *n) {
+  static const char *const names[] = {
+    "new", "allocate", "name", "to_s", "inspect", "===", "==", "!=", "<", "<=", ">", ">=", "<=>",
+    "hash", "eql?", "equal?", "respond_to?", "is_a?", "kind_of?", "instance_of?", "const_defined?",
+    "method_defined?", "instance_methods", "attr_accessor", "attr_reader", "attr_writer",
+    "include?", NULL };
+  for (int i = 0; n && names[i]; i++) if (sp_streq(n, names[i])) return 1;
+  return is_visibility_or_module_function(n);
+}
+
+int is_class_self_answer(const char *n) {
+  return n && (is_mixin_call(n) || sp_streq(n, "private_class_method") || sp_streq(n, "public_class_method") ||
+               sp_streq(n, "private_constant") || sp_streq(n, "public_constant") ||
+               sp_streq(n, "remove_method") || sp_streq(n, "undef_method"));
+}
+
+int is_self_rebinding_call(const char *n) {
+  return is_eval_exec_family(n) || sp_streq(n, "define_singleton_method");
+}
+
+int is_class_relatives_query(const char *n) {
+  return sp_streq(n, "ancestors") || sp_streq(n, "superclass") || sp_streq(n, "subclasses") ||
+         sp_streq(n, "descendants") || sp_streq(n, "included_modules");
+}
+
+int is_class_query(const char *n) {
+  return sp_streq(n, "class");
+}
+
+int is_method_owner_query(const char *n) {
+  return sp_streq(n, "owner");
+}
+
+int is_method_object_maker(const char *n) {
+  return sp_streq(n, "method") || sp_streq(n, "public_method") || sp_streq(n, "singleton_method") ||
+         sp_streq(n, "instance_method") || sp_streq(n, "public_instance_method");
+}
+
+int is_constant_or_object_reflection(const char *n) {
+  return sp_streq(n, "const_get") || sp_streq(n, "const_source_location") || sp_streq(n, "nesting") ||
+         sp_streq(n, "attached_object") || sp_streq(n, "each_object") || sp_streq(n, "eval") ||
+         sp_streq(n, "binding");
 }
 
 int is_const_set_name(const char *n) {
@@ -654,6 +745,10 @@ int is_substitution_bang(const char *n) {
 
 int is_encoding_mutator(const char *n) {
   return sp_streq(n, "force_encoding") || sp_streq(n, "encode!");
+}
+
+int encoding_mutator_max_argc(const char *n) {
+  return sp_streq(n, "encode!") ? 3 : 2;
 }
 
 int is_socket_address(const char *n) {
@@ -844,6 +939,17 @@ int is_local_time(const char *n) {
   return sp_streq(n, "localtime") || sp_streq(n, "getlocal");
 }
 
+/* The Socket constants sp_sock_const (lib/sp_io.c) answers on every
+   platform -- the entries of its table outside any #ifdef. The others are
+   the system's to define, so only the run time knows them. */
+int sock_const_always(const char *n) {
+  static const char *const names[] = {
+    "AF_INET", "AF_INET6", "AF_UNIX", "PF_INET", "PF_INET6", "PF_UNIX",
+    "SOCK_STREAM", "SOCK_DGRAM", "SHUT_RD", "SHUT_WR", "SHUT_RDWR", NULL
+  };
+  for (int i = 0; n && names[i]; i++) if (sp_streq(names[i], n)) return 1;
+  return 0;
+}
 int is_iso8601_alias(const char *n) {
   return sp_streq(n, "iso8601") || sp_streq(n, "xmlschema");
 }
@@ -938,6 +1044,13 @@ int is_range_or_time_class(const char *n) {
 
 int is_object_base_name(const char *n) {
   return sp_streq(n, "Object") || sp_streq(n, "BasicObject");
+}
+
+/* A class or module besides the builtin classes (is_builtin_reopen) whose
+   methods every builtin value may run: Object, BasicObject, Kernel,
+   Comparable, Enumerable, Module. */
+int is_builtin_method_host_name(const char *n) {
+  return is_object_root(n) || sp_streq(n, "Comparable") || sp_streq(n, "Enumerable") || sp_streq(n, "Module");
 }
 
 int is_queue_class_name(const char *n) {
@@ -1124,6 +1237,11 @@ int is_symbol_exception_accessor(const char *n) {
   return sp_streq(n, "reason") || sp_streq(n, "tag") || sp_streq(n, "key") || sp_streq(n, "name");
 }
 
+int is_boxed_self_class_name(const char *name) {
+  return name && (sp_streq(name, "Object") || sp_streq(name, "Numeric") ||
+                  sp_streq(name, "Array") || sp_streq(name, "Hash"));
+}
+
 /* Classes whose reopenings keep the runtime value instead of a user struct. */
 int is_builtin_reopen_name(const char *name) {
   return sp_streq(name, "Toplevel") ||
@@ -1231,8 +1349,22 @@ int is_proc_new(const char *recv, const char *meth) {
 }
 /* `method`: Kernel#method, the Method of the name it is handed */
 int is_method_ref_name(const char *n) { return n && sp_streq(n, "method"); }
+/* a Method (or an UnboundMethod) of the name a call is handed: calling it
+   runs that method, a writer included */
+int is_method_object_name(const char *n) {
+  return n && (sp_streq(n, "method") || sp_streq(n, "public_method") || sp_streq(n, "instance_method"));
+}
+/* Marshal, whose load makes objects with any ivars set */
+int is_marshal_const(const char *n) { return n && sp_streq(n, "Marshal"); }
 /* ENV, which answers a new String each read */
 int is_env_const(const char *n) { return n && sp_streq(n, "ENV"); }
+/* RUBY_DESCRIPTION and its siblings: a builtin constant that is a frozen
+   String (one object, read after read) */
+int is_engine_string_const(const char *n) {
+  return n && (sp_streq(n, "RUBY_DESCRIPTION") || sp_streq(n, "RUBY_VERSION") || sp_streq(n, "RUBY_PLATFORM") ||
+               sp_streq(n, "RUBY_ENGINE") || sp_streq(n, "RUBY_ENGINE_VERSION") ||
+               sp_streq(n, "RUBY_RELEASE_DATE") || sp_streq(n, "RUBY_REVISION") || sp_streq(n, "RUBY_COPYRIGHT"));
+}
 /* ARGV, whose Strings CRuby freezes */
 int is_argv_const(const char *n) { return n && sp_streq(n, "ARGV"); }
 /* to_proc curry: a proc made of a Symbol, a Method or a proc */
@@ -1290,3 +1422,82 @@ int is_alias_method_name(const char *n) { return n && sp_streq(n, "alias_method"
 int is_define_method_name(const char *n) {
   return n && sp_streq(n, "define_method");
 }
+
+/* node types with no NodeKind of their own, as nt_type spells them */
+int is_arguments_node_type(const char *t) { return t && sp_streq(t, "ArgumentsNode"); }
+
+int is_when_node_type(const char *t) { return t && sp_streq(t, "WhenNode"); }
+
+int is_ensure_node_type(const char *t) { return t && sp_streq(t, "EnsureNode"); }
+
+/* The encoding `Encoding::<nm>` names, or NULL. CRuby defines a constant
+   for every encoding name and alias with `-` and `.` as `_`, as written and
+   upcased (Encoding::Shift_JIS, Encoding::ISO_8859_1,
+   Encoding::ANSI_X3_4_1968, Encoding::CP65001); the answer is the
+   encoding's own name (CP65001 is UTF-8). */
+static const char *const enc_const_names[][2] = {
+#include "../lib/sp_encoding_names.h"
+  { NULL, NULL } };
+static int enc_const_spells(const char *name, const char *nm, int up) {
+  for (; *name && *nm; name++, nm++) {
+    char ch = *name == '-' || *name == '.' ? '_' : up && *name >= 'a' && *name <= 'z' ? (char)(*name - 'a' + 'A') : *name;
+    if (ch != *nm) return 0;
+  }
+  return !*name && !*nm;
+}
+const char *encoding_const_name(const char *nm) {
+  if (!nm || !*nm) return NULL;
+  for (int k = 0; enc_const_names[k][0]; k++)
+    if (enc_const_spells(enc_const_names[k][0], nm, 1) || enc_const_spells(enc_const_names[k][0], nm, 0))
+      return enc_const_names[k][1];
+  return NULL;
+}
+
+int strh_op(const char *n, int argc, int block) {
+  if (!n) return STRH_NONE;
+  if (block == 1) {
+    if (argc == 0 && sp_streq(n, "each")) return STRH_EACH;
+    return STRH_NONE;
+  }
+  if (block) return STRH_NONE;
+  if (argc == 1 && is_element_at_alias(n)) return STRH_ELEM;
+  if (argc == 0 && is_endpoint_query(n)) return STRH_ELEM;
+  if (argc == 2 && sp_streq(n, "[]=")) return STRH_STORE;
+  if (argc >= 1 && is_push_alias(n) && (argc == 1 || !sp_streq(n, "<<"))) return STRH_PUSH;
+  if (argc == 0 && (sp_streq(n, "pop") || sp_streq(n, "shift"))) return STRH_TAKE;
+  if (argc == 0 && is_len_alias(n)) return STRH_LEN;
+  if (argc == 0 && sp_streq(n, "empty?")) return STRH_EMPTY;
+  if (argc == 0 && sp_streq(n, "dup")) return STRH_DUP;
+  if (argc == 0 && sp_streq(n, "to_a")) return STRH_SELF;
+  if (argc <= 1 && sp_streq(n, "join")) return STRH_JOIN;
+  if (argc == 1 && sp_streq(n, "include?")) return STRH_INCLUDE;
+  if (argc == 1 && sp_streq(n, "==")) return STRH_EQ;
+  if (argc == 0 && (sp_streq(n, "inspect") || sp_streq(n, "to_s"))) return STRH_INSPECT;
+  return STRH_NONE;
+}
+
+int is_kernel_print_name(const char *n) {
+  return n && (sp_streq(n, "p") || sp_streq(n, "puts") || sp_streq(n, "print"));
+}
+
+int is_identity_compare_name(const char *n) {
+  return n && (sp_streq(n, "equal?") || sp_streq(n, "==") || sp_streq(n, "!="));
+}
+
+int is_nil_shared_name(const char *n) {
+  return n && (sp_streq(n, "nil?") || is_identity_compare_name(n));
+}
+
+int builtin_iter_owner(const char *n) {
+  if (!n) return BITER_NONE;
+  if (sp_streq(n, "each") || sp_streq(n, "reverse_each") || sp_streq(n, "each_with_index")) return BITER_ARRAY;
+  if (sp_streq(n, "times") || is_upto_name(n) || sp_streq(n, "downto")) return BITER_INTEGER;
+  if (sp_streq(n, "each_char")) return BITER_STRING;
+  return BITER_NONE;
+}
+
+int is_frozen_query(const char *n) { return n && sp_streq(n, "frozen?"); }
+
+int is_pop_name(const char *n) { return n && sp_streq(n, "pop"); }
+
+int is_first_name(const char *n) { return n && sp_streq(n, "first"); }

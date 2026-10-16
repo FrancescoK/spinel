@@ -68,9 +68,15 @@ else{/* result didn't fit the stack temp; re-render at full width (sp_str_alloc 
 /* Integer#% / Kernel#format "%b"/"%B"/"%o"/"%x"/"%X": non-decimal formatting
    with Ruby's flag, width, precision, and two's-complement-for-negative rules.
    C's printf drops the '+' and ' ' flags on these conversions and has no
-   two's-complement form, so none of it can be delegated to libc. */
-int sp_fmt_binary(const char *spec, size_t sl, char conv, long long val,
-                  char *out, size_t osz) {
+   two's-complement form, so none of it can be delegated to libc.
+
+   fmt_binary_emit does the part after the digits: the precision, the sign
+   or the "..", the '#' prefix and the width. `digits` is the body: for a
+   two's-complement value (`twos`) the digits that differ from the infinite
+   run of sign digits plus one leading sign digit, else the magnitude (empty
+   for 0). It writes at most osz bytes and answers how many it wrote. */
+static int fmt_binary_emit(const char *spec, size_t sl, char conv, int neg, int nonzero,
+                           const char *digits0, int dn0, char *out, size_t osz) {
   int base = (conv == 'o') ? 8 : (conv == 'x' || conv == 'X') ? 16 : 2;
   int upper = (conv == 'X' || conv == 'B');
   char topd = (char)(base == 8 ? '7' : base == 2 ? '1' : (upper ? 'F' : 'f'));
@@ -92,16 +98,83 @@ int sp_fmt_binary(const char *spec, size_t sl, char conv, long long val,
     i++; prec = 0;
     for (; i < sl && spec[i] >= '0' && spec[i] <= '9'; i++) prec = (prec * 10) + (spec[i] - '0');
   }
+  int twos = neg && !f_plus && !f_space;
+  /* precision: minimum digit count. The ".." body counts as 2 toward it and pads
+     with sign digits; signed magnitude pads with 0. */
+  int t2 = 0;
+  char padc = twos ? topd : '0';
+  if (prec >= 0) {
+    int target = twos ? (prec - 2) : prec;
+    if (target - dn0 > 0) t2 = target - dn0;
+    f_zero = 0;  /* precision disables 0-flag for integer conversions */
+  }
+  /* octal's alternate form has no letter: it just guarantees a leading 0, so
+     it adds nothing to a body that already starts with one (and nothing at
+     all to the two's-complement form, where a 0 would misread) */
+  int oct_zero = 0;
+  char sign = twos ? 0 : (neg ? '-' : (f_plus ? '+' : (f_space ? ' ' : 0)));
+  char prefix0 = 0, prefix1 = 0;
+  if (f_hash && base == 8) {
+    if (!twos) {
+      if (dn0 + t2 == 0) oct_zero = 1;
+      else if ((t2 ? padc : digits0[0]) != '0') prefix0 = '0';
+    }
+  }
+  else if (f_hash && nonzero) {
+    prefix0 = '0';
+    prefix1 = (base == 2) ? (upper ? 'B' : 'b') : (upper ? 'X' : 'x');
+  }
+  int head = (sign ? 1 : 0) + (prefix0 ? (prefix1 ? 2 : 1) : 0) + (twos ? 2 : 0);
+  int bn = head + t2 + dn0 + oct_zero;
+  char *body = (char *)malloc((size_t)bn + 1);
+  if (!body) return 0;
+  int b = 0;
+  if (sign) body[b++] = sign;
+  if (prefix0) { body[b++] = prefix0; if (prefix1) body[b++] = prefix1; }
+  if (twos) { body[b++] = '.'; body[b++] = '.'; }
+  for (int k = 0; k < t2; k++) body[b++] = padc;
+  for (int k = 0; k < dn0; k++) body[b++] = digits0[k];
+  if (oct_zero) body[b++] = '0';
 
+  int o = 0;
+  int pad = width - bn;
+  if (pad > 0 && !f_minus && f_zero) {
+    /* zero-pad: emit sign/prefix/".." first, then fill, then the rest. A two's-
+       complement body fills with the sign digit; signed magnitude with 0. */
+    char fillc = twos ? topd : '0';
+    for (int k = 0; k < head && o < (int)osz; k++) out[o++] = body[k];
+    for (int k = 0; k < pad && o < (int)osz; k++) out[o++] = fillc;
+    for (int k = head; k < bn && o < (int)osz; k++) out[o++] = body[k];
+  }
+  else {
+    if (pad > 0 && !f_minus) for (int k = 0; k < pad && o < (int)osz; k++) out[o++] = ' ';
+    for (int k = 0; k < bn && o < (int)osz; k++) out[o++] = body[k];
+    if (pad > 0 && f_minus) for (int k = 0; k < pad && o < (int)osz; k++) out[o++] = ' ';
+  }
+  free(body);
+  return o;
+}
+
+int sp_fmt_binary(const char *spec, size_t sl, char conv, long long val,
+                  char *out, size_t osz) {
+  int base = (conv == 'o') ? 8 : (conv == 'x' || conv == 'X') ? 16 : 2;
+  int upper = (conv == 'X' || conv == 'B');
+  char topd = (char)(base == 8 ? '7' : base == 2 ? '1' : (upper ? 'F' : 'f'));
+  int f_plus = 0, f_space = 0;
+  for (size_t i = 1; i < sl; i++) {
+    if (spec[i] == '+') f_plus = 1;
+    else if (spec[i] == ' ') f_space = 1;
+    else if (spec[i] != '-' && spec[i] != '#' && spec[i] != '0') break;
+  }
   int neg = val < 0;
   /* Ruby shows the two's-complement ".." body only for a negative value with no
      sign flag; a + or space flag switches to signed magnitude ("-101"). */
   int twos = neg && !f_plus && !f_space;
-  char digits[256]; int dn = 0;
+  char digits[80]; int dn = 0;
   if (twos) {
     /* the digits that differ from the infinite run of sign digits, plus one
        leading sign digit: -255 in base 16 is "..f01" */
-    char t[80]; int tn = 0;
+    char t[72]; int tn = 0;
     long long w = val;
     while (w != -1 && tn < (int)sizeof t) {
       long long d = w % base;
@@ -113,69 +186,73 @@ int sp_fmt_binary(const char *spec, size_t sl, char conv, long long val,
     while (tn) digits[dn++] = t[--tn];
   }
   else {
-    /* signed magnitude: |val| in the base. 0 has no significant digits, so it
-       contributes a single '0' only when precision is not 0. */
+    /* signed magnitude: |val| in the base. 0 has no significant digits. */
     unsigned long long mag = neg ? (unsigned long long)(-(val + 1)) + 1 : (unsigned long long)val;
-    if (mag == 0) { if (prec != 0) digits[dn++] = '0'; }
-    else { char t[80]; int tn = 0;
-           while (mag) { int d = (int)(mag % (unsigned)base);
-                         t[tn++] = (char)(d < 10 ? '0' + d : (upper ? 'A' : 'a') + (d - 10));
-                         mag /= (unsigned)base; }
-           while (tn) digits[dn++] = t[--tn]; }
+    char t[72]; int tn = 0;
+    while (mag) { int d = (int)(mag % (unsigned)base);
+                  t[tn++] = (char)(d < 10 ? '0' + d : (upper ? 'A' : 'a') + (d - 10));
+                  mag /= (unsigned)base; }
+    while (tn) digits[dn++] = t[--tn];
   }
-  /* precision: minimum digit count. The ".." body counts as 2 toward it and pads
-     with sign digits; signed magnitude pads with 0. */
-  if (prec >= 0) {
-    int target = twos ? (prec - 2) : prec;
-    char padc = twos ? topd : '0';
-    int t2 = target - dn;
-    if (t2 > 0) {
-      /* clamp to the digits buffer (output is capped at osz anyway) */
-      if (t2 + dn >= (int)sizeof(digits)) t2 = (int)sizeof(digits) - dn - 1;
-      memmove(digits + t2, digits, (size_t)dn);  /* shift body right */
-      memset(digits, padc, (size_t)t2);           /* leading padding */
-      dn += t2;
-    }
-    f_zero = 0;  /* precision disables 0-flag for integer conversions */
+  /* 0 has no significant digits: a single '0' only where the precision is
+     not 0 */
+  if (dn == 0) {
+    int prec0 = 0;
+    for (size_t i = 1; i < sl; i++) if (spec[i] == '.') { prec0 = 1; for (size_t j = i + 1; j < sl && spec[j] >= '0' && spec[j] <= '9'; j++) if (spec[j] != '0') prec0 = 0; break; }
+    if (!prec0) digits[dn++] = '0';
   }
-  /* assemble sign/prefix + body, then apply width padding */
-  char body[300]; int bn = 0;
-  char sign = twos ? 0 : (neg ? '-' : (f_plus ? '+' : (f_space ? ' ' : 0)));
-  char prefix0 = 0, prefix1 = 0;
-  if (f_hash && base == 8) {
-    /* octal's alternate form has no letter: it just guarantees a leading 0,
-       so it adds nothing to a body that already starts with one (and nothing
-       at all to the two's-complement form, where a 0 would misread) */
-    if (!twos) {
-      if (dn == 0) digits[dn++] = '0';
-      else if (digits[0] != '0') prefix0 = '0';
-    }
-  }
-  else if (f_hash && val != 0) {
-    prefix0 = '0';
-    prefix1 = (base == 2) ? (upper ? 'B' : 'b') : (upper ? 'X' : 'x');
-  }
-  if (sign) body[bn++] = sign;
-  if (prefix0) { body[bn++] = prefix0; if (prefix1) body[bn++] = prefix1; }
-  if (twos) { body[bn++] = '.'; body[bn++] = '.'; }
-  for (int k = 0; k < dn; k++) body[bn++] = digits[k];
+  return fmt_binary_emit(spec, sl, conv, neg, val != 0, digits, dn, out, osz);
+}
 
-  int o = 0;
-  int pad = width - bn;
-  if (pad > 0 && !f_minus && f_zero) {
-    /* zero-pad: emit sign/prefix/".." first, then fill, then the rest. A two's-
-       complement body fills with the sign bit (1); signed magnitude with 0. */
-    int head = (sign ? 1 : 0) + (prefix0 ? (prefix1 ? 2 : 1) : 0) + (twos ? 2 : 0);
-    char fillc = twos ? topd : '0';
-    for (int k = 0; k < head && o < (int)osz; k++) out[o++] = body[k];
-    for (int k = 0; k < pad && o < (int)osz; k++) out[o++] = fillc;
-    for (int k = head; k < bn && o < (int)osz; k++) out[o++] = body[k];
+/* The same for a Bignum, `mag` its digits in the base with a leading '-'
+   for a negative one (sp_bigint_to_s_base). A negative one with no sign
+   flag shows its two's complement: the magnitude's digits complemented
+   and one added, over one more digit than the magnitude has, then the run
+   of leading sign digits taken down to one ("%o" % -(3 << 62) is
+   "..76400000000000000000000"). Done on the digits, so no digit straddles
+   a word of the number (mruby b9aa4d679). */
+int sp_fmt_binary_big(const char *spec, size_t sl, char conv, const char *mag,
+                      char *out, size_t osz) {
+  int base = (conv == 'o') ? 8 : (conv == 'x' || conv == 'X') ? 16 : 2;
+  int upper = (conv == 'X' || conv == 'B');
+  char topd = (char)(base == 8 ? '7' : base == 2 ? '1' : (upper ? 'F' : 'f'));
+  int neg = mag[0] == '-';
+  if (neg) mag++;
+  int f_plus = 0, f_space = 0;
+  for (size_t i = 1; i < sl; i++) {
+    if (spec[i] == '+') f_plus = 1;
+    else if (spec[i] == ' ') f_space = 1;
+    else if (spec[i] != '-' && spec[i] != '#' && spec[i] != '0') break;
+  }
+  int twos = neg && !f_plus && !f_space;
+  int ml = (int)strlen(mag);
+  char *d = (char *)malloc((size_t)ml + 2);
+  if (!d) return 0;
+  int dn = 0;
+  #define FB_VAL(ch) ((ch) >= 'a' ? (ch) - 'a' + 10 : (ch) >= 'A' ? (ch) - 'A' + 10 : (ch) - '0')
+  #define FB_DIG(v) ((char)((v) < 10 ? '0' + (v) : (upper ? 'A' : 'a') + ((v) - 10)))
+  if (twos) {
+    /* base^(ml+1) - |n|: complement each digit of the magnitude padded
+       with one leading 0, then add one */
+    int n = ml + 1;
+    for (int k = 0; k < n; k++) d[k] = (char)(base - 1 - (k == 0 ? 0 : FB_VAL(mag[k - 1])));
+    for (int k = n - 1; k >= 0; k--) {
+      if (d[k] == base - 1) { d[k] = 0; continue; }
+      d[k]++;
+      break;
+    }
+    int lead = 0;
+    while (lead + 1 < n && d[lead] == base - 1 && d[lead + 1] == base - 1) lead++;
+    for (int k = lead; k < n; k++) d[dn++] = FB_DIG(d[k]);
   }
   else {
-    if (pad > 0 && !f_minus) for (int k = 0; k < pad && o < (int)osz; k++) out[o++] = ' ';
-    for (int k = 0; k < bn && o < (int)osz; k++) out[o++] = body[k];
-    if (pad > 0 && f_minus) for (int k = 0; k < pad && o < (int)osz; k++) out[o++] = ' ';
+    for (int k = 0; k < ml; k++) d[dn++] = FB_DIG(FB_VAL(mag[k]));
   }
+  #undef FB_VAL
+  #undef FB_DIG
+  (void)topd;
+  int o = fmt_binary_emit(spec, sl, conv, neg, 1, d, dn, out, osz);
+  free(d);
   return o;
 }
 
@@ -936,7 +1013,7 @@ sp_StrArray *sp_file_readlines(const char *path) {SP_GC_ROOT_STR(path);
   char *_buf = NULL;
   size_t _cap = 0;
   ssize_t _n;
-  while ((_n = getline(&_buf, &_cap, _fp)) >= 0) {
+  while ((_n = SP_SIG_BLOCKING(getline(&_buf, &_cap, _fp))) >= 0) {
     size_t _l = (size_t)_n;
     char *_r = sp_str_alloc_raw(_l + 1);
     memcpy(_r, _buf, _l); _r[_l] = '\0';
@@ -957,7 +1034,7 @@ sp_StrArray *sp_file_readlines_chomp(const char *path) {SP_GC_ROOT_STR(path);
   char *_buf = NULL;
   size_t _cap = 0;
   ssize_t _n;
-  while ((_n = getline(&_buf, &_cap, _fp)) >= 0) {
+  while ((_n = SP_SIG_BLOCKING(getline(&_buf, &_cap, _fp))) >= 0) {
     size_t _l = (size_t)_n;
     if (_l > 0 && _buf[_l-1] == '\n') { _buf[--_l] = '\0'; }
     if (_l > 0 && _buf[_l-1] == '\r') { _buf[--_l] = '\0'; }
@@ -1033,7 +1110,7 @@ const char *sp_slurp_stream(FILE *fp) {
       if (!nb) { free(buf); return &("\xff" "")[1]; }
       buf = nb; cap = ncap;
     }
-    size_t got = fread(buf + len, 1, cap - len - 1, fp);
+    size_t got = SP_SIG_BLOCKING(fread(buf + len, 1, cap - len - 1, fp));
     len += got;
     if (got == 0) break;
   }
@@ -1062,7 +1139,7 @@ const char *sp_slurp_stream_parked(sp_File *f) {SP_GC_ROOT(f);
   if (!buf) return &("\xff" "")[1];
   for (;;) {
     sp_io_wait_readable(f);
-    int ch = fgetc(f->fp);
+    int ch = SP_SIG_BLOCKING(fgetc(f->fp));
     if (ch == EOF) break;
     if (len + 2 >= cap) {
       char *nb = (char *)realloc(buf, cap * 2);
@@ -1077,7 +1154,7 @@ const char *sp_slurp_stream_parked(sp_File *f) {SP_GC_ROOT(f);
         if (!nb) { free(buf); return &("\xff" "")[1]; }
         buf = nb; cap *= 2;
       }
-      size_t got = fread(buf + len, 1, avail, f->fp);
+      size_t got = SP_SIG_BLOCKING(fread(buf + len, 1, avail, f->fp));
       len += got;
       if (got == 0) break;
     }
@@ -1236,7 +1313,7 @@ sp_IntArray *sp_file_binread_bytes(const char *path) {SP_GC_ROOT_STR(path);
   if (buf && sz > 0) {
     /* Use fread's actual byte count, not the raw file size -- a
        partial read otherwise pushes uninitialized memory. */
-    size_t r = fread(buf, 1, (size_t)sz, f);
+    size_t r = SP_SIG_BLOCKING(fread(buf, 1, (size_t)sz, f));
     for (size_t i = 0; i < r; i++) sp_IntArray_push(a, (sp_int)buf[i]);
   }
   free(buf);
@@ -1587,7 +1664,7 @@ sp_int sp_file_write(const char *path, const char *data) {SP_GC_ROOT_STR(path);S
    Kernel#system's is. */
 const char *sp_backtick(const char *cmd) {SP_GC_ROOT_STR(cmd);
   int fds[2];
-  if (pipe(fds) != 0) { sp_last_status = -1; return sp_str_empty; }
+  if (sp_io_make_pipe(fds) != 0) { sp_last_status = -1; return sp_str_empty; }
   fflush(NULL);
 #if defined(_WIN32)
   /* posix_spawn where there is no fork (see sp_process.c) */
@@ -1608,6 +1685,7 @@ const char *sp_backtick(const char *cmd) {SP_GC_ROOT_STR(cmd);
   if (pid == 0) {
     close(fds[0]);
     if (fds[1] != 1) { dup2(fds[1], 1); close(fds[1]); }
+    else fcntl(1, F_SETFD, 0);
     execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
     _exit(127);
   }
@@ -1622,7 +1700,7 @@ const char *sp_backtick(const char *cmd) {SP_GC_ROOT_STR(cmd);
       buf = nb; cap *= 2;
     }
     sp_io_wait_fd_readable(fds[0]);
-    ssize_t got = read(fds[0], buf + len, cap - len - 1);
+    ssize_t got = SP_SIG_BLOCKING(read(fds[0], buf + len, cap - len - 1));
     if (got < 0 && errno == EINTR) continue;
     if (got <= 0) break;
     len += (size_t)got;
@@ -1665,7 +1743,8 @@ const char *sp_file_basename(const char *path) {SP_GC_ROOT_STR(path);
 /* File.basename(path, suffix): ".*" strips the (non-leading) last extension,
    any other suffix strips a literal tail match (#2774). */
 const char *sp_file_basename2(const char *path, const char *suffix) {SP_GC_ROOT_STR(path);SP_GC_ROOT_STR(suffix);
-  const char *base = sp_file_basename(path);
+  /* a new String, read again after the copy below allocates */
+  const char *base = sp_file_basename(path); SP_GC_ROOT_STR(base);
   size_t n = strlen(base);
   if (suffix && strcmp(suffix, ".*") == 0) {
     const char *dot = strrchr(base, '.');
@@ -1681,7 +1760,8 @@ const char *sp_file_basename2(const char *path, const char *suffix) {SP_GC_ROOT_
   return r;
 }
 
-const char *sp_file_extname(const char *path) {
+const char *sp_file_extname(const char *path) {SP_GC_ROOT_STR(path);
+  /* (the extension is copied out of the path after the copy allocates) */
   const char *base = strrchr(path, '/');
   base = base ? base + 1 : path;
   const char *dot = strrchr(base, '.');
@@ -2006,7 +2086,7 @@ static void sp_bt_lines(void **buf, int n, int *lines, char **files) {
   FILE *p = popen(cmd, "r");
   if (!p) return;
   char line[2048];
-  for (int i = 0; i < n && fgets(line, sizeof line, p); i++) {
+  for (int i = 0; i < n && SP_SIG_BLOCKING(fgets(line, sizeof line, p)); i++) {
     char *c = strrchr(line, ':');
     if (c && c[1] >= '1' && c[1] <= '9') {
       lines[i] = atoi(c + 1);
@@ -2036,7 +2116,7 @@ static void sp_bt_lines(void **buf, int n, int *lines, char **files) {
   FILE *p = popen(cmd, "r");
   if (!p) return;
   char line[2048];
-  for (int i = 0; i < n && fgets(line, sizeof line, p); i++) {
+  for (int i = 0; i < n && SP_SIG_BLOCKING(fgets(line, sizeof line, p)); i++) {
     char *close = strrchr(line, ')');
     char *open = close ? strrchr(line, '(') : NULL;
     char *c = open ? strrchr(open, ':') : NULL;
@@ -2157,6 +2237,10 @@ sp_bool sp_file_pipe(const char *path);
 sp_bool sp_file_identical(const char *a, const char *b);
 const char *sp_file_realpath(const char *path);
 const char *sp_file_read_len(const char *path, sp_int n);
+const char *sp_file_read_at(const char *path, sp_int n, sp_int off);
+const char *sp_file_read_from(const char *path, sp_int off);
+const char *sp_file_read_o(const char *path, sp_oint n);
+const char *sp_file_read_at_o(const char *path, sp_oint n, sp_int off);
 sp_int sp_file_chmod(sp_int mode, const char *path);
 sp_int sp_file_truncate(const char *path, sp_int n);
 sp_int sp_file_write_at(const char *path, const char *data, sp_int off);
@@ -2234,7 +2318,7 @@ const char *sp_File_gets_sep(sp_File *f, const char *sep, sp_int limit, sp_bool 
   if (sl == 1 && sep[0] == '\n' && limit <= 0) {
     char *buf = NULL;
     size_t bcap = 0;
-    ssize_t got = getline(&buf, &bcap, f->fp);
+    ssize_t got = SP_SIG_BLOCKING(getline(&buf, &bcap, f->fp));
     if (got < 0) { free(buf); return NULL; }
     size_t n = (size_t)got;
     /* chomp takes the "\r\n" of a line as well as its "\n" */
@@ -2252,12 +2336,12 @@ const char *sp_File_gets_sep(sp_File *f, const char *sep, sp_int limit, sp_bool 
   int ch;
   /* a paragraph does not start with blank lines */
   if (para) {
-    while ((ch = fgetc(f->fp)) == '\n') { }
+    while ((ch = SP_SIG_BLOCKING(fgetc(f->fp))) == '\n') { }
     if (ch != EOF) ungetc(ch, f->fp);
   }
   int ended = 0, extra = 16;
   sp_int lim = limit;
-  while ((ch = fgetc(f->fp)) != EOF) {
+  while ((ch = SP_SIG_BLOCKING(fgetc(f->fp))) != EOF) {
     if (len + 2 > cap) { cap *= 2; char *nb = (char *)realloc(buf, cap); if (!nb) { free(buf); return NULL; } buf = nb; }
     buf[len++] = (char)ch;
     /* as CRuby's getline: a byte that ends the separator is not checked
@@ -2278,7 +2362,7 @@ const char *sp_File_gets_sep(sp_File *f, const char *sep, sp_int limit, sp_bool 
   }
   /* and the blank lines after one are not part of the next */
   if (para && ended) {
-    while ((ch = fgetc(f->fp)) == '\n') { }
+    while ((ch = SP_SIG_BLOCKING(fgetc(f->fp))) == '\n') { }
     if (ch != EOF) ungetc(ch, f->fp);
   }
   if (len == 0) { free(buf); return NULL; }
@@ -2315,7 +2399,7 @@ const char *sp_File_readline_sep(sp_File *f, const char *sep, sp_int limit, sp_b
 const char *sp_File_getc(sp_File *f) {SP_GC_ROOT(f);
   SP_IO_OPEN(f);
   sp_io_wait_readable(f);
-  int ch = fgetc(f->fp);
+  int ch = SP_SIG_BLOCKING(fgetc(f->fp));
   if (ch == EOF) return NULL;
   /* A binary handle (a socket, a File opened "rb", one put in binmode or
      given ASCII-8BIT by set_encoding) has one-byte characters: reading on after a byte that looks like a UTF-8
@@ -2327,7 +2411,7 @@ const char *sp_File_getc(sp_File *f) {SP_GC_ROOT(f);
   size_t n = 0;
   r[n++] = (char)ch;
   for (int i = 0; i < extra; i++) {
-    int c2 = fgetc(f->fp);
+    int c2 = SP_SIG_BLOCKING(fgetc(f->fp));
     if (c2 == EOF) break;
     r[n++] = (char)c2;
   }
@@ -2344,10 +2428,11 @@ const char *sp_File_readchar(sp_File *f) {SP_GC_ROOT(f);
 sp_oint sp_File_getbyte(sp_File *f) {
   SP_IO_OPEN(f);
   sp_io_wait_readable(f);
-  int ch = fgetc(f->fp);
+  int ch = SP_SIG_BLOCKING(fgetc(f->fp));
   return ch == EOF ? sp_oint_nil() : sp_oint_of((sp_int)ch);
 }
 sp_RbVal sp_File_ungetc(sp_File *f, sp_RbVal v) {
+  v = sp_rbval_str(v);
   SP_IO_OPEN(f);
   if (v.tag == SP_TAG_STR && v.v.s && v.v.s[0]) {
     size_t n = sp_str_byte_len(v.v.s);
@@ -2391,9 +2476,12 @@ sp_int sp_File_fsync(sp_File *f) {
   return 0;
 }
 sp_RbVal sp_File_putc(sp_File *f, sp_RbVal v) {
+  /* putc answers its argument itself: a shared String's handle is read
+     as its bytes for the write only */
+  sp_RbVal w = sp_rbval_str(v);
   SP_IO_OPEN(f);
   if (v.tag == SP_TAG_INT) fputc((int)(v.v.i & 0xff), f->fp);
-  else if (v.tag == SP_TAG_STR) { if (v.v.s && v.v.s[0]) fputc(v.v.s[0], f->fp); }
+  else if (w.tag == SP_TAG_STR) { if (w.v.s && w.v.s[0]) fputc(w.v.s[0], f->fp); }
   /* anything else is no character: CRuby converts it as an Integer and
      raises for nil (the boxed nil wrote nothing and answered nil) */
   else if (v.tag == SP_TAG_NIL) sp_raise_nil_to_int(0);
@@ -2481,18 +2569,61 @@ sp_int sp_file_chown(const char *path, sp_int uid, sp_int gid) {SP_GC_ROOT_STR(p
     sp_raise_cls("Errno::ENOENT", sp_sprintf("No such file or directory - %s", path ? path : ""));
   return 1;
 }
+static void sp_file_read_refuse_dir(FILE *fp, const char *path) {
+  if (!sp_file_directory(path)) return;
+  fclose(fp);
+  sp_raise_cls("Errno::EISDIR", sp_sprintf("Is a directory @ io_fread - %s", path));
+}
 const char *sp_file_read_len(const char *path, sp_int n) {SP_GC_ROOT_STR(path);
   FILE *fp = fopen(path ? path : "", "rb");
   if (!fp)
     sp_raise_cls("Errno::ENOENT",
                  sp_sprintf("No such file or directory @ rb_sysopen - %s", path ? path : ""));
   if (n < 0) n = 0;
+  sp_file_read_refuse_dir(fp, path);
   char *r = sp_str_alloc(n);
-  size_t got = fread(r, 1, (size_t)n, fp);
+  size_t got = SP_SIG_BLOCKING(fread(r, 1, (size_t)n, fp));
   fclose(fp);
   r[got] = 0;
   sp_str_set_len(r, got);
   return r;
+}
+static FILE *sp_file_open_at(const char *path, sp_int off) {
+  if (off < 0) sp_raise_cls("ArgumentError", sp_sprintf("negative offset %lld given", (long long)off));
+  FILE *fp = fopen(path ? path : "", "rb");
+  if (!fp) sp_file_raise_errno("rb_sysopen", path);
+  if (fseeko(fp, (off_t)off, SEEK_SET) != 0) {
+    fclose(fp);
+    sp_file_raise_errno("rb_io_seek", path);
+  }
+  return fp;
+}
+const char *sp_file_read_at(const char *path, sp_int n, sp_int off) {SP_GC_ROOT_STR(path);
+  FILE *fp = sp_file_open_at(path, off);
+  if (n < 0) {
+    fclose(fp);
+    sp_raise_cls("ArgumentError", sp_sprintf("negative length %lld given", (long long)n));
+  }
+  sp_file_read_refuse_dir(fp, path);
+  char *r = sp_str_alloc(n);
+  size_t got = SP_SIG_BLOCKING(fread(r, 1, (size_t)n, fp));
+  fclose(fp);
+  r[got] = 0;
+  sp_str_set_len(r, got);
+  return r;
+}
+const char *sp_file_read_from(const char *path, sp_int off) {SP_GC_ROOT_STR(path);
+  FILE *fp = sp_file_open_at(path, off);
+  sp_file_read_refuse_dir(fp, path);
+  const char *r = sp_slurp_stream(fp);
+  fclose(fp);
+  return r;
+}
+const char *sp_file_read_o(const char *path, sp_oint n) {
+  return n.nil ? sp_file_read(path) : sp_file_read_len(path, n.v);
+}
+const char *sp_file_read_at_o(const char *path, sp_oint n, sp_int off) {
+  return n.nil ? sp_file_read_from(path, off) : sp_file_read_at(path, n.v, off);
 }
 sp_int sp_file_chmod(sp_int mode, const char *path) {SP_GC_ROOT_STR(path);
   if (chmod(path ? path : "", (mode_t)mode) != 0)
@@ -2538,7 +2669,7 @@ sp_int sp_file_write_perm(const char *path, const char *data, const char *mode, 
   size_t n = sp_str_byte_len(data ? data : sp_str_empty);
   size_t w = fwrite(data ? data : "", 1, n, f->fp);
   int err = (w < n || ferror(f->fp) || fflush(f->fp) != 0) ? (errno ? errno : EIO) : 0;
-  sp_File_close(f);
+  if (sp_File_close(f) != 0 && !err) err = errno ? errno : EIO;
   if (err) {
     errno = err;
     sp_raise_cls(err == ENOSPC ? "Errno::ENOSPC" : "SystemCallError",
@@ -2590,7 +2721,7 @@ static int sp_open_fifo_aware(const char *path, int fl, mode_t perm) {
     sp_Thread_pass();
     /* nothing else runnable: do not spin the worker. nanosleep rather than a
        zero-fd poll, which is not portable to macOS. */
-    { struct timespec ts; ts.tv_sec = 0; ts.tv_nsec = 1000000; nanosleep(&ts, NULL); }
+    { struct timespec ts; ts.tv_sec = 0; ts.tv_nsec = 1000000; SP_SIG_BLOCKING(nanosleep(&ts, NULL)); }
   }
 }
 sp_File *sp_File_open_flags_perm(const char *path, sp_int fl, sp_oint perm) {SP_GC_ROOT_STR(path);
@@ -3173,6 +3304,7 @@ sp_RbVal sp_Enumerator_feed(sp_Enumerator *e, sp_RbVal v);
 sp_PolyArray *sp_Enumerator_take(sp_Enumerator *e, sp_int n);
 sp_PolyArray *sp_Enumerator_to_a(sp_Enumerator *e);
 void sp_sig_c_handler(int no);
+void sp_sig_thread_dispatch(void);   /* the generated TU (spinel_rt.h) */
 void sp_exc_resignal(const char *cls, const char *msg);
 void sp_sig_exit_dispatch(void);
 sp_RbVal sp_signal_trap(sp_RbVal sig, sp_RbVal handler);
@@ -3236,7 +3368,13 @@ static int sp_enum_returns_source(sp_Enumerator *e) {
                strncmp(m, "cycle(", 6) == 0 || strncmp(m, "combination(", 12) == 0 ||
                strcmp(m, "permutation") == 0 || strncmp(m, "permutation(", 12) == 0 ||
                strncmp(m, "repeated_combination(", 21) == 0 ||
-               strncmp(m, "repeated_permutation(", 21) == 0);
+               strncmp(m, "repeated_permutation(", 21) == 0 ||
+               /* Integer#times / #upto / #downto (and a String's #upto) */
+               strcmp(m, "times") == 0 || strncmp(m, "upto(", 5) == 0 ||
+               strncmp(m, "downto(", 7) == 0 ||
+               /* a Hash's own walks, labeled only where the Hash is the source */
+               strcmp(m, "each_pair") == 0 || strcmp(m, "each_key") == 0 ||
+               strcmp(m, "each_value") == 0);
 }
 sp_RbVal sp_enum_with_index_value(sp_Enumerator *e) {SP_GC_ROOT(e);
   if (sp_enum_returns_source(e))
@@ -3408,7 +3546,9 @@ sp_Enumerator *sp_Enumerator_regroup_gen(sp_Enumerator *e, sp_int n, sp_bool con
   sp_Enumerator *r = sp_Enumerator_new_gen(sp_regroup_gen, cap, sp_box_nil());
   SP_GC_ROOT(r);
   r->source = e->source;
-  r->meth = sp_sprintf(cons ? "each_cons(%lld)" : "each_slice(%lld)", (long long)n);
+  const char *m = sp_sprintf(cons ? "each_cons(%lld)" : "each_slice(%lld)", (long long)n);
+  sp_gc_wb((void *)r);   /* the sprintf can promote the rooted enumerator */
+  r->meth = m;
   return sp_enum_inherit_size(r, e);
 }
 sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, sp_int off) {
@@ -3477,7 +3617,7 @@ sp_int sp_io_copy_stream(const char *src, const char *dst) {SP_GC_ROOT_STR(src);
   if (!out) { fclose(in); sp_raise_cls("Errno::ENOENT",
                  sp_sprintf("No such file or directory @ rb_sysopen - %s", dst ? dst : "")); }
   char buf[8192]; size_t got; sp_int total = 0;
-  while ((got = fread(buf, 1, sizeof buf, in)) > 0) { fwrite(buf, 1, got, out); total += (sp_int)got; }
+  while ((got = SP_SIG_BLOCKING(fread(buf, 1, sizeof buf, in))) > 0) { fwrite(buf, 1, got, out); total += (sp_int)got; }
   fclose(in); fclose(out);
   return total;
 }
@@ -3595,9 +3735,10 @@ sp_RbVal sp_Enumerator_feed(sp_Enumerator *e, sp_RbVal v) {SP_GC_ROOT_RBVAL(v);S
   return sp_box_nil();
 }
 sp_PolyArray *sp_Enumerator_take(sp_Enumerator *e, sp_int n) {SP_GC_ROOT(e);
+  if (n < 0) sp_raise_cls("ArgumentError", "attempt to take negative size");
   sp_PolyArray *r = sp_PolyArray_new();
   SP_GC_ROOT(r);
-  if (n <= 0) return r;
+  if (n == 0) return r;
   if (e->gen) {
     sp_Fiber *f = sp_Fiber_new(e->gen);
     SP_GC_ROOT(f);
@@ -3641,16 +3782,110 @@ sp_PolyArray *sp_Enumerator_to_a(sp_Enumerator *e) {
   if (e->items) for (sp_int i = 0; i < e->items->len; i++) sp_PolyArray_push(r, e->items->data[i]);
   return r;
 }
-void sp_sig_c_handler(int no) {
-  sp_Proc *p = (no >= 0 && no < SP_SIG_MAX) ? (sp_Proc *)sp_trap_proc[no] : NULL;
-  if (p) sp_trap_call(p, no);
+/* ---- Signal.trap delivery ----
+   The handler only counts the delivery. It used to run the trap proc right
+   there, and a signal from outside that landed while the program was inside
+   malloc, the collector or stdio ran Ruby on top of a half-updated heap: a
+   trap that allocates, sent USR1 in a loop while the program allocated,
+   aborted on glibc's heap checks every run. The proc now runs where Ruby may
+   run, as CRuby's does: in the single-threaded runtime at the safe points
+   the compiler emits for a program that traps (a method's entry, a loop's
+   back-edge: sp_sig_pending_flag), right after a Process.kill, and in the
+   waits (sleep, the cooperative IO park, Thread.pass); in the threaded one on
+   a green thread of its own, parked on a wake pipe, so a trap runs while the
+   main thread stays blocked in a read or a sleep. Nothing here but the two
+   atomics and the write(2) is called from the handler. */
+static int sp_sig_pending[SP_SIG_MAX];
+volatile int sp_sig_pending_flag;
+/* #9222: the default SIGINT / SIGTERM's handler records a signal that
+   arrives outside a blocking call (sp_sig_async_ok, sp_types.h) in
+   sp_sig_default_pending, and the raise it makes is the generated program's
+   (sp_sig_default_raiser, set by sp_sig_install_defaults) */
+volatile int sp_sig_async_ok;
+volatile int sp_sig_default_pending;
+void (*sp_sig_default_raiser)(int);
+/* A safe point of a program that sets no trap: the recorded default signal
+   is raised. Never returns. */
+void sp_sig_poll_raise(void) {
+  int no = sp_sig_default_pending;
+  sp_sig_default_pending = 0;
+  SP_ATOMIC_STORE(&sp_sig_pending_flag, 0, __ATOMIC_RELAXED);
+  if (no && sp_sig_default_raiser) sp_sig_default_raiser(no);
+  abort();
 }
+#ifdef SP_THREADS
+static int sp_sig_wake[2] = { -1, -1 };
+#endif
+void sp_sig_c_handler(int no) {
+  if (no <= 0 || no >= SP_SIG_MAX) return;
+  int e = errno;
+  SP_ATOMIC_FETCH_ADD(&sp_sig_pending[no], 1, __ATOMIC_RELEASE);
+#ifdef SP_THREADS
+  if (sp_sig_wake[1] >= 0) { char b = 0; ssize_t w = write(sp_sig_wake[1], &b, 1); (void)w; }
+#else
+  SP_ATOMIC_STORE(&sp_sig_pending_flag, 1, __ATOMIC_RELEASE);
+#endif
+  errno = e;
+}
+/* Run the procs of the signals delivered since the last call. Deliveries of
+   one signal that arrive before its proc runs are one run, as the kernel
+   merges them while the signal is pending. The signal is blocked while its
+   proc runs, as it was in the handler, so a second delivery waits for the
+   proc instead of nesting on it; sp_trap_call unblocks it when the proc
+   leaves by a raise or a throw. */
+void sp_sig_run_pending(void) {
+  SP_ATOMIC_STORE(&sp_sig_pending_flag, 0, __ATOMIC_RELAXED);
+  /* a recorded default SIGINT / SIGTERM first: its raise leaves */
+  if (sp_sig_default_pending && sp_sig_default_raiser) {
+    int no = sp_sig_default_pending;
+    sp_sig_default_pending = 0;
+    sp_sig_default_raiser(no);
+  }
+  for (int no = 1; no < SP_SIG_MAX; no++) {
+    if (!SP_ATOMIC_LOAD(&sp_sig_pending[no], __ATOMIC_RELAXED)) continue;
+    if (!SP_ATOMIC_EXCHANGE(&sp_sig_pending[no], 0, __ATOMIC_ACQUIRE)) continue;
+    sp_Proc *p = (sp_Proc *)sp_trap_proc[no];
+    if (!p) continue;
+    sigset_t m; sigemptyset(&m); sigaddset(&m, no);
+#ifdef SP_THREADS
+    pthread_sigmask(SIG_BLOCK, &m, NULL);
+#else
+    sigprocmask(SIG_BLOCK, &m, NULL);
+#endif
+    sp_trap_call(p, no);
+    sp_sig_unblock(no, 0);
+  }
+}
+#ifdef SP_THREADS
+/* The threaded runtime's trap thread: parks on the wake pipe the handler
+   writes, and runs the procs (sp_sig_thread_dispatch hands a raise out of
+   one to the main thread, where CRuby raises it). */
+static void sp_sig_thread_body(sp_Fiber *f) {
+  (void)f;
+  for (;;) {
+    sp_io_wait_fd_readable(sp_sig_wake[0]);
+    char buf[64];
+    while (SP_SIG_BLOCKING(read(sp_sig_wake[0], buf, sizeof buf)) > 0) {}
+    sp_sig_thread_dispatch();
+  }
+}
+static void sp_sig_thread_start(void) {
+  static int started = 0;
+  if (started) return;
+  if (sp_io_make_pipe(sp_sig_wake) != 0) return;
+  for (int e = 0; e < 2; e++) { int fl = fcntl(sp_sig_wake[e], F_GETFL, 0); if (fl >= 0) fcntl(sp_sig_wake[e], F_SETFL, fl | O_NONBLOCK); }
+  started = 1;
+  sp_thread *t = sp_Thread_spawn_fiber(sp_Fiber_new(sp_sig_thread_body), sp_box_nil());
+  sp_thread_set_internal(t);
+}
+#endif
 void sp_sig_exit_dispatch(void) {
   sp_Proc *p = (sp_Proc *)sp_trap_proc[0];
   sp_trap_proc[0] = NULL;   /* run once */
   if (p) { sp_int slot = 0; _sp_proc_poly_args[0] = sp_box_int(0); sp_proc_call(p, 1, &slot); }
 }
 sp_RbVal sp_signal_trap(sp_RbVal sig, sp_RbVal handler) {SP_GC_ROOT_RBVAL(sig);SP_GC_ROOT_RBVAL(handler);
+  handler = sp_rbval_str(handler);
   int no = sp_signal_resolve(sig);
   if (no == SIGKILL || no == SIGSTOP)
     sp_raise_cls("Errno::EINVAL",
@@ -3666,8 +3901,10 @@ sp_RbVal sp_signal_trap(sp_RbVal sig, sp_RbVal handler) {SP_GC_ROOT_RBVAL(sig);S
     sp_trap_state[no] = NULL;
     if (no == 0) { static int armed = 0; if (!armed) { armed = 1; atexit(sp_sig_exit_dispatch); } }
     else {
-      /* no SA_NODEFER: the signal stays blocked while its proc runs, so a
-         second delivery waits instead of nesting (sp_trap_call) */
+#ifdef SP_THREADS
+      sp_sig_thread_start();
+#endif
+      /* the handler only records the delivery (sp_sig_c_handler) */
       struct sigaction sa; memset(&sa, 0, sizeof sa);
       sa.sa_handler = sp_sig_c_handler;
       sigemptyset(&sa.sa_mask);
@@ -3696,6 +3933,9 @@ sp_int sp_process_kill1(sp_RbVal sig, sp_int pid) {SP_GC_ROOT_RBVAL(sig);
     if (errno == EPERM) sp_raise_cls("Errno::EPERM", sp_sprintf("Operation not permitted - %lld", (long long)pid));
     sp_raise_cls("Errno::EINVAL", "Invalid argument");
   }
+  /* a signal sent to this process is handled before kill returns, as in
+     CRuby: the kernel delivered it to this thread on the way out */
+  if (SP_ATOMIC_LOAD(&sp_sig_pending_flag, __ATOMIC_ACQUIRE)) sp_sig_run_pending();
   return 1;
 }
 sp_RbVal sp_Enumerator_size(sp_Enumerator *e) {SP_GC_ROOT(e);
@@ -4166,6 +4406,19 @@ sp_StrArray *sp_get_ARGV(void) {
   return sp_argv_array_cache;
 }
 sp_StrArray *sp_loaded_features_cache = NULL;
+void sp_require_computed(const char *path, const char *const *features, int n) {
+  if (!path) path = "";
+  size_t pl = strlen(path);
+  if (pl > 3 && strcmp(path + pl - 3, ".rb") == 0) pl -= 3;
+  for (int i = 0; i < n; i++) {
+    const char *f = features[i];
+    size_t fl = strlen(f);
+    if (fl > pl) continue;
+    if (memcmp(path + pl - fl, f, fl) != 0) continue;
+    if (fl == pl || path[pl - fl - 1] == '/') return;
+  }
+  sp_raise_cls("LoadError", sp_sprintf("cannot load such file -- %s", path));
+}
 sp_StrArray *sp_get_loaded_features(void) {
   if (!sp_loaded_features_cache) sp_loaded_features_cache = sp_StrArray_new();
   return sp_loaded_features_cache;
@@ -4204,7 +4457,7 @@ const char *sp_argf_gets(void) {
   static size_t cap = 0;
   for (;;) {
     if (!sp_argf_ensure()) return NULL;
-    ssize_t n = getline(&line, &cap, sp_argf_obj.cur);
+    ssize_t n = SP_SIG_BLOCKING(getline(&line, &cap, sp_argf_obj.cur));
     if (n >= 0) {
       char *r = sp_str_alloc_raw((size_t)n + 1);
       memcpy(r, line, (size_t)n); r[n] = '\0';
@@ -4626,7 +4879,16 @@ sp_RbVal sp_box_encoding(sp_Encoding e) { sp_RbVal r; r.tag = SP_TAG_ENCODING; r
 static const char *const sp_encoding_names[][2] = {
 #include "sp_encoding_names.h"
   { NULL, NULL } };
+/* The encoding a name or alias names (case-insensitively, as CRuby), with
+   "external" / "locale" / "filesystem" UTF-8; NULL for a name no encoding has */
+static const char *sp_encoding_canon(const char *n) {
+  if (!strcasecmp(n, "external") || !strcasecmp(n, "locale") || !strcasecmp(n, "filesystem")) return "UTF-8";
+  for (int i = 0; sp_encoding_names[i][0]; i++)
+    if (!strcasecmp(n, sp_encoding_names[i][0])) return sp_encoding_names[i][1];
+  return NULL;
+}
 sp_RbVal sp_encoding_find(sp_RbVal v) {
+  v = sp_rbval_str(v);
   if (v.tag == SP_TAG_ENCODING) return v;
   if (v.tag != SP_TAG_STR) {
     const char *cn = v.tag == SP_TAG_NIL ? "nil" : v.tag == SP_TAG_INT ? "Integer"
@@ -4635,11 +4897,9 @@ sp_RbVal sp_encoding_find(sp_RbVal v) {
     sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into String", cn));
   }
   const char *n = v.v.s;
-  if (!strcasecmp(n, "external") || !strcasecmp(n, "locale") || !strcasecmp(n, "filesystem"))
-    return sp_box_encoding((sp_Encoding){ "UTF-8" });
   if (!strcasecmp(n, "internal")) return sp_box_nil();
-  for (int i = 0; sp_encoding_names[i][0]; i++)
-    if (!strcasecmp(n, sp_encoding_names[i][0])) return sp_box_encoding((sp_Encoding){ sp_encoding_names[i][1] });
+  const char *cn = sp_encoding_canon(n);
+  if (cn) return sp_box_encoding((sp_Encoding){ cn });
   sp_raise_cls("ArgumentError", sp_sprintf("unknown encoding name - %s", n));
   return sp_box_nil();
 }
@@ -4670,12 +4930,11 @@ int sp_force_encoding_mode(sp_RbVal enc) {
    external), 2 ASCII-8BIT, -1 another encoding, -2 a "BOM|" one, 0 a name
    no encoding has. `*nm` is the name. */
 static int sp_io_enc_side(sp_RbVal v, const char *s, const char **nm) {
+  v = sp_rbval_str(v);
   const char *n = NULL;
   if (s) {
     if (!strncasecmp(s, "BOM|", 4)) { *nm = s; return -2; }
-    if (!strcasecmp(s, "external") || !strcasecmp(s, "locale") || !strcasecmp(s, "filesystem")) n = "UTF-8";
-    for (int i = 0; !n && sp_encoding_names[i][0]; i++)
-      if (!strcasecmp(s, sp_encoding_names[i][0])) n = sp_encoding_names[i][1];
+    n = sp_encoding_canon(s);
     if (!n) { *nm = s; return 0; }
   }
   else if (v.tag == SP_TAG_NIL) n = "UTF-8";
@@ -4699,6 +4958,7 @@ static int sp_io_enc_side(sp_RbVal v, const char *s, const char **nm) {
 sp_File *sp_File_set_encoding(sp_File *f, sp_RbVal ext, sp_RbVal in) {
   SP_GC_ROOT(f); SP_GC_ROOT_RBVAL(ext); SP_GC_ROOT_RBVAL(in);
   SP_IO_OPEN(f);
+  ext = sp_rbval_str(ext); in = sp_rbval_str(in);
   char eb[64];
   const char *es = NULL, *is = NULL, *en, *inn;
   if (ext.tag == SP_TAG_STR && in.tag == SP_TAG_NIL && strchr(ext.v.s, ':')) {
@@ -4852,6 +5112,8 @@ const char *sp_str_gsub_str_str_hash(const char *str, const char *pat, sp_StrStr
   if (n == 0) { if (sp_re_track_last) sp_re_clear_last_match(); return str; }
   size_t total = slen + n * rlen - (plen ? n * plen : 0);
   char *out = sp_str_alloc_raw(total + 1);
+  /* the answer is held across `$~`'s allocations at the end */
+  SP_GC_ROOT_STR(out);
   size_t o = 0, last = 0;
   if (plen == 0) {
     for (size_t i = 0; i < slen; i++) {
@@ -5054,7 +5316,7 @@ sp_File *sp_io_wait_events(sp_File *f, double timeout, sp_int kind) {SP_GC_ROOT(
                         (kind == 1 || kind == 3 ? POLLOUT : 0));
     int ms = timeout < 0.0 ? -1 : (int)(timeout * 1000.0 + 0.5);
     int n;
-    do { n = poll(&pf, 1, ms); } while (n < 0 && errno == EINTR);
+    do { n = SP_SIG_BLOCKING(poll(&pf, 1, ms)); } while (n < 0 && errno == EINTR);
     if (n < 0) sp_raise_cls("IOError", "select failed");
     return n > 0 ? f : NULL;
   }
@@ -5065,7 +5327,7 @@ sp_File *sp_io_wait_events(sp_File *f, double timeout, sp_int kind) {SP_GC_ROOT(
   struct timeval tv, *tvp;
   sp_io_sel_timeout(timeout, &tv, &tvp);
   int n;
-  do { n = select(fd + 1, &rs, &ws, &es, tvp); } while (n < 0 && errno == EINTR);
+  do { n = SP_SIG_BLOCKING(select(fd + 1, &rs, &ws, &es, tvp)); } while (n < 0 && errno == EINTR);
   if (n < 0) sp_raise_cls("IOError", "select failed");
   return n > 0 ? f : NULL;
 }
@@ -5161,14 +5423,14 @@ sp_RbVal sp_io_select(sp_PolyArray *rd, sp_PolyArray *wr, sp_PolyArray *er, doub
         double left = timeout < 0.0 ? -1.0 : until - sp_io_now();
         if (timeout >= 0.0 && left < 0.0) left = 0.0;
         if (!sp_sched_wait_io_set(pfs, (int)nfd, left)) { pn = 0; break; }
-        do { pn = poll(pfs, (nfds_t)nfd, 0); } while (pn < 0 && errno == EINTR);
+        do { pn = SP_SIG_BLOCKING(poll(pfs, (nfds_t)nfd, 0)); } while (pn < 0 && errno == EINTR);
         if (pn != 0) break;   /* ready (or an error to report): read back below */
         if (timeout >= 0.0 && sp_io_now() >= until) break;   /* woken at the deadline */
       }
     }
     else
 #endif
-    do { pn = poll(pfs, (nfds_t)nfd, ms); } while (pn < 0 && errno == EINTR);
+    do { pn = SP_SIG_BLOCKING(poll(pfs, (nfds_t)nfd, ms)); } while (pn < 0 && errno == EINTR);
     if (pn < 0) { free(pfs); sp_raise_cls("IOError", "select failed"); }
     if (pn == 0 && !pending) { free(pfs); return sp_box_nil(); }
     /* Read back by DESCRIPTOR, not by entry. One IO can appear twice in a call
@@ -5240,7 +5502,7 @@ sp_RbVal sp_io_select(sp_PolyArray *rd, sp_PolyArray *wr, sp_PolyArray *er, doub
   struct timeval tv, *tvp;
   sp_io_sel_timeout(timeout, &tv, &tvp);
   int n;
-  do { n = select(maxfd + 1, &sets[0], &sets[1], &sets[2], tvp); } while (n < 0 && errno == EINTR);
+  do { n = SP_SIG_BLOCKING(select(maxfd + 1, &sets[0], &sets[1], &sets[2], tvp)); } while (n < 0 && errno == EINTR);
   if (n < 0) sp_raise_cls("IOError", "select failed");
   if (n == 0 && !pending) return sp_box_nil();
   sp_PolyArray *out = sp_PolyArray_new();
@@ -5296,7 +5558,9 @@ void sp_sleep(sp_float s) {
   req.tv_nsec = (long)((s - (double)req.tv_sec) * 1e9);
   if (req.tv_nsec < 0) req.tv_nsec = 0;
   if (req.tv_nsec >= 1000000000L) req.tv_nsec = 999999999L;
-  while (nanosleep(&req, &req) == -1 && errno == EINTR) {}
+  /* a trap delivered meanwhile runs, and the sleep goes on, as CRuby's does */
+  while (SP_SIG_BLOCKING(nanosleep(&req, &req)) == -1 && errno == EINTR)
+    if (SP_ATOMIC_LOAD(&sp_sig_pending_flag, __ATOMIC_ACQUIRE)) sp_sig_run_pending();
 #endif
 }
 
@@ -5306,7 +5570,7 @@ void sp_sleep_forever(void) {
 #ifdef SP_THREADS
   sp_sched_sleep_forever();
 #else
-  for (;;) pause();
+  for (;;) SP_SIG_BLOCKING(pause());
 #endif
 }
 
@@ -5410,10 +5674,14 @@ sp_Addrinfo *sp_addrinfo_new(const char *ip, sp_int port, sp_int stype, sp_int i
   sp_Addrinfo *a = (sp_Addrinfo *)sp_gc_alloc(sizeof(sp_Addrinfo), NULL, sp_addrinfo_scan);
   a->ip = NULL; a->afname = NULL;
   SP_GC_ROOT(a);
-  a->ip = sp_sprintf("%s", ip ? ip : "");
+  /* each sprintf can collect and promote the rooted object, so each store
+     takes the barrier after the allocation it stores: one barrier after
+     both was cleared by the second's collection, which freed the first */
+  const char *s = sp_sprintf("%s", ip ? ip : "");
+  sp_gc_wb((void *)a); a->ip = s;
   int v6 = !is_unix && ip && strchr(ip, ':') != NULL;
-  a->afname = sp_sprintf("%s", is_unix ? "AF_UNIX" : v6 ? "AF_INET6" : "AF_INET");
-  sp_gc_wb((void *)a);   /* the two sprintfs can promote the rooted object */
+  s = sp_sprintf("%s", is_unix ? "AF_UNIX" : v6 ? "AF_INET6" : "AF_INET");
+  sp_gc_wb((void *)a); a->afname = s;
   a->afamily = is_unix ? AF_UNIX : v6 ? AF_INET6 : AF_INET;
   a->port = port;
   a->socktype = stype;
@@ -5716,81 +5984,278 @@ SP_NORETURN void sp_raise_cannot_freeze(const char *cls, void *p) {
 }
 
 /* ---- String#encode(dst [, src] [, invalid:, undef:, replace:]) ----
-   The runtime models two encodings, UTF-8 and ASCII-8BIT (docs: the encoding
-   model), so a transcode is one of four pairs. Same-encoding: the bytes,
-   scrubbed only under invalid: :replace, as CRuby does. Binary to UTF-8, and
-   UTF-8 to binary: every byte >= 0x80 (every non-ASCII character) has no
-   mapping, which is Encoding::UndefinedConversionError naming the byte or the
-   code point, or the replacement under undef: :replace. The replacement
-   defaults to U+FFFD for a UTF-8 target and "?" otherwise, as CRuby's does.
-   A name the model does not know (ISO-8859-1, UTF-16) is left as the bytes,
-   which is what every earlier spinel answered for the whole method (#4439). */
-static int sp_enc_kind(sp_RbVal e, int dflt) {   /* 1 UTF-8, 2 binary, 0 unknown */
-  const char *n = NULL;
-  if (e.tag == SP_TAG_STR || e.tag == SP_TAG_ENCODING) n = e.v.s;
-  else return dflt;
-  if (!n) return dflt;
-  if (!strcasecmp(n, "UTF-8") || !strcasecmp(n, "UTF8")) return 1;
-  if (!strcasecmp(n, "ASCII-8BIT") || !strcasecmp(n, "BINARY")) return 2;
+   The runtime models UTF-8 and ASCII-8BIT, and US-ASCII as UTF-8 that holds
+   only ASCII (docs: the encoding model), so a transcode moves between those
+   three, as CRuby's does: the ASCII bytes carry over and nothing else does.
+   A sequence the source cannot hold (broken UTF-8, any byte >= 0x80 read as
+   US-ASCII) is invalid, Encoding::InvalidByteSequenceError; a character the
+   destination lacks (any non-ASCII one into ASCII-8BIT or US-ASCII, any
+   byte >= 0x80 out of ASCII-8BIT) is undefined,
+   Encoding::UndefinedConversionError; invalid: or undef: :replace puts the
+   replacement there instead, U+FFFD into UTF-8 and "?" otherwise. The same
+   encoding on both sides is the bytes, scrubbed under invalid: :replace. An
+   encoding the model does not have (ISO-8859-1, UTF-16) leaves the bytes,
+   which is what every earlier spinel answered for the whole method (#4439).
+   The arguments are read as CRuby reads them, the options first. `npos` is
+   how many positional ones the call passed: a destination passed as nil, or
+   either one that is no Encoding and no String (nor converts to one through
+   #to_str), is the TypeError; a name no encoding has is
+   Encoding::ConverterNotFoundError, unless both name the same; an invalid:
+   or undef: other than nil or :replace, a replace: that is no String or is
+   broken UTF-8, raise as CRuby's options do. They were not read before:
+   `s.encode(1)` and `s.encode("l")` answered the String unchanged. */
+static int sp_enc_kind(const char *n) {   /* 1 UTF-8, 2 binary, 3 US-ASCII, 0 another */
+  if (!strcmp(n, "UTF-8")) return 1;
+  if (!strcmp(n, "ASCII-8BIT")) return 2;
+  if (!strcmp(n, "US-ASCII")) return 3;
   return 0;
+}
+/* CRuby's Encoding#ascii_compatible?, for the encodings it answers false */
+static int sp_enc_ascii_compat(const char *n) {
+  static const char *const NOT[] = { "UTF-16", "UTF-16BE", "UTF-16LE", "UTF-32", "UTF-32BE", "UTF-32LE",
+                                     "UTF-7", "IBM037", "ISO-2022-JP", "ISO-2022-JP-2", "ISO-2022-JP-KDDI",
+                                     "CP50220", "CP50221", NULL };
+  for (int i = 0; NOT[i]; i++) if (!strcmp(n, NOT[i])) return 0;
+  return 1;
 }
 static int sp_enc_kw_replace(sp_RbVal v) {   /* `invalid: :replace` / `undef: :replace` */
   return v.tag == SP_TAG_SYM && sp_sym_name_fn && sp_sym_name_fn((sp_sym)v.v.i) &&
          !strcmp(sp_sym_name_fn((sp_sym)v.v.i), "replace");
 }
-const char *sp_str_encode(const char *s, sp_RbVal dst, sp_RbVal src,
+const char *sp_poly_class_name(sp_RbVal v);   /* lib/sp_poly_cold.c */
+/* A String argument as CRuby's StringValue takes it: a String, a shared
+   String's bytes, or a user object's #to_str; anything else is the TypeError */
+static const char *sp_enc_str_arg(sp_RbVal v) {
+  if (v.tag == SP_TAG_STR && v.v.s) return v.v.s;
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p)
+    return sp_String_cstr((sp_String *)v.v.p);
+  if (v.tag == SP_TAG_OBJ && v.cls_id >= 0 && v.v.p && sp_obj_to_str_fn) {
+    SP_GC_ROOT_RBVAL(v);   /* across the user #to_str */
+    const char *r = sp_obj_to_str_fn((int)v.cls_id, v.v.p);
+    if (r) return r;
+  }
+  sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into String",
+                                       v.tag == SP_TAG_NIL || v.tag == SP_TAG_STR ? "nil"
+                                       : v.tag == SP_TAG_BOOL ? (v.v.b ? "true" : "false")
+                                       : sp_poly_class_name(v)));
+  return NULL;
+}
+/* The encoding an encode argument names, by its own name, or the name as
+   given where no encoding has it (*known 0) */
+static const char *sp_enc_arg(sp_RbVal v, int *known) {
+  int enc = v.tag == SP_TAG_ENCODING && v.v.s;
+  const char *n = enc ? v.v.s : sp_enc_str_arg(v);
+  const char *cn = sp_encoding_canon(n);
+  *known = cn || enc;
+  return cn ? cn : n;
+}
+static void sp_enc_opt_check(sp_RbVal v, const char *what) {
+  if (v.tag != SP_TAG_NIL && !sp_enc_kw_replace(v))
+    sp_raise_cls("ArgumentError", sp_sprintf("unknown value for %s character option", what));
+}
+/* n bytes at p, quoted as a conversion error shows them (String#dump of
+   binary bytes) */
+static const char *sp_enc_bytes_desc(const char *p, size_t n) {
+  char *out = sp_str_alloc_raw(n * 4 + 3);
+  size_t o = 0;
+  out[o++] = '"';
+  for (size_t k = 0; k < n; k++) {
+    unsigned char c = (unsigned char)p[k];
+    const char *e = c == '"' ? "\\\"" : c == '\\' ? "\\\\" : c == '\n' ? "\\n" : c == '\t' ? "\\t"
+                  : c == '\r' ? "\\r" : c == '\f' ? "\\f" : c == '\v' ? "\\v" : c == '\a' ? "\\a"
+                  : c == '\b' ? "\\b" : c == 27 ? "\\e" : NULL;
+    if (e) { memcpy(out + o, e, 2); o += 2; }
+    else if (c < 0x20 || c >= 0x7F) o += (size_t)sprintf(out + o, "\\x%02X", c);
+    else out[o++] = (char)c;
+  }
+  out[o++] = '"';
+  out[o] = 0;
+  sp_str_set_len(out, o);
+  return out;
+}
+/* The UTF-8 character at p (w bytes) as U+XXXX */
+static const char *sp_enc_cp_desc(const unsigned char *p, size_t w) {
+  unsigned cp = p[0];
+  if (w == 2) cp = ((p[0] & 0x1Fu) << 6) | (p[1] & 0x3Fu);
+  else if (w == 3) cp = ((p[0] & 0x0Fu) << 12) | ((p[1] & 0x3Fu) << 6) | (p[2] & 0x3Fu);
+  else if (w == 4) cp = ((p[0] & 0x07u) << 18) | ((p[1] & 0x3Fu) << 12) | ((p[2] & 0x3Fu) << 6) | (p[3] & 0x3Fu);
+  return sp_sprintf("U+%04X", cp);
+}
+static int sp_enc_repl_kind(const char *r) { return sp_str_is_binary(r) ? 2 : 1; }
+/* The conversion error at s[i] (w bytes, of bl): the bytes quoted, or the
+   character as U+XXXX, rooted while the message is built */
+static void sp_enc_raise_at(const char *s, size_t i, size_t w, size_t bl, int bad, int from, int to,
+                            const char *sn, const char *dn) {
+  unsigned char b = (unsigned char)s[i];
+  const char *d = !bad && from == 1 ? sp_enc_cp_desc((const unsigned char *)s + i, w)
+                : sp_enc_bytes_desc(s + i, bad && from == 1 ? w : 1);
+  SP_GC_ROOT_STR(d);
+  const char *msg;
+  if (bad && from == 3) msg = sp_sprintf("%s on US-ASCII", d);
+  else if (bad) {
+    /* a lead byte cut short names what cut it, or that the String ended */
+    int lead = b >= 0xC2 && b <= 0xF4;
+    if (!lead) msg = sp_sprintf("%s on UTF-8", d);
+    else if (i + w >= bl) msg = sp_sprintf("incomplete %s on UTF-8", d);
+    else {
+      const char *nx = sp_enc_bytes_desc(s + i + w, 1);
+      SP_GC_ROOT_STR(nx);
+      msg = sp_sprintf("%s followed by %s on UTF-8", d, nx);
+    }
+  } else if (from == 2 && to == 3)
+    msg = sp_sprintf("%s to UTF-8 in conversion from ASCII-8BIT to UTF-8 to US-ASCII", d);
+  else
+    msg = sp_sprintf("%s from %s to %s", d, sn, dn);
+  sp_raise_cls(bad ? "Encoding::InvalidByteSequenceError" : "Encoding::UndefinedConversionError", msg);
+}
+const char *sp_str_encode(const char *s, int npos, sp_RbVal dst, sp_RbVal src,
                           sp_RbVal invalid, sp_RbVal undef, sp_RbVal replace) {
   SP_GC_ROOT_STR(s); SP_GC_ROOT_RBVAL(dst); SP_GC_ROOT_RBVAL(src); SP_GC_ROOT_RBVAL(replace);
+  replace = sp_rbval_str(replace);
   if (!s) sp_nil_recv("encode");
-  int from = sp_enc_kind(src, sp_str_is_binary(s) ? 2 : 1);
-  int to = sp_enc_kind(dst, 1);
-  /* encode answers a new String even where nothing changes, as CRuby's */
-  if (!from || !to) return sp_str_dup(s);
-  const char *repl = (replace.tag == SP_TAG_STR && replace.v.s) ? replace.v.s : NULL;
+  sp_enc_opt_check(invalid, "invalid");
+  sp_enc_opt_check(undef, "undefined");
+  const char *repl = replace.tag == SP_TAG_NIL ? NULL : sp_enc_str_arg(replace);
   SP_GC_ROOT_STR(repl);
-  if (from == to) {
-    if (from == 1 && sp_enc_kw_replace(invalid)) return sp_str_scrub_utf8(s, repl);
-    return sp_str_dup(s);
+  sp_int bad_len;
+  if (repl && !sp_str_is_binary(repl) &&
+      sp_str_scrub_bad(repl, (sp_int)sp_str_byte_len(repl), 0, &bad_len) < (sp_int)sp_str_byte_len(repl))
+    sp_raise_cls("ArgumentError", sp_sprintf("replacement string is broken: %s as UTF-8", sp_str_dump(repl)));
+  const char *own = sp_str_is_binary(s) ? "ASCII-8BIT" : "UTF-8";
+  int dk = 1, sk = 1;
+  /* no destination is the default internal encoding, nil, which keeps the
+     String's own */
+  const char *dn = npos >= 1 ? sp_enc_arg(dst, &dk) : own;
+  SP_GC_ROOT_STR(dn);
+  const char *sn = npos >= 2 && src.tag != SP_TAG_NIL ? sp_enc_arg(src, &sk) : own;
+  SP_GC_ROOT_STR(sn);
+  if (!dk || !sk) {
+    /* the same name twice converts nothing; CRuby answers the bytes, as binary */
+    if (!strcasecmp(dn, sn)) return sp_str_as_binary(sp_str_dup(s));
+    sp_raise_cls("Encoding::ConverterNotFoundError",
+                 sp_sprintf("code converter not found (%s to %s)", sn, dn));
   }
-  /* binary <-> UTF-8: the ASCII bytes carry over, nothing else does */
+  int from = sp_enc_kind(sn), to = sp_enc_kind(dn);
+  /* a replace: without invalid: :replace puts the replacement in for an
+     undefined character too, as CRuby's option reading does */
+  int inv_rep = sp_enc_kw_replace(invalid), undef_rep = sp_enc_kw_replace(undef) || (repl && !inv_rep);
+  /* An encoding the model does not have: the bytes are the answer only for
+     ASCII between two encodings that hold it as ASCII. Anything else needs
+     that encoding's tables, and answering the bytes unchanged (as every
+     spinel before this did) was a wrong answer: "hé".encode("ISO-8859-1")
+     is "h\xE9" in CRuby, and even one encoding named twice reads the bytes
+     as that encoding's characters, which are not UTF-8's. encode answers a
+     new String even where nothing changes, tagged as a known destination
+     names it. */
+  if (!from || !to) {
+    /* (an empty String has no bytes in any encoding) */
+    int empty = !sp_str_byte_len(s) && (!repl || sp_str_ascii_only(repl));
+    if (!empty && !(sp_str_ascii_only(s) && sp_enc_ascii_compat(sn) && sp_enc_ascii_compat(dn)))
+      sp_raise_cls("NotImplementedError",
+                   sp_sprintf("String#encode from %s to %s: spinel has UTF-8, ASCII-8BIT and "
+                              "US-ASCII only", sn, dn));
+    const char *t = sp_str_dup(s);
+    return to == 2 ? sp_str_as_binary(t) : to ? sp_str_as_text(t) : t;
+  }
   size_t bl = sp_str_byte_len(s);
-  int undef_replace = sp_enc_kw_replace(undef);
-  const char *dflt = to == 1 ? "\xEF\xBF\xBD" : "?";
-  const char *r = repl ? repl : dflt;
+  sp_int nlen = 0, nb = from == 1 ? sp_str_scrub_bad(s, (sp_int)bl, 0, &nlen) : (sp_int)bl;
+  if (from == to) {
+    /* the bytes, tagged as the encoding they are named in (a binary
+       "\xC3\xA9" encoded from UTF-8 to UTF-8 is U+00E9); invalid: :replace
+       scrubs them. Its replacement has to suit that encoding, which CRuby
+       looks at unless the String is already clean in it: when there is
+       something to replace, or the String is tagged otherwise */
+    int dirty = from == 1 ? nb < (sp_int)bl : from == 3 && !sp_str_ascii_only(s);
+    /* (a String spinel holds is never tagged US-ASCII, so CRuby looks at a
+       US-ASCII one's replacement always) */
+    if (inv_rep && repl && !sp_str_ascii_only(repl) && sp_enc_repl_kind(repl) != from &&
+        (dirty || from == 3 || from != (sp_str_is_binary(s) ? 2 : 1)))
+      sp_raise_cls("Encoding::CompatibilityError",
+                   sp_sprintf("incompatible character encodings: %s and %s",
+                              from == 2 ? "BINARY (ASCII-8BIT)" : sn,
+                              sp_str_is_binary(repl) ? "BINARY (ASCII-8BIT)" : "UTF-8"));
+    /* CRuby tags the bytes US-ASCII as they are, a broken String spinel's
+       US-ASCII (ASCII in UTF-8) cannot hold */
+    if (from == 3 && dirty && !inv_rep)
+      sp_raise_cls("NotImplementedError",
+                   "String#encode from US-ASCII to US-ASCII of non-ASCII text: spinel's US-ASCII "
+                   "holds ASCII only");
+    if (!inv_rep || !dirty) {
+      const char *t = sp_str_dup(s);
+      return to == 2 ? sp_str_as_binary(t) : sp_str_as_text(t);
+    }
+    if (from == 1) return sp_str_as_text(sp_str_scrub_utf8(s, repl));
+    /* US-ASCII scrubs each byte >= 0x80, in the walk below */
+  }
+  const char *r = repl ? repl : to == 1 ? "\xEF\xBF\xBD" : "?";
   size_t rl = repl ? sp_str_byte_len(repl) : strlen(r);
+  /* a replacement goes in as the destination holds it, which only ASCII
+     does across encodings; CRuby converts it as it opens the converter,
+     which ASCII text between these encodings never needs */
+  if (from != to && repl && !sp_str_ascii_only(repl) && sp_enc_repl_kind(repl) != to &&
+      !sp_str_ascii_only(s))
+    sp_raise_cls("Encoding::ConverterNotFoundError",
+                 sp_sprintf("code converter not found (%s to %s)", sn, dn));
   size_t cap = bl + 1, o = 0;
   char *out = (char *)malloc(cap);
   if (!out) sp_oom_die();
   for (size_t i = 0; i < bl; ) {
     unsigned char b = (unsigned char)s[i];
-    size_t w = 1;
     if (b < 0x80) { if (o + 1 >= cap) { cap *= 2; out = (char *)realloc(out, cap); if (!out) sp_oom_die(); } out[o++] = (char)b; i++; continue; }
-    if (from == 1) { w = (size_t)sp_utf8_advance(s + i); if (w == 0 || i + w > bl) w = 1; }
-    if (!undef_replace) {
-      char what[64];
-      if (from == 2) snprintf(what, sizeof what, "\"\\x%02X\"", b);
-      else {
-        unsigned cp = 0;
-        if (w == 1) cp = b;
-        else if (w == 2) cp = ((b & 0x1Fu) << 6) | ((unsigned char)s[i+1] & 0x3Fu);
-        else if (w == 3) cp = ((b & 0x0Fu) << 12) | (((unsigned char)s[i+1] & 0x3Fu) << 6) | ((unsigned char)s[i+2] & 0x3Fu);
-        else cp = ((b & 0x07u) << 18) | (((unsigned char)s[i+1] & 0x3Fu) << 12) | (((unsigned char)s[i+2] & 0x3Fu) << 6) | ((unsigned char)s[i+3] & 0x3Fu);
-        snprintf(what, sizeof what, "U+%04X", cp);
-      }
+    size_t w = 1;
+    int bad = from == 3;   /* a high byte read as US-ASCII is no character */
+    if (from == 1) {
+      bad = (sp_int)i == nb;
+      w = bad ? (size_t)nlen : (size_t)sp_utf8_advance(s + i);
+    }
+    if (bad ? !inv_rep : !undef_rep) {
       free(out);
-      sp_raise_cls("Encoding::UndefinedConversionError",
-                   sp_sprintf("%s from %s to %s", what, from == 2 ? "ASCII-8BIT" : "UTF-8",
-                              to == 2 ? "ASCII-8BIT" : "UTF-8"));
+      sp_enc_raise_at(s, i, w, bl, bad, from, to, sn, dn);
     }
     while (o + rl + 1 >= cap) { cap *= 2; out = (char *)realloc(out, cap); if (!out) sp_oom_die(); }
     memcpy(out + o, r, rl); o += rl;
     i += w;
+    if (from == 1 && (sp_int)i > nb) nb = sp_str_scrub_bad(s, (sp_int)bl, (sp_int)i, &nlen);
   }
   char *res = sp_str_alloc_raw(o + 1);
   memcpy(res, out, o); res[o] = 0; sp_str_set_len(res, o);
   free(out);
-  if (to == 2) sp_str_mark_binary(res);
-  return res;
+  return to == 2 ? sp_str_as_binary(res) : sp_str_as_text(res);
+}
+/* String#encode! on `s`, given the String encode answered for it (`t`). The
+   same bytes retag `s` in place, which every name for the String sees, and
+   answer it. New bytes (a replacement under invalid: or undef:) would have
+   to move into the String, and a String that is not shared by reference
+   (--share-strings) has no place to put them that its other names would
+   see: that is NotImplementedError rather than an answer only one name
+   holds (under --share-strings such a String is a handle, or has one slot
+   that takes the bytes back: sp_str_encode_slot). A String in an encoding
+   the model does not have keeps its tag, as force_encoding to one does. */
+const char *sp_str_encode_into(const char *s, const char *t) {
+  size_t n = sp_str_byte_len(s);
+  if (n != sp_str_byte_len(t) || memcmp(s, t, n))
+    sp_raise_cls("NotImplementedError",
+                 "String#encode! that replaces characters is not supported on this String "
+                 "(--share-strings supports it on a variable); write `s = s.encode(...)`");
+  if (sp_str_is_binary(t)) sp_str_as_binary(s); else sp_str_as_text(s);
+  return s;
+}
+/* The same for a String the one slot holding it takes back (a String
+   --share-strings leaves unshared: no other name sees it): the String,
+   retagged, or the new bytes */
+const char *sp_str_encode_slot(const char *s, const char *t) {
+  size_t n = sp_str_byte_len(s);
+  if (n != sp_str_byte_len(t) || memcmp(s, t, n)) return t;
+  if (sp_str_is_binary(t)) sp_str_as_binary(s); else sp_str_as_text(s);
+  return s;
+}
+/* The same on a shared String handle, which takes new bytes itself */
+void sp_String_encode_into(sp_String *h, const char *t) {
+  SP_GC_ROOT(h); SP_GC_ROOT_STR(t);
+  const char *s = sp_String_cstr(h);
+  size_t n = sp_str_byte_len(t);
+  if (n != sp_str_byte_len(s) || memcmp(s, t, n)) sp_String_set_bin(h, t);
+  sp_String_force_encoding(h, sp_str_is_binary(t) ? 1 : 0);
 }
 
 /* ---- Warning module: category flags (Warning[] / Warning[]=) ----

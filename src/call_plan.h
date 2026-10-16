@@ -94,6 +94,12 @@ int cplan_initializers(Compiler *c, int id, int *out, int cap);
 enum { CPT_UNKNOWN = -1, CPT_MAX = 64 };
 int cplan_targets(Compiler *c, int id, int *out, int cap);
 void cplan_targets_drop(void);
+/* Can target method mi of call id bind the call's arguments? 0 only when
+   their count is known at compile time -- plain positional arguments, no
+   splat, keyword hash or `...` -- and mi's parameters refuse it
+   (poly_arm_count): that target can only raise ArgumentError, and answers
+   nothing. */
+int cplan_target_binds(Compiler *c, int id, int mi);
 int cplan_boxed_cmethod(Compiler *c, int id, const char *name);
 /* Object fallback behind a class-gated exception accessor, or -1. */
 int cplan_exc_object_method(Compiler *c, const char *name);
@@ -195,7 +201,7 @@ typedef enum {
   /* its builtin `default:` arms, the first that applies, and the named
      cases after them (emit_poly_defaults0) */
   PB_D_ENUM_EACH, PB_D_TO_S, PB_D_CASE_CONV, PB_D_NUM, PB_D_DIGITS, PB_D_ARRAY_TRANSFORM, PB_D_PRED,
-  PB_D_TO_IF, PB_D_ANY_NONE, PB_D_TO_H, PB_D_DISPLAY,
+  PB_D_TO_IF, PB_D_ANY_NONE, PB_D_TO_H, PB_D_DISPLAY, PB_D_HASH,
   PB_N_EACH_INDEX, PB_N_JOIN, PB_N_ALIVE, PB_N_KILL, PB_N_STATUS, PB_N_QUEUE, PB_N_IO_READ,
   PB_N_IO_FLUSH, PB_N_IO_CLOSE, PB_N_ENUM_TO_A,
   /* the tag pre-arms of a dispatch with arguments (emit_poly_prearms_n) */
@@ -358,6 +364,7 @@ typedef enum {
                   answer has the call's type (nil_answer_text); a call whose
                   answer has not is emitted as before, untested */
 } CplanNil;
+const char *cplan_call_name(const NodeTable *nt, int id);
 int cplan_nil(Compiler *c, int id);
 int cplan_nil_answer_served(Compiler *c, int id);   /* codegen_call.c: nil's answer has the call's type */
 /* Is a nil fact's source `why` (nil_fact_why) a nil the program writes --

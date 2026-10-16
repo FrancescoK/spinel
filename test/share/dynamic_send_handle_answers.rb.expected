@@ -1,0 +1,57 @@
+["iv1", true]
+["iv12", true]
+["iv123", true]
+true
+["fd4", true]
+["fd45", "fd45", true]
+["fd456", true]
+["par1", true]
+["par12", true]
+["par123", true]
+"iv1237"
+nil
+"cl8"
+"cl89"
+7
+["cl89!", "new"]
+"ka"
+"kah"
+["kahq", true, false]
+true
+true
+["kahq5", 1]
+"new!"
+["newx", "newx", true]
+["lit", true, true]
+FrozenError
+["abc1", true]
+["abc12", true]
+["abc123", true]
+["ABC1234", true]
+7
+["ABC1234", "Abc1234!"]
+"iv12376"
+"bx7"
+["x", "x"]
+["abc1", true, 1]
+["abc12", true, 2]
+["abc123", true, 3]
+["ABC1234", true, 4]
+7
+["ABC12345", true]
+["ABC123456", "xyz", true]
+["ABC123456", "xyz7", true]
+["ABC1234568", true]
+["recv", "name"]
+["acc1!", ["recv", "arg"], true]
+6
+1
+["ABC12345689", true]
+["x!", true]
+[["y?"], true]
+["one?", "two"]
+["one?!", "two"]
+["a!", "b"]
+["a!", "b"]
+"one!"
+"two"

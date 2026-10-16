@@ -74,3 +74,9 @@ literal Ruby declaration artifacts. See [the recorder contract](../../docs/inter
 for its restricted initialization API, build command, import/literal checks
 and the later compiler bridge. `make cext-recorder-test cext-recorder-oracle`
 checks deterministic output and compares the same C fixture against CRuby.
+
+Step 5 adds the compiler bridge and an end-to-end CRuby oracle:
+`make cext-compiler-test`. Generated declarations can be required and the exact
+retained object archive passed with `--link`. Native methods use the ordinary
+call plan, data objects carry their Ruby ivars, and boundary sharing is decided
+by analysis.

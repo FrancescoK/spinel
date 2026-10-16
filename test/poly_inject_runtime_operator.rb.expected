@@ -1,0 +1,5 @@
+"ab"
+4.0
+[:a, 1]
+"TypeError: 5 is not a symbol nor a string"
+6

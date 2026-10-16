@@ -1,0 +1,13 @@
+[#<Encoding:BINARY (ASCII-8BIT)>]
+[#<Encoding:BINARY (ASCII-8BIT)>]
+[#<Encoding:BINARY (ASCII-8BIT)>]
+[#<Encoding:BINARY (ASCII-8BIT)>]
+[#<Encoding:BINARY (ASCII-8BIT)>]
+[#<Encoding:BINARY (ASCII-8BIT)>]
+[#<Encoding:BINARY (ASCII-8BIT)>]
+["\xE3", "\x81", "\x82"]
+["\xE3", "\x81\x82"]
+["\xE3", "\x81", "\x82"]
+#<Encoding:BINARY (ASCII-8BIT)>
+[#<Encoding:UTF-8>]
+["あ"]

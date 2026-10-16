@@ -81,6 +81,7 @@ static void pa_arm_text(Compiler *c, const PolyArm *a, char *out, size_t n) {
                                      "default enum-each", "default to_s", "default case-conv", "default numeric",
                                      "default digits", "default array-transform", "default predicate",
                                      "default to_i/to_f", "default any?/none?", "default to_h", "default display",
+                                     "default hash",
                                      "each_index", "join", "alive?", "kill", "status", "queue", "io-read",
                                      "io-flush", "io-close", "enum-to_a",
                                      "cover?", "try_convert", "gcdlcm", "unpack1", "include?", "str-delete",
@@ -194,6 +195,7 @@ void pa_report(void) {
           g_pa_trial_dropped);
 }
 
+static int plan_slot_oint(Compiler *c, int id, TyKind ret);
 /* The arm class k takes in a zero-argument poly dispatch, decided class by
    class as the dispatch did before the plan (cplan_poly) took it over:
    --plan-check's assertion, and the arms of a dispatch the plan cannot
@@ -210,8 +212,9 @@ static int poly_user_arm0_decide(Compiler *c, int id, const char *name, int argc
   if (!c->classes[k].instantiated && !class_is_prim_reopen(c, k)) return 0;
   /* native (C-backed) class arm: dispatch a declared no-arg method to its
      C symbol on the cast receiver, coercing the result into the slot. */
-  if (c->classes[k].is_native_class) {
-    int nmi = comp_native_method_find(c, k, name, 0, 0);
+  int nk = comp_native_binding_class(c, k, name);
+  if (nk >= 0) {
+    int nmi = comp_native_method_find(c, nk, name, 0, 0);
     /* only a binding that takes no argument: the lookup falls back to
        any arity, and StringScanner#peek(len) beside two user `peek`s
        got an arm calling it with none, which C refused (#5359). A
@@ -295,7 +298,8 @@ static int poly_user_arm0_decide(Compiler *c, int id, const char *name, int argc
     int ivx = comp_ivar_index(&c->classes[rdcls], ivn);
     TyKind ivt = ivx >= 0 ? c->classes[rdcls].ivar_types[ivx] : TY_INT;
     a->kind = PA_READER; a->def = (short)rdcls; a->vty = (unsigned char)ivt;
-    a->conv = ret == TY_POLY && ivt == TY_INT ? PC_BOX_OR_NIL
+    int nilbit = ivx >= 0 && oint_kind(ivt) && ivar_has_nilbit(c, rdcls, ivx);
+    a->conv = nilbit && (ret == TY_POLY || plan_slot_oint(c, id, ret)) ? PC_BOX_OR_NIL
             : ret == TY_POLY && ivt != TY_POLY ? PC_BOX
             : ret != TY_POLY && ivt == TY_POLY ? PC_UNBOX
             : ivt == TY_STRBUF && ret == TY_STRING ? PC_COPY : PC_SAME;
@@ -310,7 +314,7 @@ static int poly_user_arm0_decide(Compiler *c, int id, const char *name, int argc
    the deep-return pickup, so an earlier publication cannot replace them.
    A fresh result a builtin only reads, or the caller drops, keeps no alias. */
 void emit_poly_user_box(Compiler *c, int id, Scope *m, const char *call, Buf *b) {
-  if (!repr_share_rule(c) || m->ret != TY_STRING ||
+  if ((!repr_share_rule(c) && !c->n_cext_extensions) || m->ret != TY_STRING ||
       (!m->ret_handle && !(m->ret_fresh && share_node_shares(c, id) && !share_node_transient(c, id)))) {
     emit_boxed_ret_call(c, m, call, b);   /* an oint return boxes with its nil */
     return;
@@ -325,6 +329,44 @@ void emit_poly_user_box(Compiler *c, int id, Scope *m, const char *call, Buf *b)
   buf_printf(&hb, "sp_String_new_shared(_t%d); })", t);
   emit_boxed_text(c, TY_STRBUF, hb.p, b);
   free(hb.p);
+}
+
+/* Does the default a zero-argument call passes for parameter ai make a new
+   object: an empty rest's Array, an empty **kwrest's Hash, or a default
+   expression that allocates? */
+static int zero_arg_default_allocates(Compiler *c, Scope *ds, int ai) {
+  if (ai == ds->rest_idx || ai == ds->kwrest_idx) return 1;
+  return ds->pdefault && ds->pdefault[ai] >= 0 && subtree_may_allocate(c->nt, ds->pdefault[ai]);
+}
+
+/* The defaults of a zero-argument call's parameters, `, d0, d1...` into cb.
+   Each is made in the C argument list, so a new object one makes (an empty
+   rest's Array, an empty **kwrest's Hash) was freed by a later default's
+   allocation: such a default, with a later one that allocates, is made into
+   a rooted temp in `pre`, ahead of the call, and the call reads the temp. */
+static void emit_zero_arg_defaults(Compiler *c, Scope *ds, Buf *cb, Buf *pre) {
+  int later = 0;
+  for (int ai = 0; ai < ds->nparams; ai++) later += zero_arg_default_allocates(c, ds, ai);
+  for (int ai = 0; ai < ds->nparams; ai++) {
+    int allocates = zero_arg_default_allocates(c, ds, ai);
+    later -= allocates;
+    const char *pnm = ds->pnames ? ds->pnames[ai] : NULL;
+    LocalVar *pv = pnm ? scope_local(ds, pnm) : NULL;
+    TyKind pt = pv && pv->type != TY_UNKNOWN ? pv->type : TY_POLY;
+    buf_puts(cb, ", ");
+    if (!allocates || !later || !needs_root(pt)) {
+      emit_arg_or_default(c, ds, ai, -1, cb);
+      continue;
+    }
+    Buf d; memset(&d, 0, sizeof d);
+    emit_arg_or_default(c, ds, ai, -1, &d);
+    int t = ++g_tmp;
+    emit_ctype(c, pt, pre);
+    buf_printf(pre, " _t%d = %s; ", t, d.p ? d.p : "");
+    buf_printf(pre, pt == TY_POLY ? "SP_GC_ROOT_RBVAL(_t%d); " : "SP_GC_ROOT(_t%d); ", t);
+    buf_printf(cb, "_t%d", t);
+    free(d.p);
+  }
 }
 
 /* One user-class arm of a zero-argument poly dispatch, as the plan (or the
@@ -343,15 +385,24 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
   int k = a->key, mi = a->mi;
   int so = plan_slot_oint(c, id, ret);
   if (a->kind == PA_NATIVE || (a->kind == PA_ARITY && mi < 0)) {
-    int nmi = comp_native_method_find(c, k, name, 0, 0);
+    int nk = comp_native_binding_class(c, k, name);
+    int nmi = comp_native_method_find(c, nk >= 0 ? nk : k, name, 0, 0);
     if (a->kind == PA_NATIVE) {
       NativeMethod *nmet = &c->native_methods[nmi];
-      char nbuf[300];
+      char nbuf[300], cbuf[240];
       const char *rest0 = nmet->rest ? ", 0, NULL" : "";
-      if (sp_streq(nmet->ret, "string?"))
-        snprintf(nbuf, sizeof nbuf, "sp_box_nullable_str(%s((%s *)_t%d.v.p%s))", nmet->csym, c->classes[k].c_struct, tv, rest0);
+      /* --share-strings: a binding answering the String its object keeps,
+         where the rule shares the call's String, publishes that String's
+         handle, read through its handle form (repr_native_arm_handle), as
+         a method arm's tail read does: the call's pickup takes it */
+      if (repr_native_arm_handle(c, id, k) && share_node_shares(c, id))
+        snprintf(cbuf, sizeof cbuf, "sp_strbuf_read_pub(%s((%s *)_t%d.v.p))", nmet->share_csym, c->classes[nmet->class_id].c_struct, tv);
       else
-        snprintf(nbuf, sizeof nbuf, "%s((%s *)_t%d.v.p%s)", nmet->csym, c->classes[k].c_struct, tv, rest0);
+        snprintf(cbuf, sizeof cbuf, "%s((%s *)_t%d.v.p%s)", nmet->csym, c->classes[nmet->class_id].c_struct, tv, rest0);
+      if (sp_streq(nmet->ret, "string?"))
+        snprintf(nbuf, sizeof nbuf, "sp_box_nullable_str(%s)", cbuf);
+      else
+        snprintf(nbuf, sizeof nbuf, "%s", cbuf);
       TyKind mret = native_spec_to_ty(nmet->ret);
       buf_printf(b, " case %d: ", k);
       int pconv = PC_SAME;
@@ -396,6 +447,7 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
     /* Build the call; append default values for any optional params
        not provided by the (zero-arg) call site. */
     Buf cb; memset(&cb, 0, sizeof cb);
+    Buf dpre; memset(&dpre, 0, sizeof dpre);   /* defaults held ahead of the call */
     /* A reopened primitive (Integer/Float/String/Symbol) method takes the
        unboxed value, not a struct pointer -- read the matching union field
        instead of casting .v.p to a non-existent sp_<Prim> struct. */
@@ -445,6 +497,10 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
     int pfi9 = scope_proc_form_of(c, mi);
     buf_printf(&cb, "sp_%s_%s(%s", mc_reopen_cls(c, defcls, c->scopes[mi].name),
                mc(pfi9 >= 0 ? c->scopes[pfi9].name : c->scopes[mi].name), _dself);
+    /* a default reading an earlier parameter (Thor's `say(message = "", color =
+       nil, force_new_line = (message.to_s !~ ...))`) reads it through a local
+       each argument binds to first, as the other arms do (ctor_arm_arg) */
+    Buf pdpre; memset(&pdpre, 0, sizeof pdpre);
     if (c->scopes[mi].nparams > 0) {
       const char *saved_self = g_self;
       const char *saved_deref = g_self_deref;
@@ -474,8 +530,24 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
       /* the defaults are spelled for the proc form's own parameter
          types when that is the symbol called (#4492) */
       Scope *ds = &c->scopes[pfi9 >= 0 ? pfi9 : mi];
-      for (int ai = 0; ai < ds->nparams; ai++) {
-        buf_puts(&cb, ", "); emit_arg_or_default(c, ds, ai, -1, &cb);
+      /* a default reading an earlier parameter: each argument is bound to
+         a rooted local in order (ctor_arm_arg), which a later default reads
+         and which holds what an earlier default made; else the defaults go
+         in the argument list, an allocating one held in a temp */
+      int pd_uid = default_refs_earlier_param(c, ds) ? ++g_tmp : 0, pd_base = g_nren;
+      if (!pd_uid) emit_zero_arg_defaults(c, ds, &cb, &dpre);
+      else {
+        Buf *sv_pre9 = g_pre;
+        g_pre = &pdpre;
+        for (int ai = 0; ai < ds->nparams; ai++) {
+          buf_puts(&cb, ", ");
+          Buf vb; memset(&vb, 0, sizeof vb);
+          emit_arg_or_default(c, ds, ai, -1, &vb);
+          ctor_arm_arg(c, ds, ai, vb.p ? vb.p : "", pd_uid, &pdpre, &cb);
+          free(vb.p);
+        }
+        g_nren = pd_base;
+        g_pre = sv_pre9;
       }
       g_self = saved_self; g_self_deref = saved_deref;
     }
@@ -493,8 +565,15 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
     }
     else emit_cmethod_block_arg(c, id, &c->scopes[mi], blk_tmp0, &cb);
     buf_puts(&cb, ")");
+    if (dpre.len) {
+      Buf w; memset(&w, 0, sizeof w);
+      buf_printf(&w, "({ %s%s; })", dpre.p, cb.p ? cb.p : "");
+      free(cb.p); cb = w;
+    }
+    free(dpre.p);
     const char *call = cb.p ? cb.p : "";
     buf_printf(b, " case %d: ", k);
+    if (pdpre.p) buf_printf(b, "{ %s", pdpre.p);
     /* A proc form is a separately inferred clone, so its own return type
        is the one to read -- not the original's, which an inlined-only
        method never needed (#3399). */
@@ -545,8 +624,8 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
       else if (method_ret_is_oint(&c->scopes[pf9 ? pfi9 : mi])) buf_printf(b, "%s(%s)", oint_arg(cret9), call);
       else plan_put_plain(so, ret, call, b);
     }
-    buf_puts(b, "; break;");
-    free(cb.p);
+    buf_puts(b, pdpre.p ? "; } break;" : "; break;");
+    free(cb.p); free(pdpre.p);
     if (g_plan_check) pa_observe(pf9 ? PA_PROC_FORM : PA_USER, k, mi, cret9, pconv);
     return;
   }
@@ -585,10 +664,13 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
   /* shared-mutable ivar read into a plain string slot: the safe
      copy, not the raw handle pointer (#3227) */
   else if (ivt == TY_STRBUF && ret == TY_STRING) {
-    /* (--share-strings: published where the call picks up the handle its
-       every target publishes, a method arm beside it among them) */
-    buf_printf(b, "%s(%s)", repr_share_rule(c) && repr_call_returns_handle(c, id) ? "sp_strbuf_read_pub" : "sp_strbuf_read",
-               fld);
+    /* (--share-strings: always published. A consumer that picks the
+       handle up clears the channel before the call, so a publication no one
+       picks up is harmless; asked here, repr_call_returns_handle reads the
+       call under the pickup's own view, which has dropped the box mark, and
+       answered no, so the pickup wrapped the bytes in a new handle and the
+       field's String lost its identity: `{ host: req.host }` held a copy) */
+    buf_printf(b, "%s(%s)", repr_share_rule(c) ? "sp_strbuf_read_pub" : "sp_strbuf_read", fld);
     pconv = PC_COPY;
   }
   /* a plain String field (a Struct member) where the call answers a handle
@@ -710,14 +792,15 @@ static int poly_user_arm_n_replay(Compiler *c, int id, const char *name, const P
      poly slot answered NoMethodError for every call with an argument
      while its zero-arg calls dispatched (#4504). Positional calls
      only: a binding declares no keywords and no splat. */
-  if (c->classes[k].is_native_class) {
+  int nk = comp_native_binding_class(c, k, name);
+  if (nk >= 0) {
     /* a lone splat goes whole to a binding that is all :rest */
     if (kw_pos && has_splat_arg && argc == 1 && splat_a == 0 && kwh < 0 &&
         c->classes[k].instantiated) {
       const NativeMethod *rm = NULL;
       for (int i = 0; i < c->n_native_methods && !rm; i++) {
         const NativeMethod *m = &c->native_methods[i];
-        if (m->class_id == k && m->kind == 0 && m->rest && m->nargs == 0 && sp_streq(m->name, name))
+        if (m->class_id == nk && m->kind == 0 && m->rest && m->nargs == 0 && sp_streq(m->name, name))
           rm = m;
       }
       if (!rm) return 0;
@@ -725,7 +808,7 @@ static int poly_user_arm_n_replay(Compiler *c, int id, const char *name, const P
       int sp = stk >= 0 ? stk : atmp[0];
       if (sp_streq(rm->ret, "string?")) buf_puts(&cb, "sp_box_nullable_str(");
       buf_printf(&cb, "%s((%s *)_t%d.v.p, _t%d->len, _t%d->data)",
-                 rm->csym, c->classes[k].c_struct, tv, sp, sp);
+                 rm->csym, c->classes[nk].c_struct, tv, sp, sp);
       if (sp_streq(rm->ret, "string?")) buf_puts(&cb, ")");
       TyKind mret = sp_streq(rm->ret, "self") ? ty_object(k) : native_spec_to_ty(rm->ret);
       buf_printf(b, " case %d: ", k);
@@ -872,15 +955,19 @@ static int poly_user_arm_n_replay(Compiler *c, int id, const char *name, const P
             and handed its sp_bool to an sp_oint value slot, a hard C
             error; into a plain sp_int it read true as 1 */
          (pt0 == TY_BOOL) != (at0 == TY_BOOL) ||
-         /* two concretely different CONTAINER kinds. sp_StrStrHash * and
-            sp_SymPolyHash * are different structs, so the raw pass is a
-            hard C error, not a coercion that works -- the same argument
-            the collapsed-keyword slot below already makes. Without it, a
-            `merge` seeded Hash[String, String] on an unrelated class
-            took the arm for a plain Hash's call and the build stopped
-            inside that class (#4172). */
-         (ty_is_hash(pt0) && ty_is_hash(at0)) ||
-         (ty_is_array(pt0) && ty_is_array(at0)))) {
+         /* two concretely different kinds, either of them a builtin
+            pointer kind (a Hash, an Exception, a Proc, a Regexp, an Array
+            variant): the other is a different C struct, a scalar, or an
+            sp_PtrArray * holding other elements, so the raw pass is a hard C error, not a coercion that works --
+            the same argument the collapsed-keyword slot below already
+            makes. Without it, a `merge` seeded Hash[String, String] on an
+            unrelated class took the arm for a plain Hash's call and the
+            build stopped inside that class (#4172); a computed-name `send`
+            reached an unrelated `create(attrs = {})` with an Exception, an
+            object-array parameter with an Exception, or an Integer
+            parameter with a Regexp the same way. cplan_arm_args_fit
+            (call_plan.c) is this same test; keep them identical. */
+         (ty_is_builtin_ptr(pt0) || ty_is_builtin_ptr(at0)))) {
       arm_key_incompat = 1; break;
     }
   }
@@ -1028,7 +1115,7 @@ static void emit_poly_user_arm_n_plan(Compiler *c, int id, const char *name, con
   (void)nt; (void)argc; (void)kwall; (void)kwall_any; (void)kw_pos; (void)has_splat_arg; (void)stk;
   int k = a->key;
   if (a->kind == PA_STRUCT_SET) { emit_poly_struct_set(c, id, U, k, b); return; }
-  if (c->classes[k].is_native_class) { poly_user_arm_n_replay(c, id, name, U, k, b); return; }
+  if (comp_native_binding_class(c, k, name) >= 0) { poly_user_arm_n_replay(c, id, name, U, k, b); return; }
   int mi = a->mi;
   if (a->kind == PA_ARITY) {
     char arm_exp[600];
@@ -1178,14 +1265,15 @@ static int poly_user_arm_n_decide(Compiler *c, const char *name, const PolyUserA
     a->kind = PA_STRUCT_SET; a->vty = (unsigned char)ret;
     return 1;
   }
-  if (c->classes[k].is_native_class) {
+  int nk = comp_native_binding_class(c, k, name);
+  if (nk >= 0) {
     TyKind mret = TY_UNKNOWN;
     if (U->kw_pos && U->has_splat_arg && U->argc == 1 && U->splat_a == 0 && U->kwh < 0 &&
         c->classes[k].instantiated) {
       const NativeMethod *rm = NULL;
       for (int i = 0; i < c->n_native_methods && !rm; i++) {
         const NativeMethod *m = &c->native_methods[i];
-        if (m->class_id == k && m->kind == 0 && m->rest && m->nargs == 0 && sp_streq(m->name, name)) rm = m;
+        if (m->class_id == nk && m->kind == 0 && m->rest && m->nargs == 0 && sp_streq(m->name, name)) rm = m;
       }
       if (!rm) return 0;
       mret = sp_streq(rm->ret, "self") ? ty_object(k) : native_spec_to_ty(rm->ret);
@@ -1309,6 +1397,12 @@ int emit_poly_user_arm_n(Compiler *c, int id, int k, const char *call, TyKind mr
   else {
     buf_printf(b, "_t%d = ", tr);
     if (ret == TY_POLY && mret != TY_POLY) { emit_poly_user_box(c, id, ms, call, b); conv = PC_BOX; }
+    else if (c->n_cext_extensions && ret == TY_STRBUF && mret == TY_STRING) {
+      int temp = ++g_tmp;
+      buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = %s; !_v%d ? NULL : ", temp, call, temp);
+      if (ms && ms->ret_handle) buf_puts(b, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : ");
+      buf_printf(b, "sp_String_new_shared(_v%d); })", temp);
+    }
     else if (ret != TY_POLY && mret == TY_POLY) {
       plan_put_boxed(c, so, is_scalar_ret(ret) ? ret : TY_INT, call, b);
       conv = PC_UNBOX;
@@ -1670,7 +1764,7 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
     int fzn = sp_streq(name, "name");
     /* A Class.new class answers its name only once a constant names it: nil
        before, its display form for to_s and inspect (sp_class_val_display). */
-    if (c->has_anonymous_classes && fzn)
+    if ((c->has_anonymous_classes || comp_has_sclass_values(c)) && fzn)
       buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) { const char *_cn%d = sp_class_name_or_nil(sp_unbox_class(_t%d)); "
                     "_t%d = _cn%d ? %ssp_str_uminus_val(_cn%d)%s : %s; } else ",
                  tv, tv, tv, tr, tv, sbopen, tv, sbclose, ret == TY_POLY ? "sp_box_nil()" : "NULL");
@@ -1998,6 +2092,28 @@ int emit_poly_prearms0_blk(Compiler *c, int id, const char *name, const PolySpec
       buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_MUTEX) { _t%d = ", tv, tv, tr);
       if (ret == TY_POLY) buf_puts(b, mcall);
       else emit_unbox_text(c, ret, mcall, b);
+      buf_puts(b, "; }\nelse ");
+    }
+  }
+  /* each_index with a block on a boxed Array, in a dispatch that exists
+     because a user class also defines it: the shared proc is driven over
+     the indices, and the Array answers itself (the pre-arm above has no
+     walk for it) */
+  if (sp_streq(name, "each_index") && argc == 0 && nt_ref(nt, id, "block") >= 0) {
+    if (blk_tmp0 < 0) {
+      int cblk3 = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
+      if (cblk3 >= 0) blk_tmp0 = hoist_block_proc(c, cblk3);
+    }
+    if (blk_tmp0 >= 0) {
+      if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_ENUM_PROC, -1, TY_UNKNOWN, PC_SAME);
+      int ti = ++g_tmp;
+      char icall[256];
+      snprintf(icall, sizeof icall, "({ for (sp_int _t%d = 0; _t%d < sp_poly_length(_t%d); _t%d++)"
+                                    " sp_penum_call1(_t%d, sp_box_int(_t%d)); _t%d; })",
+               ti, ti, tv, ti, blk_tmp0, ti, tv);
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)) { _t%d = ", tv, tv, tr);
+      if (ret == TY_POLY) buf_puts(b, icall);
+      else emit_unbox_text(c, ret, icall, b);
       buf_puts(b, "; }\nelse ");
     }
   }
@@ -2357,9 +2473,27 @@ int emit_poly_defaults0(Compiler *c, int id, int recv, const char *name, const P
     buf_puts(b, " break;");
     obj_default_done = 1;
   }
+  /* hash, the same shape: the dispatch exists because a class answers hash
+     with a reader (emit_call_identity_arms), and every other receiver --
+     a builtin, an object with a def of hash -- has the key the containers
+     use, which reaches a def through the runtime's hook */
+  if (!obj_default_done && argc == 0 && sp_streq(name, "hash") && nt_ref(nt, id, "block") < 0 &&
+      (ret == TY_INT || ret == TY_POLY)) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_D_HASH, -1, TY_UNKNOWN, PC_SAME);
+    char hv[64];
+    snprintf(hv, sizeof hv, "sp_rbval_hash_key(_t%d)", tv);
+    buf_printf(b, " default: _t%d = ", tr);
+    if (ret == TY_POLY) emit_boxed_text(c, TY_INT, hv, b);
+    else plan_put_plain(plan_slot_oint(c, id, ret), ret, hv, b);
+    buf_puts(b, "; break;");
+    obj_default_done = 1;
+  }
   /* The blockless index enumerators, same shape: an Array reaching this
-     dispatch still answers them with an Enumerator. */
-  if (argc == 0 && (is_indexed_each(name))) {
+     dispatch still answers them with an Enumerator. Given a block, the
+     builtin containers' pre-arm (sp_poly_enum_proc) runs it; an arm here
+     stored the Enumerator into the block form's result slot, and the C did
+     not compile. */
+  if (argc == 0 && (is_indexed_each(name)) && nt_ref(nt, id, "block") < 0) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_N_EACH_INDEX, -1, TY_UNKNOWN, PC_SAME);
     int ewi = !sp_streq(name, "each_index");
     char ev[96];
@@ -2621,7 +2755,7 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
                     (comp_ntype(c, argv[0]) == TY_STRING ||
                      comp_ntype(c, argv[0]) == TY_NIL ||
                      comp_ntype(c, argv[0]) == TY_REGEX);
-  int is_pred = nt_ref(nt, id, "block") < 0 && poly_pred_kind(name, argc);
+  int is_pred = poly_pred_kind(name, argc);
   /* String#encode when a user class also owns `encode`: the TAG_STR receiver
      needs a pre-arm, or a genuine String falls to the switch's raising
      default -- `content.encode("UTF-8", "binary", invalid: :replace, ...)`
@@ -2665,11 +2799,14 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
   int ncand = 0;
   for (int k = 0; k < c->nclasses; k++) {
     if (!has_splat_arg && kwh < 0 && cplan_struct_aset(c, k, name, argc)) { ncand++; continue; }
-    /* a native class's methods are its declared bindings (#4504) */
-    if (c->classes[k].is_native_class) {
+    /* a native class's methods are its declared bindings (#4504), as
+       are those of a subclass of one where it does not answer the name
+       itself (#9269) */
+    int nk = comp_native_binding_class(c, k, name);
+    if (nk >= 0) {
       if (kw_pos && !has_splat_arg && c->classes[k].instantiated) {
         for (int n = pos_argc; n <= argc; n++) {
-          int nmi = comp_native_method_find(c, k, name, n, 0);
+          int nmi = comp_native_method_find(c, nk, name, n, 0);
           if (nmi >= 0 && native_takes(&c->native_methods[nmi], n)) { ncand++; break; }
         }
       }
@@ -3155,7 +3292,7 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
   if (is_strencode && pos_argc <= 2 && (ret == TY_POLY || ret == TY_STRING)) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_STR_ENCODE, -1, TY_UNKNOWN, PC_SAME);
     Buf eb; memset(&eb, 0, sizeof eb);
-    buf_printf(&eb, "sp_str_encode(_t%d.v.s", tv);
+    buf_printf(&eb, "sp_str_encode(_t%d.v.s, %d", tv, pos_argc);
     for (int a = 0; a < 2; a++) {
       buf_puts(&eb, ", ");
       if (a < pos_argc) {
@@ -3171,7 +3308,7 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
       for (int e = 0; e < kwn; e++) {
         int key = nt_ref(nt, kwels[e], "key");
         const char *kn = key >= 0 ? nt_str(nt, key, "value") : NULL;
-        if (kn && sp_streq(kn, EKW[k])) { found = e; break; }
+        if (kn && sp_streq(kn, EKW[k])) found = e;   /* the last one binds */
       }
       if (found >= 0) {
         char tn[32]; snprintf(tn, sizeof tn, "_t%d", kwtmp[found]);
@@ -3180,6 +3317,14 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
       else buf_puts(&eb, "sp_box_nil()");
     }
     buf_puts(&eb, ")");
+    /* an option the runtime does not read changes the bytes (xml:, the
+       newline ones): the String raises rather than answer without it */
+    const char *unread = encode_opt_unread(nt, kwels, kwn);
+    if (unread) {
+      eb.len = 0;
+      buf_printf(&eb, "(sp_raise_cls(\"NotImplementedError\", \"String#encode with the %s: option\"), (const char *)0)",
+                 unread);
+    }
     buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = ", tv, tr);
     if (ret == TY_POLY) buf_printf(b, "sp_box_str(%s)", eb.p); else buf_puts(b, eb.p);
     buf_puts(b, "; }\nelse ");
@@ -3288,8 +3433,7 @@ int emit_poly_prearms_n_blk(Compiler *c, int id, const char *name, const PolySpe
                                             argc == 0 ? 0 : nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? 2 : 1, b);
   }
   else if (kwh >= 0 && !has_splat_arg &&
-           is_call_alias(name) &&
-           argc <= SP_PROC_ARG_SLOTS) {
+           is_call_alias(name)) {
     /* The keyword split has no hash for a callable to take: the one built
        from the per-key temps ahead of the pre-arms (emit_poly_callable_kwh_decl,
        the dispatch declared it where a declaration can stand), passed as
@@ -3325,7 +3469,7 @@ int emit_poly_prearms_n_blk(Compiler *c, int id, const char *name, const PolySpe
    when the dispatch has no such arm. */
 int emit_poly_callable_kwh_decl(Compiler *c, const char *name, const PolySpecialsN *ps, const PolyTemps *T,
                                 const PolyKw *kw, Buf *b) {
-  if (ps->kwh < 0 || ps->has_splat_arg || ps->kw_pos || !is_call_alias(name) || T->argc > SP_PROC_ARG_SLOTS) return 0;
+  if (ps->kwh < 0 || ps->has_splat_arg || ps->kw_pos || !is_call_alias(name)) return 0;
   int kht = ++g_tmp, tv = T->tv;
   buf_printf(b, "sp_SymPolyHash *_t%d = NULL; SP_GC_ROOT(_t%d); "
                 "if (_t%d.tag == SP_TAG_OBJ && (_t%d.cls_id == SP_BUILTIN_PROC"
@@ -3336,12 +3480,31 @@ int emit_poly_callable_kwh_decl(Compiler *c, const char *name, const PolySpecial
   return kht;
 }
 
+/* A builtin arm's argument a, boxed, into ab: its temp, or for the keyword
+   hash (which has no temp; the keywords were split off) a Hash built from
+   them, as CRuby hands a method without keywords one. That Hash is held
+   in a rooted temp opened in b: 1 when the caller must close it with `}`. */
+static int poly_case_arg_boxed(Compiler *c, const PolyTemps *T, const PolyKw *kw, int a, Buf *ab, Buf *b) {
+  if (kw && kw->kwh >= 0 && a >= T->pos_argc) {
+    int th = ++g_tmp;
+    buf_printf(b, " { sp_RbVal _t%d = ", th);
+    emit_kwh_pos_hash(c, kw, 1, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", th);
+    buf_printf(ab, "_t%d", th);
+    return 1;
+  }
+  char tn[32]; snprintf(tn, sizeof tn, "_t%d", T->atmp[a]);
+  if (T->atmp_ty[a] == TY_POLY) buf_puts(ab, tn);
+  else emit_boxed_text(c, T->atmp_ty[a], tn, ab);
+  return 0;
+}
+
 /* The builtin `case` arms a poly dispatch with arguments writes after its
    class arms: an Array's index, push, unshift, pack, join, include?,
    index and intersect?, an IO's write, read and the rest, a Time's
    strftime, a Hash's `[]` and fetch by key kind, a predicate. */
 void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecialsN *ps, const PolyTemps *T,
-                       int splat_a, int is_aref, int is_fetch, Buf *b) {
+                       const PolyKw *kw, int splat_a, int is_aref, int is_fetch, Buf *b) {
   const NodeTable *nt = c->nt;
   int argc = T->argc, pos_argc = T->pos_argc, kwh = ps->kwh;
   const int *argv = T->argv, *atmp = T->atmp;
@@ -3421,10 +3584,11 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
     if (atmp_ty[0] == TY_POLY) buf_printf(b, "sp_poly_arg_int_chk(_t%d)", atmp[0]);
     else buf_printf(b, "(sp_int)_t%d", atmp[0]);
     buf_puts(b, "); ");
-    char hr[1024];
-    if (strbuf_slot_ref(c, argv[1], hr, sizeof hr)) buf_printf(b, "sp_String_set_bin(%s, _t%d); ", hr, trp);
+    Buf hr; memset(&hr, 0, sizeof hr);
+    if (strbuf_slot_text(c, argv[1], &hr)) buf_printf(b, "sp_String_set_bin(%s, _t%d); ", hr.p, trp);
     else if (nt_kind(nt, argv[1]) == NK_LocalVariableReadNode)
       buf_printf(b, "lv_%s = _t%d; ", rename_local(nt_str(nt, argv[1], "name")), trp);
+    free(hr.p);
     buf_printf(b, "_t%d = ", tr);
     if (ret == TY_POLY) buf_printf(b, "sp_box_str(_t%d)", trp);
     else buf_printf(b, "_t%d", trp);
@@ -3642,11 +3806,10 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
                    ti, ti, atmp[a], ti, tv, a, ti, atmp[a], ti);
         continue;
       }
-      char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
       Buf ab; memset(&ab, 0, sizeof ab);
-      if (atmp_ty[a] == TY_POLY) buf_puts(&ab, tn);
-      else emit_boxed_text(c, atmp_ty[a], tn, &ab);
+      int kb = poly_case_arg_boxed(c, T, kw, a, &ab, b);
       buf_printf(b, " sp_poly_insert(_t%d, %d, %s);", tv, a, ab.p ? ab.p : "sp_box_nil()");
+      if (kb) buf_puts(b, " }");
       free(ab.p);
     }
     if (ret == TY_POLY) buf_printf(b, " _t%d = _t%d;", tr, tv);
@@ -3666,11 +3829,10 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
                    ti, ti, atmp[a], ti, tv, atmp[a], ti);
         continue;
       }
-      char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
       Buf ab; memset(&ab, 0, sizeof ab);
-      if (atmp_ty[a] == TY_POLY) buf_puts(&ab, tn);
-      else emit_boxed_text(c, atmp_ty[a], tn, &ab);
+      int kb = poly_case_arg_boxed(c, T, kw, a, &ab, b);
       buf_printf(b, " sp_poly_shl(_t%d, %s);", tv, ab.p ? ab.p : "sp_box_nil()");
+      if (kb) buf_puts(b, " }");
       free(ab.p);
     }
     if (ret == TY_POLY) buf_printf(b, " _t%d = _t%d;", tr, tv);
@@ -3691,7 +3853,9 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
       for (int a = 0; a < argc; a++) {
         char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
         buf_puts(b, a ? ", " : " ");
-        if (atmp_ty[a] == TY_POLY) buf_puts(b, tn); else emit_boxed_text(c, atmp_ty[a], tn, b);
+        if (kwh >= 0 && a >= pos_argc) emit_kwh_pos_hash(c, kw, 1, b);
+        else if (atmp_ty[a] == TY_POLY) buf_puts(b, tn);
+        else emit_boxed_text(c, atmp_ty[a], tn, b);
       }
       if (argc == 0) buf_puts(b, " sp_box_nil()");
       buf_printf(b, " }; sp_poly_queue_push_n(_t%d, %d, _t%d); }", tv, argc, tq);
@@ -3704,11 +3868,10 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
                    ti, ti, atmp[a], ti, tv, atmp[a], ti);
         continue;
       }
-      char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
       Buf ab; memset(&ab, 0, sizeof ab);
-      if (atmp_ty[a] == TY_POLY) buf_puts(&ab, tn);
-      else emit_boxed_text(c, atmp_ty[a], tn, &ab);
+      int kb = poly_case_arg_boxed(c, T, kw, a, &ab, b);
       buf_printf(b, " sp_poly_shl(_t%d, %s);", tv, ab.p ? ab.p : "sp_box_nil()");
+      if (kb) buf_puts(b, " }");
       free(ab.p);
     }
     if (ret == TY_POLY) buf_printf(b, " _t%d = _t%d;", tr, tv);

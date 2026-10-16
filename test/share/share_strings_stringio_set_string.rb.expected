@@ -1,0 +1,23 @@
+"new!"
+"new!"
+"ab12"
+"new!W"
+"new!W?"
+true
+"box!"
+"box!W"
+"held!"
+"var?"
+"Ivar?"
+"xyz"
+0
+"xyz"
+"Qyz"
+frozen: IOError: not opened for writing
+true
+"Thaw"
+nil: TypeError: no implicit conversion of nil into String
+reopened: IOError: not opened for writing
+"Boxed"
+int: TypeError: no implicit conversion of Integer into String
+frozen_since: IOError: not modifiable string

@@ -301,13 +301,14 @@ SP_TLS sp_Fiber *sp_fiber_current = &sp_fiber_root;    /* extern: read by the ge
    workers from their startup). A no-op-shaped reset in the single-threaded build
    (sp_fiber_current already equals &sp_fiber_root). */
 /* A fault inside the current fiber's guard is a stack overflow, and it is
-   reported as one: without this the program died in ___chkstk_darwin on macOS
+   raised as one: without this the program died in ___chkstk_darwin on macOS
    or in a corrupted neighbour mapping on Linux, and nothing named the fiber
    stack (#4496). The handler runs on a per-thread alternate stack, since the
-   fiber's own is what just ran out, writes the line with write(2) only, then
-   restores the default disposition and returns so the faulting instruction
-   re-executes and the process dies the ordinary way (a core, the signal in
-   the exit status). Any other fault is left to the default just the same.
+   fiber's own is what just ran out. With no raise to make, it writes the line
+   with write(2) only, then restores the default disposition and returns so
+   the faulting instruction re-executes and the process dies the ordinary way
+   (a core, the signal in the exit status). Any other fault is left to the
+   default just the same.
    Installed once, only when nothing else has claimed the signal (the GC
    verifier's fault reporter, for one). */
 #include <signal.h>
@@ -332,17 +333,49 @@ void sp_sig_unblock(int a, int b) {
 }
 static void sp_fiber_fault_write(const char *s) { size_t n = strlen(s); while (n) { ssize_t w = write(2, s, n); if (w <= 0) break; s += w; n -= (size_t)w; } }
 static void sp_fiber_fault_write_num(size_t v) { char b[24]; int i = (int)sizeof b; b[--i] = 0; do { b[--i] = (char)('0' + v % 10); v /= 10; } while (v); sp_fiber_fault_write(b + i); }
+/* The handler this one stands in front of: the GC verifier's fault report,
+   which SPINEL_GC_VERIFY and SPINEL_GC_STRESS=2 install before main. Taking
+   its place only when it is that one keeps any other handler a host put
+   there; standing in front of it keeps a stack overflow SystemStackError
+   under the verifier, where the report, which runs on the stack that just
+   ran out, died of SIGILL. */
+static void (*sp_fiber_fault_chain)(int) = 0;
+/* What the program already printed is still in stdout's buffer, and neither
+   _exit nor death by a signal flushes it: a run that printed a hundred lines
+   and then overflowed would otherwise show none of them. fflush is not on
+   POSIX's async-signal-safe list, and this is a deliberate exception: the
+   buffer is stdio's, already allocated, so the flush allocates nothing and
+   is the write(2) of what is there. Only if the lock is free, though: another
+   worker holding stdout (the threaded build) would otherwise hang the dying
+   process on it. The case left is an overflow inside a stdout call on this
+   very thread, whose recursive lock this takes again: that flush can write
+   garbled output, on a path that is about to die anyway. The at_exit
+   hooks do NOT run -- they are Ruby code, and the stack they would run on is
+   the one that just ran out. */
+static void sp_fiber_fault_flush(void) {
+  if (ftrylockfile(stdout) == 0) { fflush(stdout); funlockfile(stdout); }
+}
 static void sp_fiber_fault_handler(int sig, siginfo_t *si, void *uctx) {
   (void)uctx;
   sp_Fiber *f = sp_fiber_current;
   char *a = si ? (char *)si->si_addr : NULL;
   /* The thread's own stack ran past its end: the fault lands in the OS guard
      just below it. Read as an ordinary segfault this killed the process where
-     CRuby raises SystemStackError and lets a rescue continue. The raise is
-     the generated TU's (it owns the exception stack). */
-  if (sp_stack_overflow_raise_fn && a && sp_thread_stack_lo &&
+     CRuby raises SystemStackError and lets a rescue continue. */
+  int thread_overflow = a && sp_thread_stack_lo &&
       a < sp_thread_stack_lo && a >= sp_thread_stack_lo - (ptrdiff_t)(1 << 20) &&
-      (!f || f == &sp_fiber_root || !f->stack)) {
+      (!f || f == &sp_fiber_root || !f->stack);
+  /* A green thread, Fiber or Enumerator body ran into the guard below its own
+     stack. It is the same SystemStackError, raised in that fiber: every
+     handler the exception slots hold while it runs was armed on its own stack
+     (sp_exc_ctx_load gave it its own set, and the trampoline arms the lowest
+     one), so the jump lands in one of the frames that filled it, and one the
+     body does not rescue ends the fiber the way any other raise does -- a
+     Thread's surfaces at #join / #value, a Fiber's at #resume. */
+  int fiber_overflow = f && f != &sp_fiber_root && f->stack &&
+      a >= f->stack && a < f->stack + sp_fiber_guard();
+  /* The raise is the generated TU's (it owns the exception stack). */
+  if (sp_stack_overflow_raise_fn && (thread_overflow || fiber_overflow)) {
     /* unblock the signal first: this raise does not return, and the mask it
        was entered with would otherwise stay blocked in the frame we jump to
        (on Linux longjmp does not restore it) */
@@ -355,27 +388,26 @@ static void sp_fiber_fault_handler(int sig, siginfo_t *si, void *uctx) {
       __sigreturn(NULL, 0x80000000 /* UC_RESET_ALT_STACK */, 0); }
 #endif
     sp_stack_overflow_raise_fn();   /* returns only if no handler is armed */
+  }
+  if (thread_overflow) {
     /* Nothing to rescue it: report it as the uncaught exception it is and
        leave, rather than letting the default disposition kill the process on
        a signal with nothing said. Writing a fixed string and _exit are all
        this handler may do -- the allocator is not safe to re-enter from a
        signal, and the stack a formatter would want is the one that just ran
        out. */
-    /* what the program already printed is still in stdout's buffer, and
-       _exit does not flush it: a run that printed a hundred lines and then
-       overflowed would otherwise show none of them. The at_exit hooks do NOT
-       run here -- they are Ruby code, and the stack they would run on is the
-       one that just ran out. */
-    fflush(stdout);
+    sp_fiber_fault_flush();
     sp_fiber_fault_write("stack level too deep (SystemStackError)\n");
     _exit(1);
   }
-  if (f && f != &sp_fiber_root && f->stack && a >= f->stack && a < f->stack + sp_fiber_guard()) {
+  if (fiber_overflow) {
+    sp_fiber_fault_flush();
     sp_fiber_fault_write("spinel: fiber stack overflow: a green thread, Fiber or Enumerator body ran past the ");
     sp_fiber_fault_write_num(f->stack_size / 1024);
     sp_fiber_fault_write(" KB C stack the fiber runs on (a deep call chain, a large local, or an unoptimised build "
                          "whose frames are far larger than -O2's); SPINEL_FIBER_STACK=<bytes> in the environment gives it more\n");
   }
+  if (sp_fiber_fault_chain) { sp_fiber_fault_chain(sig); return; }   /* the verifier's report */
   signal(sig, SIG_DFL);
 }
 void (*sp_stack_overflow_raise_fn)(void) = 0;
@@ -466,7 +498,8 @@ static void sp_fiber_fault_arm(void) {
   for (int i = 0; i < 2; i++) {
     struct sigaction cur;
     if (sigaction(sigs[i], NULL, &cur) != 0) continue;
-    if (!(cur.sa_flags & SA_SIGINFO) && cur.sa_handler != SIG_DFL) continue;
+    if (!(cur.sa_flags & SA_SIGINFO) && cur.sa_handler == sp_gc_fault_report) sp_fiber_fault_chain = sp_gc_fault_report;
+    else if (!(cur.sa_flags & SA_SIGINFO) && cur.sa_handler != SIG_DFL) continue;
     if ((cur.sa_flags & SA_SIGINFO) && cur.sa_sigaction) continue;
     struct sigaction sa; memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = sp_fiber_fault_handler;
@@ -638,7 +671,93 @@ static void sp_mark_suspended_fibers(void){sp_fiber_collecting=sp_fiber_current;
   /* and the fiber a transferred one returns to, suspended in its transfer */
   if(sp_fiber_current&&sp_fiber_current->return_to)sp_fiber_mark_chain(sp_fiber_current->return_to);}
 static void sp_fiber_install_gc_hook(void){if(!sp_gc_mark_suspended_fibers_hook)sp_gc_mark_suspended_fibers_hook=sp_mark_suspended_fibers;}
-static void sp_Fiber_fin(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->stack)munmap(f->stack,sp_fiber_guard()+f->stack_size);if(f->saved_roots)free(f->saved_roots);if(f->exc_ctx)sp_exc_ctx_free(f->exc_ctx);
+/* ---- the fiber stack cache ----
+ * A fiber's stack is a mapping of its own with a guard page below it, and
+ * making one is three system calls (mmap, then mprotect for the guard) and
+ * freeing it a fourth (munmap). A program that runs its work in short-lived
+ * threads paid them for every Thread.new; an empty fork-join round of eight
+ * threads spent a quarter of the spawning thread's time there, and the
+ * munmaps ran in the sweep -- inside a collection's stopped window when the
+ * collection ran there.
+ *
+ * Stacks go into a small cache instead, and the next fiber of the same size
+ * takes one with its guard page still in place. A thread's stack goes back
+ * as soon as its body has returned and its worker has switched off it
+ * (sp_fiber_release_stack, from the scheduler); left to the collector, the
+ * wanted them had mapped their own. A cached stack keeps the pages its last
+ * fiber touched, so the cache holds at most that many stacks' worth of
+ * memory; handing the pages back (madvise) saved none on short-lived threads
+ * and cost a system call per thread under the scheduler lock, and the stacks
+ * the cache replaces stayed mapped until a sweep, all of them, so the
+ * process is smaller with it than without (an 8-thread spawn loop peaked at
+ * 25 MB instead of 99).
+ *
+ * SPINEL_FIBER_STACK_CACHE is how many stacks it keeps (default 32, 0 turns
+ * it off). It is off under AddressSanitizer, where a reused stack could hide
+ * a use of a dead fiber's frames. A spin lock guards it: the finalizer runs
+ * on whichever thread sweeps, a sweeper thread included, and each critical
+ * section is a few loads and stores. */
+#ifndef SP_FIBER_STACK_CACHE
+#define SP_FIBER_STACK_CACHE 32
+#endif
+#define SP_FIBER_STACK_CACHE_MAX 1024
+static char  *sp_stk_cache[SP_FIBER_STACK_CACHE_MAX];
+static size_t sp_stk_cache_sz[SP_FIBER_STACK_CACHE_MAX];
+static int    sp_stk_n = 0;
+static int    sp_stk_lock = 0;
+static int    sp_stk_cap = -1;   /* -1: not read yet */
+static int sp_stack_cache_cap(void) {
+  int cap = SP_ATOMIC_LOAD(&sp_stk_cap, __ATOMIC_RELAXED);
+  if (cap >= 0) return cap;
+#ifdef SP_ASAN
+  cap = 0;
+#else
+  const char *e = getenv("SPINEL_FIBER_STACK_CACHE");
+  cap = (e && *e) ? atoi(e) : SP_FIBER_STACK_CACHE;
+  if (cap < 0) cap = 0;
+  if (cap > SP_FIBER_STACK_CACHE_MAX) cap = SP_FIBER_STACK_CACHE_MAX;
+#endif
+  SP_ATOMIC_STORE(&sp_stk_cap, cap, __ATOMIC_RELAXED);
+  return cap;
+}
+static void sp_stack_cache_lock(void) {
+  while (SP_ATOMIC_EXCHANGE(&sp_stk_lock, 1, __ATOMIC_ACQUIRE)) {}
+}
+static void sp_stack_cache_unlock(void) { SP_ATOMIC_STORE(&sp_stk_lock, 0, __ATOMIC_RELEASE); }
+/* A cached stack of `sz` usable bytes, guard in place, or NULL. */
+static char *sp_stack_cache_take(size_t sz) {
+  if (sp_stack_cache_cap() == 0) return NULL;
+  char *st = NULL;
+  sp_stack_cache_lock();
+  for (int i = sp_stk_n - 1; i >= 0; i--)
+    if (sp_stk_cache_sz[i] == sz) {
+      st = sp_stk_cache[i];
+      sp_stk_cache[i] = sp_stk_cache[sp_stk_n - 1];
+      sp_stk_cache_sz[i] = sp_stk_cache_sz[sp_stk_n - 1];
+      sp_stk_n--;
+      break;
+    }
+  sp_stack_cache_unlock();
+  return st;
+}
+/* Keep the stack at `st` (guard included) for a later fiber, or unmap it
+   when the cache is full. */
+static void sp_stack_cache_give(char *st, size_t sz) {
+  size_t g = sp_fiber_guard();
+  int cap = sp_stack_cache_cap(), kept = 0;
+  if (cap > 0) {
+    sp_stack_cache_lock();
+    if (sp_stk_n < cap) { sp_stk_cache[sp_stk_n] = st; sp_stk_cache_sz[sp_stk_n] = sz; sp_stk_n++; kept = 1; }
+    sp_stack_cache_unlock();
+  }
+  if (!kept) munmap(st, g + sz);
+}
+void sp_fiber_release_stack(sp_Fiber *f) {
+  if (!f || !f->stack || f->stack_released) return;
+  sp_stack_cache_give(f->stack, f->stack_size);
+  f->stack_released = 1;   /* the pointer stays: a NULL stack means the root fiber elsewhere */
+}
+static void sp_Fiber_fin(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->stack&&!f->stack_released)sp_stack_cache_give(f->stack,f->stack_size);if(f->saved_roots)free(f->saved_roots);if(f->exc_ctx)sp_exc_ctx_free(f->exc_ctx);
 #ifdef SP_TSAN
   if(f->tsan_fiber)__tsan_destroy_fiber(f->tsan_fiber);
 #endif
@@ -649,7 +768,7 @@ static void sp_Fiber_scan(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->user_data)sp_gc_
   if(f!=sp_fiber_collecting&&f!=sp_fiber_current&&f->state!=3)sp_fiber_mark_roots(f);}
 sp_Fiber*sp_Fiber_new(void(*body)(sp_Fiber*)){sp_fiber_fault_arm();sp_Fiber*f=(sp_Fiber*)sp_gc_alloc(sizeof(sp_Fiber),sp_Fiber_fin,sp_Fiber_scan);{size_t _g=sp_fiber_guard();f->stack_size=sp_fiber_stack_bytes();
 /* MAP_NORESERVE: the stack is virtual space until touched, and a strict-overcommit host must not charge every fiber the whole of it (#4496) */
-f->stack=(char*)mmap(NULL,_g+f->stack_size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_STACK|MAP_NORESERVE,-1,0);if(f->stack==MAP_FAILED){f->stack=NULL;sp_raise_cls("FiberError","failed to allocate fiber stack");}mprotect(f->stack,_g,PROT_NONE);}f->state=0;f->transferred=0;f->body=body;f->yielded_value=sp_box_nil();f->resumed_value=sp_box_nil();f->user_data=NULL;f->saved_exc_top=0;f->saved_catch_top=0;f->exc_ctx=sp_exc_ctx_new();f->raised=0;f->raised_cls=NULL;f->raised_msg=NULL;f->raised_obj=NULL;f->inject=0;f->inject_defer=0;f->inj_cls=NULL;f->inj_msg=NULL;f->inj_obj=NULL;f->storage=NULL;f->attrs=NULL;f->birth_file=NULL;f->birth_line=0;f->pass_argc=-1;f->owner=sp_thread_owner_id();f->return_to=NULL;f->thread_main=0;f->blocking=0;f->saved_roots=NULL;f->saved_nroots=0;f->saved_roots_cap=0;f->fiber_next=NULL;f->fiber_prev=NULL;sp_fiber_list_add(f);sp_fiber_install_gc_hook();if(sp_fiber_current&&sp_fiber_current->storage){sp_Fiber*volatile _froot=f;int _pushed=0;if(sp_gc_nroots<SP_GC_STACK_MAX){sp_gc_roots[sp_gc_nroots++]=(void**)&_froot;_pushed=1;}sp_FiberStore*_fst=sp_FiberStore_dup((sp_FiberStore*)sp_fiber_current->storage);sp_gc_wb((void*)f);f->storage=_fst;if(_pushed)sp_gc_nroots--;}
+f->stack=sp_stack_cache_take(f->stack_size);if(!f->stack){f->stack=(char*)mmap(NULL,_g+f->stack_size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_STACK|MAP_NORESERVE,-1,0);if(f->stack==MAP_FAILED){f->stack=NULL;sp_raise_cls("FiberError","failed to allocate fiber stack");}mprotect(f->stack,_g,PROT_NONE);}}f->state=0;f->transferred=0;f->body=body;f->yielded_value=sp_box_nil();f->resumed_value=sp_box_nil();f->user_data=NULL;f->saved_exc_top=0;f->saved_catch_top=0;f->exc_ctx=sp_exc_ctx_new();f->raised=0;f->raised_cls=NULL;f->raised_msg=NULL;f->raised_obj=NULL;f->inject=0;f->inject_defer=0;f->inj_cls=NULL;f->inj_msg=NULL;f->inj_obj=NULL;f->storage=NULL;f->attrs=NULL;f->birth_file=NULL;f->birth_line=0;f->pass_argc=-1;f->owner=sp_thread_owner_id();f->return_to=NULL;f->thread_main=0;f->blocking=0;f->stack_released=0;f->saved_roots=NULL;f->saved_nroots=0;f->saved_roots_cap=0;f->fiber_next=NULL;f->fiber_prev=NULL;sp_fiber_list_add(f);sp_fiber_install_gc_hook();if(sp_fiber_current&&sp_fiber_current->storage){sp_Fiber*volatile _froot=f;int _pushed=0;if(sp_gc_nroots<SP_GC_STACK_MAX){sp_gc_roots[sp_gc_nroots++]=(void**)&_froot;_pushed=1;}sp_FiberStore*_fst=sp_FiberStore_dup((sp_FiberStore*)sp_fiber_current->storage);sp_gc_wb((void*)f);f->storage=_fst;if(_pushed)sp_gc_nroots--;}
 #ifdef SP_TSAN
   if(!sp_fiber_root.tsan_fiber)sp_fiber_root.tsan_fiber=__tsan_get_current_fiber();
   f->tsan_fiber=__tsan_create_fiber(0);f->caller_fiber=NULL;
@@ -754,6 +873,16 @@ static void sp_fiber_consume_inject(sp_Fiber*f){SP_GC_ROOT(f);int kind=sp_fiber_
    the thread's next suspension point (sp_sched_block / sleep / Thread.pass /
    yield) delivers it inside the body, where its rescue/ensure can see it. */
 void sp_fiber_set_raise_inject(sp_Fiber*f,const char*cls,const char*msg,void*obj){SP_GC_ROOT(f);SP_GC_ROOT_STR(msg);sp_fiber_inject_publish(f,3,cls,msg,obj);}
+/* (#8702) The slot held across a step of the scheduler's own. A thread that
+   parks under a lock other than the scheduler's checks for a pending inject
+   and publishes itself BLOCKED with its slot held. sp_thread_deliver publishes
+   the inject under the same lock and reads the target's state after it, so a
+   delivery lands wholly before the check, and the thread raises, or after the
+   park is published, and it is unparked. Hold answers the kind pending;
+   release with that kind leaves the slot as it was. The holder takes no lock
+   while it holds the slot. */
+int sp_fiber_inject_hold(sp_Fiber*f){return sp_fiber_inject_lock(f);}
+void sp_fiber_inject_release(sp_Fiber*f,int kind){sp_fiber_inject_unlock(f,kind);}
 void sp_fiber_set_kill_inject(sp_Fiber*f){SP_GC_ROOT(f);sp_fiber_inject_publish(f,2,NULL,NULL,NULL);}
 void sp_fiber_defer_inject(void){sp_Fiber*f=sp_fiber_current;if(f)f->inject_defer++;}
 void sp_fiber_undefer_inject(void){sp_Fiber*f=sp_fiber_current;if(f&&f->inject_defer)f->inject_defer--;}
@@ -761,7 +890,7 @@ void sp_fiber_fire_inject_if_pending(void){sp_Fiber*f=sp_fiber_current;if(!f||f-
   /* A #kill/#raise of a thread that is inside a Fiber it resumed: it is
      delivered in that fiber, and a kill goes on up to the thread's own. */
   if(f->thread_main||f==&sp_fiber_root)return;
-  sp_Fiber*m=sp_thread_main_fiber();if(!m||!SP_INJECT_PEEK(m))return;
+  sp_Fiber*m=sp_thread_inject_home();if(!m||!SP_INJECT_PEEK(m))return;
   SP_GC_ROOT(m);int kind=sp_fiber_inject_lock(m);const char*cl=m->inj_cls;const char*ms=m->inj_msg;void*ob=m->inj_obj;m->inj_cls=NULL;m->inj_msg=NULL;m->inj_obj=NULL;sp_fiber_inject_unlock(m,0);
   if(kind==2)sp_raise_cls(SP_FIBER_KILL_CLS,(&("\xff" SP_FIBER_KILL_MAIN)[1]));else sp_fiber_reraise(cl,ms,ob);}
 /* Lock-free peek for the scheduler's pre-park checks (sp_sched_block etc.). */

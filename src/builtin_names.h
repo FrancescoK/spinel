@@ -48,7 +48,10 @@ int is_range_member_walk(const char *n); /* each each_entry step: a Range's bloc
 int is_stop_walk(const char *n); /* find detect take_while find_index each_with_index: walks that stop at the block's answer */
 int is_each_walk(const char *n);      /* each each_entry reverse_each */
 int is_index_query(const char *n);    /* find_index index rindex */
+int is_itself_name(const char *n);    /* itself */
+int is_each_char_name(const char *n);  /* each_char */
 int is_self_copy(const char *n);      /* freeze dup clone itself: the receiver, or a copy of it */
+int is_step_call(const char *n);       /* step: Numeric#step and Range#step */
 int is_int_step(const char *n);       /* times upto downto: Integer's counting iterators */
 int is_equality_name(const char *n);  /* equal? eql? == */
 int is_bits_query(const char *n);     /* allbits? anybits? nobits? */
@@ -58,6 +61,9 @@ int is_eval_exec_family(const char *n);   /* class/module/instance eval and exec
 int is_key_query(const char *n);      /* key? has_key? include? member?: Hash/ENV membership aliases */
 int is_hash_key_lookup(const char *n); /* [] fetch delete and is_key_query: a Hash call that only compares its key */
 int is_receiver_conversion(const char *n); /* to_s to_str itself: conversions a String answers with itself */
+int is_string_conversion(const char *n);   /* to_s to_str +@: conversions that turn a nil receiver into a String */
+int is_string_self_answer(const char *n);   /* to_s to_str itself +@: names a String answers itself to */
+int is_rebinding_reach_call(const char *n); /* call () send instance_variable_set instance_eval yield...: code the walk cannot see */
 int is_to_s_name(const char *n);
 int is_message_name(const char *n);
 int is_range_membership(const char *n); /* cover? include? member? ===: Range membership predicates */
@@ -86,6 +92,9 @@ int is_minmax_pair(const char *n); /* minmax: both extrema in one answer */
 int is_endpoint_query(const char *n); /* first last: collection or Range endpoints */
 int is_map_alias(const char *n); /* map collect: Enumerable transformation aliases */
 int is_instance_eval_family(const char *n); /* instance_eval instance_exec */
+int is_reflective_access(const char *n); /* instance_variable_get/set, class_variable_get/set, const_get/set, remove_* */
+int is_reflective_listing(const char *n); /* instance_variables class_variables constants */
+int is_local_reflection(const char *n); /* eval binding local_variable_get/set local_variables */
 int is_find_alias(const char *n); /* find detect: Enumerable search aliases */
 
 int is_text_conversion(const char *n); /* inspect to_s */
@@ -157,6 +166,9 @@ int is_unary_minus(const char *n); /* -@ */
 int is_casecmp_family(const char *n); /* casecmp casecmp? */
 int is_hash_key_value_each(const char *n); /* each_key each_value */
 int is_encoding_mutator(const char *n); /* encode! force_encoding */
+/* the most arguments the arms serve: force_encoding's one (two read as a
+   refusal), encode!'s two encodings and its option hash */
+int encoding_mutator_max_argc(const char *n);
 int is_range_end_reader(const char *n); /* end last */
 int is_raise_alias(const char *n); /* fail raise */
 int is_exc_message_name(const char *n); /* message full_message detailed_message */
@@ -210,6 +222,7 @@ int is_initialize_name(const char *n); /* initialize */
 int is_initialize_family(const char *n); /* initialize initialize_copy */
 
 int is_iso8601_alias(const char *n); /* iso8601 xmlschema */
+int sock_const_always(const char *n); /* Socket constants every platform defines */
 int is_exception_message(const char *n); /* message to_s */
 int is_socket_pair_alias(const char *n); /* pair socketpair */
 int is_partition_family(const char *n); /* partition rpartition */
@@ -230,6 +243,20 @@ int is_match_family(const char *n); /* !~ =~ match match? */
 int is_integer_iteration(const char *n); /* downto step times upto */
 int is_visibility_or_module_function(const char *n); /* module_function private protected public */
 int is_mixin_call(const char *n); /* include extend prepend */
+/* The calls on a class's constant or self that answer neither the class nor
+   a block of its own (comp_class_may_be_value): new allocate name to_s
+   inspect === == ... respond_to? attr_* visibility. Not include, extend,
+   prepend, private_constant, private_class_method and public_class_method:
+   those answer their receiver. */
+int is_class_plain_query(const char *n);
+int is_class_self_answer(const char *n); /* include extend prepend private_class_method public_class_method private_constant public_constant remove_method undef_method: answer their receiver */
+int is_self_rebinding_call(const char *n); /* instance_/class_/module_ eval and exec, define_singleton_method */
+int is_class_relatives_query(const char *n); /* ancestors superclass subclasses descendants included_modules */
+int is_class_query(const char *n); /* class */
+int is_method_owner_query(const char *n); /* owner */
+int is_method_object_maker(const char *n); /* method public_method singleton_method instance_method public_instance_method */
+/* const_get const_source_location nesting attached_object each_object eval binding */
+int is_constant_or_object_reflection(const char *n);
 int is_const_set_name(const char *n); /* const_set */
 int is_const_query_name(const char *n); /* const_get const_defined? const_source_location */
 int is_constants_list_name(const char *n); /* constants */
@@ -244,6 +271,7 @@ int is_file_class_name(const char *n); /* File */
 int is_filetest_module_name(const char *n); /* FileTest */
 int is_immediate_class_name(const char *n); /* FalseClass NilClass TrueClass */
 int is_object_base_name(const char *n); /* BasicObject Object */
+int is_builtin_method_host_name(const char *n); /* Object BasicObject Kernel Comparable Enumerable Module */
 int is_boolean_class_name(const char *n); /* FalseClass TrueClass */
 int is_numeric_literal_tag(const char *n); /* Float Int */
 int is_standard_output_global(const char *n); /* $stderr $stdout */
@@ -284,6 +312,9 @@ int is_gated_exception_accessor(const char *n); /* accessors owned by specific e
 int is_symbol_exception_accessor(const char *n); /* exception accessors that can return a Symbol */
 
 int is_builtin_reopen_name(const char *name);
+/* A reopened class whose instance methods take self boxed (`sp_RbVal self`,
+   emit_method_signature): Object, Numeric, Array, Hash. */
+int is_boxed_self_class_name(const char *name);
 
 int is_nil_method(const char *n); /* NilClass's public methods, its own and Object's: what nil answers */
 int is_positional_io(const char *n); /* pread / pwrite: IO at an offset */
@@ -299,6 +330,9 @@ int array_unseen_add_kind(const char *n);
 
 int is_scan_name(const char *n); /* scan: a String's match iterator */
 int is_insert_name(const char *n); /* insert */
+int is_arguments_node_type(const char *t); /* ArgumentsNode */
+int is_when_node_type(const char *t);      /* WhenNode */
+int is_ensure_node_type(const char *t);    /* EnsureNode */
 int is_clear_name(const char *n); /* clear */
 int is_enumerator_with(const char *n); /* with_index with_object: an enumerator link */
 int is_lazy_name(const char *n);       /* lazy */
@@ -311,8 +345,11 @@ int is_new_name(const char *n);          /* new: a class's constructor */
 int is_native_share_decl(const char *n); /* native_share: a package's share declaration */
 int is_proc_new(const char *recv, const char *meth); /* Proc.new */
 int is_method_ref_name(const char *n);   /* method: Kernel#method */
+int is_method_object_name(const char *n); /* method public_method instance_method: a Method of the name handed */
+int is_marshal_const(const char *n);     /* Marshal, whose load makes objects with any ivars */
 int is_env_const(const char *n);         /* ENV */
 int is_argv_const(const char *n);        /* ARGV */
+int is_engine_string_const(const char *n); /* RUBY_DESCRIPTION RUBY_VERSION ...: a frozen String */
 int is_proc_conversion_name(const char *n); /* to_proc curry: makes a proc */
 int is_aref_name(const char *n);         /* []: an element read */
 int is_shovel_name(const char *n);       /* <<: an append, a chain's link */
@@ -326,5 +363,38 @@ int is_untabled_native_class_name(const char *n);
 
 int is_define_method_name(const char *n); /* define_method */
 int is_alias_method_name(const char *n);  /* alias_method */
+/* --share-strings (#8328 step 5): the operations a String Array of handles
+   (TY_STRH_ARRAY) answers itself, by name, argument count and block (0
+   none, 1 a literal block, 2 a block argument). A container class one of
+   whose names takes any other stays in the poly form (share_strh_gate);
+   inference and codegen answer exactly these. */
+typedef enum {
+  STRH_NONE,
+  STRH_ELEM,     /* [](i), at(i), first, last: the element, a String */
+  STRH_STORE,    /* []=(i, v): stores v's String */
+  STRH_PUSH,     /* <<, push, append: stores each argument's String */
+  STRH_TAKE,     /* pop, shift: removes and answers the element */
+  STRH_LEN,      /* size, length */
+  STRH_EMPTY,    /* empty? */
+  STRH_EACH,     /* each { }: the receiver */
+  STRH_DUP,      /* dup: a new Array of the same Strings */
+  STRH_SELF,     /* to_a: the receiver */
+  STRH_JOIN,     /* join, join(sep) */
+  STRH_INCLUDE,  /* include?(v) */
+  STRH_EQ,       /* ==(other) */
+  STRH_INSPECT   /* inspect, to_s */
+} StrhOp;
+int strh_op(const char *n, int argc, int block);
+int is_kernel_print_name(const char *n);      /* p puts print */
+int is_identity_compare_name(const char *n);  /* equal? == != */
+int is_nil_shared_name(const char *n);        /* nil? equal? == !=: what nil answers as a String does */
+/* the receiver kind a block-taking iterator name belongs to */
+enum { BITER_NONE, BITER_ARRAY, BITER_INTEGER, BITER_STRING };
+int builtin_iter_owner(const char *n);        /* each reverse_each each_with_index / times upto downto / each_char */
+int is_frozen_query(const char *n);           /* frozen? */
+int is_pop_name(const char *n);               /* pop */
+int is_first_name(const char *n);             /* first */
 
+
+const char *encoding_const_name(const char *nm);  /* Encoding::NM's encoding name, or NULL */
 #endif

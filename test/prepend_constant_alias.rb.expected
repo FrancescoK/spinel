@@ -1,0 +1,15 @@
+"HELLO FROM PERSON!"
+"shout"
+[Shout, Person]
+true
+"BEEP!"
+[Quiet, Shout]
+true
+"shout"
+"CROWD!"
+[Shout, Crowd]
+"MIXER!"
+[Party, Shout, Mixer]
+[Bag, Enumerable]
+true
+[2, 4]

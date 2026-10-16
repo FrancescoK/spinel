@@ -1,0 +1,21 @@
+class ShrbsaSelector
+  def initialize: (String kind, Array[String] excluded, Array[String] keys, Array[String] values, Array[String] ops) -> void
+  def kind: () -> String
+  def excluded: () -> Array[String]
+  def keys: () -> Array[String]
+  def values: () -> Array[String]
+  def ops: () -> Array[String]
+  def describe: () -> String
+  def self.not_names: (String text) -> Array[String]
+  def self.parse: (String text) -> ShrbsaSelector
+end
+
+class ShrbsaPinned
+  @keys: Array[String]
+  def initialize: (Array[String] keys) -> void
+  def keys: () -> Array[String]
+end
+
+class Object
+  def shrbsa_join: (Array[String] keys) -> String
+end

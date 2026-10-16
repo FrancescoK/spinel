@@ -1,0 +1,20 @@
+{"a" => :b, c: 1}
+{"a" => :b}
+Tried to load unspecified class: Symbol
+{"a" => [1], "b" => [1]}
+true
+{a: 1, b: {c: 2}, d: [{e: 3}]}
+{}
+[]
+nil
+{"a" => :b}
+{"a" => 1, "b" => 1, "c" => :d}
+"1,000"
+1000
+{"a" => ":b"}
+{"projects" => {"one" => {"path" => "/tmp/one"}}, "peers" => {}}
+{projects: {one: {path: "/tmp/one"}}, peers: {}}
+nil
+{"empty" => true}
+(PATH): did not find expected ',' or ']' while parsing a flow sequence at line 1 column 4
+Errno::ENOENT

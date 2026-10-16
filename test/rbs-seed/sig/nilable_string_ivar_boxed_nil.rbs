@@ -1,0 +1,4 @@
+class NilableOwnerSlot
+  attr_reader owner_id: String?
+  attr_writer owner_id: String?
+end

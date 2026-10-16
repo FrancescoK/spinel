@@ -1,0 +1,12 @@
+Mutex#synchronize
+Monitor#synchronize
+42
+"rendered a"
+"rendered a"
+"rendered b"
+0
+:inside
+true
+:nested
+"boom"
+false

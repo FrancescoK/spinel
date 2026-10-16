@@ -1,0 +1,5 @@
+[false, true, false, false, false, false]
+[20, true, false, false, false, false]
+[:plain, true, false, false, false, false]
+[3, true, false, false, false, false]
+[:ignored, true, false, false, false, false]

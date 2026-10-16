@@ -1,0 +1,5 @@
+[package]
+name = "psych"
+
+# Pre-installed spin package: ships with the compiler, versioned with it.
+# YAML loading and dumping in Ruby (see psych.rb).

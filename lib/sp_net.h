@@ -59,6 +59,7 @@ int sp_net_sock_ip(int fd, int peer, char *ipbuf, int cap);
 int sp_net_sock_host(int fd, int peer, char *hostbuf, int cap);
 int sp_net_sock_name(int fd, int peer, void *out, int cap);
 int sp_net_accept(int sfd);
+int sp_net_accept_unless(int sfd, const unsigned char *cancel);
 int sp_net_accept_nb(int sfd);
 int sp_net_connect(const char *host, int port);
 

@@ -33,7 +33,15 @@ typedef struct sp_ev_waiter {
 
 typedef struct sp_sched_timer sp_sched_timer;
 
+/* (#8702) a one-word spin lock guarding one object's waiter list. */
+typedef int sp_wlock;
+
 typedef struct sp_thread {
+#ifdef SP_CEXT
+  void (*cext_unblock)(void *);
+  void *cext_unblock_data;
+  int cext_repeat_unblock;
+#endif
   sp_Fiber         *fiber;       /* the green thread's coroutine; NULL for the main thread (root) */
   sp_Fiber         *at;          /* the Fiber it resumed and stopped inside, or NULL when it
                                     stopped in its own: run_thread_once switches back there */
@@ -52,6 +60,8 @@ typedef struct sp_thread {
                                     stack; a waker may only enqueue it once off_cpu, otherwise it
                                     could be run on a second worker mid-context-switch */
   unsigned char     wake_pending; /* a wake arrived while still on-cpu; the worker enqueues it */
+  unsigned char     internal;    /* the runtime's own (the trap thread, lib/sp_cold.c): left out
+                                    of Thread.list, as CRuby has no such Ruby thread */
   unsigned char     repark_front;  /* next sp_sched_block puts this thread at the HEAD of the wait
                                       list: a mutex waiter woken but beaten to the exchange keeps
                                       its place in the arrival order */
@@ -65,6 +75,7 @@ typedef struct sp_thread {
   double            readied_at;  /* SPINEL_SCHED_STATS=2: when it was last put on a run queue */
   struct sp_thread *rq_next;     /* run-queue link while RUNNABLE */
   struct sp_thread *joiners;     /* threads parked in #join/#value on this one */
+  sp_wlock          join_wl;     /* guards joiners: its death drains them under it (#8702) */
   sp_ev_waiter      ev0;         /* its entry in the per-DESCRIPTOR waiter list for io_fd: a
                                     readiness event names an fd, and every thread parked on
                                     that fd is woken from it (#4306) */
@@ -75,15 +86,26 @@ typedef struct sp_thread {
   int               io_nset;
   struct sp_thread *wait_next;   /* link within the wait list it is parked on */
   struct sp_thread **wait_head;  /* head of that wait list, so #kill/#raise can unpark it */
+  struct sp_thread *io_prev;     /* the waiter before it on the I/O waiter list, for an O(1) unlink */
   struct sp_thread *all_next, *all_prev;  /* registry of live threads (GC roots) */
   void             *tls;         /* thread-local storage (Thread#[] / #[]=); lazily allocated */
-  sp_sched_timer   *timer;       /* active scheduler timer for this wait, if any */
+  sp_sched_timer   *timer;       /* active scheduler timer for this wait, if any (under the
+                                    timer lock; read without it atomically) */
+  sp_wlock          sleep_wl;    /* (#8702) a sleep is a list of one, under this lock: no list
+                                    of sleepers is shared, so sleeping threads contend on none */
+  struct sp_thread *sleep_slot;  /* that list's head: the thread itself while it sleeps */
+  sp_sched_timer   *wait_timer;  /* the timer the wait it is parked in was published with,
+                                    set under that wait's list lock and cleared when it runs
+                                    again: a timer that fires late ends only its own wait */
   unsigned char     timer_expired; /* set when a generic timed wait reaches its deadline */
   unsigned char     woken;         /* Thread#wakeup ended its sleep early */
   int               io_fd;       /* fd this thread is parked on for I/O (-1 = none, scheduler-aware I/O) */
   short             io_events;   /* poll events it is waiting for (POLLIN/POLLOUT) */
   short             io_revents;  /* poll result the monitor delivered when the fd became ready */
   unsigned          id;
+  int               park;        /* SP_PK_RUN / PARKING / PARKED / WOKEN (sp_sched.c), atomic */
+  sp_wlock         *wait_lock;   /* the lock of the object whose waiter list holds it, or NULL
+                                    when that list is under the scheduler lock */
 } sp_thread;
 
 /* Called once from main()'s prologue (on the root fiber, after sp_tu_init) when
@@ -95,6 +117,7 @@ void       sp_sched_init(void);
    a green thread and enqueue it RUNNABLE. It runs the next time the current
    thread yields, or at drain. Returns the thread (boxed SP_BUILTIN_THREAD). */
 sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg);
+void sp_thread_set_internal(sp_thread *t);
 sp_thread *sp_Thread_spawn_fiber_at(sp_Fiber *f, sp_RbVal arg, const char *file, sp_int line);
 
 /* #join: block until the thread has finished, re-raise its unhandled exception
@@ -209,6 +232,10 @@ void sp_safepoint(void);
    threaded runtime or before the worker pool exists. */
 #ifdef SP_THREADS
 void sp_native_enter(void);
+#ifdef SP_CEXT
+int sp_cext_native_register(void (*)(void *), void *, int);
+void sp_cext_native_unregister(void);
+#endif
 void sp_native_leave(void);
 #else
 static inline void sp_native_enter(void) {}
@@ -232,6 +259,7 @@ typedef struct sp_queue {
   struct sp_thread *pop_waiters;  /* threads blocked in #pop on an empty queue */
   struct sp_thread *push_waiters; /* threads blocked in #push on a full SizedQueue */
   int               closed;
+  sp_wlock          wl;           /* (#8702) guards all of the above */
 } sp_queue;
 
 sp_queue  *sp_Queue_new(void);
@@ -269,6 +297,7 @@ typedef struct sp_mutex {
      there is nobody to hand off to without taking the global scheduler lock
      (#4346). Mutated only under that lock; read atomically outside it. */
   int nwaiters;
+  sp_wlock wl;   /* guards `waiters` (#8702) */
 } sp_mutex;
 
 sp_mutex  *sp_Mutex_new(void);
@@ -285,6 +314,7 @@ sp_bool   sp_Mutex_owned(sp_mutex *m);      /* #owned? */
 /* ---- ConditionVariable (wait/signal/broadcast over a Mutex) ---- */
 typedef struct sp_condvar {
   struct sp_thread *waiters;   /* threads blocked in #wait */
+  sp_wlock wl;                 /* guards `waiters` (#8702) */
 } sp_condvar;
 
 sp_condvar *sp_CondVar_new(void);

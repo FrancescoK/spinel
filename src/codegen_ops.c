@@ -182,7 +182,7 @@ static int emit_op_template(Compiler *c, const BopCtx *x, Buf *b) {
     }
     else if (p[0] == '$' && (p[1] == '<' || p[1] == '>')) {
       TyKind rk = bop_result(x->op, x->rt);
-      if (!oint_kind(rk)) rk = comp_ntype(c, x->id);
+      if (!oint_kind(rk)) rk = repr_of(c, x->id).as_ty;
       if (oint_kind(rk) && !node_is_oint(c, x->id)) buf_printf(b, p[1] == '<' ? "%s(" : ")", oint_arg(rk));
       p++;
     }
@@ -190,7 +190,7 @@ static int emit_op_template(Compiler *c, const BopCtx *x, Buf *b) {
        where the consumer takes the oint (node_is_oint) */
     else if (p[0] == '$' && (p[1] == '[' || p[1] == ']')) {
       TyKind rk = bop_result(x->op, x->rt);
-      if (!oint_kind(rk)) rk = comp_ntype(c, x->id);
+      if (!oint_kind(rk)) rk = repr_of(c, x->id).as_ty;
       if (oint_kind(rk) && node_is_oint(c, x->id)) buf_printf(b, p[1] == '[' ? "%s(" : ")", oint_of(rk));
       p++;
     }

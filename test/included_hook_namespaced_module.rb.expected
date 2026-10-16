@@ -1,0 +1,4 @@
+Outer::Ext into Outer::Inner
+Outer::Ext into A
+top-level Ext into B
+top-level Ext into Outer::C

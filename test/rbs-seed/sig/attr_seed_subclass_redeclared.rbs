@@ -1,0 +1,11 @@
+class Sender
+  def initialize: () -> void
+  attr_accessor channel: String?
+  def send_text: (String text) -> String
+end
+
+class Pager < Sender
+  def initialize: () -> void
+  attr_accessor channel: Integer?
+  def go: () -> String
+end

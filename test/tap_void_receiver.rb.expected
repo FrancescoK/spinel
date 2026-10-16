@@ -1,0 +1,11 @@
+quiet
+nil
+nil
+true
+quiet
+"nil"
+tap: boom
+then: boom
+super: build 1
+1
+3

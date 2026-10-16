@@ -111,8 +111,10 @@ if [ "$bad" -gt 0 ]; then
       # atos on macOS does, by the file's name alone: a frame read only as
       # ` src/x.c` matched none of the last two, and the report was counted
       # with no line for its site.
-      site=$(sed -n 's/^ *#[0-9]* 0x[0-9a-f]* in \([A-Za-z_0-9]*\) \([^ ]*\.c\):\([0-9]*\).*/\1 \2 \3/p' "$log" |
-        while read -r fn path line; do
+      # (the path is read up to its `:line`, spaces and all: a compiler
+      # built under `/Users/me/My Project` names its frames so)
+      site=$(sed -n "s/^ *#[0-9]* 0x[0-9a-f]* in \\([A-Za-z_0-9]*\\) \\(.*\\.c\\):\\([0-9][0-9]*\\).*/\\1$TAB\\3$TAB\\2/p" "$log" |
+        while IFS="$TAB" read -r fn line path; do
           [ -f "src/${path##*/}" ] && { echo "src/${path##*/}:$line$TAB$fn"; break; }
         done)
       [ -n "$site" ] || site="no frame in src/${TAB}unknown"

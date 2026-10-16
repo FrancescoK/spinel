@@ -1,0 +1,4 @@
+["abc.", true]
+["abc..", false]
+["abc..", true]
+"abc.."

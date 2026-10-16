@@ -1,0 +1,7 @@
+[:delete, "/w"]
+[:dig, :a, 1]
+[:values_at, :a, :b]
+["/w", :hit]
+:deep
+:gone
+3

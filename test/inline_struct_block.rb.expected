@@ -1,0 +1,9 @@
+inline Struct body ran
+Class
+[:x, :y]
+inline Data body ran
+6
+#<struct x=4>
+10
+6
+3

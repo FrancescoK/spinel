@@ -158,9 +158,12 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
        the channel; fall back to the definition's name when nothing wrote it
        (a direct call, or a path with no write). __method__ always answers the
        definition's name (#3729). */
-    if (s && s->name && s->name[0] && sp_streq(name, "__callee__"))
-      buf_printf(b, "(_sp_cal ? sp_sym_intern(_sp_cal) : (sp_sym)%d)", comp_sym_intern(c, s->name));
-    else if (s && s->name && s->name[0]) buf_printf(b, "(sp_sym)%d", comp_sym_intern(c, s->name));
+    /* (a method a prepend or an extend moved behind another of its name
+       runs under a shadow name, `__prep_0_go`: the name as written) */
+    const char *mn = s ? comp_prep_user_name(s->name) : NULL;
+    if (mn && mn[0] && sp_streq(name, "__callee__"))
+      buf_printf(b, "(_sp_cal ? sp_sym_intern(_sp_cal) : (sp_sym)%d)", comp_sym_intern(c, mn));
+    else if (mn && mn[0]) buf_printf(b, "(sp_sym)%d", comp_sym_intern(c, mn));
     else buf_puts(b, "sp_box_nil()");
     return 1;
   }
@@ -318,7 +321,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
          through the runtime's Kernel#Integer path, nil for every failure */
       if (ty_is_object(at0) || at0 == TY_POLY || (at0 == TY_FLOAT && ac == 1)) {
         /* the runtime answers an sp_oint for an Integer-typed call */
-        int ko = comp_ntype(c, id) == TY_INT;
+        int ko = repr_of(c, id).as_ty == TY_INT;
         if (ko) oint_open(c, id, TY_INT, b);
         emit_kconv_call(c, id, av, ac, 0, b);
         if (ko) oint_close(c, id, b);
@@ -392,7 +395,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
          #to_int or #to_i answers a Bignum types the call as one */
       else if (ty_is_object(at)) {
         /* the strict form never answers nil: its sp_oint unwrapped */
-        int ko = comp_ntype(c, id) == TY_INT;
+        int ko = repr_of(c, id).as_ty == TY_INT;
         if (ko) buf_puts(b, "sp_oint_arg(");
         emit_kconv_call(c, id, av, ac, 1, b);
         if (ko) buf_puts(b, ")");
@@ -422,7 +425,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
          #to_str -- the runtime decides, raising CRuby's ArgumentError for
          anything else (#2515) */
       else {
-        int ko = comp_ntype(c, id) == TY_INT;
+        int ko = repr_of(c, id).as_ty == TY_INT;
         if (ko) buf_puts(b, "sp_oint_arg(");
         emit_kconv_call(c, id, av, ac, 1, b);
         if (ko) buf_puts(b, ")");
@@ -461,7 +464,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
          the runtime as CRuby judges it */
       else if (ty_is_object(at)) {
         /* the strict form never answers nil: its sp_ofloat unwrapped */
-        int fo = comp_ntype(c, id) == TY_FLOAT;
+        int fo = repr_of(c, id).as_ty == TY_FLOAT;
         if (fo) buf_puts(b, "sp_ofloat_arg(");
         buf_puts(b, "sp_poly_Float_ex("); emit_boxed(c, av[0], b); buf_puts(b, ", 1)");
         if (fo) buf_puts(b, ")");
@@ -684,7 +687,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         }
         /* either bound a Float draws a Float; an Integer begin keeps the end
            as written (sp_range_end_num) */
-        int is_float = (lo >= 0 && comp_ntype(c, lo) == TY_FLOAT) || (hi >= 0 && comp_ntype(c, hi) == TY_FLOAT);
+        int is_float = (lo >= 0 && repr_of(c, lo).as_ty == TY_FLOAT) || (hi >= 0 && repr_of(c, hi).as_ty == TY_FLOAT);
         /* a statically empty/reversed int range -> nil (#2519) */
         if (islit && !is_float && lo >= 0 && hi >= 0 &&
             nt_type(nt, lo) && sp_streq(nt_type(nt, lo), "IntegerNode") &&
@@ -728,7 +731,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
          a non-finite bound (Infinity/NaN) raises FloatDomainError rather than
          casting garbage to an integer (#3049); evaluate into a double first so
          the finiteness check precedes the narrowing cast. */
-      if (comp_ntype(c, av[0]) == TY_FLOAT) {
+      if (repr_of(c, av[0]).as_ty == TY_FLOAT) {
         int tf = ++g_tmp, tn = ++g_tmp;
         buf_printf(b, "({ double _t%d = ", tf); emit_float_expr(c, av[0], b);
         buf_printf(b, "; if (!isfinite(_t%d)) sp_raise_cls(\"FloatDomainError\","
@@ -767,7 +770,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     if (sp_streq(name, "srand")) {
       /* srand returns the PREVIOUS seed (#2517). */
       if (ac == 0) { buf_puts(b, "sp_kernel_srand((sp_int)time(NULL))"); return 1; }
-      buf_puts(b, "sp_kernel_srand("); emit_to_int_expr(c, av[0], b); buf_puts(b, ")");
+      buf_puts(b, "sp_kernel_srand("); emit_seed_expr(c, av[0], b); buf_puts(b, ")");
       return 1;
     }
     /* Kernel#gets reads the next line of ARGF, as `ARGF.gets` does; nil at
@@ -958,6 +961,12 @@ static int env_str_checked(const Compiler *c, int v) {
   const char *s = nt_kind(c->nt, v) == NK_StringNode ? nt_str(c->nt, v, "content") : NULL;
   return !s || strlen(s) != nt_str_len(c->nt, v, "content");
 }
+/* Does ENV operand v build a value where it stands, a new String or box
+   that only the C temp it lands in holds? An operand the operand-order
+   rewrite ran ahead of the call is its rooted temp already. */
+static int env_operand_new(Compiler *c, int v) {
+  return !arg_ran_first(v, 0) && operand_allocates_beside(c, v);
+}
 /* ENV name or value (value != 0) node v as a C string, checked */
 static void emit_env_str(Compiler *c, int v, int value, Buf *b) {
   if (env_str_checked(c, v)) buf_puts(b, "sp_env_chk(");
@@ -996,8 +1005,8 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       int left = nt_ref(c->nt, rid, "left");
       int right = nt_ref(c->nt, rid, "right");
       int excl = (int)(nt_int(c->nt, rid, "flags", 0) & 4) ? 1 : 0;
-      TyKind lty = left >= 0 ? comp_ntype(c, left) : TY_UNKNOWN;
-      TyKind rty = right >= 0 ? comp_ntype(c, right) : TY_UNKNOWN;
+      TyKind lty = left >= 0 ? repr_of(c, left).as_ty : TY_UNKNOWN;
+      TyKind rty = right >= 0 ? repr_of(c, right).as_ty : TY_UNKNOWN;
       /* A boxed endpoint (a value out of a poly slot; under
          --int-overflow=promote every Integer local and method answer)
          is read through the checked unbox, which raises CRuby's TypeError
@@ -1026,7 +1035,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     }
     /* Non-literal Range argument: compile error instead of a runtime
        crash with "no implicit conversion of Range into Integer". */
-    if (argc >= 1 && comp_ntype(c, argv[0]) == TY_RANGE)
+    if (argc >= 1 && repr_of(c, argv[0]).range == TY_INT)
       unsupported_feature(c, id,
         "caller(Range) only supports Range literals with integer endpoints "
         "(e.g. caller(0..5)); pass start and length instead: caller(start, len)");
@@ -1065,6 +1074,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         /* rooted like the while form's: a `break <v>` stores it here and then
            runs the ensure bodies it leaves, which may allocate */
         if (bt == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", t); }
+        else if (comp_ty_value_obj(c, bt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp_refs(c, bt, t, g_pre); buf_puts(g_pre, "\n"); }
         else if (needs_root(bt)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t); }
         /* Kernel#loop rescues StopIteration to terminate; wrap in a setjmp. */
         emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_exc_check_depth();\n");
@@ -1418,22 +1428,30 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
          present in the environment (#2998) */
       if (enm && (is_hash_merge_bang(enm)) && eac == 1 &&
           nt_ref(nt, id, "block") >= 0) {
-        Repr hbr = repr_of(c, eav[0]);
-        const char *htyb = nt_type(nt, eav[0]);
-        if (repr_hash_is(hbr, TY_STRING, TY_STRING) ||
-            (htyb && (sp_streq(htyb, "HashNode") || sp_streq(htyb, "KeywordHashNode")))) {
-          /* a block passed as a proc (`&pr`, `&proc { }`) is that proc; a
-             literal one is built here. Built as a literal, `&pr` gave a proc
-             with no body and every conflict read nil. */
-          int bt = nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockArgumentNode ? poly_call_blk_proc(c, id, -1) : -1;
+        /* a block passed as a proc (`&pr`, `&proc { }`) is that proc; a
+           literal one is built here. Built as a literal, `&pr` gave a proc
+           with no body and every conflict read nil. */
+        int bt = nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockArgumentNode ? poly_call_blk_proc(c, id, -1) : -1;
+        /* a hash of any other variant (a shared String value, nil, an
+           Integer, `{}`), or something a hash may be, goes boxed, as the
+           blockless arm below takes it; rooted, as building the proc after
+           it allocates */
+        int boxed = !repr_hash_is(repr_of(c, eav[0]), TY_STRING, TY_STRING);
+        int tn = boxed ? ++g_tmp : 0;
+        if (boxed) {
+          buf_printf(b, "({ sp_RbVal _t%d = ", tn);
+          emit_boxed(c, eav[0], b);
+          buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_env_update_v_blk(_t%d, ", tn, tn);
+        }
+        else {
           buf_puts(b, "sp_env_update_h_blk(");
           emit_expr(c, eav[0], b);
           buf_puts(b, ", ");
-          if (bt >= 0) buf_printf(b, "_t%d", bt);
-          else emit_proc_literal(c, id, b);
-          buf_puts(b, ")");
-          return 1;
         }
+        if (bt >= 0) buf_printf(b, "_t%d", bt);
+        else emit_proc_literal(c, id, b);
+        buf_puts(b, boxed ? "); })" : ")");
+        return 1;
       }
       if (enm && (sp_streq(enm, "update") || sp_streq(enm, "merge!") ||
                   sp_streq(enm, "replace")) && eac == 1 &&
@@ -1491,10 +1509,14 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         int dhandle = repr_call_returns_handle(c, id);
         /* --share-strings: a variable's handle is read as a copy of its
            bytes, which reach unsetenv past sp_env_str's allocation */
-        char kref[1024];
-        int key_handle = repr_share_rule(c) && strbuf_slot_ref(c, eav[0], kref, sizeof kref);
+        Buf kref; memset(&kref, 0, sizeof kref);
+        int key_handle = repr_share_rule(c) && strbuf_slot_text(c, eav[0], &kref);
+        /* a key the operand builds (`ENV.delete(key(1))`) is a new String
+           nothing else holds, and it too reaches unsetenv past that
+           allocation; a variable's or a literal's is held where it is */
+        int key_new = !key_handle && env_operand_new(c, eav[0]);
         buf_printf(b, "({ const char *_t%d = ", t1); emit_env_str(c, eav[0], 0, b);
-        if (key_handle) buf_printf(b, "; SP_GC_ROOT(_t%d)", t1);
+        if (key_handle || key_new) buf_printf(b, "; SP_GC_ROOT(_t%d)", t1);
         buf_printf(b, "; const char *_t%d = getenv(_t%d);"
                       " _t%d = _t%d ? sp_env_str(_t%d) : NULL;"
                       " unsetenv(_t%d); ", t2, t1, t2, t2, t2, t1);
@@ -1523,15 +1545,15 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
             if (repr_share_rule(c) && dpt != TY_STRING && dpt != TY_STRBUF && dpt != TY_POLY)
               unsupported_feature(c, id, "ENV.delete is not supported: its block parameter cannot carry the String key; see docs/limitations.md");
             if (repr_share_rule(c) && repr_of_slot(c, dlv).handle) {
-              if (!key_handle && nt_kind(nt, eav[0]) != NK_StringNode) buf_printf(b, "SP_GC_ROOT(_t%d); ", t1);
+              if (!key_handle && !key_new && nt_kind(nt, eav[0]) != NK_StringNode) buf_printf(b, "SP_GC_ROOT(_t%d); ", t1);
               buf_printf(b, "sp_String *lv_%s = ", rename_local(dp0));
-              if (key_handle) buf_puts(b, kref);
+              if (key_handle) buf_puts(b, kref.p);
               else buf_printf(b, "sp_String_new_shared(_t%d)", t1);
               buf_printf(b, "; SP_GC_ROOT(lv_%s); ", rename_local(dp0));
             }
             else if (dpt == TY_POLY && key_handle)
               buf_printf(b, "sp_RbVal lv_%s = sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF); SP_GC_ROOT_RBVAL(lv_%s); ",
-                         rename_local(dp0), kref, rename_local(dp0));
+                         rename_local(dp0), kref.p, rename_local(dp0));
             else if (dpt == TY_POLY)
               buf_printf(b, "sp_RbVal lv_%s = sp_box_str(_t%d); (void)lv_%s; ",
                          rename_local(dp0), t1, rename_local(dp0));
@@ -1552,6 +1574,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           }
           buf_puts(b, "} ");
         }
+        free(kref.p);
         buf_printf(b, "_t%d; })", result);
         return 1;
       }
@@ -1587,6 +1610,10 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         if (evt == TY_STRING || lit_nil) {
           int tk = ++g_tmp, tv = ++g_tmp;
           buf_printf(b, "({ const char *_t%d = ", tk); emit_str_expr(c, argv[0], b);
+          /* a key the operand builds (`ENV["K#{i}"] = v`) is held across the
+             value's evaluation when that can allocate */
+          if (env_operand_new(c, argv[0]) && env_operand_new(c, argv[1]))
+            buf_printf(b, "; SP_GC_ROOT(_t%d)", tk);
           /* a nil VALUE unsets the variable; only the key is strict */
           buf_printf(b, "; const char *_t%d = ", tv); emit_str_expr_nilable(c, argv[1], b);
           if (env_str_checked(c, argv[0])) buf_printf(b, "; sp_env_chk(_t%d, 0)", tk);
@@ -1643,6 +1670,9 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         int fhandle = repr_call_returns_handle(c, id);
         int tk = ++g_tmp, tky = ++g_tmp, tv = ++g_tmp, td = ++g_tmp;
         buf_printf(b, "({ const char *_t%d = ", tky); emit_str_expr(c, argv[0], b);
+        /* a key the operand builds is held across a default that can allocate */
+        if (argc >= 2 && env_operand_new(c, argv[0]) && env_operand_new(c, argv[1]))
+          buf_printf(b, "; SP_GC_ROOT(_t%d)", tky);
         /* the default is an argument: it evaluates whether or not the
            variable is set, before the lookup */
         if (argc >= 2) {
