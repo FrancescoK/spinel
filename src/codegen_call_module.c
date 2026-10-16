@@ -675,6 +675,34 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         buf_puts(b, ")"); return 1;
       }
     }
+    /* Dir[*pats] / Dir.glob(*pats), and Dir[a, b]: every pattern a splat
+       holds or an argument names, gathered into one list for the union */
+    if (sp_streq(name, "glob") && argc >= 1 &&
+        (argc > 1 || nt_kind(nt, argv[0]) == NK_SplatNode)) {
+      int pats = 1;
+      for (int ai = 0; ai < argc; ai++)
+        if (nt_kind(nt, argv[ai]) == NK_KeywordHashNode || comp_ntype(c, argv[ai]) == TY_INT ||
+            nt_kind(nt, argv[ai]) == NK_ConstantPathNode) pats = 0;
+      if (pats) {
+        int tl = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tl, tl);
+        for (int ai = 0; ai < argc; ai++) {
+          if (nt_kind(nt, argv[ai]) == NK_SplatNode) {
+            int ts = ++g_tmp, ti = ++g_tmp;
+            buf_printf(b, " { sp_PolyArray *_t%d = sp_poly_to_poly_array(sp_splat_to_array(", ts);
+            emit_boxed(c, nt_ref(nt, argv[ai], "expression"), b);
+            buf_printf(b, ")); SP_GC_ROOT(_t%d); for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
+                          " sp_PolyArray_push(_t%d, _t%d->data[_t%d]); }",
+                       ts, ti, ti, ts, ti, tl, ts, ti);
+          }
+          else {
+            buf_printf(b, " sp_PolyArray_push(_t%d, ", tl); emit_boxed(c, argv[ai], b); buf_puts(b, ");");
+          }
+        }
+        buf_printf(b, " sp_dir_glob_multi(sp_box_poly_array(_t%d)); })", tl);
+        return 1;
+      }
+    }
     if (sp_streq(name, "glob") && argc == 1 && ty_is_array(comp_ntype(c, argv[0]))) {
       buf_puts(b, "sp_dir_glob_multi("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); return 1;
     }
