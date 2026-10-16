@@ -19941,7 +19941,9 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
       buf_printf(&eb, "; SP_GC_ROOT_RBVAL(_t%d); sp_enum_with_src(sp_Enumerator_new_from(_t%d), _t%d, SPL(\"%s\")); })",
                  ts, ts, ts, name);
     }
-    if (repr_of(c, id).kind == RK_BOXED) emit_boxed_text(c, TY_ENUMERATOR, eb.p, b);
+    /* ...unless the dispatch's Hash face is emitting it, which boxes the
+       call's value itself */
+    if (repr_of(c, id).kind == RK_BOXED && g_pp_hash_node != id) emit_boxed_text(c, TY_ENUMERATOR, eb.p, b);
     else buf_puts(b, eb.p);
     free(eb.p);
     return 1;
@@ -19957,7 +19959,7 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     buf_printf(&eb, "({ sp_RbVal _t%d = ", th); emit_boxed(c, recv, &eb);
     buf_printf(&eb, "; SP_GC_ROOT_RBVAL(_t%d); sp_enum_with_src(sp_Enumerator_new_from_items(sp_enum_hash_side(_t%d, %d)), _t%d, SPL(\"%s\")); })",
                th, th, sp_streq(name, "each_key") ? 1 : 0, th, name);
-    if (repr_of(c, id).kind == RK_BOXED) emit_boxed_text(c, TY_ENUMERATOR, eb.p, b);
+    if (repr_of(c, id).kind == RK_BOXED && g_pp_hash_node != id) emit_boxed_text(c, TY_ENUMERATOR, eb.p, b);
     else buf_puts(b, eb.p);
     free(eb.p);
     return 1;
