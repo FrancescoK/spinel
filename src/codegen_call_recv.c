@@ -16581,7 +16581,7 @@ static int emit_poly_numeric_call(Compiler *c, int id, Buf *b, const NodeTable *
     char bv[48];
     buf_printf(b, "({ sp_RbVal _t%d = sp_poly_strbuf_deref(", tr); emit_expr(c, recv, b);
     buf_puts(b, ")");
-    if (comp_ntype(c, argv[0]) != TY_INT) buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d)", tr);
+    if (base_arg_may_gc(c, argv[0])) buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d)", tr);
     emit_base_arg(c, argv[0], tb, bv, sizeof bv, b);
     buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_str_to_i_base(_t%d.v.s, %s)"
                   " : (sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 1, expected 0)\"), (sp_int)0); })",
