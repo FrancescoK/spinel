@@ -2,3 +2,5 @@
 name = "optparse"
 
 # Pre-installed spin package: ships with the compiler, versioned with it.
+# `require "optparse"` -- OptionParser, ruby/optparse's own source at the
+# release README.md names, with the hunks it lists.
