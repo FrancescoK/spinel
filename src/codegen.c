@@ -15777,7 +15777,7 @@ void emit_regex_section(Compiler *c, Buf *b) {
   if (g_gen_obj_valeq)
     buf_puts(b, "  SP_INSTALL_HOOK(sp_obj_eq_hook, sp_obj_eq_dispatch);\n");
   if (exc_has_user_msg_override(c))
-    buf_puts(b, "  sp_user_exc_to_s_fn = sp_user_exc_to_s;\n");
+    buf_puts(b, "  sp_user_exc_to_s_fn = sp_user_exc_to_s;\n  sp_user_exc_message_fn = sp_user_exc_message;\n");
   if (c->bivar_table)
     buf_puts(b, "  sp_exc_bivar_copy_fn = sp_exc_bivar_copy;\n");
   if (exc_ivar_classes(c))
