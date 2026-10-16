@@ -925,8 +925,9 @@ class OptionParser
     # block is given. If it isn't found, nil is returned.
     #
     def search(id, key)
-      if list = __send__(id)
-        val = list.fetch(key) {return nil}
+      if list = (id == :atype ? atype : id == :short ? short : long)
+        return nil unless list.key?(key)
+        val = list[key]
         block_given? ? yield(val) : val
       end
     end
