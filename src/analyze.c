@@ -11736,6 +11736,40 @@ static int te_tail_is_value(const NodeTable *nt, int n, int depth) {
   }
 }
 
+/* Is `call` the value of a `return` guarded by block_given? alone at the top
+   level of `body`: `return to_enum(:m) unless block_given?` or `if
+   !block_given?`? Only then does every blockless call answer the Enumerator.
+   A guard that also tests an argument (`if mapping.nil? && !block_given?`,
+   activesupport's transform_keys) lets a blockless call with the argument
+   run on to the body, so both values come back. */
+static int te_pure_block_guard_return(const NodeTable *nt, int body, int call) {
+  int n = 0; const int *b = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+  for (int k = 0; k < n; k++) {
+    NodeKind gk = nt_kind(nt, b[k]);
+    if (gk != NK_IfNode && gk != NK_UnlessNode) continue;
+    if (nt_ref(nt, b[k], "subsequent") >= 0) continue;
+    int stm = nt_ref(nt, b[k], "statements");
+    int sn = 0; const int *sb = stm >= 0 ? nt_arr(nt, stm, "body", &sn) : NULL;
+    int hit = 0;
+    for (int j = 0; j < sn && !hit; j++) {
+      if (nt_kind(nt, sb[j]) != NK_ReturnNode) continue;
+      int ra = nt_ref(nt, sb[j], "arguments");
+      int rc = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rc) : NULL;
+      hit = rc == 1 && rv[0] == call;
+    }
+    if (!hit) continue;
+    int bg = nt_ref(nt, b[k], "predicate");
+    if (gk == NK_IfNode) {
+      if (bg < 0 || nt_kind(nt, bg) != NK_CallNode || !nt_str(nt, bg, "name") ||
+          !sp_streq(nt_str(nt, bg, "name"), "!")) return 0;
+      bg = nt_ref(nt, bg, "receiver");
+    }
+    return bg >= 0 && nt_kind(nt, bg) == NK_CallNode && nt_ref(nt, bg, "receiver") < 0 &&
+           nt_str(nt, bg, "name") && sp_streq(nt_str(nt, bg, "name"), "block_given?");
+  }
+  return 0;
+}
+
 /* Rewrite `recv.to_enum(:m, *a)` / `enum_for(:m, *a)` into a real Enumerator,
    dispatched on the receiver kind (needs the receiver type, so it runs in the
    fixpoint). A user-class receiver whose class defines a yielding `m` becomes
@@ -11814,7 +11848,7 @@ static int desugar_to_enum(Compiler *c) {
       /* not in a reopened builtin, whose self tail is the boxed receiver:
          the blockless call already reads the Enumerator (ret_noblock) */
       if (self_recv && es && es->name && sp_streq(es->name, m) && !value_form && reopen_ci < 0 &&
-          es->yields && es->ret != TY_ENUMERATOR) {
+          es->yields && es->ret != TY_ENUMERATOR && te_pure_block_guard_return(nt, es->body, id)) {
         scope_set_ret(es, TY_ENUMERATOR);
         es->ret_specialized = 1;
         changed = 1;
