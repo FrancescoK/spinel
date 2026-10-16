@@ -1014,8 +1014,8 @@ static const BuiltinOp bop_rows[] = {
   { TY_ENUMERATOR, "sum",             0,   0, BF_REQUIRED, TY_POLY,        BOPE_NONE },
   { TY_ENUMERATOR, "to_a",            0,   0, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
   { TY_ENUMERATOR, "entries",         0,   0, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
-  { TY_ENUMERATOR, "dup",             0,   0, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "sp_Enumerator_dup($r)", 0 },  /* typed by the generic rules */
-  { TY_ENUMERATOR, "clone",           0,   0, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "sp_Enumerator_dup($r)", 0 },
+  { TY_ENUMERATOR, "dup",             0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "sp_Enumerator_dup($r)", 0 },
+  { TY_ENUMERATOR, "clone",           0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "sp_Enumerator_dup($r)", 0 },
   { TY_ENUMERATOR, "inspect",         0,   0, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "sp_enum_inspect($r)" },
   { TY_ENUMERATOR, "to_s",            0,   0, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "sp_enum_inspect($r)" },
 
@@ -2465,12 +2465,10 @@ static const BuiltinOp bop_rows[] = {
   /* Array and Hash, any kind: freeze, frozen? and a Hash's to_h, rows of
      stage 1 looked up in emit_call_freeze_dup_arms, ahead of the families'
      own arms, where the Ranges' rows of the same names are. An Array keeps
-     its frozen flag in the struct, a Hash in its GC header. Hash#freeze
-     types nothing, as its row did before it emitted: the rules after the
-     lookup answer it. */
+     its frozen flag in the struct, a Hash in its GC header. */
   { BOP_ANY_ARRAY, "freeze",                0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "({ sp_$AArray *_t$t = $r; if (_t$t) _t$t->frozen = 1; _t$t; })", 0, 0, BOPF_SELF, 1 },
   { BOP_ANY_ARRAY, "frozen?",               0,   0, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "(($r)->frozen != 0)", 0, 0, 0, 1 },
-  { BOP_ANY_HASH,  "freeze",                0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "sp_gc_freeze($r)", 0, 0, BOPF_SELF, 1 },
+  { BOP_ANY_HASH,  "freeze",                0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "sp_gc_freeze($r)", 0, 0, BOPF_SELF, 1 },
   { BOP_ANY_HASH,  "frozen?",               0,   0, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "sp_gc_is_frozen($r)", 0, 0, 0, 1 },
   { BOP_ANY_HASH,  "to_h",                  0,   0, BF_NONE,     BOPR_SELF,     BOPE_TEMPLATE, "$r", 0, 0, BOPF_SELF_EXACT, 1 },  /* identity */
   /* The reflection lookup alone asks this family, after earlier overrides.
@@ -2612,16 +2610,19 @@ const BuiltinOp *bop_find_boxed(TyKind rt, const char *name, int argc, int has_b
   return op && (op->flags & BOPF_BOXED) ? op : NULL;
 }
 
+/* The kind whose rows a call on a receiver of kind rt reads: rt where rows
+   cover it, else the family of its Array or Hash variant. */
+TyKind bop_family_of(TyKind rt) {
+  if (bop_covers(rt)) return rt;
+  if (ty_is_array(rt)) return BOP_ANY_ARRAY;
+  if (ty_is_hash(rt)) return BOP_ANY_HASH;
+  return rt;
+}
+
 /* the flags of the row a call on a receiver of kind rt finds, the Array and
    Hash kinds through their family's rows */
 static unsigned bop_call_flags(TyKind rt, const char *name, int argc, int has_block) {
-  TyKind lk = rt;
-  if (rt == TY_STRBUF) lk = TY_STRING;
-  else if (!bop_covers(rt)) {
-    if (ty_is_array(rt)) lk = BOP_ANY_ARRAY;
-    else if (ty_is_hash(rt)) lk = BOP_ANY_HASH;
-  }
-  const BuiltinOp *op = bop_find(lk, name, argc, has_block);
+  const BuiltinOp *op = bop_find(rt == TY_STRBUF ? TY_STRING : bop_family_of(rt), name, argc, has_block);
   return op ? op->flags : 0;
 }
 

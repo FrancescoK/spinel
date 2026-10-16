@@ -5338,8 +5338,13 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
          body answers -- `def dup = self.class.new(...)` answers boxed (#5461) */
       !(ty_is_object(rt) &&
         comp_resolve_member(c, ty_object_class(rt), name, 0, NULL, NULL) != SP_MEMBER_NONE) &&
-      !(rt == TY_POLY && an_user_defines_method(c, name)))
-    { *out = rt; return 1; }
+      !(rt == TY_POLY && an_user_defines_method(c, name))) {
+    /* the receiver kind's row answers (the receiver itself, as the rule says
+       where no row does) */
+    const BuiltinOp *op = an_bop_find(c, id, bop_family_of(rt), name, argc, nt_ref(nt, id, "block") >= 0);
+    *out = op && op->result != TY_UNKNOWN ? bop_result(op, rt) : rt;
+    return 1;
+  }
 
   /* bareword freeze (implicit self) returns self, so `def seal = freeze` and
      other freeze-as-value uses stay typed as the instance. (Matches the
@@ -6074,8 +6079,11 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
   if (recv >= 0 && argc == 0 && sp_streq(name, "frozen?") &&
       (rt == TY_INT || rt == TY_FLOAT || rt == TY_SYMBOL || rt == TY_BOOL ||
        rt == TY_NIL || rt == TY_RANGE || rt == TY_COMPLEX || rt == TY_RATIONAL ||
-       rt == TY_BIGINT))
-    { *out = TY_BOOL; return 1; }
+       rt == TY_BIGINT)) {
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    *out = op && op->result != TY_UNKNOWN ? op->result : TY_BOOL;
+    return 1;
+  }
   return 0;
 }
 

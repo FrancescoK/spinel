@@ -308,6 +308,10 @@ const BuiltinOp *bop_find_stage(TyKind rt, const char *name, int argc, int has_b
    nothing. */
 int bop_covers(TyKind rt);
 
+/* The kind whose rows a receiver of kind rt reads: rt itself where a row
+   covers it, else the Array or Hash family's (every variant shares them). */
+TyKind bop_family_of(TyKind rt);
+
 /* What the call answers on a receiver of kind rt: the row's result, with a
    derived result (BOPR_*) worked out from rt. */
 TyKind bop_result(const BuiltinOp *op, TyKind rt);

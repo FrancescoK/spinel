@@ -459,12 +459,8 @@ static int emit_builtin_op_ex(Compiler *c, int id, int recv, TyKind rt, const ch
                               const char *rtext, int t0, int stage, Buf *b) {
   if (recv < 0) return 0;
   /* a Hash or Array receiver of any variant reads its family's rows */
-  TyKind lk = rt;
-  if (!bop_covers(rt)) {
-    if (ty_is_hash(rt)) lk = BOP_ANY_HASH;
-    else if (ty_is_array(rt)) lk = BOP_ANY_ARRAY;
-    if (lk == rt || !bop_covers(lk)) return 0;
-  }
+  TyKind lk = bop_family_of(rt);
+  if (!bop_covers(lk)) return 0;
   int argc;
   const int *argv = call_args(c->nt, id, &argc);
   BopArgs a = { c, argv };
