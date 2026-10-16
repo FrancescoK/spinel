@@ -1783,7 +1783,7 @@ XXX
             raise InvalidOption, arg if has_arg and !eq and arg == "-#{opt}"
           end
           begin
-            argv.unshift(opt) if opt and (!rest or (opt = opt.sub(/\A-*/, '-')) != '-')
+            argv.unshift(opt.dup) if opt and (!rest or (opt = opt.sub(/\A-*/, '-')) != '-')
             val = callback!(cb, 1, val) if cb
             callback!(setter, 2, sw.switch_name, val) if setter
           rescue ParseError
