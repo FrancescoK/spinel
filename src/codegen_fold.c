@@ -12162,6 +12162,8 @@ static void emit_arm_arg(Compiler *c, Scope *arm, int a, int atmp_id, TyKind fro
   else if (from_o && pt == from && !pto) buf_printf(b, "%s(%s)", oint_arg(pt), tn);
   else if (!from_o && pt == from && pto) buf_printf(b, "%s(%s)", oint_of(pt), tn);
   else if (pt == TY_POLY && from != TY_POLY && from != TY_UNKNOWN) emit_boxed_text(c, from, tn, b);
+  /* (a parameter that holds its nil takes the box's oint, nil kept: #9398) */
+  else if (from == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN && pto) emit_unbox_nilable_text(c, pt, tn, b);
   else if (from == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) emit_unbox_text(c, pt, tn, b);
   else buf_puts(b, tn);
 }

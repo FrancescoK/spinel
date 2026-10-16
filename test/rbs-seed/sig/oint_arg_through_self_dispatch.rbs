@@ -1,0 +1,9 @@
+class OintDispatchBase
+  def f: (untyped x) -> untyped
+  def h: (Integer? v) -> untyped
+  def q: (untyped x) -> untyped
+end
+class OintDispatchSub < OintDispatchBase
+  def f: (Integer? x) -> Integer?
+  def q: (Float? x) -> Float?
+end
