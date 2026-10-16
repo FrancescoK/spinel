@@ -1,0 +1,9 @@
+"private method 'first' called for an instance of Array"
+false
+true
+1
+"protected method 'fetch' called for an instance of Hash"
+false
+true
+3
+1

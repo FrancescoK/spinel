@@ -5660,7 +5660,14 @@ int desugar_array_first_last(Compiler *c) {
     if (comp_method_in_chain(c, k, "first", NULL) >= 0 ||
         comp_reader_in_chain(c, k, "first", NULL) ||
         comp_method_in_chain(c, k, "last", NULL) >= 0 ||
-        comp_reader_in_chain(c, k, "last", NULL)) user_fl = 1;
+        comp_reader_in_chain(c, k, "last", NULL) ||
+        /* `class Array; private :first; end` with no redefinition: no
+           method-chain entry exists, only a visibility declaration, so
+           the loop above missed it and the rewrite below would have
+           silently turned the refused call into a harmless index read
+           (K-028, kilau docs/CATALOG.md) */
+        comp_method_vis_declared(c, k, "first", NULL) != SP_VIS_PUBLIC ||
+        comp_method_vis_declared(c, k, "last", NULL) != SP_VIS_PUBLIC) user_fl = 1;
   if (user_fl) return 0;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
@@ -5881,7 +5888,10 @@ int desugar_array_at(Compiler *c) {
   int user_at = 0;
   for (int k = 0; k < c->nclasses && !user_at; k++)
     if (comp_method_in_chain(c, k, "at", NULL) >= 0 ||
-        comp_reader_in_chain(c, k, "at", NULL)) user_at = 1;
+        comp_reader_in_chain(c, k, "at", NULL) ||
+        /* a bare `private :at` reopening with no redefinition (K-028,
+           kilau docs/CATALOG.md), same reason as desugar_array_first_last */
+        comp_method_vis_declared(c, k, "at", NULL) != SP_VIS_PUBLIC) user_at = 1;
   if (!user_at)
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
