@@ -1,0 +1,8 @@
+class Tally
+  @counts: Hash[Symbol, Integer]
+  def initialize: () -> void
+  def bump: (Symbol name) -> Integer
+  def names: () -> Array[Symbol]
+  def total: (Hash[Symbol, Integer] h) -> Integer
+  def label: (Hash[Symbol, String] h) -> Integer
+end

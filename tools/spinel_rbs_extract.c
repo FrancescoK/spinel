@@ -16,7 +16,9 @@
  *     float_array / sym_array / obj_X_ptr_array / poly_array
  *   - Array[Array[Integer]] / Array[Array[Float]] → int_array_array /
  *     float_array_array (a request the narrowing pass answers, not a pin)
- *   - Hash[K, V] → str_int_hash / sym_str_hash / str_poly_hash etc.
+ *   - Hash[K, V] → str_int_hash / str_str_hash / str_poly_hash, and
+ *     sym_poly_hash for every Symbol-keyed Hash (the analyzer has no
+ *     other Symbol-keyed kind)
  *   - Optional T (T?) → <subset>?    (recursive)
  *   - Union T | nil → T?    (any other union → poly)
  *   - An `instance` return in a class, and a `self` return in its
