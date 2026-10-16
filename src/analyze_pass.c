@@ -10684,16 +10684,14 @@ static TyKind bs_join(TyKind a, TyKind b) {
   return u;
 }
 
-/* What value `v` binds as. An empty `[]` / `{}` literal has no type of its
+/* What value `v` binds as. An empty `[]` / `{}` literal, or a bare
+   `Array.new` / `Hash.new`, has no type of its
    own but is still built as a container, so it is not the Integer an
    unpinned parameter defaults to (#4295): poly holds either. */
 static TyKind bs_value(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   TyKind t = v >= 0 ? infer_type(c, v) : TY_NIL;
-  if (t == TY_UNKNOWN && (nt_kind(nt, v) == NK_ArrayNode || nt_kind(nt, v) == NK_HashNode)) {
-    int en = 0; nt_arr(nt, v, "elements", &en);
-    if (en == 0) t = TY_POLY;
-  }
+  if (t == TY_UNKNOWN && node_is_empty_container(nt, v)) t = TY_POLY;
   return t;
 }
 

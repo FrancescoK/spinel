@@ -2093,6 +2093,26 @@ static void emit_if_arm_value(Compiler *c, int last, TyKind res, int res_o, int 
   free(le.p);
 }
 
+/* The last statement of an arm of a multi-statement if used as a value (emit_if_expr):
+   assigned to the result temp `tr`. An empty `[]` / `{}` / bare `Array.new` /
+   `Hash.new` caches TY_UNKNOWN for a reason that is not "has no value": it has
+   no ELEMENT type until something supplies one. Running it for effect leaves
+   the slot at its default, which is how `if c then [] end` answered nil where
+   CRuby answers []. emit_ternary_arm already builds it against a result type.
+   A tail with no value is run for its effect alone. */
+static void emit_if_arm_tail(Compiler *c, int last, TyKind res, int res_o, int tr) {
+  TyKind lt = repr_of(c, last).as_ty;
+  if (lt == TY_UNKNOWN && node_is_empty_container(c->nt, last)) {
+    Buf le; memset(&le, 0, sizeof le);
+    emit_ternary_arm(c, last, res, &le);
+    emit_indent(g_pre, g_indent + 2);
+    buf_printf(g_pre, "_t%d = %s;\n", tr, le.p ? le.p : default_value_from_compiler(c, res));
+    free(le.p);
+  }
+  else if (lt == TY_NIL || lt == TY_UNKNOWN || lt == TY_VOID) emit_stmt(c, last, g_pre, g_indent + 2);
+  else emit_if_arm_value(c, last, res, res_o, tr);
+}
+
 /* The engine's String constants (RUBY_VERSION, ...) are frozen in CRuby, and
    each is one object however often it is read. Each is a frozen static laid
    out like a frozen literal -- a real sp_str_hdr, then the 0xf1 marker --
@@ -4454,27 +4474,7 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
     free(cnd.p);
     /* Then branch: side-effect stmts, then assign last expr to temp. */
     for (int i = 0; i < tn - 1; i++) emit_stmt(c, tb[i], g_pre, g_indent + 2);
-    if (tn > 0) {
-      int last_then = tb[tn - 1];
-      TyKind lt = repr_of(c, last_then).as_ty;
-      /* An empty `[]` / `{}` caches TY_UNKNOWN for a reason that is not
-         "has no value": it has no ELEMENT type until something supplies
-         one. Running it for effect leaves the slot at its default, which
-         is how `if c then [] end` answered nil where CRuby answers [].
-         emit_ternary_arm already builds it against a result type. */
-      int empty_lit = lt == TY_UNKNOWN && node_is_empty_container(nt, last_then);
-      if (empty_lit) {
-        Buf le; memset(&le, 0, sizeof le);
-        emit_ternary_arm(c, last_then, res, &le);
-        emit_indent(g_pre, g_indent + 2);
-        buf_printf(g_pre, "_t%d = %s;\n", tr, le.p ? le.p : default_value_from_compiler(c, res));
-        free(le.p);
-      }
-      else if (lt == TY_NIL || lt == TY_UNKNOWN || lt == TY_VOID) {
-        emit_stmt(c, last_then, g_pre, g_indent + 2);
-      }
-      else emit_if_arm_value(c, last_then, res, res_o, tr);
-    }
+    if (tn > 0) emit_if_arm_tail(c, tb[tn - 1], res, res_o, tr);
     emit_indent(g_pre, g_indent);
     buf_puts(g_pre, "}\n");
     /* Else / elsif branch. */
@@ -4484,14 +4484,7 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
         emit_indent(g_pre, g_indent);
         buf_puts(g_pre, "else {\n");
         for (int i = 0; i < en - 1; i++) emit_stmt(c, eb[i], g_pre, g_indent + 2);
-        if (en > 0) {
-          int last_else = eb[en - 1];
-          TyKind lt2 = repr_of(c, last_else).as_ty;
-          if (lt2 == TY_NIL || lt2 == TY_UNKNOWN || lt2 == TY_VOID) {
-            emit_stmt(c, last_else, g_pre, g_indent + 2);
-          }
-          else emit_if_arm_value(c, last_else, res, res_o, tr);
-        }
+        if (en > 0) emit_if_arm_tail(c, eb[en - 1], res, res_o, tr);
         emit_indent(g_pre, g_indent);
         buf_puts(g_pre, "}\n");
       }

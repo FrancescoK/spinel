@@ -14678,13 +14678,14 @@ static int is_empty_array_literal(const NodeTable *nt, int id, int cap) {
   int en = 0; nt_arr(nt, id, "elements", &en);
   return en == 0;
 }
-/* An empty `[]`, or a bare `Array.new`, which carries no element type either
-   and is as much an operand as the literal. */
-static int is_empty_array_operand(Compiler *c, int id) {
-  if (id < 0 || id >= c->node_cap) return 0;
-  NodeKind k = nt_kind(c->nt, id);
-  return (k == NK_ArrayNode || k == NK_CallNode) && node_is_empty_container(c->nt, id) &&
-         an_empty_container_kind(c, id) == 1;
+/* The node of an empty `[]`, or of a bare `Array.new`, which carries no
+   element type either and is as much an operand as the literal, or -1. An
+   operand in parentheses is the node inside them: that is what the marking
+   (empty_arr_recv, arr_want) and the inference of it read. */
+static int empty_array_operand(Compiler *c, int id) {
+  if (id < 0 || id >= c->node_cap || !node_is_empty_container(c->nt, id) || an_empty_container_kind(c, id) != 1)
+    return -1;
+  return an_unparen(c->nt, id);
 }
 static void mark_empty_array_operands(Compiler *c) {
   if (!c->empty_arr_recv || !c->arr_want) return;
@@ -14692,12 +14693,14 @@ static void mark_empty_array_operands(Compiler *c) {
   NT_FOREACH_KIND(nt, NK_EmbeddedStatementsNode, es) {
     int st = nt_ref(nt, es, "statements");
     int bn = 0; const int *bb = st >= 0 ? nt_arr(nt, st, "body", &bn) : NULL;
-    if (bn == 1 && is_empty_array_operand(c, bb[0])) comp_set_empty_arr_recv(c, bb[0], 1);
+    int eo = bn == 1 ? empty_array_operand(c, bb[0]) : -1;
+    if (eo >= 0) comp_set_empty_arr_recv(c, eo, 1);
   }
   /* `a, b = []` answers its right-hand side, which no write can back-fill */
   NT_FOREACH_KIND(nt, NK_MultiWriteNode, mw) {
     int v = nt_ref(nt, mw, "value");
-    if (is_empty_array_operand(c, v)) comp_set_empty_arr_recv(c, v, 1);
+    int eo = empty_array_operand(c, v);
+    if (eo >= 0) comp_set_empty_arr_recv(c, eo, 1);
   }
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
@@ -14705,7 +14708,8 @@ static void mark_empty_array_operands(Compiler *c) {
     if (recv < 0 || recv >= c->node_cap) continue;
     int anode = nt_ref(nt, id, "arguments");
     int an = 0; const int *av = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
-    int recv_empty = is_empty_array_operand(c, recv);
+    int recv_n = empty_array_operand(c, recv);
+    int recv_empty = recv_n >= 0;
     /* an inject / each_with_object seed is written through the block param
        and back-fills like a local: leave it */
     int seed = nt_ref(nt, id, "block") >= 0 && nm &&
@@ -14720,8 +14724,9 @@ static void mark_empty_array_operands(Compiler *c) {
         is_call_or_yield(nm) &&
         infer_type(c, recv) == TY_PROC) {
       for (int k = 0; k < an; k++) {
-        if (is_empty_array_operand(c, av[k]) && c->arr_want[av[k]] == TY_UNKNOWN)
-          comp_set_arr_want(c, av[k], TY_POLY_ARRAY);
+        int ek = empty_array_operand(c, av[k]);
+        if (ek >= 0 && c->arr_want[ek] == TY_UNKNOWN)
+          comp_set_arr_want(c, ek, TY_POLY_ARRAY);
         /* the same for `{}`: the proc-call argument emitter asks the node's
            type to decide whether the value is storable, and an untyped empty
            literal made it declare an sp_int temp and box nil, while the
@@ -14741,16 +14746,17 @@ static void mark_empty_array_operands(Compiler *c) {
       if ((ty_is_array(rt) && !seed) || ty_is_hash(rt)) {
         TyKind want = (ty_is_array(rt) && rt != TY_POLY_ARRAY && empty_arr_same_kind_method(nm))
                       ? rt : TY_POLY_ARRAY;
-        for (int k = 0; k < an; k++)
-          if (is_empty_array_operand(c, av[k]) && c->arr_want[av[k]] == TY_UNKNOWN)
-            comp_set_arr_want(c, av[k], want);
+        for (int k = 0; k < an; k++) {
+          int ek = empty_array_operand(c, av[k]);
+          if (ek >= 0 && c->arr_want[ek] == TY_UNKNOWN) comp_set_arr_want(c, ek, want);
+        }
       }
     }
     if (!recv_empty) continue;
     /* `[] + a` takes a's kind ... */
-    if (an == 1 && nm && empty_arr_same_kind_method(nm) && c->arr_want[recv] == TY_UNKNOWN) {
+    if (an == 1 && nm && empty_arr_same_kind_method(nm) && c->arr_want[recv_n] == TY_UNKNOWN) {
       TyKind at = infer_type(c, av[0]);
-      if (ty_is_array(at) && at != TY_POLY_ARRAY) { comp_set_arr_want(c, recv, at); continue; }
+      if (ty_is_array(at) && at != TY_POLY_ARRAY) { comp_set_arr_want(c, recv_n, at); continue; }
     }
     /* When both operands are bare `[]`, the receiver becomes a poly array but
        the argument has no independently inferred kind. Give that argument the
@@ -14758,12 +14764,13 @@ static void mark_empty_array_operands(Compiler *c) {
        the default sp_IntArray* into a path expecting sp_PolyArray*. Seeds keep
        their existing back-fill behavior through the block parameter. */
     if (!seed) {
-      for (int k = 0; k < an; k++)
-        if (is_empty_array_operand(c, av[k]) && c->arr_want[av[k]] == TY_UNKNOWN)
-          comp_set_arr_want(c, av[k], TY_POLY_ARRAY);
+      for (int k = 0; k < an; k++) {
+        int ek = empty_array_operand(c, av[k]);
+        if (ek >= 0 && c->arr_want[ek] == TY_UNKNOWN) comp_set_arr_want(c, ek, TY_POLY_ARRAY);
+      }
     }
     /* ... any other bare `[]` receiver is an empty poly array */
-    comp_set_empty_arr_recv(c, recv, 1);
+    comp_set_empty_arr_recv(c, recv_n, 1);
     /* The marking gives the receiver an element type, but a block parameter is
        interned only where something reads it. With neither -- `[].map { |x| 1 }`
        -- no slot exists at all, while the element loop binds `lv_x` anyway and
