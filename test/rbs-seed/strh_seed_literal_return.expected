@@ -1,0 +1,31 @@
+CREATE INDEX c;
+shared,shared
+["early"]
+["late", "later"]
+["CREATE TABLE a;", "CREATE TABLE b", "CREATE INDEX c"]
+if!
+two!
+three!
+unless-else!
+unless!
+zero!
+uno!
+many!
+rescued!
+else-arm!
+own-rescue!
+fine!
+c0!
+c5!
+c12!
+e!
+zero!
+deep1!
+deep3!
+shallow!
+shallow!
+shallow!
+x!
+x!
+mid!
+tail!

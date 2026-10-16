@@ -1,0 +1,10 @@
+module SeedEmptyArg
+  def self.check: (Array[String] fields, Array[String] scalars, Array[String] hashes) -> Integer
+  def self.named: (names: Array[String] names) -> Integer
+end
+
+class SeedEmptyArgCtl
+  def initialize: (Array[String] names, Array[String] extra) -> void
+  def run: () -> Integer
+  def names: () -> Array[String]
+end

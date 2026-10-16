@@ -1,0 +1,17 @@
+module SeedStatements
+  def self.all: () -> Array[String]
+  def self.shared: () -> Array[String]
+  def self.early: (bool flag) -> Array[String]
+end
+
+module SeedArms
+  def self.cond: (Integer flag) -> Array[String]
+  def self.neg: (bool flag) -> Array[String]
+  def self.kase: (Integer n) -> Array[String]
+  def self.guarded: (Integer flag) -> Array[String]
+  def self.own_rescue: (bool flag) -> Array[String]
+  def self.chain: (Integer f) -> Array[String]
+  def self.nested: (Integer f, Integer g) -> Array[String]
+  def self.only_return: (Integer flag) -> Array[String]
+  def self.some_returns: (Integer flag) -> Array[String]
+end
