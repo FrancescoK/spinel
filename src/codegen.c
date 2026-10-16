@@ -17199,6 +17199,7 @@ static void scan_prologue_features(Compiler *c) {
    same case, and restoring the pre-unit value needs no judgement about what
    each global's "between units" value ought to be. Scalars are left alone:
    a stale int is wrong, not undefined, and the next unit assigns its own. */
+extern int g_ctor_blk_tmp;   /* codegen_call.c */
 typedef struct EmitUnitState {
   Buf *pre;
   const char *yield_self_fallback;
@@ -17250,6 +17251,10 @@ typedef struct EmitUnitState {
   int fiber_body;      /* g_fiber_body: a refusal inside a Thread body skips its restore */
   int emitting_class_id, inline_recv_class, ie_class_id, dm_subst_node, exc_frame_depth;
   int open_defaults;
+  /* the hoisted block of `k.new(args) { }` (g_ctor_blk_tmp): a refused
+     argument drops the statement and its declaration, and a constructor
+     emitted after it passed the temporary nothing declares */
+  int ctor_blk_tmp;
   int loop_exc_base, loop_rescue_base, loop_ensure_base, redo_depth;
   /* whether the unit's block is a lowered method's proc parameter */
   int current_scope_is_lowered, yield_lowered_fallback;
@@ -17272,6 +17277,7 @@ void emit_unit_state_save(EmitUnitState *s) {
   s->loop_exc_base = g_loop_exc_base; s->loop_rescue_base = g_loop_rescue_base; s->loop_ensure_base = g_loop_ensure_base; s->redo_depth = g_redo_depth;
   s->ie_next_ty = g_ie_next_ty;
   s->open_defaults = g_open_defaults;
+  s->ctor_blk_tmp = g_ctor_blk_tmp;
   s->pre = g_pre;
   s->yield_self_fallback = g_yield_self_fallback;
   s->yield_self_fallback2 = g_yield_self_fallback2; s->yield_self_deref_fallback2 = g_yield_self_deref_fallback2; s->yield_emitting_class_fallback2 = g_yield_emitting_class_fallback2;
@@ -17326,6 +17332,7 @@ void emit_unit_state_restore(const EmitUnitState *s) {
   g_loop_exc_base = s->loop_exc_base; g_loop_rescue_base = s->loop_rescue_base; g_loop_ensure_base = s->loop_ensure_base; g_redo_depth = s->redo_depth;
   g_ie_next_ty = s->ie_next_ty;
   g_open_defaults = s->open_defaults;
+  g_ctor_blk_tmp = s->ctor_blk_tmp;
   g_pre = s->pre;
   g_yield_self_fallback = s->yield_self_fallback;
   g_yield_self_fallback2 = s->yield_self_fallback2; g_yield_self_deref_fallback2 = s->yield_self_deref_fallback2; g_yield_emitting_class_fallback2 = s->yield_emitting_class_fallback2;
