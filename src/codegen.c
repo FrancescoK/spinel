@@ -13441,6 +13441,15 @@ static void zsuper_end(ZSuper *z) {
   if (z->gather < 0) arg_layout_free(&z->L);
 }
 
+/* This method's parameter `txt` (a local `ep` of type `et`) as the boxed
+   value a bare super's Array holds: a slot that keeps its nil beside the
+   number (an oint) boxes through its own nil-aware box. */
+static void emit_zsuper_boxed(Compiler *c, LocalVar *ep, TyKind et, const char *txt, Buf *b) {
+  if (et == TY_POLY) buf_puts(b, txt);
+  else if (ep && oint_kind(et) && slot_is_oint(ep)) buf_printf(b, "%s(%s)", oint_box(et), txt);
+  else emit_boxed_text(c, et, txt, b);
+}
+
 /* The parent's parameter i for a bare super: a positional by the layout, a
    keyword from this method's like-named keyword, anything else its default
    or empty. This method's names read under the renames up to own_nren, the
@@ -13513,8 +13522,7 @@ static void emit_zsuper_param(Compiler *c, Scope *s, Scope *pm, const ZSuper *z,
       Buf txt; memset(&txt, 0, sizeof txt); emit_scope_local_ref(c, s, s->pnames[k], &txt);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", t);
-      if (et == TY_POLY) buf_puts(g_pre, txt.p);
-      else emit_boxed_text(c, et, txt.p, g_pre);
+      emit_zsuper_boxed(c, ep, et, txt.p, g_pre);
       buf_puts(g_pre, ");\n");
       free(txt.p);
     }
@@ -13587,8 +13595,7 @@ static int emit_zsuper_gather(Compiler *c, Scope *s, Scope *pm) {
     TyKind et = ep && ep->type != TY_UNKNOWN ? ep->type : TY_POLY;
     Buf txt; memset(&txt, 0, sizeof txt); emit_scope_local_ref(c, s, s->pnames[i], &txt);
     Buf ab; memset(&ab, 0, sizeof ab);
-    if (et == TY_POLY) buf_puts(&ab, txt.p);
-    else emit_boxed_text(c, et, txt.p, &ab);
+    emit_zsuper_boxed(c, ep, et, txt.p, &ab);
     free(txt.p);
     emit_indent(g_pre, g_indent);
     if (i == s->rest_idx)

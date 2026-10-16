@@ -10268,8 +10268,8 @@ void emit_pd_param_bind(Compiler *c, Scope *m, int i, int uid, const char *val, 
   snprintf(name, cap, byref ? "_cell_%s" : "lv_%s", uniq);
 }
 
-/* True if some parameter's default expression references an EARLIER parameter.
-   Ruby evaluates defaults left-to-right in the callee where earlier params are
+/* True if some parameter's default expression references an EARLIER parameter
+   (reads or assigns it: `b = (a = 4)`). Ruby evaluates defaults left-to-right in the callee where earlier params are
    already bound; spinel fills defaults at the call site, where those bindings
    are absent, so such a default needs the sibling-binding path below. */
 int default_refs_earlier_param(Compiler *c, Scope *m) {
@@ -10278,7 +10278,8 @@ int default_refs_earlier_param(Compiler *c, Scope *m) {
   for (int i = 1; i < m->nparams; i++) {
     if (!m->pdefault || m->pdefault[i] < 0) continue;
     for (int j = 0; j < i; j++)
-      if (m->pnames[j] && subtree_reads_local(nt, m->pdefault[i], m->pnames[j]))
+      if (m->pnames[j] && (subtree_reads_local(nt, m->pdefault[i], m->pnames[j]) ||
+                           subtree_writes_local(c, m->pdefault[i], m->pnames[j])))
         return 1;
   }
   return 0;
@@ -11838,6 +11839,20 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
       emit_pd_param_bind(c, m, i, uid, vb.p, tmpnames[i], sizeof tmpnames[0]);
       free(vb.p);
     }
+    /* a parameter a closure captures lives in its cell once a default has
+       run, which a later default may have written (`b = (-> { a = 7 }.call)`):
+       the call passes the alias, which takes the cell's value */
+    for (int i = 0; i < m->nparams; i++) {
+      LocalVar *cp = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
+      if (!cp || !cp->is_cell || cp->byref_out) continue;
+      for (int j = i + 1; j < m->nparams; j++)
+        if (m->pdefault && m->pdefault[j] >= 0 && subtree_writes_local(c, m->pdefault[j], m->pnames[i])) {
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "%s = %s*_cell__pd%d_%d;\n", tmpnames[i],
+                     cp->type == TY_PROC ? "(sp_Proc *)(uintptr_t)" : "", uid, i);
+          break;
+        }
+    }
     g_nren = ren_base;  /* pop the renames before emitting the call args */
     for (int i = 0; i < m->nparams; i++) {
       buf_puts(out, i == 0 ? lead : ", ");
@@ -12916,6 +12931,8 @@ static void emit_dispatch_in(Compiler *c, int cid, const char *name,
   int pd_ren_base = g_nren, pd_uid = 0;
   int pd_active = pm && (splat_tmp_d < 0 || L.gather) && default_refs_earlier_param(c, pm);
   if (pd_active) pd_uid = ++g_tmp;
+  char *pd_alias = np ? calloc((size_t)np, 1) : NULL;   /* the parameters that have an alias */
+  if (np && !pd_alias) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   /* a strict parameter's argument that can be nil (param_strict): held as
      its oint here, checked once every argument has run (below) */
   int pmi = pm ? (int)(pm - c->scopes) : -1;
@@ -13134,10 +13151,28 @@ else {
         char pdn[48]; snprintf(pdn, sizeof pdn, "_pd%d_%d", pd_uid, k);
         emit_pd_cell_alias(c, p, pdn);
         ren_push(pm->pnames[k], "_pd%d_%d", pd_uid, k);
+        pd_alias[k] = 1;
       }
     }
     free(ab.p);
   }
+  /* a default that assigns an earlier parameter (`b = (a = 4)`) wrote its
+     alias, or its cell when a closure captures the parameter; the call
+     passes the temp, which takes the value */
+  for (int k = 0; pd_active && k < np; k++)
+    if (pd_alias[k]) {
+      LocalVar *cp = scope_local(pm, pm->pnames[k]);
+      int cell = cp && cp->is_cell && !cp->byref_out;
+      for (int j = k + 1; j < pm->nparams; j++)
+        if (pm->pdefault && pm->pdefault[j] >= 0 && subtree_writes_local(c, pm->pdefault[j], pm->pnames[k])) {
+          emit_indent(g_pre, g_indent);
+          if (!cell) buf_printf(g_pre, "_t%d = lv__pd%d_%d;\n", atmp[k], pd_uid, k);
+          else if (cp->type == TY_PROC) buf_printf(g_pre, "_t%d = (sp_Proc *)(uintptr_t)*_cell__pd%d_%d;\n", atmp[k], pd_uid, k);
+          else buf_printf(g_pre, "_t%d = *_cell__pd%d_%d;\n", atmp[k], pd_uid, k);
+          break;
+        }
+    }
+  free(pd_alias);
   g_nren = pd_ren_base;   /* the renames served the defaults only */
   view_unbind(argov_saved_d);
   /* the strict parameters' checks, in the callee's order: each nil raises
