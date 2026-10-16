@@ -23389,8 +23389,11 @@ static int bscm_rewrite(NodeTable *nt, int body, int in_sg, const BscmNames *t) 
     int st = bs[k];
     NodeKind sk = nt_kind(nt, st);
     if (sk == NK_DefNode && (in_sg || (nt_ref(nt, st, "receiver") >= 0 &&
-                                       nt_kind(nt, nt_ref(nt, st, "receiver")) == NK_SelfNode)))
+                                       nt_kind(nt, nt_ref(nt, st, "receiver")) == NK_SelfNode))) {
+      /* a parameter's default runs under the same self as the body */
+      changed |= bscm_walk(nt, nt_ref(nt, st, "parameters"), t, 0);
       changed |= bscm_walk(nt, nt_ref(nt, st, "body"), t, 0);
+    }
     else if (sk == NK_SingletonClassNode && bscm_own_sclass(nt, nt_ref(nt, st, "expression"), t))
       changed |= bscm_rewrite(nt, nt_ref(nt, st, "body"), 1, t);
     /* a statement of the class body, where self is the class itself */
