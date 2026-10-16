@@ -13945,11 +13945,12 @@ static int face_srange_sym_value(Compiler *c, int id, int t, const char *call, T
 static int face_view_index_ranges(Compiler *c, int id, int *toks, int cap) {
   int argc, n = 0;
   const int *argv = call_args(c->nt, id, &argc);
-  for (int i = 0; i < argc && n < cap; i++) {
-    int a = argv[i];
+  for (int i = 0; i < argc && n + 1 < cap; i++) {
+    int a = unwrap_parens(c, argv[i]);
     if (nt_kind(c->nt, a) != NK_RangeNode || nt_int(c->nt, a, "index_of", 0) - 1 != id) continue;
     TyKind at = cg_natural_type(c, a);
     if (at != comp_ntype(c, a)) toks[n++] = view_push(c, a, at);
+    if (argv[i] != a && at != comp_ntype(c, argv[i])) toks[n++] = view_push(c, argv[i], at);
   }
   return n;
 }
@@ -14042,7 +14043,7 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
   TyKind as = ty_poly_face_kind(kind);
   int v = view_push(c, recv, as);
   int fv = view_push_face(recv, as);
-  int av[2], an = face_view_index_ranges(c, id, av, 2);
+  int av[4], an = face_view_index_ranges(c, id, av, 4);
   TyKind nat = cg_natural_type(c, id);
   if (kind == PF_HASH && repr_of(c, id).demand && strbuf_hash_default_arg(c, id) >= 0) nat = TY_STRBUF;
   /* A numeric iterator with a block answers its receiver, and the arm's

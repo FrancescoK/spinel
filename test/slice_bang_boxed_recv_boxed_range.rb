@@ -20,11 +20,12 @@ class Tape
   def exclusive = @bytes.slice!(@pos...@stop)
   def endless_excl = @bytes.slice!(@pos...)
   def beginless = @bytes.slice!(..@stop)
+  def parenthesized = @bytes.slice!((@pos..))
   def bytes = @bytes
 end
 
 [[1, 2, 3, 4, 5], "abcde".dup].each do |v|
-  %i[endless closed exclusive endless_excl beginless].each do |m|
+  %i[endless closed exclusive endless_excl beginless parenthesized].each do |m|
     t = Tape.new(v.dup, 1, 3)
     p [m, t.send(m), t.bytes]
   end
