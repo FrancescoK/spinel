@@ -1127,7 +1127,7 @@ int attr_assign_slot(Compiler *c, int id, int *cid, int *iv) {
       nt_kind(nt, argv[0]) == NK_SplatNode || nt_kind(nt, argv[0]) == NK_KeywordHashNode ||
       nt_kind(nt, argv[0]) == NK_BlockArgumentNode)
     return 0;
-  TyKind rt = comp_ntype(c, recv);
+  TyKind rt = repr_of(c, recv).as_ty;
   size_t ln = strlen(name);
   char base[256], ivn[258];
   if (ln - 1 >= sizeof base) return 0;
@@ -1171,7 +1171,7 @@ int user_assign_handle(Compiler *c, int id) {
   /* a boxed receiver is dispatched on its class, and its arms answer the
      handle the call was given (a safe-navigation link answers nil for a nil
      receiver) */
-  TyKind rty = comp_ntype(c, recv);
+  TyKind rty = repr_of(c, recv).as_ty;
   if (rty == TY_POLY || rty == TY_UNKNOWN) {
     /* ...when user classes have the writer, through a safe-navigation
        link or a plain one: each arm stores the handle the call holds (an
@@ -3870,7 +3870,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     }
     /* Module#include?(mod): mod must be a Module (a Class arg is a TypeError);
        true when mod is a proper ancestor of the receiver (#2674). */
-    if (sp_streq(name, "include?") && argc == 1 && comp_ntype(c, argv[0]) == TY_CLASS) {
+    if (sp_streq(name, "include?") && argc == 1 && repr_of(c, argv[0]).as_ty == TY_CLASS) {
       int m = ++g_tmp;
       buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
       buf_printf(b, "; sp_Class _cl%d = ", m); emit_expr(c, argv[0], b);
