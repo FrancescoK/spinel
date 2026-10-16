@@ -576,7 +576,7 @@ void slot_rule(Compiler *c, LocalVar *lv, TyKind t, int node, const char *reason
 
 int slot_set(Compiler *c, LocalVar *lv, TyKind merged, TyKind t, int node) {
   int held = 0;
-  if (!lv->range_held && (t == TY_RANGE || value_may_be_range(c, node))) { lv->range_held = 1; held = 1; }
+  if (!lv->range_held && !c->range_unheld && (t == TY_RANGE || value_may_be_range(c, node))) { lv->range_held = 1; held = 1; }
   if (merged == lv->type) {
     if (!ty_degraded(merged) && merged != TY_UNKNOWN && node >= 0) lv->last_src = node;
     return held;

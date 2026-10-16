@@ -9952,12 +9952,16 @@ static int infer_param_types_ex(Compiler *c, int settle) {
            hot method's Integer parameter was boxed by a call that could
            not reach it */
         const PolyCand *pcs = comp_poly_candidates_at(c, id, name, &npc);
+        /* a receiver of no known class: a Range among the arguments makes
+           no candidate's parameter range_held */
+        c->range_unheld = cls_fact_idx(c, recv) < 0;
         for (int pi = 0; pi < npc; pi++)
           if (pcs[pi].mi < 0 || method_takes_call_args(c, &c->scopes[pcs[pi].mi], id))
             changed |= bind_call_params(c, id, pcs[pi].mi);
         pcs = comp_cmethod_candidates(c, name, &npc);
         for (int pi = 0; pi < npc; pi++)
           changed |= bind_call_params(c, id, pcs[pi].mi);
+        c->range_unheld = 0;
       }
     }
     /* A builtin receiver's own reopening takes this call's arguments too,
