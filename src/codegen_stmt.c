@@ -3930,6 +3930,54 @@ int strbuf_poly_to_s(Compiler *c, int v) {
          (repr_of(c, r).kind == RK_BOXED || strbuf_var_handle(c, r, NULL));
 }
 
+/* The operand of conversion v, a call that answers its operand's String
+   when it is a String: itself, to_s, to_str, unary + (unless the String is
+   frozen) and Kernel#String, with no method of the program's own of the
+   name reached; -1 for any other node. */
+static int var_conversion_operand(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  const char *nm = v >= 0 && nt_kind(nt, v) == NK_CallNode ? nt_str(nt, v, "name") : NULL;
+  if (!nm || nt_ref(nt, v, "block") >= 0 || comp_method_index(c, nm) >= 0) return -1;
+  int r = nt_ref(nt, v, "receiver"), argc = 0, targets[CPT_MAX];
+  const int *av = call_args(nt, v, &argc);
+  if (cplan_targets(c, v, targets, CPT_MAX) != 0) return -1;
+  if (r >= 0 && argc == 0 && (is_receiver_conversion(nm) || is_unary_plus(nm))) return unwrap_parens(c, r);
+  if (r < 0 && is_string_class_name(nm) && argc == 1 && call_plain_argc(c, v) == 1) return unwrap_parens(c, av[0]);
+  return -1;
+}
+/* --share-strings: is v such a conversion (var_conversion_operand) of a
+   variable that holds the handle, or of such a call, down a chain of them
+   (`q.itself`, `q.to_s.itself`, `String(q)`, `+q`): that variable's String,
+   which a box of v hands on (a to_s of the variable itself is
+   strbuf_poly_to_s's, asked first). */
+int strbuf_var_conversion(Compiler *c, int v) {
+  if (!repr_share_rule(c)) return 0;
+  int r = var_conversion_operand(c, v);
+  return r >= 0 && (strbuf_var_handle(c, r, NULL) || strbuf_var_conversion(c, r));
+}
+/* The handle strbuf_var_conversion's v answers, as an sp_String *, NULL for
+   nil: for nil, itself answers nil, to_s and String a frozen "", and to_str
+   and unary + raise, unless a `&.` skips the link; unary + on a frozen
+   String answers a new one (sp_String_uplus). */
+void emit_var_conversion_handle(Compiler *c, int v, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, v, "name");
+  int r = var_conversion_operand(c, v);
+  Buf hr; memset(&hr, 0, sizeof hr);
+  if (!strbuf_var_handle(c, r, &hr)) emit_var_conversion_handle(c, r, &hr);
+  const char *h = hr.p ? hr.p : "NULL";
+  int plus = is_unary_plus(nm), t = ++g_tmp;
+  if (is_itself_name(nm) || (call_is_safe_nav(nt, v) && !plus)) buf_puts(b, h);
+  else if (is_to_s_name(nm) || is_string_class_name(nm))
+    buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? _t%d : sp_String_new_shared(sp_str_frozen_empty); })", t, h, t, t);
+  else if (plus && call_is_safe_nav(nt, v))
+    buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? sp_String_uplus(_t%d) : (sp_String *)NULL; })", t, h, t, t);
+  else
+    buf_printf(b, "({ sp_String *_t%d = %s; if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", "
+                  "sp_box_nil())); %s_t%d%s; })", t, h, t, nm, plus ? "sp_String_uplus(" : "", t, plus ? ")" : "");
+  free(hr.p);
+}
+
 /* --share-strings: is v a read of a local whose slot is a box (one an is_a?
    guard narrows too), whose String emit_strbuf_value takes as the handle
    after lifting the box (sp_poly_strbuf_lift)? */
