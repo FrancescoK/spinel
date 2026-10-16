@@ -4,6 +4,7 @@
 #include "sp_gc.h"
 #include "sp_alloc.h"
 #include "sp_proc.h"
+sp_RbVal sp_cext_object_class(sp_RbVal);
 sp_RbVal sp_cext_hash_new(void);
 sp_RbVal sp_cext_plain_object_new(void);
 void sp_cext_hash_set(sp_RbVal, sp_RbVal, sp_RbVal);

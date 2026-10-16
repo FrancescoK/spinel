@@ -259,6 +259,12 @@ the no-block refusals described above.
 
 ## Partial / relaxable limits
 
+The restricted C extension API provides `rb_obj_class` and
+`rb_class2name` at runtime. They read the object's class and its name directly,
+so Ruby overrides of `class` and `name` do not affect them. The recorder refuses
+these runtime queries during `Init_`; extensions still require source
+compilation against the restricted headers rather than loading a CRuby binary.
+
 Limited today, but additively fixable; listed roughly easiest-first.
 
 | Feature | Today | Path to relax |

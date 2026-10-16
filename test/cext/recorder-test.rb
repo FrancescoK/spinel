@@ -70,6 +70,8 @@ Dir.mktmpdir("cext-recorder-test-") do |dir|
   check(status.success? && syntax.include?("Syntax OK"), "invalid declaration Ruby")
 
   refusals = {
+    "object class during Init" => ['rb_obj_class(rb_cObject);', "rb_obj_class"],
+    "class name during Init" => ['rb_class2name(rb_cObject);', "rb_class2name"],
     "Ruby execution" => ['rb_funcall(rb_cObject, rb_intern("name"), 0);', "rb_funcall"],
     "invalid constant lookup" => ['rb_const_get(rb_cObject, rb_intern("lower"));', "ASCII constant names"],
     "eval" => ['rb_eval_string("ENV[\\\"HOME\\\"]");', "rb_eval_string"],
