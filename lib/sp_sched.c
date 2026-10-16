@@ -293,29 +293,36 @@ static void sp_sysmon_wake(void) {
   else if (g_sysmon_pipe[1] >= 0) { char c = 1; ssize_t r = write(g_sysmon_pipe[1], &c, 1); (void)r; }
 }
 
-/* (#8702) The timers -- the heap, its staging buffer and counts, each
-   thread's `timer`, and g_nearest -- are under a lock of their own, not the
-   scheduler lock: a sleep or a timed wait parks under its list's lock and
-   this one, and the monitor fires what is due under this one and wakes it
-   under its list's. Lock order: the scheduler lock, a list's wait lock, then
-   this one; nothing is taken while it is held. */
-static sp_wlock g_tm_wl = 0;
-/* The monitor's cached next wake time. Timer insertions lower it; canceling its
-   current minimum clears it so the monitor recomputes from the heap. With the
-   event backend, the monitor can skip rebuilding the I/O poll set until a
-   deadline is due. Written under g_tm_wl, read by the monitor before it waits
-   (see sp_sysmon_nudge). */
+/* (#8702) The timers. A thread has at most one, for the wait it is in, and it
+   lives in the thread: its generation (tm_armed, 0 when none) is what a cancel
+   and a firing contend for, with one atomic operation each, so neither takes
+   a lock. A new timer is staged on the parker's worker, under that worker's
+   own lock (g_tm_stage), and the monitor moves it into its heap, which is its
+   alone. An entry whose generation is no longer armed -- cancelled, or
+   replaced by a newer wait's -- is stale, and the monitor drops it when it
+   reaches it. One lock used to guard all of this, and with many threads in
+   timed waits it was the work: 128 pairs passing a turn through timed
+   ConditionVariable waits spent 72% of their CPU spinning on it, to schedule
+   a timer at each wait and cancel it at each wake. */
+typedef struct { double deadline; sp_thread *thread; uint64_t gen; int kind; } sp_tm_ent;
+typedef struct { sp_wlock wl; size_t len, cap; sp_tm_ent *ent; } __attribute__((aligned(64))) sp_tm_stage;
+static sp_tm_stage g_tm_stage[SP_MAX_WORKERS];   /* a worker's newly armed timers, for the monitor */
+/* The monitor's next wake time: the earliest deadline it knows of, 0 when
+   none. A new timer lowers it (sp_nearest_lower), and the monitor publishes
+   it again from its heap each turn (sp_timer_next). With the event backend,
+   the monitor can skip rebuilding the I/O poll set until a deadline is due. */
 static uint64_t g_nearest_bits = 0;   /* a double; 0 = nothing timed */
 static inline double nearest_get(void) { uint64_t b = SP_ATOMIC_LOAD(&g_nearest_bits, __ATOMIC_SEQ_CST); double d; memcpy(&d, &b, sizeof d); return d; }
 static inline void nearest_set(double d) { uint64_t b; memcpy(&b, &d, sizeof b); SP_ATOMIC_STORE(&g_nearest_bits, b, __ATOMIC_SEQ_CST); }
-static int g_nudge = 0;          /* a deadline earlier than the monitor's: set under g_tm_wl */
-static void sp_deadline_added(double d) {   /* PRE: g_tm_wl held */
-  if (d <= 0.0) return;
-  double n = nearest_get();
-  if (n == 0.0 || d < n) {
-    nearest_set(d);
-    g_nudge = 1;   /* it must shorten its wait: sp_sysmon_nudge, once out of the locks */
-  }
+/* Lower g_nearest to d, which is positive: a positive double orders as its
+   bits do. Answers whether it lowered it, in which case the monitor waits
+   for a later deadline and must be woken (sp_sysmon_nudge). */
+static int sp_nearest_lower(double d) {
+  uint64_t b; memcpy(&b, &d, sizeof b);
+  uint64_t cur = SP_ATOMIC_LOAD(&g_nearest_bits, __ATOMIC_SEQ_CST);
+  while (cur == 0 || b < cur)
+    if (SP_ATOMIC_CAS(&g_nearest_bits, &cur, b, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) return 1;
+  return 0;
 }
 /* Wake a monitor whose wait is longer than a deadline just added, with no
    timer or list lock held (it takes the scheduler lock). The parker stores
@@ -335,38 +342,36 @@ static void sp_sysmon_nudge(int need) {
   else sp_sysmon_wake();
 }
 
-/* Timers are appended to a staging buffer while green threads park, then
-   inserted into this min-heap together by the monitor. Most waits run to their
-   deadline, so this keeps the park path cheap and amortizes heap repair across
-   the batch, like IO::Event::Timers. Canceled handles are left in place until
-   they reach the root or compaction makes rebuilding cheaper. */
+/* The monitor's min-heap of entries, by value. Staged timers go in together
+   each turn: most waits run to their deadline, so this keeps the park path
+   cheap and amortizes heap repair across the batch, like IO::Event::Timers.
+   Stale entries are left in place until they reach the root or compaction
+   makes rebuilding cheaper. An entry holds its thread, so the thread is not
+   collected until the entry is gone (sp_sched_globals_mark). */
 enum { SP_TIMER_SLEEP, SP_TIMER_IO, SP_TIMER_WAIT };
-struct sp_sched_timer {
-  double deadline;
-  sp_thread *thread;
-  int kind;
-  int active;
-  int in_heap;
-  size_t index;
-};
 #define SP_TIMER_COMPACT_MINIMUM 128
 #define SP_TIMER_HEAPIFY_INSERT_RATIO 2
-static sp_sched_timer **g_timer_heap = NULL;
+static sp_tm_ent *g_timer_heap = NULL;
 static size_t g_timer_heap_len = 0, g_timer_heap_cap = 0;
-static sp_sched_timer **g_timer_scheduled = NULL;
-static size_t g_timer_scheduled_len = 0, g_timer_scheduled_cap = 0;
-static size_t g_timer_cancelled = 0, g_timer_pending = 0;
-static void sp_sched_timer_expire(sp_sched_timer *timer, double now);
+static long g_timer_cancelled = 0;   /* cancels whose entries are not dropped yet, roughly (atomic) */
+static void sp_sched_timer_expire(const sp_tm_ent *e, double now);
+static inline int tm_live(const sp_tm_ent *e) {
+  return SP_ATOMIC_LOAD(&e->thread->tm_armed, __ATOMIC_ACQUIRE) == e->gen;
+}
+static void tm_dropped(long n) {   /* the monitor dropped n stale entries */
+  long c = SP_ATOMIC_LOAD(&g_timer_cancelled, __ATOMIC_RELAXED);
+  while (c > 0 && !SP_ATOMIC_CAS(&g_timer_cancelled, &c, c > n ? c - n : 0, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+}
 
-static int sp_timer_reserve(sp_sched_timer ***items, size_t *capacity, size_t needed) {
+static int sp_timer_reserve(sp_tm_ent **items, size_t *capacity, size_t needed) {
   if (*capacity >= needed) return 1;
   size_t nc = *capacity ? *capacity : 16;
   while (nc < needed) {
     if (nc > SIZE_MAX / 2) { nc = needed; break; }
     nc *= 2;
   }
-  if (nc > SIZE_MAX / sizeof(sp_sched_timer *)) return 0;
-  sp_sched_timer **next = (sp_sched_timer **)realloc(*items, nc * sizeof(sp_sched_timer *));
+  if (nc > SIZE_MAX / sizeof(sp_tm_ent)) return 0;
+  sp_tm_ent *next = (sp_tm_ent *)realloc(*items, nc * sizeof(sp_tm_ent));
   if (!next) return 0;
   *items = next;
   *capacity = nc;
@@ -374,17 +379,15 @@ static int sp_timer_reserve(sp_sched_timer ***items, size_t *capacity, size_t ne
 }
 
 static void sp_timer_swap(size_t a, size_t b) {
-  sp_sched_timer *tmp = g_timer_heap[a];
+  sp_tm_ent tmp = g_timer_heap[a];
   g_timer_heap[a] = g_timer_heap[b];
   g_timer_heap[b] = tmp;
-  g_timer_heap[a]->index = a;
-  g_timer_heap[b]->index = b;
 }
 
 static void sp_timer_bubble_up(size_t i) {
   while (i > 0) {
     size_t parent = (i - 1) / 2;
-    if (g_timer_heap[parent]->deadline <= g_timer_heap[i]->deadline) break;
+    if (g_timer_heap[parent].deadline <= g_timer_heap[i].deadline) break;
     sp_timer_swap(i, parent);
     i = parent;
   }
@@ -396,169 +399,141 @@ static void sp_timer_bubble_down(size_t i) {
     if (left >= g_timer_heap_len) return;
     size_t right = left + 1;
     size_t child = right < g_timer_heap_len &&
-                   g_timer_heap[right]->deadline < g_timer_heap[left]->deadline ? right : left;
-    if (g_timer_heap[i]->deadline <= g_timer_heap[child]->deadline) return;
+                   g_timer_heap[right].deadline < g_timer_heap[left].deadline ? right : left;
+    if (g_timer_heap[i].deadline <= g_timer_heap[child].deadline) return;
     sp_timer_swap(i, child);
     i = child;
   }
 }
 
 static void sp_timer_heapify(void) {
-  for (size_t i = 0; i < g_timer_heap_len; i++) {
-    g_timer_heap[i]->in_heap = 1;
-    g_timer_heap[i]->index = i;
-  }
   if (g_timer_heap_len > 1) {
     for (size_t i = g_timer_heap_len / 2; i > 0; i--) sp_timer_bubble_down(i - 1);
   }
 }
 
-static sp_sched_timer *sp_timer_pop_root(void) {
-  if (!g_timer_heap_len) return NULL;
-  sp_sched_timer *root = g_timer_heap[0];
-  sp_sched_timer *last = g_timer_heap[--g_timer_heap_len];
-  if (g_timer_heap_len) {
-    g_timer_heap[0] = last;
-    last->index = 0;
-    sp_timer_bubble_down(0);
-  }
-  root->in_heap = 0;
-  return root;
+static void sp_timer_pop_root(void) {
+  if (!g_timer_heap_len) return;
+  g_timer_heap[0] = g_timer_heap[--g_timer_heap_len];
+  if (g_timer_heap_len) sp_timer_bubble_down(0);
 }
 
-/* Schedule `thread`'s timer. Takes g_tm_wl; *nudge is set when the monitor
-   must be woken for it (sp_sysmon_nudge, once every lock is dropped). */
-static sp_sched_timer *sp_timer_schedule(sp_thread *thread, double deadline, int kind, int *nudge) {
-  sp_sched_timer *timer = (sp_sched_timer *)malloc(sizeof(sp_sched_timer));
-  if (!timer) return NULL;
-  wl_lock(&g_tm_wl);
-  if (!sp_timer_reserve(&g_timer_scheduled, &g_timer_scheduled_cap, g_timer_scheduled_len + 1) ||
-      !sp_timer_reserve(&g_timer_heap, &g_timer_heap_cap,
-                        g_timer_heap_len + g_timer_scheduled_len + 1)) {
-    wl_unlock(&g_tm_wl);
-    free(timer);
-    return NULL;
-  }
-  timer->deadline = deadline;
-  timer->thread = thread;
-  timer->kind = kind;
-  timer->active = 1;
-  timer->in_heap = 0;
-  timer->index = 0;
-  g_timer_scheduled[g_timer_scheduled_len++] = timer;
-  SP_ATOMIC_STORE(&thread->timer, timer, __ATOMIC_RELEASE);
-  g_timer_pending++;
-  g_nudge = 0;
-  sp_deadline_added(deadline);
-  if (nudge) *nudge = g_nudge;
-  wl_unlock(&g_tm_wl);
-  return timer;
+/* Arm `thread`'s timer, from the thread itself as it is about to wait.
+   Answers the timer's generation, or 0 when it could not be staged; *nudge
+   is set when the monitor must be woken for it (sp_sysmon_nudge, once every
+   lock is dropped). Takes this worker's staging lock, which only the monitor
+   also takes. */
+static uint64_t sp_timer_schedule(sp_thread *thread, double deadline, int kind, int *nudge) {
+  int w = sp_worker_id;
+  if (w < 0 || w >= SP_MAX_WORKERS) w = 0;
+  sp_tm_stage *s = &g_tm_stage[w];
+  uint64_t gen = ++thread->tm_seq;
+  wl_lock(&s->wl);
+  if (!sp_timer_reserve(&s->ent, &s->cap, s->len + 1)) { wl_unlock(&s->wl); return 0; }
+  s->ent[s->len] = (sp_tm_ent){ deadline, thread, gen, kind };
+  /* armed before the monitor can take the entry, which it does under this lock */
+  SP_ATOMIC_STORE(&thread->tm_armed, gen, __ATOMIC_RELEASE);
+  /* sequentially consistent, as is the monitor's read of it after it
+     publishes g_nearest (sp_timer_next): the monitor finds this entry, or
+     the lowering below comes after what it published */
+  SP_ATOMIC_STORE(&s->len, s->len + 1, __ATOMIC_SEQ_CST);
+  wl_unlock(&s->wl);
+  int lowered = sp_nearest_lower(deadline);
+  if (nudge) *nudge = lowered;
+  return gen;
 }
 
-/* Cancel `thread`'s timer, if it has one. Takes g_tm_wl. A cancelled minimum
-   clears g_nearest; the monitor finds nothing due when it wakes for it and
-   takes the next deadline from the heap, so it is not woken now. */
+/* Disarm `thread`'s timer, if it has one: its entry is stale from now on,
+   and the monitor drops it when it reaches it. No lock: a firing takes the
+   generation with a compare-and-swap, so of the two exactly one gets it. */
 static void sp_timer_cancel(sp_thread *thread) {
-  if (!SP_ATOMIC_LOAD(&thread->timer, __ATOMIC_ACQUIRE)) return;
-  wl_lock(&g_tm_wl);
-  sp_sched_timer *timer = thread->timer;
-  if (timer) {
-    thread->timer = NULL;
-    if (timer->active) {
-      timer->active = 0;
-      if (g_timer_pending) g_timer_pending--;
-      if (timer->in_heap) g_timer_cancelled++;
-      if (timer->deadline == nearest_get()) nearest_set(0.0);
-    }
-  }
-  wl_unlock(&g_tm_wl);
+  if (!SP_ATOMIC_LOAD(&thread->tm_armed, __ATOMIC_ACQUIRE)) return;
+  if (SP_ATOMIC_EXCHANGE(&thread->tm_armed, 0, __ATOMIC_ACQ_REL))
+    SP_ATOMIC_FETCH_ADD(&g_timer_cancelled, 1, __ATOMIC_RELAXED);
 }
 
+/* Move what the workers have staged into the heap, dropping what went stale
+   meanwhile, and compact the heap once most of it is stale. PRE: the monitor. */
 static void sp_timer_flush(void) {
-  if (!g_timer_scheduled_len &&
-      !(g_timer_cancelled >= SP_TIMER_COMPACT_MINIMUM && g_timer_cancelled * 2 > g_timer_heap_len)) return;
-
-  if (g_timer_cancelled >= SP_TIMER_COMPACT_MINIMUM && g_timer_cancelled * 2 > g_timer_heap_len) {
+  size_t old_len = g_timer_heap_len;
+  int nw = sp_active_workers;
+  for (int w = 0; w < nw && w < SP_MAX_WORKERS; w++) {
+    sp_tm_stage *s = &g_tm_stage[w];
+    if (!SP_ATOMIC_LOAD(&s->len, __ATOMIC_SEQ_CST)) continue;
+    wl_lock(&s->wl);
+    if (sp_timer_reserve(&g_timer_heap, &g_timer_heap_cap, g_timer_heap_len + s->len)) {
+      long stale = 0;
+      for (size_t i = 0; i < s->len; i++) {
+        if (tm_live(&s->ent[i])) g_timer_heap[g_timer_heap_len++] = s->ent[i];
+        else stale++;
+      }
+      SP_ATOMIC_STORE(&s->len, 0, __ATOMIC_SEQ_CST);
+      if (stale) tm_dropped(stale);
+    }
+    wl_unlock(&s->wl);
+  }
+  long cancelled = SP_ATOMIC_LOAD(&g_timer_cancelled, __ATOMIC_RELAXED);
+  if (cancelled >= SP_TIMER_COMPACT_MINIMUM && (size_t)cancelled * 2 > g_timer_heap_len) {
     size_t write = 0;
-    for (size_t i = 0; i < g_timer_heap_len; i++) {
-      sp_sched_timer *timer = g_timer_heap[i];
-      if (timer->active) g_timer_heap[write++] = timer;
-      else free(timer);
-    }
+    for (size_t i = 0; i < g_timer_heap_len; i++)
+      if (tm_live(&g_timer_heap[i])) g_timer_heap[write++] = g_timer_heap[i];
+    tm_dropped((long)(g_timer_heap_len - write));
     g_timer_heap_len = write;
-    g_timer_cancelled = 0;
-    for (size_t i = 0; i < g_timer_scheduled_len; i++) {
-      sp_sched_timer *timer = g_timer_scheduled[i];
-      if (timer->active) g_timer_heap[g_timer_heap_len++] = timer;
-      else free(timer);
-    }
-    g_timer_scheduled_len = 0;
     sp_timer_heapify();
     return;
   }
-
-  size_t live = 0;
-  for (size_t i = 0; i < g_timer_scheduled_len; i++)
-    if (g_timer_scheduled[i]->active) live++;
-  int rebuild = g_timer_heap_len == 0 || live > g_timer_heap_len * SP_TIMER_HEAPIFY_INSERT_RATIO;
-  for (size_t i = 0; i < g_timer_scheduled_len; i++) {
-    sp_sched_timer *timer = g_timer_scheduled[i];
-    if (!timer->active) { free(timer); continue; }
-    size_t index = g_timer_heap_len++;
-    g_timer_heap[index] = timer;
-    timer->in_heap = 1;
-    timer->index = index;
-    if (!rebuild) sp_timer_bubble_up(index);
-  }
-  g_timer_scheduled_len = 0;
-  if (rebuild) sp_timer_heapify();
+  size_t added = g_timer_heap_len - old_len;
+  if (!added) return;
+  if (old_len == 0 || added > old_len * SP_TIMER_HEAPIFY_INSERT_RATIO) sp_timer_heapify();
+  else for (size_t i = old_len; i < g_timer_heap_len; i++) sp_timer_bubble_up(i);
 }
 
-static sp_sched_timer *sp_timer_peek(void) {
-  sp_timer_flush();
-  while (g_timer_heap_len && !g_timer_heap[0]->active) {
-    sp_sched_timer *timer = sp_timer_pop_root();
-    if (g_timer_cancelled) g_timer_cancelled--;
-    free(timer);
-  }
-  return g_timer_heap_len ? g_timer_heap[0] : NULL;
+/* The earliest live entry, dropping the stale ones above it. PRE: the monitor. */
+static sp_tm_ent *sp_timer_peek(void) {
+  while (g_timer_heap_len && !tm_live(&g_timer_heap[0])) { sp_timer_pop_root(); tm_dropped(1); }
+  return g_timer_heap_len ? &g_timer_heap[0] : NULL;
 }
 
-static double sp_timer_next_deadline(void) {
-  sp_sched_timer *timer = sp_timer_peek();
-  return timer ? timer->deadline : 0.0;
-}
-
-/* Fire what is due: taken off the heap under g_tm_wl, then each expired with
-   no timer lock held, since the expiry takes its list's lock. The timer is
-   freed only after its expiry, so a thread's wait_timer cannot name a newer
-   timer at the same address while it is looked at. PRE: the monitor. */
+/* Fire what is due: each entry is taken off the heap and its generation
+   claimed from its thread, then expired, which takes its list's lock. A
+   generation a cancel took first is not fired, and one claimed here is not
+   the generation of any later wait. PRE: the monitor. */
 static void sp_timer_fire_due(double now) {
+  sp_timer_flush();
   for (;;) {
-    sp_sched_timer *due[64]; int n = 0;
-    wl_lock(&g_tm_wl);
-    sp_sched_timer *timer;
-    while (n < 64 && (timer = sp_timer_peek()) && timer->deadline <= now) {
+    sp_tm_ent due[64]; int n = 0;
+    sp_tm_ent *e;
+    while (n < 64 && (e = sp_timer_peek()) && e->deadline <= now) {
+      sp_tm_ent x = *e;
       sp_timer_pop_root();
-      sp_thread *thread = timer->thread;
-      timer->active = 0;
-      if (thread->timer == timer) SP_ATOMIC_STORE(&thread->timer, NULL, __ATOMIC_RELEASE);
-      if (g_timer_pending) g_timer_pending--;
-      due[n++] = timer;
+      uint64_t g = x.gen;
+      if (SP_ATOMIC_CAS(&x.thread->tm_armed, &g, 0, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) due[n++] = x;
+      else tm_dropped(1);
     }
-    wl_unlock(&g_tm_wl);
-    for (int i = 0; i < n; i++) { sp_sched_timer_expire(due[i], now); free(due[i]); }
+    for (int i = 0; i < n; i++) sp_sched_timer_expire(&due[i], now);
     if (n < 64) return;
   }
 }
-/* The next deadline, from the heap, under g_tm_wl; republished as g_nearest. */
-static double sp_timer_next_locked(void) {
-  wl_lock(&g_tm_wl);
-  double d = sp_timer_next_deadline();
-  /* republished with the lock held: a deadline added after this lowers it */
-  nearest_set(d);
-  wl_unlock(&g_tm_wl);
-  return d;
+/* The next deadline, published as g_nearest. A worker that stages a timer
+   stores its staging length and then lowers g_nearest; this stores g_nearest
+   and then reads the lengths, all sequentially consistent: so this finds the
+   new timer, or the worker lowers what this published. With timers still
+   being staged after a few rounds it answers `now`, so the monitor comes
+   straight back for them. PRE: the monitor. */
+static double sp_timer_next(void) {
+  for (int round = 0; round < 4; round++) {
+    sp_timer_flush();
+    sp_tm_ent *e = sp_timer_peek();
+    double d = e ? e->deadline : 0.0;
+    nearest_set(d);
+    int staged = 0, nw = sp_active_workers;
+    for (int w = 0; w < nw && w < SP_MAX_WORKERS && !staged; w++)
+      staged = SP_ATOMIC_LOAD(&g_tm_stage[w].len, __ATOMIC_SEQ_CST) != 0;
+    if (!staged) return d;
+  }
+  double now = sp_monotonic_now();
+  nearest_set(now);
+  return now;
 }
 
 /* ---- preemption (design §5): timeslice tracking + the one safepoint flag ----
@@ -1910,6 +1885,21 @@ static void sp_sched_globals_mark(void) {
   REG_LOCK();
   for (sp_thread *t = g_all; t; t = t->all_next) sp_gc_mark(t);
   REG_UNLOCK();
+#ifdef SP_THREADS
+  /* A timer entry holds its thread until the monitor drops it, stale or not:
+     the monitor reads the thread's armed generation to tell. The monitor
+     does not run while the world is stopped (sp_sysmon_main). */
+  for (size_t i = 0; i < g_timer_heap_len; i++)
+    if (g_timer_heap[i].thread != &g_main_thread) sp_gc_mark(g_timer_heap[i].thread);
+  for (int w = 0; w < SP_MAX_WORKERS; w++) {
+    sp_tm_stage *s = &g_tm_stage[w];
+    if (!SP_ATOMIC_LOAD(&s->len, __ATOMIC_SEQ_CST)) continue;
+    wl_lock(&s->wl);
+    for (size_t i = 0; i < s->len; i++)
+      if (s->ent[i].thread != &g_main_thread) sp_gc_mark(s->ent[i].thread);
+    wl_unlock(&s->wl);
+  }
+#endif
   /* The main thread is a static struct, not a registry entry, so nothing
      above marks what hangs off it -- and its thread-local map
      (Thread.current[:k] = v on the main thread) is a GC object. Unmarked, a
@@ -3334,7 +3324,7 @@ static void *sp_sysmon_main(void *arg) {
       }
     }
     sp_timer_fire_due(now);
-    double nearest = sp_timer_next_locked();
+    double nearest = sp_timer_next();
     /* the clock again: the wait below is `nearest - now`, and waking what was
        due takes time, which a stale `now` added to the wait -- every timer
        of the next batch fired that much late */
@@ -3562,7 +3552,7 @@ static int sp_sched_sleep_park(double seconds) {
   if (held) sp_fiber_inject_release(inj, 0);
   int nudge = 0;
   if (seconds >= 0.0) {
-    sp_sched_timer *tm = sp_timer_schedule(self, sp_monotonic_now() + seconds, SP_TIMER_SLEEP, &nudge);
+    uint64_t tm = sp_timer_schedule(self, sp_monotonic_now() + seconds, SP_TIMER_SLEEP, &nudge);
     if (!tm) {
       sleep_unlink(self);
       SP_ATOMIC_STORE(&self->park, SP_PK_RUN, __ATOMIC_SEQ_CST);
@@ -3580,7 +3570,7 @@ static int sp_sched_sleep_park(double seconds) {
     SCHED_LOCK();
     sp_sched_pump(NULL, 1);   /* main waits (and pumps at N=1) until the monitor wakes it */
     SCHED_UNLOCK();
-    SP_ATOMIC_STORE(&self->wait_timer, NULL, __ATOMIC_RELEASE);
+    SP_ATOMIC_STORE(&self->wait_timer, 0, __ATOMIC_RELEASE);
     SP_ATOMIC_FETCH_SUB(&g_ntimed, 1, __ATOMIC_SEQ_CST);   /* running again */
     woken = self->woken;
     sp_fiber_fire_inject_if_pending();   /* a #raise delivered while sleeping */
@@ -3593,7 +3583,7 @@ static int sp_sched_sleep_park(double seconds) {
     sp_sched_switch_out();
     sp_exc_ctx_load(exc_snap);
     sp_exc_ctx_free(exc_snap);
-    SP_ATOMIC_STORE(&self->wait_timer, NULL, __ATOMIC_RELEASE);
+    SP_ATOMIC_STORE(&self->wait_timer, 0, __ATOMIC_RELEASE);
     SP_ATOMIC_FETCH_SUB(&g_ntimed, 1, __ATOMIC_SEQ_CST);   /* running again */
     woken = self->woken;
     sp_fiber_fire_inject_if_pending();   /* a #kill/#raise delivered while sleeping */
@@ -3747,7 +3737,7 @@ static int sp_sched_wait_io_impl(int fd, short events, struct pollfd *set, int n
        finds it there; without one it waits in poll() as before */
     int nudge = 0;
     if (timed) {
-      sp_sched_timer *tm = sp_timer_schedule(self, sp_monotonic_now() + timeout_s, SP_TIMER_IO, &nudge);
+      uint64_t tm = sp_timer_schedule(self, sp_monotonic_now() + timeout_s, SP_TIMER_IO, &nudge);
       if (!tm) {
         wio_unlink(home, self);
         SP_ATOMIC_STORE(&self->park, SP_PK_RUN, __ATOMIC_SEQ_CST);
@@ -3782,7 +3772,7 @@ static int sp_sched_wait_io_impl(int fd, short events, struct pollfd *set, int n
       sp_exc_ctx_load(exc_snap);
       sp_exc_ctx_free(exc_snap);
     }
-    SP_ATOMIC_STORE(&self->wait_timer, NULL, __ATOMIC_RELEASE);
+    SP_ATOMIC_STORE(&self->wait_timer, 0, __ATOMIC_RELEASE);
     int rev = self->io_revents; self->io_revents = 0; self->io_fd = -1;
     /* the set entries are off every list (whoever unparked us dropped them);
        released before an inject can raise past this frame */
@@ -3818,7 +3808,7 @@ static int sp_sched_wait_io_impl(int fd, short events, struct pollfd *set, int n
     if (!es) { SCHED_UNLOCK(); return sp_poll_plain(set, (nfds_t)n, timeout_s); }
     for (int i = 0; i < n; i++) { es[i].t = self; es[i].idx = i; es[i].next = NULL; }
   }
-  sp_sched_timer *ptm = NULL;
+  uint64_t ptm = 0;
   if (timeout_s >= 0.0 &&
       !(ptm = sp_timer_schedule(self, sp_monotonic_now() + timeout_s, SP_TIMER_IO, NULL))) {
     free(es);
@@ -3838,7 +3828,7 @@ static int sp_sched_wait_io_impl(int fd, short events, struct pollfd *set, int n
 
   if (self == &g_main_thread) {
     sp_sched_pump(NULL, 1);   /* main waits (and pumps at N=1) until the monitor wakes it */
-    SP_ATOMIC_STORE(&self->wait_timer, NULL, __ATOMIC_RELEASE);
+    SP_ATOMIC_STORE(&self->wait_timer, 0, __ATOMIC_RELEASE);
     int rev = self->io_revents; self->io_revents = 0; self->io_fd = -1;
     if (set) { free(self->ev_set); self->ev_set = NULL; self->io_set = NULL; self->io_nset = 0; }
     SCHED_UNLOCK();
@@ -3853,7 +3843,7 @@ static int sp_sched_wait_io_impl(int fd, short events, struct pollfd *set, int n
   sp_sched_switch_out();
   sp_exc_ctx_load(exc_snap);
   sp_exc_ctx_free(exc_snap);
-  SP_ATOMIC_STORE(&self->wait_timer, NULL, __ATOMIC_RELEASE);
+  SP_ATOMIC_STORE(&self->wait_timer, 0, __ATOMIC_RELEASE);
     int rev = self->io_revents; self->io_revents = 0; self->io_fd = -1;
   /* the set entries are off every list (whoever unparked us dropped them);
      released before an inject can raise past this frame */
@@ -4362,7 +4352,7 @@ static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mute
   if (held) sp_fiber_inject_release(inj, 0);
   /* scheduled once it is on the list: a timer that fires at once finds it */
   int nudge = 0;
-  sp_sched_timer *tm = sp_timer_schedule(self, deadline, SP_TIMER_WAIT, &nudge);
+  uint64_t tm = sp_timer_schedule(self, deadline, SP_TIMER_WAIT, &nudge);
   if (!tm) {
     for (sp_thread **pp = waitlist; *pp; pp = &(*pp)->wait_next)
       if (*pp == self) { *pp = self->wait_next; break; }
@@ -4386,7 +4376,7 @@ static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mute
     sp_sched_pump(NULL, 1);
     int running = SP_TH_STATE(self) == SP_TH_RUNNING;
     SCHED_UNLOCK();
-    SP_ATOMIC_STORE(&self->wait_timer, NULL, __ATOMIC_RELEASE);
+    SP_ATOMIC_STORE(&self->wait_timer, 0, __ATOMIC_RELEASE);
     SP_ATOMIC_FETCH_SUB(&g_ntimed, 1, __ATOMIC_SEQ_CST);   /* running again */
     if (!running) sp_raise_cls("ThreadError", "deadlock detected: all threads blocked");
     /* a #raise that woke main fires here, or once its mutex is held again */
@@ -4400,7 +4390,7 @@ static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mute
     sp_sched_switch_out();
     sp_exc_ctx_load(exc_snap);
     sp_exc_ctx_free(exc_snap);
-    SP_ATOMIC_STORE(&self->wait_timer, NULL, __ATOMIC_RELEASE);
+    SP_ATOMIC_STORE(&self->wait_timer, 0, __ATOMIC_RELEASE);
     SP_ATOMIC_FETCH_SUB(&g_ntimed, 1, __ATOMIC_SEQ_CST);   /* running again */
     if (!mutex) sp_fiber_fire_inject_if_pending();
   }
@@ -4430,7 +4420,7 @@ static sp_thread *sp_sched_wake_one(sp_thread **waitlist) {
 /* With `only` set (a timer firing), only the wait that timer was published
    with: the thread may have been woken since the timer was taken off the heap,
    and be parked in a newer wait the timer must not end. */
-static int sp_sched_unpark_only(sp_thread *t, sp_sched_timer *only) {
+static int sp_sched_unpark_only(sp_thread *t, uint64_t only) {
   /* a list with its own lock is unlinked under it. The thread may be
      woken and re-park elsewhere between the read and the lock, so the lock is
      checked again once held. */
@@ -4468,10 +4458,10 @@ static int sp_sched_unpark_only(sp_thread *t, sp_sched_timer *only) {
   if (wl) wl_unlock(wl);
   return 1;
 }
-static int sp_sched_unpark(sp_thread *t) { return sp_sched_unpark_only(t, NULL); }
+static int sp_sched_unpark(sp_thread *t) { return sp_sched_unpark_only(t, 0); }
 
 #ifdef SP_THREADS
-static void sp_sched_timer_expire(sp_sched_timer *timer, double now) {
+static void sp_sched_timer_expire(const sp_tm_ent *timer, double now) {
   (void)now;
   sp_thread *t = timer->thread;
 
@@ -4481,7 +4471,7 @@ static void sp_sched_timer_expire(sp_sched_timer *timer, double now) {
      unlink: the waker then owns the wake and the wait's result, and marking it
      timed out (or its I/O unready) as well reported a timeout for a wait that
      had been signalled, or for a descriptor that was ready. */
-  if (!sp_sched_unpark_only(t, timer)) return;
+  if (!sp_sched_unpark_only(t, timer->gen)) return;
   if (timer->kind == SP_TIMER_WAIT) t->timer_expired = 1;
   if (timer->kind == SP_TIMER_IO) {
 #ifdef SP_EV_BACKEND
