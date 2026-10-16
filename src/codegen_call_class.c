@@ -3857,7 +3857,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     }
     /* Module#include?(mod): mod must be a Module (a Class arg is a TypeError);
        true when mod is a proper ancestor of the receiver (#2674). */
-    if (sp_streq(name, "include?") && argc == 1 && comp_ntype(c, argv[0]) == TY_CLASS) {
+    if (sp_streq(name, "include?") && argc == 1 && repr_of(c, argv[0]).as_ty == TY_CLASS) {
       int m = ++g_tmp;
       buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
       buf_printf(b, "; sp_Class _cl%d = ", m); emit_expr(c, argv[0], b);
