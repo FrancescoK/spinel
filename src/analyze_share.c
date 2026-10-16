@@ -2960,7 +2960,10 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   int rv = recv >= 0 ? sh_val(F, c, recv) : -1;
   TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
   int maybe_str = recv >= 0 && (rt == TY_STRING || rt == TY_STRBUF || rt == TY_POLY || rt == TY_UNKNOWN);
-  if (c->share_strings && is_identity_query(name)) {
+  /* (a String receiver whose class the program gives the name runs that
+     method, which asks no identity: `class String; def equal?(o) = ...`) */
+  if (c->share_strings && is_identity_query(name) &&
+      !((rt == TY_STRING || rt == TY_STRBUF) && share_builtin_overridden(c, "String", name))) {
     int identity = recv < 0 ? sh_self(F, c, sh_method_index(c, n)) : rv;
     if (identity >= 0) F->own[identity] |= SHE_IDENTITY | SHE_COMPARED;
     if (argc == 1 && is_equality_name(name)) {
