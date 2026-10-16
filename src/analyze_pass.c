@@ -3,6 +3,7 @@
 #include "builtin_ops.h"
 #include "call_plan.h"
 #include "repr.h"
+#include "share.h"
 int callee_has_kwarg(Compiler *c, Scope *m, const char *name);
 int callee_declares_kwargs(Compiler *c, Scope *m);
 int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
@@ -3212,6 +3213,19 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
     }
     if (elem_splat_index && nt_kind(nt, recv) != NK_LocalVariableReadNode) continue;
     const char *rty = nt_type(nt, recv);
+    /* --share-strings: an element read out of an Array whose Strings are
+       shared is boxed, the Array being the general one that holds their
+       handles, where the default build reads a String out of a String
+       Array. Stored into an Integer or Float array, it is the String it
+       is, and widens the array as the String would: taken as a value of
+       run-time kind, the typed store raised TypeError (#9258). An empty
+       or String array keeps the boxed reading. */
+    if (c->share_strings && vt == TY_POLY && vnode >= 0 && (is_push || is_idx_write) &&
+        share_str_elem_read(c, vnode)) {
+      TyKind rt0 = infer_type(c, recv);
+      if (ty_is_array(rt0) && rt0 != TY_POLY_ARRAY && rt0 != TY_STR_ARRAY && rt0 != TY_STRH_ARRAY)
+        vt = TY_STRING;
+    }
     if ((is_push || is_idx_write) && !elem_splat_index &&
         arysub_container_evidence(c, id, recv, is_push, is_splice, (TyKind)kt, (TyKind)vt, &changed)) continue;
     /* `(@h ||= {})[k] = v` fills @h exactly as `@h ||= {}; @h[k] = v` does,

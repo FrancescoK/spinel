@@ -5047,6 +5047,13 @@ int share_node_elems_share(const Compiler *c, int n) {
   int r = sh_node_root(F, n, 1);
   return r >= 0 && repr_str_class_shares(F->flags[r], sh_class_holders(F, r));
 }
+int share_str_elem_read(Compiler *c, int n) {
+  if (!c->share || n < 0) return 0;
+  n = unwrap_parens(c, n);
+  if (!container_elem_read_p(c->nt, n)) return 0;
+  int r = nt_ref(c->nt, n, "receiver");
+  return r >= 0 && infer_type(c, r) == TY_POLY_ARRAY && share_node_elems_share(c, r);
+}
 int share_node_fresh_elems(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
   return F && n >= 0 && n < F->nnodes && F->fresh_cont[n] && share_node_elems_share(c, n);

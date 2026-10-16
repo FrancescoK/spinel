@@ -172,6 +172,9 @@ ShareRoute share_route(int site, int value, int elems);
 int share_node_fresh(const Compiler *c, int n);
 /* Does the rule share the elements of node n's value (a container)? */
 int share_node_elems_share(const Compiler *c, int n);
+/* Is node n an element read (`a[i]`, `a.first`) out of a general Array
+   whose String elements the rule shares? */
+int share_str_elem_read(Compiler *c, int n);
 /* ...or is their class proven to keep its Strings to itself: it exists,
    the rule does not share it, and it meets nothing the walk does not
    follow? */
