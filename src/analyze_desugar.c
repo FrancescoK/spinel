@@ -4091,6 +4091,82 @@ void step_kw_positional(Compiler *c, NodeTable *nt, int id, int args, int to_v, 
   for (int j = base; j < nt->count; j++) c->nscope[j] = sc;
 }
 
+int step_kw_unknown(Compiler *c, NodeTable *nt, int id, int args) {
+  if (nt_int(nt, id, "step_kw_unk", 0)) return 0;
+  static const char *step_owners[] = { "Integer", "Float", "Numeric", "Range" };
+  for (size_t i = 0; i < sizeof(step_owners) / sizeof(*step_owners); i++)
+    if (an_reopen_owner(c, id, step_owners[i]) >= 0) return 0;
+  int sn = nt_safe_nav(nt, id), recv = nt_ref(nt, id, "receiver");
+  int ac = 0; const int *av = nt_arr(nt, args, "arguments", &ac);
+  int en = 0; const int *els = ac ? nt_arr(nt, av[ac - 1], "elements", &en) : NULL;
+  char names[600] = "", iv[300], msg[700];
+  int nunk = 0, n = 0, sc = c->nscope[id], base = nt->count;
+  int *st = malloc(sizeof(int) * (size_t)(ac + en + 2));
+  if (!st) return 0;
+  if (!sn && subtree_has_side_effect(c, recv)) st[n++] = recv;
+  for (int i = 0; i + 1 < ac; i++) if (subtree_has_side_effect(c, av[i])) st[n++] = av[i];
+  for (int i = 0; i < en; i++) {
+    int key = nt_kind(nt, els[i]) == NK_AssocNode ? nt_ref(nt, els[i], "key") : -1;
+    const char *kn = key >= 0 && nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
+    if (!kn) { free(st); return 0; }
+    if (!sp_streq(kn, "to") && !sp_streq(kn, "by")) { kw_key_inspect(kn, 1, iv, sizeof iv); kw_names_add(names, sizeof names, &nunk, iv); }
+    if (subtree_has_side_effect(c, nt_ref(nt, els[i], "value"))) st[n++] = nt_ref(nt, els[i], "value");
+  }
+  if (!nunk) { free(st); return 0; }
+  kw_error_message(msg, sizeof msg, "unknown", nunk, names);
+  int ec = nt_new_node(nt, "ConstantReadNode"), em = nt_new_node(nt, "StringNode");
+  nt_node_set_str(nt, ec, "name", "ArgumentError");
+  nt_node_set_str(nt, em, "content", msg);
+  int ea[2] = { ec, em }, eargs = nt_new_node(nt, "ArgumentsNode"), rc = nt_new_node(nt, "CallNode");
+  nt_node_set_arr(nt, eargs, "arguments", ea, 2);
+  nt_node_set_ref(nt, rc, "receiver", -1);
+  nt_node_set_str(nt, rc, "name", "raise");
+  nt_node_set_ref(nt, rc, "arguments", eargs);
+  nt_node_set_ref(nt, rc, "block", -1);
+  st[n++] = rc;
+  int clone = nt_clone_subtree(nt, id);
+  nt_node_set_int(nt, clone, "step_kw_unk", 1);
+  st[n++] = clone;
+  int p;
+  if (sn) {
+    Scope *scp = comp_scope_of(c, id);
+    char rn[32];
+    snprintf(rn, sizeof rn, "__stpu%d", base);
+    int wr = step_kw_tmp(nt, scp, rn, recv);
+    nt_node_set_ref(nt, clone, "receiver", step_kw_tmp(nt, scp, rn, -1));
+    int nilq = nt_new_node(nt, "CallNode");
+    nt_node_set_ref(nt, nilq, "receiver", step_kw_tmp(nt, scp, rn, -1));
+    nt_node_set_str(nt, nilq, "name", "nil?");
+    nt_node_set_ref(nt, nilq, "arguments", -1);
+    nt_node_set_ref(nt, nilq, "block", -1);
+    int niln = nt_new_node(nt, "NilNode"), thenb = nt_new_node(nt, "StatementsNode"), elsn = nt_new_node(nt, "ElseNode");
+    nt_node_set_arr(nt, thenb, "body", &niln, 1);
+    int body = nt_new_node(nt, "StatementsNode");
+    nt_node_set_arr(nt, body, "body", st, n);
+    nt_node_set_ref(nt, elsn, "statements", body);
+    int ifn = nt_new_node(nt, "IfNode");
+    nt_node_set_ref(nt, ifn, "predicate", nilq);
+    nt_node_set_ref(nt, ifn, "statements", thenb);
+    nt_node_set_ref(nt, ifn, "subsequent", elsn);
+    int outer[2] = { wr, ifn }, outer_body = nt_new_node(nt, "StatementsNode");
+    nt_node_set_arr(nt, outer_body, "body", outer, 2);
+    p = nt_new_node(nt, "ParenthesesNode");
+    nt_node_set_ref(nt, p, "body", outer_body);
+  }
+  else {
+    int body = nt_new_node(nt, "StatementsNode");
+    nt_node_set_arr(nt, body, "body", st, n);
+    p = nt_new_node(nt, "ParenthesesNode");
+    nt_node_set_ref(nt, p, "body", body);
+  }
+  free(st);
+  nt_swap_nodes(nt, id, p);
+  nt_node_set_int(nt, p, "step_kw_unk", 1);
+  comp_grow_node_arrays(c);
+  for (int j = base; j < nt->count; j++) c->nscope[j] = sc;
+  return 1;
+}
+
 int desugar_step_kwargs(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
