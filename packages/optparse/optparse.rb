@@ -1744,7 +1744,7 @@ XXX
             end
           end
           begin
-            opt, cb, val = sw.parse(rest, argv) {|klass, word| raise klass, word}
+            opt, cb, val = sw.parse(rest ? rest : nil, argv) {|klass, word| raise klass, word}
             val = callback!(cb, 1, val) if cb
             callback!(setter, 2, sw.switch_name, val) if setter
           rescue ParseError
