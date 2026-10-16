@@ -860,7 +860,7 @@ class OptionParser
         pat = t if t.respond_to?(:match)
       end
       unless block
-        block = pat.method(:convert).to_proc if pat.respond_to?(:convert)
+        block = ->(*a) { pat.convert(*a) } if pat.respond_to?(:convert)
       end
       @atype[t] = [pat, block]
     end
@@ -1495,7 +1495,7 @@ XXX
       if !Completion.completable?(o) and o.respond_to?(:match)
         pattern = notwice(o, pattern, 'pattern')
         if pattern.respond_to?(:convert)
-          conv = pattern.method(:convert).to_proc
+          conv = ->(*a) { pattern.convert(*a) }
         else
           conv = SPLAT_PROC
         end
@@ -1516,7 +1516,7 @@ XXX
         when CompletingHash
         when nil
           pattern = CompletingHash.new
-          conv = pattern.method(:convert).to_proc if pattern.respond_to?(:convert)
+          conv = ->(*a) { pattern.convert(*a) }
         else
           raise ArgumentError, "argument pattern given twice"
         end
