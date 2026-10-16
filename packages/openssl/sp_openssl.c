@@ -82,7 +82,10 @@ static sp_ssl_conn sp_ssl_tab[SP_SSL_MAX];
    process-global it let one thread's success clear another's failure -- and
    two threads doing TLS could already read each other's reasons. */
 static SP_TLS char sp_ssl_errbuf[512];
-static char *sp_ssl_rdbuf;
+/* Per-thread for the same reason: SSL_read decrypts into this before the
+   bytes are copied out, and two threads reading two connections at once
+   would decrypt into one buffer. */
+static SP_TLS char *sp_ssl_rdbuf;
 
 /* Record the most recent failure so the Ruby side can raise with a reason
    rather than a bare "connect failed". OpenSSL keeps its own per-thread queue;
@@ -127,7 +130,7 @@ static void sp_ssl_release(int i) {
 /* ---- X509::Store ---- */
 /* Ruby-side handle over an OpenSSL X509_STORE, so a program can load a
    trust store of its own (typically the system CAs) and hand it to
-   sp_ssl_connect / sp_ssl_connect_nb. SSL_CTX_set1_cert_store increments
+   sp_ssl_connect_nb. SSL_CTX_set1_cert_store increments
    the reference count, so the caller retains ownership and the handle
    remains reusable. */
 struct sp_X509_Store_s {
@@ -163,11 +166,11 @@ int sp_X509_Store_set_default_paths(sp_X509_Store *s) {
 }
 
 /* Everything a client connection needs EXCEPT the handshake: the slot, the
-   context, the SSL object and the descriptor. Split out because the blocking
-   and the non-blocking connect differ only in how they drive the handshake,
-   and a second copy of the verify and SNI setup would be a second place for
-   a security default to drift out of step. Answers the slot index with the
-   slot claimed, or -1 with the reason in sp_ssl_last_error.
+   context, the SSL object and the descriptor. Kept apart from the handshake,
+   which Ruby drives one step at a time, so the verify and SNI setup has one
+   place to live and no second copy for a security default to drift out of
+   step with. Answers the slot index with the slot claimed, or -1 with the
+   reason in sp_ssl_last_error.
    `cert_store` is an optional Ruby X509::Store object; if non-NIL, its
    native X509_STORE is referenced by the SSL_CTX (SSL_CTX_set1_cert_store, so the store stays the handle's and is reusable). */
 static int sp_ssl_setup(sp_int fd, const char *hostname, sp_int verify, sp_RbVal cert_store) {
@@ -180,6 +183,10 @@ static int sp_ssl_setup(sp_int fd, const char *hostname, sp_int verify, sp_RbVal
   /* TLS 1.2 is the floor: 1.0 and 1.1 are withdrawn and a server offering
      only those is not one to fall back to silently. */
   SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+  /* A write that had to wait is retried from Ruby with the same bytes, and
+     nothing promises they are at the same address; OpenSSL refuses a retry
+     from a moved buffer unless this is set. */
+  SSL_CTX_set_mode(ctx, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
   if (verify) {
     /* The trust anchors are the operating system's. Nothing is bundled here,
        so a CA the OS stops trusting stops being trusted with it. */
@@ -233,49 +240,6 @@ else {
   return i;
 }
 
-/* Open a client connection over an already-connected fd, handshake included.
-   `hostname` drives both SNI and the certificate's name check; verify != 0
-   asks OpenSSL to validate the chain against the OS trust store. Returns a
-   handle, or -1 with the reason in sp_ssl_last_error.
-   `cert_store` is an optional Ruby X509::Store object; if non-NIL, its
-   native X509_STORE is referenced by the SSL_CTX via SSL_CTX_set1_cert_store;
-   the handle retains ownership and remains reusable. */
-sp_int sp_ssl_connect(sp_int fd, const char *hostname, sp_int verify, sp_RbVal cert_store) {
-  int i = sp_ssl_setup(fd, hostname, verify, cert_store);
-  if (i < 0) return -1;
-  if (SSL_connect(sp_ssl_tab[i].ssl) != 1) {
-    sp_ssl_note("TLS handshake failed");
-    sp_ssl_release(i);
-    return -1;
-  }
-  return i;
-}
-
-/* Up to `maxlen` decrypted bytes from one record-layer read. Returns "" at
-   EOF or on error, with the reason recorded; the byte count rides the string
-   header, so a payload with embedded NULs survives. */
-const char *sp_ssl_read(sp_int h, sp_int maxlen) {
-  sp_ssl_conn *c = sp_ssl_at(h);
-  if (!c) { sp_ssl_note("closed TLS connection"); return sp_str_dup_external(""); }
-  if (!sp_ssl_rdbuf && !(sp_ssl_rdbuf = (char *)malloc(SP_SSL_BUF)))
-    return sp_str_dup_external("");
-  if (maxlen <= 0 || maxlen >= SP_SSL_BUF) maxlen = SP_SSL_BUF - 1;
-  sp_ssl_errbuf[0] = 0;
-  int n = SSL_read(c->ssl, sp_ssl_rdbuf, (int)maxlen);
-  if (n <= 0) {
-    int e = SSL_get_error(c->ssl, n);
-    if (e == SSL_ERROR_ZERO_RETURN) sp_ssl_note("");        /* clean shutdown */
-    else if (e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE) sp_ssl_note("");
-    else sp_ssl_note("SSL_read");
-    return sp_str_dup_external("");
-  }
-  char *out = sp_str_alloc((size_t)n);
-  memcpy(out, sp_ssl_rdbuf, (size_t)n);
-  out[n] = 0;
-  sp_str_set_len(out, (size_t)n);
-  return out;
-}
-
 /* Why a non-blocking read needs a status and not just bytes: TLS is a record
    layer, so "nothing to read yet" and "I must WRITE before I can read" are
    different answers -- a renegotiating peer makes SSL_read ask for the socket
@@ -305,15 +269,18 @@ static void sp_ssl_handshake_step(sp_ssl_conn *c) {
 }
 
 /* Begin a client connection without waiting for the handshake to finish.
-   Unlike sp_ssl_connect this arms O_NONBLOCK on the descriptor itself: the
-   handshake is the FIRST thing on the connection, so there is no earlier
-   call to have done it, and a blocking fd here would put the wait back in
-   the kernel, which is the whole point of the call. Answers the handle as
-   soon as the connection exists -- the handshake may well be unfinished, and
-   sp_ssl_want says so -- or -1 when the connection could not be built. */
-/* Non-blocking connect: same parameters as sp_ssl_connect, but starts the
-   handshake and returns :wait_readable/:wait_writable if it needs more I/O.
-   The handle is kept across calls so the handshake can be resumed. */
+   Both of Ruby's connects start here, the blocking one included: it waits
+   between steps on the descriptor, where a green thread parks, and not
+   inside SSL_connect, where a quiet peer would hold the OS worker in the
+   kernel and every other thread at the next collection.
+
+   This arms O_NONBLOCK on the descriptor itself: the handshake is the FIRST
+   thing on the connection, so there is no earlier call to have done it, and
+   a blocking fd here would put the wait back in the kernel, which is the
+   whole point of the call. Answers the handle as soon as the connection
+   exists -- the handshake may well be unfinished, and sp_ssl_want says so --
+   or -1 when the connection could not be built. The handle is kept across
+   calls so the handshake can be resumed. */
 sp_int sp_ssl_connect_nb(sp_int fd, const char *hostname, sp_int verify, sp_RbVal cert_store) {
   int i = sp_ssl_setup(fd, hostname, verify, cert_store);
   if (i < 0) { sp_ssl_want_state = 4; return -1; }
@@ -375,18 +342,6 @@ const char *sp_ssl_read_nb(sp_int h, sp_int maxlen) {
     default:                    sp_ssl_want_state = 4; sp_ssl_note("SSL_read"); break;
   }
   return sp_str_dup_external("");
-}
-
-/* Write `n` bytes; answers how many went, or -1. Binary: the length comes
-   from the caller, not from strlen. */
-sp_int sp_ssl_write(sp_int h, const char *data, sp_int n) {
-  sp_ssl_conn *c = sp_ssl_at(h);
-  if (!c) { sp_ssl_note("closed TLS connection"); return -1; }
-  if (n <= 0) return 0;
-  sp_ssl_errbuf[0] = 0;
-  int w = SSL_write(c->ssl, data, (int)n);
-  if (w <= 0) { sp_ssl_note("SSL_write"); return -1; }
-  return w;
 }
 
 /* One record-layer write that never blocks, the mirror of sp_ssl_read_nb: the
@@ -458,6 +413,17 @@ sp_int sp_ssl_close(sp_int h) {
   SSL_free(c->ssl);
   SSL_CTX_free(c->ctx);
   c->ssl = NULL; c->ctx = NULL; c->fd = -1; c->in_use = 0;
+  return 0;
+}
+
+/* Release a connection whose handshake failed. No close_notify: OpenSSL
+   says SSL_shutdown must not follow a fatal error, and there is no session
+   to close. The error queue goes with it, so the next call's reason is its
+   own. */
+sp_int sp_ssl_discard(sp_int h) {
+  if (!sp_ssl_at(h)) return -1;
+  sp_ssl_release((int)h);
+  ERR_clear_error();
   return 0;
 }
 

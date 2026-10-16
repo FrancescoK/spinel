@@ -34,11 +34,9 @@ module OpenSSL
   module Native
     native_lib "openssl"
     native_obj "packages/openssl/sp_openssl.o"
-    native_func :connect,      [:int, :string, :int, :any], :int,    "sp_ssl_connect"
-    native_func :read,         [:int, :int],          :string, "sp_ssl_read"
-    native_func :write,        [:int, :string, :int], :int,    "sp_ssl_write"
     native_func :pending,      [:int],                :int,    "sp_ssl_pending"
     native_func :close,        [:int],                :int,    "sp_ssl_close"
+    native_func :discard,      [:int],                :int,    "sp_ssl_discard"
     native_func :last_error,   [],                    :string, "sp_ssl_last_error"
     native_func :peer_subject, [:int],                :string, "sp_ssl_peer_subject"
     native_func :version,      [:int],                :string, "sp_ssl_version"
@@ -171,14 +169,38 @@ module OpenSSL
         0
       end
 
+      # Blocking, as CRuby's is, and driven the way CRuby drives it: one
+      # handshake step at a time over a non-blocking descriptor, waiting on
+      # the descriptor in between. The wait is IO.select's, which parks a
+      # green thread and hands its OS worker back; a wait inside SSL_connect
+      # would keep the worker in the kernel for as long as the peer is quiet,
+      # and every other thread stopped at the next collection with it.
       def connect
-        h = Native.connect(@io.fileno, @hostname,
-                           @context.verify_mode == VERIFY_NONE ? 0 : 1,
-                           @context.cert_store)
+        h = Native.connect_nb(@io.fileno, @hostname,
+                              @context.verify_mode == VERIFY_NONE ? 0 : 1,
+                              @context.cert_store)
         if h < 0
           raise SSLError, "SSL_connect returned an error: #{Native.last_error}"
         end
         @handle = h
+        # want is per OS thread, so it is read straight after the call that
+        # set it: a loop back-edge is a preemption point, and a thread can
+        # resume on another worker.
+        want = Native.want
+        until want == 0
+          if want == 1
+            IO.select([@io])
+          elsif want == 2
+            IO.select(nil, [@io])
+          else
+            reason = Native.last_error
+            Native.discard(@handle)
+            @handle = -1
+            raise SSLError, "SSL_connect returned an error: #{reason}"
+          end
+          Native.connect_cont(@handle)
+          want = Native.want
+        end
         self
       end
 
@@ -223,17 +245,42 @@ module OpenSSL
         end
       end
 
+      # The blocking pair waits the way #connect does: on the descriptor,
+      # between non-blocking record-layer calls, so a peer that sends nothing
+      # parks this thread rather than holding a worker in SSL_read. The
+      # answers are what they were: nil at EOF (and on a failed read), the
+      # byte count from a write, SSLError when a write fails.
       def sysread(maxlen)
         raise SSLError, "not connected" if @handle < 0
-        s = Native.read(@handle, maxlen)
-        s.empty? ? nil : s
+        loop do
+          s = Native.read_nb(@handle, maxlen)
+          return s unless s.empty?
+          want = Native.want
+          if want == 1
+            IO.select([@io])
+          elsif want == 2
+            IO.select(nil, [@io])
+          else
+            return nil
+          end
+        end
       end
 
       def syswrite(data)
         raise SSLError, "not connected" if @handle < 0
-        n = Native.write(@handle, data, data.bytesize)
-        raise SSLError, "SSL_write returned an error: #{Native.last_error}" if n < 0
-        n
+        return 0 if data.bytesize == 0
+        loop do
+          n = Native.write_nb(@handle, data, data.bytesize)
+          return n if n > 0
+          want = Native.want
+          if want == 1
+            IO.select([@io])
+          elsif want == 2
+            IO.select(nil, [@io])
+          else
+            raise SSLError, "SSL_write returned an error: #{Native.last_error}"
+          end
+        end
       end
 
       # One record-layer read that never blocks. The descriptor must already
