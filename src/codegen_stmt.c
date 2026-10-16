@@ -4353,6 +4353,10 @@ static int route_block_rebinds_base(Compiler *c, int v) {
   for (int n = v; n >= 0 && nt_kind(nt, n) == NK_CallNode; n = unwrap_parens(c, nt_ref(nt, n, "receiver"))) {
     int blk = nt_ref(nt, n, "block");
     if (blk >= 0 && subtree_writes_local(c, blk, nm)) return 1;
+    /* (an argument runs after the receiver is read too: `t.scan((t = +"x";
+       re)) { }` answers the String t named before) */
+    int args = nt_ref(nt, n, "arguments");
+    if (args >= 0 && subtree_writes_local(c, args, nm)) return 1;
   }
   return 0;
 }
