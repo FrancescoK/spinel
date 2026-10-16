@@ -2699,11 +2699,22 @@ TyKind an_user_call(Compiler *c, int id, int mi, int via, int owner_ci) {
   return method_call_ret(c, pf >= 0 ? pf : mi, id);
 }
 
+/* Does the row this pass finds for call `id` count as the call's own? Not
+   under the builtin-only re-derivation, whose answer is not the call's (a
+   user method owns the name there). Except for the call that re-derivation
+   was asked about when a desugar built it (infer_call): the builtin answer
+   is the answer it has, as it is emitted. */
+static int an_bop_records(Compiler *c, int id) {
+  if (!g_plan_check || an_pure_reads || id < 0 || id >= c->node_cap) return 0;
+  if (!an_builtin_only) return 1;
+  int recv = nt_ref(c->nt, id, "receiver");
+  return recv >= 0 && recv == an_bo_recv && nt_int(c->nt, id, "desugar_builtin", 0);
+}
+
 const BuiltinOp *an_bop_find(Compiler *c, int id, TyKind rt, const char *name,
                              int argc, int has_block) {
   const BuiltinOp *op = bop_find(rt, name, argc, has_block);
-  if (g_plan_check && !an_builtin_only && !an_pure_reads && op && op->result != TY_UNKNOWN &&
-      id >= 0 && id < c->node_cap)
+  if (op && op->result != TY_UNKNOWN && an_bop_records(c, id))
     c->bop_inf[id] = op;
   return op;
 }
@@ -7776,11 +7787,11 @@ static TyKind infer_call_prelude(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
      would be with no user method: not the call's answer, so it neither
-     clears nor makes the call's records */
-  if (g_plan_check && !an_builtin_only && !an_pure_reads && id >= 0 && id < c->node_cap) {
-    c->bop_inf[id] = NULL;
+     clears nor makes the call's records (the builtin-op one is the call's
+     for a desugar-built call, an_bop_records) */
+  if (an_bop_records(c, id)) c->bop_inf[id] = NULL;
+  if (g_plan_check && !an_builtin_only && !an_pure_reads && id >= 0 && id < c->node_cap)
     c->ucall_inf[id].via = UC_NONE;
-  }
 
   return TY_UNKNOWN;
 }
