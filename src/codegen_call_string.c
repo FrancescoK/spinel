@@ -320,7 +320,11 @@ no_gsub_enum:
       if (bx) buf_puts(b, ")");
       return 1;
     }
-    if (are >= 0 && sp_streq(name, "match?")) {
+    /* String#match? on a String. Any other receiver declines: the boxed
+       dispatch asks this for a Class value's default arm
+       (emit_poly_cls_value_builtin), where it handed the class to the
+       matcher as its String */
+    if (are >= 0 && sp_streq(name, "match?") && rt == TY_STRING) {
       if (argc == 1) { buf_printf(b, "sp_re_match_p(sp_re_pat_%d, ", are); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       buf_printf(b, "sp_str_re_match_p_at(sp_re_pat_%d, ", are); emit_expr(c, recv, b);
       buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
