@@ -305,6 +305,8 @@ int rb_enc_str_coderange(VALUE v) { (void)v;DENIED("rb_enc_str_coderange"); }
 VALUE rb_hash_new_capa(long n) { (void)n;DENIED("rb_hash_new_capa"); }
 VALUE rb_hash_aset(VALUE h,VALUE k,VALUE v) { (void)h;(void)k;(void)v;DENIED("rb_hash_aset"); }
 int rb_num2int(VALUE v) { (void)v;DENIED("NUM2INT"); }
+VALUE rb_obj_class(VALUE v) { (void)v;DENIED("rb_obj_class"); }
+const char *rb_class2name(VALUE v) { (void)v;DENIED("rb_class2name"); }
 void rb_check_type(VALUE v,int t) { (void)v;(void)t;DENIED("Check_Type"); }
 VALUE rb_ll2inum(long long n) { (void)n;DENIED("LL2NUM"); }
 VALUE rb_float_new(double n) { (void)n;DENIED("DBL2NUM"); }

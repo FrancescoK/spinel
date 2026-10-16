@@ -22,6 +22,9 @@
 #include "spinel_rt.h"
 
 #ifdef SP_CEXT
+sp_RbVal sp_cext_object_class(sp_RbVal object) {
+  return sp_box_class(sp_poly_class_val(object));
+}
 sp_RbVal sp_cext_plain_object_new(void) {
   return sp_box_obj(sp_Object_new(),SP_BUILTIN_OBJECT);
 }

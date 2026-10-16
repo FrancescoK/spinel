@@ -102,9 +102,12 @@ def cruby_oracle(name)
     command(RbConfig.ruby, '-rmkmf', '-e', "create_makefile(#{name.dump})", chdir: native)
     command('make', chdir: native)
     expected = command(RbConfig.ruby, File.join(native, 'program.rb'))
+    recorded = File.join(ROOT, "test/cext/compiler/#{name}.rb.expected")
+    raise "stale #{name} CRuby expectation" if File.file?(recorded) && File.read(recorded) != expected
     raise "CRuby differs on #{name}\nexpected:\n#{expected}\nactual:\n#{actual}" unless actual == expected
   end
 end
 cruby_oracle('display')
 cruby_oracle('dispatch')
+cruby_oracle('object_class')
 puts 'C extension compiler bridge: CRuby oracle and GC modes passed'

@@ -1,0 +1,22 @@
+true
+true
+true
+true
+"ClassScope::Parent"
+"overridden name"
+"ClassScope"
+"Class"
+"Module"
+true
+true
+"NilClass"
+"TrueClass"
+"FalseClass"
+"Integer"
+"Float"
+"Symbol"
+"String"
+"Array"
+"Hash"
+"Class"
+"Module"

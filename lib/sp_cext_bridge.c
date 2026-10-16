@@ -69,6 +69,19 @@ static const char *class_name(VALUE v) {
     if (sp_obj_cls_name_fn) return sp_obj_cls_name_fn((int)r.v.i);
     sp_raise_cls("TypeError", "unknown C extension class");
 }
+VALUE rb_obj_class(VALUE object) {
+    return sp_cext_value(sp_cext_object_class(sp_cext_rbval(object)));
+}
+const char *rb_class2name(VALUE klass) {
+    sp_RbVal value=sp_cext_rbval(klass);
+    /* CRuby skips singleton classes. A modeled class/module singleton's
+     * real ancestor is Class/Module, not the attached object's class name. */
+    if(value.tag==SP_TAG_CLASS && sp_sclass_id_p(value.cls_id)) {
+        sp_Class attached={sp_sclass_base_id(value.cls_id),NULL};
+        return sp_class_is_module_fn && sp_class_is_module_fn(attached) ? "Module" : "Class";
+    }
+    return class_name(klass);
+}
 static VALUE lookup(const char *name) {
     if (!sp_cext_class_lookup_fn) sp_raise_cls("RuntimeError", "C extension class hook is missing");
     return sp_cext_value(sp_cext_class_lookup_fn(name));

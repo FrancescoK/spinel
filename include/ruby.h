@@ -82,6 +82,8 @@ void ruby_xfree(void *);
 void *sp_cext_allocv(VALUE *, size_t, size_t);
 #define RB_ALLOCV_N(type,handle,count) ((type *)sp_cext_allocv(&(handle),sizeof(type),(size_t)(count)))
 enum { T_STRING = 5, T_ARRAY = 7 };
+VALUE rb_obj_class(VALUE);
+const char *rb_class2name(VALUE);
 void rb_check_type(VALUE, int);
 #define Check_Type(value,type) rb_check_type((VALUE)(value),(type))
 
