@@ -23376,6 +23376,12 @@ static int bscm_walk(NodeTable *nt, int n, const BscmNames *t, int consts_only) 
   }
   return changed;
 }
+/* `class << self`, or `class << Time` in `class Time`: the same singleton */
+static int bscm_own_sclass(const NodeTable *nt, int ex, const BscmNames *t) {
+  if (ex >= 0 && nt_kind(nt, ex) == NK_SelfNode) return 1;
+  return ex >= 0 && nt_kind(nt, ex) == NK_ConstantReadNode && nt_str(nt, ex, "name") &&
+         sp_streq(nt_str(nt, ex, "name"), t->cls);
+}
 static int bscm_rewrite(NodeTable *nt, int body, int in_sg, const BscmNames *t) {
   int changed = 0, bn = 0;
   const int *bs = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
@@ -23385,7 +23391,7 @@ static int bscm_rewrite(NodeTable *nt, int body, int in_sg, const BscmNames *t) 
     if (sk == NK_DefNode && (in_sg || (nt_ref(nt, st, "receiver") >= 0 &&
                                        nt_kind(nt, nt_ref(nt, st, "receiver")) == NK_SelfNode)))
       changed |= bscm_walk(nt, nt_ref(nt, st, "body"), t, 0);
-    else if (sk == NK_SingletonClassNode && nt_kind(nt, nt_ref(nt, st, "expression")) == NK_SelfNode)
+    else if (sk == NK_SingletonClassNode && bscm_own_sclass(nt, nt_ref(nt, st, "expression"), t))
       changed |= bscm_rewrite(nt, nt_ref(nt, st, "body"), 1, t);
     /* a statement of the class body, where self is the class itself */
     else if (!in_sg && sk != NK_DefNode) changed |= bscm_walk(nt, st, t, 1);
