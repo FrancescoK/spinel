@@ -305,7 +305,7 @@ static void sp_sysmon_wake(void) {
    ConditionVariable waits spent 72% of their CPU spinning on it, to schedule
    a timer at each wait and cancel it at each wake. */
 typedef struct { double deadline; sp_thread *thread; uint64_t gen; int kind; } sp_tm_ent;
-typedef struct { sp_wlock wl; size_t len, cap; sp_tm_ent *ent; } __attribute__((aligned(64))) sp_tm_stage;
+typedef struct { sp_wlock wl; size_t len, cap; sp_tm_ent *ent; long ncancel; } __attribute__((aligned(64))) sp_tm_stage;
 static sp_tm_stage g_tm_stage[SP_MAX_WORKERS];   /* a worker's newly armed timers, for the monitor */
 /* The monitor's next wake time: the earliest deadline it knows of, 0 when
    none. A new timer lowers it (sp_nearest_lower), and the monitor publishes
@@ -353,14 +353,20 @@ enum { SP_TIMER_SLEEP, SP_TIMER_IO, SP_TIMER_WAIT };
 #define SP_TIMER_HEAPIFY_INSERT_RATIO 2
 static sp_tm_ent *g_timer_heap = NULL;
 static size_t g_timer_heap_len = 0, g_timer_heap_cap = 0;
-static long g_timer_cancelled = 0;   /* cancels whose entries are not dropped yet, roughly (atomic) */
+/* Cancels are counted on the canceller's worker (its staging line's
+   ncancel), and the monitor counts the stale entries it drops: the
+   difference is roughly what the heap holds stale, for compaction. One
+   shared count was an atomic add on every wake of a timed wait. */
+static long g_timer_dropped = 0;   /* the monitor's own */
 static void sp_sched_timer_expire(const sp_tm_ent *e, double now);
 static inline int tm_live(const sp_tm_ent *e) {
   return SP_ATOMIC_LOAD(&e->thread->tm_armed, __ATOMIC_ACQUIRE) == e->gen;
 }
-static void tm_dropped(long n) {   /* the monitor dropped n stale entries */
-  long c = SP_ATOMIC_LOAD(&g_timer_cancelled, __ATOMIC_RELAXED);
-  while (c > 0 && !SP_ATOMIC_CAS(&g_timer_cancelled, &c, c > n ? c - n : 0, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+static void tm_dropped(long n) { g_timer_dropped += n; }   /* the monitor dropped n stale entries */
+static long tm_cancelled(void) {   /* cancels whose entries are not dropped yet, roughly */
+  long c = -g_timer_dropped;
+  for (int w = 0; w < sp_active_workers && w < SP_MAX_WORKERS; w++) c += SP_ATOMIC_LOAD(&g_tm_stage[w].ncancel, __ATOMIC_RELAXED);
+  return c > 0 ? c : 0;
 }
 
 static int sp_timer_reserve(sp_tm_ent **items, size_t *capacity, size_t needed) {
@@ -448,8 +454,11 @@ static uint64_t sp_timer_schedule(sp_thread *thread, double deadline, int kind, 
    generation with a compare-and-swap, so of the two exactly one gets it. */
 static void sp_timer_cancel(sp_thread *thread) {
   if (!SP_ATOMIC_LOAD(&thread->tm_armed, __ATOMIC_ACQUIRE)) return;
-  if (SP_ATOMIC_EXCHANGE(&thread->tm_armed, 0, __ATOMIC_ACQ_REL))
-    SP_ATOMIC_FETCH_ADD(&g_timer_cancelled, 1, __ATOMIC_RELAXED);
+  if (SP_ATOMIC_EXCHANGE(&thread->tm_armed, 0, __ATOMIC_ACQ_REL)) {
+    int w = sp_worker_id;
+    if (w < 0 || w >= SP_MAX_WORKERS) w = 0;
+    SP_ATOMIC_FETCH_ADD(&g_tm_stage[w].ncancel, 1, __ATOMIC_RELAXED);
+  }
 }
 
 /* Move what the workers have staged into the heap, dropping what went stale
@@ -472,7 +481,7 @@ static void sp_timer_flush(void) {
     }
     wl_unlock(&s->wl);
   }
-  long cancelled = SP_ATOMIC_LOAD(&g_timer_cancelled, __ATOMIC_RELAXED);
+  long cancelled = tm_cancelled();
   if (cancelled >= SP_TIMER_COMPACT_MINIMUM && (size_t)cancelled * 2 > g_timer_heap_len) {
     size_t write = 0;
     for (size_t i = 0; i < g_timer_heap_len; i++)
@@ -728,6 +737,7 @@ static SP_TLS int g_native_noop = 0;                   /* entered before the poo
    native call and by the idle wait in the scheduler loop -- an idle worker
    has nothing running either, and waking thirty of them so each could park
    was most of what the barrier waited for. */
+static void sp_sched_signal_if_quiescent(void);   /* below */
 static void sp_out_enter_locked(int wid, int how) {
   sp_stw_publish_locked();
   if (wid >= 0 && wid < SP_MAX_WORKERS) {
@@ -737,9 +747,16 @@ static void sp_out_enter_locked(int wid, int how) {
     if (root && root != sp_fiber_current) g_native_fiber[wid][g_native_nfiber[wid]++] = root;
     SP_ATOMIC_STORE(&g_native_out[wid], (unsigned char)how, __ATOMIC_RELEASE);
   }
-  SP_ATOMIC_FETCH_ADD(&g_nnative, 1, __ATOMIC_SEQ_CST);
+  int nout = SP_ATOMIC_FETCH_ADD(&g_nnative, 1, __ATOMIC_SEQ_CST) + 1;
   if (g_stw_active && g_nparked + SP_ATOMIC_LOAD(&g_nnative, __ATOMIC_SEQ_CST) >= sp_active_workers - 1)
     pthread_cond_signal(&g_stw_request);
+  /* (#8702) The last helper to go idle wakes a main that waits for nothing
+     to be left -- the exit drain, or a join that can no longer finish -- if
+     nothing is (counts_quiet), under the lock that main looks and waits
+     under. Nothing left to run means every helper goes idle, so the last one
+     to go sees it. This was a look at the counts after every thread that
+     stopped, which is a pass over every worker's slot now. */
+  if (how == SP_OUT_IDLE && wid > 0 && nout >= sp_active_workers - 1) sp_sched_signal_if_quiescent();
 }
 /* Back in the world (PRE: sched lock held). A collection in progress counted
    this worker as out; it becomes a parker of this epoch and waits for the
@@ -1058,39 +1075,167 @@ static SP_TLS sp_thread *g_current = NULL;   /* per-worker: the green thread thi
    from another worker before parking. All queues are guarded by g_sched_lock --
    this gives locality and load balancing without a second lock; reducing the
    lock itself would mean reworking the off-cpu handshake (deferred, see git log).
-   g_runnable is the total parked-runnable count across every queue, for the
-   quiescence/deadlock predicate. */
+   The runnable count (RUNNABLE_INC) is the total parked-runnable count across
+   every queue, for the quiescence/deadlock predicate. */
 SP_TLS int sp_worker_id = 0;       /* exported: sp_alloc.h indexes the per-worker string heaps */       /* this worker's run-queue slot (0 = main); both builds */
 /* a line each, as each worker's queue is now pushed and popped without
    the scheduler lock, concurrently with its neighbours'. */
 typedef struct { sp_thread *head, *tail; } __attribute__((aligned(64))) sp_runq;
 static sp_runq    g_grq;                 /* global run queue: spawned + woken threads */
 static sp_runq    g_lrq[SP_MAX_WORKERS]; /* per-worker local run queues (rerun locality) */
-/* g_runnable (threads sitting in any run queue right now) and g_nrunning
-   (workers executing a green thread) share one word, runnable in the low half
-   and running in the high half, so that a reader sees both at one instant.
-   Main's pump decides that nothing can wake it when both are zero, and since
-   #8702 the fast path moves a thread from one to the other without the
-   scheduler lock. Read one after the other, the two could each miss the same
-   thread -- running read before its worker counted it, runnable read after
-   the worker popped it -- and a join reported a deadlock that was not one.
-   Every move raises the count it goes to before lowering the one it leaves,
-   so a single load always counts a thread on its way between them. */
+/* The runnable count (threads sitting in any run queue right now) and the
+   running count (workers executing a green thread): main's pump decides that nothing can
+   wake it when both are zero. Every move raises the count it goes to before
+   lowering the one it leaves, so a reader that sees both at one instant
+   always counts a thread on its way between them. */
+#ifdef SP_THREADS
+/* (#8702) Kept per actor, not in one shared word. A wake, a pop, a run and
+   a stop each changed the shared word, from every worker at once, and once
+   the workers ran their own queues without the scheduler lock that word was
+   where their time went: 95% of the samples of a push and a pop sat on its
+   one atomic add. Each worker, the monitor, and one locked slot for any
+   other thread now count what they do in a line of their own, which only
+   they write: a sequence number, odd while the counts change, as a seqlock.
+   A thread queued by one worker and run by another is counted up in the
+   first's slot and down in the second's, so one slot can go below zero; the
+   sums are what mean anything. Readers that need them exact read every slot
+   twice, and take the sums only when no slot changed in between
+   (counts_quiet): the slots were then all as read at one instant between
+   the passes. */
+typedef struct { unsigned seq; long long runnable, running, timed, nio; } __attribute__((aligned(64))) sp_cnt_slot;
+#define SP_CNT_SLOTS (SP_MAX_WORKERS + 2)
+#define SP_CNT_MON   SP_MAX_WORKERS          /* the monitor's */
+#define SP_CNT_OTHER (SP_MAX_WORKERS + 1)    /* any other thread's, under g_cnt_other_wl */
+static sp_cnt_slot g_cnt[SP_CNT_SLOTS];
+static SP_TLS sp_cnt_slot *g_cnt_me = NULL;   /* this thread's slot, if it has one */
+/* Workers' slots in use: [0, g_cnt_hi). Raised by a worker before its first
+   change of its slot, and read by a reader before and after its passes, so a
+   worker it does not read did not change its slot before the reader's
+   second pass. Read with the monitor's slot and the shared one: a pass over
+   every possible worker's slot cost a join round a few microseconds. */
+static int g_cnt_hi = 1;
+static void cnt_claim(int wid) {   /* a worker, before it counts anything */
+  int hi = SP_ATOMIC_LOAD(&g_cnt_hi, __ATOMIC_SEQ_CST);
+  while (hi < wid + 1 && !SP_ATOMIC_CAS(&g_cnt_hi, &hi, wid + 1, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {}
+  g_cnt_me = &g_cnt[wid];
+}
+/* the i-th slot a reader reads: the workers' in use, then the monitor's and the shared one */
+static inline sp_cnt_slot *cnt_slot(int i, int hi) { return i < hi ? &g_cnt[i] : &g_cnt[SP_CNT_MON + (i - hi)]; }
+static sp_wlock g_cnt_other_wl = 0;
+static void cnt_add4(long long drunnable, long long drunning, long long dtimed, long long dnio) {
+  sp_cnt_slot *s = g_cnt_me;
+  if (!s) { wl_lock(&g_cnt_other_wl); s = &g_cnt[SP_CNT_OTHER]; }
+  unsigned q = SP_ATOMIC_LOAD(&s->seq, __ATOMIC_RELAXED);
+  SP_ATOMIC_STORE(&s->seq, q + 1, __ATOMIC_RELAXED);
+  SP_ATOMIC_FENCE(__ATOMIC_RELEASE);   /* odd before the counts change */
+  SP_ATOMIC_STORE(&s->runnable, SP_ATOMIC_LOAD(&s->runnable, __ATOMIC_RELAXED) + drunnable, __ATOMIC_RELAXED);
+  SP_ATOMIC_STORE(&s->running, SP_ATOMIC_LOAD(&s->running, __ATOMIC_RELAXED) + drunning, __ATOMIC_RELAXED);
+  SP_ATOMIC_STORE(&s->timed, SP_ATOMIC_LOAD(&s->timed, __ATOMIC_RELAXED) + dtimed, __ATOMIC_RELAXED);
+  SP_ATOMIC_STORE(&s->nio, SP_ATOMIC_LOAD(&s->nio, __ATOMIC_RELAXED) + dnio, __ATOMIC_RELAXED);
+  /* sequentially consistent, as the shared counts' atomic adds were: what a
+     thread does after counting -- leave a list, make a wait visible -- is
+     seen after the count by a reader that reads both */
+  SP_ATOMIC_STORE(&s->seq, q + 2, __ATOMIC_SEQ_CST);
+  if (s == &g_cnt[SP_CNT_OTHER]) wl_unlock(&g_cnt_other_wl);
+}
+#define RUNNABLE_INC() cnt_add4(1, 0, 0, 0)
+#define RUNNABLE_DEC() cnt_add4(-1, 0, 0, 0)
+#define RUNNING_INC()  cnt_add4(0, 1, 0, 0)
+#define RUNNING_DEC()  cnt_add4(0, -1, 0, 0)
+#define RUNNABLE_TO_RUNNING() cnt_add4(-1, 1, 0, 0)   /* one change: the thread is in one count or the other */
+/* the two wait counts, kept the same way: threads in a sleep or a timed wait,
+   and threads parked on I/O in a worker's set */
+#define NTIMED_INC()   cnt_add4(0, 0, 1, 0)
+#define NTIMED_DEC()   cnt_add4(0, 0, -1, 0)
+#define NIO_INC()      cnt_add4(0, 0, 0, 1)
+#define NIO_DEC()      cnt_add4(0, 0, 0, -1)
+/* One pass over the slots: the sums, and each slot's sequence number.
+   Answers 0 when a slot was changing. */
+static int cnt_pass(int hi, unsigned *seq, long long *sum) {
+  long long a = 0, b = 0, c_ = 0, d = 0;
+  for (int i = 0; i < hi + 2; i++) {
+    sp_cnt_slot *c = cnt_slot(i, hi);
+    unsigned q = SP_ATOMIC_LOAD(&c->seq, __ATOMIC_SEQ_CST);
+    if (q & 1) return 0;
+    if (seq) seq[i] = q;
+    a += SP_ATOMIC_LOAD(&c->runnable, __ATOMIC_RELAXED);
+    b += SP_ATOMIC_LOAD(&c->running, __ATOMIC_RELAXED);
+    c_ += SP_ATOMIC_LOAD(&c->timed, __ATOMIC_RELAXED);
+    d += SP_ATOMIC_LOAD(&c->nio, __ATOMIC_RELAXED);
+  }
+  SP_ATOMIC_FENCE(__ATOMIC_ACQUIRE);
+  sum[0] = a; sum[1] = b; sum[2] = c_; sum[3] = d;
+  return 1;
+}
+/* The four sums -- runnable, running, timed, nio -- as of one instant: two
+   passes, and the sums of the first are taken when no slot's sequence number
+   moved by the second. With slots still changing after a few tries it
+   answers 0: a thread was being queued, run, stopped or parked during the
+   read, and the caller takes that as work (counts_quiet). */
+static int counts_snapshot(long long *sum) {
+  for (int tries = 0; tries < 4; tries++) {
+    unsigned seq[SP_CNT_SLOTS];
+    int hi = SP_ATOMIC_LOAD(&g_cnt_hi, __ATOMIC_SEQ_CST);
+    if (!cnt_pass(hi, seq, sum)) continue;
+    int same = 1;
+    for (int i = 0; i < hi + 2 && same; i++)
+      same = SP_ATOMIC_LOAD(&cnt_slot(i, hi)->seq, __ATOMIC_SEQ_CST) == seq[i];
+    if (same && SP_ATOMIC_LOAD(&g_cnt_hi, __ATOMIC_SEQ_CST) == hi) return 1;
+  }
+  return 0;
+}
+/* Nothing runnable and nothing running, as of one instant. Counts that kept
+   changing while it read them say no: the actor that makes them zero last
+   does not see that (counts_quiet is read by the last helper to go idle,
+   sp_out_enter_locked). */
+static int counts_quiet(void) {
+  long long sum[4];
+  return counts_snapshot(sum) && sum[0] == 0 && sum[1] == 0;
+}
+/* The sums from one pass, for what only needs them roughly (a Thread.pass
+   sweep's length, the helper pool's growth, the stats). */
+static void counts_approx(int *runnable, int *running) {
+  long long a = 0, b = 0;
+  int hi = SP_ATOMIC_LOAD(&g_cnt_hi, __ATOMIC_ACQUIRE);
+  for (int i = 0; i < hi + 2; i++) {
+    a += SP_ATOMIC_LOAD(&cnt_slot(i, hi)->runnable, __ATOMIC_RELAXED);
+    b += SP_ATOMIC_LOAD(&cnt_slot(i, hi)->running, __ATOMIC_RELAXED);
+  }
+  *runnable = a > 0 ? (int)a : 0; *running = b > 0 ? (int)b : 0;
+}
+/* Threads parked on I/O in a worker's set, from one pass: for the monitor's
+   and Thread.pass's "is any thread waiting on I/O" */
+static int nio_approx(void) {
+  long long d = 0;
+  int hi = SP_ATOMIC_LOAD(&g_cnt_hi, __ATOMIC_ACQUIRE);
+  for (int i = 0; i < hi + 2; i++) d += SP_ATOMIC_LOAD(&cnt_slot(i, hi)->nio, __ATOMIC_RELAXED);
+  return d > 0 ? (int)d : 0;
+}
+#else
+/* One worker: the counts are its own. */
 static uint64_t   g_counts = 0;
 #define SP_COUNT_RUNNING_ONE ((uint64_t)1 << 32)
-#define RUNNABLE_INC() ((void)SP_ATOMIC_FETCH_ADD(&g_counts, (uint64_t)1, __ATOMIC_SEQ_CST))
-#define RUNNABLE_DEC() ((void)SP_ATOMIC_FETCH_SUB(&g_counts, (uint64_t)1, __ATOMIC_SEQ_CST))
-#define RUNNING_INC()  ((void)SP_ATOMIC_FETCH_ADD(&g_counts, SP_COUNT_RUNNING_ONE, __ATOMIC_SEQ_CST))
-#define RUNNING_DEC()  ((void)SP_ATOMIC_FETCH_SUB(&g_counts, SP_COUNT_RUNNING_ONE, __ATOMIC_SEQ_CST))
-#define COUNTS_NOW()         SP_ATOMIC_LOAD(&g_counts, __ATOMIC_SEQ_CST)
-#define COUNTS_RUNNABLE(c)   ((int)(uint32_t)(c))
-#define COUNTS_RUNNING(c)    ((int)((c) >> 32))
+#define RUNNABLE_INC() ((void)(g_counts += 1))
+#define RUNNABLE_DEC() ((void)(g_counts -= 1))
+#define RUNNING_INC()  ((void)(g_counts += SP_COUNT_RUNNING_ONE))
+#define RUNNING_DEC()  ((void)(g_counts -= SP_COUNT_RUNNING_ONE))
+#define RUNNABLE_TO_RUNNING() ((void)(g_counts += SP_COUNT_RUNNING_ONE - 1))
+static int counts_quiet(void) { return g_counts == 0; }
+static int g_ntimed_n = 0, g_nio_n = 0;
+#define NTIMED_INC() ((void)g_ntimed_n++)
+#define NTIMED_DEC() ((void)g_ntimed_n--)
+#define NIO_INC()    ((void)g_nio_n++)
+#define NIO_DEC()    ((void)g_nio_n--)
+static int counts_snapshot(long long *sum) { sum[0] = (uint32_t)g_counts; sum[1] = (long long)(g_counts >> 32); sum[2] = g_ntimed_n; sum[3] = g_nio_n; return 1; }
+static int nio_approx(void) { return g_nio_n; }
+static void counts_approx(int *runnable, int *running) { *runnable = (int)(uint32_t)g_counts; *running = (int)(g_counts >> 32); }
+#endif
 /* Threads in a sleep or a timed wait (Kernel#sleep, a timed ConditionVariable,
    Queue, join or I/O wait), for main's pump: such a thread wakes by itself in
    the end, so a wait for it is not a deadlock. Raised before the thread parks
    and lowered only once it runs again, so a thread on its way is in this or in
-   the run counts at every moment (sp_sched_pump reads it before and after). */
-static int g_ntimed = 0;
+   the run counts at every moment: they are read together, as of one instant
+   (counts_snapshot, NTIMED_INC). */
 /* (#8702) A sleeping thread is on a list of its own, under its own lock
    (sleep_wl): a timer that ends the sleep, a #wakeup and a #kill go to the
    thread itself, so no list of sleepers is shared and nothing sleeping
@@ -1311,11 +1456,11 @@ static int sp_ev_backend_wait(int set, sp_ev_ready *out, int max, int tmo_ms) {
    both ways, wait_next / io_prev), and each of its descriptor entries in the
    worker's table (ev_tab, indexed by descriptor). A park, the drain that
    readies it and the wake take no global lock; a #kill, #raise or timeout
-   unlinks it under io_wl like any wait lock (sp_sched_unpark). g_nio counts
+   unlinks it under io_wl like any wait lock (sp_sched_unpark). NIO_INC counts
    the threads parked this way, for the waits that ask whether any I/O is
    outstanding. Without the event backend (SPINEL_SCHED_POLL, or no epoll or
    kqueue) the monitor polls g_io_waiters under the scheduler lock instead. */
-static int g_nio = 0;   /* threads parked on I/O in a worker's set (atomic) */
+/* (threads parked on I/O in a worker's set: NIO_INC, with the run counts) */
 static void sched_wake_unlinked(sp_thread *t);
 static int sp_ev_home_of(sp_thread *t) { return t->home_wid < 0 ? 0 : (int)t->home_wid; }
 /* What an entry waits for: the thread's own descriptor, or one of its set */
@@ -1329,7 +1474,7 @@ static void wio_link(int w, sp_thread *t) {   /* PRE: w's io_wl held */
   s->io_waiters = t;
   t->wait_head = &s->io_waiters;
   SP_ATOMIC_STORE(&t->wait_lock, &s->io_wl, __ATOMIC_RELEASE);
-  SP_ATOMIC_FETCH_ADD(&g_nio, 1, __ATOMIC_SEQ_CST);
+  NIO_INC();
 }
 static void wio_unlink(int w, sp_thread *t) {   /* PRE: w's io_wl held */
   sp_wslot *s = &g_wslot[w];
@@ -1337,7 +1482,7 @@ static void wio_unlink(int w, sp_thread *t) {   /* PRE: w's io_wl held */
   if (t->wait_next) t->wait_next->io_prev = t->io_prev;
   t->io_prev = NULL; t->wait_next = NULL; t->wait_head = NULL;
   SP_ATOMIC_STORE(&t->wait_lock, NULL, __ATOMIC_RELEASE);
-  SP_ATOMIC_FETCH_SUB(&g_nio, 1, __ATOMIC_SEQ_CST);
+  NIO_DEC();
 }
 /* Arm `fd` in worker w's set for the union of what its waiters there want.
    Attempted on every park -- see the note above: never skipped on the belief
@@ -1408,7 +1553,7 @@ static int sp_ev_dispatch_w(int w, int fd, short rev, sp_thread **out, int n) {
        (sp_ev_wake_out): main's pump reads the counts to decide that nothing
        can wake it, and a thread in neither looked like a deadlock. Raised
        before the drop lowers it, so the count never passes through zero. */
-    SP_ATOMIC_FETCH_ADD(&g_nio, 1, __ATOMIC_SEQ_CST);
+    NIO_INC();
     sp_ev_drop_w(w, t);
     t->io_revents = rev; t->io_fd = -1;
     out[n++] = t;
@@ -1419,7 +1564,7 @@ static int sp_ev_dispatch_w(int w, int fd, short rev, sp_thread **out, int n) {
 static void sp_ev_wake_out(sp_thread **out, int n) {   /* no io_wl held */
   for (int i = 0; i < n; i++) {
     sched_wake_unlinked(out[i]);
-    SP_ATOMIC_FETCH_SUB(&g_nio, 1, __ATOMIC_SEQ_CST);   /* see sp_ev_dispatch_w */
+    NIO_DEC();   /* see sp_ev_dispatch_w */
   }
 }
 /* Handle what one wait on worker w's set returned: the kick pipe is drained,
@@ -1549,7 +1694,6 @@ void sp_sched_ev_forget(int fd) {
 #else
 void sp_sched_ev_forget(int fd) { (void)fd; }
 /* no worker parks a thread on I/O without the event backend (Windows) */
-static int g_nio = 0;
 #endif
 
 static unsigned   g_next_id = 1;
@@ -1592,6 +1736,15 @@ static void runq_push(sp_runq *q, sp_thread *t) {
 #ifdef SP_THREADS
   if (q == &g_grq) sp_sched_maybe_grow();   /* one execution helper per live green thread, up to the cap */
 #endif
+}
+/* Take the first thread off q for this worker to run now: as runq_pop, but
+   the thread stays counted runnable until run_thread_once counts it running,
+   in one change (g_run_taken), so it is never in neither count. */
+static SP_TLS int g_run_taken = 0;
+static sp_thread *runq_take(sp_runq *q) {
+  sp_thread *t = q->head;
+  if (t) { SP_ATOMIC_STORE(&q->head, t->rq_next, __ATOMIC_RELAXED); if (!q->head) q->tail = NULL; t->rq_next = NULL; }
+  return t;
 }
 static sp_thread *runq_pop(sp_runq *q) {
   sp_thread *t = q->head;
@@ -1947,6 +2100,7 @@ void sp_sched_init(void) {
   sp_gc_mark_globals_hook = sp_sched_globals_mark;
 #ifdef SP_THREADS
   sp_worker_id = 0;                          /* main is worker 0 */
+  g_cnt_me = &g_cnt[0];
   g_wslot[0].tid = pthread_self();
   g_wslot[0].active = 1;
   /* Helpers + monitor are spawned lazily on the first Thread (sp_sched_ensure_workers),
@@ -2541,15 +2695,16 @@ static void sp_thread_wake_joiners(sp_thread *t) {
    returns. On termination, publish the result/exception and wake joiners. */
 /* Quiescence: nothing left to run anywhere. A main thread parked in its pump
    (#join / drain) waits on exactly this, so the worker that empties the last of
-   the work wakes it. Counting RUNNING workers (not idle ones) makes this robust:
-   a worker that merely wakes spuriously and re-idles never touches g_nrunning,
-   so it cannot momentarily perturb the predicate the way an idle count would. */
+   the work wakes it. Counting RUNNING threads (not idle workers) makes this robust:
+   a worker that merely wakes spuriously and re-idles never touches the counts,
+   so it cannot momentarily perturb the predicate the way an idle count would.
+   (#8702) It is asked by the last helper to go idle (sp_out_enter_locked). */
 static void sp_sched_signal_if_quiescent(void) {
   /* Only main is waiting on this. Quiescent means there is nothing for a
      helper to find, so waking the helpers here was pure cost -- and in a
      park-heavy program (every green thread blocked on I/O between hops) it
      fired on every hop, which is most of what adding workers cost (#4305). */
-  if (COUNTS_NOW() == 0) SCHED_WAKE_MAIN();   /* none running, none runnable */
+  if (counts_quiet()) SCHED_WAKE_MAIN();   /* none running, none runnable */
 }
 
 /* The fiber a green thread switches back to when it yields, blocks or is
@@ -2585,7 +2740,8 @@ static void run_thread_once(sp_thread *t) { sp_gc_wb((void*)t);   /* PRE/POST: s
   }
   sp_thread *saved = g_current;
   g_current = t;
-  RUNNING_INC();
+  if (g_run_taken) { g_run_taken = 0; RUNNABLE_TO_RUNNING(); }   /* taken for this run: runq_take */
+  else RUNNING_INC();
   SP_TH_SET_STATE(t, SP_TH_RUNNING);
   SP_ATOMIC_STORE(&t->park, SP_PK_RUN, __ATOMIC_SEQ_CST);   /* on-cpu now */
   if (t->home_wid < 0) {   /* pin to this worker (TLS affinity) */
@@ -2681,11 +2837,10 @@ static void run_thread_once(sp_thread *t) { sp_gc_wb((void*)t);   /* PRE/POST: s
     sp_thread_wake_joiners(t);
     reg_remove(t);   /* collectable once no user reference remains */
     RUNNING_DEC();
-    /* the last thread to stop wakes a main waiting for that: the exit drain,
-       or a join that can no longer finish (main's pump reads both counts, in one load) */
-    if (locked) sp_sched_signal_if_quiescent();
-    else if (COUNTS_NOW() == 0)
-      { SCHED_LOCK(); sp_sched_signal_if_quiescent(); SCHED_UNLOCK(); }
+    /* a main waiting for nothing to be left (the exit drain, or a join that
+       can no longer finish) is woken by the last helper to go idle
+       (sp_out_enter_locked), not here: that took a look at the counts after
+       every thread that stopped */
     if (do_report) {
       if (locked) SCHED_UNLOCK();
       sp_thread_report(t);
@@ -2718,10 +2873,8 @@ static void run_thread_once(sp_thread *t) { sp_gc_wb((void*)t);   /* PRE/POST: s
     sched_wake_home(t->home_wid);   /* pinned to us: our own loop re-picks it */
   }
   RUNNING_DEC();
-  /* this thread blocked/passed; if nothing else runs, wake a waiting main (whose pump looks under the lock) */
-  if (locked) sp_sched_signal_if_quiescent();
-  else if (COUNTS_NOW() == 0)
-    { SCHED_LOCK(); sp_sched_signal_if_quiescent(); SCHED_UNLOCK(); }
+  /* a main waiting for nothing to be left is woken by the last helper to go
+     idle (sp_out_enter_locked) */
 }
 
 #ifdef SP_THREADS
@@ -2759,7 +2912,7 @@ static void sp_safepoint_preempt(void) {
    empty. When may_wait is set and a helper worker is still busy (so it may yet
    enqueue work or wake us), block on g_sched_work instead of returning on an
    empty queue -- otherwise main would falsely declare a deadlock while a helper
-   runs the very thread that will wake it. At N=1 g_nrunning is 0 between runs, so
+   runs the very thread that will wake it. At N=1 the running count is 0 between runs, so
    this returns on an empty queue exactly as before. PRE/POST: sched lock held. */
 /* may_wait: 0 never waits, 1 waits for anything outstanding, 2 is the EXIT
    DRAIN -- it waits for work that can still run and NOT for threads that are
@@ -2807,25 +2960,23 @@ static void sp_sched_pump(sp_thread *target, int may_wait) {
 #ifdef SP_THREADS
     /* Queue empty for us. Wait while a helper is still running a green thread or
        work sits in the queue (a helper will pick it up) -- it may enqueue more or
-       wake us; the worker that drops g_nrunning to zero with an empty queue
-       broadcasts (sp_sched_signal_if_quiescent). Only when nothing runs and the
+       wake us; the last helper to go idle with nothing left wakes us
+       (sp_sched_signal_if_quiescent). Only when nothing runs and the
        queue is empty do we fall through -- drained, or a deadlock the caller
        observes. */
-    /* A thread on its way between the counts and an I/O wait is in the counts
-       or in g_nio at every moment -- its wake counts it runnable before it
-       leaves g_nio, its park enters g_nio before it stops running -- but they
-       are three loads, made without the locks the moves take. g_nio is read
-       before the counts and again after: whichever way the thread moves, one
-       of the three sees it. */
-    int nio_before = SP_ATOMIC_LOAD(&g_nio, __ATOMIC_SEQ_CST) != 0;
-    /* the same for a thread between the counts and a sleep or timed wait */
-    int ntimed_before = SP_ATOMIC_LOAD(&g_ntimed, __ATOMIC_SEQ_CST) != 0;
-    int outstanding = COUNTS_NOW() != 0;   /* one load: see g_counts */
+    /* A thread on its way between the run counts and an I/O wait or a timed
+       wait is in one of them at every moment -- its wake counts it runnable
+       before it leaves the wait's count, its park enters that count before it
+       stops running -- and the four are read as of one instant
+       (counts_snapshot). Counts that kept changing while it read them say
+       there is work. */
+    long long sum[4];
+    int read = counts_snapshot(sum);
+    int outstanding = !read || sum[0] != 0 || sum[1] != 0;
     /* A timed wait or an I/O waiter is work that may yet become runnable, so an
        ordinary wait counts it. The exit drain does not: nothing is going to
        ask for it after main has returned. */
-    if (may_wait == 1) outstanding = outstanding || g_io_waiters || nio_before || SP_ATOMIC_LOAD(&g_nio, __ATOMIC_SEQ_CST)
-                                     || ntimed_before || SP_ATOMIC_LOAD(&g_ntimed, __ATOMIC_SEQ_CST);
+    if (may_wait == 1) outstanding = outstanding || g_io_waiters || sum[2] != 0 || sum[3] != 0;
     if (may_wait && outstanding) {
 #ifdef SP_EV_BACKEND
       /* Main is worker 0, and threads pin to it -- at SPINEL_WORKERS=1 all of
@@ -2857,7 +3008,9 @@ static void sp_sched_pass(void) {
   /* Snapshot the runnable count and run exactly that many: a thread that
      re-queues itself (its own Thread.pass) during the sweep lands beyond the
      snapshot and waits for the next sweep, so it cannot starve main. */
-  int n = COUNTS_RUNNABLE(COUNTS_NOW());
+  int n, nrun;
+  counts_approx(&n, &nrun);
+  (void)nrun;
 #ifdef SP_EV_BACKEND
   /* Main's own readiness set holds the I/O of the threads pinned to main's
      worker (a thread that first ran in one of these sweeps is), and only a
@@ -2868,9 +3021,9 @@ static void sp_sched_pass(void) {
      every 1024th sweep and only while some thread waits on I/O: the event
      still arrives within microseconds of spinning. */
   static unsigned pass_tick;   /* main's only: under the lock */
-  if (g_wslot[0].evfd > 0 && SP_ATOMIC_LOAD(&g_nio, __ATOMIC_RELAXED) && (++pass_tick & 1023u) == 0) {
+  if (g_wslot[0].evfd > 0 && (++pass_tick & 1023u) == 0 && nio_approx()) {
     sp_ev_worker_wait(0, 0);
-    n = COUNTS_RUNNABLE(COUNTS_NOW());
+    counts_approx(&n, &nrun);
   }
 #endif
   while (n-- > 0) {
@@ -3293,6 +3446,7 @@ static void *sp_sysmon_main(void *arg) {
   /* The monitor must never field a preemption signal itself. */
   sigset_t blk; sigemptyset(&blk); sigaddset(&blk, g_preempt_sig);
   pthread_sigmask(SIG_BLOCK, &blk, NULL);
+  g_cnt_me = &g_cnt[SP_CNT_MON];   /* the threads its timers make runnable */
   SCHED_LOCK();
   for (;;) {
     if (g_shutdown) break;
@@ -3310,8 +3464,8 @@ static void *sp_sysmon_main(void *arg) {
         for (int k = 0; k < 32; k++) if (g_sched_lat_hist[k]) fprintf(stderr, " [%u]=%llu", 1u << k, g_sched_lat_hist[k]);
         fprintf(stderr, "\n");
         int busyw = 0; for (int i = 0; i < sp_active_workers; i++) if (g_wslot[i].active && SP_ATOMIC_LOAD(&g_wslot[i].cur, __ATOMIC_ACQUIRE)) busyw++;
-        { uint64_t c = COUNTS_NOW();
-          fprintf(stderr, "[sched-lat] workers=%d busy=%d runnable=%d nrunning=%d\n", sp_active_workers, busyw, COUNTS_RUNNABLE(c), COUNTS_RUNNING(c)); }
+        { int crq, cru; counts_approx(&crq, &cru);
+          fprintf(stderr, "[sched-lat] workers=%d busy=%d runnable=%d nrunning=%d\n", sp_active_workers, busyw, crq, cru); }
         { int pinned[SP_MAX_WORKERS] = {0}; int unpinned = 0;
           REG_LOCK();
           for (sp_thread *a = g_all; a; a = a->all_next) { if (a->home_wid >= 0) pinned[a->home_wid]++; else unpinned++; }
@@ -3401,7 +3555,7 @@ static void *sp_sysmon_main(void *arg) {
       if (g_pfds && g_pths) g_pcap = 16;
     }
     }
-    int have_io = (nio > 0) || (g_io_waiters != NULL) || SP_ATOMIC_LOAD(&g_nio, __ATOMIC_SEQ_CST);
+    int have_io = (nio > 0) || (g_io_waiters != NULL) || nio_approx();
     if (nearest == 0.0 && !busy && !have_io) {
       /* nothing to time or watch: sleep until a thread sleeps / waits on I/O /
          is picked up by a worker (a registrant signals g_sysmon_cv). */
@@ -3544,7 +3698,7 @@ static int sp_sched_sleep_park(double seconds) {
     }
     else held = 1;
   }
-  SP_ATOMIC_FETCH_ADD(&g_ntimed, 1, __ATOMIC_SEQ_CST);   /* before it stops running */
+  NTIMED_INC();   /* before it stops running */
   SP_TH_SET_STATE(self, SP_TH_BLOCKED);
   SP_ATOMIC_STORE(&self->park, SP_PK_PARKING, __ATOMIC_SEQ_CST);   /* on a list, still on its stack */
   self->woken = 0;
@@ -3558,7 +3712,7 @@ static int sp_sched_sleep_park(double seconds) {
       SP_ATOMIC_STORE(&self->park, SP_PK_RUN, __ATOMIC_SEQ_CST);
       SP_TH_SET_STATE(self, SP_TH_RUNNING);
       wl_unlock(&self->sleep_wl);
-      SP_ATOMIC_FETCH_SUB(&g_ntimed, 1, __ATOMIC_SEQ_CST);
+      NTIMED_DEC();
       return -1;
     }
     SP_ATOMIC_STORE(&self->wait_timer, tm, __ATOMIC_RELEASE);
@@ -3571,7 +3725,7 @@ static int sp_sched_sleep_park(double seconds) {
     sp_sched_pump(NULL, 1);   /* main waits (and pumps at N=1) until the monitor wakes it */
     SCHED_UNLOCK();
     SP_ATOMIC_STORE(&self->wait_timer, 0, __ATOMIC_RELEASE);
-    SP_ATOMIC_FETCH_SUB(&g_ntimed, 1, __ATOMIC_SEQ_CST);   /* running again */
+    NTIMED_DEC();   /* running again */
     woken = self->woken;
     sp_fiber_fire_inject_if_pending();   /* a #raise delivered while sleeping */
   }
@@ -3584,7 +3738,7 @@ static int sp_sched_sleep_park(double seconds) {
     sp_exc_ctx_load(exc_snap);
     sp_exc_ctx_free(exc_snap);
     SP_ATOMIC_STORE(&self->wait_timer, 0, __ATOMIC_RELEASE);
-    SP_ATOMIC_FETCH_SUB(&g_ntimed, 1, __ATOMIC_SEQ_CST);   /* running again */
+    NTIMED_DEC();   /* running again */
     woken = self->woken;
     sp_fiber_fire_inject_if_pending();   /* a #kill/#raise delivered while sleeping */
   }
@@ -3683,7 +3837,7 @@ static int sp_sched_wait_io_impl(int fd, short events, struct pollfd *set, int n
   sp_thread *self = g_current;
 #ifdef SP_EV_BACKEND
   /* (#8702) With the event backend the park is the home worker's business
-     (see g_nio): it takes the worker's I/O lock, and a deadline the timer
+     (see NIO_INC): it takes the worker's I/O lock, and a deadline the timer
      lock. The worker's set is brought up under the scheduler lock, once.
      Lock order: the scheduler lock, io_wl, then the timer lock. */
   int home = sp_ev_home_of(self);
@@ -3867,19 +4021,19 @@ int sp_sched_wait_io_set(struct pollfd *set, int n, double timeout_s) {
    collection is in progress and exits when main signals shutdown at drain. */
 /* (#8702) run what is queued on this worker without the scheduler
    lock, for as long as there is some (PRE/POST: the scheduler lock NOT held).
-   A popped thread leaves g_runnable before run_thread_once counts it in
-   g_nrunning, and main's pump reads both to decide that nothing can wake it,
-   so a slot is held in g_nrunning across the pop. Every 61st pick, and when a
+   A thread taken off the queue stays counted runnable until run_thread_once
+   counts it running, in one change (runq_take): main's pump reads both to
+   decide that nothing can wake it. Every 61st pick, and when a
    descriptor of a thread pinned here is ready, it returns for one turn of the
    locked loop, which drains this worker's readiness set and gives the global
    queue its turn. Answers SP_LOCAL_TURN then, and otherwise whether it ran
    anything. */
 #define SP_LOCAL_TURN 2
 static int sp_worker_run_local(int wid) {
-  RUNNING_INC();
-  RQ_LOCK(wid); sp_thread *ft = runq_pop(&g_lrq[wid]); RQ_UNLOCK(wid);
+  RQ_LOCK(wid); sp_thread *ft = runq_take(&g_lrq[wid]); RQ_UNLOCK(wid);
   int ran = ft != NULL;
   while (ft) {
+    g_run_taken = 1;
     run_thread_once(ft);
     ft = NULL;
     if (SP_ATOMIC_LOAD(&g_stw_active, __ATOMIC_SEQ_CST) || SP_ATOMIC_LOAD(&g_shutdown, __ATOMIC_RELAXED)) break;
@@ -3890,17 +4044,15 @@ static int sp_worker_run_local(int wid) {
        between threads, and what it readies lands on this worker's queue */
     if (g_wslot[wid].evfd > 0) (void)sp_ev_drain(wid);
 #endif
-    RQ_LOCK(wid); ft = runq_pop(&g_lrq[wid]); RQ_UNLOCK(wid);
+    RQ_LOCK(wid); ft = runq_take(&g_lrq[wid]); RQ_UNLOCK(wid);
   }
-  RUNNING_DEC();
-  if (COUNTS_NOW() == 0)
-    { SCHED_LOCK(); sp_sched_signal_if_quiescent(); SCHED_UNLOCK(); }
   return ran;
 }
 
 static void *sp_worker_main(void *arg) {
   int wid = (int)(intptr_t)arg;
   sp_worker_id = wid;          /* TLS: read only by this worker */
+  cnt_claim(wid);              /* its run counts (cnt_add) */
   sp_fiber_worker_init();
   SCHED_LOCK();
   int locked_turn = 0;   /* the fast path asked for one turn of this loop */
@@ -3915,9 +4067,8 @@ static void *sp_worker_main(void *arg) {
        collection, and every 61st pick, which gives the global queue its turn
        and drains this worker's readiness set (the I/O of threads pinned
        here). */
-    /* A popped thread leaves g_runnable before run_thread_once counts it in
-       g_nrunning; main's pump reads both to decide that nothing can wake it,
-       so the slot is held in g_nrunning across the pop. */
+    /* A thread taken off the queue stays counted runnable until
+       run_thread_once counts it running, in one change (runq_take). */
     /* A turn the fast path asked for is taken before going back to it: with
        this worker's queue never empty (a thread that does not block), the
        loop went straight back in, and neither the global queue nor the
@@ -4095,9 +4246,9 @@ static void sp_sched_spawn_helper(void) {
    parallel execution threads while never starting a helper the workload has no
    runnable thread for -- a lone background thread brings up exactly one. */
 static void sp_sched_maybe_grow(void) {
-  if (!g_workers_started || g_stw_active) return;
-  uint64_t c = COUNTS_NOW();
-  int live = COUNTS_RUNNABLE(c) + COUNTS_RUNNING(c);
+  if (!g_workers_started || g_stw_active || g_helpers_spawned >= g_worker_cap) return;
+  int crq, cru; counts_approx(&crq, &cru);   /* a pass over the slots: only while the pool can still grow */
+  int live = crq + cru;
   int want = live < g_worker_cap ? live : g_worker_cap;
   while (g_helpers_spawned < want) {
     int before = g_helpers_spawned;
@@ -4333,7 +4484,7 @@ static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mute
     wl_unlock(wl);
     return 1;
   }
-  SP_ATOMIC_FETCH_ADD(&g_ntimed, 1, __ATOMIC_SEQ_CST);   /* before it stops running */
+  NTIMED_INC();   /* before it stops running */
   SP_TH_SET_STATE(self, SP_TH_BLOCKED);
   SP_ATOMIC_STORE(&self->park, SP_PK_PARKING, __ATOMIC_SEQ_CST);   /* on a list, still on its stack */
   self->wait_head = waitlist;
@@ -4361,7 +4512,7 @@ static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mute
     SP_ATOMIC_STORE(&self->park, SP_PK_RUN, __ATOMIC_SEQ_CST);
     SP_TH_SET_STATE(self, SP_TH_RUNNING);
     wl_unlock(wl);
-    SP_ATOMIC_FETCH_SUB(&g_ntimed, 1, __ATOMIC_SEQ_CST);
+    NTIMED_DEC();
     return -1;
   }
   SP_ATOMIC_STORE(&self->wait_timer, tm, __ATOMIC_RELEASE);
@@ -4377,7 +4528,7 @@ static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mute
     int running = SP_TH_STATE(self) == SP_TH_RUNNING;
     SCHED_UNLOCK();
     SP_ATOMIC_STORE(&self->wait_timer, 0, __ATOMIC_RELEASE);
-    SP_ATOMIC_FETCH_SUB(&g_ntimed, 1, __ATOMIC_SEQ_CST);   /* running again */
+    NTIMED_DEC();   /* running again */
     if (!running) sp_raise_cls("ThreadError", "deadlock detected: all threads blocked");
     /* a #raise that woke main fires here, or once its mutex is held again */
     if (mutex) sp_fiber_defer_inject();
@@ -4391,7 +4542,7 @@ static int sp_sched_block_timeout(sp_thread **waitlist, double deadline, sp_mute
     sp_exc_ctx_load(exc_snap);
     sp_exc_ctx_free(exc_snap);
     SP_ATOMIC_STORE(&self->wait_timer, 0, __ATOMIC_RELEASE);
-    SP_ATOMIC_FETCH_SUB(&g_ntimed, 1, __ATOMIC_SEQ_CST);   /* running again */
+    NTIMED_DEC();   /* running again */
     if (!mutex) sp_fiber_fire_inject_if_pending();
   }
   return self->timer_expired ? 0 : 1;
