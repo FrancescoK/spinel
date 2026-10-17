@@ -26568,6 +26568,41 @@ static int param_borrow_scalar_ty(TyKind t) {
   return t == TY_INT || t == TY_FLOAT || t == TY_BOOL || t == TY_SYMBOL || t == TY_NIL;
 }
 
+/* Is call n an attr_reader's read of an object's field (`node.off`)? It
+   reads the slot and runs nothing, unless a class below the receiver's
+   defines a method of the name, which the receiver may be. */
+static int param_borrow_attr_read(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (nt_ref(nt, n, "block") >= 0) return 0;
+  int args = nt_ref(nt, n, "arguments"), argc = 0;
+  if (args >= 0) nt_arr(nt, args, "arguments", &argc);
+  int recv = nt_ref(nt, n, "receiver");
+  const char *name = nt_str(nt, n, "name");
+  if (argc != 0 || recv < 0 || !name || !ty_is_object(c->ntype[recv])) return 0;
+  int cid = ty_object_class(c->ntype[recv]), defc = cid;
+  if (cid < 0 || cid >= c->nclasses || !comp_reader_in_chain(c, cid, name, &defc)) return 0;
+  if (comp_method_in_chain(c, cid, name, NULL) >= 0) return 0;
+  int nd = 0; const int *ds = comp_descendants(c, cid, &nd);
+  for (int d = 0; d < nd && ds; d++)
+    if (comp_method_in_class(c, ds[d], name) >= 0) return 0;
+  return 1;
+}
+
+/* Is call n an element read of a typed Array (`w[0]`, a row of an Array of
+   objects)? It runs nothing and keeps no String pointer. */
+static int param_borrow_elem_read(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, n, "name");
+  int recv = nt_ref(nt, n, "receiver");
+  if (!name || !sp_streq(name, "[]") || recv < 0 || nt_ref(nt, n, "block") >= 0) return 0;
+  int args = nt_ref(nt, n, "arguments"), argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  TyKind rt = c->ntype[recv];
+  if (argc != 1 || c->ntype[argv[0]] != TY_INT) return 0;
+  return rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY || rt == TY_STR_ARRAY || rt == TY_INT_ARRAY_ARRAY ||
+         rt == TY_FLOAT_ARRAY_ARRAY || ty_is_obj_array(rt);
+}
+
 /* The user methods call n reaches (its plan's method and, for a switch,
    every member), into out; 0 for a builtin, -1 when the switch has more
    members than out can hold (none of them is checked). */
@@ -26643,6 +26678,7 @@ static int param_borrow_loud_ex(Compiler *c, int n, int *tg, int *ntg) {
     if (is_opaque_reaching_call(name)) return 1;
     int recv = nt_ref(nt, n, "receiver");
     TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
+    if (k == 0 && param_borrow_attr_read(c, n)) return 0;
     if (recv >= 0 && !param_borrow_plain_ty(rt) && rt != TY_CLASS) return 1;
     if ((rt == TY_STRING || rt == TY_STRBUF) && sp_str_mutator(name, 0)) return 1;
     int blk = nt_ref(nt, n, "block");
@@ -26651,7 +26687,10 @@ static int param_borrow_loud_ex(Compiler *c, int n, int *tg, int *ntg) {
     int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
     /* IO#read(n, buf) and its kin fill the buffer in place */
     if (rt == TY_IO && argc >= 2) return 1;
-    for (int i = 0; i < argc; i++)
+    /* a user method's arguments are only bound: what it does with an
+       object it is handed, its own walk sees (and its loudness is this
+       call's) */
+    for (int i = 0; i < argc && k == 0; i++)
       if (!param_borrow_plain_ty(c->ntype[argv[i]])) return 1;
     return 0;
   }
@@ -26661,7 +26700,8 @@ static int param_borrow_loud_ex(Compiler *c, int n, int *tg, int *ntg) {
 }
 
 /* An operand evaluated beside the borrowed argument: a variable read, a
-   literal, or scalar arithmetic over those. */
+   literal, scalar arithmetic over those, an element read of a typed Array,
+   or an attr_reader's read of a field. */
 static int param_borrow_plain_operand(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   if (n < 0) return 1;
@@ -26672,6 +26712,13 @@ static int param_borrow_plain_operand(Compiler *c, int n) {
     return 1;
   case NK_CallNode: {
     int recv = nt_ref(nt, n, "receiver");
+    { int tg0[64];
+      if ((param_borrow_elem_read(c, n) || param_borrow_attr_read(c, n)) &&
+          param_borrow_targets(c, n, tg0, 64) == 0) {
+        int a0 = nt_ref(nt, n, "arguments"), ac0 = 0;
+        const int *av0 = a0 >= 0 ? nt_arr(nt, a0, "arguments", &ac0) : NULL;
+        return param_borrow_plain_operand(c, recv) && (ac0 == 0 || param_borrow_plain_operand(c, av0[0]));
+      } }
     TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
     if ((rt != TY_INT && rt != TY_FLOAT) || nt_ref(nt, n, "block") >= 0) return 0;
     int tg[64];
