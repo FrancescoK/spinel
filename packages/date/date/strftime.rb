@@ -67,7 +67,7 @@ class Date
     end
 
     result = +''.encode(fmt.encoding)
-    sc = StringScanner.new(fmt)
+    sc = StringScanner.new(fmt.dup)
 
     until sc.eos?
       # Batch collect literal (non-%) characters

@@ -856,9 +856,8 @@ class Date
   #
   def new_start(start = DEFAULT_SG)
     obj = self.class.allocate
-    obj.instance_variable_set(:@jd, @jd)
     # Store the cutover as a Float, matching the C extension (see init_from_jd).
-    obj.instance_variable_set(:@start, start.to_f)
+    obj.set_jd_start(@jd, Float(start.to_f))
     obj
   end
 
@@ -1305,8 +1304,7 @@ class Date
         jd = @jd
         while jd <= limit_jd
           obj = Date.allocate
-          obj.instance_variable_set(:@jd, jd)
-          obj.instance_variable_set(:@start, sg)
+          obj.set_jd_start(jd, sg)
           yield obj
           jd += step
         end
@@ -1314,8 +1312,7 @@ class Date
         jd = @jd
         while jd >= limit_jd
           obj = Date.allocate
-          obj.instance_variable_set(:@jd, jd)
-          obj.instance_variable_set(:@start, sg)
+          obj.set_jd_start(jd, sg)
           yield obj
           jd += step
         end
@@ -1353,8 +1350,7 @@ class Date
       sg = @start
       while jd <= max_jd
         obj = Date.allocate
-        obj.instance_variable_set(:@jd, jd)
-        obj.instance_variable_set(:@start, sg)
+        obj.set_jd_start(jd, sg)
         yield obj
         jd += 1
       end
@@ -1375,8 +1371,7 @@ class Date
       sg = @start
       while jd >= min_jd
         obj = Date.allocate
-        obj.instance_variable_set(:@jd, jd)
-        obj.instance_variable_set(:@start, sg)
+        obj.set_jd_start(jd, sg)
         yield obj
         jd -= 1
       end
@@ -1428,16 +1423,41 @@ class Date
   # ---------------------------------------------------------------------------
 
   # :nodoc:
+  # @rbs other: Date
   def initialize_copy(other)
     # Assign every ivar in the canonical order so copies share the same shape
-    # as freshly constructed instances (see init_from_jd).
-    @jd            = other.instance_variable_get(:@jd)
-    @start         = other.instance_variable_get(:@start)
-    @day_fraction  = other.instance_variable_get(:@day_fraction)
-    @year          = other.instance_variable_get(:@year)
-    @month         = other.instance_variable_get(:@month)
-    @day           = other.instance_variable_get(:@day)
+    # as freshly constructed instances (see init_from_jd). The fields are
+    # read through the readers below, not instance_variable_get, so the
+    # compiler knows what each one holds.
+    @jd            = Integer(other.copied_jd)
+    @start         = Float(other.copied_start)
+    @day_fraction  = other.copied_day_fraction
+    @year          = other.copied_year
+    @month         = other.copied_month
+    @day           = other.copied_day
   end
+
+  protected
+
+  # The fields initialize_copy reads from the Date it copies.
+  def copied_jd = @jd
+  def copied_start = @start
+  def copied_day_fraction = @day_fraction
+  def copied_year = @year
+  def copied_month = @month
+  def copied_day = @day
+
+  # Sets the Julian day and the cutover of a Date allocate made (and
+  # nothing else), without instance_variable_set.
+  # @rbs jd: Integer
+  # @rbs sg: Float
+  def set_jd_start(jd, sg)
+    @jd = jd
+    @start = sg
+    self
+  end
+
+  public
 
   # :nodoc:
   def marshal_dump
@@ -1537,6 +1557,7 @@ class Date
           when :wday  then h[:wday] = wday
           when :yday  then h[:yday] = yday
           end
+          nil  # (each drops the block's value; nil keeps the fields' values out of it)
         end
         h
       end
@@ -1745,7 +1766,7 @@ class Date
     # Store the cutover as a Float, matching the C extension (which keeps it as
     # a double). Keeps #start, #hash and marshal output consistent regardless of
     # whether the caller passed an Integer (e.g. ITALY) or a Float sentinel.
-    @start         = sg.to_f
+    @start         = Float(sg.to_f)
     @day_fraction  = df
     # Initialize the lazily-computed civil ivars up front so every Date
     # instance shares a single object shape regardless of which accessors

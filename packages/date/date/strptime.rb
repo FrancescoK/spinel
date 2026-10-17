@@ -117,8 +117,8 @@ class Date
     # Core scanner: walks format string and string simultaneously using StringScanner.
     # Returns new string position on success; throws :sp_fail on failure.
     def sp_run(str, si, fmt, hash)
-      fmt_sc = StringScanner.new(fmt)
-      str_sc = StringScanner.new(str)
+      fmt_sc = StringScanner.new(fmt.dup)
+      str_sc = StringScanner.new(str.dup)
       str_sc.pos = si
 
       until fmt_sc.eos?
@@ -616,7 +616,7 @@ class Date
       len = zone_str.length
       c0 = zone_str[0]
       if c0 == '+' || c0 == '-'
-        sc = StringScanner.new(zone_str)
+        sc = StringScanner.new(zone_str.dup)
         if sc.scan(/([+-])(\d{2}):?(\d{2})\z/)
           sign = sc[1] == '-' ? -1 : 1
           h = sc[2].to_i
@@ -800,16 +800,29 @@ class Date
           hash[:year] ||= (today ||= Date.today).year
           hash[:yday] ||= 1
         when :civil
+          # (each field by name, as today.__send__(sym) answers it)
           a.each do |sym|
             break unless hash[sym].nil?
-            hash[sym] = (today ||= Date.today).__send__(sym)
+            today ||= Date.today
+            hash[sym] = case sym
+                        when :year then today.year
+                        when :mon then today.mon
+                        when :mday then today.mday
+                        else raise NoMethodError, "undefined method '#{sym}' for an instance of Date"
+                        end
           end
           hash[:mon]  ||= 1
           hash[:mday] ||= 1
         when :commercial
           a.each do |sym|
             break unless hash[sym].nil?
-            hash[sym] = (today ||= Date.today).__send__(sym)
+            today ||= Date.today
+            hash[sym] = case sym
+                        when :cwyear then today.cwyear
+                        when :cweek then today.cweek
+                        when :cwday then today.cwday
+                        else raise NoMethodError, "undefined method '#{sym}' for an instance of Date"
+                        end
           end
           hash[:cweek] ||= 1
           hash[:cwday] ||= 1

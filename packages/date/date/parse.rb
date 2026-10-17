@@ -44,7 +44,7 @@ class Date
       # Fast path: YYYY-MM-DDTHH:MM:SS+HH:MM (25 bytes) or YYYY-MM-DDTHH:MM:SSZ (20 bytes)
       len = string.length
       if len == 25 || len == 20
-        sc = StringScanner.new(string)
+        sc = StringScanner.new(string.dup)
         if sc.scan(/(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})/)
           h = {
             year: sc[1].to_i, mon: sc[2].to_i, mday: sc[3].to_i,
@@ -111,7 +111,7 @@ class Date
       # Fast path for Type 1: "Dow, DD Mon YYYY HH:MM:SS GMT" (29 bytes)
       len = string.length
       if len == 29
-        sc = StringScanner.new(string)
+        sc = StringScanner.new(string.dup)
         if sc.scan(/([A-Za-z]{3}), (\d{2}) ([A-Za-z]{3}) (\d{4}) (\d{2}):(\d{2}):(\d{2}) (GMT)\z/i)
           wkey = compute_3key(sc[1])
           wday_info = ABBR_DAY_3KEY[wkey]
@@ -193,7 +193,7 @@ class Date
       # Fast path: "Dow, DD Mon YYYY HH:MM:SS +ZZZZ" (31 bytes, 2-digit day)
       len = string.length
       if len == 31
-        sc = StringScanner.new(string)
+        sc = StringScanner.new(string.dup)
         if sc.scan(/([A-Za-z]{3}), (\d{2}) ([A-Za-z]{3}) (\d{4}) (\d{2}):(\d{2}):(\d{2}) ([+-]\d{4})\z/)
           wkey = compute_3key(sc[1])
           wday_info = ABBR_DAY_3KEY[wkey]
@@ -273,7 +273,7 @@ class Date
 
       # Fast path: YYYY-MM-DD (exactly 10 bytes, all ASCII)
       if string.length == 10
-        sc = StringScanner.new(string)
+        sc = StringScanner.new(string.dup)
         if sc.scan(/(\d{4})-(\d{2})-(\d{2})\z/)
           return { year: sc[1].to_i, mon: sc[2].to_i, mday: sc[3].to_i }
         end
@@ -335,7 +335,7 @@ class Date
 
       # Fast path: YYYY-MM-DD (exactly 10 bytes, all ASCII)
       if string.length == 10
-        sc = StringScanner.new(string)
+        sc = StringScanner.new(string.dup)
         if sc.scan(/(\d{4})-(\d{2})-(\d{2})\z/)
           return { mday: sc[3].to_i, year: sc[1].to_i, mon: sc[2].to_i }
         end
@@ -391,7 +391,7 @@ class Date
 
       # Fast path: X##.##.## (9 bytes: era + YY.MM.DD)
       if string.length == 9
-        sc = StringScanner.new(string)
+        sc = StringScanner.new(string.dup)
         if sc.scan(/([A-Za-z])(\d{2})\.(\d{2})\.(\d{2})\z/)
           era_offset = JISX0301_ERA[sc[1].downcase]
           if era_offset
@@ -466,7 +466,7 @@ class Date
 
       # Fast ISO: YYYY-MM-DD (exactly 10 ASCII bytes)
       if len == 10
-        sc = StringScanner.new(string)
+        sc = StringScanner.new(string.dup)
         if sc.scan(/(\d{4})-(\d{2})-(\d{2})\z/)
           return { year: sc[1].to_i, mon: sc[2].to_i, mday: sc[3].to_i }
         end
@@ -474,7 +474,7 @@ class Date
 
       # Fast compact: YYYYMMDD (exactly 8 ASCII digit bytes)
       if len == 8
-        sc = StringScanner.new(string)
+        sc = StringScanner.new(string.dup)
         if sc.scan(/(\d{4})(\d{2})(\d{2})\z/)
           return { year: sc[1].to_i, mon: sc[2].to_i, mday: sc[3].to_i }
         end
@@ -619,8 +619,10 @@ class Date
       end
 
       # zone -> offset
+      # (String() answers the zone itself; it tells the compiler what the
+      # hash's value is)
       if h[:zone] && !h.key?(:offset)
-        h[:offset] = fast_zone_offset(h[:zone])
+        h[:offset] = fast_zone_offset(String(h[:zone]))
       end
 
       h
@@ -841,7 +843,7 @@ class Date
       return 0 if len == 1 && (zone_str[0] == 'Z' || zone_str[0] == 'z')
 
       if zone_str[0] == '+' || zone_str[0] == '-'
-        sc = StringScanner.new(zone_str)
+        sc = StringScanner.new(zone_str.dup)
         if sc.scan(/([+-])(\d{2}):?(\d{2})\z/)
           sign = sc[1] == '-' ? -1 : 1
           return sign * (sc[2].to_i * 3600 + sc[3].to_i * 60)

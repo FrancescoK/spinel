@@ -397,6 +397,7 @@ class DateTime < Date
           when :sec_fraction then h[:sec_fraction] = sec_fraction
           when :zone         then h[:zone] = zone
           end
+          nil  # (each drops the block's value; nil keeps the fields' values out of it)
         end
         h
       end
@@ -927,12 +928,12 @@ class DateTime < Date
   def _init_datetime(jd, h, m, s, sf, of, sg)
     @jd            = Integer(jd)
     # Store the cutover as a Float, matching the C extension (see init_from_jd).
-    @start         = sg.to_f
+    @start         = Float(sg.to_f)
     @day_fraction  = nil
-    @hour          = h
-    @min           = m
-    @sec_i         = s
-    @sec_frac      = sf.is_a?(Rational) ? sf : Rational(sf)
+    @hour          = Integer(h)
+    @min           = Integer(m)
+    @sec_i         = Integer(s)
+    @sec_frac      = Rational(sf)
     @of            = of.to_i
     # Initialize lazily-computed (inherited from Date) civil ivars up front so
     # every DateTime instance shares a single object shape.
