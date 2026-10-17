@@ -32761,7 +32761,7 @@ static int seed_ret_site(const VpLeaf *leaf, void *ud) {
 static void seed_ret_branch_sites(const NodeTable *nt, int v, int *sites, int *n, int cap) {
   SeedSites s = { sites, n, cap };
   if (v < 0 || *n >= cap) return;
-  for_each_value_position(nt, v, VPS_IF | VPS_UNLESS, seed_ret_site, &s);
+  for_each_value_position(nt, v, VPS_IF | VPS_UNLESS | VPS_CASE, seed_ret_site, &s);
 }
 static int seed_ret_family(Compiler *c, TyKind t);
 static int seed_ret_kind(TyKind t);
