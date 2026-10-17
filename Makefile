@@ -53,7 +53,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: ty-setter-check imemo-shadow-test int-min-test all hooks share-strings-test line-map-check gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check value-edges-check value-edges-regen re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
+.PHONY: ty-setter-check imemo-shadow-test int-min-test all hooks share-strings-test line-map-check gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check value-edges-check value-edges-regen value-pos-test re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-test-shared gate-bench gc-phases-test gc-stress-test gc-str-major-test gc-str-budget-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot rubyboy gate-rubyboy scale-test clean install uninstall deps tools
@@ -1464,7 +1464,7 @@ test: lib/spinel_rt_responds_generated.h $(SPINEL_TIMEOUT) cext-header-test cext
 # The actual run. rbs-test golden-checks the RBS extractor (cheap, C-only).
 # rbs-seed-test checks the seeds actually reach the analyzer (incl. nested
 # classes, #1417).
-test-run: int-min-test timing-test signal-default-test source-marker-test rbs-test rbs-seed-test inline-rbs-test re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test gc-phases-test gc-stress-test gc-threshold-test gc-obj-budget-test gc-str-budget-test gc-str-major-test threaded-render-test gc-locality-test byref-capture-test thread-puts-test ext-test ext-cruby-test test-corpus-summary
+test-run: int-min-test timing-test signal-default-test source-marker-test rbs-test rbs-seed-test inline-rbs-test re-lit-test value-pos-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test gc-phases-test gc-stress-test gc-threshold-test gc-obj-budget-test gc-str-budget-test gc-str-major-test threaded-render-test gc-locality-test byref-capture-test thread-puts-test ext-test ext-cruby-test test-corpus-summary
 
 # The test/*.rb corpus (and the bundled packages') on its own, without the
 # C-side legs: what a 32-bit target runs (`make test-corpus CC='cc -m32'`),
@@ -5271,6 +5271,21 @@ share-spec-check:
 ARITY_RUBY ?= ruby
 arity-spec-check:
 	@$(ARITY_RUBY) tools/gen_builtin_arity_spec.rb --check
+
+# The value-position iterator (src/value_pos.c) on one method per shape: the
+# positions --dump-value-positions lists for test/value-pos/shapes.rb are the
+# expected file. test/value_pos_shapes.rb runs the same shapes against CRuby.
+# After a deliberate change of the iterator or of tools/value_edges.yml, read
+# the diff, then refresh the expected file:
+#   spinel --dump-value-positions test/value-pos/shapes.rb > test/value-pos/shapes.expected
+# --check-value-pos walks tables built by hand for the limits no program
+# reaches: the visit budget and a stack past its 32 entries.
+value-pos-test: $(SPINEL)
+	@tmp=$$(mktemp -d /tmp/spinel-value-pos.XXXXXX); \
+	$(SPINEL) --dump-value-positions test/value-pos/shapes.rb > "$$tmp/out" 2>&1; \
+	if diff -u test/value-pos/shapes.expected "$$tmp/out" && $(SPINEL) --check-value-pos test/value-pos/shapes.rb; \
+	then echo "value-pos-test: ok"; rm -rf "$$tmp"; \
+	else echo "value-pos-test: FAIL"; rm -rf "$$tmp"; exit 1; fi
 
 # The value edges (tools/value_edges.yml) against the pinned Prism gem's
 # vendor/prism/config.yml, which `make deps` fetches: every node kind and

@@ -24,6 +24,7 @@
 #ifndef SPINEL_VALUE_POS_H
 #define SPINEL_VALUE_POS_H
 
+#include <stdio.h>
 #include "node_table.h"
 
 typedef enum {
@@ -101,5 +102,15 @@ enum {
 /* Calls fn on each value position of root in source order, depth first (the
    `ensure` clause is never one). Answers the first nonzero fn answered, else 0. */
 int for_each_value_position(const NodeTable *nt, int root, unsigned flags, VpFn fn, void *ud);
+
+/* --dump-value-positions: for the body of each method and of the program, the
+   leaves the walk yields with every flag on, one line each (the unit-test
+   surface of the iterator and of tools/value_edges.yml). */
+void value_pos_dump(const NodeTable *nt, FILE *out);
+
+/* --check-value-pos: walks tables built by hand to see the two limits: a cycle
+   ends in one VPK_GAVE_UP leaf, and a wide case and a 5000-arm elsif chain are
+   walked in order. 0 when they hold. */
+int value_pos_check(void);
 
 #endif

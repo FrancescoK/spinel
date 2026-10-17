@@ -231,3 +231,149 @@ int for_each_value_position(const NodeTable *nt, int root, unsigned flags, VpFn 
   if (w.items != w.small) free(w.items);
   return stop;
 }
+
+/* ---- --dump-value-positions ---- */
+
+typedef struct {
+  const NodeTable *nt;
+  FILE *out;
+  int line;   /* the scope's line: where a nil with no parent is */
+} VpDump;
+
+static const char *vp_kind_name(VpKind k) {
+  switch (k) {
+  case VPK_EXPR: return "EXPR";
+  case VPK_NIL: return "NIL";
+  case VPK_JUMP: return "JUMP";
+  case VPK_GAVE_UP: return "GAVE_UP";
+  }
+  return "?";
+}
+
+static int vp_dump_leaf(const VpLeaf *lf, void *ud) {
+  VpDump *d = ud;
+  const NodeTable *nt = d->nt;
+  fprintf(d->out, "  %s", vp_kind_name(lf->kind));
+  if (lf->node >= 0) fprintf(d->out, " #%d %s", lf->node, nt_type(nt, lf->node));
+  int line = lf->node >= 0 ? (int)nt_int(nt, lf->node, "node_line", 0)
+           : lf->parent >= 0 ? (int)nt_int(nt, lf->parent, "node_line", 0) : d->line;
+  fprintf(d->out, " line %d arm %d", line, lf->arm);
+  if (lf->parent >= 0) fprintf(d->out, " parent #%d %s", lf->parent, nt_type(nt, lf->parent));
+  else fprintf(d->out, " parent -");
+  fprintf(d->out, " depth %d\n", lf->cond_depth);
+  return 0;
+}
+
+static void vp_dump_scope(const NodeTable *nt, FILE *out, const char *title, int line, int root) {
+  VpDump d;
+  d.nt = nt; d.out = out; d.line = line;
+  fprintf(out, "%s line %d\n", title, line);
+  for_each_value_position(nt, root, VP_ALL_FLAGS, vp_dump_leaf, &d);
+}
+
+/* The program, then every method, block and lambda body of the program's own
+   file in node order (the builtins parsed ahead of it are another file). A
+   block is a root of its own: the walk never goes into one. */
+void value_pos_dump(const NodeTable *nt, FILE *out) {
+  fprintf(out, "main\n");
+  VpDump d;
+  d.nt = nt; d.out = out; d.line = 1;
+  for_each_value_position(nt, nt_ref(nt, nt->root_id, "statements"), VP_ALL_FLAGS, vp_dump_leaf, &d);
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if ((k != NK_DefNode && k != NK_BlockNode && k != NK_LambdaNode) || nt_int(nt, id, "node_file", 0) != 0) continue;
+    const char *name = nt_str(nt, id, "name");
+    char title[256];
+    if (k == NK_DefNode) snprintf(title, sizeof title, "def %s", name ? name : "?");
+    else snprintf(title, sizeof title, "%s", k == NK_BlockNode ? "block" : "lambda");
+    vp_dump_scope(nt, out, title, (int)nt_int(nt, id, "node_line", 0), nt_ref(nt, id, "body"));
+  }
+}
+
+/* ---- --check-value-pos ---- */
+
+/* What a walk over a table built by hand saw: leaves of each kind, whether
+   the EXPR leaves came in the order and with the arms the check expects. */
+typedef struct {
+  int leaves[4];   /* by VpKind */
+  int next_arm;    /* the arm the next EXPR leaf should carry */
+  int out_of_order;
+  int last_node;
+} VpCheck;
+
+static void vp_check_init(VpCheck *k) {
+  memset(k, 0, sizeof *k);
+  k->last_node = -1;
+}
+
+static int vp_check_leaf(const VpLeaf *lf, void *ud) {
+  VpCheck *k = ud;
+  k->leaves[lf->kind]++;
+  if (lf->kind == VPK_EXPR) {
+    if (lf->arm != k->next_arm || lf->node <= k->last_node) k->out_of_order = 1;
+    k->next_arm = lf->arm + 1;
+    k->last_node = lf->node;
+  }
+  return 0;
+}
+
+/* A cycle of parentheses and statements, which only a shared subtree could
+   make in a real table: the walk ends with one gave-up leaf. */
+static int vp_check_budget(void) {
+  NodeTable *nt = nt_new_table();
+  int p = nt_new_node(nt, "ParenthesesNode"), s = nt_new_node(nt, "StatementsNode");
+  int body[1];
+  body[0] = p;
+  nt_node_set_ref(nt, p, "body", s);
+  nt_node_set_arr(nt, s, "body", body, 1);
+  VpCheck k;
+  vp_check_init(&k);
+  for_each_value_position(nt, p, VP_ALL_FLAGS, vp_check_leaf, &k);
+  int ok = k.leaves[VPK_GAVE_UP] == 1 && k.leaves[VPK_EXPR] + k.leaves[VPK_NIL] + k.leaves[VPK_JUMP] == 0;
+  nt_free(nt);
+  return ok;
+}
+
+/* A case with 100 when clauses and no else (the stack outgrows its 32 entries
+   on the C stack) and an if/elsif chain of 5000 arms (no recursion to cut):
+   every arm is seen once, in source order, with its place in the chain. */
+static int vp_check_long(void) {
+  NodeTable *nt = nt_new_table();
+  enum { WHENS = 100, ARMS = 5000 };
+  int whens[WHENS];
+  for (int i = 0; i < WHENS; i++) {
+    whens[i] = nt_new_node(nt, "WhenNode");
+    nt_node_set_ref(nt, whens[i], "statements", nt_new_node(nt, "IntegerNode"));
+  }
+  int cs = nt_new_node(nt, "CaseNode");
+  nt_node_set_arr(nt, cs, "conditions", whens, WHENS);
+  VpCheck kc;
+  vp_check_init(&kc);
+  for_each_value_position(nt, cs, VP_ALL_FLAGS, vp_check_leaf, &kc);
+  int ok = kc.leaves[VPK_EXPR] == WHENS && kc.leaves[VPK_NIL] == 1 && !kc.out_of_order && kc.next_arm == WHENS;
+  int root = nt_new_node(nt, "IfNode"), cur = root;
+  for (int i = 0; i < ARMS; i++) {
+    int next = nt_new_node(nt, "IfNode");
+    nt_node_set_ref(nt, cur, "statements", nt_new_node(nt, "IntegerNode"));
+    nt_node_set_ref(nt, cur, "subsequent", next);
+    cur = next;
+  }
+  nt_node_set_ref(nt, cur, "statements", nt_new_node(nt, "IntegerNode"));
+  int tail = nt_new_node(nt, "ElseNode");
+  nt_node_set_ref(nt, tail, "statements", nt_new_node(nt, "IntegerNode"));
+  nt_node_set_ref(nt, cur, "subsequent", tail);
+  VpCheck ki;
+  vp_check_init(&ki);
+  for_each_value_position(nt, root, VP_ALL_FLAGS, vp_check_leaf, &ki);
+  ok = ok && ki.leaves[VPK_EXPR] == ARMS + 2 && ki.leaves[VPK_GAVE_UP] == 0 && !ki.out_of_order;
+  nt_free(nt);
+  return ok;
+}
+
+int value_pos_check(void) {
+  int ok = 1;
+  if (!vp_check_budget()) { fprintf(stderr, "value-pos-check: a cycle did not end in one gave-up leaf\n"); ok = 0; }
+  if (!vp_check_long()) { fprintf(stderr, "value-pos-check: a wide case or a long elsif chain was not walked in order\n"); ok = 0; }
+  if (ok) printf("value-pos-check: ok\n");
+  return ok ? 0 : 1;
+}
