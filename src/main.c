@@ -502,8 +502,8 @@ static void usage(void) {
    on the parsed table and stop; the mode a flag names, or 0. */
 static int table_mode_of(const char *a) {
   if (sp_streq(a, "--dump-ast")) return 1;
-  if (!strcmp(a, "--dump-value-positions")) return 2;
-  return !strcmp(a, "--check-value-pos") ? 3 : 0;
+  if (sp_streq(a, "--dump-value-positions")) return 2;
+  return sp_streq(a, "--check-value-pos") ? 3 : 0;
 }
 static int run_table_mode(const NodeTable *nt, int mode) {
   if (mode == 1) nt_dump(nt, stdout);

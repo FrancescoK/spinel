@@ -1464,7 +1464,7 @@ test: lib/spinel_rt_responds_generated.h $(SPINEL_TIMEOUT) cext-header-test cext
 # The actual run. rbs-test golden-checks the RBS extractor (cheap, C-only).
 # rbs-seed-test checks the seeds actually reach the analyzer (incl. nested
 # classes, #1417).
-test-run: int-min-test timing-test signal-default-test source-marker-test rbs-test rbs-seed-test inline-rbs-test re-lit-test value-pos-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test gc-phases-test gc-stress-test gc-threshold-test gc-obj-budget-test gc-str-budget-test gc-str-major-test threaded-render-test gc-locality-test byref-capture-test thread-puts-test ext-test ext-cruby-test test-corpus-summary
+test-run: int-min-test timing-test signal-default-test source-marker-test rbs-test rbs-seed-test inline-rbs-test re-lit-test value-pos-test value-edges-check reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test gc-phases-test gc-stress-test gc-threshold-test gc-obj-budget-test gc-str-budget-test gc-str-major-test threaded-render-test gc-locality-test byref-capture-test thread-puts-test ext-test ext-cruby-test test-corpus-summary
 
 # The test/*.rb corpus (and the bundled packages') on its own, without the
 # C-side legs: what a 32-bit target runs (`make test-corpus CC='cc -m32'`),
@@ -5288,14 +5288,24 @@ value-pos-test: $(SPINEL)
 	else echo "value-pos-test: FAIL"; rm -rf "$$tmp"; exit 1; fi
 
 # The value edges (tools/value_edges.yml) against the pinned Prism gem's
-# vendor/prism/config.yml, which `make deps` fetches: every node kind and
-# child field is annotated, the generated arms (src/value_pos_arms.inc) are
-# current and each hand-written arm exists. Rerun it after a PRISM_VERSION
-# bump; value-edges-regen rewrites the generated file after an edit of the
-# annotation. Neither needs more than any Ruby with the standard yaml library.
+# config.yml (vendor/prism/config.yml, which `make deps` fetches): every node
+# kind and child field is annotated, the generated arms (src/value_pos_arms.inc)
+# are current and each hand-written arm exists, so a PRISM_VERSION bump that adds
+# a node kind or a field fails here until someone decides what it means. It is
+# one of test-run's legs. A build on the Prism gem's own tree (PRISM_DIR from
+# the gem) or with no Ruby skips it with a message, as rbs-seed-test skips
+# without vendor/rbs. value-edges-regen rewrites the generated file after an
+# edit of the annotation; neither needs more than a Ruby with its standard
+# yaml library.
 VALUE_EDGES_RUBY ?= ruby
 value-edges-check:
-	@PRISM_CONFIG=$(PRISM_DIR)/config.yml $(VALUE_EDGES_RUBY) tools/gen_value_edges.rb --check
+	@if [ ! -f "$(PRISM_DIR)/config.yml" ]; then \
+	  echo "value-edges-check: skipped ($(PRISM_DIR)/config.yml not found; run 'make deps')"; \
+	elif ! command -v $(VALUE_EDGES_RUBY) >/dev/null 2>&1; then \
+	  echo "value-edges-check: skipped (no $(VALUE_EDGES_RUBY))"; \
+	else \
+	  PRISM_CONFIG="$(PRISM_DIR)/config.yml" $(VALUE_EDGES_RUBY) tools/gen_value_edges.rb --check; \
+	fi
 value-edges-regen:
 	@$(VALUE_EDGES_RUBY) tools/gen_value_edges.rb --write
 
