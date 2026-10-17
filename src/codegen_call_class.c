@@ -2511,6 +2511,53 @@ void struct_nil_fill_stmts(Compiler *c, int ci, int given, const char *obj, Buf 
     buf_printf(out, "%s; ", set);
   }
 }
+/* The defaults of initialize `initm` as emit_args_filled writes them, for a
+   `k.new` arm. Under --defer-refusals a default the compiler refuses is no
+   reason to lose the call for the classes it does not concern: the arm's
+   text is rolled back and 0 answered, with the refusal's message in msg, for
+   the arm to raise it (emit_stmt_or_defer's rule, one arm wide). */
+static int ctor_defaults_or_defer(Compiler *c, int initm, Buf *out, char *msg, size_t msz) {
+  if (!defer_refusals() || !g_unsup_armed || g_unsup_probe || g_unsup_quiet) {
+    emit_args_filled(c, initm, -1, "", out);
+    return 1;
+  }
+  jmp_buf outer; memcpy(outer, g_unsup_recover, sizeof outer);
+  size_t out_len = out->len;
+  Buf *saved_pre = g_pre; size_t saved_pre_len = g_pre ? g_pre->len : 0;
+  ConvHold *saved_hold = g_conv_hold;
+  EmitUnitState *saved = emit_state_snapshot();
+  int ndiag0 = g_ndiags;
+  volatile int ok = 0;
+  if (setjmp(g_unsup_recover) == 0) {
+    emit_args_filled(c, initm, -1, "", out);
+    ok = 1;
+  }
+  else {
+    g_stmt_deferrals++;
+    g_conv_hold = saved_hold;
+    emit_state_release(saved, 1); saved = NULL;
+    g_pre = saved_pre;
+    if (g_pre && g_pre->len > saved_pre_len) { g_pre->len = saved_pre_len; if (g_pre->p) g_pre->p[saved_pre_len] = '\0'; }
+    out->len = out_len; if (out->p) out->p[out_len] = '\0';
+    g_unsup_armed = 1;
+    if (g_ndiags > ndiag0) {
+      const SpDiag *d = &g_diags[g_ndiags - 1];
+      if (d->line > 0) snprintf(msg, msz, "%s:%d: %s", d->file ? d->file : "?", d->line, d->msg);
+      else snprintf(msg, msz, "%s", d->msg);
+    }
+    else snprintf(msg, msz, "refused at compile time");
+  }
+  if (saved) emit_state_release(saved, 0);
+  memcpy(g_unsup_recover, outer, sizeof outer);
+  return ok;
+}
+/* `case ci:` raising the refusal ctor_defaults_or_defer kept */
+static void ctor_deferred_arm(int ci, const char *msg, Buf *b) {
+  buf_printf(b, "case %d: sp_raise_cls(\"NotImplementedError\", \"", ci);
+  emit_c_escaped(b, msg);
+  buf_puts(b, "\"); break;");
+}
+
 
 const unsigned char *g_poly_new_only = NULL;
 
@@ -2637,8 +2684,10 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
         g_ctor_self = selftxt;
         g_ctor_self_deref = comp_ty_value_obj(c, ty_object(ci)) ? "." : "->";
       }
+      /* the arm's own statements, a default's hoists among them: ahead of
+         the switch they ran for every class */
       Buf *sv_pre = g_pre;
-      if (pd_uid || self_t >= 0) g_pre = &pdpre;
+      g_pre = &pdpre;
       for (int j = 0; j < np; j++) {
         if (j) buf_puts(&ab, ", ");
         if (is2) {
@@ -2758,33 +2807,49 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
          still declares the slots, #2452); the call site supplies no args, so
          emit_args_filled emits each param's default. A default reading the
          instance runs on the allocated object, as in the poly arm below. */
+      /* what a default hoists (its statements, a temp) belongs to this arm:
+         ahead of the switch every class's defaults ran for any class, and
+         one that raises (or is refused) stopped the call for all of them */
+      Buf apre; memset(&apre, 0, sizeof apre);
+      Buf *sv_pre = g_pre; g_pre = &apre;
       if (ctor_needs_self_defaults(c, initm, 0)) {
-        buf_printf(b, "case %d: _t%d=", ci, rt2);
-        buf_printf(b, c->classes[ci].is_value_type ? "sp_box_vobj_%s(" : "sp_box_obj(",
+        Buf av; memset(&av, 0, sizeof av);
+        buf_printf(&av, c->classes[ci].is_value_type ? "sp_box_vobj_%s(" : "sp_box_obj(",
                    c->classes[ci].c_name);
-        emit_ctor_alloc_init(c, ci, initm, -1, id, b);
-        if (c->classes[ci].is_value_type) buf_puts(b, "); break;");
-        else { buf_puts(b, ","); arysub_box_id(c, ty_object(ci), b); buf_puts(b, "); break;"); }
+        emit_ctor_alloc_init(c, ci, initm, -1, id, &av);
+        if (c->classes[ci].is_value_type) buf_puts(&av, ")");
+        else { buf_puts(&av, ","); arysub_box_id(c, ty_object(ci), &av); buf_puts(&av, ")"); }
+        g_pre = sv_pre;
+        buf_printf(b, "case %d: { %s_t%d=%s; } break;", ci, apre.p ? apre.p : "", rt2, av.p);
+        free(av.p); free(apre.p);
         continue;
       }
       Buf ab9; memset(&ab9, 0, sizeof ab9);
-      if (initm >= 0 && c->scopes[initm].nparams > 0)
-        emit_args_filled(c, initm, -1, "", &ab9);
+      char dmsg9[2600];
+      if (initm >= 0 && c->scopes[initm].nparams > 0 &&
+          !ctor_defaults_or_defer(c, initm, &ab9, dmsg9, sizeof dmsg9)) {
+        g_pre = sv_pre;
+        ctor_deferred_arm(ci, dmsg9, b);
+        free(ab9.p); free(apre.p);
+        continue;
+      }
       emit_ctor_block_slot(c, id, initm, ab9.p && ab9.p[0] ? ", " : "", &ab9);
+      g_pre = sv_pre;
       const char *args9 = ab9.p ? ab9.p : "";
+      const char *pre9 = apre.p ? apre.p : "";
       /* a value-type object returns by value: box via its vobj boxer, not
          sp_box_obj which expects a heap pointer (#2450) */
       if (c->classes[ci].is_value_type)
-        buf_printf(b, "case %d: _t%d=sp_box_vobj_%s(sp_%s_new(%s));break;",
-                   ci, rt2, c->classes[ci].c_name, c->classes[ci].c_name, args9);
+        buf_printf(b, "case %d: { %s_t%d=sp_box_vobj_%s(sp_%s_new(%s)); } break;",
+                   ci, pre9, rt2, c->classes[ci].c_name, c->classes[ci].c_name, args9);
       else {
         /* an Array subclass instance is boxed as its Array (arysub_box_id) */
-        buf_printf(b, "case %d: _t%d=sp_box_obj(sp_%s_new(%s),",
-                   ci, rt2, c->classes[ci].c_name, args9);
+        buf_printf(b, "case %d: { %s_t%d=sp_box_obj(sp_%s_new(%s),",
+                   ci, pre9, rt2, c->classes[ci].c_name, args9);
         arysub_box_id(c, ty_object(ci), b);
-        buf_puts(b, ");break;");
+        buf_puts(b, "); } break;");
       }
-      free(ab9.p);
+      free(ab9.p); free(apre.p);
     }
     ctor_arity_emit(&aerr, b);
     emit_builtin_new_arms(c, 0, NULL, rt2, kt, 0, b);
@@ -2881,27 +2946,41 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
          optional: the arm fills each with its default, exactly as the
          statically-known `Klass.new` does. */
       if (argc == 0 && nreq == 0 && np > 0) {
-        buf_printf(b, "case %d: _t%d=", ci, rt2);
+        /* what a default hoists belongs to this arm, as in the Class-valued
+           form above */
+        Buf apre; memset(&apre, 0, sizeof apre);
+        Buf av; memset(&av, 0, sizeof av);
+        Buf *sv_pre = g_pre; g_pre = &apre;
         if (ctor_needs_self_defaults(c, initm, 0)) {
-          buf_printf(b, c->classes[ci].is_value_type ? "sp_box_vobj_%s(" : "sp_box_obj(",
+          buf_printf(&av, c->classes[ci].is_value_type ? "sp_box_vobj_%s(" : "sp_box_obj(",
                      c->classes[ci].c_name);
-          emit_ctor_alloc_init(c, ci, initm, -1, id, b);
-          if (c->classes[ci].is_value_type) buf_puts(b, "); break;");
-          else buf_printf(b, ",%d); break;", ci);
-          continue;
+          emit_ctor_alloc_init(c, ci, initm, -1, id, &av);
+          if (c->classes[ci].is_value_type) buf_puts(&av, ")");
+          else buf_printf(&av, ",%d)", ci);
         }
-        Buf ad; memset(&ad, 0, sizeof ad);
-        emit_args_filled(c, initm, -1, "", &ad);
-        emit_ctor_block_slot(c, id, initm, ad.p && ad.p[0] ? ", " : "", &ad);
-        if (c->classes[ci].is_value_type)
-          buf_printf(b, "sp_box_vobj_%s(sp_%s_new(%s)); break;",
-                     c->classes[ci].c_name, c->classes[ci].c_name, ad.p ? ad.p : "");
         else {
-          buf_printf(b, "sp_box_obj(sp_%s_new(%s),", c->classes[ci].c_name, ad.p ? ad.p : "");
-          arysub_box_id(c, ty_object(ci), b);
-          buf_puts(b, "); break;");
+          Buf ad; memset(&ad, 0, sizeof ad);
+          char dmsg[2600];
+          if (!ctor_defaults_or_defer(c, initm, &ad, dmsg, sizeof dmsg)) {
+            g_pre = sv_pre;
+            ctor_deferred_arm(ci, dmsg, b);
+            free(ad.p); free(av.p); free(apre.p);
+            continue;
+          }
+          emit_ctor_block_slot(c, id, initm, ad.p && ad.p[0] ? ", " : "", &ad);
+          if (c->classes[ci].is_value_type)
+            buf_printf(&av, "sp_box_vobj_%s(sp_%s_new(%s))",
+                       c->classes[ci].c_name, c->classes[ci].c_name, ad.p ? ad.p : "");
+          else {
+            buf_printf(&av, "sp_box_obj(sp_%s_new(%s),", c->classes[ci].c_name, ad.p ? ad.p : "");
+            arysub_box_id(c, ty_object(ci), &av);
+            buf_puts(&av, ")");
+          }
+          free(ad.p);
         }
-        free(ad.p);
+        g_pre = sv_pre;
+        buf_printf(b, "case %d: { %s_t%d=%s; } break;", ci, apre.p ? apre.p : "", rt2, av.p);
+        free(apre.p); free(av.p);
         continue;
       }
       /* Same rule as the class-value emitter above: optional parameters are
@@ -2936,8 +3015,10 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
         g_ctor_self = selftxt;
         g_ctor_self_deref = comp_ty_value_obj(c, ty_object(ci)) ? "." : "->";
       }
+      /* the arm's own statements, a default's hoists among them: ahead of
+         the switch they ran for every class */
       Buf *sv_pre = g_pre;
-      if (pd_uid || self_t >= 0) g_pre = &pdpre;
+      g_pre = &pdpre;
       for (int j = 0; j < np; j++) {
         if (j) buf_puts(&ab, ", ");
         if (is) {
