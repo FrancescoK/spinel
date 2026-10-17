@@ -314,6 +314,24 @@ module URI
     def self.build(userinfo: nil, host: nil, port: nil, path: "", query: nil, fragment: nil)
       HTTP.new("http", userinfo, host, port || 80, path, query, fragment)
     end
+
+    # The host, with ":port" when the port is not the scheme's default --
+    # CRuby's URI::HTTP#authority. An absent port is left off, as #to_s
+    # leaves it off.
+    def authority
+      if @port.nil? || @port == default_port || @port <= 0
+        @host.to_s
+      else
+        "#{@host}:#{@port}"
+      end
+    end
+
+    # "scheme://authority", the web origin a CSP source or a same-origin
+    # check compares -- CRuby's URI::HTTP#origin. No userinfo, path, query
+    # or fragment.
+    def origin
+      "#{@scheme}://#{authority}"
+    end
   end
 
   class HTTPS < HTTP
