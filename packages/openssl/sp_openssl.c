@@ -1103,8 +1103,10 @@ static EVP_PKEY *sp_pkey_decode(BIO *bio, const char *type, int selection) {
    read the same way here, to be named in the error rather than called
    unparsable. On OpenSSL 3.0 and later CRuby asks the decoder for parameters
    and then for a public key, never for any selection at once, which fails on
-   some 3.0 and 3.1 releases; before 3.0 its last try is
-   PEM_read_bio_Parameters. */
+   some 3.0 and 3.1 releases. Before 3.0 its last try is
+   PEM_read_bio_Parameters, which does not read an RSA PUBLIC KEY, so that is
+   read here with PEM_read_bio_RSAPublicKey: the error names RSA on every
+   version. */
 static EVP_PKEY *sp_pkey_parse_any(const char *data, long n) {
   EVP_PKEY *k = NULL;
   BIO *bio = BIO_new_mem_buf(data, (int)n);
@@ -1116,7 +1118,17 @@ static EVP_PKEY *sp_pkey_parse_any(const char *data, long n) {
     if (!(k = sp_pkey_decode(bio, types[i], EVP_PKEY_KEY_PARAMETERS)))
       k = sp_pkey_decode(bio, types[i], EVP_PKEY_PUBLIC_KEY);
 #else
-  k = PEM_read_bio_Parameters(bio, NULL);
+  RSA *rsa;
+
+  if (!(k = PEM_read_bio_Parameters(bio, NULL))) {
+    (void)BIO_reset(bio);
+    if ((rsa = PEM_read_bio_RSAPublicKey(bio, NULL, sp_pkey_no_pass, NULL)) &&
+        (!(k = EVP_PKEY_new()) || EVP_PKEY_assign_RSA(k, rsa) != 1)) {
+      EVP_PKEY_free(k);
+      k = NULL;
+      RSA_free(rsa);
+    }
+  }
 #endif
   BIO_free(bio);
   return k;
