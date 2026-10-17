@@ -73,7 +73,7 @@ typedef struct {
   SSL     *ssl;
   SSL_CTX *ctx;
   int      fd;
-  int      in_use;
+  int      in_use;        /* 0 free, 2 claimed and being filled, 1 live */
   int      nonblock;      /* O_NONBLOCK armed by the first non-blocking read */
 } sp_ssl_conn;
 
@@ -109,15 +109,37 @@ const char *sp_ssl_last_error(void) {
   return sp_str_dup_external(sp_ssl_errbuf[0] ? sp_ssl_errbuf : "");
 }
 
+/* A free slot, claimed in the same step that finds it. Threads run native
+   calls on parallel workers, so two connections set up at the same moment
+   are two searches at once, and a search that only looked left both of them
+   the same slot: the second connection overwrote the first, and two
+   SSLSockets drove one SSL. A claimed slot reads 2 until its connection is
+   in it and it is published as 1, so sp_ssl_at never answers one half
+   filled. */
 static int sp_ssl_slot(void) {
-  for (int i = 0; i < SP_SSL_MAX; i++) if (!sp_ssl_tab[i].in_use) return i;
+  for (int i = 0; i < SP_SSL_MAX; i++) {
+    int free_slot = 0;
+    if (SP_ATOMIC_CAS(&sp_ssl_tab[i].in_use, &free_slot, 2, 0,
+                      __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
+      return i;
+  }
   return -1;
 }
 
 static sp_ssl_conn *sp_ssl_at(sp_int h) {
   if (h < 0 || h >= SP_SSL_MAX) return NULL;
   sp_ssl_conn *c = &sp_ssl_tab[h];
-  return c->in_use ? c : NULL;
+  return SP_ATOMIC_LOAD(&c->in_use, __ATOMIC_ACQUIRE) == 1 ? c : NULL;
+}
+
+/* Empty a slot and make it free again, the free last: a slot another thread
+   can claim has nothing of this connection left in it. */
+static void sp_ssl_vacate(sp_ssl_conn *c) {
+  c->ssl = NULL;
+  c->ctx = NULL;
+  c->fd = -1;
+  c->nonblock = 0;
+  SP_ATOMIC_STORE(&c->in_use, 0, __ATOMIC_RELEASE);
 }
 
 /* Give a slot back, whatever stage it reached. */
@@ -125,7 +147,7 @@ static void sp_ssl_release(int i) {
   sp_ssl_conn *c = &sp_ssl_tab[i];
   if (c->ssl) SSL_free(c->ssl);
   if (c->ctx) SSL_CTX_free(c->ctx);
-  memset(c, 0, sizeof *c);
+  sp_ssl_vacate(c);
 }
 
 /* ---- X509::Store ---- */
@@ -313,8 +335,6 @@ const char *sp_x509_pem(const char *der) {
    `cert_store` is an optional Ruby X509::Store object; if non-NIL, its
    native X509_STORE is referenced by the SSL_CTX (SSL_CTX_set1_cert_store, so the store stays the handle's and is reusable). */
 static int sp_ssl_setup(sp_int fd, const char *hostname, sp_int verify, sp_RbVal cert_store) {
-  int i = sp_ssl_slot();
-  if (i < 0) { sp_ssl_note("too many TLS connections"); return -1; }
   sp_ssl_errbuf[0] = 0;
 
   SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
@@ -371,11 +391,19 @@ else {
     SSL_free(ssl); SSL_CTX_free(ctx);
     return -1;
   }
+  /* The slot is claimed last, once there is a connection to put in it, so
+     no failure above has one to give back. */
+  int i = sp_ssl_slot();
+  if (i < 0) {
+    sp_ssl_note("too many TLS connections");
+    SSL_free(ssl); SSL_CTX_free(ctx);
+    return -1;
+  }
   sp_ssl_tab[i].ssl = ssl;
   sp_ssl_tab[i].ctx = ctx;
   sp_ssl_tab[i].fd  = (int)fd;
   sp_ssl_tab[i].nonblock = 0;
-  sp_ssl_tab[i].in_use = 1;
+  SP_ATOMIC_STORE(&sp_ssl_tab[i].in_use, 1, __ATOMIC_RELEASE);
   return i;
 }
 
@@ -551,7 +579,7 @@ sp_int sp_ssl_close(sp_int h) {
   SSL_shutdown(c->ssl);
   SSL_free(c->ssl);
   SSL_CTX_free(c->ctx);
-  c->ssl = NULL; c->ctx = NULL; c->fd = -1; c->in_use = 0;
+  sp_ssl_vacate(c);
   return 0;
 }
 
