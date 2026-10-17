@@ -7445,7 +7445,7 @@ static int cext_widen_containers(Compiler *c, int v, CextWalk *seen) {
     if (!n && is_fresh_array(c, v)) changed |= cext_pin_array_producer(c, v);
     for (int q = 0; q < n; q++) {
       int *leaves = cext_walk_values(c);
-      int count = value_leaves(c, c->scopes[targets[q]].body, leaves, 0, nt->count);
+      int count = value_leaves_ex(c, c->scopes[targets[q]].body, leaves, 0, nt->count, VL_NARROW);
       for (int j = 0; j < count; j++) changed |= cext_widen_containers(c, leaves[j], seen);
       free(leaves);
     }
@@ -7480,7 +7480,11 @@ static int cext_widen_containers(Compiler *c, int v, CextWalk *seen) {
   } else if (kind == NK_StatementsNode || kind == NK_IfNode || kind == NK_UnlessNode ||
              kind == NK_BeginNode || kind == NK_LocalVariableWriteNode || kind == NK_ReturnNode) {
     int *leaves = cext_walk_values(c);
-    int count = value_leaves(c, v, leaves, 0, nt->count);
+    /* the narrow shapes (VL_NARROW), as before the iterator: a begin's
+       String read through here was demanded as a handle under a begin
+       whose own slot stays a const char *, and the tail's value was
+       dropped (test/cext/send-test, rb_eval_string's `begin ... end`) */
+    int count = value_leaves_ex(c, v, leaves, 0, nt->count, VL_NARROW);
     for (int j = 0; j < count; j++) if (leaves[j] != v)
       changed |= cext_widen_containers(c, leaves[j], seen);
     free(leaves);
