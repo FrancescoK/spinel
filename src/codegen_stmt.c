@@ -4961,6 +4961,18 @@ int emit_bang_self_handle(Compiler *c, int v, Buf *b) {
    box's handle. */
 void emit_poly_arms_handle(Compiler *c, int base, Buf *b) {
   const NodeTable *nt = c->nt;
+  /* a call that ran ahead into a temp (emit_arg_temp) is that temp, not a
+     second dispatch: its handle where one was taken (ran_first_handle), or
+     a new one around the String it holds (`f(x.to_html, k: v)` on a boxed
+     receiver, whose arms take the argument by name) */
+  if (arg_ran_first(base, 0)) {
+    int th = ran_first_handle(base);
+    if (th >= 0) { buf_printf(b, "_t%d", th); return; }
+    buf_printf(b, "%s(", strbuf_new_func(c, base));
+    emit_str_expr(c, base, b);
+    buf_puts(b, ")");
+    return;
+  }
   if (nt_kind(nt, base) == NK_ParenthesesNode) {
     int body = nt_ref(nt, base, "body");
     int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
