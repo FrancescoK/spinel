@@ -4187,7 +4187,13 @@ static int sp_worker_idle_unlocked(int wid) {
 #endif
     {
       RQ_LOCK(wid);
-      if (!g_lrq[wid].head) {
+      /* shutdown is read again under the queue's lock: the drain stores it
+         and then kicks this worker under that lock, and a kick reaches only
+         a worker whose `idle` is up. Read once above, before the lock, a
+         drain in between found `idle` down, and this worker then waited for
+         good while main joined it (a program that printed all it had to,
+         then never exited: gc-minor-test on CI) */
+      if (!g_lrq[wid].head && !SP_ATOMIC_LOAD(&g_shutdown, __ATOMIC_RELAXED)) {
         g_wslot[wid].idle = 1;
         pthread_cond_wait(&g_wslot[wid].cv, &g_rq_lock[wid].m);   /* woken for work meant for us, or shutdown */
         g_wslot[wid].idle = 0;
