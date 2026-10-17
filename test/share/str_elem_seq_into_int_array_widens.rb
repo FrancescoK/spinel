@@ -38,3 +38,37 @@ p k
 m = [1, 2]
 m[0] = f ? (o = [s, 21].map { |x| x.to_s }; o[0] + "x") : o[1]
 p m
+
+# more arms than the walk's first buffer holds, the shared read in the last
+rr = [s, 22].map { |x| x.to_s }
+n9 = [1, 2]
+n9[1] = case ARGV.size + 99
+when 0 then "l0"
+when 1 then "l1"
+when 2 then "l2"
+when 3 then "l3"
+when 4 then "l4"
+when 5 then "l5"
+when 6 then "l6"
+when 7 then "l7"
+when 8 then "l8"
+when 9 then "l9"
+when 10 then "l10"
+else rr[1]
+end
+p n9
+u9 = [1, 2]
+u9[1] = if ARGV.size == 5 then "e0"
+elsif ARGV.size == 6 then "e6"
+elsif ARGV.size == 7 then "e7"
+elsif ARGV.size == 8 then "e8"
+elsif ARGV.size == 9 then "e9"
+elsif ARGV.size == 10 then "e10"
+elsif ARGV.size == 11 then "e11"
+elsif ARGV.size == 12 then "e12"
+elsif ARGV.size == 13 then "e13"
+elsif ARGV.size == 14 then "e14"
+elsif ARGV.size == 15 then "e15"
+else rr[1]
+end
+p u9
