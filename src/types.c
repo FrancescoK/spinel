@@ -360,34 +360,27 @@ TyKind ty_array_elem(TyKind arr) {
    whose lowering is a plain value of one kind. Two families: the element
    readers answer the array's element, and the copies and reorderings answer
    the receiver's own kind. A pair left out here keeps the yield's single
-   typing, as before. `dig` with one index (K-024 leftover scope, kilau
-   docs/CATALOG.md, see RENCANA_K024_YIELD_BUILTIN_RESULT.md Task 1) answers
-   the array's element -- same as `[]` -- since `builtin_ops.c`'s own
-   `BOP_ANY_ARRAY "dig" 1 1` row lowers it to the same nilable-aware getter
-   (`sp_$AArray_get$O`) `[]` uses, confirmed with `--emit-types` on a direct
-   (non-yield) `arr.dig(0)`: `int`, `nullable: true`, not poly. Only `dig`
-   with two or more indices (that row's `2 127` sibling) is poly, since a
-   second level of navigation is not guaranteed to be a plain scalar. An
-   earlier version of this comment claimed `dig` was unconditionally poly,
-   checked only the generic-poly-receiver and OpenStruct/Struct call sites
-   and missed this row; corrected after `test/yield_receiver_builtin_dig.rb`
-   stayed RED with a poly-vs-int slot mismatch through an unconditional-poly
-   first attempt.
+   typing, as before. `dig` with one index answers the array's element --
+   same as `[]` -- since `builtin_ops.c`'s own `BOP_ANY_ARRAY "dig" 1 1` row
+   lowers it to the same nilable-aware getter (`sp_$AArray_get$O`) `[]`
+   uses, confirmed with `--emit-types` on a direct (non-yield) `arr.dig(0)`:
+   `int`, `nullable: true`, not poly. Only `dig` with two or more indices
+   (that row's `2 127` sibling) is poly, since a second level of navigation
+   is not guaranteed to be a plain scalar.
    `promote` (the `--int-overflow=promote` flag) answers a different type
    for `succ`'s Integer site, and an Integer Array's `sum`, than the
    default (raise) mode: a receiver that is not a known constant promotes
    past the word to a boxed Bignum, which the non-yield path already does
    (`infer_numeric_call`'s `succ`/`next`/`abs` arm) and a yield's receiver,
-   never a compile-time constant, always takes. `sum` itself is answered by
-   `fold_sum_type` (below), already shaped for this: a Float or String
-   Array's `sum` answers poly in BOTH modes (the default Integer(0) seed's
-   mismatch with a non-Integer element, not a promote-mode rule -- a String
-   Array's boxed path raises CRuby's TypeError at runtime, same as the
-   direct, non-yield call). An earlier version of this comment claimed a
-   Float Array's `sum` stayed `TY_FLOAT` and a String Array's was declined;
-   both wrong, corrected the same way the `dig` claim above was: checked
-   with --emit-types on a direct call before trusting the prior paragraph's
-   reasoning instead of after. */
+   never a compile-time constant, always takes. `succ` on a String or
+   Symbol site, and `sum` on a Float or String Array site, are unaffected
+   by `promote` -- confirmed each with `--emit-types` on a direct call
+   before writing its arm, not assumed from the pattern the Integer cases
+   follow. `sum` itself is answered by `fold_sum_type` (below), already
+   shaped for this: a Float or String Array's `sum` answers poly in BOTH
+   modes (the default Integer(0) seed's mismatch with a non-Integer
+   element, not a promote-mode rule -- a String Array's boxed path raises
+   CRuby's TypeError at runtime, same as the direct, non-yield call). */
 static int ty_recv_is_plain_array(TyKind t) {
   return t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY || t == TY_STR_ARRAY;
 }
@@ -404,14 +397,17 @@ int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind recv,
       if (recv != TY_INT && recv != TY_FLOAT && recv != TY_STRING) return 0;
       *out = recv; return 1;
     }
-    /* succ: a String site always answers String; an Integer site answers
-       Integer in raise (default) mode, poly under --int-overflow=promote --
-       a yield's receiver is never a known constant, so it always takes that
-       mode's non-constant path (confirmed with --emit-types on a direct,
-       non-yield call: an Integer local read back from an array answers
-       poly under promote, string stays string either way). */
+    /* succ: a String or Symbol site always answers its own kind (String's
+       and Symbol's own `succ` bop rows are a fixed result type, no
+       receiver-value dependence). An Integer site answers Integer in raise
+       (default) mode, poly under --int-overflow=promote -- a yield's
+       receiver is never a known constant, so it always takes that mode's
+       non-constant path (confirmed with --emit-types on a direct, non-yield
+       call: an Integer local read back from an array answers poly under
+       promote). */
     if (!strcmp(name, "succ")) {
       if (recv == TY_STRING) { *out = TY_STRING; return 1; }
+      if (recv == TY_SYMBOL) { *out = TY_SYMBOL; return 1; }
       if (recv == TY_INT) { *out = promote ? TY_POLY : TY_INT; return 1; }
       return 0;
     }
@@ -448,6 +444,11 @@ int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind recv,
     }
     return 0;
   }
+  /* Unlike succ/sum above, dig ignores `promote`: a one-index dig answers
+     the same nilable element `[]` does (below), and `[]` is itself
+     promote-independent -- an Integer Array's indexed read stays Integer
+     under promote (only arithmetic results that could overflow become
+     poly), so dig at one index follows it rather than succ/sum's rule. */
   if (!strcmp(name, "dig") && argc >= 1 && ty_recv_is_plain_array(recv)) {
     *out = (argc == 1) ? ty_array_elem(recv) : TY_POLY; return 1;
   }
