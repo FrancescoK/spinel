@@ -2840,18 +2840,18 @@ static int push_chain_base(Compiler *c, int recv) {
 }
 
 static int value_leaves(Compiler *c, int n, int *out, int nout, int cap);
-enum { VL_NIL = 1, VL_BEGIN = 2 };
-static int value_leaves_ex(Compiler *c, int n, int *out, int nout, int cap, int nil_ok);
+enum { VL_NIL = 1, VL_NARROW = 2 };
+static int value_leaves_ex(Compiler *c, int n, int *out, int nout, int cap, int opts);
 static int *cext_walk_values(Compiler *c);
 /* Is one of the values `n` can answer, through parentheses, a plain begin
    body and the arms of a conditional (an arm left out answers nil), an
    element read out of an Array of shared Strings (share_str_elem_read)? */
 static int share_str_value_leaves(Compiler *c, int n) {
   int small[8], *lv = small, found = 0;
-  int cnt = value_leaves_ex(c, n, lv, 0, 8, VL_NIL | VL_BEGIN);
+  int cnt = value_leaves_ex(c, n, lv, 0, 8, VL_NIL);
   if (cnt < 0) {  /* more leaves than the buffer holds: one slot per node is enough */
     lv = cext_walk_values(c);
-    cnt = value_leaves_ex(c, n, lv, 0, c->nt->count, VL_NIL | VL_BEGIN);
+    cnt = value_leaves_ex(c, n, lv, 0, c->nt->count, VL_NIL);
   }
   for (int i = 0; i < cnt && !found; i++) found = share_str_elem_read(c, lv[i]);
   if (lv != small) free(lv);
@@ -5786,9 +5786,12 @@ static int widen_nested_literals(Compiler *c, int recv, int is_push, int is_spli
    through parentheses, the last statement, and each arm of an `if`,
    `unless` or `case`. Answers the new count, or -1 when a path has no
    such expression (an arm left out answers nil) or out[] is full. */
-/* With `nil_ok` (VL_NIL), a path that answers nil (an arm left out, an empty
-   body, a bare `return`) adds no expression instead of answering -1. VL_BEGIN
-   also reads through a plain begin; the flag is for the one caller that asks. */
+/* With VL_NIL, a path that answers nil (an arm left out, an empty body, a
+   bare `return`) adds no expression instead of answering -1. VL_NARROW keeps
+   the walk to the shapes it began with, parentheses, sequences, `if`, `unless`,
+   `case` and a tail `return`: a caller that has to see exactly those asks for
+   it. Every other shape the iterator knows is looked through, one per
+   commit, each with the program it changes. */
 typedef struct {
   const NodeTable *nt;
   int *out;
@@ -5813,10 +5816,11 @@ static int value_leaf_collect(const VpLeaf *leaf, void *ud) {
   v->out[v->nout++] = leaf->node;
   return 0;
 }
-static int value_leaves_ex(Compiler *c, int n, int *out, int nout, int cap, int nil_ok) {
+static int value_leaves_ex(Compiler *c, int n, int *out, int nout, int cap, int opts) {
   if (nout < 0) return -1;
-  ValueLeaves v = { c->nt, out, nout, cap, nil_ok };
-  unsigned shapes = VPS_IF | VPS_UNLESS | VPS_CASE | ((nil_ok & VL_BEGIN) ? VPS_BEGIN_PLAIN : 0);
+  ValueLeaves v = { c->nt, out, nout, cap, (opts & VL_NIL) != 0 };
+  unsigned shapes = VPS_IF | VPS_UNLESS | VPS_CASE;
+  if (!(opts & VL_NARROW)) shapes |= VPS_BEGIN;
   for_each_value_position(c->nt, n, VP_FOLLOW_RETURN | shapes, value_leaf_collect, &v);
   return v.nout;
 }
@@ -5829,17 +5833,17 @@ static int value_leaves(Compiler *c, int n, int *out, int nout, int cap) {
    follow, so the returns come from the scope's own chain (comp_sret_first,
    in node order as the scan was) once scope shape is fixed, instead of a
    scan of every ReturnNode of the program per question. */
-static int method_value_leaves_ex(Compiler *c, int mi, int *out, int cap, int nil_ok) {
+static int method_value_leaves_ex(Compiler *c, int mi, int *out, int cap, int opts) {
   Scope *m = &c->scopes[mi];
-  int n = m->body >= 0 ? value_leaves_ex(c, m->body, out, 0, cap, nil_ok) : nil_ok ? 0 : -1;
+  int n = m->body >= 0 ? value_leaves_ex(c, m->body, out, 0, cap, opts) : (opts & VL_NIL) ? 0 : -1;
   if (comp_scope_index_is_frozen()) {
     for (int r = comp_sret_first(c, mi); r >= 0 && n >= 0; r = comp_sret_next(c, r))
-      n = value_leaves_ex(c, r, out, n, cap, nil_ok);
+      n = value_leaves_ex(c, r, out, n, cap, opts);
     return n;
   }
   NT_FOREACH_KIND(c->nt, NK_ReturnNode, r) {
     if (n < 0) break;
-    if (comp_scope_of(c, r) == m) n = value_leaves_ex(c, r, out, n, cap, nil_ok);
+    if (comp_scope_of(c, r) == m) n = value_leaves_ex(c, r, out, n, cap, opts);
   }
   return n;
 }
@@ -5849,7 +5853,12 @@ int method_value_leaves(Compiler *c, int mi, int *out, int cap) {
 /* The same, a path that answers nil adding nothing: the expressions whose
    value the method may answer, beside a nil. */
 int method_value_leaves_or_nil(Compiler *c, int mi, int *out, int cap) {
-  return method_value_leaves_ex(c, mi, out, cap, 1);
+  return method_value_leaves_ex(c, mi, out, cap, VL_NIL);
+}
+/* The same on the narrow shapes (VL_NARROW), for the caller whose answer a
+   wider walk would turn into a refusal in the default build. */
+int method_value_leaves_or_nil_narrow(Compiler *c, int mi, int *out, int cap) {
+  return method_value_leaves_ex(c, mi, out, cap, VL_NIL | VL_NARROW);
 }
 
 /* 1 when a call bound to method scope `mi` can reach another definition: an
