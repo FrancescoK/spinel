@@ -8,6 +8,7 @@
 #include "call_plan.h"
 #include "share.h"
 #include "timing.h"
+#include "value_pos.h"
 #include "builtin_names.h"
 
 
@@ -5614,35 +5615,37 @@ static int method_in_override_family(Compiler *c, int class_id,
 
 /* Does every value `id` can produce name a class (a constant that is one of
    the program's classes)? The class names met are appended to `names`. */
-static int value_leaves_are_classes(Compiler *c, int id, char *names, size_t cap, int depth) {
-  const NodeTable *nt = c->nt;
-  if (id < 0 || depth > 32) return 0;
-  switch (nt_kind(nt, id)) {
-  case NK_StatementsNode: {
-    int n = 0; const int *b = nt_arr(nt, id, "body", &n);
-    return b && n > 0 && value_leaves_are_classes(c, b[n - 1], names, cap, depth + 1);
-  }
-  case NK_ParenthesesNode:
-    return value_leaves_are_classes(c, nt_ref(nt, id, "body"), names, cap, depth + 1);
-  case NK_IfNode: case NK_UnlessNode: {
-    int els = nt_ref(nt, id, nt_kind(nt, id) == NK_IfNode ? "subsequent" : "else_clause");
-    return value_leaves_are_classes(c, nt_ref(nt, id, "statements"), names, cap, depth + 1) &&
-           value_leaves_are_classes(c, els, names, cap, depth + 1);
-  }
-  case NK_ElseNode:
-    return value_leaves_are_classes(c, nt_ref(nt, id, "statements"), names, cap, depth + 1);
-  case NK_ConstantReadNode: case NK_ConstantPathNode: {
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm || comp_class_index(c, nm) < 0) return 0;
-    if (!strstr(names, nm) && strlen(names) + strlen(nm) + 3 < cap) {
-      if (*names) strcat(names, ", ");
-      strcat(names, nm);
+typedef struct {
+  Compiler *c;
+  char *names;
+  size_t cap;
+  int ok;
+} ClassLeaves;
+
+/* One value position: a constant naming a class adds its name, anything
+   else (a nil by absence too) fails the walk. */
+static int class_leaf_check(const VpLeaf *leaf, void *ud) {
+  ClassLeaves *k = ud;
+  const NodeTable *nt = k->c->nt;
+  if (leaf->kind == VPK_EXPR &&
+      (nt_kind(nt, leaf->node) == NK_ConstantReadNode || nt_kind(nt, leaf->node) == NK_ConstantPathNode)) {
+    const char *nm = nt_str(nt, leaf->node, "name");
+    if (nm && comp_class_index(k->c, nm) >= 0) {
+      if (!strstr(k->names, nm) && strlen(k->names) + strlen(nm) + 3 < k->cap) {
+        if (*k->names) strcat(k->names, ", ");
+        strcat(k->names, nm);
+      }
+      return 0;
     }
-    return 1;
   }
-  default:
-    return 0;
-  }
+  k->ok = 0;
+  return 1;
+}
+static int value_leaves_are_classes(Compiler *c, int id, char *names, size_t cap) {
+  ClassLeaves k = { c, names, cap, 1 };
+  if (id < 0) return 0;
+  for_each_value_position(c->nt, id, VPS_IF | VPS_UNLESS, class_leaf_check, &k);
+  return k.ok;
 }
 
 /* A return seed naming an instance type (`-> Story`, or a union of them)
@@ -5656,14 +5659,14 @@ static int seed_ret_contradicts_class_body(Compiler *c, Scope *s, TyKind rt) {
   if (!ty_is_object(rt) && rt != TY_POLY) return 0;
   if (s->body < 0) return 0;
   char names[256] = "";
-  if (!value_leaves_are_classes(c, s->body, names, sizeof names, 0)) return 0;
+  if (!value_leaves_are_classes(c, s->body, names, sizeof names)) return 0;
   const NodeTable *nt = c->nt;
   int si = (int)(s - c->scopes);
   NT_FOREACH_KIND(nt, NK_ReturnNode, rid) {
     if (c->nscope[rid] != si) continue;
     int an = nt_ref(nt, rid, "arguments"), n = 0;
     const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
-    if (!av || n != 1 || !value_leaves_are_classes(c, av[0], names, sizeof names, 0)) return 0;
+    if (!av || n != 1 || !value_leaves_are_classes(c, av[0], names, sizeof names)) return 0;
   }
   const char *cls = s->class_id >= 0 && s->class_id < c->nclasses ? c->classes[s->class_id].name : NULL;
   fprintf(stderr, "spinel: warning: --rbs: %s%s%s is declared to return an instance, but it returns "
