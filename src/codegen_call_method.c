@@ -1314,27 +1314,26 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
        receiver goes into a temp the call below reads (through the argument
        override), so it is evaluated once. Without this the nil receiver
        reached sp_proc_recv, which raises -- as `pr.call` should (#4844). */
-    { const char *cop = nt_str(nt, id, "call_operator");
-      if (cop && sp_streq(cop, "&.") && g_sn_proc_node != id && g_n_argov < MAX_ARG_OVERRIDE) {
-        int tq = ++g_tmp;
-        Buf rq; memset(&rq, 0, sizeof rq); emit_expr(c, recv, &rq);
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d);\n", tq, rq.p ? rq.p : "NULL", tq);
-        free(rq.p);
-        int slot = view_bind(recv, "_t%d", tq);
-        int sv = g_sn_proc_node; g_sn_proc_node = id;
-        Buf cb; memset(&cb, 0, sizeof cb);
-        /* an Integer / Float answer is an sp_oint: nil for the skipped call,
-           the call's own oint otherwise (`&.` makes this node an oint) */
-        if (oint_kind(rty)) emit_oint_expr(c, id, rty, &cb); else emit_expr(c, id, &cb);
-        g_sn_proc_node = sv;
-        view_unbind(g_n_argov - 1);
-        const char *nilv = rty == TY_POLY || rty == TY_UNKNOWN ? "sp_box_nil()"
-                         : oint_kind(rty) ? oint_nil(rty) : default_value_from_compiler(c, rty);
-        buf_printf(b, "(_t%d ? %s : %s)", tq, cb.p ? cb.p : nilv, nilv);
-        free(cb.p);
-        return 1;
-      } }
+    if (nt_safe_nav(nt, id) && g_sn_proc_node != id && g_n_argov < MAX_ARG_OVERRIDE) {
+      int tq = ++g_tmp;
+      Buf rq; memset(&rq, 0, sizeof rq); emit_expr(c, recv, &rq);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d);\n", tq, rq.p ? rq.p : "NULL", tq);
+      free(rq.p);
+      int slot = view_bind(recv, "_t%d", tq);
+      int sv = g_sn_proc_node; g_sn_proc_node = id;
+      Buf cb; memset(&cb, 0, sizeof cb);
+      /* an Integer / Float answer is an sp_oint: nil for the skipped call,
+         the call's own oint otherwise (`&.` makes this node an oint) */
+      if (oint_kind(rty)) emit_oint_expr(c, id, rty, &cb); else emit_expr(c, id, &cb);
+      g_sn_proc_node = sv;
+      view_unbind(g_n_argov - 1);
+      const char *nilv = rty == TY_POLY || rty == TY_UNKNOWN ? "sp_box_nil()"
+                       : oint_kind(rty) ? oint_nil(rty) : default_value_from_compiler(c, rty);
+      buf_printf(b, "(_t%d ? %s : %s)", tq, cb.p ? cb.p : nilv, nilv);
+      free(cb.p);
+      return 1;
+    }
     /* a nil receiver raises NoMethodError, except for `===`, which nil
        answers itself (false) */
     int proc_nil_raises = !sp_streq(name, "===");

@@ -2007,8 +2007,7 @@ static int sn_args_run_late(Compiler *c, int id, int recv) {
 int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv) {
   /* Safe navigation &. : nil receiver -> return nil/0; non-nil -> emit conditional */
   {
-    const char *safe_op = nt_str(nt, id, "call_operator");
-    if (recv >= 0 && safe_op && sp_streq(safe_op, "&.")) {
+    if (recv >= 0 && nt_safe_nav(nt, id)) {
       /* --share-strings: a safe-navigation route over an attribute
          assignment's handle (emit_strbuf_assign_safe_nav) runs once, as
          that handle or NULL; its value is the handle, or that handle's

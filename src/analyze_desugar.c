@@ -1372,8 +1372,7 @@ static int erm_rewrite_stmt(Compiler *c, int st, const char *self_leaf) {
   if (!nm) return st;
   int attr = sp_streq(nm, "attr_reader") || sp_streq(nm, "attr_writer") || sp_streq(nm, "attr_accessor");
   if (!attr && !sp_streq(nm, "include") && !sp_streq(nm, "prepend")) return st;
-  const char *cop = nt_str(nt, st, "call_operator");
-  if (cop && sp_streq(cop, "&.")) return st;
+  if (nt_safe_nav(nt, st)) return st;
   int recv = nt_ref(nt, st, "receiver");
   if (recv < 0 || (nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode)) return st;
   const char *leaf = nt_str(nt, recv, "name");
@@ -1398,7 +1397,6 @@ static int erm_rewrite_stmt(Compiler *c, int st, const char *self_leaf) {
   if (self_leaf) {
     if (nt_kind(nt, recv) != NK_ConstantReadNode || !sp_streq(leaf, self_leaf)) return st;
     nt_node_set_ref(nt, st, "receiver", -1);
-    nt_node_set_str(nt, st, "call_operator", "");
     return -2;   /* rewritten in place */
   }
   int is_mod = decl == 2;
@@ -1410,7 +1408,6 @@ static int erm_rewrite_stmt(Compiler *c, int st, const char *self_leaf) {
   nt_node_set_int(nt, rn, "node_file", nt_int(nt, st, "node_file", 0));
   nt_node_set_ref(nt, rn, "constant_path", path);
   nt_node_set_ref(nt, st, "receiver", -1);
-  nt_node_set_str(nt, st, "call_operator", "");
   nt_node_set_arr(nt, body, "body", &st, 1);
   nt_node_set_ref(nt, rn, "body", body);
   return rn;
@@ -3437,7 +3434,7 @@ void step_kw_positional(Compiler *c, NodeTable *nt, int id, int args, int to_v, 
   int sc = c->nscope[id], base = nt->count;
   Scope *scp = comp_scope_of(c, id);
   if (by_v < 0) { by_v = nt_new_node(nt, "IntegerNode"); nt_node_set_int(nt, by_v, "value", 1); }
-  if (by_first && !call_is_safe_nav(nt, id) && (subtree_has_side_effect(c, by_v) || subtree_has_side_effect(c, to_v))) {
+  if (by_first && !nt_safe_nav(nt, id) && (subtree_has_side_effect(c, by_v) || subtree_has_side_effect(c, to_v))) {
     int recv = nt_ref(nt, id, "receiver"), k = nt_kind(nt, recv), st[3], n = 0;
     char rn[32], bn[32];
     snprintf(rn, sizeof rn, "__stpr%d", base);
@@ -5680,7 +5677,6 @@ int desugar_defined_method_call(Compiler *c) {
         int call = nt_new_node(nt, "CallNode");
         nt_node_set_ref(nt, call, "receiver", next >= 0 ? next : recv);
         nt_node_set_str(nt, call, "name", m);
-        nt_node_set_str(nt, call, "call_operator", ".");
         nt_node_set_ref(nt, call, "arguments", args);
         nt_node_set_ref(nt, call, "block", blk);
         nt_node_set_int(nt, call, "node_line", line);
@@ -6242,8 +6238,7 @@ int desugar_main_self_call(Compiler *c) {
       continue;
     }
     if (recv < 0 || nt_kind(nt, recv) != NK_SelfNode) continue;
-    const char *cop = nt_str(nt, id, "call_operator");
-    if (cop && sp_streq(cop, "&.")) continue;
+    if (nt_safe_nav(nt, id)) continue;
     if (!self_is_main(c, recv) || nt_int(nt, recv, "ie_self", 0)) continue;
     if (comp_method_index(c, name) < 0) continue;   /* no top-level def */
     nt_node_set_ref(nt, id, "receiver", -1);
@@ -10581,7 +10576,7 @@ static int stored_enum_write(Compiler *c, int id, int n0) {
   if (nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0 || !m || an > (sp_streq(m, "find") || sp_streq(m, "gsub") || sp_streq(m, "gsub!")) ||
       (an && (nt_kind(nt, av[0]) == NK_SplatNode || nt_kind(nt, av[0]) == NK_KeywordHashNode)) ||
       nt_ref(nt, v, "receiver") < 0 ||
-      (nt_str(nt, v, "call_operator") && sp_streq(nt_str(nt, v, "call_operator"), "&."))) return -1;
+      nt_safe_nav(nt, v)) return -1;
   while (meths[k] && !sp_streq(m, meths[k])) k++;
   if (!meths[k] || program_defines_name(nt, n0, m)) return -1;
   for (int p = 0; p < n0; p++) {
@@ -10926,8 +10921,7 @@ int desugar_enum_walk_calls(Compiler *c) {
       hn = "__enumw_with_index";
     }
     if (!hn) continue;
-    const char *cop = nt_str(nt, id, "call_operator");
-    if (cop && sp_streq(cop, "&.")) continue;
+    if (nt_safe_nav(nt, id)) continue;
     if (infer_type(c, recv) != TY_ENUMERATOR) continue;
     if (!block_body_breaks(nt, nt_ref(nt, blk, "body"))) continue;
     int *na = (int *)malloc(sizeof(int) * (size_t)(an + 1));
@@ -11413,8 +11407,7 @@ int desugar_builtin_enum_calls(Compiler *c) {
     }
     /* `v&.m { }`: the receiver is bound once and a nil answers nil, the
        same dispatch shape with a nil test for the class test */
-    const char *cop = nt_str(nt, id, "call_operator");
-    int safe_nav = cop && sp_streq(cop, "&.");
+    int safe_nav = nt_safe_nav(nt, id);
     int blk = nt_ref(nt, id, "block");
     int recv_read = recv;
     int generic = id;
@@ -11509,7 +11502,7 @@ int desugar_builtin_enum_calls(Compiler *c) {
       nt_node_set_arr(nt, body, "body", stmts, 2);
       nt_node_set_type(nt, id, "ParenthesesNode");
       nt_node_set_ref(nt, id, "body", body);
-      if (safe_nav) nt_node_set_str(nt, id, "call_operator", ".");
+      nt_set_safe_nav(nt, id, 0);
       nt_node_set_ref(nt, id, "receiver", -1);
       nt_node_set_ref(nt, id, "arguments", -1);
       nt_node_set_ref(nt, id, "block", -1);
@@ -11894,8 +11887,7 @@ int desugar_builtin_scalar_calls(Compiler *c) {
     /* `v&.fdiv(2)`: the rewrite onto the generic's copy is a plain call,
        which loses the safe navigation, so a nil `v` reached the method;
        the call keeps its `&.` and its typed emitter */
-    { const char *cop = nt_str(nt, id, "call_operator");
-      if (cop && sp_streq(cop, "&.")) continue; }
+    if (nt_safe_nav(nt, id)) continue;
     int ok = bx_recv_concrete(bx, rt);
     if (bx == SP_BX_COMPARABLE) {
       /* Integer/Bignum/Float only, narrower than builtins/comparable.rb's
@@ -12322,7 +12314,6 @@ int desugar_recursive_param_defaults(Compiler *c) {
     nt_node_set_str(nt, v, "name", hname);
     nt_node_set_ref(nt, v, "receiver", -1);
     nt_node_set_ref(nt, v, "block", -1);
-    nt_node_set_str(nt, v, "call_operator", ".");
     if (na > 0) {
       int an = fwd_new_node_like(nt, v, "ArgumentsNode");
       int av[256];
@@ -14279,7 +14270,6 @@ int desugar_builtin_alias_calls(Compiler *c) {
         nt_node_set_int(nt, sf, "node_line", nt_int(nt, id, "node_line", 0));
         nt_node_set_int(nt, sf, "node_file", nt_int(nt, id, "node_file", 0));
         nt_node_set_ref(nt, id, "receiver", sf);
-        nt_node_set_str(nt, id, "call_operator", ".");
         nt_node_set_int(nt, id, "vcall", 0);
         comp_grow_node_arrays(c);
         c->nscope[sf] = c->nscope[id];
@@ -19396,11 +19386,10 @@ int desugar_safe_nav_attr_write(Compiler *c) {
     const char *ty = nt_type(nt, id);
     if (!ty || !(sp_streq(ty, "CallOperatorWriteNode") || sp_streq(ty, "CallOrWriteNode") ||
                  sp_streq(ty, "CallAndWriteNode"))) continue;
-    const char *cop = nt_str(nt, id, "call_operator");
     int recv = nt_ref(nt, id, "receiver");
     const char *rn = nt_str(nt, id, "name");
     int v = nt_ref(nt, id, "value");
-    if (!cop || !sp_streq(cop, "&.") || recv < 0 || !rn || v < 0) continue;
+    if (!nt_safe_nav(nt, id) || recv < 0 || !rn || v < 0) continue;
     const char *bop = nt_str(nt, id, "binary_operator");
     char tyb[32], bopb[16];
     snprintf(tyb, sizeof tyb, "%s", ty);
@@ -19594,7 +19583,7 @@ int desugar_reopened_op_write(Compiler *c) {
       continue;
     }
     int recv = nt_ref(nt, id, "receiver"), pre[3], npre = 0, r1, r2, store = -1;
-    if (recv < 0 || nt_ref(nt, id, "block") >= 0 || call_is_safe_nav(nt, id)) continue;
+    if (recv < 0 || nt_ref(nt, id, "block") >= 0 || nt_safe_nav(nt, id)) continue;
     if (k == NK_IndexOperatorWriteNode) {
       int args = nt_ref(nt, id, "arguments"), an = 0;
       const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;

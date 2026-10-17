@@ -1291,7 +1291,7 @@ static int assign_mutated_receiver(Compiler *c, int id, int explicit_writer) {
   int q = comp_recv_parent(c, id);
   /* through the links that answer the receiver itself (`itself`, `to_s`) */
   for (int d = 0; d < 8 && q >= 0 && nt_kind(nt, q) == NK_CallNode && str_self_call(nt, q) &&
-                  is_receiver_conversion(nt_str(nt, q, "name")) && !call_is_safe_nav(nt, q); d++)
+                  is_receiver_conversion(nt_str(nt, q, "name")) && !nt_safe_nav(nt, q); d++)
     q = comp_recv_parent(c, q);
   const char *nm = q >= 0 && nt_kind(nt, q) == NK_CallNode ? nt_str(nt, q, "name") : NULL;
   /* a safe-navigation mutator takes no route over the handle (it must skip a
@@ -1302,7 +1302,7 @@ static int assign_mutated_receiver(Compiler *c, int id, int explicit_writer) {
   /* (a mutator given nothing to append, `concat`, answers its receiver
      without the route taking a handle) */
   return nm && (is_string_rebind_mutator(nm) || is_freeze_family(nm)) && !(argc == 0 && is_append_concat(nm)) &&
-         (explicit_writer || !call_is_safe_nav(nt, q));
+         (explicit_writer || !nt_safe_nav(nt, q));
 }
 
 /* Is call id, as a call's receiver, only read: the call changes nothing,

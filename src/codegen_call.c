@@ -1003,8 +1003,7 @@ int poly_block_call_needs_dispatch(Compiler *c, int id) {
 int sn_guard_pending(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (g_sn_skip == id) return 0;
-  const char *op = nt_str(nt, id, "call_operator");
-  if (!op || !sp_streq(op, "&.")) return 0;
+  if (!nt_safe_nav(nt, id)) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   Repr rr = repr_of(c, recv);
@@ -18372,8 +18371,7 @@ static int toplevel_def(Compiler *c, const char *name) {
 static int arity_call_block(const NodeTable *nt, int id, int *argc, int *kwh) {
   *kwh = 0;
   /* nil&.m short-circuits before any arity check */
-  const char *safe_op = nt_str(nt, id, "call_operator");
-  if (safe_op && sp_streq(safe_op, "&.")) return -1;
+  if (nt_safe_nav(nt, id)) return -1;
   /* several builtins change their accepted counts under a block (Array#fill:
      1..3 bare, 0..2 with a block) -- the spec carries a separate quartet
      probed with a block, so a call with a LITERAL block checks against that
@@ -23520,7 +23518,7 @@ int ivar_nil_recv_guard(Compiler *c, int id, int *recv_out) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0 || nt_kind(nt, recv) != NK_InstanceVariableReadNode) return 0;
-  if (nt_str(nt, id, "call_operator") && sp_streq(nt_str(nt, id, "call_operator"), "&.")) return 0;
+  if (nt_safe_nav(nt, id)) return 0;
   const char *nm = nt_str(nt, id, "name");
   /* (a method nil answers itself, CRuby's nil.public_methods: `__id__`
      and `equal?` on a nil slot are nil's) */
@@ -24343,7 +24341,7 @@ int nil_recv_guard(Compiler *c, int id, int *recv_out) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0 || id == g_ivar_nil_guarded_id) return 0;
-  if (nt_str(nt, id, "call_operator") && sp_streq(nt_str(nt, id, "call_operator"), "&.")) return 0;
+  if (nt_safe_nav(nt, id)) return 0;
   const char *nm = nt_str(nt, id, "name");
   if (!nm || nil_answers_call(nm)) return 0;
   if (nt_kind(nt, recv) == NK_InstanceVariableReadNode) return ivar_nil_recv_guard(c, id, recv_out);
@@ -26406,8 +26404,7 @@ static int emit_at_without_array(Compiler *c, int id, Buf *b) {
   buf_printf(b, "({ sp_RbVal _t%d = ", t);
   if (rt == TY_SYMBOL) { buf_puts(b, "sp_box_sym("); emit_expr(c, recv, b); buf_puts(b, ")"); }
   else emit_boxed(c, recv, b);
-  const char *op = nt_str(nt, id, "call_operator");
-  if (op && sp_streq(op, "&.")) buf_printf(b, "; if (_t%d.tag != SP_TAG_NIL) { ", t);
+  if (nt_safe_nav(nt, id)) buf_printf(b, "; if (_t%d.tag != SP_TAG_NIL) { ", t);
   else buf_puts(b, "; { ");
   for (int i = 0; i < argc; i++) { buf_puts(b, "(void)("); emit_expr(c, argv[i], b); buf_puts(b, "); "); }
   buf_printf(b, "sp_raise_poly_nomethod(\"at\", _t%d); } %s; })", t,
@@ -28203,8 +28200,7 @@ void emit_io_wait(Compiler *c, const char *name, int argc, const int *argv,
    `**h` passes nothing in CRuby. */
 int boxed_write_takes_list(Compiler *c, int id, const int *argv, int argc) {
   const NodeTable *nt = c->nt;
-  const char *op = nt_str(nt, id, "call_operator");
-  if (op && sp_streq(op, "&.")) return 0;
+  if (nt_safe_nav(nt, id)) return 0;
   for (int k = 0; k < argc; k++) {
     if (nt_kind(nt, argv[k]) == NK_KeywordHashNode) return 0;
     if (nt_kind(nt, argv[k]) == NK_SplatNode) {

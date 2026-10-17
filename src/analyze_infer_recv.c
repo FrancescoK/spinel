@@ -1522,12 +1522,6 @@ int poly_blockless_enum_name(const char *name) {
          sp_streq(name, "filter") || sp_streq(name, "find_all") || sp_streq(name, "reject");
 }
 
-/* A call written `recv&.name`. */
-int call_is_safe_nav(const NodeTable *nt, int id) {
-  const char *op = nt_str(nt, id, "call_operator");
-  return op && sp_streq(op, "&.");
-}
-
 /* Boxed (poly) receivers: the run of poly-face arms of infer_call */
 static int block_yields_int_too(const NodeTable *nt, int blk) {
   int n = 0;
@@ -1894,7 +1888,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       (is_each_walk(name) ||
        /* `v&.select` keeps the boxed answer, which holds the nil a nil
           receiver gives: an Enumerator slot reads it back as one */
-       (poly_blockless_enum_name(name) && !call_is_safe_nav(nt, id))) &&
+       (poly_blockless_enum_name(name) && !nt_safe_nav(nt, id))) &&
       !an_user_defines_or_reads(c, name))
     { *out = TY_ENUMERATOR; return 1; }
   /* A blockless each_char / each_line / each_byte / each_codepoint on the same
