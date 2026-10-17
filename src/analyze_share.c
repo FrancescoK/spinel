@@ -341,38 +341,7 @@ static int sh_new(ShareFacts *F, int kind) {
   return e;
 }
 
-static int g_dbg_watch = -1, g_dbg_done = 0; static Compiler *g_dbg_c;
-static void sh_union_real(ShareFacts *F, int a, int b);
-static int g_dbg_n = 0;
-static void sh_dbg_desc(ShareFacts *F, int e, char *out, size_t cap) {
-  int h = e >= 0 ? F->hidx[e] : -1;
-  if (h < 0) { snprintf(out, cap, "%d(kind %d)", e, e >= 0 ? (int)F->kind[e] : -1); return; }
-  ShareHolder *H = &F->h[h];
-  snprintf(out, cap, "%d(kind %d scope %s name %s node %d line %d)", e, (int)H->kind,
-           H->scope >= 0 ? g_dbg_c->scopes[H->scope].name : "-", H->name ? H->name : "-", H->node,
-           H->node >= 0 ? (int)nt_int(g_dbg_c->nt, H->node, "line", -1) : -1);
-}
 static void sh_union(ShareFacts *F, int a, int b) {
-  if (g_dbg_watch >= 0 && !g_dbg_done && a >= 0 && b >= 0 && g_dbg_n < 40) {
-    int rw = sh_find(F, g_dbg_watch), ra = sh_find(F, a), rb = sh_find(F, b);
-    if (ra != rb && (ra == rw || rb == rw)) {
-      char da[200], db[200]; sh_dbg_desc(F, ra == rw ? b : a, da, sizeof da); sh_dbg_desc(F, ra == rw ? a : b, db, sizeof db);
-      fprintf(stderr, "GROW %d: watch-side %s  other %s\n", g_dbg_n++, db, da);
-    }
-  }
-  int before = 0;
-  if (g_dbg_watch >= 0 && !g_dbg_done && F->unknown >= 0 && a >= 0 && b >= 0)
-    before = sh_find(F, g_dbg_watch) == sh_find(F, F->unknown);
-  sh_union_real(F, a, b);
-  if (g_dbg_watch >= 0 && !g_dbg_done && F->unknown >= 0 && !before && sh_find(F, g_dbg_watch) == sh_find(F, F->unknown)) {
-    g_dbg_done = 1;
-    { int ha = F->hidx[a], hb = F->hidx[b];
-      fprintf(stderr, "JOINED-UNKNOWN a=%d(kind %d scope %s) b=%d(kind %d scope %s node %d)\n", a, (int)F->kind[a],
-              ha >= 0 && F->h[ha].scope >= 0 ? g_dbg_c->scopes[F->h[ha].scope].name : "-", b, (int)F->kind[b],
-              hb >= 0 && F->h[hb].scope >= 0 ? g_dbg_c->scopes[F->h[hb].scope].name : "-", hb >= 0 ? F->h[hb].node : -1); }
-  }
-}
-static void sh_union_real(ShareFacts *F, int a, int b) {
   if (a < 0 || b < 0) return;
   int sp = 0;
   if (F->union_stack_cap < 64) {
@@ -3852,11 +3821,6 @@ static int sh_method_answers_no_string(Compiler *c, int mi) {
       for (int j = 0; j < k; j++) { if (sp >= 255) { ok = 0; break; } if (ids[j] >= 0) stack[sp++] = ids[j]; }
     }
   }
-  if (getenv("DBGNS") && m->name && sp_streq(m->name, "sub")) {
-    int bn = 0; const int *bb = nt_arr(nt, m->body, "body", &bn);
-    fprintf(stderr, "NS sub ok=%d body=%s nlast=%s val=%d\n", ok, nt_type(nt, m->body), bn ? nt_type(nt, bb[bn-1]) : "-", sh_value_no_string(c, m->body, 0));
-    if (bn && nt_kind(nt, bb[bn-1]) == NK_IfNode) { int pr = nt_ref(nt, bb[bn-1], "predicate"); fprintf(stderr, "  pred=%s %s narrows=%d\n", nt_type(nt, pr), nt_str(nt, pr, "name") ? nt_str(nt, pr, "name") : "-", sh_if_narrows_off_string(c, bb[bn-1])); }
-  }
   return ok && sh_value_no_string(c, m->body, 0);
 }
 static int sh_val(ShareFacts *F, Compiler *c, int n) {
@@ -3864,11 +3828,6 @@ static int sh_val(ShareFacts *F, Compiler *c, int n) {
   if (F->nval[n] != -2) return F->nval[n];
   F->nval[n] = -1;
   int v = sh_val_compute(F, c, n);
-  if (getenv("DBGU") && n == atoi(getenv("DBGU")) && v >= 0) { g_dbg_watch = v; g_dbg_done = 0; g_dbg_c = c; }
-  if (getenv("DBGU") && nt_kind(c->nt, n) == NK_CallNode && nt_str(c->nt, n, "name") && sp_streq(nt_str(c->nt, n, "name"), "sub")) {
-    int rv = nt_ref(c->nt, n, "receiver");
-    fprintf(stderr, "SUBV n=%d v=%d recvkind=%s recvname=%s unknown=%d ntype=%d\n", n, v, rv >= 0 ? nt_type(c->nt, rv) : "-", rv >= 0 && nt_str(c->nt, rv, "name") ? nt_str(c->nt, rv, "name") : "-", v >= 0 && F->unknown >= 0 && sh_find(F, v) == sh_find(F, F->unknown), (int)c->ntype[n]);
-  }
   /* a value whose type holds no String is none, whatever it flowed
      through (a write's target is still unified above) */
   if (v >= 0 && c->ntype[n] != TY_UNKNOWN && !sh_may_hold(c, c->ntype[n]) &&
@@ -4846,11 +4805,6 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
   sh_settle_peeks(F, c);
   sh_finalize(F);
   sh_index_blocks(F, c);
-  if (getenv("DBGU")) for (int n = 0; n < F->nnodes; n++) {
-    if (F->nval[n] < 0 || nt_kind(c->nt, n) != NK_CallNode || !nt_str(c->nt, n, "name") || !sp_streq(nt_str(c->nt, n, "name"), "sub")) continue;
-    int r = sh_find(F, F->nval[n]);
-    fprintf(stderr, "SUBEND n=%d root=%d flags=%d unkroot=%d\n", n, r, (int)F->flags[r], F->unknown >= 0 ? sh_find(F, F->unknown) : -1);
-  }
   return F;
 }
 
