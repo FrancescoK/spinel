@@ -73,6 +73,7 @@ test/share/share_strings_yield_bang.rb	test/share/share_strings_yield_bang.rb:14
 test/share/storage_round_late_widening.rb	test/share/storage_round_late_widening.rb:37	CallNode ([])	boxed as bytes by sp_box_str (sp_poly_to_s)
 test/share/string_enumerator_handle.rb	test/share/string_enumerator_handle.rb:98	LocalVariableReadNode (s)	boxed as bytes by sp_box_str (bytes face)
 test/share/string_enumerator_handle.rb	test/share/string_enumerator_handle.rb:98	LocalVariableReadNode (s)	boxed as bytes by sp_box_str (bytes face)
+test/share/undefined_constant_receiver_value.rb	test/share/undefined_constant_receiver_value.rb:13	CallNode (to_s)	bytes wrapped into a new handle by sp_String_new_shared (bytes face)
 test/share/verify/buffer_p5_fillcmp.rb	test/share/verify/buffer_p5_fillcmp.rb:13	CallNode (read)	boxed as bytes by sp_box_str (sp_strbuf_read_pub)
 test/share/verify/buffer_p5_fillcmp.rb	test/share/verify/buffer_p5_fillcmp.rb:16	CallNode (read)	boxed as bytes by sp_box_str (sp_strbuf_read_pub)
 test/share/verify/route_c_freeze_dup.rb	test/share/verify/route_c_freeze_dup.rb:3	LocalVariableReadNode (s)	changed in place as bytes by sp_str_freeze_val (sp_strbuf_read_pub)

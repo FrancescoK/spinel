@@ -1258,11 +1258,51 @@ static void repr_flow_route_name(const Compiler *c, int v, char *out, size_t cap
   }
 }
 
+/* Does value v raise before it exists: a call whose receiver chain (or a
+   constant path's parents) starts at the read of a constant the program
+   defines nowhere, which codegen emits as the NameError raise (emit of a
+   ConstantReadNode), or at the parenthesized raise analyze_scope.c makes
+   of a nested name it cannot find (`(raise NameError, "uninitialized
+   constant X"; nil)`)? Such a value is handed on nowhere: `@d =
+   BCrypt::Password.create(x).to_s` with no BCrypt raises before the write. */
+static int repr_value_raises_first(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  for (int d = 0; d < 64 && v >= 0; d++) {
+    NodeKind k = nt_kind(nt, v);
+    /* below the value itself every link is untyped, as a chain on a
+       missing name is: ENV, ARGF and the like are untyped reads too, but
+       their methods answer typed values */
+    if (d > 0 && (k == NK_CallNode || k == NK_ConstantPathNode) && c->ntype[v] != TY_UNKNOWN) return 0;
+    if (k == NK_CallNode) { v = nt_ref(nt, v, "receiver"); continue; }
+    if (k == NK_ConstantPathNode) { v = nt_ref(nt, v, "parent"); continue; }
+    if (k == NK_ConstantReadNode) {
+      const char *nm = nt_str(nt, v, "name");
+      return d > 1 && nm && c->ntype[v] == TY_UNKNOWN && !comp_const(c, nm) && comp_class_index(c, nm) < 0 &&
+             builtin_class_id(nm) == 0 && !is_builtin_exception_name(nm) && !is_builtin_class_name(nm) &&
+             !is_builtin_module_name(nm) && !is_env_const(nm);
+    }
+    if (k != NK_ParenthesesNode) return 0;
+    int st = nt_ref(nt, v, "body");
+    if (st < 0 || nt_kind(nt, st) != NK_StatementsNode) return 0;
+    int n = 0; const int *b = nt_arr(nt, st, "body", &n);
+    for (int i = 0; b && i < n; i++) {
+      int s = unwrap_parens(c, b[i]);
+      const char *nm = s >= 0 && nt_kind(nt, s) == NK_CallNode && nt_ref(nt, s, "receiver") < 0
+                       ? nt_str(nt, s, "name") : NULL;
+      if (nm && is_raise_alias(nm) && !bare_call_class_owned(c, s) && cplan_user_fresh(c, s)->mi < 0)
+        return 1;
+    }
+    return 0;
+  }
+  return 0;
+}
+
 /* Does flow value node v need the route check: a String (or a box that may
    hold one) whose class the rule shares? */
 static int repr_flow_checked(Compiler *c, int v) {
   v = unwrap_parens(c, v);
   if (v < 0) return 0;
+  if (repr_value_raises_first(c, v)) return 0;
   NodeKind k = nt_kind(c->nt, v);
   if (k == NK_NilNode || k == NK_StringNode || k == NK_InterpolatedStringNode) return 0;
   TyKind t = c->ntype[v];
