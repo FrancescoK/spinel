@@ -8464,9 +8464,10 @@ static int proc_literals_reaching(Compiler *c, int ref, int *out, int max, int d
     return 1;
   }
   int n = 0;
-  if (k == NK_IfNode || k == NK_UnlessNode || k == NK_CaseNode || k == NK_ParenthesesNode) {
+  if (k == NK_IfNode || k == NK_UnlessNode || k == NK_CaseNode || k == NK_CaseMatchNode ||
+      k == NK_ParenthesesNode) {
     ProcArms a = { c, out, max, 0, depth };
-    for_each_value_position(nt, ref, VPS_IF | VPS_UNLESS | VPS_CASE, proc_arm, &a);
+    for_each_value_position(nt, ref, VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN, proc_arm, &a);
     return a.n;
   }
   if (k == NK_LocalVariableReadNode) {
