@@ -442,6 +442,12 @@ static int param_gets_boxed_arg(Compiler *c, Scope *sc, int p) {
   return 0;
 }
 
+static int named_param_gets_boxed_arg(Compiler *c, Scope *sc, const char *name) {
+  for (int q = 0; name && q < sc->nparams; q++)
+    if (sc->pnames && sc->pnames[q] && sp_streq(sc->pnames[q], name)) return param_gets_boxed_arg(c, sc, q);
+  return 0;
+}
+
 int infer_param_hash_value(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -8289,6 +8295,11 @@ int infer_hash_params(Compiler *c) {
       Scope *ws = comp_scope_of(c, id);
       LocalVar *wlv = scope_local(ws, wrnm);
       if (!wlv || !wlv->is_param || wlv->type != TY_UNKNOWN) continue;
+      /* The same wait the `[]=` path below makes: typed here, `t[k] += 1` on a
+         parameter a caller hands `Hash.new(0)` made the call convert a copy,
+         which had lost the default, and the writes never reached the caller's
+         hash. */
+      if (named_param_gets_boxed_arg(c, ws, wrnm)) continue;
       int wargs = nt_ref(nt, id, "arguments");
       int wan = 0; const int *wargv = wargs >= 0 ? nt_arr(nt, wargs, "arguments", &wan) : NULL;
       if (wan < 1) continue;
@@ -8315,10 +8326,7 @@ int infer_hash_params(Compiler *c) {
     /* a caller's boxed hash, or one not typed yet, is not this body's to
        decide: typed here, the call converted a copy and the callee's
        writes never reached the caller's hash */
-    { int pi = -1;
-      for (int q = 0; q < s->nparams; q++)
-        if (s->pnames && s->pnames[q] && sp_streq(s->pnames[q], nt_str(nt, recv, "name"))) { pi = q; break; }
-      if (pi >= 0 && param_gets_boxed_arg(c, s, pi)) continue; }
+    if (named_param_gets_boxed_arg(c, s, nt_str(nt, recv, "name"))) continue;
     /* Literal-key [] / fetch: infer specific variant */
     if (sp_streq(name, "[]") || sp_streq(name, "fetch")) {
       int args = nt_ref(nt, id, "arguments");
