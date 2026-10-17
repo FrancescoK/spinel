@@ -1,0 +1,7 @@
+["ICN", "GMP"]
+[["Jamsil Bridge", "AF_INET", "127.0.0.1"], ["Cheongdam Bridge", "AF_INET", "127.0.0.1"]]
+"Jayang-dong"
+["Incheon", "Gimpo I"]
+["Ttukseom Hangang Park"]
+[nil]
+undefined method 'recv' for an instance of Integer
