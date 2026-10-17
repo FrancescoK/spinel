@@ -553,13 +553,23 @@ static double sp_timer_next(void) {
  * preempting thread always parks at a safe point. g_npreempt counts outstanding
  * requests so the flag (shared with GC stop-the-world) is cleared only when no
  * reason remains. All of this is touched solely under g_sched_lock. */
-#define SP_PREEMPT_QUANTUM 0.010   /* a green thread runs ~10ms before it must yield */
-#define SP_PREEMPT_TICK    0.005   /* monitor re-checks worker timeslices this often while busy */
+/* The timeslice is RUBY_THREAD_TIMESLICE milliseconds, as in CRuby, and 10
+   unless that is set; the monitor checks it twice a slice, at most every 5 ms.
+   Both are fixed at the first Thread.new (sp_sched_start_workers). */
+static double g_quantum = 0.010, g_tick = 0.005;
+#define SP_PREEMPT_QUANTUM g_quantum   /* a green thread runs this long before it must yield */
+#define SP_PREEMPT_TICK    g_tick      /* monitor re-checks worker timeslices this often while busy */
 /* (#8702) and keeps ticking this long after it last saw a worker busy, before
    it waits untimed: a thread that starts while it ticks needs no signal */
 #define SP_MON_LINGER      (4 * SP_PREEMPT_TICK)
 static int g_npreempt = 0;         /* preempt_requests set but not yet consumed */
 static int g_preempt_sig = SIGURG; /* the signal the monitor sends; SPINEL_PREEMPT_SIGNAL overrides */
+/* SPINEL_WAKE_PREEMPT=1 (#8702): a woken thread goes to the front of its home
+   worker's queue, and the thread running there yields to it at its next
+   safepoint, rather than the woken one waiting out the timeslices ahead of
+   it. Off by default: where wakes are frequent it costs the CPU-bound threads
+   throughput. */
+static int g_wake_preempt = 0;
 typedef struct { pthread_t tid; sp_thread *cur; unsigned long long since_bits; int active;
                  /* A STARTED green thread is pinned to its home worker, so the wake
                     that readies it has exactly one worker to reach. Waiting on one
@@ -613,6 +623,25 @@ static inline double wslot_since(int w) {
 }
 static void sp_recompute_safepoint_flag(void) {   /* PRE: g_sched_lock held */
   SP_SAFEPOINT_SET(g_stw_active || g_npreempt > 0);
+}
+/* Ask r, running on worker w, to yield at its next safepoint poll: at the end
+   of its timeslice (the monitor) or for a woken thread (SPINEL_WAKE_PREEMPT).
+   A worker that stops running r clears cur without the scheduler lock, then
+   looks for a request (run_thread_once); this sets the request, then reads cur
+   again, all four sequentially consistent, so one of the two sees the other:
+   the worker retires the request, or this takes it back. A request left on a
+   thread that had stopped kept the safepoint flag up, every thread's polls on
+   the scheduler lock, until that thread ran again. PRE: g_sched_lock held. */
+static void sched_preempt(int w, sp_thread *r) {
+  if (SP_ATOMIC_LOAD(&r->preempt_request, __ATOMIC_ACQUIRE)) return;
+  SP_ATOMIC_STORE(&r->preempt_request, 1, __ATOMIC_SEQ_CST);
+  if (SP_ATOMIC_LOAD(&g_wslot[w].cur, __ATOMIC_SEQ_CST) != r) {
+    SP_ATOMIC_STORE(&r->preempt_request, 0, __ATOMIC_RELEASE);
+    return;
+  }
+  g_npreempt++;
+  sp_recompute_safepoint_flag();
+  pthread_kill(g_wslot[w].tid, g_preempt_sig);   /* nudge it to its next safepoint poll */
 }
 /* The preemption signal lands on the target worker's own stack. Re-assert the
    flag so the worker sees it even if it was about to clear the lock-free read;
@@ -1098,7 +1127,9 @@ static SP_TLS sp_thread *g_current = NULL;   /* per-worker: the green thread thi
 SP_TLS int sp_worker_id = 0;       /* exported: sp_alloc.h indexes the per-worker string heaps */       /* this worker's run-queue slot (0 = main); both builds */
 /* a line each, as each worker's queue is now pushed and popped without
    the scheduler lock, concurrently with its neighbours'. */
-typedef struct { sp_thread *head, *tail; } __attribute__((aligned(64))) sp_runq;
+typedef struct { sp_thread *head, *tail;
+                 sp_thread *woke;   /* the last of the woken threads at its front (SPINEL_WAKE_PREEMPT) */
+               } __attribute__((aligned(64))) sp_runq;
 static sp_runq    g_grq;                 /* global run queue: spawned + woken threads */
 static sp_runq    g_lrq[SP_MAX_WORKERS]; /* per-worker local run queues (rerun locality) */
 /* The runnable count (threads sitting in any run queue right now) and the
@@ -1765,6 +1796,21 @@ static void runq_push(sp_runq *q, sp_thread *t) {
   if (q == &g_grq) sp_sched_maybe_grow();   /* one execution helper per live green thread, up to the cap */
 #endif
 }
+#ifdef SP_THREADS
+/* SPINEL_WAKE_PREEMPT: a woken thread goes ahead of the threads queued here
+   when their timeslice ended, behind those woken before it. Only a worker's
+   own queue, and only a started thread, which nothing steals: the woken ones
+   leave from the front. PRE: the queue's lock held. */
+static void runq_push_woken(sp_runq *q, sp_thread *t) {
+  SP_TH_SET_STATE(t, SP_TH_RUNNABLE);
+  if (sched_lat_enabled()) t->readied_at = sp_monotonic_now();
+  sp_thread *p = q->woke;
+  if (p) { t->rq_next = p->rq_next; p->rq_next = t; }
+  else { t->rq_next = q->head; SP_ATOMIC_STORE(&q->head, t, __ATOMIC_RELAXED); }
+  if (q->tail == p) q->tail = t;
+  q->woke = t; RUNNABLE_INC();
+}
+#endif
 /* Take the first thread off q for this worker to run now: as runq_pop, but
    the thread stays counted runnable until run_thread_once counts it running,
    in one change (g_run_taken), so it is never in neither count. */
@@ -1772,6 +1818,7 @@ static SP_TLS int g_run_taken = 0;
 static sp_thread *runq_take(sp_runq *q) {
   sp_thread *t = q->head;
   if (t) { SP_ATOMIC_STORE(&q->head, t->rq_next, __ATOMIC_RELAXED); if (!q->head) q->tail = NULL; t->rq_next = NULL;
+    if (q->woke == t) q->woke = NULL;
 #ifdef SP_THREADS
     /* an unstarted thread a thread spawned onto this worker's own queue
        (sp_Thread_spawn_fiber): without this the count stayed up, and every
@@ -1784,6 +1831,7 @@ static sp_thread *runq_take(sp_runq *q) {
 static sp_thread *runq_pop(sp_runq *q) {
   sp_thread *t = q->head;
   if (t) { SP_ATOMIC_STORE(&q->head, t->rq_next, __ATOMIC_RELAXED); if (!q->head) q->tail = NULL; t->rq_next = NULL; RUNNABLE_DEC();
+    if (q->woke == t) q->woke = NULL;
 #ifdef SP_THREADS
     if (q != &g_grq && t->home_wid < 0) SP_ATOMIC_FETCH_SUB(&g_lrq_unstarted, 1, __ATOMIC_RELAXED);
 #endif
@@ -1934,12 +1982,23 @@ static void sched_push_wake(sp_thread *t) {
     return;
   }
   RQ_LOCK(w);
-  runq_push(&g_lrq[w], t);
+  if (g_wake_preempt) runq_push_woken(&g_lrq[w], t); else runq_push(&g_lrq[w], t);
   if (g_wslot[w].evfd <= 0 && g_wslot[w].idle) pthread_cond_signal(&g_wslot[w].cv);
   RQ_UNLOCK(w);
 #ifdef SP_EV_BACKEND
   if (g_wslot[w].evfd > 0 && w != sp_worker_id) sp_ev_kick(w);
 #endif
+  /* SPINEL_WAKE_PREEMPT: and the thread running on that worker yields to it,
+     unless that is the waker, or t itself, taken already */
+  if (g_wake_preempt && w != sp_worker_id) {
+    sp_thread *r = SP_ATOMIC_LOAD(&g_wslot[w].cur, __ATOMIC_ACQUIRE);
+    if (r && r != t && !SP_ATOMIC_LOAD(&r->preempt_request, __ATOMIC_ACQUIRE)) {
+      int had = g_sched_held;
+      if (!had) SCHED_LOCK();
+      sched_preempt(w, r);
+      if (!had) SCHED_UNLOCK();
+    }
+  }
 #endif
 }
 static void sched_make_runnable(sp_thread *t) {
@@ -2840,10 +2899,11 @@ static void run_thread_once(sp_thread *t) { sp_gc_wb((void*)t);   /* PRE/POST: s
   g_sched_home = NULL;
   g_current = saved;
 #ifdef SP_THREADS
-  SP_ATOMIC_STORE(&g_wslot[sp_worker_id].cur, NULL, __ATOMIC_RELEASE);   /* no longer timing t on this worker */
+  SP_ATOMIC_STORE(&g_wslot[sp_worker_id].cur, NULL, __ATOMIC_SEQ_CST);   /* no longer timing t on this worker */
   /* If the monitor flagged t but it yielded/blocked/died before reaching a poll,
-     retire the request here so the flag does not stay stuck set. */
-  if (SP_ATOMIC_LOAD(&t->preempt_request, __ATOMIC_ACQUIRE)) {
+     retire the request here so the flag does not stay stuck set. Sequentially
+     consistent, as the store above: see sched_preempt. */
+  if (SP_ATOMIC_LOAD(&t->preempt_request, __ATOMIC_SEQ_CST)) {
     if (!locked) SCHED_LOCK();
     if (SP_ATOMIC_LOAD(&t->preempt_request, __ATOMIC_ACQUIRE)) { SP_ATOMIC_STORE(&t->preempt_request, 0, __ATOMIC_RELEASE); g_npreempt--; sp_recompute_safepoint_flag(); }
     if (!locked) SCHED_UNLOCK();
@@ -3553,12 +3613,8 @@ static void *sp_sysmon_main(void *arg) {
         r->cext_unblock(r->cext_unblock_data);
 #endif
       busy = 1; last_busy = now;
-      if (!SP_ATOMIC_LOAD(&r->preempt_request, __ATOMIC_ACQUIRE) && (now - wslot_since(i)) >= SP_PREEMPT_QUANTUM) {
-        SP_ATOMIC_STORE(&r->preempt_request, 1, __ATOMIC_RELEASE);
-        g_npreempt++;
-        sp_recompute_safepoint_flag();
-        pthread_kill(g_wslot[i].tid, g_preempt_sig);   /* nudge it to its next safepoint poll */
-      }
+      if (!SP_ATOMIC_LOAD(&r->preempt_request, __ATOMIC_ACQUIRE) && (now - wslot_since(i)) >= SP_PREEMPT_QUANTUM)
+        sched_preempt(i, r);
     }
     /* Rebuilding the poll set walks the I/O waiters and grows with the
        population. The event backend holds descriptors in the kernel, so skip
@@ -4405,6 +4461,12 @@ static int sp_sched_start_workers(void) {
      signal only nudges the worker there. Resolve and pin g_preempt_sig here,
      before the monitor reads it through the pthread_create edge. */
   g_preempt_sig = sp_resolve_preempt_signal();
+  /* RUBY_THREAD_TIMESLICE as CRuby reads it: milliseconds, ignored unless
+     positive. Fixed here, before the monitor and any helper start. */
+  { const char *e = getenv("RUBY_THREAD_TIMESLICE");
+    long ms = e ? strtol(e, NULL, 0) : 0;
+    if (ms > 0) { g_quantum = ms / 1000.0; g_tick = g_quantum / 2 < 0.005 ? g_quantum / 2 : 0.005; } }
+  { const char *e = getenv("SPINEL_WAKE_PREEMPT"); g_wake_preempt = e && strcmp(e, "1") == 0; }
   struct sigaction sa; memset(&sa, 0, sizeof sa);
   sa.sa_handler = sp_preempt_handler;
   sigemptyset(&sa.sa_mask);

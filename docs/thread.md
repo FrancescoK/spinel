@@ -32,7 +32,8 @@ is a user guarantee.
   The same is true of a worker inside an `ffi_func` declared `blocking: true`
   (see [FFI.md](FFI.md)).
 - **Preemption.** A monitor thread timeslices CPU-bound threads (~10 ms
-  quantum) so a thread that loops without yielding cannot starve its siblings.
+  quantum, `RUBY_THREAD_TIMESLICE`) so a thread that loops without yielding
+  cannot starve its siblings.
   Preemption is taken at **safepoint polls** (loop back-edges): a thread that
   spends a long time inside a single runtime call with no poll yields only when
   that call returns. The preemption signal is `SIGURG`, overridable with
@@ -157,6 +158,8 @@ These are deliberate consequences of real parallelism, listed in
 |---|---|
 | `SPINEL_WORKERS` | number of OS workers; overrides the online-core autodetect (min 1). Read at the first `Thread.new`, so a program can set it itself: `ENV["SPINEL_WORKERS"] = "1"` before spawning caps its own pool, and `... = "1" unless ENV["SPINEL_WORKERS"]` declares a default the environment still overrides |
 | `SPINEL_PREEMPT_SIGNAL` | the signal the monitor uses to preempt a busy worker (default `SIGURG`) |
+| `RUBY_THREAD_TIMESLICE` | the timeslice in milliseconds, as CRuby reads it (default 10; CRuby's is 100). A thread woken onto a worker that runs more CPU-bound threads waits behind their timeslices: a shorter one lets it run sooner, but costs those threads throughput whether anything wakes or not. Read at the first `Thread.new` |
+| `SPINEL_WAKE_PREEMPT` | `1` puts a woken thread at the front of its worker's queue, behind any woken before it, and the thread running there yields to it at its next safepoint, instead of the woken one waiting out the timeslices ahead of it. Off by default: it costs nothing where nothing wakes, but where wakes are frequent the threads it preempts lose throughput. Read at the first `Thread.new` |
 | `SPINEL_FIBER_STACK_CACHE` | how many freed fiber stacks are kept for reuse (default 32; `0` maps and unmaps one per fiber, as before). A thread's stack goes back when its body returns, and the next thread or fiber of the same size takes it with its guard still in place, so `Thread.new` does not map a stack at all in a steady state. A kept stack keeps the pages its last fiber touched, so the cache holds at most that many stacks' worth of memory, and less than leaving every finished thread's stack mapped until the next collection, as before. Off under AddressSanitizer |
 | `SPINEL_SCHED_STATS` | `1` prints, at exit, what the scheduler's monitor did (turns, polls, readiness arms). `2` also prints every five seconds three histograms of what a green thread waited for: on a run queue after being readied, in `Mutex#lock`, and in `ConditionVariable#wait`, plus how the live threads are pinned across the workers. These are the numbers a tail latency is made of when the CPU is not the bottleneck |
 | `SPINEL_GC_MINOR` | `0` turns the generational object mark off: every collection then marks the whole live heap. On by default since 2026-09-12: a minor cycle marks the young objects plus what the write barrier remembered of the old ones, and a full cycle runs on the cadence the survival ratio sets (`SPINEL_GC_FULL_INTERVAL=N` pins it). `SPINEL_GC_VERIFY_GEN=1` re-marks the whole heap after every minor and names any holder the barrier missed |
