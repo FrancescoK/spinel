@@ -122,8 +122,10 @@ input and hashes it whole. `Cipher` (aes-gcm) and `PKey::EC` are subsets,
 each described in its file under `packages/openssl/openssl/`.
 `OpenSSL::PKey.read` reads EC keys, private (SEC1 or PKCS#8) or public, from
 PEM or DER into a `PKey::EC`; any other kind of key raises `PKeyError`
-naming EC as the kind it reads, where CRuby answers an RSA, DSA or DH object,
-and an encrypted PEM raises too, since there is no passphrase argument.
+naming EC as the kind it reads, where CRuby answers an RSA, DSA or DH object.
+EC parameters with no key in them raise too, where CRuby answers a `PKey::EC`
+with neither half, and so does an encrypted PEM, since there is no passphrase
+argument.
 `X509::Certificate` reads a certificate from PEM or DER (`new`, and `load`
 for every certificate in a chain file) and writes it back (`to_der`,
 `to_pem`); it holds the DER, and the fields inside it (`subject`, `issuer`,

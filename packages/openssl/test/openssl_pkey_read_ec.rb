@@ -1,4 +1,4 @@
-# spinel: not-cruby -- PKey::EC's curve, key bytes, sign_raw and verify_raw have no CRuby spelling, and PKey.read refuses the RSA and Ed25519 keys CRuby reads; the key bytes below are what CRuby's private_key and public_key give for the same PEM
+# spinel: not-cruby -- PKey::EC's curve, key bytes, sign_raw and verify_raw have no CRuby spelling, and PKey.read refuses the RSA, Ed25519 and DH keys and the EC parameters CRuby reads; the key bytes below are what CRuby's private_key and public_key give for the same PEM
 require "openssl"
 
 # The test key of openssl_pkey_read.rb, made for these tests and used nowhere
@@ -39,6 +39,27 @@ ED25519_PEM = <<~PEM
 MC4CAQAwBQYDK2VwBCIEIMP88ZqEGaagCHly59xSdb6Nh5XQEOK3OA81yj9frZVZ
 -----END PRIVATE KEY-----
 PEM
+# RSA_PEM's public half in PKCS#1, not the PUBLIC KEY form.
+RSA_PUBLIC_PEM = <<~PEM
+-----BEGIN RSA PUBLIC KEY-----
+MIGJAoGBALsNpFNYkNXQkxGW/cPwbZFaTvZZXEooubjT6wJCzUJYACl/jH1z1Z3D
+dej3vJw60bLzdL9tffXgtLuVL0/W2ed5Gh6GsGCw2pNN7v2vH+fXLNYE6r/dMHRk
+NmF8AnELIJRfxONemxr0uMkqa8hZTMELMTJs/zbVc2JkOerMupqxAgMBAAE=
+-----END RSA PUBLIC KEY-----
+PEM
+# Parameters with no key in them. CRuby reads the first as a PKey::DH, and
+# the second as a PKey::EC with neither half.
+DH_PEM = <<~PEM
+-----BEGIN DH PARAMETERS-----
+MEkCQQDambzLuPNchurung0+RRRfgEUT+0hEECLUjNrslsJ6cvUqEk1i1unPp4jv
+UG6rb1roiXVYHgpKN3bio7D5xJ7HAgECAgF9
+-----END DH PARAMETERS-----
+PEM
+EC_PARAMETERS_PEM = <<~PEM
+-----BEGIN EC PARAMETERS-----
+BggqhkjOPQMBBw==
+-----END EC PARAMETERS-----
+PEM
 # SEC1_PEM encrypted with the passphrase "Ttukseom". PKey.read takes no
 # passphrase, so this is a key that does not parse, and nothing prompts.
 ENCRYPTED_PEM = <<~PEM
@@ -67,7 +88,7 @@ p pub.verify_raw("SHA256", sig, "Mapo Bridge to Yeouido")
 p pub.verify_raw("SHA256", sig, "Mapo Bridge to Hapjeong")
 p OpenSSL::PKey::EC.from_private_bytes("prime256v1", key.private_key_bytes).public_key_bytes == key.public_key_bytes
 
-[RSA_PEM, ED25519_PEM, ENCRYPTED_PEM].each do |pem|
+[RSA_PEM, ED25519_PEM, ENCRYPTED_PEM, RSA_PUBLIC_PEM, DH_PEM, EC_PARAMETERS_PEM].each do |pem|
   begin
     OpenSSL::PKey.read(pem)
   rescue OpenSSL::PKey::PKeyError => e

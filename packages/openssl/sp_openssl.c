@@ -29,6 +29,9 @@
 #include <openssl/evp.h>
 #include <openssl/ecdsa.h>
 #include <openssl/rsa.h>
+#if !defined(LIBRESSL_VERSION_NUMBER) && OPENSSL_VERSION_NUMBER >= 0x30000000L
+# include <openssl/decoder.h>
+#endif
 #include <limits.h>
 #include <string.h>
 #include <fcntl.h>
@@ -1071,8 +1074,57 @@ static int sp_pkey_no_pass(char *buf, int size, int rwflag, void *u) {
   return -1;
 }
 
+#if !defined(LIBRESSL_VERSION_NUMBER) && OPENSSL_VERSION_NUMBER >= 0x30000000L
+/* One decoder try, as CRuby's ossl_pkey_read makes it: a decoder of its own
+   for the input type and selection, moved on PEM block by PEM block. */
+static EVP_PKEY *sp_pkey_decode(BIO *bio, const char *type, int selection) {
+  EVP_PKEY *k = NULL;
+  OSSL_DECODER_CTX *d = OSSL_DECODER_CTX_new_for_pkey(&k, type, NULL, NULL,
+                                                      selection, NULL, NULL);
+  int pos = 0, at;
+
+  if (d) {
+    OSSL_DECODER_CTX_set_pem_password_cb(d, sp_pkey_no_pass, NULL);
+    while (OSSL_DECODER_from_bio(d, bio) != 1 && !BIO_eof(bio)) {
+      at = BIO_tell(bio);
+      if (at < 0 || at <= pos) break;
+      pos = at;
+    }
+    OSSL_DECODER_CTX_free(d);
+  }
+  (void)BIO_reset(bio);
+  return k;
+}
+#endif
+
+/* CRuby's last tries, for input none of the above reads: parameters with no
+   key in them (DH PARAMETERS, EC PARAMETERS), and a public key in another
+   form (a PKCS#1 RSA PUBLIC KEY). CRuby answers a key for those, so they are
+   read the same way here, to be named in the error rather than called
+   unparsable. On OpenSSL 3.0 and later CRuby asks the decoder for parameters
+   and then for a public key, never for any selection at once, which fails on
+   some 3.0 and 3.1 releases; before 3.0 its last try is
+   PEM_read_bio_Parameters. */
+static EVP_PKEY *sp_pkey_parse_any(const char *data, long n) {
+  EVP_PKEY *k = NULL;
+  BIO *bio = BIO_new_mem_buf(data, (int)n);
+
+  if (!bio) return NULL;
+#if !defined(LIBRESSL_VERSION_NUMBER) && OPENSSL_VERSION_NUMBER >= 0x30000000L
+  static const char *const types[] = { "DER", "PEM" };
+  for (int i = 0; i < 2 && !k; i++)
+    if (!(k = sp_pkey_decode(bio, types[i], EVP_PKEY_KEY_PARAMETERS)))
+      k = sp_pkey_decode(bio, types[i], EVP_PKEY_PUBLIC_KEY);
+#else
+  k = PEM_read_bio_Parameters(bio, NULL);
+#endif
+  BIO_free(bio);
+  return k;
+}
+
 /* DER before PEM, and a private key before a public one: the order CRuby's
-   PKey.read tries them in. *priv says which half was found. */
+   PKey.read tries them in. *priv says which half was found, and is -1 for
+   what sp_pkey_parse_any found, where the key has to be asked. */
 static EVP_PKEY *sp_pkey_parse(const char *data, int *priv) {
   long n = (long)sp_str_byte_len(data);
   const unsigned char *p = (const unsigned char *)data;
@@ -1090,6 +1142,7 @@ static EVP_PKEY *sp_pkey_parse(const char *data, int *priv) {
     if ((k = PEM_read_bio_PUBKEY(bio, NULL, sp_pkey_no_pass, NULL))) *priv = 0;
     BIO_free(bio);
   }
+  if (!k && (k = sp_pkey_parse_any(data, n))) *priv = -1;
   return k;
 }
 
@@ -1138,6 +1191,7 @@ const char *sp_pkey_ec_read(const char *data) {
 #endif
   if ((ec = EVP_PKEY_get0_EC_KEY(k)) && (g = EC_KEY_get0_group(ec)))
     nid = EC_GROUP_get_curve_name(g);
+  if (priv < 0) priv = ec && EC_KEY_get0_private_key(ec) ? 1 : 0;
   if (nid != NID_undef && (curve = OBJ_nid2sn(nid)) && (clen = strlen(curve)) < 64) {
     flen = (EC_GROUP_get_degree(g) + 7) / 8;
     if (flen <= 0 || flen > SP_EC_MAX_FIELD) curve = NULL;
@@ -1164,6 +1218,7 @@ const char *sp_pkey_ec_read(const char *data) {
   EVP_PKEY_free(k);
   if (!n) {
     OPENSSL_cleanse(sp_pkey_read_buf, sizeof sp_pkey_read_buf);
+    ERR_clear_error();
     return sp_ec_fail(curve ? "EC key without its key bytes" : "EC key on a curve without a name");
   }
   ERR_clear_error();

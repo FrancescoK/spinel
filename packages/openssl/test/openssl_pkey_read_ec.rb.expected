@@ -9,3 +9,6 @@ true
 "unsupported key type: RSA (this package reads EC keys)"
 "unsupported key type: ED25519 (this package reads EC keys)"
 "Could not parse PKey"
+"unsupported key type: RSA (this package reads EC keys)"
+"unsupported key type: DH (this package reads EC keys)"
+"EC key without its key bytes"
