@@ -130,6 +130,8 @@ int strbuf_ivar_owner(Compiler *c, int node);
 int attr_assign_slot(Compiler *c, int id, int *cid, int *iv);
 const int *codegen_node_parents(Compiler *c, int node);
 int user_assign_handle(Compiler *c, int id);
+const NativeMethod *native_assign_keeps(Compiler *c, int id);
+void emit_native_assign_read(Compiler *c, int id, const char *href, Buf *b);
 int writers_change_param(Compiler *c, int id);
 int strbuf_assign_leaf(Compiler *c, int v);
 /* --share-strings: a tail some arm of which ends in a leaf only
@@ -1848,7 +1850,7 @@ int lazy_alias_write_suppressible(Compiler *c, int write);  /* lazy-alias write 
 int lazy_alias_src_hoist(Compiler *c, int write);           /* ...the source it evaluates once, or -1 */
 int emit_lazy_size_expr(Compiler *c, int id, Buf *b);
 int emit_native_ctor(Compiler *c, int id, int ci, int argc, const int *argv, Buf *b);
-int emit_native_share_keeps(Compiler *c, int recv, const NativeMethod *m, int argc, const int *argv, Buf *b);
+int emit_native_share_keeps(Compiler *c, int id, int recv, const NativeMethod *m, int argc, const int *argv, Buf *b);
 void emit_block_value_into(Compiler *c, int block, const char *dest,
                            int want_poly, int indent);
 int emit_block_cond_next(Compiler *c, int block, int indent, Buf *out);
