@@ -419,15 +419,13 @@ static int cf_ivar_els(CF *f, int v, const char *name, int *out, int max) {
 static int cf_sg_access(CF *f, int v, int k, const char *nm, const int *argv, int argc) {
   ClassInfo *ci = &f->c->classes[k];
   char ivn[256];
-  size_t ln = strlen(nm);
   if (argc == 0 && comp_is_sg_reader(ci, nm)) {
     snprintf(ivn, sizeof ivn, "@%s", nm);
     if (v >= 0) cf_unite(f, v, cf_entry(f, -(k + 2), ivn));
     return 1;
   }
-  if (ln > 1 && ln < sizeof ivn - 1 && nm[ln - 1] == '=') {
-    char base[256];
-    memcpy(base, nm, ln - 1); base[ln - 1] = 0;
+  char base[256];
+  if (setter_base_name(nm, base, sizeof base)) {
     if (!comp_is_sg_writer(ci, base)) return 0;
     snprintf(ivn, sizeof ivn, "@%s", base);
     int e = cf_entry(f, -(k + 2), ivn);
@@ -480,10 +478,8 @@ static CFByName *cf_byname(CF *f, const char *name) {
   e->mi = malloc(sizeof(int) * (size_t)cap); e->cmi = malloc(sizeof(int) * (size_t)ccap);
   e->rd = malloc(sizeof(int) * (size_t)rcap); e->wr = malloc(sizeof(int) * (size_t)wcap);
   if (!e->mi || !e->cmi || !e->rd || !e->wr) cf_oom();
-  size_t ln = strlen(name);
   char base[256];
-  int is_w = ln > 1 && ln < sizeof base && name[ln - 1] == '=' && name[ln - 2] != '=' && name[ln - 2] != '!' && name[ln - 2] != '<' && name[ln - 2] != '>';
-  if (is_w) { memcpy(base, name, ln - 1); base[ln - 1] = 0; }
+  int is_w = setter_base_name(name, base, sizeof base);
   for (int k = 0; k < c->nclasses; k++) {
     int mi = comp_method_in_chain(c, k, name, NULL);
     if (mi >= 0) {
@@ -1014,10 +1010,8 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
   Compiler *c = f->c;
   const ClsSet *s = &f->pool[pidx];
   int builtin = pidx == CF_EMPTY || s->bv;
-  size_t ln = strlen(nm);
-  int is_w = ln > 1 && nm[ln - 1] == '=' && nm[ln - 2] != '=' && nm[ln - 2] != '!' && nm[ln - 2] != '<' && nm[ln - 2] != '>';
   char base[256] = "";
-  if (is_w && ln < sizeof base) { memcpy(base, nm, ln - 1); base[ln - 1] = 0; }
+  int is_w = setter_base_name(nm, base, sizeof base);
   for (int i = 0; i < s->n; i++) {
     int k = s->cls[i];
     if (k >= c->nclasses) {

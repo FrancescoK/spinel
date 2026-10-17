@@ -1238,13 +1238,8 @@ int comp_arysub_name_is_array(Compiler *c, int cid, const char *n) {
   int dc = -1, ro = comp_arysub_reopen(c, cid);
   if ((comp_method_in_chain(c, cid, n, &dc) >= 0 && (ro < 0 || dc != ro)) ||
       comp_reader_in_chain(c, cid, n, NULL)) return 0;
-  size_t l = strlen(n);
-  if (l > 1 && n[l - 1] == '=' && n[l - 2] != '=' && n[l - 2] != '!' && n[l - 2] != '<' &&
-      n[l - 2] != '>' && n[l - 2] != '[') {
-    char base[256];
-    snprintf(base, sizeof base, "%.*s", (int)(l - 1), n);
-    if (comp_writer_in_chain(c, cid, base, NULL)) return 0;
-  }
+  char base[256];
+  if (setter_base_name(n, base, sizeof base) && comp_writer_in_chain(c, cid, base, NULL)) return 0;
   return !is_arysub_object_name(n) && comp_arysub_builtin_name(c, cid, n);
 }
 /* Whether call `id` on a receiver of type rt, an Array subclass instance, is
@@ -1534,8 +1529,7 @@ int comp_sg_const_candidates(Compiler *c, int class_id, const char *base, int *o
         if (!ty || !sp_streq(ty, "CallNode")) continue;
         const char *nm = nt_str(nt, id, "name");
         if (!nm) continue;
-        size_t nl = strlen(nm);
-        if (nl == 0 || nm[nl - 1] != '=') continue;
+        if (!name_is_plain_setter(nm)) continue;
         int recv = nt_ref(nt, id, "receiver");
         if (recv < 0) continue;
         const char *rty = nt_type(nt, recv);
@@ -1588,8 +1582,7 @@ int comp_sg_reader_const(Compiler *c, int call_id) {
   if (nt_ref(nt, call_id, "arguments") >= 0) return -1;
   const char *nm = nt_str(nt, call_id, "name");
   if (!nm) return -1;
-  size_t nl = strlen(nm);
-  if (nl > 0 && nm[nl - 1] == '=') return -1;
+  if (name_is_plain_setter(nm)) return -1;
   int recv = nt_ref(nt, call_id, "receiver");
   if (recv < 0) return -1;
   const char *rty = nt_type(nt, recv);
@@ -1611,8 +1604,7 @@ int comp_sg_reader_candidates(Compiler *c, int call_id, int *out, int max) {
   if (nt_ref(nt, call_id, "arguments") >= 0) return 0;
   const char *nm = nt_str(nt, call_id, "name");
   if (!nm) return 0;
-  size_t nl = strlen(nm);
-  if (nl > 0 && nm[nl - 1] == '=') return 0;
+  if (name_is_plain_setter(nm)) return 0;
   int recv = nt_ref(nt, call_id, "receiver");
   if (recv < 0) return 0;
   const char *rty = nt_type(nt, recv);
@@ -1866,14 +1858,13 @@ int name_is_plain_setter(const char *name) {
   return p != '=' && p != '!' && p != '<' && p != '>' && p != ']';
 }
 /* Is CallNode `id` a setter written as an assignment (`obj.x = v`), whose
-   value is the argument whatever the writer returns? A call the send desugar
-   retargeted (`obj.send(:x=, v)`, marked send_blind / vis_enforce) is a plain
-   method call: its value is what the method returns (#4921). */
+   value is the argument whatever the writer returns? Prism flags it
+   (nt_attr_write), and a desugar that writes one sets the flag. A call the
+   send desugar retargeted (`obj.send(:x=, v)`) is a plain method call, not
+   flagged: its value is what the method returns (#4921). `[]=` has its own
+   value form, so it is no plain setter. */
 int call_is_setter_assign(const NodeTable *nt, int id) {
-  if (id < 0 || !name_is_plain_setter(nt_str(nt, id, "name"))) return 0;
-  const char *sb = nt_str(nt, id, "send_blind");
-  const char *ve = nt_str(nt, id, "vis_enforce");
-  return !(sb && sb[0] == '1') && !(ve && ve[0] == '1');
+  return id >= 0 && nt_attr_write(nt, id) && name_is_plain_setter(nt_str(nt, id, "name"));
 }
 /* The view a `parameters(lambda: v)` call asks for when v is the literal
    true (1), false (0) or nil (-1, the receiver's own): -2 for any other
@@ -2100,8 +2091,7 @@ int comp_name_is_sg_alias_only(Compiler *c, int class_id, const char *name) {
   int sg = 0;
   /* a writer is listed by the name it assigns (`x` for `x=`) */
   char wbase[256] = "";
-  size_t nl = strlen(name);
-  if (nl > 1 && nl < sizeof wbase && name[nl - 1] == '=') { memcpy(wbase, name, nl - 1); wbase[nl - 1] = '\0'; }
+  setter_base_name(name, wbase, sizeof wbase);
   for (int cid = class_id; cid >= 0 && cid < c->nclasses; cid = c->classes[cid].parent) {
     ClassInfo *ci = &c->classes[cid];
     for (int i = 0; i < ci->naliases; i++) {

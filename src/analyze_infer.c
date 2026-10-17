@@ -1927,11 +1927,8 @@ int an_object_methods_listable(Compiler *c, int cid, const char *name) {
    visibility it gives, -1 for a def (the caller reads the def's). */
 static int an_module_carries(Compiler *c, int m, const char *nm) {
   ClassInfo *kc = &c->classes[m];
-  size_t l = strlen(nm);
-  if (l > 0 && nm[l - 1] == '=') {
-    char base[256];
-    if (l - 1 >= sizeof base) return 0;
-    memcpy(base, nm, l - 1); base[l - 1] = '\0';
+  char base[256];
+  if (setter_base_name(nm, base, sizeof base)) {
     if (comp_is_writer(kc, base)) return 1;
   }
   else if (comp_is_reader(kc, nm)) return 1;
@@ -2622,14 +2619,9 @@ int class_has_subclass(Compiler *c, int ocid);
 
 static int sg_accessor_type(Compiler *c, int ci, const char *name, TyKind *out) {
   ClassInfo *cls = &c->classes[ci];
-  int nlen = (int)strlen(name);
   char base[256];
   const char *rn;
-  /* setter: name ends with '=' */
-  if (nlen > 1 && name[nlen - 1] == '=') {
-    int blen = nlen - 1;
-    if (blen >= (int)sizeof base) return 0;
-    memcpy(base, name, (size_t)blen); base[blen] = '\0';
+  if (setter_base_name(name, base, sizeof base)) {
     if (!comp_is_sg_writer(cls, base)) return 0;
     rn = base;
   }
@@ -5191,10 +5183,9 @@ static int infer_operator_call(Compiler *c, int id, const NodeTable *nt, const c
 /* Does some class have a `class << self` accessor `name` (`x`, or `x=` with
    one argument)? */
 static int cls_value_sg_accessor_any(Compiler *c, const char *name, int argc) {
-  int nlen = (int)strlen(name), setter = nlen > 1 && name[nlen - 1] == '=';
-  if (setter ? argc != 1 : argc != 0) return 0;
   char base[256];
-  snprintf(base, sizeof base, "%.*s", setter ? nlen - 1 : nlen, name);
+  int setter = setter_base_name(name, base, sizeof base);
+  if (setter ? argc != 1 : argc != 0) return 0;
   for (int k = 0; k < c->nclasses; k++) {
     if (is_builtin_reopen(c->classes[k].name)) continue;
     const char *rn = setter ? base : comp_resolve_cm_alias_at(c, k, name, NULL);

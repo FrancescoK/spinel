@@ -647,6 +647,7 @@ static pm_node_t *sp_fw_def(const char *r, size_t rl, const char *meth, size_t m
     memcpy(tn, meth, tl);
     tn[tl] = '=';
     body = sp_made_call(sp_fw_recv(r, rl, at), sp_made_id(tn, tl + 1), sp_made_lvar("_fw_v", at), 0, at);
+    body->flags |= PM_CALL_NODE_FLAGS_ATTRIBUTE_WRITE;   /* written as the assignment */
     free(tn);
   }
   else {
@@ -918,6 +919,17 @@ static void flatten_parameter(int id, pm_node_t *node) {
   if (value) emit_ref(id, "value", value);
 }
 
+/* The Prism flags of a CallNode that the passes read by name, each written
+   only when Prism set it: `recv&.name` (nt_safe_nav); `recv.name = v`,
+   `recv.name=(v)` and `recv[i] = v`, which `recv.send(:name=, v)` is not
+   (nt_attr_write); and a bare identifier (no receiver/parens/args), a
+   variable-or-method read whose unresolved form is CRuby's NameError, not
+   NoMethodError (vcall). */
+static void emit_call_flags(int id, const pm_node_t *node) {
+  if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) emit_int(id, "safe_nav", 1);
+  if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_ATTRIBUTE_WRITE)) emit_int(id, "attr_write", 1);
+  if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_VARIABLE_CALL)) emit_int(id, "vcall", 1);
+}
 static int flatten_node(pm_node_t *node) {
   if (!node) return -1;
 
@@ -1081,11 +1093,7 @@ static int flatten_node(pm_node_t *node) {
     R("receiver", n->receiver);
     R("arguments", n->arguments);
     R("block", n->block);
-    /* `recv&.name`: nt_safe_nav reads the flag, set only when it is. */
-    if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) I("safe_nav", 1);
-    /* A bare identifier (no receiver/parens/args) is a variable-or-method
-       read: an unresolved one is CRuby's NameError, not NoMethodError. */
-    if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_VARIABLE_CALL)) I("vcall", 1);
+    emit_call_flags(id, node);
     /* `__dir__` in a required file is that file's directory: carry the file
        for the compile-time folds, which otherwise see only the entry script */
     if (!n->receiver && !n->arguments) {

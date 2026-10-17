@@ -15445,7 +15445,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
        custom writer (e.g. CPU#next_frame_clock= setting @clk_frame) runs */
     int crecv = nt_ref(nt, tgt, "receiver");
     size_t snl = nm ? strlen(nm) : 0;
-    if (!nm || snl < 2 || nm[snl - 1] != '=' || crecv < 0) { unsupported(c, id, "multiple assignment call target"); return 1; }
+    if (!name_is_plain_setter(nm) || crecv < 0) { unsupported(c, id, "multiple assignment call target"); return 1; }
     TyKind crt = comp_ntype(c, crecv);
     /* a boxed receiver dispatches on its class, as the single setter does */
     if (crt == TY_POLY) {
@@ -17075,7 +17075,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       const char *setnm = nt_str(nt, lefts[i], "name");
       int recv_id2 = nt_ref(nt, lefts[i], "receiver");
       size_t snlen = setnm ? strlen(setnm) : 0;
-      if (!setnm || snlen < 2 || setnm[snlen - 1] != '=' || recv_id2 < 0)
+      if (!name_is_plain_setter(setnm) || recv_id2 < 0)
         { unsupported(c, id, "multiple assignment call target"); continue; }
       TyKind rt2 = comp_ntype(c, recv_id2);
       if (rt2 == TY_POLY) {
@@ -17445,11 +17445,8 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
             if (vaty && sp_streq(vaty, "SymbolNode")) mn = nt_str(nt, vav[vi], "value");
             else if (vaty && sp_streq(vaty, "StringNode")) mn = nt_str(nt, vav[vi], "unescaped");
             if (!mn) continue;
-            size_t ml = strlen(mn);
             char wb[256]; wb[0] = '\0';
-            if (ml > 0 && mn[ml - 1] == '=' && ml - 1 < sizeof wb) {
-              memcpy(wb, mn, ml - 1); wb[ml - 1] = '\0';
-            }
+            setter_base_name(mn, wb, sizeof wb);
             int found = comp_method_in_chain(c, vcid, mn, NULL) >= 0 ||
                         comp_reader_in_chain(c, vcid, mn, NULL) ||
                         (wb[0] && comp_writer_in_chain(c, vcid, wb, NULL));
@@ -17554,13 +17551,11 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
   {
     const char *nm = nt_str(nt, id, "name");
     int recv = nt_ref(nt, id, "receiver");
-    size_t ln = nm ? strlen(nm) : 0;
-    if (nm && recv >= 0 && ln >= 2 && nm[ln - 1] == '=' && !nt_safe_nav(nt, id)) {
+    if (recv >= 0 && name_is_plain_setter(nm) && !nt_safe_nav(nt, id)) {
       TyKind rt = comp_ntype(c, recv);
       if (ty_is_object(rt)) {
         char base[256];
-        if (ln - 1 < sizeof base) {
-          memcpy(base, nm, ln - 1); base[ln - 1] = '\0';
+        if (setter_base_name(nm, base, sizeof base)) {
           int args = nt_ref(nt, id, "arguments");
           int an = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
           /* attr writer -> field write, UNLESS an explicit `def x=` overrides
@@ -17678,8 +17673,7 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
          class's ivar, converting the rhs to that ivar's slot type. */
       else if (rt == TY_POLY) {
         char base[256];
-        if (ln - 1 < sizeof base) {
-          memcpy(base, nm, ln - 1); base[ln - 1] = '\0';
+        if (setter_base_name(nm, base, sizeof base)) {
           int args = nt_ref(nt, id, "arguments");
           int an = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
           int ncand = 0;

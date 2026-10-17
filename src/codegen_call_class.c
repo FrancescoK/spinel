@@ -473,10 +473,8 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
           buf_printf(b, "sp_int _k%d = ", tv);
           emit_poly_dispatch_key(c, tv, 1, 1, poly_exc_cand(c, qm), b);
           buf_puts(b, "; (");
-          size_t ql = strlen(qm);
           char wbase[256]; wbase[0] = '\0';
-          int is_wr = ql > 0 && qm[ql - 1] == '=' && ql - 1 < sizeof wbase;
-          if (is_wr) { memcpy(wbase, qm, ql - 1); wbase[ql - 1] = '\0'; }
+          int is_wr = setter_base_name(qm, wbase, sizeof wbase);
           int first = 1;
           for (int k = 0; k < c->nclasses; k++) {
             if (comp_is_undeffed_in_chain(c, k, qm)) continue;
@@ -580,11 +578,9 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     }
     if (qm && ci >= 0) {
       /* a writer query (`m=`) consults the writer table under its base name */
-      size_t ln = strlen(qm);
-      int is_setter = ln > 0 && qm[ln - 1] == '=';
       char base[256];
       base[0] = '\0';
-      if (is_setter && ln - 1 < sizeof base) { memcpy(base, qm, ln - 1); base[ln - 1] = '\0'; }
+      int is_setter = setter_base_name(qm, base, sizeof base);
       /* Ruby makes the initialize family private on every class, defined or
          not: private_method_defined? is true for all of them and the public /
          protected / plain queries are false (#3874). */
@@ -2203,12 +2199,10 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
      The statement form is handled in emit_stmt; this expression form is hit
      when the assignment is the last statement of an instance_eval block. */
   if (recv >= 0) {
-    int _alen = (int)strlen(name);
     TyKind _art = comp_ntype(c, recv);
-    if (_alen > 1 && name[_alen - 1] == '=' && ty_is_object(_art)) {
-      char _abase[256]; int _ablen = _alen - 1;
-      if (_ablen < (int)sizeof _abase) {
-        memcpy(_abase, name, (size_t)_ablen); _abase[_ablen] = '\0';
+    if (ty_is_object(_art) && name_is_plain_setter(name)) {
+      char _abase[256];
+      if (setter_base_name(name, _abase, sizeof _abase)) {
         int _arc = ty_object_class(_art), _adefc = -1;
         /* attr writer -> field write, UNLESS an explicit `def x=` overrides it
            at an equal-or-more-derived class; then fall through to dispatch. */
@@ -3312,10 +3306,9 @@ static void sg_slot_boxed(Compiler *c, int k, const char *base, Buf *b) {
    it. 0 when no class has the accessor. */
 static int emit_cls_value_sg_accessor(Compiler *c, int id, int recv, const char *name, int argc, const int *argv,
                                       Buf *b) {
-  int nlen = (int)strlen(name), setter = nlen > 1 && name[nlen - 1] == '=';
-  if (setter ? argc != 1 : argc != 0) return 0;
   char base[256];
-  snprintf(base, sizeof base, "%.*s", setter ? nlen - 1 : nlen, name);
+  int setter = setter_base_name(name, base, sizeof base);
+  if (setter ? argc != 1 : argc != 0) return 0;
   int any = 0;
   for (int k = 0; k < c->nclasses && !any; k++) {
     if (is_builtin_reopen(c->classes[k].name)) continue;
@@ -5235,10 +5228,8 @@ void emit_refl_method_defined(Compiler *c, Buf *b) {
     for (int i = 0; i < nn; i++) {
       const char *qm = names[i];
       if (sp_streq(qm, "initialize") || name_is_synth_method(c, qm) || comp_is_undeffed_in_chain(c, k, qm)) continue;
-      size_t ln = strlen(qm);
-      int is_setter = ln > 0 && qm[ln - 1] == '=';
       char base[256]; base[0] = 0;
-      if (is_setter && ln - 1 < sizeof base) { memcpy(base, qm, ln - 1); base[ln - 1] = 0; }
+      int is_setter = setter_base_name(qm, base, sizeof base);
       int mc = -1;
       int mi = comp_method_in_chain(c, k, qm, &mc);
       if (mi >= 0 && scope_is_struct_synth(c, mi)) mi = -1;

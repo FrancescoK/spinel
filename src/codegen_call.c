@@ -10326,7 +10326,7 @@ static int recv_new_string(Compiler *c, int n, int depth) {
       for (int k = 0; !made && makes[k]; k++) made = sp_streq(nm, makes[k]) && str_fresh_value(c, n);
     return made && an_prog_never_gives(nm, 0);
   }
-  if (depth >= 3 || pl->dispatch != CP_DIRECT || nm[strlen(nm) - 1] == '=' ||
+  if (depth >= 3 || pl->dispatch != CP_DIRECT || nt_attr_write(nt, n) ||
       body_has_return(nt, c->scopes[pl->mi].body)) return 0;
   return recv_new_string(c, scope_body_last(c, pl->mi), depth + 1) && an_prog_never_gives(nm, 1);
 }
@@ -10967,10 +10967,8 @@ int class_method_named(Compiler *c, const char *name) {
    `attr_accessor :pos`, a Struct member)? Writers are kept under the base
    name, which the arm's method and reader test does not ask. */
 int attr_writer_named(Compiler *c, int cls, const char *name) {
-  size_t nl = strlen(name);
   char base[128];
-  if (nl < 2 || name[nl - 1] != '=' || nl > sizeof base) return 0;
-  memcpy(base, name, nl - 1); base[nl - 1] = '\0';
+  if (!setter_base_name(name, base, sizeof base)) return 0;
   for (int k = 0; k < c->nclasses; k++)
     if ((cls < 0 || k == cls) && comp_writer_in_chain(c, k, base, NULL)) return 1;
   return 0;
@@ -16905,10 +16903,8 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
    `m=` attr writer)? Lets a poly respond_to?(:qm) decide whether a runtime
    cls_id check is needed instead of the union-wide static probe answer. */
 int any_class_defines(Compiler *c, const char *qm) {
-  size_t ql = strlen(qm);
   char wbase[256]; wbase[0] = '\0';
-  int is_wr = ql > 0 && qm[ql - 1] == '=' && ql - 1 < sizeof wbase;
-  if (is_wr) { memcpy(wbase, qm, ql - 1); wbase[ql - 1] = '\0'; }
+  int is_wr = setter_base_name(qm, wbase, sizeof wbase);
   for (int k = 0; k < c->nclasses; k++)
     if (comp_method_in_chain(c, k, qm, NULL) >= 0 ||
         comp_reader_in_chain(c, k, qm, NULL) ||
@@ -17504,14 +17500,9 @@ static int class_responds_to(Compiler *c, int ci, const char *qm) {
   const NodeTable *nt = c->nt;
   if (comp_cmethod_in_chain(c, ci, qm, NULL) >= 0) return 1;
   /* singleton attr_accessor/reader/writer via class << self */
-  size_t ql = strlen(qm);
-  int is_wr = ql > 0 && qm[ql - 1] == '=';
-  if (is_wr) {
-    char base[256];
-    if (ql - 1 < sizeof base) {
-      memcpy(base, qm, ql - 1); base[ql - 1] = '\0';
-      if (comp_is_sg_writer(&c->classes[ci], base)) return 1;
-    }
+  char base[256];
+  if (name_is_plain_setter(qm)) {
+    if (setter_base_name(qm, base, sizeof base) && comp_is_sg_writer(&c->classes[ci], base)) return 1;
   }
   else if (comp_is_sg_reader(&c->classes[ci], qm)) return 1;
   int is_module = comp_class_is_module(c, &c->classes[ci]);
@@ -28233,12 +28224,10 @@ void emit_push_arg_list(Compiler *c, const int *argv, int argc, int tpa, Buf *b)
 int emit_sg_accessor(Compiler *c, int id, int ci, const char *cn, const char *name,
                             int argc, const int *argv, Buf *b) {
   ClassInfo *cls = &c->classes[ci];
-  int nlen = (int)strlen(name);
-  if (nlen > 1 && name[nlen - 1] == '=') {
+  if (name_is_plain_setter(name)) {
     /* setter */
-    char base[256]; int blen = nlen - 1;
-    if (blen >= (int)sizeof base) return 0;
-    memcpy(base, name, (size_t)blen); base[blen] = '\0';
+    char base[256];
+    if (!setter_base_name(name, base, sizeof base)) return 0;
     if (!comp_is_sg_writer(cls, base)) return 0;
     if (comp_is_sg_civ(cls, base)) {
       char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", base);
@@ -28834,10 +28823,8 @@ static int obj_responds_answer(Compiler *c, int cid, const char *qm) {
     return comp_method_in_chain(c, cid, qm, NULL) >= 0 && vis == SP_VIS_PUBLIC ? 2 : 1;
   }
   for (int u = 0; respond_universal[u]; u++) if (sp_streq(qm, respond_universal[u])) return 2;
-  size_t ql = strlen(qm);
-  int is_wr = ql > 0 && qm[ql - 1] == '=';
   char wbase[256]; wbase[0] = '\0';
-  if (is_wr && ql - 1 < sizeof wbase) { memcpy(wbase, qm, ql - 1); wbase[ql - 1] = '\0'; }
+  int is_wr = setter_base_name(qm, wbase, sizeof wbase);
   if (comp_is_undeffed_in_chain(c, cid, qm)) return 0;
   /* a singleton alias names a class method, not one of the instance's */
   if (comp_name_is_sg_alias_only(c, cid, qm)) return 0;

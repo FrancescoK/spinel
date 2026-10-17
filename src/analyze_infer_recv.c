@@ -1455,47 +1455,43 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       return 1;
     }
     /* attr writer: obj.x= returns the assigned value */
-    size_t ln = strlen(name);
-    if (ln >= 2 && name[ln - 1] == '=') {
-      char base[256];
-      if (ln - 1 < sizeof base) {
-        memcpy(base, name, ln - 1); base[ln - 1] = '\0';
-        int wdefc = -1;
-        /* only while the attribute's writer is the one the call reaches: an
-           explicit `def x=` at an equal-or-more-derived class wins, as the
-           emitter decides (comp_resolve_member), and its value is the
-           argument as written (the rule below). Typed from the attribute's
-           boxed slot instead, the expression read as poly while the emitter
-           handed back the raw argument (`def x=(v) = super` under
-           --int-overflow=promote). */
-        if (comp_writer_in_chain(c, cid, base, &wdefc) && argc >= 1 &&
-            comp_resolve_member(c, cid, base, 1, NULL, NULL) == SP_MEMBER_ATTR) {
-          TyKind rhsk = infer_type(c, argv[0]);
-          /* (a handle local's value is its String face, as an ivar write's is) */
-          if (rhsk == TY_STRBUF && c->share_strings) rhsk = TY_STRING;
-          /* codegen boxes a scalar rhs into a poly ivar slot, so the assignment
-             expression's C value is that boxed poly -- report poly to match. */
-          char wivn[258]; snprintf(wivn, sizeof wivn, "@%s", base);
-          int wcid = wdefc < 0 ? cid : wdefc;
-          int wivx = comp_ivar_index(&c->classes[wcid], wivn);
-          TyKind wivt = wivx >= 0 ? c->classes[wcid].ivar_types[wivx] : TY_UNKNOWN;
-          if (wivt == TY_POLY && rhsk != TY_POLY) { *out = TY_POLY; return 1; }
-          { *out = rhsk; return 1; }
-        }
-        /* A hand-written `def x=(v)` is an assignment expression as well: its
-           value is the argument as written, whatever the body returns (codegen
-           passes the argument through a temp that is the expression's value).
-           An argument not yet typed leaves the call to the method rule below,
-           which the next round revisits. */
-        int smi = argc == 1 && call_is_setter_assign(c->nt, id)
-                  ? comp_method_in_chain(c, cid, name, NULL) : -1;
-        if (smi >= 0) {
-          TyKind rhsk = infer_type(c, argv[0]);
-          if (rhsk == TY_STRBUF && c->share_strings) rhsk = TY_STRING;
-          if (rhsk != TY_UNKNOWN) {
-            an_user_call_record(c, id, smi, UC_INST, cid);
-            *out = rhsk; return 1;
-          }
+    char base[256];
+    if (setter_base_name(name, base, sizeof base)) {
+      int wdefc = -1;
+      /* only while the attribute's writer is the one the call reaches: an
+         explicit `def x=` at an equal-or-more-derived class wins, as the
+         emitter decides (comp_resolve_member), and its value is the
+         argument as written (the rule below). Typed from the attribute's
+         boxed slot instead, the expression read as poly while the emitter
+         handed back the raw argument (`def x=(v) = super` under
+         --int-overflow=promote). */
+      if (comp_writer_in_chain(c, cid, base, &wdefc) && argc >= 1 &&
+          comp_resolve_member(c, cid, base, 1, NULL, NULL) == SP_MEMBER_ATTR) {
+        TyKind rhsk = infer_type(c, argv[0]);
+        /* (a handle local's value is its String face, as an ivar write's is) */
+        if (rhsk == TY_STRBUF && c->share_strings) rhsk = TY_STRING;
+        /* codegen boxes a scalar rhs into a poly ivar slot, so the assignment
+           expression's C value is that boxed poly -- report poly to match. */
+        char wivn[258]; snprintf(wivn, sizeof wivn, "@%s", base);
+        int wcid = wdefc < 0 ? cid : wdefc;
+        int wivx = comp_ivar_index(&c->classes[wcid], wivn);
+        TyKind wivt = wivx >= 0 ? c->classes[wcid].ivar_types[wivx] : TY_UNKNOWN;
+        if (wivt == TY_POLY && rhsk != TY_POLY) { *out = TY_POLY; return 1; }
+        { *out = rhsk; return 1; }
+      }
+      /* A hand-written `def x=(v)` is an assignment expression as well: its
+         value is the argument as written, whatever the body returns (codegen
+         passes the argument through a temp that is the expression's value).
+         An argument not yet typed leaves the call to the method rule below,
+         which the next round revisits. */
+      int smi = argc == 1 && call_is_setter_assign(c->nt, id)
+                ? comp_method_in_chain(c, cid, name, NULL) : -1;
+      if (smi >= 0) {
+        TyKind rhsk = infer_type(c, argv[0]);
+        if (rhsk == TY_STRBUF && c->share_strings) rhsk = TY_STRING;
+        if (rhsk != TY_UNKNOWN) {
+          an_user_call_record(c, id, smi, UC_INST, cid);
+          *out = rhsk; return 1;
         }
       }
     }

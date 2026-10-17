@@ -3652,10 +3652,8 @@ static int defined_super_reaches(Compiler *c, int sup) {
                         (ri->def_node < 0 || nt_ref(c->nt, ri->def_node, "superclass") < 0));
     return plain ? 0 : -1;
   }
-  size_t ln = strlen(u);
   char base[256];
-  int setter = ln > 1 && ln - 1 < sizeof base && u[ln - 1] == '=';
-  if (setter) { memcpy(base, u, ln - 1); base[ln - 1] = '\0'; }
+  int setter = setter_base_name(u, base, sizeof base);
   /* an ancestor that undefs the name ahead of any definition: the super
      reaches nothing (`undef :test` in the superclass) */
   if (p >= 0 && comp_is_undeffed_in_chain(c, p, u)) return 0;
