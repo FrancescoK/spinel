@@ -5344,6 +5344,40 @@ int share_builtin_fresh(Compiler *c, int call) {
    t : s`, `H.fetch(k, s)`: ShareFacts.alt), or that goes to a place with no
    flow to show for it (a call the walk does not follow, an exception's
    message: ShareFacts.kp_e). */
+/* Is v a call whose every target answers one of its parameters
+   (scope_ret_param)? Its value is the caller's own argument, which the
+   caller's flow keeps, not the parameter: share_value_fresh asks that
+   argument. (A method answering itself by recursion joins its parameter
+   with its answer as alternatives of one conditional.) */
+static int sh_call_answers_param(Compiler *c, int v) {
+  if (v < 0 || nt_kind(c->nt, v) != NK_CallNode) return 0;
+  int tg[8];
+  int n = cplan_targets(c, v, tg, 8);
+  if (n <= 0) return 0;
+  for (int i = 0; i < n; i++) if (tg[i] < 0 || scope_ret_param(c, tg[i]) < 0) return 0;
+  return 1;
+}
+/* Is flow (kind, site, v) a parameter's read handed back to that same
+   parameter by its own method calling itself (`pass(x, n - 1)` in `def
+   pass(x, n)`)? The call's only target is the method the read is in and
+   the read binds the parameter it reads: the slot it fills is the one it
+   came from, so it keeps the String nowhere new. */
+static int sh_param_self_pass(Compiler *c, int kind, int site, int v) {
+  const NodeTable *nt = c->nt;
+  if (kind != SHFL_ARG || site < 0 || v < 0 || nt_kind(nt, site) != NK_CallNode ||
+      nt_kind(nt, v) != NK_LocalVariableReadNode) return 0;
+  Scope *m = comp_scope_of(c, v);
+  int mi = m ? (int)(m - c->scopes) : -1;
+  const char *pn = nt_str(nt, v, "name");
+  int pj = -1;
+  for (int j = 0; m && pn && j < m->nparams && pj < 0; j++)
+    if (m->pnames[j] && sp_streq(m->pnames[j], pn)) pj = j;
+  if (mi <= 0 || pj < 0 || comp_scope_of(c, site) != m) return 0;
+  int tg[2];
+  int nt2 = cplan_targets(c, site, tg, 2);
+  if (nt2 != 1 || tg[0] != mi) return 0;
+  return arg_layout_param_source(c, m, site, pj, NULL) == v;
+}
 int share_param_kept(Compiler *c, int mi, int pj) {
   ShareFacts *F = c->share;
   Scope *m = &c->scopes[mi];
@@ -5358,7 +5392,9 @@ int share_param_kept(Compiler *c, int mi, int pj) {
     if (!F->pkept) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     for (int i = 0; i < F->nfl; i++) {
       int e = F->fl_val[i] >= 0 && F->fl_val[i] < F->nnodes ? F->nval[F->fl_val[i]] : -1;
-      if (e >= 0 && F->fl_kind[i] != SHFL_MUTATE) F->pkept[alt ? sh_alt_find(F, e) : e] = 1;
+      if (e >= 0 && F->fl_kind[i] != SHFL_MUTATE && !sh_param_self_pass(c, F->fl_kind[i], F->fl_site[i], F->fl_val[i]) &&
+          !(alt && sh_call_answers_param(c, F->fl_val[i])))
+        F->pkept[alt ? sh_alt_find(F, e) : e] = 1;
     }
     for (int i = 0; alt && i < F->nkp; i++) F->pkept[sh_alt_find(F, F->kp_e[i])] = 1;
   }
