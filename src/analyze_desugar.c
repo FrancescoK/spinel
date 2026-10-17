@@ -4929,7 +4929,7 @@ static int dsend_name_leaf(const VpLeaf *leaf, void *ud) {
 }
 static int dsend_literal_names(Compiler *c, int v, char ***names, int *n, int *cap, ANameHash *seen) {
   DsendArms a = { c, names, n, cap, seen, 1 };
-  for_each_value_position(c->nt, v, VPS_IF | VPS_UNLESS, dsend_name_leaf, &a);
+  for_each_value_position(c->nt, v, VPS_IF | VPS_UNLESS | VPS_CASE, dsend_name_leaf, &a);
   return a.ok;
 }
 
