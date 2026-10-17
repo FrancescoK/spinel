@@ -5716,6 +5716,17 @@ int share_value_fresh(Compiler *c, int n, int depth) {
     int mi = sh_method_index(c, n);
     return mi >= 0 && sh_blocks_fresh(c, mi, depth + 1);
   }
+  /* super answers what the method it reaches answers: a new String where
+     that method's returns joined nothing else, or each answers one, as a
+     call of it does (sh_user_call_fresh); not where it answers a
+     parameter, which zsuper hands on unseen */
+  if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
+    const CallPlan *p = cplan_user_fresh(c, n);
+    int mi = p->mi;
+    if (!c->share || p->dispatch != CP_DIRECT || mi <= 0 || mi >= c->nscopes || scope_ret_param(c, mi) >= 0)
+      return 0;
+    return !c->share->ret_joined[mi] || scope_ret_fresh(c, mi);
+  }
   if (k != NK_CallNode) return 0;
   if (sh_user_call_fresh(c, n, depth)) return 1;
   /* ENV's [] answers a new String each read; to_s, to_str, itself and
