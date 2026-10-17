@@ -1945,7 +1945,6 @@ static TyKind sh_bop_arg_type(const void *ud, int i) {
   return i >= 0 && i < a->argc ? a->c->ntype[a->argv[i]] : TY_UNKNOWN;
 }
 
-static int sh_method_missing_reaches(Compiler *c, int call, const char *name);
 
 /* A boxed String row can replace the container default only when the
    selected typed row describes this call shape and the dispatch plan and
@@ -1992,13 +1991,11 @@ static int sh_boxed_string_row_composable(ShareFacts *F, Compiler *c, int n,
   }
   if (has_other_builtin || bop_share_named(BOP_ANY_RECV, name)) return 0;
 
-  /* Match the existing boxed-freshness exclusions for Object and dynamic
-     lookup. These routes can answer without being an ordinary user target. */
-  if (object_public_method_name(name) || comp_method_index(c, "method_missing") >= 0) return 0;
-  if (sh_method_missing_reaches(c, n, name)) return 0;
-  int missing = 0;
-  comp_cmethod_candidates(c, "method_missing", &missing);
-  if (missing) return 0;
+  /* Match the existing boxed-freshness exclusion for Object's methods,
+     which can answer without being an ordinary user target. (A
+     method_missing hook answers nothing here: Spinel never routes a call
+     to it.) */
+  if (object_public_method_name(name)) return 0;
 
   const PolyPlan *p = cplan_poly_fresh(c, n);
   if (!p || (p->ret != TY_STRING && p->ret != TY_POLY)) return 0;
@@ -2032,15 +2029,15 @@ static int sh_boxed_string_row_composable(ShareFacts *F, Compiler *c, int n,
 
 static int sh_native_placeholder(Compiler *c, const PolyCand *p, const char *name);
 /* Is call n, on a boxed receiver, of a name no program method answers
-   (no target here, no method_missing, no reader, native binding or
-   OpenStruct field of the name, no singleton accessor) and that every
+   (no target here, no reader, native binding or OpenStruct field of the
+   name, no singleton accessor) and that every
    builtin kind having it answers with a new String or no String
    (bop_share_pure_anywhere): `x.tr("-", "_")`, `x.squeeze`? The box holds
    one of those kinds, or the call raises NoMethodError. */
 static int sh_boxed_pure_name(ShareFacts *F, Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, n, "name");
-  int argc = call_plain_argc(c, n), np = 0, missing = 0;
+  int argc = call_plain_argc(c, n), np = 0;
   /* (an answer typed poly is boxed by the dispatch's String arm as its
      bytes, a box whose copies stop naming one String once one of them is
      appended to: such a call stays in its receiver's class) */
@@ -2048,15 +2045,13 @@ static int sh_boxed_pure_name(ShareFacts *F, Compiler *c, int n) {
       object_public_method_name(name) || bop_name_has_reader(name, BOP_READ_NUMERIC | BOP_READ_CONTAINER) ||
       (ty_poly_face_owners(name, argc, 0, 1, 1) & PF_OWNERS & ~(PF_STRING | PF_INT | PF_FLOAT | PF_RANGE |
                                                                  PF_FRANGE | PF_RANDOM)) ||
-      !bop_share_pure_anywhere(name, argc, 0) || comp_method_index(c, "method_missing") >= 0)
+      !bop_share_pure_anywhere(name, argc, 0))
     return 0;
-  comp_cmethod_candidates(c, "method_missing", &missing);
-  if (missing) return 0;
   /* (a native class's empty placeholder row answers nothing) */
   const PolyCand *pc = comp_poly_candidates(c, name, &np);
   for (int i = 0; i < np; i++)
     if (!sh_native_placeholder(c, &pc[i], name)) return 0;
-  return !sh_singleton_accessor(F, c, name) && !sh_method_missing_reaches(c, n, name);
+  return !sh_singleton_accessor(F, c, name);
 }
 
 static void sh_record_boxed_fresh(ShareFacts *F, Compiler *c, int n,
@@ -5127,114 +5122,6 @@ static int sh_native_placeholder(Compiler *c, const PolyCand *p, const char *nam
   if (comp_reader_in_chain(c, p->cls, name, NULL)) return 0;
   return !comp_poly_arm_defines(c, p->cls, name);
 }
-/* Does class k answer `name` itself: a method or a reader in its chain,
-   or a native binding? */
-static int sh_class_answers(Compiler *c, int k, const char *name) {
-  return comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL) ||
-         comp_poly_arm_defines(c, k, name);
-}
-/* Does class j's chain hold class or module k: j itself, a superclass, or
-   a module one of them includes or prepends (directly or through another
-   module)? Every chain holds Object, BasicObject and Kernel, and k < 0
-   stands for them. */
-static int sh_chain_holds(Compiler *c, int j, int k) {
-  if (k < 0 || (c->classes[k].name && is_object_root(c->classes[k].name))) return 1;
-  for (int a = j, d = 0; a >= 0 && a < c->nclasses && d <= c->nclasses; a = c->classes[a].parent, d++) {
-    if (a == k) return 1;
-    for (int m = 0; m < c->classes[a].nincluded_mods; m++)
-      if (comp_module_includes(c, c->classes[a].included_mods[m], k, 0)) return 1;
-  }
-  return 0;
-}
-/* Can a hook in class or module k whose instances the boxed-receiver walk
-   does not list as a class of its own (Object, a reopened builtin, a
-   builtin module; k < 0 for every object) answer call `call` of `name`?
-   Where the receiver can be a builtin value (nil, a literal, a builtin
-   class's instance: poly_recv_builtin) or the walk cannot bound it, it
-   can; otherwise only through a class the walk lists (*ks, *nk, asked once
-   for the call) whose chain holds k and lacks the name. */
-static int sh_unlisted_hook_reaches(Compiler *c, int call, const char *name, int k,
-                                    const int **ks, int *nk) {
-  if (*nk < 0) *ks = poly_recv_classes(c, call, nk);
-  if (!*ks || poly_recv_builtin(c, call)) return 1;
-  for (int x = 0; x < *nk; x++)
-    if (sh_chain_holds(c, (*ks)[x], k) && !sh_class_answers(c, (*ks)[x], name)) return 1;
-  return 0;
-}
-/* Can module mod's method_missing hook answer call `call` of `name`? The
-   hook is in the chain of each class that includes or prepends the module
-   (an object's extend makes such a class), and of its subclasses: one that
-   lacks the name reaches the hook where the receiver can be of it, by the
-   boxed-receiver walk, a singleton's always. A module included at the top
-   level, by a builtin module (Kernel, Comparable) or by a class the walk
-   does not bound (a builtin's) is in the chain of values the walk does not
-   list (sh_unlisted_hook_reaches), and one a class extends answers on the
-   class itself, which always counts. */
-static int sh_module_hook_reaches(Compiler *c, int call, const char *name, int mod,
-                                  const int **ks, int *nk) {
-  for (int t = 0; t < c->ntoplevel_includes; t++)
-    if (comp_module_includes(c, c->toplevel_includes[t], mod, 0))
-      return sh_unlisted_hook_reaches(c, call, name, -1, ks, nk);
-  for (int j = 0; j < c->nclasses; j++) {
-    ClassInfo *cj = &c->classes[j];
-    for (int e = 0; e < cj->nextended_mods; e++)
-      if (comp_module_includes(c, cj->extended_mods[e], mod, 0)) return 1;
-    if (comp_class_is_module(c, cj)) {
-      if (cj->name && is_builtin_module_name(cj->name) && comp_module_includes(c, j, mod, 0) &&
-          sh_unlisted_hook_reaches(c, call, name, j, ks, nk)) return 1;
-      continue;
-    }
-    if (!sh_chain_holds(c, j, mod) || sh_class_answers(c, j, name)) continue;
-    if (cj->is_singleton_of) return 1;
-    if ((cj->name && is_builtin_class_name(cj->name)) || !cls_fact_bounded(c, j)) {
-      if (sh_unlisted_hook_reaches(c, call, name, j, ks, nk)) return 1;
-      continue;
-    }
-    if (*nk < 0) *ks = poly_recv_classes(c, call, nk);
-    if (!*ks) return 1;
-    for (int x = 0; x < *nk; x++)
-      if ((*ks)[x] == j) return 1;
-  }
-  return 0;
-}
-/* Can a method_missing hook answer call `call` of `name`, as CRuby routes
-   a call no method of the receiver's class answers: a class whose chain
-   holds a hook (a Ruby method, a reader, a native binding) and not the
-   name, that the receiver can be? The boxed-receiver walk lists the
-   program's classes and the native classes the receiver can be
-   (poly_recv_classes, asked only once such a class turns up); a hook in
-   an object's singleton class, or for a receiver the walk cannot bound,
-   counts. A hook in a class the walk does not bound (Object, a reopened
-   builtin, an exception's) counts where the receiver can be a builtin
-   value, nil included (an element read past the end, a missing else), or
-   of a listed class below it that lacks the name
-   (sh_unlisted_hook_reaches). A module's hook counts through the classes
-   that include it (sh_module_hook_reaches). A hook that only classes
-   answering the name themselves reach, or only classes the receiver never
-   is, answers nothing here. (Spinel never routes a call to the hook; this
-   keeps CRuby's answer in view.) */
-static int sh_method_missing_reaches(Compiler *c, int call, const char *name) {
-  int n = 0, nk = -1;
-  const int *ks = NULL;
-  const PolyCand *p = comp_poly_candidates(c, "method_missing", &n);
-  for (int i = 0; i < n; i++) {
-    int k = p[i].cls;
-    if (sh_native_placeholder(c, &p[i], "method_missing") || sh_class_answers(c, k, name)) continue;
-    if (c->classes[k].is_singleton_of) return 1;
-    if (!p[i].native && !cls_fact_bounded(c, k)) {
-      if (comp_class_is_module(c, &c->classes[k]) ? sh_module_hook_reaches(c, call, name, k, &ks, &nk)
-                                                   : sh_unlisted_hook_reaches(c, call, name, k, &ks, &nk))
-        return 1;
-      continue;
-    }
-    if (nk < 0) ks = poly_recv_classes(c, call, &nk);
-    if (!ks) return 1;
-    for (int j = 0; j < nk; j++)
-      if (ks[j] == k) return 1;
-  }
-  return 0;
-}
-
 /* A boxed call's builtin arms answer a value of their own when the
    any-receiver row says so. String's receiver conversions are the
    exception to Object's row: to_s can hand its String back unchanged. */
@@ -5247,15 +5134,10 @@ static int sh_builtin_fresh(Compiler *c, int call, int ostruct) {
      other receiver raises. The arity tables already record that ownership.
      The dispatch plan must also exclude readers, native bindings and
      catch-all arms such as OpenStruct's member read. Object's public
-     method table covers the names the arity tables omit. A user-defined
-     method_missing can answer a name with no ordinary target too: a
-     top-level one for any receiver, a class's where the receiver can be of
-     a class that has the hook and not the name. */
+     method table covers the names the arity tables omit. (A method_missing
+     hook answers no name: Spinel never routes a call to it, and warns
+     where one is defined.) */
   if (object_public_method_name(name)) return 0;
-  if (comp_method_index(c, "method_missing") >= 0) return 0;
-  int missing = 0;
-  comp_cmethod_candidates(c, "method_missing", &missing);
-  if (missing) return 0;
   /* With no builtin face or dynamic fields, only the user methods can
      answer. Their freshness is checked by the caller. */
   if (!ostruct && !bop_name_has_reader(name, BOP_READ_NUMERIC | BOP_READ_CONTAINER | BOP_READ_STRING) &&
@@ -5277,9 +5159,7 @@ static int sh_builtin_fresh(Compiler *c, int call, int ostruct) {
       for (int j = 0; j < ntg; j++) if (tg[j] == p[i].mi) { found = 1; break; }
       if (!found) return 0;
     }
-    /* a class's hook is asked last: whether the receiver can be of its
-       class walks the receiver's values, and only an answer of 1 needs it */
-    if (user_methods > 0) return !sh_method_missing_reaches(c, call, name);
+    if (user_methods > 0) return 1;
   }
   return 0;
 }
