@@ -1520,6 +1520,7 @@ static void nf_bind_params(NF *f, int id, int mi, const int *av, int an) {
       int a = ie_kwhash_value(c, kwh, m->pnames[k]);
       why = a >= 0 ? nf_expr(f, a) : dflt >= 0 ? nf_expr(f, dflt) : NFW_OPAQUE;
     }
+    else if (from == ARG_REST) continue;   /* the rest Array the layout gathers is never nil */
     else why = NFW_OPAQUE;   /* a splat's element, a gathered value */
     nf_set(f, &p->obj_may_nil, why);
   }
@@ -1862,8 +1863,12 @@ void an_nil_facts(Compiler *c) {
     for (int k = 0; k < m->nlocals; k++) {
       LocalVar *lv = &m->locals[k];
       if (!nf_tracked(c, lv->type)) continue;
+      /* the Array a *rest gathers and the Hash a **kwrest does are never nil, whoever calls */
+      int gathers = lv->is_param && lv->name &&
+                    ((m->rest_idx >= 0 && m->pnames[m->rest_idx] && sp_streq(lv->name, m->pnames[m->rest_idx])) ||
+                     (m->kwrest_idx >= 0 && m->pnames[m->kwrest_idx] && sp_streq(lv->name, m->pnames[m->kwrest_idx])));
       if (lv->is_param && lv->obj_nilable) nf_set(&f, &lv->obj_may_nil, NFW_NIL);
-      if (lv->is_param && unseen) nf_set(&f, &lv->obj_may_nil, NFW_CALLER);
+      if (lv->is_param && unseen && !gathers) nf_set(&f, &lv->obj_may_nil, NFW_CALLER);
       if (lv->or_written && !lv->is_param && !lv->is_block_param) nf_set(&f, &lv->obj_may_nil, NFW_UNSET);
     }
   }

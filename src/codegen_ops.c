@@ -261,7 +261,7 @@ static int emit_op_array_first(Compiler *c, const BopCtx *x, Buf *b) {
     buf_printf(b, "sp_%sArray_oget(%s, 0)", ak ? ak : "", r);
     if (!node_is_oint(c, x->id)) buf_puts(b, ")");
   }
-  else buf_printf(b, "sp_%sArray_get(%s, 0)", ak ? ak : "", r);
+  else buf_printf(b, "sp_%sArray_get%s(%s, 0)", ak ? ak : "", recv_never_nil(c, x->recv) ? "" : "_m", r);
   free(r);
   return 1;
 }
@@ -420,6 +420,7 @@ static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *)
   [BOPE_ARRAY_PUSH] = emit_op_array_push,
   [BOPE_ARRAY_INSERT_N] = emit_op_array_insert_n,
   [BOPE_ARRAY_TRANSPOSE] = emit_op_array_transpose,
+  [BOPE_ARRAY_NIL_RECV] = emit_op_array_nil_recv,
   [BOPE_ARRAY_ASSOC] = emit_op_array_assoc,
   [BOPE_ARRAY_COMBINATION] = emit_op_array_combination,
   [BOPE_ARRAY_PRODUCT] = emit_op_array_product,

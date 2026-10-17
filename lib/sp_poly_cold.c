@@ -532,10 +532,10 @@ sp_StrPolyHash*sp_StrPolyHash_merge(sp_StrPolyHash*a,sp_StrPolyHash*b)
 {SP_GC_ROOT(a);SP_GC_ROOT(b);sp_StrPolyHash*r=sp_StrPolyHash_new();r->default_v=a->default_v;r->dproc=a->dproc;r->dproc_self=a->dproc_self;for(sp_int i=0;i<a->len;i++)sp_StrPolyHash_set(r,a->order[i],sp_StrPolyHash_get(a,a->order[i]));for(sp_int i=0;i<b->len;i++)sp_StrPolyHash_set(r,b->order[i],sp_StrPolyHash_get(b,b->order[i]));return r;}
 
 sp_StrPolyHash*sp_StrPolyHash_dup(sp_StrPolyHash*h)
-{SP_GC_ROOT(h);sp_StrPolyHash*r=sp_StrPolyHash_new();r->default_v=h->default_v;r->dproc=h->dproc;r->dproc_self=h->dproc_self;for(sp_int i=0;i<h->len;i++)sp_StrPolyHash_set(r,h->order[i],sp_StrPolyHash_get(h,h->order[i]));return r;}
+{if(!h)return NULL;SP_GC_ROOT(h);sp_StrPolyHash*r=sp_StrPolyHash_new();r->default_v=h->default_v;r->dproc=h->dproc;r->dproc_self=h->dproc_self;for(sp_int i=0;i<h->len;i++)sp_StrPolyHash_set(r,h->order[i],sp_StrPolyHash_get(h,h->order[i]));return r;}
 
 void sp_StrPolyHash_clear(sp_StrPolyHash*h)
-{ sp_gc_wb((void*)h);if(!h)return;for(sp_int i=0;i<h->cap;i++)h->keys[i]=NULL;h->len=0;}
+{ sp_gc_wb((void*)h);if (SP_UNLIKELY(!h)) sp_nil_recv("clear");for(sp_int i=0;i<h->cap;i++)h->keys[i]=NULL;h->len=0;}
 
 const char*sp_StrPolyHash_inspect(sp_StrPolyHash*h)
 {return h?sp_inspect_container(sp_box_obj(h,SP_BUILTIN_STR_POLY_HASH)):SPL("nil");}
@@ -599,19 +599,19 @@ const char *sp_OpenStruct_inspect(sp_OpenStruct *o)
 }
 
 sp_SymPolyHash*sp_SymPolyHash_dup(sp_SymPolyHash*h)
-{sp_SymPolyHash*r=sp_SymPolyHash_new();r->default_v=h->default_v;r->dproc=h->dproc;r->dproc_self=h->dproc_self;for(sp_int i=0;i<h->len;i++)sp_SymPolyHash_set(r,h->order[i],sp_SymPolyHash_get(h,h->order[i]));return r;}
+{if(!h)return NULL;sp_SymPolyHash*r=sp_SymPolyHash_new();r->default_v=h->default_v;r->dproc=h->dproc;r->dproc_self=h->dproc_self;for(sp_int i=0;i<h->len;i++)sp_SymPolyHash_set(r,h->order[i],sp_SymPolyHash_get(h,h->order[i]));return r;}
 
 void sp_SymPolyHash_clear(sp_SymPolyHash*h)
-{if(!h)return;for(sp_int i=0;i<h->cap;i++)h->keys[i]=-1;h->len=0;}
+{if (SP_UNLIKELY(!h)) sp_nil_recv("clear");for(sp_int i=0;i<h->cap;i++)h->keys[i]=-1;h->len=0;}
 
 const char*sp_SymPolyHash_inspect(sp_SymPolyHash*h)
 {return h?sp_inspect_container(sp_box_obj(h,SP_BUILTIN_SYM_POLY_HASH)):SPL("nil");}
 
 sp_PolyPolyHash*sp_PolyPolyHash_merge(sp_PolyPolyHash*a,sp_PolyPolyHash*b)
-{SP_GC_ROOT(a);SP_GC_ROOT(b);sp_PolyPolyHash*r=sp_PolyPolyHash_new();SP_GC_ROOT(r);if(a){r->default_v=a->default_v;r->dproc=a->dproc;r->dproc_self=a->dproc_self;for(sp_int i=0;i<a->len;i++){sp_int idx=a->order[i];sp_PolyPolyHash_set(r,a->keys[idx],a->vals[idx]);}}if(b){for(sp_int i=0;i<b->len;i++){sp_int idx=b->order[i];sp_PolyPolyHash_set(r,b->keys[idx],b->vals[idx]);}}return r;}
+{SP_GC_ROOT(a);SP_GC_ROOT(b);if (SP_UNLIKELY(!a)) sp_nil_recv("merge");sp_PolyPolyHash*r=sp_PolyPolyHash_new();SP_GC_ROOT(r);r->default_v=a->default_v;r->dproc=a->dproc;r->dproc_self=a->dproc_self;for(sp_int i=0;i<a->len;i++){sp_int idx=a->order[i];sp_PolyPolyHash_set(r,a->keys[idx],a->vals[idx]);}if(b){for(sp_int i=0;i<b->len;i++){sp_int idx=b->order[i];sp_PolyPolyHash_set(r,b->keys[idx],b->vals[idx]);}}return r;}
 
 void sp_PolyPolyHash_clear(sp_PolyPolyHash*h)
-{if(!h)return;for(sp_int i=0;i<h->cap;i++)h->occ[i]=0;h->len=0;}
+{if (SP_UNLIKELY(!h)) sp_nil_recv("clear");for(sp_int i=0;i<h->cap;i++)h->occ[i]=0;h->len=0;}
 
 sp_RbVal sp_poly_clear(sp_RbVal v)
 {
@@ -1057,7 +1057,7 @@ void sp_kw_merge_any(sp_PolyPolyHash *dst, sp_RbVal h)
 }
 
 sp_PolyPolyHash*sp_PolyPolyHash_dup(sp_PolyPolyHash*h)
-{SP_GC_ROOT(h);sp_PolyPolyHash*r=sp_PolyPolyHash_new();SP_GC_ROOT(r);r->default_v=h->default_v;r->dproc=h->dproc;r->dproc_self=h->dproc_self;r->ident=h->ident;for(sp_int i=0;i<h->len;i++)sp_PolyPolyHash_set(r,h->keys[h->order[i]],h->vals[h->order[i]]);return r;}
+{if(!h)return NULL;SP_GC_ROOT(h);sp_PolyPolyHash*r=sp_PolyPolyHash_new();SP_GC_ROOT(r);r->default_v=h->default_v;r->dproc=h->dproc;r->dproc_self=h->dproc_self;r->ident=h->ident;for(sp_int i=0;i<h->len;i++)sp_PolyPolyHash_set(r,h->keys[h->order[i]],h->vals[h->order[i]]);return r;}
 
 const char*sp_PolyPolyHash_inspect(sp_PolyPolyHash*h)
 {return h?sp_inspect_container(sp_box_obj(h,SP_BUILTIN_POLY_POLY_HASH)):SPL("nil");}

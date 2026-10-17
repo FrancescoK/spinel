@@ -787,12 +787,27 @@ int emit_op_hash_flatten(Compiler *c, const BopCtx *x, Buf *b) {
   return 1;
 }
 
-/* to_a / entries: the [key, value] pairs */
+/* to_a / entries: the [key, value] pairs. The pairs loop reads the table's
+   length, so a receiver that can be nil (NULL) is answered ahead of it:
+   nil.to_a is [], and nil has no entries (#9347). */
 int emit_op_hash_to_a(Compiler *c, const BopCtx *x, Buf *b) {
   int recv = x->recv;
   TyKind rt = x->rt;
   const char *hn = ty_hash_cname(rt);
+  if (recv_never_nil(c, recv)) {
+    emit_hash_pairs_expr(c, recv, rt, hn, b);
+    return 1;
+  }
+  int th = ++g_tmp;
+  buf_printf(b, "({ sp_%sHash *_t%d = ", hn, th); emit_expr(c, recv, b);
+  buf_printf(b, "; _t%d == NULL ? ", th);
+  if (sp_streq(x->name, "entries")) buf_puts(b, "(sp_nil_recv(\"entries\"), (sp_PolyArray *)NULL)");
+  else buf_puts(b, "sp_PolyArray_new()");
+  buf_puts(b, " : ");
+  int slot = view_bind(recv, "_t%d", th);
   emit_hash_pairs_expr(c, recv, rt, hn, b);
+  view_unbind(slot);
+  buf_puts(b, "; })");
   return 1;
 }
 

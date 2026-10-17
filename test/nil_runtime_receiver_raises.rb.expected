@@ -1,0 +1,62 @@
+IA sort!: NoMethodError
+IA include?: NoMethodError
+IA compact: NoMethodError
+IA delete: NoMethodError
+IA insert: NoMethodError
+IA rotate!: NoMethodError
+[1, 2, 3]
+true
+[1, 2, 3]
+2
+[1, 9, 3]
+[9, 3, 1]
+FA sort!: NoMethodError
+FA include?: NoMethodError
+FA index: NoMethodError
+FA compact: NoMethodError
+[1.5, 2.5]
+true
+1
+[1.5, 2.5]
+SA pop: NoMethodError
+SA shift: NoMethodError
+SA include?: NoMethodError
+SA min: NoMethodError
+SA sort!: NoMethodError
+true
+"a"
+["a", "b"]
+"a"
+"b"
+PA push: NoMethodError
+PA <<: NoMethodError
+PA []: NoMethodError
+PA pop: NoMethodError
+PA length: NoMethodError
+PA reverse!: NoMethodError
+PA flatten: NoMethodError
+[1, "a", 2]
+[1, "a", 2, 2]
+1
+2
+3
+[2, "a", 1]
+[2, "a", 1]
+HI []: NoMethodError
+HI clear: NoMethodError
+HI value?: NoMethodError
+HI replace: NoMethodError
+1
+true
+{"b" => 2}
+{}
+ST delete: NoMethodError
+ST squeeze: NoMethodError
+ST oct: NoMethodError
+ST lines: NoMethodError
+"bc"
+"abca"
+0
+["abca"]
+SB <<: NoMethodError
+"012"

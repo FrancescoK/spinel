@@ -1,0 +1,45 @@
+[]
+[]
+[]
+[]
+[]
+NoMethodError
+NoMethodError
+NoMethodError
+NoMethodError
+NoMethodError
+nil
+nil
+nil
+[1, 2]
+[1.5, 2.5]
+["a", "b"]
+[1, "a"]
+[["k", 1]]
+[1, 2]
+[1.5, 2.5]
+["a", "b"]
+[1, "a"]
+[["k", 1]]
+[1, 2]
+["a", "b"]
+{"k" => 1}
+[]
+NoMethodError
+[3, 4]
+[3, 4]
+[]
+[]
+NoMethodError
+NoMethodError
+[1, 2]
+["x"]
+answered
+answered
+[1]
+[]
+NoMethodError
+[2]
+[1, 2, 3]
+[1, 2, 3]
+[1, 2, 3, 4]

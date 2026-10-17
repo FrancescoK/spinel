@@ -1376,14 +1376,14 @@ static int emit_poly_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
   /* Array#at, kept by name where a program class owns `at` too
      (desugar_array_at): the Integer index read [] makes */
   if (sp_streq(name, "at") && argc == 1 && a0 != TY_RANGE && a0 != TY_FLOAT_RANGE && a0 != TY_STR_RANGE) {
-    buf_puts(b, "sp_PolyArray_get("); emit_expr(c, recv, b); buf_puts(b, ", ");
+    buf_printf(b, "sp_PolyArray_get%s(", recv_never_nil(c, recv) ? "" : "_m"); emit_expr(c, recv, b); buf_puts(b, ", ");
     if (a0 == TY_POLY && nt_kind(nt, argv[0]) != NK_SplatNode) { buf_puts(b, "sp_poly_arg_int_chk("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
     else emit_int_expr(c, argv[0], b);
     buf_puts(b, ")");
     { *out = 1; return 1; }
   }
   if (sp_streq(name, "[]") && argc == 1) {
-    buf_puts(b, "sp_PolyArray_get("); emit_expr(c, recv, b); buf_puts(b, ", ");
+    buf_printf(b, "sp_PolyArray_get%s(", recv_never_nil(c, recv) ? "" : "_m"); emit_expr(c, recv, b); buf_puts(b, ", ");
     if (a0 == TY_POLY) { buf_puts(b, "sp_poly_arg_int_chk("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
     else if (a0 == TY_BIGINT) emit_int_expr(c, argv[0], b);   /* a widened counter used as an index */
     else emit_expr(c, argv[0], b);
@@ -3613,7 +3613,7 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
       { *out = emit_dig_splat(c, recv, argv[0], b); return 1; }
     if (argc == 1) {
       Buf rb; int ch = hold_recv_open(c, recv, 0, "sp_PolyArray *", "SP_GC_ROOT", b, &rb);
-      buf_printf(b, "sp_PolyArray_get(%s, ", rb.p); free(rb.p);
+      buf_printf(b, "sp_PolyArray_get%s(%s, ", recv_never_nil(c, recv) ? "" : "_m", rb.p); free(rb.p);
       emit_int_expr(c, argv[0], b); buf_puts(b, ")");
       if (ch) buf_puts(b, "; })");
     }
@@ -3624,7 +3624,7 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
          Symbol reached the integer offset slot as a pointer (#3575) */
       Buf rb; int ch = hold_recv_open(c, recv, 0, "sp_PolyArray *", "SP_GC_ROOT", b, &rb);
       for (int di = argc - 1; di >= 1; di--) buf_printf(b, "sp_poly_dig_step_key(");
-      buf_printf(b, "sp_PolyArray_get(%s, ", rb.p); free(rb.p); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+      buf_printf(b, "sp_PolyArray_get%s(%s, ", recv_never_nil(c, recv) ? "" : "_m", rb.p); free(rb.p); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
       for (int di = 1; di < argc; di++) { buf_puts(b, ", "); emit_boxed(c, argv[di], b); buf_puts(b, ")"); }
       if (ch) buf_puts(b, "; })");
     }
@@ -5136,13 +5136,14 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
     char ecbuf[192];
     snprintf(ecbuf, sizeof ecbuf, "%s", nested ? nested : class_ctype(c, ecls));
     const char *ecn = ecbuf;
+    const char *nm_sfx = recv_never_nil(c, recv) ? "" : "_m";   /* the raising entry where the receiver can be nil */
     if ((is_element_at_alias(name)) && argc == 1) {
-      buf_printf(b, "((%s *)sp_PtrArray_get(", ecn);
+      buf_printf(b, "((%s *)sp_PtrArray_get%s(", ecn, nm_sfx);
       emit_expr(c, recv, b); buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, "))");
       return 1;
     }
     if ((is_endpoint_query(name)) && argc == 0) {
-      buf_printf(b, "((%s *)sp_PtrArray_get(", ecn);
+      buf_printf(b, "((%s *)sp_PtrArray_get%s(", ecn, nm_sfx);
       emit_expr(c, recv, b);
       buf_puts(b, sp_streq(name, "first") ? ", 0))" : ", -1))");
       return 1;
@@ -5174,7 +5175,7 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
       int tr = ++g_tmp;
       buf_printf(b, "({ sp_PtrArray *_t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, ";");
       for (int a = 0; a < argc; a++) {
-        buf_printf(b, " sp_PtrArray_push(_t%d, ", tr);
+        buf_printf(b, " sp_PtrArray_push%s(_t%d, ", nm_sfx, tr);
         /* A poly value carries its pointer under a tag: the slot takes the
            pointer, not the sp_RbVal. A method of the array's own class whose
            return widened to poly -- one that answers its argument, reached
@@ -5187,7 +5188,7 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
       return 1;
     }
     if (is_len_alias(name) && argc == 0) {
-      buf_puts(b, "sp_PtrArray_length("); emit_expr(c, recv, b); buf_puts(b, ")");
+      buf_printf(b, "sp_PtrArray_length%s(", nm_sfx); emit_expr(c, recv, b); buf_puts(b, ")");
       return 1;
     }
     if (sp_streq(name, "empty?") && argc == 0) {

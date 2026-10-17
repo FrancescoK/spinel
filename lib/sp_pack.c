@@ -712,7 +712,7 @@ static int pk_fmt_utf8(const char *fmt) {
 }
 
 const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt) {SP_GC_ROOT(arr);
-  if (!arr || !fmt) return sp_str_empty;
+  if (SP_UNLIKELY(!arr)) sp_nil_recv("pack"); if (!fmt) return sp_str_empty;
   size_t cap = 64;
   char *buf = (char *)malloc(cap);
   if (!buf) { perror("malloc"); exit(1); }
@@ -779,7 +779,7 @@ const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt) {SP_GC_ROOT(arr)
    FloatDomainError). Mirrors sp_IntArray_pack otherwise -- note
    sp_FloatArray has no `start` offset field. */
 const char *sp_FloatArray_pack(sp_FloatArray *arr, const char *fmt) {
-  if (!arr || !fmt) return sp_str_empty;
+  if (SP_UNLIKELY(!arr)) sp_nil_recv("pack"); if (!fmt) return sp_str_empty;
   size_t cap = 64;
   char *buf = (char *)malloc(cap);
   if (!buf) { perror("malloc"); exit(1); }
@@ -858,7 +858,7 @@ static void pk_ptr_poly(char spec, int64_t count, sp_PolyArray *arr, sp_int *idx
 }
 
 const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {SP_GC_ROOT(arr);
-  if (!arr || !fmt) return sp_str_empty;
+  if (SP_UNLIKELY(!arr)) sp_nil_recv("pack"); if (!fmt) return sp_str_empty;
   size_t cap = 64;
   char *buf = (char *)malloc(cap);
   if (!buf) { perror("malloc"); exit(1); }
@@ -926,7 +926,7 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {SP_GC_ROOT(ar
 
 /* Keep ordinary packing on its original entry; only keyword calls seed it. */
 const char *sp_PolyArray_pack_buffer(sp_PolyArray *arr, const char *fmt, const char *initial) {SP_GC_ROOT(arr);
-  if (!arr || !fmt) return sp_str_empty;
+  if (SP_UNLIKELY(!arr)) sp_nil_recv("pack"); if (!fmt) return sp_str_empty;
   size_t cap = 64;
   char *buf = (char *)malloc(cap);
   if (!buf) { perror("malloc"); exit(1); }
@@ -999,7 +999,7 @@ const char *sp_PolyArray_pack_buffer(sp_PolyArray *arr, const char *fmt, const c
    handle a/A/Z padding and m/M base64/quoted-printable; other directives emit
    nothing. Reads the real byte length (embedded NULs survive base64). */
 const char *sp_StrArray_pack(sp_StrArray *arr, const char *fmt) {
-  if (!arr || !fmt) return sp_str_empty;
+  if (SP_UNLIKELY(!arr)) sp_nil_recv("pack"); if (!fmt) return sp_str_empty;
   size_t cap = 64;
   char *buf = (char *)malloc(cap);
   if (!buf) { perror("malloc"); exit(1); }
