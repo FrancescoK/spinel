@@ -2845,6 +2845,19 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_ANY_HASH, "frozen?",    BSH_PURE },
   { BOP_ANY_HASH, "clear",      BSH_RECV },
 
+  /* A Time's text forms answer a new String; named here so a boxed
+     receiver's builtin arm reads them too (sh_boxed_builtin_row): no other
+     builtin has these names, and a program's own (Date#iso8601 in the date
+     package) is a user target, asked apart. */
+  { TY_TIME, "iso8601",    BSH_PURE },
+  { TY_TIME, "xmlschema",  BSH_PURE },
+  { TY_TIME, "httpdate",   BSH_PURE },
+  { TY_TIME, "rfc2822",    BSH_PURE },
+  { TY_TIME, "rfc822",     BSH_PURE },
+  { TY_TIME, "ctime",      BSH_PURE },
+  { TY_TIME, "asctime",    BSH_PURE },
+  { TY_TIME, "strftime",   BSH_PURE },
+
   /* An IO copies what it writes and answers new Strings for what it reads;
      the buffer forms of the reads fill their second argument in place. */
   { TY_IO, "read",         BSH_FILL1 },

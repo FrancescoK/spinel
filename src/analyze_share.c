@@ -1945,6 +1945,8 @@ static int sh_boxed_builtin_row(ShareFacts *F, Compiler *c, int n,
   /* Explicit IO rows describe boxed arms too. User targets and OpenStruct
      fields stay above; an IO's wildcard cannot prove this. */
   if (!s && !F->ostruct) { s = bop_share_boxed(TY_IO, name); if (s) family = TY_IO; }
+  /* ...and a Time's text forms, a new String each (`d.iso8601` on a box) */
+  if (!s && !F->ostruct) { s = bop_share_boxed(TY_TIME, name); if (s) { family = TY_TIME; container = 0; } }
   if (!s) return 0;
   *share_out = s;
   if (family_out) *family_out = family;
