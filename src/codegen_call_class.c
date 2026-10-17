@@ -121,36 +121,49 @@ static void emit_respond_to_runtime_name(Compiler *c, int id, Buf *b, int recv, 
      plain cls_id never matched it */
   buf_printf(b, "; sp_int _k%d = ", tv);
   emit_poly_dispatch_key(c, tv, 1, 1, 0, b);
-  buf_puts(b, "; ((");
+  /* each class's names as one list, by a switch over the class: an ||
+     chain of every name nests as deep as it is long, which overflows
+     clang's stack at a few thousand */
+  buf_printf(b, "; ((({ sp_bool _r%d = 0; switch (_k%d) {", tv, tv);
   for (int k = 0; k < c->nclasses; k++) {
     if (comp_class_is_module(c, &c->classes[k])) continue;
-    buf_printf(b, "(_k%d == %d && (", tv, k);
+    Buf pb, vb;
+    memset(&pb, 0, sizeof pb);
+    memset(&vb, 0, sizeof vb);
     for (int s = 0; s < c->nscopes; s++)
       if (c->scopes[s].name && !c->scopes[s].is_cmethod && !c->scopes[s].is_proc_form &&
           comp_method_in_chain(c, k, c->scopes[s].name, NULL) == s)
-        emit_responds_name(c, k, c->scopes[s].name, tv, b);
+        emit_responds_name(c, k, c->scopes[s].name, &pb, &vb);
     for (int m = 0; m < c->n_native_methods; m++)
       if (c->native_methods[m].class_id == k && !c->native_methods[m].kind)
-        emit_responds_name(c, k, c->native_methods[m].name, tv, b);
+        emit_responds_name(c, k, c->native_methods[m].name, &pb, &vb);
     for (int p = k; p >= 0; p = c->classes[p].parent) {
       ClassInfo *cl = &c->classes[p];
-      for (int r = 0; r < cl->nreaders; r++) emit_responds_name(c, k, cl->readers[r], tv, b);
+      for (int r = 0; r < cl->nreaders; r++) emit_responds_name(c, k, cl->readers[r], &pb, &vb);
       for (int w = 0; w < cl->nwriters; w++) {
         char wn[256];
         snprintf(wn, sizeof wn, "%s=", cl->writers[w]);
-        emit_responds_name(c, k, wn, tv, b);
+        emit_responds_name(c, k, wn, &pb, &vb);
       }
       for (int a = 0; a < cl->naliases; a++)
         if (!comp_name_is_sg_alias_only(c, k, cl->alias_new[a]))   /* a class method's, not the instance's */
-          emit_responds_name(c, k, cl->alias_new[a], tv, b);
+          emit_responds_name(c, k, cl->alias_new[a], &pb, &vb);
     }
     const char *const *imp[] = { enumerable_names, comparable_names, struct_names,
                                  (const char *const[]){ "members", "to_h", "deconstruct", "deconstruct_keys", "with", NULL } };
     for (int l = 0; l < 4; l++)
       for (int i = 0; imp[l][i]; i++)
-        if (class_implicit_responds(c, k, imp[l][i])) emit_responds_name(c, k, imp[l][i], tv, b);
-    buf_puts(b, "0)) || ");
+        if (class_implicit_responds(c, k, imp[l][i])) emit_responds_name(c, k, imp[l][i], &pb, &vb);
+    if (pb.len || vb.len) {
+      buf_printf(b, " case %d: _r%d = ", k, tv);
+      if (pb.len) buf_printf(b, "sp_str_in_list(_n%d, (const char *const[]){%sNULL}) || ", tv, pb.p);
+      if (vb.len) buf_printf(b, "(_a%d && sp_str_in_list(_n%d, (const char *const[]){%sNULL})) || ", tv, tv, vb.p);
+      buf_puts(b, "0; break;");
+    }
+    free(pb.p);
+    free(vb.p);
   }
+  buf_printf(b, " } _r%d; }) || ", tv);
   /* to include_all, Object's private methods (exit, puts) too, but not on
      a BasicObject one, one whose class undefines the name, or a class value
      (whose singleton may undefine it); a name an Object reopening defines
@@ -174,11 +187,16 @@ static void emit_respond_to_runtime_name(Compiler *c, int id, Buf *b, int recv, 
       }
   }
   buf_puts(b, ")");
+  buf_printf(b, " || sp_str_in_list(_n%d, (const char *const[]){", tv);
   for (int s = 0; s < c->nscopes; s++) {
     const Scope *ts = &c->scopes[s];
-    if (ts->name && ts->def_node >= 0 && ts->class_id < 0 && !ts->is_cmethod && !ts->is_proc_form)
-      buf_printf(b, " || !strcmp(_n%d, \"%s\")", tv, ts->name);
+    if (ts->name && ts->def_node >= 0 && ts->class_id < 0 && !ts->is_cmethod && !ts->is_proc_form) {
+      buf_puts(b, "\"");
+      emit_c_escaped(b, ts->name);
+      buf_puts(b, "\", ");
+    }
   }
+  buf_puts(b, "NULL})");
   buf_printf(b, ")) || sp_poly_responds_builtin(_t%d, _n%d)", tv, tv);
   /* a boxed IO: the methods IO reopenings add, by the handle's kind */
   for (int s2 = 0; s2 < c->nscopes; s2++) {
