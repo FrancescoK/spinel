@@ -22,3 +22,9 @@ log = []
 p((log << "recv"; "abc") !~ (log << "arg"; re))
 p((log << "recv"; "abc") =~ (log << "arg"; re))
 p log
+"xbb" =~ /b/
+p re.match(nil, 0)
+p $~
+"xbb" =~ /b/
+p re.match(nil)
+p $~

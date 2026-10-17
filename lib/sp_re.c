@@ -515,14 +515,14 @@ sp_bool sp_poly_match_p_at(sp_RbVal a, sp_RbVal b, sp_int pos) {SP_GC_ROOT_RBVAL
 }
 sp_MatchData *sp_poly_match_data(sp_RbVal a, sp_RbVal b) {SP_GC_ROOT_RBVAL(a);SP_GC_ROOT_RBVAL(b);
   mrb_regexp_pattern *p; const char *s;
-  if (!sp_poly_match_pair(a, b, &p, &s)) return NULL;
+  if (!sp_poly_match_pair(a, b, &p, &s)) { sp_re_clear_last_match(); return NULL; }
   return sp_re_matchdata(p, s);
 }
 /* match(pattern, pos) with a boxed operand: the pair, from character
    position pos of the subject, as the typed sp_re_matchdata_at takes it */
 sp_MatchData *sp_poly_match_data_at(sp_RbVal a, sp_RbVal b, sp_int pos) {SP_GC_ROOT_RBVAL(a);SP_GC_ROOT_RBVAL(b);
   mrb_regexp_pattern *p; const char *s;
-  if (!sp_poly_match_pair(a, b, &p, &s)) return NULL;
+  if (!sp_poly_match_pair(a, b, &p, &s)) { sp_re_clear_last_match(); return NULL; }
   return sp_re_matchdata_at(p, s, pos);
 }
 sp_oint sp_poly_match_index(sp_RbVal a, sp_RbVal b) {SP_GC_ROOT_RBVAL(a);SP_GC_ROOT_RBVAL(b);
