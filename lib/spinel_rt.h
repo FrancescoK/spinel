@@ -15780,12 +15780,21 @@ static sp_PolyArray *sp_bm_parameters(sp_BoundMethod *m) {
     const char *kind = "req";
     if (p[0] == '*' && p[1] == '*') { kind = "keyrest"; p += 2; }
     else if (p[0] == '*') { kind = "rest"; p++; }
+    else if (p[0] == '&') { kind = "block"; p++; }
     const char *ns = p;
-    while (*p && *p != ',' && *p != ')' && *p != '=') p++;
+    while (*p && *p != ',' && *p != ')' && *p != '=' && *p != ':') p++;
     { size_t n = (size_t)(p - ns);
       char nm[128]; if (n >= sizeof nm) n = sizeof nm - 1;
       memcpy(nm, ns, n); nm[n] = 0;
       if (*p == '=') { kind = "opt"; while (*p && *p != ',' && *p != ')') p++; }
+      /* a keyword, as the description writes it: `k:` required, `k: ...`
+         with a default */
+      else if (*p == ':') {
+        p++;
+        while (*p == ' ') p++;
+        kind = *p == '.' ? "key" : "keyreq";
+        while (*p && *p != ',' && *p != ')') p++;
+      }
       if (n) {
         sp_PolyArray *pair = sp_PolyArray_new(); SP_GC_ROOT(pair);
         sp_PolyArray_push(pair, sp_box_sym(sp_sym_intern(kind)));

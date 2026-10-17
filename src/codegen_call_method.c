@@ -135,12 +135,13 @@ void emit_method_parameters_pushes(Compiler *c, int pn4, int tr4, Buf *b) {
 }
 
 
-/* "#<Method: Owner#name(a, b=..., *r)>" -- CRuby's Method#inspect
-   rendering, built at compile time from the target scope and emitted as a
-   C string literal; " file:line" is appended when positions were stamped
-   (--line-map). Keyword parameters are not rendered (they live outside
-   pnames). The text grows with the parameter names, so it is built in a
-   Buf: a fixed array cut it off, and wrote past its end once the names
+/* "#<Method: Owner#name(a, b=..., *r, k:, o: ..., **kw, &blk)>" -- CRuby's
+   Method#inspect rendering, built at compile time from the target scope and
+   emitted as a C string literal; " file:line" is appended when positions
+   were stamped (--line-map). sp_bm_parameters reads Method#parameters back
+   from it, so a keyword is written as CRuby writes it (`k:`, `o: ...`), not
+   as a positional. The text grows with the parameter names, so it is built
+   in a Buf: a fixed array cut it off, and wrote past its end once the names
    filled it. */
 static void emit_method_desc_literal(Compiler *c, int mi, const char *sym, int unbound, Buf *b) {
   Scope *m = &c->scopes[mi];
@@ -159,10 +160,14 @@ static void emit_method_desc_literal(Compiler *c, int mi, const char *sym, int u
     if (i) buf_puts(&d, ", ");
     if (i == m->rest_idx) buf_printf(&d, "*%s", m->pnames[i]);
     else if (i == m->kwrest_idx) buf_printf(&d, "**%s", m->pnames[i]);
+    else if (callee_param_is_declared_kwarg(c, m, m->pnames[i]))
+      buf_printf(&d, m->pdefault[i] >= 0 ? "%s: ..." : "%s:", m->pnames[i]);
     else if (m->pdefault[i] >= 0) buf_printf(&d, "%s=...", m->pnames[i]);
     else /* a define_method block's assigned parameter: the name written, not its slot */
       buf_printf(&d, "%.*s", (int)reassigned_param_written_len(m->pnames[i]), m->pnames[i]);
   }
+  /* the block parameter, last, as CRuby renders it (`&blk`; `&` anonymous) */
+  if (m->blk_param) buf_printf(&d, "%s&%s", m->nparams ? ", " : "", m->blk_param);
   buf_puts(&d, ")");
   int ln = scope_def_line(c, m);
   if (ln > 0) buf_printf(&d, " %s:%d", scope_def_file(c, m), ln);
