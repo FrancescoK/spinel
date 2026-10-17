@@ -1,0 +1,3 @@
+class VlCaseSearch
+  def searched_model: () -> VlCaseStory
+end
