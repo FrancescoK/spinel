@@ -177,6 +177,9 @@ typedef struct ShareFacts {
   int nbucket;
   /* each node's value: -2 not yet computed, -1 none */
   int *nval, nnodes;
+  /* per node: the base sh_self_chain_base found last from it, -1 none yet
+     (a link it passed stays passable: classes only merge) */
+  int *scb;
   /* per node: a blockless builtin call answering a new String Array of
      new Strings (`s.scan(re)`, `s.split`), whose value is a class of its
      own (sh_builtin) */
@@ -2460,9 +2463,15 @@ static int sh_ostruct_call(ShareFacts *F, Compiler *c, int n, const char *name, 
    a mutation of it is one of that receiver's, direct when it is a holder's
    read; the walk gave each link its receiver's class (BSH_RECV), which the
    class test confirms. */
+/* Each link a walk passes stays passable (its row and types are fixed, and
+   two classes once joined stay joined), so a later walk from a node above
+   resumes where the last one from this node stopped (F->scb): a chain of n
+   links walked from each of them was n^2/2 steps. */
 static int sh_self_chain_base(ShareFacts *F, Compiler *c, int n) {
   const NodeTable *nt = c->nt;
-  for (n = an_unparen(nt, n); n >= 0 && nt_kind(nt, n) == NK_CallNode; ) {
+  int start = an_unparen(nt, n);
+  for (n = start; n >= 0 && nt_kind(nt, n) == NK_CallNode; ) {
+    if (n < F->nnodes && F->scb[n] >= 0 && F->scb[n] != n) { n = F->scb[n]; continue; }
     int r = an_unparen(nt, nt_ref(nt, n, "receiver"));
     TyKind rt = r >= 0 ? c->ntype[r] : TY_VOID;
     const char *nm = nt_str(nt, n, "name");
@@ -2474,6 +2483,7 @@ static int sh_self_chain_base(ShareFacts *F, Compiler *c, int n) {
       break;
     n = r;
   }
+  if (start >= 0 && start < F->nnodes) F->scb[start] = n;
   return n;
 }
 
@@ -4243,7 +4253,7 @@ static void sh_free(ShareFacts *F) {
   free(F->mb_m); free(F->mb_b); free(F->mb_start); free(F->mb_blk); free(F->blk_dyn);
   free(F->fw_from); free(F->fw_to); free(F->blk_unk); free(F->fresh_blk); free(F->fresh_call);
   free(F->kind); free(F->flags); free(F->own);
-  free(F->h); free(F->helem); free(F->bucket); free(F->hnext); free(F->nval);
+  free(F->h); free(F->helem); free(F->bucket); free(F->hnext); free(F->nval); free(F->scb);
   free(F->lend_arg); free(F->lend_par); free(F->lend_node); free(F->lend_direct); free(F->lend_done);
   free(F->dyn); free(F->union_stack);
   free(F->any_new_blk); free(F->attr_r); free(F->attr_w); free(F->blkp); free(F->ivw);
@@ -4703,7 +4713,9 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
   F->any_callable = -1;
   F->nnodes = nt->count;
   F->nval = malloc(sizeof(int) * (size_t)(F->nnodes > 0 ? F->nnodes : 1));
-  for (int i = 0; i < F->nnodes; i++) F->nval[i] = -2;
+  F->scb = malloc(sizeof(int) * (size_t)(F->nnodes > 0 ? F->nnodes : 1));
+  if (!F->nval || !F->scb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = 0; i < F->nnodes; i++) F->nval[i] = -2, F->scb[i] = -1;
   sh_mutable_consts(F, c);
   F->unused = calloc((size_t)(F->nnodes > 0 ? F->nnodes : 1), 1);
   F->fresh_cont = calloc((size_t)(F->nnodes > 0 ? F->nnodes : 1), 1);
