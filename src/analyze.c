@@ -32745,23 +32745,30 @@ static int seed_kwarg_value(const NodeTable *nt, int kwh, const char *name) {
    be REINTERPRETED rather than converted -- the whole point of the rule. `ret`
    selects the wider judgement a return slot allows (see seed_ret_family). */
 /* The values a returned expression `v` answers with: a conditional's
-   branches (`f ? "s" : 1`, an if / unless with an else) each in turn, since
-   each returns on its own, converted to the method's type. The whole
+   branches (`f ? "s" : 1`, an if, unless, case, case/in, begin, rescue
+   modifier, or the operands of `||` and `&&`) each in turn, since each
+   returns on its own, converted to the method's type. The whole
    conditional is the boxed union of its branches, which makes no claim. A
-   branch that is missing answers nil, which every slot holds. */
+   conditional with no else lists the branches it has; a branch that is
+   missing answers nil, which every slot holds. An `||` or `&&` is a site
+   of its own as well, the type it has as a whole; reach[] says which truth
+   values a site answers with: the left of `||` only a truthy one, the left
+   of `&&` only a falsy one (VPR_*). */
 typedef struct {
   int *sites, *n, cap;
+  unsigned *reach;
 } SeedSites;
 static int seed_ret_site(const VpLeaf *leaf, void *ud) {
   SeedSites *s = ud;
   if (leaf->kind == VPK_NIL) return 0;
+  s->reach[*s->n] = leaf->reach;
   s->sites[(*s->n)++] = leaf->node;
   return *s->n >= s->cap;
 }
-static void seed_ret_branch_sites(const NodeTable *nt, int v, int *sites, int *n, int cap) {
-  SeedSites s = { sites, n, cap };
+static void seed_ret_branch_sites(const NodeTable *nt, int v, int *sites, unsigned *reach, int *n, int cap) {
+  SeedSites s = { sites, n, cap, reach };
   if (v < 0 || *n >= cap) return;
-  for_each_value_position(nt, v, VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VPS_RESCUE_MOD, seed_ret_site, &s);
+  for_each_value_position(nt, v, VP_AND_LEFT | VP_LOGIC_NODES | VPS_ALL, seed_ret_site, &s);
 }
 static int seed_ret_family(Compiler *c, TyKind t);
 static int seed_ret_kind(TyKind t);
@@ -32923,6 +32930,48 @@ int collect_mode(void);
    list. Same bargain the codegen gaps already make. */
 static int g_seed_bad = 0;
 typedef struct { int fid, ln; const char *nm; } SeedIvarReport;
+/* Can the value of `v` only be false or nil (falsy), or only a value that is
+   neither (not falsy)? Read off the literals, the operators and the methods
+   a call reaches (each of their values); 0 when it cannot tell. The left of
+   a `||` answers only when truthy and the left of a `&&` only when falsy
+   (VPR_*): an operand that cannot be that never is the value. */
+static int seed_value_only(Compiler *c, int v, int falsy, int depth) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || depth > 8) return 0;
+  switch (nt_kind(nt, v)) {
+  case NK_NilNode: case NK_FalseNode:
+    return falsy;
+  case NK_TrueNode:
+    return !falsy;
+  /* `a || b` is a when truthy and b when not; `a && b` is a when falsy and
+     b when not */
+  case NK_OrNode:
+    return falsy ? seed_value_only(c, nt_ref(nt, v, "left"), 1, depth + 1) &&
+                   seed_value_only(c, nt_ref(nt, v, "right"), 1, depth + 1)
+                 : seed_value_only(c, nt_ref(nt, v, "left"), 0, depth + 1) ||
+                   seed_value_only(c, nt_ref(nt, v, "right"), 0, depth + 1);
+  case NK_AndNode:
+    return falsy ? seed_value_only(c, nt_ref(nt, v, "right"), 1, depth + 1)
+                 : seed_value_only(c, nt_ref(nt, v, "left"), 0, depth + 1) &&
+                   seed_value_only(c, nt_ref(nt, v, "right"), 0, depth + 1);
+  case NK_CallNode: {
+    int ms[CPT_MAX], nm = cplan_targets(c, v, ms, CPT_MAX);
+    if (nm <= 0) return 0;
+    for (int i = 0; i < nm; i++) {
+      int vals[64];
+      /* a path that answers nil adds no value to the falsy walk, and ends
+         the other: it is nil */
+      int n = falsy ? method_value_leaves_or_nil(c, ms[i], vals, 64) : method_value_leaves(c, ms[i], vals, 64);
+      if (n < 0 || (!falsy && n == 0)) return 0;
+      for (int j = 0; j < n; j++)
+        if (!seed_value_only(c, vals[j], falsy, depth + 1)) return 0;
+    }
+    return 1;
+  }
+  default:
+    return 0;
+  }
+}
 static void check_seed_contradictions(Compiler *c) {
   const NodeTable *nt = c->nt;
   char _sn1[192], _sn2[192];
@@ -33014,17 +33063,26 @@ static void check_seed_contradictions(Compiler *c) {
     TyKind slot = sc->ret;
     /* every value the method can answer with: the body's tail, and each
        explicit return inside this scope -- a conditional one branch at a time */
-    int sites[64]; int nsites = 0;
-    seed_ret_branch_sites(nt, sc->body, sites, &nsites, 64);
+    int sites[64]; unsigned reach[64]; int nsites = 0;
+    seed_ret_branch_sites(nt, sc->body, sites, reach, &nsites, 64);
     NT_FOREACH_KIND(nt, NK_ReturnNode, id) {
       if (nsites >= 64) break;
       if (c->nscope[id] != s) continue;
       int rv = nt_ref(nt, id, "arguments");
       if (rv < 0) continue;
       int an = 0; const int *av = nt_arr(nt, rv, "arguments", &an);
-      if (av && an == 1) seed_ret_branch_sites(nt, av[0], sites, &nsites, 64);
+      if (av && an == 1) seed_ret_branch_sites(nt, av[0], sites, reach, &nsites, 64);
     }
     for (int k = 0; k < nsites; k++) {
+      /* The left of `||` answers only when truthy and the left of `&&` only
+         when falsy; a left of both is never the value. A truthy answer of
+         a site that is only false or nil, and a falsy one of a site that
+         is only truthy, never happens (`falsev || s`, `true && s`). Of the
+         falsy answers nil fits every slot, so only a false, a Boolean,
+         can contradict. */
+      if (reach[k] == (VPR_TRUTHY | VPR_FALSY)) continue;
+      if (reach[k] == VPR_FALSY && (infer_type(c, sites[k]) != TY_BOOL || seed_value_only(c, sites[k], 0, 0))) continue;
+      if (reach[k] == VPR_TRUTHY && seed_value_only(c, sites[k], 1, 0)) continue;
       /* An EMPTY container literal carries a default kind, not evidence: a
          bare `{}` reads as the String-keyed variant and so contradicted every
          Symbol-keyed seed, though it has no keys to disagree about and the

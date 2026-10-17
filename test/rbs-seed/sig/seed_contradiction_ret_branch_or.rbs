@@ -1,0 +1,4 @@
+class SeedRetBranchOr
+  def or3: () -> String
+  def or2: () -> String
+end
