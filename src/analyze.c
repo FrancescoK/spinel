@@ -40950,10 +40950,10 @@ static void psb_collect(Compiler *c, int node, int elems, PsbSyms *s, int depth)
     }
     return;
   }
-  case NK_IfNode: case NK_UnlessNode: case NK_CaseNode: case NK_ElseNode: case NK_ParenthesesNode:
-  case NK_StatementsNode: case NK_OrNode: case NK_AndNode: {
+  case NK_IfNode: case NK_UnlessNode: case NK_CaseNode: case NK_CaseMatchNode: case NK_ElseNode:
+  case NK_ParenthesesNode: case NK_StatementsNode: case NK_OrNode: case NK_AndNode: {
     PsbArms a = { c, elems, s, depth };
-    for_each_value_position(nt, node, VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_CASE | VPS_LOGIC, psb_arm, &a);
+    for_each_value_position(nt, node, VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_LOGIC, psb_arm, &a);
     return;
   }
   default:
