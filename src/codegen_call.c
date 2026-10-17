@@ -29126,6 +29126,20 @@ int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const cha
   if (!resolved && (is_initialize_family(qm)) && foldable) {
     resolved = 1; yes = include_all;
   }
+  /* The program's own `private`/`protected` reopening of this exact builtin
+     method name, on ANY builtin type (Integer, Range, Symbol, ... -- not
+     just Array/Hash, which the first K-028 fix covered), overrides every
+     answer path below: the universal Object-method table (`uni[]`, every
+     name in it assumed public), and each per-type hardcoded surface list
+     or early "leave unresolved" return later in this function (Symbol's
+     `symm[]`, Proc's `procm[]`, Time's `timem[]`, Range's early `return -1`)
+     all predate builtin-reopening visibility tracking and don't consult it.
+     Checked here, first, so a reopened name wins over all of them (K-028
+     follow-up, kilau docs/CATALOG.md). */
+  if (!resolved && recv >= 0 && builtin_reopen_vis_class(c, rt, qm) >= 0) {
+    if (!foldable) return -1;
+    resolved = 1; yes = include_all;
+  }
   for (int u = 0; !resolved && uni[u]; u++) if (sp_streq(qm, uni[u])) { yes = resolved = 1; break; }
   /* an Array (Hash) subclass instance answers Array's (Hash's) names (#7449) */
   if (!resolved && recv >= 0 && comp_ty_ary_root(c, rt) >= 0 &&
@@ -29321,25 +29335,18 @@ int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const cha
        folding a flat false (#3619) */
     else if (rt == TY_POLY || rt == TY_UNKNOWN) return -1;
     else {
-      /* the program's own `private`/`protected` reopening of this exact
-         builtin method name (`class Array; private :first; end`) answers
-         the same fold the ConstantReadNode/class-method branch above
-         already applies for `Array.foo`, rather than reaching the probe
-         below -- which only knows whether spinel can dispatch the call,
-         not what visibility the program gave it (K-028, kilau
-         docs/CATALOG.md). */
-      if (builtin_reopen_vis_class(c, rt, qm) >= 0) {
-        if (!foldable) return -1;
-        resolved = 1; yes = include_all;
-      }
       /* primitive/builtin receiver (String/Integer/Array/...): consult the
          analyze-time probe -- a synthesized `recv.<qm>` call whose inferred
          type says whether spinel can actually dispatch the method. This
          derives the answer from the same resolver that types a real call,
          so it never drifts from what a real `recv.qm` would compile to. A
          poly/unknown receiver with no user protocol method falls through
-         here (the builtin probe answer) rather than a possibly-wrong false. */
-      else if (rt_probe_answer(c, id, &yes)) {
+         here (the builtin probe answer) rather than a possibly-wrong false.
+         (A reopened name's own visibility is caught much earlier in this
+         function now, before respond_universal[] and the per-type surface
+         lists -- K-028 follow-up, kilau docs/CATALOG.md -- so it never
+         reaches here unresolved.) */
+      if (rt_probe_answer(c, id, &yes)) {
         /* a class value that answers yes is the site's to emit: nil responds
            to nothing, so the answer is the value's non-nilness, not a fold */
         if (yes && rt == TY_CLASS && recv >= 0) return -1;
