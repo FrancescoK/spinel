@@ -9432,7 +9432,7 @@ static int pivs_branches(Compiler *c, int v, char *set, int depth, int elems) {
   int (*f)(Compiler *, int, char *, int) = elems ? pivs_elems : pivs_value;
   switch (nt_kind(nt, v)) {
     case NK_ParenthesesNode: case NK_StatementsNode: case NK_OrNode: case NK_AndNode: case NK_IfNode:
-    case NK_UnlessNode: case NK_ElseNode: case NK_CaseNode: {
+    case NK_UnlessNode: case NK_ElseNode: case NK_CaseNode: case NK_CaseMatchNode: {
       if (nt_kind(nt, v) == NK_StatementsNode) {
         int n = 0;
         nt_arr(nt, v, "body", &n);
@@ -9442,7 +9442,7 @@ static int pivs_branches(Compiler *c, int v, char *set, int depth, int elems) {
         }
       }
       PivsArms a = { c, set, depth, elems, 1 };
-      for_each_value_position(nt, v, VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_CASE | VPS_LOGIC, pivs_arm, &a);
+      for_each_value_position(nt, v, VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_LOGIC, pivs_arm, &a);
       return a.ok;
     }
     case NK_LocalVariableReadNode: return pivs_local(c, v, set, depth, elems);
