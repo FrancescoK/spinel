@@ -32459,6 +32459,7 @@ static int pf_wanted(Compiler *c, const char *name) {
       const char *rcn = ty_is_array(rt) ? "Array" : ty_is_hash(rt) ? "Hash"
                       : (rt == TY_STRING || rt == TY_STRBUF) ? "String"
                       : rt == TY_RANDOM ? "Random"
+                      : rt == TY_FIBER ? "Fiber" : rt == TY_THREAD ? "Thread"
                       : (rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) ? "Numeric" : NULL;
       int rci = rcn ? comp_class_index(c, rcn) : -1;
       if (rci >= 0 && comp_method_in_class(c, rci, name) >= 0) return 1;

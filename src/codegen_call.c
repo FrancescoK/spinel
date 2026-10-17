@@ -29589,10 +29589,12 @@ int reopen_yields_known_container(Compiler *c, Scope *m) {
   if (!m->yields && !m->blk_param) return 0;
   return hands_block_container(c, m, m->body, 1);
 }
-/* Random, Float and Symbol proc forms take their receiver as the raw value. */
+/* Random, Float, Symbol, Fiber and Thread proc forms take their receiver
+   as the raw value. */
 static int reopen_pf_raw_self(Compiler *c, int ci) {
   return ci == comp_class_index(c, "Random") || ci == comp_class_index(c, "Float") ||
-         ci == comp_class_index(c, "Symbol");
+         ci == comp_class_index(c, "Symbol") || ci == comp_class_index(c, "Fiber") ||
+         ci == comp_class_index(c, "Thread");
 }
 /* A reopened builtin's yielding method reached with the call's block: it
    has no symbol of its own, being spliced where it can, so the call goes to
@@ -29651,7 +29653,9 @@ int emit_reopen_block_call(Compiler *c, int id, int recv, int mi, const char *bo
      uncalled: a block that widens the container's element kind reads the
      boxed one as garbage (the same widening is wrong for a top-level
      method). */
-  if (reopen_pf_raw_self(c, c->scopes[mi].class_id) && reopen_yields_container(c, &c->scopes[mi])) return 0;
+  int pci = c->scopes[mi].class_id;
+  if (reopen_pf_raw_self(c, pci) && pci != comp_class_index(c, "Fiber") && pci != comp_class_index(c, "Thread") &&
+      reopen_yields_container(c, &c->scopes[mi])) return 0;
   int cblk = nt_ref(nt, id, "block") >= 0 ? resolve_forwarded_block(c, nt_ref(nt, id, "block")) : -1;
   /* a forwarded `&blk` resolves below 0 when the caller passed no block:
      the clone's block parameter is then NULL (block_given? is false) */
