@@ -374,13 +374,20 @@ TyKind ty_array_elem(TyKind arr) {
    stayed RED with a poly-vs-int slot mismatch through an unconditional-poly
    first attempt.
    `promote` (the `--int-overflow=promote` flag) answers a different type
-   for `succ` and `sum` than the default (raise) mode: a receiver that is
-   not a known constant promotes past the word to a boxed Bignum, which the
-   non-yield path already does (`infer_numeric_call`'s `succ`/`next`/`abs`
-   arm, `infer_promote_reducer`'s `sum` arm) and a yield's receiver, never a
-   compile-time constant, always takes. A String Array's `sum` has no type
-   to answer (CRuby raises TypeError), so it is left out, same as any other
-   kind/name pair this table declines. */
+   for `succ`'s Integer site, and an Integer Array's `sum`, than the
+   default (raise) mode: a receiver that is not a known constant promotes
+   past the word to a boxed Bignum, which the non-yield path already does
+   (`infer_numeric_call`'s `succ`/`next`/`abs` arm) and a yield's receiver,
+   never a compile-time constant, always takes. `sum` itself is answered by
+   `fold_sum_type` (below), already shaped for this: a Float or String
+   Array's `sum` answers poly in BOTH modes (the default Integer(0) seed's
+   mismatch with a non-Integer element, not a promote-mode rule -- a String
+   Array's boxed path raises CRuby's TypeError at runtime, same as the
+   direct, non-yield call). An earlier version of this comment claimed a
+   Float Array's `sum` stayed `TY_FLOAT` and a String Array's was declined;
+   both wrong, corrected the same way the `dig` claim above was: checked
+   with --emit-types on a direct call before trusting the prior paragraph's
+   reasoning instead of after. */
 static int ty_recv_is_plain_array(TyKind t) {
   return t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY || t == TY_STR_ARRAY;
 }
@@ -407,6 +414,21 @@ int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind recv,
       if (recv == TY_STRING) { *out = TY_STRING; return 1; }
       if (recv == TY_INT) { *out = promote ? TY_POLY : TY_INT; return 1; }
       return 0;
+    }
+    /* sum (no seed, no block -- the only shape a yield receiver's inlined
+       call takes): fold_sum_type already names this exactly, with the
+       default Integer(0) seed every plain kind folds from. An Integer Array
+       answers Integer in raise mode and poly under promote (the same
+       non-constant-receiver rule succ above follows); a Float Array answers
+       poly in BOTH modes (0 + 1.5's seed/element mismatch, not a
+       receiver-follows rule -- confirmed with --emit-types on a direct
+       [1.5].sum, which is poly whether or not --int-overflow=promote is
+       given); a String Array also answers poly, and its boxed path raises
+       CRuby's TypeError at runtime (confirmed by running the compiled
+       binary), so it is answered here rather than declined like a truly
+       unresolvable pair. */
+    if (!strcmp(name, "sum") && ty_recv_is_plain_array(recv)) {
+      *out = fold_sum_type(TY_INT, ty_array_elem(recv), promote); return 1;
     }
     if (!strcmp(name, "itself") || !strcmp(name, "dup") || !strcmp(name, "clone") ||
         !strcmp(name, "freeze")) {
