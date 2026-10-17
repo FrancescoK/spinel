@@ -93,20 +93,38 @@ int repr_hash_is(Repr r, TyKind key, TyKind val) {
   return r.key != TY_UNKNOWN && r.key == key && r.val == val;
 }
 
-/* an object whose class some other class inherits from: its static type is
-   only the base, so its box reads the class from the object */
-int repr_dyn_cls(const Compiler *c, TyKind t) {
+/* Two facts of a stored type that depend on its class, found together so the
+   class's parent walk (class_is_exc_subclass) runs once. *exc: the type is
+   the builtin Exception or a user object of a class below an exception, an
+   object laid out as sp_Exception (Repr.exc). The return value: an object
+   whose class some other class inherits from, so its static type is only the
+   base and its box reads the class from the object (Repr.dyn_cls). */
+static int repr_class_facts(const Compiler *c, TyKind t, int *exc) {
+  *exc = t == TY_EXCEPTION;
   if (!ty_is_object(t)) return 0;
   int cid = ty_object_class(t);
   if (cid < 0 || cid >= c->nclasses) return 0;
+  *exc = class_is_exc_subclass((Compiler *)c, cid);
   /* an exception's object starts with its class name, not a class id, so
      it is boxed with the static id (emit_boxed) */
-  if (c->classes[cid].is_value_type || class_is_exc_subclass((Compiler *)c, cid)) return 0;
+  if (c->classes[cid].is_value_type || *exc) return 0;
   /* an Array subclass instance is boxed as its Array (arysub_box_id) */
   if (c->classes[cid].ary_root > 0) return 0;
   for (int k = 0; k < c->nclasses; k++)
     if (k != cid && c->classes[k].parent == cid) return 1;
   return 0;
+}
+
+int repr_dyn_cls(const Compiler *c, TyKind t) {
+  int exc;
+  return repr_class_facts(c, t, &exc);
+}
+
+/* sets Repr.dyn_cls and Repr.exc for a value stored as type t */
+static void repr_set_class_facts(const Compiler *c, Repr *r, TyKind t) {
+  int exc;
+  r->dyn_cls = repr_class_facts(c, t, &exc);
+  r->exc = exc;
 }
 
 /* An Integer or Float node whose box has to test for nil, as emit_boxed
@@ -618,7 +636,7 @@ Repr repr_of(const Compiler *c, int node) {
      read where the value is used, not where it is boxed */
   TyKind kt = r.as_ty;
   r.kind = (unsigned char)repr_kind_of_type(c, kt);
-  r.dyn_cls = repr_dyn_cls(c, kt);
+  repr_set_class_facts(c, &r, kt);
   if (repr_nil_scalar(c, node, kt)) {
     r.kind = RK_OPT;
     r.may_nil = r.nil_scalar = 1;
@@ -1043,7 +1061,7 @@ Repr repr_of_slot(const Compiler *c, const LocalVar *lv) {
   r.elem_nil_marked = (unsigned)repr_elem_nil(r.elem, lv->nullable_int_elem, lv->obj_elem_may_nil);
   repr_slot_storage(&r, lv);
   r.kind = (unsigned char)k;
-  r.dyn_cls = repr_dyn_cls(c, lv->type);
+  repr_set_class_facts(c, &r, lv->type);
   return r;
 }
 
@@ -1564,7 +1582,7 @@ Repr repr_of_ivar(const Compiler *c, int cid, int iv) {
   r.elem_nil_marked = (unsigned)repr_elem_nil(r.elem, c->classes[ec].ivar_nullable_int_elem[ek],
                                                iv < ci->n_ivar_obj_may_nil && ci->ivar_elem_may_nil &&
                                                ci->ivar_elem_may_nil[iv]);
-  r.dyn_cls = repr_dyn_cls(c, r.ty);
+  repr_set_class_facts(c, &r, r.ty);
   return r;
 }
 
@@ -1593,7 +1611,7 @@ Repr repr_of_cvar(const Compiler *c, int cid, int idx) {
   if (r.ty == TY_STRBUF && ci->cvar_str_shared[idx]) r.handle = 1;
   r.share = r.handle && c->share_strings;
   r.elems_handle = (ci->cvar_elems_shared[idx] & ELEMS_POLY) && r.ty == TY_POLY_ARRAY;
-  r.dyn_cls = repr_dyn_cls(c, r.ty);
+  repr_set_class_facts(c, &r, r.ty);
   return r;
 }
 
@@ -1611,7 +1629,7 @@ Repr repr_of_ret(const Compiler *c, const Scope *sc) {
     r.may_nil = r.nil_scalar = 1;
   }
   if (repr_may_nil(r.ty, sc->ret_obj_may_nil)) r.may_nil = 1;
-  r.dyn_cls = repr_dyn_cls(c, r.ty);
+  repr_set_class_facts(c, &r, r.ty);
   return r;
 }
 

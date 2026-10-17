@@ -927,7 +927,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        may allocate. */
     if (obj_cmp_by_identity(lrt) && !latr.untyped && !object_defines_cmp(c) &&
         !(lrt == TY_EXCEPTION && exc_subclass_defines_cmp(c))) {
-      int exc_inst = lrt == TY_EXCEPTION && ty_is_object(lat) && class_is_exc_subclass(c, ty_object_class(lat));
+      int exc_inst = lrt == TY_EXCEPTION && latr.exc && lat != TY_EXCEPTION;
       if (lat != lrt && !exc_inst) {
         oint_open(c, id, TY_INT, b);
         buf_puts(b, "((void)("); emit_expr(c, recv, b);
