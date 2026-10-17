@@ -5,7 +5,7 @@ BasicSocket
 Socket
 "TCPServer"
 "TCPServer"
-NoMethodError
+"127.0.0.1"
 NoMethodError
 "undefined method 'bogus_xyz' for class TCPServer"
 TCPServer
