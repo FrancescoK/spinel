@@ -14,7 +14,7 @@ hunks, each in its own commit with the reason:
 
 | Where | Upstream | Here | Why |
 |---|---|---|---|
-| top of the file | `require 'set' unless defined?(Set)`; `when Array, Hash, Set` in `make_switch` | no `require`; `when Array, Hash` | Set#hash does not compile in this program |
+| top of the file | `require 'set' unless defined?(Set)`; `when Array, Hash, Set` in `make_switch` | no `require`; `when Array, Hash` | a Set in every program that requires optparse changes how other values are typed: under `--share-strings` a handler such as `{ \|v\| list << v.join("+") }` is refused (#6765) |
 | `Completion.candidate` and its three callers | the table's `&method(:each)` as a block, called with a block | the table as an argument, iterated with `#each` | a Method given as such a block raises NoMethodError |
 | `RequiredArgument#parse`, `parse_in_order` | `&method(:raise)`, `{\|*exc\| raise(*exc)}` | `{ \|klass, word\| raise klass, word }` | a splatted `raise` raises TypeError |
 | `List#accept`, `make_switch` | `pattern.method(:convert).to_proc` | `->(*a) { pattern.convert(*a) }` | refused on a pattern of several classes |
