@@ -33297,6 +33297,17 @@ int new_recv_every_class(Compiler *c, int recv) {
   TyKind rt = infer_type(c, recv);
   return rt == TY_CLASS || rt == TY_POLY;
 }
+typedef struct {
+  Compiler *c;
+  int *out;
+  int cap, n;
+} NewRecvArms;
+static int new_recv_arm(const VpLeaf *leaf, void *ud) {
+  NewRecvArms *a = ud;
+  if (leaf->kind == VPK_EXPR && a->cap - a->n > 0)
+    a->n += new_recv_classes(a->c, leaf->node, a->out + a->n, a->cap - a->n);
+  return 0;
+}
 int new_recv_classes(Compiler *c, int recv, int *out, int cap) {
   const NodeTable *nt = c->nt;
   if (recv < 0 || cap <= 0) return 0;
@@ -33307,24 +33318,10 @@ int new_recv_classes(Compiler *c, int recv, int *out, int cap) {
     if (k < 0) return 0;
     out[0] = k; return 1;
   }
-  if (rk == NK_ParenthesesNode) {
-    int b = nt_ref(nt, recv, "body"), n = 0;
-    const int *st = b >= 0 && nt_kind(nt, b) == NK_StatementsNode ? nt_arr(nt, b, "body", &n) : NULL;
-    return st && n == 1 ? new_recv_classes(c, st[0], out, cap) : 0;
-  }
-  if (rk == NK_IfNode || rk == NK_ElseNode || rk == NK_StatementsNode) {
-    int n = 0;
-    if (rk == NK_StatementsNode) {
-      const int *st = nt_arr(nt, recv, "body", &n);
-      return n > 0 ? new_recv_classes(c, st[n - 1], out, cap) : 0;
-    }
-    n = new_recv_classes(c, nt_ref(nt, recv, "statements"), out, cap);
-    if (rk == NK_IfNode) {
-      int e = nt_ref(nt, recv, "subsequent");
-      if (e < 0) e = nt_ref(nt, recv, "consequent");
-      n += new_recv_classes(c, e, out + n, cap - n);
-    }
-    return n;
+  if (rk == NK_ParenthesesNode || rk == NK_IfNode || rk == NK_ElseNode || rk == NK_StatementsNode) {
+    NewRecvArms a = { c, out, cap, 0 };
+    for_each_value_position(nt, recv, VPS_IF, new_recv_arm, &a);
+    return a.n;
   }
   /* `[A, B][i]`: every element of the literal */
   if (rk == NK_CallNode && nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "[]")) {
