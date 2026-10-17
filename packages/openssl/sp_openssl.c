@@ -1053,6 +1053,124 @@ sp_int sp_ec_check_point(const char *curve, const char *pub) {
   return 1;
 }
 
+/* ---------- PKey.read: an EC key out of PEM or DER ----------
+   The key is parsed here, where it crosses the boundary, and what comes back
+   is what PKey::EC is made of: the curve's name and the key's bytes. The
+   answer is one byte for the half it carries (1 private, 0 public), one for
+   the length of the curve's name, the name, and then the private scalar,
+   field-width, or the public point in uncompressed form. openssl/pkey.rb
+   builds the EC from those, so a key read here is the same object as one
+   built from bytes. */
+static SP_TLS char sp_pkey_read_buf[2 + 64 + SP_EC_MAX_POINT];
+
+/* No passphrase is ever supplied. OpenSSL's default callback would prompt on
+   the terminal for an encrypted PEM; this makes that PEM a key that does not
+   parse. */
+static int sp_pkey_no_pass(char *buf, int size, int rwflag, void *u) {
+  (void)buf; (void)size; (void)rwflag; (void)u;
+  return -1;
+}
+
+/* DER before PEM, and a private key before a public one: the order CRuby's
+   PKey.read tries them in. *priv says which half was found. */
+static EVP_PKEY *sp_pkey_parse(const char *data, int *priv) {
+  long n = (long)sp_str_byte_len(data);
+  const unsigned char *p = (const unsigned char *)data;
+  EVP_PKEY *k = NULL;
+  BIO *bio;
+
+  if ((k = d2i_AutoPrivateKey(NULL, &p, n))) { *priv = 1; return k; }
+  p = (const unsigned char *)data;
+  if ((k = d2i_PUBKEY(NULL, &p, n))) { *priv = 0; return k; }
+  if ((bio = BIO_new_mem_buf(data, (int)n))) {
+    if ((k = PEM_read_bio_PrivateKey(bio, NULL, sp_pkey_no_pass, NULL))) *priv = 1;
+    BIO_free(bio);
+  }
+  if (!k && (bio = BIO_new_mem_buf(data, (int)n))) {
+    if ((k = PEM_read_bio_PUBKEY(bio, NULL, sp_pkey_no_pass, NULL))) *priv = 0;
+    BIO_free(bio);
+  }
+  return k;
+}
+
+/* What CRuby would have answered for a key this does not read, for the
+   message: its class name where it has one of its own. */
+static const char *sp_pkey_kind(int id) {
+  switch (id) {
+    case EVP_PKEY_RSA: return "RSA";
+    case EVP_PKEY_DSA: return "DSA";
+    case EVP_PKEY_DH:  return "DH";
+    default: { const char *sn = OBJ_nid2sn(id); return sn ? sn : "unknown"; }
+  }
+}
+
+const char *sp_pkey_ec_read(const char *data) {
+  unsigned char *out = (unsigned char *)sp_pkey_read_buf;
+  const EC_KEY *ec;
+  const EC_GROUP *g = NULL;
+  const char *curve = NULL;
+  size_t clen = 0, n = 0;
+  int priv = 0, flen = 0, nid = NID_undef;
+  EVP_PKEY *k;
+
+  sp_ssl_errbuf[0] = 0;
+  /* BIO_new_mem_buf takes an int length: refused rather than narrowed, the
+     bound the X509 calls use. */
+  if (sp_str_byte_len(data) > (size_t)INT_MAX / 2) return sp_ec_fail("key data too large");
+  if (!(k = sp_pkey_parse(data, &priv))) {
+    ERR_clear_error();
+    return sp_ec_fail("Could not parse PKey");
+  }
+  if (EVP_PKEY_base_id(k) != EVP_PKEY_EC) {
+    char why[128];
+    snprintf(why, sizeof why, "unsupported key type: %s (this package reads EC keys)",
+             sp_pkey_kind(EVP_PKEY_base_id(k)));
+    EVP_PKEY_free(k);
+    ERR_clear_error();
+    return sp_ec_fail(why);
+  }
+  /* EVP_PKEY_get0_EC_KEY and the EC_KEY getters are deprecated in OpenSSL
+     3.0, and the replacements (EVP_PKEY_get_bn_param) are not in the 1.1.0
+     this file compiles against; the same trade sp_rsa_verify makes. */
+#if defined(__GNUC__) || defined(__clang__)
+# pragma GCC diagnostic push
+# pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+  if ((ec = EVP_PKEY_get0_EC_KEY(k)) && (g = EC_KEY_get0_group(ec)))
+    nid = EC_GROUP_get_curve_name(g);
+  if (nid != NID_undef && (curve = OBJ_nid2sn(nid)) && (clen = strlen(curve)) < 64) {
+    flen = (EC_GROUP_get_degree(g) + 7) / 8;
+    if (flen <= 0 || flen > SP_EC_MAX_FIELD) curve = NULL;
+  }
+  if (curve) {
+    out[0] = (unsigned char)priv;
+    out[1] = (unsigned char)clen;
+    memcpy(out + 2, curve, clen);
+    if (priv) {
+      const BIGNUM *d = EC_KEY_get0_private_key(ec);
+      if (d && BN_bn2binpad(d, out + 2 + clen, flen) == flen) n = 2 + clen + (size_t)flen;
+    }
+    else {
+      const EC_POINT *q = EC_KEY_get0_public_key(ec);
+      size_t want = (size_t)(1 + 2 * flen);
+      if (q && EC_POINT_point2oct(g, q, POINT_CONVERSION_UNCOMPRESSED,
+                                  out + 2 + clen, want, NULL) == want)
+        n = 2 + clen + want;
+    }
+  }
+#if defined(__GNUC__) || defined(__clang__)
+# pragma GCC diagnostic pop
+#endif
+  EVP_PKEY_free(k);
+  if (!n) {
+    OPENSSL_cleanse(sp_pkey_read_buf, sizeof sp_pkey_read_buf);
+    return sp_ec_fail(curve ? "EC key without its key bytes" : "EC key on a curve without a name");
+  }
+  ERR_clear_error();
+  sp_ffi_bin_len = (int)n;
+  return sp_pkey_read_buf;
+}
+
 /* RSA signature verification over a public key given as its two halves, the
    big-endian modulus and exponent bytes: the form every protocol that names
    an RSA key carries it in (a COSE key's n and e, a JWK's). `md_name` is the

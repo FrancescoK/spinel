@@ -44,8 +44,8 @@ module OpenSSL
         new(curve, priv)
       end
 
-      # No CRuby spelling: CRuby reads a key from DER or PEM, and this package
-      # parses neither. The bytes are what a protocol stores -- a VAPID
+      # No CRuby spelling: CRuby reads a key from DER or PEM, which PKey.read
+      # below does. The bytes are what a protocol stores -- a VAPID
       # application server key is exactly this scalar, base64url'd.
       def self.from_private_bytes(curve, bytes)
         new(curve, bytes)
@@ -140,6 +140,28 @@ module OpenSSL
       end
 
     end
+
+    # CRuby's spelling, for EC keys. A private key in PEM or DER, SEC1 ("EC
+    # PRIVATE KEY") or PKCS#8 ("PRIVATE KEY", the form certbot writes),
+    # answers a PKey::EC with both halves; a public key ("PUBLIC KEY") answers
+    # one that is public only. The C reads the key and hands back its curve
+    # and bytes, so the EC is the same object EC.from_private_bytes builds.
+    #
+    # Any other kind of key raises a PKeyError that names EC as the kind this
+    # reads, where CRuby would answer a PKey::RSA, DSA or DH. There is no
+    # passphrase argument, so an encrypted PEM is a key that does not parse.
+    def self.read(data)
+      blob = Native.pkey_ec_read(data)
+      raise PKeyError, Native.last_error if blob.empty?
+      curve_len = blob.getbyte(1)
+      curve = blob.byteslice(2, curve_len)
+      bytes = blob.byteslice(2 + curve_len, blob.bytesize - 2 - curve_len)
+      if blob.getbyte(0) == 1
+        EC.from_private_bytes(curve, bytes)
+      else
+        EC.from_public_bytes(curve, bytes)
+      end
+    end
   end
 end
 
@@ -153,7 +175,7 @@ module OpenSSL
     # OpenSSL::PKey::RSA, public keys only: what a verifier holds. Built from
     # the modulus and exponent bytes, the halves a COSE key or a JWK names it
     # by. There is no CRuby spelling for that (CRuby builds one from DER or
-    # PEM, which this package parses neither of), so the constructor has its
+    # PEM, and PKey.read here reads EC keys only), so the constructor has its
     # own name, as EC.from_public_bytes does. Verifying uses CRuby's names and
     # arguments, and answers what CRuby answers.
     class RSA

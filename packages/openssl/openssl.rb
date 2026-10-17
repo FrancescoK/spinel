@@ -56,6 +56,10 @@ module OpenSSL
     native_func :ec_public_bytes, [:string, :string],          :cbinstr, "sp_ec_public_bytes"
     native_func :ec_dh,           [:string, :string, :string], :cbinstr, "sp_ec_dh"
 
+    # PKey.read: an EC key out of PEM or DER, as the half it carries, the
+    # curve's name and the key's bytes. See openssl/pkey.rb.
+    native_func :pkey_ec_read,    [:string],                   :cbinstr, "sp_pkey_ec_read"
+
     # AES-GCM, one shot. The whole operation in one call, because the Ruby
     # Cipher over it holds the state -- see openssl/cipher.rb. Encrypt answers
     # ciphertext || tag; both answer "" with the reason in last_error, since an
