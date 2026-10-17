@@ -18,6 +18,7 @@
  *   spinel -E app.rb a b c      compile to a temp dir, run, ARGV=[a,b,c]
  */
 #include "node_table.h"
+#include "value_pos.h"
 #include "spinel_rev.h"
 #include "codegen.h"
 #include "analyze.h"
@@ -491,7 +492,24 @@ static void usage(void) {
     "  --no-inline-rbs  Ignore inline RBS comments (`#: ...`, `# @rbs ...`)\n"
     "              in the program (default: apply them; docs/inline-rbs.md)\n"
     "  --int-overflow=MODE  Int +/-/* overflow handling (default: raise)\n"
-    "  --dump-ast  Print the text AST and exit (debug)\n");
+    "  --dump-ast  Print the text AST and exit (debug)\n"
+    "  --dump-value-positions  Print the value positions of each method body and of\n"
+    "              the program, and exit (debug)\n"
+    "  --check-value-pos  Check the value-position iterator's limits and exit (debug)\n");
+}
+
+/* --dump-ast (1), --dump-value-positions (2) and --check-value-pos (3) work
+   on the parsed table and stop; the mode a flag names, or 0. */
+static int table_mode_of(const char *a) {
+  if (sp_streq(a, "--dump-ast")) return 1;
+  if (sp_streq(a, "--dump-value-positions")) return 2;
+  return sp_streq(a, "--check-value-pos") ? 3 : 0;
+}
+static int run_table_mode(const NodeTable *nt, int mode) {
+  if (mode == 1) nt_dump(nt, stdout);
+  else if (mode == 2) value_pos_dump(nt, stdout);
+  else return value_pos_check();
+  return 0;
 }
 
 #ifdef SP_WORK_COUNT
@@ -684,7 +702,7 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--check-bop-arity")) return builtin_ops_arity_check() ? 1 : 0;
     else if (sp_streq(a, "--dump-traits"))  { g_dump_traits = 1; i++; }
     else if (sp_streq(a, "--emit-symbol-map")) { emit_symbol_map = 1; i++; }
-    else if (sp_streq(a, "--dump-ast"))    { dump_ast = 1; i++; }
+    else if (table_mode_of(a))             { dump_ast = table_mode_of(a); i++; }
     else if (sp_streq(a, "-h") || sp_streq(a, "--help")) { usage(); return 0; }
     /* The C compiler is half of what a spinel build is, so name it too: a bug
        report that turns out to be a codegen/compiler interaction is otherwise
@@ -994,7 +1012,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  if (dump_ast) { nt_dump(nt, stdout); nt_free(nt); if (seed_path[0]) remove(seed_path); return 0; }
+  if (dump_ast) { int rc = run_table_mode(nt, dump_ast); nt_free(nt); if (seed_path[0]) remove(seed_path); return rc; }
   sp_timing_end(tm_front, "frontend", "");
 
   /* the CRuby shim's feature name (Init_<feature>, the require name) derives

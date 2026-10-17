@@ -42858,8 +42858,13 @@ static int sa_returned_args_t(Compiler *c, int call, int *out, int cap, int poly
   if (mi <= 0) return 0;
   Scope *m = &c->scopes[mi];
   int lv[16];
-  /* a path answering nil (`if flag; s; end`) hands s over on the other */
-  int n = method_value_leaves_or_nil(c, mi, lv, 16);
+  /* a path answering nil (`if flag; s; end`) hands s over on the other. The
+     narrow shapes: seen through a `begin`, a `&&` or `||`, a rescue modifier
+     or a case/in, the String this refuses (a method that answers its parameter,
+     mutated in the caller) is refused in the default build too, where it was
+     answered, and no String route gets a new default-build refusal before
+     shared Strings are the default. */
+  int n = method_value_leaves_or_nil_narrow(c, mi, lv, 16);
   for (int i = 0; i < n; i++) {
     int l = an_unparen(nt, lv[i]);
     for (int d = 0; d < 8; d++) {

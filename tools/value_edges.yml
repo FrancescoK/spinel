@@ -1,0 +1,222 @@
+# Value edges: which child of a Prism node carries the node's own value.
+#
+# Prism's config.yml (the pinned gem's, fetched by `make deps`) lists each
+# node's child fields but not which of them are value positions, the places
+# the node's value can come from. This file says so, kind by kind and field
+# by field. tools/gen_value_edges.rb turns the entries marked `wrapper` and
+# `branch` into the arms of the switch in src/value_pos.c (src/value_pos_arms.inc,
+# checked in, so a build needs no Ruby) and checks this file against
+# config.yml: every node kind, and every child field of it, is annotated here
+# exactly once, so a Prism update that adds a kind or a field fails the check
+# until someone decides what it means.
+#
+# Written with CRuby's prism_compile.c as the reference: it compiles a child
+# with the parent's `popped` flag ("the value is not needed") when the child
+# is a value position (an `if` branch, the last statement of a sequence), and
+# elsewhere does something else. The exceptions are decided here, not taken
+# from the pattern:
+#   - a write compiles its value kept and dups it, so `x = e` is `e`'s value;
+#     `x ||= e` and `x &&= e` are `e`'s value or the target's old value (the
+#     hand-written arm yields the write node as a leaf, then `e`'s positions);
+#   - `x += e` is the operator's result, so `e` is not a value position;
+#   - the left side of `a || b` is the value when truthy, the left side of
+#     `a && b` when falsy (the hand-written arm reads it under VP_AND_LEFT);
+#   - a begin's body is dropped when an `else` follows (VP_BEGIN_BOTH keeps it),
+#     and an ensure clause is always dropped;
+#   - the arguments of return, next and break leave the scope or the block;
+#   - a scope body (def, class, module, program, lambda, block) starts a new
+#     walk: the caller names it as a root;
+#   - an `if` on a literal condition compiles one branch only. This table does
+#     not fold: both are positions.
+#
+# Each kind has one entry:
+#   role:   wrapper  the node is its child: the walk continues at the child,
+#                    keeping the parent and the arm of the node's own place
+#           branch   the node is a structural parent of its value fields; the
+#                    arm of a child is its place in the fields, in order
+#           hand     the semantics are not an edge list: value_pos.c has an arm
+#                    for it, named `case NK_<kind>:`, and this entry records
+#                    which fields that arm reads (the check demands the case)
+#   gate:   the shape bit (VPS_<gate>) that must be on for the node to be
+#           looked through; with it off the node is a leaf
+#   link:   a value field whose node continues this node's chain (an elsif, a
+#           further rescue clause): the arm numbering carries on through it
+#   value:  the value fields in source order. `f` is a node, `f.*` every
+#           element of a node list, `f.last` the last element of one, `f.*.g`
+#           the field g of every element (the arms of a case). A trailing `?`
+#           says an absent field is no position at all: a rescue clause with
+#           no successor re-raises, where an `if` with no else answers nil.
+#   skip:   child fields that are not value positions
+#   why:    one line for a skip that is not obvious
+# A kind with no child field at all is listed under `childless`.
+
+nodes:
+  # ---- wrappers: the walk goes on at the child ----
+  ParenthesesNode:   {role: wrapper, value: [body]}
+  StatementsNode:    {role: wrapper, value: [body.last]}
+  ElseNode:          {role: wrapper, value: [statements]}
+  # (WhenNode has no kind of its own in the node table, so it cannot be a
+  # wrapper: CaseNode reads each arm's `statements` itself)
+  WhenNode:          {skip: [conditions.*, statements], why: "the match values are tested, never the node's value; statements is read through CaseNode.conditions"}
+  InNode:            {role: wrapper, value: [statements], skip: [pattern]}
+
+  # ---- branches ----
+  IfNode:            {role: branch, gate: IF, link: subsequent, value: [statements, subsequent], skip: [predicate]}
+  UnlessNode:        {role: branch, gate: UNLESS, value: [statements, else_clause], skip: [predicate]}
+  CaseNode:          {role: branch, gate: CASE, value: [conditions.*.statements, else_clause], skip: [predicate]}
+  OrNode:            {role: branch, gate: LOGIC, value: [left, right]}
+  RescueModifierNode: {role: branch, gate: RESCUE_MOD, value: [expression, rescue_expression]}
+  RescueNode:        {role: branch, link: subsequent, value: [statements, "subsequent?"], skip: [exceptions.*, reference]}
+
+  # ---- hand-written arms (value_pos.c) ----
+  # a begin's body, its rescue clauses and its else; never the ensure clause
+  BeginNode:         {role: hand, value: [statements, rescue_clause, else_clause], skip: [ensure_clause]}
+  # the left side only under VP_AND_LEFT
+  AndNode:           {role: hand, value: [left, right]}
+  # without an else CRuby raises NoMatchingPatternError: VP_CASE_IN_RAISE_NIL
+  CaseMatchNode:     {role: hand, value: [conditions.*, else_clause], skip: [predicate]}
+  # the jump flags: a single argument is the value that leaves
+  ReturnNode:        {role: hand, value: [arguments]}
+  NextNode:          {role: hand, value: [arguments]}
+  BreakNode:         {role: hand, value: [arguments]}
+  # writes under VP_WRITES: a plain write is its value `e`; an or-write or
+  # and-write is the target's old value or `e`, so the write is a leaf too
+  LocalVariableWriteNode:         {role: hand, value: [value]}
+  InstanceVariableWriteNode:      {role: hand, value: [value]}
+  GlobalVariableWriteNode:        {role: hand, value: [value]}
+  ClassVariableWriteNode:         {role: hand, value: [value]}
+  ConstantWriteNode:              {role: hand, value: [value]}
+  ConstantPathWriteNode:          {role: hand, value: [value], skip: [target]}
+  LocalVariableOrWriteNode:       {role: hand, value: [value]}
+  InstanceVariableOrWriteNode:    {role: hand, value: [value]}
+  GlobalVariableOrWriteNode:      {role: hand, value: [value]}
+  ClassVariableOrWriteNode:       {role: hand, value: [value]}
+  ConstantOrWriteNode:            {role: hand, value: [value]}
+  ConstantPathOrWriteNode:        {role: hand, value: [value], skip: [target]}
+  LocalVariableAndWriteNode:      {role: hand, value: [value]}
+  InstanceVariableAndWriteNode:   {role: hand, value: [value]}
+  GlobalVariableAndWriteNode:     {role: hand, value: [value]}
+  ClassVariableAndWriteNode:      {role: hand, value: [value]}
+  ConstantAndWriteNode:           {role: hand, value: [value]}
+  ConstantPathAndWriteNode:       {role: hand, value: [value], skip: [target]}
+  CallOrWriteNode:                {role: hand, value: [value], skip: [receiver]}
+  CallAndWriteNode:               {role: hand, value: [value], skip: [receiver]}
+  IndexOrWriteNode:               {role: hand, value: [value], skip: [receiver, arguments, block]}
+  IndexAndWriteNode:              {role: hand, value: [value], skip: [receiver, arguments, block]}
+  MultiWriteNode:                 {role: hand, value: [value], skip: [lefts.*, rest, rights.*]}
+
+  # ---- kinds whose children are not value positions ----
+  AliasGlobalVariableNode: {skip: [new_name, old_name]}
+  AliasMethodNode: {skip: [new_name, old_name]}
+  AlternationPatternNode: {skip: [left, right]}
+  ArgumentsNode: {skip: [arguments.*], why: "read by the return/next/break arms, which take a single argument"}
+  ArrayNode: {skip: [elements.*]}
+  ArrayPatternNode: {skip: [constant, requireds.*, rest, posts.*]}
+  AssocNode: {skip: [key, value]}
+  AssocSplatNode: {skip: [value]}
+  BlockArgumentNode: {skip: [expression]}
+  BlockNode: {skip: [parameters, body], why: "whether a block's value is the call's (map) or not (each) is a fact about the call: a caller names the body as a root"}
+  BlockParametersNode: {skip: [parameters, locals.*]}
+  CallNode: {skip: [receiver, arguments, block], why: "a call answers what its method returns; receiver, arguments and block are inputs"}
+  CallOperatorWriteNode: {skip: [receiver, value], why: "recv.m += e answers the operator's result, not e"}
+  CallTargetNode: {skip: [receiver]}
+  CapturePatternNode: {skip: [value, target]}
+  ClassNode: {skip: [constant_path, superclass, body], why: "a class body is a scope of its own: a caller names it as a root"}
+  ClassVariableOperatorWriteNode: {skip: [value], why: "@@x += e answers the operator's result, not e"}
+  ConstantOperatorWriteNode: {skip: [value], why: "X += e answers the operator's result, not e"}
+  ConstantPathNode: {skip: [parent]}
+  ConstantPathOperatorWriteNode: {skip: [target, value], why: "A::X += e answers the operator's result, not e"}
+  ConstantPathTargetNode: {skip: [parent]}
+  DefNode: {skip: [receiver, parameters, body], why: "a method body is a scope of its own: a caller names it as a root"}
+  DefinedNode: {skip: [value], why: "defined? answers a String or nil, never its operand's value"}
+  EmbeddedStatementsNode: {skip: [statements], why: "an interpolated value is turned into a String, it is not the node's value"}
+  EmbeddedVariableNode: {skip: [variable]}
+  EnsureNode: {skip: [statements], why: "an ensure clause runs for its effect; its value is dropped"}
+  FindPatternNode: {skip: [constant, left, requireds.*, right]}
+  FlipFlopNode: {skip: [left, right]}
+  ForNode: {skip: [index, collection, statements], why: "a loop answers its collection or its break's value; the body's value is dropped"}
+  ForwardingSuperNode: {skip: [block], why: "a super call answers what its method returns"}
+  GlobalVariableOperatorWriteNode: {skip: [value], why: "$x += e answers the operator's result, not e"}
+  HashNode: {skip: [elements.*]}
+  HashPatternNode: {skip: [constant, elements.*, rest]}
+  ImaginaryNode: {skip: [numeric]}
+  ImplicitNode: {skip: [value]}
+  IndexOperatorWriteNode: {skip: [receiver, arguments, block, value], why: "recv[i] += e answers the operator's result, not e"}
+  IndexTargetNode: {skip: [receiver, arguments, block]}
+  InstanceVariableOperatorWriteNode: {skip: [value], why: "@x += e answers the operator's result, not e"}
+  InterpolatedMatchLastLineNode: {skip: [parts.*]}
+  InterpolatedRegularExpressionNode: {skip: [parts.*]}
+  InterpolatedStringNode: {skip: [parts.*]}
+  InterpolatedSymbolNode: {skip: [parts.*]}
+  InterpolatedXStringNode: {skip: [parts.*]}
+  KeywordHashNode: {skip: [elements.*]}
+  LambdaNode: {skip: [parameters, body], why: "a lambda body is a scope of its own: a caller names it as a root"}
+  LocalVariableOperatorWriteNode: {skip: [value], why: "x += e answers the operator's result, not e"}
+  MatchPredicateNode: {skip: [value, pattern], why: "`v in pat` answers true or false"}
+  MatchRequiredNode: {skip: [value, pattern], why: "`v => pat` answers nil"}
+  MatchWriteNode: {skip: [call, targets.*]}
+  ModuleNode: {skip: [constant_path, body], why: "a module body is a scope of its own: a caller names it as a root"}
+  MultiTargetNode: {skip: [lefts.*, rest, rights.*]}
+  OptionalKeywordParameterNode: {skip: [value], why: "a default value belongs to its parameter"}
+  OptionalParameterNode: {skip: [value], why: "a default value belongs to its parameter"}
+  ParametersNode: {skip: [requireds.*, optionals.*, rest, posts.*, keywords.*, keyword_rest, block]}
+  PinnedExpressionNode: {skip: [expression]}
+  PinnedVariableNode: {skip: [variable]}
+  PostExecutionNode: {skip: [statements]}
+  PreExecutionNode: {skip: [statements]}
+  ProgramNode: {skip: [statements], why: "the program is a scope: a caller names its statements as a root"}
+  RangeNode: {skip: [left, right], why: "the operands are the range's ends, not its value"}
+  ShareableConstantNode: {skip: [write], why: "a magic-comment wrapper the parser flattens into its write, which Spinel's table never holds"}
+  SingletonClassNode: {skip: [expression, body], why: "a class body is a scope of its own: a caller names it as a root"}
+  SplatNode: {skip: [expression], why: "a splat spreads its operand into a list"}
+  SuperNode: {skip: [arguments, block], why: "a super call answers what its method returns"}
+  UndefNode: {skip: [names.*]}
+  UntilNode: {skip: [predicate, statements], why: "a loop answers nil or its break's value; the body's value is dropped"}
+  WhileNode: {skip: [predicate, statements], why: "a loop answers nil or its break's value; the body's value is dropped"}
+  YieldNode: {skip: [arguments], why: "a yield answers what its block returns"}
+
+# kinds with no child field
+childless:
+  - BackReferenceReadNode
+  - BlockLocalVariableNode
+  - BlockParameterNode
+  - ClassVariableReadNode
+  - ClassVariableTargetNode
+  - ConstantReadNode
+  - ConstantTargetNode
+  - FalseNode
+  - FloatNode
+  - ForwardingArgumentsNode
+  - ForwardingParameterNode
+  - GlobalVariableReadNode
+  - GlobalVariableTargetNode
+  - ImplicitRestNode
+  - InstanceVariableReadNode
+  - InstanceVariableTargetNode
+  - IntegerNode
+  - ItLocalVariableReadNode
+  - ItParametersNode
+  - KeywordRestParameterNode
+  - LocalVariableReadNode
+  - LocalVariableTargetNode
+  - MatchLastLineNode
+  - MissingNode
+  - NilNode
+  - NoKeywordsParameterNode
+  - NumberedParametersNode
+  - NumberedReferenceReadNode
+  - RationalNode
+  - RedoNode
+  - RegularExpressionNode
+  - RequiredKeywordParameterNode
+  - RequiredParameterNode
+  - RestParameterNode
+  - RetryNode
+  - SelfNode
+  - SourceEncodingNode
+  - SourceFileNode
+  - SourceLineNode
+  - StringNode
+  - SymbolNode
+  - TrueNode
+  - XStringNode

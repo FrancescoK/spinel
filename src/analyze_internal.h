@@ -253,6 +253,7 @@ int scope_body_value(Compiler *c, int mi);
    `return`'s; see analyze_pass.c). Answers the count, or -1. */
 int method_value_leaves(Compiler *c, int mi, int *out, int cap);
 int method_value_leaves_or_nil(Compiler *c, int mi, int *out, int cap);
+int method_value_leaves_or_nil_narrow(Compiler *c, int mi, int *out, int cap);
 int block_given_tail_then_last(Compiler *c, int last);
 int super_forwards_caller_block(Compiler *c, int id);
 /* 1 if `node` is `<&block-param>.call(...)` / .() / [] for method mi -- the
