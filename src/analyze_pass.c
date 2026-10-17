@@ -5263,8 +5263,9 @@ int class_value_escapes(Compiler *c, int cid) {
 
 /* Mark in `set` each class the value of `v` can be, when every value it can
    take is a constant naming a class: through parentheses, the branches of
-   an if, unless or case, and either side of `||` or `&&`. 0 when some value
-   can be anything else. */
+   an if, unless, case or case/in, a begin (its body, rescue clauses and
+   else) and the rescue modifier, and either side of `||` or `&&`. 0 when
+   some value can be anything else. */
 typedef struct {
   Compiler *c;
   char *set;
@@ -5290,7 +5291,7 @@ static int class_set_leaf(const VpLeaf *leaf, void *ud) {
 static int value_class_set(Compiler *c, int v, char *set) {
   ClassSetLeaves k = { c, set, 1 };
   if (v < 0) return 0;
-  for_each_value_position(c->nt, v, VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VPS_LOGIC, class_set_leaf, &k);
+  for_each_value_position(c->nt, v, VP_AND_LEFT | VPS_ALL, class_set_leaf, &k);
   return k.ok;
 }
 
