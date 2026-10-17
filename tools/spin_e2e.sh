@@ -373,9 +373,40 @@ printf '[package]\nname = "idxapp"\n\n[dependencies]\n' > spin.toml
 grep -q '^hello = "~> 1.0"$' spin.toml || fail "spin add --version didn't write the constraint"
 "$SPIN" lock >/dev/null
 "$SPIN" vendor >/dev/null
-rm -rf "$XDG_CACHE_HOME/spin/packages" "$XDG_CACHE_HOME/spin/index"
+rm -rf "$XDG_CACHE_HOME/spin/packages" "$XDG_CACHE_HOME"/spin/index*
 "$SPIN" clean >/dev/null
 expect "index offline (locked, vendored)" "hello v1" "$(SPIN_OFFLINE=1 "$SPIN" run 2>&1 | tail -1)"
+unset SPIN_INDEX
+
+# --- index cache per URL: SPIN_INDEX never reads another index's clone ---------
+# One cache directory served every URL, so after one index was cloned, setting
+# SPIN_INDEX to another read the first -- and `publish --direct` pushed to it.
+cd "$WORK"
+git clone -q index index2
+printf 'name = "hello"\nrepo = "file://%s/hello"\n\n[[release]]\nversion = "1.0.0"\nref = "%s"\n' "$WORK" "$SHA1" > index2/packages/hello.toml
+git -C index2 -c user.email=spin@e2e -c user.name=spin-e2e commit -qam "1.0.0 only"
+export SPIN_INDEX="file://$WORK/index"
+"$SPIN" search hell | grep -q "^hello 1.1.0 " || fail "first index not read"
+export SPIN_INDEX="file://$WORK/index2"
+"$SPIN" search hell | grep -q "^hello 1.0.0 " || fail "SPIN_INDEX switch read the previous index's cache"
+export SPIN_INDEX="file://$WORK/index"
+"$SPIN" search hell | grep -q "^hello 1.1.0 " || fail "switching SPIN_INDEX back read the other index's cache"
+# A cache cloned from another index (one directory used to serve every URL) is
+# re-cloned online and refused offline, never read.
+IDXC=""
+for c in "$XDG_CACHE_HOME"/spin/index*; do
+  [ "$(git -C "$c" remote get-url origin)" = "file://$WORK/index" ] && IDXC="$c"
+done
+[ -n "$IDXC" ] || fail "no cache directory cloned from the index"
+rm -rf "$IDXC"
+git clone -q "file://$WORK/index2" "$IDXC"
+"$SPIN" new offapp >/dev/null
+cd offapp
+printf '[package]\nname = "offapp"\n\n[dependencies]\nhello = ">= 1.0"\n' > spin.toml
+OUT=$(SPIN_OFFLINE=1 "$SPIN" lock 2>&1 || true)
+echo "$OUT" | grep -q "cached index is file://$WORK/index2" || fail "offline read a foreign cache: $OUT"
+"$SPIN" search hell | grep -q "^hello 1.1.0 " || fail "a foreign cache was read, not re-cloned"
+cd "$WORK"
 unset SPIN_INDEX
 
 # --- publish (M4): validations + --direct into the index -------------------------
@@ -438,7 +469,7 @@ cd "$WORK"
 "$SPIN" new probeapp >/dev/null
 cd probeapp
 printf '[package]\nname = "probeapp"\n\n[dependencies]\npublib = "0.1.0"\n' > spin.toml
-rm -rf "$XDG_CACHE_HOME/spin/index"
+rm -rf "$XDG_CACHE_HOME"/spin/index*
 OUT=$("$SPIN" fetch 2>&1 || true)
 echo "$OUT" | grep -q "recorded FAILING with this compiler build" || fail "exact-build fail probe didn't warn"
 unset SPIN_INDEX

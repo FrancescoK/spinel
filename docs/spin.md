@@ -146,7 +146,8 @@ repository (no server) mapping names to repos and releases:
 Selection is MVS: `spin` picks the **lowest** release satisfying the
 constraint, so a build without a lockfile is still deterministic;
 `spin.lock` then pins the exact commit. `spin search [term]` lists index
-entries. Set `SPIN_INDEX` to use another index (a `file://` URL works).
+entries. Set `SPIN_INDEX` to use another index (a `file://` URL works); each index
+URL is cached in its own clone under `~/.cache/spin/`.
 
 ### The compiler's own version
 

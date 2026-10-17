@@ -195,17 +195,38 @@ def spin_index_url
   u == "" ? "https://github.com/matz/spin-index" : u
 end
 
+# Each index URL gets its own clone, so setting SPIN_INDEX never reads (or, for
+# `publish --direct`, pushes to) a clone of another index. The default index
+# keeps the plain "index" directory existing caches already use.
+def index_cache_name(url)
+  return "index" if url == "https://github.com/matz/spin-index"
+  s = String.new   # appended below; a "" literal is frozen under spinel
+  url.each_char do |c|
+    ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9")
+    s << (ok ? c : "-")
+  end
+  "index-" + s
+end
+
 def index_dir(offline)
   base = ENV["XDG_CACHE_HOME"].to_s
   base = File.join(ENV["HOME"].to_s, ".cache") if base == ""
   Dir.mkdir(base) unless Dir.exist?(base)   # a fresh XDG_CACHE_HOME
   d = File.join(base, "spin")
   Dir.mkdir(d) unless Dir.exist?(d)
-  d = File.join(d, "index")
-  return d if Dir.exist?(File.join(d, ".git"))
+  url = spin_index_url
+  d = File.join(d, index_cache_name(url))
+  if Dir.exist?(File.join(d, ".git"))
+    origin = sh_read("git -C " + d + " remote get-url origin")
+    return d if origin == url
+    # Cloned from another index: before caches were per URL, "index" served
+    # every SPIN_INDEX. It is only a cache, so it is replaced, never read.
+    spin_die("--offline: the cached index is " + origin + ", not " + url + " (spin fetch online first)") if offline
+    system("rm -rf " + d)
+  end
   spin_die("--offline: no cached index (spin fetch first)") if offline
-  ok = system("git clone -q --depth 1 #{spin_index_url} #{d}")
-  spin_die("cannot clone the index: " + spin_index_url) unless ok
+  ok = system("git clone -q --depth 1 #{url} #{d}")
+  spin_die("cannot clone the index: " + url) unless ok
   d
 end
 
