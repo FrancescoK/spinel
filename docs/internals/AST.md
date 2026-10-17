@@ -184,7 +184,7 @@ disambiguating field is `name`, plus the recv / args / block triple.
 
 | Node                | Fields used                                          | Notes                                       |
 |---------------------|------------------------------------------------------|---------------------------------------------|
-| `CallNode`          | `name` (S), `receiver` (R), `arguments` (R), `block` (R), `flags` (I) | Universal method call. `flags` bit 0 = `&.` safe navigation. |
+| `CallNode`          | `name` (S), `receiver` (R), `arguments` (R), `block` (R), `safe_nav` (I), `vcall` (I) | Universal method call. `safe_nav` is 1 for `recv&.name` and `vcall` is 1 for a bare identifier; each is present only when Prism set the flag. |
 | `ArgumentsNode`     | `arguments` (A)                                      | Positional + keyword + splat args.          |
 | `KeywordHashNode`   | `elements` (A)                                       | Trailing keyword hash literal.              |
 | `AssocNode`         | `key` (R), `value` (R)                               | One key=>value pair inside a Hash or kwargs.|
