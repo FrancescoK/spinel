@@ -4866,6 +4866,9 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -q 'sp_make_tree(' "$$tmp/rha_mt.c" && ! grep -Eq '_gcf\.v\[[0-9]+\] = _gcf\.v\[[0-9]+\];|_t[0-9]+ = _t[0-9]+;' "$$tmp/rha_mt.c" || { echo "infer-test: FAIL (an argument the call hoisted into a rooted temp is copied into a second rooted one)"; ok=0; }; \
 	$(SPINEL) --dump-repr test/append_hash_literal_through_untyped_index.rb > "$$tmp/ahl.repr" 2>/dev/null || { echo "infer-test: FAIL (append_hash_literal_through_untyped_index: --dump-repr)"; ok=0; }; \
 	grep -Fq 'ivar Jar @out: ptr ty=str_str_hash' "$$tmp/ahl.repr" || { echo "infer-test: FAIL (an append of a Hash literal through an untyped index made stored Strings handles)"; ok=0; }; \
+	$(SPINEL) test/poll_dynamic_call_reacher.rb -c --no-line-map -o "$$tmp/pdc.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poll_dynamic_call_reacher: -c)"; ok=0; }; \
+	awk '/^[a-z].* sp_Device_peek\(.*\{$$/,/^}/' "$$tmp/pdc.c" | grep -q 'sp_sig_poll_raise()' && awk '/^[a-z].* sp_Bus_sum\(.*\{$$/,/^}/' "$$tmp/pdc.c" | grep -q 'sp_sig_poll_raise()' || { echo "infer-test: FAIL (a method making a proc's call, or the caller of a yielder making one, does not poll at its entry)"; ok=0; }; \
+	awk '/^[a-z].* sp_Bus_read\(.*\{$$/,/^}/' "$$tmp/pdc.c" | grep -q 'sp_sig_poll_raise()' && { echo "infer-test: FAIL (a method that only reaches a proc's call polls at its entry)"; ok=0; }; \
 	if [ "$(FFI_AVAILABLE)" = yes ]; then \
 	  for flags in '' --share-strings; do \
 	    $(SPINEL) $$flags --dump-repr packages/fiddle/test/fiddle_importer.rb > "$$tmp/fi.repr" 2>/dev/null || { echo "infer-test: FAIL (fiddle_importer $$flags)"; ok=0; }; \
@@ -5016,6 +5019,10 @@ signal-default-test: $(SPINEL)
 	$(SPINEL) test/signal/interrupt_recursion.rb -o "$$tmp/ir" >/dev/null 2>&1 || { echo "signal-default-test: FAIL (compile recursion)"; ok=0; }; \
 	if [ $$ok -eq 1 ]; then \
 	  [ "$$(timeout 10 "$$tmp/ir" 2>/dev/null)" = "recursion interrupted" ] || { echo "signal-default-test: FAIL (a SIGINT did not reach a recursion with no loop: the call graph lost its cycle, #9377)"; ok=0; }; \
+	fi; \
+	$(SPINEL) test/signal/interrupt_dynamic_call.rb -o "$$tmp/idc" >/dev/null 2>&1 || { echo "signal-default-test: FAIL (compile dynamic call)"; ok=0; }; \
+	if [ $$ok -eq 1 ]; then \
+	  [ "$$(timeout -s KILL 10 "$$tmp/idc" 2>/dev/null)" = "dynamic call interrupted" ] || { echo "signal-default-test: FAIL (a SIGINT did not reach a recursion through a proc's call made in a spliced yielder)"; ok=0; }; \
 	fi; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "signal-default-test: pass"; else exit 1; fi
