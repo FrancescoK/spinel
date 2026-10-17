@@ -5644,7 +5644,8 @@ static int class_leaf_check(const VpLeaf *leaf, void *ud) {
 static int value_leaves_are_classes(Compiler *c, int id, char *names, size_t cap) {
   ClassLeaves k = { c, names, cap, 1 };
   if (id < 0) return 0;
-  for_each_value_position(c->nt, id, VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN, class_leaf_check, &k);
+  for_each_value_position(c->nt, id, VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_LOGIC,
+                          class_leaf_check, &k);
   return k.ok;
 }
 

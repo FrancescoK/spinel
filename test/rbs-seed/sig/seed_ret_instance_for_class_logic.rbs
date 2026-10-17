@@ -1,0 +1,3 @@
+class VlLogicSearch
+  def searched_model: () -> VlLogicStory
+end
