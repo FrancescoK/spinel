@@ -397,6 +397,17 @@ int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind recv,
       if (recv != TY_INT && recv != TY_FLOAT && recv != TY_STRING) return 0;
       *out = recv; return 1;
     }
+    /* succ: a String site always answers String; an Integer site answers
+       Integer in raise (default) mode, poly under --int-overflow=promote --
+       a yield's receiver is never a known constant, so it always takes that
+       mode's non-constant path (confirmed with --emit-types on a direct,
+       non-yield call: an Integer local read back from an array answers
+       poly under promote, string stays string either way). */
+    if (!strcmp(name, "succ")) {
+      if (recv == TY_STRING) { *out = TY_STRING; return 1; }
+      if (recv == TY_INT) { *out = promote ? TY_POLY : TY_INT; return 1; }
+      return 0;
+    }
     if (!strcmp(name, "itself") || !strcmp(name, "dup") || !strcmp(name, "clone") ||
         !strcmp(name, "freeze")) {
       if (recv != TY_INT && recv != TY_FLOAT && recv != TY_STRING && recv != TY_SYMBOL &&
