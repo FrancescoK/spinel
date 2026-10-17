@@ -925,7 +925,7 @@ class DateTime < Date
   end
 
   def _init_datetime(jd, h, m, s, sf, of, sg)
-    @jd            = jd
+    @jd            = Integer(jd)
     # Store the cutover as a Float, matching the C extension (see init_from_jd).
     @start         = sg.to_f
     @day_fraction  = nil

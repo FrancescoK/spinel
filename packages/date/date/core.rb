@@ -1741,7 +1741,7 @@ class Date
   end
 
   def init_from_jd(jd, sg, df = nil)
-    @jd            = jd
+    @jd            = Integer(jd)
     # Store the cutover as a Float, matching the C extension (which keeps it as
     # a double). Keeps #start, #hash and marshal output consistent regardless of
     # whether the caller passed an Integer (e.g. ITALY) or a Float sentinel.
