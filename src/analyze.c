@@ -40907,7 +40907,20 @@ static void psb_add(PsbSyms *s, const char *v) {
 /* The Symbol literals `node` can evaluate to -- or, with `elems`, that the
    Array it evaluates to can hold: a literal, an element read out of an Array
    literal, a local's or a constant's assignments, and the arms of a
-   conditional. */
+   conditional. `depth` counts the reads and calls followed, which bounds a
+   local assigned from itself. */
+typedef struct {
+  Compiler *c;
+  int elems;
+  PsbSyms *s;
+  int depth;
+} PsbArms;
+static void psb_collect(Compiler *c, int node, int elems, PsbSyms *s, int depth);
+static int psb_arm(const VpLeaf *leaf, void *ud) {
+  PsbArms *a = ud;
+  if (leaf->kind == VPK_EXPR) psb_collect(a->c, leaf->node, a->elems, a->s, a->depth + 1);
+  return 0;
+}
 static void psb_collect(Compiler *c, int node, int elems, PsbSyms *s, int depth) {
   const NodeTable *nt = c->nt;
   if (node < 0 || depth > 8) return;
@@ -40945,25 +40958,12 @@ static void psb_collect(Compiler *c, int node, int elems, PsbSyms *s, int depth)
     }
     return;
   }
-  case NK_IfNode:
-    psb_collect(c, nt_ref(nt, node, "statements"), elems, s, depth + 1);
-    psb_collect(c, nt_ref(nt, node, "subsequent"), elems, s, depth + 1);
-    return;
-  case NK_ElseNode:
-    psb_collect(c, nt_ref(nt, node, "statements"), elems, s, depth + 1);
-    return;
-  case NK_ParenthesesNode:
-    psb_collect(c, nt_ref(nt, node, "body"), elems, s, depth + 1);
-    return;
-  case NK_StatementsNode: {
-    int bn = 0; const int *body = nt_arr(nt, node, "body", &bn);
-    if (bn > 0) psb_collect(c, body[bn - 1], elems, s, depth + 1);
+  case NK_IfNode: case NK_ElseNode: case NK_ParenthesesNode: case NK_StatementsNode: case NK_OrNode:
+  case NK_AndNode: {
+    PsbArms a = { c, elems, s, depth };
+    for_each_value_position(nt, node, VP_AND_LEFT | VPS_IF | VPS_LOGIC, psb_arm, &a);
     return;
   }
-  case NK_OrNode: case NK_AndNode:
-    psb_collect(c, nt_ref(nt, node, "left"), elems, s, depth + 1);
-    psb_collect(c, nt_ref(nt, node, "right"), elems, s, depth + 1);
-    return;
   default:
     return;
   }
