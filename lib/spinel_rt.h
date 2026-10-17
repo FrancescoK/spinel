@@ -1299,6 +1299,7 @@ const char *sp_slurp_stream(FILE *fp);
 sp_File *sp_File_set_encoding(sp_File *f, sp_RbVal ext, sp_RbVal in);
 static inline const char *sp_File_read(sp_File *f) {
   SP_IO_OPEN(f);
+  if (SP_ATOMIC_LOAD(&f->timeout, __ATOMIC_ACQUIRE)) return sp_File_read_timed(f, -1);
   sp_io_wait_readable(f);
   /* A handle whose read can block fills to EOF through the parking slurp: the
      plain one asks fread for a whole buffer and sits in the kernel between a
@@ -1327,6 +1328,7 @@ static inline const char *sp_File_read_n(sp_File *f, sp_int n) {
   /* a negative length is CRuby's ArgumentError, checked before the stream */
   if (n < 0) sp_raise_cls("ArgumentError", sp_sprintf("negative length %lld given", (long long)n));
   SP_IO_OPEN(f);
+  if (SP_ATOMIC_LOAD(&f->timeout, __ATOMIC_ACQUIRE)) return sp_File_read_timed(f, n);
   sp_io_wait_readable(f);
   if (n == 0) return sp_str_empty_binary();
   char *r = sp_str_alloc((size_t)n);
@@ -14906,6 +14908,42 @@ static double sp_poly_time_interval(sp_RbVal v) {
   if (cn && strcmp(cn, "Rational") == 0) return sp_poly_to_f(v);
   sp_raise_cls("TypeError", sp_sprintf("can't convert %s into time interval", cn ? cn : "Object"));
   return 0.0;
+}
+static sp_File *sp_File_set_timeout(sp_File *f, sp_RbVal value) {
+  SP_GC_ROOT(f); SP_GC_ROOT_RBVAL(value);
+  double seconds = 0.0;
+  if (sp_poly_truthy(value)) {
+    seconds = sp_poly_time_interval(value);
+    if (seconds < 0.0) sp_raise_cls("ArgumentError", "time interval must not be negative");
+    if (isnan(seconds)) sp_raise_cls("RangeError", "NaN out of Time range");
+    if (isinf(seconds)) sp_raise_cls("RangeError", "Inf out of Time range");
+  }
+  return sp_io_set_timeout(f, value, seconds);
+}
+static double sp_io_wait_interval(sp_RbVal value) {
+  double seconds = sp_poly_time_interval(value);
+  if (seconds < 0.0)
+    sp_raise_cls("ArgumentError", "time interval must not be negative");
+  if (isnan(seconds)) sp_raise_cls("RangeError", "NaN out of Time range");
+  if (isinf(seconds)) sp_raise_cls("RangeError", "Inf out of Time range");
+  return seconds;
+}
+static sp_File *sp_io_wait_timeout(sp_File *f, sp_RbVal value, sp_int kind) {
+  SP_GC_ROOT(f); SP_GC_ROOT_RBVAL(value);
+  SP_IO_OPEN(f);
+  double seconds = value.tag == SP_TAG_NIL ? sp_io_timeout_seconds(f) : sp_io_wait_interval(value);
+  return sp_io_wait_events(f, seconds, kind);
+}
+static sp_RbVal sp_io_wait_timeout_value(sp_File *f, sp_RbVal value, sp_int kind, sp_bool explicit_wait) {
+  SP_GC_ROOT(f); SP_GC_ROOT_RBVAL(value);
+  double seconds = explicit_wait ? sp_io_wait_interval(value) : -1.0;
+  SP_IO_OPEN(f);
+  int buffered;
+  (void)sp_io_readiness_fd(f, &buffered);
+  if (kind != 1 && buffered) return sp_box_bool(1);
+  if (!explicit_wait)
+    seconds = value.tag == SP_TAG_NIL ? sp_io_timeout_seconds(f) : sp_io_wait_interval(value);
+  return sp_box_nullable_obj(sp_io_wait_events(f, seconds, kind), SP_BUILTIN_IO);
 }
 static sp_RbVal sp_poly_thread_status(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_THREAD) return sp_Thread_status((sp_thread *)v.v.p);

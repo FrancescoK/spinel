@@ -3130,6 +3130,10 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
          this, `fetch` fell through to the non-hash `fetch(k, default)` rule or
          to nil, and its value-position result was dropped). */
       if (sp_streq(name, "fetch") && (argc == 1 || argc == 2)) { *out = an_poly_concrete(c, name, TY_POLY); return 1; }
+      if (sp_streq(name, "timeout=") && argc == 1) {
+        *out = call_is_setter_assign(nt, id) ? infer_type(c, argv[0]) : TY_POLY;
+        return 1;
+      }
       /* `x = v` through a writer on a poly receiver is the assigned value as
          written, like `[]=` below: the dispatch calls the writer for effect
          and yields the argument's own temp, so no arm's return widens it.
@@ -3512,6 +3516,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
           sp_streq(name, "eof?") || sp_streq(name, "tty?") || sp_streq(name, "isatty") ||
           sp_streq(name, "sync"))
         { *out = an_poly_concrete(c, name, TY_BOOL); return 1; }
+      if (sp_streq(name, "timeout") && argc == 0) { *out = TY_POLY; return 1; }
       /* sync= answers its argument (only its truth sets the mode) */
       if (sp_streq(name, "sync=") && argc == 1)
         { *out = an_poly_concrete(c, name, infer_type(c, argv[0])); return 1; }
@@ -3571,7 +3576,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
         { *out = an_poly_concrete(c, name, TY_POLY); return 1; }
       if (sp_streq(name, "read_nonblock")) { *out = an_poly_concrete(c, name, TY_STRING); return 1; }
       if ((is_io_wait(name)) && argc <= 1)
-        { *out = an_poly_concrete(c, name, TY_IO); return 1; }
+        { *out = an_poly_concrete(c, name, sp_streq(name, "wait_writable") ? TY_IO : TY_POLY); return 1; }
       if (sp_streq(name, "write_nonblock")) { *out = an_poly_concrete(c, name, TY_INT); return 1; }
       if (sp_streq(name, "read") || sp_streq(name, "gets") ||
           sp_streq(name, "readline") || sp_streq(name, "pread") ||
@@ -4261,6 +4266,10 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
     if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
   }
   if (recv >= 0 && rt == TY_IO) {
+    if (sp_streq(name, "timeout=") && argc == 1) {
+      *out = call_is_setter_assign(nt, id) ? infer_type(c, argv[0]) : TY_IO;
+      return 1;
+    }
     {
       const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
       if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }

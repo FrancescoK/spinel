@@ -954,6 +954,7 @@ const char *sp_exc_parent_of_name(const char *cls) {
     {"KeyError",              "IndexError"},
     {"RangeError",            "StandardError"},
     {"IOError",               "StandardError"},
+    {"IO::TimeoutError",      "IOError"},
     {"EOFError",              "IOError"},
     {"ZeroDivisionError",     "StandardError"},
     {"NotImplementedError",   "ScriptError"},

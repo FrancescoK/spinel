@@ -129,6 +129,7 @@ static const BuiltinClass BUILTIN_CLASSES[] = {
   { "Errno::ENOENT",                0,     BC_EXCEPTION },
   { "GC",                           0,     BC_CLASS | BC_MODULE },
   { "IO::EAGAINWaitReadable",       0,     BC_EXCEPTION },
+  { "IO::TimeoutError",            0,     BC_EXCEPTION },
   { "IO::EAGAINWaitWritable",       0,     BC_EXCEPTION },
   { "IO::EINPROGRESSWaitReadable",  0,     BC_EXCEPTION },
   { "IO::EINPROGRESSWaitWritable",  0,     BC_EXCEPTION },

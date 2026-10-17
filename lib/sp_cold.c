@@ -5294,11 +5294,14 @@ static double sp_io_now(void) {
 #endif
 sp_File *sp_io_wait_events(sp_File *f, double timeout, sp_int kind) {SP_GC_ROOT(f);
   SP_IO_OPEN(f);
-  int fd = fileno(f->fp);
+  int fd = sp_io_readiness_fd(f, NULL);
 #ifdef SP_THREADS
   if (sp_io_park_events(kind) && timeout != 0.0) {
-    extern int sp_sched_wait_io_timeout(int fd, short events, double timeout_s);
-    return sp_sched_wait_io_timeout(fd, sp_io_park_events(kind), timeout) ? f : NULL;
+    extern int sp_sched_wait_io_timeout_unless(int, short, double, const unsigned char *);
+    int ready = sp_sched_wait_io_timeout_unless(fd, sp_io_park_events(kind), timeout, &f->closed);
+    if (SP_ATOMIC_LOAD(&f->closed, __ATOMIC_RELAXED))
+      sp_raise_cls("IOError", "stream closed in another thread");
+    return ready ? f : NULL;
   }
 #endif
   /* Readiness on ONE descriptor is a poll, not a select. select(2) cannot name

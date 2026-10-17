@@ -1,0 +1,76 @@
+IOError
+default: nil
+setter-self: true
+getter: nil
+setter-self: true
+getter: false
+setter-self: true
+getter: 0
+setter-self: true
+getter: 0.01
+setter-self: true
+getter: 1
+setter-self: true
+getter: (1/10)
+invalid: ArgumentError: time interval must not be negative
+retained: (1/10)
+invalid: ArgumentError: time interval must not be negative
+retained: (1/10)
+invalid: RangeError: Inf out of Time range
+retained: (1/10)
+invalid: RangeError: NaN out of Time range
+retained: (1/10)
+invalid: TypeError: can't convert TrueClass into time interval
+retained: (1/10)
+invalid: TypeError: can't convert String into time interval
+retained: (1/10)
+invalid: TypeError: can't convert Object into time interval
+retained: (1/10)
+assignment: 0.02
+assignment-effect: 0.04
+assignment-order: ["receiver", "argument"]
+boxed-getter: 0.02
+boxed-setter: true
+method-assignment: 0.02
+method-getter: 0.02
+method-setter: true
+method-assignment: 0.02
+method-getter: 0.02
+method-setter: false
+dup: 0.02
+frozen: true
+closed-get: 0.03
+closed-set: true
+stdout-root: (1/10)
+read: IO::TimeoutError: Blocking operation timed out!
+read-all: IO::TimeoutError: Blocking operation timed out!
+readpartial: "O"
+nil-read: "O"
+read-zero: ""
+partial-zero: ""
+zero-ready: "X"
+zero-timeout: IO::TimeoutError: Blocking operation timed out!
+buffered-wait: true
+buffered-priority: true
+buffered-wait-call: true
+buffered-wait-nil: TypeError: can't convert NilClass into time interval
+buffered-wait-negative: ArgumentError: time interval must not be negative
+buffered-negative: true
+buffered-false: true
+buffered-byte: "R"
+progress: "XXX"
+wait-default: nil
+writable-default: true
+wait-nil: nil
+wait-short: nil
+wait-long-empty: nil
+wait-override: true
+ready-byte: "R"
+select: nil
+select-override: true
+select-byte: "S"
+write: IO::TimeoutError: Blocking operation timed out!
+close-wakes-read: IOError: stream closed in another thread
+close-wakes-wait: IOError: stream closed in another thread
+raise-wakes-read: RuntimeError: injected
+rescue: IO::TimeoutError: explicit

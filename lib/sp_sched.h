@@ -179,6 +179,7 @@ int        sp_sched_wait_io_timeout(int fd, short events, double timeout_s);
    where the registration would otherwise go in after the close's
    sp_sched_ev_forget and never be readied. */
 int        sp_sched_wait_io_unless(int fd, short events, const unsigned char *cancel);
+int        sp_sched_wait_io_timeout_unless(int fd, short events, double timeout_s, const unsigned char *cancel);
 sp_thread *sp_Thread_current(void);       /* Thread.current */
 sp_bool   sp_Thread_alive(sp_thread *t); /* #alive? */
 sp_bool   sp_Thread_set_report_default(sp_bool v);  /* Thread.report_on_exception= */

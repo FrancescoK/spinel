@@ -1629,6 +1629,7 @@ static void cpoly_cases_n(Compiler *c, int id, const char *name, int argc, const
                           const TyKind *atmp_ty, const PolySpecialsN *ps, int splat_a, PolyPlan *p, int *cap) {
   int kwh = ps->kwh, plain = kwh < 0 && splat_a < 0;
   if (ps->index) cpoly_family(p, cap, PB_INDEX_CASES);
+  if (sp_streq(name, "timeout=") && argc == 1 && plain) cpoly_family(p, cap, PB_IO_TIMEOUT);
   if (sp_streq(name, "read_nonblock") && ps->pos_argc == 1 && splat_a < 0) cpoly_family(p, cap, PB_IO_READ_NB);
   if ((sp_streq(name, "readpartial") || sp_streq(name, "sysread")) && argc == 1 && plain)
     cpoly_family(p, cap, PB_IO_READPARTIAL);
@@ -1936,7 +1937,7 @@ static int cpoly_str_trial(Compiler *c, int id, const char *name, int argc, cons
 static void cpoly_prearms0(Compiler *c, int id, const char *name, const PolySpecials0 *ps, TyKind ret,
                            PolyPlan *p, int *cap) {
   static const char *const ioz[] = { "close", "closed?", "eof?", "eof", "tty?", "isatty", "flush",
-    "fileno", "tell", "pos", "lineno", "sync", "gets", "getc", "readchar", "readline", "readbyte",
+    "fileno", "tell", "pos", "lineno", "sync", "timeout", "gets", "getc", "readchar", "readline", "readbyte",
     "getbyte", "readlines", NULL };
   static const char *const reduce[] = { "sum", "min", "max", "first", "last", NULL };
   /* the String transforms, by what they answer: a String, an Integer

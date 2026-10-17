@@ -28173,7 +28173,7 @@ void emit_gets_sep_args(Compiler *c, const int *argv, int argc, Buf *b) {
   free(s.p); free(l.p); free(k.p);
 }
 
-/* The readiness family on a handle `r`: the handle when ready, nil (NULL)
+/* Readiness is true for buffered input, the handle for fd readiness and nil
    on timeout. IO#wait takes the direction as a trailing symbol. */
 void emit_io_wait(Compiler *c, const char *name, int argc, const int *argv,
                          const char *r, Buf *b) {
@@ -28187,11 +28187,13 @@ void emit_io_wait(Compiler *c, const char *name, int argc, const int *argv,
     else if (sym && sp_streq(sym, "priority")) ev = 2;
     else if (sym && sp_streq(sym, "read_write")) ev = 3;
   }
-  buf_printf(b, "sp_io_wait_events(%s, ", r);
-  if (argc >= 1 && !(nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "NilNode")))
-    emit_float_expr(c, argv[0], b);
-  else buf_puts(b, "-1.0");
-  buf_printf(b, ", %d)", ev);
+  int boxed = !sp_streq(name, "wait_writable");
+  buf_printf(b, "%s(%s, ", boxed ? "sp_io_wait_timeout_value" : "sp_io_wait_timeout", r);
+  if (argc >= 1) emit_boxed(c, argv[0], b);
+  else buf_puts(b, "sp_box_nil()");
+  buf_printf(b, ", %d", ev);
+  if (boxed) buf_printf(b, ", %d", sp_streq(name, "wait") && argc > 0);
+  buf_puts(b, ")");
 }
 
 /* Does a boxed IO's `write` take the argument-list branch? Any count of

@@ -14727,6 +14727,17 @@ static void emit_writer_arm_src_root(TyKind at, const char *src, Buf *b) {
 void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
                             const char *objp, const char *src, TyKind at, int vnode,
                             int box_tv, int src_tv, int native_answer, Buf *b) {
+  if (box_tv >= 0 && sp_streq(nm, "timeout=") && (!native_answer || at == TY_POLY)) {
+    int tf = ++g_tmp;
+    buf_printf(b, " case SP_BUILTIN_IO: { sp_File *_t%d = (sp_File *)_t%d.v.p; ", tf, box_tv);
+    emit_stat_handle_nomethod(tf, box_tv, nm, b);
+    buf_printf(b, "sp_File_set_timeout(_t%d, ", tf);
+    if (at == TY_POLY) buf_puts(b, src);
+    else emit_boxed_text(c, at, src, b);
+    buf_puts(b, "); ");
+    if (native_answer) buf_printf(b, "_t%d = _t%d; ", src_tv, box_tv);
+    buf_puts(b, "break; }");
+  }
   /* --share-strings: a String a shared boxed slot takes is its handle, as
      the typed store boxes it (emit_boxed's lift, share_lift_poly_ivar_stores) */
   int lift = vnode >= 0 && repr_share_rule(c) && c->poly_strbuf_lift[vnode] && at == TY_STRING;
