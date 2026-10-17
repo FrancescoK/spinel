@@ -8440,7 +8440,21 @@ static int widen_proc_params_poly(Compiler *c, int ref) {
 /* The proc literals a block argument's value can be: the literal itself,
    either arm of a conditional, the last statement of parentheses, or any
    write to the local it reads. Up to `max` are stored in `out`; the count
-   found is returned (it may pass `max`). */
+   found is returned (it may pass `max`). `depth` counts the writes followed,
+   which bounds a local assigned from itself. */
+typedef struct {
+  Compiler *c;
+  int *out;
+  int max, n, depth;
+} ProcArms;
+static int proc_literals_reaching(Compiler *c, int ref, int *out, int max, int depth);
+static int proc_arm(const VpLeaf *leaf, void *ud) {
+  ProcArms *a = ud;
+  if (leaf->kind == VPK_EXPR)
+    a->n += proc_literals_reaching(a->c, leaf->node, a->out + (a->n < a->max ? a->n : a->max),
+                                   a->n < a->max ? a->max - a->n : 0, a->depth + 1);
+  return 0;
+}
 static int proc_literals_reaching(Compiler *c, int ref, int *out, int max, int depth) {
   NodeTable *nt = (NodeTable *)c->nt;
   if (ref < 0 || depth > 16) return 0;
@@ -8451,21 +8465,9 @@ static int proc_literals_reaching(Compiler *c, int ref, int *out, int max, int d
   }
   int n = 0;
   if (k == NK_IfNode || k == NK_UnlessNode || k == NK_ParenthesesNode) {
-    int arms[2] = { -1, -1 };
-    if (k == NK_ParenthesesNode) arms[0] = nt_ref(nt, ref, "body");
-    else {
-      arms[0] = nt_ref(nt, ref, "statements");
-      arms[1] = nt_ref(nt, ref, k == NK_UnlessNode ? "else_clause" : "subsequent");
-    }
-    for (int ai = 0; ai < 2; ai++) {
-      int arm = arms[ai];
-      if (arm >= 0 && nt_kind(nt, arm) == NK_ElseNode) arm = nt_ref(nt, arm, "statements");
-      if (arm < 0) continue;
-      int bn = 0; const int *bb = nt_arr(nt, arm, "body", &bn);
-      int last = bb && bn > 0 ? bb[bn - 1] : (nt_kind(nt, arm) == NK_StatementsNode ? -1 : arm);
-      n += proc_literals_reaching(c, last, out + (n < max ? n : max), n < max ? max - n : 0, depth + 1);
-    }
-    return n;
+    ProcArms a = { c, out, max, 0, depth };
+    for_each_value_position(nt, ref, VPS_IF | VPS_UNLESS, proc_arm, &a);
+    return a.n;
   }
   if (k == NK_LocalVariableReadNode) {
     const char *vn = nt_str(nt, ref, "name");
