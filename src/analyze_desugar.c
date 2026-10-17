@@ -1680,6 +1680,7 @@ static int fpi_reads(const NodeTable *nt, int node, const char *name) {
   }
   return n;
 }
+static int fwd_subtree_yields(const NodeTable *nt, int id);
 /* rewrite the module's initialize; 1 when it took */
 static int fpi_rewrite_init(NodeTable *nt, int def) {
   int body = nt_ref(nt, def, "body");
@@ -1695,6 +1696,9 @@ static int fpi_rewrite_init(NodeTable *nt, int def) {
     if (!bp || e < 0 || nt_kind(nt, e) != NK_LocalVariableReadNode || !sp_streq(nt_str(nt, e, "name"), bp)) return 0;
   }
   if (bp && fpi_reads(nt, body, bp) != (blk >= 0 ? 1 : 0)) return 0;
+  /* __spinel_init is called with no block: a yield or a block_given? in
+     it would not see the fiber's */
+  if (fwd_subtree_yields(nt, body)) return 0;
   int args = nt_ref(nt, sup, "arguments");
   int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   if (an > 1 || (an == 1 && nt_kind(nt, av[0]) != NK_KeywordHashNode)) return 0;

@@ -652,6 +652,12 @@ spinel: 1 refusal, nothing written
 == test/reject/ffi_ptr_ruby_object.rb [promote] rc=1
 spinel: test/reject/ffi_ptr_ruby_object.rb:11: unsupported ffi pointer argument (a Ruby object has no C address; pass an IO::Buffer, a String or a :ptr value): node N (CallNode `new`) recv=ConstantReadNode/ty49 argc=0
 spinel: 1 refusal, nothing written
+== test/reject/fiber_prepended_initialize_block_given.rb [default] rc=1
+spinel: test/reject/fiber_prepended_initialize_block_given.rb:8: unsupported call: node N (CallNode `initialize`) recv=SelfNode/ty33 argc=1 arg0ty28
+spinel: 1 refusal, nothing written
+== test/reject/fiber_prepended_initialize_block_given.rb [promote] rc=1
+spinel: test/reject/fiber_prepended_initialize_block_given.rb:8: unsupported call: node N (CallNode `initialize`) recv=SelfNode/ty33 argc=1 arg0ty28
+spinel: 1 refusal, nothing written
 == test/reject/forwarding_builtin_uneven_calls.rb [default] rc=1
 spinel: test/reject/forwarding_builtin_uneven_calls.rb:1: `...` forwarded into a builtin method, from calls that do not all pass the same number of positional arguments
 == test/reject/forwarding_builtin_uneven_calls.rb [promote] rc=1
