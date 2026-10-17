@@ -1038,6 +1038,17 @@ static void emit_ternary_arm_o(Compiler *c, int nd, TyKind res, int res_o, Buf *
   const char *bty = nt_type(nt, nd);
   if (res_o && oint_kind(res)) { emit_oint_expr(c, nd, res, b); return; }
   if (res == TY_POLY && repr_of(c, nd).kind != RK_BOXED) { emit_boxed(c, nd, b); return; }
+  /* A String result beside an arm that picks up a handle (`v.is_a?(String)
+     ? v.dup : String.new`, whose narrowed dup is a String): the handle's
+     bytes. Put in as it stands, an sp_String * shared one C conditional
+     with a const char *, and the slot read the handle as bytes. */
+  if (res == TY_STRING && repr_of(c, nd).as_ty == TY_STRBUF && nt_kind(nt, unwrap_parens(c, nd)) == NK_CallNode &&
+      strbuf_call_picks_up(c, unwrap_parens(c, nd))) {
+    buf_puts(b, "sp_strbuf_read(");
+    emit_expr(c, nd, b);
+    buf_puts(b, ")");
+    return;
+  }
   /* An arm with no C VALUE cannot sit in a C conditional beside a typed
      sibling: a method whose body is `nil` compiles to a void function, and
      `a && a.analyze` put that call straight into one arm of `? :` whose other
