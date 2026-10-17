@@ -372,6 +372,45 @@ static inline long long nt_int(const NodeTable *nt, int id, const char *key, lon
 static inline int nt_param_repeated(const NodeTable *nt, int id) {
   return (nt_int(nt, id, "flags", 0) & NT_PARAM_REPEATED) != 0;
 }
+/* Prism's node flags that flatten_node keeps in a node's "flags" integer: a
+   RangeNode's, a WhileNode's and UntilNode's, and a regexp literal's. Their
+   bits overlap (a range's EXCLUDE_END, a loop's BEGIN_MODIFIER and a
+   regexp's IGNORE_CASE are all 4), so a bit is read through the predicate for
+   its node kind, which answers 0 for any other kind, never by testing
+   "flags" against a number. spinel_parse.c asserts each value below against
+   Prism's own constant. */
+#define NT_RANGE_EXCLUDE_END 4     /* PM_RANGE_FLAGS_EXCLUDE_END */
+#define NT_LOOP_BEGIN_MODIFIER 4   /* PM_LOOP_FLAGS_BEGIN_MODIFIER */
+#define NT_RE_IGNORE_CASE 4        /* PM_REGULAR_EXPRESSION_FLAGS_IGNORE_CASE */
+#define NT_RE_EXTENDED 8           /* PM_REGULAR_EXPRESSION_FLAGS_EXTENDED */
+#define NT_RE_MULTI_LINE 16        /* PM_REGULAR_EXPRESSION_FLAGS_MULTI_LINE */
+#define NT_RE_EUC_JP 64            /* PM_REGULAR_EXPRESSION_FLAGS_EUC_JP */
+#define NT_RE_ASCII_8BIT 128       /* PM_REGULAR_EXPRESSION_FLAGS_ASCII_8BIT */
+#define NT_RE_WINDOWS_31J 256      /* PM_REGULAR_EXPRESSION_FLAGS_WINDOWS_31J */
+#define NT_RE_UTF_8 512            /* PM_REGULAR_EXPRESSION_FLAGS_UTF_8 */
+/* A range literal that excludes its end (`a...b`). */
+static inline int nt_range_excl(const NodeTable *nt, int id) {
+  return nt_kind(nt, id) == NK_RangeNode && (nt_int(nt, id, "flags", 0) & NT_RANGE_EXCLUDE_END) != 0;
+}
+/* A range a desugar builds says whether it excludes its end the way the
+   parser does. */
+static inline void nt_range_set_excl(NodeTable *nt, int id, int excl) {
+  nt_node_set_int(nt, id, "flags", excl ? NT_RANGE_EXCLUDE_END : 0);
+}
+/* A `while` or `until` loop that tests after its body (`begin ... end while
+   c`): the body runs once before the first test. */
+static inline int nt_loop_post(const NodeTable *nt, int id) {
+  NodeKind k = nt_kind(nt, id);
+  return (k == NK_WhileNode || k == NK_UntilNode) &&
+         (nt_int(nt, id, "flags", 0) & NT_LOOP_BEGIN_MODIFIER) != 0;
+}
+/* A regexp literal's option bits, a mask of the NT_RE_* values (0 for any
+   other node). */
+static inline int nt_regexp_opts(const NodeTable *nt, int id) {
+  NodeKind k = nt_kind(nt, id);
+  if (k != NK_RegularExpressionNode && k != NK_InterpolatedRegularExpressionNode) return 0;
+  return (int)nt_int(nt, id, "flags", 0);
+}
 static inline int nt_ref(const NodeTable *nt, int id, const char *key) {
   NT_WORK();
   if (id < 0 || id >= nt->count) return -1;

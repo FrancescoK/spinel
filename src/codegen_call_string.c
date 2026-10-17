@@ -1039,7 +1039,7 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
          the name length. The name is materialized once to avoid re-evaluating
          the receiver for an endless range. */
       int rn = argv[0];
-      int excl = (int)(nt_int(c->nt, rn, "flags", 0) & 4) ? 1 : 0;
+      int excl = nt_range_excl(c->nt, rn);
       int lo = nt_ref(c->nt, rn, "left"), hi = nt_ref(c->nt, rn, "right");
       int t = ++g_tmp;
       buf_printf(b, "({ const char *_t%d = sp_sym_to_s(", t); emit_expr(c, recv, b);

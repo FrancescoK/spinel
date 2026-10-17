@@ -673,7 +673,7 @@ int an_regex_local_lit(Compiler *c, int read) {
     int v = kk == NK_LocalVariableWriteNode ? nt_ref(nt, k, "value") : -1;
     if (v < 0 || nt_kind(nt, v) != NK_RegularExpressionNode) return -1;
     if (found >= 0 &&
-        (nt_int(nt, v, "flags", 0) != nt_int(nt, found, "flags", 0) ||
+        (nt_regexp_opts(nt, v) != nt_regexp_opts(nt, found) ||
          !sp_streq(nt_str(nt, v, "unescaped"), nt_str(nt, found, "unescaped"))))
       return -1;
     if (found < 0) found = v;

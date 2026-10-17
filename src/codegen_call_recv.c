@@ -1332,7 +1332,7 @@ static int emit_poly_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
   if (sp_streq(name, "[]") && argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode")) {
     /* arr[a..b] / arr[a...b] -> subarray */
     int rn = argv[0];
-    int excl = (int)(nt_int(nt, rn, "flags", 0) & 4) ? 1 : 0;
+    int excl = nt_range_excl(nt, rn);
     int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
     Buf rb; int ch = hold_recv_open(c, recv, 0, "sp_PolyArray *", "SP_GC_ROOT", b, &rb);
     buf_printf(b, "sp_PolyArray_slice_range(%s, ", rb.p);
@@ -2104,7 +2104,7 @@ static int emit_kind_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
   if (sp_streq(name, "[]") && argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode")) {
     /* arr[a..b] / arr[a...b] -> subarray */
     int rn = argv[0];
-    int excl = (int)(nt_int(nt, rn, "flags", 0) & 4) ? 1 : 0;
+    int excl = nt_range_excl(nt, rn);
     int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
     Buf rb; char tys[32]; snprintf(tys, sizeof tys, "sp_%sArray *", k);
     int ch = hold_recv_open(c, recv, 0, tys, "SP_GC_ROOT", b, &rb);
@@ -7943,7 +7943,7 @@ static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, 
            sp_streq(nt_type(c->nt, argv[0]), "RangeNode")) {
     /* s[a..b] / s[a...b]; beginless/endless ranges use 0 / length */
     int rn = argv[0];
-    int excl = (int)(nt_int(c->nt, rn, "flags", 0) & 4) ? 1 : 0;
+    int excl = nt_range_excl(c->nt, rn);
     int lo = nt_ref(c->nt, rn, "left"), hi = nt_ref(c->nt, rn, "right");
     /* the end may read the receiver's length (an endless Range, or a nil
        end), so the receiver is bound once: evaluated twice, a receiver
@@ -8033,7 +8033,7 @@ static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, 
     /* an exclusive Range with an end has no greatest member to clamp to,
        and a two-argument min above max is out of order: both raise (#3593).
        An endless one clamps from below, exclusive or not. */
-    int excl_r = (argc == 1 && !rvar && (nt_int(c->nt, argv[0], "flags", 0) & 4)) ? 1 : 0;
+    int excl_r = argc == 1 && !rvar && nt_range_excl(c->nt, argv[0]);
     int tc = ++g_tmp, tlo = ++g_tmp, thi = ++g_tmp, trg = rvar ? ++g_tmp : 0;
     buf_printf(b, "({ const char *_t%d = %s; ", tc, r);
     if (rvar) {
@@ -9732,7 +9732,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
                              (flo >= 0 && comp_ntype(c, flo) == TY_FLOAT) ||
                              (fhi >= 0 && comp_ntype(c, fhi) == TY_FLOAT));
       if (any_f) {
-        int excl3 = (int)(nt_int(nt, rn3, "flags", 0) & 4) ? 1 : 0;
+        int excl3 = nt_range_excl(nt, rn3);
         int tf3 = ++g_tmp, tlo = -1, thi = -1;
         int lo_f = flo >= 0 && comp_ntype(c, flo) == TY_FLOAT;
         int hi_f = fhi >= 0 && comp_ntype(c, fhi) == TY_FLOAT;
@@ -10447,7 +10447,7 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
                           ? nt_int(nt, rl4, "value", 0) : 0;
         long long hi4 = rr4 >= 0 && nt_type(nt, rr4) && sp_streq(nt_type(nt, rr4), "IntegerNode")
                           ? nt_int(nt, rr4, "value", 0) : sc->nmembers - 1;
-        if (nt_int(nt, argv[a4], "flags", 0) & 4) hi4--;
+        if (nt_range_excl(nt, argv[a4])) hi4--;
         if (lo4 < 0) lo4 += sc->nmembers;
         if (hi4 < 0) hi4 += sc->nmembers;
         /* a Range that runs past the last member pads with nil, the way
@@ -11637,7 +11637,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
            -- CRuby raises ArgumentError regardless of whether the end would be
            applied (#2587). An endless `lo...` has no end, so it is fine.
            Evaluate the operands in order, then raise. */
-        if (has_hi && (int)(nt_int(nt, rn2, "flags", 0) & 4)) {
+        if (has_hi && nt_range_excl(nt, rn2)) {
           const char *ccn = c->classes[ty_object_class(rt)].c_name;
           buf_puts(b, "({ (void)("); emit_boxed(c, recv, b);
           if (has_lo) { buf_puts(b, "); (void)("); emit_boxed(c, rlo, b); }
@@ -12880,7 +12880,7 @@ TyKind emit_range_step_array(Compiler *c, int id, Buf *b) {
   int is_lit = rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode");
   int lo = is_lit ? nt_ref(nt, rn, "left") : -1;
   int hi = is_lit ? nt_ref(nt, rn, "right") : -1;
-  int excl = (is_lit && (nt_int(nt, rn, "flags", 0) & 4)) ? 1 : 0;
+  int excl = is_lit && nt_range_excl(nt, rn);
   int is_float = comp_ntype(c, argv[0]) == TY_FLOAT ||
                  (lo >= 0 && comp_ntype(c, lo) == TY_FLOAT) ||
                  (hi >= 0 && comp_ntype(c, hi) == TY_FLOAT);
@@ -13223,7 +13223,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
           comp_ntype(c, nt_ref(nt, rn9, "right")) == TY_FLOAT &&
           !lazy_endpoint_is_infinite(c, nt_ref(nt, rn9, "right")) &&
           sp_streq(name, "size") && argc == 0) {
-        int excl9 = (int)(nt_int(nt, rn9, "flags", 0) & 4) ? 1 : 0;
+        int excl9 = nt_range_excl(nt, rn9);
         int tb9 = ++g_tmp, te9 = ++g_tmp;
         /* promote types a Range size poly (it can pass the word) */
         int bx9 = repr_of(c, id).kind == RK_BOXED;
@@ -13245,7 +13245,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
         int lo9 = nt_ref(nt, rn9, "left"), hi9 = nt_ref(nt, rn9, "right");
         if (lo9 >= 0 && hi9 >= 0 &&
             comp_ntype(c, lo9) == TY_STRING && comp_ntype(c, hi9) == TY_STRING) {
-          int excl9 = (int)(nt_int(nt, rn9, "flags", 0) & 4) ? 1 : 0;
+          int excl9 = nt_range_excl(nt, rn9);
           if (argc == 0 && (sp_streq(name, "begin") || sp_streq(name, "first") ||
                             sp_streq(name, "min"))) { emit_expr(c, lo9, b); return 1; }
           if (argc == 0 && (is_range_end_reader(name))) {
@@ -13381,7 +13381,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
           if (!((*q2 >= 'a' && *q2 <= 'z') || (*q2 >= 'A' && *q2 <= 'Z') ||
                 (*q2 >= '0' && *q2 <= '9') || *q2 == '_')) plain = 0;
         if (plain) {
-          int exq = (int)(nt_int(nt, rq, "flags", 0) & 4) ? 1 : 0;
+          int exq = nt_range_excl(nt, rq);
           int quoted = sp_streq(name, "inspect");
           buf_puts(b, "SPL(\"");
           if (quoted) buf_puts(b, "\\\"");
