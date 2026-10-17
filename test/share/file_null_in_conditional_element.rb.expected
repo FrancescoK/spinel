@@ -1,0 +1,4 @@
+{out: "o", in: "/tmp/in!"}
+"/tmp/in!"
+{out: "o", in: "/dev/null"}
+nil

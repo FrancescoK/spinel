@@ -1365,6 +1365,11 @@ int is_engine_string_const(const char *n) {
                sp_streq(n, "RUBY_ENGINE") || sp_streq(n, "RUBY_ENGINE_VERSION") ||
                sp_streq(n, "RUBY_RELEASE_DATE") || sp_streq(n, "RUBY_REVISION") || sp_streq(n, "RUBY_COPYRIGHT"));
 }
+/* File's String constants, which codegen emits as static literals (the
+   File arm of the constant path emitter): frozen, one String each */
+int is_file_string_const(const char *n) {
+  return n && (sp_streq(n, "SEPARATOR") || sp_streq(n, "PATH_SEPARATOR") || sp_streq(n, "NULL"));
+}
 /* ARGV, whose Strings CRuby freezes */
 int is_argv_const(const char *n) { return n && sp_streq(n, "ARGV"); }
 /* to_proc curry: a proc made of a Symbol, a Method or a proc */

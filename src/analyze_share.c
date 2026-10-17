@@ -5554,6 +5554,13 @@ int share_frozen_string(Compiler *c, int n) {
     const char *nm = nt_str(nt, u, "name");
     return is_engine_string_const(nm) && !comp_const(c, nm);
   }
+  /* (File::NULL and the separators, static literals while the program
+     has no File of its own) */
+  if (u >= 0 && nt_kind(nt, u) == NK_ConstantPathNode) {
+    int par = nt_ref(nt, u, "parent");
+    const char *pn = par >= 0 && nt_kind(nt, par) == NK_ConstantReadNode ? nt_str(nt, par, "name") : NULL;
+    return pn && sp_streq(pn, "File") && comp_class_index(c, "File") < 0 && is_file_string_const(nt_str(nt, u, "name"));
+  }
   return share_frozen_literal(c, n);
 }
 int share_value_fresh(Compiler *c, int n, int depth) {
