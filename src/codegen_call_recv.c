@@ -14836,6 +14836,26 @@ int emit_boxed_class_aref(Compiler *c, int id, Buf *b) {
       if (aref_arg_in_place(nt, argv[i])) continue;
       TyKind at = repr_of(c, argv[i]).as_ty;
       int ta = ++g_tmp;
+      /* --share-strings: a String argument the rule hands on as its handle
+         runs as that handle and reads as its String (ran_first_bind_read),
+         as emit_arg_temp takes one: emit_expr of a literal the rule boxes
+         answers its bytes, which the handle-typed temp did not hold */
+      if (at == TY_STRBUF && repr_share_rule(c)) {
+        buf_printf(b, "sp_String *_t%d = ", ta);
+        /* (a value wrapped where its handle is demanded, a literal, takes
+           a new handle around its bytes, as emit_boxed_string wraps one) */
+        if (repr_of(c, argv[i]).strbuf_src == RS_FRESH) {
+          buf_printf(b, "%s(", strbuf_new_func(c, argv[i]));
+          int mk = view_push_repr(c, argv[i], VR_STRBUF_BOX, 0);
+          emit_str_expr(c, argv[i], b);
+          view_pop(c, mk);
+          buf_puts(b, ")");
+        }
+        else emit_strbuf_handle_of(c, argv[i], b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); ", ta);
+        ran_first_bind_read(argv[i], ta);
+        continue;
+      }
       emit_ctype(c, at, b);
       buf_printf(b, " _t%d = ", ta); emit_expr(c, argv[i], b); buf_puts(b, "; ");
       if (ty_gc_rootable(c, at)) { emit_gc_root_tmp(c, at, ta, b); buf_puts(b, " "); }
