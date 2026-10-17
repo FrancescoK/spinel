@@ -28,3 +28,20 @@ p Deeper.make(nil)
 p Base.port_or_default(nil)
 p Sub.port_or_default(nil)
 p Sub.port_or_default(8080)
+
+class Mixed
+  def self.dp = nil
+  def self.make(v) = v.nil? ? dp : v
+  def self.pick = dp
+end
+
+class MixedSub < Mixed
+  def self.dp = 80
+end
+
+p Mixed.make(nil)
+p MixedSub.make(nil)
+p MixedSub.make(2.5)
+p Mixed.make(1.25)
+p MixedSub.pick
+p Mixed.pick
