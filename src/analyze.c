@@ -26171,7 +26171,10 @@ static int an_class_dynamic_new_risk(Compiler *c, int cid) {
     if (seen_any || seen || self_any_seen) {
       for (int ci = 0; ci < c->nclasses; ci++) {
         if (seen_any || (selfany && selfany[ci])) { risk[ci] = 1; continue; }
-        int mi = comp_method_in_class(c, ci, "initialize");
+        /* the initialize `new` runs: an inherited one for a class with none
+           of its own, as an_call_targets_of ties it (a subclass passed
+           MyFragment.new(h) beside an unpinnable Base::Fragment.new(doc)) */
+        int mi = comp_method_in_chain(c, ci, "initialize", NULL);
         if (mi < 0) continue;        /* no initialize: no parameter to protect */
         int pn = (mi < c->nscopes && c->scopes[mi].def_node >= 0)
                      ? nt_ref(nt, c->scopes[mi].def_node, "parameters") : -1;
