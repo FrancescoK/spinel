@@ -57,6 +57,12 @@ typedef struct {
   unsigned poly_lift:1;   /* a poly read lifted to the shared handle */
   unsigned dyn_cls:1;     /* an object of a class with subclasses: its box
                              reads the class id from the object */
+  unsigned exc:1;         /* held as an sp_Exception, or as a user exception
+                             subclass's struct, whose leading members mirror
+                             sp_Exception's: the layout a (sp_Exception *)
+                             cast reads. Which class the value is stays the
+                             type's: as_ty is TY_EXCEPTION for the builtin
+                             and an object type for a subclass */
   unsigned nil_scalar:1;  /* an Integer or Float whose box reads its nil
                              (sp_box_oint / sp_box_ofloat) */
   unsigned nil_tested:1;  /* a call's nil arm has tested this receiver for

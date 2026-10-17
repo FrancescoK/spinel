@@ -4574,8 +4574,7 @@ void emit_concurrency_raise(Compiler *c, const char *rtext, int argc, const int 
   int arg0_const = argc >= 1 && nt_type(nt, argv[0]) &&
     (sp_streq(nt_type(nt, argv[0]), "ConstantReadNode") ||
      sp_streq(nt_type(nt, argv[0]), "ConstantPathNode"));
-  int arg0_exc = a0t == TY_EXCEPTION ||
-    (ty_is_object(a0t) && class_is_exc_subclass(c, ty_object_class(a0t)));
+  int arg0_exc = argc >= 1 && repr_of(c, argv[0]).exc;
   if (argc >= 1 && arg0_exc) {
     int t = ++g_tmp;
     buf_printf(b, "({ %s *_%cr%d = %s", ctype, pfx, t, rtext);

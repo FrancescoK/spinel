@@ -117,8 +117,8 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
      exception-shaped queries still route through the base sp_Exception helpers
      (the struct's leading members mirror sp_Exception); the ivar readers fall
      through to normal object dispatch below. */
-  if (recv >= 0 && ty_is_object(comp_ntype(c, recv)) &&
-      class_is_exc_subclass(c, ty_object_class(comp_ntype(c, recv)))) {
+  Repr rr = repr_of(c, recv);
+  if (rr.exc && rr.as_ty != TY_EXCEPTION) {
     /* dup/clone copy the whole subclass struct via the GC header size, so
        mutating the copy's ivars leaves the original alone (#2772) */
     if ((is_copy_alias(name)) && argc == 0 &&
@@ -160,10 +160,7 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
        no-argument accessors had an arm and both were refused (#3870). */
     if (argc == 1 && comp_method_in_chain(c, ty_object_class(comp_ntype(c, recv)), name, NULL) < 0 &&
         (sp_streq(name, "exception") ||
-         ((is_eq_or_eql(name)) &&
-          (comp_ntype(c, argv[0]) == TY_EXCEPTION ||
-           (ty_is_object(comp_ntype(c, argv[0])) &&
-            class_is_exc_subclass(c, ty_object_class(comp_ntype(c, argv[0])))))))) {
+         ((is_eq_or_eql(name)) && repr_of(c, argv[0]).exc))) {
       if (sp_streq(name, "exception")) { emit_exc_exception(c, recv, argv[0], b); return 1; }
       buf_puts(b, "sp_exc_eq((sp_Exception *)("); emit_expr(c, recv, b);
       buf_puts(b, "), (sp_Exception *)("); emit_expr(c, argv[0], b); buf_puts(b, "))");
@@ -260,10 +257,8 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
    * rescued user subclass, fall through to the empty sp_StrArray return
    * the legacy path already provided. */
   if (sp_streq(name, "backtrace") && argc == 0 && recv >= 0) {
-    TyKind rrt = comp_ntype(c, recv);
-    int exc_ok = (rrt == TY_EXCEPTION) ||
-                 (ty_is_object(rrt) && class_is_exc_subclass(c, ty_object_class(rrt)));
-    if (exc_ok && comp_method_in_chain(c, ty_object_class(rrt), name, NULL) < 0) {
+    Repr rrr = repr_of(c, recv);
+    if (rrr.exc && comp_method_in_chain(c, ty_object_class(rrr.as_ty), name, NULL) < 0) {
       /* The base sp_Exception struct's backtrace field is the storage for
        * a builtin exception. A user exception subclass has a different
        * layout (the first 8 base fields, then its own ivars -- the base
@@ -299,10 +294,8 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
    * sp_box_obj(bt) so a chain like `e = e.set_backtrace(bt)` keeps the
    * array. */
   if (argc == 1 && sp_streq(name, "set_backtrace") && recv >= 0) {
-    TyKind rrt = comp_ntype(c, recv);
-    int exc_ok = (rrt == TY_EXCEPTION) ||
-                 (ty_is_object(rrt) && class_is_exc_subclass(c, ty_object_class(rrt)));
-    if (exc_ok && comp_method_in_chain(c, ty_object_class(rrt), name, NULL) < 0) {
+    Repr rrr = repr_of(c, recv);
+    if (rrr.exc && comp_method_in_chain(c, ty_object_class(rrr.as_ty), name, NULL) < 0) {
       int t = ++g_tmp;
       buf_printf(b, "({ sp_Exception *_t%d = (sp_Exception *)((void*)(", t);
       emit_expr(c, recv, b);
@@ -761,8 +754,8 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
                             (ckt == TY_FLOAT && !call_returns_nullable_int(c, cause_node)) ||
                             ckt == TY_BOOL || ckt == TY_SYMBOL ||
                             ckt == TY_CLASS || ckt == TY_RANGE;
-      int cause_exc = cause_is_nil || (!cause_lit && (ckt == TY_NIL || ckt == TY_EXCEPTION || ckt == TY_POLY || ckt == TY_UNKNOWN ||
-                      (ty_is_object(ckt) && class_is_exc_subclass(c, ty_object_class(ckt)))));
+      int cause_exc = cause_is_nil || (!cause_lit && (ckt == TY_NIL || ckt == TY_POLY || ckt == TY_UNKNOWN ||
+                      repr_of(c, cause_node).exc));
       int first_const = ac > 0 && nt_type(nt, av[0]) &&
                         comp_ntype(c, av[0]) != TY_STRING && comp_ntype(c, av[0]) != TY_STRBUF &&
                         (sp_streq(nt_type(nt, av[0]), "ConstantReadNode") || sp_streq(nt_type(nt, av[0]), "ConstantPathNode"));
@@ -774,9 +767,7 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
          A first argument typed as an exception may hold nil at run time
          (`raise $!`), and nil is the first error: it is tested here, after
          the operands ran, and only for a cause that cannot hold nil. */
-      int first_exc_val = !first_const && ac > 0 &&
-                          (first_ty == TY_EXCEPTION ||
-                           (ty_is_object(first_ty) && class_is_exc_subclass(c, ty_object_class(first_ty))));
+      int first_exc_val = !first_const && ac > 0 && repr_of(c, av[0]).exc;
       int first_ok = first_const ? (first_xc >= 0 ? (class_is_exc_subclass(c, first_xc) &&
                                                        comp_method_in_chain(c, first_xc, "initialize", NULL) < 0)
                                                   : (first_cn && is_exc_name(first_cn)))
@@ -840,9 +831,7 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
                 `raise ERR`) is a value, not a class name: it takes the object
                 path below, or it raised a class called "ERR" */
              !(comp_class_index(c, nt_str(nt, av[0], "name")) < 0 &&
-               (comp_ntype(c, av[0]) == TY_EXCEPTION ||
-                (ty_is_object(comp_ntype(c, av[0])) &&
-                 class_is_exc_subclass(c, ty_object_class(comp_ntype(c, av[0]))))))) {
+               repr_of(c, av[0]).exc)) {
       /* `raise E` with a user-defined E#initialize is `raise E.new`: construct
          the object (filling initialize's defaults) so its custom initialize and
          any `super`/message run. Without a custom initialize the message
@@ -1010,11 +999,11 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
       }
     }
     else {
-      TyKind at = ac > 0 ? comp_ntype(c, av[0]) : TY_UNKNOWN;
+      Repr ar = repr_of(c, ac > 0 ? av[0] : -1);
+      TyKind at = ar.as_ty;
       if (ac >= 2 && (at == TY_POLY || at == TY_CLASS))
         emit_raise_class_value(c, av[0], av[1], b);
-      else if (ac >= 2 && (at == TY_EXCEPTION ||
-                           (ty_is_object(at) && class_is_exc_subclass(c, ty_object_class(at))))) {
+      else if (ac >= 2 && ar.exc) {
         /* `raise e, msg` with an exception object in a variable: the message
            was dropped and the class name answered */
         int rk = ++g_tmp, rm = ++g_tmp;
@@ -1025,7 +1014,7 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
       }
       else if (at == TY_EXCEPTION)
         { buf_puts(b, "sp_raise_exc((sp_Exception *)("); emit_expr(c, av[0], b); buf_puts(b, "))"); }
-      else if (ty_is_object(at) && class_is_exc_subclass(c, ty_object_class(at)))
+      else if (ar.exc)
         /* an exception-subclass INSTANCE in a variable raises as itself */
         { buf_puts(b, "sp_raise_exc((sp_Exception *)("); emit_expr(c, av[0], b); buf_puts(b, "))"); }
       else if (ty_is_object(at)) {

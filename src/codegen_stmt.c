@@ -2303,7 +2303,7 @@ static int exc_text_call_on(Compiler *c, int v, int boxed) {
       nt_ref(nt, v, "arguments") >= 0 || nt_ref(nt, v, "block") >= 0) return 0;
   TyKind rt = comp_ntype(c, recv);
   if (comp_ntype(c, v) != TY_STRING && comp_ntype(c, v) != TY_STRBUF) return 0;
-  if (!boxed) return rt == TY_EXCEPTION || (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt)));
+  if (!boxed) return repr_of(c, recv).exc;
   if (rt != TY_POLY) return 0;
   /* a boxed receiver is claimed only where the classes it can hold (the
      boxed-receiver walk) include an exception class */
