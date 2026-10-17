@@ -26603,6 +26603,22 @@ static int param_borrow_elem_read(Compiler *c, int n) {
          rt == TY_FLOAT_ARRAY_ARRAY || ty_is_obj_array(rt);
 }
 
+/* Is call n `Array.new(...)` or `Hash.new(...)` of the builtin class (one
+   the program gives no initialize of its own), with no block handed on as
+   a value? A fresh container reaches no String the caller holds and runs no
+   code but a literal block's, which the walk sees. */
+static int param_borrow_builtin_new(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, n, "name");
+  int recv = nt_ref(nt, n, "receiver"), blk = nt_ref(nt, n, "block");
+  if (!name || !sp_streq(name, "new") || recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) return 0;
+  if (blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode) return 0;
+  const char *cn = nt_str(nt, recv, "name");
+  if (!cn || (!sp_streq(cn, "Array") && !sp_streq(cn, "Hash"))) return 0;
+  int cid = comp_class_index(c, cn);
+  return cid < 0 || comp_method_in_class(c, cid, "initialize") < 0;
+}
+
 /* The user methods call n reaches (its plan's method and, for a switch,
    every member), into out; 0 for a builtin, -1 when the switch has more
    members than out can hold (none of them is checked). */
@@ -26675,10 +26691,12 @@ static int param_borrow_loud_ex(Compiler *c, int n, int *tg, int *ntg) {
     int k = param_borrow_targets(c, n, tg, 64);
     if (k < 0) return 1;
     *ntg = k;
-    if (is_opaque_reaching_call(name)) return 1;
+    /* a builtin Array or Hash made fresh (its arguments still plain) */
+    int fresh = k == 0 && param_borrow_builtin_new(c, n);
+    if (is_opaque_reaching_call(name) && !fresh) return 1;
     int recv = nt_ref(nt, n, "receiver");
     TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
-    if (k == 0 && param_borrow_attr_read(c, n)) return 0;
+    if (k == 0 && (param_borrow_attr_read(c, n) || param_borrow_elem_read(c, n))) return 0;
     if (recv >= 0 && !param_borrow_plain_ty(rt) && rt != TY_CLASS) return 1;
     if ((rt == TY_STRING || rt == TY_STRBUF) && sp_str_mutator(name, 0)) return 1;
     int blk = nt_ref(nt, n, "block");
