@@ -1,0 +1,6 @@
+"/CN=turn.jayang-dong.example"
+"accepted"
+"client: OpenSSL::SSL::SSLError"
+"OpenSSL::SSL::SSLError: SSL_accept returned an error: SSL_CTX_use_PrivateKey"
+"client: OpenSSL::SSL::SSLError"
+"ArgumentError: private key is needed"

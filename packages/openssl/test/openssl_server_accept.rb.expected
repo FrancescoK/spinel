@@ -1,0 +1,14 @@
+[true, true, true]
+true
+[true, true, true]
+["TLSv1.3", "Han River: Jayang-dong\n"]
+"accepted"
+["TLSv1.3", "Han River: Jayang-dong\n"]
+"accepted"
+true
+["TLSv1.3", "Han River: Jayang-dong\n"]
+"accepted"
+"public key mismatch"
+"private key is needed"
+"client: OpenSSL::SSL::SSLError"
+"server: OpenSSL::SSL::SSLError"
