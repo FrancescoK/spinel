@@ -2938,13 +2938,41 @@ static void mx_class_body(pm_statements_node_t *st, MxEdits *ed, MxClass *k, int
     m->expanded++;
   }
 }
-/* calls of each dynamic macro's name anywhere in the program */
-typedef struct { int *counts; } MxCount;
+/* Can the macro `def` take this call's arguments? A call it cannot take
+   (`r.attribute` of an attr_reader against `def attribute(name)`) raises
+   before the macro would run, so it keeps nothing of the macro alive. A
+   splat, a keyword hash, a block-pass or `...` may fit anything. */
+static int mx_call_fits(const pm_def_node_t *def, const pm_call_node_t *cn) {
+  if (cn->block && PM_NODE_TYPE(cn->block) == PM_BLOCK_ARGUMENT_NODE) return 1;
+  size_t argc = cn->arguments ? cn->arguments->arguments.size : 0;
+  for (size_t i = 0; i < argc; i++) {
+    pm_node_type_t t = PM_NODE_TYPE(cn->arguments->arguments.nodes[i]);
+    if (t == PM_SPLAT_NODE || t == PM_KEYWORD_HASH_NODE || t == PM_FORWARDING_ARGUMENTS_NODE) return 1;
+  }
+  const pm_parameters_node_t *ps = def->parameters;
+  if (!ps) return argc == 0;
+  if (ps->rest || ps->keyword_rest || ps->keywords.size) return 1;
+  size_t lo = ps->requireds.size + ps->posts.size;
+  return argc >= lo && argc <= lo + ps->optionals.size;
+}
+
+/* calls of each dynamic macro's name anywhere in the program; `attr` holds
+   the Symbols an attr_* call names (they define a method, not refer to one) */
+typedef struct { int *counts; const pm_node_t **attr; int nattr, cattr; } MxCount;
 
 static bool mx_count_visit(const pm_node_t *n, void *data) {
   MxCount *mc = (MxCount *)data;
   if (PM_NODE_TYPE(n) == PM_CALL_NODE) {
-    char *nm = mx_name(((pm_call_node_t *)n)->name);
+    pm_call_node_t *ac = (pm_call_node_t *)n;
+    char *nm = mx_name(ac->name);
+    if (!ac->receiver && mx_is_attr(nm) && mx_prim_builtin(nm) && ac->arguments)
+      for (size_t q = 0; q < ac->arguments->arguments.size; q++) {
+        if (mc->nattr == mc->cattr) {
+          mc->cattr = mc->cattr ? mc->cattr * 2 : 16;
+          mc->attr = realloc(mc->attr, sizeof(*mc->attr) * (size_t)mc->cattr);
+        }
+        mc->attr[mc->nattr++] = ac->arguments->arguments.nodes[q];
+      }
     for (int i = 0; i < g_mx_nmacros; i++) {
       if (g_mx_macros[i].expanded == 0) continue;
       /* a call in the macro's own body runs only when the macro does (the
@@ -2953,7 +2981,7 @@ static bool mx_count_visit(const pm_node_t *n, void *data) {
       const pm_location_t *dl = &g_mx_macros[i].def->base.location;
       if (n->location.start >= dl->start && n->location.end <= dl->end) continue;
       char *dn = mx_name(g_mx_macros[i].def->name);
-      if (strcmp(dn, nm) == 0) {
+      if (strcmp(dn, nm) == 0 && mx_call_fits(g_mx_macros[i].def, (const pm_call_node_t *)n)) {
         mc->counts[i]++;
         if (getenv("SPINEL_MACRO_DEBUG")) {
           int seen = 0;
@@ -2973,6 +3001,7 @@ static bool mx_count_visit(const pm_node_t *n, void *data) {
      `public_send("m", ...)`) keeps it too */
   const pm_string_t *us = PM_NODE_TYPE(n) == PM_SYMBOL_NODE ? &((pm_symbol_node_t *)n)->unescaped
                         : PM_NODE_TYPE(n) == PM_STRING_NODE ? &((pm_string_node_t *)n)->unescaped : NULL;
+  for (int q = 0; us && q < mc->nattr; q++) if (mc->attr[q] == n) us = NULL;
   if (us) {
     for (int i = 0; i < g_mx_nmacros; i++) {
       if (g_mx_macros[i].expanded == 0) continue;
@@ -3080,7 +3109,7 @@ static char *sp_expand_class_macros(const char *source) {
       if (ed.n > 0) {
         /* a macro every call of which was expanded is dropped: what it would
            do at run time is the compiler's to refuse, and nothing calls it */
-        MxCount mc = { calloc((size_t)g_mx_nmacros + 1, sizeof(int)) };
+        MxCount mc = { calloc((size_t)g_mx_nmacros + 1, sizeof(int)), NULL, 0, 0 };
         pm_visit_node(root, mx_count_visit, &mc);
         for (int i = 0; i < g_mx_nmacros; i++) {
           MxMacro *m = &g_mx_macros[i];
@@ -3098,6 +3127,7 @@ static char *sp_expand_class_macros(const char *source) {
           ed.e[ed.n].start = ds; ed.e[ed.n].end = de; ed.e[ed.n].text = blank.p; ed.n++;
         }
         free(mc.counts);
+        free(mc.attr);
         qsort(ed.e, (size_t)ed.n, sizeof(MxEdit), mx_edit_cmp);
         MxBuf nb = {0};
         const uint8_t *from = (const uint8_t *)source;
