@@ -250,7 +250,7 @@ TyKind ty_array_elem(TyKind arr);      /* array kind -> element type */
    0 when the pair is not one of them. The analyzer widens a diverging yield
    only where every site's kind is answered here, and codegen types each
    site's call from it, so the two sides read one table (see types.c). */
-int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind recv, TyKind *out);
+int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind recv, int promote, TyKind *out);
 int ty_is_hash(TyKind t);
 /* Object's identity protocol on the native kinds (=== == != equal? eql?
    frozen? freeze, and on the IO family to_s and <=> as well), answered by

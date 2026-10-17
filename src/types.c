@@ -360,16 +360,31 @@ TyKind ty_array_elem(TyKind arr) {
    whose lowering is a plain value of one kind. Two families: the element
    readers answer the array's element, and the copies and reorderings answer
    the receiver's own kind. A pair left out here keeps the yield's single
-   typing, as before. Some builtins look like they belong and do not: an
-   Integer's succ and an Integer Array's sum answer a Bignum under
-   --int-overflow=promote, so their type is the mode's and not the
-   receiver's, and a String Array's sum raises CRuby's TypeError through a
-   boxed path. dig's answer depends on how many indices it is given, and
-   under promote even an Integer Array's dig(0) is boxed. */
+   typing, as before. `dig` with one index (K-024 leftover scope, kilau
+   docs/CATALOG.md, see RENCANA_K024_YIELD_BUILTIN_RESULT.md Task 1) answers
+   the array's element -- same as `[]` -- since `builtin_ops.c`'s own
+   `BOP_ANY_ARRAY "dig" 1 1` row lowers it to the same nilable-aware getter
+   (`sp_$AArray_get$O`) `[]` uses, confirmed with `--emit-types` on a direct
+   (non-yield) `arr.dig(0)`: `int`, `nullable: true`, not poly. Only `dig`
+   with two or more indices (that row's `2 127` sibling) is poly, since a
+   second level of navigation is not guaranteed to be a plain scalar. An
+   earlier version of this comment claimed `dig` was unconditionally poly,
+   checked only the generic-poly-receiver and OpenStruct/Struct call sites
+   and missed this row; corrected after `test/yield_receiver_builtin_dig.rb`
+   stayed RED with a poly-vs-int slot mismatch through an unconditional-poly
+   first attempt.
+   `promote` (the `--int-overflow=promote` flag) answers a different type
+   for `succ` and `sum` than the default (raise) mode: a receiver that is
+   not a known constant promotes past the word to a boxed Bignum, which the
+   non-yield path already does (`infer_numeric_call`'s `succ`/`next`/`abs`
+   arm, `infer_promote_reducer`'s `sum` arm) and a yield's receiver, never a
+   compile-time constant, always takes. A String Array's `sum` has no type
+   to answer (CRuby raises TypeError), so it is left out, same as any other
+   kind/name pair this table declines. */
 static int ty_recv_is_plain_array(TyKind t) {
   return t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY || t == TY_STR_ARRAY;
 }
-int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind recv, TyKind *out) {
+int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind recv, int promote, TyKind *out) {
   if (!name) return 0;
   if (argc == 0) {
     if (!strcmp(name, "abs") || !strcmp(name, "magnitude")) {
@@ -399,6 +414,9 @@ int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind recv,
       *out = ty_array_elem(recv); return 1;
     }
     return 0;
+  }
+  if (!strcmp(name, "dig") && argc >= 1 && ty_recv_is_plain_array(recv)) {
+    *out = (argc == 1) ? ty_array_elem(recv) : TY_POLY; return 1;
   }
   if (argc == 1 && !strcmp(name, "[]") && arg0 == TY_INT && ty_recv_is_plain_array(recv)) {
     *out = ty_array_elem(recv); return 1;

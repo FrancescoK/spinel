@@ -2479,7 +2479,7 @@ static int yield_recv_chain_kind(Compiler *c, int node, TyKind bt, TyKind *out) 
       *out = (rr == TY_UNKNOWN || rr == TY_VOID) ? TY_POLY : rr;
       return 1;
     } }
-  if (ty_recv_builtin_result(nt_str(nt, node, "name"), ac, a0, rk, out)) return 1;
+  if (ty_recv_builtin_result(nt_str(nt, node, "name"), ac, a0, rk, g_promote_mode, out)) return 1;
   return an_yield_site_builtin_answer(c, node, rk, out);
 }
 static int yield_recv_builtin_every_site(Compiler *c, int call) {
