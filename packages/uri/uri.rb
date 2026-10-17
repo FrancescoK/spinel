@@ -1,15 +1,15 @@
 # Spinel bundled `uri`.
 #
 # The spelling is CRuby's. URI.parse answers the class of the scheme --
-# URI::HTTP, HTTPS, FTP, File, WS, WSS, MailTo -- or URI::Generic, with the
+# URI::HTTP, HTTPS, FTP, File, WS, WSS, MailTo, LDAP, LDAPS -- or URI::Generic, with the
 # component readers and writers, #to_s, #request_uri, #merge, #normalize and
 # the rest a parsed URI is read with; URI.split, URI.join, the www-form and
 # URI-component codecs, and DEFAULT_PARSER. What is not here is absent the
 # way a subset is absent things, and a program naming it fails to compile
 # rather than at run time:
 #
-# * no URI::LDAP, and no scheme registry (URI.register_scheme,
-#   URI.scheme_list) to add a class to
+# * no scheme registry (URI.register_scheme, URI.scheme_list) to add a
+#   class to
 # * no URI.extract or URI.regexp; the component writers do not validate
 #   what they are given
 # * the URI.escape family CRuby removed is not here either
@@ -104,7 +104,8 @@ module URI
 
     def initialize(scheme, userinfo, host, port, path, query, fragment)
       @scheme = scheme
-      @userinfo = userinfo
+      # An empty userinfo ("http://@h/") has no user, as CRuby splits it.
+      @userinfo = userinfo.nil? || userinfo.empty? ? nil : userinfo
       @host = host
       @port = port
       @path = path
@@ -130,11 +131,49 @@ module URI
     end
 
     # `URI::Generic.build(scheme: "http", host: "x.com")`: a URI from its
-    # components, of this class whatever the scheme.
-    def self.build(scheme: nil, userinfo: nil, host: nil, port: nil, path: "", query: nil, fragment: nil, opaque: nil)
-      u = new(scheme, userinfo, host, port, path, query, fragment)
-      u.opaque = opaque
+    # components, of this class whatever the scheme -- a Hash (or keywords)
+    # by name, or an Array of all nine in #component's order.
+    def self.build(args = nil, **kw)
+      h = args.nil? ? kw : args
+      if h.is_a?(Array) && h.size == 9
+        a = h
+        h = {}
+        [:scheme, :userinfo, :host, :port, :registry, :path, :opaque, :query, :fragment].each_with_index { |c, i| h[c] = a[i] }
+      elsif !h.is_a?(Hash)
+        raise ArgumentError, "expected Array of or Hash of components of #{self} (#{component.join(', ')})"
+      end
+      from_components(h)
+    end
+
+    # A URI of this class from a components Hash, a port not given being
+    # the scheme's default, as CRuby's initialize sets it.
+    def self.from_components(h)
+      path = h[:path]
+      path = "" if path.nil? && h[:opaque].nil?
+      u = new(h[:scheme], h[:userinfo], h[:host], h[:port], path, h[:query], h[:fragment])
+      # The instance's default port: the class method's nil-or-Integer answer miscompiles read here.
+      u.port = u.default_port if u.port.nil?
+      u.opaque = h[:opaque] unless h[:opaque].nil?
       u
+    end
+
+    # CRuby's Util.make_components_hash for a scheme class's build: an
+    # Array of its components after the scheme, in order, or a Hash; the
+    # scheme is the class's name.
+    def self.components_hash(args, kw)
+      h = args.nil? ? kw : args
+      comps = component
+      if h.is_a?(Array) && h.size == comps.size - 1
+        a = h
+        h = {}
+        comps[1..-1].each_with_index { |c, i| h[c] = a[i] }
+      elsif h.is_a?(Hash)
+        h = h.dup
+      else
+        raise ArgumentError, "expected Array of or Hash of components of #{self} (#{comps[1..-1].join(', ')})"
+      end
+      h[:scheme] = name.sub(/\A.*::/, "").downcase
+      h
     end
 
     # The parts of the userinfo "user:password" either side of its first ":".
@@ -558,11 +597,9 @@ module URI
   end
 
   # `URI::HTTPS.build(host: "api.github.com", path: "/x")` -- a URI from
-  # its components rather than from a string. CRuby also takes an Array
-  # of components in order, and validates each one; the keyword form is
-  # the one an application writes, and validation is absent here the way
-  # it is for the component writers above. A port not given is the
-  # scheme's default, which #to_s leaves off, as CRuby does.
+  # its components rather than from a string: keywords, a Hash, or an
+  # Array of [userinfo, host, port, path, query, fragment]. A port not
+  # given is the scheme's default, which #to_s leaves off, as CRuby does.
   class HTTP < Generic
     def self.default_port
       80
@@ -572,8 +609,8 @@ module URI
       [:scheme, :userinfo, :host, :port, :path, :query, :fragment]
     end
 
-    def self.build(userinfo: nil, host: nil, port: nil, path: "", query: nil, fragment: nil)
-      HTTP.new("http", userinfo, host, port || 80, path, query, fragment)
+    def self.build(args = nil, **kw)
+      from_components(components_hash(args, kw))
     end
 
     # The host, with ":port" when the port is not the scheme's default --
@@ -599,10 +636,6 @@ module URI
     def self.default_port
       443
     end
-
-    def self.build(userinfo: nil, host: nil, port: nil, path: "", query: nil, fragment: nil)
-      HTTPS.new("https", userinfo, host, port || 443, path, query, fragment)
-    end
   end
 
   # An FTP URI's path is relative to the login directory: it is kept
@@ -620,15 +653,20 @@ module URI
       [:scheme, :userinfo, :host, :port, :path, :typecode]
     end
 
-    protected
-
-    def component_value(c)
-      c == :typecode ? @typecode : super
+    # Keywords, a Hash or [userinfo, host, port, path, typecode]; the path
+    # is relative to the login directory, an absolute one starting "/".
+    def self.build(args = nil, **kw)
+      h = components_hash(args, kw)
+      path = h[:path].to_s
+      path = path.start_with?("/") ? "/%2F#{path[1..-1]}" : "/#{path}"
+      tc = h[:typecode]
+      path = "#{path};type=#{tc}" unless tc.nil?
+      h[:path] = path
+      from_components(h)
     end
 
-    public
-
     def initialize(scheme, userinfo, host, port, path, query, fragment)
+      raise InvalidURIError if path.nil?
       super
       @typecode = nil
       rel = @path.to_s
@@ -640,6 +678,22 @@ module URI
         rel = rel[0, ti]
       end
       @path = rel
+    end
+
+    def typecode=(v)
+      unless v == "a" || v == "i" || v == "d"
+        raise InvalidComponentError, "bad typecode(expected a, i, d): #{v}"
+      end
+      @typecode = v
+    end
+
+    # #merge, carrying the reference's typecode over when the result is
+    # not this URI. CRuby reads the typecode off the reference even when
+    # it is a String or a URI without one, and raises; here it is nil.
+    def merge(oth)
+      t = super
+      t.set_typecode(oth.is_a?(FTP) ? oth.typecode : nil) if t.is_a?(FTP) && self != t
+      t
     end
 
     def to_s
@@ -655,11 +709,60 @@ module URI
       s << "##{@fragment}" unless @fragment.nil?
       s
     end
+
+    protected
+
+    def set_typecode(v)
+      @typecode = v
+    end
+
+    def replace!(oth)
+      super
+      @typecode = oth.typecode if oth.is_a?(FTP)
+    end
+
+    def component_value(c)
+      c == :typecode ? @typecode : super
+    end
+
+    public
   end
 
+  # A file URI has a host and a path and nothing else: "localhost" and no
+  # host are both "", there is no port, and a userinfo cannot be set.
   class File < Generic
     def self.component
       [:scheme, :host, :path]
+    end
+
+    def self.build(args = nil, **kw)
+      from_components(components_hash(args, kw))
+    end
+
+    def initialize(scheme, userinfo, host, port, path, query, fragment)
+      super
+      @host = "" if @host.nil? || @host == "localhost"
+      @userinfo = nil
+      @port = nil
+    end
+
+    def host=(v)
+      @host = v.nil? || v == "localhost" ? "" : v
+    end
+
+    def port=(v)
+    end
+
+    def userinfo=(v)
+      raise InvalidURIError, "cannot set userinfo for file URI"
+    end
+
+    def user=(v)
+      raise InvalidURIError, "cannot set user for file URI"
+    end
+
+    def password=(v)
+      raise InvalidURIError, "cannot set password for file URI"
     end
   end
 
@@ -670,6 +773,10 @@ module URI
 
     def self.component
       [:scheme, :userinfo, :host, :port, :path, :query]
+    end
+
+    def self.build(args = nil, **kw)
+      from_components(components_hash(args, kw))
     end
   end
 
@@ -682,21 +789,44 @@ module URI
   # `mailto:to?hname=hvalue&...`: the addresses before the "?", and the
   # headers after it as [name, value] pairs, both as written.
   class MailTo < Generic
+    # CRuby's, with its `\g<hfield>` call spelled out.
+    HFIELD = "(?:%\\h\\h|[!$'-.0-;@-Z_a-z~])*=(?:%\\h\\h|[!$'-.0-;@-Z_a-z~])*"
+    HEADER_REGEXP = Regexp.new("\\A#{HFIELD}(?:&#{HFIELD})*\\z")
+    EMAIL_REGEXP = /\A[a-zA-Z0-9.!\#$%&'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\z/
+
     def self.component
       [:scheme, :to, :headers]
     end
 
-    protected
-
-    def component_value(c)
-      case c
-      when :to then to
-      when :headers then headers
-      else super
+    # Keywords, a Hash or [to, headers]: +to+ a String or an Array of
+    # addresses, +headers+ a String, [name, value] pairs or a Hash.
+    def self.build(args = nil, **kw)
+      h = components_hash(args, kw)
+      to = h[:to]
+      opaque = if to.is_a?(Array)
+                 to.join(",")
+               elsif to.is_a?(String)
+                 to.dup
+               else
+                 String.new
+               end
+      hs = h[:headers]
+      unless hs.nil?
+        query = if hs.is_a?(Array)
+                  hs.map { |x| x.is_a?(Array) ? "#{x[0]}=#{x[1..-1].join}" : x.to_s }.join("&")
+                elsif hs.is_a?(Hash)
+                  hs.map { |k, v| "#{k}=#{v}" }.join("&")
+                else
+                  hs.to_s
+                end
+        # (a new String, not `<<`: under --share-strings an @opaque changed in
+        # place refuses every writer's assignment in value position)
+        opaque = "#{opaque}?#{query}" unless query.empty?
       end
+      u = new("mailto", nil, nil, nil, nil, nil, nil)
+      u.opaque = opaque
+      u
     end
-
-    public
 
     def to
       o = @opaque.to_s
@@ -710,6 +840,197 @@ module URI
       return [] unless i
       o[(i + 1)..-1].to_s.split("&").map { |h| h.split("=", 2) }
     end
+
+    # The addresses, each a "%XX"-escaped addr-spec, "," or ";" between them.
+    def to=(v)
+      unless v.nil? || v.empty?
+        v.split(/[,;]/).each do |addr|
+          if addr !~ /\A(?:%\h\h|[!$&-.0-;=@-Z_a-z~])*\z/
+            raise InvalidComponentError, "an address in 'to' is invalid as URI #{addr.dump}"
+          end
+          if URI.decode_uri_component(addr) !~ EMAIL_REGEXP
+            raise InvalidComponentError, "an address in 'to' is invalid as uri-escaped addr-spec #{addr.dump}"
+          end
+        end
+      end
+      rebuild_opaque(v.to_s, headers_query)
+      v
+    end
+
+    # "name=value&..." -- the headers part after the "?".
+    def headers=(v)
+      if !v.nil? && !v.empty? && v !~ HEADER_REGEXP
+        raise InvalidComponentError, "bad component(expected opaque component): #{v}"
+      end
+      rebuild_opaque(to, v.to_s)
+      v
+    end
+
+    # The message the URI describes, as RFC 822 text: "To:" (with any "to"
+    # header added), the other headers capitalized, a blank line, the body.
+    def to_mailtext
+      to_line = URI.decode_www_form_component(to)
+      head = String.new
+      body = ""
+      headers.each do |x|
+        case x[0]
+        when "body"
+          body = URI.decode_www_form_component(x[1].to_s)
+        when "to"
+          to_line = "#{to_line}, #{URI.decode_www_form_component(x[1].to_s)}"
+        else
+          head << URI.decode_www_form_component(x[0].to_s).capitalize + ": " + URI.decode_www_form_component(x[1].to_s) + "\n"
+        end
+      end
+      "To: #{to_line}\n#{head}\n#{body}\n"
+    end
+
+    def to_rfc822text
+      to_mailtext
+    end
+
+    protected
+
+    def component_value(c)
+      case c
+      when :to then to
+      when :headers then headers
+      else super
+      end
+    end
+
+    private
+
+    def headers_query
+      o = @opaque.to_s
+      i = o.index("?")
+      i ? o[(i + 1)..-1].to_s : ""
+    end
+
+    def rebuild_opaque(to, query)
+      @opaque = query.empty? ? to : "#{to}?#{query}"
+    end
+
+    public
+  end
+
+  # `ldap://host:port/dn?attributes?scope?filter?extensions`: the
+  # distinguished name is the path after its "/", the rest the "?"-split
+  # query, and each has a reader and a writer that rewrites the URI.
+  class LDAP < Generic
+    SCOPE_ONE = "one"
+    SCOPE_SUB = "sub"
+    SCOPE_BASE = "base"
+    SCOPE = [SCOPE_ONE, SCOPE_SUB, SCOPE_BASE]
+
+    attr_reader :dn, :attributes, :scope, :filter, :extensions
+
+    def self.default_port
+      389
+    end
+
+    def self.component
+      [:scheme, :host, :port, :dn, :attributes, :scope, :filter, :extensions]
+    end
+
+    # Keywords, a Hash or [host, port, dn, attributes, scope, filter,
+    # extensions]: the query drops the trailing parts not given.
+    def self.build(args = nil, **kw)
+      h = components_hash(args, kw)
+      h[:path] = h[:dn] unless h[:dn].nil?
+      query = []
+      [h[:extensions], h[:filter], h[:scope], h[:attributes]].each do |x|
+        next if x.nil? && query.empty?
+        query.unshift(x)
+      end
+      h[:query] = query.join("?")
+      from_components(h)
+    end
+
+    def initialize(scheme, userinfo, host, port, path, query, fragment)
+      super
+      raise InvalidURIError, "bad LDAP URL" unless @fragment.nil?
+      raise InvalidURIError, "bad LDAP URL" if @path.nil?
+      @dn = @path[1..-1].to_s
+      @attributes = nil
+      @scope = nil
+      @filter = nil
+      @extensions = nil
+      unless @query.nil?
+        parts = @query.split("?")
+        @attributes = parts[0] if !parts[0].nil? && !parts[0].empty?
+        @scope = parts[1] if !parts[1].nil? && !parts[1].empty?
+        @filter = parts[2] if !parts[2].nil? && !parts[2].empty?
+        @extensions = parts[3] if !parts[3].nil? && !parts[3].empty?
+      end
+    end
+
+    def dn=(v)
+      @dn = v
+      build_path_query
+      v
+    end
+
+    def attributes=(v)
+      @attributes = v
+      build_path_query
+      v
+    end
+
+    def scope=(v)
+      @scope = v
+      build_path_query
+      v
+    end
+
+    def filter=(v)
+      @filter = v
+      build_path_query
+      v
+    end
+
+    def extensions=(v)
+      @extensions = v
+      build_path_query
+      v
+    end
+
+    def hierarchical?
+      false
+    end
+
+    protected
+
+    def component_value(c)
+      case c
+      when :dn then @dn
+      when :attributes then @attributes
+      when :scope then @scope
+      when :filter then @filter
+      when :extensions then @extensions
+      else super
+      end
+    end
+
+    private
+
+    def build_path_query
+      @path = "/#{@dn}"
+      query = []
+      [@extensions, @filter, @scope, @attributes].each do |x|
+        next if x.nil? && query.empty?
+        query.unshift(x)
+      end
+      @query = query.join("?")
+    end
+
+    public
+  end
+
+  class LDAPS < LDAP
+    def self.default_port
+      636
+    end
   end
 
   # The class a scheme's URI is parsed as.
@@ -722,6 +1043,8 @@ module URI
     when "ws" then WS
     when "wss" then WSS
     when "mailto" then MailTo
+    when "ldap" then LDAP
+    when "ldaps" then LDAPS
     else Generic
     end
   end
@@ -1030,8 +1353,7 @@ module URI
     if opaque
       if klass == MailTo
         to = opaque.index("?") ? opaque[0, opaque.index("?")] : opaque
-        bad = to.split(",", -1).any? { |a| a !~ /\A[^@\s?]+@[^@\s?]+\z/ }
-        raise InvalidComponentError, "unrecognised opaque part for mailtoURL: #{opaque}" if !to.empty? && bad
+        raise InvalidComponentError, "unrecognised opaque part for mailtoURL: #{opaque}" if to !~ /\A(?:[^@,;]+@[^@,;]+(?:\z|[,;]))*\z/
       end
       u = klass.new(scheme, nil, nil, nil, nil, nil, fragment)
       u.opaque = opaque
