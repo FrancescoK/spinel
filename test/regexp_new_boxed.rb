@@ -16,3 +16,13 @@ begin
 rescue TypeError => e
   p e.message
 end
+log = []
+r5 = Regexp.new((log << "pat"; t[:re]), (log << "opt"; "z"))
+p [r5.source, log]
+begin
+  Regexp.new(t[:s], "z")
+rescue ArgumentError => e
+  p e.message
+end
+r6 = Regexp.new(t[:s], "mi")
+p r6.options

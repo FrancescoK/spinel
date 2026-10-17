@@ -13546,10 +13546,19 @@ void emit_regexp_new(Compiler *c, int argc, const int *argv, Buf *b) {
     int tv = ++g_tmp;
     Buf bv; memset(&bv, 0, sizeof bv);
     emit_boxed(c, argv[0], &bv);
-    Buf flagbuf; memset(&flagbuf, 0, sizeof flagbuf);
-    emit_re_opts_flags(c, argc, argv, &flagbuf);
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", tv, bv.p ? bv.p : "sp_box_nil()");
+    /* the options are evaluated whatever the pattern is, and converted
+       only for a String: a Regexp ignores them, unknown letters and all */
+    int to = -1;
+    if (argc >= 2) {
+      to = ++g_tmp;
+      Buf ob; memset(&ob, 0, sizeof ob);
+      emit_boxed(c, argv[1], &ob);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", to, ob.p ? ob.p : "sp_box_nil()", to);
+      free(ob.p);
+    }
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "mrb_regexp_pattern *_t%d;\n", tp);
     emit_indent(g_pre, g_indent);
@@ -13558,10 +13567,11 @@ void emit_regexp_new(Compiler *c, int argc, const int *argv, Buf *b) {
                tv, tv, ts, tv, tp, ts, ts, ts);
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "else { const char *_t%d = sp_poly_arg_str_chk(_t%d); "
-                      "_t%d = re_compile(_t%d, (int64_t)(_t%d ? sp_str_byte_len(_t%d) : 0), %s); }\n",
-               ts, tv, tp, ts, ts, ts, flagbuf.p ? flagbuf.p : "0");
+                      "_t%d = re_compile(_t%d, (int64_t)(_t%d ? sp_str_byte_len(_t%d) : 0), ",
+               ts, tv, tp, ts, ts, ts);
+    if (to >= 0) buf_printf(g_pre, "sp_re_opts_from_poly(_t%d)); }\n", to);
+    else buf_puts(g_pre, "0); }\n");
     free(bv.p);
-    free(flagbuf.p);
     buf_printf(b, "_t%d", tp);
     return;
   }
