@@ -82,9 +82,10 @@ static void poll_block_edges(Compiler *c, int n, int t, int **ef, int **et, int 
    proc's call reaches every method? Only such a method polls at its entry
    for a delivered signal (#9222): a call chain that ends returns to a loop
    or a method that polls. A method is on one when its strongly connected
-   component has two methods or calls itself, or when it reaches a call that
-   may reach any method. Found once per compile, in time linear in the
-   calls. */
+   component has two methods or calls itself, or when it makes a call that
+   may reach any method (a cycle through that call enters it again; the
+   methods that reach it need not poll). Found once per compile, in time
+   linear in the calls. */
 static unsigned char *g_poll_cyc;
 static int g_poll_cyc_n = -1;
 int poll_scope_on_cycle(Compiler *c, int si) {
@@ -171,13 +172,15 @@ int poll_scope_on_cycle(Compiler *c, int si) {
         if (csp > 0) { int u = cs[csp - 1]; if (low[v] < low[u]) low[u] = low[v]; }
       }
     }
-    /* a method that reaches a call that may reach any method */
+    /* a method that makes a call that may reach any method, and the
+       callers of one that yields, whose body runs spliced into theirs */
     int *q = malloc(sizeof(int) * (size_t)(ns + 1)), qh = 0, qt = 0;
     unsigned char *seen = calloc((size_t)ns + 1, 1);
     for (int v = 0; v < ns; v++) if (dyn[v]) { seen[v] = 1; q[qt++] = v; }
     while (qh < qt) {
       int v = q[qh++];
       g_poll_cyc[v] = 1;
+      if (!c->scopes[v].yields) continue;
       for (int k = roff[v]; k < roff[v + 1]; k++) if (!seen[radj[k]]) { seen[radj[k]] = 1; q[qt++] = radj[k]; }
     }
     free(q); free(seen); free(idx); free(low); free(stk); free(cs); free(ci); free(on);
