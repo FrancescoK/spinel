@@ -115,7 +115,7 @@ int emit_io_pick(Compiler *c, int tv, const char *name, int public_only, Buf *b)
 void emit_io_pick_public(Compiler *c, const char *qm, const char *pick, Buf *b);
 void emit_io_reopen_responds(Compiler *c, int tv, const char *qm, int include_all, Buf *b);
 void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_cand, int exc_cand, Buf *b);
-void emit_responds_name(Compiler *c, int k, const char *nm, int tv, Buf *b);
+void emit_responds_name(Compiler *c, int k, const char *nm, Buf *pub, Buf *priv);
 extern const char *const enumerable_names[];
 extern int g_rto_nil_obj;
 extern int g_rto_by_cls;

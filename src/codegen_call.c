@@ -17436,11 +17436,14 @@ int respond_to_user_defined(Compiler *c, int id, int recv) {
   return k >= 0 && comp_method_in_chain(c, k, "respond_to?", NULL) >= 0;
 }
 
-void emit_responds_name(Compiler *c, int k, const char *nm, int tv, Buf *b) {
+/* Name `nm` of class k into the list its visibility answers by: `pub` for
+   any respond_to?, `priv` for one with include_all only. */
+void emit_responds_name(Compiler *c, int k, const char *nm, Buf *pub, Buf *priv) {
   if (name_is_synth_method(c, nm) || is_initialize_family(nm)) return;
-  buf_printf(b, "(!strcmp(_n%d, \"", tv);
+  Buf *b = comp_method_vis_in_chain(c, k, nm) == SP_VIS_PUBLIC ? pub : priv;
+  buf_puts(b, "\"");
   emit_c_escaped(b, nm);
-  buf_printf(b, "\") && (_a%d || %d)) || ", tv, comp_method_vis_in_chain(c, k, nm) == SP_VIS_PUBLIC);
+  buf_puts(b, "\", ");
 }
 
 /* The Class/Module surface every class object carries, `new` included (a
