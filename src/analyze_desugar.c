@@ -1460,6 +1460,181 @@ int desugar_explicit_receiver_mixin(Compiler *c) {
   return changed;
 }
 
+/* ---- ivars of a Fiber or Thread reopening, and of a module mixed in -----
+   A fiber or a thread is a runtime handle with no ivar slots, so `@x` in a
+   `class Fiber` reopening, or in a module only Fiber includes or prepends
+   (fiber-annotation's Fiber::Annotation), emitted a member sp_Fiber does
+   not have. Such an ivar lives where `Fiber.attr_accessor :x` keeps x
+   (desugar_handle_attr_accessor), under the same key, so the two agree:
+     @x       ->  __storage_get(:__attr_x)        (Thread: thread_variable_get)
+     @x = v   ->  __storage_set(:__attr_x, v)     (Thread: thread_variable_set)
+   and a receiverless `attr_accessor :x` in the body becomes that pair of
+   defs. Only instance-method bodies are rewritten; `@x op= v` is lowered
+   first. A module also mixed in elsewhere, or into both Fiber and Thread,
+   is left alone. */
+static void cbi_lower_op_writes(NodeTable *nt, int node);
+static int ma_def(NodeTable *nt, const char *name, int self_recv, int with_val, int body_stmt, long long line);
+static int ha_call(NodeTable *nt, const char *m, const char *key, int with_val, long long line);
+static void hiv_call_into(NodeTable *nt, int id, const char *m, const char *iv, int val) {
+  long long line = nt_int(nt, id, "node_line", 0);
+  int file = nt_int(nt, id, "node_file", 0);
+  char key[300];
+  snprintf(key, sizeof key, "__attr_%s", iv[0] == '@' ? iv + 1 : iv);
+  int sym = nt_new_node(nt, "SymbolNode");
+  int args = nt_new_node(nt, "ArgumentsNode");
+  if (sym < 0 || args < 0) return;
+  nt_node_set_str(nt, sym, "value", key);
+  int av[2] = { sym, val };
+  nt_node_set_arr(nt, args, "arguments", av, val >= 0 ? 2 : 1);
+  nt_node_reset(nt, id, "CallNode");
+  nt_node_set_str(nt, id, "name", m);
+  nt_node_set_ref(nt, id, "receiver", -1);
+  nt_node_set_ref(nt, id, "block", -1);
+  nt_node_set_ref(nt, id, "arguments", args);
+  nt_node_set_int(nt, id, "node_line", line);
+  nt_node_set_int(nt, id, "node_file", file);
+}
+static void hiv_rewrite(NodeTable *nt, int node, int is_thread) {
+  if (node < 0) return;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_DefNode || k == NK_SingletonClassNode) return;
+  if (k == NK_InstanceVariableReadNode || k == NK_InstanceVariableWriteNode) {
+    const char *nm = nt_str(nt, node, "name");
+    if (!nm) return;
+    char iv[256]; snprintf(iv, sizeof iv, "%s", nm);
+    int val = k == NK_InstanceVariableWriteNode ? nt_ref(nt, node, "value") : -1;
+    if (k == NK_InstanceVariableWriteNode && val < 0) return;
+    hiv_rewrite(nt, val, is_thread);
+    hiv_call_into(nt, node, val >= 0 ? (is_thread ? "thread_variable_set" : "__storage_set")
+                                     : (is_thread ? "thread_variable_get" : "__storage_get"), iv, val);
+    return;
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) hiv_rewrite(nt, nt_ref_at(nt, node, i), is_thread);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, node, i, &cnt);
+    int *cp = cnt > 0 ? malloc(sizeof(int) * (size_t)cnt) : NULL;
+    if (cnt > 0 && !cp) continue;
+    if (cnt > 0) memcpy(cp, ids, sizeof(int) * (size_t)cnt);
+    for (int j = 0; j < cnt; j++) hiv_rewrite(nt, cp[j], is_thread);
+    free(cp);
+  }
+}
+/* the body's defs and attr_* statements, rewritten onto the store */
+static int hiv_rewrite_body(NodeTable *nt, int owner, int is_thread) {
+  int body = nt_ref(nt, owner, "body");
+  if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) return 0;
+  int bn = 0; const int *bb0 = nt_arr(nt, body, "body", &bn);
+  if (!bb0 || bn == 0) return 0;
+  int *bb = (int *)malloc(sizeof(int) * (size_t)bn);
+  if (!bb) return 0;
+  memcpy(bb, bb0, sizeof(int) * (size_t)bn);
+  int *nb = NULL, nnb = 0, attrs = 0;
+  for (int i = 0; i < bn; i++) {
+    int st = bb[i];
+    NodeKind k = nt_kind(nt, st);
+    if (k == NK_DefNode && nt_ref(nt, st, "receiver") < 0) {
+      cbi_lower_op_writes(nt, nt_ref(nt, st, "body"));
+      hiv_rewrite(nt, nt_ref(nt, st, "body"), is_thread);
+    }
+    const char *nm = k == NK_CallNode && nt_ref(nt, st, "receiver") < 0 && nt_ref(nt, st, "block") < 0
+                     ? nt_str(nt, st, "name") : NULL;
+    int reader = nm && is_attr_reader_family(nm), writer = nm && is_attr_writer_family(nm);
+    int args = reader || writer ? nt_ref(nt, st, "arguments") : -1;
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    int ok = av && an > 0;
+    for (int a = 0; ok && a < an; a++) ok = nt_kind(nt, av[a]) == NK_SymbolNode && nt_str(nt, av[a], "value");
+    if (!ok) { xc_push(&nb, &nnb, st); continue; }
+    long long line = nt_int(nt, st, "node_line", 0);
+    int *syms = (int *)malloc(sizeof(int) * (size_t)an);
+    if (!syms) { xc_push(&nb, &nnb, st); continue; }
+    memcpy(syms, av, sizeof(int) * (size_t)an);
+    for (int a = 0; a < an; a++) {
+      char base[256], key[300], wn[300];
+      snprintf(base, sizeof base, "%s", nt_str(nt, syms[a], "value"));
+      snprintf(key, sizeof key, "__attr_%s", base);
+      snprintf(wn, sizeof wn, "%s=", base);
+      if (reader) {
+        int cl = ha_call(nt, is_thread ? "thread_variable_get" : "__storage_get", key, 0, line);
+        int d = cl >= 0 ? ma_def(nt, base, 0, 0, cl, line) : -1;
+        if (d >= 0) xc_push(&nb, &nnb, d);
+      }
+      if (writer) {
+        int cl = ha_call(nt, is_thread ? "thread_variable_set" : "__storage_set", key, 1, line);
+        int d = cl >= 0 ? ma_def(nt, wn, 0, 1, cl, line) : -1;
+        if (d >= 0) xc_push(&nb, &nnb, d);
+      }
+    }
+    free(syms);
+    attrs = 1;
+  }
+  if (attrs) nt_node_set_arr(nt, body, "body", nb, nnb);
+  free(nb); free(bb);
+  return 1;
+}
+/* 1 Fiber, 2 Thread, 0 neither: a `class Fiber` / `class Thread` reopening */
+static int hiv_handle_class(const NodeTable *nt, int id) {
+  if (nt_kind(nt, id) != NK_ClassNode || nt_ref(nt, id, "superclass") >= 0) return 0;
+  int cp = nt_ref(nt, id, "constant_path");
+  const char *n = cp >= 0 && nt_kind(nt, cp) == NK_ConstantReadNode ? nt_str(nt, cp, "name") : NULL;
+  return !n ? 0 : sp_streq(n, "Fiber") ? 1 : sp_streq(n, "Thread") ? 2 : 0;
+}
+static const char *hiv_const_leaf(const NodeTable *nt, int r) {
+  NodeKind k = r >= 0 ? nt_kind(nt, r) : NK_NilNode;
+  return k == NK_ConstantReadNode || k == NK_ConstantPathNode ? nt_str(nt, r, "name") : NULL;
+}
+int desugar_handle_ivars(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  /* the modules a reopening mixes in: name, which handle, how often */
+  const char *mods[64]; int mkind[64], mcount[64], nm = 0;
+  for (int id = 0; id < n0; id++) {
+    int h = hiv_handle_class(nt, id);
+    int body = h ? nt_ref(nt, id, "body") : -1;
+    int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    for (int i = 0; bb && i < bn; i++) {
+      const char *cn = nt_kind(nt, bb[i]) == NK_CallNode && nt_ref(nt, bb[i], "receiver") < 0
+                       ? nt_str(nt, bb[i], "name") : NULL;
+      if (!cn || (!sp_streq(cn, "include") && !sp_streq(cn, "prepend"))) continue;
+      int args = nt_ref(nt, bb[i], "arguments");
+      int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      for (int a = 0; av && a < an; a++) {
+        const char *leaf = hiv_const_leaf(nt, av[a]);
+        if (!leaf) continue;
+        int j = 0;
+        while (j < nm && !sp_streq(mods[j], leaf)) j++;
+        if (j == nm) { if (nm == 64) continue; mods[nm] = leaf; mkind[nm] = h; mcount[nm] = 0; nm++; }
+        else if (mkind[j] != h) mkind[j] = 0;
+        mcount[j]++;
+      }
+    }
+  }
+  /* a module mixed in anywhere else keeps its ivars */
+  for (int id = 0; nm && id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *cn = nt_str(nt, id, "name");
+    if (!cn || (!sp_streq(cn, "include") && !sp_streq(cn, "prepend") && !sp_streq(cn, "extend"))) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    for (int a = 0; av && a < an; a++) {
+      const char *leaf = hiv_const_leaf(nt, av[a]);
+      for (int j = 0; leaf && j < nm; j++) if (sp_streq(mods[j], leaf)) mcount[j]--;
+    }
+  }
+  for (int id = 0; id < n0; id++) {
+    int h = hiv_handle_class(nt, id);
+    if (!h && nt_kind(nt, id) == NK_ModuleNode) {
+      const char *leaf = hiv_const_leaf(nt, nt_ref(nt, id, "constant_path"));
+      for (int j = 0; leaf && j < nm; j++)
+        if (sp_streq(mods[j], leaf) && mkind[j] && mcount[j] == 0) h = mkind[j];
+    }
+    if (h) changed |= hiv_rewrite_body(nt, id, h == 2);
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 /* ---- `singleton_class.prepend(Mod)` in a class or module body ------------
    The statement adds Mod's methods to the class object -- what `extend Mod`
    does, but in front of the class's own singleton methods, where an extend
