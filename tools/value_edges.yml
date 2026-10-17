@@ -66,7 +66,7 @@ nodes:
   CaseNode:          {role: branch, gate: CASE, value: [conditions.*.statements, else_clause], skip: [predicate]}
   OrNode:            {role: branch, gate: LOGIC, value: [left, right]}
   RescueModifierNode: {role: branch, gate: RESCUE_MOD, value: [expression, rescue_expression]}
-  RescueNode:        {role: branch, link: subsequent, value: [statements, subsequent?], skip: [exceptions.*, reference]}
+  RescueNode:        {role: branch, link: subsequent, value: [statements, "subsequent?"], skip: [exceptions.*, reference]}
 
   # ---- hand-written arms (value_pos.c) ----
   # a begin's body, its rescue clauses and its else; never the ensure clause

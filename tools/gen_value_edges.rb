@@ -60,7 +60,26 @@ def parse_spelling(text)
   end
 end
 
+# YAML.safe_load_file keeps the last of a repeated key, so a node annotated
+# twice would pass for annotated once. Walk the parse tree instead and name
+# every mapping key that repeats in its mapping, with its line.
+def repeated_keys(node, found = [])
+  if node.is_a?(Psych::Nodes::Mapping)
+    seen = {}
+    node.children.each_slice(2) do |k, _|
+      next unless k.is_a?(Psych::Nodes::Scalar)
+      found << "#{k.value} (line #{k.start_line + 1}, first at line #{seen[k.value] + 1})" if seen.key?(k.value)
+      seen[k.value] ||= k.start_line
+    end
+  end
+  (node.children || []).each { |c| repeated_keys(c, found) }
+  found
+end
+
 def load_edges
+  tree = YAML.parse_file(EDGES)
+  dups = tree ? repeated_keys(tree) : []
+  abort "#{EDGES}: repeated keys: #{dups.join(", ")}" unless dups.empty?
   y = YAML.safe_load_file(EDGES)
   abort "#{EDGES}: no `nodes` map" unless y.is_a?(Hash) && y["nodes"].is_a?(Hash)
   nodes = y["nodes"].transform_values do |e|
@@ -171,7 +190,7 @@ end
 def check(nodes, childless)
   abort "#{CONFIG} is missing: run `make deps` (it fetches the pinned Prism gem)" unless File.exist?(CONFIG)
   prism = prism_children(YAML.load_file(CONFIG))
-  errors = []
+  errors = childless.tally.select { |_, n| n > 1 }.keys.map { |k| "#{k}: listed twice under `childless`" }
   prism.each do |kind, fields|
     if fields.empty?
       errors << "#{kind}: has no child field, but is not listed under `childless`" unless childless.include?(kind) || nodes.key?(kind)
