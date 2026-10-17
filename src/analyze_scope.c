@@ -3837,8 +3837,10 @@ static int alias_target_defined_before(Compiler *c, ClassInfo *cls, int cid, con
     const char *dn = nt_kind(nt, sc->def_node) == NK_DefNode ? nt_str(nt, sc->def_node, "name") : NULL;
     if ((sc->name && sp_streq(sc->name, od)) || (dn && sp_streq(dn, od))) return 1;
   }
+  /* ... of the same side: an instance alias of the name is no singleton one */
   for (int i = 0; i < cls->naliases; i++)
-    if (cls->alias_node[i] >= 0 && cls->alias_node[i] < at && sp_streq(cls->alias_new[i], od)) return 1;
+    if (cls->alias_node[i] >= 0 && cls->alias_node[i] < at && !cls->alias_sg[i] == !singleton &&
+        sp_streq(cls->alias_new[i], od)) return 1;
   return 0;
 }
 

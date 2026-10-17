@@ -1078,16 +1078,17 @@ static int xs_body_extends_self(const NodeTable *nt, int mod) {
    The module's singleton class holds them and answers before the module
    `extend self` brought in, so a `def self.name` clone of the instance def
    must not take their place. key is the module the entries belong to. */
-typedef struct { int key; const char *name; } XsOwn;
-static void xs_add_own(XsOwn **v, int *n, int *cap, int key, const char *nm) {
+typedef struct { int key; const char *name; int writer; } XsOwn;   /* writer: the name of `name=` */
+static void xs_add_own_w(XsOwn **v, int *n, int *cap, int key, const char *nm, int writer) {
   if (!nm) return;
   if (*n >= *cap) {
     *cap = *cap ? *cap * 2 : 8;
     *v = (XsOwn *)realloc(*v, sizeof(XsOwn) * (size_t)*cap);
     if (!*v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
-  (*v)[*n].key = key; (*v)[(*n)++].name = nm;
+  (*v)[*n].key = key; (*v)[*n].writer = writer; (*v)[(*n)++].name = nm;
 }
+static void xs_add_own(XsOwn **v, int *n, int *cap, int key, const char *nm) { xs_add_own_w(v, n, cap, key, nm, 0); }
 static int xs_is_module_ref(const NodeTable *nt, int r, const char *mname) {
   if (r < 0) return 0;
   if (nt_kind(nt, r) == NK_SelfNode) return 1;
@@ -1117,6 +1118,17 @@ static void xs_collect_own(const NodeTable *nt, int mod, int key, XsOwn **v, int
         int a = nt_ref(nt, ss[j], "arguments"), an = 0;
         const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
         xs_add_own(v, n, cap, key, an >= 1 && nt_kind(nt, av[0]) == NK_SymbolNode ? nt_str(nt, av[0], "value") : NULL);
+      }
+      else if (nt_kind(nt, ss[j]) == NK_CallNode && nt_ref(nt, ss[j], "receiver") < 0 && cn &&
+               (is_attr_reader_family(cn) || is_attr_writer_family(cn))) {
+        /* `attr_reader :x` names the reader x, `attr_writer :x` the writer x= */
+        int a = nt_ref(nt, ss[j], "arguments"), an = 0;
+        const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+        for (int q = 0; q < an; q++) {
+          const char *an_ = nt_kind(nt, av[q]) == NK_SymbolNode ? nt_str(nt, av[q], "value") : NULL;
+          if (is_attr_reader_family(cn)) xs_add_own_w(v, n, cap, key, an_, 0);
+          if (is_attr_writer_family(cn)) xs_add_own_w(v, n, cap, key, an_, 1);
+        }
       }
     }
   }
@@ -1174,7 +1186,11 @@ int desugar_extend_self(Compiler *c) {
       if (nt_kind(nt, st) != NK_DefNode || nt_ref(nt, st, "receiver") >= 0) continue;
       const char *dn = nt_str(nt, st, "name");
       int mine = 0;
-      for (int k = 0; dn && k < nown && !mine; k++) mine = own[k].key == has && sp_streq(own[k].name, dn);
+      size_t dl = dn ? strlen(dn) : 0;
+      int dw = dl > 1 && dn[dl - 1] == '=' && (isalnum((unsigned char)dn[dl - 2]) || dn[dl - 2] == '_');   /* `def x=`, not `def ==` */
+      for (int k = 0; dn && k < nown && !mine; k++)
+        mine = own[k].key == has && (dw ? own[k].writer && strlen(own[k].name) == dl - 1 && strncmp(own[k].name, dn, dl - 1) == 0
+                                        : !own[k].writer && sp_streq(own[k].name, dn));
       if (mine) continue;   /* the module's own class method stands */
       int clone = nt_clone_subtree(nt, st);
       if (clone < 0) continue;
