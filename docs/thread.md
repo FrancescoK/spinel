@@ -68,9 +68,12 @@ becomes ready. Every read entry point on a socket, a pipe or a terminal
 `#readbyte`, `#eof?`, `#each_line` and the rest) parks this way, and so does
 a readiness wait -- `IO#wait_readable(t)`, `IO#wait_writable(t)`,
 `IO.select` over one IO or several, with or without a timeout -- which wakes
-on whichever of an fd or the deadline comes first. A backtick, `system` and
-`Process.waitpid2` in a green thread wait for the child without holding the
-worker either.
+on whichever of an fd or the deadline comes first. An
+`OpenSSL::SSL::SSLSocket`'s blocking calls (`connect`, `sysread`,
+`syswrite`, and the buffered reads and writes over them) wait the same way,
+on the descriptor between non-blocking record-layer steps. A backtick,
+`system` and `Process.waitpid2` in a green thread wait for the child without
+holding the worker either.
 
 Why this matters beyond fairness: a collection stops the world at
 safepoints, and a worker sitting in a syscall never reaches one, so a thread
