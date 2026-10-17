@@ -2259,6 +2259,16 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
   static const char *const procm[] = {
     "call", "()", "[]", "yield", "arity", "lambda?", "curry", "to_proc",
     "parameters", "<<", ">>", "source_location", NULL };
+  /* A Method's and an UnboundMethod's own names: the ones the literal
+     respond_to?(:m) fold already answers true for, so a name held in a
+     variable gets the same answer (observer's add_observer(m, :call)). */
+  static const char *const methm[] = {
+    "call", "[]", "<<", ">>", "arity", "box", "curry", "name", "original_name",
+    "owner", "parameters", "receiver", "source_location", "super_method",
+    "to_proc", "unbind", NULL };
+  static const char *const umethm[] = {
+    "arity", "bind", "bind_call", "name", "original_name", "owner",
+    "parameters", "source_location", "super_method", NULL };
   /* "name" (NameError), "key"/"receiver" (KeyError/NameError) and
      "result" (UncaughtThrowError) are real but gated to one subclass each
      -- a generic RuntimeError does not respond_to?(:key) in CRuby, and
@@ -2308,6 +2318,8 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
     return sp_str_in_list(m, enumm) || sp_str_in_list(m, rngm);
   if (strcmp(cn, "Symbol") == 0) return sp_str_in_list(m, symm);
   if (strcmp(cn, "Proc") == 0) return sp_str_in_list(m, procm);
+  if (strcmp(cn, "Method") == 0) return sp_str_in_list(m, methm);
+  if (strcmp(cn, "UnboundMethod") == 0) return sp_str_in_list(m, umethm);
   if (strcmp(cn, "Regexp") == 0) return sp_str_in_list(m, regm);
   if (strcmp(cn, "MatchData") == 0) return sp_str_in_list(m, mdm);
   /* nil answers a small surface of its own; the literal receiver folded it at
