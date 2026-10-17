@@ -428,6 +428,19 @@ cooperatively on the green-thread scheduler, so a thread-per-connection server
 does not stall its siblings, and socket writes bypass stdio (`#sync` is true,
 as in CRuby).
 
+`IO#timeout` and `#timeout=` store a per-handle duration. A timed blocking
+wait in `read`, or in a socket or synchronous pipe `write`, raises
+`IO::TimeoutError < IOError`; progress starts a new wait, so the duration is
+not a deadline for the whole call. `nil` disables it. An omitted readiness
+duration uses the handle's duration and returns `nil` on expiry. `nil` has
+the same effect for `wait_readable`, `wait_writable` and `wait_priority`;
+legacy `wait(nil)` raises `TypeError`. An explicit duration overrides the
+handle's duration. Buffered input makes `wait_readable`,
+`wait_priority` and `wait` return `true`. Other readers and buffered stdio writes
+do not use this duration. `readpartial` stays untimed, matching CRuby 4.0.7.
+Socket construction is untimed: setting the duration on a connected handle
+cannot bound its earlier connection attempt.
+
 `Socket::` constants (`SOL_SOCKET`, `SO_REUSEADDR`, `AF_INET`, `SOCK_DGRAM`,
 `SHUT_RDWR`, `TCP_NODELAY`, ...) resolve at run time from the system headers,
 so they carry the right platform-specific values. `Socket.const_defined?(:X)`

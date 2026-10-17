@@ -1,0 +1,30 @@
+0.02
+0.02
+true
+0.02
+0.02
+false
+""
+TypeError: can't convert FalseClass into time interval
+IO::TimeoutError: Blocking operation timed out!
+nil
+true
+"OK"
+nil
+"abc"
+[0]
+"def"
+nil
+""
+"a"
+1
+"b"
+2
+"c"
+3
+"ab"
+2
+"c\x00def"
+7
+NoMethodError
+NoMethodError

@@ -1235,6 +1235,8 @@ static const BuiltinOp bop_rows[] = {
      (they type the block parameter) stay in infer_call_inner; a name with
      no rule there is poly. */
   { TY_IO, "respond_to?",    0, 127, BF_ANY, TY_BOOL,     BOPE_NONE },  /* true or false whatever the name */
+  { TY_IO, "timeout",        0, 127, BF_ANY, TY_POLY,     BOPE_NONE },
+  { TY_IO, "timeout=",       0, 127, BF_ANY, TY_UNKNOWN,  BOPE_NONE },
   { TY_IO, "read",           0,   0, BF_ANY, TY_STRING,   BOPE_TEMPLATE, "sp_File_read($r)", TY_UNKNOWN },
   { TY_IO, "read",           0, 127, BF_ANY, TY_STRING,   BOPE_NONE },
   { TY_IO, "gets",           0, 127, BF_ANY, TY_STRING,   BOPE_NONE },
@@ -1346,10 +1348,10 @@ static const BuiltinOp bop_rows[] = {
   { TY_IO, "hash",           0,   0, BF_ANY, TY_INT,      BOPE_NONE },  /* Object's, on the handle */
   { TY_IO, "object_id",      0,   0, BF_ANY, TY_INT,      BOPE_NONE },
   { TY_IO, "__id__",         0,   0, BF_ANY, TY_INT,      BOPE_NONE },
-  { TY_IO, "wait_readable",  0, 127, BF_ANY, TY_IO,       BOPE_NONE },  /* the handle or nil */
+  { TY_IO, "wait_readable",  0, 127, BF_ANY, TY_POLY,     BOPE_NONE },  /* true, the handle or nil */
   { TY_IO, "wait_writable",  0, 127, BF_ANY, TY_IO,       BOPE_NONE },
-  { TY_IO, "wait_priority",  0, 127, BF_ANY, TY_IO,       BOPE_NONE },
-  { TY_IO, "wait",           0, 127, BF_ANY, TY_IO,       BOPE_NONE },
+  { TY_IO, "wait_priority",  0, 127, BF_ANY, TY_POLY,     BOPE_NONE },
+  { TY_IO, "wait",           0, 127, BF_ANY, TY_POLY,     BOPE_NONE },
   { TY_IO, "to_io",          0,   0, BF_ANY, TY_IO,       BOPE_TEMPLATE, "($r)", TY_UNKNOWN },
   { TY_IO, "to_io",          0, 127, BF_ANY, TY_IO,       BOPE_NONE },
   { TY_IO, "reopen",         1, 127, BF_ANY, TY_IO,       BOPE_TEMPLATE, "sp_File_reopen_io($r, $e0)", BOP_K(TY_IO) },

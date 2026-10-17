@@ -4074,6 +4074,9 @@ int sp_sched_wait_io_timeout(int fd, short events, double timeout_s) {
 int sp_sched_wait_io_unless(int fd, short events, const unsigned char *cancel) {
   return sp_sched_wait_io_impl(fd, events, NULL, 0, -1.0, cancel);
 }
+int sp_sched_wait_io_timeout_unless(int fd, short events, double timeout_s, const unsigned char *cancel) {
+  return sp_sched_wait_io_impl(fd, events, NULL, 0, timeout_s, cancel);
+}
 int sp_sched_wait_io_set(struct pollfd *set, int n, double timeout_s) {
   if (n == 1) return sp_sched_wait_io_impl(set[0].fd, set[0].events, NULL, 0, timeout_s, NULL);
   return sp_sched_wait_io_impl(-1, 0, set, n, timeout_s, NULL);

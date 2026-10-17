@@ -663,6 +663,29 @@ static int boxed_winsize_set(Compiler *c, const char *name, int argc, const int 
          repr_of(c, argv[0]).elem == TY_INT;
 }
 
+static int emit_io_timeout_set(Compiler *c, int id, int recv, int value, Buf *b) {
+  int tv = ++g_tmp, ta = ++g_tmp, tf = ++g_tmp;
+  buf_puts(b, "({ ");
+  tv = hold_operand(c, recv, TY_POLY, 1, tv, 1, " ", b);
+  ta = hold_operand(c, value, TY_POLY, 1, ta, 1, " ", b);
+  buf_printf(b, "sp_File *_t%d = sp_poly_as_io(_t%d, \"timeout=\"); ", tf, tv);
+  emit_stat_handle_nomethod(tf, tv, "timeout=", b);
+  buf_printf(b, "sp_File_set_timeout(_t%d, _t%d); ", tf, ta);
+  Repr result = repr_of(c, id);
+  if (call_is_setter_assign(c->nt, id)) {
+    char arg[32]; snprintf(arg, sizeof arg, "_t%d", ta);
+    if (result.kind == RK_BOXED || result.as_ty == TY_POLY) buf_puts(b, arg);
+    else if (node_is_oint(c, id)) emit_unbox_nilable_text(c, result.as_ty, arg, b);
+    else emit_unbox_text(c, result.as_ty, arg, b);
+  }
+  else if (result.kind == RK_BOXED || result.as_ty == TY_POLY)
+    buf_printf(b, "_t%d", tv);
+  else
+    buf_printf(b, "_t%d", tf);
+  buf_puts(b, "; })");
+  return 1;
+}
+
 /* the IO methods on a poly receiver that may hold a stream (write, read, gets, puts, print, ...) */
 int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   if (emit_io_read_nonblock_outbuf(c, id, b)) return 1;
@@ -722,6 +745,8 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        sp_streq(name, "pos") || sp_streq(name, "pread") || sp_streq(name, "pwrite") ||
        sp_streq(name, "fsync") || sp_streq(name, "fdatasync") ||
        sp_streq(name, "sync") || sp_streq(name, "sync=") ||
+       (sp_streq(name, "timeout") && argc == 0) ||
+       (sp_streq(name, "timeout=") && argc == 1) ||
        /* the non-blocking pair: a Socket destructured out of Socket.pair, or
           read back out of a container, is a poly value like any other, and
           without an arm here `w.read_nonblock(n, exception: false)` had no
@@ -842,6 +867,9 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       return 1;
     }
     if (!iocand) {
+      if (sp_streq(name, "timeout=") && argc == 1) {
+        return emit_io_timeout_set(c, id, recv, argv[0], b);
+      }
       /* write with an argument list (boxed_write_takes_list): the receiver
          and then the arguments are evaluated (a splat contributes its
          elements), the receiver and the list rooted, then the handle is
@@ -998,7 +1026,10 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       if (tdr) buf_printf(b, "_t%d", tdr);
       else emit_boxed(c, recv, b);
       buf_printf(b, ", \"%s\"); ", name);
-      if (sp_streq(name, "write") && argc >= 1) {
+      if (sp_streq(name, "timeout") && argc == 0) {
+        buf_printf(b, "sp_File_timeout(_t%d); })", tio2);
+      }
+      else if (sp_streq(name, "write") && argc >= 1) {
         /* Same String/non-String split as the TY_IO arm: a String knows its own
            byte count, a stringified value may be an unmarked static name. */
         int sk2 = repr_of(c, argv[0]).as_ty == TY_STRING;
@@ -1466,6 +1497,8 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
     return 1;
   }
   if (recv >= 0 && comp_ntype(c, recv) == TY_IO) {
+    if (sp_streq(name, "timeout=") && argc == 1)
+      return emit_io_timeout_set(c, id, recv, argv[0], b);
     const char *r = NULL;
     Buf rb = {0};
     emit_expr(c, recv, &rb);

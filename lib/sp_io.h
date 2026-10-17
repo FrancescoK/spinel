@@ -79,7 +79,15 @@ typedef struct {
                                   closer and those threads leaves last, so none
                                   of them reads a freed FILE or a descriptor
                                   number already reused (sp_io_use, sp_io.c) */
+  struct sp_io_timeout *timeout;
 } sp_File;
+
+sp_RbVal sp_File_timeout(sp_File *f);
+sp_File *sp_io_set_timeout(sp_File *f, sp_RbVal value, double seconds);
+double sp_io_timeout_seconds(sp_File *f);
+const char *sp_File_read_timed(sp_File *f, sp_int n);
+sp_File *sp_io_wait_events(sp_File *f, double timeout, sp_int kind);
+int sp_io_readiness_fd(sp_File *f, int *buffered);
 
 /* Object#frozen? / #freeze on a handle. A nil slot is nil's answer: frozen. */
 sp_bool sp_io_frozen(sp_File *f);

@@ -229,6 +229,7 @@ typedef enum {
   PB_REDISPATCH, PB_REDISPATCH_RECV,
   /* a String value-form mutator through the face table (emit_face_str_bang) */
   PB_FACE_STR_BANG,
+  PB_IO_TIMEOUT,
   PB_NFAMILIES
 } PolyFamily;
 

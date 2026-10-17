@@ -15517,7 +15517,7 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       Repr ar0 = repr_of(c, argv[0]);
       TyKind at = ar0.as_ty;
       int nil_rhs = (at == TY_NIL || at == TY_VOID);
-      int unk_rhs = at == TY_UNKNOWN;
+      int unk_rhs = at == TY_UNKNOWN || (sp_streq(name, "timeout=") && !call_is_setter_assign(nt, id));
       /* an Integer or a Float that may be nil goes boxed, nil and all: read
          as the plain number it lost the nil, and the call answered that
          number where the method's value is the nilable one (#8769) */
