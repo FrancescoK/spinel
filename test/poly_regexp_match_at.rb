@@ -15,3 +15,10 @@ p "xyz" !~ re
 p "abc" =~ re
 x = "abc" !~ re
 p x
+"xbb" =~ /b/
+p re.match("abbcb", 9)
+p $~
+log = []
+p((log << "recv"; "abc") !~ (log << "arg"; re))
+p((log << "recv"; "abc") =~ (log << "arg"; re))
+p log

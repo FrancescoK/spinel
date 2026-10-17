@@ -17213,6 +17213,22 @@ static const char *cbi_identity_refusal(Compiler *c, int id, int recv, TyKind rt
   return why;
 }
 
+/* `=~` answers the match offset or nil, so it rides boxed like the typed
+   form does; `!~` is that nil, as a bool. */
+static int emit_poly_match_index(Compiler *c, int id, const char *name, int recv, int arg, Buf *b) {
+  int ta = ++g_tmp, tmi = ++g_tmp;
+  Buf nb; memset(&nb, 0, sizeof nb);
+  buf_printf(&nb, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, &nb);
+  buf_printf(&nb, "; SP_GC_ROOT_RBVAL(_t%d); sp_oint _t%d = sp_poly_match_index(_t%d, ", ta, tmi, ta);
+  emit_boxed(c, arg, &nb);
+  if (sp_streq(name, "=~")) buf_printf(&nb, "); sp_box_oint(_t%d); })", tmi);
+  else buf_printf(&nb, "); (sp_bool)_t%d.nil; })", tmi);
+  if (sp_streq(name, "!~") && repr_of(c, id).kind == RK_BOXED) emit_boxed_text(c, TY_BOOL, nb.p, b);
+  else buf_puts(b, nb.p);
+  free(nb.p);
+  return 1;
+}
+
 int emit_poly_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -17599,27 +17615,8 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       (sp_streq(name, "match?") || sp_streq(name, "match") || sp_streq(name, "=~") || sp_streq(name, "!~")) &&
       (rt == TY_POLY || ((rt == TY_STRING || rt == TY_STRBUF) &&
                          comp_ntype(c, argv[0]) == TY_POLY))) {
-    /* `=~` answers the match offset or nil, so it rides boxed like the typed
-       form does; the other two answer a bool and a MatchData. */
-    if (sp_streq(name, "=~")) {
-      int tmi = ++g_tmp;
-      buf_printf(b, "({ sp_oint _t%d = sp_poly_match_index(", tmi);
-      emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b);
-      buf_printf(b, "); sp_box_oint(_t%d); })", tmi);
-      return 1;
-    }
-    /* `!~` is `=~`'s nil, as a bool */
-    if (sp_streq(name, "!~")) {
-      int tmi = ++g_tmp;
-      Buf nb; memset(&nb, 0, sizeof nb);
-      buf_printf(&nb, "({ sp_oint _t%d = sp_poly_match_index(", tmi);
-      emit_boxed(c, recv, &nb); buf_puts(&nb, ", "); emit_boxed(c, argv[0], &nb);
-      buf_printf(&nb, "); (sp_bool)_t%d.nil; })", tmi);
-      if (repr_of(c, id).kind == RK_BOXED) emit_boxed_text(c, TY_BOOL, nb.p, b);
-      else buf_puts(b, nb.p);
-      free(nb.p);
-      return 1;
-    }
+    if (sp_streq(name, "=~") || sp_streq(name, "!~"))
+      return emit_poly_match_index(c, id, name, recv, argv[0], b);
     /* the operands are held and checked first (sp_poly_match_check): the
        helpers answered no match for a receiver without the method and for
        a pattern of the wrong kind */

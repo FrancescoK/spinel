@@ -1167,7 +1167,7 @@ sp_MatchData *sp_re_matchdata_at(mrb_regexp_pattern *pat, const char *str, sp_in
   if (!str) return NULL;
   sp_int cl = sp_str_length(str);
   if (cpos < 0) cpos += cl;
-  if (cpos < 0 || cpos > cl) return NULL;
+  if (cpos < 0 || cpos > cl) { sp_re_clear_last_match(); return NULL; }
   size_t boff = sp_utf8_byte_offset(str, cpos);
   int64_t slen = (int64_t)sp_str_byte_len(str);
   int caps[64];
