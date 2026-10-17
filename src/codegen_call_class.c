@@ -1336,11 +1336,11 @@ static int assign_peeked_reader(Compiler *c, int id) {
    is not the last of its sequence, or the value of a conditional, begin or
    parenthesized expression that is itself dropped, or the value of a block
    whose call just answers the yield (`def y = yield`) and is itself
-   dropped? What ends the climb (a loop body, a block of an iterator) is
-   an_value_dropped's, unless a user class defines a method of the block
-   call's name, which can answer the block's value. The tail or `return`
-   of a method that answers nothing (a `void` C function, as an --rbs
-   `-> nil` seed makes it) is thrown away too. */
+   dropped, or the value of a tap's block? What ends the climb (a loop
+   body, a block of an iterator) is an_value_dropped's, unless a user class
+   defines a method of the block call's name, which can answer the block's
+   value. The tail or `return` of a method that answers nothing (a `void` C
+   function, as an --rbs `-> nil` seed makes it) is thrown away too. */
 static int assign_value_dropped(Compiler *c, int id, const int *par) {
   const NodeTable *nt = c->nt;
   int n = id;
@@ -1372,6 +1372,10 @@ static int assign_value_dropped(Compiler *c, int id, const int *par) {
         n = p;
         continue;
       }
+      /* tap answers its receiver, never its block's value */
+      const char *bn = gk == NK_BlockNode && par[gp] >= 0 && nt_kind(nt, par[gp]) == NK_CallNode
+                       ? nt_str(nt, par[gp], "name") : NULL;
+      if (bn && sp_streq(bn, "tap") && !cow_user_block_value(c, par, n)) return 1;
       return an_value_dropped(nt, par, n) && !cow_user_block_value(c, par, n);
     }
     if (!assign_value_slot(nt, p, n)) return 0;
