@@ -92,6 +92,7 @@ typedef struct {
   const char *modname;    /* the path of the module whose macro runs */
   const pm_node_t *mbody; /* the body of the macro that runs */
   int own_class;          /* the macro is a `def self.m` of the class it expands in */
+  const char *clspath;    /* the name of the class it expands in, when `class X` spells it for certain */
 } MxCtx;
 
 static Mv mv_nil(void) { Mv v; memset(&v, 0, sizeof v); v.k = MV_NIL; return v; }
@@ -293,6 +294,7 @@ static MxNames g_mx_defs;    /* the instance methods the modules define ... */
 static MxNames g_mx_dup;     /* ... those defined more than once */
 static MxNames g_mx_hidden;  /* names a class method, alias or define_singleton_method gives */
 static int g_mx_hide_all;    /* ... and one named at run time outside any macro */
+static int g_mx_selfname;    /* name, to_s or inspect may be given a class receiver a method of its own (Module, Class, Kernel, a block, a receiver) */
 static MxNames g_mx_poison;  /* ivars something outside the macros writes, or may write */
 static int g_mx_poison_all;  /* ... or one named at run time */
 static MxNames g_mx_fixwriters;  /* names of macros that may write however they are called */
@@ -665,6 +667,11 @@ static int mx_eval_call(MxCtx *c, pm_call_node_t *n, Mv *out) {
       free(scratch.p);
       /* it still runs at run time, from the text that keeps it */
       if (!ok && c->iv) { memcpy(c->iv, sv_iv, sizeof(MxVar) * (size_t)sv_niv); *c->niv = sv_niv; mx_forget(c->iv, sv_niv, c->unsure); }
+    }
+    /* the class's own name: `self.name`, `to_s`, `inspect` (Module's own) */
+    else if (!m && c->clspath && !argc && (strcmp(name, "name") == 0 || strcmp(name, "to_s") == 0 ||
+                                           strcmp(name, "inspect") == 0) && mx_prim_builtin(name) && !g_mx_selfname) {
+      *out = mv_str(c->clspath, strlen(c->clspath), MV_STR); ok = 1;
     }
     goto done;
   }
@@ -1586,7 +1593,7 @@ static int mx_call_macro(MxCtx *c, MxMacro *m, pm_arguments_node_t *argn, Mv *re
   MxCtx sub; memset(&sub, 0, sizeof sub);
   sub.out = c->out; sub.depth = c->depth + 1;
   sub.iv = c->iv; sub.niv = c->niv; sub.unsure = c->unsure;
-  sub.modname = m->module; sub.own_class = m->self_def;
+  sub.modname = m->module; sub.own_class = m->self_def; sub.clspath = c->clspath;
   sub.mbody = m->def->body;
   if (!mx_bind_params(c, &sub, m, argn, 1)) return 0;
   sub.ret = mv_nil();
@@ -1858,10 +1865,116 @@ static void mx_hide_sclass_body(const pm_node_t *b) {
   }
 }
 
+/* An instance method named like a class's own name gives, in Module, Class or
+   Kernel, is what a class receiver reaches in place of the builtin. */
+static int mx_selfname_is(const char *s) {
+  return s && (strcmp(s, "name") == 0 || strcmp(s, "to_s") == 0 || strcmp(s, "inspect") == 0);
+}
+
+/* a define_method / alias_method / attr_* (or send of one) that gives the class's
+   own name a method: by a literal name, or by one only known at run time (which
+   `lit_only` ignores, except for define_singleton_method: it names the class's
+   own methods, which a macro's computed name reaches too) */
+static int mx_selfname_call(const pm_call_node_t *cn, int lit_only) {
+  char *nm = mx_name(cn->name);
+  pm_node_t **a = cn->arguments ? cn->arguments->arguments.nodes : NULL;
+  size_t na = cn->arguments ? cn->arguments->arguments.size : 0;
+  int hit = 0;
+  if (strcmp(nm, "send") == 0 || strcmp(nm, "public_send") == 0 || strcmp(nm, "__send__") == 0) {
+    char *m = na > 1 ? mx_sym_or_str(a[0]) : NULL;
+    if (m && (strcmp(m, "define_method") == 0 || strcmp(m, "alias_method") == 0 || strcmp(m, "define_singleton_method") == 0)) {
+      char *a1 = mx_sym_or_str(a[1]);
+      hit = a1 ? mx_selfname_is(a1) : !(lit_only && strcmp(m, "define_singleton_method") != 0);
+      free(a1);
+    }
+    else if (m && mx_is_attr(m))
+      for (size_t i = 1; i < na && !hit; i++) {
+        char *ai = mx_sym_or_str(a[i]);
+        hit = ai ? mx_selfname_is(ai) : !lit_only;
+        free(ai);
+      }
+    free(m);
+  }
+  else if (strcmp(nm, "define_method") == 0 || strcmp(nm, "alias_method") == 0 || strcmp(nm, "define_singleton_method") == 0) {
+    char *a0 = na ? mx_sym_or_str(a[0]) : NULL;
+    hit = a0 ? mx_selfname_is(a0) : !(lit_only && strcmp(nm, "define_singleton_method") != 0);
+    free(a0);
+  }
+  else if (mx_is_attr(nm)) {
+    for (size_t i = 0; i < na && !hit; i++) {
+      char *ai = mx_sym_or_str(a[i]);
+      hit = ai ? mx_selfname_is(ai) : !lit_only;
+      free(ai);
+    }
+  }
+  free(nm);
+  return hit;
+}
+
+/* A call that can hand a class methods the scan above cannot follow: code run
+   in the class's own scope (a string, or a block with a computed name), its
+   singleton class, or a module that is not named by a constant. Wherever it
+   is, the class's own name is no longer known at compile time. */
+static int mx_selfname_reflects(const pm_call_node_t *cn, const char *nm) {
+  static const char *const R[] = { "class_eval", "module_eval", "class_exec", "module_exec", "instance_eval",
+    "instance_exec", "singleton_class", "define_singleton_method", "def_delegator", "def_delegators",
+    "def_single_delegator", "def_single_delegators", NULL };
+  const char *w = nm;
+  char *sent = NULL;
+  int hit = 0;
+  size_t na = cn->arguments ? cn->arguments->arguments.size : 0;
+  if ((strcmp(nm, "send") == 0 || strcmp(nm, "public_send") == 0 || strcmp(nm, "__send__") == 0) && na)
+    w = sent = mx_sym_or_str(cn->arguments->arguments.nodes[0]);
+  for (int i = 0; w && R[i]; i++) if (strcmp(w, R[i]) == 0) hit = 1;
+  if (w && (strcmp(w, "extend") == 0 || strcmp(w, "prepend") == 0 || strcmp(w, "include") == 0))
+    for (size_t i = (w == nm ? 0 : 1); i < na; i++) {
+      pm_node_type_t t = PM_NODE_TYPE(cn->arguments->arguments.nodes[i]);
+      if (t != PM_CONSTANT_READ_NODE && t != PM_CONSTANT_PATH_NODE) hit = 1;
+    }
+  free(sent);
+  return hit;
+}
+
+/* data: non-NULL when n is inside a block, where a def is not a plain class
+   body's (instance_eval, class_eval, Module.new { ... }); *data & 2: and the
+   block is in a macro's body, whose computed names the expansion follows */
+static bool mx_selfname_visit(const pm_node_t *n, void *data) {
+  int blk = data != NULL;
+  int lit_only = blk && (*(const int *)data & 2);
+  if (PM_NODE_TYPE(n) == PM_DEF_NODE) {
+    const pm_def_node_t *d = (const pm_def_node_t *)n;
+    char *dn = mx_name(d->name);
+    if ((blk || !d->receiver) && mx_selfname_is(dn)) g_mx_selfname = 1;
+    free(dn);
+  }
+  else if (PM_NODE_TYPE(n) == PM_ALIAS_METHOD_NODE) {
+    char *an = mx_sym_or_str(((const pm_alias_method_node_t *)n)->new_name);
+    if (an ? mx_selfname_is(an) : !lit_only) g_mx_selfname = 1;
+    free(an);
+  }
+  else if (PM_NODE_TYPE(n) == PM_CALL_NODE) {
+    const pm_call_node_t *cn = (const pm_call_node_t *)n;
+    if (!cn->receiver && mx_selfname_call(cn, lit_only)) g_mx_selfname = 1;
+  }
+  return true;
+}
+
+/* a `class Module` / `class Class` / `module Kernel` (however spelled) body */
+static void mx_selfname_scan(pm_node_t *cp, pm_node_t *body) {
+  char *last = mx_last_name(cp);
+  if (last && body && (strcmp(last, "Module") == 0 || strcmp(last, "Class") == 0 || strcmp(last, "Kernel") == 0))
+    pm_visit_node(body, mx_selfname_visit, NULL);
+  free(last);
+}
+
 static bool mx_hide_visit(const pm_node_t *n, void *data) {
   MxHideScan *hs = data;
   switch (PM_NODE_TYPE(n)) {
+  case PM_CLASS_NODE:
+    mx_selfname_scan(((const pm_class_node_t *)n)->constant_path, ((const pm_class_node_t *)n)->body);
+    return true;
   case PM_MODULE_NODE: {
+    mx_selfname_scan(((const pm_module_node_t *)n)->constant_path, ((const pm_module_node_t *)n)->body);
     /* a module's own methods are the macros: scan them as macro code */
     pm_node_t *b = ((const pm_module_node_t *)n)->body;
     if (b && PM_NODE_TYPE(b) == PM_STATEMENTS_NODE) {
@@ -1900,9 +2013,20 @@ static bool mx_hide_visit(const pm_node_t *n, void *data) {
     }
     return true;
   }
+  case PM_BLOCK_NODE: case PM_LAMBDA_NODE: {
+    int one = hs->in_macro ? 3 : 1;
+    pm_node_t *b = PM_NODE_TYPE(n) == PM_BLOCK_NODE ? ((const pm_block_node_t *)n)->body : ((const pm_lambda_node_t *)n)->body;
+    if (b) pm_visit_node(b, mx_selfname_visit, &one);
+    return true;
+  }
   case PM_CALL_NODE: {
     const pm_call_node_t *cn = (const pm_call_node_t *)n;
     char *nm = mx_name(cn->name);
+    /* a receiver-less send reaches the same place (`class << Todo; send(:attr_reader, :name)`) */
+    int sends = strcmp(nm, "send") == 0 || strcmp(nm, "public_send") == 0 || strcmp(nm, "__send__") == 0;
+    if (mx_selfname_reflects(cn, nm)) g_mx_selfname = 1;
+    if ((cn->receiver || sends || strcmp(nm, "define_singleton_method") == 0) &&
+        mx_selfname_call(cn, !cn->receiver && hs->in_macro)) g_mx_selfname = 1;
     if (strcmp(nm, "define_singleton_method") == 0 || strcmp(nm, "alias_method") == 0 ||
         strcmp(nm, "remove_method") == 0 || strcmp(nm, "undef_method") == 0 ||
         strcmp(nm, "remove_singleton_method") == 0) {
@@ -2555,6 +2679,7 @@ typedef struct {
   int unknown;                  /* a call was left as written that may define methods or write state */
   MxNames gen;                  /* class methods its expansions define */
   MxNames selfdefs;             /* the `def self.m`s its body gave so far, at its top level */
+  const char *clsname;          /* its name while a `class X` body that names it for certain is walked */
   int noiv;                     /* this body may run out of order, or be another class's: no state */
   MxVar iv[64]; int niv;        /* the ivars its macros keep, as the evaluator follows them */
 } MxClass;
@@ -2651,10 +2776,12 @@ static bool mx_class_visit(const pm_node_t *n, void *data) {
       free(text);
     }
     int sv = k->noiv;
+    const char *svn = k->clsname;
+    k->clsname = odd ? NULL : path + 2;
     if (odd) k->noiv = 1;
     /* an extend that may not run (or not now) is not recorded */
     mx_class_body((pm_statements_node_t *)body, w->ed, k, !w->loose, w->mark);
-    k->noiv = sv;
+    k->noiv = sv; k->clsname = svn;
   }
   MxWalk sub = { w->ed, path, w->mark, odd };
   if (body) pm_visit_node(body, mx_class_visit, &sub);
@@ -2883,7 +3010,7 @@ static void mx_class_body(pm_statements_node_t *st, MxEdits *ed, MxClass *k, int
     if (!extended || k->vis || k->unknown || hd) { k->unknown = 1; continue; }
     MxBuf out = {0};
     MxCtx c; memset(&c, 0, sizeof c);
-    c.out = dyn ? &out : NULL; c.modname = m->module; c.own_class = m->self_def;
+    c.out = dyn ? &out : NULL; c.modname = m->module; c.own_class = m->self_def; c.clspath = k->clsname;
     c.iv = k->noiv ? NULL : k->iv; c.niv = &k->niv; c.unsure = &k->unknown;
     /* evaluate on a copy of the state: a failed expansion must not leave half
        its writes behind */
@@ -3130,7 +3257,7 @@ static char *sp_expand_class_macros(const char *source) {
     mx_names_free(&g_mx_defs);
     mx_names_free(&g_mx_dup);
     mx_names_free(&g_mx_hidden);
-    g_mx_hide_all = 0;
+    g_mx_hide_all = 0; g_mx_selfname = 0;
     mx_names_free(&g_mx_poison);
     g_mx_poison_all = 0;
     mx_names_free(&g_mx_fixwriters);
