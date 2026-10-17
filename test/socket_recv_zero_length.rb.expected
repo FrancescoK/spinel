@@ -1,0 +1,10 @@
+""
+"y"
+["", #<Encoding:BINARY (ASCII-8BIT)>, "AF_INET"]
+"w"
+"negative string size (or size too big)"
+nil
+"ab"
+"negative string size (or size too big)"
+nil
+nil

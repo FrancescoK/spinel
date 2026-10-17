@@ -445,9 +445,10 @@ int sp_net_udp_send_to(int fd, const char *data, int len, const char *host, int 
     return rc;
 }
 /* Reads one datagram into `buf`; fills the sender's IP/port when asked.
-   Returns the byte count, or -1. */
+   Returns the byte count, or -1. A cap of 0 still takes the datagram (and
+   discards it), as recvfrom(2) does. */
 int sp_net_udp_recv_from(int fd, char *buf, int cap, char *ipbuf, int ipcap, int *port_out) {
-    if (fd < 0 || cap <= 0) return -1;
+    if (fd < 0 || cap < 0) return -1;
     struct sockaddr_storage ss;
     socklen_t sl = sizeof ss;
     ssize_t n;

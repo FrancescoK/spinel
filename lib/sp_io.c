@@ -1228,12 +1228,15 @@ static long sp_io_buffered(FILE *fp);
 const char *sp_sock_recv(sp_File *f, sp_int len) {SP_GC_ROOT(f);
   extern int sp_net_udp_recv_from(int fd, char *buf, int cap, char *ipbuf, int ipcap, int *port_out);
   sp_sock_require(f, "recv");
-  if (len <= 0) return sp_str_empty_binary();
+  if (len < 0) sp_raise_cls("ArgumentError", "negative string size (or size too big)");
   /* bytes a read on the stream already pulled into stdio's buffer are the
      peer's next ones: served first, as readpartial does, or recv stepped
      over them (#7195) */
   long pend = sp_io_buffered(sp_io_use(f));
   sp_io_unuse(f);
+  /* a zero-length read of a stream with bytes waiting answers nil, as
+     recv(2) of none answers 0 below */
+  if (pend > 0 && len == 0) return NULL;
   if (pend > 0) {
     size_t want = (size_t)len < (size_t)pend ? (size_t)len : (size_t)pend;
     char *r = sp_str_alloc(want);
@@ -1248,8 +1251,10 @@ const char *sp_sock_recv(sp_File *f, sp_int len) {SP_GC_ROOT(f);
      thread then wakes this one with CRuby's IOError, where a recv(2) already
      blocked in the kernel answered EBADF, or read a descriptor that was by
      then someone else's (#7555) */
+  /* (a zero-length read still waits for the peer, as CRuby's does: a
+     datagram it then takes is discarded, and a stream answers nil) */
   sp_io_wait_readable(f);
-  char *buf = (char *)malloc((size_t)len);
+  char *buf = (char *)malloc(len > 0 ? (size_t)len : 1);
   if (!buf) sp_raise_cls("NoMemoryError", "recv");
   FILE *fp = sp_io_try_use(f);
   if (!fp) { free(buf); sp_raise_cls("IOError", "stream closed in another thread"); }
@@ -1275,14 +1280,10 @@ const char *sp_sock_recvfrom(sp_File *f, sp_int len, const char **ip_out, sp_int
   sp_sock_require(f, "recvfrom");
   char ipbuf[64];
   int port = 0;
-  if (len <= 0) {
-    const char *s = sp_str_empty_binary(); SP_GC_ROOT_STR(s);   /* across the address's copy */
-    *ip_out = sp_str_from_bytes("", 0);
-    *port_out = 0;
-    return s;
-  }
+  if (len < 0) sp_raise_cls("ArgumentError", "negative string size (or size too big)");
+  /* (a zero-length read waits and takes a datagram too, as sp_sock_recv) */
   sp_io_wait_readable(f);   /* as sp_sock_recv (#7555) */
-  char *buf = (char *)malloc((size_t)len);
+  char *buf = (char *)malloc(len > 0 ? (size_t)len : 1);
   if (!buf) sp_raise_cls("NoMemoryError", "recvfrom");
   FILE *fp = sp_io_try_use(f);
   if (!fp) { free(buf); sp_raise_cls("IOError", "stream closed in another thread"); }
