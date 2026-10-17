@@ -85,6 +85,21 @@ module OpenSSL
         @private_key_bytes.empty?
       end
 
+      # CRuby's predicates, and CRuby's aliases for them. A key here always
+      # has its public half, derived from the scalar or given as the point, so
+      # public? is true for every key; CRuby's EC.new(curve) makes a key with
+      # neither half, which this package has no way to build.
+      def private?
+        !public_only?
+      end
+
+      def public?
+        true
+      end
+
+      alias private_key? private?
+      alias public_key? public?
+
       # CRuby's name; CRuby takes an EC::Point and this takes the same point's
       # uncompressed bytes. The answer is identical either way: the X
       # coordinate of the product, field-width, which is what CRuby returns
