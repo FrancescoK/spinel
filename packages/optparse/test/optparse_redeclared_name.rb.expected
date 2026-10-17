@@ -1,0 +1,11 @@
+[:foo, 2]
+[:foo, 2]
+:f
+:fast
+:own_help
+Usage: t
+        --foo                        second
+        --fast
+    -f
+        --help
+["foo", "fast"]

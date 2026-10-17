@@ -1,0 +1,48 @@
+# optparse
+
+`require "optparse"`: OptionParser, ruby/optparse's own source at the version
+CRuby 4.0 ships.
+
+- Source: <https://github.com/ruby/optparse>, release v0.8.1, commit
+  `f2e31e81a50cb3c7c7e8523c41497c7588bc5669` (2025-12-10). `lib/optparse.rb`
+  is `optparse.rb` here, `lib/optparse/*.rb` is `optparse/*.rb`.
+- License: Ruby's (`COPYING`) or the 2-clause BSD license (`BSDL`), both
+  copied from that commit.
+
+`optparse/*.rb` is unchanged. `optparse.rb` is unchanged except for these
+hunks, each in its own commit with the reason:
+
+| Where | Upstream | Here | Why |
+|---|---|---|---|
+| top of the file | `require 'set' unless defined?(Set)`; `when Array, Hash, Set` in `make_switch` | no `require`; `when Array, Hash` | Set#hash does not compile in this program |
+| `Completion.candidate` and its three callers | the table's `&method(:each)` as a block, called with a block | the table as an argument, iterated with `#each` | a Method given as such a block raises NoMethodError |
+| `RequiredArgument#parse`, `parse_in_order` | `&method(:raise)`, `{\|*exc\| raise(*exc)}` | `{ \|klass, word\| raise klass, word }` | a splatted `raise` raises TypeError |
+| `List#accept`, `make_switch` | `pattern.method(:convert).to_proc` | `->(*a) { pattern.convert(*a) }` | refused on a pattern of several classes |
+| `List#search` | `__send__(id)`, `fetch(key) {return nil}` | the reader by name, `key?` | `fetch` on the table raised NoMethodError |
+| `visit` | `el.__send__(id, *args, &block)` | a `case` calling each method by name | the block did not arrive |
+| pager of `--help` | a branch under `if ... and false` with `Process.exec(..., in: f)` | removed | `exec` with options is refused, even dead |
+| `--version` | `--version=pkg` loads `optparse/version` | the package name is ignored | that file finds versions by constant names at run time |
+| `version`, `release` | `defined?(@version) && @version` | `@version` | `defined?` answered nil for an ivar set only by `attr_writer` |
+| `release` | `defined?(::Release) && ::Release` | `defined?(::Release) ? ::Release : nil` | refused under `--share-strings` |
+| `make_switch` | `when Proc, Method` | `if o.is_a?(Method)` before the `case`, then `when Proc` | `when Method` does not match a Method |
+| short switches in `parse_in_order` | `argv.unshift(opt)` | `argv.unshift(opt.dup)` | the String is stored, then the local reused |
+| long switches in `parse_in_order` | `sw.parse(rest, argv)` | `sw.parse(rest ? rest : nil, argv)` | a nil `rest` crashed a switch with an optional value |
+| the yes/no table | String keys only | one Symbol key stored and removed | lets a value Hash with Symbol keys be given to `on` |
+| `environment` | `require 'shellwords'` inside the method | `require 'shellwords'` at the top of the file | the in-method require hid the program's own Shellwords |
+| `Switch#summarize` | `left = [sopts.join(', ')]` | `left = [sopts.join(', ').dup]` | refused under `--share-strings`: the String is changed in place through the Array |
+| `Switch#add_banner`, `Switch#compsys` | `desc.join` | `desc.join.dup` | refused under `--share-strings`: the String is handed on and could change in place |
+| `OptionParser.with` | `new(*args)` | `self.new(*args)` | a bare `new` in a class method was compiled as the instance method `new` |
+| `ParseError` | `alias to_s message` | `def to_s; message; end` | the alias left no `to_s` (a link error) |
+| end of the file | `ARGV.extend(OptionParser::Arguable)` | removed | `extend` on one object is refused |
+
+So `ARGV.options`, `ARGV.parse!` and `ARGV.getopts` are not available,
+`OptionParser#getopts` and `OptionParser.getopts` do not work yet, and
+`--version=pkg` prints the program's own version. Everything else the gem's
+documentation shows works as in CRuby, `accept`, Regexp and Range patterns,
+`optparse/date`, `optparse/time`, `optparse/uri` and `optparse/shellwords`
+included.
+
+To update, replace these files with a newer release's `lib/`, carry the hunks
+above over (the commits that made them are the list), and update the commit.
+
+The tests in `test/` run in the gate, with `.expected` from CRuby 4.0.

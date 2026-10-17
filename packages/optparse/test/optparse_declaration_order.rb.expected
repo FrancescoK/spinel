@@ -1,0 +1,32 @@
+"f"
+[OptionParser::InvalidArgument, "invalid argument: --m=12"]
+[OptionParser::MissingArgument, "missing argument: --m"]
+"fast"
+[OptionParser::InvalidArgument, "invalid argument: --m=12"]
+[OptionParser::MissingArgument, "missing argument: --m"]
+"f"
+[OptionParser::InvalidArgument, "invalid argument: --m=12"]
+[OptionParser::MissingArgument, "missing argument: --m"]
+[:on, "argument type given twice: NilClass"]
+[:on, "argument type given twice: NilClass"]
+[:on, "argument type given twice: String"]
+[OptionParser::InvalidArgument, "invalid argument: --m=f"]
+12
+[OptionParser::MissingArgument, "missing argument: --m"]
+[OptionParser::InvalidArgument, "invalid argument: --m=f"]
+[OptionParser::InvalidArgument, "invalid argument: --m=12"]
+[OptionParser::MissingArgument, "missing argument: --m"]
+false
+[OptionParser::InvalidArgument, "invalid argument: --m=12"]
+[OptionParser::MissingArgument, "missing argument: --m"]
+[:on, "argument type given twice: TrueClass"]
+[OptionParser::NeedlessArgument, "needless argument: --m=f"]
+[OptionParser::NeedlessArgument, "needless argument: --m=12"]
+nil
+"f"
+"12"
+true
+[:on, "argument style given twice: OptionParser::Switch::OptionalArgument"]
+"f"
+"12"
+[OptionParser::MissingArgument, "missing argument: --m"]
