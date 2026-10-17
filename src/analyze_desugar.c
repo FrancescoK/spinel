@@ -1636,6 +1636,186 @@ int desugar_handle_ivars(Compiler *c) {
   return changed;
 }
 
+/* ---- a module's initialize prepended onto Fiber -------------------------
+   fiber-annotation prepends onto Fiber an initialize that runs ahead of the
+   runtime's, then hands it the rest:
+     def initialize(annotation: nil, **options, &block)
+       @annotation = annotation
+       super(**options, &block)
+     end
+   A fiber is made by the runtime from its block alone, so (#9384) each
+   `Fiber.new(args) { }` becomes the fiber made from the block, then the
+   module's initialize run on it, renamed __spinel_init, then the fiber:
+     (t = Fiber.new { }; t.__spinel_init(args); t)
+   and its one `super(**opts, &block)` applies the keywords Fiber.new takes
+   to that fiber (`__fiber_init_opts(opts)`, blocking: and storage:, an
+   unknown one raising as CRuby does). Only an initialize whose one super
+   names its keywords as a keyword hash and hands on the method's own block
+   (or none), whose block is read nowhere else, in a module prepended onto
+   Fiber and mixed in nowhere else. */
+static void fpi_supers(const NodeTable *nt, int node, int *sup, int *nsup, int *fwd) {
+  if (node < 0) return;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_DefNode || k == NK_SingletonClassNode) return;
+  if (k == NK_ForwardingSuperNode) (*fwd)++;
+  if (k == NK_SuperNode) { if (*nsup == 0) *sup = node; (*nsup)++; }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) fpi_supers(nt, nt_ref_at(nt, node, i), sup, nsup, fwd);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++) fpi_supers(nt, ids[j], sup, nsup, fwd);
+  }
+}
+static int fpi_reads(const NodeTable *nt, int node, const char *name) {
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  int n = k == NK_LocalVariableReadNode && sp_streq(nt_str(nt, node, "name"), name);
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) n += fpi_reads(nt, nt_ref_at(nt, node, i), name);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++) n += fpi_reads(nt, ids[j], name);
+  }
+  return n;
+}
+/* rewrite the module's initialize; 1 when it took */
+static int fpi_rewrite_init(NodeTable *nt, int def) {
+  int body = nt_ref(nt, def, "body");
+  int sup = -1, nsup = 0, fwd = 0;
+  fpi_supers(nt, body, &sup, &nsup, &fwd);
+  if (nsup != 1 || fwd) return 0;
+  int pn = nt_ref(nt, def, "parameters");
+  int bpn = pn >= 0 ? nt_ref(nt, pn, "block") : -1;
+  const char *bp = bpn >= 0 ? nt_str(nt, bpn, "name") : NULL;
+  int blk = nt_ref(nt, sup, "block");
+  if (blk >= 0) {
+    int e = nt_kind(nt, blk) == NK_BlockArgumentNode ? nt_ref(nt, blk, "expression") : -1;
+    if (!bp || e < 0 || nt_kind(nt, e) != NK_LocalVariableReadNode || !sp_streq(nt_str(nt, e, "name"), bp)) return 0;
+  }
+  if (bp && fpi_reads(nt, body, bp) != (blk >= 0 ? 1 : 0)) return 0;
+  int args = nt_ref(nt, sup, "arguments");
+  int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an > 1 || (an == 1 && nt_kind(nt, av[0]) != NK_KeywordHashNode)) return 0;
+  long long line = nt_int(nt, sup, "node_line", 0);
+  int file = nt_int(nt, sup, "node_file", 0);
+  int kw = an == 1 ? av[0] : -1;
+  if (kw >= 0) {
+    int en = 0; const int *ev = nt_arr(nt, kw, "elements", &en);
+    int h = nt_new_node(nt, "HashNode"), a = nt_new_node(nt, "ArgumentsNode");
+    if (h < 0 || a < 0) return 0;
+    int *cp = en > 0 ? (int *)malloc(sizeof(int) * (size_t)en) : NULL;
+    if (en > 0 && !cp) return 0;
+    if (en > 0) memcpy(cp, ev, sizeof(int) * (size_t)en);
+    nt_node_set_arr(nt, h, "elements", cp, en);
+    free(cp);
+    nt_node_set_int(nt, h, "node_line", line);
+    nt_node_set_arr(nt, a, "arguments", &h, 1);
+    nt_node_reset(nt, sup, "CallNode");
+    nt_node_set_str(nt, sup, "name", "__fiber_init_opts");
+    nt_node_set_ref(nt, sup, "receiver", -1);
+    nt_node_set_ref(nt, sup, "block", -1);
+    nt_node_set_ref(nt, sup, "arguments", a);
+  }
+  else nt_node_reset(nt, sup, "NilNode");
+  nt_node_set_int(nt, sup, "node_line", line);
+  nt_node_set_int(nt, sup, "node_file", file);
+  nt_node_set_str(nt, def, "name", "__spinel_init");
+  return 1;
+}
+/* `Fiber.new(args) { }` -> (t = Fiber.new { }; t.__spinel_init(args); t) */
+static void fpi_rewrite_new(NodeTable *nt, int id) {
+  long long line = nt_int(nt, id, "node_line", 0);
+  int file = nt_int(nt, id, "node_file", 0);
+  int recv = nt_ref(nt, id, "receiver"), blk = nt_ref(nt, id, "block"), args = nt_ref(nt, id, "arguments");
+  char tmp[48]; snprintf(tmp, sizeof tmp, "__fib_init_%d", id);
+  int mk = nt_new_node(nt, "CallNode"), wr = nt_new_node(nt, "LocalVariableWriteNode");
+  int r1 = nt_new_node(nt, "LocalVariableReadNode"), ic = nt_new_node(nt, "CallNode");
+  int r2 = nt_new_node(nt, "LocalVariableReadNode"), st = nt_new_node(nt, "StatementsNode");
+  if (mk < 0 || wr < 0 || r1 < 0 || ic < 0 || r2 < 0 || st < 0) return;
+  nt_node_set_str(nt, mk, "name", "new");
+  nt_node_set_ref(nt, mk, "receiver", recv);
+  nt_node_set_ref(nt, mk, "block", blk);
+  nt_node_set_ref(nt, mk, "arguments", -1);
+  nt_node_set_str(nt, wr, "name", tmp); nt_node_set_int(nt, wr, "depth", 0);
+  nt_node_set_ref(nt, wr, "value", mk);
+  nt_node_set_str(nt, r1, "name", tmp); nt_node_set_int(nt, r1, "depth", 0);
+  nt_node_set_str(nt, r2, "name", tmp); nt_node_set_int(nt, r2, "depth", 0);
+  nt_node_set_str(nt, ic, "name", "__spinel_init");
+  nt_node_set_ref(nt, ic, "receiver", r1);
+  nt_node_set_ref(nt, ic, "block", -1);
+  nt_node_set_ref(nt, ic, "arguments", args);
+  int seq[3] = { wr, ic, r2 };
+  for (int i = 0; i < 3; i++) { nt_node_set_int(nt, seq[i], "node_line", line); nt_node_set_int(nt, seq[i], "node_file", file); }
+  nt_node_set_int(nt, mk, "node_line", line); nt_node_set_int(nt, mk, "node_file", file);
+  nt_node_set_arr(nt, st, "body", seq, 3);
+  nt_node_reset(nt, id, "ParenthesesNode");
+  nt_node_set_ref(nt, id, "body", st);
+  nt_node_set_int(nt, id, "node_line", line);
+  nt_node_set_int(nt, id, "node_file", file);
+}
+static int hiv_handle_class(const NodeTable *nt, int id);
+static const char *hiv_const_leaf(const NodeTable *nt, int r);
+int desugar_fiber_prepended_init(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  /* the modules prepended onto Fiber, and how often they are mixed in */
+  const char *mods[16]; int mcount[16], nm = 0;
+  for (int id = 0; id < n0; id++) {
+    int body = hiv_handle_class(nt, id) == 1 ? nt_ref(nt, id, "body") : -1;
+    int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    for (int i = 0; bb && i < bn; i++) {
+      const char *cn = nt_kind(nt, bb[i]) == NK_CallNode && nt_ref(nt, bb[i], "receiver") < 0
+                       ? nt_str(nt, bb[i], "name") : NULL;
+      if (!cn || !sp_streq(cn, "prepend")) continue;
+      int args = nt_ref(nt, bb[i], "arguments");
+      int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      for (int a = 0; av && a < an && nm < 16; a++) {
+        const char *leaf = hiv_const_leaf(nt, av[a]);
+        if (leaf) { mods[nm] = leaf; mcount[nm] = 0; nm++; }
+      }
+    }
+  }
+  if (!nm) return 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *cn = nt_str(nt, id, "name");
+    if (!cn || (!sp_streq(cn, "include") && !sp_streq(cn, "prepend") && !sp_streq(cn, "extend"))) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    for (int a = 0; av && a < an; a++) {
+      const char *leaf = hiv_const_leaf(nt, av[a]);
+      for (int j = 0; leaf && j < nm; j++) if (sp_streq(mods[j], leaf)) mcount[j]++;
+    }
+  }
+  int took = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_ModuleNode) continue;
+    const char *leaf = hiv_const_leaf(nt, nt_ref(nt, id, "constant_path"));
+    int ok = 0;
+    for (int j = 0; leaf && j < nm; j++) if (sp_streq(mods[j], leaf) && mcount[j] == 1) ok = 1;
+    int body = ok ? nt_ref(nt, id, "body") : -1;
+    int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    for (int i = 0; bb && i < bn; i++)
+      if (nt_kind(nt, bb[i]) == NK_DefNode && nt_ref(nt, bb[i], "receiver") < 0 &&
+          sp_streq(nt_str(nt, bb[i], "name"), "initialize"))
+        took |= fpi_rewrite_init(nt, bb[i]);
+  }
+  if (!took) return 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode || !sp_streq(nt_str(nt, id, "name"), "new")) continue;
+    int recv = nt_ref(nt, id, "receiver"), blk = nt_ref(nt, id, "block");
+    if (recv < 0 || blk < 0) continue;
+    NodeKind rk = nt_kind(nt, recv);
+    if (!(rk == NK_ConstantReadNode || (rk == NK_ConstantPathNode && nt_ref(nt, recv, "parent") < 0)) ||
+        !sp_streq(nt_str(nt, recv, "name"), "Fiber")) continue;
+    fpi_rewrite_new(nt, id);
+  }
+  comp_grow_node_arrays(c);
+  return 1;
+}
+
 /* ---- `singleton_class.prepend(Mod)` in a class or module body ------------
    The statement adds Mod's methods to the class object -- what `extend Mod`
    does, but in front of the class's own singleton methods, where an extend
@@ -4015,7 +4195,13 @@ static const char *engine_body_class(NodeTable *nt, int stmt) {
 
 static int engine_method_absent(NodeTable *nt, const char *cls, const char *m, int in, int depth) {
   if (builtin_method_known(cls, m) || me_body_defines(nt, cls, m, in)) return 0;
-  if (is_builtin_class_name(cls) || is_builtin_module_name(cls)) return builtin_method_known(cls, NULL) ? 1 : -1;
+  /* a builtin the arity facts leave out (Fiber) answers from CRuby's own
+     method list: fiber-annotation's `unless Fiber.method_defined?(:annotation)` */
+  if (is_builtin_class_name(cls) || is_builtin_module_name(cls)) {
+    if (builtin_method_known(cls, NULL)) return 1;
+    int v = core_method_vis(cls, m, 1);
+    return v < 0 ? -1 : v == 1 || v == 2 ? 0 : 1;
+  }
   if (!me_leaf_defined(nt, cls) || depth > 16) return -1;
   int a = 1;
   for (int id = 0; id < nt->count && a > 0; id++) {
@@ -4082,6 +4268,33 @@ static int engine_source_lib_defines(NodeTable *nt, const char *h, const char *x
   return li >= 0 && li < gi;
 }
 
+/* Is definition `id` in a module that only `in` mixes in anywhere (the
+   guarded `Fiber.prepend(Fiber::Annotation)` of the module defined above
+   it)? Such a method reaches no class unless `in` runs. */
+static int engine_def_mixed_in_only(NodeTable *nt, int id, int in) {
+  NT_FOREACH_KIND(nt, NK_ModuleNode, md) {
+    if (!subtree_has(nt, md, id)) continue;
+    int cp = nt_ref(nt, md, "constant_path");
+    const char *leaf = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (!leaf) return 0;
+    int inside = 0;
+    for (int k = 0; k < nt->count; k++) {
+      const char *cn = nt_kind(nt, k) == NK_CallNode ? nt_str(nt, k, "name") : NULL;
+      if (!cn || (!sp_streq(cn, "include") && !sp_streq(cn, "prepend") && !sp_streq(cn, "extend"))) continue;
+      int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, k, "arguments"), "arguments", &ac);
+      for (int a = 0; a < ac; a++) {
+        NodeKind ak = nt_kind(nt, av[a]);
+        const char *n = ak == NK_ConstantReadNode || ak == NK_ConstantPathNode ? nt_str(nt, av[a], "name") : NULL;
+        if (!n || !sp_streq(n, leaf)) continue;
+        if (!subtree_has(nt, in, k)) return 0;
+        inside = 1;
+      }
+    }
+    return inside;
+  }
+  return 0;
+}
+
 static int engine_absent(NodeTable *nt, int e, int in) {
   const char *x = NULL;
   const char *en = nt_kind(nt, e) == NK_CallNode && nt_ref(nt, e, "block") < 0 ? nt_str(nt, e, "name") : NULL;
@@ -4094,7 +4307,8 @@ static int engine_absent(NodeTable *nt, int e, int in) {
                     nt_kind(nt, av[0]) == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
     int a = !cls || !m ? -1 : builtin_object_method_known(m) ? 0 : engine_method_absent(nt, cls, m, in, 0);
     if (a > 0)
-      for (int id = 0; id < nt->count; id++) if (me_stmt_defines(nt, id, m) && !subtree_has(nt, in, id)) return -1;
+      for (int id = 0; id < nt->count; id++)
+        if (me_stmt_defines(nt, id, m) && !subtree_has(nt, in, id) && !engine_def_mixed_in_only(nt, id, in)) return -1;
     return a;
   }
   /* `L::X.instance_method(:m)` of a module the program defines with that

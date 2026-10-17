@@ -21244,6 +21244,28 @@ static sp_Fiber *sp_Fiber_with_storage(sp_Fiber *f, sp_RbVal v) {
   if (!(v.tag == SP_TAG_BOOL && v.v.i)) sp_Fiber_storage_replace(f, v);
   return f;
 }
+/* A prepended Fiber#initialize's `super(**opts)` (#9384): the keywords
+   Fiber.new takes, applied to the fiber already made from the block; any
+   other raises CRuby's `unknown keyword: :k` */
+static void sp_Fiber_init_opts(sp_Fiber *f, sp_RbVal kw) SP_UNUSED;
+static void sp_Fiber_init_opts(sp_Fiber *f, sp_RbVal kw) {
+  if (kw.tag != SP_TAG_OBJ) return;
+  SP_GC_ROOT(f); SP_GC_ROOT_RBVAL(kw);
+  sp_PolyArray *ks = sp_poly_keys(kw); SP_GC_ROOT(ks);
+  char list[256]; int n = 0, cnt = 0; list[0] = 0;
+  for (sp_int i = 0; i < ks->len; i++) {
+    sp_RbVal k = ks->data[i];
+    if (k.tag != SP_TAG_SYM || ((sp_sym)k.v.i != sp_sym_intern("blocking") && (sp_sym)k.v.i != sp_sym_intern("storage")))
+      sp_kwargs_list_add(list, &n, &cnt, sp_poly_inspect(k));
+  }
+  if (cnt) sp_raise_kw_error("unknown", cnt, list);
+  for (sp_int i = 0; i < ks->len; i++) {
+    sp_bool found;
+    sp_RbVal v = sp_poly_hash_get_pair_val(kw, ks->data[i], &found);
+    if ((sp_sym)ks->data[i].v.i == sp_sym_intern("blocking")) f->blocking = sp_poly_truthy(v);
+    else sp_Fiber_with_storage(f, v);
+  }
+}
 
 /* Hash#to_proc cap-scan: the proc's `cap` field IS the source hash
    (a single GC pointer), so marking it keeps the hash alive for the
