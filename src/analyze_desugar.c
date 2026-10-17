@@ -6571,15 +6571,27 @@ int desugar_call_or_write_reopen(Compiler *c) {
     int val = nt_ref(nt, id, "value");
     if (recv < 0 || !attr || val < 0) continue;
     TyKind rt = infer_type(c, recv);
-    if (rt == TY_UNKNOWN || rt == TY_VOID || rt == TY_NIL || ty_is_object(rt)) continue;
+    if (rt == TY_UNKNOWN || rt == TY_VOID || rt == TY_NIL) continue;
     char wname[300];
     snprintf(wname, sizeof wname, "%s=", attr);
+    /* an object of a native class (or a subclass's) that binds both halves,
+       the writer one that keeps its argument (`io.string ||= s`, where
+       --share-strings binds StringIO#string=), has no member of the
+       program's to pair: the two calls are the bindings */
+    int native_pair = 0;
+    if (ty_is_object(rt)) {
+      int nk = comp_native_answer_class(c, ty_object_class(rt), attr);
+      int rm = nk >= 0 ? comp_native_method_find(c, nk, attr, 0, 0) : -1;
+      int wm = nk >= 0 ? comp_native_method_find(c, nk, wname, 1, 0) : -1;
+      native_pair = rm >= 0 && wm >= 0 && (c->native_methods[wm].share & NSH_KEEPS);
+      if (!native_pair) continue;
+    }
     /* both halves defined by a reopening of a builtin, or a receiver that
        may be one of several kinds (`known.is_alias_for ||= x`, `known` read
        out of a Hash of mixed values), which the two calls dispatch on as
        any call does; a user object's pairing stays the emitter's */
     int has_def_writer = 0, has_def_reader = 0;
-    if (rt == TY_POLY) has_def_writer = has_def_reader = 1;
+    if (rt == TY_POLY || native_pair) has_def_writer = has_def_reader = 1;
     for (int q = 0; q < c->nclasses && !(has_def_writer && has_def_reader); q++) {
       if (!c->classes[q].name || !is_builtin_reopen(c->classes[q].name)) continue;
       if (comp_method_in_chain(c, q, wname, NULL) >= 0) has_def_writer = 1;

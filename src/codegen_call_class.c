@@ -1216,6 +1216,29 @@ int user_assign_handle(Compiler *c, int id) {
   return m->nparams == 1 && m->rest_idx < 0 && m->kwrest_idx < 0 && !m->blk_param;
 }
 
+/* Is call id an attribute assignment of one plain String to a native class's
+   binding that keeps its argument (`native_share ... "keeps"`: StringIO#string=),
+   where the --share-strings rule shares the String the object keeps? Its value
+   is the String the binding was handed, as the handle it is a name of (the
+   binding's handle form answers that handle). The binding, or NULL. */
+const NativeMethod *native_assign_keeps(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver"), argc = 0;
+  const int *argv = call_args(nt, id, &argc);
+  if (!repr_share_rule(c) || recv < 0 || argc != 1 || nt_ref(nt, id, "block") >= 0 || !call_is_setter_assign(nt, id) ||
+      repr_of(c, argv[0]).kind == RK_BOXED || (comp_ntype(c, argv[0]) != TY_STRING && comp_ntype(c, argv[0]) != TY_STRBUF))
+    return NULL;
+  TyKind rty = repr_of(c, recv).as_ty, at = comp_ntype(c, argv[0]);
+  if (!ty_is_object(rty)) return NULL;
+  /* (a class that has no binding that keeps its argument is the common answer) */
+  int nk = comp_native_answer_class(c, ty_object_class(rty), nt_str(nt, id, "name"));
+  if (nk < 0 || !c->classes[nk].native_share_keeps) return NULL;
+  int nm = comp_native_method_find_typed(c, nk, nt_str(nt, id, "name"), 1, 0, &at);
+  const NativeMethod *m = nm >= 0 ? &c->native_methods[nm] : NULL;
+  return m && m->kind == 0 && (m->share & NSH_KEEPS) && m->share_csym && !m->rest && m->nargs == 1 &&
+         share_node_elems_share(c, recv) ? m : NULL;
+}
+
 static int assign_value_slot(const NodeTable *nt, int p, int n);
 /* Is call id the value its own method answers: the last statement of the
    method's body, or of a branch body of a conditional, case or begin that
@@ -1451,6 +1474,22 @@ static void assign_value_route(Compiler *c, int id, int value, int as_string, in
   Repr mk = repr_of(c, id);
   q.carry = ((mk.handle || mk.demand) && !as_string) || tail ? id : SHARE_CARRY_COPY;
   if (!share_route_defer(c, &q, msg)) unsupported_feature(c, id, msg);
+}
+
+/* The value of a native binding's attribute assignment (native_assign_keeps)
+   that is taken as a String, not as the handle: href is the binding's
+   handle form, called, which answers the handle it was handed. The String is
+   a read of that one object, published for the caller to pick up as the
+   handle where it is the tail of a method that answers handles. A consumer
+   that keeps it as a String is the share analysis' to refuse, which sees
+   the value as the object's String. */
+void emit_native_assign_read(Compiler *c, int id, const char *href, Buf *b) {
+  const int *par = codegen_node_parents(c, id);
+  Scope *sc = comp_scope_of(c, id);
+  if (par && sc && sc->def_node >= 0 && sc->ret_handle && (assign_is_tail(c, id, par) || assign_is_returned(c, id, par)))
+    emit_strbuf_node_read(c, id, href, b);
+  else
+    buf_printf(b, "sp_strbuf_read(%s)", href);
 }
 
 /* The writer call of `obj.x = v`, whose value the caller supplies. Where

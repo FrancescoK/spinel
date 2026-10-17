@@ -148,10 +148,12 @@ int repr_write_share(const Compiler *c, int node) {
       k == NK_ClassVariableWriteNode || k == NK_ClassVariableOrWriteNode || k == NK_ClassVariableAndWriteNode)
     return repr_static_share(c, node);
   /* an attribute assignment (`obj.x = v`): its value is v, the handle an
-     attr writer stored in its field or an explicit writer was handed */
+     attr writer stored in its field, an explicit writer was handed or a
+     native binding keeps */
   if (k == NK_CallNode) {
     int cid, iv;
-    return attr_assign_slot(mc, node, &cid, &iv) ? repr_of_ivar(c, cid, iv).share : user_assign_handle(mc, node);
+    return attr_assign_slot(mc, node, &cid, &iv) ? repr_of_ivar(c, cid, iv).share
+                                                 : user_assign_handle(mc, node) || native_assign_keeps(mc, node) != NULL;
   }
   return 0;
 }

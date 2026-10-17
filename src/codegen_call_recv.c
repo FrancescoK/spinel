@@ -11360,7 +11360,7 @@ static int emit_native_binding_call(Compiler *c, int id, int cid, const char *na
   if (nm >= 0) {
     NativeMethod *m = &c->native_methods[nm];
     native_arg_check(c, id, "native method", m, argc, argv);
-    if (emit_native_share_keeps(c, recv, m, argc, argv, b)) return 1;
+    if (emit_native_share_keeps(c, id, recv, m, argc, argv, b)) return 1;
     emit_native_call_on(c, m, recv, NULL, argc, argv, b);
     return 1;
   }
