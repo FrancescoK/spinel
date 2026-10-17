@@ -7,7 +7,7 @@ true
 #<Encoding:BINARY (ASCII-8BIT)>
 true
 "ICN\xFF"
-#<Encoding:BINARY (ASCII-8BIT)>
+["", #<Encoding:BINARY (ASCII-8BIT)>]
 #<Encoding:BINARY (ASCII-8BIT)>
 ["Ttukseom ", #<Encoding:BINARY (ASCII-8BIT)>]
 "H"

@@ -27,7 +27,11 @@ p got.encoding
 p got == "ICN\xFF".b
 p got
 
-p rx.recv(0).encoding
+# a zero-length read waits for a datagram, which it discards
+tx.send("x", 0, "127.0.0.1", port)
+z = rx.recv(0)
+p [z, z.encoding]
+tx.send("y", 0, "127.0.0.1", port)
 p rx.recvfrom(0)[0].encoding
 tx.close
 rx.close
