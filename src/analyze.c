@@ -44726,6 +44726,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_singleton_attr(c);             /* singleton_class.attr_accessor :x -> def self.x / def self.x= */
   desugar_sclass_readers_through_class(c); /* class << self; attr_reader :x read as obj.class.x -> def x = @x */
   desugar_handle_attr_accessor(c);       /* Thread.attr_accessor :x -> a Thread reopening on its store */
+  desugar_fiber_prepended_init(c);       /* a prepended Fiber#initialize -> __spinel_init run on the new fiber */
   desugar_handle_ivars(c);               /* @x in a Fiber / Thread reopening or its mixin -> the same store */
   desugar_constant_path_self_alias(c);   /* A::B::C = remove_const(:C) (C a class) -> dropped */
   /* builtins/enumerable.rb, spliced by the parser: its definitions become

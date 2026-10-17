@@ -1072,6 +1072,9 @@ static const BuiltinOp bop_rows[] = {
   { TY_FIBER, "__storage_set", 2, 2, BF_ANY, TY_POLY, BOPE_TEMPLATE,
     "({ sp_RbVal _t$t = $b1; SP_GC_ROOT_RBVAL(_t$t); sp_Fiber_attr_set($r, $e0, _t$t); _t$t; })", BOP_K(TY_SYMBOL) },
   { TY_FIBER, "__storage_set", 0, BOP_ARGC_ANY, BF_ANY, TY_POLY,    BOPE_NONE },
+  /* a prepended initialize's super(**opts) (desugar_fiber_prepended_init) */
+  { TY_FIBER, "__fiber_init_opts", 1, 1, BF_ANY, TY_POLY, BOPE_TEMPLATE, "(sp_Fiber_init_opts($r, $b0), sp_box_nil())" },
+  { TY_FIBER, "__fiber_init_opts", 0, BOP_ARGC_ANY, BF_ANY, TY_POLY, BOPE_NONE },
   { TY_FIBER, "alive?",        0, BOP_ARGC_ANY, BF_ANY, TY_BOOL,    BOPE_TEMPLATE, "sp_Fiber_alive($r)" },
   /* Fiber#value: resume until the fiber finishes, answering the last value */
   { TY_FIBER, "value",         0, BOP_ARGC_ANY, BF_ANY, TY_POLY,    BOPE_TEMPLATE, "sp_Fiber_resume($r, sp_box_nil())" },
