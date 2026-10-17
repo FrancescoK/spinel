@@ -705,14 +705,18 @@ int cplan_target_binds(Compiler *c, int id, int mi) {
   if (id < 0 || mi < 0 || mi >= c->nscopes || nt_kind(nt, id) != NK_CallNode) return 1;
   int args = nt_ref(nt, id, "arguments"), argc = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
-  for (int a = 0; a < argc; a++) {
+  /* a trailing keyword hash is judged as the arm judges it: taken as
+     keywords, refused, or one more positional Hash (kw_plan) */
+  int kwh = argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+  int pos_argc = kwh >= 0 ? argc - 1 : argc;
+  for (int a = 0; a < pos_argc; a++) {
     NodeKind k = nt_kind(nt, argv[a]);
     if (k == NK_SplatNode || k == NK_KeywordHashNode || k == NK_ForwardingArgumentsNode ||
         k == NK_BlockArgumentNode)
       return 1;
   }
   char exp[256];
-  return poly_arm_count(c, &c->scopes[mi], -1, argc, -1, exp, sizeof exp) >= 0;
+  return poly_arm_count(c, &c->scopes[mi], kwh, pos_argc, -1, exp, sizeof exp) >= 0;
 }
 
 int cplan_targets(Compiler *c, int id, int *out, int cap) {
