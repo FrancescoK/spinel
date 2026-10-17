@@ -1,0 +1,9 @@
+"http://example.com"
+"https://example.com"
+"https://example.com:8443"
+"http://localhost:3000"
+"localhost:3000"
+"example.com"
+"http://www.example.com"
+true
+"https://cdn.example.com:8080"
