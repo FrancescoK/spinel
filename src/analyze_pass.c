@@ -2,6 +2,7 @@
 #include "analyze_internal.h"
 #include "builtin_ops.h"
 #include "call_plan.h"
+#include "value_pos.h"
 #include "repr.h"
 #include "share.h"
 int callee_has_kwarg(Compiler *c, Scope *m, const char *name);
@@ -5788,43 +5789,36 @@ static int widen_nested_literals(Compiler *c, int recv, int is_push, int is_spli
 /* With `nil_ok` (VL_NIL), a path that answers nil (an arm left out, an empty
    body, a bare `return`) adds no expression instead of answering -1. VL_BEGIN
    also reads through a plain begin; the flag is for the one caller that asks. */
+typedef struct {
+  const NodeTable *nt;
+  int *out;
+  int nout, cap, nil_ok;
+} ValueLeaves;
+
+/* One value position of the walk (value_pos.h). A nil adds nothing under
+   nil_ok and fails the walk otherwise; so do a return that hands out several
+   values or a splat and a walk that gave up. A next or break is the leaf it
+   always was: the walk follows only the return. */
+static int value_leaf_collect(const VpLeaf *leaf, void *ud) {
+  ValueLeaves *v = ud;
+  if (leaf->kind == VPK_NIL) {
+    if (!v->nil_ok) v->nout = -1;
+    return v->nout < 0;
+  }
+  if (leaf->kind == VPK_GAVE_UP || (leaf->kind == VPK_JUMP && nt_kind(v->nt, leaf->node) == NK_ReturnNode) ||
+      v->nout >= v->cap) {
+    v->nout = -1;
+    return 1;
+  }
+  v->out[v->nout++] = leaf->node;
+  return 0;
+}
 static int value_leaves_ex(Compiler *c, int n, int *out, int nout, int cap, int nil_ok) {
-  const NodeTable *nt = c->nt;
   if (nout < 0) return -1;
-  n = unwrap_parens(c, n);
-  if (n < 0) return nil_ok ? nout : -1;
-  NodeKind k = nt_kind(nt, n);
-  if (k == NK_StatementsNode) {
-    int bn = 0; const int *bb = nt_arr(nt, n, "body", &bn);
-    return bn > 0 ? value_leaves_ex(c, bb[bn - 1], out, nout, cap, nil_ok) : nil_ok ? nout : -1;
-  }
-  if (k == NK_ParenthesesNode) return value_leaves_ex(c, nt_ref(nt, n, "body"), out, nout, cap, nil_ok);
-  if (k == NK_ElseNode) return value_leaves_ex(c, nt_ref(nt, n, "statements"), out, nout, cap, nil_ok);
-  /* with VL_BEGIN, a begin without rescue, else or ensure answers its
-     body's value */
-  if ((nil_ok & VL_BEGIN) && k == NK_BeginNode && nt_ref(nt, n, "rescue_clause") < 0 &&
-      nt_ref(nt, n, "else_clause") < 0 && nt_ref(nt, n, "ensure_clause") < 0)
-    return value_leaves_ex(c, nt_ref(nt, n, "statements"), out, nout, cap, nil_ok);
-  if (k == NK_IfNode || k == NK_UnlessNode) {
-    int alt = nt_ref(nt, n, k == NK_IfNode ? "subsequent" : "else_clause");
-    nout = value_leaves_ex(c, nt_ref(nt, n, "statements"), out, nout, cap, nil_ok);
-    return value_leaves_ex(c, alt, out, nout, cap, nil_ok);
-  }
-  if (k == NK_CaseNode) {
-    int an = 0; const int *arms = nt_arr(nt, n, "conditions", &an);
-    for (int i = 0; i < an; i++) nout = value_leaves_ex(c, nt_ref(nt, arms[i], "statements"), out, nout, cap, nil_ok);
-    return value_leaves_ex(c, nt_ref(nt, n, "else_clause"), out, nout, cap, nil_ok);
-  }
-  if (k == NK_ReturnNode) {
-    int a = nt_ref(nt, n, "arguments"), an = 0;
-    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-    if (an == 0 && nil_ok) return nout;
-    if (an != 1 || nt_kind(nt, av[0]) == NK_SplatNode) return -1;
-    return value_leaves_ex(c, av[0], out, nout, cap, nil_ok);
-  }
-  if (nout >= cap) return -1;
-  out[nout++] = n;
-  return nout;
+  ValueLeaves v = { c->nt, out, nout, cap, nil_ok };
+  unsigned shapes = VPS_IF | VPS_UNLESS | VPS_CASE | ((nil_ok & VL_BEGIN) ? VPS_BEGIN_PLAIN : 0);
+  for_each_value_position(c->nt, n, VP_FOLLOW_RETURN | shapes, value_leaf_collect, &v);
+  return v.nout;
 }
 static int value_leaves(Compiler *c, int n, int *out, int nout, int cap) {
   return value_leaves_ex(c, n, out, nout, cap, 0);
