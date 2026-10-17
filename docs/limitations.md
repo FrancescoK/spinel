@@ -119,9 +119,13 @@ a Digest), `OpenSSL::KDF.hkdf` /
 `pbkdf2_hmac` and `OpenSSL::PKCS5.pbkdf2_hmac` are there, over the runtime's
 own crypto rather than libssl, and no HMAC-MD5; the digest object buffers its
 input and hashes it whole. `Cipher` (aes-gcm) and `PKey::EC` are subsets,
-each described in its file under `packages/openssl/openssl/`. Most of `X509`
-is not there: a call to a method the package does not define compiles into
-CRuby's NoMethodError, raised when it is reached. Spinel
+each described in its file under `packages/openssl/openssl/`.
+`X509::Certificate` reads a certificate from PEM or DER (`new`, and `load`
+for every certificate in a chain file) and writes it back (`to_der`,
+`to_pem`); it holds the DER, and the fields inside it (`subject`, `issuer`,
+`not_after`, extensions) are not read. Beyond that and `X509::Store`, most of
+`X509` is not there: a call to a method the package does not define compiles
+into CRuby's NoMethodError, raised when it is reached. Spinel
 implements no TLS and bundles no trust anchors: the chain is validated against
 the operating system's store, so a CA it stops trusting stops being trusted
 here on an OS update. The package exists only where libssl's headers were

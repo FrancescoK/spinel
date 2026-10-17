@@ -5,7 +5,9 @@
 # nothing. What is missing is missing the way a subset is missing things --
 # most of X509 is not here, and a program that uses it fails at COMPILE time
 # with an unresolved call rather than at run time somewhere deep. Digest,
-# HMAC, KDF, PKey::EC and Cipher are here, and the last two are subsets of
+# HMAC, KDF, PKey::EC, Cipher and X509::Certificate are here; a certificate
+# is its DER, read from PEM or DER and written back, and its fields are not
+# read (openssl/x509.rb). PKey::EC and Cipher are subsets of
 # CRuby's in a second sense, each spelled out in its own file: EC keeps
 # CRuby's method names but trades BN, EC::Group and EC::Point for the raw
 # bytes every protocol that names an EC key means by them, and Cipher keeps
@@ -29,6 +31,7 @@ require "openssl/digest"
 require "openssl/cipher"
 require "openssl/kdf"
 require "openssl/pkey"
+require "openssl/x509"
 
 module OpenSSL
   module Native
@@ -74,6 +77,13 @@ module OpenSSL
     # PSS the MGF1 digest and the salt length. See openssl/pkey.rb.
     native_func :rsa_verify, [:string, :string, :string, :string, :string, :int, :string, :int],
                 :int, "sp_rsa_verify"
+
+    # X509::Certificate: PEM or DER in, DER out, and "" with the reason in
+    # last_error. x509_load answers each certificate as a 4-byte big-endian
+    # length and its DER. See openssl/x509.rb.
+    native_func :x509_der,  [:string], :cbinstr, "sp_x509_der"
+    native_func :x509_load, [:string], :cbinstr, "sp_x509_load"
+    native_func :x509_pem,  [:string], :cbinstr, "sp_x509_pem"
 
     ffi_lib "ssl"
     ffi_lib "crypto"
