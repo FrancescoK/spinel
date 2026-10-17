@@ -11918,8 +11918,19 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
          reaches it: the binding builds the handle from the literal itself
          (emit_arg_or_default), and a copy made here first went unused */
       if (!seq && dyn_handle_lit_arg(c, m, k, argv[k])) continue;
+      /* --share-strings: a conditional with a handle (or a String Range's
+         endpoint) on an arm, into a boxed parameter, is boxed arm by arm
+         where it is bound (emit_boxed_cond_arms), each arm's box its own
+         object; hoisted here as the selected arm's bytes, the box held
+         another one (a call in its predicate allocated, so it was). Its arms
+         are variables, which are rooted where they live. One the analysis
+         lifted (poly_strbuf_lift) is bound as its handle below. */
+      if (!seq && repr_share_rule(c) && at == TY_STRING && m->pnames[k] &&
+          repr_of_slot(c, scope_local(m, m->pnames[k])).kind == RK_BOXED && !c->poly_strbuf_lift[argv[k]] &&
+          strbuf_srange_tail(c, argv[k]) < 0 &&
+          (strbuf_cond_has_handle_leaf(c, argv[k], 0) || strbuf_srange_arm(c, argv[k]))) root = 0;
       /* a bare read is already rooted where it lives */
-      if (aty && (sp_streq(aty, "LocalVariableReadNode") ||
+      else if (aty && (sp_streq(aty, "LocalVariableReadNode") ||
                   sp_streq(aty, "InstanceVariableReadNode") ||
                   sp_streq(aty, "ConstantReadNode") ||
                   sp_streq(aty, "SelfNode") || sp_streq(aty, "NilNode") ||
