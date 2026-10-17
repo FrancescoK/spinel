@@ -2406,8 +2406,12 @@ static TyKind infer_call_inner(Compiler *c, int id);
 /* The type of an implicit-self call to `name` bound to `mi` in scope `self`:
    the method's return unified with every descendant's direct override,
    since codegen's dispatch switches over them all. */
+static TyKind cmethod_setter_assign_ty(Compiler *c, int id, int mi);
 static TyKind an_self_call_ret(Compiler *c, Scope *self, const char *name, int mi, int id) {
   TyKind r = an_user_call(c, id, mi, c->scopes[mi].is_cmethod ? UC_CMETH : UC_INST, self->class_id);
+  /* an assignment through a writer is its argument whichever class's
+     writer the dispatch runs, so no override's return widens it */
+  if (c->scopes[mi].is_cmethod && cmethod_setter_assign_ty(c, id, mi) != TY_UNKNOWN) return r;
   return dispatch_ret_over(c, self->class_id, name, self->is_cmethod, mi, r, id);
 }
 /* `k[]` or `k[1, 2, 3]` on a boxed receiver: no builtin `[]` takes that
@@ -2695,21 +2699,27 @@ void an_user_call_record(Compiler *c, int id, int mi, int via, int owner_ci) {
   c->ucall_inf[id].via = (unsigned char)via;
 }
 
+/* `Klass.x = v` through the class's writer is an assignment: its value
+   is v as written, whatever the body returns (emit_cmethod_setter_assign),
+   as an instance writer's is. TY_UNKNOWN for any other call, and for an
+   argument not yet typed, which leaves the call to the method's return
+   until the next round revisits it. */
+static TyKind cmethod_setter_assign_ty(Compiler *c, int id, int mi) {
+  if (!c->scopes[mi].is_cmethod || nt_ref(c->nt, id, "block") >= 0 ||
+      !call_is_setter_assign(c->nt, id)) return TY_UNKNOWN;
+  int an = nt_ref(c->nt, id, "arguments"), ac = 0;
+  const int *av = an >= 0 ? nt_arr(c->nt, an, "arguments", &ac) : NULL;
+  if (ac != 1 || nt_kind(c->nt, av[0]) == NK_SplatNode) return TY_UNKNOWN;
+  TyKind rk = infer_type(c, av[0]);
+  if (rk == TY_STRBUF && c->share_strings) rk = TY_STRING;
+  return rk;
+}
+
 TyKind an_user_call(Compiler *c, int id, int mi, int via, int owner_ci) {
   an_user_call_record(c, id, mi, via, owner_ci);
-  /* `Klass.x = v` through the class's writer is an assignment: its value
-     is v as written, whatever the body returns (emit_cmethod_setter_assign),
-     as an instance writer's is. An argument not yet typed leaves the call
-     to the method's return, which the next round revisits. */
-  if (via == UC_CMETH && c->scopes[mi].is_cmethod && nt_ref(c->nt, id, "block") < 0 &&
-      call_is_setter_assign(c->nt, id)) {
-    int an = nt_ref(c->nt, id, "arguments"), ac = 0;
-    const int *av = an >= 0 ? nt_arr(c->nt, an, "arguments", &ac) : NULL;
-    if (ac == 1 && nt_kind(c->nt, av[0]) != NK_SplatNode) {
-      TyKind rk = infer_type(c, av[0]);
-      if (rk == TY_STRBUF && c->share_strings) rk = TY_STRING;
-      if (rk != TY_UNKNOWN) return rk;
-    }
+  if (via == UC_CMETH) {
+    TyKind rk = cmethod_setter_assign_ty(c, id, mi);
+    if (rk != TY_UNKNOWN) return rk;
   }
   /* A yielding reopening is called through its proc form. Its return
      includes the block's boxed answer, also through rescue or ensure. */
