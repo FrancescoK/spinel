@@ -121,10 +121,10 @@ static int re_src_all_ascii(const char *s) {
    slot. */
 int re_lit_enc_opts(Compiler *c, int recv, int rre) {
   int nid = re_lit_node(c, recv);
-  int pf = nid >= 0 ? (int)nt_int(c->nt, nid, "flags", 0) : 0;
+  int pf = nid >= 0 ? nt_regexp_opts(c->nt, nid) : 0;
   int o = 0;
-  if (pf & 128) o |= 32;                                   /* ASCII_8BIT: n */
-  if ((pf & (64 | 256 | 512)) || !re_src_all_ascii(g_re_src[rre])) o |= 16;   /* EUC_JP, WINDOWS_31J, UTF_8 */
+  if (pf & NT_RE_ASCII_8BIT) o |= 32;                      /* n */
+  if ((pf & (NT_RE_EUC_JP | NT_RE_WINDOWS_31J | NT_RE_UTF_8)) || !re_src_all_ascii(g_re_src[rre])) o |= 16;   /* e, s, u */
   return o;
 }
 
@@ -3283,7 +3283,7 @@ int emit_lazy_size_expr(Compiler *c, int id, Buf *b) {
   if (src_is_range) {
     range_lit = nt_type(nt, lazy_src) && sp_streq(nt_type(nt, lazy_src), "RangeNode");
     if (range_lit) {
-      excl = (nt_int(nt, lazy_src, "flags", 0) & 4) ? 1 : 0;
+      excl = nt_range_excl(nt, lazy_src);
       hi = nt_ref(nt, lazy_src, "right"); lo = nt_ref(nt, lazy_src, "left");
       endless = lazy_endpoint_is_infinite(c, hi);
     }
@@ -3612,7 +3612,7 @@ static int emit_lazy_pipeline_expr_1(Compiler *c, int id, Buf *b) {
   if (src_is_range) {
     src_range_literal = nt_type(nt, lazy_src) && sp_streq(nt_type(nt, lazy_src), "RangeNode");
     if (src_range_literal) {
-      excl = (int)(nt_int(nt, lazy_src, "flags", 0) & 4) ? 1 : 0;
+      excl = nt_range_excl(nt, lazy_src);
       right = nt_ref(nt, lazy_src, "right");
       endless = lazy_endpoint_is_infinite(c, right);
       left_n = nt_ref(nt, lazy_src, "left");

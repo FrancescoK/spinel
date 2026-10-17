@@ -9651,7 +9651,7 @@ static int desugar_class_literal_ctors(Compiler *c) {
       nt_node_reset(nt, id, "RangeNode");
       nt_node_set_ref(nt, id, "left", lo);
       nt_node_set_ref(nt, id, "right", hi);
-      if (excl) nt_node_set_int(nt, id, "flags", 4);
+      if (excl) nt_range_set_excl(nt, id, 1);
     }
     else continue;
     changed = 1;
@@ -11482,7 +11482,7 @@ static int desugar_string_upto(Compiler *c) {
     if (rng < 0) continue;
     nt_node_set_ref(nt, rng, "left", recv);
     nt_node_set_ref(nt, rng, "right", av[0]);
-    nt_node_set_int(nt, rng, "flags", excl ? 4 : 0);
+    nt_range_set_excl(nt, rng, excl);
     nt_node_set_ref(nt, id, "receiver", rng);
     nt_node_set_str(nt, id, "name", "each");
     nt_node_set_ref(nt, id, "arguments", -1);
@@ -35235,7 +35235,7 @@ static void nn_visit(Compiler *c, int id, NNF *f, int ctx) {
   case NK_WhileNode: case NK_UntilNode: {
     /* a nested loop in a dry walk is walked as any other node */
     if (nn_dry) { nn_visit_children_generic(c, id, f, ctx); return; }
-    int post = (int)(nt_int(nt, id, "flags", 0) & 4) ? 1 : 0;
+    int post = nt_loop_post(nt, id);
     NNF in = *f;
     nn_loop_entry(c, id, &in, ctx);
     NNF t, e;

@@ -4005,7 +4005,8 @@ static int emit_array_hash_literal_expr(Compiler *c, int id, Buf *b, const NodeT
             int rn = nt_type(nt, inner) && sp_streq(nt_type(nt, inner), "RangeNode") ? inner : -1;
             int rlo = rn >= 0 ? nt_ref(nt, rn, "left") : -1;
             int rhi = rn >= 0 ? nt_ref(nt, rn, "right") : -1;
-            int rexcl = rn >= 0 ? (int)(nt_int(nt, rn, "flags", 0) & 4) : 0;
+            /* the runtime tests the argument for truth; it has always been given Prism's bit */
+            int rexcl = nt_range_excl(nt, rn) ? NT_RANGE_EXCLUDE_END : 0;
             if (rlo >= 0 && comp_ntype(c, rlo) == TY_STRING) {
               Buf lo_b; memset(&lo_b, 0, sizeof lo_b); emit_expr(c, rlo, &lo_b);
               Buf hi_b; memset(&hi_b, 0, sizeof hi_b); emit_expr(c, rhi, &hi_b);
@@ -4100,7 +4101,8 @@ else {
         if (ir.range == TY_INT || ir.range == TY_STRING) {
           int rn2 = nt_type(nt, inner) && sp_streq(nt_type(nt, inner), "RangeNode") ? inner : -1;
           int rlo2 = rn2 >= 0 ? nt_ref(nt, rn2, "left") : -1;
-          int rexcl2 = rn2 >= 0 ? (int)(nt_int(nt, rn2, "flags", 0) & 4) : 0;
+          /* the argument is Prism's bit, as above */
+          int rexcl2 = nt_range_excl(nt, rn2) ? NT_RANGE_EXCLUDE_END : 0;
           if (rlo2 >= 0 && comp_ntype(c, rlo2) == TY_STRING) {
             int rhi2 = nt_ref(nt, rn2, "right");
             Buf lo2; memset(&lo2, 0, sizeof lo2); emit_expr(c, rlo2, &lo2);
@@ -5028,7 +5030,7 @@ static int emit_range_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   if (!(sp_streq(ty, "RangeNode"))) return 0;
   int left = nt_ref(nt, id, "left");
   int right = nt_ref(nt, id, "right");
-  int excl = (int)(nt_int(nt, id, "flags", 0) & 4) ? 1 : 0;
+  int excl = nt_range_excl(nt, id);
   /* (:a..:e): a poly array of boxed symbols, walked by name succession
      (interning through the generated TU's own table) */
   if (left >= 0 && right >= 0 &&

@@ -1163,7 +1163,7 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
         (blt9 == TY_NIL || blt9 == TY_INT || blt9 == TY_FLOAT) &&
         (brt9 == TY_NIL || brt9 == TY_INT || brt9 == TY_FLOAT) &&
         (blt9 == TY_NIL || brt9 == TY_NIL))) {
-      int excl = fvar ? 0 : (int)(nt_int(nt, rn9, "flags", 0) & 4) ? 1 : 0;
+      int excl = fvar ? 0 : nt_range_excl(nt, rn9);
       int klo = ++g_tmp, khi = ++g_tmp, fres = ++g_tmp, kmid = ++g_tmp, fx = ++g_tmp;
       if (fvar) {
         int tfr = ++g_tmp;

@@ -21,6 +21,19 @@
 #endif
 #include <prism.h>
 #include "node_table.h"
+
+/* node_table.h names the node flags the passes read without including Prism;
+   each must be the value Prism's own constant has. */
+_Static_assert(NT_RANGE_EXCLUDE_END == PM_RANGE_FLAGS_EXCLUDE_END, "range exclude-end flag");
+_Static_assert(NT_LOOP_BEGIN_MODIFIER == PM_LOOP_FLAGS_BEGIN_MODIFIER, "loop begin-modifier flag");
+_Static_assert(NT_RE_IGNORE_CASE == PM_REGULAR_EXPRESSION_FLAGS_IGNORE_CASE, "regexp /i flag");
+_Static_assert(NT_RE_EXTENDED == PM_REGULAR_EXPRESSION_FLAGS_EXTENDED, "regexp /x flag");
+_Static_assert(NT_RE_MULTI_LINE == PM_REGULAR_EXPRESSION_FLAGS_MULTI_LINE, "regexp /m flag");
+_Static_assert(NT_RE_EUC_JP == PM_REGULAR_EXPRESSION_FLAGS_EUC_JP, "regexp /e flag");
+_Static_assert(NT_RE_ASCII_8BIT == PM_REGULAR_EXPRESSION_FLAGS_ASCII_8BIT, "regexp /n flag");
+_Static_assert(NT_RE_WINDOWS_31J == PM_REGULAR_EXPRESSION_FLAGS_WINDOWS_31J, "regexp /s flag");
+_Static_assert(NT_RE_UTF_8 == PM_REGULAR_EXPRESSION_FLAGS_UTF_8, "regexp /u flag");
+
 #if defined(_WIN32)
 char *sp_w32_overlay(char *content, const char *path);   /* lib/win32/sp_win32_driver.c */
 #endif
@@ -1546,8 +1559,8 @@ static int flatten_node(pm_node_t *node) {
     N("RangeNode");
     R("left", n->left);
     R("right", n->right);
-    /* PM_RANGE_FLAGS_EXCLUDE_END = 4. Codegen reads bit 2 to decide
-       whether `..` (inclusive) or `...` (exclusive). */
+    /* PM_RANGE_FLAGS_EXCLUDE_END: nt_range_excl tells `..` (inclusive)
+       from `...` (exclusive). */
     I("flags", n->base.flags);
     break;
   }
@@ -1578,9 +1591,9 @@ static int flatten_node(pm_node_t *node) {
     N("WhileNode");
     R("predicate", n->predicate);
     R("statements", n->statements);
-    /* PM_LOOP_FLAGS_BEGIN_MODIFIER = 4 (bit 2): begin..end while form,
-       which is a post-test loop (body runs at least once). The codegen
-       reads bit 2 to decide between `while (cond) {}` and `do {} while (cond);`. */
+    /* PM_LOOP_FLAGS_BEGIN_MODIFIER: begin..end while form, which is a
+       post-test loop (body runs at least once). nt_loop_post tells the codegen
+       to emit `do {} while (cond);` rather than `while (cond) {}`. */
     I("flags", n->base.flags);
     break;
   }
@@ -1935,8 +1948,7 @@ else if (PM_NODE_TYPE(n->parameters) != PM_NUMBERED_PARAMETERS_NODE) {
     N("RegularExpressionNode");
     emit_pm_string(id, "unescaped", &n->unescaped);
     /* Emit Prism's regex flags so the codegen can pass /i, /x, /m
-       through to the engine. PM_REGULAR_EXPRESSION_FLAGS_IGNORE_CASE=4,
-       _EXTENDED=8, _MULTI_LINE=16. */
+       through to the engine (nt_regexp_opts). */
     I("flags", n->base.flags);
     break;
   }

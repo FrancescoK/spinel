@@ -712,10 +712,10 @@ static int nf_local_guarded(NF *f, int rd, const char *nm, const LocalVar *lv) {
              nf_falsy_implies(c, nt_ref(nt, p, "left"), nm)) region = cur;
     /* not a loop that tests after its body (`begin ... end while nm`,
        Prism's begin-modifier flag): that body runs once before the test */
-    else if (pk == NK_WhileNode && !(nt_int(nt, p, "flags", 0) & 4) && cur == nt_ref(nt, p, "statements") &&
+    else if (pk == NK_WhileNode && !nt_loop_post(nt, p) && cur == nt_ref(nt, p, "statements") &&
              (nf_truthy_implies(c, nt_ref(nt, p, "predicate"), nm) || nf_derefs(c, nt_ref(nt, p, "predicate"), nm, 0)))
       region = cur;
-    else if (pk == NK_UntilNode && !(nt_int(nt, p, "flags", 0) & 4) && cur == nt_ref(nt, p, "statements") &&
+    else if (pk == NK_UntilNode && !nt_loop_post(nt, p) && cur == nt_ref(nt, p, "statements") &&
              (nf_falsy_implies(c, nt_ref(nt, p, "predicate"), nm) || nf_derefs(c, nt_ref(nt, p, "predicate"), nm, 0)))
       region = cur;
     if (region >= 0) {

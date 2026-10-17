@@ -532,7 +532,7 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     if (rn >= 0 && nt_type(c->nt, rn) && sp_streq(nt_type(c->nt, rn), "RangeNode")) {
       int lo = nt_ref(c->nt, rn, "left"), hi = nt_ref(c->nt, rn, "right");
       if (lo >= 0 && hi >= 0 && comp_ntype(c, lo) == TY_STRING && comp_ntype(c, hi) == TY_STRING) {
-        int excl = (int)(nt_int(c->nt, rn, "flags", 0) & 4) ? 1 : 0;
+        int excl = nt_range_excl(c->nt, rn);
         buf_puts(b, "sp_puts_line(sp_sprintf(\"%s");
         buf_puts(b, excl ? "..." : "..");
         buf_puts(b, "%s\", sp_str_inspect("); emit_expr(c, lo, b);
@@ -2937,7 +2937,7 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
       else if (ops[i] >= 0) ts[i] = hold_operand(c, ops[i], TY_POLY, 1, ts[i], 1, " ", b);
       else buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); ", ts[i]);
     }
-    if (argc == 1 && (nt_int(nt, argv[0], "flags", 0) & 4) &&
+    if (argc == 1 && nt_range_excl(nt, argv[0]) &&
         ops[2] >= 0 && nt_kind(nt, ops[2]) != NK_NilNode)
       buf_puts(b, "sp_raise_cls(\"ArgumentError\", \"cannot clamp with an exclusive range\"); ");
     if (rvar) {
@@ -7952,7 +7952,7 @@ static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, B
      `===`, i.e. lo <= v (&& v <= hi, or v < hi when exclusive). */
   if (sp_streq(pty, "RangeNode")) {
     int lo = nt_ref(nt, pat, "left"), hi = nt_ref(nt, pat, "right");
-    int excl = (int)(nt_int(nt, pat, "flags", 0) & 4) ? 1 : 0;
+    int excl = nt_range_excl(nt, pat);
     const char *cmp = excl ? "<" : "<=";
     if (pt == TY_INT || pt == TY_FLOAT) {
       buf_puts(b, "(");
@@ -8820,7 +8820,7 @@ static void emit_pm_diag_pat_s(Compiler *c, int pat, Buf *b) {
     int lo = nt_ref(nt, pat, "left"), hi = nt_ref(nt, pat, "right");
     buf_puts(b, "\"");
     if (lo >= 0) buf_printf(b, "%lld", (long long)nt_int(nt, lo, "value", 0));
-    buf_puts(b, (nt_int(nt, pat, "flags", 0) & 4) ? "..." : "..");
+    buf_puts(b, nt_range_excl(nt, pat) ? "..." : "..");
     if (hi >= 0) buf_printf(b, "%lld", (long long)nt_int(nt, hi, "value", 0));
     buf_puts(b, "\"");
     return;
@@ -10025,7 +10025,7 @@ static int emit_when_string_range(Compiler *c, int cond, int t, Buf *b) {
   if (left < 0 && right < 0) return 0;
   if (left >= 0 && comp_ntype(c, left) != TY_STRING) return 0;
   if (right >= 0 && comp_ntype(c, right) != TY_STRING) return 0;
-  int excl = (int)(nt_int(nt, cond, "flags", 0) & 4) ? 1 : 0;
+  int excl = nt_range_excl(nt, cond);
   int tl = left >= 0 ? ++g_tmp : -1;
   int tr = right >= 0 ? ++g_tmp : -1;
   buf_puts(b, "({ ");
@@ -12102,9 +12102,9 @@ static void emit_while_loop(Compiler *c, int id, Buf *b, int indent, int is_unti
   int prev_stmt = g_stmt_cur == id ? g_stmt_prev : -1;
   int pred = nt_ref(nt, id, "predicate");
   int body = nt_ref(nt, id, "statements");
-  /* PM_LOOP_FLAGS_BEGIN_MODIFIER (bit 2 == 4): `begin..end while cond` is a
-     post-test loop -- the body runs at least once before the guard is tested. */
-  int post_test = (int)(nt_int(nt, id, "flags", 0) & 4) ? 1 : 0;
+  /* `begin..end while cond` (nt_loop_post) is a post-test loop -- the body
+     runs at least once before the guard is tested. */
+  int post_test = nt_loop_post(nt, id);
   if (post_test) {
     emit_indent(b, indent);
     buf_puts(b, "do {\n");
@@ -12321,7 +12321,7 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
        with sp_poly_to_i when its static type is poly/bigint, and when the
        counter slot is poly drive the loop with a fresh sp_int temp and re-box
        the counter local each iteration so the body sees a poly value. */
-    int excl = (int)(nt_int(nt, coll, "flags", 0) & 4) ? 1 : 0;
+    int excl = nt_range_excl(nt, coll);
     int lref = nt_ref(nt, coll, "left");
     int rref = nt_ref(nt, coll, "right");
     TyKind lty = comp_ntype(c, lref);

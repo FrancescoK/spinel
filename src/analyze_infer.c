@@ -5811,7 +5811,7 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
             nt_type(nt, hi) && sp_streq(nt_type(nt, hi), "IntegerNode")) {
           long long lov = nt_int(nt, lo, "value", 0);
           long long hiv = nt_int(nt, hi, "value", 0);
-          int excl = (nt_int(nt, argv[0], "flags", 0) & 4) ? 1 : 0;
+          int excl = nt_range_excl(nt, argv[0]);
           if ((excl ? hiv - 1 : hiv) < lov) { *out = TY_POLY; return 1; }   /* nil */
         }
         { *out = TY_INT; return 1; }
@@ -7703,7 +7703,7 @@ static int promote_red_fits(Compiler *c, int recv, int is_mul, int seed, int has
     long long lo, hi;
     if (!promote_red_const(nt, nt_ref(nt, rn, "left"), &lo) ||
         !promote_red_const(nt, nt_ref(nt, rn, "right"), &hi)) return 0;
-    if (nt_int(nt, rn, "flags", 0) & 4) hi--;
+    if (nt_range_excl(nt, rn)) hi--;
     if (hi >= lo) {
       /* (lo + hi) * count / 2: one of the two is even, halved first */
       long long sum, cnt, tri;

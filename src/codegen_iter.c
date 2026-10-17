@@ -6064,7 +6064,7 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
     if (rnode >= 0 && nt_type(nt, rnode) && sp_streq(nt_type(nt, rnode), "RangeNode")) {
       int lo = nt_ref(nt, rnode, "left"), hi = nt_ref(nt, rnode, "right");
       if (lo >= 0 && hi >= 0 && comp_ntype(c, lo) == TY_STRING && comp_ntype(c, hi) == TY_STRING) {
-        int excl = (int)(nt_int(nt, rnode, "flags", 0) & 4) ? 1 : 0;
+        int excl = nt_range_excl(nt, rnode);
         int ta = ++g_tmp, ti = ++g_tmp;
         emit_indent(b, indent);
         buf_printf(b, "sp_StrArray *_t%d = sp_StrArray_from_string_range(", ta);

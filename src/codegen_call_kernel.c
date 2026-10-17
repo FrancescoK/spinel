@@ -694,7 +694,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
             nt_type(nt, hi) && sp_streq(nt_type(nt, hi), "IntegerNode")) {
           long long lov = nt_int(nt, lo, "value", 0);
           long long hiv = nt_int(nt, hi, "value", 0);
-          int excl = (nt_int(nt, av[0], "flags", 0) & 4) ? 1 : 0;
+          int excl = nt_range_excl(nt, av[0]);
           if ((excl ? hiv - 1 : hiv) < lov) { buf_puts(b, "sp_box_nil()"); return 1; }
         }
         int tr = ++g_tmp;
@@ -1004,7 +1004,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       int rid = argv[0];
       int left = nt_ref(c->nt, rid, "left");
       int right = nt_ref(c->nt, rid, "right");
-      int excl = (int)(nt_int(c->nt, rid, "flags", 0) & 4) ? 1 : 0;
+      int excl = nt_range_excl(c->nt, rid);
       TyKind lty = left >= 0 ? repr_of(c, left).as_ty : TY_UNKNOWN;
       TyKind rty = right >= 0 ? repr_of(c, right).as_ty : TY_UNKNOWN;
       /* A boxed endpoint (a value out of a poly slot; under

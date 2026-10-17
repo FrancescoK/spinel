@@ -201,11 +201,11 @@ disambiguating field is `name`, plus the recv / args / block triple.
 | `SymbolNode`          | `content` (S)                              | Symbol literal.                |
 | `InterpolatedStringNode` / `InterpolatedSymbolNode` | `parts` (A) | Each part is either a StringNode or an `EmbeddedStatementsNode`. |
 | `EmbeddedStatementsNode` | `statements` (R)                        | `#{...}` inside a string.      |
-| `RegularExpressionNode` | `content` (S), `flags` (I)               | `/pat/`.                       |
+| `RegularExpressionNode` | `content` (S), `flags` (I)               | `/pat/`; `flags` are Prism's options (`nt_regexp_opts`). |
 | `InterpolatedRegularExpressionNode` | `parts` (A), `flags` (I)     | `/#{x}/`.                      |
 | `ArrayNode`           | `elements` (A)                             | `[1, 2, 3]`.                   |
 | `HashNode`            | `elements` (A) -- each an AssocNode        | `{a: 1}`.                      |
-| `RangeNode`           | `left` (R), `right` (R), `flags` (I)       | `flags` bit 1 = exclusive end. |
+| `RangeNode`           | `left` (R), `right` (R), `flags` (I)       | `flags` & 4 = exclusive end (`nt_range_excl`). |
 | `LambdaNode`          | (see above)                                | `-> x { x*2 }`.                |
 | `TrueNode` / `FalseNode` / `NilNode` / `SelfNode` | (no fields)    | Singleton literals.            |
 

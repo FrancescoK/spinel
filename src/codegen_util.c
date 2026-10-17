@@ -1359,9 +1359,9 @@ int g_fiber_counter = 0;
 char **g_re_src; int *g_re_flg; int g_re_count, g_re_cap;
 int re_engine_flags(int pf) {
   int f = 0;
-  if (pf & 4) f |= 1;
-  if (pf & 8) f |= 8;
-  if (pf & 16) f |= 6;
+  if (pf & NT_RE_IGNORE_CASE) f |= 1;
+  if (pf & NT_RE_EXTENDED) f |= 8;
+  if (pf & NT_RE_MULTI_LINE) f |= 6;
   return f;
 }
 /* The RegularExpressionNode behind `nid`, or -1 when the pattern is only
@@ -1523,7 +1523,7 @@ int re_lit_index(Compiler *c, int nid) {
   if (nid < 0) return -1;
   const char *src = nt_str(c->nt, nid, "unescaped");
   if (!src) return -1;
-  int flg = re_engine_flags((int)nt_int(c->nt, nid, "flags", 0));
+  int flg = re_engine_flags(nt_regexp_opts(c->nt, nid));
   for (int i = 0; i < g_re_count; i++)
     if (g_re_flg[i] == flg && sp_streq(g_re_src[i], src)) return i;
   /* A literal is two constants, the pattern and its flags, so whether the
@@ -1560,7 +1560,7 @@ int emit_regex_pat_to_buf(Compiler *c, int nid, Buf *b) {
   if (ri >= 0) { buf_printf(b, "sp_re_pat_%d", ri); return 1; }
   const char *ty = nt_type(c->nt, nid);
   if (ty && sp_streq(ty, "InterpolatedRegularExpressionNode")) {
-    int flg = re_engine_flags((int)nt_int(c->nt, nid, "flags", 0));
+    int flg = re_engine_flags(nt_regexp_opts(c->nt, nid));
     int ts = ++g_tmp, tp = ++g_tmp;
     /* Emit the interpolated pattern into a local buffer: an embedded call that
        roots its own args pushes those decls to g_pre, which must land as whole
