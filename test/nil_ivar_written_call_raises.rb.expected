@@ -1,0 +1,16 @@
+undefined method '<<' for nil
+undefined method 'size' for nil
+:pushed
+3
+undefined method 'upcase' for nil
+"AB"
+undefined method '<<' for nil
+"abx"
+undefined method 'keys' for nil
+["k"]
+undefined method 'size' for nil
+1
+undefined method 'sum' for nil
+3
+undefined method 'push' for nil
+[1, 2, 3]

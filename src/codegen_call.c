@@ -23511,9 +23511,10 @@ static int ivar_only_memo_written(Compiler *c, const char *ivn) {
    memoization (`def c = (@c ||= {})`): the slot is nil (NULL) until the
    memoizing read runs, and the typed emission stores through or reads the
    NULL pointer -- `@c[k] = v` ahead of the first `c` crashed where CRuby
-   raises NoMethodError. An ivar any other write fills is left unguarded in
-   a release build: the test would sit in front of every hot call through
-   it. A debug build guards them all. 0 when the call needs no guard. */
+   raises NoMethodError -- and one a write of the program's own leaves nil.
+   An ivar only other writes fill is left unguarded in a release build: the
+   test would sit in front of every hot call through it. A debug build
+   guards them all. 0 when the call needs no guard. */
 int g_ivar_nil_guarded_id = -1;
 int ivar_nil_recv_guard(Compiler *c, int id, int *recv_out) {
   const NodeTable *nt = c->nt;
@@ -23521,7 +23522,9 @@ int ivar_nil_recv_guard(Compiler *c, int id, int *recv_out) {
   if (recv < 0 || nt_kind(nt, recv) != NK_InstanceVariableReadNode) return 0;
   if (nt_str(nt, id, "call_operator") && sp_streq(nt_str(nt, id, "call_operator"), "&.")) return 0;
   const char *nm = nt_str(nt, id, "name");
-  if (!nm || nil_answers_call(nm)) return 0;
+  /* (a method nil answers itself, CRuby's nil.public_methods: `__id__`
+     and `equal?` on a nil slot are nil's) */
+  if (!nm || nil_answers_call(nm) || is_nil_method(nm)) return 0;
   Repr rr = repr_of(c, recv);
   TyKind rt = rr.as_ty;
   if (ty_is_object(rt)) {
@@ -23544,7 +23547,11 @@ int ivar_nil_recv_guard(Compiler *c, int id, int *recv_out) {
      every hot call through one (optcarrot lost 10-20%), so it keeps the
      memoized slots alone. */
   if (cid < 0 || !ivn) return 0;
-  if (!g_debug) {
+  /* ...and the slots a write of the program's own leaves nil (the nil fact
+     of the read, as a local's call is tested, #9347): the call on one of
+     those is CRuby's NoMethodError, where it answered a default or crashed.
+     optcarrot gains 17 tests, each a compare after a load it makes anyway */
+  if (!g_debug && !(rr.may_nil && cplan_nil_written(nil_fact_why(c, recv)))) {
     if (!ivar_only_memo_written(c, ivn)) return 0;
     /* an attribute writer fills it from outside */
     if (comp_resolve_member(c, cid, ivn + 1, 1, NULL, NULL) == SP_MEMBER_ATTR) return 0;
