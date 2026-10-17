@@ -202,7 +202,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_PROCESS_STATUS, "inspect",    0, 0, BF_ANY, TY_STRING, BOPE_TEMPLATE, "sp_process_status_str($r, 1)" },
   { TY_PROCESS_STATUS, "class",      0, 0, BF_ANY, TY_CLASS,  BOPE_TEMPLATE, "({ sp_ProcessStatus *_t$t = $r; _t$t ? ((sp_Class){(sp_int)-163, NULL}) : ((sp_Class){(sp_int)-1, SPL(\"NilClass\")}); })" },
   { TY_PROCESS_STATUS, "==",         0, 0, BF_ANY, TY_BOOL,    BOPE_PSTATUS_EQ },
-  { TY_PROCESS_STATUS, "eql?",       0, 0, BF_ANY, TY_UNKNOWN, BOPE_PSTATUS_EQ },
+  { TY_PROCESS_STATUS, "eql?",       0, 0, BF_ANY, TY_BOOL,    BOPE_PSTATUS_EQ },
   /* `$?` is nil (NULL) before any child has been waited for: the readers
      above raise NoMethodError for it (sp_process_status_recv), and to_s,
      inspect, to_i, == and != below answer as nil does */
@@ -496,8 +496,8 @@ static const BuiltinOp bop_rows[] = {
     BOP_K(TY_COMPLEX) },
   { TY_COMPLEX, "eql?",        1,   1, BF_ANY, TY_BOOL,       BOPE_TEMPLATE, "((void)($r), 0)" },
   { TY_COMPLEX, "eql?",        0, 127, BF_ANY, TY_BOOL,       BOPE_NONE },
-  { TY_COMPLEX, "equal?",      1,   1, BF_ANY, TY_UNKNOWN,    BOPE_TEMPLATE, "sp_complex_eq($r, $e0)", BOP_K(TY_COMPLEX) },
-  { TY_COMPLEX, "equal?",      1,   1, BF_ANY, TY_UNKNOWN,    BOPE_TEMPLATE, "((void)($r), 0)" },
+  { TY_COMPLEX, "equal?",      1,   1, BF_ANY, TY_BOOL,       BOPE_TEMPLATE, "sp_complex_eq($r, $e0)", BOP_K(TY_COMPLEX) },
+  { TY_COMPLEX, "equal?",      1,   1, BF_ANY, TY_BOOL,       BOPE_TEMPLATE, "((void)($r), 0)" },
   /* rationalize takes an optional eps argument (ignored -- a Complex with a
      zero imaginary part rationalizes its real part exactly) (#2556) */
   { TY_COMPLEX, "rationalize", 0,   0, BF_ANY, TY_RATIONAL,   BOPE_TEMPLATE,
@@ -847,8 +847,8 @@ static const BuiltinOp bop_rows[] = {
   { TY_FLOAT_RANGE, "begin",        0,   0, BF_ANY,  TY_UNKNOWN,     BOPE_TEMPLATE, "sp_frange_begin_v($r)", 0, 0, BOPF_INFERRED },  /* the endpoint the literal wrote is typed in infer_range_call */
   { TY_FLOAT_RANGE, "first",        0,   0, BF_ANY,  TY_UNKNOWN,     BOPE_TEMPLATE, "sp_frange_first_v($r)", 0, 0, BOPF_INFERRED },  /* the endpoint the literal wrote is typed in infer_range_call */
   { TY_FLOAT_RANGE, "min",          0,   0, BF_ANY,  TY_UNKNOWN,     BOPE_TEMPLATE, "$<sp_frange_min_v($r)$>", 0, 0, BOPF_INFERRED },  /* the endpoint the literal wrote is typed in infer_range_call */
-  { TY_FLOAT_RANGE, "min",          1,   1, BF_NONE, TY_UNKNOWN,     BOPE_TEMPLATE, "({ sp_frange_minn_raise($r, $i0); sp_box_nil(); })", 0 },  /* min(n)/max(n) enumerate (#3665) */
-  { TY_FLOAT_RANGE, "max",          1,   1, BF_NONE, TY_UNKNOWN,     BOPE_TEMPLATE, "({ sp_frange_maxn_raise($r, $i0); sp_box_nil(); })", 0 },  /* min(n)/max(n) enumerate (#3665) */
+  { TY_FLOAT_RANGE, "min",          1,   1, BF_NONE, TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_minn_raise($r, $i0); sp_box_nil(); })", 0 },  /* min(n)/max(n) enumerate (#3665) */
+  { TY_FLOAT_RANGE, "max",          1,   1, BF_NONE, TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_maxn_raise($r, $i0); sp_box_nil(); })", 0 },  /* min(n)/max(n) enumerate (#3665) */
   { TY_FLOAT_RANGE, "minmax",       0,   0, BF_NONE, TY_FLOAT_ARRAY, BOPE_TEMPLATE, "({ sp_FloatRange _t$T = $r; sp_ofloat _t$t = sp_frange_max_v(_t$T); sp_ofloat _t$u = sp_frange_min_v(_t$T); sp_FloatArray *_r$T = sp_FloatArray_new(); SP_GC_ROOT(_r$T); sp_FloatArray_push_nilable(_r$T, _t$u); sp_FloatArray_push_nilable(_r$T, _t$t); _r$T; })", 0 },  /* the endpoints (#3690): max first, as CRuby's range_minmax evaluates them, and nil for an empty range */
   { TY_FLOAT_RANGE, "cover?",       1,   1, BF_ANY,  TY_BOOL,        BOPE_TEMPLATE, "({ sp_FloatRange _t$T = $r; sp_frange_cover_i(_t$T, $i0); })", BOP_K(TY_INT) },  /* an Integer compares exactly (#7505) */
   { TY_FLOAT_RANGE, "cover?",       1,   1, BF_ANY,  TY_BOOL,        BOPE_TEMPLATE, "({ sp_FloatRange _t$T = $r; sp_frange_cover(_t$T, $f0); })", BOP_K(TY_FLOAT) },
@@ -882,7 +882,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_FLOAT_RANGE, "clone",        0,   0, BF_ANY,  TY_FLOAT_RANGE, BOPE_TEMPLATE, "$r", 0, 0, 0, 1 },
   { TY_FLOAT_RANGE, "clone",        1,   1, BF_ANY,  TY_FLOAT_RANGE, BOPE_RANGE_CLONE, NULL, 0, 0, 0, 1 },
   { TY_FLOAT_RANGE, "nil?",         0,   0, BF_ANY,  TY_BOOL,        BOPE_TEMPLATE, "((void)($r), (sp_bool)0)", 0 },  /* a Range value is never nil */
-  { TY_FLOAT_RANGE, "first",        0, 127, BF_ANY,  TY_UNKNOWN,     BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })", 0 },  /* first(n)/last(n) iterate */
+  { TY_FLOAT_RANGE, "first",        0, 127, BF_ANY,  TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })", 0 },  /* first(n)/last(n) iterate */
   { TY_FLOAT_RANGE, "last",         0,   0, BF_ANY,  TY_UNKNOWN,     BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })", 0, 0, BOPF_INFERRED },  /* the endpoint the literal wrote is typed in infer_range_call */
   { TY_FLOAT_RANGE, "last",         1, 127, BF_ANY,  TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })", 0 },  /* first(n)/last(n) iterate */
   { TY_FLOAT_RANGE, "cover?",           0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
@@ -1437,7 +1437,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_REGEX, "options",         0, 127, BF_ANY,      TY_INT,           BOPE_NONE },
   { TY_REGEX, "timeout",         0,   0, BF_ANY,      TY_POLY,       BOPE_TEMPLATE, "((void)($r), sp_box_nil())", 0 },
   { TY_REGEX, "timeout",         0, 127, BF_ANY,      TY_POLY,          BOPE_NONE },  /* nil: no per-instance timeout */
-  { TY_REGEX, "hash",            0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "(sp_int)sp_re_hash((void *)($r))", 0 },
+  { TY_REGEX, "hash",            0,   0, BF_ANY,      TY_INT,        BOPE_TEMPLATE, "(sp_int)sp_re_hash((void *)($r))", 0 },
 
   /* Symbol: result kinds; emission stays in emit_call_body. <=> and
      casecmp/casecmp? are typed by the operand (nil for a non-Symbol). */
@@ -1550,7 +1550,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_INT,   "to_f",        0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "({ sp_oint _t$t = $N; _t$t.nil ? 0.0 : (sp_float)_t$t.v; })" },  /* #4070 */
   { TY_INT,   "to_i",        0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "({ sp_oint _t$t = $N; _t$t.nil ? (sp_int)0 : _t$t.v; })" },
   { TY_INT,   "abs",         0, 127, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "sp_int_abs($r)" },
-  { TY_INT,   "size",        0,   0, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "((sp_int)sizeof(sp_int))" },
+  { TY_INT,   "size",        0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "((sp_int)sizeof(sp_int))" },
   { TY_INT,   "to_int",      1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "($r)" },
   { TY_INT,   "ord",         1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "($r)" },
   { TY_INT,   "infinite?",   1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "((void)($r), sp_oint_nil())" },
