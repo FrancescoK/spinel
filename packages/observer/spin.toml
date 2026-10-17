@@ -1,0 +1,6 @@
+[package]
+name = "observer"
+
+# Pre-installed spin package: ships with the compiler, versioned with it.
+# `require "observer"` -- ruby/observer's Observable, vendored unchanged at
+# the release README.md names.
