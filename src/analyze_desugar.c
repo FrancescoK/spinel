@@ -21104,13 +21104,19 @@ static int sce_computed_reaches_module(const NodeTable *nt, int n, int ctx, int 
 }
 /* Does the program define, alias, undefine or compute a method whose name
    `named` accepts, where a class or module would reach it? */
+static int sce_program_defines_nodefs(const NodeTable *nt, int (*named)(const char *));
 static int sce_program_defines(const NodeTable *nt, int (*named)(const char *)) {
   int hit = 0;
   NtKindIter it = nt_kind_iter_begin(nt, NK_DefNode);
   while (!hit && nt_kind_iter_next(&it))
     hit = named(nt_str(nt, it.id, "name")) && !sce_def_below_module(nt, it.id);
   nt_kind_iter_close(&it);
-  it = nt_kind_iter_begin(nt, NK_AliasMethodNode);
+  return hit || sce_program_defines_nodefs(nt, named);
+}
+/* the aliases, undefs and define_method-family calls of sce_program_defines */
+static int sce_program_defines_nodefs(const NodeTable *nt, int (*named)(const char *)) {
+  int hit = 0;
+  NtKindIter it = nt_kind_iter_begin(nt, NK_AliasMethodNode);
   while (!hit && nt_kind_iter_next(&it)) {
     int nn = nt_ref(nt, it.id, "new_name");
     hit = nn >= 0 && named(nt_str(nt, nn, "value"));
@@ -21141,8 +21147,141 @@ static int sce_program_defines(const NodeTable *nt, int (*named)(const char *)) 
   if (!hit) hit = sce_computed_reaches_module(nt, nt->root_id, 0, 0);
   return hit;
 }
-static int sce_program_reflects(const NodeTable *nt) {
-  return sce_program_defines(nt, sce_name_reflective);
+/* ---- the hooks a class body's graft would bypass, by where they live ----
+   A def of a reflective name is the whole program's concern only where any
+   class or module may reach it. One a class or module defines on itself --
+   in its `class << self`, or as `def self.method_added` -- runs for that
+   module and, for a class, its subclasses; the instance methods of a class
+   that no class or module is an instance of (anything but Module, Class and
+   their subclasses) run for none. So ActiveSupport::Subscriber's own
+   method_added leaves a Logger's class_eval text grafted. */
+typedef struct { const char **names; int n, cap; } SceScoped;
+static void sce_scoped_add(SceScoped *sc, const char *nm) {
+  if (sc->n == sc->cap) {
+    sc->cap = sc->cap ? sc->cap * 2 : 8;
+    sc->names = realloc(sc->names, (size_t)sc->cap * sizeof *sc->names);
+  }
+  sc->names[sc->n++] = nm;
+}
+/* the short name a class or module node defines, or NULL */
+static const char *sce_holder_name(const NodeTable *nt, int holder) {
+  int cp = nt_ref(nt, holder, "constant_path");
+  NodeKind ck = cp >= 0 ? nt_kind(nt, cp) : NK_CallNode;
+  return ck == NK_ConstantReadNode || ck == NK_ConstantPathNode ? nt_str(nt, cp, "name") : NULL;
+}
+static int sce_body_has(const NodeTable *nt, int holder, int stmt) {
+  int body = nt_ref(nt, holder, "body"), bn = 0;
+  const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+  for (int i = 0; i < bn; i++) if (bb[i] == stmt) return 1;
+  return 0;
+}
+/* Is a class named `nm` Module or Class, or does some class of that name
+   descend from one (by the superclass constants the program writes)? */
+static int sce_class_is_module_kind(const NodeTable *nt, const char *nm, int depth) {
+  if (!nm || depth > 32) return 1;
+  if (sp_streq(nm, "Module") || sp_streq(nm, "Class")) return 1;
+  int hit = 0;
+  NtKindIter it = nt_kind_iter_begin(nt, NK_ClassNode);
+  while (!hit && nt_kind_iter_next(&it)) {
+    const char *cn = sce_holder_name(nt, it.id);
+    if (!cn || !sp_streq(cn, nm)) continue;
+    int sup = nt_ref(nt, it.id, "superclass");
+    if (sup < 0) continue;
+    NodeKind sk = nt_kind(nt, sup);
+    if (sk != NK_ConstantReadNode && sk != NK_ConstantPathNode) { hit = 1; break; }
+    hit = sce_class_is_module_kind(nt, nt_str(nt, sup, "name"), depth + 1);
+  }
+  nt_kind_iter_close(&it);
+  return hit;
+}
+/* Where hook def `def` runs: 0 for any class or module (the whole program),
+   1 for the class or module named *scope only (and its subclasses), 2 for
+   none. Only a def directly in a body is placed; any other stays 0. */
+static int sce_hook_def_scope(const NodeTable *nt, int def, const char **scope) {
+  int rcv = nt_ref(nt, def, "receiver");
+  if (rcv >= 0 && nt_kind(nt, rcv) != NK_SelfNode) return 0;
+  static const NodeKind HOLDERS[] = { NK_ClassNode, NK_ModuleNode };
+  for (int h = 0; h < 2; h++) {
+    int res = -1;
+    NtKindIter it = nt_kind_iter_begin(nt, HOLDERS[h]);
+    while (res < 0 && nt_kind_iter_next(&it)) {
+      const char *hn = sce_holder_name(nt, it.id);
+      if (!hn) continue;
+      if (sce_body_has(nt, it.id, def)) {
+        /* `def self.method_added` in K's body: K's own */
+        if (rcv >= 0) { *scope = hn; res = 1; }
+        /* a class's instance method: no module's unless the class is one */
+        else if (h == 0 && !sce_class_is_module_kind(nt, hn, 0)) res = 2;
+        else res = 0;
+        break;
+      }
+      if (rcv >= 0) continue;
+      /* `class << self` directly in K's body */
+      int body = nt_ref(nt, it.id, "body"), bn = 0;
+      const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+      for (int i = 0; i < bn && res < 0; i++) {
+        if (nt_kind(nt, bb[i]) != NK_SingletonClassNode) continue;
+        int ex = nt_ref(nt, bb[i], "expression");
+        if (ex < 0 || nt_kind(nt, ex) != NK_SelfNode) continue;
+        int sb = nt_ref(nt, bb[i], "body");
+        int sn = 0; const int *ss = NULL;
+        if (sb >= 0 && nt_kind(nt, sb) == NK_StatementsNode) ss = nt_arr(nt, sb, "body", &sn);
+        else if (sb == def) { *scope = hn; res = 1; }
+        for (int j = 0; j < sn && res < 0; j++) if (ss[j] == def) { *scope = hn; res = 1; }
+      }
+    }
+    nt_kind_iter_close(&it);
+    if (res >= 0) return res;
+  }
+  return 0;
+}
+/* sce_program_defines for the reflective names, but a def scoped to one
+   class or module is put in *sc instead of counting for the program */
+static int sce_program_reflects_scoped(const NodeTable *nt, SceScoped *sc) {
+  int hit = 0;
+  NtKindIter it = nt_kind_iter_begin(nt, NK_DefNode);
+  while (!hit && nt_kind_iter_next(&it)) {
+    if (!sce_name_reflective(nt_str(nt, it.id, "name")) || sce_def_below_module(nt, it.id)) continue;
+    const char *scope = NULL;
+    int where = sce_hook_def_scope(nt, it.id, &scope);
+    if (where == 1) sce_scoped_add(sc, scope);
+    else if (where == 0) hit = 1;
+  }
+  nt_kind_iter_close(&it);
+  if (hit) return 1;
+  /* the aliases, undefs and calls naming one, which place nothing */
+  return sce_program_defines_nodefs(nt, sce_name_reflective);
+}
+/* Does class or module body `holder` see a hook scoped to a class in sc:
+   its own, or one of a class it descends from? */
+static int sce_scoped_reaches(const NodeTable *nt, const SceScoped *sc, int holder, int depth) {
+  const char *hn = sce_holder_name(nt, holder);
+  if (!hn) return sc->n > 0;
+  for (int i = 0; i < sc->n; i++) if (sp_streq(sc->names[i], hn)) return 1;
+  if (nt_kind(nt, holder) != NK_ClassNode || depth > 32) return 0;
+  /* a superclass the program writes, through every body of its name */
+  int hit = 0;
+  NtKindIter it = nt_kind_iter_begin(nt, NK_ClassNode);
+  while (!hit && nt_kind_iter_next(&it)) {
+    const char *cn = sce_holder_name(nt, it.id);
+    if (!cn || !sp_streq(cn, hn)) continue;
+    int sup = nt_ref(nt, it.id, "superclass");
+    if (sup < 0) continue;
+    NodeKind sk = nt_kind(nt, sup);
+    if (sk != NK_ConstantReadNode && sk != NK_ConstantPathNode) { hit = sc->n > 0; break; }
+    const char *sn = nt_str(nt, sup, "name");
+    for (int i = 0; i < sc->n && !hit; i++) if (sn && sp_streq(sc->names[i], sn)) hit = 1;
+    if (!hit && sn) {
+      NtKindIter jt = nt_kind_iter_begin(nt, NK_ClassNode);
+      while (!hit && nt_kind_iter_next(&jt)) {
+        const char *jn = sce_holder_name(nt, jt.id);
+        if (jn && sp_streq(jn, sn) && jt.id != it.id) hit = sce_scoped_reaches(nt, sc, jt.id, depth + 1);
+      }
+      nt_kind_iter_close(&jt);
+    }
+  }
+  nt_kind_iter_close(&it);
+  return hit;
 }
 /* the same of class_eval / module_eval / class_exec / module_exec */
 static int sce_name_eval_family(const char *nm) {
@@ -21181,7 +21320,8 @@ void desugar_nil_block_arg(Compiler *c) {
 int desugar_static_class_eval(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
-  int gate = -1;   /* sce_program_reflects, asked once a candidate is seen */
+  int gate = -1;   /* sce_program_reflects_scoped, asked once a candidate is seen */
+  SceScoped scoped = {0};
   for (int id = 0; id < n0; id++) {
     NodeKind k = nt_kind(nt, id);
     if (k != NK_ModuleNode && k != NK_ClassNode) continue;
@@ -21199,8 +21339,8 @@ int desugar_static_class_eval(Compiler *c) {
       int str = vis ? -1 : sce_eval_string(nt, st);
       int each = !vis && str < 0 && nt_kind(nt, st) == NK_CallNode && nt_str(nt, st, "name") &&
                  sp_streq(nt_str(nt, st, "name"), "each") && nt_ref(nt, st, "arguments") < 0;
-      if ((str >= 0 || each) && gate < 0) gate = sce_program_reflects(nt);
-      if (gate > 0) { str = -1; each = 0; }
+      if ((str >= 0 || each) && gate < 0) gate = sce_program_reflects_scoped(nt, &scoped);
+      if (gate > 0 || ((str >= 0 || each) && scoped.n > 0 && sce_scoped_reaches(nt, &scoped, id, 0))) { str = -1; each = 0; }
       if (str >= 0) {
         char *text = sce_text(nt, str, NULL, NULL);
         if (text) { ok = sce_graft(c, text, st, &ins, &nins) >= 0; free(text); }
@@ -21237,6 +21377,7 @@ int desugar_static_class_eval(Compiler *c) {
     if (any && nb) { nt_node_set_arr(nt, body, "body", nb, nbn); changed = 1; }
     free(nb); free(bb);
   }
+  free(scoped.names);
   if (changed) comp_grow_node_arrays(c);
   return changed;
 }
