@@ -5820,7 +5820,7 @@ static int value_leaves_ex(Compiler *c, int n, int *out, int nout, int cap, int 
   if (nout < 0) return -1;
   ValueLeaves v = { c->nt, out, nout, cap, (opts & VL_NIL) != 0 };
   unsigned shapes = VPS_IF | VPS_UNLESS | VPS_CASE;
-  if (!(opts & VL_NARROW)) shapes |= VPS_BEGIN | VPS_CASE_IN | VPS_LOGIC;
+  if (!(opts & VL_NARROW)) shapes |= VPS_BEGIN | VPS_CASE_IN | VPS_LOGIC | VPS_RESCUE_MOD;
   for_each_value_position(c->nt, n, VP_FOLLOW_RETURN | shapes, value_leaf_collect, &v);
   return v.nout;
 }
