@@ -8194,13 +8194,9 @@ static int desugar_builtin_method_obj(Compiler *c) {
       int ocid = ty_object_class(rt);
       int obj_accessor = 0;
       if (ocid >= 0 && comp_method_in_chain(c, ocid, sym, NULL) < 0) {
-        size_t sl = strlen(sym);
-        if (sl > 1 && sym[sl - 1] == '=') {
-          char basew[256];
-          if (sl - 1 < sizeof basew) {
-            memcpy(basew, sym, sl - 1); basew[sl - 1] = '\0';
-            if (comp_writer_in_chain(c, ocid, basew, NULL)) { obj_accessor = 1; binop = 1; }
-          }
+        char basew[256];
+        if (setter_base_name(sym, basew, sizeof basew)) {
+          if (comp_writer_in_chain(c, ocid, basew, NULL)) { obj_accessor = 1; binop = 1; }
         }
         else if (comp_reader_in_chain(c, ocid, sym, NULL)) {
           obj_accessor = 1;
@@ -8310,6 +8306,7 @@ static int desugar_builtin_method_obj(Compiler *c) {
                       (ty_is_array(rt) || rt == TY_STRING);
     nt_node_set_str(nt, call, "name", slice_alias ? "[]" : sym);
     nt_node_set_ref(nt, call, "receiver", rread);
+    if (name_is_plain_setter(sym)) nt_set_attr_write(nt, call, 1);   /* `__bam_r.attr = __bam_a` */
     if (nt_int(nt, id, "dyn_of", -1) >= 0) nt_node_set_int(nt, call, "dyn_arm", 1);
     if (cargs >= 0) nt_node_set_ref(nt, call, "arguments", cargs);
     int body = nt_new_node(nt, "StatementsNode");
@@ -15488,11 +15485,9 @@ static int empty_hash_write_lit(Compiler *c, int v) {
   }
   if (nt_kind(nt, v) == NK_CallNode && nt_ref(nt, v, "receiver") >= 0 && nt_ref(nt, v, "block") < 0) {
     const char *nm = nt_str(nt, v, "name");
-    size_t ln = nm ? strlen(nm) : 0;
     int args = nt_ref(nt, v, "arguments");
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    if (ln > 1 && nm[ln - 1] == '=' && an == 1 && av &&
-        (isalpha((unsigned char)nm[ln - 2]) || nm[ln - 2] == '_' || isdigit((unsigned char)nm[ln - 2])))
+    if (name_is_plain_setter(nm) && an == 1 && av)
       return empty_hash_write_lit(c, av[0]);
   }
   return an_or_empty_hash_fallback(c, v);
@@ -27543,14 +27538,11 @@ static int lift_poly_alias_reads(Compiler *c, const HandleArgTab *hat) {
       int built = 0;
       NT_FOREACH_KIND(nt, NK_CallNode, w) {
         const char *wn = nt_str(nt, w, "name");
-        size_t wl = wn ? strlen(wn) : 0;
-        if (wl < 2 || wn[wl - 1] != '=' || !(isalnum((unsigned char)wn[wl - 2]) || wn[wl - 2] == '_')) continue;
+        char base[128];
+        if (!setter_base_name(wn, base, sizeof base)) continue;
         int wa = nt_ref(nt, w, "arguments"), wc = 0;
         const int *wv = wa >= 0 ? nt_arr(nt, wa, "arguments", &wc) : NULL;
         if (wc != 1 || nt_kind(nt, wv[0]) != NK_LocalVariableReadNode || c->poly_strbuf_lift[wv[0]]) continue;
-        char base[128];
-        if (wl - 1 >= sizeof base) continue;
-        memcpy(base, wn, wl - 1); base[wl - 1] = 0;
         int wp = poly_attr_place(c, w, base, 1);
         if (wp < 0) continue;
         if (!built) { poly_store_app_build(c, NK_InstanceVariableReadNode, &app_tab); built = 1; }
@@ -29419,7 +29411,7 @@ static int dyn_param_walk(Compiler *c, Scope *m, int j, int depth) {
   static const char *const implicit[] = {
     "eql?", "coerce", "each", "method_missing", "respond_to_missing?", NULL };
   size_t ml = strlen(m->name);
-  if (!(isalpha((unsigned char)m->name[0]) || m->name[0] == '_') || m->name[ml - 1] == '=') return 1;
+  if (!(isalpha((unsigned char)m->name[0]) || m->name[0] == '_') || name_is_plain_setter(m->name)) return 1;
   for (int i = 0; implicit[i]; i++) if (sp_streq(m->name, implicit[i])) return 1;
   if (g_dyn.open_names || anh_find(&g_dyn.lnames, m->name) >= 0) return 1;
   int h = anh_find(&g_dyn.cnames, m->name);
@@ -32203,13 +32195,11 @@ static int promote_ivar_handle_stores(Compiler *c) {
     int recv = nt_ref(nt, u, "receiver");
     if (!nm || recv < 0 || nt_ref(nt, u, "block") >= 0) continue;
     TyKind rt = infer_type(c, recv);
-    size_t nl = strlen(nm);
-    if (ty_is_object(rt) && nl > 1 && nm[nl - 1] == '=' && nm[0] != '=' && nm[0] != '!' && nm[0] != '[') {
+    if (ty_is_object(rt) && name_is_plain_setter(nm)) {
       int al = nt_ref(nt, u, "arguments"), argc = 0;
       const int *argv = al >= 0 ? nt_arr(nt, al, "arguments", &argc) : NULL;
       char base[256], ivn[258];
-      if (argc != 1 || nl >= sizeof base) continue;
-      memcpy(base, nm, nl - 1); base[nl - 1] = 0;
+      if (argc != 1 || !setter_base_name(nm, base, sizeof base)) continue;
       int defc = -1;
       if (!comp_writer_in_chain(c, ty_object_class(rt), base, &defc) || defc < 0) continue;
       snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, defc, base));
@@ -38382,7 +38372,8 @@ static void mark_nullable_int_locals(Compiler *c) {
             TyKind rt = trc >= 0 ? infer_type(c, trc) : TY_UNKNOWN;
             if (!ty_is_object(rt) || wl < 2 || wl > 255) continue;
             int cid = ty_object_class(rt), defc = -1;
-            char base[256]; memcpy(base, wn, wn[wl - 1] == '=' ? wl - 1 : wl); base[wn[wl - 1] == '=' ? wl - 1 : wl] = '\0';
+            char base[256];
+            if (!setter_base_name(wn, base, sizeof base)) memcpy(base, wn, wl + 1);
             if (comp_writer_in_chain(c, cid, base, &defc)) {
               char ivb[300];
               snprintf(ivb, sizeof ivb, "@%s", comp_resolve_alias(c, cid, base));
@@ -38414,12 +38405,11 @@ static void mark_nullable_int_locals(Compiler *c) {
       int an = 0; const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
       if (recv < 0 || an != 2 || nt_kind(nt, av[0]) != NK_SymbolNode) continue;
       const char *wn = nt_str(nt, av[0], "value");
-      size_t wl = wn ? strlen(wn) : 0;
-      if (wl < 2 || wl > 255 || wn[wl - 1] != '=') continue;
+      char base[256];
+      if (!setter_base_name(wn, base, sizeof base)) continue;
       TyKind rt = infer_type(c, recv);
       if (!ty_is_object(rt)) continue;
       int cid = ty_object_class(rt), defc = -1;
-      char base[256]; memcpy(base, wn, wl - 1); base[wl - 1] = '\0';
       ClassInfo *ci = NULL; int iv = -1;
       if (comp_writer_in_chain(c, cid, base, &defc)) {
         char ivb[300];
@@ -38436,18 +38426,15 @@ static void mark_nullable_int_locals(Compiler *c) {
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
       const char *wn = nt_str(nt, id, "name");
       int recv = nt_ref(nt, id, "receiver");
-      size_t wl = wn ? strlen(wn) : 0;
+      char base[256];
       /* a writer called by name (`o.send(:x=, v)` desugars to it) as well
          as the assignment syntax; the comparison operators are no writers */
-      if (recv < 0 || wl < 2 || wl > 255 || wn[wl - 1] != '=' ||
-          sp_streq(wn, "==") || sp_streq(wn, "!=") || sp_streq(wn, "<=") || sp_streq(wn, ">=") || sp_streq(wn, "===") ||
-          sp_streq(wn, "[]=")) continue;
+      if (recv < 0 || !setter_base_name(wn, base, sizeof base)) continue;
       int ca = nt_ref(nt, id, "arguments");
       int an = 0; const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
       TyKind rt = infer_type(c, recv);
       if (an != 1 || (!ty_is_object(rt) && rt != TY_POLY)) continue;
       if (!nullable_int_value(c, av[0])) continue;
-      char base[256]; memcpy(base, wn, wl - 1); base[wl - 1] = '\0';
       /* a boxed receiver's write reaches the member of every class that
          takes it, as `s[:x] = v` below does (#8769) */
       for (int cid = ty_is_object(rt) ? ty_object_class(rt) : 0; cid < c->nclasses; cid++) {
@@ -43885,15 +43872,14 @@ static void share_struct_aset_handles(Compiler *c) {
     /* a member's writer through a box (emit_boxed_writer_arms): a shared
        String is handed over as its handle, as `[]=` hands it below */
     const char *un = nt_str(nt, u, "name");
-    size_t ul = un ? strlen(un) : 0;
     int ua = nt_ref(nt, u, "arguments"), uan = 0;
     const int *uav = ua >= 0 ? nt_arr(nt, ua, "arguments", &uan) : NULL;
-    int boxed_member = ul > 1 && ul < 250 && un[ul - 1] == '=' && uan == 1 && call_is_setter_assign(nt, u) &&
+    char ub[256] = "", uiv[258] = "";
+    int boxed_member = uan == 1 && call_is_setter_assign(nt, u) && setter_base_name(un, ub, sizeof ub) &&
                        comp_ntype(c, nt_ref(nt, u, "receiver")) == TY_POLY && an_arg_is_shared_handle(c, an_unparen(nt, uav[0]));
     /* only where every attribute the name writes is a boxed Struct member,
        whose arm boxes the handle (a String slot's arm takes the bytes) */
-    char ub[256] = "", uiv[258] = "";
-    if (boxed_member) { memcpy(ub, un, ul - 1); ub[ul - 1] = 0; snprintf(uiv, sizeof uiv, "@%s", ub); }
+    if (boxed_member) snprintf(uiv, sizeof uiv, "@%s", ub);
     for (int k = 0; k < c->nclasses && boxed_member; k++) {
       if (comp_resolve_member(c, k, ub, 1, NULL, NULL) != SP_MEMBER_ATTR) continue;
       int m = c->classes[k].is_struct ? comp_member_index(&c->classes[k], uiv) : -1;
@@ -48112,9 +48098,8 @@ static void an_phase_proc_returns(Compiler *c) {
         for (int id = 0; id < nt->count; id++) {
           if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
           const char *nm = nt_str(nt, id, "name");
-          size_t nl = nm ? strlen(nm) : 0;
-          if (nl < 2 || nm[nl - 1] != '=' || nm[nl - 2] == '=' || nm[nl - 2] == '!' || nm[nl - 2] == '<' ||
-              nm[nl - 2] == '>' || nm[0] == '[') continue;
+          if (!name_is_plain_setter(nm)) continue;
+          size_t nl = strlen(nm);
           int recv = nt_ref(nt, id, "receiver");
           int aa = nt_ref(nt, id, "arguments"), argc = 0;
           const int *argv = aa >= 0 ? nt_arr(nt, aa, "arguments", &argc) : NULL;
@@ -49123,10 +49108,9 @@ static void an_presence_writes(Compiler *c, int id) {
       comp_pres_note(c, nt_str(nt, av[0], k0 == NK_SymbolNode ? "value" : "content"), PRES_REMOVED);
     else if ((is_send_family(nm) || is_method_ref_name(nm)) && k0 == NK_SymbolNode) {
       const char *wn = nt_str(nt, av[0], "value");
-      size_t wl = wn ? strlen(wn) : 0;
-      char ivn[256];
-      if (wl > 1 && wl < sizeof ivn - 1 && wn[wl - 1] == '=') {
-        snprintf(ivn, sizeof ivn, "@%.*s", (int)(wl - 1), wn);
+      char ivn[256], wbase[256];
+      if (setter_base_name(wn, wbase, sizeof wbase)) {
+        snprintf(ivn, sizeof ivn, "@%s", wbase);
         comp_pres_note(c, ivn, PRES_UNMARKED);
       }
     }

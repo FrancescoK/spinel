@@ -422,6 +422,19 @@ static inline int nt_safe_nav(const NodeTable *nt, int id) {
 static inline void nt_set_safe_nav(NodeTable *nt, int id, int on) {
   if (on || nt_safe_nav(nt, id)) nt_node_set_int(nt, id, "safe_nav", on ? 1 : 0);
 }
+/* PM_CALL_NODE_FLAGS_ATTRIBUTE_WRITE: the call is written as an assignment,
+   `recv.name = v`, `recv.name=(v)` or `recv[i] = v`, so its value is the
+   argument whatever the writer returns. The parser exports it as the
+   `attr_write` flag, set only when Prism set it, and a desugar that builds
+   such an assignment sets it with nt_set_attr_write (a desugar that makes
+   the call plain clears it). `recv.send(:name=, v)` and `recv.[]=(i, v)` are
+   not assignments, and a node without the field is not one. */
+static inline int nt_attr_write(const NodeTable *nt, int id) {
+  return nt_int(nt, id, "attr_write", 0) != 0;
+}
+static inline void nt_set_attr_write(NodeTable *nt, int id, int on) {
+  if (on || nt_attr_write(nt, id)) nt_node_set_int(nt, id, "attr_write", on ? 1 : 0);
+}
 static inline int nt_ref(const NodeTable *nt, int id, const char *key) {
   NT_WORK();
   if (id < 0 || id >= nt->count) return -1;

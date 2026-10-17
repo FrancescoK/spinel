@@ -1680,9 +1680,8 @@ static void nf_calls(NF *f, int **yields, int *nyields) {
       }
     }
     /* an attr writer: its ivar */
-    size_t cl = strlen(cn);
-    if (mi < 0 && an == 1 && cl > 1 && cl < 250 && cn[cl - 1] == '=' && r >= 0 && ty_is_object(c->ntype[r])) {
-      char base[256]; memcpy(base, cn, cl - 1); base[cl - 1] = 0;
+    char base[256];
+    if (mi < 0 && an == 1 && r >= 0 && ty_is_object(c->ntype[r]) && setter_base_name(cn, base, sizeof base)) {
       int dc = -1;
       if (comp_writer_in_chain(c, ty_object_class(c->ntype[r]), base, &dc) && dc >= 0) {
         char ivn[260]; snprintf(ivn, sizeof ivn, "@%s", base);

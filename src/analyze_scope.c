@@ -4100,7 +4100,7 @@ void settle_object_builtin_aliases(Compiler *c) {
    as the later definition does in CRuby. */
 static int alias_accessor_declared_after(const NodeTable *nt, const int *stmts, int n, int k, const char *nw) {
   size_t nl = strlen(nw);
-  int wr = nl > 1 && nw[nl - 1] == '=';
+  int wr = name_is_plain_setter(nw);
   for (int j = k + 1; j < n; j++) {
     int s = stmts[j];
     const char *cn = nt_kind(nt, s) == NK_CallNode && nt_ref(nt, s, "receiver") < 0 ? nt_str(nt, s, "name") : NULL;
@@ -7750,10 +7750,7 @@ static int cmethod_reaches_class_ivar_walk(Compiler *c, int mi, int def_cls, uns
     /* a `class << self` accessor's @ivar is per class too (`self.x = v`) */
     if (def_cls >= 0 && def_cls < c->nclasses) {
       char base[256];
-      size_t bl = strlen(nm);
-      if (bl < sizeof base) {
-        memcpy(base, nm, bl + 1);
-        if (bl > 1 && base[bl - 1] == '=') base[bl - 1] = '\0';
+      if (setter_base_name(nm, base, sizeof base) || snprintf(base, sizeof base, "%s", nm) < (int)sizeof base) {
         ClassInfo *dc = &c->classes[def_cls];
         if (comp_is_sg_reader(dc, base) || comp_is_sg_writer(dc, base)) return 1;   /* sg_ or civ_, per class */
       }
@@ -10511,13 +10508,8 @@ int infer_ivar_types(Compiler *c) {
       /* attr-writer assignment: obj.x = v  (CallNode "x=") */
       const char *nm = nt_str(nt, id, "name");
       int recv = nt_ref(nt, id, "receiver");
-      size_t ln = nm ? strlen(nm) : 0;
-      if (!nm || recv < 0 || ln < 2 || nm[ln - 1] != '=') continue;
-      /* not a comparison that happens to end in '=' (==, !=, <=, >=) */
-      if (nm[ln - 2] == '=' || nm[ln - 2] == '!' || nm[ln - 2] == '<' || nm[ln - 2] == '>') continue;
       char base[256];
-      if (ln - 1 >= sizeof base) continue;
-      memcpy(base, nm, ln - 1); base[ln - 1] = '\0';
+      if (!nm || recv < 0 || !setter_base_name(nm, base, sizeof base)) continue;
       int args = nt_ref(nt, id, "arguments");
       int an = 0;
       const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;

@@ -1040,19 +1040,14 @@ int emit_call_openstruct_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       return 1;
     }
     /* a member writer `o.k = v` (parsed as name "k=") */
-    {
-      size_t nl = strlen(name);
-      if (nl > 1 && name[nl - 1] == '=' && argc == 1 &&
-          name[0] != '=' && name[0] != '<' && name[0] != '>' && name[0] != '!') {
-        char mem[256];
-        if (nl - 1 < sizeof mem) {
-          memcpy(mem, name, nl - 1); mem[nl - 1] = 0;
-          int tv = ++g_tmp;
-          buf_printf(b, "({ sp_RbVal _v%d = ", tv); emit_boxed(c, argv[0], b);
-          buf_printf(b, "; SP_GC_ROOT_RBVAL(_v%d); sp_OpenStruct_set(", tv); emit_expr(c, recv, b);
-          buf_printf(b, ", sp_sym_intern(\"%s\"), _v%d); _v%d; })", mem, tv, tv);
-          return 1;
-        }
+    if (argc == 1 && name_is_plain_setter(name)) {
+      char mem[256];
+      if (setter_base_name(name, mem, sizeof mem)) {
+        int tv = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _v%d = ", tv); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_v%d); sp_OpenStruct_set(", tv); emit_expr(c, recv, b);
+        buf_printf(b, ", sp_sym_intern(\"%s\"), _v%d); _v%d; })", mem, tv, tv);
+        return 1;
       }
     }
     /* freeze / frozen? carry the GC-header frozen bit, like the container and

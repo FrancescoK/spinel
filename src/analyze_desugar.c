@@ -423,6 +423,7 @@ static int masgn_ev_store(Compiler *c, int id, int tgt, int val) {
   free(na);
   nt_node_set_ref(nt, call, "receiver", recv);
   nt_node_set_str(nt, call, "name", nm);
+  nt_set_attr_write(nt, call, 1);   /* the store the target stands for */
   nt_node_set_ref(nt, call, "arguments", nargs);
   nt_node_set_ref(nt, call, "block", -1);
   int line = (int)nt_int(nt, id, "node_line", 0);
@@ -5757,6 +5758,10 @@ int desugar_respond_to_probe(Compiler *c) {
         probes[np++] = probe;
       }
     }
+    /* a writer name's probes stand for its assignment, as `recv.m = v` is
+       written */
+    if (name_is_plain_setter(qm))
+      for (int k = 0; k < np; k++) nt_set_attr_write(nt, probes[k], 1);
     /* Sync the parallel arrays for every node allocated in this iteration --
        even a partial shape (an allocation failed mid-shape, so no probe was
        added) leaves nodes past `base` whose c->nscope would otherwise stay
@@ -6279,6 +6284,7 @@ int desugar_call_op_write(Compiler *c) {
       { int one[1]; one[0] = bin; nt_node_set_arr(nt, wargs, "arguments", one, 1); }
       nt_node_set_ref(nt, wc, "receiver", tr2);
       nt_node_set_str(nt, wc, "name", wname);
+      nt_set_attr_write(nt, wc, 1);
       nt_node_set_ref(nt, wc, "arguments", wargs);
       { int two[2]; two[0] = tw; two[1] = wc; nt_node_set_arr(nt, stmts, "body", two, 2); }
       nt_node_set_type(nt, id, "ParenthesesNode");
@@ -6311,6 +6317,7 @@ int desugar_call_op_write(Compiler *c) {
     nt_node_set_type(nt, id, "CallNode");
     nt_node_set_ref(nt, id, "receiver", recv2);
     nt_node_set_str(nt, id, "name", wname);
+    nt_set_attr_write(nt, id, 1);
     nt_node_set_ref(nt, id, "arguments", wargs);
     comp_grow_node_arrays(c);
     int encl = c->nscope[id];
@@ -6381,6 +6388,7 @@ int desugar_call_or_write_reopen(Compiler *c) {
     nt_node_set_int(nt, rd, "node_line", line);
     { int one[1]; one[0] = val; nt_node_set_arr(nt, wargs, "arguments", one, 1); }
     nt_node_set_ref(nt, wc, "receiver", tr2); nt_node_set_str(nt, wc, "name", wname);
+    nt_set_attr_write(nt, wc, 1);
     nt_node_set_ref(nt, wc, "arguments", wargs); nt_node_set_ref(nt, wc, "block", -1);
     nt_node_set_int(nt, wc, "node_line", line);
     nt_node_set_ref(nt, join, "left", rd); nt_node_set_ref(nt, join, "right", wc);
@@ -6485,6 +6493,12 @@ int desugar_cmethod_cvar_reflection(Compiler *c) {
      (__ixr_N = recv; __ixk_N = k; __ixr_N[__ixk_N] || (__ixr_N[__ixk_N] = v))
    with `&&` for `&&=`, and `__ixr_N[__ixk_N] = __ixr_N[__ixk_N] op v` for an
    operator. A key list other than one plain argument is left alone. */
+/* An index store a desugar writes out is an assignment, as `recv[i] = v` is:
+   the call carries Prism's attribute-write flag. */
+static int ix_store_call(NodeTable *nt, int call) {
+  if (call >= 0) nt_set_attr_write(nt, call, 1);
+  return call;
+}
 static int ixw_call(NodeTable *nt, int recv_tmp_name_node_src, const char *rname, const char *name,
                     const int *args, int nargs) {
   (void)recv_tmp_name_node_src;
@@ -6578,13 +6592,13 @@ int desugar_index_op_write_user(Compiler *c) {
       nt_node_set_str(nt, bin, "name", opname);
       nt_node_set_ref(nt, bin, "arguments", ba);
       int wa[2] = { k2, bin };
-      last = ixw_call(nt, -1, rname, "[]=", wa, 2);
+      last = ix_store_call(nt, ixw_call(nt, -1, rname, "[]=", wa, 2));
     }
     else {
       int k2 = lit ? nt_clone_subtree(nt, key) : ixw_read(nt, kname);
       if (k2 < 0) continue;
       int wa[2] = { k2, val };
-      int set = ixw_call(nt, -1, rname, "[]=", wa, 2);
+      int set = ix_store_call(nt, ixw_call(nt, -1, rname, "[]=", wa, 2));
       int logic = nt_new_node(nt, k == NK_IndexOrWriteNode ? "OrNode" : "AndNode");
       if (set < 0 || logic < 0) continue;
       nt_node_set_ref(nt, logic, "left", get);
@@ -10244,14 +10258,15 @@ static void cdef_refuse_reflection(NodeTable *nt, const char *const *lone, int n
 /* Does call `id` name `nm` (or, for a writer `nm`, its base) among its
    literal arguments? */
 static int cdef_call_names(const NodeTable *nt, int id, const char *nm) {
-  size_t ln = strlen(nm);
+  char base[256];
+  int is_w = setter_base_name(nm, base, sizeof base);
   int args = nt_ref(nt, id, "arguments"), ac = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
   for (int i = 0; i < ac; i++) {
     NodeKind ak = nt_kind(nt, av[i]);
     const char *v = ak == NK_SymbolNode ? nt_str(nt, av[i], "value") :
                     ak == NK_StringNode ? nt_str(nt, av[i], "content") : NULL;
-    if (v && (sp_streq(v, nm) || (ln > 1 && nm[ln - 1] == '=' && strlen(v) == ln - 1 && !strncmp(v, nm, ln - 1))))
+    if (v && (sp_streq(v, nm) || (is_w && sp_streq(v, base))))
       return 1;
   }
   return 0;
@@ -19362,6 +19377,7 @@ int desugar_reader_index_write(Compiler *c) {
     if (ivr < 0 || w < 0 || body < 0) break;
     nt_node_set_str(nt, ivr, "name", ivn);
     nt_node_set_str(nt, w, "name", "[]=");
+    nt_set_attr_write(nt, w, nt_attr_write(nt, id));   /* the store stays the assignment it was */
     nt_node_set_ref(nt, w, "receiver", ivr);
     nt_node_set_ref(nt, w, "arguments", args);
     nt_node_set_int(nt, w, "node_line", nt_int(nt, id, "node_line", 0));
@@ -19507,17 +19523,18 @@ int desugar_index_assign_user_recv(Compiler *c) {
     if (op) {
       /* r[k] = (r[k] op v) */
       int opc = ix_index_call(nt, op, read, v, -1);
-      int store = opc >= 0 ? ix_index_call(nt, "[]=", recv2, key2, opc) : -1;
+      int store = opc >= 0 ? ix_store_call(nt, ix_index_call(nt, "[]=", recv2, key2, opc)) : -1;
       if (store < 0) continue;
       int na = nt_ref(nt, store, "arguments");
       nt_node_reset(nt, tgt, "CallNode");
       nt_node_set_ref(nt, tgt, "receiver", recv2);
       nt_node_set_str(nt, tgt, "name", "[]=");
+      nt_set_attr_write(nt, tgt, 1);
       nt_node_set_ref(nt, tgt, "arguments", na);
       nt_node_set_ref(nt, tgt, "block", -1);
     }
     else {
-      int store = ix_index_call(nt, "[]=", recv2, key2, v);
+      int store = ix_store_call(nt, ix_index_call(nt, "[]=", recv2, key2, v));
       if (store < 0) continue;
       nt_node_reset(nt, tgt, k == NK_IndexOrWriteNode ? "OrNode" : "AndNode");
       nt_node_set_ref(nt, tgt, "left", read);
@@ -19550,6 +19567,7 @@ int desugar_index_assign_user_recv(Compiler *c) {
 static int ca_attr_call(NodeTable *nt, int recv, const char *name, int arg) {
   int cl = nt_new_node(nt, "CallNode"); if (cl < 0) return -1;
   nt_node_set_ref(nt, cl, "receiver", recv); nt_node_set_str(nt, cl, "name", name);
+  if (name_is_plain_setter(name)) nt_set_attr_write(nt, cl, 1);
   if (arg >= 0) {
     int args = nt_new_node(nt, "ArgumentsNode"); if (args < 0) return -1;
     nt_node_set_arr(nt, args, "arguments", &arg, 1);
@@ -19661,6 +19679,7 @@ int desugar_const_attr_op_assign(Compiler *c) {
       int na = nt_ref(nt, store, "arguments");
       nt_node_reset(nt, id, "CallNode");
       nt_node_set_ref(nt, id, "receiver", recv2); nt_node_set_str(nt, id, "name", wn);
+      nt_set_attr_write(nt, id, 1);
       nt_node_set_ref(nt, id, "arguments", na); nt_node_set_ref(nt, id, "block", -1);
     }
     else {
@@ -19787,7 +19806,7 @@ int desugar_reopened_op_write(Compiler *c) {
       if (r1 < 0 || r2 < 0 || k1 < 0 || k2 < 0) continue;
       int read = ix_index_call(nt, "[]", r1, k1, -1);
       int opc = read >= 0 ? ix_index_call(nt, op, read, v, -1) : -1;
-      store = opc >= 0 ? ix_index_call(nt, "[]=", r2, k2, opc) : -1;
+      store = opc >= 0 ? ix_store_call(nt, ix_index_call(nt, "[]=", r2, k2, opc)) : -1;
     }
     else {
       const char *an = nt_str(nt, id, "name");

@@ -1416,8 +1416,7 @@ static int sh_named_first(const struct ShNamed *a, int n, const char *name) {
    class read or write, joined; -1 when no class has one. */
 static int sh_attr_ivars(ShareFacts *F, Compiler *c, const char *name, int node, int *writer) {
   size_t ln = strlen(name);
-  *writer = ln > 1 && name[ln - 1] == '=' && name[0] != '=' && name[0] != '!' &&
-            name[0] != '<' && name[0] != '>' && name[0] != '[';
+  *writer = name_is_plain_setter(name);
   char base[256];
   if (ln >= sizeof base - 2) return -1;
   base[0] = '@';
@@ -2445,10 +2444,9 @@ static int sh_new_call(ShareFacts *F, Compiler *c, int n, int recv, int blk) {
    `[]=`, `to_h`), Object's, then a field's reader (`os.name`) or writer
    (`os.name = s`). */
 static int sh_ostruct_call(ShareFacts *F, Compiler *c, int n, const char *name, int rv, int blk) {
-  size_t ln = strlen(name);
   int s = bop_share_named(TY_OPENSTRUCT, name);
   if (!s) s = bop_share_named(BOP_ANY_RECV, name);
-  if (!s && ln > 1 && name[ln - 1] == '=' && strchr("=!<>[", name[0]) == NULL) s = BSH_STORE_LAST;
+  if (!s && name_is_plain_setter(name)) s = BSH_STORE_LAST;
   int args = nt_ref(c->nt, n, "arguments");
   int argc = 0;
   if (args >= 0) nt_arr(c->nt, args, "arguments", &argc);
@@ -2570,13 +2568,6 @@ static int sh_blk_bound(void *ctx, Compiler *c, int scope, const char *name) {
   return got;
 }
 
-/* A name a call can write an attribute by: any name ending in `=` but the
-   operators (`==`, `!=`, `===`, `<=`, `>=`, `[]=`). No identifier test, so a
-   name one would not recognize (`ítems=`) still counts as a write. */
-static int sh_writer_name(const char *nm) {
-  size_t n = nm ? strlen(nm) : 0;
-  return n >= 2 && nm[n - 1] == '=' && !strchr("=!<>]", nm[n - 2]);
-}
 static void sh_ivw_add(ShareFacts *F, const char *key, int node) {
   if (F->nivw >= F->civw) {
     F->civw = F->civw ? F->civw * 2 : 64;
@@ -2592,7 +2583,7 @@ static void sh_ivar_writes_build(ShareFacts *F, Compiler *c) {
   NT_FOREACH_KIND(nt, NK_CallNode, u) {
     const char *nm = nt_str(nt, u, "name");
     if (!nm) continue;
-    if (sh_writer_name(nm)) { sh_ivw_add(F, nm, u); continue; }
+    if (name_is_plain_setter(nm)) { sh_ivw_add(F, nm, u); continue; }
     int args = nt_ref(nt, u, "arguments");
     int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
     const char *lit = argc >= 1 ? sh_lit_name(nt, argv[0]) : NULL;
@@ -2603,18 +2594,18 @@ static void sh_ivar_writes_build(ShareFacts *F, Compiler *c) {
     }
     else if (is_send_family(nm) || is_method_object_name(nm)) {
       if (!lit || is_send_family(lit) || is_ivar_set(lit) || is_method_object_name(lit)) F->ivw_all = 1;
-      else if (sh_writer_name(lit)) sh_ivw_add(F, lit, u);
+      else if (name_is_plain_setter(lit)) sh_ivw_add(F, lit, u);
     }
     else if (is_alias_method_name(nm)) {
       const char *old = argc >= 2 ? sh_lit_name(nt, argv[1]) : NULL;
-      if (!old || sh_writer_name(old)) F->ivw_all = 1;
+      if (!old || name_is_plain_setter(old)) F->ivw_all = 1;
     }
     else if (r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode && is_marshal_const(nt_str(nt, r, "name")))
       F->ivw_all = 1;
   }
   NT_FOREACH_KIND(nt, NK_AliasMethodNode, u) {
     const char *old = sh_lit_name(nt, nt_ref(nt, u, "old_name"));
-    if (!old || sh_writer_name(old)) F->ivw_all = 1;
+    if (!old || name_is_plain_setter(old)) F->ivw_all = 1;
   }
   /* an attribute's `||=` and `&&=` carry the writer's name, or only the
      reader's (`x`, asked for as such) */
@@ -2645,7 +2636,7 @@ static int sh_ivw_value(Compiler *c, int u) {
   const char *nm = nt_str(nt, u, "name");
   int args = nt_ref(nt, u, "arguments");
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
-  int want = sh_writer_name(nm) ? 1 : is_ivar_set(nm) || is_send_family(nm) ? 2 : 0;
+  int want = name_is_plain_setter(nm) ? 1 : is_ivar_set(nm) || is_send_family(nm) ? 2 : 0;
   if (!want || argc != want) return -1;
   NodeKind vk = nt_kind(nt, argv[want - 1]);
   return vk == NK_SplatNode || vk == NK_KeywordHashNode || vk == NK_BlockArgumentNode ? -1 : argv[want - 1];
@@ -3930,8 +3921,7 @@ static int sh_str_cmp(const void *a, const void *b) {
    protocols: an operator, an index or a setter (sum's `+`, case's `===`). */
 static int sh_operator_name(const char *nm) {
   if (!(nm[0] == '_' || (nm[0] >= 'a' && nm[0] <= 'z') || (nm[0] >= 'A' && nm[0] <= 'Z'))) return 1;
-  size_t ln = strlen(nm);
-  return nm[ln - 1] == '=';
+  return name_is_plain_setter(nm);
 }
 
 /* A block given to user methods none of whose yields is read drops its
