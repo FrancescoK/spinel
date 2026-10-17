@@ -1365,7 +1365,8 @@ int desugar_kernel_reopen(Compiler *c) {
    module body, only the body's own class as the receiver, the statement
    then left receiverless there):
      K.prepend(M)  ->  class K; prepend M; end    (module K when K is one)
-   include and attr_reader/_writer/_accessor are the same shape. Inside a
+   include, extend and attr_reader/_writer/_accessor are the same shape
+   (console's `Console.extend(Interface)` in `module Console`). Inside a
    method, a block or a condition the call still runs only when reached,
    so those stay refused (call_plan.c), as does define_method. */
 /* How the program declares `leaf`: 1 a class, 2 a module, 0 neither (a
@@ -1388,7 +1389,7 @@ static int erm_rewrite_stmt(Compiler *c, int st, const char *self_leaf) {
   const char *nm = nt_str(nt, st, "name");
   if (!nm) return st;
   int attr = sp_streq(nm, "attr_reader") || sp_streq(nm, "attr_writer") || sp_streq(nm, "attr_accessor");
-  if (!attr && !sp_streq(nm, "include") && !sp_streq(nm, "prepend")) return st;
+  if (!attr && !sp_streq(nm, "include") && !sp_streq(nm, "prepend") && !sp_streq(nm, "extend")) return st;
   if (nt_safe_nav(nt, st)) return st;
   int recv = nt_ref(nt, st, "receiver");
   if (recv < 0 || (nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode)) return st;
@@ -1398,7 +1399,7 @@ static int erm_rewrite_stmt(Compiler *c, int st, const char *self_leaf) {
   /* Fiber and Thread take a mixin in a reopening (fiber-annotation's
      `Fiber.prepend(Fiber::Annotation)`); their attr_* have a pass of
      their own */
-  if (!decl && !attr && nt_kind(nt, recv) == NK_ConstantReadNode &&
+  if (!decl && !attr && !sp_streq(nm, "extend") && nt_kind(nt, recv) == NK_ConstantReadNode &&
       (sp_streq(leaf, "Fiber") || sp_streq(leaf, "Thread"))) decl = 1;
   if (!decl) return st;
   int args = nt_ref(nt, st, "arguments"), an = 0;
