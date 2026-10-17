@@ -28,6 +28,11 @@ const char *poly_recv_class_values(Compiler *c, int call);
    the receiver's Class values is k or under it; 1 when the walk cannot
    bound them. Shared by the dispatch's arms and the call's type. */
 int poly_cls_value_reaches(Compiler *c, int call, int k);
+/* Is the class-value arm for class method kmi of class k left out of boxed
+   call `call`: a module's own `def self.x` when no box can hold the module
+   or none reaches the method. The dispatch (poly_cls_value_cands) and the
+   call's type (an_class_concrete) both ask it, so they take the same arms. */
+int poly_cls_arm_left_out(Compiler *c, int call, int k, int kmi);
 /* A class method of `name` on one of the Class values the boxed receiver of
    `call` holds, as far as the walk bounds them (poly_cls_value_reaches): a
    String face then answers only part of the call, and the call's type meets

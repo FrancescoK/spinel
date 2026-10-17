@@ -1628,10 +1628,7 @@ int poly_cls_value_cands(Compiler *c, int id, const char *name, int argc, const 
        so does a reopened builtin (`class Class`, registered as Class__reopen)
        or a method copied in from elsewhere (a module mixed into Class):
        every class answers those. */
-    int own_module_cmethod = kmi >= 0 && kmi < c->nscopes && c->scopes[kmi].is_cmethod &&
-                             c->scopes[kmi].class_id == k && !c->scopes[kmi].origin_module_ci &&
-                             !strstr(c->classes[k].name, "__reopen") && comp_class_is_module(c, &c->classes[k]);
-    if (own_module_cmethod && (!comp_class_may_be_value(c, k) || !share_target_reachable(c, id, kmi))) continue;
+    if (poly_cls_arm_left_out(c, id, k, kmi)) continue;
     /* a yielding candidate is called through its proc form (#3399) */
     int kpf = scope_proc_form_of(c, kmi);
     if (kpf >= 0 && !proc_form_live(c, kpf)) kpf = -1;
