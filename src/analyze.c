@@ -37054,14 +37054,37 @@ static int mark_nullable_params_of_call(Compiler *c, int id, int mi) {
    the parent's matching one, so a parameter that can hold nil (`b = nil`)
    makes the parent's Integer or Float slot hold its nil too, as the same
    call spelled `super(a, b)` does through mark_nullable_params_of_call. */
+static int zsuper_param_nilable(Scope *s, int idx) {
+  LocalVar *src = idx >= 0 && s->pnames[idx] ? scope_local(s, s->pnames[idx]) : NULL;
+  return src && src->nullable_int;
+}
 static int mark_nullable_params_of_zsuper(Compiler *c, int id, int mi) {
   Scope *s = comp_scope_of(c, id), *m = &c->scopes[mi];
-  int changed = 0;
+  int changed = 0, srest = s->rest_idx, opt_seen = 0;
+  int gather = srest >= 0 && s->pnames[srest];
   for (int k = 0; k < m->nparams; k++) {
     int own = zsuper_param_source(c, s, m, k);
-    LocalVar *src = own >= 0 && s->pnames[own] ? scope_local(s, s->pnames[own]) : NULL;
+    int nil = zsuper_param_nilable(s, own);
+    /* A method with a rest passes its positionals as one gathered list, and
+       which of them a parameter of the parent takes depends on how many
+       there are: the layout the types follow (bind_zsuper_params). With
+       the rest empty, the last fixed parameters are the ones a parameter
+       counted from the end takes, and a parent's parameter after an
+       optional takes any of them. */
+    if (gather && k != m->rest_idx && k != m->kwrest_idx && m->pnames[k] &&
+        !callee_param_is_declared_kwarg(c, m, m->pnames[k])) {
+      int optional = m->pdefault && m->pdefault[k] >= 0;
+      if (own > srest) opt_seen |= optional;
+      else if ((m->rest_idx >= 0 && k > m->rest_idx) || (opt_seen && !optional)) {
+        for (int j = 0; j < srest; j++) nil |= zsuper_param_nilable(s, j);
+      }
+      else {
+        opt_seen |= optional;
+        if (k < srest && (m->rest_idx < 0 || k < m->rest_idx)) nil |= zsuper_param_nilable(s, k);
+      }
+    }
     LocalVar *p = m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
-    if (!src || !src->nullable_int || !p || (p->type != TY_INT && p->type != TY_FLOAT) ||
+    if (!nil || !p || (p->type != TY_INT && p->type != TY_FLOAT) ||
         p->nullable_int || param_strict(c, mi, k, NULL, NULL)) continue;
     p->nullable_int = 1; changed = 1;
   }
