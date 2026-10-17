@@ -501,6 +501,10 @@ int strh_elem_slot(Compiler *c, int v);
 int strh_handle_call(Compiler *c, int v);
 /* An operation on a String Array of handles (codegen_call_array.c) */
 int emit_strh_call(Compiler *c, int id, Buf *b);
+/* When set, the arms of a boxed `new` (emit_call_new_arms) are only the
+   classes it marks: a caller that has already tested the receiver's cls_id
+   (emit_boxed_class_aref) keeps the switch to the classes that test admits. */
+extern const unsigned char *g_poly_new_only;
 extern int g_block_nren;
 extern int g_yield_block_fallback_nren;
 /* Paired 1:1 with g_block_nren / g_yield_block_fallback_nren: the &block

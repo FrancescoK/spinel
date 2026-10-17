@@ -2512,6 +2512,8 @@ void struct_nil_fill_stmts(Compiler *c, int ci, int given, const char *obj, Buf 
   }
 }
 
+const unsigned char *g_poly_new_only = NULL;
+
 /* new and allocate on a Class value, a poly receiver, self's class or a constant, and Cls.exception */
 int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* .new WITH arguments on a Class value whose class is only known at run time.
@@ -2850,6 +2852,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
     CtorArityArms aerr = {0};
     for (int ci = 0; ci < c->nclasses; ci++) {
       if (is_builtin_reopen(c->classes[ci].name) || c->classes[ci].is_native_class) continue;
+      if (g_poly_new_only && !g_poly_new_only[ci]) continue;
       /* a class built by its own `self.new` may never be instantiated at all */
       if (emit_user_new_arm(c, id, ci, argc, atmp, 1, rt2, b)) continue;
       if (emit_exc_sub_new_arm(c, ci, argc, atmp, rt2, b)) continue;
