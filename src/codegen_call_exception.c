@@ -440,8 +440,7 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     /* `e.cause&.m`: the nil test is taken here, and the re-entry is past
        it, as the safe-navigation guard's own second pass is; that guard
        narrowed the boxed receiver back to the exception it had been */
-    const char *sop = nt_str(c->nt, id, "call_operator");
-    int sn = sop && sp_streq(sop, "&.");
+    int sn = nt_safe_nav(c->nt, id);
     int sv_sn = g_sn_skip;
     TyKind at = repr_of(c, id).as_ty;
     /* an Integer / Float answer is the `&.`'s oint, nil where it stops */
@@ -451,11 +450,11 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       buf_printf(b, "_t%d.tag == SP_TAG_NIL ? %s : ", tv, so ? oint_nil(at) : nv ? nv : default_value_from_compiler(c, at));
       g_sn_skip = id;
       /* past the test the call is a plain one on the boxed exception */
-      nt_node_set_str((NodeTable *)c->nt, id, "call_operator", ".");
+      nt_set_safe_nav((NodeTable *)c->nt, id, 0);
     }
     if (so) emit_oint_expr(c, id, at, b);
     else emit_expr(c, id, b);
-    if (sn) nt_node_set_str((NodeTable *)c->nt, id, "call_operator", "&.");
+    if (sn) nt_set_safe_nav((NodeTable *)c->nt, id, 1);
     g_sn_skip = sv_sn;
     exc_um_skip = sv_skip;
     view_pop(c, vw);

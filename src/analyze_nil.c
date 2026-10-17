@@ -614,8 +614,7 @@ static int nf_derefs(Compiler *c, int n, const char *nm, int depth) {
   case NK_CallNode: {
     int r = nt_ref(nt, n, "receiver");
     const char *cn = nt_str(nt, n, "name");
-    const char *op = nt_str(nt, n, "call_operator");
-    if (r >= 0 && cn && !(op && sp_streq(op, "&.")) && nf_is_read_of(nt, r, nm) &&
+    if (r >= 0 && cn && !nt_safe_nav(nt, n) && nf_is_read_of(nt, r, nm) &&
         nt_kind(nt, nf_unparen(nt, r)) == NK_LocalVariableReadNode && !is_nil_method(cn) &&
         !nf_nil_user_method(c, cn)) return 1;
     if (r >= 0 && nf_derefs(c, r, nm, depth + 1)) return 1;
@@ -796,10 +795,9 @@ static int nf_call(NF *f, int v) {
   Compiler *c = f->c;
   const NodeTable *nt = f->nt;
   const char *nm = nt_str(nt, v, "name");
-  const char *op = nt_str(nt, v, "call_operator");
   /* only a tracked value's nil: the slots it can reach are tracked */
   if (!nf_tracked(f->c, c->ntype[v])) return NFW_NONE;
-  if (op && sp_streq(op, "&.")) return NFW_SAFE_NAV;
+  if (nt_safe_nav(nt, v)) return NFW_SAFE_NAV;
   if (!nm) return NFW_OPAQUE;
   int r = nt_ref(nt, v, "receiver");
   int a = nt_ref(nt, v, "arguments"), an = 0;

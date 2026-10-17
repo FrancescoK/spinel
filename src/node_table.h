@@ -411,6 +411,17 @@ static inline int nt_regexp_opts(const NodeTable *nt, int id) {
   if (k != NK_RegularExpressionNode && k != NK_InterpolatedRegularExpressionNode) return 0;
   return (int)nt_int(nt, id, "flags", 0);
 }
+/* PM_CALL_NODE_FLAGS_SAFE_NAVIGATION: the call is written `recv&.name`
+   (also on the call-operator write nodes, `recv&.name += 1`). The parser
+   exports it as the `safe_nav` flag, set only when Prism set it, and a
+   desugar that turns the call into a plain one clears it, as it clears
+   `vcall`. A node without the field is not a safe navigation. */
+static inline int nt_safe_nav(const NodeTable *nt, int id) {
+  return nt_int(nt, id, "safe_nav", 0) != 0;
+}
+static inline void nt_set_safe_nav(NodeTable *nt, int id, int on) {
+  if (on || nt_safe_nav(nt, id)) nt_node_set_int(nt, id, "safe_nav", on ? 1 : 0);
+}
 static inline int nt_ref(const NodeTable *nt, int id, const char *key) {
   NT_WORK();
   if (id < 0 || id >= nt->count) return -1;

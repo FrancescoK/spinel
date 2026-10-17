@@ -2922,8 +2922,7 @@ static int emit_chunk_family_runs(Compiler *c, int ck) {
      nil receiver and raised where CRuby answers nil. Stand down only BEFORE
      the guard runs -- it re-enters this emission on the guarded temp with
      g_sn_skip set, and that pass has to lower normally. */
-  { const char *sop = nt_str(nt, ck, "call_operator");
-    if (sop && sp_streq(sop, "&.") && g_sn_skip != ck && prr.kind == RK_BOXED) return -1; }
+  if (nt_safe_nav(nt, ck) && g_sn_skip != ck && prr.kind == RK_BOXED) return -1;
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1) return -1;

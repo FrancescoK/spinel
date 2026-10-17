@@ -7191,8 +7191,7 @@ void rewrite_self_attr_empty_writes(Compiler *c) {
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || nt_kind(nt, recv) != NK_SelfNode) continue;
     if (nt_ref(nt, id, "block") >= 0) continue;
-    const char *cop = nt_str(nt, id, "call_operator");
-    if (cop && sp_streq(cop, "&.")) continue;
+    if (nt_safe_nav(nt, id)) continue;
     const char *name = nt_str(nt, id, "name");
     char base[256];
     if (!name || !name_is_plain_setter(name) || !setter_base_name(name, base, sizeof base)) continue;

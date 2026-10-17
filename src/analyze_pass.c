@@ -13509,7 +13509,6 @@ static int dfi_single_write(NodeTable *nt, int tgt, int rd) {
   nt_node_set_ref(nt, call, "receiver", recv);
   nt_node_set_ref(nt, call, "arguments", an);
   nt_node_set_ref(nt, call, "block", -1);
-  nt_node_set_str(nt, call, "call_operator", ".");
   return call;
 }
 

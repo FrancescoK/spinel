@@ -9464,8 +9464,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       repr_of(c, recv).as_ty != TY_STRBUF &&   /* a handle is no fresh copy, and no const char * */
       !((!nil_answers_name(name)) && recv_may_be_sentinel(c, recv))) {
     for (int ai = 0; ai < argc && !g_noguard; ai++) g_noguard = operand_allocates_beside(c, argv[ai]);
-    const char *sop_n = nt_str(nt, id, "call_operator");
-    if (sop_n && sp_streq(sop_n, "&.")) g_noguard = 0;
+    if (nt_safe_nav(nt, id)) g_noguard = 0;
     if (g_noguard) {
       g_tmpid = ++g_tmp;
       snprintf(g_rname, sizeof g_rname, "_t%d", g_tmpid);
@@ -9475,8 +9474,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
   }
   if (!g_noguard && (rt == TY_INT || rt == TY_STRING) && name && recv >= 0 && !nil_answers_name(name) &&
       recv_may_be_sentinel(c, recv) && !y_ident) {
-    const char *sop_g = nt_str(nt, id, "call_operator");
-    if (!(sop_g && sp_streq(sop_g, "&."))) {
+    if (!nt_safe_nav(nt, id)) {
       /* Bind the receiver once and let every arm below read the temp: some
          of them fold the call to a constant (`size` is sizeof(sp_int)) or to
          the receiver itself (`numerator`) and never render the receiver
@@ -14589,7 +14587,7 @@ int face_str_bang_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   /* (one whose nil guard an enclosing emitter stands for, g_sn_skip, is
      the plain one) */
-  if (id < 0 || nt_kind(nt, id) != NK_CallNode || (call_is_safe_nav(nt, id) && g_sn_skip != id)) return 0;
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode || (nt_safe_nav(nt, id) && g_sn_skip != id)) return 0;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver"), argc;
   if (!name || recv < 0 || !ty_str_bang_flags(name) || comp_recv_type(c, recv) != TY_POLY ||
@@ -14601,7 +14599,7 @@ int face_str_bang_call(Compiler *c, int id) {
 /* Is id such a bang under safe navigation (`bid(x)&.upcase!`), taken as
    the plain one inside the nil guard its emitter holds (emit_held_handle)? */
 int face_str_bang_sn_call(Compiler *c, int id) {
-  if (id < 0 || nt_kind(c->nt, id) != NK_CallNode || !call_is_safe_nav(c->nt, id) || g_sn_skip == id) return 0;
+  if (id < 0 || nt_kind(c->nt, id) != NK_CallNode || !nt_safe_nav(c->nt, id) || g_sn_skip == id) return 0;
   int sv = g_sn_skip, f;
   g_sn_skip = id;
   f = face_str_bang_call(c, id);
@@ -14800,8 +14798,7 @@ int emit_boxed_class_aref(Compiler *c, int id, Buf *b) {
   int argc;
   const int *argv = call_args(nt, id, &argc);
   TyKind rt = recv >= 0 ? comp_recv_type(c, recv) : TY_VOID;
-  const char *cop = nt_str(nt, id, "call_operator");
-  if (cop && sp_streq(cop, "&.")) return 0;
+  if (nt_safe_nav(nt, id)) return 0;
   Repr ir = repr_of(c, id);
   if (recv >= 0 && rt == TY_POLY && name && sp_streq(name, "[]") && g_aref_cls_skip != id &&
       nt_ref(nt, id, "block") < 0 && (ir.kind == RK_BOXED || ir.untyped) &&

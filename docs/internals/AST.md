@@ -96,7 +96,6 @@ N 1 StatementsNode
 A 1 body 2
 N 2 CallNode
 S 2 name puts
-S 2 call_operator .
 R 2 receiver -1
 R 2 arguments 3
 R 2 block -1
@@ -105,6 +104,10 @@ A 3 arguments 4
 N 4 StringNode
 S 4 content hi
 ```
+
+A call written `recv&.name` also carries `I 2 safe_nav 1` (Prism's
+safe-navigation flag, on the call-operator write nodes too); an ordinary
+call carries no such field, and `nt_safe_nav` answers 0 for it.
 
 Node ids are assigned in DFS pre-order during parse, so a child's id is
 greater than its parent's id, except for the StatementsNode made for an

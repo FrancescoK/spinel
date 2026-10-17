@@ -2700,7 +2700,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       int r = nt_ref(c->nt, node, "receiver");
       Buf hr; memset(&hr, 0, sizeof hr);
       /* `s&.to_s` answers nil for a nil s, where `s.to_s` answers "". */
-      int sn = call_is_safe_nav(c->nt, node) && g_sn_skip != node;
+      int sn = nt_safe_nav(c->nt, node) && g_sn_skip != node;
       if (strbuf_var_handle(c, r, &hr)) {
         if (sn) buf_printf(b, "(%s ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil())", hr.p, hr.p);
         else buf_printf(b, "sp_strbuf_to_s_box(%s)", hr.p);

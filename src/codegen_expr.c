@@ -5872,7 +5872,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
                              _ynt != TY_UNKNOWN
                                ? _ynt : g_yield_slot_ty,
                              b, 0, 1); }
-    else if (nt_str(nt, id, "call_operator") && sp_streq(nt_str(nt, id, "call_operator"), "&.")) {
+    else if (nt_safe_nav(nt, id)) {
       /* `blk&.call`: the nil parameter answers nil instead of raising (an
          Integer / Float answer is the node's oint, as `&.` always is) */
       TyKind at = repr_of(c, id).as_ty;

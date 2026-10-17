@@ -9722,11 +9722,11 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
   /* n.times.each { } is n.times { }: the blockless times is a Range here,
      whose each answered 0...n where the Enumerator's each answers n */
   if (nm && sp_streq(nm, "each") && nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockNode &&
-      nt_ref(nt, id, "arguments") < 0 && !call_is_safe_nav(nt, id)) {
+      nt_ref(nt, id, "arguments") < 0 && !nt_safe_nav(nt, id)) {
     int trecv = nt_ref(nt, id, "receiver");
     if (trecv >= 0 && nt_kind(nt, trecv) == NK_CallNode && nt_str(nt, trecv, "name") &&
         sp_streq(nt_str(nt, trecv, "name"), "times") && nt_ref(nt, trecv, "block") < 0 &&
-        nt_ref(nt, trecv, "arguments") < 0 && !call_is_safe_nav(nt, trecv)) {
+        nt_ref(nt, trecv, "arguments") < 0 && !nt_safe_nav(nt, trecv)) {
       int n = nt_ref(nt, trecv, "receiver");
       if (n >= 0 && infer_type(c, n) == TY_INT) {
         nt_node_set_str(nt, id, "name", "times");
@@ -21800,7 +21800,7 @@ static int strh_elem_use_ok(Compiler *c, const int *par, int e) {
     if (!nm || share_builtin_overridden(c, "String", nm)) return 0;
     /* (a safe navigation skips a nil element, which a test of the handle
        would raise on) */
-    if (call_is_safe_nav(nt, p)) return 0;
+    if (nt_safe_nav(nt, p)) return 0;
     /* (the element can be nil: nil answers a few of these as a String does,
        the rest raise the NoMethodError the element read tests for) */
     if (is_nil_method(nm) && !is_nil_shared_name(nm))
@@ -33315,8 +33315,7 @@ static int nn_call_unboxes_nil(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, v, "name");
   if (!nm) return 0;
-  const char *op = nt_str(nt, v, "call_operator");
-  if (op && sp_streq(op, "&.")) return 1;
+  if (nt_safe_nav(nt, v)) return 1;
   int rcv = nt_ref(nt, v, "receiver");
   if (rcv < 0) {
     if (comp_self_call_mi(c, v, nm) >= 0) return 0;   /* the program's own p or catch */
@@ -34178,8 +34177,7 @@ int scalar_nil_only_call(Compiler *c, int id, TyKind rt) {
   const char *nm = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   if (!nm || recv < 0 || nt_ref(nt, id, "block") >= 0) return 0;
-  const char *op = nt_str(nt, id, "call_operator");
-  if (op && sp_streq(op, "&.")) return 0;
+  if (nt_safe_nav(nt, id)) return 0;
   if (rt != TY_INT && rt != TY_FLOAT) return 0;
   int args = nt_ref(nt, id, "arguments");
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
@@ -34871,7 +34869,7 @@ static void nn_used(Compiler *c, int call, NNF *f, int ctx, int amark) {
   static const char *const local_ops[] = { "<", "<=", ">", ">=", "+", "-", "*", "/", NULL };
   const char *nm = nt_str(nt, call, "name");
   int recv = nt_ref(nt, call, "receiver");
-  if (!nm || recv < 0 || nt_ref(nt, call, "block") >= 0 || call_is_safe_nav(nt, call) || nn_numeric_reopened)
+  if (!nm || recv < 0 || nt_ref(nt, call, "block") >= 0 || nt_safe_nav(nt, call) || nn_numeric_reopened)
     return;
   TyKind rt = comp_ntype(c, recv);
   int num = rt == TY_INT || rt == TY_FLOAT;
@@ -34974,12 +34972,11 @@ static void nn_operands_nonnil(Compiler *c, int id, NNF *f, int ctx, int amark) 
   const NodeTable *nt = c->nt;
   static const char *const ops[] = { "<", "<=", ">", ">=", "+", "-", "*", "/", NULL };
   const char *nm = nt_str(nt, id, "name");
-  const char *op = nt_str(nt, id, "call_operator");
   int recv = nt_ref(nt, id, "receiver");
   int ca = nt_ref(nt, id, "arguments"); int an = 0;
   const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
   if (f->bot || nn_numeric_reopened || !nn_name_in(nm, ops) || recv < 0 || an != 1 ||
-      nt_ref(nt, id, "block") >= 0 || (op && sp_streq(op, "&.")))
+      nt_ref(nt, id, "block") >= 0 || nt_safe_nav(nt, id))
     return;
   TyKind rt = comp_ntype(c, recv), at = comp_ntype(c, av[0]);
   if (rt != TY_INT && rt != TY_FLOAT) return;
@@ -39383,7 +39380,7 @@ static void kwb_clone_split(Compiler *c, int call, Scope *sc) {
   snprintf(vn, sizeof vn, "__kwcv%d", nt->count);
   int rcv = nt_ref(nt, call, "receiver"), st[3], ns = 0;
   NodeKind rk = rcv >= 0 ? nt_kind(nt, rcv) : NK_SelfNode;
-  int sn = call_is_safe_nav(nt, call);
+  int sn = nt_safe_nav(nt, call);
   int bind = rcv >= 0 && (sn || (rk != NK_SelfNode && rk != NK_ConstantReadNode &&
                                  (subtree_has_side_effect(c, v) ||
                                   (rk != NK_LocalVariableReadNode && rk != NK_InstanceVariableReadNode))));
@@ -39461,7 +39458,7 @@ static void kwb_optional_split(NodeTable *nt, int call, int row, Scope *sc) {
   snprintf(vn, sizeof vn, "__kwov%d", nt->count);
   snprintf(xn, sizeof xn, "__kwox%d", nt->count);
   snprintf(rn, sizeof rn, "__kwor%d", nt->count);
-  int sn = call_is_safe_nav(nt, call), rw = -1;
+  int sn = nt_safe_nav(nt, call), rw = -1;
   if (sn) {
     rw = kwb_lv(nt, sc, rn, nt_clone_subtree(nt, nt_ref(nt, call, "receiver")));
     nt_node_set_ref(nt, call, "receiver", kwb_lv(nt, sc, rn, -1));
@@ -39542,7 +39539,7 @@ static void desugar_diverging_args(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_CallNode || call_is_safe_nav(nt, id)) continue;
+    if (nt_kind(nt, id) != NK_CallNode || nt_safe_nav(nt, id)) continue;
     int an = nt_ref(nt, id, "arguments"), n = 0, k = -1;
     const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
     for (int i = 0; i < n && k < 0; i++) {
@@ -39686,8 +39683,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   if (blk >= 0 && subst) lo = 1;
   /* insert(i, *objs) spreads at run time (emit_array_splat_mutator) */
   if (sp_streq(cnm, "insert") && sp_at > 0) return 0;
-  const char *cop = nt_str(nt, id, "call_operator");
-  if (cop && sp_streq(cop, "&.")) return 0;
+  if (nt_safe_nav(nt, id)) return 0;
   /* A splat of anything but a local -- a constant, a method's result -- is
      bound to a temporary as `[*ex]` (nil spreads to no arguments, a Range to
      its elements), in its turn among the arguments, and the arms read that. */
@@ -40970,8 +40966,7 @@ static int desugar_poly_symbol_block_arg(Compiler *c) {
     if (nt_int(nt, ba, "psb_done", 0)) continue;   /* its own value reads the Symbols again */
     /* `r&.m(&v)` evaluates v only when r is not nil, and the parentheses
        would read it first */
-    const char *cop = nt_str(nt, id, "call_operator");
-    if (cop && sp_streq(cop, "&.")) continue;
+    if (nt_safe_nav(nt, id)) continue;
     int ex = nt_ref(nt, ba, "expression");
     if (ex < 0) continue;
     /* A Symbol-typed value too: a local is desugar_symbol_var_block_arg's
@@ -44287,14 +44282,14 @@ static void desugar_itself_receiver(Compiler *c) {
   }
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode || !sp_streq(nt_str(nt, id, "name"), "itself") ||
-        nt_ref(nt, id, "arguments") >= 0 || nt_ref(nt, id, "block") >= 0 || call_is_safe_nav(nt, id)) continue;
+        nt_ref(nt, id, "arguments") >= 0 || nt_ref(nt, id, "block") >= 0 || nt_safe_nav(nt, id)) continue;
     int r = nt_ref(nt, id, "receiver");
     if (r < 0) continue;
     long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
     /* (a chain of them is its base: `@s.itself.itself`, whichever link is
        rewritten first) */
     for (int d = 0; d < 16 && r >= 0 && nt_kind(nt, r) == NK_CallNode && sp_streq(nt_str(nt, r, "name"), "itself") &&
-                    nt_ref(nt, r, "arguments") < 0 && nt_ref(nt, r, "block") < 0 && !call_is_safe_nav(nt, r);
+                    nt_ref(nt, r, "arguments") < 0 && nt_ref(nt, r, "block") < 0 && !nt_safe_nav(nt, r);
          d++)
       r = nt_ref(nt, r, "receiver");
     if (r < 0) continue;
@@ -44327,7 +44322,7 @@ static void desugar_tap_value_write(Compiler *c) {
     const char *x = nt_str(nt, id, "name");
     int v = nt_ref(nt, id, "value");
     if (!x || v < 0 || nt_kind(nt, v) != NK_CallNode || !sp_streq(nt_str(nt, v, "name"), "tap") ||
-        nt_ref(nt, v, "arguments") >= 0 || call_is_safe_nav(nt, v)) continue;
+        nt_ref(nt, v, "arguments") >= 0 || nt_safe_nav(nt, v)) continue;
     int blk = nt_ref(nt, v, "block"), r = nt_ref(nt, v, "receiver");
     if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || r < 0) continue;
     NodeKind rk = nt_kind(nt, unwrap_parens(c, r));

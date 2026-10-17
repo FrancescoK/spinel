@@ -934,7 +934,7 @@ int an_int_step_range_chain(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int p = comp_recv_parent(c, id);
   if (p < 0 || nt_kind(nt, p) != NK_CallNode || an_unparen(nt, nt_ref(nt, p, "receiver")) != id ||
-      call_is_safe_nav(nt, p)) return 0;
+      nt_safe_nav(nt, p)) return 0;
   const char *pn = nt_str(nt, p, "name");
   /* the `to_a` hop a desugar puts under an Enumerator's walk (enum_recv)
      is not a reader: the walk answers this receiver */
@@ -956,7 +956,7 @@ int an_int_step_range_chain(Compiler *c, int id) {
                                sp_streq(pn, "filter_map"))) {
     int g = comp_recv_parent(c, p);
     if (g < 0 || nt_kind(nt, g) != NK_CallNode || an_unparen(nt, nt_ref(nt, g, "receiver")) != p ||
-        call_is_safe_nav(nt, g)) return 0;
+        nt_safe_nav(nt, g)) return 0;
     const char *gn = nt_str(nt, g, "name");
     int gblk = nt_ref(nt, g, "block");
     if (!gn || range_enum_reopen_defines(c, gn)) return 0;
@@ -1005,7 +1005,7 @@ int an_blockless_tuples_kept(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int p = comp_recv_parent(c, id);
   if (p < 0 || nt_kind(nt, p) != NK_CallNode || an_unparen(nt, nt_ref(nt, p, "receiver")) != id ||
-      call_is_safe_nav(nt, p)) return 0;
+      nt_safe_nav(nt, p)) return 0;
   const char *pn = nt_str(nt, p, "name");
   /* nor is a `to_a` a desugar puts under a walk (made_to_a): the walk
      reads the Enumerator through it and may answer its source */
@@ -2776,7 +2776,7 @@ static int an_prog_extends_builtin(Compiler *c) {
 int an_bi_generic_splat(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (id < 0 || nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "block") >= 0) return 0;
-  if (nt_ref(nt, id, "receiver") < 0 || call_is_safe_nav(nt, id)) return 0;
+  if (nt_ref(nt, id, "receiver") < 0 || nt_safe_nav(nt, id)) return 0;
   const char *name = nt_str(nt, id, "name");
   if (!name) return 0;
   int an = nt_ref(nt, id, "arguments"), n = 0;
@@ -7195,8 +7195,7 @@ static int infer_block_kernel_call(Compiler *c, int id, const NodeTable *nt, con
 static int infer_last_resort_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, TyKind rt, TyKind *out) {
   /* safe navigation &. with unresolved type: return poly (receiver may be nil at runtime) */
   {
-    const char *call_op = nt_str(nt, id, "call_operator");
-    if (recv >= 0 && call_op && sp_streq(call_op, "&.")) { *out = TY_POLY; return 1; }
+    if (recv >= 0 && nt_safe_nav(nt, id)) { *out = TY_POLY; return 1; }
   }
 
   /* Builtin class reopening: look up user-defined methods on Array/Numeric/Object
@@ -8480,8 +8479,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   /* Safe navigation &. : nil receiver always short-circuits to nil */
   {
-    const char *call_op = nt_str(nt, id, "call_operator");
-    if (recv >= 0 && call_op && sp_streq(call_op, "&.") && rt == TY_NIL) return TY_NIL;
+    if (recv >= 0 && nt_safe_nav(nt, id) && rt == TY_NIL) return TY_NIL;
   }
 
   /* nil receiver: type inference for NilClass methods */
@@ -11170,9 +11168,8 @@ TyKind infer_type(Compiler *c, int id) {
      the program saying nil is possible; the answer has to be able to hold
      one. */
   if (!an_ty_holds_nil(t) && nt_kind(c->nt, id) == NK_CallNode) {
-    const char *sn_op = nt_str(c->nt, id, "call_operator");
     int sn_recv = nt_ref(c->nt, id, "receiver");
-    if (sn_op && sp_streq(sn_op, "&.") && sn_recv >= 0) t = TY_POLY;
+    if (nt_safe_nav(c->nt, id) && sn_recv >= 0) t = TY_POLY;
   }
   /* Nor is a pure read's answer recorded (an_pure_reads): it is asked after
      the analysis, under whatever view codegen has open. */

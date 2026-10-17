@@ -2330,8 +2330,7 @@ int cplan_nil(Compiler *c, int id) {
   if (id < 0 || id >= nt->count || nt_kind(nt, id) != NK_CallNode) return CN_NONE;
   int r = nt_ref(nt, id, "receiver");
   const char *nm = cplan_call_name(nt, id);
-  const char *op = nt_str(nt, id, "call_operator");
-  if (r < 0 || !nm || (op && sp_streq(op, "&."))) return CN_NONE;
+  if (r < 0 || !nm || nt_safe_nav(nt, id)) return CN_NONE;
   /* the receiver as settled, not as a view retypes it: a poly arm's
      unboxed String is never its box's nil */
   TyKind rt = c->ntype[r];

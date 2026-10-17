@@ -1981,8 +1981,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
          written in turn, as the boxed receiver's arm does. The arms below
          read a splat as one operand and wrote the Array's inspect (#7313). */
       { int has_splat = 0, listable = !is_sw;
-        const char *wop = nt_str(nt, id, "call_operator");
-        if (wop && sp_streq(wop, "&.")) listable = 0;
+        if (nt_safe_nav(nt, id)) listable = 0;
         for (int k = 0; k < argc && listable; k++) {
           if (nt_kind(nt, argv[k]) == NK_KeywordHashNode) listable = 0;
           else if (nt_kind(nt, argv[k]) == NK_SplatNode) {

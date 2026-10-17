@@ -1081,14 +1081,8 @@ static int flatten_node(pm_node_t *node) {
     R("receiver", n->receiver);
     R("arguments", n->arguments);
     R("block", n->block);
-    /* Issue #793: emit explicit call_operator for non-safe-nav calls
-       too, so codegen reads "." instead of an unset field. */
-    if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) {
-      S("call_operator", "&.");
-    }
-    else {
-      S("call_operator", ".");
-    }
+    /* `recv&.name`: nt_safe_nav reads the flag, set only when it is. */
+    if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) I("safe_nav", 1);
     /* A bare identifier (no receiver/parens/args) is a variable-or-method
        read: an unresolved one is CRuby's NameError, not NoMethodError. */
     if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_VARIABLE_CALL)) I("vcall", 1);
@@ -1365,9 +1359,7 @@ static int flatten_node(pm_node_t *node) {
     NAME("name", n->read_name);
     NAME("binary_operator", n->binary_operator);
     R("value", n->value);
-    if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) {
-      S("call_operator", "&.");
-    }
+    if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) I("safe_nav", 1);
     break;
   }
   case PM_CALL_AND_WRITE_NODE: {
@@ -1376,9 +1368,7 @@ static int flatten_node(pm_node_t *node) {
     R("receiver", n->receiver);
     NAME("name", n->read_name);
     R("value", n->value);
-    if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) {
-      S("call_operator", "&.");
-    }
+    if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) I("safe_nav", 1);
     break;
   }
   case PM_CALL_OR_WRITE_NODE: {
@@ -1387,9 +1377,7 @@ static int flatten_node(pm_node_t *node) {
     R("receiver", n->receiver);
     NAME("name", n->read_name);
     R("value", n->value);
-    if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) {
-      S("call_operator", "&.");
-    }
+    if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) I("safe_nav", 1);
     break;
   }
   case PM_GLOBAL_VARIABLE_WRITE_NODE: {

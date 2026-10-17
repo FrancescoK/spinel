@@ -3571,7 +3571,7 @@ static int strbuf_bang_self_local_at(const Compiler *c, int v) {
   /* --share-strings: itself, to_s or to_str of a held chain answers its
      String (strbuf_held_chain; nil.to_s's "" aside, emit_held_handle) */
   if (repr_share_rule(c) && is_receiver_conversion(nt_str(nt, v, "name")) && call_plain_argc((Compiler *)c, v) == 0 &&
-      nt_ref(nt, v, "block") < 0 && !call_is_safe_nav(nt, v) && nt_kind(nt, unwrap_parens((Compiler *)c, r)) == NK_CallNode) {
+      nt_ref(nt, v, "block") < 0 && !nt_safe_nav(nt, v) && nt_kind(nt, unwrap_parens((Compiler *)c, r)) == NK_CallNode) {
     int ct[CPT_MAX];
     return cplan_targets((Compiler *)c, v, ct, CPT_MAX) == 0 && strbuf_held_chain(c, r);
   }
@@ -4867,9 +4867,9 @@ static int plain_expr(Compiler *c, int n, int depth) {
     int recv = nt_ref(nt, n, "receiver");
     /* An Integer sum either returns a number or raises, even at INTPTR_MIN. */
     if (nm && recv >= 0 && is_sum_name(nm) && ty_is_array(repr_of(c, recv).as_ty) &&
-        !call_is_safe_nav(nt, n) && cplan_user(c, n)->dispatch == CP_NONE) return 1;
+        !nt_safe_nav(nt, n) && cplan_user(c, n)->dispatch == CP_NONE) return 1;
     if (!nm || recv < 0 || nt_ref(nt, n, "block") >= 0) return 0;
-    if (call_is_safe_nav(nt, n)) return 0;   /* nil&.+(1) is nil */
+    if (nt_safe_nav(nt, n)) return 0;   /* nil&.+(1) is nil */
     int args = nt_ref(nt, n, "arguments"), argc = 0;
     const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
     /* a collection's or String's size: a count, never nil (unless the program
@@ -7546,8 +7546,7 @@ static int node_is_oint_asked(Compiler *c, int node) {
     /* `r&.m`: nil when r is -- except on the safe-navigation emitter's
        re-entry for the same node (g_sn_skip), which emits the plain call on
        the guarded receiver and wraps it itself */
-    const char *sop = nt_str(nt, node, "call_operator");
-    if (sop && sp_streq(sop, "&.") && g_sn_skip != node) {
+    if (nt_safe_nav(nt, node) && g_sn_skip != node) {
       /* nil when the receiver is -- only where a guard stands (a receiver
          that cannot be nil, `3&.fdiv(2)`, has neither guard nor nil) */
       if (sn_guard_pending(c, node)) return 1;
