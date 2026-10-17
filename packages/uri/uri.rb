@@ -9,10 +9,8 @@
 # What is not here is absent the way a subset is absent things, and a
 # program naming it fails to compile rather than at run time:
 #
-# * the component writers do not validate what they are given
-# * the URI.escape family CRuby removed is not here either, nor the
-#   obsolete URI::ABS_PATH-style constants CRuby answers through
-#   const_missing
+# * the URI.escape family CRuby removed, and the obsolete URI::ABS_PATH-
+#   style constants CRuby answers through const_missing
 require "socket"
 
 module URI
@@ -30,32 +28,186 @@ module URI
 
   class Generic
     attr_reader :scheme, :userinfo, :host, :port, :path, :query, :fragment
-    # The component writers CRuby's Generic has: a parsed URI is edited
-    # in place and re-serialised with #to_s (`uri.host = "fxtwitter.com"`
-    # is how a Rails app swaps a domain). Assignment only -- CRuby also
-    # validates the new component and raises InvalidComponentError on a
-    # bad one, which is absent here the way the rest of the subset is.
-    attr_writer :scheme, :userinfo, :host, :port, :path, :query, :fragment
-
     # What follows the scheme of a URI with no hierarchy ("isbn:1" in
     # "urn:isbn:1"); nil for every other URI.
-    attr_accessor :opaque
-
-    def hostname=(value)
-      @host = value
-    end
+    attr_reader :opaque
 
     def initialize(scheme, userinfo, host, port, path, query, fragment)
+      @parser = nil
       @scheme = scheme.nil? ? nil : scheme.downcase
       # An empty userinfo ("http://@h/") has no user, as CRuby splits it.
       @userinfo = userinfo.nil? || userinfo.empty? ? nil : userinfo
       @host = host
       @port = port
       @path = path
-      @query = query
-      @fragment = fragment
       @opaque = nil
+      # CRuby's initialize sends both through their writers, which escape
+      # what a query or a fragment may not carry: "?a b" is "?a%20b".
+      @query = URI.normalize_query(query)
+      @fragment = URI.normalize_fragment(fragment)
       @port = default_port if @port.nil?
+    end
+
+    # The component writers, with CRuby's checks against the grammar of
+    # the parser that made the URI (RFC 3986's, unless the RFC 2396 parser
+    # parsed it): a bad component raises InvalidComponentError, one the
+    # URI's other parts rule out InvalidURIError. Setting the host or the
+    # port drops the userinfo, as CRuby's writers do.
+    def scheme=(v)
+      if !v.nil? && !grammar_match?(:SCHEME, v)
+        raise InvalidComponentError, "bad component(expected scheme component): #{v}"
+      end
+      set_scheme(v)
+      v
+    end
+
+    def userinfo=(v)
+      return nil if v.nil?
+      u = nil
+      pw = nil
+      if v.is_a?(Array)
+        u = v[0]
+        pw = v[1]
+      else
+        u, pw = URI.split_userinfo(v)
+      end
+      check_user(u)
+      check_password(pw, u)
+      set_userinfo(URI.join_userinfo(u, pw))
+      v
+    end
+
+    # The user, a ":" in it splitting off the password, as CRuby's #user=
+    # sets both from one string.
+    def user=(v)
+      check_user(v)
+      set_userinfo(v)
+      v
+    end
+
+    # The password after the user; there must be a user.
+    def password=(v)
+      check_password(v, user)
+      set_userinfo(URI.join_userinfo(user, v))
+      v
+    end
+
+    def host=(v)
+      unless v.nil?
+        raise InvalidURIError, "cannot set host with registry or opaque" unless @opaque.nil?
+        if !grammar_match?(:HOST, v)
+          raise InvalidComponentError, "bad component(expected host component): #{v}"
+        end
+      end
+      set_host(v)
+      set_userinfo(nil)
+      v
+    end
+
+    # The host, an IPv6 address given bare put in brackets.
+    def hostname=(v)
+      v = "[#{v}]" if !v.nil? && !(v.start_with?("[") && v.end_with?("]")) && v.index(":")
+      self.host = v
+    end
+
+    def port=(v)
+      unless v.nil?
+        raise InvalidURIError, "cannot set port with registry or opaque" unless @opaque.nil?
+        if !v.is_a?(Integer) && !grammar_match?(:PORT, v)
+          raise InvalidComponentError, "bad component(expected port component): #{v.inspect}"
+        end
+      end
+      set_port(v.is_a?(Integer) || v.nil? ? v : (v.empty? ? nil : v.to_i))
+      set_userinfo(nil)
+      port
+    end
+
+    def registry=(v)
+      raise InvalidURIError, "cannot set registry"
+    end
+
+    def registry
+      nil
+    end
+
+    # An absolute path once the URI has a scheme (FTP's is relative to the
+    # login directory, so either kind), and no path beside an opaque part.
+    def path=(v)
+      raise InvalidURIError, "path conflicts with opaque" if !v.nil? && !@opaque.nil?
+      if !v.nil? && !v.empty? && !grammar_match?(:ABS_PATH, v)
+        if !@scheme.nil? && @scheme != "ftp"
+          raise InvalidComponentError, "bad component(expected absolute path component): #{v}"
+        elsif !grammar_match?(:REL_PATH, v)
+          raise InvalidComponentError, "bad component(expected relative path component): #{v}"
+        end
+      end
+      set_path(v)
+      v
+    end
+
+    def query=(v)
+      return set_query(nil) if v.nil?
+      raise InvalidURIError, "query conflicts with opaque" unless @opaque.nil?
+      set_query(URI.normalize_query(v))
+    end
+
+    def opaque=(v)
+      unless v.nil?
+        if !@host.nil? || !@port.nil? || !@userinfo.nil? || !@path.nil?
+          raise InvalidURIError, "cannot set opaque with host, port, userinfo or path"
+        elsif !grammar_match?(:OPAQUE, v)
+          raise InvalidComponentError, "bad component(expected opaque component): #{v}"
+        end
+      end
+      set_opaque(v)
+      v
+    end
+
+    def fragment=(v)
+      set_fragment(URI.normalize_fragment(v))
+    end
+
+    # The parser whose grammar the writers check against.
+    def parser
+      @parser.nil? ? RFC3986_PARSER : @parser
+    end
+
+    def parser=(v)
+      @parser = v
+    end
+
+    # The unchecked setters, as CRuby's protected set_* are: what #merge,
+    # #route_from and the parsers assemble a URI with.
+    def set_scheme(v)
+      @scheme = v.nil? ? nil : v.downcase
+    end
+
+    def set_userinfo(v)
+      @userinfo = v.nil? || v.empty? ? nil : v
+    end
+
+    def set_host(v)
+      @host = v
+    end
+
+    def set_port(v)
+      @port = v
+    end
+
+    def set_path(v)
+      @path = v
+    end
+
+    def set_query(v)
+      @query = v
+    end
+
+    def set_opaque(v)
+      @opaque = v
+    end
+
+    def set_fragment(v)
+      @fragment = v
     end
 
     # true when the URI names a scheme -- a full URL rather than a bare
@@ -91,12 +243,31 @@ module URI
 
     # A URI of this class from a components Hash, a port not given being
     # the scheme's default, as CRuby's initialize sets it.
+    # A URI of this class from a components Hash, each component through
+    # its checked writer in the order CRuby's build sends them (an IPv6
+    # host bracketed, a port String read as a number), a port not given
+    # being the scheme's default.
     def self.from_components(h)
-      path = h[:path]
-      path = "" if path.nil? && h[:opaque].nil?
-      u = new(h[:scheme], h[:userinfo], h[:host], h[:port], path, h[:query], h[:fragment])
-      u.opaque = h[:opaque] unless h[:opaque].nil?
+      g = Generic.new(nil, nil, nil, nil, nil, nil, nil)
+      g.scheme = h[:scheme]
+      g.hostname = h[:host]
+      g.port = h[:port]
+      check_build_userinfo(h[:userinfo])
+      g.userinfo = h[:userinfo]
+      g.path = h[:path]
+      g.query = h[:query]
+      g.opaque = h[:opaque]
+      g.fragment = h[:fragment]
+      path = g.path
+      path = "" if path.nil? && g.opaque.nil?
+      u = new(g.scheme, g.userinfo, g.host, g.port, path, g.query, g.fragment)
+      u.set_opaque(g.opaque) unless g.opaque.nil?
       u
+    end
+
+    # File refuses a userinfo; every other class takes one.
+    def self.check_build_userinfo(v)
+      nil
     end
 
     # CRuby's Util.make_components_hash for a scheme class's build: an
@@ -164,19 +335,20 @@ module URI
       v && v.start_with?("[") && v.end_with?("]") ? v[1..-2] : v
     end
 
+    # CRuby's #to_s: the authority's "//" whenever there is a host (and
+    # for file and postgres URIs, as "file:///etc"), a default port left
+    # off, and a "/" between an authority and a relative path.
     def to_s
       s = String.new
-      s << "#{@scheme}:" unless @scheme.nil? || @scheme.empty?
+      s << "#{@scheme}:" unless @scheme.nil?
       if @opaque.nil?
-        # The authority's "//" goes in whenever there is a host, so a
-        # network-path reference ("//host/x") keeps it; file URIs keep
-        # it with an empty host, as CRuby does ("file:///etc").
         s << "//" if !@host.nil? || @scheme == "file" || @scheme == "postgres"
-        s << "#{@userinfo}@" unless @userinfo.nil?
-        s << @host.to_s
-        # A cleared port (`uri.port = nil`) is omitted, as CRuby omits it.
+        s << "#{userinfo}@" unless userinfo.nil?
+        s << @host unless @host.nil?
         s << ":#{@port}" if !@port.nil? && @port != default_port
-        s << @path.to_s
+        p = @path.to_s
+        s << "/" if (!@host.nil? || !@port.nil?) && !p.empty? && !p.start_with?("/")
+        s << p
         s << "?#{@query}" unless @query.nil?
       else
         s << @opaque
@@ -201,24 +373,24 @@ module URI
 
       # Only a fragment (or nothing at all): this URI with that fragment.
       if (rel.path.nil? || rel.path.empty?) && !authority && rel.query.nil?
-        base.fragment = rel.fragment unless rel.fragment.nil?
+        base.set_fragment(rel.fragment) unless rel.fragment.nil?
         return base
       end
 
-      base.query = nil
-      base.fragment = nil
+      base.set_query(nil)
+      base.set_fragment(nil)
       if authority
         # The reference's authority replaces the base's whole: a port it
         # leaves out is the scheme's default, not the base's.
-        base.userinfo = rel.userinfo
-        base.host = rel.host
-        base.port = rel.port.nil? ? base.default_port : rel.port
-        base.path = rel.path.to_s
+        base.set_userinfo(rel.userinfo)
+        base.set_host(rel.host)
+        base.set_port(rel.port.nil? ? base.default_port : rel.port)
+        base.set_path(rel.path.to_s)
       elsif base.opaque.nil?
-        base.path = merge_path(base.path.to_s, rel.path.to_s)
+        base.set_path(merge_path(base.path.to_s, rel.path.to_s))
       end
-      base.query = rel.query unless rel.query.nil?
-      base.fragment = rel.fragment unless rel.fragment.nil?
+      base.set_query(rel.query) unless rel.query.nil?
+      base.set_fragment(rel.fragment) unless rel.fragment.nil?
       base
     end
     def +(oth)
@@ -297,26 +469,26 @@ module URI
       return dup if @scheme != oth.scheme
 
       rel = Generic.new(nil, @userinfo, @host, @port, @path, @query, @fragment)
-      rel.opaque = @opaque
+      rel.set_opaque(@opaque)
       if rel.userinfo != oth.userinfo || rel.host.to_s.downcase != oth.host.to_s.downcase || rel.port != oth.port
         return dup if @userinfo.nil? && @host.nil?
-        rel.port = nil if rel.port == oth.default_port
+        rel.set_port(nil) if rel.port == oth.default_port
         return rel
       end
-      rel.userinfo = nil
-      rel.host = nil
-      rel.port = nil
+      rel.set_userinfo(nil)
+      rel.set_host(nil)
+      rel.set_port(nil)
       if !rel.path.nil? && rel.path == oth.path
-        rel.path = ""
-        rel.query = nil if rel.query == oth.query
+        rel.set_path("")
+        rel.set_query(nil) if rel.query == oth.query
         return rel
       elsif !rel.opaque.nil? && rel.opaque == oth.opaque
-        rel.opaque = ""
-        rel.query = nil if rel.query == oth.query
+        rel.set_opaque("")
+        rel.set_query(nil) if rel.query == oth.query
         return rel
       end
-      rel.path = route_from_path(oth.path.to_s, @path.to_s)
-      rel.path = "" if rel.path == "./" && !@query.nil?
+      rel.set_path(route_from_path(oth.path.to_s, @path.to_s))
+      rel.set_path("") if rel.path == "./" && !@query.nil?
       rel
     end
 
@@ -385,17 +557,6 @@ module URI
       pw.nil? ? nil : URI.decode_uri_component(pw)
     end
 
-    # The user (with the password after a ":" in it), as CRuby's #user= sets
-    # both from one string; #password= keeps the user and replaces the rest.
-    def user=(v)
-      @userinfo = v
-    end
-
-    def password=(v)
-      u = user
-      raise InvalidURIError, "password component depends user component" if u.nil?
-      @userinfo = v.nil? ? u : "#{u}:#{v}"
-    end
 
     # The proxy +env+ names for this URI's scheme ("http_proxy", or
     # "HTTP_PROXY"), as a URI; nil for a loopback host or one +no_proxy+
@@ -464,6 +625,27 @@ module URI
 
     def inspect
       "#<#{self.class} #{self}>"
+    end
+
+    def check_user(v)
+      raise InvalidURIError, "cannot set user with opaque" unless @opaque.nil?
+      return if v.nil?
+      if !grammar_match?(:USERINFO, v)
+        raise InvalidComponentError, "bad component(expected userinfo component or user component): #{v}"
+      end
+    end
+
+    def check_password(v, user)
+      raise InvalidURIError, "cannot set password with opaque" unless @opaque.nil?
+      return if v.nil?
+      raise InvalidURIError, "password component depends user component" if user.nil?
+      raise InvalidComponentError, "bad password component" if !grammar_match?(:USERINFO, v)
+    end
+
+    # Whether +v+ is one +name+ of the parser's grammar. Regexp#match, not
+    # String#!~: a Regexp read out of the table has no String#!~ at run time.
+    def grammar_match?(name, v)
+      !parser.regexp[name].match(v.to_s).nil?
     end
 
     # Equal when of the same class with the same components once normalized.
@@ -688,14 +870,22 @@ module URI
       @port = nil
     end
 
-    def host=(v)
+    def self.check_build_userinfo(v)
+      raise InvalidURIError, "cannot set userinfo for file URI" unless v.nil?
+    end
+
+    def set_host(v)
       @host = v.nil? || v == "localhost" ? "" : v
     end
 
-    def port=(v)
+    def set_port(v)
+    end
+
+    def set_userinfo(v)
     end
 
     def userinfo=(v)
+      return nil if v.nil?
       raise InvalidURIError, "cannot set userinfo for file URI"
     end
 
@@ -766,7 +956,11 @@ module URI
         opaque = "#{opaque}?#{query}" unless query.empty?
       end
       u = new("mailto", nil, nil, nil, nil, nil, nil)
-      u.opaque = opaque
+      u.set_opaque(opaque)
+      u.check_mailto!
+      to_part, header_part = opaque.split("?", 2)
+      u.to = to_part
+      u.headers = header_part
       u
     end
 
@@ -1026,13 +1220,14 @@ module URI
     end
     path = "" if path.nil? && opaque.nil?
     u = klass.new(s, userinfo, host, pn, path, query, fragment)
-    u.opaque = opaque unless opaque.nil?
+    u.set_opaque(opaque) unless opaque.nil?
+    u.parser = parser unless parser.nil? || parser.equal?(RFC3986_PARSER)
     u.check_mailto! if u.is_a?(MailTo)
     u
   end
 
-  def self.from_split(parts)
-    self.for(parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], parts[6], parts[7], parts[8])
+  def self.from_split(parts, parser = nil)
+    self.for(parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], parts[6], parts[7], parts[8], parser)
   end
 
   # Percent-encode one www-form component: everything but the unreserved set,
@@ -1300,7 +1495,7 @@ module URI
     end
 
     def parse(uri)
-      URI.from_split(split(uri))
+      URI.from_split(split(uri), self)
     end
 
     def join(*uris)
@@ -1635,6 +1830,47 @@ module URI
   PARSER = RFC3986_PARSER
   Parser = RFC3986_Parser
   REGEXP = RFC2396_REGEXP
+
+  # The user and the password either side of a userinfo's first ":".
+  def self.split_userinfo(ui)
+    return [nil, nil] if ui.nil? || ui.empty?
+    parts = ui.split(":", 2)
+    [parts[0], parts[1]]
+  end
+
+  def self.join_userinfo(user, password)
+    return nil if user.nil?
+    password.nil? ? user : "#{user}:#{password}"
+  end
+
+  # A query as CRuby's #query= stores it: tabs and newlines dropped, and
+  # every byte a query may not carry as "%XX"; a "%" before two non-hex
+  # characters is refused.
+  def self.normalize_query(v)
+    return nil if v.nil?
+    s = v.to_s.delete("\t\r\n")
+    if (m = /%[^0-9A-Fa-f][^0-9A-Fa-f]/.match(s))
+      raise InvalidURIError, "invalid percent escape: #{m[0]}"
+    end
+    out = String.new
+    s.each_byte do |b|
+      keep = b == 0x21 || (b >= 0x24 && b <= 0x26) || (b >= 0x28 && b <= 0x3b) || b == 0x3d ||
+             (b >= 0x3f && b <= 0x5f) || (b >= 0x61 && b <= 0x7e)
+      keep ? out << b.chr : out << format("%%%02X", b)
+    end
+    out.force_encoding(Encoding::US_ASCII)
+  end
+
+  # A fragment as CRuby's #fragment= stores it: tabs and newlines dropped,
+  # every byte outside "!".."~" as "%XX".
+  def self.normalize_fragment(v)
+    return nil if v.nil?
+    out = String.new
+    v.to_s.delete("\t\r\n").each_byte do |b|
+      b >= 0x21 && b <= 0x7e ? out << b.chr : out << format("%%%02X", b)
+    end
+    out.force_encoding(Encoding::US_ASCII)
+  end
 
   VERSION = "1.1.2"
   VERSION_CODE = "010102"
