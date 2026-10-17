@@ -1,0 +1,8 @@
+["a+b", 3, true]
+["c+d", true]
+["c+d", 1, true]
+3
+"no implicit conversion of Integer into String"
+["a+b", ["pat", "opt"]]
+"unknown regexp option: z"
+5
