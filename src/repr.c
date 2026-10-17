@@ -1329,9 +1329,25 @@ static void repr_flow_refuse(Compiler *c, int u, int kind) {
            "on a copy (#6765)", rn, repr_flow_kind_name(kind));
   unsupported_feature_collect(c, u, msg);
 }
+/* The values the n flows lend to a parameter that is no byref slot
+   (SHFL_LEND, whose route always carries them), marked by node; NULL
+   when there are none. */
+static unsigned char *repr_flows_lent(Compiler *c, int n) {
+  unsigned char *lent = NULL;
+  for (int j = 0; j < n; j++) {
+    int site, w;
+    if (share_flow_at(c, j, &site, &w) != SHFL_LEND || w < 0 || w >= c->nt->count) continue;
+    const ShareHolder *ph = share_holder(c, site);
+    if (!ph || ph->kind != SHK_LOCAL || c->scopes[ph->scope].locals[ph->local].byref_out) continue;
+    if (!lent && !(lent = calloc((size_t)c->nt->count, 1))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    lent[w] = 1;
+  }
+  return lent;
+}
 static void repr_share_flows_check(Compiler *c, const char *stats) {
   int nf = share_flow_count(c);
   int bad = -1, bad_kind = 0;
+  unsigned char *lent = repr_flows_lent(c, nf);
   for (int i = 0; i < nf; i++) {
     int site, v;
     int kind = share_flow_at(c, i, &site, &v);
@@ -1345,6 +1361,11 @@ static void repr_share_flows_check(Compiler *c, const char *stats) {
     }
     /* a flow in an unreachable scope is never emitted (bad_lit's rule) */
     if (v < 0 || !comp_scope_of(c, v)->reachable || !repr_flow_checked(c, v)) continue;
+    /* an argument whose parameter the walk lends it (a slot the callee
+       only reads for the length of the call, SHFL_LEND) and whose class
+       does not share is handed on as that lend is: the lend's own flow is
+       the one checked (`sig(pick(h, k, fb))`, #9258 cluster 14) */
+    if (kind == SHFL_ARG && lent && lent[v] && share_flow_dest_shares(c, i) == 0) continue;
     int u = unwrap_parens(c, v);
     int ok = strbuf_flow_carries(c, kind, site, v);
     if (stats && stats[0] == '2') {
@@ -1359,6 +1380,7 @@ static void repr_share_flows_check(Compiler *c, const char *stats) {
     if (!ok && collect_emit_anyway()) repr_flow_refuse(c, u, kind);
     else if (!ok && bad < 0) { bad = u; bad_kind = kind; }
   }
+  free(lent);
   if (bad >= 0) repr_flow_refuse(c, bad, bad_kind);
 }
 
