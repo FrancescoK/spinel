@@ -13434,15 +13434,17 @@ static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
      original key. */
   if (v.cls_id != SP_BUILTIN_POLY_POLY_HASH && sp_poly_is_strbuf(key))
     key = sp_poly_strbuf_deref(key);
-#ifdef SP_SHARE_BOX_HANDLES
-  /* --share-strings: a new String the runtime boxed as its handle
-     (sp_box_str_new, `h[k] += "s"` on a boxed receiver) into a typed
-     String value, which keeps its own copy of each String it is handed,
-     as the compiler's stores into one do; the rule widens a typed Hash
-     whose Strings another name shares */
+  /* A handle into a typed String value, which keeps its own copy of each
+     String it is handed, as the compiler's stores into one do (and
+     sp_poly_elem_s, a typed Array's): a new String the runtime boxed as its
+     handle under --share-strings (sp_box_str_new, `h[k] += "s"` on a boxed
+     receiver; the rule widens a typed Hash whose Strings another name
+     shares), or in any build a poly local's String lifted to its handle for
+     a `[]=` that another of the name's targets appends to in place
+     (poly_strbuf_lift, #6179). Kept behind the --share-strings guard, the
+     lifted one was refused as a store of another kind. */
   if ((v.cls_id == SP_BUILTIN_STR_STR_HASH || v.cls_id == SP_BUILTIN_INT_STR_HASH) && sp_poly_is_strbuf(val) && val.v.p)
     val = sp_box_str(sp_strbuf_read((sp_String *)val.v.p));
-#endif
   switch (v.cls_id) {
     case SP_BUILTIN_STR_POLY_HASH:
       if (key.tag == SP_TAG_STR) sp_StrPolyHash_set((sp_StrPolyHash*)v.v.p, key.v.s, val);
