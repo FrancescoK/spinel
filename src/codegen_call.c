@@ -13547,7 +13547,7 @@ void emit_regexp_new(Compiler *c, int argc, const int *argv, Buf *b) {
     Buf bv; memset(&bv, 0, sizeof bv);
     emit_boxed(c, argv[0], &bv);
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", tv, bv.p ? bv.p : "sp_box_nil()");
+    buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tv, bv.p ? bv.p : "sp_box_nil()", tv);
     /* the options are evaluated whatever the pattern is, and converted
        only for a String: a Regexp ignores them, unknown letters and all */
     int to = -1;
