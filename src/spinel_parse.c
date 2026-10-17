@@ -4145,9 +4145,16 @@ static int sp_require_tolerated(const char *name) {
      :string/:pointer/... types, extend FFI::Library as a no-op).
      "rational" / "complex": both classes are built in, so the require has
      nothing to load and nothing to warn about -- CRuby satisfies them
-     silently for the same reason (#3455). */
+     silently for the same reason (#3455).
+     "rbconfig" / "rubygems": the parser splices builtins/rbconfig.rb and
+     builtins/gem.rb into a program that names RbConfig or Gem, and CRuby has
+     both loaded before the program starts, so the require answers false.
+     Refused under --require-gate, they broke every spin build using the
+     bundled optparse, which requires rbconfig (#9441). ("gem" is no library
+     in CRuby either: its require stays a LoadError there.) */
   static const char *const tolerated[] = { "thread", "enumerator", "fiber", "ffi",
-                                           "rational", "complex", "io/wait", NULL };
+                                           "rational", "complex", "io/wait",
+                                           "rbconfig", "rubygems", NULL };
   for (int i = 0; tolerated[i]; i++) {
     if (strcmp(name, tolerated[i]) == 0) return 1;
   }
