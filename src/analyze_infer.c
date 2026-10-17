@@ -2739,6 +2739,27 @@ const BuiltinOp *an_bop_find(Compiler *c, int id, TyKind rt, const char *name,
   return op;
 }
 
+/* an argument's kind for a row's argument guard: what inference makes of it,
+   as the arm reading the row would ask */
+typedef struct { Compiler *c; const int *argv; } AnBopArgs;
+static TyKind an_bop_arg_type(const void *ud, int i) {
+  const AnBopArgs *a = ud;
+  return infer_type(a->c, a->argv[i]);
+}
+
+/* an_bop_find over the call's arguments (argv, argc of them): the rows that
+   guard an argument's kind are read too, as codegen reads them. An argument
+   no guard holds (a user object, a Bignum) finds the unguarded row of its
+   arity, or none, and the rules after the lookup answer. */
+const BuiltinOp *an_bop_find_arg(Compiler *c, int id, TyKind rt, const char *name,
+                                 int argc, const int *argv, int has_block) {
+  AnBopArgs a = { c, argv };
+  const BuiltinOp *op = bop_find_arg(rt, name, argc, has_block, an_bop_arg_type, &a);
+  if (op && op->result != TY_UNKNOWN && an_bop_records(c, id))
+    c->bop_inf[id] = op;
+  return op;
+}
+
 /* Does the program give a builtin class or module (String, Comparable,
    Kernel, Object ...) an instance method of its own, by a def in it or a
    module it includes or prepends? Shape alone, so asked once per scope
@@ -4681,18 +4702,20 @@ static int infer_string_recv_call(Compiler *c, int id, const NodeTable *nt, cons
     /* promote mode: a String#to_i past sp_int is a Bignum (sp_str_to_i_promote).
        It reads the mode, so it sits ahead of the to_i row. */
     if (g_promote_mode && sp_streq(name, "to_i") && argc <= 1) { *out = TY_POLY; return 1; }
-    /* builtin-op rows (builtin_ops.c): the calls typed by name, arity and
-       block form */
+    /* builtin-op rows (builtin_ops.c): the calls typed by name, arity, block
+       form and, for the rows that guard it, the argument's kind (casecmp's
+       and lines' separator) */
     {
-      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      const BuiltinOp *op = an_bop_find_arg(c, id, rt, name, argc, argv, nt_ref(nt, id, "block") >= 0);
       if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
     }
-    /* casecmp/casecmp? with a statically non-string argument: CRuby answers
-       nil rather than raising, so the call types nil (the emitter drops the
-       comparison and evaluates the argument for effect). */
+    /* casecmp/casecmp? with an argument the rows' guards do not hold (a
+       boxed one, a String or an untyped one are theirs): CRuby answers nil
+       rather than raising for a statically non-string one, so the call types
+       nil (the emitter drops the comparison and evaluates the argument for
+       effect). */
     if ((is_casecmp_family(name)) && argc == 1) {
       TyKind at0 = infer_type(c, argv[0]);
-      if (at0 == TY_POLY) { *out = TY_POLY; return 1; }  /* runtime tag decides: boxed result or nil */
       /* an operand that answers #to_str is converted and compared
          (rb_check_string_type). The call is typed POLY, not the Integer or
          boolean a String operand gives, because the conversion can still
@@ -4700,8 +4723,7 @@ static int infer_string_recv_call(Compiler *c, int id, const NodeTable *nt, cons
          emitter takes the same shape test, so both agree. */
       if (ty_is_object(at0) && class_has_to_str_shape(c, ty_object_class(at0)))
         { *out = TY_POLY; return 1; }
-      if (at0 != TY_STRING && at0 != TY_UNKNOWN) { *out = TY_NIL; return 1; }
-      { *out = sp_streq(name, "casecmp") ? TY_INT : TY_BOOL; return 1; }
+      { *out = TY_NIL; return 1; }
     }
     if (sp_streq(name, "unpack1") && (argc == 1 || argc == 2)) { *out = an_unpack1_lit_type(nt, argv[0]); return 1; }
     /* byteindex/byterindex over a String or Regexp needle -> byte offset or
@@ -4719,8 +4741,6 @@ static int infer_string_recv_call(Compiler *c, int id, const NodeTable *nt, cons
     if (sp_streq(name, "each_line") && nt_ref(nt, id, "block") < 0 && lines_sep_ty(c, argv[0]) &&
         (argc == 1 || (argc == 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "KeywordHashNode"))))
       { *out = TY_ENUMERATOR; return 1; }  /* each_line(sep) blockless */
-    if (sp_streq(name, "lines") && argc == 1 && infer_type(c, argv[0]) == TY_STRING)
-      { *out = TY_STR_ARRAY; return 1; }   /* lines(sep) */
     if (sp_streq(name, "lines") && argc == 2 && infer_type(c, argv[0]) == TY_STRING &&
         nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "KeywordHashNode"))
       { *out = TY_STR_ARRAY; return 1; }   /* lines(sep, chomp: true) (#3546) */
@@ -7634,13 +7654,13 @@ static int infer_send_blind(Compiler *c, int id, int recv, const char *name, TyK
   return 0;
 }
 
-/* A Symbol receiver: the table's rows, then the comparisons whose answer
-   turns on the operand (infer_call_inner's rules, in their order).
-   TY_UNKNOWN when none answers. */
+/* A Symbol receiver: the table's rows (casecmp and clamp by the operand's
+   kind), then the comparison whose answer turns on the operand
+   (infer_call_inner's rules, in their order). TY_UNKNOWN when none answers. */
 static TyKind infer_symbol_call(Compiler *c, int id, const NodeTable *nt, const char *name, int argc, const int *argv) {
   TyKind rt = TY_SYMBOL;
   {
-    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    const BuiltinOp *op = an_bop_find_arg(c, id, rt, name, argc, argv, nt_ref(nt, id, "block") >= 0);
     if (op && op->result != TY_UNKNOWN) return op->result;
   }
   /* Symbol#<=> is defined only between Symbols; String included, any other
@@ -7650,16 +7670,6 @@ static TyKind infer_symbol_call(Compiler *c, int id, const NodeTable *nt, const 
     if (at == TY_SYMBOL) return TY_INT;
     if (at != TY_POLY && at != TY_UNKNOWN) return TY_NIL;
   }
-  /* casecmp/casecmp? against a non-symbol operand answer nil */
-  if (sp_streq(name, "casecmp") && argc == 1)
-    return infer_type(c, argv[0]) == TY_SYMBOL ? TY_INT : TY_NIL;
-  if (sp_streq(name, "casecmp?") && argc == 1)
-    return infer_type(c, argv[0]) == TY_SYMBOL ? TY_BOOL : TY_NIL;
-  /* clamp between two Symbols is one of the three (the row's argument
-     guard is not read here, where the lookup has no argument kinds) */
-  if (sp_streq(name, "clamp") && argc == 2 &&
-      infer_type(c, argv[0]) == TY_SYMBOL && infer_type(c, argv[1]) == TY_SYMBOL)
-    return TY_SYMBOL;
   return TY_UNKNOWN;
 }
 

@@ -531,12 +531,16 @@ static const BuiltinOp bop_rows[] = {
 #undef CX_NUM
 #undef CX_TYPEERROR
 
-  /* Rational (sp_Rational, by value: num and den). round/truncate/floor/
-     ceil with a digit count, step and the operators are typed by their
-     arguments in infer_numeric_call, so their rows leave inference to it
+  /* Rational (sp_Rational, by value: num and den). The operators state their
+     result by the argument's kind, which the rows' guards split. A
+     round/truncate/floor/ceil with a digit count answers by the digit
+     count's value (an Integer literal above zero keeps the Rational), which
+     no kind carries: those rows leave inference to infer_numeric_call
      (TY_UNKNOWN). Rational#i holds two floats where CRuby keeps the exact
      Rational (#2706). The operators against a Float are mostly claimed
-     first by the Float <op> Rational arm, which sits above the lookup. */
+     first by the Float <op> Rational arm, which sits above the lookup. An
+     operand no guard holds (a boxed or untyped one, a Bignum, a user
+     object) finds no row, and the rules after the lookup answer it. */
 #define RAT_IR  (BOP_K(TY_RATIONAL) | BOP_K(TY_INT))
   { TY_RATIONAL, "numerator",   0, 127, BF_ANY, TY_INT,        BOPE_TEMPLATE, "($r).num" },
   { TY_RATIONAL, "denominator", 0, 127, BF_ANY, TY_INT,        BOPE_TEMPLATE, "($r).den" },
@@ -555,10 +559,10 @@ static const BuiltinOp bop_rows[] = {
   { TY_RATIONAL, "rationalize", 0, 127, BF_ANY, TY_RATIONAL,   BOPE_NONE },
   { TY_RATIONAL, "to_i",        0, 127, BF_ANY, TY_INT,        BOPE_TEMPLATE, "(($r).num / ($R).den)" },
   { TY_RATIONAL, "to_int",      0, 127, BF_ANY, TY_INT,        BOPE_TEMPLATE, "(($r).num / ($R).den)" },
-  { TY_RATIONAL, "truncate",    0,   0, BF_ANY, TY_UNKNOWN,    BOPE_TEMPLATE, "(($r).num / ($R).den)" },
-  { TY_RATIONAL, "round",       0,   0, BF_ANY, TY_UNKNOWN,    BOPE_TEMPLATE, "sp_rational_round_i($r)" },
-  { TY_RATIONAL, "floor",       0,   0, BF_ANY, TY_UNKNOWN,    BOPE_TEMPLATE, "sp_rational_floor_i($r)" },
-  { TY_RATIONAL, "ceil",        0,   0, BF_ANY, TY_UNKNOWN,    BOPE_TEMPLATE, "sp_rational_ceil_i($r)" },
+  { TY_RATIONAL, "truncate",    0,   0, BF_ANY, TY_INT,    BOPE_TEMPLATE, "(($r).num / ($R).den)" },
+  { TY_RATIONAL, "round",       0,   0, BF_ANY, TY_INT,    BOPE_TEMPLATE, "sp_rational_round_i($r)" },
+  { TY_RATIONAL, "floor",       0,   0, BF_ANY, TY_INT,    BOPE_TEMPLATE, "sp_rational_floor_i($r)" },
+  { TY_RATIONAL, "ceil",        0,   0, BF_ANY, TY_INT,    BOPE_TEMPLATE, "sp_rational_ceil_i($r)" },
   { TY_RATIONAL, "round",       1,   2, BF_ANY, TY_UNKNOWN,    BOPE_RATIONAL_ROUND },
   { TY_RATIONAL, "truncate",    1,   2, BF_ANY, TY_UNKNOWN,    BOPE_RATIONAL_ROUND },
   { TY_RATIONAL, "floor",       1,   2, BF_ANY, TY_UNKNOWN,    BOPE_RATIONAL_ROUND },
@@ -637,26 +641,26 @@ static const BuiltinOp bop_rows[] = {
   /* % / modulo / remainder / divmod: exact against a Rational or Integer,
      in floats against a Float ([Integer quotient, Float remainder] for
      divmod, #2595) */
-  { TY_RATIONAL, "%",         1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_rational_mod($r, $e0)", BOP_K(TY_RATIONAL) },
-  { TY_RATIONAL, "%",         1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_rational_mod($r, sp_rational_new($e0, 1))", BOP_K(TY_INT) },
-  { TY_RATIONAL, "%",         1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_fmod(sp_rational_to_f($r), $f0)", BOP_K(TY_FLOAT) },
-  { TY_RATIONAL, "modulo",    1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_rational_mod($r, $e0)", BOP_K(TY_RATIONAL) },
-  { TY_RATIONAL, "modulo",    1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_rational_mod($r, sp_rational_new($e0, 1))", BOP_K(TY_INT) },
-  { TY_RATIONAL, "modulo",    1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_fmod(sp_rational_to_f($r), $f0)", BOP_K(TY_FLOAT) },
-  { TY_RATIONAL, "remainder", 1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_rational_rem($r, $e0)", BOP_K(TY_RATIONAL) },
-  { TY_RATIONAL, "remainder", 1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_rational_rem($r, sp_rational_new($e0, 1))", BOP_K(TY_INT) },
-  { TY_RATIONAL, "remainder", 1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "fmod(sp_rational_to_f($r), $f0)", BOP_K(TY_FLOAT) },
-  { TY_RATIONAL, "divmod",    1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE,
+  { TY_RATIONAL, "%",         1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_mod($r, $e0)", BOP_K(TY_RATIONAL) },
+  { TY_RATIONAL, "%",         1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_mod($r, sp_rational_new($e0, 1))", BOP_K(TY_INT) },
+  { TY_RATIONAL, "%",         1, 1, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "sp_fmod(sp_rational_to_f($r), $f0)", BOP_K(TY_FLOAT) },
+  { TY_RATIONAL, "modulo",    1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_mod($r, $e0)", BOP_K(TY_RATIONAL) },
+  { TY_RATIONAL, "modulo",    1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_mod($r, sp_rational_new($e0, 1))", BOP_K(TY_INT) },
+  { TY_RATIONAL, "modulo",    1, 1, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "sp_fmod(sp_rational_to_f($r), $f0)", BOP_K(TY_FLOAT) },
+  { TY_RATIONAL, "remainder", 1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_rem($r, $e0)", BOP_K(TY_RATIONAL) },
+  { TY_RATIONAL, "remainder", 1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_rem($r, sp_rational_new($e0, 1))", BOP_K(TY_INT) },
+  { TY_RATIONAL, "remainder", 1, 1, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "fmod(sp_rational_to_f($r), $f0)", BOP_K(TY_FLOAT) },
+  { TY_RATIONAL, "divmod",    1, 1, BF_ANY, TY_POLY_ARRAY, BOPE_TEMPLATE,
     "({ sp_Rational _t$t = $r; sp_Rational _t$u = $e0; sp_int _t$v = sp_rational_idiv(_t$t, _t$u);"
     " sp_PolyArray *_t$w = sp_PolyArray_new(); SP_GC_ROOT(_t$w);"
     " sp_PolyArray_push(_t$w, sp_box_int(_t$v));"
     " sp_PolyArray_push(_t$w, sp_box_rational(sp_rational_mod(_t$t, _t$u))); _t$w; })", BOP_K(TY_RATIONAL) },
-  { TY_RATIONAL, "divmod",    1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE,
+  { TY_RATIONAL, "divmod",    1, 1, BF_ANY, TY_POLY_ARRAY, BOPE_TEMPLATE,
     "({ sp_Rational _t$t = $r; sp_Rational _t$u = sp_rational_new($e0, 1); sp_int _t$v = sp_rational_idiv(_t$t, _t$u);"
     " sp_PolyArray *_t$w = sp_PolyArray_new(); SP_GC_ROOT(_t$w);"
     " sp_PolyArray_push(_t$w, sp_box_int(_t$v));"
     " sp_PolyArray_push(_t$w, sp_box_rational(sp_rational_mod(_t$t, _t$u))); _t$w; })", BOP_K(TY_INT) },
-  { TY_RATIONAL, "divmod",    1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE,
+  { TY_RATIONAL, "divmod",    1, 1, BF_ANY, TY_POLY_ARRAY, BOPE_TEMPLATE,
     "({ sp_float _t$t = sp_rational_to_f($r); sp_float _t$u = $f0; sp_int _t$v = (sp_int)floor(_t$t / _t$u);"
     " sp_PolyArray *_t$w = sp_PolyArray_new(); SP_GC_ROOT(_t$w);"
     " sp_PolyArray_push(_t$w, sp_box_int(_t$v));"
@@ -664,9 +668,9 @@ static const BuiltinOp bop_rows[] = {
   /* ** computes in floats except against an Integer (CRuby; a negative
      base with a fractional exponent would be Complex, out of the value
      model -- it yields NaN here) */
-  { TY_RATIONAL, "**",        1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "pow(sp_rational_to_f($r), sp_rational_to_f($e0))", BOP_K(TY_RATIONAL) },
-  { TY_RATIONAL, "**",        1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_rational_pow($r, (sp_int)($e0))", BOP_K(TY_INT) },
-  { TY_RATIONAL, "**",        1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "pow(sp_rational_to_f($r), $f0)", BOP_K(TY_FLOAT) },
+  { TY_RATIONAL, "**",        1, 1, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "pow(sp_rational_to_f($r), sp_rational_to_f($e0))", BOP_K(TY_RATIONAL) },
+  { TY_RATIONAL, "**",        1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_pow($r, (sp_int)($e0))", BOP_K(TY_INT) },
+  { TY_RATIONAL, "**",        1, 1, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "pow(sp_rational_to_f($r), $f0)", BOP_K(TY_FLOAT) },
   { TY_RATIONAL, "-@",          0,   0, BF_ANY, TY_RATIONAL,   BOPE_TEMPLATE, "sp_rational_neg($r)" },
   { TY_RATIONAL, "-@",          0, 127, BF_ANY, TY_RATIONAL,   BOPE_NONE },
   { TY_RATIONAL, "+@",          0,   0, BF_ANY, TY_RATIONAL,   BOPE_TEMPLATE, "$r" },
@@ -677,20 +681,20 @@ static const BuiltinOp bop_rows[] = {
      against a Rational or an Integer exact; against a Float self converts
      to Float. A poly operand (a Rational out of a poly array, say) is not
      modeled and falls through to the generic path. */
-  { TY_RATIONAL, "+",   1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_complex_add(((sp_Complex){sp_rational_to_f($r), 0, 1}), $e0)", BOP_K(TY_COMPLEX) },
-  { TY_RATIONAL, "+",   1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "(sp_rational_to_f($r) + $e0)", BOP_K(TY_FLOAT) },
-  { TY_RATIONAL, "+",   1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_rational_add($r, $q0)", RAT_IR },
-  { TY_RATIONAL, "-",   1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_complex_sub(((sp_Complex){sp_rational_to_f($r), 0, 1}), $e0)", BOP_K(TY_COMPLEX) },
-  { TY_RATIONAL, "-",   1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "(sp_rational_to_f($r) - $e0)", BOP_K(TY_FLOAT) },
-  { TY_RATIONAL, "-",   1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_rational_sub($r, $q0)", RAT_IR },
-  { TY_RATIONAL, "*",   1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_complex_mul(((sp_Complex){sp_rational_to_f($r), 0, 1}), $e0)", BOP_K(TY_COMPLEX) },
-  { TY_RATIONAL, "*",   1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "(sp_rational_to_f($r) * $e0)", BOP_K(TY_FLOAT) },
-  { TY_RATIONAL, "*",   1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_rational_mul($r, $q0)", RAT_IR },
-  { TY_RATIONAL, "/",   1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_complex_div(((sp_Complex){sp_rational_to_f($r), 0, 1}), $e0)", BOP_K(TY_COMPLEX) },
-  { TY_RATIONAL, "/",   1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "(sp_rational_to_f($r) / $e0)", BOP_K(TY_FLOAT) },
-  { TY_RATIONAL, "/",   1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_rational_div($r, $q0)", RAT_IR },
-  { TY_RATIONAL, "quo", 1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "(sp_rational_to_f($r) / $e0)", BOP_K(TY_FLOAT) },
-  { TY_RATIONAL, "quo", 1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_rational_div($r, $q0)", RAT_IR },
+  { TY_RATIONAL, "+",   1, 1, BF_ANY, TY_COMPLEX, BOPE_TEMPLATE, "sp_complex_add(((sp_Complex){sp_rational_to_f($r), 0, 1}), $e0)", BOP_K(TY_COMPLEX) },
+  { TY_RATIONAL, "+",   1, 1, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "(sp_rational_to_f($r) + $e0)", BOP_K(TY_FLOAT) },
+  { TY_RATIONAL, "+",   1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_add($r, $q0)", RAT_IR },
+  { TY_RATIONAL, "-",   1, 1, BF_ANY, TY_COMPLEX, BOPE_TEMPLATE, "sp_complex_sub(((sp_Complex){sp_rational_to_f($r), 0, 1}), $e0)", BOP_K(TY_COMPLEX) },
+  { TY_RATIONAL, "-",   1, 1, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "(sp_rational_to_f($r) - $e0)", BOP_K(TY_FLOAT) },
+  { TY_RATIONAL, "-",   1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_sub($r, $q0)", RAT_IR },
+  { TY_RATIONAL, "*",   1, 1, BF_ANY, TY_COMPLEX, BOPE_TEMPLATE, "sp_complex_mul(((sp_Complex){sp_rational_to_f($r), 0, 1}), $e0)", BOP_K(TY_COMPLEX) },
+  { TY_RATIONAL, "*",   1, 1, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "(sp_rational_to_f($r) * $e0)", BOP_K(TY_FLOAT) },
+  { TY_RATIONAL, "*",   1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_mul($r, $q0)", RAT_IR },
+  { TY_RATIONAL, "/",   1, 1, BF_ANY, TY_COMPLEX, BOPE_TEMPLATE, "sp_complex_div(((sp_Complex){sp_rational_to_f($r), 0, 1}), $e0)", BOP_K(TY_COMPLEX) },
+  { TY_RATIONAL, "/",   1, 1, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "(sp_rational_to_f($r) / $e0)", BOP_K(TY_FLOAT) },
+  { TY_RATIONAL, "/",   1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_div($r, $q0)", RAT_IR },
+  { TY_RATIONAL, "quo", 1, 1, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "(sp_rational_to_f($r) / $e0)", BOP_K(TY_FLOAT) },
+  { TY_RATIONAL, "quo", 1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_div($r, $q0)", RAT_IR },
   /* fdiv: float division whatever the operand; div: floor division to an
      Integer (Numeric#div) */
   /* fdiv(Complex) takes the quotient's Float, raising RangeError for a
@@ -705,54 +709,54 @@ static const BuiltinOp bop_rows[] = {
   { TY_RATIONAL, "div",         0, 127, BF_ANY, TY_INT,        BOPE_NONE },
   /* comparisons: against a Float by float value (coercing the Float to a
      Rational truncates it, 1.5 -> 1/1, and compares wrong) */
-  { TY_RATIONAL, "<",   1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "(sp_rational_to_f($r) < $f0)", BOP_K(TY_FLOAT) },
-  { TY_RATIONAL, "<",   1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "(sp_rational_cmp($r, $q0) < 0)", RAT_IR },
-  { TY_RATIONAL, ">",   1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "(sp_rational_to_f($r) > $f0)", BOP_K(TY_FLOAT) },
-  { TY_RATIONAL, ">",   1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "(sp_rational_cmp($r, $q0) > 0)", RAT_IR },
-  { TY_RATIONAL, "<=",  1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "(sp_rational_to_f($r) <= $f0)", BOP_K(TY_FLOAT) },
-  { TY_RATIONAL, "<=",  1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "(sp_rational_cmp($r, $q0) <= 0)", RAT_IR },
-  { TY_RATIONAL, ">=",  1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "(sp_rational_to_f($r) >= $f0)", BOP_K(TY_FLOAT) },
-  { TY_RATIONAL, ">=",  1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "(sp_rational_cmp($r, $q0) >= 0)", RAT_IR },
-  { TY_RATIONAL, "<=>", 1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE,
+  { TY_RATIONAL, "<",   1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_rational_to_f($r) < $f0)", BOP_K(TY_FLOAT) },
+  { TY_RATIONAL, "<",   1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_rational_cmp($r, $q0) < 0)", RAT_IR },
+  { TY_RATIONAL, ">",   1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_rational_to_f($r) > $f0)", BOP_K(TY_FLOAT) },
+  { TY_RATIONAL, ">",   1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_rational_cmp($r, $q0) > 0)", RAT_IR },
+  { TY_RATIONAL, "<=",  1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_rational_to_f($r) <= $f0)", BOP_K(TY_FLOAT) },
+  { TY_RATIONAL, "<=",  1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_rational_cmp($r, $q0) <= 0)", RAT_IR },
+  { TY_RATIONAL, ">=",  1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_rational_to_f($r) >= $f0)", BOP_K(TY_FLOAT) },
+  { TY_RATIONAL, ">=",  1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_rational_cmp($r, $q0) >= 0)", RAT_IR },
+  { TY_RATIONAL, "<=>", 1, 1, BF_ANY, TY_INT, BOPE_TEMPLATE,
     "$[({ sp_float _t$t = sp_rational_to_f($r); sp_float _t$u = $f0; (sp_int)(_t$t < _t$u ? -1 : (_t$t > _t$u ? 1 : 0)); })$]", BOP_K(TY_FLOAT) },
-  { TY_RATIONAL, "<=>", 1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "$[sp_rational_cmp($r, $q0)$]", RAT_IR },  /* never nil: lifted where an oint is wanted */
+  { TY_RATIONAL, "<=>", 1, 1, BF_ANY, TY_INT, BOPE_TEMPLATE, "$[sp_rational_cmp($r, $q0)$]", RAT_IR },  /* never nil: lifted where an oint is wanted */
   /* == / != / === (=== is value equality for a Numeric, #2564). A numeric
      operand compares by value. A poly one is not a non-numeric one: at run
      time it is very often the Rational that came out of an Array, so the
      runtime compares (#3382). Anything else is never == (#2572). */
-  { TY_RATIONAL, "==",  1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "(sp_rational_to_f($r) == $f0)", BOP_K(TY_FLOAT) },
-  { TY_RATIONAL, "==",  1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "(sp_rational_eq($r, $q0))", RAT_IR },
-  { TY_RATIONAL, "==",  1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "(sp_poly_eq(sp_box_rational($r), $b0))", BOP_K(TY_POLY) | BOP_K(TY_UNKNOWN) },
-  { TY_RATIONAL, "==",  1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "((void)($r), (void)($b0), 0)" },
-  { TY_RATIONAL, "===", 1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "(sp_rational_to_f($r) == $f0)", BOP_K(TY_FLOAT) },
-  { TY_RATIONAL, "===", 1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "(sp_rational_eq($r, $q0))", RAT_IR },
-  { TY_RATIONAL, "===", 1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "(sp_poly_eq(sp_box_rational($r), $b0))", BOP_K(TY_POLY) | BOP_K(TY_UNKNOWN) },
-  { TY_RATIONAL, "===", 1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "((void)($r), (void)($b0), 0)" },
-  { TY_RATIONAL, "!=",  1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "(sp_rational_to_f($r) != $f0)", BOP_K(TY_FLOAT) },
-  { TY_RATIONAL, "!=",  1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "(!sp_rational_eq($r, $q0))", RAT_IR },
-  { TY_RATIONAL, "!=",  1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "(!sp_poly_eq(sp_box_rational($r), $b0))", BOP_K(TY_POLY) | BOP_K(TY_UNKNOWN) },
-  { TY_RATIONAL, "!=",  1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "((void)($r), (void)($b0), 1)" },
+  { TY_RATIONAL, "==",  1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_rational_to_f($r) == $f0)", BOP_K(TY_FLOAT) },
+  { TY_RATIONAL, "==",  1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_rational_eq($r, $q0))", RAT_IR },
+  { TY_RATIONAL, "==",  1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_poly_eq(sp_box_rational($r), $b0))", BOP_K(TY_POLY) | BOP_K(TY_UNKNOWN) },
+  { TY_RATIONAL, "==",  1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "((void)($r), (void)($b0), 0)" },
+  { TY_RATIONAL, "===", 1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_rational_to_f($r) == $f0)", BOP_K(TY_FLOAT) },
+  { TY_RATIONAL, "===", 1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_rational_eq($r, $q0))", RAT_IR },
+  { TY_RATIONAL, "===", 1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_poly_eq(sp_box_rational($r), $b0))", BOP_K(TY_POLY) | BOP_K(TY_UNKNOWN) },
+  { TY_RATIONAL, "===", 1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "((void)($r), (void)($b0), 0)" },
+  { TY_RATIONAL, "!=",  1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_rational_to_f($r) != $f0)", BOP_K(TY_FLOAT) },
+  { TY_RATIONAL, "!=",  1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(!sp_rational_eq($r, $q0))", RAT_IR },
+  { TY_RATIONAL, "!=",  1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(!sp_poly_eq(sp_box_rational($r), $b0))", BOP_K(TY_POLY) | BOP_K(TY_UNKNOWN) },
+  { TY_RATIONAL, "!=",  1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "((void)($r), (void)($b0), 1)" },
   /* Comparable#between? / #clamp via <=> (#2563): clamp between two
      Rationals answers the receiver or a bound; with another bound the
      applied bound keeps its own class (#3233) */
-  { TY_RATIONAL, "between?", 2, 2, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE,
+  { TY_RATIONAL, "between?", 2, 2, BF_ANY, TY_BOOL, BOPE_TEMPLATE,
     "({ sp_Rational _t$t = $r; (sp_rational_cmp(_t$t, $q0) >= 0 && sp_rational_cmp(_t$t, $q1) <= 0); })", RAT_IR, RAT_IR },
-  { TY_RATIONAL, "clamp",    2, 2, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE,
+  { TY_RATIONAL, "clamp",    2, 2, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE,
     "({ sp_Rational _t$t = $r; sp_Rational _t$u = $e0; sp_Rational _t$v = $e1;"
     " sp_rational_cmp(_t$t, _t$u) < 0 ? _t$u : (sp_rational_cmp(_t$t, _t$v) > 0 ? _t$v : _t$t); })",
     BOP_K(TY_RATIONAL), BOP_K(TY_RATIONAL) },
-  { TY_RATIONAL, "clamp",    2, 2, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_num_clamp(sp_box_rational($r), $b0, $b1)" },
+  { TY_RATIONAL, "clamp",    2, 2, BF_ANY, TY_POLY, BOPE_TEMPLATE, "sp_num_clamp(sp_box_rational($r), $b0, $b1)" },
   /* eql? / equal? on the unboxed value: component equality against a
      Rational; eql? asks a poly operand at run time whether it IS a
      Rational (Rational(1,1).eql?(1) is false, #3382); constant false
      otherwise */
-  { TY_RATIONAL, "eql?",   1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_rational_eq($r, $e0)", BOP_K(TY_RATIONAL) },
-  { TY_RATIONAL, "eql?",   1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE,
+  { TY_RATIONAL, "eql?",   1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "sp_rational_eq($r, $e0)", BOP_K(TY_RATIONAL) },
+  { TY_RATIONAL, "eql?",   1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE,
     "({ sp_RbVal _t$t = $b0; sp_poly_is_rational(_t$t) && sp_poly_eq(sp_box_rational($r), _t$t); })",
     BOP_K(TY_POLY) | BOP_K(TY_UNKNOWN) },
-  { TY_RATIONAL, "eql?",   1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "((void)($r), 0)" },
-  { TY_RATIONAL, "equal?", 1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_rational_eq($r, $e0)", BOP_K(TY_RATIONAL) },
-  { TY_RATIONAL, "equal?", 1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "((void)($r), 0)" },
+  { TY_RATIONAL, "eql?",   1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "((void)($r), 0)" },
+  { TY_RATIONAL, "equal?", 1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "sp_rational_eq($r, $e0)", BOP_K(TY_RATIONAL) },
+  { TY_RATIONAL, "equal?", 1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "((void)($r), 0)" },
 #undef RAT_IR
 
   /* Range copies carry their own frozen state, even though their endpoints
@@ -1490,10 +1494,10 @@ static const BuiltinOp bop_rows[] = {
     " sp_str_cmp_bytes(sp_sym_to_s(_t$t), sp_sym_to_s(_t$u)) < 0 ? _t$u :"
     " (sp_str_cmp_bytes(sp_sym_to_s(_t$t), sp_sym_to_s(_t$v)) > 0 ? _t$v : _t$t); })",
     BOP_K(TY_SYMBOL), BOP_K(TY_SYMBOL) },
-  { TY_SYMBOL, "casecmp",         1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "sp_str_casecmp(sp_sym_to_s($r), sp_sym_to_s($e0))", BOP_K(TY_SYMBOL) },
-  { TY_SYMBOL, "casecmp",         1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "((void)($r), (void)($e0), 0)", 0 },
-  { TY_SYMBOL, "casecmp?",        1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "sp_str_casecmp_p(sp_sym_to_s($r), sp_sym_to_s($e0))", BOP_K(TY_SYMBOL) },
-  { TY_SYMBOL, "casecmp?",        1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "((void)($r), (void)($e0), 0)", 0 },
+  { TY_SYMBOL, "casecmp",         1,   1, BF_ANY,      TY_INT,        BOPE_TEMPLATE, "sp_str_casecmp(sp_sym_to_s($r), sp_sym_to_s($e0))", BOP_K(TY_SYMBOL) },
+  { TY_SYMBOL, "casecmp",         1,   1, BF_ANY,      TY_NIL,        BOPE_TEMPLATE, "((void)($r), (void)($e0), 0)", 0 },
+  { TY_SYMBOL, "casecmp?",        1,   1, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "sp_str_casecmp_p(sp_sym_to_s($r), sp_sym_to_s($e0))", BOP_K(TY_SYMBOL) },
+  { TY_SYMBOL, "casecmp?",        1,   1, BF_ANY,      TY_NIL,        BOPE_TEMPLATE, "((void)($r), (void)($e0), 0)", 0 },
 
   /* Method and Proc: the result kinds read off the name and arity.
      call/()/[] (the target's or the proc's return), bind_call, receiver,
@@ -1865,14 +1869,18 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "=~",              1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "((void)($r), sp_raise_cls(\"NoMethodError\", ($e0) ? \"undefined method '=~' for true\" : \"undefined method '=~' for false\"), (sp_bool)0)", BOP_K(TY_BOOL) },
   { TY_STRING, "!~",              1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "((void)($r), sp_raise_cls(\"TypeError\", \"type mismatch: String given\"), (sp_bool)0)", BOP_K(TY_STRING) },
   { TY_STRING, "!~",              1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "((void)($r), sp_raise_cls(\"NoMethodError\", ($e0) ? \"undefined method '=~' for true\" : \"undefined method '=~' for false\"), (sp_bool)0)", BOP_K(TY_BOOL) },
-  { TY_STRING, "casecmp",         1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "({ const char *_t$t = $r; SP_GC_ROOT_STR(_t$t); sp_RbVal _t$u = $e0; const char *_t$v = sp_poly_check_str(_t$u); (_t$v || _t$u.tag == SP_TAG_STR) ? sp_box_int(sp_str_casecmp(_t$t, _t$v ? _t$v : \"\")) : sp_box_nil(); })", BOP_K(TY_POLY) },
-  { TY_STRING, "casecmp?",        1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "({ const char *_t$t = $r; SP_GC_ROOT_STR(_t$t); sp_RbVal _t$u = $e0; const char *_t$v = sp_poly_check_str(_t$u); (_t$v || _t$u.tag == SP_TAG_STR) ? sp_box_bool(sp_str_casecmp_p(_t$t, _t$v ? _t$v : \"\")) : sp_box_nil(); })", BOP_K(TY_POLY) },
-  { TY_STRING, "casecmp",         1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "sp_str_casecmp($r, $e0)", BOP_K(TY_STRING) | BOP_K(TY_UNKNOWN) },
-  { TY_STRING, "casecmp?",        1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "sp_str_casecmp_p($r, $e0)", BOP_K(TY_STRING) | BOP_K(TY_UNKNOWN) },
+  { TY_STRING, "casecmp",         1,   1, BF_ANY,      TY_POLY,       BOPE_TEMPLATE, "({ const char *_t$t = $r; SP_GC_ROOT_STR(_t$t); sp_RbVal _t$u = $e0; const char *_t$v = sp_poly_check_str(_t$u); (_t$v || _t$u.tag == SP_TAG_STR) ? sp_box_int(sp_str_casecmp(_t$t, _t$v ? _t$v : \"\")) : sp_box_nil(); })", BOP_K(TY_POLY) },
+  { TY_STRING, "casecmp?",        1,   1, BF_ANY,      TY_POLY,       BOPE_TEMPLATE, "({ const char *_t$t = $r; SP_GC_ROOT_STR(_t$t); sp_RbVal _t$u = $e0; const char *_t$v = sp_poly_check_str(_t$u); (_t$v || _t$u.tag == SP_TAG_STR) ? sp_box_bool(sp_str_casecmp_p(_t$t, _t$v ? _t$v : \"\")) : sp_box_nil(); })", BOP_K(TY_POLY) },
+  { TY_STRING, "casecmp",         1,   1, BF_ANY,      TY_INT,        BOPE_TEMPLATE, "sp_str_casecmp($r, $e0)", BOP_K(TY_STRING) | BOP_K(TY_UNKNOWN) },
+  { TY_STRING, "casecmp?",        1,   1, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "sp_str_casecmp_p($r, $e0)", BOP_K(TY_STRING) | BOP_K(TY_UNKNOWN) },
   { TY_STRING, "lines",           0,   0, BF_NONE,     TY_STR_ARRAY,  BOPE_TEMPLATE, "sp_str_lines($r)", 0 },
   { TY_STRING, "lines",           0,   0, BF_REQUIRED, TY_STRING,     BOPE_TEMPLATE, "sp_str_lines($r)", 0, 0, BOPF_SELF },  /* the block form iterates and answers the receiver */
-  { TY_STRING, "lines",           1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "sp_str_lines_sep($r, $e0)", BOP_K(TY_STRING) },
-  { TY_STRING, "lines",           1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "sp_str_lines_sep($r, sp_poly_arg_str_or_null($b0))", BOP_K(TY_POLY) | BOP_K(TY_NIL) },
+  /* lines(sep): a String separator types the Array in either block form
+     (inference has always read it so), a boxed or nil one splits the
+     block form off, which answers the receiver */
+  { TY_STRING, "lines",           1,   1, BF_ANY,      TY_STR_ARRAY,  BOPE_TEMPLATE, "sp_str_lines_sep($r, $e0)", BOP_K(TY_STRING) },
+  { TY_STRING, "lines",           1,   1, BF_NONE,     TY_STR_ARRAY,  BOPE_TEMPLATE, "sp_str_lines_sep($r, sp_poly_arg_str_or_null($b0))", BOP_K(TY_POLY) | BOP_K(TY_NIL) },
+  { TY_STRING, "lines",           1,   1, BF_REQUIRED, TY_STRING,     BOPE_TEMPLATE, "sp_str_lines_sep($r, sp_poly_arg_str_or_null($b0))", BOP_K(TY_POLY) | BOP_K(TY_NIL), 0, BOPF_SELF },
   { TY_STRING, "gsub",            2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_gsub_str_str_hash($r, $e0, $e1)", 0, BOP_K(TY_STR_STR_HASH) },
   { TY_STRING, "gsub",            2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_gsub_str_str_hash($r, $e0, sp_StrPolyHash_to_s_values($e1))", 0, BOP_K(TY_STR_POLY_HASH) },
   { TY_STRING, "gsub",            2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_gsub_str_str_hash($r, $e0, sp_StrIntHash_to_s_values($e1))", 0, BOP_K(TY_STR_INT_HASH) },
