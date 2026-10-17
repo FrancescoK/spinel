@@ -1,0 +1,15 @@
+#<Encoding:BINARY (ASCII-8BIT)>
+true
+true
+"GMP"
+"\x00\x01\x00\x03!\x12\xA4B\x8F\x00\x11\xA4\xFF\x00\x7F\x80\x00\x01\x02\xC3GMP"
+"AF_INET"
+#<Encoding:BINARY (ASCII-8BIT)>
+true
+"ICN\xFF"
+#<Encoding:BINARY (ASCII-8BIT)>
+#<Encoding:BINARY (ASCII-8BIT)>
+["Ttukseom ", #<Encoding:BINARY (ASCII-8BIT)>]
+"H"
+["angang Park, Jayang-dong", #<Encoding:BINARY (ASCII-8BIT)>]
+nil
