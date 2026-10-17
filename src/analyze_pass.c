@@ -5265,39 +5265,33 @@ int class_value_escapes(Compiler *c, int cid) {
    take is a constant naming a class: through parentheses, the branches of
    an if, unless or case, and either side of `||` or `&&`. 0 when some value
    can be anything else. */
-static int value_class_set(Compiler *c, int v, char *set, int depth) {
-  const NodeTable *nt = c->nt;
-  if (v < 0 || depth > 64) return 0;
-  NodeKind k = nt_kind(nt, v);
-  const char *t = nt_type(nt, v);
-  if (k == NK_ConstantReadNode || k == NK_ConstantPathNode) {
-    int ci = comp_class_index(c, nt_str(nt, v, "name"));
-    if (ci < 0) return 0;
-    set[ci] = 1;
-    return 1;
+typedef struct {
+  Compiler *c;
+  char *set;
+  int ok;
+} ClassSetLeaves;
+
+/* One value position: a constant naming a class marks it, anything else (a
+   nil by absence too) fails the walk. */
+static int class_set_leaf(const VpLeaf *leaf, void *ud) {
+  ClassSetLeaves *k = ud;
+  const NodeTable *nt = k->c->nt;
+  if (leaf->kind == VPK_EXPR &&
+      (nt_kind(nt, leaf->node) == NK_ConstantReadNode || nt_kind(nt, leaf->node) == NK_ConstantPathNode)) {
+    int ci = comp_class_index(k->c, nt_str(nt, leaf->node, "name"));
+    if (ci >= 0) {
+      k->set[ci] = 1;
+      return 0;
+    }
   }
-  if (k == NK_ParenthesesNode) return value_class_set(c, nt_ref(nt, v, "body"), set, depth + 1);
-  if (k == NK_StatementsNode) {
-    int n = 0; const int *body = nt_arr(nt, v, "body", &n);
-    return n > 0 && value_class_set(c, body[n - 1], set, depth + 1);
-  }
-  if (k == NK_OrNode || k == NK_AndNode)
-    return value_class_set(c, nt_ref(nt, v, "left"), set, depth + 1) &&
-           value_class_set(c, nt_ref(nt, v, "right"), set, depth + 1);
-  if (k == NK_IfNode || k == NK_UnlessNode) {
-    int alt = nt_ref(nt, v, k == NK_IfNode ? "subsequent" : "else_clause");
-    if (alt < 0 && k == NK_IfNode) alt = nt_ref(nt, v, "consequent");
-    return value_class_set(c, nt_ref(nt, v, "statements"), set, depth + 1) &&
-           value_class_set(c, alt, set, depth + 1);
-  }
-  if (t && sp_streq(t, "ElseNode")) return value_class_set(c, nt_ref(nt, v, "statements"), set, depth + 1);
-  if (t && sp_streq(t, "CaseNode")) {
-    int n = 0; const int *arms = nt_arr(nt, v, "conditions", &n);
-    for (int i = 0; i < n; i++)
-      if (!value_class_set(c, nt_ref(nt, arms[i], "statements"), set, depth + 1)) return 0;
-    return value_class_set(c, nt_ref(nt, v, "else_clause"), set, depth + 1);
-  }
-  return 0;
+  k->ok = 0;
+  return 1;
+}
+static int value_class_set(Compiler *c, int v, char *set) {
+  ClassSetLeaves k = { c, set, 1 };
+  if (v < 0) return 0;
+  for_each_value_position(c->nt, v, VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_CASE | VPS_LOGIC, class_set_leaf, &k);
+  return k.ok;
 }
 
 /* The classes a `new` receiver can be when that is a known set of constants:
@@ -5307,7 +5301,7 @@ static int recv_class_set(Compiler *c, int recv, char *set) {
   const NodeTable *nt = c->nt;
   memset(set, 0, (size_t)c->nclasses);
   if (recv < 0) return 0;
-  if (nt_kind(nt, recv) != NK_LocalVariableReadNode) return value_class_set(c, recv, set, 0);
+  if (nt_kind(nt, recv) != NK_LocalVariableReadNode) return value_class_set(c, recv, set);
   const char *vn = nt_str(nt, recv, "name");
   Scope *sc = comp_scope_of(c, recv);
   if (!vn || !sc) return 0;
@@ -5321,7 +5315,7 @@ static int recv_class_set(Compiler *c, int recv, char *set) {
     if (!un || !sp_streq(un, vn)) continue;
     if (comp_scope_of(c, u) != sc) continue;
     if (!sp_streq(ut, "LocalVariableWriteNode")) return 0;
-    if (!value_class_set(c, nt_ref(nt, u, "value"), set, 0)) return 0;
+    if (!value_class_set(c, nt_ref(nt, u, "value"), set)) return 0;
     nw++;
   }
   return nw > 0;
