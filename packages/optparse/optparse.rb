@@ -616,7 +616,7 @@ class OptionParser
       @long.each {|s| ldone.fetch(s) {lopts << s}; ldone[s] = true} if @long
       return if sopts.empty? and lopts.empty? # completely hidden
 
-      left = [sopts.join(', ').dup]
+      left = [String.new(sopts.join(', '))]
       right = desc.dup
 
       while s = lopts.shift

@@ -14,7 +14,7 @@ hunks, each in its own commit with the reason:
 
 | Where | Upstream | Here | Why |
 |---|---|---|---|
-| top of the file | `require 'set' unless defined?(Set)`; `when Array, Hash, Set` in `make_switch` | no `require`; `when Array, Hash` | Set#hash does not compile in this program |
+| top of the file | `require 'set' unless defined?(Set)`; `when Array, Hash, Set` in `make_switch` | no `require`; `when Array, Hash` | a Set in every program that requires optparse changes how other values are typed: under `--share-strings` a handler such as `{ \|v\| list << v.join("+") }` is refused (#6765) |
 | `Completion.candidate` and its three callers | the table's `&method(:each)` as a block, called with a block | the table as an argument, iterated with `#each` | a Method given as such a block raises NoMethodError |
 | `RequiredArgument#parse`, `parse_in_order` | `&method(:raise)`, `{\|*exc\| raise(*exc)}` | `{ \|klass, word\| raise klass, word }` | a splatted `raise` raises TypeError |
 | `List#accept`, `make_switch` | `pattern.method(:convert).to_proc` | `->(*a) { pattern.convert(*a) }` | refused on a pattern of several classes |
@@ -29,7 +29,7 @@ hunks, each in its own commit with the reason:
 | long switches in `parse_in_order` | `sw.parse(rest, argv)` | `sw.parse(rest ? rest : nil, argv)` | a nil `rest` crashed a switch with an optional value |
 | the yes/no table | String keys only | one Symbol key stored and removed | lets a value Hash with Symbol keys be given to `on` |
 | `environment` | `require 'shellwords'` inside the method | `require 'shellwords'` at the top of the file | the in-method require hid the program's own Shellwords |
-| `Switch#summarize` | `left = [sopts.join(', ')]` | `left = [sopts.join(', ').dup]` | refused under `--share-strings`: the String is changed in place through the Array |
+| `Switch#summarize` | `left = [sopts.join(', ')]` | `left = [String.new(sopts.join(', '))]` | the String is changed in place through the Array: refused under `--share-strings`, and in the default build the change is lost once the program uses `Set` |
 | `Switch#add_banner`, `Switch#compsys` | `desc.join` | `desc.join.dup` | refused under `--share-strings`: the String is handed on and could change in place |
 | `OptionParser.with` | `new(*args)` | `self.new(*args)` | a bare `new` in a class method was compiled as the instance method `new` |
 | `ParseError` | `alias to_s message` | `def to_s; message; end` | the alias left no `to_s` (a link error) |

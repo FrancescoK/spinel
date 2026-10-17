@@ -1,0 +1,8 @@
+Usage: tool [OPTIONS]
+    -v, --verbose                    Be loud
+        --dry-run                    Change nothing
+    -c, --color, --colour            Paint the output
+    -n, --name=NAME                  Who to greet
+    -l, --level[=N]                  How much
+    -q                               Say nothing
+[:verbose, :dry_run, :color, "Amy", 2, :quiet]
