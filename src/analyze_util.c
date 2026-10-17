@@ -274,10 +274,13 @@ static int class_may_have_const(Compiler *c, int k, const char *nm, int *sub, in
   return 0;
 }
 /* Can the program define constant `nm` where no class body or `P::NAME = v`
-   path shows it: through const_set, or a path whose parent is not a
-   constant (`self::NAME = v`, `klass::NAME = v`)? A const_set or such a
-   write with a literal name places that name only; a const_set whose name
-   is computed may place any. */
+   path shows it: through a path whose parent is not a constant
+   (`self::NAME = v`, `klass::NAME = v`), which places the name it writes?
+   A const_set places none: with a literal name it re-assigns a constant
+   the program already defines, a C global, and with a computed one it is
+   refused (or raises, deferred), so neither makes NAME a member of P. A
+   send dispatch's const_set arm (`target.send(m, *args)`, desugared over
+   every candidate name) is one with a computed name. */
 typedef struct { int any; int n, cap; const char **names; } DynConsts;
 static void dyn_consts_add(DynConsts *d, const char *nm) {
   if (!nm) { d->any = 1; return; }
@@ -289,15 +292,6 @@ static void dyn_consts_add(DynConsts *d, const char *nm) {
 }
 static void places_consts_dynamically(Compiler *c, DynConsts *d) {
   const NodeTable *nt = c->nt;
-  NT_FOREACH_KIND(nt, NK_CallNode, id)
-    if (sp_streq(nt_str(nt, id, "name"), "const_set")) {
-      int a = nt_ref(nt, id, "arguments"), an = 0;
-      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-      if (an != 2) continue;                    /* not Module#const_set(name, value) */
-      NodeKind ak = nt_kind(nt, av[0]);
-      dyn_consts_add(d, ak == NK_SymbolNode ? nt_str(nt, av[0], "value")
-                        : ak == NK_StringNode ? nt_str(nt, av[0], "content") : NULL);
-    }
   static const NodeKind writes[] = { NK_ConstantPathWriteNode, NK_ConstantPathOrWriteNode,
                                      NK_ConstantPathAndWriteNode, NK_ConstantPathOperatorWriteNode };
   for (int i = 0; i < 4; i++)
