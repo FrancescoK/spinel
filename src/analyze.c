@@ -33347,8 +33347,10 @@ int new_recv_every_class(Compiler *c, int recv) {
   return rt == TY_CLASS || rt == TY_POLY;
 }
 /* The classes a `new` receiver can be: a local holding one class, a
-   constant, or a class value chosen at run time -- each branch of a `?:` or
-   an `if`, a parenthesized one, or an element of a literal Array of them
+   constant, or a class value chosen at run time -- each branch of a `?:`,
+   an `if`, an `unless`, a `case`, a `case`/`in`, a `begin`, a rescue
+   modifier, either side of a `||` or the right side of a `&&`, a
+   parenthesized one, or an element of a literal Array of them
    (`[A, B][i]`). Up to cap of them, in *out; answers the count, or 0 when
    some value the receiver can be names no class here (a call, a local no
    class is known to hold, a branch that is missing) or the classes do not
@@ -33382,9 +33384,9 @@ int new_recv_classes(Compiler *c, int recv, int *out, int cap) {
   }
   if (rk == NK_ParenthesesNode || rk == NK_IfNode || rk == NK_UnlessNode || rk == NK_CaseNode ||
       rk == NK_CaseMatchNode || rk == NK_OrNode || rk == NK_AndNode || rk == NK_BeginNode ||
-      rk == NK_ElseNode || rk == NK_StatementsNode) {
+      rk == NK_RescueModifierNode || rk == NK_ElseNode || rk == NK_StatementsNode) {
     NewRecvArms a = { c, out, cap, 0, 1 };
-    for_each_value_position(nt, recv, VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VPS_LOGIC, new_recv_arm, &a);
+    for_each_value_position(nt, recv, VPS_ALL, new_recv_arm, &a);
     return a.ok ? a.n : 0;
   }
   /* `[A, B][i]`: every element of the literal */
