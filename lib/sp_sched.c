@@ -4196,8 +4196,16 @@ static int sp_worker_idle_unlocked(int wid) {
          a worker whose `idle` is up. Read once above, before the lock, a
          drain in between found `idle` down, and this worker then waited for
          good while main joined it (a program that printed all it had to,
-         then never exited: gc-minor-test on CI) */
-      if (!g_lrq[wid].head && !SP_ATOMIC_LOAD(&g_shutdown, __ATOMIC_RELAXED)) {
+         then never exited: gc-minor-test on CI). So is every other reason
+         a kick was sent: a waker that chose this worker for a thread on the
+         global queue or one to steal raises `wake_sent` before it kicks
+         (sched_wake_idle_helper), and a finished collection leaves its
+         sweeps unclaimed before it kicks the idle workers to take their own
+         (sched_wake_all_workers). Either kick, sent in the same window, was
+         lost, and the work waited for some later wake. */
+      if (!g_lrq[wid].head && !SP_ATOMIC_LOAD(&g_shutdown, __ATOMIC_RELAXED)
+          && !SP_ATOMIC_LOAD(&g_wslot[wid].wake_sent, __ATOMIC_RELAXED)
+          && !SP_ATOMIC_LOAD(&g_cs_unclaimed, __ATOMIC_RELAXED)) {
         g_wslot[wid].idle = 1;
         pthread_cond_wait(&g_wslot[wid].cv, &g_rq_lock[wid].m);   /* woken for work meant for us, or shutdown */
         g_wslot[wid].idle = 0;
