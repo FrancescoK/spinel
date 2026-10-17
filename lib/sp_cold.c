@@ -2156,7 +2156,16 @@ sp_StrArray *sp_bt_format(void **buf, int n) {
   sp_StrArray *a = sp_StrArray_new();
   SP_GC_ROOT(a);
   if (!sp_bt_enabled || n <= 0) return a;
-  char **syms = backtrace_symbols(buf, n);
+  /* Each frame is named at its return address less one, the call itself, as
+     sp_bt_lines asks its line: a method whose last statement raises calls a
+     function that does not return, and gcc ends the method on that call, so
+     its return address is the first byte past the method and named no
+     method (the raising method's frame was dropped). */
+  void **at = (void **)malloc(sizeof *at * (size_t)n);
+  if (!at) return a;
+  for (int i = 0; i < n; i++) at[i] = i > 0 ? (void *)((char *)buf[i] - 1) : buf[i];
+  char **syms = backtrace_symbols(at, n);
+  free(at);
   if (!syms) return a;
   const char *src = (sp_bt_srcfile && sp_bt_srcfile[0]) ? sp_bt_srcfile : "(spinel)";
   int *lines = (int *)calloc((size_t)n, sizeof *lines);
