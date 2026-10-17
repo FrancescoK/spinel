@@ -222,14 +222,25 @@ def check_node(kind, e, fields, prism, errors)
   errors << "#{kind}: link #{e[:link]} does not allow #{kind} itself" unless fields.dig(e[:link], :kinds)&.include?(kind)
 end
 
-# A hand entry stands for an arm in value_pos.c; the arms of the generated
-# file are those of the file, so a stale copy would be silently a different
-# iterator.
+# A hand entry stands for an arm in value_pos.c, and an arm there stands for a
+# hand entry: the `case NK_<kind>:` labels of its code (comments left out, the
+# generated arms are a file of their own) are exactly the `hand` kinds. A hand
+# arm for a kind the annotation generates would be a second label for it, and
+# one for a kind the annotation does not call hand an arm nothing checks.
 def check_hand(nodes)
   src = File.exist?(ITERATOR) ? File.read(ITERATOR) : ""
-  nodes.select { |_, e| e[:role] == "hand" }.keys.filter_map do |k|
-    "#{k}: role `hand`, but src/value_pos.c has no `case NK_#{k}:`" unless src.include?("case NK_#{k}:")
+  code = src.gsub(%r{/\*.*?\*/}m, "").gsub(%r{//[^\n]*}, "")
+  labels = code.scan(/\bcase\s+NK_(\w+)\s*:/).flatten
+  hand = nodes.select { |_, e| e[:role] == "hand" }.keys
+  errors = []
+  (hand - labels).each { |k| errors << "#{k}: role `hand`, but src/value_pos.c has no `case NK_#{k}:`" }
+  (labels - hand).each do |k|
+    role = nodes.dig(k, :role)
+    errors << (role ? "#{k}: has a hand-written `case NK_#{k}:` but its role is `#{role}`" :
+                      "#{k}: has a hand-written `case NK_#{k}:` but is not a `hand` entry")
   end
+  errors << "src/value_pos.c repeats a case label" if labels.size != labels.uniq.size
+  errors
 end
 
 opts = {}

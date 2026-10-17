@@ -285,6 +285,56 @@ def ivar_write(a)
   @v = a == 0 ? 250 : 251
 end
 
+# the old value is the answer of an or-write when it is truthy, of an
+# and-write when it is falsy
+def orw(x)
+  (x ||= 7)
+end
+
+def andw(x)
+  (x &&= 8)
+end
+
+def idxor(h)
+  (h[:k] ||= 3)
+end
+
+def idxand(h)
+  (h[:k] &&= 4)
+end
+
+def ivor(v)
+  @i = v
+  (@i ||= 5)
+end
+
+def ivand(v)
+  @i = v
+  (@i &&= 6)
+end
+
+def gvor(v)
+  $g = v
+  ($g ||= 9)
+end
+
+class Cell
+  attr_accessor :a
+end
+
+def callor(v)
+  c = Cell.new
+  c.a = v
+  (c.a ||= 11)
+end
+
+def calland(v)
+  c = Cell.new
+  c.a = v
+  (c.a &&= 12)
+end
+
+
 [0, 1, 2].each do |a|
   show("if_else", a, if_else(a))
   show("if_no_else", a, if_no_else(a))
@@ -343,3 +393,22 @@ end
 show("next_values", "", next_values)
 show("break_value", "", break_value)
 show("loop_break", "", loop_break)
+show("orw", 5, orw(5))
+show("orw", nil, orw(nil))
+show("andw", nil, andw(nil))
+show("andw", false, andw(false))
+show("andw", 3, andw(3))
+show("idxor", 9, idxor({k: 9}))
+show("idxor", "none", idxor({}))
+show("idxand", 9, idxand({k: 9}))
+show("idxand", "none", idxand({}))
+show("ivor", 2, ivor(2))
+show("ivor", nil, ivor(nil))
+show("ivand", nil, ivand(nil))
+show("ivand", 2, ivand(2))
+show("gvor", 2, gvor(2))
+show("gvor", nil, gvor(nil))
+show("callor", 2, callor(2))
+show("callor", nil, callor(nil))
+show("calland", nil, calland(nil))
+show("calland", 2, calland(2))

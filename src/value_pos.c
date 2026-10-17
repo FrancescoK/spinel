@@ -47,7 +47,8 @@ typedef enum {
   VPSTEP_LEAF,      /* the node is a leaf */
   VPSTEP_JUMP,      /* a jump that is not followed */
   VPSTEP_PEEL,      /* a wrapper: the item now holds its child */
-  VPSTEP_EXPANDED   /* the value positions are pushed */
+  VPSTEP_EXPANDED,  /* the value positions are pushed */
+  VPSTEP_LEAF_THEN_EXPANDED  /* the node is a leaf, and its positions follow it */
 } VpStep;
 
 static void vp_push(VpWalk *w, int node, int parent, int arm, int depth, int link) {
@@ -138,13 +139,23 @@ static VpStep vp_jump(VpWalk *w, VpItem *cur, unsigned follow) {
   return VPSTEP_EXPANDED;
 }
 
-/* A write compiles its value kept and dups it, so `x = e`, `x ||= e` and
-   `x &&= e` are `e`'s value (an operator write is the operator's result and
-   is not listed here). Under VP_WRITES the positions are `e`'s. */
+/* A plain write compiles its value kept and dups it, so `x = e` is `e`'s
+   value: under VP_WRITES the positions are `e`'s. An operator write
+   (`x += e`) is the operator's result and is not listed here. */
 static VpStep vp_write(VpWalk *w, VpItem *cur) {
   if (!(w->flags & VP_WRITES)) return VPSTEP_LEAF;
   vp_push(w, nt_ref(w->nt, cur->node, "value"), cur->node, 0, cur->depth, 0);
   return VPSTEP_EXPANDED;
+}
+
+/* `x ||= e` answers the target's old value when it is truthy and `e` when it
+   is not; `x &&= e` the old value when it is falsy. Under VP_WRITES the write
+   node is a leaf, standing for that old value (a caller classifies it as it
+   would a read of the target), and `e`'s positions follow it. */
+static VpStep vp_logical_write(VpWalk *w, VpItem *cur) {
+  if (!(w->flags & VP_WRITES)) return VPSTEP_LEAF;
+  vp_push(w, nt_ref(w->nt, cur->node, "value"), cur->node, 0, cur->depth, 0);
+  return VPSTEP_LEAF_THEN_EXPANDED;
 }
 
 static VpStep vp_step(VpWalk *w, VpItem *cur) {
@@ -170,6 +181,8 @@ static VpStep vp_step(VpWalk *w, VpItem *cur) {
   case NK_ClassVariableWriteNode:
   case NK_ConstantWriteNode:
   case NK_ConstantPathWriteNode:
+  case NK_MultiWriteNode:
+    return vp_write(w, cur);
   case NK_LocalVariableOrWriteNode:
   case NK_InstanceVariableOrWriteNode:
   case NK_GlobalVariableOrWriteNode:
@@ -186,8 +199,7 @@ static VpStep vp_step(VpWalk *w, VpItem *cur) {
   case NK_CallAndWriteNode:
   case NK_IndexOrWriteNode:
   case NK_IndexAndWriteNode:
-  case NK_MultiWriteNode:
-    return vp_write(w, cur);
+    return vp_logical_write(w, cur);
   default:
     break;
   }
@@ -209,6 +221,8 @@ static int vp_visit(VpWalk *w, VpItem cur) {
       return 0;
     case VPSTEP_JUMP:
       return vp_emit(w, &cur, VPK_JUMP);
+    case VPSTEP_LEAF_THEN_EXPANDED:
+      return vp_emit(w, &cur, VPK_EXPR);
     case VPSTEP_LEAF:
       break;
     }

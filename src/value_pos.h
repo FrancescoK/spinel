@@ -72,9 +72,14 @@ enum {
   /* a begin with an `else` also yields its body. Off, the else's value
      replaces it. */
   VP_BEGIN_BOTH = 1u << 4,
-  /* `x = e`, `x ||= e`, `x &&= e` and the other plain and logical writes
-     yield the positions of `e`. Off, the write is a leaf. An operator write
-     (`x += e`) answers the operator's result and is always a leaf. */
+  /* `x = e` and the other plain writes (and a multiple write) yield the
+     positions of `e`. `x ||= e` and `x &&= e` (a local, an instance, global
+     or class variable, a constant, a constant path, an attribute, an index)
+     answer the target's old value as well when it is truthy (`||=`) or falsy
+     (`&&=`): they yield the write node itself as a leaf, standing for that
+     old value and classified as a read of the target would be, and then the
+     positions of `e`. Off, the write is a leaf. An operator write (`x += e`)
+     answers the operator's result and is always a leaf. */
   VP_WRITES = 1u << 5,
   /* a case/in without an else yields VPK_NIL (CRuby raises instead). Off, it
      yields nothing for the missing else. */

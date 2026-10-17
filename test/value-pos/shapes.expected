@@ -1,6 +1,6 @@
 main
-  EXPR #1061 IntegerNode line 349 arm 0 parent #1057 IfNode depth 1
-  EXPR #1064 IntegerNode line 349 arm 1 parent #1057 IfNode depth 1
+  EXPR #1103 IntegerNode line 369 arm 0 parent #1099 IfNode depth 1
+  EXPR #1106 IntegerNode line 369 arm 1 parent #1099 IfNode depth 1
 def if_else line 8
   EXPR #281 IntegerNode line 9 arm 0 parent #278 IfNode depth 1
   EXPR #284 IntegerNode line 9 arm 1 parent #278 IfNode depth 1
@@ -154,41 +154,60 @@ def write_ivar line 282
   EXPR #896 IntegerNode line 283 arm 0 parent #893 IfNode depth 1
   EXPR #899 IntegerNode line 283 arm 1 parent #893 IfNode depth 1
 def or_write line 286
+  EXPR #904 LocalVariableOrWriteNode line 287 arm 0 parent - depth 0
   EXPR #910 IntegerNode line 287 arm 0 parent #907 IfNode depth 1
   EXPR #913 IntegerNode line 287 arm 1 parent #907 IfNode depth 1
 def and_write line 290
+  EXPR #920 LocalVariableAndWriteNode line 292 arm 0 parent - depth 0
   EXPR #921 LocalVariableReadNode line 292 arm 0 parent #920 LocalVariableAndWriteNode depth 0
-def operator_write line 295
-  EXPR #928 LocalVariableOperatorWriteNode line 297 arm 0 parent - depth 0
-def attr_write line 300
-  EXPR #934 CallNode line 301 arm 0 parent - depth 0
-def index_or_write line 304
-  EXPR #946 IntegerNode line 305 arm 0 parent #942 IndexOrWriteNode depth 0
-def multi_write line 308
-  EXPR #954 ArrayNode line 309 arm 0 parent #951 MultiWriteNode depth 0
-def write_nested line 312
-  EXPR #968 IntegerNode line 313 arm 0 parent #965 IfNode depth 1
-  EXPR #971 IntegerNode line 313 arm 1 parent #965 IfNode depth 1
-def many_shapes line 316
-  EXPR #990 LocalVariableReadNode line 319 arm 0 parent #988 BeginNode depth 3
-  EXPR #993 IntegerNode line 319 arm 1 parent #991 RescueNode depth 4
-  EXPR #998 LocalVariableReadNode line 320 arm 0 parent #997 AndNode depth 4
-  EXPR #999 LocalVariableReadNode line 320 arm 1 parent #997 AndNode depth 4
-  EXPR #1003 LocalVariableReadNode line 320 arm 0 parent #1002 RescueModifierNode depth 4
-  EXPR #1004 IntegerNode line 320 arm 1 parent #1002 RescueModifierNode depth 4
-  EXPR #1008 LocalVariableReadNode line 323 arm 0 parent #1007 LocalVariableWriteNode depth 1
-def string_interpolation line 327
-  EXPR #1013 InterpolatedStringNode line 328 arm 0 parent - depth 0
-def call_with_block line 331
-  EXPR #1021 CallNode line 332 arm 0 parent - depth 0
-block line 332
-  EXPR #1031 IntegerNode line 332 arm 0 parent #1028 IfNode depth 1
-  EXPR #1034 IntegerNode line 332 arm 1 parent #1028 IfNode depth 1
-def lambda_value line 335
-  EXPR #1039 LambdaNode line 336 arm 0 parent - depth 0
-lambda line 336
-  EXPR #1041 LocalVariableReadNode line 336 arm 0 parent - depth 0
-def while_value line 339
-  EXPR #1046 WhileNode line 340 arm 0 parent - depth 0
-def defined_value line 345
-  EXPR #1054 DefinedNode line 346 arm 0 parent - depth 0
+def ivar_or_write line 295
+  EXPR #926 InstanceVariableOrWriteNode line 296 arm 0 parent - depth 0
+  EXPR #932 IntegerNode line 296 arm 0 parent #929 IfNode depth 1
+  EXPR #935 IntegerNode line 296 arm 1 parent #929 IfNode depth 1
+def gvar_or_write line 299
+  EXPR #940 GlobalVariableOrWriteNode line 300 arm 0 parent - depth 0
+  EXPR #941 LocalVariableReadNode line 300 arm 0 parent #940 GlobalVariableOrWriteNode depth 0
+def gvar_and_write line 303
+  EXPR #946 GlobalVariableAndWriteNode line 304 arm 0 parent - depth 0
+  EXPR #947 LocalVariableReadNode line 304 arm 0 parent #946 GlobalVariableAndWriteNode depth 0
+def call_or_write line 307
+  EXPR #952 CallOrWriteNode line 308 arm 0 parent - depth 0
+  EXPR #954 IntegerNode line 308 arm 0 parent #952 CallOrWriteNode depth 0
+def index_and_write line 311
+  EXPR #959 IndexAndWriteNode line 312 arm 0 parent - depth 0
+  EXPR #963 IntegerNode line 312 arm 0 parent #959 IndexAndWriteNode depth 0
+def operator_write line 315
+  EXPR #970 LocalVariableOperatorWriteNode line 317 arm 0 parent - depth 0
+def attr_write line 320
+  EXPR #976 CallNode line 321 arm 0 parent - depth 0
+def index_or_write line 324
+  EXPR #984 IndexOrWriteNode line 325 arm 0 parent - depth 0
+  EXPR #988 IntegerNode line 325 arm 0 parent #984 IndexOrWriteNode depth 0
+def multi_write line 328
+  EXPR #996 ArrayNode line 329 arm 0 parent #993 MultiWriteNode depth 0
+def write_nested line 332
+  EXPR #1010 IntegerNode line 333 arm 0 parent #1007 IfNode depth 1
+  EXPR #1013 IntegerNode line 333 arm 1 parent #1007 IfNode depth 1
+def many_shapes line 336
+  EXPR #1032 LocalVariableReadNode line 339 arm 0 parent #1030 BeginNode depth 3
+  EXPR #1035 IntegerNode line 339 arm 1 parent #1033 RescueNode depth 4
+  EXPR #1040 LocalVariableReadNode line 340 arm 0 parent #1039 AndNode depth 4
+  EXPR #1041 LocalVariableReadNode line 340 arm 1 parent #1039 AndNode depth 4
+  EXPR #1045 LocalVariableReadNode line 340 arm 0 parent #1044 RescueModifierNode depth 4
+  EXPR #1046 IntegerNode line 340 arm 1 parent #1044 RescueModifierNode depth 4
+  EXPR #1050 LocalVariableReadNode line 343 arm 0 parent #1049 LocalVariableWriteNode depth 1
+def string_interpolation line 347
+  EXPR #1055 InterpolatedStringNode line 348 arm 0 parent - depth 0
+def call_with_block line 351
+  EXPR #1063 CallNode line 352 arm 0 parent - depth 0
+block line 352
+  EXPR #1073 IntegerNode line 352 arm 0 parent #1070 IfNode depth 1
+  EXPR #1076 IntegerNode line 352 arm 1 parent #1070 IfNode depth 1
+def lambda_value line 355
+  EXPR #1081 LambdaNode line 356 arm 0 parent - depth 0
+lambda line 356
+  EXPR #1083 LocalVariableReadNode line 356 arm 0 parent - depth 0
+def while_value line 359
+  EXPR #1088 WhileNode line 360 arm 0 parent - depth 0
+def defined_value line 365
+  EXPR #1096 DefinedNode line 366 arm 0 parent - depth 0

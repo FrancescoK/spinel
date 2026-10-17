@@ -292,6 +292,26 @@ def and_write(a)
   x &&= a
 end
 
+def ivar_or_write(a)
+  @v ||= (a ? 1 : 2)
+end
+
+def gvar_or_write(a)
+  $g ||= a
+end
+
+def gvar_and_write(a)
+  $g &&= a
+end
+
+def call_or_write(a)
+  a.foo ||= 1
+end
+
+def index_and_write(a)
+  a[0] &&= 1
+end
+
 def operator_write(a)
   x = 1
   x += a

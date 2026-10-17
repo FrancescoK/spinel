@@ -16,6 +16,8 @@
 # elsewhere does something else. The exceptions are decided here, not taken
 # from the pattern:
 #   - a write compiles its value kept and dups it, so `x = e` is `e`'s value;
+#     `x ||= e` and `x &&= e` are `e`'s value or the target's old value (the
+#     hand-written arm yields the write node as a leaf, then `e`'s positions);
 #   - `x += e` is the operator's result, so `e` is not a value position;
 #   - the left side of `a || b` is the value when truthy, the left side of
 #     `a && b` when falsy (the hand-written arm reads it under VP_AND_LEFT);
@@ -77,7 +79,8 @@ nodes:
   ReturnNode:        {role: hand, value: [arguments]}
   NextNode:          {role: hand, value: [arguments]}
   BreakNode:         {role: hand, value: [arguments]}
-  # writes under VP_WRITES: the value is kept and dup'ed, so the write is its value
+  # writes under VP_WRITES: a plain write is its value `e`; an or-write or
+  # and-write is the target's old value or `e`, so the write is a leaf too
   LocalVariableWriteNode:         {role: hand, value: [value]}
   InstanceVariableWriteNode:      {role: hand, value: [value]}
   GlobalVariableWriteNode:        {role: hand, value: [value]}
