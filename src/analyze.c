@@ -32749,24 +32749,19 @@ static int seed_kwarg_value(const NodeTable *nt, int kwh, const char *name) {
    each returns on its own, converted to the method's type. The whole
    conditional is the boxed union of its branches, which makes no claim. A
    branch that is missing answers nil, which every slot holds. */
-static void seed_ret_branch_sites(const NodeTable *nt, int v, int *sites, int *n, int cap, int depth) {
+typedef struct {
+  int *sites, *n, cap;
+} SeedSites;
+static int seed_ret_site(const VpLeaf *leaf, void *ud) {
+  SeedSites *s = ud;
+  if (leaf->kind == VPK_NIL) return 0;
+  s->sites[(*s->n)++] = leaf->node;
+  return *s->n >= s->cap;
+}
+static void seed_ret_branch_sites(const NodeTable *nt, int v, int *sites, int *n, int cap) {
+  SeedSites s = { sites, n, cap };
   if (v < 0 || *n >= cap) return;
-  NodeKind k = nt_kind(nt, v);
-  if (depth < 16 && (k == NK_StatementsNode || k == NK_ParenthesesNode)) {
-    int b = k == NK_ParenthesesNode ? nt_ref(nt, v, "body") : v;
-    int bn = 0; const int *bb = b >= 0 ? nt_arr(nt, b, "body", &bn) : NULL;
-    if (bb && bn > 0) { seed_ret_branch_sites(nt, bb[bn - 1], sites, n, cap, depth + 1); return; }
-  }
-  if (depth < 16 && (k == NK_IfNode || k == NK_UnlessNode)) {
-    int els = nt_ref(nt, v, k == NK_IfNode ? "subsequent" : "else_clause");
-    if (els >= 0) {
-      seed_ret_branch_sites(nt, nt_ref(nt, v, "statements"), sites, n, cap, depth + 1);
-      if (nt_kind(nt, els) == NK_ElseNode) els = nt_ref(nt, els, "statements");
-      seed_ret_branch_sites(nt, els, sites, n, cap, depth + 1);
-      return;
-    }
-  }
-  sites[(*n)++] = v;
+  for_each_value_position(nt, v, VPS_IF | VPS_UNLESS, seed_ret_site, &s);
 }
 static int seed_ret_family(Compiler *c, TyKind t);
 static int seed_ret_kind(TyKind t);
@@ -33020,14 +33015,14 @@ static void check_seed_contradictions(Compiler *c) {
     /* every value the method can answer with: the body's tail, and each
        explicit return inside this scope -- a conditional one branch at a time */
     int sites[64]; int nsites = 0;
-    seed_ret_branch_sites(nt, sc->body, sites, &nsites, 64, 0);
+    seed_ret_branch_sites(nt, sc->body, sites, &nsites, 64);
     NT_FOREACH_KIND(nt, NK_ReturnNode, id) {
       if (nsites >= 64) break;
       if (c->nscope[id] != s) continue;
       int rv = nt_ref(nt, id, "arguments");
       if (rv < 0) continue;
       int an = 0; const int *av = nt_arr(nt, rv, "arguments", &an);
-      if (av && an == 1) seed_ret_branch_sites(nt, av[0], sites, &nsites, 64, 0);
+      if (av && an == 1) seed_ret_branch_sites(nt, av[0], sites, &nsites, 64);
     }
     for (int k = 0; k < nsites; k++) {
       /* An EMPTY container literal carries a default kind, not evidence: a
