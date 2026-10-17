@@ -2841,14 +2841,20 @@ static int push_chain_base(Compiler *c, int recv) {
 static int value_leaves(Compiler *c, int n, int *out, int nout, int cap);
 enum { VL_NIL = 1, VL_BEGIN = 2 };
 static int value_leaves_ex(Compiler *c, int n, int *out, int nout, int cap, int nil_ok);
+static int *cext_walk_values(Compiler *c);
 /* Is one of the values `n` can answer, through parentheses, a plain begin
    body and the arms of a conditional (an arm left out answers nil), an
    element read out of an Array of shared Strings (share_str_elem_read)? */
 static int share_str_value_leaves(Compiler *c, int n) {
-  int lv[8], cnt = value_leaves_ex(c, n, lv, 0, 8, VL_NIL | VL_BEGIN);
-  for (int i = 0; i < cnt; i++)
-    if (share_str_elem_read(c, lv[i])) return 1;
-  return 0;
+  int small[8], *lv = small, found = 0;
+  int cnt = value_leaves_ex(c, n, lv, 0, 8, VL_NIL | VL_BEGIN);
+  if (cnt < 0) {  /* more leaves than the buffer holds: one slot per node is enough */
+    lv = cext_walk_values(c);
+    cnt = value_leaves_ex(c, n, lv, 0, c->nt->count, VL_NIL | VL_BEGIN);
+  }
+  for (int i = 0; i < cnt && !found; i++) found = share_str_elem_read(c, lv[i]);
+  if (lv != small) free(lv);
+  return found;
 }
 static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb, int *fb, LWIndex lw_ix, LWIndex ivw_ix) {
   int changed = 0;
