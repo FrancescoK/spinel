@@ -8,6 +8,7 @@
    this file split. */
 #include "builtin_ops.h"
 #include "analyze_internal.h"
+#include "value_pos.h"
 #include <stdio.h>
 #include <ctype.h>
 #include <limits.h>
@@ -4895,34 +4896,41 @@ static int dsend_name_source(Compiler *c, int arg) {
 /* The names a value can be when it is a Symbol or String literal, nil, or a
    conditional choosing among them (`re ? :assert_match : :assert_equal`),
    added to `names`. 0 for anything else. */
-static int dsend_literal_names(Compiler *c, int v, char ***names, int *n, int *cap, ANameHash *seen) {
-  const NodeTable *nt = c->nt;
-  if (v < 0) return 1;   /* an if with no else: nil */
-  const char *ty = nt_type(nt, v);
-  switch (nt_kind(nt, v)) {
-  case NK_NilNode: return 1;
-  case NK_SymbolNode: case NK_StringNode: {
-    const char *s = nt_kind(nt, v) == NK_SymbolNode ? nt_str(nt, v, "value") : nt_str(nt, v, "content");
-    if (!s || !*s) return 0;
-    /* only a name the program's literals would offer: method-shaped, and
-       not a send itself or a Method's wrapper (dsend_candidates) */
-    if (!dsend_method_name_shaped(s) || strncmp(s, "__bam_", 6) == 0 || is_send_family(s)) return 0;
-    dsend_add_name(names, n, cap, seen, s);
-    return 1; }
-  case NK_IfNode:
-    return dsend_literal_names(c, nt_ref(nt, v, "statements"), names, n, cap, seen) &&
-           dsend_literal_names(c, nt_ref(nt, v, "subsequent"), names, n, cap, seen);
-  case NK_UnlessNode:
-    return dsend_literal_names(c, nt_ref(nt, v, "statements"), names, n, cap, seen) &&
-           dsend_literal_names(c, nt_ref(nt, v, "else_clause"), names, n, cap, seen);
-  case NK_StatementsNode: {
-    int bn = 0; const int *bb = nt_arr(nt, v, "body", &bn);
-    return bn == 1 && bb ? dsend_literal_names(c, bb[0], names, n, cap, seen) : 0; }
-  default:
-    if (ty && sp_streq(ty, "ElseNode")) return dsend_literal_names(c, nt_ref(nt, v, "statements"), names, n, cap, seen);
-    if (ty && sp_streq(ty, "ParenthesesNode")) return dsend_literal_names(c, nt_ref(nt, v, "body"), names, n, cap, seen);
-    return 0;
+typedef struct {
+  Compiler *c;
+  char ***names;
+  int *n, *cap;
+  ANameHash *seen;
+  int ok;
+} DsendArms;
+
+/* One value position: a nil (a missing arm too), or a literal naming a
+   method the program's literals would offer, adds its name; anything else
+   fails the walk. */
+static int dsend_name_leaf(const VpLeaf *leaf, void *ud) {
+  DsendArms *a = ud;
+  const NodeTable *nt = a->c->nt;
+  if (leaf->kind == VPK_NIL) return 0;
+  if (leaf->kind == VPK_EXPR) {
+    NodeKind k = nt_kind(nt, leaf->node);
+    if (k == NK_NilNode) return 0;
+    if (k == NK_SymbolNode || k == NK_StringNode) {
+      const char *s = k == NK_SymbolNode ? nt_str(nt, leaf->node, "value") : nt_str(nt, leaf->node, "content");
+      /* only a name the program's literals would offer: method-shaped, and
+         not a send itself or a Method's wrapper (dsend_candidates) */
+      if (s && *s && dsend_method_name_shaped(s) && strncmp(s, "__bam_", 6) != 0 && !is_send_family(s)) {
+        dsend_add_name(a->names, a->n, a->cap, a->seen, s);
+        return 0;
+      }
+    }
   }
+  a->ok = 0;
+  return 1;
+}
+static int dsend_literal_names(Compiler *c, int v, char ***names, int *n, int *cap, ANameHash *seen) {
+  DsendArms a = { c, names, n, cap, seen, 1 };
+  for_each_value_position(c->nt, v, VPS_IF | VPS_UNLESS, dsend_name_leaf, &a);
+  return a.ok;
 }
 
 /* The names a send's name can be when it is a local each of whose writes in
