@@ -538,10 +538,17 @@ static const BuiltinOp bop_rows[] = {
      no kind carries: those rows leave inference to infer_numeric_call
      (TY_UNKNOWN). Rational#i holds two floats where CRuby keeps the exact
      Rational (#2706). The operators against a Float are mostly claimed
-     first by the Float <op> Rational arm, which sits above the lookup. An
-     operand no guard holds (a boxed or untyped one, a Bignum, a user
-     object) finds no row, and the rules after the lookup answer it. */
+     first by the Float <op> Rational arm, which sits above the lookup.
+     The operand a guard does not name falls to rows after the guarded
+     ones, which only type the call (BOPE_NONE, codegen emits a boxed or
+     other operand elsewhere): a boxed operand folds through
+     sp_poly_<op>, whose value is boxed, so it stays poly (typing it
+     Rational handed an sp_RbVal to sp_rational_inspect), and any other
+     kind a guard can name gets the Rational (a Float for **). An operand
+     of a kind with no bit in a guard (a user object, an Array of them)
+     finds no row, and the rule after the lookup answers it. */
 #define RAT_IR  (BOP_K(TY_RATIONAL) | BOP_K(TY_INT))
+#define RAT_NOT_POLY (~BOP_K(TY_POLY))   /* every other kind a guard can name */
   { TY_RATIONAL, "numerator",   0, 127, BF_ANY, TY_INT,        BOPE_TEMPLATE, "($r).num" },
   { TY_RATIONAL, "denominator", 0, 127, BF_ANY, TY_INT,        BOPE_TEMPLATE, "($r).den" },
   { TY_RATIONAL, "to_s",        0, 127, BF_ANY, TY_STRING,     BOPE_TEMPLATE, "sp_rational_to_s($r)" },
@@ -644,12 +651,18 @@ static const BuiltinOp bop_rows[] = {
   { TY_RATIONAL, "%",         1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_mod($r, $e0)", BOP_K(TY_RATIONAL) },
   { TY_RATIONAL, "%",         1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_mod($r, sp_rational_new($e0, 1))", BOP_K(TY_INT) },
   { TY_RATIONAL, "%",         1, 1, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "sp_fmod(sp_rational_to_f($r), $f0)", BOP_K(TY_FLOAT) },
+  { TY_RATIONAL, "%", 1, 1, BF_ANY, TY_POLY, BOPE_NONE, NULL, BOP_K(TY_POLY) },
+  { TY_RATIONAL, "%", 1, 1, BF_ANY, TY_RATIONAL, BOPE_NONE, NULL, RAT_NOT_POLY },
   { TY_RATIONAL, "modulo",    1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_mod($r, $e0)", BOP_K(TY_RATIONAL) },
   { TY_RATIONAL, "modulo",    1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_mod($r, sp_rational_new($e0, 1))", BOP_K(TY_INT) },
   { TY_RATIONAL, "modulo",    1, 1, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "sp_fmod(sp_rational_to_f($r), $f0)", BOP_K(TY_FLOAT) },
+  { TY_RATIONAL, "modulo", 1, 1, BF_ANY, TY_POLY, BOPE_NONE, NULL, BOP_K(TY_POLY) },
+  { TY_RATIONAL, "modulo", 1, 1, BF_ANY, TY_RATIONAL, BOPE_NONE, NULL, RAT_NOT_POLY },
   { TY_RATIONAL, "remainder", 1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_rem($r, $e0)", BOP_K(TY_RATIONAL) },
   { TY_RATIONAL, "remainder", 1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_rem($r, sp_rational_new($e0, 1))", BOP_K(TY_INT) },
   { TY_RATIONAL, "remainder", 1, 1, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "fmod(sp_rational_to_f($r), $f0)", BOP_K(TY_FLOAT) },
+  { TY_RATIONAL, "remainder", 1, 1, BF_ANY, TY_POLY, BOPE_NONE, NULL, BOP_K(TY_POLY) },
+  { TY_RATIONAL, "remainder", 1, 1, BF_ANY, TY_RATIONAL, BOPE_NONE, NULL, RAT_NOT_POLY },
   { TY_RATIONAL, "divmod",    1, 1, BF_ANY, TY_POLY_ARRAY, BOPE_TEMPLATE,
     "({ sp_Rational _t$t = $r; sp_Rational _t$u = $e0; sp_int _t$v = sp_rational_idiv(_t$t, _t$u);"
     " sp_PolyArray *_t$w = sp_PolyArray_new(); SP_GC_ROOT(_t$w);"
@@ -665,12 +678,15 @@ static const BuiltinOp bop_rows[] = {
     " sp_PolyArray *_t$w = sp_PolyArray_new(); SP_GC_ROOT(_t$w);"
     " sp_PolyArray_push(_t$w, sp_box_int(_t$v));"
     " sp_PolyArray_push(_t$w, sp_box_float(_t$t - (sp_float)_t$v * _t$u)); _t$w; })", BOP_K(TY_FLOAT) },
+  { TY_RATIONAL, "divmod", 1, 1, BF_ANY, TY_POLY_ARRAY, BOPE_NONE },
   /* ** computes in floats except against an Integer (CRuby; a negative
      base with a fractional exponent would be Complex, out of the value
      model -- it yields NaN here) */
   { TY_RATIONAL, "**",        1, 1, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "pow(sp_rational_to_f($r), sp_rational_to_f($e0))", BOP_K(TY_RATIONAL) },
   { TY_RATIONAL, "**",        1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_pow($r, (sp_int)($e0))", BOP_K(TY_INT) },
   { TY_RATIONAL, "**",        1, 1, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "pow(sp_rational_to_f($r), $f0)", BOP_K(TY_FLOAT) },
+  { TY_RATIONAL, "**", 1, 1, BF_ANY, TY_POLY, BOPE_NONE, NULL, BOP_K(TY_POLY) },
+  { TY_RATIONAL, "**", 1, 1, BF_ANY, TY_FLOAT, BOPE_NONE, NULL, RAT_NOT_POLY },
   { TY_RATIONAL, "-@",          0,   0, BF_ANY, TY_RATIONAL,   BOPE_TEMPLATE, "sp_rational_neg($r)" },
   { TY_RATIONAL, "-@",          0, 127, BF_ANY, TY_RATIONAL,   BOPE_NONE },
   { TY_RATIONAL, "+@",          0,   0, BF_ANY, TY_RATIONAL,   BOPE_TEMPLATE, "$r" },
@@ -684,17 +700,27 @@ static const BuiltinOp bop_rows[] = {
   { TY_RATIONAL, "+",   1, 1, BF_ANY, TY_COMPLEX, BOPE_TEMPLATE, "sp_complex_add(((sp_Complex){sp_rational_to_f($r), 0, 1}), $e0)", BOP_K(TY_COMPLEX) },
   { TY_RATIONAL, "+",   1, 1, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "(sp_rational_to_f($r) + $e0)", BOP_K(TY_FLOAT) },
   { TY_RATIONAL, "+",   1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_add($r, $q0)", RAT_IR },
+  { TY_RATIONAL, "+", 1, 1, BF_ANY, TY_POLY, BOPE_NONE, NULL, BOP_K(TY_POLY) },
+  { TY_RATIONAL, "+", 1, 1, BF_ANY, TY_RATIONAL, BOPE_NONE, NULL, RAT_NOT_POLY },
   { TY_RATIONAL, "-",   1, 1, BF_ANY, TY_COMPLEX, BOPE_TEMPLATE, "sp_complex_sub(((sp_Complex){sp_rational_to_f($r), 0, 1}), $e0)", BOP_K(TY_COMPLEX) },
   { TY_RATIONAL, "-",   1, 1, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "(sp_rational_to_f($r) - $e0)", BOP_K(TY_FLOAT) },
   { TY_RATIONAL, "-",   1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_sub($r, $q0)", RAT_IR },
+  { TY_RATIONAL, "-", 1, 1, BF_ANY, TY_POLY, BOPE_NONE, NULL, BOP_K(TY_POLY) },
+  { TY_RATIONAL, "-", 1, 1, BF_ANY, TY_RATIONAL, BOPE_NONE, NULL, RAT_NOT_POLY },
   { TY_RATIONAL, "*",   1, 1, BF_ANY, TY_COMPLEX, BOPE_TEMPLATE, "sp_complex_mul(((sp_Complex){sp_rational_to_f($r), 0, 1}), $e0)", BOP_K(TY_COMPLEX) },
   { TY_RATIONAL, "*",   1, 1, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "(sp_rational_to_f($r) * $e0)", BOP_K(TY_FLOAT) },
   { TY_RATIONAL, "*",   1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_mul($r, $q0)", RAT_IR },
+  { TY_RATIONAL, "*", 1, 1, BF_ANY, TY_POLY, BOPE_NONE, NULL, BOP_K(TY_POLY) },
+  { TY_RATIONAL, "*", 1, 1, BF_ANY, TY_RATIONAL, BOPE_NONE, NULL, RAT_NOT_POLY },
   { TY_RATIONAL, "/",   1, 1, BF_ANY, TY_COMPLEX, BOPE_TEMPLATE, "sp_complex_div(((sp_Complex){sp_rational_to_f($r), 0, 1}), $e0)", BOP_K(TY_COMPLEX) },
   { TY_RATIONAL, "/",   1, 1, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "(sp_rational_to_f($r) / $e0)", BOP_K(TY_FLOAT) },
   { TY_RATIONAL, "/",   1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_div($r, $q0)", RAT_IR },
+  { TY_RATIONAL, "/", 1, 1, BF_ANY, TY_POLY, BOPE_NONE, NULL, BOP_K(TY_POLY) },
+  { TY_RATIONAL, "/", 1, 1, BF_ANY, TY_RATIONAL, BOPE_NONE, NULL, RAT_NOT_POLY },
   { TY_RATIONAL, "quo", 1, 1, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "(sp_rational_to_f($r) / $e0)", BOP_K(TY_FLOAT) },
   { TY_RATIONAL, "quo", 1, 1, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE, "sp_rational_div($r, $q0)", RAT_IR },
+  { TY_RATIONAL, "quo", 1, 1, BF_ANY, TY_POLY, BOPE_NONE, NULL, BOP_K(TY_POLY) },
+  { TY_RATIONAL, "quo", 1, 1, BF_ANY, TY_RATIONAL, BOPE_NONE, NULL, RAT_NOT_POLY },
   /* fdiv: float division whatever the operand; div: floor division to an
      Integer (Numeric#div) */
   /* fdiv(Complex) takes the quotient's Float, raising RangeError for a
@@ -711,15 +737,20 @@ static const BuiltinOp bop_rows[] = {
      Rational truncates it, 1.5 -> 1/1, and compares wrong) */
   { TY_RATIONAL, "<",   1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_rational_to_f($r) < $f0)", BOP_K(TY_FLOAT) },
   { TY_RATIONAL, "<",   1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_rational_cmp($r, $q0) < 0)", RAT_IR },
+  { TY_RATIONAL, "<", 1, 1, BF_ANY, TY_BOOL, BOPE_NONE },
   { TY_RATIONAL, ">",   1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_rational_to_f($r) > $f0)", BOP_K(TY_FLOAT) },
   { TY_RATIONAL, ">",   1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_rational_cmp($r, $q0) > 0)", RAT_IR },
+  { TY_RATIONAL, ">", 1, 1, BF_ANY, TY_BOOL, BOPE_NONE },
   { TY_RATIONAL, "<=",  1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_rational_to_f($r) <= $f0)", BOP_K(TY_FLOAT) },
   { TY_RATIONAL, "<=",  1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_rational_cmp($r, $q0) <= 0)", RAT_IR },
+  { TY_RATIONAL, "<=", 1, 1, BF_ANY, TY_BOOL, BOPE_NONE },
   { TY_RATIONAL, ">=",  1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_rational_to_f($r) >= $f0)", BOP_K(TY_FLOAT) },
   { TY_RATIONAL, ">=",  1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "(sp_rational_cmp($r, $q0) >= 0)", RAT_IR },
+  { TY_RATIONAL, ">=", 1, 1, BF_ANY, TY_BOOL, BOPE_NONE },
   { TY_RATIONAL, "<=>", 1, 1, BF_ANY, TY_INT, BOPE_TEMPLATE,
     "$[({ sp_float _t$t = sp_rational_to_f($r); sp_float _t$u = $f0; (sp_int)(_t$t < _t$u ? -1 : (_t$t > _t$u ? 1 : 0)); })$]", BOP_K(TY_FLOAT) },
   { TY_RATIONAL, "<=>", 1, 1, BF_ANY, TY_INT, BOPE_TEMPLATE, "$[sp_rational_cmp($r, $q0)$]", RAT_IR },  /* never nil: lifted where an oint is wanted */
+  { TY_RATIONAL, "<=>", 1, 1, BF_ANY, TY_INT, BOPE_NONE },
   /* == / != / === (=== is value equality for a Numeric, #2564). A numeric
      operand compares by value. A poly one is not a non-numeric one: at run
      time it is very often the Rational that came out of an Array, so the
@@ -741,6 +772,7 @@ static const BuiltinOp bop_rows[] = {
      applied bound keeps its own class (#3233) */
   { TY_RATIONAL, "between?", 2, 2, BF_ANY, TY_BOOL, BOPE_TEMPLATE,
     "({ sp_Rational _t$t = $r; (sp_rational_cmp(_t$t, $q0) >= 0 && sp_rational_cmp(_t$t, $q1) <= 0); })", RAT_IR, RAT_IR },
+  { TY_RATIONAL, "between?", 2, 2, BF_ANY, TY_BOOL, BOPE_NONE },
   { TY_RATIONAL, "clamp",    2, 2, BF_ANY, TY_RATIONAL, BOPE_TEMPLATE,
     "({ sp_Rational _t$t = $r; sp_Rational _t$u = $e0; sp_Rational _t$v = $e1;"
     " sp_rational_cmp(_t$t, _t$u) < 0 ? _t$u : (sp_rational_cmp(_t$t, _t$v) > 0 ? _t$v : _t$t); })",
@@ -757,6 +789,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_RATIONAL, "eql?",   1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "((void)($r), 0)" },
   { TY_RATIONAL, "equal?", 1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "sp_rational_eq($r, $e0)", BOP_K(TY_RATIONAL) },
   { TY_RATIONAL, "equal?", 1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "((void)($r), 0)" },
+#undef RAT_NOT_POLY
 #undef RAT_IR
 
   /* Range copies carry their own frozen state, even though their endpoints

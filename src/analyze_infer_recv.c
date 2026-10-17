@@ -386,27 +386,14 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       int op_mi_r = comp_method_in_chain(c, ty_object_class(a0r), name, NULL);
       if (op_mi_r >= 0) { *out = (TyKind)c->scopes[op_mi_r].ret; return 1; }
     }
-    /* the operands no row guard holds (the guards are Rational, Integer,
-       Float and, for the arithmetic, Complex): what the rows do not state */
+    /* a user object (or an Array of them) as the operand has no bit in a
+       row's guard, so the rows after the guarded ones cannot hold it: the
+       arithmetic types the Rational, the exponent the Float. A coercing
+       one is answered above. */
     if (argc == 1 && (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") ||
-                      sp_streq(name, "/") || sp_streq(name, "quo")))
-      /* a boxed operand folds through sp_poly_<op>, whose value is boxed: the
-         operand's runtime class picks the result class, so it stays poly
-         (typing it Rational handed an sp_RbVal to sp_rational_inspect) */
-      { *out = a0r == TY_POLY ? TY_POLY : TY_RATIONAL; return 1; }
-    /* a boxed exponent folds through sp_poly_pow, as the operators above
-       do: the exponent's runtime class picks the result's (a Rational for
-       an Integer or an integer-valued Rational, else a Float), so it stays
-       poly. Typed Float, the boxed answer went into sp_box_float. */
-    if (argc == 1 && sp_streq(name, "**"))
-      { *out = a0r == TY_POLY ? TY_POLY : TY_FLOAT; return 1; }
-    if (argc == 1 && (sp_streq(name, "<") || sp_streq(name, ">") ||
-                      sp_streq(name, "<=") || sp_streq(name, ">="))) { *out = TY_BOOL; return 1; }
-    if (argc == 1 && sp_streq(name, "<=>")) { *out = TY_INT; return 1; }
-    if (argc == 2 && sp_streq(name, "between?")) { *out = TY_BOOL; return 1; }
-    if (argc == 1 && (is_remainder_family(name)))
-      { *out = infer_type(c, argv[0]) == TY_POLY ? TY_POLY : TY_RATIONAL; return 1; }
-    if (argc == 1 && sp_streq(name, "divmod")) { *out = TY_POLY_ARRAY; return 1; }
+                      sp_streq(name, "/") || sp_streq(name, "quo") || is_remainder_family(name)))
+      { *out = TY_RATIONAL; return 1; }
+    if (argc == 1 && sp_streq(name, "**")) { *out = TY_FLOAT; return 1; }
   }
   return 0;
 }
