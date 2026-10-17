@@ -1,18 +1,18 @@
 # Spinel bundled `uri`.
 #
-# The spelling is CRuby's. URI.parse answers the class of the scheme --
-# URI::HTTP, HTTPS, FTP, File, WS, WSS, MailTo, LDAP, LDAPS -- or URI::Generic, with the
-# component readers and writers, #to_s, #request_uri, #merge, #normalize and
-# the rest a parsed URI is read with; URI.split, URI.join, the www-form and
-# URI-component codecs, and DEFAULT_PARSER. What is not here is absent the
-# way a subset is absent things, and a program naming it fails to compile
-# rather than at run time:
+# CRuby's uri: URI.parse answers the class of the scheme -- URI::HTTP,
+# HTTPS, FTP, File, WS, WSS, MailTo, LDAP, LDAPS, one URI.register_scheme
+# added, or URI::Generic -- with its component readers and writers, #to_s,
+# #merge / #route_to, #normalize, #find_proxy and the rest; URI.split and
+# URI.join on CRuby's RFC 3986 grammar, the RFC 2396 parser, the www-form
+# and URI-component codecs, URI.extract / URI.regexp and URI.get_encoding.
+# What is not here is absent the way a subset is absent things, and a
+# program naming it fails to compile rather than at run time:
 #
-# * no scheme registry (URI.register_scheme, URI.scheme_list) to add a
-#   class to
-# * no URI.extract or URI.regexp; the component writers do not validate
-#   what they are given
-# * the URI.escape family CRuby removed is not here either
+# * the component writers do not validate what they are given
+# * the URI.escape family CRuby removed is not here either, nor the
+#   obsolete URI::ABS_PATH-style constants CRuby answers through
+#   const_missing
 require "socket"
 
 module URI
@@ -26,63 +26,6 @@ module URI
   end
 
   class BadURIError < Error
-  end
-
-  # The regexp sources CRuby's RFC 2396 parser builds itself from, which a
-  # server reads to match what a request carries -- webrick matches a Host
-  # header with `URI::RFC2396_Parser.new.pattern.fetch(:HOST)`. #pattern
-  # answers the table up to :USERINFO, each source spelled as CRuby spells
-  # it; the path and whole-URI patterns after it, the #regexp table, and
-  # the parser's own #parse/#split/#escape are absent.
-  class RFC2396_Parser
-    module PATTERN
-      ALPHA = "a-zA-Z"
-      ALNUM = "#{ALPHA}\\d"
-      HEX = "a-fA-F\\d"
-      ESCAPED = "%[#{HEX}]{2}"
-      UNRESERVED = "\\-_.!~*'()#{ALNUM}"
-      RESERVED = ";/?:@&=+$,\\[\\]"
-      DOMLABEL = "(?:[#{ALNUM}](?:[-#{ALNUM}]*[#{ALNUM}])?)"
-      TOPLABEL = "(?:[#{ALPHA}](?:[-#{ALNUM}]*[#{ALNUM}])?)"
-    end
-
-    attr_reader :pattern
-
-    def initialize
-      escaped = PATTERN::ESCAPED
-      unreserved = PATTERN::UNRESERVED
-      reserved = PATTERN::RESERVED
-      uric = "(?:[#{unreserved}#{reserved}]|#{escaped})"
-      hostname = "(?:[a-zA-Z0-9\\-.]|%\\h\\h)+"
-      ipv4addr = "\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}"
-      hex4 = "[#{PATTERN::HEX}]{1,4}"
-      lastpart = "(?:#{hex4}|#{ipv4addr})"
-      hexseq1 = "(?:#{hex4}:)*#{hex4}"
-      hexseq2 = "(?:#{hex4}:)*#{lastpart}"
-      ipv6addr = "(?:#{hexseq2}|(?:#{hexseq1})?::(?:#{hexseq2})?)"
-      ipv6ref = "\\[#{ipv6addr}\\]"
-      host = "(?:#{hostname}|#{ipv4addr}|#{ipv6ref})"
-      port = "\\d*"
-      @pattern = {
-        ESCAPED: escaped,
-        UNRESERVED: unreserved,
-        RESERVED: reserved,
-        DOMLABEL: PATTERN::DOMLABEL,
-        TOPLABEL: PATTERN::TOPLABEL,
-        HOSTNAME: hostname,
-        URIC: uric,
-        URIC_NO_SLASH: "(?:[#{unreserved};?:@&=+$,]|#{escaped})",
-        QUERY: "#{uric}*",
-        FRAGMENT: "#{uric}*",
-        IPV4ADDR: ipv4addr,
-        IPV6ADDR: ipv6addr,
-        IPV6REF: ipv6ref,
-        HOST: host,
-        PORT: port,
-        HOSTPORT: "#{host}(?::#{port})?",
-        USERINFO: "(?:[#{unreserved};:&=+$,]|#{escaped})*",
-      }
-    end
   end
 
   class Generic
@@ -103,7 +46,7 @@ module URI
     end
 
     def initialize(scheme, userinfo, host, port, path, query, fragment)
-      @scheme = scheme
+      @scheme = scheme.nil? ? nil : scheme.downcase
       # An empty userinfo ("http://@h/") has no user, as CRuby splits it.
       @userinfo = userinfo.nil? || userinfo.empty? ? nil : userinfo
       @host = host
@@ -112,6 +55,7 @@ module URI
       @query = query
       @fragment = fragment
       @opaque = nil
+      @port = default_port if @port.nil?
     end
 
     # true when the URI names a scheme -- a full URL rather than a bare
@@ -151,8 +95,6 @@ module URI
       path = h[:path]
       path = "" if path.nil? && h[:opaque].nil?
       u = new(h[:scheme], h[:userinfo], h[:host], h[:port], path, h[:query], h[:fragment])
-      # The instance's default port: the class method's nil-or-Integer answer miscompiles read here.
-      u.port = u.default_port if u.port.nil?
       u.opaque = h[:opaque] unless h[:opaque].nil?
       u
     end
@@ -828,6 +770,17 @@ module URI
       u
     end
 
+    # CRuby's MailTo#initialize checks: a query alone is the headers, there
+    # must be an opaque part, and its addresses must read as addresses.
+    def check_mailto!
+      @opaque = "?#{@query}" if @opaque.nil? && !@query.nil?
+      raise InvalidComponentError, "missing opaque part for mailto URL" if @opaque.nil?
+      if to !~ /\A(?:[^@,;]+@[^@,;]+(?:\z|[,;]))*\z/
+        raise InvalidComponentError, "unrecognised opaque part for mailtoURL: #{@opaque}"
+      end
+      self
+    end
+
     def to
       o = @opaque.to_s
       i = o.index("?")
@@ -1033,20 +986,53 @@ module URI
     end
   end
 
-  # The class a scheme's URI is parsed as.
-  def self.scheme_class(scheme)
-    case scheme
-    when "http" then HTTP
-    when "https" then HTTPS
-    when "ftp" then FTP
-    when "file" then File
-    when "ws" then WS
-    when "wss" then WSS
-    when "mailto" then MailTo
-    when "ldap" then LDAP
-    when "ldaps" then LDAPS
-    else Generic
+  # The scheme registry URI.parse and URI.for pick a class from: the
+  # bundled schemes, and what URI.register_scheme adds, by upper-case name.
+  SCHEMES = {
+    "WS" => WS, "WSS" => WSS, "HTTP" => HTTP, "HTTPS" => HTTPS, "LDAP" => LDAP,
+    "FTP" => FTP, "FILE" => File, "LDAPS" => LDAPS, "MAILTO" => MailTo,
+  }
+
+  def self.register_scheme(scheme, klass)
+    SCHEMES[scheme.to_s.upcase] = klass
+  end
+
+  def self.scheme_list
+    SCHEMES.dup
+  end
+
+  # The class a scheme's URI is, +default+ for one not registered.
+  def self.scheme_class(scheme, default = Generic)
+    return default if scheme.nil? || !scheme.ascii_only?
+    k = SCHEMES[scheme.upcase]
+    k.nil? ? default : k
+  end
+
+  # A URI of +scheme+'s class from the nine components URI.split answers,
+  # as CRuby's URI.for builds it: the scheme in lower case, a port String
+  # as an Integer ("" as none), a registry refused, the empty path for a
+  # URI with neither a path nor an opaque part.
+  def self.for(scheme, userinfo = nil, host = nil, port = nil, registry = nil, path = nil, opaque = nil, query = nil, fragment = nil, parser = nil, default: Generic)
+    klass = scheme_class(scheme, default)
+    s = scheme.nil? ? nil : scheme.downcase
+    unless registry.nil?
+      raise InvalidURIError, "the scheme #{s} does not accept registry part: #{registry} (or bad hostname?)"
     end
+    pn = nil
+    if port.is_a?(Integer)
+      pn = port
+    elsif !port.nil? && !port.empty?
+      pn = port.to_i
+    end
+    path = "" if path.nil? && opaque.nil?
+    u = klass.new(s, userinfo, host, pn, path, query, fragment)
+    u.opaque = opaque unless opaque.nil?
+    u.check_mailto! if u.is_a?(MailTo)
+    u
+  end
+
+  def self.from_split(parts)
+    self.for(parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], parts[6], parts[7], parts[8])
   end
 
   # Percent-encode one www-form component: everything but the unreserved set,
@@ -1195,172 +1181,561 @@ module URI
     parts.join("&")
   end
 
-  # The characters RFC 3986 excludes from a URI: the space and the
-  # control range, plus the "unwise" set a generic URI may not carry
-  # unescaped, and the brackets an authority reserves for an IPv6
-  # literal. CRuby's parser rejects a string containing any of them
-  # with `InvalidURIError`, and an app can be RELYING on that rescue
-  # rather than on its own validation -- a Rails message body decides
-  # whether to keep a link by asking whether `URI.parse` accepted it,
-  # so a parser that accepts everything turns that check into a no-op.
-  # `"http://exa mple.com/ "` is the shape that surfaced it: with a
-  # space admitted, the host reads as an ordinary off-site domain.
-  INVALID_URI_CHARS = " <>\"{}|\\^`[]"
-
-  # Where each of them is excluded is not uniform, and CRuby's own parser is
-  # what this follows: the QUERY (between the first `?` and the first `#`)
-  # takes any ASCII character, including a space and the unwise set, so
-  # `?filter=a|b` parses; everywhere else -- the scheme, the authority, the
-  # path and the fragment -- the set above is rejected. A bracket is the
-  # exception inside an authority, where `http://[::1]/x` is an IPv6 host.
-  # A byte outside ASCII is rejected everywhere, query included.
-  def self.invalid_char?(s)
-    qi = s.index("?")
-    fi = s.index("#")
-    qi = nil if qi && fi && fi < qi          # `#a?b` is all fragment
-    auth_end = -1
-    # the authority follows "scheme://", or the "//" that opens a
-    # network-path reference ("//[::1]:81/x")
-    ai = s.start_with?("//") ? -1 : s.index("://")
-    # (read through to_i: an Integer-or-nil's `+` reaches every class's +)
-    a3 = ai.to_i + 3
-    if ai
-      auth_end = s.length
-      i = a3
-      while i < s.length
-        c = s[i]
-        if c == "/" || c == "?" || c == "#"
-          auth_end = i
-          break
-        end
-        i += 1
-      end
+  # RFC 2396's grammar as regexp sources: the strings CRuby's
+  # RFC2396_Parser builds its patterns from, and which a server reads to
+  # match what a request carries (webrick matches a Host header with
+  # `URI::RFC2396_Parser.new.pattern.fetch(:HOST)`). PATTERN holds each
+  # entry of the default table, as CRuby fills it in after the class.
+  module RFC2396_REGEXP
+    # Each written out as its value: CRuby's chain of interpolations was code
+    # the C compiler took longer over than the rest of the grammar.
+    module PATTERN
+      ALPHA = "a-zA-Z"
+      ALNUM = "a-zA-Z\\d"
+      HEX = "a-fA-F\\d"
+      ESCAPED = "%[a-fA-F\\d]{2}"
+      UNRESERVED = "\\-_.!~*'()a-zA-Z\\d"
+      RESERVED = ";/?:@&=+$,\\[\\]"
+      DOMLABEL = "(?:[a-zA-Z\\d](?:[-a-zA-Z\\d]*[a-zA-Z\\d])?)"
+      TOPLABEL = "(?:[a-zA-Z](?:[-a-zA-Z\\d]*[a-zA-Z\\d])?)"
+      HOSTNAME = "(?:(?:[a-zA-Z\\d](?:[-a-zA-Z\\d]*[a-zA-Z\\d])?)\\.)*(?:[a-zA-Z](?:[-a-zA-Z\\d]*[a-zA-Z\\d])?)\\.?"
+      URIC = "(?:[\\-_.!~*'()a-zA-Z\\d;/?:@&=+$,\\[\\]]|%[a-fA-F\\d]{2})"
+      URIC_NO_SLASH = "(?:[\\-_.!~*'()a-zA-Z\\d;?:@&=+$,]|%[a-fA-F\\d]{2})"
+      QUERY = "(?:[\\-_.!~*'()a-zA-Z\\d;/?:@&=+$,\\[\\]]|%[a-fA-F\\d]{2})*"
+      FRAGMENT = "(?:[\\-_.!~*'()a-zA-Z\\d;/?:@&=+$,\\[\\]]|%[a-fA-F\\d]{2})*"
+      IPV4ADDR = "\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}"
+      IPV6ADDR = "(?:(?:[a-fA-F\\d]{1,4}:)*(?:[a-fA-F\\d]{1,4}|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})|(?:(?:[a-fA-F\\d]{1,4}:)*[a-fA-F\\d]{1,4})?::(?:(?:[a-fA-F\\d]{1,4}:)*(?:[a-fA-F\\d]{1,4}|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}))?)"
+      IPV6REF = "\\[(?:(?:[a-fA-F\\d]{1,4}:)*(?:[a-fA-F\\d]{1,4}|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})|(?:(?:[a-fA-F\\d]{1,4}:)*[a-fA-F\\d]{1,4})?::(?:(?:[a-fA-F\\d]{1,4}:)*(?:[a-fA-F\\d]{1,4}|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}))?)\\]"
+      HOST = "(?:(?:[a-zA-Z0-9\\-.]|%\\h\\h)+|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|\\[(?:(?:[a-fA-F\\d]{1,4}:)*(?:[a-fA-F\\d]{1,4}|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})|(?:(?:[a-fA-F\\d]{1,4}:)*[a-fA-F\\d]{1,4})?::(?:(?:[a-fA-F\\d]{1,4}:)*(?:[a-fA-F\\d]{1,4}|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}))?)\\])"
+      PORT = "\\d*"
+      HOSTPORT = "(?:(?:[a-zA-Z0-9\\-.]|%\\h\\h)+|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|\\[(?:(?:[a-fA-F\\d]{1,4}:)*(?:[a-fA-F\\d]{1,4}|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})|(?:(?:[a-fA-F\\d]{1,4}:)*[a-fA-F\\d]{1,4})?::(?:(?:[a-fA-F\\d]{1,4}:)*(?:[a-fA-F\\d]{1,4}|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}))?)\\])(?::\\d*)?"
+      USERINFO = "(?:[\\-_.!~*'()a-zA-Z\\d;:&=+$,]|%[a-fA-F\\d]{2})*"
+      PATH_SEGMENTS = "(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*)*"
+      REG_NAME = "(?:[\\-_.!~*'()a-zA-Z\\d$,;:@&=+]|%[a-fA-F\\d]{2})+"
+      REL_SEGMENT = "(?:[\\-_.!~*'()a-zA-Z\\d;@&=+$,]|%[a-fA-F\\d]{2})+"
+      SCHEME = "[a-zA-Z][\\-+.a-zA-Z\\d]*"
+      ABS_PATH = "/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*)*"
+      REL_PATH = "(?:[\\-_.!~*'()a-zA-Z\\d;@&=+$,]|%[a-fA-F\\d]{2})+(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*)*)?"
+      NET_PATH = "//(?:(?:(?:[\\-_.!~*'()a-zA-Z\\d;:&=+$,]|%[a-fA-F\\d]{2})*@)?(?:(?:[a-zA-Z0-9\\-.]|%\\h\\h)+|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|\\[(?:(?:[a-fA-F\\d]{1,4}:)*(?:[a-fA-F\\d]{1,4}|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})|(?:(?:[a-fA-F\\d]{1,4}:)*[a-fA-F\\d]{1,4})?::(?:(?:[a-fA-F\\d]{1,4}:)*(?:[a-fA-F\\d]{1,4}|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}))?)\\])(?::\\d*)?|(?:[\\-_.!~*'()a-zA-Z\\d$,;:@&=+]|%[a-fA-F\\d]{2})+)(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*)*)?"
+      HIER_PART = "(?://(?:(?:(?:[\\-_.!~*'()a-zA-Z\\d;:&=+$,]|%[a-fA-F\\d]{2})*@)?(?:(?:[a-zA-Z0-9\\-.]|%\\h\\h)+|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|\\[(?:(?:[a-fA-F\\d]{1,4}:)*(?:[a-fA-F\\d]{1,4}|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})|(?:(?:[a-fA-F\\d]{1,4}:)*[a-fA-F\\d]{1,4})?::(?:(?:[a-fA-F\\d]{1,4}:)*(?:[a-fA-F\\d]{1,4}|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}))?)\\])(?::\\d*)?|(?:[\\-_.!~*'()a-zA-Z\\d$,;:@&=+]|%[a-fA-F\\d]{2})+)(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*)*)?|/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*)*)(?:\\?(?:(?:[\\-_.!~*'()a-zA-Z\\d;/?:@&=+$,\\[\\]]|%[a-fA-F\\d]{2})*))?"
+      OPAQUE_PART = "(?:[\\-_.!~*'()a-zA-Z\\d;?:@&=+$,]|%[a-fA-F\\d]{2})(?:[\\-_.!~*'()a-zA-Z\\d;/?:@&=+$,\\[\\]]|%[a-fA-F\\d]{2})*"
+      ABS_URI = "[a-zA-Z][\\-+.a-zA-Z\\d]*:(?:(?://(?:(?:(?:[\\-_.!~*'()a-zA-Z\\d;:&=+$,]|%[a-fA-F\\d]{2})*@)?(?:(?:[a-zA-Z0-9\\-.]|%\\h\\h)+|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|\\[(?:(?:[a-fA-F\\d]{1,4}:)*(?:[a-fA-F\\d]{1,4}|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})|(?:(?:[a-fA-F\\d]{1,4}:)*[a-fA-F\\d]{1,4})?::(?:(?:[a-fA-F\\d]{1,4}:)*(?:[a-fA-F\\d]{1,4}|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}))?)\\])(?::\\d*)?|(?:[\\-_.!~*'()a-zA-Z\\d$,;:@&=+]|%[a-fA-F\\d]{2})+)(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*)*)?|/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*)*)(?:\\?(?:(?:[\\-_.!~*'()a-zA-Z\\d;/?:@&=+$,\\[\\]]|%[a-fA-F\\d]{2})*))?|(?:[\\-_.!~*'()a-zA-Z\\d;?:@&=+$,]|%[a-fA-F\\d]{2})(?:[\\-_.!~*'()a-zA-Z\\d;/?:@&=+$,\\[\\]]|%[a-fA-F\\d]{2})*)"
+      REL_URI = "(?://(?:(?:(?:[\\-_.!~*'()a-zA-Z\\d;:&=+$,]|%[a-fA-F\\d]{2})*@)?(?:(?:[a-zA-Z0-9\\-.]|%\\h\\h)+|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|\\[(?:(?:[a-fA-F\\d]{1,4}:)*(?:[a-fA-F\\d]{1,4}|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})|(?:(?:[a-fA-F\\d]{1,4}:)*[a-fA-F\\d]{1,4})?::(?:(?:[a-fA-F\\d]{1,4}:)*(?:[a-fA-F\\d]{1,4}|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}))?)\\])(?::\\d*)?|(?:[\\-_.!~*'()a-zA-Z\\d$,;:@&=+]|%[a-fA-F\\d]{2})+)(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*)*)?|/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*)*|(?:[\\-_.!~*'()a-zA-Z\\d;@&=+$,]|%[a-fA-F\\d]{2})+(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*)*)?)(?:\\?(?:[\\-_.!~*'()a-zA-Z\\d;/?:@&=+$,\\[\\]]|%[a-fA-F\\d]{2})*)?"
+      URI_REF = "(?:[a-zA-Z][\\-+.a-zA-Z\\d]*:(?:(?://(?:(?:(?:[\\-_.!~*'()a-zA-Z\\d;:&=+$,]|%[a-fA-F\\d]{2})*@)?(?:(?:[a-zA-Z0-9\\-.]|%\\h\\h)+|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|\\[(?:(?:[a-fA-F\\d]{1,4}:)*(?:[a-fA-F\\d]{1,4}|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})|(?:(?:[a-fA-F\\d]{1,4}:)*[a-fA-F\\d]{1,4})?::(?:(?:[a-fA-F\\d]{1,4}:)*(?:[a-fA-F\\d]{1,4}|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}))?)\\])(?::\\d*)?|(?:[\\-_.!~*'()a-zA-Z\\d$,;:@&=+]|%[a-fA-F\\d]{2})+)(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*)*)?|/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*)*)(?:\\?(?:(?:[\\-_.!~*'()a-zA-Z\\d;/?:@&=+$,\\[\\]]|%[a-fA-F\\d]{2})*))?|(?:[\\-_.!~*'()a-zA-Z\\d;?:@&=+$,]|%[a-fA-F\\d]{2})(?:[\\-_.!~*'()a-zA-Z\\d;/?:@&=+$,\\[\\]]|%[a-fA-F\\d]{2})*)|(?://(?:(?:(?:[\\-_.!~*'()a-zA-Z\\d;:&=+$,]|%[a-fA-F\\d]{2})*@)?(?:(?:[a-zA-Z0-9\\-.]|%\\h\\h)+|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|\\[(?:(?:[a-fA-F\\d]{1,4}:)*(?:[a-fA-F\\d]{1,4}|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})|(?:(?:[a-fA-F\\d]{1,4}:)*[a-fA-F\\d]{1,4})?::(?:(?:[a-fA-F\\d]{1,4}:)*(?:[a-fA-F\\d]{1,4}|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}))?)\\])(?::\\d*)?|(?:[\\-_.!~*'()a-zA-Z\\d$,;:@&=+]|%[a-fA-F\\d]{2})+)(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*)*)?|/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*)*|(?:[\\-_.!~*'()a-zA-Z\\d;@&=+$,]|%[a-fA-F\\d]{2})+(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*(?:/(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*(?:;(?:[\\-_.!~*'()a-zA-Z\\d:@&=+$,]|%[a-fA-F\\d]{2})*)*)*)?)(?:\\?(?:[\\-_.!~*'()a-zA-Z\\d;/?:@&=+$,\\[\\]]|%[a-fA-F\\d]{2})*)?)?(?:#(?:[\\-_.!~*'()a-zA-Z\\d;/?:@&=+$,\\[\\]]|%[a-fA-F\\d]{2})*)?"
     end
-    # the host inside the authority, after any `user:pw@`
-    host_start = -1
-    host_end = -1
-    if ai
-      host_start = a3
-      j = host_start
-      while j < auth_end
-        host_start = j + 1 if s[j] == "@"
-        j += 1
-      end
-      host_end = auth_end
-      j = host_start
-      while j < auth_end
-        if s[j] == "]"
-          host_end = j + 1
-          break
-        end
-        j += 1
-      end
-    end
-    i = 0
-    while i < s.length
-      c = s[i]
-      o = c.ord
-      return true if o > 0x7f
-      in_query = qi && i > qi && (fi.nil? || i < fi)
-      unless in_query
-        return true if o < 0x20 || o == 0x7f
-        if INVALID_URI_CHARS.include?(c)
-          # a bracketed IPv6 host: `[` opens the host and `]` closes it, with
-          # only a `:port` allowed after. Anything else bracketed is rejected
-          # the way CRuby rejects `http://exa[mple.com/`.
-          bracket_host = (c == "[" && i == host_start) ||
-                         (c == "]" && i == host_end - 1 && host_end > host_start + 1 &&
-                          s[host_start] == "[")
-          return true unless bracket_host
-        end
-      end
-      i += 1
-    end
-    false
   end
 
-  # Splits +str+ the RFC 3986 way: an optional "scheme:", then either an
-  # opaque part (a scheme followed by no "/", as in "urn:isbn:1") or a
-  # hierarchical part -- an optional "//authority", the path, "?query" --
-  # and "#fragment". With no scheme it is a relative reference: "c" and
-  # "../d" are paths, and only "//host/x" carries a host. The parts, as
-  # CRuby's URI.split answers them: scheme, userinfo, host, port (as
-  # written), registry, path, opaque, query, fragment.
-  def self.split(str)
-    s = str.to_s
-    raise InvalidURIError, "bad URI (is not URI?): #{s.inspect}" if invalid_char?(s)
+  # CRuby's RFC 2396 parser: the regexp-driven #split and #parse of the
+  # older grammar, #escape / #unescape (the URI.escape the RFC 3986
+  # parser delegates to), #extract and #make_regexp, and the #pattern and
+  # #regexp tables, each pattern overridable through +opts+.
+  class RFC2396_Parser
+    include RFC2396_REGEXP
 
-    fragment = nil
-    fi = s.index("#")
-    if fi
-      fragment = s[(fi + 1)..-1].to_s
-      s = s[0, fi]
+    def initialize(opts = {})
+      @opts = opts
+      @pattern = nil
+      @regexp = nil
     end
 
-    scheme = nil
-    rest = s
-    ci = s.index(":")
-    if ci && ci > 0 && s[0, ci] =~ /\A[A-Za-z][A-Za-z0-9+\-.]*\z/
-      scheme = s[0, ci].downcase
-      rest = s[(ci + 1)..-1].to_s
+    # Built on first use rather than in initialize: RFC2396_PARSER is made at
+    # load, and its tables were then compiled into every program requiring uri.
+    def pattern
+      @pattern = initialize_pattern(@opts) if @pattern.nil?
+      @pattern
     end
 
-    if !scheme.nil? && !rest.empty? && !rest.start_with?("/")
-      return [scheme, nil, nil, nil, nil, nil, rest, nil, fragment]
+    def regexp
+      @regexp = initialize_regexp(pattern) if @regexp.nil?
+      @regexp
     end
 
-    query = nil
-    qi = rest.index("?")
-    if qi
-      query = rest[(qi + 1)..-1].to_s
-      rest = rest[0, qi]
+    def split(uri)
+      scheme = nil
+      userinfo = nil
+      host = nil
+      port = nil
+      registry = nil
+      path = nil
+      opaque = nil
+      query = nil
+      fragment = nil
+      if uri == ""
+        # an empty reference: just the empty path
+      elsif (m = regexp[:ABS_URI].match(uri))
+        scheme = m[1]
+        opaque = m[2]
+        userinfo = m[3]
+        host = m[4]
+        port = m[5]
+        registry = m[6]
+        path = m[7]
+        query = m[8]
+        fragment = m[9]
+        raise InvalidURIError, "bad URI (absolute but no scheme): #{uri}" if scheme.nil?
+        if opaque.nil? && path.nil? && host.nil? && registry.nil?
+          raise InvalidURIError, "bad URI (absolute but no path): #{uri}"
+        end
+      elsif (m = regexp[:REL_URI].match(uri))
+        userinfo = m[1]
+        host = m[2]
+        port = m[3]
+        registry = m[4]
+        rel_segment = m[5]
+        abs_path = m[6]
+        query = m[7]
+        fragment = m[8]
+        if !rel_segment.nil? && !abs_path.nil?
+          path = rel_segment + abs_path
+        elsif !rel_segment.nil?
+          path = rel_segment
+        elsif !abs_path.nil?
+          path = abs_path
+        end
+      else
+        raise InvalidURIError, "bad URI (is not URI?): #{uri}"
+      end
+      path = "" if path.nil? && opaque.nil?
+      [scheme, userinfo, host, port, registry, path, opaque, query, fragment]
     end
 
-    authority = nil
-    path = rest
-    if rest.start_with?("//")
-      authority = rest[2..-1].to_s
-      path = ""
-      pi = authority.index("/")
-      if pi
-        path = authority[pi..-1].to_s
-        authority = authority[0, pi]
+    def parse(uri)
+      URI.from_split(split(uri))
+    end
+
+    def join(*uris)
+      u = convert_to_uri(uris[0])
+      uris[1..-1].each { |r| u = u.merge(r) }
+      u
+    end
+
+    # Each absolute URI in +str+, each yielded when a block is given.
+    def extract(str, schemes = nil)
+      re = make_regexp(schemes)
+      found = []
+      pos = 0
+      # The rest of +str+ matched, not #match(str, pos): a Regexp read out of the table has no two-argument #match at run time.
+      while pos <= str.length && (m = re.match(str[pos..-1]))
+        found << m[0]
+        pos += m.end(0)
+        pos += 1 if m[0].empty?
+      end
+      if block_given?
+        found.each { |u| yield u }
+        nil
+      else
+        found
       end
     end
 
-    userinfo = nil
-    host = nil
-    port = nil
-    if authority
-      ai = authority.index("@")
-      if ai
-        userinfo = authority[0, ai]
-        authority = authority[(ai + 1)..-1].to_s
-      end
-      host = authority
-      ci = authority.rindex(":")
-      if ci && authority[(ci + 1)..-1].to_s =~ /\A[0-9]*\z/
-        host = authority[0, ci]
-        port = authority[(ci + 1)..-1].to_s
-      end
+    # The absolute-URI pattern, or one that also requires one of +schemes+.
+    def make_regexp(schemes = nil)
+      return regexp[:ABS_URI_REF] if schemes.nil?
+      Regexp.new("(?=(?i:#{Regexp.union(*schemes).source}):)#{pattern[:X_ABS_URI]}", Regexp::EXTENDED)
     end
-    [scheme, userinfo, host, port, nil, path, nil, query, fragment]
+
+    # Each byte of each match of +unsafe+ (a Regexp, or a String of the
+    # characters to escape) as "%XX".
+    def escape(str, unsafe = regexp[:UNSAFE])
+      unsafe = Regexp.new("[#{Regexp.quote(unsafe)}]") unless unsafe.is_a?(Regexp)
+      str.gsub(unsafe) { |us| us.bytes.map { |b| format("%%%02X", b) }.join }.force_encoding(Encoding::US_ASCII)
+    end
+
+    # Each match of +escaped+ ("%XX") as its byte, in the string's own
+    # encoding (UTF-8 for a US-ASCII one).
+    def unescape(str, escaped = regexp[:ESCAPED])
+      enc = str.encoding
+      enc = Encoding::UTF_8 if enc == Encoding::US_ASCII
+      str.gsub(escaped) { |e| e[1, 2].to_i(16).chr.force_encoding(enc) }
+    end
+
+    private
+
+    # Each pattern is its template with the ones before it filled in, by one
+    # loop: written out as CRuby's interpolations, every one was its own join
+    # in the C, and the two tables were a large part of a uri program's build.
+    def initialize_pattern(opts = {})
+      v = {
+        "{ESCAPED}" => opts[:ESCAPED] || PATTERN::ESCAPED,
+        "{UNRESERVED}" => opts[:UNRESERVED] || PATTERN::UNRESERVED,
+        "{RESERVED}" => opts[:RESERVED] || PATTERN::RESERVED,
+        "{DOMLABEL}" => opts[:DOMLABEL] || PATTERN::DOMLABEL,
+        "{TOPLABEL}" => opts[:TOPLABEL] || PATTERN::TOPLABEL,
+        "{HOSTNAME}" => opts[:HOSTNAME] || "(?:[a-zA-Z0-9\\-.]|%\\h\\h)+",
+        "{HEX}" => PATTERN::HEX,
+        "{ALPHA}" => PATTERN::ALPHA,
+      }
+      names = %w[{URIC} {URIC_NO_SLASH} {QUERY} {FRAGMENT} {IPV4ADDR} {HEX4} {LASTPART} {HEXSEQ1} {HEXSEQ2} {IPV6ADDR} {IPV6REF} {HOST} {PORT} {HOSTPORT} {USERINFO} {PCHAR} {PARAM} {SEGMENT} {PATH_SEGMENTS} {SERVER} {REG_NAME} {AUTHORITY} {REL_SEGMENT} {SCHEME} {ABS_PATH} {REL_PATH} {NET_PATH} {HIER_PART} {OPAQUE_PART} {ABS_URI} {REL_URI} {URI_REF} {X_ABS_URI} {X_REL_URI}]
+      templates = [
+        "(?:[{UNRESERVED}{RESERVED}]|{ESCAPED})",
+        "(?:[{UNRESERVED};?:@&=+$,]|{ESCAPED})",
+        "{URIC}*",
+        "{URIC}*",
+        "\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}",
+        "[{HEX}]{1,4}",
+        "(?:{HEX4}|{IPV4ADDR})",
+        "(?:{HEX4}:)*{HEX4}",
+        "(?:{HEX4}:)*{LASTPART}",
+        "(?:{HEXSEQ2}|(?:{HEXSEQ1})?::(?:{HEXSEQ2})?)",
+        "\\[{IPV6ADDR}\\]",
+        "(?:{HOSTNAME}|{IPV4ADDR}|{IPV6REF})",
+        "\\d*",
+        "{HOST}(?::{PORT})?",
+        "(?:[{UNRESERVED};:&=+$,]|{ESCAPED})*",
+        "(?:[{UNRESERVED}:@&=+$,]|{ESCAPED})",
+        "{PCHAR}*",
+        "{PCHAR}*(?:;{PARAM})*",
+        "{SEGMENT}(?:/{SEGMENT})*",
+        "(?:{USERINFO}@)?{HOSTPORT}",
+        "(?:[{UNRESERVED}$,;:@&=+]|{ESCAPED})+",
+        "(?:{SERVER}|{REG_NAME})",
+        "(?:[{UNRESERVED};@&=+$,]|{ESCAPED})+",
+        "[{ALPHA}][\\-+.{ALPHA}\\d]*",
+        "/{PATH_SEGMENTS}",
+        "{REL_SEGMENT}(?:{ABS_PATH})?",
+        "//{AUTHORITY}(?:{ABS_PATH})?",
+        "(?:{NET_PATH}|{ABS_PATH})(?:\\?(?:{QUERY}))?",
+        "{URIC_NO_SLASH}{URIC}*",
+        "{SCHEME}:(?:{HIER_PART}|{OPAQUE_PART})",
+        "(?:{NET_PATH}|{ABS_PATH}|{REL_PATH})(?:\\?{QUERY})?",
+        "(?:{ABS_URI}|{REL_URI})?(?:\#{FRAGMENT})?",
+        "
+        ({SCHEME}):                           (?# 1: scheme)
+        (?:
+           ({OPAQUE_PART})                    (?# 2: opaque)
+        |
+           (?:(?:
+             //(?:
+                 (?:(?:({USERINFO})@)?        (?# 3: userinfo)
+                   (?:({HOST})(?::(\\d*))?))? (?# 4: host, 5: port)
+               |
+                 ({REG_NAME})                 (?# 6: registry)
+               )
+             |
+             (?!//))                           (?# XXX: '//' is the mark for hostport)
+             ({ABS_PATH})?                    (?# 7: path)
+           )(?:\\?({QUERY}))?                 (?# 8: query)
+        )
+        (?:\\#({FRAGMENT}))?                  (?# 9: fragment)
+      ",
+        "
+        (?:
+          (?:
+            //
+            (?:
+              (?:({USERINFO})@)?       (?# 1: userinfo)
+                ({HOST})?(?::(\\d*))?  (?# 2: host, 3: port)
+            |
+              ({REG_NAME})             (?# 4: registry)
+            )
+          )
+        |
+          ({REL_SEGMENT})              (?# 5: rel_segment)
+        )?
+        ({ABS_PATH})?                  (?# 6: abs_path)
+        (?:\\?({QUERY}))?              (?# 7: query)
+        (?:\\#({FRAGMENT}))?           (?# 8: fragment)
+      ",
+      ]
+      names.size.times { |i| v[names[i]] = templates[i].gsub(/\{[A-Z][A-Z0-9_]*\}/, v) }
+      ret = {}
+      %i[ESCAPED UNRESERVED RESERVED DOMLABEL TOPLABEL HOSTNAME URIC URIC_NO_SLASH QUERY FRAGMENT IPV4ADDR IPV6ADDR IPV6REF HOST PORT HOSTPORT USERINFO PATH_SEGMENTS REG_NAME REL_SEGMENT SCHEME ABS_PATH REL_PATH NET_PATH HIER_PART OPAQUE_PART ABS_URI REL_URI URI_REF X_ABS_URI X_REL_URI].each { |k| ret[k] = v["{#{k}}"] }
+      ret
+    end
+
+    def initialize_regexp(pattern)
+      v = {}
+      pattern.each { |k, s| v["{#{k}}"] = s }
+      ret = {}
+      keys = %i[ABS_URI REL_URI URI_REF ABS_URI_REF REL_URI_REF ESCAPED UNSAFE SCHEME USERINFO HOST PORT OPAQUE REGISTRY ABS_PATH REL_PATH QUERY FRAGMENT]
+      extended = [1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+      templates = [
+        "\\A\\s*+{X_ABS_URI}\\s*\\z",
+        "\\A\\s*+{X_REL_URI}\\s*\\z",
+        "{URI_REF}",
+        "{X_ABS_URI}",
+        "{X_REL_URI}",
+        "{ESCAPED}",
+        "[^{UNRESERVED}{RESERVED}]",
+        "\\A{SCHEME}\\z",
+        "\\A{USERINFO}\\z",
+        "\\A{HOST}\\z",
+        "\\A{PORT}\\z",
+        "\\A{OPAQUE_PART}\\z",
+        "\\A{REG_NAME}\\z",
+        "\\A{ABS_PATH}\\z",
+        "\\A{REL_PATH}\\z",
+        "\\A{QUERY}\\z",
+        "\\A{FRAGMENT}\\z",
+      ]
+      keys.size.times { |i| ret[keys[i]] = Regexp.new(templates[i].gsub(/\{[A-Z][A-Z0-9_]*\}/, v), extended[i] == 1 ? Regexp::EXTENDED : 0) }
+      ret
+    end
+
+
+    def convert_to_uri(uri)
+      URI.for_merge(uri)
+    end
   end
 
-  def self.parse(str)
-    scheme, userinfo, host, port, _registry, path, opaque, query, fragment = split(str)
-    klass = scheme_class(scheme)
-    if opaque
-      if klass == MailTo
-        to = opaque.index("?") ? opaque[0, opaque.index("?")] : opaque
-        raise InvalidComponentError, "unrecognised opaque part for mailtoURL: #{opaque}" if to !~ /\A(?:[^@,;]+@[^@,;]+(?:\z|[,;]))*\z/
-      end
-      u = klass.new(scheme, nil, nil, nil, nil, nil, fragment)
-      u.opaque = opaque
-      return u
+  # The parser URI.parse is (URI::DEFAULT_PARSER), CRuby's: RFC 3986's
+  # grammar as one regexp for a URI and one for a relative reference,
+  # which #split matches to answer the nine components. #extract,
+  # #make_regexp, #escape and #unescape hand over to the RFC 2396 parser,
+  # as CRuby's do.
+  class RFC3986_Parser
+    HOST = %r[
+      (?<IP-literal>\[(?:
+          (?<IPv6address>
+            (?:\h{1,4}:){6}
+            (?<ls32>\h{1,4}:\h{1,4}
+            | (?<IPv4address>(?<dec-octet>[1-9]\d|1\d{2}|2[0-4]\d|25[0-5]|\d)
+                \.\g<dec-octet>\.\g<dec-octet>\.\g<dec-octet>)
+            )
+          | ::(?:\h{1,4}:){5}\g<ls32>
+          | \h{1,4}?::(?:\h{1,4}:){4}\g<ls32>
+          | (?:(?:\h{1,4}:)?\h{1,4})?::(?:\h{1,4}:){3}\g<ls32>
+          | (?:(?:\h{1,4}:){,2}\h{1,4})?::(?:\h{1,4}:){2}\g<ls32>
+          | (?:(?:\h{1,4}:){,3}\h{1,4})?::\h{1,4}:\g<ls32>
+          | (?:(?:\h{1,4}:){,4}\h{1,4})?::\g<ls32>
+          | (?:(?:\h{1,4}:){,5}\h{1,4})?::\h{1,4}
+          | (?:(?:\h{1,4}:){,6}\h{1,4})?::
+          )
+        | (?<IPvFuture>v\h++\.[!$&-.0-9:;=A-Z_a-z~]++)
+        )\])
+    | \g<IPv4address>
+    | (?<reg-name>(?:%\h\h|[!$&-.0-9;=A-Z_a-z~])*+)
+    ]x
+    USERINFO = /(?:%\h\h|[!$&-.0-9:;=A-Z_a-z~])*+/
+    SCHEME = %r[[A-Za-z][+\-.0-9A-Za-z]*+].source
+    SEG = %r[(?:%\h\h|[!$&-.0-9:;=@A-Z_a-z~/])].source
+    SEG_NC = %r[(?:%\h\h|[!$&-.0-9;=@A-Z_a-z~])].source
+    FRAGMENT = %r[(?:%\h\h|[!$&-.0-9:;=@A-Z_a-z~/?])*+].source
+    RFC3986_URI = %r[\A
+    (?<seg>#{SEG}){0}
+    (?<URI>
+      (?<scheme>#{SCHEME}):
+      (?<hier-part>//
+        (?<authority>
+          (?:(?<userinfo>#{USERINFO.source})@)?
+          (?<host>#{HOST.source.delete(" \n")})
+          (?::(?<port>\d*+))?
+        )
+        (?<path-abempty>(?:/\g<seg>*+)?)
+      | (?<path-absolute>/((?!/)\g<seg>++)?)
+      | (?<path-rootless>(?!/)\g<seg>++)
+      | (?<path-empty>)
+      )
+      (?:\?(?<query>[^\#]*+))?
+      (?:\#(?<fragment>#{FRAGMENT}))?
+    )\z]x
+    RFC3986_relative_ref = %r[\A
+    (?<seg>#{SEG}){0}
+    (?<relative-ref>
+      (?<relative-part>//
+        (?<authority>
+          (?:(?<userinfo>#{USERINFO.source})@)?
+          (?<host>#{HOST.source.delete(" \n")}(?<!/))?
+          (?::(?<port>\d*+))?
+        )
+        (?<path-abempty>(?:/\g<seg>*+)?)
+      | (?<path-absolute>/\g<seg>*+)
+      | (?<path-noscheme>#{SEG_NC}++(?:/\g<seg>*+)?)
+      | (?<path-empty>)
+      )
+      (?:\?(?<query>[^#]*+))?
+      (?:\#(?<fragment>#{FRAGMENT}))?
+    )\z]x
+
+    attr_reader :regexp
+
+    def initialize
+      @regexp = default_regexp
     end
-    pn = port.nil? || port.empty? ? klass.default_port : port.to_i
-    klass.new(scheme, userinfo, host, pn, path, query, fragment)
+
+    def split(uri)
+      unless uri.is_a?(String)
+        raise InvalidURIError, "bad URI (is not URI?): #{uri.inspect}" unless uri.is_a?(Generic)
+        uri = uri.to_s
+      end
+      raise InvalidURIError, "URI must be ascii only #{uri.dump}" unless uri.ascii_only?
+      if (m = RFC3986_URI.match(uri))
+        query = m["query"]
+        scheme = m["scheme"]
+        opaque = m["path-rootless"]
+        if opaque
+          opaque = "#{opaque}?#{query}" if query
+          [scheme, nil, nil, nil, nil, nil, opaque, nil, m["fragment"]]
+        else
+          path = m["path-abempty"] || m["path-absolute"] || m["path-empty"]
+          [scheme, m["userinfo"], m["host"], m["port"], nil, path, nil, query, m["fragment"]]
+        end
+      elsif (m = RFC3986_relative_ref.match(uri))
+        path = m["path-abempty"] || m["path-absolute"] || m["path-noscheme"] || m["path-empty"]
+        [nil, m["userinfo"], m["host"], m["port"], nil, path, nil, m["query"], m["fragment"]]
+      else
+        raise InvalidURIError, "bad URI (is not URI?): #{uri.inspect}"
+      end
+    end
+
+    def parse(uri)
+      URI.from_split(split(uri))
+    end
+
+    def join(*uris)
+      u = URI.for_merge(uris[0])
+      uris[1..-1].each { |r| u = u.merge(r) }
+      u
+    end
+
+    def extract(str, schemes = nil)
+      warn "URI::RFC3986_PARSER.extract is obsolete. Use URI::RFC2396_PARSER.extract explicitly." if $VERBOSE
+      if block_given?
+        RFC2396_PARSER.extract(str, schemes) { |u| yield u }
+      else
+        RFC2396_PARSER.extract(str, schemes)
+      end
+    end
+
+    def make_regexp(schemes = nil)
+      warn "URI::RFC3986_PARSER.make_regexp is obsolete. Use URI::RFC2396_PARSER.make_regexp explicitly." if $VERBOSE
+      RFC2396_PARSER.make_regexp(schemes)
+    end
+
+    def escape(str, unsafe = nil)
+      warn "URI::RFC3986_PARSER.escape is obsolete. Use URI::RFC2396_PARSER.escape explicitly." if $VERBOSE
+      unsafe ? RFC2396_PARSER.escape(str, unsafe) : RFC2396_PARSER.escape(str)
+    end
+
+    def unescape(str, escaped = nil)
+      warn "URI::RFC3986_PARSER.unescape is obsolete. Use URI::RFC2396_PARSER.unescape explicitly." if $VERBOSE
+      escaped ? RFC2396_PARSER.unescape(str, escaped) : RFC2396_PARSER.unescape(str)
+    end
+
+    private
+
+    def default_regexp
+      {
+        SCHEME: %r[\A#{SCHEME}\z],
+        USERINFO: %r[\A#{USERINFO}\z],
+        HOST: %r[\A#{HOST}\z],
+        ABS_PATH: %r[\A/#{SEG}*+\z],
+        REL_PATH: %r[\A(?!/)#{SEG}++\z],
+        QUERY: %r[\A(?:%\h\h|[!$&-.0-9:;=@A-Z_a-z~/?])*+\z],
+        FRAGMENT: %r[\A#{FRAGMENT}\z],
+        OPAQUE: %r[\A(?:[^/].*)?\z],
+        PORT: /\A[\x09\x0a\x0c\x0d ]*+\d*[\x09\x0a\x0c\x0d ]*\z/,
+      }
+    end
+  end
+
+  RFC2396_PARSER = RFC2396_Parser.new
+  RFC3986_PARSER = RFC3986_Parser.new
+  DEFAULT_PARSER = RFC3986_PARSER
+  PARSER = RFC3986_PARSER
+  Parser = RFC3986_Parser
+  REGEXP = RFC2396_REGEXP
+
+  VERSION = "1.1.2"
+  VERSION_CODE = "010102"
+
+  # The WHATWG Encoding Standard's labels, each to the encoding it names
+  # (CRuby's table), which URI.get_encoding looks a label up in.
+  WEB_ENCODINGS_ = {
+    "unicode-1-1-utf-8" => "utf-8", "utf-8" => "utf-8", "utf8" => "utf-8", "866" => "ibm866",
+    "cp866" => "ibm866", "csibm866" => "ibm866", "ibm866" => "ibm866", "csisolatin2" => "iso-8859-2",
+    "iso-8859-2" => "iso-8859-2", "iso-ir-101" => "iso-8859-2", "iso8859-2" => "iso-8859-2", "iso88592" => "iso-8859-2",
+    "iso_8859-2" => "iso-8859-2", "iso_8859-2:1987" => "iso-8859-2", "l2" => "iso-8859-2", "latin2" => "iso-8859-2",
+    "csisolatin3" => "iso-8859-3", "iso-8859-3" => "iso-8859-3", "iso-ir-109" => "iso-8859-3", "iso8859-3" => "iso-8859-3",
+    "iso88593" => "iso-8859-3", "iso_8859-3" => "iso-8859-3", "iso_8859-3:1988" => "iso-8859-3", "l3" => "iso-8859-3",
+    "latin3" => "iso-8859-3", "csisolatin4" => "iso-8859-4", "iso-8859-4" => "iso-8859-4", "iso-ir-110" => "iso-8859-4",
+    "iso8859-4" => "iso-8859-4", "iso88594" => "iso-8859-4", "iso_8859-4" => "iso-8859-4", "iso_8859-4:1988" => "iso-8859-4",
+    "l4" => "iso-8859-4", "latin4" => "iso-8859-4", "csisolatincyrillic" => "iso-8859-5", "cyrillic" => "iso-8859-5",
+    "iso-8859-5" => "iso-8859-5", "iso-ir-144" => "iso-8859-5", "iso8859-5" => "iso-8859-5", "iso88595" => "iso-8859-5",
+    "iso_8859-5" => "iso-8859-5", "iso_8859-5:1988" => "iso-8859-5", "arabic" => "iso-8859-6", "asmo-708" => "iso-8859-6",
+    "csiso88596e" => "iso-8859-6", "csiso88596i" => "iso-8859-6", "csisolatinarabic" => "iso-8859-6", "ecma-114" => "iso-8859-6",
+    "iso-8859-6" => "iso-8859-6", "iso-8859-6-e" => "iso-8859-6", "iso-8859-6-i" => "iso-8859-6", "iso-ir-127" => "iso-8859-6",
+    "iso8859-6" => "iso-8859-6", "iso88596" => "iso-8859-6", "iso_8859-6" => "iso-8859-6", "iso_8859-6:1987" => "iso-8859-6",
+    "csisolatingreek" => "iso-8859-7", "ecma-118" => "iso-8859-7", "elot_928" => "iso-8859-7", "greek" => "iso-8859-7",
+    "greek8" => "iso-8859-7", "iso-8859-7" => "iso-8859-7", "iso-ir-126" => "iso-8859-7", "iso8859-7" => "iso-8859-7",
+    "iso88597" => "iso-8859-7", "iso_8859-7" => "iso-8859-7", "iso_8859-7:1987" => "iso-8859-7", "sun_eu_greek" => "iso-8859-7",
+    "csiso88598e" => "iso-8859-8", "csisolatinhebrew" => "iso-8859-8", "hebrew" => "iso-8859-8", "iso-8859-8" => "iso-8859-8",
+    "iso-8859-8-e" => "iso-8859-8", "iso-ir-138" => "iso-8859-8", "iso8859-8" => "iso-8859-8", "iso88598" => "iso-8859-8",
+    "iso_8859-8" => "iso-8859-8", "iso_8859-8:1988" => "iso-8859-8", "visual" => "iso-8859-8", "csisolatin6" => "iso-8859-10",
+    "iso-8859-10" => "iso-8859-10", "iso-ir-157" => "iso-8859-10", "iso8859-10" => "iso-8859-10", "iso885910" => "iso-8859-10",
+    "l6" => "iso-8859-10", "latin6" => "iso-8859-10", "iso-8859-13" => "iso-8859-13", "iso8859-13" => "iso-8859-13",
+    "iso885913" => "iso-8859-13", "iso-8859-14" => "iso-8859-14", "iso8859-14" => "iso-8859-14", "iso885914" => "iso-8859-14",
+    "csisolatin9" => "iso-8859-15", "iso-8859-15" => "iso-8859-15", "iso8859-15" => "iso-8859-15", "iso885915" => "iso-8859-15",
+    "iso_8859-15" => "iso-8859-15", "l9" => "iso-8859-15", "iso-8859-16" => "iso-8859-16", "cskoi8r" => "koi8-r",
+    "koi" => "koi8-r", "koi8" => "koi8-r", "koi8-r" => "koi8-r", "koi8_r" => "koi8-r",
+    "koi8-ru" => "koi8-u", "koi8-u" => "koi8-u", "dos-874" => "windows-874", "iso-8859-11" => "windows-874",
+    "iso8859-11" => "windows-874", "iso885911" => "windows-874", "tis-620" => "windows-874", "windows-874" => "windows-874",
+    "cp1250" => "windows-1250", "windows-1250" => "windows-1250", "x-cp1250" => "windows-1250", "cp1251" => "windows-1251",
+    "windows-1251" => "windows-1251", "x-cp1251" => "windows-1251", "ansi_x3.4-1968" => "windows-1252", "ascii" => "windows-1252",
+    "cp1252" => "windows-1252", "cp819" => "windows-1252", "csisolatin1" => "windows-1252", "ibm819" => "windows-1252",
+    "iso-8859-1" => "windows-1252", "iso-ir-100" => "windows-1252", "iso8859-1" => "windows-1252", "iso88591" => "windows-1252",
+    "iso_8859-1" => "windows-1252", "iso_8859-1:1987" => "windows-1252", "l1" => "windows-1252", "latin1" => "windows-1252",
+    "us-ascii" => "windows-1252", "windows-1252" => "windows-1252", "x-cp1252" => "windows-1252", "cp1253" => "windows-1253",
+    "windows-1253" => "windows-1253", "x-cp1253" => "windows-1253", "cp1254" => "windows-1254", "csisolatin5" => "windows-1254",
+    "iso-8859-9" => "windows-1254", "iso-ir-148" => "windows-1254", "iso8859-9" => "windows-1254", "iso88599" => "windows-1254",
+    "iso_8859-9" => "windows-1254", "iso_8859-9:1989" => "windows-1254", "l5" => "windows-1254", "latin5" => "windows-1254",
+    "windows-1254" => "windows-1254", "x-cp1254" => "windows-1254", "cp1255" => "windows-1255", "windows-1255" => "windows-1255",
+    "x-cp1255" => "windows-1255", "cp1256" => "windows-1256", "windows-1256" => "windows-1256", "x-cp1256" => "windows-1256",
+    "cp1257" => "windows-1257", "windows-1257" => "windows-1257", "x-cp1257" => "windows-1257", "cp1258" => "windows-1258",
+    "windows-1258" => "windows-1258", "x-cp1258" => "windows-1258", "x-mac-cyrillic" => "macCyrillic", "x-mac-ukrainian" => "macCyrillic",
+    "chinese" => "gbk", "csgb2312" => "gbk", "csiso58gb231280" => "gbk", "gb2312" => "gbk",
+    "gb_2312" => "gbk", "gb_2312-80" => "gbk", "gbk" => "gbk", "iso-ir-58" => "gbk",
+    "x-gbk" => "gbk", "gb18030" => "gb18030", "big5" => "big5", "big5-hkscs" => "big5",
+    "cn-big5" => "big5", "csbig5" => "big5", "x-x-big5" => "big5", "cseucpkdfmtjapanese" => "cp51932",
+    "euc-jp" => "cp51932", "x-euc-jp" => "cp51932", "csiso2022jp" => "cp50221", "iso-2022-jp" => "cp50221",
+    "csshiftjis" => "Windows-31J", "ms932" => "Windows-31J", "ms_kanji" => "Windows-31J", "shift-jis" => "Windows-31J",
+    "shift_jis" => "Windows-31J", "sjis" => "Windows-31J", "windows-31j" => "Windows-31J", "x-sjis" => "Windows-31J",
+    "cseuckr" => "euc-kr", "csksc56011987" => "euc-kr", "euc-kr" => "euc-kr", "iso-ir-149" => "euc-kr",
+    "korean" => "euc-kr", "ks_c_5601-1987" => "euc-kr", "ks_c_5601-1989" => "euc-kr", "ksc5601" => "euc-kr",
+    "ksc_5601" => "euc-kr", "windows-949" => "euc-kr", "utf-16be" => "utf-16be", "utf-16" => "utf-16le",
+    "utf-16le" => "utf-16le",
+  }
+
+  # The Encoding a web label names ("latin1" is Windows-1252, as the
+  # Encoding Standard has it), nil for one it does not.
+  def self.get_encoding(label)
+    name = WEB_ENCODINGS_[label.to_str.strip.downcase]
+    return nil if name.nil?
+    begin
+      Encoding.find(name)
+    rescue ArgumentError
+      nil
+    end
+  end
+
+  def self.split(uri)
+    RFC3986_PARSER.split(uri)
+  end
+
+  def self.parse(uri)
+    RFC3986_PARSER.parse(uri)
+  end
+
+  # `URI.join("http://example.com/a/", "b", "../c")`: the first argument
+  # parsed, then each of the rest merged onto it in turn.
+  def self.join(*str)
+    RFC3986_PARSER.join(*str)
+  end
+
+  # Every absolute URI in +str+ (of one of +schemes+, when given); CRuby
+  # marks it obsolete.
+  def self.extract(str, schemes = nil)
+    warn "URI.extract is obsolete" if $VERBOSE
+    if block_given?
+      RFC2396_PARSER.extract(str, schemes) { |u| yield u }
+    else
+      RFC2396_PARSER.extract(str, schemes)
+    end
+  end
+
+  def self.regexp(schemes = nil)
+    warn "URI.regexp is obsolete" if $VERBOSE
+    RFC2396_PARSER.make_regexp(schemes)
   end
 
   # #merge's argument: a URI as it is, a String parsed.
@@ -1372,138 +1747,6 @@ module URI
     else
       raise ArgumentError, "bad argument (expected URI object or URI string)"
     end
-  end
-
-  # The RFC 2396 parser's #make_regexp, the pattern CRuby builds for an
-  # absolute URI. The rest of the parser (#split, #parse, #escape, the
-  # pattern and regexp tables) is not here.
-  class RFC2396_Parser
-    def make_regexp(schemes = nil)
-      x = x_abs_uri
-      return Regexp.new(x, Regexp::EXTENDED) unless schemes
-      Regexp.new("(?=(?i:#{Regexp.union(*schemes).source}):)#{x}", Regexp::EXTENDED)
-    end
-
-    private
-
-    # The pieces of CRuby's initialize_pattern the absolute-URI pattern uses.
-    def x_abs_uri
-      alpha = "a-zA-Z"
-      alnum = "#{alpha}\\d"
-      hex = "a-fA-F\\d"
-      escaped = "%[#{hex}]{2}"
-      unreserved = "\\-_.!~*'()#{alnum}"
-      reserved = ";/?:@&=+$,\\[\\]"
-      uric = "(?:[#{unreserved}#{reserved}]|#{escaped})"
-      uric_no_slash = "(?:[#{unreserved};?:@&=+$,]|#{escaped})"
-      query = "#{uric}*"
-      fragment = "#{uric}*"
-      hostname = "(?:[a-zA-Z0-9\\-.]|%\\h\\h)+"
-      ipv4addr = "\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}"
-      hex4 = "[#{hex}]{1,4}"
-      lastpart = "(?:#{hex4}|#{ipv4addr})"
-      hexseq1 = "(?:#{hex4}:)*#{hex4}"
-      hexseq2 = "(?:#{hex4}:)*#{lastpart}"
-      ipv6addr = "(?:#{hexseq2}|(?:#{hexseq1})?::(?:#{hexseq2})?)"
-      ipv6ref = "\\[#{ipv6addr}\\]"
-      host = "(?:#{hostname}|#{ipv4addr}|#{ipv6ref})"
-      userinfo = "(?:[#{unreserved};:&=+$,]|#{escaped})*"
-      pchar = "(?:[#{unreserved}:@&=+$,]|#{escaped})"
-      param = "#{pchar}*"
-      segment = "#{pchar}*(?:;#{param})*"
-      path_segments = "#{segment}(?:/#{segment})*"
-      reg_name = "(?:[#{unreserved}$,;:@&=+]|#{escaped})+"
-      scheme = "[#{alpha}][\\-+.#{alpha}\\d]*"
-      abs_path = "/#{path_segments}"
-      opaque_part = "#{uric_no_slash}#{uric}*"
-      "
-        (#{scheme}):                           (?# 1: scheme)
-        (?:
-           (#{opaque_part})                    (?# 2: opaque)
-        |
-           (?:(?:
-             //(?:
-                 (?:(?:(#{userinfo})@)?        (?# 3: userinfo)
-                   (?:(#{host})(?::(\\d*))?))? (?# 4: host, 5: port)
-               |
-                 (#{reg_name})                 (?# 6: registry)
-               )
-             |
-             (?!//))                           (?# XXX: '//' is the mark for hostport)
-             (#{abs_path})?                    (?# 7: path)
-           )(?:\\?(#{query}))?                 (?# 8: query)
-        )
-        (?:\\#(#{fragment}))?                  (?# 9: fragment)
-      "
-    end
-  end
-
-  RFC2396_PARSER = RFC2396_Parser.new
-
-  # The parser URI.parse is (URI::DEFAULT_PARSER): #parse, #split and #join
-  # answer as URI's own, and #escape / #unescape percent-encode what is
-  # neither reserved nor unreserved. #extract, #regexp and #make_regexp
-  # are absent.
-  class RFC3986_Parser
-    def split(uri)
-      URI.split(uri)
-    end
-
-    def parse(uri)
-      URI.parse(uri)
-    end
-
-    def join(*uris)
-      URI.join(*uris)
-    end
-
-    # Each byte of a character outside the unreserved and reserved sets as
-    # "%XX"; with +unsafe+, each match of it instead.
-    def escape(str, unsafe = nil)
-      out = String.new
-      if unsafe
-        str.to_s.gsub(unsafe) { |m| m.bytes.map { |b| format("%%%02X", b) }.join }
-      else
-        str.to_s.each_char do |ch|
-          if ch =~ /\A[\-_.!~*'()a-zA-Z\d;\/?:@&=+$,\[\]]\z/
-            out << ch
-          else
-            ch.bytes.each { |b| out << format("%%%02X", b) }
-          end
-        end
-        out
-      end
-    end
-
-    # Each "%" and two hex digits as that byte; any other "%" stays.
-    def unescape(str)
-      out = String.new
-      s = str.to_s
-      i = 0
-      while i < s.length
-        h1 = s[i] == "%" ? URI.hex_digit(s[i + 1]) : nil
-        h2 = h1 ? URI.hex_digit(s[i + 2]) : nil
-        if h1 && h2
-          out << (h1 * 16 + h2).chr
-          i += 3
-        else
-          out << s[i]
-          i += 1
-        end
-      end
-      out.force_encoding(Encoding::UTF_8)
-    end
-  end
-
-  RFC3986_PARSER = RFC3986_Parser.new
-  DEFAULT_PARSER = RFC3986_PARSER
-
-  # `URI.join("http://example.com/a/", "b", "../c")`: the first argument
-  # parsed, then each of the rest merged onto it in turn.
-  def self.join(base, *rels)
-    u = for_merge(base)
-    rels.each { |r| u = u.merge(r) }
-    u
   end
 
   # The bytes of an IPv4 (4) or IPv6 (16) address, nil for anything else.
