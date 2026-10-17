@@ -4836,7 +4836,12 @@ void register_ffi_decls(Compiler *c) {
         c->native_methods[mi].args = arg_specs;
         c->native_methods[mi].rest = en > 0 && sp_streq(arg_specs[en - 1], "rest");
         c->native_methods[mi].nargs = c->native_methods[mi].rest ? en - 1 : en;
-        c->native_methods[mi].share = 0;
+        /* a cstring or cbinstr answer is the callee's own buffer, copied
+           onto the String heap at the call site (emit of a native call):
+           a new String each call, whatever the package declares. Under
+           --share-strings only, as a package's <name>.share.rb is read. */
+        c->native_methods[mi].share = c->share_strings && (sp_streq(ret_spec, "cstring") || sp_streq(ret_spec, "cbinstr"))
+                                      ? NSH_FRESH : 0;
         c->native_methods[mi].share_csym = NULL;
         continue;
       }
