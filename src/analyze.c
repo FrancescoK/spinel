@@ -33333,10 +33333,6 @@ int file_stat_nil_call(Compiler *c, int v) {
   return 1;
 }
 
-/* The classes a `new` receiver can be: a local holding one class, a
-   constant, or a class value chosen at run time -- each branch of a `?:` or
-   an `if`, a parenthesized one, or an element of a literal Array of them
-   (`[A, B][i]`). Up to cap of them, in *out; answers the count. */
 /* Is a `new` on recv a run-time switch over every class of the program: a
    class value no analysis names (`Object.const_get(x).new`, `o.class.new`),
    not a constant, self, an inline `Struct.new(...)`, a `self.class` naming
@@ -33350,15 +33346,28 @@ int new_recv_every_class(Compiler *c, int recv) {
   TyKind rt = infer_type(c, recv);
   return rt == TY_CLASS || rt == TY_POLY;
 }
+/* The classes a `new` receiver can be: a local holding one class, a
+   constant, or a class value chosen at run time -- each branch of a `?:` or
+   an `if`, a parenthesized one, or an element of a literal Array of them
+   (`[A, B][i]`). Up to cap of them, in *out; answers the count, or 0 when
+   some value the receiver can be names no class here (a call, a local no
+   class is known to hold, a branch that is missing) or the classes do not
+   all fit: the caller then takes the receiver for a class value no analysis
+   names, and builds every class. A partial set built only the classes it
+   named, and a class outside it, chosen at run time, was read as another. */
 typedef struct {
   Compiler *c;
   int *out;
-  int cap, n;
+  int cap, n, ok;
 } NewRecvArms;
 static int new_recv_arm(const VpLeaf *leaf, void *ud) {
   NewRecvArms *a = ud;
-  if (leaf->kind == VPK_EXPR && a->cap - a->n > 0)
-    a->n += new_recv_classes(a->c, leaf->node, a->out + a->n, a->cap - a->n);
+  int k = leaf->kind == VPK_EXPR && a->cap - a->n > 0 ? new_recv_classes(a->c, leaf->node, a->out + a->n, a->cap - a->n) : 0;
+  if (k <= 0) {
+    a->ok = 0;
+    return 1;
+  }
+  a->n += k;
   return 0;
 }
 int new_recv_classes(Compiler *c, int recv, int *out, int cap) {
@@ -33372,9 +33381,9 @@ int new_recv_classes(Compiler *c, int recv, int *out, int cap) {
     out[0] = k; return 1;
   }
   if (rk == NK_ParenthesesNode || rk == NK_IfNode || rk == NK_ElseNode || rk == NK_StatementsNode) {
-    NewRecvArms a = { c, out, cap, 0 };
+    NewRecvArms a = { c, out, cap, 0, 1 };
     for_each_value_position(nt, recv, VPS_IF, new_recv_arm, &a);
-    return a.n;
+    return a.ok ? a.n : 0;
   }
   /* `[A, B][i]`: every element of the literal */
   if (rk == NK_CallNode && nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "[]")) {
@@ -33382,7 +33391,11 @@ int new_recv_classes(Compiler *c, int recv, int *out, int cap) {
     if (ar < 0 || nt_kind(nt, ar) != NK_ArrayNode) return 0;
     int en = 0; const int *ev = nt_arr(nt, ar, "elements", &en);
     int n = 0;
-    for (int e = 0; e < en && n < cap; e++) n += new_recv_classes(c, ev[e], out + n, cap - n);
+    for (int e = 0; e < en; e++) {
+      int k = n < cap ? new_recv_classes(c, ev[e], out + n, cap - n) : 0;
+      if (k <= 0) return 0;
+      n += k;
+    }
     return n;
   }
   return 0;
