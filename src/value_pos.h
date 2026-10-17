@@ -54,7 +54,16 @@ typedef struct {
                       case, begin, rescue clause, `&&`, `||` and rescue
                       modifier counts one, a wrapper, a write or a followed
                       jump none */
+  unsigned reach;  /* VPR_*: which truth values the leaf is the walk's value
+                      for. 0 for a leaf that is the value whatever it holds */
 } VpLeaf;
+
+/* A left operand is the value of `a || b` only when truthy and of `a && b`
+   (under VP_AND_LEFT) only when falsy; every leaf below it inherits that, so
+   a caller judging the type of a leaf can set aside the values it never
+   answers with (a nil or false from the left of `||`; anything truthy from
+   the left of `&&`). A leaf with both bits is never the value. */
+enum { VPR_TRUTHY = 1u << 0, VPR_FALSY = 1u << 1 };
 
 /* A nonzero answer stops the walk. */
 typedef int (*VpFn)(const VpLeaf *leaf, void *ud);
@@ -84,6 +93,11 @@ enum {
   /* a case/in without an else yields VPK_NIL (CRuby raises instead). Off, it
      yields nothing for the missing else. */
   VP_CASE_IN_RAISE_NIL = 1u << 6,
+  /* an `a || b` or `a && b` that is walked (VPS_LOGIC) is also yielded as a
+     leaf of its own, standing for the whole expression, before its operands:
+     for a caller that judges the type the expression has as a whole as well
+     as the operands one by one. Not part of VP_ALL_FLAGS. */
+  VP_LOGIC_NODES = 1u << 7,
 
   /* The shapes the walk sees through; a shape that is off is a leaf. No bit
      at all means every shape. A walker passes the subset it handled before it

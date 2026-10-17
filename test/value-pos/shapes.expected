@@ -93,18 +93,18 @@ def rescue_modifier_arms line 186
   EXPR #674 IntegerNode line 187 arm 1 parent #671 RescueModifierNode depth 2
   EXPR #677 IntegerNode line 187 arm 1 parent #668 IfNode depth 1
 def and_op line 190
-  EXPR #684 LocalVariableReadNode line 191 arm 0 parent #683 AndNode depth 1
+  EXPR #684 LocalVariableReadNode line 191 arm 0 parent #683 AndNode depth 1 reach falsy
   EXPR #685 LocalVariableReadNode line 191 arm 1 parent #683 AndNode depth 1
 def or_op line 194
-  EXPR #692 LocalVariableReadNode line 195 arm 0 parent #691 OrNode depth 1
+  EXPR #692 LocalVariableReadNode line 195 arm 0 parent #691 OrNode depth 1 reach truthy
   EXPR #693 LocalVariableReadNode line 195 arm 1 parent #691 OrNode depth 1
 def or_chain line 198
-  EXPR #702 LocalVariableReadNode line 199 arm 0 parent #701 OrNode depth 2
-  EXPR #703 LocalVariableReadNode line 199 arm 1 parent #701 OrNode depth 2
+  EXPR #702 LocalVariableReadNode line 199 arm 0 parent #701 OrNode depth 2 reach truthy
+  EXPR #703 LocalVariableReadNode line 199 arm 1 parent #701 OrNode depth 2 reach truthy
   EXPR #704 LocalVariableReadNode line 199 arm 1 parent #700 OrNode depth 1
 def mixed_logic line 202
-  EXPR #713 LocalVariableReadNode line 203 arm 0 parent #712 AndNode depth 2
-  EXPR #714 LocalVariableReadNode line 203 arm 1 parent #712 AndNode depth 2
+  EXPR #713 LocalVariableReadNode line 203 arm 0 parent #712 AndNode depth 2 reach never
+  EXPR #714 LocalVariableReadNode line 203 arm 1 parent #712 AndNode depth 2 reach truthy
   EXPR #715 LocalVariableReadNode line 203 arm 1 parent #711 OrNode depth 1
 def paren_empty line 206
   NIL line 206 arm 0 parent - depth 0
@@ -154,34 +154,34 @@ def write_ivar line 282
   EXPR #896 IntegerNode line 283 arm 0 parent #893 IfNode depth 1
   EXPR #899 IntegerNode line 283 arm 1 parent #893 IfNode depth 1
 def or_write line 286
-  EXPR #904 LocalVariableOrWriteNode line 287 arm 0 parent - depth 0
+  EXPR #904 LocalVariableOrWriteNode line 287 arm 0 parent - depth 0 reach truthy
   EXPR #910 IntegerNode line 287 arm 0 parent #907 IfNode depth 1
   EXPR #913 IntegerNode line 287 arm 1 parent #907 IfNode depth 1
 def and_write line 290
-  EXPR #920 LocalVariableAndWriteNode line 292 arm 0 parent - depth 0
+  EXPR #920 LocalVariableAndWriteNode line 292 arm 0 parent - depth 0 reach falsy
   EXPR #921 LocalVariableReadNode line 292 arm 0 parent #920 LocalVariableAndWriteNode depth 0
 def ivar_or_write line 295
-  EXPR #926 InstanceVariableOrWriteNode line 296 arm 0 parent - depth 0
+  EXPR #926 InstanceVariableOrWriteNode line 296 arm 0 parent - depth 0 reach truthy
   EXPR #932 IntegerNode line 296 arm 0 parent #929 IfNode depth 1
   EXPR #935 IntegerNode line 296 arm 1 parent #929 IfNode depth 1
 def gvar_or_write line 299
-  EXPR #940 GlobalVariableOrWriteNode line 300 arm 0 parent - depth 0
+  EXPR #940 GlobalVariableOrWriteNode line 300 arm 0 parent - depth 0 reach truthy
   EXPR #941 LocalVariableReadNode line 300 arm 0 parent #940 GlobalVariableOrWriteNode depth 0
 def gvar_and_write line 303
-  EXPR #946 GlobalVariableAndWriteNode line 304 arm 0 parent - depth 0
+  EXPR #946 GlobalVariableAndWriteNode line 304 arm 0 parent - depth 0 reach falsy
   EXPR #947 LocalVariableReadNode line 304 arm 0 parent #946 GlobalVariableAndWriteNode depth 0
 def call_or_write line 307
-  EXPR #952 CallOrWriteNode line 308 arm 0 parent - depth 0
+  EXPR #952 CallOrWriteNode line 308 arm 0 parent - depth 0 reach truthy
   EXPR #954 IntegerNode line 308 arm 0 parent #952 CallOrWriteNode depth 0
 def index_and_write line 311
-  EXPR #959 IndexAndWriteNode line 312 arm 0 parent - depth 0
+  EXPR #959 IndexAndWriteNode line 312 arm 0 parent - depth 0 reach falsy
   EXPR #963 IntegerNode line 312 arm 0 parent #959 IndexAndWriteNode depth 0
 def operator_write line 315
   EXPR #970 LocalVariableOperatorWriteNode line 317 arm 0 parent - depth 0
 def attr_write line 320
   EXPR #976 CallNode line 321 arm 0 parent - depth 0
 def index_or_write line 324
-  EXPR #984 IndexOrWriteNode line 325 arm 0 parent - depth 0
+  EXPR #984 IndexOrWriteNode line 325 arm 0 parent - depth 0 reach truthy
   EXPR #988 IntegerNode line 325 arm 0 parent #984 IndexOrWriteNode depth 0
 def multi_write line 328
   EXPR #996 ArrayNode line 329 arm 0 parent #993 MultiWriteNode depth 0
@@ -191,8 +191,8 @@ def write_nested line 332
 def many_shapes line 336
   EXPR #1032 LocalVariableReadNode line 339 arm 0 parent #1030 BeginNode depth 3
   EXPR #1035 IntegerNode line 339 arm 1 parent #1033 RescueNode depth 4
-  EXPR #1040 LocalVariableReadNode line 340 arm 0 parent #1039 AndNode depth 4
-  EXPR #1041 LocalVariableReadNode line 340 arm 1 parent #1039 AndNode depth 4
+  EXPR #1040 LocalVariableReadNode line 340 arm 0 parent #1039 AndNode depth 4 reach never
+  EXPR #1041 LocalVariableReadNode line 340 arm 1 parent #1039 AndNode depth 4 reach truthy
   EXPR #1045 LocalVariableReadNode line 340 arm 0 parent #1044 RescueModifierNode depth 4
   EXPR #1046 IntegerNode line 340 arm 1 parent #1044 RescueModifierNode depth 4
   EXPR #1050 LocalVariableReadNode line 343 arm 0 parent #1049 LocalVariableWriteNode depth 1
