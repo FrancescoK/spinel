@@ -53,7 +53,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: ty-setter-check imemo-shadow-test int-min-test all hooks share-strings-test line-map-check gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
+.PHONY: ty-setter-check imemo-shadow-test int-min-test all hooks share-strings-test line-map-check gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check value-edges-check value-edges-regen re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-test-shared gate-bench gc-phases-test gc-stress-test gc-str-major-test gc-str-budget-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot rubyboy gate-rubyboy scale-test clean install uninstall deps tools
@@ -282,13 +282,13 @@ build/rbs/%.o: $(RBS_DIR)/src/%.c
 # `spinel` is the single binary: it emits C and then drives cc to link it.
 # (SPINEL itself is defined above, just before the `all` target.)
 
-SPINEL_HDRS = src/cext_bridge.h src/builtin_ops.h src/builtin_name_traits.inc src/core_class_methods.inc src/builtin_zero_ops.inc src/builtin_arity.inc src/builtin_share_pure.inc src/codegen_call_arms.h src/builtin_names.h src/ty_traits.inc src/call_plan.h src/codegen_poly.h src/repr.h src/holder.h src/share.h src/node_table.h src/codegen.h src/codegen_internal.h src/types.h src/compiler.h src/analyze.h src/analyze_internal.h src/ffi_spec.h src/csplit.h $(PLATFORM_HDRS)
+SPINEL_HDRS = src/cext_bridge.h src/builtin_ops.h src/builtin_name_traits.inc src/core_class_methods.inc src/builtin_zero_ops.inc src/builtin_arity.inc src/builtin_share_pure.inc src/codegen_call_arms.h src/builtin_names.h src/ty_traits.inc src/call_plan.h src/value_pos.h src/value_pos_arms.inc src/codegen_poly.h src/repr.h src/holder.h src/share.h src/node_table.h src/codegen.h src/codegen_internal.h src/types.h src/compiler.h src/analyze.h src/analyze_internal.h src/ffi_spec.h src/csplit.h $(PLATFORM_HDRS)
 build/csrc/analyze_desugar.o build/csrc-work/analyze_desugar.o build/csrc/codegen_call.o build/csrc-work/codegen_call.o: $(wildcard src/*_method_names.inc)
 SPINEL_OBJ  = build/csrc/node_table.o build/csrc/types.o build/csrc/compiler.o \
                build/csrc/ffi_spec.o \
                build/csrc/analyze.o build/csrc/analyze_util.o build/csrc/analyze_infer.o build/csrc/analyze_infer_recv.o \
                build/csrc/analyze_cext.o build/csrc/analyze_scope.o build/csrc/analyze_pass.o build/csrc/analyze_desugar.o build/csrc/analyze_nil.o build/csrc/analyze_cls.o build/csrc/analyze_arm.o build/csrc/analyze_const.o build/csrc/analyze_share.o build/csrc/repr.o build/csrc/holder.o build/csrc/codegen.o build/csrc/codegen_util.o build/csrc/ty_traits_check.o \
-               build/csrc/codegen_fold.o build/csrc/codegen_call.o build/csrc/codegen_call_poly.o build/csrc/codegen_call_method.o build/csrc/codegen_call_io.o build/csrc/codegen_call_kernel.o build/csrc/codegen_call_exception.o build/csrc/codegen_call_module.o build/csrc/codegen_call_string.o build/csrc/codegen_call_class.o build/csrc/codegen_call_operator.o build/csrc/codegen_call_object.o build/csrc/codegen_ops.o build/csrc/codegen_call_concurrency.o build/csrc/codegen_call_numeric.o build/csrc/codegen_call_hash.o build/csrc/codegen_call_array.o build/csrc/codegen_view.o build/csrc/builtin_ops.o build/csrc/builtin_names.o build/csrc/codegen_call_recv.o build/csrc/codegen_iter.o build/csrc/call_plan.o build/csrc/codegen_poly_plan.o build/csrc/share_check.o build/csrc/share_plan.o build/csrc/codegen_str.o \
+               build/csrc/codegen_fold.o build/csrc/codegen_call.o build/csrc/codegen_call_poly.o build/csrc/codegen_call_method.o build/csrc/codegen_call_io.o build/csrc/codegen_call_kernel.o build/csrc/codegen_call_exception.o build/csrc/codegen_call_module.o build/csrc/codegen_call_string.o build/csrc/codegen_call_class.o build/csrc/codegen_call_operator.o build/csrc/codegen_call_object.o build/csrc/codegen_ops.o build/csrc/codegen_call_concurrency.o build/csrc/codegen_call_numeric.o build/csrc/codegen_call_hash.o build/csrc/codegen_call_array.o build/csrc/codegen_view.o build/csrc/builtin_ops.o build/csrc/builtin_names.o build/csrc/codegen_call_recv.o build/csrc/codegen_iter.o build/csrc/call_plan.o build/csrc/value_pos.o build/csrc/codegen_poly_plan.o build/csrc/share_check.o build/csrc/share_plan.o build/csrc/codegen_str.o \
                build/csrc/codegen_expr.o build/csrc/codegen_stmt.o build/csrc/csplit.o build/csrc/main.o
 # The decision registry (--decisions, --decisions-log; `make decisions-test`).
 SPINEL_HDRS += src/decide.h
@@ -5271,6 +5271,18 @@ share-spec-check:
 ARITY_RUBY ?= ruby
 arity-spec-check:
 	@$(ARITY_RUBY) tools/gen_builtin_arity_spec.rb --check
+
+# The value edges (tools/value_edges.yml) against the pinned Prism gem's
+# vendor/prism/config.yml, which `make deps` fetches: every node kind and
+# child field is annotated, the generated arms (src/value_pos_arms.inc) are
+# current and each hand-written arm exists. Rerun it after a PRISM_VERSION
+# bump; value-edges-regen rewrites the generated file after an edit of the
+# annotation. Neither needs more than any Ruby with the standard yaml library.
+VALUE_EDGES_RUBY ?= ruby
+value-edges-check:
+	@PRISM_CONFIG=$(PRISM_DIR)/config.yml $(VALUE_EDGES_RUBY) tools/gen_value_edges.rb --check
+value-edges-regen:
+	@$(VALUE_EDGES_RUBY) tools/gen_value_edges.rb --write
 
 # lib/sp_poly_cold.c holds functions spinel_rt.h used to define static in every
 # generated unit. Compiled once, its object must not depend on the integer
