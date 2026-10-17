@@ -856,8 +856,11 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         const char *rcv_nm = (rcv_ty && (sp_streq(rcv_ty, "ConstantReadNode") ||
                                          sp_streq(rcv_ty, "ConstantPathNode"))) ? nt_str(nt, recv, "name") : NULL;
         int rcid = rcv_nm ? comp_class_index(c, rcv_nm) : -1;
-        if (rcid >= 0) {
-          const char *qn = class_ruby_name(c, rcid); if (!qn) qn = c->classes[rcid].name;
+        const char *qn = rcid >= 0 ? class_ruby_name(c, rcid) : NULL;
+        if (rcid >= 0 && !qn) qn = c->classes[rcid].name;
+        /* a reopened Object is a class of the program, but its constants are
+           the top-level ones, named unqualified (#9468) */
+        if (qn && !sp_streq(qn, "Object")) {
           buf_printf(b, "\"uninitialized constant %s::%s\"", qn, cg_qm);
         }
         else {

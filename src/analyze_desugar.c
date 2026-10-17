@@ -17800,6 +17800,9 @@ int desugar_dynamic_const_get(Compiler *c) {
     if (recv < 0 || (nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode)) continue;
     const char *mn = nt_str(nt, recv, "name");
     if (!mn) continue;
+    /* Object's constants are the top-level ones, not those a reopening's
+       body assigns: its lookup stays with the top-level table (#9468) */
+    if (sp_streq(mn, "Object") && nt_kind(nt, recv) == NK_ConstantReadNode) continue;
     /* the module's first body carries the generated methods */
     int first = -1;
     for (int m = 0; m < n0 && first < 0; m++) {
