@@ -14815,6 +14815,7 @@ int emit_boxed_class_aref(Compiler *c, int id, Buf *b) {
     }
     int ncls = 0, tsv = 0;
     Buf ids; memset(&ids, 0, sizeof ids);
+    unsigned char *only = calloc((size_t)c->nclasses, 1);
     for (int ci = 0; ci < c->nclasses; ci++) {
       ClassInfo *k = &c->classes[ci];
       if (!k->is_struct || is_builtin_reopen(k->name) || k->is_native_class) continue;
@@ -14823,8 +14824,9 @@ int emit_boxed_class_aref(Compiler *c, int id, Buf *b) {
       if (aref_arg_mistyped(c, ci, argv, argc)) continue;
       if (!ncls) tsv = ++g_tmp;
       buf_printf(&ids, "%s_t%d.cls_id == %d", ncls++ ? " || " : "", tsv, ci);
+      only[ci] = 1;
     }
-    if (!ncls) { free(ids.p); return 0; }
+    if (!ncls) { free(ids.p); free(only); return 0; }
     /* the receiver, then each argument that is not a literal, once, into
        rooted temps both re-entries below read; an argument whose own parts
        are hoisted ahead of the statement (an Array or a Hash literal) has
@@ -14849,8 +14851,13 @@ int emit_boxed_class_aref(Compiler *c, int id, Buf *b) {
     Buf *sv_pre = g_pre;
     Buf npre; memset(&npre, 0, sizeof npre);
     g_pre = &npre;
+    /* the `new` arm is taken only for the classes tested above: its
+       switch has their arms, not one per class of the program */
     char *sv_nm = nt_node_swap_str((NodeTable *)nt, id, "name", "new");
+    const unsigned char *sv_only = g_poly_new_only;
+    g_poly_new_only = only;
     Buf nb; memset(&nb, 0, sizeof nb); emit_call(c, id, &nb);
+    g_poly_new_only = sv_only;
     nt_node_restore_str((NodeTable *)nt, id, "name", sv_nm);
     int sv_skip = g_aref_cls_skip;
     g_aref_cls_skip = id;
@@ -14864,7 +14871,7 @@ int emit_boxed_class_aref(Compiler *c, int id, Buf *b) {
     else buf_printf(b, "(%s)", nb.p ? nb.p : "sp_box_nil()");
     if (apre.p) buf_printf(b, " : ({\n%s(%s); }); })", apre.p, ab.p ? ab.p : "sp_box_nil()");
     else buf_printf(b, " : (%s); })", ab.p ? ab.p : "sp_box_nil()");
-    free(npre.p); free(apre.p); free(nb.p); free(ab.p); free(ids.p);
+    free(npre.p); free(apre.p); free(nb.p); free(ab.p); free(ids.p); free(only);
     return 1;
   }
   return 0;
