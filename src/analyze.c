@@ -33381,10 +33381,10 @@ int new_recv_classes(Compiler *c, int recv, int *out, int cap) {
     out[0] = k; return 1;
   }
   if (rk == NK_ParenthesesNode || rk == NK_IfNode || rk == NK_UnlessNode || rk == NK_CaseNode ||
-      rk == NK_CaseMatchNode || rk == NK_OrNode || rk == NK_AndNode || rk == NK_ElseNode ||
-      rk == NK_StatementsNode) {
+      rk == NK_CaseMatchNode || rk == NK_OrNode || rk == NK_AndNode || rk == NK_BeginNode ||
+      rk == NK_ElseNode || rk == NK_StatementsNode) {
     NewRecvArms a = { c, out, cap, 0, 1 };
-    for_each_value_position(nt, recv, VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_LOGIC, new_recv_arm, &a);
+    for_each_value_position(nt, recv, VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VPS_LOGIC, new_recv_arm, &a);
     return a.ok ? a.n : 0;
   }
   /* `[A, B][i]`: every element of the literal */
