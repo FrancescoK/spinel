@@ -4663,10 +4663,13 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
     TyKind rrt = robj >= 0 ? comp_ntype(c, robj) : TY_UNKNOWN;
     if (ty_is_object(rrt)) {
       int cid = ty_object_class(rrt);
-      int defmi = comp_cmethod_in_chain(c, cid, name, NULL), dyield = 0;
+      int defmi = comp_cmethod_in_chain(c, cid, name, NULL), dyield = 0, wants_blk = 0;
       for (int k = 0; defmi >= 0 && k < c->nclasses; k++) {
         int km = is_descendant(c, k, cid) ? comp_cmethod_in_chain(c, k, name, NULL) : -1;
-        if (km >= 0 && c->scopes[km].yields) dyield = 1;
+        if (km >= 0) {
+          if (c->scopes[km].yields) dyield = 1;
+          if (c->scopes[km].blk_param && c->scopes[km].blk_param[0]) wants_blk = 1;
+        }
       }
       if (defmi >= 0 && !dyield) {
         /* Count distinct class method impls across the hierarchy */
@@ -4689,6 +4692,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
           buf_printf(g_pre, " _t%d = %s;\n", ot, rb.p ? rb.p : ""); free(rb.p);
           buf_printf(&objptr, "_t%d", ot);
         }
+        int blk_tmp = nimpl > 1 && wants_blk ? hoist_call_block_proc(c, id) : -1;
         if (nimpl <= 1) {
           /* single implementation: call directly. The value still has to fit
              the slot the INFERENCE gave this call: the many-implementation
@@ -4718,6 +4722,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
           }
           { const char *ld = rt_cls ? ", " : emit_cmethod_self_cls_arg(c, defmi, cid, &dcb);
             emit_args_filled(c, defmi, nt_ref(nt, id, "arguments"), ld, &dcb); }
+          emit_cmethod_block_arg(c, id, &c->scopes[defmi], blk_tmp, &dcb);
           buf_puts(&dcb, ")");
           TyKind want = repr_of(c, id).as_ty;
           const char *dc = dcb.p ? dcb.p : "";
@@ -4773,6 +4778,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
               buf_puts(b, "(");
               { const char *ld = emit_cmethod_self_cls_arg(c, kmi, k, b);
                 emit_args_filled(c, kmi, nt_ref(nt, id, "arguments"), ld, b); }
+              emit_cmethod_block_arg(c, id, &c->scopes[kmi], blk_tmp, b);
               buf_printf(b, "); _t%d = sp_box_nil(); break;", rtmp);
             }
             else {
@@ -4785,6 +4791,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
               buf_puts(&ab, "(");
               { const char *ld = emit_cmethod_self_cls_arg(c, kmi, k, &ab);
                 emit_args_filled(c, kmi, nt_ref(nt, id, "arguments"), ld, &ab); }
+              emit_cmethod_block_arg(c, id, &c->scopes[kmi], blk_tmp, &ab);
               buf_puts(&ab, ")");
               buf_printf(b, "_t%d = ", rtmp);
               if (unified == TY_POLY && kr != TY_POLY)
@@ -4804,6 +4811,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
               buf_puts(b, "(");
               { const char *ld = emit_cmethod_self_cls_arg(c, defmi, cid, b);
                 emit_args_filled(c, defmi, nt_ref(nt, id, "arguments"), ld, b); }
+              emit_cmethod_block_arg(c, id, &c->scopes[defmi], blk_tmp, b);
               buf_printf(b, "); _t%d = sp_box_nil(); break;", rtmp);
             }
             else {
@@ -4812,6 +4820,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
               buf_puts(&db, "(");
               { const char *ld = emit_cmethod_self_cls_arg(c, defmi, cid, &db);
                 emit_args_filled(c, defmi, nt_ref(nt, id, "arguments"), ld, &db); }
+              emit_cmethod_block_arg(c, id, &c->scopes[defmi], blk_tmp, &db);
               buf_puts(&db, ")");
               buf_printf(b, "_t%d = ", rtmp);
               if (unified == TY_POLY && dr != TY_POLY)

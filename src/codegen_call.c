@@ -1535,7 +1535,7 @@ int poly_call_blk_proc(Compiler *c, int id, int have) {
   int cb = resolve_forwarded_block(c, nt_ref(c->nt, id, "block"));
   return cb >= 0 ? hoist_block_proc(c, cb) : -1;
 }
-static int hoist_call_block_proc(Compiler *c, int id) {
+int hoist_call_block_proc(Compiler *c, int id) {
   int cblk = resolve_forwarded_block(c, nt_ref(c->nt, id, "block"));
   const char *cbt = cblk >= 0 ? nt_type(c->nt, cblk) : NULL;
   if (!cbt || sp_streq(cbt, "BlockArgumentNode")) return -1;
