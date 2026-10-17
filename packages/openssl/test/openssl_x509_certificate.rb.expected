@@ -1,0 +1,17 @@
+2
+[OpenSSL::X509::Certificate, OpenSSL::X509::Certificate]
+true
+true
+376
+#<Encoding:BINARY (ASCII-8BIT)>
+#<Encoding:BINARY (ASCII-8BIT)>
+true
+true
+true
+true
+1
+"Could not detect format of certificate data!"
+"Could not detect format of certificate data!"
+OpenSSL::X509::CertificateError
+OpenSSL::X509::CertificateError
+OpenSSL::OpenSSLError

@@ -22,6 +22,7 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/x509v3.h>
+#include <openssl/pem.h>
 #include <openssl/ec.h>
 #include <openssl/bn.h>
 #include <openssl/objects.h>
@@ -163,6 +164,144 @@ sp_X509_Store *sp_X509_Store_new(sp_int cls_id) {
 int sp_X509_Store_set_default_paths(sp_X509_Store *s) {
   if (!s || !s->store) return -1;
   return X509_STORE_set_default_paths(s->store);
+}
+
+/* ---- X509::Certificate ---- */
+/* A certificate is its DER, the way a key is its bytes: PEM is parsed here,
+   where it crosses the boundary, and no X509 * outlives the call. Ruby holds
+   the DER, and to_pem encodes it again when asked. */
+
+/* Each entry point answers into a buffer of its own, grown to fit. A chain
+   is a few kilobytes and nothing bounds it, so the fixed-size buffers the EC
+   calls use do not fit here. */
+typedef struct { char *p; size_t cap; } sp_x509_out;
+static SP_TLS sp_x509_out sp_x509_der_out, sp_x509_load_out, sp_x509_pem_out;
+
+static char *sp_x509_room(sp_x509_out *o, size_t n) {
+  if (n > o->cap) {
+    char *q = (char *)realloc(o->p, n);
+    if (!q) return NULL;
+    o->p = q;
+    o->cap = n;
+  }
+  return o->p;
+}
+
+/* An empty answer plus a reason in sp_ssl_last_error, as the EC calls answer;
+   the Ruby side raises OpenSSL::X509::CertificateError with it. No DER or PEM
+   is empty, so "empty" is unambiguously the failure. */
+static const char *sp_x509_fail(const char *what) {
+  sp_ssl_note(what);
+  sp_ffi_bin_len = 0;
+  return "";
+}
+
+/* DER first, then PEM, the order CRuby's Certificate.new and .load try them
+   in: DER is binary and can hold bytes that look like a PEM header, while
+   PEM never parses as DER. */
+static X509 *sp_x509_from_der(const char *data) {
+  const unsigned char *p = (const unsigned char *)data;
+  X509 *x = d2i_X509(NULL, &p, (long)sp_str_byte_len(data));
+  if (!x) ERR_clear_error();
+  return x;
+}
+
+/* Append one certificate as a 4-byte big-endian length and its DER. */
+static int sp_x509_append(sp_x509_out *o, size_t *at, X509 *x) {
+  int n = i2d_X509(x, NULL);
+  unsigned char *p;
+  if (n <= 0 || !sp_x509_room(o, *at + 4 + (size_t)n)) return 0;
+  p = (unsigned char *)o->p + *at;
+  p[0] = (unsigned char)(n >> 24);
+  p[1] = (unsigned char)(n >> 16);
+  p[2] = (unsigned char)(n >> 8);
+  p[3] = (unsigned char)n;
+  p += 4;
+  if (i2d_X509(x, &p) != n) return 0;
+  *at += 4 + (size_t)n;
+  return 1;
+}
+
+/* Certificate.new: one certificate, PEM or DER, answered as its DER. */
+const char *sp_x509_der(const char *data) {
+  X509 *x = sp_x509_from_der(data);
+  BIO *bio;
+  size_t at = 0;
+  int ok;
+
+  sp_ssl_errbuf[0] = 0;
+  if (!x) {
+    if (!(bio = BIO_new_mem_buf(data, (int)sp_str_byte_len(data))))
+      return sp_x509_fail("BIO_new_mem_buf");
+    x = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+    BIO_free(bio);
+    if (!x) return sp_x509_fail("PEM_read_bio_X509");
+  }
+  ok = sp_x509_append(&sp_x509_der_out, &at, x);
+  X509_free(x);
+  if (!ok) return sp_x509_fail("i2d_X509");
+  sp_ffi_bin_len = (int)at - 4;
+  return sp_x509_der_out.p + 4;
+}
+
+/* Certificate.load: every certificate in a PEM string, in order, or the one
+   in a DER string, each as a 4-byte length and its DER. As in CRuby, the PEM
+   read ends at the first place no further BEGIN line is found; any other
+   failure is a certificate that did not parse, and the whole load fails
+   rather than answering the ones before it. */
+const char *sp_x509_load(const char *data) {
+  X509 *x = sp_x509_from_der(data);
+  BIO *bio;
+  size_t at = 0;
+  int ok = 1;
+
+  sp_ssl_errbuf[0] = 0;
+  if (x) {
+    ok = sp_x509_append(&sp_x509_load_out, &at, x);
+    X509_free(x);
+    if (!ok) return sp_x509_fail("i2d_X509");
+    sp_ffi_bin_len = (int)at;
+    return sp_x509_load_out.p;
+  }
+  if (!(bio = BIO_new_mem_buf(data, (int)sp_str_byte_len(data))))
+    return sp_x509_fail("BIO_new_mem_buf");
+  while (ok && (x = PEM_read_bio_X509(bio, NULL, NULL, NULL))) {
+    ok = sp_x509_append(&sp_x509_load_out, &at, x);
+    X509_free(x);
+  }
+  BIO_free(bio);
+  if (!ok) return sp_x509_fail("i2d_X509");
+  if (at == 0) {
+    ERR_clear_error();
+    return sp_x509_fail("Could not detect format of certificate data!");
+  }
+  if (ERR_GET_REASON(ERR_peek_last_error()) != PEM_R_NO_START_LINE)
+    return sp_x509_fail("PEM_read_bio_X509");
+  ERR_clear_error();
+  sp_ffi_bin_len = (int)at;
+  return sp_x509_load_out.p;
+}
+
+/* Certificate#to_pem: the DER Ruby holds, written as OpenSSL writes it. */
+const char *sp_x509_pem(const char *der) {
+  X509 *x = sp_x509_from_der(der);
+  BIO *bio = NULL;
+  char *mem = NULL;
+  long n = 0;
+
+  sp_ssl_errbuf[0] = 0;
+  if (!x) return sp_x509_fail("d2i_X509");
+  if ((bio = BIO_new(BIO_s_mem())) && PEM_write_bio_X509(bio, x))
+    n = BIO_get_mem_data(bio, &mem);
+  X509_free(x);
+  if (n <= 0 || !sp_x509_room(&sp_x509_pem_out, (size_t)n)) {
+    BIO_free(bio);
+    return sp_x509_fail("PEM_write_bio_X509");
+  }
+  memcpy(sp_x509_pem_out.p, mem, (size_t)n);
+  BIO_free(bio);
+  sp_ffi_bin_len = (int)n;
+  return sp_x509_pem_out.p;
 }
 
 /* Everything a client connection needs EXCEPT the handshake: the slot, the
