@@ -1,12 +1,27 @@
 ["nil!"]
+["nil!"]
+true
 ["12?"]
+["12?"]
+true
+["nil+"]
 ["nil+"]
 1
+true
 ["nil!"]
+{k: "nil!"}
+true
 [1, "abcy!", 3]
 "abcy!"
+true
 ["\"src\"", "12", "nil!"]
+true
 ["srcsrc", "1212", "!"]
+true
+["nil!"]
+["\"src\"", "12", "nil!"]
+true
 ["ab!?"]
 "ab!?"
+true
 ["bp!"]
