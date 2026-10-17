@@ -18864,6 +18864,19 @@ static int strbuf_demand_nested_literal(Compiler *c, int lit, int depth) {
 static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
   const NodeTable *nt = c->nt;
   if (sn < 0 || c->strbuf_box[sn]) return 0;
+  /* Parentheses around one statement are transparent: the demand is the
+     statement's, as if they were not there, and the parenthesis carries
+     the mark only once the statement does. emit_boxed_impl boxes the
+     statement itself, so a mark on the parenthesis alone stored a plain
+     box over a copy, and `r << (+"a")` or `r << (c ? s : t)` lost a later
+     `r[0] << x`; the parenthesis keeps its mark for a call argument that
+     ran first into a temp, which is boxed by the parenthesis's own type. */
+  int snp = an_unparen(nt, sn);
+  if (snp >= 0 && snp != sn) {
+    int ch = strbuf_demand_store_leaf(c, snp, depth);
+    if (c->strbuf_box[snp]) { comp_set_strbuf_box(c, sn, 1); ch = 1; }
+    return ch;
+  }
   /* --share-strings: a nested Array or Hash literal whose own elements the
      rule shares (`[[+"ab", 1], 2]` with `id(x[0][0]).upcase!`) */
   NodeKind snk = nt_kind(nt, an_unparen(nt, sn));
@@ -19039,14 +19052,6 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
   }
   if (st2 != TY_STRING && st2 != TY_STRBUF) return 0;
   comp_set_strbuf_box(c, sn, 1);
-  /* --share-strings: the box is emitted for the node inside a one-statement
-     parenthesis (emit_boxed_impl unwraps it; a desugared store's value can
-     come wrapped in one, as `a[i] = begin ... end`'s does), which boxes the
-     handle the route hands on: marked on the parenthesis alone,
-     `r << (x.inspect)` stored a plain box of the bytes, and a change through
-     the element went to a copy. (The default build has no route to box: a
-     mark there wraps a fresh handle over a copy of a variable's String.) */
-  if (c->share_strings && snu >= 0 && snu != sn) comp_set_strbuf_box(c, snu, 1);
   return 1;
 }
 static int strbuf_store_leaf(Compiler *c, int sn, int depth, int mode) {
