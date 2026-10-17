@@ -273,31 +273,56 @@ static int class_may_have_const(Compiler *c, int k, const char *nm, int *sub, in
     if (class_may_have_const(c, ki->included_mods[i], nm, sub, depth + 1)) return 1;
   return 0;
 }
-/* Can the program define constants where no class body or `P::NAME = v`
-   path shows them: through const_set, or a path whose parent is not a
-   constant (`self::NAME = v`, `klass::NAME = v`)? */
-static int places_consts_dynamically(Compiler *c);
-static int program_places_consts_dynamically(Compiler *c) {
-  /* a walk over the program, asked once per defined? path: once per tree */
-  static long long memo_ver = -1; static int memo;
-  if (c->nt->version != memo_ver) { memo = places_consts_dynamically(c); memo_ver = c->nt->version; }
-  return memo;
+/* Can the program define constant `nm` where no class body or `P::NAME = v`
+   path shows it: through const_set, or a path whose parent is not a
+   constant (`self::NAME = v`, `klass::NAME = v`)? A const_set or such a
+   write with a literal name places that name only; a const_set whose name
+   is computed may place any. */
+typedef struct { int any; int n, cap; const char **names; } DynConsts;
+static void dyn_consts_add(DynConsts *d, const char *nm) {
+  if (!nm) { d->any = 1; return; }
+  if (d->n == d->cap) {
+    d->cap = d->cap ? d->cap * 2 : 16;
+    d->names = realloc(d->names, (size_t)d->cap * sizeof *d->names);
+  }
+  d->names[d->n++] = nm;
 }
-static int places_consts_dynamically(Compiler *c) {
+static void places_consts_dynamically(Compiler *c, DynConsts *d) {
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_CallNode, id)
-    if (sp_streq(nt_str(nt, id, "name"), "const_set")) return 1;
+    if (sp_streq(nt_str(nt, id, "name"), "const_set")) {
+      int a = nt_ref(nt, id, "arguments"), an = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+      if (an != 2) continue;                    /* not Module#const_set(name, value) */
+      NodeKind ak = nt_kind(nt, av[0]);
+      dyn_consts_add(d, ak == NK_SymbolNode ? nt_str(nt, av[0], "value")
+                        : ak == NK_StringNode ? nt_str(nt, av[0], "content") : NULL);
+    }
   static const NodeKind writes[] = { NK_ConstantPathWriteNode, NK_ConstantPathOrWriteNode,
                                      NK_ConstantPathAndWriteNode, NK_ConstantPathOperatorWriteNode };
   for (int i = 0; i < 4; i++)
     NT_FOREACH_KIND(nt, writes[i], w) {
       int t = nt_ref(nt, w, "target"), q = t >= 0 ? nt_ref(nt, t, "parent") : -1;
-      if (q >= 0 && nt_kind(nt, q) != NK_ConstantReadNode && nt_kind(nt, q) != NK_ConstantPathNode) return 1;
+      if (q >= 0 && nt_kind(nt, q) != NK_ConstantReadNode && nt_kind(nt, q) != NK_ConstantPathNode)
+        dyn_consts_add(d, nt_str(nt, t, "name"));
     }
   NT_FOREACH_KIND(nt, NK_ConstantPathTargetNode, t) {
     int q = nt_ref(nt, t, "parent");
-    if (q >= 0 && nt_kind(nt, q) != NK_ConstantReadNode && nt_kind(nt, q) != NK_ConstantPathNode) return 1;
+    if (q >= 0 && nt_kind(nt, q) != NK_ConstantReadNode && nt_kind(nt, q) != NK_ConstantPathNode)
+      dyn_consts_add(d, nt_str(nt, t, "name"));
   }
+}
+static int program_places_const_dynamically(Compiler *c, const char *nm) {
+  /* a walk over the program, asked once per defined? path: once per tree */
+  static long long memo_ver = -1; static DynConsts memo;
+  if (c->nt->version != memo_ver) {
+    free(memo.names);
+    memset(&memo, 0, sizeof memo);
+    places_consts_dynamically(c, &memo);
+    memo_ver = c->nt->version;
+  }
+  if (memo.any) return 1;
+  for (int i = 0; i < memo.n; i++) if (sp_streq(memo.names[i], nm)) return 1;
   return 0;
 }
 int const_seg_builtin(Compiler *c, int id);
@@ -332,7 +357,7 @@ static int const_path_scope(Compiler *c, int seg, int *missing) {
   }
   int sub = -1;
   if (class_may_have_const(c, pk, nm, &sub, 0)) return sub >= 0 && !c->classes[sub].is_builtin_const ? sub : -1;
-  if (program_places_consts_dynamically(c)) return -1;
+  if (program_places_const_dynamically(c, nm)) return -1;
   /* a member the runtime gives a program module: a builtin exception
      (JSON::ParserError) or an FFI constant */
   const char *pn = nt_str(nt, par, "name");
