@@ -922,6 +922,40 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
 }
 
 /* the module functions of GC, Fiber, Process, Marshal and Math, Integer.sqrt, to_json and Dir.exist? */
+/* Marshal.dump / load / restore through the module as a value (`m =
+   Marshal; m.dump(x)`): a class value that is Marshal at run time takes the
+   module's own, and any other has no such method. Only where no class of
+   the program defines the name and the call answers a box. */
+int emit_marshal_value_call(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  int args = nt_ref(nt, id, "arguments"), argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  if (!name || recv < 0 || argc != 1 || nt_ref(nt, id, "block") >= 0) return 0;
+  int dump = sp_streq(name, "dump");
+  if (!dump && !sp_streq(name, "load") && !sp_streq(name, "restore")) return 0;
+  NodeKind rk = nt_kind(nt, recv);
+  if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if ((rt != TY_POLY && rt != TY_CLASS) || nt_kind(nt, argv[0]) == NK_SplatNode) return 0;
+  if (repr_of(c, id).as_ty != TY_POLY || recv_user_defines(c, name)) return 0;
+  int tr = ++g_tmp, ta = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", tr);
+  emit_boxed(c, recv, b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", tr, ta);
+  emit_boxed(c, argv[0], b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); "
+                "sp_Class _c%d = _t%d.tag == SP_TAG_CLASS ? sp_unbox_class(_t%d) : (sp_Class){0, NULL}; "
+                "if (!(_t%d.tag == SP_TAG_CLASS && _c%d.cls_id < 0 && _c%d.name && !strcmp(_c%d.name, \"Marshal\"))) "
+                "sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); ",
+             ta, tr, tr, tr, tr, tr, tr, tr, name, tr);
+  if (dump) buf_printf(b, "sp_box_str(sp_marshal_dump(_t%d)); })", ta);
+  else buf_printf(b, "const char *_s%d = sp_poly_arg_str_chk(_t%d); "
+                     "sp_marshal_load(_s%d, (sp_int)sp_str_byte_len(_s%d)); })", ta, ta, ta, ta);
+  return 1;
+}
+
 int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* StringIO is a native-bound package class; .open is Ruby in the package. */
 

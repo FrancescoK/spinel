@@ -2608,6 +2608,15 @@ static void cf_node(CF *f, int v) {
     }
     int kc = comp_class_index(c, nm);
     if (kc >= 0) { cf_add_set(f, v, cf_classval(f, kc)); return; }   /* the Class object */
+    /* a module whose methods hand out values from anywhere, held as a
+       value (`m = Marshal`): a call on what holds it answers anything, as
+       one on the constant itself does (the call rule above); as a call's
+       own receiver it is read there */
+    { const char *key = cf_const_key(nm);
+      int as_recv = f->par && v < f->nnodes && f->par[v] >= 0 && nt_kind(nt, f->par[v]) == NK_CallNode &&
+                    nt_ref(nt, f->par[v], "receiver") == v;
+      if (!as_recv && kc < 0 && !cf_entry_has(f, CF_K_CONSTW, key) &&
+          (cf_poison_const(nm) || (key && cf_poison_const(key)))) { cf_all(f, v); return; } }
     if (!cf_entry_has(f, CF_K_CONSTW, cf_const_key(nm))) return;   /* a builtin's: ARGV, Float::INFINITY */
     cf_flow(f, cf_entry(f, CF_K_CONST, cf_const_key(nm)), v);
     return;
