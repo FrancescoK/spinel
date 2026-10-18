@@ -7582,6 +7582,22 @@ static int poly_block_mutator_name(const char *name) {
   for (int i = 0; names[i]; i++) if (sp_streq(name, names[i])) return 1;
   return 0;
 }
+/* Does the builtin arm `text` raise NoMethodError for method `name` itself
+   (the re-entered emission found no such builtin)? A raise for another
+   name -- a call inside the block the arm runs, on a value with no such
+   method -- is the block's own, and the arm stands. */
+static int arm_raises_nomethod_for(const char *text, const char *name) {
+  static const char tok[] = "sp_raise_cls(\"NoMethodError\"";
+  char quoted[300];
+  snprintf(quoted, sizeof quoted, "'%s'", name);
+  for (const char *p = strstr(text, tok); p; p = strstr(p + 1, tok)) {
+    const char *q = strstr(p, quoted), *e = strchr(p + sizeof tok - 1, ')');
+    if (q && (!e || q < e)) return 1;
+    /* a message built at run time names no method here: keep the old reading */
+    if (!strstr(p, "method '") || (e && strstr(p, "method '") > e)) return 1;
+  }
+  return 0;
+}
 static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const char *name,
                                      int argc, const int *argv, const int *atmp,
                                      const TyKind *atmp_ty, TyKind ret, int tv, int tr,
@@ -7759,7 +7775,7 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
   free(nb->p); free(nb);
   if (!ib.p || strncmp(share_check_unmarked(ib.p), "sp_raise_nomethod(", 18) == 0 ||
       strncmp(share_check_unmarked(ib.p), "sp_raise_poly_nomethod(", 23) == 0 ||
-      strstr(ib.p, "sp_raise_cls(\"NoMethodError\"") != NULL) {
+      arm_raises_nomethod_for(ib.p, name)) {
     free(ib.p); free(arm_pre); return 0;
   }
   /* the re-entered emission can land on Object's own method, which may

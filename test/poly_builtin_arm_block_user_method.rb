@@ -22,3 +22,12 @@ v.each_cons(2) { |t1, t2| p [t1.b, t2.b, t1.size] }
 w = pick([[Tok.new(1)], Node.new([Tok.new(5), Tok.new(2)])], 1)
 w.each_cons(2) { |t1, t2| p [t1.b, t2.b] }
 pick([["x", "y"], Node.new([])], 0).each_cons(2) { |s1, s2| p [s1.b, s2.size] }
+
+# a call in that block that raises NoMethodError on some value (a private
+# method of another class) is the block's own: the Array keeps its arm
+class Hidden
+  private def b = 0
+end
+Hidden.new if ARGV.size > 5
+u = pick([[Tok.new(7), Tok.new(8)], Node.new([Tok.new(5), Tok.new(2)])], 0)
+u.each_cons(2) { |t1, t2| p [t1.b, t2.b] }
