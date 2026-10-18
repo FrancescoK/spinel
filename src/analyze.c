@@ -12697,6 +12697,9 @@ static int narrow_locals_from_arrays(Compiler *c) {
         int idx_op = cn && (is_element_at_alias(cn)) && can == 1;
         int end_op = cn && (is_endpoint_query(cn)) && can == 0;
         if ((!idx_op && !end_op) || crecv < 0) { ok = 0; break; }
+        /* an index that may be a Range reads a subarray too, boxed
+           (infer_array_call) */
+        if (idx_op && infer_type(c, v) == TY_POLY) { ok = 0; break; }
         TyKind rt = infer_type(c, crecv);
         /* element type of a narrowed obj-array OR the new int-array-array */
         /* a scalar-element array yields its element type; an out-of-range
