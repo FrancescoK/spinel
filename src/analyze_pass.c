@@ -14920,7 +14920,7 @@ static int rows_method_taken(const NodeTable *nt, const char *dn) {
 
 /* The edges rows_value_dropped climbs: `if` and `unless` arms and a plain
    begin; a begin with clauses passes its body and its else on by hand. */
-enum { ROWS_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_BEGIN_PLAIN | VP_BEGIN_BOTH };
+enum { ROWS_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN_PLAIN | VP_BEGIN_BOTH };
 
 /* Whether the value of `w` is thrown away: a statement whose value nothing
    reads, the last statement of a conditional, a parenthesized or a begin
