@@ -727,21 +727,56 @@ static const char *arm_text_body(const ArmText *a) {
   return n >= 6 && strncmp(body + n - 6, "break;", 6) == 0 ? body : NULL;
 }
 
-void arm_texts_flush(ArmText *a, int n, Buf *b) {
-  for (int i = 0; i < n; i++) {
-    if (!a[i].t.p) continue;
-    const char *body = arm_text_body(&a[i]);
-    if (!body) { buf_puts(b, a[i].t.p); free(a[i].t.p); a[i].t.p = NULL; continue; }
-    buf_printf(b, " case %d:", a[i].k);
-    for (int j = i + 1; j < n; j++) {
-      const char *bj = arm_text_body(&a[j]);
-      if (!bj || !sp_streq(bj, body)) continue;
-      buf_printf(b, " case %d:", a[j].k);
-      free(a[j].t.p); a[j].t.p = NULL;
-    }
-    buf_printf(b, " %s", body);
-    free(a[i].t.p); a[i].t.p = NULL;
+/* one more arm slot, for class k (grown as the arms are written, so a
+   dispatch over a few classes allocates for a few) */
+ArmText *arm_text_next(ArmText *a, int *n, int *cap, int k) {
+  if (*n == *cap) {
+    *cap = *cap ? *cap * 2 : 8;
+    a = realloc(a, sizeof *a * (size_t)*cap);
+    if (!a) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
+  memset(&a[*n], 0, sizeof a[*n]);
+  a[*n].k = k;
+  (*n)++;
+  return a;
+}
+
+/* The arms grouped by body through a hash table, each group put out where
+   its first arm stood: one pass over the texts, not a comparison of every
+   pair (a dispatch over many classes was quadratic in them, scale-test). */
+void arm_texts_flush(ArmText *a, int n, Buf *b) {
+  if (n <= 0) return;
+  const char **body = malloc(sizeof *body * (size_t)n);
+  size_t *len = malloc(sizeof *len * (size_t)n);
+  int *lead = malloc(sizeof *lead * (size_t)n), *next = malloc(sizeof *next * (size_t)n), *tail = malloc(sizeof *tail * (size_t)n);
+  int cap = 16; while (cap < 2 * n) cap <<= 1;
+  int *tab = malloc(sizeof *tab * (size_t)cap);
+  if (!body || !len || !lead || !next || !tail || !tab) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int q = 0; q < cap; q++) tab[q] = -1;
+  for (int i = 0; i < n; i++) {
+    next[i] = -1; tail[i] = i; lead[i] = i;
+    body[i] = arm_text_body(&a[i]);
+    if (!body[i]) continue;
+    len[i] = strlen(body[i]);
+    unsigned h = 2166136261u;
+    for (size_t q = 0; q < len[i]; q++) h = (h ^ (unsigned char)body[i][q]) * 16777619u;
+    for (unsigned q = h & (unsigned)(cap - 1);; q = (q + 1) & (unsigned)(cap - 1)) {
+      int g = tab[q];
+      if (g < 0) { tab[q] = i; break; }
+      if (len[g] == len[i] && memcmp(body[g], body[i], len[i]) == 0) {
+        lead[i] = g; next[tail[g]] = i; tail[g] = i;
+        break;
+      }
+    }
+  }
+  for (int i = 0; i < n; i++) {
+    if (lead[i] != i || !a[i].t.p) continue;
+    if (!body[i]) { buf_puts(b, a[i].t.p); continue; }
+    for (int m = i; m >= 0; m = next[m]) buf_printf(b, " case %d:", a[m].k);
+    buf_printf(b, " %s", body[i]);
+  }
+  for (int i = 0; i < n; i++) { free(a[i].t.p); a[i].t.p = NULL; }
+  free(body); free(len); free(lead); free(next); free(tail); free(tab);
 }
 
 /* The user-class arms of a zero-argument poly dispatch
@@ -1406,12 +1441,12 @@ void emit_poly_user_arms_n(Compiler *c, int id, const char *name, const PolyUser
   }
   if (!served && g_plan_check) fprintf(stderr, "plan-check: cplan-fallback: poly-user-n node %d %s\n", id, name);
   int j = 0, recv = nt_ref(c->nt, id, "receiver");
-  ArmText *at = calloc((size_t)(c->nclasses > 0 ? c->nclasses : 1), sizeof *at);
-  int nat = 0;
+  ArmText *at = NULL;
+  int nat = 0, cat = 0;
   for (int k = 0; k < c->nclasses; k++) {
     if (cls_fact_excludes(c, recv, k)) continue;   /* a class the receiver never holds has no arm (#8530) */
-    Buf *ab = at ? &at[nat].t : b;
-    if (at) at[nat++].k = k;
+    at = arm_text_next(at, &nat, &cat, k);
+    Buf *ab = &at[nat - 1].t;
     if (!served) { poly_user_arm_n_replay(c, id, name, U, k, ab); continue; }
     if (j < n && arms[j].key == k) { emit_poly_user_arm_n_plan(c, id, name, U, &arms[j], ab); j++; continue; }
     Buf scratch; memset(&scratch, 0, sizeof scratch);
@@ -1419,7 +1454,7 @@ void emit_poly_user_arms_n(Compiler *c, int id, const char *name, const PolyUser
       fprintf(stderr, "plan-check: cplan-conflict: poly-user-n node %d %s: class %d: decided only\n", id, name, k);
     free(scratch.p);
   }
-  if (at) arm_texts_flush(at, nat, b);
+  arm_texts_flush(at, nat, b);
   free(at);
   free(arms);
 }

@@ -2170,6 +2170,7 @@ int call_publishes_shared_handle(Compiler *c, int v);
 /* One class's arm of a dispatch switch, written apart (arm_texts_flush) */
 typedef struct { int k; Buf t; } ArmText;
 void arm_texts_flush(ArmText *a, int n, Buf *b);
+ArmText *arm_text_next(ArmText *a, int *n, int *cap, int k);
 int emit_reader_override_handle(Compiler *c, int id, int cid, const char *name, const char *selfptr,
                                 const char *reader, int boxed, Buf *b);
 TyKind reader_override_ty(Compiler *c, int id, int cid, const char *name);
