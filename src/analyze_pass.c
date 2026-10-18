@@ -7552,6 +7552,30 @@ static int cext_pin_array_producer(Compiler *c, int v) {
   return 1;
 }
 
+static int is_fresh_hash(Compiler *c, int v);
+/* A local of no type yet that only `{}` / `Hash.new(...)` builds: an empty
+   Hash all the same, though its read carries no type (a `Hash.new(default)`
+   decides no key type, and nothing in the caller stores into it). */
+static int local_only_fresh_hash(Compiler *c, int anode) {
+  const NodeTable *nt = c->nt;
+  anode = unwrap_parens(c, anode);
+  if (anode < 0 || nt_kind(nt, anode) != NK_LocalVariableReadNode) return 0;
+  const char *an = nt_str(nt, anode, "name");
+  Scope *asc = an ? comp_scope_of(c, anode) : NULL;
+  LocalVar *al = asc ? scope_local(asc, an) : NULL;
+  if (!al || al->is_param || al->is_block_param || al->type != TY_UNKNOWN) return 0;
+  int si = (int)(asc - c->scopes), saw = 0;
+  for (int r = lw_shared_first(c, an, si); r >= 0; r = lw_shared_next(r)) {
+    int w = lw_shared_node(r);
+    if (comp_scope_of(c, w) != asc || !sp_streq(nt_str(nt, w, "name"), an)) continue;
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode) return 0;
+    int v = nt_ref(nt, w, "value");
+    if (!is_fresh_hash(c, v) || (nt_kind(nt, v) == NK_CallNode && nt_ref(nt, v, "block") >= 0)) return 0;
+    saw = 1;
+  }
+  return saw;
+}
+
 static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, int argc) {
   if (mi < 0) return 0;
   const NodeTable *nt = c->nt;
@@ -7648,6 +7672,7 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
        the callee's array methods dispatch. Never during the fixpoint -- a
        concrete kind from another call site must win the unification. */
     int empty_kind = at == TY_UNKNOWN && node_is_empty_container(nt, anode) ? an_empty_container_kind(c, anode) : 0;
+    if (at == TY_UNKNOWN && !empty_kind && local_only_fresh_hash(c, anode)) empty_kind = 2;
     if (g_final_bind_pass && p->type == TY_UNKNOWN && empty_kind == 1) {
       slot_rule(c, p, TY_POLY_ARRAY, anode, "an empty `[]` argument and no other call site typing it: the parameter is the untyped array"); changed = 1; continue;
     }
