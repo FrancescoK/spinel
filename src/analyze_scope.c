@@ -396,18 +396,18 @@ static int super_value_used(const NodeTable *nt, const int *par, int v) {
   case VPU_ENDED:
     break;
   }
+  /* a loop body is run for its effect */
+  if (vp_up_loop(nt, &up) >= 0) return 0;
   int p = up.parent;
   switch (nt_kind(nt, p)) {
-  case NK_WhileNode: case NK_UntilNode:
-    return nt_ref(nt, p, "predicate") == up.node;
   case NK_DefNode:
     return 0;
   case NK_BeginNode:
     /* the body beside an else: the begin answers the else's value */
     return 0;
   case NK_BlockNode: {
-    int call = par[p];
-    const char *cn = call >= 0 && nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
+    int call = vp_up_block_call(nt, par, &up);
+    const char *cn = call >= 0 ? nt_str(nt, call, "name") : NULL;
     static const char *const it[] = { "each", "each_with_index", "each_index", "times", "upto",
                                       "downto", "step", "loop", "each_slice", "each_cons",
                                       "reverse_each", "tap", NULL };

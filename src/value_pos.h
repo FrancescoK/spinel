@@ -173,6 +173,20 @@ typedef struct {
    cycle. Answers up->kind. */
 VpUpKind vp_climb(const NodeTable *nt, const int *par, int node, unsigned flags, VpUp *up);
 
+/* Where a climb ended, for the walkers that classify it the same way. Each
+   answers the node, or -1 when the climb did not end there. */
+
+/* the def whose body the climb reached: the value is the method's answer */
+int vp_up_def(const NodeTable *nt, const VpUp *up);
+
+/* the while or until whose body the climb reached: a loop's body is run for
+   its effect */
+int vp_up_loop(const NodeTable *nt, const VpUp *up);
+
+/* the call whose block's body the climb reached: whether the value is the
+   call's answer is a fact about the call, and the caller's to decide */
+int vp_up_block_call(const NodeTable *nt, const int *par, const VpUp *up);
+
 /* --dump-value-positions: for the body of each method and of the program, the
    leaves the walk yields with every flag on, one line each (the unit-test
    surface of the iterator and of tools/value_edges.yml). */

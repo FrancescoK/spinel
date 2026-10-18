@@ -1277,7 +1277,7 @@ static int assign_is_tail(Compiler *c, int id, const int *par) {
   vp_climb(nt, par, id, ASSIGN_CLIMB, &up);
   while (up.kind == VPU_ENDED && is_when_node_type(nt_type(nt, up.parent)))
     vp_climb(nt, par, up.parent, ASSIGN_CLIMB, &up);
-  return up.kind == VPU_ENDED && nt_kind(nt, up.parent) == NK_DefNode && nt_ref(nt, up.parent, "body") == up.node;
+  return vp_up_def(nt, &up) >= 0;
 }
 
 /* Is call id the value of a `return` of its own method: through parentheses

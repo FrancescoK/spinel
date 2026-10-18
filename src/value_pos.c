@@ -419,6 +419,23 @@ VpUpKind vp_climb(const NodeTable *nt, const int *par, int node, unsigned flags,
   }
 }
 
+int vp_up_def(const NodeTable *nt, const VpUp *up) {
+  return up->kind == VPU_ENDED && nt_kind(nt, up->parent) == NK_DefNode && nt_ref(nt, up->parent, "body") == up->node
+         ? up->parent : -1;
+}
+
+int vp_up_loop(const NodeTable *nt, const VpUp *up) {
+  if (up->kind != VPU_ENDED) return -1;
+  NodeKind k = nt_kind(nt, up->parent);
+  return (k == NK_WhileNode || k == NK_UntilNode) && nt_ref(nt, up->parent, "statements") == up->node ? up->parent : -1;
+}
+
+int vp_up_block_call(const NodeTable *nt, const int *par, const VpUp *up) {
+  if (up->kind != VPU_ENDED || nt_kind(nt, up->parent) != NK_BlockNode || nt_ref(nt, up->parent, "body") != up->node) return -1;
+  int call = par[up->parent];
+  return call >= 0 && nt_kind(nt, call) == NK_CallNode ? call : -1;
+}
+
 /* ---- --dump-value-positions ---- */
 
 typedef struct {

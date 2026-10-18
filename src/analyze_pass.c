@@ -14894,14 +14894,12 @@ static int rows_slot_elem_reads(const NodeTable *nt, Compiler *c, const int *par
   return 1;
 }
 
-/* The value of `w`, the last statement of the block `bl`, is thrown away
-   when the block's call is an iterator that ignores its block's value
-   (`each`, `times`): a method of the program's own by that name may answer
-   what its block answers (`def each = yield`). */
-static int rows_block_drops(Compiler *c, const int *par, int bl) {
-  const NodeTable *nt = c->nt;
-  int call = par[bl];
-  const char *iter = call >= 0 && nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
+/* The value of the last statement of the block of `call` is thrown away
+   when the call is an iterator that ignores its block's value (`each`,
+   `times`): a method of the program's own by that name may answer what its
+   block answers (`def each = yield`). */
+static int rows_block_drops(Compiler *c, int call) {
+  const char *iter = nt_str(c->nt, call, "name");
   return iter && is_block_loop_method(iter) && !an_user_defines_method(c, iter);
 }
 
@@ -14945,10 +14943,13 @@ static int rows_value_dropped(Compiler *c, const int *par, int w, const char **s
     NodeKind gk = nt_kind(nt, g);
     if (gk == NK_BeginNode) { w = g; continue; }
     /* the body of a loop, the block of an iterator that ignores its value */
-    if (gk == NK_WhileNode || gk == NK_UntilNode) return nt_ref(nt, g, "statements") == up.node;
-    if (gk == NK_BlockNode) return rows_block_drops(c, par, g);
+    if (vp_up_loop(nt, &up) >= 0) return 1;
+    if (gk == NK_BlockNode) {
+      int call = vp_up_block_call(nt, par, &up);
+      return call >= 0 && rows_block_drops(c, call);
+    }
     /* (a method whose body is a begin is not asked) */
-    if (gk == NK_DefNode && nt_kind(nt, up.node) == NK_StatementsNode) dn = nt_str(nt, g, "name");
+    if (vp_up_def(nt, &up) >= 0 && nt_kind(nt, up.node) == NK_StatementsNode) dn = nt_str(nt, g, "name");
     break;
   }
   if (!dn || rows_method_taken(nt, dn)) return 0;
