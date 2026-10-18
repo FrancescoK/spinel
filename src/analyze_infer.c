@@ -4743,7 +4743,7 @@ static int infer_string_recv_call(Compiler *c, int id, const NodeTable *nt, cons
       { *out = TY_ENUMERATOR; return 1; }  /* each_line(sep) blockless */
     if (sp_streq(name, "lines") && argc == 2 && infer_type(c, argv[0]) == TY_STRING &&
         nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "KeywordHashNode"))
-      { *out = TY_STR_ARRAY; return 1; }   /* lines(sep, chomp: true) (#3546) */
+      { *out = nt_ref(nt, id, "block") >= 0 ? TY_STRING : TY_STR_ARRAY; return 1; }   /* lines(sep, chomp: true) (#3546) */
     if (sp_streq(name, "each_line")) { *out = TY_STRING; return 1; }
     if (sp_streq(name, "lines")) { *out = nt_ref(nt, id, "block") >= 0 ? TY_STRING : TY_STR_ARRAY; return 1; }
     if (sp_streq(name, "scan") && argc == 1) {
