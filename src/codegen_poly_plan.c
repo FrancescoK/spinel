@@ -1520,6 +1520,17 @@ void emit_poly_index_cases(TyKind ret, int tr, int tv, const char *idxref, int s
   }
 }
 
+/* Whether a user class defines `name` as a class-level method. Only that one
+   can answer a class-tagged value: an instance method's receiver carries
+   SP_TAG_OBJ, so the class-tagged arm stays beside the user arms (a class
+   value must not reach them by its cls_id, which is the class's own id). */
+static int recv_user_cdefines(Compiler *c, const char *name) {
+  if (g_poly_builtin_arm) return 0;
+  for (int uk = 0; uk < c->nclasses; uk++)
+    if (comp_cmethod_in_chain(c, uk, name, NULL) >= 0) return 1;
+  return 0;
+}
+
 /* The names a blockless-or-not zero-argument poly dispatch answers
    beside its user arms (the pre-arms and builtin cases of
    emit_poly_method_dispatch), and its user candidates: ncand classes own
@@ -1532,7 +1543,7 @@ void poly_specials0(Compiler *c, int id, const char *name, PolySpecials0 *s) {
   int is_empty = sp_streq(name, "empty?");
   /* A class-tagged poly value answers these with its class name (#2656); only
      when no user class defines them, or that user method is the real target. */
-  int is_class_named = is_name_reader(name) && !recv_user_defines(c, name);
+  int is_class_named = is_name_reader(name) && !recv_user_cdefines(c, name);
   /* The Module reflection a class-tagged poly value answers. `ancestors` and
      friends had an arm only for a receiver typed TY_CLASS -- a constant --
      so iterating an Array of classes and asking the block parameter left the
