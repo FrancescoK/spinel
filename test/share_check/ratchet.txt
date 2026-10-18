@@ -12,6 +12,7 @@ test/share/bang_held_call_receiver.rb	test/share/bang_held_call_receiver.rb:59	C
 test/share/boxed_exception_message.rb	test/share/boxed_exception_message.rb:11	CallNode (message)	bytes wrapped into a new handle by sp_String_new_shared (sp_poly_to_s)
 test/share/boxed_exception_message.rb	test/share/boxed_exception_message.rb:18	CallNode (message)	bytes wrapped into a new handle by sp_String_new_shared (sp_poly_to_s)
 test/share/boxed_exception_message.rb	test/share/boxed_exception_message.rb:22	CallNode (message)	bytes wrapped into a new handle by sp_String_new_shared (sp_poly_to_s)
+test/share/boxed_string_handle_holders.rb	test/share/boxed_string_handle_holders.rb:22	LocalVariableReadNode (s)	changed in place as bytes by sp_str_upcase (bytes face)
 test/share/boxed_sub_class_value_return_keeps_nested_string.rb	test/share/boxed_sub_class_value_return_keeps_nested_string.rb:26	CallNode (sub)	boxed as bytes by sp_box_str (bytes face)
 test/share/boxed_sub_transitive_class_accessor_keeps_nested_string.rb	test/share/boxed_sub_transitive_class_accessor_keeps_nested_string.rb:25	CallNode (sub)	boxed as bytes by sp_box_str (bytes face)
 test/share/boxed_sub_transitive_explicit_class_ivar_keeps_nested_string.rb	test/share/boxed_sub_transitive_explicit_class_ivar_keeps_nested_string.rb:27	CallNode (sub)	boxed as bytes by sp_box_str (bytes face)
