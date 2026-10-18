@@ -543,8 +543,13 @@ static int sh_holder(ShareFacts *F, int kind, int a, int b, const char *name, in
    Strings sit in its ivars, which are holders of their own. */
 static int sh_may_hold(const Compiler *c, TyKind t) {
   /* an object holds its Strings in ivars, which are holders of their own;
-     a native class's object keeps the String its binding declares */
-  if (ty_is_object(t)) return ty_object_class(t) < c->nclasses && c->classes[ty_object_class(t)].native_share_keeps;
+     a native class's object keeps the String its binding declares, and so
+     does a subclass's, which is built by the class's constructor */
+  if (ty_is_object(t)) {
+    int k = ty_object_class(t);
+    if (k < c->nclasses && c->classes[k].nsub_root > 0) k = c->classes[k].nsub_root - 1;
+    return k < c->nclasses && c->classes[k].native_share_keeps;
+  }
   if (ty_is_obj_array(t)) return 0;
   switch (t) {
   case TY_VOID: case TY_NIL: case TY_INT: case TY_BIGINT: case TY_FLOAT: case TY_SYMBOL:
@@ -2431,7 +2436,9 @@ static int sh_new_call(ShareFacts *F, Compiler *c, int n, int recv, int blk) {
     }
     return -1;
   }
-  if (ci->is_native_class) {
+  /* (a subclass of a native class with no initialize of its own is built by the class's
+     constructor, as emit_native_ctor builds it: #9269) */
+  if (ci->is_native_class || (ci->nsub_root > 0 && comp_method_in_chain(c, cid, "initialize", NULL) < 0)) {
     int r = sh_native_new(F, c, n, cid);
     if (r != -2) return r;
   }
@@ -3048,7 +3055,9 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   /* a native class's method (its binding's `native_share`), on an object
      or, in the package's own Ruby methods, on self */
   /* (or on a box holding one: sh_boxed_native_class) */
-  int ncid = ty_is_object(rt) ? ty_object_class(rt) : recv < 0 ? sh_ivar_owner(c, n)
+  /* (a subclass of a native class, where no method of the program's answers
+     the name first, takes the class's binding: comp_native_answer_class) */
+  int ncid = ty_is_object(rt) ? comp_native_answer_class(c, ty_object_class(rt), name) : recv < 0 ? sh_ivar_owner(c, n)
              : c->share_strings && rt == TY_POLY ? sh_boxed_native_class(c, n, name, argc) : -1;
   if (ncid >= 0 && ncid < c->nclasses && c->classes[ncid].is_native_class) {
     int r = sh_native_call(F, c, n, ncid, name, argc, rv, blk, recv < 0);
