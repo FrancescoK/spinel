@@ -5269,41 +5269,36 @@ int class_value_escapes(Compiler *c, int cid) {
 
 /* Mark in `set` each class the value of `v` can be, when every value it can
    take is a constant naming a class: through parentheses, the branches of
-   an if, unless or case, and either side of `||` or `&&`. 0 when some value
-   can be anything else. */
-static int value_class_set(Compiler *c, int v, char *set, int depth) {
-  const NodeTable *nt = c->nt;
-  if (v < 0 || depth > 64) return 0;
-  NodeKind k = nt_kind(nt, v);
-  const char *t = nt_type(nt, v);
-  if (k == NK_ConstantReadNode || k == NK_ConstantPathNode) {
-    int ci = comp_class_index(c, nt_str(nt, v, "name"));
-    if (ci < 0) return 0;
-    set[ci] = 1;
-    return 1;
+   an if, unless, case or case/in, a begin (its body, rescue clauses and
+   else) and the rescue modifier, and either side of `||` or `&&`. 0 when
+   some value can be anything else. */
+typedef struct {
+  Compiler *c;
+  char *set;
+  int ok;
+} ClassSetLeaves;
+
+/* One value position: a constant naming a class marks it, anything else (a
+   nil by absence too) fails the walk. */
+static int class_set_leaf(const VpLeaf *leaf, void *ud) {
+  ClassSetLeaves *k = ud;
+  const NodeTable *nt = k->c->nt;
+  if (leaf->kind == VPK_EXPR &&
+      (nt_kind(nt, leaf->node) == NK_ConstantReadNode || nt_kind(nt, leaf->node) == NK_ConstantPathNode)) {
+    int ci = comp_class_index(k->c, nt_str(nt, leaf->node, "name"));
+    if (ci >= 0) {
+      k->set[ci] = 1;
+      return 0;
+    }
   }
-  if (k == NK_ParenthesesNode) return value_class_set(c, nt_ref(nt, v, "body"), set, depth + 1);
-  if (k == NK_StatementsNode) {
-    int n = 0; const int *body = nt_arr(nt, v, "body", &n);
-    return n > 0 && value_class_set(c, body[n - 1], set, depth + 1);
-  }
-  if (k == NK_OrNode || k == NK_AndNode)
-    return value_class_set(c, nt_ref(nt, v, "left"), set, depth + 1) &&
-           value_class_set(c, nt_ref(nt, v, "right"), set, depth + 1);
-  if (k == NK_IfNode || k == NK_UnlessNode) {
-    int alt = nt_ref(nt, v, k == NK_IfNode ? "subsequent" : "else_clause");
-    if (alt < 0 && k == NK_IfNode) alt = nt_ref(nt, v, "consequent");
-    return value_class_set(c, nt_ref(nt, v, "statements"), set, depth + 1) &&
-           value_class_set(c, alt, set, depth + 1);
-  }
-  if (t && sp_streq(t, "ElseNode")) return value_class_set(c, nt_ref(nt, v, "statements"), set, depth + 1);
-  if (t && sp_streq(t, "CaseNode")) {
-    int n = 0; const int *arms = nt_arr(nt, v, "conditions", &n);
-    for (int i = 0; i < n; i++)
-      if (!value_class_set(c, nt_ref(nt, arms[i], "statements"), set, depth + 1)) return 0;
-    return value_class_set(c, nt_ref(nt, v, "else_clause"), set, depth + 1);
-  }
-  return 0;
+  k->ok = 0;
+  return 1;
+}
+static int value_class_set(Compiler *c, int v, char *set) {
+  ClassSetLeaves k = { c, set, 1 };
+  if (v < 0) return 0;
+  for_each_value_position(c->nt, v, VP_AND_LEFT | VPS_ALL, class_set_leaf, &k);
+  return k.ok;
 }
 
 /* The classes a `new` receiver can be when that is a known set of constants:
@@ -5313,7 +5308,7 @@ static int recv_class_set(Compiler *c, int recv, char *set) {
   const NodeTable *nt = c->nt;
   memset(set, 0, (size_t)c->nclasses);
   if (recv < 0) return 0;
-  if (nt_kind(nt, recv) != NK_LocalVariableReadNode) return value_class_set(c, recv, set, 0);
+  if (nt_kind(nt, recv) != NK_LocalVariableReadNode) return value_class_set(c, recv, set);
   const char *vn = nt_str(nt, recv, "name");
   Scope *sc = comp_scope_of(c, recv);
   if (!vn || !sc) return 0;
@@ -5327,7 +5322,7 @@ static int recv_class_set(Compiler *c, int recv, char *set) {
     if (!un || !sp_streq(un, vn)) continue;
     if (comp_scope_of(c, u) != sc) continue;
     if (!sp_streq(ut, "LocalVariableWriteNode")) return 0;
-    if (!value_class_set(c, nt_ref(nt, u, "value"), set, 0)) return 0;
+    if (!value_class_set(c, nt_ref(nt, u, "value"), set)) return 0;
     nw++;
   }
   return nw > 0;
@@ -8454,7 +8449,21 @@ static int widen_proc_params_poly(Compiler *c, int ref) {
 /* The proc literals a block argument's value can be: the literal itself,
    either arm of a conditional, the last statement of parentheses, or any
    write to the local it reads. Up to `max` are stored in `out`; the count
-   found is returned (it may pass `max`). */
+   found is returned (it may pass `max`). `depth` counts the writes followed,
+   which bounds a local assigned from itself. */
+typedef struct {
+  Compiler *c;
+  int *out;
+  int max, n, depth;
+} ProcArms;
+static int proc_literals_reaching(Compiler *c, int ref, int *out, int max, int depth);
+static int proc_arm(const VpLeaf *leaf, void *ud) {
+  ProcArms *a = ud;
+  if (leaf->kind == VPK_EXPR)
+    a->n += proc_literals_reaching(a->c, leaf->node, a->out + (a->n < a->max ? a->n : a->max),
+                                   a->n < a->max ? a->max - a->n : 0, a->depth + 1);
+  return 0;
+}
 static int proc_literals_reaching(Compiler *c, int ref, int *out, int max, int depth) {
   NodeTable *nt = (NodeTable *)c->nt;
   if (ref < 0 || depth > 16) return 0;
@@ -8464,22 +8473,12 @@ static int proc_literals_reaching(Compiler *c, int ref, int *out, int max, int d
     return 1;
   }
   int n = 0;
-  if (k == NK_IfNode || k == NK_UnlessNode || k == NK_ParenthesesNode) {
-    int arms[2] = { -1, -1 };
-    if (k == NK_ParenthesesNode) arms[0] = nt_ref(nt, ref, "body");
-    else {
-      arms[0] = nt_ref(nt, ref, "statements");
-      arms[1] = nt_ref(nt, ref, k == NK_UnlessNode ? "else_clause" : "subsequent");
-    }
-    for (int ai = 0; ai < 2; ai++) {
-      int arm = arms[ai];
-      if (arm >= 0 && nt_kind(nt, arm) == NK_ElseNode) arm = nt_ref(nt, arm, "statements");
-      if (arm < 0) continue;
-      int bn = 0; const int *bb = nt_arr(nt, arm, "body", &bn);
-      int last = bb && bn > 0 ? bb[bn - 1] : (nt_kind(nt, arm) == NK_StatementsNode ? -1 : arm);
-      n += proc_literals_reaching(c, last, out + (n < max ? n : max), n < max ? max - n : 0, depth + 1);
-    }
-    return n;
+  if (k == NK_IfNode || k == NK_UnlessNode || k == NK_CaseNode || k == NK_CaseMatchNode ||
+      k == NK_BeginNode || k == NK_RescueModifierNode || k == NK_OrNode || k == NK_AndNode ||
+      k == NK_ParenthesesNode) {
+    ProcArms a = { c, out, max, 0, depth };
+    for_each_value_position(nt, ref, VPS_ALL, proc_arm, &a);
+    return a.n;
   }
   if (k == NK_LocalVariableReadNode) {
     const char *vn = nt_str(nt, ref, "name");

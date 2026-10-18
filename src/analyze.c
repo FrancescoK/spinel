@@ -8,6 +8,7 @@
 #include "call_plan.h"
 #include "share.h"
 #include "timing.h"
+#include "value_pos.h"
 #include "builtin_names.h"
 
 
@@ -5620,35 +5621,37 @@ static int method_in_override_family(Compiler *c, int class_id,
 
 /* Does every value `id` can produce name a class (a constant that is one of
    the program's classes)? The class names met are appended to `names`. */
-static int value_leaves_are_classes(Compiler *c, int id, char *names, size_t cap, int depth) {
-  const NodeTable *nt = c->nt;
-  if (id < 0 || depth > 32) return 0;
-  switch (nt_kind(nt, id)) {
-  case NK_StatementsNode: {
-    int n = 0; const int *b = nt_arr(nt, id, "body", &n);
-    return b && n > 0 && value_leaves_are_classes(c, b[n - 1], names, cap, depth + 1);
-  }
-  case NK_ParenthesesNode:
-    return value_leaves_are_classes(c, nt_ref(nt, id, "body"), names, cap, depth + 1);
-  case NK_IfNode: case NK_UnlessNode: {
-    int els = nt_ref(nt, id, nt_kind(nt, id) == NK_IfNode ? "subsequent" : "else_clause");
-    return value_leaves_are_classes(c, nt_ref(nt, id, "statements"), names, cap, depth + 1) &&
-           value_leaves_are_classes(c, els, names, cap, depth + 1);
-  }
-  case NK_ElseNode:
-    return value_leaves_are_classes(c, nt_ref(nt, id, "statements"), names, cap, depth + 1);
-  case NK_ConstantReadNode: case NK_ConstantPathNode: {
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm || comp_class_index(c, nm) < 0) return 0;
-    if (!strstr(names, nm) && strlen(names) + strlen(nm) + 3 < cap) {
-      if (*names) strcat(names, ", ");
-      strcat(names, nm);
+typedef struct {
+  Compiler *c;
+  char *names;
+  size_t cap;
+  int ok;
+} ClassLeaves;
+
+/* One value position: a constant naming a class adds its name, anything
+   else (a nil by absence too) fails the walk. */
+static int class_leaf_check(const VpLeaf *leaf, void *ud) {
+  ClassLeaves *k = ud;
+  const NodeTable *nt = k->c->nt;
+  if (leaf->kind == VPK_EXPR &&
+      (nt_kind(nt, leaf->node) == NK_ConstantReadNode || nt_kind(nt, leaf->node) == NK_ConstantPathNode)) {
+    const char *nm = nt_str(nt, leaf->node, "name");
+    if (nm && comp_class_index(k->c, nm) >= 0) {
+      if (!strstr(k->names, nm) && strlen(k->names) + strlen(nm) + 3 < k->cap) {
+        if (*k->names) strcat(k->names, ", ");
+        strcat(k->names, nm);
+      }
+      return 0;
     }
-    return 1;
   }
-  default:
-    return 0;
-  }
+  k->ok = 0;
+  return 1;
+}
+static int value_leaves_are_classes(Compiler *c, int id, char *names, size_t cap) {
+  ClassLeaves k = { c, names, cap, 1 };
+  if (id < 0) return 0;
+  for_each_value_position(c->nt, id, VP_AND_LEFT | VPS_ALL, class_leaf_check, &k);
+  return k.ok;
 }
 
 /* A return seed naming an instance type (`-> Story`, or a union of them)
@@ -5662,14 +5665,14 @@ static int seed_ret_contradicts_class_body(Compiler *c, Scope *s, TyKind rt) {
   if (!ty_is_object(rt) && rt != TY_POLY) return 0;
   if (s->body < 0) return 0;
   char names[256] = "";
-  if (!value_leaves_are_classes(c, s->body, names, sizeof names, 0)) return 0;
+  if (!value_leaves_are_classes(c, s->body, names, sizeof names)) return 0;
   const NodeTable *nt = c->nt;
   int si = (int)(s - c->scopes);
   NT_FOREACH_KIND(nt, NK_ReturnNode, rid) {
     if (c->nscope[rid] != si) continue;
     int an = nt_ref(nt, rid, "arguments"), n = 0;
     const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
-    if (!av || n != 1 || !value_leaves_are_classes(c, av[0], names, sizeof names, 0)) return 0;
+    if (!av || n != 1 || !value_leaves_are_classes(c, av[0], names, sizeof names)) return 0;
   }
   const char *cls = s->class_id >= 0 && s->class_id < c->nclasses ? c->classes[s->class_id].name : NULL;
   fprintf(stderr, "spinel: warning: --rbs: %s%s%s is declared to return an instance, but it returns "
@@ -32771,28 +32774,30 @@ static int seed_kwarg_value(const NodeTable *nt, int kwh, const char *name) {
    be REINTERPRETED rather than converted -- the whole point of the rule. `ret`
    selects the wider judgement a return slot allows (see seed_ret_family). */
 /* The values a returned expression `v` answers with: a conditional's
-   branches (`f ? "s" : 1`, an if / unless with an else) each in turn, since
-   each returns on its own, converted to the method's type. The whole
+   branches (`f ? "s" : 1`, an if, unless, case, case/in, begin, rescue
+   modifier, or the operands of `||` and `&&`) each in turn, since each
+   returns on its own, converted to the method's type. The whole
    conditional is the boxed union of its branches, which makes no claim. A
-   branch that is missing answers nil, which every slot holds. */
-static void seed_ret_branch_sites(const NodeTable *nt, int v, int *sites, int *n, int cap, int depth) {
+   conditional with no else lists the branches it has; a branch that is
+   missing answers nil, which every slot holds. An `||` or `&&` is a site
+   of its own as well, the type it has as a whole; reach[] says which truth
+   values a site answers with: the left of `||` only a truthy one, the left
+   of `&&` only a falsy one (VPR_*). */
+typedef struct {
+  int *sites, *n, cap;
+  unsigned *reach;
+} SeedSites;
+static int seed_ret_site(const VpLeaf *leaf, void *ud) {
+  SeedSites *s = ud;
+  if (leaf->kind == VPK_NIL) return 0;
+  s->reach[*s->n] = leaf->reach;
+  s->sites[(*s->n)++] = leaf->node;
+  return *s->n >= s->cap;
+}
+static void seed_ret_branch_sites(const NodeTable *nt, int v, int *sites, unsigned *reach, int *n, int cap) {
+  SeedSites s = { sites, n, cap, reach };
   if (v < 0 || *n >= cap) return;
-  NodeKind k = nt_kind(nt, v);
-  if (depth < 16 && (k == NK_StatementsNode || k == NK_ParenthesesNode)) {
-    int b = k == NK_ParenthesesNode ? nt_ref(nt, v, "body") : v;
-    int bn = 0; const int *bb = b >= 0 ? nt_arr(nt, b, "body", &bn) : NULL;
-    if (bb && bn > 0) { seed_ret_branch_sites(nt, bb[bn - 1], sites, n, cap, depth + 1); return; }
-  }
-  if (depth < 16 && (k == NK_IfNode || k == NK_UnlessNode)) {
-    int els = nt_ref(nt, v, k == NK_IfNode ? "subsequent" : "else_clause");
-    if (els >= 0) {
-      seed_ret_branch_sites(nt, nt_ref(nt, v, "statements"), sites, n, cap, depth + 1);
-      if (nt_kind(nt, els) == NK_ElseNode) els = nt_ref(nt, els, "statements");
-      seed_ret_branch_sites(nt, els, sites, n, cap, depth + 1);
-      return;
-    }
-  }
-  sites[(*n)++] = v;
+  for_each_value_position(nt, v, VP_AND_LEFT | VP_LOGIC_NODES | VPS_ALL, seed_ret_site, &s);
 }
 static int seed_ret_family(Compiler *c, TyKind t);
 static int seed_ret_kind(TyKind t);
@@ -32954,6 +32959,48 @@ int collect_mode(void);
    list. Same bargain the codegen gaps already make. */
 static int g_seed_bad = 0;
 typedef struct { int fid, ln; const char *nm; } SeedIvarReport;
+/* Can the value of `v` only be false or nil (falsy), or only a value that is
+   neither (not falsy)? Read off the literals, the operators and the methods
+   a call reaches (each of their values); 0 when it cannot tell. The left of
+   a `||` answers only when truthy and the left of a `&&` only when falsy
+   (VPR_*): an operand that cannot be that never is the value. */
+static int seed_value_only(Compiler *c, int v, int falsy, int depth) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || depth > 8) return 0;
+  switch (nt_kind(nt, v)) {
+  case NK_NilNode: case NK_FalseNode:
+    return falsy;
+  case NK_TrueNode:
+    return !falsy;
+  /* `a || b` is a when truthy and b when not; `a && b` is a when falsy and
+     b when not */
+  case NK_OrNode:
+    return falsy ? seed_value_only(c, nt_ref(nt, v, "left"), 1, depth + 1) &&
+                   seed_value_only(c, nt_ref(nt, v, "right"), 1, depth + 1)
+                 : seed_value_only(c, nt_ref(nt, v, "left"), 0, depth + 1) ||
+                   seed_value_only(c, nt_ref(nt, v, "right"), 0, depth + 1);
+  case NK_AndNode:
+    return falsy ? seed_value_only(c, nt_ref(nt, v, "right"), 1, depth + 1)
+                 : seed_value_only(c, nt_ref(nt, v, "left"), 0, depth + 1) &&
+                   seed_value_only(c, nt_ref(nt, v, "right"), 0, depth + 1);
+  case NK_CallNode: {
+    int ms[CPT_MAX], nm = cplan_targets(c, v, ms, CPT_MAX);
+    if (nm <= 0) return 0;
+    for (int i = 0; i < nm; i++) {
+      int vals[64];
+      /* a path that answers nil adds no value to the falsy walk, and ends
+         the other: it is nil */
+      int n = falsy ? method_value_leaves_or_nil(c, ms[i], vals, 64) : method_value_leaves(c, ms[i], vals, 64);
+      if (n < 0 || (!falsy && n == 0)) return 0;
+      for (int j = 0; j < n; j++)
+        if (!seed_value_only(c, vals[j], falsy, depth + 1)) return 0;
+    }
+    return 1;
+  }
+  default:
+    return 0;
+  }
+}
 static void check_seed_contradictions(Compiler *c) {
   const NodeTable *nt = c->nt;
   char _sn1[192], _sn2[192];
@@ -33045,17 +33092,26 @@ static void check_seed_contradictions(Compiler *c) {
     TyKind slot = sc->ret;
     /* every value the method can answer with: the body's tail, and each
        explicit return inside this scope -- a conditional one branch at a time */
-    int sites[64]; int nsites = 0;
-    seed_ret_branch_sites(nt, sc->body, sites, &nsites, 64, 0);
+    int sites[64]; unsigned reach[64]; int nsites = 0;
+    seed_ret_branch_sites(nt, sc->body, sites, reach, &nsites, 64);
     NT_FOREACH_KIND(nt, NK_ReturnNode, id) {
       if (nsites >= 64) break;
       if (c->nscope[id] != s) continue;
       int rv = nt_ref(nt, id, "arguments");
       if (rv < 0) continue;
       int an = 0; const int *av = nt_arr(nt, rv, "arguments", &an);
-      if (av && an == 1) seed_ret_branch_sites(nt, av[0], sites, &nsites, 64, 0);
+      if (av && an == 1) seed_ret_branch_sites(nt, av[0], sites, reach, &nsites, 64);
     }
     for (int k = 0; k < nsites; k++) {
+      /* The left of `||` answers only when truthy and the left of `&&` only
+         when falsy; a left of both is never the value. A truthy answer of
+         a site that is only false or nil, and a falsy one of a site that
+         is only truthy, never happens (`falsev || s`, `true && s`). Of the
+         falsy answers nil fits every slot, so only a false, a Boolean,
+         can contradict. */
+      if (reach[k] == (VPR_TRUTHY | VPR_FALSY)) continue;
+      if (reach[k] == VPR_FALSY && (infer_type(c, sites[k]) != TY_BOOL || seed_value_only(c, sites[k], 0, 0))) continue;
+      if (reach[k] == VPR_TRUTHY && seed_value_only(c, sites[k], 1, 0)) continue;
       /* An EMPTY container literal carries a default kind, not evidence: a
          bare `{}` reads as the String-keyed variant and so contradicted every
          Symbol-keyed seed, though it has no keys to disagree about and the
@@ -33306,10 +33362,6 @@ int file_stat_nil_call(Compiler *c, int v) {
   return 1;
 }
 
-/* The classes a `new` receiver can be: a local holding one class, a
-   constant, or a class value chosen at run time -- each branch of a `?:` or
-   an `if`, a parenthesized one, or an element of a literal Array of them
-   (`[A, B][i]`). Up to cap of them, in *out; answers the count. */
 /* Is a `new` on recv a run-time switch over every class of the program: a
    class value no analysis names (`Object.const_get(x).new`, `o.class.new`),
    not a constant, self, an inline `Struct.new(...)`, a `self.class` naming
@@ -33323,6 +33375,32 @@ int new_recv_every_class(Compiler *c, int recv) {
   TyKind rt = infer_type(c, recv);
   return rt == TY_CLASS || rt == TY_POLY;
 }
+/* The classes a `new` receiver can be: a local holding one class, a
+   constant, or a class value chosen at run time -- each branch of a `?:`,
+   an `if`, an `unless`, a `case`, a `case`/`in`, a `begin`, a rescue
+   modifier, either side of a `||` or the right side of a `&&`, a
+   parenthesized one, or an element of a literal Array of them
+   (`[A, B][i]`). Up to cap of them, in *out; answers the count, or 0 when
+   some value the receiver can be names no class here (a call, a local no
+   class is known to hold, a branch that is missing) or the classes do not
+   all fit: the caller then takes the receiver for a class value no analysis
+   names, and builds every class. A partial set built only the classes it
+   named, and a class outside it, chosen at run time, was read as another. */
+typedef struct {
+  Compiler *c;
+  int *out;
+  int cap, n, ok;
+} NewRecvArms;
+static int new_recv_arm(const VpLeaf *leaf, void *ud) {
+  NewRecvArms *a = ud;
+  int k = leaf->kind == VPK_EXPR && a->cap - a->n > 0 ? new_recv_classes(a->c, leaf->node, a->out + a->n, a->cap - a->n) : 0;
+  if (k <= 0) {
+    a->ok = 0;
+    return 1;
+  }
+  a->n += k;
+  return 0;
+}
 int new_recv_classes(Compiler *c, int recv, int *out, int cap) {
   const NodeTable *nt = c->nt;
   if (recv < 0 || cap <= 0) return 0;
@@ -33333,24 +33411,12 @@ int new_recv_classes(Compiler *c, int recv, int *out, int cap) {
     if (k < 0) return 0;
     out[0] = k; return 1;
   }
-  if (rk == NK_ParenthesesNode) {
-    int b = nt_ref(nt, recv, "body"), n = 0;
-    const int *st = b >= 0 && nt_kind(nt, b) == NK_StatementsNode ? nt_arr(nt, b, "body", &n) : NULL;
-    return st && n == 1 ? new_recv_classes(c, st[0], out, cap) : 0;
-  }
-  if (rk == NK_IfNode || rk == NK_ElseNode || rk == NK_StatementsNode) {
-    int n = 0;
-    if (rk == NK_StatementsNode) {
-      const int *st = nt_arr(nt, recv, "body", &n);
-      return n > 0 ? new_recv_classes(c, st[n - 1], out, cap) : 0;
-    }
-    n = new_recv_classes(c, nt_ref(nt, recv, "statements"), out, cap);
-    if (rk == NK_IfNode) {
-      int e = nt_ref(nt, recv, "subsequent");
-      if (e < 0) e = nt_ref(nt, recv, "consequent");
-      n += new_recv_classes(c, e, out + n, cap - n);
-    }
-    return n;
+  if (rk == NK_ParenthesesNode || rk == NK_IfNode || rk == NK_UnlessNode || rk == NK_CaseNode ||
+      rk == NK_CaseMatchNode || rk == NK_OrNode || rk == NK_AndNode || rk == NK_BeginNode ||
+      rk == NK_RescueModifierNode || rk == NK_ElseNode || rk == NK_StatementsNode) {
+    NewRecvArms a = { c, out, cap, 0, 1 };
+    for_each_value_position(nt, recv, VPS_ALL, new_recv_arm, &a);
+    return a.ok ? a.n : 0;
   }
   /* `[A, B][i]`: every element of the literal */
   if (rk == NK_CallNode && nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "[]")) {
@@ -33358,7 +33424,11 @@ int new_recv_classes(Compiler *c, int recv, int *out, int cap) {
     if (ar < 0 || nt_kind(nt, ar) != NK_ArrayNode) return 0;
     int en = 0; const int *ev = nt_arr(nt, ar, "elements", &en);
     int n = 0;
-    for (int e = 0; e < en && n < cap; e++) n += new_recv_classes(c, ev[e], out + n, cap - n);
+    for (int e = 0; e < en; e++) {
+      int k = n < cap ? new_recv_classes(c, ev[e], out + n, cap - n) : 0;
+      if (k <= 0) return 0;
+      n += k;
+    }
     return n;
   }
   return 0;
@@ -40933,7 +41003,20 @@ static void psb_add(PsbSyms *s, const char *v) {
 /* The Symbol literals `node` can evaluate to -- or, with `elems`, that the
    Array it evaluates to can hold: a literal, an element read out of an Array
    literal, a local's or a constant's assignments, and the arms of a
-   conditional. */
+   conditional. `depth` counts the reads and calls followed, which bounds a
+   local assigned from itself. */
+typedef struct {
+  Compiler *c;
+  int elems;
+  PsbSyms *s;
+  int depth;
+} PsbArms;
+static void psb_collect(Compiler *c, int node, int elems, PsbSyms *s, int depth);
+static int psb_arm(const VpLeaf *leaf, void *ud) {
+  PsbArms *a = ud;
+  if (leaf->kind == VPK_EXPR) psb_collect(a->c, leaf->node, a->elems, a->s, a->depth + 1);
+  return 0;
+}
 static void psb_collect(Compiler *c, int node, int elems, PsbSyms *s, int depth) {
   const NodeTable *nt = c->nt;
   if (node < 0 || depth > 8) return;
@@ -40971,25 +41054,13 @@ static void psb_collect(Compiler *c, int node, int elems, PsbSyms *s, int depth)
     }
     return;
   }
-  case NK_IfNode:
-    psb_collect(c, nt_ref(nt, node, "statements"), elems, s, depth + 1);
-    psb_collect(c, nt_ref(nt, node, "subsequent"), elems, s, depth + 1);
-    return;
-  case NK_ElseNode:
-    psb_collect(c, nt_ref(nt, node, "statements"), elems, s, depth + 1);
-    return;
-  case NK_ParenthesesNode:
-    psb_collect(c, nt_ref(nt, node, "body"), elems, s, depth + 1);
-    return;
-  case NK_StatementsNode: {
-    int bn = 0; const int *body = nt_arr(nt, node, "body", &bn);
-    if (bn > 0) psb_collect(c, body[bn - 1], elems, s, depth + 1);
+  case NK_IfNode: case NK_UnlessNode: case NK_CaseNode: case NK_CaseMatchNode: case NK_BeginNode:
+  case NK_RescueModifierNode: case NK_ElseNode: case NK_ParenthesesNode: case NK_StatementsNode:
+  case NK_OrNode: case NK_AndNode: {
+    PsbArms a = { c, elems, s, depth };
+    for_each_value_position(nt, node, VP_AND_LEFT | VPS_ALL, psb_arm, &a);
     return;
   }
-  case NK_OrNode: case NK_AndNode:
-    psb_collect(c, nt_ref(nt, node, "left"), elems, s, depth + 1);
-    psb_collect(c, nt_ref(nt, node, "right"), elems, s, depth + 1);
-    return;
   default:
     return;
   }

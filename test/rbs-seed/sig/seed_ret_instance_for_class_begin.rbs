@@ -1,0 +1,3 @@
+class VlBeginSearch
+  def searched_model: () -> VlBeginStory
+end

@@ -10,7 +10,7 @@ end
 class LtApp2
   def nest_left: (untyped v) -> String
   def nest_and: (untyped v) -> String
-  def nest_or3: () -> String
+  def nest_or3: () -> String?
   def nest_swap: (untyped v) -> String
   def nest_cond: (untyped v) -> String
   def ivar_left: (untyped v) -> String

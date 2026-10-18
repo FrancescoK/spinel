@@ -1,0 +1,12 @@
+class SeedRetLogic
+  def left_or: () -> String
+  def false_or: () -> String
+  def and_int: () -> String
+  def and_cond: () -> String
+  def or_chain: () -> String
+  def false_call_or: () -> String
+  def ensure_or: () -> String
+  def and_false_or: () -> String
+  def nil_call_or: () -> String
+  def true_and: () -> String
+end

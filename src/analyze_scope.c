@@ -1,6 +1,7 @@
 #include "analyze_internal.h"
 #include "builtin_names.h"
 #include "call_plan.h"
+#include "value_pos.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9425,26 +9426,39 @@ static int pivs_var_stores(Compiler *c, NodeKind rk, const char *vn, int key, ch
   }
   return saw;
 }
+/* The branches of a conditional, a sequence or a logical operator: each of
+   its value positions is visited at one level down (the walk has no depth of
+   its own), a nil by absence as the missing value it is. */
+typedef struct {
+  Compiler *c;
+  char *set;
+  int depth, elems, ok;
+} PivsArms;
+static int pivs_arm(const VpLeaf *leaf, void *ud) {
+  PivsArms *a = ud;
+  int (*f)(Compiler *, int, char *, int) = a->elems ? pivs_elems : pivs_value;
+  if (leaf->kind != VPK_GAVE_UP && f(a->c, leaf->node, a->set, a->depth + 1)) return 0;
+  a->ok = 0;
+  return 1;
+}
 static int pivs_branches(Compiler *c, int v, char *set, int depth, int elems) {
   const NodeTable *nt = c->nt;
   int (*f)(Compiler *, int, char *, int) = elems ? pivs_elems : pivs_value;
   switch (nt_kind(nt, v)) {
-    case NK_ParenthesesNode: return f(c, nt_ref(nt, v, "body"), set, depth + 1);
-    case NK_StatementsNode: {
-      int n = 0; const int *b = nt_arr(nt, v, "body", &n);
-      if (n == 0 && !elems) pivs_note_builtin(c);
-      return n == 0 || f(c, b[n - 1], set, depth + 1);
-    }
-    case NK_OrNode: case NK_AndNode:
-      return f(c, nt_ref(nt, v, "left"), set, depth + 1) && f(c, nt_ref(nt, v, "right"), set, depth + 1);
-    case NK_IfNode: case NK_UnlessNode:
-      return f(c, nt_ref(nt, v, "statements"), set, depth + 1) &&
-             f(c, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"), set, depth + 1);
-    case NK_ElseNode: return f(c, nt_ref(nt, v, "statements"), set, depth + 1);
-    case NK_CaseNode: {
-      int n = 0; const int *w = nt_arr(nt, v, "conditions", &n);
-      for (int i = 0; i < n; i++) if (!f(c, nt_ref(nt, w[i], "statements"), set, depth + 1)) return 0;
-      return f(c, nt_ref(nt, v, "else_clause"), set, depth + 1);
+    case NK_ParenthesesNode: case NK_StatementsNode: case NK_OrNode: case NK_AndNode: case NK_IfNode:
+    case NK_UnlessNode: case NK_ElseNode: case NK_CaseNode: case NK_CaseMatchNode: case NK_BeginNode:
+    case NK_RescueModifierNode: {
+      if (nt_kind(nt, v) == NK_StatementsNode) {
+        int n = 0;
+        nt_arr(nt, v, "body", &n);
+        if (n == 0) {
+          if (!elems) pivs_note_builtin(c);
+          return 1;
+        }
+      }
+      PivsArms a = { c, set, depth, elems, 1 };
+      for_each_value_position(nt, v, VP_AND_LEFT | VPS_ALL, pivs_arm, &a);
+      return a.ok;
     }
     case NK_LocalVariableReadNode: return pivs_local(c, v, set, depth, elems);
     case NK_InstanceVariableReadNode: {

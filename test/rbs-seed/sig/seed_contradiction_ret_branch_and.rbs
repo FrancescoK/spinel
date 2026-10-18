@@ -1,0 +1,3 @@
+class SeedRetBranchAnd
+  def andl: () -> String
+end

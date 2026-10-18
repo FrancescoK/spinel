@@ -123,7 +123,7 @@ class LtApp2
 
   def s = @s
   def t = @t
-  def falsev = false
+  def nilv = nil
   def ident(x) = x
 
   def nest_left(v)
@@ -135,7 +135,7 @@ class LtApp2
   end
 
   def nest_or3
-    (s or @t or falsev)
+    (s or @t or nilv)
   end
 
   def nest_swap(v)

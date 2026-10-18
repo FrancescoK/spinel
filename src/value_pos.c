@@ -26,6 +26,7 @@ typedef struct {
   int depth;
   int link;     /* pushed as the next link of a chain: its arm numbering
                    carries on from `arm` */
+  unsigned reach;   /* VPR_* bits, inherited from the item it was pushed by */
 } VpItem;
 
 enum { VP_SMALL = 32 };
@@ -37,6 +38,7 @@ typedef struct {
   VpFn fn;
   void *ud;
   long budget;        /* visits left: a tree cannot take more than one per node */
+  unsigned reach;     /* the VPR_* bits of the item being visited: what vp_push gives its children */
   VpItem *items;      /* the stack: `small` first, the heap past it */
   int n, cap;
   VpItem small[VP_SMALL];
@@ -66,12 +68,14 @@ static void vp_push(VpWalk *w, int node, int parent, int arm, int depth, int lin
   }
   VpItem *it = &w->items[w->n++];
   it->node = node; it->parent = parent; it->arm = arm; it->depth = depth; it->link = link;
+  it->reach = w->reach;
 }
 
 static int vp_emit(VpWalk *w, const VpItem *it, VpKind kind) {
   VpLeaf lf;
   lf.node = it->node; lf.kind = kind; lf.parent = it->parent; lf.arm = it->arm;
   lf.cond_depth = it->depth;
+  lf.reach = it->reach;
   return w->fn(&lf, w->ud);
 }
 
@@ -151,10 +155,15 @@ static VpStep vp_write(VpWalk *w, VpItem *cur) {
 /* `x ||= e` answers the target's old value when it is truthy and `e` when it
    is not; `x &&= e` the old value when it is falsy. Under VP_WRITES the write
    node is a leaf, standing for that old value (a caller classifies it as it
-   would a read of the target), and `e`'s positions follow it. */
+   would a read of the target), and `e`'s positions follow it. The old value
+   answers only when truthy for `||=` and only when falsy for `&&=`: the leaf
+   says so in its reach, `e`'s positions keep what they inherited. */
 static VpStep vp_logical_write(VpWalk *w, VpItem *cur) {
   if (!(w->flags & VP_WRITES)) return VPSTEP_LEAF;
   vp_push(w, nt_ref(w->nt, cur->node, "value"), cur->node, 0, cur->depth, 0);
+  const char *t = nt_type(w->nt, cur->node);
+  size_t tl = strlen(t);
+  cur->reach |= tl >= 12 && strcmp(t + tl - 12, "AndWriteNode") == 0 ? VPR_FALSY : VPR_TRUTHY;
   return VPSTEP_LEAF_THEN_EXPANDED;
 }
 
@@ -206,18 +215,33 @@ static VpStep vp_step(VpWalk *w, VpItem *cur) {
   return VPSTEP_LEAF;
 }
 
+/* The operands of `a || b` and `a && b` have just been pushed, the left one
+   last: it is the value of `||` only when truthy, and of `&&` (when the left
+   side is a position at all) only when falsy. */
+static void vp_mark_left(VpWalk *w, int node) {
+  NodeKind k = nt_kind(w->nt, node);
+  if (k == NK_OrNode) w->items[w->n - 1].reach |= VPR_TRUTHY;
+  else if (k == NK_AndNode && (w->flags & VP_AND_LEFT)) w->items[w->n - 1].reach |= VPR_FALSY;
+}
+
 /* One item: peel until it is a leaf or has pushed its positions. */
 static int vp_visit(VpWalk *w, VpItem cur) {
+  w->reach = cur.reach;
   for (;;) {
     if (cur.node < 0) return vp_emit(w, &cur, VPK_NIL);
     if (--w->budget < 0) {
       w->n = 0;   /* one gave-up leaf, then the walk is over */
       return vp_emit(w, &cur, VPK_GAVE_UP);
     }
+    if ((w->flags & VP_LOGIC_NODES) && (w->shapes & VPS_LOGIC) &&
+        (nt_kind(w->nt, cur.node) == NK_OrNode || nt_kind(w->nt, cur.node) == NK_AndNode) &&
+        vp_emit(w, &cur, VPK_EXPR))
+      return 1;
     switch (vp_step(w, &cur)) {
     case VPSTEP_PEEL:
       continue;
     case VPSTEP_EXPANDED:
+      vp_mark_left(w, cur.node);
       return 0;
     case VPSTEP_JUMP:
       return vp_emit(w, &cur, VPK_JUMP);
@@ -235,6 +259,7 @@ int for_each_value_position(const NodeTable *nt, int root, unsigned flags, VpFn 
   w.nt = nt; w.flags = flags; w.fn = fn; w.ud = ud;
   w.shapes = (flags & VPS_ALL) ? (flags & VPS_ALL) : VPS_ALL;
   w.budget = nt->count;
+  w.reach = 0;
   w.items = w.small; w.n = 0; w.cap = VP_SMALL;
   vp_push(&w, root, -1, 0, 0, 0);
   int stop = 0;
@@ -274,7 +299,9 @@ static int vp_dump_leaf(const VpLeaf *lf, void *ud) {
   fprintf(d->out, " line %d arm %d", line, lf->arm);
   if (lf->parent >= 0) fprintf(d->out, " parent #%d %s", lf->parent, nt_type(nt, lf->parent));
   else fprintf(d->out, " parent -");
-  fprintf(d->out, " depth %d\n", lf->cond_depth);
+  fprintf(d->out, " depth %d", lf->cond_depth);
+  if (lf->reach) fprintf(d->out, " reach %s", lf->reach == VPR_TRUTHY ? "truthy" : lf->reach == VPR_FALSY ? "falsy" : "never");
+  fputc('\n', d->out);
   return 0;
 }
 
@@ -384,9 +411,46 @@ static int vp_check_long(void) {
   return ok;
 }
 
+/* VP_LOGIC_NODES: `(a || b) && c` yields the && as a leaf, then the || as a
+   leaf, then a, b and c, with the truth values each one answers for. */
+typedef struct {
+  int n;
+  int node[8];
+  unsigned reach[8];
+} VpLogicCheck;
+
+static int vp_logic_leaf(const VpLeaf *lf, void *ud) {
+  VpLogicCheck *k = ud;
+  if (k->n < 8) { k->node[k->n] = lf->node; k->reach[k->n] = lf->reach; }
+  k->n++;
+  return 0;
+}
+
+static int vp_check_logic(void) {
+  NodeTable *nt = nt_new_table();
+  int a = nt_new_node(nt, "IntegerNode"), b = nt_new_node(nt, "IntegerNode"), c = nt_new_node(nt, "IntegerNode");
+  int orn = nt_new_node(nt, "OrNode"), andn = nt_new_node(nt, "AndNode");
+  nt_node_set_ref(nt, orn, "left", a);
+  nt_node_set_ref(nt, orn, "right", b);
+  nt_node_set_ref(nt, andn, "left", orn);
+  nt_node_set_ref(nt, andn, "right", c);
+  VpLogicCheck k;
+  memset(&k, 0, sizeof k);
+  for_each_value_position(nt, andn, VP_AND_LEFT | VP_LOGIC_NODES | VPS_ALL, vp_logic_leaf, &k);
+  int ok = k.n == 5 && k.node[0] == andn && k.node[1] == orn && k.node[2] == a && k.node[3] == b && k.node[4] == c &&
+           k.reach[0] == 0 && k.reach[1] == VPR_FALSY && k.reach[2] == (VPR_FALSY | VPR_TRUTHY) &&
+           k.reach[3] == VPR_FALSY && k.reach[4] == 0;
+  memset(&k, 0, sizeof k);
+  for_each_value_position(nt, andn, VPS_ALL, vp_logic_leaf, &k);   /* without VP_AND_LEFT: the right side of the && only */
+  ok = ok && k.n == 1 && k.node[0] == c;
+  nt_free(nt);
+  return ok;
+}
+
 int value_pos_check(void) {
   int ok = 1;
   if (!vp_check_budget()) { fprintf(stderr, "value-pos-check: a cycle did not end in one gave-up leaf\n"); ok = 0; }
+  if (!vp_check_logic()) { fprintf(stderr, "value-pos-check: the logical operators did not yield their node and their truth values\n"); ok = 0; }
   if (!vp_check_long()) { fprintf(stderr, "value-pos-check: a wide case or a long elsif chain was not walked in order\n"); ok = 0; }
   if (ok) printf("value-pos-check: ok\n");
   return ok ? 0 : 1;

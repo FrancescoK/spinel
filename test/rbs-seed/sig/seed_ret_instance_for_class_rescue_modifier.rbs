@@ -1,0 +1,3 @@
+class VlRescueModifierSearch
+  def searched_model: () -> VlRescueModifierStory
+end

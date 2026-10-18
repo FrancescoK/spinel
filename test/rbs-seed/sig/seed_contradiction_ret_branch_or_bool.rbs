@@ -1,0 +1,3 @@
+class SeedRetBranchOrBool
+  def pick: () -> String
+end
