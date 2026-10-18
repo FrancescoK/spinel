@@ -3222,6 +3222,12 @@ int cls_fact_bounded(Compiler *c, int k) {
 int cls_fact_excludes(Compiler *c, int recv, int k) {
   const ClsSet *s = cls_fact_node(c, recv);
   if (!s || !cls_fact_bounded(c, k)) return 0;
+  /* A receiver no value reaches (a call in code nothing runs) excludes no
+     class: its call keeps binding every method of the name, as it did
+     while the facts were every class. Left unbound, such a method's
+     parameters are untyped, and an untyped argument it hands on widens a
+     live method's parameter to a box (#9514). */
+  if (s->n == 0 && !s->bv) return 0;
   for (int i = 0; i < s->n; i++) if (s->cls[i] == k) return 0;
   return 1;
 }
