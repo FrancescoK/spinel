@@ -5031,9 +5031,10 @@ static void mark_body_self(const NodeTable *nt, int id, int owner, int *body_sel
 }
 
 
-/* The edges value_handed_on climbs: the conditionals and `||`/`&&` (both
-   sides), and a begin with no clause. */
-enum { HANDED_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_LOGIC | VPS_BEGIN_PLAIN | VP_AND_LEFT | VP_BEGIN_BOTH };
+/* The edges value_handed_on climbs: the conditionals, `||` and `&&` (both
+   sides), and a begin with its rescue clauses. A begin's body beside an else
+   is climbed too: the answer errs on the side of handing a class on. */
+enum { HANDED_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_LOGIC | VPS_BEGIN | VP_AND_LEFT | VP_BEGIN_BOTH };
 
 /* Is the value of node `u` handed on -- stored, passed, returned -- rather
    than only consumed where it stands? Consumed: the receiver of a call that
@@ -5063,13 +5064,9 @@ static int value_handed_on(const NodeTable *nt, const int *parent, int u) {
     int p = up.parent;
     NodeKind pk = nt_kind(nt, p);
     const char *pt = nt_type(nt, p);
-    /* a begin with clauses passes its body, its rescue clauses and its else
-       on (the else is a choice); an interpolated statement list passes up
-       to the interpolation, which consumes it */
-    if (pk == NK_BeginNode || (pt && sp_streq(pt, "EmbeddedStatementsNode"))) {
-      if (pk == NK_BeginNode && up.node == nt_ref(nt, p, "else_clause")) chosen = 1;
-      u = p; continue;
-    }
+    /* an interpolated statement list passes up to the interpolation, which
+       consumes it */
+    if (pt && sp_streq(pt, "EmbeddedStatementsNode")) { u = p; continue; }
     /* a condition, a pattern, a `when` or `in` clause's tests */
     if (pk == NK_IfNode || pk == NK_UnlessNode || pk == NK_CaseNode || pk == NK_CaseMatchNode ||
         (pt && (sp_streq(pt, "WhenNode") || sp_streq(pt, "InNode"))))
@@ -5079,10 +5076,6 @@ static int value_handed_on(const NodeTable *nt, const int *parent, int u) {
                sp_streq(pt, "InterpolatedRegularExpressionNode") ||
                sp_streq(pt, "ProgramNode")))
       return 0;
-    /* a rescue clause answers its statements, and the next clause's value */
-    if (pk == NK_RescueNode && (up.node == nt_ref(nt, p, "statements") || up.node == nt_ref(nt, p, "subsequent"))) {
-      u = p; continue;
-    }
     if (pk == NK_ClassNode || pk == NK_ModuleNode || pk == NK_ConstantPathNode ||
         pk == NK_RescueNode)
       return 0;
