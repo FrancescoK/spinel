@@ -4088,14 +4088,30 @@ static int qc_resolve_ref(const NodeTable *nt, int ref, char (*scope)[64], int s
   int cl = ref >= 0 ? qc_read_chain(nt, ref, chain, &abs_anchor) : 0;
   return qc_resolve_chain(chain, cl, abs_anchor, scope, scope_n, out);
 }
+/* Does a body enclosing scope[0..scope_n) define `head` (a class or module
+   of the program at scope[0..p) + head, p >= 1)? */
+static int qc_head_shadowed(const char *head, char (*scope)[64], int scope_n) {
+  for (int p = scope_n; p >= 1; p--) {
+    if (p + 1 > QC_MAXDEPTH) continue;
+    char cand[QC_MAXDEPTH][64];
+    for (int i = 0; i < p; i++) snprintf(cand[i], 64, "%s", scope[i]);
+    snprintf(cand[p], 64, "%s", head);
+    for (int d = 0; d < qc_ndefs; d++)
+      if (qc_path_eq(qc_defs[d].path, qc_defs[d].depth, cand, p + 1)) return 1;
+  }
+  return 0;
+}
 /* ... the same for a chain already read (cl names) */
 static int qc_resolve_chain(char (*chain)[64], int cl, int abs_anchor, char (*scope)[64],
                             int scope_n, char (*out)[64]) {
   if (cl <= 0) return 0;
   /* a path through a header under a builtin (`Regexp::Syntax::Base`) is
-     the body that header opened */
+     the body that header opened, unless an enclosing body defines a
+     module of the head's name, which the read finds first, as Ruby's
+     lexical lookup does */
   char bchain[QC_MAXDEPTH + 1][64];
-  if (cl <= QC_MAXDEPTH + 1 && (is_builtin_class_name(chain[0]) || is_builtin_module_name(chain[0]))) {
+  if (cl <= QC_MAXDEPTH + 1 && (is_builtin_class_name(chain[0]) || is_builtin_module_name(chain[0])) &&
+      (abs_anchor || !qc_head_shadowed(chain[0], scope, scope_n))) {
     for (int i = 0; i < cl; i++) snprintf(bchain[i], 64, "%s", chain[i]);
     cl = qc_builtin_head(bchain, cl, &abs_anchor);
     chain = bchain;
@@ -4368,8 +4384,10 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
         for (int i = 0; i < wn; i++) if (sp_streq(ws[i].name, cname)) { involved = 1; break; }
         if (involved) {
           /* `Regexp::Syntax::Token::X` reads X in the body `module
-             Regexp::Syntax` opened, which the passes keep at [Syntax] */
-          cl = qc_builtin_head(chain, cl, &abs_anchor);
+             Regexp::Syntax` opened, which the passes keep at [Syntax],
+             unless an enclosing body defines its own `Regexp` */
+          if (abs_anchor || !qc_head_shadowed(chain[0], path, depth))
+            cl = qc_builtin_head(chain, cl, &abs_anchor);
           cl = qc_expand_read_alias(path, depth, chain, cl, &abs_anchor);
           cname = chain[cl - 1];
         }

@@ -4,3 +4,5 @@
 [:"age=1.1", :"age=2.0"]
 [:"age=1.1", :"age=2.0", :other]
 [:report]
+[:shadow]
+[:literal, :"age=1.1", :"age=2.0"]

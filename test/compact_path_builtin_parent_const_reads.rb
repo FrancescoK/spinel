@@ -50,3 +50,19 @@ p Regexp::Syntax::Token::UnicodeProperty::All
 p Regexp::Syntax::V1_9_1::PROPS
 p Regexp::Syntax::V1_9_3::PROPS
 p String::Report::All
+
+# an enclosing body's own Regexp comes first, as Ruby's lexical lookup
+# finds it
+module Shadow
+  module Regexp
+    module Syntax
+      module Token
+        All = %i[shadow].freeze
+      end
+    end
+  end
+
+  def self.read = Regexp::Syntax::Token::All
+end
+p Shadow.read
+p Regexp::Syntax::Token::All
