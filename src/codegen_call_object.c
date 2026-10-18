@@ -1271,7 +1271,9 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       buf_puts(b, "sp_str_is_frozen_val("); emit_expr(c, recv, b); buf_puts(b, ")");
       return 1;
     }
-    if (frr.kind == RK_BOXED) {
+    /* a class of the program's own `frozen?` answers for its objects: the
+       boxed dispatch reaches it, and the builtin's for the rest */
+    if (frr.kind == RK_BOXED && !an_user_defines_method(c, "frozen?")) {
       buf_puts(b, "sp_poly_frozen("); emit_expr(c, recv, b); buf_puts(b, ")");
       return 1;
     }
