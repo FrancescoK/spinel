@@ -22,3 +22,15 @@ w = pick([[1, 2], Set[3, 4]], 1)
 p w.map! { |x| x * 2 }
 p pick([[1], Set[3, 4, 5]], 1).delete_if { |x| x == 4 }
 p pick([[1], Set[3, 4, 5]], 1).select! { |x| x > 3 }
+
+# the block's own calls dispatch on their own receivers: `pos` is the
+# program's here, not IO#pos, though the Array's arm reads its receiver as
+# no object of the program's
+class Tok
+  def initialize(p) = @p = p
+  def pos = @p
+  def blank? = @p.zero?
+end
+p pick([[Tok.new(1), Tok.new(0), Tok.new(2)], Set[3]], 0).reject(&:blank?).map!(&:pos)
+p pick([[Tok.new(5)], Set[3]], 0).map! { |t| t.pos * 2 }
+p pick([[Tok.new(5), Tok.new(0)], Set[3]], 0).select! { |t| !t.blank? }.size
