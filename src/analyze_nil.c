@@ -1147,15 +1147,20 @@ static void nf_elem_writes(NF *f) {
     NT_FOREACH_KIND(nt, wk[q], w) {
       int val = nt_ref(nt, w, "value");
       /* `Array.new(n) { ... }` whose block can answer nil is typed a
-         PolyArray where the slot it fills settles a pointer one */
-      if (val < 0 || !(nf_elem_tracked(c->ntype[val]) || c->ntype[val] == TY_POLY_ARRAY)) continue;
-      nf_elem_mark(f, w, nf_elem(f, val, 0));
+         PolyArray where the slot it fills settles a pointer one; a boxed
+         value (a choice between an Array and nil) carries no element fact
+         of its own, but a nil stored through its slot still lands in the
+         Array it was chosen from */
+      int boxed = val >= 0 && c->ntype[val] == TY_POLY;
+      if (val < 0 || !(nf_elem_tracked(c->ntype[val]) || c->ntype[val] == TY_POLY_ARRAY || boxed)) continue;
+      if (!boxed) nf_elem_mark(f, w, nf_elem(f, val, 0));
       int wf = nf_elem_slot_op(f, w, 0);
       if (wf > 0 && (wf & NF_EL_STORED)) nf_elem_mark_back(f, val, 0);
     }
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     int recv = mutated_array(c, nt_ref(nt, id, "receiver"));
-    if (recv < 0 || !nf_elem_tracked(c->ntype[recv])) continue;
+    /* a boxed receiver stores into whichever Array it holds */
+    if (recv < 0 || !(nf_elem_tracked(c->ntype[recv]) || c->ntype[recv] == TY_POLY)) continue;
     int from, to, elems;
     int g = array_mutation_stores(c, id, 1, &from, &to, &elems);
     if (g < 0) continue;
@@ -1491,7 +1496,8 @@ static void nf_bind_params(NF *f, int id, int mi, const int *av, int an) {
   int open = 0;
   for (int k = 0; k < m->nparams && !open; k++) {
     LocalVar *p = m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
-    open = p && ((nf_open(p->obj_may_nil) && nf_tracked(f->c, p->type)) || nf_elem_tracked(p->type));
+    open = p && ((nf_open(p->obj_may_nil) && nf_tracked(f->c, p->type)) || nf_elem_tracked(p->type) ||
+                 (p->type == TY_POLY && (p->obj_elem_may_nil & NF_EL_STORED)));
   }
   if (!open) return;
   ArgLayout L;
@@ -1505,10 +1511,11 @@ static void nf_bind_params(NF *f, int id, int mi, const int *av, int an) {
     /* an Array argument that can hold nil makes an Array parameter one,
        and a nil the method stores through the parameter lands in the
        argument's Array */
-    if (nf_elem_tracked(p->type)) {
+    if (nf_elem_tracked(p->type) || p->type == TY_POLY) {
       int a = from == ARG_NODE ? layout_plain_arg(c, m, av, &L, k) : from == ARG_DEFAULT ? dflt
               : from == ARG_BY_NAME ? ie_kwhash_value(c, kwh, m->pnames[k]) : -1;
-      if (a >= 0 && !(p->obj_elem_may_nil & NF_EL_HOLDS) && nf_elem(f, a, 0)) nf_elem_add(f, &p->obj_elem_may_nil, NF_EL_HOLDS);
+      if (a >= 0 && p->type != TY_POLY && !(p->obj_elem_may_nil & NF_EL_HOLDS) && nf_elem(f, a, 0))
+        nf_elem_add(f, &p->obj_elem_may_nil, NF_EL_HOLDS);
       if (a >= 0 && (p->obj_elem_may_nil & NF_EL_STORED)) nf_elem_mark_back(f, a, 0);
     }
     if (!nf_open(p->obj_may_nil) || !nf_tracked(f->c, p->type)) continue;
