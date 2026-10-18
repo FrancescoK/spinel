@@ -5063,9 +5063,9 @@ static int value_handed_on(const NodeTable *nt, const int *parent, int u) {
     int p = up.parent;
     NodeKind pk = nt_kind(nt, p);
     const char *pt = nt_type(nt, p);
-    /* a begin with clauses passes its body and its else on (the else is a
-       choice), a rescue clause ends the climb; an interpolated statement
-       list passes up to the interpolation, which consumes it */
+    /* a begin with clauses passes its body, its rescue clauses and its else
+       on (the else is a choice); an interpolated statement list passes up
+       to the interpolation, which consumes it */
     if (pk == NK_BeginNode || (pt && sp_streq(pt, "EmbeddedStatementsNode"))) {
       if (pk == NK_BeginNode && up.node == nt_ref(nt, p, "else_clause")) chosen = 1;
       u = p; continue;
@@ -5079,6 +5079,10 @@ static int value_handed_on(const NodeTable *nt, const int *parent, int u) {
                sp_streq(pt, "InterpolatedRegularExpressionNode") ||
                sp_streq(pt, "ProgramNode")))
       return 0;
+    /* a rescue clause answers its statements, and the next clause's value */
+    if (pk == NK_RescueNode && (up.node == nt_ref(nt, p, "statements") || up.node == nt_ref(nt, p, "subsequent"))) {
+      u = p; continue;
+    }
     if (pk == NK_ClassNode || pk == NK_ModuleNode || pk == NK_ConstantPathNode ||
         pk == NK_RescueNode)
       return 0;
