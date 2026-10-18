@@ -21403,6 +21403,16 @@ static int push_stmt_takes_value_form(Compiler *c, int id) {
   return run > 1 && !pure;
 }
 
+/* A receiver a statement may read more than once: a plain read of a variable,
+   a slot or a constant, a global, or the temp the operand-order rewrite bound
+   the receiver to. */
+static int recv_rereadable(Compiler *c, int recv) {
+  if (subtree_is_pure_read(c, recv) || nt_kind(c->nt, recv) == NK_GlobalVariableReadNode) return 1;
+  for (int i = 0; i < g_n_argov; i++)
+    if (g_argov_node[i] == recv) return 1;
+  return 0;
+}
+
 static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent);
 static int emit_array_mutate_stmt_dispatch(Compiler *c, int id, Buf *b, int indent) {
   int recv = nt_ref(c->nt, id, "receiver");
@@ -22541,10 +22551,38 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       return 1;
     }
     if (is_push_alias(name) && argc >= 1) {
+      /* A receiver that can be nil raises, under the name as written, once
+         every argument has run: CRuby evaluates all of them before it finds
+         the receiver has no push, and a push that raises stops at the first
+         argument. Each argument is pushed in turn (a nil Array takes none)
+         and the receiver is tested after the last. A receiver that is not a
+         plain read is held in a temp rather than read twice. */
+      int nil_ok = recv_never_nil(c, recv);
+      if (!nil_ok && !recv_rereadable(c, recv)) {
+        int t = ++g_tmp;
+        emit_indent(b, indent);
+        buf_printf(b, "{ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d);\n", t);
+        for (int a = 0; a < argc; a++) {
+          emit_indent(b, indent + 1);
+          buf_printf(b, "sp_PolyArray_push(_t%d, ", t); emit_boxed(c, argv[a], b); buf_puts(b, ");\n");
+        }
+        emit_indent(b, indent + 1);
+        nil_recv_check(name, t, b);
+        buf_puts(b, "\n");
+        emit_indent(b, indent);
+        buf_puts(b, "}\n");
+        return 1;
+      }
       for (int a = 0; a < argc; a++) {
         emit_indent(b, indent);
-        buf_printf(b, "sp_PolyArray_push%s(", recv_never_nil(c, recv) ? "" : "_m"); emit_expr(c, recv, b); buf_puts(b, ", ");
+        buf_puts(b, "sp_PolyArray_push("); emit_expr(c, recv, b); buf_puts(b, ", ");
         emit_boxed(c, argv[a], b); buf_puts(b, ");\n");
+      }
+      if (!nil_ok) {
+        emit_indent(b, indent);
+        buf_puts(b, "if (SP_UNLIKELY(!("); emit_expr(c, recv, b);
+        buf_printf(b, "))) sp_nil_recv(\"%s\");\n", name);
       }
       return 1;
     }
