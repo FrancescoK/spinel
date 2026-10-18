@@ -14874,8 +14874,16 @@ void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
           pt != TY_POLY && pt != TY_UNKNOWN &&
           !(ty_is_numeric(at) && ty_is_numeric(pt)) && !hread && !wrap)
         continue;
+      /* (a parameter that holds its nil takes the value as its oint, nil
+         and all: handed the bare number, the writer's C call did not
+         compile) */
+      int po = api >= 0 && arm->pnames && arm->pnames[api] && oint_kind(pt) &&
+               slot_is_oint(scope_local(arm, arm->pnames[api]));
       Buf vb; memset(&vb, 0, sizeof vb);
-      if (hread) buf_printf(&vb, "sp_strbuf_read_pub(%s)", src);
+      if (po && at == TY_POLY) buf_printf(&vb, "%s(%s)", oint_unbox(pt), src);
+      else if (po && (at == TY_NIL || at == TY_VOID)) buf_puts(&vb, oint_nil(pt));
+      else if (po && ty_is_numeric(at)) buf_printf(&vb, "%s(%s)", oint_of(pt), src);
+      else if (hread) buf_printf(&vb, "sp_strbuf_read_pub(%s)", src);
       else if (wrap) buf_printf(&vb, "sp_String_new_shared(%s)", src);
       /* (--share-strings: a String into a boxed parameter as its handle's
          box, which a change through the parameter reaches, the field it is
