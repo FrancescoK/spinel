@@ -9972,16 +9972,26 @@ static int emit_native_share_ctor(Compiler *c, int id, int ci, const NativeMetho
    (`native_share "string=", ... "keeps"`), where the rule shares the String
    the object keeps: its handle form, handed the String's handle as a
    member store hands it on (emit_strbuf_handle_of; the seal checks that
-   route, SHFL_MEMBER); its value read out of it. 0 otherwise. */
-int emit_native_share_keeps(Compiler *c, int recv, const NativeMethod *m, int argc, const int *argv, Buf *b) {
+   route, SHFL_MEMBER). Its value is that handle (the handle form answers
+   it) where the assignment is taken as one, else the String read out of it
+   (native_assign_keeps, as an attribute assignment's value is its argument).
+   0 otherwise. */
+int emit_native_share_keeps(Compiler *c, int id, int recv, const NativeMethod *m, int argc, const int *argv, Buf *b) {
   if (!repr_share_rule(c) || m->kind != 0 || !(m->share & NSH_KEEPS) || !m->share_csym || m->rest || m->nargs != 1 ||
       argc != 1 || !share_node_elems_share(c, recv))
     return 0;
-  buf_printf(b, "sp_strbuf_read(%s(", m->share_csym);
-  emit_expr(c, recv, b);
-  buf_puts(b, ", ");
-  emit_strbuf_handle_of(c, argv[0], b);
-  buf_puts(b, "))");
+  Repr hr = repr_of(c, id);
+  int shr = native_assign_keeps(c, id) != NULL, hv = shr && (hr.handle || hr.demand);
+  Buf hb; memset(&hb, 0, sizeof hb);
+  buf_printf(&hb, "%s(", m->share_csym);
+  emit_expr(c, recv, &hb);
+  buf_puts(&hb, ", ");
+  emit_strbuf_handle_of(c, argv[0], &hb);
+  buf_puts(&hb, ")");
+  if (hv) buf_puts(b, hb.p);
+  else if (shr) emit_native_assign_read(c, id, hb.p, b);
+  else buf_printf(b, "sp_strbuf_read(%s)", hb.p);
+  free(hb.p);
   return 1;
 }
 int emit_native_ctor(Compiler *c, int id, int ci, int argc, const int *argv, Buf *b) {

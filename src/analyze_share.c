@@ -543,8 +543,13 @@ static int sh_holder(ShareFacts *F, int kind, int a, int b, const char *name, in
    Strings sit in its ivars, which are holders of their own. */
 static int sh_may_hold(const Compiler *c, TyKind t) {
   /* an object holds its Strings in ivars, which are holders of their own;
-     a native class's object keeps the String its binding declares */
-  if (ty_is_object(t)) return ty_object_class(t) < c->nclasses && c->classes[ty_object_class(t)].native_share_keeps;
+     a native class's object keeps the String its binding declares, and so
+     does a subclass's, which is built by the class's constructor */
+  if (ty_is_object(t)) {
+    int k = ty_object_class(t);
+    if (k < c->nclasses && c->classes[k].nsub_root > 0) k = c->classes[k].nsub_root - 1;
+    return k < c->nclasses && c->classes[k].native_share_keeps;
+  }
   if (ty_is_obj_array(t)) return 0;
   switch (t) {
   case TY_VOID: case TY_NIL: case TY_INT: case TY_BIGINT: case TY_FLOAT: case TY_SYMBOL:
@@ -2293,14 +2298,16 @@ static int sh_native_call(ShareFacts *F, Compiler *c, int n, int cid, const char
   unsigned sh = nm >= 0 ? c->native_methods[nm].share : 0;
   if (!sh || (on_self && !(sh & NSH_FRESH))) return -2;
   /* one that keeps its argument (`io.string = s`) keeps it as the object's
-     String from then on, as a constructor does; its value is that String */
+     String from then on, as a constructor does; its value is that String,
+     which a new String argument is the object's too, no longer one no name
+     holds */
   if ((sh & NSH_KEEPS) && argc == 1) {
     const int *argv = call_args(c->nt, n, &argc);
     int av = sh_arg_val(F, c, argv[0]), e = sh_elem(F, rv);
     sh_union(F, e, av);
     /* (stored as a member is: the seal checks the route carries the handle) */
     sh_flow(F, SHFL_MEMBER, n, argv[0], e);
-    return av;
+    return av >= 0 ? av : e;
   }
   int u = sh_unknown_call(F, c, n, blk);
   if (sh & NSH_FRESH) return -1;
@@ -2429,7 +2436,9 @@ static int sh_new_call(ShareFacts *F, Compiler *c, int n, int recv, int blk) {
     }
     return -1;
   }
-  if (ci->is_native_class) {
+  /* (a subclass of a native class with no initialize of its own is built by the class's
+     constructor, as emit_native_ctor builds it: #9269) */
+  if (ci->is_native_class || (ci->nsub_root > 0 && comp_method_in_chain(c, cid, "initialize", NULL) < 0)) {
     int r = sh_native_new(F, c, n, cid);
     if (r != -2) return r;
   }
@@ -3046,7 +3055,9 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   /* a native class's method (its binding's `native_share`), on an object
      or, in the package's own Ruby methods, on self */
   /* (or on a box holding one: sh_boxed_native_class) */
-  int ncid = ty_is_object(rt) ? ty_object_class(rt) : recv < 0 ? sh_ivar_owner(c, n)
+  /* (a subclass of a native class, where no method of the program's answers
+     the name first, takes the class's binding: comp_native_answer_class) */
+  int ncid = ty_is_object(rt) ? comp_native_answer_class(c, ty_object_class(rt), name) : recv < 0 ? sh_ivar_owner(c, n)
              : c->share_strings && rt == TY_POLY ? sh_boxed_native_class(c, n, name, argc) : -1;
   if (ncid >= 0 && ncid < c->nclasses && c->classes[ncid].is_native_class) {
     int r = sh_native_call(F, c, n, ncid, name, argc, rv, blk, recv < 0);

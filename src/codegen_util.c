@@ -3658,10 +3658,12 @@ const NativeMethod *strbuf_native_answer(Compiler *c, int n) {
   if (!repr_share_rule(c) || n < 0 || nt_kind(nt, n) != NK_CallNode || nt_ref(nt, n, "block") >= 0) return NULL;
   int r = nt_ref(nt, n, "receiver");
   TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
-  if (!ty_is_object(rt) || !c->classes[ty_object_class(rt)].is_native_class) return NULL;
+  /* (or a subclass of one, where no method of the program's answers the name first) */
+  int nk = ty_is_object(rt) ? comp_native_answer_class(c, ty_object_class(rt), nt_str(nt, n, "name")) : -1;
+  if (nk < 0 || !c->classes[nk].is_native_class) return NULL;
   int a = nt_ref(nt, n, "arguments"), argc = 0;
   if (a >= 0) nt_arr(nt, a, "arguments", &argc);
-  int nm = comp_native_method_find(c, ty_object_class(rt), nt_str(nt, n, "name"), argc, 0);
+  int nm = comp_native_method_find(c, nk, nt_str(nt, n, "name"), argc, 0);
   const NativeMethod *m = nm >= 0 ? &c->native_methods[nm] : NULL;
   if (!m || !(m->share & NSH_ANSWERS) || !m->share_csym || argc != 0 || !share_node_elems_share(c, r)) return NULL;
   return m;
@@ -3756,7 +3758,11 @@ static int strbuf_slot_into(Compiler *c, int recv, Buf *b) {
     Buf rb; memset(&rb, 0, sizeof rb);
     emit_expr(c, nt_ref(c->nt, recv, "receiver"), &rb);
     int fit = rb.p != NULL;
-    if (fit) buf_printf(b, "%s(%s)", nm->share_csym, rb.p);
+    /* (the native object of a subclass's instance is cast, as the call's receiver is, #9269) */
+    TyKind ort = comp_ntype(c, nt_ref(c->nt, recv, "receiver"));
+    int sub = ty_is_object(ort) && ty_object_class(ort) != nm->class_id;
+    if (fit && sub) buf_printf(b, "%s((%s *)(%s))", nm->share_csym, c->classes[nm->class_id].c_struct, rb.p);
+    else if (fit) buf_printf(b, "%s(%s)", nm->share_csym, rb.p);
     free(rb.p);
     if (fit) return 1;
   }
