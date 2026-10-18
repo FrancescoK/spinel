@@ -7582,6 +7582,24 @@ int emit_op_str_set_n(Compiler *c, const BopCtx *x, Buf *b) {
   return 1;
 }
 
+/* One candidate of a start_with? against the subject in C variable `subj`:
+   a Regexp (written inline, held in a value, or boxed) matches at index 0,
+   anything else is a String prefix. */
+void emit_start_with_arg(Compiler *c, int arg, const char *subj, Buf *b) {
+  TyKind at = comp_ntype(c, arg);
+  if (re_lit_index(c, arg) >= 0)
+    buf_printf(b, "(sp_re_match(sp_re_pat_%d, %s) == 0)", re_lit_index(c, arg), subj);
+  else if (at == TY_REGEX) {
+    buf_puts(b, "(sp_re_match("); emit_expr(c, arg, b); buf_printf(b, ", %s) == 0)", subj);
+  }
+  else if (at == TY_POLY) {
+    buf_printf(b, "sp_str_start_with_boxed(%s, ", subj); emit_boxed(c, arg, b); buf_puts(b, ")");
+  }
+  else {
+    buf_printf(b, "sp_str_start_with(%s, ", subj); emit_str_expr(c, arg, b); buf_puts(b, ")");
+  }
+}
+
 /* String#start_with? / #end_with? over several candidates: true when any
    matches, the receiver bound once (a String chain row) */
 int emit_op_str_affix_any(Compiler *c, const BopCtx *x, Buf *b) {
@@ -7593,6 +7611,8 @@ int emit_op_str_affix_any(Compiler *c, const BopCtx *x, Buf *b) {
   buf_printf(b, "({ const char *_t%d = %s; (", tv, x->rtext);
   for (int j = 0; j < argc; j++) {
     if (j) buf_puts(b, " || ");
+    char sv[24]; snprintf(sv, sizeof sv, "_t%d", tv);
+    if (sp_streq(x->name, "start_with?")) { emit_start_with_arg(c, argv[j], sv, b); continue; }
     buf_printf(b, "%s(_t%d, ", fn, tv);
     emit_str_expr(c, argv[j], b);
     buf_puts(b, ")");
