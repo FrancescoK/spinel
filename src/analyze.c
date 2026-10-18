@@ -1355,6 +1355,9 @@ int a_block_is_lifted(Compiler *c, int id) {
        the Method is held in a local. The capture pass revisits this query
        after inference settles, before storage is consumed by codegen. */
     if (rt == TY_METHOD) return 1;
+    /* and so does a Method or a Proc read out of a slot that holds other
+       values (sp_poly_callable_call_blk) */
+    if (rt == TY_POLY && is_call_alias(name)) return 1;
   }
   /* so is Fiber.blocking { }'s, which sp_Fiber_blocking_proc calls */
   if (sp_streq(name, "blocking") && recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&

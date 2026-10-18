@@ -1915,6 +1915,29 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
 }
 
 /* a Method or a Proc read out of a container widened to poly: name / owner / receiver, arity, and call / () / yield answered from the boxed value */
+/* `slot.call(args) { ... }` (or `&b`) on a boxed callable: a bound Method
+   enters its thunk with the block, and a Proc takes it on the block channel,
+   both through sp_poly_callable_call_blk. The arguments were hoisted into
+   the temps aptmp and published (pubs). The direct casts a Method takes
+   without a block cannot hand one over. */
+static void emit_poly_callable_blk_call(Compiler *c, int t, int argc, const int *argv, const int *aptmp,
+                                        const char *pubs, int kwpos, int tblk, Buf *b) {
+  if (pubs) { buf_puts(b, "("); buf_puts(b, pubs); }
+  buf_printf(b, "sp_poly_callable_call_blk(_t%d, %d, (sp_int[%d]){", t, argc, argc > 16 ? argc : 16);
+  for (int k = 0; k < argc; k++) {
+    TyKind at = repr_of(c, argv[k]).as_ty;
+    if (k) buf_puts(b, ", ");
+    if (!aptmp) emit_expr(c, argv[k], b);
+    else if (at == TY_POLY) buf_printf(b, "sp_poly_slot_arg(_t%d)", aptmp[k]);
+    else if (proc_slot_is_ptr(at) || at == TY_PROC) buf_printf(b, "(sp_int)(uintptr_t)_t%d", aptmp[k]);
+    else if (at == TY_FLOAT || proc_slot_via_poly(c, at)) buf_puts(b, "0");
+    else buf_printf(b, "_t%d", aptmp[k]);
+  }
+  if (argc == 0) buf_puts(b, "0");
+  buf_printf(b, "}, %d, _t%d)", kwpos, tblk);
+  if (pubs) buf_puts(b, ")");
+}
+
 int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* A Method read out of a container widened to poly: answer from the
      sp_BoundMethod itself, which carries everything the compile-time arms
@@ -2157,6 +2180,14 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
          is created with a NULL self. Branch at run time so a top-level Method
          read out of a container is not invoked with a spurious leading self
          arg -- which would shift every real argument by one (#3231). */
+      int tblk = nt_ref(nt, id, "block") >= 0 ? poly_call_blk_proc(c, id, -1) : -1;
+      if (tblk >= 0) {
+        emit_poly_callable_blk_call(c, t, argc, argv, aptmp, pubs.p, argc == 0 ? 0 :
+                                    nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? 2 : 1, tblk, b);
+        buf_puts(b, yield_else);
+        free(pubs.p); free(aptmp);
+        return 1;
+      }
       if (pubs.p) { buf_puts(b, "("); buf_puts(b, pubs.p); }
       /* A Method whose target cannot read the argument class, or whose
          stamped per-position class differs, cannot be invoked through the

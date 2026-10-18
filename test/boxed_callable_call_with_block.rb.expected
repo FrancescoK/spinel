@@ -1,0 +1,7 @@
+:none
+[:strict, {mine: "x", theirs: "y"}]
+:accepted
+[2, 12]
+[11]
+300
+:no_block
