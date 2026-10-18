@@ -16982,6 +16982,22 @@ static int inh_scope_of(const NodeTable *nt, const int *parent, int id) {
   return -1;
 }
 
+/* Can the ancestors of class or module `s` supply a constant to a read in
+   its body: a superclass, or an include or prepend in one of its bodies?
+   Ruby looks there after the lexical scopes and before the top level, which
+   inh_resolve_path does not follow. */
+static int inh_scope_has_ancestors(const NodeTable *nt, int s) {
+  if (s < 0) return 0;
+  if (nt_kind(nt, s) == NK_ClassNode && nt_ref(nt, s, "superclass") >= 0) return 1;
+  int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, s, "body"), "body", &bn);
+  for (int k = 0; k < bn; k++) {
+    const char *nm = nt_kind(nt, bv[k]) == NK_CallNode && nt_ref(nt, bv[k], "receiver") < 0
+                     ? nt_str(nt, bv[k], "name") : NULL;
+    if (xs_is_include(nt, bv[k]) || (nm && is_prepend_alias(nm))) return 1;
+  }
+  return 0;
+}
+
 /* Add `q` and each namespace it is under (`A`, `A::B` for `A::B::C`) to `h`. */
 static void inh_add_name(ANameHash *h, const char *q) {
   for (const char *e = strstr(q, "::"); ; e = strstr(e + 2, "::")) {
@@ -17066,7 +17082,10 @@ static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0
     }
     if (k != NK_ClassNode && k != NK_ModuleNode) continue;
     int sc = k == NK_ClassNode ? nt_ref(nt, id, "superclass") : -1;
-    if (sc >= 0 && (nt_kind(nt, sc) == NK_ConstantReadNode || nt_kind(nt, sc) == NK_ConstantPathNode)) {
+    /* a superclass the enclosing body's ancestors may supply is left
+       unresolved (NULL): inh_qindex_build marks such a class unsure */
+    if (sc >= 0 && (nt_kind(nt, sc) == NK_ConstantReadNode || nt_kind(nt, sc) == NK_ConstantPathNode) &&
+        !inh_scope_has_ancestors(nt, inh_scope_of(nt, parent, id))) {
       char sq[1024];
       inh_resolve_path(&r, qn, nt, parent, id, sc, 1, sq, sizeof sq);
       qs[id] = strdup(sq);
@@ -17089,7 +17108,7 @@ static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0
    its own or through `extend`, the qualified superclass the first header
    naming one gives, and whether a hook is defined on its leaf from outside
    a body (`def Foo.inherited`, which the leaf index keys alone). */
-typedef struct { ANameHash names; char *hook, *outside; const char **sup; } InhQIndex;
+typedef struct { ANameHash names; char *hook, *outside, *unsure; const char **sup; } InhQIndex;
 static void inh_qindex_build(InhQIndex *qx, Compiler *c, const InhIndex *ix, char **qn, char **qs, int n0) {
   const NodeTable *nt = c->nt;
   memset(qx, 0, sizeof *qx);
@@ -17107,21 +17126,27 @@ static void inh_qindex_build(InhQIndex *qx, Compiler *c, const InhIndex *ix, cha
       if (e >= cap) {
         cap = cap ? cap * 2 : 64;
         qx->hook = realloc(qx->hook, (size_t)cap); qx->outside = realloc(qx->outside, (size_t)cap);
+        qx->unsure = realloc(qx->unsure, (size_t)cap);
         qx->sup = realloc(qx->sup, sizeof(char *) * (size_t)cap);
-        if (!qx->hook || !qx->outside || !qx->sup) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        if (!qx->hook || !qx->outside || !qx->unsure || !qx->sup) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
       }
-      qx->hook[e] = 0; qx->sup[e] = NULL;
+      qx->hook[e] = 0; qx->unsure[e] = 0; qx->sup[e] = NULL;
       const char *leaf = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
       qx->outside[e] = leaf && anh_has(&outside, leaf);
     }
     int body = nt_ref(nt, id, "body");
     if (inh_hook_in(nt, id) >= 0 || (body >= 0 && inh_extended_entry(ix, nt, body) >= 0)) qx->hook[e] = 1;
     if (!qx->sup[e] && qs[id]) qx->sup[e] = qs[id];
+    /* a constant superclass with no resolved name (left to the ancestors,
+       or out of memory): the qualified chain cannot be followed */
+    int sc = nt_ref(nt, id, "superclass");
+    if (sc >= 0 && (nt_kind(nt, sc) == NK_ConstantReadNode || nt_kind(nt, sc) == NK_ConstantPathNode) && !qs[id])
+      qx->unsure[e] = 1;
   }
   anh_free(&outside);
 }
 static void inh_qindex_free(InhQIndex *qx) {
-  anh_free(&qx->names); free(qx->hook); free(qx->outside); free(qx->sup);
+  anh_free(&qx->names); free(qx->hook); free(qx->outside); free(qx->unsure); free(qx->sup);
 }
 /* Does the class qualified `q`, or an ancestor of it, have an inherited
    hook, followed by qualified names? 1 or 0; -1 when the chain leaves the
@@ -17135,7 +17160,7 @@ static int inh_qchain_has_hook(const InhQIndex *qx, const char *q) {
     int e = anh_find(&qx->names, q);
     if (e < 0) return -1;
     if (qx->hook[e]) return 1;
-    if (qx->outside[e]) return -1;
+    if (qx->outside[e] || qx->unsure[e]) return -1;
     const char *sup = qx->sup[e];
     if (!sup || sp_streq(sup, q)) return 0;
     q = sup;
