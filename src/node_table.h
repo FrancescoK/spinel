@@ -328,6 +328,10 @@ void nt_node_set_int(NodeTable *nt, int id, const char *key, long long val);
 void nt_node_set_ref(NodeTable *nt, int id, const char *key, int child);
 void nt_node_set_arr(NodeTable *nt, int id, const char *key, const int *ids, int n);
 int  nt_new_int(NodeTable *nt, long long v);                     /* a new IntegerNode */
+/* Are the nodes appended at or after id `from` all local variable reads?
+   Such a read is a leaf, so a whole-tree index built before it was appended
+   (one that reads no local variable read) is still the index of the table. */
+int  nt_appended_only_local_reads(const NodeTable *nt, int from);
 
 /* Accessors. id must be in [0, nt->count). Out-of-range ids return the
    given defaults so callers can walk freely without bounds checks. */

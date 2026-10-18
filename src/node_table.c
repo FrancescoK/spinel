@@ -306,6 +306,12 @@ int nt_new_node(NodeTable *nt, const char *type) {
   if (type) node_set_type(nd, type, strlen(type));
   return id;
 }
+int nt_appended_only_local_reads(const NodeTable *nt, int from) {
+  if (from < 0) return 0;
+  for (int n = from; n < nt->count; n++)
+    if (nt_kind(nt, n) != NK_LocalVariableReadNode) return 0;
+  return 1;
+}
 int nt_new_int(NodeTable *nt, long long v) {
   int n = nt_new_node(nt, "IntegerNode");
   nt_node_set_int(nt, n, "value", v);

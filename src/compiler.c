@@ -2783,6 +2783,12 @@ static void cv_build(Compiler *c) {
 }
 int comp_class_may_be_value(Compiler *c, int k) {
   if (k < 0 || k >= c->nclasses || !c->nt) return 1;
+  /* A writer's value temporary (emit_setter_assign_value) appends a local
+     variable read at each site it emits, and rebuilding over the whole
+     table for each of them made this most of a large program's codegen. */
+  if (c->cls_value && c->cls_value_n == c->nclasses && c->cls_value_nodes < c->nt->count &&
+      nt_appended_only_local_reads(c->nt, c->cls_value_nodes))
+    c->cls_value_nodes = c->nt->count;
   if (!c->cls_value || c->cls_value_n != c->nclasses || c->cls_value_nodes != c->nt->count) cv_build(c);
   return c->cls_value[k];
 }
