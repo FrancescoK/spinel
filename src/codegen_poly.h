@@ -152,7 +152,7 @@ int  emit_poly_prearms0_blk(Compiler *c, int id, const char *name, const PolySpe
                             int tv, int tr, Buf *b);
 int  emit_poly_callable_prearm(Compiler *c, const char *name, int argc,
                                const int *atmp, const TyKind *atmp_ty, const char *guard,
-                               int tv, int tr, TyKind ret, int kwpos, Buf *b);
+                               int tv, int tr, TyKind ret, int kwpos, int tblk, Buf *b);
 int  emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int argc,
                                 const int *atmp, const TyKind *atmp_ty, const int *htmp,
                                 const PolyKw *kw, int tv, int tr, TyKind ret, int blk_tmp, Buf *b);

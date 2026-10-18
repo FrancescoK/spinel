@@ -2122,6 +2122,13 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
   }
 }
 
+/* The proc a boxed callable's pre-arm hands a `call`/`()`/`[]` with a
+   block (the dispatch's own, `have`, or one built here), or -1 */
+static int callable_prearm_blk(Compiler *c, int id, const char *name, int have) {
+  if (!name || !is_call_alias(name) || nt_ref(c->nt, id, "block") < 0) return -1;
+  return poly_call_blk_proc(c, id, have);
+}
+
 /* The rest of a zero-argument poly dispatch's pre-arms, after the tag
    chain (emit_poly_prearms0): the block a candidate takes, hoisted once as
    a proc (its temp is the result), a builtin container or Mutex driving
@@ -2240,7 +2247,8 @@ int emit_poly_prearms0_blk(Compiler *c, int id, const char *name, const PolySpec
     }
   }
   /* a boxed Proc/Curry/Method in a slot a user `call`/`[]` shadows (#4395) */
-  if (emit_poly_callable_prearm(c, name, 0, NULL, NULL, NULL, tv, tr, ret, 0, b) && g_plan_check)
+  if (emit_poly_callable_prearm(c, name, 0, NULL, NULL, NULL, tv, tr, ret, 0,
+                                callable_prearm_blk(c, id, name, blk_tmp0), b) && g_plan_check)
     pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_CALLABLE, -1, TY_UNKNOWN, PC_SAME);
   /* a class-valued receiver dispatches class-side, ahead of the instance
      arms (#4218) */
@@ -3543,17 +3551,19 @@ int emit_poly_prearms_n_blk(Compiler *c, int id, const char *name, const PolySpe
      the keyword split binds by name to a user candidate, so skip it. A
      splatted argument is one temp holding an array, not one temp per
      value, so the positional publish sequence below cannot spread it. */
+  int tblk = (kw_pos || kwh >= 0) && !has_splat_arg ? callable_prearm_blk(c, id, name, blk_tmp2) : -1;
   if (kw_pos && !has_splat_arg) {
     if (kwall >= 0) {
       for (int e = 0; e < 2; e++) {
         char kg[48];
         snprintf(kg, sizeof kg, "_t%d->len %s 0 && ", kwall, e ? ">" : "==");
         called |= emit_poly_callable_prearm(c, name, pos_argc + e, atmp, atmp_ty, kg, tv, tr, ret,
-                                            e ? 2 : pos_argc > 0 ? 1 : 0, b);
+                                            e ? 2 : pos_argc > 0 ? 1 : 0, tblk, b);
       }
     }
     else called = emit_poly_callable_prearm(c, name, argc, atmp, atmp_ty, NULL, tv, tr, ret,
-                                            argc == 0 ? 0 : nt_argv_kwh(nt, argv, argc) >= 0 ? 2 : 1, b);
+                                            argc == 0 ? 0 : nt_argv_kwh(nt, argv, argc) >= 0 ? 2 : 1,
+                                            tblk, b);
   }
   else if (kwh >= 0 && !has_splat_arg &&
            is_call_alias(name)) {
@@ -3573,7 +3583,7 @@ int emit_poly_prearms_n_blk(Compiler *c, int id, const char *name, const PolySpe
     }
     atmp[pos_argc] = kht;
     atmp_ty[pos_argc] = TY_SYM_POLY_HASH;
-    called = emit_poly_callable_prearm(c, name, argc, atmp, atmp_ty, NULL, tv, tr, ret, 2, b);
+    called = emit_poly_callable_prearm(c, name, argc, atmp, atmp_ty, NULL, tv, tr, ret, 2, tblk, b);
   }
   else if (splat_last)
     called = emit_poly_callable_spread_prearm(c, name, splat_a, atmp, atmp_ty,
