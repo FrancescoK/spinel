@@ -2784,6 +2784,14 @@ const BuiltinOp *an_bop_find_arg(Compiler *c, int id, TyKind rt, const char *nam
   return op;
 }
 
+/* bop_result_args with the call's arguments' kinds from infer_type, for the
+   rows whose result turns on them (BOPR_ARRAY_PLUS, BOPR_ARRAY_SETOP); any
+   other row answers as bop_result does */
+TyKind an_bop_result(Compiler *c, const BuiltinOp *op, TyKind rt, int argc, const int *argv) {
+  AnBopArgs a = { c, argv };
+  return bop_result_args(op, rt, argc, an_bop_arg_type, &a);
+}
+
 /* Does the program give a builtin class or module (String, Comparable,
    Kernel, Object ...) an instance method of its own, by a def in it or a
    module it includes or prepends? Shape alone, so asked once per scope
@@ -6394,26 +6402,6 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
     if (sp_streq(name, "options")) { *out = TY_INT; return 1; }
   }
 
-  /* array set operations with several operands: the named forms are variadic
-     (fold over each argument). The rows state the result of one operand
-     (BOPR_ARRAY_SETOP) and answer it ahead of here; the result of several
-     turns on every operand's kind. */
-  if (recv >= 0 && argc >= 2 && ty_is_array(rt) &&
-      is_set_op(name)) {
-    /* every operand of the receiver's kind, or an empty [] (TY_UNKNOWN):
-       the result is that kind. Any array of another kind, or a boxed
-       operand: the codegen boxes the operands to poly and runs the poly
-       set op, so the result is a poly array. */
-    int same = 1, poly = 1;
-    for (int j = 0; j < argc; j++) {
-      TyKind aj = j == 0 ? a0 : infer_type(c, argv[j]);
-      if (aj == rt || aj == TY_UNKNOWN) continue;
-      same = 0;
-      if (!ty_is_array(aj) && aj != TY_POLY) poly = 0;
-    }
-    if (same) { *out = rt; return 1; }
-    if (poly) { *out = TY_POLY_ARRAY; return 1; }
-  }
   /* Array#intersect?(other) -> bool */
   if (recv >= 0 && argc == 1 && sp_streq(name, "intersect?") && ty_is_array(rt))
     { *out = TY_BOOL; return 1; }
