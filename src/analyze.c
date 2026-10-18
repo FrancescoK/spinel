@@ -3429,18 +3429,35 @@ static int qc_nalias_ws = 0, qc_calias_ws = 0;
 static const NodeTable *qc_hdr_nt = NULL;
 static Compiler *qc_hdr_cc = NULL;
 static int qc_nhdr = 0;
+static int qc_builtin_head(char (*chain)[64], int cl, int *abs_anchor);
 static int qc_header_segs(const NodeTable *nt, int cp, char (*segs)[64]) {
   if (cp < 0 || nt_kind(nt, cp) != NK_ConstantPathNode) return 0;
-  const char *rev[QC_MAXDEPTH]; int ns = 0;
+  const char *rev[QC_MAXDEPTH]; int ns = 0, builtin = 0;
   for (int q = nt_ref(nt, cp, "parent"); ; ) {
     if (q < 0 || ns >= QC_MAXDEPTH) return 0;
     NodeKind qk = nt_kind(nt, q);
     if (qk != NK_ConstantReadNode && qk != NK_ConstantPathNode) return 0;
     const char *nm = nt_str(nt, q, "name");
-    if (!nm || is_builtin_class_name(nm) || is_builtin_module_name(nm)) return 0;
+    if (!nm) return 0;
+    builtin |= is_builtin_class_name(nm) || is_builtin_module_name(nm);
     rev[ns++] = nm;
     if (qk == NK_ConstantReadNode) break;
     q = nt_ref(nt, q, "parent");
+  }
+  /* a path through a compact header under a builtin (`module
+     Regexp::Expression` before `module Regexp::Expression::Escape`) is the
+     body that header opened ([Expression]); any other builtin segment
+     leaves the header registered by its leaf */
+  if (builtin) {
+    char bchain[QC_MAXDEPTH + 1][64];
+    for (int i = 0; i < ns; i++) snprintf(bchain[i], 64, "%s", rev[ns - 1 - i]);
+    int abs_anchor = 0, bl = qc_builtin_head(bchain, ns, &abs_anchor);
+    if (!abs_anchor || bl < 1 || bl >= QC_MAXDEPTH) return 0;
+    for (int i = 0; i < bl; i++) {
+      if (is_builtin_class_name(bchain[i]) || is_builtin_module_name(bchain[i])) return 0;
+      snprintf(segs[i], 64, "%s", bchain[i]);
+    }
+    return bl;
   }
   /* a head that is a constant holding a module (`M = X; class M::Foo`)
      stands for the module's own path, X::Foo */
@@ -3755,6 +3772,54 @@ static void qc_note_holder_header(int node, int alias, char (*path)[64], int dep
   h->away = qc_aliases[alias].depth != depth;
   for (int i = 0; i < depth && !h->away; i++) h->away = !sp_streq(qc_aliases[alias].scope[i], path[i]);
 }
+/* The compact headers under a builtin's name (`module Regexp::Syntax`,
+   `class Regexp::Syntax::V1 < ...`), whose segments qc_header_segs leaves
+   out: the path as written, builtin head first, and the path of the body
+   it opens in the passes' model ([Syntax], [V1]). A read of the written
+   path names that body (qc_builtin_head). */
+typedef struct { int n; char chain[QC_MAXDEPTH + 1][64]; int depth; char path[QC_MAXDEPTH][64]; } QCBuiltinHdr;
+static QCBuiltinHdr *qc_bhdrs = NULL;
+static int qc_nbhdrs = 0, qc_cbhdrs = 0;
+static void qc_note_builtin_header(const NodeTable *nt, int cp, char (*path)[64], int depth) {
+  char chain[QC_MAXDEPTH + 1][64];
+  int abs_anchor = 0;
+  int n = qc_read_chain(nt, cp, chain, &abs_anchor);
+  if (n < 2 || !(is_builtin_class_name(chain[0]) || is_builtin_module_name(chain[0]))) return;
+  if (qc_nbhdrs == qc_cbhdrs) {
+    qc_cbhdrs = qc_cbhdrs ? qc_cbhdrs * 2 : 8;
+    qc_bhdrs = realloc(qc_bhdrs, sizeof(QCBuiltinHdr) * (size_t)qc_cbhdrs);
+    if (!qc_bhdrs) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  QCBuiltinHdr *h = &qc_bhdrs[qc_nbhdrs++];
+  h->n = n; h->depth = depth;
+  for (int i = 0; i < n; i++) snprintf(h->chain[i], 64, "%s", chain[i]);
+  for (int i = 0; i < depth; i++) snprintf(h->path[i], 64, "%s", path[i]);
+}
+/* A path read chain[0..cl) whose head is a builtin's name and that starts
+   with the written path of such a header (the longest) names that
+   header's body: the prefix is replaced by the body's path, and the read is
+   anchored at the top level. Answers the new length, or cl unchanged. */
+static int qc_builtin_head(char (*chain)[64], int cl, int *abs_anchor) {
+  if (cl < 2 || !(is_builtin_class_name(chain[0]) || is_builtin_module_name(chain[0]))) return cl;
+  int best = -1;
+  for (int i = 0; i < qc_nbhdrs; i++) {
+    const QCBuiltinHdr *h = &qc_bhdrs[i];
+    if (h->n > cl || (best >= 0 && h->n <= qc_bhdrs[best].n)) continue;
+    int ok = 1;
+    for (int j = 0; j < h->n && ok; j++) ok = sp_streq(h->chain[j], chain[j]);
+    if (ok) best = i;
+  }
+  if (best < 0) return cl;
+  const QCBuiltinHdr *h = &qc_bhdrs[best];
+  int nl = h->depth + cl - h->n;
+  if (nl > QC_MAXDEPTH + 1) return cl;
+  char out[QC_MAXDEPTH + 1][64];
+  for (int i = 0; i < h->depth; i++) snprintf(out[i], 64, "%s", h->path[i]);
+  for (int i = h->n; i < cl; i++) snprintf(out[h->depth + i - h->n], 64, "%s", chain[i]);
+  for (int i = 0; i < nl; i++) snprintf(chain[i], 64, "%s", out[i]);
+  *abs_anchor = 1;
+  return nl;
+}
 static void qc_resolve_walk(const NodeTable *nt, int node, char (*path)[64], int depth, unsigned char *lex) {
   if (node < 0) return;
   NodeKind k = nt_kind(nt, node);
@@ -3766,6 +3831,7 @@ static void qc_resolve_walk(const NodeTable *nt, int node, char (*path)[64], int
     const char *mn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
     char segs[QC_MAXDEPTH][64];
     int aliased = 0, ns = mn ? qc_header_segs(nt, cp, segs) : 0;
+    int builtin_hdr = mn && ns == 0 && nt_kind(nt, cp) == NK_ConstantPathNode && nt_ref(nt, cp, "parent") >= 0;
     if (ns > 0) {
       int p = depth;
       while (p >= 0 && !((p == 0 || lex[p]) && qc_known_has(path, p, segs[0]))) p--;
@@ -3786,6 +3852,7 @@ static void qc_resolve_walk(const NodeTable *nt, int node, char (*path)[64], int
     }
     if (mn) {
       depth = qc_push_header(nt, node, &path, depth, lex, &own);
+      if (builtin_hdr) qc_note_builtin_header(nt, cp, path, depth);
       if (qc_ndefs == qc_cdefs) {
         qc_cdefs = qc_cdefs ? qc_cdefs * 2 : 32;
         qc_defs = realloc(qc_defs, sizeof(QCDef) * (size_t)qc_cdefs);
@@ -3841,6 +3908,7 @@ static void qc_free_headers(void) {
   free(qc_hdr_alias); qc_hdr_alias = NULL; qc_nhdr = 0;
   free(qc_aliases); qc_aliases = NULL; qc_naliases = qc_caliases = 0;
   free(qc_alias_ws); qc_alias_ws = NULL; qc_nalias_ws = qc_calias_ws = 0;
+  free(qc_bhdrs); qc_bhdrs = NULL; qc_nbhdrs = qc_cbhdrs = 0;
   qc_hdr_nt = NULL; qc_hdr_cc = NULL;
   qc_free_defs();
 }
@@ -4020,10 +4088,34 @@ static int qc_resolve_ref(const NodeTable *nt, int ref, char (*scope)[64], int s
   int cl = ref >= 0 ? qc_read_chain(nt, ref, chain, &abs_anchor) : 0;
   return qc_resolve_chain(chain, cl, abs_anchor, scope, scope_n, out);
 }
+/* Does a body enclosing scope[0..scope_n) define `head` (a class or module
+   of the program at scope[0..p) + head, p >= 1)? */
+static int qc_head_shadowed(const char *head, char (*scope)[64], int scope_n) {
+  for (int p = scope_n; p >= 1; p--) {
+    if (p + 1 > QC_MAXDEPTH) continue;
+    char cand[QC_MAXDEPTH][64];
+    for (int i = 0; i < p; i++) snprintf(cand[i], 64, "%s", scope[i]);
+    snprintf(cand[p], 64, "%s", head);
+    for (int d = 0; d < qc_ndefs; d++)
+      if (qc_path_eq(qc_defs[d].path, qc_defs[d].depth, cand, p + 1)) return 1;
+  }
+  return 0;
+}
 /* ... the same for a chain already read (cl names) */
 static int qc_resolve_chain(char (*chain)[64], int cl, int abs_anchor, char (*scope)[64],
                             int scope_n, char (*out)[64]) {
   if (cl <= 0) return 0;
+  /* a path through a header under a builtin (`Regexp::Syntax::Base`) is
+     the body that header opened, unless an enclosing body defines a
+     module of the head's name, which the read finds first, as Ruby's
+     lexical lookup does */
+  char bchain[QC_MAXDEPTH + 1][64];
+  if (cl <= QC_MAXDEPTH + 1 && (is_builtin_class_name(chain[0]) || is_builtin_module_name(chain[0])) &&
+      (abs_anchor || !qc_head_shadowed(chain[0], scope, scope_n))) {
+    for (int i = 0; i < cl; i++) snprintf(bchain[i], 64, "%s", chain[i]);
+    cl = qc_builtin_head(bchain, cl, &abs_anchor);
+    chain = bchain;
+  }
   for (int p = abs_anchor ? 0 : scope_n; p >= 0; p--) {
     if (p + cl > QC_MAXDEPTH) continue;
     char cand[QC_MAXDEPTH][64];
@@ -4290,7 +4382,15 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
         /* does this name participate in a collision? */
         int involved = 0;
         for (int i = 0; i < wn; i++) if (sp_streq(ws[i].name, cname)) { involved = 1; break; }
-        if (involved) { cl = qc_expand_read_alias(path, depth, chain, cl, &abs_anchor); cname = chain[cl - 1]; }
+        if (involved) {
+          /* `Regexp::Syntax::Token::X` reads X in the body `module
+             Regexp::Syntax` opened, which the passes keep at [Syntax],
+             unless an enclosing body defines its own `Regexp` */
+          if (abs_anchor || !qc_head_shadowed(chain[0], path, depth))
+            cl = qc_builtin_head(chain, cl, &abs_anchor);
+          cl = qc_expand_read_alias(path, depth, chain, cl, &abs_anchor);
+          cname = chain[cl - 1];
+        }
         if (involved) {
           /* try lexical prefixes innermost-first (relative), or only the root (::) */
           QCScope *sc = qc_scopes;
