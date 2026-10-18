@@ -8841,10 +8841,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && (rt == TY_UNKNOWN || rt == TY_POLY) &&
       sp_streq(name, "values_at") && argc >= 1 &&
       hash_new_default_arg(c, recv) >= 0) return TY_POLY_ARRAY;  /* (#2408) */
-  /* h.default = v as a value: the assigned value (works for the untyped {}
-     literal receiver too) */
-  if (recv >= 0 && sp_streq(name, "default=") && argc == 1 && ty_is_hash(rt))
-    return infer_type(c, argv[0]);
+  /* h.default = v as a value: the assigned value. A Hash receiver's row states
+     it (BOPR_ARG0); an untyped {} literal has no Hash kind for a row to
+     cover, so it answers here. */
   if (recv >= 0 && sp_streq(name, "default=") && argc == 1 && rt == TY_UNKNOWN &&
       nt_type(nt, recv) &&
       (sp_streq(nt_type(nt, recv), "HashNode") || sp_streq(nt_type(nt, recv), "KeywordHashNode")))

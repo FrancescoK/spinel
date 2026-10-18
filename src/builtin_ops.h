@@ -303,9 +303,13 @@ typedef struct BuiltinOp {
                                            (instance_variable_set(name, value)) */
 #define BOPR_HASH_REPLACE ((TyKind)-24) /* Hash#replace(other): the receiver's kind
                                            when other is the same Hash kind, else
-                                           the general hash (the receiver's slot
-                                           widens to hold another variant or a
-                                           boxed one) */
+                                           the general hash. replace returns self,
+                                           but self's slot widens to the general
+                                           hash when other is another variant or a
+                                           boxed one (which holds whichever variant
+                                           the value really is), so a `r = h.replace(o)`
+                                           capture agrees from the first fixpoint
+                                           round (#2374, #3975) */
 #define BOPR_HASH_STORE  ((TyKind)-25)  /* Hash#[]= and store(key, value): the
                                            value's kind unified with the Hash's
                                            value kind */

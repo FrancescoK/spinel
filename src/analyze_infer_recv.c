@@ -472,8 +472,10 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     }
     if (sp_streq(name, "key") && argc == 1 && rt == TY_SYM_POLY_HASH) { *out = TY_SYMBOL; return 1; }
     if (sp_streq(name, "key") && argc == 1) { *out = TY_POLY; return 1; }  /* the key (boxed) or nil (#2352) */
+    /* the row states the two-argument form (BOPR_HASH_STORE); another count raises
+       at run time and keeps the answer it had */
     if (is_store_alias(name))
-      { *out = argc >= 2 ? ty_unify(infer_type(c, argv[1]), ty_hash_val(rt)) : ty_hash_val(rt); return 1; }
+      { *out = argc >= 3 ? ty_unify(infer_type(c, argv[1]), ty_hash_val(rt)) : ty_hash_val(rt); return 1; }
     if (sp_streq(name, "fetch")) {
       TyKind vt = ty_hash_val(rt);
       if (argc == 2) {
@@ -582,19 +584,6 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       /* a BOXED argument holds whichever variant the value really is, which the
          receiver's layout cannot be assumed to match: the same fold (#3975) */
       if (at == TY_POLY) { *out = TY_POLY_POLY_HASH; return 1; }
-      { *out = rt; return 1; }
-    }
-    /* replace(other) returns self, but self's SLOT widens to the universal
-       PolyPoly hash when other is a different variant (the receiver-mutation
-       evidence in infer_write_types does the same to the local) -- mirror it
-       here so a `r = h.replace(o)` capture agrees from the first fixpoint
-       iteration instead of lagging one phase behind (#2374 hang: a SymPoly-
-       declared r holding a PolyPoly pointer made inspect walk garbage). */
-    if (sp_streq(name, "replace") && argc == 1) {
-      TyKind ot = infer_type(c, argv[0]);
-      /* a boxed other holds whichever variant the value really is (#3975's
-         rule for merge) */
-      if ((ty_is_hash(ot) || ot == TY_POLY) && ot != rt) { *out = TY_POLY_POLY_HASH; return 1; }
       { *out = rt; return 1; }
     }
     if (sp_streq(name, "merge")) { *out = rt; return 1; }
