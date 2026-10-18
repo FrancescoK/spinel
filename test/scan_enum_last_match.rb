@@ -22,3 +22,11 @@ p "".to_enum(:scan, RE).map { Regexp.last_match }
 def words(s) = s
 src = words(ARGV.size > 3 ? 7 : "x9 y8")
 p src.to_enum(:scan, /[a-z](\d)/).map { Regexp.last_match[1] }
+
+# a program class of its own with a scan, on the same boxed receiver
+class Lexer
+  def scan(re) = yield("tok")
+end
+srcs = [words("q7 r6"), Lexer.new]
+p srcs[ARGV.size].to_enum(:scan, /[a-z](\d)/).map { Regexp.last_match[1] }
+p srcs[1].to_enum(:scan, /x/).map { |t| t.upcase }

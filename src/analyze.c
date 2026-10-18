@@ -12048,7 +12048,7 @@ static int desugar_to_enum(Compiler *c) {
     }
 
     if (recv >= 0 && sp_streq(m, "scan") &&
-        (rt == TY_STRING || (rt == TY_POLY && !an_user_defines_or_reads(c, m))) &&
+        (rt == TY_STRING || rt == TY_POLY) &&
         desugar_scan_enum_consumer(c, id)) {
       changed = 1;
       continue;
