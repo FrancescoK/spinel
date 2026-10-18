@@ -14534,7 +14534,7 @@ static int spnb_tail_leaf(const VpLeaf *leaf, void *ud) {
 static void spnb_tail(Compiler *c, int node, TyKind *base, int *saw_nil, int *ok) {
   if (node < 0 || !*ok) return;
   SpnbTail t = { c, base, saw_nil, ok };
-  for_each_value_position(c->nt, node, VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN, spnb_tail_leaf, &t);
+  for_each_value_position(c->nt, node, VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VPS_RESCUE_MOD, spnb_tail_leaf, &t);
 }
 
 /* the single non-nil type scope mi's poly return decomposes to, or UNKNOWN */
