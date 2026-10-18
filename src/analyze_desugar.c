@@ -11026,12 +11026,14 @@ int desugar_builtins(Compiler *c) {
        itself keeps its call) */
     if (cn0 && sp_streq(cn0, "collect_concat") && builtin_enum_name_index("flat_map") >= 0 &&
         !program_defines_name(nt, n0, "collect_concat")) {
+      nt_node_set_str(nt, id, "orig_name", cn0);
       cn0 = "flat_map";
       nt_node_set_str(nt, id, "name", cn0);
     }
     /* detect is find under another name, the same way */
     if (cn0 && sp_streq(cn0, "detect") && builtin_enum_name_index("find") >= 0 &&
         !program_defines_name(nt, n0, "detect")) {
+      nt_node_set_str(nt, id, "orig_name", cn0);
       cn0 = "find";
       nt_node_set_str(nt, id, "name", cn0);
     }
@@ -11662,6 +11664,17 @@ int desugar_builtin_splat_forward(Compiler *c) {
   return changed;
 }
 
+/* The name a call had before the pre-pass renamed it to the builtin's
+   (detect to find, collect_concat to flat_map), which is the name a class of
+   the program may answer with a reader or a method of its own. Written back
+   when the receiver turns out to be such a class: answers 1 if it was. */
+int enum_unrename(NodeTable *nt, int id) {
+  const char *orig = nt_str(nt, id, "orig_name"), *nm = nt_str(nt, id, "name");
+  if (!orig || !nm || sp_streq(orig, nm)) return 0;
+  nt_node_set_str(nt, id, "name", orig);
+  return 1;
+}
+
 /* Does a receiver of type `rt` have a real method named `name`, among the
    generic Enumerable-sourced names this file clones per call site
    (builtin_enum_name_index, consumed by desugar_builtin_enum_calls below)
@@ -11872,9 +11885,12 @@ int desugar_builtin_enum_calls(Compiler *c) {
     else if (rt == TY_UNKNOWN && (nt_kind(nt, recv) == NK_ArrayNode || nt_kind(nt, recv) == NK_HashNode)) ok = 1;
     else if (ty_is_object(rt)) {
       int ci = ty_object_class(rt);
+      const char *qn = nt_str(nt, id, "orig_name") ? nt_str(nt, id, "orig_name") : name;
       /* an Array subclass is Enumerable through Array (#7449) */
       ok = (an_class_includes_enumerable(c, ci) || comp_ary_root(c, ci) >= 0) &&
-           comp_enum_answers_first(c, ci, name);
+           comp_enum_answers_first(c, ci, qn);
+      /* a class that answers the name itself keeps the name it was called by */
+      if (!ok && enum_unrename(nt, id)) changed = 1;
     }
     else if (rt == TY_POLY) ok = 1;   /* a class of its own definition is dispatched below */
     if (!ok) continue;

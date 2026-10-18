@@ -255,6 +255,7 @@ TyKind infer_type(Compiler *c, int id);
    one of these names, which the one-shot rewrites that actually type
    them never reach (K-026 cause A). */
 int enum_builtin_responds(Compiler *c, const char *name, TyKind rt);
+int enum_unrename(NodeTable *nt, int id);
 /* empty infer_type's memo of earlier queries' answers: the start or end of
    a pass whose writes are not all counted (#8852) */
 void infer_memo_boundary(void);

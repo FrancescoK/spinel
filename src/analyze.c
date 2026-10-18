@@ -10664,6 +10664,9 @@ int desugar_enum_method_recv(Compiler *c) {
     const char *nm = nt_str(nt, id, "name");
     if (desugar_enum_named_call(c, id, nt, nm, &changed)) continue;
     if (!nm || !is_array_enum_method(nm)) continue;
+    /* the name the call was written with, where the pre-pass renamed it
+       (detect to find): the one a class's own reader or method answers */
+    const char *qn = nt_str(nt, id, "orig_name") ? nt_str(nt, id, "orig_name") : nm;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) {
       /* `count` with no receiver inside another method of the same class: the
@@ -10676,8 +10679,11 @@ int desugar_enum_method_recv(Compiler *c) {
       /* a Data class includes no Enumerable in CRuby -- `to_a` inside one is a
          NameError, not its members */
       if (ocid < c->nclasses && c->classes[ocid].is_data) continue;
+      /* a class without an #each that answers the name itself has the name
+         it was called by back (detect, renamed to find by the pre-pass) */
+      if (qn != nm && !comp_enum_answers_first(c, ocid, qn)) { changed |= enum_unrename(nt, id); continue; }
       if (comp_method_in_chain(c, ocid, "__enum_to_a", NULL) < 0) continue;
-      if (!comp_enum_answers_first(c, ocid, nm)) continue;   /* the class's own */
+      if (!comp_enum_answers_first(c, ocid, qn)) continue;   /* the class's own */
       int selfn = nt_new_node(nt, "SelfNode");
       int wrap = nt_new_node(nt, "CallNode");
       if (selfn < 0 || wrap < 0) continue;
@@ -10928,7 +10934,7 @@ int desugar_enum_method_recv(Compiler *c) {
       changed = 1;
       continue;
     }
-    if (!comp_enum_answers_first(c, cid, nm)) continue;                    /* class defines it */
+    if (!comp_enum_answers_first(c, cid, qn)) { changed |= enum_unrename(nt, id); continue; }   /* class defines it */
     /* minmax only where Enumerable really is: a Struct, or a class that mixes
        it in, itself, through a superclass or through an included module
        (whose own minmax builtins/enumerable.rb also answers); a class with a

@@ -5,7 +5,7 @@
 require "stringio"
 
 class Sub < StringIO
-  attr_reader :count, :first, :min, :tally, :minmax, :chain
+  attr_reader :count, :first, :min, :tally, :minmax, :chain, :detect
   attr_accessor :map, :sum
   attr_writer :string
   def initialize
@@ -16,16 +16,17 @@ class Sub < StringIO
     @tally = 10
     @minmax = 11
     @chain = 12
+    @detect = 13
     @map = 14
     @sum = 15
   end
-  def implicit = [count, first, min, tally, minmax, chain, map, sum]
-  def explicit = [self.count, self.first, self.min, self.tally, self.minmax, self.chain, self.map, self.sum]
+  def implicit = [count, first, min, tally, minmax, chain, detect, map, sum]
+  def explicit = [self.count, self.first, self.min, self.tally, self.minmax, self.chain, self.detect, self.map, self.sum]
   def peek = @string
 end
 
 s = Sub.new
-p [s.count, s.first, s.min, s.tally, s.minmax, s.chain, s.map, s.sum]
+p [s.count, s.first, s.min, s.tally, s.minmax, s.chain, s.detect, s.map, s.sum]
 p s.implicit
 p s.explicit
 x = s.count
@@ -43,23 +44,25 @@ p s.lineno
 
 class Items
   include Enumerable
-  attr_reader :count, :first, :sort, :to_a, :find_all
+  attr_reader :count, :first, :sort, :to_a, :find_all, :collect_concat, :detect
   def initialize
     @count = 1
     @first = 2
     @sort = 3
     @to_a = 4
     @find_all = 6
+    @collect_concat = 5
+    @detect = 7
   end
   def each
     yield 30
     yield 20
   end
-  def implicit = [count, first, sort, to_a, find_all]
+  def implicit = [count, first, sort, to_a, collect_concat, find_all, detect]
 end
 
 i = Items.new
-p [i.count, i.first, i.sort, i.to_a, i.find_all]
+p [i.count, i.first, i.sort, i.to_a, i.collect_concat, i.find_all, i.detect]
 p i.implicit
 p i.min
 p i.select { |v| v > 25 }
