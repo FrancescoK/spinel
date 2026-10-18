@@ -1,0 +1,7 @@
+[:All, :Inner, :V1_A, :V1_B]
+[:All, :Inner]
+[1, 2]
+[1, 2]
+[9]
+Outer::UP::Inner
+[[9], Outer::Other::Inner]

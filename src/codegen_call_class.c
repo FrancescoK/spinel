@@ -3400,8 +3400,8 @@ static int anon_struct_recv_ci(Compiler *c, int recv) {
 /* Push class CI's constant names (its ancestors' too when INHERIT) onto the
    PolyArray _t<TA>, as Module#constants lists them. */
 static void emit_class_constants_push(Compiler *c, int ci, int inherit, int ta, Buf *b) {
-  const char *names[128];
-  int n = collect_class_constants(c, ci, inherit, names, 128, 0, 0);
+  const char *names[128], *shown[128];
+  int n = collect_class_constants(c, ci, inherit, names, shown, 128, 0, 0);
   /* intern at runtime: a constant name is not otherwise a symbol in the
      program, so comp_sym_intern here would come too late for the
      generated name table and the symbol would render empty */
@@ -3409,7 +3409,7 @@ static void emit_class_constants_push(Compiler *c, int ci, int inherit, int ta, 
     /* a constant not assigned yet is not listed */
     if (const_has_flag(comp_const(c, names[k]))) buf_printf(b, " if (cst_%s__set)", names[k]);
     buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", ta);
-    emit_str_literal(b, names[k]);
+    emit_str_literal(b, shown[k]);
     buf_puts(b, ")));");
   }
 }

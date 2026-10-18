@@ -2014,15 +2014,22 @@ int desugar_dynamic_const_get_arms(Compiler *c) {
   if (!any) return 0;
   /* the candidates: every constant the program writes or opens as a class or
      module, by its own (last) name -- the flat namespace the literal rule
-     resolves in */
+     resolves in. A constant or class whose leaf collided carries a qualified
+     key (`Mod__NAME`); a runtime name is the leaf as written, which the
+     literal rule finds under the receiver's qualified key. */
   char **cand = NULL; int ncand = 0, candcap = 0;
   for (int id = 0; id < n0; id++) {
     NodeKind k = nt_kind(nt, id);
     const char *v = NULL;
-    if (k == NK_ConstantWriteNode) v = nt_str(nt, id, "name");
+    if (k == NK_ConstantWriteNode) {
+      v = nt_str(nt, id, "qc_orig_name");
+      if (!v) v = nt_str(nt, id, "name");
+    }
     else if (k == NK_ClassNode || k == NK_ModuleNode) {
       int cp = nt_ref(nt, id, "constant_path");
-      v = cp >= 0 ? nt_str(nt, cp, "name") : nt_str(nt, id, "name");
+      const char *rn = cp >= 0 ? nt_str(nt, cp, "qc_ruby_name") : NULL;
+      const char *rl = rn ? strrchr(rn, ':') : NULL;
+      v = rn ? (rl ? rl + 1 : rn) : cp >= 0 ? nt_str(nt, cp, "name") : nt_str(nt, id, "name");
     }
     if (!v || !*v) continue;
     int dup = 0;
