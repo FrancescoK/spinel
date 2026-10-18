@@ -11854,6 +11854,95 @@ static int te_pure_block_guard_return(const NodeTable *nt, int body, int call) {
   return 0;
 }
 
+/* Does `node` hold a next, break or redo that leaves the block it is in
+   (none under a nested block, lambda or def counts)? */
+static int se_leaves_block(const NodeTable *nt, int node) {
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_NextNode || k == NK_BreakNode || k == NK_RedoNode) return 1;
+  if (k == NK_BlockNode || k == NK_LambdaNode || k == NK_DefNode) return 0;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) if (se_leaves_block(nt, nt_ref_at(nt, node, i))) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, node, i, &n);
+    for (int j = 0; j < n; j++) if (se_leaves_block(nt, ids[j])) return 1;
+  }
+  return 0;
+}
+
+/* Are the parameters of block `blk` none, or plain requireds alone? */
+static int se_plain_block_params(const NodeTable *nt, int blk) {
+  int bp = nt_ref(nt, blk, "parameters");
+  if (bp < 0) return 1;
+  if (nt_kind(nt, bp) != NK_BlockParametersNode) return 0;
+  int pp = nt_ref(nt, bp, "parameters");
+  if (pp < 0) return 1;
+  static const char *const arrs[] = { "optionals", "posts", "keywords", NULL };
+  for (int a = 0; arrs[a]; a++) { int n = 0; nt_arr(nt, pp, arrs[a], &n); if (n) return 0; }
+  return nt_ref(nt, pp, "rest") < 0 && nt_ref(nt, pp, "keyword_rest") < 0 && nt_ref(nt, pp, "block") < 0;
+}
+
+/* `str.to_enum(:scan, re).map { |m| ... }`, and `.each { }`: the Enumerator
+   runs scan, which sets $~ for each match its block sees (`Regexp.last_match`
+   reads it). The blockless scan answers the matches with $~ left at the last
+   one, so the consumer's block becomes the block of the scan itself:
+     .each { body }  ->  str.scan(re) { body }
+     .map { body }   ->  (__sm_N = []; str.scan(re) { __sm_N << begin body end }; __sm_N)
+   Only for a block of plain parameters whose body leaves it by none of
+   next, break or redo (a `next v` would push nothing). 1 when rewritten. */
+static int desugar_scan_enum_consumer(Compiler *c, int te) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int par = -1;
+  for (int p = 0; p < nt->count && par < 0; p++)
+    if (nt_kind(nt, p) == NK_CallNode && nt_ref(nt, p, "receiver") == te) par = p;
+  const char *pn = par >= 0 ? nt_str(nt, par, "name") : NULL;
+  int is_map = pn && (sp_streq(pn, "map") || sp_streq(pn, "collect"));
+  if (!pn || (!is_map && !sp_streq(pn, "each"))) return 0;
+  int pa = 0; if (nt_ref(nt, par, "arguments") >= 0) nt_arr(nt, nt_ref(nt, par, "arguments"), "arguments", &pa);
+  int blk = nt_ref(nt, par, "block");
+  if (pa || blk < 0 || nt_kind(nt, blk) != NK_BlockNode || !se_plain_block_params(nt, blk)) return 0;
+  int body = nt_ref(nt, blk, "body");
+  if (se_leaves_block(nt, body)) return 0;
+  int recv = nt_ref(nt, te, "receiver");
+  int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, te, "arguments"), "arguments", &ac);
+  if (recv < 0 || ac != 2) return 0;
+  int re = av[1];
+  int base = nt->count;
+  int inner = body >= 0 ? body : blk;
+  int sargs = te_args1(nt, re);
+  if (!is_map) {
+    nt_node_set_ref(nt, par, "receiver", recv);
+    nt_node_set_str(nt, par, "name", "scan");
+    nt_node_set_ref(nt, par, "arguments", sargs);
+  }
+  else {
+    char an[48]; snprintf(an, sizeof an, "__sm_%s", comp_node_tag(c, par));
+    int empty = nt_new_node(nt, "ArrayNode");
+    int w = te_lvwrite(nt, an, empty);
+    int beg = nt_new_node(nt, "BeginNode");
+    if (body >= 0) nt_node_set_ref(nt, beg, "statements", body);
+    int push = te_call(nt, te_lvread(nt, an), "<<", te_args1(nt, beg), -1);
+    int pbody = te_stmts1(nt, push);
+    int inner_n0 = beg;   /* the nodes from here to pbody sit in the block */
+    nt_node_set_ref(nt, blk, "body", pbody);
+    int scan = te_call(nt, recv, "scan", sargs, blk);
+    int seq[3] = { w, scan, te_lvread(nt, an) };
+    int stmts = nt_new_node(nt, "StatementsNode");
+    nt_node_set_arr(nt, stmts, "body", seq, 3);
+    nt_node_reset(nt, par, "ParenthesesNode");
+    nt_node_set_ref(nt, par, "body", stmts);
+    comp_grow_node_arrays(c);
+    for (int j = base; j < nt->count; j++)
+      c->nscope[j] = j >= inner_n0 && j <= pbody ? c->nscope[inner] : c->nscope[par];
+    scope_local_intern(comp_scope_of(c, par), an);
+  }
+  nt_node_reset(nt, te, "NilNode");
+  comp_grow_node_arrays(c);
+  for (int j = base; j < nt->count && !is_map; j++) c->nscope[j] = c->nscope[par];
+  return 1;
+}
+
 /* Rewrite `recv.to_enum(:m, *a)` / `enum_for(:m, *a)` into a real Enumerator,
    dispatched on the receiver kind (needs the receiver type, so it runs in the
    fixpoint). A user-class receiver whose class defines a yielding `m` becomes
@@ -11958,6 +12047,12 @@ static int desugar_to_enum(Compiler *c) {
       continue;
     }
 
+    if (recv >= 0 && sp_streq(m, "scan") &&
+        (rt == TY_STRING || (rt == TY_POLY && !an_user_defines_or_reads(c, m))) &&
+        desugar_scan_enum_consumer(c, id)) {
+      changed = 1;
+      continue;
+    }
     /* Builtin receiver: retarget to the blockless iterator (drops the leading
        method symbol, keeps any trailing args). */
     int is_builtin = ty_is_array(rt) || ty_is_hash(rt) || rt == TY_STRING ||
