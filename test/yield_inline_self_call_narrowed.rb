@@ -45,3 +45,30 @@ end
 A.new.run
 A2.new.run
 B.new.run
+
+# an override that answers an Integer or a Float that may be nil: boxed
+# with its nil
+class NBase
+  def count(_r = nil) = [:base, "b"][ARGV.size]
+  def weight = "w"
+
+  def report(r)
+    n = count(r)
+    w = weight
+    yield 1 if block_given?
+    p [n, w]
+  end
+end
+
+class NA < NBase
+  def count(r = nil) = r > 1 ? r : nil
+  def weight = ARGV.size > 3 ? nil : 2.5
+
+  def run
+    report(1) { |x| x }
+    report(2) { |x| x }
+  end
+end
+
+NA.new.run
+NBase.new.report(3)
