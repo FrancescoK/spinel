@@ -17275,6 +17275,64 @@ static void cr_collect_method_operands(Compiler *c, const NodeTable *nt, int m,
   if (ma >= 0) cr_collect_calls(c, nt, ma, out, n, cap, instance_self);
 }
 
+/* Set by compute_reachable for its last pass, on the settled types: the
+   names cr_recv_builtin_value may leave unmarked, else NULL. */
+const ANameHash *g_cr_typed = NULL;
+static int g_cr_user_coerce = 0;
+
+static int cr_ty_builtin_value(Compiler *c, TyKind t) {
+  return t == TY_INT || t == TY_FLOAT || t == TY_STRING || t == TY_STRBUF || t == TY_SYMBOL ||
+         t == TY_BOOL || t == TY_NIL || ((ty_is_array(t) || ty_is_hash(t)) && !c->has_arysub);
+}
+
+/* A call whose receiver has settled on a builtin value (an Integer, a Float,
+   a String, a Symbol, true / false, nil, an Array or a Hash with no program
+   subclass) runs that builtin's method, never a program's method of the
+   name. Marking it by bare name kept every class's `+` alive for any
+   `i + 1`, and with them all they call: uri's Generic#+ and #- brought merge
+   and route_from into every program requiring uri. Only a name every scope
+   of which is a plain class's method is left unmarked: a reopened builtin's,
+   a module's or a top-level def's may be the one called, and an alias has no
+   scope to tell. A number's operator with an operand that may be an object
+   still marks where a class defines coerce, whose pair the operator is
+   applied to; the names a builtin hands on to its operand (`str =~ obj`,
+   `a != b`) always do. The protocol names (==, <=>, hash, to_s, ...) are
+   roots of their own (method_name_implicitly_invoked). */
+static int cr_recv_builtin_value(Compiler *c, const NodeTable *nt, int id, const char *nm) {
+  static const char *const handed_on[] = { "=~", "!~", "!=", "===", NULL };
+  for (int i = 0; handed_on[i]; i++) if (sp_streq(nm, handed_on[i])) return 0;
+  if (!anh_has(g_cr_typed, nm)) return 0;
+  int r = nt_ref(nt, id, "receiver");
+  if (r < 0) return 0;
+  TyKind rt = comp_ntype(c, r);
+  if (!cr_ty_builtin_value(c, rt)) return 0;
+  if ((rt == TY_INT || rt == TY_FLOAT) && g_cr_user_coerce) {
+    int an = nt_ref(nt, id, "arguments"), n = 0;
+    const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
+    for (int i = 0; i < n; i++) if (!cr_ty_builtin_value(c, comp_ntype(c, av[i]))) return 0;
+  }
+  return 1;
+}
+
+/* The names only plain classes' methods hold, which a builtin value's call
+   cannot reach (cr_recv_builtin_value). */
+void cr_class_only_names(Compiler *c, ANameHash *out) {
+  ANameHash held; memset(&held, 0, sizeof held);
+  g_cr_user_coerce = 0;
+  for (int s = 0; s < c->nscopes; s++) {
+    const Scope *sc = &c->scopes[s];
+    if (!sc->name) continue;
+    if (sp_streq(sc->name, "coerce")) g_cr_user_coerce = 1;
+    ClassInfo *k = sc->class_id >= 0 ? &c->classes[sc->class_id] : NULL;
+    if (!k || comp_class_is_module(c, k) || is_builtin_reopen(k->name)) anh_add(&held, sc->name);
+  }
+  for (int s = 0; s < c->nscopes; s++) {
+    const char *nm = c->scopes[s].name;
+    if (nm && !anh_has(&held, nm) && !anh_has(out, nm)) anh_add(out, nm);
+  }
+  anh_free(&held);
+}
+
 /* Collect CallNode names in the subtree rooted at `id`, stopping at nested
    DefNodes (which are separate method scopes). `out` / `n` / `cap` are
    the dynamic string array to append to. */
@@ -17412,6 +17470,7 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
   if (k0 == NK_IndexOperatorWriteNode || k0 == NK_IndexOrWriteNode || k0 == NK_IndexAndWriteNode) {
     names[1] = "[]"; names[2] = "[]=";
   }
+  if (g_cr_typed && k0 == NK_CallNode && nm && names[0] == nm && cr_recv_builtin_value(c, nt, id, nm)) names[0] = NULL;
   for (int j = 0; j < 3; j++) {
     if (!names[j]) continue;
     int found = 0;
