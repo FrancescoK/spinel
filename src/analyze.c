@@ -34245,28 +34245,18 @@ static int const_array_index_in_range(Compiler *c, int recv, int idx) {
 /* Can position `pos` of a multiple assignment's value be nil, where the
    value is a constant Array of a known length or a `?:` of such (1 when it
    is anything else)? An element past the length is nil; one within it is
-   the literal's element, or the value the `map` block gives it. */
-static int masgn_const_pos_may_nil(Compiler *c, int v, int pos) {
+   the literal's element, or the value the `map` block gives it. Every value
+   position of the value, by the iterator's `if` shapes, is asked; a missing
+   one, or a walk that gave up, is nil. */
+typedef struct { Compiler *c; int pos; } MasgnPos;
+static int masgn_leaf_may_nil(const VpLeaf *leaf, void *ud) {
+  MasgnPos *m = ud;
+  Compiler *c = m->c;
   const NodeTable *nt = c->nt;
-  while (v >= 0 && nt_kind(nt, v) == NK_ParenthesesNode) {
-    int b = nt_ref(nt, v, "body"), n = 0;
-    const int *st = b >= 0 && nt_kind(nt, b) == NK_StatementsNode ? nt_arr(nt, b, "body", &n) : NULL;
-    v = st && n == 1 ? st[0] : -1;
-  }
-  if (v < 0) return 1;
-  if (nt_kind(nt, v) == NK_IfNode) {
-    int t = nt_ref(nt, v, "statements"), e = nt_ref(nt, v, "subsequent");
-    if (e < 0) e = nt_ref(nt, v, "consequent");
-    int n = 0; const int *st = t >= 0 ? nt_arr(nt, t, "body", &n) : NULL;
-    if (!st || n != 1 || e < 0 || nt_kind(nt, e) != NK_ElseNode) return 1;
-    int es = nt_ref(nt, e, "statements"), en = 0;
-    const int *ev = es >= 0 ? nt_arr(nt, es, "body", &en) : NULL;
-    if (!ev || en != 1) return 1;
-    return masgn_const_pos_may_nil(c, st[0], pos) || masgn_const_pos_may_nil(c, ev[0], pos);
-  }
-  if (!carr_is_read(nt, v, nt_str(nt, v, "name"))) return 1;
+  int v = leaf->node;
+  if (leaf->kind != VPK_EXPR || !carr_is_read(nt, v, nt_str(nt, v, "name"))) return 1;
   const CArr *ca = const_array(c, nt_str(nt, v, "name"));
-  if (!ca || pos >= ca->len) return 1;
+  if (!ca || m->pos >= ca->len) return 1;
   for (int i = 0; i < ca->nlit; i++) {
     if (ca->blk[i] >= 0) {
       int bd = nt_ref(nt, ca->blk[i], "body"), bn = 0;
@@ -34275,9 +34265,13 @@ static int masgn_const_pos_may_nil(Compiler *c, int v, int pos) {
       continue;
     }
     int en = 0; const int *ev = nt_arr(nt, ca->lit[i], "elements", &en);
-    if (pos >= en || nt_kind(nt, ev[pos]) == NK_NilNode || nullable_int_value(c, ev[pos])) return 1;
+    if (m->pos >= en || nt_kind(nt, ev[m->pos]) == NK_NilNode || nullable_int_value(c, ev[m->pos])) return 1;
   }
   return 0;
+}
+static int masgn_const_pos_may_nil(Compiler *c, int v, int pos) {
+  MasgnPos m = { c, pos };
+  return for_each_value_position(c->nt, v, VPS_IF, masgn_leaf_may_nil, &m);
 }
 
 /* A call that answers one element of its receiver, or nil when there is none
