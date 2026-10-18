@@ -3429,18 +3429,35 @@ static int qc_nalias_ws = 0, qc_calias_ws = 0;
 static const NodeTable *qc_hdr_nt = NULL;
 static Compiler *qc_hdr_cc = NULL;
 static int qc_nhdr = 0;
+static int qc_builtin_head(char (*chain)[64], int cl, int *abs_anchor);
 static int qc_header_segs(const NodeTable *nt, int cp, char (*segs)[64]) {
   if (cp < 0 || nt_kind(nt, cp) != NK_ConstantPathNode) return 0;
-  const char *rev[QC_MAXDEPTH]; int ns = 0;
+  const char *rev[QC_MAXDEPTH]; int ns = 0, builtin = 0;
   for (int q = nt_ref(nt, cp, "parent"); ; ) {
     if (q < 0 || ns >= QC_MAXDEPTH) return 0;
     NodeKind qk = nt_kind(nt, q);
     if (qk != NK_ConstantReadNode && qk != NK_ConstantPathNode) return 0;
     const char *nm = nt_str(nt, q, "name");
-    if (!nm || is_builtin_class_name(nm) || is_builtin_module_name(nm)) return 0;
+    if (!nm) return 0;
+    builtin |= is_builtin_class_name(nm) || is_builtin_module_name(nm);
     rev[ns++] = nm;
     if (qk == NK_ConstantReadNode) break;
     q = nt_ref(nt, q, "parent");
+  }
+  /* a path through a compact header under a builtin (`module
+     Regexp::Expression` before `module Regexp::Expression::Escape`) is the
+     body that header opened ([Expression]); any other builtin segment
+     leaves the header registered by its leaf */
+  if (builtin) {
+    char bchain[QC_MAXDEPTH + 1][64];
+    for (int i = 0; i < ns; i++) snprintf(bchain[i], 64, "%s", rev[ns - 1 - i]);
+    int abs_anchor = 0, bl = qc_builtin_head(bchain, ns, &abs_anchor);
+    if (!abs_anchor || bl < 1 || bl >= QC_MAXDEPTH) return 0;
+    for (int i = 0; i < bl; i++) {
+      if (is_builtin_class_name(bchain[i]) || is_builtin_module_name(bchain[i])) return 0;
+      snprintf(segs[i], 64, "%s", bchain[i]);
+    }
+    return bl;
   }
   /* a head that is a constant holding a module (`M = X; class M::Foo`)
      stands for the module's own path, X::Foo */
