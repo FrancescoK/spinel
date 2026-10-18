@@ -17419,10 +17419,12 @@ static sp_PolyArray *sp_poly_enum_recv_arr(sp_RbVal v, const char *nm) {
 /* `to_h` on a boxed receiver. A Hash answers ITSELF -- CRuby returns self, so
    there is nothing to build and no copy to make. Every other kind goes through
    its pair list: an Array of two-element Arrays is the pair form CRuby accepts,
-   and a Struct/Data answers its member table. Anything else raises the
-   NoMethodError the dispatch would have raised (#4170). */
+   and a Struct/Data answers its member table, nil an empty Hash. Anything
+   else raises the NoMethodError the dispatch would have raised (#4170). */
 static sp_RbVal sp_poly_to_h_val(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id)) return v;
+  /* nil.to_h is a new empty Hash */
+  if (v.tag == SP_TAG_NIL) return sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH);
   if (v.tag == SP_TAG_OBJ && sp_obj_to_h_fn && v.cls_id >= 0) {
     sp_RbVal h = sp_obj_to_h_fn(v);
     if (h.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(h.cls_id)) return h;
