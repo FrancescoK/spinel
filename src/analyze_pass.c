@@ -17302,7 +17302,10 @@ static int cr_recv_builtin_value(Compiler *c, const NodeTable *nt, int id, const
   static const char *const handed_on[] = { "=~", "!~", "!=", "===", NULL };
   for (int i = 0; handed_on[i]; i++) if (sp_streq(nm, handed_on[i])) return 0;
   if (!anh_has(g_cr_typed, nm)) return 0;
-  int r = nt_ref(nt, id, "receiver");
+  /* a variable's `x op= v` applies op to the variable's value, of the type
+     the write settles on */
+  int opw = nt_kind(nt, id) != NK_CallNode;
+  int r = opw ? id : nt_ref(nt, id, "receiver");
   if (r < 0) return 0;
   TyKind rt = comp_ntype(c, r);
   /* a boxed value the class facts show holds no class of the program's (an
@@ -17312,8 +17315,10 @@ static int cr_recv_builtin_value(Compiler *c, const NodeTable *nt, int id, const
   if (rt == TY_POLY) { const ClsSet *cs = cls_fact_node(c, r); boxed_builtin = cs && cs->n == 0; }
   if (!boxed_builtin && !cr_ty_builtin_value(c, rt)) return 0;
   if ((rt == TY_INT || rt == TY_BIGINT || rt == TY_FLOAT || boxed_builtin) && g_cr_user_coerce) {
-    int an = nt_ref(nt, id, "arguments"), n = 0;
+    int an = opw ? -1 : nt_ref(nt, id, "arguments"), n = 0;
     const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
+    int ov = opw ? nt_ref(nt, id, "value") : -1;
+    if (opw && (ov < 0 || !cr_ty_builtin_value(c, comp_ntype(c, ov)))) return 0;
     for (int i = 0; i < n; i++) if (!cr_ty_builtin_value(c, comp_ntype(c, av[i]))) return 0;
   }
   return 1;
@@ -17475,7 +17480,10 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
   if (k0 == NK_IndexOperatorWriteNode || k0 == NK_IndexOrWriteNode || k0 == NK_IndexAndWriteNode) {
     names[1] = "[]"; names[2] = "[]=";
   }
-  if (g_cr_typed && k0 == NK_CallNode && nm && names[0] == nm && cr_recv_builtin_value(c, nt, id, nm)) names[0] = NULL;
+  int var_opw = k0 == NK_LocalVariableOperatorWriteNode || k0 == NK_InstanceVariableOperatorWriteNode ||
+                k0 == NK_ClassVariableOperatorWriteNode || k0 == NK_GlobalVariableOperatorWriteNode;
+  if (g_cr_typed && (k0 == NK_CallNode || var_opw) && nm && names[0] == nm && cr_recv_builtin_value(c, nt, id, nm))
+    names[0] = NULL;
   for (int j = 0; j < 3; j++) {
     if (!names[j]) continue;
     int found = 0;

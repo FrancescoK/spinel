@@ -10,5 +10,6 @@ end
 v = Vec.new(1)
 i = 0
 i = i + v.x
+i += 1
 h = { a: 1 }.merge({ b: 2 })
 p i, h, v.x - 1
