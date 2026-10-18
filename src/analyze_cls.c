@@ -113,6 +113,7 @@ typedef struct CF {
   int *fs, nfs, cfs;                   /* new edges whose source's objects are yet to be sent: (src, dst, kind) */
   int *orig;                  /* (directed, SPINEL_CLS_FLOW=why) per element, the rule line that made it every class */
   int dbg_seed, dbg_ptop;     /* SPINEL_CLS_FLOW_SEED, SPINEL_CLS_FLOW_PTOP: print where every class, and an untracked container, start */
+  int pts_max;                /* objects an element holds before it joins the summary (CF_PTS_MAX; SPINEL_CLS_FLOW_PTSMAX overrides) */
 } CF;
 
 static void cf_oom(void) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
@@ -341,7 +342,7 @@ static void cf_pts_add(CF *f, int x, int o) {
     cf_edge(f, ko, ks); cf_edge(f, ks, ko);
     return;
   }
-  if (f->npts[x] >= CF_PTS_MAX) {
+  if (f->npts[x] >= f->pts_max) {
     /* a summary's own contents past the cap join the one global summary
        (no summary of summaries); its own past the cap give up */
     if (f->smc[x] == 2) { cf_ptop_set(f, x); return; }
@@ -369,6 +370,7 @@ static void cf_pts_add(CF *f, int x, int o) {
 }
 static void cf_escape(CF *f, int e) {
   if (e < 0 || f->esc[e]) return;
+  if (f->dbg_ptop) fprintf(stderr, "cls-flow-esc: element %d node-line %d kind %s name %s file %s\n", e, e < f->nnodes ? (int)nt_int(f->nt, e, "node_line", 0) : -1, e < f->nnodes ? nt_type(f->nt, e) : "slot", e < f->nnodes && nt_str(f->nt, e, "name") ? nt_str(f->nt, e, "name") : "-", e < f->nnodes && nt_file_path(f->nt, (int)nt_int(f->nt, e, "node_file", 0)) ? nt_file_path(f->nt, (int)nt_int(f->nt, e, "node_file", 0)) : "-");
   f->esc[e] = 1; f->changed = 1;
   for (int i = 0; i < f->npts[e]; i++) cf_add_set_at(f, f->obj_cont[f->pts[e][i]], CF_ALL, __LINE__);
 }
@@ -858,6 +860,44 @@ static int cf_opaque_name(const char *nm) {
   for (int i = 0; names[i]; i++) if (sp_streq(nm, names[i])) return 1;
   return 0;
 }
+/* the runtime module whose protocol a method of the name is; NULL for one
+   any builtin may call (to_s, ==, each, ...) */
+static const char *cf_protocol_gate(const char *nm) {
+  if (sp_streq(nm, "marshal_dump") || sp_streq(nm, "marshal_load") || sp_streq(nm, "_dump") || sp_streq(nm, "_load")) return "Marshal";
+  if (sp_streq(nm, "encode_with") || sp_streq(nm, "init_with")) return "Psych";
+  if (sp_streq(nm, "pretty_print")) return "PP";
+  if (sp_streq(nm, "to_json") || sp_streq(nm, "as_json")) return "JSON";
+  return NULL;
+}
+/* does the program read a constant of the name anywhere (YAML for Psych)? */
+static int cf_const_named(CF *f, const char *nm) {
+  const NodeTable *nt = f->nt;
+  int yaml = sp_streq(nm, "Psych");
+  NT_FOREACH_KIND(nt, NK_ConstantReadNode, id) {
+    const char *cn = nt_str(nt, id, "name");
+    if (cn && (sp_streq(cn, nm) || (yaml && sp_streq(cn, "YAML")))) return 1;
+  }
+  NT_FOREACH_KIND(nt, NK_ConstantPathNode, id) {
+    const char *cn = nt_str(nt, id, "name");
+    if (cn && (sp_streq(cn, nm) || (yaml && sp_streq(cn, "YAML")))) return 1;
+  }
+  return 0;
+}
+/* an operator every builtin answers with a value of its own kind (a
+   number, a bool, a new container), or with the receiver (`<<`); not `[]`,
+   `[]=` or `===` (a Proc's runs it) */
+static int cf_builtin_operator(const char *nm) {
+  static const char *const names[] = { "+", "-", "*", "/", "%", "**", "&", "|", "^", "<<", ">>", "<=>", "==", "!=",
+    "<", "<=", ">", ">=", "-@", "+@", "~", "!", "=~", "!~", NULL };
+  for (int i = 0; nm && names[i]; i++) if (sp_streq(nm, names[i])) return 1;
+  return 0;
+}
+/* Kernel's conversion functions, named like the class they answer */
+static int cf_kernel_conversion(const char *nm) {
+  static const char *const names[] = { "Integer", "Float", "String", "Rational", "Complex", "Array", "Hash", NULL };
+  for (int i = 0; nm && names[i]; i++) if (sp_streq(nm, names[i])) return 1;
+  return 0;
+}
 /* a constant whose methods hand out values from anywhere */
 static int cf_poison_const(const char *nm) {
   static const char *const names[] = { "Marshal", "ObjectSpace", "Fiber", "Thread", "Ractor", "Binding",
@@ -928,8 +968,8 @@ static int cf_block_params(CF *f, int blk, const char **out, int max, int *plain
   int rn = 0; const int *rq = nt_arr(nt, pn, "requireds", &rn);
   for (int i = 0; i < rn && n < max; i++) {
     const char *nm = nt_kind(nt, rq[i]) == NK_RequiredParameterNode ? nt_str(nt, rq[i], "name") : NULL;
-    if (!nm) { *plain = 0; continue; }   /* a destructuring `|(a, b)|` */
-    out[n++] = nm;
+    if (!nm && nt_kind(nt, rq[i]) != NK_MultiTargetNode) { *plain = 0; continue; }
+    out[n++] = nm;   /* NULL: a destructuring `|(a, b)|`, bound by cf_bind_destructured */
   }
   int on = 0; const int *op = nt_arr(nt, pn, "optionals", &on);
   for (int i = 0; i < on && n < max; i++) { out[n++] = nt_str(nt, op[i], "name"); }
@@ -971,10 +1011,122 @@ static int cf_all_param_names(CF *f, int params_owner, const char **out, int max
   }
   return n;
 }
+/* the names a destructuring parameter `|(a, (b, *c)), d|` of a block or a
+   lambda binds, each with the position of the required parameter it is
+   part of (pos, -1 for a post's) and whether it takes the rest as an
+   Array (splat) */
+static int cf_destructured_collect(CF *f, int t, int pos, int splat, const char **names, int *poss,
+                                   unsigned char *splats, int n, int max) {
+  const NodeTable *nt = f->nt;
+  if (t < 0 || n >= max) return n;
+  NodeKind k = nt_kind(nt, t);
+  if (k == NK_MultiTargetNode) {
+    static const char *const parts[] = { "lefts", "rights" };
+    for (int a = 0; a < 2; a++) {
+      int ln = 0; const int *ps = nt_arr(nt, t, parts[a], &ln);
+      for (int i = 0; i < ln; i++) n = cf_destructured_collect(f, ps[i], pos, 0, names, poss, splats, n, max);
+    }
+    int r = nt_ref(nt, t, "rest");
+    if (r >= 0 && nt_kind(nt, r) == NK_SplatNode)
+      n = cf_destructured_collect(f, nt_ref(nt, r, "expression"), pos, 1, names, poss, splats, n, max);
+    return n;
+  }
+  if (k == NK_LocalVariableTargetNode && nt_str(nt, t, "name")) {
+    names[n] = nt_str(nt, t, "name"); poss[n] = pos; splats[n] = (unsigned char)splat; n++;
+  }
+  return n;
+}
+static int cf_destructured_params(CF *f, int blk, const char **names, int *poss, unsigned char *splats, int max) {
+  const NodeTable *nt = f->nt;
+  int bp = nt_ref(nt, blk, "parameters");
+  if (bp < 0 || nt_kind(nt, bp) == NK_NumberedParametersNode) return 0;
+  int pn = nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : bp;
+  if (pn < 0 || nt_kind(nt, pn) != NK_ParametersNode) return 0;
+  int n = 0;
+  int rn = 0; const int *rq = nt_arr(nt, pn, "requireds", &rn);
+  for (int i = 0; i < rn; i++)
+    if (nt_kind(nt, rq[i]) == NK_MultiTargetNode) n = cf_destructured_collect(f, rq[i], i, 0, names, poss, splats, n, max);
+  int pon = 0; const int *po = nt_arr(nt, pn, "posts", &pon);
+  for (int i = 0; i < pon; i++)
+    if (nt_kind(nt, po[i]) == NK_MultiTargetNode) n = cf_destructured_collect(f, po[i], -1, 0, names, poss, splats, n, max);
+  return n;
+}
+/* is target node v a name a block's or a lambda's destructuring parameter
+   binds (cf_destructured_params)? The rules that bind the block's
+   parameters give it its classes. */
+static int cf_destructured_block_param(CF *f, int v) {
+  const NodeTable *nt = f->nt;
+  if (!f->par) return 0;
+  int p = f->par[v], seen = 0;
+  while (p >= 0 && (nt_kind(nt, p) == NK_MultiTargetNode || nt_kind(nt, p) == NK_SplatNode)) { seen = 1; p = f->par[p]; }
+  if (!seen || p < 0 || nt_kind(nt, p) != NK_ParametersNode) return 0;
+  p = f->par[p];
+  if (p >= 0 && nt_kind(nt, p) == NK_BlockParametersNode) p = f->par[p];
+  return p >= 0 && (nt_kind(nt, p) == NK_BlockNode || nt_kind(nt, p) == NK_LambdaNode);
+}
+/* name q, a destructuring parameter's, bound from pe, what the parameter
+   takes as a whole: an element of it, the value itself (a non-Array is
+   taken whole, with nil for the others), what a to_ary of the program's
+   answers; the rest takes an Array of them */
+static void cf_bind_destructured(CF *f, int blk, const char *q, int pe, int splat) {
+  int body = nt_ref(f->nt, blk, "body");
+  int lq = cf_lv(f, body >= 0 ? body : blk, q);
+  if (lq < 0) return;
+  if (splat || pe < 0) { cf_all(f, lq); return; }
+  cf_flow(f, pe, lq);
+  cf_load(f, pe, lq);
+  CFByName *b = cf_byname(f, "to_ary");
+  for (int i = 0; i < b->n; i++) if (!cf_prelude_scope(f, b->mi[i])) cf_load(f, f->ret_el[b->mi[i]], lq);
+}
+/* the local targets of a multiple assignment node mw (lefts, rights, a
+   splat rest, a nested MultiTargetNode), bound from val (cf_masgn_targets);
+   depth bounds the nesting */
+static void cf_masgn_targets(CF *f, int mw, int val, int depth) {
+  const NodeTable *nt = f->nt;
+  static const char *const parts[] = { "lefts", "rights" };
+  for (int a = 0; a < 2; a++) {
+    int ln = 0; const int *ps = nt_arr(nt, mw, parts[a], &ln);
+    for (int i = 0; i < ln; i++) {
+      int t = ps[i];
+      NodeKind k = nt_kind(nt, t);
+      if (k == NK_LocalVariableTargetNode) {
+        int lq = cf_lv(f, t, nt_str(nt, t, "name"));
+        if (lq < 0) continue;
+        if (val < 0) { cf_all(f, lq); continue; }
+        cf_flow(f, val, lq);
+        cf_load(f, val, lq);
+        CFByName *b = cf_byname(f, "to_ary");
+        for (int j = 0; j < b->n; j++) if (!cf_prelude_scope(f, b->mi[j])) cf_load(f, f->ret_el[b->mi[j]], lq);
+      }
+      else if (k == NK_MultiTargetNode && depth < 8) {
+        /* an element of the value, destructured again */
+        int e = -1;
+        if (val >= 0) { e = cf_entry(f, -(t + 2), "#mt"); cf_flow(f, val, e); cf_load(f, val, e); }
+        cf_masgn_targets(f, t, e, depth + 1);
+      }
+    }
+  }
+  int r = nt_ref(nt, mw, "rest");
+  if (r >= 0 && nt_kind(nt, r) == NK_SplatNode) {
+    int e = nt_ref(nt, r, "expression");
+    if (e >= 0 && nt_kind(nt, e) == NK_LocalVariableTargetNode) cf_all(f, cf_lv(f, e, nt_str(nt, e, "name")));
+  }
+}
+/* is target node v a local a multiple assignment binds (cf_masgn_targets)? */
+static int cf_masgn_target(CF *f, int v) {
+  const NodeTable *nt = f->nt;
+  if (!f->par) return 0;
+  int p = f->par[v];
+  while (p >= 0 && (nt_kind(nt, p) == NK_MultiTargetNode || nt_kind(nt, p) == NK_SplatNode)) p = f->par[p];
+  return p >= 0 && nt_kind(nt, p) == NK_MultiWriteNode;
+}
 static void cf_all_block_params(CF *f, int blk) {
   const char *names[64];
   int n = cf_all_param_names(f, blk, names, 64);
   int body = nt_ref(f->nt, blk, "body");
+  for (int i = 0; i < n; i++) cf_all(f, cf_lv(f, body >= 0 ? body : blk, names[i]));
+  int poss[64]; unsigned char splats[64];
+  n = cf_destructured_params(f, blk, names, poss, splats, 64);
   for (int i = 0; i < n; i++) cf_all(f, cf_lv(f, body >= 0 ? body : blk, names[i]));
 }
 
@@ -1128,7 +1280,11 @@ static void cf_bind_block(CF *f, int mi, int blk) {
   int n = cf_block_params(f, blk, names, CF_YARGS, &plain);
   int opaque = (m->blk_param && m->blk_param[0]) || f->has_super[mi] || m->is_proc_form || m->is_lowered_yield;
   if (!plain || opaque) { cf_all_block_params(f, blk); return; }
-  for (int i = 0; i < n; i++) cf_flow(f, f->yarg_el[mi][i], cf_lv(f, body >= 0 ? body : blk, names[i]));
+  for (int i = 0; i < n; i++) if (names[i]) cf_flow(f, f->yarg_el[mi][i], cf_lv(f, body >= 0 ? body : blk, names[i]));
+  const char *dn[64]; int poss[64]; unsigned char splats[64];
+  int nd = cf_destructured_params(f, blk, dn, poss, splats, 64);
+  for (int i = 0; i < nd; i++)
+    cf_bind_destructured(f, blk, dn[i], poss[i] >= 0 && poss[i] < CF_YARGS ? f->yarg_el[mi][poss[i]] : -1, splats[i]);
 }
 
 /* ---- calls ---- */
@@ -1228,12 +1384,36 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
       return;
     }
   }
-  /* any other: the value may be the receiver, its contents or an argument,
-     and shares the receiver's contents; an argument may be stored into the
-     receiver */
   /* (directed) the answer may be a container of its own, of what it was
      built from or of builtin values */
   if (f->directed) { int o = cf_el_obj(f, v); if (o >= 0) cf_add_set(f, f->obj_cont[o], cf_bv_set(f)); }
+  /* an operator of a builtin: a builtin value (a number, a bool, a new
+     container of the operands' elements), never the operand itself; `<<`
+     answers the receiver with the argument added. A user class's coerce
+     can hand the operation to the program's own operator of the name. */
+  if (cf_builtin_operator(nm)) {
+    int shl = sp_streq(nm, "<<");
+    cf_add_set(f, v, cf_bv_set(f));
+    if (shl) cf_flow(f, recv_el, v);
+    cf_share(f, v, recv_el);
+    for (int i = 0; i < argc; i++) {
+      NodeKind k = nt_kind(nt, argv[i]);
+      if (k == NK_BlockArgumentNode || k == NK_SymbolNode) continue;
+      int a = k == NK_SplatNode ? nt_ref(nt, argv[i], "expression") : argv[i];
+      cf_share(f, v, a);
+      if (shl) cf_store(f, recv_el, a);
+      cf_protocol_returns(f, v, a);
+    }
+    if (cf_byname(f, "coerce")->n) {
+      CFByName *b = cf_byname(f, nm);
+      for (int i = 0; i < b->n; i++) if (!cf_prelude_scope(f, b->mi[i])) cf_flow(f, f->ret_el[b->mi[i]], v);
+    }
+    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) cf_all_block_params(f, blk);
+    return;
+  }
+  /* any other: the value may be the receiver, its contents or an argument,
+     and shares the receiver's contents; an argument may be stored into the
+     receiver */
   cf_flow(f, recv_el, v);
   cf_load(f, recv_el, v);
   if (f->directed && sp_streq(nm, "dig")) cf_load(f, v, v);   /* to any depth */
@@ -1292,6 +1472,32 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
         cf_flow(f, ak == NK_SplatNode ? nt_ref(nt, argv[q], "expression") : argv[q], pe);
       }
     }
+    /* a destructuring parameter takes the same as a whole, through an
+       element of its own (one per such parameter), and its names are
+       bound from that (cf_bind_destructured) */
+    { const char *dn[64]; int poss[64], dpe[64]; unsigned char splats[64];
+      int nd = cf_destructured_params(f, blk, dn, poss, splats, 64);
+      for (int i = 0; i < nd; i++) {
+        int j = 0;
+        while (j < i && poss[j] != poss[i]) j++;
+        if (j < i) dpe[i] = dpe[j];
+        else {
+          char tag[24]; snprintf(tag, sizeof tag, "#dp%d", poss[i]);
+          int pe = dpe[i] = cf_entry(f, -(blk + 2), tag);   /* one per parameter, held across the rounds */
+          if (!f->directed) cf_unite(f, v, pe);
+          else {
+            cf_load(f, recv_el, pe);
+            cf_flow(f, recv_el, pe);
+            cf_flow(f, blk, pe);
+            for (int q = 0; q < argc; q++) {
+              NodeKind ak = nt_kind(nt, argv[q]);
+              if (ak == NK_BlockArgumentNode || ak == NK_SymbolNode) continue;
+              cf_flow(f, ak == NK_SplatNode ? nt_ref(nt, argv[q], "expression") : argv[q], pe);
+            }
+          }
+        }
+        cf_bind_destructured(f, blk, dn[i], dpe[i], splats[i]);
+      } }
   }
   else if (blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode) {
     int e = nt_ref(nt, blk, "expression");
@@ -1373,6 +1579,29 @@ static void cf_construct(CF *f, int v, int x, const int *argv, int argc, int blk
 /* the call on a receiver whose classes are known (set pidx, not every
    class): each class's method, reader or writer; the builtin answer where
    one has none */
+/* The value of a call on an instance of a native class (a `native_struct`
+   with `native_method` bindings): the binding's declared answer, a builtin
+   value for a String, a number, a bool or nil (`:string`, `:nstring`,
+   `:int`, ...), the receiver itself for `:self`, anything for `:any`. A
+   name no binding takes answers as Object's method would when it is one
+   whose answer is a builtin (`nil?`, `==`, `to_s`), else anything. */
+static void cf_native_answer(CF *f, int v, int recv_el, int k, const char *nm, int argc) {
+  Compiler *c = f->c;
+  int m = comp_native_method_find(c, k, nm, argc, 0);
+  if (m < 0) {
+    if (cf_scalar_answer(nm)) cf_add_set(f, v, cf_bv_set(f));
+    else cf_all(f, v);
+    return;
+  }
+  const char *ret = c->native_methods[m].ret;
+  if (!ret || !*ret) { cf_add_set(f, v, cf_bv_set(f)); return; }   /* no value: nil */
+  if (sp_streq(ret, "self")) { cf_flow(f, recv_el, v); return; }
+  TyKind t = native_spec_to_ty(ret);
+  if (sp_streq(ret, "string?") || sp_streq(ret, "int?") || sp_streq(ret, "float?") ||
+      (t != TY_POLY && t != TY_UNKNOWN)) { cf_add_set(f, v, cf_bv_set(f)); return; }
+  cf_all(f, v);
+}
+
 static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, const int *argv, int argc, int blk) {
   Compiler *c = f->c;
   const ClsSet *s = &f->pool[pidx];
@@ -1420,9 +1649,9 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
       if (blk >= 0 && nt_kind(f->nt, blk) == NK_BlockNode) cf_all_block_params(f, blk);
       continue;
     }
-    /* a native binding of the class: anything */
+    /* a native binding of the class: what its declaration says it answers */
     if (cf_class_has_natives(f, k)) {
-      cf_all(f, v);
+      cf_native_answer(f, v, recv_el, k, nm, argc);
       if (blk >= 0 && nt_kind(f->nt, blk) == NK_BlockNode) cf_all_block_params(f, blk);
       continue;
     }
@@ -1521,6 +1750,12 @@ static void cf_call(CF *f, int v) {
   const int *argv = a >= 0 ? nt_arr(nt, a, "arguments", &argc) : NULL;
   int blk = nt_ref(nt, v, "block");
   if (!nm) { cf_all(f, v); return; }
+  /* `send(:m, a, b)` with the name a literal is the call `m(a, b)` */
+  if (argc >= 1 && (sp_streq(nm, "send") || sp_streq(nm, "__send__") || sp_streq(nm, "public_send"))) {
+    NodeKind k0 = nt_kind(nt, argv[0]);
+    const char *lit = k0 == NK_SymbolNode ? nt_str(nt, argv[0], "value") : k0 == NK_StringNode ? nt_str(nt, argv[0], "content") : NULL;
+    if (lit) { nm = lit; argv++; argc--; }
+  }
   if (cf_opaque_name(nm)) {
     cf_all(f, v);
     for (int i = 0; i < argc; i++) cf_all(f, argv[i]);
@@ -1633,6 +1868,32 @@ static void cf_call(CF *f, int v) {
        hand on what they are given; `new` has no class here */
     if (sp_streq(nm, "lambda") || sp_streq(nm, "proc") || sp_streq(nm, "define_method")) {
       if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) cf_all_block_params(f, blk);
+    }
+    /* Kernel's conversions answer their kind whatever they are handed:
+       Integer(x) an Integer (to_int / to_i must answer one, else it
+       raises), Float, String, Rational and Complex likewise; Array(x) and
+       Hash(x) a container of x, its elements, or what its to_ary / to_a /
+       to_hash answers */
+    if (cf_kernel_conversion(nm) && blk < 0) {
+      cf_add_set(f, v, cf_bv_set(f));
+      if (sp_streq(nm, "Array") || sp_streq(nm, "Hash")) {
+        /* (unified) one element for the container and what it holds */
+        int cont = v;
+        if (f->directed) { int o = cf_el_obj(f, v); cont = f->obj_cont[o]; }   /* (cf_el_obj may move obj_cont) */
+        for (int i = 0; i < argc; i++) {
+          NodeKind ak = nt_kind(nt, argv[i]);
+          if (ak == NK_BlockArgumentNode || ak == NK_KeywordHashNode) continue;
+          int a = ak == NK_SplatNode ? nt_ref(nt, argv[i], "expression") : argv[i];
+          cf_flow(f, a, cont);
+          cf_load(f, a, cont);
+          static const char *const convs[] = { "to_ary", "to_a", "to_hash", "to_h", NULL };
+          for (int q = 0; convs[q]; q++) {
+            CFByName *b = cf_byname(f, convs[q]);
+            for (int j = 0; j < b->n; j++) if (!cf_prelude_scope(f, b->mi[j])) cf_load(f, f->ret_el[b->mi[j]], cont);
+          }
+        }
+      }
+      return;
     }
     /* self is the receiver (`def seal = freeze` answers self, a bare
        `each` in an Array subclass iterates self) */
@@ -1956,6 +2217,8 @@ static void cf_node(CF *f, int v) {
   case NK_LocalVariableTargetNode: {
     int p = f->par ? f->par[v] : -1;
     if (p >= 0 && (nt_kind(nt, p) == NK_RescueNode || nt_kind(nt, p) == NK_ForNode)) return;
+    if (cf_destructured_block_param(f, v)) return;   /* bound with the block's parameters */
+    if (cf_masgn_target(f, v)) return;               /* bound by its multiple assignment */
     cf_all(f, cf_lv(f, v, nt_str(nt, v, "name")));
     return;
   }
@@ -2059,7 +2322,15 @@ static void cf_node(CF *f, int v) {
     cf_flow(f, cf_entry(f, CF_K_CONST, cf_const_key(nm)), v);
     return;
   }
-  case NK_MultiWriteNode: cf_flow(f, nt_ref(nt, v, "value"), v); return;
+  case NK_MultiWriteNode: {
+    /* `a, (b, c), *d = value`: each name takes an element of the value, or
+       the value itself when it is no Array (then the others take nil), or
+       what a to_ary of the program's answers; the rest takes an Array */
+    int val = nt_ref(nt, v, "value");
+    cf_flow(f, val, v);
+    cf_masgn_targets(f, v, val, 0);
+    return;
+  }
   case NK_MultiTargetNode: return;
   case NK_YieldNode: {
     int mi = cf_owner_def(f, v, 0, NULL);
@@ -2161,14 +2432,30 @@ static void cf_node(CF *f, int v) {
         cf_flow(f, f->yval_el[mi], f->yval_el[t]);
       }
     }
-    /* not nmis: the method itself is among those of its name */
-    if (others == 0 && !(s->is_cmethod && sp_streq(s->name, "new"))) {
-      /* a builtin ancestor's method (Exception#initialize, Array#push, a
-         Struct's): its value is its own, built from the arguments, and
-         self is its receiver, as for a bare builtin call (Object#freeze
-         answers it) */
+    /* The methods above are every method of the name, a superset of the
+       ancestors'. When no ancestor of the program's own (the superclass
+       chain, the modules the class includes) has the name, the super runs
+       a builtin ancestor's method (Exception#initialize, Array#push, a
+       Struct's): its value is its own, built from the arguments, and self
+       is its receiver, as for a bare builtin call (Object#freeze answers
+       it). A native class's binding answers as its declaration says. */
+    int anc_user = 0;
+    if (s->class_id >= 0 && s->class_id < c->nclasses) {
+      ClassInfo *ci = &c->classes[s->class_id];
+      int par = ci->parent;
+      if (par >= 0 && par < c->nclasses)
+        anc_user = (s->is_cmethod ? comp_cmethod_in_chain(c, par, s->name, NULL) : comp_method_in_chain(c, par, s->name, NULL)) >= 0;
+      for (int m = 0; m < ci->nincluded_mods && !anc_user && !s->is_cmethod; m++) {
+        int md = ci->included_mods[m];
+        if (md >= 0 && md < c->nclasses && comp_method_in_chain(c, md, s->name, NULL) >= 0) anc_user = 1;
+      }
+    }
+    if (!anc_user && !(s->is_cmethod && sp_streq(s->name, "new"))) {
       int ik = s->is_cmethod ? -1 : cf_inst_class(f, mi);
-      cf_builtin_rule(f, v, ik >= 0 && !cf_selfless_fn(s->name) ? f->self_el[ik] : -1, argv2, argc2, blk, s->name);
+      int recv_el = ik >= 0 && !cf_selfless_fn(s->name) ? f->self_el[ik] : -1;
+      int nk = ik >= 0 ? comp_native_answer_class(c, ik, s->name) : -1;
+      if (nk >= 0 && nk != ik) cf_native_answer(f, v, recv_el, nk, s->name, argc2);
+      else cf_builtin_rule(f, v, recv_el, argv2, argc2, blk, s->name);
     }
     return;
   }
@@ -2221,6 +2508,18 @@ static void cf_collect_dyn(CF *f) {
     int a = nt_ref(nt, id, "arguments"), an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     int any = 0;
+    /* a send of a literal name is that call (cf_call), and an alias_method
+       of two literal names an alias the class table has: neither leaves a
+       method to be called with arguments the pass does not see */
+    int is_send = sp_streq(cn, "send") || sp_streq(cn, "__send__") || sp_streq(cn, "public_send");
+    if ((is_send || sp_streq(cn, "alias_method")) && an >= (is_send ? 1 : 2)) {
+      int lits = 1;
+      for (int i = 0; i < (is_send ? 1 : 2) && lits; i++) {
+        NodeKind ak = nt_kind(nt, av[i]);
+        lits = (ak == NK_SymbolNode && nt_str(nt, av[i], "value")) || (ak == NK_StringNode && nt_str(nt, av[i], "content"));
+      }
+      if (lits) continue;
+    }
     for (int i = 0; i < an; i++) {
       NodeKind ak = nt_kind(nt, av[i]);
       const char *s = ak == NK_SymbolNode ? nt_str(nt, av[i], "value") : ak == NK_StringNode ? nt_str(nt, av[i], "content") : NULL;
@@ -2531,6 +2830,8 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
   if (directed) {
     cf_grow_directed(&f); f.gsum = -1;
     f.dbg_seed = getenv("SPINEL_CLS_FLOW_SEED") != NULL; f.dbg_ptop = getenv("SPINEL_CLS_FLOW_PTOP") != NULL;
+    f.pts_max = getenv("SPINEL_CLS_FLOW_PTSMAX") ? atoi(getenv("SPINEL_CLS_FLOW_PTSMAX")) : CF_PTS_MAX;
+    if (f.pts_max < 1) f.pts_max = CF_PTS_MAX;
   }
   const char *dump = getenv("SPINEL_CLS_FACTS");
   if (dump && sp_streq(dump, "why") && !directed) {
@@ -2654,6 +2955,29 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
         s->cs_synth || s->is_module_function || cf_prelude_scope(&f, mi) ||
         (c->n_cext_extensions && s->def_node >= 0 && nt_int(c->nt, s->def_node, "cext_stub", 0))) {
       f.protocol[mi] = 1;
+      /* a copy's initialize_copy / initialize_dup / initialize_clone takes
+         the original: an instance of the class, or of a subclass */
+      if (s->def_node >= 0 && s->class_id >= 0 && !s->is_cmethod && s->nparams >= 1 &&
+          (sp_streq(s->name, "initialize_copy") || sp_streq(s->name, "initialize_dup") || sp_streq(s->name, "initialize_clone")) &&
+          !cf_opaque_name(s->name) && !cf_is_dyn(&f, s->name)) {
+        int pe = cf_param_el(&f, mi, 0);
+        if (pe >= 0) cf_add_set(&f, pe, f.desc[s->class_id]);
+        for (int i = 1; i < s->nparams; i++) cf_all(&f, cf_param_el(&f, mi, i));
+        if (s->blk_param && s->blk_param[0]) cf_all(&f, cf_lv_in(&f, mi, s->blk_param));
+        continue;
+      }
+      /* a protocol a runtime module calls (Marshal's marshal_load, Psych's
+         init_with, PP's pretty_print, JSON's to_json) runs only when the
+         program names the module somewhere: else no call binds it */
+      if (cf_protocol_name(s->name) && !cf_opaque_name(s->name) && !cf_is_dyn(&f, s->name) &&
+          !s->is_proc_form && !s->is_lowered_yield && !s->cs_synth && !s->is_module_function && !cf_prelude_scope(&f, mi)) {
+        const char *gate = cf_protocol_gate(s->name);
+        if (gate && !cf_const_named(&f, gate)) continue;
+      }
+      if (f.dbg_seed && s->nparams > 0) fprintf(stderr, "cls-flow-proto: %s params %d%s%s%s%s%s%s%s%s file %s\n", s->name, s->nparams,
+        cf_protocol_name(s->name) ? " proto" : "", cf_opaque_name(s->name) ? " opaque" : "", cf_is_dyn(&f, s->name) ? " dyn" : "",
+        s->is_proc_form ? " procform" : "", s->is_lowered_yield ? " lyield" : "", s->cs_synth ? " cssynth" : "", s->is_module_function ? " modfn" : "",
+        cf_prelude_scope(&f, mi) ? " prelude" : "", s->def_node >= 0 && nt_file_path(nt, (int)nt_int(nt, s->def_node, "node_file", 0)) ? nt_file_path(nt, (int)nt_int(nt, s->def_node, "node_file", 0)) : "-");
       cf_all_params(&f, mi);
     }
     if (s->blk_param && s->blk_param[0]) {
