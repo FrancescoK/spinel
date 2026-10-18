@@ -1020,10 +1020,10 @@ static void nf_elem_mark_back(NF *f, int v, int depth) {
   if (v < 0 || v >= nt->count || depth > 8) return;
   switch (nt_kind(nt, v)) {
   case NK_ParenthesesNode: case NK_StatementsNode: case NK_ElseNode: case NK_IfNode: case NK_UnlessNode:
-  case NK_CaseNode:
+  case NK_CaseNode: case NK_CaseMatchNode:
   case NK_AndNode: case NK_OrNode: {
     NfBackArms a = { f, depth };
-    for_each_value_position(nt, v, VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_CASE | VPS_LOGIC, nf_back_arm, &a);
+    for_each_value_position(nt, v, VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_LOGIC, nf_back_arm, &a);
     return;
   }
   case NK_LocalVariableWriteNode: case NK_InstanceVariableWriteNode: case NK_GlobalVariableWriteNode:
