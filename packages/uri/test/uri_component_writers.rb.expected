@@ -47,3 +47,7 @@ nil
 [URI::InvalidComponentError, "bad component(expected host component): a_b"]
 "a_b"
 [URI::InvalidComponentError, "bad component(expected absolute path component): /a b"]
+[URI::InvalidComponentError, "bad component(expected host component): "]
+[URI::InvalidComponentError, "bad component(expected host component): "]
+"ws://"
+"//"

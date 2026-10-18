@@ -62,3 +62,7 @@ r = URI::RFC2396_PARSER.parse("http://h/x")
 t { r.host = "a_b"; r.to_s }
 t { URI("http://h/x").host = "a_b" }
 t { r.path = "/a b" }
+t { URI::HTTP.build(host: "").to_s }
+t { URI::HTTPS.build(host: "").to_s }
+t { URI::WS.build(host: "").to_s }
+t { URI::Generic.build(host: "").to_s }

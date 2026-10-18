@@ -9,8 +9,9 @@
 # What is not here is absent the way a subset is absent things, and a
 # program naming it fails to compile rather than at run time:
 #
-# * the URI.escape family CRuby removed, and the obsolete URI::ABS_PATH-
-#   style constants CRuby answers through const_missing
+# * the URI.escape family CRuby removed, the obsolete constants CRuby
+#   answers through const_missing, and URI.parser= (which rebinds
+#   constants)
 require "socket"
 
 module URI
@@ -93,12 +94,7 @@ module URI
     end
 
     def host=(v)
-      unless v.nil?
-        raise InvalidURIError, "cannot set host with registry or opaque" unless @opaque.nil?
-        if !grammar_match?(:HOST, v)
-          raise InvalidComponentError, "bad component(expected host component): #{v}"
-        end
-      end
+      check_host(v)
       set_host(v)
       set_userinfo(nil)
       v
@@ -241,8 +237,6 @@ module URI
       from_components(h)
     end
 
-    # A URI of this class from a components Hash, a port not given being
-    # the scheme's default, as CRuby's initialize sets it.
     # A URI of this class from a components Hash, each component through
     # its checked writer in the order CRuby's build sends them (an IPv6
     # host bracketed, a port String read as a number), a port not given
@@ -261,6 +255,7 @@ module URI
       path = g.path
       path = "" if path.nil? && g.opaque.nil?
       u = new(g.scheme, g.userinfo, g.host, g.port, path, g.query, g.fragment)
+      u.check_host(u.host)
       u.set_opaque(g.opaque) unless g.opaque.nil?
       u
     end
@@ -319,13 +314,6 @@ module URI
       u = dup
       u.normalize!
       u
-    end
-
-    # What goes on the request line: the path with the query, and "/" when the
-    # path is empty -- `URI("http://example.com").request_uri` is "/".
-    def request_uri
-      p = (@path.nil? || @path.empty?) ? "/" : @path
-      @query.nil? ? p : "#{p}?#{@query}"
     end
 
     # the host without the brackets an IPv6 address carries in a URI, as
@@ -627,6 +615,13 @@ module URI
       "#<#{self.class} #{self}>"
     end
 
+    def check_host(v)
+      return false if v.nil?
+      raise InvalidURIError, "cannot set host with registry or opaque" unless @opaque.nil?
+      raise InvalidComponentError, "bad component(expected host component): #{v}" if !grammar_match?(:HOST, v)
+      true
+    end
+
     def check_user(v)
       raise InvalidURIError, "cannot set user with opaque" unless @opaque.nil?
       return if v.nil?
@@ -737,15 +732,26 @@ module URI
       from_components(components_hash(args, kw))
     end
 
+    # What goes on the request line: the path with the query, "/" put in
+    # front of a path without one (`URI("http://example.com").request_uri`
+    # is "/"); nil for a URI with no path.
+    def request_uri
+      return nil if @path.nil?
+      url = @query.nil? ? @path.dup : "#{@path}?#{@query}"
+      url.start_with?("/") ? url : "/#{url}"
+    end
+
     # The host, with ":port" when the port is not the scheme's default --
-    # CRuby's URI::HTTP#authority. An absent port is left off, as #to_s
-    # leaves it off.
+    # CRuby's URI::HTTP#authority.
     def authority
-      if @port.nil? || @port == default_port || @port <= 0
-        @host.to_s
-      else
-        "#{@host}:#{@port}"
-      end
+      @port == default_port ? @host.to_s : "#{@host}:#{@port}"
+    end
+
+    # An HTTP URI must name a host: the empty one is refused too.
+    def check_host(v)
+      ret = super
+      raise InvalidComponentError, "bad component(expected host component): #{v}" if ret && v.empty?
+      ret
     end
 
     # "scheme://authority", the web origin a CSP source or a same-origin
@@ -884,6 +890,24 @@ module URI
     def set_userinfo(v)
     end
 
+    def set_user(v)
+    end
+
+    def set_password(v)
+    end
+
+    def check_userinfo(user)
+      raise InvalidURIError, "cannot set userinfo for file URI"
+    end
+
+    def check_user(user)
+      raise InvalidURIError, "cannot set user for file URI"
+    end
+
+    def check_password(user, _ = nil)
+      raise InvalidURIError, "cannot set password for file URI"
+    end
+
     def userinfo=(v)
       return nil if v.nil?
       raise InvalidURIError, "cannot set userinfo for file URI"
@@ -909,6 +933,15 @@ module URI
 
     def self.build(args = nil, **kw)
       from_components(components_hash(args, kw))
+    end
+
+    # What goes on the request line: the path with the query, "/" put in
+    # front of a path without one (`URI("http://example.com").request_uri`
+    # is "/"); nil for a URI with no path.
+    def request_uri
+      return nil if @path.nil?
+      url = @query.nil? ? @path.dup : "#{@path}?#{@query}"
+      url.start_with?("/") ? url : "/#{url}"
     end
   end
 
@@ -940,7 +973,7 @@ module URI
                elsif to.is_a?(String)
                  to.dup
                else
-                 String.new
+                 +""
                end
       hs = h[:headers]
       unless hs.nil?
@@ -1941,6 +1974,38 @@ module URI
       Encoding.find(name)
     rescue ArgumentError
       nil
+    end
+  end
+
+  # CRuby sets these from the default parser's #regexp table when it loads
+  # (URI.parser=, which cannot rebind a constant here, is absent).
+  SCHEME = RFC3986_PARSER.regexp[:SCHEME]
+  USERINFO = RFC3986_PARSER.regexp[:USERINFO]
+  HOST = RFC3986_PARSER.regexp[:HOST]
+  ABS_PATH = RFC3986_PARSER.regexp[:ABS_PATH]
+  REL_PATH = RFC3986_PARSER.regexp[:REL_PATH]
+  QUERY = RFC3986_PARSER.regexp[:QUERY]
+  FRAGMENT = RFC3986_PARSER.regexp[:FRAGMENT]
+  OPAQUE = RFC3986_PARSER.regexp[:OPAQUE]
+  PORT = RFC3986_PARSER.regexp[:PORT]
+
+  # The byte tables CRuby's codecs read: each byte to its "%XX" (a space
+  # as "+" for www-form), and each "%XX" in any letter case to its byte.
+  # (built whole rather than store by store: under --share-strings a
+  # constant's Strings stored into one by one are refused, #6765)
+  TBLENCURICOMP_ = (0..255).map { |i| [i.chr, format("%%%02X", i)] }.to_h
+  TBLENCWWWCOMP_ = TBLENCURICOMP_.merge({ " " => "+" })
+  TBLDECWWWCOMP_ = (0..255).flat_map do |i|
+    h = i >> 4
+    l = i & 15
+    [format("%%%X%X", h, l), format("%%%x%X", h, l), format("%%%X%x", h, l), format("%%%x%x", h, l)].map { |k| [k, i.chr] }
+  end.to_h.merge({ "+" => " " })
+
+  module Util
+    # A scheme class's components from an Array (after the scheme) or a
+    # Hash, with the scheme from the class name.
+    def self.make_components_hash(klass, array_hash)
+      klass.components_hash(array_hash, {})
     end
   end
 
