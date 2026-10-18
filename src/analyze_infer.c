@@ -7851,6 +7851,12 @@ static TyKind infer_call_prelude(Compiler *c, int id) {
   return TY_UNKNOWN;
 }
 
+/* The exception accessors infer_call_inner types on a poly receiver: the
+   ones sp_poly_exc_acc answers with a boxed value. */
+static int is_poly_exc_boxed_accessor(const char *name) {
+  return sp_streq(name, "backtrace") || sp_streq(name, "result") || sp_streq(name, "errno") ||
+         sp_streq(name, "error_code") || sp_streq(name, "key") || sp_streq(name, "receiver");
+}
 static TyKind infer_call_inner(Compiler *c, int id) {
   TyKind prelude = infer_call_prelude(c, id);
   if (prelude != TY_UNKNOWN) return prelude;
@@ -8074,9 +8080,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
        the exception has none -- `if msg.backtrace` in the logger gem's
        Formatter was refused as a non-bool condition because the call had
        no type at all */
-    if (argc == 0 && (sp_streq(name, "backtrace") || sp_streq(name, "result") ||
-                      sp_streq(name, "errno") || sp_streq(name, "key") || sp_streq(name, "receiver")))
-      return TY_POLY;
+    if (argc == 0 && is_poly_exc_boxed_accessor(name)) return TY_POLY;
   }
 
   TyKind send_ret;

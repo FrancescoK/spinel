@@ -339,7 +339,7 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
   if (recv >= 0 && argc == 0 &&
       nt_ref(nt, id, "block") < 0 &&
       (sp_streq(name, "message") || sp_streq(name, "result") ||
-       sp_streq(name, "errno") ||
+       sp_streq(name, "errno") || sp_streq(name, "error_code") ||
        sp_streq(name, "key") || sp_streq(name, "receiver") ||
        sp_streq(name, "backtrace") || sp_streq(name, "cause") ||
        is_exception_full_message(name)) &&

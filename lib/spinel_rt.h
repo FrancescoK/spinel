@@ -2371,6 +2371,7 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
     if (strcmp(m, "name") == 0) return sp_exc_is_a(ve, "NameError");
     if (strcmp(m, "args") == 0 || strcmp(m, "private_call?") == 0) return sp_exc_is_a(ve, "NoMethodError");
     if (strcmp(m, "errno") == 0) return sp_exc_is_a(ve, "SystemCallError");
+    if (strcmp(m, "error_code") == 0) return sp_exc_is_a(ve, "Socket::ResolutionError");
     if (strcmp(m, "status") == 0 || strcmp(m, "success?") == 0) return sp_exc_is_a(ve, "SystemExit");
     if (strcmp(m, "signo") == 0 || strcmp(m, "signm") == 0) return sp_exc_is_a(ve, "SignalException");
     if (strcmp(m, "tag") == 0 || strcmp(m, "value") == 0) return sp_exc_is_a(ve, "UncaughtThrowError");
@@ -16195,6 +16196,7 @@ static sp_RbVal sp_poly_exc_acc(sp_RbVal v, const char *which) {
   if (!strcmp(which, "message")) return sp_box_str(sp_exc_message(e));
   if (!strcmp(which, "result"))  return sp_exc_result(e);
   if (!strcmp(which, "errno"))   return sp_exc_errno_acc(e);
+  if (!strcmp(which, "error_code")) return sp_exc_error_code_acc(e);
   if (!strcmp(which, "key"))     return sp_exc_key_acc(e);
   if (!strcmp(which, "receiver")) return sp_exc_receiver_acc(e);
   if (!strcmp(which, "name"))    return sp_exc_name_acc(e);

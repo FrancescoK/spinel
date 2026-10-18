@@ -65,6 +65,18 @@ static int sp_net_accept_cloexec(int sfd, struct sockaddr *addr, socklen_t *len)
 
 static volatile sig_atomic_t sp_net_term_flag = 0;
 
+/* The EAI_* code of the last lookup on this thread, 0 when it resolved.
+   The helpers below answer -1 for a failed lookup and a failed socket call
+   alike, so the raiser reads this to tell Socket::ResolutionError from an
+   Errno. It is taken (and cleared) by sp_net_take_resolution_error. */
+static SP_TLS int sp_net_gai_error = 0;
+
+int sp_net_take_resolution_error(void) {
+    int rc = sp_net_gai_error;
+    sp_net_gai_error = 0;
+    return rc;
+}
+
 /* A DNS lookup can take seconds, so we leave the world while it runs and
    the GC doesn't wait for us. The host is copied first, since a GC may
    run meanwhile and nothing may be rooting it. */
@@ -72,13 +84,14 @@ static int sp_net_resolve(const char *host, const char *port,
                           const struct addrinfo *hints, struct addrinfo **res) {
     char buf[NI_MAXHOST];
     if (host) {
-        if (strlen(host) >= sizeof buf) return EAI_NONAME;   /* longer than any DNS name */
+        if (strlen(host) >= sizeof buf) return sp_net_gai_error = EAI_NONAME;   /* longer than any DNS name */
         strcpy(buf, host);
         host = buf;
     }
     sp_native_enter();
     int rc = getaddrinfo(host, port, hints, res);
     sp_native_leave();
+    sp_net_gai_error = rc;
     return rc;
 }
 

@@ -1,0 +1,14 @@
+[:getaddress, Socket::ResolutionError, "getaddrinfo", true, true]
+[:tcp_socket, Socket::ResolutionError, "getaddrinfo(3)", true, true]
+[:tcp_server, Socket::ResolutionError, "getaddrinfo", true, true]
+[:getaddrinfo, Socket::ResolutionError, "getaddrinfo", true, true]
+[:tcp_server_sockets, Socket::ResolutionError, "getaddrinfo", true, true]
+[:sockaddr_in, Socket::ResolutionError, "getaddrinfo", true, true]
+[:udp_bind, Socket::ResolutionError, "getaddrinfo", true, true]
+[:udp_connect, Socket::ResolutionError, "getaddrinfo", true, true]
+[:udp_send, Socket::ResolutionError, "getaddrinfo", true, true]
+[true, true, SocketError]
+true
+true
+true
+[Socket::ResolutionError, "by hand", nil]

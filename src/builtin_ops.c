@@ -177,6 +177,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_EXCEPTION, "signm", 0, 0, BF_NONE, TY_STRING, BOPE_TEMPLATE, "sp_exc_signm_acc($r)", 0, 0, 0 },
   { TY_EXCEPTION, "name", 0, 0, BF_NONE, TY_POLY, BOPE_TEMPLATE, "sp_exc_name_acc($r)", 0, 0, 0 },
   { TY_EXCEPTION, "errno", 0, 0, BF_NONE, TY_POLY, BOPE_TEMPLATE, "sp_exc_errno_acc($r)", 0, 0, 0 },
+  { TY_EXCEPTION, "error_code", 0, 0, BF_NONE, TY_POLY, BOPE_TEMPLATE, "sp_exc_error_code_acc($r)", 0, 0, 0 },
   { TY_EXCEPTION, "result", 0, 0, BF_NONE, TY_POLY, BOPE_TEMPLATE, "sp_exc_result($r)", 0, 0, 0 },
 
   /* Process::Tms: four cumulative CPU times, all Float (#3044), fields of

@@ -1973,7 +1973,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       !an_user_recv_defines_method(c, name) &&
       (sp_streq(name, "message") || sp_streq(name, "result") ||
-       sp_streq(name, "errno") ||
+       sp_streq(name, "errno") || sp_streq(name, "error_code") ||
        sp_streq(name, "key") || sp_streq(name, "receiver") ||
        sp_streq(name, "backtrace") || sp_streq(name, "cause") ||
        sp_streq(name, "full_message") || sp_streq(name, "detailed_message")))

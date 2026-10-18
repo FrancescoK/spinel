@@ -83,6 +83,9 @@ int sp_net_unix_path(int fd, int peer, char *buf, int cap);
 int sp_net_gethostname(char *buf, int cap);
 int sp_net_socketpair(int domain, int type, int protocol, int fds[2]);
 int sp_net_socket(int domain, int type, int protocol);
+/* The EAI_* code of the lookup a -1 above failed on, or 0 when it was not
+   a lookup that failed; reading it clears it. */
+int sp_net_take_resolution_error(void);
 int sp_net_getaddrinfo_at(const char *host, int port, int want_family, int socktype, int idx,
                           int *family, int *stype, int *proto,
                           char *ipbuf, int ipcap, int *port_out);
