@@ -2,11 +2,13 @@
 # boxed (out of an Array, or a parameter a run-time-named send can fill
 # with anything): each class's own slot, as `Name.x` takes it, and the
 # value stored is evaluated once. A value that is no class keeps CRuby's
-# NoMethodError.
+# NoMethodError. An alias of the writer or the reader reaches the same slot.
 
 class Base
   class << self
     attr_accessor :features
+    alias_method :flags=, :features=
+    alias_method :flags, :features
 
     def hello(x) = [name, x]
   end
@@ -35,3 +37,6 @@ p relay(Any, :hello, 3)
 rescue NoMethodError => e
   puts e.message
 end
+
+x.flags = { b: 2 }
+p Any.features, x.flags

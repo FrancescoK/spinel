@@ -3357,8 +3357,8 @@ int cls_value_sg_accessor_named(Compiler *c, const char *name, int argc) {
   if (setter ? argc != 1 : argc != 0) return 0;
   for (int k = 0; k < c->nclasses; k++) {
     if (is_builtin_reopen(c->classes[k].name)) continue;
-    const char *rn = setter ? base : comp_resolve_cm_alias_at(c, k, name, NULL);
-    if (setter ? comp_is_sg_writer(&c->classes[k], base) : comp_is_sg_reader(&c->classes[k], rn ? rn : name))
+    const char *rn = comp_resolve_cm_alias_at(c, k, name, NULL);
+    if (setter ? comp_sg_writer_reached(c, k, name, base, sizeof base) : comp_is_sg_reader(&c->classes[k], rn ? rn : name))
       return 1;
   }
   return 0;
@@ -3377,9 +3377,10 @@ int emit_cls_value_sg_accessor_of(Compiler *c, int id, int recv, const char *kte
   for (int k = 0; k < c->nclasses; k++) {
     if (is_builtin_reopen(c->classes[k].name)) continue;
     ClassInfo *cls = &c->classes[k];
-    const char *rn = setter ? base : comp_resolve_cm_alias_at(c, k, name, NULL);
+    /* an alias (`alias_method :lvl=, :level=`) reaches the accessor it names */
+    const char *rn = comp_resolve_cm_alias_at(c, k, name, NULL);
     if (!rn) rn = name;
-    if (setter ? !comp_is_sg_writer(cls, base) : !comp_is_sg_reader(cls, rn)) continue;
+    if (setter ? !comp_sg_writer_reached(c, k, name, base, sizeof base) : !comp_is_sg_reader(cls, rn)) continue;
     buf_printf(b, "%sif (_t%d.cls_id == %d) { ", first ? "" : "else ", tk, k);
     first = 0;
     if (setter) {

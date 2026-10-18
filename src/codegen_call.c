@@ -28348,8 +28348,7 @@ int emit_sg_accessor(Compiler *c, int id, int ci, const char *cn, const char *na
   if (name_is_plain_setter(name)) {
     /* setter */
     char base[256];
-    if (!setter_base_name(name, base, sizeof base)) return 0;
-    if (!comp_is_sg_writer(cls, base)) return 0;
+    if (!comp_sg_writer_reached(c, ci, name, base, sizeof base)) return 0;
     if (comp_is_sg_civ(cls, base)) {
       char ivn[sizeof base + 1]; snprintf(ivn, sizeof ivn, "@%s", base);
       int ivi = comp_ivar_index(cls, ivn);

@@ -5258,11 +5258,11 @@ static int cls_value_sg_accessor_any(Compiler *c, const char *name, int argc) {
   if (setter ? argc != 1 : argc != 0) return 0;
   /* no class holds the name, nor an alias that may stand for one */
   sga_index(c);
-  if (!anh_has(&g_sga_names, setter ? base : name) && (setter || !anh_has(&g_sga_aliases, name))) return 0;
+  if (!anh_has(&g_sga_names, setter ? base : name) && !anh_has(&g_sga_aliases, name)) return 0;
   for (int k = 0; k < c->nclasses; k++) {
     if (is_builtin_reopen(c->classes[k].name)) continue;
-    const char *rn = setter ? base : comp_resolve_cm_alias_at(c, k, name, NULL);
-    if (setter ? comp_is_sg_writer(&c->classes[k], base) : comp_is_sg_reader(&c->classes[k], rn ? rn : name))
+    const char *rn = comp_resolve_cm_alias_at(c, k, name, NULL);
+    if (setter ? comp_sg_writer_reached(c, k, name, base, sizeof base) : comp_is_sg_reader(&c->classes[k], rn ? rn : name))
       return 1;
   }
   return 0;
