@@ -17566,6 +17566,171 @@ int emit_object_methods_reflection(Compiler *c, int recv, int cid, const char *n
   buf_puts(b, "; })");
   return 1;
 }
+/* The names a builtin value of core class `cls` answers #methods (`prot`
+   set) or #public_methods with: CRuby's list, through the class's
+   ancestors, each with the methods the program gives it ahead of its own
+   (a reopened Integer, Object or Kernel). */
+typedef struct { ReflNames *r; int prot; } ReflCoreNote;
+static void refl_core_note(void *ud, const char *m, int vis) {
+  ReflCoreNote *n = ud;
+  refl_note(n->r, m, vis == 1 || (n->prot && vis == 2));
+}
+static void refl_value_methods(Compiler *c, const char *cls, int prot, ReflNames *r) {
+  ReflCoreNote n = { r, prot };
+  for (const char *p = core_class_ancestors(cls); p && *p;) {
+    const char *e = strchr(p, ' ');
+    size_t l = e ? (size_t)(e - p) : strlen(p);
+    char an[64];
+    snprintf(an, sizeof an, "%.*s", (int)l, p);
+    int uk = comp_class_index(c, an);
+    if (uk >= 0 && c->classes[uk].is_builtin_const && c->classes[uk].enclosing_class < 0)
+      refl_own_instance_methods(c, uk, 1, prot, 0, 1, r);
+    core_own_methods_each(p, l, refl_core_note, &n);
+    p += l + (e ? 1 : 0);
+  }
+}
+
+/* The builtin classes a value's #methods lists (an_value_methods_class),
+   in the order sp_value_methods numbers them: class i's #methods is 2i+1,
+   its #public_methods 2i. TrueClass stands for false too. */
+static const char *const value_methods_classes[] = {
+  "NilClass", "TrueClass", "Integer", "Float", "Symbol", "String", "Array", "Hash", "Range",
+  "Regexp", "Rational", "Proc", "Time", "Object", NULL };
+/* the ones a boxed receiver finds by its class's name, after the tags */
+static const int value_methods_by_name_from = 5;
+
+static int value_methods_index(const char *cls, int prot) {
+  for (int i = 0; value_methods_classes[i]; i++)
+    if (sp_streq(value_methods_classes[i], cls)) return 2 * i + (prot ? 1 : 0);
+  return -1;
+}
+
+/* A fresh Array of class `cls`'s names, from the one table per class the
+   program carries (emit_value_methods_helpers) */
+static void emit_value_methods_list(Compiler *c, const char *cls, int prot, Buf *b) {
+  (void)c;
+  buf_printf(b, "sp_value_methods(%d)", value_methods_index(cls, prot));
+}
+
+/* sp_value_methods(k): a fresh Array of the names of class k/2 of
+   value_methods_classes, its #methods for an odd k (refl_value_methods), one
+   static table per list. sp_value_methods_poly(v, prot): the list of a boxed
+   value's class -- an immediate's by its tag, an instance of one of the
+   program's classes by its class (emit_object_methods_list), any other by
+   its class's name; a BasicObject has no #methods, and a builtin class the
+   lists do not hold is refused. Written, with their prototypes, when the
+   finished program calls them (as pd_emit_used writes its helpers). */
+void emit_value_methods_helpers(Compiler *c, const char *const *texts, int ntexts, Buf *protos,
+                                Buf *defs) {
+  /* the lists the calls name (a typed site names its own by number) */
+  enum { NVM = 2 * (int)(sizeof value_methods_classes / sizeof value_methods_classes[0]) };
+  unsigned char used[NVM] = {0};
+  int poly = 0, any = 0;
+  for (int t = 0; t < ntexts; t++) {
+    if (!texts[t]) continue;
+    if (strstr(texts[t], "sp_value_methods_poly(")) poly = any = 1;
+    for (const char *p = strstr(texts[t], "sp_value_methods("); p; p = strstr(p + 1, "sp_value_methods(")) {
+      int k = atoi(p + strlen("sp_value_methods("));
+      if (k >= 0 && k < NVM) used[k] = 1, any = 1;
+    }
+  }
+  if (!any) return;
+  buf_puts(protos, "static sp_PolyArray *sp_value_methods(int k);\n");
+  if (poly) buf_puts(protos, "static sp_PolyArray *sp_value_methods_poly(sp_RbVal v, int prot);\n");
+  Buf *b = defs;
+  buf_puts(b, "static sp_PolyArray *sp_value_methods(int k) {\n  const char *const *n = NULL;\n  switch (k) {\n");
+  for (int prot = 0; prot < 2; prot++) {
+    for (int i = 0; value_methods_classes[i]; i++) {
+      if (!poly && !used[2 * i + prot]) continue;
+      ReflNames r = {0};
+      refl_value_methods(c, value_methods_classes[i], prot, &r);
+      int leaf = comp_class_index(c, value_methods_classes[i]);
+      buf_printf(b, "  case %d: { static const char *const t[] = { ", 2 * i + prot);
+      for (int j = 0; j < r.n; j++) {
+        if (!r.show[j] || (leaf >= 0 && comp_is_undeffed_in_chain(c, leaf, r.v[j]))) continue;
+        emit_str_literal(b, r.v[j]);
+        buf_puts(b, ", ");
+      }
+      buf_puts(b, "NULL }; n = t; break; }\n");
+      refl_free(&r);
+    }
+  }
+  buf_puts(b, "  }\n  sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a);\n"
+              "  for (int i = 0; n && n[i]; i++) sp_PolyArray_push(a, sp_box_sym(sp_sym_intern(n[i])));\n"
+              "  return a;\n}\n");
+  if (!poly) return;
+  buf_puts(b, "static sp_PolyArray *sp_value_methods_poly(sp_RbVal v, int prot) {\n  SP_GC_ROOT_RBVAL(v);\n"
+              "  if (v.tag == SP_TAG_NIL) return sp_value_methods(prot);\n"
+              "  if (v.tag == SP_TAG_BOOL) return sp_value_methods(2 + prot);\n"
+              "  if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT) return sp_value_methods(4 + prot);\n"
+              "  if (v.tag == SP_TAG_FLT) return sp_value_methods(6 + prot);\n"
+              "  if (v.tag == SP_TAG_SYM) return sp_value_methods(8 + prot);\n"
+              "  if (sp_poly_is_user_obj(v)) {\n");
+  for (int prot = 0; prot < 2; prot++) {
+    const char *name = prot ? "methods" : "public_methods";
+    buf_printf(b, "    if (prot == %d) switch (v.cls_id) {\n", prot);
+    for (int k = 0; k < c->nclasses; k++) {
+      if (!c->classes[k].instantiated || c->classes[k].is_singleton_of ||
+          !an_object_methods_listable(c, k, name)) continue;
+      buf_printf(b, "    case %d: return ", k);
+      emit_object_methods_list(c, k, name, 1, prot, 0, 1, -1, b);
+      buf_puts(b, ";\n");
+    }
+    buf_puts(b, "    default: break;\n    }\n");
+  }
+  buf_puts(b, "  } else {\n    const char *cn = sp_poly_class_name(v);\n");
+  for (int i = value_methods_by_name_from; value_methods_classes[i]; i++)
+    buf_printf(b, "    if (!strcmp(cn, \"%s\")) return sp_value_methods(%d + prot);\n",
+               value_methods_classes[i], 2 * i);
+  buf_puts(b, "    if (!strcmp(cn, \"BasicObject\")) sp_raise_poly_nomethod(prot ? \"methods\" : \"public_methods\", v);\n"
+              "  }\n  sp_raise_cls(\"NotImplementedError\", sp_sprintf(SPL(\"spinel: the methods of an instance of %s are not listed\"),"
+              " sp_poly_class_name(v)));\n  return NULL;\n}\n");
+}
+
+/* nil.methods / 1.public_methods / "s".methods(true) on a builtin value
+   (an_value_methods_class): its class's list, as CRuby answers it. A
+   receiver that may hold nil picks NilClass's at run time; true and false
+   list the same names. The receiver is evaluated for its effects. */
+int emit_value_methods_reflection(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0) return 0;
+  int args = nt_ref(nt, id, "arguments"), argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  const char *name = nt_str(nt, id, "name");
+  TyKind rt = comp_ntype(c, recv);
+  const char *cls = an_value_methods_class(c, recv, rt, name, argc, argv);
+  if (!cls) return 0;
+  int prot = sp_streq(name, "methods");
+  if (!cls[0]) {
+    buf_puts(b, "sp_value_methods_poly(");
+    emit_boxed(c, recv, b);
+    buf_printf(b, ", %d)", prot);
+    return 1;
+  }
+  Repr rr = repr_of(c, recv);
+  int nilable = rt != TY_NIL &&
+                (rr.kind == RK_BOXED || rr.kind == RK_OPT ||
+                 ((ty_null_is_nil(rt) || rt == TY_SYMBOL) && node_may_be_null_nil(c, recv)));
+  int t = ++g_tmp;
+  if (nilable) {
+    buf_printf(b, "({ sp_RbVal _v%d = ", t);
+    emit_boxed(c, recv, b);
+    buf_printf(b, "; _v%d.tag == SP_TAG_NIL ? ", t);
+    emit_value_methods_list(c, "NilClass", prot, b);
+    buf_puts(b, " : ");
+    emit_value_methods_list(c, cls, prot, b);
+    buf_puts(b, "; })");
+    return 1;
+  }
+  buf_puts(b, "({ (void)(");
+  emit_expr(c, recv, b);
+  buf_puts(b, "); ");
+  emit_value_methods_list(c, cls, prot, b);
+  buf_puts(b, "; })");
+  return 1;
+}
+
 /* Does any user class answer respond_to?(qm) at run time, through a method of
    its own or a name it carries implicitly? Decides whether a boxed receiver
    asks the per-class check or only the builtin surface. */
@@ -30969,6 +31134,7 @@ static void emit_call_body_ordinary(Compiler *c, int id, Buf *b) {
 
   if (recv >= 0 && emit_call_untyped_array_arms(c, b, nt, name, recv, argc, comp_ntype(c, recv))) return;
 
+  if (emit_value_methods_reflection(c, id, b)) return;
   if (emit_call_class_value_arms(c, id, b, nt, name, recv, argc, argv)) return;
 
   if (emit_call_freeze_dup_arms(c, id, b, nt, name, recv, argc)) return;
