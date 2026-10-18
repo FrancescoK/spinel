@@ -8118,7 +8118,7 @@ void specialize_inherited_cls_new(Compiler *c) {
     if (recv >= 0 && nt_kind(nt, recv) == NK_CallNode) {
       const char *rn = nt_str(nt, recv, "name");
       int rr = nt_ref(nt, recv, "receiver");
-      const char *mname = nt_str(nt, id, "name");
+      const char *mname = cls_call_name(c, id);
       Scope *encl = comp_scope_of(c, id);
       if (rn && sp_streq(rn, "class") && rr >= 0 && nt_kind(nt, rr) == NK_SelfNode &&
           mname && !sp_streq(mname, "new") && encl && !encl->is_cmethod && encl->class_id >= 0 &&
@@ -8291,7 +8291,7 @@ void specialize_inherited_cls_new(Compiler *c) {
        an implicit declaration, mistyped arms, and a link error (#4053). */
     for (int id = 0; id < node_count && !called_direct; id++) {
       if (nt_kind(nt, id) != NK_CallNode) continue;
-      const char *nm4 = nt_str(nt, id, "name");
+      const char *nm4 = cls_call_name(c, id);
       if (!nm4 || !sp_streq(nm4, src->name)) continue;
       int r4 = nt_ref(nt, id, "receiver");
       if (r4 < 0 || nt_kind(nt, r4) != NK_CallNode) continue;
