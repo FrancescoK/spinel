@@ -6,7 +6,7 @@
 
 class Base
   class << self
-    attr_accessor :features
+    attr_accessor :features, :flags
     alias_method :flags=, :features=
     alias_method :flags, :features
 
@@ -41,7 +41,8 @@ end
 x.flags = { b: 2 }
 p Any.features, x.flags
 
-# a subclass's own accessor of the alias's name is behind no alias
+# a subclass's own accessor of the alias's name is behind no alias, also
+# when it redeclares one the parent has
 class Own < Base
   class << self
     attr_accessor :flags

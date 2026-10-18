@@ -1928,6 +1928,11 @@ void comp_add_sg_reader(ClassInfo *ci, const char *name) {
 void comp_add_sg_writer(ClassInfo *ci, const char *name) {
   name_add(&ci->sg_writers, &ci->nsg_writers, &ci->csg_writers, name);
 }
+void comp_add_sg_decl(ClassInfo *ci, const char *base, int writer) {
+  char nm[260];
+  if (snprintf(nm, sizeof nm, "%s%s", base, writer ? "=" : "") >= (int)sizeof nm) return;
+  name_add(&ci->sg_decl, &ci->nsg_decl, &ci->csg_decl, nm);
+}
 void comp_add_sg_civ(ClassInfo *ci, const char *name) {
   if (name) name_add(&ci->sg_civ, &ci->nsg_civ, &ci->csg_civ, name);
 }
@@ -2036,14 +2041,11 @@ const char *comp_resolve_cm_alias_ex(Compiler *c, int class_id, const char *name
   return resolve_alias_side(c, class_id, name, NULL, builtin, 1);
 }
 /* Does class `d` declare the `class << self` accessor `name` (`x`, or `x=`)
-   itself? A subclass's lists hold its parent's accessors as well. */
+   itself? A subclass's lists hold its ancestors' accessors as well, so the
+   declarations are kept apart (a redeclared one is in both). */
 static int sg_accessor_own(Compiler *c, int d, const char *name) {
-  char base[256];
   ClassInfo *ci = &c->classes[d];
-  ClassInfo *pi = ci->parent >= 0 ? &c->classes[ci->parent] : NULL;
-  if (setter_base_name(name, base, sizeof base))
-    return comp_is_sg_writer(ci, base) && !(pi && comp_is_sg_writer(pi, base));
-  return comp_is_sg_reader(ci, name) && !(pi && comp_is_sg_reader(pi, name));
+  return name_list_has(ci->sg_decl, ci->nsg_decl, name);
 }
 static const char *resolve_alias_side(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin, int sg) {
   if (builtin) *builtin = 0;
