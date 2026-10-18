@@ -5468,7 +5468,7 @@ sp_condvar *sp_CondVar_new(void) {
   return cv;
 }
 
-sp_RbVal sp_CondVar_wait(sp_condvar *cv, sp_mutex *m) {
+static sp_RbVal sp_CondVar_wait_impl(sp_condvar *cv, sp_mutex *m) {
   time_t beg = time(NULL);
   /* the owner check and a pending #kill/#raise need no lock; the park
      itself is ordered under the condvar's own (sp_sched_block_wl) */
@@ -5511,10 +5511,11 @@ static void sp_CondVar_wait_timeout_blocking(sp_mutex *m, double seconds) {
   sp_Mutex_lock(m);
 }
 
-sp_RbVal sp_CondVar_wait_timeout(sp_condvar *cv, sp_mutex *m, double seconds) {
+static sp_RbVal sp_CondVar_wait_nb_impl(sp_condvar *cv, sp_mutex *m);
+static sp_RbVal sp_CondVar_wait_timeout_impl(sp_condvar *cv, sp_mutex *m, double seconds) {
   /* CRuby checks the interval before it lets go of the mutex */
   if (seconds < 0.0) sp_raise_cls("ArgumentError", "time interval must not be negative");
-  if (!(seconds > 0.0)) return sp_CondVar_wait_nb(cv, m);
+  if (!(seconds > 0.0)) return sp_CondVar_wait_nb_impl(cv, m);
 #ifdef SP_THREADS
   /* With no spawned green threads there is no monitor yet. Release the mutex
      and sleep directly; the main thread is the only possible signaler in this
@@ -5541,7 +5542,7 @@ sp_RbVal sp_CondVar_wait_timeout(sp_condvar *cv, sp_mutex *m, double seconds) {
 /* CRuby's `wait(mutex, 0)`: release the mutex and return without parking.
    The cv->waiters list is threads blocked on this CV, not pending signals, so
    this path does not touch it. */
-sp_RbVal sp_CondVar_wait_nb(sp_condvar *cv, sp_mutex *m) {
+static sp_RbVal sp_CondVar_wait_nb_impl(sp_condvar *cv, sp_mutex *m) {
   (void)cv;
   SCHED_LOCK();
   if (SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) != g_current) {
@@ -5561,6 +5562,36 @@ sp_RbVal sp_CondVar_wait_nb(sp_condvar *cv, sp_mutex *m) {
   sp_fiber_undefer_inject();
   sp_fiber_fire_inject_if_pending();
   return sp_box_nil();
+}
+
+/* A Monitor (a reentrant Mutex) held more than once is released whole by a
+   wait and taken back at the same depth, as CRuby's Monitor#wait_for_cond
+   does: left as it was, the depth outlived the release, and a waiter in
+   nested synchronize blocks came back holding the count of the thread that
+   signalled it (MonitorMixin::ConditionVariable). */
+static int sp_cv_depth_take(sp_mutex *m) {
+  if (!m->reentrant || SP_ATOMIC_LOAD(&m->owner, __ATOMIC_SEQ_CST) != g_current) return 0;
+  int d = m->depth;
+  m->depth = 0;
+  return d;
+}
+sp_RbVal sp_CondVar_wait(sp_condvar *cv, sp_mutex *m) {
+  int d = sp_cv_depth_take(m);
+  sp_RbVal r = sp_CondVar_wait_impl(cv, m);
+  m->depth = d;
+  return r;
+}
+sp_RbVal sp_CondVar_wait_timeout(sp_condvar *cv, sp_mutex *m, double seconds) {
+  int d = sp_cv_depth_take(m);
+  sp_RbVal r = sp_CondVar_wait_timeout_impl(cv, m, seconds);
+  m->depth = d;
+  return r;
+}
+sp_RbVal sp_CondVar_wait_nb(sp_condvar *cv, sp_mutex *m) {
+  int d = sp_cv_depth_take(m);
+  sp_RbVal r = sp_CondVar_wait_nb_impl(cv, m);
+  m->depth = d;
+  return r;
 }
 
 void sp_CondVar_signal(sp_condvar *cv) {

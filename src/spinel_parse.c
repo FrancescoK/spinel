@@ -4397,6 +4397,27 @@ static char *sp_splice_named_builtin(char *source, const char *exe_path, const c
   return sp_prepend_require(source, exe_path, head, fsl, fsl_n);
 }
 
+/* builtins/monitor_mixin.rb: MonitorMixin, for a program that names it in
+   code (`include MonitorMixin`, `MonitorMixin::ConditionVariable`) and does
+   not define it -- named, not called through, so the Gem-style test of a
+   `.`/`::` after the name does not ask the right question */
+static char *sp_splice_monitor_mixin(char *source, const char *exe_path,
+                                     unsigned char **fsl, size_t *fsl_n) {
+  static const char w[] = "MonitorMixin";
+  size_t wl = sizeof w - 1;
+  int named = 0;
+  for (const char *p = strstr(source, w); p && !named; p = strstr(p + 1, w)) {
+    char prev = p == source ? 0 : p[-1];
+    if (sp_req_ident_char(prev) || prev == '@' || prev == '$' || sp_req_ident_char(p[wl])) continue;
+    const char *bol = p;
+    while (bol > source && bol[-1] != '\n') bol--;
+    while (*bol == ' ' || *bol == '\t') bol++;
+    if (*bol != '#') named = 1;
+  }
+  if (!named || sp_src_defines_module(source, w)) return source;
+  return sp_prepend_require(source, exe_path, "require \"builtins/monitor_mixin\"\n", fsl, fsl_n);
+}
+
 /* builtins/object_space.rb: the finalizer API. Only for a program that names
    it -- the rest of ObjectSpace stays the refusal it is
    (docs/limitations.md). Names it in code, that is: the file holds procs in
@@ -5287,6 +5308,7 @@ static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
   source = sp_splice_named_builtin(source, argv0, "Gem", "builtins/gem", &fsl, &fsl_n);
   source = sp_splice_named_builtin(source, argv0, "RbConfig", "builtins/rbconfig", &fsl, &fsl_n);
   source = sp_splice_named_builtin(source, argv0, "ThreadGroup", "builtins/thread_group", &fsl, &fsl_n);
+  source = sp_splice_monitor_mixin(source, argv0, &fsl, &fsl_n);
   source = sp_splice_object_space(source, argv0, &fsl, &fsl_n);
   source = sp_splice_process_detach(source, argv0, &fsl, &fsl_n);
   source = sp_splice_system_spawn(source, argv0, &fsl, &fsl_n);
