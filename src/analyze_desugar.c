@@ -3533,8 +3533,7 @@ int desugar_enumerable_chain(Compiler *c) {
       TyKind rt = infer_type(c, recv);
       if (ty_is_object(rt)) {
         int ci = ty_object_class(rt);
-        if (ci >= 0 && (comp_method_in_chain(c, ci, "chain", NULL) >= 0 ||
-                        (argc == 0 && comp_reader_in_chain(c, ci, "chain", NULL)))) continue;
+        if (ci >= 0 && !comp_enum_answers_first(c, ci, "chain")) continue;
       }
       /* A boxed receiver (an Array read out of a container) materializes
          through the run-time #to_a dispatch over whatever it holds, so it
@@ -11686,7 +11685,7 @@ int enum_builtin_responds(Compiler *c, const char *name, TyKind rt) {
   if (ty_is_object(rt)) {
     int ci = ty_object_class(rt);
     return (an_class_includes_enumerable(c, ci) || comp_ary_root(c, ci) >= 0) &&
-           comp_method_in_chain(c, ci, name, NULL) < 0;
+           comp_enum_answers_first(c, ci, name);
   }
   return 0;
 }
@@ -11875,8 +11874,7 @@ int desugar_builtin_enum_calls(Compiler *c) {
       int ci = ty_object_class(rt);
       /* an Array subclass is Enumerable through Array (#7449) */
       ok = (an_class_includes_enumerable(c, ci) || comp_ary_root(c, ci) >= 0) &&
-           comp_method_in_chain(c, ci, name, NULL) < 0 &&
-           !(nt_ref(nt, id, "arguments") < 0 && comp_reader_in_chain(c, ci, name, NULL));   /* an attr_reader is the class's own too */
+           comp_enum_answers_first(c, ci, name);
     }
     else if (rt == TY_POLY) ok = 1;   /* a class of its own definition is dispatched below */
     if (!ok) continue;

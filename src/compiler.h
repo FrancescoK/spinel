@@ -799,6 +799,17 @@ typedef struct {
      includes that module. */
   int *included_mods;
   int nincluded_mods, cincluded_mods;
+  /* Where Enumerable sits among this class's own includes: 0 when its bodies
+     do not include it, else 1 + the number of program modules included
+     before it (a later include goes in front in Ruby's lookup). Set where
+     the includes are processed (process_include_body). */
+  int enum_inc_at;
+  int enum_prepended;   /* its bodies `prepend Enumerable`: in front of the class itself */
+  /* The attr_reader / attr_accessor names this class's own bodies declare,
+     as against readers[], which also holds those a module it includes and a
+     superclass bring. */
+  char **own_readers;
+  int nown_readers, cown_readers;
   /* Modules this class extends (class indices), in the order register_extends
      meets them: its singleton's ancestors, which `Klass.is_a?(M)` asks. */
   int *extended_mods;
@@ -1846,6 +1857,13 @@ int        comp_writer_in_chain(Compiler *c, int class_id, const char *name, int
 void       comp_add_reader(ClassInfo *ci, const char *name);
 void       comp_add_writer(ClassInfo *ci, const char *name);
 int        comp_is_reader(ClassInfo *ci, const char *name);
+void       comp_add_own_reader(ClassInfo *ci, const char *name);
+int        comp_is_own_reader(ClassInfo *ci, const char *name);
+/* Whether a call named `name` on an instance of class cid, which has an
+   #each, is Enumerable's: no method or reader of the program's comes before
+   Enumerable in Ruby's lookup order. 0 when the program's answers first. */
+int        comp_enum_answers_first(Compiler *c, int cid, const char *name);
+int        core_method_vis(const char *cls, const char *m, int inherit);   /* codegen_call_class.c */
 int        comp_is_writer(ClassInfo *ci, const char *name);
 int        name_is_plain_setter(const char *name);
 int        call_is_setter_assign(const NodeTable *nt, int id);

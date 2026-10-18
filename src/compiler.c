@@ -342,6 +342,8 @@ void comp_free(Compiler *c) {
     free(c->classes[i].rbs_pin_ivars);
     for (int j = 0; j < c->classes[i].nreaders; j++) free(c->classes[i].readers[j]);
     free(c->classes[i].readers);
+    for (int j = 0; j < c->classes[i].nown_readers; j++) free(c->classes[i].own_readers[j]);
+    free(c->classes[i].own_readers);
     for (int j = 0; j < c->classes[i].nwriters; j++) free(c->classes[i].writers[j]);
     free(c->classes[i].writers);
     for (int j = 0; j < c->classes[i].nundefs; j++) free(c->classes[i].undefs[j]);
@@ -1847,6 +1849,11 @@ void comp_add_writer(ClassInfo *ci, const char *name) {
   name_add(&ci->writers, &ci->nwriters, &ci->cwriters, name);
 }
 int comp_is_reader(ClassInfo *ci, const char *name) { return name_list_has(ci->readers, ci->nreaders, name); }
+void comp_add_own_reader(ClassInfo *ci, const char *name) {
+  comp_add_reader(ci, name);
+  name_add(&ci->own_readers, &ci->nown_readers, &ci->cown_readers, name);
+}
+int comp_is_own_reader(ClassInfo *ci, const char *name) { return name_list_has(ci->own_readers, ci->nown_readers, name); }
 int comp_is_writer(ClassInfo *ci, const char *name) { return name_list_has(ci->writers, ci->nwriters, name); }
 
 /* A plain setter name: `x=`, but not the operators that also end in `=`
@@ -2330,6 +2337,74 @@ int comp_writer_in_chain(Compiler *c, int class_id, const char *name, int *def_c
   for (int cid = class_id; cid >= 0; cid = c->classes[cid].parent)
     if (comp_is_writer(&c->classes[cid], name)) { if (def_class) *def_class = cid; return 1; }
   return 0;
+}
+
+/* Whether the program answers `name` at one level of the lookup, class or
+   module k itself: a def of its own (not a copy an include made), a reader
+   its own body declared, or an alias. */
+static int enum_level_answers(Compiler *c, int k, const char *name) {
+  ClassInfo *ci = &c->classes[k];
+  int mi = comp_method_in_class(c, k, name);
+  if (mi >= 0 && (!c->scopes[mi].is_include_copy || c->scopes[mi].is_prepend_copy)) return 1;
+  if (comp_is_own_reader(ci, name)) return 1;
+  for (int a = 0; a < ci->naliases; a++)
+    if ((!ci->alias_sg || !ci->alias_sg[a]) && sp_streq(ci->alias_new[a], name)) return 1;
+  return 0;
+}
+/* Ruby's lookup from level k: 1 when the program answers first, 2 when
+   Enumerable does, 0 when neither does at k or below the modules it
+   includes (the last included first, Enumerable at its place among them).
+   `own_enum` is whether the Enumerable k brings, its own include or that of
+   a module it includes, counts: it does not where a superclass has it among
+   its ancestors already (the include is then a no-op). */
+/* Whether Enumerable is among the ancestors class or module k brings: it
+   includes (or prepends) it, or includes a module that does. */
+static int enum_reaches(Compiler *c, int k, int depth) {
+  ClassInfo *ci = &c->classes[k];
+  if (ci->enum_inc_at || ci->enum_prepended) return 1;
+  for (int j = 0; j < ci->nincluded_mods && depth < 16; j++) {
+    int m = ci->included_mods[j];
+    if (m >= 0 && m < c->nclasses && m != k && enum_reaches(c, m, depth + 1)) return 1;
+  }
+  return 0;
+}
+static int enum_level_walk(Compiler *c, int k, const char *name, int own_enum, int depth) {
+  ClassInfo *ci = &c->classes[k];
+  if (ci->enum_prepended) return 2;   /* in front of the class's own */
+  if (enum_level_answers(c, k, name)) return 1;
+  int at = own_enum && ci->enum_inc_at ? ci->enum_inc_at - 1 : -1;
+  for (int j = ci->nincluded_mods - 1; ; j--) {
+    if (at >= 0 && j == at - 1) return 2;
+    if (j < 0) return 0;
+    int m = ci->included_mods[j];
+    if (m < 0 || m >= c->nclasses || m == k || depth >= 16) continue;
+    int r = enum_level_walk(c, m, name, own_enum, depth + 1);
+    if (r) return r;
+  }
+}
+int comp_enum_answers_first(Compiler *c, int cid, const char *name) {
+  /* what master answers: the program's method or reader anywhere in the chain */
+  int master = comp_method_in_chain(c, cid, name, NULL) < 0 && !comp_reader_in_chain(c, cid, name, NULL);
+  if (cid < 0 || cid >= c->nclasses || !name) return master;
+  /* a name Enumerable does not have (each, join, index ...): the program's alone */
+  if (core_method_vis("Enumerable", name, 0) <= 0) return master;
+  /* the topmost class that has Enumerable among its ancestors, by an include
+     of its own or of a module: below it the include is a no-op. A Struct, an Array or a native class has Enumerable of its
+     own, at a place the includes do not show: master's answer there. */
+  int top = -1, n = 0;
+  for (int k = cid; k >= 0 && k < c->nclasses && n < 256; k = c->classes[k].parent, n++) {
+    ClassInfo *ci = &c->classes[k];
+    if (ci->is_struct || ci->is_native_class || ci->nsub_root > 0 || comp_ary_root(c, k) >= 0) return master;
+    if (enum_reaches(c, k, 0)) top = k;
+    if (k == ci->parent) break;
+  }
+  n = 0;
+  for (int k = cid; k >= 0 && k < c->nclasses && n < 256; k = c->classes[k].parent, n++) {
+    int r = enum_level_walk(c, k, name, k == top, 0);
+    if (r) return r == 2;
+    if (k == c->classes[k].parent) break;
+  }
+  return master;
 }
 
 /* ---- Poly-dispatch candidates by method name ----

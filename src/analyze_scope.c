@@ -3507,7 +3507,7 @@ else {
       char ivname[256];
       snprintf(ivname, sizeof ivname, "@%s", base);
       comp_ivar_intern(cls, ivname);
-      if (reader) comp_add_reader(cls, base);
+      if (reader) comp_add_own_reader(cls, base);
       if (writer) comp_add_writer(cls, base);
     }
   }
@@ -6836,6 +6836,10 @@ void process_include_body(Compiler *c, int ci, int body_node) {
         const char *al = resolve_class_alias(c, mname);
         if (al) mod_id = comp_class_index(c, al);
       }
+      /* where Enumerable sits among the includes (a later include goes in
+         front): after the program's modules included so far */
+      if (mname && !c->classes[ci].enum_inc_at && sp_streq(mname, "Enumerable"))
+        c->classes[ci].enum_inc_at = c->classes[ci].nincluded_mods + 1;
       if (mod_id < 0) {
         /* A module with no class of its own -- a builtin named through its
            path, `include IO::WaitReadable`. The AST name is the leaf, so the
@@ -8279,7 +8283,16 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
       const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
       for (int j = 0; j < an; j++) {
         int mod_id = mixin_arg_class(c, args[j]);
+        if (nt_kind(nt, args[j]) == NK_ConstantReadNode && sp_streq(nt_str(nt, args[j], "name"), "Enumerable"))
+          c->classes[ci].enum_prepended = 1;
         if (mod_id < 0) continue;
+        /* its readers answer in front of the class's own, as its methods do */
+        for (int r = 0; r < c->classes[mod_id].nreaders; r++) {
+          char ivname[256];
+          snprintf(ivname, sizeof ivname, "@%s", c->classes[mod_id].readers[r]);
+          comp_ivar_intern(&c->classes[ci], ivname);
+          comp_add_own_reader(&c->classes[ci], c->classes[mod_id].readers[r]);
+        }
         /* Transplant each instance method of the module into class ci. */
         for (int ms = 0; ms < c->nscopes; ms++) {
           Scope *sc = &c->scopes[ms];

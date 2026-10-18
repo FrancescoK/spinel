@@ -10677,7 +10677,7 @@ int desugar_enum_method_recv(Compiler *c) {
          NameError, not its members */
       if (ocid < c->nclasses && c->classes[ocid].is_data) continue;
       if (comp_method_in_chain(c, ocid, "__enum_to_a", NULL) < 0) continue;
-      if (comp_method_in_chain(c, ocid, nm, NULL) >= 0) continue;   /* the class's own */
+      if (!comp_enum_answers_first(c, ocid, nm)) continue;   /* the class's own */
       int selfn = nt_new_node(nt, "SelfNode");
       int wrap = nt_new_node(nt, "CallNode");
       if (selfn < 0 || wrap < 0) continue;
@@ -10928,11 +10928,7 @@ int desugar_enum_method_recv(Compiler *c) {
       changed = 1;
       continue;
     }
-    if (comp_method_in_chain(c, cid, nm, NULL) >= 0) continue;            /* class defines it */
-    /* an attr_reader is the class's own method too (activesupport's
-       CallbackChain reads `other.chain`) */
-    if (nt_ref(nt, id, "arguments") < 0 && nt_ref(nt, id, "block") < 0 &&
-        comp_reader_in_chain(c, cid, nm, NULL)) continue;
+    if (!comp_enum_answers_first(c, cid, nm)) continue;                    /* class defines it */
     /* minmax only where Enumerable really is: a Struct, or a class that mixes
        it in, itself, through a superclass or through an included module
        (whose own minmax builtins/enumerable.rb also answers); a class with a
