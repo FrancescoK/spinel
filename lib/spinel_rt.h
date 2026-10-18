@@ -7284,43 +7284,10 @@ static sp_RbVal sp_poly_binop_sym(sp_RbVal a, sp_sym op, sp_RbVal b) {
   if (s && strcmp(s, ">>") == 0) return sp_poly_shr(a, b);
   return sp_poly_binop_bad(s ? s : "", a, b);
 }
-/* Apply a binary operator named by string to two boxed operands. Used by the
-   generated coerce dispatch to finish the protocol on the pair #coerce
-   answered; an unknown operator answers nil rather than raising, and the
-   caller's original TypeError stands. */
-static sp_RbVal sp_poly_binop_apply(const char *op, sp_RbVal a, sp_RbVal b) {
-  if (!op) return sp_box_nil();
-  if (op[1] == 0) {
-    switch (op[0]) {
-      case '+': return sp_poly_add(a, b);
-      case '-': return sp_poly_sub(a, b);
-      case '*': return sp_poly_mul(a, b);
-      case '/': return sp_poly_div(a, b);
-      case '%': return sp_poly_mod(a, b);
-      case '<': return sp_box_bool(sp_poly_lt(a, b));
-      case '>': return sp_box_bool(sp_poly_gt(a, b));
-      default: break;
-    }
-  }
-  if (strcmp(op, "**") == 0) return sp_poly_pow(a, b);
-  /* The ordered comparisons and the named numeric methods finish the protocol
-     the same way the operators do -- CRuby routes all of them through coerce,
-     and each already has a boxed helper here. Left out, the pair #coerce
-     answered was computed and then thrown away for every operation but the
-     six arithmetic ones. */
-  if (strcmp(op, "<=") == 0) return sp_box_bool(sp_poly_le(a, b));
-  if (strcmp(op, ">=") == 0) return sp_box_bool(sp_poly_ge(a, b));
-  if (strcmp(op, "<=>") == 0) {
-    return sp_box_oint(sp_poly_spaceship(a, b));
-  }
-  if (strcmp(op, "div") == 0) return sp_poly_div_m(a, b);
-  if (strcmp(op, "modulo") == 0) return sp_poly_mod(a, b);
-  if (strcmp(op, "remainder") == 0) return sp_poly_remainder(a, b);
-  if (strcmp(op, "quo") == 0) return sp_poly_quo(a, b);
-  if (strcmp(op, "fdiv") == 0) return sp_box_float(sp_poly_fdiv(a, b));
-  if (strcmp(op, "divmod") == 0) return sp_poly_divmod(a, b);
-  return sp_box_nil();
-}
+/* Apply a binary operator named by string to two boxed operands, finishing
+   the coerce protocol (lib/sp_poly_cold.c: it reaches every boxed numeric
+   operator, which a generated unit compiled for the one dispatch that calls it) */
+sp_RbVal sp_poly_binop_apply(const char *op, sp_RbVal a, sp_RbVal b);
 static sp_int sp_PolyArray_length(sp_PolyArray *a) { if (!a) return 0; return a->len; }
 /* Helpers for iterating over a poly value that holds a boxed array. */
 static sp_int sp_poly_arr_len(sp_RbVal a) {
