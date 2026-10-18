@@ -45,14 +45,15 @@ module OpenSSL
     native_func :peer_subject, [:int],                :string, "sp_ssl_peer_subject"
     native_func :version,      [:int],                :string, "sp_ssl_version"
     native_func :cipher,       [:int],                :string, "sp_ssl_cipher"
-    native_func :connect_nb,   [:int, :string, :int, :any], :int,    "sp_ssl_connect_nb"
+    native_func :connect_nb,   [:int, :string, :int, :any, :string, :string, :string], :int, "sp_ssl_connect_nb"
     native_func :handshake_cont, [:int],              :int,    "sp_ssl_handshake_cont"
     native_func :read_nb,      [:int, :int],          :string, "sp_ssl_read_nb"
     native_func :want,         [],                    :int,    "sp_ssl_want"
     native_func :write_nb,     [:int, :string, :int], :int,    "sp_ssl_write_nb"
-    # The server half: the certificates as x509_load lays them out, the leaf
-    # first, and the key as its curve and scalar. See SSLContext below.
-    native_func :accept_nb,    [:int, :string, :string, :string], :int, "sp_ssl_accept_nb"
+    # A context's own certificates as x509_load lays them out, the leaf
+    # first, and its key as its curve and scalar: a server's, and a client's
+    # for a server that asks. See SSLContext below.
+    native_func :accept_nb,    [:int, :string, :string, :string, :int, :any], :int, "sp_ssl_accept_nb"
     native_func :server_check, [:string, :string, :string],       :int, "sp_ssl_server_check"
 
     # EC, over the same object. Bytes in, bytes out, and an empty answer
@@ -109,6 +110,8 @@ module OpenSSL
   module SSL
     VERIFY_NONE = 0
     VERIFY_PEER = 1
+    VERIFY_FAIL_IF_NO_PEER_CERT = 2
+    VERIFY_CLIENT_ONCE = 4
 
     class SSLError < OpenSSLError
     end
@@ -137,12 +140,17 @@ module OpenSSL
     # key a server presents. set_params is the one Net::HTTP calls; the rest
     # of CRuby's forty-odd accessors are not here.
     #
-    # A server context holds its certificates and key as the objects it was
-    # given, and each accept builds OpenSSL's context from their bytes
-    # (#9341): there is no setup step, and nothing to free. A server asks for
-    # no client certificate, whatever verify_mode says.
+    # A context holds its certificates and key as the objects it was given,
+    # and each accept or connect builds OpenSSL's context from their bytes
+    # (#9341): there is no setup step, and nothing to free. A client sends
+    # them to a server that asks for a certificate.
+    #
+    # verify_mode reads VERIFY_PEER until it is set, where CRuby's reads nil,
+    # and a server asks for a client certificate only once the program has
+    # set it (4a in #9341): a default context here would otherwise ask every
+    # client for one, which CRuby's does not.
     class SSLContext
-      attr_accessor :verify_mode
+      attr_reader :verify_mode
       attr_accessor :verify_hostname
       attr_accessor :cert_store
       attr_accessor :cert
@@ -158,12 +166,26 @@ module OpenSSL
         @extra_chain_cert = nil
         @added_chain = ""
         @added_key = nil
+        @verify_mode_set = false
       end
 
+      def verify_mode=(mode)
+        @verify_mode = mode
+        @verify_mode_set = true
+      end
+
+      # Through the writer, as CRuby's set_params is, so a server context it
+      # is called on asks for a client certificate as CRuby's does.
       def set_params(params = nil)
-        @verify_mode = VERIFY_PEER
+        self.verify_mode = VERIFY_PEER
         @verify_hostname = true
         self
+      end
+
+      # Not CRuby's: the verify_mode SSLSocket#accept hands to the C, which is
+      # VERIFY_NONE until the program sets one.
+      def accept_verify_mode
+        @verify_mode_set ? @verify_mode : VERIFY_NONE
       end
 
       # CRuby's, and checked when it is called, as CRuby checks it: a key
@@ -183,12 +205,12 @@ module OpenSSL
         self
       end
 
-      # Not CRuby's: what SSLSocket#accept hands to the C. cert= and key=
-      # win over add_certificate when both are set, as in CRuby, whose setup
-      # applies them after it; extra_chain_cert is sent with either. With
-      # neither, all three are empty, and the handshake fails as CRuby's
-      # does without a certificate.
-      def server_chain
+      # Not CRuby's: what SSLSocket#accept and #connect hand to the C. cert=
+      # and key= win over add_certificate when both are set, as in CRuby,
+      # whose setup applies them after it; extra_chain_cert is sent with
+      # either. With neither, all three are empty: a server's handshake fails
+      # as CRuby's does without a certificate, and a client sends none.
+      def own_chain
         if @cert && @key
           SSLContext.chain_bytes(@cert, @extra_chain_cert)
         elsif @added_key
@@ -198,7 +220,7 @@ module OpenSSL
         end
       end
 
-      def server_key
+      def own_key
         @cert && @key ? @key : @added_key
       end
 
@@ -258,13 +280,7 @@ module OpenSSL
       # would keep the worker in the kernel for as long as the peer is quiet,
       # and every other thread stopped at the next collection with it.
       def connect
-        h = Native.connect_nb(@io.fileno, @hostname,
-                              @context.verify_mode == VERIFY_NONE ? 0 : 1,
-                              @context.cert_store)
-        if h < 0
-          raise SSLError, "SSL_connect returned an error: #{Native.last_error}"
-        end
-        @handle = h
+        start_connect
         finish_handshake("SSL_connect")
       end
 
@@ -322,13 +338,7 @@ module OpenSSL
       # avoid.
       def connect_nonblock(exception: true)
         if @handle < 0
-          h = Native.connect_nb(@io.fileno, @hostname,
-                                @context.verify_mode == VERIFY_NONE ? 0 : 1,
-                                @context.cert_store)
-          if h < 0
-            raise SSLError, "SSL_connect returned an error: #{Native.last_error}"
-          end
-          @handle = h
+          start_connect
         else
           Native.handshake_cont(@handle)
         end
@@ -466,18 +476,38 @@ module OpenSSL
 
       private
 
-      # A key without its private half raises here, CRuby's ArgumentError,
-      # which CRuby raises at SSLSocket.new; a key that is not the
-      # certificate's is the C's SSLError, as CRuby's is.
+      # The client's certificate and key go with every connect, and OpenSSL
+      # sends them only to a server that asks.
+      def start_connect
+        key = own_key
+        h = Native.connect_nb(@io.fileno, @hostname,
+                              @context.verify_mode == VERIFY_NONE ? 0 : 1,
+                              @context.cert_store, @context.own_chain,
+                              key ? key.curve : "", key ? key.private_key_bytes : "")
+        if h < 0
+          raise SSLError, "SSL_connect returned an error: #{Native.last_error}"
+        end
+        @handle = h
+      end
+
       def start_accept
-        key = @context.server_key
-        raise ArgumentError, "private key is needed" if key && !key.private?
-        h = Native.accept_nb(@io.fileno, @context.server_chain,
-                             key ? key.curve : "", key ? key.private_key_bytes : "")
+        key = own_key
+        h = Native.accept_nb(@io.fileno, @context.own_chain,
+                             key ? key.curve : "", key ? key.private_key_bytes : "",
+                             @context.accept_verify_mode, @context.cert_store)
         if h < 0
           raise SSLError, "SSL_accept returned an error: #{Native.last_error}"
         end
         @handle = h
+      end
+
+      # A key without its private half raises here, CRuby's ArgumentError,
+      # which CRuby raises at SSLSocket.new; a key that is not the
+      # certificate's is the C's SSLError, as CRuby's is.
+      def own_key
+        key = @context.own_key
+        raise ArgumentError, "private key is needed" if key && !key.private?
+        key
       end
 
       # Both blocking handshakes, after their first step: wait on the
