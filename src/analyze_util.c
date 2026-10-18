@@ -1485,21 +1485,83 @@ static const char *cn_body_const_key(const NodeTable *nt, int root, const char *
   }
   return NULL;
 }
+/* The ClassNodes and ModuleNodes of each name, ascending, and the body
+   answers const_value_owned_key gave per (class, constant) pair, kept while
+   the node table is unchanged (no node added, no field rewritten). A
+   runtime-name const_get is one literal arm per constant, and an arm on a
+   receiver known only at run time asks every class and each of its
+   ancestors: each ask walked the whole table. */
+static ANameHash g_cvo_names;          /* class or module name -> chain */
+static int *g_cvo_first, *g_cvo_next, *g_cvo_ids;
+static ANameHash g_cvo_memo;           /* "class\001constant" -> answer */
+static const char **g_cvo_ans;
+static const NodeTable *g_cvo_nt;
+static unsigned g_cvo_ver;
+static unsigned long g_cvo_edits;
+static int g_cvo_cnt = -1;
+static void cvo_reset(void) {
+  anh_free(&g_cvo_names); memset(&g_cvo_names, 0, sizeof g_cvo_names);
+  for (int i = 0; i < g_cvo_memo.n; i++) free((char *)g_cvo_memo.key[i]);
+  anh_free(&g_cvo_memo); memset(&g_cvo_memo, 0, sizeof g_cvo_memo);
+  free(g_cvo_first); free(g_cvo_next); free(g_cvo_ids); free(g_cvo_ans);
+  g_cvo_first = g_cvo_next = g_cvo_ids = NULL; g_cvo_ans = NULL;
+}
+static void cvo_build(const NodeTable *nt) {
+  cvo_reset();
+  int ncl = 0, nmo = 0;
+  const int *cl = nt_nodes_of_kind(nt, NK_ClassNode, &ncl);
+  const int *mo = nt_nodes_of_kind(nt, NK_ModuleNode, &nmo);
+  size_t n = (size_t)(ncl + nmo > 0 ? ncl + nmo : 1);
+  g_cvo_ids = malloc(sizeof(int) * n);
+  g_cvo_next = malloc(sizeof(int) * n);
+  g_cvo_first = malloc(sizeof(int) * n);
+  int *last = malloc(sizeof(int) * n);
+  if (!g_cvo_ids || !g_cvo_next || !g_cvo_first || !last) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  /* both kinds merged in id order, the order a walk of the table meets them */
+  for (int i = 0, j = 0, p = 0; p < ncl + nmo; p++) {
+    int id = j >= nmo || (i < ncl && cl[i] < mo[j]) ? cl[i++] : mo[j++];
+    g_cvo_ids[p] = id; g_cvo_next[p] = -1;
+    /* a ClassNode carries its name through constant_path, not a name field */
+    int cp = nt_ref(nt, id, "constant_path");
+    const char *nm = cp >= 0 ? nt_str(nt, cp, "name") : nt_str(nt, id, "name");
+    if (!nm) continue;
+    int k = anh_find(&g_cvo_names, nm);
+    if (k < 0) { anh_add(&g_cvo_names, nm); k = g_cvo_names.n - 1; g_cvo_first[k] = p; }
+    else g_cvo_next[last[k]] = p;
+    last[k] = p;
+  }
+  free(last);
+  g_cvo_nt = nt; g_cvo_ver = nt->version; g_cvo_edits = nt->edits; g_cvo_cnt = nt->count;
+}
+/* The key of the first value constant CONSTNAME written directly in the body
+   of a `class`/`module CLSNAME`, or NULL. */
+static const char *cvo_body_key(const NodeTable *nt, const char *clsname, const char *constname) {
+  if (g_cvo_nt != nt || g_cvo_ver != nt->version || g_cvo_edits != nt->edits || g_cvo_cnt != nt->count)
+    cvo_build(nt);
+  size_t cl = strlen(clsname), kl = strlen(constname);
+  char *mk = malloc(cl + kl + 2);
+  if (!mk) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memcpy(mk, clsname, cl); mk[cl] = '\001'; memcpy(mk + cl + 1, constname, kl + 1);
+  int m = anh_find(&g_cvo_memo, mk);
+  if (m >= 0) { free(mk); return g_cvo_ans[m]; }
+  const char *key = NULL;
+  int k = anh_find(&g_cvo_names, clsname);
+  for (int p = k >= 0 ? g_cvo_first[k] : -1; p >= 0 && !key; p = g_cvo_next[p]) {
+    int body = nt_ref(nt, g_cvo_ids[p], "body");
+    key = body >= 0 ? cn_body_const_key(nt, body, constname, 1) : NULL;
+  }
+  anh_add(&g_cvo_memo, mk);
+  g_cvo_ans = realloc(g_cvo_ans, sizeof(char *) * (size_t)g_cvo_memo.cap);
+  if (!g_cvo_ans) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  g_cvo_ans[g_cvo_memo.n - 1] = key;
+  return key;
+}
 /* The key of value constant CONSTNAME written directly in the body of class
    or module CLSNAME, or NULL when it holds none. */
 static const char *const_value_owned_key(Compiler *c, const char *clsname, const char *constname) {
   const NodeTable *nt = c->nt;
-  for (int id = 0; id < nt->count; id++) {
-    NodeKind k = nt_kind(nt, id);
-    if (k != NK_ClassNode && k != NK_ModuleNode) continue;
-    /* a ClassNode carries its name through constant_path, not a name field */
-    int cp = nt_ref(nt, id, "constant_path");
-    const char *n = cp >= 0 ? nt_str(nt, cp, "name") : nt_str(nt, id, "name");
-    if (!n || !sp_streq(n, clsname)) continue;
-    int body = nt_ref(nt, id, "body");
-    const char *key = body >= 0 ? cn_body_const_key(nt, body, constname, 1) : NULL;
-    if (key) return key;
-  }
+  const char *key = cvo_body_key(nt, clsname, constname);
+  if (key) return key;
   /* ... or a path write through it (`Base::N = v`, or through an alias of
      it), under the key the constant qualifier gave it. The qualifier
      resolved the whole path (qc_owner): `Left::Base` is not a top-level
@@ -1521,11 +1583,54 @@ static const char *const_value_owned_key(Compiler *c, const char *clsname, const
 static int const_value_owned(Compiler *c, const char *clsname, const char *constname) {
   return const_value_owned_key(c, clsname, constname) != NULL;
 }
+/* The classes of each name's leaf, ascending, while a caller asks const_get
+   of every class in turn (const_get_leaves_begin .. _end): the class table
+   does not change in that stretch, and each ask walked every class once per
+   ancestor. Outside it the walks below run as they are. */
+static ANameHash g_cgl_leaves;
+static int *g_cgl_first, *g_cgl_next;
+static const Compiler *g_cgl_c;
+void const_get_leaves_begin(Compiler *c) {
+  const_get_leaves_end();
+  size_t n = (size_t)(c->nclasses > 0 ? c->nclasses : 1);
+  g_cgl_first = malloc(sizeof(int) * n);
+  g_cgl_next = malloc(sizeof(int) * n);
+  int *last = malloc(sizeof(int) * n);
+  if (!g_cgl_first || !g_cgl_next || !last) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < c->nclasses; k++) {
+    g_cgl_next[k] = -1;
+    const char *rn = class_ruby_name(c, k), *l = rn ? strrchr(rn, ':') : NULL;
+    if (!rn) continue;
+    const char *leaf = l ? l + 1 : rn;
+    int h = anh_find(&g_cgl_leaves, leaf);
+    if (h < 0) { anh_add(&g_cgl_leaves, leaf); h = g_cgl_leaves.n - 1; g_cgl_first[h] = k; }
+    else g_cgl_next[last[h]] = k;
+    last[h] = k;
+  }
+  free(last);
+  g_cgl_c = c;
+}
+void const_get_leaves_end(void) {
+  anh_free(&g_cgl_leaves); memset(&g_cgl_leaves, 0, sizeof g_cgl_leaves);
+  free(g_cgl_first); free(g_cgl_next);
+  g_cgl_first = g_cgl_next = NULL;
+  g_cgl_c = NULL;
+}
+/* The first class of leaf LEAF, -1 for none, while the index is up. */
+static int cgl_first(const char *leaf) {
+  int h = anh_find(&g_cgl_leaves, leaf);
+  return h >= 0 ? g_cgl_first[h] : -1;
+}
 /* The class nested directly in class or module O under the leaf LEAF (its
    key may be qualified, `O__LEAF`, when another constant or class shares the
    leaf), or -1. */
 static int class_nested_leaf(Compiler *c, int o, const char *leaf) {
   if (o < 0) return -1;
+  if (g_cgl_c == c) {
+    for (int k = cgl_first(leaf); k >= 0; k = g_cgl_next[k])
+      if (c->classes[k].enclosing_class == o) return k;
+    return -1;
+  }
   for (int k = 0; k < c->nclasses; k++) {
     if (c->classes[k].enclosing_class != o) continue;
     const char *rn = class_ruby_name(c, k), *l = rn ? strrchr(rn, ':') : NULL;
@@ -1535,6 +1640,7 @@ static int class_nested_leaf(Compiler *c, int o, const char *leaf) {
 }
 /* Is any class or module of the program named LEAF, at any nesting? */
 static int class_leaf_any(Compiler *c, const char *leaf) {
+  if (g_cgl_c == c) return cgl_first(leaf) >= 0;
   for (int k = 0; k < c->nclasses; k++) {
     const char *rn = class_ruby_name(c, k), *l = rn ? strrchr(rn, ':') : NULL;
     if (rn && sp_streq(l ? l + 1 : rn, leaf)) return 1;

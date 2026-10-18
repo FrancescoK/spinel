@@ -756,12 +756,14 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         /* each module's answer, by class index; any value constant gives up */
         int *cks = calloc(c->nclasses > 0 ? c->nclasses : 1, sizeof *cks);
         int any = 0, allcls = 1;
+        const_get_leaves_begin(c);
         for (int k = 0; k < c->nclasses; k++) {
           cks[k] = dflt;
           if (!c->classes[k].name) continue;
           if (const_get_lookup(c, c->classes[k].name, cg_qm, &cks[k])) { allcls = 0; break; }
           if (cks[k] != dflt) any = 1;
         }
+        const_get_leaves_end();
         if (any && allcls) {
           int t = ++g_tmp;
           int boxed = repr_of(c, id).as_ty != TY_CLASS;
