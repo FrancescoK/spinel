@@ -13190,8 +13190,18 @@ static void emit_cext_marshal_check(Compiler *c, Buf *b) {
               "    rb_raise(rb_eTypeError, \"no _dump_data is defined for class %s\", sp_obj_cls_name_fn((int)*(sp_int *)p));\n"
               "  break; default: break; } }\n");
 }
-static void emit_marshal_dispatch(Compiler *c, Buf *b) {
-  emit_cext_marshal_check(c, b);
+/* Does the program name Marshal other than to load (to dump), or other
+   than to dump (to load)? (scan_prologue_features) The dispatch half no call
+   can reach is left a stub: each arm is a class's, and a program of many
+   classes carried megabytes of them for a Marshal.load of plain data. */
+static int g_marshal_dumps = 1, g_marshal_loads = 1;
+
+static void emit_marshal_dump_dispatch(Compiler *c, Buf *b) {
+  if (!g_marshal_dumps) {
+    buf_puts(b, "static int sp_marshal_obj_dump(sp_mar_buf *b, int cls_id, void *p) {\n"
+                "  (void)b; (void)cls_id; (void)p; return 0;\n}\n");
+    return;
+  }
   buf_puts(b, "static int sp_marshal_obj_dump(sp_mar_buf *b, int cls_id, void *p) {\n");
   if (c->n_cext_extensions) buf_puts(b, "  _sp_cext_marshal_check(cls_id, p);\n");
   buf_puts(b, "  switch (cls_id) {\n");
@@ -13278,9 +13288,16 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
     buf_puts(b, "      return 1;\n    }\n");
   }
   buf_puts(b, "    default: return 0;\n  }\n}\n");
+}
 
+static void emit_marshal_load_dispatch(Compiler *c, Buf *b) {
   /* `into` nil allocates the object (the reader registers it before it
      reads what can link back to it); an object sets its ivars from iv */
+  if (!g_marshal_loads) {
+    buf_puts(b, "static sp_RbVal sp_marshal_obj_load(const char *name, sp_RbVal into, sp_RbVal iv_boxed, int *ok) {\n"
+                "  (void)name; (void)into; (void)iv_boxed; *ok = 0; return sp_box_nil();\n}\n");
+    return;
+  }
   buf_puts(b, "static sp_RbVal sp_marshal_obj_load(const char *name, sp_RbVal into, sp_RbVal iv_boxed, int *ok) {\n");
   buf_puts(b, "  sp_PolyArray *iv = (sp_PolyArray *)iv_boxed.v.p;\n");
   buf_puts(b, "  *ok = 1; (void)iv;\n");
@@ -13328,6 +13345,12 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
     buf_puts(b, ";\n  }\n");
   }
   buf_puts(b, "  *ok = 0; return sp_box_nil();\n}\n");
+}
+
+static void emit_marshal_dispatch(Compiler *c, Buf *b) {
+  emit_cext_marshal_check(c, b);
+  emit_marshal_dump_dispatch(c, b);
+  emit_marshal_load_dispatch(c, b);
 }
 
 /* A parent parameter a bare `super` has no argument for: `*rest` takes an
@@ -17121,6 +17144,7 @@ static void scan_prologue_features(Compiler *c) {
   const NodeTable *nt = c->nt;
   g_uses_symbols = (c->nsymbols > 0);
   g_uses_marshal = 0;
+  int mar_refs = 0, mar_load_refs = 0, mar_dump_refs = 0;
   g_uses_regex = 0; g_uses_argv = 0; g_uses_threads = 0; g_uses_finalizers = 0; g_uses_traps = 0;
   g_uses_ensure = 0;
   g_uses_program_name = 0;
@@ -17201,7 +17225,7 @@ static void scan_prologue_features(Compiler *c) {
       /* Marshal.load reconstructs symbols at runtime, so it needs the symbol
          table (sp_sym_intern / sp_sym_to_s) emitted even if the program uses no
          symbol literals; it also drives the sp_marshal_v vtable install. */
-      else if (sp_streq(nm, "Marshal")) { g_uses_marshal = 1; g_uses_symbols = 1; }
+      else if (sp_streq(nm, "Marshal")) { g_uses_marshal = 1; g_uses_symbols = 1; mar_refs++; }
     }
     else if (sp_streq(ty, "GlobalVariableReadNode") || sp_streq(ty, "GlobalVariableWriteNode")) {
       const char *nm = nt_str(nt, i, "name");
@@ -17213,6 +17237,15 @@ static void scan_prologue_features(Compiler *c) {
     else if (sp_streq(ty, "CallNode")) {
       const char *nm = nt_str(nt, i, "name");
       if (!nm) continue;
+      /* `Marshal.load` / `.restore` and `Marshal.dump`: the half of the object
+         dispatch each needs (emit_marshal_dispatch) */
+      { int mr = nt_ref(nt, i, "receiver");
+        NodeKind mk = mr >= 0 ? nt_kind(nt, mr) : NK_CallNode;
+        if ((mk == NK_ConstantReadNode || mk == NK_ConstantPathNode) && nt_str(nt, mr, "name") &&
+            sp_streq(nt_str(nt, mr, "name"), "Marshal")) {
+          if (sp_streq(nm, "load") || sp_streq(nm, "restore")) mar_load_refs++;
+          else if (sp_streq(nm, "dump")) mar_dump_refs++;
+        } }
       /* Reflection that YIELDS symbols the source never spells: without this
          the program has no SymbolNode, so sp_sym_name_fn stays uninstalled and
          sp_poly_cmp falls back to comparing symbols by id -- `constants.sort`
@@ -17359,6 +17392,11 @@ static void scan_prologue_features(Compiler *c) {
        fallbacks only when BOTH are absent. */
     if (g_emit_sym_rt || g_emit_class_names) { g_emit_sym_rt = 1; g_emit_class_names = 1; }
   }
+  /* a reference to Marshal other than as the receiver of a load (a dump, a
+     send, a constant handed on) may dump, and one other than a dump's may
+     load */
+  g_marshal_dumps = mar_refs > mar_load_refs;
+  g_marshal_loads = mar_refs > mar_dump_refs;
 }
 
 /* ---- collect-mode unit state ----
