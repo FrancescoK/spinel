@@ -22763,15 +22763,18 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
        class or global variable that one of them may assign is held first,
        as the value form orders it (emit_operands_in_order). Read inside the
        set's argument list, C left the order to the C compiler, and gcc ran
-       `@data[swap(i)] = v`'s swap ahead of @data. */
+       `@data[swap(i)] = v`'s swap ahead of @data. The hold goes to the
+       prelude, ahead of any statement the index or the value puts there (a
+       block's, a rescue's). */
     NodeKind rk = nt_kind(nt, recv);
     int hold = (rk == NK_InstanceVariableReadNode || rk == NK_GlobalVariableReadNode ||
                 rk == NK_ClassVariableReadNode) &&
                (subtree_may_reassign_state(c, argv[0]) || subtree_may_reassign_state(c, argv[1]));
     int th = hold ? ++g_tmp : 0;
     if (hold) {
-      buf_printf(b, "{ sp_%sArray *_t%d = ", k, th); emit_expr(c, recv, b);
-      buf_printf(b, "; SP_GC_ROOT(_t%d); ", th);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_%sArray *_t%d = ", k, th); emit_expr(c, recv, g_pre);
+      buf_printf(g_pre, "; SP_GC_ROOT(_t%d);\n", th);
     }
     buf_printf(b, "sp_%sArray_set%s(", k, nsfx);
     if (hold) buf_printf(b, "_t%d", th);
@@ -22786,7 +22789,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     else if (vt == TY_POLY && et == TY_FLOAT) { buf_puts(b, "sp_poly_elem_f("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
     else if (vt == TY_UNKNOWN) emit_unresolved_coerced(c, argv[1], et, b);   /* a raise token, a void call */
     else emit_coerce(c, argv[1], et, CO_HOLD, "an Array element store", b);
-    buf_printf(b, ")%s;%s\n", hc_mark(), hold ? " }" : "");
+    buf_printf(b, ")%s;\n", hc_mark());
     return 1;
   }
   if (is_push_alias(name) && argc >= 1) {
