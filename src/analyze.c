@@ -6579,11 +6579,11 @@ static void desugar_enumerator_produce(Compiler *c) {
   }
 }
 
-/* Is `nm` a positional parameter (required, optional or post) of the def
-   whose ParametersNode is `params`? */
-static int ef_positional_param(const NodeTable *nt, int params, const char *nm) {
+/* Is `nm` a positional parameter (required, optional or post) or a keyword
+   parameter of the def whose ParametersNode is `params`? */
+static int ef_named_param(const NodeTable *nt, int params, const char *nm) {
   if (params < 0 || !nm) return 0;
-  static const char *const arrs[] = { "requireds", "optionals", "posts", NULL };
+  static const char *const arrs[] = { "requireds", "optionals", "posts", "keywords", NULL };
   for (int a = 0; arrs[a]; a++) {
     int n = 0; const int *ids = nt_arr(nt, params, arrs[a], &n);
     for (int k = 0; k < n; k++) {
@@ -6618,9 +6618,20 @@ static int ef_stable_arg(Compiler *c, int def, int arg) {
     return e >= 0 && nt_type(nt, e) && sp_streq(nt_type(nt, e), "LocalVariableReadNode") && rn &&
            nt_str(nt, e, "name") && sp_streq(nt_str(nt, e, "name"), rn) && !blkp_name_written(c, body, rn);
   }
+  /* `include_self: include_self`: keywords whose values can each be read
+     again, a keyword parameter's included */
+  if (sp_streq(ty, "KeywordHashNode")) {
+    int en = 0; const int *els = nt_arr(nt, arg, "elements", &en);
+    for (int k = 0; k < en; k++) {
+      int key = nt_kind(nt, els[k]) == NK_AssocNode ? nt_ref(nt, els[k], "key") : -1;
+      if (key < 0 || nt_kind(nt, key) != NK_SymbolNode || !ef_stable_arg(c, def, nt_ref(nt, els[k], "value")))
+        return 0;
+    }
+    return 1;
+  }
   if (!sp_streq(ty, "LocalVariableReadNode")) return 0;
   const char *nm = nt_str(nt, arg, "name");
-  return ef_positional_param(nt, nt_ref(nt, def, "parameters"), nm) && !blkp_name_written(c, body, nm);
+  return ef_named_param(nt, nt_ref(nt, def, "parameters"), nm) && !blkp_name_written(c, body, nm);
 }
 
 /* Is `node` an enum_for / to_enum call on self naming the method being
