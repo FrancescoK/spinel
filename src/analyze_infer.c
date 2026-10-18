@@ -3265,7 +3265,15 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
         if (mi >= 0 && c->scopes[mi].ret == TY_UNKNOWN) continue;
         if (mi >= 0) {
           if (!found) an_user_call_record(c, id, mi, UC_POLY, k);
-          r = found ? ty_unify(r, c->scopes[mi].ret) : c->scopes[mi].ret; found = 1; continue;
+          r = found ? ty_unify(r, c->scopes[mi].ret) : c->scopes[mi].ret; found = 1;
+          /* The dispatch calls a yielding method through its proc form, whose
+             body is typed apart: `return list unless block_given?` answers
+             there, and the yield form, which takes the block as given,
+             answers self alone. */
+          int pf = c->scopes[mi].yields ? scope_proc_form_of(c, mi) : -1;
+          if (pf >= 0 && c->scopes[pf].ret != TY_UNKNOWN && c->scopes[pf].ret != TY_VOID)
+            r = ty_unify(r, c->scopes[pf].ret);
+          continue;
         }
         int rdcls = pcs[pi].rdcls;
         if (rdcls >= 0) {
