@@ -14510,44 +14510,31 @@ static void spnb_ret_walk(Compiler *c, int root, Scope *s, TyKind *base, int *sa
   }
 }
 
-/* tail-value contribution: the body's falling-off value */
+/* tail-value contribution: the body's falling-off value. Each value position of
+   the body, by the shapes the iterator is given below (a sequence's value is its
+   last statement), is a nil (a nil literal, or an arm that is missing or empty),
+   a return (counted by the returns walk), a Time, or anything else, which ends
+   the walk with ok = 0. */
+typedef struct { Compiler *c; TyKind *base; int *saw_nil, *ok; } SpnbTail;
+static int spnb_tail_leaf(const VpLeaf *leaf, void *ud) {
+  SpnbTail *t = ud;
+  Compiler *c = t->c;
+  if (leaf->kind == VPK_NIL) { *t->saw_nil = 1; return 0; }
+  if (leaf->kind == VPK_JUMP && nt_kind(c->nt, leaf->node) == NK_ReturnNode) return 0;
+  if (leaf->kind == VPK_EXPR) {
+    if (nt_kind(c->nt, leaf->node) == NK_NilNode) { *t->saw_nil = 1; return 0; }
+    if (infer_type(c, leaf->node) == TY_TIME && (*t->base == TY_UNKNOWN || *t->base == TY_TIME)) {
+      *t->base = TY_TIME;
+      return 0;
+    }
+  }
+  *t->ok = 0;
+  return 1;
+}
 static void spnb_tail(Compiler *c, int node, TyKind *base, int *saw_nil, int *ok) {
   if (node < 0 || !*ok) return;
-  const NodeTable *nt = c->nt;
-  const char *ty = nt_type(nt, node);
-  if (!ty) { *ok = 0; return; }
-  if (sp_streq(ty, "StatementsNode")) {
-    int n = 0;
-    const int *bb = nt_arr(nt, node, "body", &n);
-    if (n == 0) { *saw_nil = 1; return; }
-    spnb_tail(c, bb[n - 1], base, saw_nil, ok);
-    return;
-  }
-  if (sp_streq(ty, "ReturnNode")) return;   /* counted by the returns walk */
-  if (sp_streq(ty, "NilNode")) { *saw_nil = 1; return; }
-  if (sp_streq(ty, "IfNode")) {
-    spnb_tail(c, nt_ref(nt, node, "statements"), base, saw_nil, ok);
-    int sub = nt_ref(nt, node, "subsequent");
-    if (sub >= 0) spnb_tail(c, sub, base, saw_nil, ok);
-    else *saw_nil = 1;                       /* if-without-else can fall nil */
-    return;
-  }
-  if (sp_streq(ty, "ElseNode")) {
-    spnb_tail(c, nt_ref(nt, node, "statements"), base, saw_nil, ok);
-    return;
-  }
-  if (sp_streq(ty, "UnlessNode")) {
-    spnb_tail(c, nt_ref(nt, node, "statements"), base, saw_nil, ok);
-    int sub = nt_ref(nt, node, "else_clause");
-    if (sub >= 0) spnb_tail(c, sub, base, saw_nil, ok);
-    else *saw_nil = 1;
-    return;
-  }
-  {
-    TyKind t = infer_type(c, node);
-    if (t == TY_TIME && (*base == TY_UNKNOWN || *base == TY_TIME)) { *base = TY_TIME; return; }
-  }
-  *ok = 0;
+  SpnbTail t = { c, base, saw_nil, ok };
+  for_each_value_position(c->nt, node, VPS_IF | VPS_UNLESS, spnb_tail_leaf, &t);
 }
 
 /* the single non-nil type scope mi's poly return decomposes to, or UNKNOWN */
