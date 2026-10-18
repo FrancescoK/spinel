@@ -464,10 +464,11 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   (void)argv; (void)recv; (void)nt;
   if (!name) return 0;
   if (recv >= 0 && ty_is_hash(rt)) {
-    /* builtin-op rows (builtin_ops.c) */
+    /* builtin-op rows (builtin_ops.c); default=, replace, []= and store
+       state their result by the arguments' kinds */
     {
       const BuiltinOp *op = an_bop_find(c, id, BOP_ANY_HASH, name, argc, nt_ref(nt, id, "block") >= 0);
-      if (op && op->result != TY_UNKNOWN) { *out = bop_result(op, rt); return 1; }
+      if (op && op->result != TY_UNKNOWN) { *out = an_bop_result(c, op, rt, argc, argv); return 1; }
     }
     if (sp_streq(name, "key") && argc == 1 && rt == TY_SYM_POLY_HASH) { *out = TY_SYMBOL; return 1; }
     if (sp_streq(name, "key") && argc == 1) { *out = TY_POLY; return 1; }  /* the key (boxed) or nil (#2352) */

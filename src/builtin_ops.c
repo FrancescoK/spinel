@@ -2031,8 +2031,8 @@ static const BuiltinOp bop_rows[] = {
      the arm after the lookup */
   { BOP_ANY_HASH, "delete",           1,   1, BF_REQUIRED, TY_POLY,        BOPE_NONE },
   { BOP_ANY_HASH, "shift",            0,   0, BF_NONE,     TY_POLY,        BOPE_HASH_SHIFT },  /* the first pair, or nil */
-  { BOP_ANY_HASH, "replace",          1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_HASH_REPLACE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
-  { BOP_ANY_HASH, "default=",         1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_HASH_SET_DEFAULT },
+  { BOP_ANY_HASH, "replace",          1,   1, BF_ANY,      BOPR_HASH_REPLACE, BOPE_HASH_REPLACE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
+  { BOP_ANY_HASH, "default=",         1,   1, BF_ANY,      BOPR_ARG0,      BOPE_HASH_SET_DEFAULT },  /* the assigned value */
   { BOP_ANY_HASH, "merge!",           2, 127, BF_NONE,     BOPR_SELF,      BOPE_HASH_MERGE_BANG_MANY, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },  /* #2431 */
   { BOP_ANY_HASH, "update",           2, 127, BF_NONE,     BOPR_SELF,      BOPE_HASH_MERGE_BANG_MANY, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
   /* the conversions */
@@ -2130,13 +2130,14 @@ static const BuiltinOp bop_rows[] = {
   /* Hash, any kind: the forms of CRuby's Hash methods (Enumerable's too)
      no row above covers, so that each has a row with its counts, its
      block rule and whether it answers the receiver (BOPF_SELF,
-     BOPF_SELF_OR_NIL, bop_answers_self). They type nothing: inference
-     keeps infer_hash_call's rules after the lookup and the ones after it,
-     and codegen the legacy chain. Each fits only calls no row above fits.
+     BOPF_SELF_OR_NIL, bop_answers_self). They type nothing, apart from
+     `[]=` and `store`, which state the value they store: inference keeps
+     infer_hash_call's rules after the lookup and the ones after it, and
+     codegen the legacy chain. Each fits only calls no row above fits.
      to_h without a block answers the receiver only when its class is
      exactly Hash, so it carries no flag. */
-  { BOP_ANY_HASH, "[]=",              2,   2, BF_ANY,      TY_UNKNOWN,     BOPE_NONE },  /* the assigned value */
-  { BOP_ANY_HASH, "store",            2,   2, BF_ANY,      TY_UNKNOWN,     BOPE_NONE },
+  { BOP_ANY_HASH, "[]=",              2,   2, BF_ANY,      BOPR_HASH_STORE, BOPE_NONE },  /* the assigned value */
+  { BOP_ANY_HASH, "store",            2,   2, BF_ANY,      BOPR_HASH_STORE, BOPE_NONE },
   { BOP_ANY_HASH, "fetch",            1,   2, BF_ANY,      TY_UNKNOWN,     BOPE_NONE },
   { BOP_ANY_HASH, "dig",              1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_NONE },
   { BOP_ANY_HASH, "==",               1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
@@ -2522,11 +2523,11 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH,  "frozen?",               0,   0, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "sp_gc_is_frozen($r)", 0, 0, 0, 1 },
   { BOP_ANY_HASH,  "to_h",                  0,   0, BF_NONE,     BOPR_SELF,     BOPE_TEMPLATE, "$r", 0, 0, BOPF_SELF_EXACT, 1 },  /* identity */
   /* The reflection lookup alone asks this family, after earlier overrides.
-     A set's result depends on its value argument, so inference supplies it. */
+     A set answers the value it was given (BOPR_ARG1). */
   { BOP_IVAR_LESS, "instance_variable_get",      1, 1, BF_NONE, TY_NIL,        BOPE_IVAR_REFLECTION, "get" },
   { BOP_IVAR_LESS, "instance_variable_defined?", 1, 1, BF_NONE, TY_BOOL,       BOPE_IVAR_REFLECTION, "defined" },
   { BOP_IVAR_LESS, "instance_variables",         0, 0, BF_NONE, TY_POLY_ARRAY, BOPE_IVAR_REFLECTION, "list" },
-  { BOP_IVAR_LESS, "instance_variable_set",      2, 2, BF_NONE, TY_UNKNOWN,    BOPE_IVAR_REFLECTION, "set" },
+  { BOP_IVAR_LESS, "instance_variable_set",      2, 2, BF_NONE, BOPR_ARG1,     BOPE_IVAR_REFLECTION, "set" },
   /* an ivar of a builtin class's self (desugar_builtin_ivars), on any receiver
      kind: the runtime's map (sp_bivar_*) */
   { BOP_IVAR_LESS, "__bivar_get",                1, 1, BF_NONE, TY_POLY,       BOPE_IVAR_REFLECTION, "bg" },
@@ -2700,13 +2701,37 @@ TyKind bop_result(const BuiltinOp *op, TyKind rt) {
   case (int)BOPR_ARRAY_TUPLES: return rt == TY_POLY_ARRAY ? TY_POLY_ARRAY : TY_ENUMERATOR;
   /* the operands' kinds decide these (bop_result_args) */
   case (int)BOPR_ARRAY_PLUS:
-  case (int)BOPR_ARRAY_SETOP: return TY_UNKNOWN;
+  case (int)BOPR_ARRAY_SETOP:
+  case (int)BOPR_ARG0:
+  case (int)BOPR_ARG1:
+  case (int)BOPR_HASH_REPLACE:
+  case (int)BOPR_HASH_STORE: return TY_UNKNOWN;
   default:                  return op->result;
   }
 }
 
 TyKind bop_result_args(const BuiltinOp *op, TyKind rt, int argc, BopArgKind arg_of, const void *ud) {
-  if (op->result != BOPR_ARRAY_PLUS && op->result != BOPR_ARRAY_SETOP) return bop_result(op, rt);
+  switch ((int)op->result) {
+  case (int)BOPR_ARRAY_PLUS:
+  case (int)BOPR_ARRAY_SETOP:
+    break;
+  case (int)BOPR_ARG0:
+    return argc >= 1 ? arg_of(ud, 0) : TY_UNKNOWN;
+  case (int)BOPR_ARG1:
+    return argc >= 2 ? arg_of(ud, 1) : TY_UNKNOWN;
+  case (int)BOPR_HASH_REPLACE: {
+    /* other of the receiver's own variant keeps the receiver's kind; a
+       Hash of another variant, or a boxed one (whichever variant it really
+       holds), widens the receiver's slot to the general hash */
+    if (argc < 1) return TY_UNKNOWN;
+    TyKind a0 = arg_of(ud, 0);
+    return (ty_is_hash(a0) || a0 == TY_POLY) && a0 != rt ? TY_POLY_POLY_HASH : rt;
+  }
+  case (int)BOPR_HASH_STORE:
+    return argc >= 2 ? ty_unify(arg_of(ud, 1), ty_hash_val(rt)) : TY_UNKNOWN;
+  default:
+    return bop_result(op, rt);
+  }
   if (argc < 1) return TY_UNKNOWN;
   /* An Array of the receiver's kind, or an untyped operand (an empty
      literal), keeps the receiver's kind; another Array's kind gives the

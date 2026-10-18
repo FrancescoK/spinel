@@ -297,6 +297,18 @@ typedef struct BuiltinOp {
                                            the receiver's kind when each keeps it,
                                            else a poly array if each is an Array
                                            or boxed, else no kind */
+#define BOPR_ARG0        ((TyKind)-22)  /* the first argument's kind (Hash#default=:
+                                           it answers the value it was given) */
+#define BOPR_ARG1        ((TyKind)-23)  /* the second argument's kind
+                                           (instance_variable_set(name, value)) */
+#define BOPR_HASH_REPLACE ((TyKind)-24) /* Hash#replace(other): the receiver's kind
+                                           when other is the same Hash kind, else
+                                           the general hash (the receiver's slot
+                                           widens to hold another variant or a
+                                           boxed one) */
+#define BOPR_HASH_STORE  ((TyKind)-25)  /* Hash#[]= and store(key, value): the
+                                           value's kind unified with the Hash's
+                                           value kind */
 
 /* argc_max of a row that takes any number of arguments */
 #define BOP_ARGC_ANY 127
@@ -341,8 +353,9 @@ TyKind bop_family_of(TyKind rt);
    derived result (BOPR_*) worked out from rt. */
 TyKind bop_result(const BuiltinOp *op, TyKind rt);
 /* bop_result for the rows whose answer also turns on the call's operands'
-   kinds (BOPR_ARRAY_PLUS, BOPR_ARRAY_SETOP); any other row answers as
-   bop_result does. arg_of(ud, i) answers argument i's kind, as for
+   kinds (BOPR_ARRAY_PLUS, BOPR_ARRAY_SETOP, BOPR_ARG0, BOPR_ARG1,
+   BOPR_HASH_REPLACE, BOPR_HASH_STORE); any other row answers as bop_result
+   does. arg_of(ud, i) answers argument i's kind, as for
    bop_find_arg, and is called only for those rows. TY_UNKNOWN where the row
    states no kind for these operands. It reads no node: the caller brings
    the kinds. */
