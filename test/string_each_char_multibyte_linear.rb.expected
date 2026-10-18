@@ -1,0 +1,11 @@
+300000
+["a", "é", "\u0000", "b", "日", "🍣"]
+[1, 2, 1, 1, 3, 4]
+["\xC3", "\xA9", "\xFF"]
+[#<Encoding:BINARY (ASCII-8BIT)>, #<Encoding:BINARY (ASCII-8BIT)>, #<Encoding:BINARY (ASCII-8BIT)>]
+["é", "\xFF", "a"]
+["h", "é", "o"]
+3
+["a", 2]
+["ñ", "a", "n", "d", "ú"]
+done

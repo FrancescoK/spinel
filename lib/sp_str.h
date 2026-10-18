@@ -180,6 +180,8 @@ sp_oint sp_str_byterindex(const char*s,const char*sub);
 sp_oint sp_str_byterindex_from(const char*s,const char*sub,sp_int pos);
 const char*sp_str_sub_range(const char*s,sp_int start,sp_int len);
 const char*sp_str_char_at_or_nil(const char*s,sp_int i);
+size_t sp_str_char_width(const char*s,size_t blen,size_t at);
+const char*sp_str_char_step(const char*s,size_t blen,size_t*at);
 const char*sp_str_sub_range_len(const char*s,sp_int cl,sp_int start,sp_int len);
 const char*sp_str_sub_range_r(const char*s,sp_int start,sp_int end_,sp_int excl);
 const char*sp_str_sub_range_len_r(const char*s,sp_int cl,sp_int start,sp_int end_,sp_int excl);

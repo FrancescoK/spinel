@@ -1183,12 +1183,20 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
       }
     }
     else {
-      buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_str_length(_t%d); _t%d++) { ", ti, ti, ts, ti);
+      /* walked by byte offset, each turn stepping over one character: taking
+         the i-th character counted the string from its start every turn once
+         a multibyte character made it not fixed width, quadratic in its length */
+      int tn = ++g_tmp;
+      buf_printf(b, "size_t _t%d = sp_str_byte_len(_t%d); ", tn, ts);
+      buf_printf(b, "for (size_t _t%d = 0; _t%d < _t%d; ) { ", ti, ti, tn);
       if (p0) {
-        if (p0_box_poly_ech) buf_printf(b, "lv_%s = sp_box_str(sp_str_char_at_or_nil(_t%d, _t%d)); ", p0, ts, ti);
-        else if (p0_handle_ech) buf_printf(b, "lv_%s = sp_String_new_shared(sp_str_char_at_or_nil(_t%d, _t%d)); ", p0, ts, ti);
-        else buf_printf(b, "lv_%s = sp_str_char_at_or_nil(_t%d, _t%d); ", p0, ts, ti);
+        char step[96];
+        snprintf(step, sizeof step, "sp_str_char_step(_t%d, _t%d, &_t%d)", ts, tn, ti);
+        if (p0_box_poly_ech) buf_printf(b, "lv_%s = sp_box_str(%s); ", p0, step);
+        else if (p0_handle_ech) buf_printf(b, "lv_%s = sp_String_new_shared(%s); ", p0, step);
+        else buf_printf(b, "lv_%s = %s; ", p0, step);
       }
+      else buf_printf(b, "_t%d += sp_str_char_width(_t%d, _t%d, _t%d); ", ti, ts, tn, ti);
     }
     emit_iter_loop_stmts(c, body, b, 0);
     if (p0 && tsv_ech > 0) buf_printf(b, " lv_%s = _t%d;", p0, tsv_ech);
