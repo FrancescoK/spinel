@@ -466,6 +466,9 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out);
 struct BuiltinOp;
 const struct BuiltinOp *an_bop_find(Compiler *c, int id, TyKind rt, const char *name,
                                     int argc, int has_block);
+/* an_bop_find for the BOPF_BOXED row of kind rt (bop_find_boxed) */
+const struct BuiltinOp *an_bop_find_boxed(Compiler *c, int id, TyKind rt, const char *name,
+                                          int argc, int has_block);
 /* an_bop_find with the call's arguments' kinds (inferred), so the rows that
    guard an argument are read too */
 const struct BuiltinOp *an_bop_find_arg(Compiler *c, int id, TyKind rt, const char *name,

@@ -1540,8 +1540,10 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   if (!name) return 0;
   if (recv >= 0 && rt == TY_POLY && argc == 0 &&
       (is_text_conversion(name)) &&
-      !an_user_recv_defines_method(c, name))
+      !an_user_recv_defines_method(c, name)) {
+    an_bop_find_boxed(c, id, TY_STRING, name, argc, nt_ref(nt, id, "block") >= 0);
     { *out = TY_STRING; return 1; }
+  }
   /* #hash on a boxed receiver is always the Integer sp_rbval_hash_key
      answers -- a user #hash in the program is reached through
      sp_obj_hash_hook inside it and its answer is folded to the key -- so the

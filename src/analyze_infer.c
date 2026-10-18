@@ -2763,6 +2763,14 @@ const BuiltinOp *an_bop_find(Compiler *c, int id, TyKind rt, const char *name,
   return op;
 }
 
+const BuiltinOp *an_bop_find_boxed(Compiler *c, int id, TyKind rt, const char *name,
+                                   int argc, int has_block) {
+  const BuiltinOp *op = bop_find_boxed(rt, name, argc, has_block);
+  if (op && op->result != TY_UNKNOWN && an_bop_records(c, id))
+    c->bop_inf[id] = op;
+  return op;
+}
+
 /* an argument's kind for a row's argument guard: what inference makes of it,
    as the arm reading the row would ask */
 typedef struct { Compiler *c; const int *argv; } AnBopArgs;
@@ -2917,8 +2925,16 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
     if (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
         sp_streq(name, ">=") || sp_streq(name, "==") || sp_streq(name, "!=") ||
         sp_streq(name, "nil?") || sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
-        sp_streq(name, "include?"))
+        sp_streq(name, "include?")) {
+      /* include? is recorded under the receiver's row, or under the String
+         row that stands for a boxed receiver */
+      if (sp_streq(name, "include?")) {
+        int blk = nt_ref(nt, id, "block") >= 0;
+        if (rt == TY_POLY) an_bop_find_boxed(c, id, TY_STRING, name, argc, blk);
+        else an_bop_find(c, id, bop_family_of(rt), name, argc, blk);
+      }
       { *out = TY_BOOL; return 1; }
+    }
     if (rt == TY_POLY) {
       /* A container read the poly dispatch may have to serve from a builtin
          Array or Hash: record what the builtin surface alone would answer, so
@@ -6783,7 +6799,12 @@ static int infer_exception_call(Compiler *c, int id, const NodeTable *nt, const 
     if (sp_streq(name, "cause")) { *out = TY_EXCEPTION; return 1; }      /* the threaded cause, nil if none */
     /* A gated accessor can fall through to the program's Object method. */
     if (rt == TY_EXCEPTION && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-        cplan_exc_object_method(c, name) >= 0) { *out = TY_POLY; return 1; }
+        cplan_exc_object_method(c, name) >= 0) {
+      /* codegen emits the accessor's row as one arm of the call, beside the
+         Object method, so the call is recorded under that row */
+      an_bop_find(c, id, rt, name, argc, 0);
+      { *out = TY_POLY; return 1; }
+    }
     if (rt == TY_EXCEPTION) {
       const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
       if (op) { *out = bop_result(op, rt); return 1; }
