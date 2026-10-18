@@ -4578,7 +4578,13 @@ static char *sp_splice_builtins(char *source, const char *exe_path,
 static char *sp_splice_builtin_enumerator(char *source, const char *exe_path,
                                           unsigned char **fsl, size_t *fsl_n) {
   if (getenv("SPINEL_NO_BUILTINS")) return source;
-  if (!strstr(source, "break")) return source;
+  /* a String's piece walk with an index (str.each_char.with_index { }),
+     which builtins/enumerator.rb's __enumw_str_*_with_index serve when the
+     String is no variable to read again after the walk */
+  int str_walk = sp_source_mentions_method(source, "with_index") &&
+                 (sp_source_mentions_method(source, "each_char") || sp_source_mentions_method(source, "each_line") ||
+                  sp_source_mentions_method(source, "each_byte") || sp_source_mentions_method(source, "each_codepoint"));
+  if (!str_walk && !strstr(source, "break")) return source;
   static const char *const names[] = {
     "map", "collect", "select", "filter", "reject", "filter_map", "each_with_object", "with_object",
     "inject", "reduce", "each_slice", "each_cons", "each_entry", "with_index", NULL
@@ -4587,7 +4593,7 @@ static char *sp_splice_builtin_enumerator(char *source, const char *exe_path,
   for (int i = 0; names[i] && !any; i++) if (sp_source_mentions_method(source, names[i])) any = 1;
   if (!any) return source;
   /* the keyword, not the word in a string or a comment */
-  { SpSrcLex *lx = sp_src_lex_of(source); if (!lx->brk && !lx->evals) return source; }
+  { SpSrcLex *lx = sp_src_lex_of(source); if (!str_walk && !lx->brk && !lx->evals) return source; }
   char lib_dir[1024], gp[1200];
   sp_lib_dir(exe_path, lib_dir, sizeof lib_dir);
   int base_len = (int)strlen(lib_dir);

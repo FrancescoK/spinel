@@ -604,6 +604,7 @@ int desugar_safe_nav_attr_write(Compiler *c);
 int desugar_body_self_call(Compiler *c);
 int desugar_body_module_eval(Compiler *c);
 int desugar_extend_self(Compiler *c);
+int block_body_breaks(const NodeTable *nt, int node);   /* a break that leaves this block */
 int desugar_kernel_reopen(Compiler *c);
 int desugar_singleton_class_mixin(Compiler *c);
 int desugar_explicit_receiver_mixin(Compiler *c);

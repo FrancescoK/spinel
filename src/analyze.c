@@ -7434,6 +7434,13 @@ static int is_array_enum_method(const char *nm) {
    answered)? `s.each_char.with_index` kept so stays an Enumerator over
    each_char's, which holds a String the rule shares and reads it when it is
    walked (sp_enum_str_each_h); `chars` would read it here. */
+/* builtins/enumerator.rb's walk named `nm`, spliced into this program
+   (the pass runs before the top-level defs are registered as methods) */
+static int ecw_helper_spliced(const NodeTable *nt, const char *nm) {
+  NT_FOREACH_KIND(nt, NK_DefNode, d)
+    if (nt_ref(nt, d, "receiver") < 0 && nt_str(nt, d, "name") && sp_streq(nt_str(nt, d, "name"), nm)) return 1;
+  return 0;
+}
 static int enum_chain_kept(const NodeTable *nt, int **par, int id) {
   if (nt_ref(nt, id, "block") >= 0) return 0;
   /* (the parent map, made at the first such call of the pass) */
@@ -7872,6 +7879,34 @@ static void desugar_enum_chain_shapes(Compiler *c) {
         (sp_streq(rn, "each_char") || sp_streq(rn, "each_line") || sp_streq(rn, "each_byte") ||
          sp_streq(rn, "each_codepoint")) &&
         !(c->share_strings && enum_chain_kept(nt, &kept_par, id))) {
+      /* a block that breaks: the walk's helper answers the String, or the
+         break's value through the call's own break wrapper -- the
+         (walk; s) form below lets its tail take the break's place */
+      const char *swh = sp_streq(rn, "each_char") ? "__enumw_str_chars_with_index" :
+                        sp_streq(rn, "each_line") ? "__enumw_str_lines_with_index" :
+                        sp_streq(rn, "each_byte") ? "__enumw_str_bytes_with_index" :
+                                                    "__enumw_str_codepoints_with_index";
+      int wblk = nt_ref(nt, id, "block");
+      int wsrc = nt_ref(nt, recv, "receiver");
+      int wa = nt_ref(nt, id, "arguments"), wan = 0;
+      const int *wav = wa >= 0 ? nt_arr(nt, wa, "arguments", &wan) : NULL;
+      NodeKind wsk = wsrc >= 0 ? nt_kind(nt, wsrc) : NK_NilNode;
+      int wvar = wsk == NK_LocalVariableReadNode || wsk == NK_InstanceVariableReadNode;
+      /* and a String that is no variable: the (walk; s) form below cannot
+         read it again, and the walk alone answered the pieces */
+      if (wblk >= 0 && nt_kind(nt, wblk) == NK_BlockNode && wsrc >= 0 && wan <= 1 &&
+          (wan == 0 || nt_kind(nt, wav[0]) != NK_SplatNode) &&
+          (block_body_breaks(nt, nt_ref(nt, wblk, "body")) || !wvar) && ecw_helper_spliced(nt, swh)) {
+        int nargs = nt_new_node(nt, "ArgumentsNode");
+        if (nargs < 0) continue;
+        int na[2] = { wsrc, wan ? wav[0] : -1 };
+        nt_node_set_arr(nt, nargs, "arguments", na, wan + 1);
+        nt_node_set_str(nt, id, "name", swh);
+        nt_node_set_ref(nt, id, "receiver", -1);
+        nt_node_set_ref(nt, id, "arguments", nargs);
+        comp_grow_node_arrays(c);
+        continue;
+      }
       nt_node_set_str(nt, recv, "name",
                       sp_streq(rn, "each_char") ? "chars" :
                       sp_streq(rn, "each_line") ? "lines" :
