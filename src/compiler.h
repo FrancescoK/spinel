@@ -464,6 +464,12 @@ typedef struct {
                           String (share_node_fresh) beside the handle reads
                           the others publish: that tail clears the side
                           channel (emit_tail_value), so the caller wraps it */
+  unsigned char ret_rbs_hash; /* a Hash return seed gave way to the box the
+                          body answers (ret_seed_holds): the slot stays boxed,
+                          the return is checked to be a Hash of any form, once
+                          and always (emit_rbs_hash_ret_wrapper), and a call of
+                          the method answers no proc or Method */
+  unsigned char ret_rbs_hash_nil; /* that seed was `Hash[..]?`: nil passes */
   int ret_rbs_nilable; /* that seed was RBS's nilable form (`Integer?`), and the
                           pinned kind is an unboxed scalar: the return can be
                           nil (an oint), so a caller boxing it has to answer

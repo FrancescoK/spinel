@@ -5597,8 +5597,12 @@ int param_seed_holds(LocalVar *lv, TyKind at) {
 /* And a return's against the value its body answers. */
 int ret_seed_holds(Scope *s, TyKind r) {
   if (!s->ret_rbs_seeded) return 0;
-  if (!seed_form_gives_way(s->ret, r) && !seed_box_gives_way(s->ret, r) && !seed_symkey_box_gives_way(s->ret, r))
-    return 1;
+  int boxed = seed_box_gives_way(s->ret, r) || seed_symkey_box_gives_way(s->ret, r);
+  if (!seed_form_gives_way(s->ret, r) && !boxed) return 1;
+  /* The box the body answers keeps its form, which only the run time knows,
+     but the seed still says what it is: a Hash. A yielding method can be
+     spliced into its caller, past the check that makes it so. */
+  if (boxed && !s->yields && !s->is_proc_form) s->ret_rbs_hash = 1;
   s->ret_rbs_seeded = 0;
   s->ret_rbs_nilable = 0;
   return 0;
@@ -5788,6 +5792,7 @@ static void seed_method(Compiler *c, Scope *s, const char *ret_tok, char *ptypes
        nil arm returns the empty string instead (#4250). */
     s->ret_rbs_nilable = g_seed_nilable &&
                          (rt == TY_INT || rt == TY_FLOAT || rt == TY_STRING);
+    s->ret_rbs_hash_nil = g_seed_nilable && ty_is_hash(rt);
     /* A memoized CONTAINER reader (`def self.table; @table ||= {}; end`) IS
        its ivar: pinning only the return left the slot poly, and the seeded
        narrowing then cast a PolyPolyHash payload to the declared hash -- a
@@ -29465,6 +29470,8 @@ static int dyn_returns_walk(Compiler *c, int mi, int depth) {
 }
 static int dyn_returns_may_callable(Compiler *c, int mi, int depth) {
   if (mi < 0 || mi >= g_dyn.nscope) return 1;
+  /* a Hash seed's return is checked to be a Hash when it returns */
+  if (mi < c->nscopes && c->scopes[mi].ret_rbs_hash) return 0;
   unsigned char *m = &g_dyn.rcall[mi];
   if (*m == 3) return 1;
   if (*m) return *m == 2;
