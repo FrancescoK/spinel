@@ -388,10 +388,11 @@ VpUpKind vp_climb(const NodeTable *nt, const int *par, int node, unsigned flags,
   unsigned shapes = vp_shapes(flags);
   long budget = nt->count;
   int cur = node, branches = 0;
-  up->kind = VPU_ROOT; up->node = node; up->parent = -1; up->branches = 0;
+  unsigned reach = 0;
+  up->kind = VPU_ROOT; up->node = node; up->parent = -1; up->branches = 0; up->reach = 0;
   for (;;) {
     int p = cur >= 0 && cur < nt->count ? par[cur] : -1;
-    up->node = cur; up->parent = p; up->branches = branches;
+    up->node = cur; up->parent = p; up->branches = branches; up->reach = reach;
     if (p < 0) return up->kind = VPU_ROOT;
     if (--budget < 0) return up->kind = VPU_GAVE_UP;
     if (vp_is_kind_named(nt, p, "ArgumentsNode")) {
@@ -403,6 +404,11 @@ VpUpKind vp_climb(const NodeTable *nt, const int *par, int node, unsigned flags,
     if (e == VPE_NONE)
       return up->kind = nt_kind(nt, p) == NK_StatementsNode ? VPU_DROPPED : VPU_ENDED;
     if (e == VPE_BRANCH) branches++;
+    /* a left operand is the value of `||` when truthy, of `&&` when falsy */
+    if (cur == nt_ref(nt, p, "left")) {
+      if (nt_kind(nt, p) == NK_OrNode) reach |= VPR_TRUTHY;
+      else if (nt_kind(nt, p) == NK_AndNode) reach |= VPR_FALSY;
+    }
     cur = p;
   }
 }
@@ -442,16 +448,20 @@ static void vp_print_id(const VpDump *d, int id) {
 
 /* The upward half must agree with the walk: climbing from a leaf with the
    same flags goes back to the root it was yielded from (through the jumps it
-   followed). A leaf it does not reach is printed, so that value-pos-test
-   fails on it. */
-static int vp_dump_climbs_back(const VpDump *d, int leaf) {
+   followed), and crosses the operands the leaf's reach says it did. A leaf it
+   does not reach is printed, so that value-pos-test fails on it. (An or-write
+   or and-write is a leaf standing for the target's old value, which no
+   operand carries: its reach is not asked.) */
+static int vp_dump_climbs_back(const VpDump *d, const VpLeaf *lf) {
   VpUp up;
-  for (int hops = 0; hops < d->nt->count; hops++) {
+  int leaf = lf->node, hops = 0;
+  for (; hops < d->nt->count; hops++) {
     vp_climb(d->nt, d->par, leaf, VP_ALL_FLAGS, &up);
     if (up.kind != VPU_JUMP) break;
     leaf = up.parent;
   }
-  return up.node == d->root;
+  if (up.node != d->root) return 0;
+  return hops > 0 || vp_write_kind(nt_kind(d->nt, lf->node)) == VPW_LOGICAL || up.reach == lf->reach;
 }
 
 static const char *vp_kind_name(VpKind k) {
@@ -481,7 +491,7 @@ static int vp_dump_leaf(const VpLeaf *lf, void *ud) {
   fprintf(d->out, " depth %d", lf->cond_depth);
   if (lf->reach) fprintf(d->out, " reach %s", lf->reach == VPR_TRUTHY ? "truthy" : lf->reach == VPR_FALSY ? "falsy" : "never");
   fputc('\n', d->out);
-  if (lf->node >= 0 && lf->kind != VPK_GAVE_UP && !vp_dump_climbs_back(d, lf->node))
+  if (lf->node >= 0 && lf->kind != VPK_GAVE_UP && !vp_dump_climbs_back(d, lf))
     { fprintf(d->out, "  UP-MISMATCH"); vp_print_id(d, lf->node); fprintf(d->out, " does not climb back to its root\n"); }
   return 0;
 }

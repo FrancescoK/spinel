@@ -161,6 +161,11 @@ typedef struct {
   int parent;    /* the ender, as the kinds above say; -1 at a root */
   int branches;  /* conditionals crossed on the way (as VpLeaf.cond_depth counts them): 0 when
                     the node is the value however the climb went */
+  unsigned reach; /* VPR_*: the truth values the node answers the top for, as VpLeaf.reach
+                    says of a leaf. A bit is set when the climb crossed the left operand of
+                    `||` (truthy) or of `&&` under VP_AND_LEFT (falsy); that operand was
+                    also tested, so a walker asking whether a value is thrown away or
+                    unread counts a node with a bit as read */
 } VpUp;
 
 /* Climbs from node while the parent takes it as its own value, and says where
