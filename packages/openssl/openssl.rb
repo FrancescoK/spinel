@@ -179,11 +179,22 @@ module OpenSSL
         @verify_mode_set = true
       end
 
-      # Through the writer, as CRuby's set_params is, so a server context it
-      # is called on asks for a client certificate as CRuby's does.
+      # CRuby's defaults, VERIFY_PEER and verify_hostname, with what params
+      # gives for those two, set through the writer as CRuby's set_params
+      # sets them: Net::SMTP's tls_verify: false passes VERIFY_NONE here, and
+      # a server context asks for a client certificate unless params says
+      # VERIFY_NONE. The other keys CRuby's takes name members this context
+      # does not have, and are not read. CRuby answers the merged params;
+      # this answers the context.
       def set_params(params = nil)
-        self.verify_mode = VERIFY_PEER
-        @verify_hostname = true
+        mode = VERIFY_PEER
+        hostname = true
+        unless params.nil?
+          mode = params[:verify_mode].to_i if params.key?(:verify_mode)
+          hostname = params[:verify_hostname] ? true : false if params.key?(:verify_hostname)
+        end
+        self.verify_mode = mode
+        @verify_hostname = hostname
         self
       end
 
