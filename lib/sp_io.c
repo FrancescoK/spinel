@@ -24,6 +24,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/un.h>
+#include <netdb.h>  /* gai_strerror for Socket::ResolutionError */
 #include <sys/time.h> /* utimes() for File.utime */
 #include <errno.h>
 #include <limits.h>  /* INT_MAX for the socket int arguments */
@@ -198,6 +199,17 @@ sp_File *sp_io_fdopen_ex(int fd, const char *mode, int owns_fd) {SP_GC_ROOT_STR(
 }
 sp_File *sp_io_fdopen(int fd, const char *mode) { return sp_io_fdopen_ex(fd, mode, 1); }
 
+/* When the -1 a socket helper of lib/sp_net.c answered was a lookup that
+   failed, CRuby's Socket::ResolutionError: `what` and the resolver's text,
+   as CRuby words it. Otherwise it returns, and the caller raises the Errno
+   the socket call left. */
+static void sp_sock_raise_if_unresolved(const char *what) {
+  extern int sp_net_take_resolution_error(void);
+  extern SP_NORETURN void sp_raise_resolution_error(int code, const char *msg);
+  int rc = sp_net_take_resolution_error();
+  if (rc != 0) sp_raise_resolution_error(rc, sp_sprintf("%s: %s", what, gai_strerror(rc)));
+}
+
 /* BasicSocket.do_not_reverse_lookup: true unless the program changes it; a
    socket takes it when it is made, and keeps its own copy after that */
 sp_bool sp_sock_dnrl_default = 1;
@@ -207,7 +219,12 @@ sp_bool sp_sock_dnrl_default = 1;
    see sp_sock_write below -- so a response is on the wire immediately, like
    CRuby sockets' sync = true default. `kind` lands in ->mode for #class. */
 sp_File *sp_io_fdopen_sock(int fd, const char *kind) {SP_GC_ROOT_STR(kind);
-  if (fd < 0) sp_raise_cls("Errno::ECONNREFUSED", "Connection refused");
+  if (fd < 0) {
+    /* TCPSocket.new names the call by its man page section; TCPServer.new
+       does not */
+    sp_sock_raise_if_unresolved(strcmp(kind, "tcp") == 0 ? "getaddrinfo(3)" : "getaddrinfo");
+    sp_raise_cls("Errno::ECONNREFUSED", "Connection refused");
+  }
   /* The scheduler-aware accept/connect helpers may hand us a non-blocking
      fd; the stdio read side must BLOCK (fgets treats EAGAIN as EOF), so
      clear O_NONBLOCK. Green threads still yield: every read entry point
@@ -1095,7 +1112,10 @@ sp_PolyArray *sp_sock_tcp_server_sockets(const char *host, sp_int port) {SP_GC_R
   int fds[16];
   const char *op = NULL;
   int n = sp_net_listen_all(host, sp_sock_int_arg(port), fds, 16, &op);
-  if (n < 0) sp_raise_cls("SocketError", sp_sprintf("getaddrinfo: %s", op));
+  if (n < 0) {
+    sp_sock_raise_if_unresolved("getaddrinfo");
+    sp_raise_cls("SocketError", sp_sprintf("getaddrinfo: %s", op));
+  }
   if (n == 0) {
     int e = errno;
     sp_raise_cls(sp_errno_class_name(e),
@@ -1170,7 +1190,10 @@ sp_PolyArray *sp_sock_getaddrinfo(const char *host, sp_int port, sp_int family, 
     int fam = 0, stype = 0, proto = 0, p = 0;
     char ip[64];
     if (sp_net_getaddrinfo_at(host, (int)port, (int)family, (int)socktype, i, &fam, &stype, &proto,
-                              ip, (int)sizeof ip, &p) != 0) break;
+                              ip, (int)sizeof ip, &p) != 0) {
+      sp_sock_raise_if_unresolved("getaddrinfo");
+      break;
+    }
     const char *ips = sp_str_from_bytes(ip, strlen(ip));
     SP_GC_ROOT_STR(ips);   /* held across the row's allocation */
     sp_PolyArray *row = sp_PolyArray_new();
@@ -1187,13 +1210,15 @@ sp_PolyArray *sp_sock_getaddrinfo(const char *host, sp_int port, sp_int family, 
 }
 
 /* IPSocket.getaddress(host): the first address the name resolves to, as
-   CRuby answers it; SocketError with getaddrinfo's message when none */
+   CRuby answers it; Socket::ResolutionError when the name does not resolve */
 const char *sp_sock_getaddress(const char *host) {SP_GC_ROOT_STR(host);
   extern int sp_net_getaddress(const char *host, char *ipbuf, int ipcap, const char **err);
   char ip[64];
   const char *err = NULL;
-  if (sp_net_getaddress(host, ip, (int)sizeof ip, &err) != 0)
+  if (sp_net_getaddress(host, ip, (int)sizeof ip, &err) != 0) {
+    sp_sock_raise_if_unresolved("getaddrinfo");
     sp_raise_cls("SocketError", sp_sprintf("getaddrinfo: %s", err ? err : ""));
+  }
   return sp_str_from_bytes(ip, strlen(ip));
 }
 
@@ -1206,9 +1231,11 @@ const char *sp_sock_pack_sockaddr_in(sp_int port, const char *host) {SP_GC_ROOT_
   extern int sp_net_pack_sockaddr_in(const char *host, int port, void *out, int cap);
   char buf[128];
   int n = sp_net_pack_sockaddr_in(host, (int)port, buf, (int)sizeof buf);
-  if (n < 0)
+  if (n < 0) {
+    sp_sock_raise_if_unresolved("getaddrinfo");
     sp_raise_cls("SocketError",
                  sp_sprintf("getaddrinfo: Name or service not known - %s", host ? host : ""));
+  }
   return sp_str_from_bytes(buf, (size_t)n);
 }
 
@@ -1322,22 +1349,29 @@ static void sp_sock_require(sp_File *f, const char *m) {SP_GC_ROOT(f);SP_GC_ROOT
 sp_int sp_sock_bind(sp_File *f, const char *host, sp_int port) {SP_GC_ROOT(f);SP_GC_ROOT_STR(host);
   extern int sp_net_udp_bind(int fd, const char *host, int port);
   sp_sock_require(f, "bind");
-  if (sp_net_udp_bind(fileno(f->fp), host, (int)port) != 0)
+  if (sp_net_udp_bind(fileno(f->fp), host, (int)port) != 0) {
+    sp_sock_raise_if_unresolved("getaddrinfo");
     sp_file_raise_errno("bind", host ? host : "");
+  }
   return 0;
 }
 sp_int sp_sock_connect(sp_File *f, const char *host, sp_int port) {SP_GC_ROOT(f);SP_GC_ROOT_STR(host);
   extern int sp_net_udp_connect(int fd, const char *host, int port);
   sp_sock_require(f, "connect");
-  if (sp_net_udp_connect(fileno(f->fp), host, (int)port) != 0)
+  if (sp_net_udp_connect(fileno(f->fp), host, (int)port) != 0) {
+    sp_sock_raise_if_unresolved("getaddrinfo");
     sp_file_raise_errno("connect", host ? host : "");
+  }
   return 0;
 }
 sp_int sp_sock_send(sp_File *f, const char *data, sp_int len, const char *host, sp_int port) {SP_GC_ROOT(f);SP_GC_ROOT_STR(data);SP_GC_ROOT_STR(host);
   extern int sp_net_udp_send_to(int fd, const char *data, int len, const char *host, int port);
   sp_sock_require(f, "send");
   int n = sp_net_udp_send_to(fileno(f->fp), data, (int)len, host, (int)port);
-  if (n < 0) sp_file_raise_errno("send", host ? host : "");
+  if (n < 0) {
+    sp_sock_raise_if_unresolved("getaddrinfo");
+    sp_file_raise_errno("send", host ? host : "");
+  }
   return (sp_int)n;
 }
 static long sp_io_buffered(FILE *fp);
@@ -1716,6 +1750,7 @@ sp_oint sp_sock_connect_nb(sp_File *f, const char *host, sp_int port, sp_bool ex
   sp_io_nb_end(f, saved);
   errno = ce;
   if (rc == 0) return sp_oint_of(0);
+  sp_sock_raise_if_unresolved("getaddrinfo");
   if (errno == EINPROGRESS || errno == EALREADY) {
     if (!exc) return sp_oint_nil();
     sp_raise_cls("IO::EINPROGRESSWaitWritable", "operation in progress - connect(2) would block");

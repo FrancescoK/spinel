@@ -940,6 +940,20 @@ sp_RbVal sp_exc_errno_acc(sp_Exception *e) {SP_GC_ROOT(e);
   sp_exc_acc_gate(e, "SystemCallError", "errno");
   return e->xkey;
 }
+/* Socket::ResolutionError, raised for a name getaddrinfo could not resolve,
+   with the resolver's EAI_* code as #error_code. The code rides the xkey
+   slot, which no other accessor reads on this class. */
+SP_NORETURN void sp_raise_resolution_error(int code, const char *msg) {
+  sp_pending_exc_key = sp_box_int((sp_int)code);
+  sp_pending_exc_flags |= 2;
+  sp_raise_cls("Socket::ResolutionError", msg);
+}
+/* Socket::ResolutionError#error_code: the EAI_* code, nil on one the
+   program made itself, as CRuby's. */
+sp_RbVal sp_exc_error_code_acc(sp_Exception *e) {SP_GC_ROOT(e);
+  sp_exc_acc_gate(e, "Socket::ResolutionError", "error_code");
+  return e->xkey;
+}
 /* The builtin exception hierarchy, as {class, direct superclass} pairs. Shared
    by Exception#is_a? and the by-name #superclass lookup (#3031). */
 const char *sp_exc_parent_of_name(const char *cls) {
@@ -955,6 +969,9 @@ const char *sp_exc_parent_of_name(const char *cls) {
     {"RangeError",            "StandardError"},
     {"IOError",               "StandardError"},
     {"IO::TimeoutError",      "IOError"},
+    /* the socket library's: a lookup that fails is the subclass */
+    {"SocketError",           "StandardError"},
+    {"Socket::ResolutionError", "SocketError"},
     {"EOFError",              "IOError"},
     {"ZeroDivisionError",     "StandardError"},
     {"NotImplementedError",   "ScriptError"},
@@ -1043,6 +1060,7 @@ sp_bool sp_exc_has_acc(sp_Exception *e, const char *acc) {
     {"status", "SystemExit"}, {"success?", "SystemExit"},
     {"signo", "SignalException"}, {"signm", "SignalException"},
     {"name", "NameError"}, {"errno", "SystemCallError"}, {"result", "StopIteration"},
+    {"error_code", "Socket::ResolutionError"},
   };
   for (size_t i = 0; i < sizeof OWN / sizeof OWN[0]; i++)
     if (!strcmp(acc, OWN[i][0])) return sp_exc_cls_matches(c, OWN[i][1]);

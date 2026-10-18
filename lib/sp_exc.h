@@ -162,6 +162,8 @@ sp_Exception *sp_exc_cause(volatile sp_Exception *ve);
 sp_RbVal sp_exc_result(volatile sp_Exception *ve);
 const char *sp_errno_class_name(int e);   /* "Errno::ENOENT" for ENOENT; the parent for an unlisted one */
 sp_RbVal sp_exc_errno_acc(sp_Exception *e);   /* SystemCallError#errno */
+sp_RbVal sp_exc_error_code_acc(sp_Exception *e);   /* Socket::ResolutionError#error_code */
+SP_NORETURN void sp_raise_resolution_error(int code, const char *msg);
 enum { SP_SYSERR_NONE, SP_SYSERR_NUM, SP_SYSERR_BASE, SP_SYSERR_BARE };
 int sp_syserr_kind(const char *cls, sp_int *num);   /* where cls stands in the SystemCallError family */
 const char *sp_syserr_text(int has_num, sp_int num, const char *func, const char *msg);

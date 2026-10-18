@@ -1227,7 +1227,7 @@ int builtin_module_owns(const char *cls, const char *m) {
 int is_gated_exception_accessor(const char *n) {
   static const char *const names[] = {
     "key", "receiver", "args", "private_call?", "reason", "exit_value", "tag",
-    "value", "status", "success?", "signo", "signm", "name", "errno", "result", NULL };
+    "value", "status", "success?", "signo", "signm", "name", "errno", "error_code", "result", NULL };
   if (!n) return 0;
   for (int i = 0; names[i]; i++) if (sp_streq(n, names[i])) return 1;
   return 0;

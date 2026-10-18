@@ -130,6 +130,10 @@ static const BuiltinClass BUILTIN_CLASSES[] = {
   { "GC",                           0,     BC_CLASS | BC_MODULE },
   { "IO::EAGAINWaitReadable",       0,     BC_EXCEPTION },
   { "IO::TimeoutError",            0,     BC_EXCEPTION },
+  /* the socket library's: lib/sp_exc.c gives them their parents, so
+     `rescue SocketError` catches a failed lookup's Socket::ResolutionError */
+  { "SocketError",                  0,     BC_EXCEPTION },
+  { "Socket::ResolutionError",      0,     BC_EXCEPTION },
   { "IO::EAGAINWaitWritable",       0,     BC_EXCEPTION },
   { "IO::EINPROGRESSWaitReadable",  0,     BC_EXCEPTION },
   { "IO::EINPROGRESSWaitWritable",  0,     BC_EXCEPTION },
