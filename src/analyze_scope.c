@@ -7607,6 +7607,17 @@ void register_extends(Compiler *c) {
   if (!seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int ci = 0; ci < c->nclasses; ci++) {
    nseen = 0;
+   /* Class's own methods first: a module the class extends sits in front
+      of Class among the singleton's ancestors, so its copies, made after,
+      take the place of these */
+   if (cls_mod >= 0 && (ci == cls_mod || class_is_root(c, ci))) {
+     did_clone |= extend_class_with(c, ci, cls_mod, 0, 0);
+     /* `class Class; prepend P; end`: P in front of the reopening, as an
+        `extend` of it would put it (see desugar_module_prepends) */
+     int pre[64];
+     int np = module_prepend_list(c, cls_mod, pre, 64);
+     for (int q = np - 1; q >= 0; q--) did_clone |= extend_class_with(c, ci, pre[q], 0, 0);
+   }
    /* Every body that defines this class, not only the first: `extend M` is
       commonly written in a REOPENING of the class, and reading def_node alone
       never saw it, so the module's methods were never transplanted and a call
@@ -7658,14 +7669,6 @@ void register_extends(Compiler *c) {
         did_clone |= extend_class_with(c, ci, mod_id, inherited, (int)nt_int(nt, s, "sclass_prepend", 0));
       }
     }
-   }
-   if (cls_mod >= 0 && (ci == cls_mod || class_is_root(c, ci))) {
-     did_clone |= extend_class_with(c, ci, cls_mod, 0, 0);
-     /* `class Class; prepend P; end`: P in front of the reopening, as an
-        `extend` of it would put it (see desugar_module_prepends) */
-     int pre[64];
-     int np = module_prepend_list(c, cls_mod, pre, 64);
-     for (int q = np - 1; q >= 0; q--) did_clone |= extend_class_with(c, ci, pre[q], 0, 0);
    }
   }
   /* The cloned bodies introduced new local nodes, and register_locals ran
