@@ -347,10 +347,29 @@ void topup_forwarding_arity(Compiler *c) {
   }
 }
 
-/* The edges super_value_used climbs: the conditionals, a begin and its
-   rescue clauses (its body beside an else too), and the one value of a
-   `return`; not `||`, `&&` or a rescue modifier. */
-enum { SUPER_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VP_BEGIN_BOTH | VP_FOLLOW_RETURN };
+/* The edges super_value_used climbs: the conditionals, a rescue modifier,
+   a begin and its rescue clauses (its body beside an else too), and the
+   one value of a `return`. Not `||` or `&&`: the C of an operator whose
+   operand is the void call of initialize does not compile, so a `super`
+   there stays refused. */
+enum { SUPER_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VPS_RESCUE_MOD | VP_BEGIN_BOTH | VP_FOLLOW_RETURN };
+
+/* Does the climb from `v` to `top` cross a rescue modifier and, with it,
+   parentheses, or end at a `return`'s argument (`return begin super rescue
+   nil end`)? Such a modifier is emitted as a conditional expression whose
+   operand is the void call of initialize, which does not compile: the bare
+   modifier is a statement and does, the other stays refused (as does a
+   parenthesized `if`, which master cannot emit either). */
+static int super_modifier_in_expression(const NodeTable *nt, const int *par, int v, int top, VpUpKind ended) {
+  int modifier = 0, parens = 0;
+  for (int n = v; n != top && n >= 0;) {
+    n = par[n];
+    NodeKind k = n >= 0 ? nt_kind(nt, n) : NK_NONE;
+    modifier |= k == NK_RescueModifierNode;
+    parens |= k == NK_ParenthesesNode;
+  }
+  return modifier && (parens || ended == VPU_JUMP);
+}
 
 /* Is node v's value used? A statement list, a branch, a begin and a rescue
    pass it on to whatever holds them (vp_climb). A statement before a list's
@@ -358,7 +377,9 @@ enum { SUPER_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | 
    iterator that ignores its block's value throw it away. */
 static int super_value_used(const NodeTable *nt, const int *par, int v) {
   VpUp up;
-  switch (vp_climb(nt, par, v, SUPER_CLIMB, &up)) {
+  VpUpKind ended = vp_climb(nt, par, v, SUPER_CLIMB, &up);
+  if (super_modifier_in_expression(nt, par, v, up.node, ended)) return 1;
+  switch (ended) {
   case VPU_ROOT:
   case VPU_DROPPED:
     return 0;
