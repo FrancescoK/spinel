@@ -58,6 +58,16 @@ static int call_is_chain_receiver_with_block(Compiler *c, int id) {
   return 0;
 }
 
+/* The Array row a call finds, but for a blockless row that is not the call's
+   to state: the receiver of a block chain (arr.select.with_index { }) is
+   answered by the rules after the lookup (BOPF_NOT_CHAIN_RECV). */
+static const BuiltinOp *array_call_row(Compiler *c, int id, const char *name, int argc,
+                                       const int *argv, int has_block) {
+  const BuiltinOp *op = bop_find(BOP_ANY_ARRAY, name, argc, has_block);
+  if (op && (op->flags & BOPF_NOT_CHAIN_RECV) && call_is_chain_receiver_with_block(c, id)) return NULL;
+  return an_bop_find_arg(c, id, BOP_ANY_ARRAY, name, argc, argv, has_block);
+}
+
 /* Object's face of a Float or String range (tap / then, instance_variables,
    `!`, object_id, display, ...): the universal rules type it about the range
    itself, as they do for an Integer range. `=~` is no longer Object's, and
@@ -706,7 +716,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        state their result by the operands' kinds, and so do the rows that
        guard an argument's kind (an index, a count, slice!'s Range) */
     {
-      const BuiltinOp *op = an_bop_find_arg(c, id, BOP_ANY_ARRAY, name, argc, argv, block >= 0);
+      const BuiltinOp *op = array_call_row(c, id, name, argc, argv, block >= 0);
       if (op && (*out = an_bop_result(c, op, rt, argc, argv)) != TY_UNKNOWN) return 1;
     }
     /* a blockless map/collect is a usable Enumerator too (size/class/next);
