@@ -1,3 +1,4 @@
+# spinel: share
 # Civil dates: construction, the calendar fields, arithmetic and comparison,
 # as CRuby's date answers them.
 require "date"

@@ -1,3 +1,4 @@
+# spinel: share
 # DateTime with offsets, and Time#to_date. json_schemer validates
 # `format: date-time` with DateTime.rfc3339 and new_offset.
 require "date"

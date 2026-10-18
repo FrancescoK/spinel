@@ -1,3 +1,4 @@
+# spinel: share
 # Parsing and formatting: Date.parse and the ISO 8601 / RFC 3339 readers,
 # strftime, and what a malformed string raises. ruby_llm reads its model
 # registry's dates with Date.parse and Date.iso8601.

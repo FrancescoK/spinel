@@ -23713,8 +23713,28 @@ static int an_tail_arm(Compiler *c, RetHandles *R, int a, TailCount *tc) {
    read, or a call or `super` whose every target method does? A nullable
    tail can also answer nil, which the existing pickup tests before using
    the return channel. Count it with the pickup's own tail predicate. */
+/* Is tail n a String method answering its receiver (`<<`, concat,
+   force_encoding: the String share row's BSH_RECV), called on a typed
+   String no reopening gives a method of the name? It answers what its
+   receiver answers (`fast_ymd << 'T00:00:00+0000'`,
+   `internal_strftime(fmt).force_encoding(enc)`). */
+static int an_tail_recv_answer(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, n, "receiver");
+  const char *nm = nt_str(nt, n, "name");
+  if (recv < 0 || !nm || nt_ref(nt, n, "block") >= 0) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (rt != TY_STRING && rt != TY_STRBUF) return 0;
+  if (bop_share_named(TY_STRING, nm) != BSH_RECV) return 0;
+  int si = comp_class_index(c, "String");
+  return si < 0 || comp_method_in_chain(c, si, nm, NULL) < 0;
+}
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   const NodeTable *nt = c->nt;
+  /* the fresh walk: a receiver-answering String method's tail is its
+     receiver's (a new String appended to is one still) */
+  if (R->fresh && n >= 0 && nt_kind(nt, n) == NK_CallNode && an_tail_recv_answer(c, n))
+    return an_tail_handle(c, R, nt_ref(nt, n, "receiver"), tc);
   if (!R->fresh && c->n_cext_extensions && n >= 0 &&
       nt_kind(nt, n) == NK_InstanceVariableReadNode && comp_ntype(c, n) == TY_STRBUF) {
     if (g_repr_check) repr_channel_predict(c, n, tc->mi, RCH_PUBLISH);
