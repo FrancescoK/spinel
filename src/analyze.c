@@ -37151,7 +37151,12 @@ int param_strict(Compiler *c, int mi, int k, const char **what, int *ord) {
     g_pstrict_n = c->nscopes; g_pstrict_nt = c->nt;
     ps_index_build(c);
   }
-  else if (g_ps_ncount != c->nt->count) ps_index_build(c);   /* nodes cloned since */
+  /* nodes cloned since; a local variable read appended since (a writer's
+     value temporary) is none of the nodes the index lists */
+  else if (g_ps_ncount != c->nt->count) {
+    if (g_ps_ncount < c->nt->count && nt_appended_only_local_reads(c->nt, g_ps_ncount)) g_ps_ncount = c->nt->count;
+    else ps_index_build(c);
+  }
   PStrict *ps = &g_pstrict[mi];
   if (!ps->done) ps_compute(c, mi);
   if (what) *what = ps->what[k];
