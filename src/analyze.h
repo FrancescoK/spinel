@@ -154,6 +154,9 @@ void analyze_program(Compiler *c);
    (0 or 1) defs of that name: read ahead of the desugars, by absence. */
 int an_prog_never_gives(const char *nm, int defs);
 int an_prog_names_method(const char *nm);
+/* a push onto a typed Array a builtin call just built, given an element of
+   another kind: it answers the general Array (analyze_infer.c) */
+int an_push_widens_fresh(Compiler *c, int id);
 /* True if a regex source contains a capturing group: an unescaped '(' that
    isn't the start of a non-capturing/extension group '(?...'. scan returns
    nested arrays for capturing patterns, which the str_array path can't model. */

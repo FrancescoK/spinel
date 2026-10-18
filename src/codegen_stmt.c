@@ -22789,6 +22789,12 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     buf_printf(b, ")%s;\n", hc_mark());
     return 1;
   }
+  /* onto a fresh typed Array given another kind (an_push_widens_fresh): the
+     value form rebuilds it as the general Array; the statement drops it */
+  if (is_push_alias(name) && argc >= 1 && an_push_widens_fresh(c, id)) {
+    emit_indent(b, indent); buf_puts(b, "(void)"); emit_expr(c, id, b); buf_puts(b, ";\n");
+    return 1;
+  }
   if (is_push_alias(name) && argc >= 1) {
     TyKind et = ty_array_elem(rt);
     /* Any splat arg (`arr.push(*other)`) spreads its array's elements at

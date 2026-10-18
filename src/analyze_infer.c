@@ -7813,6 +7813,7 @@ static int array_hash_reopen_owner(Compiler *c, int id, TyKind rt, const char *n
 }
 
 static TyKind infer_call_prelude(Compiler *c, int id) {
+  if (an_push_widens_fresh(c, id)) return TY_POLY_ARRAY;
   if (c->n_cext_extensions) {
     if (nt_int(c->nt, id, "cext_const_read", 0)) {
       if (nt_int(c->nt, id, "cext_const_missing", 0)) return TY_POLY;
@@ -7858,6 +7859,37 @@ static int is_poly_exc_boxed_accessor(const char *name) {
   return sp_streq(name, "backtrace") || sp_streq(name, "result") || sp_streq(name, "errno") ||
          sp_streq(name, "error_code") || sp_streq(name, "key") || sp_streq(name, "receiver");
 }
+
+/* A push onto a typed Array a builtin call just built (`s.scan(/\d+/) << 99`,
+   `str.split << x`), given an element of another kind the typed Array cannot
+   hold: no variable holds the Array to widen, so the push answers the general
+   Array it becomes (the codegen rebuilds the fresh Array as one,
+   emit_push_lift). 1 for such a call. */
+int an_push_widens_fresh(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, id) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!nm || recv < 0 || !is_push_alias(nm) || nt_ref(nt, id, "block") >= 0) return 0;
+  if (nt_kind(nt, unwrap_parens(c, recv)) != NK_CallNode) return 0;
+  TyKind rt = infer_type(c, recv);
+  if (rt != TY_STR_ARRAY && rt != TY_INT_ARRAY && rt != TY_FLOAT_ARRAY) return 0;
+  if (!is_fresh_array(c, recv)) return 0;
+  TyKind elem = ty_array_elem(rt);
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  for (int k = 0; k < ac; k++) {
+    if (nt_kind(nt, av[k]) == NK_SplatNode) return 0;
+    TyKind at = infer_type(c, av[k]);
+    if (at == TY_STRBUF) at = TY_STRING;
+    int scalar = at == TY_INT || at == TY_FLOAT || at == TY_STRING || at == TY_SYMBOL || at == TY_BOOL ||
+                 at == TY_BIGINT;
+    /* an Integer into a Float Array is stored as the Float it converts to */
+    if (scalar && at != elem && !(elem == TY_FLOAT && at == TY_INT)) return 1;
+  }
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   TyKind prelude = infer_call_prelude(c, id);
   if (prelude != TY_UNKNOWN) return prelude;

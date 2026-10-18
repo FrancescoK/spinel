@@ -2037,6 +2037,19 @@ int emit_call_append_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         }
       }
     }
+    /* ...and so is one a builtin call just built, which no variable holds
+       to widen (an_push_widens_fresh): its elements, boxed, then the push */
+    if (!needs_lift && an_push_widens_fresh(c, id)) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_PolyArray *_t%d = sp_poly_to_poly_array(", t);
+      emit_boxed(c, recv, b);
+      buf_printf(b, "); SP_GC_ROOT(_t%d); ", t);
+      for (int a = 0; a < argc; a++) {
+        buf_printf(b, "sp_PolyArray_push(_t%d, ", t); emit_boxed(c, argv[a], b); buf_puts(b, "); ");
+      }
+      buf_printf(b, "_t%d; })", t);
+      return 1;
+    }
     if (needs_lift) {
       int en = 0;
       const int *els = nt_arr(nt, recv, "elements", &en);

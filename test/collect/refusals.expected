@@ -44,12 +44,6 @@ spinel: 1 refusal, nothing written
 == test/reject/anon_superclass_struct_ancestors.rb [promote] rc=1
 spinel: test/reject/anon_superclass_struct_ancestors.rb:6: unsupported `ancestors` that can reach a class whose superclass is an anonymous class (Class.new, Struct.new or Data.define as the superclass): spinel has no class object for the anonymous class
 spinel: 1 refusal, nothing written
-== test/reject/array_push_other_class_temporary.rb [default] rc=1
-spinel: test/reject/array_push_other_class_temporary.rb:6: an Array push given a String, which no conversion keeps in its sp_int slot
-spinel: 1 refusal, nothing written
-== test/reject/array_push_other_class_temporary.rb [promote] rc=1
-spinel: test/reject/array_push_other_class_temporary.rb:6: an Array push given a String, which no conversion keeps in its sp_int slot
-spinel: 1 refusal, nothing written
 == test/reject/attr_assign_value_shared_string.rb [default] rc=1
 spinel: test/reject/attr_assign_value_shared_string.rb:6: an attribute assignment in value position (kept, passed on, or a method's last expression, which the method answers) stores into an instance variable that is mutated in place through another name, and its value would be a copy (a String is not yet shared by reference through an assignment's value). Make the assignment a statement of its own, or read the String back through the reader.
 spinel: 1 refusal, nothing written

@@ -837,7 +837,10 @@ compiled as a typed array (`sp_IntArray`, `sp_FloatArray`, `sp_StrArray`),
 which is what makes numeric code fast. A store the compiler can see both
 sides of widens the array instead (`a = Array.new(0, 0); a << "x"` makes `a` a
 general Array), so the typed representation is only kept where every store
-agrees. A value whose kind is decided at run time -- an element read out of a
+agrees. So does a push of a value of another kind onto the typed Array a
+builtin call has just built, which no variable holds
+(`(s.scan(/\d+/) << 99).join(".")`, `[1, 2].map { |x| x }.push("s")`): the
+push answers the general Array that Array becomes. A value whose kind is decided at run time -- an element read out of a
 general Array, a boxed parameter, a poly-typed call -- that does not match
 the array's kind cannot be stored, and raises `TypeError` at the store:
 
