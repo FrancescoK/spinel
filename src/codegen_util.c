@@ -2458,11 +2458,18 @@ static int ivs_related(Compiler *c, int k, int cid) {
    Use the name across classes so inherited layouts agree on the extra field.
    A lowered Object setter can add a slot beside unrelated ordinary writers;
    those classes do not share its layout or assignment emitters. */
+int an_calls_named_first(Compiler *c, const char *name);   /* analyze_internal.h */
+int an_calls_named_next(int id);
+/* The kinds of an ivar write (every InstanceVariable node but the read) */
+static const NodeKind IVS_WK[] = { NK_InstanceVariableWriteNode, NK_InstanceVariableOrWriteNode,
+                                   NK_InstanceVariableAndWriteNode, NK_InstanceVariableOperatorWriteNode,
+                                   NK_InstanceVariableTargetNode };
 static int ivs_reflect_only(Compiler *c, int cid, const char *ivn) {
   const NodeTable *nt = c->nt;
   int found = 0, scoped = 0;
-  NT_FOREACH_KIND(nt, NK_CallNode, u) {
-    if (!is_ivar_set_name(nt_str(nt, u, "name"))) continue;
+  /* asked per class and ivar: the calls of the name, not every call */
+  for (int u = an_calls_named_first(c, "instance_variable_set"); u >= 0; u = an_calls_named_next(u)) {
+    if (nt_kind(nt, u) != NK_CallNode || !is_ivar_set_name(nt_str(nt, u, "name"))) continue;
     int a = nt_ref(nt, u, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
     if (ac != 2) continue;
@@ -2491,14 +2498,12 @@ static int ivs_reflect_only(Compiler *c, int cid, const char *ivn) {
       if (iv >= 0 && iv < ci->nmembers) return 0;
     }
   }
-  for (int n = 0; n < nt->count; n++) {
-    const char *t = nt_type(nt, n);
-    if (t && strncmp(t, "InstanceVariable", 16) == 0 && !strstr(t, "Read") &&
-        sp_streq(nt_str(nt, n, "name"), ivn)) {
+  for (int q = 0; q < 5; q++)
+    NT_FOREACH_KIND(nt, IVS_WK[q], n) {
+      if (!sp_streq(nt_str(nt, n, "name"), ivn)) continue;
       int owner = comp_ivar_owner(c, n);
       if (!scoped || owner < 0 || ivs_related(c, owner, cid)) return 0;
     }
-  }
   return found;
 }
 /* The kinds above before ivs_tracked: 0, 1, 2, or 3 for a reflection-only
@@ -2515,9 +2520,7 @@ static int ivs_base_kind(Compiler *c, int cid, const char *ivn) {
              ty_is_array(t) || ty_is_hash(t) || ty_is_object(t))) kind = 2;
   else {
     kind = 1;
-    static const NodeKind WK[] = { NK_InstanceVariableWriteNode, NK_InstanceVariableOrWriteNode,
-                                   NK_InstanceVariableAndWriteNode, NK_InstanceVariableOperatorWriteNode,
-                                   NK_InstanceVariableTargetNode };
+    const NodeKind *WK = IVS_WK;
     for (int q = 0; q < 5 && kind == 1; q++)
       NT_FOREACH_KIND(nt, WK[q], w) {
         if (!sp_streq(nt_str(nt, w, "name"), ivn)) continue;
@@ -2533,12 +2536,16 @@ static int ivs_base_kind(Compiler *c, int cid, const char *ivn) {
         if (WK[q] == NK_InstanceVariableOperatorWriteNode) continue;   /* answers a value or raises */
         if (!ivs_never_nil(c, nt_ref(nt, w, "value"))) { kind = 2; break; }
       }
-    /* a write from outside: instance_variable_set, a writer, instance_eval */
+    /* a write from outside: instance_variable_set, a writer, instance_eval.
+       Asked per class and ivar, so the calls of those names, not every
+       call: any one of them decides */
     char wr[128]; snprintf(wr, sizeof wr, "%s=", ivn + 1);
-    NT_FOREACH_KIND(nt, NK_CallNode, u) {
-      if (kind != 1) break;
+    const char *const outside[] = { "instance_variable_set", wr, "instance_eval", "instance_exec",
+                                    "class_eval", "class_exec" };
+    for (int on = 0; on < 6 && kind == 1; on++)
+    for (int u = an_calls_named_first(c, outside[on]); u >= 0 && kind == 1; u = an_calls_named_next(u)) {
       const char *un = nt_str(nt, u, "name");
-      if (!un) continue;
+      if (nt_kind(nt, u) != NK_CallNode || !un || !sp_streq(un, outside[on])) continue;
       int a = nt_ref(nt, u, "arguments"), ac = 0;
       const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
       if (sp_streq(un, "instance_variable_set")) {
@@ -2555,14 +2562,15 @@ static int ivs_base_kind(Compiler *c, int cid, const char *ivn) {
         if (ivs_subtree_writes(nt, nt_ref(nt, u, "block"), ivn, 0)) kind = 2;
       }
     }
-    /* `o.x ||= v` and its kin write through the writer too */
-    for (int u = 0; kind == 1 && u < nt->count; u++) {
-      const char *ut = nt_type(nt, u);
-      if (!ut || (!sp_streq(ut, "CallOrWriteNode") && !sp_streq(ut, "CallAndWriteNode") &&
-                  !sp_streq(ut, "CallOperatorWriteNode"))) continue;
-      const char *rn = nt_str(nt, u, "name"), *wn = nt_str(nt, u, "write_name");
-      if ((rn && (sp_streq(rn, ivn + 1) || sp_streq(rn, wr))) || (wn && sp_streq(wn, wr))) kind = 2;
-    }
+    /* `o.x ||= v` and its kin write through the writer too (a
+       CallOperatorWriteNode has no kind of its own: among the unkinded) */
+    static const NodeKind CW[] = { NK_CallOrWriteNode, NK_CallAndWriteNode, NK_NONE };
+    for (int q = 0; q < 3 && kind == 1; q++)
+      NT_FOREACH_KIND(nt, CW[q], u) {
+        if (CW[q] == NK_NONE && !(nt_type(nt, u) && sp_streq(nt_type(nt, u), "CallOperatorWriteNode"))) continue;
+        const char *rn = nt_str(nt, u, "name"), *wn = nt_str(nt, u, "write_name");
+        if ((rn && (sp_streq(rn, ivn + 1) || sp_streq(rn, wr))) || (wn && sp_streq(wn, wr))) { kind = 2; break; }
+      }
   }
   if (kind == 2 && ivs_reflect_only(c, cid, ivn)) kind = 3;
   return kind;
