@@ -9822,6 +9822,15 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         else buf_printf(b, "%s(%s)", oint_of(ret), sref);
         buf_puts(b, "; })");
       }
+      else if (!pd_done && is_setter_val && ret == TY_POLY && atmp_ty[0] != TY_POLY &&
+               atmp_ty[0] != TY_UNKNOWN && !node_has_oint_form(c, argv[0])) {
+        /* the value is the call's, and the call is boxed: a Symbol, an
+           Integer or a String argument boxes as its kind */
+        char sref[32]; snprintf(sref, sizeof sref, "_t%d", atmp[0]);
+        buf_puts(b, " ");
+        emit_boxed_text(c, atmp_ty[0], sref, b);
+        buf_puts(b, "; })");
+      }
       else buf_printf(b, " _t%d; })", pd_done || !is_setter_val ? tr : atmp[0]);
       free(atmp);
       free(atmp_ty);
