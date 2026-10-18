@@ -4305,6 +4305,25 @@ static SP_UNUSED double sp_key2f(int64_t k) {
   if (k < 0) { u.i = -k; return -u.d; }
   u.i = k; return u.d;
 }
+/* CRuby's BSEARCH_CHECK (range.c) on a block's answer `r`: 1 when a number
+   that is zero ends the search there. Else *smaller says the search goes
+   left (true, or a negative number) or right (false, nil, a positive
+   number), and *sat that the answer was true; any other answer is CRuby's
+   TypeError. */
+static SP_UNUSED int sp_bsearch_answer(sp_RbVal r, int *smaller, int *sat) {
+  *sat = 0;
+  if (r.tag == SP_TAG_INT) { if (r.v.i == 0) return 1; *smaller = r.v.i < 0; }
+  else if (r.tag == SP_TAG_BOOL && r.v.b) { *sat = 1; *smaller = 1; }
+  else if (r.tag == SP_TAG_NIL || r.tag == SP_TAG_BOOL) *smaller = 0;
+  else if (r.tag == SP_TAG_FLT) { if (r.v.f == 0.0) return 1; *smaller = r.v.f < 0.0; }
+  else sp_raise_cls("TypeError", sp_sprintf(SPL("wrong argument type %s (must be numeric, true, false or nil)"),
+                                            sp_poly_class_name(r)));
+  return 0;
+}
+/* the probe CRuby's BSEARCH takes strictly between float keys lo and hi */
+static SP_UNUSED int64_t sp_bsearch_key_mid(int64_t lo, int64_t hi) {
+  return ((hi < 0) == (lo < 0)) ? lo + ((hi - lo) / 2) : (lo + hi) / 2;
+}
 /* How many steps (r).step(unit) { } takes, as CRuby's ruby_float_step
    counts them: infinite for an endless range, which the loop walks until a
    break. A zero step and a NaN bound raise as CRuby does, and a beginless

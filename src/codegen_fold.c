@@ -1159,153 +1159,69 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
        infinite bound is a bound like any other. Its answer is the least
        double the block accepts (find-minimum), or one the block answers 0
        for (find-any), else nil. */
-    if (fvar || (comp_ntype(c, recv) == TY_FLOAT_RANGE &&
-        (blt9 == TY_NIL || blt9 == TY_INT || blt9 == TY_FLOAT) &&
-        (brt9 == TY_NIL || brt9 == TY_INT || brt9 == TY_FLOAT) &&
-        (blt9 == TY_NIL || brt9 == TY_NIL))) {
-      int excl = fvar ? 0 : nt_range_excl(nt, rn9);
-      int klo = ++g_tmp, khi = ++g_tmp, fres = ++g_tmp, kmid = ++g_tmp, fx = ++g_tmp;
-      if (fvar) {
-        int tfr = ++g_tmp;
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_FloatRange _t%d = ", tfr); emit_expr(c, recv, g_pre); buf_puts(g_pre, ";\n");
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "int64_t _t%d = sp_f2key(_t%d.first);\n", klo, tfr);
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "int64_t _t%d = sp_f2key(_t%d.last) - ((_t%d.excl && !(_t%d.omitted & SP_FRANGE_NO_END)) ? 1 : 0);\n",
-                   khi, tfr, tfr, tfr);
-      }
-      else {
+    /* CRuby bisects the doubles themselves, in the order of their bit
+       patterns (sp_f2key), with range.c's BSEARCH: strictly between the key
+       below the first and the key past the last (the last itself when the
+       end is excluded), a true answer kept and searching down, a number
+       find-any (zero is the answer), nil or false searching up. A missing
+       bound is an infinity. */
+    if (!fvar && !((blt9 == TY_NIL || blt9 == TY_INT || blt9 == TY_FLOAT) &&
+                   (brt9 == TY_NIL || brt9 == TY_INT || brt9 == TY_FLOAT)))
+      return 0;
+    int klo = ++g_tmp, khi = ++g_tmp, fres = ++g_tmp, fsat = ++g_tmp, kmid = ++g_tmp;
+    int fx = ++g_tmp, ffound = ++g_tmp, fsm = ++g_tmp;
+    if (fvar) {
+      int tfr = ++g_tmp;
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_FloatRange _t%d = ", tfr); emit_expr(c, recv, g_pre); buf_puts(g_pre, ";\n");
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "int64_t _t%d = sp_f2key(_t%d.first) - 1;\n", klo, tfr);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "int64_t _t%d = sp_f2key(_t%d.last) + (_t%d.excl ? 0 : 1);\n", khi, tfr, tfr);
+    }
+    else {
+      int excl = nt_range_excl(nt, rn9);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "int64_t _t%d = sp_f2key(", klo);
       if (blt9 == TY_NIL) { if (rleft >= 0) { buf_puts(g_pre, "((void)("); emit_expr(c, rleft, g_pre); buf_puts(g_pre, "), -HUGE_VAL)"); } else buf_puts(g_pre, "-HUGE_VAL"); }
       else emit_float_expr(c, rleft, g_pre);
-      buf_puts(g_pre, ");\n");
+      buf_puts(g_pre, ") - 1;\n");
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "int64_t _t%d = sp_f2key(", khi);
       if (brt9 == TY_NIL) { if (rright >= 0) { buf_puts(g_pre, "((void)("); emit_expr(c, rright, g_pre); buf_puts(g_pre, "), HUGE_VAL)"); } else buf_puts(g_pre, "HUGE_VAL"); }
       else emit_float_expr(c, rright, g_pre);
-      buf_printf(g_pre, ")%s;\n", (excl && brt9 != TY_NIL) ? " - 1" : "");
-      }
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_ofloat _t%d = sp_ofloat_nil();\n", fres);
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "while (_t%d <= _t%d) {\n", klo, khi);
-      emit_indent(g_pre, g_indent + 1);
-      buf_printf(g_pre, "int64_t _t%d = (_t%d >> 1) + (_t%d >> 1) + (_t%d & _t%d & 1);\n", kmid, klo, khi, klo, khi);
-      emit_indent(g_pre, g_indent + 1);
-      buf_printf(g_pre, "double _t%d = sp_key2f(_t%d);\n", fx, kmid);
-      if (p0) { snprintf(pv, sizeof pv, "_t%d", fx); emit_iter_param_assign(c, block, p0_orig, p0, TY_FLOAT, pv, g_pre, g_indent + 1); }
-      IterStep st; emit_iter_step_open(c, block, 0, g_indent + 1, &st);
-      int save = g_indent; g_indent++;
-      Buf cb; memset(&cb, 0, sizeof cb);
-      TyKind bt = emit_iter_step_tail(c, &st, &cb); g_indent = save;
-      char up[96], down[96];
-      snprintf(up, sizeof up, "{ if (_t%d == INT64_MAX) break; _t%d = _t%d + 1; }", kmid, klo, kmid);
-      snprintf(down, sizeof down, "{ if (_t%d == INT64_MIN) break; _t%d = _t%d - 1; }", kmid, khi, kmid);
-      if (bt == TY_INT || bt == TY_FLOAT || bt == TY_POLY) {
-        /* a number is find-any (0 found, positive: the target is above the
-           probe, negative: below); in a mixed block any other truthy value
-           is find-minimum, nil/false searches up */
-        int fv = ++g_tmp;
-        emit_indent(g_pre, g_indent + 1);
-        if (bt == TY_POLY) buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", fv, cb.p ? cb.p : "sp_box_nil()");
-        else buf_printf(g_pre, "sp_RbVal _t%d = %s(%s);\n", fv, bt == TY_INT ? "sp_box_int" : "sp_box_float", cb.p ? cb.p : "0");
-        emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "if (_t%d.tag == SP_TAG_INT || _t%d.tag == SP_TAG_FLT) {\n", fv, fv);
-        emit_indent(g_pre, g_indent + 2);
-        buf_printf(g_pre, "double _c = sp_poly_to_f(_t%d);\n", fv);
-        emit_indent(g_pre, g_indent + 2);
-        buf_printf(g_pre, "if (_c == 0.0) { _t%d = sp_ofloat_of(_t%d); break; }\n", fres, fx);
-        emit_indent(g_pre, g_indent + 2);
-        buf_printf(g_pre, "else if (_c > 0.0) %s\n", up);
-        emit_indent(g_pre, g_indent + 2);
-        buf_printf(g_pre, "else %s\n", down);
-        emit_indent(g_pre, g_indent + 1);
-        buf_puts(g_pre, "}\n");
-        emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "else if (sp_poly_truthy(_t%d)) { _t%d = sp_ofloat_of(_t%d); %s }\n", fv, fres, fx, down);
-        emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "else %s\n", up);
-      }
-      else {
-        emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "if (%s) { _t%d = sp_ofloat_of(_t%d); %s }\n", cb.p ? cb.p : "0", fres, fx, down);
-        emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "else %s\n", up);
-      }
-      free(cb.p);
-      emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-      oint_open(c, id, TY_FLOAT, b); buf_printf(b, "_t%d", fres); oint_close(c, id, b);
-      return 1;
+      buf_printf(g_pre, ")%s;\n", excl ? "" : " + 1");
     }
-    if ((blt9 == TY_INT || blt9 == TY_FLOAT) && (brt9 == TY_INT || brt9 == TY_FLOAT)) {
-      int flo = ++g_tmp, fhi = ++g_tmp, fres = ++g_tmp, fi = ++g_tmp, fmid = ++g_tmp;
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "double _t%d = ", flo); emit_float_expr(c, rleft, g_pre); buf_puts(g_pre, ";\n");
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "double _t%d = ", fhi); emit_float_expr(c, rright, g_pre); buf_puts(g_pre, ";\n");
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_ofloat _t%d = sp_ofloat_nil(); int _t%d;\n", fres, fi);
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "for (_t%d = 0; _t%d < 100; _t%d++) {\n", fi, fi, fi);
-      emit_indent(g_pre, g_indent + 1);
-      buf_printf(g_pre, "double _t%d = _t%d + (_t%d - _t%d) / 2.0;\n", fmid, flo, fhi, flo);
-      if (p0) { snprintf(pv, sizeof pv, "_t%d", fmid); emit_iter_param_assign(c, block, p0_orig, p0, TY_FLOAT, pv, g_pre, g_indent + 1); }
-      IterStep st; emit_iter_step_open(c, block, 0, g_indent + 1, &st);
-      int save = g_indent; g_indent++;
-      Buf cb; memset(&cb, 0, sizeof cb);
-      TyKind bt = emit_iter_step_tail(c, &st, &cb); g_indent = save;
-      if (bt == TY_INT || bt == TY_FLOAT) {
-        /* find-any (CRuby: a Numeric block is `target <=> x`): 0 found,
-           positive means the target sorts after the probe, negative before.
-           No exact 0 within the bisection is a miss (nil) (#3067). */
-        int fcmp = ++g_tmp;
-        emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "double _t%d = (double)(%s);\n", fcmp, cb.p ? cb.p : "0");
-        emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "if (_t%d == 0.0) { _t%d = sp_ofloat_of(_t%d); break; }\n", fcmp, fres, fmid);
-        emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "else if (_t%d > 0.0) { _t%d = _t%d; }\n", fcmp, flo, fmid);
-        emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "else { _t%d = _t%d; }\n", fhi, fmid);
-      }
-      else if (bt == TY_POLY) {
-        /* mixed block: an Integer/Float value is find-any, any other truthy
-           value is find-minimum, nil/false searches up (#3067) */
-        int fv = ++g_tmp;
-        emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", fv, cb.p ? cb.p : "sp_box_nil()");
-        emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "if (_t%d.tag == SP_TAG_INT || _t%d.tag == SP_TAG_FLT) {\n", fv, fv);
-        emit_indent(g_pre, g_indent + 2);
-        buf_printf(g_pre, "double _c = sp_poly_to_f(_t%d);\n", fv);
-        emit_indent(g_pre, g_indent + 2);
-        buf_printf(g_pre, "if (_c == 0.0) { _t%d = sp_ofloat_of(_t%d); break; }\n", fres, fmid);
-        emit_indent(g_pre, g_indent + 2);
-        buf_printf(g_pre, "else if (_c > 0.0) { _t%d = _t%d; }\n", flo, fmid);
-        emit_indent(g_pre, g_indent + 2);
-        buf_printf(g_pre, "else { _t%d = _t%d; }\n", fhi, fmid);
-        emit_indent(g_pre, g_indent + 1);
-        buf_puts(g_pre, "}\n");
-        emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "else if (sp_poly_truthy(_t%d)) { _t%d = sp_ofloat_of(_t%d); _t%d = _t%d; }\n",
-                   fv, fres, fmid, fhi, fmid);
-        emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "else { _t%d = _t%d; }\n", flo, fmid);
-      }
-      else {
-        emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "if (%s) { _t%d = sp_ofloat_of(_t%d); _t%d = _t%d; }\n",
-                   cb.p ? cb.p : "0", fres, fmid, fhi, fmid);
-        emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "else { _t%d = _t%d; }\n", flo, fmid);
-      }
-      free(cb.p);
-      emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-      oint_open(c, id, TY_FLOAT, b); buf_printf(b, "_t%d", fres); oint_close(c, id, b);
-      return 1;
-    }
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_ofloat _t%d = sp_ofloat_nil(), _t%d = sp_ofloat_nil(); int _t%d = 0, _t%d = 0;\n",
+               fres, fsat, ffound, fsm);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "while (_t%d + 1 < _t%d) {\n", klo, khi);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "int64_t _t%d = sp_bsearch_key_mid(_t%d, _t%d);\n", kmid, klo, khi);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "double _t%d = sp_key2f(_t%d);\n", fx, kmid);
+    if (p0) { snprintf(pv, sizeof pv, "_t%d", fx); emit_iter_param_assign(c, block, p0_orig, p0, TY_FLOAT, pv, g_pre, g_indent + 1); }
+    IterStep st; emit_iter_step_open(c, block, 1, g_indent + 1, &st);
+    int save = g_indent; g_indent++;
+    Buf cb; memset(&cb, 0, sizeof cb);
+    emit_iter_step_tail(c, &st, &cb); g_indent = save;
+    int fv = ++g_tmp, fsa = ++g_tmp;
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_RbVal _t%d = %s; int _t%d;\n", fv, cb.p ? cb.p : "sp_box_nil()", fsa);
+    free(cb.p);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "if (sp_bsearch_answer(_t%d, &_t%d, &_t%d)) { _t%d = sp_ofloat_of(_t%d); _t%d = 1; break; }\n",
+               fv, fsm, fsa, fres, fx, ffound);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "if (_t%d) _t%d = sp_ofloat_of(_t%d);\n", fsa, fsat, fx);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "if (_t%d) _t%d = _t%d; else _t%d = _t%d;\n", fsm, khi, kmid, klo, kmid);
+    emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "if (!_t%d) _t%d = _t%d;\n", ffound, fres, fsat);
+    oint_open(c, id, TY_FLOAT, b); buf_printf(b, "_t%d", fres); oint_close(c, id, b);
+    return 1;
   }
   if (recv < 0 || comp_ntype(c, recv) != TY_RANGE) return 0;
   int tr = ++g_tmp, tlo = ++g_tmp, thi = ++g_tmp, tres = ++g_tmp, tmid = ++g_tmp;
@@ -1367,24 +1283,27 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "else %s\n", left);
   }
   else if (repr_of(c, bb[bn - 1]).kind == RK_BOXED) {
-    /* a mixed block (int-or-nil ternary) is CRuby's combined dispatch: an
-       Integer is find-any (0 found, positive right, negative left), any
-       other truthy value is find-minimum, nil/false searches right */
-    int tv = ++g_tmp;
+    /* a boxed answer takes CRuby's BSEARCH_CHECK (sp_bsearch_answer): a
+       zero is the answer, true is kept and searches down, a number by its
+       sign, nil or false up, anything else a TypeError */
+    int tv = ++g_tmp, tsm = ++g_tmp, tsa = ++g_tmp;
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", tv, cb.p ? cb.p : "sp_box_nil()");
+    buf_printf(g_pre, "sp_RbVal _t%d = %s; int _t%d, _t%d;\n", tv, cb.p ? cb.p : "sp_box_nil()", tsm, tsa);
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "if (_t%d.tag == SP_TAG_INT) {\n", tv);
-    emit_indent(g_pre, g_indent + 2);
-    buf_printf(g_pre, "if (_t%d.v.i == 0) { _t%d = sp_oint_of(_t%d); break; }\n", tv, tres, tmid);
-    emit_indent(g_pre, g_indent + 2);
-    buf_printf(g_pre, "else if (_t%d.v.i > 0) %s\n", tv, right);
-    emit_indent(g_pre, g_indent + 2);
-    buf_printf(g_pre, "else %s\n", left);
-    emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
+    buf_printf(g_pre, "if (sp_bsearch_answer(_t%d, &_t%d, &_t%d)) { _t%d = sp_oint_of(_t%d); break; }\n",
+               tv, tsm, tsa, tres, tmid);
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "else if (sp_poly_truthy(_t%d)) { _t%d = sp_oint_of(_t%d); %s }\n", tv, tres, tmid, left);
-    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else %s\n", right);
+    buf_printf(g_pre, "if (_t%d) _t%d = sp_oint_of(_t%d);\n", tsa, tres, tmid);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "if (_t%d) %s else %s\n", tsm, left, right);
+  }
+  else if (fa_t != TY_BOOL && fa_t != TY_NIL && fa_t != TY_UNKNOWN) {
+    /* an answer of no kind the search takes: CRuby's TypeError */
+    Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, fa_t, cb.p ? cb.p : "sp_box_nil()", &bx);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_raise_cls(\"TypeError\", sp_sprintf(SPL(\"wrong argument type %%s (must be numeric, true, false or nil)\"), "
+                      "sp_poly_class_name(%s)));\n", bx.p ? bx.p : "sp_box_nil()");
+    free(bx.p);
   }
   else {
     emit_indent(g_pre, g_indent + 1);
