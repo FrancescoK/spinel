@@ -5715,6 +5715,9 @@ int emit_poly_pred_value(Compiler *c, int id, const char *tvref,
         buf_printf(b, "sp_poly_is_a(%s, (sp_Class){%d})", tvref, target);
         return 1;
       }
+      /* a reopened builtin (`class Array` with a method added) is a class of
+         the program too, but its values are the builtin's */
+      if (target >= 0 && is_builtin_reopen(c->classes[target].name)) target = -1;
       if (target >= 0) {   /* user-class target: chain check on the object cls_id */
         buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id >= 0 && "
                       "sp_class_le((sp_Class){%s.cls_id}, (sp_Class){%d}))",
