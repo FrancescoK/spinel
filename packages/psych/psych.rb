@@ -1139,6 +1139,22 @@ module Psych
     found ? value : fallback
   end
 
+  # The tag tables a program registers its classes in (activesupport's
+  # time_with_zone.rb, actionpack's Parameters): Psych's load_tags maps a
+  # tag to the class name a load builds, dump_tags a class to the tag a
+  # dump writes. Building or dumping such an object is not done here, so
+  # the tables are kept as written and answer what was written.
+  @load_tags = {}
+  @dump_tags = {}
+  def self.load_tags = @load_tags
+  def self.load_tags=(tags)
+    @load_tags = tags
+  end
+  def self.dump_tags = @dump_tags
+  def self.dump_tags=(tags)
+    @dump_tags = tags
+  end
+
   def self.load(yaml, permitted_classes: [Symbol], permitted_symbols: [], aliases: false, filename: nil,
                 fallback: nil, symbolize_names: false, freeze: false, strict_integer: false, parse_symbols: true)
     safe_load(yaml, permitted_classes: permitted_classes, permitted_symbols: permitted_symbols, aliases: aliases,
