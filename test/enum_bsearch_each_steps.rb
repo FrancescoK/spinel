@@ -52,3 +52,12 @@ begin
 rescue TypeError => ex
   puts ex.message
 end
+
+# a mixed answer: the element at low once one was true, as CRuby's
+$seen = []
+mx = [1, 2, 3, 4, 5, 6, 7].bsearch
+r3 = mx.each { |w| visit(w, [true, 1, -1][w % 3]) }
+p r3, $seen
+$seen = []
+mx.each { |w| visit(w, [true, 1, -1][w % 3]) }
+p $seen

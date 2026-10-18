@@ -8,3 +8,6 @@
 2
 [3, 2]
 wrong argument type String (must be numeric, true, false or nil)
+5
+[4, 6, 5]
+[4, 6, 5]

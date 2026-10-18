@@ -19309,6 +19309,7 @@ static sp_RbVal sp_enum_bsearch_each_proc(sp_Enumerator *e, sp_Proc *blk) {
   if (!e || !e->items || !blk) return sp_box_nil();
   sp_int lo = 0, hi = e->items->len;
   sp_RbVal found = sp_box_nil(); SP_GC_ROOT_RBVAL(found);
+  sp_bool sat = FALSE;
   while (lo < hi) {
     sp_int mid = lo + (hi - lo) / 2;
     sp_RbVal item = e->items->data[mid]; SP_GC_ROOT_RBVAL(item);
@@ -19317,10 +19318,10 @@ static sp_RbVal sp_enum_bsearch_each_proc(sp_Enumerator *e, sp_Proc *blk) {
     _sp_proc_poly_ret = sp_box_nil();
     sp_proc_call(blk, 1, slots);
     sp_RbVal result = _sp_proc_poly_ret; SP_GC_ROOT_RBVAL(result);
-    sp_bool sat = FALSE;
-    if (sp_enum_bsearch_narrow(&lo, &hi, mid, result, &sat)) { found = item; break; }
-    if (sat) found = item;
+    if (sp_enum_bsearch_narrow(&lo, &hi, mid, result, &sat)) { found = item; sat = FALSE; break; }
   }
+  /* once an answer was true, the element at low, as rb_ary_bsearch_index answers */
+  if (sat && lo < e->items->len) found = e->items->data[lo];
   e->bsearch_lo = 0; e->bsearch_hi = e->items->len - 1;
   e->bsearch_mid = -1; e->bsearch_waiting = FALSE; e->bsearch_result = sp_box_nil();
   e->peeked = FALSE;
