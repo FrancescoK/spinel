@@ -1580,6 +1580,18 @@ int str_fresh_value(Compiler *c, int n) {
   return (self == 0 || self == BOPF_COPY_CLASS) && !str_self_call(nt, n) && bop_share(TY_STRING, nm) == BSH_PURE;
 }
 
+/* String#dedup is -@, and sp_str_uminus_val raises under -@: a nil
+   receiver raises under dedup (#9347). The receiver the nil fact says is
+   never nil keeps the plain call. */
+int emit_op_string_dedup(Compiler *c, const BopCtx *x, Buf *b) {
+  int named = !recv_never_nil(c, x->recv);
+  buf_printf(b, "sp_str_uminus_val(%s", named ? "sp_nil_recv_named(" : "");
+  if (x->rtext) buf_puts(b, x->rtext);
+  else emit_expr(c, x->recv, b);
+  buf_printf(b, "%s)", named ? ", \"dedup\")" : "");
+  return 1;
+}
+
 int emit_op_string_slice(Compiler *c, const BopCtx *x, Buf *b) {
   int id = x->id, recv = x->recv, argc;
   const int *argv = call_args(c->nt, id, &argc);

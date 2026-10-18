@@ -2328,6 +2328,9 @@ int emit_op_hash_delete(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_invert(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_flatten(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_to_a(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_hash_nil_recv(Compiler *c, const BopCtx *x, Buf *b);
+int emit_hash_has_value(Compiler *c, int recv, int arg, TyKind rt, const char *hn, int poly,
+                        const char *name, Buf *b);
 int emit_op_hash_sort(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_first(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_take(Compiler *c, const BopCtx *x, Buf *b);
@@ -2363,10 +2366,14 @@ int emit_scalar_array_transpose(Compiler *c, int id, int recv, TyKind rt,
 int emit_op_float_rationalize(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_string_scan_checked(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_string_slice(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_string_dedup(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_string_scrub_block(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_transpose(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_nil_recv(Compiler *c, const BopCtx *x, Buf *b);
 int recv_never_nil(Compiler *c, int recv);
+int nil_recv_open(Compiler *c, int recv, const char *rtext, const char *ctype, const char *vt, int root, Buf *b);
+void nil_recv_check(const char *name, int t, Buf *b);
+void nil_recv_close(const char *name, int t, int has_value, Buf *b);
 int emit_op_array_assoc(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_combination(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_product(Compiler *c, const BopCtx *x, Buf *b);

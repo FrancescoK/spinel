@@ -6234,6 +6234,7 @@ int desugar_array_first_last(Compiler *c) {
     c->nscope[idx] = c->nscope[id];
     c->nscope[ia] = c->nscope[id];
     nt_node_set_ref(nt, id, "arguments", ia);
+    if (!nt_str(nt, id, "written_name")) nt_node_set_str(nt, id, "written_name", nm);   /* a nil receiver names first or last, not [] (cplan_call_name) */
     nt_node_set_str(nt, id, "name", "[]");
     changed = 1;
   }
@@ -6458,6 +6459,7 @@ int desugar_array_at(Compiler *c) {
     /* a receiver that turns out boxed may be a Hash or a String, which have #[] but
        no #at: the index read checks the receiver first */
     nt_node_set_int(nt, id, "was_at", 1);
+    if (!nt_str(nt, id, "written_name")) nt_node_set_str(nt, id, "written_name", "at");   /* a nil receiver names at, not [] (cplan_call_name) */
     nt_node_set_str(nt, id, "name", "[]");
     changed = 1;
   }

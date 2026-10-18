@@ -74,6 +74,8 @@ int is_quantifier_or_count(const char *n);  /* all? any? none? one? count: is_qu
 int is_push_unshift(const char *n);   /* << push append unshift: is_push_alias's names and unshift */
 int is_identity_query(const char *n); /* equal? object_id __id__ frozen?: tells an object from its copy */
 int is_len_alias(const char *n);      /* length size */
+int is_length_spelling(const char *n); /* size count empty? */
+int is_difference_spelling(const char *n); /* difference */
 int is_str_each_iter(const char *n);  /* each_char each_line each_byte each_codepoint: String's element iterators */
 int is_freeze_name(const char *n);    /* freeze */
 int is_enum_step_name(const char *n); /* next peek size: an Enumerator stepped from outside */

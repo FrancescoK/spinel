@@ -1,0 +1,68 @@
+PA length_: undefined method 'length' for nil
+PA size_: undefined method 'size' for nil
+PA count_: undefined method 'count' for nil
+PA empty_: undefined method 'empty?' for nil
+PA first_: undefined method 'first' for nil
+PA last_: undefined method 'last' for nil
+PA at_: undefined method 'at' for nil
+PA idx: undefined method '[]' for nil
+PA dig_: undefined method 'dig' for nil
+PA dig_two: undefined method 'dig' for nil
+PA shl: undefined method '<<' for nil
+PA shl_val: undefined method '<<' for nil
+PA append_: undefined method 'append' for nil
+PA append_two: undefined method 'append' for nil
+PA push_: undefined method 'push' for nil
+PA push_two: undefined method 'push' for nil
+[3, 3, 3, false, 1, :b, "a", 1, 1]
+[1, "a", :b, 4]
+[1, "a", :b, 4, 4, 5]
+[1, "a", :b, 4, 4, 5, 4]
+OA length_: undefined method 'length' for nil
+OA size_: undefined method 'size' for nil
+OA count_: undefined method 'count' for nil
+OA empty_: undefined method 'empty?' for nil
+OA first_: undefined method 'first' for nil
+OA last_: undefined method 'last' for nil
+OA at_: undefined method 'at' for nil
+OA idx: undefined method '[]' for nil
+OA shl: undefined method '<<' for nil
+OA append_: undefined method 'append' for nil
+OA push_: undefined method 'push' for nil
+[2, 2, 2, false, 1, 2, 2, 1]
+[1, 2, 3, 3, 3, 4]
+HI length_: undefined method 'length' for nil
+HI size_: undefined method 'size' for nil
+HI count_: undefined method 'count' for nil
+HI empty_: undefined method 'empty?' for nil
+HI value_: undefined method 'value?' for nil
+HI has_value_: undefined method 'has_value?' for nil
+[2, 2, 2, false, true, true]
+ST length_: undefined method 'length' for nil
+ST size_: undefined method 'size' for nil
+ST dedup_: undefined method 'dedup' for nil
+ST uminus: undefined method '-@' for nil
+[3, 3, "abc", "abc"]
+IA minus: undefined method '-' for nil
+IA diff: undefined method 'difference' for nil
+IA diff_two: undefined method 'difference' for nil
+IA diff_float: undefined method 'difference' for nil
+IA diff_str: undefined method 'difference' for nil
+IA diff_mixed: undefined method 'difference' for nil
+[[1, 3], [1, 3], [1], [1, 2, 3], ["x"], [2, 3]]
+HK s_len: undefined method 'length' for nil
+HK s_size: undefined method 'size' for nil
+HK s_count: undefined method 'count' for nil
+HK s_empty: undefined method 'empty?' for nil
+HK x_len: undefined method 'length' for nil
+HK y_len: undefined method 'length' for nil
+HK z_len: undefined method 'length' for nil
+[1, 1, 1, false, 1, 1, 1]
+MK first of a call: undefined method 'first' for nil
+MK last of a call: undefined method 'last' for nil
+MK at of a call: undefined method 'at' for nil
+[1, 2.5, "a"]
+boxed last: undefined method 'last' for nil
+boxed first: undefined method 'first' for nil
+boxed at: undefined method 'at' for nil
+["a", 1, 1]

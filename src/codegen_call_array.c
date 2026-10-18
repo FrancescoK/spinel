@@ -222,9 +222,12 @@ int emit_op_array_cycle_n(Compiler *c, const BopCtx *x, Buf *b) {
 int emit_op_array_last(Compiler *c, const BopCtx *x, Buf *b) {
   int t = ++g_tmp;
   Buf rb = expr_buf(c, x->recv);
+  /* a receiver that can be nil raises under last, not under the [] its read names */
+  int nil_ok = recv_never_nil(c, x->recv);
+  const char *pre = nil_ok ? "" : "sp_nil_recv_named(", *post = nil_ok ? "" : ", \"last\")";
   if (x->rt == TY_POLY_ARRAY)
-    buf_printf(b, "({ sp_PolyArray *_t%d = %s; sp_PolyArray_get%s(_t%d, sp_PolyArray_length(_t%d) - 1); })",
-               t, rb.p ? rb.p : "", recv_never_nil(c, x->recv) ? "" : "_m", t, t);
+    buf_printf(b, "({ sp_PolyArray *_t%d = %s%s%s; sp_PolyArray_get(_t%d, sp_PolyArray_length(_t%d) - 1); })",
+               t, pre, rb.p ? rb.p : "", post, t, t);
   else if (oint_kind(ty_array_elem(x->rt))) {
     /* an Integer or Float element is read with its nil (an empty array,
        a nil element), unwrapped where the consumer wants it plain */
@@ -236,8 +239,8 @@ int emit_op_array_last(Compiler *c, const BopCtx *x, Buf *b) {
   }
   else {
     const char *k = array_kind(x->rt);
-    buf_printf(b, "({ %s _t%d = %s; sp_%sArray_get%s(_t%d, sp_%sArray_length(_t%d) - 1); })",
-               c_type_name(x->rt), t, rb.p ? rb.p : "", k, recv_never_nil(c, x->recv) ? "" : "_m", t, k, t);
+    buf_printf(b, "({ %s _t%d = %s%s%s; sp_%sArray_get(_t%d, sp_%sArray_length(_t%d) - 1); })",
+               c_type_name(x->rt), t, pre, rb.p ? rb.p : "", post, k, t, k, t);
   }
   free(rb.p);
   return 1;
@@ -600,6 +603,43 @@ int emit_op_array_setop(Compiler *c, const BopCtx *x, Buf *b) {
   (void)name; (void)a0; (void)k; (void)block; (void)argv;
   if (emit_setop_splat(c, id, recv, rt, name, b)) return 1;
   if (emit_array_operand_type_error(c, x, b)) return 1;
+  /* difference on a receiver that can be nil raises under difference, not
+     under the - the functions name (#9347), once every operand has run: the
+     receiver and the operands are evaluated into temps, the receiver is
+     tested (and seen as tested, nil_tested), and the set op is emitted over
+     the temps, so an operand of another element kind is boxed after the test
+     and not turned into an empty Array from a NULL receiver */
+  if (is_difference_spelling(name) && argc >= 1 && rt != TY_POLY_ARRAY && k &&
+      !recv_never_nil(c, recv) && !repr_of(c, recv).nil_tested) {
+    int tr = ++g_tmp;
+    Buf rx = expr_buf(c, recv);
+    Buf pre; memset(&pre, 0, sizeof pre);
+    buf_printf(&pre, "({ sp_%sArray *_t%d = %s; SP_GC_ROOT(_t%d); ", k, tr, rx.p ? rx.p : "", tr);
+    free(rx.p);
+    int sv = g_n_argov;
+    view_bind(recv, "_t%d", tr);
+    for (int j = 0; j < argc; j++) {
+      Repr ar = repr_of(c, argv[j]);
+      if (ar.untyped) continue;
+      int ta = ++g_tmp;
+      emit_ctype(c, ar.as_ty, &pre);
+      buf_printf(&pre, " _t%d = ", ta);
+      emit_expr(c, argv[j], &pre);
+      buf_puts(&pre, "; ");
+      emit_gc_root_tmp(c, ar.as_ty, ta, &pre);
+      buf_puts(&pre, " ");
+      view_bind(argv[j], "_t%d", ta);
+    }
+    nil_recv_check(name, tr, &pre);
+    int tok = view_push_repr(c, recv, VR_NIL_TESTED, 1);
+    Buf inner; memset(&inner, 0, sizeof inner);
+    int ok = emit_op_array_setop(c, x, &inner);
+    view_pop(c, tok);
+    view_unbind(sv);
+    if (ok) buf_printf(b, "%s %s; })", pre.p ? pre.p : "", inner.p ? inner.p : "");
+    free(pre.p); free(inner.p);
+    return ok;
+  }
   if (rt == TY_POLY_ARRAY) {
     if (is_set_op(name) && argc == 1 && (a0r.elem == TY_POLY || a0r.untyped)) {
       const char *fn = (is_intersection_alias(name)) ? "intersect" : (is_union_alias(name) ? "union" : "difference");
@@ -1173,7 +1213,18 @@ int emit_op_array_push(Compiler *c, const BopCtx *x, Buf *b) {
   (void)name; (void)k; (void)block; (void)argv;
   if (rt != TY_POLY_ARRAY) return 0;
   if (is_push_alias(name) && argc == 1) {
-    buf_printf(b, "sp_PolyArray_push%s(", recv_never_nil(c, recv) ? "" : "_m"); emit_expr(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+    /* a receiver that can be nil raises under the name as written (push, << or
+       append), once the argument has run */
+    if (recv_never_nil(c, recv)) {
+      buf_puts(b, "sp_PolyArray_push("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      return 1;
+    }
+    Buf rx = expr_buf(c, recv);
+    int t = nil_recv_open(c, recv, rx.p ? rx.p : "", "sp_PolyArray *", NULL, subtree_may_allocate(c->nt, argv[0]), b);
+    free(rx.p);
+    buf_printf(b, "sp_PolyArray_push(_t%d, ", t); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+    nil_recv_close(name, t, 0, b);
     return 1;
   }
   return 0;
@@ -1233,10 +1284,54 @@ int recv_never_nil(Compiler *c, int recv) {
   return !repr_of(c, recv).may_nil;
 }
 
+/* A call on a container that can be nil whose Ruby name its function does not
+   carry: the compiler's own reads take a NULL container for an empty one, and
+   the spellings that share a function (size and count with length; at, first,
+   last and dig with []; << and append with push) are not one method to CRuby,
+   which says `undefined method 'size' for nil` (#9347). A call with no
+   argument passes its receiver through sp_nil_recv_named, which raises under
+   the name as written. A call with arguments holds the receiver in a temp, runs
+   the tolerant function on it, and tests the temp once the arguments have run,
+   as CRuby tests a receiver after evaluating them: nil_recv_open begins the
+   statement expression, with `<vt> _vN = ` ahead of the call when it answers a
+   value of C type vt (NULL for a call that answers none), and roots the temp
+   when root is set, as it must be while an argument can allocate; the caller
+   writes the call on `_tN`, and nil_recv_close ends it. A function that does
+   not take a NULL (a Hash's has_value, difference) is tested first, with
+   nil_recv_check alone, once the arguments have been evaluated into temps. */
+int nil_recv_open(Compiler *c, int recv, const char *rtext, const char *ctype, const char *vt, int root, Buf *b) {
+  /* the argument-order rewrite may hold the receiver in a rooted temp
+     already (`_tN`): that one is the test's, and is not copied and rooted again */
+  int t = -1, held = 0, n = 0;
+  for (int i = 0; i < g_n_argov; i++)
+    if (g_argov_node[i] == recv) held = 1;
+  if (held && (sscanf(rtext, "_t%d%n", &t, &n) != 1 || rtext[n])) t = -1;
+  buf_puts(b, "({ ");
+  if (t < 0) {
+    t = ++g_tmp;
+    buf_printf(b, "%s _t%d = %s; ", ctype, t, rtext);
+    if (root) buf_printf(b, "SP_GC_ROOT(_t%d); ", t);
+  }
+  if (vt) buf_printf(b, "%s _v%d = ", vt, t);
+  return t;
+}
+
+void nil_recv_check(const char *name, int t, Buf *b) {
+  buf_printf(b, "if (SP_UNLIKELY(!_t%d)) sp_nil_recv(\"%s\");", t, name);
+}
+
+void nil_recv_close(const char *name, int t, int has_value, Buf *b) {
+  buf_puts(b, "; ");
+  nil_recv_check(name, t, b);
+  if (has_value) buf_printf(b, " _v%d;", t);
+  buf_puts(b, " })");
+}
+
 /* Array#length, size, count, empty?, to_a and entries (#9347). nil has no
    length, size, count or empty?, nil.to_a is [], and nil has no entries, so a
-   receiver that can be nil is read through the functions that say so
-   (sp_*Array_length_m, _to_a, _entries); one that cannot keeps the plain read
+   receiver that can be nil is read through what says so (sp_*Array_length_m,
+   or sp_nil_recv_named under the name as written, _to_a, _entries); one that
+   cannot keeps the plain read
    the compiler's own loops use (sp_*Array_length, tolerant of NULL as it
    always was, and to_a's receiver itself), so a program over an Array known
    not to be nil keeps its C and the folding gcc does on it. entries copies,
@@ -1252,6 +1347,8 @@ int emit_op_array_nil_recv(Compiler *c, const BopCtx *x, Buf *b) {
   int plain = recv_never_nil(c, x->recv) || nt_safe_nav(c->nt, x->id);
   /* Integer and Float Arrays have no tolerant length to tell apart from */
   int len_m = !plain && (rt == TY_POLY_ARRAY || rt == TY_STR_ARRAY || ty_is_ptr_array(rt));
+  /* the raising length names length: size, count and empty? raise under their own name */
+  int named = len_m && is_length_spelling(x->name);
   /* an object Array's raiser already names the call */
   if (!plain && sp_streq(x->name, "empty?") && ty_is_ptr_array(rt)) {
     buf_puts(b, "sp_PtrArray_empty(");
@@ -1267,10 +1364,12 @@ int emit_op_array_nil_recv(Compiler *c, const BopCtx *x, Buf *b) {
   else if (to_a || entries) buf_printf(b, "sp_%sArray_%s(", k, entries ? "entries" : "to_a");
   else {
     if (sp_streq(x->name, "empty?")) buf_puts(b, "(");
-    buf_printf(b, "sp_%sArray_length%s(", lk, len_m ? "_m" : "");
+    buf_printf(b, "sp_%sArray_length%s(", lk, len_m && !named ? "_m" : "");
+    if (named) buf_puts(b, "sp_nil_recv_named(");
   }
   if (x->rtext) buf_puts(b, x->rtext);
   else emit_expr(c, x->recv, b);
+  if (named) buf_printf(b, ", \"%s\")", x->name);
   if (!(to_a && plain)) buf_puts(b, ")");
   if (sp_streq(x->name, "empty?")) buf_puts(b, " == 0)");
   if (lift) buf_puts(b, ")");
@@ -2076,8 +2175,7 @@ int emit_call_append_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     else emit_recv_rooted(c, recv, t, "SP_GC_ROOT", b);
     TyKind elem = ty_array_elem(art);
     for (int a = 0; a < argc; a++) {
-      buf_printf(b, "sp_%sArray_push%s(_t%d, ", k,
-                 art == TY_POLY_ARRAY && !recv_never_nil(c, recv) ? "_m" : nil_store_sfx(c, k, argv[a]), t);
+      buf_printf(b, "sp_%sArray_push%s(_t%d, ", k, nil_store_sfx(c, k, argv[a]), t);
       if (art == TY_POLY_ARRAY) emit_boxed(c, argv[a], b);
       /* a poly value into a String, Integer or Float array: its nil is the
          slot's nil, and a value of another kind is refused, as the statement
@@ -2114,6 +2212,10 @@ int emit_call_append_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       else emit_coerce(c, argv[a], elem, CO_HOLD, "an Array push", b);
       buf_puts(b, "); ");
     }
+    /* a nil mixed Array took none of the pushes: it raises, under the name
+       as written, once every argument has run */
+    if (art == TY_POLY_ARRAY && !recv_never_nil(c, recv))
+      buf_printf(b, "if (SP_UNLIKELY(!_t%d)) sp_nil_recv(\"%s\"); ", t, name);
     buf_printf(b, "_t%d; })", t);
     return 1;
   }

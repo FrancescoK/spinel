@@ -818,6 +818,11 @@ SP_NORETURN SP_COLD void sp_nil_recv(const char *meth);          /* NoMethodErro
 SP_NORETURN SP_COLD void sp_raise_nil_to_int(int of_wording);    /* TypeError "no implicit conversion from nil to integer" (1: "of nil into Integer") */
 SP_NORETURN SP_COLD void sp_raise_nil_opnd(const char *cls);     /* TypeError "nil can't be coerced into <cls>" */
 SP_NORETURN SP_COLD void sp_raise_nil_cmp(int left_nil, const char *op, const char *cls);  /* ArgumentError "comparison of <cls> with nil failed" (left_nil: NoMethodError) */
+/* The test of a call written under a name its function does not carry (size
+   and count over a length, first over an element read): the receiver, or the
+   NoMethodError for nil under that name. Passed through so the call reads it
+   in place (#9347). */
+static inline void *sp_nil_recv_named(const void *p, const char *meth) { if (SP_UNLIKELY(!p)) sp_nil_recv(meth); return (void *)p; }
 /* the RECEIVER of `op` (`x + 1`, `x.abs`, `x < y`): NoMethodError for nil */
 static inline sp_int    sp_oint_val(sp_oint o, const char *op)     { if (SP_UNLIKELY(o.nil)) sp_nil_recv(op); return o.v; }
 static inline sp_float  sp_ofloat_val(sp_ofloat o, const char *op) { if (SP_UNLIKELY(o.nil)) sp_nil_recv(op); return o.v; }
@@ -1014,7 +1019,6 @@ static SP_NOINLINE void sp_PolyArray_grow(sp_PolyArray *a) {
   h->size += sizeof(sp_RbVal) * a->cap; sp_gc_bytes_add(sizeof(sp_RbVal) * a->cap);
 }
 static inline void sp_PolyArray_push(sp_PolyArray *a, sp_RbVal v) { if (!a) return; sp_gc_wb((void*)a); if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return; } if (a->len >= a->cap) sp_PolyArray_grow(a); a->data[a->len++] = v; }
-static inline void sp_PolyArray_push_m(sp_PolyArray *a, sp_RbVal v) { if (SP_UNLIKELY(!a)) sp_nil_recv("push"); sp_PolyArray_push(a, v); }
 static inline sp_RbVal sp_PolyArray_get(sp_PolyArray *a, sp_int i) { if (!a) return sp_box_nil(); if ((unsigned long long)i < (unsigned long long)a->len) return a->data[i]; if (i < 0) i += a->len; if (i < 0 || i >= a->len) return sp_box_nil(); return a->data[i]; }
 static inline sp_RbVal sp_PolyArray_get_m(sp_PolyArray *a, sp_int i) { if (SP_UNLIKELY(!a)) sp_nil_recv("[]"); return sp_PolyArray_get(a, i); }
 /* ---- relocated from spinel_rt.h: frozen-string check primitives used

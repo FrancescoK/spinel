@@ -310,6 +310,18 @@ int is_len_alias(const char *n) {
   return sp_streq(n, "length") || sp_streq(n, "size");
 }
 
+/* The named spelling of Array#-: its functions raise under - (#9347). */
+int is_difference_spelling(const char *n) {
+  return sp_streq(n, "difference");
+}
+
+/* The spellings of an Array's or Hash's length whose function names length
+   (sp_*Array_length_m): a nil receiver raises under the name as written, which
+   is length's own only for length itself (#9347). */
+int is_length_spelling(const char *n) {
+  return sp_streq(n, "size") || sp_streq(n, "count") || sp_streq(n, "empty?");
+}
+
 int is_add_sub_mul(const char *n) {
   return sp_streq(n, "+") || sp_streq(n, "-") || sp_streq(n, "*");
 }

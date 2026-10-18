@@ -787,6 +787,55 @@ int emit_op_hash_flatten(Compiler *c, const BopCtx *x, Buf *b) {
   return 1;
 }
 
+/* Hash#length, size, count and empty?: the length of a Hash that can be nil
+   raises under the name as written, where the shared length function could
+   only say length (and only the Integer Hash's said it: the other kinds'
+   dereferenced the NULL) (#9347). A
+   receiver the nil fact says is never nil keeps the plain read. */
+int emit_op_hash_nil_recv(Compiler *c, const BopCtx *x, Buf *b) {
+  const char *hn = ty_hash_cname(x->rt);
+  if (!hn) return 0;
+  int empty = sp_streq(x->name, "empty?");
+  int named = !recv_never_nil(c, x->recv) && !nt_safe_nav(c->nt, x->id);
+  /* a length where the call's slot holds its nil is lifted, as the template did */
+  int lift = !empty && node_is_oint(c, x->id);
+  if (lift) buf_printf(b, "%s(", oint_of(TY_INT));
+  if (empty) buf_puts(b, "(");
+  buf_printf(b, "sp_%sHash_length(%s", hn, named ? "sp_nil_recv_named(" : "");
+  if (x->rtext) buf_puts(b, x->rtext);
+  else emit_expr(c, x->recv, b);
+  if (named) buf_printf(b, ", \"%s\")", x->name);
+  buf_puts(b, ")");
+  if (empty) buf_puts(b, " == 0)");
+  if (lift) buf_puts(b, ")");
+  return 1;
+}
+
+/* Hash#value? and has_value?: the function names value?, so has_value? on a
+   receiver that can be nil must raise under its own name, once the argument
+   has run (#9347); value? takes the same block, which names the call as
+   written. A receiver the nil fact says is never nil keeps the plain call. */
+int emit_hash_has_value(Compiler *c, int recv, int arg, TyKind rt, const char *hn, int poly,
+                        const char *name, Buf *b) {
+  if (!recv_never_nil(c, recv)) {
+    Buf rx = expr_buf(c, recv);
+    char ct[48]; snprintf(ct, sizeof ct, "sp_%sHash *", hn);
+    int t = nil_recv_open(c, recv, rx.p ? rx.p : "", ct, NULL, subtree_may_allocate(c->nt, arg), b);
+    free(rx.p);
+    int ta = ++g_tmp;
+    buf_printf(b, "%s _t%d = ", poly ? "sp_RbVal" : c_type_name(ty_hash_val(rt)), ta);
+    if (poly) emit_boxed(c, arg, b); else emit_expr(c, arg, b);
+    buf_puts(b, "; "); nil_recv_check(name, t, b);
+    buf_printf(b, " sp_%sHash_has_value(_t%d, _t%d); })", hn, t, ta);
+    return 1;
+  }
+  buf_printf(b, "sp_%sHash_has_value(", hn);
+  emit_expr(c, recv, b); buf_puts(b, ", ");
+  if (poly) emit_boxed(c, arg, b); else emit_expr(c, arg, b);
+  buf_puts(b, ")");
+  return 1;
+}
+
 /* to_a / entries: the [key, value] pairs. The pairs loop reads the table's
    length, so a receiver that can be nil (NULL) is answered ahead of it:
    nil.to_a is [], and nil has no entries (#9347). */
