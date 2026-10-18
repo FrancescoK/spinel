@@ -2845,6 +2845,32 @@ static int push_chain_base(Compiler *c, int recv) {
   return recv;
 }
 
+/* `$g[i] = v`, `@@a << v`, `TABLE[i] = v`: the slot is typed from its
+   writes alone, so an element its array kind cannot hold widens it to the
+   general Array here, as it does a local's. Only the widening is taken:
+   seeding or re-keying these slots stays with their write passes, which
+   keep a general Array against a typed array write. A Hash slot widens the
+   same way from a store or a merge! of keys or values it cannot hold
+   (`TABLE["k"] = v` into a Symbol-keyed one, `TABLE.merge!(other)` of a
+   Hash keyed by anything). 1 when the slot widened. */
+static int fold_named_slot_evidence(Compiler *c, int recv, int is_push, int is_splice,
+                                    int is_idx_write, TyKind kt, TyKind vt) {
+  TyRef nslot = named_array_slot(c, recv);
+  int nhash = nslot && ty_is_hash(*nslot) && is_idx_write && !is_push && !is_splice;
+  if (!nslot || (!nhash && ((!ty_is_array(*nslot) && *nslot != TY_STRH_ARRAY) || *nslot == TY_POLY_ARRAY))) return 0;
+  TyKind nt2 = *nslot;
+  fold_container_evidence(&nt2, is_push, is_splice, kt, vt);
+  /* --share-strings: a String's handle pushed into a String Array
+     keeps its Strings as handles, where the container class can take
+     that form (share_strh_gate marks it otherwise) */
+  if (nt2 == TY_POLY_ARRAY && c->share_strings && is_push && vt == TY_STRBUF &&
+      (*nslot == TY_STR_ARRAY || *nslot == TY_STRH_ARRAY) && strh_named_open(c, recv))
+    nt2 = TY_STRH_ARRAY;
+  if (nt2 == *nslot || (nhash && !ty_is_hash(nt2))) return 0;
+  ty_ref_set(nslot, nt2);
+  return 1;
+}
+
 static int value_leaves(Compiler *c, int n, int *out, int nout, int cap);
 enum { VL_NIL = 1, VL_NARROW = 2 };
 static int value_leaves_ex(Compiler *c, int n, int *out, int nout, int cap, int opts);
@@ -3599,22 +3625,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
     else if ((is_push || is_idx_write) && rty &&
              (sp_streq(rty, "GlobalVariableReadNode") || sp_streq(rty, "ClassVariableReadNode") ||
               sp_streq(rty, "ConstantReadNode"))) {
-      /* `$g[i] = v`, `@@a << v`, `TABLE[i] = v`: the slot is typed from its
-         writes alone, so an element its array kind cannot hold widens it to
-         the general Array here, as it does a local's. Only the widening is
-         taken: seeding or re-keying these slots stays with their write
-         passes, which keep a general Array against a typed array write. */
-      TyRef nslot = named_array_slot(c, recv);
-      if (!nslot || (!ty_is_array(*nslot) && *nslot != TY_STRH_ARRAY) || *nslot == TY_POLY_ARRAY) continue;
-      TyKind nt2 = *nslot;
-      fold_container_evidence(&nt2, is_push, is_splice, (TyKind)kt, (TyKind)vt);
-      /* --share-strings: a String's handle pushed into a String Array
-         keeps its Strings as handles, where the container class can take
-         that form (share_strh_gate marks it otherwise) */
-      if (nt2 == TY_POLY_ARRAY && c->share_strings && is_push && vt == TY_STRBUF &&
-          (*nslot == TY_STR_ARRAY || *nslot == TY_STRH_ARRAY) && strh_named_open(c, recv))
-        nt2 = TY_STRH_ARRAY;
-      if (nt2 != *nslot) { ty_ref_set(nslot, nt2); changed = 1; }
+      changed |= fold_named_slot_evidence(c, recv, is_push, is_splice, is_idx_write, (TyKind)kt, (TyKind)vt);
       continue;
     }
     else if ((is_push || is_idx_write) && rty && sp_streq(rty, "CallNode") &&
