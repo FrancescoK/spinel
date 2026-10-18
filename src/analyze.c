@@ -33981,6 +33981,16 @@ static int nested_elem_nilable(Compiler *c, int v, int depth) {
   return 0;
 }
 
+/* One value position of a conditional or a sequence: the array there is asked
+   at the next level. `depth` counts the calls and slots followed, as it did;
+   the structure between two of them costs none. A walk that gave up is a
+   position that may hold a nil. */
+typedef struct { Compiler *c; int depth; } ElemArms;
+static int elem_arm(const VpLeaf *leaf, void *ud) {
+  ElemArms *a = ud;
+  if (leaf->kind == VPK_NIL) return 0;
+  return leaf->kind == VPK_GAVE_UP || nullable_int_elem_expr(a->c, leaf->node, a->depth + 1);
+}
 static int nullable_int_elem_expr(Compiler *c, int v, int depth) {
   const NodeTable *nt = c->nt;
   if (v < 0 || depth > 8) return 0;
@@ -34003,35 +34013,16 @@ static int nullable_int_elem_expr(Compiler *c, int v, int depth) {
   /* A conditional's value is one of its arms, as nullable_int_value walks
      them: the array is marked if any arm's array is. An absent arm is a nil,
      not an array holding one. */
-  if (nt_kind(nt, v) == NK_ParenthesesNode)
-    return nullable_int_elem_expr(c, nt_ref(nt, v, "body"), depth + 1);
-  if (nt_kind(nt, v) == NK_StatementsNode) {
-    int n = 0; const int *st = nt_arr(nt, v, "body", &n);
-    return st && n > 0 && nullable_int_elem_expr(c, st[n - 1], depth + 1);
+  switch (nt_kind(nt, v)) {
+  case NK_ParenthesesNode: case NK_StatementsNode: case NK_ElseNode: case NK_IfNode: case NK_UnlessNode:
+  case NK_CaseNode: case NK_CaseMatchNode: case NK_BeginNode: case NK_RescueModifierNode:
+  case NK_OrNode: case NK_AndNode: {
+    ElemArms a = { c, depth };
+    return for_each_value_position(nt, v, VP_AND_LEFT | VP_BEGIN_BOTH | VPS_ALL, elem_arm, &a);
   }
-  if (nt_kind(nt, v) == NK_ElseNode)
-    return nullable_int_elem_expr(c, nt_ref(nt, v, "statements"), depth + 1);
-  if (nt_kind(nt, v) == NK_IfNode || nt_kind(nt, v) == NK_UnlessNode)
-    return nullable_int_elem_expr(c, nt_ref(nt, v, "statements"), depth + 1) ||
-           nullable_int_elem_expr(c, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1);
-  if (nt_kind(nt, v) == NK_CaseNode || nt_kind(nt, v) == NK_CaseMatchNode) {
-    int nw = 0; const int *whens = nt_arr(nt, v, "conditions", &nw);
-    for (int w = 0; whens && w < nw; w++)
-      if (nullable_int_elem_expr(c, nt_ref(nt, whens[w], "statements"), depth + 1)) return 1;
-    return nullable_int_elem_expr(c, nt_ref(nt, v, "else_clause"), depth + 1);
+  default:
+    break;
   }
-  if (nt_kind(nt, v) == NK_BeginNode) {
-    if (nullable_int_elem_expr(c, nt_ref(nt, v, "statements"), depth + 1)) return 1;
-    for (int rs = nt_ref(nt, v, "rescue_clause"); rs >= 0; rs = nt_ref(nt, rs, "subsequent"))
-      if (nullable_int_elem_expr(c, nt_ref(nt, rs, "statements"), depth + 1)) return 1;
-    return nullable_int_elem_expr(c, nt_ref(nt, v, "else_clause"), depth + 1);
-  }
-  if (nt_kind(nt, v) == NK_RescueModifierNode)
-    return nullable_int_elem_expr(c, nt_ref(nt, v, "expression"), depth + 1) ||
-           nullable_int_elem_expr(c, nt_ref(nt, v, "rescue_expression"), depth + 1);
-  if (nt_kind(nt, v) == NK_OrNode || nt_kind(nt, v) == NK_AndNode)
-    return nullable_int_elem_expr(c, nt_ref(nt, v, "left"), depth + 1) ||
-           nullable_int_elem_expr(c, nt_ref(nt, v, "right"), depth + 1);
   if (nt_kind(nt, v) == NK_CallNode) {
     const char *nm = nt_str(nt, v, "name");
     int tail = call_block_tail(c, v);
