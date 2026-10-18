@@ -429,18 +429,52 @@ static int bop_result_fallback_allowed(const char *name) {
          !strcmp(name, "take") || !strcmp(name, "drop") ||
          !strcmp(name, "fetch") || !strcmp(name, "sample");
 }
+/* Whether a yield site answers `name` on a receiver of kind recv from the
+   builtin-op rows rather than from a rule of its own: 1 for a listed pair,
+   0 for a listed name whose receiver is not one of its kinds (the site keeps
+   the yield's single typing), -1 for a name not listed. This list, not the
+   rows, is the set of pairs a yield may widen to poly: the rows answer
+   kinds beyond these (a poly Array's `first`, Complex#abs), and widening
+   those sites would change what is emitted. *self_name is set for the names
+   whose answer is the receiver's own kind where no row states one. */
+static int yield_site_listed(const char *name, TyKind recv, int *self_name) {
+  int num = recv == TY_INT || recv == TY_FLOAT;
+  *self_name = 0;
+  if (!strcmp(name, "abs") || !strcmp(name, "magnitude")) return num;
+  /* String#-@ is the deduplicated frozen String, so a String site belongs
+     here too; a String has no abs or magnitude. */
+  if (!strcmp(name, "-@")) { *self_name = 1; return num || recv == TY_STRING; }
+  if (!strcmp(name, "itself") || !strcmp(name, "dup") || !strcmp(name, "clone") ||
+      !strcmp(name, "freeze")) {
+    *self_name = 1;
+    return num || recv == TY_STRING || recv == TY_SYMBOL || ty_recv_is_plain_array(recv);
+  }
+  if (!strcmp(name, "sort") || !strcmp(name, "reverse") || !strcmp(name, "uniq") ||
+      !strcmp(name, "compact") || !strcmp(name, "to_a") || !strcmp(name, "first") ||
+      !strcmp(name, "last") || !strcmp(name, "min") || !strcmp(name, "max") ||
+      !strcmp(name, "pop") || !strcmp(name, "shift"))
+    return ty_recv_is_plain_array(recv);
+  return -1;
+}
 int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind arg1,
-                            int range_has_float_bound, TyKind recv, int promote, TyKind *out) {
+                            int range_has_float_bound, TyKind recv, int promote, TyKind *out,
+                            const struct BuiltinOp **row) {
   if (!name) return 0;
+  if (row) *row = NULL;
   if (argc == 0) {
-    if (!strcmp(name, "abs") || !strcmp(name, "magnitude")) {
-      if (recv != TY_INT && recv != TY_FLOAT) return 0;
-      *out = recv; return 1;
-    }
-    /* String#-@ is the deduplicated frozen String, so a String site belongs
-       here too; a String has no abs or magnitude. */
-    if (!strcmp(name, "-@")) {
-      if (recv != TY_INT && recv != TY_FLOAT && recv != TY_STRING) return 0;
+    /* A listed name answers from its row: the receiver's own kind for the
+       copies and reorderings, the element for the element readers. Where no
+       row states a kind -- Integer and Float have none for -@ itself dup
+       clone freeze, String's leave it to their flags, an Array has none for
+       itself -- those five names answer the receiver's own kind. */
+    int self_name;
+    int listed = yield_site_listed(name, recv, &self_name);
+    if (listed == 0) return 0;
+    if (listed > 0) {
+      const BuiltinOp *op = bop_find(bop_family_of(recv), name, 0, 0);
+      TyKind r = op ? bop_result(op, recv) : TY_UNKNOWN;
+      if (r != TY_UNKNOWN) { *out = r; if (row) *row = op; return 1; }
+      if (!self_name) return 0;
       *out = recv; return 1;
     }
     /* succ: a String or Symbol site always answers its own kind (String's
@@ -471,22 +505,6 @@ int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind arg1,
        unresolvable pair. */
     if (!strcmp(name, "sum") && ty_recv_is_plain_array(recv)) {
       *out = fold_sum_type(TY_INT, ty_array_elem(recv), promote); return 1;
-    }
-    if (!strcmp(name, "itself") || !strcmp(name, "dup") || !strcmp(name, "clone") ||
-        !strcmp(name, "freeze")) {
-      if (recv != TY_INT && recv != TY_FLOAT && recv != TY_STRING && recv != TY_SYMBOL &&
-          !ty_recv_is_plain_array(recv)) return 0;
-      *out = recv; return 1;
-    }
-    if (!strcmp(name, "sort") || !strcmp(name, "reverse") || !strcmp(name, "uniq") ||
-        !strcmp(name, "compact") || !strcmp(name, "to_a")) {
-      if (!ty_recv_is_plain_array(recv)) return 0;
-      *out = recv; return 1;
-    }
-    if (!strcmp(name, "first") || !strcmp(name, "last") || !strcmp(name, "min") ||
-        !strcmp(name, "max") || !strcmp(name, "pop") || !strcmp(name, "shift")) {
-      if (!ty_recv_is_plain_array(recv)) return 0;
-      *out = ty_array_elem(recv); return 1;
     }
     /* No hand-written arm above matched this argc=0 name: fall through
        (instead of returning 0 here) to the generic bop_rows-backed check
@@ -603,7 +621,7 @@ int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind arg1,
     TyKind ak[2] = { arg0, arg1 };
     const BuiltinOp *op = bop_find_arg(bop_family_of(recv), name, argc,
                                         /*has_block=*/0, bop_arg01_kind, ak);
-    if (op && op->result != TY_UNKNOWN) { *out = bop_result(op, recv); return 1; }
+    if (op && op->result != TY_UNKNOWN) { *out = bop_result(op, recv); if (row) *row = op; return 1; }
   }
   return 0;
 }

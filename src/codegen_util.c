@@ -983,7 +983,7 @@ static int yield_builtin_method_site_type(const Compiler *c, int id, TyKind *out
     TyKind a0 = ac >= 1 && av ? comp_ntype(c, av[0]) : TY_UNKNOWN;
     TyKind a1; int rhfb;
     ty_recv_call_extra_args(c, av, ac, &a1, &rhfb);
-    if (ty_recv_builtin_result(op, ac, a0, a1, rhfb, rt, g_promote_mode, out)) return 1;
+    if (ty_recv_builtin_result(op, ac, a0, a1, rhfb, rt, g_promote_mode, out, NULL)) return 1;
   }
   /* a site the table does not answer, beside a reopen on the chain: the
      answer the analysis recorded for this site's kind */

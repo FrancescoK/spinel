@@ -2465,6 +2465,7 @@ void ty_recv_call_extra_args(const Compiler *c, const int *av, int argc,
       *range_has_float_bound = 1;
   }
 }
+static int an_bop_records(Compiler *c, int id);  /* defined with an_bop_find */
 /* What the chain from the yield up to `node` answers at a site whose block
    answers `bt`, by ty_recv_builtin_result one link at a time. */
 static int yield_recv_chain_kind(Compiler *c, int node, TyKind bt, TyKind *out) {
@@ -2500,7 +2501,13 @@ static int yield_recv_chain_kind(Compiler *c, int node, TyKind bt, TyKind *out) 
       *out = (rr == TY_UNKNOWN || rr == TY_VOID) ? TY_POLY : rr;
       return 1;
     } }
-  if (ty_recv_builtin_result(nt_str(nt, node, "name"), ac, a0, a1, rhfb, rk, g_promote_mode, out)) return 1;
+  const struct BuiltinOp *row;
+  if (ty_recv_builtin_result(nt_str(nt, node, "name"), ac, a0, a1, rhfb, rk, g_promote_mode, out, &row)) {
+    /* the row the site's answer came from is the call's, as for any call a
+       row answers; the last site's stays (codegen emits the node per site) */
+    if (row && an_bop_records(c, node)) c->bop_inf[node] = row;
+    return 1;
+  }
   return an_yield_site_builtin_answer(c, node, rk, out);
 }
 static int yield_recv_builtin_every_site(Compiler *c, int call) {
