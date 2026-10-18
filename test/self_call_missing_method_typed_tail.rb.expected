@@ -1,0 +1,7 @@
+"za"
+[1, 2]
+3
+undefined method 'receiver' for an instance of Checker
+undefined method 'pick' for an instance of Checker
+undefined method 'count_of' for an instance of Checker
+[1, 2]
