@@ -947,6 +947,11 @@ typedef struct {
   int implicit_self;
 } InlineTarget;
 
+/* a class method of a class (not a module, whose module_function twins
+   are its instance methods too) */
+static int cmethod_of_class(Compiler *c, const Scope *encl) {
+  return encl->is_cmethod && encl->class_id >= 0 && !comp_class_is_module(c, &c->classes[encl->class_id]);
+}
 static int inline_string_self(Compiler *c, int id, InlineTarget *t) {
   if (!repr_share_rule(c)) return 0;
   const CallPlan *p = cplan_user(c, id);
@@ -977,7 +982,10 @@ static void inline_target_lookup(Compiler *c, int id, const char *name, int recv
       t->recv_class = g_ie_class_id;
     else if (encl && encl->class_id >= 0) {
       if (encl->is_cmethod) t->mi = comp_cmethod_in_chain(c, encl->class_id, name, NULL);
-      if (t->mi < 0) {
+      /* a class's class method has the class as self: its instance methods
+         are out of reach (a bare `new` is Class#new, not a yielding
+         instance `new` beside it) */
+      if (t->mi < 0 && !cmethod_of_class(c, encl)) {
         t->mi = comp_method_in_chain(c, encl->class_id, name, NULL);
         if (t->mi >= 0) t->implicit_self = 1;
       }
@@ -4140,7 +4148,7 @@ static int call_targets_yielding_method(Compiler *c, int id) {
     if (g_ie_class_id >= 0) mi = comp_method_in_chain(c, g_ie_class_id, name, NULL);
     if (mi < 0 && encl && encl->class_id >= 0) {
       if (encl->is_cmethod) mi = comp_cmethod_in_chain(c, encl->class_id, name, NULL);
-      if (mi < 0) mi = comp_method_in_chain(c, encl->class_id, name, NULL);
+      if (mi < 0 && !cmethod_of_class(c, encl)) mi = comp_method_in_chain(c, encl->class_id, name, NULL);
     }
     else if (mi < 0 && g_class_body_id >= 0)
       mi = comp_cmethod_in_chain(c, g_class_body_id, name, NULL);
