@@ -22774,8 +22774,27 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       buf_printf(b, ", _t%d, _t%d)%s%s; }\n", tk, tv, hc_mark(), *redo ? ")" : "");
       return 1;
     }
+    /* Ruby reads the receiver before the index and the value: an instance,
+       class or global variable that one of them may assign is held first,
+       as the value form orders it (emit_operands_in_order). Read inside the
+       set's argument list, C left the order to the C compiler, and gcc ran
+       `@data[swap(i)] = v`'s swap ahead of @data. The hold goes to the
+       prelude, ahead of any statement the index or the value puts there (a
+       block's, a rescue's). */
+    NodeKind rk = nt_kind(nt, recv);
+    int hold = (rk == NK_InstanceVariableReadNode || rk == NK_GlobalVariableReadNode ||
+                rk == NK_ClassVariableReadNode) &&
+               (subtree_may_reassign_state(c, argv[0]) || subtree_may_reassign_state(c, argv[1]));
+    int th = hold ? ++g_tmp : 0;
+    if (hold) {
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_%sArray *_t%d = ", k, th); emit_expr(c, recv, g_pre);
+      buf_printf(g_pre, "; SP_GC_ROOT(_t%d);\n", th);
+    }
     buf_printf(b, "sp_%sArray_set%s(", k, nsfx);
-    emit_expr(c, recv, b); buf_puts(b, ", ");
+    if (hold) buf_printf(b, "_t%d", th);
+    else emit_expr(c, recv, b);
+    buf_puts(b, ", ");
     emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
     /* a value that can be nil is stored with it (the _nilable set takes the
        oint); a poly RHS converts to the element representation */
