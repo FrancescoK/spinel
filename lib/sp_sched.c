@@ -641,7 +641,14 @@ static void sched_preempt(int w, sp_thread *r) {
   }
   g_npreempt++;
   sp_recompute_safepoint_flag();
-  pthread_kill(g_wslot[w].tid, g_preempt_sig);   /* nudge it to its next safepoint poll */
+  /* Nudge it to its next safepoint poll. The handler stores the flag just
+     set under the lock, so the poll comes without the signal too. macOS
+     does not get it: a signal that lands on a thread waiting for a
+     pthread_rwlock's write lock (OpenSSL takes those) can lose the wakeup,
+     and the thread waits forever (#9484). */
+#ifndef __APPLE__
+  pthread_kill(g_wslot[w].tid, g_preempt_sig);
+#endif
 }
 /* The preemption signal lands on the target worker's own stack. Re-assert the
    flag so the worker sees it even if it was about to clear the lock-free read;
