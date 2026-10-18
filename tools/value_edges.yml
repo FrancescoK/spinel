@@ -37,6 +37,9 @@
 #           hand     the semantics are not an edge list: value_pos.c has an arm
 #                    for it, named `case NK_<kind>:`, and this entry records
 #                    which fields that arm reads (the check demands the case)
+#   up:     how a `hand` entry is read upward (vp_climb): `climb`, the climb
+#           itself reads the arm (the arguments of a jump); `write`, the write
+#           rule of vp_up_hand. Without it, vp_up_hand has a `case NK_<kind>:`
 #   gate:   the shape bit (VPS_<gate>) that must be on for the node to be
 #           looked through; with it off the node is a leaf
 #   link:   a value field whose node continues this node's chain (an elsif, a
@@ -56,7 +59,8 @@ nodes:
   StatementsNode:    {role: wrapper, value: [body.last]}
   ElseNode:          {role: wrapper, value: [statements]}
   # (WhenNode has no kind of its own in the node table, so it cannot be a
-  # wrapper: CaseNode reads each arm's `statements` itself)
+  # wrapper: CaseNode reads each arm's `statements` itself, and vp_up_edge
+  # tests the type of a clause by name)
   WhenNode:          {skip: [conditions.*, statements], why: "the match values are tested, never the node's value; statements is read through CaseNode.conditions"}
   InNode:            {role: wrapper, value: [statements], skip: [pattern]}
 
@@ -66,7 +70,7 @@ nodes:
   CaseNode:          {role: branch, gate: CASE, value: [conditions.*.statements, else_clause], skip: [predicate]}
   OrNode:            {role: branch, gate: LOGIC, value: [left, right]}
   RescueModifierNode: {role: branch, gate: RESCUE_MOD, value: [expression, rescue_expression]}
-  RescueNode:        {role: branch, link: subsequent, value: [statements, "subsequent?"], skip: [exceptions.*, reference]}
+  RescueNode:        {role: branch, gate: BEGIN_CLAUSES, link: subsequent, value: [statements, "subsequent?"], skip: [exceptions.*, reference]}
 
   # ---- hand-written arms (value_pos.c) ----
   # a begin's body, its rescue clauses and its else; never the ensure clause
@@ -76,34 +80,34 @@ nodes:
   # without an else CRuby raises NoMatchingPatternError: VP_CASE_IN_RAISE_NIL
   CaseMatchNode:     {role: hand, value: [conditions.*, else_clause], skip: [predicate]}
   # the jump flags: a single argument is the value that leaves
-  ReturnNode:        {role: hand, value: [arguments]}
-  NextNode:          {role: hand, value: [arguments]}
-  BreakNode:         {role: hand, value: [arguments]}
+  ReturnNode:        {role: hand, up: climb, value: [arguments]}
+  NextNode:          {role: hand, up: climb, value: [arguments]}
+  BreakNode:         {role: hand, up: climb, value: [arguments]}
   # writes under VP_WRITES: a plain write is its value `e`; an or-write or
   # and-write is the target's old value or `e`, so the write is a leaf too
-  LocalVariableWriteNode:         {role: hand, value: [value]}
-  InstanceVariableWriteNode:      {role: hand, value: [value]}
-  GlobalVariableWriteNode:        {role: hand, value: [value]}
-  ClassVariableWriteNode:         {role: hand, value: [value]}
-  ConstantWriteNode:              {role: hand, value: [value]}
-  ConstantPathWriteNode:          {role: hand, value: [value], skip: [target]}
-  LocalVariableOrWriteNode:       {role: hand, value: [value]}
-  InstanceVariableOrWriteNode:    {role: hand, value: [value]}
-  GlobalVariableOrWriteNode:      {role: hand, value: [value]}
-  ClassVariableOrWriteNode:       {role: hand, value: [value]}
-  ConstantOrWriteNode:            {role: hand, value: [value]}
-  ConstantPathOrWriteNode:        {role: hand, value: [value], skip: [target]}
-  LocalVariableAndWriteNode:      {role: hand, value: [value]}
-  InstanceVariableAndWriteNode:   {role: hand, value: [value]}
-  GlobalVariableAndWriteNode:     {role: hand, value: [value]}
-  ClassVariableAndWriteNode:      {role: hand, value: [value]}
-  ConstantAndWriteNode:           {role: hand, value: [value]}
-  ConstantPathAndWriteNode:       {role: hand, value: [value], skip: [target]}
-  CallOrWriteNode:                {role: hand, value: [value], skip: [receiver]}
-  CallAndWriteNode:               {role: hand, value: [value], skip: [receiver]}
-  IndexOrWriteNode:               {role: hand, value: [value], skip: [receiver, arguments, block]}
-  IndexAndWriteNode:              {role: hand, value: [value], skip: [receiver, arguments, block]}
-  MultiWriteNode:                 {role: hand, value: [value], skip: [lefts.*, rest, rights.*]}
+  LocalVariableWriteNode:         {role: hand, up: write, value: [value]}
+  InstanceVariableWriteNode:      {role: hand, up: write, value: [value]}
+  GlobalVariableWriteNode:        {role: hand, up: write, value: [value]}
+  ClassVariableWriteNode:         {role: hand, up: write, value: [value]}
+  ConstantWriteNode:              {role: hand, up: write, value: [value]}
+  ConstantPathWriteNode:          {role: hand, up: write, value: [value], skip: [target]}
+  LocalVariableOrWriteNode:       {role: hand, up: write, value: [value]}
+  InstanceVariableOrWriteNode:    {role: hand, up: write, value: [value]}
+  GlobalVariableOrWriteNode:      {role: hand, up: write, value: [value]}
+  ClassVariableOrWriteNode:       {role: hand, up: write, value: [value]}
+  ConstantOrWriteNode:            {role: hand, up: write, value: [value]}
+  ConstantPathOrWriteNode:        {role: hand, up: write, value: [value], skip: [target]}
+  LocalVariableAndWriteNode:      {role: hand, up: write, value: [value]}
+  InstanceVariableAndWriteNode:   {role: hand, up: write, value: [value]}
+  GlobalVariableAndWriteNode:     {role: hand, up: write, value: [value]}
+  ClassVariableAndWriteNode:      {role: hand, up: write, value: [value]}
+  ConstantAndWriteNode:           {role: hand, up: write, value: [value]}
+  ConstantPathAndWriteNode:       {role: hand, up: write, value: [value], skip: [target]}
+  CallOrWriteNode:                {role: hand, up: write, value: [value], skip: [receiver]}
+  CallAndWriteNode:               {role: hand, up: write, value: [value], skip: [receiver]}
+  IndexOrWriteNode:               {role: hand, up: write, value: [value], skip: [receiver, arguments, block]}
+  IndexAndWriteNode:              {role: hand, up: write, value: [value], skip: [receiver, arguments, block]}
+  MultiWriteNode:                 {role: hand, up: write, value: [value], skip: [lefts.*, rest, rights.*]}
 
   # ---- kinds whose children are not value positions ----
   AliasGlobalVariableNode: {skip: [new_name, old_name]}

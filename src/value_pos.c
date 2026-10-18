@@ -12,12 +12,18 @@
    vp_step holds the switch. Its uniform arms are generated from
    tools/value_edges.yml (value_pos_arms.inc, `make value-edges-regen`); the
    arms below it are the rules that are evaluation semantics, not edges, each
-   named in the annotation as role `hand`. */
+   named in the annotation as role `hand`.
+
+   The same value fields are read the other way for the walkers that ask how a
+   node's parent uses its value (vp_is_value_edge, vp_climb): vp_up_edge's
+   uniform arms are generated too (value_pos_edges.inc), so the two
+   directions come from one annotation. */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "value_pos.h"
+#include "analyze.h"
 
 typedef struct {
   int node;     /* the node to visit, or -1: nil by absence */
@@ -30,6 +36,13 @@ typedef struct {
 } VpItem;
 
 enum { VP_SMALL = 32 };
+
+/* The shapes a walk or a climb sees through: those named, none with VPS_NONE,
+   every one when no VPS_ bit is given. */
+static unsigned vp_shapes(unsigned flags) {
+  if (flags & VPS_ALL) return flags & VPS_ALL;
+  return (flags & VPS_NONE) ? 0 : VPS_ALL;
+}
 
 typedef struct {
   const NodeTable *nt;
@@ -167,6 +180,43 @@ static VpStep vp_logical_write(VpWalk *w, VpItem *cur) {
   return VPSTEP_LEAF_THEN_EXPANDED;
 }
 
+/* The writes the iterator reads under VP_WRITES, by what they answer: a plain
+   write is its value; an or-write or and-write is the target's old value or
+   its value; any other kind is no write here. One list, for both directions. */
+typedef enum { VPW_NONE, VPW_PLAIN, VPW_LOGICAL } VpWriteKind;
+
+static VpWriteKind vp_write_kind(NodeKind k) {
+  switch (k) {
+  case NK_LocalVariableWriteNode:
+  case NK_InstanceVariableWriteNode:
+  case NK_GlobalVariableWriteNode:
+  case NK_ClassVariableWriteNode:
+  case NK_ConstantWriteNode:
+  case NK_ConstantPathWriteNode:
+  case NK_MultiWriteNode:
+    return VPW_PLAIN;
+  case NK_LocalVariableOrWriteNode:
+  case NK_InstanceVariableOrWriteNode:
+  case NK_GlobalVariableOrWriteNode:
+  case NK_ClassVariableOrWriteNode:
+  case NK_ConstantOrWriteNode:
+  case NK_ConstantPathOrWriteNode:
+  case NK_LocalVariableAndWriteNode:
+  case NK_InstanceVariableAndWriteNode:
+  case NK_GlobalVariableAndWriteNode:
+  case NK_ClassVariableAndWriteNode:
+  case NK_ConstantAndWriteNode:
+  case NK_ConstantPathAndWriteNode:
+  case NK_CallOrWriteNode:
+  case NK_CallAndWriteNode:
+  case NK_IndexOrWriteNode:
+  case NK_IndexAndWriteNode:
+    return VPW_LOGICAL;
+  default:
+    return VPW_NONE;
+  }
+}
+
 static VpStep vp_step(VpWalk *w, VpItem *cur) {
   const NodeTable *nt = w->nt;
   switch (nt_kind(nt, cur->node)) {
@@ -184,32 +234,15 @@ static VpStep vp_step(VpWalk *w, VpItem *cur) {
     return vp_jump(w, cur, VP_FOLLOW_NEXT);
   case NK_BreakNode:
     return vp_jump(w, cur, VP_FOLLOW_BREAK);
-  case NK_LocalVariableWriteNode:
-  case NK_InstanceVariableWriteNode:
-  case NK_GlobalVariableWriteNode:
-  case NK_ClassVariableWriteNode:
-  case NK_ConstantWriteNode:
-  case NK_ConstantPathWriteNode:
-  case NK_MultiWriteNode:
-    return vp_write(w, cur);
-  case NK_LocalVariableOrWriteNode:
-  case NK_InstanceVariableOrWriteNode:
-  case NK_GlobalVariableOrWriteNode:
-  case NK_ClassVariableOrWriteNode:
-  case NK_ConstantOrWriteNode:
-  case NK_ConstantPathOrWriteNode:
-  case NK_LocalVariableAndWriteNode:
-  case NK_InstanceVariableAndWriteNode:
-  case NK_GlobalVariableAndWriteNode:
-  case NK_ClassVariableAndWriteNode:
-  case NK_ConstantAndWriteNode:
-  case NK_ConstantPathAndWriteNode:
-  case NK_CallOrWriteNode:
-  case NK_CallAndWriteNode:
-  case NK_IndexOrWriteNode:
-  case NK_IndexAndWriteNode:
-    return vp_logical_write(w, cur);
   default:
+    switch (vp_write_kind(nt_kind(nt, cur->node))) {
+    case VPW_PLAIN:
+      return vp_write(w, cur);
+    case VPW_LOGICAL:
+      return vp_logical_write(w, cur);
+    default:
+      break;
+    }
     break;
   }
   return VPSTEP_LEAF;
@@ -257,7 +290,7 @@ static int vp_visit(VpWalk *w, VpItem cur) {
 int for_each_value_position(const NodeTable *nt, int root, unsigned flags, VpFn fn, void *ud) {
   VpWalk w;
   w.nt = nt; w.flags = flags; w.fn = fn; w.ud = ud;
-  w.shapes = (flags & VPS_ALL) ? (flags & VPS_ALL) : VPS_ALL;
+  w.shapes = vp_shapes(flags);
   w.budget = nt->count;
   w.reach = 0;
   w.items = w.small; w.n = 0; w.cap = VP_SMALL;
@@ -271,6 +304,109 @@ int for_each_value_position(const NodeTable *nt, int root, unsigned flags, VpFn 
   return stop;
 }
 
+/* ---- the upward half ---- */
+
+/* How a child hangs from its parent: not a value position of it, a wrapper's
+   (parentheses, a statement list's last, an else: its value is the child's),
+   or a branch's (a conditional that crossed). */
+enum { VPE_NONE, VPE_WRAP, VPE_BRANCH };
+
+/* A kind the node table has no NK_ value for (a `when` clause, the arguments
+   of a call) is told by its type name. */
+static int vp_is_kind_named(const NodeTable *nt, int id, const char *name) {
+  const char *t = nt_kind(nt, id) == NK_NONE ? nt_type(nt, id) : NULL;
+  return t && strcmp(t, name) == 0;
+}
+
+/* The hand-written upward arms, one per `role: hand` entry of
+   value_edges.yml that is neither a jump (the climb reads those) nor a write
+   (the rule below the switch). Each reads the same fields as its downward arm
+   in vp_step. */
+static int vp_up_hand(const NodeTable *nt, int p, int child, unsigned flags, unsigned shapes) {
+  NodeKind k = nt_kind(nt, p);
+  switch (k) {
+  case NK_BeginNode: {
+    int body = nt_ref(nt, p, "statements"), rescue = nt_ref(nt, p, "rescue_clause");
+    int els = nt_ref(nt, p, "else_clause"), ensure = nt_ref(nt, p, "ensure_clause");
+    if (rescue < 0 && els < 0 && ensure < 0)
+      return (shapes & VPS_BEGIN_PLAIN) && child == body ? VPE_WRAP : VPE_NONE;
+    if (!(shapes & VPS_BEGIN_CLAUSES)) return VPE_NONE;
+    if (child == rescue || child == els) return VPE_BRANCH;
+    return child == body && (els < 0 || (flags & VP_BEGIN_BOTH)) ? VPE_BRANCH : VPE_NONE;
+  }
+  case NK_AndNode:
+    if (!(shapes & VPS_LOGIC)) return VPE_NONE;
+    if (child == nt_ref(nt, p, "right")) return VPE_BRANCH;
+    return child == nt_ref(nt, p, "left") && (flags & VP_AND_LEFT) ? VPE_BRANCH : VPE_NONE;
+  case NK_CaseMatchNode: {
+    if (!(shapes & VPS_CASE_IN)) return VPE_NONE;
+    if (child == nt_ref(nt, p, "else_clause")) return VPE_BRANCH;
+    int an = 0;
+    const int *av = nt_arr(nt, p, "conditions", &an);
+    for (int i = 0; i < an; i++)
+      if (av[i] == child) return VPE_BRANCH;
+    return VPE_NONE;
+  }
+  default:
+    break;
+  }
+  VpWriteKind wk = (flags & VP_WRITES) ? vp_write_kind(k) : VPW_NONE;
+  if (wk != VPW_NONE && child == nt_ref(nt, p, "value")) return wk == VPW_PLAIN ? VPE_WRAP : VPE_BRANCH;
+  /* a `when` clause has no kind of its own: its statements are its value */
+  if (vp_is_kind_named(nt, p, "WhenNode") && child == nt_ref(nt, p, "statements")) return VPE_WRAP;
+  return VPE_NONE;
+}
+
+static int vp_up_edge(const NodeTable *nt, int p, int child, unsigned flags, unsigned shapes) {
+  switch (nt_kind(nt, p)) {
+#include "value_pos_edges.inc"
+  default:
+    break;
+  }
+  return vp_up_hand(nt, p, child, flags, shapes);
+}
+
+int vp_is_value_edge(const NodeTable *nt, int parent, int child, unsigned flags) {
+  return parent >= 0 && child >= 0 && vp_up_edge(nt, parent, child, flags, vp_shapes(flags)) != VPE_NONE;
+}
+
+/* The jump a node is the single value of, when the flag follows it: the
+   ArgumentsNode of a return, next or break with one non-splat argument. */
+static int vp_jump_of(const NodeTable *nt, const int *par, int args, int child, unsigned flags) {
+  int g = par[args];
+  if (g < 0) return -1;
+  NodeKind gk = nt_kind(nt, g);
+  unsigned need = gk == NK_ReturnNode ? VP_FOLLOW_RETURN : gk == NK_NextNode ? VP_FOLLOW_NEXT
+                : gk == NK_BreakNode ? VP_FOLLOW_BREAK : 0;
+  if (!(flags & need) || nt_ref(nt, g, "arguments") != args) return -1;
+  int an = 0;
+  const int *av = nt_arr(nt, args, "arguments", &an);
+  return an == 1 && av[0] == child && nt_kind(nt, child) != NK_SplatNode ? g : -1;
+}
+
+VpUpKind vp_climb(const NodeTable *nt, const int *par, int node, unsigned flags, VpUp *up) {
+  unsigned shapes = vp_shapes(flags);
+  long budget = nt->count;
+  int cur = node, branches = 0;
+  up->kind = VPU_ROOT; up->node = node; up->parent = -1; up->branches = 0;
+  for (;;) {
+    int p = cur >= 0 && cur < nt->count ? par[cur] : -1;
+    up->node = cur; up->parent = p; up->branches = branches;
+    if (p < 0) return up->kind = VPU_ROOT;
+    if (--budget < 0) return up->kind = VPU_GAVE_UP;
+    if (vp_is_kind_named(nt, p, "ArgumentsNode")) {
+      int jump = vp_jump_of(nt, par, p, cur, flags);
+      if (jump >= 0) { up->parent = jump; return up->kind = VPU_JUMP; }
+      return up->kind = VPU_ENDED;
+    }
+    int e = vp_up_edge(nt, p, cur, flags, shapes);
+    if (e == VPE_NONE)
+      return up->kind = nt_kind(nt, p) == NK_StatementsNode ? VPU_DROPPED : VPU_ENDED;
+    if (e == VPE_BRANCH) branches++;
+    cur = p;
+  }
+}
+
 /* ---- --dump-value-positions ---- */
 
 typedef struct {
@@ -278,6 +414,8 @@ typedef struct {
   FILE *out;
   int line;   /* the scope's line: where a nil with no parent is */
   const int *ord;   /* by node id: the program node's number, as vp_ord_table counts */
+  const int *par;   /* the parent map, for the upward check */
+  int root;         /* the root being walked */
 } VpDump;
 
 /* The numbers a dump prints for nodes. Ids count from the first node the
@@ -300,6 +438,20 @@ static int *vp_ord_table(const NodeTable *nt) {
 static void vp_print_id(const VpDump *d, int id) {
   if (d->ord[id] >= 0) fprintf(d->out, " #%d", d->ord[id]);
   else fprintf(d->out, " #p%d", id - ((int)nt_int(d->nt, id, "node_bi", 0) - 1));
+}
+
+/* The upward half must agree with the walk: climbing from a leaf with the
+   same flags goes back to the root it was yielded from (through the jumps it
+   followed). A leaf it does not reach is printed, so that value-pos-test
+   fails on it. */
+static int vp_dump_climbs_back(const VpDump *d, int leaf) {
+  VpUp up;
+  for (int hops = 0; hops < d->nt->count; hops++) {
+    vp_climb(d->nt, d->par, leaf, VP_ALL_FLAGS, &up);
+    if (up.kind != VPU_JUMP) break;
+    leaf = up.parent;
+  }
+  return up.node == d->root;
 }
 
 static const char *vp_kind_name(VpKind k) {
@@ -329,12 +481,14 @@ static int vp_dump_leaf(const VpLeaf *lf, void *ud) {
   fprintf(d->out, " depth %d", lf->cond_depth);
   if (lf->reach) fprintf(d->out, " reach %s", lf->reach == VPR_TRUTHY ? "truthy" : lf->reach == VPR_FALSY ? "falsy" : "never");
   fputc('\n', d->out);
+  if (lf->node >= 0 && lf->kind != VPK_GAVE_UP && !vp_dump_climbs_back(d, lf->node))
+    { fprintf(d->out, "  UP-MISMATCH"); vp_print_id(d, lf->node); fprintf(d->out, " does not climb back to its root\n"); }
   return 0;
 }
 
-static void vp_dump_scope(const NodeTable *nt, FILE *out, const int *ord, const char *title, int line, int root) {
+static void vp_dump_scope(const NodeTable *nt, const int *par, FILE *out, const int *ord, const char *title, int line, int root) {
   VpDump d;
-  d.nt = nt; d.out = out; d.line = line; d.ord = ord;
+  d.nt = nt; d.out = out; d.line = line; d.ord = ord; d.par = par; d.root = root;
   fprintf(out, "%s line %d\n", title, line);
   for_each_value_position(nt, root, VP_ALL_FLAGS, vp_dump_leaf, &d);
 }
@@ -343,11 +497,13 @@ static void vp_dump_scope(const NodeTable *nt, FILE *out, const int *ord, const 
    file in node order (the builtins parsed ahead of it are another file). A
    block is a root of its own: the walk never goes into one. */
 void value_pos_dump(const NodeTable *nt, FILE *out) {
+  int *par = an_parent_map(nt);
+  if (!par) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   fprintf(out, "main\n");
   int *ord = vp_ord_table(nt);
   VpDump d;
-  d.nt = nt; d.out = out; d.line = 1; d.ord = ord;
-  for_each_value_position(nt, nt_ref(nt, nt->root_id, "statements"), VP_ALL_FLAGS, vp_dump_leaf, &d);
+  d.nt = nt; d.out = out; d.line = 1; d.ord = ord; d.par = par; d.root = nt_ref(nt, nt->root_id, "statements");
+  for_each_value_position(nt, d.root, VP_ALL_FLAGS, vp_dump_leaf, &d);
   for (int id = 0; id < nt->count; id++) {
     NodeKind k = nt_kind(nt, id);
     if ((k != NK_DefNode && k != NK_BlockNode && k != NK_LambdaNode) || nt_int(nt, id, "node_file", 0) != 0) continue;
@@ -355,9 +511,10 @@ void value_pos_dump(const NodeTable *nt, FILE *out) {
     char title[256];
     if (k == NK_DefNode) snprintf(title, sizeof title, "def %s", name ? name : "?");
     else snprintf(title, sizeof title, "%s", k == NK_BlockNode ? "block" : "lambda");
-    vp_dump_scope(nt, out, ord, title, (int)nt_int(nt, id, "node_line", 0), nt_ref(nt, id, "body"));
+    vp_dump_scope(nt, par, out, ord, title, (int)nt_int(nt, id, "node_line", 0), nt_ref(nt, id, "body"));
   }
   free(ord);
+  free(par);
 }
 
 /* ---- --check-value-pos ---- */
@@ -436,6 +593,32 @@ static int vp_check_long(void) {
   vp_check_init(&ki);
   for_each_value_position(nt, root, VP_ALL_FLAGS, vp_check_leaf, &ki);
   ok = ok && ki.leaves[VPK_EXPR] == ARMS + 2 && ki.leaves[VPK_GAVE_UP] == 0 && !ki.out_of_order;
+  /* and the climb back from the last arm crosses them all */
+  int *par = an_parent_map(nt);
+  if (!par) { nt_free(nt); return 0; }
+  int deepest = nt_ref(nt, tail, "statements");
+  VpUp up;
+  vp_climb(nt, par, deepest, VP_ALL_FLAGS, &up);
+  ok = ok && up.kind == VPU_ROOT && up.node == root && up.branches == ARMS + 1;
+  free(par);
+  nt_free(nt);
+  return ok;
+}
+
+/* A cycle of parentheses and statements ends a climb in VPU_GAVE_UP, as it
+   ends a walk. */
+static int vp_check_climb_budget(void) {
+  NodeTable *nt = nt_new_table();
+  int p = nt_new_node(nt, "ParenthesesNode"), s = nt_new_node(nt, "StatementsNode");
+  int body[1];
+  body[0] = p;
+  nt_node_set_ref(nt, p, "body", s);
+  nt_node_set_arr(nt, s, "body", body, 1);
+  int *par = an_parent_map(nt);
+  if (!par) { nt_free(nt); return 0; }
+  VpUp up;
+  int ok = vp_climb(nt, par, p, VP_ALL_FLAGS, &up) == VPU_GAVE_UP;
+  free(par);
   nt_free(nt);
   return ok;
 }
@@ -479,8 +662,9 @@ static int vp_check_logic(void) {
 int value_pos_check(void) {
   int ok = 1;
   if (!vp_check_budget()) { fprintf(stderr, "value-pos-check: a cycle did not end in one gave-up leaf\n"); ok = 0; }
+  if (!vp_check_climb_budget()) { fprintf(stderr, "value-pos-check: a cycle did not end a climb in one gave-up answer\n"); ok = 0; }
   if (!vp_check_logic()) { fprintf(stderr, "value-pos-check: the logical operators did not yield their node and their truth values\n"); ok = 0; }
-  if (!vp_check_long()) { fprintf(stderr, "value-pos-check: a wide case or a long elsif chain was not walked in order\n"); ok = 0; }
+  if (!vp_check_long()) { fprintf(stderr, "value-pos-check: a wide case or a long elsif chain was not walked in order, or not climbed back\n"); ok = 0; }
   if (ok) printf("value-pos-check: ok\n");
   return ok ? 0 : 1;
 }

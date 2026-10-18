@@ -53,6 +53,7 @@
     return VPSTEP_EXPANDED;
   }
   case NK_RescueNode: {
+    if (!(w->shapes & VPS_BEGIN_CLAUSES)) break;
     int n = cur->node;
     int base = cur->link ? cur->arm : 0, d = cur->depth + 1;
     int subsequent_at = nt_ref(nt, n, "subsequent");
