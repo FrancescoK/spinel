@@ -14511,18 +14511,30 @@ static void spnb_ret_walk(Compiler *c, int root, Scope *s, TyKind *base, int *sa
 }
 
 /* tail-value contribution: the body's falling-off value. Each value position of
-   the body, by the shapes the iterator is given below (a sequence's value is its
-   last statement), is a nil (a nil literal, or an arm that is missing or empty),
-   a return (counted by the returns walk), a Time, or anything else, which ends
-   the walk with ok = 0. */
+   the body, by every shape and with the left side of `&&` (a sequence's value is
+   its last statement), is a nil (a nil literal, or an arm that is missing or
+   empty; not one on the left of an `||`, which is the value only when truthy,
+   and a position below both an `||` and an `&&` is never the value), a return
+   (counted by the returns walk), a Time, or anything else, which ends the walk
+   with ok = 0. */
 typedef struct { Compiler *c; TyKind *base; int *saw_nil, *ok; } SpnbTail;
 static int spnb_tail_leaf(const VpLeaf *leaf, void *ud) {
   SpnbTail *t = ud;
   Compiler *c = t->c;
-  if (leaf->kind == VPK_NIL) { *t->saw_nil = 1; return 0; }
+  /* The left of an `||` is the value only when truthy and the left of an `&&` only when falsy: a
+     nil there, written or not, is never the walk's nil, and below both a position is never the value. */
+  if ((leaf->reach & (VPR_TRUTHY | VPR_FALSY)) == (VPR_TRUTHY | VPR_FALSY)) return 0;
+  int may_be_nil = !(leaf->reach & VPR_TRUTHY);
+  if (leaf->kind == VPK_NIL) {
+    if (may_be_nil) *t->saw_nil = 1;
+    return 0;
+  }
   if (leaf->kind == VPK_JUMP && nt_kind(c->nt, leaf->node) == NK_ReturnNode) return 0;
   if (leaf->kind == VPK_EXPR) {
-    if (nt_kind(c->nt, leaf->node) == NK_NilNode) { *t->saw_nil = 1; return 0; }
+    if (nt_kind(c->nt, leaf->node) == NK_NilNode) {
+      if (may_be_nil) *t->saw_nil = 1;
+      return 0;
+    }
     if (infer_type(c, leaf->node) == TY_TIME && (*t->base == TY_UNKNOWN || *t->base == TY_TIME)) {
       *t->base = TY_TIME;
       return 0;
@@ -14534,7 +14546,7 @@ static int spnb_tail_leaf(const VpLeaf *leaf, void *ud) {
 static void spnb_tail(Compiler *c, int node, TyKind *base, int *saw_nil, int *ok) {
   if (node < 0 || !*ok) return;
   SpnbTail t = { c, base, saw_nil, ok };
-  for_each_value_position(c->nt, node, VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VPS_RESCUE_MOD, spnb_tail_leaf, &t);
+  for_each_value_position(c->nt, node, VP_AND_LEFT | VPS_ALL, spnb_tail_leaf, &t);
 }
 
 /* the single non-nil type scope mi's poly return decomposes to, or UNKNOWN */
