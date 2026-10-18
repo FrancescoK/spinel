@@ -3478,6 +3478,11 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
                compute the value and drop it. Same void tail as the rest. */
             sp_streq(nt_type(nt, bd3[bn3 - 1]), "RescueModifierNode") ||
             sp_streq(nt_type(nt, bd3[bn3 - 1]), "BeginNode") ||
+            /* a loop's value is nil: into a boxed slot, the boxed nil its
+               expression form ends in (as statements the splice's value was
+               the loop's trailing counter decrement, an int, #9488) */
+            (want_poly && (sp_streq(nt_type(nt, bd3[bn3 - 1]), "WhileNode") ||
+                           sp_streq(nt_type(nt, bd3[bn3 - 1]), "UntilNode"))) ||
             block_tail_needs_value_form(c, bd3[bn3 - 1]))) {
     /* A GNU statement-expression's value is its last statement only when that
        statement is an EXPRESSION; a trailing if/case/begin STATEMENT yields
