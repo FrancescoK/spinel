@@ -923,6 +923,36 @@ const char*sp_str_sub_range(const char*s,sp_int start,sp_int len){SP_GC_ROOT_STR
 /* Single-character `s[i]`. Returns NULL on out-of-bounds so the caller can
    yield CRuby's `"hello"[20] -> nil`. */
 const char*sp_str_char_at_or_nil(const char*s,sp_int i){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("[]");sp_int cl=sp_str_length(s);if(i<0)i+=cl;if(i<0||i>=cl)return NULL;return sp_str_sub_range(s,i,1);}
+/* The width in bytes of the character at byte `at` of s, which ends at
+   byte blen: one on a BINARY string, as #chars counts. */
+size_t sp_str_char_width(const char*s,size_t blen,size_t at){
+  size_t n = sp_str_is_binary(s) ? 1 : (size_t)sp_utf8_advance(s + at);
+  return at + n > blen ? blen - at : n;
+}
+/* each_char's step: the character at byte *at of s, and *at moved past it.
+   Walking by byte keeps the loop linear; indexing the i-th character counted
+   from the start of the string on every turn once a multibyte character made
+   it not fixed width. The result is what s[i] answers for that character. */
+const char*sp_str_char_step(const char*s,size_t blen,size_t*at){
+  SP_GC_ROOT_STR(s);
+  size_t off = *at, n = sp_str_char_width(s, blen, off);
+  *at = off + n;
+  int bin = sp_str_is_binary(s);
+  unsigned char c = (unsigned char)s[off];
+  if (n == 1 && bin) return sp_bin_char(c);
+  if (n == 1 && c != 0) {
+    if (!sp_char_cache_init) {
+      for (int i = 0; i < 256; i++) { sp_char_cache[i][0] = (char)0xff; sp_char_cache[i][1] = (char)i; sp_char_cache[i][2] = 0; }
+      sp_char_cache_init = 1;
+    }
+    return &sp_char_cache[c][1];
+  }
+  char *r = sp_str_alloc_raw(n + 1);
+  memcpy(r, s + off, n); r[n] = 0;
+  sp_str_set_len(r, n);
+  if (bin) sp_str_mark_binary(r);
+  return r;
+}
 const char*sp_str_sub_range_len(const char*s,sp_int cl,sp_int start,sp_int len){SP_GC_ROOT_STR(s);if(start<0)start+=cl;if(start<0||start>cl||len<0)return NULL;if(start==cl||len==0){return sp_str_is_binary(s)?sp_str_empty_binary():&("\xff" "")[1];}if(len>cl-start)len=cl-start;size_t _fb;int fixed=sp_str_fixed_width(s,&_fb);int bin=fixed?sp_str_is_binary(s):0;size_t boff=fixed?(size_t)start:sp_utf8_byte_offset(s,start);size_t blen_total=fixed?_fb:sp_str_byte_len(s);size_t bp=boff;sp_int rem=len;while(rem>0&&bp<blen_total){bp+=fixed?1:sp_utf8_advance(s+bp);rem--;}if(bp>blen_total)bp=blen_total;size_t bend=bp;size_t blen=bend-boff;if(bin&&len==1&&blen==1)return sp_bin_char((unsigned char)s[boff]);if(!bin&&len==1&&blen==1){unsigned char c=(unsigned char)s[boff];if(c!=0){if(!sp_char_cache_init){for(int i=0;i<256;i++){sp_char_cache[i][0]=(char)0xff;sp_char_cache[i][1]=(char)i;sp_char_cache[i][2]=0;}sp_char_cache_init=1;}return &sp_char_cache[c][1];}}char*r=sp_str_alloc_raw(blen+1);memcpy(r,s+boff,blen);r[blen]=0;sp_str_set_len(r,blen);if(bin)sp_str_mark_binary(r);return r;}
 const char*sp_str_sub_range_r(const char*s,sp_int start,sp_int end_,sp_int excl){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("[]");sp_int cl=sp_str_length(s);if(end_<0)end_+=cl;if(start<0)start+=cl;if(start<0)return NULL;if(end_>=cl){end_=cl;excl=1;}sp_int n=end_-start+(excl?0:1);if(n<0)n=0;return sp_str_sub_range_len(s,cl,start,n);}
 const char*sp_str_sub_range_len_r(const char*s,sp_int cl,sp_int start,sp_int end_,sp_int excl){SP_GC_ROOT_STR(s);if(end_<0)end_+=cl;if(start<0)start+=cl;if(start<0)return NULL;if(end_>=cl){end_=cl;excl=1;}sp_int n=end_-start+(excl?0:1);if(n<0)n=0;return sp_str_sub_range_len(s,cl,start,n);}
