@@ -16564,9 +16564,67 @@ static int cb_self_act(const NodeTable *nt, int s) {
 
 /* Is `nm` the name of a method the program defines? Its call already goes
    where the program's method is. */
-static int cb_program_defines(const NodeTable *nt, const char *nm) {
-  NT_FOREACH_KIND(nt, NK_DefNode, d)
-    if (nt_str(nt, d, "name") && sp_streq(nt_str(nt, d, "name"), nm)) return 1;
+static int cb_body_defs(const NodeTable *nt, int body, const char *nm) {
+  int bn = 0; const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+  for (int i = 0; i < bn; i++) {
+    int st = bb[i];
+    /* `private def m` and its kin define m as well */
+    if (nt_kind(nt, st) == NK_CallNode && nt_ref(nt, st, "receiver") < 0) {
+      int a = nt_ref(nt, st, "arguments"), an = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+      if (an == 1 && nt_kind(nt, av[0]) == NK_DefNode) st = av[0];
+    }
+    if (nt_kind(nt, st) == NK_DefNode && nt_str(nt, st, "name") && sp_streq(nt_str(nt, st, "name"), nm)) return 1;
+  }
+  return 0;
+}
+/* A definition of `nm` class `cname` answers on itself: its class method
+   (`def self.nm` in a body of it, `def Cname.nm`), one in a `class << self`
+   of its body, or one a reopened Module, Class, Object, Kernel or
+   BasicObject gives every class. Another class's instance method of the
+   name (activesupport's DeprecationProxy delegates instance_methods) is no
+   answer of this class's. Without a class name (a Struct.new block), any
+   class method or singleton-class def of the name counts. */
+static int cb_class_side_defs(const NodeTable *nt, int body, const char *nm) {
+  int bn = 0; const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+  for (int i = 0; i < bn; i++) {
+    int st = bb[i];
+    if (nt_kind(nt, st) == NK_SingletonClassNode && cb_body_defs(nt, nt_ref(nt, st, "body"), nm)) return 1;
+    if (nt_kind(nt, st) == NK_CallNode && nt_ref(nt, st, "receiver") < 0) {
+      int a = nt_ref(nt, st, "arguments"), an = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+      if (an == 1 && nt_kind(nt, av[0]) == NK_DefNode) st = av[0];
+    }
+    if (nt_kind(nt, st) == NK_DefNode && nt_str(nt, st, "name") && sp_streq(nt_str(nt, st, "name"), nm) &&
+        nt_ref(nt, st, "receiver") >= 0 && nt_kind(nt, nt_ref(nt, st, "receiver")) == NK_SelfNode) return 1;
+  }
+  return 0;
+}
+static int cb_program_defines(const NodeTable *nt, const char *nm, const char *cname) {
+  NT_FOREACH_KIND(nt, NK_DefNode, d) {
+    if (!nt_str(nt, d, "name") || !sp_streq(nt_str(nt, d, "name"), nm)) continue;
+    int r = nt_ref(nt, d, "receiver");
+    if (r < 0) continue;
+    if (!cname) return 1;
+    if (nt_kind(nt, r) == NK_ConstantReadNode && nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), cname)) return 1;
+  }
+  if (!cname) {
+    NT_FOREACH_KIND(nt, NK_SingletonClassNode, sc)
+      if (cb_body_defs(nt, nt_ref(nt, sc, "body"), nm)) return 1;
+  }
+  static const char *const roots[] = { "Module", "Class", "Object", "Kernel", "BasicObject", NULL };
+  for (int pass = 0; pass < 2; pass++) {
+    NodeKind kk = pass ? NK_ModuleNode : NK_ClassNode;
+    NT_FOREACH_KIND(nt, kk, cn) {
+      int cp = nt_ref(nt, cn, "constant_path");
+      const char *cnm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+      if (!cnm) continue;
+      int root = 0;
+      for (int r = 0; roots[r] && !root; r++) root = sp_streq(cnm, roots[r]);
+      if (root && cb_body_defs(nt, nt_ref(nt, cn, "body"), nm)) return 1;
+      if (cname && sp_streq(cnm, cname) && cb_class_side_defs(nt, nt_ref(nt, cn, "body"), nm)) return 1;
+    }
+  }
   return 0;
 }
 
@@ -16592,7 +16650,7 @@ static int cb_struct_act(const NodeTable *nt, int s) {
   return nm && (sp_streq(nm, "members") || sp_streq(nm, "keyword_init?"));
 }
 
-static int cb_give_self(NodeTable *nt, int node, const char *builtin, int strct) {
+static int cb_give_self(NodeTable *nt, int node, const char *builtin, int strct, const char *cname) {
   if (node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode ||
@@ -16600,7 +16658,7 @@ static int cb_give_self(NodeTable *nt, int node, const char *builtin, int strct)
   int changed = 0;
   const char *cm = k == NK_CallNode ? nt_str(nt, node, "name") : NULL;
   int r = k == NK_CallNode ? nt_ref(nt, node, "receiver") : -1;
-  if (builtin && cb_method_defined_name(cm) && !cb_program_defines(nt, cm) &&
+  if (builtin && cb_method_defined_name(cm) && !cb_program_defines(nt, cm, cname) &&
       (r < 0 || nt_kind(nt, r) == NK_SelfNode)) {
     int cls = fwd_new_node_like(nt, node, "ConstantReadNode");
     if (cls >= 0) {
@@ -16609,7 +16667,7 @@ static int cb_give_self(NodeTable *nt, int node, const char *builtin, int strct)
       changed = 1;
     }
   }
-  else if ((cb_self_act(nt, node) || (strct && cb_struct_act(nt, node))) && !cb_program_defines(nt, cm) &&
+  else if ((cb_self_act(nt, node) || (strct && cb_struct_act(nt, node))) && !cb_program_defines(nt, cm, cname) &&
            !(builtin && cb_method_table_name(cm))) {
     int self = fwd_new_node_like(nt, node, "SelfNode");
     if (self >= 0) {
@@ -16618,12 +16676,12 @@ static int cb_give_self(NodeTable *nt, int node, const char *builtin, int strct)
     }
   }
   int nr = nt_num_refs(nt, node);
-  for (int i = 0; i < nr; i++) changed |= cb_give_self(nt, nt_ref_at(nt, node, i), builtin, strct);
+  for (int i = 0; i < nr; i++) changed |= cb_give_self(nt, nt_ref_at(nt, node, i), builtin, strct, cname);
   int na = nt_num_arrs(nt, node);
   for (int i = 0; i < na; i++) {
     int cnt = 0;
     const int *ids = nt_arr_at(nt, node, i, &cnt);
-    for (int j = 0; j < cnt; j++) changed |= cb_give_self(nt, ids[j], builtin, strct);
+    for (int j = 0; j < cnt; j++) changed |= cb_give_self(nt, ids[j], builtin, strct, cname);
   }
   return changed;
 }
@@ -16642,7 +16700,7 @@ int desugar_class_body_object_acts(Compiler *c) {
     const char *cname = cpk == NK_ConstantReadNode || cpk == NK_ConstantPathNode ? nt_str(nt, cp, "name") : NULL;
     int builtin = cname && (is_builtin_class_name(cname) || is_builtin_module_name(cname)) &&
                   (cpk == NK_ConstantReadNode ? !engine_lexically_nested(nt, cn) : nt_ref(nt, cp, "parent") < 0);
-    changed |= cb_give_self(nt, nt_ref(nt, cn, "body"), builtin ? cname : NULL, 0);
+    changed |= cb_give_self(nt, nt_ref(nt, cn, "body"), builtin ? cname : NULL, 0, cname);
   }
   /* a Struct.new / Data.define block a constant or a local holds is the
      class's body, where self is the class as well */
@@ -16651,7 +16709,7 @@ int desugar_class_body_object_acts(Compiler *c) {
     if (wk != NK_ConstantWriteNode && wk != NK_LocalVariableWriteNode) continue;
     int val = nt_ref(nt, w, "value");
     int blk = is_struct_call(c, val) ? nt_ref(nt, val, "block") : -1;
-    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) changed |= cb_give_self(nt, nt_ref(nt, blk, "body"), NULL, 1);
+    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) changed |= cb_give_self(nt, nt_ref(nt, blk, "body"), NULL, 1, NULL);
   }
   if (changed) comp_grow_node_arrays(c);
   return changed;
