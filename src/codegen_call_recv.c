@@ -11243,7 +11243,13 @@ void emit_native_super_call(Compiler *c, int id, int nm, int argc, const int *ar
   native_arg_check(c, id, "native method", m, argc, argv);
   char st[192];
   snprintf(st, sizeof st, "((%s *)%s)", c->classes[m->class_id].c_struct, g_self);
+  /* one that answers self answers the native object, which the call's type,
+     the subclass, takes back by a cast (as the receiver form does) */
+  TyKind rt = comp_ntype(c, id);
+  int back = sp_streq(m->ret, "self") && ty_is_object(rt) && ty_object_class(rt) != m->class_id;
+  if (back) { buf_puts(b, "(("); emit_ctype(c, rt, b); buf_puts(b, ")"); }
   emit_native_call_on(c, m, -1, st, argc, argv, b);
+  if (back) buf_puts(b, ")");
 }
 
 /* A call of a native class's binding on an instance of class cid (the
@@ -11726,7 +11732,18 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       int sv_node = g_nsub_cast_node;
       const char *sv_type = g_nsub_cast_type;
       if (ncid != cid) { g_nsub_cast_node = recv; g_nsub_cast_type = c->classes[ncid].c_struct; }
-      int done = emit_native_binding_call(c, id, ncid, name, recv, argc, argv, b);
+      /* a binding that answers self (`io << x`, `io.flush`) answers the
+         native object, which the receiver's type, the subclass, takes back
+         by a cast */
+      int bnm = ncid != cid ? comp_native_method_find(c, ncid, name, argc, 0) : -1;
+      int back = bnm >= 0 && sp_streq(c->native_methods[bnm].ret, "self"), done;
+      if (back) {
+        Buf cb = {0};
+        done = emit_native_binding_call(c, id, ncid, name, recv, argc, argv, &cb);
+        if (done) { buf_puts(b, "(("); emit_ctype(c, rt, b); buf_puts(b, ")"); buf_puts(b, cb.p); buf_puts(b, ")"); }
+        free(cb.p);
+      }
+      else done = emit_native_binding_call(c, id, ncid, name, recv, argc, argv, b);
       g_nsub_cast_node = sv_node; g_nsub_cast_type = sv_type;
       if (done) return 1;
     }
