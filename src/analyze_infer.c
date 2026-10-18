@@ -9994,6 +9994,9 @@ static TyKind infer_array_literal(Compiler *c, int id) {
        otherwise, for good) */
     if (strh_all && (strh_has || share_strh_literal_slot(c, id)) && !share_strh_node_no(c, id) && strh_literal_held(c, id))
       return TY_STRH_ARRAY;
+    if (c->arr_want && id < c->node_cap && ty_is_obj_array(c->arr_want[id]) &&
+        e == ty_array_elem(c->arr_want[id]))
+      return c->arr_want[id];
     /* ty_array_of holds an all-unknown element type at bottom while the
        fixpoint runs; see its TY_UNKNOWN case. */
     return ty_array_of(e);
