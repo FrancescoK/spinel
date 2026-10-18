@@ -17032,9 +17032,14 @@ static void inh_resolve_path(InhNames *r, char **qn, const NodeTable *nt, const 
   }
   snprintf(q, cap, "%s%s%s", in, *in ? "::" : "", p);
 }
-static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0) {
+static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0, char ***qsuper) {
   char **qn = calloc((size_t)(n0 > 0 ? n0 : 1), sizeof(char *));
   if (!qn) return NULL;
+  /* and, by class node, the class its superclass names, resolved the same
+     way from where the header stands */
+  char **qs = calloc((size_t)(n0 > 0 ? n0 : 1), sizeof(char *));
+  if (!qs) { free(qn); return NULL; }
+  *qsuper = qs;
   InhNames r; memset(&r, 0, sizeof r);
   for (int id = 0; id < n0; id++) {
     NodeKind k = nt_kind(nt, id);
@@ -17060,6 +17065,12 @@ static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0
       continue;
     }
     if (k != NK_ClassNode && k != NK_ModuleNode) continue;
+    int sc = k == NK_ClassNode ? nt_ref(nt, id, "superclass") : -1;
+    if (sc >= 0 && (nt_kind(nt, sc) == NK_ConstantReadNode || nt_kind(nt, sc) == NK_ConstantPathNode)) {
+      char sq[1024];
+      inh_resolve_path(&r, qn, nt, parent, id, sc, 1, sq, sizeof sq);
+      qs[id] = strdup(sq);
+    }
     inh_resolve_path(&r, qn, nt, parent, id, nt_ref(nt, id, "constant_path"), 0, q, sizeof q);
     qn[id] = strdup(q);
     if (!qn[id]) break;
@@ -17071,6 +17082,65 @@ static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0
   free(r.target);
   anh_free(&r.known); anh_free(&r.alias);
   return qn;
+}
+
+/* The classes by the qualified names their headers resolve to
+   (inh_qualified_names): whether one of its bodies has an inherited hook,
+   its own or through `extend`, the qualified superclass the first header
+   naming one gives, and whether a hook is defined on its leaf from outside
+   a body (`def Foo.inherited`, which the leaf index keys alone). */
+typedef struct { ANameHash names; char *hook, *outside; const char **sup; } InhQIndex;
+static void inh_qindex_build(InhQIndex *qx, Compiler *c, const InhIndex *ix, char **qn, char **qs, int n0) {
+  const NodeTable *nt = c->nt;
+  memset(qx, 0, sizeof *qx);
+  ANameHash outside; memset(&outside, 0, sizeof outside);
+  for (int id = 0; id < n0; id++) {
+    const char *hn = NULL;
+    if (inh_hook_on_named(nt, id, &hn) >= 0 && hn && !anh_has(&outside, hn)) anh_add(&outside, hn);
+  }
+  int cap = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_ClassNode || !qn[id]) continue;
+    int e = anh_find(&qx->names, qn[id]);
+    if (e < 0) {
+      anh_add(&qx->names, qn[id]); e = qx->names.n - 1;
+      if (e >= cap) {
+        cap = cap ? cap * 2 : 64;
+        qx->hook = realloc(qx->hook, (size_t)cap); qx->outside = realloc(qx->outside, (size_t)cap);
+        qx->sup = realloc(qx->sup, sizeof(char *) * (size_t)cap);
+        if (!qx->hook || !qx->outside || !qx->sup) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      qx->hook[e] = 0; qx->sup[e] = NULL;
+      const char *leaf = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
+      qx->outside[e] = leaf && anh_has(&outside, leaf);
+    }
+    int body = nt_ref(nt, id, "body");
+    if (inh_hook_in(nt, id) >= 0 || (body >= 0 && inh_extended_entry(ix, nt, body) >= 0)) qx->hook[e] = 1;
+    if (!qx->sup[e] && qs[id]) qx->sup[e] = qs[id];
+  }
+  anh_free(&outside);
+}
+static void inh_qindex_free(InhQIndex *qx) {
+  anh_free(&qx->names); free(qx->hook); free(qx->outside); free(qx->sup);
+}
+/* Does the class qualified `q`, or an ancestor of it, have an inherited
+   hook, followed by qualified names? 1 or 0; -1 when the chain leaves the
+   class headers (a class a Struct constant or no header of the program
+   defines) or meets a hook defined from outside a body, where the leaf
+   names decide as before. Keyed by the leaf alone, the hook of one Base
+   reached every class under another Base: a Syntax::Base
+   hook went into each Expression::Base subclass. */
+static int inh_qchain_has_hook(const InhQIndex *qx, const char *q) {
+  for (int depth = 0; q && depth < 64; depth++) {
+    int e = anh_find(&qx->names, q);
+    if (e < 0) return -1;
+    if (qx->hook[e]) return 1;
+    if (qx->outside[e]) return -1;
+    const char *sup = qx->sup[e];
+    if (!sup || sp_streq(sup, q)) return 0;
+    q = sup;
+  }
+  return -1;
 }
 
 int desugar_inherited_hooks(Compiler *c) {
@@ -17130,7 +17200,10 @@ int desugar_inherited_hooks(Compiler *c) {
   }
   /* then the call, once per class: a reopening does not create it again */
   ANameHash seen; memset(&seen, 0, sizeof seen);
-  char **qnames = inh_qualified_names(nt, parent, n0);
+  char **qsupers = NULL;
+  char **qnames = inh_qualified_names(nt, parent, n0, &qsupers);
+  InhQIndex qx; memset(&qx, 0, sizeof qx);
+  if (qnames && qsupers) inh_qindex_build(&qx, c, &ix, qnames, qsupers, n0);
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_ClassNode) continue;
     int sc = nt_ref(nt, id, "superclass");
@@ -17139,6 +17212,9 @@ int desugar_inherited_hooks(Compiler *c) {
     if (!sn || !inh_chain_has_hook(&ix, sn)) continue;
     const char *qn = qnames ? qnames[id] : NULL;
     if (!qn || anh_has(&seen, qn)) continue;
+    /* the superclass the header names, qualified: a hook on another class
+       of the same leaf does not fire here */
+    if (qsupers && qsupers[id] && inh_qchain_has_hook(&qx, qsupers[id]) == 0) continue;
     char *qd = strdup(qn);
     if (!qd) break;
     anh_add(&seen, qd);
@@ -17179,6 +17255,9 @@ int desugar_inherited_hooks(Compiler *c) {
   for (int k = 0; k < seen.n; k++) free((char *)seen.key[k]);
   if (qnames) for (int k = 0; k < n0; k++) free(qnames[k]);
   free(qnames);
+  inh_qindex_free(&qx);
+  if (qsupers) for (int k = 0; k < n0; k++) free(qsupers[k]);
+  free(qsupers);
   anh_free(&seen);
   inh_index_free(&ix);
   free(parent);
@@ -17452,7 +17531,9 @@ typedef struct {
 static void scg_qual_build(const NodeTable *nt, const int *parent, int n0, ScgQual *q) {
   memset(q, 0, sizeof *q);
   size_t n = (size_t)(n0 > 0 ? n0 : 1);
-  q->qn = inh_qualified_names(nt, parent, n0);
+  char **qsup_unused = NULL;
+  q->qn = inh_qualified_names(nt, parent, n0, &qsup_unused);
+  if (qsup_unused) { for (int k = 0; k < n0; k++) free(qsup_unused[k]); free(qsup_unused); }
   q->grp = malloc(sizeof(int) * n);
   q->next = malloc(sizeof(int) * n);
   q->head = malloc(sizeof(int) * n);
