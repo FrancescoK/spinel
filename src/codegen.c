@@ -7215,7 +7215,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   g_exc_frame_depth = 0; g_method_pr_exc_depth = 0; g_rescue_save_depth = 0;
   /* real-function funnel mirror: no proc-return frame yet (set below when
      one exists); block bodies spliced by yield-inlines restore from these. */
-  g_fn_pr_label = NULL; g_fn_pr_var = NULL; g_fn_ret_type = g_ret_type;
+  g_fn_pr_label = NULL; g_fn_pr_var = NULL; g_fn_ret_type = g_ret_type; g_fn_ret_oint = g_ret_oint;
   int is_void = method_is_void(s);
   /* A method that creates a non-lambda proc with a `return` owns a proc-return
      frame: a setjmp target the proc longjmps to. All returns funnel through a
@@ -7315,7 +7315,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   }
   g_result_var = sv_rv2; g_result_poly = sv_rp2; g_result_ty = sv_rty2; g_result_oint = sv_ro2;
   g_method_pr_label = NULL; g_method_pr_var = NULL;
-  g_fn_pr_label = NULL; g_fn_pr_var = NULL; g_fn_ret_type = TY_UNKNOWN;
+  g_fn_pr_label = NULL; g_fn_pr_var = NULL; g_fn_ret_type = TY_UNKNOWN; g_fn_ret_oint = 0;
   g_self_deref = saved_deref;
   g_self = saved_self9;
   g_ret_type = saved_rt; g_ret_oint = saved_ro; g_ensure_depth = saved_ed;
@@ -8420,8 +8420,8 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
      (restored below). */
   const char *sv_fbderef = g_self_deref;
   g_self_deref = (cap_self && self_is_value) ? "." : "->";
-  const char *sv_fn_prl2 = g_fn_pr_label, *sv_fn_prv2 = g_fn_pr_var; TyKind sv_fn_rt2 = g_fn_ret_type;
-  g_fn_pr_label = NULL; g_fn_pr_var = NULL; g_fn_ret_type = TY_POLY;
+  const char *sv_fn_prl2 = g_fn_pr_label, *sv_fn_prv2 = g_fn_pr_var; TyKind sv_fn_rt2 = g_fn_ret_type; int sv_fn_ro2 = g_fn_ret_oint;
+  g_fn_pr_label = NULL; g_fn_pr_var = NULL; g_fn_ret_type = TY_POLY; g_fn_ret_oint = 0;
   /* The funnel itself is parked with its mirror, as the proc emitter parks
      it: `_pr_done` and `_prret` belong to the method's C function, and an
      `ensure` in the body ended in a `goto` to them from this one. */
@@ -8702,7 +8702,7 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
   g_proc_return_home = sv_prh_fb; g_proc_toplevel_return = sv_ptr_fb;
   g_self_deref = sv_fbderef;
   g_result_poly = sv_rp; g_result_var = sv_rv; g_yielder_name = sv_yld;
-  g_fn_pr_label = sv_fn_prl2; g_fn_pr_var = sv_fn_prv2; g_fn_ret_type = sv_fn_rt2;
+  g_fn_pr_label = sv_fn_prl2; g_fn_pr_var = sv_fn_prv2; g_fn_ret_type = sv_fn_rt2; g_fn_ret_oint = sv_fn_ro2;
   g_method_pr_label = sv_fbprl; g_method_pr_var = sv_fbprv;
   g_brk_ser_var = sv_fbser; g_brk_skip_id = sv_fbskip;
   g_cap_struct = sv_fbcap; g_cap_names = sv_fbcapn;
@@ -9915,8 +9915,8 @@ else if (orecv >= 0 && onm) {
   int sv_excd = g_exc_frame_depth, sv_prexcd = g_method_pr_exc_depth;
   int sv_rsd = g_rescue_save_depth;
   g_exc_frame_depth = 0; g_method_pr_exc_depth = 0; g_rescue_save_depth = 0;
-  const char *sv_fn_prl = g_fn_pr_label, *sv_fn_prv = g_fn_pr_var; TyKind sv_fn_rt = g_fn_ret_type;
-  g_fn_pr_label = NULL; g_fn_pr_var = NULL; g_fn_ret_type = ret;
+  const char *sv_fn_prl = g_fn_pr_label, *sv_fn_prv = g_fn_pr_var; TyKind sv_fn_rt = g_fn_ret_type; int sv_fn_ro = g_fn_ret_oint;
+  g_fn_pr_label = NULL; g_fn_pr_var = NULL; g_fn_ret_type = ret; g_fn_ret_oint = 0;
   char home_acc[48] = "";
   if (ret_proc) { snprintf(home_acc, sizeof home_acc, "((_proc_cap_%d *)_cap)->_home", pid); g_proc_return_home = home_acc; }
   else g_proc_return_home = NULL;
@@ -10538,7 +10538,7 @@ else if (orecv >= 0 && onm) {
   g_proc_toplevel_return = sv_ptr;
   g_exc_frame_depth = sv_excd; g_method_pr_exc_depth = sv_prexcd;
   g_rescue_save_depth = sv_rsd;
-  g_fn_pr_label = sv_fn_prl; g_fn_pr_var = sv_fn_prv; g_fn_ret_type = sv_fn_rt;
+  g_fn_pr_label = sv_fn_prl; g_fn_pr_var = sv_fn_prv; g_fn_ret_type = sv_fn_rt; g_fn_ret_oint = sv_fn_ro;
 
   if (ie_mark >= 0 || rself) buf_puts(b, "({ sp_Proc *_pie = ");
   if (ncap == 0 && !cap_self && !cap_cls && !ret_proc && !brk_blk) {
@@ -17426,6 +17426,7 @@ typedef struct EmitUnitState {
      refuses. Restored here to their value before the unit, which is the
      between-units value. */
   TyKind ret_type, fn_ret_type, result_ty;
+  int fn_ret_oint;
   int c_ret_void, in_proc_body, result_poly, proc_body_kind, proc_toplevel_return;
   int indent, nren, block_nren, block_id, c_loop_depth, ensure_depth;
   int fiber_body;      /* g_fiber_body: a refusal inside a Thread body skips its restore */
@@ -17446,7 +17447,7 @@ typedef struct EmitUnitState {
 void emit_unit_state_save(EmitUnitState *s) {
   s->move_depth = comp_scope_move_depth();
   s->view_depth = view_mark();
-  s->ret_type = g_ret_type; s->fn_ret_type = g_fn_ret_type; s->result_ty = g_result_ty;
+  s->ret_type = g_ret_type; s->fn_ret_type = g_fn_ret_type; s->fn_ret_oint = g_fn_ret_oint; s->result_ty = g_result_ty;
   s->c_ret_void = g_c_ret_void; s->in_proc_body = g_in_proc_body; s->result_poly = g_result_poly;
   s->proc_body_kind = g_proc_body_kind; s->proc_toplevel_return = g_proc_toplevel_return;
   s->indent = g_indent; s->nren = g_nren; s->block_nren = g_block_nren; s->block_id = g_block_id;
@@ -17501,7 +17502,7 @@ void emit_unit_state_save(EmitUnitState *s) {
 void emit_unit_state_restore(const EmitUnitState *s) {
   comp_scope_move_unwind(s->move_depth);
   view_unwind(s->view_depth);
-  g_ret_type = s->ret_type; g_fn_ret_type = s->fn_ret_type; g_result_ty = s->result_ty;
+  g_ret_type = s->ret_type; g_fn_ret_type = s->fn_ret_type; g_fn_ret_oint = s->fn_ret_oint; g_result_ty = s->result_ty;
   g_c_ret_void = s->c_ret_void; g_in_proc_body = s->in_proc_body; g_result_poly = s->result_poly;
   g_proc_body_kind = s->proc_body_kind; g_proc_toplevel_return = s->proc_toplevel_return;
   g_indent = s->indent; g_nren = s->nren; g_block_nren = s->block_nren; g_block_id = s->block_id;
