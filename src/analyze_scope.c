@@ -8003,10 +8003,14 @@ static int name_called_on_dynamic_recv(Compiler *c, const char *name, int node_c
 
 /* The class method a call runs on its receiver: its own name, or for a
    `K.method(:m)` the m the Method binds, which runs on K when called as
-   `K.m` does (`Sub.method(:make).call` constructs a Sub). */
+   `K.m` does (`Sub.method(:make).call` constructs a Sub). A `K.send(:m)`
+   (`__send__`, `public_send`) runs m on K too: the inherited hook's call,
+   `Sup.__send__(:inherited, self)`, is one. */
 static const char *cls_call_name(Compiler *c, int id) {
   const char *nm = nt_str(c->nt, id, "name");
-  const char *sym = nm && sp_streq(nm, "method") ? method_sym_arg(c, id) : NULL;
+  int named = nm && (sp_streq(nm, "method") || sp_streq(nm, "send") || sp_streq(nm, "__send__") ||
+                     sp_streq(nm, "public_send"));
+  const char *sym = named ? method_sym_arg(c, id) : NULL;
   return sym ? sym : nm;
 }
 
