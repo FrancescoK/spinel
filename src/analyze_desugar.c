@@ -8958,15 +8958,80 @@ static int fwd_body_holds(const NodeTable *nt, int ct, int id) {
   return 0;
 }
 static void fwd_ns_key(const NodeTable *nt, int id, char *key, size_t cap);
+/* The class or module whose body holds each node (fwd_body_holds), the
+   first of them in node order before it, or -1. Asked by scanning every
+   node before it, per node and per level of nesting, the namespace keys
+   (desugar_extend_self takes one per module, fwd_resolve_const one per
+   candidate class) grew with the square of the program. The holders are
+   entered in node order, statement by statement, only as far as a
+   question needs: up to the statement of the first one holding the node,
+   where the scan stopped too, and never past the node. A tree (again
+   after an edit) is so walked at most once over all its questions, and
+   never further than the scan went. An entry counts when it carries the
+   tree's stamp, so an edit clears nothing. */
+static int *g_lex_par;
+static unsigned *g_lex_stamp;
+static int g_lex_cap;
+static unsigned g_lex_cur;
+static int g_lex_hi, g_lex_k;  /* entered: the holders before g_lex_hi, and
+                                  the first g_lex_k statements of its body */
+static const int *g_lex_bv;    /* that body, of g_lex_bn statements (-1: */
+static int g_lex_bn = -1;      /* not read yet) */
+static const NodeTable *g_lex_nt;
+static unsigned g_lex_ver;
+static unsigned long g_lex_edits;
+static int g_lex_cnt = -1;
+static void fwd_lex_restamp(const NodeTable *nt) {
+  if (nt->count > g_lex_cap) {
+    int cap = g_lex_cap > 0 ? g_lex_cap : 1024;
+    while (cap < nt->count) cap *= 2;
+    int *par = realloc(g_lex_par, sizeof(int) * (size_t)cap);
+    if (par) g_lex_par = par;
+    unsigned *st = par ? realloc(g_lex_stamp, sizeof(unsigned) * (size_t)cap) : NULL;
+    if (!st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    g_lex_stamp = st;
+    memset(g_lex_stamp + g_lex_cap, 0, sizeof(unsigned) * (size_t)(cap - g_lex_cap));
+    g_lex_cap = cap;
+  }
+  if (++g_lex_cur == 0) {
+    memset(g_lex_stamp, 0, sizeof(unsigned) * (size_t)g_lex_cap);
+    g_lex_cur = 1;
+  }
+  g_lex_hi = g_lex_k = 0;
+  g_lex_bn = -1;
+  g_lex_nt = nt; g_lex_ver = nt->version; g_lex_edits = (unsigned long)nt->edits; g_lex_cnt = nt->count;
+}
+static int fwd_lex_parent(const NodeTable *nt, int id) {
+  if (id < 0 || id >= nt->count) return -1;
+  /* a body rewritten in place (nt_node_set_arr) counts an edit, not a
+     version */
+  if (g_lex_nt != nt || g_lex_ver != nt->version || g_lex_edits != (unsigned long)nt->edits ||
+      g_lex_cnt != nt->count)
+    fwd_lex_restamp(nt);
+  while (g_lex_stamp[id] != g_lex_cur && g_lex_hi < id) {
+    int ct = g_lex_hi;
+    if (g_lex_bn < 0) {
+      g_lex_bn = 0;
+      g_lex_bv = fwd_node_is(nt, ct, "ClassNode") || fwd_node_is(nt, ct, "ModuleNode")
+                 ? nt_arr(nt, nt_ref(nt, ct, "body"), "body", &g_lex_bn) : NULL;
+    }
+    if (g_lex_k >= g_lex_bn) { g_lex_hi++; g_lex_k = 0; g_lex_bn = -1; continue; }
+    int st = g_lex_bv[g_lex_k++];
+    int held[2] = { st, fwd_body_def(nt, st) };
+    for (int h = 0; h < 2; h++)
+      if (held[h] > ct && held[h] < nt->count && g_lex_stamp[held[h]] != g_lex_cur) {
+        g_lex_par[held[h]] = ct;
+        g_lex_stamp[held[h]] = g_lex_cur;
+      }
+  }
+  return g_lex_stamp[id] == g_lex_cur ? g_lex_par[id] : -1;
+}
 /* The lexical namespace a node sits in: its enclosing classes and modules. */
 static void fwd_lex_ctx(const NodeTable *nt, int id, char *key, size_t cap) {
-  for (int ct = 0; ct < id; ct++) {
-    if (!fwd_node_is(nt, ct, "ClassNode") && !fwd_node_is(nt, ct, "ModuleNode")) continue;
-    if (!fwd_body_holds(nt, ct, id)) continue;
-    fwd_ns_key(nt, ct, key, cap);
-    fwd_key_add(key, cap, nt_str(nt, nt_ref(nt, ct, "constant_path"), "name"));
-    break;
-  }
+  int ct = fwd_lex_parent(nt, id);
+  if (ct < 0) return;
+  fwd_ns_key(nt, ct, key, cap);
+  fwd_key_add(key, cap, nt_str(nt, nt_ref(nt, ct, "constant_path"), "name"));
 }
 /* The namespace a class or module node is opened in: its lexical namespace
    and the qualifier of its own path. */
