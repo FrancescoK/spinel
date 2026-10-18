@@ -4279,15 +4279,21 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
     TyKind trt = is_scalar_ret(ret) ? ret : TY_INT;
     char getx[200];
     snprintf(getx, sizeof getx, "sp_SymPolyHash_get((sp_SymPolyHash *)_t%d.v.p, _t%d)", tv, atmp[0]);
-    buf_printf(b, " case SP_BUILTIN_SYM_POLY_HASH: _t%d = sp_SymPolyHash_has_key((sp_SymPolyHash *)_t%d.v.p, _t%d) ? ", tr, tv, atmp[0]);
+    /* `[]` answers the hash's default on a miss, which the storage's own
+       read already knows: the has_key gate is fetch's, as for the String
+       keys above (#5544), and in front of `[]` it answered nil for a
+       Hash.new("") */
+    buf_printf(b, " case SP_BUILTIN_SYM_POLY_HASH: _t%d = ", tr);
+    if (is_fetch) buf_printf(b, "sp_SymPolyHash_has_key((sp_SymPolyHash *)_t%d.v.p, _t%d) ? ", tv, atmp[0]);
     if (ret == TY_POLY) buf_puts(b, getx);
     else if (trt == TY_STRING) buf_printf(b, "sp_poly_to_s(%s)", getx);
     else if (trt == TY_FLOAT) buf_printf(b, "sp_poly_to_f(%s)", getx);
     else if (trt == TY_INT) buf_printf(b, "sp_poly_to_i(%s)", getx);
     else buf_printf(b, "sp_poly_to_i(%s)", getx);
-    buf_puts(b, " : ");
-    if (is_fetch) emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? atmp_ty[1] : TY_UNKNOWN, argv[0], ret, trt, b);
-    else buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, trt));
+    if (is_fetch) {
+      buf_puts(b, " : ");
+      emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? atmp_ty[1] : TY_UNKNOWN, argv[0], ret, trt, b);
+    }
     buf_puts(b, "; break;");
     /* a symbol key against generic poly-keyed storage: an empty `{}`
        literal boxes as PolyPolyHash, so a symbol-keyed [] / fetch must
