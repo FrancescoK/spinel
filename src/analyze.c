@@ -34222,11 +34222,12 @@ static int const_array_index_in_range(Compiler *c, int recv, int idx) {
 }
 
 /* Can position `pos` of a multiple assignment's value be nil, where the
-   value is a constant Array of a known length or a `?:` of such (1 when it
-   is anything else)? An element past the length is nil; one within it is
-   the literal's element, or the value the `map` block gives it. Every value
-   position of the value, by the iterator's `if` shapes, is asked; a missing
-   one, or a walk that gave up, is nil. */
+   value is a constant Array of a known length, or a conditional or a
+   sequence whose value positions are such (1 when any is anything else)?
+   An element past the length is nil; one within it is the literal's
+   element, or the value the `map` block gives it. Every value
+   position of the value, by the iterator's `if` and `unless` shapes, is
+   asked; a missing one, or a walk that gave up, is nil. */
 typedef struct { Compiler *c; int pos; } MasgnPos;
 static int masgn_leaf_may_nil(const VpLeaf *leaf, void *ud) {
   MasgnPos *m = ud;
@@ -34250,7 +34251,7 @@ static int masgn_leaf_may_nil(const VpLeaf *leaf, void *ud) {
 }
 static int masgn_const_pos_may_nil(Compiler *c, int v, int pos) {
   MasgnPos m = { c, pos };
-  return for_each_value_position(c->nt, v, VPS_IF, masgn_leaf_may_nil, &m);
+  return for_each_value_position(c->nt, v, VPS_IF | VPS_UNLESS, masgn_leaf_may_nil, &m);
 }
 
 /* A call that answers one element of its receiver, or nil when there is none
@@ -38485,9 +38486,9 @@ static void mark_nullable_int_locals(Compiler *c) {
             may_nil = (pos < 0 || pos >= en || (pass && pos < ln)) ? 1 : nullable_int_value(c, ev[pos]);
           }
           else if (scalar_rhs) may_nil = pass || j > 0 || nullable_int_value(c, mv);
-          /* a constant Array of a known length (through `?:`): a left
-             within it takes that element of each literal the constant
-             can be */
+          /* a constant Array of a known length (or a conditional of
+             such): a left within it takes that element of each literal
+             the constant can be */
           else if (!pass && mrest < 0) may_nil = masgn_const_pos_may_nil(c, mv, j);
           else may_nil = 1;   /* an array of unknown length, or a boxed value */
           if (!may_nil) continue;
