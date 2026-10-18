@@ -10947,6 +10947,10 @@ int desugar_enum_method_recv(Compiler *c) {
       continue;
     }
     if (comp_method_in_chain(c, cid, nm, NULL) >= 0) continue;            /* class defines it */
+    /* an attr_reader is the class's own method too (activesupport's
+       CallbackChain reads `other.chain`) */
+    if (nt_ref(nt, id, "arguments") < 0 && nt_ref(nt, id, "block") < 0 &&
+        comp_reader_in_chain(c, cid, nm, NULL)) continue;
     /* minmax only where Enumerable really is: a Struct, or a class that mixes
        it in, itself, through a superclass or through an included module
        (whose own minmax builtins/enumerable.rb also answers); a class with a
