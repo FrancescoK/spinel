@@ -1489,6 +1489,9 @@ static const BuiltinOp bop_rows[] = {
   { TY_SYMBOL, "to_sym",          0, 127, BF_ANY,      TY_SYMBOL,     BOPE_TEMPLATE, "$r", 0 },
   { TY_SYMBOL, "intern",          0, 127, BF_ANY,      TY_SYMBOL,     BOPE_TEMPLATE, "$r", 0 },
   { TY_SYMBOL, "itself",          0, 127, BF_ANY,      TY_SYMBOL,     BOPE_TEMPLATE, "$r", 0 },
+  { TY_SYMBOL, "dup",             0,   0, BF_ANY,      TY_SYMBOL,     BOPE_NONE },
+  { TY_SYMBOL, "clone",           0,   0, BF_ANY,      TY_SYMBOL,     BOPE_NONE },
+  { TY_SYMBOL, "freeze",          0,   0, BF_ANY,      TY_SYMBOL,     BOPE_NONE },
   { TY_SYMBOL, "succ",            0, 127, BF_ANY,      TY_SYMBOL,     BOPE_TEMPLATE, "sp_sym_intern(sp_str_succ(sp_sym_to_s($r)))", 0 },
   { TY_SYMBOL, "next",            0, 127, BF_ANY,      TY_SYMBOL,     BOPE_TEMPLATE, "sp_sym_intern(sp_str_succ(sp_sym_to_s($r)))", 0 },
   { TY_SYMBOL, "length",          0, 127, BF_ANY,      TY_INT,        BOPE_TEMPLATE, "sp_str_length(sp_sym_to_s($r))", 0 },
@@ -1587,6 +1590,13 @@ static const BuiltinOp bop_rows[] = {
   { TY_INT,   "to_f",        0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "({ sp_oint _t$t = $N; _t$t.nil ? 0.0 : (sp_float)_t$t.v; })" },  /* #4070 */
   { TY_INT,   "to_i",        0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "({ sp_oint _t$t = $N; _t$t.nil ? (sp_int)0 : _t$t.v; })" },
   { TY_INT,   "abs",         0, 127, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "sp_int_abs($r)" },
+  /* -@ itself dup clone freeze answer the receiver's own value, which
+     nothing emits a call for: the rows state its kind */
+  { TY_INT,   "-@",          0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "itself",      0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "dup",         0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "clone",       0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "freeze",      0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
   { TY_INT,   "size",        0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "((sp_int)sizeof(sp_int))" },
   { TY_INT,   "to_int",      1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "($r)" },
   { TY_INT,   "ord",         1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "($r)" },
@@ -1700,6 +1710,12 @@ static const BuiltinOp bop_rows[] = {
   { TY_FLOAT, "next_float",  0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "nextafter($r, INFINITY)" },
   { TY_FLOAT, "prev_float",  0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "nextafter($r, -INFINITY)" },
   { TY_FLOAT, "abs",         0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "fabs($r)" },
+  /* as Integer's -@ itself dup clone freeze above */
+  { TY_FLOAT, "-@",          0,   0, BF_ANY,      TY_FLOAT,       BOPE_NONE },
+  { TY_FLOAT, "itself",      0,   0, BF_ANY,      TY_FLOAT,       BOPE_NONE },
+  { TY_FLOAT, "dup",         0,   0, BF_ANY,      TY_FLOAT,       BOPE_NONE },
+  { TY_FLOAT, "clone",       0,   0, BF_ANY,      TY_FLOAT,       BOPE_NONE },
+  { TY_FLOAT, "freeze",      0,   0, BF_ANY,      TY_FLOAT,       BOPE_NONE },
   { TY_FLOAT, "magnitude",   0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "fabs($r)" },
   { TY_FLOAT, "modulo",      1,   1, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "sp_fmod($r, $F0)" },
   { TY_FLOAT, "modulo",      0, 127, BF_ANY,      TY_FLOAT,       BOPE_NONE },
@@ -1927,7 +1943,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "%",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
   { TY_STRING, "+",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
   { TY_STRING, "+@",                  0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF_CLASS },  /* the receiver, or a copy of a frozen one */
-  { TY_STRING, "-@",                  0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF_CLASS },  /* the receiver if frozen, else a frozen copy */
+  { TY_STRING, "-@",                  0,   0, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_CLASS },  /* the receiver if frozen, else a frozen copy */
   { TY_STRING, "==",                  1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
   { TY_STRING, "===",                 1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
   { TY_STRING, "eql?",                1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
@@ -1940,9 +1956,10 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "hash",                0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
   { TY_STRING, "length",              0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
   { TY_STRING, "size",                0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
-  { TY_STRING, "dup",                 0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_COPY_CLASS },
-  { TY_STRING, "clone",               0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_COPY_CLASS },
-  { TY_STRING, "freeze",              0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
+  { TY_STRING, "dup",                 0,   0, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_COPY_CLASS },
+  { TY_STRING, "clone",               0,   0, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_COPY_CLASS },
+  { TY_STRING, "freeze",              0,   0, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
+  { TY_STRING, "itself",              0,   0, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "byteindex",           1,   2, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
   { TY_STRING, "byterindex",          1,   2, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
   { TY_STRING, "match",               1,   2, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
@@ -2290,6 +2307,7 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "sort",                  0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
   { BOP_ANY_ARRAY, "uniq",                  0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
   { BOP_ANY_ARRAY, "to_a",                  0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_EXACT },
+  { BOP_ANY_ARRAY, "itself",                0,   0, BF_ANY,      BOPR_SELF,     BOPE_NONE },
   { BOP_ANY_ARRAY, "to_ary",                0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "deconstruct",           0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "entries",               0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
@@ -2420,9 +2438,14 @@ static const BuiltinOp bop_rows[] = {
   /* Array, any kind: the forms of CRuby's Array methods no row above
      covers, so that each has a row with its counts, its block rule and
      whether it answers the receiver (BOPF_SELF, BOPF_SELF_OR_NIL,
-     bop_answers_self). They type nothing: inference keeps the rules after
+     bop_answers_self). Most type nothing: inference keeps the rules after
      the lookup, which read the operands, the block or the call's place,
-     and codegen the legacy chain. Each fits only calls no row above fits. */
+     and codegen the legacy chain. Each fits only calls no row above fits.
+     An index or count whose kind says the answer (an Integer, a Range)
+     states it in rows that guard it; the unguarded row of the name stays
+     for every other kind of index, which the rules read. */
+  { BOP_ANY_ARRAY, "[]",                    1,   1, BF_ANY,      BOPR_SELF,     BOPE_NONE, NULL, BOP_K(TY_RANGE) },  /* a subarray */
+  { BOP_ANY_ARRAY, "[]",                    1,   1, BF_ANY,      BOPR_ELEM,     BOPE_NONE, NULL, BOP_K(TY_INT) },  /* an element */
   { BOP_ANY_ARRAY, "[]",                    1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },  /* an element, or a subarray for a Range */
   { BOP_ANY_ARRAY, "slice",                 1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
   { BOP_ANY_ARRAY, "[]=",                   2,   3, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },  /* the assigned value */
@@ -2729,6 +2752,7 @@ static const BopShareRow bop_share_rows[] = {
   { TY_STRING, "[]=",        BSH_FETCH },
   { TY_STRING, "+@",         BSH_RECV },
   { TY_STRING, "freeze",     BSH_RECV },
+  { TY_STRING, "itself",     BSH_RECV },
   { TY_STRING, "-@",         BSH_FROZEN },
   { TY_STRING, "dedup",      BSH_FROZEN },
   { TY_STRING, "dup",        BSH_PURE },
