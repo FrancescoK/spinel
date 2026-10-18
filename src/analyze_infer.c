@@ -2924,16 +2924,15 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
     }
     if (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
         sp_streq(name, ">=") || sp_streq(name, "==") || sp_streq(name, "!=") ||
-        sp_streq(name, "nil?") || sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
-        sp_streq(name, "include?")) {
-      /* include? is recorded under the receiver's row, or under the String
-         row that stands for a boxed receiver */
-      if (sp_streq(name, "include?")) {
-        int blk = nt_ref(nt, id, "block") >= 0;
-        if (rt == TY_POLY) an_bop_find_boxed(c, id, TY_STRING, name, argc, blk);
-        else an_bop_find(c, id, bop_family_of(rt), name, argc, blk);
-      }
+        sp_streq(name, "nil?") || sp_streq(name, "is_a?") || sp_streq(name, "kind_of?"))
       { *out = TY_BOOL; return 1; }
+    /* include? is the receiver's row, or the String row that stands for a
+       boxed receiver; a bool where no row has it (a user object) */
+    if (sp_streq(name, "include?")) {
+      int blk = nt_ref(nt, id, "block") >= 0;
+      const BuiltinOp *op = rt == TY_POLY ? an_bop_find_boxed(c, id, TY_STRING, name, argc, blk)
+                                          : an_bop_find(c, id, bop_family_of(rt), name, argc, blk);
+      { *out = op ? bop_result(op, rt) : TY_BOOL; return 1; }
     }
     if (rt == TY_POLY) {
       /* A container read the poly dispatch may have to serve from a builtin

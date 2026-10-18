@@ -1538,11 +1538,12 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
   (void)argv; (void)recv; (void)nt;
   if (!name) return 0;
-  if (recv >= 0 && rt == TY_POLY && argc == 0 &&
-      (is_text_conversion(name)) &&
-      !an_user_recv_defines_method(c, name)) {
-    an_bop_find_boxed(c, id, TY_STRING, name, argc, nt_ref(nt, id, "block") >= 0);
-    { *out = TY_STRING; return 1; }
+  /* to_s and inspect answer a String whatever the box holds (the String
+     rows that stand for a boxed receiver), unless a class of the program
+     owns the name */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 && !an_user_recv_defines_method(c, name)) {
+    const BuiltinOp *op = an_bop_find_boxed(c, id, TY_STRING, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op) { *out = op->result; return 1; }
   }
   /* #hash on a boxed receiver is always the Integer sp_rbval_hash_key
      answers -- a user #hash in the program is reached through
