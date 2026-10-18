@@ -4721,8 +4721,9 @@ void register_ffi_decls(Compiler *c) {
           const char *ucpn = ucp >= 0 ? nt_str(nt, ucp, "name") : NULL;
           if (!ucpn || !sp_streq(ucpn, leaf)) continue;
           /* a class the collision qualifier already registered under its
-             own path (`Cache::Store` beside "X509::Store") is a distinct
-             class, not a merge: its registered name is no longer the leaf */
+             own path (`Cache::Store` beside "OpenSSL::X509::Store") is a
+             distinct class, not a merge: its registered name is no longer
+             the leaf */
           { const char *reg = nt_str(nt, ucn, "name");
             if (reg && !sp_streq(reg, leaf)) continue; }
           /* rebuild the definition's own qualified spelling; a bare

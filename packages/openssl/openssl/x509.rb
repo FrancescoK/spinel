@@ -15,6 +15,10 @@ module OpenSSL
     class CertificateError < OpenSSLError
     end
 
+    # What X509::Store#add_cert raises (openssl.rb).
+    class StoreError < OpenSSLError
+    end
+
     class Certificate
       # Every certificate in a PEM string, in order: for a fullchain.pem, the
       # leaf and then the certificates that issued it. A DER string holds one
