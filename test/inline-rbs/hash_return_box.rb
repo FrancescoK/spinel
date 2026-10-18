@@ -31,6 +31,8 @@ cfg = Cfg.new
 styles = %w[x y z]
 p(styles.map { |st| cfg.for("a")[st]&.include?("1") })
 p cfg.for("a").key?("y")
+holder = [cfg, nil].first
+p(styles.map { |st| holder.for("a")[st]&.include?("2") })
 p cfg.maybe("k")
 p cfg.maybe("a")["x"]
 p cfg.early("boxed")["x"]

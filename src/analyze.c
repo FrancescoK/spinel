@@ -28922,6 +28922,21 @@ static int dyn_scopes_named(Compiler *c, const char *nm) {
   return h >= 0 ? g_dyn.shead[h] : -1;
 }
 
+/* Is every method named nm one whose Hash return seed keeps the box and
+   checks it (Scope.ret_rbs_hash), with no builtin and no attribute reader of
+   the name? A call of it on any receiver then answers a Hash, or raises. */
+static int dyn_rbs_hash_name(Compiler *c, const char *nm) {
+  if (!nm || builtin_method_known_any(nm) || builtin_object_method_known(nm)) return 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_reader_in_chain(c, k, nm, NULL)) return 0;
+  int any = 0;
+  for (int mi = dyn_scopes_named(c, nm); mi >= 0; mi = g_dyn.snext[mi]) {
+    if (!c->scopes[mi].ret_rbs_hash) return 0;
+    any = 1;
+  }
+  return any;
+}
+
 /* Is there any target at all that appends to a String parameter: a proc
    literal, a block kept as `&blk`, a method a `method(:m)` names? What an
    unknown target answers (see above). */
@@ -29600,9 +29615,12 @@ static int dyn_may_callable_walk(Compiler *c, int v, int depth) {
     case NK_CallNode: {
       const char *nm = nt_str(nt, v, "name");
       if (!nm || nt_ref(nt, v, "block") >= 0) return 1;
-      /* on a boxed or builtin receiver it may be the builtin's answer */
+      /* on a boxed or builtin receiver it may be the builtin's answer, unless
+         no builtin has the name and every method of it is a Hash return
+         seed's, checked at its return (Scope.ret_rbs_hash) */
       int recv = nt_ref(nt, v, "receiver");
-      if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode && !ty_is_object(comp_ntype(c, recv))) return 1;
+      if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode && !ty_is_object(comp_ntype(c, recv)))
+        return !dyn_rbs_hash_name(c, nm);
       /* self in a class method is the class: its methods (a `class << self`
          accessor) are not walked */
       if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {

@@ -3,7 +3,8 @@
 # of them a lambda that appends to its argument). The value stays boxed, a
 # Hash of whatever form it is, and is checked to be a Hash when it returns;
 # a String handed to `[]` on the result is then no String a proc could
-# append to, which the compiler refused before.
+# append to, which the compiler refused before -- on a receiver of a
+# known class, and on a boxed one when every method of the name is such.
 
 BOXED_KEYS = {}
 BOXED_KEYS[["x", 1].first] = "boxed"
@@ -34,6 +35,8 @@ cfg = Cfg.new
 styles = %w[x y z]
 p(styles.map { |st| cfg.for("a")[st]&.include?("1") })
 p cfg.for("a").key?("y")
+holder = [cfg, nil].first
+p(styles.map { |st| holder.for("a")[st]&.include?("2") })
 p cfg.maybe("k")
 p cfg.maybe("a")["x"]
 p cfg.early("boxed")["x"]
