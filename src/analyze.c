@@ -4496,10 +4496,13 @@ void qc_collect_class_writes(Compiler *c, int node, char (*path)[64], int depth,
   qc_pop_header(own, NULL);
 }
 
-/* whether a `native_struct "A::B::Leaf", ...` declaration names `leaf` under
-   a qualified path */
-static int qc_native_leaf_declared(Compiler *c, const char *leaf) {
+/* how a `native_struct "A::B::Leaf", ...` declaration names w's leaf: 2
+   when it spells w's own path -- `class OpenSSL::X509::Store` beside
+   "OpenSSL::X509::Store" is that native class reopened -- 1 when it is under
+   another qualified path, 0 when no declaration names it */
+static int qc_native_leaf_declared(Compiler *c, const QCWrite *w) {
   const NodeTable *nt = c->nt;
+  int found = 0;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, "native_struct") || nt_ref(nt, id, "receiver") >= 0) continue;
@@ -4509,9 +4512,18 @@ static int qc_native_leaf_declared(Compiler *c, const char *leaf) {
     const char *cn = nt_str(nt, av[0], "content");
     const char *sep = cn ? strrchr(cn, ':') : NULL;
     if (!sep || sep == cn || sep[-1] != ':') continue;
-    if (sp_streq(sep + 1, leaf)) return 1;
+    if (!sp_streq(sep + 1, w->name)) continue;
+    char own[512];
+    own[0] = 0;
+    for (int i = 0; i < w->depth; i++) {
+      strncat(own, w->path[i], sizeof own - strlen(own) - 1);
+      strncat(own, "::", sizeof own - strlen(own) - 1);
+    }
+    strncat(own, w->name, sizeof own - strlen(own) - 1);
+    if (sp_streq(own, cn)) return 2;
+    found = 1;
   }
-  return 0;
+  return found;
 }
 /* whether the program defines a class or module whose header names `nm` */
 static int qc_class_name_defined(Compiler *c, const char *nm) {
@@ -4572,10 +4584,12 @@ void qualify_colliding_classes(Compiler *c) {
        reopen checks) would take it for the builtin. Qualify it too (#3781). */
     if (!collide && ws[i].depth > 0 && builtin_class_id(ws[i].name) != 0) collide = 1;
     /* ... and a native class declared under a qualified path (openssl's
-       `native_struct "X509::Store"`), which registers under its leaf: a
-       nested `class Store` elsewhere (activesupport's Cache::Store) shares
-       that key and was refused as a merge; qualified, it is its own class. */
-    if (!collide && ws[i].depth > 0 && qc_native_leaf_declared(c, ws[i].name)) collide = 1;
+       `native_struct "OpenSSL::X509::Store"`), which registers under its
+       leaf: a nested `class Store` elsewhere (activesupport's Cache::Store)
+       shares that key and was refused as a merge; qualified, it is its own
+       class. */
+    int native = ws[i].depth > 0 ? qc_native_leaf_declared(c, &ws[i]) : 0;
+    if (!collide && native == 1) collide = 1;
     /* ... and the builtin classes the id table does not carry (Encoding is
        a tag of its own, not a class id): walk_scope refuses a nested
        `module Encoding` -- activesupport's ActiveSupport::JSON::Encoding --
@@ -4605,6 +4619,11 @@ void qualify_colliding_classes(Compiler *c) {
     /* ... and a nested class sharing its leaf with a plain constant written
        elsewhere, which keeps the bare leaf as its key */
     if (!collide && ws[i].depth > 0 && qc_leaf_elsewhere(&ws[i], kws, kwn)) collide = 1;
+    /* ... except the native class itself, written under the path its
+       declaration spells: the native class registers under its bare leaf,
+       so the reopening keeps the leaf whatever else shares it, and the
+       others (Cache::Store) are the ones qualified away from it. */
+    if (native == 2) collide = 0;
     /* ... and when the qualified name is one the program gives a class or
        module of its own (`class Foo__Mutex` beside `class Foo::Mutex`),
        the name takes a leading underscore, as often as it needs to be

@@ -16,7 +16,8 @@
 #
 # Spinel implements neither TLS nor any of the arithmetic below it.
 # sp_openssl.c is glue over the system libssl and libcrypto, and the trust
-# anchors are the operating system's; nothing is bundled.
+# anchors are the operating system's, or the ones a program adds to an
+# X509::Store of its own; nothing is bundled.
 #
 # SSLSocket is not an IO, exactly as in CRuby: it is an ordinary object that
 # answers #to_io, which is why IO.select had to learn that protocol. The
@@ -92,12 +93,16 @@ module OpenSSL
     native_func :x509_der,  [:string], :cbinstr, "sp_x509_der"
     native_func :x509_load, [:string], :cbinstr, "sp_x509_load"
     native_func :x509_pem,  [:string], :cbinstr, "sp_x509_pem"
+    # X509::Store#add_cert: the store, and the certificate's DER.
+    native_func :x509_store_add, [:any, :string], :int, "sp_x509_store_add"
 
     ffi_lib "ssl"
     ffi_lib "crypto"
 
-    # X509::Store - for system CA cert loading
-    native_struct "X509::Store", "sp_X509_Store", "sp_X509_Store_free"
+    # X509::Store - for system CA cert loading, or a CA of the program's own.
+    # Declared under its whole path, which is the name it answers to and the
+    # one the reopening at the end of this file spells.
+    native_struct "OpenSSL::X509::Store", "sp_X509_Store", "sp_X509_Store_free"
     native_new [], "sp_X509_Store_new"
     native_method :set_default_paths, [], :int, "sp_X509_Store_set_default_paths"
   end
@@ -500,5 +505,19 @@ module OpenSSL
         self
       end
     end
+  end
+end
+
+# Reopened at the top level, under the path it was declared with: that is
+# what makes it the native class rather than a second Store.
+class OpenSSL::X509::Store
+  # CRuby's, for a client that trusts a CA of its own rather than, or as well
+  # as, the operating system's. The store keeps its own copy, so a
+  # certificate dropped after this stays trusted.
+  def add_cert(cert)
+    if OpenSSL::Native.x509_store_add(self, cert.to_der) != 1
+      raise OpenSSL::X509::StoreError, OpenSSL::Native.last_error
+    end
+    self
   end
 end

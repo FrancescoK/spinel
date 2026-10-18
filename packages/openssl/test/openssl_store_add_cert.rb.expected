@@ -1,0 +1,8 @@
+OpenSSL::X509::Store
+true
+"Han River: Incheon\n"
+"accepted"
+"client: OpenSSL::SSL::SSLError"
+"server: refused"
+"client: OpenSSL::SSL::SSLError"
+"server: refused"

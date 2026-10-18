@@ -134,12 +134,14 @@ argument.
 `X509::Certificate` reads a certificate from PEM or DER (`new`, and `load`
 for every certificate in a chain file) and writes it back (`to_der`,
 `to_pem`); it holds the DER, and the fields inside it (`subject`, `issuer`,
-`not_after`, extensions) are not read. Beyond that and `X509::Store`, most of
+`not_after`, extensions) are not read. Beyond that and `X509::Store` (`new`,
+`set_default_paths`, `add_cert`), most of
 `X509` is not there: a call to a method the package does not define compiles
 into CRuby's NoMethodError, raised when it is reached. Spinel
 implements no TLS and bundles no trust anchors: the chain is validated against
 the operating system's store, so a CA it stops trusting stops being trusted
-here on an OS update. The package exists only where libssl's headers were
+here on an OS update; a context given a `cert_store` validates against that
+store instead. The package exists only where libssl's headers were
 present at build time.
 
 The require-gated stdlib Spinel *does* provide (`StringIO`, `IO#winsize`,

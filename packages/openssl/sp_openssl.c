@@ -192,6 +192,28 @@ int sp_X509_Store_set_default_paths(sp_X509_Store *s) {
   return X509_STORE_set_default_paths(s->store);
 }
 
+/* store.add_cert's half: the certificate as the DER a Ruby
+   X509::Certificate holds, and the store takes a reference of its own. 1
+   when it is in the store, 0 with the reason in sp_ssl_last_error. */
+sp_int sp_x509_store_add(sp_RbVal store, const char *der) {
+  sp_X509_Store *s = store.tag != SP_TAG_NIL ? (sp_X509_Store *)store.v.p : NULL;
+  const unsigned char *p = (const unsigned char *)der;
+  size_t len = sp_str_byte_len(der);
+  X509 *x;
+  int ok;
+
+  sp_ssl_errbuf[0] = 0;
+  if (!s || !s->store) { sp_ssl_note("X509_STORE"); return 0; }
+  if (len > (size_t)INT_MAX || !(x = d2i_X509(NULL, &p, (long)len))) {
+    sp_ssl_note("certificate");
+    return 0;
+  }
+  ok = X509_STORE_add_cert(s->store, x);
+  X509_free(x);
+  if (!ok) sp_ssl_note("X509_STORE_add_cert");
+  return ok ? 1 : 0;
+}
+
 /* ---- X509::Certificate ---- */
 /* A certificate is its DER, the way a key is its bytes: PEM is parsed here,
    where it crosses the boundary, and no X509 * outlives the call. Ruby holds
