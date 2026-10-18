@@ -487,6 +487,10 @@ typedef struct {
                                  the bang's as its handle's read, as for
                                  ret_pub_fresh */
   unsigned char ret_channel_check; /* --repr-check: the earlier pickup proof succeeded */
+  unsigned char ret_unread; /* a String method no call reads the value of: every
+                               call of its name drops it (an_mark_unread_returns),
+                               so its body runs as statements and builds no value
+                               -- a tail `@out << x` read the whole buffer out */
   unsigned char ret_fresh; /* the same return-tail walk proves a new String
                               (or nil) on every path; no incoming handle */
   int ret_param;       /* --share-strings: every non-fresh return reads this

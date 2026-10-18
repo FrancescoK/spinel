@@ -7294,7 +7294,10 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
     buf_puts(b, "    }\n  _pr_done: ;\n  sp_proc_ret_head = _h.prev;\n  return _prret;\n");
   }
   else {
-    emit_stmts_tail(c, s->body, b, 1);
+    /* no call reads the value (an_mark_unread_returns): the body runs as
+       statements, and the default below is the value no one reads */
+    if (s->ret_unread) emit_stmts(c, s->body, b, 1);
+    else emit_stmts_tail(c, s->body, b, 1);
     buf_puts(b, "  return ");
     if (ty_is_object(s->ret)) {
       if (comp_ty_value_obj(c, s->ret)) buf_printf(b, "(sp_%s){0};\n", c->classes[ty_object_class(s->ret)].c_name);
