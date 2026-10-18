@@ -369,8 +369,14 @@ const char *sp_x509_pem(const char *der) {
    step with. Answers the slot index with the slot claimed, or -1 with the
    reason in sp_ssl_last_error.
    `cert_store` is an optional Ruby X509::Store object; if non-NIL, its
-   native X509_STORE is referenced by the SSL_CTX (SSL_CTX_set1_cert_store, so the store stays the handle's and is reusable). */
-static int sp_ssl_setup(sp_int fd, const char *hostname, sp_int verify, sp_RbVal cert_store) {
+   native X509_STORE is referenced by the SSL_CTX (SSL_CTX_set1_cert_store, so the store stays the handle's and is reusable).
+   `chain`, `curve` and `priv` are the client's own certificate and key, laid
+   out as for a server (sp_ssl_use_chain below), and all three empty when the
+   context has none; OpenSSL sends them only to a server that asks. */
+static int sp_ssl_use_chain(SSL_CTX *ctx, const char *chain, const char *curve, const char *priv);
+
+static int sp_ssl_setup(sp_int fd, const char *hostname, sp_int verify, sp_RbVal cert_store,
+                        const char *chain, const char *curve, const char *priv) {
   sp_ssl_errbuf[0] = 0;
 
   SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
@@ -406,6 +412,7 @@ else {
       SSL_CTX_set1_cert_store(ctx, store->store);
     }
   }
+  if (!sp_ssl_use_chain(ctx, chain, curve, priv)) { SSL_CTX_free(ctx); return -1; }
 
   SSL *ssl = SSL_new(ctx);
   if (!ssl) { sp_ssl_note("SSL_new"); SSL_CTX_free(ctx); return -1; }
@@ -489,8 +496,9 @@ static void sp_ssl_handshake_step(sp_ssl_conn *c) {
    exists -- the handshake may well be unfinished, and sp_ssl_want says so --
    or -1 when the connection could not be built. The handle is kept across
    calls so the handshake can be resumed. */
-sp_int sp_ssl_connect_nb(sp_int fd, const char *hostname, sp_int verify, sp_RbVal cert_store) {
-  int i = sp_ssl_setup(fd, hostname, verify, cert_store);
+sp_int sp_ssl_connect_nb(sp_int fd, const char *hostname, sp_int verify, sp_RbVal cert_store,
+                         const char *chain, const char *curve, const char *priv) {
+  int i = sp_ssl_setup(fd, hostname, verify, cert_store, chain, curve, priv);
   if (i < 0) { sp_ssl_want_state = 4; return -1; }
   sp_ssl_conn *c = &sp_ssl_tab[i];
   int fl = fcntl(c->fd, F_GETFL, 0);
@@ -1417,20 +1425,14 @@ static EVP_PKEY *sp_ec_evp_private(const char *curve, const char *priv) {
   return k;
 }
 
-/* The certificate before the key, so SSL_CTX_use_PrivateKey is the call that
+/* A context's own certificates and key, a server's or a client's: the
+   certificate before the key, so SSL_CTX_use_PrivateKey is the call that
    finds a key that is not the certificate's, with CRuby's reason for it.
-   Answers the context, or NULL with the reason in sp_ssl_last_error. */
-static SSL_CTX *sp_ssl_server_ctx(const char *chain, const char *curve, const char *priv) {
+   Empty is no certificate. Answers 1, or 0 with the reason in
+   sp_ssl_last_error. */
+static int sp_ssl_use_chain(SSL_CTX *ctx, const char *chain, const char *curve, const char *priv) {
   size_t len = sp_str_byte_len(chain), at = 0;
-  SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
 
-  if (!ctx) { sp_ssl_note("SSL_CTX_new"); return NULL; }
-  /* The client side's floor and mode, for the same reasons. */
-  SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
-  SSL_CTX_set_mode(ctx, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
-  /* A server asks for no client certificate: CRuby's default context does
-     not, and this package's verify_mode reads VERIFY_PEER by default. */
-  SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
   while (at < len) {
     const unsigned char *p = (const unsigned char *)chain + at, *der = p + 4;
     size_t n;
@@ -1441,8 +1443,7 @@ static SSL_CTX *sp_ssl_server_ctx(const char *chain, const char *curve, const ch
     n = ((size_t)p[0] << 24) | ((size_t)p[1] << 16) | ((size_t)p[2] << 8) | p[3];
     if (n > len - at - 4 || n > (size_t)INT_MAX || !(x = d2i_X509(NULL, &der, (long)n))) {
       sp_ssl_note("certificate");
-      SSL_CTX_free(ctx);
-      return NULL;
+      return 0;
     }
     if (at == 0) {
       ok = SSL_CTX_use_certificate(ctx, x);      /* takes its own reference */
@@ -1451,17 +1452,31 @@ static SSL_CTX *sp_ssl_server_ctx(const char *chain, const char *curve, const ch
         EVP_PKEY *k = sp_ec_evp_private(curve, priv);
         ok = k && SSL_CTX_use_PrivateKey(ctx, k);
         EVP_PKEY_free(k);
-        if (!ok) { sp_ssl_note("SSL_CTX_use_PrivateKey"); SSL_CTX_free(ctx); return NULL; }
+        if (!ok) { sp_ssl_note("SSL_CTX_use_PrivateKey"); return 0; }
       }
     }
     else {
       ok = SSL_CTX_add_extra_chain_cert(ctx, x);  /* owns x once it succeeds */
       if (!ok) X509_free(x);
     }
-    if (!ok) { sp_ssl_note("SSL_CTX_use_certificate"); SSL_CTX_free(ctx); return NULL; }
+    if (!ok) { sp_ssl_note("SSL_CTX_use_certificate"); return 0; }
     at += 4 + n;
   }
-  if (at != len) { sp_ssl_note("certificate"); SSL_CTX_free(ctx); return NULL; }
+  if (at != len) { sp_ssl_note("certificate"); return 0; }
+  return 1;
+}
+
+/* Answers the context, or NULL with the reason in sp_ssl_last_error. It asks
+   for no client certificate; sp_ssl_accept_nb sets what verify_mode says. */
+static SSL_CTX *sp_ssl_server_ctx(const char *chain, const char *curve, const char *priv) {
+  SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
+
+  if (!ctx) { sp_ssl_note("SSL_CTX_new"); return NULL; }
+  /* The client side's floor and mode, for the same reasons. */
+  SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+  SSL_CTX_set_mode(ctx, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+  SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
+  if (!sp_ssl_use_chain(ctx, chain, curve, priv)) { SSL_CTX_free(ctx); return NULL; }
   return ctx;
 }
 
@@ -1471,8 +1486,13 @@ static SSL_CTX *sp_ssl_server_ctx(const char *chain, const char *curve, const ch
    Ruby's accept and accept_nonblock both start here, so a client that
    connects and never sends a ClientHello parks a green thread rather than
    holding an OS worker. Answers the handle, or -1 when the connection could
-   not be built. */
-sp_int sp_ssl_accept_nb(sp_int fd, const char *chain, const char *curve, const char *priv) {
+   not be built.
+   `verify` is the SSL_VERIFY_* bits a server's verify_mode holds, 0 unless
+   the program set it (4a in #9341): with SSL_VERIFY_PEER the server asks
+   for a client certificate and validates one against `cert_store`, which
+   is empty when the context has none, as CRuby's is. */
+sp_int sp_ssl_accept_nb(sp_int fd, const char *chain, const char *curve, const char *priv,
+                        sp_int verify, sp_RbVal cert_store) {
   SSL_CTX *ctx;
   SSL *ssl;
   int i;
@@ -1480,6 +1500,11 @@ sp_int sp_ssl_accept_nb(sp_int fd, const char *chain, const char *curve, const c
   sp_ssl_want_state = 4;
   sp_ssl_errbuf[0] = 0;
   if (!(ctx = sp_ssl_server_ctx(chain, curve, priv))) return -1;
+  SSL_CTX_set_verify(ctx, (int)verify, NULL);
+  if (cert_store.tag != SP_TAG_NIL) {
+    sp_X509_Store *store = (sp_X509_Store *)cert_store.v.p;
+    if (store && store->store) SSL_CTX_set1_cert_store(ctx, store->store);
+  }
   if (!(ssl = SSL_new(ctx))) { sp_ssl_note("SSL_new"); SSL_CTX_free(ctx); return -1; }
   SSL_set_accept_state(ssl);
   if (!SSL_set_fd(ssl, (int)fd)) {

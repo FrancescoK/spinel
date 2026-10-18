@@ -243,8 +243,15 @@ module OpenSSL
       self
     end
 
+    # A flush that fails does not keep close from closing, as in CRuby
+    # (`flush rescue nil`): the peer that would have taken the bytes is gone,
+    # and a caller that rescued the failed write still closes in an ensure.
     def close
-      flush
+      begin
+        flush
+      rescue StandardError
+        nil
+      end
       sysclose
       nil
     end

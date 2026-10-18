@@ -115,8 +115,12 @@ provides `OpenSSL::SSL` only: `SSLContext`, `SSLSocket`, `SSLError` and the
 server's half of it: a context given a certificate and an EC key (`cert=`,
 `key=`, `extra_chain_cert=`, `add_certificate`), and `SSLSocket#accept` /
 `#accept_nonblock`. Each accept builds OpenSSL's context from those, so a
-session does not resume across two connections, and a server asks for no
-client certificate whatever `verify_mode` says.
+session does not resume across two connections. A client sends its
+context's certificate and key to a server that asks for one. A server asks
+only once the program sets `verify_mode` (or calls `set_params`), and checks
+what it gets against its `cert_store`, which is empty unless one is given
+(CRuby's `set_params` gives it the system's); `verify_mode` reads
+`VERIFY_PEER` before it is set, where CRuby's reads nil.
 `OpenSSL::Digest` (`SHA256` / `SHA1` / `MD5`, the class-method forms and the
 object: `OpenSSL::Digest.new("SHA256")`, `update` / `<<`, `digest`,
 `hexdigest`, `digest_length`), `OpenSSL::HMAC` (the algorithm by name or as
