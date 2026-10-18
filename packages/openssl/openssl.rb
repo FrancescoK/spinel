@@ -45,10 +45,14 @@ module OpenSSL
     native_func :version,      [:int],                :string, "sp_ssl_version"
     native_func :cipher,       [:int],                :string, "sp_ssl_cipher"
     native_func :connect_nb,   [:int, :string, :int, :any], :int,    "sp_ssl_connect_nb"
-    native_func :connect_cont, [:int],                :int,    "sp_ssl_connect_cont"
+    native_func :handshake_cont, [:int],              :int,    "sp_ssl_handshake_cont"
     native_func :read_nb,      [:int, :int],          :string, "sp_ssl_read_nb"
     native_func :want,         [],                    :int,    "sp_ssl_want"
     native_func :write_nb,     [:int, :string, :int], :int,    "sp_ssl_write_nb"
+    # The server half: the certificates as x509_load lays them out, the leaf
+    # first, and the key as its curve and scalar. See SSLContext below.
+    native_func :accept_nb,    [:int, :string, :string, :string], :int, "sp_ssl_accept_nb"
+    native_func :server_check, [:string, :string, :string],       :int, "sp_ssl_server_check"
 
     # EC, over the same object. Bytes in, bytes out, and an empty answer
     # means the reason is in last_error -- see openssl/pkey.rb.
@@ -124,23 +128,82 @@ module OpenSSL
       include IO::WaitWritable
     end
 
-    # Only the members an outbound HTTPS client reaches. set_params is the one
-    # Net::HTTP calls; the rest of CRuby's forty-odd accessors are not here.
+    # The members an outbound HTTPS client reaches, and the certificate and
+    # key a server presents. set_params is the one Net::HTTP calls; the rest
+    # of CRuby's forty-odd accessors are not here.
+    #
+    # A server context holds its certificates and key as the objects it was
+    # given, and each accept builds OpenSSL's context from their bytes
+    # (#9341): there is no setup step, and nothing to free. A server asks for
+    # no client certificate, whatever verify_mode says.
     class SSLContext
       attr_accessor :verify_mode
       attr_accessor :verify_hostname
       attr_accessor :cert_store
+      attr_accessor :cert
+      attr_accessor :key
+      attr_accessor :extra_chain_cert
 
       def initialize
         @verify_mode = VERIFY_PEER
         @verify_hostname = true
         @cert_store = nil
+        @cert = nil
+        @key = nil
+        @extra_chain_cert = nil
+        @added_chain = ""
+        @added_key = nil
       end
 
       def set_params(params = nil)
         @verify_mode = VERIFY_PEER
         @verify_hostname = true
         self
+      end
+
+      # CRuby's, and checked when it is called, as CRuby checks it: a key
+      # without its private half, or one that is not the certificate's, raises
+      # here rather than at the first accept. It leaves cert, key and
+      # extra_chain_cert as they were, as in CRuby. A second call replaces
+      # the first: the keys here are all EC, and OpenSSL keeps one
+      # certificate per kind of key.
+      def add_certificate(certificate, pkey, extra_certs = nil)
+        raise ArgumentError, "private key is needed" unless pkey.private?
+        chain = SSLContext.chain_bytes(certificate, extra_certs)
+        if Native.server_check(chain, pkey.curve, pkey.private_key_bytes) != 1
+          raise ArgumentError, "public key mismatch"
+        end
+        @added_chain = chain
+        @added_key = pkey
+        self
+      end
+
+      # Not CRuby's: what SSLSocket#accept hands to the C. cert= and key=
+      # win over add_certificate when both are set, as in CRuby, whose setup
+      # applies them after it; extra_chain_cert is sent with either. With
+      # neither, all three are empty, and the handshake fails as CRuby's
+      # does without a certificate.
+      def server_chain
+        if @cert && @key
+          SSLContext.chain_bytes(@cert, @extra_chain_cert)
+        elsif @added_key
+          @added_chain + SSLContext.chain_bytes(nil, @extra_chain_cert)
+        else
+          ""
+        end
+      end
+
+      def server_key
+        @cert && @key ? @key : @added_key
+      end
+
+      # Each certificate as a 4-byte big-endian length and its DER, the leaf
+      # first: the layout Native.x509_load answers in.
+      def self.chain_bytes(leaf, extra)
+        out = "".b
+        out << [leaf.to_der.bytesize].pack("N") << leaf.to_der if leaf
+        (extra || []).each { |c| out << [c.to_der.bytesize].pack("N") << c.to_der }
+        out
       end
     end
 
@@ -197,25 +260,44 @@ module OpenSSL
           raise SSLError, "SSL_connect returned an error: #{Native.last_error}"
         end
         @handle = h
-        # want is per OS thread, so it is read straight after the call that
-        # set it: a loop back-edge is a preemption point, and a thread can
-        # resume on another worker.
-        want = Native.want
-        until want == 0
-          if want == 1
-            IO.select([@io])
-          elsif want == 2
-            IO.select(nil, [@io])
-          else
-            reason = Native.last_error
-            Native.discard(@handle)
-            @handle = -1
-            raise SSLError, "SSL_connect returned an error: #{reason}"
-          end
-          Native.connect_cont(@handle)
-          want = Native.want
+        finish_handshake("SSL_connect")
+      end
+
+      # The server's #connect: the handshake on an accepted socket, with the
+      # context's certificate and key, waiting the same way. A client that
+      # connects and never sends its hello parks this thread, not a worker.
+      def accept
+        start_accept
+        finish_handshake("SSL_accept")
+      end
+
+      # The server's #connect_nonblock, with the same answers and the same
+      # resumption: the first call builds the connection and takes one step,
+      # and each call after it takes one more.
+      def accept_nonblock(exception: true)
+        if @handle < 0
+          start_accept
+        else
+          Native.handshake_cont(@handle)
         end
-        self
+        case Native.want
+        when 0
+          self
+        when 1
+          return :wait_readable unless exception
+          raise SSLErrorWaitReadable, "read would block"
+        when 2
+          return :wait_writable unless exception
+          raise SSLErrorWaitWritable, "write would block"
+        else
+          # The slot goes back here, not at sysclose: a server that rescues
+          # a failed handshake closes the TCP socket and drops this object,
+          # and on a public port failed handshakes are routine.
+          reason = Native.last_error
+          Native.discard(@handle)
+          @handle = -1
+          raise SSLError, "SSL_accept returned an error: #{reason}"
+        end
       end
 
       # Non-blocking connect: answers the SSLSocket once the handshake is
@@ -243,7 +325,7 @@ module OpenSSL
           end
           @handle = h
         else
-          Native.connect_cont(@handle)
+          Native.handshake_cont(@handle)
         end
         case Native.want
         when 0
@@ -375,6 +457,47 @@ module OpenSSL
 
       def cipher_name
         @handle < 0 ? "" : Native.cipher(@handle)
+      end
+
+      private
+
+      # A key without its private half raises here, CRuby's ArgumentError,
+      # which CRuby raises at SSLSocket.new; a key that is not the
+      # certificate's is the C's SSLError, as CRuby's is.
+      def start_accept
+        key = @context.server_key
+        raise ArgumentError, "private key is needed" if key && !key.private?
+        h = Native.accept_nb(@io.fileno, @context.server_chain,
+                             key ? key.curve : "", key ? key.private_key_bytes : "")
+        if h < 0
+          raise SSLError, "SSL_accept returned an error: #{Native.last_error}"
+        end
+        @handle = h
+      end
+
+      # Both blocking handshakes, after their first step: wait on the
+      # descriptor in the direction the last step asked for, then take the
+      # next. A failure gives the slot back before it raises.
+      def finish_handshake(what)
+        # want is per OS thread, so it is read straight after the call that
+        # set it: a loop back-edge is a preemption point, and a thread can
+        # resume on another worker.
+        want = Native.want
+        until want == 0
+          if want == 1
+            IO.select([@io])
+          elsif want == 2
+            IO.select(nil, [@io])
+          else
+            reason = Native.last_error
+            Native.discard(@handle)
+            @handle = -1
+            raise SSLError, "#{what} returned an error: #{reason}"
+          end
+          Native.handshake_cont(@handle)
+          want = Native.want
+        end
+        self
       end
     end
   end

@@ -387,6 +387,9 @@ else {
 
   SSL *ssl = SSL_new(ctx);
   if (!ssl) { sp_ssl_note("SSL_new"); SSL_CTX_free(ctx); return -1; }
+  /* The handshake step is SSL_do_handshake, which a server's connection
+     shares; this is what makes it a client's. */
+  SSL_set_connect_state(ssl);
   if (hostname && hostname[0]) {
     SSL_set_tlsext_host_name(ssl, hostname);     /* SNI */
     if (verify) {
@@ -435,11 +438,13 @@ sp_int sp_ssl_want(void) { return sp_ssl_want_state; }
    sp_ssl_want what it wants next: 0 finished, 1 wait until readable, 2 wait
    until writable, 4 a real failure with the reason in sp_ssl_last_error.
    The two directions are separate because a handshake genuinely needs both,
-   and a caller waiting on the wrong one waits forever. */
+   and a caller waiting on the wrong one waits forever. The same step drives
+   a client's handshake and a server's: the connection was set up as one or
+   the other. */
 static void sp_ssl_handshake_step(sp_ssl_conn *c) {
   sp_ssl_errbuf[0] = 0;
   sp_ssl_want_state = 0;
-  int r = SSL_connect(c->ssl);
+  int r = SSL_do_handshake(c->ssl);
   if (r == 1) return;
   switch (SSL_get_error(c->ssl, r)) {
     case SSL_ERROR_WANT_READ:  sp_ssl_want_state = 1; break;
@@ -473,10 +478,10 @@ sp_int sp_ssl_connect_nb(sp_int fd, const char *hostname, sp_int verify, sp_RbVa
   return i;
 }
 
-/* Resume a handshake begun by sp_ssl_connect_nb. 1 when it is done, 0 when
-   it is not, with sp_ssl_want carrying which of the two waits, or the
-   failure. */
-sp_int sp_ssl_connect_cont(sp_int h) {
+/* Resume a handshake begun by sp_ssl_connect_nb or sp_ssl_accept_nb. 1 when
+   it is done, 0 when it is not, with sp_ssl_want carrying which of the two
+   waits, or the failure. */
+sp_int sp_ssl_handshake_cont(sp_int h) {
   sp_ssl_conn *c = sp_ssl_at(h);
   if (!c) { sp_ssl_want_state = 4; sp_ssl_note("closed TLS connection"); return 0; }
   sp_ssl_handshake_step(c);
@@ -1333,4 +1338,159 @@ sp_int sp_rsa_verify(const char *n_bytes, const char *e_bytes, const char *md_na
   ERR_clear_error();
   if (!rc) sp_ssl_note("signature did not verify");
   return rc;
+}
+
+/* ---------- The server half ----------
+
+   A server's SSL_CTX is built per accept from the certificate and key bytes
+   the Ruby SSLContext holds (#9341, 2a), the way a client's is built per
+   connect: it lives in the connection's slot and goes with it at close, so
+   nothing here outlives a connection. That costs about 120 us an accept on
+   an M1, near what the handshake's own P-256 arithmetic costs, and a session
+   cannot resume across two accepts, a limit the client side already has.
+
+   `chain` is the certificates as sp_x509_load lays them out, a 4-byte
+   big-endian length before each DER: the leaf, then what is sent with it.
+   `curve` and `priv` are the EC key's curve name and private scalar. All
+   three are empty for a context with no certificate and key, and the
+   handshake then fails as CRuby's does there, with "no shared cipher". */
+
+/* An EVP_PKEY for SSL_CTX_use_PrivateKey, from the two things a PKey::EC
+   holds. The public point is derived here, as sp_ec_public_bytes derives
+   it, rather than trusted from the caller. */
+static EVP_PKEY *sp_ec_evp_private(const char *curve, const char *priv) {
+  int flen = 0;
+  EC_GROUP *g = sp_ec_group(curve, &flen);
+  BIGNUM *d = NULL;
+  EC_POINT *q = NULL;
+  EC_KEY *ec = NULL;
+  EVP_PKEY *k = NULL;
+  int ok = 0;
+
+  if (!g) return NULL;
+  if ((d = sp_ec_scalar(g, priv, flen)) && (q = EC_POINT_new(g)) &&
+      EC_POINT_mul(g, q, d, NULL, NULL, NULL)) {
+    /* EC_KEY is deprecated in OpenSSL 3.0, and EVP_PKEY_fromdata, which
+       replaces it, is not in the 1.1.0 this file compiles against; the same
+       trade sp_pkey_ec_read makes. */
+#if defined(__GNUC__) || defined(__clang__)
+# pragma GCC diagnostic push
+# pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+    if ((ec = EC_KEY_new()) && EC_KEY_set_group(ec, g) &&
+        EC_KEY_set_private_key(ec, d) && EC_KEY_set_public_key(ec, q) &&
+        (k = EVP_PKEY_new()) && EVP_PKEY_assign_EC_KEY(k, ec)) {
+      ec = NULL;                       /* the EVP_PKEY owns it now */
+      ok = 1;
+    }
+    EC_KEY_free(ec);
+#if defined(__GNUC__) || defined(__clang__)
+# pragma GCC diagnostic pop
+#endif
+  }
+  if (!ok) { EVP_PKEY_free(k); k = NULL; }
+  EC_POINT_free(q);
+  BN_clear_free(d);
+  EC_GROUP_free(g);
+  return k;
+}
+
+/* The certificate before the key, so SSL_CTX_use_PrivateKey is the call that
+   finds a key that is not the certificate's, with CRuby's reason for it.
+   Answers the context, or NULL with the reason in sp_ssl_last_error. */
+static SSL_CTX *sp_ssl_server_ctx(const char *chain, const char *curve, const char *priv) {
+  size_t len = sp_str_byte_len(chain), at = 0;
+  SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
+
+  if (!ctx) { sp_ssl_note("SSL_CTX_new"); return NULL; }
+  /* The client side's floor and mode, for the same reasons. */
+  SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+  SSL_CTX_set_mode(ctx, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+  /* A server asks for no client certificate: CRuby's default context does
+     not, and this package's verify_mode reads VERIFY_PEER by default. */
+  SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
+  while (at < len) {
+    const unsigned char *p = (const unsigned char *)chain + at, *der = p + 4;
+    size_t n;
+    X509 *x = NULL;
+    int ok;
+
+    if (len - at < 4) break;
+    n = ((size_t)p[0] << 24) | ((size_t)p[1] << 16) | ((size_t)p[2] << 8) | p[3];
+    if (n > len - at - 4 || n > (size_t)INT_MAX || !(x = d2i_X509(NULL, &der, (long)n))) {
+      sp_ssl_note("certificate");
+      SSL_CTX_free(ctx);
+      return NULL;
+    }
+    if (at == 0) {
+      ok = SSL_CTX_use_certificate(ctx, x);      /* takes its own reference */
+      X509_free(x);
+      if (ok && curve[0]) {
+        EVP_PKEY *k = sp_ec_evp_private(curve, priv);
+        ok = k && SSL_CTX_use_PrivateKey(ctx, k);
+        EVP_PKEY_free(k);
+        if (!ok) { sp_ssl_note("SSL_CTX_use_PrivateKey"); SSL_CTX_free(ctx); return NULL; }
+      }
+    }
+    else {
+      ok = SSL_CTX_add_extra_chain_cert(ctx, x);  /* owns x once it succeeds */
+      if (!ok) X509_free(x);
+    }
+    if (!ok) { sp_ssl_note("SSL_CTX_use_certificate"); SSL_CTX_free(ctx); return NULL; }
+    at += 4 + n;
+  }
+  if (at != len) { sp_ssl_note("certificate"); SSL_CTX_free(ctx); return NULL; }
+  return ctx;
+}
+
+/* Begin a server connection on an accepted descriptor without waiting for
+   the handshake, the mirror of sp_ssl_connect_nb: O_NONBLOCK is armed here,
+   the first step is taken, and sp_ssl_want says what the next one waits for.
+   Ruby's accept and accept_nonblock both start here, so a client that
+   connects and never sends a ClientHello parks a green thread rather than
+   holding an OS worker. Answers the handle, or -1 when the connection could
+   not be built. */
+sp_int sp_ssl_accept_nb(sp_int fd, const char *chain, const char *curve, const char *priv) {
+  SSL_CTX *ctx;
+  SSL *ssl;
+  int i;
+
+  sp_ssl_want_state = 4;
+  sp_ssl_errbuf[0] = 0;
+  if (!(ctx = sp_ssl_server_ctx(chain, curve, priv))) return -1;
+  if (!(ssl = SSL_new(ctx))) { sp_ssl_note("SSL_new"); SSL_CTX_free(ctx); return -1; }
+  SSL_set_accept_state(ssl);
+  if (!SSL_set_fd(ssl, (int)fd)) {
+    sp_ssl_note("SSL_set_fd");
+    SSL_free(ssl); SSL_CTX_free(ctx);
+    return -1;
+  }
+  /* Claimed last, as sp_ssl_setup claims it. */
+  if ((i = sp_ssl_slot()) < 0) {
+    sp_ssl_note("too many TLS connections");
+    SSL_free(ssl); SSL_CTX_free(ctx);
+    return -1;
+  }
+  sp_ssl_conn *c = &sp_ssl_tab[i];
+  c->ssl = ssl;
+  c->ctx = ctx;
+  c->fd  = (int)fd;
+  c->nonblock = 1;
+  SP_ATOMIC_STORE(&c->in_use, 1, __ATOMIC_RELEASE);
+  int fl = fcntl(c->fd, F_GETFL, 0);
+  if (fl >= 0) fcntl(c->fd, F_SETFL, fl | O_NONBLOCK);
+  sp_ssl_handshake_step(c);
+  return i;
+}
+
+/* add_certificate's check, made when it is called, as CRuby makes it: the
+   context an accept would build is built and dropped. 1 when the key is the
+   certificate's, 0 with the reason in sp_ssl_last_error. */
+sp_int sp_ssl_server_check(const char *chain, const char *curve, const char *priv) {
+  SSL_CTX *ctx;
+
+  sp_ssl_errbuf[0] = 0;
+  if (!(ctx = sp_ssl_server_ctx(chain, curve, priv))) return 0;
+  SSL_CTX_free(ctx);
+  return 1;
 }

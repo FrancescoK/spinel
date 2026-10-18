@@ -111,7 +111,12 @@ writers do not validate what they are given. An https request needs the
 
 **TLS / `openssl`.** The `openssl` package binds the system libssl and
 provides `OpenSSL::SSL` only: `SSLContext`, `SSLSocket`, `SSLError` and the
-`VERIFY_*` constants, which is what an outbound HTTPS client reaches.
+`VERIFY_*` constants, which is what an outbound HTTPS client reaches, and a
+server's half of it: a context given a certificate and an EC key (`cert=`,
+`key=`, `extra_chain_cert=`, `add_certificate`), and `SSLSocket#accept` /
+`#accept_nonblock`. Each accept builds OpenSSL's context from those, so a
+session does not resume across two connections, and a server asks for no
+client certificate whatever `verify_mode` says.
 `OpenSSL::Digest` (`SHA256` / `SHA1` / `MD5`, the class-method forms and the
 object: `OpenSSL::Digest.new("SHA256")`, `update` / `<<`, `digest`,
 `hexdigest`, `digest_length`), `OpenSSL::HMAC` (the algorithm by name or as
