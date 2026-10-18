@@ -19282,12 +19282,34 @@ sp_int sp_proc_call(sp_Proc *p, sp_int argc, sp_int *args) { if (!p || !p->fn) r
 #endif
 /* Enumerator#each on Array#bsearch runs the saved search with the consumer's
    block as its predicate, returning the selected element (or nil). */
+/* One step of a bsearch Enumerator's walk, as CRuby's rb_ary_bsearch_index
+   takes it: the block answered `r` for the element at `mid` of [lo, hi)
+   (hi exclusive). A true answer is a candidate (*sat), and the search goes
+   left, as it does for a negative number; false, nil or a positive number
+   send it right. A number that is zero ends it at mid: answers 1. */
+static SP_UNUSED int sp_enum_bsearch_narrow(sp_int *lo, sp_int *hi, sp_int mid, sp_RbVal r, sp_bool *sat) {
+  int smaller;
+  if (r.tag == SP_TAG_INT) { if (r.v.i == 0) return 1; smaller = r.v.i < 0; }
+  else if (r.tag == SP_TAG_BOOL && r.v.b) { *sat = TRUE; smaller = 1; }
+  else if (r.tag == SP_TAG_NIL || r.tag == SP_TAG_BOOL) smaller = 0;
+  else if (r.tag == SP_TAG_FLT) { if (r.v.f == 0.0) return 1; smaller = r.v.f < 0.0; }
+  else {
+    sp_raise_cls("TypeError", sp_sprintf(SPL("wrong argument type %s (must be numeric, true, false or nil)"),
+                                          sp_poly_class_name(r)));
+    return 1;
+  }
+  if (smaller) *hi = mid;
+  else *lo = mid + 1;
+  return 0;
+}
+/* `e.each { }` on a bsearch Enumerator, its block a proc: the element the
+   search ends at, or nil */
 static sp_RbVal sp_enum_bsearch_each_proc(sp_Enumerator *e, sp_Proc *blk) {
   SP_GC_ROOT(e); SP_GC_ROOT(blk);
   if (!e || !e->items || !blk) return sp_box_nil();
-  sp_int lo = 0, hi = e->items->len - 1;
+  sp_int lo = 0, hi = e->items->len;
   sp_RbVal found = sp_box_nil(); SP_GC_ROOT_RBVAL(found);
-  while (lo <= hi) {
+  while (lo < hi) {
     sp_int mid = lo + (hi - lo) / 2;
     sp_RbVal item = e->items->data[mid]; SP_GC_ROOT_RBVAL(item);
     sp_int slots[16] = {0};
@@ -19295,23 +19317,9 @@ static sp_RbVal sp_enum_bsearch_each_proc(sp_Enumerator *e, sp_Proc *blk) {
     _sp_proc_poly_ret = sp_box_nil();
     sp_proc_call(blk, 1, slots);
     sp_RbVal result = _sp_proc_poly_ret; SP_GC_ROOT_RBVAL(result);
-    if (result.tag != SP_TAG_INT && result.tag != SP_TAG_FLT &&
-        result.tag != SP_TAG_BOOL && result.tag != SP_TAG_NIL)
-      sp_raise_cls("TypeError", "wrong argument type for Array#bsearch block");
-    if (result.tag == SP_TAG_INT) {
-      if (result.v.i == 0) { found = item; hi = mid - 1; }
-      else if (result.v.i < 0) hi = mid - 1;
-      else lo = mid + 1;
-    }
-    else if (result.tag == SP_TAG_FLT) {
-      if (result.v.f == 0.0) { found = item; hi = mid - 1; }
-      else if (result.v.f < 0.0) hi = mid - 1;
-      else lo = mid + 1;
-    }
-    else if (result.tag != SP_TAG_NIL && !(result.tag == SP_TAG_BOOL && !result.v.b)) {
-      found = item; hi = mid - 1;
-    }
-    else lo = mid + 1;
+    sp_bool sat = FALSE;
+    if (sp_enum_bsearch_narrow(&lo, &hi, mid, result, &sat)) { found = item; break; }
+    if (sat) found = item;
   }
   e->bsearch_lo = 0; e->bsearch_hi = e->items->len - 1;
   e->bsearch_mid = -1; e->bsearch_waiting = FALSE; e->bsearch_result = sp_box_nil();
