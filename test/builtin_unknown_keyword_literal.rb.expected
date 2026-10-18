@@ -1,0 +1,16 @@
+unpack, typed: ArgumentError: unknown keyword: :exit (ran [0, 2])
+unpack, boxed: ArgumentError: unknown keyword: :exit (ran [0, 2])
+unpack1, typed: ArgumentError: unknown keyword: :platform (ran [1, 1])
+unpack1, boxed: ArgumentError: unknown keyword: :platform (ran [1, 1])
+unpack, no offset: ArgumentError: unknown keyword: :line (ran [7])
+two unknown: ArgumentError: unknown keywords: :line, :exit (ran [2, 4])
+lines: ArgumentError: unknown keyword: :trail (ran [true, :dawn])
+clone: ArgumentError: unknown keyword: :gate (ran [false, :main])
+"Kondae"
+["Jayang Station"]
+7
+["Achasan", "Han River"]
+"Guui"
+19033
+** with an unknown key: ArgumentError: unknown keyword: :exit (ran [])
+false

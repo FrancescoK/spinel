@@ -39551,6 +39551,32 @@ static int kwb_explicit(NodeTable *nt, int row, int h, Scope *sc) {
   nt_node_set_arr(nt, kh, "elements", &as, 1);
   return kh;
 }
+/* A literal keyword hash naming a key the builtin does not take, as the Hash
+   kwb_explicit checks: its values run in order and the call raises CRuby's
+   `unknown keyword(s)`, as a `**` operand holding that key does. Before, the
+   arm read the key it knows and the call answered as if the others were not
+   there. A hash of the key the method takes, or one with a `**` or a key
+   that is no Symbol, stays as it is (-1). So do the line readers: IO's gets,
+   each_line and readlines accept a keyword they do not take, and
+   File.readlines takes the open options (`encoding:`, `mode:`) too. */
+static int kwb_unknown_literal(NodeTable *nt, int row, int kh) {
+  const char *m = kwb_rows[row][0];
+  if (!kwb_is(m, "unpack") && !kwb_is(m, "unpack1") && !kwb_is(m, "lines") && !kwb_is(m, "clone")) return -1;
+  int en = 0;
+  const int *el = nt_arr(nt, kh, "elements", &en);
+  if (en < 1 || en > 16) return -1;
+  int els[16], unknown = 0;
+  for (int i = 0; i < en; i++) {
+    int key = nt_kind(nt, el[i]) == NK_AssocNode ? nt_ref(nt, el[i], "key") : -1;
+    if (key < 0 || nt_kind(nt, key) != NK_SymbolNode) return -1;
+    if (!kwb_is(nt_str(nt, key, "value"), kwb_rows[row][1])) unknown = 1;
+    els[i] = el[i];
+  }
+  if (!unknown) return -1;
+  int h = nt_new_node(nt, "HashNode");
+  nt_node_set_arr(nt, h, "elements", els, en);
+  return h;
+}
 static void kwb_clone_split(Compiler *c, int call, Scope *sc) {
   NodeTable *nt = (NodeTable *)c->nt;
   int an = nt_ref(nt, call, "arguments"), n = 0, en = 0;
@@ -39688,8 +39714,13 @@ static void desugar_builtin_kwsplat(Compiler *c) {
     if (n < 1 || n > 16 || nt_kind(nt, av[n - 1]) != NK_KeywordHashNode) continue;
     for (int i = 0; i < n; i++) args[i] = av[i];
     const int *el = nt_arr(nt, args[n - 1], "elements", &en);
+    int lit = -1;
     if (en == 1 && nt_kind(nt, el[0]) == NK_AssocSplatNode && nt_ref(nt, el[0], "value") >= 0) {
       args[n - 1] = kwb_explicit(nt, row, nt_ref(nt, el[0], "value"), NULL);
+      nt_node_set_arr(nt, an, "arguments", args, n);
+    }
+    else if ((lit = kwb_unknown_literal(nt, row, args[n - 1])) >= 0) {
+      args[n - 1] = kwb_explicit(nt, row, lit, NULL);
       nt_node_set_arr(nt, an, "arguments", args, n);
     }
     kwb_clone_split(c, id, NULL);
