@@ -139,10 +139,15 @@ const char *sp_sym_inspect_name(const char *name) {SP_GC_ROOT_STR(name);
   memcpy(r + 1, body, bl);
   return r;
 }
-/* A symbol hash key in the `key: value` short form: a simple name is bare, a
-   name needing quotes is string-quoted (`"k space": ...`) -- no leading colon. */
+/* A symbol hash key in the `key: value` short form: a name that can be
+   written as a label is bare -- an identifier, with an optional trailing `?`
+   or `!` -- and any other is string-quoted (`"k space": ...`, `"+": ...`,
+   `"a=": ...`, `"@a": ...`), as CRuby's Hash#inspect writes it; no leading
+   colon. */
 const char *sp_sym_inspect_key(const char *name) {SP_GC_ROOT_STR(name);
-  return sp_sym_simple_p(name) ? name : sp_str_inspect(name);
+  size_t l = name ? sp_str_byte_len(name) : 0;
+  int label = l > 0 && l == strlen(name) && name[l - 1] != '=' && sp_sym_plain_name_p(name, TRUE);
+  return label ? name : sp_str_inspect(name);
 }
 /* Map every codepoint of s through fn; ß (U+00DF) upcases to "SS" when
    up is set, so allocate room for a 3x expansion. */
