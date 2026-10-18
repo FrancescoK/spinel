@@ -1,0 +1,24 @@
+true
+"a,b\nc,d\ne"
+9
+"a,"
+"b\nc,"
+"d\ne"
+true
+"a,b"
+"c,d"
+"e"
+true
+"a,b\n"
+"c,d\n"
+"e"
+true
+"a,b\nc,d\ne"
+true
+4 4 1 true
+
+["a,b\n", "c,d\n", "e"]
+["a,", "b\nc,", "d\ne"]
+["a,b", "c,d", "e"]
+["a,b\nc,d\ne"]
+["a,b\n", "c,d\n", "e"]

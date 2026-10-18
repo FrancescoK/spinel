@@ -257,7 +257,7 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       is_basic_arith(name)) { *out = TY_COMPLEX; return 1; }
   /* Complex: builtin-op rows (builtin_ops.c) */
   if (rt == TY_COMPLEX) {
-    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    const BuiltinOp *op = an_bop_find_arg(c, id, rt, name, argc, argv, nt_ref(nt, id, "block") >= 0);
     if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
   }
   /* Proc#curry and curry application via []. A curried call stays TY_CURRY until
@@ -351,9 +351,10 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       if (nt_ref(nt, id, "block") >= 0) { *out = rt; return 1; }
       { *out = TY_POLY_ARRAY; return 1; }
     }
-    /* the kinds that do not depend on the arguments: builtin-op rows */
+    /* builtin-op rows: the operators and the digitless forms by the
+       arguments' kinds (the rows' argument guards) */
     {
-      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      const BuiltinOp *op = an_bop_find_arg(c, id, rt, name, argc, argv, nt_ref(nt, id, "block") >= 0);
       if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
     }
     /* round/truncate: no digits (or a literal <= 0) is an Integer, a literal
@@ -385,32 +386,14 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       int op_mi_r = comp_method_in_chain(c, ty_object_class(a0r), name, NULL);
       if (op_mi_r >= 0) { *out = (TyKind)c->scopes[op_mi_r].ret; return 1; }
     }
+    /* a user object (or an Array of them) as the operand has no bit in a
+       row's guard, so the rows after the guarded ones cannot hold it: the
+       arithmetic types the Rational, the exponent the Float. A coercing
+       one is answered above. */
     if (argc == 1 && (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") ||
-                      sp_streq(name, "/") || sp_streq(name, "quo")))
-      /* a boxed operand folds through sp_poly_<op>, whose value is boxed: the
-         operand's runtime class picks the result class, so it stays poly
-         (typing it Rational handed an sp_RbVal to sp_rational_inspect) */
-      { *out = a0r == TY_FLOAT ? TY_FLOAT : a0r == TY_POLY ? TY_POLY : TY_RATIONAL; return 1; }
-    /* a boxed exponent folds through sp_poly_pow, as the operators above
-       do: the exponent's runtime class picks the result's (a Rational for
-       an Integer or an integer-valued Rational, else a Float), so it stays
-       poly. Typed Float, the boxed answer went into sp_box_float. */
-    if (argc == 1 && sp_streq(name, "**"))
-      { *out = a0r == TY_INT ? TY_RATIONAL : a0r == TY_POLY ? TY_POLY : TY_FLOAT; return 1; }
-    if (argc == 1 && (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
-                      sp_streq(name, ">=") || sp_streq(name, "==") || sp_streq(name, "!=") ||
-                      sp_streq(name, "==="))) { *out = TY_BOOL; return 1; }
-    if (argc == 1 && sp_streq(name, "<=>")) { *out = TY_INT; return 1; }
-    if (argc == 2 && sp_streq(name, "between?")) { *out = TY_BOOL; return 1; }
-    if (argc == 2 && sp_streq(name, "clamp") &&
-        infer_type(c, argv[0]) == TY_RATIONAL && infer_type(c, argv[1]) == TY_RATIONAL) { *out = TY_RATIONAL; return 1; }
-    /* clamp with a non-Rational (Integer/Float) bound: the applied bound keeps
-       its own class, so the result is boxed (#3233). */
-    if (argc == 2 && sp_streq(name, "clamp")) { *out = TY_POLY; return 1; }
-    if (argc == 1 && (is_remainder_family(name)))
-      { TyKind _a0 = infer_type(c, argv[0]);
-        *out = _a0 == TY_FLOAT ? TY_FLOAT : _a0 == TY_POLY ? TY_POLY : TY_RATIONAL; return 1; }
-    if (argc == 1 && sp_streq(name, "divmod")) { *out = TY_POLY_ARRAY; return 1; }
+                      sp_streq(name, "/") || sp_streq(name, "quo") || is_remainder_family(name)))
+      { *out = TY_RATIONAL; return 1; }
+    if (argc == 1 && sp_streq(name, "**")) { *out = TY_FLOAT; return 1; }
   }
   return 0;
 }

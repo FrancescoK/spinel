@@ -466,6 +466,10 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out);
 struct BuiltinOp;
 const struct BuiltinOp *an_bop_find(Compiler *c, int id, TyKind rt, const char *name,
                                     int argc, int has_block);
+/* an_bop_find with the call's arguments' kinds (inferred), so the rows that
+   guard an argument are read too */
+const struct BuiltinOp *an_bop_find_arg(Compiler *c, int id, TyKind rt, const char *name,
+                                        int argc, const int *argv, int has_block);
 /* method_call_ret(c, mi, id) for a call an arm of infer_call bound to the
    user method mi, recording the binding (via UC_*, the class owner_ci whose
    chain was searched) under --plan-check */
