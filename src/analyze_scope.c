@@ -8335,7 +8335,8 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
       const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
       for (int j = 0; j < an; j++) {
         int mod_id = mixin_arg_class(c, args[j]);
-        if (nt_kind(nt, args[j]) == NK_ConstantReadNode && sp_streq(nt_str(nt, args[j], "name"), "Enumerable"))
+        NodeKind pk = nt_kind(nt, args[j]);
+        if ((pk == NK_ConstantReadNode || pk == NK_ConstantPathNode) && sp_streq(nt_str(nt, args[j], "name"), "Enumerable"))
           c->classes[ci].enum_prepended = 1;
         if (mod_id < 0) continue;
         /* its readers answer in front of the class's own, as its methods do */
