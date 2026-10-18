@@ -11947,12 +11947,15 @@ int desugar_builtin_enum_calls(Compiler *c) {
        over the classes that define it, the block copied for the second arm.
        Without such a class the call is rewritten in place. */
     int ndef = 0, defcls[64];
+    /* the name the call was written with, where the pre-pass renamed it
+       (detect to find): the one a class's own method or reader answers */
+    const char *qn = nt_str(nt, id, "orig_name") ? nt_str(nt, id, "orig_name") : name;
     if (rt == TY_POLY) {
       for (int k = 0; k < c->nclasses && ndef < 64; k++)
         /* Enumerable itself answers through the copy: it holds a program's
            own method of the name (index_by), and an Array is_a? it too */
         if (!c->classes[k].is_native_class && !sp_streq(c->classes[k].name, "Enumerable") &&
-            (comp_poly_arm_defines_n(c, k, name, an) || (an == 0 && comp_reader_in_chain(c, k, name, NULL))))
+            (comp_poly_arm_defines_n(c, k, qn, an) || (an == 0 && comp_reader_in_chain(c, k, qn, NULL))))
           defcls[ndef++] = k;
     }
     /* `v&.m { }`: the receiver is bound once and a nil answers nil, the
@@ -12018,7 +12021,7 @@ int desugar_builtin_enum_calls(Compiler *c) {
         /* pred so far is `__r.nil?`; the class test becomes the inner if */
         int cpred = enum_is_a_chain(c, rn, defcls, ndef);
         if (cpred < 0) { free(chained); free(in_default); return changed; }
-        nt_node_set_str(nt, own, "name", name);
+        nt_node_set_str(nt, own, "name", qn);
         nt_node_set_ref(nt, own, "receiver", ownr);
         nt_node_set_int(nt, own, "enum_own", 1);   /* the class's method: a user arm */
         if (args >= 0) nt_node_set_ref(nt, own, "arguments", args);
@@ -12034,7 +12037,7 @@ int desugar_builtin_enum_calls(Compiler *c) {
         nt_node_set_arr(nt, es, "body", &ifc, 1);
       }
       else {
-        nt_node_set_str(nt, own, "name", name);
+        nt_node_set_str(nt, own, "name", qn);
         nt_node_set_ref(nt, own, "receiver", ownr);
         /* the class's method: a user arm; a Range's, the poly dispatch's */
         nt_node_set_int(nt, own, range_arm ? "enum_range_own" : "enum_own", 1);
