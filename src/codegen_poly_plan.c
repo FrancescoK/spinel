@@ -1861,6 +1861,18 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
                     "_t%d = %ssp_str_uminus_val(sp_sym_to_s((sp_sym)_t%d.v.i))%s; else ",
                  tv, tr, sbopen, tv, sbclose, tv, tr, sbopen, tv, sbclose);
   }
+  /* A class of the program defining name declines the arms above, but
+     an Encoding's and a Symbol's are guarded on a tag no object carries:
+     they stand beside the program's arm (`instance_methods(false).each
+     { |m| m.name }` in a program with a name of its own) */
+  else if (sp_streq(name, "name") && (ret == TY_POLY || ret == TY_STRING)) {
+    const char *sbopen = (ret == TY_POLY) ? "sp_box_str(" : "";
+    const char *sbclose = (ret == TY_POLY) ? ")" : "";
+    buf_printf(b, "if (_t%d.tag == SP_TAG_ENCODING) _t%d = %ssp_str_uminus_val(_t%d.v.s)%s; "
+                  "else if (_t%d.tag == SP_TAG_SYM) "
+                  "_t%d = %ssp_str_uminus_val(sp_sym_to_s((sp_sym)_t%d.v.i))%s; else ",
+               tv, tr, sbopen, tv, sbclose, tv, tr, sbopen, tv, sbclose);
+  }
   if (is_class_reflect) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_CLASS_REFLECT, -1, TY_UNKNOWN, PC_SAME);
     /* sp_class_superclass only knows the user chain; a builtin class needs
