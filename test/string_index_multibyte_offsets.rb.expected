@@ -1,0 +1,33 @@
+nil "é" "a" "b" "c" "d" "e" "f" "g" "h" "i" "j" "a" "b" "c" "d" "e" "f" "g" "h" "i" "j" "a" "b" "c" "d" "e" "f" "g" "h" "i" "j" "a" "b" "c" "d" "e" "f" "g" "h" "i" "j" "a" "b" "c" "d" "e" "f" "g" "h" "i" "j" "é" "a" "b" "c" "d" "e" "f" "g" "h" "i" "j" "a" "b" "c" "d" "e" "f" "g" "h" "i" "j" "a" "b" "c" "d" "e" "f" "g" "h" "i" "j" "a" "b" "c" "d" "e" "f" "g" "h" "i" "j" "a" "b" "c" "d" "e" "f" "g" "h" "i" "j" nil nil
+"éab" "éabcd" "abc" "abcde" "ghi" "ghija" "hij" "hijab" "ija" "ijabc" "hij" "hij" "j" "j" "" "" nil nil
+"fghi"
+"efghijabcdefghijabcdefghij"
+nil "a" "b" "c" "d" "e" "f" "g" "é" "h" "i" "j" "k" "l" "m" "n" "o" "p" "a" "b" "c" "d" "e" "f" "g" "é" "h" "i" "j" "k" "l" "m" "n" "o" "p" nil nil
+"abc" "abcde" "bcd" "bcdef" "éhi" "éhijk" "hij" "hijkl" "ijk" "ijklm" "nop" "nop" "p" "p" "" "" nil nil
+"lmno"
+"hijklmnop"
+nil "日" "本" "語" "の" "テ" "キ" "ス" "ト" "、" "a" "日" "本" "語" "の" "テ" "キ" "ス" "ト" "、" "a" "日" "本" "語" "の" "テ" "キ" "ス" "ト" "、" "a" "日" "本" "語" "の" "テ" "キ" "ス" "ト" "、" "a" "日" "本" "語" "の" "テ" "キ" "ス" "ト" "、" "a" "日" "本" "語" "の" "テ" "キ" "ス" "ト" "、" "a" "日" "本" "語" "の" "テ" "キ" "ス" "ト" "、" "a" "日" "本" "語" "の" "テ" "キ" "ス" "ト" "、" "a" nil nil
+"日本語" "日本語のテ" "本語の" "本語のテキ" "ト、a" "ト、a日本" "、a日" "、a日本語" "a日本" "a日本語の" "ト、a" "ト、a" "a" "a" "" "" nil nil
+"キスト、"
+"日本語のテキスト、a日本語のテキスト、a"
+nil "a" "🍣" "b" "c" "🍣" "d" "e" "f" "🍣" "g" "h" "i" "j" "🍣" "k" "l" "m" "n" "o" "p" "q" "🍣" "r" "s" "a" "🍣" "b" "c" "🍣" "d" "e" "f" "🍣" "g" "h" "i" "j" "🍣" "k" "l" "m" "n" "o" "p" "q" "🍣" "r" "s" nil nil
+"a🍣b" "a🍣bc🍣" "🍣bc" "🍣bc🍣d" "f🍣g" "f🍣ghi" "🍣gh" "🍣ghij" "ghi" "ghij🍣" "🍣rs" "🍣rs" "s" "s" "" "" nil nil
+"pq🍣r"
+"j🍣klmnopq🍣rs"
+nil "ñ" "a" "n" "d" "ú" "\u0000" "ñ" "a" "n" "d" "ú" "\u0000" "ñ" "a" "n" "d" "ú" "ñ" "a" "n" "d" "ú" "\u0000" "ñ" "a" "n" "d" "ú" "\u0000" "ñ" "a" "n" "d" "ú" nil nil
+"ñan" "ñandú" "and" "andú\u0000" "and" "andú\u0000" "ndú" "ndú\u0000ñ" "dú\u0000" "dú\u0000ña" "ndú" "ndú" "ú" "ú" "" "" nil nil
+"ñand"
+"ndú\u0000ñandú"
+nil "1" "2" "3" "4" "5" "6" "7" "é" "1" "2" "3" "4" "5" "6" "7" "é" nil nil
+"123" "12345" "234" "23456" "é" "é" "" "" nil nil "67é" "67é" "é" "é" "" "" nil nil
+"4567"
+"567é"
+nil "1" "2" "3" "4" "5" "6" "7" "8" "é" "1" "2" "3" "4" "5" "6" "7" "8" "é" nil nil
+"123" "12345" "234" "23456" "8é" "8é" "é" "é" "" "" "78é" "78é" "é" "é" "" "" nil nil
+"5678"
+"5678é"
+nil "é" "é" nil nil
+"é" "é" "" "" nil nil nil nil nil nil nil nil "é" "é" "" "" nil nil
+nil
+"é"
+5646
