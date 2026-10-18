@@ -3316,8 +3316,11 @@ static char *sp_rewrite_computed_requires(const char *source, const char *dir) {
    the require in place; in a required file it answers nil there, and the
    requires go at the end of the file -- after the module body the autoload
    sits in, which the loaded file usually reopens. A path that starts with
-   `#{__dir__}/` is literal enough: it is a require_relative. A receiver
-   form (`Mod.autoload`) or any other computed path is left as it was. */
+   `#{__dir__}/` is literal enough: it is a require_relative, and so is
+   `File.expand_path('path', __dir__)`. In a required file the name may be a
+   local (`%w[A B].each { |n| autoload n, ... }`): loaded eagerly, the file
+   is the same whatever name it was asked for. A receiver form
+   (`Mod.autoload`) or any other computed path is left as it was. */
 static int sp_autoload_is_main = 0;
 /* the autoload's file beside the one naming it (lib/foo.rb autoloading
    "foo/bar" is lib/foo/bar.rb, the gem layout): reached without a load path */
@@ -3362,8 +3365,13 @@ static char *sp_rewrite_autoloads(const char *source, const char *dir) {
       int paren = 0;
       while (*q == ' ' || *q == '\t') q++;
       if (*q == '(') { paren = 1; q++; while (*q == ' ' || *q == '\t') q++; }
-      if (*q == ':') {
-        q++;
+      /* the name: a Symbol, or -- in a required file, whose requires go
+         at its end -- a local naming it (`%w[A B].each { |n| autoload n,
+         ... }`): the file is loaded once whatever names it holds */
+      int named = 0;
+      if (*q == ':') { q++; named = 1; }
+      else if (!sp_autoload_is_main && ((*q >= 'a' && *q <= 'z') || *q == '_')) named = 1;
+      if (named) {
         const char *ns = q;
         while (sp_req_ident_char(*q)) q++;
         if (q > ns) {
@@ -3371,6 +3379,31 @@ static char *sp_rewrite_autoloads(const char *source, const char *dir) {
           if (*q == ',') {
             q++;
             while (*q == ' ' || *q == '\t') q++;
+            /* `File.expand_path('path', __dir__)` names the file beside this
+               one, as `"#{__dir__}/path"` does */
+            int xp = 0;
+            if (strncmp(q, "File.expand_path(", 17) == 0) {
+              const char *xq = q + 17;
+              while (*xq == ' ' || *xq == '\t') xq++;
+              if (*xq == '"' || *xq == '\'') {
+                char xc = *xq;
+                const char *xe = xq + 1;
+                while (*xe && *xe != xc && *xe != '\n' && *xe != '#' && *xe != '\\') xe++;
+                if (*xe == xc) {
+                  const char *xt = xe + 1;
+                  while (*xt == ' ' || *xt == '\t') xt++;
+                  if (*xt == ',') {
+                    xt++;
+                    while (*xt == ' ' || *xt == '\t') xt++;
+                    if (strncmp(xt, "__dir__", 7) == 0 && !sp_req_ident_char(xt[7])) {
+                      xt += 7;
+                      while (*xt == ' ' || *xt == '\t') xt++;
+                      if (*xt == ')') { xp = 1; q = xq; }
+                    }
+                  }
+                }
+              }
+            }
             if (*q == '"' || *q == '\'') {
               char qq = *q++;
               /* `"#{__dir__}/path"` (the gem layout: lib/rdoc.rb autoloading
@@ -3379,13 +3412,15 @@ static char *sp_rewrite_autoloads(const char *source, const char *dir) {
                  requiring file's own directory, so the call is
                  `require_relative "path"`. Any other `#{` is a computed path
                  and leaves the call as it was. */
-              int dir_rel = 0;
-              if (qq == '"' && strncmp(q, "#{__dir__}/", 11) == 0) { q += 11; dir_rel = 1; }
+              int dir_rel = xp;
+              if (!xp && qq == '"' && strncmp(q, "#{__dir__}/", 11) == 0) { q += 11; dir_rel = 1; }
               const char *fs = q;
               while (*q && *q != qq && *q != '\n' && *q != '#' ) q++;
               if (*q == qq) {
                 size_t flen = (size_t)(q - fs);
                 q++;
+                /* past the expand_path call's `, __dir__)` */
+                if (xp) { while (*q && *q != ')') q++; if (*q == ')') q++; }
                 while (*q == ' ' || *q == '\t') q++;
                 if (!paren || *q == ')') {
                   if (paren) q++;
