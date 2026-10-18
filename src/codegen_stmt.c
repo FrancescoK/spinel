@@ -7,6 +7,7 @@ static int emit_strbuf_boxed_store(Compiler *c, int v, Buf *b);
 #include "builtin_ops.h"
 #include "call_plan.h"
 #include "codegen_call_arms.h"
+#include "value_pos.h"
 
 /* A constant write ends on the constant itself where the write stands as a
    value (comp_const_write_valued) but the statement form ends on something
@@ -16532,22 +16533,18 @@ static int masgn_el_fresh_str(Compiler *c, int el) {
          (nt_kind(nt, r) == NK_InterpolatedStringNode && masgn_interp_reads_only(nt, r));
 }
 
-/* Is `v` an Array or a Hash by its text, or nil written as nil: a
-   literal, or a conditional or parentheses whose every arm is one? The nil
-   fact (may_nil) follows a nil written so. */
-static int masgn_holder_value(const NodeTable *nt, int v, int depth) {
-  if (v < 0 || depth > 8) return 0;
-  NodeKind k = nt_kind(nt, v);
-  if (k == NK_ArrayNode || k == NK_HashNode || k == NK_NilNode) return 1;
-  if (k == NK_ParenthesesNode) return masgn_holder_value(nt, nt_ref(nt, v, "body"), depth + 1);
-  if (k == NK_ElseNode) return masgn_holder_value(nt, nt_ref(nt, v, "statements"), depth + 1);
-  if (k == NK_StatementsNode) {
-    int n = 0;
-    const int *st = nt_arr(nt, v, "body", &n);
-    return n == 1 && masgn_holder_value(nt, st[0], depth + 1);
-  }
-  return k == NK_IfNode && masgn_holder_value(nt, nt_ref(nt, v, "statements"), depth + 1) &&
-         masgn_holder_value(nt, nt_ref(nt, v, "subsequent"), depth + 1);
+/* Is `v` an Array or a Hash by its text, or nil written as nil: a literal, or
+   a conditional or parentheses whose every value position is one? The nil
+   fact (may_nil) follows a nil written so. A position that is missing, a
+   jump, or a walk that gave up is none. Read through the iterator with the
+   `if` and `unless` shapes; a sequence's value is its last statement. */
+static int masgn_not_holder_leaf(const VpLeaf *leaf, void *ud) {
+  const NodeTable *nt = ud;
+  NodeKind k = leaf->kind == VPK_EXPR ? nt_kind(nt, leaf->node) : NK_NONE;
+  return k != NK_ArrayNode && k != NK_HashNode && k != NK_NilNode;
+}
+static int masgn_holder_value(const NodeTable *nt, int v) {
+  return !for_each_value_position(nt, v, VPS_IF | VPS_UNLESS, masgn_not_holder_leaf, (void *)nt);
 }
 
 /* Is the local `r` reads known to hold an Array or a Hash wherever its nil
@@ -16567,7 +16564,7 @@ static int masgn_local_written_as_holder(Compiler *c, int r) {
   for (int w = comp_lvw_first_sc(c, (int)(s - c->scopes), rn); w >= 0; w = comp_lvw_next_sc(c, w)) {
     const char *wn = nt_str(nt, w, "name");
     if (!wn || !sp_streq(wn, rn) || comp_scope_of(c, w) != s) continue;
-    if (nt_kind(nt, w) != NK_LocalVariableWriteNode || !masgn_holder_value(nt, nt_ref(nt, w, "value"), 0)) return 0;
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode || !masgn_holder_value(nt, nt_ref(nt, w, "value"))) return 0;
     writes++;
   }
   return writes > 0;

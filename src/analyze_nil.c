@@ -50,6 +50,7 @@
 
 #include "analyze_internal.h"
 #include "call_plan.h"
+#include "value_pos.h"
 
 /* a memo entry whose value is being computed */
 #define NF_BUSY 0xff
@@ -995,10 +996,15 @@ static void nf_elem_mark(NF *f, int slot_node, int why) {
 }
 
 static void nf_elem_mark_back(NF *f, int v, int depth);
-static void nf_elem_back_list(NF *f, int st, int depth) {
-  if (st < 0 || nt_kind(f->nt, st) != NK_StatementsNode) { nf_elem_mark_back(f, st, depth); return; }
-  int n = 0; const int *b = nt_arr(f->nt, st, "body", &n);
-  if (n > 0) nf_elem_mark_back(f, b[n - 1], depth);
+
+/* One value position of a conditional or a sequence: the slots the Array there
+   is read out of, at the next level. A walk that gave up marks only the node it
+   stopped at. */
+typedef struct { NF *f; int depth; } NfBackArms;
+static int nf_back_arm(const VpLeaf *leaf, void *ud) {
+  NfBackArms *a = ud;
+  if (leaf->kind != VPK_NIL) nf_elem_mark_back(a->f, leaf->node, a->depth + 1);
+  return 0;
 }
 
 /* An Array is a reference: a nil stored through one name of it (`b = a;
@@ -1013,17 +1019,13 @@ static void nf_elem_mark_back(NF *f, int v, int depth) {
   const NodeTable *nt = f->nt;
   if (v < 0 || v >= nt->count || depth > 8) return;
   switch (nt_kind(nt, v)) {
-  case NK_ParenthesesNode: nf_elem_back_list(f, nt_ref(nt, v, "body"), depth + 1); return;
-  case NK_StatementsNode: nf_elem_back_list(f, v, depth + 1); return;
-  case NK_ElseNode: nf_elem_back_list(f, nt_ref(nt, v, "statements"), depth + 1); return;
-  case NK_IfNode: case NK_UnlessNode:
-    nf_elem_back_list(f, nt_ref(nt, v, "statements"), depth + 1);
-    nf_elem_mark_back(f, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1);
+  case NK_ParenthesesNode: case NK_StatementsNode: case NK_ElseNode: case NK_IfNode: case NK_UnlessNode:
+  case NK_CaseNode: case NK_CaseMatchNode: case NK_BeginNode: case NK_RescueModifierNode:
+  case NK_AndNode: case NK_OrNode: {
+    NfBackArms a = { f, depth };
+    for_each_value_position(nt, v, VP_AND_LEFT | VPS_ALL, nf_back_arm, &a);
     return;
-  case NK_AndNode: case NK_OrNode:
-    nf_elem_mark_back(f, nt_ref(nt, v, "left"), depth + 1);
-    nf_elem_mark_back(f, nt_ref(nt, v, "right"), depth + 1);
-    return;
+  }
   case NK_LocalVariableWriteNode: case NK_InstanceVariableWriteNode: case NK_GlobalVariableWriteNode:
   case NK_ClassVariableWriteNode: case NK_ConstantWriteNode:
     (void)nf_elem_slot_op(f, v, NF_EL_HOLDS | NF_EL_STORED);
@@ -1032,20 +1034,15 @@ static void nf_elem_mark_back(NF *f, int v, int depth) {
   case NK_CallNode: {
     if (nf_elem_slot_op(f, v, NF_EL_HOLDS | NF_EL_STORED) >= 0) return;
     int pmi = nf_plan(f, v, NULL, NULL);
-    if (pmi >= 0) { nf_elem_back_list(f, f->c->scopes[pmi].body, depth + 1); return; }
+    /* the depth is passed unchanged: a method body is a structure node (a
+       StatementsNode, a BeginNode, parentheses), which costs the level */
+    if (pmi >= 0) { nf_elem_mark_back(f, f->c->scopes[pmi].body, depth); return; }
     if (mutated_array(f->c, v) != v) nf_elem_mark_back(f, nt_ref(nt, v, "receiver"), depth + 1);
     return;
   }
   default:
     (void)nf_elem_slot_op(f, v, NF_EL_HOLDS | NF_EL_STORED);
   }
-}
-
-static int nf_elem(NF *f, int v, int depth);
-static int nf_elem_list(NF *f, int st, int depth) {
-  if (st < 0 || nt_kind(f->nt, st) != NK_StatementsNode) return nf_elem(f, st, depth);
-  int n = 0; const int *b = nt_arr(f->nt, st, "body", &n);
-  return n > 0 ? nf_elem(f, b[n - 1], depth) : 0;
 }
 
 /* Can an element of the Array node v's value be nil (NFW_ELEM_NIL, else
@@ -1063,19 +1060,24 @@ static int nf_elem(NF *f, int v, int depth) {
   f->ememo[v] = r ? 2 : 1;
   return r;
 }
+/* One value position of a conditional or a sequence: whether the Array there
+   can hold a nil, at the next level. A walk that gave up can. */
+typedef struct { NF *f; int depth; } NfElemArms;
+static int nf_elem_arm(const VpLeaf *leaf, void *ud) {
+  NfElemArms *a = ud;
+  if (leaf->kind == VPK_NIL) return 0;
+  return leaf->kind == VPK_GAVE_UP || nf_elem(a->f, leaf->node, a->depth + 1);
+}
 static int nf_elem_uncached(NF *f, int v, int depth) {
   const NodeTable *nt = f->nt;
   switch (nt_kind(nt, v)) {
-  case NK_ParenthesesNode: return nf_elem_list(f, nt_ref(nt, v, "body"), depth + 1);
-  case NK_StatementsNode: return nf_elem_list(f, v, depth + 1);
-  case NK_ElseNode: return nf_elem_list(f, nt_ref(nt, v, "statements"), depth + 1);
-  case NK_IfNode: case NK_UnlessNode:
-    return nf_elem_list(f, nt_ref(nt, v, "statements"), depth + 1) ||
-           nf_elem(f, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1)
+  case NK_ParenthesesNode: case NK_StatementsNode: case NK_ElseNode: case NK_IfNode: case NK_UnlessNode:
+  case NK_CaseNode: case NK_CaseMatchNode: case NK_BeginNode: case NK_RescueModifierNode:
+  case NK_AndNode: case NK_OrNode: {
+    NfElemArms a = { f, depth };
+    return for_each_value_position(nt, v, VP_AND_LEFT | VPS_ALL, nf_elem_arm, &a)
            ? NFW_ELEM_NIL : 0;
-  case NK_AndNode: case NK_OrNode:
-    return nf_elem(f, nt_ref(nt, v, "left"), depth + 1) || nf_elem(f, nt_ref(nt, v, "right"), depth + 1)
-           ? NFW_ELEM_NIL : 0;
+  }
   case NK_LocalVariableWriteNode: case NK_InstanceVariableWriteNode: case NK_GlobalVariableWriteNode:
   case NK_ClassVariableWriteNode: case NK_ConstantWriteNode:
     return nf_elem(f, nt_ref(nt, v, "value"), depth + 1);

@@ -12767,21 +12767,22 @@ static int narrow_locals_from_arrays(Compiler *c) {
   return any;
 }
 
-/* Does every branch of `if` value v end in a value other than nil? (A nil one leaves the slot boxed, taking the branch by reference, #4486.) */
-static int oa_branches_all_valued(const NodeTable *nt, int v) {
-  const char *t = v >= 0 ? nt_type(nt, v) : NULL;
-  if (!t) return 0;
-  if (sp_streq(t, "StatementsNode")) {
-    int bn = 0; const int *bb = nt_arr(nt, v, "body", &bn);
-    return bn > 0 && oa_branches_all_valued(nt, bb[bn - 1]);
-  }
-  if (sp_streq(t, "ElseNode")) return oa_branches_all_valued(nt, nt_ref(nt, v, "statements"));
-  if (sp_streq(t, "IfNode") || sp_streq(t, "UnlessNode")) {
-    int alt = nt_ref(nt, v, sp_streq(t, "IfNode") ? "subsequent" : "else_clause");
-    return oa_branches_all_valued(nt, nt_ref(nt, v, "statements")) && oa_branches_all_valued(nt, alt);
-  }
-  return !sp_streq(t, "NilNode");
+/* A value position that is no value: a missing or empty arm, a nil written as
+   nil or as `(nil)`, a walk that gave up. A return is not one: it hands out
+   no nil of its own. */
+static int oa_unvalued_leaf(const VpLeaf *leaf, void *ud) {
+  const NodeTable *nt = ud;
+  return leaf->kind == VPK_NIL || leaf->kind == VPK_GAVE_UP ||
+         (leaf->kind == VPK_EXPR && nt_kind(nt, leaf->node) == NK_NilNode);
 }
+
+/* Does every branch of `if` value v end in a value other than nil? (A nil one leaves the slot boxed, taking the branch by reference, #4486.)
+   The branches are the value positions of an if, an unless, an elsif and an
+   else. */
+static int oa_branches_all_valued(const NodeTable *nt, int v) {
+  return v >= 0 && !for_each_value_position(nt, v, VPS_IF | VPS_UNLESS, oa_unvalued_leaf, (void *)nt);
+}
+
 /* Classify one value flowing into slot S: an object or int-array literal is
    element evidence, another slot (or a narrowable call's value) is an alias
    edge, nil is neutral, and anything the pass does not model kills the slot.
@@ -14554,44 +14555,43 @@ static void spnb_ret_walk(Compiler *c, int root, Scope *s, TyKind *base, int *sa
   }
 }
 
-/* tail-value contribution: the body's falling-off value */
+/* tail-value contribution: the body's falling-off value. Each value position of
+   the body, by every shape and with the left side of `&&` (a sequence's value is
+   its last statement), is a nil (a nil literal, or an arm that is missing or
+   empty; not one on the left of an `||`, which is the value only when truthy,
+   and a position below both an `||` and an `&&` is never the value), a return
+   (counted by the returns walk), a Time, or anything else, which ends the walk
+   with ok = 0. */
+typedef struct { Compiler *c; TyKind *base; int *saw_nil, *ok; } SpnbTail;
+static int spnb_tail_leaf(const VpLeaf *leaf, void *ud) {
+  SpnbTail *t = ud;
+  Compiler *c = t->c;
+  /* The left of an `||` is the value only when truthy and the left of an `&&` only when falsy: a
+     nil there, written or not, is never the walk's nil, and below both a position is never the value. */
+  if ((leaf->reach & (VPR_TRUTHY | VPR_FALSY)) == (VPR_TRUTHY | VPR_FALSY)) return 0;
+  int may_be_nil = !(leaf->reach & VPR_TRUTHY);
+  if (leaf->kind == VPK_NIL) {
+    if (may_be_nil) *t->saw_nil = 1;
+    return 0;
+  }
+  if (leaf->kind == VPK_JUMP && nt_kind(c->nt, leaf->node) == NK_ReturnNode) return 0;
+  if (leaf->kind == VPK_EXPR) {
+    if (nt_kind(c->nt, leaf->node) == NK_NilNode) {
+      if (may_be_nil) *t->saw_nil = 1;
+      return 0;
+    }
+    if (infer_type(c, leaf->node) == TY_TIME && (*t->base == TY_UNKNOWN || *t->base == TY_TIME)) {
+      *t->base = TY_TIME;
+      return 0;
+    }
+  }
+  *t->ok = 0;
+  return 1;
+}
 static void spnb_tail(Compiler *c, int node, TyKind *base, int *saw_nil, int *ok) {
   if (node < 0 || !*ok) return;
-  const NodeTable *nt = c->nt;
-  const char *ty = nt_type(nt, node);
-  if (!ty) { *ok = 0; return; }
-  if (sp_streq(ty, "StatementsNode")) {
-    int n = 0;
-    const int *bb = nt_arr(nt, node, "body", &n);
-    if (n == 0) { *saw_nil = 1; return; }
-    spnb_tail(c, bb[n - 1], base, saw_nil, ok);
-    return;
-  }
-  if (sp_streq(ty, "ReturnNode")) return;   /* counted by the returns walk */
-  if (sp_streq(ty, "NilNode")) { *saw_nil = 1; return; }
-  if (sp_streq(ty, "IfNode")) {
-    spnb_tail(c, nt_ref(nt, node, "statements"), base, saw_nil, ok);
-    int sub = nt_ref(nt, node, "subsequent");
-    if (sub >= 0) spnb_tail(c, sub, base, saw_nil, ok);
-    else *saw_nil = 1;                       /* if-without-else can fall nil */
-    return;
-  }
-  if (sp_streq(ty, "ElseNode")) {
-    spnb_tail(c, nt_ref(nt, node, "statements"), base, saw_nil, ok);
-    return;
-  }
-  if (sp_streq(ty, "UnlessNode")) {
-    spnb_tail(c, nt_ref(nt, node, "statements"), base, saw_nil, ok);
-    int sub = nt_ref(nt, node, "else_clause");
-    if (sub >= 0) spnb_tail(c, sub, base, saw_nil, ok);
-    else *saw_nil = 1;
-    return;
-  }
-  {
-    TyKind t = infer_type(c, node);
-    if (t == TY_TIME && (*base == TY_UNKNOWN || *base == TY_TIME)) { *base = TY_TIME; return; }
-  }
-  *ok = 0;
+  SpnbTail t = { c, base, saw_nil, ok };
+  for_each_value_position(c->nt, node, VP_AND_LEFT | VPS_ALL, spnb_tail_leaf, &t);
 }
 
 /* the single non-nil type scope mi's poly return decomposes to, or UNKNOWN */
@@ -34058,6 +34058,16 @@ static int nested_elem_nilable(Compiler *c, int v, int depth) {
   return 0;
 }
 
+/* One value position of a conditional or a sequence: the array there is asked
+   at the next level. `depth` counts the calls and slots followed, as it did;
+   the structure between two of them costs none. A walk that gave up is a
+   position that may hold a nil. */
+typedef struct { Compiler *c; int depth; } ElemArms;
+static int elem_arm(const VpLeaf *leaf, void *ud) {
+  ElemArms *a = ud;
+  if (leaf->kind == VPK_NIL) return 0;
+  return leaf->kind == VPK_GAVE_UP || nullable_int_elem_expr(a->c, leaf->node, a->depth + 1);
+}
 static int nullable_int_elem_expr(Compiler *c, int v, int depth) {
   const NodeTable *nt = c->nt;
   if (v < 0 || depth > 8) return 0;
@@ -34080,35 +34090,16 @@ static int nullable_int_elem_expr(Compiler *c, int v, int depth) {
   /* A conditional's value is one of its arms, as nullable_int_value walks
      them: the array is marked if any arm's array is. An absent arm is a nil,
      not an array holding one. */
-  if (nt_kind(nt, v) == NK_ParenthesesNode)
-    return nullable_int_elem_expr(c, nt_ref(nt, v, "body"), depth + 1);
-  if (nt_kind(nt, v) == NK_StatementsNode) {
-    int n = 0; const int *st = nt_arr(nt, v, "body", &n);
-    return st && n > 0 && nullable_int_elem_expr(c, st[n - 1], depth + 1);
+  switch (nt_kind(nt, v)) {
+  case NK_ParenthesesNode: case NK_StatementsNode: case NK_ElseNode: case NK_IfNode: case NK_UnlessNode:
+  case NK_CaseNode: case NK_CaseMatchNode: case NK_BeginNode: case NK_RescueModifierNode:
+  case NK_OrNode: case NK_AndNode: {
+    ElemArms a = { c, depth };
+    return for_each_value_position(nt, v, VP_AND_LEFT | VP_BEGIN_BOTH | VPS_ALL, elem_arm, &a);
   }
-  if (nt_kind(nt, v) == NK_ElseNode)
-    return nullable_int_elem_expr(c, nt_ref(nt, v, "statements"), depth + 1);
-  if (nt_kind(nt, v) == NK_IfNode || nt_kind(nt, v) == NK_UnlessNode)
-    return nullable_int_elem_expr(c, nt_ref(nt, v, "statements"), depth + 1) ||
-           nullable_int_elem_expr(c, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1);
-  if (nt_kind(nt, v) == NK_CaseNode || nt_kind(nt, v) == NK_CaseMatchNode) {
-    int nw = 0; const int *whens = nt_arr(nt, v, "conditions", &nw);
-    for (int w = 0; whens && w < nw; w++)
-      if (nullable_int_elem_expr(c, nt_ref(nt, whens[w], "statements"), depth + 1)) return 1;
-    return nullable_int_elem_expr(c, nt_ref(nt, v, "else_clause"), depth + 1);
+  default:
+    break;
   }
-  if (nt_kind(nt, v) == NK_BeginNode) {
-    if (nullable_int_elem_expr(c, nt_ref(nt, v, "statements"), depth + 1)) return 1;
-    for (int rs = nt_ref(nt, v, "rescue_clause"); rs >= 0; rs = nt_ref(nt, rs, "subsequent"))
-      if (nullable_int_elem_expr(c, nt_ref(nt, rs, "statements"), depth + 1)) return 1;
-    return nullable_int_elem_expr(c, nt_ref(nt, v, "else_clause"), depth + 1);
-  }
-  if (nt_kind(nt, v) == NK_RescueModifierNode)
-    return nullable_int_elem_expr(c, nt_ref(nt, v, "expression"), depth + 1) ||
-           nullable_int_elem_expr(c, nt_ref(nt, v, "rescue_expression"), depth + 1);
-  if (nt_kind(nt, v) == NK_OrNode || nt_kind(nt, v) == NK_AndNode)
-    return nullable_int_elem_expr(c, nt_ref(nt, v, "left"), depth + 1) ||
-           nullable_int_elem_expr(c, nt_ref(nt, v, "right"), depth + 1);
   if (nt_kind(nt, v) == NK_CallNode) {
     const char *nm = nt_str(nt, v, "name");
     int tail = call_block_tail(c, v);
@@ -34192,8 +34183,8 @@ int nullable_int_elem_array(Compiler *c, int node) {
    multiple assignment from it fills that many targets. Constants are
    interned by their last name (`DMC::LUT` and a `LUT` elsewhere share one),
    so every definition of the name is asked, and every read of the name must
-   be the receiver of a call that leaves the array as it is, or the value a
-   multiple assignment takes apart (through `?:`). */
+   be the receiver of a call that leaves the array as it is, or a value
+   position of the value a multiple assignment takes apart. */
 typedef struct { const char *name; int len; int nlit; int lit[8]; int blk[8]; } CArr;
 static CArr *carr_tab; static int carr_n, carr_cap, carr_count = -1;
 static int carr_lit(const NodeTable *nt, int v, int *blk) {
@@ -34216,26 +34207,19 @@ static int carr_is_read(const NodeTable *nt, int n, const char *name) {
   return (k == NK_ConstantReadNode || k == NK_ConstantPathNode) && nt_str(nt, n, "name") &&
          sp_streq(nt_str(nt, n, "name"), name);
 }
-/* the reads a multiple assignment's value takes apart, through `?:` */
+/* the reads a multiple assignment's value takes apart: each value position of
+   the value, by the iterator's `if` and `unless` shapes, that reads the
+   constant. A walk that gave up leaves the marks made before it, and the
+   reads it did not reach unmarked, which fail the constant's check. */
+typedef struct { const NodeTable *nt; const char *name; unsigned char *ok; } CarrMasgn;
+static int carr_masgn_leaf(const VpLeaf *leaf, void *ud) {
+  CarrMasgn *m = ud;
+  if (leaf->kind == VPK_EXPR && carr_is_read(m->nt, leaf->node, m->name)) m->ok[leaf->node] = 1;
+  return 0;
+}
 static void carr_mark_masgn_value(const NodeTable *nt, int v, const char *name, unsigned char *ok) {
-  while (v >= 0 && nt_kind(nt, v) == NK_ParenthesesNode) {
-    int b = nt_ref(nt, v, "body"), n = 0;
-    const int *st = b >= 0 && nt_kind(nt, b) == NK_StatementsNode ? nt_arr(nt, b, "body", &n) : NULL;
-    v = st && n == 1 ? st[0] : -1;
-  }
-  if (v < 0) return;
-  if (carr_is_read(nt, v, name)) { ok[v] = 1; return; }
-  if (nt_kind(nt, v) == NK_IfNode) {
-    int t = nt_ref(nt, v, "statements"), e = nt_ref(nt, v, "subsequent");
-    if (e < 0) e = nt_ref(nt, v, "consequent");
-    int n = 0; const int *st = t >= 0 ? nt_arr(nt, t, "body", &n) : NULL;
-    if (st && n == 1) carr_mark_masgn_value(nt, st[0], name, ok);
-    if (e >= 0 && nt_kind(nt, e) == NK_ElseNode) {
-      int es = nt_ref(nt, e, "statements"), en = 0;
-      const int *ev = es >= 0 ? nt_arr(nt, es, "body", &en) : NULL;
-      if (ev && en == 1) carr_mark_masgn_value(nt, ev[0], name, ok);
-    }
-  }
+  CarrMasgn m = { nt, name, ok };
+  for_each_value_position(nt, v, VPS_IF | VPS_UNLESS, carr_masgn_leaf, &m);
 }
 static int carr_keeps(const char *nm) {
   static const char *const K[] = {
@@ -34315,30 +34299,21 @@ static int const_array_index_in_range(Compiler *c, int recv, int idx) {
 }
 
 /* Can position `pos` of a multiple assignment's value be nil, where the
-   value is a constant Array of a known length or a `?:` of such (1 when it
-   is anything else)? An element past the length is nil; one within it is
-   the literal's element, or the value the `map` block gives it. */
-static int masgn_const_pos_may_nil(Compiler *c, int v, int pos) {
+   value is a constant Array of a known length, or a conditional or a
+   sequence whose value positions are such (1 when any is anything else)?
+   An element past the length is nil; one within it is the literal's
+   element, or the value the `map` block gives it. Every value
+   position of the value, by the iterator's `if` and `unless` shapes, is
+   asked; a missing one, or a walk that gave up, is nil. */
+typedef struct { Compiler *c; int pos; } MasgnPos;
+static int masgn_leaf_may_nil(const VpLeaf *leaf, void *ud) {
+  MasgnPos *m = ud;
+  Compiler *c = m->c;
   const NodeTable *nt = c->nt;
-  while (v >= 0 && nt_kind(nt, v) == NK_ParenthesesNode) {
-    int b = nt_ref(nt, v, "body"), n = 0;
-    const int *st = b >= 0 && nt_kind(nt, b) == NK_StatementsNode ? nt_arr(nt, b, "body", &n) : NULL;
-    v = st && n == 1 ? st[0] : -1;
-  }
-  if (v < 0) return 1;
-  if (nt_kind(nt, v) == NK_IfNode) {
-    int t = nt_ref(nt, v, "statements"), e = nt_ref(nt, v, "subsequent");
-    if (e < 0) e = nt_ref(nt, v, "consequent");
-    int n = 0; const int *st = t >= 0 ? nt_arr(nt, t, "body", &n) : NULL;
-    if (!st || n != 1 || e < 0 || nt_kind(nt, e) != NK_ElseNode) return 1;
-    int es = nt_ref(nt, e, "statements"), en = 0;
-    const int *ev = es >= 0 ? nt_arr(nt, es, "body", &en) : NULL;
-    if (!ev || en != 1) return 1;
-    return masgn_const_pos_may_nil(c, st[0], pos) || masgn_const_pos_may_nil(c, ev[0], pos);
-  }
-  if (!carr_is_read(nt, v, nt_str(nt, v, "name"))) return 1;
+  int v = leaf->node;
+  if (leaf->kind != VPK_EXPR || !carr_is_read(nt, v, nt_str(nt, v, "name"))) return 1;
   const CArr *ca = const_array(c, nt_str(nt, v, "name"));
-  if (!ca || pos >= ca->len) return 1;
+  if (!ca || m->pos >= ca->len) return 1;
   for (int i = 0; i < ca->nlit; i++) {
     if (ca->blk[i] >= 0) {
       int bd = nt_ref(nt, ca->blk[i], "body"), bn = 0;
@@ -34347,9 +34322,13 @@ static int masgn_const_pos_may_nil(Compiler *c, int v, int pos) {
       continue;
     }
     int en = 0; const int *ev = nt_arr(nt, ca->lit[i], "elements", &en);
-    if (pos >= en || nt_kind(nt, ev[pos]) == NK_NilNode || nullable_int_value(c, ev[pos])) return 1;
+    if (m->pos >= en || nt_kind(nt, ev[m->pos]) == NK_NilNode || nullable_int_value(c, ev[m->pos])) return 1;
   }
   return 0;
+}
+static int masgn_const_pos_may_nil(Compiler *c, int v, int pos) {
+  MasgnPos m = { c, pos };
+  return for_each_value_position(c->nt, v, VPS_IF | VPS_UNLESS, masgn_leaf_may_nil, &m);
 }
 
 /* A call that answers one element of its receiver, or nil when there is none
@@ -38584,9 +38563,9 @@ static void mark_nullable_int_locals(Compiler *c) {
             may_nil = (pos < 0 || pos >= en || (pass && pos < ln)) ? 1 : nullable_int_value(c, ev[pos]);
           }
           else if (scalar_rhs) may_nil = pass || j > 0 || nullable_int_value(c, mv);
-          /* a constant Array of a known length (through `?:`): a left
-             within it takes that element of each literal the constant
-             can be */
+          /* a constant Array of a known length (or a conditional of
+             such): a left within it takes that element of each literal
+             the constant can be */
           else if (!pass && mrest < 0) may_nil = masgn_const_pos_may_nil(c, mv, j);
           else may_nil = 1;   /* an array of unknown length, or a boxed value */
           if (!may_nil) continue;
