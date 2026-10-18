@@ -5031,6 +5031,10 @@ static void mark_body_self(const NodeTable *nt, int id, int owner, int *body_sel
 }
 
 
+/* The edges value_handed_on climbs: the conditionals and `||`/`&&` (both
+   sides), and a begin with no clause. */
+enum { HANDED_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_LOGIC | VPS_BEGIN_PLAIN | VP_AND_LEFT | VP_BEGIN_BOTH };
+
 /* Is the value of node `u` handed on -- stored, passed, returned -- rather
    than only consumed where it stands? Consumed: the receiver of a call that
    does not hand its receiver on, an interpolated part, the argument of an
@@ -5050,33 +5054,26 @@ static int value_handed_on(const NodeTable *nt, const int *parent, int u) {
     "is_a?", "kind_of?", "instance_of?", "include", "extend", "prepend",
     "include?", "==", "!=", "===", "equal?", "eql?", "<", "<=", ">", ">=", "<=>", NULL };
   int chosen = 0;
-  for (int depth = 0; depth < 400; depth++) {
-    int p = parent[u];
-    if (p < 0) return 0;
+  for (long guard = nt->count; guard >= 0; guard--) {
+    VpUp up;
+    VpUpKind ended = vp_climb(nt, parent, u, HANDED_CLIMB, &up);
+    if (up.branches > 0) chosen = 1;
+    if (ended == VPU_ROOT || ended == VPU_DROPPED) return 0;
+    if (ended == VPU_GAVE_UP) return 1;
+    int p = up.parent;
     NodeKind pk = nt_kind(nt, p);
     const char *pt = nt_type(nt, p);
-    if (pk == NK_StatementsNode) {
-      int n = 0; const int *body = nt_arr(nt, p, "body", &n);
-      if (n > 0 && body[n - 1] != u) return 0;
+    /* a begin with clauses passes its body and its else on (the else is a
+       choice), a rescue clause ends the climb; an interpolated statement
+       list passes up to the interpolation, which consumes it */
+    if (pk == NK_BeginNode || (pt && sp_streq(pt, "EmbeddedStatementsNode"))) {
+      if (pk == NK_BeginNode && up.node == nt_ref(nt, p, "else_clause")) chosen = 1;
       u = p; continue;
     }
-    if (pk == NK_ParenthesesNode || pk == NK_BeginNode ||
-        (pt && sp_streq(pt, "EmbeddedStatementsNode"))) {
-      u = p; continue;
-    }
-    if (pk == NK_IfNode || pk == NK_UnlessNode || pk == NK_AndNode || pk == NK_OrNode ||
-        (pt && sp_streq(pt, "ElseNode"))) {
-      if ((pk == NK_IfNode || pk == NK_UnlessNode) && nt_ref(nt, p, "predicate") == u) return 0;
-      chosen = 1; u = p; continue;
-    }
-    if (pt && (sp_streq(pt, "WhenNode") || sp_streq(pt, "InNode"))) {
-      if (nt_ref(nt, p, "statements") != u) return 0;
-      chosen = 1; u = p; continue;
-    }
-    if (pt && (sp_streq(pt, "CaseNode") || sp_streq(pt, "CaseMatchNode"))) {
-      if (nt_ref(nt, p, "predicate") == u) return 0;
-      chosen = 1; u = p; continue;
-    }
+    /* a condition, a pattern, a `when` or `in` clause's tests */
+    if (pk == NK_IfNode || pk == NK_UnlessNode || pk == NK_CaseNode || pk == NK_CaseMatchNode ||
+        (pt && (sp_streq(pt, "WhenNode") || sp_streq(pt, "InNode"))))
+      return 0;
     if (pt && (sp_streq(pt, "InterpolatedStringNode") || sp_streq(pt, "InterpolatedSymbolNode") ||
                sp_streq(pt, "InterpolatedXStringNode") ||
                sp_streq(pt, "InterpolatedRegularExpressionNode") ||
@@ -5087,9 +5084,9 @@ static int value_handed_on(const NodeTable *nt, const int *parent, int u) {
       return 0;
     /* the `self` of `def self.m` names where m is defined; it is no value
        (taken as one, every class with a class method escaped, #5272) */
-    if (pk == NK_DefNode && nt_ref(nt, p, "receiver") == u) return 0;
+    if (pk == NK_DefNode && nt_ref(nt, p, "receiver") == up.node) return 0;
     if (pk == NK_CallNode) {
-      if (nt_ref(nt, p, "receiver") == u) return chosen || str_in(nt_str(nt, p, "name"), passes_recv);
+      if (nt_ref(nt, p, "receiver") == up.node) return chosen || str_in(nt_str(nt, p, "name"), passes_recv);
       return 1;
     }
     if (pt && sp_streq(pt, "ArgumentsNode")) {
