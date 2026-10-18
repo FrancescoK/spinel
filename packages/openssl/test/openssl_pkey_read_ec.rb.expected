@@ -6,9 +6,9 @@ true
 true
 false
 true
-"unsupported key type: RSA (this package reads EC keys)"
-"unsupported key type: ED25519 (this package reads EC keys)"
+OpenSSL::PKey::RSA
+"unsupported key type: ED25519 (this package reads EC and RSA keys)"
 "Could not parse PKey"
-"unsupported key type: RSA (this package reads EC keys)"
-"unsupported key type: DH (this package reads EC keys)"
+OpenSSL::PKey::RSA
+"unsupported key type: DH (this package reads EC and RSA keys)"
 "EC key without its key bytes"

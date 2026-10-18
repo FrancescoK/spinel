@@ -1119,14 +1119,15 @@ sp_int sp_ec_check_point(const char *curve, const char *pub) {
   return 1;
 }
 
-/* ---------- PKey.read: an EC key out of PEM or DER ----------
+/* ---------- PKey.read: an EC or RSA key out of PEM or DER ----------
    The key is parsed here, where it crosses the boundary, and what comes back
-   is what PKey::EC is made of: the curve's name and the key's bytes. The
-   answer is one byte for the half it carries (1 private, 0 public), one for
-   the length of the curve's name, the name, and then the private scalar,
-   field-width, or the public point in uncompressed form. openssl/pkey.rb
-   builds the EC from those, so a key read here is the same object as one
-   built from bytes. */
+   is what the Ruby key is made of. For an EC key that is the curve's name and
+   the key's bytes: one byte for the half it carries (1 private, 0 public),
+   one for the length of the curve's name, the name, and then the private
+   scalar, field-width, or the public point in uncompressed form. An RSA key
+   answers as sp_pkey_rsa_answer lays it out. openssl/pkey.rb builds the key
+   from those, so a key read here is the same object as one built from
+   bytes. */
 static SP_TLS char sp_pkey_read_buf[2 + 64 + SP_EC_MAX_POINT];
 
 /* No passphrase is ever supplied. OpenSSL's default callback would prompt on
@@ -1221,6 +1222,62 @@ static EVP_PKEY *sp_pkey_parse(const char *data, int *priv) {
   return k;
 }
 
+/* An RSA key for PKey.read: a byte for the half it carries (3 private, 2
+   public), the modulus and the exponent each as a 4-byte big-endian length
+   and its bytes, and for a private key its PKCS#1 DER after them, which holds
+   the CRT components and is what sp_rsa_sign and an accept read back. Into a
+   buffer of its own, grown to fit: an RSA key does not fit the EC answer's.
+   *priv is -1 for a key sp_pkey_parse_any found, and the key is asked. */
+static SP_TLS sp_x509_out sp_pkey_rsa_out;
+
+static const char *sp_pkey_rsa_answer(EVP_PKEY *k, int priv) {
+  const BIGNUM *n = NULL, *e = NULL, *d = NULL;
+  int nl, el, dl = 0;
+  unsigned char *o, *q;
+  size_t total;
+  RSA *rsa;
+
+#if defined(__GNUC__) || defined(__clang__)
+# pragma GCC diagnostic push
+# pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+  if (!(rsa = EVP_PKEY_get1_RSA(k))) return sp_ec_fail("RSA key without its key bytes");
+  RSA_get0_key(rsa, &n, &e, &d);
+  if (priv < 0) priv = d != NULL;
+  if (!n || !e || (priv && !d)) { RSA_free(rsa); return sp_ec_fail("RSA key without its key bytes"); }
+  nl = BN_num_bytes(n);
+  el = BN_num_bytes(e);
+  if (priv && (dl = i2d_RSAPrivateKey(rsa, NULL)) <= 0) {
+    RSA_free(rsa);
+    return sp_ec_fail("i2d_RSAPrivateKey");
+  }
+  total = 1 + 4 + (size_t)nl + 4 + (size_t)el + (size_t)dl;
+  if (!(o = (unsigned char *)sp_x509_room(&sp_pkey_rsa_out, total))) {
+    RSA_free(rsa);
+    return sp_ec_fail("out of memory");
+  }
+  o[0] = (unsigned char)(priv ? 3 : 2);
+  o[1] = (unsigned char)(nl >> 24); o[2] = (unsigned char)(nl >> 16);
+  o[3] = (unsigned char)(nl >> 8);  o[4] = (unsigned char)nl;
+  BN_bn2bin(n, o + 5);
+  q = o + 5 + nl;
+  q[0] = (unsigned char)(el >> 24); q[1] = (unsigned char)(el >> 16);
+  q[2] = (unsigned char)(el >> 8);  q[3] = (unsigned char)el;
+  BN_bn2bin(e, q + 4);
+  q += 4 + el;
+  if (dl && i2d_RSAPrivateKey(rsa, &q) != dl) {
+    OPENSSL_cleanse(o, total);
+    RSA_free(rsa);
+    return sp_ec_fail("i2d_RSAPrivateKey");
+  }
+  RSA_free(rsa);
+#if defined(__GNUC__) || defined(__clang__)
+# pragma GCC diagnostic pop
+#endif
+  sp_ffi_bin_len = (int)total;
+  return (const char *)o;
+}
+
 /* What CRuby would have answered for a key this does not read, for the
    message: its class name where it has one of its own. */
 static const char *sp_pkey_kind(int id) {
@@ -1232,7 +1289,7 @@ static const char *sp_pkey_kind(int id) {
   }
 }
 
-const char *sp_pkey_ec_read(const char *data) {
+const char *sp_pkey_read(const char *data) {
   unsigned char *out = (unsigned char *)sp_pkey_read_buf;
   const EC_KEY *ec;
   const EC_GROUP *g = NULL;
@@ -1249,9 +1306,15 @@ const char *sp_pkey_ec_read(const char *data) {
     ERR_clear_error();
     return sp_ec_fail("Could not parse PKey");
   }
+  if (EVP_PKEY_base_id(k) == EVP_PKEY_RSA) {
+    const char *r = sp_pkey_rsa_answer(k, priv);
+    EVP_PKEY_free(k);
+    ERR_clear_error();
+    return r;
+  }
   if (EVP_PKEY_base_id(k) != EVP_PKEY_EC) {
     char why[128];
-    snprintf(why, sizeof why, "unsupported key type: %s (this package reads EC keys)",
+    snprintf(why, sizeof why, "unsupported key type: %s (this package reads EC and RSA keys)",
              sp_pkey_kind(EVP_PKEY_base_id(k)));
     EVP_PKEY_free(k);
     ERR_clear_error();
@@ -1370,6 +1433,61 @@ sp_int sp_rsa_verify(const char *n_bytes, const char *e_bytes, const char *md_na
   return rc;
 }
 
+/* An EVP_PKEY from the PKCS#1 DER a private PKey::RSA holds, or NULL. */
+static EVP_PKEY *sp_rsa_evp_private(const char *der) {
+  const unsigned char *p = (const unsigned char *)der;
+  size_t len = sp_str_byte_len(der);
+
+  if (len == 0 || len > (size_t)INT_MAX) return NULL;
+  return d2i_PrivateKey(EVP_PKEY_RSA, NULL, &p, (long)len);
+}
+
+/* RSA signing, the mirror of sp_rsa_verify, with the private key as the
+   PKCS#1 DER PKey.read answers: PKCS#1 v1.5 (pss 0), or PSS with MGF1 over
+   `mgf1_name` and the salt length `saltlen` (-1 the digest's length, -3 the
+   most that fits, else that many bytes), which are CRuby's
+   `sign(md, data)` and `sign_pss(md, data, salt_length:, mgf1_hash:)`.
+   Answers the signature, or "" with the reason in last_error, which starts
+   "unsupported digest algorithm" when a digest name resolves to nothing. */
+static SP_TLS sp_x509_out sp_rsa_sig_out;
+
+const char *sp_rsa_sign(const char *der, const char *md_name, const char *data, sp_int pss,
+                        const char *mgf1_name, sp_int saltlen) {
+  const EVP_MD *md = EVP_get_digestbyname(md_name);
+  const EVP_MD *mgf1 = pss ? EVP_get_digestbyname(mgf1_name) : md;
+  EVP_PKEY *pkey = NULL;
+  EVP_MD_CTX *ctx = NULL;
+  EVP_PKEY_CTX *pctx = NULL;
+  size_t n = 0;
+  int ok = 0;
+
+  sp_ssl_errbuf[0] = 0;
+  if (!md || !mgf1) {
+    snprintf(sp_ssl_errbuf, sizeof sp_ssl_errbuf, "unsupported digest algorithm: %s",
+             md ? mgf1_name : md_name);
+    sp_ffi_bin_len = 0;
+    return "";
+  }
+  if (!(pkey = sp_rsa_evp_private(der))) { ERR_clear_error(); return sp_ec_fail("RSA private key"); }
+  if ((ctx = EVP_MD_CTX_new()) &&
+      EVP_DigestSignInit(ctx, &pctx, md, NULL, pkey) == 1 &&
+      (!pss || (EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_PSS_PADDING) > 0 &&
+                EVP_PKEY_CTX_set_rsa_pss_saltlen(pctx, (int)saltlen) > 0 &&
+                EVP_PKEY_CTX_set_rsa_mgf1_md(pctx, mgf1) > 0)) &&
+      EVP_DigestSign(ctx, NULL, &n, (const unsigned char *)data, sp_str_byte_len(data)) == 1 &&
+      n <= (size_t)INT_MAX && sp_x509_room(&sp_rsa_sig_out, n) &&
+      EVP_DigestSign(ctx, (unsigned char *)sp_rsa_sig_out.p, &n,
+                     (const unsigned char *)data, sp_str_byte_len(data)) == 1)
+    ok = 1;
+  if (!ok) sp_ssl_note("EVP_DigestSign");
+  EVP_MD_CTX_free(ctx);
+  EVP_PKEY_free(pkey);
+  ERR_clear_error();
+  if (!ok) { sp_ffi_bin_len = 0; return ""; }
+  sp_ffi_bin_len = (int)n;
+  return sp_rsa_sig_out.p;
+}
+
 /* ---------- The server half ----------
 
    A server's SSL_CTX is built per accept from the certificate and key bytes
@@ -1402,7 +1520,7 @@ static EVP_PKEY *sp_ec_evp_private(const char *curve, const char *priv) {
       EC_POINT_mul(g, q, d, NULL, NULL, NULL)) {
     /* EC_KEY is deprecated in OpenSSL 3.0, and EVP_PKEY_fromdata, which
        replaces it, is not in the 1.1.0 this file compiles against; the same
-       trade sp_pkey_ec_read makes. */
+       trade sp_pkey_read makes. */
 #if defined(__GNUC__) || defined(__clang__)
 # pragma GCC diagnostic push
 # pragma GCC diagnostic ignored "-Wdeprecated-declarations"
