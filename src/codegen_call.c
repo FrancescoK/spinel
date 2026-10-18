@@ -24182,7 +24182,8 @@ static void nil_target_release(Compiler *c, int mark, int held) {
    call runs on a non-nil receiver, and nil's answer stands for a nil one,
    where NilClass answers with a value of the type the call has. The names
    and their answers, as the call's type: to_s and inspect (a String),
-   to_i and hash (an Integer), to_f (a Float), nil?, !, ==, !=, ===, eql?,
+   to_i and hash (an Integer), to_f (a Float), to_a and to_h (an empty Array
+   and Hash), nil?, !, ==, !=, ===, eql?,
    equal?, frozen?, is_a?, kind_of? and instance_of? (a bool). The ones
    whose answer depends on the argument read it from the operand the head
    held. Answers a static text, or NULL for a name or a type not served. */
@@ -24209,6 +24210,13 @@ static const char *nil_answer_text(Compiler *c, int id, char *buf, size_t cap) {
     if (t == TY_POLY) return "sp_box_poly_array(sp_PolyArray_new())";
     if (!ty_is_array(t) || !array_kind(t)) return NULL;
     snprintf(buf, cap, "sp_%sArray_new()", array_kind(t));
+    return buf;
+  }
+  /* and nil.to_h a fresh empty Hash */
+  if (sp_streq(nm, "to_h") && an == 0 && nt_ref(nt, id, "block") < 0) {
+    if (t == TY_POLY) return "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)";
+    if (!ty_is_hash(t) || !ty_hash_cname(t)) return NULL;
+    snprintf(buf, cap, "sp_%sHash_new()", ty_hash_cname(t));
     return buf;
   }
   if (t != TY_BOOL) return NULL;
@@ -24247,6 +24255,8 @@ int cplan_nil_answer_served(Compiler *c, int id) {
   if (sp_streq(nm, "to_f") && an == 0) return t == TY_FLOAT || t == TY_POLY;
   if (sp_streq(nm, "to_a") && an == 0)
     return t == TY_POLY_ARRAY || t == TY_POLY || (ty_is_array(t) && array_kind(t) != NULL);
+  if (sp_streq(nm, "to_h") && an == 0 && nt_ref(nt, id, "block") < 0)
+    return t == TY_POLY || (ty_is_hash(t) && ty_hash_cname(t) != NULL);
   if (t != TY_BOOL) return 0;
   if ((sp_streq(nm, "nil?") || sp_streq(nm, "!") || sp_streq(nm, "frozen?")) && an == 0) return 1;
   if ((sp_streq(nm, "is_a?") || sp_streq(nm, "kind_of?") || sp_streq(nm, "instance_of?")) && an == 1)
