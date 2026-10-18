@@ -7223,18 +7223,47 @@ static TyKind bound_source_type(Compiler *c, int src, const LocalVar *p) {
    the call's count -- any other raises ArgumentError -- so those are not its
    callees, and their parameters are not bound from it. A splat, a `...` or a
    keyword hash a method without keywords takes as a positional leave the
-   count open, and a method that may take it is kept. */
+   count open, and a method that may take it is kept. A method with keywords
+   takes a call that names no keyword it lacks, unless it has a `**` rest,
+   and leaves out none it requires, unless a `**h` or a computed key may
+   pass it. */
+static int call_kwargs_fit(Compiler *c, Scope *m, int kwh) {
+  const NodeTable *nt = c->nt;
+  int en = 0, open = 0;
+  const int *el = kwh >= 0 ? nt_arr(nt, kwh, "elements", &en) : NULL;
+  for (int e = 0; e < en; e++) {
+    int key = nt_ref(nt, el[e], "key");
+    if (nt_kind(nt, el[e]) != NK_AssocNode || nt_kind(nt, key) != NK_SymbolNode) { open = 1; continue; }
+    if (m->kwrest_idx < 0 && !callee_has_kwarg(c, m, nt_str(nt, key, "value"))) return 0;
+  }
+  if (open) return 1;
+  int pn = m->def_node >= 0 ? nt_ref(nt, m->def_node, "parameters") : -1;
+  int kn = 0;
+  const int *kws = pn >= 0 ? nt_arr(nt, pn, "keywords", &kn) : NULL;
+  for (int k = 0; k < kn; k++) {
+    if (!nt_type(nt, kws[k]) || !sp_streq(nt_type(nt, kws[k]), "RequiredKeywordParameterNode")) continue;
+    const char *name = nt_str(nt, kws[k], "name");
+    int passed = 0;
+    for (int e = 0; e < en && name && !passed; e++) {
+      const char *kv = nt_str(nt, nt_ref(nt, el[e], "key"), "value");
+      passed = kv && sp_streq(kv, name);
+    }
+    if (!passed) return 0;
+  }
+  return 1;
+}
+
 int method_takes_call_args(Compiler *c, Scope *m, int call_id) {
   const NodeTable *nt = c->nt;
   int args = nt_ref(nt, call_id, "arguments");
   int n = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &n) : NULL;
-  int pos = 0, splat = 0, kwh = 0;
+  int pos = 0, splat = 0, kwh = -1;
   for (int i = 0; i < n; i++) {
     NodeKind k = nt_kind(nt, av[i]);
     if (k == NK_ForwardingArgumentsNode) return 1;
     if (k == NK_BlockArgumentNode) continue;
-    if (k == NK_KeywordHashNode) { kwh = 1; continue; }
+    if (k == NK_KeywordHashNode) { kwh = av[i]; continue; }
     if (k == NK_SplatNode) splat++;
     pos++;
   }
@@ -7247,8 +7276,9 @@ int method_takes_call_args(Compiler *c, Scope *m, int call_id) {
   }
   if (m->rest_idx >= 0) max = INT_MAX;
   if (splat) return pos - splat <= max;
+  if (kws && !call_kwargs_fit(c, m, kwh)) return 0;
   if (pos >= req && pos <= max) return 1;
-  return kwh && !kws && pos + 1 >= req && pos + 1 <= max;
+  return kwh >= 0 && !kws && pos + 1 >= req && pos + 1 <= max;
 }
 
 /* Type method mi's parameters from the arguments `argv` of call_id. */
