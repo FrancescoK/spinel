@@ -2133,8 +2133,11 @@ int builtin_object_method_known(const char *m) {
 
 /* The constant names a class/module defines in its OWN body, in declaration
    order, appended to `out` (deduplicated). Scans every ClassNode/ModuleNode
-   that opens `ci`, so reopenings contribute too. #2674 */
-static int class_own_constants(Compiler *c, int ci, const char **out, int max, int n) {
+   that opens `ci`, so reopenings contribute too. #2674 `shown` gets the
+   name Ruby lists for each: a constant or class whose leaf collided carries
+   a qualified key (`Mod__NAME`), and the listing shows the leaf it was
+   written with. */
+static int class_own_constants(Compiler *c, int ci, const char **out, const char **shown, int max, int n) {
   const NodeTable *nt = c->nt;
   for (int id = 0; id < nt->count && n < max; id++) {
     const char *ty = nt_type(nt, id);
@@ -2146,8 +2149,11 @@ static int class_own_constants(Compiler *c, int ci, const char **out, int max, i
     int bn = 0; const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
     for (int k = 0; k < bn && n < max; k++) {
       const char *sty = nt_type(nt, stmts[k]);
-      const char *nm = NULL;
-      if (sty && sp_streq(sty, "ConstantWriteNode")) nm = nt_str(nt, stmts[k], "name");
+      const char *nm = NULL, *sh = NULL;
+      if (sty && sp_streq(sty, "ConstantWriteNode")) {
+        nm = nt_str(nt, stmts[k], "name");
+        sh = nt_str(nt, stmts[k], "qc_orig_name");
+      }
       /* A nested class or module IS a constant of the enclosing one, and the
          only kind this collected was the value-assigning form -- so a module
          holding both reported the value and not the nested module (#4040). */
@@ -2157,12 +2163,17 @@ static int class_own_constants(Compiler *c, int ci, const char **out, int max, i
         if (full) {
           const char *last = strrchr(full, ':');
           nm = last ? last + 1 : full;   /* the leaf name, not the path */
+          /* a qualified class keeps its Ruby path beside the key */
+          const char *rn = nt_str(nt, ncp, "qc_ruby_name");
+          const char *rl = rn ? strrchr(rn, ':') : NULL;
+          if (rn) sh = rl ? rl + 1 : rn;
         }
       }
       if (!nm) continue;
+      if (!sh) sh = nm;
       int dup = 0;
-      for (int q = 0; q < n; q++) if (sp_streq(out[q], nm)) { dup = 1; break; }
-      if (!dup) out[n++] = nm;
+      for (int q = 0; q < n; q++) if (sp_streq(shown[q], sh)) { dup = 1; break; }
+      if (!dup) { out[n] = nm; shown[n++] = sh; }
     }
   }
   return n;
@@ -2207,17 +2218,17 @@ static int class_module_refs(Compiler *c, int ci, const char *kw, int *out, int 
    constants are the top-level ones, which CRuby does not report here.
    The order WITHIN one class is its declaration order; CRuby's comes out of an
    id table and is not specified, so only the grouping is meaningful. #2674 */
-int collect_class_constants(Compiler *c, int ci, int inherit,
-                                   const char **out, int max, int n, int depth) {
+int collect_class_constants(Compiler *c, int ci, int inherit, const char **out, const char **shown,
+                            int max, int n, int depth) {
   if (ci < 0 || ci >= c->nclasses || depth > 32 || n >= max) return n;
-  n = class_own_constants(c, ci, out, max, n);
+  n = class_own_constants(c, ci, out, shown, max, n);
   if (!inherit) return n;
   int mods[32], nm2;
   nm2 = class_module_refs(c, ci, "prepend", mods, 32);
-  for (int q = nm2 - 1; q >= 0; q--) n = collect_class_constants(c, mods[q], 1, out, max, n, depth + 1);
+  for (int q = nm2 - 1; q >= 0; q--) n = collect_class_constants(c, mods[q], 1, out, shown, max, n, depth + 1);
   nm2 = class_module_refs(c, ci, "include", mods, 32);
-  for (int q = nm2 - 1; q >= 0; q--) n = collect_class_constants(c, mods[q], 1, out, max, n, depth + 1);
-  return collect_class_constants(c, c->classes[ci].parent, 1, out, max, n, depth + 1);
+  for (int q = nm2 - 1; q >= 0; q--) n = collect_class_constants(c, mods[q], 1, out, shown, max, n, depth + 1);
+  return collect_class_constants(c, c->classes[ci].parent, 1, out, shown, max, n, depth + 1);
 }
 
 /* eval(string) / Kernel.eval(string) compiling an arbitrary runtime string is a
