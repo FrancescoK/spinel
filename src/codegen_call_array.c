@@ -2177,6 +2177,10 @@ int emit_call_store_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         /* ...and a boxed one, which may hold nil at run time: unboxed with its
            nil, and the expression answers it boxed again */
         int vboxo = unbox_poly_val && hvt == TY_INT;
+        /* ...and one that can be nil into a Hash of boxed values: held as
+           its oint, boxed with its nil (a Float parameter that holds one) */
+        TyKind vpt = vt == TY_FLOAT || vt == TY_INT ? vt : TY_UNKNOWN;
+        int vpolyo = is_poly_hash && vpt != TY_UNKNOWN && node_has_oint_form(c, argv[1]);
         buf_puts(b, "({ ");
         /* A receiver or a key that can allocate goes into a temp ahead of the
            value, in Ruby's order; the receiver is rooted when the key or the
@@ -2203,11 +2207,13 @@ int emit_call_store_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
            default block, whose value is what the read answers): boxed once,
            so the store and the expression's value are the one handle */
         if (is_poly_hash && repr_of(c, argv[1]).handle) decl_type = TY_POLY;
-        if (voset || vboxo) buf_puts(b, "sp_oint"); else emit_ctype(c, decl_type, b);
+        if (vpolyo) buf_puts(b, oint_ctype(vpt));
+        else if (voset || vboxo) buf_puts(b, "sp_oint"); else emit_ctype(c, decl_type, b);
         buf_printf(b, " _t%d = ", tv);
         /* When the slot is poly but the rhs has no type yet (e.g. `{}`),
            emit a boxed value so the sp_RbVal temp initialises correctly. */
-        if (voset) emit_oint_expr(c, argv[1], TY_INT, b);
+        if (vpolyo) emit_oint_expr(c, argv[1], vpt, b);
+        else if (voset) emit_oint_expr(c, argv[1], TY_INT, b);
         else if (vboxo) { buf_puts(b, "sp_poly_hval_oi("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
         else if (unbox_poly_val) {
           const char *fn = hvt == TY_STRING ? "sp_poly_hval_s" : hvt == TY_INT ? "sp_poly_hval_i" : "sp_poly_hval_f";
@@ -2233,6 +2239,10 @@ int emit_call_store_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           if (vboxo) buf_printf(b, "sp_box_oint(_t%d); })", tv);
           else if (node_is_oint(c, id)) buf_printf(b, "_t%d; })", tv);
           else buf_printf(b, "sp_oint_arg(_t%d); })", tv);
+          return 1;
+        }
+        if (vpolyo) {
+          buf_printf(b, "%s(_t%d)); %s(_t%d); })", oint_box(vpt), tv, oint_box(vpt), tv);
           return 1;
         }
         if (is_poly_hash && decl_type != TY_POLY) {

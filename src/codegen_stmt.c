@@ -15255,7 +15255,89 @@ static void masgn_conv_o(Compiler *c, TyKind st, TyKind vt, const char *val, Buf
   else buf_printf(b, "%s(%s)", oint_of(st), val);
   (void)c;
 }
+/* Can the writer a call target `o.x` runs take an element with its nil (a
+   writer's parameter that holds one or is boxed, a field with a nil bit or a
+   boxed one)? A native writer, or a plain Integer parameter or field, takes
+   it plain: a program with only those keeps its C. */
+static int masgn_writer_takes_nil(Compiler *c, int tgt) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_kind(nt, tgt) == NK_CallTargetNode ? nt_str(nt, tgt, "name") : NULL;
+  int recv = nm ? nt_ref(nt, tgt, "receiver") : -1;
+  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  if (!ty_is_object(rt)) return 1;
+  int crc = ty_object_class(rt), cdef = -1;
+  int wmi = comp_method_in_chain(c, crc, nm, &cdef);
+  if (wmi >= 0) {
+    const LocalVar *wp = c->scopes[wmi].nparams >= 1 ? scope_local(&c->scopes[wmi], c->scopes[wmi].pnames[0]) : NULL;
+    return !wp || slot_is_oint(wp) || wp->type == TY_POLY;
+  }
+  if (comp_native_method_find(c, crc, nm, 1, 0) >= 0) return 0;
+  char base[256], ivn[260];
+  if (!setter_base_name(nm, base, sizeof base)) return 1;
+  snprintf(ivn, sizeof ivn, "@%s", base);
+  int wdc = -1; comp_writer_in_chain(c, crc, base, &wdc);
+  int wcls = wdc >= 0 ? wdc : crc, ix = comp_ivar_index(&c->classes[wcls], ivn);
+  TyKind ivt = ix >= 0 ? c->classes[wcls].ivar_types[ix] : TY_UNKNOWN;
+  return ix < 0 || ivt == TY_POLY || (oint_kind(ivt) && ivar_has_nilbit(c, wcls, ix));
+}
+static int masgn_index_writer(Compiler *c, TyKind rt, int *cdef, TyKind *kt);
+/* Can the slot a global, class variable, index or call target stores into
+   take an element with its nil: a boxed slot, one that holds its nil, an Array
+   store that notes one, a writer as masgn_writer_takes_nil says? A plain
+   Integer slot takes it plain, and keeps its C. */
+static int masgn_target_takes_nil(Compiler *c, int id, int tgt) {
+  const NodeTable *nt = c->nt;
+  NodeKind tk = nt_kind(nt, tgt);
+  const char *nm = nt_str(nt, tgt, "name");
+  if (tk == NK_CallTargetNode) return masgn_writer_takes_nil(c, tgt);
+  if (tk == NK_GlobalVariableTargetNode && nm) {
+    const char *gn = comp_resolve_gvar(c, nm + 1);
+    LocalVar *gv = gn ? comp_gvar(c, gn) : NULL;
+    return !gv || gv->type == TY_POLY || gvar_is_oint(c, gv);
+  }
+  if (tk == NK_ClassVariableTargetNode && nm) {
+    Scope *sc = comp_scope_of(c, id);
+    int cid = (sc && sc->class_id >= 0) ? sc->class_id : g_class_body_id;
+    if (cid >= 0) cid = comp_cvar_owner(c, cid, nm);
+    int cx = cid >= 0 ? comp_cvar_index(&c->classes[cid], nm) : -1;
+    return cx < 0 || c->classes[cid].cvar_types[cx] == TY_POLY || cvar_is_oint(c, cid, cx);
+  }
+  if (tk == NK_IndexTargetNode) {
+    int recv = nt_ref(nt, tgt, "receiver");
+    TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+    if (rt == TY_POLY_ARRAY) return 1;
+    if (ty_is_array(rt)) {
+      const char *k = array_kind(rt);
+      return !k || !oint_kind(ty_array_elem(rt)) || nil_store_sfx(c, k, NIL_STORE_BOXED)[0];
+    }
+    if (ty_is_hash(rt)) return ty_hash_val(rt) == TY_POLY;
+    if (ty_is_object(rt)) {
+      int wmi = masgn_index_writer(c, rt, NULL, NULL);
+      const LocalVar *vp = wmi >= 0 && c->scopes[wmi].nparams >= 2 ? scope_local(&c->scopes[wmi], c->scopes[wmi].pnames[1]) : NULL;
+      return !vp || vp->type == TY_POLY || slot_is_oint(vp);
+    }
+  }
+  return 1;
+}
+/* Element `ix` of the Integer or Float Array _t<arr> (kind k) as a temp
+   with its nil beside it, for a target that can hold the nil (masgn_conv_o):
+   a read past the end is nil, as in CRuby. Names the temp in `out` and
+   answers 1, or answers 0 for an element that holds no nil. */
+static int masgn_elem_temp(Compiler *c, int id, int tgt, TyKind st, TyKind elem, const char *k, int arr, const char *ix,
+                           int indent, Buf *b, char *out, size_t on) {
+  if (!oint_kind(elem) || st == TY_POLY_ARRAY || g_masgn_notmps >= 64 || !masgn_target_takes_nil(c, id, tgt)) return 0;
+  int tv = ++g_tmp;
+  emit_indent(b, indent);
+  buf_printf(b, "%s _t%do = sp_%sArray_oget(_t%d, %s); %s _t%d = _t%do.v;\n",
+             oint_ctype(elem), tv, k, arr, ix, c_type_name(elem), tv, tv);
+  g_masgn_otmps[g_masgn_notmps++] = tv;
+  snprintf(out, on, "_t%d", tv);
+  return 1;
+}
 static void masgn_conv(Compiler *c, int id, TyKind st, TyKind vt, const char *val, Buf *b) {
+  /* an element held with its nil beside it boxes as that oint */
+  int on = masgn_oint_temp(val);
+  if (on >= 0 && st == TY_POLY && oint_kind(vt)) { buf_printf(b, "%s(_t%do)", oint_box(vt), on); return; }
   if (!val) {
     if (oint_kind(st)) refuse_nil_store(c, id, st, "a multiple assignment target");
     buf_puts(b, nil_sentinel(st == TY_UNKNOWN ? TY_POLY : st)); return;
@@ -15267,6 +15349,13 @@ static void masgn_conv(Compiler *c, int id, TyKind st, TyKind vt, const char *va
   else if (vt == TY_POLY && st == TY_FLOAT) buf_printf(b, "sp_poly_to_f(%s)", val);
   else if (vt == TY_POLY && st != TY_POLY && st != TY_UNKNOWN) emit_unbox_text(c, st, val, b);
   else emit_coerce_text(c, id, vt, st, CO_HOLD, val, "a multiple assignment's target", b);
+}
+/* masgn_conv into a user writer's parameter: one that holds its nil takes
+   the element's oint */
+static void masgn_conv_param(Compiler *c, int id, const LocalVar *p, TyKind vt, const char *val, Buf *b) {
+  TyKind st = p ? p->type : vt;
+  if (p && slot_is_oint(p)) masgn_conv_o(c, st, vt, val, b);
+  else masgn_conv(c, id, st, vt, val, b);
 }
 /* A tuple element with no value of its own (nil, or a call that answers
    none): its temp holds a boxed nil, and a typed slot takes its own nil. */
@@ -15508,7 +15597,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
       if (key_tmp >= 0) buf_printf(b, "_t%d", key_tmp);
       else masgn_index_key(c, argv[0], kt, b);
       buf_puts(b, ", ");
-      masgn_conv(c, id, vp ? vp->type : vt, vt, val, b);
+      masgn_conv_param(c, id, vp, vt, val, b);
       buf_puts(b, ");\n");
     }
     else unsupported(c, id, "multiple assignment index target non-array/hash");
@@ -15565,7 +15654,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
       LocalVar *wp = c->scopes[wmi].nparams >= 1 ? scope_local(&c->scopes[wmi], c->scopes[wmi].pnames[0]) : NULL;
       buf_printf(b, "sp_%s_%s((sp_%s *)", c->classes[cdef].c_name, mc(c->scopes[wmi].name), c->classes[cdef].c_name);
       emit_node_or_tmp(c, crecv, recv_tmp, b); buf_puts(b, ", ");
-      masgn_conv(c, id, wp ? wp->type : vt, vt, val, b);
+      masgn_conv_param(c, id, wp, vt, val, b);
       buf_puts(b, ");\n");
     }
     else {
@@ -16196,7 +16285,9 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
         emit_const_flag_set(cv_rt, cnm_rt, b, indent);
       }
       else {
-        char gx[80]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
+        char gx[80], ix[32]; snprintf(ix, sizeof ix, "%dLL", i);
+        if (!masgn_elem_temp(c, id, lefts[i], st, elem, k, tarr, ix, indent, b, gx, sizeof gx))
+          snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
         if (!masgn_store(c, id, lefts[i], gx, elem, ttr[i], ttk[i], indent, b))
           unsupported(c, id, "multiple assignment target");
       }
@@ -16341,8 +16432,10 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
           free(ge.p);
           continue;
         }
-        char rgx[160];
-        snprintf(rgx, sizeof rgx, "(_t%d >= _t%d->len ? %s : sp_%sArray_get(_t%d, _t%d))", tix, tarr, nilv, k, tarr, tix);
+        char rgx[160], rix[32];
+        snprintf(rix, sizeof rix, "_t%d", tix);
+        if (!masgn_elem_temp(c, id, rights[j], st, elem, k, tarr, rix, indent, b, rgx, sizeof rgx))
+          snprintf(rgx, sizeof rgx, "(_t%d >= _t%d->len ? %s : sp_%sArray_get(_t%d, _t%d))", tix, tarr, nilv, k, tarr, tix);
         if (!masgn_store(c, id, rights[j], rgx, elem, -1, -1, indent, b))
           unsupported(c, id, "multiple assignment target");
       }
