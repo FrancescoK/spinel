@@ -71,6 +71,46 @@ def __enumw_with_index(recv, off = 0)
   recv
 end
 
+# str.each_char.with_index { } (and each_line / each_byte / each_codepoint)
+# with a block that breaks: the String's pieces walked with a counter, the
+# String itself the answer when no break is taken (desugar's rewrite of the
+# walk onto the piece array keeps the element types exact)
+def __enumw_str_chars_with_index(str, off = 0)
+  i = off
+  str.chars.each do |x|
+    yield x, i
+    i += 1
+  end
+  str
+end
+
+def __enumw_str_lines_with_index(str, off = 0)
+  i = off
+  str.lines.each do |x|
+    yield x, i
+    i += 1
+  end
+  str
+end
+
+def __enumw_str_bytes_with_index(str, off = 0)
+  i = off
+  str.bytes.each do |x|
+    yield x, i
+    i += 1
+  end
+  str
+end
+
+def __enumw_str_codepoints_with_index(str, off = 0)
+  i = off
+  str.codepoints.each do |x|
+    yield x, i
+    i += 1
+  end
+  str
+end
+
 def __enumw_each_slice(recv, n)
   buf = []
   recv.each do |x|

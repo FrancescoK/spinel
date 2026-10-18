@@ -2950,7 +2950,7 @@ int desugar_int_enum_with_index(Compiler *c) {
    A block that breaks keeps its shape (the walk's break is not ready), and so
    does one that redoes (its counter would move twice), or an offset that is
    not a plain Integer (nil and to_int need a conversion the counter lacks). */
-static int block_body_breaks(const NodeTable *nt, int node);
+int block_body_breaks(const NodeTable *nt, int node);
 static int hwi_redoes(const NodeTable *nt, int node) {
   if (node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
@@ -11393,7 +11393,7 @@ int nested_row_iter_call(Compiler *c, int id) {
 
 /* Does `node` hold a `break` that leaves the block it sits in, rather than a
    loop or a block nested inside it? */
-static int block_body_breaks(const NodeTable *nt, int node) {
+int block_body_breaks(const NodeTable *nt, int node) {
   if (node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_BreakNode) return 1;
