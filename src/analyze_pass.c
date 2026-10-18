@@ -7243,17 +7243,17 @@ int method_takes_call_args(Compiler *c, Scope *m, int call_id) {
     if (k == NK_SplatNode) splat++;
     pos++;
   }
-  int req = 0, max = 0;
+  int req = 0, max = 0, kws = m->kwrest_idx >= 0;
   for (int k = 0; k < m->nparams; k++) {
-    if (k == m->rest_idx || k == m->kwrest_idx || !m->pnames[k] ||
-        callee_has_kwarg(c, m, m->pnames[k])) continue;
+    if (k == m->rest_idx || k == m->kwrest_idx || !m->pnames[k]) continue;
+    if (callee_has_kwarg(c, m, m->pnames[k])) { kws = 1; continue; }
     max++;
     if (!m->pdefault || m->pdefault[k] < 0) req++;
   }
   if (m->rest_idx >= 0) max = INT_MAX;
   if (splat) return pos - splat <= max;
   if (pos >= req && pos <= max) return 1;
-  return kwh && pos + 1 >= req && pos + 1 <= max;
+  return kwh && !kws && pos + 1 >= req && pos + 1 <= max;
 }
 
 /* Type method mi's parameters from the arguments `argv` of call_id. */
