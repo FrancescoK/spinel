@@ -9277,7 +9277,9 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
        it had. Class-only targets with a builtin collision open the same
        switch, since user_defines_or_reads counts instance methods. */
     int name_taken = user_defines_or_reads(c, name) || poly_cmethod_collision(c, id, name);
-    if (ncand > 0 || name_taken || is_lengthlike || is_pred || is_class_named || is_class_reflect || is_ostruct || is_io_rewind || is_poly_to_a || is_poly_to_h) {
+    /* a File::Stat's mtime / atime, served by the stat handle's arm */
+    int is_stat_time = sp_streq(name, "mtime") || sp_streq(name, "atime");
+    if (ncand > 0 || name_taken || is_lengthlike || is_pred || is_class_named || is_class_reflect || is_ostruct || is_io_rewind || is_poly_to_a || is_poly_to_h || is_stat_time) {
       TyKind ret = repr_of(c, id).as_ty;
       /* an OpenStruct member is a boxed value; but when analyze typed the
          call concretely (a user method OR reader/alias resolves the name --

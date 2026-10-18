@@ -1959,6 +1959,16 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
        getc a nil-able String (NULL boxes to nil), getbyte an Integer or
        nil (an oint), readline/readchar/readbyte raise EOFError */
     const BuiltinZeroOp *io_op = bop_zero_find(TY_IO, name);
+    /* a stat handle's times (File::Stat#mtime / atime), a Time each */
+    int stat_k = sp_streq(name, "mtime") ? 0 : sp_streq(name, "atime") ? 1 : -1;
+    if (stat_k >= 0 && (ret == TY_POLY || ret == TY_TIME)) {
+      char sx[96];
+      snprintf(sx, sizeof sx, "sp_stat_handle_time((sp_File *)_t%d.v.p, %d)", tv, stat_k);
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO) { _t%d = ", tv, tv, tr);
+      if (ret == TY_POLY) emit_boxed_text(c, TY_TIME, sx, b);
+      else buf_puts(b, sx);
+      buf_puts(b, "; }\nelse ");
+    }
     /* a bare puts writes the newline and answers nil (#6158) */
     if (sp_streq(name, "puts")) {
       if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_IO_PUTS, -1, TY_UNKNOWN, PC_SAME);
