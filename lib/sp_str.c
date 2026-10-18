@@ -615,6 +615,30 @@ sp_int sp_str_length(const char*s){
 sp_int sp_str_ord(const char*s){if(!s)sp_nil_recv("ord");
   if(sp_str_byte_len(s)==0)sp_raise_cls("ArgumentError","empty string");
   uint32_t cp;sp_utf8_decode(s,&cp);return(sp_int)cp;}
+/* The byte offset of character char_idx of a valid UTF-8 string: that of its
+   lead byte, the one every character has and no continuation byte (10xxxxxx)
+   is. Counted eight bytes at a time, as CRuby counts: stepping one character
+   at a time made s[i] four to seven times slower than CRuby's on any string
+   that is not all ASCII. */
+static size_t sp_utf8_valid_byte_offset(const char *s, size_t blen, sp_int char_idx) {
+  const unsigned char *p = (const unsigned char *)s, *end = p + blen;
+  while (p + 8 <= end) {
+    uint64_t w;
+    memcpy(&w, p, sizeof(w));
+    uint64_t cont = w & ~(w << 1) & 0x8080808080808080ULL;
+    sp_int leads = 8 - (sp_int)(((cont >> 7) * 0x0101010101010101ULL) >> 56);
+    /* the lead byte sought lies past this word */
+    if (leads > char_idx) break;
+    char_idx -= leads;
+    p += 8;
+  }
+  for (; p < end; p++) {
+    if ((*p & 0xC0) == 0x80) continue;
+    if (char_idx == 0) break;
+    char_idx--;
+  }
+  return (size_t)(p - (const unsigned char *)s);
+}
 size_t sp_utf8_byte_offset(const char*s,sp_int char_idx){
   if (!s || char_idx <= 0) return 0;
   /* one unit per byte on a binary string, so indexing and slicing agree with
@@ -625,11 +649,14 @@ size_t sp_utf8_byte_offset(const char*s,sp_int char_idx){
     size_t bl = sp_str_byte_len(s), off = (size_t)char_idx;
     return off > bl ? bl : off;
   }
+  /* fewer characters than bytes in the length cache: the walk that counted
+     them found valid UTF-8 (an invalid byte makes it count bytes) */
+  int valid = 0;
   if (sp_str_cacheable(s)) {
     unsigned h = sp_str_lcache_hash(s);
     for (unsigned w = 0; w < SP_STR_LCACHE_WAYS; w++) {
       if (sp_str_lcache[h + w].s != s) continue;
-      if ((size_t)sp_str_lcache[h + w].char_len != sp_str_lcache[h + w].byte_len) break;
+      if ((size_t)sp_str_lcache[h + w].char_len != sp_str_lcache[h + w].byte_len) { valid = 1; break; }
       size_t off = (size_t)char_idx;
       return off > sp_str_lcache[h + w].byte_len ? sp_str_lcache[h + w].byte_len : off;
     }
@@ -644,6 +671,7 @@ size_t sp_utf8_byte_offset(const char*s,sp_int char_idx){
   size_t blen = sp_str_byte_len(s);
   const char *p = s;
   const char *end = s + blen;
+  if (valid) return sp_utf8_valid_byte_offset(s, blen, char_idx);
   while (char_idx > 0 && p < end) {
     p += sp_utf8_advance(p);
     char_idx--;
