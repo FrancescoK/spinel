@@ -14109,6 +14109,13 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
   int sfo = g_face_oint_id, sfg = g_face_oint_got;
   int keep_o = (nat == TY_INT || nat == TY_FLOAT) && !node_is_oint(c, id);
   if (keep_o) { g_face_oint_id = id; g_face_oint_got = 0; }
+  /* ...and an owner's search that answers its oint whatever the slot (a
+     String's byteindex, sp_str_byteindex): asked with the call read as the
+     owner's answer, over the receiver read as the owner, the form says so
+     where the call itself is poly (another class's method of the name
+     widened it) */
+  int arm_o = 0;
+  if (keep_o) { int vi = view_push(c, id, nat); arm_o = node_is_oint(c, id); view_pop(c, vi); }
   /* a block mutator over a boxed Array may run on the box itself
      (emit_array_filter_loop), and then has nothing to write back */
   int slr = g_face_live_recv, slb = g_face_live_box, slu = g_face_live_used;
@@ -14122,6 +14129,7 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
      no copy */
   if (g_share_check && kind == PF_STRING && (flags & PF_MUT) && box) share_check_declare_reads(&cb, 0, recv);
   TyKind got_o = keep_o ? (TyKind)g_face_oint_got : TY_UNKNOWN;
+  if (!got_o && arm_o) got_o = nat;
   g_face_oint_id = sfo; g_face_oint_got = sfg;
   if (got_o) {
     Buf ob; memset(&ob, 0, sizeof ob);
