@@ -3544,6 +3544,10 @@ int desugar_enumerable_chain(Compiler *c) {
          two poly arrays; a typed receiver's `+` over the boxed array binds
          its operands without roots, so that call is left as it was. */
       if (rt == TY_POLY && an_user_defines_or_reads(c, "chain")) continue;
+      /* nor while the receiver is untyped, when the program has a chain of
+         its own: an initialize_copy's `other.chain` (activesupport's
+         CallbackChain) is typed only once the dispatch reaches it */
+      if (rt == TY_UNKNOWN && an_user_defines_or_reads(c, "chain")) continue;
       if (rt != TY_POLY && !chain_operand_ok(c, recv)) continue;
     }
     int ok = 1;
