@@ -26696,6 +26696,38 @@ int strbuf_self_reader_handle(Compiler *c, int id) {
   return rp.handle || rp.demand;
 }
 
+/* A body emitted for a class other than its own (a yielding method spliced
+   into a subclass's caller) types its bare call by its own class's
+   dispatch, which joins every override's answer into a box; the dispatch
+   from dispatch_cid can answer a narrower type, which the call boxes for
+   that slot. The type to box, else TY_UNKNOWN. *nullable is set when the
+   one method the dispatch can run answers an Integer or Float that may be
+   nil (an sp_oint / sp_ofloat, boxed with its nil). Where an override can
+   run too, the class-id dispatch reads such an answer without its nil
+   (sp_oint_arg), so a call that may reach one is left to the plain
+   dispatch. */
+static TyKind implicit_self_narrowed_ty(Compiler *c, int id, const Scope *self, int dispatch_cid, int mi,
+                                        int *nullable) {
+  *nullable = 0;
+  if (dispatch_cid == self->class_id || self->is_cmethod || repr_of(c, id).as_ty != TY_POLY) return TY_UNKNOWN;
+  const Scope *m = &c->scopes[mi];
+  if (m->is_cmethod || (m->yields && nt_ref(c->nt, id, "block") >= 0)) return TY_UNKNOWN;
+  const char *name = nt_str(c->nt, id, "name");
+  TyKind r = dispatch_ret_over(c, dispatch_cid, name, 0, mi, (TyKind)m->ret, id);
+  if (r == TY_POLY || r == TY_UNKNOWN || r == TY_VOID || r == TY_NIL) return TY_UNKNOWN;
+  int any_o = method_ret_is_oint(m), other = 0, nd = 0;
+  const int *ds = comp_descendants(c, dispatch_cid, &nd);
+  for (int i = 0; i < nd; i++) {
+    int kmi = comp_method_in_chain(c, ds[i], name, NULL);
+    if (kmi < 0 || kmi == mi) continue;
+    other = 1;
+    any_o |= method_ret_is_oint(&c->scopes[kmi]);
+  }
+  if (any_o && other) return TY_UNKNOWN;
+  *nullable = any_o;
+  return r;
+}
+
 int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -26770,6 +26802,17 @@ int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
   }
   if (mi >= 0) {
     if (emit_reopen_own_call(c, id, dispatch_cid, b)) return 1;
+    int nullable = 0;
+    TyKind nty = implicit_self_narrowed_ty(c, id, self, dispatch_cid, mi, &nullable);
+    if (nty != TY_UNKNOWN) {
+      Buf db; memset(&db, 0, sizeof db);
+      emit_dispatch(c, dispatch_cid, name, g_self, nt_ref(nt, id, "arguments"),
+                    nt_ref(nt, id, "block"), &db);
+      if (nullable) buf_printf(b, "%s(%s)", oint_box(nty), db.p ? db.p : "0");
+      else emit_boxed_text(c, nty, db.p ? db.p : "0", b);
+      free(db.p);
+      return 1;
+    }
     emit_dispatch(c, dispatch_cid, name, g_self, nt_ref(nt, id, "arguments"),
                   nt_ref(nt, id, "block"), b);
     return 1;
