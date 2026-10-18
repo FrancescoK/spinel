@@ -4140,7 +4140,10 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
       for (int q = 0; q < nseen && !dup; q++) dup = seen[q] == sid;
       if (dup) continue; }
     if (at == TY_UNKNOWN || at == TY_VOID) {
-      if (!dsend_name_diverges(c, nm)) continue;     /* did not resolve on this receiver/arity */
+      /* did not resolve on this receiver/arity; a method of the program the
+         arm reached is kept, whatever its body's value: one that always
+         raises (an Array operator given a nil operand) has no type */
+      if (cplan_user(c, arm)->mi < 0 && !dsend_name_diverges(c, nm)) continue;
       at = TY_NIL;
     }
     if (mo && method_obj_target_mi(c, arm) < 0) continue;
@@ -23650,6 +23653,32 @@ static void nil_recv_raise_text(Compiler *c, int id, char *out, size_t n) {
     snprintf(out, n, "sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into Array\")");
   else
     snprintf(out, n, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()))", nt_str(c->nt, id, "name"));
+}
+/* An Array call that always raises for its operand (the operand is no Array:
+   emit_array_operand_type_error, emit_array_operand_misfit) still dispatches
+   on its receiver first, and a nil one is CRuby's NoMethodError, not the
+   operand's TypeError. A local, a parameter or a call's value is tested by
+   the call's nil arm (cplan_nil); an ivar no write of the program sets to nil
+   is nil until a method fills it, and ivar_nil_recv_guard leaves it
+   untested. Its call holds the receiver in a temp as the operands run
+   (emit_fold_recv_hold; 0 when there is nothing to test) and tests it once
+   they have (emit_fold_recv_test), in code that only ever raises. The names
+   nil answers (`&`, `|`, `<=>`) are no NoMethodError and keep their text. */
+int emit_fold_recv_hold(Compiler *c, int id, int recv, Buf *b) {
+  TyKind rt = repr_of(c, recv).as_ty;
+  const char *nm = nt_str(c->nt, id, "name");
+  if (nt_kind(c->nt, unwrap_parens(c, recv)) != NK_InstanceVariableReadNode || !ty_is_array(rt) ||
+      !nm || is_nil_method(nm)) {
+    buf_puts(b, "(void)("); emit_expr(c, recv, b); buf_puts(b, "); ");
+    return 0;
+  }
+  int t = ++g_tmp;
+  emit_ctype(c, rt, b); buf_printf(b, " _t%d = (", t); emit_expr(c, recv, b); buf_puts(b, "); ");
+  return t;
+}
+void emit_fold_recv_test(Compiler *c, int id, int t, Buf *b) {
+  if (t) buf_printf(b, "if (_t%d == NULL) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ",
+                    t, nt_str(c->nt, id, "name"));
 }
 /* The guard as a statement ahead of a statement-form emission of call `id`,
    which runs with g_ivar_nil_guarded_id naming it so it is not guarded twice */
