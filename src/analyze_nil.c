@@ -1071,10 +1071,10 @@ static int nf_elem_uncached(NF *f, int v, int depth) {
   const NodeTable *nt = f->nt;
   switch (nt_kind(nt, v)) {
   case NK_ParenthesesNode: case NK_StatementsNode: case NK_ElseNode: case NK_IfNode: case NK_UnlessNode:
-  case NK_CaseNode:
+  case NK_CaseNode: case NK_CaseMatchNode:
   case NK_AndNode: case NK_OrNode: {
     NfElemArms a = { f, depth };
-    return for_each_value_position(nt, v, VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_CASE | VPS_LOGIC, nf_elem_arm, &a)
+    return for_each_value_position(nt, v, VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_LOGIC, nf_elem_arm, &a)
            ? NFW_ELEM_NIL : 0;
   }
   case NK_LocalVariableWriteNode: case NK_InstanceVariableWriteNode: case NK_GlobalVariableWriteNode:
