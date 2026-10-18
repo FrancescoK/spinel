@@ -93,6 +93,14 @@ int emit_op_mutex_sleep(Compiler *c, const BopCtx *x, Buf *b) {
    A nil timeout means no deadline, and non-positive timeouts take the
    existing release-and-reacquire path without parking. The value is
    the runtime's answer: nil on a timeout, else the seconds slept. */
+/* The mutex a wait takes: a boxed one (a value an initialize took through a
+   dynamic `klass.new(*args)`, say) is unboxed, raising for anything else */
+static void emit_condvar_mutex_arg(Compiler *c, int arg, Buf *b) {
+  if (repr_of(c, arg).as_ty == TY_POLY) {
+    buf_puts(b, "sp_poly_as_mutex("); emit_boxed(c, arg, b); buf_puts(b, ", \"wait\")");
+  }
+  else emit_expr(c, arg, b);
+}
 int emit_op_condvar_wait(Compiler *c, const BopCtx *x, Buf *b) {
   int recv = x->recv;
   int argc;
@@ -100,7 +108,7 @@ int emit_op_condvar_wait(Compiler *c, const BopCtx *x, Buf *b) {
   int t = ++g_tmp;
   buf_printf(b, "({ sp_condvar *_t%d = ", t); emit_expr(c, recv, b);
   if (argc == 1) {
-    buf_printf(b, "; sp_CondVar_wait(_t%d, ", t); emit_expr(c, argv[0], b);
+    buf_printf(b, "; sp_CondVar_wait(_t%d, ", t); emit_condvar_mutex_arg(c, argv[0], b);
     buf_puts(b, "); })");
   }
   else {
@@ -110,24 +118,24 @@ int emit_op_condvar_wait(Compiler *c, const BopCtx *x, Buf *b) {
     Repr tr = repr_of(c, to_arg);
     if (aty && sp_streq(aty, "IntegerNode") &&
         (int)nt_int(c->nt, to_arg, "value", 0) == 0) {
-      buf_printf(b, "; sp_CondVar_wait_nb(_t%d, ", t); emit_expr(c, argv[0], b);
+      buf_printf(b, "; sp_CondVar_wait_nb(_t%d, ", t); emit_condvar_mutex_arg(c, argv[0], b);
       buf_puts(b, "); })");
     }
     else if (nt_kind(c->nt, to_arg) == NK_NilNode) {
-      buf_printf(b, "; sp_CondVar_wait(_t%d, ", t); emit_expr(c, argv[0], b);
+      buf_printf(b, "; sp_CondVar_wait(_t%d, ", t); emit_condvar_mutex_arg(c, argv[0], b);
       buf_puts(b, "); })");
     }
     else if (tr.as_ty == TY_NIL) {
       /* A non-literal nil expression (for example, a method returning
          nil) still has to run for its side effects, then means no timeout. */
       int m = ++g_tmp;
-      buf_printf(b, "; sp_mutex *_m%d = ", m); emit_expr(c, argv[0], b);
+      buf_printf(b, "; sp_mutex *_m%d = ", m); emit_condvar_mutex_arg(c, argv[0], b);
       buf_puts(b, "; (void)("); emit_expr(c, to_arg, b);
       buf_printf(b, "); sp_CondVar_wait(_t%d, _m%d); })", t, m);
     }
     else {
       int m = ++g_tmp;
-      buf_printf(b, "; sp_mutex *_m%d = ", m); emit_expr(c, argv[0], b);
+      buf_printf(b, "; sp_mutex *_m%d = ", m); emit_condvar_mutex_arg(c, argv[0], b);
       if (tr.as_ty == TY_POLY || tr.untyped) {
         int timeout = ++g_tmp;
         buf_printf(b, "; sp_RbVal _timeout%d = ", timeout); emit_boxed(c, to_arg, b);

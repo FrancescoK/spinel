@@ -61,3 +61,17 @@ class Plain
   def run = synchronize { synchronize { :nested } }
 end
 p Plain.new.run
+
+# a condition variable waits on a mutex held boxed as well
+class Holder
+  def initialize(m) = (@m = m)
+  attr_reader :m
+end
+mon = Mutex.new
+h = [Holder.new(mon), Holder.new("x")][0]
+cv = ConditionVariable.new
+ready = false
+w = Thread.new { mon.synchronize { cv.wait(h.m) until ready; :woke } }
+sleep 0.05
+mon.synchronize { ready = true; cv.signal }
+p w.value
