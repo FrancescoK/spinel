@@ -1,0 +1,10 @@
+{}
+{escape: [:a]}
+{escape: [:a, :b], group: [:x]}
+{escape: [:a, :b, :c], group: [:x]}
+{}
+["V1", "Side"]
+["V2"]
+["V3"]
+nil
+["V2"]
