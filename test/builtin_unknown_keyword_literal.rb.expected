@@ -4,6 +4,7 @@ unpack1, typed: ArgumentError: unknown keyword: :platform (ran [1, 1])
 unpack1, boxed: ArgumentError: unknown keyword: :platform (ran [1, 1])
 unpack, no offset: ArgumentError: unknown keyword: :line (ran [7])
 two unknown: ArgumentError: unknown keywords: :line, :exit (ran [2, 4])
+seventeen entries: ArgumentError: unknown keywords: :jayang, :konkuk, :grand_park, :gunja, :junggok, :yongmasan, :sagajeong, :myeonmok, :sangbong, :junghwa, :meokgol, :taereung, :gongneung, :hagye, :junggye, :nowon (ran [0, 1, 2])
 lines: ArgumentError: unknown keyword: :trail (ran [true, :dawn])
 clone: ArgumentError: unknown keyword: :gate (ran [false, :main])
 "Kondae"

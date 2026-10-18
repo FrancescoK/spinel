@@ -32,6 +32,12 @@ try("unpack1, typed") { msg.unpack1("n", offset: note(1), platform: note(1)) }
 try("unpack1, boxed") { boxed.unpack1("n", offset: note(1), platform: note(1)) }
 try("unpack, no offset") { msg.unpack("C", line: note(7)) }
 try("two unknown") { msg.unpack("C", line: note(2), exit: note(4)) }
+# a hash of more than sixteen entries: Line 7 from Jayang to Nowon
+try("seventeen entries") do
+  msg.unpack("C", offset: note(0), jayang: note(1), konkuk: note(2), grand_park: 3, gunja: 4,
+             junggok: 5, yongmasan: 6, sagajeong: 7, myeonmok: 8, sangbong: 9, junghwa: 10,
+             meokgol: 11, taereung: 12, gongneung: 13, hagye: 14, junggye: 15, nowon: 16)
+end
 try("lines") { "Achasan\nHan River\n".lines(chomp: note(true), trail: note(:dawn)) }
 try("clone") { "Children's Grand Park".clone(freeze: note(false), gate: note(:main)) }
 r, w = IO.pipe
