@@ -8701,43 +8701,37 @@ static int int_arms_clamp_pow(Compiler *c, int id, Buf *b, const NodeTable *nt, 
            (comp_ntype(c, argv[0]) == TY_NIL || comp_ntype(c, argv[1]) == TY_NIL)) {
     buf_printf(b, "sp_num_clamp_open(sp_box_int(%s), ", r); emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
   }
-  /* A Float (or runtime-typed poly) bound makes the applied bound or the
-     in-range receiver decide the result class at runtime, so box the
-     operands and return whichever is chosen unchanged via sp_num_clamp. */
+  /* A Float, Bignum or runtime-typed poly bound makes the applied bound or
+     the in-range receiver decide the result class at runtime, so box the
+     operands and return whichever is chosen unchanged via sp_num_clamp.
+
+     A Bignum bound used to get its own hand-written arm here (#3006) that
+     compared via sp_bigint_cmp and, when the Bignum bound itself was the
+     answer, truncated it back to an sp_int with sp_bigint_to_int -- correct
+     only because that arm's two callers (both reachable only through plain
+     method dispatch on a concretely Integer-typed receiver) happen to never
+     carry a Bignum whose value truly exceeds int64 there. A yield receiver's
+     per-call-site builtin dispatch (ty_recv_builtin_result, types.c) reaches
+     this same arm directly, bypassing method dispatch, and ALWAYS answers
+     this call poly for a Bignum bound (arg0/arg1 != recv), exactly like the
+     Float/poly/Rational cases just above -- so returning a bare, truncated
+     sp_int here produced a C type mismatch ('assigning to sp_RbVal from
+     incompatible type sp_int') the first time a genuinely out-of-int64-range
+     Bignum bound reached this arm through a yield receiver. Folding Bignum
+     into this branch fixes both the boxing mismatch and the truncation: a
+     Bignum bound's actual VALUE is not statically known to exceed int64 (an
+     arithmetic result such as `x - x + 1000` stays typed Bignum however
+     small it computes to), so only a real, boxed comparison (sp_num_clamp,
+     via sp_poly_cmp) answers every magnitude correctly. */
   else if (sp_streq(name, "clamp") && argc == 2 &&
            (comp_ntype(c, argv[0]) == TY_FLOAT || comp_ntype(c, argv[1]) == TY_FLOAT ||
             comp_ntype(c, argv[0]) == TY_POLY || comp_ntype(c, argv[1]) == TY_POLY ||
-            comp_ntype(c, argv[0]) == TY_RATIONAL || comp_ntype(c, argv[1]) == TY_RATIONAL)) {
+            comp_ntype(c, argv[0]) == TY_RATIONAL || comp_ntype(c, argv[1]) == TY_RATIONAL ||
+            comp_ntype(c, argv[0]) == TY_BIGINT || comp_ntype(c, argv[1]) == TY_BIGINT)) {
     /* a Rational bound (like a Float bound) makes the applied bound decide
        the result class at runtime; box the operands and let sp_num_clamp
        return whichever is chosen unchanged (#3232) */
     buf_printf(b, "sp_num_clamp(sp_box_int(%s), ", r); emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
-  }
-  /* clamp(lo, hi) with a Bignum bound: an sp_int receiver is inside any
-     Bignum bound on that side, so only the sp_int side can bind (#3006) */
-  else if (sp_streq(name, "clamp") && argc == 2 &&
-           (repr_of(c, argv[0]).big || repr_of(c, argv[1]).big)) {
-    int tlo = repr_of(c, argv[0]).big, thi = repr_of(c, argv[1]).big;
-    buf_puts(b, "({ ");
-    if (tlo) { buf_puts(b, "(void)("); emit_expr(c, argv[0], b); buf_puts(b, "); "); }
-    if (thi) { buf_puts(b, "(void)("); emit_expr(c, argv[1], b); buf_puts(b, "); "); }
-    if (tlo && thi) buf_printf(b, "(sp_int)(%s); })", r);
-    else if (tlo) {
-      /* a Bignum LOW bound is above every sp_int receiver... unless it is
-         negative, in which case the receiver already exceeds it */
-      int tb2 = ++g_tmp;
-      buf_printf(b, "sp_Bigint *_t%d = ", tb2); emit_expr(c, argv[0], b);
-      buf_printf(b, "; sp_bigint_cmp(_t%d, sp_bigint_new_int(%s)) > 0"
-                    " ? sp_bigint_to_int(_t%d) : (sp_int)(%s); })", tb2, r, tb2, r);
-    }
-    else {
-      int tb2 = ++g_tmp;
-      buf_printf(b, "sp_Bigint *_t%d = ", tb2); emit_expr(c, argv[1], b);
-      buf_printf(b, "; sp_bigint_cmp(_t%d, sp_bigint_new_int(%s)) < 0"
-                    " ? sp_bigint_to_int(_t%d) : sp_int_clamp_ck(%s, ", tb2, r, tb2, r);
-      emit_expr(c, argv[0], b);
-      buf_printf(b, ", %s); })", r);
-    }
   }
   else if (sp_streq(name, "clamp") && argc == 2) { buf_printf(b, "sp_int_clamp_ck(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
   else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT_RANGE) {
@@ -9810,10 +9804,17 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
              (comp_ntype(c, argv[0]) == TY_NIL || comp_ntype(c, argv[1]) == TY_NIL)) {
       buf_printf(b, "sp_num_clamp_open(sp_box_float(%s), ", r); emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
     }
-    /* a Rational bound: box the operands and clamp through sp_num_clamp, which
-       understands Rational and returns the applied operand unchanged (#3232) */
+    /* A Rational or Bignum bound: box the operands and clamp through
+       sp_num_clamp, which understands both and returns the applied operand
+       unchanged (#3232). A Float receiver had no Bignum-bound arm at all
+       until this one: every other arm below guards on TY_INT/TY_FLOAT (or
+       TY_RATIONAL here), so a Bignum bound fell through every arm and
+       raised NoMethodError for a call CRuby answers (the Bignum bound
+       itself, same reasoning as the mirrored Integer-receiver gap fixed
+       alongside this one in int_arms_clamp_pow). */
     else if (sp_streq(name, "clamp") && argc == 2 &&
-             (comp_ntype(c, argv[0]) == TY_RATIONAL || comp_ntype(c, argv[1]) == TY_RATIONAL)) {
+             (comp_ntype(c, argv[0]) == TY_RATIONAL || comp_ntype(c, argv[1]) == TY_RATIONAL ||
+              comp_ntype(c, argv[0]) == TY_BIGINT || comp_ntype(c, argv[1]) == TY_BIGINT)) {
       buf_printf(b, "sp_num_clamp(sp_box_float(%s), ", r); emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
     }
     /* Float#clamp with float bounds always yields a float (the returned bound
