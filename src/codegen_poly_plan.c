@@ -1542,8 +1542,13 @@ void poly_specials0(Compiler *c, int id, const char *name, PolySpecials0 *s) {
   int is_lengthlike = is_count_alias(name);
   int is_empty = sp_streq(name, "empty?");
   /* A class-tagged poly value answers these with its class name (#2656); only
-     when no user class defines them, or that user method is the real target. */
-  int is_class_named = is_name_reader(name) && !recv_user_cdefines(c, name);
+     when no user class defines them, or that user method is the real target.
+     `name` stays beside a program's instance methods of the name (#9567:
+     only a class-level `name` can answer a class-tagged value); to_s and
+     inspect keep the older rule, as a program's own to_s is common and the
+     class arm's text beside it does not fit a shared String slot. */
+  int is_class_named = is_name_reader(name) &&
+                       !(sp_streq(name, "name") ? recv_user_cdefines(c, name) : recv_user_defines(c, name));
   /* The Module reflection a class-tagged poly value answers. `ancestors` and
      friends had an arm only for a receiver typed TY_CLASS -- a constant --
      so iterating an Array of classes and asking the block parameter left the
@@ -1845,10 +1850,13 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
      boxed class carries the CLASS's id and would otherwise alias that
      user class's arm. Declined when a user class defines the method --
      then a user object is the likelier receiver and it must win. */
+  /* (a result slot that is a shared String's handle, beside user arms
+     answering handles, takes the arms' text wrapped as one) */
+  const char *hopen = ret == TY_STRBUF ? "sp_String_new_shared(" : "", *hclose = ret == TY_STRBUF ? ")" : "";
   if (is_class_named) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_CLASS_NAMED, -1, TY_UNKNOWN, PC_SAME);
-    const char *sbopen = (ret == TY_POLY) ? "sp_box_str(" : "";
-    const char *sbclose = (ret == TY_POLY) ? ")" : "";
+    const char *sbopen = (ret == TY_POLY) ? "sp_box_str(" : hopen;
+    const char *sbclose = (ret == TY_POLY) ? ")" : hclose;
     /* a boxed class's #name is the interned frozen String the typed
        forms answer (sp_str_frozen_name, which emit_call wraps around
        those), as the Encoding and Symbol arms below intern theirs; its
@@ -1876,9 +1884,9 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
      an Encoding's and a Symbol's are guarded on a tag no object carries:
      they stand beside the program's arm (`instance_methods(false).each
      { |m| m.name }` in a program with a name of its own) */
-  else if (sp_streq(name, "name") && (ret == TY_POLY || ret == TY_STRING)) {
-    const char *sbopen = (ret == TY_POLY) ? "sp_box_str(" : "";
-    const char *sbclose = (ret == TY_POLY) ? ")" : "";
+  else if (sp_streq(name, "name") && (ret == TY_POLY || ret == TY_STRING || ret == TY_STRBUF)) {
+    const char *sbopen = (ret == TY_POLY) ? "sp_box_str(" : hopen;
+    const char *sbclose = (ret == TY_POLY) ? ")" : hclose;
     buf_printf(b, "if (_t%d.tag == SP_TAG_ENCODING) _t%d = %ssp_str_uminus_val(_t%d.v.s)%s; "
                   "else if (_t%d.tag == SP_TAG_SYM) "
                   "_t%d = %ssp_str_uminus_val(sp_sym_to_s((sp_sym)_t%d.v.i))%s; else ",
