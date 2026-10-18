@@ -113,9 +113,11 @@ writers do not validate what they are given. An https request needs the
 provides `OpenSSL::SSL` only: `SSLContext`, `SSLSocket`, `SSLError` and the
 `VERIFY_*` constants, which is what an outbound HTTPS client reaches, and a
 server's half of it: a context given a certificate and an EC key (`cert=`,
-`key=`, `extra_chain_cert=`, `add_certificate`), and `SSLSocket#accept` /
-`#accept_nonblock`. Each accept builds OpenSSL's context from those, so a
-session does not resume across two connections. A client sends its
+`key=`, `extra_chain_cert=`, `add_certificate`), `SSLSocket#accept` /
+`#accept_nonblock`, and `SSLServer` over a `TCPServer`, whose `accept`
+makes the handshake inline as CRuby's does (`start_immediately = false`
+leaves it to the caller). Each accept builds OpenSSL's context from those,
+so a session does not resume across two connections. A client sends its
 context's certificate and key to a server that asks for one. A server asks
 only once the program sets `verify_mode` (or calls `set_params`), and checks
 what it gets against its `cert_store`, which is empty unless one is given

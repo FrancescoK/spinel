@@ -992,6 +992,9 @@ sp_int sp_sock_const(const char *n) {
 #ifdef MSG_PEEK
     { "MSG_PEEK", MSG_PEEK },
 #endif
+#ifdef SOMAXCONN
+    { "SOMAXCONN", SOMAXCONN },
+#endif
 #ifdef MSG_WAITALL
     { "MSG_WAITALL", MSG_WAITALL },
 #endif
