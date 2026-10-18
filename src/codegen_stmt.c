@@ -17592,6 +17592,7 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
              goes to the explicit method. */
           int writer_wins =
               comp_resolve_member(c, ty_object_class(rt), base, 1, NULL, NULL) == SP_MEMBER_ATTR;
+          int nk = comp_native_answer_class(c, ty_object_class(rt), nm);
           if (writer_wins) {
             /* `private :x=` on the writer: the refusal, as a statement */
             Buf vb; memset(&vb, 0, sizeof vb);
@@ -17664,13 +17665,13 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
               return 1;
             }
           }
-          /* a native class's own `x=` binding is its call: the subclass
-             arms below read a cls_id its C struct may not carry (a
-             StringScanner's `@s.pos = n` with a user class's `attr_accessor
-             :pos` in the program) */
+          /* a native class's own `x=` binding is its call, also on a
+             subclass of it that does not answer the name itself (#9269):
+             the subclass arms below read a cls_id its C struct may not
+             carry (a StringScanner's `@s.pos = n` with a user class's
+             `attr_accessor :pos` in the program) */
           else if (comp_method_in_chain(c, ty_object_class(rt), nm, NULL) < 0 &&
-                   !(c->classes[ty_object_class(rt)].is_native_class &&
-                     comp_native_method_find(c, ty_object_class(rt), nm, 1, 0) >= 0)) {
+                   !(nk >= 0 && comp_native_method_find(c, nk, nm, 1, 0) >= 0)) {
             /* writer not in chain and no explicit method: try subclass dispatch via cls_id */
             int ncand = 0;
             for (int k = 0; k < c->nclasses; k++)
