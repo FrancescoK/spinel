@@ -17248,6 +17248,28 @@ static int emit_poly_match_index(Compiler *c, int id, const char *name, int recv
   return 1;
 }
 
+/* unpack(fmt, offset: n) and unpack1(fmt, offset: n) on a boxed String, as the
+   typed receiver's arm takes them. With the keyword the boxed String had no
+   arm and raised NoMethodError (#7317 for unpack1); a multiple assignment from
+   unpack was refused. unpack answers a boxed array like its one-argument form,
+   unpack1 its first element. */
+static int emit_poly_unpack_off(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name,
+                                int recv, int argc, const int *argv, TyKind rt) {
+  int one = sp_streq(name, "unpack1");
+  if (recv < 0 || rt != TY_POLY || argc != 2 || (!one && !sp_streq(name, "unpack")) ||
+      nt_kind(nt, argv[1]) != NK_KeywordHashNode || struct_kwarg_value(c, argv[1], "offset") < 0 ||
+      user_defines_or_reads(c, name))
+    return 0;
+  const int args[2] = { argv[0], struct_kwarg_value(c, argv[1], "offset") };
+  TyKind u1t = one ? repr_of(c, id).as_ty : TY_POLY;
+  if (oint_kind(u1t)) { oint_open(c, id, u1t, b); buf_printf(b, "%s(", oint_unbox(u1t)); }
+  buf_puts(b, one ? "sp_PolyArray_get(" : "sp_box_poly_array(");
+  emit_poly_str_transform(c, recv, 2, args, name, "unpack_off", 2, b);
+  buf_puts(b, one ? ", 0)" : ")");
+  if (oint_kind(u1t)) { buf_puts(b, ")"); oint_close(c, id, b); }
+  return 1;
+}
+
 int emit_poly_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -18052,21 +18074,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     if (oint_kind(u1t)) { buf_puts(b, ")"); oint_close(c, id, b); }
     return 1;
   }
-  /* ...and unpack1(fmt, offset: n), as the typed receiver's arm takes it: with
-     the keyword the boxed String had no arm and raised NoMethodError (#7317) */
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "unpack1") && argc == 2 &&
-      nt_kind(nt, argv[1]) == NK_KeywordHashNode && struct_kwarg_value(c, argv[1], "offset") >= 0 &&
-      !user_defines_or_reads(c, name)) {
-    int offv = struct_kwarg_value(c, argv[1], "offset");
-    TyKind u1t = repr_of(c, id).as_ty;
-    if (oint_kind(u1t)) { oint_open(c, id, u1t, b); buf_printf(b, "%s(", oint_unbox(u1t)); }
-    const int args[2] = { argv[0], offv };
-    buf_puts(b, "sp_PolyArray_get(");
-    emit_poly_str_transform(c, recv, 2, args, name, "unpack_off", 2, b);
-    buf_puts(b, ", 0)");
-    if (oint_kind(u1t)) { buf_puts(b, ")"); oint_close(c, id, b); }
-    return 1;
-  }
+  if (emit_poly_unpack_off(c, id, b, nt, name, recv, argc, argv, rt)) return 1;
   { int r; if (emit_poly_index_call(c, id, b, nt, name, recv, argc, argv, rt, &r)) return r; }
   /* poly receiver: join. Stands down for a user class that defines the name --
      the arm answered the receiver's #to_s where CRuby entered the method, and

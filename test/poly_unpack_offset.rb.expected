@@ -1,0 +1,10 @@
+[257, 16]
+[32802, 11]
+["Jayang-dong"]
+[11, 19041]
+"Jayang"
+"2112a442"
+[74, "aya"]
+[nil]
+ArgumentError: offset outside of string
+NoMethodError: undefined method 'unpack' for an instance of Integer
