@@ -3628,6 +3628,10 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
       /* the descriptor surface, typed as the TY_IO arms type it: a stat is
          carried as the handle itself, the offsets and counts are ints */
       if (sp_streq(name, "stat") && argc == 0) { *out = an_poly_concrete(c, name, TY_IO); return 1; }
+      /* and that handle's times (File::Stat#mtime / atime; a boxed ctime is
+         Time#ctime's String as well, left to that arm) */
+      if (argc == 0 && (sp_streq(name, "mtime") || sp_streq(name, "atime")))
+        { *out = an_poly_concrete(c, name, TY_TIME); return 1; }
       if (sp_streq(name, "seek") || sp_streq(name, "tell") || sp_streq(name, "pos") ||
           sp_streq(name, "pwrite") || sp_streq(name, "fsync") ||
           sp_streq(name, "fdatasync")) { *out = an_poly_concrete(c, name, TY_INT); return 1; }
