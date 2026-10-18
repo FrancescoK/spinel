@@ -1,0 +1,5 @@
+[:helper, :visit_DOT, :visit_LITERAL]
+[:guard]
+[:accept, :pub]
+[[:DOT, :visit_DOT], [:LITERAL, :visit_LITERAL]]
+:dot
