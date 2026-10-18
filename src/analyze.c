@@ -34152,26 +34152,18 @@ static int carr_is_read(const NodeTable *nt, int n, const char *name) {
   return (k == NK_ConstantReadNode || k == NK_ConstantPathNode) && nt_str(nt, n, "name") &&
          sp_streq(nt_str(nt, n, "name"), name);
 }
-/* the reads a multiple assignment's value takes apart, through `?:` */
+/* the reads a multiple assignment's value takes apart, through `?:`: each
+   value position of the value, by the iterator's `if` shapes, that reads the
+   constant */
+typedef struct { const NodeTable *nt; const char *name; unsigned char *ok; } CarrMasgn;
+static int carr_masgn_leaf(const VpLeaf *leaf, void *ud) {
+  CarrMasgn *m = ud;
+  if (leaf->kind == VPK_EXPR && carr_is_read(m->nt, leaf->node, m->name)) m->ok[leaf->node] = 1;
+  return 0;
+}
 static void carr_mark_masgn_value(const NodeTable *nt, int v, const char *name, unsigned char *ok) {
-  while (v >= 0 && nt_kind(nt, v) == NK_ParenthesesNode) {
-    int b = nt_ref(nt, v, "body"), n = 0;
-    const int *st = b >= 0 && nt_kind(nt, b) == NK_StatementsNode ? nt_arr(nt, b, "body", &n) : NULL;
-    v = st && n == 1 ? st[0] : -1;
-  }
-  if (v < 0) return;
-  if (carr_is_read(nt, v, name)) { ok[v] = 1; return; }
-  if (nt_kind(nt, v) == NK_IfNode) {
-    int t = nt_ref(nt, v, "statements"), e = nt_ref(nt, v, "subsequent");
-    if (e < 0) e = nt_ref(nt, v, "consequent");
-    int n = 0; const int *st = t >= 0 ? nt_arr(nt, t, "body", &n) : NULL;
-    if (st && n == 1) carr_mark_masgn_value(nt, st[0], name, ok);
-    if (e >= 0 && nt_kind(nt, e) == NK_ElseNode) {
-      int es = nt_ref(nt, e, "statements"), en = 0;
-      const int *ev = es >= 0 ? nt_arr(nt, es, "body", &en) : NULL;
-      if (ev && en == 1) carr_mark_masgn_value(nt, ev[0], name, ok);
-    }
-  }
+  CarrMasgn m = { nt, name, ok };
+  for_each_value_position(nt, v, VPS_IF, carr_masgn_leaf, &m);
 }
 static int carr_keeps(const char *nm) {
   static const char *const K[] = {
