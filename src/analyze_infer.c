@@ -3099,7 +3099,8 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
       /* ...and the same names where they take arguments. unpack answers a
          boxed array, byteslice a boxed String or nil; the codegen arm for
          these sits outside its argc==0 block, and this mirrors it. */
-      if ((sp_streq(name, "unpack") && argc == 1) ||
+      if ((sp_streq(name, "unpack") &&
+           (argc == 1 || (argc == 2 && nt_kind(nt, argv[1]) == NK_KeywordHashNode))) ||   /* (fmt, offset: n) too */
           (sp_streq(name, "byteslice") && (argc == 1 || argc == 2)) ||
           (sp_streq(name, "scrub") && argc == 1) ||
           (sp_streq(name, "encode") && argc >= 1 && argc <= 3) ||
