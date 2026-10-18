@@ -3694,6 +3694,21 @@ int desugar_implicit_send(Compiler *c) {
   return changed;
 }
 
+/* A socket write, recv.send(data, flags[, host, port]), whose receiver the
+   fixpoint has not typed yet: an instance variable, or a local read off one,
+   is UNKNOWN on the first pass and the socket (TY_IO) on the next. Retargeting
+   or lowering it as Object#send on that first pass made the payload a method
+   name, so the send-family passes leave it for the pass that knows the type. */
+static int socket_send_untyped(const NodeTable *nt, int id, TyKind recv_ty) {
+  if (recv_ty != TY_UNKNOWN || !sp_feature_required("socket")) return 0;
+  int args = nt_ref(nt, id, "arguments");
+  if (args < 0) return 0;
+  int argc = 0; const int *argv = nt_arr(nt, args, "arguments", &argc);
+  if (!argv || argc < 2 || argc > 4) return 0;
+  NodeKind flags = nt_kind(nt, argv[1]);
+  return flags == NK_IntegerNode || flags == NK_ConstantPathNode;
+}
+
 /* `recv.public_send(:m, args)` with a literal name -> a direct `recv.m(args)`
    call stamped `vis_enforce`, so codegen raises NoMethodError for a
    private/protected target. send/__send__ keep the visibility-blind textual
@@ -3726,7 +3741,8 @@ int desugar_public_send_recv(Compiler *c) {
       /* A socket's #send is the datagram write, not Object#send: CRuby picks
          by the receiver's class, and `u.send("ping", 0, host, port)` would
          otherwise retarget to a method named "ping" (#2922). */
-      if (sp_streq(nm, "send") && bsrt == TY_IO && sp_feature_required("socket")) continue;
+      if (sp_streq(nm, "send") && (bsrt == TY_IO || socket_send_untyped(nt, id, bsrt)) &&
+          sp_feature_required("socket")) continue;
     }
     int args = nt_ref(nt, id, "arguments");
     if (args < 0) continue;
@@ -5411,7 +5427,10 @@ static int desugar_dynamic_send_inner(Compiler *c) {
        The literal-name retarget above already leaves it alone (#2922); a
        payload held in a variable reached here and became a dispatch over the
        program's method names on the payload's bytes (#7193). */
-    if (sp_streq(nm, "send") && recv >= 0 && infer_type(c, recv) == TY_IO && sp_feature_required("socket")) continue;
+    if (sp_streq(nm, "send") && recv >= 0 && sp_feature_required("socket")) {
+      TyKind rt = infer_type(c, recv);
+      if (rt == TY_IO || socket_send_untyped(nt, id, rt)) continue;
+    }
     { int dn = 0; nt_arr(nt, id, "dyn_send_arms", &dn); if (dn > 0) continue; }  /* already lowered */
     int args = nt_ref(nt, id, "arguments");
     if (args < 0) continue;
