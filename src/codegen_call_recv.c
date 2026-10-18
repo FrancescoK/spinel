@@ -14131,6 +14131,9 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
   TyKind got_o = keep_o ? (TyKind)g_face_oint_got : TY_UNKNOWN;
   if (!got_o && arm_o) got_o = nat;
   g_face_oint_id = sfo; g_face_oint_got = sfg;
+  /* the raise token below is no oint, whatever the emitter noted on its way
+     to declining: it is handed on as the token */
+  if (got_o && cb.p && strncmp(share_check_unmarked(cb.p), "sp_raise_nomethod(", 18) == 0) got_o = TY_UNKNOWN;
   if (got_o) {
     Buf ob; memset(&ob, 0, sizeof ob);
     TyKind slot = repr_of(c, id).as_ty;
