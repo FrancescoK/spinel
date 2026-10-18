@@ -408,7 +408,7 @@ static int _sp_int_cmp(const void*a,const void*b){sp_int va=*(const sp_int*)a,vb
 /* sort with a nil element: nil against a number is CRuby's ArgumentError
    (sp_IntArray_nil_cmp_ck), and an array of nils alone is already sorted */
 static int ia_sort_nils(sp_IntArray*a){if(!a->nilbits)return 0;sp_IntArray_nil_cmp_ck(a);return sp_IntArray_has_nil(a);}
-sp_IntArray*sp_IntArray_sort(sp_IntArray*a){SP_GC_ROOT(a);sp_IntArray*b=sp_IntArray_dup(a);if(ia_sort_nils(b))return b;qsort(b->data+b->start,b->len,sizeof(sp_int),_sp_int_cmp);return b;}
+sp_IntArray*sp_IntArray_sort(sp_IntArray*a){SP_GC_ROOT(a);if (SP_UNLIKELY(!a)) sp_nil_recv("sort");sp_IntArray*b=sp_IntArray_dup(a);if(ia_sort_nils(b))return b;qsort(b->data+b->start,b->len,sizeof(sp_int),_sp_int_cmp);return b;}
 void sp_IntArray_sort_bang(sp_IntArray*a){SP_GC_ROOT(a);if (SP_UNLIKELY(!a)) sp_nil_recv("sort!");if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_INT_ARRAY);return;}if(ia_sort_nils(a))return;qsort(a->data+a->start,a->len,sizeof(sp_int),_sp_int_cmp);}
 /* The Array set operations (uniq, uniq!, &, |, -, intersect?) asked
    include? of a growing or a foreign array once per element: quadratic, so
@@ -469,7 +469,7 @@ void sp_IntArray_uniq_bang(sp_IntArray*a){SP_GC_ROOT(a);if (SP_UNLIKELY(!a)) sp_
   a->len = w;
 }
 void sp_IntArray_shuffle_bang(sp_IntArray*a){SP_GC_ROOT(a);if (SP_UNLIKELY(!a)) sp_nil_recv("shuffle!");if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_INT_ARRAY);return;}if(SP_UNLIKELY(a->nilbits)){sp_oint*p=ia_pack(a);for(sp_int i=a->len-1;i>0;i--){sp_int j=sp_krand_below(i+1);sp_oint t=p[i];p[i]=p[j];p[j]=t;}ia_unpack(a,p,a->len);return;}for(sp_int i=a->len-1;i>0;i--){sp_int j=sp_krand_below(i+1);sp_int t=a->data[a->start+i];a->data[a->start+i]=a->data[a->start+j];a->data[a->start+j]=t;}}
-sp_IntArray*sp_IntArray_shuffle(sp_IntArray*a){SP_GC_ROOT(a);sp_IntArray*b=sp_IntArray_dup(a);sp_IntArray_shuffle_bang(b);return b;}
+sp_IntArray*sp_IntArray_shuffle(sp_IntArray*a){SP_GC_ROOT(a);if (SP_UNLIKELY(!a)) sp_nil_recv("shuffle");sp_IntArray*b=sp_IntArray_dup(a);sp_IntArray_shuffle_bang(b);return b;}
 /* Array#sample: nil for `[].sample`, as CRuby. Issue #536. */
 sp_oint sp_IntArray_sample_o(sp_IntArray*a){SP_GC_ROOT(a);if (SP_UNLIKELY(!a)) sp_nil_recv("sample"); if (a->len<=0)return sp_oint_nil();return sp_IntArray_oget(a,sp_krand_below(a->len));}
 /* Issue #745/#832: empty min/max answer nil; without the guard, the first
@@ -649,8 +649,8 @@ static int fa_sort_nils(sp_FloatArray*a){if(!a->nilbits)return 0;sp_FloatArray_n
 void sp_FloatArray_sort_bang(sp_FloatArray*a){SP_GC_ROOT(a);if (SP_UNLIKELY(!a)) sp_nil_recv("sort!");if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_FLT_ARRAY);return;}if(fa_sort_nils(a))return;qsort(a->data,a->len,sizeof(sp_float),_sp_float_cmp);}
 void sp_FloatArray_shuffle_bang(sp_FloatArray*a){SP_GC_ROOT(a);if (SP_UNLIKELY(!a)) sp_nil_recv("shuffle!");if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_FLT_ARRAY);return;}if(SP_UNLIKELY(a->nilbits)){sp_ofloat*p=fa_pack(a);for(sp_int i=a->len-1;i>0;i--){sp_int j=sp_krand_below(i+1);sp_ofloat t=p[i];p[i]=p[j];p[j]=t;}fa_unpack(a,p,a->len);return;}for(sp_int i=a->len-1;i>0;i--){sp_int j=sp_krand_below(i+1);sp_float t=a->data[i];a->data[i]=a->data[j];a->data[j]=t;}}
 sp_FloatArray*sp_FloatArray_dup(sp_FloatArray*a){if(!a)return NULL;SP_GC_ROOT(a);sp_FloatArray*b=sp_FloatArray_new();sp_FloatArray_replace(b,a);return b;}
-sp_FloatArray*sp_FloatArray_sort(sp_FloatArray*a){SP_GC_ROOT(a);sp_FloatArray*b=sp_FloatArray_dup(a);sp_FloatArray_sort_bang(b);return b;}
-sp_FloatArray*sp_FloatArray_shuffle(sp_FloatArray*a){SP_GC_ROOT(a);sp_FloatArray*r=sp_FloatArray_new();sp_FloatArray_replace(r,a);sp_FloatArray_shuffle_bang(r);return r;}
+sp_FloatArray*sp_FloatArray_sort(sp_FloatArray*a){SP_GC_ROOT(a);if (SP_UNLIKELY(!a)) sp_nil_recv("sort");sp_FloatArray*b=sp_FloatArray_dup(a);sp_FloatArray_sort_bang(b);return b;}
+sp_FloatArray*sp_FloatArray_shuffle(sp_FloatArray*a){SP_GC_ROOT(a);if (SP_UNLIKELY(!a)) sp_nil_recv("shuffle");sp_FloatArray*r=sp_FloatArray_new();sp_FloatArray_replace(r,a);sp_FloatArray_shuffle_bang(r);return r;}
 sp_ofloat sp_FloatArray_sample_o(sp_FloatArray*a){SP_GC_ROOT(a);if (SP_UNLIKELY(!a)) sp_nil_recv("sample"); if (a->len<=0)return sp_ofloat_nil();return sp_FloatArray_oget(a,sp_krand_below(a->len));}
 /* IEEE 754 == on sp_float: NaN never matches; +0.0 == -0.0 (diverges from Float#eql?). */
 /* a NaN is not == to itself, but CRuby's identity fallback still finds the
@@ -747,7 +747,7 @@ void sp_PtrArray_rotate_bang(sp_PtrArray*a,sp_int n){
 sp_PtrArray*sp_PtrArray_dup(sp_PtrArray*a){if(!a)return NULL;SP_GC_ROOT(a);sp_PtrArray*b=sp_PtrArray_new_scan(a->scan_elem);for(sp_int i=0;i<a->len;i++)sp_PtrArray_push(b,a->data[i]);return b;}
 sp_PtrArray*sp_PtrArray_slice(sp_PtrArray*a,sp_int start,sp_int len){SP_GC_ROOT(a);if(start<0)start+=a->len;if(start<0)start=0;sp_PtrArray*b=sp_PtrArray_new_scan(a->scan_elem);if(start>=a->len||len<=0)return b;if(len>a->len-start)len=a->len-start;for(sp_int i=0;i<len;i++)sp_PtrArray_push(b,a->data[start+i]);return b;}
 void sp_PtrArray_shuffle_bang(sp_PtrArray*a){SP_GC_ROOT(a); sp_gc_wb((void*)a);for(sp_int i=a->len-1;i>0;i--){sp_int j=sp_krand_below(i+1);void*t=a->data[i];a->data[i]=a->data[j];a->data[j]=t;}}
-sp_PtrArray*sp_PtrArray_shuffle(sp_PtrArray*a){SP_GC_ROOT(a);sp_PtrArray*b=sp_PtrArray_dup(a);sp_PtrArray_shuffle_bang(b);return b;}
+sp_PtrArray*sp_PtrArray_shuffle(sp_PtrArray*a){SP_GC_ROOT(a);if (SP_UNLIKELY(!a)) sp_nil_recv("shuffle");sp_PtrArray*b=sp_PtrArray_dup(a);sp_PtrArray_shuffle_bang(b);return b;}
 void *sp_PtrArray_sample(sp_PtrArray*a){SP_GC_ROOT(a);if(a->len<=0)return NULL;return a->data[sp_krand_below(a->len)];}
 
 /* ============================= sp_StrArray ============================ */
@@ -923,8 +923,8 @@ else{found=a->data[i];}}a->len=w;return found;}
 void sp_StrArray_insert(sp_StrArray*a,sp_int i,const char*v){SP_GC_ROOT(a);SP_GC_ROOT_STR(v); sp_gc_wb((void*)a);if (SP_UNLIKELY(!a)) sp_nil_recv("insert");if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_STR_ARRAY);return;}sp_int orig=i;if(i<0)i+=a->len+1;if(i<0)sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)orig,(long long)(-(a->len+1))));while(i>a->len)sp_StrArray_push(a,NULL);/* CRuby pads with nils past the end */sp_StrArray_push(a,sp_str_empty);for(sp_int j=a->len-1;j>i;j--)a->data[j]=a->data[j-1];a->data[i]=v;}
 void sp_StrArray_shuffle_bang(sp_StrArray*a){SP_GC_ROOT(a); sp_gc_wb((void*)a);if (SP_UNLIKELY(!a)) sp_nil_recv("shuffle!");if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_STR_ARRAY);return;}for(sp_int i=a->len-1;i>0;i--){sp_int j=sp_krand_below(i+1);const char*t=a->data[i];a->data[i]=a->data[j];a->data[j]=t;}}
 sp_StrArray*sp_StrArray_dup(sp_StrArray*a){if(!a)return NULL;SP_GC_ROOT(a);sp_StrArray*r=sp_StrArray_new();sp_StrArray_replace(r,a);return r;}
-sp_StrArray*sp_StrArray_sort(sp_StrArray*a){SP_GC_ROOT(a);sp_StrArray*b=sp_StrArray_dup(a);sp_StrArray_sort_bang(b);return b;}
-sp_StrArray*sp_StrArray_shuffle(sp_StrArray*a){SP_GC_ROOT(a);sp_StrArray*r=sp_StrArray_new();sp_StrArray_replace(r,a);sp_StrArray_shuffle_bang(r);return r;}
+sp_StrArray*sp_StrArray_sort(sp_StrArray*a){SP_GC_ROOT(a);if (SP_UNLIKELY(!a)) sp_nil_recv("sort");sp_StrArray*b=sp_StrArray_dup(a);sp_StrArray_sort_bang(b);return b;}
+sp_StrArray*sp_StrArray_shuffle(sp_StrArray*a){SP_GC_ROOT(a);if (SP_UNLIKELY(!a)) sp_nil_recv("shuffle");sp_StrArray*r=sp_StrArray_new();sp_StrArray_replace(r,a);sp_StrArray_shuffle_bang(r);return r;}
 const char *sp_StrArray_sample(sp_StrArray*a){SP_GC_ROOT(a);if(a->len<=0)return NULL;return a->data[sp_krand_below(a->len)];}
 
 /* ============ poly/inspect-dependent array ops (display, concat, to_poly) ============ */

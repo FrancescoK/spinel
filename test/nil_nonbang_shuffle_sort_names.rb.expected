@@ -1,0 +1,32 @@
+IA sorted: undefined method 'sort' for nil
+IA shuffled: undefined method 'shuffle' for nil
+IA sorted_bang: undefined method 'sort!' for nil
+IA shuffled_bang: undefined method 'shuffle!' for nil
+FA sorted: undefined method 'sort' for nil
+FA shuffled: undefined method 'shuffle' for nil
+FA sorted_bang: undefined method 'sort!' for nil
+FA shuffled_bang: undefined method 'shuffle!' for nil
+SA sorted: undefined method 'sort' for nil
+SA shuffled: undefined method 'shuffle' for nil
+SA sorted_bang: undefined method 'sort!' for nil
+SA shuffled_bang: undefined method 'shuffle!' for nil
+PA sorted: undefined method 'sort' for nil
+PA shuffled: undefined method 'shuffle' for nil
+PA sorted_bang: undefined method 'sort!' for nil
+PA shuffled_bang: undefined method 'shuffle!' for nil
+[1, 2, 3]
+[1, 2, 3]
+[1, 2, 3]
+[1, 2, 3]
+[1.5, 2.5]
+[1.5, 2.5]
+[1.5, 2.5]
+[1.5, 2.5]
+["a", "b"]
+["a", "b"]
+["a", "b"]
+["a", "b"]
+[1.5, 2, 3]
+[1.5, 2, 3]
+[1.5, 2, 3]
+[1.5, 2, 3]

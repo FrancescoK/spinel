@@ -9038,7 +9038,7 @@ static void sp_PolyArray_rotate_bang(sp_PolyArray*a,sp_int n){
   }
   if(t!=stackbuf)free(t);
 }
-static sp_PolyArray *sp_PolyArray_shuffle(sp_PolyArray *a) { sp_PolyArray *b = sp_PolyArray_dup(a); sp_PolyArray_shuffle_bang(b); return b; }
+static sp_PolyArray *sp_PolyArray_shuffle(sp_PolyArray *a) { if (SP_UNLIKELY(!a)) sp_nil_recv("shuffle"); sp_PolyArray *b = sp_PolyArray_dup(a); sp_PolyArray_shuffle_bang(b); return b; }
 /* When sort hits an incomparable pair the result is discarded and we raise
    ArgumentError, matching CRuby. The comparator cannot raise (it would longjmp
    out of the sort), so it records the offending pair and sort_bang raises after. */
@@ -9143,7 +9143,7 @@ static void sp_PolyArray_sort_bang(sp_PolyArray *a) {
     if (inc) sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(ia), sp_cmperr_desc(ib)));
   }
 }
-static sp_PolyArray *sp_PolyArray_sort(sp_PolyArray *a) { sp_PolyArray *b = sp_PolyArray_dup(a); sp_PolyArray_sort_bang(b); return b; }
+static sp_PolyArray *sp_PolyArray_sort(sp_PolyArray *a) { if (SP_UNLIKELY(!a)) sp_nil_recv("sort"); sp_PolyArray *b = sp_PolyArray_dup(a); sp_PolyArray_sort_bang(b); return b; }
 /* A literal array's min and max (`[a, b].max`): CRuby's VM answers them
    without building the array, comparing each new element with the extreme
    so far, `new <=> extreme` -- the other way round from Array#max above, so
