@@ -34106,8 +34106,8 @@ int nullable_int_elem_array(Compiler *c, int node) {
    multiple assignment from it fills that many targets. Constants are
    interned by their last name (`DMC::LUT` and a `LUT` elsewhere share one),
    so every definition of the name is asked, and every read of the name must
-   be the receiver of a call that leaves the array as it is, or the value a
-   multiple assignment takes apart (through `?:`). */
+   be the receiver of a call that leaves the array as it is, or a value
+   position of the value a multiple assignment takes apart. */
 typedef struct { const char *name; int len; int nlit; int lit[8]; int blk[8]; } CArr;
 static CArr *carr_tab; static int carr_n, carr_cap, carr_count = -1;
 static int carr_lit(const NodeTable *nt, int v, int *blk) {
@@ -34130,9 +34130,10 @@ static int carr_is_read(const NodeTable *nt, int n, const char *name) {
   return (k == NK_ConstantReadNode || k == NK_ConstantPathNode) && nt_str(nt, n, "name") &&
          sp_streq(nt_str(nt, n, "name"), name);
 }
-/* the reads a multiple assignment's value takes apart, through `?:`: each
-   value position of the value, by the iterator's `if` shapes, that reads the
-   constant */
+/* the reads a multiple assignment's value takes apart: each value position of
+   the value, by the iterator's `if` and `unless` shapes, that reads the
+   constant. A walk that gave up leaves the marks made before it, and the
+   reads it did not reach unmarked, which fail the constant's check. */
 typedef struct { const NodeTable *nt; const char *name; unsigned char *ok; } CarrMasgn;
 static int carr_masgn_leaf(const VpLeaf *leaf, void *ud) {
   CarrMasgn *m = ud;
@@ -34141,7 +34142,7 @@ static int carr_masgn_leaf(const VpLeaf *leaf, void *ud) {
 }
 static void carr_mark_masgn_value(const NodeTable *nt, int v, const char *name, unsigned char *ok) {
   CarrMasgn m = { nt, name, ok };
-  for_each_value_position(nt, v, VPS_IF, carr_masgn_leaf, &m);
+  for_each_value_position(nt, v, VPS_IF | VPS_UNLESS, carr_masgn_leaf, &m);
 }
 static int carr_keeps(const char *nm) {
   static const char *const K[] = {
