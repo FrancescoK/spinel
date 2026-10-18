@@ -239,17 +239,22 @@ typedef struct BuiltinOp {
    kinds, and they cover only the first two arguments. */
 #define BOPF_ARGS_BUILTIN 64
 /* The row's result is TY_UNKNOWN because inference types the call in a rule
-   of its own (Method#receiver is the type of the Method's bound receiver,
-   which a result kind cannot say), and the row only gives codegen its
-   emitter. --plan-check expects inference to have answered such a call
-   without a row, as long as the call was typed; a TY_UNKNOWN row without
-   the flag is a call the table does not type yet.
+   of its own, from a fact of this call that no kind carries, and the row
+   only gives codegen its emitter. Method#receiver is the type of the
+   Method's bound receiver expression; a Float range's begin, first, min and
+   last are the endpoint the Range literal wrote ((1..2.5).begin is the
+   Integer 1); String#scan reads the pattern literal's source for capture
+   groups and String#unpack1 the format literal. A call whose answer is a
+   function of the receiver's and the arguments' kinds does not belong
+   here: it states its kind. --plan-check expects inference to have
+   answered such a call without a row, as long as the call was typed; a
+   TY_UNKNOWN row without the flag is a call the table does not type yet.
 
-   In practice only Method#receiver's own row sets this: most TY_UNKNOWN
-   rows whose answer genuinely is hand-written elsewhere (`[]`, `slice`,
-   `[]=`, `==`, `fetch`'s 2-arg form, ...) were never given the flag either,
-   so its absence is not reliable evidence that a row is unfinished rather
-   than a deliberate defer -- check what reads the row (an arm in
+   Only those rows set it: most TY_UNKNOWN rows whose answer genuinely is
+   hand-written elsewhere (`[]`, `slice`, `[]=`, `==`, `fetch`'s 2-arg
+   form, ...) were never given the flag either, so its absence is not
+   reliable evidence that a row is unfinished rather than a deliberate defer
+   -- check what reads the row (an arm in
    infer_array_call/infer_numeric_call/infer_hash_call, or a plan-check
    expectation) before assuming a bare TY_UNKNOWN is a gap to close. */
 #define BOPF_INFERRED 128
