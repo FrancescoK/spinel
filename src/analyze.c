@@ -12731,21 +12731,22 @@ static int narrow_locals_from_arrays(Compiler *c) {
   return any;
 }
 
-/* Does every branch of `if` value v end in a value other than nil? (A nil one leaves the slot boxed, taking the branch by reference, #4486.) */
-static int oa_branches_all_valued(const NodeTable *nt, int v) {
-  const char *t = v >= 0 ? nt_type(nt, v) : NULL;
-  if (!t) return 0;
-  if (sp_streq(t, "StatementsNode")) {
-    int bn = 0; const int *bb = nt_arr(nt, v, "body", &bn);
-    return bn > 0 && oa_branches_all_valued(nt, bb[bn - 1]);
-  }
-  if (sp_streq(t, "ElseNode")) return oa_branches_all_valued(nt, nt_ref(nt, v, "statements"));
-  if (sp_streq(t, "IfNode") || sp_streq(t, "UnlessNode")) {
-    int alt = nt_ref(nt, v, sp_streq(t, "IfNode") ? "subsequent" : "else_clause");
-    return oa_branches_all_valued(nt, nt_ref(nt, v, "statements")) && oa_branches_all_valued(nt, alt);
-  }
-  return !sp_streq(t, "NilNode");
+/* A value position that is no value: a missing or empty arm, a nil written as
+   nil or as `(nil)`, a walk that gave up. A return is not one: it hands out
+   no nil of its own. */
+static int oa_unvalued_leaf(const VpLeaf *leaf, void *ud) {
+  const NodeTable *nt = ud;
+  return leaf->kind == VPK_NIL || leaf->kind == VPK_GAVE_UP ||
+         (leaf->kind == VPK_EXPR && nt_kind(nt, leaf->node) == NK_NilNode);
 }
+
+/* Does every branch of `if` value v end in a value other than nil? (A nil one leaves the slot boxed, taking the branch by reference, #4486.)
+   The branches are the value positions of an if, an unless, an elsif and an
+   else. */
+static int oa_branches_all_valued(const NodeTable *nt, int v) {
+  return v >= 0 && !for_each_value_position(nt, v, VPS_IF | VPS_UNLESS, oa_unvalued_leaf, (void *)nt);
+}
+
 /* Classify one value flowing into slot S: an object or int-array literal is
    element evidence, another slot (or a narrowable call's value) is an alias
    edge, nil is neutral, and anything the pass does not model kills the slot.
