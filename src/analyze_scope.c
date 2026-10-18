@@ -7681,6 +7681,58 @@ void register_extends(Compiler *c) {
   if (did_clone) register_locals(c);
 }
 
+/* The nodes of each scope, chained in node order, while
+   specialize_inherited_cls_new runs: its questions read one class method's
+   body (the nodes whose scope it is), and scanned the whole program for it
+   per call naming an inherited class method, which grew with the square of
+   the program (each class body's DSL calls, each asking of a method the whole
+   tree). The chains take the nodes a clone appends as they are asked
+   (walk_scope has given them their scope by then); no node changes its scope
+   during the pass. Off, a question scans the table as before. */
+static struct { int on, upto, ns, ncap; int *head, *tail, *next; } g_sn;
+static void sn_extend(Compiler *c) {
+  int n = c->nt->count;
+  if (c->nscopes > g_sn.ns) {
+    int ns = c->nscopes;
+    g_sn.head = realloc(g_sn.head, sizeof(int) * (size_t)ns);
+    g_sn.tail = realloc(g_sn.tail, sizeof(int) * (size_t)ns);
+    if (!g_sn.head || !g_sn.tail) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int k = g_sn.ns; k < ns; k++) g_sn.head[k] = g_sn.tail[k] = -1;
+    g_sn.ns = ns;
+  }
+  if (n <= g_sn.upto) return;
+  if (n > g_sn.ncap) {
+    g_sn.ncap = n * 2;
+    g_sn.next = realloc(g_sn.next, sizeof(int) * (size_t)g_sn.ncap);
+    if (!g_sn.next) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  for (int id = g_sn.upto; id < n; id++) {
+    int si = id < c->node_cap ? c->nscope[id] : -1;
+    g_sn.next[id] = -1;
+    if (si < 0 || si >= g_sn.ns) continue;
+    if (g_sn.head[si] < 0) g_sn.head[si] = id;
+    else g_sn.next[g_sn.tail[si]] = id;
+    g_sn.tail[si] = id;
+  }
+  g_sn.upto = n;
+}
+static void sn_begin(void) { g_sn.on = 1; g_sn.upto = 0; g_sn.ns = 0; }
+static void sn_end(void) {
+  free(g_sn.head); free(g_sn.tail); free(g_sn.next);
+  memset(&g_sn, 0, sizeof g_sn);
+}
+/* The node of scope mi after id (the first for id < 0), in node order; -1
+   past the last */
+static int sn_next(Compiler *c, int mi, int id) {
+  if (g_sn.on) {
+    sn_extend(c);
+    if (mi < 0 || mi >= g_sn.ns) return -1;
+    return id < 0 ? g_sn.head[mi] : g_sn.next[id];
+  }
+  for (int k = id + 1; k < c->nt->count; k++) if (c->nscope[k] == mi) return k;
+  return -1;
+}
+
 /* A call on the class method's own self: bare, or `self.m` (these passes run
    before the desugar that drops an explicit self receiver). */
 static int cm_call_on_self(const NodeTable *nt, int id) {
@@ -7705,8 +7757,8 @@ static int cmethod_reaches_override_walk(Compiler *c, int mi, int ci, int def_cl
   if (mi < 0 || mi >= c->nscopes || seen[mi]) return 0;
   seen[mi] = 1;
   const NodeTable *nt = c->nt;
-  NT_FOREACH_KIND(nt, NK_CallNode, id) {
-    if (c->nscope[id] != mi) continue;
+  for (int id = sn_next(c, mi, -1); id >= 0; id = sn_next(c, mi, id)) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
     if (!cm_call_on_self(nt, id)) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || sp_streq(nm, "new")) continue;          /* direct `new` is the caller's has_new path */
@@ -7743,8 +7795,7 @@ static int cmethod_reaches_class_ivar_walk(Compiler *c, int mi, int def_cls, uns
   if (mi < 0 || mi >= c->nscopes || seen[mi]) return 0;
   seen[mi] = 1;
   const NodeTable *nt = c->nt;
-  for (int id = 0; id < nt->count; id++) {
-    if (c->nscope[id] != mi) continue;
+  for (int id = sn_next(c, mi, -1); id >= 0; id = sn_next(c, mi, id)) {
     NodeKind k = nt_kind(nt, id);
     if (k == NK_InstanceVariableReadNode || k == NK_InstanceVariableWriteNode ||
         k == NK_InstanceVariableOperatorWriteNode || k == NK_InstanceVariableOrWriteNode ||
@@ -7758,8 +7809,8 @@ static int cmethod_reaches_class_ivar_walk(Compiler *c, int mi, int def_cls, uns
       if (pm >= 0 && pdef >= 0 && cmethod_reaches_class_ivar_walk(c, pm, pdef, seen)) return 1;
     }
   }
-  NT_FOREACH_KIND(nt, NK_CallNode, id) {
-    if (c->nscope[id] != mi) continue;
+  for (int id = sn_next(c, mi, -1); id >= 0; id = sn_next(c, mi, id)) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
     if (!cm_call_on_self(nt, id)) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || sp_streq(nm, "new")) continue;
@@ -7809,8 +7860,8 @@ static int cmethod_needs_specialization_d(Compiler *c, int mi, int ci, int def_c
 static int cmethod_calls_specialized_sibling(Compiler *c, int mi, int ci, int def_cls, int depth) {
   if (depth > 8) return 0;
   const NodeTable *nt = c->nt;
-  NT_FOREACH_KIND(nt, NK_CallNode, id) {
-    if (c->nscope[id] != mi) continue;
+  for (int id = sn_next(c, mi, -1); id >= 0; id = sn_next(c, mi, id)) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
     if (!cm_call_on_self(nt, id)) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || sp_streq(nm, "new")) continue;
@@ -7833,8 +7884,8 @@ static int cmethod_needs_specialization_d(Compiler *c, int mi, int ci, int def_c
   const NodeTable *nt = c->nt;
   int need = 0;
   if (has_new) *has_new = 0;
-  NT_FOREACH_KIND(nt, NK_CallNode, id) {
-    if (c->nscope[id] != mi) continue;
+  for (int id = sn_next(c, mi, -1); id >= 0; id = sn_next(c, mi, id)) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
     /* `allocate` / `self.allocate` builds the calling class, as a bare `new` does */
     if (allocate_on_own_class(c, id) >= 0) { if (has_new) *has_new = 1; need = 1; continue; }
     if (nt_ref(nt, id, "receiver") >= 0) continue;   /* receiverless only */
@@ -7910,8 +7961,7 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci) {
      ORIGINAL mi body (cloned nodes are attributed to dst, not mi); a sub-clone
      reallocs c->scopes/c->nscope, so use indices and refetch. */
   int scan_n = nt->count;
-  for (int id = 0; id < scan_n; id++) {
-    if (c->nscope[id] != mi) continue;
+  for (int id = sn_next(c, mi, -1); id >= 0 && id < scan_n; id = sn_next(c, mi, id)) {
     const char *ty = nt_type(nt, id);
     if (!ty || !sp_streq(ty, "CallNode")) continue;
     if (!cm_call_on_self(nt, id)) continue;
@@ -8018,6 +8068,7 @@ static void specialize_super_cmethod(Compiler *c, int own, int snap) {
 void specialize_inherited_cls_new(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int snap = c->nscopes;
+  sn_begin();
   int node_count = nt->count;   /* don't scan nodes appended by cloning */
   int did_clone = 0;
   /* self in a class body is the class, so a receiver-less call there names a
@@ -8247,6 +8298,7 @@ void specialize_inherited_cls_new(Compiler *c) {
   }
   free(ccall);
   free(body_cls);
+  sn_end();
   /* The cloned bodies introduced new local/ivar nodes; intern them. */
   if (did_clone) register_locals(c);
 }
