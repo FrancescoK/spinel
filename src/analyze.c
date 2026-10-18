@@ -45773,10 +45773,11 @@ static int ur_enclosing_def(const NodeTable *nt, const int *par, int v) {
   return -1;
 }
 /* Is call n one that sends a name it computes (`send(x)`, `method(name)`,
-   `x.to_proc`)? */
+   `x.to_proc`), or an `alias_method` either of whose names it computes (a
+   call by the new name may read the old one's value)? */
 static int ur_computed_send(const NodeTable *nt, int n) {
   static const char *const senders[] = { "send", "__send__", "public_send", "method", "public_method",
-    "instance_method", "public_instance_method", "singleton_method", NULL };
+    "instance_method", "public_instance_method", "singleton_method", "alias_method", NULL };
   const char *nm = nt_str(nt, n, "name");
   if (!nm) return 0;
   if (sp_streq(nm, "to_proc")) {
@@ -45788,8 +45789,11 @@ static int ur_computed_send(const NodeTable *nt, int n) {
   int an = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   if (an == 0) return 0;
-  NodeKind k = nt_kind(nt, av[0]);
-  return k != NK_SymbolNode && k != NK_StringNode;
+  for (int i = 0; i < (sp_streq(nm, "alias_method") ? an : 1); i++) {
+    NodeKind k = nt_kind(nt, av[i]);
+    if (k != NK_SymbolNode && k != NK_StringNode) return 1;
+  }
+  return 0;
 }
 /* Is `&e` (BlockArgumentNode b) a block the program may have computed from a
    name? Forwarding the method's own block parameter is not: what it holds
