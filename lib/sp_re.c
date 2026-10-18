@@ -533,6 +533,25 @@ sp_oint sp_poly_match_index(sp_RbVal a, sp_RbVal b) {SP_GC_ROOT_RBVAL(a);SP_GC_R
   sp_int r = sp_re_match(p, s);
   return r < 0 ? sp_oint_nil() : sp_oint_of(r);
 }
+/* The group a name reads after a match. A name may repeat across
+   alternation branches; CRuby (Onigmo's onig_name_to_backref_number) then
+   reads the last of its groups that took part in the match, and the last
+   declared only when none did. Taking the last declared always made
+   `md[:name]` and a replacement's \k<name> read an empty group when an
+   earlier branch matched. `caps` holds `ncaps` positions, a begin/end pair
+   per group. -1 when the pattern has no group of that name. */
+int sp_re_name_group(const mrb_regexp_pattern *pat, const char *name, const int *caps, int ncaps) {
+  int last = re_named_group(pat, name);
+  if (last < 0) return -1;
+  int n = re_num_named(pat);
+  for (int k = n - 1; k >= 0; k--) {
+    int g = -1;
+    const char *nm = re_named_name(pat, k, &g);
+    if (!nm || strcmp(nm, name) != 0) continue;
+    if ((g * 2) + 1 < ncaps && caps[g * 2] >= 0) return g;
+  }
+  return last;
+}
 void sp_re_expand_rep(const mrb_regexp_pattern *pat,
                              char **out_io, size_t *olen_io, size_t *cap_io,
                              const char *rep, size_t rlen,
@@ -607,7 +626,7 @@ void sp_re_expand_rep(const mrb_regexp_pattern *pat,
           }
           memcpy(name, rep + i + 3, nlen);
           name[nlen] = '\0';
-          int gi = re_named_group(pat, name);
+          int gi = sp_re_name_group(pat, name, caps, ncaps);
           if (gi < 0) {
            /* Build the message before freeing the name, then release the
               scratch buffer: sp_raise_cls longjmps, so the caller's free()
@@ -898,7 +917,7 @@ sp_RbVal sp_re_match_poly(mrb_regexp_pattern *pat, const char *str) {SP_GC_ROOT_
    ask only once the pattern matched, so a failed match stays nil. */
 const char *sp_re_named_capture(const mrb_regexp_pattern *pat, const char *name) {
   if (!pat || !name || !sp_re_last_str) return NULL;
-  int g = re_named_group(pat, name);
+  int g = sp_re_name_group(pat, name, sp_re_caps, sp_re_last_ncap * 2 < 64 ? sp_re_last_ncap * 2 : 64);
   if (g < 0) sp_raise_cls("IndexError", sp_sprintf("undefined group name reference: %s", name));
   if ((g * 2) + 1 >= 64) return NULL;
   int b = sp_re_caps[g * 2], e = sp_re_caps[(g * 2) + 1];
@@ -1209,7 +1228,7 @@ const char *sp_MatchData_aref(sp_MatchData *m, sp_int i) {SP_GC_ROOT(m);
    is unknown or the group did not participate). */
 const char *sp_MatchData_aref_name(sp_MatchData *m, const char *name) {SP_GC_ROOT(m);SP_GC_ROOT_STR(name);
   if (!m || !name) return NULL;
-  int g = re_named_group(m->pat, name);
+  int g = sp_re_name_group(m->pat, name, m->caps, m->ncap * 2);
   if (g < 0) sp_raise_cls("IndexError", sp_sprintf("undefined group name reference: %s", name));
   return sp_MatchData_aref(m, g);
 }
@@ -1375,7 +1394,7 @@ sp_IntArray *sp_MatchData_byteoffset(sp_MatchData *m, sp_int i) {SP_GC_ROOT(m);
    name to its group index like MatchData#[], then defer to the index form. An
    unknown name raises IndexError, matching MRI. */
 static int sp_md_group_by_name(sp_MatchData *m, const char *name) {SP_GC_ROOT_STR(name);
-  int g = m ? re_named_group(m->pat, name) : -1;
+  int g = m ? sp_re_name_group(m->pat, name, m->caps, m->ncap * 2) : -1;
   if (g < 0) sp_raise_cls("IndexError", sp_sprintf("undefined group name reference: %s", name));
   return g;
 }
