@@ -1269,15 +1269,11 @@ enum { ASSIGN_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN |
 /* Is call id the value its own method answers: the last statement of the
    method's body, or of a branch body of a conditional, case or begin that
    is itself the last? Climbs from the call (vp_climb), so its cost is the
-   depth. The condition of a `when` is climbed as if it were the clause's
-   value. */
+   depth. */
 static int assign_is_tail(Compiler *c, int id, const int *par) {
-  const NodeTable *nt = c->nt;
   VpUp up;
-  vp_climb(nt, par, id, ASSIGN_CLIMB, &up);
-  while (up.kind == VPU_ENDED && is_when_node_type(nt_type(nt, up.parent)))
-    vp_climb(nt, par, up.parent, ASSIGN_CLIMB, &up);
-  return vp_up_def(nt, &up) >= 0;
+  vp_climb(c->nt, par, id, ASSIGN_CLIMB, &up);
+  return vp_up_def(c->nt, &up) >= 0;
 }
 
 /* Is call id the value of a `return` of its own method: through parentheses
