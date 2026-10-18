@@ -1046,6 +1046,7 @@ int desugar_body_self_call(Compiler *c) {
    the shape, reached from its autoloader as `Inflector.underscore(full)`. */
 static void fwd_ns_key(const NodeTable *nt, int id, char *key, size_t cap);
 static void fwd_key_add(char *key, size_t cap, const char *seg);
+static int fwd_new_node_like(NodeTable *nt, int like, const char *ty);
 static int xs_is_extend_self(const NodeTable *nt, int st) {
   if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "receiver") >= 0) return 0;
   const char *nm = nt_str(nt, st, "name");
@@ -1134,6 +1135,55 @@ static void xs_collect_own(const NodeTable *nt, int mod, int key, XsOwn **v, int
     }
   }
 }
+/* is nm, a reader (writer 0) or writer (1) name, a class method the module
+   (key has) defines itself? */
+static int xs_owns(const XsOwn *own, int nown, int has, const char *nm, int writer) {
+  size_t l = strlen(nm);
+  for (int k = 0; k < nown; k++) {
+    if (own[k].key != has) continue;
+    if (own[k].writer == writer && sp_streq(own[k].name, nm)) return 1;
+    /* a `def self.nm=` is entered by its whole name */
+    const char *on = own[k].name;
+    if (writer && !own[k].writer && strlen(on) == l + 1 && strncmp(on, nm, l) == 0 && on[l] == '=') return 1;
+  }
+  return 0;
+}
+/* `attr_accessor :a, :b` (or attr_reader / attr_writer) as a direct statement
+   of the body: the same call in a `class << self` beside it, without the
+   names the module defines itself as class methods; -1 when none is left
+   or the call is another shape. */
+static int xs_singleton_attr(NodeTable *nt, int st, const XsOwn *own, int nown, int has) {
+  if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "receiver") >= 0 || nt_ref(nt, st, "block") >= 0) return -1;
+  const char *cn = nt_str(nt, st, "name");
+  if (!cn || !(is_attr_reader_family(cn) || is_attr_writer_family(cn))) return -1;
+  int args = nt_ref(nt, st, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an <= 0) return -1;
+  for (int q = 0; q < an; q++) if (nt_kind(nt, av[q]) != NK_SymbolNode) return -1;
+  int call = nt_clone_subtree(nt, st);
+  int cargs = call >= 0 ? nt_ref(nt, call, "arguments") : -1;
+  if (cargs < 0) return -1;
+  int cn_ = 0; const int *cv = nt_arr(nt, cargs, "arguments", &cn_);
+  int *keep = (int *)malloc(sizeof(int) * (size_t)cn_); int nk = 0;
+  if (!keep) return -1;
+  for (int q = 0; q < cn_; q++) {
+    const char *an_ = nt_str(nt, cv[q], "value");
+    if (!an_ || (is_attr_reader_family(cn) && xs_owns(own, nown, has, an_, 0)) ||
+        (is_attr_writer_family(cn) && xs_owns(own, nown, has, an_, 1))) continue;
+    keep[nk++] = cv[q];
+  }
+  if (nk > 0) nt_node_set_arr(nt, cargs, "arguments", keep, nk);
+  free(keep);
+  if (nk == 0) return -1;
+  int sc = fwd_new_node_like(nt, st, "SingletonClassNode");
+  int sbody = fwd_new_node_like(nt, st, "StatementsNode");
+  int sf = fwd_new_node_like(nt, st, "SelfNode");
+  if (sc < 0 || sbody < 0 || sf < 0) return -1;
+  nt_node_set_arr(nt, sbody, "body", &call, 1);
+  nt_node_set_ref(nt, sc, "expression", sf);
+  nt_node_set_ref(nt, sc, "body", sbody);
+  return sc;
+}
 int desugar_extend_self(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
@@ -1184,6 +1234,8 @@ int desugar_extend_self(Compiler *c) {
         nb[nbn++] = ext;
         continue;
       }
+      int sattr = xs_singleton_attr(nt, st, own, nown, has);
+      if (sattr >= 0) { nb[nbn++] = sattr; continue; }
       if (nt_kind(nt, st) != NK_DefNode || nt_ref(nt, st, "receiver") >= 0) continue;
       const char *dn = nt_str(nt, st, "name");
       int mine = 0;
