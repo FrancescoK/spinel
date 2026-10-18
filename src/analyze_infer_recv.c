@@ -779,12 +779,11 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
            : gbt == TY_STRING ? TY_STR_ARRAY : TY_POLY_ARRAY; return 1; }
     }
     if (sp_streq(name, "[]")) {
-      /* arr[range] / arr[start, len] -> a subarray; arr[i] -> an element. The
-         range index may be a literal RangeNode or a variable/param typed
-         TY_RANGE. */
-      if (argc == 2) { *out = rt; return 1; }
-      if (argc == 1 && ((nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode")) ||
-                        a0 == TY_RANGE)) { *out = rt; return 1; }
+      /* arr[start, len] and arr[i] / arr[range] by an Integer or Range index
+         are the rows'; a literal RangeNode of another kind of range (a
+         Float or String one) is a subarray too. */
+      if (argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode"))
+        { *out = rt; return 1; }
       /* a boxed index that may be a Range: an element or a subarray, boxed */
       if (argc == 1 && a0 == TY_POLY && value_may_be_range(c, argv[0])) { *out = TY_POLY; return 1; }
       { *out = ty_array_elem(rt); return 1; }
@@ -803,11 +802,6 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         { *out = (bt == TY_UNKNOWN || bt == et) ? et : TY_POLY; return 1; }
       }
       { *out = et; return 1; }
-    }
-    if (sp_streq(name, "dig") && argc >= 1) {
-      /* dig(*keys) walks a runtime key list: the depth is unknown here */
-      if (argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode) { *out = ty_array_elem(rt); return 1; }
-      { *out = TY_POLY; return 1; }
     }
     /* index returns nil on a miss -> poly (int-or-nil) */
     if (is_index_query(name) &&
@@ -1082,19 +1076,11 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       }
       { *out = ty_array_elem(rt); return 1; }
     }
-    /* `arr.take(n)`/`drop(n)` is a subarray, but `arr.lazy.take(n)` stays a lazy
-       stage -- let the lazy pipeline (below) type the forced chain, not this
-       eager subarray arm. */
-    {
-      int rcv_is_lazy = recv >= 0 && nt_type(nt, recv) &&
-                        sp_streq(nt_type(nt, recv), "CallNode") &&
-                        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "lazy");
-      if ((is_take_drop(name)) && argc == 1 && !rcv_is_lazy)
-        { *out = rt; return 1; }  /* subarray */
-    }
-    /* sample(n) takes n elements -> a subarray.
+    /* sample(n) takes n elements -> a subarray, an Integer n being the row's.
        sample(random: rng) is the single-element form, not a count -- a sole
-       keyword-hash arg selects one element (falls to the element arm) (#2970) */
+       keyword-hash arg selects one element (falls to the element arm) (#2970).
+       A positional Hash has the kind of a keyword one and is a TypeError, so
+       the syntax decides, not the kind. */
     int sample_kw = sp_streq(name, "sample") && argc == 1 && argv &&
                     nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode");
     if (sp_streq(name, "sample") && argc == 1 && !sample_kw)
@@ -1150,7 +1136,10 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       if (sp_streq(name, "repeated_combination") && argc == 1 && block < 0) { *out = cmb; return 1; } }
     /* slice(range) is a subarray, slice(i) one element (mirrors #[]);
        slice!(range) removes a subarray, slice!(i) one element. A boxed
-       index that may be a Range answers either, boxed. */
+       index that may be a Range answers either, boxed. The rows state an
+       Integer or a Range index (slice's for the blockless call, slice!'s
+       Range row); this is the other kinds of index, and the block the
+       builtin leaves unused. */
     if ((sp_streq(name, "slice") && argc == 1 && (nt_ref(nt, id, "block") < 0 || call_unused_block(c, id) >= 0)) ||
         (sp_streq(name, "slice!") && argc == 1)) {
       if (a0 == TY_POLY && value_may_be_range(c, argv[0])) { *out = TY_POLY; return 1; }
@@ -1167,15 +1156,10 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     }
     if (sp_streq(name, "[]=") && argc == 3)
       { *out = rt == TY_POLY_ARRAY ? TY_POLY : infer_type(c, argv[2]); return 1; }
-    if ((sp_streq(name, "assoc") || sp_streq(name, "rassoc")) && rt == TY_POLY_ARRAY)
-      { *out = TY_POLY_ARRAY; return 1; }  /* the matching sub-array, or nil (NULL ptr) */
-    /* an array of numbers, Strings, Symbols or booleans holds no Array to
-       match: the boxed nil emit_op_array_assoc answers */
-    if ((sp_streq(name, "assoc") || sp_streq(name, "rassoc")) && argc == 1) {
-      TyKind et = ty_array_elem(rt);
-      if (et == TY_INT || et == TY_FLOAT || et == TY_STRING || et == TY_SYMBOL || et == TY_BOOL)
-        { *out = TY_POLY; return 1; }
-    }
+    /* assoc / rassoc given a number of arguments but one (an ArgumentError)
+       on a poly array: the row states the call with one */
+    if ((sp_streq(name, "assoc") || sp_streq(name, "rassoc")) && argc != 1 && rt == TY_POLY_ARRAY)
+      { *out = TY_POLY_ARRAY; return 1; }
     if (sp_streq(name, "to_h") && argc == 0 && block < 0) {
       /* Infer the hash type from the pairs of an array literal: every pair,
          not the first alone -- `[["a", "b"], ["c", 1]].to_h` (and Hash[...],
