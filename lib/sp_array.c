@@ -535,9 +535,9 @@ sp_IntArray*sp_IntArray_union(sp_IntArray*a,sp_IntArray*b){SP_GC_ROOT(a);SP_GC_R
   return r;}
 /* Array#- / Array#difference: keep every LHS element NOT in RHS,
    preserving the LHS's duplicates. `[1,1,2,3] - [3]` is `[1,1,2]`. */
-sp_IntArray*sp_IntArray_difference(sp_IntArray*a,sp_IntArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_IntArray*r=sp_IntArray_new();SP_GC_ROOT(r);if (SP_UNLIKELY(!a)) sp_nil_recv("-");
-  if (SP_UNLIKELY(SP_MAY_NIL(a) || (b && SP_MAY_NIL(b)))) {for(sp_int i=0;i<a->len;i++){sp_oint v=sp_IntArray_oget(a,i);if(!ia_include_o(b,v))sp_IntArray_push_o(r,v);}return r;}
-  if (b && sp_setop_hashes(b->len, a->len)) {
+sp_IntArray*sp_IntArray_difference(sp_IntArray*a,sp_IntArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_IntArray*r=sp_IntArray_new();SP_GC_ROOT(r);if (SP_UNLIKELY(!a)) sp_nil_recv("-");if (SP_UNLIKELY(!b)) sp_raise_cls("TypeError", "no implicit conversion of nil into Array");
+  if (SP_UNLIKELY(SP_MAY_NIL(a) || SP_MAY_NIL(b))) {for(sp_int i=0;i<a->len;i++){sp_oint v=sp_IntArray_oget(a,i);if(!ia_include_o(b,v))sp_IntArray_push_o(r,v);}return r;}
+  if (sp_setop_hashes(b->len, a->len)) {
     sp_iset in_b; sp_iset_init(&in_b, b->len); sp_iset_add_all(&in_b, b);
     for (sp_int i = 0; i < a->len; i++) { sp_int v = a->data[a->start + i]; if (!sp_iset_has(&in_b, v)) sp_IntArray_push(r, v); }
     sp_iset_free(&in_b);
@@ -668,7 +668,7 @@ sp_bool sp_FloatArray_delete_nil(sp_FloatArray*a){SP_GC_ROOT(a);if (SP_UNLIKELY(
 sp_FloatArray*sp_FloatArray_intersect(sp_FloatArray*a,sp_FloatArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_FloatArray*r=sp_FloatArray_new();SP_GC_ROOT(r);if(!a||!b)return r;for(sp_int i=0;i<a->len;i++){sp_ofloat v=sp_FloatArray_oget(a,i);if(fa_include_o(b,v)&&!fa_include_o(r,v))sp_FloatArray_push_o(r,v);}return r;}
 sp_bool sp_FloatArray_intersect_p(sp_FloatArray*a,sp_FloatArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);if (SP_UNLIKELY(!a)) sp_nil_recv("intersect?"); if (!b)return 0;for(sp_int i=0;i<a->len;i++)if(fa_include_o(b,sp_FloatArray_oget(a,i)))return 1;return 0;}
 sp_FloatArray*sp_FloatArray_union(sp_FloatArray*a,sp_FloatArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_FloatArray*r=sp_FloatArray_new();SP_GC_ROOT(r);if(a)for(sp_int i=0;i<a->len;i++){sp_ofloat v=sp_FloatArray_oget(a,i);if(!fa_include_o(r,v))sp_FloatArray_push_o(r,v);}if(b){for(sp_int i=0;i<b->len;i++){sp_ofloat v=sp_FloatArray_oget(b,i);if(!fa_include_o(r,v))sp_FloatArray_push_o(r,v);}}return r;}
-sp_FloatArray*sp_FloatArray_difference(sp_FloatArray*a,sp_FloatArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_FloatArray*r=sp_FloatArray_new();SP_GC_ROOT(r);if (SP_UNLIKELY(!a)) sp_nil_recv("-");for(sp_int i=0;i<a->len;i++){sp_ofloat v=sp_FloatArray_oget(a,i);if(!fa_include_o(b,v))sp_FloatArray_push_o(r,v);}return r;}
+sp_FloatArray*sp_FloatArray_difference(sp_FloatArray*a,sp_FloatArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_FloatArray*r=sp_FloatArray_new();SP_GC_ROOT(r);if (SP_UNLIKELY(!a)) sp_nil_recv("-");if (SP_UNLIKELY(!b)) sp_raise_cls("TypeError", "no implicit conversion of nil into Array");for(sp_int i=0;i<a->len;i++){sp_ofloat v=sp_FloatArray_oget(a,i);if(!fa_include_o(b,v))sp_FloatArray_push_o(r,v);}return r;}
 /* insert(i, v) on a Float array, as sp_IntArray_insert does on an Integer
    one: a negative index counts from past the end, and the gap before an index
    past the end is nil. */
@@ -880,8 +880,8 @@ sp_StrArray*sp_StrArray_union(sp_StrArray*a,sp_StrArray*b){SP_GC_ROOT(a);SP_GC_R
     return r;
   }
   if(a)for(sp_int i=0;i<a->len;i++){const char*v=a->data[i];if(!sp_StrArray_include(r,v))sp_StrArray_push(r,v);}if(b){for(sp_int i=0;i<b->len;i++){const char*v=b->data[i];if(!sp_StrArray_include(r,v))sp_StrArray_push(r,v);}}return r;}
-sp_StrArray*sp_StrArray_difference(sp_StrArray*a,sp_StrArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_StrArray*r=sp_StrArray_new();
-  if (b && sp_setop_hashes(b->len, a->len)) {
+sp_StrArray*sp_StrArray_difference(sp_StrArray*a,sp_StrArray*b){SP_GC_ROOT(a);SP_GC_ROOT(b);if (SP_UNLIKELY(!a)) sp_nil_recv("-");if (SP_UNLIKELY(!b)) sp_raise_cls("TypeError", "no implicit conversion of nil into Array");sp_StrArray*r=sp_StrArray_new();
+  if (sp_setop_hashes(b->len, a->len)) {
     sp_sset in_b; sp_sset_init(&in_b, b->len, 1); sp_sset_add_all(&in_b, b);
     for (sp_int i = 0; i < a->len; i++) if (!sp_sset_has(&in_b, a->data[i])) sp_StrArray_push(r, a->data[i]);
     sp_sset_free(&in_b);
