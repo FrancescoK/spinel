@@ -454,10 +454,14 @@ module OpenSSL
         @handle < 0 ? 0 : Native.pending(@handle)
       end
 
+      # The socket goes with it under sync_close whether or not a handshake
+      # ever finished, as in CRuby: SSLServer#accept closes a failed one
+      # through this.
       def sysclose
-        return nil if @handle < 0
-        Native.close(@handle)
-        @handle = -1
+        if @handle >= 0
+          Native.close(@handle)
+          @handle = -1
+        end
         @io.close if @sync_close && @io && !@io.closed?
         nil
       end
@@ -533,6 +537,67 @@ module OpenSSL
           want = Native.want
         end
         self
+      end
+    end
+
+    # CRuby's SSLServer: a TCPServer whose accept answers an SSLSocket. The
+    # handshake is made inside accept, as in CRuby, so a client that
+    # connects and sends nothing holds the accept until it does. A server on
+    # a public port sets start_immediately to false and bounds each
+    # handshake itself, with SSLSocket#accept_nonblock and IO.select.
+    # CRuby also sets the context's session_id_context here; a session does
+    # not resume across two accepts in this package, so there is none.
+    class SSLServer
+      attr_accessor :start_immediately
+
+      def initialize(svr, ctx)
+        @svr = svr
+        @ctx = ctx
+        @start_immediately = true
+      end
+
+      def to_io
+        @svr
+      end
+
+      def listen(backlog = Socket::SOMAXCONN)
+        @svr.listen(backlog)
+      end
+
+      def shutdown(how = Socket::SHUT_RDWR)
+        @svr.shutdown(how)
+      end
+
+      # The SSLSocket takes the accepted socket with it when it closes, and
+      # a handshake that fails closes both before it raises.
+      def accept
+        sock = @svr.accept
+        ssl = SSLSocket.new(sock, @ctx)
+        ssl.sync_close = true
+        begin
+          ssl.accept if @start_immediately
+        rescue Exception => e
+          ssl.close
+          raise e
+        end
+        ssl
+      end
+
+      def close
+        @svr.close
+      end
+
+      # CRuby's SocketForwarder, for the members a server reads.
+      def addr
+        @svr.addr
+      end
+
+      def fileno
+        @svr.fileno
+      end
+
+      def closed?
+        @svr.closed?
       end
     end
   end

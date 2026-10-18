@@ -1,0 +1,13 @@
+TCPServer
+true
+0
+"Han River: Jayang-dong\n"
+[OpenSSL::SSL::SSLSocket, true, true]
+"SSLError"
+"closed"
+:wait_readable
+nil
+true
+"Han River: Incheon\n"
+"accepted"
+true
