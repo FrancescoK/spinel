@@ -7477,6 +7477,15 @@ static void builtin_default_probe_fn(Compiler *c, int id, void *ctx, Buf *nb) {
   else if (pr->box_o) emit_oint_expr(c, id, pr->bt, nb);
   else emit_expr(c, id, nb);
 }
+/* The Array / Hash methods that take a block and no argument and change
+   their receiver in place, answering it or nil */
+static int poly_block_mutator_name(const char *name) {
+  static const char *const names[] = {
+    "map!", "collect!", "select!", "filter!", "reject!", "delete_if", "keep_if", "sort_by!",
+    "uniq!", "transform_values!", "transform_keys!", NULL };
+  for (int i = 0; names[i]; i++) if (sp_streq(name, names[i])) return 1;
+  return 0;
+}
 static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const char *name,
                                      int argc, const int *argv, const int *atmp,
                                      const TyKind *atmp_ty, TyKind ret, int tv, int tr,
@@ -7491,7 +7500,13 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
   { int fb0 = nt_ref(nt, id, "block");
     nil_fwd = fb0 >= 0 && nt_kind(nt, fb0) == NK_BlockArgumentNode &&
               resolve_forwarded_block(c, fb0) < 0 && !forwarded_real_proc(fb0, -1); }
-  if (nt_ref(nt, id, "block") >= 0 && argc == 0 && !nil_fwd) return 0;
+  /* a block call without arguments takes the builtin's arm only for the
+     in-place mutators, which answer the receiver (or nil), into a call
+     answering a box: the others' answer (a count, a truth value) is not of
+     the type the analysis recorded for the builtin, and their arm did not
+     build */
+  if (nt_ref(nt, id, "block") >= 0 && argc == 0 && !nil_fwd &&
+      !(poly_block_mutator_name(name) && ret == TY_POLY)) return 0;
   if (g_pd_skip == id || g_n_argov + argc + 1 > MAX_ARG_OVERRIDE) return 0;
   if (argc > 0 && (!atmp || !atmp_ty)) return 0;
   /* a splat's temp is the flattened list, which no builtin emitter reads
