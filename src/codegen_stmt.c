@@ -17065,6 +17065,10 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
          wrapped, as the single write wraps it (emit_strbuf_value) */
       else if (ltt == TY_STRBUF && valt == TY_STRING) buf_printf(b, "sp_String_new_shared(_t%d)", tmps[i]);
       else if (ltt == TY_STRBUF && valt == TY_POLY) buf_printf(b, "sp_poly_as_strbuf(_t%d)", tmps[i]);
+      /* an Integer element into a local the program promotes to a Bignum
+         wraps, as the plain write does (`a, b = 0, 1` ahead of a loop that
+         grows them, #9537: the raw sp_int did not build) */
+      else if (ltt == TY_BIGINT && valt == TY_INT) buf_printf(b, "sp_bigint_new_int(_t%d)", tmps[i]);
       /* a boxed element into a typed local: unboxed, as a plain write does
          (`mk, x = 0, nl` with nl only ever nil) */
       else if (llv && slot_is_oint(llv)) {
