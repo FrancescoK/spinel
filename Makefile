@@ -4667,6 +4667,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	$(SPINEL) test/infer/object_array_map.rb -c --no-line-map -o "$$tmp/oam.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (object_array_map: -c)"; ok=0; }; \
 	grep -q 'sp_PtrArray \* iv_list;' "$$tmp/oam.c" || { echo "infer-test: FAIL (#4846 an array of one class walked by map stayed boxed)"; ok=0; }; \
 	grep -q '(lv_x)->iv_name' "$$tmp/oam.c" || { echo "infer-test: FAIL (#4846 an element call is not a direct read)"; ok=0; }; \
+	$(SPINEL) test/infer/obj_array_literal_arg.rb -c --no-line-map -o "$$tmp/oal.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (obj_array_literal_arg: -c)"; ok=0; }; \
+	grep -q 'sp_PtrArray \* iv_steps;' "$$tmp/oal.c" && grep -q 'sp_total(sp_PtrArray \* lv_parts' "$$tmp/oal.c" || { echo "infer-test: FAIL (an object Array literal passed as an argument stayed boxed)"; ok=0; }; \
 	$(SPINEL) test/infer/struct_cmethod_bare_new.rb -c --no-line-map -o "$$tmp/sn.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (struct_cmethod_bare_new: -c)"; ok=0; }; \
 	for m in 'sp_sym iv_op;' 'sp_int iv_n;' 'sp_int iv_a;' 'const char \* iv_b;' 'sp_int iv_v;'; do \
 	  grep -q "$$m" "$$tmp/sn.c" || { echo "infer-test: FAIL (struct_cmethod_bare_new: member not typed: $$m)"; ok=0; }; \

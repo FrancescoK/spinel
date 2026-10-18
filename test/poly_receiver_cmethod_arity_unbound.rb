@@ -3,6 +3,11 @@ class Step
   def apply(x) = x + @n
 end
 
+class Scale
+  def initialize(n) = @n = n
+  def apply(x) = x * @n
+end
+
 class Holder
   def initialize(steps) = @steps = steps
   def run(x) = @steps.map { |step| step.apply(x) }
@@ -23,4 +28,4 @@ str = +"x"
 bang.call(str)
 p str
 p Restore.apply(Table.new, %w[ab cd])
-p Holder.new([Step.new(1), Step.new(2)]).run(10)
+p Holder.new([Step.new(1), Scale.new(2)]).run(10)

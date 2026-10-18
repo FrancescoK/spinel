@@ -12192,6 +12192,16 @@ static int oa_elem_evidence(Compiler *c, OAS *sl, int S, int node) {
   if (node >= 0 && infer_type(c, node) == TY_POLY) sl[S].poly_elem = 1;
   return oa_obj_class_of(c, node);
 }
+/* `[A.new, A.new]` passed straight to a method: a literal of objects only,
+   built at the parameter's kind when that narrows (oa_note_src) */
+static int oa_obj_literal(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || nt_kind(nt, node) != NK_ArrayNode) return 0;
+  int en = 0; const int *el = nt_arr(nt, node, "elements", &en);
+  for (int e = 0; e < en; e++)
+    if (nt_kind(nt, el[e]) == NK_SplatNode || !ty_is_object(infer_type(c, el[e]))) return 0;
+  return en > 0;
+}
 static int oa_recv_op_ok(const char *nm, int argc, int has_block) {
   if (!nm || has_block) return 0;
   if ((is_element_at_alias(nm)) && argc == 1) return 1;
@@ -13040,9 +13050,14 @@ static int narrow_object_arrays(Compiler *c) {
       }
       else {
         if (!ty_is_ptr_array(c->arr_want[id])) continue;
-        if (nt_kind(nt, id) != NK_CallNode) continue;
-        const char *rn = nt_str(nt, id, "name");
-        if (!rn || !(is_map_alias(rn))) continue;
+        if (nt_kind(nt, id) == NK_ArrayNode) {
+          if (!ty_is_obj_array(c->arr_want[id]) || is_empty_array_literal(nt, id, c->node_cap)) continue;
+        }
+        else {
+          if (nt_kind(nt, id) != NK_CallNode) continue;
+          const char *rn = nt_str(nt, id, "name");
+          if (!rn || !(is_map_alias(rn))) continue;
+        }
       }
       comp_set_arr_want(c, id, TY_UNKNOWN);
       if (n_cleared == cap_cleared) {
@@ -13592,6 +13607,10 @@ static int narrow_object_arrays(Compiler *c) {
         if (a >= 0 && read_slot[a] >= 0) {
           claimed[a] = 1;
           oa_uf_union(sl, read_slot[a], T);
+        }
+        else if (oa_obj_literal(c, a)) {
+          oa_classify_value(c, sl, n, read_slot, call_ret, claimed, T, a);
+          oa_note_src(T, a);
         }
         else {
           sl[T].alive = 0;   /* unmodeled incoming value for this position */

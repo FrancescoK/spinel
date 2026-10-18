@@ -7,6 +7,11 @@ class Step
   def apply(names:) = names.map { |x| x + @n }
 end
 
+class Scale
+  def initialize(n) = @n = n
+  def apply(names:) = names.map { |x| x * @n }
+end
+
 class Holder
   def initialize(steps) = @steps = steps
   def run = @steps.map { |step| step.apply(names: [1, 2]) }
@@ -27,4 +32,4 @@ str = +"x"
 bang.call(str)
 p str
 p Restore.apply(Table.new, names: %w[ab cd])
-p Holder.new([Step.new(1), Step.new(2)]).run
+p Holder.new([Step.new(1), Scale.new(2)]).run
