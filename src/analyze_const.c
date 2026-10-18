@@ -35,7 +35,8 @@
    (codegen_util.c, const_has_flag). The walk reads no types, so the guard
    folds that decide `defined?(K)` before inference (comp_defined_guard_true)
    can ask it. A program that defines const_missing, which spinel does not
-   call, flags none, and a name that is also a class's is not flagged.
+   call, flags only the constants a `constants` listing alone can see before
+   their assignment, and a name that is also a class's is not flagged.
 
    A program that defines a method a definition runs (inherited, included,
    method_added ...) has its definitions counted as code of the program's
@@ -416,7 +417,9 @@ void an_const_presence(Compiler *c) {
   w.plain = calloc(nc, 1);
   w.rd = malloc(nc * sizeof(int));
   int *first = calloc(nc, sizeof(int));   /* per constant: its earliest plain assignment's node + 1 */
-  if (!w.settled || !w.direct || !w.wpost || !w.pre || !w.cref_at || !w.seen || !w.plain || !w.rd || !first) {
+  char *listed_only = calloc(nc, 1);      /* per constant: early only to a `constants` listing */
+  if (!w.settled || !w.direct || !w.wpost || !w.pre || !w.cref_at || !w.seen || !w.plain || !w.rd || !first ||
+      !listed_only) {
     fprintf(stderr, "spinel: out of memory\n"); exit(1);
   }
   for (size_t i = 0; i < nc; i++) w.rd[i] = INT_MAX;
@@ -455,15 +458,22 @@ void an_const_presence(Compiler *c) {
   for (int i = 0; i < c->nconsts; i++) {
     if (!first[i] || c->consts[i].const_early) continue;
     int wr = first[i] - 1;
-    if (!w.settled[wr] && (w.rd[i] < w.wpost[wr] || w.listed < w.wpost[wr])) c->consts[i].const_early = 1;
+    if (!w.settled[wr] && (w.rd[i] < w.wpost[wr] || w.listed < w.wpost[wr])) {
+      c->consts[i].const_early = 1;
+      listed_only[i] = w.rd[i] >= w.wpost[wr];
+    }
   }
   /* A name that is also a class's (an alias `Key = Impl::Key`) is one slot of
      the flat table for the value and the class, and a read of the class must
      not wait for the value. A program that defines const_missing gets the
      answers master gave: spinel does not call it, so the NameError a flag
-     raises would be the wrong one. */
+     raises would be the wrong one. A constant no read can reach before its
+     assignment, only a `constants` listing, keeps its flag there: the
+     listing leaves it out until it is assigned, as CRuby's does, and no
+     read tests it early. */
   for (int i = 0; i < c->nconsts; i++)
-    if (c->consts[i].const_early && (w.cmissing || comp_class_index(c, c->consts[i].name) >= 0))
+    if (c->consts[i].const_early &&
+        ((w.cmissing && !listed_only[i]) || comp_class_index(c, c->consts[i].name) >= 0))
       c->consts[i].const_early = 0;
   /* the name a flagged read shows ahead of the constant: "" at the top level */
   for (int id = 0; id < nt->count; id++) {
@@ -475,5 +485,5 @@ void an_const_presence(Compiler *c) {
   for (int i = 0; i < w.ncrefs; i++) free(w.crefs[i]);
   free(w.crefs);
   free(w.settled); free(w.direct); free(w.wpost); free(w.pre); free(w.cref_at);
-  free(w.seen); free(w.plain); free(w.rd); free(first);
+  free(w.seen); free(w.plain); free(w.rd); free(first); free(listed_only);
 }
