@@ -15679,6 +15679,43 @@ static TyKind hash_want_join(TyKind cur, TyKind want) {
   if (cur == want || ck == wk || !ckeyed || !wkeyed) return cur;
   return TY_POLY_POLY_HASH;
 }
+/* The empty Hash literal node `n` can only answer: through parentheses, a
+   `||=` of a class variable, global or local whose value is `{}`, or a
+   zero-argument self call whose method's last statement is such a write.
+   -1 for anything else. An ivar's memo is not one: the ivar's slot takes the
+   getter's writes as evidence and widens its literals itself (#4902). */
+static int ekh_memo_literal(Compiler *c, int n, int depth) {
+  const NodeTable *nt = c->nt;
+  if (n < 0 || depth > 4) return -1;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_ParenthesesNode || k == NK_StatementsNode) {
+    int body = k == NK_ParenthesesNode ? nt_ref(nt, n, "body") : n;
+    if (body < 0) return -1;
+    if (nt_kind(nt, body) != NK_StatementsNode) return ekh_memo_literal(c, body, depth + 1);
+    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+    return bn >= 1 ? ekh_memo_literal(c, bb[bn - 1], depth + 1) : -1;
+  }
+  if (k == NK_ClassVariableOrWriteNode || k == NK_GlobalVariableOrWriteNode ||
+      k == NK_LocalVariableOrWriteNode) {
+    int v = nt_ref(nt, n, "value");
+    if (v < 0 || nt_kind(nt, v) != NK_HashNode) return -1;
+    int en = 0; nt_arr(nt, v, "elements", &en);
+    return en == 0 ? v : -1;
+  }
+  if (k == NK_CallNode && nt_ref(nt, n, "arguments") < 0 && nt_ref(nt, n, "block") < 0) {
+    int r = nt_ref(nt, n, "receiver");
+    if (r >= 0 && nt_kind(nt, r) != NK_SelfNode) return -1;
+    const char *nm = nt_str(nt, n, "name");
+    Scope *s = comp_scope_of(c, n);
+    if (!nm || !s || s->class_id < 0) return -1;
+    int mi = s->is_cmethod ? comp_cmethod_in_chain(c, s->class_id, nm, NULL)
+                           : comp_method_in_chain(c, s->class_id, nm, NULL);
+    if (mi < 0 || mi >= c->nscopes || c->scopes[mi].nparams != 0) return -1;
+    int body = c->scopes[mi].body;
+    return body >= 0 ? ekh_memo_literal(c, body, depth + 1) : -1;
+  }
+  return -1;
+}
 static int mark_empty_hash_key_ctx(Compiler *c) {
   int changed = 0;
   if (!c->hash_want) return 0;
@@ -15747,6 +15784,13 @@ static int mark_empty_hash_key_ctx(Compiler *c) {
       recv = outer;
     }
     if (recv < 0 || recv >= c->node_cap) continue;
+    /* the empty literal a memo holds: `(@@h ||= {})[k]`, or a reader that
+       answers one (`def self.h = (@@h ||= {})`, `h[k] = v`) -- a class
+       variable's literal has no slot the key sites reach the way an ivar's
+       does, and kept the String-keyed default (railties' Annotation
+       registers its extensions under Regexp keys) */
+    { int lit = ekh_memo_literal(c, recv, 0);
+      if (lit >= 0) recv = lit; }
     NodeKind rk = nt_kind(nt, recv);
     int direct = (rk == NK_HashNode || rk == NK_KeywordHashNode);
     if (direct) {

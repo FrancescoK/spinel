@@ -1,0 +1,5 @@
+[/\.(builder|rb|rake|ruby)$/, /\.(erb)$/]
+"erb:TODO"
+{[1, 2] => :pair, sym: :one}
+"AB"
+{ab: "AB"}
