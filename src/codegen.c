@@ -12534,13 +12534,36 @@ static void emit_obj_to_ary_dispatch(Compiler *c, Buf *b) {
    #deconstruct with its members but has no #to_a at all, so the to_a dispatch
    deliberately skips it and a nested array sub-pattern never matched a Data
    element (#3882). Everything else defers to that dispatch. */
+/* The scope a #deconstruct call on class cid runs, and the class defining
+   it, else -1. An alias resolves to its target's scope, so the C function
+   is named after the scope (`alias deconstruct child_nodes` runs
+   sp_K_child_nodes). An alias of an inherited method is a forwarder
+   `def deconstruct(*a, &b)` to the hidden alias `deconstruct#inherited`
+   (desugar_inherited_aliases): that answers with the method it reaches.
+   Only the forwarder is followed: a `def deconstruct` written after the
+   alias replaces it, and is the method that runs. */
+int comp_deconstruct_method(Compiler *c, int cid, int *defcls) {
+  int dc = -1;
+  int mi = comp_method_in_chain(c, cid, "deconstruct", &dc);
+  if (mi < 0 || dc < 0) return -1;
+  ClassInfo *dci = &c->classes[dc];
+  int dn = c->scopes[mi].def_node;
+  int fwd = dn >= 0 && nt_int(c->nt, dn, "alias_forwarder", 0);
+  for (int k = 0; fwd && k < dci->naliases; k++)
+    if (dci->alias_new[k] && sp_streq(dci->alias_new[k], "deconstruct#inherited")) {
+      mi = comp_method_in_chain(c, dc, "deconstruct#inherited", &dc);
+      break;
+    }
+  if (mi >= 0 && defcls) *defcls = dc;
+  return mi;
+}
 /* The scope of class i's own #deconstruct when it has one this TU emits
    and a boxed value can call (no arguments, no block), else -1. A Struct's
    comes from the Struct machinery, not from here. */
 static int user_deconstruct_scope(Compiler *c, int i, int *defcls) {
   ClassInfo *ci = &c->classes[i];
   if (!ci->instantiated || ci->is_native_class || ci->is_data) return -1;
-  int mi = comp_method_in_chain(c, i, "deconstruct", defcls);
+  int mi = comp_deconstruct_method(c, i, defcls);
   if (mi < 0) return -1;
   Scope *m = &c->scopes[mi];
   if (!m->reachable || m->yields || m->nparams != 0 || scope_is_shadowed(c, mi) ||
@@ -12568,8 +12591,8 @@ static void emit_obj_deconstruct_dispatch(Compiler *c, Buf *b) {
     if (dmi >= 0) {
       const char *dcn = c->classes[dcls].c_name;
       char call[256];
-      snprintf(call, sizeof call, "sp_%s_deconstruct(%s(sp_%s *)v.v.p)",
-               dcn, c->classes[dcls].is_value_type ? "*" : "", dcn);
+      snprintf(call, sizeof call, "sp_%s_%s(%s(sp_%s *)v.v.p)",
+               dcn, mc(c->scopes[dmi].name), c->classes[dcls].is_value_type ? "*" : "", dcn);
       buf_printf(b, "    case %d: return ", i);
       emit_boxed_text(c, c->scopes[dmi].ret, call, b);
       buf_puts(b, ";\n");
