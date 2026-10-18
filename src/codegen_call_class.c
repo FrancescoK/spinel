@@ -1297,15 +1297,6 @@ static int assign_is_returned(Compiler *c, int id, const int *par) {
   return 0;
 }
 
-/* Is n a place in node p whose value is p's value: a branch body, not a
-   condition, a case or pattern subject, a rescue's class list or a guard?
-   The value edges (value_pos.h) of an if, unless, case, case/in and begin
-   (its body beside an else too), but no `when` clause: the one a case's arm
-   hangs from is not climbed here. */
-static int assign_value_slot(const NodeTable *nt, int p, int n) {
-  return !is_when_node_type(nt_type(nt, p)) && vp_is_value_edge(nt, p, n, ASSIGN_CLIMB);
-}
-
 /* Is call id (through parentheses) the receiver of a String mutator or of
    freeze, whose emitter takes the receiver as the handle it changes
    (strbuf_recv_handle, the freeze arm), so the text a copy would give is
@@ -1392,7 +1383,7 @@ static int assign_value_dropped(Compiler *c, int id, const int *par) {
         const int *mbb = mb >= 0 && nt_kind(nt, mb) == NK_StatementsNode ? nt_arr(nt, mb, "body", &mn) : NULL;
         if (mn == 1 && nt_kind(nt, mbb[0]) == NK_YieldNode) { n = par[gp]; continue; }
       }
-      if (gp >= 0 && assign_value_slot(nt, gp, p)) {
+      if (gp >= 0 && vp_is_value_edge(nt, gp, p, ASSIGN_CLIMB)) {
         n = p;
         continue;
       }
@@ -1402,7 +1393,7 @@ static int assign_value_dropped(Compiler *c, int id, const int *par) {
       if (bn && sp_streq(bn, "tap") && !cow_user_block_value(c, par, n)) return 1;
       return an_value_dropped(nt, par, n) && !cow_user_block_value(c, par, n);
     }
-    if (!assign_value_slot(nt, p, n)) return 0;
+    if (!vp_is_value_edge(nt, p, n, ASSIGN_CLIMB)) return 0;
     n = p;
   }
 }
