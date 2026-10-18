@@ -622,7 +622,7 @@ sp_int sp_str_ord(const char*s){if(!s)sp_nil_recv("ord");
    that is not all ASCII. */
 static size_t sp_utf8_valid_byte_offset(const char *s, size_t blen, sp_int char_idx) {
   const unsigned char *p = (const unsigned char *)s, *end = p + blen;
-  while (p + 8 <= end) {
+  while ((size_t)(end - p) >= 8) {   /* no pointer past the end is formed */
     uint64_t w;
     memcpy(&w, p, sizeof(w));
     uint64_t cont = w & ~(w << 1) & 0x8080808080808080ULL;
