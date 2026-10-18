@@ -16482,14 +16482,14 @@ static int masgn_el_fresh_str(Compiler *c, int el) {
    a conditional or parentheses whose every value position is one? The nil
    fact (may_nil) follows a nil written so. A position that is missing, a
    jump, or a walk that gave up is none. Read through the iterator with the
-   `if` shapes (if, elsif, else); a sequence's value is its last statement. */
+   `if` and `unless` shapes; a sequence's value is its last statement. */
 static int masgn_not_holder_leaf(const VpLeaf *leaf, void *ud) {
   const NodeTable *nt = ud;
   NodeKind k = leaf->kind == VPK_EXPR ? nt_kind(nt, leaf->node) : NK_NONE;
   return k != NK_ArrayNode && k != NK_HashNode && k != NK_NilNode;
 }
 static int masgn_holder_value(const NodeTable *nt, int v) {
-  return !for_each_value_position(nt, v, VPS_IF, masgn_not_holder_leaf, (void *)nt);
+  return !for_each_value_position(nt, v, VPS_IF | VPS_UNLESS, masgn_not_holder_leaf, (void *)nt);
 }
 
 /* Is the local `r` reads known to hold an Array or a Hash wherever its nil
