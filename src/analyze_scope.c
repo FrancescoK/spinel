@@ -8932,6 +8932,12 @@ typedef struct PivsFacts {
   ANameHash names[PX_N];
   int *first[PX_N], *last[PX_N], cap[PX_N];
   int *next, *aux;
+  /* the calls whose receiver reads a local (pivs_read_root), chained in
+     node order from a bucket of the local's name and the receiver's scope
+     (entry e: rv_call[e], then rv_next[e]; a chain keeps its collisions),
+     and the names of the locals a call's argument reads (pivs_local) */
+  int *rv_head, rv_nb, *rv_call, *rv_next;
+  ANameHash handed;
 } PivsFacts;
 static void pivs_ix_clear(PivsFacts *f) {
   for (int q = 0; q < PX_N; q++) {
@@ -8941,6 +8947,9 @@ static void pivs_ix_clear(PivsFacts *f) {
   }
   free(f->next); free(f->aux);
   f->next = f->aux = NULL;
+  free(f->rv_head); free(f->rv_call); free(f->rv_next);
+  f->rv_head = f->rv_call = f->rv_next = NULL; f->rv_nb = 0;
+  anh_free(&f->handed); memset(&f->handed, 0, sizeof f->handed);
 }
 void pivs_facts_free(Compiler *c) {
   PivsFacts *f = c->pivs;
@@ -8981,8 +8990,31 @@ static void pivs_ix_add(PivsFacts *f, int q, const char *nm, int node, int aux) 
   else f->next[f->last[q][k]] = node;
   f->last[q][k] = node;
 }
-/* The first node of list q named nm (then f->next), in node order */
-static int pivs_ix_first(Compiler *c, int q, const char *nm) {
+/* The local `n` reads: the name of the local read it is, or of the one a
+   chain of the methods answering their receiver ends on (`xs.each { }`,
+   `xs.tap { }`); NULL for none. */
+static const char *pivs_read_root(const NodeTable *nt, int n) {
+  static const char *const SELF[] = { "each", "each_with_index", "reverse_each", "tap", "itself", "freeze",
+                                      "sort!", "sort_by!", "shuffle!", "reverse!", "rotate!", NULL };
+  for (int d = 0; n >= 0 && d < 16; d++) {
+    if (nt_kind(nt, n) == NK_LocalVariableReadNode) return nt_str(nt, n, "name");
+    if (nt_kind(nt, n) != NK_CallNode) return NULL;
+    const char *un = nt_str(nt, n, "name");
+    int self = 0;
+    for (int i = 0; SELF[i] && un && !self; i++) self = sp_streq(un, SELF[i]);
+    if (!self) return NULL;
+    n = nt_ref(nt, n, "receiver");
+  }
+  return NULL;
+}
+/* Does `n` read local `vn` (pivs_read_root)? */
+static int pivs_is_read_of(const NodeTable *nt, int n, const char *vn) {
+  const char *r = pivs_read_root(nt, n);
+  return r && sp_streq(r, vn);
+}
+static void pivs_rv_build(Compiler *c, PivsFacts *f);
+/* The facts' indexes, built for the tree as it is now */
+static PivsFacts *pivs_ix_ready(Compiler *c) {
   const NodeTable *nt = c->nt;
   PivsFacts *f = pivs_facts(c);
   if (f->ix_nt != nt || f->ix_ver != nt->version || f->ix_count != nt->count) {
@@ -9018,9 +9050,24 @@ static int pivs_ix_first(Compiler *c, int q, const char *nm) {
         default: break;
       }
     }
+    pivs_rv_build(c, f);
   }
+  return f;
+}
+/* The first node of list q named nm (then f->next), in node order */
+static int pivs_ix_first(Compiler *c, int q, const char *nm) {
+  PivsFacts *f = pivs_ix_ready(c);
   int k = nm ? anh_find(&f->names[q], nm) : -1;
   return k >= 0 ? f->first[q][k] : -1;
+}
+static unsigned pivs_rv_bucket(const PivsFacts *f, const char *nm, int si) {
+  return (sp_strhash(nm) ^ ((unsigned)si * 2654435761u)) & (unsigned)(f->rv_nb - 1);
+}
+/* The first entry of the chain holding the calls whose receiver reads a
+   local named nm in scope si (then f->rv_next; the call is f->rv_call[e]) */
+static int pivs_rv_first(Compiler *c, int si, const char *nm) {
+  PivsFacts *f = pivs_ix_ready(c);
+  return f->rv_nb ? f->rv_head[pivs_rv_bucket(f, nm, si)] : -1;
 }
 static int pivs_value(Compiler *c, int v, char *set, int depth);
 static int pivs_elems(Compiler *c, int arr, char *set, int depth);
@@ -9048,22 +9095,6 @@ static int pivs_note_class_value(Compiler *c, int v) {
   f->memo[f->active].has_class = 1;
   if (ci >= 0) f->memo[f->active].cvals[ci] = 1;
   return 1;
-}
-/* Does `n` read local `vn`, or call one of the methods answering their
-   receiver on such a read (`xs.each { }`, `xs.tap { }`)? */
-static int pivs_is_read_of(const NodeTable *nt, int n, const char *vn) {
-  static const char *const SELF[] = { "each", "each_with_index", "reverse_each", "tap", "itself", "freeze",
-                                      "sort!", "sort_by!", "shuffle!", "reverse!", "rotate!", NULL };
-  for (int d = 0; n >= 0 && d < 16; d++) {
-    if (nt_kind(nt, n) == NK_LocalVariableReadNode) return sp_streq(nt_str(nt, n, "name"), vn);
-    if (nt_kind(nt, n) != NK_CallNode) return 0;
-    const char *un = nt_str(nt, n, "name");
-    int self = 0;
-    for (int i = 0; SELF[i] && un && !self; i++) self = sp_streq(un, SELF[i]);
-    if (!self) return 0;
-    n = nt_ref(nt, n, "receiver");
-  }
-  return 0;
 }
 /* Does local `vn` of scope `si` take only plain writes in its own scope, so
    its writes' values are all it can hold? */
@@ -9221,18 +9252,21 @@ static int pivs_write_kind(const NodeTable *nt, int w, NodeKind wk) {
   return ty && strstr(ty, "WriteNode") != NULL;
 }
 
-/* Does a read of a local named vn appear where it is handed on: an
+/* The names of the locals whose reads appear where they are handed on: an
    element of a literal, a returned, yielded or written value, or the last
-   value of a method or block? Only the name decides, so the answer is kept
-   per name until the node table changes (pivs_local asked it once per
-   Array local it reached, walking every node each time). */
+   value of a method or block. Only the name decides, so one walk of the tree
+   answers every name, kept until the node table changes (a walk per name
+   asked, as pivs_local reached each Array local, grew with the square of
+   the program). */
 static ANameHash g_esc_names;
-static signed char *g_esc_res;
-static int g_esc_cap, g_esc_cnt = -1;
+static int g_esc_cnt = -1;
 static const NodeTable *g_esc_nt;
 static unsigned g_esc_ver;
-static int pivs_local_escapes_uncached(Compiler *c, const char *vn) {
-  const NodeTable *nt = c->nt;
+static void pivs_esc_note(const NodeTable *nt, int n) {
+  const char *vn = pivs_read_root(nt, n);
+  if (vn && anh_find(&g_esc_names, vn) < 0) anh_add(&g_esc_names, vn);
+}
+static void pivs_local_escapes_build(const NodeTable *nt) {
   for (int w = 0; w < nt->count; w++) {
     NodeKind wk = nt_kind(nt, w);
     if (wk == NK_ArrayNode || wk == NK_HashNode || wk == NK_KeywordHashNode || wk == NK_ReturnNode ||
@@ -9240,47 +9274,35 @@ static int pivs_local_escapes_uncached(Compiler *c, const char *vn) {
       int n = 0;
       const int *el = wk == NK_ArrayNode || wk == NK_HashNode || wk == NK_KeywordHashNode
                         ? nt_arr(nt, w, "elements", &n) : NULL;
-      for (int k = 0; k < n; k++) if (pivs_is_read_of(nt, el[k], vn)) return 1;
-      if (wk == NK_AssocNode && pivs_is_read_of(nt, nt_ref(nt, w, "value"), vn)) return 1;
+      for (int k = 0; k < n; k++) pivs_esc_note(nt, el[k]);
+      if (wk == NK_AssocNode) pivs_esc_note(nt, nt_ref(nt, w, "value"));
       if (wk == NK_ReturnNode || wk == NK_YieldNode) {
         int a = nt_ref(nt, w, "arguments"), ac = 0;
         const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
-        for (int k = 0; k < ac; k++) if (pivs_is_read_of(nt, av[k], vn)) return 1;
+        for (int k = 0; k < ac; k++) pivs_esc_note(nt, av[k]);
       }
     }
-    else if (wk != NK_LocalVariableReadNode && pivs_write_kind(nt, w, wk) &&
-             pivs_is_read_of(nt, nt_ref(nt, w, "value"), vn)) return 1;
+    else if (wk != NK_LocalVariableReadNode && pivs_write_kind(nt, w, wk))
+      pivs_esc_note(nt, nt_ref(nt, w, "value"));
   }
   /* the last value of a method or a block is handed out */
   for (int k = 0; k < 2; k++)
     NT_FOREACH_KIND(nt, k ? NK_BlockNode : NK_DefNode, d) {
       int b = nt_ref(nt, d, "body"), n = 0;
       const int *st = b >= 0 && nt_kind(nt, b) == NK_StatementsNode ? nt_arr(nt, b, "body", &n) : NULL;
-      if ((n > 0 && pivs_is_read_of(nt, st[n - 1], vn)) || pivs_is_read_of(nt, b, vn)) return 1;
+      if (n > 0) pivs_esc_note(nt, st[n - 1]);
+      pivs_esc_note(nt, b);
     }
-  return 0;
 }
+/* Does a read of a local named vn appear where it is handed on? */
 static int pivs_local_escapes(Compiler *c, const char *vn) {
   const NodeTable *nt = c->nt;
   if (g_esc_nt != nt || g_esc_ver != nt->version || g_esc_cnt != nt->count) {
     anh_free(&g_esc_names); memset(&g_esc_names, 0, sizeof g_esc_names);
     g_esc_nt = nt; g_esc_ver = nt->version; g_esc_cnt = nt->count;
+    pivs_local_escapes_build(nt);
   }
-  int k = anh_find(&g_esc_names, vn);
-  if (k >= 0) return g_esc_res[k];
-  int r = pivs_local_escapes_uncached(c, vn);
-  /* the walk reads the tree only, so the table it was asked against
-     still holds */
-  anh_add(&g_esc_names, vn);
-  k = g_esc_names.n - 1;
-  if (k >= g_esc_cap) {
-    g_esc_cap = g_esc_cap ? g_esc_cap * 2 : 64;
-    while (k >= g_esc_cap) g_esc_cap *= 2;
-    g_esc_res = realloc(g_esc_res, (size_t)g_esc_cap);
-    if (!g_esc_res) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  }
-  g_esc_res[k] = (signed char)r;
-  return r;
+  return anh_find(&g_esc_names, vn) >= 0;
 }
 
 /* A builtin iterator moved onto its copy, `__enum_each_with_index__3(recv) { }`
@@ -9294,6 +9316,79 @@ static int pivs_enum_iter(const char *name, char *buf, size_t n) {
   buf[sep - name - 7] = 0;
   return 1;
 }
+/* the iterators whose block's first parameter is an element of the receiver */
+static const char *const PIVS_IT[] = { "each", "map", "collect", "select", "filter", "reject", "each_with_index",
+                                       "each_with_object", "find", "detect", "flat_map", "filter_map", "any?",
+                                       "all?", "none?", "sort_by", "min_by", "max_by", "group_by", "count",
+                                       "sum", "find_index", NULL };
+/* Does call u, whose receiver reads an Array local, leave the local holding
+   only what the walk bounds (into set): a push of bounded values, or no
+   mutation? */
+static int pivs_local_push_ok(Compiler *c, int u, char *set, int depth) {
+  const NodeTable *nt = c->nt;
+  int a = nt_ref(nt, u, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  const char *un = nt_str(nt, u, "name");
+  if (!un) return 0;
+  if (is_push_alias(un) ||
+      sp_streq(un, "unshift") || sp_streq(un, "prepend") || sp_streq(un, "insert")) {
+    for (int k = sp_streq(un, "insert") ? 1 : 0; k < ac; k++)
+      if (nt_kind(nt, av[k]) == NK_SplatNode ? !pivs_elems(c, nt_ref(nt, av[k], "expression"), set, depth + 1)
+                                              : !pivs_value(c, av[k], set, depth + 1)) return 0;
+  }
+  else if (sp_streq(un, "concat")) {
+    for (int k = 0; k < ac; k++) if (!pivs_elems(c, av[k], set, depth + 1)) return 0;
+  }
+  else if (sp_streq(un, "[]=")) {
+    if (ac != 2 || nt_kind(nt, av[0]) != NK_IntegerNode) return 0;
+    if (!pivs_value(c, av[1], set, depth + 1)) return 0;
+  }
+  else if (array_mutator_name(un) ||
+           (nt_ref(nt, u, "block") >= 0 && nt_kind(nt, nt_ref(nt, u, "block")) == NK_BlockArgumentNode))
+    return 0;
+  return 1;
+}
+/* pivs_ix_ready's call indexes: the calls by the local their receiver reads
+   and its scope, and the locals handed on as an argument, where they may be
+   kept and grown: any but a printer's, an iterator copy's first, or one the
+   call's receiver also reads. Only the name decides the latter. */
+static void pivs_rv_build(Compiler *c, PivsFacts *f) {
+  const NodeTable *nt = c->nt;
+  int ncalls = 0;
+  const int *calls = nt_nodes_of_kind(nt, NK_CallNode, &ncalls);
+  int nb = 16;
+  while (nb < ncalls && nb < (1 << 22)) nb <<= 1;
+  f->rv_nb = nb;
+  f->rv_head = malloc(sizeof(int) * (size_t)nb);
+  f->rv_call = malloc(sizeof(int) * (size_t)(ncalls > 0 ? ncalls : 1));
+  f->rv_next = malloc(sizeof(int) * (size_t)(ncalls > 0 ? ncalls : 1));
+  if (!f->rv_head || !f->rv_call || !f->rv_next) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int b = 0; b < nb; b++) f->rv_head[b] = -1;
+  int ne = 0;
+  for (int i = ncalls - 1; i >= 0; i--) {   /* reverse: chains run in node order */
+    int u = calls[i], r = nt_ref(nt, u, "receiver");
+    const char *rn = pivs_read_root(nt, r);
+    Scope *rs = rn ? comp_scope_of(c, r) : NULL;
+    if (rs) {
+      unsigned b = pivs_rv_bucket(f, rn, (int)(rs - c->scopes));
+      f->rv_call[ne] = u; f->rv_next[ne] = f->rv_head[b]; f->rv_head[b] = ne++;
+    }
+    const char *cn = nt_str(nt, u, "name");
+    if (r < 0 && cn && (sp_streq(cn, "p") || sp_streq(cn, "puts") || sp_streq(cn, "print") || sp_streq(cn, "pp")))
+      continue;
+    char eit[64];
+    int itfirst = 0;
+    if (r < 0 && cn && pivs_enum_iter(cn, eit, sizeof eit))
+      for (int j = 0; PIVS_IT[j] && !itfirst; j++) itfirst = sp_streq(eit, PIVS_IT[j]);
+    int a = nt_ref(nt, u, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    for (int k = 0; k < ac; k++) {
+      if (nt_kind(nt, av[k]) == NK_SplatNode || (itfirst && k == 0)) continue;
+      const char *xn = pivs_read_root(nt, av[k]);
+      if (xn && !(rn && sp_streq(rn, xn)) && anh_find(&f->handed, xn) < 0) anh_add(&f->handed, xn);
+    }
+  }
+}
 static int pivs_local(Compiler *c, int v, char *set, int depth, int elems) {
   const NodeTable *nt = c->nt;
   const char *vn = nt_str(nt, v, "name");
@@ -9305,10 +9400,6 @@ static int pivs_local(Compiler *c, int v, char *set, int depth, int elems) {
   /* a parameter of an iterator's literal block (one spliced into its
      method keeps the parameter there, renamed): the first is an element
      of the receiver */
-  static const char *const IT[] = { "each", "map", "collect", "select", "filter", "reject", "each_with_index",
-                                    "each_with_object", "find", "detect", "flat_map", "filter_map", "any?",
-                                    "all?", "none?", "sort_by", "min_by", "max_by", "group_by", "count",
-                                    "sum", "find_index", NULL };
   int lastu = -1;
   for (int q = pivs_ix_first(c, PX_BLOCK_PARAM, vn); q >= 0; q = c->pivs->next[q]) {
     int u = c->pivs->aux[q];
@@ -9334,7 +9425,7 @@ static int pivs_local(Compiler *c, int v, char *set, int depth, int elems) {
       un = enb; ur = uav[0];
     }
     int known = 0;
-    for (int j = 0; IT[j] && un && !known; j++) known = sp_streq(un, IT[j]);
+    for (int j = 0; PIVS_IT[j] && un && !known; j++) known = sp_streq(un, PIVS_IT[j]);
     if (!known || at != 0 || elems ||
         (rn != 1 && !sp_streq(un, "each_with_index") && !sp_streq(un, "each_with_object"))) return 0;
     /* reassigned, it is not only the element */
@@ -9348,47 +9439,24 @@ static int pivs_local(Compiler *c, int v, char *set, int depth, int elems) {
   if (!pivs_local_writes_ok(c, si, vn)) return 0;
   if (elems) {
     /* an Array local: what its literal writes hold, and what is pushed onto
-       it; handed anywhere else, it may gain what this does not see */
-    NT_FOREACH_KIND(nt, NK_CallNode, u) {
-      int r = nt_ref(nt, u, "receiver");
-      int a = nt_ref(nt, u, "arguments"), ac = 0;
-      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
-      if (pivs_is_read_of(nt, r, vn) && comp_scope_of(c, r) == s) {
-        const char *un = nt_str(nt, u, "name");
-        if (!un) return 0;
-        if (is_push_alias(un) ||
-            sp_streq(un, "unshift") || sp_streq(un, "prepend") || sp_streq(un, "insert")) {
-          for (int k = sp_streq(un, "insert") ? 1 : 0; k < ac; k++)
-            if (nt_kind(nt, av[k]) == NK_SplatNode ? !pivs_elems(c, nt_ref(nt, av[k], "expression"), set, depth + 1)
-                                                    : !pivs_value(c, av[k], set, depth + 1)) return 0;
-        }
-        else if (sp_streq(un, "concat")) {
-          for (int k = 0; k < ac; k++) if (!pivs_elems(c, av[k], set, depth + 1)) return 0;
-        }
-        else if (sp_streq(un, "[]=")) {
-          if (ac != 2 || nt_kind(nt, av[0]) != NK_IntegerNode) return 0;
-          if (!pivs_value(c, av[1], set, depth + 1)) return 0;
-        }
-        else if (array_mutator_name(un) ||
-                 (nt_ref(nt, u, "block") >= 0 && nt_kind(nt, nt_ref(nt, u, "block")) == NK_BlockArgumentNode))
-          return 0;
-      }
-      /* handed as an argument it may be kept and grown, except to the
-         printers */
-      const char *cn = nt_str(nt, u, "name");
-      if (r < 0 && cn && (sp_streq(cn, "p") || sp_streq(cn, "puts") || sp_streq(cn, "print") || sp_streq(cn, "pp")))
-        continue;
-      /* an iterator's copy reads its first argument; it keeps and grows nothing */
-      char eit[64];
-      int itfirst = 0;
-      if (r < 0 && cn && pivs_enum_iter(cn, eit, sizeof eit))
-        for (int j = 0; IT[j] && !itfirst; j++) itfirst = sp_streq(eit, IT[j]);
-      for (int k = 0; k < ac; k++) {
-        int x = av[k];
-        if (nt_kind(nt, x) == NK_SplatNode) continue;
-        if (pivs_is_read_of(nt, x, vn) && !(pivs_is_read_of(nt, r, vn)) && !(itfirst && k == 0)) return 0;
-      }
+       it; handed anywhere else, it may gain what this does not see. The
+       indexes answer both (scanning every call per local reached grew with
+       the square of the program). The calls are copied out, as the walk
+       below may ask for the indexes of a tree it changed. */
+    if (anh_find(&pivs_ix_ready(c)->handed, vn) >= 0) return 0;
+    int nu = 0;
+    for (int e = pivs_rv_first(c, si, vn); e >= 0; e = c->pivs->rv_next[e]) nu++;
+    int *us = malloc(sizeof(int) * (size_t)(nu > 0 ? nu : 1));
+    if (!us) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    nu = 0;
+    for (int e = pivs_rv_first(c, si, vn); e >= 0; e = c->pivs->rv_next[e]) us[nu++] = c->pivs->rv_call[e];
+    int ok = 1;
+    for (int ui = 0; ui < nu && ok; ui++) {
+      int r = nt_ref(nt, us[ui], "receiver");
+      if (pivs_is_read_of(nt, r, vn) && comp_scope_of(c, r) == s) ok = pivs_local_push_ok(c, us[ui], set, depth);
     }
+    free(us);
+    if (!ok) return 0;
     if (pivs_local_escapes(c, vn)) return 0;
   }
   for (int w = comp_lvw_first_sc(c, si, vn); w >= 0; w = comp_lvw_next_sc(c, w)) {
