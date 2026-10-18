@@ -6642,6 +6642,22 @@ int desugar_call_op_write(Compiler *c) {
   return changed;
 }
 
+/* `self.class` (or a bare `class`): read again at no cost and with no
+   effect, so the writer of a `||=` on it takes the same read */
+static int cow_rereads(const NodeTable *nt, int recv) {
+  int r = nt_kind(nt, recv) == NK_CallNode ? nt_ref(nt, recv, "receiver") : -2;
+  return r != -2 && (r < 0 || nt_kind(nt, r) == NK_SelfNode) && nt_str(nt, recv, "name") &&
+         sp_streq(nt_str(nt, recv, "name"), "class") && nt_ref(nt, recv, "arguments") < 0 &&
+         nt_ref(nt, recv, "block") < 0;
+}
+/* the temp `__cow_N = recv` and the two reads of it */
+static void cow_bind_temp(NodeTable *nt, int tw, int tr1, int tr2, const char *tname, int recv) {
+  nt_node_set_str(nt, tw, "name", tname); nt_node_set_int(nt, tw, "depth", 0);
+  nt_node_set_ref(nt, tw, "value", recv);
+  nt_node_set_str(nt, tr1, "name", tname); nt_node_set_int(nt, tr1, "depth", 0);
+  nt_node_set_str(nt, tr2, "name", tname); nt_node_set_int(nt, tr2, "depth", 0);
+}
+
 /* `recv.attr ||= value` / `&&=` where the receiver is a builtin a reopening
    gave the reader and the writer to -- a Thread with the accessor
    `Thread.attr_accessor` declared, activesupport's IsolatedExecutionState
@@ -6650,9 +6666,9 @@ int desugar_call_op_write(Compiler *c) {
    so it was refused. It is the two calls Ruby means, on the receiver
    evaluated once:
      (__cow_N = recv; __cow_N.attr || (__cow_N.attr = value))
-   A receiver that may be one of several kinds has no pairing in the
-   emitter either and takes the same two calls. A user-object receiver
-   keeps the emitter's own pairing. */
+   A receiver that may be one of several kinds, or a Class value, has no
+   pairing in the emitter either and takes the same two calls. A
+   user-object receiver keeps the emitter's own pairing. */
 int desugar_call_or_write_reopen(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -6686,7 +6702,9 @@ int desugar_call_or_write_reopen(Compiler *c) {
        out of a Hash of mixed values), which the two calls dispatch on as
        any call does; a user object's pairing stays the emitter's */
     int has_def_writer = 0, has_def_reader = 0;
-    if (rt == TY_POLY || native_pair) has_def_writer = has_def_reader = 1;
+    /* and a Class value (`self.class.memo ||= v` in a module the classes
+       include), whose halves are class methods: the calls reach them */
+    if (rt == TY_POLY || rt == TY_CLASS || native_pair) has_def_writer = has_def_reader = 1;
     for (int q = 0; q < c->nclasses && !(has_def_writer && has_def_reader); q++) {
       if (!c->classes[q].name || !is_builtin_reopen(c->classes[q].name)) continue;
       if (comp_method_in_chain(c, q, wname, NULL) >= 0) has_def_writer = 1;
@@ -6695,20 +6713,19 @@ int desugar_call_or_write_reopen(Compiler *c) {
     if (!has_def_writer || !has_def_reader) continue;
     char tname[48]; snprintf(tname, sizeof tname, "__cow_%s", comp_node_tag(c, id));
     int first = nt->count;
-    int tw = nt_new_node(nt, "LocalVariableWriteNode");
-    int tr1 = nt_new_node(nt, "LocalVariableReadNode");
-    int tr2 = nt_new_node(nt, "LocalVariableReadNode");
+    /* `self.class` is read again for the writer rather than held */
+    int again = rt == TY_CLASS && cow_rereads(nt, recv);
+    int tw = again ? -1 : nt_new_node(nt, "LocalVariableWriteNode");
+    int tr1 = again ? recv : nt_new_node(nt, "LocalVariableReadNode");
+    int tr2 = again ? nt_clone_subtree(nt, recv) : nt_new_node(nt, "LocalVariableReadNode");
     int rd = nt_new_node(nt, "CallNode");
     int wargs = nt_new_node(nt, "ArgumentsNode");
     int wc = nt_new_node(nt, "CallNode");
     int join = nt_new_node(nt, k == NK_CallOrWriteNode ? "OrNode" : "AndNode");
     int stmts = nt_new_node(nt, "StatementsNode");
-    if (tw < 0 || tr1 < 0 || tr2 < 0 || rd < 0 || wargs < 0 || wc < 0 || join < 0 || stmts < 0) continue;
+    if ((tw < 0 && !again) || tr1 < 0 || tr2 < 0 || rd < 0 || wargs < 0 || wc < 0 || join < 0 || stmts < 0) continue;
     long long line = nt_int(nt, id, "node_line", 0);
-    nt_node_set_str(nt, tw, "name", tname); nt_node_set_int(nt, tw, "depth", 0);
-    nt_node_set_ref(nt, tw, "value", recv);
-    nt_node_set_str(nt, tr1, "name", tname); nt_node_set_int(nt, tr1, "depth", 0);
-    nt_node_set_str(nt, tr2, "name", tname); nt_node_set_int(nt, tr2, "depth", 0);
+    if (!again) cow_bind_temp(nt, tw, tr1, tr2, tname, recv);
     nt_node_set_ref(nt, rd, "receiver", tr1); nt_node_set_str(nt, rd, "name", attr);
     nt_node_set_ref(nt, rd, "arguments", -1); nt_node_set_ref(nt, rd, "block", -1);
     nt_node_set_int(nt, rd, "node_line", line);
@@ -6718,7 +6735,7 @@ int desugar_call_or_write_reopen(Compiler *c) {
     nt_node_set_ref(nt, wc, "arguments", wargs); nt_node_set_ref(nt, wc, "block", -1);
     nt_node_set_int(nt, wc, "node_line", line);
     nt_node_set_ref(nt, join, "left", rd); nt_node_set_ref(nt, join, "right", wc);
-    { int two[2]; two[0] = tw; two[1] = join; nt_node_set_arr(nt, stmts, "body", two, 2); }
+    { int two[2]; two[0] = tw; two[1] = join; nt_node_set_arr(nt, stmts, "body", two + again, 2 - again); }
     nt_node_set_type(nt, id, "ParenthesesNode");
     nt_node_set_ref(nt, id, "body", stmts);
     nt_node_set_ref(nt, id, "receiver", -1);
@@ -6726,7 +6743,7 @@ int desugar_call_or_write_reopen(Compiler *c) {
     comp_grow_node_arrays(c);
     int encl = c->nscope[id];
     for (int j = first; j < nt->count; j++) c->nscope[j] = encl;
-    scope_local_intern(comp_scope_of(c, tw), tname);
+    if (!again) scope_local_intern(comp_scope_of(c, tw), tname);
     changed = 1;
   }
   free(wname);
