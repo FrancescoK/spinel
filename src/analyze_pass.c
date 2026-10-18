@@ -10003,7 +10003,8 @@ static int infer_param_types_ex(Compiler *c, int settle) {
             changed |= bind_call_params(c, id, pcs[pi].mi);
         pcs = comp_cmethod_candidates(c, name, &npc);
         for (int pi = 0; pi < npc; pi++)
-          changed |= bind_call_params(c, id, pcs[pi].mi);
+          if (method_takes_call_args(c, &c->scopes[pcs[pi].mi], id))
+            changed |= bind_call_params(c, id, pcs[pi].mi);
         c->range_unheld = 0;
       }
     }
