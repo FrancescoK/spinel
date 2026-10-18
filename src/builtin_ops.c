@@ -3651,6 +3651,32 @@ int bop_share_boxed(TyKind fam, const char *name) {
 int bop_share_named(TyKind fam, const char *name) {
   return name ? bop_share_find(fam, name) : 0;
 }
+int bop_share_uniform(const char *name) {
+  if (!name) return 0;
+  int s = bop_share_find(BOP_ANY_RECV, name);
+  if (s) return s;
+  s = bop_share_find(TY_STRING, name);
+  int a = bop_share_find(BOP_ANY_ARRAY, name), h = bop_share_find(BOP_ANY_HASH, name);
+  return s && s == a && s == h ? s : 0;
+}
+int bop_share_kinds(const char *name, int *out, int max) {
+  static const TyKind fams[] = { BOP_ANY_RECV, TY_STRING, BOP_ANY_ARRAY, BOP_ANY_HASH };
+  int n = 0;
+  if (!name) return 0;
+  for (size_t i = 0; i < sizeof fams / sizeof fams[0] && n < max; i++) {
+    int s = bop_share_find(fams[i], name), j = 0;
+    /* The rows tell what a String's identity does: a Hash's key is the
+       frozen copy the Hash made, so keys and key answer no String handed
+       in (PURE). The key object itself is what a class fact tracks, and
+       those answer it: a container of the elements, an element. */
+    if (fams[i] == BOP_ANY_HASH && s == BSH_PURE && sp_streq(name, "keys")) s = BSH_SUB;
+    if (fams[i] == BOP_ANY_HASH && s == BSH_PURE && sp_streq(name, "key")) s = BSH_ELEM;
+    if (!s) continue;
+    while (j < n && out[j] != s) j++;
+    if (j == n) out[n++] = s;
+  }
+  return n;
+}
 
 int bop_share_self_answer(const char *name, int has_block) {
   size_t n = name ? strlen(name) : 0;
