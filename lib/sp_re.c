@@ -531,7 +531,9 @@ sp_oint sp_poly_match_index(sp_RbVal a, sp_RbVal b) {SP_GC_ROOT_RBVAL(a);SP_GC_R
   if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_REGEX) b = sp_box_str(sp_re_operand(b, 1));
   if (!sp_poly_match_pair(a, b, &p, &s)) return sp_oint_nil();
   sp_int r = sp_re_match(p, s);
-  return r < 0 ? sp_oint_nil() : sp_oint_of(r);
+  /* a character position, as the typed form answers: sp_re_match's is a
+     byte offset, which is not one past a multibyte character */
+  return r < 0 ? sp_oint_nil() : sp_oint_of(sp_str_byte_to_char(s, r));
 }
 void sp_re_expand_rep(const mrb_regexp_pattern *pat,
                              char **out_io, size_t *olen_io, size_t *cap_io,
