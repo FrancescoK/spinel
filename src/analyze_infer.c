@@ -2784,6 +2784,14 @@ const BuiltinOp *an_bop_find_arg(Compiler *c, int id, TyKind rt, const char *nam
   return op;
 }
 
+/* bop_result_args with the call's arguments' kinds from infer_type, for the
+   rows whose result turns on them (BOPR_ARRAY_PLUS, BOPR_ARRAY_SETOP); any
+   other row answers as bop_result does */
+TyKind an_bop_result(Compiler *c, const BuiltinOp *op, TyKind rt, int argc, const int *argv) {
+  AnBopArgs a = { c, argv };
+  return bop_result_args(op, rt, argc, an_bop_arg_type, &a);
+}
+
 /* Does the program give a builtin class or module (String, Comparable,
    Kernel, Object ...) an instance method of its own, by a def in it or a
    module it includes or prepends? Shape alone, so asked once per scope
@@ -2851,15 +2859,6 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
        arithmetic, even when the count `n` widened to poly under promote. */
     if ((ty_is_array(rt) || rt == TY_POLY_ARRAY) && sp_streq(name, "*") && argc == 1)
       { *out = rt; return 1; }
-    /* `arr - x` / `arr & x` / `arr | x` with a poly operand are SET operations,
-       not arithmetic. codegen coerces the operand at run time -- an Array
-       becomes a poly array, anything else raises CRuby's TypeError -- so the
-       result is a poly array. Typed as arithmetic instead, `-` reached
-       sp_poly_sub, which had no array case and answered "no implicit
-       conversion of Array into Array" on two real Arrays (#3475). */
-    if ((ty_is_array(rt) || rt == TY_POLY_ARRAY) && argc == 1 &&
-        is_set_op(name))
-      { *out = TY_POLY_ARRAY; return 1; }
     /* String operators with a poly operand are NOT poly arithmetic: `str % x`
        is printf formatting, `str + x` is concatenation, `str * n` is repeat --
        all yield a string. Defer them to the rt==TY_STRING path below. */
@@ -5014,13 +5013,6 @@ static int infer_operator_call(Compiler *c, int id, const NodeTable *nt, const c
       }
       { *out = TY_UNKNOWN; return 1; }
     }
-    /* array + same-kind -> same kind; different-kind -> poly_array */
-    if (sp_streq(name, "+") && ty_is_array(rt) && a0 == rt) { *out = rt; return 1; }
-    if (sp_streq(name, "+") && ty_is_array(rt) && ty_is_array(a0) && a0 != rt) { *out = TY_POLY_ARRAY; return 1; }
-    /* typed array +/- an empty literal [] (a0 UNKNOWN) keeps the receiver kind */
-    if ((sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "&") ||
-         sp_streq(name, "|") || sp_streq(name, "union") || sp_streq(name, "difference") ||
-         sp_streq(name, "intersection")) && ty_is_array(rt) && a0 == TY_UNKNOWN) { *out = rt; return 1; }
     /* array * int -> same array type (repeat); array * string -> join string */
     if (sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && a0 == TY_INT) { *out = rt; return 1; }
     if (sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && a0 == TY_STRING) { *out = TY_STRING; return 1; }
@@ -6414,30 +6406,6 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
     if (sp_streq(name, "options")) { *out = TY_INT; return 1; }
   }
 
-  /* array set operations: &, intersection, |, union, -, difference. The named
-     forms are variadic (fold over each argument); the operators are binary. */
-  if (recv >= 0 && argc >= 1 && ty_is_array(rt) &&
-      is_set_op(name)) {
-    /* every operand of the receiver's kind, or an empty [] (TY_UNKNOWN):
-       the result is that kind. Any array of another kind, or a boxed
-       operand of a variadic form: the codegen boxes the operands to poly
-       and runs the poly set op, so the result is a poly array. */
-    int same = 1, poly = 1;
-    for (int j = 0; j < argc; j++) {
-      TyKind aj = j == 0 ? a0 : infer_type(c, argv[j]);
-      if (aj == rt || aj == TY_UNKNOWN) continue;
-      same = 0;
-      if (!ty_is_array(aj) && !(aj == TY_POLY && argc > 1)) poly = 0;
-    }
-    if (same) { *out = rt; return 1; }
-    if (poly) { *out = TY_POLY_ARRAY; return 1; }
-  }
-  /* The variadic set operations with NO argument answer a copy of the
-     receiver, and fetch_values with none answers an empty Array; only the
-     union form had an arm, so the others were refused outright (#3851). */
-  if (recv >= 0 && argc == 0 && ty_is_array(rt) &&
-      (is_named_set_operator(name)))
-    { *out = rt; return 1; }
   /* Array#intersect?(other) -> bool */
   if (recv >= 0 && argc == 1 && sp_streq(name, "intersect?") && ty_is_array(rt))
     { *out = TY_BOOL; return 1; }

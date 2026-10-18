@@ -2380,13 +2380,15 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "sort",                  0,   0, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_SORT },
   { BOP_ANY_ARRAY, "uniq",                  0,   0, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_UNIQ },
   { BOP_ANY_ARRAY, "replace",               1,   1, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_REPLACE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
-  { BOP_ANY_ARRAY, "+",                     1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_PLUS, NULL, 0, 0, BOPF_ARGS_BUILTIN },
-  { BOP_ANY_ARRAY, "&",                     1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP, NULL, 0, 0, BOPF_ARGS_BUILTIN },
-  { BOP_ANY_ARRAY, "|",                     1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP, NULL, 0, 0, BOPF_ARGS_BUILTIN },
-  { BOP_ANY_ARRAY, "-",                     1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP, NULL, 0, 0, BOPF_ARGS_BUILTIN },
-  { BOP_ANY_ARRAY, "intersection",          1, 127, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP, NULL, 0, 0, BOPF_ARGS_BUILTIN },
-  { BOP_ANY_ARRAY, "union",                 1, 127, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP, NULL, 0, 0, BOPF_ARGS_BUILTIN },
-  { BOP_ANY_ARRAY, "difference",            1, 127, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  /* + & | - and the named set operations state their result by the operands'
+     kinds (bop_result_args): the named forms fold it over every operand. */
+  { BOP_ANY_ARRAY, "+",                     1,   1, BF_ANY,      BOPR_ARRAY_PLUS,  BOPE_ARRAY_PLUS, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { BOP_ANY_ARRAY, "&",                     1,   1, BF_ANY,      BOPR_ARRAY_SETOP, BOPE_ARRAY_SETOP, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { BOP_ANY_ARRAY, "|",                     1,   1, BF_ANY,      BOPR_ARRAY_SETOP, BOPE_ARRAY_SETOP, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { BOP_ANY_ARRAY, "-",                     1,   1, BF_ANY,      BOPR_ARRAY_SETOP, BOPE_ARRAY_SETOP, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { BOP_ANY_ARRAY, "intersection",          1, 127, BF_ANY,      BOPR_ARRAY_SETOP, BOPE_ARRAY_SETOP, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { BOP_ANY_ARRAY, "union",                 1, 127, BF_ANY,      BOPR_ARRAY_SETOP, BOPE_ARRAY_SETOP, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { BOP_ANY_ARRAY, "difference",            1, 127, BF_ANY,      BOPR_ARRAY_SETOP, BOPE_ARRAY_SETOP, NULL, 0, 0, BOPF_ARGS_BUILTIN },
   { BOP_ANY_ARRAY, "intersect?",            1,   1, BF_ANY,      TY_BOOL,       BOPE_ARRAY_INTERSECT_P, NULL, 0, 0, BOPF_ARGS_BUILTIN },
   { BOP_ANY_ARRAY, "sum",                   0,   0, BF_NONE,     BOPR_ARRAY_SUM, BOPE_ARRAY_SUM0 },
   { BOP_ANY_ARRAY, "compact!",              0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_ARRAY_COMPACT_BANG, NULL, 0, 0, BOPF_SELF_OR_NIL },
@@ -2696,8 +2698,36 @@ TyKind bop_result(const BuiltinOp *op, TyKind rt) {
   case (int)BOPR_ARRAY_INDEX:
     return rt == TY_INT_ARRAY || rt == TY_STR_ARRAY || rt == TY_FLOAT_ARRAY ? TY_POLY : TY_INT;
   case (int)BOPR_ARRAY_TUPLES: return rt == TY_POLY_ARRAY ? TY_POLY_ARRAY : TY_ENUMERATOR;
+  /* the operands' kinds decide these (bop_result_args) */
+  case (int)BOPR_ARRAY_PLUS:
+  case (int)BOPR_ARRAY_SETOP: return TY_UNKNOWN;
   default:                  return op->result;
   }
+}
+
+TyKind bop_result_args(const BuiltinOp *op, TyKind rt, int argc, BopArgKind arg_of, const void *ud) {
+  if (op->result != BOPR_ARRAY_PLUS && op->result != BOPR_ARRAY_SETOP) return bop_result(op, rt);
+  if (argc < 1) return TY_UNKNOWN;
+  /* An Array of the receiver's kind, or an untyped operand (an empty
+     literal), keeps the receiver's kind; another Array's kind gives the
+     poly array. A boxed operand is coerced at run time: + is then boxed and
+     the set operations give a poly array. Any other operand raises: no kind.
+     + takes one operand; the named set operations fold over all of them,
+     the result being the receiver's kind only if every operand keeps it. */
+  if (op->result == BOPR_ARRAY_PLUS) {
+    TyKind a0 = arg_of(ud, 0);
+    if (a0 == rt || a0 == TY_UNKNOWN) return rt;
+    if (ty_is_array(a0)) return TY_POLY_ARRAY;
+    return a0 == TY_POLY ? TY_POLY : TY_UNKNOWN;
+  }
+  int same = 1, boxable = 1;
+  for (int j = 0; j < argc; j++) {
+    TyKind aj = arg_of(ud, j);
+    if (aj == rt || aj == TY_UNKNOWN) continue;
+    same = 0;
+    if (!ty_is_array(aj) && aj != TY_POLY) boxable = 0;
+  }
+  return same ? rt : boxable ? TY_POLY_ARRAY : TY_UNKNOWN;
 }
 
 int bop_covers(TyKind rt) {

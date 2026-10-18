@@ -304,6 +304,13 @@ static int emit_op_pstatus_eq(Compiler *c, const BopCtx *x, Buf *b) {
   return 1;
 }
 
+/* an argument's kind, for a row's argument guard */
+typedef struct { const Compiler *c; const int *argv; } BopArgs;
+static TyKind bop_arg_ntype(const void *ud, int i) {
+  const BopArgs *a = ud;
+  return comp_ntype(a->c, a->argv[i]);
+}
+
 /* --plan-check: the row codegen emitted the call with should be the row
    inference answered it with (the same receiver kind, name and result; a
    row guarded on its first argument stands for its unguarded sibling).
@@ -331,18 +338,23 @@ static void plan_check_observe(Compiler *c, int id, TyKind rt, const BuiltinOp *
      it (a String bang's value form runs the plain method), so the row
      inference chose for the original name says nothing about this one. */
   if (inf && !sp_streq(inf->name, op->name)) return;
+  /* a row whose result turns on the arguments' kinds states it for the
+     arguments the call has */
+  int argc = 0;
+  const int *argv = call_args(c->nt, id, &argc);
+  BopArgs ba = { c, argv };
   if (inf && inf->recv == op->recv && sp_streq(inf->name, op->name) &&
-      bop_result(inf, rt) == bop_result(op, rt)) return;
+      bop_result_args(inf, rt, argc, bop_arg_ntype, &ba) == bop_result_args(op, rt, argc, bop_arg_ntype, &ba)) return;
   if (inf && inf->recv != op->recv)
     fprintf(stderr, "plan-check: respecialized: node %d %s#%s: codegen row %s, inference row %s\n",
             id, ty_name(rt), op->name, ty_name(op->recv), ty_name(inf->recv));
   else if (inf)
     fprintf(stderr, "plan-check: conflict: node %d %s#%s: codegen row %d..%d -> %s, inference row %s#%s -> %s\n",
-            id, ty_name(rt), op->name, op->argc_min, op->argc_max, ty_name(bop_result(op, rt)),
-            ty_name(inf->recv), inf->name, ty_name(bop_result(inf, rt)));
+            id, ty_name(rt), op->name, op->argc_min, op->argc_max, ty_name(bop_result_args(op, rt, argc, bop_arg_ntype, &ba)),
+            ty_name(inf->recv), inf->name, ty_name(bop_result_args(inf, rt, argc, bop_arg_ntype, &ba)));
   else
     fprintf(stderr, "plan-check: unrecorded: node %d %s#%s: codegen row %d..%d -> %s, inference answered without a row\n",
-            id, ty_name(rt), op->name, op->argc_min, op->argc_max, ty_name(bop_result(op, rt)));
+            id, ty_name(rt), op->name, op->argc_min, op->argc_max, ty_name(bop_result_args(op, rt, argc, bop_arg_ntype, &ba)));
 }
 
 static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *) = {
@@ -448,13 +460,6 @@ static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *)
   [BOPE_PROC_SOURCE_LOCATION] = emit_op_proc_source_location,
   [BOPE_ARRAY_PRED_CLASS] = emit_op_array_pred_class,
 };
-
-/* an argument's kind, for a row's argument guard */
-typedef struct { const Compiler *c; const int *argv; } BopArgs;
-static TyKind bop_arg_ntype(const void *ud, int i) {
-  const BopArgs *a = ud;
-  return comp_ntype(a->c, a->argv[i]);
-}
 
 static int emit_builtin_op_ex(Compiler *c, int id, int recv, TyKind rt, const char *name,
                               const char *rtext, int t0, int stage, Buf *b) {

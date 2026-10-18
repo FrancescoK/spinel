@@ -706,10 +706,11 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         (argc == 1 || (argc == 0 && sp_streq(name, "permutation"))) &&
         !an_blockless_tuples_kept(c, id))
       { *out = TY_ENUMERATOR; return 1; }
-    /* builtin-op rows (builtin_ops.c) */
+    /* builtin-op rows (builtin_ops.c); + & | - and the named set operations
+       state their result by the operands' kinds */
     {
       const BuiltinOp *op = an_bop_find(c, id, BOP_ANY_ARRAY, name, argc, block >= 0);
-      if (op && (*out = bop_result(op, rt)) != TY_UNKNOWN) return 1;
+      if (op && (*out = an_bop_result(c, op, rt, argc, argv)) != TY_UNKNOWN) return 1;
     }
     /* a blockless map/collect is a usable Enumerator too (size/class/next);
        chained block forms (map.with_index { }) are typed by their own arms
