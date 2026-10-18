@@ -1134,6 +1134,12 @@ static void cf_bind_block(CF *f, int mi, int blk) {
 /* ---- calls ---- */
 
 static void cf_construct(CF *f, int v, int x, const int *argv, int argc, int blk, const char *nm);
+/* a subclass of Array, Hash or String: its instances are that container */
+static int cf_container_class(Compiler *c, int k) {
+  if (k < 0 || k >= c->nclasses) return 0;
+  ClassInfo *ci = &c->classes[k];
+  return ci->ary_root || ci->ary_hash || ci->ary_str;
+}
 
 /* an iteration that drops its block's values */
 static int cf_drops_block_value(const char *nm) {
@@ -1303,7 +1309,18 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
    method the compiler supplies, which answers as the builtin it is */
 static int cf_user_target(CF *f, int v, int mi, const int *argv, int argc, int blk) {
   if (mi < 0) return 0;
-  if (cf_prelude_scope(f, mi)) return 0;
+  if (cf_prelude_scope(f, mi)) {
+    /* the compiler's own answer, which the caller takes as the builtin's;
+       (directed) its body runs too, and what it hands back (state a
+       class keeps: ThreadGroup's __groups) is the same object at each
+       call, which the builtin's answer, one per call, is not */
+    if (f->directed) {
+      if (v >= 0) cf_flow(f, f->ret_el[mi], v);
+      cf_bind_args(f, mi, argv, argc);
+      cf_bind_block(f, mi, blk);
+    }
+    return 0;
+  }
   if (v >= 0) cf_flow(f, f->ret_el[mi], v);
   cf_bind_args(f, mi, argv, argc);
   cf_bind_block(f, mi, blk);
@@ -1315,6 +1332,10 @@ static void cf_construct(CF *f, int v, int x, const int *argv, int argc, int blk
   Compiler *c = f->c;
   const NodeTable *nt = f->nt;
   cf_add_set(f, v, f->own[x]);
+  /* (directed) an instance of a subclass of Array, Hash or String is a
+     container whose contents the walk does not follow (its own methods
+     fill it through self) */
+  if (f->directed && cf_container_class(c, x)) cf_ptop_set(f, v);
   ClassInfo *k = &c->classes[x];
   int cn = sp_streq(nm, "new") ? comp_cmethod_in_chain(c, x, "new", NULL) : -1;
   if (cn >= 0 && cf_user_target(f, v, cn, argv, argc, blk)) return;
@@ -1537,7 +1558,10 @@ static void cf_call(CF *f, int v) {
         cf_add_set(f, v, f->desc[s->class_id]);
         /* each class as `X.new` builds it: its initialize, or a Struct's
            or Data's members, which have none */
-        for (int i = 0; i < ds->n; i++) cf_construct(f, -1, ds->cls[i], argv, argc, blk, nm);
+        for (int i = 0; i < ds->n; i++) {
+          cf_construct(f, -1, ds->cls[i], argv, argc, blk, nm);
+          if (f->directed && cf_container_class(c, ds->cls[i])) cf_ptop_set(f, v);
+        }
         return;
       }
       if (s->is_cmethod) {
@@ -1847,7 +1871,7 @@ static void cf_node(CF *f, int v) {
     else if (s->def_node < 0 && cf_owner_block(f, v, 0) >= 0) cf_all(f, v);
     /* a top-level def is Object's, and runs for any object (a Kernel
        reopening's function copy is one): its self is anything */
-    else if (f->directed && s->def_node >= 0 && s->class_id < 0 && !s->is_cmethod) cf_all(f, v);
+    else if (s->def_node >= 0 && s->class_id < 0 && !s->is_cmethod) cf_all(f, v);
     return;
   }
   case NK_ArrayNode: {
@@ -2021,10 +2045,10 @@ static void cf_node(CF *f, int v) {
   case NK_ConstantReadNode: case NK_ConstantPathNode: {
     const char *nm = nt_str(nt, v, "name");
     if (!nm) { cf_all(f, v); return; }
-    /* (directed) a class body's `m` / `self.m`, which the body desugar
-       sends to the class: in a block run under another self it is that
-       self (ie_rself_cmethod_call) */
-    if (f->directed && f->par && v < f->nnodes && f->par[v] >= 0 && nt_kind(nt, f->par[v]) == NK_CallNode &&
+    /* a class body's `m` / `self.m`, which the body desugar sends to the
+       class: in a block run under another self it is that self
+       (ie_rself_cmethod_call) */
+    if (f->par && v < f->nnodes && f->par[v] >= 0 && nt_kind(nt, f->par[v]) == NK_CallNode &&
         nt_ref(nt, f->par[v], "receiver") == v && nt_int(nt, f->par[v], "self_call", 0) && cf_in_exec_block(f, v)) {
       cf_all(f, v);
       return;
@@ -2437,6 +2461,40 @@ static void cf_why_report(CF *f) {
   free(roots); free(byline); free(size); free(recv_any);
 }
 
+/* SPINEL_CLS_FACTS: each call's receiver fact, as the oracle reads it */
+static void cf_dump_facts(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    /* a call on self has no fact of its own: a consumer holds every
+       class there, and so does the dump */
+    int r = nt_ref(nt, id, "receiver");
+    const ClsSet *s = r >= 0 ? cls_fact_node(c, r) : NULL;
+    const char *fp = nt_file_path(nt, (int)nt_int(nt, id, "node_file", 0));
+    fprintf(stderr, "cls-fact: %s:%d %s receiver:", fp && *fp ? fp : "?", (int)nt_int(nt, id, "node_line", 0), nt_str(nt, id, "name") ? nt_str(nt, id, "name") : "?");
+    if (!s) fprintf(stderr, r < 0 ? " ANY self" : " ANY");
+    else if (s->n == 0) fprintf(stderr, " none");
+    else for (int i = 0; i < s->n; i++) {
+      int k = s->cls[i] >= c->nclasses ? s->cls[i] - c->nclasses : s->cls[i];
+      /* the Ruby name, as class_ruby_name builds it (a singleton
+         subclass is its parent; a segment qualify_colliding_classes
+         rewrote is its leaf), without its cache: the name is not
+         settled this early */
+      char cn[512] = ""; int chain[16], d = 0;
+      for (int e = singleton_visible_ci(c, k); e >= 0 && d < 16; e = c->classes[e].enclosing_class) chain[d++] = e;
+      for (int q = d - 1; q >= 0; q--) {
+        const char *seg = c->classes[chain[q]].name ? c->classes[chain[q]].name : "?";
+        const char *t = q < d - 1 ? strstr(seg, "__") : NULL;
+        while (t) { seg = t + 2; t = strstr(seg, "__"); }
+        size_t l = strlen(cn);
+        snprintf(cn + l, sizeof cn - l, "%s%s", q < d - 1 ? "::" : "", seg);
+      }
+      fprintf(stderr, s->cls[i] >= c->nclasses ? " Class(%s)" : " %s", cn);
+    }
+    if (s && s->bv) fprintf(stderr, " +builtin");
+    fprintf(stderr, "\n");
+  }
+}
+
 static void cf_solve(Compiler *c, int directed, int dump_facts) {
   const NodeTable *nt = c->nt;
   CF f;
@@ -2444,10 +2502,10 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
   f.directed = directed;
   f.c = c; f.nt = nt; f.nnodes = nt->count;
   f.par = du_parent_map(nt);
-  /* (directed) a receiver a pass gave a call after the map was made (`r`
-     -> `self.r`) has the call as its parent, so the blocks around it are
+  /* a receiver a pass gave a call after the map was made (`r` ->
+     `self.r`) has the call as its parent, so the blocks around it are
      seen */
-  if (directed && f.par)
+  if (f.par)
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
       int r = nt_ref(nt, id, "receiver");
       if (r >= 0 && r < nt->count && f.par[r] < 0) f.par[r] = id;
@@ -2541,6 +2599,14 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
     f.desc[k] = cf_pool(&f, &s);
     f.self_el[k] = cf_new_el(&f);
     f.set[f.self_el[k]] = f.desc[k];
+    /* (directed) self in a method an Array, Hash or String subclass runs
+       is such a container (cf_construct) */
+    if (directed) {
+      const ClsSet *ds = &f.pool[f.desc[k]];
+      int box = ds->all;
+      for (int i = 0; i < ds->n && !box; i++) box = cf_container_class(c, ds->cls[i]);
+      if (box) cf_ptop_set(&f, f.self_el[k]);
+    }
     /* a class or module the compiler supplies, or one of the runtime's the
        program reopens, runs for any object */
     if (c->classes[k].def_node >= 0 && nt_int(nt, c->classes[k].def_node, "node_bi", 0) != 0) cf_all(&f, f.self_el[k]);
@@ -2622,37 +2688,7 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
   for (int v = 0; v < nt->count; v++) c->cls_fact[v] = cf_set_of(&f, v);
   c->cls_fact_n = nt->count;
   c->cls_pool = f.pool; c->ncls_pool = f.npool;
-  if (dump_facts) {
-    NT_FOREACH_KIND(nt, NK_CallNode, id) {
-      /* a call on self has no fact of its own: a consumer holds every
-         class there, and so does the dump */
-      int r = nt_ref(nt, id, "receiver");
-      const ClsSet *s = r >= 0 ? cls_fact_node(c, r) : NULL;
-      const char *fp = nt_file_path(nt, (int)nt_int(nt, id, "node_file", 0));
-      fprintf(stderr, "cls-fact: %s:%d %s receiver:", fp && *fp ? fp : "?", (int)nt_int(nt, id, "node_line", 0), nt_str(nt, id, "name") ? nt_str(nt, id, "name") : "?");
-      if (!s) fprintf(stderr, r < 0 ? " ANY self" : " ANY");
-      else if (s->n == 0) fprintf(stderr, " none");
-      else for (int i = 0; i < s->n; i++) {
-        int k = s->cls[i] >= c->nclasses ? s->cls[i] - c->nclasses : s->cls[i];
-        /* the Ruby name, as class_ruby_name builds it (a singleton
-           subclass is its parent; a segment qualify_colliding_classes
-           rewrote is its leaf), without its cache: the name is not
-           settled this early */
-        char cn[512] = ""; int chain[16], d = 0;
-        for (int e = singleton_visible_ci(c, k); e >= 0 && d < 16; e = c->classes[e].enclosing_class) chain[d++] = e;
-        for (int q = d - 1; q >= 0; q--) {
-          const char *seg = c->classes[chain[q]].name ? c->classes[chain[q]].name : "?";
-          const char *t = q < d - 1 ? strstr(seg, "__") : NULL;
-          while (t) { seg = t + 2; t = strstr(seg, "__"); }
-          size_t l = strlen(cn);
-          snprintf(cn + l, sizeof cn - l, "%s%s", q < d - 1 ? "::" : "", seg);
-        }
-        fprintf(stderr, s->cls[i] >= c->nclasses ? " Class(%s)" : " %s", cn);
-      }
-      if (s && s->bv) fprintf(stderr, " +builtin");
-      fprintf(stderr, "\n");
-    }
-  }
+  if (dump_facts) cf_dump_facts(c);
   if (f.why) cf_why_report(&f);
   /* the pass's own */
   free(f.par); free(f.uf); free(f.set); free(f.ph);
@@ -2765,18 +2801,74 @@ static void cf_flow_compare(Compiler *c, const int *df, const ClsSet *dp, int dn
   free(amemo);
 }
 
+/* The facts both walks hold: each is every class a value can be, so a
+   class only one of them names is not one the value is. The directed walk
+   is the narrower almost everywhere, but past its summary cap (CF_PTS_MAX)
+   it joins contents the unified walk keeps apart. */
+static void cf_meet(Compiler *c, const int *df, const ClsSet *dp, int dn, int **mf, ClsSet **mp, int *mn, int *mnp) {
+  int n = c->cls_fact_n < dn ? c->cls_fact_n : dn;
+  int cap = 256, np = 2, hcap = 1024;
+  ClsSet *pool = malloc(sizeof *pool * (size_t)cap);
+  int *ht = malloc(sizeof(int) * (size_t)hcap), *fact = malloc(sizeof(int) * ((size_t)n + 1));
+  if (!pool || !ht || !fact) cf_oom();
+  memset(pool, 0, sizeof *pool * 2);
+  pool[CF_ALL].all = 1;
+  for (int i = 0; i < hcap; i++) ht[i] = -1;
+  for (int v = 0; v < n; v++) {
+    int u = c->cls_fact[v], d = df[v];
+    const ClsSet *us = &c->cls_pool[u], *ds = &dp[d];
+    ClsSet m; memset(&m, 0, sizeof m);
+    if (u == CF_ALL && d == CF_ALL) { fact[v] = CF_ALL; continue; }
+    if (u == CF_ALL) m = *ds;
+    else if (d == CF_ALL) m = *us;
+    else {
+      m.bv = (unsigned char)(us->bv && ds->bv);
+      for (int i = 0, j = 0; i < us->n && j < ds->n; ) {
+        if (us->cls[i] < ds->cls[j]) i++;
+        else if (ds->cls[j] < us->cls[i]) j++;
+        else { m.cls[m.n++] = us->cls[i]; i++; j++; }
+      }
+    }
+    if (m.n == 0 && !m.bv) { fact[v] = CF_EMPTY; continue; }
+    unsigned h = cf_set_hash(&m) & (unsigned)(hcap - 1);
+    while (ht[h] >= 0 && memcmp(&pool[ht[h]], &m, sizeof m)) h = (h + 1) & (unsigned)(hcap - 1);
+    if (ht[h] >= 0) { fact[v] = ht[h]; continue; }
+    if (np == cap) { cap *= 2; if (!(pool = realloc(pool, sizeof *pool * (size_t)cap))) cf_oom(); }
+    pool[np] = m; ht[h] = np; fact[v] = np++;
+    if (np * 2 > hcap) {
+      hcap *= 2;
+      if (!(ht = realloc(ht, sizeof(int) * (size_t)hcap))) cf_oom();
+      for (int i = 0; i < hcap; i++) ht[i] = -1;
+      for (int k = 2; k < np; k++) {
+        unsigned g = cf_set_hash(&pool[k]) & (unsigned)(hcap - 1);
+        while (ht[g] >= 0) g = (g + 1) & (unsigned)(hcap - 1);
+        ht[g] = k;
+      }
+    }
+  }
+  free(ht);
+  *mf = fact; *mp = pool; *mn = n; *mnp = np;
+}
+
 void an_cls_facts(Compiler *c) {
   const char *flow = getenv("SPINEL_CLS_FLOW");
-  int *df = NULL, dn = 0; ClsSet *dp = NULL;
-  /* use: the directed sets are the facts (the oracle, experiments) */
-  if (flow && sp_streq(flow, "use")) { cf_solve(c, 1, getenv("SPINEL_CLS_FACTS") != NULL); return; }
-  if (flow) {
-    cf_solve(c, 1, sp_streq(flow, "dump"));
-    df = c->cls_fact; dp = c->cls_pool; dn = c->cls_fact_n;
-    c->cls_fact = NULL; c->cls_pool = NULL; c->cls_fact_n = 0; c->ncls_pool = 0;
-  }
-  cf_solve(c, 0, getenv("SPINEL_CLS_FACTS") != NULL);
-  if (df) { cf_flow_compare(c, df, dp, dn); free(df); free(dp); }
+  int dump = getenv("SPINEL_CLS_FACTS") != NULL;
+  /* SPINEL_CLS_FLOW=unified or =directed takes one walk's facts, to tell
+     them apart when a program's answer changes */
+  if (flow && sp_streq(flow, "unified")) { cf_solve(c, 0, dump); return; }
+  if (flow && sp_streq(flow, "directed")) { cf_solve(c, 1, dump); return; }
+  /* the facts both walks hold (#8837); any other SPINEL_CLS_FLOW value
+     compares the two (cls-flow: lines) */
+  cf_solve(c, 1, 0);
+  int *df = c->cls_fact, dn = c->cls_fact_n; ClsSet *dp = c->cls_pool;
+  c->cls_fact = NULL; c->cls_pool = NULL; c->cls_fact_n = 0; c->ncls_pool = 0;
+  cf_solve(c, 0, 0);
+  int *mf, mn, mnp; ClsSet *mp;
+  cf_meet(c, df, dp, dn, &mf, &mp, &mn, &mnp);
+  if (flow) { cf_flow_compare(c, df, dp, dn); fprintf(stderr, "cls-flow: (the facts, the meet of the two:)\n"); cf_flow_compare(c, mf, mp, mn); }
+  free(df); free(dp); free(c->cls_fact); free(c->cls_pool);
+  c->cls_fact = mf; c->cls_fact_n = mn; c->cls_pool = mp; c->ncls_pool = mnp;
+  if (dump) cf_dump_facts(c);
 }
 
 /* See compiler.h. */
