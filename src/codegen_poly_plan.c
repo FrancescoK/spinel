@@ -710,6 +710,40 @@ static void poly_arms_assert(Compiler *c, int id, const char *site, const PolyAr
   }
 }
 
+/* The arms of one dispatch, written apart and then put out with the classes
+   whose arms are the same text sharing one body: subclasses that call the
+   method they inherit. Each was its own copy of the call, and with the
+   method forced inline its own copy of the method, ten at every
+   `u.userinfo = v` on a URI, which held clang for half a minute on one file.
+   An arm is shared only when it is its class's label and a body that leaves
+   the switch, so no fallthrough moves. */
+static const char *arm_text_body(const ArmText *a) {
+  char lab[32];
+  int ll = snprintf(lab, sizeof lab, " case %d: ", a->k);
+  if (!a->t.p || strncmp(a->t.p, lab, (size_t)ll) != 0) return NULL;
+  const char *body = a->t.p + ll;
+  size_t n = strlen(body);
+  while (n > 0 && (body[n - 1] == ' ' || body[n - 1] == '}')) n--;
+  return n >= 6 && strncmp(body + n - 6, "break;", 6) == 0 ? body : NULL;
+}
+
+void arm_texts_flush(ArmText *a, int n, Buf *b) {
+  for (int i = 0; i < n; i++) {
+    if (!a[i].t.p) continue;
+    const char *body = arm_text_body(&a[i]);
+    if (!body) { buf_puts(b, a[i].t.p); free(a[i].t.p); a[i].t.p = NULL; continue; }
+    buf_printf(b, " case %d:", a[i].k);
+    for (int j = i + 1; j < n; j++) {
+      const char *bj = arm_text_body(&a[j]);
+      if (!bj || !sp_streq(bj, body)) continue;
+      buf_printf(b, " case %d:", a[j].k);
+      free(a[j].t.p); a[j].t.p = NULL;
+    }
+    buf_printf(b, " %s", body);
+    free(a[i].t.p); a[i].t.p = NULL;
+  }
+}
+
 /* The user-class arms of a zero-argument poly dispatch
    (emit_poly_method_dispatch): one `case` per class a boxed receiver can be
    at run time -- its method (or proc form), a reader, a native binding, an
@@ -741,7 +775,13 @@ void emit_poly_user_arms0(Compiler *c, int id, const char *name, int argc, TyKin
     free(old);
   }
   if (g_plan_check && served) cplan_served("poly-user0");
-  for (int i = 0; i < n; i++) emit_poly_user_arm0(c, id, name, ret, tv, tr, blk_tmp0, &arms[i], b);
+  ArmText *at = calloc((size_t)(n > 0 ? n : 1), sizeof *at);
+  for (int i = 0; i < n; i++) {
+    if (at) at[i].k = arms[i].key;
+    emit_poly_user_arm0(c, id, name, ret, tv, tr, blk_tmp0, &arms[i], at ? &at[i].t : b);
+  }
+  if (at) arm_texts_flush(at, n, b);
+  free(at);
   free(arms);
 }
 
@@ -1366,15 +1406,21 @@ void emit_poly_user_arms_n(Compiler *c, int id, const char *name, const PolyUser
   }
   if (!served && g_plan_check) fprintf(stderr, "plan-check: cplan-fallback: poly-user-n node %d %s\n", id, name);
   int j = 0, recv = nt_ref(c->nt, id, "receiver");
+  ArmText *at = calloc((size_t)(c->nclasses > 0 ? c->nclasses : 1), sizeof *at);
+  int nat = 0;
   for (int k = 0; k < c->nclasses; k++) {
     if (cls_fact_excludes(c, recv, k)) continue;   /* a class the receiver never holds has no arm (#8530) */
-    if (!served) { poly_user_arm_n_replay(c, id, name, U, k, b); continue; }
-    if (j < n && arms[j].key == k) { emit_poly_user_arm_n_plan(c, id, name, U, &arms[j], b); j++; continue; }
+    Buf *ab = at ? &at[nat].t : b;
+    if (at) at[nat++].k = k;
+    if (!served) { poly_user_arm_n_replay(c, id, name, U, k, ab); continue; }
+    if (j < n && arms[j].key == k) { emit_poly_user_arm_n_plan(c, id, name, U, &arms[j], ab); j++; continue; }
     Buf scratch; memset(&scratch, 0, sizeof scratch);
     if (poly_user_arm_n_replay(c, id, name, U, k, &scratch) && g_plan_check)
       fprintf(stderr, "plan-check: cplan-conflict: poly-user-n node %d %s: class %d: decided only\n", id, name, k);
     free(scratch.p);
   }
+  if (at) arm_texts_flush(at, nat, b);
+  free(at);
   free(arms);
 }
 

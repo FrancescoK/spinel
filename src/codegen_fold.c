@@ -12419,6 +12419,8 @@ static void emit_dispatch_per_arm(Compiler *c, int cid, const char *name, const 
   buf_printf(b, " _t%d; switch (", rtmp);
   emit_obj_dispatch_key(c, cid, selfptr, b);
   buf_puts(b, ") {");
+  ArmText *at = calloc((size_t)(c->nclasses > 0 ? c->nclasses : 1), sizeof *at);
+  int nat = 0;
   for (int k = 0; k < c->nclasses; k++) {
     if (!is_descendant(c, k, cid)) continue;
     int kd = -1;
@@ -12426,9 +12428,13 @@ static void emit_dispatch_per_arm(Compiler *c, int cid, const char *name, const 
     int kmi = dispatch_arm_scope(c, kmi0);
     if (kmi < 0) continue;
     nd_callee(c, g_nd_call_id, kmi0, kd, 1);
-    buf_printf(b, " case %d: ", k);
-    emit_dispatch_arm_call(c, kd, kmi, selfptr, argsNode, blk_tmp, ret, disp_ret, rtmp, b);
+    Buf *ab = at ? &at[nat].t : b;
+    if (at) at[nat++].k = k;
+    buf_printf(ab, " case %d: ", k);
+    emit_dispatch_arm_call(c, kd, kmi, selfptr, argsNode, blk_tmp, ret, disp_ret, rtmp, ab);
   }
+  if (at) arm_texts_flush(at, nat, b);
+  free(at);
   buf_puts(b, " default: ");
   int dmi = mi >= 0 && dispatch_arm_scope(c, mi) >= 0 ? dispatch_arm_scope(c, mi) : mi;
   if (dmi >= 0)
@@ -13281,6 +13287,8 @@ else {
   buf_printf(b, " _t%d; switch (", rtmp);
   emit_obj_dispatch_key(c, cid, selfptr, b);
   buf_puts(b, ") {");
+  ArmText *at = calloc((size_t)(c->nclasses > 0 ? c->nclasses : 1), sizeof *at);
+  int nat = 0;
   for (int k = 0; k < c->nclasses; k++) {
     if (!is_descendant(c, k, cid)) continue;
     int kd = -1;
@@ -13298,11 +13306,15 @@ else {
                c->classes[kd].c_name, kfn, c->classes[kd].c_name, selfptr);
     for (int a = 0; a < np; a++) emit_arm_arg(c, &c->scopes[kmi], a, atmp[a], atmp_ty[a], atmp_o[a], &_ac);
     buf_puts(&_ac, ")");
-    buf_printf(b, " case %d: { ", k);
-    emit_disp_arm_assign(c, &c->scopes[kmi], _ac.p, ret, disp_ret, rtmp, b);
-    buf_puts(b, "break; }");
+    Buf *ab = at ? &at[nat].t : b;
+    if (at) at[nat++].k = k;
+    buf_printf(ab, " case %d: { ", k);
+    emit_disp_arm_assign(c, &c->scopes[kmi], _ac.p, ret, disp_ret, rtmp, ab);
+    buf_puts(ab, "break; }");
     free(_ac.p);
   }
+  if (at) arm_texts_flush(at, nat, b);
+  free(at);
   /* When the method is defined only in descendants (m == NULL), the base class
      has no implementation. The default arm is unreachable (self is always a
      descendant that has the method), so emit a typed placeholder rather than a

@@ -1,0 +1,11 @@
+Base base ["base=y", "base 3 4"]
+A base ["base=y", "base 3 4"]
+B base ["base=y", "base 3 4"]
+C c ["c=y", "base 3 4"]
+D base ["base=y", "d 3 4"]
+base ["base=x", "base 1 2"]
+base ["base=x", "base 1 2"]
+base ["base=x", "base 1 2"]
+c ["c=x", "base 1 2"]
+base ["base=x", "d 1 2"]
+undefined method 'put'

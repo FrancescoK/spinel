@@ -2167,6 +2167,9 @@ int operand_may_change_string(Compiler *c, int n);
 /* Does the program give a Hash a default block anywhere? Only such a Hash runs code on a missing key. */
 int prog_has_hash_default_block(Compiler *c);
 int call_publishes_shared_handle(Compiler *c, int v);
+/* One class's arm of a dispatch switch, written apart (arm_texts_flush) */
+typedef struct { int k; Buf t; } ArmText;
+void arm_texts_flush(ArmText *a, int n, Buf *b);
 int emit_reader_override_handle(Compiler *c, int id, int cid, const char *name, const char *selfptr,
                                 const char *reader, int boxed, Buf *b);
 TyKind reader_override_ty(Compiler *c, int id, int cid, const char *name);
