@@ -1148,12 +1148,16 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
       rn9 = local_sole_range_node(c, rn9);
     int rleft = rn9 >= 0 ? nt_ref(nt, rn9, "left") : -1;
     int rright = rn9 >= 0 ? nt_ref(nt, rn9, "right") : -1;
-    /* a Float range held where no literal can be seen (a captured or
-       re-assigned variable, a call's answer) bisects its run-time bounds */
-    int fvar = rn9 < 0 && comp_ntype(c, recv) == TY_FLOAT_RANGE;
-    if (rn9 < 0 && !fvar) return 0;
     TyKind blt9 = rleft >= 0 ? comp_ntype(c, rleft) : TY_NIL;
     TyKind brt9 = rright >= 0 ? comp_ntype(c, rright) : TY_NIL;
+    /* a Float range held where no literal can be seen (a captured or
+       re-assigned variable, a call's answer) bisects its run-time bounds;
+       so does one whose literal's bounds are boxed (a boxed range's Float
+       arm, which reads the range the box holds) */
+    int bnum9 = (blt9 == TY_NIL || blt9 == TY_INT || blt9 == TY_FLOAT) &&
+                (brt9 == TY_NIL || brt9 == TY_INT || brt9 == TY_FLOAT);
+    int fvar = (rn9 < 0 || !bnum9) && comp_ntype(c, recv) == TY_FLOAT_RANGE;
+    if (rn9 < 0 && !fvar) return 0;
     /* A half-open Float range (..2.5), (1.5..): CRuby bisects the doubles
        themselves, in the order of their bit patterns (sp_f2key), so an
        infinite bound is a bound like any other. Its answer is the least
