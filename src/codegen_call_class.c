@@ -10,6 +10,7 @@
 #include "call_plan.h"
 #include "codegen_call_arms.h"
 #include "share.h"
+#include "value_pos.h"
 
 /* Does `obj.class.name`'s dispatch switch over cid and the classes below it
    have an arm that answers an sp_oint / sp_ofloat? Then the switch's value
@@ -1260,6 +1261,11 @@ const NativeMethod *native_assign_keeps(Compiler *c, int id) {
          share_node_elems_share(c, recv) ? m : NULL;
 }
 
+/* The edges the assignment walkers climb: the conditionals, a begin and its
+   rescue clauses (its body also when an else follows), not `||`, `&&` or a
+   rescue modifier. */
+enum { ASSIGN_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VP_BEGIN_BOTH };
+
 static int assign_value_slot(const NodeTable *nt, int p, int n);
 /* Is call id the value its own method answers: the last statement of the
    method's body, or of a branch body of a conditional, case or begin that
@@ -1308,18 +1314,12 @@ static int assign_is_returned(Compiler *c, int id, const int *par) {
 }
 
 /* Is n a place in node p whose value is p's value: a branch body, not a
-   condition, a case or pattern subject, a rescue's class list or a guard? */
+   condition, a case or pattern subject, a rescue's class list or a guard?
+   The value edges (value_pos.h) of an if, unless, case, case/in and begin
+   (its body beside an else too), but no `when` clause: the one a case's arm
+   hangs from is not climbed here. */
 static int assign_value_slot(const NodeTable *nt, int p, int n) {
-  switch (nt_kind(nt, p)) {
-  case NK_IfNode: case NK_UnlessNode: case NK_CaseNode: case NK_CaseMatchNode:
-    return n != nt_ref(nt, p, "predicate");
-  case NK_InNode: case NK_RescueNode:
-    return n == nt_ref(nt, p, "statements") || n == nt_ref(nt, p, "subsequent");
-  case NK_ElseNode: case NK_BeginNode: case NK_ParenthesesNode:
-    return 1;
-  default:
-    return 0;
-  }
+  return !is_when_node_type(nt_type(nt, p)) && vp_is_value_edge(nt, p, n, ASSIGN_CLIMB);
 }
 
 /* Is call id (through parentheses) the receiver of a String mutator or of
