@@ -599,6 +599,14 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
           EMIT_IV(); buf_printf(&conv, ", %d))", cid2);
         }
       }
+      else if (t == TY_UNKNOWN && nt_kind(nt, expr) == NK_CallNode && call_names_only_void_methods(c, expr)) {
+        /* a call on a method that answers nothing, a C void function (one
+           whose value is a call on a constant defined nowhere, which raises
+           NameError when it runs): evaluated for its effect, and read as
+           nil is, the empty string */
+        buf_puts(&conv, "((void)(");
+        EMIT_IV(); buf_puts(&conv, "), sp_str_empty)");
+      }
       else if (t == TY_UNKNOWN) {
         /* An untyped value (e.g. a method resolved only through an included
            module) is already emitted as a boxed sp_RbVal, so stringify it the
