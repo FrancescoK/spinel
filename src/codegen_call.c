@@ -26693,6 +26693,20 @@ int strbuf_self_reader_handle(Compiler *c, int id) {
   return rp.handle || rp.demand;
 }
 
+/* A body emitted for a class other than its own (a yielding method spliced
+   into a subclass's caller) types its bare call by its own class's
+   dispatch, which joins every override's answer into a box; the dispatch
+   from dispatch_cid can answer a narrower type, which the call boxes for
+   that slot. The type to box, else TY_UNKNOWN. */
+static TyKind implicit_self_narrowed_ty(Compiler *c, int id, const Scope *self, int dispatch_cid, int mi) {
+  if (dispatch_cid == self->class_id || self->is_cmethod || repr_of(c, id).as_ty != TY_POLY) return TY_UNKNOWN;
+  const Scope *m = &c->scopes[mi];
+  if (m->is_cmethod || (m->yields && nt_ref(c->nt, id, "block") >= 0)) return TY_UNKNOWN;
+  TyKind r = dispatch_ret_over(c, dispatch_cid, nt_str(c->nt, id, "name"), 0, mi, (TyKind)m->ret, id);
+  if (r == TY_POLY || r == TY_UNKNOWN || r == TY_VOID || r == TY_NIL) return TY_UNKNOWN;
+  return r;
+}
+
 int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -26767,6 +26781,15 @@ int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
   }
   if (mi >= 0) {
     if (emit_reopen_own_call(c, id, dispatch_cid, b)) return 1;
+    TyKind nty = implicit_self_narrowed_ty(c, id, self, dispatch_cid, mi);
+    if (nty != TY_UNKNOWN) {
+      Buf db; memset(&db, 0, sizeof db);
+      emit_dispatch(c, dispatch_cid, name, g_self, nt_ref(nt, id, "arguments"),
+                    nt_ref(nt, id, "block"), &db);
+      emit_boxed_text(c, nty, db.p ? db.p : "0", b);
+      free(db.p);
+      return 1;
+    }
     emit_dispatch(c, dispatch_cid, name, g_self, nt_ref(nt, id, "arguments"),
                   nt_ref(nt, id, "block"), b);
     return 1;
