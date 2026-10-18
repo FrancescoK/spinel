@@ -2212,6 +2212,9 @@ int comp_native_answer_class(Compiler *c, int cid, const char *name) {
   int r = c->classes[cid].nsub_root - 1;
   if (r < 0 || !name) return -1;
   if (comp_method_in_chain(c, cid, name, NULL) >= 0 || comp_reader_in_chain(c, cid, name, NULL)) return -1;
+  /* (nor an attribute writer of the program's) */
+  char base[256];
+  if (setter_base_name(name, base, sizeof base) && comp_writer_in_chain(c, cid, base, NULL)) return -1;
   return r;
 }
 
