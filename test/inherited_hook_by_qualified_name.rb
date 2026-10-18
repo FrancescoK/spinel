@@ -41,3 +41,13 @@ class Holder < Expr::Base
   class V3 < Syn::Base; end
 end
 p Syn::Base.seen.size
+
+# a path from the top does not look in those ancestors: the full name
+# decides again (a nested Expr keeps `::Expr` as written)
+module Syn
+  module Expr; end
+end
+class Holder < Expr::Base
+  class Lit < ::Expr::Base; end
+end
+p Holder::Lit.new.x, Syn::Base.seen.size

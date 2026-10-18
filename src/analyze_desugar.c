@@ -17019,7 +17019,7 @@ static void inh_add_name(ANameHash *h, const char *q) {
    it there, so `class Alias::Foo` is A::Foo. A path from the top (`::Foo`,
    `Object::Foo`) is taken as written; a segment found nowhere goes under the
    innermost scope. */
-typedef struct { ANameHash known, alias; char **target; int ntarget; } InhNames;
+typedef struct { ANameHash known, alias, anc; char **target; int ntarget; } InhNames;
 static void inh_resolve_path(InhNames *r, char **qn, const NodeTable *nt, const int *parent,
                              int id, int path, int ref, char *q, size_t cap) {
   char w[512], head[1024];
@@ -17047,6 +17047,25 @@ static void inh_resolve_path(InhNames *r, char **qn, const NodeTable *nt, const 
     if (a >= 0) { snprintf(q, cap, "%s%s", r->target[a], sep); return; }
   }
   snprintf(q, cap, "%s%s%s", in, *in ? "::" : "", p);
+}
+/* The qualified superclass of class node `id` (superclass `sc`), or NULL
+   when the ancestors of the enclosing class or module may supply its name:
+   Ruby looks there after the lexical scopes, which inh_resolve_path does
+   not follow, and inh_qindex_build marks such a class unsure. Those are
+   the ancestors any body of that class gave it before (`r->anc`) as well
+   as this one; a path from the top (`::Foo`) does not look there. */
+static char *inh_resolve_super(InhNames *r, char **qn, const NodeTable *nt, const int *parent,
+                               int id, int sc) {
+  NodeKind sk = nt_kind(nt, sc);
+  if (sk != NK_ConstantReadNode && sk != NK_ConstantPathNode) return NULL;
+  char w[512], sq[1024];
+  int rooted = 0;
+  cbs_path_text(nt, sc, w, sizeof w, &rooted);
+  int s = inh_scope_of(nt, parent, id);
+  if (!rooted && (inh_scope_has_ancestors(nt, s) || (s >= 0 && qn[s] && anh_has(&r->anc, qn[s]))))
+    return NULL;
+  inh_resolve_path(r, qn, nt, parent, id, sc, 1, sq, sizeof sq);
+  return strdup(sq);
 }
 static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0, char ***qsuper) {
   char **qn = calloc((size_t)(n0 > 0 ? n0 : 1), sizeof(char *));
@@ -17082,24 +17101,23 @@ static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0
     }
     if (k != NK_ClassNode && k != NK_ModuleNode) continue;
     int sc = k == NK_ClassNode ? nt_ref(nt, id, "superclass") : -1;
-    /* a superclass the enclosing body's ancestors may supply is left
-       unresolved (NULL): inh_qindex_build marks such a class unsure */
-    if (sc >= 0 && (nt_kind(nt, sc) == NK_ConstantReadNode || nt_kind(nt, sc) == NK_ConstantPathNode) &&
-        !inh_scope_has_ancestors(nt, inh_scope_of(nt, parent, id))) {
-      char sq[1024];
-      inh_resolve_path(&r, qn, nt, parent, id, sc, 1, sq, sizeof sq);
-      qs[id] = strdup(sq);
-    }
+    if (sc >= 0) qs[id] = inh_resolve_super(&r, qn, nt, parent, id, sc);
     inh_resolve_path(&r, qn, nt, parent, id, nt_ref(nt, id, "constant_path"), 0, q, sizeof q);
     qn[id] = strdup(q);
     if (!qn[id]) break;
     inh_add_name(&r.known, q);
+    if (inh_scope_has_ancestors(nt, id) && !anh_has(&r.anc, q)) {
+      char *ad = strdup(q);
+      if (!ad) break;
+      anh_add(&r.anc, ad);
+    }
   }
   for (int k = 0; k < r.known.n; k++) free((char *)r.known.key[k]);
   for (int k = 0; k < r.alias.n; k++) free((char *)r.alias.key[k]);
+  for (int k = 0; k < r.anc.n; k++) free((char *)r.anc.key[k]);
   for (int k = 0; k < r.ntarget; k++) free(r.target[k]);
   free(r.target);
-  anh_free(&r.known); anh_free(&r.alias);
+  anh_free(&r.known); anh_free(&r.alias); anh_free(&r.anc);
   return qn;
 }
 
