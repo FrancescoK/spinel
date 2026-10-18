@@ -2146,7 +2146,7 @@ static int emit_kind_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
   }
   /* a boxed index that may hold a Range (infer_array_call): an Integer
      reads an element, a Range a subarray */
-  if (sp_streq(name, "[]") && argc == 1 && a0 == TY_POLY && comp_ntype(c, id) == TY_POLY) {
+  if (is_slice_alias(name) && argc == 1 && a0 == TY_POLY && comp_ntype(c, id) == TY_POLY) {
     buf_puts(b, "sp_poly_index_poly("); emit_boxed(c, recv, b); buf_puts(b, ", ");
     emit_expr(c, argv[0], b); buf_puts(b, ")");
     { *out = 1; return 1; }

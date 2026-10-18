@@ -2427,6 +2427,46 @@ void emit_aset_range_held(Compiler *c, int id, int recv, TyKind rt, const int *a
   buf_puts(b, "; })");
 }
 
+/* `arr.slice!(i)` whose boxed index may be a Range (value_may_be_range),
+   typed boxed (infer_array_call): a Range removes the subarray, anything
+   else the element. Read as an Integer, a Range raised TypeError. */
+static int slice_bang_range_held(Compiler *c, int id, TyKind rt, int argc, const int *argv) {
+  if (argc != 1 || repr_of(c, argv[0]).as_ty != TY_POLY || repr_of(c, id).as_ty != TY_POLY) return 0;
+  TyKind et = ty_array_elem(rt);
+  if (rt != TY_POLY_ARRAY && et != TY_INT && et != TY_FLOAT && et != TY_STRING) return 0;
+  return value_may_be_range(c, argv[0]);
+}
+static void emit_slice_bang_range_held(Compiler *c, int id, int recv, TyKind rt, const int *argv, Buf *b) {
+  buf_puts(b, "({ ");
+  int tr = hold_operand(c, recv, rt, 0, ++g_tmp, 1, " ", b);
+  int rbind = view_bind(recv, "_t%d", tr);
+  int ti = ++g_tmp;
+  buf_printf(b, "sp_RbVal _t%d = ", ti); emit_expr(c, argv[0], b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? ", ti, ti, ti);
+  Buf ab; memset(&ab, 0, sizeof ab);
+  int bind = view_bind(argv[0], "(*(sp_Range *)_t%d.v.p)", ti);
+  int v = view_push(c, argv[0], TY_RANGE);
+  emit_call_array_arms(c, id, &ab, c->nt, "slice!", recv, 1, argv, rt);
+  view_pop(c, v);
+  view_unbind(bind);
+  emit_boxed_text(c, rt, ab.p ? ab.p : "NULL", b);
+  free(ab.p); memset(&ab, 0, sizeof ab);
+  buf_puts(b, " : ");
+  bind = view_bind(argv[0], "sp_poly_arg_int_chk(_t%d)", ti);
+  v = view_push(c, argv[0], TY_INT);
+  emit_call_array_arms(c, id, &ab, c->nt, "slice!", recv, 1, argv, rt);
+  view_pop(c, v);
+  view_unbind(bind);
+  view_unbind(rbind);
+  TyKind et = ty_array_elem(rt);
+  const char *e = ab.p ? ab.p : "";
+  if (rt == TY_POLY_ARRAY) buf_puts(b, e);
+  else if (et == TY_STRING) buf_printf(b, "sp_box_nullable_str(%s)", e);
+  else buf_printf(b, "%s(%s)", oint_box(et), e);
+  free(ab.p);
+  buf_puts(b, "; })");
+}
+
 /* an Array receiver: a store in expression position (a[i] = v, a[i, n] = src, a[range] = src),
    sum and the other methods of an empty literal, then the Array emitters (emit_array_call) */
 int emit_call_array_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
@@ -2442,6 +2482,10 @@ int emit_call_array_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
   }
   if (recv >= 0 && ty_is_array(rt) && sp_streq(name, "[]=") && argc == 2 && aset_range_held(c, rt, argv)) {
     emit_aset_range_held(c, id, recv, rt, argv, b);
+    return 1;
+  }
+  if (recv >= 0 && ty_is_array(rt) && sp_streq(name, "slice!") && slice_bang_range_held(c, id, rt, argc, argv)) {
+    emit_slice_bang_range_held(c, id, recv, rt, argv, b);
     return 1;
   }
   if (recv >= 0 && ty_is_array(rt) && sp_streq(name, "[]=") && argc == 2) {

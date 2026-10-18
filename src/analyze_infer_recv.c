@@ -1140,12 +1140,14 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       if (sp_streq(name, "permutation") && (argc == 1 || argc == 0) && block < 0) { *out = cmb; return 1; }
       if (sp_streq(name, "repeated_permutation") && argc == 1 && block < 0) { *out = cmb; return 1; }
       if (sp_streq(name, "repeated_combination") && argc == 1 && block < 0) { *out = cmb; return 1; } }
-    if (sp_streq(name, "slice") && argc == 1 && (nt_ref(nt, id, "block") < 0 || call_unused_block(c, id) >= 0))
-      /* slice(range) is a subarray; slice(i) one element (mirrors #[]) */
+    /* slice(range) is a subarray, slice(i) one element (mirrors #[]);
+       slice!(range) removes a subarray, slice!(i) one element. A boxed
+       index that may be a Range answers either, boxed. */
+    if ((sp_streq(name, "slice") && argc == 1 && (nt_ref(nt, id, "block") < 0 || call_unused_block(c, id) >= 0)) ||
+        (sp_streq(name, "slice!") && argc == 1)) {
+      if (a0 == TY_POLY && value_may_be_range(c, argv[0])) { *out = TY_POLY; return 1; }
       { *out = infer_type(c, argv[0]) == TY_RANGE ? rt : ty_array_elem(rt); return 1; }
-    if (sp_streq(name, "slice!") && argc == 1)
-      /* slice!(range) removes a subarray; slice!(i) removes one element */
-      { *out = infer_type(c, argv[0]) == TY_RANGE ? rt : ty_array_elem(rt); return 1; }
+    }
     /* a[i] = v -> v's type (== element type); a[range] = v / a[s,l] = v is a
        splice and returns the RHS as written. The poly-array splice emitter
        yields the RHS BOXED (its `_t` temp is an sp_RbVal), so a poly receiver
