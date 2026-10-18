@@ -174,6 +174,9 @@ const char *sp_StringIO_readchar(sp_StringIO *s) {SP_GC_ROOT(s); const char *r =
 sp_int sp_StringIO_rewind(sp_StringIO *s) { s->pos = 0; s->lineno = 0; return 0; }
 sp_int sp_StringIO_seek(sp_StringIO *s, sp_int off) { if (off < 0) off = 0; s->pos = off; return 0; }
 sp_int sp_StringIO_tell(sp_StringIO *s) { return s->pos; }
+/* pos= moves to any offset at or past 0 (past the end reads nothing); a
+   negative one is CRuby's Errno::EINVAL */
+sp_int sp_StringIO_set_pos(sp_StringIO *s, sp_int p) { if (p < 0) sp_raise_cls("Errno::EINVAL", "Invalid argument"); s->pos = p; return p; }
 sp_bool sp_StringIO_eof_p(sp_StringIO *s) { sio_sync(s); return s->pos >= s->len; }
 sp_int sp_StringIO_truncate(sp_StringIO *s, sp_int l) { sio_sync(s); if (l < 0) l = 0; sio_check_write(s); if (l < s->len) { sio_own(s); s->len = l; s->buf[l] = '\0'; sio_publish(s); } return 0; }
 void sp_StringIO_close(sp_StringIO *s) { s->closed = 1; }
