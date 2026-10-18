@@ -3388,6 +3388,33 @@ static int emit_cls_value_sg_accessor(Compiler *c, int id, int recv, const char 
 }
 
 
+/* The arms of a class value's call for the classes whose `class << self`
+   accessor of the name answers it, beside the classes the call reaches a
+   class method of (`klass.label`, one class with `attr_accessor :label` on
+   its singleton, another with `def self.label`): each reads or writes its
+   own slot into the dispatch's boxed result `_t<tr>`. 1 when any. */
+static int emit_cls_value_sg_arms(Compiler *c, int id, const char *name, int argc, const int *argv,
+                                  int tr, Buf *b) {
+  char base[256];
+  int setter = setter_base_name(name, base, sizeof base), any = 0;
+  if (setter ? argc != 1 : argc != 0) return 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (is_builtin_reopen(c->classes[k].name) || comp_cmethod_in_chain(c, k, name, NULL) >= 0) continue;
+    ClassInfo *cls = &c->classes[k];
+    const char *rn = setter ? base : comp_resolve_cm_alias_at(c, k, name, NULL);
+    if (!rn) rn = name;
+    if (setter ? !comp_is_sg_writer(cls, base) : !comp_is_sg_reader(cls, rn)) continue;
+    if (!b) return 1;
+    buf_printf(b, " case %d: ", k);
+    if (setter) { buf_puts(b, "(void)"); emit_sg_accessor(c, id, k, cls->name, name, argc, argv, b); buf_puts(b, "; "); }
+    buf_printf(b, "_t%d = ", tr);
+    sg_slot_boxed(c, k, setter ? base : rn, b);
+    buf_puts(b, "; break;");
+    any = 1;
+  }
+  return any;
+}
+
 /* The anonymous Struct / Data class a `new` receiver names statically: a
    `Struct.new(...)` call, or a local the analysis holds one in; -1 else */
 static int anon_struct_recv_ci(Compiler *c, int recv) {
@@ -4292,6 +4319,9 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         if (simple9) {
           TyKind slot9 = is_scalar_ret(uret9) && uret9 != TY_VOID && uret9 != TY_UNKNOWN
                          ? uret9 : (ty_is_object(uret9) ? uret9 : TY_POLY);
+          /* a class answering by its `class << self` accessor answers boxed */
+          int sg9 = emit_cls_value_sg_arms(c, id, name, argc, argv, 0, NULL);
+          if (sg9) slot9 = TY_POLY;
           int tk9 = ++g_tmp, tr9 = ++g_tmp, argsN9 = nt_ref(nt, id, "arguments");
           buf_puts(b, "({ ");
           /* The receiver, then each argument once, as the boxed class value's
@@ -4383,6 +4413,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
              the method: CRuby raises NoMethodError, and falling out of the
              switch left the result slot at its default -- a junk value the
              caller could not tell from a real answer. */
+          if (sg9) emit_cls_value_sg_arms(c, id, name, argc, argv, tr9, b);
           if (!rdef9) buf_printf(b, " default: %s; break;", rraise9);
           buf_printf(b, " } _t%d; })", tr9);
           unhoist_dispatch_args(c, hn9, hsv9, hty9);
