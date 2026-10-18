@@ -156,18 +156,22 @@ module OpenSSL
 
     end
 
-    # CRuby's spelling, for EC keys. A private key in PEM or DER, SEC1 ("EC
-    # PRIVATE KEY") or PKCS#8 ("PRIVATE KEY", the form certbot writes),
-    # answers a PKey::EC with both halves; a public key ("PUBLIC KEY") answers
-    # one that is public only. The C reads the key and hands back its curve
-    # and bytes, so the EC is the same object EC.from_private_bytes builds.
+    # CRuby's spelling, for EC and RSA keys. A private EC key in PEM or DER,
+    # SEC1 ("EC PRIVATE KEY") or PKCS#8 ("PRIVATE KEY", the form certbot
+    # writes), answers a PKey::EC with both halves; a public key ("PUBLIC
+    # KEY") answers one that is public only. The C reads the key and hands
+    # back its curve and bytes, so the EC is the same object
+    # EC.from_private_bytes builds. An RSA key, PKCS#1 or PKCS#8, private or
+    # public, answers a PKey::RSA the same way.
     #
-    # Any other kind of key raises a PKeyError that names EC as the kind this
-    # reads, where CRuby would answer a PKey::RSA, DSA or DH. There is no
-    # passphrase argument, so an encrypted PEM is a key that does not parse.
+    # Any other kind of key raises a PKeyError that names EC and RSA as the
+    # kinds this reads, where CRuby would answer a PKey::DSA or DH. There is
+    # no passphrase argument, so an encrypted PEM is a key that does not
+    # parse.
     def self.read(data)
-      blob = Native.pkey_ec_read(data)
+      blob = Native.pkey_read(data)
       raise PKeyError, Native.last_error if blob.empty?
+      return RSA.from_read(blob) if blob.getbyte(0) >= 2
       curve_len = blob.getbyte(1)
       curve = blob.byteslice(2, curve_len)
       bytes = blob.byteslice(2 + curve_len, blob.bytesize - 2 - curve_len)
@@ -187,12 +191,15 @@ module OpenSSL
     # `rescue OpenSSL::PKey::PKeyError` catch the same errors.
     RSAError = PKeyError
 
-    # OpenSSL::PKey::RSA, public keys only: what a verifier holds. Built from
+    # OpenSSL::PKey::RSA. A public key is what a verifier holds, built from
     # the modulus and exponent bytes, the halves a COSE key or a JWK names it
     # by. There is no CRuby spelling for that (CRuby builds one from DER or
-    # PEM, and PKey.read here reads EC keys only), so the constructor has its
-    # own name, as EC.from_public_bytes does. Verifying uses CRuby's names and
-    # arguments, and answers what CRuby answers.
+    # PEM), so the constructor has its own name, as EC.from_public_bytes
+    # does. A private key comes from PKey.read, and holds its private half as
+    # the PKCS#1 DER it was read into, the CRT components the C reads back
+    # for each signature; nothing on the C side outlives the call. Signing
+    # and verifying use CRuby's names and arguments, and answer what CRuby
+    # answers.
     class RSA
       attr_reader :n_bytes
       attr_reader :e_bytes
@@ -201,10 +208,24 @@ module OpenSSL
         new(n_bytes, e_bytes)
       end
 
-      def initialize(n_bytes, e_bytes)
+      # Not CRuby's: PKey.read's answer for an RSA key, a byte for the half
+      # (3 private, 2 public), the modulus and the exponent each after a
+      # 4-byte length, and for a private key its PKCS#1 DER.
+      def self.from_read(blob)
+        nl = blob.byteslice(1, 4).unpack1("N")
+        n = blob.byteslice(5, nl)
+        el = blob.byteslice(5 + nl, 4).unpack1("N")
+        e = blob.byteslice(9 + nl, el)
+        at = 9 + nl + el
+        der = blob.getbyte(0) == 3 ? blob.byteslice(at, blob.bytesize - at) : ""
+        new(n, e, der)
+      end
+
+      def initialize(n_bytes, e_bytes, private_der = "")
         raise PKeyError, "an RSA public key needs a modulus and an exponent" if n_bytes.empty? || e_bytes.empty?
         @n_bytes = n_bytes
         @e_bytes = e_bytes
+        @private_der = private_der
       end
 
       def public?
@@ -212,7 +233,32 @@ module OpenSSL
       end
 
       def private?
-        false
+        !@private_der.empty?
+      end
+
+      # CRuby's: the public half, as a key of its own.
+      def public_key
+        RSA.new(@n_bytes, @e_bytes)
+      end
+
+      # PKCS#1 v1.5 over the named digest of the data, as CRuby's PKey#sign:
+      # ArgumentError without the private half, and DigestError for an
+      # algorithm OpenSSL does not know.
+      def sign(digest, data)
+        rsa_sign(digest_name(digest), data, 0, "", 0)
+      end
+
+      # PSS with MGF1, both keywords required, as in CRuby. salt_length is
+      # :digest (the digest's length), :max (the most that fits) or an
+      # Integer; anything else is CRuby's TypeError.
+      def sign_pss(digest, data, salt_length:, mgf1_hash:)
+        salt = case salt_length
+               when :digest then -1 # RSA_PSS_SALTLEN_DIGEST
+               when :max then -3    # RSA_PSS_SALTLEN_MAX
+               when Integer then salt_length
+               else raise TypeError, "no implicit conversion of #{salt_length.class} into Integer"
+               end
+        rsa_sign(digest_name(digest), data, 1, digest_name(mgf1_hash), salt)
       end
 
       # PKCS#1 v1.5 over the named digest of the data: true or false, and
@@ -242,6 +288,17 @@ module OpenSSL
       # CRuby takes the algorithm as its name or as an OpenSSL::Digest.
       def digest_name(digest)
         digest.is_a?(OpenSSL::Digest) ? digest.name : digest.to_s
+      end
+
+      def rsa_sign(md, data, pss, mgf1, salt)
+        raise ArgumentError, "private key is needed" unless private?
+        sig = Native.rsa_sign(@private_der, md, data, pss, mgf1, salt)
+        if sig.empty?
+          why = Native.last_error
+          raise OpenSSL::Digest::DigestError, why if why.start_with?("unsupported digest algorithm")
+          raise PKeyError, why
+        end
+        sig
       end
 
       # The native call answers 1 for a good signature, 0 for a bad one, -1

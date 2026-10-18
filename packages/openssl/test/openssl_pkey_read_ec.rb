@@ -1,4 +1,4 @@
-# spinel: not-cruby -- PKey::EC's curve, key bytes, sign_raw and verify_raw have no CRuby spelling, and PKey.read refuses the RSA, Ed25519 and DH keys and the EC parameters CRuby reads; the key bytes below are what CRuby's private_key and public_key give for the same PEM
+# spinel: not-cruby -- PKey::EC's curve, key bytes, sign_raw and verify_raw have no CRuby spelling, and PKey.read refuses the Ed25519 and DH keys and the EC parameters CRuby reads; the key bytes below are what CRuby's private_key and public_key give for the same PEM
 require "openssl"
 
 # The test key of openssl_pkey_read.rb, made for these tests and used nowhere
@@ -88,9 +88,11 @@ p pub.verify_raw("SHA256", sig, "Mapo Bridge to Yeouido")
 p pub.verify_raw("SHA256", sig, "Mapo Bridge to Hapjeong")
 p OpenSSL::PKey::EC.from_private_bytes("prime256v1", key.private_key_bytes).public_key_bytes == key.public_key_bytes
 
+# The RSA keys read as RSA keys (openssl_pkey_rsa.rb); the rest are refused,
+# each with its reason.
 [RSA_PEM, ED25519_PEM, ENCRYPTED_PEM, RSA_PUBLIC_PEM, DH_PEM, EC_PARAMETERS_PEM].each do |pem|
   begin
-    OpenSSL::PKey.read(pem)
+    p OpenSSL::PKey.read(pem).class
   rescue OpenSSL::PKey::PKeyError => e
     p e.message
   end

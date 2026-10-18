@@ -62,9 +62,9 @@ module OpenSSL
     native_func :ec_public_bytes, [:string, :string],          :cbinstr, "sp_ec_public_bytes"
     native_func :ec_dh,           [:string, :string, :string], :cbinstr, "sp_ec_dh"
 
-    # PKey.read: an EC key out of PEM or DER, as the half it carries, the
-    # curve's name and the key's bytes. See openssl/pkey.rb.
-    native_func :pkey_ec_read,    [:string],                   :cbinstr, "sp_pkey_ec_read"
+    # PKey.read: an EC or RSA key out of PEM or DER, as the half it carries
+    # and the key's bytes. See openssl/pkey.rb.
+    native_func :pkey_read,       [:string],                   :cbinstr, "sp_pkey_read"
 
     # AES-GCM, one shot. The whole operation in one call, because the Ruby
     # Cipher over it holds the state -- see openssl/cipher.rb. Encrypt answers
@@ -87,6 +87,11 @@ module OpenSSL
     # PSS the MGF1 digest and the salt length. See openssl/pkey.rb.
     native_func :rsa_verify, [:string, :string, :string, :string, :string, :int, :string, :int],
                 :int, "sp_rsa_verify"
+    # And signing, with a private key as its PKCS#1 DER: the DER, digest,
+    # data, then PSS (1) or PKCS#1 v1.5 (0), the MGF1 digest and the salt
+    # length. "" with the reason in last_error.
+    native_func :rsa_sign, [:string, :string, :string, :int, :string, :int],
+                :cbinstr, "sp_rsa_sign"
 
     # X509::Certificate: PEM or DER in, DER out, and "" with the reason in
     # last_error. x509_load answers each certificate as a 4-byte big-endian

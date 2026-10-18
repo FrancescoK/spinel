@@ -1,0 +1,21 @@
+[OpenSSL::PKey::RSA, true, true]
+[OpenSSL::PKey::RSA, true, true]
+[OpenSSL::PKey::RSA, false, true]
+[OpenSSL::PKey::RSA, false, true]
+[OpenSSL::PKey::RSA, true]
+[OpenSSL::PKey::RSA, true]
+[OpenSSL::PKey::RSA, false]
+256
+"3724202f01518ed7ee14d3583537cb5e4445cb63437fe2d53336cd3993229675"
+true
+true
+false
+256
+false
+true
+true
+true
+[OpenSSL::PKey::RSA, false, true]
+"private key is needed"
+OpenSSL::Digest::DigestError
+"no implicit conversion of Symbol into Integer"

@@ -132,8 +132,11 @@ own crypto rather than libssl, and no HMAC-MD5; the digest object buffers its
 input and hashes it whole. `Cipher` (aes-gcm) and `PKey::EC` are subsets,
 each described in its file under `packages/openssl/openssl/`.
 `OpenSSL::PKey.read` reads EC keys, private (SEC1 or PKCS#8) or public, from
-PEM or DER into a `PKey::EC`; any other kind of key raises `PKeyError`
-naming EC as the kind it reads, where CRuby answers an RSA, DSA or DH object.
+PEM or DER into a `PKey::EC`, and RSA keys (PKCS#1 or PKCS#8) into a
+`PKey::RSA`, which signs with `sign` and `sign_pss` when it has its private
+half and has no `n`, `d` or other BN readers; any other kind of key raises
+`PKeyError` naming EC and RSA as the kinds it reads, where CRuby answers a
+DSA or DH object.
 EC parameters with no key in them raise too, where CRuby answers a `PKey::EC`
 with neither half, and so does an encrypted PEM, since there is no passphrase
 argument.
