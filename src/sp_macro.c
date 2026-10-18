@@ -3078,8 +3078,10 @@ static int mx_call_fits(const pm_def_node_t *def, const pm_call_node_t *cn) {
   }
   const pm_parameters_node_t *ps = def->parameters;
   if (!ps) return argc == 0;
-  if (ps->rest || ps->keyword_rest || ps->keywords.size) return 1;
+  /* keywords never take a positional argument (a keyword hash returned above),
+     so only a rest parameter lifts the upper bound */
   size_t lo = ps->requireds.size + ps->posts.size;
+  if (ps->rest) return argc >= lo;
   return argc >= lo && argc <= lo + ps->optionals.size;
 }
 
