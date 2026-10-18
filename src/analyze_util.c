@@ -1583,11 +1583,54 @@ static const char *const_value_owned_key(Compiler *c, const char *clsname, const
 static int const_value_owned(Compiler *c, const char *clsname, const char *constname) {
   return const_value_owned_key(c, clsname, constname) != NULL;
 }
+/* The classes of each name's leaf, ascending, while a caller asks const_get
+   of every class in turn (const_get_leaves_begin .. _end): the class table
+   does not change in that stretch, and each ask walked every class once per
+   ancestor. Outside it the walks below run as they are. */
+static ANameHash g_cgl_leaves;
+static int *g_cgl_first, *g_cgl_next;
+static const Compiler *g_cgl_c;
+void const_get_leaves_begin(Compiler *c) {
+  const_get_leaves_end();
+  size_t n = (size_t)(c->nclasses > 0 ? c->nclasses : 1);
+  g_cgl_first = malloc(sizeof(int) * n);
+  g_cgl_next = malloc(sizeof(int) * n);
+  int *last = malloc(sizeof(int) * n);
+  if (!g_cgl_first || !g_cgl_next || !last) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < c->nclasses; k++) {
+    g_cgl_next[k] = -1;
+    const char *rn = class_ruby_name(c, k), *l = rn ? strrchr(rn, ':') : NULL;
+    if (!rn) continue;
+    const char *leaf = l ? l + 1 : rn;
+    int h = anh_find(&g_cgl_leaves, leaf);
+    if (h < 0) { anh_add(&g_cgl_leaves, leaf); h = g_cgl_leaves.n - 1; g_cgl_first[h] = k; }
+    else g_cgl_next[last[h]] = k;
+    last[h] = k;
+  }
+  free(last);
+  g_cgl_c = c;
+}
+void const_get_leaves_end(void) {
+  anh_free(&g_cgl_leaves); memset(&g_cgl_leaves, 0, sizeof g_cgl_leaves);
+  free(g_cgl_first); free(g_cgl_next);
+  g_cgl_first = g_cgl_next = NULL;
+  g_cgl_c = NULL;
+}
+/* The first class of leaf LEAF, -1 for none, while the index is up. */
+static int cgl_first(const char *leaf) {
+  int h = anh_find(&g_cgl_leaves, leaf);
+  return h >= 0 ? g_cgl_first[h] : -1;
+}
 /* The class nested directly in class or module O under the leaf LEAF (its
    key may be qualified, `O__LEAF`, when another constant or class shares the
    leaf), or -1. */
 static int class_nested_leaf(Compiler *c, int o, const char *leaf) {
   if (o < 0) return -1;
+  if (g_cgl_c == c) {
+    for (int k = cgl_first(leaf); k >= 0; k = g_cgl_next[k])
+      if (c->classes[k].enclosing_class == o) return k;
+    return -1;
+  }
   for (int k = 0; k < c->nclasses; k++) {
     if (c->classes[k].enclosing_class != o) continue;
     const char *rn = class_ruby_name(c, k), *l = rn ? strrchr(rn, ':') : NULL;
@@ -1597,6 +1640,7 @@ static int class_nested_leaf(Compiler *c, int o, const char *leaf) {
 }
 /* Is any class or module of the program named LEAF, at any nesting? */
 static int class_leaf_any(Compiler *c, const char *leaf) {
+  if (g_cgl_c == c) return cgl_first(leaf) >= 0;
   for (int k = 0; k < c->nclasses; k++) {
     const char *rn = class_ruby_name(c, k), *l = rn ? strrchr(rn, ':') : NULL;
     if (rn && sp_streq(l ? l + 1 : rn, leaf)) return 1;
