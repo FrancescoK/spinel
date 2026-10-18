@@ -22054,16 +22054,17 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
         emit_indent(b, indent);
         emit_expr(c, cur, b); buf_puts(b, " = sp_str_append_grow(");
         emit_expr(c, cur, b); buf_puts(b, ", ");
-        if (at == TY_INT) {
-          buf_puts(b, "sp_int_codepoint_to_str_in("); emit_expr(c, cur, b); buf_puts(b, ", ");
-          emit_expr(c, arg, b); buf_puts(b, ")");
-        }
-        else if (at == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, arg, b); buf_puts(b, ")"); }
-        /* a string-typed arg whose value is really the unresolved-call gate's
-           sp_raise_nomethod(...) poly (`s << time_or_nil.strftime(...)`, the
-           receiver being nilable): emit_str_expr coerces it to the string slot,
-           keeping the raise, instead of passing the sp_RbVal through raw. */
-        else emit_str_expr(c, arg, b);
+        /* the rule the handle arm above shares: an Integer is a codepoint
+           whether typed or boxed. This arm sent a boxed one through
+           sp_poly_to_s, so `s << v` with v holding 19 appended "19" where
+           CRuby appends the byte 19. emit_str_append_arg also keeps the
+           string-slot coercion (emit_str_expr) for a string-typed arg whose
+           value is really the unresolved-call gate's sp_raise_nomethod(...)
+           poly (`s << time_or_nil.strftime(...)`). */
+        { Buf rt; memset(&rt, 0, sizeof rt);
+          emit_expr(c, cur, &rt);
+          emit_str_append_arg(c, arg, rt.p, b);
+          free(rt.p); }
         buf_puts(b, ");\n");
       }
       return 1;
