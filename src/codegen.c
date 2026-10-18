@@ -12539,13 +12539,17 @@ static void emit_obj_to_ary_dispatch(Compiler *c, Buf *b) {
    is named after the scope (`alias deconstruct child_nodes` runs
    sp_K_child_nodes). An alias of an inherited method is a forwarder
    `def deconstruct(*a, &b)` to the hidden alias `deconstruct#inherited`
-   (desugar_inherited_aliases): that answers with the method it reaches. */
+   (desugar_inherited_aliases): that answers with the method it reaches.
+   Only the forwarder is followed: a `def deconstruct` written after the
+   alias replaces it, and is the method that runs. */
 int comp_deconstruct_method(Compiler *c, int cid, int *defcls) {
   int dc = -1;
   int mi = comp_method_in_chain(c, cid, "deconstruct", &dc);
   if (mi < 0 || dc < 0) return -1;
   ClassInfo *dci = &c->classes[dc];
-  for (int k = 0; k < dci->naliases; k++)
+  int dn = c->scopes[mi].def_node;
+  int fwd = dn >= 0 && nt_int(c->nt, dn, "alias_forwarder", 0);
+  for (int k = 0; fwd && k < dci->naliases; k++)
     if (dci->alias_new[k] && sp_streq(dci->alias_new[k], "deconstruct#inherited")) {
       mi = comp_method_in_chain(c, dc, "deconstruct#inherited", &dc);
       break;

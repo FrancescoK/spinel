@@ -6,3 +6,8 @@
 [:a, 3]
 [:one, :base]
 [:one, :base]
+[:one, :own]
+[:one, :base]
+[:one, :own]
+[:one, :base]
+[:a, 4]

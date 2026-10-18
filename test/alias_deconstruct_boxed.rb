@@ -41,3 +41,31 @@ r = case C.new
     in [s] then [:one, s]
     end
 p r
+
+# a def after an alias of the inherited child_nodes replaces it, and an
+# alias after a def replaces the def
+class D < Base
+  alias deconstruct child_nodes
+  def deconstruct = [:own]
+end
+
+class E < Base
+  def deconstruct = [:own]
+  alias deconstruct child_nodes
+end
+
+r = case D.new
+    in [s] then [:one, s]
+    end
+p r
+r = case E.new
+    in [s] then [:one, s]
+    end
+p r
+[D.new, E.new, A.new(4)][ARGV.size, 3].each do |x|
+  r = case x
+      in [s] then [:one, s]
+      in [n, :a] then [:a, n]
+      end
+  p r
+end
