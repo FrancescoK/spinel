@@ -302,6 +302,22 @@ typedef struct BuiltinOp {
                                            Integer, Float, String, Symbol or boolean
                                            array holds none to match, the boxed nil;
                                            any other array states no kind */
+#define BOPR_ARG0        ((TyKind)-23)  /* the first argument's kind (Hash#default=:
+                                           it answers the value it was given) */
+#define BOPR_ARG1        ((TyKind)-24)  /* the second argument's kind
+                                           (instance_variable_set(name, value)) */
+#define BOPR_HASH_REPLACE ((TyKind)-25) /* Hash#replace(other): the receiver's kind
+                                           when other is the same Hash kind, else
+                                           the general hash. replace returns self,
+                                           but self's slot widens to the general
+                                           hash when other is another variant or a
+                                           boxed one (which holds whichever variant
+                                           the value really is), so a `r = h.replace(o)`
+                                           capture agrees from the first fixpoint
+                                           round (#2374, #3975) */
+#define BOPR_HASH_STORE  ((TyKind)-26)  /* Hash#[]= and store(key, value): the
+                                           value's kind unified with the Hash's
+                                           value kind */
 
 /* argc_max of a row that takes any number of arguments */
 #define BOP_ARGC_ANY 127
@@ -346,8 +362,9 @@ TyKind bop_family_of(TyKind rt);
    derived result (BOPR_*) worked out from rt. */
 TyKind bop_result(const BuiltinOp *op, TyKind rt);
 /* bop_result for the rows whose answer also turns on the call's operands'
-   kinds (BOPR_ARRAY_PLUS, BOPR_ARRAY_SETOP); any other row answers as
-   bop_result does. arg_of(ud, i) answers argument i's kind, as for
+   kinds (BOPR_ARRAY_PLUS, BOPR_ARRAY_SETOP, BOPR_ARG0, BOPR_ARG1,
+   BOPR_HASH_REPLACE, BOPR_HASH_STORE); any other row answers as bop_result
+   does. arg_of(ud, i) answers argument i's kind, as for
    bop_find_arg, and is called only for those rows. TY_UNKNOWN where the row
    states no kind for these operands. It reads no node: the caller brings
    the kinds. */

@@ -2792,8 +2792,9 @@ const BuiltinOp *an_bop_find_arg(Compiler *c, int id, TyKind rt, const char *nam
 }
 
 /* bop_result_args with the call's arguments' kinds from infer_type, for the
-   rows whose result turns on them (BOPR_ARRAY_PLUS, BOPR_ARRAY_SETOP); any
-   other row answers as bop_result does */
+   rows whose result turns on them (BOPR_ARRAY_PLUS, BOPR_ARRAY_SETOP,
+   BOPR_ARG0, BOPR_ARG1, BOPR_HASH_REPLACE, BOPR_HASH_STORE); any other row
+   answers as bop_result does */
 TyKind an_bop_result(Compiler *c, const BuiltinOp *op, TyKind rt, int argc, const int *argv) {
   AnBopArgs a = { c, argv };
   return bop_result_args(op, rt, argc, an_bop_arg_type, &a);
@@ -6136,7 +6137,7 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
       nt_ref(nt, id, "block") < 0)
     { *out = TY_POLY_ARRAY; return 1; }
 
-  /* The row supplies the answer, except a set which answers its value. A
+  /* The row supplies the answer (a set's is its value, BOPR_ARG1). A
      builtin class's own ivar access answers the row's whatever the receiver
      kind, and a read of a value whose ivars the runtime's map can hold is
      whatever was stored, once the program can store one. */
@@ -6144,7 +6145,7 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
     const BuiltinOp *op = an_bop_find(c, id, BOP_IVAR_LESS, name, argc, nt_ref(nt, id, "block") >= 0);
     if (op && !is_bivar_access(name) && op->result == TY_NIL && c->bivar_table && ty_bivar_keyed(rt))
       { *out = TY_POLY; return 1; }
-    if (op) { *out = op->result == TY_UNKNOWN ? infer_type(c, argv[1]) : bop_result(op, rt); return 1; }
+    if (op) { *out = an_bop_result(c, op, rt, argc, argv); return 1; }
   }
 
   /* define_singleton_method(:m) { } that register_singleton_defs resolved
@@ -8856,10 +8857,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && (rt == TY_UNKNOWN || rt == TY_POLY) &&
       sp_streq(name, "values_at") && argc >= 1 &&
       hash_new_default_arg(c, recv) >= 0) return TY_POLY_ARRAY;  /* (#2408) */
-  /* h.default = v as a value: the assigned value (works for the untyped {}
-     literal receiver too) */
-  if (recv >= 0 && sp_streq(name, "default=") && argc == 1 && ty_is_hash(rt))
-    return infer_type(c, argv[0]);
+  /* h.default = v as a value: the assigned value. A Hash receiver's row states
+     it (BOPR_ARG0); an untyped {} literal has no Hash kind for a row to
+     cover, so it answers here. */
   if (recv >= 0 && sp_streq(name, "default=") && argc == 1 && rt == TY_UNKNOWN &&
       nt_type(nt, recv) &&
       (sp_streq(nt_type(nt, recv), "HashNode") || sp_streq(nt_type(nt, recv), "KeywordHashNode")))
