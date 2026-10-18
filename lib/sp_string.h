@@ -158,7 +158,7 @@ static inline sp_String*sp_String_new_inline_len(const char*s,int64_t len){
 /* Shared append core: `tl` is the operand byte length (strlen for the
    bare-literal-safe entry, sp_str_byte_len for the binary one). */
 static inline void sp_fd_append_len(sp_String*s,const char*t,int64_t tl){if(!sp_fd_grow(s,s->len+tl))return;memcpy(s->data+s->len,t,tl);s->len+=tl;s->data[s->len]=0;sp_fd_publish(s);}
-static inline void sp_String_append(sp_String*s,const char*t){if(!s||!t)return;if(sp_String_is_frozen(s)){sp_raise_frozen_str(s->data);return;}sp_fd_append_len(s,t,(int64_t)strlen(t));}
+static inline void sp_String_append(sp_String*s,const char*t){if (SP_UNLIKELY(!s)) sp_nil_recv("<<"); if (!t)return;if(sp_String_is_frozen(s)){sp_raise_frozen_str(s->data);return;}sp_fd_append_len(s,t,(int64_t)strlen(t));}
 /* Binary-safe append: sizes the operand with the header length so an embedded
    NUL is preserved (Ruby String#<< / concat on a marked spinel string). */
 /* Replace the buffer contents in place (the handle stays stable, so every
@@ -177,11 +177,11 @@ static inline void sp_String_set_bin_enc(sp_String*s,const char*t){
   else if(s->binary){s->binary=0;sp_str_as_text(s->data);sp_fd_publish(s);}
 }
 /* the first tl bytes of t: the append form of an interpolation (emit_interp_append) */
-static inline void sp_String_append_n(sp_String*s,const char*t,size_t tl){if(!s||!t)return;if(sp_String_is_frozen(s)){sp_raise_frozen_str(s->data);return;}sp_fd_append_len(s,t,(int64_t)tl);}
+static inline void sp_String_append_n(sp_String*s,const char*t,size_t tl){if (SP_UNLIKELY(!s)) sp_nil_recv("<<"); if (!t)return;if(sp_String_is_frozen(s)){sp_raise_frozen_str(s->data);return;}sp_fd_append_len(s,t,(int64_t)tl);}
 /* append_as_bytes preserves the handle's encoding as well as embedded NULs. */
-static inline void sp_String_append_bytes(sp_String*s,const char*t){if(!s||!t)return;if(sp_String_is_frozen(s)){sp_raise_frozen_str(s->data);return;}sp_fd_append_len(s,t,(int64_t)sp_str_byte_len(t));}
+static inline void sp_String_append_bytes(sp_String*s,const char*t){if (SP_UNLIKELY(!s)) sp_nil_recv("<<"); if (!t)return;if(sp_String_is_frozen(s)){sp_raise_frozen_str(s->data);return;}sp_fd_append_len(s,t,(int64_t)sp_str_byte_len(t));}
 static inline void sp_String_append_bin(sp_String*s,const char*t){
-  if(!s||!t)return;
+  if (SP_UNLIKELY(!s)) sp_nil_recv("<<"); if (!t)return;
   if(sp_String_is_frozen(s)){sp_raise_frozen_str(s->data);return;}
   if (s->binary && !sp_str_is_binary(t) &&
       !sp_str_ascii_only(t) && sp_str_ascii_only(s->data)) {

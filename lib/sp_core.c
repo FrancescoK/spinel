@@ -664,7 +664,7 @@ sp_int sp_int_truncate(sp_int v,sp_int nd){if(nd>=0)return v;sp_int p=-nd;if(p>=
    parsing too); an unparseable string is 0. A value past sp_int raises
    RangeError, like the sibling Integer() parsers. */
 sp_int sp_str_oct(const char*s){SP_GC_ROOT_STR(s);
-  if(!s)return 0;
+  if (SP_UNLIKELY(!s)) sp_nil_recv("oct");
   const char*p=s;
   while(isspace((unsigned char)*p))p++;
   int sign=1;

@@ -2365,6 +2365,8 @@ int emit_op_string_scan_checked(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_string_slice(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_string_scrub_block(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_transpose(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_nil_recv(Compiler *c, const BopCtx *x, Buf *b);
+int recv_never_nil(Compiler *c, int recv);
 int emit_op_array_assoc(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_combination(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_product(Compiler *c, const BopCtx *x, Buf *b);

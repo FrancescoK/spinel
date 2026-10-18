@@ -16045,6 +16045,16 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
     buf_printf(b, " _t%d = ", tarr); emit_expr(c, value, b); buf_puts(b, ";\n");
     emit_indent(b, indent);
     buf_printf(b, "SP_GC_ROOT(_t%d);\n", tarr);
+    /* `a, b = nil` assigns nil to each target, as an empty Array does: the
+       reads below take the source's length and its elements. A source the
+       nil fact says is never nil keeps its C. */
+    {
+      const char *nk = st == TY_POLY_ARRAY ? "Poly" : array_kind(st);
+      if (nk && !recv_never_nil(c, value)) {
+        emit_indent(b, indent);
+        buf_printf(b, "if (!_t%d) _t%d = sp_%sArray_new();\n", tarr, tarr, nk);
+      }
+    }
     Scope *rt_scope = comp_scope_of(c, id);
     for (int i = 0; i < ln; i++) {
       const char *lty = nt_type(nt, lefts[i]);
@@ -22533,7 +22543,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     if (is_push_alias(name) && argc >= 1) {
       for (int a = 0; a < argc; a++) {
         emit_indent(b, indent);
-        buf_puts(b, "sp_PolyArray_push("); emit_expr(c, recv, b); buf_puts(b, ", ");
+        buf_printf(b, "sp_PolyArray_push%s(", recv_never_nil(c, recv) ? "" : "_m"); emit_expr(c, recv, b); buf_puts(b, ", ");
         emit_boxed(c, argv[a], b); buf_puts(b, ");\n");
       }
       return 1;

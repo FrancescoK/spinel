@@ -10093,18 +10093,6 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
       }
     }
   }
-  /* Array#entries is #to_a; the array emitters only know to_a. */
-  if (nm && sp_streq(nm, "entries") && nt_ref(nt, id, "block") < 0) {
-    int erecv2 = nt_ref(nt, id, "receiver");
-    int ea2 = nt_ref(nt, id, "arguments");
-    int eac2 = 0;
-    if (ea2 >= 0) nt_arr(nt, ea2, "arguments", &eac2);
-    if (erecv2 >= 0 && eac2 == 0 && ty_is_array(infer_type(c, erecv2))) {
-      nt_node_set_str(nt, id, "name", "to_a");
-      *changed = 1;
-      return 1;
-    }
-  }
   /* poly-array sum { blk } == map { blk }.sum (the typed-array redispatch
      serves int/float receivers natively) */
   if (nm && sp_streq(nm, "sum") && nt_ref(nt, id, "block") >= 0) {
@@ -10489,17 +10477,17 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
       return 1;
     }
   }
-  /* member? on a builtin container is Array/Hash/Range#include? (#2388);
-     entries on an array is to_a (#2390). User classes keep their own. */
-  if (nm && ((sp_streq(nm, "member?") || sp_streq(nm, "entries")) &&
-             nt_ref(nt, id, "block") < 0)) {
+  /* member? on a builtin container is Array/Hash/Range#include? (#2388).
+     User classes keep their own. (entries on an Array keeps its own name:
+     it copies, and it raises on a nil receiver where to_a answers [].) */
+  if (nm && sp_streq(nm, "member?") && nt_ref(nt, id, "block") < 0) {
     int mrc = nt_ref(nt, id, "receiver");
     int man = 0; { int _a = nt_ref(nt, id, "arguments");
                    if (_a >= 0) nt_arr(nt, _a, "arguments", &man); }
     TyKind mrt = mrc >= 0 ? infer_type(c, mrc) : TY_UNKNOWN;
     /* a not-yet-narrowed local holding an empty [] literal is still an
        array; restrict the UNKNOWN case to plain variable/literal receivers
-       so a not-yet-typed method-call chain keeps its own entries path */
+       so a not-yet-typed method-call chain keeps its own path */
     int mrt_open = 0;
     if (mrt == TY_UNKNOWN && mrc >= 0 && nt_type(nt, mrc) &&
         sp_streq(nt_type(nt, mrc), "ArrayNode")) {
@@ -10514,12 +10502,6 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
       *changed = 1;
       return 1;
     }
-    if (sp_streq(nm, "entries") && man == 0 && (ty_is_array(mrt) || mrt_open)) {
-      nt_node_set_str(nt, id, "name", "to_a");
-      *changed = 1;
-      return 1;
-    }
-
   }
   /* `a.chain(b, c)` is desugared wholesale by desugar_enumerable_chain into
      `__enum_chain(a.to_a + b.to_a + c.to_a)` -- a real Enumerator::Chain that

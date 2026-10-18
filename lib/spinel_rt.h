@@ -1147,7 +1147,7 @@ static const char *sp_str_dedup(const char *s) {
   return f;
 }
 static inline const char *sp_str_uminus_val(const char *s) {
-  if (!s) return s;
+  if (SP_UNLIKELY(!s)) sp_nil_recv("-@");
   /* An already-frozen receiver (0xf1) still interns by content (CRuby
      rb_fstring): the first frozen holder of a content registers itself,
      later dedups of equal contents return that same object -- even when
@@ -3205,7 +3205,7 @@ static SP_UNUSED sp_RbVal sp_IntArray_fold_v(sp_IntArray *a, sp_RbVal acc, int m
 /* the same without a seed (inject / reduce with only the operator): the
    first element starts the fold, and an empty array answers nil */
 static SP_UNUSED sp_RbVal sp_IntArray_fold1_v(sp_IntArray *a, int mul) {
-  if (!a || a->len == 0) return sp_box_nil();
+  if (SP_UNLIKELY(!a)) sp_nil_recv("inject"); if (a->len == 0) return sp_box_nil();
   SP_GC_ROOT(a);
   sp_RbVal acc = sp_IntArray_box_elem(a, 0);
   SP_GC_ROOT_RBVAL(acc);
@@ -6921,7 +6921,7 @@ static sp_RbVal sp_poly_bxor(sp_RbVal a, sp_RbVal b) {
    (one made from Symbol#to_s), else a new, plain handle with the same
    contents */
 static inline sp_String *sp_String_uplus(sp_String *h) {
-  if (!h || !(sp_String_is_frozen(h) || (h->chilled && sp_String_chilled_now(h)))) return h;
+  if (SP_UNLIKELY(!h)) sp_nil_recv("+@"); if (!(sp_String_is_frozen(h) || (h->chilled && sp_String_chilled_now(h)))) return h;
   return sp_String_new_shared(sp_str_dup(sp_String_cstr(h)));
 }
 /* +s: s itself unless it is frozen or chilled, else a plain copy (CRuby) */
@@ -6980,7 +6980,7 @@ static sp_RbVal sp_poly_neg_chk(sp_RbVal v) {
 /* Definition of the root-entry marker forward-declared near
    sp_gc_mark_all: a low-bit-tagged slot is an sp_RbVal* root. */
 /* sp_gc_mark_root_entry is an inline helper in sp_gc.h. */
-static sp_RbVal sp_PolyArray_pop(sp_PolyArray *a) { if (!a || a->len <= 0) return sp_box_nil(); if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return sp_box_nil(); } return a->data[--a->len]; }
+static sp_RbVal sp_PolyArray_pop(sp_PolyArray *a) { if (SP_UNLIKELY(!a)) sp_nil_recv("pop"); if (a->len <= 0) return sp_box_nil(); if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return sp_box_nil(); } return a->data[--a->len]; }
 /* log(|Gamma(x)|) for x > 0, via the Stirling asymptotic series pushed into
    its accurate region (x >= 12) by the recurrence Gamma(x) = Gamma(x+1)/x. We
    compute it ourselves rather than calling the platform `lgamma_r`, whose
@@ -6993,9 +6993,9 @@ double sp_lgamma_pos(double x);
 /* Math.lgamma(x) -> [log(|gamma(x)|), sign of gamma(x)]. */
 /* sp_math_lgamma: moved to lib/sp_cold.c */
 sp_PolyArray *sp_math_lgamma(double x);
-static sp_RbVal sp_PolyArray_shift(sp_PolyArray *a) { if (!a || a->len <= 0) return sp_box_nil(); if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return sp_box_nil(); } sp_RbVal v = a->data[0]; memmove(a->data, a->data+1, (size_t)(--a->len)*sizeof(sp_RbVal)); return v; }
-static sp_RbVal sp_PolyArray_delete_at(sp_PolyArray *a, sp_int i) {sp_gc_wb((void*)a);  if (!a) return sp_box_nil(); if (i < 0) i += a->len; if (i < 0 || i >= a->len) return sp_box_nil(); sp_RbVal v = a->data[i]; for (sp_int j = i; j < a->len - 1; j++) a->data[j] = a->data[j+1]; a->len--; return v; }
-static void sp_PolyArray_insert(sp_PolyArray *a, sp_int i, sp_RbVal v) {sp_gc_wb((void*)a);  if (!a) return; if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return; } sp_int orig = i; if (i < 0) i += a->len + 1; if (i < 0) sp_raise_cls("IndexError", sp_sprintf("index %lld too small for array; minimum: %lld", (long long)orig, (long long)(-(a->len + 1)))); while (i > a->len) sp_PolyArray_push(a, sp_box_nil()); /* CRuby pads with nils past the end */ sp_PolyArray_push(a, sp_box_nil()); for (sp_int j = a->len - 1; j > i; j--) a->data[j] = a->data[j-1]; a->data[i] = v; }
+static sp_RbVal sp_PolyArray_shift(sp_PolyArray *a) { if (SP_UNLIKELY(!a)) sp_nil_recv("shift"); if (a->len <= 0) return sp_box_nil(); if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return sp_box_nil(); } sp_RbVal v = a->data[0]; memmove(a->data, a->data+1, (size_t)(--a->len)*sizeof(sp_RbVal)); return v; }
+static sp_RbVal sp_PolyArray_delete_at(sp_PolyArray *a, sp_int i) {sp_gc_wb((void*)a);  if (SP_UNLIKELY(!a)) sp_nil_recv("delete_at"); if (i < 0) i += a->len; if (i < 0 || i >= a->len) return sp_box_nil(); sp_RbVal v = a->data[i]; for (sp_int j = i; j < a->len - 1; j++) a->data[j] = a->data[j+1]; a->len--; return v; }
+static void sp_PolyArray_insert(sp_PolyArray *a, sp_int i, sp_RbVal v) {sp_gc_wb((void*)a);  if (SP_UNLIKELY(!a)) sp_nil_recv("insert"); if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return; } sp_int orig = i; if (i < 0) i += a->len + 1; if (i < 0) sp_raise_cls("IndexError", sp_sprintf("index %lld too small for array; minimum: %lld", (long long)orig, (long long)(-(a->len + 1)))); while (i > a->len) sp_PolyArray_push(a, sp_box_nil()); /* CRuby pads with nils past the end */ sp_PolyArray_push(a, sp_box_nil()); for (sp_int j = a->len - 1; j > i; j--) a->data[j] = a->data[j-1]; a->data[i] = v; }
 /* Array#delete(v): removes every element sp_poly_eq to v, returns the
    last one (nil if none). Was missing for TY_POLY_ARRAY -- only TY_INT_ARRAY/
    TY_STR_ARRAY had it -- which blocked the array-backed Set package's
@@ -7005,7 +7005,7 @@ static void sp_PolyArray_insert(sp_PolyArray *a, sp_int i, sp_RbVal v) {sp_gc_wb
    separately-compiled cold array library. */
 static sp_RbVal sp_PolyArray_delete(sp_PolyArray *a, sp_RbVal v) {sp_gc_wb((void*)a); 
   if (a && a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return sp_box_nil(); }
-  if (!a) return sp_box_nil();
+  if (SP_UNLIKELY(!a)) sp_nil_recv("delete");
   /* sp_poly_eq can allocate (bigint promotion) and so trigger a collection
      mid-loop; a and v may be reachable only through the call expression. */
   SP_GC_ROOT(a); SP_GC_ROOT_RBVAL(v);
@@ -7322,6 +7322,7 @@ static sp_RbVal sp_poly_binop_apply(const char *op, sp_RbVal a, sp_RbVal b) {
   return sp_box_nil();
 }
 static sp_int sp_PolyArray_length(sp_PolyArray *a) { if (!a) return 0; return a->len; }
+static sp_int sp_PolyArray_length_m(sp_PolyArray *a) { if (SP_UNLIKELY(!a)) sp_nil_recv("length"); return a->len; }
 /* Helpers for iterating over a poly value that holds a boxed array. */
 static sp_int sp_poly_arr_len(sp_RbVal a) {
   if (a.tag != SP_TAG_OBJ) return 0;
@@ -8149,7 +8150,7 @@ static sp_RbVal sp_poly_arr_range(sp_RbVal recv, sp_Range r) {
 /* sp_poly_replace: moved to lib/sp_cold.c */
 sp_RbVal sp_poly_replace(sp_RbVal recv, sp_RbVal src);
 static sp_PolyArray *sp_PolyArray_slice_bang(sp_PolyArray *a, sp_int from, sp_int n) {SP_GC_ROOT(a); sp_gc_wb((void*)a);
-  if (!a) return sp_PolyArray_new();
+  if (SP_UNLIKELY(!a)) sp_nil_recv("slice!");
   if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return sp_PolyArray_new(); }
   /* a start past the end is nil, not an empty slice (#3607) */
   if (from < 0) from += a->len;
@@ -8169,7 +8170,7 @@ void sp_poly_combination_recur(sp_PolyArray *src, sp_int start, sp_int k, sp_Pol
 static sp_PolyArray *sp_PolyArray_combination(sp_PolyArray *a, sp_int k) {
   SP_GC_ROOT(a);
   sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
-  if (!a || k < 0 || k > a->len) return out;
+  if (SP_UNLIKELY(!a)) sp_nil_recv("combination"); if (k < 0 || k > a->len) return out;
   sp_PolyArray *acc = sp_PolyArray_new(); SP_GC_ROOT(acc);
   sp_poly_combination_recur(a, 0, k, acc, out);
   return out;
@@ -8179,7 +8180,7 @@ void sp_poly_repeated_combination_recur(sp_PolyArray *src, sp_int start, sp_int 
 static sp_PolyArray *sp_PolyArray_repeated_combination(sp_PolyArray *a, sp_int k) {
   SP_GC_ROOT(a);
   sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
-  if (!a || k < 0) return out;
+  if (SP_UNLIKELY(!a)) sp_nil_recv("repeated_combination"); if (k < 0) return out;
   sp_PolyArray *acc = sp_PolyArray_new(); SP_GC_ROOT(acc);
   sp_poly_repeated_combination_recur(a, 0, k, acc, out);
   return out;
@@ -8191,7 +8192,7 @@ void sp_poly_repeated_permutation_recur(sp_PolyArray *src, sp_int k, sp_PolyArra
 static sp_PolyArray *sp_PolyArray_repeated_permutation(sp_PolyArray *a, sp_int k) {
   SP_GC_ROOT(a);
   sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
-  if (!a || k < 0) return out;
+  if (SP_UNLIKELY(!a)) sp_nil_recv("repeated_permutation"); if (k < 0) return out;
   sp_PolyArray *acc = sp_PolyArray_new(); SP_GC_ROOT(acc);
   sp_poly_repeated_permutation_recur(a, k, acc, out);
   return out;
@@ -8199,7 +8200,7 @@ static sp_PolyArray *sp_PolyArray_repeated_permutation(sp_PolyArray *a, sp_int k
 static sp_PolyArray *sp_PolyArray_permutation(sp_PolyArray *a, sp_int k) {
   SP_GC_ROOT(a);
   sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
-  if (!a || k < 0 || k > a->len) return out;
+  if (SP_UNLIKELY(!a)) sp_nil_recv("permutation"); if (k < 0 || k > a->len) return out;
   sp_IntArray *used = sp_IntArray_new(); SP_GC_ROOT(used);
   for (sp_int i = 0; i < a->len; i++) sp_IntArray_push(used, 0);
   sp_PolyArray *acc = sp_PolyArray_new(); SP_GC_ROOT(acc);
@@ -8208,7 +8209,11 @@ static sp_PolyArray *sp_PolyArray_permutation(sp_PolyArray *a, sp_int k) {
 }
 /* A nil-held Array slot is NULL, and nil.dup is nil (#9347). */
 static sp_PolyArray *sp_PolyArray_dup(sp_PolyArray *a) { if (!a) return NULL; SP_GC_ROOT(a); sp_PolyArray *b = sp_PolyArray_new(); for (sp_int i = 0; i < a->len; i++) sp_PolyArray_push(b, a->data[i]); return b; }
-static sp_PolyArray *sp_PolyArray_replace(sp_PolyArray *dst, sp_PolyArray *src) { if (!dst || !src) return dst; if (dst == src) return dst; if (dst->frozen) { sp_raise_frozen_array_at(dst, SP_BUILTIN_POLY_ARRAY); return dst; } dst->len = 0; for (sp_int i = 0; i < src->len; i++) sp_PolyArray_push(dst, src->data[i]); return dst; }
+static sp_PolyArray *sp_PolyArray_to_a(sp_PolyArray *a) { return a ? a : sp_PolyArray_new(); }
+/* The Array `*a` spreads in a call: a copy, and `*nil` is nothing, an empty Array (a rest built from a nil splat is [], #9347). */
+static sp_PolyArray *sp_PolyArray_splat(sp_PolyArray *a) { return a ? sp_PolyArray_dup(a) : sp_PolyArray_new(); }
+static sp_PolyArray *sp_PolyArray_entries(sp_PolyArray *a) { if (SP_UNLIKELY(!a)) sp_nil_recv("entries"); return sp_PolyArray_dup(a); }
+static sp_PolyArray *sp_PolyArray_replace(sp_PolyArray *dst, sp_PolyArray *src) { if (SP_UNLIKELY(!dst)) sp_nil_recv("replace"); if (!src) return dst; if (dst == src) return dst; if (dst->frozen) { sp_raise_frozen_array_at(dst, SP_BUILTIN_POLY_ARRAY); return dst; } dst->len = 0; for (sp_int i = 0; i < src->len; i++) sp_PolyArray_push(dst, src->data[i]); return dst; }
 /* Array#replace where the SOURCE is of another kind -- `[1, 2].replace(["x"])`
    is ordinary Ruby, and the receiver becomes a copy of whatever the source
    holds. The typed arms can only serve a source of their own kind, so a poly
@@ -8217,7 +8222,7 @@ static sp_PolyArray *sp_PolyArray_replace(sp_PolyArray *dst, sp_PolyArray *src) 
    the truncation: dst->len = 0 would otherwise clear the array and only then
    let the first push raise. */
 static sp_PolyArray *sp_PolyArray_replace_from(sp_PolyArray *dst, sp_RbVal src) {
-  if (!dst) return dst;
+  if (SP_UNLIKELY(!dst)) sp_nil_recv("replace");
   SP_GC_ROOT(dst);
   SP_GC_ROOT_RBVAL(src);
   if (src.tag == SP_TAG_OBJ && src.v.p == (void *)dst) return dst;
@@ -8235,7 +8240,7 @@ static sp_PolyArray *sp_PolyArray_concat_into(sp_PolyArray *a, sp_RbVal other) {
   for (sp_int i = 0; i < n; i++) sp_PolyArray_push(a, sp_poly_arr_get(other, i));
   return a;
 }
-static sp_PolyArray *sp_PolyArray_concat(sp_PolyArray *a, sp_PolyArray *b) { SP_GC_ROOT(a); SP_GC_ROOT(b); sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (a) for (sp_int i = 0; i < a->len; i++) sp_PolyArray_push(r, a->data[i]); if (b) for (sp_int i = 0; i < b->len; i++) sp_PolyArray_push(r, b->data[i]); return r; }
+static sp_PolyArray *sp_PolyArray_concat(sp_PolyArray *a, sp_PolyArray *b) { SP_GC_ROOT(a); SP_GC_ROOT(b); sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (SP_UNLIKELY(!a)) sp_nil_recv("+"); for (sp_int i = 0; i < a->len; i++) sp_PolyArray_push(r, a->data[i]); if (b) for (sp_int i = 0; i < b->len; i++) sp_PolyArray_push(r, b->data[i]); return r; }
 /* Array#* with an Integer on a boxed Array of any storage kind: a fresh
    array holding the elements n times over. */
 static sp_PolyArray *sp_poly_array_repeat(sp_RbVal a, sp_int n) {
@@ -8260,9 +8265,9 @@ static sp_PtrArray *sp_PolyArray_to_obj_ptr(sp_PolyArray *a) {
 /* Array#concat: append b's elements onto a IN PLACE, returning a (unlike the
    fresh-array sp_PolyArray_concat above). Snapshot b's length first so `a` and
    `b` aliasing the same array still terminates. */
-static sp_PolyArray *sp_PolyArray_append_all(sp_PolyArray *a, sp_PolyArray *b) { if (!a || !b) return a; SP_GC_ROOT(a); SP_GC_ROOT(b); sp_int bn = b->len; if (a == b) { /* self-concat: a push may realloc a->data, dangling b->data (same buffer) -- snapshot b first. */ sp_PolyArray *bc = sp_PolyArray_new(); SP_GC_ROOT(bc); for (sp_int i = 0; i < bn; i++) sp_PolyArray_push(bc, b->data[i]); b = bc; } for (sp_int i = 0; i < bn; i++) sp_PolyArray_push(a, b->data[i]); return a; }
+static sp_PolyArray *sp_PolyArray_append_all(sp_PolyArray *a, sp_PolyArray *b) { if (SP_UNLIKELY(!a)) sp_nil_recv("concat"); if (!b) return a; SP_GC_ROOT(a); SP_GC_ROOT(b); sp_int bn = b->len; if (a == b) { /* self-concat: a push may realloc a->data, dangling b->data (same buffer) -- snapshot b first. */ sp_PolyArray *bc = sp_PolyArray_new(); SP_GC_ROOT(bc); for (sp_int i = 0; i < bn; i++) sp_PolyArray_push(bc, b->data[i]); b = bc; } for (sp_int i = 0; i < bn; i++) sp_PolyArray_push(a, b->data[i]); return a; }
 /* Array#rindex(obj): index of the LAST element == obj, or -1 (arm maps to nil). */
-static sp_int sp_PolyArray_rindex(sp_PolyArray *a, sp_RbVal v) { if (!a) return -1; for (sp_int i = a->len - 1; i >= 0; i--) if (sp_poly_rb_equal(a->data[i], v)) return i; return -1; }
+static sp_int sp_PolyArray_rindex(sp_PolyArray *a, sp_RbVal v) { if (SP_UNLIKELY(!a)) sp_nil_recv("rindex"); for (sp_int i = a->len - 1; i >= 0; i--) if (sp_poly_rb_equal(a->data[i], v)) return i; return -1; }
 /* Array#index / #rindex with a VALUE argument, over any array storage kind:
    the first (or last) position comparing equal, or nil for none. Used
    by the poly-receiver arm, where the element kind is only known at run time. */
@@ -8279,7 +8284,7 @@ static sp_oint sp_poly_arr_index_val(sp_RbVal a, sp_RbVal v, int rev) {
 /* Membership for the set operations (-, |, &, intersect?): Ruby matches their
    elements by hash/eql?, not ==, so 2 and 2.0 are different elements. */
 static sp_bool sp_poly_eql(sp_RbVal a, sp_RbVal b);
-static sp_bool sp_PolyArray_include_eql(sp_PolyArray *a, sp_RbVal v) { if (!a) return FALSE; for (sp_int i = 0; i < a->len; i++) if (sp_poly_eql(a->data[i], v)) return TRUE; return FALSE; }
+static sp_bool sp_PolyArray_include_eql(sp_PolyArray *a, sp_RbVal v) { if (SP_UNLIKELY(!a)) sp_nil_recv("include?"); for (sp_int i = 0; i < a->len; i++) if (sp_poly_eql(a->data[i], v)) return TRUE; return FALSE; }
 /* The set behind uniq and the set operations of a boxed Array (uniq,
    uniq!, |, &, -, union, intersection, difference, intersect?); the entry
    points above and below hand over to the functions here. They compared
@@ -8385,7 +8390,8 @@ static sp_bool sp_poly_arr_includes_eql(sp_RbVal ary, sp_RbVal v) {
 /* The values of a, each one eql? to an earlier one dropped. */
 static sp_PolyArray *sp_PolyArray_uniq(sp_PolyArray *a) {
   SP_GC_ROOT(a);
-  if (!a || a->len <= 1) return a ? sp_PolyArray_dup(a) : sp_PolyArray_new();
+  if (SP_UNLIKELY(!a)) sp_nil_recv("uniq");
+  if (a->len <= 1) return sp_PolyArray_dup(a);
   sp_EqlSet s = { NULL }; SP_GC_ROOT(s.vals); SP_GC_ROOT(s.tbl);
   sp_eqlset_init(&s);
   for (sp_int i = 0; i < a->len; i++) sp_eqlset_add(&s, a->data[i]);
@@ -8396,7 +8402,7 @@ static sp_PolyArray *sp_PolyArray_uniq(sp_PolyArray *a) {
    CRuby raises then too. */
 static void sp_PolyArray_uniq_eql_bang(sp_PolyArray *a) {
   sp_gc_wb((void *)a);
-  if (!a) return;
+  if (SP_UNLIKELY(!a)) sp_nil_recv("uniq!");
   if (a->frozen) sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY);
   if (a->len <= 1) return;
   SP_GC_ROOT(a);
@@ -8450,7 +8456,7 @@ static sp_PolyArray *sp_PolyArray_intersect_eql(sp_PolyArray *a, sp_PolyArray *b
 static sp_PolyArray *sp_PolyArray_difference_eql(sp_PolyArray *a, sp_PolyArray *b) {
   SP_GC_ROOT(a); SP_GC_ROOT(b);
   sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
-  if (!a) return r;
+  if (SP_UNLIKELY(!a)) sp_nil_recv("-");
   if (!b || a->len <= SP_ARRAY_SMALL_LEN || b->len <= SP_ARRAY_SMALL_LEN) {
     sp_RbVal bb = b ? sp_box_poly_array(b) : sp_box_nil();
     for (sp_int i = 0; i < a->len; i++) {
@@ -8484,12 +8490,12 @@ static sp_bool sp_poly_intersect_p_eql(sp_RbVal a, sp_RbVal b) {
   return 0;
 }
 static sp_bool sp_PolyArray_intersect_p_eql(sp_PolyArray *a, sp_PolyArray *b) {
-  if (!a || !b) return 0;
+  if (SP_UNLIKELY(!a)) sp_nil_recv("intersect?"); if (!b) return 0;
   return sp_poly_intersect_p_eql(sp_box_poly_array(a), sp_box_poly_array(b));
 }
 static sp_PolyArray *sp_PolyArray_intersect(sp_PolyArray *a, sp_PolyArray *b) { return sp_PolyArray_intersect_eql(a, b); }
 /* intersect? predicate: early-exit, no allocation (matches CRuby's non-building Array#intersect?). */
-static sp_bool sp_PolyArray_intersect_p(sp_PolyArray *a, sp_PolyArray *b) { if (!a || !b) return 0; for (sp_int i = 0; i < a->len; i++) if (sp_PolyArray_include_eql(b, a->data[i])) return 1; return 0; }
+static sp_bool sp_PolyArray_intersect_p(sp_PolyArray *a, sp_PolyArray *b) { if (SP_UNLIKELY(!a)) sp_nil_recv("intersect?"); if (!b) return 0; for (sp_int i = 0; i < a->len; i++) if (sp_PolyArray_include_eql(b, a->data[i])) return 1; return 0; }
 /* Array#intersect? on two boxed arrays of any storage kind. Coercing both to
    poly arrays built two fresh copies a call, and as sibling arguments the
    second one's allocation collected the first. Only the argument, which the
@@ -8504,8 +8510,8 @@ static sp_bool sp_poly_intersect_p(sp_RbVal a, sp_RbVal b) {
 static sp_PolyArray *sp_PolyArray_union(sp_PolyArray *a, sp_PolyArray *b) { return sp_PolyArray_union_eql(a, b); }
 static sp_PolyArray *sp_PolyArray_difference(sp_PolyArray *a, sp_PolyArray *b) { return sp_PolyArray_difference_eql(a, b); }
 /* Array#compact for poly_array: keep elements whose tag is not SP_TAG_NIL. */
-static sp_PolyArray *sp_PolyArray_compact(sp_PolyArray *a) { SP_GC_ROOT(a); sp_PolyArray *b = sp_PolyArray_new(); SP_GC_ROOT(b); if (!a) return b; for (sp_int i = 0; i < a->len; i++) { if (a->data[i].tag != SP_TAG_NIL) sp_PolyArray_push(b, a->data[i]); } return b; }
-static sp_PolyArray *sp_PolyArray_compact_bang(sp_PolyArray *a) {sp_gc_wb((void*)a);  if (!a) return a; sp_int w = 0; for (sp_int i = 0; i < a->len; i++) { if (a->data[i].tag != SP_TAG_NIL) a->data[w++] = a->data[i]; } a->len = w; return a; }
+static sp_PolyArray *sp_PolyArray_compact(sp_PolyArray *a) { SP_GC_ROOT(a); sp_PolyArray *b = sp_PolyArray_new(); SP_GC_ROOT(b); if (SP_UNLIKELY(!a)) sp_nil_recv("compact"); for (sp_int i = 0; i < a->len; i++) { if (a->data[i].tag != SP_TAG_NIL) sp_PolyArray_push(b, a->data[i]); } return b; }
+static sp_PolyArray *sp_PolyArray_compact_bang(sp_PolyArray *a) {sp_gc_wb((void*)a);  if (SP_UNLIKELY(!a)) sp_nil_recv("compact!"); sp_int w = 0; for (sp_int i = 0; i < a->len; i++) { if (a->data[i].tag != SP_TAG_NIL) a->data[w++] = a->data[i]; } a->len = w; return a; }
 /* An unlimited flatten (or a join) that meets an array it is already inside
    has no answer to give: the flat run would be infinite, so CRuby raises. The
    walk's own frames go first (sp_poly_recur_drop_kind). Off the hot path by
@@ -8552,7 +8558,7 @@ static sp_PolyArray *sp_PolyArray_flatten_bang(sp_PolyArray *a);  /* below */
 static sp_PolyArray *sp_PolyArray_flatten(sp_PolyArray *a) {
   SP_GC_ROOT(a);
   sp_PolyArray *b = sp_PolyArray_new(); SP_GC_ROOT(b);
-  if (!a) return b;
+  if (SP_UNLIKELY(!a)) sp_nil_recv("flatten");
   /* the receiver is on the path as much as any nested array is: `a << a;
      a.flatten` has to raise, and only this frame can catch that */
   int mark = sp_poly_recur_push(SP_POLY_RECUR_FLATTEN, a, NULL);
@@ -8588,7 +8594,7 @@ static void sp_PolyArray_flatten_into_d(sp_PolyArray *out, sp_RbVal v, sp_int de
 static sp_PolyArray *sp_PolyArray_flatten_depth(sp_PolyArray *a, sp_int d) {
   SP_GC_ROOT(a);
   sp_PolyArray *b = sp_PolyArray_new(); SP_GC_ROOT(b);
-  if (!a) return b;
+  if (SP_UNLIKELY(!a)) sp_nil_recv("flatten");
   int mark = d < 0 ? sp_poly_recur_push(SP_POLY_RECUR_FLATTEN, a, NULL) : sp_poly_recur_save();
   for (sp_int i = 0; i < a->len; i++) sp_PolyArray_flatten_into_d(b, a->data[i], d);
   sp_poly_recur_pop(mark);
@@ -8597,7 +8603,7 @@ static sp_PolyArray *sp_PolyArray_flatten_depth(sp_PolyArray *a, sp_int d) {
 /* Array#flatten!: replace the receiver's contents with the flattened run
    (aliases observe the mutation). */
 static sp_PolyArray *sp_PolyArray_flatten_bang(sp_PolyArray *a) {sp_gc_wb((void*)a); 
-  if (!a) return NULL;
+  if (SP_UNLIKELY(!a)) sp_nil_recv("flatten!");
   if (a->frozen) sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY);
   SP_GC_ROOT(a);
   sp_PolyArray *f = sp_PolyArray_flatten(a); SP_GC_ROOT(f);
@@ -8751,7 +8757,7 @@ static sp_PolyArray *sp_pair_to_poly(sp_RbVal el) {
    Each pair may be any array kind, so compare element 0 via sp_poly_arr_get;
    a pair with no element 0 (a non-array or empty array) is skipped. */
 static sp_PolyArray *sp_PolyArray_assoc(sp_PolyArray *a, sp_RbVal key) {
-  if (!a) return NULL;
+  if (SP_UNLIKELY(!a)) sp_nil_recv("assoc");
   for (sp_int i = 0; i < a->len; i++) {
     sp_RbVal el = a->data[i];
     if (sp_array_kind_len(el) >= 1 && sp_poly_rb_equal(sp_poly_arr_get(el, 0), key))
@@ -8763,7 +8769,7 @@ static sp_PolyArray *sp_PolyArray_assoc(sp_PolyArray *a, sp_RbVal key) {
 /* Array#rassoc -- same as assoc but matches against the second
    element of each sub-array (a pair with fewer than 2 elements is skipped). */
 static sp_PolyArray *sp_PolyArray_rassoc(sp_PolyArray *a, sp_RbVal val) {
-  if (!a) return NULL;
+  if (SP_UNLIKELY(!a)) sp_nil_recv("rassoc");
   for (sp_int i = 0; i < a->len; i++) {
     sp_RbVal el = a->data[i];
     if (sp_array_kind_len(el) >= 2 && sp_poly_rb_equal(sp_poly_arr_get(el, 1), val))
@@ -8809,7 +8815,7 @@ static sp_PolyArray *sp_PolyArray_flatten_n(sp_PolyArray *a, sp_int depth) {
   SP_GC_ROOT(a);
   sp_PolyArray *b = sp_PolyArray_new();
   SP_GC_ROOT(b);
-  if (!a) return b;
+  if (SP_UNLIKELY(!a)) sp_nil_recv("flatten");
   int mark = depth < 0 ? sp_poly_recur_push(SP_POLY_RECUR_FLATTEN, a, NULL) : sp_poly_recur_save();
   for (sp_int i = 0; i < a->len; i++) sp_PolyArray_flatten_into_n(b, a->data[i], depth);
   sp_poly_recur_pop(mark);
@@ -8826,7 +8832,7 @@ sp_PolyArray *sp_poly_array_transpose(sp_PolyArray *rows);
    `Array#sum` on a poly_array whose runtime tags are uniform int
    (e.g. the result of `arr.map { _1[:int_key] }`). Non-int tags
    contribute zero. */
-static sp_int sp_PolyArray_sum_int(sp_PolyArray *a) { if (!a) return 0; sp_int s = 0; for (sp_int i = 0; i < a->len; i++) { if (a->data[i].tag == SP_TAG_INT) s += a->data[i].v.i; } return s; }
+static sp_int sp_PolyArray_sum_int(sp_PolyArray *a) { if (SP_UNLIKELY(!a)) sp_nil_recv("sum"); sp_int s = 0; for (sp_int i = 0; i < a->len; i++) { if (a->data[i].tag == SP_TAG_INT) s += a->data[i].v.i; } return s; }
 /* Array#sum with the default (Integer 0) initial value, folding via sp_poly_add
    so the result promotes to the element class (Float for any Float element,
    Rational/Bignum likewise) rather than dropping non-Integer elements. */
@@ -8858,12 +8864,12 @@ static sp_RbVal sp_IntArray_sum_promote(sp_IntArray *a, sp_int seed) {
   return acc;
 }
 static sp_RbVal sp_PolyArray_sum_poly(sp_PolyArray *a) {
-  if (!a) return sp_box_int(0);
+  if (SP_UNLIKELY(!a)) sp_nil_recv("sum");
   return sp_poly_sum_seed(sp_box_poly_array(a), sp_box_int(0));
 }
 /* Array#sum with a String initial value: concatenate the string elements onto
    the initial (["a","b"].sum("") == "ab"). */
-static const char *sp_PolyArray_sum_str(sp_PolyArray *a, const char *init) { const char *s = init ? init : ""; if (!a) return s; for (sp_int i = 0; i < a->len; i++) { if (a->data[i].tag == SP_TAG_STR && a->data[i].v.s) s = sp_str_concat(s, a->data[i].v.s); } return s; }
+static const char *sp_PolyArray_sum_str(sp_PolyArray *a, const char *init) { const char *s = init ? init : ""; if (SP_UNLIKELY(!a)) sp_nil_recv("sum"); for (sp_int i = 0; i < a->len; i++) { if (a->data[i].tag == SP_TAG_STR && a->data[i].v.s) s = sp_str_concat(s, a->data[i].v.s); } return s; }
 /* Bignum#downto(hi)/#upto(hi) materialized: a poly array of Bignums from `lo`
    to `hi` inclusive (descending for downto, ascending for upto) (#2305). */
 static sp_PolyArray *sp_bigint_range_array(sp_Bigint *lo, sp_Bigint *hi, int up) {
@@ -8883,7 +8889,8 @@ static sp_PolyArray *sp_PolyArray_sum_concat(sp_PolyArray *a, sp_RbVal init) {
   SP_GC_ROOT(a);
   sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
   sp_PolyArray_flatten_into_n(r, init, 1);
-  if (a) for (sp_int i = 0; i < a->len; i++) sp_PolyArray_flatten_into_n(r, a->data[i], 1);
+  if (SP_UNLIKELY(!a)) sp_nil_recv("sum");
+  for (sp_int i = 0; i < a->len; i++) sp_PolyArray_flatten_into_n(r, a->data[i], 1);
   return r;
 }
 /* Check each addend as it is appended. A non-Array still goes through
@@ -8892,7 +8899,8 @@ static sp_PolyArray *sp_PolyArray_sum_concat_checked(sp_PolyArray *a, sp_RbVal i
   SP_GC_ROOT(a);
   sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
   sp_PolyArray_flatten_into_n(r, init, 1);
-  if (a) for (sp_int i = 0; i < a->len; i++) {
+  if (SP_UNLIKELY(!a)) sp_nil_recv("sum");
+  for (sp_int i = 0; i < a->len; i++) {
     sp_RbVal e = a->data[i];
     if (e.tag != SP_TAG_OBJ || !sp_poly_is_array_kind(e.cls_id))
       r = sp_poly_to_poly_array(sp_poly_add(sp_box_poly_array(r), e));
@@ -8992,8 +9000,8 @@ static sp_StrArray *sp_StrArray_from_poly_array(sp_PolyArray *a) { sp_StrArray *
    the typed array -- and printed [0] for CRuby's [nil] (#4686). */
 static sp_IntArray *sp_IntArray_from_poly_array(sp_PolyArray *a) { sp_IntArray *r = sp_IntArray_new(); if (!a) return r; SP_GC_ROOT(a); SP_GC_ROOT(r); for (sp_int i = 0; i < a->len; i++) sp_IntArray_push_o(r, sp_unbox_oint(a->data[i])); return r; }
 static sp_FloatArray *sp_FloatArray_from_poly_array(sp_PolyArray *a) { sp_FloatArray *r = sp_FloatArray_new(); if (!a) return r; SP_GC_ROOT(a); SP_GC_ROOT(r); for (sp_int i = 0; i < a->len; i++) sp_FloatArray_push_o(r, sp_unbox_ofloat(a->data[i])); return r; }
-static void sp_PolyArray_reverse_bang(sp_PolyArray *a) {sp_gc_wb((void*)a);  if (!a || a->frozen) { if (a && a->frozen) sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return; } for (sp_int i = 0, j = a->len - 1; i < j; i++, j--) { sp_RbVal t = a->data[i]; a->data[i] = a->data[j]; a->data[j] = t; } }
-static void sp_PolyArray_shuffle_bang(sp_PolyArray *a) {sp_gc_wb((void*)a);  if (!a || a->frozen) { if (a && a->frozen) sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return; } for (sp_int i = a->len - 1; i > 0; i--) { sp_int j = sp_krand_below(i + 1); sp_RbVal t = a->data[i]; a->data[i] = a->data[j]; a->data[j] = t; } }
+static void sp_PolyArray_reverse_bang(sp_PolyArray *a) {sp_gc_wb((void*)a);  if (SP_UNLIKELY(!a)) sp_nil_recv("reverse!");if (a->frozen) {sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY);return;} for (sp_int i = 0, j = a->len - 1; i < j; i++, j--) { sp_RbVal t = a->data[i]; a->data[i] = a->data[j]; a->data[j] = t; } }
+static void sp_PolyArray_shuffle_bang(sp_PolyArray *a) {sp_gc_wb((void*)a);  if (SP_UNLIKELY(!a)) sp_nil_recv("shuffle!");if (a->frozen) {sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY);return;} for (sp_int i = a->len - 1; i > 0; i--) { sp_int j = sp_krand_below(i + 1); sp_RbVal t = a->data[i]; a->data[i] = a->data[j]; a->data[j] = t; } }
 /* poly.reverse: `reverse` is both Array#reverse and String#reverse, so a poly
    receiver dispatches on the runtime kind -- an array yields a reversed poly
    array, anything else reverses its string form (#2905). */
@@ -9007,7 +9015,7 @@ static sp_RbVal sp_poly_reverse(sp_RbVal v) {
   return sp_box_str_new(sp_str_reverse(sp_poly_recv_s(v, "reverse")));
 }
 static void sp_PolyArray_rotate_bang(sp_PolyArray*a,sp_int n){
-  if(!a)return;
+  if (SP_UNLIKELY(!a)) sp_nil_recv("rotate!");
   if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY);return;}
   if(a->len<=0)return;
   n=((n%a->len)+a->len)%a->len;
@@ -9088,7 +9096,7 @@ static void _sp_poly_msort(sp_PolyArray *a, int (*cmp)(const void *, const void 
    VM shortcut says it the other way round, but `a = [1, "a"]; a.min` and
    minmax do not). */
 static sp_RbVal sp_PolyArray_max(sp_PolyArray *a) {sp_gc_wb((void*)a); 
-  if (!a || a->len == 0) return sp_box_nil();
+  if (SP_UNLIKELY(!a)) sp_nil_recv("max"); if (a->len == 0) return sp_box_nil();
   SP_GC_ROOT(a);  /* sp_poly_cmp can allocate; keep a (and best, which is one of
                      its elements) reachable across the comparisons. */
   sp_RbVal best = a->data[0];
@@ -9101,7 +9109,7 @@ static sp_RbVal sp_PolyArray_max(sp_PolyArray *a) {sp_gc_wb((void*)a);
   return best;
 }
 static sp_RbVal sp_PolyArray_min(sp_PolyArray *a) {sp_gc_wb((void*)a); 
-  if (!a || a->len == 0) return sp_box_nil();
+  if (SP_UNLIKELY(!a)) sp_nil_recv("min"); if (a->len == 0) return sp_box_nil();
   SP_GC_ROOT(a);  /* sp_poly_cmp can allocate; keep a (and best, which is one of
                      its elements) reachable across the comparisons. */
   sp_RbVal best = a->data[0];
@@ -9114,7 +9122,7 @@ static sp_RbVal sp_PolyArray_min(sp_PolyArray *a) {sp_gc_wb((void*)a);
   return best;
 }
 static void sp_PolyArray_sort_bang(sp_PolyArray *a) {
-  if (!a || a->frozen) { if (a && a->frozen) sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return; }
+  if (SP_UNLIKELY(!a)) sp_nil_recv("sort!");if (a->frozen) {sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY);return;}
   /* Root the array across the sort: the comparator runs sp_poly_cmp, which can
      allocate (e.g. a bigint temp) and trigger GC; without this, a precise sweep
      could collect a (and its elements) mid-sort. This also roots the transient
@@ -9268,17 +9276,18 @@ static sp_PolyArray *sp_ptr_array_box(sp_PtrArray *a, int cls_id) {
 static sp_PtrArray *sp_PtrArray_sort_obj(sp_PtrArray *a, int cls_id) SP_UNUSED;
 static sp_PtrArray *sp_PtrArray_sort_obj(sp_PtrArray *a, int cls_id) {
   SP_GC_ROOT(a);
+  if (SP_UNLIKELY(!a)) sp_nil_recv("sort");
   sp_PolyArray *p = sp_ptr_array_box(a, cls_id);
   SP_GC_ROOT(p);   /* box's own root is popped on its return; sort + new_scan below allocate */
   sp_PolyArray_sort_bang(p);
-  sp_PtrArray *r = a ? sp_PtrArray_new_scan(a->scan_elem) : sp_PtrArray_new();
+  sp_PtrArray *r = sp_PtrArray_new_scan(a->scan_elem);
   SP_GC_ROOT(r);
   for (sp_int i = 0; i < p->len; i++) sp_PtrArray_push(r, p->data[i].v.p);
   return r;
 }
 static void sp_PtrArray_sort_obj_bang(sp_PtrArray *a, int cls_id) SP_UNUSED;
 static void sp_PtrArray_sort_obj_bang(sp_PtrArray *a, int cls_id) {sp_gc_wb((void*)a); 
-  if (!a) return;
+  if (SP_UNLIKELY(!a)) sp_nil_recv("sort!");
   if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_PTR_ARRAY); return; }
   SP_GC_ROOT(a);
   sp_PolyArray *p = sp_ptr_array_box(a, cls_id);
@@ -9289,7 +9298,7 @@ static void sp_PtrArray_sort_obj_bang(sp_PtrArray *a, int cls_id) {sp_gc_wb((voi
 /* min/max over an object array; empty -> NULL (the object-typed nil). */
 static void *sp_PtrArray_minmax_obj(sp_PtrArray *a, int cls_id, int want_max) SP_UNUSED;
 static void *sp_PtrArray_minmax_obj(sp_PtrArray *a, int cls_id, int want_max) {sp_gc_wb((void*)a); 
-  if (!a || a->len == 0) return NULL;
+  if (SP_UNLIKELY(!a)) sp_nil_recv(want_max ? "max" : "min"); if (a->len == 0) return NULL;
   SP_GC_ROOT(a);
   void *best = a->data[0];
   for (sp_int i = 1; i < a->len; i++) {
@@ -9374,19 +9383,19 @@ static sp_PolyArray *sp_PolyArray_sort_by_first_ck(sp_PolyArray *a) {
    and nil when it was a no-op. The plain *_bang statements stay void. */
 static void sp_PolyArray_uniq_bang(sp_PolyArray *a);
 static sp_RbVal sp_PolyArray_uniq_bangq(sp_PolyArray *a) {
-  if (!a) return sp_box_nil();
+  if (SP_UNLIKELY(!a)) sp_nil_recv("uniq!");
   sp_int n = a->len;
   sp_PolyArray_uniq_eql_bang(a);
   return a->len != n ? sp_box_poly_array(a) : sp_box_nil();
 }
 static sp_RbVal sp_PolyArray_compact_bangq(sp_PolyArray *a) {
-  if (!a) return sp_box_nil();
+  if (SP_UNLIKELY(!a)) sp_nil_recv("compact!");
   sp_int n = a->len;
   sp_PolyArray_compact_bang(a);
   return a->len != n ? sp_box_poly_array(a) : sp_box_nil();
 }
 static sp_RbVal sp_PolyArray_flatten_bangq(sp_PolyArray *a) {
-  if (!a) return sp_box_nil();
+  if (SP_UNLIKELY(!a)) sp_nil_recv("flatten!");
   int ch = 0;
   for (sp_int i = 0; i < a->len && !ch; i++)
     if (a->data[i].tag == SP_TAG_OBJ && sp_poly_is_array_kind(a->data[i].cls_id)) ch = 1;
@@ -9395,7 +9404,7 @@ static sp_RbVal sp_PolyArray_flatten_bangq(sp_PolyArray *a) {
   return sp_box_poly_array(a);
 }
 static sp_RbVal sp_PolyArray_flatten_bangq_depth(sp_PolyArray *a, sp_int d) {sp_gc_wb((void*)a); 
-  if (!a) return sp_box_nil();
+  if (SP_UNLIKELY(!a)) sp_nil_recv("flatten!");
   if (a->frozen) sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY);
   SP_GC_ROOT(a);
   int ch = 0;
@@ -9408,13 +9417,13 @@ static sp_RbVal sp_PolyArray_flatten_bangq_depth(sp_PolyArray *a, sp_int d) {sp_
   return sp_box_poly_array(a);
 }
 static sp_RbVal sp_IntArray_uniq_bangq(sp_IntArray *a) {
-  if (!a) return sp_box_nil();
+  if (SP_UNLIKELY(!a)) sp_nil_recv("uniq!");
   sp_int n = a->len;
   sp_IntArray_uniq_bang(a);
   return a->len != n ? sp_box_int_array(a) : sp_box_nil();
 }
 static sp_RbVal sp_FloatArray_uniq_bangq(sp_FloatArray *a) {
-  if (!a) return sp_box_nil();
+  if (SP_UNLIKELY(!a)) sp_nil_recv("uniq!");
   sp_int n = a->len;
   sp_FloatArray_uniq_bang(a);
   return a->len != n ? sp_box_float_array(a) : sp_box_nil();
@@ -9425,7 +9434,7 @@ static sp_bool sp_poly_eql(sp_RbVal a, sp_RbVal b);
    same eql? calls in the same order as before -- and a kept one moves down
    to the end of the kept prefix. Shifting the whole tail down over every
    duplicate made a run of duplicates cost a pass of the array each. */
-static void sp_PolyArray_uniq_bang(sp_PolyArray*a){sp_gc_wb((void*)a); if(!a||a->frozen){if(a&&a->frozen)sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY);return;}
+static void sp_PolyArray_uniq_bang(sp_PolyArray*a){sp_gc_wb((void*)a); if (SP_UNLIKELY(!a)) sp_nil_recv("uniq!");if (a->frozen) {sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY);return;}
   sp_int w=0;
   for(sp_int i=0;i<a->len;i++){
     sp_RbVal v=a->data[i];
@@ -9487,7 +9496,7 @@ SP_NORETURN static void sp_raise_key_not_found(sp_RbVal key) {
    the boxed-element case. */
 static const char *sp_poly_join(sp_RbVal a, const char *sep);  /* mutual recursion below */
 static const char *sp_PolyArray_join(sp_PolyArray *a, const char *sep) {
-  if (!a) return sp_str_empty;
+  if (SP_UNLIKELY(!a)) sp_nil_recv("join");
   SP_GC_ROOT(a); SP_GC_ROOT(sep);
   /* A run that contains itself has no finite text, so CRuby raises here rather
      than printing an ellipsis the way #inspect does. Nested arrays come back
@@ -9611,7 +9620,7 @@ static sp_bool sp_PolyArray_eq_typed(sp_PolyArray *pa, void *tp, int kind) {
   return sp_PolyArray_eq(pa, (sp_PolyArray *)tp);
 }
 static sp_bool sp_PolyArray_include(sp_PolyArray *a, sp_RbVal v) {
-  if (!a) return FALSE;
+  if (SP_UNLIKELY(!a)) sp_nil_recv("include?");
   for (sp_int i = 0; i < a->len; i++) {
     if (sp_poly_rb_equal(a->data[i], v)) return TRUE;
   }
@@ -9644,20 +9653,20 @@ static sp_StrPolyHash*sp_StrPolyHash_new_dproc(sp_strpoly_dproc_t fn,void*self){
 static void sp_StrPolyHash_grow(sp_StrPolyHash*h){ sp_gc_wb((void*)h);sp_int oc=h->cap;const char**ok=h->keys;sp_RbVal*ov=h->vals;h->cap*=2;h->mask=h->cap-1;h->keys=(const char**)sp_pl_zalloc((size_t)h->cap*sizeof(const char*));h->vals=(sp_RbVal*)sp_pl_zalloc((size_t)h->cap*sizeof(sp_RbVal));h->order=(const char**)sp_pl_realloc(h->order,sizeof(const char*)*h->cap);h->len=0;for(sp_int i=0;i<oc;i++){if(ok[i]){sp_int idx=(sp_int)(sp_str_hash(ok[i])&h->mask);while(h->keys[idx])idx=(idx+1)&h->mask;h->keys[idx]=ok[i];h->vals[idx]=ov[i];h->len++;}}sp_pl_free(ok);sp_pl_free(ov);}
 static sp_RbVal sp_StrPolyHash_get(sp_StrPolyHash*h,const char*k){if(!h)return sp_box_nil();sp_int idx=(sp_int)(sp_str_hash(k)&h->mask);while(h->keys[idx]){if(sp_str_eq(h->keys[idx],k))return h->vals[idx];idx=(idx+1)&h->mask;}if(h->dproc)return h->dproc(h,k,h->dproc_self);return h->default_v;}
 static void sp_StrPolyHash_set(sp_StrPolyHash*h,const char*k,sp_RbVal v){sp_gc_wb((void*)h); if(!k){sp_raise_cls("TypeError","no implicit conversion of nil into String");return;} if(h->len*2>=h->cap)sp_StrPolyHash_grow(h);sp_int idx=(sp_int)(sp_str_hash(k)&h->mask);while(h->keys[idx]){if(sp_str_eq(h->keys[idx],k)){h->vals[idx]=v;return;}idx=(idx+1)&h->mask;}{SP_GC_ROOT(h);SP_GC_ROOT_STR(k);SP_GC_ROOT_RBVAL(v);k=sp_hash_key_str(k);}sp_gc_wb((void*)h);h->keys[idx]=k;h->vals[idx]=v;h->order[h->len]=k;h->len++;}
-static sp_bool sp_StrPolyHash_has_key(sp_StrPolyHash*h,const char*k){if(!h)return FALSE;sp_int idx=(sp_int)(sp_str_hash(k)&h->mask);while(h->keys[idx]){if(sp_str_eq(h->keys[idx],k))return TRUE;idx=(idx+1)&h->mask;}return FALSE;}
+static sp_bool sp_StrPolyHash_has_key(sp_StrPolyHash*h,const char*k){if (SP_UNLIKELY(!h)) sp_nil_recv("key?");sp_int idx=(sp_int)(sp_str_hash(k)&h->mask);while(h->keys[idx]){if(sp_str_eq(h->keys[idx],k))return TRUE;idx=(idx+1)&h->mask;}return FALSE;}
 static sp_int sp_StrPolyHash_length(sp_StrPolyHash*h){return h->len;}
-static sp_StrArray*sp_StrPolyHash_keys(sp_StrPolyHash*h){SP_GC_ROOT(h);sp_StrArray*a=sp_StrArray_new();SP_GC_ROOT(a);if(!h)return a;for(sp_int i=0;i<h->len;i++)sp_StrArray_push(a,h->order[i]);return a;}
+static sp_StrArray*sp_StrPolyHash_keys(sp_StrPolyHash*h){SP_GC_ROOT(h);sp_StrArray*a=sp_StrArray_new();SP_GC_ROOT(a);if (SP_UNLIKELY(!h)) sp_nil_recv("keys");for(sp_int i=0;i<h->len;i++)sp_StrArray_push(a,h->order[i]);return a;}
 static sp_PolyArray*sp_StrPolyHash_values(sp_StrPolyHash*h){SP_GC_ROOT(h);sp_PolyArray*a=sp_PolyArray_new();SP_GC_ROOT(a);for(sp_int i=0;i<h->len;i++)sp_PolyArray_push(a,sp_StrPolyHash_get(h,h->order[i]));return a;}
-static sp_bool sp_StrPolyHash_has_value(sp_StrPolyHash*h,sp_RbVal v){if(!h)return FALSE;for(sp_int i=0;i<h->len;i++)if(sp_poly_rb_equal(sp_StrPolyHash_get(h,h->order[i]),v))return TRUE;return FALSE;}
+static sp_bool sp_StrPolyHash_has_value(sp_StrPolyHash*h,sp_RbVal v){if (SP_UNLIKELY(!h)) sp_nil_recv("value?");for(sp_int i=0;i<h->len;i++)if(sp_poly_rb_equal(sp_StrPolyHash_get(h,h->order[i]),v))return TRUE;return FALSE;}
 static void sp_StrPolyHash_delete(sp_StrPolyHash*h,const char*k){ sp_gc_wb((void*)h);sp_int idx=(sp_int)(sp_str_hash(k)&h->mask);while(h->keys[idx]){if(sp_str_eq(h->keys[idx],k)){h->keys[idx]=NULL;h->vals[idx]=sp_box_nil();h->len--;sp_int j=(idx+1)&h->mask;while(h->keys[j]){sp_int nj=(sp_int)(sp_str_hash(h->keys[j])&h->mask);if((j>idx&&(nj<=idx||nj>j))||(j<idx&&nj<=idx&&nj>j)){h->keys[idx]=h->keys[j];h->vals[idx]=h->vals[j];h->keys[j]=NULL;h->vals[j]=sp_box_nil();idx=j;}j=(j+1)&h->mask;}{sp_int oi=0;while(oi<=h->len){if(strcmp(h->order[oi],k)==0){while(oi<h->len){h->order[oi]=h->order[oi+1];oi++;}break;}oi++;}}return;}idx=(idx+1)&h->mask;}}
 static void sp_StrPolyHash_delete_bytes(sp_StrPolyHash*h,const char*k){ sp_gc_wb((void*)h);sp_int idx=(sp_int)(sp_str_hash(k)&h->mask);while(h->keys[idx]){if(sp_str_eq(h->keys[idx],k)){h->keys[idx]=NULL;h->vals[idx]=sp_box_nil();h->len--;sp_int j=(idx+1)&h->mask;while(h->keys[j]){sp_int nj=(sp_int)(sp_str_hash(h->keys[j])&h->mask);if((j>idx&&(nj<=idx||nj>j))||(j<idx&&nj<=idx&&nj>j)){h->keys[idx]=h->keys[j];h->vals[idx]=h->vals[j];h->keys[j]=NULL;h->vals[j]=sp_box_nil();idx=j;}j=(j+1)&h->mask;}{sp_int oi=0;while(oi<=h->len){if(sp_str_eq(h->order[oi],k)){while(oi<h->len){h->order[oi]=h->order[oi+1];oi++;}break;}oi++;}}return;}idx=(idx+1)&h->mask;}}
 /* Hash#merge for str_poly_hash. Same shape as the
    StrIntHash / SymPolyHash siblings -- copy recv's entries into a
    fresh hash, then overlay other's. */
 sp_StrPolyHash*sp_StrPolyHash_merge(sp_StrPolyHash*a,sp_StrPolyHash*b);
-static void sp_StrPolyHash_update(sp_StrPolyHash*a,sp_StrPolyHash*b){if(!a||!b||a==b)return;SP_GC_ROOT(a);SP_GC_ROOT(b);for(sp_int i=0;i<b->len;i++)sp_StrPolyHash_set(a,b->order[i],sp_StrPolyHash_get(b,b->order[i]));}
+static void sp_StrPolyHash_update(sp_StrPolyHash*a,sp_StrPolyHash*b){if (SP_UNLIKELY(!a)) sp_nil_recv("update"); if (!b||a==b)return;SP_GC_ROOT(a);SP_GC_ROOT(b);for(sp_int i=0;i<b->len;i++)sp_StrPolyHash_set(a,b->order[i],sp_StrPolyHash_get(b,b->order[i]));}
 sp_StrPolyHash*sp_StrPolyHash_dup(sp_StrPolyHash*h);
-static sp_StrPolyHash*sp_StrPolyHash_replace(sp_StrPolyHash*h,sp_StrPolyHash*o){ sp_gc_wb((void*)h);if(!h)return h;for(sp_int i=0;i<h->cap;i++)h->keys[i]=NULL;h->len=0;if(o)for(sp_int i=0;i<o->len;i++)sp_StrPolyHash_set(h,o->order[i],sp_StrPolyHash_get(o,o->order[i]));return h;}
+static sp_StrPolyHash*sp_StrPolyHash_replace(sp_StrPolyHash*h,sp_StrPolyHash*o){ sp_gc_wb((void*)h);if (SP_UNLIKELY(!h)) sp_nil_recv("replace");for(sp_int i=0;i<h->cap;i++)h->keys[i]=NULL;h->len=0;if(o)for(sp_int i=0;i<o->len;i++)sp_StrPolyHash_set(h,o->order[i],sp_StrPolyHash_get(o,o->order[i]));return h;}
 void sp_StrPolyHash_clear(sp_StrPolyHash*h);
 static sp_bool sp_StrPolyHash_eq(sp_StrPolyHash*a,sp_StrPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(sp_int i=0;i<a->len;i++){const char*k=a->order[i];if(!sp_StrPolyHash_has_key(b,k))return FALSE;if(!sp_poly_rb_equal(sp_StrPolyHash_get(a,k),sp_StrPolyHash_get(b,k)))return FALSE;}return TRUE;}
 /* Issue #851: inspect for str_poly_hash. */
@@ -9760,10 +9769,10 @@ static sp_bool sp_SymPolyHash_has_key(sp_SymPolyHash*h,sp_sym k){sp_int idx=(sp_
 static sp_int sp_SymPolyHash_length(sp_SymPolyHash*h){return h->len;}
 static sp_IntArray*sp_SymPolyHash_keys(sp_SymPolyHash*h){SP_GC_ROOT(h);sp_IntArray*a=sp_IntArray_new();SP_GC_ROOT(a);for(sp_int i=0;i<h->len;i++)sp_IntArray_push(a,(sp_int)h->order[i]);return a;}
 static sp_PolyArray*sp_SymPolyHash_values(sp_SymPolyHash*h){SP_GC_ROOT(h);sp_PolyArray*a=sp_PolyArray_new();SP_GC_ROOT(a);for(sp_int i=0;i<h->len;i++)sp_PolyArray_push(a,sp_SymPolyHash_get(h,h->order[i]));return a;}
-static sp_bool sp_SymPolyHash_has_value(sp_SymPolyHash*h,sp_RbVal v){if(!h)return FALSE;for(sp_int i=0;i<h->len;i++)if(sp_poly_rb_equal(sp_SymPolyHash_get(h,h->order[i]),v))return TRUE;return FALSE;}
-static sp_sym sp_SymPolyHash_key(sp_SymPolyHash*h,sp_RbVal v){if(!h)return (sp_sym)-1;for(sp_int i=0;i<h->len;i++)if(sp_poly_rb_equal(sp_SymPolyHash_get(h,h->order[i]),v))return h->order[i];return (sp_sym)-1;}
+static sp_bool sp_SymPolyHash_has_value(sp_SymPolyHash*h,sp_RbVal v){if (SP_UNLIKELY(!h)) sp_nil_recv("value?");for(sp_int i=0;i<h->len;i++)if(sp_poly_rb_equal(sp_SymPolyHash_get(h,h->order[i]),v))return TRUE;return FALSE;}
+static sp_sym sp_SymPolyHash_key(sp_SymPolyHash*h,sp_RbVal v){if (SP_UNLIKELY(!h)) sp_nil_recv("key");for(sp_int i=0;i<h->len;i++)if(sp_poly_rb_equal(sp_SymPolyHash_get(h,h->order[i]),v))return h->order[i];return (sp_sym)-1;}
 sp_SymPolyHash*sp_SymPolyHash_merge(sp_SymPolyHash*a,sp_SymPolyHash*b);
-static void sp_SymPolyHash_update(sp_SymPolyHash*a,sp_SymPolyHash*b){if(!a||!b||a==b)return;SP_GC_ROOT(a);SP_GC_ROOT(b);for(sp_int i=0;i<b->len;i++)sp_SymPolyHash_set(a,b->order[i],sp_SymPolyHash_get(b,b->order[i]));}
+static void sp_SymPolyHash_update(sp_SymPolyHash*a,sp_SymPolyHash*b){if (SP_UNLIKELY(!a)) sp_nil_recv("update"); if (!b||a==b)return;SP_GC_ROOT(a);SP_GC_ROOT(b);for(sp_int i=0;i<b->len;i++)sp_SymPolyHash_set(a,b->order[i],sp_SymPolyHash_get(b,b->order[i]));}
 /* OpenStruct: a dynamic-member object (#3135). Members are named at run time
    (JSON keys, CLI args, ...) so they cannot be static C fields; the backing is
    a SymPolyHash of symbol -> boxed value. Reads of an absent member are nil,
@@ -9974,7 +9983,7 @@ static sp_PolyArray *sp_Object_ivars(sp_Object *o){
   for(sp_int i=0;o&&o->ivars&&i<o->ivars->len;i++) sp_PolyArray_push(a,sp_box_sym(o->ivars->order[i]));
   return a;
 }
-static sp_SymPolyHash*sp_SymPolyHash_replace(sp_SymPolyHash*h,sp_SymPolyHash*o){if(!h)return h;for(sp_int i=0;i<h->cap;i++)h->keys[i]=-1;h->len=0;if(o)for(sp_int i=0;i<o->len;i++)sp_SymPolyHash_set(h,o->order[i],sp_SymPolyHash_get(o,o->order[i]));return h;}
+static sp_SymPolyHash*sp_SymPolyHash_replace(sp_SymPolyHash*h,sp_SymPolyHash*o){if (SP_UNLIKELY(!h)) sp_nil_recv("replace");for(sp_int i=0;i<h->cap;i++)h->keys[i]=-1;h->len=0;if(o)for(sp_int i=0;i<o->len;i++)sp_SymPolyHash_set(h,o->order[i],sp_SymPolyHash_get(o,o->order[i]));return h;}
 void sp_SymPolyHash_clear(sp_SymPolyHash*h);
 static sp_bool sp_SymPolyHash_eq(sp_SymPolyHash*a,sp_SymPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(sp_int i=0;i<a->len;i++){sp_sym k=a->order[i];if(!sp_SymPolyHash_has_key(b,k))return FALSE;if(!sp_poly_rb_equal(sp_SymPolyHash_get(a,k),sp_SymPolyHash_get(b,k)))return FALSE;}return TRUE;}
 /* Hash#inspect for sym_poly_hash. CRuby 4.0 renders symbol keys
@@ -10459,7 +10468,7 @@ static inline sp_int sp_pph_hash_key(const sp_PolyPolyHash*h,sp_RbVal k){return 
 static inline sp_bool sp_pph_eql_key(const sp_PolyPolyHash*h,sp_RbVal a,sp_RbVal b){return h->ident?sp_poly_equal(a,b):sp_rbval_eql_key(a,b);}
 static SP_NOINLINE sp_RbVal sp_PolyPolyHash_miss(sp_PolyPolyHash*h,sp_RbVal k){if(h->dproc)return h->dproc(h,k,h->dproc_self);return h->default_v;}
 static sp_RbVal sp_PolyPolyHash_get(sp_PolyPolyHash*h,sp_RbVal k){if(!h)return sp_box_nil();SP_GC_ROOT(h);SP_GC_ROOT_RBVAL(k);sp_int hs=sp_hash_slot(sp_pph_hash_key(h,k));sp_int idx=(sp_int)(hs&h->mask);while(h->occ[idx]){if(h->hs[idx]==hs&&sp_pph_eql_key(h,h->keys[idx],k))return h->vals[idx];idx=(idx+1)&h->mask;}return sp_PolyPolyHash_miss(h,k);}
-static sp_bool sp_PolyPolyHash_has_value(sp_PolyPolyHash*h,sp_RbVal v){if(!h)return FALSE;for(sp_int i=0;i<h->len;i++)if(sp_poly_rb_equal(h->vals[h->order[i]],v))return TRUE;return FALSE;}
+static sp_bool sp_PolyPolyHash_has_value(sp_PolyPolyHash*h,sp_RbVal v){if (SP_UNLIKELY(!h)) sp_nil_recv("value?");for(sp_int i=0;i<h->len;i++)if(sp_poly_rb_equal(h->vals[h->order[i]],v))return TRUE;return FALSE;}
 /* defined with the curry machinery below; the key-typed reads and the cold
    index path all apply a curried receiver through it */
 static sp_RbVal sp_curry_call_poly(sp_Curry *c, sp_int argc, const sp_RbVal *args);
@@ -10575,7 +10584,7 @@ static sp_RbVal sp_marv_hash_new(void) { return sp_box_obj(sp_PolyPolyHash_new()
    this one did not, so a `merge` the emitter lowered here left a reference to a
    function the build never emits and the link failed (#4020). */
 static void sp_PolyPolyHash_update(sp_PolyPolyHash *a, sp_PolyPolyHash *b) {
-  if (!a || !b || a == b) return;
+  if (SP_UNLIKELY(!a)) sp_nil_recv("update"); if (!b || a == b) return;
   SP_GC_ROOT(a); SP_GC_ROOT(b);
   for (sp_int i = 0; i < b->len; i++) {
     sp_int idx = b->order[i];
@@ -10612,26 +10621,26 @@ static SP_UNUSED void sp_marv_any_push(sp_RbVal a, sp_RbVal v) { (void)sp_poly_s
 /* order[] holds slot indices (not keys), so iterate keys/vals by the stored
    index; merge inherits the LEFT receiver's default per CRuby. */
 sp_PolyPolyHash*sp_PolyPolyHash_merge(sp_PolyPolyHash*a,sp_PolyPolyHash*b);
-static sp_bool sp_PolyPolyHash_has_key(sp_PolyPolyHash*h,sp_RbVal k){if(!h)return FALSE;SP_GC_ROOT(h);SP_GC_ROOT_RBVAL(k);sp_int hs=sp_hash_slot(sp_pph_hash_key(h,k));sp_int idx=(sp_int)(hs&h->mask);while(h->occ[idx]){if(h->hs[idx]==hs&&sp_pph_eql_key(h,h->keys[idx],k))return TRUE;idx=(idx+1)&h->mask;}return FALSE;}
+static sp_bool sp_PolyPolyHash_has_key(sp_PolyPolyHash*h,sp_RbVal k){if (SP_UNLIKELY(!h)) sp_nil_recv("key?");SP_GC_ROOT(h);SP_GC_ROOT_RBVAL(k);sp_int hs=sp_hash_slot(sp_pph_hash_key(h,k));sp_int idx=(sp_int)(hs&h->mask);while(h->occ[idx]){if(h->hs[idx]==hs&&sp_pph_eql_key(h,h->keys[idx],k))return TRUE;idx=(idx+1)&h->mask;}return FALSE;}
 /* Hash#rehash: a key changed since it was stored is under the hash it was
    stored with. Every entry is stored anew into a fresh table, in order,
    which asks each key again and folds keys that have become eql? into the
    first of them with the last value, as CRuby's does; the arrays are then
    swapped in whole, so a hook that raises leaves the hash as it was. The
    shell they came in is emptied for its finalizer. */
-static sp_PolyPolyHash*sp_PolyPolyHash_rehash(sp_PolyPolyHash*h){if(!h)return h;if(sp_gc_is_frozen(h))sp_raise_frozen_hash_at(h,SP_BUILTIN_POLY_POLY_HASH);sp_gc_wb((void*)h);SP_GC_ROOT(h);sp_PolyPolyHash*t=sp_PolyPolyHash_new();SP_GC_ROOT(t);t->ident=h->ident;for(sp_int i=0;i<h->len;i++){sp_int oi=h->order[i];sp_PolyPolyHash_set(t,h->keys[oi],h->vals[oi]);}sp_pl_free(h->keys);sp_pl_free(h->vals);sp_pl_free(h->hs);sp_pl_free(h->order);sp_pl_free(h->occ);h->keys=t->keys;h->vals=t->vals;h->hs=t->hs;h->order=t->order;h->occ=t->occ;h->len=t->len;h->cap=t->cap;h->mask=t->mask;t->keys=NULL;t->vals=NULL;t->hs=NULL;t->order=NULL;t->occ=NULL;t->len=0;t->cap=0;return h;}
+static sp_PolyPolyHash*sp_PolyPolyHash_rehash(sp_PolyPolyHash*h){if (SP_UNLIKELY(!h)) sp_nil_recv("rehash");if(sp_gc_is_frozen(h))sp_raise_frozen_hash_at(h,SP_BUILTIN_POLY_POLY_HASH);sp_gc_wb((void*)h);SP_GC_ROOT(h);sp_PolyPolyHash*t=sp_PolyPolyHash_new();SP_GC_ROOT(t);t->ident=h->ident;for(sp_int i=0;i<h->len;i++){sp_int oi=h->order[i];sp_PolyPolyHash_set(t,h->keys[oi],h->vals[oi]);}sp_pl_free(h->keys);sp_pl_free(h->vals);sp_pl_free(h->hs);sp_pl_free(h->order);sp_pl_free(h->occ);h->keys=t->keys;h->vals=t->vals;h->hs=t->hs;h->order=t->order;h->occ=t->occ;h->len=t->len;h->cap=t->cap;h->mask=t->mask;t->keys=NULL;t->vals=NULL;t->hs=NULL;t->order=NULL;t->occ=NULL;t->len=0;t->cap=0;return h;}
 /* A Symbol is its own value, so a Symbol-keyed hash already finds its keys
    by identity; compare_by_identity only sets what the predicate answers. */
-static sp_SymPolyHash*sp_SymPolyHash_compare_by_identity(sp_SymPolyHash*h){if(!h||h->ident)return h;if(sp_gc_is_frozen(h))sp_raise_frozen_hash_at(h,SP_BUILTIN_SYM_POLY_HASH);h->ident=TRUE;return h;}
-static sp_bool sp_PolyPolyHash_ident_p(sp_PolyPolyHash*h){return h&&h->ident;}
-static sp_bool sp_SymPolyHash_ident_p(sp_SymPolyHash*h){return h&&h->ident;}
+static sp_SymPolyHash*sp_SymPolyHash_compare_by_identity(sp_SymPolyHash*h){if (SP_UNLIKELY(!h)) sp_nil_recv("compare_by_identity"); if (h->ident)return h;if(sp_gc_is_frozen(h))sp_raise_frozen_hash_at(h,SP_BUILTIN_SYM_POLY_HASH);h->ident=TRUE;return h;}
+static sp_bool sp_PolyPolyHash_ident_p(sp_PolyPolyHash*h){if (SP_UNLIKELY(!h)) sp_nil_recv("compare_by_identity?");return h->ident;}
+static sp_bool sp_SymPolyHash_ident_p(sp_SymPolyHash*h){if (SP_UNLIKELY(!h)) sp_nil_recv("compare_by_identity?");return h->ident;}
 static sp_bool sp_hash_never_ident_p(const void*h){(void)h;return FALSE;}
 #define sp_hash_ident_p(h) _Generic((h), sp_PolyPolyHash*: sp_PolyPolyHash_ident_p, sp_SymPolyHash*: sp_SymPolyHash_ident_p, default: sp_hash_never_ident_p)(h)
 /* Hash#compare_by_identity: from now on keys are found by equal?. A hash
    that already holds entries is rebuilt under the identity hash, as CRuby
    rehashes it; entries whose keys are eql? but not equal? stay apart from
    then on, and none merge (a hash holds no two eql? keys before). */
-static sp_PolyPolyHash*sp_PolyPolyHash_compare_by_identity(sp_PolyPolyHash*h){if(!h||h->ident)return h;if(sp_gc_is_frozen(h))sp_raise_frozen_hash_at(h,SP_BUILTIN_POLY_POLY_HASH);h->ident=TRUE;if(h->len>0)sp_PolyPolyHash_rehash(h);return h;}
+static sp_PolyPolyHash*sp_PolyPolyHash_compare_by_identity(sp_PolyPolyHash*h){if (SP_UNLIKELY(!h)) sp_nil_recv("compare_by_identity"); if (h->ident)return h;if(sp_gc_is_frozen(h))sp_raise_frozen_hash_at(h,SP_BUILTIN_POLY_POLY_HASH);h->ident=TRUE;if(h->len>0)sp_PolyPolyHash_rehash(h);return h;}
 /* Hash#delete in place: the backward shift the other hash kinds delete
    with, closing the hole the entry leaves so a probe that ran through it
    still reaches what lies beyond. order[] holds slot indexes here, not keys,
@@ -10641,7 +10650,7 @@ static sp_PolyPolyHash*sp_PolyPolyHash_compare_by_identity(sp_PolyPolyHash*h){if
    Rebuilding the table instead -- every remaining key hashed and inserted
    anew -- would cost a delete what filling the table costs. */
 static void sp_PolyPolyHash_delete(sp_PolyPolyHash*h,sp_RbVal k){
-  if(!h)return;
+  if (SP_UNLIKELY(!h)) sp_nil_recv("delete");
   sp_gc_wb((void*)h);
   SP_GC_ROOT(h);SP_GC_ROOT_RBVAL(k);
   sp_int hs=sp_hash_slot(sp_pph_hash_key(h,k));
@@ -14767,7 +14776,7 @@ static sp_PolyArray *sp_poly_values(sp_RbVal v) {
   sp_raise_nomethod(sp_nomethod_msg("values", v));   /* nil and the rest named as CRuby does */
   return NULL;  /* unreachable: sp_raise_cls is noreturn */
 }
-static sp_PolyPolyHash*sp_PolyPolyHash_replace(sp_PolyPolyHash*h,sp_PolyPolyHash*o){if(!h||h==o)return h;SP_GC_ROOT(h);SP_GC_ROOT(o);for(sp_int i=0;i<h->cap;i++)h->occ[i]=FALSE;h->len=0;h->ident=o?o->ident:FALSE;if(o)for(sp_int i=0;i<o->len;i++)sp_PolyPolyHash_set(h,o->keys[o->order[i]],o->vals[o->order[i]]);return h;}
+static sp_PolyPolyHash*sp_PolyPolyHash_replace(sp_PolyPolyHash*h,sp_PolyPolyHash*o){if (SP_UNLIKELY(!h)) sp_nil_recv("replace"); if (h==o)return h;SP_GC_ROOT(h);SP_GC_ROOT(o);for(sp_int i=0;i<h->cap;i++)h->occ[i]=FALSE;h->len=0;h->ident=o?o->ident:FALSE;if(o)for(sp_int i=0;i<o->len;i++)sp_PolyPolyHash_set(h,o->keys[o->order[i]],o->vals[o->order[i]]);return h;}
 sp_PolyPolyHash*sp_PolyPolyHash_dup(sp_PolyPolyHash*h);
 /* Issue #738: poly_poly_hash inspect using sp_poly_inspect on each
    k,v. Output mirrors Ruby's `{k => v, ...}` for non-symbol keys and
@@ -14778,8 +14787,8 @@ const char*sp_PolyPolyHash_inspect(sp_PolyPolyHash*h);
    poly_poly_hash so any (key, value) pair shape is uniformly
    representable. str_str_hash_invert lives above (line ~1132)
    and stays as a same-type round-trip. */
-static sp_PolyPolyHash*sp_StrIntHash_invert_poly(sp_StrIntHash*h){SP_GC_ROOT(h);sp_PolyPolyHash*r=sp_PolyPolyHash_new();if(!h)return r;for(sp_int i=0;i<h->len;i++)sp_PolyPolyHash_set(r,sp_box_oint(sp_StrIntHash_vget(h,h->order[i])),sp_box_str(h->order[i]));return r;}
-static sp_PolyPolyHash*sp_IntStrHash_invert(sp_IntStrHash*h){SP_GC_ROOT(h);sp_PolyPolyHash*r=sp_PolyPolyHash_new();if(!h)return r;for(sp_int i=0;i<h->len;i++)sp_PolyPolyHash_set(r,sp_box_str(sp_IntStrHash_get(h,h->order[i])),sp_box_int(h->order[i]));return r;}
+static sp_PolyPolyHash*sp_StrIntHash_invert_poly(sp_StrIntHash*h){SP_GC_ROOT(h);sp_PolyPolyHash*r=sp_PolyPolyHash_new();if (SP_UNLIKELY(!h)) sp_nil_recv("invert");for(sp_int i=0;i<h->len;i++)sp_PolyPolyHash_set(r,sp_box_oint(sp_StrIntHash_vget(h,h->order[i])),sp_box_str(h->order[i]));return r;}
+static sp_PolyPolyHash*sp_IntStrHash_invert(sp_IntStrHash*h){SP_GC_ROOT(h);sp_PolyPolyHash*r=sp_PolyPolyHash_new();if (SP_UNLIKELY(!h)) sp_nil_recv("invert");for(sp_int i=0;i<h->len;i++)sp_PolyPolyHash_set(r,sp_box_str(sp_IntStrHash_get(h,h->order[i])),sp_box_int(h->order[i]));return r;}
 static sp_bool sp_PolyPolyHash_eq(sp_PolyPolyHash*a,sp_PolyPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(sp_int i=0;i<a->len;i++){sp_RbVal k=a->keys[a->order[i]];if(!sp_PolyPolyHash_has_key(b,k))return FALSE;if(!sp_poly_rb_equal(sp_PolyPolyHash_get(a,k),sp_PolyPolyHash_get(b,k)))return FALSE;}return TRUE;}
 /* --- cross-variant hash equality ------------------------------------------
    Boxed key/value of the i-th insertion-ordered pair, per variant. */

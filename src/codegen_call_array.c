@@ -223,8 +223,8 @@ int emit_op_array_last(Compiler *c, const BopCtx *x, Buf *b) {
   int t = ++g_tmp;
   Buf rb = expr_buf(c, x->recv);
   if (x->rt == TY_POLY_ARRAY)
-    buf_printf(b, "({ sp_PolyArray *_t%d = %s; sp_PolyArray_get(_t%d, sp_PolyArray_length(_t%d) - 1); })",
-               t, rb.p ? rb.p : "", t, t);
+    buf_printf(b, "({ sp_PolyArray *_t%d = %s; sp_PolyArray_get%s(_t%d, sp_PolyArray_length(_t%d) - 1); })",
+               t, rb.p ? rb.p : "", recv_never_nil(c, x->recv) ? "" : "_m", t, t);
   else if (oint_kind(ty_array_elem(x->rt))) {
     /* an Integer or Float element is read with its nil (an empty array,
        a nil element), unwrapped where the consumer wants it plain */
@@ -236,8 +236,8 @@ int emit_op_array_last(Compiler *c, const BopCtx *x, Buf *b) {
   }
   else {
     const char *k = array_kind(x->rt);
-    buf_printf(b, "({ %s _t%d = %s; sp_%sArray_get(_t%d, sp_%sArray_length(_t%d) - 1); })",
-               c_type_name(x->rt), t, rb.p ? rb.p : "", k, t, k, t);
+    buf_printf(b, "({ %s _t%d = %s; sp_%sArray_get%s(_t%d, sp_%sArray_length(_t%d) - 1); })",
+               c_type_name(x->rt), t, rb.p ? rb.p : "", k, recv_never_nil(c, x->recv) ? "" : "_m", t, k, t);
   }
   free(rb.p);
   return 1;
@@ -1173,7 +1173,7 @@ int emit_op_array_push(Compiler *c, const BopCtx *x, Buf *b) {
   (void)name; (void)k; (void)block; (void)argv;
   if (rt != TY_POLY_ARRAY) return 0;
   if (is_push_alias(name) && argc == 1) {
-    buf_puts(b, "sp_PolyArray_push("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+    buf_printf(b, "sp_PolyArray_push%s(", recv_never_nil(c, recv) ? "" : "_m"); emit_expr(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
     return 1;
   }
   return 0;
@@ -1221,6 +1221,60 @@ int emit_op_array_insert_n(Compiler *c, const BopCtx *x, Buf *b) {
     return 1;
   }
   return 0;
+}
+
+/* Is receiver node recv an Array (or Hash) that is never nil: the nil fact
+   (analyze_nil.c, #7444) says it cannot be. */
+int recv_never_nil(Compiler *c, int recv) {
+  /* ARGV is the program's own Array of Strings (a call to the runtime) */
+  if (nt_kind(c->nt, recv) == NK_ConstantReadNode) {
+    if (is_argv_const(nt_str(c->nt, recv, "name"))) return 1;
+  }
+  return !repr_of(c, recv).may_nil;
+}
+
+/* Array#length, size, count, empty?, to_a and entries (#9347). nil has no
+   length, size, count or empty?, nil.to_a is [], and nil has no entries, so a
+   receiver that can be nil is read through the functions that say so
+   (sp_*Array_length_m, _to_a, _entries); one that cannot keeps the plain read
+   the compiler's own loops use (sp_*Array_length, tolerant of NULL as it
+   always was, and to_a's receiver itself), so a program over an Array known
+   not to be nil keeps its C and the folding gcc does on it. entries copies,
+   whatever the receiver. */
+int emit_op_array_nil_recv(Compiler *c, const BopCtx *x, Buf *b) {
+  TyKind rt = x->rt;
+  const char *k = rt == TY_POLY_ARRAY ? "Poly" : rt == TY_STRH_ARRAY ? "Strh" : ty_is_ptr_array(rt) ? "Ptr" : array_kind(rt);
+  if (!k) return 0;
+  /* the Array of shared String handles is an sp_PtrArray for its length */
+  const char *lk = rt == TY_STRH_ARRAY ? "Ptr" : k;
+  int entries = sp_streq(x->name, "entries"), to_a = sp_streq(x->name, "to_a");
+  /* a safe navigation has tested the receiver already */
+  int plain = recv_never_nil(c, x->recv) || nt_safe_nav(c->nt, x->id);
+  /* Integer and Float Arrays have no tolerant length to tell apart from */
+  int len_m = !plain && (rt == TY_POLY_ARRAY || rt == TY_STR_ARRAY || ty_is_ptr_array(rt));
+  /* an object Array's raiser already names the call */
+  if (!plain && sp_streq(x->name, "empty?") && ty_is_ptr_array(rt)) {
+    buf_puts(b, "sp_PtrArray_empty(");
+    if (x->rtext) buf_puts(b, x->rtext);
+    else emit_expr(c, x->recv, b);
+    buf_puts(b, ")");
+    return 1;
+  }
+  /* a length where the call's slot holds its nil is lifted, as the template did */
+  int lift = !to_a && !entries && !sp_streq(x->name, "empty?") && node_is_oint(c, x->id);
+  if (lift) buf_printf(b, "%s(", oint_of(TY_INT));
+  if (to_a && plain) { /* the receiver itself */ }
+  else if (to_a || entries) buf_printf(b, "sp_%sArray_%s(", k, entries ? "entries" : "to_a");
+  else {
+    if (sp_streq(x->name, "empty?")) buf_puts(b, "(");
+    buf_printf(b, "sp_%sArray_length%s(", lk, len_m ? "_m" : "");
+  }
+  if (x->rtext) buf_puts(b, x->rtext);
+  else emit_expr(c, x->recv, b);
+  if (!(to_a && plain)) buf_puts(b, ")");
+  if (sp_streq(x->name, "empty?")) buf_puts(b, " == 0)");
+  if (lift) buf_puts(b, ")");
+  return 1;
 }
 
 /* Array#transpose of a poly array */
@@ -2022,7 +2076,8 @@ int emit_call_append_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     else emit_recv_rooted(c, recv, t, "SP_GC_ROOT", b);
     TyKind elem = ty_array_elem(art);
     for (int a = 0; a < argc; a++) {
-      buf_printf(b, "sp_%sArray_push%s(_t%d, ", k, nil_store_sfx(c, k, argv[a]), t);
+      buf_printf(b, "sp_%sArray_push%s(_t%d, ", k,
+                 art == TY_POLY_ARRAY && !recv_never_nil(c, recv) ? "_m" : nil_store_sfx(c, k, argv[a]), t);
       if (art == TY_POLY_ARRAY) emit_boxed(c, argv[a], b);
       /* a poly value into a String, Integer or Float array: its nil is the
          slot's nil, and a value of another kind is refused, as the statement

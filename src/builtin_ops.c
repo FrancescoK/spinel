@@ -2337,18 +2337,18 @@ static const BuiltinOp bop_rows[] = {
      with operands (the operand's kind), push/<</append (a literal
      receiver), assoc/rassoc (a typed receiver falls to the reopen rules)
      and the block forms of uniq!/compact!/flatten! carry none. */
-  { BOP_ANY_ARRAY, "length",                0,   0, BF_NONE,     TY_INT,        BOPE_TEMPLATE, "sp_$AArray_length($r)" },
-  { BOP_ANY_ARRAY, "size",                  0,   0, BF_NONE,     TY_INT,        BOPE_TEMPLATE, "sp_$AArray_length($r)" },
-  { BOP_ANY_ARRAY, "count",                 0,   0, BF_NONE,     TY_INT,        BOPE_TEMPLATE, "sp_$AArray_length($r)" },
-  { BOP_ANY_ARRAY, "empty?",                0,   0, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "(sp_$AArray_length($r) == 0)" },
+  { BOP_ANY_ARRAY, "length",                0,   0, BF_NONE,     TY_INT,        BOPE_ARRAY_NIL_RECV },
+  { BOP_ANY_ARRAY, "size",                  0,   0, BF_NONE,     TY_INT,        BOPE_ARRAY_NIL_RECV },
+  { BOP_ANY_ARRAY, "count",                 0,   0, BF_NONE,     TY_INT,        BOPE_ARRAY_NIL_RECV },
+  { BOP_ANY_ARRAY, "empty?",                0,   0, BF_ANY,      TY_BOOL,       BOPE_ARRAY_NIL_RECV },
   { BOP_ANY_ARRAY, "first",                 0,   0, BF_ANY,      BOPR_ELEM,     BOPE_ARRAY_FIRST },  /* an Integer / Float element with its nil */
   { BOP_ANY_ARRAY, "shift",                 0,   0, BF_ANY,      BOPR_ELEM,     BOPE_ARRAY_POP_SHIFT },  /* nil when empty: an sp_oint for the scalar kinds */
   { BOP_ANY_ARRAY, "pop",                   0,   0, BF_ANY,      BOPR_ELEM,     BOPE_ARRAY_POP_SHIFT },
   { BOP_ANY_ARRAY, "sample",                0,   0, BF_ANY,      BOPR_ELEM,     BOPE_TEMPLATE, "$<sp_$AArray_sample$O($r)$>" },  /* one element, or nil when empty; was TY_UNKNOWN without BOPF_INFERRED, an unfinished row -- no argument, so no ambiguity with sample(n)'s random:-kwarg case below */
   { BOP_ANY_ARRAY, "inspect",               0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_$AArray_inspect($r)" },
-  { BOP_ANY_ARRAY, "to_a",                  0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "$r", 0, 0, BOPF_SELF_EXACT },
+  { BOP_ANY_ARRAY, "to_a",                  0,   0, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_NIL_RECV, NULL, 0, 0, BOPF_SELF_EXACT },  /* the receiver; nil.to_a is [] */
   { BOP_ANY_ARRAY, "to_ary",                0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "$r", 0, 0, BOPF_SELF },
-  { BOP_ANY_ARRAY, "entries",               0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "$r" },
+  { BOP_ANY_ARRAY, "entries",               0,   0, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_NIL_RECV },  /* a copy; nil has no entries */
   { BOP_ANY_ARRAY, "deconstruct",           0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "$r", 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "dup",                   0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "sp_$AArray_dup($r)", 0, 0, BOPF_COPY_CLASS },
   { BOP_ANY_ARRAY, "clone",                 0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "({ sp_$AArray *_t$t = $r; sp_$AArray *_t$u = sp_$AArray_dup(_t$t); if (_t$t) _t$u->frozen = _t$t->frozen; _t$u; })", 0, 0, BOPF_COPY_CLASS },  /* the frozen flag carries over; nil.clone is nil */

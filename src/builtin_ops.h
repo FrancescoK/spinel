@@ -128,6 +128,7 @@ typedef enum {
   BOPE_ARRAY_PUSH,        /* Array#push / << / append of one value (poly) */
   BOPE_ARRAY_INSERT_N,    /* Array#insert(i, v...) (poly) */
   BOPE_ARRAY_TRANSPOSE,   /* Array#transpose (poly) */
+  BOPE_ARRAY_NIL_RECV,    /* Array#length / size / count / empty? / to_a / entries: a receiver that may be nil is tested */
   BOPE_ARRAY_ASSOC,       /* Array#assoc / #rassoc (poly) */
   BOPE_ARRAY_COMBINATION, /* Array#combination / #permutation and the repeated forms, blockless */
   BOPE_ARRAY_PRODUCT,     /* Array#product without a block */
