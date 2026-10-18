@@ -5226,12 +5226,39 @@ static int infer_operator_call(Compiler *c, int id, const NodeTable *nt, const c
     { *out = TY_BOOL; return 1; }
   return 0;
 }
+/* The `class << self` accessor names of every class, and every alias name,
+   kept while the class tables hold still: a boxed receiver's call asks of
+   any class, and resolving the name's aliases in every class per call grew
+   with the classes times the calls. */
+static ANameHash g_sga_names, g_sga_aliases;
+static const Compiler *g_sga_c;
+static unsigned g_sga_gen;
+static long g_sga_n = -1;
+static void sga_index(Compiler *c) {
+  /* the lists only grow: their total length says whether one did */
+  long n = c->nclasses;
+  for (int k = 0; k < c->nclasses; k++)
+    n += c->classes[k].nsg_readers + c->classes[k].nsg_writers + c->classes[k].naliases;
+  if (g_sga_c == c && g_sga_gen == comp_table_gen && g_sga_n == n) return;
+  anh_free(&g_sga_names); memset(&g_sga_names, 0, sizeof g_sga_names);
+  anh_free(&g_sga_aliases); memset(&g_sga_aliases, 0, sizeof g_sga_aliases);
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *ci = &c->classes[k];
+    for (int j = 0; j < ci->nsg_readers; j++) if (!anh_has(&g_sga_names, ci->sg_readers[j])) anh_add(&g_sga_names, ci->sg_readers[j]);
+    for (int j = 0; j < ci->nsg_writers; j++) if (!anh_has(&g_sga_names, ci->sg_writers[j])) anh_add(&g_sga_names, ci->sg_writers[j]);
+    for (int j = 0; j < ci->naliases; j++) if (!anh_has(&g_sga_aliases, ci->alias_new[j])) anh_add(&g_sga_aliases, ci->alias_new[j]);
+  }
+  g_sga_c = c; g_sga_gen = comp_table_gen; g_sga_n = n;
+}
 /* Does some class have a `class << self` accessor `name` (`x`, or `x=` with
    one argument)? */
 static int cls_value_sg_accessor_any(Compiler *c, const char *name, int argc) {
   char base[256];
   int setter = setter_base_name(name, base, sizeof base);
   if (setter ? argc != 1 : argc != 0) return 0;
+  /* no class holds the name, nor an alias that may stand for one */
+  sga_index(c);
+  if (!anh_has(&g_sga_names, setter ? base : name) && (setter || !anh_has(&g_sga_aliases, name))) return 0;
   for (int k = 0; k < c->nclasses; k++) {
     if (is_builtin_reopen(c->classes[k].name)) continue;
     const char *rn = setter ? base : comp_resolve_cm_alias_at(c, k, name, NULL);
@@ -7255,6 +7282,9 @@ static int infer_last_resort_call(Compiler *c, int id, const NodeTable *nt, cons
       int ncc = 0;
       comp_cmethod_candidates(c, name, &ncc);
       if (ncc > 0) { *out = TY_POLY; return 1; }
+      /* ...or a `class << self` accessor of one: its per-class arms answer
+         the slot boxed (emit_cls_value_sg_accessor_of) */
+      if (cls_value_sg_accessor_any(c, name, argc)) { *out = TY_POLY; return 1; }
       /* Thread.current / Fiber.current through a class held in a poly slot:
          a boxed handle (the codegen's gate answers it) */
       if (argc == 0 && sp_streq(name, "current") && !an_user_defines_method(c, name)) { *out = TY_POLY; return 1; }

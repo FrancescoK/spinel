@@ -3347,22 +3347,31 @@ static void sg_slot_boxed(Compiler *c, int k, const char *base, Buf *b) {
    `self.class.x` once the class has a subclass): an arm per class with the
    accessor, on that class's own slot, as `Name.x` takes it. The value is
    boxed; a setter answers what it stored. NoMethodError for a class without
-   it. 0 when no class has the accessor. */
-static int emit_cls_value_sg_accessor(Compiler *c, int id, int recv, const char *name, int argc, const int *argv,
-                                      Buf *b) {
+   it. 0 when no class has the accessor. The class is the sp_Class `ktext`,
+   or the receiver's value when that is NULL. */
+/* Does some class have a `class << self` accessor `name` (`x`, or `x=` with
+   one argument)? */
+int cls_value_sg_accessor_named(Compiler *c, const char *name, int argc) {
   char base[256];
   int setter = setter_base_name(name, base, sizeof base);
   if (setter ? argc != 1 : argc != 0) return 0;
-  int any = 0;
-  for (int k = 0; k < c->nclasses && !any; k++) {
+  for (int k = 0; k < c->nclasses; k++) {
     if (is_builtin_reopen(c->classes[k].name)) continue;
     const char *rn = setter ? base : comp_resolve_cm_alias_at(c, k, name, NULL);
-    any = setter ? comp_is_sg_writer(&c->classes[k], base) : comp_is_sg_reader(&c->classes[k], rn ? rn : name);
+    if (setter ? comp_is_sg_writer(&c->classes[k], base) : comp_is_sg_reader(&c->classes[k], rn ? rn : name))
+      return 1;
   }
-  if (!any) return 0;
+  return 0;
+}
+int emit_cls_value_sg_accessor_of(Compiler *c, int id, int recv, const char *ktext, const char *name, int argc,
+                                  const int *argv, Buf *b) {
+  char base[256];
+  int setter = setter_base_name(name, base, sizeof base);
+  if (!cls_value_sg_accessor_named(c, name, argc)) return 0;
   int tk = ++g_tmp, tr = ++g_tmp;
   buf_printf(b, "({ sp_Class _t%d = ", tk);
-  emit_expr(c, recv, b);
+  if (ktext) buf_puts(b, ktext);
+  else emit_expr(c, recv, b);
   buf_printf(b, "; sp_RbVal _t%d = sp_box_nil(); ", tr);
   int first = 1;
   for (int k = 0; k < c->nclasses; k++) {
@@ -3385,6 +3394,10 @@ static int emit_cls_value_sg_accessor(Compiler *c, int id, int recv, const char 
   buf_printf(b, "else sp_raise_cls(\"NoMethodError\", sp_str_concat3(\"undefined method '%s' for class \", "
                 "sp_class_to_s(_t%d), \"\")); _t%d; })", name, tk, tr);
   return 1;
+}
+static int emit_cls_value_sg_accessor(Compiler *c, int id, int recv, const char *name, int argc, const int *argv,
+                                      Buf *b) {
+  return emit_cls_value_sg_accessor_of(c, id, recv, NULL, name, argc, argv, b);
 }
 
 
