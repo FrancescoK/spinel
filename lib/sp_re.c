@@ -984,7 +984,8 @@ mrb_regexp_pattern *sp_re_union_array(sp_PolyArray *a) {SP_GC_ROOT(a);
   const char *joined = NULL;
   SP_GC_ROOT_STR(joined);
   for (sp_int i = 0; i < a->len; i++) {
-    sp_RbVal v = sp_PolyArray_get(a, i);
+    /* (a String a variable shares is its handle's box: read as its bytes) */
+    sp_RbVal v = sp_rbval_str(sp_PolyArray_get(a, i));
     const char *part;
     if (v.tag == SP_TAG_STR) part = sp_re_escape(v.v.s ? v.v.s : "");
     else if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_REGEX) part = sp_re_to_s_str(v.v.p);
