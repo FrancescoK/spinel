@@ -40,3 +40,14 @@ end
 
 x.flags = { b: 2 }
 p Any.features, x.flags
+
+# a subclass's own accessor of the alias's name is behind no alias
+class Own < Base
+  class << self
+    attr_accessor :flags
+  end
+end
+o = [Own, 1][ARGV.size]
+o.flags = 7
+Own.flags = 8 if Own.flags == 7
+p Own.flags, Own.features

@@ -2035,6 +2035,16 @@ int comp_sg_writer_reached(Compiler *c, int k, const char *name, char *base, siz
 const char *comp_resolve_cm_alias_ex(Compiler *c, int class_id, const char *name, int *builtin) {
   return resolve_alias_side(c, class_id, name, NULL, builtin, 1);
 }
+/* Does class `d` declare the `class << self` accessor `name` (`x`, or `x=`)
+   itself? A subclass's lists hold its parent's accessors as well. */
+static int sg_accessor_own(Compiler *c, int d, const char *name) {
+  char base[256];
+  ClassInfo *ci = &c->classes[d];
+  ClassInfo *pi = ci->parent >= 0 ? &c->classes[ci->parent] : NULL;
+  if (setter_base_name(name, base, sizeof base))
+    return comp_is_sg_writer(ci, base) && !(pi && comp_is_sg_writer(pi, base));
+  return comp_is_sg_reader(ci, name) && !(pi && comp_is_sg_reader(pi, name));
+}
 static const char *resolve_alias_side(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin, int sg) {
   if (builtin) *builtin = 0;
   if (!name) return name;
@@ -2067,7 +2077,7 @@ static const char *resolve_alias_side(Compiler *c, int class_id, const char *nam
              location`). Asked only once an alias is found, which most
              lookups never do. */
           for (int d = from; d >= 0 && d != cid; d = c->classes[d].parent)
-            if (sg == 1 ? comp_cmethod_in_class(c, d, name) >= 0
+            if (sg == 1 ? comp_cmethod_in_class(c, d, name) >= 0 || sg_accessor_own(c, d, name)
                         : comp_method_in_class(c, d, name) >= 0 || comp_is_reader(&c->classes[d], name)) return name;
           next = ci->alias_old[i];
           /* An alias of an INHERITED method names the body that was in effect
