@@ -50,6 +50,7 @@
 
 #include "analyze_internal.h"
 #include "call_plan.h"
+#include "value_pos.h"
 
 /* a memo entry whose value is being computed */
 #define NF_BUSY 0xff
@@ -1041,13 +1042,6 @@ static void nf_elem_mark_back(NF *f, int v, int depth) {
   }
 }
 
-static int nf_elem(NF *f, int v, int depth);
-static int nf_elem_list(NF *f, int st, int depth) {
-  if (st < 0 || nt_kind(f->nt, st) != NK_StatementsNode) return nf_elem(f, st, depth);
-  int n = 0; const int *b = nt_arr(f->nt, st, "body", &n);
-  return n > 0 ? nf_elem(f, b[n - 1], depth) : 0;
-}
-
 /* Can an element of the Array node v's value be nil (NFW_ELEM_NIL, else
    0)? A slot's flag, a literal's elements, what `Array.new` or a map
    fills it with, and the receiver's or the operands' own elements for a
@@ -1063,19 +1057,23 @@ static int nf_elem(NF *f, int v, int depth) {
   f->ememo[v] = r ? 2 : 1;
   return r;
 }
+/* One value position of a conditional or a sequence: whether the Array there
+   can hold a nil, at the next level. A walk that gave up can. */
+typedef struct { NF *f; int depth; } NfElemArms;
+static int nf_elem_arm(const VpLeaf *leaf, void *ud) {
+  NfElemArms *a = ud;
+  if (leaf->kind == VPK_NIL) return 0;
+  return leaf->kind == VPK_GAVE_UP || nf_elem(a->f, leaf->node, a->depth + 1);
+}
 static int nf_elem_uncached(NF *f, int v, int depth) {
   const NodeTable *nt = f->nt;
   switch (nt_kind(nt, v)) {
-  case NK_ParenthesesNode: return nf_elem_list(f, nt_ref(nt, v, "body"), depth + 1);
-  case NK_StatementsNode: return nf_elem_list(f, v, depth + 1);
-  case NK_ElseNode: return nf_elem_list(f, nt_ref(nt, v, "statements"), depth + 1);
-  case NK_IfNode: case NK_UnlessNode:
-    return nf_elem_list(f, nt_ref(nt, v, "statements"), depth + 1) ||
-           nf_elem(f, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1)
+  case NK_ParenthesesNode: case NK_StatementsNode: case NK_ElseNode: case NK_IfNode: case NK_UnlessNode:
+  case NK_AndNode: case NK_OrNode: {
+    NfElemArms a = { f, depth };
+    return for_each_value_position(nt, v, VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_LOGIC, nf_elem_arm, &a)
            ? NFW_ELEM_NIL : 0;
-  case NK_AndNode: case NK_OrNode:
-    return nf_elem(f, nt_ref(nt, v, "left"), depth + 1) || nf_elem(f, nt_ref(nt, v, "right"), depth + 1)
-           ? NFW_ELEM_NIL : 0;
+  }
   case NK_LocalVariableWriteNode: case NK_InstanceVariableWriteNode: case NK_GlobalVariableWriteNode:
   case NK_ClassVariableWriteNode: case NK_ConstantWriteNode:
     return nf_elem(f, nt_ref(nt, v, "value"), depth + 1);
