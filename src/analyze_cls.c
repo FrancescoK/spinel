@@ -86,6 +86,33 @@ typedef struct CF {
   unsigned char *exec_esc;    /* per scope: its block parameter may run under another self */
   unsigned char *exec_blk;    /* per node: a block or lambda that may run under another self */
   int pending;            /* calls round 0 left to phase 1 */
+  /* directed mode (#8837, SPINEL_CLS_FLOW): a flow is an edge from the
+     element it reads to the element it writes, and a set reaches along the
+     edges; no two elements are made one */
+  int directed;
+  int **succ; int *nsucc, *csucc;       /* per element: the elements it flows into */
+  int *wl, nwl, cwl; unsigned char *inwl; int dcap;
+  unsigned long long *eh; int ehcap, ehn;   /* the edges made, (src << 32 | dst) + 1 */
+  /* the contents (directed mode): elements a flow connects share one
+     contents class (a union-find over the elements), and a class's contents
+     element, made on first use, holds what any container they hold holds.
+     A contents element is in its own class, so a container's contents'
+     contents are its contents (one level, as in Das's one-level flow). */
+  int **psucc, *npsucc, *cpsucc;        /* per element: the elements its objects reach (a share) */
+  int **pts, *npts, *cpts;              /* per element: the objects it may hold, sorted */
+  int **pdel, *npdel, *cpdel;           /* per element: the objects added since it was last sent on */
+  int **ld, *nld, *cld, **st, *nst, *cst;   /* per element: the loads out of it, the stores into it */
+  unsigned char *ptop, *esc;            /* may hold an untracked container; its objects escaped */
+  unsigned char *smc;                   /* a summary object's contents element: past the cap it gives up */
+  int *elobj;                           /* per element: the object it stands for, -1 */
+  int *summ;                            /* per element: the object that stands for all it holds past the cap, -1 */
+  int *obj_cont, nobj, cobj;            /* per object: its contents element */
+  int draining;
+  int gsum;                             /* the one summary a summary's own contents join past the cap, -1 */
+  long st_edges, st_pts, st_drain, st_rounds;
+  int *fs, nfs, cfs;                   /* new edges whose source's objects are yet to be sent: (src, dst, kind) */
+  int *orig;                  /* (directed, SPINEL_CLS_FLOW=why) per element, the rule line that made it every class */
+  int dbg_seed, dbg_ptop;     /* SPINEL_CLS_FLOW_SEED, SPINEL_CLS_FLOW_PTOP: print where every class, and an untracked container, start */
 } CF;
 
 static void cf_oom(void) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
@@ -195,6 +222,7 @@ static int cf_classvals_of(CF *f, int pidx) {
 
 /* ---- the union-find ---- */
 
+static void cf_grow_directed(CF *f);
 static int cf_new_el(CF *f) {
   if (f->nel == f->cel) {
     f->cel = f->cel ? f->cel * 2 : 1024;
@@ -205,16 +233,234 @@ static int cf_new_el(CF *f) {
     if (f->usz && !(f->usz = realloc(f->usz, sizeof *f->usz * (size_t)f->cel))) cf_oom();
     if (f->why_el && !(f->why_el = realloc(f->why_el, sizeof *f->why_el * (size_t)f->cel))) cf_oom();
   }
+  if (f->directed && f->nel >= f->dcap) cf_grow_directed(f);
   f->uf[f->nel] = f->nel; f->set[f->nel] = CF_EMPTY;
   if (f->why) { f->why[f->nel] = 0; f->why_el[f->nel] = -1; f->usz[f->nel] = 1; }
   return f->nel++;
 }
+
+/* ---- directed mode ---- */
+
+/* A container's contents are an object's (Andersen-style points-to, one
+   object per allocation: a literal, a builtin's result, a rest parameter's
+   Array): an element holds a set of objects, which reaches along the
+   edges as the classes do, and a store into an element or a load out of it
+   goes to the contents of every object it holds, those it comes to hold
+   later included. An element that may hold a container the walk does not
+   track (ptop: every element whose classes are every class) loads every
+   class; one stored into such a container, or handed to code the walk does
+   not see, escapes: its objects' contents may be anything. A share (`a`'s
+   and `b`'s containers may be one another's) is a pair of edges that carry
+   only the objects. */
+static void cf_grow_directed(CF *f) {
+  int ncap = f->dcap ? f->dcap * 2 : (f->cel > 1024 ? f->cel : 1024);
+  while (ncap <= f->nel) ncap *= 2;
+#define CF_GROW(p) do { if (!((p) = realloc((p), sizeof *(p) * (size_t)ncap))) cf_oom(); } while (0)
+  CF_GROW(f->succ); CF_GROW(f->nsucc); CF_GROW(f->csucc);
+  CF_GROW(f->psucc); CF_GROW(f->npsucc); CF_GROW(f->cpsucc);
+  CF_GROW(f->inwl); CF_GROW(f->orig);
+  CF_GROW(f->pts); CF_GROW(f->npts); CF_GROW(f->cpts);
+  CF_GROW(f->pdel); CF_GROW(f->npdel); CF_GROW(f->cpdel);
+  CF_GROW(f->ld); CF_GROW(f->nld); CF_GROW(f->cld);
+  CF_GROW(f->st); CF_GROW(f->nst); CF_GROW(f->cst);
+  CF_GROW(f->ptop); CF_GROW(f->esc); CF_GROW(f->elobj); CF_GROW(f->summ); CF_GROW(f->smc);
+#undef CF_GROW
+  for (int i = f->dcap; i < ncap; i++) {
+    f->succ[i] = NULL; f->nsucc[i] = 0; f->csucc[i] = 0;
+    f->psucc[i] = NULL; f->npsucc[i] = 0; f->cpsucc[i] = 0;
+    f->inwl[i] = 0; f->orig[i] = 0;
+    f->pts[i] = NULL; f->npts[i] = 0; f->cpts[i] = 0;
+    f->pdel[i] = NULL; f->npdel[i] = 0; f->cpdel[i] = 0;
+    f->ld[i] = NULL; f->nld[i] = 0; f->cld[i] = 0;
+    f->st[i] = NULL; f->nst[i] = 0; f->cst[i] = 0;
+    f->ptop[i] = 0; f->esc[i] = 0; f->elobj[i] = -1; f->summ[i] = -1; f->smc[i] = 0;
+  }
+  f->dcap = ncap;
+}
+static void cf_wl_push(CF *f, int x) {
+  if (f->inwl[x]) return;
+  if (f->nwl == f->cwl) {
+    f->cwl = f->cwl ? f->cwl * 2 : 1024;
+    if (!(f->wl = realloc(f->wl, sizeof *f->wl * (size_t)f->cwl))) cf_oom();
+  }
+  f->inwl[x] = 1; f->wl[f->nwl++] = x;
+}
+/* a key not seen before: 1 (an edge, a pts edge, a load or a store) */
+static int cf_mark(CF *f, unsigned long long key) {
+  if (f->ehn * 2 >= f->ehcap) {
+    int ncap = f->ehcap ? f->ehcap * 2 : 1 << 16;
+    unsigned long long *nh = calloc((size_t)ncap, sizeof *nh);
+    if (!nh) cf_oom();
+    for (int i = 0; i < f->ehcap; i++)
+      if (f->eh[i]) {
+        unsigned h = (unsigned)((f->eh[i] * 0x9E3779B97F4A7C15ULL) >> 33) & (unsigned)(ncap - 1);
+        while (nh[h]) h = (h + 1) & (unsigned)(ncap - 1);
+        nh[h] = f->eh[i];
+      }
+    free(f->eh); f->eh = nh; f->ehcap = ncap;
+  }
+  unsigned h = (unsigned)((key * 0x9E3779B97F4A7C15ULL) >> 33) & (unsigned)(f->ehcap - 1);
+  while (f->eh[h]) { if (f->eh[h] == key) return 0; h = (h + 1) & (unsigned)(f->ehcap - 1); }
+  f->eh[h] = key; f->ehn++;
+  return 1;
+}
+#define CF_KEY(a, b, kind) ((((unsigned long long)(unsigned)(a) << 32) | (unsigned)(b)) + 1 + ((unsigned long long)(kind) << 62))
+static void cf_push_int(int **v, int *n, int *cap, int x) {
+  if (*n == *cap) { *cap = *cap ? *cap * 2 : 4; if (!(*v = realloc(*v, sizeof(int) * (size_t)*cap))) cf_oom(); }
+  (*v)[(*n)++] = x;
+}
+static void cf_drain(CF *f);
+static void cf_add_set_at(CF *f, int x, int pidx, int line);
+static int cf_new_el(CF *f);
+/* x may hold a container the walk does not track */
+static void cf_escape(CF *f, int e);
+#define cf_ptop_set(f, x) cf_ptop_set_at((f), (x), __LINE__)
+static void cf_ptop_set_at(CF *f, int x, int line) {
+  if (x < 0 || f->ptop[x]) return;
+  if (f->dbg_ptop) fprintf(stderr, "cls-flow-ptop: rule %d element %d set-all %d npts %d smc %d\n", line, x, f->set[x] == CF_ALL, f->npts[x], f->smc[x]);
+  f->ptop[x] = 1; f->changed = 1;
+  for (int i = 0; i < f->nld[x]; i++) cf_add_set_at(f, f->ld[x][i], CF_ALL, __LINE__);
+  for (int i = 0; i < f->nst[x]; i++) cf_escape(f, f->st[x][i]);
+  cf_wl_push(f, x);
+}
+static int cf_pts_has(CF *f, int x, int o) {
+  int lo = 0, hi = f->npts[x];
+  while (lo < hi) { int m = (lo + hi) / 2; if (f->pts[x][m] < o) lo = m + 1; else hi = m; }
+  return lo < f->npts[x] && f->pts[x][lo] == o;
+}
+static void cf_edge(CF *f, int src, int dst);
+/* x holds object o */
+#define CF_PTS_MAX 64
+static int cf_new_obj(CF *f);
+static void cf_pts_add(CF *f, int x, int o) {
+  if (x < 0 || o < 0 || cf_pts_has(f, x, o)) return;
+  /* past the cap, x holds one object whose contents are those of all it
+     was handed, joined both ways (Steensgaard over just those contents) */
+  if (f->summ[x] >= 0) {
+    int ks = f->obj_cont[f->summ[x]], ko = f->obj_cont[o];
+    cf_edge(f, ko, ks); cf_edge(f, ks, ko);
+    return;
+  }
+  if (f->npts[x] >= CF_PTS_MAX) {
+    /* a summary's own contents past the cap join the one global summary
+       (no summary of summaries); its own past the cap give up */
+    if (f->smc[x] == 2) { cf_ptop_set(f, x); return; }
+    if (f->gsum < 0) { f->gsum = cf_new_obj(f); f->smc[f->obj_cont[f->gsum]] = 2; }
+    int sm = f->gsum;
+    f->summ[x] = sm;
+    int ks = f->obj_cont[sm];
+    for (int i = 0; i < f->npts[x]; i++) { int ko = f->obj_cont[f->pts[x][i]]; cf_edge(f, ko, ks); cf_edge(f, ks, ko); }
+    { int ko = f->obj_cont[o]; cf_edge(f, ko, ks); cf_edge(f, ks, ko); }
+    o = sm;     /* the summary is added like any object: it reaches on, loads and stores apply to it */
+  }
+  int lo = 0, hi = f->npts[x];
+  while (lo < hi) { int m = (lo + hi) / 2; if (f->pts[x][m] < o) lo = m + 1; else hi = m; }
+  cf_push_int(&f->pts[x], &f->npts[x], &f->cpts[x], o);
+  f->st_pts++;
+  memmove(&f->pts[x][lo + 1], &f->pts[x][lo], sizeof(int) * (size_t)(f->npts[x] - 1 - lo));
+  f->pts[x][lo] = o;
+  f->changed = 1;
+  int k = f->obj_cont[o];
+  for (int i = 0; i < f->nld[x]; i++) cf_edge(f, k, f->ld[x][i]);
+  for (int i = 0; i < f->nst[x]; i++) cf_edge(f, f->st[x][i], k);
+  if (f->esc[x]) cf_add_set_at(f, k, CF_ALL, __LINE__);
+  cf_push_int(&f->pdel[x], &f->npdel[x], &f->cpdel[x], o);
+  cf_wl_push(f, x);
+}
+static void cf_escape(CF *f, int e) {
+  if (e < 0 || f->esc[e]) return;
+  f->esc[e] = 1; f->changed = 1;
+  for (int i = 0; i < f->npts[e]; i++) cf_add_set_at(f, f->obj_cont[f->pts[e][i]], CF_ALL, __LINE__);
+}
+/* the object x stands for, made on first use (a literal's, a result's) */
+static int cf_new_obj(CF *f) {
+  int k = cf_new_el(f);
+  if (f->nobj == f->cobj) {
+    f->cobj = f->cobj ? f->cobj * 2 : 1024;
+    if (!(f->obj_cont = realloc(f->obj_cont, sizeof(int) * (size_t)f->cobj))) cf_oom();
+  }
+  int o = f->nobj++;
+  f->obj_cont[o] = k;
+  return o;
+}
+static int cf_el_obj(CF *f, int x) {
+  if (x < 0) return -1;
+  if (f->elobj[x] >= 0) return f->elobj[x];
+  int o = cf_new_obj(f);
+  f->elobj[x] = o;
+  cf_pts_add(f, x, o);
+  return o;
+}
+/* every set along the edges, until none grows */
+static void cf_drain(CF *f) {
+  if (f->draining) return;
+  f->draining = 1;
+  while (f->nwl || f->nfs) {
+    if (f->nfs) {
+      int dst = f->fs[--f->nfs], src = f->fs[--f->nfs];
+      for (int j = 0; j < f->npts[src]; j++) cf_pts_add(f, dst, f->pts[src][j]);
+      continue;
+    }
+    int x = f->wl[--f->nwl];
+    f->inwl[x] = 0;
+    f->st_drain++;
+    /* the objects x gained since it was last sent on (a new edge sends all
+       of them itself, cf_edge) */
+    int nd = f->npdel[x], *dl = NULL;
+    if (nd) { dl = f->pdel[x]; f->pdel[x] = NULL; f->npdel[x] = 0; f->cpdel[x] = 0; }
+    for (int i = 0; i < f->nsucc[x]; i++) {
+      int y = f->succ[x][i];
+      int sx = f->set[x];
+      int u = cf_union(f, f->set[y], sx);
+      if (u != f->set[y]) {
+        if (u == CF_ALL && !f->orig[y]) f->orig[y] = f->orig[x] ? f->orig[x] : -1;
+        f->set[y] = u; f->changed = 1; cf_wl_push(f, y);
+        if (u == CF_ALL) cf_ptop_set(f, y);
+      }
+      for (int j = 0; j < nd; j++) cf_pts_add(f, y, dl[j]);
+      if (f->ptop[x]) cf_ptop_set(f, y);
+    }
+    for (int i = 0; i < f->npsucc[x]; i++) {
+      int y = f->psucc[x][i];
+      for (int j = 0; j < nd; j++) cf_pts_add(f, y, dl[j]);
+      if (f->ptop[x]) cf_ptop_set(f, y);
+    }
+    free(dl);
+  }
+  f->draining = 0;
+}
+static void cf_kick(CF *f, int src) {
+  if (f->set[src] != CF_EMPTY || f->ptop[src]) cf_wl_push(f, src);
+  cf_drain(f);
+}
+/* an edge src -> dst, once */
+static void cf_edge(CF *f, int src, int dst) {
+  if (src < 0 || dst < 0 || src == dst) return;
+  if (!cf_mark(f, CF_KEY(src, dst, 0))) return;
+  cf_push_int(&f->succ[src], &f->nsucc[src], &f->csucc[src], dst);
+  f->st_edges++;
+  f->changed = 1;
+  if (f->npts[src]) { cf_push_int(&f->fs, &f->nfs, &f->cfs, src); cf_push_int(&f->fs, &f->nfs, &f->cfs, dst); }
+  cf_kick(f, src);
+}
+/* an edge that carries only the objects */
+static void cf_pedge(CF *f, int src, int dst) {
+  if (src < 0 || dst < 0 || src == dst) return;
+  if (!cf_mark(f, CF_KEY(src, dst, 1))) return;
+  cf_push_int(&f->psucc[src], &f->npsucc[src], &f->cpsucc[src], dst);
+  f->changed = 1;
+  if (f->npts[src]) { cf_push_int(&f->fs, &f->nfs, &f->cfs, src); cf_push_int(&f->fs, &f->nfs, &f->cfs, dst); }
+  if (f->ptop[src]) cf_wl_push(f, src);
+  cf_kick(f, src);
+}
+
 static int cf_find(CF *f, int x) {
   while (f->uf[x] != x) { f->uf[x] = f->uf[f->uf[x]]; x = f->uf[x]; }
   return x;
 }
 static void cf_unite_at(CF *f, int a, int b, int line) {
   if (a < 0 || b < 0) return;
+  if (f->directed) { (void)line; cf_edge(f, a, b); cf_edge(f, b, a); return; }
   a = cf_find(f, a); b = cf_find(f, b);
   if (a == b) return;
   if (a > b) { int t = a; a = b; b = t; }
@@ -238,6 +484,17 @@ static void cf_unite_at(CF *f, int a, int b, int line) {
 }
 static void cf_add_set_at(CF *f, int x, int pidx, int line) {
   if (x < 0) return;
+  if (f->directed) {
+    int u = cf_union(f, f->set[x], pidx);
+    if (u != f->set[x]) {
+      if (u == CF_ALL && !f->orig[x]) f->orig[x] = pidx == CF_ALL ? line : -line;
+      if (u == CF_ALL && f->dbg_seed) fprintf(stderr, "cls-flow-seed: rule %d element %d node-line %d kind %s\n", line, x, x < f->nnodes ? (int)nt_int(f->nt, x, "node_line", 0) : -1, x < f->nnodes ? nt_type(f->nt, x) : "slot");
+      f->set[x] = u; f->changed = 1;
+      if (u == CF_ALL) cf_ptop_set(f, x);
+      cf_wl_push(f, x); cf_drain(f);
+    }
+    return;
+  }
   int x0 = x;
   x = cf_find(f, x);
   int u = cf_union(f, f->set[x], pidx);
@@ -248,6 +505,56 @@ static void cf_add_set_at(CF *f, int x, int pidx, int line) {
 }
 #define cf_add_set(f, x, pidx) cf_add_set_at((f), (x), (pidx), __LINE__)
 #define cf_unite(f, a, b) cf_unite_at((f), (a), (b), __LINE__)
+/* a flow from src to dst: an edge in directed mode, else one element */
+static void cf_flow_at(CF *f, int src, int dst, int line) {
+  if (f->directed) { (void)line; cf_edge(f, src, dst); return; }
+  cf_unite_at(f, src, dst, line);
+}
+#define cf_flow(f, src, dst) cf_flow_at((f), (src), (dst), __LINE__)
+/* e stored into container c: e is in the contents of every object c holds
+   (c's own, made here, when it holds none: a value whose contents only
+   these calls name) */
+static void cf_store_at(CF *f, int c, int e, int line) {
+  if (f->directed) {
+    (void)line; if (c < 0 || e < 0) return;
+    if (!cf_mark(f, CF_KEY(c, e, 2))) return;
+    cf_push_int(&f->st[c], &f->nst[c], &f->cst[c], e);
+    f->changed = 1;
+    for (int i = 0; i < f->npts[c]; i++) cf_edge(f, e, f->obj_cont[f->pts[c][i]]);
+    if (f->ptop[c]) cf_escape(f, e);
+    if (!f->npts[c] && !f->ptop[c]) cf_el_obj(f, c);
+    return;
+  }
+  cf_unite_at(f, c, e, line);
+}
+#define cf_store(f, c, e) cf_store_at((f), (c), (e), __LINE__)
+/* v read out of container c: v holds the contents of every object c holds */
+static void cf_load_at(CF *f, int c, int v, int line) {
+  if (f->directed) {
+    (void)line; if (c < 0 || v < 0) return;
+    if (!cf_mark(f, CF_KEY(c, v, 3))) return;
+    cf_push_int(&f->ld[c], &f->nld[c], &f->cld[c], v);
+    f->changed = 1;
+    for (int i = 0; i < f->npts[c]; i++) cf_edge(f, f->obj_cont[f->pts[c][i]], v);
+    if (f->ptop[c]) cf_add_set_at(f, v, CF_ALL, __LINE__);
+    return;
+  }
+  cf_unite_at(f, v, c, line);
+}
+#define cf_load(f, c, v) cf_load_at((f), (c), (v), __LINE__)
+/* a's own container holds b's elements (a splat into a literal, a
+   builtin's answer built from its receiver, a rest parameter's Array of a
+   splat's) */
+static void cf_share_at(CF *f, int a, int b, int line) {
+  if (f->directed) {
+    (void)line; if (a < 0 || b < 0) return;
+    int o = cf_el_obj(f, a);
+    cf_load_at(f, b, f->obj_cont[o], line);
+    return;
+  }
+  cf_unite_at(f, a, b, line);
+}
+#define cf_share(f, a, b) cf_share_at((f), (a), (b), __LINE__)
 #define cf_all(f, x) cf_add_set_at((f), (x), CF_ALL, __LINE__)
 static int cf_set_of(CF *f, int x) { return x < 0 ? CF_ALL : f->set[cf_find(f, x)]; }
 
@@ -421,7 +728,7 @@ static int cf_sg_access(CF *f, int v, int k, const char *nm, const int *argv, in
   char ivn[256];
   if (argc == 0 && comp_is_sg_reader(ci, nm)) {
     snprintf(ivn, sizeof ivn, "@%s", nm);
-    if (v >= 0) cf_unite(f, v, cf_entry(f, -(k + 2), ivn));
+    if (v >= 0) cf_flow(f, cf_entry(f, -(k + 2), ivn), v);
     return 1;
   }
   char base[256];
@@ -430,7 +737,7 @@ static int cf_sg_access(CF *f, int v, int k, const char *nm, const int *argv, in
     char wivn[sizeof base + 1];
     snprintf(wivn, sizeof wivn, "@%s", base);
     int e = cf_entry(f, -(k + 2), wivn);
-    for (int a = 0; a < argc; a++) { cf_unite(f, e, argv[a]); if (v >= 0) cf_unite(f, v, argv[a]); }
+    for (int a = 0; a < argc; a++) { cf_flow(f, argv[a], e); if (v >= 0) cf_flow(f, argv[a], v); }
     return 1;
   }
   return 0;
@@ -765,11 +1072,15 @@ static void cf_bind_args(CF *f, int mi, const int *argv, int argc) {
     for (int i = 0; i < np; i++)
       for (int a = 0; a < npos; a++) {
         int an = nt_kind(nt, pos[a]) == NK_SplatNode ? nt_ref(nt, pos[a], "expression") : pos[a];
-        cf_unite(f, cf_param_el(f, mi, ppos[i]), an);
+        int pe = cf_param_el(f, mi, ppos[i]);
+        cf_flow(f, an, pe);
+        if (ppos[i] == m->rest_idx) cf_store(f, pe, an);
+        /* a splat hands on its Array's elements */
+        if (an != pos[a]) { cf_load(f, an, pe); if (ppos[i] == m->rest_idx) cf_share(f, pe, an); }
       }
   }
   else {
-    for (int a = 0; a < npos && a < np; a++) cf_unite(f, cf_param_el(f, mi, ppos[a]), pos[a]);
+    for (int a = 0; a < npos && a < np; a++) cf_flow(f, pos[a], cf_param_el(f, mi, ppos[a]));
   }
   if (kwh >= 0) {
     int en = 0; const int *els = nt_arr(nt, kwh, "elements", &en);
@@ -780,13 +1091,13 @@ static void cf_bind_args(CF *f, int mi, const int *argv, int argc) {
       int bound = 0;
       if (kn) {
         for (int i = 0; i < m->nparams; i++)
-          if (m->pnames[i] && sp_streq(m->pnames[i], kn) && cf_param_is_kw(f, m, i)) { cf_unite(f, cf_param_el(f, mi, i), val); bound = 1; }
-        if (m->kwrest_idx >= 0) { cf_unite(f, cf_param_el(f, mi, m->kwrest_idx), val); bound = 1; }
+          if (m->pnames[i] && sp_streq(m->pnames[i], kn) && cf_param_is_kw(f, m, i)) { cf_flow(f, val, cf_param_el(f, mi, i)); bound = 1; }
+        if (m->kwrest_idx >= 0) { cf_flow(f, val, cf_param_el(f, mi, m->kwrest_idx)); cf_store(f, cf_param_el(f, mi, m->kwrest_idx), val); bound = 1; }
       }
       if (!bound) {
         /* a computed key, a double splat: any keyword parameter */
         for (int i = 0; i < m->nparams; i++)
-          if (i == m->kwrest_idx || cf_param_is_kw(f, m, i)) cf_unite(f, cf_param_el(f, mi, i), val);
+          if (i == m->kwrest_idx || cf_param_is_kw(f, m, i)) { cf_flow(f, val, cf_param_el(f, mi, i)); if (i == m->kwrest_idx) cf_store(f, cf_param_el(f, mi, i), val); }
       }
     }
   }
@@ -803,21 +1114,21 @@ static void cf_bind_block(CF *f, int mi, int blk) {
     int e = nt_ref(nt, blk, "expression");
     if (e >= 0 && nt_kind(nt, e) == NK_SymbolNode) {
       const char *sym = nt_str(nt, e, "value");
-      if (sym) { CFByName *b = cf_byname(f, sym); for (int i = 0; i < b->n; i++) cf_unite(f, f->yval_el[mi], f->ret_el[b->mi[i]]); }
+      if (sym) { CFByName *b = cf_byname(f, sym); for (int i = 0; i < b->n; i++) cf_flow(f, f->ret_el[b->mi[i]], f->yval_el[mi]); }
       if (!sym || sp_streq(sym, "new") || sp_streq(sym, "allocate") || cf_opaque_name(sym)) cf_all(f, f->yval_el[mi]);
     }
     else cf_unite(f, f->yval_el[mi], e);
     return;
   }
   if (nt_kind(nt, blk) != NK_BlockNode) return;
-  if (f->yval_used[mi]) cf_unite(f, f->yval_el[mi], blk);
+  if (f->yval_used[mi]) cf_flow(f, blk, f->yval_el[mi]);
   int body = nt_ref(nt, blk, "body");
   const char *names[CF_YARGS];
   int plain = 1;
   int n = cf_block_params(f, blk, names, CF_YARGS, &plain);
   int opaque = (m->blk_param && m->blk_param[0]) || f->has_super[mi] || m->is_proc_form || m->is_lowered_yield;
   if (!plain || opaque) { cf_all_block_params(f, blk); return; }
-  for (int i = 0; i < n; i++) cf_unite(f, cf_lv(f, body >= 0 ? body : blk, names[i]), f->yarg_el[mi][i]);
+  for (int i = 0; i < n; i++) cf_flow(f, f->yarg_el[mi][i], cf_lv(f, body >= 0 ? body : blk, names[i]));
 }
 
 /* ---- calls ---- */
@@ -853,8 +1164,9 @@ static void cf_protocol_returns(CF *f, int v, int el) {
     for (int q = 0; names[q]; q++) {
       int mi = comp_method_in_chain(f->c, k, names[q], NULL);
       if (mi < 0 || cf_prelude_scope(f, mi)) continue;   /* the compiler's own answer as the builtin */
-      cf_unite(f, v, f->ret_el[mi]);
-      if (sp_streq(names[q], "each")) for (int y = 0; y < CF_YARGS; y++) cf_unite(f, v, f->yarg_el[mi][y]);
+      cf_flow(f, f->ret_el[mi], v);
+      if (sp_streq(names[q], "each"))
+        for (int y = 0; y < CF_YARGS; y++) { cf_flow(f, f->yarg_el[mi][y], v); cf_store(f, v, f->yarg_el[mi][y]); }
     }
   }
 }
@@ -900,13 +1212,26 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
       return;
     }
     if (cf_element_answer(nm)) {
-      cf_unite(f, v, recv_el);
+      /* (a Proc's [] is its call: its set is its value's) */
+      cf_load(f, recv_el, v);
+      cf_flow(f, recv_el, v);
+      /* dig reads through the containers it finds, to any depth */
+      if (f->directed && sp_streq(nm, "dig")) cf_load(f, v, v);
       cf_add_set(f, v, cf_bv_set(f));
       cf_protocol_returns(f, v, recv_el);
       return;
     }
   }
-  cf_unite(f, v, recv_el);
+  /* any other: the value may be the receiver, its contents or an argument,
+     and shares the receiver's contents; an argument may be stored into the
+     receiver */
+  /* (directed) the answer may be a container of its own, of what it was
+     built from or of builtin values */
+  if (f->directed) { int o = cf_el_obj(f, v); if (o >= 0) cf_add_set(f, f->obj_cont[o], cf_bv_set(f)); }
+  cf_flow(f, recv_el, v);
+  cf_load(f, recv_el, v);
+  if (f->directed && sp_streq(nm, "dig")) cf_load(f, v, v);   /* to any depth */
+  cf_share(f, v, recv_el);
   cf_add_set(f, v, cf_bv_set(f));
   cf_protocol_returns(f, v, recv_el);
   for (int i = 0; i < argc; i++)
@@ -919,7 +1244,7 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
       if (e >= 0 && nt_kind(nt, e) == NK_SymbolNode) {
         const char *sym = nt_str(nt, e, "value");
         if (!sym || sp_streq(sym, "new") || sp_streq(sym, "allocate") || cf_opaque_name(sym)) cf_all(f, v);
-        else { CFByName *b = cf_byname(f, sym); for (int q = 0; q < b->n; q++) cf_unite(f, v, f->ret_el[b->mi[q]]); }
+        else { CFByName *b = cf_byname(f, sym); for (int q = 0; q < b->n; q++) { cf_flow(f, f->ret_el[b->mi[q]], v); cf_store(f, v, f->ret_el[b->mi[q]]); } }
       }
       else cf_unite(f, v, e);
       continue;
@@ -929,25 +1254,45 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
          are m's yield arguments (as each's are, cf_protocol_returns) */
       if (i == 0 && (sp_streq(nm, "to_enum") || sp_streq(nm, "enum_for"))) {
         CFByName *b = cf_byname(f, nt_str(nt, argv[i], "value"));
-        for (int q = 0; q < b->n; q++) for (int y = 0; y < CF_YARGS; y++) cf_unite(f, v, f->yarg_el[b->mi[q]][y]);
+        for (int q = 0; q < b->n; q++)
+          for (int y = 0; y < CF_YARGS; y++) { cf_flow(f, f->yarg_el[b->mi[q]][y], v); cf_store(f, v, f->yarg_el[b->mi[q]][y]); }
       }
       continue;
     }
-    cf_unite(f, v, k == NK_SplatNode ? nt_ref(nt, argv[i], "expression") : argv[i]);
+    int a = k == NK_SplatNode ? nt_ref(nt, argv[i], "expression") : argv[i];
+    cf_flow(f, a, v);
+    cf_store(f, recv_el, a);
+    /* (and its elements: `concat`, `merge`), through the answer's own
+       container in directed mode */
+    if (f->directed) { int o = cf_el_obj(f, v); cf_load(f, a, f->obj_cont[o]); cf_store(f, recv_el, f->obj_cont[o]); }
+    else cf_share(f, recv_el, a);
   }
   if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) {
-    if (!cf_drops_block_value(nm)) cf_unite(f, v, blk);
+    if (!cf_drops_block_value(nm)) { cf_flow(f, blk, v); cf_store(f, v, blk); }
     int body = nt_ref(nt, blk, "body");
     const char *names[64];
     int n = cf_all_param_names(f, blk, names, 64);
-    for (int i = 0; i < n; i++) cf_unite(f, v, cf_lv(f, body >= 0 ? body : blk, names[i]));
+    for (int i = 0; i < n; i++) {
+      int pe = cf_lv(f, body >= 0 ? body : blk, names[i]);
+      if (!f->directed) { cf_unite(f, v, pe); continue; }
+      /* an element, the receiver, an argument (a memo, an initial value),
+         the block's own value (an accumulator) */
+      cf_load(f, recv_el, pe);
+      cf_flow(f, recv_el, pe);
+      cf_flow(f, blk, pe);
+      for (int q = 0; q < argc; q++) {
+        NodeKind ak = nt_kind(nt, argv[q]);
+        if (ak == NK_BlockArgumentNode || ak == NK_SymbolNode) continue;
+        cf_flow(f, ak == NK_SplatNode ? nt_ref(nt, argv[q], "expression") : argv[q], pe);
+      }
+    }
   }
   else if (blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode) {
     int e = nt_ref(nt, blk, "expression");
     if (e >= 0 && nt_kind(nt, e) == NK_SymbolNode) {
       const char *sym = nt_str(nt, e, "value");
       if (!sym || sp_streq(sym, "new") || sp_streq(sym, "allocate") || cf_opaque_name(sym)) cf_all(f, v);
-      else { CFByName *b = cf_byname(f, sym); for (int q = 0; q < b->n; q++) cf_unite(f, v, f->ret_el[b->mi[q]]); }
+      else { CFByName *b = cf_byname(f, sym); for (int q = 0; q < b->n; q++) { cf_flow(f, f->ret_el[b->mi[q]], v); cf_store(f, v, f->ret_el[b->mi[q]]); } }
     }
     else cf_unite(f, v, e);
   }
@@ -959,7 +1304,7 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
 static int cf_user_target(CF *f, int v, int mi, const int *argv, int argc, int blk) {
   if (mi < 0) return 0;
   if (cf_prelude_scope(f, mi)) return 0;
-  if (v >= 0) cf_unite(f, v, f->ret_el[mi]);
+  if (v >= 0) cf_flow(f, f->ret_el[mi], v);
   cf_bind_args(f, mi, argv, argc);
   cf_bind_block(f, mi, blk);
   return 1;
@@ -984,10 +1329,10 @@ static void cf_construct(CF *f, int v, int x, const int *argv, int argc, int blk
       if (ak == NK_KeywordHashNode) { kwh = argv[i]; continue; }
       if (ak == NK_BlockArgumentNode) continue;
       if (ak == NK_SplatNode) {
-        for (int r = 0; r < k->nreaders; r++) { char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", k->readers[r]); cf_unite(f, cf_entry(f, f->fam[x], ivn), nt_ref(nt, argv[i], "expression")); }
+        for (int r = 0; r < k->nreaders; r++) { char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", k->readers[r]); cf_flow(f, nt_ref(nt, argv[i], "expression"), cf_entry(f, f->fam[x], ivn)); }
         continue;
       }
-      if (p < k->nreaders) { char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", k->readers[p]); cf_unite(f, cf_entry(f, f->fam[x], ivn), argv[i]); }
+      if (p < k->nreaders) { char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", k->readers[p]); cf_flow(f, argv[i], cf_entry(f, f->fam[x], ivn)); }
       p++;
     }
     if (kwh >= 0) {
@@ -996,8 +1341,8 @@ static void cf_construct(CF *f, int v, int x, const int *argv, int argc, int blk
         int key = nt_kind(nt, els[e]) == NK_AssocNode ? nt_ref(nt, els[e], "key") : -1;
         const char *kn = key >= 0 && nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
         int val = nt_ref(nt, els[e], "value");
-        if (kn) { char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", kn); cf_unite(f, cf_entry(f, f->fam[x], ivn), val); }
-        else for (int r = 0; r < k->nreaders; r++) { char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", k->readers[r]); cf_unite(f, cf_entry(f, f->fam[x], ivn), val); }
+        if (kn) { char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", kn); cf_flow(f, val, cf_entry(f, f->fam[x], ivn)); }
+        else for (int r = 0; r < k->nreaders; r++) { char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", k->readers[r]); cf_flow(f, val, cf_entry(f, f->fam[x], ivn)); }
       }
     }
   }
@@ -1038,12 +1383,12 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
     if (comp_reader_in_chain(c, k, nm, NULL)) {
       /* the reader an alias names reads its own ivar (`alias loc location`) */
       char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, k, nm));
-      cf_unite(f, v, cf_entry(f, f->fam[k], ivn));
+      cf_flow(f, cf_entry(f, f->fam[k], ivn), v);
       continue;
     }
     if (is_w && comp_writer_in_chain(c, k, base, NULL)) {
       char ivn[sizeof base + 1]; snprintf(ivn, sizeof ivn, "@%s", base);
-      for (int a = 0; a < argc; a++) { cf_unite(f, cf_entry(f, f->fam[k], ivn), argv[a]); cf_unite(f, v, argv[a]); }
+      for (int a = 0; a < argc; a++) { cf_flow(f, argv[a], cf_entry(f, f->fam[k], ivn)); cf_flow(f, argv[a], v); }
       continue;
     }
     int tl = comp_method_index(c, nm);
@@ -1065,9 +1410,13 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
     builtin = 1;
     ClassInfo *ci = &c->classes[k];
     if (ci->is_struct || ci->is_data)
-      for (int r = 0; r < ci->nreaders; r++) { char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", ci->readers[r]); cf_unite(f, v, cf_entry(f, f->fam[k], ivn)); }
+      for (int r = 0; r < ci->nreaders; r++) {
+        char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", ci->readers[r]);
+        int me = cf_entry(f, f->fam[k], ivn);
+        cf_flow(f, me, v); cf_store(f, recv_el, me);
+      }
     int each = comp_method_in_chain(c, k, "each", NULL);
-    if (each >= 0) for (int y = 0; y < CF_YARGS; y++) cf_unite(f, v, f->yarg_el[each][y]);
+    if (each >= 0) for (int y = 0; y < CF_YARGS; y++) { cf_flow(f, f->yarg_el[each][y], v); cf_store(f, recv_el, f->yarg_el[each][y]); }
   }
   if (builtin) {
     /* Deferred until the classes have settled: the builtin answer unifies
@@ -1107,15 +1456,20 @@ static void cf_call_any(CF *f, int v, const char *nm, const int *argv, int argc,
   for (int i = 0; i < b->ncm; i++) { cf_bind_args(f, b->cmi[i], argv, argc); cf_bind_block(f, b->cmi[i], blk); }
   for (int i = 0; i < b->nwr; i++) {
     char ivn[256]; snprintf(ivn, sizeof ivn, "@%.*s", (int)strlen(nm) - 1, nm);
-    for (int a = 0; a < argc; a++) cf_unite(f, cf_entry(f, f->fam[b->wr[i]], ivn), argv[a]);
+    for (int a = 0; a < argc; a++) cf_flow(f, argv[a], cf_entry(f, f->fam[b->wr[i]], ivn));
   }
   if (sp_streq(nm, "new")) { CFByName *ini = cf_byname(f, "initialize"); for (int q = 0; q < ini->n; q++) cf_bind_args(f, ini->mi[q], argv, argc); }
   /* the block's parameters and the arguments may go anywhere */
-  if (blk >= 0 && nt_kind(f->nt, blk) == NK_BlockNode) { cf_all_block_params(f, blk); cf_unite(f, v, blk); }
+  if (blk >= 0 && nt_kind(f->nt, blk) == NK_BlockNode) { cf_all_block_params(f, blk); cf_flow(f, blk, v); }
   for (int a = 0; a < argc; a++) {
     NodeKind k = nt_kind(f->nt, argv[a]);
     if (k == NK_BlockArgumentNode || k == NK_SymbolNode) continue;
-    cf_all(f, k == NK_SplatNode ? nt_ref(f->nt, argv[a], "expression") : argv[a]);
+    int an = k == NK_SplatNode ? nt_ref(f->nt, argv[a], "expression") : argv[a];
+    /* (directed) code the walk does not see can store anything into an
+       argument, which changes its contents, not the classes the argument
+       holds */
+    if (f->directed) cf_escape(f, an);
+    else cf_all(f, an);
   }
   (void)c;
 }
@@ -1203,7 +1557,7 @@ static void cf_call(CF *f, int v) {
           if (mi >= 0) { if (cf_user_target(f, v, mi, argv, argc, blk)) found = 1; continue; }
           if (comp_reader_in_chain(c, ds->cls[i], nm, NULL)) {
             char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, ds->cls[i], nm));
-            cf_unite(f, v, cf_entry(f, f->fam[ds->cls[i]], ivn));
+            cf_flow(f, cf_entry(f, f->fam[ds->cls[i]], ivn), v);
             found = 1;
           }
         }
@@ -1300,7 +1654,7 @@ static void cf_call(CF *f, int v) {
          whose value is one of these). Fiber.yield answers what a resume
          passes: the channel, which a resume with arguments makes anything
          (the enumerators the compiler makes resume with none). */
-      if (key && sp_streq(key, "Fiber") && sp_streq(nm, "yield")) { cf_unite(f, v, f->fiber_ch); return; }
+      if (key && sp_streq(key, "Fiber") && sp_streq(nm, "yield")) { cf_flow(f, f->fiber_ch, v); return; }
       cf_all(f, v);
       if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) { cf_all_block_params(f, blk); cf_all(f, blk); }
       return;
@@ -1338,7 +1692,20 @@ static void cf_call(CF *f, int v) {
   }
   int recv_el = r;
   int pidx = cf_set_of(f, recv_el);
-  if (pidx == CF_ALL) { cf_call_any(f, v, nm, argv, argc, blk); return; }
+  /* (why: the value is every class because the receiver is) */
+  if (pidx == CF_ALL && f->directed && f->orig && v >= 0 && !f->orig[v] && f->set[v] != CF_ALL) f->orig[v] = f->orig[recv_el];
+  if (pidx == CF_ALL) {
+    /* (directed) the method may be a builtin's that stores its arguments
+       into the receiver: into each container the receiver is known to hold */
+    if (f->directed)
+      for (int a = 0; a < argc; a++) {
+        NodeKind ak = nt_kind(nt, argv[a]);
+        if (ak == NK_BlockArgumentNode || ak == NK_SymbolNode) continue;
+        cf_store(f, recv_el, ak == NK_SplatNode ? nt_ref(nt, argv[a], "expression") : argv[a]);
+      }
+    cf_call_any(f, v, nm, argv, argc, blk);
+    return;
+  }
   cf_call_known(f, v, pidx, recv_el, nm, argv, argc, blk);
 }
 
@@ -1448,7 +1815,7 @@ static void cf_node(CF *f, int v) {
     const char *nm = nt_str(nt, v, "name");
     int el = owner >= 0 && nt_kind(nt, owner) == NK_BlockNode ? cf_lv(f, nt_ref(nt, owner, "body") >= 0 ? nt_ref(nt, owner, "body") : owner, nm)
            : d >= 0 ? cf_lv_in(f, d, nm) : cf_lv(f, v, nm);
-    cf_unite(f, el, nt_ref(nt, v, "value"));
+    cf_flow(f, nt_ref(nt, v, "value"), el);
     return;
   }
   case NK_SelfNode: {
@@ -1464,7 +1831,7 @@ static void cf_node(CF *f, int v) {
       break;
     }
     int ik = cf_inst_class(f, si);
-    if (ik >= 0) { cf_unite(f, v, f->self_el[ik]); return; }
+    if (ik >= 0) { cf_flow(f, f->self_el[ik], v); return; }
     Scope *s = &c->scopes[si];
     /* the Class object: of the class a class method runs for, or one below
        it; the class whose body this is */
@@ -1478,66 +1845,75 @@ static void cf_node(CF *f, int v) {
     }
     else if (v < f->nnodes && c->node_cbody && c->node_cbody[v] >= 0) cf_add_set(f, v, cf_classval(f, c->node_cbody[v]));
     else if (s->def_node < 0 && cf_owner_block(f, v, 0) >= 0) cf_all(f, v);
+    /* a top-level def is Object's, and runs for any object (a Kernel
+       reopening's function copy is one): its self is anything */
+    else if (f->directed && s->def_node >= 0 && s->class_id < 0 && !s->is_cmethod) cf_all(f, v);
     return;
   }
   case NK_ArrayNode: {
     cf_add_set(f, v, cf_bv_set(f));
+    if (f->directed) cf_el_obj(f, v);
     int n = 0; const int *els = nt_arr(nt, v, "elements", &n);
-    for (int i = 0; i < n; i++) cf_unite(f, v, nt_kind(nt, els[i]) == NK_SplatNode ? nt_ref(nt, els[i], "expression") : els[i]);
+    for (int i = 0; i < n; i++)
+      if (nt_kind(nt, els[i]) == NK_SplatNode) cf_share(f, v, nt_ref(nt, els[i], "expression"));
+      else cf_store(f, v, els[i]);
     return;
   }
   case NK_HashNode: case NK_KeywordHashNode: {
     cf_add_set(f, v, cf_bv_set(f));
+    if (f->directed) cf_el_obj(f, v);
     int n = 0; const int *els = nt_arr(nt, v, "elements", &n);
     for (int i = 0; i < n; i++) {
-      if (nt_kind(nt, els[i]) == NK_AssocNode) cf_unite(f, v, nt_ref(nt, els[i], "key"));
-      cf_unite(f, v, nt_ref(nt, els[i], "value"));
+      if (nt_kind(nt, els[i]) == NK_AssocNode) cf_store(f, v, nt_ref(nt, els[i], "key"));
+      if (nt_kind(nt, els[i]) == NK_AssocSplatNode) cf_share(f, v, nt_ref(nt, els[i], "value"));
+      else cf_store(f, v, nt_ref(nt, els[i], "value"));
     }
     return;
   }
   case NK_AssocNode: case NK_AssocSplatNode: return;
-  case NK_SplatNode: cf_unite(f, v, nt_ref(nt, v, "expression")); return;
+  case NK_SplatNode: cf_flow(f, nt_ref(nt, v, "expression"), v); return;
   case NK_BlockArgumentNode: return;
-  case NK_RangeNode: cf_add_set(f, v, cf_bv_set(f)); cf_unite(f, v, nt_ref(nt, v, "left")); cf_unite(f, v, nt_ref(nt, v, "right")); return;
-  case NK_ParenthesesNode: cf_unite(f, v, cf_tail(f, nt_ref(nt, v, "body"))); return;
-  case NK_StatementsNode: cf_unite(f, v, cf_tail(f, v)); return;
-  case NK_ElseNode: cf_unite(f, v, cf_tail(f, nt_ref(nt, v, "statements"))); return;
+  case NK_RangeNode: cf_add_set(f, v, cf_bv_set(f)); if (f->directed) cf_el_obj(f, v); cf_store(f, v, nt_ref(nt, v, "left")); cf_store(f, v, nt_ref(nt, v, "right")); return;
+  case NK_ParenthesesNode: cf_flow(f, cf_tail(f, nt_ref(nt, v, "body")), v); return;
+  case NK_StatementsNode: cf_flow(f, cf_tail(f, v), v); return;
+  case NK_ElseNode: cf_flow(f, cf_tail(f, nt_ref(nt, v, "statements")), v); return;
   case NK_BeginNode: {
-    cf_unite(f, v, cf_tail(f, nt_ref(nt, v, "statements")));
-    cf_unite(f, v, nt_ref(nt, v, "else_clause"));
+    cf_flow(f, cf_tail(f, nt_ref(nt, v, "statements")), v);
+    cf_flow(f, nt_ref(nt, v, "else_clause"), v);
     for (int rc = nt_ref(nt, v, "rescue_clause"), d = 0; rc >= 0 && d < 64; rc = nt_ref(nt, rc, "subsequent"), d++)
-      cf_unite(f, v, cf_tail(f, nt_ref(nt, rc, "statements")));
+      cf_flow(f, cf_tail(f, nt_ref(nt, rc, "statements")), v);
     return;
   }
   case NK_RescueNode: cf_rescue(f, v); return;
 
   case NK_IfNode: case NK_UnlessNode: {
-    cf_unite(f, v, cf_tail(f, nt_ref(nt, v, "statements")));
-    cf_unite(f, v, nt_ref(nt, v, k == NK_IfNode ? "subsequent" : "else_clause"));
+    cf_flow(f, cf_tail(f, nt_ref(nt, v, "statements")), v);
+    cf_flow(f, nt_ref(nt, v, k == NK_IfNode ? "subsequent" : "else_clause"), v);
     return;
   }
   case NK_CaseNode: case NK_CaseMatchNode: {
-    cf_unite(f, v, nt_ref(nt, v, "else_clause"));
+    cf_flow(f, nt_ref(nt, v, "else_clause"), v);
     int wn = 0; const int *w = nt_arr(nt, v, "conditions", &wn);
-    for (int i = 0; i < wn; i++) cf_unite(f, v, cf_tail(f, nt_ref(nt, w[i], "statements")));
+    for (int i = 0; i < wn; i++) cf_flow(f, cf_tail(f, nt_ref(nt, w[i], "statements")), v);
     return;
   }
-  case NK_AndNode: case NK_OrNode: cf_unite(f, v, nt_ref(nt, v, "left")); cf_unite(f, v, nt_ref(nt, v, "right")); return;
-  case NK_RescueModifierNode: cf_unite(f, v, nt_ref(nt, v, "expression")); cf_unite(f, v, nt_ref(nt, v, "rescue_expression")); return;
+  case NK_AndNode: case NK_OrNode: cf_flow(f, nt_ref(nt, v, "left"), v); cf_flow(f, nt_ref(nt, v, "right"), v); return;
+  case NK_RescueModifierNode: cf_flow(f, nt_ref(nt, v, "expression"), v); cf_flow(f, nt_ref(nt, v, "rescue_expression"), v); return;
   /* nil, or what a break hands it (NK_BreakNode) */
   case NK_WhileNode: case NK_UntilNode: return;
   case NK_ForNode: {
     /* the collection it walked, or what a break hands it */
-    cf_unite(f, v, nt_ref(nt, v, "collection"));
+    cf_flow(f, nt_ref(nt, v, "collection"), v);
     int idx = nt_ref(nt, v, "index");
-    if (idx >= 0 && nt_kind(nt, idx) == NK_LocalVariableTargetNode) cf_unite(f, cf_lv(f, idx, nt_str(nt, idx, "name")), nt_ref(nt, v, "collection"));
+    if (idx >= 0 && nt_kind(nt, idx) == NK_LocalVariableTargetNode) cf_load(f, nt_ref(nt, v, "collection"), cf_lv(f, idx, nt_str(nt, idx, "name")));
     return;
   }
   case NK_LocalVariableWriteNode: case NK_LocalVariableOrWriteNode: case NK_LocalVariableAndWriteNode: {
     int val = nt_ref(nt, v, "value");
     int el = cf_lv(f, v, nt_str(nt, v, "name"));
-    cf_unite(f, v, val);
-    if (el < 0) cf_all(f, v); else cf_unite(f, el, val);
+    cf_flow(f, val, v);
+    if (el < 0) cf_all(f, v);
+    else { cf_flow(f, val, el); if (k != NK_LocalVariableWriteNode) cf_flow(f, el, v); }
     return;
   }
   case NK_LocalVariableOperatorWriteNode: {
@@ -1550,7 +1926,7 @@ static void cf_node(CF *f, int v) {
     int pidx = cf_set_of(f, el);
     if (pidx == CF_ALL) cf_all(f, v);
     else cf_call_known(f, v, pidx, el, op, argv1, 1, -1);
-    cf_unite(f, el, v);
+    cf_flow(f, v, el);
     return;
   }
   case NK_LocalVariableTargetNode: {
@@ -1561,7 +1937,7 @@ static void cf_node(CF *f, int v) {
   }
   case NK_LocalVariableReadNode: {
     int el = cf_lv(f, v, nt_str(nt, v, "name"));
-    if (el < 0) cf_all(f, v); else cf_unite(f, v, el);
+    if (el < 0) cf_all(f, v); else cf_flow(f, el, v);
     return;
   }
   case NK_InstanceVariableWriteNode: case NK_InstanceVariableOrWriteNode: case NK_InstanceVariableAndWriteNode:
@@ -1580,8 +1956,11 @@ static void cf_node(CF *f, int v) {
       int pidx = n > 0 ? cf_set_of(f, els[0]) : CF_ALL;
       if (pidx == CF_ALL || !op) cf_all(f, v); else cf_call_known(f, v, pidx, els[0], op, argv1, 1, -1);
     }
-    else cf_unite(f, v, val);
-    for (int i = 0; i < n; i++) cf_unite(f, els[i], v);
+    else cf_flow(f, val, v);
+    for (int i = 0; i < n; i++) {
+      cf_flow(f, v, els[i]);
+      if (k == NK_InstanceVariableOrWriteNode || k == NK_InstanceVariableAndWriteNode) cf_flow(f, els[i], v);
+    }
     if (f->all_ivars) cf_all(f, v);
     return;
   }
@@ -1595,7 +1974,7 @@ static void cf_node(CF *f, int v) {
   case NK_InstanceVariableReadNode: {
     if (cf_in_exec_block(f, v)) { cf_all(f, v); return; }
     int els[64]; int n = cf_ivar_els(f, v, nt_str(nt, v, "name"), els, 64);
-    for (int i = 0; i < n; i++) cf_unite(f, v, els[i]);
+    for (int i = 0; i < n; i++) cf_flow(f, els[i], v);
     if (f->all_ivars) cf_all(f, v);
     return;
   }
@@ -1610,8 +1989,9 @@ static void cf_node(CF *f, int v) {
     int el = cf_entry(f, key, key == CF_K_CONST ? cf_const_key(nm) : nm);
     int val = nt_ref(nt, v, "value");
     int opw = k == NK_ClassVariableOperatorWriteNode || k == NK_GlobalVariableOperatorWriteNode || k == NK_ConstantOperatorWriteNode;
-    if (opw) cf_all(f, v); else cf_unite(f, v, val);
-    cf_unite(f, el, v);
+    if (opw) cf_all(f, v); else cf_flow(f, val, v);
+    cf_flow(f, v, el);
+    if (!opw && k != NK_ClassVariableWriteNode && k != NK_GlobalVariableWriteNode && k != NK_ConstantWriteNode) cf_flow(f, el, v);
     return;
   }
   case NK_ConstantPathWriteNode: case NK_ConstantPathOrWriteNode: case NK_ConstantPathAndWriteNode:
@@ -1619,49 +1999,58 @@ static void cf_node(CF *f, int v) {
     int t = nt_ref(nt, v, "target");
     const char *nm = t >= 0 ? nt_str(nt, t, "name") : nt_str(nt, v, "name");
     int val = nt_ref(nt, v, "value");
-    if (k == NK_ConstantPathOperatorWriteNode) cf_all(f, v); else cf_unite(f, v, val);
+    if (k == NK_ConstantPathOperatorWriteNode) cf_all(f, v); else cf_flow(f, val, v);
     if (!nm) { cf_all(f, v); return; }
-    cf_unite(f, cf_entry(f, CF_K_CONST, cf_const_key(nm)), v);
+    cf_flow(f, v, cf_entry(f, CF_K_CONST, cf_const_key(nm)));
+    if (k == NK_ConstantPathOrWriteNode || k == NK_ConstantPathAndWriteNode) cf_flow(f, cf_entry(f, CF_K_CONST, cf_const_key(nm)), v);
     return;
   }
   case NK_ClassVariableTargetNode: cf_all(f, cf_entry(f, CF_K_CVAR, nt_str(nt, v, "name"))); return;
   case NK_GlobalVariableTargetNode: { const char *nm = nt_str(nt, v, "name"); if (nm && nm[0] == '$') nm = comp_resolve_gvar(c, nm + 1); cf_all(f, cf_entry(f, CF_K_GVAR, nm)); return; }
   case NK_ConstantTargetNode: cf_all(f, cf_entry(f, CF_K_CONST, cf_const_key(nt_str(nt, v, "name")))); return;
-  case NK_ClassVariableReadNode: cf_unite(f, v, cf_entry(f, CF_K_CVAR, nt_str(nt, v, "name"))); return;
+  case NK_ClassVariableReadNode: cf_flow(f, cf_entry(f, CF_K_CVAR, nt_str(nt, v, "name")), v); return;
   case NK_GlobalVariableReadNode: {
     const char *nm = nt_str(nt, v, "name");
     if (!nm) { cf_all(f, v); return; }
     /* `$!`, `$~`, `$1`: the runtime's own */
     if (nm[0] == '$' && (nm[1] == '!' || nm[1] == '@')) { cf_all(f, v); return; }
     if (nm[0] == '$' && !((nm[1] >= 'a' && nm[1] <= 'z') || (nm[1] >= 'A' && nm[1] <= 'Z') || nm[1] == '_')) return;
-    cf_unite(f, v, cf_entry(f, CF_K_GVAR, comp_resolve_gvar(c, nm + 1)));
+    cf_flow(f, cf_entry(f, CF_K_GVAR, comp_resolve_gvar(c, nm + 1)), v);
     return;
   }
   case NK_ConstantReadNode: case NK_ConstantPathNode: {
     const char *nm = nt_str(nt, v, "name");
     if (!nm) { cf_all(f, v); return; }
+    /* (directed) a class body's `m` / `self.m`, which the body desugar
+       sends to the class: in a block run under another self it is that
+       self (ie_rself_cmethod_call) */
+    if (f->directed && f->par && v < f->nnodes && f->par[v] >= 0 && nt_kind(nt, f->par[v]) == NK_CallNode &&
+        nt_ref(nt, f->par[v], "receiver") == v && nt_int(nt, f->par[v], "self_call", 0) && cf_in_exec_block(f, v)) {
+      cf_all(f, v);
+      return;
+    }
     int kc = comp_class_index(c, nm);
     if (kc >= 0) { cf_add_set(f, v, cf_classval(f, kc)); return; }   /* the Class object */
     if (!cf_entry_has(f, CF_K_CONSTW, cf_const_key(nm))) return;   /* a builtin's: ARGV, Float::INFINITY */
-    cf_unite(f, v, cf_entry(f, CF_K_CONST, cf_const_key(nm)));
+    cf_flow(f, cf_entry(f, CF_K_CONST, cf_const_key(nm)), v);
     return;
   }
-  case NK_MultiWriteNode: cf_unite(f, v, nt_ref(nt, v, "value")); return;
+  case NK_MultiWriteNode: cf_flow(f, nt_ref(nt, v, "value"), v); return;
   case NK_MultiTargetNode: return;
   case NK_YieldNode: {
     int mi = cf_owner_def(f, v, 0, NULL);
     if (mi < 0) { cf_all(f, v); return; }
-    cf_unite(f, v, f->yval_el[mi]);
+    cf_flow(f, f->yval_el[mi], v);
     int a = nt_ref(nt, v, "arguments"), an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     int spread = 0;
     for (int i = 0; i < an; i++) if (nt_kind(nt, av[i]) == NK_SplatNode || nt_kind(nt, av[i]) == NK_KeywordHashNode) spread = 1;
     if (spread || an > CF_YARGS) {
       for (int i = 0; i < an; i++) for (int y = 0; y < CF_YARGS; y++)
-        cf_unite(f, f->yarg_el[mi][y], nt_kind(nt, av[i]) == NK_SplatNode ? nt_ref(nt, av[i], "expression") : av[i]);
+        cf_flow(f, nt_kind(nt, av[i]) == NK_SplatNode ? nt_ref(nt, av[i], "expression") : av[i], f->yarg_el[mi][y]);
       return;
     }
-    for (int i = 0; i < an; i++) cf_unite(f, f->yarg_el[mi][i], av[i]);
+    for (int i = 0; i < an; i++) cf_flow(f, av[i], f->yarg_el[mi][i]);
     return;
   }
   case NK_ReturnNode: {
@@ -1671,7 +2060,7 @@ static void cf_node(CF *f, int v) {
     int mi = cf_owner_def(f, v, 1, &lam);
     int to = lam >= 0 ? lam : mi >= 0 ? f->ret_el[mi] : -1;
     if (to < 0) return;
-    for (int i = 0; i < an; i++) cf_unite(f, to, nt_kind(nt, av[i]) == NK_SplatNode ? nt_ref(nt, av[i], "expression") : av[i]);
+    for (int i = 0; i < an; i++) cf_flow(f, nt_kind(nt, av[i]) == NK_SplatNode ? nt_ref(nt, av[i], "expression") : av[i], to);
     return;
   }
   case NK_NextNode: case NK_BreakNode: {
@@ -1682,7 +2071,7 @@ static void cf_node(CF *f, int v) {
     if (blk < 0) {
       /* a break is its loop's value; a next's argument in a loop goes nowhere */
       int loop = k == NK_BreakNode ? cf_owner_loop(f, v) : -1;
-      for (int i = 0; loop >= 0 && i < an; i++) cf_unite(f, loop, nt_kind(nt, av[i]) == NK_SplatNode ? nt_ref(nt, av[i], "expression") : av[i]);
+      for (int i = 0; loop >= 0 && i < an; i++) cf_flow(f, nt_kind(nt, av[i]) == NK_SplatNode ? nt_ref(nt, av[i], "expression") : av[i], loop);
       return;
     }
     /* a next is the block's value; a break is the call's */
@@ -1691,11 +2080,11 @@ static void cf_node(CF *f, int v) {
       to = f->par ? f->par[blk] : -1;
       if (to < 0 || nt_kind(nt, to) != NK_CallNode) { if (nt_kind(nt, blk) == NK_LambdaNode) to = blk; else return; }
     }
-    for (int i = 0; i < an; i++) cf_unite(f, to, nt_kind(nt, av[i]) == NK_SplatNode ? nt_ref(nt, av[i], "expression") : av[i]);
+    for (int i = 0; i < an; i++) cf_flow(f, nt_kind(nt, av[i]) == NK_SplatNode ? nt_ref(nt, av[i], "expression") : av[i], to);
     return;
   }
   case NK_BlockNode: {
-    cf_unite(f, v, cf_tail(f, nt_ref(nt, v, "body")));
+    cf_flow(f, cf_tail(f, nt_ref(nt, v, "body")), v);
     int p = f->par ? f->par[v] : -1;
     /* a block whose call the walk does not bind (a super's) takes anything */
     if (p < 0 || (nt_kind(nt, p) != NK_CallNode && nt_kind(nt, p) != NK_LambdaNode)) cf_all_block_params(f, v);
@@ -1733,19 +2122,19 @@ static void cf_node(CF *f, int v) {
       int t = mis[i];
       if (t == mi) continue;
       others++;
-      cf_unite(f, v, f->ret_el[t]);
+      cf_flow(f, f->ret_el[t], v);
       if (k == NK_SuperNode) cf_bind_args(f, t, argv2, argc2);
       else {
         /* the same parameters, by position */
         Scope *ts = &c->scopes[t];
-        for (int p = 0; p < s->nparams && p < ts->nparams; p++) cf_unite(f, cf_param_el(f, mi, p), cf_param_el(f, t, p));
-        if (ts->nparams != s->nparams) for (int p = 0; p < ts->nparams; p++) for (int q = 0; q < s->nparams; q++) cf_unite(f, cf_param_el(f, t, p), cf_param_el(f, mi, q));
+        for (int p = 0; p < s->nparams && p < ts->nparams; p++) cf_flow(f, cf_param_el(f, mi, p), cf_param_el(f, t, p));
+        if (ts->nparams != s->nparams) for (int p = 0; p < ts->nparams; p++) for (int q = 0; q < s->nparams; q++) cf_flow(f, cf_param_el(f, mi, q), cf_param_el(f, t, p));
       }
       if (blk >= 0) cf_bind_block(f, t, blk);
       else if (f->yval_el[mi] >= 0) {
         /* the block handed on: the parent's yields reach this method's block */
-        for (int y = 0; y < CF_YARGS; y++) cf_unite(f, f->yarg_el[mi][y], f->yarg_el[t][y]);
-        cf_unite(f, f->yval_el[mi], f->yval_el[t]);
+        for (int y = 0; y < CF_YARGS; y++) cf_flow(f, f->yarg_el[t][y], f->yarg_el[mi][y]);
+        cf_flow(f, f->yval_el[mi], f->yval_el[t]);
       }
     }
     /* not nmis: the method itself is among those of its name */
@@ -1905,10 +2294,10 @@ static int cf_in_exec_block(CF *f, int v) {
 static void cf_ivar_write_any(CF *f, const char *name, int v) {
   if (!name) return;
   for (int k = 0; k < f->c->nclasses; k++) {
-    if (!f->mod[k]) cf_unite(f, cf_entry(f, f->fam[k], name), v);
-    cf_unite(f, cf_entry(f, -(k + 2), name), v);
+    if (!f->mod[k]) cf_flow(f, v, cf_entry(f, f->fam[k], name));
+    cf_flow(f, v, cf_entry(f, -(k + 2), name));
   }
-  cf_unite(f, cf_entry(f, CF_K_MAIN, name), v);
+  cf_flow(f, v, cf_entry(f, CF_K_MAIN, name));
 }
 
 static int cf_scope_has_super(CF *f, int mi) {
@@ -2048,12 +2437,21 @@ static void cf_why_report(CF *f) {
   free(roots); free(byline); free(size); free(recv_any);
 }
 
-void an_cls_facts(Compiler *c) {
+static void cf_solve(Compiler *c, int directed, int dump_facts) {
   const NodeTable *nt = c->nt;
   CF f;
   memset(&f, 0, sizeof f);
+  f.directed = directed;
   f.c = c; f.nt = nt; f.nnodes = nt->count;
   f.par = du_parent_map(nt);
+  /* (directed) a receiver a pass gave a call after the map was made (`r`
+     -> `self.r`) has the call as its parent, so the blocks around it are
+     seen */
+  if (directed && f.par)
+    NT_FOREACH_KIND(nt, NK_CallNode, id) {
+      int r = nt_ref(nt, id, "receiver");
+      if (r >= 0 && r < nt->count && f.par[r] < 0) f.par[r] = id;
+    }
   /* The pool: CF_ALL and CF_EMPTY are sentinel indices that cf_pool answers
      without a lookup, so their entries are written here, as the sets they
      stand for. The hash table's rebuild hashes every entry below npool;
@@ -2072,8 +2470,12 @@ void an_cls_facts(Compiler *c) {
   if (!f.uf || !f.set) cf_oom();
   for (int i = 0; i < nt->count; i++) { f.uf[i] = i; f.set[i] = CF_EMPTY; }
   f.nel = nt->count;
+  if (directed) {
+    cf_grow_directed(&f); f.gsum = -1;
+    f.dbg_seed = getenv("SPINEL_CLS_FLOW_SEED") != NULL; f.dbg_ptop = getenv("SPINEL_CLS_FLOW_PTOP") != NULL;
+  }
   const char *dump = getenv("SPINEL_CLS_FACTS");
-  if (dump && sp_streq(dump, "why")) {
+  if (dump && sp_streq(dump, "why") && !directed) {
     f.why = calloc((size_t)f.cel, sizeof *f.why);
     f.why_el = malloc(sizeof *f.why_el * (size_t)f.cel);
     f.usz = malloc(sizeof *f.usz * (size_t)f.cel);
@@ -2207,7 +2609,7 @@ void an_cls_facts(Compiler *c) {
     /* a method's value: its body's tail */
     for (int mi = 1; mi < c->nscopes; mi++) {
       Scope *s = &c->scopes[mi];
-      if (s->body >= 0) cf_unite(&f, f.ret_el[mi], cf_tail(&f, s->body));
+      if (s->body >= 0) cf_flow(&f, cf_tail(&f, s->body), f.ret_el[mi]);
     }
     if (f.changed) { f.phase = 0; continue; }
     if (f.phase == 1 || f.pending == 0) break;
@@ -2220,7 +2622,7 @@ void an_cls_facts(Compiler *c) {
   for (int v = 0; v < nt->count; v++) c->cls_fact[v] = cf_set_of(&f, v);
   c->cls_fact_n = nt->count;
   c->cls_pool = f.pool; c->ncls_pool = f.npool;
-  if (getenv("SPINEL_CLS_FACTS")) {
+  if (dump_facts) {
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
       /* a call on self has no fact of its own: a consumer holds every
          class there, and so does the dump */
@@ -2261,6 +2663,120 @@ void an_cls_facts(Compiler *c) {
   free(f.ent);
   for (int k = 0; k < f.bn_cap; k++) if (f.bn[k].name) { free((char *)f.bn[k].name); free(f.bn[k].mi); free(f.bn[k].cmi); free(f.bn[k].rd); free(f.bn[k].wr); }
   free(f.bn);
+  if (directed && getenv("SPINEL_CLS_FLOW")) fprintf(stderr, "cls-flow-stats: elements %d objects %d edges %ld pts-adds %ld drain-visits %ld rounds %d\n", f.nel, f.nobj, f.st_edges, f.st_pts, f.st_drain, f.round + 1);
+  if (directed && getenv("SPINEL_CLS_FLOW") && sp_streq(getenv("SPINEL_CLS_FLOW"), "why")) {
+    int cap = 8192; int *cnt = calloc((size_t)cap * 2, sizeof(int));
+    NT_FOREACH_KIND(nt, NK_CallNode, id) {
+      int r = nt_ref(nt, id, "receiver");
+      if (r < 0 || f.set[r] != CF_ALL) continue;
+      int o = f.orig[r]; if (o < -cap || o > cap) o = 0;
+      cnt[o + cap]++;
+      if (getenv("SPINEL_CLS_FLOW_EACH")) fprintf(stderr, "cls-flow-any: line %d %s orig %d\n", (int)nt_int(nt, id, "node_line", 0), nt_str(nt, id, "name") ? nt_str(nt, id, "name") : "?", o);
+    }
+    for (int o = 0; o < cap * 2; o++)
+      if (cnt[o]) fprintf(stderr, "cls-flow-why: %s line %d: %d receivers\n", o - cap > 0 ? "every-class rule at" : o - cap < 0 ? "a set past the cap at" : "unknown", o - cap < 0 ? cap - o : o - cap, cnt[o]);
+    free(cnt);
+  }
+  if (directed) {
+    free(f.orig);
+    for (int i = 0; i < f.dcap; i++) free(f.succ[i]);
+    free(f.succ); free(f.nsucc); free(f.csucc); free(f.inwl); free(f.wl); free(f.eh);
+    for (int i = 0; i < f.dcap; i++) { free(f.psucc[i]); free(f.pts[i]); free(f.pdel[i]); free(f.ld[i]); free(f.st[i]); }
+    free(f.pdel); free(f.npdel); free(f.cpdel);
+    free(f.psucc); free(f.npsucc); free(f.cpsucc); free(f.pts); free(f.npts); free(f.cpts);
+    free(f.ld); free(f.nld); free(f.cld); free(f.st); free(f.nst); free(f.cst);
+    free(f.ptop); free(f.esc); free(f.elobj); free(f.summ); free(f.smc); free(f.obj_cont); free(f.fs);
+  }
+}
+
+/* SPINEL_CLS_FLOW: the directed sets beside the unified ones, per call
+   receiver: how many are every class in each, and where they differ (the
+   directed set must lie inside the unified one wherever that one is
+   bounded). The unified facts are the ones kept. */
+/* the program's methods a call of the name on a value of set s may run: one
+   arm each (an instance method, or a class method for a Class object);
+   every class's for ANY */
+static int cf_arms(Compiler *c, const ClsSet *s, int any, const char *nm) {
+  int ms[64], n = 0;
+  int lim = any ? 2 * c->nclasses : s->n;
+  for (int i = 0; i < lim && n < 64; i++) {
+    int k = any ? i : s->cls[i];
+    int mi = k < c->nclasses ? comp_method_in_chain(c, k, nm, NULL) : comp_cmethod_in_chain(c, k - c->nclasses, nm, NULL);
+    if (mi < 0) continue;
+    int dup = 0;
+    for (int j = 0; j < n && !dup; j++) dup = ms[j] == mi;
+    if (!dup) ms[n++] = mi;
+  }
+  return n;
+}
+static void cf_flow_compare(Compiler *c, const int *df, const ClsSet *dp, int dn) {
+  const NodeTable *nt = c->nt;
+  long calls = 0, any_u = 0, any_d = 0, same = 0, narrower = 0, wider = 0;
+  /* the arms (cf_arms) of the calls a program's method may answer */
+  long ucalls = 0, arms_u = 0, arms_d = 0, mono_u = 0, mono_d = 0;
+  struct { const char *nm; int n; } *amemo = calloc(8192, sizeof *amemo);
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    int r = nt_ref(nt, id, "receiver");
+    if (r < 0 || r >= dn || r >= c->cls_fact_n) continue;
+    calls++;
+    int u = c->cls_fact[r], d = df[r];
+    const ClsSet *us = &c->cls_pool[u], *ds = &dp[d];
+    const char *anm = nt_str(nt, id, "name");
+    if (anm && amemo) {
+      unsigned h = sp_strhash(anm) & 8191u;
+      while (amemo[h].nm && !sp_streq(amemo[h].nm, anm)) h = (h + 1) & 8191u;
+      if (!amemo[h].nm) { amemo[h].nm = anm; amemo[h].n = cf_arms(c, NULL, 1, anm); }
+      int all = amemo[h].n;
+      if (all > 0) {
+        int au = u == 0 ? all : cf_arms(c, us, 0, anm), ad = d == 0 ? all : cf_arms(c, ds, 0, anm);
+        ucalls++; arms_u += au; arms_d += ad; mono_u += au <= 1; mono_d += ad <= 1;
+      }
+    }
+    if (u == 0) any_u++;
+    if (d == 0) any_d++;
+    if (u == 0 && d == 0) { same++; continue; }
+    if (u == 0) { narrower++; continue; }
+    if (d == 0) { wider++; goto report; }
+    {
+      int sub = 1;
+      for (int i = 0; i < ds->n && sub; i++) {
+        int in = 0;
+        for (int j = 0; j < us->n && !in; j++) in = us->cls[j] == ds->cls[i];
+        sub = in;
+      }
+      NodeKind rk = nt_kind(nt, r);
+      int lit = rk == NK_IntegerNode || rk == NK_FloatNode || rk == NK_StringNode || rk == NK_SymbolNode ||
+                rk == NK_InterpolatedStringNode || rk == NK_ArrayNode || rk == NK_HashNode || rk == NK_RangeNode;
+      if (!sub || (ds->bv && !us->bv && !lit)) { wider++; goto report; }
+      if (ds->n == us->n && ds->bv == us->bv) same++; else narrower++;
+      continue;
+    }
+  report:
+    if (getenv("SPINEL_CLS_FLOW") && sp_streq(getenv("SPINEL_CLS_FLOW"), "wider")) {
+      const char *fp = nt_file_path(nt, (int)nt_int(nt, id, "node_file", 0));
+      fprintf(stderr, "cls-flow: wider %s:%d %s\n", fp && *fp ? fp : "?", (int)nt_int(nt, id, "node_line", 0),
+              nt_str(nt, id, "name") ? nt_str(nt, id, "name") : "?");
+    }
+  }
+  fprintf(stderr, "cls-flow: %ld receivers, ANY unified %ld (%.1f%%) directed %ld (%.1f%%); same %ld, narrower %ld, wider %ld\n",
+          calls, any_u, calls ? 100.0 * any_u / calls : 0.0, any_d, calls ? 100.0 * any_d / calls : 0.0, same, narrower, wider);
+  fprintf(stderr, "cls-flow-arms: %ld calls a program's method may answer; arms unified %ld directed %ld; at most one arm unified %ld (%.1f%%) directed %ld (%.1f%%)\n",
+          ucalls, arms_u, arms_d, mono_u, ucalls ? 100.0 * mono_u / ucalls : 0.0, mono_d, ucalls ? 100.0 * mono_d / ucalls : 0.0);
+  free(amemo);
+}
+
+void an_cls_facts(Compiler *c) {
+  const char *flow = getenv("SPINEL_CLS_FLOW");
+  int *df = NULL, dn = 0; ClsSet *dp = NULL;
+  /* use: the directed sets are the facts (the oracle, experiments) */
+  if (flow && sp_streq(flow, "use")) { cf_solve(c, 1, getenv("SPINEL_CLS_FACTS") != NULL); return; }
+  if (flow) {
+    cf_solve(c, 1, sp_streq(flow, "dump"));
+    df = c->cls_fact; dp = c->cls_pool; dn = c->cls_fact_n;
+    c->cls_fact = NULL; c->cls_pool = NULL; c->cls_fact_n = 0; c->ncls_pool = 0;
+  }
+  cf_solve(c, 0, getenv("SPINEL_CLS_FACTS") != NULL);
+  if (df) { cf_flow_compare(c, df, dp, dn); free(df); free(dp); }
 }
 
 /* See compiler.h. */
