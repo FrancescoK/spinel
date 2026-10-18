@@ -34,7 +34,12 @@ typedef struct sp_StringLiteral {
 } sp_StringLiteral;
 static inline sp_StringLiteral *sp_String_literal_slot(const char *s) {
   if (!s || ((const unsigned char *)s)[-1] != 0xf1) return NULL;
-  uintptr_t p = (uintptr_t)(((const sp_str_hdr *)(s - 1)) - 1)->next;
+  const sp_str_hdr *h = ((const sp_str_hdr *)(s - 1)) - 1;
+  /* a slab string's link is never written (its chunk's bitmaps hold what
+     the link would): a frozen one keeps its slot's last occupant's first
+     word there, which may be odd */
+  if (sp_slab_owns(h)) return NULL;
+  uintptr_t p = (uintptr_t)h->next;
   return p & 1 ? (sp_StringLiteral *)(p - 1) : NULL;
 }
 sp_String *sp_String_literal_handle(sp_StringLiteral *slot, const char *s);
