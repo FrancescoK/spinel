@@ -4243,6 +4243,13 @@ static int ewi_chain(Compiler *c, int id, int *out_arr, int *out_off) {
   return 1;
 }
 
+/* with_index's offset as the Integer it seeds the running index with: a
+   boxed one converted, and nil (written, or a value that may be nil) the
+   0 CRuby takes it for */
+static void emit_with_index_offset(Compiler *c, int node, Buf *b) {
+  if (b == g_pre) { emit_into_pre_line(c, emit_with_index_offset, node); return; }
+  emit_int_expr_bound(c, node, "0", b);
+}
 int emit_each_with_index_chain(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -4332,7 +4339,7 @@ int emit_each_with_index_chain(Compiler *c, int id, Buf *b) {
     emit_gc_root_tmp(c, acc_ty, tacc, b); buf_puts(b, " ");
   }
   buf_printf(b, "sp_int _t%d = ", tidx);
-  if (off >= 0) emit_int_expr(c, off, b); else buf_puts(b, "0");   /* a boxed offset as an Integer */
+  if (off >= 0) emit_with_index_offset(c, off, b); else buf_puts(b, "0");
   buf_puts(b, "; ");
 
   /* Override block-param types so the body expression types correctly, then
@@ -4485,7 +4492,7 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", ta);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_int _t%d = ", tidx);
-  if (off >= 0) emit_int_expr(c, off, g_pre); else buf_puts(g_pre, "0");   /* a boxed offset as an Integer */
+  if (off >= 0) emit_with_index_offset(c, off, g_pre); else buf_puts(g_pre, "0");
   buf_puts(g_pre, ";\n");
 
   const char *rk = NULL;
@@ -6194,7 +6201,7 @@ int emit_with_index_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_int _t%d = ", tidx);
   /* as an Integer: a boxed offset (`with_index(body.first_line)` on a value
      known only at run time) went into the sp_int raw */
-  if (wi_argc > 0 && wi_argv) emit_int_expr(c, wi_argv[0], g_pre); else buf_puts(g_pre, "0");
+  if (wi_argc > 0 && wi_argv) emit_with_index_offset(c, wi_argv[0], g_pre); else buf_puts(g_pre, "0");
   buf_puts(g_pre, ";\n");
   if (collecting) {
     emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", rk, tres, rk);

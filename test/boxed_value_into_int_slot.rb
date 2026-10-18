@@ -79,3 +79,9 @@ begin
 rescue NoMethodError => e
   p e.class
 end
+
+# a nil offset, written or known only at run time, starts at 0
+p "a\nb\n".each_line.with_index(nil).map { |l, n| "#{n}:#{l}" }
+off = ARGV.size > 3 ? 1 : nil
+p "a\nb\n".each_line.with_index(off).map { |l, n| "#{n}:#{l}" }
+p %w[x y].each.with_index(off).map { |s, i| "#{i}#{s}" }
