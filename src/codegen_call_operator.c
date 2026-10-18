@@ -1940,7 +1940,11 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       return 1;
     }
     if (cfn) {
-      buf_printf(b, "%s(", cfn); emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      /* typed boxed for a program's operator that answers more than a bool,
+         but in a dispatch's builtin arm the builtin comparison answers: its
+         bool is boxed for the readers of the call's boxed type */
+      int bx = comp_ntype(c, id) == TY_POLY;
+      buf_printf(b, "%s%s(", bx ? "sp_box_bool(" : "", cfn); emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, bx ? "))" : ")");
       c->args_in_call = recv;
       return 1;
     }
