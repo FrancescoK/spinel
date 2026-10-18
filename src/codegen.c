@@ -12200,9 +12200,8 @@ static void emit_cls_answers_dispatch(Compiler *c, Buf *b) {
     for (int k = 0; k < c->nclasses; k++) {
       if (c->classes[k].parent != i || is_builtin_reopen(c->classes[k].name)) continue;
       if (c->classes[k].is_singleton_of) continue;   /* a singleton class is not listed */
-      const char *kn = class_ruby_name(c, k);
-      if (!kn) kn = c->classes[k].name;
-      buf_printf(b, " sp_PolyArray_push(a, sp_box_class(((sp_Class){%d, SPL(\"%s\")})));", k, kn);
+      /* boxed by id, as the constant receiver's Class#subclasses is */
+      buf_printf(b, " sp_PolyArray_push(a, sp_box_class(((sp_Class){%d, NULL})));", k);
     }
     buf_puts(b, " return a;\n");
   }
