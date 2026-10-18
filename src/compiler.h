@@ -1921,6 +1921,7 @@ int         comp_resolve_member(Compiler *c, int class_id, const char *name, int
 const char *comp_resolve_alias(Compiler *c, int class_id, const char *name);
 const char *comp_resolve_alias_at(Compiler *c, int class_id, const char *name, int *start_cls);
 const char *comp_resolve_cm_alias_at(Compiler *c, int class_id, const char *name, int *start_cls);
+int comp_sg_writer_reached(Compiler *c, int k, const char *name, char *base, size_t cap);
 void rewrite_builtin_cm_alias_call(Compiler *c, int id);   /* analyze.c */
 const char *comp_resolve_cm_alias_ex(Compiler *c, int class_id, const char *name, int *builtin);
 int comp_name_is_sg_alias_only(Compiler *c, int class_id, const char *name);

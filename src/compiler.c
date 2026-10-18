@@ -2031,6 +2031,12 @@ const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, i
 const char *comp_resolve_cm_alias_at(Compiler *c, int class_id, const char *name, int *start_cls) {
   return resolve_alias_side(c, class_id, name, start_cls, NULL, 1);
 }
+/* Does class `k` have the `class << self` writer that setter `name` (`x=`,
+   or an alias of one) reaches? Its attribute name (`x`) goes to `base`. */
+int comp_sg_writer_reached(Compiler *c, int k, const char *name, char *base, size_t cap) {
+  const char *rn = comp_resolve_cm_alias_at(c, k, name, NULL);
+  return setter_base_name(rn ? rn : name, base, cap) && comp_is_sg_writer(&c->classes[k], base);
+}
 /* ... and, for the builtin an alias captured (2: a builtin singleton method),
    the name of it, as comp_resolve_alias_ex answers for the instance side */
 const char *comp_resolve_cm_alias_ex(Compiler *c, int class_id, const char *name, int *builtin) {

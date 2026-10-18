@@ -21297,6 +21297,35 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
           return 1;
         }
         free(ccls);
+        /* no class method of the name, but a `class << self` accessor
+           (`subclass.features = ...` on a class held boxed): the arms a
+           Class-typed value takes, on the class the box holds; any other
+           value takes what the call compiles to without them */
+        { Buf sg; memset(&sg, 0, sizeof sg);
+          int tv = -1, hn = 0, *hsv = NULL, *hty = NULL;
+          char kt[64];
+          if (nc == 0 && cls_value_sg_accessor_named(c, nm, argc)) {
+            tv = hoist_boxed_rooted(c, recv);
+            snprintf(kt, sizeof kt, "sp_unbox_class(_t%d)", tv);
+            /* a setter's value runs once, ahead of the arms that store it */
+            hn = hoist_dispatch_args(c, nt_ref(nt, id, "arguments"), &hsv, &hty);
+          }
+          if (tv >= 0 && emit_cls_value_sg_accessor_of(c, id, recv, kt, nm, argc, argv, &sg)) {
+            Buf eb3; memset(&eb3, 0, sizeof eb3);
+            int slot3 = view_bind(recv, "_t%d", tv);
+            int sv3 = g_cls_tag_skip;
+            g_cls_tag_skip = id;
+            emit_boxed(c, id, &eb3);
+            g_cls_tag_skip = sv3;
+            view_unbind(g_n_argov - 1);
+            (void)slot3;
+            buf_printf(b, "((_t%d.tag == SP_TAG_CLASS) ? %s : %s)", tv, sg.p, eb3.p ? eb3.p : "sp_box_nil()");
+            free(eb3.p); free(sg.p);
+            unhoist_dispatch_args(c, hn, hsv, hty);
+            return 1;
+          }
+          if (tv >= 0) unhoist_dispatch_args(c, hn, hsv, hty);
+          free(sg.p); }
       }
       /* The receiver's static class HAS subclasses and cannot answer this
          name, while some subclass can. A slot typed as that class is only its
@@ -28406,8 +28435,7 @@ int emit_sg_accessor(Compiler *c, int id, int ci, const char *cn, const char *na
   if (name_is_plain_setter(name)) {
     /* setter */
     char base[256];
-    if (!setter_base_name(name, base, sizeof base)) return 0;
-    if (!comp_is_sg_writer(cls, base)) return 0;
+    if (!comp_sg_writer_reached(c, ci, name, base, sizeof base)) return 0;
     if (comp_is_sg_civ(cls, base)) {
       char ivn[sizeof base + 1]; snprintf(ivn, sizeof ivn, "@%s", base);
       int ivi = comp_ivar_index(cls, ivn);

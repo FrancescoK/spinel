@@ -1,0 +1,10 @@
+{a: 1}
+{a: 1}
+nil
+[{n: 1}, 1]
+["Any", 2]
+["Any", 3]
+undefined method 'features=' for an instance of Integer
+undefined method 'features=' for class Other
+{b: 2}
+{b: 2}
