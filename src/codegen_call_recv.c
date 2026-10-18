@@ -43,6 +43,13 @@ static void emit_fallback_block_value(Compiler *c, const int *bb, int bn, const 
     for (int k = 0; k < bn; k++) if (subtree_has_own_next(c->nt, bb[k])) lead = 0;
   if (lead)
     for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);
+  /* a block that ends in `return` leaves the method there: the return is
+     a statement, and the value after it is never read */
+  if (lead && bn > 0 && nt_kind(c->nt, bb[bn - 1]) == NK_ReturnNode) {
+    emit_stmt(c, bb[bn - 1], b, 0);
+    buf_printf(b, "%s; })", empty);
+    return;
+  }
   Buf pre, val;
   memset(&pre, 0, sizeof pre); memset(&val, 0, sizeof val);
   if (bn > 0) emit_split_pre(c, bb[bn - 1], boxed ? emit_boxed : emit_expr, &pre, &val);
