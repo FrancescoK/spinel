@@ -26302,13 +26302,23 @@ static int narrow_params_from_arrays(Compiler *c) {
      visible declares an ABI the other route does not honour -- and for
      `initialize`, which resolves through `K.new` rather than by unique name,
      that is reachable: a subclass whose `super(s)` passes a String to a
-     parameter narrowed to sp_int from `Holder.new(@col[q])` does not compile. */
+     parameter narrowed to sp_int from `Holder.new(@col[q])` does not compile.
+     An alias is such a route too: a call by the alias's name finds no scope
+     of that name below, so `alias on_b on_a` narrowed on_a's parameter to
+     the class its own callers pass, and `on_b(other)` was refused. */
   ANameHash supern; memset(&supern, 0, sizeof supern);
   for (int u = 0; u < nt->count; u++) {
     NodeKind sk = nt_kind(nt, u);
     if (sk != NK_SuperNode && sk != NK_ForwardingSuperNode) continue;
     Scope *ss = comp_scope_of(c, u);
     if (ss && ss->name && !anh_has(&supern, ss->name)) anh_add(&supern, ss->name);
+  }
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    ClassInfo *cls = &c->classes[ci];
+    for (int a = 0; a < cls->naliases; a++) {
+      const char *ao = cls->alias_old[a];
+      if (ao && !anh_has(&supern, ao)) anh_add(&supern, ao);
+    }
   }
 
   /* The unique scope of each method name, hashed once: resolving it per call
