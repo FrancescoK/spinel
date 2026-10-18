@@ -347,63 +347,53 @@ void topup_forwarding_arity(Compiler *c) {
   }
 }
 
+/* The edges super_value_used climbs: the conditionals, a begin and its
+   rescue clauses (its body beside an else too), and the one value of a
+   `return`; not `||`, `&&` or a rescue modifier. */
+enum { SUPER_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VP_BEGIN_BOTH | VP_FOLLOW_RETURN };
+
 /* Is node v's value used? A statement list, a branch, a begin and a rescue
-   pass it on to whatever holds them. A statement before a list's last, a
-   loop body, an ensure clause, a method body and the block of an iterator
-   that ignores its block's value throw it away. */
+   pass it on to whatever holds them (vp_climb). A statement before a list's
+   last, a loop body, an ensure clause, a method body and the block of an
+   iterator that ignores its block's value throw it away. */
 static int super_value_used(const NodeTable *nt, const int *par, int v) {
-  for (int p; (p = par[v]) >= 0; v = p) {
-    switch (nt_kind(nt, p)) {
-    case NK_StatementsNode: {
-      int n = 0;
-      const int *st = nt_arr(nt, p, "body", &n);
-      if (n == 0 || st[n - 1] != v) return 0;
-      break;
+  VpUp up;
+  switch (vp_climb(nt, par, v, SUPER_CLIMB, &up)) {
+  case VPU_ROOT:
+  case VPU_DROPPED:
+    return 0;
+  case VPU_GAVE_UP:
+    return 1;
+  case VPU_JUMP:
+    /* `return super` leaves initialize, whose value `new` drops; only a
+       lambda's return hands the value on. */
+    for (int q = par[up.parent]; q >= 0; q = par[q]) {
+      if (nt_kind(nt, q) == NK_LambdaNode) return 1;
+      if (nt_kind(nt, q) == NK_DefNode) return 0;
     }
-    case NK_IfNode: case NK_UnlessNode: case NK_CaseNode: case NK_CaseMatchNode:
-      if (nt_ref(nt, p, "predicate") == v) return 1;
-      break;
-    case NK_WhileNode: case NK_UntilNode:
-      return nt_ref(nt, p, "predicate") == v;
-    case NK_InNode: case NK_RescueNode:
-      if (nt_ref(nt, p, "statements") != v && nt_ref(nt, p, "subsequent") != v) return 1;
-      break;
-    case NK_ElseNode: case NK_ParenthesesNode: case NK_BeginNode:
-      break;
-    case NK_DefNode:
-      return 0;
-    case NK_ReturnNode:
-      /* `return super` leaves initialize, whose value `new` drops; only a
-         lambda's return hands the value on. */
-      for (int q = par[p]; q >= 0; q = par[q]) {
-        if (nt_kind(nt, q) == NK_LambdaNode) return 1;
-        if (nt_kind(nt, q) == NK_DefNode) return 0;
-      }
-      return 0;
-    case NK_BlockNode: {
-      int call = par[p];
-      const char *cn = call >= 0 && nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
-      static const char *const it[] = { "each", "each_with_index", "each_index", "times", "upto",
-                                        "downto", "step", "loop", "each_slice", "each_cons",
-                                        "reverse_each", "tap", NULL };
-      for (int k = 0; cn && it[k]; k++)
-        if (sp_streq(cn, it[k])) return 0;
-      return 1;
-    }
-    default: {
-      const char *ty = nt_type(nt, p);
-      if (ty && sp_streq(ty, "EnsureNode")) return 0;
-      if (ty && sp_streq(ty, "WhenNode") && nt_ref(nt, p, "statements") == v) break;
-      if (ty && sp_streq(ty, "ArgumentsNode") && par[p] >= 0 && nt_kind(nt, par[p]) == NK_ReturnNode) {
-        int na = 0;
-        nt_arr(nt, p, "arguments", &na);
-        if (na == 1) break;   /* `return super`; `return super, x` builds an Array of it */
-      }
-      return 1;
-    }
-    }
+    return 0;
+  case VPU_ENDED:
+    break;
   }
-  return 0;
+  int p = up.parent;
+  switch (nt_kind(nt, p)) {
+  case NK_WhileNode: case NK_UntilNode:
+    return nt_ref(nt, p, "predicate") == up.node;
+  case NK_DefNode:
+    return 0;
+  case NK_BlockNode: {
+    int call = par[p];
+    const char *cn = call >= 0 && nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
+    static const char *const it[] = { "each", "each_with_index", "each_index", "times", "upto",
+                                      "downto", "step", "loop", "each_slice", "each_cons",
+                                      "reverse_each", "tap", NULL };
+    for (int k = 0; cn && it[k]; k++)
+      if (sp_streq(cn, it[k])) return 0;
+    return 1;
+  }
+  default:
+    return !is_ensure_node_type(nt_type(nt, p));
+  }
 }
 
 /* $LOAD_PATH ($:, $-I) and $LOADED_FEATURES ($") each name one Array the
