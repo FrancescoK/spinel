@@ -32,3 +32,6 @@ p Mid.descendants.map(&:name)
 p Leaf.descendants
 # a class value Class#subclasses answers reaches its class methods
 p Mid.subclasses.map { |k| [k.name, k.descendants] }
+# and so does one a class value's subclasses answers
+k = [Root, Mid][1]
+p k.subclasses.map { |s| [s.name, s.descendants] }
