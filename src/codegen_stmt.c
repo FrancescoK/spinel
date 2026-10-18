@@ -13270,6 +13270,17 @@ static int emit_return_values(Compiler *c, const int *a, int n, const char *open
    waits in the innermost region's _retvN, and the region's tail hands it on,
    out through every enclosing ensure and then out of the C function. A
    proc's `next` leaves its function the same way (emit_next_leaving_body). */
+static int same_pr_label(const char *a, const char *b) {
+  return a == b || (a && b && sp_streq(a, b));
+}
+/* (EnsureCtx.oret) a deferred return of the funnel now in force, which is
+   not the one the frame opened under: the frame's exit takes it there */
+static void ensure_note_oret(EnsureCtx *ctx) {
+  if (ctx->oret) return;
+  ctx->oret = 1;
+  ctx->oret_label = g_method_pr_label; ctx->oret_var = g_method_pr_var; ctx->oret_ty = g_ret_type;
+  ctx->oret_exc = g_method_pr_exc_depth; ctx->oret_ens = g_method_pr_ensure_depth;
+}
 static void emit_return_deferred(Compiler *c, const int *a, int n, Buf *b, int indent) {
   EnsureCtx *ctx = &g_ensure_stack[g_ensure_depth - 1];
   emit_indent(b, indent);
@@ -13316,8 +13327,10 @@ static void emit_return_deferred(Compiler *c, const int *a, int n, Buf *b, int i
   int pops = g_exc_frame_depth - ctx->exc_base;
   if (pops < 0) pops = 0;
   emit_rescue_pops_to(b, ctx->rescue_base);
-  buf_printf(b, "_retf%d = 1; sp_exc_top -= %d; goto _ensure%d; }\n",
-             ctx->lid, pops, ctx->lid);
+  int other = ctx->pr_track && !same_pr_label(g_method_pr_label, ctx->pr_label);
+  if (other) ensure_note_oret(ctx);
+  buf_printf(b, "_retf%d = %d; sp_exc_top -= %d; goto _ensure%d; }\n",
+             ctx->lid, other ? 2 : 1, pops, ctx->lid);
 }
 
 static void emit_return_1(Compiler *c, int id, Buf *b, int indent);
@@ -13999,14 +14012,36 @@ void emit_ensure_chain_pops(Buf *b, const EnsureCtx *outer) {
 /* A deferred return runs only ensures belonging to its method, then pops
    frames down to that method's exit. An inline exit is inside the caller's
    protected regions, which must remain live after the call. */
-static void emit_ensure_return(Compiler *c, int eid, int has_retval, Buf *b, int indent) {
+static void emit_ensure_return_1(Compiler *c, int eid, int has_retval, Buf *b, int indent);
+static void emit_ensure_return(Compiler *c, const EnsureCtx *self, int eid, int has_retval, Buf *b, int indent) {
+  /* a return of another funnel than this frame's (EnsureCtx.oret): taken
+     first, as it would be where it was written */
+  if (self && self->oret) {
+    const char *sl = g_method_pr_label, *sv = g_method_pr_var;
+    TyKind st = g_ret_type; int se = g_method_pr_exc_depth, sn = g_method_pr_ensure_depth;
+    g_method_pr_label = self->oret_label; g_method_pr_var = self->oret_var; g_ret_type = self->oret_ty;
+    g_method_pr_exc_depth = self->oret_exc; g_method_pr_ensure_depth = self->oret_ens;
+    buf_printf(b, "if (_retf%d == 2) { ", eid);
+    emit_ensure_return_1(c, eid, has_retval, b, indent);
+    buf_puts(b, "}\n");
+    emit_indent(b, indent);
+    g_method_pr_label = sl; g_method_pr_var = sv; g_ret_type = st;
+    g_method_pr_exc_depth = se; g_method_pr_ensure_depth = sn;
+  }
+  emit_ensure_return_1(c, eid, has_retval, b, indent);
+}
+static void emit_ensure_return_1(Compiler *c, int eid, int has_retval, Buf *b, int indent) {
   int base = g_method_pr_label ? g_method_pr_ensure_depth : 0;
   if (g_ensure_depth > base) {
     EnsureCtx *outer = &g_ensure_stack[g_ensure_depth - 1];
+    /* handed on: its own flag again, or 2 when the outer frame opened
+       under another funnel than this return's */
+    int other = outer->pr_track && !same_pr_label(g_method_pr_label, outer->pr_label);
+    if (other) ensure_note_oret(outer);
     buf_printf(b, "if (_retf%d) { ", eid);
     if (has_retval && outer->has_retval)
       buf_printf(b, "_retv%d = _retv%d; ", outer->lid, eid);
-    buf_printf(b, "_retf%d = 1; ", outer->lid);
+    buf_printf(b, "_retf%d = %d; ", outer->lid, other ? 2 : 1);
     emit_ensure_chain_pops(b, outer);
     buf_printf(b, "goto _ensure%d; }\n", outer->lid);
     return;
@@ -14165,7 +14200,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     }
     g_ensure_stack[g_ensure_depth++] = (EnsureCtx){ .lid = eid, .has_retval = has_retval, .exc_base = g_exc_frame_depth,
                                                     .retv_ty = g_ret_type, .rescue_base = g_rescue_save_depth,
-                                                    .retv_o = g_ret_oint };
+                                                    .retv_o = g_ret_oint, .pr_track = 1, .pr_label = g_method_pr_label };
 
     /* retry in the rescue restarts the body; the ensure runs only when the
        begin finally exits (matching CRuby, where an aborted attempt does not
@@ -14277,6 +14312,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     emit_indent(b, indent + 1); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "}\n");
 
+    EnsureCtx self_ctx = g_ensure_stack[g_ensure_depth - 1];
     g_ensure_depth--;
 
     /* Ensure label: reached by deferred-return goto AND by normal fall-through. */
@@ -14396,7 +14432,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       buf_printf(b, "sp_rescue_sp -= _brkf%d - 1; break; }\n", eid);
     }
     emit_indent(b, indent);
-    emit_ensure_return(c, eid, has_retval, b, indent);
+    emit_ensure_return(c, &self_ctx, eid, has_retval, b, indent);
     if (g_ensure_depth > 0) {
       EnsureCtx *outer = &g_ensure_stack[g_ensure_depth - 1];
       /* Unhandled exception. It belongs to the nearest enclosing HANDLER,

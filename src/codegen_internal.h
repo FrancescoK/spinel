@@ -866,7 +866,14 @@ void emit_line_directive(Compiler *c, int id, Buf *b);
    g_ret_type at the store site therefore asked the wrong function whether to
    box, and a String went into an sp_RbVal slot unboxed. */
 typedef struct { int lid; int has_retval; int exc_base; TyKind retv_ty; int rescue_base; int catches;
-                 int retv_o;   /* the frame's slot holds its nil beside the value (sp_oint) */ } EnsureCtx;
+                 int retv_o;   /* the frame's slot holds its nil beside the value (sp_oint) */
+                 /* the return funnel a `return` written where the frame opens takes
+                    (g_method_pr_label then); a deferred return that takes another one
+                    (a block spliced into an inlined method returns from the method the
+                    block was written in) is flagged 2 and taken there after the
+                    ensure, through the funnel it was written under (#9511) */
+                 int pr_track; const char *pr_label;
+                 int oret; const char *oret_label, *oret_var; TyKind oret_ty; int oret_exc, oret_ens; } EnsureCtx;
 extern EnsureCtx g_ensure_stack[MAX_ENSURE_DEPTH];
 extern int       g_ensure_depth;
 

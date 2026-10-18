@@ -1,0 +1,7 @@
+"returned from fetch"
+:outer
+[:own, :after]
+43
+:deep
+:value
+[:finish, :finish, :outer_ensure, :own_ensure, :finish, :finish, :pool, :finish]
