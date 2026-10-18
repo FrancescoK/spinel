@@ -2563,13 +2563,23 @@ static void emit_poly_slot_text(Compiler *c, int src, int k, int arg, const char
   buf_puts(b, tc >= 0 ? "))" : ")");
 }
 
+/* Is txt `sp_box_nil()` alone, in any parentheses? */
+static int proc_arg_is_box_nil(const char *txt) {
+  const char *p = past_open_parens(txt);
+  if (strncmp(p, "sp_box_nil()", 12) != 0) return 0;
+  for (p += 12; *p; p++) if (*p != ')') return 0;
+  return 1;
+}
 /* The initializer of a block or proc argument's temp. An untyped argument
-   rides an sp_int temp, and one that is a missing method's raise token is
-   an sp_RbVal: it goes in unboxed, as a typed store takes it (the inline
-   splice of the same yield does, emit_block_arg_coerced). */
+   rides an sp_int temp, and one that diverges (a missing method's raise
+   token, an unresolved super's raise) is an sp_RbVal: it goes in unboxed,
+   as a typed store takes it (the inline splice of the same yield does,
+   emit_block_arg_coerced). An unresolved hook's boxed nil is the slot's 0. */
 static void emit_proc_arg_temp_init(Compiler *c, int node, int typed, const char *txt, Buf *b) {
   if (!txt) txt = "";
-  if (!typed && strncmp(past_open_parens(txt), "sp_raise_nomethod(", 18) == 0) emit_unresolved_coerced_text(c, node, TY_INT, txt, b);
+  if (!typed && (strncmp(past_open_parens(txt), "sp_raise_nomethod(", 18) == 0 || text_diverges(txt)))
+    emit_unresolved_coerced_text(c, node, TY_INT, txt, b);
+  else if (!typed && proc_arg_is_box_nil(txt)) buf_puts(b, "0");
   else buf_puts(b, txt);
   buf_puts(b, ";\n");
 }

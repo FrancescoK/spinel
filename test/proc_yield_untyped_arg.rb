@@ -28,3 +28,18 @@ loud = [[:enter, Ev.new(:lit, "ab")], [:exit, Ev.new(:escape, "\\d")]]
     puts "NoMethodError: #{e.name}"
   end
 end
+
+# an unresolved super as the argument: it raises NoMethodError when reached
+class Walker
+  def each_pair(evs)
+    evs.reduce(0) do |depth, e|
+      yield(super(), e) if e > 1
+      depth + 1
+    end
+  end
+end
+[[1, 2], Tree.new([1])].each do |evs|
+  p(Walker.new.each_pair(evs) { |a, b| p [a + 1, b] })
+rescue NoMethodError
+  puts "NoMethodError"
+end
