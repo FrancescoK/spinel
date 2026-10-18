@@ -1,0 +1,8 @@
+Integer => Integer: collected while churning: yes
+Integer => String: collected while churning: yes
+String => Integer: collected while churning: yes
+String => String: collected while churning: yes
+String => mixed: collected while churning: yes
+Object => Integer: collected while churning: yes
+Hash subclass: collected while churning: yes
+5600000
