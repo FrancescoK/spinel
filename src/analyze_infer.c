@@ -10760,7 +10760,12 @@ TyKind infer_uncached(Compiler *c, int id) {
        no ancestor defines is Object#freeze, which answers the object
        (codegen's twin in emit_super) */
     int freeze_super = !s->is_cmethod && uname && sp_streq(uname, "freeze");
+    /* and `super` in a class method named subclasses reaches Class#subclasses,
+       an Array of classes (emit_super's twin) */
+    int subs_super = s->is_cmethod && uname && sp_streq(uname, "subclasses") &&
+                     nt_ref(nt, id, "arguments") < 0;
     TyKind none = super_reaches_exc_text(c, id, 0) ? TY_STRING
+                : subs_super ? TY_POLY_ARRAY
                 : rto_super ? TY_BOOL
                 : freeze_super ? ty_object(s->class_id) : TY_UNKNOWN;
     if (p < 0) return none;
