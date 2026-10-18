@@ -1884,6 +1884,11 @@ static void emit_block_arg_coerced(Compiler *c, int node, TyKind ot, Buf *b) {
      block_settle_types kept nullable, bs_join_val) is the slot's own nil,
      not the 0 it emits as */
   else if (nk == NK_NilNode && oint_kind(ot)) buf_puts(b, oint_nil(ot));
+  /* an untyped value (a call no class answers, which raises NoMethodError
+     before it binds anything) into a typed parameter: the raise, and the
+     slot's own value after it, as any typed store takes it */
+  else if (at == TY_UNKNOWN && !empty_lit && ot != TY_POLY && ot != TY_UNKNOWN && ot != TY_VOID)
+    emit_unresolved_coerced(c, node, ot, b);
   /* and so is a boxed nil: under --int-overflow=promote an Integer slot
      that can hold nil (an ivar, a local, a method's parameter) is widened
      to the box, while a block parameter it feeds keeps its Integer type,
@@ -3418,6 +3423,10 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     TyKind tlt3 = comp_ntype(c, tl3);
     int void_tail = (tlt3 == TY_UNKNOWN || tlt3 == TY_VOID) &&
                     nt_kind(nt, tl3) == NK_CallNode && nt_ref(nt, tl3, "receiver") >= 0;
+    /* nor does a tail whose value, like every `next`'s, is nil: the carrier
+       is opaque, and an inlined method's own result slot (sp_RbVal when its
+       body holds a bare `return`) did not fit the sp_int carrier */
+    if (nx_bt == TY_NIL) void_tail = 1;
     { Buf tb; memset(&tb, 0, sizeof tb);
       Buf *svp3 = g_pre; int svi3 = g_indent; g_pre = b; g_indent = 0;
       if (void_tail) emit_expr(c, tl3, &tb);

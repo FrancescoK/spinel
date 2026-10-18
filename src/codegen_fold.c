@@ -4332,7 +4332,7 @@ int emit_each_with_index_chain(Compiler *c, int id, Buf *b) {
     emit_gc_root_tmp(c, acc_ty, tacc, b); buf_puts(b, " ");
   }
   buf_printf(b, "sp_int _t%d = ", tidx);
-  if (off >= 0) emit_expr(c, off, b); else buf_puts(b, "0");
+  if (off >= 0) emit_int_expr(c, off, b); else buf_puts(b, "0");   /* a boxed offset as an Integer */
   buf_puts(b, "; ");
 
   /* Override block-param types so the body expression types correctly, then
@@ -4485,7 +4485,7 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", ta);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_int _t%d = ", tidx);
-  if (off >= 0) emit_expr(c, off, g_pre); else buf_puts(g_pre, "0");
+  if (off >= 0) emit_int_expr(c, off, g_pre); else buf_puts(g_pre, "0");   /* a boxed offset as an Integer */
   buf_puts(g_pre, ";\n");
 
   const char *rk = NULL;
@@ -6192,7 +6192,9 @@ int emit_with_index_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", trecv);
   /* running index, seeded with the offset */
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_int _t%d = ", tidx);
-  if (wi_argc > 0 && wi_argv) emit_expr(c, wi_argv[0], g_pre); else buf_puts(g_pre, "0");
+  /* as an Integer: a boxed offset (`with_index(body.first_line)` on a value
+     known only at run time) went into the sp_int raw */
+  if (wi_argc > 0 && wi_argv) emit_int_expr(c, wi_argv[0], g_pre); else buf_puts(g_pre, "0");
   buf_puts(g_pre, ";\n");
   if (collecting) {
     emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", rk, tres, rk);
