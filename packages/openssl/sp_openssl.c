@@ -1433,7 +1433,8 @@ sp_int sp_rsa_verify(const char *n_bytes, const char *e_bytes, const char *md_na
   return rc;
 }
 
-/* An EVP_PKEY from the PKCS#1 DER a private PKey::RSA holds, or NULL. */
+/* An EVP_PKEY from the PKCS#1 DER a private PKey::RSA holds, or NULL: what
+   sp_rsa_sign signs with, and what a context's RSA key is loaded from. */
 static EVP_PKEY *sp_rsa_evp_private(const char *der) {
   const unsigned char *p = (const unsigned char *)der;
   size_t len = sp_str_byte_len(der);
@@ -1488,6 +1489,42 @@ const char *sp_rsa_sign(const char *der, const char *md_name, const char *data, 
   return sp_rsa_sig_out.p;
 }
 
+/* A public RSA key's to_der, as CRuby answers it: the SubjectPublicKeyInfo
+   DER a PUBLIC KEY PEM holds, from the modulus and exponent bytes. "" with
+   the reason in last_error. */
+static SP_TLS sp_x509_out sp_rsa_pub_out;
+
+const char *sp_rsa_public_der(const char *n_bytes, const char *e_bytes) {
+  BIGNUM *n = BN_bin2bn((const unsigned char *)n_bytes, (int)sp_str_byte_len(n_bytes), NULL);
+  BIGNUM *e = BN_bin2bn((const unsigned char *)e_bytes, (int)sp_str_byte_len(e_bytes), NULL);
+  unsigned char *q;
+  RSA *rsa = NULL;
+  int len = 0;
+
+  sp_ssl_errbuf[0] = 0;
+#if defined(__GNUC__) || defined(__clang__)
+# pragma GCC diagnostic push
+# pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+  if (n && e && (rsa = RSA_new()) && RSA_set0_key(rsa, n, e, NULL)) {
+    n = NULL; e = NULL;                  /* the RSA owns them now */
+    if ((len = i2d_RSA_PUBKEY(rsa, NULL)) > 0 && sp_x509_room(&sp_rsa_pub_out, (size_t)len)) {
+      q = (unsigned char *)sp_rsa_pub_out.p;
+      if (i2d_RSA_PUBKEY(rsa, &q) != len) len = 0;
+    }
+    else len = 0;
+  }
+  RSA_free(rsa);
+#if defined(__GNUC__) || defined(__clang__)
+# pragma GCC diagnostic pop
+#endif
+  BN_free(n);
+  BN_free(e);
+  if (len <= 0) { ERR_clear_error(); return sp_ec_fail("i2d_RSA_PUBKEY"); }
+  sp_ffi_bin_len = len;
+  return sp_rsa_pub_out.p;
+}
+
 /* ---------- The server half ----------
 
    A server's SSL_CTX is built per accept from the certificate and key bytes
@@ -1499,9 +1536,10 @@ const char *sp_rsa_sign(const char *der, const char *md_name, const char *data, 
 
    `chain` is the certificates as sp_x509_load lays them out, a 4-byte
    big-endian length before each DER: the leaf, then what is sent with it.
-   `curve` and `priv` are the EC key's curve name and private scalar. All
-   three are empty for a context with no certificate and key, and the
-   handshake then fails as CRuby's does there, with "no shared cipher". */
+   `curve` and `priv` are an EC key's curve name and private scalar, or for
+   an RSA key an empty name and its PKCS#1 DER. All three are empty for a
+   context with no certificate and key, and the handshake then fails as
+   CRuby's does there, with "no shared cipher". */
 
 /* An EVP_PKEY for SSL_CTX_use_PrivateKey, from the two things a PKey::EC
    holds. The public point is derived here, as sp_ec_public_bytes derives
@@ -1566,11 +1604,15 @@ static int sp_ssl_use_chain(SSL_CTX *ctx, const char *chain, const char *curve, 
     if (at == 0) {
       ok = SSL_CTX_use_certificate(ctx, x);      /* takes its own reference */
       X509_free(x);
-      if (ok && curve[0]) {
-        EVP_PKEY *k = sp_ec_evp_private(curve, priv);
+      if (ok && (curve[0] || sp_str_byte_len(priv))) {
+        EVP_PKEY *k = curve[0] ? sp_ec_evp_private(curve, priv) : sp_rsa_evp_private(priv);
         ok = k && SSL_CTX_use_PrivateKey(ctx, k);
         EVP_PKEY_free(k);
         if (!ok) { sp_ssl_note("SSL_CTX_use_PrivateKey"); return 0; }
+        /* A key of another kind than the certificate's goes into a slot of
+           its own rather than failing, and this is the call that finds it:
+           the slot the key went into has no certificate. */
+        if (!SSL_CTX_check_private_key(ctx)) { sp_ssl_note("SSL_CTX_check_private_key"); return 0; }
       }
     }
     else {

@@ -88,6 +88,12 @@ p pub.verify_raw("SHA256", sig, "Mapo Bridge to Yeouido")
 p pub.verify_raw("SHA256", sig, "Mapo Bridge to Hapjeong")
 p OpenSSL::PKey::EC.from_private_bytes("prime256v1", key.private_key_bytes).public_key_bytes == key.public_key_bytes
 
+# An RSA key's public_key holds copies of the modulus and exponent: changing
+# the copy's leaves the key verifying its own signatures.
+rsa = OpenSSL::PKey.read(RSA_PEM)
+rsa.public_key.n_bytes.replace("Yeouido")
+p rsa.verify("SHA256", rsa.sign("SHA256", "Banpo Bridge"), "Banpo Bridge")
+
 # The RSA keys read as RSA keys (openssl_pkey_rsa.rb); the rest are refused,
 # each with its reason.
 [RSA_PEM, ED25519_PEM, ENCRYPTED_PEM, RSA_PUBLIC_PEM, DH_PEM, EC_PARAMETERS_PEM].each do |pem|

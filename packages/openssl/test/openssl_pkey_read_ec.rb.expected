@@ -6,6 +6,7 @@ true
 true
 false
 true
+true
 OpenSSL::PKey::RSA
 "unsupported key type: ED25519 (this package reads EC and RSA keys)"
 "Could not parse PKey"

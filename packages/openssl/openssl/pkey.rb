@@ -236,9 +236,21 @@ module OpenSSL
         !@private_der.empty?
       end
 
-      # CRuby's: the public half, as a key of its own.
+      # CRuby's: the public half, as a key of its own, over copies of the
+      # modulus and exponent, so changing the one it answers leaves this
+      # key's verifying half alone.
       def public_key
-        RSA.new(@n_bytes, @e_bytes)
+        RSA.new(@n_bytes.dup, @e_bytes.dup)
+      end
+
+      # CRuby's: a private key as its PKCS#1 DER, the RSA PRIVATE KEY form,
+      # and a public one as the SubjectPublicKeyInfo DER a PUBLIC KEY PEM
+      # holds.
+      def to_der
+        return @private_der.dup if private?
+        der = Native.rsa_public_der(@n_bytes, @e_bytes)
+        raise PKeyError, Native.last_error if der.empty?
+        der
       end
 
       # PKCS#1 v1.5 over the named digest of the data, as CRuby's PKey#sign:

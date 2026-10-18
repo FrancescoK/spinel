@@ -92,6 +92,8 @@ module OpenSSL
     # length. "" with the reason in last_error.
     native_func :rsa_sign, [:string, :string, :string, :int, :string, :int],
                 :cbinstr, "sp_rsa_sign"
+    # A public key's to_der: n and e in, the SubjectPublicKeyInfo DER out.
+    native_func :rsa_public_der, [:string, :string], :cbinstr, "sp_rsa_public_der"
 
     # X509::Certificate: PEM or DER in, DER out, and "" with the reason in
     # last_error. x509_load answers each certificate as a 4-byte big-endian
@@ -207,13 +209,13 @@ module OpenSSL
       # CRuby's, and checked when it is called, as CRuby checks it: a key
       # without its private half, or one that is not the certificate's, raises
       # here rather than at the first accept. It leaves cert, key and
-      # extra_chain_cert as they were, as in CRuby. A second call replaces
-      # the first: the keys here are all EC, and OpenSSL keeps one
-      # certificate per kind of key.
+      # extra_chain_cert as they were, as in CRuby. The key is a PKey::EC or
+      # a PKey::RSA. A second call replaces the first, where CRuby keeps one
+      # certificate per kind of key, an EC one and an RSA one side by side.
       def add_certificate(certificate, pkey, extra_certs = nil)
         raise ArgumentError, "private key is needed" unless pkey.private?
         chain = SSLContext.chain_bytes(certificate, extra_certs)
-        if Native.server_check(chain, pkey.curve, pkey.private_key_bytes) != 1
+        if Native.server_check(chain, SSLContext.key_curve(pkey), SSLContext.key_bytes(pkey)) != 1
           raise ArgumentError, "public key mismatch"
         end
         @added_chain = chain
@@ -238,6 +240,16 @@ module OpenSSL
 
       def own_key
         @cert && @key ? @key : @added_key
+      end
+
+      # Not CRuby's: a private key as the C takes it, an EC key as its curve
+      # and scalar, an RSA key as an empty curve and its PKCS#1 DER.
+      def self.key_curve(key)
+        key.is_a?(PKey::EC) ? key.curve : ""
+      end
+
+      def self.key_bytes(key)
+        key.is_a?(PKey::EC) ? key.private_key_bytes : key.to_der
       end
 
       # Each certificate as a 4-byte big-endian length and its DER, the leaf
@@ -503,7 +515,7 @@ module OpenSSL
         h = Native.connect_nb(@io.fileno, @hostname,
                               @context.verify_mode == VERIFY_NONE ? 0 : 1,
                               @context.cert_store, @context.own_chain,
-                              key ? key.curve : "", key ? key.private_key_bytes : "")
+                              key ? SSLContext.key_curve(key) : "", key ? SSLContext.key_bytes(key) : "")
         if h < 0
           raise SSLError, "SSL_connect returned an error: #{Native.last_error}"
         end
@@ -513,7 +525,7 @@ module OpenSSL
       def start_accept
         key = own_key
         h = Native.accept_nb(@io.fileno, @context.own_chain,
-                             key ? key.curve : "", key ? key.private_key_bytes : "",
+                             key ? SSLContext.key_curve(key) : "", key ? SSLContext.key_bytes(key) : "",
                              @context.accept_verify_mode, @context.cert_store)
         if h < 0
           raise SSLError, "SSL_accept returned an error: #{Native.last_error}"
