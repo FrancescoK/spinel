@@ -996,10 +996,15 @@ static void nf_elem_mark(NF *f, int slot_node, int why) {
 }
 
 static void nf_elem_mark_back(NF *f, int v, int depth);
-static void nf_elem_back_list(NF *f, int st, int depth) {
-  if (st < 0 || nt_kind(f->nt, st) != NK_StatementsNode) { nf_elem_mark_back(f, st, depth); return; }
-  int n = 0; const int *b = nt_arr(f->nt, st, "body", &n);
-  if (n > 0) nf_elem_mark_back(f, b[n - 1], depth);
+
+/* One value position of a conditional or a sequence: the slots the Array there
+   is read out of, at the next level. A walk that gave up marks only the node it
+   stopped at. */
+typedef struct { NF *f; int depth; } NfBackArms;
+static int nf_back_arm(const VpLeaf *leaf, void *ud) {
+  NfBackArms *a = ud;
+  if (leaf->kind != VPK_NIL) nf_elem_mark_back(a->f, leaf->node, a->depth + 1);
+  return 0;
 }
 
 /* An Array is a reference: a nil stored through one name of it (`b = a;
@@ -1014,17 +1019,12 @@ static void nf_elem_mark_back(NF *f, int v, int depth) {
   const NodeTable *nt = f->nt;
   if (v < 0 || v >= nt->count || depth > 8) return;
   switch (nt_kind(nt, v)) {
-  case NK_ParenthesesNode: nf_elem_back_list(f, nt_ref(nt, v, "body"), depth + 1); return;
-  case NK_StatementsNode: nf_elem_back_list(f, v, depth + 1); return;
-  case NK_ElseNode: nf_elem_back_list(f, nt_ref(nt, v, "statements"), depth + 1); return;
-  case NK_IfNode: case NK_UnlessNode:
-    nf_elem_back_list(f, nt_ref(nt, v, "statements"), depth + 1);
-    nf_elem_mark_back(f, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1);
+  case NK_ParenthesesNode: case NK_StatementsNode: case NK_ElseNode: case NK_IfNode: case NK_UnlessNode:
+  case NK_AndNode: case NK_OrNode: {
+    NfBackArms a = { f, depth };
+    for_each_value_position(nt, v, VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_LOGIC, nf_back_arm, &a);
     return;
-  case NK_AndNode: case NK_OrNode:
-    nf_elem_mark_back(f, nt_ref(nt, v, "left"), depth + 1);
-    nf_elem_mark_back(f, nt_ref(nt, v, "right"), depth + 1);
-    return;
+  }
   case NK_LocalVariableWriteNode: case NK_InstanceVariableWriteNode: case NK_GlobalVariableWriteNode:
   case NK_ClassVariableWriteNode: case NK_ConstantWriteNode:
     (void)nf_elem_slot_op(f, v, NF_EL_HOLDS | NF_EL_STORED);
@@ -1033,7 +1033,9 @@ static void nf_elem_mark_back(NF *f, int v, int depth) {
   case NK_CallNode: {
     if (nf_elem_slot_op(f, v, NF_EL_HOLDS | NF_EL_STORED) >= 0) return;
     int pmi = nf_plan(f, v, NULL, NULL);
-    if (pmi >= 0) { nf_elem_back_list(f, f->c->scopes[pmi].body, depth + 1); return; }
+    /* the depth is passed unchanged: a method body is a structure node (a
+       StatementsNode, a BeginNode, parentheses), which costs the level */
+    if (pmi >= 0) { nf_elem_mark_back(f, f->c->scopes[pmi].body, depth); return; }
     if (mutated_array(f->c, v) != v) nf_elem_mark_back(f, nt_ref(nt, v, "receiver"), depth + 1);
     return;
   }
