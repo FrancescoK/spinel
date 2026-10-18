@@ -1266,33 +1266,18 @@ const NativeMethod *native_assign_keeps(Compiler *c, int id) {
    rescue modifier. */
 enum { ASSIGN_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VP_BEGIN_BOTH };
 
-static int assign_value_slot(const NodeTable *nt, int p, int n);
 /* Is call id the value its own method answers: the last statement of the
    method's body, or of a branch body of a conditional, case or begin that
-   is itself the last? Climbs from the call, so its cost is the depth. */
+   is itself the last? Climbs from the call (vp_climb), so its cost is the
+   depth. The condition of a `when` is climbed as if it were the clause's
+   value. */
 static int assign_is_tail(Compiler *c, int id, const int *par) {
   const NodeTable *nt = c->nt;
-  int n = id;
-  for (int p = par[n]; p >= 0; n = p, p = par[p]) {
-    NodeKind k = nt_kind(nt, p);
-    if (k == NK_DefNode) return nt_ref(nt, p, "body") == n;
-    if (k == NK_StatementsNode) {
-      int sn = 0;
-      const int *sb = nt_arr(nt, p, "body", &sn);
-      if (sn == 0 || sb[sn - 1] != n) return 0;
-      continue;
-    }
-    if (k == NK_BeginNode && n == nt_ref(nt, p, "ensure_clause")) return 0;
-    if (k == NK_BlockNode || k == NK_LambdaNode) return 0;
-    if (k == NK_NONE) {
-      /* a `when` arm: the only unnamed kind a case holds */
-      int gp = par[p];
-      if (gp < 0 || (nt_kind(nt, gp) != NK_CaseNode)) return 0;
-      continue;
-    }
-    if (!assign_value_slot(nt, p, n)) return 0;
-  }
-  return 0;
+  VpUp up;
+  vp_climb(nt, par, id, ASSIGN_CLIMB, &up);
+  while (up.kind == VPU_ENDED && is_when_node_type(nt_type(nt, up.parent)))
+    vp_climb(nt, par, up.parent, ASSIGN_CLIMB, &up);
+  return up.kind == VPU_ENDED && nt_kind(nt, up.parent) == NK_DefNode && nt_ref(nt, up.parent, "body") == up.node;
 }
 
 /* Is call id the value of a `return` of its own method: through parentheses
