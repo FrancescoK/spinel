@@ -91,6 +91,14 @@ static void emit_match_block_body(Compiler *c, const int *body, int n, int tr, B
   }
 }
 
+/* A `match` the String arms answer: its MatchData (or NULL), boxed where
+   the call itself is typed boxed (a receiver known only at run time, whose
+   slot took the box), as the value's other readers take it. */
+static void emit_matchdata_as_call(Compiler *c, int id, const char *md, Buf *b) {
+  if (comp_ntype(c, id) == TY_POLY) emit_boxed_text(c, TY_MATCHDATA, md ? md : "NULL", b);
+  else buf_puts(b, md ? md : "NULL");
+}
+
 int emit_call_regexp_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0) {
   /* regex literal match predicates (bool-returning, no MatchData/globals):
      /re/.match?(str[, pos])  and  str.match?(/re/[, pos]) */
@@ -374,15 +382,18 @@ no_gsub_enum:
       return 1;
     }
     if (are >= 0 && sp_streq(name, "match")) {
+      Buf mb; memset(&mb, 0, sizeof mb);
       if (argc == 1) {
         /* recv is the subject string; emit_str_expr coerces a poly/nilable
            receiver (`@message.subject.match(/re/)`) to the const char* slot */
-        buf_printf(b, "sp_re_matchdata(sp_re_pat_%d, ", are); emit_str_expr(c, recv, b); buf_puts(b, ")");
+        buf_printf(&mb, "sp_re_matchdata(sp_re_pat_%d, ", are); emit_str_expr(c, recv, &mb); buf_puts(&mb, ")");
       }
       else {
-        buf_printf(b, "sp_re_matchdata_at(sp_re_pat_%d, ", are); emit_str_expr(c, recv, b);
-        buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+        buf_printf(&mb, "sp_re_matchdata_at(sp_re_pat_%d, ", are); emit_str_expr(c, recv, &mb);
+        buf_puts(&mb, ", "); emit_int_expr(c, argv[1], &mb); buf_puts(&mb, ")");
       }
+      emit_matchdata_as_call(c, id, mb.p, b);
+      free(mb.p);
       return 1;
     }
     /* String#match?/#match with a String pattern argument: CRuby treats the
@@ -564,11 +575,14 @@ no_gsub_enum:
           if (sp_streq(name, "match") && (argc == 1 || argc == 2)) {
             /* emit_str_expr, not emit_expr: a poly receiver needs coercing into
                the const char* slot, as the precompiled-literal arms do (#3389) */
-            if (argc == 1) { buf_printf(b, "sp_re_matchdata(%s, ", rp.p); emit_str_expr(c, recv, b); buf_puts(b, ")"); }
+            Buf mb; memset(&mb, 0, sizeof mb);
+            if (argc == 1) { buf_printf(&mb, "sp_re_matchdata(%s, ", rp.p); emit_str_expr(c, recv, &mb); buf_puts(&mb, ")"); }
             else {
-              buf_printf(b, "sp_re_matchdata_at(%s, ", rp.p); emit_str_expr(c, recv, b);
-              buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+              buf_printf(&mb, "sp_re_matchdata_at(%s, ", rp.p); emit_str_expr(c, recv, &mb);
+              buf_puts(&mb, ", "); emit_int_expr(c, argv[1], &mb); buf_puts(&mb, ")");
             }
+            emit_matchdata_as_call(c, id, mb.p, b);
+            free(mb.p);
             free(rp.p); return 1;
           }
         }
