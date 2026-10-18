@@ -706,10 +706,17 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         (argc == 1 || (argc == 0 && sp_streq(name, "permutation"))) &&
         !an_blockless_tuples_kept(c, id))
       { *out = TY_ENUMERATOR; return 1; }
-    /* builtin-op rows (builtin_ops.c); + & | - and the named set operations
-       state their result by the operands' kinds */
+    /* dig(*keys) walks a runtime key list: the depth, and so the value's
+       type, is not known here. A sole splat has the kind of its elements, so
+       the dig row's one-key result cannot tell it from a key: answered ahead
+       of the lookup. */
+    if (sp_streq(name, "dig") && argc == 1 && nt_kind(nt, argv[0]) == NK_SplatNode)
+      { *out = TY_POLY; return 1; }
+    /* builtin-op rows (builtin_ops.c): + & | - and the named set operations
+       state their result by the operands' kinds, and so do the rows that
+       guard an argument's kind (an index, a count, slice!'s Range) */
     {
-      const BuiltinOp *op = an_bop_find(c, id, BOP_ANY_ARRAY, name, argc, block >= 0);
+      const BuiltinOp *op = an_bop_find_arg(c, id, BOP_ANY_ARRAY, name, argc, argv, block >= 0);
       if (op && (*out = an_bop_result(c, op, rt, argc, argv)) != TY_UNKNOWN) return 1;
     }
     /* a blockless map/collect is a usable Enumerator too (size/class/next);
