@@ -1,4 +1,5 @@
 #include "analyze_internal.h"
+#include "value_pos.h"
 #include "builtin_ops.h"
 #include "call_plan.h"
 #include "repr.h"
@@ -1248,14 +1249,13 @@ int *an_parent_map(const NodeTable *nt) {
 }
 
 /* Whether the value of `node` is thrown away: a statement that is not the
-   value of its sequence, or the last one of a loop body or of the block of
-   an iterator that does not answer the block's value. */
+   value of its sequence (not a value edge of its list, value_pos.h), or the
+   last one of a loop body or of the block of an iterator that does not
+   answer the block's value. */
 int an_value_dropped(const NodeTable *nt, const int *parent, int node) {
   int st = parent[node];
   if (st < 0 || nt_kind(nt, st) != NK_StatementsNode) return 0;
-  int sn = 0;
-  const int *sb = nt_arr(nt, st, "body", &sn);
-  if (sn > 0 && sb[sn - 1] != node) return 1;
+  if (!vp_is_value_edge(nt, st, node, 0)) return 1;
   int owner = parent[st];
   if (owner < 0) return 0;
   NodeKind ok = nt_kind(nt, owner);
