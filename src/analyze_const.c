@@ -63,6 +63,7 @@ typedef struct {
   int ncrefs, ccrefs;
   int *rd;           /* per constant: where it is first read in program order */
   int listed;        /* where the first `constants` call is in program order */
+  int computed;      /* ... and the first const_get (or kin) of a computed name */
   int hooks;         /* a definition can run a hook of the program's */
   int cmissing;      /* the program defines const_missing, which spinel does not call */
   int reopened;      /* a builtin class is reopened: its operators may be the program's */
@@ -350,6 +351,8 @@ static void cw_order(ConstWalk *w) {
     if (k == NK_CallNode) {
       const char *cn = nt_str(nt, id, "name");
       if (cn && is_constants_list_name(cn) && w->listed > ord) w->listed = ord;
+      if (cn && !rn && is_const_query_name(cn) && nt_ref(nt, id, "arguments") >= 0 && w->computed > ord)
+        w->computed = ord;
     }
     int nr = nt_num_refs(nt, id), na = nt_num_arrs(nt, id), room = nr + 3;
     for (int i = 0; i < na; i++) { int m = 0; nt_arr_at(nt, id, i, &m); room += m; }
@@ -406,7 +409,7 @@ static const char *cw_write_name(const NodeTable *nt, int id) {
    (see the header comment). */
 void an_const_presence(Compiler *c) {
   const NodeTable *nt = c->nt;
-  ConstWalk w = { .c = c, .nt = nt, .clean = 1, .listed = INT_MAX };
+  ConstWalk w = { .c = c, .nt = nt, .clean = 1, .listed = INT_MAX, .computed = INT_MAX };
   size_t nn = (size_t)(nt->count > 0 ? nt->count : 1), nc = (size_t)(c->nconsts > 0 ? c->nconsts : 1);
   w.settled = calloc(nn, 1);
   w.direct = calloc(nn, 1);
@@ -460,7 +463,8 @@ void an_const_presence(Compiler *c) {
     int wr = first[i] - 1;
     if (!w.settled[wr] && (w.rd[i] < w.wpost[wr] || w.listed < w.wpost[wr])) {
       c->consts[i].const_early = 1;
-      listed_only[i] = w.rd[i] >= w.wpost[wr];
+      /* a const_get of a computed name may read it too */
+      listed_only[i] = w.rd[i] >= w.wpost[wr] && w.computed >= w.wpost[wr];
     }
   }
   /* A name that is also a class's (an alias `Key = Impl::Key`) is one slot of
