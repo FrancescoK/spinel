@@ -3984,8 +3984,9 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           /* the class a `def obj.m` synthesizes under the object's class is a
              singleton class, which Class#subclasses leaves out */
           if (c->classes[k].is_singleton_of) continue;
-          const char *kn = class_ruby_name(c, k); if (!kn) kn = c->classes[k].name;
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_class(((sp_Class){%d, SPL(\"%s\")})));", ta, k, kn);
+          /* boxed by id: a class-side dispatch switches on it, and
+             sp_class_to_s names it */
+          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_class(((sp_Class){%d, NULL})));", ta, k);
         }
         buf_printf(b, " _t%d; })", ta);
         return 1;

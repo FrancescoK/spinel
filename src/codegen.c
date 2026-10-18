@@ -3866,6 +3866,16 @@ int cmethod_takes_self_cls(Compiler *c, int si) {
       if (ty && sp_streq(ty, "CallNode") && nt_ref(c->nt, nid, "receiver") < 0) {
         const char *nm = nt_str(c->nt, nid, "name");
         if (nm && sp_streq(nm, "name")) ans = 1;
+        /* a bare call to a class method that reads its receiving class
+           hands it this one's (a cycle answers no until it is settled) */
+        else if (nm) {
+          int cmi = comp_cmethod_in_chain(c, s->class_id, nm, NULL);
+          if (cmi >= 0 && cmi != si) {
+            g_cm_selfcls[si] = 0;
+            if (cmethod_takes_self_cls(c, cmi)) ans = 1;
+            g_cm_selfcls[si] = -1;
+          }
+        }
       }
     }
   }
@@ -14362,6 +14372,30 @@ void emit_super(Compiler *c, int id, Buf *b) {
         else buf_printf(b, "(%s)", raise_tail_value_c(c, ht));
         return;
       }
+    }
+    /* Class#subclasses at the end of the chain: the receiving class's
+       direct subclasses, of the classes the program defines below this
+       one (activesupport's ReloadedClassesFiltering, prepended into Class,
+       filters `super` that way) */
+    if (cmi < 0 && sp_streq(uname, "subclasses") && nt_ref(c->nt, id, "arguments") < 0) {
+      int ta = ++g_tmp, tc = ++g_tmp;
+      int si = (int)(s - c->scopes);
+      buf_printf(b, "({ sp_Class _t%d = ", tc);
+      if (cmethod_takes_self_cls(c, si)) buf_puts(b, cmethod_cls_token(c, s));
+      else buf_printf(b, "((sp_Class){%d, NULL})", s->class_id);
+      buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
+      for (int k = 0; k < c->nclasses; k++) {
+        int par = c->classes[k].parent;
+        if (par < 0 || (par != s->class_id && !is_descendant(c, par, s->class_id))) continue;
+        if (is_builtin_reopen(c->classes[k].name) || c->classes[k].is_singleton_of) continue;
+        /* boxed by id, as Class#subclasses boxes them */
+        buf_printf(b, " if (_t%d.cls_id == %d) sp_PolyArray_push(_t%d, sp_box_class(((sp_Class){%d, NULL})));",
+                   tc, par, ta, k);
+      }
+      TyKind st = repr_of(c, id).as_ty;
+      if (st == TY_POLY) buf_printf(b, " sp_box_poly_array(_t%d); })", ta);
+      else buf_printf(b, " _t%d; })", ta);
+      return;
     }
     if (cmi < 0) {
       const char *scn2 = class_ruby_name(c, s->class_id);
