@@ -16398,6 +16398,17 @@ static sp_int sp_brk_push(void) {
   sp_brk_top++;
   return s;
 }
+/* A break scope's guard (SP_CLEANUP): a C `return` or a `goto` out of the
+   scope -- a `return` in the block an iterator inlined runs, a funnel's or
+   an ensure's exit -- leaves without the scope's own pop, and every such
+   exit left one entry behind until the fixed stack ran out (a method
+   called in a loop raised SystemStackError). Leaving the scope by any way
+   drops what it pushed. A longjmp past it skips the guard: the raise's
+   handler unwinds the scopes (sp_handler_stacks_unwind), and a break or
+   a throw trims the stack itself. */
+static inline void sp_brk_scope_end(int *entry) {
+  if (sp_brk_top > *entry) sp_brk_top = *entry;
+}
 static SP_NORETURN void sp_brk_throw(sp_int serial, sp_RbVal v) {
   for (int i = sp_brk_top - 1; i >= 0; i--) {
     if (sp_brk_serial[i] != serial) continue;
