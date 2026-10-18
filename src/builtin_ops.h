@@ -286,6 +286,16 @@ typedef struct BuiltinOp {
 #define BOPR_ARRAY_TUPLES ((TyKind)-19) /* blockless combination & co.: a poly array
                                            materializes the tuples, any other array
                                            answers an Enumerator */
+#define BOPR_ARRAY_PLUS  ((TyKind)-20)  /* Array#+(other): bop_result_arg. An Array
+                                           of the receiver's kind or an untyped one
+                                           (an empty literal) keeps the receiver's
+                                           kind, another Array's gives a poly array,
+                                           a boxed operand is boxed; any other
+                                           operand states no kind */
+#define BOPR_ARRAY_SETOP ((TyKind)-21)  /* Array#& | - and the one-operand union,
+                                           intersection and difference: as
+                                           BOPR_ARRAY_PLUS, but a boxed operand
+                                           gives a poly array */
 
 /* argc_max of a row that takes any number of arguments */
 #define BOP_ARGC_ANY 127
@@ -329,6 +339,11 @@ TyKind bop_family_of(TyKind rt);
 /* What the call answers on a receiver of kind rt: the row's result, with a
    derived result (BOPR_*) worked out from rt. */
 TyKind bop_result(const BuiltinOp *op, TyKind rt);
+/* bop_result for the rows whose answer also turns on the first argument's
+   kind a0 (BOPR_ARRAY_PLUS, BOPR_ARRAY_SETOP); any other row answers as
+   bop_result does. TY_UNKNOWN where the row states no kind for that
+   argument. It reads no node: the caller brings the kind. */
+TyKind bop_result_arg(const BuiltinOp *op, TyKind rt, TyKind a0);
 
 /* The BOPF_BOXED row of kind rt for `name`, or NULL. */
 const BuiltinOp *bop_find_boxed(TyKind rt, const char *name, int argc, int has_block);

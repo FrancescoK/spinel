@@ -331,18 +331,23 @@ static void plan_check_observe(Compiler *c, int id, TyKind rt, const BuiltinOp *
      it (a String bang's value form runs the plain method), so the row
      inference chose for the original name says nothing about this one. */
   if (inf && !sp_streq(inf->name, op->name)) return;
+  /* a row whose result turns on the first argument's kind states it for
+     the argument the call has */
+  int argc = 0;
+  const int *argv = call_args(c->nt, id, &argc);
+  TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
   if (inf && inf->recv == op->recv && sp_streq(inf->name, op->name) &&
-      bop_result(inf, rt) == bop_result(op, rt)) return;
+      bop_result_arg(inf, rt, a0) == bop_result_arg(op, rt, a0)) return;
   if (inf && inf->recv != op->recv)
     fprintf(stderr, "plan-check: respecialized: node %d %s#%s: codegen row %s, inference row %s\n",
             id, ty_name(rt), op->name, ty_name(op->recv), ty_name(inf->recv));
   else if (inf)
     fprintf(stderr, "plan-check: conflict: node %d %s#%s: codegen row %d..%d -> %s, inference row %s#%s -> %s\n",
-            id, ty_name(rt), op->name, op->argc_min, op->argc_max, ty_name(bop_result(op, rt)),
-            ty_name(inf->recv), inf->name, ty_name(bop_result(inf, rt)));
+            id, ty_name(rt), op->name, op->argc_min, op->argc_max, ty_name(bop_result_arg(op, rt, a0)),
+            ty_name(inf->recv), inf->name, ty_name(bop_result_arg(inf, rt, a0)));
   else
     fprintf(stderr, "plan-check: unrecorded: node %d %s#%s: codegen row %d..%d -> %s, inference answered without a row\n",
-            id, ty_name(rt), op->name, op->argc_min, op->argc_max, ty_name(bop_result(op, rt)));
+            id, ty_name(rt), op->name, op->argc_min, op->argc_max, ty_name(bop_result_arg(op, rt, a0)));
 }
 
 static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *) = {
