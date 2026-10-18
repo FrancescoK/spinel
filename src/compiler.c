@@ -1238,8 +1238,8 @@ int comp_arysub_name_is_array(Compiler *c, int cid, const char *n) {
   if (comp_ary_root(c, cid) < 0 || !n) return 0;
   /* a method of the builtin's reopen is the builtin's */
   int dc = -1, ro = comp_arysub_reopen(c, cid);
-  if ((comp_method_in_chain(c, cid, n, &dc) >= 0 && (ro < 0 || dc != ro)) ||
-      comp_reader_in_chain(c, cid, n, NULL)) return 0;
+  if (((comp_method_in_chain(c, cid, n, &dc) >= 0 && (ro < 0 || dc != ro)) ||
+       comp_reader_in_chain(c, cid, n, NULL)) && !comp_enum_answers_first(c, cid, n)) return 0;
   char base[256];
   if (setter_base_name(n, base, sizeof base) && comp_writer_in_chain(c, cid, base, NULL)) return 0;
   return !is_arysub_object_name(n) && comp_arysub_builtin_name(c, cid, n);
@@ -2394,7 +2394,16 @@ int comp_enum_answers_first(Compiler *c, int cid, const char *name) {
   int top = -1, n = 0;
   for (int k = cid; k >= 0 && k < c->nclasses && n < 256; k = c->classes[k].parent, n++) {
     ClassInfo *ci = &c->classes[k];
-    if (ci->is_struct || ci->is_native_class || ci->nsub_root > 0 || comp_ary_root(c, k) >= 0) return master;
+    if (ci->is_struct || ci->is_native_class || ci->nsub_root > 0 || comp_ary_root(c, k) >= 0) {
+      /* only a prepended Enumerable is placed: in front of the class it is
+         prepended to, behind the ones below it */
+      for (int j = cid, g = 0; g < 256; j = c->classes[j].parent, g++) {
+        if (c->classes[j].enum_prepended) return 1;
+        if (enum_level_answers(c, j, name)) return 0;
+        if (j == k || c->classes[j].parent < 0) break;
+      }
+      return master;
+    }
     if (enum_reaches(c, k, 0)) top = k;
     if (k == ci->parent) break;
   }
