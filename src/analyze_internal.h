@@ -108,7 +108,7 @@ void du_memo_free(void);
 /* The edges an_value_dropped (and cow_user_block_value, which asks of the
    block it ends at) climbs: where a value is passed on to the statement or
    the block that holds it. */
-enum { AN_DROP_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN };
+enum { AN_DROP_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN };
 int an_value_dropped(const NodeTable *nt, const int *parent, int node);
 int cow_user_block_value(Compiler *c, const int *parent, int id);
 /* The methods the default build may lend a String parameter's slot by

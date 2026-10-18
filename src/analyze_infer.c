@@ -1256,6 +1256,8 @@ int *an_parent_map(const NodeTable *nt) {
 int an_value_dropped(const NodeTable *nt, const int *parent, int node) {
   VpUp up;
   if (vp_climb(nt, parent, node, AN_DROP_CLIMB, &up) == VPU_DROPPED || vp_up_loop(nt, &up) >= 0) return 1;
+  /* a begin's body beside an else, and an ensure clause, are run for their effect */
+  if (up.kind == VPU_ENDED && (nt_kind(nt, up.parent) == NK_BeginNode || is_ensure_node_type(nt_type(nt, up.parent)))) return 1;
   int call = vp_up_block_call(nt, parent, &up);
   const char *bn = call >= 0 ? nt_str(nt, call, "name") : NULL;
   return bn && is_block_loop_method(bn);
