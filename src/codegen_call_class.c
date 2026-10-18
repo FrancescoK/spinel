@@ -1282,14 +1282,17 @@ static int assign_is_tail(Compiler *c, int id, const int *par) {
 
 /* Is call id the value of a `return` of its own method: through parentheses
    and the return's argument list, with no block, lambda or method between
-   them? Climbs from the call, so its cost is the nesting depth. */
+   them? Climbs from the call (vp_climb, through nothing but parentheses and
+   statements), so its cost is the nesting depth. A statement before a
+   list's last is climbed as if the list were its value. */
 static int assign_is_returned(Compiler *c, int id, const int *par) {
   const NodeTable *nt = c->nt;
-  int p = par[id];
-  while (p >= 0 && (nt_kind(nt, p) == NK_ParenthesesNode || nt_kind(nt, p) == NK_StatementsNode)) p = par[p];
-  /* p is the return's argument list */
-  int ret = p >= 0 ? par[p] : -1;
-  if (ret < 0 || nt_kind(nt, ret) != NK_ReturnNode || nt_ref(nt, ret, "arguments") != p) return 0;
+  VpUp up;
+  int n = id;
+  while (vp_climb(nt, par, n, VPS_NONE, &up) == VPU_DROPPED) n = up.parent;
+  /* up.parent is the return's argument list */
+  int ret = up.kind == VPU_ENDED ? par[up.parent] : -1;
+  if (ret < 0 || nt_kind(nt, ret) != NK_ReturnNode || nt_ref(nt, ret, "arguments") != up.parent) return 0;
   for (int q = par[ret]; q >= 0; q = par[q]) {
     NodeKind qk = nt_kind(nt, q);
     if (qk == NK_BlockNode || qk == NK_LambdaNode) return 0;
