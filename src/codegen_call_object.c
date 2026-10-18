@@ -2070,6 +2070,11 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
                accumulator from it) then renders the unboxed answer the box
                below expects, instead of an sp_RbVal the arms assign bools to. */
             int vw = view_push(c, id, nat);
+            /* the receiver is read through `_sn_`, its box: seen boxed, so
+               the call's emitter unboxes it (a String-or-nil one kept its
+               String node type, and `x&.pre_match&.match?(re)` handed the box
+               to sp_re_match_p as the String's bytes) */
+            int vr = comp_ntype(c, recv) != TY_POLY ? view_push(c, recv, TY_POLY) : -1;
             Buf vb; memset(&vb, 0, sizeof vb);
             /* A value arm that hoists statements names `_sn_` ahead of the
                expression declaring it: the statement guard below serves it. */
@@ -2078,6 +2083,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
             g_pre = sv_pre3;
             hoisted = pb.len > 0;
             free(pb.p);
+            if (vr >= 0) view_pop(c, vr);
             view_pop(c, vw);
             g_sn_skip = sv_skip3;
             view_unbind(g_n_argov - 1);
@@ -2178,6 +2184,9 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
                       natg != TY_UNKNOWN && natg != TY_VOID);
           /* an Integer / Float answer: the call's own oint, or its plain
              value wrapped (the re-entry sees the inner call's form) */
+          /* the receiver is read through `_sn`, its box: seen boxed, as the
+             arm above sees it (a program defining the method comes here) */
+          int vr = comp_ntype(c, recv) != TY_POLY ? view_push(c, recv, TY_POLY) : -1;
           if (oint_kind(ret2)) emit_oint_expr(c, id, ret2, b);
           else if (sn_ptr) emit_expr(c, id, b);
           else if (gbox) {
@@ -2189,6 +2198,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
             free(gvb.p);
           }
           else emit_boxed(c, id, b);
+          if (vr >= 0) view_pop(c, vr);
           g_sn_skip = sv_skip;
           view_unbind(g_n_argov - 1);
         }
