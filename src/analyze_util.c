@@ -2698,7 +2698,9 @@ static int method_block_presence(Compiler *c, int mi) {
   const NodeTable *nt = c->nt;
   const char *mn = c->scopes[mi].name;
   int with = 0, without = 0, mixed = 0;
-  for (int cid = 0; cid < nt->count && !mixed; cid++) {
+  /* the calls of the method's name, not every node: asked per call of a
+     method whose answer depends on its block */
+  for (int cid = mn ? an_calls_named_first(c, mn) : -1; cid >= 0 && !mixed; cid = an_calls_named_next(cid)) {
     if (nt_kind(nt, cid) != NK_CallNode) continue;
     const char *cn = nt_str(nt, cid, "name");
     if (!cn || !mn || !sp_streq(cn, mn)) continue;
