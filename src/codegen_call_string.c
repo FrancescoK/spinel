@@ -902,8 +902,8 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
      A String operand is regexp-escaped; a Regexp operand (literal or a constant
      bound to one) contributes its source wrapped in CRuby's `(?on-off:src)` option
      group so its flags survive; a single Array argument is expanded into its
-     elements. A runtime Regexp value has no recoverable source (patterns compile
-     to bytecode), so that lone form still loud-rejects. */
+     elements. A Regexp built at run time (`Regexp.compile(s)`, a value held
+     in a variable) keeps its source too, and joins by the same #to_s form. */
   if (recv >= 0 && argc >= 0 && sp_streq(name, "union") &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
@@ -946,11 +946,24 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
        flags verbatim, no option-group wrapper). */
     if (nops == 1 && re_lit_src(c, ops[0]) && emit_regex_pat_to_buf(c, ops[0], b))
       return 1;
+    /* a lone Regexp built at run time is the answer itself, as a literal is */
+    if (nops == 1 && !re_lit_src(c, ops[0]) && repr_of(c, ops[0]).kind != RK_BOXED &&
+        repr_of(c, ops[0]).as_ty == TY_REGEX) {
+      emit_expr(c, ops[0], b);
+      return 1;
+    }
     /* a lone boxed element is told apart at run time as the lone argument
        is; `*[v]` is the argument v itself, so an Array there joins too */
     if (nops == 1 && !re_lit_src(c, ops[0]) && repr_of(c, ops[0]).kind == RK_BOXED) {
       buf_puts(b, nt_kind(nt, argv[0]) == NK_SplatNode ? "sp_re_union_boxed(" : "sp_re_union_one(");
       emit_expr(c, ops[0], b); buf_puts(b, ")");
+      return 1;
+    }
+    /* ...and so is a lone operand of another kind, boxed for the check: a
+       Symbol is escaped by name, anything else is the TypeError */
+    if (nops == 1 && !re_lit_src(c, ops[0]) && repr_of(c, ops[0]).as_ty != TY_STRING &&
+        nt_kind(nt, ops[0]) != NK_SplatNode) {
+      buf_puts(b, "sp_re_union_one("); emit_boxed(c, ops[0], b); buf_puts(b, ")");
       return 1;
     }
     int ts = ++g_tmp, tp = ++g_tmp;
@@ -971,9 +984,14 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
       else {
         Repr ar = repr_of(c, ops[i]);
         TyKind at = ar.as_ty;
-        if (at != TY_STRING && ar.kind != RK_BOXED)
-          unsupported(c, id, "Regexp.union operand without a compile-time source (runtime Regexp or non-String value)");
+        if (nt_kind(nt, ops[i]) == NK_SplatNode)
+          unsupported(c, id, "Regexp.union operand splatted beside others");
         if (ar.kind == RK_BOXED) { buf_puts(&ab, "sp_re_union_operand("); emit_expr(c, ops[i], &ab); buf_puts(&ab, ")"); }
+        /* any other kind is checked boxed: a Symbol or a number among
+           several operands is CRuby's TypeError */
+        else if (at != TY_STRING && at != TY_REGEX) { buf_puts(&ab, "sp_re_union_operand("); emit_boxed(c, ops[i], &ab); buf_puts(&ab, ")"); }
+        /* a Regexp built at run time: its (?on-off:src) form, as a literal's */
+        else if (at == TY_REGEX) { buf_puts(&ab, "sp_re_to_s_str((void *)("); emit_expr(c, ops[i], &ab); buf_puts(&ab, "))"); }
         else { buf_puts(&ab, "sp_re_escape("); emit_expr(c, ops[i], &ab); buf_puts(&ab, ")"); }
       }
       emit_indent(g_pre, g_indent);
