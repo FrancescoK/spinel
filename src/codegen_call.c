@@ -20678,6 +20678,21 @@ static void refuse_setter_sym_block(Compiler *c, int id) {
   if (sv && name_is_plain_setter(sv))
     unsupported_feature(c, id, "a setter Symbol (`&:name=`) as the block of a builtin method is not supported");
 }
+/* An implicit self-call with arguments whose name the class being emitted
+   does not have in its chain, while some user class or module defines it:
+   CRuby's NoMethodError at run time (its arm in emit_unresolved_call).
+   The call answers no type, and a consumer that types it (a method's tail)
+   evaluates it and takes its slot's nil, as for a void method's call. */
+int call_misses_self_method(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0; if (args >= 0) nt_arr(nt, args, "arguments", &argc);
+  return name && nt_kind(nt, id) == NK_CallNode && nt_ref(nt, id, "receiver") < 0 && g_gate_raise &&
+         !nt_int(nt, id, "vcall", 0) && nt_ref(nt, id, "block") < 0 && argc > 0 &&
+         g_emitting_class_id >= 0 && comp_method_in_chain(c, g_emitting_class_id, name, NULL) < 0 &&
+         an_user_defines_method(c, name);
+}
 int emit_unresolved_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -20763,11 +20778,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
      rather than "the compiler has no arm for this builtin", which must keep
      failing loudly. The zero-argument spelling of the same thing is the vcall
      arm above, and both ride the same gate switch. */
-  if (recv < 0 && g_gate_raise && !nt_int(nt, id, "vcall", 0) &&
-      nt_ref(nt, id, "block") < 0 && argc > 0 &&
-      g_emitting_class_id >= 0 &&
-      comp_method_in_chain(c, g_emitting_class_id, name, NULL) < 0 &&
-      an_user_defines_method(c, name)) {
+  if (call_misses_self_method(c, id)) {
     const char *ucn = class_ruby_name(c, g_emitting_class_id);
     TyKind uret = repr_of(c, id).as_ty;
     buf_puts(b, "(");

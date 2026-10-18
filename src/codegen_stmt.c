@@ -12995,9 +12995,11 @@ static void emit_tail_value_1(Compiler *c, int node, Buf *b) {
   /* A call that answers no type -- a method whose value is a call on a
      constant defined nowhere, which raises NameError when it runs -- is a
      C void function: evaluate it, and give the slot its nil (never reached,
-     but the slot's C type still needs a value; `return f()` did not build). */
+     but the slot's C type still needs a value; `return f()` did not build).
+     So is a self-call the class does not have, which raises NoMethodError. */
   if (g_ret_type != TY_UNKNOWN && nt_kind(c->nt, node) == NK_CallNode &&
-      comp_ntype(c, node) == TY_UNKNOWN && call_names_only_void_methods(c, node)) {
+      comp_ntype(c, node) == TY_UNKNOWN &&
+      (call_names_only_void_methods(c, node) || call_misses_self_method(c, node))) {
     buf_puts(b, "((void)("); emit_expr(c, node, b); buf_puts(b, "), ");
     emit_ret_nil(c, g_ret_type, b); buf_puts(b, ")");
     return;
