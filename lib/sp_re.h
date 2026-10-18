@@ -36,6 +36,7 @@ int re_exec_attempt(const mrb_regexp_pattern *pat, const char *str, int64_t len,
 int re_num_named(const mrb_regexp_pattern *pat);
 const char *re_named_name(const mrb_regexp_pattern *pat, int i, int *group_out);
 int re_named_group(const mrb_regexp_pattern *pat, const char *name);
+int sp_re_name_group(const mrb_regexp_pattern *pat, const char *name, const int *caps, int ncaps);
 
 /* `caps` holds ncap*2 positions and lives in the SAME block as the struct, so
    a MatchData costs what its match needs rather than what the widest one

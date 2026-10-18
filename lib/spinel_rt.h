@@ -9710,6 +9710,8 @@ static sp_StrPolyHash *sp_md_named_captures(sp_MatchData *m) {
        (sp_Regexp_names), and rooted while the value allocates */
     if (nm) {
       const char *k = sp_str_dup_external(nm); SP_GC_ROOT_STR(k);
+      /* a name repeated across branches reads the group that matched */
+      g = sp_re_name_group(m->pat, nm, m->caps, m->ncap * 2);
       sp_RbVal v = sp_box_nullable_str(sp_MatchData_aref(m, g));
       sp_StrPolyHash_set(h, k, v);
     }
@@ -9728,7 +9730,7 @@ static sp_RbVal sp_MatchData_match_length(sp_MatchData *m, sp_int i) {
    rather than reading the symbol's id as an index (#3630). */
 static sp_RbVal sp_MatchData_match_length_name(sp_MatchData *m, const char *name) {
   if (!m || !name) return sp_box_nil();
-  int g = re_named_group(m->pat, name);
+  int g = sp_re_name_group(m->pat, name, m->caps, m->ncap * 2);
   if (g < 0) sp_raise_cls("IndexError", sp_sprintf("undefined group name reference: %s", name));
   return sp_MatchData_match_length(m, g);
 }
@@ -9891,7 +9893,7 @@ static sp_SymPolyHash *sp_md_named_captures_sym(sp_MatchData *m) {
   for (int i = 0; i < n; i++) {
     int g = -1;
     const char *nm = re_named_name(m->pat, i, &g);
-    if (nm) sp_SymPolyHash_set(h, sp_sym_intern(nm), sp_box_nullable_str(sp_MatchData_aref(m, g)));
+    if (nm) sp_SymPolyHash_set(h, sp_sym_intern(nm), sp_box_nullable_str(sp_MatchData_aref(m, sp_re_name_group(m->pat, nm, m->caps, m->ncap * 2))));
   }
   return h;
 }
@@ -9925,6 +9927,7 @@ static sp_SymPolyHash *sp_md_deconstruct_keys(sp_MatchData *m, sp_RbVal keys) {
       int g = -1;
       const char *nm = re_named_name(m->pat, j, &g);
       if (nm && strcmp(nm, kn) == 0) {
+        g = sp_re_name_group(m->pat, nm, m->caps, m->ncap * 2);
         sp_SymPolyHash_set(h, (sp_sym)k.v.i, sp_box_nullable_str(sp_MatchData_aref(m, g)));
         break;
       }
