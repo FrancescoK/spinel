@@ -31,6 +31,7 @@ module StringIOPackage
 
   native_method :string,   [], :string,  "sp_StringIO_string"
   native_method :pos,      [], :int,     "sp_StringIO_pos"
+  native_method :pos=,     [:int], :int, "sp_StringIO_set_pos"
   native_method :tell,     [], :int,     "sp_StringIO_tell"
   native_method :size,     [], :int,     "sp_StringIO_size"
   native_method :length,   [], :int,     "sp_StringIO_size"

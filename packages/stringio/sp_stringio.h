@@ -34,6 +34,7 @@ sp_StringIO *sp_StringIO_new_s(sp_int cls_id, const char *init);
 sp_StringIO *sp_StringIO_new_sm(sp_int cls_id, const char *init, const char *mode);
 const char *sp_StringIO_string(sp_StringIO *s);
 sp_int sp_StringIO_pos(sp_StringIO *s);
+sp_int sp_StringIO_set_pos(sp_StringIO *s, sp_int p);
 sp_int sp_StringIO_size(sp_StringIO *s);
 sp_int sp_StringIO_lineno(sp_StringIO *s);
 sp_int sp_StringIO_write(sp_StringIO *s, const char *str);
