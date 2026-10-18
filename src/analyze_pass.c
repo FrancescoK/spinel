@@ -17281,7 +17281,7 @@ const ANameHash *g_cr_typed = NULL;
 static int g_cr_user_coerce = 0;
 
 static int cr_ty_builtin_value(Compiler *c, TyKind t) {
-  return t == TY_INT || t == TY_FLOAT || t == TY_STRING || t == TY_STRBUF || t == TY_SYMBOL ||
+  return t == TY_INT || t == TY_BIGINT || t == TY_FLOAT || t == TY_STRING || t == TY_STRBUF || t == TY_SYMBOL ||
          t == TY_BOOL || t == TY_NIL || ((ty_is_array(t) || ty_is_hash(t)) && !c->has_arysub);
 }
 
@@ -17305,8 +17305,13 @@ static int cr_recv_builtin_value(Compiler *c, const NodeTable *nt, int id, const
   int r = nt_ref(nt, id, "receiver");
   if (r < 0) return 0;
   TyKind rt = comp_ntype(c, r);
-  if (!cr_ty_builtin_value(c, rt)) return 0;
-  if ((rt == TY_INT || rt == TY_FLOAT) && g_cr_user_coerce) {
+  /* a boxed value the class facts show holds no class of the program's (an
+     Integer that may outgrow a machine word under promote) is a builtin
+     value too (#8530) */
+  int boxed_builtin = 0;
+  if (rt == TY_POLY) { const ClsSet *cs = cls_fact_node(c, r); boxed_builtin = cs && cs->n == 0; }
+  if (!boxed_builtin && !cr_ty_builtin_value(c, rt)) return 0;
+  if ((rt == TY_INT || rt == TY_BIGINT || rt == TY_FLOAT || boxed_builtin) && g_cr_user_coerce) {
     int an = nt_ref(nt, id, "arguments"), n = 0;
     const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
     for (int i = 0; i < n; i++) if (!cr_ty_builtin_value(c, comp_ntype(c, av[i]))) return 0;
