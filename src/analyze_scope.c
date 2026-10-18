@@ -396,14 +396,12 @@ static int super_value_used(const NodeTable *nt, const int *par, int v) {
   case VPU_ENDED:
     break;
   }
-  /* a loop body is run for its effect */
-  if (vp_up_loop(nt, &up) >= 0) return 0;
+  /* a loop body, a begin's body beside an else and an ensure clause are run
+     for their effect */
+  if (vp_up_loop(nt, &up) >= 0 || vp_up_effect_clause(nt, &up)) return 0;
   int p = up.parent;
   switch (nt_kind(nt, p)) {
   case NK_DefNode:
-    return 0;
-  case NK_BeginNode:
-    /* the body beside an else: the begin answers the else's value */
     return 0;
   case NK_BlockNode: {
     int call = vp_up_block_call(nt, par, &up);
@@ -416,7 +414,7 @@ static int super_value_used(const NodeTable *nt, const int *par, int v) {
     return 1;
   }
   default:
-    return !is_ensure_node_type(nt_type(nt, p));
+    return 1;
   }
 }
 

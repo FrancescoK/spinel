@@ -436,6 +436,13 @@ int vp_up_block_call(const NodeTable *nt, const int *par, const VpUp *up) {
   return call >= 0 && nt_kind(nt, call) == NK_CallNode ? call : -1;
 }
 
+int vp_up_effect_clause(const NodeTable *nt, const VpUp *up) {
+  if (up->kind != VPU_ENDED) return 0;
+  if (nt_kind(nt, up->parent) == NK_BeginNode)
+    return nt_ref(nt, up->parent, "else_clause") >= 0 && nt_ref(nt, up->parent, "statements") == up->node;
+  return vp_is_kind_named(nt, up->parent, "EnsureNode");
+}
+
 /* ---- --dump-value-positions ---- */
 
 typedef struct {

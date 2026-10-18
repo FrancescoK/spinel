@@ -187,6 +187,11 @@ int vp_up_loop(const NodeTable *nt, const VpUp *up);
    call's answer is a fact about the call, and the caller's to decide */
 int vp_up_block_call(const NodeTable *nt, const int *par, const VpUp *up);
 
+/* Did the climb end at a clause that is run for its effect: the body of a
+   begin whose else follows it (the begin answers the else's value) or an
+   ensure clause? Its value is thrown away. */
+int vp_up_effect_clause(const NodeTable *nt, const VpUp *up);
+
 /* --dump-value-positions: for the body of each method and of the program, the
    leaves the walk yields with every flag on, one line each (the unit-test
    surface of the iterator and of tools/value_edges.yml). */
