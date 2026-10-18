@@ -17861,7 +17861,9 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
             LocalVar *llv = (lnm && lsc) ? scope_local(lsc, lnm) : NULL;
             if (repr_of_slot(c, llv).kind == RK_STRBUF) {
               emit_indent(b, indent);
-              buf_printf(b, "sp_gc_freeze((void *)lv_%s);\n", rename_local(lnm));
+              /* (a local a block captures lives in its cell) */
+              if (llv->is_cell) buf_printf(b, "sp_gc_freeze((void *)(*_cell_%s));\n", rename_local(lnm));
+              else buf_printf(b, "sp_gc_freeze((void *)lv_%s);\n", rename_local(lnm));
               return 1;
             }
           }
