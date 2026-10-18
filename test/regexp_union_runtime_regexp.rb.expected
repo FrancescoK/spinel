@@ -1,0 +1,24 @@
+"(?-mix:[\\u{231A}\\u{231B}](?<![#*0-9])️)|(?-mix:[#*0-9]\\u{FE0F}?\\u{20E3})"
+1
+0
+nil
+/(?-mix:[a-c]z)|(?-mix:x(?<![0-9])y)/
+"(?-mix:[a-c]z)|(?-mix:x(?<![0-9])y)"
+0
+0
+/(?i-mx:a)|(?m-ix:b)|c\.d/
+/(?!)/
+/a\+b/
+/x|(?-mix:y)/
+true
+"(?-mix:x(?<![0-9])y)"
+/a/
+"no implicit conversion of Symbol into String"
+"no implicit conversion of Integer into String"
+"no implicit conversion of nil into String"
+/a/
+/(?!)/
+"a|b"
+/(?x-mi:a)|(?-mix:b)/
+/foo|bar\.baz/
+1
