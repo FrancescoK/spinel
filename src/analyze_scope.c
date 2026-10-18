@@ -348,11 +348,11 @@ void topup_forwarding_arity(Compiler *c) {
 }
 
 /* The edges super_value_used climbs: the conditionals, a rescue modifier,
-   a begin and its rescue clauses (its body beside an else too), and the
-   one value of a `return`. Not `||` or `&&`: the C of an operator whose
-   operand is the void call of initialize does not compile, so a `super`
-   there stays refused. */
-enum { SUPER_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VPS_RESCUE_MOD | VP_BEGIN_BOTH | VP_FOLLOW_RETURN };
+   a begin and its rescue clauses, and the one value of a `return`. A
+   begin's body is a value only when no else follows it. Not `||` or `&&`:
+   the C of an operator whose operand is the void call of initialize does
+   not compile, so a `super` there stays refused. */
+enum { SUPER_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VPS_RESCUE_MOD | VP_FOLLOW_RETURN };
 
 /* Does the climb from `v` to `top` cross a rescue modifier and, with it,
    parentheses, or end at a `return`'s argument (`return begin super rescue
@@ -401,6 +401,9 @@ static int super_value_used(const NodeTable *nt, const int *par, int v) {
   case NK_WhileNode: case NK_UntilNode:
     return nt_ref(nt, p, "predicate") == up.node;
   case NK_DefNode:
+    return 0;
+  case NK_BeginNode:
+    /* the body beside an else: the begin answers the else's value */
     return 0;
   case NK_BlockNode: {
     int call = par[p];
