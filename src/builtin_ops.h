@@ -297,6 +297,11 @@ typedef struct BuiltinOp {
                                            the receiver's kind when each keeps it,
                                            else a poly array if each is an Array
                                            or boxed, else no kind */
+#define BOPR_ASSOC       ((TyKind)-22)  /* Array#assoc / #rassoc(v): a poly array's
+                                           matching sub-array is a poly array; an
+                                           Integer, Float, String, Symbol or boolean
+                                           array holds none to match, the boxed nil;
+                                           any other array states no kind */
 
 /* argc_max of a row that takes any number of arguments */
 #define BOP_ARGC_ANY 127

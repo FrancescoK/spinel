@@ -2366,8 +2366,8 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "last",                  0,   0, BF_ANY,      BOPR_ELEM,     BOPE_ARRAY_LAST },
   { BOP_ANY_ARRAY, "join",                  0,   1, BF_ANY,      TY_STRING,     BOPE_ARRAY_JOIN },
   { BOP_ANY_ARRAY, "[]",                    2,   2, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "({ sp_$AArray *_t$t = $gsp_int _t$u = $i0; sp_int _t$v = $i1; sp_int _t$w = sp_$AArray_length(_t$t); (_t$v < 0 || _t$u > _t$w || _t$u < -_t$w) ? (sp_$AArray *)0 : sp_$AArray_slice(_t$t, _t$u, _t$v); })" },
-  { BOP_ANY_ARRAY, "dig",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "$<sp_$AArray_get$O($h, $i0)$>" },  /* one step: arr[i]; an Integer or Float element with its nil (sp_IntArray_get_o) */
-  { BOP_ANY_ARRAY, "slice!",                1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SLICE_BANG_RANGE, NULL, BOP_K(TY_RANGE) },
+  { BOP_ANY_ARRAY, "dig",                   1,   1, BF_ANY,      BOPR_ELEM,     BOPE_TEMPLATE, "$<sp_$AArray_get$O($h, $i0)$>" },  /* one step: arr[i]; an Integer or Float element with its nil (sp_IntArray_get_o) */
+  { BOP_ANY_ARRAY, "slice!",                1,   1, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_SLICE_BANG_RANGE, NULL, BOP_K(TY_RANGE) },
   { BOP_ANY_ARRAY, "slice!",                1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "$<sp_$AArray_delete_at$O($h, $i0)$>" },  /* the element, or nil */
   { BOP_ANY_ARRAY, "uniq!",                 0,   0, BF_REQUIRED, TY_POLY,       BOPE_TEMPLATE, "sp_$AArray_uniq_bangq($r)", 0, 0, BOPF_SELF_OR_NIL },
   { BOP_ANY_ARRAY, "reverse!",              0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "({ sp_$AArray *_t$t = $r; sp_$AArray_reverse_bang(_t$t); _t$t; })", 0, 0, BOPF_SELF },
@@ -2400,8 +2400,8 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "append",                1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_PUSH, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "insert",                2, 127, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_INSERT_N, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "transpose",             0,   0, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_TRANSPOSE },
-  { BOP_ANY_ARRAY, "assoc",                 1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_ASSOC },
-  { BOP_ANY_ARRAY, "rassoc",                1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_ASSOC },
+  { BOP_ANY_ARRAY, "assoc",                 1,   1, BF_ANY,      BOPR_ASSOC,    BOPE_ARRAY_ASSOC },
+  { BOP_ANY_ARRAY, "rassoc",                1,   1, BF_ANY,      BOPR_ASSOC,    BOPE_ARRAY_ASSOC },
   { BOP_ANY_ARRAY, "combination",           1,   1, BF_NONE,     BOPR_ARRAY_TUPLES, BOPE_ARRAY_COMBINATION },
   { BOP_ANY_ARRAY, "repeated_combination",  1,   1, BF_NONE,     BOPR_ARRAY_TUPLES, BOPE_ARRAY_COMBINATION },
   { BOP_ANY_ARRAY, "repeated_permutation",  1,   1, BF_NONE,     BOPR_ARRAY_TUPLES, BOPE_ARRAY_COMBINATION },
@@ -2423,10 +2423,20 @@ static const BuiltinOp bop_rows[] = {
   /* Array, any kind: the forms of CRuby's Array methods no row above
      covers, so that each has a row with its counts, its block rule and
      whether it answers the receiver (BOPF_SELF, BOPF_SELF_OR_NIL,
-     bop_answers_self). They type nothing: inference keeps the rules after
+     bop_answers_self). Most type nothing: inference keeps the rules after
      the lookup, which read the operands, the block or the call's place,
-     and codegen the legacy chain. Each fits only calls no row above fits. */
+     and codegen the legacy chain. Each fits only calls no row above fits.
+     An index or count whose kind says the answer (an Integer, a Range)
+     states it in rows that guard it; the unguarded row of the name stays
+     for every other kind of index, which the rules read. */
+  { BOP_ANY_ARRAY, "[]",                    1,   1, BF_ANY,      BOPR_SELF,     BOPE_NONE, NULL, BOP_K(TY_RANGE) },  /* a subarray */
+  { BOP_ANY_ARRAY, "[]",                    1,   1, BF_ANY,      BOPR_ELEM,     BOPE_NONE, NULL, BOP_K(TY_INT) },  /* an element */
   { BOP_ANY_ARRAY, "[]",                    1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },  /* an element, or a subarray for a Range */
+  /* slice: the blockless call only; a block the builtin leaves unused is
+     read by the rule after the lookup, and a block that runs code is not
+     this call */
+  { BOP_ANY_ARRAY, "slice",                 1,   1, BF_NONE,     BOPR_SELF,     BOPE_NONE, NULL, BOP_K(TY_RANGE) },
+  { BOP_ANY_ARRAY, "slice",                 1,   1, BF_NONE,     BOPR_ELEM,     BOPE_NONE, NULL, BOP_K(TY_INT) },
   { BOP_ANY_ARRAY, "slice",                 1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
   { BOP_ANY_ARRAY, "[]=",                   2,   3, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },  /* the assigned value */
   { BOP_ANY_ARRAY, "fetch",                 1,   1, BF_NONE,     BOPR_ELEM,     BOPE_NONE },  /* split off the blockless, 1-arg (KeyError-on-miss) case: always the element kind. BF_NONE, not BF_ANY: a block form (fetch(i) { ... }) answers the block's own tail type compared against the element kind, a separate hand-written rule this row must not shadow. */
@@ -2439,6 +2449,7 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "<=>",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
   { BOP_ANY_ARRAY, "hash",                  0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
   { BOP_ANY_ARRAY, "member?",               1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { BOP_ANY_ARRAY, "sample",                1,   1, BF_ANY,      BOPR_SELF,     BOPE_NONE, NULL, BOP_K(TY_INT) },  /* sample(n): n elements; sample(random: r) is told by its syntax, not its kind */
   { BOP_ANY_ARRAY, "sample",                0,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
   { BOP_ANY_ARRAY, "push",                  0, 127, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "append",                0, 127, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
@@ -2699,6 +2710,15 @@ TyKind bop_result(const BuiltinOp *op, TyKind rt) {
   case (int)BOPR_ARRAY_INDEX:
     return rt == TY_INT_ARRAY || rt == TY_STR_ARRAY || rt == TY_FLOAT_ARRAY ? TY_POLY : TY_INT;
   case (int)BOPR_ARRAY_TUPLES: return rt == TY_POLY_ARRAY ? TY_POLY_ARRAY : TY_ENUMERATOR;
+  case (int)BOPR_ASSOC: {
+    /* the matching sub-array of a poly array; an array of numbers, Strings,
+       Symbols or booleans holds no Array to match: the boxed nil
+       emit_op_array_assoc answers. Any other array states no kind. */
+    if (rt == TY_POLY_ARRAY) return TY_POLY_ARRAY;
+    TyKind et = ty_array_elem(rt);
+    return et == TY_INT || et == TY_FLOAT || et == TY_STRING || et == TY_SYMBOL || et == TY_BOOL
+           ? TY_POLY : TY_UNKNOWN;
+  }
   /* the operands' kinds decide these (bop_result_args) */
   case (int)BOPR_ARRAY_PLUS:
   case (int)BOPR_ARRAY_SETOP: return TY_UNKNOWN;
