@@ -2902,8 +2902,10 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
     }
     /* a program's == answering anything but a bool (a Symbol, nil) answers
        it through the boxed call too, where the boxed-operator dispatch can
-       call it (one positional, no rest): sp_poly_eq_value hands it back */
-    if (sp_streq(name, "==") && argc == 1) {
+       call it (one positional, no rest): sp_poly_eq_value hands it back.
+       Only a boxed receiver may be that class: a Float or Integer one with
+       a boxed argument is the builtin ==, whose bool codegen emits. */
+    if (rt == TY_POLY && sp_streq(name, "==") && argc == 1) {
       for (int k = 0; k < c->nclasses; k++) {
         if (c->classes[k].is_native_class) continue;
         int mi = comp_method_in_chain(c, k, name, NULL);
