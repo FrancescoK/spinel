@@ -1,0 +1,36 @@
+"Alpha::Beta::Foo::Bar"
+"Alpha::Beta::Foo."
+"Foo.bar"
+nil
+nil
+5
+nil
+["b-"]
+[]
+["key", "value", nil, nil]
+1
+1
+0
+0
+0
+2
+0
+0
+0
+0
+4
+nil
+false
+4
+0
+nil
+"aaa:b"
+"aa_b"
+1
+nil
+["é::"]
+[["a", "1"], ["b", "2"], ["c", "3"]]
+"11, 22, 33"
+["a=1", "b=2", "c=3"]
+[]
+"no pairs here"

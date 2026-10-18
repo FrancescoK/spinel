@@ -49,7 +49,9 @@ end
 
 # The catastrophic shapes give up at a limit rather than run forever: a
 # search stopped at the limit has not shown there is no match, so it raises
-# RegexpError where it cannot answer instead of reading as a miss.
+# RegexpError where it cannot answer instead of reading as a miss. The second
+# needs a `b` the subject does not hold, which answers no match before any
+# search is made, as CRuby answers it.
 [/(a+)+$/, /(a*)*b\1/].each do |re|
   begin
     p(!!(("a" * 40 + "!") =~ re))
