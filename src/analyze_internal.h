@@ -4,6 +4,7 @@
 #ifndef SPINEL_ANALYZE_INTERNAL_H
 #define SPINEL_ANALYZE_INTERNAL_H
 #include "analyze.h"
+#include "value_pos.h"
 #include "ffi_spec.h"
 
 #include <stdio.h>
@@ -104,6 +105,10 @@ typedef struct { int *pos; char *done; } DUPos;
 int *du_parent_map(const NodeTable *nt);
 int du_read_maybe_unset(const NodeTable *nt, const int *par, DUPos *dp, int rd, const char *nm);
 void du_memo_free(void);
+/* The edges an_value_dropped (and cow_user_block_value, which asks of the
+   block it ends at) climbs: where a value is passed on to the statement or
+   the block that holds it. */
+enum { AN_DROP_CLIMB = VPS_NONE };
 int an_value_dropped(const NodeTable *nt, const int *parent, int node);
 int cow_user_block_value(Compiler *c, const int *parent, int id);
 /* The methods the default build may lend a String parameter's slot by

@@ -6662,20 +6662,38 @@ int desugar_array_at(Compiler *c) {
   return changed;
 }
 
-/* The last statement of a block whose call any user class defines (a
-   user `each`): an_value_dropped reads only the call's name, but that
-   method can answer the block's value. */
-int cow_user_block_value(Compiler *c, const int *parent, int id) {
-  const NodeTable *nt = c->nt;
+/* The store of `w.n += 1` kept for a dropped value is emitted only for a
+   statement of a list that is not the list's last, or the last of a loop's
+   body or of the block of an iterator that does not answer the block's
+   value: the node's own list and no further. An operator assignment in an
+   arm of an `if`, a `case` or a begin, in parentheses or under `||`/`&&`
+   is written as a read and a write call, whatever an_value_dropped says of
+   it: the plain store types the attribute by its operator, so an Integer
+   slot given a boxed operand truncates it (`s.pos += 2.5` stores 2), where
+   the write call keeps the attribute boxed. */
+static int cow_statement_dropped(const NodeTable *nt, const int *parent, int id) {
   int st = parent[id];
   if (st < 0 || nt_kind(nt, st) != NK_StatementsNode) return 0;
-  int sn = 0;
-  const int *sb = nt_arr(nt, st, "body", &sn);
-  if (sn <= 0 || sb[sn - 1] != id) return 0;
-  int blk = parent[st];
-  if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return 0;
-  int call = parent[blk];
-  const char *bn = call >= 0 && nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
+  if (!vp_is_value_edge(nt, st, id, VPS_NONE)) return 1;
+  int owner = parent[st];
+  if (owner < 0) return 0;
+  NodeKind ok = nt_kind(nt, owner);
+  if (ok == NK_WhileNode || ok == NK_UntilNode) return 1;
+  if (ok != NK_BlockNode) return 0;
+  int bc = parent[owner];
+  const char *bn = bc >= 0 && nt_kind(nt, bc) == NK_CallNode ? nt_str(nt, bc, "name") : NULL;
+  return bn && is_block_loop_method(bn);
+}
+
+/* The last statement of a block whose call any user class defines (a
+   user `each`), reached as an_value_dropped climbs: an_value_dropped reads
+   only the call's name, but that method can answer the block's value. */
+int cow_user_block_value(Compiler *c, const int *parent, int id) {
+  const NodeTable *nt = c->nt;
+  VpUp up;
+  vp_climb(nt, parent, id, AN_DROP_CLIMB, &up);
+  int call = vp_up_block_call(nt, parent, &up);
+  const char *bn = call >= 0 ? nt_str(nt, call, "name") : NULL;
   if (!bn) return 0;
   for (int k = 0; k < c->nclasses; k++)
     if (comp_method_in_chain(c, k, bn, NULL) >= 0) return 1;
@@ -6727,7 +6745,7 @@ int desugar_call_op_write(Compiler *c) {
     if (!has_def_writer) {
       if (!parent) parent = an_parent_map(nt);
       if (!parent) continue;
-      if (an_value_dropped(nt, parent, id) && !cow_user_block_value(c, parent, id)) continue;
+      if (cow_statement_dropped(nt, parent, id) && !cow_user_block_value(c, parent, id)) continue;
       /* defined?(w.n += 1) is "assignment": as the writer call it read "method".
          desugar_defined_method_call has looked through any parentheses
          around it, so the defined? names it as its value. */
