@@ -112,8 +112,9 @@ writers do not validate what they are given. An https request needs the
 **TLS / `openssl`.** The `openssl` package binds the system libssl and
 provides `OpenSSL::SSL` only: `SSLContext`, `SSLSocket`, `SSLError` and the
 `VERIFY_*` constants, which is what an outbound HTTPS client reaches, and a
-server's half of it: a context given a certificate and an EC key (`cert=`,
-`key=`, `extra_chain_cert=`, `add_certificate`), `SSLSocket#accept` /
+server's half of it: a context given a certificate and an EC or RSA key
+(`cert=`, `key=`, `extra_chain_cert=`, `add_certificate`, one certificate at
+a time where CRuby keeps one per kind of key), `SSLSocket#accept` /
 `#accept_nonblock`, and `SSLServer` over a `TCPServer`, whose `accept`
 makes the handshake inline as CRuby's does (`start_immediately = false`
 leaves it to the caller). Each accept builds OpenSSL's context from those,
