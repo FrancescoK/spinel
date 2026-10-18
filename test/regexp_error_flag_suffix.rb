@@ -30,9 +30,8 @@ p Regexp.new('a', Regexp::IGNORECASE | Regexp::EXTENDED | Regexp::MULTILINE).ins
 p Regexp.new('a', Regexp::MULTILINE).inspect
 p Regexp.new('a', 0).inspect
 
-# a few other refusals carry it too, including one of this engine's own:
-# `\R` is a construct CRuby has and this one refuses (see docs/limitations.md),
-# so the last line is the only one here that does not read the same on CRuby.
+# a few other refusals carry it too; `\R`, which this engine refused once, now
+# compiles as CRuby's does
 show('(?<1>a)', Regexp::MULTILINE)
 show('[a-\d]', Regexp::IGNORECASE)
 show('\R', Regexp::EXTENDED)

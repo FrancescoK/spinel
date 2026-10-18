@@ -4,7 +4,8 @@
 # rather than a newline, and /\p{Alpha}/ answered a pattern that asked for a
 # letter with the text of the request. Ported from mruby-regexp 2e7e38a80 and
 # ef283321f; upstream refuses `\G` and `\g<name>` in the same commit, and both
-# are carried here already, so they keep working.
+# are carried here already, so they keep working. `\R` is carried now too
+# (test/regexp_linebreak_escape.rb).
 def t(label)
   r = begin
     yield.inspect
