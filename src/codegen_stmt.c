@@ -8010,7 +8010,7 @@ static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, B
        read `->len` off the object'"'"'s struct (#3956). */
     if (ty_is_object(pt)) {
       int adef = -1;
-      int am = comp_method_in_chain(c, ty_object_class(pt), "deconstruct", &adef);
+      int am = comp_deconstruct_method(c, ty_object_class(pt), &adef);
       if (am < 0 || adef < 0 || c->scopes[am].ret == TY_UNKNOWN) return 0;
       TyKind art = c->scopes[am].ret;
       const char *acn = c->classes[adef].c_name;
@@ -8022,8 +8022,8 @@ static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, B
       emit_ctype(c, art, as);
       buf_printf(as, " _t%d = ", at);
       emit_obj_deconstruct_open(c, pt, art, t, as);
-      if (aisv) buf_printf(as, "sp_%s_deconstruct(_t%d)", acn, t);
-      else      buf_printf(as, "sp_%s_deconstruct((sp_%s *)_t%d)", acn, acn, t);
+      if (aisv) buf_printf(as, "sp_%s_%s(_t%d)", acn, mc(c->scopes[am].name), t);
+      else      buf_printf(as, "sp_%s_%s((sp_%s *)_t%d)", acn, mc(c->scopes[am].name), acn, t);
       emit_obj_deconstruct_close(c, pt, art, as);
       buf_puts(as, ";\n");
       if (needs_root(art)) { emit_indent(as, ai); emit_gc_root_tmp(c, art, at, as); buf_puts(as, "\n"); }
@@ -9226,17 +9226,17 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
     else if (ty_is_object(pt) && sp_streq(pty, "ArrayPatternNode")) {
       int isv = c->classes[ty_object_class(pt)].is_value_type;
       int ddef = -1;
-      int dm = comp_method_in_chain(c, ty_object_class(pt), "deconstruct", &ddef);
+      int dm = comp_deconstruct_method(c, ty_object_class(pt), &ddef);
       if (dm >= 0) {
         TyKind rrt = (TyKind)c->scopes[dm].ret;
         TyKind drt = ty_is_array(rrt) ? rrt : TY_POLY_ARRAY;
-        const char *dcn = c->classes[ddef].name;
+        const char *dcn = c->classes[ddef].c_name;
         arm_t = ++g_tmp;
         emit_indent(b, indent + 1); emit_ctype(c, drt, b);
         buf_printf(b, " _t%d = ", arm_t);
         emit_obj_deconstruct_open(c, pt, rrt, t, b);
-        if (isv) buf_printf(b, "sp_%s_deconstruct(_t%d)", dcn, t);
-        else     buf_printf(b, "sp_%s_deconstruct((sp_%s *)_t%d)", dcn, dcn, t);
+        if (isv) buf_printf(b, "sp_%s_%s(_t%d)", dcn, mc(c->scopes[dm].name), t);
+        else     buf_printf(b, "sp_%s_%s((sp_%s *)_t%d)", dcn, mc(c->scopes[dm].name), dcn, t);
         emit_obj_deconstruct_close(c, pt, rrt, b);
         buf_puts(b, ";\n");
         if (needs_root(drt)) { emit_indent(b, indent + 1); emit_gc_root_tmp(c, drt, arm_t, b); buf_puts(b, "\n"); }

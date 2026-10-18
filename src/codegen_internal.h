@@ -1785,6 +1785,9 @@ const char *mc(const char *name);
    function of that exact spelling (sp_String_length). */
 const char *mc_reopen_cls(Compiler *c, int class_id, const char *mname);
 const char *mc_top(Compiler *c, const char *name);
+/* The scope a #deconstruct call on class cid runs, through an alias
+   (codegen.c) */
+int comp_deconstruct_method(Compiler *c, int cid, int *defcls);
 const char *iv_c(const char *name);  /* ivar/member name -> valid C field id (#3110) */
 #define IV_C_MAX 64  /* iv_c's longest result; a longer name is shortened with a hash */
 /* A method scope is shadowed (and must not be emitted) when a later
