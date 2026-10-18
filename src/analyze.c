@@ -510,11 +510,15 @@ static int an_sum_needs_coerce(Compiler *c, int id, int typed) {
   return et == TY_UNKNOWN || et == TY_POLY || ty_is_object(et);
 }
 
+extern const ANameHash *g_cr_typed;
+void cr_class_only_names(Compiler *c, ANameHash *out);
 void compute_reachable(Compiler *c, int typed) {
   /* Build per-scope call sets (CallNode names, not entering nested DefNodes). */
   char ***scope_calls = calloc((size_t)c->nscopes, sizeof(char **));
   int   *sc_n        = calloc((size_t)c->nscopes, sizeof(int));
   int   *sc_cap      = calloc((size_t)c->nscopes, sizeof(int));
+  ANameHash held; memset(&held, 0, sizeof held);
+  if (typed == 2) { cr_class_only_names(c, &held); g_cr_typed = &held; }
   for (int s = 0; s < c->nscopes; s++) {
     const Scope *sc = &c->scopes[s];
     int instance_self = sc->name && !sc->is_cmethod && sc->class_id >= 0 &&
@@ -529,6 +533,8 @@ void compute_reachable(Compiler *c, int typed) {
         cr_collect_calls(c, c->nt, pn, &scope_calls[s], &sc_n[s], &sc_cap[s], instance_self);
     }
   }
+  g_cr_typed = NULL;
+  anh_free(&held);
 
 
   /* BFS queue (scope indices). */
@@ -50002,6 +50008,9 @@ void analyze_program(Compiler *c) {
   AN_PHASE("value_types", an_phase_value_types(c));
   AN_PHASE("reconcile_check", an_phase_reconcile_check(c));
   sa_check_conversion_stores(c);
+  /* once more on the settled types, which tell a builtin receiver's call
+     from a program method's (cr_recv_builtin_value) */
+  compute_reachable(c, 2);
 
   if (getenv("SP_FIXPOINT_LOG"))
     fprintf(stderr, "[fp] rounds=%d%s\n", g_fixpoint_rounds,
