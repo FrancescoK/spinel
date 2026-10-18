@@ -1884,6 +1884,65 @@ int desugar_fiber_prepended_init(Compiler *c) {
    core_ext/enumerable.rb prepends a const_missing hook onto Enumerable's
    singleton this way, and the whole statement was refused as
    Object#singleton_class. `singleton_class.include` is an extend. */
+/* A receiverless `include M` / `prepend M` of constants: the mixin
+   statement a singleton-class body can hold. */
+static int scm_mixin_stmt(const NodeTable *nt, int st) {
+  if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "block") >= 0 || nt_ref(nt, st, "receiver") >= 0) return 0;
+  const char *nm = nt_str(nt, st, "name");
+  if (!nm || (!sp_streq(nm, "prepend") && !sp_streq(nm, "include"))) return 0;
+  int args = nt_ref(nt, st, "arguments");
+  int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an < 1 || !av) return 0;
+  for (int a = 0; a < an; a++)
+    if (nt_kind(nt, av[a]) != NK_ConstantReadNode && nt_kind(nt, av[a]) != NK_ConstantPathNode) return 0;
+  return 1;
+}
+/* `class << self; include M; end` in a class or module body includes M into
+   the class's singleton class: what `extend M` does (`prepend M` there puts
+   M in front, as `singleton_class.prepend(M)` below). The statement leaves
+   the singleton body for the enclosing one, as that extend, in place of the
+   `class << self` it was in -- ahead of it, so the body's own methods are
+   still the class's first. */
+static int scm_hoist_sclass_mixins(NodeTable *nt, int body) {
+  int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+  int moved = 0;
+  for (int i = 0; i < bn; i++) {
+    int sc = bb[i];
+    if (nt_kind(nt, sc) != NK_SingletonClassNode || nt_kind(nt, nt_ref(nt, sc, "expression")) != NK_SelfNode) continue;
+    int sb = nt_ref(nt, sc, "body");
+    if (sb < 0 || nt_kind(nt, sb) != NK_StatementsNode) continue;
+    int sn = 0; const int *ss = nt_arr(nt, sb, "body", &sn);
+    for (int j = 0; j < sn; j++) if (scm_mixin_stmt(nt, ss[j])) moved++;
+  }
+  if (!moved) return 0;
+  int *out = malloc(sizeof(int) * (size_t)(bn + moved));
+  if (!out) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int no = 0;
+  for (int i = 0; i < bn; i++) {
+    int sc = bb[i];
+    int sb = nt_kind(nt, sc) == NK_SingletonClassNode && nt_kind(nt, nt_ref(nt, sc, "expression")) == NK_SelfNode
+             ? nt_ref(nt, sc, "body") : -1;
+    if (sb >= 0 && nt_kind(nt, sb) == NK_StatementsNode) {
+      int sn = 0; const int *ss0 = nt_arr(nt, sb, "body", &sn);
+      int *ss = malloc(sizeof(int) * (size_t)(sn > 0 ? sn : 1));
+      if (!ss) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      memcpy(ss, ss0, sizeof(int) * (size_t)sn);
+      int keep = 0;
+      for (int j = 0; j < sn; j++) {
+        if (!scm_mixin_stmt(nt, ss[j])) { ss[keep++] = ss[j]; continue; }
+        if (sp_streq(nt_str(nt, ss[j], "name"), "prepend")) nt_node_set_int(nt, ss[j], "sclass_prepend", 1);
+        nt_node_set_str(nt, ss[j], "name", "extend");
+        out[no++] = ss[j];
+      }
+      nt_node_set_arr(nt, sb, "body", ss, keep);
+      free(ss);
+    }
+    out[no++] = sc;
+  }
+  nt_node_set_arr(nt, body, "body", out, no);
+  free(out);
+  return 1;
+}
 int desugar_singleton_class_mixin(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
@@ -1892,6 +1951,7 @@ int desugar_singleton_class_mixin(Compiler *c) {
     if (k != NK_ModuleNode && k != NK_ClassNode) continue;
     int body = nt_ref(nt, id, "body");
     if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    if (scm_hoist_sclass_mixins(nt, body)) changed = 1;
     int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
     for (int i = 0; i < bn; i++) {
       int st = bb[i];

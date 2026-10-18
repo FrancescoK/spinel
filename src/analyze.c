@@ -44905,7 +44905,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_ffi_library_functions(c);   /* attach_function :f -> def self.f (the ffi gem) */
   desugar_native_func_defs(c);          /* native_func :f -> def self.f = Mod.f (a module value finds it) */
   desugar_explicit_receiver_mixin(c);    /* K.prepend(M) as a statement -> class K; prepend M; end */
-  desugar_singleton_class_mixin(c);      /* singleton_class.prepend(M) in a body -> extend M */
+  desugar_singleton_class_mixin(c);      /* singleton_class.prepend(M), class << self; include M -> extend M */
   desugar_attr_const_splat(c);           /* attr_accessor(*FLAGS), FLAGS = %i[a b] -> attr_accessor(:a, :b) */
   desugar_singleton_attr(c);             /* singleton_class.attr_accessor :x -> def self.x / def self.x= */
   desugar_sclass_readers_through_class(c); /* class << self; attr_reader :x read as obj.class.x -> def x = @x */
