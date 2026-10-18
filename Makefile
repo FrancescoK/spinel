@@ -5297,8 +5297,10 @@ arity-spec-check:
 # The value-position iterator (src/value_pos.c) on one method per shape: the
 # positions --dump-value-positions lists for test/value-pos/shapes.rb are the
 # expected file. test/value_pos_shapes.rb runs the same shapes against CRuby.
-# After a deliberate change of the iterator or of tools/value_edges.yml, read
-# the diff, then refresh the expected file:
+# The dump numbers a program node by how many program nodes come before it, so
+# a builtin that grows or shrinks leaves the file alone. After a deliberate
+# change of the iterator or of tools/value_edges.yml, read the diff, then
+# refresh the expected file:
 #   spinel --dump-value-positions test/value-pos/shapes.rb > test/value-pos/shapes.expected
 # --check-value-pos walks tables built by hand for the limits no program
 # reaches: the visit budget and a stack past its 32 entries.
