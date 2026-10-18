@@ -1,7 +1,7 @@
-# spinel: rbs-seed-check
 # A Hash#each value handed to a writer whose RBS signature leaves the value
-# `untyped`, and which stores it where a later append reaches it, is refused
-# as it is without the signature: the C did not build (#8235).
+# `untyped`, and which stores it where a later append reaches it: the
+# shared String is that value, as CRuby's is (the copying build refused it,
+# #8235; its C had not built).
 class UntypedAppendWriter
   def initialize
     @values = {}

@@ -1,7 +1,7 @@
 # A split's each in an expression whose rescue modifier retries: the retry
-# runs the each again over the same Strings. Still refused, not silently
-# applied to copies.
-# spinel: reject-thread-string
+# runs the each again over the same Strings. The Strings are shared now
+# (#6765); what is still refused is the retry in a rescue modifier, which
+# Spinel does not take outside a rescue clause.
 out = []
 a = "a;b".split(";")
 i = 0

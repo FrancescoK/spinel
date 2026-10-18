@@ -50,12 +50,6 @@ spinel: 1 refusal, nothing written
 == test/reject/array_push_other_class_temporary.rb [promote] rc=1
 spinel: test/reject/array_push_other_class_temporary.rb:6: an Array push given a String, which no conversion keeps in its sp_int slot
 spinel: 1 refusal, nothing written
-== test/reject/attr_assign_value_shared_string.rb [default] rc=1
-spinel: test/reject/attr_assign_value_shared_string.rb:6: an attribute assignment in value position (kept, passed on, or a method's last expression, which the method answers) stores into an instance variable that is mutated in place through another name, and its value would be a copy (a String is not yet shared by reference through an assignment's value). Make the assignment a statement of its own, or read the String back through the reader.
-spinel: 1 refusal, nothing written
-== test/reject/attr_assign_value_shared_string.rb [promote] rc=1
-spinel: test/reject/attr_assign_value_shared_string.rb:6: an attribute assignment in value position (kept, passed on, or a method's last expression, which the method answers) stores into an instance variable that is mutated in place through another name, and its value would be a copy (a String is not yet shared by reference through an assignment's value). Make the assignment a statement of its own, or read the String back through the reader.
-spinel: 1 refusal, nothing written
 == test/reject/bare_const_unreachable_const_missing.rb [default] rc=1
 spinel: test/reject/bare_const_unreachable_const_missing.rb:9: uninitialized constant B::X (NameError): the program defines it only as A::X, which CRuby's lookup from B (its lexical scope, then its ancestors) does not reach; CRuby then calls const_missing (or raises NameError), which spinel does not follow here
 == test/reject/bare_const_unreachable_const_missing.rb [promote] rc=1
@@ -146,10 +140,6 @@ spinel: 1 refusal, nothing written
 == test/reject/builtin_value_ivar_set.rb [promote] rc=1
 spinel: test/reject/builtin_value_ivar_set.rb:6: an instance variable set on a String (`@x = v` in a String method, or instance_variable_set): a String is copied, not shared, so it keeps no identity for the variable yet (waits on #6765); see docs/limitations.md
 spinel: 1 refusal, nothing written
-== test/reject/byref_param_handed_on_before_fresh_rebind.rb [default] rc=1
-spinel: test/reject/byref_param_handed_on_before_fresh_rebind.rb:17: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/byref_param_handed_on_before_fresh_rebind.rb [promote] rc=1
-spinel: test/reject/byref_param_handed_on_before_fresh_rebind.rb:17: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
 == test/reject/class_body_block_next.rb [default] rc=1
 spinel: test/reject/class_body_block_next.rb:7: next in a block that is a class body (the block of Class.new, Module.new, Struct.new or Data.define): the definitions after it would be made or not at run time
 == test/reject/class_body_block_next.rb [promote] rc=1
@@ -668,26 +658,6 @@ spinel: 1 refusal, nothing written
 == test/reject/forwarding_super_yielding_optional.rb [promote] rc=1
 spinel: test/reject/forwarding_super_yielding_optional.rb:5: `super(...)` into a method that yields and takes an optional or *rest parameter: the forwarded arguments cannot leave one out
 spinel: 1 refusal, nothing written
-== test/reject/hash_pair_string_mutation.rb [default] rc=1
-spinel: test/reject/hash_pair_string_mutation.rb:6: a String read out of a Hash through its [key, value] pairs is mutated: a String is not yet shared by reference through a Hash's pairs. Mutate it through the Hash (h[k] << x)
-== test/reject/hash_pair_string_mutation.rb [promote] rc=1
-spinel: test/reject/hash_pair_string_mutation.rb:6: a String read out of a Hash through its [key, value] pairs is mutated: a String is not yet shared by reference through a Hash's pairs. Mutate it through the Hash (h[k] << x)
-== test/reject/hash_value_into_appended_ivar.rb [default] rc=1
-spinel: test/reject/hash_value_into_appended_ivar.rb:18: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/hash_value_into_appended_ivar.rb [promote] rc=1
-spinel: test/reject/hash_value_into_appended_ivar.rb:18: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/hash_value_method_answer_appending_writer.rb [default] rc=1
-spinel: test/reject/hash_value_method_answer_appending_writer.rb:20: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/hash_value_method_answer_appending_writer.rb [promote] rc=1
-spinel: test/reject/hash_value_method_answer_appending_writer.rb:20: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/hash_value_poly_appending_writer.rb [default] rc=1
-spinel: test/reject/hash_value_poly_appending_writer.rb:16: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/hash_value_poly_appending_writer.rb [promote] rc=1
-spinel: test/reject/hash_value_poly_appending_writer.rb:16: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/hash_values_at_appending_block.rb [default] rc=1
-spinel: test/reject/hash_values_at_appending_block.rb:4: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/hash_values_at_appending_block.rb [promote] rc=1
-spinel: test/reject/hash_values_at_appending_block.rb:4: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
 == test/reject/include_module_from_expression.rb [default] rc=1
 spinel: test/reject/include_module_from_expression.rb:9: `include` of a module named by an expression, not a constant, is not supported (the mixin is resolved at compile time)
 == test/reject/include_module_from_expression.rb [promote] rc=1
@@ -733,12 +703,6 @@ spinel: test/reject/io_reopen_yielding_call.rb:10: unsupported call: node N (Cal
 spinel: 1 refusal, nothing written
 == test/reject/io_reopen_yielding_call.rb [promote] rc=1
 spinel: test/reject/io_reopen_yielding_call.rb:10: unsupported call: node N (CallNode `twice`) recv=GlobalVariableReadNode/ty46 argc=0
-spinel: 1 refusal, nothing written
-== test/reject/ivar_set_shared_string_slot.rb [default] rc=1
-spinel: test/reject/ivar_set_shared_string_slot.rb:10: an instance variable write given a String, which no conversion keeps in its sp_String * slot
-spinel: 1 refusal, nothing written
-== test/reject/ivar_set_shared_string_slot.rb [promote] rc=1
-spinel: test/reject/ivar_set_shared_string_slot.rb:10: an instance variable write given a String, which no conversion keeps in its sp_String * slot
 spinel: 1 refusal, nothing written
 == test/reject/lazy_chain_in_global.rb [default] rc=1
 spinel: test/reject/lazy_chain_in_global.rb:3: unsupported a lazy chain held in an instance, class or global variable or a constant (an Enumerator::Lazy is fused into the call that forces it; keep the chain in a local or force it where it is built): node N (CallNode `lazy`) recv=ArrayNode/ty19 argc=0
@@ -1228,10 +1192,6 @@ spinel: 1 refusal, nothing written
 == test/reject/scrub_bang_block.rb [promote] rc=1
 spinel: test/reject/scrub_bang_block.rb:2: String#scrub! with a block is not yet supported: the block would be ignored
 spinel: 1 refusal, nothing written
-== test/reject/scrub_bang_retained_append.rb [default] rc=1
-spinel: test/reject/scrub_bang_retained_append.rb:3: a String is not yet shared by reference through a retained scrub! result that is appended to
-== test/reject/scrub_bang_retained_append.rb [promote] rc=1
-spinel: test/reject/scrub_bang_retained_append.rb:3: a String is not yet shared by reference through a retained scrub! result that is appended to
 == test/reject/self_call_in_block_still_reaches_class_method.rb [default] rc=1
 spinel: test/reject/self_call_in_block_still_reaches_class_method.rb:8: undefined method '[]=' for a Class: no class in the program defines a class method '[]=' (NoMethodError)
 spinel: 1 refusal, nothing written
@@ -1334,108 +1294,6 @@ spinel: 1 refusal, nothing written
 == test/reject/stdout_reassigned_writer_only.rb [promote] rc=1
 spinel: test/reject/stdout_reassigned_writer_only.rb:12: unsupported puts while $stdout can hold an object whose class has a write but no puts: node N (CallNode `puts`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
-== test/reject/string_append_through_kept_block_index.rb [default] rc=1
-spinel: test/reject/string_append_through_kept_block_index.rb:11: a String is passed through `b[]`, and a proc or Method it can reach appends to the String it is handed: this call hands it a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a block's parameter). Return the String from the proc or Method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_append_through_kept_block_index.rb [promote] rc=1
-spinel: test/reject/string_append_through_kept_block_index.rb:11: a String is passed through `b[]`, and a proc or Method it can reach appends to the String it is handed: this call hands it a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a block's parameter). Return the String from the proc or Method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_append_through_new_global.rb [default] rc=1
-spinel: test/reject/string_append_through_new_global.rb:11: a String is passed to `initialize`'s parameter `s` through `Box.new`, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a global variable). Return the String from the method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_append_through_new_global.rb [promote] rc=1
-spinel: test/reject/string_append_through_new_global.rb:11: a String is passed to `initialize`'s parameter `s` through `Box.new`, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a global variable). Return the String from the method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_append_through_proc_keyword.rb [default] rc=1
-spinel: test/reject/string_append_through_proc_keyword.rb:10: a String is passed to a proc's parameter `k` through `f.call`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a block's parameter). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_append_through_proc_keyword.rb [promote] rc=1
-spinel: test/reject/string_append_through_proc_keyword.rb:10: a String is passed to a proc's parameter `k` through `f.call`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a block's parameter). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_array_append_value.rb [default] rc=1
-spinel: test/reject/string_array_append_value.rb:6: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
-== test/reject/string_array_append_value.rb [promote] rc=1
-spinel: test/reject/string_array_append_value.rb:6: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
-== test/reject/string_array_global_push.rb [default] rc=1
-spinel: test/reject/string_array_global_push.rb:8: an element of a global Array is a String mutated in place through the Array (a String is not yet shared by reference through a global variable's Array). Keep the Array in a local or an instance variable.
-== test/reject/string_array_global_push.rb [promote] rc=1
-spinel: test/reject/string_array_global_push.rb:8: an element of a global Array is a String mutated in place through the Array (a String is not yet shared by reference through a global variable's Array). Keep the Array in a local or an instance variable.
-== test/reject/string_array_insert_element.rb [default] rc=1
-spinel: test/reject/string_array_insert_element.rb:6: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
-== test/reject/string_array_insert_element.rb [promote] rc=1
-spinel: test/reject/string_array_insert_element.rb:6: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
-== test/reject/string_array_reader_value.rb [default] rc=1
-spinel: test/reject/string_array_reader_value.rb:9: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
-== test/reject/string_array_reader_value.rb [promote] rc=1
-spinel: test/reject/string_array_reader_value.rb:9: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
-== test/reject/string_array_rebound_iterator_alias.rb [default] rc=1
-spinel: test/reject/string_array_rebound_iterator_alias.rb:5: a String appended to through a rebound iterator alias is not yet shared by reference with its Array
-== test/reject/string_array_rebound_iterator_alias.rb [promote] rc=1
-spinel: test/reject/string_array_rebound_iterator_alias.rb:5: a String appended to through a rebound iterator alias is not yet shared by reference with its Array
-== test/reject/string_array_uplus_param.rb [default] rc=1
-spinel: test/reject/string_array_uplus_param.rb:7: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
-== test/reject/string_array_uplus_param.rb [promote] rc=1
-spinel: test/reject/string_array_uplus_param.rb:7: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
-== test/reject/string_bang_result_mutation.rb [default] rc=1
-spinel: test/reject/string_bang_result_mutation.rb:5: the result of a String bang method, which is its receiver, is mutated in place (a String is not yet shared by reference through a bang method's result). Mutate the receiver instead.
-== test/reject/string_bang_result_mutation.rb [promote] rc=1
-spinel: test/reject/string_bang_result_mutation.rb:5: the result of a String bang method, which is its receiver, is mutated in place (a String is not yet shared by reference through a bang method's result). Mutate the receiver instead.
-== test/reject/string_bang_result_second_name.rb [default] rc=1
-spinel: test/reject/string_bang_result_second_name.rb:7: the result of a String bang method, which is its receiver, is mutated in place (a String is not yet shared by reference through a bang method's result). Mutate the receiver instead.
-== test/reject/string_bang_result_second_name.rb [promote] rc=1
-spinel: test/reject/string_bang_result_second_name.rb:7: the result of a String bang method, which is its receiver, is mutated in place (a String is not yet shared by reference through a bang method's result). Mutate the receiver instead.
-== test/reject/string_boxed_local_container_element.rb [default] rc=1
-spinel: test/reject/string_boxed_local_container_element.rb:7: a String a boxed local holds is stored into a container and mutated in place through it (a String is not yet shared by reference through a boxed local's container element). Mutate the String through the local itself.
-== test/reject/string_boxed_local_container_element.rb [promote] rc=1
-spinel: test/reject/string_boxed_local_container_element.rb:7: a String a boxed local holds is stored into a container and mutated in place through it (a String is not yet shared by reference through a boxed local's container element). Mutate the String through the local itself.
-== test/reject/string_boxed_local_iterator_element.rb [default] rc=1
-spinel: test/reject/string_boxed_local_iterator_element.rb:7: a String a boxed local holds is stored into a container and mutated in place through it (a String is not yet shared by reference through a boxed local's container element). Mutate the String through the local itself.
-== test/reject/string_boxed_local_iterator_element.rb [promote] rc=1
-spinel: test/reject/string_boxed_local_iterator_element.rb:7: a String a boxed local holds is stored into a container and mutated in place through it (a String is not yet shared by reference through a boxed local's container element). Mutate the String through the local itself.
-== test/reject/string_boxed_reader_copied_too_late.rb [default] rc=1
-spinel: test/reject/string_boxed_reader_copied_too_late.rb:13: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
-== test/reject/string_boxed_reader_copied_too_late.rb [promote] rc=1
-spinel: test/reject/string_boxed_reader_copied_too_late.rb:13: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
-== test/reject/string_boxed_reader_copy_reopened_dup.rb [default] rc=1
-spinel: test/reject/string_boxed_reader_copy_reopened_dup.rb:17: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
-== test/reject/string_boxed_reader_copy_reopened_dup.rb [promote] rc=1
-spinel: test/reject/string_boxed_reader_copy_reopened_dup.rb:17: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
-== test/reject/string_boxed_reader_mutation.rb [default] rc=1
-spinel: test/reject/string_boxed_reader_mutation.rb:6: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
-== test/reject/string_boxed_reader_mutation.rb [promote] rc=1
-spinel: test/reject/string_boxed_reader_mutation.rb:6: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
-== test/reject/string_boxed_reader_query_reopened.rb [default] rc=1
-spinel: test/reject/string_boxed_reader_query_reopened.rb:17: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
-== test/reject/string_boxed_reader_query_reopened.rb [promote] rc=1
-spinel: test/reject/string_boxed_reader_query_reopened.rb:17: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
-== test/reject/string_callee_reader_store.rb [default] rc=1
-spinel: test/reject/string_callee_reader_store.rb:9: a String a method stores into an Array or Hash its caller passed it is mutated in place through the caller's container (a String is not yet shared by reference through a store into a parameter's container). Store the String in the caller, or mutate it in the method.
-== test/reject/string_callee_reader_store.rb [promote] rc=1
-spinel: test/reject/string_callee_reader_store.rb:9: a String a method stores into an Array or Hash its caller passed it is mutated in place through the caller's container (a String is not yet shared by reference through a store into a parameter's container). Store the String in the caller, or mutate it in the method.
-== test/reject/string_chained_index_append.rb [default] rc=1
-spinel: test/reject/string_chained_index_append.rb:3: a String is not yet shared by reference through an Array's chained index into an appending block
-== test/reject/string_chained_index_append.rb [promote] rc=1
-spinel: test/reject/string_chained_index_append.rb:3: a String is not yet shared by reference through an Array's chained index into an appending block
-== test/reject/string_chars_local_each_mutation.rb [default] rc=1
-spinel: test/reject/string_chars_local_each_mutation.rb:4: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
-== test/reject/string_chars_local_each_mutation.rb [promote] rc=1
-spinel: test/reject/string_chars_local_each_mutation.rb:4: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
-== test/reject/string_cvar_boxed_param.rb [default] rc=1
-spinel: test/reject/string_cvar_boxed_param.rb:10: a String is passed to `poly`'s parameter `io` through the call, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a class variable into a parameter that boxes it). Return the String from the method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_cvar_boxed_param.rb [promote] rc=1
-spinel: test/reject/string_cvar_boxed_param.rb:10: a String is passed to `poly`'s parameter `io` through the call, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a class variable into a parameter that boxes it). Return the String from the method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_duplicate_keyword_variable.rb [default] rc=1
-spinel: test/reject/string_duplicate_keyword_variable.rb:5: a String is passed to a proc's parameter `k` through a repeated keyword, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a repeated keyword). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_duplicate_keyword_variable.rb [promote] rc=1
-spinel: test/reject/string_duplicate_keyword_variable.rb:5: a String is passed to a proc's parameter `k` through a repeated keyword, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a repeated keyword). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_encode_bang_options_result.rb [default] rc=1
-spinel: test/reject/string_encode_bang_options_result.rb:5: the result of a String bang method, which is its receiver, is mutated in place (a String is not yet shared by reference through a bang method's result). Mutate the receiver instead.
-== test/reject/string_encode_bang_options_result.rb [promote] rc=1
-spinel: test/reject/string_encode_bang_options_result.rb:5: the result of a String bang method, which is its receiver, is mutated in place (a String is not yet shared by reference through a bang method's result). Mutate the receiver instead.
 == test/reject/string_encode_newline_option.rb [default] rc=1
 spinel: test/reject/string_encode_newline_option.rb:5: String#encode with the crlf_newline: option
 spinel: 1 refusal, nothing written
@@ -1454,238 +1312,12 @@ spinel: 1 refusal, nothing written
 == test/reject/string_encode_xml_option.rb [promote] rc=1
 spinel: test/reject/string_encode_xml_option.rb:5: String#encode with the xml: option
 spinel: 1 refusal, nothing written
-== test/reject/string_fiber_arg.rb [default] rc=1
-spinel: test/reject/string_fiber_arg.rb:6: a String is passed to a block's parameter `t` through `Fiber#resume`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `Fiber#resume`). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_fiber_arg.rb [promote] rc=1
-spinel: test/reject/string_fiber_arg.rb:6: a String is passed to a block's parameter `t` through `Fiber#resume`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `Fiber#resume`). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_fiber_method_param_arg.rb [default] rc=1
-spinel: test/reject/string_fiber_method_param_arg.rb:6: a String is passed to a block's parameter `t` through `Fiber#resume`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `Fiber#resume`). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_fiber_method_param_arg.rb [promote] rc=1
-spinel: test/reject/string_fiber_method_param_arg.rb:6: a String is passed to a block's parameter `t` through `Fiber#resume`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `Fiber#resume`). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_forward_poly_chain.rb [default] rc=1
-spinel: test/reject/string_forward_poly_chain.rb:12: a String is passed to `m`'s parameter `p` through a parameter it hands on, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a global variable). Return the String from the method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_forward_poly_chain.rb [promote] rc=1
-spinel: test/reject/string_forward_poly_chain.rb:12: a String is passed to `m`'s parameter `p` through a parameter it hands on, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a global variable). Return the String from the method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_forward_rest_past16.rb [default] rc=1
-spinel: test/reject/string_forward_rest_past16.rb:9: a String is passed to `w`'s parameter `r` through the rest it hands on, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a local variable). Return the String from the method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_forward_rest_past16.rb [promote] rc=1
-spinel: test/reject/string_forward_rest_past16.rb:9: a String is passed to `w`'s parameter `r` through the rest it hands on, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a local variable). Return the String from the method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_fresh_array_append.rb [default] rc=1
-spinel: test/reject/string_fresh_array_append.rb:3: a String is not yet shared by reference through a fresh Array literal into an appending iterator block
-spinel: 1 refusal, nothing written
-== test/reject/string_fresh_array_append.rb [promote] rc=1
-spinel: test/reject/string_fresh_array_append.rb:3: a String is not yet shared by reference through a fresh Array literal into an appending iterator block
-spinel: 1 refusal, nothing written
-== test/reject/string_gather_short_splat_lead.rb [default] rc=1
-spinel: test/reject/string_gather_short_splat_lead.rb:10: a String is passed to `g`'s parameter `a` through a call that gathers its arguments, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a local variable ahead of a splat whose length decides which parameter takes it). Return the String from the method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_gather_short_splat_lead.rb [promote] rc=1
-spinel: test/reject/string_gather_short_splat_lead.rb:10: a String is passed to `g`'s parameter `a` through a call that gathers its arguments, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a local variable ahead of a splat whose length decides which parameter takes it). Return the String from the method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_global_alias_mutation.rb [default] rc=1
-spinel: test/reject/string_global_alias_mutation.rb:5: a String variable assigned from or to a global variable is mutated in place (a String is not yet shared by reference through a global variable). Mutate the String through the global, or assign the global again after the mutation.
-== test/reject/string_global_alias_mutation.rb [promote] rc=1
-spinel: test/reject/string_global_alias_mutation.rb:5: a String variable assigned from or to a global variable is mutated in place (a String is not yet shared by reference through a global variable). Mutate the String through the global, or assign the global again after the mutation.
-== test/reject/string_global_array_each_mutation.rb [default] rc=1
-spinel: test/reject/string_global_array_each_mutation.rb:8: an element of a global Array is a String mutated in place through the Array (a String is not yet shared by reference through a global variable's Array). Keep the Array in a local or an instance variable.
-== test/reject/string_global_array_each_mutation.rb [promote] rc=1
-spinel: test/reject/string_global_array_each_mutation.rb:8: an element of a global Array is a String mutated in place through the Array (a String is not yet shared by reference through a global variable's Array). Keep the Array in a local or an instance variable.
-== test/reject/string_global_handle_param.rb [default] rc=1
-spinel: test/reject/string_global_handle_param.rb:16: a String is passed to `h`'s parameter `io` through the call, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a global variable into a parameter that takes its handle). Return the String from the method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_global_handle_param.rb [promote] rc=1
-spinel: test/reject/string_global_handle_param.rb:16: a String is passed to `h`'s parameter `io` through the call, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a global variable into a parameter that takes its handle). Return the String from the method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_global_hash_element_mutation.rb [default] rc=1
-spinel: test/reject/string_global_hash_element_mutation.rb:8: an element of a global Hash is a String mutated in place through the Hash (a String is not yet shared by reference through a global variable's Hash). Keep the Hash in a local or an instance variable.
-== test/reject/string_global_hash_element_mutation.rb [promote] rc=1
-spinel: test/reject/string_global_hash_element_mutation.rb:8: an element of a global Hash is a String mutated in place through the Hash (a String is not yet shared by reference through a global variable's Hash). Keep the Hash in a local or an instance variable.
-== test/reject/string_global_identity_after_mutations.rb [default] rc=1
-spinel: test/reject/string_global_identity_after_mutations.rb:6: a String variable assigned from or to a global variable is mutated in place (a String is not yet shared by reference through a global variable). Mutate the String through the global, or assign the global again after the mutation.
-== test/reject/string_global_identity_after_mutations.rb [promote] rc=1
-spinel: test/reject/string_global_identity_after_mutations.rb:6: a String variable assigned from or to a global variable is mutated in place (a String is not yet shared by reference through a global variable). Mutate the String through the global, or assign the global again after the mutation.
-== test/reject/string_hash_call.rb [default] rc=1
-spinel: test/reject/string_hash_call.rb:5: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_call.rb [promote] rc=1
-spinel: test/reject/string_hash_call.rb:5: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_chained_index_alias.rb [default] rc=1
-spinel: test/reject/string_hash_chained_index_alias.rb:6: a String is not yet shared by reference through a Hash's chained index into an appending block
-== test/reject/string_hash_chained_index_alias.rb [promote] rc=1
-spinel: test/reject/string_hash_chained_index_alias.rb:6: a String is not yet shared by reference through a Hash's chained index into an appending block
-== test/reject/string_hash_chained_index_observed.rb [default] rc=1
-spinel: test/reject/string_hash_chained_index_observed.rb:5: a String is not yet shared by reference through a Hash's chained index into an appending block
-== test/reject/string_hash_chained_index_observed.rb [promote] rc=1
-spinel: test/reject/string_hash_chained_index_observed.rb:5: a String is not yet shared by reference through a Hash's chained index into an appending block
-== test/reject/string_hash_fresh.rb [default] rc=1
-spinel: test/reject/string_hash_fresh.rb:4: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_fresh.rb [promote] rc=1
-spinel: test/reject/string_hash_fresh.rb:4: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_fresh_each.rb [default] rc=1
-spinel: test/reject/string_hash_fresh_each.rb:4: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_fresh_each.rb [promote] rc=1
-spinel: test/reject/string_hash_fresh_each.rb:4: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_fresh_index.rb [default] rc=1
-spinel: test/reject/string_hash_fresh_index.rb:5: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_fresh_index.rb [promote] rc=1
-spinel: test/reject/string_hash_fresh_index.rb:5: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_fresh_literal.rb [default] rc=1
-spinel: test/reject/string_hash_fresh_literal.rb:4: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_fresh_literal.rb [promote] rc=1
-spinel: test/reject/string_hash_fresh_literal.rb:4: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_fresh_pair.rb [default] rc=1
-spinel: test/reject/string_hash_fresh_pair.rb:4: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_fresh_pair.rb [promote] rc=1
-spinel: test/reject/string_hash_fresh_pair.rb:4: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_fresh_store.rb [default] rc=1
-spinel: test/reject/string_hash_fresh_store.rb:5: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_fresh_store.rb [promote] rc=1
-spinel: test/reject/string_hash_fresh_store.rb:5: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_fresh_store_block.rb [default] rc=1
-spinel: test/reject/string_hash_fresh_store_block.rb:5: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_fresh_store_block.rb [promote] rc=1
-spinel: test/reject/string_hash_fresh_store_block.rb:5: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_fresh_values.rb [default] rc=1
-spinel: test/reject/string_hash_fresh_values.rb:4: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_fresh_values.rb [promote] rc=1
-spinel: test/reject/string_hash_fresh_values.rb:4: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_interpolated.rb [default] rc=1
-spinel: test/reject/string_hash_interpolated.rb:5: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_interpolated.rb [promote] rc=1
-spinel: test/reject/string_hash_interpolated.rb:5: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_literal_captured.rb [default] rc=1
-spinel: test/reject/string_hash_literal_captured.rb:5: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_literal_captured.rb [promote] rc=1
-spinel: test/reject/string_hash_literal_captured.rb:5: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_pair_variable.rb [default] rc=1
-spinel: test/reject/string_hash_pair_variable.rb:6: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_pair_variable.rb [promote] rc=1
-spinel: test/reject/string_hash_pair_variable.rb:6: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_store_pair.rb [default] rc=1
-spinel: test/reject/string_hash_store_pair.rb:6: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_store_pair.rb [promote] rc=1
-spinel: test/reject/string_hash_store_pair.rb:6: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_store_pair_block.rb [default] rc=1
-spinel: test/reject/string_hash_store_pair_block.rb:6: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_store_pair_block.rb [promote] rc=1
-spinel: test/reject/string_hash_store_pair_block.rb:6: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_store_value.rb [default] rc=1
-spinel: test/reject/string_hash_store_value.rb:6: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_store_value.rb [promote] rc=1
-spinel: test/reject/string_hash_store_value.rb:6: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_store_value_block.rb [default] rc=1
-spinel: test/reject/string_hash_store_value_block.rb:6: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_store_value_block.rb [promote] rc=1
-spinel: test/reject/string_hash_store_value_block.rb:6: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_value_variable.rb [default] rc=1
-spinel: test/reject/string_hash_value_variable.rb:5: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_value_variable.rb [promote] rc=1
-spinel: test/reject/string_hash_value_variable.rb:5: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_values_variable.rb [default] rc=1
-spinel: test/reject/string_hash_values_variable.rb:5: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_hash_values_variable.rb [promote] rc=1
-spinel: test/reject/string_hash_values_variable.rb:5: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_identity_return_appended.rb [default] rc=1
-spinel: test/reject/string_identity_return_appended.rb:11: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/string_identity_return_appended.rb [promote] rc=1
-spinel: test/reject/string_identity_return_appended.rb:11: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/string_identity_return_mutation.rb [default] rc=1
-spinel: test/reject/string_identity_return_mutation.rb:6: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/string_identity_return_mutation.rb [promote] rc=1
-spinel: test/reject/string_identity_return_mutation.rb:6: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/string_identity_return_nil_arm.rb [default] rc=1
-spinel: test/reject/string_identity_return_nil_arm.rb:11: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/string_identity_return_nil_arm.rb [promote] rc=1
-spinel: test/reject/string_identity_return_nil_arm.rb:11: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/string_identity_return_param.rb [default] rc=1
-spinel: test/reject/string_identity_return_param.rb:7: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/string_identity_return_param.rb [promote] rc=1
-spinel: test/reject/string_identity_return_param.rb:7: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
 == test/reject/string_iter_block_argument.rb [default] rc=1
 spinel: test/reject/string_iter_block_argument.rb:7: unsupported a String iterator given its block as a block argument (&blk): write the block out, or use each_char / each_byte / each_line: node N (CallNode `bytes`) recv=StringNode/ty6 argc=0
 spinel: 1 refusal, nothing written
 == test/reject/string_iter_block_argument.rb [promote] rc=1
 spinel: test/reject/string_iter_block_argument.rb:7: unsupported a String iterator given its block as a block argument (&blk): write the block out, or use each_char / each_byte / each_line: node N (CallNode `bytes`) recv=StringNode/ty6 argc=0
 spinel: 1 refusal, nothing written
-== test/reject/string_ivar_alias_lent_call.rb [default] rc=1
-spinel: test/reject/string_ivar_alias_lent_call.rb:7: a String instance variable written from a local is passed to an appending parameter (a String is not yet shared by reference through a lent instance variable written from a local). Return the String from the method and assign it, or append to it in the caller.
-== test/reject/string_ivar_alias_lent_call.rb [promote] rc=1
-spinel: test/reject/string_ivar_alias_lent_call.rb:7: a String instance variable written from a local is passed to an appending parameter (a String is not yet shared by reference through a lent instance variable written from a local). Return the String from the method and assign it, or append to it in the caller.
-== test/reject/string_ivar_alias_lent_super.rb [default] rc=1
-spinel: test/reject/string_ivar_alias_lent_super.rb:9: a String instance variable written from a local is passed to an appending parameter (a String is not yet shared by reference through a lent instance variable written from a local). Return the String from the method and assign it, or append to it in the caller.
-== test/reject/string_ivar_alias_lent_super.rb [promote] rc=1
-spinel: test/reject/string_ivar_alias_lent_super.rb:9: a String instance variable written from a local is passed to an appending parameter (a String is not yet shared by reference through a lent instance variable written from a local). Return the String from the method and assign it, or append to it in the caller.
-== test/reject/string_ivar_array_append.rb [default] rc=1
-spinel: test/reject/string_ivar_array_append.rb:5: a String is not yet shared by reference through an ivar's or a call's Array into an appending iterator block
-== test/reject/string_ivar_array_append.rb [promote] rc=1
-spinel: test/reject/string_ivar_array_append.rb:5: a String is not yet shared by reference through an ivar's or a call's Array into an appending iterator block
-== test/reject/string_kwsplat_last_dynamic.rb [default] rc=1
-spinel: test/reject/string_kwsplat_last_dynamic.rb:6: a String is passed to a proc's parameter `k` through a splatted Hash literal (`**{ k: v }`), which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splatted Hash literal (`**{ k: v }`)). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_kwsplat_last_dynamic.rb [promote] rc=1
-spinel: test/reject/string_kwsplat_last_dynamic.rb:6: a String is passed to a proc's parameter `k` through a splatted Hash literal (`**{ k: v }`), which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splatted Hash literal (`**{ k: v }`)). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_kwsplat_last_yieldblock.rb [default] rc=1
-spinel: test/reject/string_kwsplat_last_yieldblock.rb:4: a String variable is passed through a splatted Hash literal (`**{ k: v }`) to a block's appending keyword parameter (a String is not yet shared by reference through a splatted Hash literal (`**{ k: v }`)). Return the String from the block and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_kwsplat_last_yieldblock.rb [promote] rc=1
-spinel: test/reject/string_kwsplat_last_yieldblock.rb:4: a String variable is passed through a splatted Hash literal (`**{ k: v }`) to a block's appending keyword parameter (a String is not yet shared by reference through a splatted Hash literal (`**{ k: v }`)). Return the String from the block and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_kwsplat_last_yieldproc.rb [default] rc=1
-spinel: test/reject/string_kwsplat_last_yieldproc.rb:5: a String is passed to a proc's parameter `k` through a splatted Hash literal (`**{ k: v }`), which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splatted Hash literal (`**{ k: v }`)). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_kwsplat_last_yieldproc.rb [promote] rc=1
-spinel: test/reject/string_kwsplat_last_yieldproc.rb:5: a String is passed to a proc's parameter `k` through a splatted Hash literal (`**{ k: v }`), which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splatted Hash literal (`**{ k: v }`)). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_kwsplat_literal_dynamic.rb [default] rc=1
-spinel: test/reject/string_kwsplat_literal_dynamic.rb:5: a String is passed to a proc's parameter `k1` through a splatted Hash literal (`**{ k: v }`), which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splatted Hash literal (`**{ k: v }`)). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_kwsplat_literal_dynamic.rb [promote] rc=1
-spinel: test/reject/string_kwsplat_literal_dynamic.rb:5: a String is passed to a proc's parameter `k1` through a splatted Hash literal (`**{ k: v }`), which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splatted Hash literal (`**{ k: v }`)). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_kwsplat_literal_yield.rb [default] rc=1
-spinel: test/reject/string_kwsplat_literal_yield.rb:3: a String variable is passed through a splatted Hash literal (`**{ k: v }`) to a block's appending keyword parameter (a String is not yet shared by reference through a splatted Hash literal (`**{ k: v }`)). Return the String from the block and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_kwsplat_literal_yield.rb [promote] rc=1
-spinel: test/reject/string_kwsplat_literal_yield.rb:3: a String variable is passed through a splatted Hash literal (`**{ k: v }`) to a block's appending keyword parameter (a String is not yet shared by reference through a splatted Hash literal (`**{ k: v }`)). Return the String from the block and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_lent_global_rebound.rb [default] rc=1
-spinel: test/reject/string_lent_global_rebound.rb:10: `$g` is passed to gr2's parameter `v`, which appends to it, and `$g` is assigned at line 8, where the assignment can run during the call: the append would then reach the newly assigned String instead of the one passed (a String held by a global, a class variable, or a top-level or class-level instance variable is not yet shared by reference). Pass a local and assign it back after the call.
-spinel: 1 refusal, nothing written
-== test/reject/string_lent_global_rebound.rb [promote] rc=1
-spinel: test/reject/string_lent_global_rebound.rb:10: `$g` is passed to gr2's parameter `v`, which appends to it, and `$g` is assigned at line 8, where the assignment can run during the call: the append would then reach the newly assigned String instead of the one passed (a String held by a global, a class variable, or a top-level or class-level instance variable is not yet shared by reference). Pass a local and assign it back after the call.
-spinel: 1 refusal, nothing written
-== test/reject/string_lent_global_rebound_block.rb [default] rc=1
-spinel: test/reject/string_lent_global_rebound_block.rb:10: `$z` is passed to yl's parameter `v`, which appends to it, and `$z` is assigned at line 10, where the assignment can run during the call: the append would then reach the newly assigned String instead of the one passed (a String held by a global, a class variable, or a top-level or class-level instance variable is not yet shared by reference). Pass a local and assign it back after the call.
-spinel: 1 refusal, nothing written
-== test/reject/string_lent_global_rebound_block.rb [promote] rc=1
-spinel: test/reject/string_lent_global_rebound_block.rb:10: `$z` is passed to yl's parameter `v`, which appends to it, and `$z` is assigned at line 10, where the assignment can run during the call: the append would then reach the newly assigned String instead of the one passed (a String held by a global, a class variable, or a top-level or class-level instance variable is not yet shared by reference). Pass a local and assign it back after the call.
-spinel: 1 refusal, nothing written
-== test/reject/string_lent_ivar_rebound.rb [default] rc=1
-spinel: test/reject/string_lent_ivar_rebound.rb:10: `@x` is passed to gri's parameter `v`, which appends to it, and `@x` is assigned at line 8, where the assignment can run during the call: the append would then reach the newly assigned String instead of the one passed (a String held by a global, a class variable, or a top-level or class-level instance variable is not yet shared by reference). Pass a local and assign it back after the call.
-spinel: 1 refusal, nothing written
-== test/reject/string_lent_ivar_rebound.rb [promote] rc=1
-spinel: test/reject/string_lent_ivar_rebound.rb:10: `@x` is passed to gri's parameter `v`, which appends to it, and `@x` is assigned at line 8, where the assignment can run during the call: the append would then reach the newly assigned String instead of the one passed (a String held by a global, a class variable, or a top-level or class-level instance variable is not yet shared by reference). Pass a local and assign it back after the call.
-spinel: 1 refusal, nothing written
-== test/reject/string_lines_element_alias_mutation.rb [default] rc=1
-spinel: test/reject/string_lines_element_alias_mutation.rb:4: an element read of a local String Array that split, scan, lines or chars answered is mutated in place (a String is not yet shared by reference through such an Array's element read). Write the changed String back into the Array (`a[i] = a[i].chomp`), or build the Array with map.
-== test/reject/string_lines_element_alias_mutation.rb [promote] rc=1
-spinel: test/reject/string_lines_element_alias_mutation.rb:4: an element read of a local String Array that split, scan, lines or chars answered is mutated in place (a String is not yet shared by reference through such an Array's element read). Write the changed String back into the Array (`a[i] = a[i].chomp`), or build the Array with map.
-== test/reject/string_lines_local_each_mutation.rb [default] rc=1
-spinel: test/reject/string_lines_local_each_mutation.rb:7: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
-== test/reject/string_lines_local_each_mutation.rb [promote] rc=1
-spinel: test/reject/string_lines_local_each_mutation.rb:7: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
-== test/reject/string_literal_element_alias.rb [default] rc=1
-spinel: test/reject/string_literal_element_alias.rb:7: a local bound from an element read of an Array or Hash literal holding a String variable is mutated in place (a String is not yet shared by reference through a literal's element). Mutate the String variable itself.
-== test/reject/string_literal_element_alias.rb [promote] rc=1
-spinel: test/reject/string_literal_element_alias.rb:7: a local bound from an element read of an Array or Hash literal holding a String variable is mutated in place (a String is not yet shared by reference through a literal's element). Mutate the String variable itself.
 == test/reject/string_method_object_mutator.rb [default] rc=1
 spinel: test/reject/string_method_object_mutator.rb:7: String#method is not supported for a method that changes the String in place (`<<`, `concat`, `upcase!`, ...): the Method object is bound to the String's value, not to the String, so calling it could not change the String it came from. Call the method on the String directly, or wrap it in a block (`->(x) { s << x }`) (see docs/limitations.md)
 spinel: 1 refusal, nothing written
@@ -1704,240 +1336,16 @@ spinel: 1 refusal, nothing written
 == test/reject/string_mutator_jump_arm.rb [promote] rc=1
 spinel: test/reject/string_mutator_jump_arm.rb:7: unsupported expression: node N (ReturnNode)
 spinel: 1 refusal, nothing written
-== test/reject/string_nested_masgn_deep.rb [default] rc=1
-spinel: test/reject/string_nested_masgn_deep.rb:4: a nested multiple-assignment target appends to a String variable from an Array literal (a String is not yet shared by reference through a nested multiple-assignment target). Append to the source String instead.
-== test/reject/string_nested_masgn_deep.rb [promote] rc=1
-spinel: test/reject/string_nested_masgn_deep.rb:4: a nested multiple-assignment target appends to a String variable from an Array literal (a String is not yet shared by reference through a nested multiple-assignment target). Append to the source String instead.
-== test/reject/string_nested_masgn_target.rb [default] rc=1
-spinel: test/reject/string_nested_masgn_target.rb:4: a nested multiple-assignment target appends to a String variable from an Array literal (a String is not yet shared by reference through a nested multiple-assignment target). Append to the source String instead.
-== test/reject/string_nested_masgn_target.rb [promote] rc=1
-spinel: test/reject/string_nested_masgn_target.rb:4: a nested multiple-assignment target appends to a String variable from an Array literal (a String is not yet shared by reference through a nested multiple-assignment target). Append to the source String instead.
-== test/reject/string_plain_mutator_result_mutation.rb [default] rc=1
-spinel: test/reject/string_plain_mutator_result_mutation.rb:7: the result of `bytesplice`, `append_as_bytes`, or `concat` or `prepend` with other than one argument, which is its receiver, is mutated in place (a String is not yet shared by reference through such a result). Mutate the receiver instead.
-== test/reject/string_plain_mutator_result_mutation.rb [promote] rc=1
-spinel: test/reject/string_plain_mutator_result_mutation.rb:7: the result of `bytesplice`, `append_as_bytes`, or `concat` or `prepend` with other than one argument, which is its receiver, is mutated in place (a String is not yet shared by reference through such a result). Mutate the receiver instead.
-== test/reject/string_plain_mutator_result_toplevel_ivar.rb [default] rc=1
-spinel: test/reject/string_plain_mutator_result_toplevel_ivar.rb:7: the result of `bytesplice`, `append_as_bytes`, or `concat` or `prepend` with other than one argument, which is its receiver, is mutated in place (a String is not yet shared by reference through such a result). Mutate the receiver instead.
-== test/reject/string_plain_mutator_result_toplevel_ivar.rb [promote] rc=1
-spinel: test/reject/string_plain_mutator_result_toplevel_ivar.rb:7: the result of `bytesplice`, `append_as_bytes`, or `concat` or `prepend` with other than one argument, which is its receiver, is mutated in place (a String is not yet shared by reference through such a result). Mutate the receiver instead.
-== test/reject/string_proc_param_store.rb [default] rc=1
-spinel: test/reject/string_proc_param_store.rb:6: a String held by a block parameter no element iterator binds (a proc's, a lambda's, a yielding method's block, `each_char`'s) is stored into a container and mutated in place through it (a String is not yet shared by reference through a stored block parameter). Mutate the String before storing it, or store it where the caller holds it.
-== test/reject/string_proc_param_store.rb [promote] rc=1
-spinel: test/reject/string_proc_param_store.rb:6: a String held by a block parameter no element iterator binds (a proc's, a lambda's, a yielding method's block, `each_char`'s) is stored into a container and mutated in place through it (a String is not yet shared by reference through a stored block parameter). Mutate the String before storing it, or store it where the caller holds it.
-== test/reject/string_reopen_proc_self_mutation.rb [default] rc=1
-spinel: test/reject/string_reopen_proc_self_mutation.rb:6: String self is not yet shared by reference with a block that mutates it: the default build would hand on a copy. Build with --share-strings to support this call.
-spinel: 1 refusal, nothing written
-== test/reject/string_reopen_proc_self_mutation.rb [promote] rc=1
-spinel: test/reject/string_reopen_proc_self_mutation.rb:6: String self is not yet shared by reference with a block that mutates it: the default build would hand on a copy. Build with --share-strings to support this call.
-spinel: 1 refusal, nothing written
-== test/reject/string_reopen_yield_self_mutation.rb [default] rc=1
-spinel: test/reject/string_reopen_yield_self_mutation.rb:6: String self is not yet shared by reference with a block that mutates it: the default build would hand on a copy. Build with --share-strings to support this call.
-spinel: 1 refusal, nothing written
-== test/reject/string_reopen_yield_self_mutation.rb [promote] rc=1
-spinel: test/reject/string_reopen_yield_self_mutation.rb:6: String self is not yet shared by reference with a block that mutates it: the default build would hand on a copy. Build with --share-strings to support this call.
-spinel: 1 refusal, nothing written
-== test/reject/string_rest_splat_yield.rb [default] rc=1
-spinel: test/reject/string_rest_splat_yield.rb:7: a String is passed to a block's parameter `b` through a splat into a yield, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splat into a yield). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_rest_splat_yield.rb [promote] rc=1
-spinel: test/reject/string_rest_splat_yield.rb:7: a String is passed to a block's parameter `b` through a splat into a yield, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splat into a yield). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_returned_arg_plain_mutator.rb [default] rc=1
-spinel: test/reject/string_returned_arg_plain_mutator.rb:8: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/string_returned_arg_plain_mutator.rb [promote] rc=1
-spinel: test/reject/string_returned_arg_plain_mutator.rb:8: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/string_returned_arg_plain_mutator_caller.rb [default] rc=1
-spinel: test/reject/string_returned_arg_plain_mutator_caller.rb:8: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/string_returned_arg_plain_mutator_caller.rb [promote] rc=1
-spinel: test/reject/string_returned_arg_plain_mutator_caller.rb:8: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/string_returned_arg_second.rb [default] rc=1
-spinel: test/reject/string_returned_arg_second.rb:7: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/string_returned_arg_second.rb [promote] rc=1
-spinel: test/reject/string_returned_arg_second.rb:7: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/string_returned_arg_second_append.rb [default] rc=1
-spinel: test/reject/string_returned_arg_second_append.rb:6: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/string_returned_arg_second_append.rb [promote] rc=1
-spinel: test/reject/string_returned_arg_second_append.rb:6: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/string_returned_arg_stored.rb [default] rc=1
-spinel: test/reject/string_returned_arg_stored.rb:7: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/string_returned_arg_stored.rb [promote] rc=1
-spinel: test/reject/string_returned_arg_stored.rb:7: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/string_returned_arg_stored_element.rb [default] rc=1
-spinel: test/reject/string_returned_arg_stored_element.rb:6: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/string_returned_arg_stored_element.rb [promote] rc=1
-spinel: test/reject/string_returned_arg_stored_element.rb:6: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/string_returned_arg_stored_literal.rb [default] rc=1
-spinel: test/reject/string_returned_arg_stored_literal.rb:5: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/string_returned_arg_stored_literal.rb [promote] rc=1
-spinel: test/reject/string_returned_arg_stored_literal.rb:5: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/string_scan_block_kept_mutation.rb [default] rc=1
-spinel: test/reject/string_scan_block_kept_mutation.rb:6: a match `scan` hands its block is kept and mutated in place (a String is not yet shared by reference through `scan`'s block parameter). Mutate a copy (`m = +m.dup`) and keep that.
-== test/reject/string_scan_block_kept_mutation.rb [promote] rc=1
-spinel: test/reject/string_scan_block_kept_mutation.rb:6: a match `scan` hands its block is kept and mutated in place (a String is not yet shared by reference through `scan`'s block parameter). Mutate a copy (`m = +m.dup`) and keep that.
-== test/reject/string_self_reader_push.rb [default] rc=1
-spinel: test/reject/string_self_reader_push.rb:9: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
-== test/reject/string_self_reader_push.rb [promote] rc=1
-spinel: test/reject/string_self_reader_push.rb:9: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
-== test/reject/string_splat_changed_array.rb [default] rc=1
-spinel: test/reject/string_splat_changed_array.rb:11: a String is passed to a proc's parameter `y` through a splat of an Array the program changes, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splat of an Array that holds a copy). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_splat_changed_array.rb [promote] rc=1
-spinel: test/reject/string_splat_changed_array.rb:11: a String is passed to a proc's parameter `y` through a splat of an Array the program changes, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splat of an Array that holds a copy). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_splat_global_toplevel.rb [default] rc=1
-spinel: test/reject/string_splat_global_toplevel.rb:8: a String is passed to `app`'s parameter `a` through a splat, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splat). Return the String from the method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_splat_global_toplevel.rb [promote] rc=1
-spinel: test/reject/string_splat_global_toplevel.rb:8: a String is passed to `app`'s parameter `a` through a splat, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splat). Return the String from the method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_split_element_read_mutation.rb [default] rc=1
-spinel: test/reject/string_split_element_read_mutation.rb:6: an element read of a local String Array that split, scan, lines or chars answered is mutated in place (a String is not yet shared by reference through such an Array's element read). Write the changed String back into the Array (`a[i] = a[i].chomp`), or build the Array with map.
-== test/reject/string_split_element_read_mutation.rb [promote] rc=1
-spinel: test/reject/string_split_element_read_mutation.rb:6: an element read of a local String Array that split, scan, lines or chars answered is mutated in place (a String is not yet shared by reference through such an Array's element read). Write the changed String back into the Array (`a[i] = a[i].chomp`), or build the Array with map.
-== test/reject/string_split_local_each_in_loop.rb [default] rc=1
-spinel: test/reject/string_split_local_each_in_loop.rb:9: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
-== test/reject/string_split_local_each_in_loop.rb [promote] rc=1
-spinel: test/reject/string_split_local_each_in_loop.rb:9: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
-== test/reject/string_split_local_each_in_retrying_rescue.rb [default] rc=1
-spinel: test/reject/string_split_local_each_in_retrying_rescue.rb:11: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
-== test/reject/string_split_local_each_in_retrying_rescue.rb [promote] rc=1
-spinel: test/reject/string_split_local_each_in_retrying_rescue.rb:11: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
-== test/reject/string_split_local_each_mutation.rb [default] rc=1
-spinel: test/reject/string_split_local_each_mutation.rb:7: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
-== test/reject/string_split_local_each_mutation.rb [promote] rc=1
-spinel: test/reject/string_split_local_each_mutation.rb:7: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
 == test/reject/string_split_local_each_rescue_modifier_retry.rb [default] rc=1
-spinel: test/reject/string_split_local_each_rescue_modifier_retry.rb:8: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
+spinel: test/reject/string_split_local_each_rescue_modifier_retry.rb:8: unsupported retry (outside rescue): node N (RetryNode)
+spinel: 1 refusal, nothing written
 == test/reject/string_split_local_each_rescue_modifier_retry.rb [promote] rc=1
-spinel: test/reject/string_split_local_each_rescue_modifier_retry.rb:8: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
-== test/reject/string_split_local_each_retry.rb [default] rc=1
-spinel: test/reject/string_split_local_each_retry.rb:10: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
-== test/reject/string_split_local_each_retry.rb [promote] rc=1
-spinel: test/reject/string_split_local_each_retry.rb:10: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
-== test/reject/string_split_local_shift_after_each.rb [default] rc=1
-spinel: test/reject/string_split_local_shift_after_each.rb:7: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
-== test/reject/string_split_local_shift_after_each.rb [promote] rc=1
-spinel: test/reject/string_split_local_shift_after_each.rb:7: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
-== test/reject/string_split_map_bang_read_before.rb [default] rc=1
-spinel: test/reject/string_split_map_bang_read_before.rb:7: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
-== test/reject/string_split_map_bang_read_before.rb [promote] rc=1
-spinel: test/reject/string_split_map_bang_read_before.rb:7: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
-== test/reject/string_split_map_bang_retry.rb [default] rc=1
-spinel: test/reject/string_split_map_bang_retry.rb:9: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
-== test/reject/string_split_map_bang_retry.rb [promote] rc=1
-spinel: test/reject/string_split_map_bang_retry.rb:9: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
-== test/reject/string_split_result_iterator_append.rb [default] rc=1
-spinel: test/reject/string_split_result_iterator_append.rb:5: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
-== test/reject/string_split_result_iterator_append.rb [promote] rc=1
-spinel: test/reject/string_split_result_iterator_append.rb:5: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
-== test/reject/string_split_select_mutation.rb [default] rc=1
-spinel: test/reject/string_split_select_mutation.rb:6: a String is not yet shared by reference through an ivar's or a call's Array into an appending iterator block
-== test/reject/string_split_select_mutation.rb [promote] rc=1
-spinel: test/reject/string_split_select_mutation.rb:6: a String is not yet shared by reference through an ivar's or a call's Array into an appending iterator block
-== test/reject/string_tap_fresh_append.rb [default] rc=1
-spinel: test/reject/string_tap_fresh_append.rb:3: a String is not yet shared by reference through tap on a fresh String
-spinel: 1 refusal, nothing written
-== test/reject/string_tap_fresh_append.rb [promote] rc=1
-spinel: test/reject/string_tap_fresh_append.rb:3: a String is not yet shared by reference through tap on a fresh String
-spinel: 1 refusal, nothing written
-== test/reject/string_thread_arg.rb [default] rc=1
-spinel: test/reject/string_thread_arg.rb:5: a String is passed to a block's parameter `t` through `Thread.new`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `Thread.new`). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_thread_arg.rb [promote] rc=1
-spinel: test/reject/string_thread_arg.rb:5: a String is passed to a block's parameter `t` through `Thread.new`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `Thread.new`). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_thread_arg_in_loop.rb [default] rc=1
-spinel: test/reject/string_thread_arg_in_loop.rb:7: a String is passed to a block's parameter `t` through `Thread.new`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `Thread.new`). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_thread_arg_in_loop.rb [promote] rc=1
-spinel: test/reject/string_thread_arg_in_loop.rb:7: a String is passed to a block's parameter `t` through `Thread.new`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `Thread.new`). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_thread_block_param_arg.rb [default] rc=1
-spinel: test/reject/string_thread_block_param_arg.rb:6: a String is passed to a block's parameter `t` through `Thread.new`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `Thread.new`). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_thread_block_param_arg.rb [promote] rc=1
-spinel: test/reject/string_thread_block_param_arg.rb:6: a String is passed to a block's parameter `t` through `Thread.new`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `Thread.new`). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_thread_global_arg.rb [default] rc=1
-spinel: test/reject/string_thread_global_arg.rb:5: a String is passed to a block's parameter `t` through `Thread.new`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `Thread.new`). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_thread_global_arg.rb [promote] rc=1
-spinel: test/reject/string_thread_global_arg.rb:5: a String is passed to a block's parameter `t` through `Thread.new`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `Thread.new`). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_thread_ivar_arg.rb [default] rc=1
-spinel: test/reject/string_thread_ivar_arg.rb:7: a String is passed to a block's parameter `t` through `Thread.new`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `Thread.new`). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_thread_ivar_arg.rb [promote] rc=1
-spinel: test/reject/string_thread_ivar_arg.rb:7: a String is passed to a block's parameter `t` through `Thread.new`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `Thread.new`). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_thread_method_param_arg.rb [default] rc=1
-spinel: test/reject/string_thread_method_param_arg.rb:5: a String is passed to a block's parameter `t` through `Thread.new`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `Thread.new`). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_thread_method_param_arg.rb [promote] rc=1
-spinel: test/reject/string_thread_method_param_arg.rb:5: a String is passed to a block's parameter `t` through `Thread.new`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `Thread.new`). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_to_s_receiver_rebind.rb [default] rc=1
-spinel: test/reject/string_to_s_receiver_rebind.rb:8: `to_s` (or another call answering its String receiver) is mutated in place while an argument reassigns the variable it was read from (a String is not yet shared by reference through `to_s` on a String). Mutate the variable itself, or read it into another local first.
-== test/reject/string_to_s_receiver_rebind.rb [promote] rc=1
-spinel: test/reject/string_to_s_receiver_rebind.rb:8: `to_s` (or another call answering its String receiver) is mutated in place while an argument reassigns the variable it was read from (a String is not yet shared by reference through `to_s` on a String). Mutate the variable itself, or read it into another local first.
-== test/reject/string_to_s_store_boxed_local.rb [default] rc=1
-spinel: test/reject/string_to_s_store_boxed_local.rb:7: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
-== test/reject/string_to_s_store_boxed_local.rb [promote] rc=1
-spinel: test/reject/string_to_s_store_boxed_local.rb:7: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
-== test/reject/string_yield_captured_param.rb [default] rc=1
-spinel: test/reject/string_yield_captured_param.rb:4: a String is passed to a block's parameter `q` through `yield` into a capture-wrapper block, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `yield` into a capture-wrapper block). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_yield_captured_param.rb [promote] rc=1
-spinel: test/reject/string_yield_captured_param.rb:4: a String is passed to a block's parameter `q` through `yield` into a capture-wrapper block, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `yield` into a capture-wrapper block). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_yield_line_read_after.rb [default] rc=1
-spinel: test/reject/string_yield_line_read_after.rb:7: a String is passed to a proc's parameter `s` through a yield into a block argument, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a `yield` into a Method or proc passed with `&`). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_yield_line_read_after.rb [promote] rc=1
-spinel: test/reject/string_yield_line_read_after.rb:7: a String is passed to a proc's parameter `s` through a yield into a block argument, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a `yield` into a Method or proc passed with `&`). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_yield_line_user_each_line.rb [default] rc=1
-spinel: test/reject/string_yield_line_user_each_line.rb:14: a String is passed through a yield into a block argument, and a proc or Method it can reach appends to the String it is handed: this call hands it a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a `yield` into a Method or proc passed with `&`). Return the String from the proc or Method and assign it, or append to it in the caller.
-spinel: test/reject/string_yield_line_user_each_line.rb:14: a String is passed to a proc's parameter `s` through a yield into a block argument, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a `yield` into a Method or proc passed with `&`). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 2 refusals, nothing written
-== test/reject/string_yield_line_user_each_line.rb [promote] rc=1
-spinel: test/reject/string_yield_line_user_each_line.rb:14: a String is passed through a yield into a block argument, and a proc or Method it can reach appends to the String it is handed: this call hands it a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a `yield` into a Method or proc passed with `&`). Return the String from the proc or Method and assign it, or append to it in the caller.
-spinel: test/reject/string_yield_line_user_each_line.rb:14: a String is passed to a proc's parameter `s` through a yield into a block argument, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a `yield` into a Method or proc passed with `&`). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 2 refusals, nothing written
-== test/reject/string_yield_line_user_foreach.rb [default] rc=1
-spinel: test/reject/string_yield_line_user_foreach.rb:14: a String is passed through a yield into a block argument, and a proc or Method it can reach appends to the String it is handed: this call hands it a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a `yield` into a Method or proc passed with `&`). Return the String from the proc or Method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_yield_line_user_foreach.rb [promote] rc=1
-spinel: test/reject/string_yield_line_user_foreach.rb:14: a String is passed through a yield into a block argument, and a proc or Method it can reach appends to the String it is handed: this call hands it a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a `yield` into a Method or proc passed with `&`). Return the String from the proc or Method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_yield_poly_param_global.rb [default] rc=1
-spinel: test/reject/string_yield_poly_param_global.rb:8: a String is passed to `w`'s parameter `x` through a yield into a block argument, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a global variable). Return the String from the method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_yield_poly_param_global.rb [promote] rc=1
-spinel: test/reject/string_yield_poly_param_global.rb:8: a String is passed to `w`'s parameter `x` through a yield into a block argument, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a global variable). Return the String from the method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_yield_splat_captured.rb [default] rc=1
-spinel: test/reject/string_yield_splat_captured.rb:11: a String is passed to a block's parameter `q` through a splat into a yield, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splat into a yield). Return the String from the proc and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_yield_splat_captured.rb [promote] rc=1
-spinel: test/reject/string_yield_splat_captured.rb:11: a String is passed to a block's parameter `q` through a splat into a yield, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splat into a yield). Return the String from the proc and assign it, or append to it in the caller.
+spinel: test/reject/string_split_local_each_rescue_modifier_retry.rb:8: unsupported retry (outside rescue): node N (RetryNode)
 spinel: 1 refusal, nothing written
 == test/reject/stringio_subclass_initialize_no_super.rb [default] rc=1
 spinel: test/reject/stringio_subclass_initialize_no_super.rb:7: NoSuper#initialize does not call super: the StringIO it is would be left unset, where CRuby raises IOError (uninitialized stream) on its first use; call super in initialize
 == test/reject/stringio_subclass_initialize_no_super.rb [promote] rc=1
 spinel: test/reject/stringio_subclass_initialize_no_super.rb:7: NoSuper#initialize does not call super: the StringIO it is would be left unset, where CRuby raises IOError (uninitialized stream) on its first use; call super in initialize
-== test/reject/struct_masgn_string_member.rb [default] rc=1
-spinel: test/reject/struct_masgn_string_member.rb:11: unsupported multiple assignment index target non-array/hash: node N (MultiWriteNode)
-spinel: 1 refusal, nothing written
-== test/reject/struct_masgn_string_member.rb [promote] rc=1
-spinel: test/reject/struct_masgn_string_member.rb:11: unsupported multiple assignment index target non-array/hash: node N (MultiWriteNode)
-spinel: 1 refusal, nothing written
-== test/reject/struct_member_block_param_store.rb [default] rc=1
-spinel: test/reject/struct_member_block_param_store.rb:6: a String variable is stored into a Struct member or through an attribute writer into an instance variable that is mutated in place through another name (a String is not yet shared by reference through this variable). Store a String no variable keeps, or mutate it through the variable.
-spinel: 1 refusal, nothing written
-== test/reject/struct_member_block_param_store.rb [promote] rc=1
-spinel: test/reject/struct_member_block_param_store.rb:6: a String variable is stored into a Struct member or through an attribute writer into an instance variable that is mutated in place through another name (a String is not yet shared by reference through this variable). Store a String no variable keeps, or mutate it through the variable.
-spinel: 1 refusal, nothing written
 == test/reject/struct_subclass_own_new_superclass.rb [default] rc=1
 spinel: test/reject/struct_subclass_own_new_superclass.rb:7: unsupported superclass expression (a call other than Struct.new, Data.define, a Struct subclass's new or a blockless Class.new(Constant)): write the superclass as a constant
 == test/reject/struct_subclass_own_new_superclass.rb [promote] rc=1
@@ -2101,10 +1509,4 @@ spinel: test/reject/yield_method_only_in_subclass_when.rb:7: `with_wrapping` tak
 spinel: 1 refusal, nothing written
 == test/reject/yield_method_only_in_subclass_when.rb [promote] rc=1
 spinel: test/reject/yield_method_only_in_subclass_when.rb:7: `with_wrapping` takes a block and is defined only in subclasses of `Order`; define it in `Order` too (for example as `raise NotImplementedError`)
-spinel: 1 refusal, nothing written
-== test/reject/yield_splat_elem_append.rb [default] rc=1
-spinel: test/reject/yield_splat_elem_append.rb:5: a String is passed through a splat into a yield to a block parameter the block appends to, from a value that is not a String variable: the block would append to a copy. Return the String from the block and assign it, or append to it in the caller
-spinel: 1 refusal, nothing written
-== test/reject/yield_splat_elem_append.rb [promote] rc=1
-spinel: test/reject/yield_splat_elem_append.rb:5: a String is passed through a splat into a yield to a block parameter the block appends to, from a value that is not a String variable: the block would append to a copy. Return the String from the block and assign it, or append to it in the caller
 spinel: 1 refusal, nothing written

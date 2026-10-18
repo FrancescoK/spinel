@@ -78,9 +78,9 @@ registry, or stack reification -- none of which exist in a flat compiled binary.
 | Runtime structural mutation of a class through an explicit receiver (`Klass.include(M)`, `Klass.attr_accessor(...)`, `Klass.define_method(...)` outside the class body) | unsupported | the class graph, ancestor chain, and method/ivar layout are baked at compile time; the same declarations *inside* a `class` body work. `K.include(M)` / `K.prepend(M)` / `K.extend(M)` / `K.attr_*(:x)` as a statement of the program (K a class or module the program declares, every argument a constant or a symbol) is that reopening, `class K; prepend M; end`, and is supported, as are `Fiber.include(M)` / `Fiber.prepend(M)` and the same on Thread (fiber-annotation), whose reopenings are supported; likewise in K's own body. In a method, a block or a condition, through a constant holding a class (`A = Object`) and `define_method` it stays refused |
 | A method nil has of its own (`to_s`, `inspect`, `==`, `nil?`, `hash`, `is_a?`, ...) called on a user object that may be nil, where the program's method answers a value of another type than nil's (`def to_s = 42`), or the name is one whose answer the compiler does not produce (`dup`, `clone`, `respond_to?`, `methods`, `is_a?` with a computed class, ...) | the program's method runs for the nil receiver and answers as it does for an object; CRuby answers as NilClass (`""`, `nil`, `false`) | a call on an object that may be nil (the nil fact, #7444) raises `NoMethodError` for a method nil lacks, and takes NilClass's answer for `to_s`, `inspect`, `to_a`, `to_i`, `to_f`, `hash`, `nil?`, `!`, `frozen?`, `==`, `!=`, `===`, `eql?`, `equal?` and a kind query naming a constant, where that answer has the call's type (also through an alias of an `attr_reader`, by the name the call was written as). An answer of another type has no slot in the call's type, and the remaining names have answers the compiler does not model, so those calls run as before |
 | A call through an `@ivar` before the method that assigns it has run (`@store[k] = v` ahead of a `reset` that sets `@store = {}`) | a release build dereferences the unset slot and crashes (SIGSEGV); a `-g` / `--debug` build raises CRuby's `NoMethodError` (`undefined method '[]=' for nil`) | the test would stand in front of every call through such an ivar, and state a `reset` or `setup` method assigns is often the hottest there is (optcarrot lost 10-20% to it), so only the debug build carries it. An ivar the program fills only by memoization (`@c ||= {}`) is guarded in both builds |
-| An ivar write in an Object or Kernel method with boxed `self` | uses the existing reflective setter; refused if a possible receiver has no writable slot, or the default build encounters a shared String handle slot; `--share-strings` carries the handle through the setter | ordinary user-class slots are registered by the existing boxed-receiver analysis, including a class that starts with no ivars; its indexed call sites bound the receiver layouts, while calls it cannot follow remain conservative; an unused setter adds no instance slots; no write is silently dropped |
+| An ivar write in an Object or Kernel method with boxed `self` | uses the existing reflective setter; refused if a possible receiver has no writable slot, or a possible receiver has no writable slot; the setter carries a shared String's handle | ordinary user-class slots are registered by the existing boxed-receiver analysis, including a class that starts with no ivars; its indexed call sites bound the receiver layouts, while calls it cannot follow remain conservative; an unused setter adds no instance slots; no write is silently dropped |
 | `defined?(@x)` in an Object or Kernel method whose receiver is boxed | refused when the existing layout facts cannot track whether a possible receiver's slot has been assigned | an initialized slot, a slot whose value distinguishes unset, or a slot with an explicit presence bit is supported; a slot introduced by a root setter keeps its presence bit even if an unrelated class writes an ivar of the same name; mixed ordinary/reflective nil writes to related layouts can leave presence untracked |
-| General reflection (`methods`, `instance_variables`) and `instance_variable_get` / `instance_variable_set` / `instance_variable_defined?` with a **non-literal** name | a non-literal `instance_variable_get` or `instance_variable_set` on a user-class instance (typed, boxed, an exception, main) dispatches by name over the ivars its class declares, each as its literal form does: a read boxes the field and a write stores into it, after the analysis joined the written value's type into every field the write can reach (a field that may take a value of another type widens to a box). A name the class does not declare lives in a table keyed by the object, where the rest of the reflection finds it as CRuby does: `instance_variable_get` (literal or computed), `instance_variable_defined?` (literal or computed), `instance_variables` (after the declared names), the default `inspect`, `dup`, `clone` and `remove_instance_variable`. A name without `@` raises NameError, a frozen receiver (a Data, an immediate) FrozenError. Refused when a boxed receiver may be an instance of a class that defines its own `instance_variable_get` / `instance_variable_set`, and for a computed write on a by-value object; a computed write into a shared String field raises NotImplementedError when it runs, in the default build | user-class ivars are C struct offsets; a literal name resolves to the known offset, a computed one to a switch over the class's names, and the table takes the rest. Builtin reflective paths and ordinary ivar access in Object methods keep working. `instance_variables` can list the declared fields. A **literal** `instance_variable_get(:@x)` / `instance_variable_set(:@x, v)` *is* supported, like `send(:literal)` below. |
+| General reflection (`methods`, `instance_variables`) and `instance_variable_get` / `instance_variable_set` / `instance_variable_defined?` with a **non-literal** name | a non-literal `instance_variable_get` or `instance_variable_set` on a user-class instance (typed, boxed, an exception, main) dispatches by name over the ivars its class declares, each as its literal form does: a read boxes the field and a write stores into it, after the analysis joined the written value's type into every field the write can reach (a field that may take a value of another type widens to a box). A name the class does not declare lives in a table keyed by the object, where the rest of the reflection finds it as CRuby does: `instance_variable_get` (literal or computed), `instance_variable_defined?` (literal or computed), `instance_variables` (after the declared names), the default `inspect`, `dup`, `clone` and `remove_instance_variable`. A name without `@` raises NameError, a frozen receiver (a Data, an immediate) FrozenError. Refused when a boxed receiver may be an instance of a class that defines its own `instance_variable_get` / `instance_variable_set`, and for a computed write on a by-value object; a computed write into a shared String field raises NotImplementedError when it runs | user-class ivars are C struct offsets; a literal name resolves to the known offset, a computed one to a switch over the class's names, and the table takes the rest. Builtin reflective paths and ordinary ivar access in Object methods keep working. `instance_variables` can list the declared fields. A **literal** `instance_variable_get(:@x)` / `instance_variable_set(:@x, v)` *is* supported, like `send(:literal)` below. |
 | User-defined `#hash` / `#eql?` for hash *keys* | not dispatched (identity probe) | the hash machinery can't call back into a user method per key |
 | A method that **uses its block** (`yield` or `block.call`) **and recurses into itself** (`def rec(n, &b); ...; rec(n-1, &b); yield n; end`) | compile error (loud, was a hang / undefined-symbol) | a block-using method is inlined at each call site (there is no standalone function that takes the block), so a self-call inlines its own body unboundedly -- the runtime base case is invisible at compile time. Recursion *through a yielded block* (`with_state { with_state { } }`, finite source nesting) does work |
 | `Monitor#class` | reports `Thread::Mutex` | a Monitor IS a mutex here, with reentrancy switched on per object, and the class name for a `TY_MUTEX` value is decided at compile time from the type rather than read off the object. `#synchronize` (including reentrant use), `#try_enter` and mutual exclusion across threads all behave as CRuby's do; only the name differs. The `MonitorMixin` module is modelled for an includer (`synchronize`, `mon_*`, `new_cond` and its `wait` / `wait_while` / `wait_until` / `signal` / `broadcast`); `Monitor#new_cond` on a Monitor itself is not. |
@@ -161,7 +161,7 @@ The require-gated stdlib Spinel *does* provide (`StringIO`, `IO#winsize`,
 `require` is a compile error. This is opt-in today via `--require-gate` (or
 `SPINEL_REQUIRE_GATE=1`); `spin build` always compiles with it on.
 See [require.md](require.md) for which stdlib needs which `require`.
-| Mixed / non-UTF-8 encodings | UTF-8 / ASCII-8BIT only. `IO#set_encoding` picks between the two (US-ASCII counts as UTF-8) for what a read with no length and `getc` answer; a third encoding, an internal encoding that would convert reads, or `BOM\|` raises `NotImplementedError` at run time, and options (`invalid: :replace`, ...) are refused. `String#encode` / `encode!` convert between UTF-8, ASCII-8BIT and US-ASCII with `invalid:`, `undef:` and `replace:` as CRuby's; with another encoding they answer ASCII text unchanged where both encodings hold it as ASCII (and an empty String as empty) and raise `NotImplementedError` otherwise, as they do for non-ASCII text from US-ASCII to itself without `invalid: :replace`, and a call that names `xml:`, `fallback:` or a newline option, or computes an option's key, is refused (a `**` hash holding one of those options raises `NotImplementedError`). `encode!` that replaces characters raises `NotImplementedError` except under `--share-strings` on a variable or a String shared by reference, where it reaches every name for the String; `s = s.encode(...)` works everywhere | one internal representation; transcoding tables are out of scope |
+| Mixed / non-UTF-8 encodings | UTF-8 / ASCII-8BIT only. `IO#set_encoding` picks between the two (US-ASCII counts as UTF-8) for what a read with no length and `getc` answer; a third encoding, an internal encoding that would convert reads, or `BOM\|` raises `NotImplementedError` at run time, and options (`invalid: :replace`, ...) are refused. `String#encode` / `encode!` convert between UTF-8, ASCII-8BIT and US-ASCII with `invalid:`, `undef:` and `replace:` as CRuby's; with another encoding they answer ASCII text unchanged where both encodings hold it as ASCII (and an empty String as empty) and raise `NotImplementedError` otherwise, as they do for non-ASCII text from US-ASCII to itself without `invalid: :replace`, and a call that names `xml:`, `fallback:` or a newline option, or computes an option's key, is refused (a `**` hash holding one of those options raises `NotImplementedError`). `encode!` that replaces characters works on a variable or a String shared by reference, where it reaches every name for the String, and raises `NotImplementedError` elsewhere; `s = s.encode(...)` works everywhere | one internal representation; transcoding tables are out of scope |
 | Embedded `NUL` in general binary strings | `char *` boundary assumption | most string ops are NUL-terminated at the C boundary |
 
 `send`/`public_send`/`__send__` with a **non-literal** name (`send(meth)`) is
@@ -329,7 +329,7 @@ Limited today, but additively fixable; listed roughly easiest-first.
 | A fiber scheduler (`Fiber.set_scheduler`, `Fiber.schedule`, the `Fiber::Scheduler` hooks) | not supported: `Fiber.scheduler` and `Fiber.current_scheduler` are always nil | blocking IO, `sleep` and the thread primitives park the green thread on Spinel's own scheduler instead (see [thread.md](thread.md)); nothing routes them to a Ruby scheduler object yet. `Fiber#blocking?`, `Fiber.blocking?`, `Fiber.blocking { }` and `Fiber.new(blocking:)` work, and answer what CRuby answers with no scheduler set |
 | `k.new(x)` where `k` is a Class VALUE and the constructor parameter is typed by its DEFAULT | `NoMethodError` where CRuby constructs | `initialize(a = 1)` types `a` Integer. A statically known `Klass.new("x")` widens that parameter, because the inference can see the call site and which class it names; a class-value call site names no class, so it seeds nothing and the parameter keeps the type its default gave it. The dispatch then has no arm for a String argument and raises. Passing an argument of the parameter's own type works, as does any constructor whose parameters are typed by their uses rather than by a default. Before this raise existed the arm was selected anyway and the argument's bits were read as the parameter's type, so the raise is the fix rather than the limitation |
 | A promoted value stored into an int-typed Array (`--int-overflow=promote`) | truncated back to int64 by the store | the array's element type has to widen with the value; blanket-widening every int array costs promote mode more than it buys, so this wants a data-flow rule. Seeding the array with one value past 2^63 (or holding the state in a scalar) keeps the promotion today |
-| A splatted call on a boxed value that may be a builtin, beside a user method of the same name (`o.center(*a)`, where `o` holds a String or a user object with its own `center`) | for the names in `bop_generic_rows` (src/builtin_ops.c), the builtin side runs one function per method name, which takes the list's length and its elements boxed and answers boxed. A receiver whose class has no such method raises `NoMethodError` before an argument is read, as in CRuby. It writes out up to 4 arguments: a longer list into a method that takes any number raises `NotImplementedError`, and so does a list holding an object of a program class (its `to_str` or `<=>` would run in another order than CRuby's). A name that changes its receiver in place (any name ending in `!`, and the String mutators such as `prepend` and `replace`) takes it only under `--share-strings`, on any receiver (`[3, 1, 2].sort!` too): the default build hands the builtin a copy of a boxed String, and the written-out call loses the change the same way. These raise `NoMethodError`, as before: an instance of an Array, Hash or String subclass; a program that gives a builtin class or module a method (`class String; def blank?`), or names the method by a Symbol (`alias`, `undef_method`, `private :center`, `send(:center)`); any other name, a count past the most its row allows (`round(*a)` with one argument), and the names whose blockless form answers an Enumerator (`each_slice`, `index`) | a name joins the table once its function, on every builtin receiver class and with each kind of argument, answers as CRuby does or raises. Some are out because the written-out call answers wrong too: `o.fill(x)` with a boxed `x` answers `[1.0, 1.0]` on `[1.5, 2.5]`, `o.utc` on a boxed Time and `t.localtime("+09:00")` leave the Time as it was, `assoc` compares keys with `eql?`, `byteoffset(5)` answers `[nil, nil]` past the last group, `"héllo".byteindex("l", 2)` answers 3 from inside a character, and `rpartition(/(b)/)` leaves `$~` on another match |
+| A splatted call on a boxed value that may be a builtin, beside a user method of the same name (`o.center(*a)`, where `o` holds a String or a user object with its own `center`) | for the names in `bop_generic_rows` (src/builtin_ops.c), the builtin side runs one function per method name, which takes the list's length and its elements boxed and answers boxed. A receiver whose class has no such method raises `NoMethodError` before an argument is read, as in CRuby. It writes out up to 4 arguments: a longer list into a method that takes any number raises `NotImplementedError`, and so does a list holding an object of a program class (its `to_str` or `<=>` would run in another order than CRuby's). A name that changes its receiver in place (any name ending in `!`, and the String mutators such as `prepend` and `replace`) takes it on any receiver (`[3, 1, 2].sort!` too): the boxed String is shared by reference, so the written-out call changes it. These raise `NoMethodError`, as before: an instance of an Array, Hash or String subclass; a program that gives a builtin class or module a method (`class String; def blank?`), or names the method by a Symbol (`alias`, `undef_method`, `private :center`, `send(:center)`); any other name, a count past the most its row allows (`round(*a)` with one argument), and the names whose blockless form answers an Enumerator (`each_slice`, `index`) | a name joins the table once its function, on every builtin receiver class and with each kind of argument, answers as CRuby does or raises. Some are out because the written-out call answers wrong too: `o.fill(x)` with a boxed `x` answers `[1.0, 1.0]` on `[1.5, 2.5]`, `o.utc` on a boxed Time and `t.localtime("+09:00")` leave the Time as it was, `assoc` compares keys with `eql?`, `byteoffset(5)` answers `[nil, nil]` past the last group, `"héllo".byteindex("l", 2)` answers 3 from inside a character, and `rpartition(/(b)/)` leaves `$~` on another match |
 
 ### Bound Methods read out of poly slots
 
@@ -772,27 +772,22 @@ Symbol ends there read as numbers. A literal Range of Symbols (`:a..:e`) is
 built as its Array of Symbols: it enumerates and answers `include?` as CRuby's
 does, but `p` prints the Array and `size` counts it.
 
-#### A String Range keeps copies of its endpoints in the default build
+#### A String Range keeps the String objects of its endpoints
 
-In the default build a Range of Strings holds its two endpoints by value, as
-copies. A change in place to the String an endpoint was made from (`<<`, a
-`!` method) is not seen through the Range, and `begin` / `end` answer a copy
-of the endpoint rather than the String itself:
+A Range of Strings keeps the String objects its endpoints were made from,
+wherever the Range is held (a local, an instance variable, a Struct or Data
+member, an Array or Hash element, a global, a constant, a class variable):
+every read of the Range sees each endpoint as it is now, and `begin` /
+`first` / `end` / `last` answer that String itself, so a change through
+`r.begin` changes the endpoint's String, as in CRuby. A frozen literal
+endpoint stays the frozen literal.
 
 ```ruby
 first = String.new("aa")
 r = (first.."zz")
 first << "x"
-p r.begin       # "aax" in CRuby and under --share-strings, "aa" in the default build
+p r.begin       # "aax", as in CRuby
 ```
-
-Built with `--share-strings`, a String Range keeps the String objects its
-endpoints were made from, wherever the Range is held (a local, an instance
-variable, a Struct or Data member, an Array or Hash element, a global, a
-constant, a class variable): every read of the Range sees each endpoint as
-it is now, and `begin` / `first` / `end` / `last` answer that String itself,
-so a change through `r.begin` changes the endpoint's String. A frozen
-literal endpoint stays the frozen literal.
 
 #### A call that cannot exist is refused at compile time, not raised at run time
 
@@ -914,7 +909,7 @@ process environment. Its class is Hash, not Object.
 
 #### Some ENV result routes cannot carry a shared String yet
 
-With `--share-strings`, `ENV.store` and `ENV.[]=` return their value
+`ENV.store` and `ENV.[]=` return their value
 argument's handle while the environment keeps a copy. A shared String
 stored through a boxed value is refused when another live name could
 observe a copy of its plain bytes. Fresh results and fresh values passed
@@ -989,7 +984,7 @@ copy behaves as CRuby's String does. With any other read of it in the
 method, or a yield that is not a statement of the block's own body (one in
 a loop could hand the grown String over again), it is refused as above.
 
-With `--share-strings`, loading a native class such as `StringIO` does not
+Loading a native class such as `StringIO` does not
 by itself invalidate a fresh String returned by a user method through a
 boxed receiver. Native candidate entries with no Ruby method, reader, or
 native binding for the called name or `method_missing` add no return path.
@@ -1009,14 +1004,14 @@ instance variable counts as one that can. A top-level `method_missing`
 counts for every call, and one in an object's singleton class or a module
 a class extends whatever the receiver can be.
 
-With `--share-strings`, a method that returns a fresh empty Hash directly
+A method that returns a fresh empty Hash directly
 (`{}` or a blockless `Hash.new` with no default or a String/nil default) can
 carry shared String values even when inference otherwise gives the return a
 String-keyed, String-valued type. The promotion preserves the Hash and stored
 String identities through callers and ivars. RBS-pinned returns and methods
 with nonempty or alternate Hash producers keep their existing inferred types.
 
-With `--share-strings`, a boxed call may also compose an exact String builtin
+A boxed call may also compose an exact String builtin
 row with same-named user-method returns when the settled dispatch plan accounts
 for both. For example, a blockless two-argument `String#sub` can return a fresh
 String through its String arm while a same-named user method returns `nil`;
@@ -1033,7 +1028,6 @@ programs retain the previous boxed-container effects.
 
 Not yet shared:
 
-- String `self` handed to a mutating block through `yield` or `block.call` in the default build. Build with `--share-strings` to keep receiver mutations through this route. Read-only blocks and fresh String returns work in both builds;
 - a String variable in a splatted Hash literal (`**{ k: v }`) at a dynamic call or yield whose key binds an appending keyword parameter;
 
 - a String variable in an Array literal feeding an appended nested multiple-assignment target;
@@ -1052,7 +1046,7 @@ Not yet shared:
 - through a container element, a String a boxed local holds (`s = [+"xy", 1][k]`) stored into an Array, a Hash, an instance variable's or a global's Array and mutated in place through an element read or an iterator's block parameter (`[s][0].prepend(x)`, `[s].each { |e| e << x }`);
 - through a literal's element, a local bound from an element read of an Array or Hash literal holding a String variable (`t = [s][0]`, `t = [s].first`), when the local is mutated in place and the variable is read again;
 - through a global variable: a String variable assigned from a global (`t = $g`, `t = $g.to_s`) or to one (`$g = s`, `$h = $g`), when one name is mutated in place and the other is read;
-- through a method that returns its String parameter (`def id(x) = x`, also `x.itself` or a bang method on it), when the result or the variable passed in is mutated in place and the other is read (a variable passed in through the caller's own parameter counts: the caller reads it again). A reopened String method returning an omitted parameter whose default is `self` hands on a copy of the receiver in the default build and is not refused (`--share-strings` shares it);
+- through a method that returns its String parameter (`def id(x) = x`, also `x.itself` or a bang method on it), when the result or the variable passed in is mutated in place and the other is read (a variable passed in through the caller's own parameter counts: the caller reads it again);
 - through a bang method's result, which is its receiver (`r = s.strip!`, `r = s.strip! || s`), when the result is mutated in place through a variable and the receiver is read, by its own name or, for a local that shares its String, through the other one (`t = s; r = t.strip!`); a mutator straight on the result (`s.sub!(a, b) << x`) reaches the receiver;
 - through the result of `bytesplice`, `append_as_bytes`, or `concat` or `prepend` with other than one argument, which is its receiver too (`r = s.concat(a, b)`), when the result is mutated in place through a local, a global or an instance variable of the top level and the receiver is read, or when a method returns its parameter through one of them. A class's instance variable that keeps the result is left alone: an append through it reaches an instance-variable receiver in some programs (`@r = @s.concat(a, b)` where a parameter set `@s`) and does not build in others, and most other changes through either name are lost. A mutator straight on the result of `bytesplice` or `append_as_bytes` (`s.bytesplice(0, 1, "Z") << x`) does not reach the receiver. Neither of these is refused yet;
 - through `to_s` (or another call answering its String receiver) under a mutator whose argument reassigns the variable, when the variable is a String handle (`e.to_s << (e = +"b")`);
@@ -1067,7 +1061,6 @@ Not yet shared:
 - into an Array or Hash a caller passes a method, a String the method stores (`def keep(a) = (a << n)`), when the caller mutates the element in place;
 
 - through an ivar's or a call's Array, a fresh Array literal, a narrowed boxed String element, or a fresh String's `tap`, into an appending block or parameter;
-- through a parameter of a reopened builtin's method that the method yields on or passes to its `&block` (`class String; def po(a) = yield(a); end`, then `s.po(u) { |v| v << x }`), into an appending block: the block appends to a copy in the default build, and this is not refused (`--share-strings` shares it);
 
 - by keyword, through a curried proc;
 - through `instance_exec`, a String variable in or ahead of a splat
@@ -1898,5 +1891,4 @@ design or on the relaxable list.
 String line iteration with a nil separator yields the receiver itself. A block
 that mutates that String while another name observes it is refused because the
 line iterator cannot bind the receiver handle. Array#fill block results use
-shared handles under `--share-strings`; the default build refuses an observed
-mutation through a retained String result.
+shared handles.

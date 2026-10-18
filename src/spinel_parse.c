@@ -2442,13 +2442,11 @@ static int source_references_io_buffer(const char *src) {
    sp_feature_enabled(). Definitions here (spinel_parse.c includes no project
    headers); declared extern in compiler.h. */
 int g_require_gate = 0;
-/* --share-strings, as main.c exports it: on only when SPINEL_SHARE_STRINGS
-   is set to something, empty and "0" being off. The compiler's flag and the
-   parser's read of a package's share declarations ask this one test. */
-int sp_share_strings_env(void) {
-  const char *e = getenv("SPINEL_SHARE_STRINGS");
-  return e && *e && strcmp(e, "0") != 0;
-}
+/* A String is shared by reference, as CRuby shares it (#6765): the one
+   mode, with no switch to copy. The compiler's flag and the parser's read
+   of a package's share declarations ask this one test; `--share-strings`
+   is still accepted and changes nothing. */
+int sp_share_strings_env(void) { return 1; }
 int g_require_gate_cli = 0;   /* --require-gate */
 static char **sp_req_feats = NULL;
 static int sp_req_feats_n = 0;

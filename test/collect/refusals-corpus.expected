@@ -1,28 +1,6 @@
-== test/array_op_assign_reads_slot_first.rb [promote] rc=1
-spinel: test/array_op_assign_reads_slot_first.rb:64: the operand of an `op=` given a Array, which no conversion keeps in its sp_IntArray * slot
-spinel: test/array_op_assign_reads_slot_first.rb:88: the operand of an `op=` given a Array, which no conversion keeps in its sp_IntArray * slot
-spinel: test/array_op_assign_reads_slot_first.rb:14: the operand of an `op=` given a Array, which no conversion keeps in its sp_IntArray * slot
-spinel: 3 refusals, nothing written
-== test/array_push_stmt_operand_order.rb [promote] rc=1
-spinel: test/array_push_stmt_operand_order.rb:132: an attribute writer given a Array, which no conversion keeps in its sp_PolyArray * slot
-spinel: 1 refusal, nothing written
-== test/cvar_gc_root.rb [promote] rc=1
-spinel: test/cvar_gc_root.rb:8: the operand of an `op=` given a Array, which no conversion keeps in its sp_IntArray * slot
-spinel: 1 refusal, nothing written
-== test/cvar_gvar_array_op_assign_value.rb [promote] rc=1
-spinel: test/cvar_gvar_array_op_assign_value.rb:10: the operand of an `op=` given a Array, which no conversion keeps in its sp_IntArray * slot
-spinel: test/cvar_gvar_array_op_assign_value.rb:12: the operand of an `op=` given a Array, which no conversion keeps in its sp_IntArray * slot
-spinel: test/cvar_gvar_array_op_assign_value.rb:22: the operand of an `op=` given a Array, which no conversion keeps in its sp_IntArray * slot
-spinel: test/cvar_gvar_array_op_assign_value.rb:24: the operand of an `op=` given a Array, which no conversion keeps in its sp_IntArray * slot
-spinel: test/cvar_gvar_array_op_assign_value.rb:32: the operand of an `op=` given a Array, which no conversion keeps in its sp_IntArray * slot
-spinel: test/cvar_gvar_array_op_assign_value.rb:35: the operand of an `op=` given a Array, which no conversion keeps in its sp_IntArray * slot
-spinel: 6 refusals, nothing written
-== test/frozen_hash_shift_default_guard.rb [promote] rc=1
-spinel: test/frozen_hash_shift_default_guard.rb:71: a Hash default given a value of any class, which no conversion keeps in its sp_int slot
-spinel: 1 refusal, nothing written
-== test/ivar_array_op_assign.rb [promote] rc=1
-spinel: test/ivar_array_op_assign.rb:8: the operand of an `op=` given a Array, which no conversion keeps in its sp_IntArray * slot
-spinel: 1 refusal, nothing written
-== test/poly_dispatch_default_reads_param.rb [promote] rc=1
-spinel: test/poly_dispatch_default_reads_param.rb:25: a parameter default given a Array, which no conversion keeps in its sp_IntArray * slot
-spinel: 1 refusal, nothing written
+== packages/date/test/date_civil.rb [promote] rc=1
+spinel: packages/date/date/core.rb:1710: under --share-strings, the String the value of `to_s` hands on as an in-place change is shared with another name and changed in place, and that route cannot carry the shared handle yet: it would hand on a copy (#6765)
+== packages/date/test/date_parse_format.rb [promote] rc=1
+spinel: packages/date/date/core.rb:1622: under --share-strings, the String the value of `to_s` hands on as an in-place change is shared with another name and changed in place, and that route cannot carry the shared handle yet: it would hand on a copy (#6765)
+== packages/date/test/datetime_and_time.rb [promote] rc=1
+spinel: packages/date/date/core.rb:1622: under --share-strings, the String the value of `to_s` hands on as an in-place change is shared with another name and changed in place, and that route cannot carry the shared handle yet: it would hand on a copy (#6765)

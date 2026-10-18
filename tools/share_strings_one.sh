@@ -12,7 +12,6 @@ spinel=$1; t=$2
 e="$t.expected"
 rbs=
 case "$t" in
-  test/reject/*) e="test/share/reject/${t##*/}.expected";;
   test/rbs-seed/*) e="${t%.rb}.expected"; rbs="--rbs test/rbs-seed/sig";;
 esac
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/spinel-share1.XXXXXX") || exit 2

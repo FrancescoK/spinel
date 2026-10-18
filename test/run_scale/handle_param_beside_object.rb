@@ -1,4 +1,4 @@
-# run-scale: 100000 100 | 100000 1600 | 1.5
+# run-scale: 1000000 100 | 1000000 1600 | 1.5
 # #9434, #9457: a shared handle handed on to a read-only parameter beside
 # an object, an element read of a typed Array (of objects too), an
 # attr_reader's read or a scratch Array the reader makes was copied in full
