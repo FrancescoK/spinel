@@ -5170,6 +5170,32 @@ char **dsend_candidates(Compiler *c, int *out_n) {
       }
     }
   }
+  /* A method-table listing (`private_instance_methods(false)` in a class
+     body, `K.instance_methods(false)`) spells the names of its class's own
+     methods as surely as a literal: a table built from one and sent through
+     (actionpack's Journey::Visitors fill their DISPATCH_CACHE from the
+     private visit_*s) holds those names, so they count among the literals. */
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *rn = nt_str(nt, id, "name");
+    if (!rn || !(sp_streq(rn, "instance_methods") || sp_streq(rn, "public_instance_methods") ||
+                 sp_streq(rn, "private_instance_methods") || sp_streq(rn, "protected_instance_methods")))
+      continue;
+    int rr = nt_ref(nt, id, "receiver"), rci = -1;
+    if (rr < 0 || nt_kind(nt, rr) == NK_SelfNode) {
+      /* a statement of a class body (not of a def in it): the body's class */
+      Scope *ls = comp_scope_of(c, id);
+      if ((!ls || !ls->name) && c->node_cbody && id < c->node_cap) rci = c->node_cbody[id];
+    }
+    else if (nt_kind(nt, rr) == NK_ConstantReadNode) rci = comp_class_index(c, nt_str(nt, rr, "name"));
+    if (rci < 0) continue;
+    for (int s = 0; s < c->nscopes; s++) {
+      const char *sn = c->scopes[s].name;
+      if (!sn || c->scopes[s].class_id != rci || c->scopes[s].is_cmethod || anh_has(&g_dsend_lits, sn)) continue;
+      for (int k = 0; k < ncand; k++)
+        if (sp_streq(cand[k], sn)) { anh_add(&g_dsend_lits, cand[k]); break; }
+    }
+  }
   anh_free(&cand_set);
   int any_computed = 0;
   for (int id = 0; id < n0 && !any_computed; id++) {
@@ -16523,6 +16549,7 @@ static int cb_self_act(const NodeTable *nt, int s) {
     "eql?", "equal?", "object_id",
     /* Module's */
     "name", "ancestors", "superclass", "instance_methods", "public_instance_methods",
+    "private_instance_methods", "protected_instance_methods",
     "instance_method", "method_defined?", "public_method_defined?", "private_method_defined?",
     "include?", "included_modules", NULL };
   if (nt_kind(nt, s) != NK_CallNode || nt_ref(nt, s, "receiver") >= 0) return 0;
@@ -16550,6 +16577,7 @@ static int cb_program_defines(const NodeTable *nt, const char *nm) {
    methods from CRuby's table, take the class by name instead. */
 static int cb_method_table_name(const char *nm) {
   return nm && (sp_streq(nm, "instance_methods") || sp_streq(nm, "public_instance_methods") ||
+                sp_streq(nm, "private_instance_methods") || sp_streq(nm, "protected_instance_methods") ||
                 sp_streq(nm, "instance_method"));
 }
 static int cb_method_defined_name(const char *nm) {
