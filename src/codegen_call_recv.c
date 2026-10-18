@@ -15084,13 +15084,18 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
       }
       else if (sp_streq(name, "size")) {
         /* Integer#size is the byte width of the machine representation, not
-           a length; sp_poly_length has no arm for it and answered 0. */
-        oint_open(c, id, TY_INT, b); buf_puts(b, "sp_poly_size("); emit_boxed(c, recv, b); buf_puts(b, ")"); oint_close(c, id, b);
+           a length; sp_poly_length has no arm for it and answered 0. A call
+           the analysis types boxed (a program class's size answers more than
+           an Integer, though none of them is this receiver's arm) answers
+           boxed, as its reader takes it. */
+        if (comp_ntype(c, id) == TY_POLY) { buf_puts(b, "sp_box_oint(sp_poly_size("); emit_boxed(c, recv, b); buf_puts(b, "))"); }
+        else { oint_open(c, id, TY_INT, b); buf_puts(b, "sp_poly_size("); emit_boxed(c, recv, b); buf_puts(b, ")"); oint_close(c, id, b); }
       }
       else {
         /* nil / a number / a user object has no #length: answering 0 turned a
            NoMethodError into a silent zero (#3974) */
-        buf_puts(b, "sp_poly_length_m("); emit_boxed(c, recv, b); buf_puts(b, ")");
+        int bx = comp_ntype(c, id) == TY_POLY;
+        buf_puts(b, bx ? "sp_box_int(sp_poly_length_m(" : "sp_poly_length_m("); emit_boxed(c, recv, b); buf_puts(b, bx ? "))" : ")");
       }
       { *out = 1; return 1; }
     }
