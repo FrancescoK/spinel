@@ -624,6 +624,10 @@ int hc_string(Compiler *c, int recv, char *d, char *l, size_t cap);
    hc_iob_read: the call is a literal-typed get_value the cache reads */
 int hc_iobuf(Compiler *c, int recv, char *d, char *l, size_t cap);
 int hc_iob_read(Compiler *c, int id);
+/* hc_iobuf_w: the view's bytes and how many a write may store into;
+   hc_iob_write: the call is a literal-typed set_value the cache writes */
+int hc_iobuf_w(Compiler *c, int recv, char *d, char *w, size_t cap);
+int hc_iob_write(Compiler *c, int id);
 /* hc_array for a Float array whose in-range elements the reader needs to
    be no nil: *n names a length that is 0 while the array may hold one, or
    while `guard` (a Float local the loop does not assign; -1 for none) is

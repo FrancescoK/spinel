@@ -11486,7 +11486,27 @@ static int emit_native_binding_call(Compiler *c, int id, int cid, const char *na
       TyKind vt = comp_ntype(c, argv[2]);
       int f = comp_iob_ty_is_float(it);
       if ((f && (vt == TY_FLOAT || vt == TY_INT)) || (!f && vt == TY_INT)) {
-        buf_printf(b, "sp_IOBuffer_set_%s(", f ? "f" : "i");
+        const char *fi = f ? "f" : "i";
+        char hd[48], hw[48];
+        if (hc_iob_write(c, id) && hc_iobuf_w(c, recv, hd, hw, sizeof hd)) {
+          /* a buffer whose view the loop being emitted holds (hc_iobuf_w):
+             a value that goes within its writable bytes is stored there,
+             and anything else takes the out-of-line write, which raises as
+             it does uncached */
+          int tk = ++g_tmp, tv = ++g_tmp, tr = ++g_tmp;
+          buf_printf(b, "({ sp_int _t%d = ", tk);
+          emit_int_expr(c, argv[1], b);
+          buf_printf(b, "; %s _t%d = ", f ? "double" : "sp_int", tv);
+          if (f) emit_float_expr(c, argv[2], b);
+          else emit_int_expr(c, argv[2], b);
+          buf_printf(b, "; sp_int _t%d = sp_iob_put_%s(%s, %s, %d, _t%d, _t%d); SP_LIKELY(_t%d) ? _t%d : sp_IOBuffer_set_%s(",
+                     tr, fi, hd, hw, it, tk, tv, tr, tr, fi);
+          emit_expr(c, recv, b);
+          buf_printf(b, ", %d, _t%d, _t%d); })", it, tk, tv);
+          return 1;
+        }
+        /* inline, falling back to sp_IOBuffer_set_i/_f (lib/sp_iobuffer.h) */
+        buf_printf(b, "sp_IOBuffer_store_%s(", fi);
         emit_expr(c, recv, b);
         buf_printf(b, ", %d, ", it);
         emit_int_expr(c, argv[1], b);
