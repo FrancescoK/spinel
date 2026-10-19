@@ -15585,11 +15585,14 @@ static int masgn_struct_store(Compiler *c, int tgt, const char *val, TyKind vt,
   view_pop(c, vr);
   return 1;
 }
-/* The temps a target's hoisted receiver and index live in (masgn_store reads
-   them; -1 when the target keeps them in place). */
-static void masgn_target_tmps(const NodeTable *nt, int tgt, int *recv_tmp, int *key_tmp) {
-  *recv_tmp = (int)nt_int(nt, tgt, "masgn_rtmp", -1);
-  *key_tmp = (int)nt_int(nt, tgt, "masgn_ktmp", -1);
+/* The temps the targets' hoisted receivers and indexes live in, by target
+   node (masgn_hoist_targets fills them; -1 where a target keeps its parts in
+   place). One statement's, on the stack of emit_multi_write_stmt. */
+typedef struct { int n; int *tgt, *recv, *key; } MasgnTmps;
+static void masgn_target_tmps(const MasgnTmps *mt, int tgt, int *recv_tmp, int *key_tmp) {
+  *recv_tmp = *key_tmp = -1;
+  for (int i = 0; mt && i < mt->n; i++)
+    if (mt->tgt[i] == tgt) { *recv_tmp = mt->recv[i]; *key_tmp = mt->key[i]; return; }
 }
 /* A store through a receiver that may be nil raises the NoMethodError
    CRuby does (`w[0], w[1] = a, b` over nil: "undefined method '[]=' for
@@ -15605,14 +15608,14 @@ static void masgn_recv_guard(Compiler *c, int recv, int recv_tmp, const char *na
   emit_node_or_tmp(c, recv, recv_tmp, b);
   buf_printf(b, "))) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));\n", name);
 }
-static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
+static int masgn_store(Compiler *c, int id, const MasgnTmps *mt, int tgt, const char *val, TyKind vt,
                        int recv_tmp, int key_tmp, int indent, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, tgt), *nm = nt_str(nt, tgt, "name");
   if (!ty) return 0;
   /* a target the statement hoisted (masgn_hoist_targets): the splat's, a
      right's and a nested one's receiver is read from its temp as a left's */
-  if (recv_tmp < 0 && key_tmp < 0) masgn_target_tmps(nt, tgt, &recv_tmp, &key_tmp);
+  if (recv_tmp < 0 && key_tmp < 0) masgn_target_tmps(mt, tgt, &recv_tmp, &key_tmp);
   if (sp_streq(ty, "InstanceVariableTargetNode") && nm) {
     char lhs[320]; int cid = -1;
     if (!masgn_ivar_home(c, id, nm, lhs, sizeof lhs, &cid)) return 1;
@@ -15847,7 +15850,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
    expression: a local, a nested (a, *b, c) target, which destructures the
    value as the outer assignment does (an Array spreads, anything else is a
    one-element list), or any target masgn_store writes. */
-static void emit_massign_poly_target(Compiler *c, int id, int tgt, const char *val,
+static void emit_massign_poly_target(Compiler *c, int id, const MasgnTmps *mt, int tgt, const char *val,
                                      int indent, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, tgt);
@@ -15868,7 +15871,7 @@ static void emit_massign_poly_target(Compiler *c, int id, int tgt, const char *v
     return;
   }
   if (!sp_streq(ty, "MultiTargetNode")) {
-    if (!masgn_store(c, id, tgt, val, TY_POLY, -1, -1, indent, b))
+    if (!masgn_store(c, id, mt, tgt, val, TY_POLY, -1, -1, indent, b))
       unsupported(c, id, "multiple assignment nested target");
     return;
   }
@@ -15885,7 +15888,7 @@ static void emit_massign_poly_target(Compiler *c, int id, int tgt, const char *v
   for (int i = 0; i < ln; i++) {
     char ge[96];
     snprintf(ge, sizeof ge, "(%dLL >= _t%d ? sp_box_nil() : sp_poly_massign_get(_t%d, %dLL))", i, tn, tv, i);
-    emit_massign_poly_target(c, id, lefts[i], ge, indent, b);
+    emit_massign_poly_target(c, id, mt, lefts[i], ge, indent, b);
   }
   if (inner >= 0) {
     int tr = ++g_tmp, ti = ++g_tmp;
@@ -15904,7 +15907,7 @@ static void emit_massign_poly_target(Compiler *c, int id, int tgt, const char *v
       masgn_conv(c, id, rlv ? rlv->type : TY_POLY_ARRAY, TY_POLY_ARRAY, rx, b);
       buf_puts(b, ";\n");
     }
-    else if (!masgn_store(c, id, inner, rx, TY_POLY_ARRAY, -1, -1, indent, b))
+    else if (!masgn_store(c, id, mt, inner, rx, TY_POLY_ARRAY, -1, -1, indent, b))
       unsupported(c, id, "multiple assignment nested splat target");
   }
   for (int j = 0; j < rn; j++) {
@@ -15914,7 +15917,7 @@ static void emit_massign_poly_target(Compiler *c, int id, int tgt, const char *v
                tix, tn, rn, j, ln + j, tn, rn, j, ln + j);
     char rgx[128];
     snprintf(rgx, sizeof rgx, "(_t%d >= _t%d ? sp_box_nil() : sp_poly_massign_get(_t%d, _t%d))", tix, tn, tv, tix);
-    emit_massign_poly_target(c, id, rights[j], rgx, indent, b);
+    emit_massign_poly_target(c, id, mt, rights[j], rgx, indent, b);
   }
 }
 
@@ -16158,7 +16161,7 @@ static void emit_class_body_stmts(Compiler *c, int ci, int body, Buf *b, int ind
 }
 
 /* A MultiWriteNode whose value is not an Array literal (a, b = x) (emit_multi_write_stmt's arms, in their order) */
-static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, int ln, const int *lefts, int value, const char *vty, int tuple, int rn, const int *rights, const char *rest_var, const char *rest_gvar, int rest_tgt, int *ttr, int *ttk) {
+static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, int ln, const int *lefts, int value, const char *vty, int tuple, int rn, const int *rights, const char *rest_var, const char *rest_gvar, int rest_tgt, int *ttr, int *ttk, const MasgnTmps *mt) {
   if (!(!tuple)) return 0;
   char iv_lhs[320]; int iv_home_cid = -1;   /* an ivar target's home (masgn_ivar_home) */
   /* scalar RHS (`a, b = 1`): the first target takes the value, the rest
@@ -16217,7 +16220,7 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
       if (!sp_streq(lty, "LocalVariableTargetNode")) {
         Buf vb; memset(&vb, 0, sizeof vb);
         if (i == 0) emit_expr(c, value, &vb);
-        if (!masgn_store(c, id, lefts[i], i == 0 ? (vb.p ? vb.p : "") : NULL, st, ttr[i], ttk[i], indent, b))
+        if (!masgn_store(c, id, mt, lefts[i], i == 0 ? (vb.p ? vb.p : "") : NULL, st, ttr[i], ttk[i], indent, b))
           unsupported(c, id, "multiple assignment target");
         free(vb.p);
         continue;
@@ -16276,7 +16279,7 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
         buf_puts(b, ");\n");
       }
       char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr0);
-      if (rest_tgt >= 0) masgn_store(c, id, rest_tgt, rx, rat0, -1, -1, indent, b);
+      if (rest_tgt >= 0) masgn_store(c, id, mt, rest_tgt, rx, rat0, -1, -1, indent, b);
       else {
         emit_indent(b, indent);
         if (rest_var) { emit_local_ref(c, id, rest_var, b); buf_puts(b, " = "); }
@@ -16296,7 +16299,7 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
       if (!sp_streq(rty2, "LocalVariableTargetNode")) {
         Buf vb; memset(&vb, 0, sizeof vb);
         if (j == 0 && ln == 0) emit_expr(c, value, &vb);
-        if (!masgn_store(c, id, rights[j], j == 0 && ln == 0 ? (vb.p ? vb.p : "") : NULL, st, -1, -1, indent, b))
+        if (!masgn_store(c, id, mt, rights[j], j == 0 && ln == 0 ? (vb.p ? vb.p : "") : NULL, st, -1, -1, indent, b))
           unsupported(c, id, "multiple assignment target");
         free(vb.p);
         continue;
@@ -16351,7 +16354,7 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
         buf_printf(&ge, "(%dLL >= _t%d->len ? sp_box_nil() : ", i, tarr);
         emit_boxed_text(c, elem, gx, &ge);
         buf_puts(&ge, ")");
-        emit_massign_poly_target(c, id, lefts[i], ge.p, indent, b);
+        emit_massign_poly_target(c, id, mt, lefts[i], ge.p, indent, b);
         free(ge.p);
       }
       else if (sp_streq(lty, "LocalVariableTargetNode")) {
@@ -16436,7 +16439,7 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
         char gx[80], ix[32]; snprintf(ix, sizeof ix, "%dLL", i);
         if (!masgn_elem_temp(c, id, lefts[i], st, elem, k, tarr, ix, indent, b, gx, sizeof gx))
           snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
-        if (!masgn_store(c, id, lefts[i], gx, elem, ttr[i], ttk[i], indent, b))
+        if (!masgn_store(c, id, mt, lefts[i], gx, elem, ttr[i], ttk[i], indent, b))
           unsupported(c, id, "multiple assignment target");
       }
     }
@@ -16476,7 +16479,7 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
       else if (sp_streq(rk, "Poly"))
         buf_printf(&rv, "sp_%sArray_to_poly%s(_t%d)", k, sp_streq(k, "Str") ? "_fmt" : "", tr);
       else buf_printf(&rv, "_t%d", tr);
-      if (rest_tgt >= 0) masgn_store(c, id, rest_tgt, rv.p ? rv.p : "", rvt, -1, -1, indent, b);
+      if (rest_tgt >= 0) masgn_store(c, id, mt, rest_tgt, rv.p ? rv.p : "", rvt, -1, -1, indent, b);
       else {
         emit_indent(b, indent);
         if (rest_var) emit_local_ref(c, id, rest_var, b); else buf_printf(b, "gv_%s", rest_gvar);
@@ -16576,7 +16579,7 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
           buf_printf(&ge, "(_t%d >= _t%d->len ? sp_box_nil() : ", tix, tarr);
           emit_boxed_text(c, elem, gx, &ge);
           buf_puts(&ge, ")");
-          emit_massign_poly_target(c, id, rights[j], ge.p, indent, b);
+          emit_massign_poly_target(c, id, mt, rights[j], ge.p, indent, b);
           free(ge.p);
           continue;
         }
@@ -16584,7 +16587,7 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
         snprintf(rix, sizeof rix, "_t%d", tix);
         if (!masgn_elem_temp(c, id, rights[j], st, elem, k, tarr, rix, indent, b, rgx, sizeof rgx))
           snprintf(rgx, sizeof rgx, "(_t%d >= _t%d->len ? %s : sp_%sArray_get(_t%d, _t%d))", tix, tarr, nilv, k, tarr, tix);
-        if (!masgn_store(c, id, rights[j], rgx, elem, -1, -1, indent, b))
+        if (!masgn_store(c, id, mt, rights[j], rgx, elem, -1, -1, indent, b))
           unsupported(c, id, "multiple assignment target");
       }
     }
@@ -16607,7 +16610,7 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
       if (sp_streq(lty, "MultiTargetNode")) {
         /* nested (a, (b, c)) target: recurse over the boxed sub-value */
         char ge[80]; snprintf(ge, sizeof ge, "sp_poly_massign_get(_t%d, %dLL)", tarr, i);
-        emit_massign_poly_target(c, id, lefts[i], ge, indent, b);
+        emit_massign_poly_target(c, id, mt, lefts[i], ge, indent, b);
       }
       else if (sp_streq(lty, "LocalVariableTargetNode")) {
         const char *lnm = nt_str(nt, lefts[i], "name");
@@ -16659,7 +16662,7 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
       }
       else {
         char ge[80]; snprintf(ge, sizeof ge, "sp_poly_massign_get(_t%d, %dLL)", tarr, i);
-        if (!masgn_store(c, id, lefts[i], ge, TY_POLY, ttr[i], ttk[i], indent, b))
+        if (!masgn_store(c, id, mt, lefts[i], ge, TY_POLY, ttr[i], ttk[i], indent, b))
           unsupported(c, id, "multiple assignment target");
       }
     }
@@ -16677,7 +16680,7 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
         buf_printf(b, "for (sp_int _t%d = %dLL; _t%d < _t%d - %dLL; _t%d++) sp_PolyArray_push(_t%d, sp_poly_massign_get(_t%d, _t%d));\n",
                    ti, ln, ti, tn, rn, ti, tr, tarr, ti);
         char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr);
-        if (rest_tgt >= 0) masgn_store(c, id, rest_tgt, rx, TY_POLY_ARRAY, -1, -1, indent, b);
+        if (rest_tgt >= 0) masgn_store(c, id, mt, rest_tgt, rx, TY_POLY_ARRAY, -1, -1, indent, b);
         else {
           emit_indent(b, indent);
           LocalVar *rg = rest_var ? scope_local(comp_scope_of(c, id), rest_var) : comp_gvar(c, rest_gvar);
@@ -16702,7 +16705,7 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
         if (!sp_streq(lty, "LocalVariableTargetNode")) {
           char rgx[128];
           snprintf(rgx, sizeof rgx, "(_t%d >= _t%d ? sp_box_nil() : sp_poly_massign_get(_t%d, _t%d))", tix, tn, tarr, tix);
-          emit_massign_poly_target(c, id, rights[j], rgx, indent, b);
+          emit_massign_poly_target(c, id, mt, rights[j], rgx, indent, b);
           continue;
         }
         emit_indent(b, indent);
@@ -16960,23 +16963,20 @@ static int masgn_flat_targets(const NodeTable *nt, int node, int *out, int n) {
    or the `to_s` an interpolation runs, which no predicate here sees -- a
    literal part may be boxed on the heap by its slot, a Rational under a
    poly key, and the hoist happens only where some part is a call or a
-   build. Each target's temps are recorded on it (masgn_target_tmps). */
-static void masgn_hoist_targets(Compiler *c, int id) {
-  NodeTable *nt = (NodeTable *)c->nt;
-  int nf = masgn_flat_targets(nt, id, NULL, 0);
-  int *flat = nf > 0 ? alloca(sizeof(int) * (size_t)nf) : NULL;
-  if (nf > 0) masgn_flat_targets(nt, id, flat, 0);
+   build. Each target's temps are recorded in `mt` (masgn_target_tmps). */
+static void masgn_hoist_targets(Compiler *c, int id, MasgnTmps *mt) {
+  const NodeTable *nt = c->nt;
+  const int *flat = mt->tgt;
   int hoist = 0;
-  for (int i = 0; i < nf; i++) {
+  for (int i = 0; i < mt->n; i++) {
     int r, k;
     masgn_target_parts(nt, flat[i], &r, &k);
-    nt_node_set_int(nt, flat[i], "masgn_rtmp", -1);
-    nt_node_set_int(nt, flat[i], "masgn_ktmp", -1);
+    mt->recv[i] = mt->key[i] = -1;
     if (!masgn_part_plain(c, r, flat, i) || !masgn_part_plain(c, k, flat, i)) hoist = 1;
   }
   if (!hoist) return;
   Buf *hb = g_pre;
-  for (int i = 0; i < nf; i++) {
+  for (int i = 0; i < mt->n; i++) {
     int r, k;
     masgn_target_parts(nt, flat[i], &r, &k);
     if (r < 0) continue;
@@ -16989,9 +16989,9 @@ static void masgn_hoist_targets(Compiler *c, int id) {
     if (index && nt_int(nt, flat[i], "struct_aset", 0)) { obj_ix = 1; okt = TY_UNKNOWN; }
     if (index && (k < 0 || !(poly_r || obj_ix || ty_is_array(rt) || (ty_is_hash(rt) && ty_hash_cname(rt))))) continue;
     if (!index && !ty_is_object(rt)) continue;
-    nt_node_set_int(nt, flat[i], "masgn_rtmp", masgn_hoist_part(c, r, poly_r ? TY_POLY : rt, hb));
-    if (obj_ix) nt_node_set_int(nt, flat[i], "masgn_ktmp", masgn_hoist_part(c, k, okt == TY_UNKNOWN ? repr_of(c, k).as_ty : okt, hb));
-    else if (index) nt_node_set_int(nt, flat[i], "masgn_ktmp", masgn_hoist_part(c, k, poly_r || ty_is_array(rt) ? TY_INT : ty_hash_key(rt), hb));
+    mt->recv[i] = masgn_hoist_part(c, r, poly_r ? TY_POLY : rt, hb);
+    if (obj_ix) mt->key[i] = masgn_hoist_part(c, k, okt == TY_UNKNOWN ? repr_of(c, k).as_ty : okt, hb);
+    else if (index) mt->key[i] = masgn_hoist_part(c, k, poly_r || ty_is_array(rt) ? TY_INT : ty_hash_key(rt), hb);
   }
 }
 /* A MultiWriteNode statement (a, b = ...) (emit_stmt_inner's arms, in their order) */
@@ -17080,11 +17080,16 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
   }
   /* every target's receiver and index, hoisted where a part is a call
      (masgn_hoist_targets) */
-  masgn_hoist_targets(c, id);
+  int nf = masgn_flat_targets(nt, id, NULL, 0);
+  MasgnTmps mts = { nf, nf > 0 ? alloca(sizeof(int) * (size_t)nf) : NULL, nf > 0 ? alloca(sizeof(int) * (size_t)nf) : NULL,
+                    nf > 0 ? alloca(sizeof(int) * (size_t)nf) : NULL };
+  const MasgnTmps *mt = &mts;
+  masgn_flat_targets(nt, id, mts.tgt, 0);
+  masgn_hoist_targets(c, id, &mts);
   int *ttr = ln > 0 ? alloca(sizeof(int) * (size_t)ln) : NULL;
   int *ttk = ln > 0 ? alloca(sizeof(int) * (size_t)ln) : NULL;
-  for (int i = 0; i < ln; i++) masgn_target_tmps(nt, lefts[i], &ttr[i], &ttk[i]);
-  if (emit_multi_write_scalar(c, id, b, indent, nt, ln, lefts, value, vty, tuple, rn, rights, rest_var, rest_gvar, rest_tgt, ttr, ttk)) return 1;
+  for (int i = 0; i < ln; i++) masgn_target_tmps(mt, lefts[i], &ttr[i], &ttk[i]);
+  if (emit_multi_write_scalar(c, id, b, indent, nt, ln, lefts, value, vty, tuple, rn, rights, rest_var, rest_gvar, rest_tgt, ttr, ttk, mt)) return 1;
   /* A store that can run user code -- the general hash's key hooks, a
      receiver typed at run time, a user `[]=` or writer -- or that
      allocates -- the rest array, a store that copies a String key (#6410), a
@@ -17301,9 +17306,9 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
         }
       }
       else if (lty && sp_streq(lty, "MultiTargetNode"))
-        emit_massign_poly_target(c, id, lefts[i], "sp_box_nil()", indent, b);
+        emit_massign_poly_target(c, id, mt, lefts[i], "sp_box_nil()", indent, b);
       /* every other target past the supplied elements takes nil */
-      else if (!masgn_store(c, id, lefts[i], NULL, TY_NIL, ttr[i], ttk[i], indent, b))
+      else if (!masgn_store(c, id, mt, lefts[i], NULL, TY_NIL, ttr[i], ttk[i], indent, b))
         unsupported(c, id, "multiple assignment target");
       continue;
     }
@@ -17437,7 +17442,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       TyKind rt2 = comp_ntype(c, recv_id2);
       if (rt2 == TY_POLY) {
         char rv[32]; snprintf(rv, sizeof rv, "_t%d", tmps[i]);
-        masgn_store(c, id, lefts[i], masgn_nil_el(c, els[i]) ? NULL : rv, tmpts[i], ttr[i], ttk[i], indent, b);
+        masgn_store(c, id, mt, lefts[i], masgn_nil_el(c, els[i]) ? NULL : rv, tmpts[i], ttr[i], ttk[i], indent, b);
         continue;
       }
       if (!ty_is_object(rt2))
@@ -17450,7 +17455,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
         char rv[32]; snprintf(rv, sizeof rv, "_t%d", tmps[i]);
         if (comp_method_in_chain(c, rc2, setnm, NULL) < 0 && comp_native_method_find(c, rc2, setnm, 1, 0) < 0)
           unsupported(c, id, "multiple assignment call target no writer");
-        else masgn_store(c, id, lefts[i], masgn_nil_el(c, els[i]) ? NULL : rv, tmpts[i], ttr[i], ttk[i], indent, b);
+        else masgn_store(c, id, mt, lefts[i], masgn_nil_el(c, els[i]) ? NULL : rv, tmpts[i], ttr[i], ttk[i], indent, b);
         continue;
       }
       char ivn2[260]; snprintf(ivn2, sizeof ivn2, "@%s", base2);
@@ -17492,7 +17497,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       char ex[32]; snprintf(ex, sizeof ex, "_t%d", tmps[i]);
       Buf ge; memset(&ge, 0, sizeof ge);
       emit_boxed_text(c, tmpts[i], ex, &ge);
-      emit_massign_poly_target(c, id, lefts[i], ge.p ? ge.p : "sp_box_nil()", indent, b);
+      emit_massign_poly_target(c, id, mt, lefts[i], ge.p ? ge.p : "sp_box_nil()", indent, b);
       free(ge.p);
     }
     else if (lty && sp_streq(lty, "GlobalVariableTargetNode")) {
@@ -17523,7 +17528,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       TyKind recv_t = comp_ntype(c, recv_id);
       if (ty_is_object(recv_t) || nt_int(nt, lefts[i], "struct_aset", 0)) {
         char rv[32]; snprintf(rv, sizeof rv, "_t%d", tmps[i]);
-        masgn_store(c, id, lefts[i], masgn_nil_el(c, els[i]) ? NULL : rv, tmpts[i], ttr[i], ttk[i], indent, b);
+        masgn_store(c, id, mt, lefts[i], masgn_nil_el(c, els[i]) ? NULL : rv, tmpts[i], ttr[i], ttk[i], indent, b);
         continue;
       }
       if (ty_is_array(recv_t) || ty_is_hash(recv_t)) masgn_recv_guard(c, recv_id, ttr[i], "[]=", indent, b);
@@ -17668,7 +17673,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       }
     }
     char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr);
-    if (rest_tgt >= 0) masgn_store(c, id, rest_tgt, rx, rest_arr_t, -1, -1, indent, b);
+    if (rest_tgt >= 0) masgn_store(c, id, mt, rest_tgt, rx, rest_arr_t, -1, -1, indent, b);
     else {
       emit_indent(b, indent);
       if (rest_var) buf_printf(b, "lv_%s = ", rename_local(rest_var));
@@ -17739,10 +17744,10 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       if (sp_streq(lty, "MultiTargetNode")) {
         Buf ge; memset(&ge, 0, sizeof ge);
         if (ridx >= 0) emit_boxed_text(c, rvt, rv, &ge);
-        emit_massign_poly_target(c, id, rights[j], ge.p ? ge.p : "sp_box_nil()", indent, b);
+        emit_massign_poly_target(c, id, mt, rights[j], ge.p ? ge.p : "sp_box_nil()", indent, b);
         free(ge.p);
       }
-      else if (!masgn_store(c, id, rights[j], ridx >= 0 ? rv : NULL, rvt, -1, -1, indent, b))
+      else if (!masgn_store(c, id, mt, rights[j], ridx >= 0 ? rv : NULL, rvt, -1, -1, indent, b))
         unsupported(c, id, "multiple assignment target");
     }
   }
