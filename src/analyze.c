@@ -44137,31 +44137,29 @@ typedef struct { int v[8], n; } ScanNamed;
    call's answer can otherwise be a String another name holds in CRuby (an
    exception's `to_s` is its message, `gets` sets `$_`), which no share fact
    knows. */
-static int scan_fresh_string(Compiler *c, int r, ScanNamed *nm) {
+static int scan_fresh_string(Compiler *c, int r, ScanNamed *nm);
+typedef struct { Compiler *c; ScanNamed *nm; } ScanFresh;
+static int scan_fresh_leaf_bad(const VpLeaf *lf, void *ud) {
+  const ScanFresh *f = ud;
+  Compiler *c = f->c;
+  ScanNamed *nm = f->nm;
   const NodeTable *nt = c->nt;
-  r = an_unparen(nt, r);
-  if (r < 0) return 1;  /* a conditional's missing arm: nil */
+  if (lf->kind == VPK_NIL) return 0;   /* a conditional's missing arm: nil */
+  if (lf->kind == VPK_GAVE_UP) return 1;
+  int r = lf->node;
   NodeKind k = nt_kind(nt, r);
   if (k == NK_StringNode || k == NK_InterpolatedStringNode || k == NK_IntegerNode || k == NK_FloatNode ||
       k == NK_SymbolNode || k == NK_NilNode || k == NK_TrueNode || k == NK_FalseNode)
-    return 1;
+    return 0;
   if (k == NK_LocalVariableReadNode) {
-    if (nm->n >= 8) return 0;
+    if (nm->n >= 8) return 1;
     nm->v[nm->n++] = r;
-    return 1;
+    return 0;
   }
-  if (k == NK_StatementsNode || k == NK_ElseNode) {
-    int b = k == NK_ElseNode ? nt_ref(nt, r, "statements") : r, n = 0;
-    const int *st = b >= 0 ? nt_arr(nt, b, "body", &n) : NULL;
-    return n == 0 || scan_fresh_string(c, st[n - 1], nm);
-  }
-  if (k == NK_IfNode || k == NK_UnlessNode)
-    return scan_fresh_string(c, nt_ref(nt, r, "statements"), nm) &&
-           scan_fresh_string(c, nt_ref(nt, r, k == NK_IfNode ? "subsequent" : "else_clause"), nm);
   const char *name = k == NK_CallNode ? nt_str(nt, r, "name") : NULL;
   int rv = name ? an_unparen(nt, nt_ref(nt, r, "receiver")) : -1;
-  if (!name || rv < 0 || nt_ref(nt, r, "block") >= 0) return 0;
-  if (is_unary_plus(name)) return nt_kind(nt, rv) == NK_StringNode;
+  if (!name || rv < 0 || nt_ref(nt, r, "block") >= 0) return 1;
+  if (is_unary_plus(name)) return nt_kind(nt, rv) != NK_StringNode;
   int args = nt_ref(nt, r, "arguments"), argc = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   if (nt_kind(nt, rv) == NK_ArrayNode) {
@@ -44169,12 +44167,12 @@ static int scan_fresh_string(Compiler *c, int r, ScanNamed *nm) {
        `[](0)`): one of its elements, or nil */
     if (!((is_endpoint_query(name) && argc == 0) ||
           (is_aref_name(name) && argc == 1 && nt_kind(nt, argv[0]) != NK_RangeNode)))
-      return 0;
+      return 1;
     int n = 0;
     const int *el = nt_arr(nt, rv, "elements", &n);
     for (int i = 0; i < n; i++)
-      if (!scan_fresh_string(c, el[i], nm)) return 0;
-    return 1;
+      if (!scan_fresh_string(c, el[i], nm)) return 1;
+    return 0;
   }
   /* the String row, else the any-receiver one (`itself`), else String's
      default */
@@ -44182,7 +44180,12 @@ static int scan_fresh_string(Compiler *c, int r, ScanNamed *nm) {
   int sh = bop_share_named(TY_STRING, name);
   if (!sh) sh = bop_share_named(BOP_ANY_RECV, name);
   if (!sh) sh = bop_share(TY_STRING, name);
-  return (rt == TY_STRING || rt == TY_STRBUF) && sh == BSH_PURE && rd_builtin_string_method(c, name);
+  return !((rt == TY_STRING || rt == TY_STRBUF) && sh == BSH_PURE && rd_builtin_string_method(c, name));
+}
+/* (the arms of an `if` or `unless`, each of which must be such a value) */
+static int scan_fresh_string(Compiler *c, int r, ScanNamed *nm) {
+  ScanFresh f = { c, nm };
+  return !for_each_value_position(c->nt, r, VPS_IF | VPS_UNLESS, scan_fresh_leaf_bad, &f);
 }
 /* The locals a chain of writes has followed: one met again adds no String. */
 typedef struct ScanChain { const struct ScanChain *up; int root; const char *name; int depth; } ScanChain;
