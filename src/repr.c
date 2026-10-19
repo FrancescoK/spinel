@@ -361,7 +361,10 @@ int repr_boxed_reader_handle(Compiler *c, int v) {
    shared buffer, under --share-strings. Every user method the call can
    dispatch to must return the handle or a new String; a target answering
    anything else, or one the call cannot resolve, declines. Builtin arms
-   are not among those targets. */
+   are not among those targets, nor is the method the call is in (`def
+   to_s = @v.to_s`, whose box may hold another of its objects): that arm
+   answers what the method's other tails answer, which its own return
+   decides. */
 int repr_boxed_to_s_operand(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return -1;
@@ -373,6 +376,7 @@ int repr_boxed_to_s_operand(Compiler *c, int v) {
   int targets[CPT_MAX], n = cplan_targets(c, v, targets, CPT_MAX);
   if (n < 0) return -1;
   for (int i = 0; i < n; i++) {
+    if (c->scopes + targets[i] == comp_scope_of(c, v)) continue;
     if (c->scopes[targets[i]].ret != TY_STRING ||
         (!scope_ret_handle(c, targets[i]) && !scope_ret_fresh(c, targets[i]))) return -1;
   }
