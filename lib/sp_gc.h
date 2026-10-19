@@ -55,7 +55,13 @@
                                          so it was neither a Range nor
                                          enumerable through a poly slot (#3619) */
 #define SP_BUILTIN_OPENSTRUCT  (-41)  /* OpenStruct: dynamic symbol->value members */
-typedef struct { int tag; int cls_id; union { sp_int i; const char *s; sp_float f; sp_bool b; void *p; } v; } sp_RbVal;
+/* b is the whole word, not a _Bool: sp_box_bool writes 0 or 1 into i, and a
+   read of b where the box holds another member (which the C only does behind
+   a tag test) must not be a trap representation. gcc speculated such a read
+   through a _Bool, took its value as 0 or 1, and `(tag != BOOL) | b` over a
+   returned Integer 7 came out 7: `n&.info(x) ? 1 : 2` answered -5 at -O2
+   once IPA-SRA passed the value in registers. */
+typedef struct { int tag; int cls_id; union { sp_int i; const char *s; sp_float f; sp_int b; void *p; } v; } sp_RbVal;
 
 /* ---- Collector globals shared with the generated TU ----
  * Only the globals touched by both the kept hot path (sp_gc_alloc, the
