@@ -1878,7 +1878,7 @@ int strbuf_yield_proc_box(Compiler *c, int v) {
   int mi = sc ? (int)(sc - c->scopes) : -1, last = mi > 0 ? scope_body_last(c, mi) : -1;
   return (vt == TY_STRING || vt == TY_STRBUF) && mi > 0 && last != v && block_given_tail_then_last(c, last) != v;
 }
-static int strbuf_cond_arm_any(Compiler *c, int v, int depth, int (*leaf)(Compiler *, int), int deep);
+static int strbuf_cond_arm_any(Compiler *c, int v, int (*leaf)(Compiler *, int), int deep);
 /* A leaf of the arm walk: a String Range's endpoint (strbuf_srange_tail), a
    `next` of one, or a `begin` (with no rescue, else or ensure) ending in one */
 static int strbuf_value_held(Compiler *c, int v);
@@ -1893,23 +1893,23 @@ static int strbuf_srange_leaf_d(Compiler *c, int v, int unheld) {
      dropped), as strbuf_begin_arm_leaf takes them */
   if (v >= 0 && nt_kind(nt, v) == NK_BeginNode) {
     int el = nt_ref(nt, v, "else_clause");
-    if (el < 0 && strbuf_cond_arm_any(c, nt_ref(nt, v, "statements"), 1, leaf, 0)) return 1;
+    if (el < 0 && strbuf_cond_arm_any(c, nt_ref(nt, v, "statements"), leaf, 0)) return 1;
     for (int rc = nt_ref(nt, v, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
-      if (strbuf_cond_arm_any(c, nt_ref(nt, rc, "statements"), 1, leaf, 0)) return 1;
-    return el >= 0 && strbuf_cond_arm_any(c, nt_ref(nt, el, "statements"), 1, leaf, 0);
+      if (strbuf_cond_arm_any(c, nt_ref(nt, rc, "statements"), leaf, 0)) return 1;
+    return el >= 0 && strbuf_cond_arm_any(c, nt_ref(nt, el, "statements"), leaf, 0);
   }
   if (v >= 0 && nt_kind(nt, v) == NK_RescueModifierNode)
-    return strbuf_cond_arm_any(c, nt_ref(nt, v, "expression"), 1, leaf, 0) ||
-           strbuf_cond_arm_any(c, nt_ref(nt, v, "rescue_expression"), 1, leaf, 0);
+    return strbuf_cond_arm_any(c, nt_ref(nt, v, "expression"), leaf, 0) ||
+           strbuf_cond_arm_any(c, nt_ref(nt, v, "rescue_expression"), leaf, 0);
   if (v >= 0 && nt_kind(nt, v) == NK_NextNode) {
     int na = 0; const int *av = call_args(nt, v, &na);
-    return na == 1 && strbuf_cond_arm_any(c, av[0], 1, leaf, 0);
+    return na == 1 && strbuf_cond_arm_any(c, av[0], leaf, 0);
   }
   /* a call of a yielding method with a literal block answers what the
      block's last statement does */
   if (v >= 0 && nt_kind(nt, v) == NK_CallNode && nt_ref(nt, v, "block") >= 0 &&
       nt_kind(nt, nt_ref(nt, v, "block")) == NK_BlockNode && strbuf_route_inline_call(c, v))
-    return strbuf_cond_arm_any(c, nt_ref(nt, nt_ref(nt, v, "block"), "body"), 1, leaf, 0);
+    return strbuf_cond_arm_any(c, nt_ref(nt, nt_ref(nt, v, "block"), "body"), leaf, 0);
   /* (unheld: an endpoint the String plan shares is the handle its Range
      keeps, which the handle route hands on) */
   return strbuf_srange_tail(c, v) >= 0 && !(unheld && strbuf_value_held(c, v));
@@ -1920,7 +1920,7 @@ static int strbuf_srange_leaf_d(Compiler *c, int v, int unheld) {
    the endpoint's own String, where the handle route would wrap a new String
    around the bytes of one the Range keeps none for. */
 int strbuf_srange_arm(Compiler *c, int v) {
-  return repr_share_rule(c) && v >= 0 && strbuf_cond_arm_any(c, v, 0, strbuf_srange_leaf, 0);
+  return repr_share_rule(c) && v >= 0 && strbuf_cond_arm_any(c, v, strbuf_srange_leaf, 0);
 }
 /* ...and is `next v` one whose value v is such, with no handle the plan
    shares for the endpoint? The handle face leaves it to the Range's own
@@ -1928,7 +1928,7 @@ int strbuf_srange_arm(Compiler *c, int v) {
 int strbuf_next_srange_value(Compiler *c, int v) {
   int na = 0;
   const int *av = nt_kind(c->nt, v) == NK_NextNode ? call_args(c->nt, v, &na) : NULL;
-  return repr_share_rule(c) && na == 1 && av[0] >= 0 && strbuf_cond_arm_any(c, av[0], 0, strbuf_srange_unheld_leaf, 0);
+  return repr_share_rule(c) && na == 1 && av[0] >= 0 && strbuf_cond_arm_any(c, av[0], strbuf_srange_unheld_leaf, 0);
 }
 /* ...and is the value of the literal block spliced here (no `next` in it) one
    (strbuf_srange_arm)? */
@@ -2022,11 +2022,11 @@ static int strbuf_leaf_is(Compiler *c, int v, int want) {
   if (k == NK_NilNode) return want == SLK_FRESH;
   if (k == NK_NextNode) {
     int na = 0; const int *av = call_args(nt, v, &na);
-    return na != 1 ? want == SLK_HELD : strbuf_cond_arm_any(c, av[0], 1, walk, 0);
+    return na != 1 ? want == SLK_HELD : strbuf_cond_arm_any(c, av[0], walk, 0);
   }
   int blk = k == NK_CallNode ? nt_ref(nt, v, "block") : -1;
   if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && strbuf_route_inline_call(c, v))
-    return strbuf_cond_arm_any(c, nt_ref(nt, blk, "body"), 1, walk, 0);
+    return strbuf_cond_arm_any(c, nt_ref(nt, blk, "body"), walk, 0);
   int kind = SLK_HELD;
   if (strbuf_srange_tail(c, v) >= 0)
     kind = strbuf_value_held(c, v) ? SLK_HELD : SLK_UNHELD;
@@ -2039,8 +2039,8 @@ static int strbuf_leaf_is(Compiler *c, int v, int want) {
 }
 /* ...is the value v of a block's tail one the demand has a handle for? */
 int strbuf_value_handleish(Compiler *c, int v) {
-  return strbuf_cond_arm_any(c, v, 0, strbuf_leaf_held, 1) ||
-         (strbuf_cond_arm_any(c, v, 0, strbuf_leaf_fresh, 0) && !strbuf_cond_arm_any(c, v, 0, strbuf_leaf_unheld, 0));
+  return strbuf_cond_arm_any(c, v, strbuf_leaf_held, 1) ||
+         (strbuf_cond_arm_any(c, v, strbuf_leaf_fresh, 0) && !strbuf_cond_arm_any(c, v, strbuf_leaf_unheld, 0));
 }
 int strbuf_yield_tail_held(Compiler *c) {
   int tail = strbuf_site_tail(c);
@@ -3401,42 +3401,27 @@ int strbuf_arg_carries(Compiler *c, int v) {
          (repr_share_rule(c) && strbuf_poly_user_base(c, v) >= 0);
 }
 /* Does a value conditional v hands on, taken arm by arm, answer leaf: a
-   conditional's arms, a sequence's last statement? Past the depth the walk
-   answers deep. */
-static int strbuf_cond_arm_any(Compiler *c, int v, int depth, int (*leaf)(Compiler *, int), int deep) {
-  const NodeTable *nt = c->nt;
-  v = unwrap_parens(c, v);
-  if (v < 0) return 0;
-  if (depth > 16) return deep;
-  switch (nt_kind(nt, v)) {
-  case NK_StatementsNode: {
-    int n = 0; const int *bb = nt_arr(nt, v, "body", &n);
-    return n > 0 && strbuf_cond_arm_any(c, bb[n - 1], depth + 1, leaf, deep);
-  }
-  case NK_ElseNode: return strbuf_cond_arm_any(c, nt_ref(nt, v, "statements"), depth + 1, leaf, deep);
-  case NK_IfNode: case NK_UnlessNode:
-    return strbuf_cond_arm_any(c, nt_ref(nt, v, "statements"), depth + 1, leaf, deep) ||
-           strbuf_cond_arm_any(c, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1,
-                               leaf, deep);
-  case NK_OrNode:
-    return strbuf_cond_arm_any(c, nt_ref(nt, v, "left"), depth + 1, leaf, deep) ||
-           strbuf_cond_arm_any(c, nt_ref(nt, v, "right"), depth + 1, leaf, deep);
-  case NK_AndNode: return strbuf_cond_arm_any(c, nt_ref(nt, v, "right"), depth + 1, leaf, deep);
-  case NK_CaseNode: case NK_CaseMatchNode: {
-    int nw = 0; const int *whens = nt_arr(nt, v, "conditions", &nw);
-    for (int w = 0; w < nw; w++)
-      if (strbuf_cond_arm_any(c, nt_ref(nt, whens[w], "statements"), depth + 1, leaf, deep)) return 1;
-    return strbuf_cond_arm_any(c, nt_ref(nt, v, "else_clause"), depth + 1, leaf, deep);
-  }
-  default: return leaf(c, v);
-  }
+   conditional's arms, a sequence's last statement? Read through the
+   iterator with the if, unless, case, case/in and `||` and `&&` shapes (a
+   begin and a rescue modifier are leaves, which a leaf may take apart); the
+   walk has no depth, and answers deep if it is cut short. */
+typedef struct { Compiler *c; int (*leaf)(Compiler *, int); int deep; } StrbufArmAny;
+static int strbuf_cond_arm_leaf(const VpLeaf *lf, void *ud) {
+  const StrbufArmAny *a = ud;
+  if (lf->kind == VPK_GAVE_UP) return a->deep;
+  return lf->kind != VPK_NIL && a->leaf(a->c, lf->node);
+}
+static int strbuf_cond_arm_any(Compiler *c, int v, int (*leaf)(Compiler *, int), int deep) {
+  StrbufArmAny a = { c, leaf, deep };
+  return for_each_value_position(c->nt, v, VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_LOGIC,
+                                 strbuf_cond_arm_leaf, &a);
 }
 /* ...is v such a bang, or a conditional that takes its arms one by one as
    handles (strbuf_cond_has_handle_leaf) with such a bang among the values
    it hands on? An argument that runs ahead of the binding takes its handle
    there (emit_arg_temp), which the binding then takes (ran_first_handle). */
 int strbuf_arg_bang_value(Compiler *c, int v) {
-  return strbuf_arg_bang(c, v) || (strbuf_cond_has_handle_leaf(c, v, 0) && strbuf_cond_arm_any(c, v, 0, strbuf_arg_bang, 0));
+  return strbuf_arg_bang(c, v) || (strbuf_cond_has_handle_leaf(c, v, 0) && strbuf_cond_arm_any(c, v, strbuf_arg_bang, 0));
 }
 /* A builtin value route can publish its handle as a method's return too.
    The return analysis and tail emitter ask the same route predicate.
@@ -24218,7 +24203,7 @@ int face_bang_on_runtime_elems(Compiler *c, int v) {
 static int face_bang_cond_on_runtime_elems(Compiler *c, int v) {
   NodeKind k = v >= 0 ? nt_kind(c->nt, v) : NK_NONE;
   return (k == NK_IfNode || k == NK_UnlessNode || k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode) &&
-         strbuf_cond_arm_any(c, v, 0, face_bang_on_runtime_elems, 1);
+         strbuf_cond_arm_any(c, v, face_bang_on_runtime_elems, 1);
 }
 /* repr.c's flow check asks this (codegen_internal.h). */
 int strbuf_flow_carries(Compiler *c, int kind, int site, int v) {
