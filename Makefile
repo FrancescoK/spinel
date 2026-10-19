@@ -1506,7 +1506,8 @@ test-corpus-summary: test-corpus-results
 # --ext-init/--ext-entry compile a kernel into a host-callable library, and a
 # pure-C host drives it through the emitted header alone -- init, typed
 # entries, and a raise caught through the exported try helper -- and a kernel
-# whose entries start and join threads after an init that started some.
+# whose entries start and join threads after an init that started some, and
+# one whose at_exit hooks run when the host exits, not as its init returns.
 ext-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	@tmp=$$(mktemp -d /tmp/spinel-ext.XXXXXX); ok=1; \
 	$(SPINEL) test/ext/kernel.rb -c --no-line-map \
@@ -1535,6 +1536,16 @@ ext-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	    $(TIMEOUT10) "$$tmp/thost" > "$$tmp/out" 2>&1; \
 	    printf '60\n150\n1\n' | cmp -s - "$$tmp/out" || { echo "ext-test: FAIL (threads host output mismatch, or it hung)"; cat "$$tmp/out"; ok=0; }; \
 	  else echo "ext-test: FAIL (threads host C did not compile)"; sed -n 1,6p "$$tmp/cc.err"; ok=0; fi; \
+	fi; \
+	if [ $$ok -eq 1 ]; then \
+	  if ! $(SPINEL) test/ext/at_exit.rb -c --no-line-map --ext-init Init_ext_at_exit \
+	      --ext-entry ExtAtExit.go -o "$$tmp/a.c" >/dev/null 2>&1; then \
+	    echo "ext-test: FAIL (at_exit emission)"; ok=0; \
+	  elif $(CC) -O1 -w -Ilib -I"$$tmp" test/ext/at_exit_host.c "$$tmp/a.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/ahost" 2>"$$tmp/cc.err"; then \
+	    "$$tmp/ahost" > "$$tmp/out" 2>&1; rc=$$?; \
+	    printf 'init returned\nentry 41\n42\nmain returns\nentry hook 41\ntoplevel hook\n' | cmp -s - "$$tmp/out" && [ $$rc -eq 3 ] || \
+	      { echo "ext-test: FAIL (at_exit hooks not run at host exit, or status $$rc is not the host's 3)"; cat "$$tmp/out"; ok=0; }; \
+	  else echo "ext-test: FAIL (at_exit host C did not compile)"; sed -n 1,6p "$$tmp/cc.err"; ok=0; fi; \
 	fi; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "ext-test: pass"; else exit 1; fi
