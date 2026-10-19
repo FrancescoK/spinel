@@ -9144,31 +9144,16 @@ static void yu_add(int y, int w, int kind) {
 }
 /* Lists `w` for each yield y that value_arm_is(nt, v, y) answers yes for,
    down the same arms. */
+typedef struct { const NodeTable *nt; int w, kind; } YuCollect;
+static int yu_collect_leaf(const VpLeaf *lf, void *ud) {
+  const YuCollect *y = ud;
+  if (lf->kind == VPK_EXPR && nt_kind(y->nt, lf->node) == NK_YieldNode) yu_add(lf->node, y->w, y->kind);
+  return 0;
+}
 static void yu_collect(const NodeTable *nt, int v, int w, int kind) {
   if (v < 0 || v >= nt->count) return;
-  switch (nt_kind(nt, v)) {
-  case NK_YieldNode: yu_add(v, w, kind); return;
-  case NK_StatementsNode: {
-    int n = 0; const int *st = nt_arr(nt, v, "body", &n);
-    if (n > 0) yu_collect(nt, st[n - 1], w, kind);
-    return;
-  }
-  case NK_ParenthesesNode: yu_collect(nt, nt_ref(nt, v, "body"), w, kind); return;
-  case NK_ElseNode: yu_collect(nt, nt_ref(nt, v, "statements"), w, kind); return;
-  case NK_IfNode:
-    yu_collect(nt, nt_ref(nt, v, "statements"), w, kind);
-    yu_collect(nt, nt_ref(nt, v, "subsequent"), w, kind);
-    return;
-  case NK_UnlessNode:
-    yu_collect(nt, nt_ref(nt, v, "statements"), w, kind);
-    yu_collect(nt, nt_ref(nt, v, "else_clause"), w, kind);
-    return;
-  case NK_AndNode: case NK_OrNode:
-    yu_collect(nt, nt_ref(nt, v, "left"), w, kind);
-    yu_collect(nt, nt_ref(nt, v, "right"), w, kind);
-    return;
-  default: return;
-  }
+  YuCollect y = { nt, w, kind };
+  for_each_value_position(nt, v, YU_ARMS, yu_collect_leaf, &y);
 }
 /* The first entry for yield `y` (follow g_yu_next), -1 for none. */
 static int yield_uses(Compiler *c, int y) {
