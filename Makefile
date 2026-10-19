@@ -55,7 +55,7 @@ RBS_LIB      = build/librbs.a
 
 .PHONY: ty-setter-check imemo-shadow-test int-min-test all hooks share-strings-test line-map-check gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check value-edges-check value-edges-regen value-pos-test re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
         test test-run clean-test-results regen-rbs-expected \
-        regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-test-shared gate-bench gc-phases-test gc-stress-test gc-str-major-test gc-str-budget-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
+        regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-bench gc-phases-test gc-stress-test gc-str-major-test gc-str-budget-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot rubyboy gate-rubyboy scale-test clean install uninstall deps tools
 
 # `make all` includes the RBS extractor when vendor/rbs has been fetched
@@ -1150,9 +1150,6 @@ endif
 endif
 TEST_RESULT_DIR ?= build/test-results
 TEST_TARGETS := $(patsubst test/%.rb,$(TEST_RESULT_DIR)/%.ok,$(TESTS))
-ifeq ($(TEST_REVERSE),1)
-TEST_TARGETS := $(patsubst test/%.rb,$(TEST_RESULT_DIR)/%.ok,$(filter $(TESTS),$(shell ls -r test/*.rb)))
-endif
 
 # Bundled spin packages carry their own test/*.rb (the same snapshot contract,
 # runnable with `spin test` inside the package). The compiler gate runs them
@@ -1477,7 +1474,7 @@ test-run: int-min-test timing-test signal-default-test source-marker-test rbs-te
 test-corpus: lib/spinel_rt_responds_generated.h $(SPINEL_TIMEOUT)
 	+@$(MAKE) --no-print-directory clean-test-results
 	+@$(MAKE) $(TEST_JOBS) --no-print-directory test-corpus-summary
-.PHONY: test-corpus-results test-corpus-shared-summary
+.PHONY: test-corpus-results
 test-corpus-results: $(TEST_TARGETS) $(PKG_TEST_TARGETS)
 test-corpus-summary: test-corpus-results
 	@if [ -z "$(TIMEOUT_BIN)" ]; then echo "Note: no 'timeout' command found; running without time limits."; fi
@@ -3814,8 +3811,6 @@ endif
 #     ($(CC), CFLAGS/OPT, the -O0 override, the overflow and thread defines,
 #     the PCH flag, the archive and package objects picked, -l flags), and the
 #     timeout;
-#   - SPINEL_SHARE_STRINGS, so the default and sharing legs never reuse
-#     each other's passes even when they emit identical C;
 #   - RESULT_CACHE_FP, computed once per run after the prerequisites are
 #     built: the content of both runtime archives, every bundled package
 #     object and build/spinel-timeout, every header under lib/ and
@@ -5036,7 +5031,6 @@ hooks:
 
 # tools/gate.rb in a throwaway repository (test/gate-tool). Not a gate leg:
 # it needs a Ruby 4.0 (GATE_RUBY or PATH) and is skipped without one.
-# Also checks the shared corpus's known-failure summary.
 gate-tool-test:
 	@r=$$(sh tools/gate-ruby) || { echo "gate-tool-test: skipped (no Ruby 4.0 or later; set GATE_RUBY)"; exit 0; }; \
 	"$$r" test/gate-tool/gate_test.rb
@@ -5053,25 +5047,16 @@ gate-full:
 # happens elsewhere at the same commit (the maintainer's merge cycle runs it
 # on a second machine beside the CI lanes). A plain `make gate` runs it.
 GATE_RUBYSPEC ?= 1
-gate-legs: $(if $(filter 0,$(GATE_RUBYSPEC)),,gate-rubyspec) gate-test gate-test-shared gate-bench gate-optcarrot gate-rubyboy gate-props
-# Both corpus sub-makes use the same -O1 PCH files. Build them once before
-# either leg starts so one cannot read a PCH while the other writes it.
+gate-legs: $(if $(filter 0,$(GATE_RUBYSPEC)),,gate-rubyspec) gate-test gate-bench gate-optcarrot gate-rubyboy gate-props
+# The corpus sub-make uses the -O1 PCH files. Build them once before the leg
+# starts, so the other legs that run beside it never read a PCH it writes.
 .PHONY: gate-pch
 gate-pch:
 	+@$(MAKE) --no-print-directory test-pch OPT=-O1
-gate-test gate-test-shared: gate-pch
+gate-test: gate-pch
 
 gate-test:
 	+@$(MAKE) --no-print-directory test OPT=-O1
-# The same corpus, including packages, with String sharing. Separate verdicts
-# let the two legs run together; the result-cache key includes the flag too.
-# infer-test and reject-test keep their default-build expectations.
-gate-test-shared:
-	+@$(MAKE) --no-print-directory clean-test-results TEST_RESULT_DIR=build/test-results-shared
-	+@$(MAKE) $(TEST_JOBS) --no-print-directory test-corpus-shared-summary OPT=-O1 SPINEL_SHARE_STRINGS=1 TEST_REVERSE=1 TEST_RESULT_DIR=build/test-results-shared
-
-test-corpus-shared-summary: test-corpus-results
-	@awk -f tools/shared_test_results.awk test/share/known-failures.txt $(TEST_RESULT_DIR)/*.ok
 
 # The property gates `check` runs. They were in the fast pre-commit target and
 # NOT in the pre-push one, so the full gate was not a superset of the quick one
