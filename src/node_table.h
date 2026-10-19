@@ -440,6 +440,18 @@ static inline int nt_safe_nav(const NodeTable *nt, int id) {
 static inline void nt_set_safe_nav(NodeTable *nt, int id, int on) {
   if (on || nt_safe_nav(nt, id)) nt_node_set_int(nt, id, "safe_nav", on ? 1 : 0);
 }
+/* PM_CALL_NODE_FLAGS_VARIABLE_CALL: the call is a bare identifier (`foo`,
+   no receiver, no parentheses, no arguments), which Ruby resolves as a local
+   variable first and only then as a method. The parser exports it as the
+   `vcall` flag, set only when Prism set it, and a desugar that gives the call
+   a receiver clears it with nt_set_vcall. A node without the field is not a
+   variable call. */
+static inline int nt_vcall(const NodeTable *nt, int id) {
+  return nt_int(nt, id, "vcall", 0) != 0;
+}
+static inline void nt_set_vcall(NodeTable *nt, int id, int on) {
+  if (on || nt_vcall(nt, id)) nt_node_set_int(nt, id, "vcall", on ? 1 : 0);
+}
 /* PM_CALL_NODE_FLAGS_ATTRIBUTE_WRITE: the call is written as an assignment,
    `recv.name = v`, `recv.name=(v)` or `recv[i] = v`, so its value is the
    argument whatever the writer returns. The parser exports it as the

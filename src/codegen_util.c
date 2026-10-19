@@ -3923,7 +3923,7 @@ int unsup_message(Compiler *c, int id, const char *what, int self_ci, char *msg,
        parens, no args) is CRuby's NameError -- an undefined local that fell
        through to method lookup. Name the enclosing class the way CRuby does. */
     if (recv < 0 && ac == 0 && nt_ref(c->nt, id, "block") < 0 &&
-        nt_int(c->nt, id, "vcall", 0)) {
+        nt_vcall(c->nt, id)) {
       const char *cn = self_ci >= 0 ? class_ruby_name(c, self_ci) : NULL;
       snprintf(msg, cap, "undefined local variable or method '%s' for %s%s (NameError)",
                mname, cn ? "an instance of " : "main", cn ? cn : "");

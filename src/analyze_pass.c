@@ -11528,7 +11528,7 @@ static void ie_subtree_retarget(Compiler *c, int root, const char *tmp, int dept
       comp_grow_node_arrays(c);
       c->nscope[rd] = c->nscope[root];
       nt_node_set_ref(nt, root, "receiver", rd);
-      nt_node_set_int(nt, root, "vcall", 0);   /* no longer a bare identifier */
+      nt_set_vcall(nt, root, 0);   /* no longer a bare identifier */
     }
   }
   SpNode *nd = &nt->nodes[root];

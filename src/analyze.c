@@ -2946,7 +2946,7 @@ static void ie_rself_give_self(Compiler *c, int n) {
       c->nscope[sn] = c->nscope[n];
       if (c->node_cbody && n < c->node_cap && sn < c->node_cap) c->node_cbody[sn] = c->node_cbody[n];
       nt_node_set_ref(nt, n, "receiver", sn);
-      nt_node_set_int(nt, n, "vcall", 0);
+      nt_set_vcall(nt, n, 0);
     }
   }
   for (int i = 0, nr = nt_num_refs(nt, n); i < nr; i++) ie_rself_give_self(c, nt_ref_at(nt, n, i));
@@ -9560,7 +9560,7 @@ static int desugar_std_stream_bare_output(Compiler *c) {
       int gv = sbo_stdout_read(c, id);
       if (gv < 0) continue;
       nt_node_set_ref(nt, id, "receiver", gv);
-      nt_node_set_int(nt, id, "vcall", 0);
+      nt_set_vcall(nt, id, 0);
     }
     else {
       /* the text to write, and what the call answers */
