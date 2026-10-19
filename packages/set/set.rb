@@ -302,7 +302,7 @@ class Set
   def replace(enum)
     check_frozen
     Set.check_enum(enum)
-    if enum.is_a?(Set)
+    if Set === enum
       @data = enum.to_a
       @ident = enum.compare_by_identity?
       return self
@@ -344,7 +344,7 @@ class Set
   def &(other)
     Set.check_enum(other)
     r = Set.new
-    if other.is_a?(Set) && size < other.size && (@ident || other.compare_by_identity?)
+    if Set === other && size < other.size && (@ident || other.compare_by_identity?)
       @data.each { |x| r.add(x) if other.include?(x) }
       return r
     end
@@ -390,7 +390,7 @@ class Set
     return true if self.equal?(other)
     return false unless other.is_a?(Set)
     return false unless size == other.size
-    return false if size > 0 && @ident != other.compare_by_identity?
+    return false if size > 0 && @ident != (Set === other && other.compare_by_identity?)
     mark = RecursionGuard.enter_eq(self, other)
     # A pair already being compared answers "equal", which is what lets two
     # distinct self-containing Sets finish. CRuby answers false here, for a
@@ -465,11 +465,14 @@ class Set
   end
 
   # Where either side compares by identity, CRuby walks the smaller Set and
-  # asks the other, and walks any other operand and asks this Set.
+  # asks the other, and walks any other operand and asks this Set. Only a
+  # real Set (Set === other) is asked how it compares: a Set-like object
+  # may answer is_a?(Set) with true and have no compare_by_identity?, as
+  # ruby/spec's SetSpecs::SetLike does, and CRuby tests the class.
   def disjoint?(other)
-    if @ident || (other.is_a?(Set) && other.compare_by_identity?)
+    if @ident || (Set === other && other.compare_by_identity?)
       Set.check_enum(other)
-      if other.is_a?(Set) && size < other.size
+      if Set === other && size < other.size
         @data.each { |x| return false if other.include?(x) }
       else
         other.each { |x| return false if include?(x) }
