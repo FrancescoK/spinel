@@ -19061,6 +19061,15 @@ static void emit_ffi_decls(Compiler *c, Buf *b) {
       for (int k = 0; k < cf->nclasses && !used; k++) used = cf->classes[k].nsub_root == nci + 1;
       if (used) buf_printf(b, "#include \"../%s\"\n", cf->classes[nci].native_sub_header);
     }
+    /* IO::Buffer is a runtime class (lib/sp_iobuffer.c): its header, on the
+       runtime include path, carries the inline accessors the literal-symbol
+       get_value fold calls */
+    for (int nci = 0; nci < cf->nclasses; nci++)
+      if (cf->classes[nci].is_native_class && cf->classes[nci].c_struct &&
+          sp_streq(cf->classes[nci].c_struct, "sp_IOBuffer")) {
+        buf_puts(b, "#include \"sp_iobuffer.h\"\n");
+        break;
+      }
     /* forward-declare each native class's package struct (incomplete: the TU
        holds only pointers) so the method externs below can name it. */
     for (int nci = 0; nci < cf->nclasses; nci++)
