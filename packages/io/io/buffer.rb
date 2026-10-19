@@ -121,9 +121,11 @@ class IO::Buffer
     new(0).__become_for(string)
   end
 
-  # IO::Buffer.map(file, size = nil, offset = 0, flags = READONLY): a view
-  # of the file through mmap (munmap'd by the finalizer; resize refused).
-  def self.map(file, size = nil, offset = 0, flags = READONLY)
+  # IO::Buffer.map(file, size = nil, offset = 0, flags = 0): a view of the
+  # file through mmap (munmap'd by the finalizer; resize refused). As in
+  # CRuby the default is a writable shared mapping, so a file opened
+  # read-only needs READONLY.
+  def self.map(file, size = nil, offset = 0, flags = 0)
     new(0).__become_map(file, size.nil? ? -1 : size, offset, flags)
   end
 
