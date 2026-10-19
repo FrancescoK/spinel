@@ -20768,9 +20768,16 @@ char *codegen_program(const NodeTable *nt) {
      helpers, or at the next entry that blocks, as after a require. */
   if (g_uses_threads && !g_ext_init_name) buf_puts(body, "    sp_sched_drain();\n");
   /* main's exit status is the hooks' to change: a hook that calls `exit`, or
-     that raises, decides what the program exits with (sp_at_exit_run). The
-     ext-init form is a void function, so there it just runs them. */
-  if (g_needs_at_exit && g_ext_init_name) buf_puts(body, "  sp_at_exit_run(0);\n");
+     that raises, decides what the program exits with (sp_at_exit_run). An
+     ext-init is where the library's life starts, not where the program ends:
+     as a required file's do in CRuby, its hooks -- and any an entry registers
+     later -- run when the host exits, from a C exit handler the init arms as
+     it arms the END blocks above. That runs on the thread that calls exit,
+     and the host's status stands: an exit handler cannot exit again. */
+  if (g_needs_at_exit && g_ext_init_name) {
+    buf_puts(&g_procs, "static void _sp_ext_at_exit(void) { sp_at_exit_run(0); }\n");
+    buf_puts(body, "  atexit(_sp_ext_at_exit);\n");
+  }
   if (g_ext_init_name) buf_puts(body, "}\n");
   else {
     if (g_needs_at_exit) buf_puts(body, "  _sp_main_rc = sp_at_exit_run(0);\n}\n");
