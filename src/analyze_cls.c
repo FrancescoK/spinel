@@ -938,11 +938,22 @@ static int cf_poison_const(const char *nm) {
   for (int i = 0; names[i]; i++) if (sp_streq(nm, names[i])) return 1;
   return 0;
 }
-/* a method the runtime calls back with arguments of its own */
+/* a method the runtime calls back with arguments of its own: the implicit
+   conversions, the equality and ordering a container or a sort asks,
+   coerce and the operators it hands on, each and call, the IO protocol
+   an object standing in for a stream answers, Marshal's and Psych's, the
+   hooks a class definition fires, and what a pattern asks. A method named
+   like a builtin's (`fetch`, `find`, `map`, `delete`, `[]`) is not one:
+   its calls are the program's own, bound where they stand (a call on a
+   receiver that may be anything binds every method of the name,
+   cf_call_any), and the prelude's Enumerable and Comparable call `each`
+   and `<=>` of their includers, which stay here. Naming those here made a
+   Hash-like class's parameters every class (#8837: 148 methods of the
+   blog, []/[]= first). */
 static int cf_protocol_name(const char *nm) {
   static const char *const names[] = {
     "to_s", "inspect", "==", "!=", "eql?", "equal?", "hash", "<=>", "===", "=~", "!~", "<", "<=", ">", ">=",
-    "+", "-", "*", "/", "%", "**", "&", "|", "^", "<<", ">>", "!", "~", "+@", "-@", "[]", "[]=",
+    "+", "-", "*", "/", "%", "**", "&", "|", "^", "<<", ">>", "!", "~", "+@", "-@",
     "each", "each_pair", "call", "to_proc", "to_ary", "to_a", "to_h", "to_hash", "to_str", "to_int",
     "to_i", "to_f", "to_r", "to_c", "to_sym", "to_path", "to_io", "to_json", "as_json", "coerce",
     "succ", "pred", "dup", "clone", "initialize_copy", "initialize_dup", "initialize_clone",
@@ -951,18 +962,11 @@ static int cf_protocol_name(const char *nm) {
     "_dump", "_load", "encode_with", "init_with", "pretty_print", "inherited", "included", "extended",
     "prepended", "method_added", "singleton_method_added", "const_missing", "write", "print", "puts",
     "read", "getc", "gets", "readpartial", "sysread", "syswrite", "close", "flush", "sync", "fileno",
-    "tty?", "isatty", "binmode", "external_encoding", "set_encoding", "path", "size", "length", "empty?",
-    "fetch", "key?", "keys", "values", "include?", "between?", "clamp", "step", "divmod", "fdiv",
-    "arity", "curry", "parameters", "lambda?", "yield", "deconstruct", "deconstruct_keys", "freeze",
-    "frozen?", "each_entry", "first", "last", "min", "max", "sum", "count", "find", "select", "map",
-    "reject", "sort", "sort_by", "reduce", "inject", "zip", "each_with_index", "each_with_object",
-    "entries", "lazy", "with_index", "next", "peek", "rewind", "default", "default_proc", "compare_by_identity",
-    "join", "flatten", "concat", "push", "pop", "shift", "unshift", "insert", "delete", "delete_at",
-    "delete_if", "slice", "dig", "values_at", "merge", "update", "store", "key", "invert", "transform_values",
-    "replace", "clear", "then", "yield_self", "tap", "itself", "display", "nil?", "is_a?", "kind_of?",
-    "instance_of?", "class", "object_id", "__id__", "singleton_methods", "methods", "public_methods",
-    "define_method", "attr_accessor", "attr_reader", "attr_writer", "new", "allocate", "superclass",
-    "ancestors", "name", "instance_methods", "const_get", "exit", "at_exit", "trap", NULL };
+    "tty?", "isatty", "binmode", "external_encoding", "set_encoding", "path",
+    "between?", "clamp", "step", "divmod", "fdiv", "arity", "curry", "parameters", "lambda?", "yield",
+    "dig", "deconstruct", "deconstruct_keys", "next", "peek", "rewind", "default", "default_proc",
+    "then", "yield_self", "tap", "display", "define_method", "attr_accessor", "attr_reader", "attr_writer",
+    "new", "allocate", "superclass", "ancestors", "name", "instance_methods", "const_get", "exit", "at_exit", "trap", NULL };
   for (int i = 0; names[i]; i++) if (sp_streq(nm, names[i])) return 1;
   return 0;
 }
