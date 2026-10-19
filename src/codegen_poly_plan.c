@@ -3795,6 +3795,10 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
         buf_puts(b, "; ");
       }
       else buf_printf(b, "sp_RbVal _t%d = %s; ", wrr, a0n);
+      /* a shared String's box (SP_BUILTIN_STRBUF) is its bytes with their
+         length: read before the tag test, or the String arm below sized
+         it by strlen and a frame stopped at its first NUL (#9602) */
+      buf_printf(b, "_t%d = sp_poly_strbuf_deref(_t%d); ", wrr, wrr);
       buf_printf(b, "sp_RbVal _t%d = (_t%d.tag == SP_TAG_STR) ? "
                      "sp_box_int(sp_File_write_bin((sp_File *)_t%d.v.p, _t%d.v.s)) : "
                      "sp_box_int(sp_File_write((sp_File *)_t%d.v.p, sp_poly_to_s(_t%d))); ",
@@ -3840,7 +3844,7 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
       /* Root the boxed operand before calling sp_poly_to_s: the
          conversion can allocate and trigger GC, which would lose the
          operand if it were only reachable through a local. */
-      buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d); ", wrr);
+      buf_printf(b, "_t%d = sp_poly_strbuf_deref(_t%d); SP_GC_ROOT_RBVAL(_t%d); ", wrr, wrr, wrr);   /* (a shared String's box: its bytes, #9602) */
       /* Resolve the operand to a (pointer, length) pair once. A marked
          String keeps its header length (binary-safe, embedded NULs
          survive); anything else is a NUL-terminated C string from
