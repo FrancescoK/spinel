@@ -1,0 +1,14 @@
+rhs 3
+rhs 4
+undefined method 'a=' for nil
+undefined method 'a=' for nil
+rhs 5
+rhs 6
+undefined method '[]=' for nil
+undefined method '[]=' for nil
+undefined method '[]=' for nil
+[3, 4]
+undefined method '[]=' for nil
+undefined method '[]=' for nil
+[3, 4]
+["a", "b"]

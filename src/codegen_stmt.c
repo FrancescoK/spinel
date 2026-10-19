@@ -15379,6 +15379,20 @@ static int masgn_struct_store(Compiler *c, int tgt, const char *val, TyKind vt,
   view_pop(c, vr);
   return 1;
 }
+/* A store through a receiver that may be nil raises the NoMethodError
+   CRuby does (`w[0], w[1] = a, b` over nil: "undefined method '[]=' for
+   nil"), after the right side has run, as the single `w[0] = a` does; the
+   typed arrays' setters skip a NULL receiver silently. As the call plan's
+   nil target (cplan_nil) does, it tests a nil the program writes, not one
+   the nil fact cannot bound (a global, an ivar, a builtin's answer), which
+   a receiver that is never nil would pay for. */
+static void masgn_recv_guard(Compiler *c, int recv, int recv_tmp, const char *name, int indent, Buf *b) {
+  if (recv_never_nil(c, recv) || !cplan_nil_written(nil_fact_why(c, recv))) return;
+  emit_indent(b, indent);
+  buf_puts(b, "if (SP_UNLIKELY(!(");
+  emit_node_or_tmp(c, recv, recv_tmp, b);
+  buf_printf(b, "))) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));\n", name);
+}
 static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
                        int recv_tmp, int key_tmp, int indent, Buf *b) {
   const NodeTable *nt = c->nt;
@@ -15450,6 +15464,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
     if (ty_is_array(rt)) {
       const char *k = rt == TY_POLY_ARRAY ? "Poly" : array_kind(rt);
       if (!k || comp_ntype(c, argv[0]) == TY_RANGE) { unsupported(c, id, "multiple assignment array index target"); return 1; }
+      masgn_recv_guard(c, recv, recv_tmp, "[]=", indent, b);
       emit_indent(b, indent);
       /* a masgn element is often nil (a short right side): the store notes it */
       buf_printf(b, "sp_%sArray_set%s(", k, nil_store_sfx(c, k, NIL_STORE_BOXED));
@@ -15480,6 +15495,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
       buf_puts(b, recv_tmp >= 0 ? ");\n" : "); }\n");
     }
     else if (ty_is_hash(rt) && ty_hash_cname(rt)) {
+      masgn_recv_guard(c, recv, recv_tmp, "[]=", indent, b);
       emit_indent(b, indent);
       buf_puts(b, "if (sp_gc_is_frozen("); emit_node_or_tmp(c, recv, recv_tmp, b);
       buf_puts(b, ")) sp_raise_frozen_hash_at("); emit_node_or_tmp(c, recv, recv_tmp, b);
@@ -15545,6 +15561,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
     int crc = ty_object_class(crt);
     int cdef = -1;
     int wmi = comp_method_in_chain(c, crc, nm, &cdef);
+    masgn_recv_guard(c, crecv, recv_tmp, nm, indent, b);
     emit_indent(b, indent);
     /* a writer a native class binds (`native_method :x=, [:float], ...`):
        its C function on the struct, the element converted to the argument
@@ -17190,6 +17207,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       char expr2[32]; snprintf(expr2, sizeof expr2, "_t%d", tmps[i]);
       Buf rb; memset(&rb, 0, sizeof rb);
       emit_node_or_tmp(c, recv_id2, ttr[i], &rb);
+      masgn_recv_guard(c, recv_id2, ttr[i], setnm, indent, b);
       {
         Buf fb; memset(&fb, 0, sizeof fb);
         emit_frozen_obj_guard(c, rc2, rb.p ? rb.p : "", &fb);
@@ -17252,6 +17270,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
         masgn_store(c, id, lefts[i], masgn_nil_el(c, els[i]) ? NULL : rv, tmpts[i], ttr[i], ttk[i], indent, b);
         continue;
       }
+      if (ty_is_array(recv_t) || ty_is_hash(recv_t)) masgn_recv_guard(c, recv_id, ttr[i], "[]=", indent, b);
       emit_indent(b, indent);
       if (ty_is_array(recv_t)) {
         /* a Range index stores a slice, which this arm has no call for */
