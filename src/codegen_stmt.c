@@ -10907,37 +10907,24 @@ static int emit_when_lambda_inline(Compiler *c, int cond, int t, TyKind pt, int 
    attribute write on a boxed receiver? Their value forms answer the bytes
    and publish nothing, so such a tail is emitted arm by arm, each leaf by
    emit_tail_value. */
+static int tail_pub_arm(const VpLeaf *lf, void *ud);
 int tail_pub_leaf(Compiler *c, int v) {
+  return for_each_value_position(c->nt, v, VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VPS_RESCUE_MOD,
+                                 tail_pub_arm, c);
+}
+/* (a String `||` or `&&` is a leaf of the walk: the return analysis reads
+   its operands only where an_tail_logic_op says it took them) */
+static int tail_pub_arm(const VpLeaf *lf, void *ud) {
+  Compiler *c = ud;
   const NodeTable *nt = c->nt;
-  NodeKind k = v >= 0 ? nt_kind(nt, v) : NK_NONE;
-  int n = 0;
-  const int *bb;
-  switch (k) {
-    case NK_ParenthesesNode: return tail_pub_leaf(c, nt_ref(nt, v, "body"));
-    case NK_StatementsNode:
-      bb = nt_arr(nt, v, "body", &n);
-      return n > 0 && tail_pub_leaf(c, bb[n - 1]);
-    case NK_ElseNode: return tail_pub_leaf(c, nt_ref(nt, v, "statements"));
-    case NK_IfNode: case NK_UnlessNode:
-      return tail_pub_leaf(c, nt_ref(nt, v, "statements")) ||
-             tail_pub_leaf(c, nt_ref(nt, v, k == NK_IfNode ? "subsequent" : "else_clause"));
-    case NK_CaseNode: case NK_CaseMatchNode:
-      bb = nt_arr(nt, v, "conditions", &n);
-      for (int w = 0; w < n; w++)
-        if (tail_pub_leaf(c, nt_ref(nt, bb[w], "statements"))) return 1;
-      return tail_pub_leaf(c, nt_ref(nt, v, "else_clause"));
-    case NK_BeginNode:
-      for (int rc = nt_ref(nt, v, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
-        if (tail_pub_leaf(c, nt_ref(nt, rc, "statements"))) return 1;
-      return tail_pub_leaf(c, nt_ref(nt, v, nt_ref(nt, v, "else_clause") >= 0 ? "else_clause" : "statements"));
-    case NK_RescueModifierNode:
-      return tail_pub_leaf(c, nt_ref(nt, v, "expression")) || tail_pub_leaf(c, nt_ref(nt, v, "rescue_expression"));
-    case NK_OrNode: case NK_AndNode:
-      return an_tail_logic_op(c, v) &&
-             ((k == NK_OrNode && tail_pub_leaf(c, nt_ref(nt, v, "left"))) || tail_pub_leaf(c, nt_ref(nt, v, "right")));
-    default:
-      return strbuf_builtin_tail(c, v) || (strbuf_assign_leaf(c, v) && strbuf_assign_boxed_recv(c, v));
-  }
+  int v = lf->node;
+  if (lf->kind == VPK_GAVE_UP) return 1;
+  if (lf->kind == VPK_NIL) return 0;
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_OrNode || k == NK_AndNode)
+    return an_tail_logic_op(c, v) &&
+           ((k == NK_OrNode && tail_pub_leaf(c, nt_ref(nt, v, "left"))) || tail_pub_leaf(c, nt_ref(nt, v, "right")));
+  return strbuf_builtin_tail(c, v) || (strbuf_assign_leaf(c, v) && strbuf_assign_boxed_recv(c, v));
 }
 
 /* A String result slot uses the return-tail emitter even when control
