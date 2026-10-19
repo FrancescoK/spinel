@@ -41,8 +41,9 @@ Single-file fixtures cover the documented subset: the scalar type
 vocabulary, nominal types, `Array[T]` / `Hash[K,V]` tag selection,
 nullable (`T?` / `T | nil`), heterogeneous-union → `poly`, member kinds
 (`meth` / `cmeth` / `self?.` / `attr_*` / `@ivar`), unqualified
-parent-scope resolution, first-overload-wins, and the signature- and
-type-level shapes that drop a method wholesale.
+parent-scope resolution, type aliases (`aliases.rbs`),
+first-overload-wins, and the signature- and type-level shapes that drop
+a method wholesale.
 
 Multi-file cross-file resolution (issue #658) is not covered here:
 output ordering across files depends on `readdir`, which isn't portable

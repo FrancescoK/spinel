@@ -32,6 +32,14 @@ void sbuf_set(sbuf_t *s, const char *src, size_t n);
 void known_names_add(const char *name, size_t n);
 bool known_names_has(const char *name);
 
+/* The type aliases declared (`type name = T`), by qualified name
+ * ("_"-joined, as the classes are), each with the seed tag its type maps
+ * to. A reference to an alias maps to that tag; a name not here is out of
+ * the subset. */
+void alias_add(const char *name, const char *tag);
+const char *alias_find(const char *name);
+size_t alias_count(void);
+
 /* The qualified name of the declaration whose members are being mapped;
  * an unqualified type name resolves against it first. */
 extern const char *g_self_scope;

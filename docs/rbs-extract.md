@@ -207,9 +207,18 @@ the field layouts coincide by construction.
 | `Hash[Symbol, <any>]`                  | `sym_poly_hash`                       |
 | `T?`                                   | `<T>?`  (recursive)                   |
 | `T \| nil` / `nil \| T`                | `<T>?`                                |
+| `name` of a `type name = T`            | what `T` maps to                      |
 
 The analyzer has one Symbol-keyed Hash kind, the poly-valued one, so every
 `Hash[Symbol, V]` maps to it and the values stay boxed.
+
+A type alias (`type patch_t = Array[untyped]`, at the top level or in a
+class or module) stands for its type wherever its name is referenced,
+in the file that declares it or another: the extractor collects every
+alias before it reads a signature, and an alias whose type names another
+alias follows it. The name resolves as a class name does (below). A
+generic alias (`type listed[T] = Array[T]`) and an alias whose type is
+out of the subset stay out of it.
 
 ### `Array[Array[Integer]]` and `Array[Array[Float]]` on an instance variable
 
@@ -342,7 +351,7 @@ stands on its own.
 - Interfaces (`_Foo`)
 - Intersections (`T & U`)
 - Literal types (`:foo`, `42`, `"x"`)
-- Type aliases
+- Generic type aliases (`type listed[T] = Array[T]`)
 - Type variables (generics with parameters)
 - Records (`{ name: T, ... }`)
 - Tuples (`[T, U]`)
