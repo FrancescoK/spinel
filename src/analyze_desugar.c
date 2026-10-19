@@ -5913,8 +5913,12 @@ static int desugar_dynamic_send_inner(Compiler *c) {
         nt_node_set_ref(nt, id, "receiver", pr);
       }
     }
+    /* the dispatch is a switch over the arms whose default raises
+       NoMethodError (emit_dynamic_send), so a name a variable holds -- a
+       parameter, an ivar, a table read -- reaches the arms' methods and no
+       other, as a computed one does (#9627) */
+    if (computed || narm > 0) nt_node_set_int(nt, id, "dyn_send_complete", 1);
     free(arms);
-    if (computed) nt_node_set_int(nt, id, "dyn_send_complete", 1);
     for (int k = 0; k < nown; k++) free(own[k]);
     free(own);
     comp_grow_node_arrays(c);

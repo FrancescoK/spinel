@@ -3080,7 +3080,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     Scope *sc = comp_scope_of(c, n);
     if (c->share_strings && sc && !sc->reachable) return -1;
     const char *lit = argc >= 1 ? sh_lit_name(nt, argv[0]) : NULL;
-    /* a computed name whose arms are complete (desugar_dynamic_send,
+    /* a runtime name whose arms are complete (desugar_dynamic_send,
        dyn_send_complete): every method the send can reach has an arm the
        walk follows as a call of its own, and any other name raises
        NoMethodError, so no method is reached by name beside them (#9627) */
