@@ -2054,6 +2054,7 @@ static int sg_accessor_own(Compiler *c, int d, const char *name) {
   ClassInfo *ci = &c->classes[d];
   return name_list_has(ci->sg_decl, ci->nsg_decl, name);
 }
+int comp_sg_accessor_own(Compiler *c, int d, const char *name) { return sg_accessor_own(c, d, name); }
 static const char *resolve_alias_side(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin, int sg) {
   if (builtin) *builtin = 0;
   if (!name) return name;

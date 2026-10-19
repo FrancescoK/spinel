@@ -145,6 +145,11 @@ void emit_ffi_callback_arg(Compiler *c, int cbidx, int argnode, Buf *out);
 void emit_ffi_num_arg(Compiler *c, int arg, TyKind at, const char *spec, int dbl, Buf *b);
 int emit_or_take_back(Compiler *c, int id, Buf *b, int (*fn)(Compiler *, int, Buf *));
 int emit_sg_accessor(Compiler *c, int id, int ci, const char *cn, const char *name, int argc, const int *argv, Buf *b);
+/* Does a value of class k answer `name` by a `class << self` accessor ahead
+   of any class method of the name? And the arms of those classes in the
+   class-tag ternary over the boxed value in _t<tv>. */
+int cls_sg_accessor_first(Compiler *c, int k, const char *name, int argc);
+void emit_boxed_cls_sg_first_arms(Compiler *c, int id, const char *name, int argc, const int *argv, int tv, Buf *b);
 int cls_value_sg_accessor_named(Compiler *c, const char *name, int argc);
 int emit_cls_value_sg_accessor_of(Compiler *c, int id, int recv, const char *ktext, const char *name, int argc,
                                   const int *argv, Buf *b);

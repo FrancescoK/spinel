@@ -21244,7 +21244,12 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
         int ncap = c->nclasses > 0 ? c->nclasses : 1;
         int *ccls = malloc(sizeof(int) * 4 * (size_t)ncap);
         int *cmi = ccls + ncap, *cdef = cmi + ncap, *cpf = cdef + ncap, nc = 0;
+        /* the classes whose `class << self` accessor answers the call ahead
+           of any class method, an inherited one included: an arm each, after
+           the methods' (emit_boxed_cls_sg_first_arms) */
+        int nsg = 0;
         for (int k = 0; k < c->nclasses; k++) {
+          if (cls_sg_accessor_first(c, k, nm, argc)) { nsg++; continue; }
           int dc = -1;
           int mi = comp_cmethod_in_chain(c, k, nm, &dc);
           if (mi < 0) continue;
@@ -21346,6 +21351,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
             free(cb.p);
             buf_puts(b, " : ");
           }
+          if (nsg > 0) emit_boxed_cls_sg_first_arms(c, id, nm, argc, argv, tv, b);
           /* Not a Class at run time: this is whatever the call would have
              compiled to with no class method of the name in the program -- a
              String receiver takes the String method. Raising here instead made
