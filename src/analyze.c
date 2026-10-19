@@ -43517,13 +43517,24 @@ static void refuse_set_identity_members(Compiler *c) {
   const NodeTable *nt = c->nt;
   int set_cid = comp_class_index(c, "Set");
   if (set_cid < 0 || comp_method_in_class(c, set_cid, "compare_by_identity") < 0) return;
+  /* a compare_by_identity that may make a Set an identity one: on a value
+     that may be a Set, or on self in an instance method of a Set's subclass
+     (a Hash's or another class's is no Set's) */
   int asked = 0;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
-    if (nm && !asked && sp_streq(nm, "compare_by_identity") && nt_ref(nt, id, "arguments") < 0) {
-      Scope *s = comp_scope_of(c, id);
-      if (!s || s->class_id != set_cid) asked = 1;
+    if (!nm || asked || !sp_streq(nm, "compare_by_identity") || nt_ref(nt, id, "arguments") >= 0) continue;
+    Scope *s = comp_scope_of(c, id);
+    if (s && s->class_id == set_cid) continue;
+    int r = nt_ref(nt, id, "receiver");
+    if (r < 0) {
+      if (s && !s->is_cmethod && s->class_id >= 0 && is_descendant(c, s->class_id, set_cid)) asked = 1;
+      continue;
     }
+    TyKind rt = infer_type(c, r);
+    if ((ty_is_object(rt) && (ty_object_class(rt) == set_cid || is_descendant(c, ty_object_class(rt), set_cid))) ||
+        (rt == TY_POLY && !cls_fact_excludes(c, r, set_cid)))
+      asked = 1;
   }
   if (!asked) return;
   static const char *const elem_names[] = {
