@@ -1380,6 +1380,30 @@ spinel: test/reject/super_init_value_begin.rb:13: unsupported value of `super` i
 spinel: test/reject/super_init_value_if.rb:13: unsupported value of `super` in initialize: initialize is compiled to return nothing, so the parent's last value is not there to answer (see docs/limitations.md)
 == test/reject/super_init_value_if.rb [promote] rc=1
 spinel: test/reject/super_init_value_if.rb:13: unsupported value of `super` in initialize: initialize is compiled to return nothing, so the parent's last value is not there to answer (see docs/limitations.md)
+== test/reject/super_initialize_rescue_mod_local.rb [default] rc=1
+spinel: test/reject/super_initialize_rescue_mod_local.rb:17: unsupported value of `super` in initialize: initialize is compiled to return nothing, so the parent's last value is not there to answer (see docs/limitations.md)
+== test/reject/super_initialize_rescue_mod_local.rb [promote] rc=1
+spinel: test/reject/super_initialize_rescue_mod_local.rb:17: unsupported value of `super` in initialize: initialize is compiled to return nothing, so the parent's last value is not there to answer (see docs/limitations.md)
+== test/reject/super_initialize_rescue_mod_parens.rb [default] rc=1
+spinel: test/reject/super_initialize_rescue_mod_parens.rb:17: unsupported value of `super` in initialize: initialize is compiled to return nothing, so the parent's last value is not there to answer (see docs/limitations.md)
+== test/reject/super_initialize_rescue_mod_parens.rb [promote] rc=1
+spinel: test/reject/super_initialize_rescue_mod_parens.rb:17: unsupported value of `super` in initialize: initialize is compiled to return nothing, so the parent's last value is not there to answer (see docs/limitations.md)
+== test/reject/super_initialize_rescue_mod_return_begin.rb [default] rc=1
+spinel: test/reject/super_initialize_rescue_mod_return_begin.rb:18: unsupported value of `super` in initialize: initialize is compiled to return nothing, so the parent's last value is not there to answer (see docs/limitations.md)
+== test/reject/super_initialize_rescue_mod_return_begin.rb [promote] rc=1
+spinel: test/reject/super_initialize_rescue_mod_return_begin.rb:18: unsupported value of `super` in initialize: initialize is compiled to return nothing, so the parent's last value is not there to answer (see docs/limitations.md)
+== test/reject/super_initialize_rescue_mod_return_case.rb [default] rc=1
+spinel: test/reject/super_initialize_rescue_mod_return_case.rb:19: unsupported value of `super` in initialize: initialize is compiled to return nothing, so the parent's last value is not there to answer (see docs/limitations.md)
+== test/reject/super_initialize_rescue_mod_return_case.rb [promote] rc=1
+spinel: test/reject/super_initialize_rescue_mod_return_case.rb:19: unsupported value of `super` in initialize: initialize is compiled to return nothing, so the parent's last value is not there to answer (see docs/limitations.md)
+== test/reject/super_initialize_rescue_mod_return_parens.rb [default] rc=1
+spinel: test/reject/super_initialize_rescue_mod_return_parens.rb:17: unsupported value of `super` in initialize: initialize is compiled to return nothing, so the parent's last value is not there to answer (see docs/limitations.md)
+== test/reject/super_initialize_rescue_mod_return_parens.rb [promote] rc=1
+spinel: test/reject/super_initialize_rescue_mod_return_parens.rb:17: unsupported value of `super` in initialize: initialize is compiled to return nothing, so the parent's last value is not there to answer (see docs/limitations.md)
+== test/reject/super_initialize_rescue_mod_ternary.rb [default] rc=1
+spinel: test/reject/super_initialize_rescue_mod_ternary.rb:18: unsupported value of `super` in initialize: initialize is compiled to return nothing, so the parent's last value is not there to answer (see docs/limitations.md)
+== test/reject/super_initialize_rescue_mod_ternary.rb [promote] rc=1
+spinel: test/reject/super_initialize_rescue_mod_ternary.rb:18: unsupported value of `super` in initialize: initialize is compiled to return nothing, so the parent's last value is not there to answer (see docs/limitations.md)
 == test/reject/superclass_mismatch.rb [default] rc=1
 spinel: test/reject/superclass_mismatch.rb:13: superclass mismatch for class Thing (B here, A at line 10)
 == test/reject/superclass_mismatch.rb [promote] rc=1
