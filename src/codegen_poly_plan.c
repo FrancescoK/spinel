@@ -4800,12 +4800,15 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
   }
   /* cover?: no builtin but a Range has the method; a receiver of another
      class raises, as in CRuby, where the switch left it at the result's
-     initializer (false). A Range the pre-arms did not take keeps that
-     answer: the argument is of no class the Range covers. */
+     initializer (false). A Range the pre-arms did not take answers false:
+     the argument is of no class the Range covers. A boxed result starts at
+     nil, so it is given the false. */
   else if (is_cover) {
     buf_printf(b, " default: if (!(_t%d.tag == SP_TAG_OBJ && (_t%d.cls_id == SP_BUILTIN_RANGE ||"
                   " _t%d.cls_id == SP_BUILTIN_FLOAT_RANGE || _t%d.cls_id == SP_BUILTIN_STR_RANGE)))"
-                  " sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", tv, tv, tv, tv, name, tv);
+                  " sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d));", tv, tv, tv, tv, name, tv);
+    if (ret == TY_POLY) buf_printf(b, " else _t%d = sp_box_bool(0);", tr);
+    buf_puts(b, " break;");
   }
   else if (is_aref || is_fetch) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_ND_AREF, -1, TY_UNKNOWN, PC_SAME);
