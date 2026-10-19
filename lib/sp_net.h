@@ -63,6 +63,17 @@ int sp_net_accept_unless(int sfd, const unsigned char *cancel);
 int sp_net_accept_nb(int sfd);
 int sp_net_connect(const char *host, int port);
 
+/* connect with a deadline: gives up after timeout_s seconds and returns -1
+ * (a negative timeout_s waits as connect does). The deadline covers every
+ * address the host resolves to; the name lookup itself is not bounded.
+ * Under SP_THREADS the green thread parks with the deadline
+ * (sp_sched_wait_io_timeout), and the returned fd is non-blocking as
+ * connect's is there. take_connect_timeout tells a timeout apart from a
+ * refusal or a failed lookup: 1 when the calling worker's last
+ * connect_timeout gave up on the deadline, else 0. Reading it clears it. */
+int sp_net_connect_timeout(const char *host, int port, double timeout_s);
+int sp_net_take_connect_timeout(void);
+
 /* ---- UDP ----
  * udp_open: an unbound SOCK_DGRAM fd. bind/connect attach it to a local /
  * remote address. send_to with a NULL host uses the connected peer.

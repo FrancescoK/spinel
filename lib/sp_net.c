@@ -635,6 +635,9 @@ int sp_net_shutdown(int fd, int how) {
     return shutdown(fd, how);
 }
 
+static double sp_net_now(void);
+static int sp_net_wait_io_until(int fd, short events, double deadline);
+
 /* A connect to a host that doesn't answer can take over a minute. With
    threads we park until it finishes instead of holding the worker. A
    signal doesn't cancel a connect, so on EINTR we wait for it too. */
@@ -695,6 +698,91 @@ int sp_net_connect(const char *host, int port) {
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
     return fd;
+}
+
+/* sp_net_connect_wait with a deadline (an sp_net_now() value). Returns 0 when
+   connected, -1 on failure, and -2 when the deadline passed first. The fd is
+   non-blocking for the connect in every build, since a blocking connect
+   would wait in the kernel past the deadline; the unthreaded build puts
+   blocking back afterwards, so the fd it returns is the kind sp_net_connect
+   returns there. */
+static int sp_net_connect_until(int fd, const struct sockaddr *sa, socklen_t len, double deadline) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) return -1;
+    int rc = -1;
+    if (SP_SIG_BLOCKING(connect(fd, sa, len)) == 0) {
+        rc = 0;
+    } else if (errno == EINPROGRESS || errno == EINTR) {
+        int w = sp_net_wait_io_until(fd, POLLOUT, deadline);
+        if (w == 0) {
+            rc = -2;
+        } else if (w > 0) {
+            int err = 0;
+            socklen_t elen = sizeof err;
+            if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &elen) == 0 && err == 0) rc = 0;
+            else if (err) errno = err;
+        }
+    }
+#ifndef SP_THREADS
+    if (rc == 0) fcntl(fd, F_SETFL, flags);
+#endif
+    return rc;
+}
+
+/* Per-worker, like sp_net_recv_timed_out. */
+static SP_TLS int sp_net_connect_timed_out;
+
+/* sp_net_connect with a deadline of timeout_s seconds (see sp_net.h). */
+int sp_net_connect_timeout(const char *host, int port, double timeout_s) {
+    sp_net_connect_timed_out = 0;
+    if (timeout_s < 0) return sp_net_connect(host, port);
+    if (port < 0 || port > 65535) return -1;
+    signal(SIGPIPE, SIG_IGN);
+
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family   = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    char portbuf[16];
+    snprintf(portbuf, sizeof(portbuf), "%d", port);
+    if (sp_net_resolve(host, portbuf, &hints, &res) != 0) return -1;
+
+    /* One deadline for every address the name resolves to, started after
+       the lookup, so a host with several addresses still answers in time. */
+    double deadline = sp_net_now() + timeout_s;
+    sp_fiber_defer_inject();
+    int fd = -1;
+    for (struct addrinfo *ai = res; ai != NULL; ai = ai->ai_next) {
+        if (sp_fiber_current && sp_fiber_inject_pending(sp_fiber_current)) break;
+        if (sp_net_now() >= deadline) { sp_net_connect_timed_out = 1; break; }
+        fd = sp_net_socket_cloexec(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0) continue;
+        int rc = sp_net_connect_until(fd, ai->ai_addr, ai->ai_addrlen, deadline);
+        if (rc == 0) break;
+        close(fd);
+        fd = -1;
+        if (rc == -2) { sp_net_connect_timed_out = 1; break; }
+    }
+    freeaddrinfo(res);
+    sp_fiber_undefer_inject();
+    if (sp_fiber_current && sp_fiber_inject_pending(sp_fiber_current)) {
+        if (fd >= 0) { close(fd); fd = -1; }
+        sp_fiber_fire_inject_if_pending();
+    }
+    if (fd < 0) return -1;
+    sp_net_connect_timed_out = 0;
+
+    int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    return fd;
+}
+
+/* Whether this worker's last timed connect gave up on its deadline; clears it. */
+int sp_net_take_connect_timeout(void) {
+    int t = sp_net_connect_timed_out;
+    sp_net_connect_timed_out = 0;
+    return t;
 }
 
 int sp_net_close(int fd) {
