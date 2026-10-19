@@ -5724,24 +5724,6 @@ static int sh_call_fresh(Compiler *c, int n, int depth) {
   return ok;
 }
 
-/* Is arm a of a conditional (its statements, an else or an elsif) a new
-   String or nil, or does it leave no value (none, or empty)? */
-static int sh_arm_fresh(Compiler *c, int a, int depth) {
-  const NodeTable *nt = c->nt;
-  if (a < 0) return 1;
-  switch (nt_kind(nt, a)) {
-  case NK_NilNode: return 1;
-  /* parentheses answer their last statement, or nil when empty
-     (an_unparen reads only one statement) */
-  case NK_ParenthesesNode: return sh_arm_fresh(c, nt_ref(nt, a, "body"), depth);
-  case NK_ElseNode: return sh_arm_fresh(c, nt_ref(nt, a, "statements"), depth);
-  case NK_StatementsNode: {
-    int n = 0; const int *bb = nt_arr(nt, a, "body", &n);
-    return n == 0 || sh_arm_fresh(c, bb[n - 1], depth);
-  }
-  default: return share_value_fresh(c, a, depth);
-  }
-}
 /* Is node n the frozen String literal itself: a literal of a file whose
    literals are frozen (`fzl`), or a `freeze`, `-@` or `dedup` of one, which
    answer their receiver? Every evaluation answers the one object the
@@ -5792,20 +5774,14 @@ int share_frozen_string(Compiler *c, int n) {
   }
   return share_frozen_literal(c, n);
 }
-int share_value_fresh(Compiler *c, int n, int depth) {
+/* Is value n, a leaf of share_value_fresh's walk, a new String or nil: a call the walk
+   found answers no String any name holds, a conversion, a yield or a super
+   that answers one, an element read of a temporary container of them? */
+static int sh_value_fresh_leaf(Compiler *c, int n, int depth) {
   const NodeTable *nt = c->nt;
-  n = an_unparen(nt, n);
-  if (n < 0 || depth > 8) return 0;
   NodeKind k = nt_kind(nt, n);
   if (k == NK_NilNode) return 1;
   if (k == NK_StringNode || k == NK_InterpolatedStringNode) return 1;
-  if (k == NK_RescueModifierNode)
-    return share_value_fresh(c, nt_ref(nt, n, "expression"), depth + 1) &&
-           share_value_fresh(c, nt_ref(nt, n, "rescue_expression"), depth + 1);
-  /* a conditional each of whose arms is one, or nil */
-  if (k == NK_IfNode || k == NK_UnlessNode)
-    return sh_arm_fresh(c, nt_ref(nt, n, "statements"), depth + 1) &&
-           sh_arm_fresh(c, nt_ref(nt, n, k == NK_IfNode ? "subsequent" : "else_clause"), depth + 1);
   /* a call the walk found answers no String any name holds (a share row's
      new or frozen String) */
   if (k == NK_CallNode && c->share && n < c->share->nnodes && c->share->nval[n] == -1) return 1;
@@ -5871,6 +5847,29 @@ int share_value_fresh(Compiler *c, int n, int depth) {
   if (sh == BSH_ITER_FIND && is_minmax_query(nm) && call_plain_argc(c, n) == 0 &&
       !share_builtin_overridden(c, "Array", nm)) sh = BSH_ELEM;
   return (sh == BSH_ELEM || sh == BSH_ELEM_N) && nt_ref(nt, n, "block") < 0 && sh_fresh_elems(c, recv, depth + 1);
+}
+typedef struct { Compiler *c; int depth; } ShFresh;
+static int sh_fresh_arm_bad(const VpLeaf *lf, void *ud) {
+  const ShFresh *f = ud;
+  /* a conditional's missing arm and an empty body answer nil */
+  if (lf->kind == VPK_NIL) return 0;
+  if (lf->kind == VPK_GAVE_UP) return 1;
+  /* a rescue modifier is a leaf of the walk: each operand is a value of its
+     own, asked as the whole is */
+  if (nt_kind(f->c->nt, lf->node) == NK_RescueModifierNode)
+    return !(share_value_fresh(f->c, nt_ref(f->c->nt, lf->node, "expression"), f->depth + 1) &&
+             share_value_fresh(f->c, nt_ref(f->c->nt, lf->node, "rescue_expression"), f->depth + 1));
+  return !sh_value_fresh_leaf(f->c, lf->node, f->depth);
+}
+/* Is value n a new String or nil: a conditional each of whose arms is one
+   (or nil), a rescue modifier whose expression and fallback are, or such a
+   leaf? The arms of the conditional are read through the iterator. `depth`
+   bounds the leaves' own chains of calls, not the shapes. */
+int share_value_fresh(Compiler *c, int n, int depth) {
+  n = an_unparen(c->nt, n);
+  if (n < 0 || depth > 8) return 0;
+  ShFresh f = { c, depth };
+  return !for_each_value_position(c->nt, n, VPS_IF | VPS_UNLESS, sh_fresh_arm_bad, &f);
 }
 int share_tail_fresh(Compiler *c, int n) {
   if (share_node_fresh(c, n)) return 1;
