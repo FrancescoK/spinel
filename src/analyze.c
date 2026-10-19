@@ -24303,7 +24303,9 @@ int scope_ret_param(Compiler *c, int mi) {
 static int promote_shared_stored_strings_pass(Compiler *c);
 /* A String builtin answering a new Array of new Strings nothing else holds
    (`s.split(",")`, `s.scan(re)`, `s.lines`, `s.chars`), or Dir's listing
-   of a directory (`Dir.entries(d)`, `Dir.children(d)`, `Dir.glob(p)`). */
+   of a directory (`Dir.entries(d)`, `Dir.children(d)`, `Dir.glob(p)`), or
+   such an Array sorted (`Dir.children(d).sort`): a new Array of the same
+   Strings, whose first Array nothing reads again. */
 static int sb_fresh_string_array_call(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   n = an_unparen(nt, n);
@@ -24311,6 +24313,8 @@ static int sb_fresh_string_array_call(Compiler *c, int n) {
   const char *mn = nt_str(nt, n, "name");
   int r = nt_ref(nt, n, "receiver");
   if (!mn || r < 0) return 0;
+  if (sp_streq(mn, "sort") && nt_ref(nt, n, "arguments") < 0 && !an_user_defines_method(c, mn))
+    return infer_type(c, n) == TY_STR_ARRAY && sb_fresh_string_array_call(c, r);
   if (nt_kind(nt, r) == NK_ConstantReadNode && sp_streq(nt_str(nt, r, "name"), "Dir") &&
       comp_class_index(c, "Dir") < 0 &&
       (sp_streq(mn, "entries") || sp_streq(mn, "children") || sp_streq(mn, "glob")))
@@ -24591,6 +24595,7 @@ static int str_append_arg_not_string(Compiler *c, int call) {
   }
   return 0;
 }
+static const char *hp_call(const NodeTable *nt, int x, int *recv, int *argc, char *buf, size_t bn);
 static int promote_shared_stored_strings_pass(Compiler *c) {
   int changed = 0;
   /* --share-strings: the one rule decides first (#6765) */
@@ -25186,18 +25191,12 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
     }
     /* the builtin's own copy, once the call has been rewritten onto it:
        `__enum_filter_map__N(arr) { |x| }` carries the container as its
-       first argument (desugar_builtin_enum_calls) */
+       first argument (desugar_builtin_enum_calls); ibn is the iterator's
+       own name, which its share row is kept under */
+    char nb4[128]; const char *ibn = itn; int ac4;
     if (recv4 < 0 && strncmp(itn, "__enum_", 7) == 0) {
-      const char *bn = itn + 7;
-      const char *sep = strstr(bn, "__");
-      char nb[128];
-      if (!sep || (size_t)(sep - bn) >= sizeof nb) continue;
-      memcpy(nb, bn, (size_t)(sep - bn)); nb[sep - bn] = 0;
-      if (!strbuf_elem_first_iterator(nb)) continue;
-      int a4 = nt_ref(nt, w, "arguments"); int an4 = 0;
-      const int *av4 = a4 >= 0 ? nt_arr(nt, a4, "arguments", &an4) : NULL;
-      if (an4 < 1) continue;
-      recv4 = av4[0];
+      ibn = hp_call(nt, w, &recv4, &ac4, nb4, sizeof nb4);
+      if (recv4 < 0 || !strbuf_elem_first_iterator(ibn)) continue;
     }
     /* `x.then { |u| ... }` (tap, yield_self) binds the receiver itself: a
        String the block appends to, or yields on to a block that does, is
@@ -25299,9 +25298,9 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
        (desugar_fresh_array_each_writeback takes each's). The parameter then
        binds the element as a copy, as for any read. */
     if ((bpv4->type == TY_STRING || bpv4->type == TY_STRBUF) && sb_fresh_string_array_call(c, recv4) &&
-        (is_map_bang_alias(itn) || comp_value_dropped(c, w) ||
-         bop_share_named(BOP_ANY_ARRAY, itn) == BSH_ITER_MAP ||
-         bop_share_named(BOP_ANY_ARRAY, itn) == BSH_ITER_MAP_BANG))
+        (is_map_bang_alias(ibn) || comp_value_dropped(c, w) ||
+         bop_share_named(BOP_ANY_ARRAY, ibn) == BSH_ITER_MAP ||
+         bop_share_named(BOP_ANY_ARRAY, ibn) == BSH_ITER_MAP_BANG))
       continue;
     if ((bpv4->type == TY_STRING || bpv4->type == TY_STRBUF) &&
         (nt_kind(nt, recv4) == NK_InstanceVariableReadNode || nt_kind(nt, recv4) == NK_CallNode) &&
@@ -25313,7 +25312,7 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
       q.to_name = bp4;
       /* an element iterator answering its receiver (its share row, BSH_ITER)
          whose value is dropped hands each element to the block alone */
-      q.fresh_elems = bop_share_named(BOP_ANY_ARRAY, itn) == BSH_ITER && comp_value_dropped(c, w);
+      q.fresh_elems = bop_share_named(BOP_ANY_ARRAY, ibn) == BSH_ITER && comp_value_dropped(c, w);
       if (!share_route_defer(c, &q, ia_msg)) unsupported_feature(c, w, ia_msg);
     }
     int gpl = (bpv4->type == TY_STRING || bpv4->type == TY_STRBUF || bpv4->type == TY_POLY) &&
