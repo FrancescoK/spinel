@@ -216,11 +216,13 @@ The analyzer has one Symbol-keyed Hash kind, the poly-valued one, so every
 
 A type alias (`type patch_t = Array[untyped]`, at the top level or in a
 class or module) stands for its type wherever its name is referenced,
-in the file that declares it or another: the extractor collects every
-alias before it reads a signature, and an alias whose type names another
-alias follows it. The name resolves as a class name does (below). A
-generic alias (`type listed[T] = Array[T]`) and an alias whose type is
-out of the subset stay out of it.
+in the file that declares it or another: the extractor declares every
+alias, then maps their types to a fixpoint, before it reads a signature,
+so an alias whose type names another alias follows it, and a name
+resolves to the nearest declaration (as a class name does, below)
+whatever the order of the declarations or the files. A generic alias
+(`type listed[T] = Array[T]`), an alias whose type is out of the subset
+and an alias in a cycle stay out of it.
 
 A record is the Hash its fields make: Symbol-keyed for `name:` and
 `:name =>` fields, String-keyed for `"name" =>` fields, with the values

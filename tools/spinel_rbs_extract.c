@@ -489,17 +489,26 @@ else {
     sbuf_free(&leaf);
 }
 
-/* Pre-pass: register every `type name = T` declaration, at the top level
- * or inside a class or module, under its qualified name with the tag T
- * maps to. T is mapped as a member of the declaring scope is (the scope
- * is g_self_scope, its parent the enclosing scope), so a class name in
- * it resolves as in a signature. An alias whose type is out of the
- * subset, or that names an alias not registered yet (one declared later,
- * or in a file read later), registers nothing on this round; the caller
- * runs the pass again while a round registers something. A generic alias
- * (`type listed[T] = Array[T]`) stays out of the subset. */
+/* The alias pass registers what a round could resolve; the last round
+ * (g_alias_final) also registers an alias whose type names an alias
+ * that never got a tag (a cycle, a generic one), with the fallback the
+ * emit pass would give it too (`undeclared | nil` is poly). */
+static int g_alias_final = 0;
+
+/* Pre-passes over the `type name = T` declarations, at the top level or
+ * inside a class or module. The names pass declares each under its
+ * qualified name, so a reference resolves to the nearest declaration
+ * whatever the order of the files. The alias pass maps T, as a member of
+ * the declaring scope is mapped (the scope is g_self_scope, its parent
+ * the enclosing scope), and registers the tag. An alias whose type is
+ * out of the subset registers nothing; one that names an alias with no
+ * tag yet (declared later, or in a file read later) registers nothing on
+ * this round, so a fallback on the way (`later | nil` to poly) is not
+ * kept, and the caller runs the pass again while a round registers
+ * something. A generic alias (`type listed[T] = Array[T]`) stays out of
+ * the subset. */
 static void collect_aliases(rbs_parser_t *p, rbs_node_t *node,
-                            const char *scope, const char *outer_scope) {
+                            const char *scope, const char *outer_scope, bool declare) {
     if (node->type == RBS_AST_DECLARATIONS_TYPE_ALIAS) {
         rbs_ast_declarations_type_alias_t *a = (rbs_ast_declarations_type_alias_t *) node;
         if (a->type_params != NULL && a->type_params->length > 0) return;
@@ -513,10 +522,16 @@ static void collect_aliases(rbs_parser_t *p, rbs_node_t *node,
             sbuf_append_cstr(&qualified, "_");
         }
         sbuf_append(&qualified, leaf.buf, leaf.len);
-        if (alias_find(qualified.buf) == NULL) {
+        if (declare) {
+            alias_declare(qualified.buf);
+        }
+else if (alias_find(qualified.buf) == NULL) {
             const char *sv_self_scope = g_self_scope;
             g_self_scope = (scope != NULL && scope[0] != '\0') ? scope : NULL;
-            if (map_type(p, a->type, outer_scope, &tag)) alias_add(qualified.buf, tag.buf);
+            g_alias_unresolved = false;
+            bool ok = map_type(p, a->type, outer_scope, &tag);
+            if (ok && (!g_alias_unresolved || g_alias_final)) alias_add(qualified.buf, tag.buf);
+            g_alias_unresolved = false;
             g_self_scope = sv_self_scope;
         }
         sbuf_free(&tag);
@@ -550,7 +565,7 @@ else {
     sbuf_append(&qualified, leaf.buf, leaf.len);
     if (members != NULL) {
         for (rbs_node_list_node_t *cur = members->head; cur != NULL; cur = cur->next) {
-            collect_aliases(p, cur->node, qualified.buf, scope);
+            collect_aliases(p, cur->node, qualified.buf, scope, declare);
         }
     }
     sbuf_free(&qualified);
@@ -673,13 +688,14 @@ static void process_file_phase(const char *path, FILE *out, process_phase_t phas
         rbs_node_list_node_t *pre = sig->declarations->head;
         while (pre != NULL) {
             collect_decl_names(p, pre->node, "");
+            collect_aliases(p, pre->node, "", "", true);
             pre = pre->next;
         }
     }
 else if (phase == PHASE_COLLECT_ALIASES) {
         rbs_node_list_node_t *pre = sig->declarations->head;
         while (pre != NULL) {
-            collect_aliases(p, pre->node, "", "");
+            collect_aliases(p, pre->node, "", "", false);
             pre = pre->next;
         }
     }
@@ -793,7 +809,9 @@ int main(int argc, char **argv) {
     }
     /* The aliases, to a fixpoint: an alias whose type names another alias
      * registers once that one has, whatever the order of the files, and a
-     * round that registers nothing ends it (a cycle registers nothing). */
+     * round that registers nothing ends it. One last round then registers
+     * what still waits on an alias that never got a tag (a cycle), as the
+     * emit pass would read it. */
     for (int round = 0; round < 16; round++) {
         size_t before = alias_count();
         for (int i = 1; i < argc; i++) {
@@ -801,6 +819,11 @@ int main(int argc, char **argv) {
         }
         if (alias_count() == before) break;
     }
+    g_alias_final = 1;
+    for (int i = 1; i < argc; i++) {
+        walk_phase(argv[i], stdout, PHASE_COLLECT_ALIASES);
+    }
+    g_alias_final = 0;
     for (int i = 1; i < argc; i++) {
         walk_phase(argv[i], stdout, PHASE_EMIT);
     }
