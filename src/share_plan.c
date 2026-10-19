@@ -385,7 +385,6 @@ static int share_plan_tail_renders(Compiler *c, int a, int depth) {
   }
   default: break;
   }
-  if (face_bang_on_runtime_elems(c, a)) return 0;
   int o, k = share_plan_producer_at(c, a, &o);
   if (k == SPK_LIFT) k = share_plan_producer_core(c, a, &o, 1);
   switch (k) {

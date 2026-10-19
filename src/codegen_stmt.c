@@ -1815,7 +1815,7 @@ int strbuf_tail_plain(Compiler *c, int v) {
             `loop`, an inlined call, a begin, a chain over a handle ...), but
             a yield: whose tail is asked by strbuf_route_yield, looping */
          (k != NK_YieldNode && strbuf_route_carries(c, v, 1)) ||
-         (face_str_bang_call(c, v) && !face_bang_on_runtime_elems(c, v)) ||
+         face_str_bang_call(c, v) ||
          (repr_share_rule(c) && strbuf_poly_user_base(c, v) >= 0);
 }
 /* ...and is the last statement of statement list st? */
