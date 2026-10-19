@@ -2322,7 +2322,7 @@ static int emit_boxed_cond_arms(Compiler *c, int node, Buf *b) {
   }
   /* The other String conditionals already have a handle-valued route:
      box its answer so ||, && and case keep the selected arm's String. */
-  if ((k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode || k == NK_CaseMatchNode) &&
+  if ((k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode || k == NK_CaseMatchNode || k == NK_RescueModifierNode) &&
       (t == TY_STRING || t == TY_STRBUF) && strbuf_value_carries(c, node)) {
     str_box_open(b, 1);
     emit_strbuf_handle_of(c, node, b);
