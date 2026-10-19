@@ -1,0 +1,6 @@
+["s", "W", 42]
+["sym!", "WORD!"]
+["sym!"]
+[:m, :m]
+[1, 2]
+"undefined method 'label=' for class Num"
