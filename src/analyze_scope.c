@@ -9016,6 +9016,7 @@ typedef struct PivsFacts {
   const NodeTable *ix_nt;
   unsigned ix_ver;
   int ix_count;
+  NtStamp ix_stamp, rv_stamp;   /* (pivs_ix_ready) */
   ANameHash names[PX_N];
   int *first[PX_N], *last[PX_N], cap[PX_N];
   int *next, *aux;
@@ -9034,6 +9035,8 @@ static void pivs_ix_clear(PivsFacts *f) {
   }
   free(f->next); free(f->aux);
   f->next = f->aux = NULL;
+}
+static void pivs_rv_clear(PivsFacts *f) {
   free(f->rv_head); free(f->rv_call); free(f->rv_next);
   f->rv_head = f->rv_call = f->rv_next = NULL; f->rv_nb = 0;
   anh_free(&f->handed); memset(&f->handed, 0, sizeof f->handed);
@@ -9044,6 +9047,7 @@ void pivs_facts_free(Compiler *c) {
   for (int i = 0; i < f->nmemo; i++) { free(f->memo[i].set); free(f->memo[i].cls); free(f->memo[i].hash); free(f->memo[i].cvals); }
   free(f->memo); free(f->memo_at); free(f->seen);
   pivs_ix_clear(f);
+  pivs_rv_clear(f);
   free(f);
   c->pivs = NULL;
 }
@@ -9104,9 +9108,22 @@ static void pivs_rv_build(Compiler *c, PivsFacts *f);
 static PivsFacts *pivs_ix_ready(Compiler *c) {
   const NodeTable *nt = c->nt;
   PivsFacts *f = pivs_facts(c);
+  /* A local variable read appended or a call renamed since is none of the
+     lists' nodes, and a list's node is below the count it was built at; the
+     call indexes read the calls' names, so a rename rebuilds them alone. */
+  if (f->ix_nt == nt && f->ix_ver != nt->version && f->ix_count >= 0 && nt_stamp_holds(nt, f->ix_stamp, 1)) {
+    if (!nt_stamp_holds(nt, f->rv_stamp, 0)) {
+      pivs_rv_clear(f);
+      pivs_rv_build(c, f);
+      f->rv_stamp = nt_stamp(nt);
+    }
+    f->ix_ver = nt->version; f->ix_count = nt->count; f->ix_stamp = nt_stamp(nt);
+  }
   if (f->ix_nt != nt || f->ix_ver != nt->version || f->ix_count != nt->count) {
     pivs_ix_clear(f);
+    pivs_rv_clear(f);
     f->ix_nt = nt; f->ix_ver = nt->version; f->ix_count = nt->count;
+    f->ix_stamp = f->rv_stamp = nt_stamp(nt);
     f->next = malloc(sizeof(int) * (size_t)(nt->count > 0 ? nt->count : 1));
     f->aux = malloc(sizeof(int) * (size_t)(nt->count > 0 ? nt->count : 1));
     if (!f->next || !f->aux) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }

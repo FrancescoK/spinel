@@ -59,6 +59,10 @@ typedef struct {
      exactly the edits that can change which node carries which name. Caches
      keyed on node identity or name can revalidate against it. */
   unsigned version;
+  /* The parts of version that a local variable read appended by
+     nt_new_local_read, and a call renamed by nt_node_swap_str or
+     nt_node_restore_str, bumped (nt_stamp_holds). */
+  unsigned read_version, rename_version;
   /* Bumped by every edit of a node, an int, ref or array field's included,
      which version leaves out. infer_type keeps an earlier query's answers
      only while neither it nor version has moved (#8852). */
@@ -332,6 +336,16 @@ int  nt_new_int(NodeTable *nt, long long v);                     /* a new Intege
    Such a read is a leaf, so a whole-tree index built before it was appended
    (one that reads no local variable read) is still the index of the table. */
 int  nt_appended_only_local_reads(const NodeTable *nt, int from);
+/* A new local variable read of name, counted in read_version. */
+int  nt_new_local_read(NodeTable *nt, const char *name);
+/* The table's version when an index was built, with its two counted parts.
+   nt_stamp_holds answers whether every version bump since was a local
+   variable read appended (nt_new_local_read) or, with renames, a call's name
+   swapped or restored: an index that reads neither (nor, with renames, any
+   call's name) is then still the index of the table. */
+typedef struct { unsigned version, reads, renames; } NtStamp;
+NtStamp nt_stamp(const NodeTable *nt);
+int  nt_stamp_holds(const NodeTable *nt, NtStamp s, int renames);
 
 /* Accessors. id must be in [0, nt->count). Out-of-range ids return the
    given defaults so callers can walk freely without bounds checks. */

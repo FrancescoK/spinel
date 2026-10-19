@@ -1099,6 +1099,7 @@ typedef struct {
   int *lvw_next;        /* [lvw_count] next write id sharing the bucket */
   int lvw_nbuckets, lvw_count;
   unsigned lvw_version; /* nt->version the index was built for */
+  NtStamp lvw_stamp;
   int lvw_built;
 
   /* local-write-by-(scope,name) index; see comp_lvw_first_sc */
@@ -1106,6 +1107,7 @@ typedef struct {
   int *lvws_next;       /* [lvws_count] next write id sharing the bucket */
   int lvws_nbuckets, lvws_count;
   unsigned lvws_version;
+  NtStamp lvws_stamp;
   int lvws_built;
 
   /* node-by-kind chains; see comp_kind_first */

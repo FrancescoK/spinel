@@ -1565,8 +1565,7 @@ static int emit_setter_assign_value(Compiler *c, int id, const int *argv, Buf *b
          Integer one that can be nil (`r.x = h[k]&.to_i`) keeps the
          slot's nil, or the setter's -2^63 check reads it as -2^63 */
       lv->nullable_int = (at == TY_INT || at == TY_FLOAT) && nullable_int_value(c, saved0_arg);
-      int rd = nt_new_node((NodeTable *)nt, "LocalVariableReadNode");
-      nt_node_set_str((NodeTable *)nt, rd, "name", svn);
+      int rd = nt_new_local_read((NodeTable *)nt, svn);
       comp_grow_node_arrays(c);
       c->nscope[rd] = c->nscope[id];
       comp_set_ntype(c, rd, at);

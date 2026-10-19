@@ -312,6 +312,22 @@ int nt_appended_only_local_reads(const NodeTable *nt, int from) {
     if (nt_kind(nt, n) != NK_LocalVariableReadNode) return 0;
   return 1;
 }
+int nt_new_local_read(NodeTable *nt, const char *name) {
+  unsigned v = nt->version;
+  int id = nt_new_node(nt, "LocalVariableReadNode");
+  nt_node_set_str(nt, id, "name", name);
+  nt->read_version += nt->version - v;
+  return id;
+}
+NtStamp nt_stamp(const NodeTable *nt) {
+  NtStamp s = { nt->version, nt->read_version, nt->rename_version };
+  return s;
+}
+int nt_stamp_holds(const NodeTable *nt, NtStamp s, int renames) {
+  unsigned counted = nt->read_version - s.reads;
+  if (renames) counted += nt->rename_version - s.renames;
+  return nt->version - s.version == counted;
+}
 int nt_new_int(NodeTable *nt, long long v) {
   int n = nt_new_node(nt, "IntegerNode");
   nt_node_set_int(nt, n, "value", v);
@@ -360,6 +376,7 @@ char *nt_node_swap_str(NodeTable *nt, int id, const char *key, const char *val) 
   SpNode *nd = (SpNode *)node_at(nt, id);
   if (!nd) return NULL;
   nt->version++;
+  if (nt_kind(nt, id) == NK_CallNode && sp_streq(key, "name")) nt->rename_version++;
   size_t vlen = strlen(val);
   for (int j = 0; j < nd->ns; j++)
     if (sp_streq(nd->s[j].key, key)) {
@@ -375,6 +392,7 @@ void nt_node_restore_str(NodeTable *nt, int id, const char *key, char *held) {
   SpNode *nd = (SpNode *)node_at(nt, id);
   if (!nd) { free(held); return; }
   nt->version++;
+  if (nt_kind(nt, id) == NK_CallNode && sp_streq(key, "name")) nt->rename_version++;
   for (int j = 0; j < nd->ns; j++)
     if (sp_streq(nd->s[j].key, key)) {
       free(nd->s[j].val);
