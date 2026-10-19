@@ -12140,22 +12140,6 @@ static int desugar_scan_enum_consumer(Compiler *c, int te) {
   return 1;
 }
 
-/* Is the `return` written in a lambda (`-> { return 1 }`, `lambda { return 1 }`)?
-   It leaves the lambda, not the method the lambda is written in. */
-static int te_return_in_lambda(Compiler *c, int rid) {
-  const NodeTable *nt = c->nt;
-  const int *par = comp_parent_map(c);
-  for (int n = par[rid]; n >= 0; n = par[n]) {
-    NodeKind k = nt_kind(nt, n);
-    if (k == NK_DefNode) return 0;
-    if (k == NK_LambdaNode) return 1;
-    if (k == NK_BlockNode && par[n] >= 0 && nt_kind(nt, par[n]) == NK_CallNode) {
-      const char *cn = nt_str(nt, par[n], "name");
-      if (cn && is_lambda_constructor(cn) && nt_ref(nt, par[n], "receiver") < 0) return 1;
-    }
-  }
-  return 0;
-}
 /* A `return v` written inside a block of the method (`@a.each { |x| return x
    if yield(x) > 1 }`) leaves the method with a value, which neither the tail
    nor the statements before it show (te_guard_value reads no block): the
@@ -12163,7 +12147,7 @@ static int te_return_in_lambda(Compiler *c, int rid) {
 static int te_block_return_value(Compiler *c, int si) {
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_ReturnNode, rid) {
-    if (c->nscope[rid] != si || te_return_in_lambda(c, rid)) continue;
+    if (c->nscope[rid] != si || return_in_lambda(c, rid)) continue;
     int a = nt_ref(nt, rid, "arguments");
     int ac = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
     if (ac > 0 && te_tail_is_value(nt, av[0])) return 1;
@@ -12179,6 +12163,15 @@ static int te_block_return_value(Compiler *c, int si) {
    materialized Enumerator. Un-resolved or unsupported receivers are left
    untouched -- a leftover to_enum/enum_for is loudly rejected downstream (no
    silent-wrong). Returns 1 if anything changed. */
+/* The `return` that hands out the guard's `call`, or -1. */
+static int guard_return_of(const NodeTable *nt, int call) {
+  NT_FOREACH_KIND(nt, NK_ReturnNode, rid) {
+    int a = nt_ref(nt, rid, "arguments");
+    int ac = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    if (ac == 1 && av[0] == call) return rid;
+  }
+  return -1;
+}
 static int desugar_to_enum(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -12250,7 +12243,8 @@ static int desugar_to_enum(Compiler *c) {
       /* not in a reopened builtin, whose self tail is the boxed receiver:
          the blockless call already reads the Enumerator (ret_noblock) */
       if (self_recv && es && es->name && sp_streq(es->name, m) && !value_form && reopen_ci < 0 &&
-          es->yields && es->ret != TY_ENUMERATOR && te_pure_block_guard_return(nt, es->body, id)) {
+          es->yields && es->ret != TY_ENUMERATOR && te_pure_block_guard_return(nt, es->body, id) &&
+          !return_before(c, (int)(es - c->scopes), guard_return_of(nt, id))) {
         scope_set_ret(es, TY_ENUMERATOR);
         es->ret_specialized = 1;
         changed = 1;

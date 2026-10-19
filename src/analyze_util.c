@@ -1848,6 +1848,31 @@ int is_blk_param_call(Compiler *c, int node, int mi) {
   const char *bp = c->scopes[mi].blk_param;
   return rn && bp && bp[0] && sp_streq(rn, bp);
 }
+/* Is the `return` written in a lambda (`-> { return 1 }`, `lambda { return 1 }`)?
+   It leaves the lambda, not the method the lambda is written in. */
+int return_in_lambda(Compiler *c, int rid) {
+  const NodeTable *nt = c->nt;
+  const int *par = comp_parent_map(c);
+  for (int n = par[rid]; n >= 0; n = par[n]) {
+    NodeKind k = nt_kind(nt, n);
+    if (k == NK_DefNode) return 0;
+    if (k == NK_LambdaNode) return 1;
+    if (k == NK_BlockNode && par[n] >= 0 && nt_kind(nt, par[n]) == NK_CallNode) {
+      const char *cn = nt_str(nt, par[n], "name");
+      if (cn && is_lambda_constructor(cn) && nt_ref(nt, par[n], "receiver") < 0) return 1;
+    }
+  }
+  return 0;
+}
+/* Is there a `return` of scope `si` other than `guard_ret`, written before it
+   (an early `return 0 if @a.nil?` before `return to_enum(:m) unless
+   block_given?`)? The guard then does not stop every blockless call. A
+   statement's nodes come before those of the statements after it. */
+int return_before(Compiler *c, int si, int guard_ret) {
+  NT_FOREACH_KIND(c->nt, NK_ReturnNode, rid)
+    if (rid < guard_ret && c->nscope[rid] == si && !return_in_lambda(c, rid)) return 1;
+  return 0;
+}
 /* Is `node` an instance_eval / instance_exec that hands the method's own
    block on (`instance_exec(*args, &block)`) as the value the method falls off
    its end with? The inlined method answers the value that block has at each
