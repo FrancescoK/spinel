@@ -1899,7 +1899,6 @@ void       comp_add_alias(ClassInfo *ci, const char *new_name, const char *old_n
 void       comp_add_alias_from(ClassInfo *ci, const char *new_name, const char *old_name, int from_cls);
 void       comp_add_sg_civ(ClassInfo *ci, const char *name);
 int        comp_is_sg_civ(ClassInfo *ci, const char *name);
-int        comp_is_sg_inh(ClassInfo *ci, const char *name);
 void       comp_add_sg_inh(ClassInfo *ci, const char *name);
 void       comp_add_sg_decl(ClassInfo *ci, const char *base, int writer);
 /* Prepend-chain helpers. */
@@ -1929,6 +1928,9 @@ const char *comp_resolve_alias(Compiler *c, int class_id, const char *name);
 const char *comp_resolve_alias_at(Compiler *c, int class_id, const char *name, int *start_cls);
 const char *comp_resolve_cm_alias_at(Compiler *c, int class_id, const char *name, int *start_cls);
 int comp_sg_writer_reached(Compiler *c, int k, const char *name, char *base, size_t cap);
+/* Does class d declare the `class << self` accessor `name` (`x`, or `x=`)
+   itself, rather than inherit it? */
+int comp_sg_accessor_own(Compiler *c, int d, const char *name);
 void rewrite_builtin_cm_alias_call(Compiler *c, int id);   /* analyze.c */
 const char *comp_resolve_cm_alias_ex(Compiler *c, int class_id, const char *name, int *builtin);
 int comp_name_is_sg_alias_only(Compiler *c, int class_id, const char *name);

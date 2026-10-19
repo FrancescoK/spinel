@@ -17485,12 +17485,14 @@ void refl_class_singleton_methods(Compiler *c, int ci, int all, ReflNames *r) {
         refl_note(r, an, 1);
     }
     /* an accessor inherited from an ancestor's `class << self` is the
-       ancestor's own: singleton_methods(false) leaves it out */
+       ancestor's own: singleton_methods(false) leaves it out. What the class
+       declares is read from its declarations, the reader and the writer
+       apart: it may declare one half and inherit the other. */
     for (int i = 0; i < kc->nsg_readers; i++)
-      if (all || !comp_is_sg_inh(kc, kc->sg_readers[i])) refl_note(r, kc->sg_readers[i], 1);
+      if (all || comp_sg_accessor_own(c, k, kc->sg_readers[i])) refl_note(r, kc->sg_readers[i], 1);
     for (int i = 0; i < kc->nsg_writers; i++) {
-      if (!all && comp_is_sg_inh(kc, kc->sg_writers[i])) continue;
       char wn[256]; snprintf(wn, sizeof wn, "%s=", kc->sg_writers[i]);
+      if (!all && !comp_sg_accessor_own(c, k, wn)) continue;
       refl_note(r, wn, 1);
     }
     if (!all) break;
