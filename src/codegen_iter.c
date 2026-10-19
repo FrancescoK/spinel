@@ -3857,6 +3857,29 @@ int poly_block_dispatch_cands(Compiler *c, int id, int *cand, int max) {
   return nc;
 }
 
+/* Does the builtin arm `text` raise NoMethodError for `name` other than as
+   the last branch of a kind test (`if (<an Array>) ... else if (<a Hash>)
+   ... else <raise>`, the builtin emission of a boxed receiver)? Then the
+   builtin surface declined the call, or the arm rebuilt a dispatch of its
+   own; the raise only a receiver of no kind with the method reaches is
+   the builtin's answer, as CRuby's. */
+static int builtin_arm_raises_name(const char *text, const char *name) {
+  char rtok[300];
+  snprintf(rtok, sizeof rtok, "sp_raise_nomethod(sp_nomethod_msg(\"%s\"", name);
+  static const char tail[] = "else ";
+  for (const char *p = strstr(text, rtok); p; p = strstr(p + 1, rtok))
+    if ((size_t)(p - text) < sizeof tail - 1 || strncmp(p - (sizeof tail - 1), tail, sizeof tail - 1) != 0)
+      return 1;
+  /* a declining emitter that names the method another way */
+  char ntok[300];
+  snprintf(ntok, sizeof ntok, "sp_nomethod_msg(\"%s\"", name);
+  for (const char *p = strstr(text, ntok); p; p = strstr(p + 1, ntok))
+    if ((size_t)(p - text) < strlen("sp_raise_nomethod(") ||
+        strncmp(p - strlen("sp_raise_nomethod("), "sp_raise_nomethod(", strlen("sp_raise_nomethod(")) != 0)
+      return 1;
+  return 0;
+}
+
 int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -4072,9 +4095,7 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
     g_unsup_probe = sv_probe; g_pre = sv_gpre;
     view_pop(c, va);
     view_unbind(slot);
-    char rtok[300];
-    snprintf(rtok, sizeof rtok, "sp_nomethod_msg(\"%s\"", name);
-    if (ok && ab->p && !strstr(ab->p, rtok)) {
+    if (ok && ab->p && !builtin_arm_raises_name(ab->p, name)) {
       emit_indent(&sw, indent); buf_puts(&sw, "default: {\n");
       buf_puts(&sw, ab->p);
       emit_indent(&sw, indent + 1); buf_puts(&sw, "break;\n");
