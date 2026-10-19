@@ -48,10 +48,17 @@ static int iob_slice_invalid(sp_IOBuffer *b);
    the point CRuby does: set_value / set_values first of all, set_string /
    copy / clear after their argument checks and before the range checks,
    and!/or!/xor! after the mask checks. read / pread are the exception:
-   CRuby validates them as reads (iob_io_span). */
-static void iob_writable(sp_IOBuffer *b) {
+   CRuby validates them as reads (iob_io_span). The typed setters split it
+   (iob_value_wptr) so that a write looks at the slice once. */
+static void iob_readonly(sp_IOBuffer *b) {
   if (b->flags & SP_IOB_READONLY) sp_raise_cls("IO::Buffer::AccessError", "Buffer is not writable!");
+}
+static void iob_writable_slice(sp_IOBuffer *b) {
   if (iob_slice_invalid(b)) sp_raise_cls("IO::Buffer::InvalidatedError", "Buffer is invalid!");
+}
+static void iob_writable(sp_IOBuffer *b) {
+  iob_readonly(b);
+  iob_writable_slice(b);
 }
 
 /* the value's Ruby spelling for TypeError messages (nil/true/false read as
@@ -150,6 +157,26 @@ static uint8_t *iob_value_ptr(sp_IOBuffer *b, int64_t off, int width) {
     iob_arg(sp_sprintf("Type extends beyond end of buffer! (offset=%lld > size=%lld)",
                        (long long)off, (long long)b->size));
   return iob_ptr(b) + off;
+}
+/* The same for a write, past iob_readonly. CRuby looks at an invalidated
+   slice before the offset; this looks at it once, where the bytes are
+   taken, and ahead of the range error only when there is one -- the order
+   CRuby raises in, without a second look on every write. */
+static int iob_value_oob(sp_IOBuffer *b, int64_t off, int width) {
+  return off < 0 || b->size < width || off > b->size - width;
+}
+static SP_NORETURN void iob_value_range_error(sp_IOBuffer *b, int64_t off) {
+  if (off < 0) iob_arg("Offset can't be negative!");
+  iob_arg(sp_sprintf("Type extends beyond end of buffer! (offset=%lld > size=%lld)",
+                     (long long)off, (long long)b->size));
+}
+static uint8_t *iob_value_wptr(sp_IOBuffer *b, int64_t off, int width) {
+  if (iob_value_oob(b, off, width)) {
+    iob_writable_slice(b);
+    iob_value_range_error(b, off);
+  }
+  iob_writable_slice(b);
+  return iob_base(b) + off;
 }
 
 /* ---- raw loads/stores (byte-assembled: host-endian agnostic) ---- */
@@ -289,11 +316,12 @@ static sp_RbVal iob_get_core(sp_IOBuffer *b, int ty, int64_t off) {
 }
 
 /* Answers the offset just past the value, as CRuby does (set_values
-   chains it). The caller has run iob_writable: CRuby checks the buffer
-   before the type name, the offset or the value. */
+   chains it). CRuby checks the buffer -- read-only, then an invalidated
+   slice -- before the offset and the value. */
 static sp_int iob_set_core(sp_IOBuffer *b, int ty, int64_t off, sp_RbVal val) {
   const IobType *t = &iob_types[ty];
-  uint8_t *p = iob_value_ptr(b, off, t->width);
+  iob_readonly(b);
+  uint8_t *p = iob_value_wptr(b, off, t->width);
   if (t->flt) {
     double f = iob_float_operand(val);
     uint64_t raw;
@@ -385,9 +413,16 @@ sp_IOBuffer *sp_IOBuffer_become_for(sp_IOBuffer *b, const char *s) {
 sp_RbVal sp_IOBuffer_get_value(sp_IOBuffer *b, sp_RbVal type, sp_int off) {
   return iob_get_core(b, iob_decode_type(type), off);
 }
+/* CRuby checks the buffer before the type name: a bad name looks at it
+   first, and a good one leaves it to iob_set_core, once */
 sp_int sp_IOBuffer_set_value(sp_IOBuffer *b, sp_RbVal type, sp_int off, sp_RbVal val) {
-  iob_writable(b);
-  return iob_set_core(b, iob_decode_type(type), off, val);
+  int ty = type.tag == SP_TAG_SYM && sp_sym_name_fn
+         ? sp_IOBuffer_type_of(sp_sym_name_fn((sp_sym)type.v.i)) : -1;
+  if (ty < 0) {
+    iob_writable(b);
+    iob_arg("Invalid type name!");
+  }
+  return iob_set_core(b, ty, off, val);
 }
 
 sp_int sp_IOBuffer_get_i(sp_IOBuffer *b, sp_int ty, sp_int off) {
@@ -410,11 +445,9 @@ double sp_IOBuffer_get_f(sp_IOBuffer *b, sp_int ty, sp_int off) {
   union { uint64_t u; double f; } u; u.u = raw; return u.f;
 }
 sp_int sp_IOBuffer_set_i(sp_IOBuffer *b, sp_int ty, sp_int off, sp_int v) {
-  iob_writable(b);
   return iob_set_core(b, ty, off, sp_box_int(v));
 }
 sp_int sp_IOBuffer_set_f(sp_IOBuffer *b, sp_int ty, sp_int off, double v) {
-  iob_writable(b);
   return iob_set_core(b, ty, off, sp_box_float(v));
 }
 /* The typed lowering with a BOXED value: the generic path minus the symbol
@@ -422,7 +455,6 @@ sp_int sp_IOBuffer_set_f(sp_IOBuffer *b, sp_int ty, sp_int off, double v) {
    Float (truncating, as CRuby does) and u64/s64 take a Bignum -- so it
    reaches iob_set_core unexamined, exactly as set_value leaves it. */
 sp_int sp_IOBuffer_set_v(sp_IOBuffer *b, sp_int ty, sp_int off, sp_RbVal v) {
-  iob_writable(b);
   return iob_set_core(b, ty, off, v);
 }
 /* set_values (packages/io/io/buffer.rb) checks the buffer before its

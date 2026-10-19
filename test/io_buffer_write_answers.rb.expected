@@ -21,6 +21,12 @@ f64 11
 9
 29
 3
+100
+set_values negative offset: ArgumentError: Offset can't be negative!
+set_values empty, negative offset: ArgumentError: Offset can't be negative!
+set_values negative offset, values not an Array: ArgumentError: Offset can't be negative!
+set_values negative offset, lengths differ: ArgumentError: Offset can't be negative!
+set_values negative offset, types not an Array: ArgumentError: Argument buffer_types should be an array!
 3
 3
 2

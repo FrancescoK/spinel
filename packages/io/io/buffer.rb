@@ -251,12 +251,15 @@ class IO::Buffer
   end
 
   # Answers the offset past the last value, as set_value does. The buffer
-  # is checked first (read-only, an invalidated slice), as CRuby does.
+  # is checked first (read-only, an invalidated slice), then the types, the
+  # offset (so an empty list at a negative one raises too) and the values,
+  # in CRuby's order.
   def set_values(types, offset, values)
     __check_writable
     unless types.is_a?(Array)
       raise ArgumentError, "Argument buffer_types should be an array!"
     end
+    raise ArgumentError, "Offset can't be negative!" if offset < 0
     unless values.is_a?(Array)
       raise ArgumentError, "Argument values should be an array!"
     end

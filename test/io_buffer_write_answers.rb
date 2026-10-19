@@ -37,6 +37,12 @@ puts b.set_value(:f64, 16, 3)
 puts b.set_values([:U8, :u16, :u32], 2, [1, 2, 3])
 puts b.set_values([:F64, :S8], 20, [1.5, -1])
 puts b.set_values([], 3, [])
+puts b.set_values([], 100, [])
+try("set_values negative offset") { b.set_values([:U8], -1, [1]) }
+try("set_values empty, negative offset") { b.set_values([], -1, []) }
+try("set_values negative offset, values not an Array") { b.set_values([:U8], -1, 1) }
+try("set_values negative offset, lengths differ") { b.set_values([:U8], -1, [1, 2]) }
+try("set_values negative offset, types not an Array") { b.set_values(:U8, -1, [1]) }
 
 # set_string and copy answer the byte count
 puts b.set_string("abc")
