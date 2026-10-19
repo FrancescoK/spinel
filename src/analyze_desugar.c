@@ -482,7 +482,10 @@ int desugar_masgn_store_evidence(Compiler *c) {
          left target already took */
       long long pos = tuple ? (en - rn + j < ln ? -1 : en - rn + j)
                     : scalar ? (j == 0 && ln == 0 ? 0 : -1) : j - rn;
-      changed |= masgn_ev_store(c, id, tgt, masgn_ev_value(nt, value, tuple, en, els, scalar, pos));
+      int ev = masgn_ev_value(nt, value, tuple, en, els, scalar, pos);
+      /* the lefts that take elements first, and the rights, for a run-time array counted from the end */
+      if (ev >= 0 && !tuple && !scalar) { nt_node_set_int(nt, ev, "masgn_left", ln); nt_node_set_int(nt, ev, "masgn_right", rn); }
+      changed |= masgn_ev_store(c, id, tgt, ev);
     }
     /* a splat target takes the array of what the fixed targets leave: the
        tuple's middle, the scalar alone, or a run-time array's slice, typed

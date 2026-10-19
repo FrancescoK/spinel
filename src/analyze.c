@@ -34643,8 +34643,20 @@ static int elem_miss_call(Compiler *c, int v) {
   }
   /* the element a multiple assignment hands one of its targets, read back
      only as type evidence (desugar_masgn_store_evidence): it is no more a
-     miss there than it is for the assignment's local and ivar targets */
-  if (nt_int(nt, v, "masgn_elem", LLONG_MIN) != LLONG_MIN) return 0;
+     miss there than it is for the assignment's local and ivar targets,
+     except past the end of a constant Array of a known length, which
+     leaves nil in the slot the target stores through */
+  if (nt_int(nt, v, "masgn_elem", LLONG_MIN) != LLONG_MIN) {
+    if (argc != 1 || !carr_is_read(nt, recv, nt_str(nt, recv, "name"))) return 0;
+    /* a target after the splat, counted from the end: the j-th of the rights
+       takes the element at max(len - rights + j, lefts + j), nil when that is
+       past the end, which is when lefts + j >= len */
+    const CArr *ca = const_array(c, nt_str(nt, recv, "name"));
+    long long pos = nt_int(nt, v, "masgn_elem", 0);
+    if (ca && pos < 0)
+      return nt_int(nt, v, "masgn_left", 0) + pos + nt_int(nt, v, "masgn_right", 0) >= ca->len;
+    return !const_array_index_in_range(c, recv, argv[0]);
+  }
   /* Integer#[] reads a bit (0 or 1), never nil */
   if (sp_streq(nm, "[]")) { TyKind brt = infer_type(c, recv); if (brt == TY_INT || brt == TY_BIGINT) return 0; }
   /* (a block given to them goes unused, as in CRuby: `a.at(i, &b)` misses
