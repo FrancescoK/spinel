@@ -30853,6 +30853,16 @@ static void emit_call_body_ordinary(Compiler *c, int id, Buf *b) {
 
   if (emit_call_exception_arms(c, id, b, nt, name, recv, argc, argv)) return;
 
+  /* Regexp's own class methods (union, escape, compile, ...) ahead of the
+     class-method arms, which took a reopened Regexp for a class of the
+     program's and refused `Regexp.union` as a class method none defines;
+     a class method the program gives Regexp itself still goes there */
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode && nt_str(nt, recv, "name") &&
+      sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
+    int rci = comp_class_index(c, "Regexp");
+    if ((rci < 0 || comp_cmethod_in_chain(c, rci, name, NULL) < 0) &&
+        emit_call_regexp_class_arms(c, id, b, nt, name, recv, argc, argv)) return;
+  }
   if (emit_call_class_method_arms(c, id, b, nt, name, recv, argc, argv)) return;
   if (emit_call_regexp_class_arms(c, id, b, nt, name, recv, argc, argv)) return;
 
