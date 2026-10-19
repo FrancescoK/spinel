@@ -3144,12 +3144,13 @@ static int emit_array_operand_misfit(Compiler *c, int id, const char *name, int 
     else buf_printf(b, "(void)(%s); ", av.p ? av.p : "0");
     free(ap.p); free(av.p);
   }
+  /* a nil receiver raises before any operand is converted */
+  emit_fold_recv_test(c, id, tr, b);
   for (int ai = 0; ai < bad; ai++)
     if (comp_ntype(c, argv[ai]) == TY_POLY)
       buf_printf(b, "if (_t%d.tag != SP_TAG_OBJ || !sp_poly_is_array_kind(_t%d.cls_id))"
                     " sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %%s into Array\", sp_convert_src_name(_t%d))); ",
                  t0 + ai, t0 + ai, t0 + ai);
-  emit_fold_recv_test(c, id, tr, b);
   if (comp_ntype(c, argv[bad]) == TY_NIL)
     buf_puts(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into Array\");");
   else if (comp_ntype(c, argv[bad]) == TY_BOOL)

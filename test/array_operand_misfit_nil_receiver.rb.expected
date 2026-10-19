@@ -1,0 +1,20 @@
+concat_nil 5: NoMethodError: undefined method 'concat' for nil
+concat_nil "s": NoMethodError: undefined method 'concat' for nil
+concat_nil [2]: NoMethodError: undefined method 'concat' for nil
+union_true 5: NoMethodError: undefined method 'union' for nil
+union_true "s": NoMethodError: undefined method 'union' for nil
+union_true [2]: NoMethodError: undefined method 'union' for nil
+product_nil 5: NoMethodError: undefined method 'product' for nil
+product_nil "s": NoMethodError: undefined method 'product' for nil
+product_nil [2]: NoMethodError: undefined method 'product' for nil
+concat_int 5: NoMethodError: undefined method 'concat' for nil
+concat_int "s": NoMethodError: undefined method 'concat' for nil
+concat_int [2]: NoMethodError: undefined method 'concat' for nil
+concat_nil 5: TypeError: no implicit conversion of Integer into Array
+concat_nil [2]: TypeError: no implicit conversion of nil into Array
+union_true 5: TypeError: no implicit conversion of Integer into Array
+union_true [2]: TypeError: no implicit conversion of true into Array
+product_nil 5: TypeError: no implicit conversion of Integer into Array
+product_nil [2]: TypeError: no implicit conversion of nil into Array
+concat_int 5: TypeError: no implicit conversion of Integer into Array
+concat_int [2]: TypeError: no implicit conversion of Integer into Array
