@@ -1027,11 +1027,20 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         buf_printf(b, "sp_File_timeout(_t%d); })", tio2);
       }
       else if (sp_streq(name, "write") && argc >= 1) {
-        /* Same String/non-String split as the TY_IO arm: a String knows its own
-           byte count, a stringified value may be an unmarked static name. */
-        int sk2 = repr_of(c, argv[0]).as_ty == TY_STRING;
-        buf_printf(b, "%s(_t%d, ", sk2 ? "sp_File_write_bin" : "sp_File_write", tio2);
-        emit_to_s_expr(c, argv[0], b);
+        /* Same split as the TY_IO arm: a String knows its own byte count, a
+           stringified value may be an unmarked static name, and an operand
+           whose class is only known at run time picks the entry by its tag.
+           Chosen statically, a poly String took the plain entry and stopped
+           at its first NUL. */
+        TyKind wk2 = repr_of(c, argv[0]).as_ty;
+        if (wk2 == TY_POLY) {
+          buf_printf(b, "sp_File_write_poly(_t%d, ", tio2);
+          emit_boxed(c, argv[0], b);
+        }
+        else {
+          buf_printf(b, "%s(_t%d, ", wk2 == TY_STRING ? "sp_File_write_bin" : "sp_File_write", tio2);
+          emit_to_s_expr(c, argv[0], b);
+        }
         buf_puts(b, "); })");
       }
       else if (is_text_print(name)) {
