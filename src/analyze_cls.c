@@ -1818,6 +1818,21 @@ static void cf_native_answer(CF *f, int v, int recv_el, int k, const char *nm, i
   cf_all(f, v);
 }
 
+/* The value of a call on a native class or module itself (`SQL.sqlite3_column_int(stmt, i)`,
+   `Lib.new(...)`): an ffi_func answers a C value, a builtin (a number, a
+   String, a pointer), a native_new an instance of the class, and a name no
+   binding takes answers as a Class's method would. Every such call used
+   to answer anything, and the Row it filled held every class (#8837). */
+static void cf_native_class_answer(CF *f, int v, int x, const char *nm, int argc) {
+  Compiler *c = f->c;
+  const char *cn = x >= 0 && x < c->nclasses ? c->classes[x].name : NULL;
+  for (int i = 0; cn && i < c->n_native_funcs; i++)
+    if (c->native_funcs[i].mod && sp_streq(c->native_funcs[i].mod, cn) && sp_streq(c->native_funcs[i].name, nm)) { cf_add_set(f, v, cf_bv_set(f)); return; }
+  if (comp_native_method_find(c, x, nm, argc, 1) >= 0) { cf_add_set(f, v, f->own[x]); return; }
+  if (cf_scalar_answer(nm)) { cf_add_set(f, v, cf_bv_set(f)); return; }
+  cf_all(f, v);
+}
+
 static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, const int *argv, int argc, int blk) {
   Compiler *c = f->c;
   const ClsSet *s = &f->pool[pidx];
@@ -1839,7 +1854,7 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
       if (cm >= 0 && cf_user_target(f, v, cm, argv, argc, blk)) continue;
       if (cm < 0 && cf_sg_access(f, v, kc, nm, argv, argc)) continue;
       if (cm < 0 && f->mod[kc]) { int mm = comp_method_in_chain(c, kc, nm, NULL); if (mm >= 0 && cf_user_target(f, v, mm, argv, argc, blk)) continue; }
-      if (cf_class_has_natives(f, kc)) { cf_all(f, v); continue; }
+      if (cf_class_has_natives(f, kc)) { cf_native_class_answer(f, v, kc, nm, argc); continue; }
       builtin = 1;
       continue;
     }
@@ -2135,7 +2150,7 @@ static void cf_call(CF *f, int v) {
     /* a native binding of the class or module (an ffi_func, a Fiddle
        extern): its value is anything */
     if (cf_class_has_natives(f, x)) {
-      cf_all(f, v);
+      cf_native_class_answer(f, v, x, nm, argc);
       if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) cf_all_block_params(f, blk);
       return;
     }
