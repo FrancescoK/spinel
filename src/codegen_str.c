@@ -473,11 +473,14 @@ static int str_box_by_kind(Compiler *c, int node, StrForm *sf) {
   case SPK_PUBLISHED: {
     /* only a call to user methods, each publishing on its return: a builtin
        (ENV.fetch with a default) never clears or sets the channel, so the
-       pickup could take a handle an earlier call left there */
+       pickup could take a handle an earlier call left there. A read into a
+       buffer (strbuf_io_outbuf) is the builtin that does: it answers the
+       buffer's handle through sp_strbuf_read_pub, which publishes it */
     int u = unwrap_parens(c, node), tg[CPT_MAX];
     if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && !strbuf_call_picks_up(c, u) &&
         nt_ref(c->nt, u, "block") < 0 && comp_ntype(c, u) != TY_POLY && repr_call_returns_handle(c, u) &&
-        cplan_targets(c, u, tg, CPT_MAX) > 0 && strbuf_pickup_published(c, u) && !arg_ran_first(node, 0) &&
+        (cplan_targets(c, u, tg, CPT_MAX) > 0 || strbuf_io_outbuf(c, u) >= 0) &&
+        strbuf_pickup_published(c, u) && !arg_ran_first(node, 0) &&
         !emit_boxed_lift(c, node) && share_plan_of(c, node, SPR_BOX, NULL).form == SPF_HANDLE) {
       str_box_open(b, 1);
       emit_published_pickup(c, u, b);
