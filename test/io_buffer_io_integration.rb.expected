@@ -1,24 +1,24 @@
-5
-"hello"
-6
-"hello world"
 16
-", this is a file"
+"hello"
+11
+"hellos is a"
 10
+" of bytes\na file"
+0
 0
 37
-5
+8
 "world"
 0
 0
-4
+8
 2
-2
-"BCCDGH!"
+7
+"BCDEFGHHGH!"
 "B"
 4
-"CCDG"
-"H!"
+"CDEF"
+"GHHGH!"
 [10, "pipe bytes", false]
 0
 true

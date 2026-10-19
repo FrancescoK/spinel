@@ -1,3 +1,6 @@
+# spinel: not-cruby -- the pipe and socket parts park the green thread until
+# bytes arrive; CRuby's read answers -EAGAIN there. The file parts answer as
+# CRuby 4.0 does: each call moves the span from offset to the buffer's end.
 # IO::Buffer's IO integration (#4474, makenowjust): read / write / pread /
 # pwrite against an IO handle, one syscall each answering the byte count (0
 # at EOF, -errno on failure), coordinated with the handle's stdio buffer

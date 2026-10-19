@@ -975,8 +975,14 @@ static sp_File *iob_io(sp_RbVal io) {
 static uint8_t *iob_io_span(sp_IOBuffer *b, sp_int *length, sp_int offset, int writing) {
   if (offset < 0) iob_arg("Offset can't be negative!");
   uint8_t *base = iob_ptr(b);
+  if (*length < 0 && offset > b->size) iob_arg("The given offset is bigger than the buffer size!");
   if (*length < 0) *length = b->size - offset;
   iob_range(b, offset, *length);
+  /* CRuby moves the span from offset to the end of the buffer whatever
+     length says (io_buffer_read: a read of size - offset bytes): length
+     only bounds the check, so `b.read(io, 5)` into a 16-byte buffer reads
+     16, and `b.write(io, 5)` from an 11-byte one writes 11 */
+  *length = b->size - offset;
   if (writing && (b->flags & SP_IOB_READONLY)) sp_raise_cls("IO::Buffer::AccessError", "Buffer is not writable!");
   if (!base) sp_raise_cls("IO::Buffer::AccessError", "Buffer is not allocated!");
   return base + offset;
@@ -1018,7 +1024,7 @@ sp_int sp_IOBuffer_write_io(sp_IOBuffer *b, sp_RbVal io, sp_int length, sp_int o
 sp_int sp_IOBuffer_pread_io(sp_IOBuffer *b, sp_RbVal io, sp_int from, sp_int length, sp_int offset) {
   SP_GC_ROOT(b); SP_GC_ROOT_RBVAL(io);
   sp_File *f = iob_io(io);
-  if (from < 0) iob_arg("Position can't be negative!");
+  if (from < 0) return -(sp_int)EINVAL;   /* the syscall's answer, as CRuby hands it on */
   uint8_t *at = iob_io_span(b, &length, offset, 1);
   if (length == 0) return 0;
   ssize_t n;
@@ -1028,7 +1034,7 @@ sp_int sp_IOBuffer_pread_io(sp_IOBuffer *b, sp_RbVal io, sp_int from, sp_int len
 sp_int sp_IOBuffer_pwrite_io(sp_IOBuffer *b, sp_RbVal io, sp_int from, sp_int length, sp_int offset) {
   SP_GC_ROOT(b); SP_GC_ROOT_RBVAL(io);
   sp_File *f = iob_io(io);
-  if (from < 0) iob_arg("Position can't be negative!");
+  if (from < 0) return -(sp_int)EINVAL;   /* the syscall's answer, as CRuby hands it on */
   uint8_t *at = iob_io_span(b, &length, offset, 0);
   if (length == 0) return 0;
   if (fflush(f->fp) != 0) return -(sp_int)errno;
