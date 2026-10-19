@@ -15585,6 +15585,12 @@ static int masgn_struct_store(Compiler *c, int tgt, const char *val, TyKind vt,
   view_pop(c, vr);
   return 1;
 }
+/* The temps a target's hoisted receiver and index live in (masgn_store reads
+   them; -1 when the target keeps them in place). */
+static void masgn_target_tmps(const NodeTable *nt, int tgt, int *recv_tmp, int *key_tmp) {
+  *recv_tmp = (int)nt_int(nt, tgt, "masgn_rtmp", -1);
+  *key_tmp = (int)nt_int(nt, tgt, "masgn_ktmp", -1);
+}
 /* A store through a receiver that may be nil raises the NoMethodError
    CRuby does (`w[0], w[1] = a, b` over nil: "undefined method '[]=' for
    nil"), after the right side has run, as the single `w[0] = a` does; the
@@ -15604,6 +15610,9 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, tgt), *nm = nt_str(nt, tgt, "name");
   if (!ty) return 0;
+  /* a target the statement hoisted (masgn_hoist_targets): the splat's, a
+     right's and a nested one's receiver is read from its temp as a left's */
+  if (recv_tmp < 0 && key_tmp < 0) masgn_target_tmps(nt, tgt, &recv_tmp, &key_tmp);
   if (sp_streq(ty, "InstanceVariableTargetNode") && nm) {
     char lhs[320]; int cid = -1;
     if (!masgn_ivar_home(c, id, nm, lhs, sizeof lhs, &cid)) return 1;
@@ -16913,6 +16922,78 @@ int masgn_face_elem(Compiler *c, int mw, int el) {
   return 0;
 }
 
+/* The targets that store through a receiver, in the order Ruby evaluates
+   them: a multiple assignment's lefts, its splat target and its rights, a
+   nested `(a, b)` expanded where it stands. Fills `out` when given; answers
+   the count. */
+static int masgn_flat_targets(const NodeTable *nt, int node, int *out, int n) {
+  int ln = 0, rn = 0;
+  const int *ls = nt_arr(nt, node, "lefts", &ln), *rs = nt_arr(nt, node, "rights", &rn);
+  int rest = nt_ref(nt, node, "rest");
+  int inner = rest >= 0 && nt_kind(nt, rest) == NK_SplatNode ? nt_ref(nt, rest, "expression") : -1;
+  for (int pass = 0; pass < 3; pass++) {
+    int cnt = pass == 0 ? ln : pass == 1 ? inner >= 0 : rn;
+    for (int i = 0; i < cnt; i++) {
+      int t = pass == 0 ? ls[i] : pass == 1 ? inner : rs[i];
+      if (nt_kind(nt, t) == NK_MultiTargetNode) n = masgn_flat_targets(nt, t, out, n);
+      else { if (out) out[n] = t; n++; }
+    }
+  }
+  return n;
+}
+/* Ruby evaluates each target's receiver and index before any value, left
+   to right -- `a[i], o.x = f, g` reads a, i and o, then f and g -- and
+   assigns last. A receiver or index that is a plain read or literal
+   answers the same whenever it runs and stays at its store; once any is a
+   call, a literal that allocates or a write, every target's receiver and
+   index goes into a temp, so the order is Ruby's, and a key that is a
+   fresh object is held while the values build. The targets are all of
+   them, the splat's, the rights' and those nested in a `(a, b)`: a
+   receiver left in place is emitted again by the store's nil guard and
+   by the setter, and a call in it ran twice. The temps go into the
+   statement's prelude, ahead of what a value hoists there -- a literal's
+   build -- and each part is emitted whole before its declaration is
+   written, and the index after the receiver's, so what a part hoists
+   lands before its own declaration and after the part before it. The
+   temps are rooted outright: a part that is a read is held by its
+   variable only until a later part or a value runs user code -- a call,
+   or the `to_s` an interpolation runs, which no predicate here sees -- a
+   literal part may be boxed on the heap by its slot, a Rational under a
+   poly key, and the hoist happens only where some part is a call or a
+   build. Each target's temps are recorded on it (masgn_target_tmps). */
+static void masgn_hoist_targets(Compiler *c, int id) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int nf = masgn_flat_targets(nt, id, NULL, 0);
+  int *flat = nf > 0 ? alloca(sizeof(int) * (size_t)nf) : NULL;
+  if (nf > 0) masgn_flat_targets(nt, id, flat, 0);
+  int hoist = 0;
+  for (int i = 0; i < nf; i++) {
+    int r, k;
+    masgn_target_parts(nt, flat[i], &r, &k);
+    nt_node_set_int(nt, flat[i], "masgn_rtmp", -1);
+    nt_node_set_int(nt, flat[i], "masgn_ktmp", -1);
+    if (!masgn_part_plain(c, r, flat, i) || !masgn_part_plain(c, k, flat, i)) hoist = 1;
+  }
+  if (!hoist) return;
+  Buf *hb = g_pre;
+  for (int i = 0; i < nf; i++) {
+    int r, k;
+    masgn_target_parts(nt, flat[i], &r, &k);
+    if (r < 0) continue;
+    int index = sp_streq(nt_type(nt, flat[i]), "IndexTargetNode");
+    TyKind rt = comp_ntype(c, r);
+    int poly_r = index && (rt == TY_POLY || rt == TY_UNKNOWN);
+    TyKind okt = TY_UNKNOWN;
+    int obj_ix = index && ty_is_object(rt) && masgn_index_writer(c, rt, NULL, &okt) >= 0;
+    /* a Struct's `[]=` (masgn_struct_store) takes the key as it is */
+    if (index && nt_int(nt, flat[i], "struct_aset", 0)) { obj_ix = 1; okt = TY_UNKNOWN; }
+    if (index && (k < 0 || !(poly_r || obj_ix || ty_is_array(rt) || (ty_is_hash(rt) && ty_hash_cname(rt))))) continue;
+    if (!index && !ty_is_object(rt)) continue;
+    nt_node_set_int(nt, flat[i], "masgn_rtmp", masgn_hoist_part(c, r, poly_r ? TY_POLY : rt, hb));
+    if (obj_ix) nt_node_set_int(nt, flat[i], "masgn_ktmp", masgn_hoist_part(c, k, okt == TY_UNKNOWN ? repr_of(c, k).as_ty : okt, hb));
+    else if (index) nt_node_set_int(nt, flat[i], "masgn_ktmp", masgn_hoist_part(c, k, poly_r || ty_is_array(rt) ? TY_INT : ty_hash_key(rt), hb));
+  }
+}
 /* A MultiWriteNode statement (a, b = ...) (emit_stmt_inner's arms, in their order) */
 static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, const char *ty) {
   g_masgn_notmps = 0;   /* the oint temps are this assignment's (temp numbers restart per function) */
@@ -16997,52 +17078,12 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
         rest_tgt = rest_inner;
     }
   }
-  /* Ruby evaluates each target's receiver and index before any value, left
-     to right -- `a[i], o.x = f, g` reads a, i and o, then f and g -- and
-     assigns last. A receiver or index that is a plain read or literal
-     answers the same whenever it runs and stays at its store; once any is a
-     call, a literal that allocates or a write, every target's receiver and
-     index goes into a temp, so the order is Ruby's, and a key that is a
-     fresh object is held while the values build. The temps go into the
-     statement's prelude, ahead of what a value hoists there -- a literal's
-     build -- and each part is emitted whole before its declaration is
-     written, and the index after the receiver's, so what a part hoists
-     lands before its own declaration and after the part before it. The
-     temps are rooted outright: a part that is a read is held by its
-     variable only until a later part or a value runs user code -- a call,
-     or the `to_s` an interpolation runs, which no predicate here sees -- a
-     literal part may be boxed on the heap by its slot, a Rational under a
-     poly key, and the hoist happens only where some part is a call or a
-     build. */
+  /* every target's receiver and index, hoisted where a part is a call
+     (masgn_hoist_targets) */
+  masgn_hoist_targets(c, id);
   int *ttr = ln > 0 ? alloca(sizeof(int) * (size_t)ln) : NULL;
   int *ttk = ln > 0 ? alloca(sizeof(int) * (size_t)ln) : NULL;
-  int hoist = 0;
-  for (int i = 0; i < ln; i++) {
-    int r, k;
-    masgn_target_parts(nt, lefts[i], &r, &k);
-    ttr[i] = ttk[i] = -1;
-    if (!masgn_part_plain(c, r, lefts, i) || !masgn_part_plain(c, k, lefts, i)) hoist = 1;
-  }
-  if (hoist) {
-    Buf *hb = g_pre;
-    for (int i = 0; i < ln; i++) {
-      int r, k;
-      masgn_target_parts(nt, lefts[i], &r, &k);
-      if (r < 0) continue;
-      int index = sp_streq(nt_type(nt, lefts[i]), "IndexTargetNode");
-      TyKind rt = comp_ntype(c, r);
-      int poly_r = index && (rt == TY_POLY || rt == TY_UNKNOWN);
-      TyKind okt = TY_UNKNOWN;
-      int obj_ix = index && ty_is_object(rt) && masgn_index_writer(c, rt, NULL, &okt) >= 0;
-      /* a Struct's `[]=` (masgn_struct_store) takes the key as it is */
-      if (index && nt_int(nt, lefts[i], "struct_aset", 0)) { obj_ix = 1; okt = TY_UNKNOWN; }
-      if (index && (k < 0 || !(poly_r || obj_ix || ty_is_array(rt) || (ty_is_hash(rt) && ty_hash_cname(rt))))) continue;
-      if (!index && !ty_is_object(rt)) continue;
-      ttr[i] = masgn_hoist_part(c, r, poly_r ? TY_POLY : rt, hb);
-      if (obj_ix) ttk[i] = masgn_hoist_part(c, k, okt == TY_UNKNOWN ? repr_of(c, k).as_ty : okt, hb);
-      else if (index) ttk[i] = masgn_hoist_part(c, k, poly_r || ty_is_array(rt) ? TY_INT : ty_hash_key(rt), hb);
-    }
-  }
+  for (int i = 0; i < ln; i++) masgn_target_tmps(nt, lefts[i], &ttr[i], &ttk[i]);
   if (emit_multi_write_scalar(c, id, b, indent, nt, ln, lefts, value, vty, tuple, rn, rights, rest_var, rest_gvar, rest_tgt, ttr, ttk)) return 1;
   /* A store that can run user code -- the general hash's key hooks, a
      receiver typed at run time, a user `[]=` or writer -- or that
