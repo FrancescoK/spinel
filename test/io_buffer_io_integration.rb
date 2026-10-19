@@ -110,7 +110,7 @@ end
 # writable view that writes through, a private one that does not
 File.binwrite(path, "mapped file contents")
 File.open(path, "rb") do |f|
-  m = IO::Buffer.map(f)
+  m = IO::Buffer.map(f, nil, 0, IO::Buffer::READONLY)
   p m.size, m.mapped?, m.readonly?, m.shared?
   p m.get_string(0, 6)
   begin
@@ -123,7 +123,7 @@ File.open(path, "rb") do |f|
   rescue IO::Buffer::AccessError => e
     p e.message
   end
-  p IO::Buffer.map(f, 4, 7).get_string
+  p IO::Buffer.map(f, 4, 7, IO::Buffer::READONLY).get_string
   p m.slice(7, 4).get_string
   p m.get_value(:U8, 0)
 end
