@@ -21491,21 +21491,20 @@ static unsigned share_types_digest(Compiler *c) {
 static int share_lift_value(Compiler *c, int v);
 static int share_lift_jumps(Compiler *c, int n, NodeKind k);
 /* An arm of a conditional value: its last statement, through parentheses
-   and an `else`. */
-static int share_lift_arms(Compiler *c, int n) {
-  const NodeTable *nt = c->nt;
-  for (int d = 0; n >= 0 && d < 16; d++) {
-    NodeKind k = nt_kind(nt, n);
-    if (k == NK_ElseNode) { n = nt_ref(nt, n, "statements"); continue; }
-    if (k == NK_ParenthesesNode) { n = nt_ref(nt, n, "body"); continue; }
-    if (k == NK_StatementsNode) {
-      int bn = 0; const int *bv = nt_arr(nt, n, "body", &bn);
-      n = bn > 0 ? bv[bn - 1] : -1;
-      continue;
-    }
-    return share_lift_value(c, n);
-  }
+   and an `else`, which the iterator peels. No shape is looked through, so
+   the arm is the leaf, whatever it is: share_lift_value takes a conditional
+   in an arm apart, or marks it whole where it is String-typed (it needs the
+   conditional itself, which a flat walk of its arms does not give). */
+typedef struct { Compiler *c; int changed; } ShareLiftArm;
+static int share_lift_arm(const VpLeaf *lf, void *ud) {
+  ShareLiftArm *a = ud;
+  if (lf->kind == VPK_EXPR || lf->kind == VPK_JUMP) a->changed = share_lift_value(a->c, lf->node);
   return 0;
+}
+static int share_lift_arms(Compiler *c, int n) {
+  ShareLiftArm a = { c, 0 };
+  for_each_value_position(c->nt, n, VPS_NONE, share_lift_arm, &a);
+  return a.changed;
 }
 static int share_lift_value(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
