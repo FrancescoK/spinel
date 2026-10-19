@@ -1,0 +1,8 @@
+Regexp
+true
+true
+false
+/a\.|(?-mix:b1)/
+"x\\.y"
+true
+:own
