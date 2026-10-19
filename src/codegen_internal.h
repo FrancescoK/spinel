@@ -511,6 +511,12 @@ void str_box_close(Buf *b);
    (sp_strbuf_read_pub) */
 void str_read_handle(Buf *b, const char *h, int pub);
 void str_read_handle_tmp(Buf *b, int tmp, int pub);
+/* A new handle around the bytes the caller emits between the open and the
+   close, and the box of a String Range endpoint temp `t` keeps (handle
+   field `h`, String field `e`), written in one place (codegen_str.c) */
+void str_new_handle_open(Buf *b);
+void str_new_handle_close(Buf *b);
+void str_box_kept(Buf *b, int t, const char *h, const char *e);
 /* The box face's arms for a value boxed by its representation: a String
    the plan wraps as the new handle it is (`wrap`), else its bytes */
 void emit_str_box_leaf(Compiler *c, int v, int wrap, Buf *b);
