@@ -1,295 +1,295 @@
-U8 owned 0..16: ok; 11,48,85,22,59,96,33,70,7,44,81,18,55,92,29,66
+U8 owned 0..16: ok -> 16; 11,48,85,22,59,96,33,70,7,44,81,18,55,92,29,66
 U8 owned past the end 11..20: at 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16); 0,0,0,0,0,0,0,0,0,0,0,18,55,92,29,66
 U8 owned from -2 -2..3: at -2: ArgumentError: Offset can't be negative!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 U8 slice 0..12: at 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=9); 11,48,85,22,59,96,33,70,7
 U8 its root: 0,0,0,11,48,85,22,59,96,33,70,7,0,0,0,0
 U8 zero 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
 U8 freed 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-U8 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+U8 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 U8 transferred from 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-U8 transferred to 0..16: ok; 11,48,85,22,59,96,33,70,7,44,81,18,55,92,29,66
-U8 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+U8 transferred to 0..16: ok -> 16; 11,48,85,22,59,96,33,70,7,44,81,18,55,92,29,66
+U8 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 U8 readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80
 U8 readonly past the end 7..12: at 7: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72
 U8 mapped readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-U8 mapped private 0..16: ok; 11,48,85,22,59,96,33,70,7,44,81,18,55,92,29,66
+U8 mapped private 0..16: ok -> 16; 11,48,85,22,59,96,33,70,7,44,81,18,55,92,29,66
 U8 nil 0..2: at 0: NoMethodError: undefined method 'set_value' for nil; nil
-S8 owned 0..16: ok; 217,254,35,228,9,46,239,20,213,250,31,224,5,42,235,16
+S8 owned 0..16: ok -> 16; 217,254,35,228,9,46,239,20,213,250,31,224,5,42,235,16
 S8 owned past the end 11..20: at 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16); 0,0,0,0,0,0,0,0,0,0,0,224,5,42,235,16
 S8 owned from -2 -2..3: at -2: ArgumentError: Offset can't be negative!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 S8 slice 0..12: at 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=9); 217,254,35,228,9,46,239,20,213
 S8 its root: 0,0,0,217,254,35,228,9,46,239,20,213,0,0,0,0
 S8 zero 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
 S8 freed 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-S8 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+S8 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 S8 transferred from 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-S8 transferred to 0..16: ok; 217,254,35,228,9,46,239,20,213,250,31,224,5,42,235,16
-S8 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+S8 transferred to 0..16: ok -> 16; 217,254,35,228,9,46,239,20,213,250,31,224,5,42,235,16
+S8 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 S8 readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80
 S8 readonly past the end 7..12: at 7: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72
 S8 mapped readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-S8 mapped private 0..16: ok; 217,254,35,228,9,46,239,20,213,250,31,224,5,42,235,16
+S8 mapped private 0..16: ok -> 16; 217,254,35,228,9,46,239,20,213,250,31,224,5,42,235,16
 S8 nil 0..2: at 0: NoMethodError: undefined method 'set_value' for nil; nil
-u16 owned 0..15: ok; 11,48,85,22,59,96,33,70,7,44,81,18,55,92,29,0
+u16 owned 0..15: ok -> 16; 11,48,85,22,59,96,33,70,7,44,81,18,55,92,29,0
 u16 owned past the end 10..20: at 15: ArgumentError: Type extends beyond end of buffer! (offset=15 > size=16); 0,0,0,0,0,0,0,0,0,0,81,18,55,92,29,0
 u16 owned from -2 -2..3: at -2: ArgumentError: Offset can't be negative!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 u16 slice 0..12: at 8: ArgumentError: Type extends beyond end of buffer! (offset=8 > size=9); 11,48,85,22,59,96,33,70,0
 u16 its root: 0,0,0,11,48,85,22,59,96,33,70,0,0,0,0,0
 u16 zero 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
 u16 freed 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-u16 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+u16 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 u16 transferred from 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-u16 transferred to 0..15: ok; 11,48,85,22,59,96,33,70,7,44,81,18,55,92,29,0
-u16 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+u16 transferred to 0..15: ok -> 16; 11,48,85,22,59,96,33,70,7,44,81,18,55,92,29,0
+u16 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 u16 readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80
 u16 readonly past the end 7..12: at 7: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72
 u16 mapped readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-u16 mapped private 0..15: ok; 11,48,85,22,59,96,33,70,7,44,81,18,55,92,29,0
+u16 mapped private 0..15: ok -> 16; 11,48,85,22,59,96,33,70,7,44,81,18,55,92,29,0
 u16 nil 0..2: at 0: NoMethodError: undefined method 'set_value' for nil; nil
-s16 owned 0..15: ok; 217,254,35,228,9,46,239,20,213,250,31,224,5,42,235,255
+s16 owned 0..15: ok -> 16; 217,254,35,228,9,46,239,20,213,250,31,224,5,42,235,255
 s16 owned past the end 10..20: at 15: ArgumentError: Type extends beyond end of buffer! (offset=15 > size=16); 0,0,0,0,0,0,0,0,0,0,31,224,5,42,235,255
 s16 owned from -2 -2..3: at -2: ArgumentError: Offset can't be negative!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 s16 slice 0..12: at 8: ArgumentError: Type extends beyond end of buffer! (offset=8 > size=9); 217,254,35,228,9,46,239,20,0
 s16 its root: 0,0,0,217,254,35,228,9,46,239,20,0,0,0,0,0
 s16 zero 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
 s16 freed 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-s16 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+s16 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 s16 transferred from 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-s16 transferred to 0..15: ok; 217,254,35,228,9,46,239,20,213,250,31,224,5,42,235,255
-s16 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+s16 transferred to 0..15: ok -> 16; 217,254,35,228,9,46,239,20,213,250,31,224,5,42,235,255
+s16 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 s16 readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80
 s16 readonly past the end 7..12: at 7: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72
 s16 mapped readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-s16 mapped private 0..15: ok; 217,254,35,228,9,46,239,20,213,250,31,224,5,42,235,255
+s16 mapped private 0..15: ok -> 16; 217,254,35,228,9,46,239,20,213,250,31,224,5,42,235,255
 s16 nil 0..2: at 0: NoMethodError: undefined method 'set_value' for nil; nil
-U16 owned 0..15: ok; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,29
+U16 owned 0..15: ok -> 16; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,29
 U16 owned past the end 10..20: at 15: ArgumentError: Type extends beyond end of buffer! (offset=15 > size=16); 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,29
 U16 owned from -2 -2..3: at -2: ArgumentError: Offset can't be negative!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 U16 slice 0..12: at 8: ArgumentError: Type extends beyond end of buffer! (offset=8 > size=9); 0,0,0,0,0,0,0,0,70
 U16 its root: 0,0,0,0,0,0,0,0,0,0,0,70,0,0,0,0
 U16 zero 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
 U16 freed 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-U16 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+U16 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 U16 transferred from 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-U16 transferred to 0..15: ok; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,29
-U16 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+U16 transferred to 0..15: ok -> 16; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,29
+U16 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 U16 readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80
 U16 readonly past the end 7..12: at 7: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72
 U16 mapped readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-U16 mapped private 0..15: ok; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,29
+U16 mapped private 0..15: ok -> 16; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,29
 U16 nil 0..2: at 0: NoMethodError: undefined method 'set_value' for nil; nil
-S16 owned 0..15: ok; 255,255,0,255,0,0,255,0,255,255,0,255,0,0,255,235
+S16 owned 0..15: ok -> 16; 255,255,0,255,0,0,255,0,255,255,0,255,0,0,255,235
 S16 owned past the end 10..20: at 15: ArgumentError: Type extends beyond end of buffer! (offset=15 > size=16); 0,0,0,0,0,0,0,0,0,0,0,255,0,0,255,235
 S16 owned from -2 -2..3: at -2: ArgumentError: Offset can't be negative!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 S16 slice 0..12: at 8: ArgumentError: Type extends beyond end of buffer! (offset=8 > size=9); 255,255,0,255,0,0,255,0,20
 S16 its root: 0,0,0,255,255,0,255,0,0,255,0,20,0,0,0,0
 S16 zero 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
 S16 freed 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-S16 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+S16 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 S16 transferred from 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-S16 transferred to 0..15: ok; 255,255,0,255,0,0,255,0,255,255,0,255,0,0,255,235
-S16 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+S16 transferred to 0..15: ok -> 16; 255,255,0,255,0,0,255,0,255,255,0,255,0,0,255,235
+S16 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 S16 readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80
 S16 readonly past the end 7..12: at 7: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72
 S16 mapped readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-S16 mapped private 0..15: ok; 255,255,0,255,0,0,255,0,255,255,0,255,0,0,255,235
+S16 mapped private 0..15: ok -> 16; 255,255,0,255,0,0,255,0,255,255,0,255,0,0,255,235
 S16 nil 0..2: at 0: NoMethodError: undefined method 'set_value' for nil; nil
-u32 owned 0..13: ok; 11,48,85,22,59,96,33,70,7,44,81,18,55,0,0,0
+u32 owned 0..13: ok -> 16; 11,48,85,22,59,96,33,70,7,44,81,18,55,0,0,0
 u32 owned past the end 8..20: at 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16); 0,0,0,0,0,0,0,0,7,44,81,18,55,0,0,0
 u32 owned from -2 -2..3: at -2: ArgumentError: Offset can't be negative!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 u32 slice 0..12: at 6: ArgumentError: Type extends beyond end of buffer! (offset=6 > size=9); 11,48,85,22,59,96,0,0,0
 u32 its root: 0,0,0,11,48,85,22,59,96,0,0,0,0,0,0,0
 u32 zero 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
 u32 freed 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-u32 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+u32 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 u32 transferred from 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-u32 transferred to 0..13: ok; 11,48,85,22,59,96,33,70,7,44,81,18,55,0,0,0
-u32 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+u32 transferred to 0..13: ok -> 16; 11,48,85,22,59,96,33,70,7,44,81,18,55,0,0,0
+u32 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 u32 readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80
 u32 readonly past the end 7..12: at 7: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72
 u32 mapped readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-u32 mapped private 0..13: ok; 11,48,85,22,59,96,33,70,7,44,81,18,55,0,0,0
+u32 mapped private 0..13: ok -> 16; 11,48,85,22,59,96,33,70,7,44,81,18,55,0,0,0
 u32 nil 0..2: at 0: NoMethodError: undefined method 'set_value' for nil; nil
-s32 owned 0..13: ok; 217,254,35,228,9,46,239,20,213,250,31,224,5,0,0,0
+s32 owned 0..13: ok -> 16; 217,254,35,228,9,46,239,20,213,250,31,224,5,0,0,0
 s32 owned past the end 8..20: at 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16); 0,0,0,0,0,0,0,0,213,250,31,224,5,0,0,0
 s32 owned from -2 -2..3: at -2: ArgumentError: Offset can't be negative!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 s32 slice 0..12: at 6: ArgumentError: Type extends beyond end of buffer! (offset=6 > size=9); 217,254,35,228,9,46,0,0,0
 s32 its root: 0,0,0,217,254,35,228,9,46,0,0,0,0,0,0,0
 s32 zero 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
 s32 freed 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-s32 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+s32 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 s32 transferred from 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-s32 transferred to 0..13: ok; 217,254,35,228,9,46,239,20,213,250,31,224,5,0,0,0
-s32 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+s32 transferred to 0..13: ok -> 16; 217,254,35,228,9,46,239,20,213,250,31,224,5,0,0,0
+s32 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 s32 readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80
 s32 readonly past the end 7..12: at 7: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72
 s32 mapped readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-s32 mapped private 0..13: ok; 217,254,35,228,9,46,239,20,213,250,31,224,5,0,0,0
+s32 mapped private 0..13: ok -> 16; 217,254,35,228,9,46,239,20,213,250,31,224,5,0,0,0
 s32 nil 0..2: at 0: NoMethodError: undefined method 'set_value' for nil; nil
-U32 owned 0..13: ok; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,55
+U32 owned 0..13: ok -> 16; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,55
 U32 owned past the end 8..20: at 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16); 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,55
 U32 owned from -2 -2..3: at -2: ArgumentError: Offset can't be negative!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 U32 slice 0..12: at 6: ArgumentError: Type extends beyond end of buffer! (offset=6 > size=9); 0,0,0,0,0,0,0,0,96
 U32 its root: 0,0,0,0,0,0,0,0,0,0,0,96,0,0,0,0
 U32 zero 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
 U32 freed 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-U32 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+U32 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 U32 transferred from 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-U32 transferred to 0..13: ok; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,55
-U32 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+U32 transferred to 0..13: ok -> 16; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,55
+U32 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 U32 readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80
 U32 readonly past the end 7..12: at 7: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72
 U32 mapped readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-U32 mapped private 0..13: ok; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,55
+U32 mapped private 0..13: ok -> 16; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,55
 U32 nil 0..2: at 0: NoMethodError: undefined method 'set_value' for nil; nil
-S32 owned 0..13: ok; 255,255,0,255,0,0,255,0,255,255,0,255,0,0,0,5
+S32 owned 0..13: ok -> 16; 255,255,0,255,0,0,255,0,255,255,0,255,0,0,0,5
 S32 owned past the end 8..20: at 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16); 0,0,0,0,0,0,0,0,255,255,0,255,0,0,0,5
 S32 owned from -2 -2..3: at -2: ArgumentError: Offset can't be negative!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 S32 slice 0..12: at 6: ArgumentError: Type extends beyond end of buffer! (offset=6 > size=9); 255,255,0,255,0,0,0,0,46
 S32 its root: 0,0,0,255,255,0,255,0,0,0,0,46,0,0,0,0
 S32 zero 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
 S32 freed 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-S32 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+S32 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 S32 transferred from 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-S32 transferred to 0..13: ok; 255,255,0,255,0,0,255,0,255,255,0,255,0,0,0,5
-S32 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+S32 transferred to 0..13: ok -> 16; 255,255,0,255,0,0,255,0,255,255,0,255,0,0,0,5
+S32 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 S32 readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80
 S32 readonly past the end 7..12: at 7: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72
 S32 mapped readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-S32 mapped private 0..13: ok; 255,255,0,255,0,0,255,0,255,255,0,255,0,0,0,5
+S32 mapped private 0..13: ok -> 16; 255,255,0,255,0,0,255,0,255,255,0,255,0,0,0,5
 S32 nil 0..2: at 0: NoMethodError: undefined method 'set_value' for nil; nil
-u64 owned 0..9: ok; 217,254,35,228,9,46,239,20,213,255,255,255,255,255,255,255
+u64 owned 0..9: ok -> 16; 217,254,35,228,9,46,239,20,213,255,255,255,255,255,255,255
 u64 owned past the end 4..20: at 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=16); 0,0,0,0,9,46,239,20,213,255,255,255,255,255,255,255
 u64 owned from -2 -2..3: at -2: ArgumentError: Offset can't be negative!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 u64 slice 0..12: at 2: ArgumentError: Type extends beyond end of buffer! (offset=2 > size=9); 217,254,255,255,255,255,255,255,255
 u64 its root: 0,0,0,217,254,255,255,255,255,255,255,255,0,0,0,0
 u64 zero 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
 u64 freed 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-u64 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+u64 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 u64 transferred from 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-u64 transferred to 0..9: ok; 217,254,35,228,9,46,239,20,213,255,255,255,255,255,255,255
-u64 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+u64 transferred to 0..9: ok -> 16; 217,254,35,228,9,46,239,20,213,255,255,255,255,255,255,255
+u64 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 u64 readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80
 u64 readonly past the end 7..12: at 7: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72
 u64 mapped readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-u64 mapped private 0..9: ok; 217,254,35,228,9,46,239,20,213,255,255,255,255,255,255,255
+u64 mapped private 0..9: ok -> 16; 217,254,35,228,9,46,239,20,213,255,255,255,255,255,255,255
 u64 nil 0..2: at 0: NoMethodError: undefined method 'set_value' for nil; nil
-s64 owned 0..9: ok; 217,254,35,228,9,46,239,20,213,255,255,255,255,255,255,255
+s64 owned 0..9: ok -> 16; 217,254,35,228,9,46,239,20,213,255,255,255,255,255,255,255
 s64 owned past the end 4..20: at 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=16); 0,0,0,0,9,46,239,20,213,255,255,255,255,255,255,255
 s64 owned from -2 -2..3: at -2: ArgumentError: Offset can't be negative!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 s64 slice 0..12: at 2: ArgumentError: Type extends beyond end of buffer! (offset=2 > size=9); 217,254,255,255,255,255,255,255,255
 s64 its root: 0,0,0,217,254,255,255,255,255,255,255,255,0,0,0,0
 s64 zero 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
 s64 freed 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-s64 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+s64 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 s64 transferred from 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-s64 transferred to 0..9: ok; 217,254,35,228,9,46,239,20,213,255,255,255,255,255,255,255
-s64 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+s64 transferred to 0..9: ok -> 16; 217,254,35,228,9,46,239,20,213,255,255,255,255,255,255,255
+s64 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 s64 readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80
 s64 readonly past the end 7..12: at 7: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72
 s64 mapped readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-s64 mapped private 0..9: ok; 217,254,35,228,9,46,239,20,213,255,255,255,255,255,255,255
+s64 mapped private 0..9: ok -> 16; 217,254,35,228,9,46,239,20,213,255,255,255,255,255,255,255
 s64 nil 0..2: at 0: NoMethodError: undefined method 'set_value' for nil; nil
-U64 owned 0..9: ok; 255,255,0,255,0,0,255,0,255,255,255,255,255,255,255,213
+U64 owned 0..9: ok -> 16; 255,255,0,255,0,0,255,0,255,255,255,255,255,255,255,213
 U64 owned past the end 4..20: at 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=16); 0,0,0,0,0,0,255,0,255,255,255,255,255,255,255,213
 U64 owned from -2 -2..3: at -2: ArgumentError: Offset can't be negative!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 U64 slice 0..12: at 2: ArgumentError: Type extends beyond end of buffer! (offset=2 > size=9); 255,255,255,255,255,255,255,255,254
 U64 its root: 0,0,0,255,255,255,255,255,255,255,255,254,0,0,0,0
 U64 zero 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
 U64 freed 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-U64 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+U64 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 U64 transferred from 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-U64 transferred to 0..9: ok; 255,255,0,255,0,0,255,0,255,255,255,255,255,255,255,213
-U64 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+U64 transferred to 0..9: ok -> 16; 255,255,0,255,0,0,255,0,255,255,255,255,255,255,255,213
+U64 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 U64 readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80
 U64 readonly past the end 7..12: at 7: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72
 U64 mapped readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-U64 mapped private 0..9: ok; 255,255,0,255,0,0,255,0,255,255,255,255,255,255,255,213
+U64 mapped private 0..9: ok -> 16; 255,255,0,255,0,0,255,0,255,255,255,255,255,255,255,213
 U64 nil 0..2: at 0: NoMethodError: undefined method 'set_value' for nil; nil
-S64 owned 0..9: ok; 255,255,0,255,0,0,255,0,255,255,255,255,255,255,255,213
+S64 owned 0..9: ok -> 16; 255,255,0,255,0,0,255,0,255,255,255,255,255,255,255,213
 S64 owned past the end 4..20: at 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=16); 0,0,0,0,0,0,255,0,255,255,255,255,255,255,255,213
 S64 owned from -2 -2..3: at -2: ArgumentError: Offset can't be negative!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 S64 slice 0..12: at 2: ArgumentError: Type extends beyond end of buffer! (offset=2 > size=9); 255,255,255,255,255,255,255,255,254
 S64 its root: 0,0,0,255,255,255,255,255,255,255,255,254,0,0,0,0
 S64 zero 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
 S64 freed 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-S64 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+S64 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 S64 transferred from 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-S64 transferred to 0..9: ok; 255,255,0,255,0,0,255,0,255,255,255,255,255,255,255,213
-S64 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+S64 transferred to 0..9: ok -> 16; 255,255,0,255,0,0,255,0,255,255,255,255,255,255,255,213
+S64 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 S64 readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80
 S64 readonly past the end 7..12: at 7: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72
 S64 mapped readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-S64 mapped private 0..9: ok; 255,255,0,255,0,0,255,0,255,255,255,255,255,255,255,213
+S64 mapped private 0..9: ok -> 16; 255,255,0,255,0,0,255,0,255,255,255,255,255,255,255,213
 S64 nil 0..2: at 0: NoMethodError: undefined method 'set_value' for nil; nil
-f32 owned 0..13: ok; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,64
+f32 owned 0..13: ok -> 16; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,64
 f32 owned past the end 8..20: at 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16); 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,64
 f32 owned from -2 -2..3: at -2: ArgumentError: Offset can't be negative!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 f32 slice 0..12: at 6: ArgumentError: Type extends beyond end of buffer! (offset=6 > size=9); 0,0,0,0,0,0,0,128,62
 f32 its root: 0,0,0,0,0,0,0,0,0,0,128,62,0,0,0,0
 f32 zero 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
 f32 freed 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-f32 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+f32 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 f32 transferred from 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-f32 transferred to 0..13: ok; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,64
-f32 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+f32 transferred to 0..13: ok -> 16; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,64
+f32 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 f32 readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80
 f32 readonly past the end 7..12: at 7: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72
 f32 mapped readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-f32 mapped private 0..13: ok; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,64
+f32 mapped private 0..13: ok -> 16; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,64
 f32 nil 0..2: at 0: NoMethodError: undefined method 'set_value' for nil; nil
-f64 owned 0..9: ok; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,240,63
+f64 owned 0..9: ok -> 16; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,240,63
 f64 owned past the end 4..20: at 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=16); 0,0,0,0,0,0,0,0,0,0,0,0,0,0,240,63
 f64 owned from -2 -2..3: at -2: ArgumentError: Offset can't be negative!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 f64 slice 0..12: at 2: ArgumentError: Type extends beyond end of buffer! (offset=2 > size=9); 0,0,0,0,0,0,0,232,191
 f64 its root: 0,0,0,0,0,0,0,0,0,0,232,191,0,0,0,0
 f64 zero 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
 f64 freed 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-f64 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+f64 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 f64 transferred from 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-f64 transferred to 0..9: ok; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,240,63
-f64 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+f64 transferred to 0..9: ok -> 16; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,240,63
+f64 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 f64 readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80
 f64 readonly past the end 7..12: at 7: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72
 f64 mapped readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-f64 mapped private 0..9: ok; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,240,63
+f64 mapped private 0..9: ok -> 16; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,240,63
 f64 nil 0..2: at 0: NoMethodError: undefined method 'set_value' for nil; nil
-F32 owned 0..13: ok; 191,191,191,190,0,62,63,63,63,63,63,63,64,0,0,0
+F32 owned 0..13: ok -> 16; 191,191,191,190,0,62,63,63,63,63,63,63,64,0,0,0
 F32 owned past the end 8..20: at 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16); 0,0,0,0,0,0,0,0,63,63,63,63,64,0,0,0
 F32 owned from -2 -2..3: at -2: ArgumentError: Offset can't be negative!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 F32 slice 0..12: at 6: ArgumentError: Type extends beyond end of buffer! (offset=6 > size=9); 191,191,191,190,0,62,128,0,0
 F32 its root: 0,0,0,191,191,191,190,0,62,128,0,0,0,0,0,0
 F32 zero 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
 F32 freed 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-F32 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+F32 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 F32 transferred from 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-F32 transferred to 0..13: ok; 191,191,191,190,0,62,63,63,63,63,63,63,64,0,0,0
-F32 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+F32 transferred to 0..13: ok -> 16; 191,191,191,190,0,62,63,63,63,63,63,63,64,0,0,0
+F32 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 F32 readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80
 F32 readonly past the end 7..12: at 7: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72
 F32 mapped readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-F32 mapped private 0..13: ok; 191,191,191,190,0,62,63,63,63,63,63,63,64,0,0,0
+F32 mapped private 0..13: ok -> 16; 191,191,191,190,0,62,63,63,63,63,63,63,64,0,0,0
 F32 nil 0..2: at 0: NoMethodError: undefined method 'set_value' for nil; nil
-F64 owned 0..9: ok; 191,191,191,191,0,63,63,63,63,240,0,0,0,0,0,0
+F64 owned 0..9: ok -> 16; 191,191,191,191,0,63,63,63,63,240,0,0,0,0,0,0
 F64 owned past the end 4..20: at 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=16); 0,0,0,0,0,63,63,63,63,240,0,0,0,0,0,0
 F64 owned from -2 -2..3: at -2: ArgumentError: Offset can't be negative!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 F64 slice 0..12: at 2: ArgumentError: Type extends beyond end of buffer! (offset=2 > size=9); 191,191,232,0,0,0,0,0,0
 F64 its root: 0,0,0,191,191,232,0,0,0,0,0,0,0,0,0,0
 F64 zero 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
 F64 freed 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-F64 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+F64 slice of freed 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 F64 transferred from 0..2: at 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0); 
-F64 transferred to 0..9: ok; 191,191,191,191,0,63,63,63,63,240,0,0,0,0,0,0
-F64 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError; invalid
+F64 transferred to 0..9: ok -> 16; 191,191,191,191,0,63,63,63,63,240,0,0,0,0,0,0
+F64 slice of shrunk 0..2: at 0: IO::Buffer::InvalidatedError: Buffer is invalid!; invalid
 F64 readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80
 F64 readonly past the end 7..12: at 7: IO::Buffer::AccessError: Buffer is not writable!; 65,66,67,68,69,70,71,72
 F64 mapped readonly 0..4: at 0: IO::Buffer::AccessError: Buffer is not writable!; 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-F64 mapped private 0..9: ok; 191,191,191,191,0,63,63,63,63,240,0,0,0,0,0,0
+F64 mapped private 0..9: ok -> 16; 191,191,191,191,0,63,63,63,63,240,0,0,0,0,0,0
 F64 nil 0..2: at 0: NoMethodError: undefined method 'set_value' for nil; nil
-U8 bump: ok; 211,248,29,222,3,40,233,14,207,244,25,218,255,36,229,10
-S8 bump: ok; 111,148,185,122,159,196,133,170,107,144,181,118,155,192,129,166
-U16 bump: ok; 245,144,63,118,37,192,11,166,241,140,59,114,33,188,7,162
-s16 bump: ok; 219,186,37,161,11,235,241,208,215,182,33,157,7,231,237,204
-u32 bump: ok; 99,2,0,0,187,1,0,0,63,2,0,0,151,1,0,0
-F64 bump: ok; 11,64,85,22,59,96,33,70,7,60,81,18,55,92,29,66
+U8 bump: ok -> 16; 211,248,29,222,3,40,233,14,207,244,25,218,255,36,229,10
+S8 bump: ok -> 16; 111,148,185,122,159,196,133,170,107,144,181,118,155,192,129,166
+U16 bump: ok -> 16; 245,144,63,118,37,192,11,166,241,140,59,114,33,188,7,162
+s16 bump: ok -> 16; 219,186,37,161,11,235,241,208,215,182,33,157,7,231,237,204
+u32 bump: ok -> 16; 99,2,0,0,187,1,0,0,63,2,0,0,151,1,0,0
+F64 bump: ok -> 16; 11,64,85,22,59,96,33,70,7,60,81,18,55,92,29,66
 overlap: 11,48,85,22,60,97,34,71,8,45,82,19,55,92,29,66

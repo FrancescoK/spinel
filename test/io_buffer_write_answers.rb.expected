@@ -1,0 +1,93 @@
+2
+32
+4
+32
+8
+32
+16
+32
+8
+16
+24
+8
+16
+24
+U8 4
+s16 5
+U32 7
+s64 11
+F32 7
+f64 11
+9
+29
+3
+3
+3
+2
+2
+0
+4
+4
+2
+2
+0
+true
+true
+true
+true
+true
+true
+-- freed
+set_value: IO::Buffer::InvalidatedError: Buffer is invalid!
+set_value bad type: IO::Buffer::InvalidatedError: Buffer is invalid!
+set_value past end: IO::Buffer::InvalidatedError: Buffer is invalid!
+set_values: IO::Buffer::InvalidatedError: Buffer is invalid!
+set_values empty: IO::Buffer::InvalidatedError: Buffer is invalid!
+set_string: IO::Buffer::InvalidatedError: Buffer is invalid!
+set_string empty: IO::Buffer::InvalidatedError: Buffer is invalid!
+set_string neg offset: ArgumentError: Offset can't be negative!
+copy: IO::Buffer::InvalidatedError: Buffer is invalid!
+copy empty: IO::Buffer::InvalidatedError: Buffer is invalid!
+clear: IO::Buffer::InvalidatedError: Buffer is invalid!
+clear zero: IO::Buffer::InvalidatedError: Buffer is invalid!
+clear offset past end: ArgumentError: The given offset is bigger than the buffer size!
+and!: IO::Buffer::InvalidatedError: Buffer is invalid!
+or!: IO::Buffer::InvalidatedError: Buffer is invalid!
+xor!: IO::Buffer::InvalidatedError: Buffer is invalid!
+not!: IO::Buffer::InvalidatedError: Buffer is invalid!
+get_value: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+get_string: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+copy from it: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+and! by it: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+copy from it, bad offset: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+-- shrunk
+set_value: IO::Buffer::InvalidatedError: Buffer is invalid!
+set_value bad type: IO::Buffer::InvalidatedError: Buffer is invalid!
+set_value past end: IO::Buffer::InvalidatedError: Buffer is invalid!
+set_values: IO::Buffer::InvalidatedError: Buffer is invalid!
+set_values empty: IO::Buffer::InvalidatedError: Buffer is invalid!
+set_string: IO::Buffer::InvalidatedError: Buffer is invalid!
+set_string empty: IO::Buffer::InvalidatedError: Buffer is invalid!
+set_string neg offset: ArgumentError: Offset can't be negative!
+copy: IO::Buffer::InvalidatedError: Buffer is invalid!
+copy empty: IO::Buffer::InvalidatedError: Buffer is invalid!
+clear: IO::Buffer::InvalidatedError: Buffer is invalid!
+clear zero: IO::Buffer::InvalidatedError: Buffer is invalid!
+clear offset past end: ArgumentError: The given offset is bigger than the buffer size!
+and!: IO::Buffer::InvalidatedError: Buffer is invalid!
+or!: IO::Buffer::InvalidatedError: Buffer is invalid!
+xor!: IO::Buffer::InvalidatedError: Buffer is invalid!
+not!: IO::Buffer::InvalidatedError: Buffer is invalid!
+get_value: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+get_string: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+copy from it: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+and! by it: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+copy from it, bad offset: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+ro set_value: IO::Buffer::AccessError: Buffer is not writable!
+ro set_values: IO::Buffer::AccessError: Buffer is not writable!
+ro set_string: IO::Buffer::AccessError: Buffer is not writable!
+ro copy: IO::Buffer::AccessError: Buffer is not writable!
+ro copy from shrunk: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+ro clear: IO::Buffer::AccessError: Buffer is not writable!
+ro clear offset past end: ArgumentError: The given offset is bigger than the buffer size!
+ro not!: IO::Buffer::AccessError: Buffer is not writable!

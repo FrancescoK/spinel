@@ -5,7 +5,9 @@
 # (AccessError, before the offset is looked at), an invalidated slice, nil,
 # and offsets past both ends, after the writes that went in. A slice's
 # writes reach its root; 8/16-bit stores wrap. The bytes are printed after
-# each loop. The 32-bit range checks are io_buffer_loop_cache_write_int32.rb.
+# each loop, with what the loop's last write answered (the offset just past
+# its value, as CRuby's set_value does). The 32-bit range checks are
+# io_buffer_loop_cache_write_int32.rb.
 require "tmpdir"
 
 def bytes(b)
@@ -20,61 +22,63 @@ def bytes(b)
   out.join(",")
 end
 
-# A write to an invalidated slice prints its class only: Spinel's message
-# for it is the read's ("Buffer has been invalidated!"), where CRuby's
-# writes say "Buffer is invalid!".
+# A write to an invalidated slice says "Buffer is invalid!" (a read says
+# "Buffer has been invalidated!").
 def err(e)
-  e.is_a?(IO::Buffer::InvalidatedError) ? e.class.to_s : "#{e.class}: #{e.message}"
+  "#{e.class}: #{e.message}"
 end
 
 # one cached loop per type, writing from `from` up to `to`
 def fill(t, b, from, to)
   i = from
+  last = 0
   case t
-  when :U8  then while i < to; b.set_value(:U8, i, (i * 37 + 11) % 100); i += 1; end
-  when :S8  then while i < to; b.set_value(:S8, i, (i * 37 + 11) % 100 - 50); i += 1; end
-  when :u16 then while i < to; b.set_value(:u16, i, (i * 37 + 11) % 100); i += 1; end
-  when :s16 then while i < to; b.set_value(:s16, i, (i * 37 + 11) % 100 - 50); i += 1; end
-  when :U16 then while i < to; b.set_value(:U16, i, (i * 37 + 11) % 100); i += 1; end
-  when :S16 then while i < to; b.set_value(:S16, i, (i * 37 + 11) % 100 - 50); i += 1; end
-  when :u32 then while i < to; b.set_value(:u32, i, (i * 37 + 11) % 100); i += 1; end
-  when :s32 then while i < to; b.set_value(:s32, i, (i * 37 + 11) % 100 - 50); i += 1; end
-  when :U32 then while i < to; b.set_value(:U32, i, (i * 37 + 11) % 100); i += 1; end
-  when :S32 then while i < to; b.set_value(:S32, i, (i * 37 + 11) % 100 - 50); i += 1; end
-  when :u64 then while i < to; b.set_value(:u64, i, (i * 37 + 11) % 100 - 50); i += 1; end
-  when :s64 then while i < to; b.set_value(:s64, i, (i * 37 + 11) % 100 - 50); i += 1; end
-  when :U64 then while i < to; b.set_value(:U64, i, (i * 37 + 11) % 100 - 50); i += 1; end
-  when :S64 then while i < to; b.set_value(:S64, i, (i * 37 + 11) % 100 - 50); i += 1; end
+  when :U8  then while i < to; last = b.set_value(:U8, i, (i * 37 + 11) % 100); i += 1; end
+  when :S8  then while i < to; last = b.set_value(:S8, i, (i * 37 + 11) % 100 - 50); i += 1; end
+  when :u16 then while i < to; last = b.set_value(:u16, i, (i * 37 + 11) % 100); i += 1; end
+  when :s16 then while i < to; last = b.set_value(:s16, i, (i * 37 + 11) % 100 - 50); i += 1; end
+  when :U16 then while i < to; last = b.set_value(:U16, i, (i * 37 + 11) % 100); i += 1; end
+  when :S16 then while i < to; last = b.set_value(:S16, i, (i * 37 + 11) % 100 - 50); i += 1; end
+  when :u32 then while i < to; last = b.set_value(:u32, i, (i * 37 + 11) % 100); i += 1; end
+  when :s32 then while i < to; last = b.set_value(:s32, i, (i * 37 + 11) % 100 - 50); i += 1; end
+  when :U32 then while i < to; last = b.set_value(:U32, i, (i * 37 + 11) % 100); i += 1; end
+  when :S32 then while i < to; last = b.set_value(:S32, i, (i * 37 + 11) % 100 - 50); i += 1; end
+  when :u64 then while i < to; last = b.set_value(:u64, i, (i * 37 + 11) % 100 - 50); i += 1; end
+  when :s64 then while i < to; last = b.set_value(:s64, i, (i * 37 + 11) % 100 - 50); i += 1; end
+  when :U64 then while i < to; last = b.set_value(:U64, i, (i * 37 + 11) % 100 - 50); i += 1; end
+  when :S64 then while i < to; last = b.set_value(:S64, i, (i * 37 + 11) % 100 - 50); i += 1; end
   end
-  "ok"
+  "ok -> #{last}"
 rescue => e
   "at #{i}: #{err(e)}"
 end
 def fillf(t, b, from, to)
   i = from
+  last = 0
   case t
-  when :f32 then while i < to; b.set_value(:f32, i, i * 0.25 - 1); i += 1; end
-  when :f64 then while i < to; b.set_value(:f64, i, i * 0.25 - 1); i += 1; end
-  when :F32 then while i < to; b.set_value(:F32, i, i * 0.25 - 1); i += 1; end
-  when :F64 then while i < to; b.set_value(:F64, i, i * 0.25 - 1); i += 1; end
+  when :f32 then while i < to; last = b.set_value(:f32, i, i * 0.25 - 1); i += 1; end
+  when :f64 then while i < to; last = b.set_value(:f64, i, i * 0.25 - 1); i += 1; end
+  when :F32 then while i < to; last = b.set_value(:F32, i, i * 0.25 - 1); i += 1; end
+  when :F64 then while i < to; last = b.set_value(:F64, i, i * 0.25 - 1); i += 1; end
   end
-  "ok"
+  "ok -> #{last}"
 rescue => e
   "at #{i}: #{err(e)}"
 end
 # read-modify-write: a cached read and a cached write of the same bytes
 def bump(t, b)
   i = 0
+  last = 0
   n = b.size
   case t
-  when :U8  then while i < n; b.set_value(:U8, i, b.get_value(:U8, i) + 200); i += 1; end
-  when :S8  then while i < n; b.set_value(:S8, i, b.get_value(:S8, i) + 100); i += 1; end
-  when :U16 then while i < n - 1; b.set_value(:U16, i, b.get_value(:U16, i) + 60000); i += 2; end
-  when :s16 then while i < n - 1; b.set_value(:s16, i, b.get_value(:s16, i) - 30000); i += 2; end
-  when :u32 then while i < n - 3; b.set_value(:u32, i, b.get_value(:u32, i) % 1000); i += 4; end
-  when :F64 then while i < n - 7; b.set_value(:F64, i, b.get_value(:F64, i) * 2); i += 8; end
+  when :U8  then while i < n; last = b.set_value(:U8, i, b.get_value(:U8, i) + 200); i += 1; end
+  when :S8  then while i < n; last = b.set_value(:S8, i, b.get_value(:S8, i) + 100); i += 1; end
+  when :U16 then while i < n - 1; last = b.set_value(:U16, i, b.get_value(:U16, i) + 60000); i += 2; end
+  when :s16 then while i < n - 1; last = b.set_value(:s16, i, b.get_value(:s16, i) - 30000); i += 2; end
+  when :u32 then while i < n - 3; last = b.set_value(:u32, i, b.get_value(:u32, i) % 1000); i += 4; end
+  when :F64 then while i < n - 7; last = b.set_value(:F64, i, b.get_value(:F64, i) * 2); i += 8; end
   end
-  "ok"
+  "ok -> #{last}"
 rescue => e
   "at #{i}: #{err(e)}"
 end
