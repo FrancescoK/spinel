@@ -36,6 +36,7 @@ class Set
 
   def initialize(enum = nil)
     @data = []
+    @ident = false
     if enum
       Set.check_enum(enum)
       # materialize first: the operand may be an Enumerator (or any other
@@ -49,10 +50,58 @@ class Set
     end
   end
 
-  # dup and clone must not share the element array with the original.
+  # dup and clone must not share the element array with the original. A copy
+  # compares its elements as the original does.
   def initialize_copy(orig)
     @data = orig.to_a
+    @ident = orig.compare_by_identity?
   end
+
+  # compare_by_identity makes the Set find its elements by equal? rather than
+  # by eql? and hash, as CRuby's does. Spinel's identity is CRuby's for an
+  # object, an Array, a Hash, a Symbol, nil, true and false; a program that
+  # may put another kind into a Set beside an identity one is refused at
+  # compile time.
+  def compare_by_identity
+    return self if @ident
+    check_frozen
+    @ident = true
+    self
+  end
+
+  def compare_by_identity?
+    @ident
+  end
+
+  # The members of an identity Set are found by equal?, of any other by eql?.
+  def find_member(x)
+    if @ident
+      @data.any? { |e| e.equal?(x) }
+    else
+      @data.any? { |e| e.eql?(x) }
+    end
+  end
+  private :find_member
+
+  def remove_member(x)
+    if @ident
+      @data.delete_if { |e| e.equal?(x) }
+    else
+      @data.delete_if { |e| e.eql?(x) }
+    end
+  end
+  private :remove_member
+
+  # A new Set that compares as this one does, holding its members: what
+  # CRuby's dup gives the combining operators.
+  def same_kind_copy
+    return Set.new(@data) unless @ident
+    r = Set.new
+    r.compare_by_identity
+    @data.each { |x| r.add(x) }
+    r
+  end
+  private :same_kind_copy
 
   # A frozen Set refuses every mutation, as CRuby's does: the element array is
   # a private ivar, so freezing the Set itself has to be what the check reads.
@@ -94,7 +143,7 @@ class Set
 
   def delete(x)
     check_frozen
-    @data.delete_if { |e| e.eql?(x) }
+    remove_member(x)
     self
   end
 
@@ -102,12 +151,12 @@ class Set
   def delete?(x)
     check_frozen
     return nil unless include?(x)
-    @data.delete_if { |e| e.eql?(x) }
+    remove_member(x)
     self
   end
 
   def include?(x)
-    @data.any? { |e| e.eql?(x) }
+    find_member(x)
   end
   alias member? include?
   alias === include?
@@ -165,7 +214,9 @@ class Set
 
   # In-place block methods. map!/collect! replace the elements (re-deduplicating);
   # keep_if/delete_if always return self; select!/reject! return self when
-  # anything changed and nil otherwise (CRuby's Set contract).
+  # anything changed and nil otherwise (CRuby's Set contract). map! builds a
+  # new plain Set and takes it over, so an identity Set compares by eql?
+  # afterwards, as CRuby's does.
   def map!
     check_frozen
     r = []
@@ -176,6 +227,7 @@ class Set
       _i += 1
     end
     @data = []
+    @ident = false
     r.each { |v| push_member(v) }
     self
   end
@@ -245,9 +297,16 @@ class Set
     self
   end
 
+  # A Set given to replace is copied, the way it compares included, as
+  # CRuby's initialize_copy does.
   def replace(enum)
     check_frozen
     Set.check_enum(enum)
+    if enum.is_a?(Set)
+      @data = enum.to_a
+      @ident = enum.compare_by_identity?
+      return self
+    end
     @data = []
     enum.to_a.each { |x| add(x) }
     self
@@ -262,7 +321,7 @@ class Set
   def subtract(enum)
     check_frozen
     Set.check_enum(enum)
-    enum.to_a.each { |x| @data.delete_if { |e| e.eql?(x) } }
+    enum.to_a.each { |x| remove_member(x) }
     self
   end
 
@@ -279,18 +338,26 @@ class Set
   # The intersection ENUMERATES the operand and keeps what the receiver holds
   # -- so a Hash operand contributes its [key, value] pairs, and the result
   # follows the operand's order, as CRuby's does. Asking the operand for
-  # #include? instead read a Hash by key (#3676).
+  # #include? instead read a Hash by key (#3676). Between two Sets CRuby
+  # walks the smaller and looks each member up in the other, which tells
+  # where either compares by identity: the answer is a plain Set.
   def &(other)
     Set.check_enum(other)
     r = Set.new
+    if other.is_a?(Set) && size < other.size && (@ident || other.compare_by_identity?)
+      @data.each { |x| r.add(x) if other.include?(x) }
+      return r
+    end
     other.to_a.each { |x| r.add(x) if include?(x) }
     r
   end
   alias intersection &
 
+  # The union and the difference start from a copy, which compares as this
+  # Set does.
   def |(other)
     Set.check_enum(other)
-    r = Set.new(@data)
+    r = same_kind_copy
     other.to_a.each { |x| r.add(x) }
     r
   end
@@ -300,20 +367,30 @@ class Set
   # The difference enumerates the operand too, for the same reason.
   def -(other)
     Set.check_enum(other)
-    r = Set.new(@data)
+    r = same_kind_copy
     other.to_a.each { |x| r.delete(x) }
     r
   end
   alias difference -
 
+  # An identity Set's copy takes each member of the operand out if it holds
+  # it and in if not, as CRuby's does.
   def ^(other)
-    (self | other) - (self & other)
+    return (self | other) - (self & other) unless @ident
+    Set.check_enum(other)
+    r = same_kind_copy
+    src = other.is_a?(Set) ? other.to_a : Set.new(other).to_a
+    src.each { |x| r.include?(x) ? r.delete(x) : r.add(x) }
+    r
   end
 
+  # Two Sets that compare their elements differently are not equal unless
+  # both are empty.
   def ==(other)
     return true if self.equal?(other)
     return false unless other.is_a?(Set)
     return false unless size == other.size
+    return false if size > 0 && @ident != other.compare_by_identity?
     mark = RecursionGuard.enter_eq(self, other)
     # A pair already being compared answers "equal", which is what lets two
     # distinct self-containing Sets finish. CRuby answers false here, for a
@@ -343,8 +420,11 @@ class Set
     x
   end
 
+  # A larger Set is no subset, and a smaller no superset, before any member
+  # is asked: an identity Set may hold two members a plain one holds as one.
   def subset?(other)
     Set.check_set(other)
+    return false if size > other.size
     @data.all? { |x| other.include?(x) }
   end
   alias <= subset?
@@ -354,6 +434,7 @@ class Set
     # Walk the operand rather than calling ITS #subset?: the parameter's type
     # is bound from every call site, so a rejected Array argument still had to
     # answer a Set-only method for the program to compile.
+    return false if size < other.size
     other.all? { |x| include?(x) }
   end
   alias >= superset?
@@ -370,15 +451,31 @@ class Set
   end
   alias > proper_superset?
 
+  # By size first, as CRuby's: two Sets of one size compare 0 or not at all.
   def <=>(other)
     return nil unless other.is_a?(Set)
-    return 0 if size == other.size && subset?(other)
-    return -1 if subset?(other)
-    return 1 if superset?(other)
+    if size < other.size
+      return -1 if subset?(other)
+    elsif size > other.size
+      return 1 if superset?(other)
+    elsif subset?(other)
+      return 0
+    end
     nil
   end
 
+  # Where either side compares by identity, CRuby walks the smaller Set and
+  # asks the other, and walks any other operand and asks this Set.
   def disjoint?(other)
+    if @ident || (other.is_a?(Set) && other.compare_by_identity?)
+      Set.check_enum(other)
+      if other.is_a?(Set) && size < other.size
+        @data.each { |x| return false if other.include?(x) }
+      else
+        other.each { |x| return false if include?(x) }
+      end
+      return true
+    end
     @data.each { |x| return false if other.include?(x) }
     true
   end
@@ -494,6 +591,8 @@ class Set
     return nil unless nested
     f = flatten
     @data = []
+    # CRuby replaces the Set with the flat one, which compares by eql?
+    @ident = false
     f.each { |y| add(y) }
     self
   end

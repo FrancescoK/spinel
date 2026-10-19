@@ -43475,6 +43475,149 @@ static int sa_after_all_mutations(Compiler *c, SaOrder *o, int w) {
   }
   return o->after_all && w >= 0 && w < nt->count && o->after_all[w];
 }
+/* ---- Set#compare_by_identity ----
+   An identity Set finds its members by equal?. Spinel's identity is CRuby's
+   for an object of the program's, an Array, a Hash, a Proc, a class, a
+   Symbol, nil, true and false; a String may be one object here where CRuby
+   has two (the frozen literal pool, the copies between representations),
+   and an Integer, a Float, a Rational, a Complex or a Range is held by
+   value here where CRuby makes a new object of each Bignum and non-flonum
+   Float, as Hash#compare_by_identity's keys are refused for. Every Set shares
+   one class, so in a program that calls compare_by_identity anywhere, a
+   value that may be of one of those kinds -- or of no kind the analysis
+   knows -- entering a Set or looked up in one is refused. */
+static int sid_kind_ok(Compiler *c, TyKind t) {
+  if (t == TY_SYMBOL || t == TY_NIL || t == TY_BOOL || t == TY_PROC || t == TY_CLASS) return 1;
+  return ty_is_object(t) || ty_is_array(t) || ty_is_hash(t);
+}
+/* Is value v statically one whose identity is CRuby's? A boxed local whose
+   every write in its scope is such a value counts. */
+static int sid_value_ok(Compiler *c, int v, int depth) {
+  const NodeTable *nt = c->nt;
+  v = an_unparen(nt, v);
+  if (v < 0 || depth > 8) return 0;
+  TyKind t = infer_type(c, v);
+  if (t != TY_POLY) return sid_kind_ok(c, t);
+  if (nt_kind(nt, v) != NK_LocalVariableReadNode) return 0;
+  const char *vn = nt_str(nt, v, "name");
+  Scope *vs = comp_scope_of(c, v);
+  if (!vn || !vs) return 0;
+  int any = 0;
+  for (int w = comp_lvw_first(c, vn); w >= 0; w = comp_lvw_next(c, w)) {
+    if (comp_scope_of(c, w) != vs) continue;
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode) return 0;
+    if (!sid_value_ok(c, nt_ref(nt, w, "value"), depth + 1)) return 0;
+    any = 1;
+  }
+  return any;
+}
+/* ...and is collection v one whose elements all are? A Set's members were
+   judged when they entered it. */
+static int sid_collection_ok(Compiler *c, int v, int set_cid) {
+  const NodeTable *nt = c->nt;
+  v = an_unparen(nt, v);
+  if (v < 0) return 0;
+  TyKind t = infer_type(c, v);
+  if (ty_is_object(t)) return ty_object_class(t) == set_cid || is_descendant(c, ty_object_class(t), set_cid);
+  if (ty_is_array(t)) {
+    TyKind et = ty_array_elem(t);
+    if (et != TY_POLY && et != TY_UNKNOWN) return sid_kind_ok(c, et);
+    if (nt_kind(nt, v) != NK_ArrayNode) return 0;
+    int en = 0; const int *el = nt_arr(nt, v, "elements", &en);
+    for (int e = 0; e < en; e++) if (!sid_value_ok(c, el[e], 0)) return 0;
+    return 1;
+  }
+  return 0;
+}
+/* the value a block answers: its last statement. With `own`, the block is
+   handed the Set's own members, and a parameter it answers back is one. */
+static int sid_block_ok(Compiler *c, int blk, int own) {
+  const NodeTable *nt = c->nt;
+  if (blk < 0) return 1;
+  if (nt_kind(nt, blk) != NK_BlockNode) return 0;
+  int body = nt_ref(nt, blk, "body");
+  int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (bn == 0) return 1;
+  int v = an_unparen(nt, bb[bn - 1]);
+  if (own && nt_kind(nt, v) == NK_LocalVariableReadNode && nt_str(nt, v, "name"))
+    for (int k = 0; block_param_name(c, blk, k); k++)
+      if (sp_streq(block_param_name(c, blk, k), nt_str(nt, v, "name"))) return 1;
+  return sid_value_ok(c, v, 0);
+}
+static void refuse_set_identity_members(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int set_cid = comp_class_index(c, "Set");
+  if (set_cid < 0 || comp_method_in_class(c, set_cid, "compare_by_identity") < 0) return;
+  /* a compare_by_identity that may make a Set an identity one: on a value
+     that may be a Set, or on self in an instance method of a Set's subclass
+     (a Hash's or another class's is no Set's) */
+  int asked = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || asked || !sp_streq(nm, "compare_by_identity") || nt_ref(nt, id, "arguments") >= 0) continue;
+    Scope *s = comp_scope_of(c, id);
+    if (s && s->class_id == set_cid) continue;
+    int r = nt_ref(nt, id, "receiver");
+    if (r < 0) {
+      if (s && !s->is_cmethod && s->class_id >= 0 && is_descendant(c, s->class_id, set_cid)) asked = 1;
+      continue;
+    }
+    TyKind rt = infer_type(c, r);
+    if ((ty_is_object(rt) && (ty_object_class(rt) == set_cid || is_descendant(c, ty_object_class(rt), set_cid))) ||
+        (rt == TY_POLY && !cls_fact_excludes(c, r, set_cid)))
+      asked = 1;
+  }
+  if (!asked) return;
+  static const char *const elem_names[] = {
+    "add", "<<", "add?", "delete", "delete?", "include?", "member?", "===", NULL };
+  static const char *const coll_names[] = {
+    "merge", "replace", "subtract", "&", "intersection", "|", "union", "+", "-", "difference",
+    "^", "disjoint?", "intersect?", "subset?", "superset?", "proper_subset?",
+    "proper_superset?", "<=", ">=", "<", ">", NULL };
+  static const char msg[] =
+      "a value whose identity is not CRuby's (a String, an Integer, a Float, a Rational, a Complex, a Range, "
+      "or one of no static kind) enters or is looked up in a Set, in a program that calls "
+      "Set#compare_by_identity: an identity Set would find it otherwise than CRuby's";
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    Scope *s = comp_scope_of(c, id);
+    if (s && s->class_id == set_cid) continue;   /* the Set's own walks of its members */
+    int recv = nt_ref(nt, id, "receiver");
+    int args = nt_ref(nt, id, "arguments"), argc = 0;
+    const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    int blk = nt_ref(nt, id, "block");
+    if (recv < 0) continue;
+    NodeKind rk = nt_kind(nt, an_unparen(nt, recv));
+    int on_class = (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) &&
+                   nt_str(nt, an_unparen(nt, recv), "name") &&
+                   sp_streq(nt_str(nt, an_unparen(nt, recv), "name"), "Set");
+    int ok = 1;
+    if (on_class) {
+      if (sp_streq(nm, "[]")) for (int a = 0; a < argc && ok; a++) ok = sid_value_ok(c, argv[a], 0);
+      else if (sp_streq(nm, "new")) ok = (argc == 0 || sid_collection_ok(c, argv[0], set_cid)) && sid_block_ok(c, blk, 0);
+      else continue;
+    }
+    else if (sp_streq(nm, "to_set") && argc == 0) {
+      ok = sid_collection_ok(c, recv, set_cid) && sid_block_ok(c, blk, 0);
+    }
+    else {
+      TyKind rt = infer_type(c, recv);
+      int maybe_set = (ty_is_object(rt) && (ty_object_class(rt) == set_cid || is_descendant(c, ty_object_class(rt), set_cid))) ||
+                      (rt == TY_POLY && !cls_fact_excludes(c, recv, set_cid));
+      if (!maybe_set) continue;
+      int is_elem = 0, is_coll = 0;
+      for (int k = 0; elem_names[k] && !is_elem; k++) is_elem = sp_streq(nm, elem_names[k]);
+      for (int k = 0; coll_names[k] && !is_coll; k++) is_coll = sp_streq(nm, coll_names[k]);
+      if (is_elem && argc == 1) ok = sid_value_ok(c, argv[0], 0);
+      else if (is_coll) for (int a = 0; a < argc && ok; a++) ok = sid_collection_ok(c, argv[a], set_cid);
+      else if ((sp_streq(nm, "map!") || sp_streq(nm, "collect!")) && rt != TY_POLY) ok = sid_block_ok(c, blk, 1);
+      else continue;
+    }
+    if (!ok) unsupported_feature(c, id, msg);
+  }
+}
+
 static void refuse_string_alias_copies(Compiler *c) {
   const NodeTable *nt = c->nt;
   SaArrayReads arr_ix = { NULL };
@@ -50741,6 +50884,7 @@ static void an_phase_reconcile_check(Compiler *c) {
   refuse_literal_element_aliases(c);
   refuse_string_array_element_mutations(c);
   refuse_string_alias_copies(c);
+  refuse_set_identity_members(c);
 
   /* Last: the capture pass again, on the settled types. a_block_is_lifted asks
      whether the receiver is poly, and a receiver that widened after the

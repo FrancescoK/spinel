@@ -1691,6 +1691,25 @@ CRuby's answer keeps the identity, and its keys would no longer be followed.
 So is using the hash as an argument or a value, or the answer of
 `compare_by_identity` as another name for it.
 
+#### `Set#compare_by_identity`
+
+A Set made to compare by identity finds its members by `equal?`, as CRuby
+4.0's does, and its copies and the operators that start from a copy (`|`,
+`-`, `^`) compare the same way, while `&`, `map!`, `flatten` and `classify`
+answer a plain Set. Its members are a Symbol, nil, true, false, an Array, a
+Hash, a Proc, a class or an object whose class is defined by the program: in
+a program that calls `compare_by_identity` on a value that may be a Set, a
+value that may be of another kind -- a String (equal-content Strings may be
+one object here, through the frozen literal pool, where CRuby has two), an
+Integer or a Float (held by value here, where CRuby makes a new object of
+each Bignum and non-flonum Float), a Rational, a Complex, a Range, or a
+boxed value of no static kind -- added to a Set, looked up in one, or handed
+to one as a collection (`Set.new`, `Set[]`, `merge`, `|`, `to_set`, a
+`map!` block's answers, ...) is refused at compile time, naming the call, as
+`Hash#compare_by_identity` refuses such keys. Every Set shares one class,
+and a Set can be made to compare by identity after it was filled, so the
+check covers the program's other Sets too.
+
 #### `String#equal?` and literal identity
 
 `equal?` on strings is pointer identity. Equal frozen literals are one
