@@ -1678,6 +1678,8 @@ int ivar_nil_recv_guard(Compiler *c, int id, int *recv_out);
    local that can hold nil (codegen_call.c) */
 int nil_recv_guard(Compiler *c, int id, int *recv_out);
 void emit_ivar_nil_guard(Compiler *c, int id, int recv, Buf *b, int indent);
+int emit_fold_recv_hold(Compiler *c, int id, int recv, Buf *b);
+void emit_fold_recv_test(Compiler *c, int id, int t, Buf *b);
 int emit_ivar_nil_guarded(Compiler *c, int id, Buf *b, int indent,
                           int (*fn)(Compiler *, int, Buf *, int));
 /* a statement-position call on a builtin receiver that may be nil, behind

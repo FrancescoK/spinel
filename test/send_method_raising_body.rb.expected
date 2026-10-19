@@ -1,0 +1,27 @@
+minus_nil: NoMethodError undefined method '-' for nil
+plus_true: NoMethodError undefined method '+' for nil
+diff_nil: NoMethodError undefined method 'difference' for nil
+union_nil: NoMethodError undefined method 'union' for nil
+inter_int: NoMethodError undefined method 'intersection' for nil
+concat_nil: NoMethodError undefined method 'concat' for nil
+nil_call: NoMethodError undefined method 'foo' for nil
+plain_raise: RuntimeError x
+int_raise: ArgumentError invalid value for Integer(): "x"
+tail: NoMethodError undefined method '-' for nil
+minus_nil: TypeError no implicit conversion of nil into Array
+plus_true: TypeError no implicit conversion of true into Array
+diff_nil: TypeError no implicit conversion of nil into Array
+union_nil: TypeError no implicit conversion of nil into Array
+inter_int: TypeError no implicit conversion of Integer into Array
+concat_nil: TypeError no implicit conversion of nil into Array
+nil_call: NoMethodError undefined method 'foo' for nil
+plain_raise: RuntimeError x
+int_raise: ArgumentError invalid value for Integer(): "x"
+tail: TypeError no implicit conversion of nil into Array
+and_nil: TypeError no implicit conversion of nil into Array
+or_int: TypeError no implicit conversion of Integer into Array
+direct: NoMethodError undefined method '-' for nil
+direct: NoMethodError undefined method 'difference' for nil
+direct: TypeError no implicit conversion of nil into Array
+direct: TypeError no implicit conversion of nil into Array
+public_send minus_nil: no implicit conversion of nil into Array

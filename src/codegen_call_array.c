@@ -342,7 +342,8 @@ static int emit_array_operand_type_error(Compiler *c, const BopCtx *x, Buf *b) {
   /* and a String slot's nil is NULL */
   int str_rt = at == TY_STRING;
   int tb = ++g_tmp;
-  buf_puts(b, "({ (void)("); emit_expr(c, x->recv, b); buf_puts(b, "); ");
+  buf_puts(b, "({ ");
+  int tr = emit_fold_recv_hold(c, x->id, x->recv, b);
   if (nil_rt) {
     buf_printf(b, "%s _t%d = (", oint_ctype(at), tb);
     emit_oint_expr(c, argv[0], at, b); buf_puts(b, "); ");
@@ -352,6 +353,7 @@ static int emit_array_operand_type_error(Compiler *c, const BopCtx *x, Buf *b) {
     emit_expr(c, argv[0], b); buf_puts(b, "); ");
   }
   else { buf_puts(b, "(void)("); emit_expr(c, argv[0], b); buf_puts(b, "); "); }
+  emit_fold_recv_test(c, x->id, tr, b);
   if (at == TY_NIL)
     buf_puts(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into Array\");");
   else if (at == TY_BOOL)
