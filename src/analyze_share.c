@@ -1399,6 +1399,7 @@ static void sh_block_to_method(ShareFacts *F, Compiler *c, int blk, int mi) {
 
 static void sh_named_build(ShareFacts *F, Compiler *c);
 static int sh_named_first(const struct ShNamed *a, int n, const char *name);
+static int sh_copied_self_targets(Compiler *c, int call, int *out, int cap);
 /* the user methods a call reaches (cplan_targets: the plan's method and, for
    a switch, every member); -1 when they are more than cap or not knowable
    yet (the caller then treats the call as one the walk does not follow,
@@ -1438,11 +1439,47 @@ static int sh_targets_in(ShareFacts *F, Compiler *c, int call, int *out, int cap
   (void)F;
   int n = cplan_targets(c, call, out, cap), m = 0;
   if (n == CPT_UNKNOWN) return -1;
+  if (n == 0) return sh_copied_self_targets(c, call, out, cap);
   for (int i = 0; i < n; i++)
     if (share_target_reachable(c, call, out[i]) && sh_target_armed(c, call, out[i])) out[m++] = out[i];
   return m;
 }
 static int sh_targets(Compiler *c, int call, int *out, int cap) { return sh_targets_in(NULL, c, call, out, cap); }
+/* A module's method an include copied into its includers runs as those
+   copies (is_transplanted_source), where self is an includer, so a
+   receiverless call in it reaches what each includer's chain answers to
+   the name. Asked in the module's own method, the plan finds nothing for a
+   name only the includers define (openssl's Buffering#do_write calls the
+   includer's syswrite), and the walk took it as a call it does not follow,
+   with the write buffer it was handed. The methods the copies' classes
+   reach; 0 when one reaches none (a builtin, or NoMethodError), -1 past
+   cap. */
+static int sh_copied_self_targets(Compiler *c, int call, int *out, int cap) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
+  Scope *s = comp_scope_of(c, call);
+  int si = (int)(s - c->scopes);
+  if (!name || nt_ref(nt, call, "receiver") >= 0 || nt_int(nt, call, "builtin_only", 0) || !s->is_transplanted_source ||
+      s->is_cmethod || s->def_node < 0 || scope_toplevel_included(c, si))
+    return 0;
+  /* (a name no class answers, a builtin's, reaches none) */
+  int n = 0;
+  comp_poly_candidates(c, name, &n);
+  if (n == 0) return 0;
+  n = 0;
+  for (int k = 0; k < c->nscopes; k++) {
+    const Scope *cp = &c->scopes[k];
+    if (k == si || cp->def_node != s->def_node || cp->class_id < 0 || cp->is_cmethod) continue;
+    int mi = comp_method_in_chain(c, cp->class_id, name, NULL);
+    if (mi < 0) return 0;
+    int seen = 0;
+    for (int j = 0; j < n && !seen; j++) seen = out[j] == mi;
+    if (seen) continue;
+    if (n == cap) return -1;
+    out[n++] = mi;
+  }
+  return n;
+}
 int share_target_reachable(Compiler *c, int call, int mi) {
   if (mi < 0 || mi >= c->nscopes || !c->scopes[mi].is_cmethod || cplan_user_fresh(c, call)->via != UC_POLY)
     return 1;
