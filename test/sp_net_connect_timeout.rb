@@ -43,7 +43,7 @@ while fd >= 0 && tries < 6
   tries += 1
 end
 puts "full queue: #{fd} timed out: #{Net.sp_net_take_connect_timeout}"
-puts "waited the deadline: #{waited >= 0.25 && waited < 5.0}"
+puts "waited the deadline: #{waited >= 0.25 && waited < 2.0}"
 # Reading the flag clears it.
 puts "cleared: #{Net.sp_net_take_connect_timeout}"
 
