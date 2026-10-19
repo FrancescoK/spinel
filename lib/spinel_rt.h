@@ -11882,18 +11882,15 @@ static sp_RbVal sp_poly_dig_step_key(sp_RbVal a, sp_RbVal k) {
 static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx);
 static int sp_poly_diggable(sp_RbVal v);   /* defined below */
 static int sp_poly_dig_recv_ok(sp_RbVal v);   /* defined below */
+static sp_RbVal sp_poly_dig_n(sp_RbVal recv, sp_int n, const sp_RbVal *keys);
 static sp_RbVal sp_poly_dig_list(sp_RbVal recv, sp_PolyArray *keys) {
   if (!keys) return sp_box_nil();
   SP_GC_ROOT(keys);
   /* a receiver that cannot be dug (nil answered nil) is the call's
      NoMethodError, with the keys as its args */
-  if (!sp_poly_dig_recv_ok(recv)) sp_raise_nomethod(sp_nomethod_msg_args("dig", recv, keys->len, keys->data));
-  sp_RbVal cur = recv;
-  for (sp_int i = 0; i < keys->len; i++) {
-    if (cur.tag == SP_TAG_NIL) return sp_box_nil();
-    cur = sp_poly_dig_index(cur, keys->data[i]);
-  }
-  return cur;
+  /* The same walk checks runtime arity and intermediate receivers, and
+     roots the values across each step. */
+  return sp_poly_dig_n(recv, keys->len, keys->data);
 }
 /* poly[poly_key]: dispatch on key tag at runtime. */
 static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
@@ -12224,6 +12221,7 @@ static sp_RbVal sp_poly_dig_n(sp_RbVal recv, sp_int n, const sp_RbVal *keys) {
   /* nor has any other receiver that cannot be dug: the call's NoMethodError,
      with the keys as its args (the TypeError below is a step's) */
   if (!sp_poly_dig_recv_ok(recv)) sp_raise_nomethod(sp_nomethod_msg_args("dig", recv, n, (sp_RbVal *)keys));
+  if (n == 0) sp_raise_arity(0, 1, -1, NULL);
   sp_poly_coll_chk(recv, "dig");
   sp_RbVal cur = recv;
   for (sp_int i = 0; i < n; i++) {

@@ -1,0 +1,24 @@
+2
+1
+nil
+2.5
+1.5
+"y"
+"x"
+[3, 4]
+3
+2
+2
+3
+3
+3
+nil
+8
+[3, 4]
+3
+nil
+ArgumentError: wrong number of arguments (given 0, expected 1+)
+ArgumentError: wrong number of arguments (given 0, expected 1+)
+ArgumentError: wrong number of arguments (given 0, expected 1+)
+TypeError: Integer does not have #dig method
+TypeError: Integer does not have #dig method

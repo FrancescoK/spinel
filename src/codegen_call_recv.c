@@ -5190,6 +5190,11 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
   TyKind rt = comp_recv_type(c, recv);
   TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
   TyKind res = repr_of(c, id).as_ty;   /* a Hash result's C table (to_h) */
+  /* A splat's runtime depth needs a boxed result, even when the Array's
+     elements have one type. The fixed-key rows cannot read that list. */
+  if (recv >= 0 && ty_is_array(rt) && is_dig_name(name) &&
+      nt_argv_has_splat(nt, argv, argc))
+    return emit_dig_splat(c, recv, argc, argv, b);
   /* [].first / [].last on an empty literal: there is no element type to read;
      the value is nil (boxed -- the call types poly). */
   if (recv >= 0 && argc == 0 && (is_endpoint_query(name)) &&
