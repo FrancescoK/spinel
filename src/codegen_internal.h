@@ -620,6 +620,10 @@ void *hc_iter_begin(Compiler *c, int id, Buf **bp);   /* an Integer block loop's
 void hc_iter_end(void *h, Buf **bp, int indent, int keep);
 extern int g_loop_polls_in_cond;   /* the next emit_loop_body leaves its polls to the loop's condition */
 int hc_string(Compiler *c, int recv, char *d, char *l, size_t cap);
+/* an IO::Buffer's cached view (sp_iob_view): *d its bytes, *l their count;
+   hc_iob_read: the call is a literal-typed get_value the cache reads */
+int hc_iobuf(Compiler *c, int recv, char *d, char *l, size_t cap);
+int hc_iob_read(Compiler *c, int id);
 /* hc_array for a Float array whose in-range elements the reader needs to
    be no nil: *n names a length that is 0 while the array may hold one, or
    while `guard` (a Float local the loop does not assign; -1 for none) is

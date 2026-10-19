@@ -11343,8 +11343,16 @@ static int subtree_changes_local_syn(Compiler *c, int root, const char *name) {
    headers). A call to anything else, a block, another kind of loop or a rescue leaves
    the loop as it was. An array is cached when it is read through a local, an
    ivar, or a field read of a local, where the loop assigns neither the local
-   nor the ivar. */
-enum { HC_INT, HC_FLOAT, HC_STR };
+   nor the ivar.
+
+   An IO::Buffer is cached the same way: its literal-typed `get_value` reads
+   and its `size` run no code and move no buffer, so the loop keeps the bytes
+   a read sees and their count (sp_iob_view) and reads them in place. What
+   could free, resize or transfer the buffer -- any other call -- leaves the
+   loop uncached; a finalizer or a trap handler runs only at a poll, after
+   which the cache is read again. Another thread's free in parallel is a data
+   race, as it is for an Array (docs/thread.md). */
+enum { HC_INT, HC_FLOAT, HC_STR, HC_IOB };
 /* recv: the array's text, on the heap (a field read of a long-named local
    is as long as its names: no length decides whether a loop is cached) */
 typedef struct { char *recv; int kind; int nf; Buf guard; } HcEntry;   /* nf: hc_array_nilfree asked;
@@ -11526,6 +11534,32 @@ int hc_promoted_int(Compiler *c, int n) {
   return g_hcp_state > 0 && hcp_val(c, n, 0);
 }
 
+/* Is type t an IO::Buffer whose binding `nm` (argc arguments) the call
+   reaches -- no method of the program's answering it instead? */
+static int hc_iob_binding(Compiler *c, TyKind t, const char *nm, int argc) {
+  if (!ty_is_object(t)) return 0;
+  int cid = ty_object_class(t);
+  if (cid < 0 || cid >= c->nclasses || !c->classes[cid].is_native_class || !c->classes[cid].c_struct ||
+      !sp_streq(c->classes[cid].c_struct, "sp_IOBuffer"))
+    return 0;
+  return comp_native_method_find(c, cid, nm, argc, 0) >= 0 && comp_method_in_chain(c, cid, nm, NULL) < 0;
+}
+/* `buf.get_value(:U8, i)`: a read emit_native_binding_call lowers inline --
+   a literal type symbol of 32 bits or fewer, or a float (the 64-bit
+   integers read boxed) -- at an Integer offset */
+int hc_iob_read(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  if (!nm || !sp_streq(nm, "get_value") || recv < 0 || ac != 2 || nt_ref(nt, id, "block") >= 0 ||
+      nt_kind(nt, av[0]) != NK_SymbolNode || !hc_iob_binding(c, comp_ntype(c, recv), nm, 2))
+    return 0;
+  int it = comp_iob_sym_type(nt_str(nt, av[0], "value"));
+  return it >= 0 && !comp_iob_ty_is_64(it) && (comp_ntype(c, av[1]) == TY_INT || hc_promoted_int(c, av[1]));
+}
+
 static int hc_call_ok(Compiler *c, int id, int stmt) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, id, "name");
@@ -11551,6 +11585,7 @@ static int hc_call_ok(Compiler *c, int id, int stmt) {
   if (sp_streq(nm, "getbyte") && ac == 1 && rt == TY_STRING && comp_ntype(c, av[0]) == TY_INT) return 1;
   if (is_len_alias(nm) && ac == 0 && (ty_is_array(rt) || rt == TY_STRING))
     return 1;
+  if (hc_iob_read(c, id) || (ac == 0 && sp_streq(nm, "size") && hc_iob_binding(c, rt, nm, 0))) return 1;
   int alloc = 0;
   if (ac == 0 && call_is_field_read(c, id, &alloc) && !alloc) return 1;
   if (ac == 0 && (rt == TY_INT || rt == TY_FLOAT)) {
@@ -11621,7 +11656,7 @@ static int hc_node_ok(Compiler *c, int id, int stmt, HcRegion *r) {
   switch (nt_kind(nt, id)) {
     case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode: case NK_IntegerNode:
     case NK_FloatNode: case NK_NilNode: case NK_TrueNode: case NK_FalseNode: case NK_SelfNode:
-    case NK_ConstantReadNode:
+    case NK_ConstantReadNode: case NK_SymbolNode:
       return 1;
     case NK_StatementsNode: kids_stmt = 1; break;
     case NK_ParenthesesNode: kids_stmt = stmt; break;
@@ -11803,6 +11838,15 @@ int hc_array_nilfree(Compiler *c, int recv, int guard, char *d, char *n, size_t 
   return 2;
 }
 
+/* an IO::Buffer's view: the bytes (_hcd) and their count (_hcl) */
+int hc_iobuf(Compiler *c, int recv, char *d, char *l, size_t cap) {
+  int e = hc_entry(c, recv, HC_IOB);
+  if (e < 0) return 0;
+  snprintf(d, cap, "_hcd%d_%d", g_hc->id, e);
+  snprintf(l, cap, "_hcl%d_%d", g_hc->id, e);
+  return 1;
+}
+
 int hc_string(Compiler *c, int recv, char *d, char *l, size_t cap) {
   int e = hc_entry(c, recv, HC_STR);
   if (e < 0) return 0;
@@ -11867,7 +11911,10 @@ int hoisted_value_is_stmt(Compiler *c, int id) {
    in its own condition or body, between the outer test and any outer read
    after it, so in a program that polls a body with one proves nothing
    (hc_subtree_loops); the nested loop is proved on its own. Records i and a
-   in the region, or leaves it as it was. */
+   in the region, or leaves it as it was.
+   An IO::Buffer is not proved this way: `i < buf.size` does not put a byte
+   at i -- an invalidated slice answers its size and has no bytes, and a nil
+   buffer is the same C pointer -- so its reads keep their test. */
 /* Does the subtree hold a loop -- a while, until or for, or a call with a
    block (an Integer block loop, the one kind a cached region admits) --
    that polls on every pass? */
@@ -12065,7 +12112,8 @@ static void hc_close(HcRegion *r, const char *loop, Buf *b, int indent) {
   if (r->n > 0) {
     emit_indent(b, indent); buf_puts(b, "{\n");
     for (int i = 0; i < r->n; i++) {
-      const char *et = r->e[i].kind == HC_INT ? "sp_int" : r->e[i].kind == HC_FLOAT ? "sp_float" : "const char";
+      const char *et = r->e[i].kind == HC_INT ? "sp_int" : r->e[i].kind == HC_FLOAT ? "sp_float" :
+                       r->e[i].kind == HC_IOB ? "const uint8_t" : "const char";
       emit_indent(b, indent + 1);
       buf_printf(b, "%s *_hcd%d_%d; sp_int _hcl%d_%d;", et, r->id, i, r->id, i);
       /* _hcw: a store may write the cached element -- not into a frozen
@@ -12074,7 +12122,8 @@ static void hc_close(HcRegion *r, const char *loop, Buf *b, int indent) {
          needs no test of its own, and a store below it has no bit to clear;
          anything at or past it takes the slow path. An array with a nil far
          out (a gap past its end) keeps the fast path below the gap */
-      if (r->e[i].kind != HC_STR) buf_printf(b, " int _hcw%d_%d; sp_int _hcr%d_%d;", r->id, i, r->id, i);
+      if (r->e[i].kind == HC_INT || r->e[i].kind == HC_FLOAT)
+        buf_printf(b, " int _hcw%d_%d; sp_int _hcr%d_%d;", r->id, i, r->id, i);
       if (r->e[i].nf) buf_printf(b, " sp_int _hcn%d_%d;", r->id, i);
       buf_puts(b, "\n");
     }
@@ -12084,6 +12133,8 @@ static void hc_close(HcRegion *r, const char *loop, Buf *b, int indent) {
       if (r->e[i].kind == HC_STR)
         buf_printf(b, "{ const char *_s = %s; _hcd%d_%d = _s; _hcl%d_%d = _s ? (sp_int)sp_str_byte_len(_s) : 0; } ",
                    rv, r->id, i, r->id, i);
+      else if (r->e[i].kind == HC_IOB)
+        buf_printf(b, "_hcd%d_%d = sp_iob_view(%s, &_hcl%d_%d); ", r->id, i, rv, r->id, i);
       else {
         buf_printf(b, "{ sp_%sArray *_a = %s; _hcd%d_%d = _a ? _a->data%s : NULL; _hcl%d_%d = _a ? _a->len : 0; _hcw%d_%d = _a && !_a->frozen; _hcr%d_%d = _a ? SP_%s_NILFREE_LEN(_a) : 0; ",
                    r->e[i].kind == HC_INT ? "Int" : "Float", rv, r->id, i,

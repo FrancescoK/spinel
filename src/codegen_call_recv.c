@@ -11439,6 +11439,15 @@ static int emit_native_binding_call(Compiler *c, int id, int cid, const char *na
      Conditions mirror the analyzer's special-case
      (analyze_infer_recv.c); any declined shape falls through to the
      generic boxed binding below. */
+  /* ...and its size, a field read the C compiler can keep in a register
+     across a loop that stores nothing */
+  if (c->classes[cid].c_struct && sp_streq(c->classes[cid].c_struct, "sp_IOBuffer") && argc == 0 &&
+      sp_streq(name, "size") && comp_native_method_find(c, cid, name, 0, 0) >= 0) {
+    buf_puts(b, "sp_IOBuffer_size_inline(");
+    emit_expr(c, recv, b);
+    buf_puts(b, ")");
+    return 1;
+  }
   if (c->classes[cid].c_struct && sp_streq(c->classes[cid].c_struct, "sp_IOBuffer") &&
       argc >= 2 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "SymbolNode") &&
       (comp_ntype(c, argv[1]) == TY_INT || comp_ntype(c, argv[1]) == TY_POLY)) {
@@ -11450,7 +11459,22 @@ static int emit_native_binding_call(Compiler *c, int id, int cid, const char *na
         buf_printf(b, ", %d, ", it);
       }
       else {   /* inline, falling back to sp_IOBuffer_get_i/_f (lib/sp_iobuffer.h) */
-        buf_printf(b, "sp_IOBuffer_load_%s(", comp_iob_ty_is_float(it) ? "f" : "i");
+        const char *fi = comp_iob_ty_is_float(it) ? "f" : "i";
+        char hd[48], hl[48];
+        if (hc_iob_read(c, id) && hc_iobuf(c, recv, hd, hl, sizeof hd)) {
+          /* a buffer whose view the loop being emitted holds (hc_iobuf):
+             a value within it is read there, and anything else takes the
+             out-of-line read, which raises as it does uncached. */
+          int tk = ++g_tmp;
+          buf_printf(b, "({ sp_int _t%d = ", tk);
+          emit_int_expr(c, argv[1], b);
+          buf_printf(b, "; SP_LIKELY(sp_iob_fits(%s, _t%d, %d)) ? sp_iob_decode_%s(%s + _t%d, %d) : sp_IOBuffer_get_%s(",
+                     hl, tk, it, fi, hd, tk, it, fi);
+          emit_expr(c, recv, b);
+          buf_printf(b, ", %d, _t%d); })", it, tk);
+          return 1;
+        }
+        buf_printf(b, "sp_IOBuffer_load_%s(", fi);
         emit_expr(c, recv, b);
         buf_printf(b, ", %d, ", it);
       }
