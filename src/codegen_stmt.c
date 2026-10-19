@@ -1879,6 +1879,7 @@ int strbuf_yield_proc_box(Compiler *c, int v) {
   return (vt == TY_STRING || vt == TY_STRBUF) && mi > 0 && last != v && block_given_tail_then_last(c, last) != v;
 }
 static int strbuf_cond_arm_any(Compiler *c, int v, int (*leaf)(Compiler *, int), int deep);
+static int strbuf_cond_arm_any_in(Compiler *c, int v, unsigned extra, int (*leaf)(Compiler *, int), int deep);
 /* A leaf of the arm walk: a String Range's endpoint (strbuf_srange_tail), a
    `next` of one, or a `begin` (with no rescue, else or ensure) ending in one */
 static int strbuf_value_held(Compiler *c, int v);
@@ -1890,17 +1891,10 @@ static int strbuf_srange_leaf_d(Compiler *c, int v, int unheld) {
   int (*leaf)(Compiler *, int) = unheld ? strbuf_srange_unheld_leaf : strbuf_srange_leaf;
   v = unwrap_parens(c, v);
   /* a begin's value is its body's, a rescue's or its else's (an ensure's is
-     dropped), as strbuf_begin_arm_leaf takes them */
-  if (v >= 0 && nt_kind(nt, v) == NK_BeginNode) {
-    int el = nt_ref(nt, v, "else_clause");
-    if (el < 0 && strbuf_cond_arm_any(c, nt_ref(nt, v, "statements"), leaf, 0)) return 1;
-    for (int rc = nt_ref(nt, v, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
-      if (strbuf_cond_arm_any(c, nt_ref(nt, rc, "statements"), leaf, 0)) return 1;
-    return el >= 0 && strbuf_cond_arm_any(c, nt_ref(nt, el, "statements"), leaf, 0);
-  }
-  if (v >= 0 && nt_kind(nt, v) == NK_RescueModifierNode)
-    return strbuf_cond_arm_any(c, nt_ref(nt, v, "expression"), leaf, 0) ||
-           strbuf_cond_arm_any(c, nt_ref(nt, v, "rescue_expression"), leaf, 0);
+     dropped), as strbuf_begin_arm_leaf takes them; a rescue modifier's is
+     its expression's or its fallback's */
+  if (v >= 0 && (nt_kind(nt, v) == NK_BeginNode || nt_kind(nt, v) == NK_RescueModifierNode))
+    return strbuf_cond_arm_any_in(c, v, VPS_BEGIN | VPS_RESCUE_MOD, leaf, 0);
   if (v >= 0 && nt_kind(nt, v) == NK_NextNode) {
     int na = 0; const int *av = call_args(nt, v, &na);
     return na == 1 && strbuf_cond_arm_any(c, av[0], leaf, 0);
@@ -3411,10 +3405,15 @@ static int strbuf_cond_arm_leaf(const VpLeaf *lf, void *ud) {
   if (lf->kind == VPK_GAVE_UP) return a->deep;
   return lf->kind != VPK_NIL && a->leaf(a->c, lf->node);
 }
-static int strbuf_cond_arm_any(Compiler *c, int v, int (*leaf)(Compiler *, int), int deep) {
+/* (`extra` adds shapes the leaf test does not take apart itself: strbuf_srange_leaf_d reads
+   a begin and a rescue modifier through it) */
+static int strbuf_cond_arm_any_in(Compiler *c, int v, unsigned extra, int (*leaf)(Compiler *, int), int deep) {
   StrbufArmAny a = { c, leaf, deep };
-  return for_each_value_position(c->nt, v, VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_LOGIC,
+  return for_each_value_position(c->nt, v, extra | VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_LOGIC,
                                  strbuf_cond_arm_leaf, &a);
+}
+static int strbuf_cond_arm_any(Compiler *c, int v, int (*leaf)(Compiler *, int), int deep) {
+  return strbuf_cond_arm_any_in(c, v, 0, leaf, deep);
 }
 /* ...is v such a bang, or a conditional that takes its arms one by one as
    handles (strbuf_cond_has_handle_leaf) with such a bang among the values
