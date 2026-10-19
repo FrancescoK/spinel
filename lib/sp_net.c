@@ -928,11 +928,16 @@ int sp_sched_wait_io_timeout(int fd, short events, double timeout_s);
 
 /* sp_net_wait_io until `deadline` (an sp_net_now() value). Returns 1 to retry
    the syscall, 0 when the deadline passed first, -1 to give up (term
-   requested or poll error). Rechecks the clock after every wake, so an early
-   return from the wait only waits again for what is left. */
+   requested, poll error, or a deferred Thread#raise/#kill pending). Rechecks
+   the clock after every wake, so an early return from the wait only waits
+   again for what is left. */
 static int sp_net_wait_io_until(int fd, short events, double deadline) {
     for (;;) {
         if (sp_net_term_flag) return -1;
+        /* A deferred inject wakes the park without readiness, and the park
+           returns at once while one is pending: give up so the caller can
+           clean up and let it fire, rather than spin until the deadline. */
+        if (sp_fiber_current && sp_fiber_inject_pending(sp_fiber_current)) return -1;
         double left = deadline - sp_net_now();
         if (left <= 0) return 0;
 #ifdef SP_THREADS
