@@ -859,10 +859,36 @@ static void emit_zip_args(Compiler *c, const int *argv, int nargs, const int *tb
   }
 }
 
-static int emit_dig_splat(Compiler *c, int recv, int arg, Buf *b) {
+static int emit_dig_splat(Compiler *c, int recv, int argc, const int *argv, Buf *b) {
   Buf rb; int ch = hold_recv_open(c, recv, 1, "sp_RbVal", "SP_GC_ROOT_RBVAL", b, &rb);
-  buf_printf(b, "sp_poly_dig_list(%s, sp_poly_to_poly_array(", rb.p); free(rb.p);
-  emit_boxed(c, arg, b); buf_puts(b, "))");
+  if (argc == 1) {
+    buf_printf(b, "sp_poly_dig_list(%s, sp_poly_to_poly_array(", rb.p);
+    emit_boxed(c, argv[0], b); buf_puts(b, "))");
+  }
+  else {
+    int tk = ++g_tmp;
+    buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tk, tk);
+    for (int a = 0; a < argc; a++) {
+      /* Keep argument hoists at their evaluation point, after earlier keys. */
+      Buf pre = {0}, value = {0}; Buf *saved_pre = g_pre;
+      g_pre = &pre; emit_boxed(c, argv[a], &value); g_pre = saved_pre;
+      if (pre.p) buf_puts(b, pre.p);
+      if (nt_kind(c->nt, argv[a]) == NK_SplatNode) {
+        int ts = ++g_tmp;
+        buf_printf(b, "{ sp_PolyArray *_t%d = sp_poly_to_poly_array(%s); SP_GC_ROOT(_t%d);"
+                      " for (sp_int _i = 0; _i < _t%d->len; _i++)"
+                      " sp_PolyArray_push(_t%d, _t%d->data[_i]); }",
+                   ts, value.p, ts, ts, tk, ts);
+      }
+      else buf_printf(b, " sp_PolyArray_push(_t%d, %s);", tk, value.p);
+      free(pre.p); free(value.p);
+    }
+    /* sp_poly_dig_n, as the boxed arm: a step onto a scalar is a TypeError
+       naming its class, as CRuby raises, not an index into it */
+    int tr = ++g_tmp;
+    buf_printf(b, " sp_RbVal _t%d = %s; sp_poly_dig_n(_t%d, _t%d->len, _t%d->data); })", tr, rb.p, tr, tk, tk);
+  }
+  free(rb.p);
   if (ch) buf_puts(b, "; })");
   return 1;
 }
@@ -3650,7 +3676,7 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
     /* dig(*keys): walk the runtime key list (see the hash arm) */
     /* the receiver is held across the keys, which may allocate */
     if (nt_kind(nt, argv[0]) == NK_SplatNode)
-      { *out = emit_dig_splat(c, recv, argv[0], b); return 1; }
+      { *out = emit_dig_splat(c, recv, argc, argv, b); return 1; }
     /* a receiver that can be nil is read as an empty Array and raises
        under `dig` once the keys have run, not under [] (nil_recv_open) */
     int nil_t = -1;
@@ -6433,7 +6459,7 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
            key's own type and the C did not compile. */
         /* the receiver is held across the keys, which may allocate */
         if (nt_kind(nt, argv[0]) == NK_SplatNode)
-          return emit_dig_splat(c, recv, argv[0], b);
+          return emit_dig_splat(c, recv, argc, argv, b);
         TyKind vt = ty_hash_val(rt);
         TyKind kt = ty_hash_key(rt);
         /* Static key-type mismatch (string key on sym hash, a String on an
@@ -17934,7 +17960,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     /* the receiver is held across the arguments, which may allocate */
     if (!has_user_dig) {
       if (argc == 1 && nt_kind(nt, argv[0]) == NK_SplatNode)
-        return emit_dig_splat(c, recv, argv[0], b);
+        return emit_dig_splat(c, recv, argc, argv, b);
       int any_splat = 0;
       for (int a = 0; a < argc; a++)
         if (nt_kind(nt, argv[a]) == NK_SplatNode) any_splat = 1;
