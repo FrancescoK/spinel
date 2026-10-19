@@ -6028,7 +6028,14 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
   /* a parameter the scope holds as the shared handle binds each String
      element through it (elem_param_is_handle) rather than shadowing it */
   int as_handle = !autosplat && elem_param_is_handle(clv0, et_elem);
-  int use_shadow = !as_handle && clv0 && clv0->type != et_elem && et_elem != TY_UNKNOWN;
+  /* a lone parameter over an Enumerator that yields several values holds the
+     packed arguments (desugar's enum_hop_yield_view "args"): each element of
+     the hop's array is that Array, and the parameter keeps the Array type
+     inference gave it rather than a shadow of the boxed element (#9643) */
+  const char *yv = recv >= 0 ? nt_str(nt, recv, "enum_yield_view") : NULL;
+  int args_view = !autosplat && !as_handle && yv && sp_streq(yv, "args") && et_elem == TY_POLY &&
+                  clv0 && clv0->type == TY_POLY_ARRAY;
+  int use_shadow = !as_handle && !args_view && clv0 && clv0->type != et_elem && et_elem != TY_UNKNOWN;
   if (use_shadow) {
     lv_set_type(clv0, et_elem);
     for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);
@@ -6052,6 +6059,10 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
   else if (as_handle) {
     emit_indent(g_pre, bodyIndent);
     buf_printf(g_pre, "lv_%s = sp_String_new_shared(sp_%sArray_get(_t%d, _t%d));\n", p0, k, trecv, ti);
+  }
+  else if (args_view) {
+    emit_indent(g_pre, bodyIndent);
+    buf_printf(g_pre, "lv_%s = sp_poly_to_poly_array(sp_%sArray_get(_t%d, _t%d));\n", p0, k, trecv, ti);
   }
   else if (p0) {
     emit_indent(g_pre, bodyIndent);

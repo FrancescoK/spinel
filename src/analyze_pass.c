@@ -16399,6 +16399,17 @@ int infer_block_params(Compiler *c) {
               sp_streq(name, "reject!")))
       pt = TY_POLY;
 
+    /* desugar's `{ |__spa| x = __spa[0]; ... }` over an Enumerator that
+       yields several values (enum_hop_yield_view, the hop's enum_yield_view
+       "args"): the lone parameter is the Array the hop packs each step's
+       values into, read at run time. Typed from the Enumerator's element as
+       the arms below type a parameter, the map fold bound it to the boxed
+       element and `__spa[0]` fell to the NoMethodError gate (#9643). */
+    { const char *view = recv >= 0 ? nt_str(nt, recv, "enum_yield_view") : NULL;
+      if (view && sp_streq(view, "args") && p0) {
+        if (bp_widen(comp_scope_of(c, block), p0, TY_POLY_ARRAY)) changed = 1;
+        continue;
+      } }
     { int r = infer_block_params_enum_arms(c, nt, id, block, name, recv, rt, p0); changed |= r & 1; if (r & 2) continue; }
 
     { int r = infer_block_params_container_arms(c, nt, id, block, name, recv, rt, p0, pt); changed |= r & 1; if (r & 2) continue; }
