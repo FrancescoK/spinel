@@ -21765,49 +21765,35 @@ static int share_static_container(Compiler *c, int kind, const char *name) {
    v itself, a `return`'s argument, the last statement of a list, the arms of
    an `if`, `unless` or `case`, and the body, rescues and else of a `begin`.
    Answers the new count, which counts what out[] (cap long) had no room for. */
-static int share_ret_literals(const NodeTable *nt, int v, int *out, int n, int cap, int depth) {
-  v = an_unparen(nt, v);
-  if (v < 0 || depth > 64) return n;
-  switch (nt_kind(nt, v)) {
+typedef struct { const NodeTable *nt; int *out, n, cap; } RetLits;
+static int share_ret_literals(const NodeTable *nt, int v, int *out, int n, int cap);
+static int share_ret_lit_leaf(const VpLeaf *lf, void *ud) {
+  RetLits *r = ud;
+  if (lf->kind == VPK_NIL || lf->kind == VPK_GAVE_UP) return 0;
+  const NodeTable *nt = r->nt;
+  switch (nt_kind(nt, lf->node)) {
     case NK_ArrayNode: case NK_HashNode:
-      if (n < cap) out[n] = v;
-      return n + 1;
-    case NK_ReturnNode: {
-      int ra = nt_ref(nt, v, "arguments"), rn = 0;
-      const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
-      return rn == 1 ? share_ret_literals(nt, rv[0], out, n, cap, depth + 1) : n;
-    }
-    case NK_StatementsNode: {
-      int bn = 0; const int *b = nt_arr(nt, v, "body", &bn);
-      return bn > 0 ? share_ret_literals(nt, b[bn - 1], out, n, cap, depth + 1) : n;
-    }
-    case NK_ElseNode:
-      return share_ret_literals(nt, nt_ref(nt, v, "statements"), out, n, cap, depth + 1);
-    case NK_IfNode: case NK_UnlessNode: {
-      /* (the `elsif` links of a chain are followed in a loop, as the rescues
-         of a begin are, so a long chain costs no depth) */
-      for (int d = 0; v >= 0 && d < 64; d++) {
-        n = share_ret_literals(nt, nt_ref(nt, v, "statements"), out, n, cap, depth + 1);
-        int sub = nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause");
-        if (sub >= 0 && nt_kind(nt, sub) == NK_IfNode) { v = sub; continue; }
-        return share_ret_literals(nt, sub, out, n, cap, depth + 1);
-      }
-      return n;
-    }
-    case NK_BeginNode:
-      n = share_ret_literals(nt, nt_ref(nt, v, "statements"), out, n, cap, depth + 1);
-      n = share_ret_literals(nt, nt_ref(nt, v, "else_clause"), out, n, cap, depth + 1);
-      for (int rc = nt_ref(nt, v, "rescue_clause"), d = 0; rc >= 0 && d < 64; rc = nt_ref(nt, rc, "subsequent"), d++)
-        n = share_ret_literals(nt, nt_ref(nt, rc, "statements"), out, n, cap, depth + 1);
-      return n;
-    case NK_CaseNode: case NK_CaseMatchNode: {
-      int wn = 0; const int *w = nt_arr(nt, v, "conditions", &wn);
-      for (int k = 0; k < wn; k++) n = share_ret_literals(nt, nt_ref(nt, w[k], "statements"), out, n, cap, depth + 1);
-      return share_ret_literals(nt, nt_ref(nt, v, "else_clause"), out, n, cap, depth + 1);
+      if (r->n < r->cap) r->out[r->n] = lf->node;
+      r->n++;
+      return 0;
+    /* a begin is a leaf of the walk: its body, its else and its rescues, in that order */
+    case NK_BeginNode: {
+      int v = lf->node;
+      r->n = share_ret_literals(nt, nt_ref(nt, v, "statements"), r->out, r->n, r->cap);
+      r->n = share_ret_literals(nt, nt_ref(nt, v, "else_clause"), r->out, r->n, r->cap);
+      for (int rc = nt_ref(nt, v, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
+        r->n = share_ret_literals(nt, nt_ref(nt, rc, "statements"), r->out, r->n, r->cap);
+      return 0;
     }
     default:
-      return n;
+      return 0;
   }
+}
+static int share_ret_literals(const NodeTable *nt, int v, int *out, int n, int cap) {
+  RetLits r = { nt, out, n, cap };
+  for_each_value_position(nt, v, VP_FOLLOW_RETURN | VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN,
+                          share_ret_lit_leaf, &r);
+  return r.n;
 }
 /* The literals of typed Strings (`const char *` elements, which cannot hold
    the shared handle) method mi answers, as its last value or through a
@@ -21816,10 +21802,10 @@ static int share_ret_literals(const NodeTable *nt, int v, int *out, int n, int c
 static int share_ret_typed_str_literals(Compiler *c, int mi, int *out, int cap) {
   TyKind t = c->scopes[mi].ret;
   if (!(ty_is_array(t) && ty_array_elem(t) == TY_STRING) && !(ty_is_hash(t) && ty_hash_val(t) == TY_STRING)) return 0;
-  int n = share_ret_literals(c->nt, scope_body_value(c, mi), out, 0, cap, 0);
+  int n = share_ret_literals(c->nt, scope_body_value(c, mi), out, 0, cap);
   for (int u = comp_ret_first(c, mi); u >= 0; u = comp_ret_next(c, u))
     if (nt_kind(c->nt, u) == NK_ReturnNode && comp_scope_of(c, u) == &c->scopes[mi])
-      n = share_ret_literals(c->nt, u, out, n, cap, 0);
+      n = share_ret_literals(c->nt, u, out, n, cap);
   return n;
 }
 static int share_ret_typed_str_literal(Compiler *c, int mi) {
