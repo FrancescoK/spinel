@@ -1,0 +1,29 @@
+["\r\n"]
+true
+["a", "", "b"]
+1
+0
+nil
+["\r\r\n"]
+true
+nil
+true
+true
+false
+"a|b"
+["x", "y"]
+["\r\n", "\n"]
+true
+false
+true
+true
+false
+0
+"\n"
+0
+0
+0
+0
+0
+invalid pattern in look-behind: /(?<=\R)x/
+true

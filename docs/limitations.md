@@ -1325,15 +1325,16 @@ POSIX names from ASCII as its brackets do, and refuses the categories and the
 emoji properties rather than answer them from ASCII.
 
 **A regexp construct the engine does not carry is refused, not read as its
-letters.** `\R` (any linebreak) and `\X` (a grapheme cluster) each mean
-something in CRuby that this engine does not do. Left as unknown escapes each
-was simply its own letter, so `/\R/` matched an `R` rather than a newline.
-They raise `RegexpError` at compile time instead. Inside a character class
+letters.** `\X` (a grapheme cluster) means something in CRuby that this
+engine does not do. Left as an unknown escape it was simply its own letter, so
+it raises `RegexpError` at compile time instead. Inside a character class
 CRuby reads `\K`, `\R` and `\X` as the letter too, and so does the class
-parser here, so `[\R]` still matches an `R`. `\G`, `\g<name>` and `\K` (drop
-what was matched before it) ARE carried and behave as CRuby does, except that
-a `\K` inside a lookaround or an absent operator `(?~...)`, or in a pattern
-that also calls a group with `\g`, raises `RegexpError` too.
+parser here, so `[\R]` still matches an `R`. `\R` (any linebreak, CRuby's
+`(?>\r\n|[\n\v\f\r\u0085\u2028\u2029])`, and in a look-behind the same
+`RegexpError` as CRuby's), `\G`, `\g<name>` and `\K` (drop what was matched
+before it) ARE carried and behave as CRuby does, except that a `\K` inside a
+lookaround or an absent operator `(?~...)`, or in a pattern that also calls a
+group with `\g`, raises `RegexpError` too.
 
 The same applies inside a character class, where a `[` never stands for
 itself: `[[.a.]]` (a collating element) and `[[=a=]]` (an equivalence class)

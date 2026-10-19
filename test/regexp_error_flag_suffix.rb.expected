@@ -15,4 +15,4 @@ empty range in char class: /(?-m)[z-a]/m
 "/a/"
 invalid group name <1>: /(?<1>a)/m
 char-class value at end of range: /[a-\d]/i
-\R is not supported: /\R/x
+compiled
