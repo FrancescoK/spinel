@@ -110,6 +110,10 @@ enum {
   VPS_BEGIN_CLAUSES = 1u << 13, /* a begin with any of them */
   VPS_RESCUE_MOD = 1u << 14,  /* x rescue y */
   VPS_LOGIC = 1u << 15,       /* `a || b`, `a && b` */
+  /* Only with no VPS_ bit besides: no shape at all, so that only the
+     wrappers (parentheses, statements, else, an `in` clause) are looked
+     through. Without it, no bit means every shape. */
+  VPS_NONE = 1u << 16,
   VPS_BEGIN = VPS_BEGIN_PLAIN | VPS_BEGIN_CLAUSES,
   VPS_ALL = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VPS_RESCUE_MOD | VPS_LOGIC
 };
@@ -121,6 +125,72 @@ enum {
 /* Calls fn on each value position of root in source order, depth first (the
    `ensure` clause is never one). Answers the first nonzero fn answered, else 0. */
 int for_each_value_position(const NodeTable *nt, int root, unsigned flags, VpFn fn, void *ud);
+
+/* ---- the upward half ----
+
+   The walkers that ask how a node's parent uses its value (is it the method's
+   answer, a statement whose value is thrown away, an argument, a receiver)
+   climb from the node through the same value edges, read from the same
+   annotation the other way: a node is a value position of its parent exactly
+   when the iterator yields it from the parent. The flags are the iterator's:
+   a shape that is off is no edge, VP_AND_LEFT and VP_BEGIN_BOTH name the
+   operands and the begin body that count, VP_FOLLOW_* make a single non-splat
+   argument of a jump an edge into the jump, and VP_WRITES a write's value an
+   edge into the write. */
+
+/* Is child, a direct child of parent, a value position of it: parent's value
+   can be child's? A statement list's value is its last statement's. */
+int vp_is_value_edge(const NodeTable *nt, int parent, int child, unsigned flags);
+
+typedef enum {
+  VPU_ENDED,     /* the parent takes the node as an input or a scope body, not as its own
+                    value: a predicate, a receiver, an argument, a def or block body, a
+                    loop body. parent = the ender */
+  VPU_DROPPED,   /* a statement before the last of its list: its value is thrown away.
+                    parent = the list */
+  VPU_JUMP,      /* the node is the one value of a return, next or break whose flag is on.
+                    parent = the jump: the value leaves by it */
+  VPU_ROOT,      /* no parent is left: the climb reached the top of the table */
+  VPU_GAVE_UP    /* the budget ran out (a table with a cycle): the safe answer is the caller's */
+} VpUpKind;
+
+typedef struct {
+  VpUpKind kind;
+  int node;      /* the last node of the climb: the child of the ender. The node itself when
+                    it was the ender's operand at once */
+  int parent;    /* the ender, as the kinds above say; -1 at a root */
+  int branches;  /* conditionals crossed on the way (as VpLeaf.cond_depth counts them): 0 when
+                    the node is the value however the climb went */
+  unsigned reach; /* VPR_*: the truth values the node answers the top for, as VpLeaf.reach
+                    says of a leaf. A bit is set when the climb crossed the left operand of
+                    `||` (truthy) or of `&&` under VP_AND_LEFT (falsy); that operand was
+                    also tested, so a walker asking whether a value is thrown away or
+                    unread counts a node with a bit as read */
+} VpUp;
+
+/* Climbs from node while the parent takes it as its own value, and says where
+   it ended. A budget of one step per node ends a climb in a table with a
+   cycle. Answers up->kind. */
+VpUpKind vp_climb(const NodeTable *nt, const int *par, int node, unsigned flags, VpUp *up);
+
+/* Where a climb ended, for the walkers that classify it the same way. Each
+   answers the node, or -1 when the climb did not end there. */
+
+/* the def whose body the climb reached: the value is the method's answer */
+int vp_up_def(const NodeTable *nt, const VpUp *up);
+
+/* the while or until whose body the climb reached: a loop's body is run for
+   its effect */
+int vp_up_loop(const NodeTable *nt, const VpUp *up);
+
+/* the call whose block's body the climb reached: whether the value is the
+   call's answer is a fact about the call, and the caller's to decide */
+int vp_up_block_call(const NodeTable *nt, const int *par, const VpUp *up);
+
+/* Did the climb end at a clause that is run for its effect: the body of a
+   begin whose else follows it (the begin answers the else's value) or an
+   ensure clause? Its value is thrown away. */
+int vp_up_effect_clause(const NodeTable *nt, const VpUp *up);
 
 /* --dump-value-positions: for the body of each method and of the program, the
    leaves the walk yields with every flag on, one line each (the unit-test

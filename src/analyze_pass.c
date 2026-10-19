@@ -5031,6 +5031,11 @@ static void mark_body_self(const NodeTable *nt, int id, int owner, int *body_sel
 }
 
 
+/* The edges value_handed_on climbs: the conditionals, `||` and `&&` (both
+   sides), and a begin with its rescue clauses. A begin's body beside an else
+   is climbed too: the answer errs on the side of handing a class on. */
+enum { HANDED_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_LOGIC | VPS_BEGIN | VP_AND_LEFT | VP_BEGIN_BOTH };
+
 /* Is the value of node `u` handed on -- stored, passed, returned -- rather
    than only consumed where it stands? Consumed: the receiver of a call that
    does not hand its receiver on, an interpolated part, the argument of an
@@ -5050,33 +5055,22 @@ static int value_handed_on(const NodeTable *nt, const int *parent, int u) {
     "is_a?", "kind_of?", "instance_of?", "include", "extend", "prepend",
     "include?", "==", "!=", "===", "equal?", "eql?", "<", "<=", ">", ">=", "<=>", NULL };
   int chosen = 0;
-  for (int depth = 0; depth < 400; depth++) {
-    int p = parent[u];
-    if (p < 0) return 0;
+  for (long guard = nt->count; guard >= 0; guard--) {
+    VpUp up;
+    VpUpKind ended = vp_climb(nt, parent, u, HANDED_CLIMB, &up);
+    if (up.branches > 0) chosen = 1;
+    if (ended == VPU_ROOT || ended == VPU_DROPPED) return 0;
+    if (ended == VPU_GAVE_UP) return 1;
+    int p = up.parent;
     NodeKind pk = nt_kind(nt, p);
     const char *pt = nt_type(nt, p);
-    if (pk == NK_StatementsNode) {
-      int n = 0; const int *body = nt_arr(nt, p, "body", &n);
-      if (n > 0 && body[n - 1] != u) return 0;
-      u = p; continue;
-    }
-    if (pk == NK_ParenthesesNode || pk == NK_BeginNode ||
-        (pt && sp_streq(pt, "EmbeddedStatementsNode"))) {
-      u = p; continue;
-    }
-    if (pk == NK_IfNode || pk == NK_UnlessNode || pk == NK_AndNode || pk == NK_OrNode ||
-        (pt && sp_streq(pt, "ElseNode"))) {
-      if ((pk == NK_IfNode || pk == NK_UnlessNode) && nt_ref(nt, p, "predicate") == u) return 0;
-      chosen = 1; u = p; continue;
-    }
-    if (pt && (sp_streq(pt, "WhenNode") || sp_streq(pt, "InNode"))) {
-      if (nt_ref(nt, p, "statements") != u) return 0;
-      chosen = 1; u = p; continue;
-    }
-    if (pt && (sp_streq(pt, "CaseNode") || sp_streq(pt, "CaseMatchNode"))) {
-      if (nt_ref(nt, p, "predicate") == u) return 0;
-      chosen = 1; u = p; continue;
-    }
+    /* an interpolated statement list passes up to the interpolation, which
+       consumes it */
+    if (pt && sp_streq(pt, "EmbeddedStatementsNode")) { u = p; continue; }
+    /* a condition, a pattern, a `when` or `in` clause's tests */
+    if (pk == NK_IfNode || pk == NK_UnlessNode || pk == NK_CaseNode || pk == NK_CaseMatchNode ||
+        (pt && (sp_streq(pt, "WhenNode") || sp_streq(pt, "InNode"))))
+      return 0;
     if (pt && (sp_streq(pt, "InterpolatedStringNode") || sp_streq(pt, "InterpolatedSymbolNode") ||
                sp_streq(pt, "InterpolatedXStringNode") ||
                sp_streq(pt, "InterpolatedRegularExpressionNode") ||
@@ -5087,9 +5081,9 @@ static int value_handed_on(const NodeTable *nt, const int *parent, int u) {
       return 0;
     /* the `self` of `def self.m` names where m is defined; it is no value
        (taken as one, every class with a class method escaped, #5272) */
-    if (pk == NK_DefNode && nt_ref(nt, p, "receiver") == u) return 0;
+    if (pk == NK_DefNode && nt_ref(nt, p, "receiver") == up.node) return 0;
     if (pk == NK_CallNode) {
-      if (nt_ref(nt, p, "receiver") == u) return chosen || str_in(nt_str(nt, p, "name"), passes_recv);
+      if (nt_ref(nt, p, "receiver") == up.node) return chosen || str_in(nt_str(nt, p, "name"), passes_recv);
       return 1;
     }
     if (pt && sp_streq(pt, "ArgumentsNode")) {
@@ -14900,17 +14894,13 @@ static int rows_slot_elem_reads(const NodeTable *nt, Compiler *c, const int *par
   return 1;
 }
 
-/* an_value_dropped has said the value of `w` is thrown away. For the last
-   statement of a block it went by the iterator's name (`each`, `times`):
-   a method of the program's own by that name may answer what its block
-   answers (`def each = yield`). */
-static int rows_block_drops(Compiler *c, const int *par, int w) {
-  const NodeTable *nt = c->nt;
-  int st = par[w], bl = par[st];
-  int sn = 0; const int *sb = nt_arr(nt, st, "body", &sn);
-  if (sn <= 0 || sb[sn - 1] != w || bl < 0 || nt_kind(nt, bl) != NK_BlockNode) return 1;
-  const char *iter = par[bl] >= 0 ? nt_str(nt, par[bl], "name") : NULL;
-  return iter && !an_user_defines_method(c, iter);
+/* The value of the last statement of the block of `call` is thrown away
+   when the call is an iterator that ignores its block's value (`each`,
+   `times`): a method of the program's own by that name may answer what its
+   block answers (`def each = yield`). */
+static int rows_block_drops(Compiler *c, int call) {
+  const char *iter = nt_str(c->nt, call, "name");
+  return iter && is_block_loop_method(iter) && !an_user_defines_method(c, iter);
 }
 
 /* Whether the value of method `dn` can be taken other than by a call of
@@ -14928,51 +14918,55 @@ static int rows_method_taken(const NodeTable *nt, const char *dn) {
   return 0;
 }
 
+/* The edges rows_value_dropped climbs: every shape, the begin's body beside
+   an else being a clause run for its effect. */
+enum { ROWS_CLIMB = VPS_ALL };
+
 /* Whether the value of `w` is thrown away: a statement whose value nothing
    reads, the last statement of a conditional, a parenthesized or a begin
-   body whose own value is thrown away, or the last statement of a method
-   every call of which (by name, whatever the receiver) throws its value
-   away in turn, and whose value nothing takes another way
+   body whose own value is thrown away (vp_climb), or the last statement of
+   a method every call of which (by name, whatever the receiver) throws its
+   value away in turn, and whose value nothing takes another way
    (rows_method_taken). A method already being asked about (a tail calling
    a method of its own name, as `reset` methods do) counts as thrown away
    there: its other calls decide. `seen` holds those names, `depth` of
    them at most. */
 static int rows_value_dropped(Compiler *c, const int *par, int w, const char **seen, int nseen) {
   const NodeTable *nt = c->nt;
-  for (int guard = 0; guard < 64; guard++) {
-    if (an_value_dropped(nt, par, w)) return rows_block_drops(c, par, w);
-    int st = par[w];
-    if (st < 0 || nt_kind(nt, st) != NK_StatementsNode) return 0;
-    int sn = 0; const int *sb = nt_arr(nt, st, "body", &sn);
-    if (sn <= 0 || sb[sn - 1] != w) return 0;
-    int g = par[st];
-    NodeKind gk = g >= 0 ? nt_kind(nt, g) : NK_NONE;
-    if (gk == NK_ElseNode) { g = par[g]; gk = g >= 0 ? nt_kind(nt, g) : NK_NONE; }
-    if (gk == NK_IfNode || gk == NK_UnlessNode || gk == NK_ParenthesesNode || gk == NK_BeginNode) {
-      w = g; continue;
-    }
-    const char *dn = gk == NK_DefNode ? nt_str(nt, g, "name") : NULL;
-    if (!dn || rows_method_taken(nt, dn)) return 0;
-    for (int k = 0; k < nseen; k++) if (sp_streq(seen[k], dn)) return 1;
-    if (nseen >= 4) return 0;
-    seen[nseen] = dn;
-    for (int q = an_calls_named_first(c, dn); q >= 0; q = an_calls_named_next(q)) {
-      const char *qn = nt_kind(nt, q) == NK_CallNode ? nt_str(nt, q, "name") : NULL;
-      if (qn && sp_streq(qn, dn) && !rows_value_dropped(c, par, q, seen, nseen + 1)) return 0;
-    }
-    /* `super` is a call of the method it is written in; outside a `def`
-       (a define_method block) it may be a call of any */
-    const NodeKind sup[] = { NK_SuperNode, NK_ForwardingSuperNode };
-    for (size_t k = 0; k < sizeof sup / sizeof sup[0]; k++)
-      NT_FOREACH_KIND(nt, sup[k], q) {
-        int d = par[q];
-        while (d >= 0 && nt_kind(nt, d) != NK_DefNode) d = par[d];
-        const char *in = d >= 0 ? nt_str(nt, d, "name") : NULL;
-        if ((!in || sp_streq(in, dn)) && !rows_value_dropped(c, par, q, seen, nseen + 1)) return 0;
-      }
-    return 1;
+  VpUp up;
+  VpUpKind ended = vp_climb(nt, par, w, ROWS_CLIMB, &up);
+  /* the left operand of `||` is tested, whatever the operator answers */
+  if (up.reach) return 0;
+  if (ended == VPU_DROPPED) return 1;
+  if (ended != VPU_ENDED) return 0;
+  /* the body of a loop, a clause run for its effect, the block of an
+     iterator that ignores its value */
+  if (vp_up_loop(nt, &up) >= 0 || vp_up_effect_clause(nt, &up)) return 1;
+  if (nt_kind(nt, up.parent) == NK_BlockNode) {
+    int call = vp_up_block_call(nt, par, &up);
+    return call >= 0 && rows_block_drops(c, call);
   }
-  return 0;
+  int def = vp_up_def(nt, &up);
+  const char *dn = def >= 0 ? nt_str(nt, def, "name") : NULL;
+  if (!dn || rows_method_taken(nt, dn)) return 0;
+  for (int k = 0; k < nseen; k++) if (sp_streq(seen[k], dn)) return 1;
+  if (nseen >= 4) return 0;
+  seen[nseen] = dn;
+  for (int q = an_calls_named_first(c, dn); q >= 0; q = an_calls_named_next(q)) {
+    const char *qn = nt_kind(nt, q) == NK_CallNode ? nt_str(nt, q, "name") : NULL;
+    if (qn && sp_streq(qn, dn) && !rows_value_dropped(c, par, q, seen, nseen + 1)) return 0;
+  }
+  /* `super` is a call of the method it is written in; outside a `def`
+     (a define_method block) it may be a call of any */
+  const NodeKind sup[] = { NK_SuperNode, NK_ForwardingSuperNode };
+  for (size_t k = 0; k < sizeof sup / sizeof sup[0]; k++)
+    NT_FOREACH_KIND(nt, sup[k], q) {
+      int d = par[q];
+      while (d >= 0 && nt_kind(nt, d) != NK_DefNode) d = par[d];
+      const char *in = d >= 0 ? nt_str(nt, d, "name") : NULL;
+      if ((!in || sp_streq(in, dn)) && !rows_value_dropped(c, par, q, seen, nseen + 1)) return 0;
+    }
+  return 1;
 }
 
 /* Whether constant `cname` is reached other than by the reads

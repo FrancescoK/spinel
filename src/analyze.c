@@ -37989,11 +37989,10 @@ static void wnh_note(int body) {
    Its type then reaches slots the late widening cannot retype. */
 static int wnh_last_stmt(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
-  NT_FOREACH_KIND(nt, NK_StatementsNode, st) {
-    int n = 0; const int *b = nt_arr(nt, st, "body", &n);
-    for (int k = 0; k < n; k++) if (b[k] == id) return k == n - 1;
-  }
-  return 1;   /* not a statement: its value is used */
+  const int *par = comp_parent_map(c);
+  int st = id >= 0 && id < nt->count ? par[id] : -1;
+  /* not a statement: its value is used */
+  return st < 0 || nt_kind(nt, st) != NK_StatementsNode || vp_is_value_edge(nt, st, id, VPS_NONE);
 }
 /* Is node n method mi's answer: its body's last statement, or the last
    statement of an `if` / `unless` / `else` arm in that place, or of a `case`

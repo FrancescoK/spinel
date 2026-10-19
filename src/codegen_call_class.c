@@ -10,6 +10,7 @@
 #include "call_plan.h"
 #include "codegen_call_arms.h"
 #include "share.h"
+#include "value_pos.h"
 
 /* Does `obj.class.name`'s dispatch switch over cid and the classes below it
    have an arm that answers an sp_oint / sp_ofloat? Then the switch's value
@@ -1260,66 +1261,38 @@ const NativeMethod *native_assign_keeps(Compiler *c, int id) {
          share_node_elems_share(c, recv) ? m : NULL;
 }
 
-static int assign_value_slot(const NodeTable *nt, int p, int n);
+/* The edges the assignment walkers climb: the conditionals, a begin and its
+   rescue clauses (its body also when an else follows), not `||`, `&&` or a
+   rescue modifier. */
+enum { ASSIGN_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VP_BEGIN_BOTH };
+
 /* Is call id the value its own method answers: the last statement of the
    method's body, or of a branch body of a conditional, case or begin that
-   is itself the last? Climbs from the call, so its cost is the depth. */
+   is itself the last? Climbs from the call (vp_climb), so its cost is the
+   depth. */
 static int assign_is_tail(Compiler *c, int id, const int *par) {
-  const NodeTable *nt = c->nt;
-  int n = id;
-  for (int p = par[n]; p >= 0; n = p, p = par[p]) {
-    NodeKind k = nt_kind(nt, p);
-    if (k == NK_DefNode) return nt_ref(nt, p, "body") == n;
-    if (k == NK_StatementsNode) {
-      int sn = 0;
-      const int *sb = nt_arr(nt, p, "body", &sn);
-      if (sn == 0 || sb[sn - 1] != n) return 0;
-      continue;
-    }
-    if (k == NK_BeginNode && n == nt_ref(nt, p, "ensure_clause")) return 0;
-    if (k == NK_BlockNode || k == NK_LambdaNode) return 0;
-    if (k == NK_NONE) {
-      /* a `when` arm: the only unnamed kind a case holds */
-      int gp = par[p];
-      if (gp < 0 || (nt_kind(nt, gp) != NK_CaseNode)) return 0;
-      continue;
-    }
-    if (!assign_value_slot(nt, p, n)) return 0;
-  }
-  return 0;
+  VpUp up;
+  vp_climb(c->nt, par, id, ASSIGN_CLIMB, &up);
+  return vp_up_def(c->nt, &up) >= 0;
 }
 
 /* Is call id the value of a `return` of its own method: through parentheses
    and the return's argument list, with no block, lambda or method between
-   them? Climbs from the call, so its cost is the nesting depth. */
+   them? Climbs from the call (vp_climb, through nothing but parentheses and
+   statements), so its cost is the nesting depth. */
 static int assign_is_returned(Compiler *c, int id, const int *par) {
   const NodeTable *nt = c->nt;
-  int p = par[id];
-  while (p >= 0 && (nt_kind(nt, p) == NK_ParenthesesNode || nt_kind(nt, p) == NK_StatementsNode)) p = par[p];
-  /* p is the return's argument list */
-  int ret = p >= 0 ? par[p] : -1;
-  if (ret < 0 || nt_kind(nt, ret) != NK_ReturnNode || nt_ref(nt, ret, "arguments") != p) return 0;
+  VpUp up;
+  vp_climb(nt, par, id, VPS_NONE, &up);
+  /* up.parent is the return's argument list */
+  int ret = up.kind == VPU_ENDED ? par[up.parent] : -1;
+  if (ret < 0 || nt_kind(nt, ret) != NK_ReturnNode || nt_ref(nt, ret, "arguments") != up.parent) return 0;
   for (int q = par[ret]; q >= 0; q = par[q]) {
     NodeKind qk = nt_kind(nt, q);
     if (qk == NK_BlockNode || qk == NK_LambdaNode) return 0;
     if (qk == NK_DefNode) return 1;
   }
   return 0;
-}
-
-/* Is n a place in node p whose value is p's value: a branch body, not a
-   condition, a case or pattern subject, a rescue's class list or a guard? */
-static int assign_value_slot(const NodeTable *nt, int p, int n) {
-  switch (nt_kind(nt, p)) {
-  case NK_IfNode: case NK_UnlessNode: case NK_CaseNode: case NK_CaseMatchNode:
-    return n != nt_ref(nt, p, "predicate");
-  case NK_InNode: case NK_RescueNode:
-    return n == nt_ref(nt, p, "statements") || n == nt_ref(nt, p, "subsequent");
-  case NK_ElseNode: case NK_BeginNode: case NK_ParenthesesNode:
-    return 1;
-  default:
-    return 0;
-  }
 }
 
 /* Is call id (through parentheses) the receiver of a String mutator or of
@@ -1408,7 +1381,7 @@ static int assign_value_dropped(Compiler *c, int id, const int *par) {
         const int *mbb = mb >= 0 && nt_kind(nt, mb) == NK_StatementsNode ? nt_arr(nt, mb, "body", &mn) : NULL;
         if (mn == 1 && nt_kind(nt, mbb[0]) == NK_YieldNode) { n = par[gp]; continue; }
       }
-      if (gp >= 0 && assign_value_slot(nt, gp, p)) {
+      if (gp >= 0 && vp_is_value_edge(nt, gp, p, ASSIGN_CLIMB)) {
         n = p;
         continue;
       }
@@ -1418,7 +1391,7 @@ static int assign_value_dropped(Compiler *c, int id, const int *par) {
       if (bn && sp_streq(bn, "tap") && !cow_user_block_value(c, par, n)) return 1;
       return an_value_dropped(nt, par, n) && !cow_user_block_value(c, par, n);
     }
-    if (!assign_value_slot(nt, p, n)) return 0;
+    if (!vp_is_value_edge(nt, p, n, ASSIGN_CLIMB)) return 0;
     n = p;
   }
 }

@@ -347,63 +347,75 @@ void topup_forwarding_arity(Compiler *c) {
   }
 }
 
-/* Is node v's value used? A statement list, a branch, a begin and a rescue
-   pass it on to whatever holds them. A statement before a list's last, a
-   loop body, an ensure clause, a method body and the block of an iterator
-   that ignores its block's value throw it away. */
-static int super_value_used(const NodeTable *nt, const int *par, int v) {
-  for (int p; (p = par[v]) >= 0; v = p) {
-    switch (nt_kind(nt, p)) {
-    case NK_StatementsNode: {
-      int n = 0;
-      const int *st = nt_arr(nt, p, "body", &n);
-      if (n == 0 || st[n - 1] != v) return 0;
-      break;
-    }
-    case NK_IfNode: case NK_UnlessNode: case NK_CaseNode: case NK_CaseMatchNode:
-      if (nt_ref(nt, p, "predicate") == v) return 1;
-      break;
-    case NK_WhileNode: case NK_UntilNode:
-      return nt_ref(nt, p, "predicate") == v;
-    case NK_InNode: case NK_RescueNode:
-      if (nt_ref(nt, p, "statements") != v && nt_ref(nt, p, "subsequent") != v) return 1;
-      break;
-    case NK_ElseNode: case NK_ParenthesesNode: case NK_BeginNode:
-      break;
-    case NK_DefNode:
-      return 0;
-    case NK_ReturnNode:
-      /* `return super` leaves initialize, whose value `new` drops; only a
-         lambda's return hands the value on. */
-      for (int q = par[p]; q >= 0; q = par[q]) {
-        if (nt_kind(nt, q) == NK_LambdaNode) return 1;
-        if (nt_kind(nt, q) == NK_DefNode) return 0;
-      }
-      return 0;
-    case NK_BlockNode: {
-      int call = par[p];
-      const char *cn = call >= 0 && nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
-      static const char *const it[] = { "each", "each_with_index", "each_index", "times", "upto",
-                                        "downto", "step", "loop", "each_slice", "each_cons",
-                                        "reverse_each", "tap", NULL };
-      for (int k = 0; cn && it[k]; k++)
-        if (sp_streq(cn, it[k])) return 0;
-      return 1;
-    }
-    default: {
-      const char *ty = nt_type(nt, p);
-      if (ty && sp_streq(ty, "EnsureNode")) return 0;
-      if (ty && sp_streq(ty, "WhenNode") && nt_ref(nt, p, "statements") == v) break;
-      if (ty && sp_streq(ty, "ArgumentsNode") && par[p] >= 0 && nt_kind(nt, par[p]) == NK_ReturnNode) {
-        int na = 0;
-        nt_arr(nt, p, "arguments", &na);
-        if (na == 1) break;   /* `return super`; `return super, x` builds an Array of it */
-      }
-      return 1;
-    }
-    }
+/* The edges super_value_used climbs: the conditionals, a rescue modifier,
+   a begin and its rescue clauses, and the one value of a `return`. A
+   begin's body is a value only when no else follows it. Not `||` or `&&`:
+   the C of an operator whose operand is the void call of initialize does
+   not compile, so a `super` there stays refused. */
+enum { SUPER_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VPS_RESCUE_MOD | VP_FOLLOW_RETURN };
+
+/* Does the climb from `v` to `top` cross a rescue modifier and, with it,
+   parentheses, or end at a `return`'s argument (`return begin super rescue
+   nil end`)? Such a modifier is emitted as a conditional expression whose
+   operand is the void call of initialize, which does not compile: the bare
+   modifier is a statement and does, the other stays refused (as does a
+   parenthesized `if`, which master cannot emit either). */
+static int super_modifier_in_expression(const NodeTable *nt, const int *par, int v, int top, VpUpKind ended) {
+  int modifier = 0, parens = 0;
+  for (int n = v; n != top && n >= 0;) {
+    n = par[n];
+    NodeKind k = n >= 0 ? nt_kind(nt, n) : NK_NONE;
+    modifier |= k == NK_RescueModifierNode;
+    parens |= k == NK_ParenthesesNode;
   }
-  return 0;
+  return modifier && (parens || ended == VPU_JUMP);
+}
+
+/* Is node v's value used? A statement list, a branch, a begin and a rescue
+   pass it on to whatever holds them (vp_climb). A statement before a list's
+   last, a loop body, an ensure clause, a method body and the block of an
+   iterator that ignores its block's value throw it away. */
+static int super_value_used(const NodeTable *nt, const int *par, int v) {
+  VpUp up;
+  VpUpKind ended = vp_climb(nt, par, v, SUPER_CLIMB, &up);
+  if (super_modifier_in_expression(nt, par, v, up.node, ended)) return 1;
+  switch (ended) {
+  case VPU_ROOT:
+  case VPU_DROPPED:
+    return 0;
+  case VPU_GAVE_UP:
+    return 1;
+  case VPU_JUMP:
+    /* `return super` leaves initialize, whose value `new` drops; only a
+       lambda's return hands the value on. */
+    for (int q = par[up.parent]; q >= 0; q = par[q]) {
+      if (nt_kind(nt, q) == NK_LambdaNode) return 1;
+      if (nt_kind(nt, q) == NK_DefNode) return 0;
+    }
+    return 0;
+  case VPU_ENDED:
+    break;
+  }
+  /* a loop body, a begin's body beside an else and an ensure clause are run
+     for their effect */
+  if (vp_up_loop(nt, &up) >= 0 || vp_up_effect_clause(nt, &up)) return 0;
+  int p = up.parent;
+  switch (nt_kind(nt, p)) {
+  case NK_DefNode:
+    return 0;
+  case NK_BlockNode: {
+    int call = vp_up_block_call(nt, par, &up);
+    const char *cn = call >= 0 ? nt_str(nt, call, "name") : NULL;
+    static const char *const it[] = { "each", "each_with_index", "each_index", "times", "upto",
+                                      "downto", "step", "loop", "each_slice", "each_cons",
+                                      "reverse_each", "tap", NULL };
+    for (int k = 0; cn && it[k]; k++)
+      if (sp_streq(cn, it[k])) return 0;
+    return 1;
+  }
+  default:
+    return 1;
+  }
 }
 
 /* $LOAD_PATH ($:, $-I) and $LOADED_FEATURES ($") each name one Array the

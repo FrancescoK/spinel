@@ -1,4 +1,5 @@
 #include "analyze_internal.h"
+#include "value_pos.h"
 #include "builtin_ops.h"
 #include "call_plan.h"
 #include "repr.h"
@@ -1249,20 +1250,19 @@ int *an_parent_map(const NodeTable *nt) {
 
 /* Whether the value of `node` is thrown away: a statement that is not the
    value of its sequence, or the last one of a loop body or of the block of
-   an iterator that does not answer the block's value. */
+   an iterator that does not answer the block's value, climbing from the
+   node through the places a value is passed on (vp_climb, over
+   AN_DROP_CLIMB). */
 int an_value_dropped(const NodeTable *nt, const int *parent, int node) {
-  int st = parent[node];
-  if (st < 0 || nt_kind(nt, st) != NK_StatementsNode) return 0;
-  int sn = 0;
-  const int *sb = nt_arr(nt, st, "body", &sn);
-  if (sn > 0 && sb[sn - 1] != node) return 1;
-  int owner = parent[st];
-  if (owner < 0) return 0;
-  NodeKind ok = nt_kind(nt, owner);
-  if (ok == NK_WhileNode || ok == NK_UntilNode) return 1;
-  if (ok != NK_BlockNode) return 0;
-  int bc = parent[owner];
-  const char *bn = bc >= 0 && nt_kind(nt, bc) == NK_CallNode ? nt_str(nt, bc, "name") : NULL;
+  VpUp up;
+  VpUpKind ended = vp_climb(nt, parent, node, AN_DROP_CLIMB, &up);
+  /* the left operand of `||` is tested, whatever the operator answers */
+  if (up.reach) return 0;
+  if (ended == VPU_DROPPED || vp_up_loop(nt, &up) >= 0) return 1;
+  /* a begin's body beside an else, and an ensure clause, are run for their effect */
+  if (vp_up_effect_clause(nt, &up)) return 1;
+  int call = vp_up_block_call(nt, parent, &up);
+  const char *bn = call >= 0 ? nt_str(nt, call, "name") : NULL;
   return bn && is_block_loop_method(bn);
 }
 
