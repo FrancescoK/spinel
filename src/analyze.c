@@ -43551,11 +43551,23 @@ static void refuse_set_identity_members(Compiler *c) {
      that may be a Set, or on self in an instance method of a Set's subclass
      (a Hash's or another class's is no Set's) */
   int asked = 0;
+  /* a computed name's dispatch -- a send's or method()'s arm, or a
+     method(name) wrapper (__bam_*) -- is made for every name the program
+     defines (Rack::Headers defines its own compare_by_identity): such a
+     call is no Set's unless the program spells the name, as
+     `x.method(:compare_by_identity)` would */
+  int spelled = 0;
+  for (int k = 0; k < 2 && !spelled; k++)
+    NT_FOREACH_KIND(nt, k ? NK_StringNode : NK_SymbolNode, lit) {
+      const char *v = nt_str(nt, lit, k ? "content" : "value");
+      if (v && sp_streq(v, "compare_by_identity")) { spelled = 1; break; }
+    }
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm || asked || !sp_streq(nm, "compare_by_identity") || nt_ref(nt, id, "arguments") >= 0) continue;
     Scope *s = comp_scope_of(c, id);
     if (s && s->class_id == set_cid) continue;
+    if (!spelled && (nt_int(nt, id, "dyn_arm", 0) || (s && s->name && strncmp(s->name, "__bam_", 6) == 0))) continue;
     int r = nt_ref(nt, id, "receiver");
     if (r < 0) {
       if (s && !s->is_cmethod && s->class_id >= 0 && is_descendant(c, s->class_id, set_cid)) asked = 1;
