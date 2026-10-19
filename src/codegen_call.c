@@ -24142,6 +24142,37 @@ static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead
     /* A retained argument's handle is taken at this first evaluation,
        before another operand can overwrite the return channel. */
     if (node[i] == harg && emit_nil_target_route(c, node[i], 1, b, lead) >= 0) continue;
+    /* An argument that is a shared String's handle (a slot's, a reader's)
+       is held as the handle, and read from it: held as its value form, a
+       copy of its bytes, the arm that boxes the handle for a boxed
+       parameter boxed the copy as one (sp_box_nullable_obj of a
+       const char *), and the method read its first bytes as the data
+       pointer (#9602). */
+    if (node[i] != r && repr_share_rule(c) && (ty[i] == TY_STRING || ty[i] == TY_STRBUF)) {
+      Buf hb; memset(&hb, 0, sizeof hb);
+      int got = strbuf_slot_text(c, node[i], &hb);
+      /* (a reader whose box is the handle, repr_boxed_reader_handle, is read
+         with the handle demanded) */
+      if (!got && nt_kind(nt, node[i]) == NK_CallNode && (repr_boxed_reader_handle(c, node[i]) || strbuf_route_reader(c, node[i]))) {
+        int sd = view_push_repr(c, node[i], VR_HANDLE_DEMAND, 1);
+        emit_expr(c, node[i], &hb);
+        view_pop(c, sd);
+        got = hb.p != NULL;
+      }
+      if (got) {
+        int t = ++g_tmp;
+        buf_puts(b, lead);
+        buf_printf(b, "sp_String *_t%d = %s;", t, hb.p);
+        if (later_alloc) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
+        buf_puts(b, *lead ? "\n" : " ");
+        free(hb.p);
+        ran_first_bind_read(node[i], t);
+        int tok = view_push_repr(c, node[i], VR_HEAD_HELD, 1);
+        if (*held < 0) *held = tok;
+        continue;
+      }
+      free(hb.p);
+    }
     /* not fresh: ty[i] declares the temp, and a fresh String (#7580) renders as the String
        where its stored type is the handle */
     /* a boxed index's key that can be nil is held with its nil
