@@ -19866,6 +19866,11 @@ static sp_RbVal sp_kernel_Integer_val(sp_RbVal v, sp_int base, int raise) {
   if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT) return v;
   if (v.tag == SP_TAG_FLT) return isnan(v.v.f) || isinf(v.v.f) ? sp_box_nil() : sp_box_int((sp_int)v.v.f);
   if (v.tag == SP_TAG_STR) return sp_obj_conv_str_Integer(v.v.s ? v.v.s : sp_str_empty, 0, 0);
+  /* a Rational truncates, as the strict form does */
+  if (sp_poly_is_rat_kind(v)) {
+    SP_GC_ROOT_RBVAL(v);
+    return sp_poly_to_i_meth_v(v);
+  }
   return sp_box_nil();
 }
 /* The entry points the Kernel#Integer / Kernel#Float emits call, one per
@@ -19900,6 +19905,7 @@ static sp_ofloat sp_poly_Float_ex(sp_RbVal v, int raise) {
   if (v.tag == SP_TAG_FLT) return sp_ofloat_of(v.v.f);
   if (v.tag == SP_TAG_INT) return sp_ofloat_of((sp_float)v.v.i);
   if (v.tag == SP_TAG_BIGINT) return sp_ofloat_of(sp_poly_to_f(v));
+  if (sp_poly_is_rat_kind(v)) return sp_ofloat_of(sp_poly_to_f_with_rational(v));
   if (v.tag == SP_TAG_STR) return sp_str_to_f_lenient(v.v.s ? v.v.s : sp_str_empty);
   return sp_ofloat_nil();
 }
