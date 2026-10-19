@@ -289,6 +289,11 @@ int builtin_method_arity(const char *cls, const char *m, int *out);
 int builtin_method_known(const char *cls, const char *m);
 int core_method_vis(const char *cls, const char *m, int inherit);   /* codegen_call_class.c */
 int refl_builtin_vis(Compiler *c, int ci, const char *m, int inherit);   /* codegen_call_class.c */
+const char *core_class_ancestors(const char *cls);   /* codegen_call_class.c */
+void core_own_methods_each(const char *cls, size_t cl, void (*f)(void *, const char *, int), void *ud);
+int emit_value_methods_reflection(Compiler *c, int id, Buf *b);   /* codegen_call.c */
+void emit_value_methods_helpers(Compiler *c, const char *const *texts, int ntexts, Buf *protos,
+                                Buf *defs);   /* codegen_call.c */
 int builtin_comparable_owns(const char *cls, const char *m);
 int builtin_comparable_arity(const char *m);
 int builtin_numeric_owns(const char *cls, const char *m);

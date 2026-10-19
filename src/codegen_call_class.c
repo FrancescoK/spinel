@@ -263,6 +263,22 @@ static int core_own_vis(const char *cls, size_t cl, const char *m) {
   return 0;
 }
 
+/* CRuby's ancestors of core class or module `cls`, nearest first and
+   separated by spaces, or NULL where the table does not hold it */
+const char *core_class_ancestors(const char *cls) {
+  for (int i = 0; cls && core_cls_ancestors[i].cls; i++)
+    if (sp_streq(core_cls_ancestors[i].cls, cls)) return core_cls_ancestors[i].anc;
+  return NULL;
+}
+
+/* Calls f(ud, m, vis) for each instance method core class or module `cls`
+   (its first `cl` bytes) defines itself, in the table's order */
+void core_own_methods_each(const char *cls, size_t cl, void (*f)(void *, const char *, int), void *ud) {
+  for (int i = 0; core_cls_methods[i].cls; i++)
+    if (strlen(core_cls_methods[i].cls) == cl && !strncmp(core_cls_methods[i].cls, cls, cl))
+      f(ud, core_cls_methods[i].m, core_cls_methods[i].vis);
+}
+
 /* The visibility (1 public, 2 protected, 4 private) of instance method `m`
    of core class or module `cls` in CRuby, through its ancestors with
    `inherit` (only those above `cls` with 2, where its `super` looks); 0

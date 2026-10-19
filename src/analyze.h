@@ -450,6 +450,9 @@ int an_object_methods_listable(Compiler *c, int cid, const char *name);
 int an_module_methods_listable(Compiler *c, int m, const char *name);
 int an_module_defines(Compiler *c, int m, const char *nm, int *vis);
 int an_object_methods_all_arg(Compiler *c, int cid, int argc, const int *argv);
+/* obj.methods / public_methods on a builtin value: the core class it lists as */
+const char *an_value_methods_class(Compiler *c, int recv, TyKind rt, const char *name, int argc,
+                                   const int *argv);
 int an_class_singleton_methods_listable(Compiler *c, int cid);
 int ewo_memo_passed_to_callable_at(Compiler *c, int callid, int pidx);
 

@@ -2087,6 +2087,42 @@ int an_object_methods_all_arg(Compiler *c, int cid, int argc, const int *argv) {
   return 2;
 }
 
+/* obj.methods / obj.public_methods (no argument, or `true`) on a builtin
+   value typed `rt`: the core class whose instance it is, whose whole list
+   core_class_methods.inc holds (a class that undefines inherited methods,
+   as Complex does, is left out: the table has no rows for an undef), or ""
+   for a boxed receiver, whose class is known only at run time. NULL for any
+   other call. A def of the name answers it itself -- one in the class or
+   an ancestor the program reopens, or for a boxed receiver one anywhere --
+   and self is left alone: in a reopened builtin's body it is the boxed
+   value. */
+const char *an_value_methods_class(Compiler *c, int recv, TyKind rt, const char *name, int argc,
+                                   const int *argv) {
+  if (!name || (!sp_streq(name, "methods") && !sp_streq(name, "public_methods"))) return NULL;
+  if (recv < 0 || nt_kind(c->nt, recv) == NK_SelfNode) return NULL;
+  if (an_object_methods_all_arg(c, -1, argc, argv) != 1) return NULL;
+  const char *cn = rt == TY_NIL ? "NilClass" : rt == TY_BOOL ? "TrueClass"
+                 : rt == TY_INT || rt == TY_BIGINT ? "Integer" : rt == TY_FLOAT ? "Float"
+                 : rt == TY_STRING || rt == TY_STRBUF ? "String" : rt == TY_SYMBOL ? "Symbol"
+                 : rt == TY_RANGE || rt == TY_FLOAT_RANGE || rt == TY_STR_RANGE ? "Range"
+                 : rt == TY_REGEX ? "Regexp" : rt == TY_RATIONAL ? "Rational"
+                 : rt == TY_PROC ? "Proc" : rt == TY_TIME ? "Time"
+                 : ty_is_array(rt) ? "Array" : ty_is_hash(rt) ? "Hash"
+                 : rt == TY_POLY ? "" : NULL;
+  if (!cn) return NULL;
+  if (!cn[0]) return an_user_defines_method(c, name) ? NULL : cn;
+  for (const char *p = core_class_ancestors(cn); p && *p;) {
+    const char *e = strchr(p, ' ');
+    size_t l = e ? (size_t)(e - p) : strlen(p);
+    char an[64];
+    snprintf(an, sizeof an, "%.*s", (int)l, p);
+    int uk = comp_class_index(c, an);
+    if (uk >= 0 && comp_method_in_class(c, uk, name) >= 0) return NULL;
+    p += l + (e ? 1 : 0);
+  }
+  return cn;
+}
+
 /* Klass.singleton_methods: listable ahead of time when the class does not
    define the name itself and every ancestor is a user class spinel knows the
    class methods of -- not a Struct/Data (whose generated class methods are
@@ -7951,6 +7987,20 @@ int an_push_widens_fresh(Compiler *c, int id) {
   return 0;
 }
 
+/* obj.methods / public_methods / singleton_methods the compiler lists: on
+   a typed user object (an_object_methods_listable) or a builtin value
+   (an_value_methods_class) */
+static int infer_methods_listed(Compiler *c, int recv, TyKind rt, const char *name, int argc,
+                                const int *argv) {
+  if (recv >= 0 && ty_is_object(rt) &&
+      (sp_streq(name, "methods") || sp_streq(name, "public_methods") ||
+       sp_streq(name, "singleton_methods")) &&
+      an_object_methods_all_arg(c, ty_object_class(rt), argc, argv) >= 0 &&
+      an_object_methods_listable(c, ty_object_class(rt), name))
+    return 1;
+  return an_value_methods_class(c, recv, rt, name, argc, argv) != NULL;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   TyKind prelude = infer_call_prelude(c, id);
   if (prelude != TY_UNKNOWN) return prelude;
@@ -8763,12 +8813,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && ty_is_object(rt) && argc == 0 &&
       sp_streq(name, "instance_variables"))
     return TY_POLY_ARRAY;
-  if (recv >= 0 && ty_is_object(rt) &&
-      (sp_streq(name, "methods") || sp_streq(name, "public_methods") ||
-       sp_streq(name, "singleton_methods")) &&
-      an_object_methods_all_arg(c, ty_object_class(rt), argc, argv) >= 0 &&
-      an_object_methods_listable(c, ty_object_class(rt), name))
-    return TY_POLY_ARRAY;
+  if (infer_methods_listed(c, recv, rt, name, argc, argv)) return TY_POLY_ARRAY;
 
   /* Kernel#puts / #print return nil; typed so the value form composes. */
   if (recv < 0 && !an_bare_call_class_owned(c, id) && (is_text_print(name)) &&
