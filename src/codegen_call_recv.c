@@ -14176,6 +14176,22 @@ static int face_view_index_ranges(Compiler *c, int id, int *toks, int cap) {
   return n;
 }
 
+/* `a.fill(v[, start[, len]])` on a boxed Array with Integer offsets and no
+   block: sp_poly_fill fills the Array itself where the value fits it,
+   rather than a boxed copy of the whole Array written back. */
+static int face_fill_in_place(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int argc = 0;
+  const int *argv = call_args(nt, id, &argc);
+  if (!is_fill_name(nt_str(nt, id, "name")) || nt_ref(nt, id, "block") >= 0 || argc < 1 || argc > 3) return 0;
+  for (int i = 0; i < argc; i++) {
+    NodeKind k = nt_kind(nt, argv[i]);
+    if (k == NK_SplatNode || k == NK_BlockArgumentNode || k == NK_KeywordHashNode) return 0;
+    if (i > 0 && comp_ntype(c, argv[i]) != TY_INT) return 0;
+  }
+  return 1;
+}
+
 static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, int box, Buf *val) {
   const NodeTable *nt = c->nt;
   /* The re-entered emitter may rename the node for its own re-entry (a
@@ -14204,6 +14220,22 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
     else emit_expr(c, recv, &rb);
   }
   const char *rs = box ? bx : rb.p ? rb.p : "sp_box_nil()";
+  if (kind == PF_ARRAY && face_fill_in_place(c, id)) {
+    int argc = 0;
+    const int *argv = call_args(nt, id, &argc);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", t, rs, t);
+    int tv = ++g_tmp;
+    buf_printf(val, "({ sp_RbVal _t%d = ", tv);
+    emit_boxed(c, argv[0], val);
+    buf_puts(val, "; sp_int _s = ");
+    if (argc >= 2) emit_expr(c, argv[1], val); else buf_puts(val, "0");
+    buf_puts(val, "; sp_int _l = ");
+    if (argc == 3) emit_expr(c, argv[2], val); else buf_puts(val, "0");
+    buf_printf(val, "; sp_poly_fill(_t%d, _t%d, %d, _s, _l); })", t, tv, argc);
+    free(rb.p);
+    return TY_POLY;
+  }
   emit_indent(g_pre, g_indent);
   switch (kind) {
     /* A String mutator's receiver checks a shared handle's frozen flag

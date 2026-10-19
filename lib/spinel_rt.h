@@ -7743,6 +7743,36 @@ static sp_RbVal sp_poly_arr_live_recv(sp_RbVal v, const char *m) {
   return sp_box_poly_array(sp_poly_arr_recv(v, m));
 }
 static inline void sp_PolyArray_set(sp_PolyArray *a, sp_int i, sp_RbVal v);   /* fwd: defined below */
+/* `a.fill(v[, start[, len]])` on a boxed receiver with Integer offsets
+   (argc counts v): a PolyArray, and an Integer or Float Array whose span
+   is in bounds and whose kind v is, fill in place; anything else fills a
+   boxed copy and writes it back. Answers the receiver. */
+static sp_RbVal sp_poly_fill(sp_RbVal recv, sp_RbVal v, int argc, sp_int start, sp_int len) {
+  if (!(recv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(recv.cls_id))) sp_raise_nomethod(sp_nomethod_msg("fill", recv));
+  if (sp_poly_array_frozen(recv)) sp_raise_frozen_array_at(recv.v.p, recv.cls_id);
+  sp_PolyArray *p = recv.cls_id == SP_BUILTIN_POLY_ARRAY ? (sp_PolyArray *)recv.v.p : NULL;
+  sp_int alen = sp_poly_arr_len(recv), s = 0, e = alen;
+  if (argc >= 2) { s = start < 0 ? start + alen : start; if (s < 0) s = 0; }
+  if (argc == 3) e = len < 0 ? s : s + len;
+  else if (s > alen) e = s;
+  if (recv.cls_id == SP_BUILTIN_POLY_ARRAY) {
+    for (sp_int i = s; i < e; i++) sp_PolyArray_set(p, i, v);
+    return recv;
+  }
+  if (e <= alen && recv.cls_id == SP_BUILTIN_INT_ARRAY && v.tag == SP_TAG_INT) {
+    for (sp_int i = s; i < e; i++) sp_IntArray_set((sp_IntArray *)recv.v.p, i, v.v.i);
+    return recv;
+  }
+  if (e <= alen && recv.cls_id == SP_BUILTIN_FLT_ARRAY && v.tag == SP_TAG_FLT) {
+    for (sp_int i = s; i < e; i++) sp_FloatArray_set((sp_FloatArray *)recv.v.p, i, v.v.f);
+    return recv;
+  }
+  SP_GC_ROOT_RBVAL(recv); SP_GC_ROOT_RBVAL(v);
+  p = sp_poly_to_poly_array(recv); SP_GC_ROOT(p);
+  for (sp_int i = s; i < e; i++) sp_PolyArray_set(p, i, v);
+  sp_poly_arr_writeback(recv, p);
+  return recv;
+}
 /* One element such a loop stores, in the original's own representation and
    under the write-back's checks: a typed Array cannot take an element of
    another kind, and cannot be re-laid from here. The check is per store, so
