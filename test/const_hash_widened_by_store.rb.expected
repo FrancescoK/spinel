@@ -6,3 +6,6 @@
 {a: 1, "k" => 2, 3 => :three}
 [Symbol, String, Integer]
 {a: 1, b: 2}
+{a: 1, "k" => 2, "x" => 3}
+{a: 1, "k" => 2}
+{a: 1, "k" => 2}

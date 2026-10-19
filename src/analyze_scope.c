@@ -5552,6 +5552,7 @@ int infer_global_const_types(Compiler *c) {
       const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
       if (rn) lv = comp_gvar(c, rn);
       vt = infer_type(c, nt_ref(nt, id, "value"));
+      vt = lit_takes_general_hash(c, lv, nt_ref(nt, id, "value"), vt, &changed);
       if (vt == TY_NIL) {
         if (lv && nil_write_type(lv->type) != lv->type) { lv_set_type(lv, nil_write_type(lv->type)); changed = 1; }
         continue;
@@ -5582,6 +5583,7 @@ int infer_global_const_types(Compiler *c) {
         vt = TY_POLY;
       else
         vt = infer_type(c, nt_ref(nt, id, "value"));
+      vt = lit_takes_general_hash(c, lv, nt_ref(nt, id, "value"), vt, &changed);
     }
     else if (sp_streq(ty, "ConstantPathWriteNode") || sp_streq(ty, "ConstantPathOrWriteNode") ||
              sp_streq(ty, "ConstantPathAndWriteNode") || sp_streq(ty, "ConstantPathOperatorWriteNode")) {
@@ -5595,6 +5597,7 @@ int infer_global_const_types(Compiler *c) {
         vt = TY_POLY;
       else
         vt = infer_type(c, nt_ref(nt, id, "value"));
+      vt = lit_takes_general_hash(c, lv, nt_ref(nt, id, "value"), vt, &changed);
     }
     else if (sp_streq(ty, "MultiWriteNode")) {
       int ln = 0;

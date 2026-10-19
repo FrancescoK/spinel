@@ -26,3 +26,20 @@ p Codes::T.keys.map(&:class)
 SAME = { a: 1 }
 SAME[:b] = 2
 p SAME
+
+# named by its path, from outside its module, and written by its path
+module Rates
+  R = { a: 1 }
+end
+Rates::R["k"] = 2
+Rates::R.merge!("x" => 3)
+p Rates::R
+module Kinds; end
+Kinds::K = { a: 1 }
+Kinds::K["k"] = 2
+p Kinds::K
+
+# a global written conditionally takes the general Hash too
+$opts ||= { a: 1 }
+$opts["k"] = 2
+p $opts
