@@ -8970,6 +8970,14 @@ static void sp_poly_match_check(sp_RbVal a, const char *m, sp_int n, sp_RbVal *a
         (b.tag == SP_TAG_OBJ && (b.cls_id == SP_BUILTIN_STRBUF || b.cls_id == SP_BUILTIN_REGEX))))
     sp_scan_bad_pattern(b);
 }
+/* start_with? of a candidate known only at run time: a Regexp matches at
+   the start of s, anything else is a String prefix or CRuby's TypeError */
+static sp_bool sp_str_start_with_boxed(const char *s, sp_RbVal pat) SP_UNUSED;
+static sp_bool sp_str_start_with_boxed(const char *s, sp_RbVal pat) {
+  if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_REGEX)
+    return sp_re_match((mrb_regexp_pattern *)pat.v.p, s) == 0;
+  return sp_str_start_with(s, sp_poly_arg_str_chk(pat));
+}
 static sp_StrArray *sp_scan_boxed(const char *s, sp_RbVal pat) SP_UNUSED;
 static sp_StrArray *sp_scan_boxed(const char *s, sp_RbVal pat) {
   if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_REGEX)
