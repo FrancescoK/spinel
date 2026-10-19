@@ -7244,7 +7244,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
        walk (a user #inspect that returns through a proc) drops the frames the
        longjmp jumps over; the exception and catch stacks record theirs inside
        the runtime calls that open their arms, but this node is built here. */
-    buf_puts(b, "    _h.exc_top = sp_exc_top; _h.catch_top = sp_catch_top;\n");
+    buf_puts(b, "    _h.exc_top = sp_exc_top; _h.catch_top = sp_catch_top; _h.brk_top = sp_brk_top;\n");
     buf_puts(b, "    _h.recur_mark = sp_poly_recur_save();\n");
     buf_puts(b, "    _h.prev = sp_proc_ret_head; sp_proc_ret_head = &_h;\n");
     /* a proc's return out of an ensure body drops the exception that body
@@ -7257,7 +7257,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
       buf_puts(b, ";\n");
       /* the longjmp-home delivery also restores sp_catch_top: a return out of a
          catch block inside the home (or a callee) must not leak its catch slot. */
-      buf_printf(b, "    if (setjmp(_h.jb)) { sp_proc_ret_head = _h.prev; sp_catch_top = _h.catch_top;%s return ", hic);
+      buf_printf(b, "    if (setjmp(_h.jb)) { sp_proc_ret_head = _h.prev; sp_catch_top = _h.catch_top; sp_brk_top = _h.brk_top;%s return ", hic);
       /* The box is the selected return, even if its evaluation or an
          intervening ensure published a different String. */
       int pub = repr_share_rule(c) && s->ret == TY_STRING && (s->ret_handle || s->ret_pub_fresh);
@@ -7268,7 +7268,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
       buf_puts(b, "; }\n");
     }
     else {
-      buf_printf(b, "    if (setjmp(_h.jb)) { sp_proc_ret_head = _h.prev; sp_catch_top = _h.catch_top;%s return; }\n", hic);
+      buf_printf(b, "    if (setjmp(_h.jb)) { sp_proc_ret_head = _h.prev; sp_catch_top = _h.catch_top; sp_brk_top = _h.brk_top;%s return; }\n", hic);
     }
     buf_puts(b, "    {\n");
     g_method_pr_label = "_pr_done"; g_method_pr_var = is_void ? NULL : "_prret";
