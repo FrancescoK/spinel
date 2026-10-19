@@ -24050,6 +24050,13 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   if (R->fresh && k == NK_CallNode && share_node_fresh(c, n)) { tc->fresh++; return 1; }
   if (k == NK_CallNode && c->ntype[n] == TY_NIL) { tc->nils++; return 1; }
   if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
+    /* a super into a native class's binding that keeps the String it is
+       handed answers that String's handle (#9258) */
+    if (!R->fresh && repr_super_native_keeps(c, n)) {
+      if (g_repr_check) repr_channel_predict(c, n, tc->mi, RCH_PUBLISH);
+      tc->reads++;
+      return 1;
+    }
     /* Exception's text publishes the message's handle (the super emitter's
        exception arm) */
     int tos[16];

@@ -11379,6 +11379,17 @@ static void emit_native_call_on(Compiler *c, const NativeMethod *m, int recv, co
                bin_tmp);
   if (wrap) buf_puts(b, ")");
 }
+/* The handle form of the binding a `super(v)` reaches that keeps the
+   String it is handed (repr_super_native_keeps), on self: its value is the
+   handle it kept, which a method tail publishes (emit_tail_value) and the
+   plain call reads out (emit_native_super_call) */
+void emit_native_super_keeps_handle(Compiler *c, int id, Buf *b) {
+  const NativeMethod *m = repr_super_native_keeps(c, id);
+  int argc = 0; const int *argv = call_args(c->nt, id, &argc);
+  buf_printf(b, "%s((%s *)%s, ", m->share_csym, c->classes[m->class_id].c_struct, g_self);
+  emit_strbuf_handle_of(c, argv[0], b);
+  buf_puts(b, ")");
+}
 /* `super(args)` in a method of a subclass of a native class that reaches
    the class's binding nm (#9269): the binding on self, cast to the
    native object */
@@ -11389,6 +11400,21 @@ void emit_native_super_call(Compiler *c, int id, int nm, int argc, const int *ar
   snprintf(st, sizeof st, "((%s *)%s)", c->classes[m->class_id].c_struct, g_self);
   /* one that answers self answers the native object, which the call's type,
      the subclass, takes back by a cast (as the receiver form does) */
+  /* one that keeps the String it is handed (`native_share "string=" ...
+     "keeps"`), where the walk shares the String the instance keeps: its
+     handle form on self, as emit_native_share_keeps calls it on a receiver
+     (repr_super_native_keeps, #9258); its value the handle where the call's
+     representation takes one (the method's return publishes it), else the
+     String read out of it */
+  if (repr_super_native_keeps(c, id) == m) {
+    Repr hr = repr_of(c, id);
+    Buf hb; memset(&hb, 0, sizeof hb);
+    emit_native_super_keeps_handle(c, id, &hb);
+    if (hr.handle || hr.demand) buf_puts(b, hb.p);
+    else buf_printf(b, "sp_strbuf_read(%s)", hb.p);
+    free(hb.p);
+    return;
+  }
   TyKind rt = comp_ntype(c, id);
   int back = sp_streq(m->ret, "self") && ty_is_object(rt) && ty_object_class(rt) != m->class_id;
   if (back) { buf_puts(b, "(("); emit_ctype(c, rt, b); buf_puts(b, ")"); }

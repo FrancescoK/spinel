@@ -676,10 +676,20 @@ static int sh_method_index(Compiler *c, int node) {
 
 /* A reopening's receiver is a binding, just as an explicit parameter is.
    Its byte-only uses do not require a handle ABI. */
+/* A subclass of a native class whose object keeps a String (StringIO):
+   the instance a method of the subclass runs on keeps it, so self holds
+   the String a super into the class's binding keeps or answers (#9258). */
+static int sh_native_keeps_self(const Compiler *c, int cid) {
+  if (cid < 0 || cid >= c->nclasses || c->classes[cid].nsub_root <= 0) return 0;
+  int root = c->classes[cid].nsub_root - 1;
+  return root < c->nclasses && c->classes[root].native_share_keeps;
+}
+
 static int sh_self(ShareFacts *F, Compiler *c, int mi) {
   if (!c->share_strings || mi < 0) return -1;
   Scope *s = &c->scopes[mi];
-  return !s->is_cmethod && s->class_id >= 0 && s->class_id == comp_class_index(c, "String")
+  if (s->is_cmethod || s->class_id < 0) return -1;
+  return s->class_id == comp_class_index(c, "String") || sh_native_keeps_self(c, s->class_id)
        ? sh_scope_holder(F, SHK_SELF, mi) : -1;
 }
 
@@ -2448,6 +2458,14 @@ static int sh_new_call(ShareFacts *F, Compiler *c, int n, int recv, int blk) {
   if (mi < 0) return ci->def_node >= 0 ? -1 : -2;
   sh_bind(F, c, n, mi);
   if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) sh_block_to_method(F, c, blk, mi);
+  /* a subclass of a native class whose object keeps a String, with an
+     initialize of its own: the value is the instance that initialize ran
+     on, which keeps what its super handed the class's constructor (#9258) */
+  if (sh_native_keeps_self(c, cid)) {
+    int r = sh_new(F, SHK_VALUE);
+    sh_union(F, r, sh_scope_holder(F, SHK_SELF, mi));
+    return r;
+  }
   return -1;
 }
 
@@ -3455,8 +3473,32 @@ static int sh_super(ShareFacts *F, Compiler *c, int n) {
     r = sh_join(F, r, sh_scope_holder(F, SHK_RET, tg[i]));
   }
   if (ntg == 0) {
-    /* Exception#initialize keeps its message */
     Scope *cs = cur >= 0 ? &c->scopes[cur] : NULL;
+    /* super into the native class a subclass's method reaches (#9258):
+       initialize reaches the class's constructor, which keeps its first
+       String argument as the object's String, the way `StringIO.new(s)`
+       does (sh_native_new); another name reaches its binding, on the
+       instance the method runs on (sh_self). The explicit form only, as
+       the codegen takes it (emit_native_ctor on self, emit_native_super_call). */
+    if (cs && nt_kind(nt, n) == NK_SuperNode && sh_native_keeps_self(c, cs->class_id)) {
+      int root = c->classes[cs->class_id].nsub_root - 1, self = sh_self(F, c, cur);
+      int argc = 0; const int *argv = call_args(nt, n, &argc);
+      if (self >= 0 && is_initialize_family(cs->name)) {
+        int nm = comp_native_method_find(c, root, "new", argc, 1);
+        if (nm >= 0 && (c->native_methods[nm].share & NSH_KEEPS)) {
+          int e = sh_elem(F, self);
+          for (int i = 0; i < argc; i++) sh_union(F, i == 0 ? e : F->unknown, sh_arg_val(F, c, argv[i]));
+          if (argc > 0) sh_flow(F, SHFL_MEMBER, n, argv[0], e);
+          if (c->native_methods[nm].share & NSH_CHANGES) sh_mark_at(F, e, SHF_MUT | SHF_INDIRECT, n);
+          return self;
+        }
+      }
+      else if (self >= 0) {
+        int r = sh_native_call(F, c, n, root, cs->name, argc, self, blk, 0);
+        if (r != -2) return r;
+      }
+    }
+    /* Exception#initialize keeps its message */
     if (cs && cs->class_id >= 0 && class_is_exc_subclass(c, cs->class_id)) {
       if (nt_kind(nt, n) == NK_ForwardingSuperNode)
         for (int j = 0; j < cs->nparams; j++)

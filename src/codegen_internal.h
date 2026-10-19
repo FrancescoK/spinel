@@ -2815,6 +2815,7 @@ int emit_struct_new_call(Compiler *c, int id, int ci, int argc, const int *argv,
 extern int g_nsub_cast_node;
 extern const char *g_arm_member_fills;
 void emit_native_super_call(Compiler *c, int id, int nm, int argc, const int *argv, Buf *b);
+void emit_native_super_keeps_handle(Compiler *c, int id, Buf *b); /* the handle form of a keeps binding a super reaches (#9258) */
 extern const char *g_native_into;
 extern const char *g_nsub_cast_type;
 /* member i of class ci read as `expr` through `objprefix` ("_t3->"), boxed

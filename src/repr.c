@@ -224,9 +224,33 @@ static int repr_boxed_native_handle(Compiler *c, int v) {
    String's handle (Scope.ret_handle): the value is that handle, which the
    callee's tail read publishes. (A call marked to be stored as the handle
    is read with its mark lifted, as a String, and picked up here.) */
+/* --share-strings: `super(v)` in a method of a subclass of a native class
+   whose object keeps a String, reaching the class's binding of the name
+   that keeps the String it is handed (`native_share "string=" ...
+   "keeps"`), where the instance's own String is shared (#9258): the
+   binding's handle form answers the handle it kept. The binding, or NULL. */
+const NativeMethod *repr_super_native_keeps(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c) || !c->share || n < 0 || nt_kind(nt, n) != NK_SuperNode) return NULL;
+  Scope *ms = comp_scope_of(c, n);
+  if (!ms || ms->is_cmethod || ms->class_id < 0 || ms->class_id >= c->nclasses || ms->def_node < 0 ||
+      !ms->name || is_initialize_family(ms->name) || c->classes[ms->class_id].nsub_root <= 0)
+    return NULL;
+  int root = c->classes[ms->class_id].nsub_root - 1;
+  if (root >= c->nclasses || !c->classes[root].native_share_keeps) return NULL;
+  int argc = 0; const int *argv = call_args(nt, n, &argc);
+  if (argc != 1 || nt_ref(nt, n, "block") >= 0) return NULL;
+  TyKind at = comp_ntype(c, argv[0]);
+  int nm = comp_native_method_find_typed(c, root, ms->name, 1, 0, &at);
+  const NativeMethod *m = nm >= 0 ? &c->native_methods[nm] : NULL;
+  if (!m || m->kind != 0 || !(m->share & NSH_KEEPS) || !m->share_csym || m->rest || m->nargs != 1) return NULL;
+  return repr_str_elems_share(c, share_self_holder(c, (int)(ms - c->scopes))) ? m : NULL;
+}
+
 int repr_call_returns_handle(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   v = unwrap_parens(c, v);
+  if (repr_super_native_keeps(c, v)) return 1;
   if (repr_share_rule(c) && v >= 0 && (nt_kind(nt, v) == NK_SuperNode || nt_kind(nt, v) == NK_ForwardingSuperNode)) {
     const CallPlan *p = cplan_user(c, v);
     return p->dispatch == CP_DIRECT && repr_self_handle(c, p->mi) && scope_ret_handle(c, p->mi);
@@ -355,8 +379,18 @@ int repr_boxed_to_s_operand(Compiler *c, int v) {
   return recv;
 }
 
+/* The self holder of a String reopening's method stands for the String
+   self is; a method of a subclass of a native class has one too, for the
+   String its instance keeps (#9258), and self there is the object, never a
+   String slot. */
+static int scope_self_is_string(const Compiler *c, int scope) {
+  if (scope < 0) return 0;
+  const Scope *s = &c->scopes[scope];
+  return !s->is_cmethod && s->class_id >= 0 && s->class_id == comp_class_index((Compiler *)c, "String");
+}
+
 int repr_self_handle(const Compiler *c, int scope) {
-  if (!c->share_strings) return 0;
+  if (!c->share_strings || !scope_self_is_string(c, scope)) return 0;
   int h = share_self_holder(c, scope);
   return share_self_used(c, h) && repr_str_shares(c, h);
 }
@@ -380,7 +414,7 @@ static int repr_user_answers_self(Compiler *c, int v) {
     if (body >= 0 && nt_kind(nt, body) == NK_StatementsNode) nt_arr(nt, body, "body", &nb);
     int last = scope_body_last(c, tg[i]);
     if (m->def_node < 0 || m->nparams != 0 || nb != 1 || last < 0 || nt_kind(nt, last) != NK_SelfNode ||
-        share_self_holder(c, tg[i]) < 0)
+        !scope_self_is_string(c, tg[i]) || share_self_holder(c, tg[i]) < 0)
       return 0;
   }
   return 1;
@@ -1139,7 +1173,7 @@ static Repr repr_of_share_holder(Compiler *c, const ShareHolder *h) {
   r.ty = r.as_ty = TY_UNKNOWN;
   switch (h->kind) {
   case SHK_SELF:
-    if (!share_self_used(c, share_self_holder(c, h->scope))) break;
+    if (!scope_self_is_string(c, h->scope) || !share_self_used(c, share_self_holder(c, h->scope))) break;
     r.ty = r.as_ty = TY_STRING;
     r.share = repr_self_handle(c, h->scope);
     break;

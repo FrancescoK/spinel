@@ -12914,6 +12914,16 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
     if (g_repr_check) { repr_channel_note(c, node, RCH_PUBLISH); repr_channel_end(c, frame); }
     return;
   }
+  /* a super into a native class's binding that keeps the String it is
+     handed (`super(v)` in a StringIO subclass's string=): the handle form
+     answers the handle it kept, which the tail publishes (#9258) */
+  if (ts && ts->ret_handle && repr_super_native_keeps(c, node)) {
+    buf_puts(b, "sp_strbuf_read_pub(");
+    emit_native_super_keeps_handle(c, node, b);
+    buf_puts(b, ")");
+    if (g_repr_check) { repr_channel_note(c, node, RCH_PUBLISH); repr_channel_end(c, frame); }
+    return;
+  }
   /* an iterator over a boxed local answering its receiver, the method's
      last statement (strbuf_iter_box_tail): the call runs, then the box
      publishes its handle and answers its bytes */
