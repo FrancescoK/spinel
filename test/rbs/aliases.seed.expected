@@ -12,4 +12,6 @@ meth generic - -
 meth inner - str_int_hash
 meth unknown int -
 meth cyclic int -
+meth nil_cyclic - -
+meth undeclared int poly
 class Outer_Inner

@@ -489,12 +489,6 @@ else {
     sbuf_free(&leaf);
 }
 
-/* The alias pass registers what a round could resolve; the last round
- * (g_alias_final) also registers an alias whose type names an alias
- * that never got a tag (a cycle, a generic one), with the fallback the
- * emit pass would give it too (`undeclared | nil` is poly). */
-static int g_alias_final = 0;
-
 /* Pre-passes over the `type name = T` declarations, at the top level or
  * inside a class or module. The names pass declares each under its
  * qualified name, so a reference resolves to the nearest declaration
@@ -505,8 +499,9 @@ static int g_alias_final = 0;
  * tag yet (declared later, or in a file read later) registers nothing on
  * this round, so a fallback on the way (`later | nil` to poly) is not
  * kept, and the caller runs the pass again while a round registers
- * something. A generic alias (`type listed[T] = Array[T]`) stays out of
- * the subset. */
+ * something. An alias in a cycle therefore never registers, in any
+ * order, and a reference to it is out of the subset. A generic alias
+ * (`type listed[T] = Array[T]`) stays out of the subset too. */
 static void collect_aliases(rbs_parser_t *p, rbs_node_t *node,
                             const char *scope, const char *outer_scope, bool declare) {
     if (node->type == RBS_AST_DECLARATIONS_TYPE_ALIAS) {
@@ -530,7 +525,7 @@ else if (alias_find(qualified.buf) == NULL) {
             g_self_scope = (scope != NULL && scope[0] != '\0') ? scope : NULL;
             g_alias_unresolved = false;
             bool ok = map_type(p, a->type, outer_scope, &tag);
-            if (ok && (!g_alias_unresolved || g_alias_final)) alias_add(qualified.buf, tag.buf);
+            if (ok && !g_alias_unresolved) alias_add(qualified.buf, tag.buf);
             g_alias_unresolved = false;
             g_self_scope = sv_self_scope;
         }
@@ -809,21 +804,16 @@ int main(int argc, char **argv) {
     }
     /* The aliases, to a fixpoint: an alias whose type names another alias
      * registers once that one has, whatever the order of the files, and a
-     * round that registers nothing ends it. One last round then registers
-     * what still waits on an alias that never got a tag (a cycle), as the
-     * emit pass would read it. */
-    for (int round = 0; round < 16; round++) {
+     * round that registers nothing ends it (the tags only grow, and the
+     * declarations bound them, so it ends). What still has no tag then (a
+     * cycle, a type out of the subset) stays out of it. */
+    for (;;) {
         size_t before = alias_count();
         for (int i = 1; i < argc; i++) {
             walk_phase(argv[i], stdout, PHASE_COLLECT_ALIASES);
         }
         if (alias_count() == before) break;
     }
-    g_alias_final = 1;
-    for (int i = 1; i < argc; i++) {
-        walk_phase(argv[i], stdout, PHASE_COLLECT_ALIASES);
-    }
-    g_alias_final = 0;
     for (int i = 1; i < argc; i++) {
         walk_phase(argv[i], stdout, PHASE_EMIT);
     }

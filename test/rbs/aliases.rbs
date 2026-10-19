@@ -5,7 +5,9 @@
 # declarations: an alias of an alias follows, a nilable alias of a later
 # one waits for it, and a class's own alias wins over a top-level one of
 # the name even when it is declared after its use. A generic alias
-# (`type listed[T]`) is out of subset, as a name no declaration gives is.
+# (`type listed[T]`) is out of subset, as a name no declaration gives is,
+# and so is an alias in a cycle, through a nilable union too, in any
+# order; an undeclared name in a nilable union is poly, as in a signature.
 type word_list = Array[String]
 type payload = Hash[Symbol, untyped]
 type scalar = Integer | String
@@ -17,6 +19,9 @@ type later_t = Integer
 type value_t = String
 type looped = other_loop
 type other_loop = looped
+type nil_loop = nil_loop_back | nil
+type nil_loop_back = nil_loop
+type undeclared_nil = no_such | nil
 
 module Outer
   type patch_t = Array[String]
@@ -38,6 +43,8 @@ module Outer
     def inner: (Inner::row) -> void
     def unknown: (no_such) -> Integer
     def cyclic: (looped) -> Integer
+    def nil_cyclic: (nil_loop) -> nil_loop_back
+    def undeclared: (undeclared_nil) -> Integer
   end
 
   module Inner
