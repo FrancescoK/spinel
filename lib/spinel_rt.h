@@ -7966,6 +7966,34 @@ static sp_int sp_poly_arr_misfit(sp_RbVal orig, const sp_PolyArray *work) {
   }
   return -1;
 }
+/* `a[start, len] = src` of a boxed Array whose elements all fit typed array
+   `recv` as they are: the elements are unboxed into a scratch row and spliced
+   by the typed array's own splice, so a store into a large array costs the
+   row, not a boxed copy of the whole array. 0 when one does not fit. */
+static int sp_poly_splice_unboxed(sp_RbVal recv, sp_int start, sp_int len, sp_PolyArray *src) {
+  sp_int n = src->len;
+  int tag = recv.cls_id == SP_BUILTIN_INT_ARRAY ? SP_TAG_INT
+          : recv.cls_id == SP_BUILTIN_FLT_ARRAY ? SP_TAG_FLT : SP_TAG_STR;
+  for (sp_int i = 0; i < n; i++) if (src->data[i].tag != tag) return 0;
+  void *row = sp_pl_alloc(sizeof(sp_RbVal) * (size_t)(n > 0 ? n : 1));
+  if (!row) sp_oom_die();
+  if (tag == SP_TAG_INT) {
+    sp_int *r = (sp_int *)row;
+    for (sp_int i = 0; i < n; i++) r[i] = src->data[i].v.i;
+    sp_IntArray_splice((sp_IntArray *)recv.v.p, start, len, r, n);
+  } else if (tag == SP_TAG_FLT) {
+    sp_float *r = (sp_float *)row;
+    for (sp_int i = 0; i < n; i++) r[i] = src->data[i].v.f;
+    sp_FloatArray_splice((sp_FloatArray *)recv.v.p, start, len, r, n);
+  } else {
+    const char **r = (const char **)row;
+    SP_GC_ROOT(src);
+    for (sp_int i = 0; i < n; i++) r[i] = src->data[i].v.s;
+    sp_StrArray_splice((sp_StrArray *)recv.v.p, start, len, r, n);
+  }
+  sp_pl_free(row);
+  return 1;
+}
 static sp_RbVal sp_poly_splice(sp_RbVal recv, sp_int start, sp_int len, sp_RbVal src) {
   /* `s[start, len] = v` through a poly receiver: spinel strings splice into a
      fresh buffer, so a plain string box answers the new value for the caller to
@@ -8003,6 +8031,11 @@ static sp_RbVal sp_poly_splice(sp_RbVal recv, sp_int start, sp_int len, sp_RbVal
   }
   int nofill = s <= alen;   /* a start past the end needs a nil-fill -> promote */
   int is_empty_arr = sp_rbval_is_array(src) && sp_poly_arr_len(src) == 0;
+  if (nofill && src.tag == SP_TAG_OBJ && src.cls_id == SP_BUILTIN_POLY_ARRAY &&
+      (recv.cls_id == SP_BUILTIN_INT_ARRAY || recv.cls_id == SP_BUILTIN_FLT_ARRAY ||
+       recv.cls_id == SP_BUILTIN_STR_ARRAY) &&
+      sp_poly_splice_unboxed(recv, start, len, (sp_PolyArray *)src.v.p))
+    return recv;
   switch (recv.cls_id) {
     case SP_BUILTIN_INT_ARRAY: {
       sp_IntArray *a = (sp_IntArray *)recv.v.p;
