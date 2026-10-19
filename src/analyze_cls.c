@@ -323,7 +323,9 @@ static void cf_ptop_set_at(CF *f, int x, int line) {
   if (x < 0 || f->ptop[x]) return;
   if (f->dbg_ptop) fprintf(stderr, "cls-flow-ptop: rule %d element %d set-all %d npts %d smc %d\n", line, x, f->set[x] == CF_ALL, f->npts[x], f->smc[x]);
   f->ptop[x] = 1; f->changed = 1;
-  for (int i = 0; i < f->nld[x]; i++) cf_add_set_at(f, f->ld[x][i], CF_ALL, __LINE__);
+  /* (why: a load out of it is every class because the container is; the
+     container's own origin is the rule to name) */
+  for (int i = 0; i < f->nld[x]; i++) cf_add_set_at(f, f->ld[x][i], CF_ALL, f->orig && f->orig[x] > 0 ? f->orig[x] : __LINE__);
   for (int i = 0; i < f->nst[x]; i++) cf_escape(f, f->st[x][i]);
   cf_wl_push(f, x);
 }
@@ -1206,15 +1208,16 @@ static int cf_masgn_target(CF *f, int v) {
   while (p >= 0 && (nt_kind(nt, p) == NK_MultiTargetNode || nt_kind(nt, p) == NK_SplatNode)) p = f->par[p];
   return p >= 0 && nt_kind(nt, p) == NK_MultiWriteNode;
 }
-static void cf_all_block_params(CF *f, int blk) {
+static void cf_all_block_params_at(CF *f, int blk, int line) {
   const char *names[64];
   int n = cf_all_param_names(f, blk, names, 64);
   int body = nt_ref(f->nt, blk, "body");
-  for (int i = 0; i < n; i++) cf_all(f, cf_lv(f, body >= 0 ? body : blk, names[i]));
+  for (int i = 0; i < n; i++) cf_add_set_at(f, cf_lv(f, body >= 0 ? body : blk, names[i]), CF_ALL, line);
   int poss[64]; unsigned char splats[64];
   n = cf_destructured_params(f, blk, names, poss, splats, 64);
   for (int i = 0; i < n; i++) cf_all(f, cf_lv(f, body >= 0 ? body : blk, names[i]));
 }
+#define cf_all_block_params(f, blk) cf_all_block_params_at((f), (blk), __LINE__)
 
 /* the owning method of node v: the DefNode above it, -1 at the top level
    or inside a lambda that comes first (when lambda_stop) */
@@ -3326,9 +3329,14 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
     /* a method named like a call the analysis does not follow (`bind`,
        `send`, ...): such a call binds nothing, so its parameters are left
        to hold anything rather than nothing (#8720) */
-    if (cf_protocol_name(s->name) || cf_opaque_name(s->name) || cf_is_dyn(&f, s->name) ||
+    const char *noseed = getenv("SPINEL_CLS_NOSEED");   /* (measurement only: skip one seeding) */
+    int sd_all = noseed && sp_streq(noseed, "all");
+    int sd_proto = cf_protocol_name(s->name) && !(noseed && sp_streq(noseed, "proto")) && !sd_all;
+    int sd_prelude = cf_prelude_scope(&f, mi) && !(noseed && sp_streq(noseed, "prelude")) && !sd_all;
+    int sd_modfn = s->is_module_function && !(noseed && sp_streq(noseed, "modfn")) && !sd_all;
+    if (sd_proto || cf_opaque_name(s->name) || cf_is_dyn(&f, s->name) ||
         s->is_proc_form || s->is_lowered_yield ||
-        s->cs_synth || s->is_module_function || cf_prelude_scope(&f, mi) ||
+        s->cs_synth || sd_modfn || sd_prelude ||
         (c->n_cext_extensions && s->def_node >= 0 && nt_int(c->nt, s->def_node, "cext_stub", 0))) {
       f.protocol[mi] = 1;
       /* a C extension's method answers whatever VALUE its C returns (a
