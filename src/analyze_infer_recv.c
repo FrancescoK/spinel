@@ -142,7 +142,12 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
           if (side >= 0 && infer_type(c, side) == TY_INT) { *out = TY_INT; return 1; }
         }
       }
-      { *out = argc == 0 ? TY_FLOAT : TY_POLY; return 1; }   /* first(n)/last(n) raise anyway */
+      if (argc == 0) { *out = TY_FLOAT; return 1; }
+      /* min(n)/max(n) and first(n)/last(n) enumerate (and raise): their
+         rows state the boxed answer; any other name or count, and a block
+         form of min and max, has no row and answers boxed as well */
+      { const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+        *out = op ? bop_result(op, rt) : TY_POLY; return 1; }
     }
     {
       const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
@@ -264,7 +269,13 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     if (is_eq_or_ne(name)) { *out = TY_BOOL; return 1; }
   }
   if (rt == TY_RATIONAL && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX &&
-      is_basic_arith(name)) { *out = TY_COMPLEX; return 1; }
+      is_basic_arith(name)) {
+    /* record the row of a Complex operand; the answer stays by name, as this
+       gate reads the operand's type the node table holds and the row's guard
+       the one inference makes of it now */
+    (void)an_bop_find_arg(c, id, rt, name, argc, argv, nt_ref(nt, id, "block") >= 0);
+    *out = TY_COMPLEX; return 1;
+  }
   /* Complex: builtin-op rows (builtin_ops.c) */
   if (rt == TY_COMPLEX) {
     const BuiltinOp *op = an_bop_find_arg(c, id, rt, name, argc, argv, nt_ref(nt, id, "block") >= 0);
@@ -1807,8 +1818,12 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      an array of single-char strings (#2909). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 &&
       (sp_streq(name, "chars") || sp_streq(name, "lines")) &&
-      nt_ref(nt, id, "block") < 0)
-    { *out = an_user_defines_or_reads(c, name) ? TY_POLY : TY_STR_ARRAY; return 1; }
+      nt_ref(nt, id, "block") < 0) {
+    if (an_user_defines_or_reads(c, name)) { *out = TY_POLY; return 1; }
+    /* the String row of the name states this Array of Strings: record it */
+    (void)an_bop_find(c, id, TY_STRING, name, 0, 0);
+    *out = TY_STR_ARRAY; return 1;
+  }
   /* lines(sep), lines(chomp: ...) and lines(sep, chomp: ...) on a poly
      value: the same Array of Strings the typed String answers */
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "lines") && nt_ref(nt, id, "block") < 0 &&

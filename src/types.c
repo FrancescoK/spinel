@@ -480,10 +480,15 @@ int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind arg1,
        call: an Integer local read back from an array answers poly under
        promote). */
     if (!strcmp(name, "succ")) {
-      if (recv == TY_STRING) { *out = TY_STRING; return 1; }
-      if (recv == TY_SYMBOL) { *out = TY_SYMBOL; return 1; }
-      if (recv == TY_INT) { *out = promote ? TY_POLY : TY_INT; return 1; }
-      return 0;
+      if (recv == TY_STRING) *out = TY_STRING;
+      else if (recv == TY_SYMBOL) *out = TY_SYMBOL;
+      else if (recv == TY_INT) *out = promote ? TY_POLY : TY_INT;
+      else return 0;
+      /* the kind's row, where it states that answer (not an Integer's under
+         promote, which the row does not know) */
+      const BuiltinOp *op = bop_find(recv, name, 0, 0);
+      if (row && op && bop_result(op, recv) == *out) *row = op;
+      return 1;
     }
     /* sum (no seed, no block -- the only shape a yield receiver's inlined
        call takes): fold_sum_type already names this exactly, with the
@@ -528,7 +533,14 @@ int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind arg1,
     return 1;
   }
   if (!strcmp(name, "dig") && argc >= 1 && ty_recv_is_plain_array(recv)) {
-    *out = (argc == 1) ? ty_array_elem(recv) : TY_POLY; return 1;
+    /* one index is the element, two or more are poly: the Array rows state
+       both, for any count of indexes */
+    const BuiltinOp *op = bop_find(bop_family_of(recv), name, argc, 0);
+    if (op) {
+      *out = bop_result(op, recv);
+      if (row) *row = op;
+      return 1;
+    }
   }
   /* sample(n): tells a count (arg0 == TY_INT, answers a subarray -- the
      receiver's own kind) apart from a random: keyword hash (arg0 is a

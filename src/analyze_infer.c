@@ -8006,6 +8006,16 @@ static int conv_arg_can_answer_nil(Compiler *c, const NodeTable *nt, const char 
   return (a0 == TY_INT || a0 == TY_FLOAT) && nullable_int_value(c, argv[0]);
 }
 
+/* Hash#default_proc: the stored Hash.new{} block as a first-class Proc
+   (NULL-encoded nil when the hash has none). The family's row states the
+   Proc and is recorded; a call with a block finds no row and answers the
+   Proc as well. */
+static TyKind infer_hash_default_proc(Compiler *c, int id, TyKind rt) {
+  const BuiltinOp *op = an_bop_find(c, id, bop_family_of(rt), "default_proc", 0,
+                                    nt_ref(c->nt, id, "block") >= 0);
+  return op ? bop_result(op, rt) : TY_PROC;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   TyKind prelude = infer_call_prelude(c, id);
   if (prelude != TY_UNKNOWN) return prelude;
@@ -8782,10 +8792,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   { TyKind r; if (infer_constant_query_call(c, id, nt, name, recv, argc, argv, &r)) return r; }
   { TyKind r; if (infer_method_proc_call(c, id, nt, name, recv, argc, argv, rt, &r)) return r; }
-  /* Hash#default_proc: the stored Hash.new{} block as a first-class Proc
-     (NULL-encoded nil when the hash has none) */
   if (recv >= 0 && ty_is_hash(rt) && argc == 0 && sp_streq(name, "default_proc"))
-    return TY_PROC;
+    return infer_hash_default_proc(c, id, rt);
   /* default_proc= installs the lambda; the assignment's value is the proc (#2371) */
   if (recv >= 0 && ty_is_hash(rt) && argc == 1 && sp_streq(name, "default_proc="))
     return TY_PROC;
