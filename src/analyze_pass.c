@@ -6926,9 +6926,12 @@ static int widen_boxed_array_sources_1(Compiler *c, int v, TyKind elem, int dept
   NodeKind k = nt_kind(nt, v);
   if (k == NK_LocalVariableWriteNode || k == NK_LocalVariableOrWriteNode)
     return widen_boxed_array_sources(c, nt_ref(nt, v, "value"), elem, depth + 1);
-  if (k == NK_IfNode || k == NK_UnlessNode || k == NK_CaseNode) {
+  /* a conditional, a logical operator or a begin: the arrays any of its arms
+     answers (a nil arm adds none) */
+  if (k == NK_IfNode || k == NK_UnlessNode || k == NK_CaseNode || k == NK_CaseMatchNode || k == NK_OrNode ||
+      k == NK_AndNode || k == NK_BeginNode || k == NK_RescueModifierNode || k == NK_ParenthesesNode) {
     int lv[16];
-    int n = value_leaves(c, v, lv, 0, 16), ch = 0;
+    int n = value_leaves_ex(c, v, lv, 0, 16, VL_NIL), ch = 0;
     for (int i = 0; i < n; i++) ch |= widen_boxed_array_sources(c, lv[i], elem, depth + 1);
     return ch;
   }
