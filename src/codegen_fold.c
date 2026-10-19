@@ -11982,7 +11982,7 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
       if (!seq && repr_share_rule(c) && at == TY_STRING && m->pnames[k] &&
           repr_of_slot(c, scope_local(m, m->pnames[k])).kind == RK_BOXED && !c->poly_strbuf_lift[argv[k]] &&
           strbuf_srange_tail(c, argv[k]) < 0 &&
-          (strbuf_cond_has_handle_leaf(c, argv[k], 0) || strbuf_srange_arm(c, argv[k]))) root = 0;
+          (strbuf_cond_has_handle_leaf(c, argv[k]) || strbuf_srange_arm(c, argv[k]))) root = 0;
       /* a bare read is already rooted where it lives */
       else if (aty && (sp_streq(aty, "LocalVariableReadNode") ||
                   sp_streq(aty, "InstanceVariableReadNode") ||

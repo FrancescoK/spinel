@@ -454,7 +454,7 @@ static int repr_conversion_hands_handle(Compiler *c, int node) {
   int x = repr_string_conversion_operand(c, node), op, more;
   while ((more = x >= 0 ? repr_string_conversion_operand(c, x) : -1) >= 0) x = more;
   return x >= 0 && (repr_of(c, x).kind == RK_BOXED || strbuf_route_kind(c, x, &op) != SPK_NONE ||
-                    strbuf_cond_has_handle_leaf(c, x, 0));
+                    strbuf_cond_has_handle_leaf(c, x));
 }
 /* Where the boxed form of a shared-mutable String comes from, as emit_boxed
    decides it for a node stored as (or holding) the handle. */
