@@ -184,6 +184,8 @@ typedef struct ShareFacts {
      new Strings (`s.scan(re)`, `s.split`), whose value is a class of its
      own (sh_builtin) */
   unsigned char *fresh_cont;
+  /* per node: inside a method the program never names (sh_dead_nodes) */
+  unsigned char *dead;
   /* mixed boxed-String calls whose selected builtin row actually answered
      with no carried identity (`sh_builtin` returned -1), alongside the
      selected row and input signature used to revalidate the proof */
@@ -4247,7 +4249,7 @@ static void sh_free(ShareFacts *F) {
   free(F->mut_n); free(F->mut_v);
   free(F->aj_v); free(F->aj_s); free(F->aj_done);
   free(F->fl_site); free(F->fl_val); free(F->fl_kind); free(F->fl_dest); free(F->into); free(F->pk); free(F->lam);
-  free(F->lsc); free(F->ret_m); free(F->ret_v); free(F->ret_done); free(F->unused); free(F->fresh_cont);
+  free(F->lsc); free(F->ret_m); free(F->ret_v); free(F->ret_done); free(F->unused); free(F->fresh_cont); free(F->dead);
   if (F->own_elig) free(F->byref_elig);
   free(F->byval); free(F->byval_done);
   free(F->rsite); free(F->mread); free(F->ret_joined);
@@ -4688,6 +4690,70 @@ static void sh_mark_local_lambdas(ShareFacts *F, Compiler *c) {
   free(off); free(cand); free(cnt); free(outer);
 }
 
+/* The nodes of the methods the program never names. Such a method runs
+   nothing, so its body's reads and writes are no facts about the Strings the
+   program holds, and the walk leaves it out: `def run1(f, x) = q { f.call(x) }`
+   beside `def run(f) = q { f.call }` joined q's value (one holder per method,
+   not per call site) with what any proc may answer, and
+   `w = run(proc { +"new" }); w << "!"` was refused (#9258, cluster 9).
+   Scope.reachable is the census an earlier phase took, before the rewrites the
+   fixpoint adds calls through, so the walk takes its own census of the table
+   as it stands (compute_reachable), keyed by the table's version, and puts the
+   scopes' flags back as they were. A method the census reaches by name alone
+   (a send, a Symbol, an alias) counts as named. */
+static void sh_mark_subtree(const NodeTable *nt, int id, unsigned char *dead) {
+  if (id < 0 || id >= nt->count || dead[id]) return;
+  dead[id] = 1;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) sh_mark_subtree(nt, nt_ref_at(nt, id, i), dead);
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0;
+    const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++) sh_mark_subtree(nt, ids[j], dead);
+  }
+}
+static const NodeTable *g_dead_nt;
+static unsigned g_dead_version;
+static int g_dead_count, g_dead_nscopes;
+static unsigned char *g_dead;
+static unsigned char *sh_dead_nodes(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  size_t n = (size_t)(nt->count > 0 ? nt->count : 1);
+  if (!g_dead || g_dead_nt != nt || g_dead_version != nt->version || g_dead_count != nt->count ||
+      g_dead_nscopes != c->nscopes) {
+    unsigned char *was = malloc((size_t)(c->nscopes > 0 ? c->nscopes : 1));
+    free(g_dead);
+    g_dead = calloc(n, 1);
+    if (!was || !g_dead) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    /* a node two scopes own (a clone of a method the dispatch splices keeps
+       its source's def) is dead only when no scope that owns it is reached */
+    unsigned char *live = calloc(n, 1);
+    if (!live) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int s = 0; s < c->nscopes; s++) was[s] = (unsigned char)c->scopes[s].reachable;
+    compute_reachable(c, 1);
+    for (int s = 0; s < c->nscopes; s++) {
+      Scope *m = &c->scopes[s];
+      if ((m->reachable || was[s]) && m->def_node >= 0) { sh_mark_subtree(nt, m->def_node, live); sh_mark_subtree(nt, m->body, live); }
+    }
+    for (int s = 0; s < c->nscopes; s++) {
+      Scope *m = &c->scopes[s];
+      /* (dead only where the earlier census agrees: a scope a rewrite made
+         is reached by a mark of its own, not by a name, as the proc form of
+         a reopening's method is) */
+      if (!m->reachable && !was[s] && m->def_node >= 0) { sh_mark_subtree(nt, m->def_node, g_dead); sh_mark_subtree(nt, m->body, g_dead);
+        if (getenv("SPINEL_SHARE_DEAD")) fprintf(stderr, "share dead: %s%s%s (scope %d, was %d)\n", m->class_id >= 0 ? c->classes[m->class_id].name : "", m->class_id >= 0 ? (m->is_cmethod ? "." : "#") : "", m->name ? m->name : "?", s, was[s]); }
+      m->reachable = was[s];
+    }
+    for (size_t i = 0; i < n; i++) if (live[i]) g_dead[i] = 0;
+    free(live); free(was);
+    g_dead_nt = nt; g_dead_version = nt->version; g_dead_count = nt->count; g_dead_nscopes = c->nscopes;
+  }
+  unsigned char *d = malloc(n);
+  if (!d) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memcpy(d, g_dead, n);
+  return d;
+}
 static ShareFacts *sh_build(Compiler *c, int closed) {
   const NodeTable *nt = c->nt;
   cplan_targets_drop();
@@ -4720,6 +4786,7 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
   sh_mutable_consts(F, c);
   F->unused = calloc((size_t)(F->nnodes > 0 ? F->nnodes : 1), 1);
   F->fresh_cont = calloc((size_t)(F->nnodes > 0 ? F->nnodes : 1), 1);
+  F->dead = sh_dead_nodes(c);
   size_t ns = (size_t)(c->nscopes > 0 ? c->nscopes : 1);
   /* the default build's answer once compute_byref_out_params has given it,
      else this build's own: the types still move until then */
@@ -4763,13 +4830,13 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
   static const NodeKind loops[] = { NK_WhileNode, NK_UntilNode, NK_ForNode };
   for (int k = 0; k < 3; k++)
     NT_FOREACH_KIND(nt, loops[k], ln) sh_mark_last_unused(F, nt, nt_ref(nt, ln, "statements"), SHU_TAIL);
-  for (int n = 0; n < F->nnodes; n++) sh_val(F, c, n);
+  for (int n = 0; n < F->nnodes; n++) if (!F->dead[n]) sh_val(F, c, n);
   sh_settle_any_new(F, c);
   /* each method's value is its body's last, and its defaults bind its
-     parameters */
+     parameters (a method the program never names binds nothing: sh_dead_nodes) */
   for (int mi = 0; mi < c->nscopes; mi++) {
     Scope *m = &c->scopes[mi];
-    if (m->def_node < 0) continue;
+    if (m->def_node < 0 || F->dead[m->def_node]) continue;
     if (m->body >= 0) sh_ret(F, mi, sh_stmts_val(F, c, m->body));
     for (int j = 0; j < m->nparams; j++) {
       if (!m->pdefault || m->pdefault[j] < 0 || !m->pnames[j]) continue;
@@ -6179,8 +6246,17 @@ static void sh_route_rt_mark(Compiler *c, const ShareRoute *q) {
     nt_node_set_int((NodeTable *)c->nt, q->rt_site, "scan_rtcheck", 1);
 }
 
+/* Is node n inside a method the program never names (sh_dead_nodes)? Such a
+   node runs nothing: the walk leaves it out, and a route recorded there is
+   not refused. */
+int share_node_dead(const Compiler *c, int n) {
+  const ShareFacts *F = c->share;
+  return F && F->dead && n >= 0 && n < F->nnodes && F->dead[n];
+}
+
 int share_route_defer(Compiler *c, const ShareRoute *q, const char *msg) {
   if (!c->share_strings) return 0;
+  if (share_node_dead(c, q->site)) return 1;
   if (repr_sealed()) {
     if (!sh_route_ok(c, q)) return 0;
     sh_route_rt_mark(c, q);
@@ -6207,6 +6283,7 @@ int share_route_defer(Compiler *c, const ShareRoute *q, const char *msg) {
 void share_routes_check(Compiler *c) {
   for (int i = 0; i < c->nshare_route; i++) {
     const ShareRoute *r = &c->share_route[i];
+    if (share_node_dead(c, r->site)) continue;   /* (a method the program never names runs nothing) */
     const char *stats = getenv("SPINEL_SHARE_STATS");
     if (stats && stats[0] == '2')
       fprintf(stderr, "share-route: site %d value %d%s to %d%s%s%s carry %d ok=%d\n", r->site, r->value,

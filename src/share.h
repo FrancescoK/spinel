@@ -117,6 +117,8 @@ int share_elem_holder(const Compiler *c, int h);
 int share_class_count(const Compiler *c);
 int share_holder_class(const Compiler *c, int h);
 int share_node_class(const Compiler *c, int n);
+/* n is inside a method the program never names: the walk left it out (sh_dead_nodes) */
+int share_node_dead(const Compiler *c, int n);
 
 /* The facts of holder h's class. */
 unsigned share_class_flags(const Compiler *c, int h);
