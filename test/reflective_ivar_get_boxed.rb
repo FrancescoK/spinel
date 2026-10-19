@@ -52,3 +52,15 @@ p bx.name, r7.equal?(s)
 r8 = ARGV.size > 5 ? +"other" : bx.instance_variable_get(:@name)
 r8 << "S"
 p bx.name, r8.equal?(s)
+
+# an identity test against a boxed value, and a method's tail
+z = [s, 1][ARGV.size]
+p z.equal?(bx.instance_variable_get(:@name)), bx.instance_variable_get(:@name).equal?(z)
+
+def tail_of(o)
+  o.instance_variable_get(:@name)
+end
+
+r9 = tail_of(bx)
+r9 << "R"
+p bx.name, r9.equal?(s)

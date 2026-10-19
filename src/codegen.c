@@ -3115,7 +3115,9 @@ static int emit_boxed_routes(Compiler *c, int node, Buf *b) {
      (a new handle over a copy was another String) */
   if (strbuf_srange_tail(c, node) >= 0 && emit_srange_route_boxed(c, node, b)) return 1;
   if (emit_boxed_lift_ran_first(c, node, b)) return 1;
-  if (lift || (!arg_ran_first(node, 0) && (strbuf_route_reader(c, node) || strbuf_route_ivar_get(c, node) ||
+  if (lift || (!arg_ran_first(node, 0) && (strbuf_route_reader(c, node) ||
+                                                (strbuf_route_ivar_get(c, node) &&
+                                                 share_plan_of(c, node, SPR_BOX, NULL).form == SPF_HANDLE) ||
                                                 strbuf_route_boxed_exc_message(c, node)))) {
     Buf hb; memset(&hb, 0, sizeof hb);
     if (emit_strbuf_route(c, node, &hb)) {

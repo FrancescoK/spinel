@@ -1785,8 +1785,9 @@ int strbuf_tail_plain(Compiler *c, int v) {
   TyKind t = comp_ntype(c, v);
   if ((t == TY_STRING || t == TY_STRBUF) && share_value_fresh(c, v, 0)) return 1;
   if (strbuf_native_answer(c, v)) return 1;
-  /* A shared reader's demanded value is its slot's handle too. */
-  if (strbuf_route_reader(c, v)) return 1;
+  /* A shared reader's demanded value is its slot's handle too, a reflective
+     read's as well. */
+  if (strbuf_route_reader(c, v) || strbuf_route_ivar_get(c, v)) return 1;
   if (strbuf_hash_default_arg(c, v) >= 0) return 1;
   /* So is a call answering its receiver over a handle (`s.freeze`). */
   if (strbuf_bang_self_local(c, v)) return 1;

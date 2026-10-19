@@ -3594,9 +3594,11 @@ int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKin
         else buf_puts(b, ")");
         free(lhs.p);
       }
-      else if ((mt == TY_STRBUF || (repr_share_rule(c) && mt == TY_STRING)) && repr_of(c, id).demand) {
-        /* the caller asked for the HANDLE, not a reading of it. The
-           out-of-line reader answers the same way for the same demand;
+      else if ((mt == TY_STRBUF || (repr_share_rule(c) && mt == TY_STRING)) &&
+               (repr_of(c, id).demand || repr_of(c, id).handle)) {
+        /* the caller asked for the HANDLE (a demand, or the read marked as
+           the handle itself), not a reading of it. The out-of-line reader
+           answers the same way for the same demand;
            inlined, it copied regardless, so `obj.reader.equal?(x)` compared
            two fresh copies and answered false for one object (#4363). */
         if (mt == TY_STRING) buf_puts(b, "sp_String_new_shared(");
