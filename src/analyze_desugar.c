@@ -11042,7 +11042,7 @@ static int bi_kernel_call_name(const char *nm) {
     "exit", "abort", "at_exit", "binding", "warn", "fail", "freeze", "frozen?", "nil?",
     "respond_to?", "is_a?", "kind_of?", "instance_of?", "equal?", "eql?", "hash",
     "object_id", "dup", "clone", "itself", "then", "tap", "inspect", "to_s", "class",
-    "__enum_pairs", NULL };
+    "__enum_pairs", "__enum_count_int", NULL };
   return str_in(nm, ks);
 }
 
