@@ -4136,10 +4136,6 @@ int strh_method_open(const Scope *m) {
   return m->name && !method_name_implicitly_invoked(m->name) && !(m->class_id >= 0 && (sp_streq(m->name, "deconstruct") || sp_streq(m->name, "deconstruct_keys"))) && !m->is_ext_entry &&
          !m->is_proc_form && !m->is_lowered_yield && !m->ret_rbs_seeded;
 }
-/* What the old climb did not cross: a begin that is a method's whole body. */
-static int strh_climb_stops(const NodeTable *nt, const VpUp *up) {
-  return up->kind != VPU_JUMP && nt_kind(nt, up->node) == NK_BeginNode;
-}
 /* Is node n, a read of an Array of handles, the value its method answers: the
    body's last statement (an `if`'s arm, a begin's body and parentheses
    included) or the one argument of a `return`? The caller's name for it is
@@ -4150,7 +4146,6 @@ int strh_value_returned(Compiler *c, const int *par, int n) {
   if (n < 0 || n >= nt->count) return 0;
   VpUp up;
   VpUpKind ended = vp_climb(nt, par, n, STRH_CLIMB | VP_FOLLOW_RETURN, &up);
-  if (strh_climb_stops(nt, &up)) return 0;
   if (ended == VPU_JUMP)
     return comp_scope_of(c, up.parent)->def_node >= 0 && strh_method_open(comp_scope_of(c, up.parent));
   return vp_up_def(nt, &up) >= 0 && strh_method_open(comp_scope_of(c, n));
