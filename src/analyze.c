@@ -18940,50 +18940,38 @@ static int strbuf_block_param_source_walk(Compiler *c, const char *vn, Scope *vs
    branch of a conditional that is one, or an element read of an Array or
    Hash literal holding one? Unlike poly_var_may_hold_string, a value it
    cannot see answers no: what asks is a refusal. */
-static int poly_value_shows_string(Compiler *c, int v, int depth) {
+static int poly_value_shows_string(Compiler *c, int v);
+static int poly_leaf_shows_string(const VpLeaf *lf, void *ud) {
+  Compiler *c = ud;
   const NodeTable *nt = c->nt;
-  v = an_unparen(nt, v);
-  if (v < 0 || depth > 8) return 0;
+  /* (a walk cut short saw nothing: a value it cannot see answers no) */
+  if (lf->kind != VPK_EXPR && lf->kind != VPK_JUMP) return 0;
+  int v = lf->node;
   TyKind vt = infer_type(c, v);
   if (vt == TY_STRING || vt == TY_STRBUF) return 1;
-  switch (nt_kind(nt, v)) {
-    case NK_IfNode: case NK_UnlessNode:
-      return poly_value_shows_string(c, nt_ref(nt, v, "statements"), depth + 1) ||
-             poly_value_shows_string(c, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"),
-                                      depth + 1);
-    case NK_ElseNode:
-      return poly_value_shows_string(c, nt_ref(nt, v, "statements"), depth + 1);
-    case NK_StatementsNode: {
-      int n = 0; const int *b = nt_arr(nt, v, "body", &n);
-      return n > 0 && poly_value_shows_string(c, b[n - 1], depth + 1);
-    }
-    case NK_OrNode: case NK_AndNode:
-      return poly_value_shows_string(c, nt_ref(nt, v, "left"), depth + 1) ||
-             poly_value_shows_string(c, nt_ref(nt, v, "right"), depth + 1);
-    case NK_CallNode: {
-      int r = an_unparen(nt, nt_ref(nt, v, "receiver"));
-      if (r < 0 || !container_elem_read_p(nt, v)) return 0;
-      int en = 0; const int *el = NULL;
-      if (nt_kind(nt, r) == NK_ArrayNode) el = nt_arr(nt, r, "elements", &en);
-      for (int e = 0; e < en; e++) if (poly_value_shows_string(c, el[e], depth + 1)) return 1;
-      if (nt_kind(nt, r) == NK_HashNode) {
-        el = nt_arr(nt, r, "elements", &en);
-        for (int e = 0; e < en; e++)
-          if (nt_kind(nt, el[e]) == NK_AssocNode && poly_value_shows_string(c, nt_ref(nt, el[e], "value"), depth + 1))
-            return 1;
-      }
-      return 0;
-    }
-    default:
-      return 0;
+  if (nt_kind(nt, v) != NK_CallNode) return 0;
+  int r = an_unparen(nt, nt_ref(nt, v, "receiver"));
+  if (r < 0 || !container_elem_read_p(nt, v)) return 0;
+  int en = 0; const int *el = NULL;
+  if (nt_kind(nt, r) == NK_ArrayNode) el = nt_arr(nt, r, "elements", &en);
+  for (int e = 0; e < en; e++) if (poly_value_shows_string(c, el[e])) return 1;
+  if (nt_kind(nt, r) == NK_HashNode) {
+    el = nt_arr(nt, r, "elements", &en);
+    for (int e = 0; e < en; e++)
+      if (nt_kind(nt, el[e]) == NK_AssocNode && poly_value_shows_string(c, nt_ref(nt, el[e], "value")))
+        return 1;
   }
+  return 0;
+}
+static int poly_value_shows_string(Compiler *c, int v) {
+  return for_each_value_position(c->nt, v, VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_LOGIC, poly_leaf_shows_string, c);
 }
 /* Can boxed local (vn, vs) hold a String, by what one of its writes shows? */
 static int poly_local_shows_string(Compiler *c, const char *vn, Scope *vs) {
   const NodeTable *nt = c->nt;
   for (int w = comp_lvw_first_sc(c, (int)(vs - c->scopes), vn); w >= 0; w = comp_lvw_next_sc(c, w))
     if (nt_kind(nt, w) == NK_LocalVariableWriteNode && comp_scope_of(c, w) == vs &&
-        sp_streq(nt_str(nt, w, "name"), vn) && poly_value_shows_string(c, nt_ref(nt, w, "value"), 0))
+        sp_streq(nt_str(nt, w, "name"), vn) && poly_value_shows_string(c, nt_ref(nt, w, "value")))
       return 1;
   return 0;
 }
