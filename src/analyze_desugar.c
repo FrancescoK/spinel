@@ -6811,6 +6811,14 @@ int desugar_call_op_write(Compiler *c) {
   return changed;
 }
 
+/* the temp `__cow_N = recv` and the two reads of it */
+static void cow_bind_temp(NodeTable *nt, int tw, int tr1, int tr2, const char *tname, int recv) {
+  nt_node_set_str(nt, tw, "name", tname); nt_node_set_int(nt, tw, "depth", 0);
+  nt_node_set_ref(nt, tw, "value", recv);
+  nt_node_set_str(nt, tr1, "name", tname); nt_node_set_int(nt, tr1, "depth", 0);
+  nt_node_set_str(nt, tr2, "name", tname); nt_node_set_int(nt, tr2, "depth", 0);
+}
+
 /* `recv.attr ||= value` / `&&=` where the receiver is a builtin a reopening
    gave the reader and the writer to -- a Thread with the accessor
    `Thread.attr_accessor` declared, activesupport's IsolatedExecutionState
@@ -6819,9 +6827,9 @@ int desugar_call_op_write(Compiler *c) {
    so it was refused. It is the two calls Ruby means, on the receiver
    evaluated once:
      (__cow_N = recv; __cow_N.attr || (__cow_N.attr = value))
-   A receiver that may be one of several kinds has no pairing in the
-   emitter either and takes the same two calls. A user-object receiver
-   keeps the emitter's own pairing. */
+   A receiver that may be one of several kinds, or a Class value, has no
+   pairing in the emitter either and takes the same two calls. A
+   user-object receiver keeps the emitter's own pairing. */
 int desugar_call_or_write_reopen(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -6855,7 +6863,9 @@ int desugar_call_or_write_reopen(Compiler *c) {
        out of a Hash of mixed values), which the two calls dispatch on as
        any call does; a user object's pairing stays the emitter's */
     int has_def_writer = 0, has_def_reader = 0;
-    if (rt == TY_POLY || native_pair) has_def_writer = has_def_reader = 1;
+    /* and a Class value (`self.class.memo ||= v` in a module the classes
+       include), whose halves are class methods: the calls reach them */
+    if (rt == TY_POLY || rt == TY_CLASS || native_pair) has_def_writer = has_def_reader = 1;
     for (int q = 0; q < c->nclasses && !(has_def_writer && has_def_reader); q++) {
       if (!c->classes[q].name || !is_builtin_reopen(c->classes[q].name)) continue;
       if (comp_method_in_chain(c, q, wname, NULL) >= 0) has_def_writer = 1;
@@ -6874,10 +6884,7 @@ int desugar_call_or_write_reopen(Compiler *c) {
     int stmts = nt_new_node(nt, "StatementsNode");
     if (tw < 0 || tr1 < 0 || tr2 < 0 || rd < 0 || wargs < 0 || wc < 0 || join < 0 || stmts < 0) continue;
     long long line = nt_int(nt, id, "node_line", 0);
-    nt_node_set_str(nt, tw, "name", tname); nt_node_set_int(nt, tw, "depth", 0);
-    nt_node_set_ref(nt, tw, "value", recv);
-    nt_node_set_str(nt, tr1, "name", tname); nt_node_set_int(nt, tr1, "depth", 0);
-    nt_node_set_str(nt, tr2, "name", tname); nt_node_set_int(nt, tr2, "depth", 0);
+    cow_bind_temp(nt, tw, tr1, tr2, tname, recv);
     nt_node_set_ref(nt, rd, "receiver", tr1); nt_node_set_str(nt, rd, "name", attr);
     nt_node_set_ref(nt, rd, "arguments", -1); nt_node_set_ref(nt, rd, "block", -1);
     nt_node_set_int(nt, rd, "node_line", line);
