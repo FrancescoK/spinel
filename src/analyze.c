@@ -21092,57 +21092,42 @@ static LocalVar *strbuf_poly_gvar(Compiler *c, int node, const char **grn) {
    it reads: a string-valued expression marks for a fresh-handle wrap, an
    eligible string local promotes. */
 static int strbuf_demand_elem_arg(Compiler *c, int an);
-static int strbuf_demand_value_leaves(Compiler *c, int node, int depth) {
+typedef struct { Compiler *c; int depth; int changed; } StrbufDemand;
+static int strbuf_demand_leaf(const VpLeaf *lf, void *ud) {
+  StrbufDemand *w = ud;
+  Compiler *c = w->c;
   const NodeTable *nt = c->nt;
-  if (node < 0 || depth > 16) return 0;
+  int node = lf->node, depth = w->depth;
+  if (lf->kind != VPK_EXPR && lf->kind != VPK_JUMP) return 0;
   switch (nt_kind(nt, node)) {
-    case NK_CaseNode: case NK_CaseMatchNode: {
-      int changed = 0;
-      int nw = 0; const int *whens = nt_arr(nt, node, "conditions", &nw);
-      for (int w = 0; w < nw; w++)
-        changed |= strbuf_demand_value_leaves(c, nt_ref(nt, whens[w], "statements"), depth + 1);
-      return changed | strbuf_demand_value_leaves(c, nt_ref(nt, node, "else_clause"), depth + 1);
-    }
     case NK_InstanceVariableReadNode: {
       int cid;
       if (!strbuf_poly_ivar_read(c, node, &cid)) return 0;
-      return strbuf_demand_ivar_writes(c, cid, nt_str(nt, node, "name"), depth + 4);
+      w->changed |= strbuf_demand_ivar_writes(c, cid, nt_str(nt, node, "name"), depth + 4);
+      return 0;
     }
     case NK_GlobalVariableReadNode: {
       const char *grn;
       if (!strbuf_poly_gvar(c, node, &grn)) return 0;
-      return strbuf_demand_gvar_writes(c, grn, depth + 4);
+      w->changed |= strbuf_demand_gvar_writes(c, grn, depth + 4);
+      return 0;
     }
-    case NK_StatementsNode: {
-      int n = 0; const int *b = nt_arr(nt, node, "body", &n);
-      return n > 0 ? strbuf_demand_value_leaves(c, b[n - 1], depth + 1) : 0;
-    }
-    case NK_ParenthesesNode:
-      return strbuf_demand_value_leaves(c, nt_ref(nt, node, "body"), depth + 1);
-    case NK_ElseNode:
-      return strbuf_demand_value_leaves(c, nt_ref(nt, node, "statements"), depth + 1);
-    case NK_IfNode:
-      return strbuf_demand_value_leaves(c, nt_ref(nt, node, "statements"), depth + 1) |
-             strbuf_demand_value_leaves(c, nt_ref(nt, node, "subsequent"), depth + 1);
-    case NK_UnlessNode:
-      return strbuf_demand_value_leaves(c, nt_ref(nt, node, "statements"), depth + 1) |
-             strbuf_demand_value_leaves(c, nt_ref(nt, node, "else_clause"), depth + 1);
-    case NK_OrNode: case NK_AndNode:
-      return strbuf_demand_value_leaves(c, nt_ref(nt, node, "left"), depth + 1) |
-             strbuf_demand_value_leaves(c, nt_ref(nt, node, "right"), depth + 1);
     case NK_LocalVariableReadNode: {
       if (c->strbuf_box[node]) return 0;
       const char *vn = nt_str(nt, node, "name");
       Scope *vs = vn ? comp_scope_of(c, node) : NULL;
       LocalVar *vlv = vs ? scope_local(vs, vn) : NULL;
-      if (vlv && vlv->type == TY_POLY && !vlv->is_param)
-        return strbuf_demand_local_writes(c, vn, vs, depth + 4);
+      if (vlv && vlv->type == TY_POLY && !vlv->is_param) {
+        w->changed |= strbuf_demand_local_writes(c, vn, vs, depth + 4);
+        return 0;
+      }
       if (!vlv || !strbuf_slot_eligible(c, vn, vs, vlv)) return 0;
       if (strbuf_mut_kind(c, vn, vs) < 0) return 0;
       lv_set_type(vlv, TY_STRBUF); vlv->str_shared = 1;
       comp_set_strbuf_box(c, node, 1);
       sbd_gen++;
-      return 1;
+      w->changed = 1;
+      return 0;
     }
     default: {
       if (c->strbuf_box[node]) return 0;
@@ -21151,14 +21136,25 @@ static int strbuf_demand_value_leaves(Compiler *c, int node, int depth) {
       if (infer_type(c, node) == TY_POLY) {
         int d = strbuf_demand_elem_arg(c, node);
         if (d >= 0) sbd_gen++;   /* it may have marked stores, changed or not */
-        return d > 0 ? d : 0;
+        w->changed |= d > 0 ? d : 0;
+        return 0;
       }
       if (infer_type(c, node) != TY_STRING) return 0;
       comp_set_strbuf_box(c, node, 1);
       sbd_gen++;
-      return 1;
+      w->changed = 1;
+      return 0;
     }
   }
+}
+/* (the walk is the arms of a conditional, each leaf demanded in turn; `depth`
+   counts the variables hopped through, not the shapes) */
+static int strbuf_demand_value_leaves(Compiler *c, int node, int depth) {
+  if (node < 0 || depth > 16) return 0;
+  StrbufDemand w = { c, depth, 0 };
+  for_each_value_position(c->nt, node, VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_LOGIC,
+                          strbuf_demand_leaf, &w);
+  return w.changed;
 }
 
 /* String methods that only READ the receiver's bytes and keep no pointer past
