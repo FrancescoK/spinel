@@ -14918,8 +14918,9 @@ static int rows_method_taken(const NodeTable *nt, const char *dn) {
   return 0;
 }
 
-/* The edges rows_value_dropped climbs. */
-enum { ROWS_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VPS_RESCUE_MOD };
+/* The edges rows_value_dropped climbs: every shape, the begin's body beside
+   an else being a clause run for its effect. */
+enum { ROWS_CLIMB = VPS_ALL };
 
 /* Whether the value of `w` is thrown away: a statement whose value nothing
    reads, the last statement of a conditional, a parenthesized or a begin
@@ -14934,6 +14935,8 @@ static int rows_value_dropped(Compiler *c, const int *par, int w, const char **s
   const NodeTable *nt = c->nt;
   VpUp up;
   VpUpKind ended = vp_climb(nt, par, w, ROWS_CLIMB, &up);
+  /* the left operand of `||` is tested, whatever the operator answers */
+  if (up.reach) return 0;
   if (ended == VPU_DROPPED) return 1;
   if (ended != VPU_ENDED) return 0;
   /* the body of a loop, a clause run for its effect, the block of an
