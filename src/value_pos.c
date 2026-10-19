@@ -277,7 +277,30 @@ typedef struct {
   const NodeTable *nt;
   FILE *out;
   int line;   /* the scope's line: where a nil with no parent is */
+  const int *ord;   /* by node id: the program node's number, as vp_ord_table counts */
 } VpDump;
+
+/* The numbers a dump prints for nodes. Ids count from the first node the
+   parser made, and the builtins spliced in ahead of the program are parsed
+   first, so a builtin that grows moved every id of the dump. A program node
+   is numbered by how many program nodes come before it (the count
+   comp_node_ord gives it), which the builtins do not change. */
+static int *vp_ord_table(const NodeTable *nt) {
+  int *ord = malloc((size_t)(nt->count ? nt->count : 1) * sizeof *ord);
+  if (!ord) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int next = 0;
+  for (int id = 0; id < nt->count; id++)
+    ord[id] = nt_int(nt, id, "node_bi", 0) ? -1 : next++;
+  return ord;
+}
+
+/* "#12" for a program node. A builtin's node, should a dump reach one, is
+   "#p3": its number inside the builtin method (or top-level statement) it
+   belongs to, which only an edit of that builtin moves. */
+static void vp_print_id(const VpDump *d, int id) {
+  if (d->ord[id] >= 0) fprintf(d->out, " #%d", d->ord[id]);
+  else fprintf(d->out, " #p%d", id - ((int)nt_int(d->nt, id, "node_bi", 0) - 1));
+}
 
 static const char *vp_kind_name(VpKind k) {
   switch (k) {
@@ -293,11 +316,15 @@ static int vp_dump_leaf(const VpLeaf *lf, void *ud) {
   VpDump *d = ud;
   const NodeTable *nt = d->nt;
   fprintf(d->out, "  %s", vp_kind_name(lf->kind));
-  if (lf->node >= 0) fprintf(d->out, " #%d %s", lf->node, nt_type(nt, lf->node));
+  if (lf->node >= 0) { vp_print_id(d, lf->node); fprintf(d->out, " %s", nt_type(nt, lf->node)); }
   int line = lf->node >= 0 ? (int)nt_int(nt, lf->node, "node_line", 0)
            : lf->parent >= 0 ? (int)nt_int(nt, lf->parent, "node_line", 0) : d->line;
   fprintf(d->out, " line %d arm %d", line, lf->arm);
-  if (lf->parent >= 0) fprintf(d->out, " parent #%d %s", lf->parent, nt_type(nt, lf->parent));
+  if (lf->parent >= 0) {
+    fprintf(d->out, " parent");
+    vp_print_id(d, lf->parent);
+    fprintf(d->out, " %s", nt_type(nt, lf->parent));
+  }
   else fprintf(d->out, " parent -");
   fprintf(d->out, " depth %d", lf->cond_depth);
   if (lf->reach) fprintf(d->out, " reach %s", lf->reach == VPR_TRUTHY ? "truthy" : lf->reach == VPR_FALSY ? "falsy" : "never");
@@ -305,9 +332,9 @@ static int vp_dump_leaf(const VpLeaf *lf, void *ud) {
   return 0;
 }
 
-static void vp_dump_scope(const NodeTable *nt, FILE *out, const char *title, int line, int root) {
+static void vp_dump_scope(const NodeTable *nt, FILE *out, const int *ord, const char *title, int line, int root) {
   VpDump d;
-  d.nt = nt; d.out = out; d.line = line;
+  d.nt = nt; d.out = out; d.line = line; d.ord = ord;
   fprintf(out, "%s line %d\n", title, line);
   for_each_value_position(nt, root, VP_ALL_FLAGS, vp_dump_leaf, &d);
 }
@@ -317,8 +344,9 @@ static void vp_dump_scope(const NodeTable *nt, FILE *out, const char *title, int
    block is a root of its own: the walk never goes into one. */
 void value_pos_dump(const NodeTable *nt, FILE *out) {
   fprintf(out, "main\n");
+  int *ord = vp_ord_table(nt);
   VpDump d;
-  d.nt = nt; d.out = out; d.line = 1;
+  d.nt = nt; d.out = out; d.line = 1; d.ord = ord;
   for_each_value_position(nt, nt_ref(nt, nt->root_id, "statements"), VP_ALL_FLAGS, vp_dump_leaf, &d);
   for (int id = 0; id < nt->count; id++) {
     NodeKind k = nt_kind(nt, id);
@@ -327,8 +355,9 @@ void value_pos_dump(const NodeTable *nt, FILE *out) {
     char title[256];
     if (k == NK_DefNode) snprintf(title, sizeof title, "def %s", name ? name : "?");
     else snprintf(title, sizeof title, "%s", k == NK_BlockNode ? "block" : "lambda");
-    vp_dump_scope(nt, out, title, (int)nt_int(nt, id, "node_line", 0), nt_ref(nt, id, "body"));
+    vp_dump_scope(nt, out, ord, title, (int)nt_int(nt, id, "node_line", 0), nt_ref(nt, id, "body"));
   }
+  free(ord);
 }
 
 /* ---- --check-value-pos ---- */
