@@ -11347,9 +11347,11 @@ static int subtree_changes_local_syn(Compiler *c, int root, const char *name) {
    ivar, or a field read of a local, where the loop assigns neither the local
    nor the ivar.
 
-   An IO::Buffer is cached the same way: its literal-typed `get_value` reads
-   and its `size` run no code and move no buffer, so the loop keeps the bytes
-   a read sees and their count (sp_iob_view) and reads them in place. What
+   An IO::Buffer is cached the same way: its literal-typed `get_value` reads,
+   `set_value` writes and its `size` run no code and move no buffer, so the
+   loop keeps the bytes a read sees, their count (sp_iob_view) and how many a
+   write may store into (none of a read-only buffer's), and reads and writes
+   them in place. What
    could free, resize or transfer the buffer -- any other call -- leaves the
    loop uncached; a finalizer or a trap handler runs only at a poll, after
    which the cache is read again. Another thread's free in parallel is a data
@@ -11561,6 +11563,25 @@ int hc_iob_read(Compiler *c, int id) {
   int it = comp_iob_sym_type(nt_str(nt, av[0], "value"));
   return it >= 0 && !comp_iob_ty_is_64(it) && (comp_ntype(c, av[1]) == TY_INT || hc_promoted_int(c, av[1]));
 }
+/* `buf.set_value(:U8, i, v)`: a write emit_native_binding_call lowers
+   inline -- a literal type symbol at an Integer offset, with an Integer
+   value, or an Integer or Float one for a float type. It runs no code and
+   moves no buffer: the out-of-line write it falls back to only stores or
+   raises. */
+int hc_iob_write(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  if (!nm || !sp_streq(nm, "set_value") || recv < 0 || ac != 3 || nt_ref(nt, id, "block") >= 0 ||
+      nt_kind(nt, av[0]) != NK_SymbolNode || !hc_iob_binding(c, comp_ntype(c, recv), nm, 3))
+    return 0;
+  int it = comp_iob_sym_type(nt_str(nt, av[0], "value"));
+  if (it < 0 || !(comp_ntype(c, av[1]) == TY_INT || hc_promoted_int(c, av[1]))) return 0;
+  TyKind vt = comp_ntype(c, av[2]);
+  return vt == TY_INT || (comp_iob_ty_is_float(it) && vt == TY_FLOAT);
+}
 
 static int hc_call_ok(Compiler *c, int id, int stmt) {
   const NodeTable *nt = c->nt;
@@ -11587,7 +11608,8 @@ static int hc_call_ok(Compiler *c, int id, int stmt) {
   if (sp_streq(nm, "getbyte") && ac == 1 && rt == TY_STRING && comp_ntype(c, av[0]) == TY_INT) return 1;
   if (is_len_alias(nm) && ac == 0 && (ty_is_array(rt) || rt == TY_STRING))
     return 1;
-  if (hc_iob_read(c, id) || (ac == 0 && sp_streq(nm, "size") && hc_iob_binding(c, rt, nm, 0))) return 1;
+  if (hc_iob_read(c, id) || hc_iob_write(c, id) ||
+      (ac == 0 && sp_streq(nm, "size") && hc_iob_binding(c, rt, nm, 0))) return 1;
   int alloc = 0;
   if (ac == 0 && call_is_field_read(c, id, &alloc) && !alloc) return 1;
   if (ac == 0 && (rt == TY_INT || rt == TY_FLOAT)) {
@@ -11846,6 +11868,14 @@ int hc_iobuf(Compiler *c, int recv, char *d, char *l, size_t cap) {
   if (e < 0) return 0;
   snprintf(d, cap, "_hcd%d_%d", g_hc->id, e);
   snprintf(l, cap, "_hcl%d_%d", g_hc->id, e);
+  return 1;
+}
+/* ...and how many of them a write may store into (_hcw, sp_iob_view_wlen) */
+int hc_iobuf_w(Compiler *c, int recv, char *d, char *w, size_t cap) {
+  int e = hc_entry(c, recv, HC_IOB);
+  if (e < 0) return 0;
+  snprintf(d, cap, "_hcd%d_%d", g_hc->id, e);
+  snprintf(w, cap, "_hcw%d_%d", g_hc->id, e);
   return 1;
 }
 
@@ -12115,7 +12145,7 @@ static void hc_close(HcRegion *r, const char *loop, Buf *b, int indent) {
     emit_indent(b, indent); buf_puts(b, "{\n");
     for (int i = 0; i < r->n; i++) {
       const char *et = r->e[i].kind == HC_INT ? "sp_int" : r->e[i].kind == HC_FLOAT ? "sp_float" :
-                       r->e[i].kind == HC_IOB ? "const uint8_t" : "const char";
+                       r->e[i].kind == HC_IOB ? "uint8_t" : "const char";
       emit_indent(b, indent + 1);
       buf_printf(b, "%s *_hcd%d_%d; sp_int _hcl%d_%d;", et, r->id, i, r->id, i);
       /* _hcw: a store may write the cached element -- not into a frozen
@@ -12126,6 +12156,8 @@ static void hc_close(HcRegion *r, const char *loop, Buf *b, int indent) {
          out (a gap past its end) keeps the fast path below the gap */
       if (r->e[i].kind == HC_INT || r->e[i].kind == HC_FLOAT)
         buf_printf(b, " int _hcw%d_%d; sp_int _hcr%d_%d;", r->id, i, r->id, i);
+      /* _hcw of a buffer: how many of its bytes a write may store into */
+      if (r->e[i].kind == HC_IOB) buf_printf(b, " sp_int _hcw%d_%d;", r->id, i);
       if (r->e[i].nf) buf_printf(b, " sp_int _hcn%d_%d;", r->id, i);
       buf_puts(b, "\n");
     }
@@ -12136,7 +12168,8 @@ static void hc_close(HcRegion *r, const char *loop, Buf *b, int indent) {
         buf_printf(b, "{ const char *_s = %s; _hcd%d_%d = _s; _hcl%d_%d = _s ? (sp_int)sp_str_byte_len(_s) : 0; } ",
                    rv, r->id, i, r->id, i);
       else if (r->e[i].kind == HC_IOB)
-        buf_printf(b, "_hcd%d_%d = sp_iob_view(%s, &_hcl%d_%d); ", r->id, i, rv, r->id, i);
+        buf_printf(b, "{ sp_IOBuffer *_b = %s; _hcd%d_%d = sp_iob_view(_b, &_hcl%d_%d); _hcw%d_%d = sp_iob_view_wlen(_b, _hcl%d_%d); } ",
+                   rv, r->id, i, r->id, i, r->id, i, r->id, i);
       else {
         buf_printf(b, "{ sp_%sArray *_a = %s; _hcd%d_%d = _a ? _a->data%s : NULL; _hcl%d_%d = _a ? _a->len : 0; _hcw%d_%d = _a && !_a->frozen; _hcr%d_%d = _a ? SP_%s_NILFREE_LEN(_a) : 0; ",
                    r->e[i].kind == HC_INT ? "Int" : "Float", rv, r->id, i,

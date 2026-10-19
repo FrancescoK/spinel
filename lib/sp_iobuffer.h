@@ -133,8 +133,9 @@ static inline sp_int sp_IOBuffer_size_inline(sp_IOBuffer *b) { return (sp_int)b-
    the bytes a read of b sees and how many -- an owned buffer's, or a valid
    slice's within its source. NULL and 0 for nil, a freed or transferred
    buffer and an invalidated slice (iob_slice_invalid), every read of which
-   takes sp_IOBuffer_get_i / _get_f and raises as it does uncached. */
-static inline const uint8_t *sp_iob_view(sp_IOBuffer *b, sp_int *len) {
+   takes sp_IOBuffer_get_i / _get_f and raises as it does uncached. A
+   cached set_value writes them too, up to sp_iob_view_wlen. */
+static inline uint8_t *sp_iob_view(sp_IOBuffer *b, sp_int *len) {
   *len = 0;
   if (!b) return NULL;
   if (b->data) { *len = b->size; return b->data; }
@@ -151,6 +152,53 @@ static inline int sp_iob_fits(sp_int len, sp_int off, sp_int ty) {
 sp_int sp_IOBuffer_set_i(sp_IOBuffer *b, sp_int ty, sp_int off, sp_int v);
 sp_int sp_IOBuffer_set_f(sp_IOBuffer *b, sp_int ty, sp_int off, double v);
 sp_int sp_IOBuffer_set_v(sp_IOBuffer *b, sp_int ty, sp_int off, sp_RbVal v);
+
+/* The same writes inline, as the reads above. sp_iob_put_i / _put_f store
+   v at off among the d bytes of which wl are writable and answer the width,
+   or answer 0 when the value does not go there: off outside the wl bytes (a
+   read-only buffer has none), or a 32-bit value out of range. The caller
+   then calls sp_IOBuffer_set_i / _set_f, which checks in CRuby's order
+   (AccessError before the offset) and raises as before; both answer what
+   the out-of-line write answers. The 64-bit integers come here too: any
+   sp_int fits them. */
+static inline void sp_iob_store(uint8_t *p, int width, int be, uint64_t v) {
+  if (be) for (int i = 0; i < width; i++) p[i] = (uint8_t)(v >> (8 * (width - 1 - i)));
+  else    for (int i = 0; i < width; i++) p[i] = (uint8_t)(v >> (8 * i));
+}
+/* an 8/16-bit store wraps and a 64-bit one holds any sp_int; a 32-bit one
+   takes [-2^31, 2^31-1] signed, [-2^31, 2^32-1] unsigned */
+static inline int sp_iob_holds(sp_int ty, sp_int v) {
+  return sp_iob_width(ty) != 4 || ((int64_t)v >= -((int64_t)1 << 31) &&
+                                   (int64_t)v <= ((ty & 1) ? ((int64_t)1 << 31) - 1 : ((int64_t)1 << 32) - 1));
+}
+static inline sp_int sp_iob_put_i(uint8_t *d, sp_int wl, sp_int ty, sp_int off, sp_int v) {
+  if (SP_UNLIKELY(!sp_iob_fits(wl, off, ty) || !sp_iob_holds(ty, v))) return 0;
+  sp_iob_store(d + off, sp_iob_width(ty), sp_iob_big_endian(ty), (uint64_t)(int64_t)v);
+  return sp_iob_width(ty);
+}
+static inline sp_int sp_iob_put_f(uint8_t *d, sp_int wl, sp_int ty, sp_int off, double v) {
+  if (SP_UNLIKELY(!sp_iob_fits(wl, off, ty))) return 0;
+  uint64_t raw;
+  if (sp_iob_width(ty) == 4) { union { uint32_t u; float f; } u; u.f = (float)v; raw = u.u; }
+  else { union { uint64_t u; double f; } u; u.f = v; raw = u.u; }
+  sp_iob_store(d + off, sp_iob_width(ty), sp_iob_big_endian(ty), raw);
+  return sp_iob_width(ty);
+}
+/* how many of a view's len bytes a write may store into: none of a
+   read-only buffer's (a slice carries its root's READONLY) */
+static inline sp_int sp_iob_view_wlen(sp_IOBuffer *b, sp_int len) {
+  return b && !(b->flags & SP_IOB_READONLY) ? len : 0;
+}
+/* an owned buffer's bytes: a slice's data is NULL (see the struct), so a
+   slice takes the out-of-line write */
+static inline sp_int sp_IOBuffer_store_i(sp_IOBuffer *b, sp_int ty, sp_int off, sp_int v) {
+  sp_int r = sp_iob_put_i(b->data, b->data ? sp_iob_view_wlen(b, b->size) : 0, ty, off, v);
+  return SP_LIKELY(r) ? r : sp_IOBuffer_set_i(b, ty, off, v);
+}
+static inline sp_int sp_IOBuffer_store_f(sp_IOBuffer *b, sp_int ty, sp_int off, double v) {
+  sp_int r = sp_iob_put_f(b->data, b->data ? sp_iob_view_wlen(b, b->size) : 0, ty, off, v);
+  return SP_LIKELY(r) ? r : sp_IOBuffer_set_f(b, ty, off, v);
+}
 
 /* strings */
 const char *sp_IOBuffer_get_string0(sp_IOBuffer *b);
