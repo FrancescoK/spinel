@@ -208,6 +208,8 @@ the field layouts coincide by construction.
 | `T?`                                   | `<T>?`  (recursive)                   |
 | `T \| nil` / `nil \| T`                | `<T>?`                                |
 | `name` of a `type name = T`            | what `T` maps to                      |
+| `{ name: T, ... }` (a record)          | `sym_poly_hash`                       |
+| `{ "name" => T, ... }`                 | `str_poly_hash`                       |
 
 The analyzer has one Symbol-keyed Hash kind, the poly-valued one, so every
 `Hash[Symbol, V]` maps to it and the values stay boxed.
@@ -219,6 +221,11 @@ alias before it reads a signature, and an alias whose type names another
 alias follows it. The name resolves as a class name does (below). A
 generic alias (`type listed[T] = Array[T]`) and an alias whose type is
 out of the subset stay out of it.
+
+A record is the Hash its fields make: Symbol-keyed for `name:` and
+`:name =>` fields, String-keyed for `"name" =>` fields, with the values
+boxed whatever the field types say, as `Hash[Symbol, V]` is. A record
+with keys of another class, or of both, maps to `poly`.
 
 ### `Array[Array[Integer]]` and `Array[Array[Float]]` on an instance variable
 
@@ -353,7 +360,6 @@ stands on its own.
 - Literal types (`:foo`, `42`, `"x"`)
 - Generic type aliases (`type listed[T] = Array[T]`)
 - Type variables (generics with parameters)
-- Records (`{ name: T, ... }`)
 - Tuples (`[T, U]`)
 - Proc types (`^(T) -> U`)
 - `Hash[K, V]` where K is not `String` or `Symbol`

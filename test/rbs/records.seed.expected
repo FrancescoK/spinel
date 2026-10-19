@@ -1,0 +1,8 @@
+class Records
+meth sym sym_poly_hash sym_poly_hash
+meth sym_arrow - sym_poly_hash
+meth str - str_poly_hash
+meth mixed - poly
+meth other - poly
+meth aliased sym_poly_hash sym_poly_hash
+meth listed - poly_array

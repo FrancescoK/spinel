@@ -21,6 +21,8 @@
  *     other Symbol-keyed kind)
  *   - Optional T (T?) → <subset>?    (recursive)
  *   - Union T | nil → T?    (any other union → poly)
+ *   - A record `{ name: T, ... }` → sym_poly_hash (str_poly_hash for
+ *     String keys, poly for other keys)
  *   - A type alias (`type patch_t = Array[untyped]`, generic ones
  *     excepted) → what its type maps to, wherever the name is referenced
  *   - An `instance` return in a class, and a `self` return in its

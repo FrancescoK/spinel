@@ -515,12 +515,34 @@ static bool map_alias(rbs_parser_t *p, rbs_types_alias_t *a, const char *enclosi
     return found;
 }
 
+/* `{ name: String, ?age: Integer }`: a Hash keyed by the field names,
+ * which are Symbols (`name:`, `:name =>`) or Strings (`"name" =>`), with
+ * values of several types: the poly-valued Hash kind of that key class.
+ * Keys of another class, or of both, have no kind of their own: poly, as
+ * a union is. */
+static bool map_record(rbs_types_record_t *r, sbuf_t *out) {
+    bool sym = true, str = true;
+    if (r->all_fields != NULL) {
+        for (rbs_hash_node_t *f = r->all_fields->head; f != NULL; f = f->next) {
+            if (f->key != NULL && f->key->type == RBS_AST_SYMBOL) str = false;
+            else if (f->key != NULL && f->key->type == RBS_AST_STRING) sym = false;
+            else { sym = false; str = false; }
+        }
+    }
+    if (sym) sbuf_set(out, "sym_poly_hash", 13);
+    else if (str) sbuf_set(out, "str_poly_hash", 13);
+    else sbuf_set(out, "poly", 4);
+    return true;
+}
+
 bool map_type(rbs_parser_t *p, rbs_node_t *node,
                      const char *enclosing_scope, sbuf_t *out) {
     if (node == NULL) return false;
     switch (node->type) {
         case RBS_TYPES_ALIAS:
             return map_alias(p, (rbs_types_alias_t *) node, enclosing_scope, out);
+        case RBS_TYPES_RECORD:
+            return map_record((rbs_types_record_t *) node, out);
         case RBS_TYPES_BASES_BOOL:
             sbuf_set(out, "bool", 4);
             return true;
@@ -623,8 +645,7 @@ else {
         default:
             /* Out of subset: Self / Top / Bottom / Any / Instance /
              * Class / Block / Function / Interface / Intersection /
-             * Literal / Proc / Record / RecordFieldType / Tuple /
-             * UntypedFunction / Variable. */
+             * Literal / Proc / Tuple / UntypedFunction / Variable. */
             return false;
     }
 }
