@@ -324,7 +324,7 @@ static int share_plan_arm_bad(const VpLeaf *lf, void *ud) {
   const SharePlanArms *a = ud;
   Compiler *c = a->c;
   const NodeTable *nt = c->nt;
-  int v = lf->node, depth = a->depth + lf->cond_depth;
+  int v = lf->node, depth = a->depth;
   if (lf->kind == VPK_NIL) return 0;
   if (lf->kind == VPK_GAVE_UP) return 1;
   if (nt_kind(nt, v) == NK_BeginNode) {
