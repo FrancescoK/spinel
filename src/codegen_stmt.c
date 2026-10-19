@@ -4407,8 +4407,9 @@ static int emit_held_self_answer_shim(Compiler *c, int id, int r, TyKind ty, Buf
     if (nilok) buf_printf(b, " _res%d = 0; if (_t%d) {", tH, tH);
     else buf_printf(b, " _res%d; if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));",
                     tH, tH, nt_str(c->nt, id, "name"));
-    buf_printf(b, " SP_GC_ROOT(_t%d);%s const char *lv__sh%d = sp_strbuf_read(_t%d); SP_GC_ROOT(lv__sh%d);",
-               tH, pre.p ? pre.p : "", tH, tH, tH);
+    buf_printf(b, " SP_GC_ROOT(_t%d);%s const char *lv__sh%d = ", tH, pre.p ? pre.p : "", tH);
+    str_read_handle_tmp(b, tH, 0);
+    buf_printf(b, "; SP_GC_ROOT(lv__sh%d);", tH);
     /* a block that changes the String through another name while gsub! or
        sub! runs over it is CRuby's RuntimeError, where the shadow's write
        back would drop the change */
@@ -4898,7 +4899,9 @@ static int emit_bang_self_handle_1(Compiler *c, int v, int pub, Buf *b) {
     int th = ++g_tmp, mark = g_n_argov;
     emit_bang_held_open(c, v, th, sref, 1, 0, b);
     if (emit_self_mutator_stmt(c, v, b)) {
-      buf_printf(b, pub ? "sp_strbuf_read_pub(_t%d); })" : "_t%d; })", th);
+      if (pub) str_read_handle_tmp(b, th, 1);
+      else buf_printf(b, "_t%d", th);
+      buf_puts(b, "; })");
       break;
     }
     buf_printf(b, "const char *_t%d = ", tr);

@@ -360,6 +360,19 @@ void str_box_handle_tmp(Buf *b, int tmp) {
   str_box_close(b);
 }
 
+/* The bytes a String handle reads as (a copy of its String, NULL for nil,
+   frozen for a frozen handle): the one place its text is written, as it is
+   for the box. `pub` is the read that also publishes the handle to the
+   deep-return channel (sp_strbuf_read_pub), for a consumer whose value a
+   caller picks the handle up from. str_read_handle reads text already
+   written, str_read_handle_tmp a temp. */
+void str_read_handle(Buf *b, const char *h, int pub) {
+  buf_printf(b, "%s(%s)", pub ? "sp_strbuf_read_pub" : "sp_strbuf_read", h ? h : "NULL");
+}
+void str_read_handle_tmp(Buf *b, int tmp, int pub) {
+  buf_printf(b, "%s(_t%d)", pub ? "sp_strbuf_read_pub" : "sp_strbuf_read", tmp);
+}
+
 /* The box face's last arms, where the value is boxed by its representation
    (emit_boxed_impl's TY_STRING arm): a String the plan wraps (`wrap`) as
    the new handle it is (sp_box_str_new), so the box's copies name one

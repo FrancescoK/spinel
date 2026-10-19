@@ -506,6 +506,11 @@ void str_box_handle(Buf *b, const char *h);
 void str_box_handle_tmp(Buf *b, int tmp);
 void str_box_open(Buf *b, int nullable);
 void str_box_close(Buf *b);
+/* The bytes a handle reads as, written in one place (codegen_str.c): of
+   text already written or of a temp; `pub` also publishes the handle
+   (sp_strbuf_read_pub) */
+void str_read_handle(Buf *b, const char *h, int pub);
+void str_read_handle_tmp(Buf *b, int tmp, int pub);
 /* The box face's arms for a value boxed by its representation: a String
    the plan wraps as the new handle it is (`wrap`), else its bytes */
 void emit_str_box_leaf(Compiler *c, int v, int wrap, Buf *b);

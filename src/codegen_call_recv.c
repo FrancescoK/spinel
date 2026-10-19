@@ -12139,7 +12139,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           else if (repr_of(c, id).read_raw && decide_node(c->nt, id, "strbuf-raw", NULL))
             buf_printf(b, "_t%d ? sp_String_cstr(_t%d) : NULL; })", tvR, tvR);
           else
-            buf_printf(b, "sp_strbuf_read(_t%d); })", tvR);
+            { str_read_handle_tmp(b, tvR, 0); buf_puts(b, "; })"); }
           return 1;
         }
         /* a field with a nil bit is read with it where the call's consumer
