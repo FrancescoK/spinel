@@ -498,14 +498,6 @@ char *g_ext_shim_text = NULL;
    compared with the form repr_of predicts for the node, and a mismatch is
    printed to stderr with what explains it. Only statics are touched, so the
    C is the same with and without the flag. */
-enum {
-  RW_NONE,           /* nothing at the site explains a difference */
-  RW_YIELD,          /* a yield boxed by the block of this call site */
-  RW_TRANSPLANT,     /* a module ivar read boxed by the including class's field */
-  RW_RAN_FIRST,      /* an argument that already ran: its temp */
-  RW_HANDLE_ROUTE,   /* a conditional boxed through its shared handle route */
-  RW_LITERAL         /* an empty literal or Hash.new boxed by its shape */
-};
 static int rc_depth;        /* emit_boxed nesting */
 static int rc_text_form = -1;
 static TyKind rc_text_ty = TY_UNKNOWN;
@@ -1967,9 +1959,9 @@ const char *ty_box_nil_fn(TyKind t) {
    box its handle (emit_strbuf_write_handle). 0 for any other node. */
 static int emit_boxed_write_handle(Compiler *c, int node, Buf *b) {
   if (!repr_write_share(c, node)) return 0;
-  buf_puts(b, "sp_box_nullable_obj(");
+  str_box_open(b, 1);
   emit_strbuf_write_handle(c, node, b);
-  buf_puts(b, ", SP_BUILTIN_STRBUF)");
+  str_box_close(b);
   RC(RF_STRBUF_HANDLE, RW_NONE);
   return 1;
 }
@@ -1986,7 +1978,7 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
     /* (an argument that ran ahead as the handle it hands on is that
        handle's box, the bang not run again) */
     if (ran_first_handle(node) >= 0) {
-      buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", ran_first_handle(node));
+      str_box_handle_tmp(b, ran_first_handle(node));
       RC(RF_STRBUF_HANDLE, RW_RAN_FIRST);
       return 1;
     }
@@ -2020,7 +2012,7 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
     Buf hb; memset(&hb, 0, sizeof hb);
     emit_bang_self_handle(c, node, &hb);
     view_pop(c, sv_b);
-    buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p ? hb.p : "NULL");
+    str_box_handle(b, hb.p ? hb.p : "NULL");
     free(hb.p);
     RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
     return 1;
@@ -2034,7 +2026,9 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
   int sv_b = view_push_repr(c, node, VR_STRBUF_BOX, 0);
   emit_expr(c, node, b);
   view_pop(c, sv_b);
-  buf_printf(b, "; _t%d ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil(); })", tb, sb.p ? sb.p : "");
+  buf_printf(b, "; _t%d ? ", tb);
+  str_box_handle(b, sb.p ? sb.p : "");
+  buf_puts(b, " : sp_box_nil(); })");
   free(sb.p);
   RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
   return 1;
@@ -2053,7 +2047,11 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
     emit_local_ref(c, node, nt_str(c->nt, node, "name"), &rb);
     snprintf(ref, sizeof ref, "%s", rb.p ? rb.p : "NULL");
     free(rb.p);
-    buf_printf(b, "(%s ? sp_box_nullable_obj(sp_String_new(%s), SP_BUILTIN_STRBUF) : sp_box_nil())", ref, ref);
+    buf_printf(b, "(%s ? ", ref);
+    str_box_open(b, 1);
+    buf_printf(b, "sp_String_new(%s)", ref);
+    str_box_close(b);
+    buf_puts(b, " : sp_box_nil())");
     RC(RF_STRBUF_HANDLE, RW_NONE);
     return;
   }
@@ -2062,9 +2060,9 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
   if (c->strbuf_box[node]) {
     int cr = an_str_conversion_local(c, node);
     if (cr >= 0 && comp_ntype(c, cr) == TY_STRBUF) {
-      buf_puts(b, "sp_box_nullable_obj(");
+      str_box_open(b, 1);
       emit_local_ref(c, cr, nt_str(c->nt, cr, "name"), b);
-      buf_puts(b, ", SP_BUILTIN_STRBUF)");
+      str_box_close(b);
       RC(RF_STRBUF_HANDLE, RW_NONE);
       return;
     }
@@ -2078,9 +2076,9 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
   }
   /* an element a String Array of handles reads or removes: its handle */
   if (rp->strbuf_src == RS_HANDLE && strh_handle_call(c, node)) {
-    buf_puts(b, "sp_box_nullable_obj(");
+    str_box_open(b, 1);
     strh_elem_handle_text(c, node, b);
-    buf_puts(b, ", SP_BUILTIN_STRBUF)");
+    str_box_close(b);
     RC(RF_STRBUF_HANDLE, RW_NONE);
     return;
   }
@@ -2097,21 +2095,21 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
     Buf srefS; memset(&srefS, 0, sizeof srefS);
     int th = ran_first_handle(node);
     if (th >= 0) {
-      buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", th);
+      str_box_handle_tmp(b, th);
       RC(RF_STRBUF_HANDLE, RW_RAN_FIRST);
       return;
     }
     /* a write whose slot holds the rule's handle: that handle */
     if (emit_boxed_write_handle(c, node, b)) return;
     strbuf_slot_text(c, node, &srefS);
-    buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", srefS.p ? srefS.p : "");
+    str_box_handle(b, srefS.p ? srefS.p : "");
     free(srefS.p);
     RC(RF_STRBUF_HANDLE, RW_NONE);
     return;
   }
   NodeKind k = nt_kind(c->nt, node);
   if (repr_self_shared(c, node)) {
-    buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", g_self);
+    str_box_handle(b, g_self);
     RC(RF_STRBUF_HANDLE, RW_NONE);
     return;
   }
@@ -2124,7 +2122,7 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
     LocalVar *blv0 = bs0 ? scope_local(bs0, bn0) : NULL;
     int th0 = repr_of_slot(c, blv0).handle ? ran_first_handle(node) : -1;
     if (th0 >= 0) {   /* ran first: the handle it read then, as above */
-      buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", th0);
+      str_box_handle_tmp(b, th0);
       RC(RF_STRBUF_HANDLE, RW_RAN_FIRST);
       return;
     }
@@ -2132,9 +2130,9 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
        (`f.call(k: s)` beside `-> { s }` named an lv_s nothing declared); a
        handle local holds NULL for nil (a nil argument bound to a parameter
        that is the handle): box that as nil */
-    buf_puts(b, "sp_box_nullable_obj(");
+    str_box_open(b, 1);
     emit_local_ref(c, node, bn0, b);
-    buf_puts(b, ", SP_BUILTIN_STRBUF)");
+    str_box_close(b);
     RC(RF_STRBUF_HANDLE, RW_NONE);
     return;
   }
@@ -2143,7 +2141,7 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
       (k == NK_InstanceVariableReadNode || repr_static_read_kind(k))) {
     Buf srefX; memset(&srefX, 0, sizeof srefX);
     if (strbuf_slot_text(c, node, &srefX)) {
-      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", srefX.p);
+      str_box_handle(b, srefX.p);
       free(srefX.p);
       RC(RF_STRBUF_HANDLE, RW_NONE);
       return;
@@ -2154,11 +2152,11 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
      so its value IS the slot -- the same handle the read above boxes, not
      a string to wrap a fresh handle around (#3993). */
   if (rp->strbuf_src == RS_HANDLE && k == NK_InstanceVariableWriteNode) {
-    buf_puts(b, "sp_box_obj(");
+    str_box_open(b, 0);
     int sv_mw = view_push_repr(c, node, VR_STRBUF_BOX, 0);
     emit_expr(c, node, b);
     view_pop(c, sv_mw);
-    buf_puts(b, ", SP_BUILTIN_STRBUF)");
+    str_box_close(b);
     RC(RF_STRBUF_HANDLE, RW_NONE);
     return;
   }
@@ -2169,11 +2167,13 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
      one: pass it through (as a handle box either way) so the alias keeps
      the container's own string rather than a fresh copy of it (#3941) */
   if (rp->strbuf_src == RS_ELEM) {
-    buf_puts(b, "sp_box_obj(sp_poly_as_strbuf(");
+    str_box_open(b, 0);
+    buf_puts(b, "sp_poly_as_strbuf(");
     int sv_m2 = view_push_repr(c, node, VR_STRBUF_BOX, 0);
     emit_expr(c, node, b);
     view_pop(c, sv_m2);
-    buf_puts(b, "), SP_BUILTIN_STRBUF)");
+    buf_puts(b, ")");
+    str_box_close(b);
     RC(RF_STRBUF_ELEM, RW_NONE);
     return;
   }
@@ -2191,7 +2191,7 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
     int got_h = strbuf_slot_text(c, node, &sref_h);
     view_pop(c, sv_mh);
     if (got_h) {
-      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", sref_h.p ? sref_h.p : "");
+      str_box_handle(b, sref_h.p ? sref_h.p : "");
       free(sref_h.p);
       RC(RF_STRBUF_HANDLE, RW_NONE);
       return;
@@ -2209,7 +2209,7 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
         nt_arr(c->nt, nt_ref(c->nt, node, "arguments"), "arguments", &na) && na == 1)
       vn = nt_arr(c->nt, nt_ref(c->nt, node, "arguments"), "arguments", &na)[0];
     if (strbuf_var_handle(c, vn, &vref)) {
-      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", vref.p);
+      str_box_handle(b, vref.p);
       free(vref.p);
       RC(RF_STRBUF_HANDLE, RW_NONE);
       return;
@@ -2217,7 +2217,7 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
     free(vref.p); }
   { Buf hb; memset(&hb, 0, sizeof hb);
     if (emit_strbuf_route(c, node, &hb)) {
-      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
+      str_box_handle(b, hb.p);
       free(hb.p);
       RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
       return;
@@ -2238,15 +2238,27 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
      more cycles than with it apart, all of them in its collections. */
   int tn = stored_value_may_be_nil(c, node) ? ++g_tmp : 0;
   if (tn) buf_printf(b, "({ const char *_t%d = ", tn);
-  else buf_puts(b, "sp_box_obj(sp_String_new_shared(");
+  else {
+    str_box_open(b, 0);
+    buf_puts(b, "sp_String_new_shared(");
+  }
   { Buf eb0; memset(&eb0, 0, sizeof eb0);
     int sv_mark = view_push_repr(c, node, VR_STRBUF_BOX, 0);   /* emit the plain string value */
     emit_str_expr(c, node, &eb0);
     view_pop(c, sv_mark);
     buf_puts(b, eb0.p ? eb0.p : "(&(\"\\xff\")[1])");
     free(eb0.p); }
-  if (tn) buf_printf(b, "; _t%d ? sp_box_obj(sp_String_new_shared(_t%d), SP_BUILTIN_STRBUF) : sp_box_nil(); })", tn, tn);
-  else buf_puts(b, "), SP_BUILTIN_STRBUF)");
+  if (tn) {
+    buf_printf(b, "; _t%d ? ", tn);
+    str_box_open(b, 0);
+    buf_printf(b, "sp_String_new_shared(_t%d)", tn);
+    str_box_close(b);
+    buf_puts(b, " : sp_box_nil(); })");
+  }
+  else {
+    buf_puts(b, ")");
+    str_box_close(b);
+  }
   RC(RF_STRBUF_FRESH, RW_NONE);
 }
 
@@ -2310,11 +2322,11 @@ static int emit_boxed_cond_arms(Compiler *c, int node, Buf *b) {
   }
   /* The other String conditionals already have a handle-valued route:
      box its answer so ||, && and case keep the selected arm's String. */
-  if ((k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode || k == NK_CaseMatchNode) &&
+  if ((k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode || k == NK_CaseMatchNode || k == NK_RescueModifierNode) &&
       (t == TY_STRING || t == TY_STRBUF) && strbuf_value_carries(c, node)) {
-    buf_puts(b, "sp_box_nullable_obj(");
+    str_box_open(b, 1);
     emit_strbuf_handle_of(c, node, b);
-    buf_puts(b, ", SP_BUILTIN_STRBUF)");
+    str_box_close(b);
     RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
     return 1;
   }
@@ -2330,7 +2342,7 @@ static int emit_boxed_cond_arms(Compiler *c, int node, Buf *b) {
   /* an argument that ran ahead as the handle it hands on (emit_arg_temp):
      that handle's box, not the arms run again */
   if (ran_first_handle(node) >= 0) {
-    buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", ran_first_handle(node));
+    str_box_handle_tmp(b, ran_first_handle(node));
     RC(RF_STRBUF_HANDLE, RW_RAN_FIRST);
     return 1;
   }
@@ -2514,7 +2526,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     if (repr_share_rule(c) && (bt == TY_STRING || bt == TY_STRBUF) && strbuf_yield_tail_held(c)) {
       Buf hb; memset(&hb, 0, sizeof hb);
       if (emit_strbuf_route(c, node, &hb)) {
-        buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
+        str_box_handle(b, hb.p);
         free(hb.p);
         RC(RF_STRBUF_HANDLE, RW_YIELD);
         return;
@@ -2705,7 +2717,11 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       /* `s&.to_s` answers nil for a nil s, where `s.to_s` answers "". */
       int sn = nt_safe_nav(c->nt, node) && g_sn_skip != node;
       if (strbuf_var_handle(c, r, &hr)) {
-        if (sn) buf_printf(b, "(%s ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil())", hr.p, hr.p);
+        if (sn) {
+          buf_printf(b, "(%s ? ", hr.p);
+          str_box_handle(b, hr.p);
+          buf_puts(b, " : sp_box_nil())");
+        }
         else buf_printf(b, "sp_strbuf_to_s_box(%s)", hr.p);
         free(hr.p);
       }
@@ -2728,9 +2744,9 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
        conversions over one (strbuf_var_conversion): boxed as the bytes,
        `x.then { |q| q.itself }` answered a copy */
     if (t == TY_STRING && strbuf_var_conversion(c, node)) {
-      buf_puts(b, "sp_box_nullable_obj(");
+      str_box_open(b, 1);
       emit_var_conversion_handle(c, node, b);
-      buf_puts(b, ", SP_BUILTIN_STRBUF)");
+      str_box_close(b);
       RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
       return;
     }
@@ -2739,9 +2755,9 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
        boxed as it */
     if (t == TY_STRING && repr_share_rule(c) && nt_kind(c->nt, node) == NK_CallNode &&
         (strbuf_chain_over_handle(c, node) || strbuf_bang_chain(c, node))) {
-      buf_puts(b, "sp_box_nullable_obj(");
+      str_box_open(b, 1);
       emit_strbuf_handle_of(c, node, b);
-      buf_puts(b, ", SP_BUILTIN_STRBUF)");
+      str_box_close(b);
       RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
       return;
     }
@@ -2811,17 +2827,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
        the box's copies name one String; any other is boxed as its bytes,
        which sp_box_str boxes as their handle where a handle owns them */
     int wrap = c->share_plan && share_plan_of(c, node, SPR_BOX, NULL).form == SPF_WRAP;
-    /* The new handle is an object only this box holds, and the box is
-       often a temporary handed to a runtime call that allocates before it
-       is done with it (a Hash lookup's key): rooted here, as the runtime
-       roots a String key by its tag but not a handle's box. Unrooted, a
-       collection inside the lookup freed the handle and its inline bytes. */
-    if (wrap) {
-      int tb = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = sp_box_str_new(", tb); emit_expr(c, node, b);
-      buf_printf(b, "); SP_GC_ROOT_RBVAL(_t%d); _t%d; })", tb, tb);
-    }
-    else { buf_printf(b, "%s(", ty_box_fn(TY_STRING)); emit_expr(c, node, b); buf_puts(b, ")"); }
+    emit_str_box_leaf(c, node, wrap, b);
     RC(RF_STR, RW_NONE);
     return;
   }
@@ -2903,7 +2909,7 @@ void emit_boxed_operand(Compiler *c, const int *argv, int argc, int k, Buf *b) {
   if (later) {
     Buf hb; memset(&hb, 0, sizeof hb);
     if (emit_strbuf_route(c, argv[k], &hb)) {
-      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
+      str_box_handle(b, hb.p);
       free(hb.p);
       return;
     }
@@ -2913,13 +2919,12 @@ void emit_boxed_operand(Compiler *c, const int *argv, int argc, int k, Buf *b) {
 }
 
 static void emit_boxed_string(Compiler *c, int node, Buf *b);
-static int emit_boxed_by_kind(Compiler *c, int node, Buf *b);
 void emit_boxed(Compiler *c, int node, Buf *b) {
   if (b == g_pre) { emit_into_pre_line(c, emit_boxed, node); return; }
   if (g_share_check) share_check_mark(c, node, 'B', b);
   int frame = g_repr_check ? repr_channel_begin(c, node) : -1;
   if (c->n_cext_extensions && ran_first_handle(node) >= 0) {
-    buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", ran_first_handle(node));
+    str_box_handle_tmp(b, ran_first_handle(node));
     if (g_repr_check) repr_channel_boxed(c, node, frame);
     return;
   }
@@ -2928,7 +2933,11 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     int temp=++g_tmp;
     buf_printf(b,"({ _sp_ret_strbuf = NULL; const char *_cext_string%d = ",temp);
     emit_expr(c,node,b);
-    buf_printf(b,"; _sp_ret_strbuf ? sp_box_obj(_sp_ret_strbuf, SP_BUILTIN_STRBUF) : _cext_string%d ? sp_box_str(_cext_string%d) : sp_box_nil(); })",temp,temp);
+    buf_puts(b, "; _sp_ret_strbuf ? ");
+    str_box_open(b, 0);
+    buf_puts(b, "_sp_ret_strbuf");
+    str_box_close(b);
+    buf_printf(b, " : _cext_string%d ? sp_box_str(_cext_string%d) : sp_box_nil(); })", temp, temp);
     if(g_repr_check)repr_channel_boxed(c,node,frame);
     return;
   }
@@ -2965,15 +2974,15 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
 
 /* The lift a String stored into a boxed slot the rule shares takes
    (poly_strbuf_lift): its box is lifted into its handle. */
-static int emit_boxed_lift(Compiler *c, int node) {
+int emit_boxed_lift(Compiler *c, int node) {
   return repr_share_rule(c) && node >= 0 && c->poly_strbuf_lift[node] && comp_ntype(c, node) == TY_STRING;
 }
 
 /* An argument that ran ahead as the handle it hands on (a lifted call
    result): that handle's box; 0 with nothing emitted for any other. */
-static int emit_boxed_lift_ran_first(Compiler *c, int node, Buf *b) {
+int emit_boxed_lift_ran_first(Compiler *c, int node, Buf *b) {
   if (!emit_boxed_lift(c, node) || ran_first_handle(node) < 0) return 0;
-  buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", ran_first_handle(node));
+  str_box_handle_tmp(b, ran_first_handle(node));
   return 1;
 }
 
@@ -3042,7 +3051,9 @@ static int emit_boxed_self_chain(Compiler *c, int node, Buf *b) {
     if (nm && is_freeze_name(nm)) frz = 1;
   }
   if (frz) buf_printf(b, "; if (_t%d) sp_String_freeze(%s)", tb, slot);
-  buf_printf(b, "; _t%d ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil(); })", tb, slot);
+  buf_printf(b, "; _t%d ? ", tb);
+  str_box_handle(b, slot);
+  buf_puts(b, " : sp_box_nil(); })");
   /* (the chain runs over the handle held ahead of its blocks: the reads
      its links make of that handle, in the prelude and here, are no copy) */
   if (g_share_check && bound) {
@@ -3065,7 +3076,7 @@ static int emit_boxed_routes(Compiler *c, int node, Buf *b) {
      handle's String (ran_first_bind_read), is boxed as the handle */
   if (repr_share_rule(c) && ran_first_handle(node) >= 0 &&
       (ran_first_read_handle(node) >= 0 || comp_ntype(c, node) == TY_STRBUF)) {
-    buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", ran_first_handle(node));
+    str_box_handle_tmp(b, ran_first_handle(node));
     return 1;
   }
   int lift = emit_boxed_lift(c, node);
@@ -3104,10 +3115,13 @@ static int emit_boxed_routes(Compiler *c, int node, Buf *b) {
      (a new handle over a copy was another String) */
   if (strbuf_srange_tail(c, node) >= 0 && emit_srange_route_boxed(c, node, b)) return 1;
   if (emit_boxed_lift_ran_first(c, node, b)) return 1;
-  if (lift || (!arg_ran_first(node, 0) && (strbuf_route_reader(c, node) || strbuf_route_boxed_exc_message(c, node)))) {
+  if (lift || (!arg_ran_first(node, 0) && (strbuf_route_reader(c, node) ||
+                                                (strbuf_route_ivar_get(c, node) &&
+                                                 share_plan_of(c, node, SPR_BOX, NULL).form == SPF_HANDLE) ||
+                                                strbuf_route_boxed_exc_message(c, node)))) {
     Buf hb; memset(&hb, 0, sizeof hb);
     if (emit_strbuf_route(c, node, &hb)) {
-      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
+      str_box_handle(b, hb.p);
       free(hb.p);
       return 1;
     }
@@ -3117,7 +3131,7 @@ static int emit_boxed_routes(Compiler *c, int node, Buf *b) {
 
 /* ...and the value's box by its representation (emit_boxed_impl), lifted
    into its handle where a store lifts it. */
-static void emit_boxed_by_repr(Compiler *c, int node, Buf *b) {
+void emit_boxed_by_repr(Compiler *c, int node, Buf *b) {
   int lift = emit_boxed_lift(c, node);
   /* --share-strings: a boxed call's answer a container store lifts into a
      handle (strbuf_demand_store_leaf), so a mutation through the element
@@ -3133,120 +3147,23 @@ static void emit_boxed_by_repr(Compiler *c, int node, Buf *b) {
 }
 
 /* The box of value node: under --share-strings, a String's by its
-   producer's kind (emit_boxed_by_kind); else the route arms, then the
-   representation's. */
+   producer's kind (emit_str_form's box face, codegen_str.c); else the route
+   arms, then the representation's. */
 static void emit_boxed_string(Compiler *c, int node, Buf *b) {
-  if (c->share_plan && node >= 0 && emit_boxed_by_kind(c, node, b)) return;
+  TyKind bt = c->share_plan && node >= 0 ? comp_ntype(c, node) : TY_UNKNOWN;
+  if (bt == TY_STRING || bt == TY_STRBUF) {
+    StrForm sf;
+    if (emit_str_form(c, node, SPR_BOX, SPX_BOX, 0, &sf) >= 0) {
+      str_form_settle(c, &sf, b);
+      str_form_close(&sf, b);
+      if (sf.rf >= 0) rc_note(c, node, sf.rf, sf.rw, 0);
+      str_form_free(&sf);
+      return;
+    }
+    str_form_free(&sf);
+  }
   if (emit_boxed_routes(c, node, b)) return;
   emit_boxed_by_repr(c, node, b);
-}
-
-/* --share-strings: the box face (#8328) of a String value (or one the rule
-   holds as the handle), by its producer's kind (share.h's SPK_*), asked
-   where it is boxed; 0 with nothing emitted for any other value:
-     NONE, FROZEN  the value's box by its representation: its bytes boxed
-                   (sp_box_str, or the new handle sp_box_str_new where the
-                   plan wraps it), a new handle's box, a lift; one that ran
-                   first into a store's lift: the handle it took;
-     BOX           the box itself, by its representation (or as above);
-     PROC_CALL     a proc's answer: the box the proc hands back, the call
-                   emitted as a box (a catch's or a reopened method's
-                   answer: the route arms);
-     any other     the box of the handle the producer hands on, by the
-                   route arms, then the representation's (a variable's
-                   slot, a demanded read, a boxed element, a narrowed box,
-                   a bang off a handle, a box's to_s, a chain). */
-static int emit_boxed_by_kind(Compiler *c, int node, Buf *b) {
-  TyKind t = comp_ntype(c, node);
-  if (t != TY_STRING && t != TY_STRBUF) return 0;
-  int kind = share_plan_producer(c, node, NULL);
-  _Static_assert(SPK__COUNT == 23, "a box render for each producer kind");
-  switch (kind) {
-  case SPK_NONE: case SPK_FROZEN: case SPK_BOX:
-    if (!emit_boxed_lift_ran_first(c, node, b)) emit_boxed_by_repr(c, node, b);
-    return 1;
-  case SPK_PROC_CALL:
-    if (strbuf_proc_call_box(c, node) && !arg_ran_first(node, 0) && !emit_boxed_lift(c, node)) {
-      /* (a block literal the call splices answers its tail boxed, as
-         emit_strbuf_route's proc arm asks it) */
-      int v = unwrap_parens(c, node), sv = view_push(c, v, TY_POLY);
-      if (is_block_call(c, v)) emit_block_invoke(c, nt_ref(c->nt, v, "arguments"), b, 0, 1, TY_POLY);
-      else emit_expr(c, v, b);
-      view_pop(c, sv);
-      RC(RF_PASS, RW_HANDLE_ROUTE);
-      return 1;
-    }
-    return 0;
-  /* a call with a literal block that the handle route splices (a yielding
-     call, `then`) and whose block's value the handle face renders
-     (a tail that is a write of a handle, a `next` of one): boxed as that
-     handle, as emit_strbuf_route reads the call, where the call's bytes
-     boxed whole were a const char * in a handle's place */
-  case SPK_BLOCK_VALUE:
-    if (nt_kind(c->nt, unwrap_parens(c, node)) == NK_CallNode && nt_ref(c->nt, unwrap_parens(c, node), "block") >= 0 &&
-        !arg_ran_first(node, 0) && !emit_boxed_lift(c, node) &&
-        share_plan_of(c, node, SPR_BOX, NULL).form == SPF_HANDLE) {
-      Buf hb; memset(&hb, 0, sizeof hb);
-      if (emit_strbuf_route(c, node, &hb)) {
-        buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
-        free(hb.p);
-        RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
-        return 1;
-      }
-      free(hb.p);
-    }
-    return 0;
-  /* a write whose slot holds the rule's handle (an ivar's, a global's, a
-     class variable's, an `||=`): the write runs, and its box is the handle
-     it stored */
-  case SPK_WRITE:
-    if (!arg_ran_first(node, 0) && !emit_boxed_lift(c, node) && strbuf_value_carries(c, node)) {
-      buf_puts(b, "sp_box_nullable_obj(");
-      emit_strbuf_handle_of(c, node, b);
-      buf_puts(b, ", SP_BUILTIN_STRBUF)");
-      RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
-      return 1;
-    }
-    return 0;
-  /* a call whose targets publish their handle, where the plan boxes that
-     handle but no store marked the call for its pickup (a block's value
-     that map collects, read through a typed receiver's reader): the
-     pickup, boxed, where the bytes boxed whole were a copy that a later
-     change to the String through the receiver never reached */
-  case SPK_PUBLISHED: {
-    /* only a call to user methods, each publishing on its return: a builtin
-       (ENV.fetch with a default) never clears or sets the channel, so the
-       pickup could take a handle an earlier call left there */
-    int u = unwrap_parens(c, node), tg[CPT_MAX];
-    if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && !strbuf_call_picks_up(c, u) &&
-        nt_ref(c->nt, u, "block") < 0 && comp_ntype(c, u) != TY_POLY && repr_call_returns_handle(c, u) &&
-        cplan_targets(c, u, tg, CPT_MAX) > 0 && strbuf_pickup_published(c, u) && !arg_ran_first(node, 0) &&
-        !emit_boxed_lift(c, node) && share_plan_of(c, node, SPR_BOX, NULL).form == SPF_HANDLE) {
-      buf_puts(b, "sp_box_nullable_obj(");
-      emit_published_pickup(c, u, b);
-      buf_puts(b, ", SP_BUILTIN_STRBUF)");
-      RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
-      return 1;
-    }
-    return 0;
-  }
-  case SPK_SLOT: case SPK_DEMANDED: case SPK_ELEM: case SPK_SLOT_POLY: case SPK_SELF: case SPK_BANG_BOX:
-  case SPK_POLY_ARMS: case SPK_EXC_MESSAGE: case SPK_EXC_SUPER: case SPK_READER:
-  /* a yield that calls the block's proc: the box the proc answered */
-  case SPK_YIELD:
-    if (!strbuf_yield_proc_box(c, node)) return 0;
-    {
-      int v = unwrap_parens(c, node), sv = view_push(c, v, TY_POLY);
-      emit_expr(c, v, b);
-      view_pop(c, sv);
-      RC(RF_PASS, RW_HANDLE_ROUTE);
-    }
-    return 1;
-  case SPK_ASSIGN: case SPK_OPERAND: case SPK_COND: case SPK_SEQUENCE:
-  case SPK_LIFT:
-    return 0;
-  }
-  return 0;
 }
 
 /* `vol` makes the local volatile (required for locals live across a setjmp
@@ -8628,7 +8545,9 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
       /* --share-strings: a String the rule shares is the thread's value
          itself (`Thread.new { s }.value << x` changes s): its handle, boxed */
       else if ((lty == TY_STRING || lty == TY_STRBUF) && strbuf_var_handle(c, last, &sref_fb)) {
-        buf_printf(pb, "    _fb->yielded_value = sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF);\n", sref_fb.p);
+        buf_puts(pb, "    _fb->yielded_value = ");
+        str_box_handle(pb, sref_fb.p);
+        buf_puts(pb, ";\n");
         free(sref_fb.p);
       }
       /* a route over one, or a conditional with such an arm (`c ? s : nil`) */
@@ -8640,7 +8559,9 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
         emit_strbuf_handle_of(c, last, &vb);
         g_pre = sv2; g_indent = sv2i;
         if (pre2.p) buf_puts(pb, pre2.p);
-        buf_printf(pb, "    _fb->yielded_value = sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF);\n", vb.p ? vb.p : "NULL");
+        buf_puts(pb, "    _fb->yielded_value = ");
+        str_box_handle(pb, vb.p);
+        buf_puts(pb, ";\n");
         free(pre2.p); free(vb.p);
       }
       else {
@@ -19509,7 +19430,13 @@ static void emit_exc_text_return(Compiler *c, int mi, const char *call, int mode
   if (!mode) { buf_printf(b, "return %s;", call); return; }
   buf_printf(b, "{ _sp_ret_strbuf = NULL; const char *_v = %s; ", call);
   if (!c->scopes[mi].ret_handle) buf_puts(b, "_sp_ret_strbuf = NULL; ");
-  if (mode == 2) buf_puts(b, "return _sp_ret_strbuf ? sp_box_obj(_sp_ret_strbuf, SP_BUILTIN_STRBUF) : _v ? sp_box_str(_v) : sp_box_nil(); }");
+  if (mode == 2) {
+    buf_puts(b, "return _sp_ret_strbuf ? ");
+    str_box_open(b, 0);
+    buf_puts(b, "_sp_ret_strbuf");
+    str_box_close(b);
+    buf_puts(b, " : _v ? sp_box_str(_v) : sp_box_nil(); }");
+  }
   else buf_puts(b, "return _v; }");
 }
 

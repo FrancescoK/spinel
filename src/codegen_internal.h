@@ -200,12 +200,7 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b);
 /* --share-strings: does codegen hand the shared handle along flow kind
    `kind` (ShareFlowKind) at node site, from value node v?
    The routes codegen carries, which the seal requires of every flow into a
-   shared class (repr_share_flows_check). fm holds the answers asked once
-   per method, for one check. */
-typedef struct {
-  signed char *yield_ok;   /* per method scope: its yields carry the handle
-                              (1), do not (0), not asked yet (-1) */
-} StrbufFlowMemo;
+   shared class (repr_share_flows_check). */
 int strbuf_flow_carries(Compiler *c, int kind, int site, int v);
 /* --share-strings: is element el of plain multiple write mw rendered through the handle face into a held temp? */
 int masgn_face_elem(Compiler *c, int mw, int el);
@@ -222,6 +217,7 @@ int strbuf_self_reader_slot(Compiler *c, int id);
 int strbuf_self_reader_handle(Compiler *c, int id);
 int strbuf_call_reads_handle(Compiler *c, int recv);
 int strbuf_route_reader(Compiler *c, int v);
+int strbuf_route_ivar_get(Compiler *c, int v);
 /* The String plan's producer kind (SPK_*) of route v, and the operand
    whose supply it hands on (codegen_stmt.c). */
 int strbuf_route_kind(Compiler *c, int v, int *op);
@@ -429,7 +425,9 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b);
    str_form_settle meets. Two flags are needs of the value itself:
      SF_EVAL_ONCE       the value is used more than once (in two forms, or
                         twice), so it is evaluated once, into a temp of
-                        type `cty` that the uses read (`tmp`);
+                        type `cty` that the uses read (`tmp`; a renderer
+                        that must name it ahead of its operand's own temps
+                        reserves the number in `tmp` itself);
      SF_ROOT_UNTIL_USE  the value is an object made here that what runs
                         before its use could collect, so it stays rooted
                         until then.
@@ -444,11 +442,27 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b);
                         argument binder's rooting of the values that run
                         ahead to; str_form_settle does not act on it. */
 enum { SF_EVAL_ONCE = 1, SF_ROOT_UNTIL_USE = 2, SF_ALLOCATES = 4 };
+/* Why a box's form can differ from the one repr_of predicts for its node
+   (--repr-check, codegen.c): what at the site explains it */
+enum {
+  RW_NONE,           /* nothing at the site explains a difference */
+  RW_YIELD,          /* a yield boxed by the block of this call site */
+  RW_TRANSPLANT,     /* a module ivar read boxed by the including class's field */
+  RW_RAN_FIRST,      /* an argument that already ran: its temp */
+  RW_HANDLE_ROUTE,   /* a conditional boxed through its shared handle route */
+  RW_LITERAL         /* an empty literal or Hash.new boxed by its shape */
+};
+/* tmp: the temp an SF_EVAL_ONCE value is bound to (str_form_settle numbers
+   it unless the renderer reserved one). rf, rw: the box form (RF_*,
+   repr.h) the box face wrote and why it may differ from the predicted one
+   (RW_*), -1 and RW_NONE where it noted none; the consumer records them
+   (--repr-check). */
 typedef struct {
   Buf expr;
   unsigned needs;
   TyKind cty;
   int tmp;
+  int rf, rw;
 } StrForm;
 /* Node v in the form the String plan (share_plan.c) gives it for a
    consumer in `role` (SPR_*), in the face the consumer holds it in, into
@@ -459,17 +473,42 @@ typedef struct {
                  parameter that is a String buffer);
      SPX_IDENT   what its identity is held in, for the identity role
                  (equal?): the handle, the bytes or a box, whichever its
-                 producer holds (sf->cty TY_STRBUF, TY_STRING, TY_POLY).
+                 producer holds (sf->cty TY_STRBUF, TY_STRING, TY_POLY);
+     SPX_BOX     an sp_RbVal (sf->cty TY_POLY) for a consumer that boxes
+                 the value (a poly slot, a container's element, a poly
+                 argument), in the plan's SPR_BOX form. Only the box of a
+                 String by its producer's kind is rendered here; the
+                 answer is 0 where a box was written (its form is its
+                 own text) and -1, with nothing written, for a value
+                 whose kind has none, which the consumer boxes by its
+                 representation (emit_boxed_string, codegen.c).
    `dest` says what the destination does with a new handle (SFD_*):
      SFD_OWN     it holds its own copy (a parameter that is the handle
                  because a Method reaches it, LocalVar.dyn_handle): a new
                  handle keeps its bytes inside the object. */
-enum { SPX_ID, SPX_HANDLE, SPX_IDENT };
+enum { SPX_ID, SPX_HANDLE, SPX_IDENT, SPX_BOX };
 enum { SFD_OWN = 1 };
 int emit_str_form(Compiler *c, int v, int role, int face, unsigned dest, StrForm *sf);
 /* Node v, a String, boxed in the plan's form for the taker of a dispatch's
    answer (codegen_str.c): the handle's box where the plan gives the handle. */
 void emit_str_form_box(Compiler *c, int v, Buf *b);
+/* What codegen.c's box path shares with the box face (codegen_str.c): a
+   value that ran ahead as its handle, a store's lift, and the
+   representation's box */
+int emit_boxed_lift(Compiler *c, int node);
+int emit_boxed_lift_ran_first(Compiler *c, int node, Buf *b);
+void emit_boxed_by_repr(Compiler *c, int node, Buf *b);
+/* The box of a String handle (SP_BUILTIN_STRBUF), written in one place
+   (codegen_str.c): of text already written, of a temp, or around text the
+   caller emits between the open and the close; `nullable` boxes a NULL
+   handle as nil */
+void str_box_handle(Buf *b, const char *h);
+void str_box_handle_tmp(Buf *b, int tmp);
+void str_box_open(Buf *b, int nullable);
+void str_box_close(Buf *b);
+/* The box face's arms for a value boxed by its representation: a String
+   the plan wraps as the new handle it is (`wrap`), else its bytes */
+void emit_str_box_leaf(Compiler *c, int v, int wrap, Buf *b);
 /* A write in value position (a local's whose slot is a String buffer, any
    other whose slot holds the shared handle) as the handle it writes, into
    out; 0, writing nothing, for any other node. */

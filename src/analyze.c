@@ -18077,15 +18077,42 @@ static const char *an_static_reader_ivar(Compiler *c, int sc, int cm, const char
   return buf;
 }
 
+/* A reflective read, `obj.instance_variable_get(:@iv)` with a literal name,
+   of an ivar in the layout of a statically typed object's class: the slot
+   it reads (emit_object_ivar_call), as a reader of that ivar hands it out.
+   The ivar's name into buf and *defc the class, else NULL. */
+static const char *an_ivar_get_ivar_of(Compiler *c, int node, int *defc, char *buf, size_t cap) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, node, "name");
+  int recv = nt_ref(nt, node, "receiver"), a = nt_ref(nt, node, "arguments"), argc = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &argc) : NULL;
+  if (!nm || recv < 0 || argc != 1 || bop_share_named(BOP_ANY_RECV, nm) != BSH_IVAR_GET) return NULL;
+  NodeKind ak = nt_kind(nt, av[0]);
+  const char *sym = ak == NK_SymbolNode ? nt_str(nt, av[0], "value") : ak == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
+  TyKind rt = infer_type(c, recv);
+  if (!sym || sym[0] != '@' || !ty_is_object(rt)) return NULL;
+  int cid = ty_object_class(rt);
+  if (cid < 0 || cid >= c->nclasses || c->classes[cid].is_native_class || comp_method_in_chain(c, cid, nm, NULL) >= 0) return NULL;
+  /* (a Struct's members are no ivars of CRuby's: a read answers nil) */
+  int iv = comp_ivar_index(&c->classes[cid], sym);
+  if (iv < 0 || (c->classes[cid].is_struct && iv < c->classes[cid].nmembers)) return NULL;
+  snprintf(buf, cap, "%s", sym);
+  *defc = cid;
+  return buf;
+}
+
 /* When `node` is an argument-less reader call (attr or a simple
    `def m = @iv` method) over an object receiver or implicit self, resolve
-   the backing ivar:
+   the backing ivar; so is a reflective read of a literal ivar name
+   (an_ivar_get_ivar_of):
    returns the ivar name (into buf) and sets *defc, else NULL. */
 static const char *an_reader_ivar_of(Compiler *c, int node, int *defc,
                                      char *buf, size_t cap) {
   const NodeTable *nt = c->nt;
   if (node < 0 || nt_kind(nt, node) != NK_CallNode) return NULL;
   if (nt_ref(nt, node, "block") >= 0) return NULL;
+  { const char *ig = an_ivar_get_ivar_of(c, node, defc, buf, cap);
+    if (ig) return ig; }
   { int a2 = nt_ref(nt, node, "arguments"); int an2 = 0;
     if (a2 >= 0) nt_arr(nt, a2, "arguments", &an2);
     if (an2 != 0) return NULL; }

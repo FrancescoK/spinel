@@ -24385,7 +24385,8 @@ static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead
       int got = strbuf_slot_text(c, node[i], &hb);
       /* (a reader whose box is the handle, repr_boxed_reader_handle, is read
          with the handle demanded) */
-      if (!got && nt_kind(nt, node[i]) == NK_CallNode && (repr_boxed_reader_handle(c, node[i]) || strbuf_route_reader(c, node[i]))) {
+      if (!got && nt_kind(nt, node[i]) == NK_CallNode && (repr_boxed_reader_handle(c, node[i]) || strbuf_route_reader(c, node[i]) ||
+                         strbuf_route_ivar_get(c, node[i]))) {
         int sd = view_push_repr(c, node[i], VR_HANDLE_DEMAND, 1);
         emit_expr(c, node[i], &hb);
         view_pop(c, sd);
