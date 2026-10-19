@@ -1,0 +1,19 @@
+[[TypeError, "can't convert nil into Rational"], [TypeError, "can't convert nil into Rational"]]
+[TypeError, "can't convert nil into Rational"]
+[TypeError, "can't convert nil into Rational"]
+[TypeError, "can't convert nil into Rational"]
+[TypeError, "can't convert nil into Rational"]
+[TypeError, "can't convert nil into Rational"]
+[TypeError, "can't convert nil into Rational"]
+numerator
+denominator
+[TypeError, "can't convert nil into Rational"]
+numerator
+denominator
+[TypeError, "can't convert nil into Rational"]
+[RuntimeError, "argument failure"]
+[TypeError, "can't convert nil into Rational"]
+[TypeError, "can't convert nil into Rational"]
+(3/2)
+(0/1)
+[ZeroDivisionError, "divided by 0"]
