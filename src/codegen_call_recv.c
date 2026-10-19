@@ -43,6 +43,13 @@ static void emit_fallback_block_value(Compiler *c, const int *bb, int bn, const 
     for (int k = 0; k < bn; k++) if (subtree_has_own_next(c->nt, bb[k])) lead = 0;
   if (lead)
     for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);
+  /* a block that ends in `return` leaves the method there: the return is
+     a statement, and the value after it is never read */
+  if (lead && bn > 0 && nt_kind(c->nt, bb[bn - 1]) == NK_ReturnNode) {
+    emit_stmt(c, bb[bn - 1], b, 0);
+    buf_printf(b, "%s; })", empty);
+    return;
+  }
   Buf pre, val;
   memset(&pre, 0, sizeof pre); memset(&val, 0, sizeof val);
   if (bn > 0) emit_split_pre(c, bb[bn - 1], boxed ? emit_boxed : emit_expr, &pre, &val);
@@ -5870,6 +5877,14 @@ static void emit_blk_value_as(Compiler *c, int blk, TyKind vt, Buf *b) {
      merge loop, on the parameters' initial nil. */
   Buf *saved_pre = g_pre; g_pre = b;
   for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);
+  /* a block that ends in `return` leaves the method there (the inlined
+     body's own return): a statement, after which no value is read */
+  if (bval >= 0 && nt_kind(nt, bval) == NK_ReturnNode) {
+    emit_stmt(c, bval, b, 0);
+    g_pre = saved_pre;
+    buf_printf(b, "%s; })", vt == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, vt));
+    return;
+  }
   Buf tv; memset(&tv, 0, sizeof tv);
   if (bval >= 0) {
     int bval_boxed = repr_of(c, bval).kind == RK_BOXED;
@@ -5906,6 +5921,12 @@ static void emit_blk_value_as_o(Compiler *c, int blk, TyKind vt, Buf *b) {
   buf_puts(b, "({ ");
   Buf *saved_pre = g_pre; g_pre = b;
   for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);
+  if (bval >= 0 && nt_kind(nt, bval) == NK_ReturnNode) {   /* as emit_blk_value_as */
+    emit_stmt(c, bval, b, 0);
+    g_pre = saved_pre;
+    buf_printf(b, "%s; })", oint_nil(vt));
+    return;
+  }
   Buf tv; memset(&tv, 0, sizeof tv);
   if (bval >= 0) emit_oint_expr(c, bval, vt, &tv);
   g_pre = saved_pre;
