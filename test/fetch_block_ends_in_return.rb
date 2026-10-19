@@ -44,3 +44,13 @@ ensure
   puts "ensure #{k}"
 end
 p guarded({ q: 1 }, :q), guarded({}, :z)
+
+# an Array's fetch block that ends in return, typed and with its nil
+def arr_first_or(xs) = xs.fetch(0) { return -1 }
+def arr_scaled(xs, i) = xs.fetch(i) { |j| return j * 10 }
+def arr_maybe(xs, i)
+  v = xs.fetch(i) { |j| return nil if j > 5; 7 }
+  v + 1
+end
+p arr_first_or([]), arr_first_or([5]), arr_scaled([1], 3)
+p arr_maybe([1], 9), arr_maybe([1], 3), arr_maybe([1, 2], 1)

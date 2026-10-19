@@ -13,3 +13,9 @@ ensure q
 ensure z
 1
 :missing
+-1
+5
+30
+nil
+8
+3
