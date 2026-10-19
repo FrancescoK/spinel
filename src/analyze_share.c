@@ -1404,12 +1404,42 @@ static int sh_named_first(const struct ShNamed *a, int n, const char *name);
    yet (the caller then treats the call as one the walk does not follow,
    never as fewer methods). The answers are held for one build of the facts,
    dropped at its start. */
+/* Is user method mi, a target cplan_targets lists for boxed call `call`,
+   one the dispatch arms: a class the receiver's fact does not rule out
+   reaches it (comp_poly_candidates_at, which the arms are counted from,
+   #8530)? Every target is for a direct call, a class method (which
+   share_target_reachable bounds), or a receiver the fact bounds nothing of.
+   Listing every class's method joined the new String `[:a].map(&:inspect)`
+   answers with the ivar a class's own inspect publishes, which no Symbol
+   reaches (#9258). */
+static int sh_target_armed(Compiler *c, int call, int mi) {
+  const CallPlan *p = cplan_user_fresh(c, call);
+  if (p->via != UC_POLY || p->send_fallback == mi || mi < 0 || mi >= c->nscopes || c->scopes[mi].is_cmethod) return 1;
+  int recv = nt_ref(c->nt, call, "receiver");
+  /* (a receiver of no type the walk follows the user methods of: with
+     them gone its builtin arm is an unknown call, which joins UNKNOWN) */
+  if (recv < 0 || c->ntype[recv] != TY_POLY) return 1;
+  const ClsSet *cs = cls_fact_node(c, recv);
+  if (!cs || cs->all) return 1;
+  const char *nm = nt_str(c->nt, call, "name");
+  if (!nm) return 1;
+  int np = 0;
+  const PolyCand *pc = comp_poly_candidates_at(c, call, nm, &np);
+  for (int i = 0; i < np; i++)
+    if (pc[i].mi == mi || (pc[i].mi < 0 && comp_method_in_chain(c, pc[i].cls, nm, NULL) == mi)) return 1;
+  { const char *stats = getenv("SPINEL_SHARE_STATS");
+    if (stats && stats[0] == '2')
+      fprintf(stderr, "share-target: call %d `%s` line %d on %s drops %s#%s (set n=%d bv=%d, %d candidates at the call)\n", call, nm,
+              (int)nt_int(c->nt, call, "node_line", 0), ty_name(c->ntype[recv]),
+              c->scopes[mi].class_id >= 0 ? c->classes[c->scopes[mi].class_id].name : "?", nm, cs->n, cs->bv, np); }
+  return 0;
+}
 static int sh_targets_in(ShareFacts *F, Compiler *c, int call, int *out, int cap) {
   (void)F;
   int n = cplan_targets(c, call, out, cap), m = 0;
   if (n == CPT_UNKNOWN) return -1;
   for (int i = 0; i < n; i++)
-    if (share_target_reachable(c, call, out[i])) out[m++] = out[i];
+    if (share_target_reachable(c, call, out[i]) && sh_target_armed(c, call, out[i])) out[m++] = out[i];
   return m;
 }
 static int sh_targets(Compiler *c, int call, int *out, int cap) { return sh_targets_in(NULL, c, call, out, cap); }
@@ -1431,9 +1461,9 @@ int share_target_reachable(Compiler *c, int call, int mi) {
 static int sh_has_targets(Compiler *c, int call) {
   const CallPlan *p = cplan_user_fresh(c, call);
   if (p->mi < 0 || p->dispatch == CP_REFUSE) return 0;
-  /* (a boxed receiver's plan led by a class method lists only those no box
-     may reach, share_target_reachable, when none is left) */
-  if (p->via != UC_POLY || !c->scopes[p->mi].is_cmethod) return 1;
+  /* (a boxed receiver's plan lists only the methods its arms reach:
+     share_target_reachable, sh_target_armed; none may be left) */
+  if (p->via != UC_POLY) return 1;
   int tg[CPT_MAX];
   return sh_targets(c, call, tg, CPT_MAX) != 0;
 }
@@ -2207,6 +2237,13 @@ static int sh_boxed_fresh_recorded(Compiler *c, int n) {
 static int sh_unknown_call(ShareFacts *F, Compiler *c, int n, int blk) {
   int vals[64];
   int nv = sh_args_vals(F, c, n, vals, 64);
+  { const char *stats = getenv("SPINEL_SHARE_STATS");
+    if (stats && stats[0] == '2') {
+      const char *fp = nt_file_path(c->nt, (int)nt_int(c->nt, n, "node_file", -1));
+      const char *nm = nt_kind(c->nt, n) == NK_CallNode ? nt_str(c->nt, n, "name") : nt_type(c->nt, n);
+      fprintf(stderr, "share-unknown: %s:%d node %d `%s` joins UNKNOWN (%d values)\n", fp ? fp : "?",
+              (int)nt_int(c->nt, n, "node_line", 0), n, nm ? nm : "?", nv);
+    } }
   for (int i = 0; i < nv; i++) {
     /* A proc handed self can keep or mutate that receiver. */
     if (vals[i] >= 0 && F->kind[vals[i]] == SHK_SELF) F->own[vals[i]] |= SHE_IDENTITY | SHE_COMPARED;
@@ -3465,6 +3502,14 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
       sh_uplus_copies(c, nt_ref(nt, n, "receiver")))
     return -1;
   TyKind fam = sh_family(rt);
+  /* a class that embeds a builtin (an Array, Hash or String subclass,
+     ary_root): a name its chain does not define, and the builtin_only call
+     a super is rewritten into (arysub_super_into), is the builtin's method
+     on the embedded value, which is the instance itself */
+  if (ty_is_object(rt) && comp_ary_root(c, ty_object_class(rt)) >= 0) {
+    int ecid = ty_object_class(rt);
+    fam = comp_ary_is_str(c, ecid) ? TY_STRING : comp_ary_is_hash(c, ecid) ? BOP_ANY_HASH : BOP_ANY_ARRAY;
+  }
   /* an iterator that keeps none of its block's values drops the block's
      own: a call there hands its method's value to no caller. (An
      Enumerator's each runs the iterator it was made by, map's included.) */

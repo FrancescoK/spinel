@@ -1426,9 +1426,16 @@ static void repr_share_flows_check(Compiler *c, const char *stats) {
       char rn[160];
       repr_flow_route_name(c, u, rn, sizeof rn);
       const char *fp = nt_file_path(c->nt, (int)nt_int(c->nt, u, "node_file", -1));
-      fprintf(stderr, "share-flow: %s:%d node %d %s (%s) into %s carried=%d flags=%u\n", fp ? fp : "?",
-              (int)nt_int(c->nt, u, "node_line", 0), u, rn, ty_name(c->ntype[u]), repr_flow_kind_name(kind), ok,
-              share_node_flags(c, u));
+      /* (the plan the route asks for, as strbuf_flow_carries asks it) */
+      SharePlan sp = share_plan_of(c, v, kind == SHFL_WRITE || kind == SHFL_MEMBER || kind == SHFL_MULTI ? SPR_STORE
+                                         : kind == SHFL_ELEM || kind == SHFL_BLOCK ? SPR_BOX : SPR_TAKE, NULL);
+      int rcv = nt_kind(c->nt, u) == NK_CallNode ? nt_ref(c->nt, u, "receiver") : -1;
+      const char *sfp = site >= 0 ? nt_file_path(c->nt, (int)nt_int(c->nt, site, "node_file", -1)) : NULL;
+      fprintf(stderr, "share-flow: %s:%d node %d %s (%s) into %s carried=%d flags=%u plan form=%d kind=%s need=%d recv=%s site=%s:%d (%s)\n",
+              fp ? fp : "?", (int)nt_int(c->nt, u, "node_line", 0), u, rn, ty_name(c->ntype[u]),
+              repr_flow_kind_name(kind), ok, share_node_flags(c, u), sp.form, share_plan_kind_name(sp.kind), sp.need,
+              rcv >= 0 ? ty_name(c->ntype[rcv]) : "-", sfp ? sfp : "?", site >= 0 ? (int)nt_int(c->nt, site, "node_line", 0) : -1,
+              site >= 0 ? ty_name(c->ntype[site]) : "-");
     }
     /* the first refused flow, or under SP_COLLECT_ERRORS each one */
     if (!ok && collect_emit_anyway()) repr_flow_refuse(c, u, kind);

@@ -1,0 +1,5 @@
+:error, :warning, :info
+:a/:b
+1, :a, foo?
+foo?!
+Bar foo?!

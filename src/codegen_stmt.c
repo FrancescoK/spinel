@@ -24099,8 +24099,19 @@ static int scope_ret_frozen_lit(Compiler *c, int mi) {
   }
   return 1;
 }
+/* Does every builtin row of name answer a String that is new (BSH_PURE),
+   none its receiver or an element of it? */
+static int bop_share_all_pure(const char *nm) {
+  int ks[8], n = bop_share_kinds(nm, ks, 8);
+  /* (a String method of the name, tr or squeeze, has an arm of its own
+     that boxes its bytes; inspect has none, every builtin answers it
+     through the poly face) */
+  if (n <= 0 || bop_share_named(TY_STRING, nm)) return 0;
+  for (int i = 0; i < n; i++) if (ks[i] != BSH_PURE) return 0;
+  return 1;
+}
 /* --share-strings: is v a call on a boxed receiver, of a name no builtin
-   answers, whose dispatch has a method arm for each class the receiver can
+   answers (or one every builtin answers with a new String), whose dispatch has a method arm for each class the receiver can
    hold, each answering a String that is either a handle it publishes
    (Scope.ret_handle), a new String (ret_fresh) or a literal
    (scope_ret_frozen_lit), and one of them publishing?
@@ -24113,8 +24124,13 @@ int strbuf_poly_user_boxes(Compiler *c, int v) {
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0) return 0;
   int recv = nt_ref(nt, v, "receiver");
   const char *nm = nt_str(nt, v, "name");
-  if (recv < 0 || repr_of(c, recv).kind != RK_BOXED || !nm || builtin_object_method_known(nm) || builtin_instance_name_known(nm) ||
-      ty_poly_face_owners(nm, call_plain_argc(c, v), 0, 1, 1)) return 0;
+  if (recv < 0 || repr_of(c, recv).kind != RK_BOXED || !nm) return 0;
+  /* a name a builtin answers too only where every builtin row answers a
+     new String (BSH_PURE: inspect), which the builtin arm boxes as its own
+     handle; to_s answers a String receiver itself (BSH_RECV), and the
+     dispatch's plain value boxes it as the String it is (#9258) */
+  if ((builtin_object_method_known(nm) || builtin_instance_name_known(nm) ||
+       ty_poly_face_owners(nm, call_plain_argc(c, v), 0, 1, 1)) && !bop_share_all_pure(nm)) return 0;
   /* the dispatch's own arms (an alias's target among them), one for each
      class the receiver can hold: a class with none answers through
      method_missing or raises */
