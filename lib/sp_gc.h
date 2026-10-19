@@ -371,6 +371,22 @@ static inline void sp_gc_bytes_sub(size_t n) {
 }
 #endif
 
+/* A container's payload -- the buffers it holds outside its own slot --
+   went from `from` bytes to `to`: the object's header carries it, so the
+   mark's live total (which a full collection resets the counter to) includes
+   it, and the counter moves by the difference, so the trigger sees it, as
+   sp_PolyArray_grow counts its elements. `obj` is the object, or a container
+   embedded at the start of one (#7449), whose header is the enclosing one's.
+   A Hash's tables never were counted: one grown to megabytes and dropped
+   moved the counter by its header alone, so a program churning large Hashes
+   grew without a collection. */
+static inline void sp_gc_payload_resize(void *obj, size_t from, size_t to) {
+  sp_gc_hdr *h = (sp_gc_hdr *)((char *)obj - sizeof(sp_gc_hdr));
+  h->size = h->size - from + to;
+  if (to >= from) sp_gc_bytes_add(to - from);
+  else sp_gc_bytes_sub(from - to);
+}
+
 /* Push a header onto the shared sp_gc_heap list. Under SP_THREADS this is a
    lock-free CAS push so callers that hold no lock (the pool-hit relink) stay
    off the heap mutex; the allocators, which hold the mutex anyway for the

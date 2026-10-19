@@ -378,7 +378,9 @@ void sp_IntArray_rotate_bang(sp_IntArray*a,sp_int n){SP_GC_ROOT(a);
     sp_int*nd=(sp_int*)sp_pl_alloc(sizeof(sp_int)*(size_t)nc);
     if(nd){
       memcpy(nd,a->data+a->start,sizeof(sp_int)*(size_t)a->len);
-      sp_pl_free(a->data); a->data=nd; a->start=0; a->cap=nc;
+      sp_pl_free(a->data); a->data=nd; a->start=0;
+      sp_gc_payload_resize(a,sizeof(sp_int)*(size_t)a->cap,sizeof(sp_int)*(size_t)nc);   /* as sp_IntArray_set_cap counts it */
+      a->cap=nc;
     }
   }
   if(a->start+a->len+n<=a->cap){
