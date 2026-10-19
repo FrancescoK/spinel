@@ -1897,22 +1897,90 @@ static int scm_mixin_stmt(const NodeTable *nt, int st) {
     if (nt_kind(nt, av[a]) != NK_ConstantReadNode && nt_kind(nt, av[a]) != NK_ConstantPathNode) return 0;
   return 1;
 }
+/* Does a module named `leaf` hook its mixing in (`self.included`,
+   `self.prepended`, `self.extended`, their `*_features` / `extend_object`),
+   or extend one that may? An `include M` in `class << self` calls
+   M.included with the singleton class, which an `extend` in its place
+   would not. */
+static int scm_module_hooks(const NodeTable *nt, const char *leaf) {
+  static const char *const hooks[] = { "included", "prepended", "extended", "append_features",
+                                       "prepend_features", "extend_object", NULL };
+  NT_FOREACH_KIND(nt, NK_ModuleNode, m) {
+    const char *mn = nt_str(nt, nt_ref(nt, m, "constant_path"), "name");
+    int body = nt_ref(nt, m, "body");
+    if (!mn || !sp_streq(mn, leaf) || body < 0) continue;
+    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+    for (int i = 0; i < bn; i++) {
+      NodeKind k = nt_kind(nt, bb[i]);
+      int sb = k == NK_SingletonClassNode ? nt_ref(nt, bb[i], "body") : -1;
+      int dn = 1; const int *dv = &bb[i];
+      if (sb >= 0) dv = nt_arr(nt, sb, "body", &dn);
+      else if (k == NK_CallNode && nt_ref(nt, bb[i], "receiver") < 0 && sp_streq(nt_str(nt, bb[i], "name"), "extend"))
+        return 1;
+      else if (k != NK_DefNode || nt_ref(nt, bb[i], "receiver") < 0) continue;
+      for (int d = 0; d < dn; d++) {
+        const char *dname = nt_kind(nt, dv[d]) == NK_DefNode ? nt_str(nt, dv[d], "name") : NULL;
+        for (int h = 0; dname && hooks[h]; h++) if (sp_streq(dname, hooks[h])) return 1;
+      }
+    }
+  }
+  return 0;
+}
+/* A statement of a singleton-class body that only declares (a method, an
+   alias, an accessor, a visibility): nothing it runs can see whether a mixin
+   after it has happened yet. */
+static int scm_decl_stmt(const NodeTable *nt, int st) {
+  static const char *const decls[] = { "attr_reader", "attr_writer", "attr_accessor", "attr", "alias_method",
+                                       "private", "public", "protected", "module_function", NULL };
+  NodeKind k = nt_kind(nt, st);
+  if (k == NK_DefNode || k == NK_AliasMethodNode) return 1;
+  if (k != NK_CallNode || nt_ref(nt, st, "receiver") >= 0 || nt_ref(nt, st, "block") >= 0) return 0;
+  const char *nm = nt_str(nt, st, "name");
+  for (int i = 0; nm && decls[i]; i++) if (sp_streq(nm, decls[i])) return 1;
+  return 0;
+}
+/* The mixins of singleton-class body `sb` that can leave it (mask[j] for its
+   j-th statement, when mask is given): each one before any statement that
+   runs something, or a mixin that stays, and of modules that do not hook
+   their mixing in. The rest keep their place. */
+static int scm_sclass_hoists(const NodeTable *nt, int sb, unsigned char *mask) {
+  int sn = 0; const int *ss = nt_arr(nt, sb, "body", &sn);
+  int n = 0, open = 1;
+  for (int j = 0; j < sn; j++) {
+    int hoist = 0;
+    if (open && scm_mixin_stmt(nt, ss[j])) {
+      int an = 0; const int *av = nt_arr(nt, nt_ref(nt, ss[j], "arguments"), "arguments", &an);
+      hoist = 1;
+      for (int a = 0; a < an && hoist; a++) {
+        const char *leaf = nt_str(nt, av[a], "name");
+        if (!leaf || scm_module_hooks(nt, leaf)) hoist = 0;
+      }
+    }
+    if (mask) mask[j] = (unsigned char)hoist;
+    n += hoist;
+    if (!hoist && !scm_decl_stmt(nt, ss[j])) open = 0;
+  }
+  return n;
+}
 /* `class << self; include M; end` in a class or module body includes M into
    the class's singleton class: what `extend M` does (`prepend M` there puts
    M in front, as `singleton_class.prepend(M)` below). The statement leaves
    the singleton body for the enclosing one, as that extend, in place of the
    `class << self` it was in -- ahead of it, so the body's own methods are
-   still the class's first. */
+   still the class's first. Only where that changes nothing that runs: no
+   statement of the body before it can see the mixin missing, and the
+   module does not hook its mixing in (scm_sclass_hoists). */
+static int scm_sclass_body(const NodeTable *nt, int sc) {
+  if (nt_kind(nt, sc) != NK_SingletonClassNode || nt_kind(nt, nt_ref(nt, sc, "expression")) != NK_SelfNode) return -1;
+  int sb = nt_ref(nt, sc, "body");
+  return sb >= 0 && nt_kind(nt, sb) == NK_StatementsNode ? sb : -1;
+}
 static int scm_hoist_sclass_mixins(NodeTable *nt, int body) {
   int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
   int moved = 0;
   for (int i = 0; i < bn; i++) {
-    int sc = bb[i];
-    if (nt_kind(nt, sc) != NK_SingletonClassNode || nt_kind(nt, nt_ref(nt, sc, "expression")) != NK_SelfNode) continue;
-    int sb = nt_ref(nt, sc, "body");
-    if (sb < 0 || nt_kind(nt, sb) != NK_StatementsNode) continue;
-    int sn = 0; const int *ss = nt_arr(nt, sb, "body", &sn);
-    for (int j = 0; j < sn; j++) if (scm_mixin_stmt(nt, ss[j])) moved++;
+    int sb = scm_sclass_body(nt, bb[i]);
+    if (sb >= 0) moved += scm_sclass_hoists(nt, sb, NULL);
   }
   if (!moved) return 0;
   int *out = malloc(sizeof(int) * (size_t)(bn + moved));
@@ -1920,22 +1988,23 @@ static int scm_hoist_sclass_mixins(NodeTable *nt, int body) {
   int no = 0;
   for (int i = 0; i < bn; i++) {
     int sc = bb[i];
-    int sb = nt_kind(nt, sc) == NK_SingletonClassNode && nt_kind(nt, nt_ref(nt, sc, "expression")) == NK_SelfNode
-             ? nt_ref(nt, sc, "body") : -1;
-    if (sb >= 0 && nt_kind(nt, sb) == NK_StatementsNode) {
+    int sb = scm_sclass_body(nt, sc);
+    if (sb >= 0) {
       int sn = 0; const int *ss0 = nt_arr(nt, sb, "body", &sn);
       int *ss = malloc(sizeof(int) * (size_t)(sn > 0 ? sn : 1));
-      if (!ss) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      unsigned char *mask = malloc((size_t)(sn > 0 ? sn : 1));
+      if (!ss || !mask) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
       memcpy(ss, ss0, sizeof(int) * (size_t)sn);
+      scm_sclass_hoists(nt, sb, mask);
       int keep = 0;
       for (int j = 0; j < sn; j++) {
-        if (!scm_mixin_stmt(nt, ss[j])) { ss[keep++] = ss[j]; continue; }
+        if (!mask[j]) { ss[keep++] = ss[j]; continue; }
         if (sp_streq(nt_str(nt, ss[j], "name"), "prepend")) nt_node_set_int(nt, ss[j], "sclass_prepend", 1);
         nt_node_set_str(nt, ss[j], "name", "extend");
         out[no++] = ss[j];
       }
       nt_node_set_arr(nt, sb, "body", ss, keep);
-      free(ss);
+      free(ss); free(mask);
     }
     out[no++] = sc;
   }

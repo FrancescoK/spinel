@@ -63,3 +63,13 @@ p move(Rewriter.new, :case).n
 p IfEdit.who, IfEdit.tag(:x)
 p PrepC.who
 p Mod.run(Rewriter.new), Mod.who
+
+# after a method of the singleton body: a declaration runs nothing that
+# could see M missing
+class LateInc
+  class << self
+    def own = :own
+    include Helper
+  end
+end
+p LateInc.own, LateInc.who
