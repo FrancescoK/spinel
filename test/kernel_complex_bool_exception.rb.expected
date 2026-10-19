@@ -1,0 +1,14 @@
+false, false => nil
+true, false => nil
+true, true => TypeError: can't convert true into Complex
+false, true => TypeError: can't convert false into Complex
+true, nil => ArgumentError: expected true or false as exception: nil
+true, flag => nil
+boxed true, false => nil
+boxed false, true => TypeError: can't convert false into Complex
+boxed true, nil => ArgumentError: expected true or false as exception: nil
+boxed 1, false => (1+0i)
+false => TypeError: can't convert false into Complex
+operand
+flag
+order => nil

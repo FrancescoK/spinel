@@ -4731,13 +4731,15 @@ void emit_voided_operands(Compiler *c, int recv, int arg, int v, Buf *b) {
 /* Rational(x, exception: f) / Complex(x, exception: f) whose operand may be
    nil, when the inference typed the call poly: a nil operand answers nil only
    when the flag is false. Keeps operand order and keyword validation,
-   including for a boxed nil value. Answers 0 (nothing emitted) for any other
-   shape, which keeps the path it had. */
+   including for a boxed nil value. Complex treats a Boolean operand the same
+   way, raising sp_complex_reject_bool's TypeError when the flag is true;
+   Rational's Boolean keeps its conversion path. Answers 0 (nothing emitted)
+   for any other shape, which keeps the path it had. */
 static int emit_nullable_numeric_convert(Compiler *c, int id, const int *argv, int exc,
                                          const char *klass, Buf *b) {
   TyKind at = comp_ntype(c, argv[0]);
   if (nt_kind(c->nt, argv[1]) != NK_KeywordHashNode || repr_of(c, id).kind != RK_BOXED ||
-      !(at == TY_NIL || at == TY_POLY ||
+      !(at == TY_NIL || at == TY_POLY || (at == TY_BOOL && sp_streq(klass, "Complex")) ||
         ((at == TY_INT || at == TY_FLOAT) && nullable_int_value(c, argv[0]))))
     return 0;
   int arg = argv[0];
@@ -4750,7 +4752,12 @@ static int emit_nullable_numeric_convert(Compiler *c, int id, const int *argv, i
                 " sp_str_concat(SPL(\"expected true or false as exception: \"), sp_poly_inspect(_t%d)));"
                 " sp_RbVal _out; if (_t%d.tag == SP_TAG_NIL) {"
                 " if (_t%d.v.b) sp_raise_cls(\"TypeError\", \"can't convert nil into %s\");"
-                " _out = sp_box_nil(); }\nelse { _out = ", te, te, te, tv, te, klass);
+                " _out = sp_box_nil(); }\n", te, te, te, tv, te, klass);
+  if (sp_streq(klass, "Complex"))
+    buf_printf(b, "else if (_t%d.tag == SP_TAG_BOOL) {"
+                  " if (_t%d.v.b) sp_complex_reject_bool(_t%d, sp_box_int(0), 1);"
+                  " _out = sp_box_nil(); }\n", tv, te, tv);
+  buf_puts(b, "else { _out = ");
   /* Preserve the existing non-nil single-argument conversion paths. */
   if (sp_streq(klass, "Rational"))
     buf_printf(b, "sp_box_rational(sp_poly_kernel_rational(_t%d))", tv);
@@ -4769,9 +4776,10 @@ static int emit_nullable_numeric_convert(Compiler *c, int id, const int *argv, i
    a Complex nor a real component, so TypeError, where the float construction
    in emit_complex_rational_call read false/true as 0/1. Both arguments run
    first, and sp_complex_reject_bool picks CRuby's message. The caller skips
-   this under `exception:`, whose false answers nil (the call is typed unboxed
-   there); a call with any other keyword hash, which is not a component, is
-   declined here. Returns 1 when it emitted the raise. */
+   this under `exception:`, whose false answers nil (the call is typed poly
+   there and emit_nullable_numeric_convert answers it); a call with any other
+   keyword hash, which is not a component, is declined here. Returns 1 when it
+   emitted the raise. */
 static int emit_complex_bool_reject(Compiler *c, int argc, const int *argv, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *kt1 = argc == 2 ? nt_type(nt, argv[1]) : NULL;
