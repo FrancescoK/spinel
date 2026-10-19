@@ -419,6 +419,18 @@ static int kind_query_to_dispatch(Compiler *c, int id, const char *name, TyKind 
   return rt == TY_POLY && g_pd_skip != id && kind_query_overridden(c, name);
 }
 
+/* `<`, `<=`, `>`, `>=` on a receiver with no static type (an unresolved
+   call, a slot the fixpoint could not settle): it still has a boxed form,
+   so compare at run time, as the arithmetic operators do (#3781). */
+static int emit_untyped_recv_cmp(Compiler *c, const char *name, int recv, int arg, Buf *b) {
+  int tp = ++g_tmp;
+  buf_puts(b, "({ "); tp = hold_operand(c, recv, TY_POLY, 1, tp, 1, " ", b);
+  buf_printf(b, "%s(_t%d, ", sp_streq(name, "<") ? "sp_poly_lt" : sp_streq(name, ">") ? "sp_poly_gt"
+                             : sp_streq(name, "<=") ? "sp_poly_le" : "sp_poly_ge", tp);
+  emit_boxed(c, arg, b); buf_puts(b, "); })");
+  return 1;
+}
+
 int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
   if (emit_compare_lead_arms(c, id, name, recv, argc, argv, rt, b)) return 1;
   /* a literal `<<` whose result overflowed int64 (`1 << 64`): the node is typed
@@ -1177,6 +1189,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         return 1;
       }
     }
+    if (rt == TY_UNKNOWN) return emit_untyped_recv_cmp(c, name, recv, argv[0], b);
     unsupported(c, id, "comparison");
   }
 
