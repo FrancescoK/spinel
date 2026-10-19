@@ -3013,7 +3013,12 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
       is_ppack = 0; is_pjoin = 0;
     }
   }
-  int is_cover = sp_streq(name, "cover?") && argc == 1 && !recv_user_defines(c, name);
+  /* a class of the program's own that defines cover? (a wrapper of a
+     Range) takes its arm after the Range pre-arm, when the call answers a
+     truth value or a box the pre-arm's answer fits */
+  TyKind cvr = repr_of(c, id).as_ty;
+  int is_cover = sp_streq(name, "cover?") && argc == 1 &&
+                 (!recv_user_defines(c, name) || cvr == TY_BOOL || cvr == TY_POLY);
   int is_gcdlcm = sp_streq(name, "gcdlcm") && argc == 1 && !recv_user_defines(c, name);
   /* try_convert on a class known only at run time: a constant receiver
      has its typed emitter, but `[Array, 0][0].try_convert(x)` reached no
@@ -4828,6 +4833,15 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
            emit_unbox_text(c, is_scalar_ret(ret) ? ret : TY_INT, gen, b);
            buf_puts(b, "; break;"); }
     free(ab2.p);
+  }
+  /* cover?: no builtin but a Range has the method; a receiver of another
+     class raises, as in CRuby, where the switch left it at the result's
+     initializer (false). A Range the pre-arms did not take keeps that
+     answer: the argument is of no class the Range covers. */
+  else if (is_cover) {
+    buf_printf(b, " default: if (!(_t%d.tag == SP_TAG_OBJ && (_t%d.cls_id == SP_BUILTIN_RANGE ||"
+                  " _t%d.cls_id == SP_BUILTIN_FLOAT_RANGE || _t%d.cls_id == SP_BUILTIN_STR_RANGE)))"
+                  " sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", tv, tv, tv, tv, name, tv);
   }
   else if (is_aref || is_fetch) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_ND_AREF, -1, TY_UNKNOWN, PC_SAME);

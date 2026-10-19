@@ -1,0 +1,15 @@
+true
+false
+true
+false
+true
+true
+true
+false
+undefined method 'cover?' for an instance of Array
+true
+true
+false
+true
+true
+undefined method 'cover?' for an instance of Symbol
