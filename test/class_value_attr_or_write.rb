@@ -1,7 +1,7 @@
 # `||=` and `&&=` on an attribute of a Class value: `self.class.memo ||= v`
 # in a module that several classes include, each with its own class-level
-# accessor or hand-written reader and writer, and a class picked at run
-# time.
+# accessor, and a class picked at run time. The receiver is evaluated once,
+# as CRuby evaluates it, even where `class` is a method of the program's.
 module MinSize
   def largest(style, n)
     self.class.largest ||= -Float::INFINITY
@@ -24,11 +24,7 @@ end
 class Word
   include MinSize
   class << self
-    attr_accessor :largest
-    def label = @label
-    def label=(v)
-      @label = v.upcase
-    end
+    attr_accessor :largest, :label
   end
 end
 
@@ -49,3 +45,21 @@ k.largest ||= 0
 p k.largest
 k.largest &&= k.largest + 1
 p k.largest
+
+# a `class` of the program's own runs once for the reader and the writer
+class Counted
+  class << self
+    attr_accessor :memo
+  end
+  @calls = 0
+  def self.calls = @calls
+  def self.bump = @calls += 1
+  def class
+    Counted.bump
+    Counted
+  end
+
+  def fill = self.class.memo ||= :filled
+end
+p Counted.new.fill, Counted.calls
+p Counted.new.fill, Counted.calls

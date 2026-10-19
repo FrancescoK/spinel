@@ -6642,14 +6642,6 @@ int desugar_call_op_write(Compiler *c) {
   return changed;
 }
 
-/* `self.class` (or a bare `class`): read again at no cost and with no
-   effect, so the writer of a `||=` on it takes the same read */
-static int cow_rereads(const NodeTable *nt, int recv) {
-  int r = nt_kind(nt, recv) == NK_CallNode ? nt_ref(nt, recv, "receiver") : -2;
-  return r != -2 && (r < 0 || nt_kind(nt, r) == NK_SelfNode) && nt_str(nt, recv, "name") &&
-         sp_streq(nt_str(nt, recv, "name"), "class") && nt_ref(nt, recv, "arguments") < 0 &&
-         nt_ref(nt, recv, "block") < 0;
-}
 /* the temp `__cow_N = recv` and the two reads of it */
 static void cow_bind_temp(NodeTable *nt, int tw, int tr1, int tr2, const char *tname, int recv) {
   nt_node_set_str(nt, tw, "name", tname); nt_node_set_int(nt, tw, "depth", 0);
@@ -6713,19 +6705,17 @@ int desugar_call_or_write_reopen(Compiler *c) {
     if (!has_def_writer || !has_def_reader) continue;
     char tname[48]; snprintf(tname, sizeof tname, "__cow_%s", comp_node_tag(c, id));
     int first = nt->count;
-    /* `self.class` is read again for the writer rather than held */
-    int again = rt == TY_CLASS && cow_rereads(nt, recv);
-    int tw = again ? -1 : nt_new_node(nt, "LocalVariableWriteNode");
-    int tr1 = again ? recv : nt_new_node(nt, "LocalVariableReadNode");
-    int tr2 = again ? nt_clone_subtree(nt, recv) : nt_new_node(nt, "LocalVariableReadNode");
+    int tw = nt_new_node(nt, "LocalVariableWriteNode");
+    int tr1 = nt_new_node(nt, "LocalVariableReadNode");
+    int tr2 = nt_new_node(nt, "LocalVariableReadNode");
     int rd = nt_new_node(nt, "CallNode");
     int wargs = nt_new_node(nt, "ArgumentsNode");
     int wc = nt_new_node(nt, "CallNode");
     int join = nt_new_node(nt, k == NK_CallOrWriteNode ? "OrNode" : "AndNode");
     int stmts = nt_new_node(nt, "StatementsNode");
-    if ((tw < 0 && !again) || tr1 < 0 || tr2 < 0 || rd < 0 || wargs < 0 || wc < 0 || join < 0 || stmts < 0) continue;
+    if (tw < 0 || tr1 < 0 || tr2 < 0 || rd < 0 || wargs < 0 || wc < 0 || join < 0 || stmts < 0) continue;
     long long line = nt_int(nt, id, "node_line", 0);
-    if (!again) cow_bind_temp(nt, tw, tr1, tr2, tname, recv);
+    cow_bind_temp(nt, tw, tr1, tr2, tname, recv);
     nt_node_set_ref(nt, rd, "receiver", tr1); nt_node_set_str(nt, rd, "name", attr);
     nt_node_set_ref(nt, rd, "arguments", -1); nt_node_set_ref(nt, rd, "block", -1);
     nt_node_set_int(nt, rd, "node_line", line);
@@ -6735,7 +6725,7 @@ int desugar_call_or_write_reopen(Compiler *c) {
     nt_node_set_ref(nt, wc, "arguments", wargs); nt_node_set_ref(nt, wc, "block", -1);
     nt_node_set_int(nt, wc, "node_line", line);
     nt_node_set_ref(nt, join, "left", rd); nt_node_set_ref(nt, join, "right", wc);
-    { int two[2]; two[0] = tw; two[1] = join; nt_node_set_arr(nt, stmts, "body", two + again, 2 - again); }
+    { int two[2]; two[0] = tw; two[1] = join; nt_node_set_arr(nt, stmts, "body", two, 2); }
     nt_node_set_type(nt, id, "ParenthesesNode");
     nt_node_set_ref(nt, id, "body", stmts);
     nt_node_set_ref(nt, id, "receiver", -1);
@@ -6743,7 +6733,7 @@ int desugar_call_or_write_reopen(Compiler *c) {
     comp_grow_node_arrays(c);
     int encl = c->nscope[id];
     for (int j = first; j < nt->count; j++) c->nscope[j] = encl;
-    if (!again) scope_local_intern(comp_scope_of(c, tw), tname);
+    scope_local_intern(comp_scope_of(c, tw), tname);
     changed = 1;
   }
   free(wname);
