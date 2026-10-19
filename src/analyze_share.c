@@ -6392,8 +6392,8 @@ static void sh_route_rt_mark(Compiler *c, const ShareRoute *q) {
 }
 
 /* Is node n inside a method the program never names (sh_dead_nodes)? Such a
-   node runs nothing: the walk leaves it out, and a route recorded there is
-   not refused. */
+   node runs nothing: the walk leaves it out, and a route recorded there, or
+   one that ends there (its value never reaches the end), is not refused. */
 int share_node_dead(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
   return F && F->dead && n >= 0 && n < F->nnodes && F->dead[n];
@@ -6401,7 +6401,7 @@ int share_node_dead(const Compiler *c, int n) {
 
 int share_route_defer(Compiler *c, const ShareRoute *q, const char *msg) {
   if (!c->share_strings) return 0;
-  if (share_node_dead(c, q->site)) return 1;
+  if (share_node_dead(c, q->site) || share_node_dead(c, q->to)) return 1;
   if (repr_sealed()) {
     if (!sh_route_ok(c, q)) return 0;
     sh_route_rt_mark(c, q);
@@ -6428,7 +6428,8 @@ int share_route_defer(Compiler *c, const ShareRoute *q, const char *msg) {
 void share_routes_check(Compiler *c) {
   for (int i = 0; i < c->nshare_route; i++) {
     const ShareRoute *r = &c->share_route[i];
-    if (share_node_dead(c, r->site)) continue;   /* (a method the program never names runs nothing) */
+    /* (a method the program never names runs nothing) */
+    if (share_node_dead(c, r->site) || share_node_dead(c, r->to)) continue;
     const char *stats = getenv("SPINEL_SHARE_STATS");
     if (stats && stats[0] == '2')
       fprintf(stderr, "share-route: site %d value %d%s to %d%s%s%s carry %d ok=%d\n", r->site, r->value,
