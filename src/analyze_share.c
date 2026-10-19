@@ -37,7 +37,8 @@
 enum { SHE_WRITTEN = 1, SHE_IDENTITY = 2, SHE_COMPARED = 4,
        SHE_IVARS = 8 /* the value keeps instance variables: the runtime's
                         table is keyed by its handle, so its class is the
-                        shared object whatever holds it (SHF_IDENTITY) */ };
+                        shared object whatever holds it (SHF_IDENTITY) */,
+       SHE_ENVDEF = 16 };
 /* a class flag beside share.h's SHF_*: a value of the class leaves a call
    to be read after it (`p(lit.each { |x| x << y })`, `lit.map { }.first`),
    so a container of the class can be reached again (sh_finalize) */
@@ -216,7 +217,11 @@ typedef struct ShareFacts {
   int nlend, clend;
   /* the method names a Method, `send` or define_method can reach */
   const char **dyn;
-  int ndyn, cdyn, dyn_all, dyn_ivars;
+  int ndyn, cdyn, dyn_all, dyn_ivars, dyn_args;
+  /* the receivers `env.m(...)` of a parameter defaulting to ENV stand in
+     as a class of their own (env_st), merged into the parameter's after
+     the walk unless nothing but its default reaches it (sh_settle_env) */
+  int *env_st, *env_p, nenv, cenv;
   const char **mconst;
   int nmconst, cmconst;
   int unknown;
@@ -1923,6 +1928,7 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
       }
     }
     sh_method_ref_names(F, c, n, nt_str(nt, n, "name"), argc, argv, lit_blk);
+    F->dyn_args = 1;
     if (lit_blk) {
       sh_block_params(F, c, blk, F->unknown, 1);
       sh_union(F, bv, F->unknown);
@@ -3030,6 +3036,80 @@ static int sh_freeze_recv_assign(const Compiler *c, int n, int depth) {
 }
 
 static int sh_uplus_copies(Compiler *c, int n);
+
+/* A parameter's default of the builtin ENV: the compiler made it the
+   receiverless call `__env_to_h`, a snapshot of new Strings (BSH_PURE). */
+static int sh_env_default(const NodeTable *nt, int d) {
+  if (d < 0 || nt_kind(nt, d) != NK_CallNode || nt_ref(nt, d, "receiver") >= 0) return 0;
+  const char *dn = nt_str(nt, d, "name");
+  return dn && sp_streq(dn, "__env_to_h");
+}
+
+/* Is node r a read of a parameter whose default is the builtin ENV? Its
+   holder, or -1. */
+static int sh_env_param(ShareFacts *F, Compiler *c, int r) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, r) != NK_LocalVariableReadNode) return -1;
+  Scope *sc = comp_scope_of(c, r);
+  const char *nm = nt_str(nt, r, "name");
+  if (!sc || !nm || sc->def_node < 0 || !sc->pdefault) return -1;
+  for (int j = 0; j < sc->nparams; j++) {
+    if (!sc->pnames[j] || !sp_streq(sc->pnames[j], nm)) continue;
+    int d = sc->pdefault[j];
+    if (!sh_env_default(nt, d)) return -1;
+    return sh_local_of(F, c, sc, nm, r);
+  }
+  return -1;
+}
+
+/* Is a call of the Hash method name on an ENV default a read of it? A read
+   answers or hands its block the snapshot's own Strings, new each call, so
+   it can take a stand-in of its own (sh_call). A call that stores into it
+   ([]=, store, default=, merge!, update, replace, transform_values!) puts a
+   value there a later read answers, and one the rows do not know may, so
+   every other call makes the parameter written, which joins the stand-ins
+   back (sh_settle_env). Removing (delete, shift, select!) stores nothing. */
+static int sh_env_read(const char *name) {
+  int hs = bop_share_named(BOP_ANY_HASH, name);
+  if (hs >= BSH_ITER && hs <= BSH_ITER_THEN) return hs != BSH_ITER_MAP_BANG;
+  return hs == BSH_PURE || hs == BSH_FROZEN || hs == BSH_RECV || hs == BSH_ELEM ||
+         hs == BSH_SUB || hs == BSH_FETCH || hs == BSH_ELEM_N;
+}
+
+/* Is a call's argument lent to parameter p, or to an element of it? A lent
+   argument is joined to its parameter only when the lends settle, after
+   this, so the class of p alone does not show it. */
+static int sh_env_lent(ShareFacts *F, int p) {
+  int cur = sh_find(F, p);
+  for (int depth = 0; depth < 8 && cur >= 0; depth++) {
+    for (int i = 0; i < F->nlend; i++)
+      if (F->lend_par[i] >= 0 && sh_find(F, F->lend_par[i]) == cur) return 1;
+    int e = F->elem[cur];
+    cur = e >= 0 ? sh_find(F, e) : -1;
+  }
+  return 0;
+}
+
+/* After the walk: a parameter whose default is ENV and that nothing else
+   reaches (no write, no argument, no unknown caller, no call that stores
+   into it) holds only ENV, whose elements are new Strings each read; what
+   the program does through it shares none, so its stand-ins stay apart.
+   Any other parameter is its stand-ins. (This runs before the lends
+   settle, so the stand-ins join the classes they settle over; a stand-in
+   kept apart has no fact recorded against it that a merge would need to
+   carry, as it is never merged. Each read has a stand-in of its own: the
+   reads of one ENV are unrelated classes, which is sound while nothing
+   stores into it, as CRuby's ENV values are frozen Strings, no one of which
+   can be changed in place.) */
+static void sh_settle_env(ShareFacts *F) {
+  for (int i = 0; i < F->nenv; i++) {
+    int p = F->env_p[i], r = sh_find(F, p);
+    int pure = (F->own[p] & SHE_ENVDEF) && !(F->own[p] & SHE_WRITTEN) && F->nmem[r] == 1 &&
+               !(F->flags[r] & SHF_UNKNOWN) && !sh_env_lent(F, p);
+    if (!pure) sh_union(F, F->env_st[i], p);
+  }
+}
+
 static int sh_call(ShareFacts *F, Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, n, "name");
@@ -3039,6 +3119,21 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   int args = nt_ref(nt, n, "arguments");
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   int rv = recv >= 0 ? sh_val(F, c, recv) : -1;
+  if (recv >= 0 && rv >= 0) {
+    int ep = sh_env_param(F, c, recv);
+    if (ep >= 0 && !sh_env_read(name)) F->own[ep] |= SHE_WRITTEN;
+    else if (ep >= 0 && sh_find(F, ep) == sh_find(F, rv)) {
+      if (F->nenv >= F->cenv) {
+        F->cenv = F->cenv ? F->cenv * 2 : 16;
+        F->env_st = realloc(F->env_st, sizeof(int) * (size_t)F->cenv);
+        F->env_p = realloc(F->env_p, sizeof(int) * (size_t)F->cenv);
+        if (!F->env_st || !F->env_p) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      rv = sh_new(F, SHK_VALUE);
+      F->env_st[F->nenv] = rv;
+      F->env_p[F->nenv++] = ep;
+    }
+  }
   TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
   int maybe_str = recv >= 0 && (rt == TY_STRING || rt == TY_STRBUF || rt == TY_POLY || rt == TY_UNKNOWN);
   /* (a String receiver whose class the program gives the name runs that
@@ -3089,6 +3184,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
       if (bop_name_mutates(sym, 0))
         sh_mark_at(F, sh_elem(F, rv), SHF_MUT | SHF_INDIRECT, n);
       sh_dyn_name(F, sym);
+      F->dyn_args = 1;
     }
     else sh_union(F, sh_elem(F, rv), F->unknown);
   }
@@ -3118,7 +3214,13 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
        dyn_send_complete): every method the send can reach has an arm the
        walk follows as a call of its own, and any other name raises
        NoMethodError, so no method is reached by name beside them (#9627) */
-    if (lit || !nt_int(nt, n, "dyn_send_complete", 0)) sh_dyn_name(F, lit);
+    if (lit || !nt_int(nt, n, "dyn_send_complete", 0)) {
+      sh_dyn_name(F, lit);
+      /* the arguments of a send are values at the site, joined to UNKNOWN
+         there (sh_unknown_call); only a send handing some on reaches
+         parameters with what the walk does not see */
+      if (argc != 1 || nt_kind(nt, argv[0]) == NK_SplatNode) F->dyn_args = 1;
+    }
     /* what an arm answers (desugar_dynamic_send's `recv.m(args)` for each
        name the receiver can take) is what the send answers: the receiver's
        String for `to_s`, `itself` or a bang, a field's for a reader, a
@@ -4404,7 +4506,7 @@ static void sh_free(ShareFacts *F) {
   free(F->h); free(F->helem); free(F->bucket); free(F->hnext); free(F->nval); free(F->scb);
   free(F->lend_arg); free(F->lend_par); free(F->lend_node); free(F->lend_direct); free(F->lend_done);
   free(F->dyn); free(F->union_stack);
-  free(F->any_new_blk); free(F->attr_r); free(F->attr_w); free(F->blkp); free(F->ivw);
+  free(F->any_new_blk); free(F->env_st); free(F->env_p); free(F->attr_r); free(F->attr_w); free(F->blkp); free(F->ivw);
   for (int i = 0; i < F->nivs; i++) free((char *)F->ivs[i].name);
   free(F->ivs);
   free(F->jump); free(F->jseen); free(F->fgen);
@@ -4986,7 +5088,12 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
     for (int j = 0; j < m->nparams; j++) {
       if (!m->pdefault || m->pdefault[j] < 0 || !m->pnames[j]) continue;
       int p = sh_local_of(F, c, m, m->pnames[j], m->def_node);
-      if (p >= 0) F->own[p] |= SHE_WRITTEN;
+      int dn = m->pdefault[j];
+      int env_def = sh_env_default(nt, dn);
+      /* (an ENV default sets SHE_ENVDEF in place of SHE_WRITTEN, so a write
+         of the parameter stays told apart; sh_lendable, SHE_WRITTEN's other
+         reader, asks a String-typed parameter, which an ENV hash is not) */
+      if (p >= 0) F->own[p] |= env_def ? SHE_ENVDEF : SHE_WRITTEN;
       sh_union(F, p, sh_val(F, c, m->pdefault[j]));
       sh_flow(F, SHFL_WRITE, m->def_node, m->pdefault[j], p);
     }
@@ -5001,8 +5108,15 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
     if (!reach) continue;
     sh_union(F, sh_self(F, c, mi), F->unknown);
     F->mread[mi] = 1;
-    for (int j = 0; j < m->nparams; j++)
-      sh_union(F, m->pnames[j] ? sh_local_of(F, c, m, m->pnames[j], m->def_node) : -1, F->unknown);
+    /* (the parameters meet UNKNOWN when the call can hand them something
+       the walk does not see: a method_missing, a Method or a define_method
+       body, a send with arguments. A send of a computed name with none
+       binds each parameter its default only, and what the program binds
+       by calls the walk sees, as a direct call does; a call the walk does
+       not see, such as a case/when's ===, is as unseen without a send) */
+    if (F->dyn_args || sp_streq(m->name, "method_missing"))
+      for (int j = 0; j < m->nparams; j++)
+        sh_union(F, m->pnames[j] ? sh_local_of(F, c, m, m->pnames[j], m->def_node) : -1, F->unknown);
     sh_union(F, sh_scope_holder(F, SHK_RET, mi), F->unknown);
     F->ret_joined[mi] = 1;
     F->blk_unk[mi] = 1;
@@ -5020,6 +5134,7 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
     if (!ci->is_struct && !F->dyn_ivars) continue;
     for (int i = 0; i < ci->nivars; i++) sh_union(F, sh_ivar(F, c, k, ci->ivars[i], -1), F->unknown);
   }
+  sh_settle_env(F);
   sh_settle_reads(F, c);
   sh_settle_lends(F, c);
   sh_settle_peeks(F, c);
