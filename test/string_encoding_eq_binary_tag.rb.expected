@@ -1,0 +1,16 @@
+[false, true, true, false]
+[false, true, true, false]
+[true, false, false, true]
+[true, false, false, true]
+[false, true, true, false]
+[true, false, false, true]
+[false, true, true, false]
+true
+NoMethodError: undefined method 'encoding' for nil
+false
+NoMethodError: undefined method 'encoding' for nil
+[true, false, 2]
+[false, false]
+[false, true, false]
+[true, false]
+[false, false]
