@@ -2130,24 +2130,20 @@ static int strbuf_inline_tail_ok(Compiler *c, int mi, int t, int depth) {
   return x >= 0 && repr_of(c, x).kind != RK_BOXED && comp_ntype(c, x) != TY_POLY && !strbuf_boxed_local(c, x) &&
          strbuf_inline_tail_ok(c, mi, x, depth + 1);
 }
+/* ...and every arm of an `if` or `unless` tail t, an elsif's included,
+   which the iterator reads; `depth` is the flag strbuf_inline_tail_ok takes
+   (0 for a tail beside no `return`), and an arm is one level deeper. A
+   missing arm answers nil, which the slot takes. */
+typedef struct { Compiler *c; int mi; int depth; } StrbufInlineArms;
+static int strbuf_inline_arm_bad(const VpLeaf *lf, void *ud) {
+  const StrbufInlineArms *a = ud;
+  if (lf->kind == VPK_GAVE_UP) return 1;
+  if (lf->kind == VPK_NIL) return lf->parent < 0;
+  return !strbuf_inline_tail_ok(a->c, a->mi, lf->node, a->depth + (lf->cond_depth > 0));
+}
 static int strbuf_inline_arms_ok(Compiler *c, int mi, int t, int depth) {
-  const NodeTable *nt = c->nt;
-  t = unwrap_parens(c, t);
-  if (t < 0 || depth > 8) return 0;
-  NodeKind k = nt_kind(nt, t);
-  if (k == NK_IfNode || k == NK_UnlessNode) {
-    int arms[2] = { nt_ref(nt, t, "statements"), nt_ref(nt, t, k == NK_IfNode ? "subsequent" : "else_clause") };
-    for (int i = 0; i < 2; i++) {
-      int a = arms[i];
-      if (a >= 0 && nt_kind(nt, a) == NK_ElseNode) a = nt_ref(nt, a, "statements");
-      if (a < 0) continue;
-      if (nt_kind(nt, a) == NK_IfNode) { if (!strbuf_inline_arms_ok(c, mi, a, depth + 1)) return 0; continue; }
-      int n = 0; const int *st = nt_kind(nt, a) == NK_StatementsNode ? nt_arr(nt, a, "body", &n) : NULL;
-      if (n == 0 || !strbuf_inline_arms_ok(c, mi, st[n - 1], depth + 1)) return 0;
-    }
-    return 1;
-  }
-  return strbuf_inline_tail_ok(c, mi, t, depth);
+  StrbufInlineArms a = { c, mi, depth };
+  return !for_each_value_position(c->nt, t, VPS_IF | VPS_UNLESS, strbuf_inline_arm_bad, &a);
 }
 /* Does each `return` in subtree n of spliced method mi hand the result
    slot what strbuf_inline_tail_ok takes (a bare one nil)? The splice
