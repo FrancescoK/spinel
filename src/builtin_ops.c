@@ -3758,6 +3758,20 @@ int bop_share_kinds(const char *name, int *out, int max) {
     while (j < n && out[j] != s) j++;
     if (j == n) out[n++] = s;
   }
+  /* The rows have no Enumerator family, and an Enumerator hands on what
+     the four families' rows do not say: next and peek answer an element
+     (String's and Integer's next is the successor, PURE, which alone left
+     a user object out of the value's classes: #9620), next_values and
+     peek_values an Array of the elements. */
+  static const struct { const char *name; int share; } others[] = {
+    { "next", BSH_ELEM }, { "peek", BSH_ELEM }, { "next_values", BSH_SUB }, { "peek_values", BSH_SUB },
+    { NULL, 0 } };
+  for (int k = 0; others[k].name && n < max; k++) {
+    if (!sp_streq(name, others[k].name)) continue;
+    int j = 0;
+    while (j < n && out[j] != others[k].share) j++;
+    if (j == n) out[n++] = others[k].share;
+  }
   return n;
 }
 

@@ -1,0 +1,7 @@
+Array#[]: Works
+Enumerator#next (class): Greeter
+Array#cycle then #next: Works
+Array#each then #next: Works
+Enumerator#peek: Works
+Enumerator#next_values: Works
+Thread#join then #value: Works
