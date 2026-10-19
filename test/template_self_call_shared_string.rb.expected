@@ -1,0 +1,10 @@
+"one!"
+"two?"
+true
+true
+"one!1"
+"two?2"
+true
+true
+"ONE\x01|"
+"TWOtwo?2|"

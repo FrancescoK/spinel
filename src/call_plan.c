@@ -646,11 +646,49 @@ static int ct_exception_text(Compiler *c, int id, int *out) {
   return n;
 }
 
+/* A receiverless call in an instance method of a class whose chain has no
+   method of the name, but a descendant's does (a template method: the base
+   calls `header`, each subclass defines it): codegen dispatches it on
+   self's class over those descendants (emit_call_implicit_self_arms), so
+   the call reaches each of their methods. -2 for any other call. */
+static int ct_template_self(Compiler *c, int id, int *out) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || nt_ref(nt, id, "receiver") >= 0 || nt_int(nt, id, "builtin_only", 0)) return -2;
+  Scope *sc = comp_scope_of(c, id);
+  int cid = sc ? sc->class_id : -1;
+  if (!sc || sc->is_cmethod || cid < 0 || cid >= c->nclasses || comp_method_in_chain(c, cid, name, NULL) >= 0)
+    return -2;
+  /* (an attribute of the chain is the call's own member: emit_implicit_self_member) */
+  size_t len = strlen(name);
+  if (comp_reader_in_chain(c, cid, name, NULL)) return -2;
+  if (len > 1 && name[len - 1] == '=') {
+    char base[256];
+    if (len - 1 >= sizeof base) return -2;
+    memcpy(base, name, len - 1);
+    base[len - 1] = '\0';
+    if (comp_writer_in_chain(c, cid, base, NULL)) return -2;
+  }
+  int n = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (k == cid || !is_descendant(c, k, cid)) continue;
+    int mi = comp_method_in_chain(c, k, name, NULL), seen = 0;
+    if (mi < 0) continue;
+    for (int j = 0; j < n && !seen; j++) seen = out[j] == mi;
+    if (seen) continue;
+    if (n == CPT_MAX) return CPT_UNKNOWN;
+    out[n++] = mi;
+  }
+  return n > 0 ? n : -2;
+}
+
 static int ct_resolve(Compiler *c, int id, int *out) {
   int text = ct_exception_text(c, id, out);
   if (text != -2) return text;
   const CallPlan *p = cplan_user_fresh(c, id);
   if (p->mi < 0 || p->dispatch == CP_REFUSE) {
+    int tmpl = p->dispatch == CP_REFUSE ? -2 : ct_template_self(c, id, out);
+    if (tmpl != -2) return tmpl;
     int recv = nt_ref(c->nt, id, "receiver");
     if (recv >= 0 && comp_ntype(c, recv) == TY_UNKNOWN) return CPT_UNKNOWN;
     return 0;
