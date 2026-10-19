@@ -4086,13 +4086,26 @@ void emit_iter_step_body(Compiler *c, int block, Buf *b, int indent) {
   if (rd_lbl) g_redo_depth--;
 }
 
+/* A dispatch's builtin arm reads its RECEIVER as no object of the
+   program's (g_poly_builtin_arm); a block body's own calls are not that
+   receiver's, and a user class owns their names there as anywhere. The
+   step helpers below drop the reading for the body they emit. */
+static int step_arm_begin(void) {
+  return g_poly_builtin_arm ? view_push_arm(g_pd_skip, g_prbd_skip, 0) : -1;
+}
+static void step_arm_end(Compiler *c, int tok) {
+  if (tok >= 0) view_pop(c, tok);
+}
+
 /* A step's body inside the iterator's own C loop, through emit_stmts (the
    locals' reset, the statements), with the body's own redo label after
    that setup (g_redo_pending), where it had none. */
 void emit_iter_loop_stmts(Compiler *c, int body, Buf *b, int indent) {
   int lbl = (body >= 0 && subtree_has_own_redo(c->nt, body)) ? redo_label_push(body) : 0;
   if (lbl) g_redo_pending = lbl;
+  int arm = step_arm_begin();
   emit_stmts(c, body, b, indent);
+  step_arm_end(c, arm);
   if (lbl) g_redo_depth--;
 }
 
@@ -4118,7 +4131,13 @@ int iter_step_needs_frame(Compiler *c, int block) {
    resets the block's locals, which are fresh for every step, then emits its
    leading statements, and its tail is the answer; g_indent, which the
    tail's own setup indents by, is the caller's. */
+static void emit_iter_step_open_body(Compiler *c, int block, int want_poly, int indent, IterStep *st);
 void emit_iter_step_open(Compiler *c, int block, int want_poly, int indent, IterStep *st) {
+  int arm = step_arm_begin();
+  emit_iter_step_open_body(c, block, want_poly, indent, st);
+  step_arm_end(c, arm);
+}
+static void emit_iter_step_open_body(Compiler *c, int block, int want_poly, int indent, IterStep *st) {
   const NodeTable *nt = c->nt;
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
@@ -4149,7 +4168,14 @@ void emit_iter_step_open(Compiler *c, int block, int want_poly, int indent, Iter
   for (int j = 0; j + 1 < bn; j++) emit_stmt(c, bb[j], g_pre, indent);
 }
 
+static TyKind emit_iter_step_tail_body(Compiler *c, const IterStep *st, Buf *vb);
 TyKind emit_iter_step_tail(Compiler *c, const IterStep *st, Buf *vb) {
+  int arm = step_arm_begin();
+  TyKind t = emit_iter_step_tail_body(c, st, vb);
+  step_arm_end(c, arm);
+  return t;
+}
+static TyKind emit_iter_step_tail_body(Compiler *c, const IterStep *st, Buf *vb) {
   const NodeTable *nt = c->nt;
   if (st->slot) {
     /* an oint slot is read by a plain consumer: a nil raises there */
@@ -4188,7 +4214,9 @@ int emit_iter_step_tail_o(Compiler *c, const IterStep *st, TyKind t, Buf *vb) {
   int body = nt_ref(c->nt, st->block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(c->nt, body, "body", &bn) : NULL;
   if (bn == 0 || st->want_poly || !node_has_oint_form(c, bb[bn - 1])) return 0;
+  int arm = step_arm_begin();
   emit_oint_expr(c, bb[bn - 1], t, vb);
+  step_arm_end(c, arm);
   return 1;
 }
 
@@ -4200,8 +4228,10 @@ void emit_iter_step_cond(Compiler *c, const IterStep *st, int raw, Buf *cb) {
   int body = nt_ref(c->nt, st->block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(c->nt, body, "body", &bn) : NULL;
   if (bn == 0) { buf_puts(cb, "0"); return; }
+  int arm = step_arm_begin();
   if (raw) emit_expr(c, bb[bn - 1], cb);
   else emit_cond(c, bb[bn - 1], cb);
+  step_arm_end(c, arm);
 }
 
 /* Does a class of the program write its own each_with_index (a def of its
