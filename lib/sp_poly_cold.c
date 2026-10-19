@@ -1430,6 +1430,11 @@ else {
       }
       v = a->data[idx]; idx++;
     }
+    /* A mutable String arrives as a shared handle, not a plain String:
+       `%c` of one printed nothing and `%d` and `%f` refused it as no String,
+       where CRuby reads the String. Every conversion reads the handle as its
+       value, as %s did through sp_poly_to_s. */
+    if (sp_poly_is_strbuf(v)) v = sp_poly_strbuf_deref(v);
     if (conv == 'd' || conv == 'i' || conv == 'x' || conv == 'X' || conv == 'o' ||
         conv == 'b' || conv == 'B') {
       long long lv = 0;
