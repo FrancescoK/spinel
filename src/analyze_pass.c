@@ -14918,9 +14918,8 @@ static int rows_method_taken(const NodeTable *nt, const char *dn) {
   return 0;
 }
 
-/* The edges rows_value_dropped climbs: `if` and `unless` arms and a plain
-   begin; a begin with clauses passes its body and its else on by hand. */
-enum { ROWS_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN_PLAIN | VP_BEGIN_BOTH };
+/* The edges rows_value_dropped climbs. */
+enum { ROWS_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN };
 
 /* Whether the value of `w` is thrown away: a statement whose value nothing
    reads, the last statement of a conditional, a parenthesized or a begin
@@ -14933,25 +14932,19 @@ enum { ROWS_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN_PLA
    them at most. */
 static int rows_value_dropped(Compiler *c, const int *par, int w, const char **seen, int nseen) {
   const NodeTable *nt = c->nt;
-  const char *dn = NULL;
-  for (long guard = nt->count; guard >= 0; guard--) {
-    VpUp up;
-    VpUpKind ended = vp_climb(nt, par, w, ROWS_CLIMB, &up);
-    if (ended == VPU_DROPPED) return 1;
-    if (ended != VPU_ENDED) return 0;
-    int g = up.parent;
-    NodeKind gk = nt_kind(nt, g);
-    if (gk == NK_BeginNode) { w = g; continue; }
-    /* the body of a loop, the block of an iterator that ignores its value */
-    if (vp_up_loop(nt, &up) >= 0) return 1;
-    if (gk == NK_BlockNode) {
-      int call = vp_up_block_call(nt, par, &up);
-      return call >= 0 && rows_block_drops(c, call);
-    }
-    /* (a method whose body is a begin is not asked) */
-    if (vp_up_def(nt, &up) >= 0 && nt_kind(nt, up.node) == NK_StatementsNode) dn = nt_str(nt, g, "name");
-    break;
+  VpUp up;
+  VpUpKind ended = vp_climb(nt, par, w, ROWS_CLIMB, &up);
+  if (ended == VPU_DROPPED) return 1;
+  if (ended != VPU_ENDED) return 0;
+  /* the body of a loop, a clause run for its effect, the block of an
+     iterator that ignores its value */
+  if (vp_up_loop(nt, &up) >= 0 || vp_up_effect_clause(nt, &up)) return 1;
+  if (nt_kind(nt, up.parent) == NK_BlockNode) {
+    int call = vp_up_block_call(nt, par, &up);
+    return call >= 0 && rows_block_drops(c, call);
   }
+  int def = vp_up_def(nt, &up);
+  const char *dn = def >= 0 ? nt_str(nt, def, "name") : NULL;
   if (!dn || rows_method_taken(nt, dn)) return 0;
   for (int k = 0; k < nseen; k++) if (sp_streq(seen[k], dn)) return 1;
   if (nseen >= 4) return 0;
