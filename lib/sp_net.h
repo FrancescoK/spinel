@@ -116,6 +116,17 @@ void sp_net_set_nodelay(int fd);
  * last recv's byte count. */
 const char *sp_net_recv_some(int fd, int maxlen);
 const char *sp_net_recv_all(int fd, int max_bytes);
+
+/* recv_some with a deadline: waits at most timeout_s seconds for the first
+ * byte (a negative timeout_s waits forever, as recv_some does). It parks the
+ * green thread with the deadline (sp_sched_wait_io_timeout) rather than in a
+ * separate readiness wait before each read, and works the same on a blocking
+ * fd. An empty result is EOF, an error or a timeout; take_recv_timeout tells
+ * them apart: 1 when the calling worker's last recv_some_timeout gave up on
+ * the deadline, else 0. Reading it clears it. */
+const char *sp_net_recv_some_timeout(int fd, int maxlen, double timeout_s);
+int         sp_net_take_recv_timeout(void);
+
 int         sp_net_write_str(int fd, const char *s);
 int         sp_net_write_bytes(int fd, const char *data, int n);
 

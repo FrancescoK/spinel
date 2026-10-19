@@ -1,0 +1,8 @@
+paired: true
+silent: "" timed out: 1
+waited the deadline: true
+cleared: 0
+peek: "" timed out: 1
+data: "PONG\r\n" timed out: 0
+no deadline: "+OK\r\n" timed out: 0
+eof: "" timed out: 0
