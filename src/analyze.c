@@ -27461,18 +27461,15 @@ static int poly_value_may_be_string(Compiler *c, const HandleArgTab *hat, int v,
    by its form (poly_lit_may_be_string): a literal of another
    class is no String whatever its type settled as (an untyped method's
    `acc = []`), and a conditional is one of its arms (`c ? [0] : 1`). The
-   lifts ask without it, and their answers and C stay as they were. An
-   arm: its last statement, through an `else`. */
-static int poly_arm_may_be_string(Compiler *c, const HandleArgTab *hat, int n, int depth, const PolyLits *lits) {
-  const NodeTable *nt = c->nt;
-  for (int d = 0; n >= 0 && d < 16; d++) {
-    NodeKind k = nt_kind(nt, n);
-    if (k == NK_ElseNode) { n = nt_ref(nt, n, "statements"); continue; }
-    if (k != NK_StatementsNode) return poly_value_may_be_string(c, hat, n, depth, lits);
-    int bn = 0; const int *bv = nt_arr(nt, n, "body", &bn);
-    n = bn > 0 ? bv[bn - 1] : -1;
-  }
-  return n >= 0;   /* an empty one answers nil */
+   lifts ask without it, and their answers and C stay as they were. The
+   arms are read through the iterator: an arm's last statement, through an
+   `else` and parentheses, and a missing arm answers nil. */
+typedef struct { Compiler *c; const HandleArgTab *hat; int depth; const PolyLits *lits; } PolyArms;
+static int poly_arm_may_be_string(const VpLeaf *lf, void *ud) {
+  const PolyArms *a = ud;
+  if (lf->kind == VPK_NIL) return 0;
+  if (lf->kind == VPK_GAVE_UP) return 1;
+  return poly_value_may_be_string(a->c, a->hat, lf->node, a->depth, a->lits);
 }
 /* 0 or 1 for a literal or a conditional, -1 for any other form */
 static int poly_lit_may_be_string(Compiler *c, const HandleArgTab *hat, int v, int depth, const PolyLits *lits) {
@@ -27482,16 +27479,10 @@ static int poly_lit_may_be_string(Compiler *c, const HandleArgTab *hat, int v, i
   case NK_NilNode: case NK_TrueNode: case NK_FalseNode: case NK_RangeNode: case NK_LambdaNode:
   case NK_RegularExpressionNode:
     return 0;
-  case NK_IfNode: case NK_UnlessNode: {
-    int el = nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause");
-    int st = nt_ref(nt, v, "statements");
-    /* a missing arm answers nil */
-    return (st >= 0 && poly_arm_may_be_string(c, hat, st, depth, lits)) ||
-           (el >= 0 && poly_arm_may_be_string(c, hat, el, depth, lits));
+  case NK_IfNode: case NK_UnlessNode: case NK_OrNode: case NK_AndNode: {
+    PolyArms a = { c, hat, depth, lits };
+    return for_each_value_position(nt, v, VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_LOGIC, poly_arm_may_be_string, &a);
   }
-  case NK_OrNode: case NK_AndNode:
-    return poly_value_may_be_string(c, hat, nt_ref(nt, v, "left"), depth, lits) ||
-           poly_value_may_be_string(c, hat, nt_ref(nt, v, "right"), depth, lits);
   default:
     return -1;
   }
