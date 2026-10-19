@@ -1376,18 +1376,42 @@ static int emit_poly_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
   /* Array#at, kept by name where a program class owns `at` too
      (desugar_array_at): the Integer index read [] makes */
   if (sp_streq(name, "at") && argc == 1 && a0 != TY_RANGE && a0 != TY_FLOAT_RANGE && a0 != TY_STR_RANGE) {
-    buf_printf(b, "sp_PolyArray_get%s(", recv_never_nil(c, recv) ? "" : "_m"); emit_expr(c, recv, b); buf_puts(b, ", ");
+    /* a receiver that can be nil raises under `at`, not under [] */
+    int nil_t = -1;
+    if (recv_never_nil(c, recv)) { buf_puts(b, "sp_PolyArray_get("); emit_expr(c, recv, b); }
+    else {
+      Buf rx = expr_buf(c, recv);
+      nil_t = nil_recv_open(c, recv, rx.p ? rx.p : "", "sp_PolyArray *", "sp_RbVal", subtree_may_allocate(nt, argv[0]), b);
+      buf_printf(b, "sp_PolyArray_get(_t%d", nil_t);
+      free(rx.p);
+    }
+    buf_puts(b, ", ");
     if (a0 == TY_POLY && nt_kind(nt, argv[0]) != NK_SplatNode) { buf_puts(b, "sp_poly_arg_int_chk("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
     else emit_int_expr(c, argv[0], b);
     buf_puts(b, ")");
+    if (nil_t >= 0) nil_recv_close("at", nil_t, 1, b);
     { *out = 1; return 1; }
   }
   if (sp_streq(name, "[]") && argc == 1) {
-    buf_printf(b, "sp_PolyArray_get%s(", recv_never_nil(c, recv) ? "" : "_m"); emit_expr(c, recv, b); buf_puts(b, ", ");
+    /* first, last and at were rewritten to this read: a nil receiver names
+       the call as written, and [] only when it was written so */
+    const char *wn = cplan_call_name(nt, id);
+    int nil_t = -1;
+    if (recv_never_nil(c, recv) || !nt_str(nt, id, "written_name")) {
+      buf_printf(b, "sp_PolyArray_get%s(", recv_never_nil(c, recv) ? "" : "_m"); emit_expr(c, recv, b);
+    }
+    else {
+      Buf rx = expr_buf(c, recv);
+      nil_t = nil_recv_open(c, recv, rx.p ? rx.p : "", "sp_PolyArray *", "sp_RbVal", subtree_may_allocate(nt, argv[0]), b);
+      free(rx.p);
+      buf_printf(b, "sp_PolyArray_get(_t%d", nil_t);
+    }
+    buf_puts(b, ", ");
     if (a0 == TY_POLY) { buf_puts(b, "sp_poly_arg_int_chk("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
     else if (a0 == TY_BIGINT) emit_int_expr(c, argv[0], b);   /* a widened counter used as an index */
     else emit_expr(c, argv[0], b);
     buf_puts(b, ")");
+    if (nil_t >= 0) nil_recv_close(wn, nil_t, 1, b);
     { *out = 1; return 1; }
   }
   if (sp_streq(name, "sample") && argc == 1 && nt_type(nt, argv[0]) &&
@@ -2399,6 +2423,10 @@ else {
     /* the hoisted receiver is rooted across its arguments unless a slot
        read with slot-keeping arguments already holds it (push_recv_in_slot) */
     int held = push_recv_in_slot(c, recv, argc, argv, rt);
+    /* a nil receiver raises, under unshift or prepend as written, once every
+       argument has run: the functions below name unshift or insert */
+    char nilck[96] = "";
+    if (!recv_never_nil(c, recv)) snprintf(nilck, sizeof nilck, " if (SP_UNLIKELY(!_t%d)) sp_nil_recv(\"%s\");", t, name);
     if (rt == TY_INT_ARRAY) {
       buf_printf(b, "({ sp_IntArray *_t%d = ", t);
       if (held) { emit_expr(c, recv, b); buf_puts(b, ";"); }
@@ -2411,6 +2439,7 @@ else {
         else { buf_printf(b, " sp_int _u%d_%d = ", t, a); emit_typed_elem_value(c, argv[a], TY_INT, b); }
         buf_puts(b, ";");
       }
+      buf_puts(b, nilck);
       for (int a = argc - 1; a >= 0; a--) {
         buf_printf(b, " sp_IntArray_unshift%s(_t%d, _u%d_%d);", nil_store_sfx(c, "Int", argv[a]), t, t, a);
       }
@@ -2425,6 +2454,7 @@ else {
         buf_printf(b, " const char *_u%d_%d = ", t, a); emit_typed_elem_value(c, argv[a], TY_STRING, b);
         buf_printf(b, "; SP_GC_ROOT_STR(_u%d_%d);", t, a);
       }
+      buf_puts(b, nilck);
       for (int a = 0; a < argc; a++) {
         buf_printf(b, " sp_StrArray_insert(_t%d, %d, _u%d_%d);", t, a, t, a);
       }
@@ -2442,6 +2472,7 @@ else {
         else { buf_printf(b, " sp_float _u%d_%d = ", t, a); emit_typed_elem_value(c, argv[a], TY_FLOAT, b); }
         buf_puts(b, ";");
       }
+      buf_puts(b, nilck);
       for (int a = argc - 1; a >= 0; a--) {
         buf_printf(b, " sp_FloatArray_unshift%s(_t%d, _u%d_%d);", nil_store_sfx(c, "Float", argv[a]), t, t, a);
       }
@@ -3613,23 +3644,35 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
     /* the receiver is held across the keys, which may allocate */
     if (nt_kind(nt, argv[0]) == NK_SplatNode)
       { *out = emit_dig_splat(c, recv, argv[0], b); return 1; }
+    /* a receiver that can be nil is read as an empty Array and raises
+       under `dig` once the keys have run, not under [] (nil_recv_open) */
+    int nil_t = -1;
+    Buf rb; int ch = 0;
+    if (recv_never_nil(c, recv)) ch = hold_recv_open(c, recv, 0, "sp_PolyArray *", "SP_GC_ROOT", b, &rb);
+    else {
+      Buf rx = expr_buf(c, recv);
+      int keys_alloc = 0;
+      for (int di = 0; di < argc; di++) keys_alloc |= subtree_may_allocate(nt, argv[di]);
+      nil_t = nil_recv_open(c, recv, rx.p ? rx.p : "", "sp_PolyArray *", "sp_RbVal", keys_alloc, b);
+      free(rx.p);
+      memset(&rb, 0, sizeof rb);
+      buf_printf(&rb, "_t%d", nil_t);
+    }
     if (argc == 1) {
-      Buf rb; int ch = hold_recv_open(c, recv, 0, "sp_PolyArray *", "SP_GC_ROOT", b, &rb);
-      buf_printf(b, "sp_PolyArray_get%s(%s, ", recv_never_nil(c, recv) ? "" : "_m", rb.p); free(rb.p);
+      buf_printf(b, "sp_PolyArray_get(%s, ", rb.p); free(rb.p);
       emit_int_expr(c, argv[0], b); buf_puts(b, ")");
-      if (ch) buf_puts(b, "; })");
     }
     else {
       /* each later step goes through the dig-specific helper so a scalar
          intermediate raises TypeError instead of bit/char-indexing (#2983) */
       /* the key goes boxed: a Struct member can be named, and a String or
          Symbol reached the integer offset slot as a pointer (#3575) */
-      Buf rb; int ch = hold_recv_open(c, recv, 0, "sp_PolyArray *", "SP_GC_ROOT", b, &rb);
       for (int di = argc - 1; di >= 1; di--) buf_printf(b, "sp_poly_dig_step_key(");
-      buf_printf(b, "sp_PolyArray_get%s(%s, ", recv_never_nil(c, recv) ? "" : "_m", rb.p); free(rb.p); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+      buf_printf(b, "sp_PolyArray_get(%s, ", rb.p); free(rb.p); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
       for (int di = 1; di < argc; di++) { buf_puts(b, ", "); emit_boxed(c, argv[di], b); buf_puts(b, ")"); }
-      if (ch) buf_puts(b, "; })");
     }
+    if (nil_t >= 0) nil_recv_close("dig", nil_t, 1, b);
+    else if (ch) buf_puts(b, "; })");
     { *out = 1; return 1; }
   }
   /* unshift/prepend(*elems): insert each element at the front (reverse order
@@ -3649,6 +3692,9 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_printf(b, " sp_RbVal _t%d = ", base + ai); emit_boxed(c, argv[ai], b);
       buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", base + ai);
     }
+    /* a nil receiver raises, under unshift or prepend as written (insert is
+       the function's own name), once every element has run */
+    if (!recv_never_nil(c, recv)) buf_printf(b, " if (SP_UNLIKELY(!_t%d)) sp_nil_recv(\"%s\");", t, name);
     for (int ai = argc - 1; ai >= 0; ai--)
       buf_printf(b, " sp_PolyArray_insert(_t%d, 0, _t%d);", t, base + ai);
     buf_printf(b, " _t%d; })", t);
@@ -5138,15 +5184,30 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
     char ecbuf[192];
     snprintf(ecbuf, sizeof ecbuf, "%s", nested ? nested : class_ctype(c, ecls));
     const char *ecn = ecbuf;
-    const char *nm_sfx = recv_never_nil(c, recv) ? "" : "_m";   /* the raising entry where the receiver can be nil */
+    /* a receiver that can be nil raises under the name as written: the
+       raising entry names [] and length, and the call the others (at, first,
+       last, <<, append, push, size) tests the receiver itself */
+    int nil_ok = recv_never_nil(c, recv);
+    const char *nm_sfx = nil_ok ? "" : "_m";
     if ((is_element_at_alias(name)) && argc == 1) {
-      buf_printf(b, "((%s *)sp_PtrArray_get%s(", ecn, nm_sfx);
-      emit_expr(c, recv, b); buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, "))");
+      int t = -1;
+      const char *wn = cplan_call_name(nt, id);
+      if (nil_ok || sp_streq(wn, "[]")) { buf_printf(b, "((%s *)sp_PtrArray_get%s(", ecn, nm_sfx); emit_expr(c, recv, b); }
+      else {
+        Buf rx = expr_buf(c, recv);
+        char vt[200]; snprintf(vt, sizeof vt, "%s *", ecn);
+        t = nil_recv_open(c, recv, rx.p ? rx.p : "", "sp_PtrArray *", vt, subtree_may_allocate(nt, argv[0]), b);
+        free(rx.p);
+        buf_printf(b, "((%s *)sp_PtrArray_get(_t%d", ecn, t);
+      }
+      buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, "))");
+      if (t >= 0) nil_recv_close(wn, t, 1, b);
       return 1;
     }
     if ((is_endpoint_query(name)) && argc == 0) {
-      buf_printf(b, "((%s *)sp_PtrArray_get%s(", ecn, nm_sfx);
+      buf_printf(b, "((%s *)sp_PtrArray_get(%s", ecn, nil_ok ? "" : "sp_nil_recv_named(");
       emit_expr(c, recv, b);
+      if (!nil_ok) buf_printf(b, ", \"%s\")", name);
       buf_puts(b, sp_streq(name, "first") ? ", 0))" : ", -1))");
       return 1;
     }
@@ -5177,7 +5238,7 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
       int tr = ++g_tmp;
       buf_printf(b, "({ sp_PtrArray *_t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, ";");
       for (int a = 0; a < argc; a++) {
-        buf_printf(b, " sp_PtrArray_push%s(_t%d, ", nm_sfx, tr);
+        buf_printf(b, " sp_PtrArray_push(_t%d, ", tr);
         /* A poly value carries its pointer under a tag: the slot takes the
            pointer, not the sp_RbVal. A method of the array's own class whose
            return widened to poly -- one that answers its argument, reached
@@ -5186,11 +5247,18 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
         emit_poly_unboxed(c, argv[a], repr_of(c, argv[a]).as_ty, "sp_poly_obj_ptr(", b);
         buf_puts(b, ");");
       }
+      /* a nil receiver took none of the pushes: it raises once every
+         argument has run */
+      if (!nil_ok) buf_printf(b, " if (SP_UNLIKELY(!_t%d)) sp_nil_recv(\"%s\");", tr, name);
       buf_printf(b, " _t%d; })", tr);
       return 1;
     }
     if (is_len_alias(name) && argc == 0) {
-      buf_printf(b, "sp_PtrArray_length%s(", nm_sfx); emit_expr(c, recv, b); buf_puts(b, ")");
+      int named = !nil_ok && is_length_spelling(name);
+      buf_printf(b, "sp_PtrArray_length%s(%s", nil_ok || named ? "" : "_m", named ? "sp_nil_recv_named(" : "");
+      emit_expr(c, recv, b);
+      if (named) buf_printf(b, ", \"%s\")", name);
+      buf_puts(b, ")");
       return 1;
     }
     if (sp_streq(name, "empty?") && argc == 0) {
@@ -6745,11 +6813,7 @@ else {
           buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); (void)("); emit_expr(c, argv[0], b); buf_puts(b, "); 0; })");
           return 1;
         }
-        buf_printf(b, "sp_%sHash_has_value(", hn);
-        emit_expr(c, recv, b); buf_puts(b, ", ");
-        if (poly) emit_boxed(c, argv[0], b); else emit_expr(c, argv[0], b);
-        buf_puts(b, ")");
-        return 1;
+        return emit_hash_has_value(c, recv, argv[0], rt, hn, poly, name, b);
       }
       /* merge!/update with no Hash has nothing to fold in and answers the
          receiver, after the nil and frozen checks; a block has no conflict to
@@ -8224,6 +8288,9 @@ static int str_arms_case_search(Compiler *c, Buf *b, const NodeTable *nt, const 
         sp_streq(nt_type(nt, recv), "LocalVariableReadNode") && nt_str(nt, recv, "name") &&
         sp_streq(nt_str(nt, recv, "name"), g_hoist_len_recv))
       buf_puts(b, g_hoist_len_var);
+    /* the raising length names length: size on a String that can be nil
+       raises under its own name */
+    else if (!recv_never_nil(c, recv) && is_length_spelling(name)) buf_printf(b, "sp_str_length(sp_nil_recv_named(%s, \"%s\"))", r, name);
     else buf_printf(b, "sp_str_length_m(%s)", r);
   }
   else if (sp_streq(name, "upcase"))     buf_printf(b, "sp_str_upcase%s(%s)", case_map_suffix(c, argc, argv), r);

@@ -1,40 +1,40 @@
-IA sort!: NoMethodError
-IA include?: NoMethodError
-IA compact: NoMethodError
-IA delete: NoMethodError
-IA insert: NoMethodError
-IA rotate!: NoMethodError
+IA sort!: undefined method 'sort!' for nil
+IA include?: undefined method 'include?' for nil
+IA compact: undefined method 'compact' for nil
+IA delete: undefined method 'delete' for nil
+IA insert: undefined method 'insert' for nil
+IA rotate!: undefined method 'rotate!' for nil
 [1, 2, 3]
 true
 [1, 2, 3]
 2
 [1, 9, 3]
 [9, 3, 1]
-FA sort!: NoMethodError
-FA include?: NoMethodError
-FA index: NoMethodError
-FA compact: NoMethodError
+FA sort!: undefined method 'sort!' for nil
+FA include?: undefined method 'include?' for nil
+FA index: undefined method 'index' for nil
+FA compact: undefined method 'compact' for nil
 [1.5, 2.5]
 true
 1
 [1.5, 2.5]
-SA pop: NoMethodError
-SA shift: NoMethodError
-SA include?: NoMethodError
-SA min: NoMethodError
-SA sort!: NoMethodError
+SA pop: undefined method 'pop' for nil
+SA shift: undefined method 'shift' for nil
+SA include?: undefined method 'include?' for nil
+SA min: undefined method 'min' for nil
+SA sort!: undefined method 'sort!' for nil
 true
 "a"
 ["a", "b"]
 "a"
 "b"
-PA push: NoMethodError
-PA <<: NoMethodError
-PA []: NoMethodError
-PA pop: NoMethodError
-PA length: NoMethodError
-PA reverse!: NoMethodError
-PA flatten: NoMethodError
+PA push: undefined method 'push' for nil
+PA <<: undefined method '<<' for nil
+PA []: undefined method '[]' for nil
+PA pop: undefined method 'pop' for nil
+PA length: undefined method 'length' for nil
+PA reverse!: undefined method 'reverse!' for nil
+PA flatten: undefined method 'flatten' for nil
 [1, "a", 2]
 [1, "a", 2, 2]
 1
@@ -42,21 +42,21 @@ PA flatten: NoMethodError
 3
 [2, "a", 1]
 [2, "a", 1]
-HI []: NoMethodError
-HI clear: NoMethodError
-HI value?: NoMethodError
-HI replace: NoMethodError
+HI []: undefined method '[]' for nil
+HI clear: undefined method 'clear' for nil
+HI value?: undefined method 'value?' for nil
+HI replace: undefined method 'replace' for nil
 1
 true
 {"b" => 2}
 {}
-ST delete: NoMethodError
-ST squeeze: NoMethodError
-ST oct: NoMethodError
-ST lines: NoMethodError
+ST delete: undefined method 'delete' for nil
+ST squeeze: undefined method 'squeeze' for nil
+ST oct: undefined method 'oct' for nil
+ST lines: undefined method 'lines' for nil
 "bc"
 "abca"
 0
 ["abca"]
-SB <<: NoMethodError
+SB <<: undefined method '<<' for nil
 "012"

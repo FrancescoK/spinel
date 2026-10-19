@@ -1,0 +1,30 @@
+IA minus, operand nil: TypeError: no implicit conversion of nil into Array
+IA diff, operand nil: TypeError: no implicit conversion of nil into Array
+IA diff_first, operand nil: TypeError: no implicit conversion of nil into Array
+IA diff_last, operand nil: TypeError: no implicit conversion of nil into Array
+IA minus, receiver nil: NoMethodError: undefined method '-' for nil
+IA minus: [1, 3]
+IA diff: [1, 3]
+IA diff_first: [3]
+IA diff_last: [3]
+FA minus, operand nil: TypeError: no implicit conversion of nil into Array
+FA diff, operand nil: TypeError: no implicit conversion of nil into Array
+FA diff_first, operand nil: TypeError: no implicit conversion of nil into Array
+FA diff_last, operand nil: TypeError: no implicit conversion of nil into Array
+FA minus, receiver nil: NoMethodError: undefined method '-' for nil
+FA minus: [2.5]
+FA diff: [2.5]
+FA diff_first: []
+FA diff_last: []
+SA minus, operand nil: TypeError: no implicit conversion of nil into Array
+SA diff, operand nil: TypeError: no implicit conversion of nil into Array
+SA diff_first, operand nil: TypeError: no implicit conversion of nil into Array
+SA diff_last, operand nil: TypeError: no implicit conversion of nil into Array
+SA minus, receiver nil: NoMethodError: undefined method '-' for nil
+SA minus: ["b"]
+SA diff: ["b"]
+SA diff_first: []
+SA diff_last: []
+IA diff_empty: [1, 2, 3, 2]
+IA empty_minus, operand nil: TypeError: no implicit conversion of nil into Array
+IA empty_minus: []

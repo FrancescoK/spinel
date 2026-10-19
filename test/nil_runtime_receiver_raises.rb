@@ -4,11 +4,12 @@
 # answered false, `delete` answered nil), where CRuby has no such method on
 # nil. The slots below are never written nil, only left unset, so the
 # compiler tests none of the calls and the raise comes from the runtime.
+# Each raise is checked by its message, which names the method CRuby names.
 def raises(label)
   yield
   puts "#{label}: answered"
-rescue NoMethodError
-  puts "#{label}: NoMethodError"
+rescue NoMethodError => e
+  puts "#{label}: #{e.message}"
 end
 
 # a typed Integer Array

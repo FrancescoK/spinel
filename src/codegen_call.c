@@ -24202,7 +24202,7 @@ void emit_nil_cold_test(Compiler *c, int id, int r, Buf *b) {
   }
   else
     buf_printf(b, ") == NULL)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));",
-               enum_walk_name(c, id, r, nt_str(c->nt, id, "name")));
+               enum_walk_name(c, id, r, cplan_call_name(c->nt, id)));
 }
 
 /* A read of an array the loop being emitted caches (hc_array) takes its
@@ -26546,11 +26546,31 @@ static int at_index_convert(Compiler *c, int id, Buf *b) {
 static int g_at_chk_id = -1;
 static int emit_at_without_array(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
-  if (!nt_int(nt, id, "was_at", 0)) return 0;
+  /* first and last were rewritten to [] reads too (desugar_array_first_last):
+     a boxed receiver that is nil raises under the name as written, which the
+     index read behind them cannot say */
+  const char *fl = nt_str(nt, id, "written_name");
+  if (fl && !is_endpoint_query(fl)) fl = NULL;
+  if (!nt_int(nt, id, "was_at", 0) && !fl) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   Repr rr = repr_of(c, recv);
   TyKind rt = rr.as_ty;
+  if (fl && rr.kind != RK_BOXED) return 0;
+  if (fl && !nt_int(nt, id, "was_at", 0)) {
+    if (g_at_chk_id == id || sn_guard_pending(c, id) || g_n_argov + 1 > MAX_ARG_OVERRIDE) return 0;
+    int sv_n = g_n_argov;
+    int t = ++g_tmp;
+    buf_puts(b, "({ "); t = hold_operand(c, recv, TY_POLY, 0, t, 1, " ", b);
+    buf_printf(b, "if (SP_UNLIKELY(_t%d.tag == SP_TAG_NIL)) sp_nil_recv(\"%s\"); ", t, fl);
+    view_bind(recv, "_t%d", t);
+    int sv_chk = g_at_chk_id; g_at_chk_id = id;
+    emit_call_held(c, id, b);
+    g_at_chk_id = sv_chk;
+    view_unbind(sv_n);
+    buf_puts(b, "; })");
+    return 1;
+  }
   if (rr.kind == RK_BOXED) {
     if (g_at_chk_id == id || sn_guard_pending(c, id)) return 0;
     int args = nt_ref(nt, id, "arguments");

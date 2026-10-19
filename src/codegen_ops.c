@@ -261,7 +261,8 @@ static int emit_op_array_first(Compiler *c, const BopCtx *x, Buf *b) {
     buf_printf(b, "sp_%sArray_oget(%s, 0)", ak ? ak : "", r);
     if (!node_is_oint(c, x->id)) buf_puts(b, ")");
   }
-  else buf_printf(b, "sp_%sArray_get%s(%s, 0)", ak ? ak : "", recv_never_nil(c, x->recv) ? "" : "_m", r);
+  else if (recv_never_nil(c, x->recv)) buf_printf(b, "sp_%sArray_get(%s, 0)", ak ? ak : "", r);
+  else buf_printf(b, "sp_%sArray_get(sp_nil_recv_named(%s, \"first\"), 0)", ak ? ak : "", r);   /* first, not the [] the read names */
   free(r);
   return 1;
 }
@@ -374,6 +375,7 @@ static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *)
   [BOPE_FLOAT_RATIONALIZE] = emit_op_float_rationalize,
   [BOPE_STRING_SCAN_CHECKED] = emit_op_string_scan_checked,
   [BOPE_STRING_SLICE] = emit_op_string_slice,
+  [BOPE_STRING_DEDUP] = emit_op_string_dedup,
   [BOPE_STRING_SCRUB_BLOCK] = emit_op_string_scrub_block,
   [BOPE_THREAD_RAISE] = emit_op_thread_raise,
   [BOPE_THREAD_TLS] = emit_op_thread_tls,
@@ -409,6 +411,7 @@ static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *)
   [BOPE_HASH_INVERT] = emit_op_hash_invert,
   [BOPE_HASH_FLATTEN] = emit_op_hash_flatten,
   [BOPE_HASH_TO_A] = emit_op_hash_to_a,
+  [BOPE_HASH_NIL_RECV] = emit_op_hash_nil_recv,
   [BOPE_HASH_SORT] = emit_op_hash_sort,
   [BOPE_HASH_FIRST] = emit_op_hash_first,
   [BOPE_HASH_TAKE] = emit_op_hash_take,

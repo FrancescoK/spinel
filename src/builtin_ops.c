@@ -1831,7 +1831,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "tr_s!",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
   { TY_STRING, "delete_prefix!",  0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
   { TY_STRING, "delete_suffix!",  0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
-  { TY_STRING, "dedup",           0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_uminus_val($r)", 0, 0, BOPF_SELF_CLASS },
+  { TY_STRING, "dedup",           0,   0, BF_ANY,      TY_STRING,     BOPE_STRING_DEDUP, NULL, 0, 0, BOPF_SELF_CLASS },
   { TY_STRING, "dedup",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_CLASS },
   { TY_STRING, "succ!",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { TY_STRING, "next!",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
@@ -1992,11 +1992,11 @@ static const BuiltinOp bop_rows[] = {
      evaluated for its effects */
   { BOP_ANY_HASH, "equal?",           1,   1, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "({ sp_RbVal _t$t = $b0; (sp_bool)(_t$t.tag == SP_TAG_OBJ ? _t$t.v.p == (void *)($h) : _t$t.tag == SP_TAG_NIL && !($h)); })", BOP_K(TY_POLY) },
   { BOP_ANY_HASH, "equal?",           1,   1, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "((void)($r), (void)($e0), (sp_bool)0)" },
-  { BOP_ANY_HASH, "length",           0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "sp_$HHash_length($r)" },
-  { BOP_ANY_HASH, "size",             0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "sp_$HHash_length($r)" },
-  { BOP_ANY_HASH, "count",            0,   0, BF_NONE,     TY_INT,         BOPE_TEMPLATE, "sp_$HHash_length($r)" },
+  { BOP_ANY_HASH, "length",           0,   0, BF_ANY,      TY_INT,         BOPE_HASH_NIL_RECV },
+  { BOP_ANY_HASH, "size",             0,   0, BF_ANY,      TY_INT,         BOPE_HASH_NIL_RECV },
+  { BOP_ANY_HASH, "count",            0,   0, BF_NONE,     TY_INT,         BOPE_HASH_NIL_RECV },
   { BOP_ANY_HASH, "count",            1,   1, BF_NONE,     TY_INT,         BOPE_HASH_PATTERN },  /* the pairs == the argument */
-  { BOP_ANY_HASH, "empty?",           0,   0, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "(sp_$HHash_length($r) == 0)" },
+  { BOP_ANY_HASH, "empty?",           0,   0, BF_ANY,      TY_BOOL,        BOPE_HASH_NIL_RECV },
   /* blockless predicates fold on the pair count (a pair is always truthy,
      so all? is unconditionally true); with a pattern, each pair is tested */
   { BOP_ANY_HASH, "any?",             0,   0, BF_NONE,     TY_BOOL,        BOPE_TEMPLATE, "({ sp_$HHash *_t$t = $r; (_t$t && _t$t->len > 0); })" },

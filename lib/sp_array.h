@@ -568,15 +568,16 @@ static inline void sp_PtrArray_set_grow(sp_PtrArray*a,sp_int i,void*v){
 }
 /* The length, an element and a push of an Array the compiler holds (an
    iteration, a bound, a safe navigation) read a nil one as empty or nothing;
-   _m is the Ruby method (length, [], push), which a nil receiver raises
+   _m is the Ruby method (length, []), which a nil receiver raises
    NoMethodError for (#9347) -- the call is emitted through it only where the
    receiver can be nil (emit_op_array_nil_recv, the object Array arms of
    emit_array_call_arms), so a loop over an Array known not to be nil keeps the
-   plain read, and the folding gcc does on it. */
+   plain read, and the folding gcc does on it. A call written under another
+   name (size, at, <<, push) tests its receiver itself, under that name:
+   sp_nil_recv_named, nil_recv_open. */
 static inline sp_int sp_PtrArray_length(sp_PtrArray*a){if(!a)return 0;return a->len;}
 static inline sp_int sp_PtrArray_length_m(sp_PtrArray*a){if (SP_UNLIKELY(!a)) sp_nil_recv("length");return a->len;}
 static inline void*sp_PtrArray_get_m(sp_PtrArray*a,sp_int i){if (SP_UNLIKELY(!a)) sp_nil_recv("[]"); return sp_PtrArray_get(a,i); }
-static inline void sp_PtrArray_push_m(sp_PtrArray*a,void*v){if (SP_UNLIKELY(!a)) sp_nil_recv("push"); sp_PtrArray_push(a,v); }
 static inline sp_bool sp_PtrArray_empty(sp_PtrArray*a){sp_gc_wb((void*)a); if (SP_UNLIKELY(!a)) sp_nil_recv("empty?");return a->len==0;}
 
 /* ---- sp_PtrArray cold ops (compiled in lib/sp_array.c) ---- */

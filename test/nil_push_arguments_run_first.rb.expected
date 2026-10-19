@@ -1,0 +1,38 @@
+PA push_two: undefined method 'push' for nil after [1, 2] n=0
+PA push_three: undefined method 'push' for nil after [1, 3] n=0
+PA append_two: undefined method 'append' for nil after [1, 2] n=0
+PA shl: undefined method '<<' for nil after [1] n=0
+PA shl_chain: undefined method '<<' for nil after [1] n=0
+PA push_stmt: undefined method 'push' for nil after [1, 2] n=0
+PA push_late_stmt: undefined method 'push' for nil after [2] n=0
+PA push_assign_stmt: undefined method 'push' for nil after [] n=1
+PA append_assign_stmt: undefined method 'append' for nil after [] n=2
+PA append_stmt: undefined method 'append' for nil after [1, 3] n=0
+PA append_late_stmt: undefined method 'append' for nil after [3] n=0
+PA shl_stmt: undefined method '<<' for nil after [1] n=0
+PA shl_chain_stmt: undefined method '<<' for nil after [1] n=0
+PA push_val: undefined method 'push' for nil after [1, 2] n=0
+PA push_call: undefined method 'push' for nil after [1, 2] n=0
+PA unshift_two: undefined method 'unshift' for nil after [1, 2] n=0
+PA prepend_two: undefined method 'prepend' for nil after [1, 2] n=0
+PA insert_two: undefined method 'insert' for nil after [1, 2] n=0
+32
+34
+"[1, 1, 2, 2, 1, 2, 1, \"a\", 1, 2, 1, \"x\", 3, 1, 2, 1, 1, 2, 1, 2, 1, 2, 1, 1, \"x\", 2, 3, 1, \"x\", 3, \"x\", 2, 3, 1, 1, 2, 1, 2, 1, 2]"
+[1, 2, 1, 3, 1, 2, 1, 1, 2, 1, 2, 2, 1, 3, 3, 1, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2]
+IA unshift_two: undefined method 'unshift' for nil after [1, 2] n=0
+FA unshift_two: undefined method 'unshift' for nil after [1, 2] n=0
+SA unshift_two: undefined method 'unshift' for nil after [1, 2] n=0
+IA prepend_two: undefined method 'prepend' for nil after [1, 2] n=0
+FA prepend_two: undefined method 'prepend' for nil after [1, 2] n=0
+SA prepend_two: undefined method 'prepend' for nil after [1, 2] n=0
+"[1, 2, 1, 2, 1, 2]"
+"[1.0, 2.0, 1.0, 2.0, 1.5]"
+"[\"1\", \"2\", \"1\", \"2\", \"a\"]"
+OA push_two: undefined method 'push' for nil after [1, 2] n=0
+OA append_two: undefined method 'append' for nil after [1, 2] n=0
+OA shl: undefined method '<<' for nil after [1] n=0
+OA push_stmt: undefined method 'push' for nil after [1, 2] n=0
+OA push_late_stmt: undefined method 'push' for nil after [2] n=0
+OA push_assign_stmt: undefined method 'push' for nil after [] n=1
+[0, 1, 2, 1, 2, 1, 1, 2, 9, 2, 9, 2]
