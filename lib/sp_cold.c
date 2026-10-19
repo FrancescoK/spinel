@@ -6266,7 +6266,7 @@ const char *sp_str_encode_into(const char *s, const char *t) {
   if (n != sp_str_byte_len(t) || memcmp(s, t, n))
     sp_raise_cls("NotImplementedError",
                  "String#encode! that replaces characters is not supported on this String "
-                 "(--share-strings supports it on a variable); write `s = s.encode(...)`");
+                 "(one held in a variable supports it); write `s = s.encode(...)`");
   if (sp_str_is_binary(t)) sp_str_as_binary(s); else sp_str_as_text(s);
   return s;
 }

@@ -12437,9 +12437,8 @@ static sp_RbVal sp_bivar_set(sp_RbVal o, sp_sym k, sp_RbVal v) {
   const void *key = sp_bivar_key(o);
   if (!key)
     sp_raise_cls("NotImplementedError",
-                 sp_sprintf("instance_variable_set on a %s is not supported: Spinel copies the value and keeps "
-                            "no identity for the variable to live on%s", sp_poly_class_name(o),
-                            o.tag == SP_TAG_STR ? " (waits on #6765)" : ""));
+                 sp_sprintf("instance_variable_set on a %s is not supported: the value keeps no identity "
+                            "for the variable to live on", sp_poly_class_name(o)));
   SP_GC_ROOT_RBVAL(o); SP_GC_ROOT_RBVAL(v);
   sp_SymPolyHash *t = (sp_SymPolyHash *)sp_ivtbl_get(key);
   if (!t) {

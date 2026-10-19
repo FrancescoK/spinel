@@ -1346,7 +1346,7 @@ static void repr_flow_refuse(Compiler *c, int u, int kind) {
   char msg[512];
   snprintf(msg, sizeof msg, "the String %s hands on as %s is shared with another "
            "name and changed in place, and that route cannot carry the shared handle yet: it would hand "
-           "on a copy (#6765)", rn, repr_flow_kind_name(kind));
+           "on a copy (#9258)", rn, repr_flow_kind_name(kind));
   unsupported_feature_collect(c, u, msg);
 }
 /* The values the n flows lend to a parameter that is no byref slot
@@ -1417,17 +1417,17 @@ static void repr_share_holder_refuse(Compiler *c, int h, int elems) {
   if (elems)
     snprintf(msg, sizeof msg, "the Strings %s %s holds are shared with another "
              "name and changed in place, and a typed String container cannot hold the shared handle "
-             "yet (#6765)", kind, nm);
+             "yet (#9258)", kind, nm);
   else
     snprintf(msg, sizeof msg, "the String %s %s holds is shared with another "
-             "name and changed in place, and a %s cannot hold the shared handle yet (#6765)",
+             "name and changed in place, and a %s cannot hold the shared handle yet (#9258)",
              kind, nm, kind);
   unsupported_feature_collect(c, sh->node, msg);
 }
 static void repr_share_literal_refuse(Compiler *c, int n) {
   unsupported_feature_collect(c, n, "the Strings this literal holds are shared with "
                               "another name and changed in place, and a typed String container cannot hold "
-                              "the shared handle yet (#6765)");
+                              "the shared handle yet (#9258)");
 }
 
 /* The analysis is final: every holder the rule shares has to hold the
