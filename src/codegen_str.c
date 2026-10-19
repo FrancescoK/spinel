@@ -337,6 +337,59 @@ static int str_render_ident(Compiler *c, int v, int form, StrForm *sf) {
   return sf->cty == TY_STRBUF ? SPF_HANDLE : SPF_BYTES;
 }
 
+/* The box of a String handle (SP_BUILTIN_STRBUF): the one place its text is
+   written. A box of a handle that can be NULL is nullable (a NULL boxes as
+   nil); the other wraps what it is given as it is (an object that is never
+   nil). The handle's own text is the caller's: str_box_handle boxes text
+   already written, str_box_handle_tmp a temp, and str_box_open /
+   str_box_close wrap text the caller emits between them. */
+void str_box_open(Buf *b, int nullable) {
+  buf_puts(b, nullable ? "sp_box_nullable_obj(" : "sp_box_obj(");
+}
+void str_box_close(Buf *b) {
+  buf_puts(b, ", SP_BUILTIN_STRBUF)");
+}
+void str_box_handle(Buf *b, const char *h) {
+  str_box_open(b, 1);
+  buf_puts(b, h ? h : "NULL");
+  str_box_close(b);
+}
+void str_box_handle_tmp(Buf *b, int tmp) {
+  str_box_open(b, 1);
+  buf_printf(b, "_t%d", tmp);
+  str_box_close(b);
+}
+
+/* The box face's last arms, where the value is boxed by its representation
+   (emit_boxed_impl's TY_STRING arm): a String the plan wraps (`wrap`) as
+   the new handle it is (sp_box_str_new), so the box's copies name one
+   String, any other as its bytes, which sp_box_str boxes as their handle
+   where a handle owns them. The new handle is an object only this box
+   holds, and the box is often a temporary handed to a runtime call that
+   allocates before it is done with it (a Hash lookup's key): it is rooted
+   where it is bound, as the runtime roots a String key by its tag but not
+   a handle's box. Unrooted, a collection inside the lookup freed the
+   handle and its inline bytes. The temp is named ahead of the operand's
+   own temps (StrForm.tmp), so the operand's keep their numbers. */
+void emit_str_box_leaf(Compiler *c, int v, int wrap, Buf *b) {
+  StrForm sf;
+  memset(&sf, 0, sizeof sf);
+  sf.rf = -1;
+  sf.cty = TY_POLY;
+  if (wrap) {
+    sf.tmp = ++g_tmp;
+    sf.needs = SF_EVAL_ONCE | SF_ROOT_UNTIL_USE | SF_ALLOCATES;
+    buf_puts(&sf.expr, "sp_box_str_new(");
+  }
+  else buf_printf(&sf.expr, "%s(", ty_box_fn(TY_STRING));
+  emit_expr(c, v, &sf.expr);
+  buf_puts(&sf.expr, ")");
+  str_form_settle(c, &sf, b);
+  if (wrap) buf_printf(b, "_t%d", sf.tmp);
+  str_form_close(&sf, b);
+  str_form_free(&sf);
+}
+
 /* Record the box form (RF_*, repr.h) the box face wrote and why it may
    differ from the one repr_of predicts for the node (RW_*). */
 static void str_box_note(StrForm *sf, int rf, int rw) {
@@ -392,7 +445,7 @@ static int str_box_by_kind(Compiler *c, int node, StrForm *sf) {
         share_plan_of(c, node, SPR_BOX, NULL).form == SPF_HANDLE) {
       Buf hb; memset(&hb, 0, sizeof hb);
       if (emit_strbuf_route(c, node, &hb)) {
-        buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
+        str_box_handle(b, hb.p);
         free(hb.p);
         str_box_note(sf, RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
         return 1;
@@ -405,9 +458,9 @@ static int str_box_by_kind(Compiler *c, int node, StrForm *sf) {
      it stored */
   case SPK_WRITE:
     if (!arg_ran_first(node, 0) && !emit_boxed_lift(c, node) && strbuf_value_carries(c, node)) {
-      buf_puts(b, "sp_box_nullable_obj(");
+      str_box_open(b, 1);
       emit_strbuf_handle_of(c, node, b);
-      buf_puts(b, ", SP_BUILTIN_STRBUF)");
+      str_box_close(b);
       str_box_note(sf, RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
       return 1;
     }
@@ -426,9 +479,9 @@ static int str_box_by_kind(Compiler *c, int node, StrForm *sf) {
         nt_ref(c->nt, u, "block") < 0 && comp_ntype(c, u) != TY_POLY && repr_call_returns_handle(c, u) &&
         cplan_targets(c, u, tg, CPT_MAX) > 0 && strbuf_pickup_published(c, u) && !arg_ran_first(node, 0) &&
         !emit_boxed_lift(c, node) && share_plan_of(c, node, SPR_BOX, NULL).form == SPF_HANDLE) {
-      buf_puts(b, "sp_box_nullable_obj(");
+      str_box_open(b, 1);
       emit_published_pickup(c, u, b);
-      buf_puts(b, ", SP_BUILTIN_STRBUF)");
+      str_box_close(b);
       str_box_note(sf, RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
       return 1;
     }
@@ -512,7 +565,8 @@ static void str_identity_operand_form(Compiler *c, int v, StrForm *sf) {
    (the handle that owns them, if one does), a box as it is. */
 static void str_identity_box_text(const StrForm *sf, const char *e, Buf *b) {
   if (sf->cty == TY_POLY) buf_puts(b, e);
-  else buf_printf(b, sf->cty == TY_STRBUF ? "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)" : "sp_box_str(%s)", e);
+  else if (sf->cty == TY_STRBUF) str_box_handle(b, e);
+  else buf_printf(b, "sp_box_str(%s)", e);
 }
 
 /* Node v, a String, as the box a dispatch answers it in (an arm of a
@@ -544,7 +598,7 @@ void emit_str_form_box(Compiler *c, int v, Buf *b) {
   if (nm && nt_kind(nt, blk) == NK_BlockNode && (is_then_alias(nm) || is_tap_name(nm))) {
     emit_str_form(c, v, share_plan_role(c, v), SPX_HANDLE, 0, &sf);
     str_form_settle(c, &sf, &e);
-    buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", e.p ? e.p : "NULL");
+    str_box_handle(b, e.p ? e.p : "NULL");
     str_form_close(&sf, b);
     str_form_free(&sf);
     free(e.p);
@@ -631,7 +685,9 @@ int emit_str_equal(Compiler *c, int id, Buf *b) {
                         move;
      SF_EVAL_ONCE       a temp of the value's type bound in a statement
                         expression, `({ T _tN = <expr>; `, whose uses the
-                        consumer writes and str_form_close ends.
+                        consumer writes and str_form_close ends; N is the
+                        number the renderer reserved in sf->tmp, else the
+                        next one at this point.
    A form that needs both is rooted where its temp is bound, as the
    consumers that held an operand ahead of the next one wrote it: a box has
    no NULL to be declared with ahead of the statement, and an expression
@@ -653,7 +709,7 @@ void str_form_settle(Compiler *c, StrForm *sf, Buf *b) {
     emit_ctype(c, sf->cty, &ct);
     const char *t = ct.p ? ct.p : "void";
     size_t n = strlen(t);
-    sf->tmp = ++g_tmp;
+    if (!sf->tmp) sf->tmp = ++g_tmp;
     /* (a pointer type's star stays with the name: `sp_String *_tN`) */
     buf_printf(b, "({ %s%s_t%d = %s; ", t, n && t[n - 1] == '*' ? "" : " ", sf->tmp, e);
     if (bound_root) buf_printf(b, sf->cty == TY_POLY ? "SP_GC_ROOT_RBVAL(_t%d); " : "SP_GC_ROOT(_t%d); ", sf->tmp);

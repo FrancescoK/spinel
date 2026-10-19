@@ -2414,7 +2414,7 @@ int emit_srange_route_boxed(Compiler *c, int v, Buf *b) {
   /* (statements ahead of the route run only where the argument ran) */
   if ((ran && th < 0) || (!ran && u != unwrap_parens(c, v))) return 0;
   if (ran && !arg_ran_first(recv, 0)) {
-    buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", th);
+    str_box_handle_tmp(b, th);
     return 1;
   }
   Buf rb; memset(&rb, 0, sizeof rb);
@@ -2430,11 +2430,13 @@ int emit_srange_route_boxed(Compiler *c, int v, Buf *b) {
   const char *r = rb.p ? rb.p : "";
   emit_srange_kept_test(c, u, r, b);
   /* (min / max of an empty Range is nil) */
-  buf_puts(b, sx ? " ? sp_box_nullable_obj(" : " ? sp_box_obj(");
+  buf_puts(b, " ? ");
+  str_box_open(b, sx != 0);
   if (ran) buf_printf(b, "_t%d", th);
   else if (se) buf_printf(b, "(sp_String *)%s.%s", r, se == 1 ? "hf" : "hl");
   else buf_printf(b, "sp_srange_extreme_h(%s, %d)", r, sx == 2);
-  buf_puts(b, ", SP_BUILTIN_STRBUF) : sp_box_str(");
+  str_box_close(b);
+  buf_puts(b, " : sp_box_str(");
   /* this arm runs for an endpoint the Range keeps no handle for: what it
      boxes is no String the rule shares */
   size_t arm_at = b->len;
@@ -2844,8 +2846,11 @@ void emit_strbuf_pickup(Compiler *c, int v, int box, Buf *b) {
   if (g_repr_check) repr_channel_pickup(c, v, strbuf_pickup_answers_nil(c, v));
   /* (as a box, the bytes it takes only where nothing was published are
      the String the call answered: no copy) */
-  if (box)
-    buf_printf(b, "_sp_ret_strbuf ? sp_box_nullable_obj((sp_String *)_sp_ret_strbuf, SP_BUILTIN_STRBUF) : sp_box_str(_v%d); })", t);
+  if (box) {
+    buf_puts(b, "_sp_ret_strbuf ? ");
+    str_box_handle(b, "(sp_String *)_sp_ret_strbuf");
+    buf_printf(b, " : sp_box_str(_v%d); })", t);
+  }
   else buf_printf(b, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : sp_String_new_shared(_v%d); })", t);
   if (box && g_share_check) share_check_declare_reads(b, at, v);
 }
@@ -4465,8 +4470,11 @@ static void emit_equal_side(Compiler *c, int n, Buf *b) {
   else if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && uplus_over_self_answer(c, u)) emit_held_handle(c, u, &hb);
   if (hb.p && hb.p[0]) {
     int t = ++g_tmp;
-    buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? sp_box_obj(%s_t%d%s, SP_BUILTIN_STRBUF) : sp_box_nil(); })",
-               t, hb.p, t, fz ? "sp_String_freeze(" : "", t, fz ? ")" : "");
+    buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? ", t, hb.p, t);
+    str_box_open(b, 0);
+    buf_printf(b, "%s_t%d%s", fz ? "sp_String_freeze(" : "", t, fz ? ")" : "");
+    str_box_close(b);
+    buf_puts(b, " : sp_box_nil(); })");
   }
   else emit_boxed(c, n, b);
   free(hb.p);
@@ -15831,9 +15839,9 @@ void emit_boxed_next_value(Compiler *c, int v, Buf *b) {
   TyKind t = comp_ntype(c, v);
   if ((t == TY_STRING || t == TY_STRBUF) && strbuf_value_carries(c, v) &&
       !strbuf_srange_arm(c, v)) {
-    buf_puts(b, "sp_box_nullable_obj(");
+    str_box_open(b, 1);
     emit_strbuf_handle_of(c, v, b);
-    buf_puts(b, ", SP_BUILTIN_STRBUF)");
+    str_box_close(b);
   }
   else emit_boxed(c, v, b);
 }

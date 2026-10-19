@@ -429,7 +429,9 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b);
    str_form_settle meets. Two flags are needs of the value itself:
      SF_EVAL_ONCE       the value is used more than once (in two forms, or
                         twice), so it is evaluated once, into a temp of
-                        type `cty` that the uses read (`tmp`);
+                        type `cty` that the uses read (`tmp`; a renderer
+                        that must name it ahead of its operand's own temps
+                        reserves the number in `tmp` itself);
      SF_ROOT_UNTIL_USE  the value is an object made here that what runs
                         before its use could collect, so it stays rooted
                         until then.
@@ -454,10 +456,11 @@ enum {
   RW_HANDLE_ROUTE,   /* a conditional boxed through its shared handle route */
   RW_LITERAL         /* an empty literal or Hash.new boxed by its shape */
 };
-/* tmp: the temp an SF_EVAL_ONCE value is bound to. rf, rw: the box form
-   (RF_*, repr.h) the box face wrote and why it may differ from the
-   predicted one (RW_*), -1 and RW_NONE where it noted none; the consumer
-   records them (--repr-check). */
+/* tmp: the temp an SF_EVAL_ONCE value is bound to (str_form_settle numbers
+   it unless the renderer reserved one). rf, rw: the box form (RF_*,
+   repr.h) the box face wrote and why it may differ from the predicted one
+   (RW_*), -1 and RW_NONE where it noted none; the consumer records them
+   (--repr-check). */
 typedef struct {
   Buf expr;
   unsigned needs;
@@ -499,6 +502,17 @@ void emit_str_form_box(Compiler *c, int v, Buf *b);
 int emit_boxed_lift(Compiler *c, int node);
 int emit_boxed_lift_ran_first(Compiler *c, int node, Buf *b);
 void emit_boxed_by_repr(Compiler *c, int node, Buf *b);
+/* The box of a String handle (SP_BUILTIN_STRBUF), written in one place
+   (codegen_str.c): of text already written, of a temp, or around text the
+   caller emits between the open and the close; `nullable` boxes a NULL
+   handle as nil */
+void str_box_handle(Buf *b, const char *h);
+void str_box_handle_tmp(Buf *b, int tmp);
+void str_box_open(Buf *b, int nullable);
+void str_box_close(Buf *b);
+/* The box face's arms for a value boxed by its representation: a String
+   the plan wraps as the new handle it is (`wrap`), else its bytes */
+void emit_str_box_leaf(Compiler *c, int v, int wrap, Buf *b);
 /* A write in value position (a local's whose slot is a String buffer, any
    other whose slot holds the shared handle) as the handle it writes, into
    out; 0, writing nothing, for any other node. */
