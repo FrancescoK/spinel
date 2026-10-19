@@ -10543,7 +10543,10 @@ static sp_RbVal sp_poly_hash_foreign_miss(sp_RbVal recv, sp_RbVal key) {
     default: return sp_box_nil();
   }
 }
+static sp_sym sp_thread_local_key(sp_RbVal k);
 static sp_RbVal sp_poly_get_sym(sp_RbVal v, sp_sym key) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_THREAD)
+    return sp_Thread_tls_get((sp_thread *)v.v.p, key);
   if (sp_poly_is_call_aref(v)) return sp_poly_call_aref(v, sp_box_sym(key));
   sp_poly_coll_chk(v, "[]");
   if (v.tag != SP_TAG_OBJ) {
@@ -11028,6 +11031,10 @@ static sp_RbVal sp_poly_shift(sp_RbVal v) {
   return sp_box_nil();
 }
 static sp_RbVal sp_poly_get_str(sp_RbVal v, const char *key) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_THREAD) {
+    SP_GC_ROOT_RBVAL(v);
+    return sp_Thread_tls_get((sp_thread *)v.v.p, sp_thread_local_key(sp_box_str(key)));
+  }
   /* MatchData#["name"]: the named group */
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_MATCHDATA && v.v.p) {
     const char *g = sp_MatchData_aref_name((sp_MatchData *)v.v.p, key ? key : "");
@@ -11855,6 +11862,10 @@ static sp_RbVal sp_poly_dig_list(sp_RbVal recv, sp_PolyArray *keys) {
 }
 /* poly[poly_key]: dispatch on key tag at runtime. */
 static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
+  if (recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_THREAD) {
+    SP_GC_ROOT_RBVAL(recv); SP_GC_ROOT_RBVAL(idx);
+    return sp_Thread_tls_get((sp_thread *)recv.v.p, sp_thread_local_key(idx));
+  }
   /* a curried Proc applies its [] argument whatever the key kind -- claimed
      here, before the key-typed dispatch below coerces it to an index */
   if (recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_CURRY)
@@ -12014,6 +12025,10 @@ static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
    legitimately mapped to nil. A key whose tag does not match the storage's key
    kind can never be present, so it reports FALSE. */
 static sp_bool sp_poly_has_key(sp_RbVal recv, sp_RbVal key) {
+  if (recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_THREAD) {
+    SP_GC_ROOT_RBVAL(recv); SP_GC_ROOT_RBVAL(key);
+    return sp_Thread_tls_key((sp_thread *)recv.v.p, sp_thread_local_key(key));
+  }
   if (recv.tag != SP_TAG_OBJ) return FALSE;
   if (recv.cls_id != SP_BUILTIN_POLY_POLY_HASH && sp_poly_is_strbuf(key))
     key = sp_poly_strbuf_deref(key);
@@ -12889,6 +12904,10 @@ static sp_RbVal sp_poly_arr_set_hash(sp_RbVal v, sp_int idx, sp_RbVal val) {
 }
 /* poly_val[str_key] = val: runtime dispatch for poly recv `[]=` with string key. */
 static sp_RbVal sp_poly_set_str(sp_RbVal v, const char *key, sp_RbVal val) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_THREAD) {
+    SP_GC_ROOT_RBVAL(v); SP_GC_ROOT_RBVAL(val);
+    return sp_Thread_tls_set((sp_thread *)v.v.p, sp_thread_local_key(sp_box_str(key)), val);
+  }
   sp_poly_coll_chk(v, "[]=");
   if (v.tag == SP_TAG_SYM) sp_raise_poly_nomethod("[]=", v);   /* as sp_poly_arr_set */
   if (v.tag != SP_TAG_OBJ) return val;
@@ -12917,6 +12936,8 @@ static sp_RbVal sp_poly_set_str(sp_RbVal v, const char *key, sp_RbVal val) {
 void sp_poly_hash_merge_into(sp_RbVal dst, sp_RbVal src);
 /* poly_val[sym_key] = val: runtime dispatch for poly recv `[]=` with symbol key. */
 static sp_RbVal sp_poly_set_sym(sp_RbVal v, sp_sym key, sp_RbVal val) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_THREAD)
+    return sp_Thread_tls_set((sp_thread *)v.v.p, key, val);
   sp_poly_coll_chk(v, "[]=");
   if (v.tag == SP_TAG_SYM) sp_raise_poly_nomethod("[]=", v);   /* as sp_poly_arr_set */
   if (v.tag != SP_TAG_OBJ) return val;
@@ -13122,6 +13143,10 @@ static sp_RbVal sp_poly_str_aset_key(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
 }
 /* poly_val[poly_key] = val: fully dynamic dispatch for poly recv + poly key. */
 static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_THREAD) {
+    SP_GC_ROOT_RBVAL(v); SP_GC_ROOT_RBVAL(key); SP_GC_ROOT_RBVAL(val);
+    return sp_Thread_tls_set((sp_thread *)v.v.p, sp_thread_local_key(key), val);
+  }
   sp_poly_coll_chk(v, "[]=");
   if (v.tag == SP_TAG_SYM) sp_raise_poly_nomethod("[]=", v);   /* as sp_poly_arr_set */
   /* String#[]= takes no nil index, frozen or not; the store below has no

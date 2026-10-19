@@ -1,0 +1,14 @@
+[42, true]
+[nil, false]
+43
+[44, 44, true]
+[[:dynamic, 17], true]
+[["string_key", 17], true]
+[false, true]
+[nil, false]
+"1 is not a symbol nor a string"
+"1 is not a symbol nor a string"
+"nil is not a symbol nor a string"
+"nil is not a symbol nor a string"
+"1.5 is not a symbol nor a string"
+"1.5 is not a symbol nor a string"

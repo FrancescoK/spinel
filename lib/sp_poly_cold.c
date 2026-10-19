@@ -19,6 +19,7 @@
 #define sp_sym_to_s sp_poly_cold_sym_to_s
 #define sp_class_to_s sp_poly_cold_class_to_s
 #define sp_sym_intern sp_poly_cold_sym_intern
+#define sp_sym_intern_n sp_poly_cold_sym_intern_n
 #include "spinel_rt.h"
 
 #ifdef SP_CEXT
@@ -51,6 +52,11 @@ sp_RbVal (*sp_bsub_dup_hook_lib)(sp_RbVal, int, sp_bool *);
 /* the symbol interner is generated per program too; a keyword name that is not
    a known symbol reaches it through the hook the generated unit installs */
 sp_sym sp_poly_cold_sym_intern(const char *s) { return sp_json_sym_intern_fn ? sp_json_sym_intern_fn(s) : (sp_sym)0; }
+/* and a counted name, for sp_thread_local_key: this unit compiles the
+   header's sp_poly_has_key and sp_poly_index_poly (slice's key walk), whose
+   Thread arms call it. The hook takes a C string, so a key interns up to its
+   first NUL byte. */
+sp_sym sp_poly_cold_sym_intern_n(const char *s, size_t n) { (void)n; return sp_poly_cold_sym_intern(s); }
 const char *sp_poly_cold_sym_to_s(sp_sym id) { return sp_sym_name_fn ? sp_sym_name_fn(id) : sp_str_empty; }
 const char *sp_poly_cold_class_to_s(sp_Class c) {
   if (c.name) return c.name;
