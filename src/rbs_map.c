@@ -415,19 +415,29 @@ else {
 /* ---- type aliases ------------------------------------------ */
 
 /* `type patch_t = Array[untyped]`, by qualified name, with the tag the
- * aliased type maps to. The extractor fills the table before its emit
- * pass; a reference (`Array[patch_t]`) then maps as the aliased type
- * would. The inline RBS reader registers none, so a reference stays out
- * of the subset there, as before. */
+ * aliased type maps to. The extractor declares every alias name first
+ * and fills the tags before its emit pass; a reference (`Array[patch_t]`)
+ * then maps as the aliased type would. A name resolves among the DECLARED
+ * aliases, so a nearer declaration wins over an outer one whatever the
+ * order the files are read in; a declared alias whose tag is not known
+ * yet is unresolved (g_alias_unresolved), not an outer one of its name.
+ * The inline RBS reader declares none, so a reference stays out of the
+ * subset there, as before. */
 typedef struct { char *name; char *tag; } alias_entry_t;
 static alias_entry_t *aliases = NULL;
 static size_t aliases_len = 0;
 static size_t aliases_cap = 0;
+bool g_alias_unresolved = false;
 
-void alias_add(const char *name, const char *tag) {
+static alias_entry_t *alias_entry(const char *name) {
     for (size_t i = 0; i < aliases_len; i++) {
-        if (strcmp(aliases[i].name, name) == 0) return;
+        if (strcmp(aliases[i].name, name) == 0) return &aliases[i];
     }
+    return NULL;
+}
+
+void alias_declare(const char *name) {
+    if (alias_entry(name) != NULL) return;
     if (aliases_len >= aliases_cap) {
         size_t ncap = aliases_cap == 0 ? 16 : aliases_cap * 2;
         alias_entry_t *nbuf = (alias_entry_t *) realloc(aliases, ncap * sizeof(alias_entry_t));
@@ -439,41 +449,55 @@ void alias_add(const char *name, const char *tag) {
         aliases_cap = ncap;
     }
     aliases[aliases_len].name = strdup(name);
-    aliases[aliases_len].tag = strdup(tag);
-    if (aliases[aliases_len].name == NULL || aliases[aliases_len].tag == NULL) {
+    aliases[aliases_len].tag = NULL;
+    if (aliases[aliases_len].name == NULL) {
         fprintf(stderr, "spinel_rbs_extract: out of memory\n");
         exit(1);
     }
     aliases_len++;
 }
 
-const char *alias_find(const char *name) {
-    for (size_t i = 0; i < aliases_len; i++) {
-        if (strcmp(aliases[i].name, name) == 0) return aliases[i].tag;
+void alias_add(const char *name, const char *tag) {
+    alias_declare(name);
+    alias_entry_t *e = alias_entry(name);
+    if (e->tag != NULL) return;
+    e->tag = strdup(tag);
+    if (e->tag == NULL) {
+        fprintf(stderr, "spinel_rbs_extract: out of memory\n");
+        exit(1);
     }
-    return NULL;
+}
+
+const char *alias_find(const char *name) {
+    alias_entry_t *e = alias_entry(name);
+    return e != NULL ? e->tag : NULL;
 }
 
 size_t alias_count(void) {
-    return aliases_len;
+    size_t n = 0;
+    for (size_t i = 0; i < aliases_len; i++) {
+        if (aliases[i].tag != NULL) n++;
+    }
+    return n;
 }
 
-static bool alias_known(const char *name) {
-    return alias_find(name) != NULL;
+static bool alias_declared(const char *name) {
+    return alias_entry(name) != NULL;
 }
 
 /* Resolve a type name as a constant is looked up: an absolute one
  * (`::A::B`) as written; else against the declaration's own namespace
- * when the name is unqualified, then the enclosing scopes innermost
+ * (`Inner::row` in a body of `Outer` is `Outer::Inner::row`, as its
+ * first segment resolves there), then the enclosing scopes innermost
  * outward, then the top level. The first candidate `has` knows wins;
  * false when none does. `name` is the "_"-joined form. */
-static bool resolve_known_name(const char *name, size_t len, bool absolute, bool unqualified,
+static bool resolve_known_name(const char *name, size_t len, bool absolute,
                                const char *enclosing_scope, bool (*has)(const char *), sbuf_t *out) {
     if (absolute) {
         sbuf_set(out, name, len);
         return has(out->buf);
     }
-    if (unqualified && g_self_scope != NULL && g_self_scope[0] != '\0') {
+    if (g_self_scope != NULL && g_self_scope[0] != '\0') {
         sbuf_set(out, g_self_scope, strlen(g_self_scope));
         sbuf_append_cstr(out, "_");
         sbuf_append(out, name, len);
@@ -496,7 +520,10 @@ static bool resolve_known_name(const char *name, size_t len, bool absolute, bool
 
 /* `patch_t` or `Inner::row`: the tag of the alias the name resolves to.
  * A generic alias (`listed[Integer]`) and a name no declaration gives are
- * out of the subset. */
+ * out of the subset. A declared alias whose tag is not known yet is out
+ * of it for now, and says so in g_alias_unresolved: the extractor's
+ * collection then leaves the alias that referenced it for a later round
+ * rather than registering what a fallback (`T | nil` to poly) gave. */
 static bool map_alias(rbs_parser_t *p, rbs_types_alias_t *a, const char *enclosing_scope, sbuf_t *out) {
     if (a->args != NULL && a->args->length > 0) return false;
     sbuf_t name, qualified;
@@ -504,11 +531,11 @@ static bool map_alias(rbs_parser_t *p, rbs_types_alias_t *a, const char *enclosi
     sbuf_init(&qualified);
     name_of_type_name(p, a->name, &name);
     bool absolute = a->name != NULL && a->name->rbs_namespace != NULL && a->name->rbs_namespace->absolute;
-    bool found = resolve_known_name(name.buf, name.len, absolute, type_name_is_unqualified(a->name),
-                                    enclosing_scope, alias_known, &qualified);
+    bool found = resolve_known_name(name.buf, name.len, absolute, enclosing_scope, alias_declared, &qualified);
     if (found) {
         const char *tag = alias_find(qualified.buf);
-        sbuf_set(out, tag, strlen(tag));
+        if (tag != NULL) sbuf_set(out, tag, strlen(tag));
+        else { g_alias_unresolved = true; found = false; }
     }
     sbuf_free(&qualified);
     sbuf_free(&name);

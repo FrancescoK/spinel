@@ -1,11 +1,17 @@
 class Outer
+cmeth row_of str_int_hash -
 class Outer_Box
 meth words str_array str_array
 meth pay int sym_poly_hash
 meth patch poly_array str_array
 meth top_patch poly_array poly_array
+meth nilable - int?
+meth chosen int int
 meth mixed poly_array poly
 meth generic - -
 meth inner - str_int_hash
 meth unknown int -
+meth cyclic int -
+meth nil_cyclic - -
+meth undeclared int poly
 class Outer_Inner

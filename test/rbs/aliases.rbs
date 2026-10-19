@@ -1,29 +1,50 @@
 # A type alias stands for its type: a reference maps as the aliased type
 # would, and the name resolves as a class name does (the declaration's
 # own namespace, the enclosing ones innermost outward, then the top
-# level). An alias of an alias follows, whatever the order of the
-# declarations; a generic alias (`type listed[T]`) is out of subset, as a
-# name no declaration gives is.
+# level), to the nearest declaration whatever the order of the
+# declarations: an alias of an alias follows, a nilable alias of a later
+# one waits for it, and a class's own alias wins over a top-level one of
+# the name even when it is declared after its use. A generic alias
+# (`type listed[T]`) is out of subset, as a name no declaration gives is,
+# and so is an alias in a cycle, through a nilable union too, in any
+# order; an undeclared name in a nilable union is poly, as in a signature.
 type word_list = Array[String]
 type payload = Hash[Symbol, untyped]
 type scalar = Integer | String
 type listed[T] = Array[T]
 type patches_later = Array[patch_t]
+type nilable_later = later_t | nil
 type patch_t = Array[untyped]
+type later_t = Integer
+type value_t = String
+type looped = other_loop
+type other_loop = looped
+type nil_loop = nil_loop_back | nil
+type nil_loop_back = nil_loop
+type undeclared_nil = no_such | nil
 
 module Outer
   type patch_t = Array[String]
   type patches = Array[patch_t]
+  type chosen_t = value_t
+  type value_t = Integer
+
+  def self.row_of: () -> Inner::row
 
   class Box
     def words: (word_list) -> word_list
     def pay: (payload) -> Integer
     def patch: (patch_t) -> patches
     def top_patch: (::patch_t) -> patches_later
+    def nilable: (nilable_later) -> void
+    def chosen: (chosen_t) -> value_t
     def mixed: (scalar) -> Array[scalar]
     def generic: (listed[Integer]) -> void
     def inner: (Inner::row) -> void
     def unknown: (no_such) -> Integer
+    def cyclic: (looped) -> Integer
+    def nil_cyclic: (nil_loop) -> nil_loop_back
+    def undeclared: (undeclared_nil) -> Integer
   end
 
   module Inner
