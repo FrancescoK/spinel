@@ -22082,47 +22082,40 @@ static int strh_pure_index(const NodeTable *nt, int a) {
 /* Is the value of node n unused: a statement that is not its list's last, or
    the last of a loop's body, of a block an iterator that ignores its block's
    value (each, times, ...) runs, or of an `if` arm or a begin or rescue body
-   whose own value is unused? */
+   whose own value is unused? Climbs from the node (vp_climb, over the edges
+   strh_value_returned climbs), so its cost is the nesting depth. */
 static int strh_value_ignored(Compiler *c, const int *par, int n) {
   const NodeTable *nt = c->nt;
-  for (int depth = 0; depth < 8 && n >= 0 && n < nt->count; depth++) {
-    if (comp_value_dropped(c, n)) return 1;
-    int p = par[n];
-    if (p < 0) return 0;
-    NodeKind pk = nt_kind(nt, p);
-    if (pk == NK_StatementsNode) {
-      int g = par[p];
-      NodeKind gk = g >= 0 ? nt_kind(nt, g) : NK_NONE;
-      if (gk == NK_WhileNode || gk == NK_UntilNode || gk == NK_ForNode) return nt_ref(nt, g, "statements") == p;
-      if (gk == NK_BlockNode) {
-        int call = par[g];
-        if (call < 0 || nt_kind(nt, call) != NK_CallNode || nt_ref(nt, call, "block") != g) return 0;
-        const char *nm = nt_str(nt, call, "name");
-        int r = an_unparen(nt, nt_ref(nt, call, "receiver"));
-        TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
-        if (!nm || r < 0) return 0;
-        /* (the iterators of a builtin receiver, not a user class's own
-           `each` or one a reopening redefines; a receiver not typed yet is
-           asked again, and refused for good, once it is) */
-        int owner = builtin_iter_owner(nm);
-        if (owner == BITER_ARRAY)
-          return (rt == TY_UNKNOWN || ty_is_array(rt) || rt == TY_STRH_ARRAY || rt == TY_POLY_ARRAY) &&
-                 !share_builtin_overridden(c, "Array", nm);
-        if (owner == BITER_INTEGER)
-          return (rt == TY_UNKNOWN || rt == TY_INT) && !share_builtin_overridden(c, "Integer", nm);
-        if (owner == BITER_STRING)
-          return (rt == TY_UNKNOWN || rt == TY_STRING || rt == TY_STRBUF) && !share_builtin_overridden(c, "String", nm);
-        return 0;
-      }
-      if (g >= 0 && is_ensure_node_type(nt_type(nt, g))) return 1;
-      if (gk != NK_IfNode && gk != NK_UnlessNode && gk != NK_ElseNode && gk != NK_BeginNode && gk != NK_RescueNode)
-        return 0;
-      n = g;
-    }
-    else if (pk == NK_ElseNode || pk == NK_BeginNode || pk == NK_RescueNode) n = p;
-    else if ((pk == NK_IfNode || pk == NK_UnlessNode) && nt_ref(nt, p, "predicate") != n) n = p;
-    else return 0;
+  if (n < 0 || n >= nt->count) return 0;
+  VpUp up;
+  VpUpKind ended = vp_climb(nt, par, n, STRH_CLIMB, &up);
+  /* the old climb stopped at parentheses, whatever it had met before them */
+  for (int q = n; q >= 0 && q != up.node; q = par[q]) {
+    if (comp_value_dropped(c, q)) return 1;
+    if (nt_kind(nt, q) == NK_ParenthesesNode) return 0;
   }
+  if (ended == VPU_DROPPED) return 1;
+  if (ended != VPU_ENDED) return 0;
+  NodeKind gk = nt_kind(nt, up.parent);
+  if (vp_up_loop(nt, &up) >= 0 || (gk == NK_ForNode && nt_ref(nt, up.parent, "statements") == up.node)) return 1;
+  if (vp_up_effect_clause(nt, &up)) return 1;
+  int call = vp_up_block_call(nt, par, &up);
+  if (call < 0) return 0;
+  const char *nm = nt_str(nt, call, "name");
+  int r = an_unparen(nt, nt_ref(nt, call, "receiver"));
+  TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+  if (!nm || r < 0) return 0;
+  /* (the iterators of a builtin receiver, not a user class's own
+     `each` or one a reopening redefines; a receiver not typed yet is
+     asked again, and refused for good, once it is) */
+  int owner = builtin_iter_owner(nm);
+  if (owner == BITER_ARRAY)
+    return (rt == TY_UNKNOWN || ty_is_array(rt) || rt == TY_STRH_ARRAY || rt == TY_POLY_ARRAY) &&
+           !share_builtin_overridden(c, "Array", nm);
+  if (owner == BITER_INTEGER)
+    return (rt == TY_UNKNOWN || rt == TY_INT) && !share_builtin_overridden(c, "Integer", nm);
+  if (owner == BITER_STRING)
+    return (rt == TY_UNKNOWN || rt == TY_STRING || rt == TY_STRBUF) && !share_builtin_overridden(c, "String", nm);
   return 0;
 }
 /* Where may the String an element read, pop or shift of a handle Array
