@@ -862,6 +862,13 @@ static int sp_net_wait_io_until(int fd, short events, double deadline) {
     }
 }
 
+/* Per-call "do not block" for recv(2); 0 where the flag is missing (WASI has
+ * none), and the deadline then holds only through the wait below. */
+#ifdef MSG_DONTWAIT
+#define SP_NET_MSG_DONTWAIT MSG_DONTWAIT
+#else
+#define SP_NET_MSG_DONTWAIT 0
+#endif
 /* Per-worker, like the buffer it describes: a green thread is pinned to its
  * worker, so it reads the flag its own call set. */
 static SP_TLS int sp_net_recv_timed_out;
@@ -878,7 +885,7 @@ const char *sp_net_recv_some_timeout(int fd, int maxlen, double timeout_s) {
         if (sp_net_term_flag) { n = 0; break; }
         /* MSG_DONTWAIT: the deadline holds on a blocking fd too, where a
            plain recv would wait in the kernel with no way out. */
-        n = SP_SIG_BLOCKING(recv(fd, sp_net_recv_buf, (size_t)maxlen, MSG_DONTWAIT));
+        n = SP_SIG_BLOCKING(recv(fd, sp_net_recv_buf, (size_t)maxlen, SP_NET_MSG_DONTWAIT));
         if (n >= 0) break;
         n = 0;
         /* A signal storm must not outlast the deadline. */
