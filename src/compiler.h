@@ -459,6 +459,12 @@ typedef struct {
                           of docs/internals/ext-design.md) */
   int ret_rbs_seeded;  /* ret pinned from an --rbs advisory seed: the fixpoint
                           must not recompute it from the body */
+  int ret_elems_shared; /* --share-strings: that seed was Array[String], and the
+                          Strings the method answers are shared, so the return
+                          settled in its poly form, the boxes holding the
+                          handles (share_default_apply), as a local's does
+                          (LocalVar.elems_shared); the same Ruby type in its
+                          shared C form, not a contradiction of the seed (#9626) */
   int ret_pub_fresh;   /* --share-strings: a deep-return pickup takes this
                           method's value, and a tail of it answers a fresh
                           String (share_node_fresh) beside the handle reads

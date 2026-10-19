@@ -22920,6 +22920,17 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     else if (sh->kind == SHK_RET && repr_str_elems_share(c, h) &&
              (share_ret_typed_str_literal(c, sh->scope) || share_pattern_method(&c->scopes[sh->scope])))
       changed |= strbuf_method_ret_source_walk(c, sh->scope, -1, 0, SB_DEMAND) | share_ret_demand_literals(c, sh->scope);
+    /* a String Array an --rbs seed pins the return to, whose Strings are
+       shared: the return settles in its poly form, the boxes holding the
+       handles, as a seeded local does above; the seed keeps its Ruby type
+       (Scope.ret_elems_shared, #9626) */
+    else if (sh->kind == SHK_RET && repr_str_elems_share(c, h) && c->scopes[sh->scope].ret_rbs_seeded &&
+             (c->scopes[sh->scope].ret == TY_STR_ARRAY ||
+              (c->scopes[sh->scope].ret == TY_POLY_ARRAY && c->scopes[sh->scope].ret_elems_shared))) {
+      Scope *m = &c->scopes[sh->scope];
+      if (m->ret == TY_STR_ARRAY) { scope_set_ret(m, TY_POLY_ARRAY); m->ret_elems_shared = 1; changed = 1; }
+      changed |= strbuf_method_ret_source_walk(c, sh->scope, -1, 0, SB_DEMAND);
+    }
     /* a method answering a box the rule shares: the Strings it answers are
        boxed as handles (share_lift_poly_returns) */
     else if (sh->kind == SHK_RET && c->scopes[sh->scope].ret == TY_POLY && repr_str_shares(c, h))
@@ -33381,6 +33392,17 @@ static void check_seed_contradictions(Compiler *c) {
       v = inner;
     }
     TyKind val = infer_type(c, v);
+    /* A String Array the seed pins whose Strings are shared settles in its
+       poly form, the boxes holding the handles (share_default_apply), and a
+       String Array written into it is wrapped element by element: the same
+       Ruby type in its shared C form, as a local's is (reassert_rbs_param_seeds),
+       not a contradiction (#9626). So is a String Hash the seed pins, in
+       its String-keyed poly form. */
+    if (c->share_strings && slot == TY_POLY_ARRAY && ci->ivar_elems_shared && (ci->ivar_elems_shared[iv] & ELEMS_POLY) &&
+        (val == TY_STR_ARRAY || val == TY_STRH_ARRAY))
+      continue;
+    if (c->share_strings && slot == TY_STRH_ARRAY && val == TY_STR_ARRAY) continue;
+    if (c->share_strings && slot == TY_STR_POLY_HASH && val == TY_STR_STR_HASH) continue;
     if (!seed_contradicts(c, slot, val, 0)) continue;
     int ln  = (int)nt_int(nt, id, "node_line", 0);
     int fid = (int)nt_int(nt, id, "node_file", 0);
@@ -33502,6 +33524,12 @@ static void check_seed_contradictions(Compiler *c) {
         }
       }
       TyKind val = infer_type(c, sites[k]);
+      /* the seeded String Array return settled in its poly form, the boxes
+         holding the shared handles (ret_elems_shared): a String Array the
+         body answers is wrapped into it, the same Ruby type (#9626) */
+      if (c->share_strings && sc->ret_elems_shared && slot == TY_POLY_ARRAY &&
+          (val == TY_STR_ARRAY || val == TY_STRH_ARRAY || val == TY_POLY_ARRAY))
+        continue;
       if (!seed_contradicts(c, slot, val, 1)) continue;
       int ln  = (int)nt_int(nt, sites[k], "node_line", 0);
       int fid = (int)nt_int(nt, sites[k], "node_file", 0);

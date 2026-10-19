@@ -1,0 +1,6 @@
+class SeedSharedElemsMailer
+  @to: Array[String]?
+
+  def initialize: (Hash[Symbol, untyped] opts) -> void
+  def self.addresses: (untyped value) -> Array[String]?
+end
