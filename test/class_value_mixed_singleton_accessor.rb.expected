@@ -20,3 +20,12 @@ nil
 "medal"
 "medal"
 nil
+"plate"
+"cup"
+"plate"
+"lid:l"
+"c"
+[:tag]
+[:mark=]
+[:tag, :tag=]
+[:mark, :mark=]

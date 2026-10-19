@@ -3422,14 +3422,25 @@ static int emit_cls_value_sg_accessor(Compiler *c, int id, int recv, const char 
    class method of (`klass.label`, one class with `attr_accessor :label` on
    its singleton, another with `def self.label`): each reads or writes its
    own slot into the dispatch's boxed result `_t<tr>`. 1 when any. */
+/* Is class method scope mi of class p a copy of an ancestor's method (the
+   one an inherited method reading class-level ivars gets per subclass, see
+   specialize_inherited_cls_new) rather than a method p's own body defines?
+   The copy keeps the original's def node. */
+static int cmethod_is_inherited_copy(Compiler *c, int mi, int p) {
+  for (int o = 1; o < c->nscopes; o++)
+    if (o != mi && c->scopes[o].is_cmethod && c->scopes[o].def_node == c->scopes[mi].def_node &&
+        c->scopes[o].class_id != p) return 1;
+  return 0;
+}
 /* Does class k answer `name` by a `class << self` accessor? The lookup
    walks k's singleton class and then its superclasses', and the first class
    that declares the accessor or defines a class method of the name answers:
    the accessor wins over a `def self.label` in a superclass, and a class
    method defined below the accessor's class is ahead of it. A class's lists
-   hold the accessors its ancestors declare as well; those copies are the
-   ones sg_inh names, so a class declares the accessor when it holds it and
-   sg_inh does not. */
+   hold the accessors its ancestors declare as well, so what a class declares
+   is read from its declarations (comp_sg_accessor_own), the reader `x` and
+   the writer `x=` apart: a class can declare one half and inherit the other.
+   A per-subclass copy of an ancestor's class method is the ancestor's. */
 static int cls_value_own_sg_answers(Compiler *c, int k, const char *name, int argc) {
   char base[256];
   int setter = setter_base_name(name, base, sizeof base);
@@ -3439,10 +3450,14 @@ static int cls_value_own_sg_answers(Compiler *c, int k, const char *name, int ar
   const char *rn = setter ? base : comp_resolve_cm_alias_at(c, k, name, NULL);
   if (!rn) rn = name;
   if (setter ? !comp_is_sg_writer(cls, base) : !comp_is_sg_reader(cls, rn)) return 0;
+  char wn[260];
+  snprintf(wn, sizeof wn, "%s=", base);
   for (int p = k, guard = 0; p >= 0 && guard < 256; p = c->classes[p].parent, guard++) {
     ClassInfo *pc = &c->classes[p];
-    if (comp_cmethod_in_class(c, p, name) >= 0) return 0;
-    if ((setter ? comp_is_sg_writer(pc, base) : comp_is_sg_reader(pc, rn)) && !comp_is_sg_inh(pc, rn)) return 1;
+    int pmi = comp_cmethod_in_class(c, p, name);
+    if (pmi >= 0 && !cmethod_is_inherited_copy(c, pmi, p)) return 0;
+    if ((setter ? comp_is_sg_writer(pc, base) : comp_is_sg_reader(pc, rn)) &&
+        comp_sg_accessor_own(c, p, setter ? wn : rn)) return 1;
     if (p == pc->parent) break;
   }
   return comp_cmethod_in_chain(c, k, name, NULL) < 0;

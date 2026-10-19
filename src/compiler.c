@@ -1944,7 +1944,6 @@ void comp_add_sg_civ(ClassInfo *ci, const char *name) {
   if (name) name_add(&ci->sg_civ, &ci->nsg_civ, &ci->csg_civ, name);
 }
 int comp_is_sg_civ(ClassInfo *ci, const char *name) { return name_list_has(ci->sg_civ, ci->nsg_civ, name); }
-int comp_is_sg_inh(ClassInfo *ci, const char *name) { return name_list_has(ci->sg_inh, ci->nsg_inh, name); }
 void comp_add_sg_inh(ClassInfo *ci, const char *name) {
   if (name_list_has(ci->sg_inh, ci->nsg_inh, name)) return;
   if (ci->nsg_inh >= ci->csg_inh) {
@@ -2054,6 +2053,7 @@ static int sg_accessor_own(Compiler *c, int d, const char *name) {
   ClassInfo *ci = &c->classes[d];
   return name_list_has(ci->sg_decl, ci->nsg_decl, name);
 }
+int comp_sg_accessor_own(Compiler *c, int d, const char *name) { return sg_accessor_own(c, d, name); }
 static const char *resolve_alias_side(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin, int sg) {
   if (builtin) *builtin = 0;
   if (!name) return name;

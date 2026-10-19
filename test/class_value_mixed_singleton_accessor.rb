@@ -116,3 +116,58 @@ end
 
 Badge.tag = "badge"
 p Badge.new.tag, Medal.new.tag, Ribbon.new.tag, Pin.new.tag
+
+# A class can declare one half of an accessor and inherit the other: its own
+# reader answers ahead of the class method beside the writer it inherits,
+# and its own writer ahead of the per-class copy of an inherited `def self.x=`.
+class Plate
+  def self.tag = "plate"
+  class << self
+    attr_writer :tag
+  end
+  def tag
+    k = self.class
+    k.tag
+  end
+  def retag(v)
+    k = self.class
+    k.tag = v
+    nil
+  end
+end
+class Cup < Plate
+  class << self
+    attr_reader :tag
+  end
+end
+class Bowl < Plate
+end
+Cup.new.retag("cup")
+p Plate.new.tag, Cup.new.tag, Bowl.new.tag
+class Lid
+  class << self
+    attr_reader :mark
+  end
+  def self.mark=(v)
+    @mark = "lid:#{v}"
+  end
+  def mark
+    k = self.class
+    k.mark
+  end
+  def remark(v)
+    k = self.class
+    k.mark = v
+    nil
+  end
+end
+class Cap < Lid
+  class << self
+    attr_writer :mark
+  end
+end
+Cap.new.remark("c")
+Lid.new.remark("l")
+p Lid.new.mark, Cap.new.mark
+p Cup.singleton_methods(false).sort, Cap.singleton_methods(false).sort
+p Cup.singleton_methods.sort, Cap.singleton_methods.sort
