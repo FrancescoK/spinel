@@ -3016,9 +3016,17 @@ static void lvw_build(Compiler *c) {
     c->lvw_head[b] = w;
   }
   c->lvw_version = c->nt->version;
+  c->lvw_stamp = nt_stamp(c->nt);
   c->lvw_built = 1;
 }
 int comp_lvw_first(Compiler *c, const char *name) {
+  /* a local variable read appended, or a call renamed, moves no write: the
+     emitters do both for each of thousands of sites (a writer's value
+     temporary, a re-entry under another name), and each rebuilt the index */
+  if (c->lvw_built && c->lvw_version != c->nt->version && nt_stamp_holds(c->nt, c->lvw_stamp, 1)) {
+    c->lvw_version = c->nt->version;
+    c->lvw_stamp = nt_stamp(c->nt);
+  }
   if (!c->lvw_built || c->lvw_version != c->nt->version) lvw_build(c);
   if (!c->lvw_built) return -1;
   return c->lvw_head[sp_strhash(name) & (unsigned)(c->lvw_nbuckets - 1)];
@@ -3053,9 +3061,15 @@ static void lvws_build(Compiler *c) {
     c->lvws_head[b] = w;
   }
   c->lvws_version = c->nt->version;
+  c->lvws_stamp = nt_stamp(c->nt);
   c->lvws_built = 1;
 }
 int comp_lvw_first_sc(Compiler *c, int scope_idx, const char *name) {
+  /* (as comp_lvw_first) */
+  if (c->lvws_built && c->lvws_version != c->nt->version && nt_stamp_holds(c->nt, c->lvws_stamp, 1)) {
+    c->lvws_version = c->nt->version;
+    c->lvws_stamp = nt_stamp(c->nt);
+  }
   if (!c->lvws_built || c->lvws_version != c->nt->version) lvws_build(c);
   if (!c->lvws_built) return -1;
   unsigned b = (sp_strhash(name) ^ ((unsigned)scope_idx * 2654435761u)) & (unsigned)(c->lvws_nbuckets - 1);
