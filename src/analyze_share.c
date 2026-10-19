@@ -1672,7 +1672,7 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
       sh_flow(F, SHFL_ELEM, nt_ref(nt, n, "receiver"), argv[0], sh_elem_peek(F, rv));
     }
     if (nv > 0) sh_union(F, sh_elem(F, rv), vals[nv - 1]);
-    if (nv > 0 && argc > 0 && nt_kind(nt, argv[argc - 1]) != NK_KeywordHashNode)
+    if (nv > 0 && argc > 0 && nt_argv_kwh(nt, argv, argc) < 0)
       sh_flow(F, SHFL_ELEM, nt_ref(nt, n, "receiver"), argv[argc - 1], sh_elem_peek(F, rv));
     /* A used setter result names the stored element, even when the
        argument was fresh and therefore had no holder of its own. */
@@ -2736,10 +2736,7 @@ static int sh_args_refuse_string(Compiler *c, int n, const char *name) {
   const NodeTable *nt = c->nt;
   int args = nt_ref(nt, n, "arguments");
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
-  for (int i = 0; i < argc; i++) {
-    NodeKind k = nt_kind(nt, argv[i]);
-    if (k == NK_SplatNode || k == NK_BlockArgumentNode || k == NK_KeywordHashNode) return 0;
-  }
+  if (nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_BLOCK | NT_ARG_KEYWORDS)) return 0;
   /* the arguments taken as Strings, from first to last */
   int int_ok;
   int from = str_mutator_str_args(name, argc, &int_ok);

@@ -1217,8 +1217,7 @@ static void nf_bind_yield_elems(NF *f, int id, int blk, int mi, int from_recv, i
       else {
         int ya = nt_ref(nt, yields[mi][y], "arguments"), yn = 0;
         const int *yv = ya >= 0 ? nt_arr(nt, ya, "arguments", &yn) : NULL;
-        int splat = 0;
-        for (int j = 0; j < yn; j++) if (nt_kind(nt, yv[j]) == NK_SplatNode) splat = 1;
+        int splat = nt_argv_has_splat(nt, yv, yn);
         if (!splat && !(yn == 1 && block_param_name(f->c, blk, 1)) && i < yn) src = yv[i];
       }
       if (src < 0) continue;
@@ -1502,7 +1501,7 @@ static void nf_bind_params(NF *f, int id, int mi, const int *av, int an) {
   if (!open) return;
   ArgLayout L;
   call_layout(c, m, av, an, &L);
-  int kwh = an > 0 && nt_kind(nt, av[an - 1]) == NK_KeywordHashNode ? av[an - 1] : -1;
+  int kwh = nt_argv_kwh(nt, av, an);
   for (int k = 0; k < m->nparams; k++) {
     LocalVar *p = m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
     if (!p) continue;
@@ -1600,8 +1599,7 @@ static void nf_bind_block(NF *f, int id, int blk, int mi, int **yields, int *nyi
       for (int y = 0; y < nyields[mi] && why != NFW_NIL; y++) {
         int ya = nt_ref(nt, yields[mi][y], "arguments"), yn = 0;
         const int *yv = ya >= 0 ? nt_arr(nt, ya, "arguments", &yn) : NULL;
-        int splat = 0;
-        for (int j = 0; j < yn; j++) if (nt_kind(nt, yv[j]) == NK_SplatNode) splat = 1;
+        int splat = nt_argv_has_splat(nt, yv, yn);
         if (splat || (yn == 1 && block_param_name(c, blk, 1))) why = nf_or(why, NFW_OPAQUE);   /* spread */
         else why = nf_or(why, i >= yn ? NFW_NIL : nf_expr(f, yv[i]));
       }

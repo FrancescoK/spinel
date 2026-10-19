@@ -3297,8 +3297,7 @@ static int reduce_block_unused(Compiler *c, int id, int blk) {
   int ra = nt_ref(nt, id, "arguments"), rn = 0;
   const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
   if (rn != 2) return 0;
-  for (int k = 0; k < rn; k++)
-    if (nt_kind(nt, rv[k]) == NK_SplatNode) return 0;
+  if (nt_argv_has_splat(nt, rv, rn)) return 0;
   if (nt_kind(nt, blk) == NK_BlockArgumentNode) {
     int ex = nt_ref(nt, blk, "expression");
     NodeKind exk = ex >= 0 ? nt_kind(nt, ex) : NK_SymbolNode;
@@ -4109,8 +4108,8 @@ int desugar_toplevel_instance_exec(Compiler *c) {
     if (!nm || !sp_streq(nm, "instance_exec")) continue;
     int sc = c->nscope[id];
     if (sc < 0 || sc >= c->nscopes || c->scopes[sc].class_id >= 0) continue;
-    int blk = nt_ref(nt, id, "block");
-    if (blk < 0 || !nt_type(nt, blk) || !sp_streq(nt_type(nt, blk), "BlockArgumentNode")) continue;
+    int blk = nt_call_block_arg(nt, id);
+    if (blk < 0) continue;
     int bexpr = nt_ref(nt, blk, "expression");
     if (bexpr < 0) continue;                               /* anonymous `&`: no name to call */
     nt_node_set_ref(nt, id, "receiver", bexpr);            /* receiver = forwarded block */
@@ -6618,8 +6617,7 @@ int desugar_unused_block_arg(Compiler *c) {
        is expanded now, as the blockless call's is */
     int args = nt_ref(nt, id, "arguments"), an = 0;
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    for (int k = 0; k < an; k++)
-      if (nt_kind(nt, av[k]) == NK_SplatNode) { expand_static_splat_args(c, id, id + 1); break; }
+    if (nt_argv_has_splat(nt, av, an)) expand_static_splat_args(c, id, id + 1);
     changed = 1;
   }
   return changed;
@@ -7045,7 +7043,7 @@ int desugar_index_op_write_user(Compiler *c) {
     int argc = 0; const int *argv = nt_arr(nt, args, "arguments", &argc);
     if (argc != 1 || !argv) continue;
     NodeKind ak = nt_kind(nt, argv[0]);
-    if (ak == NK_SplatNode || ak == NK_BlockArgumentNode || ak == NK_KeywordHashNode) continue;
+    if (nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_BLOCK | NT_ARG_KEYWORDS)) continue;
     TyKind rt = infer_type(c, recv);
     int ci = ty_is_object(rt) ? ty_object_class(rt) : -1;
     /* so does one a Struct's own `[]=` can take (a key no literal names on a
@@ -7540,8 +7538,8 @@ int desugar_to_proc_block_arg(Compiler *c) {
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
     if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
-    int blk = nt_ref(nt, id, "block");
-    if (blk < 0 || !nt_type(nt, blk) || !sp_streq(nt_type(nt, blk), "BlockArgumentNode")) continue;
+    int blk = nt_call_block_arg(nt, id);
+    if (blk < 0) continue;
     int ex = nt_ref(nt, blk, "expression");
     if (ex < 0) continue;
     const char *exty = nt_type(nt, ex);
@@ -7599,8 +7597,8 @@ int desugar_proc_expr_block_arg(Compiler *c) {
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
     if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
-    int blk = nt_ref(nt, id, "block");
-    if (blk < 0 || !nt_type(nt, blk) || !sp_streq(nt_type(nt, blk), "BlockArgumentNode")) continue;
+    int blk = nt_call_block_arg(nt, id);
+    if (blk < 0) continue;
     int ex = nt_ref(nt, blk, "expression");
     if (ex < 0) continue;
     const char *exty = nt_type(nt, ex);
@@ -8200,8 +8198,8 @@ int desugar_value_callable_forwards(Compiler *c) {
   int n0 = nt->count;  /* snapshot: synthetic nodes are appended past here */
   for (int id = 0; id < n0; id++) {
     if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
-    int blk = nt_ref(nt, id, "block");
-    if (blk < 0 || !nt_type(nt, blk) || !sp_streq(nt_type(nt, blk), "BlockArgumentNode")) continue;
+    int blk = nt_call_block_arg(nt, id);
+    if (blk < 0) continue;
     int ex = nt_ref(nt, blk, "expression");
     /* An anonymous `&` (`def each(&) = @items.each(&)`) forwards the method's
        own block, which the inline path splices at every caller: the method
@@ -9385,9 +9383,7 @@ static int fwd_fixed_call_arity(const NodeTable *nt, const char *name) {
     if (!fwd_call_names(nt, id, name, &skip)) continue;
     int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &ac);
     av += skip; ac -= skip;
-    for (int k = 0; k < ac; k++)
-      if (fwd_node_is(nt, av[k], "SplatNode") || fwd_node_is(nt, av[k], "KeywordHashNode") ||
-          nt_kind(nt, av[k]) == NK_ForwardingArgumentsNode) return -1;
+    if (nt_argv_has(nt, av, ac, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_FORWARDING)) return -1;
     if (n != -2 && ac != n) return -1;
     n = ac;
   }
@@ -11526,11 +11522,7 @@ int fold_static_is_a(Compiler *c) {
         int call = copy_site[ps->def_node];
         int ca = nt_ref(nt, call, "arguments");
         int cn = 0; const int *cv = ca >= 0 ? nt_arr(nt, ca, "arguments", &cn) : NULL;
-        int plain = 1;
-        for (int j = 0; j < cn; j++) {
-          NodeKind ak = nt_kind(nt, cv[j]);
-          if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) plain = 0;
-        }
+        int plain = !nt_argv_has(nt, cv, cn, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK);
         for (int pi = 0; plain && pi < ps->nparams; pi++) {
           if (!ps->pnames || !ps->pnames[pi] || !sp_streq(ps->pnames[pi], vn)) continue;
           int dv = ps->pdefault[pi];
@@ -12179,9 +12171,8 @@ int desugar_builtin_enum_calls(Compiler *c) {
       int con = 0; if (cpn >= 0) nt_arr(nt, cpn, "optionals", &con);
       int ckn = 0; if (cpn >= 0) nt_arr(nt, cpn, "keywords", &ckn);
       int crest = cpn >= 0 && nt_ref(nt, cpn, "rest") >= 0;
-      int pos = an, splat = 0;
-      for (int j = 0; j < an; j++) if (nt_kind(nt, av[j]) == NK_SplatNode) splat = 1;
-      if (ckn > 0 && an > 0 && nt_kind(nt, av[an - 1]) == NK_KeywordHashNode) pos--;
+      int pos = an, splat = nt_argv_has_splat(nt, av, an);
+      if (ckn > 0 && nt_argv_kwh(nt, av, an) >= 0) pos--;
       if ((!splat && pos + 1 < crn) || (!crest && pos + 1 > crn + con)) continue; }
     int base = nt->count;
     int encl = c->nscope[id];
@@ -13828,11 +13819,7 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
     int bad = 0;
     int args = nt_ref(nt, id, "arguments");
     int argc = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
-    for (int k = 0; k < argc; k++) {
-      NodeKind ak = nt_kind(nt, av[k]);
-      if (ak == NK_SplatNode || ak == NK_BlockArgumentNode || ak == NK_KeywordHashNode) bad = 1;
-    }
-    if (bad) continue;
+    if (nt_argv_has(nt, av, argc, NT_ARG_SPLAT | NT_ARG_BLOCK | NT_ARG_KEYWORDS)) continue;
     TyKind rt = infer_type(c, recv);
     /* a program's own tap or then, on any receiver, yields what it likes,
        and so does its own method of the name on a boxed receiver */
@@ -14029,11 +14016,7 @@ static int block_values_in(const NodeTable *nt, int node, const char *bpn, int n
   }
   if (args != -2) {
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    for (int j = 0; j < an; j++) {
-      NodeKind ak = nt_kind(nt, av[j]);
-      if (ak == NK_SplatNode || ak == NK_BlockArgumentNode ||
-          nt_kind(nt, av[j]) == NK_ForwardingArgumentsNode) return -2;
-    }
+    if (nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_BLOCK | NT_ARG_FORWARDING)) return -2;
     if (n >= 0 && n != an) return -2;
     n = an;
   }
@@ -20258,8 +20241,7 @@ int desugar_index_assign_user_recv(Compiler *c) {
     /* ENV's own [] and []= (no program constant named ENV): a key with
        effects is held in a local, read for both calls */
     int env = rk == NK_ConstantReadNode && is_env_const(nt_str(nt, recv, "name")) && !comp_const(c, "ENV");
-    NodeKind ak = nt_kind(nt, av[0]);
-    if (env && (ak == NK_SplatNode || ak == NK_BlockArgumentNode || ak == NK_KeywordHashNode)) continue;
+    if (env && nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_BLOCK | NT_ARG_KEYWORDS)) continue;
     if (!ix_pure(nt, recv) || (!env && !ix_pure(nt, av[0]))) continue;
     if (!env && (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)) {
       /* `Mod[k] ||= v` on a module or class whose `[]` / `[]=` are its own
@@ -20580,8 +20562,7 @@ int desugar_reopened_op_write(Compiler *c) {
       int args = nt_ref(nt, id, "arguments"), an = 0;
       const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
       if (an != 1) continue;
-      NodeKind ak = nt_kind(nt, av[0]);
-      if (ak == NK_SplatNode || ak == NK_BlockArgumentNode || ak == NK_KeywordHashNode) continue;
+      if (nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_BLOCK | NT_ARG_KEYWORDS)) continue;
       int key = av[0], k1, k2;
       ow_twice(c, nt, id, recv, 'r', pre, &npre, &r1, &r2);
       ow_twice(c, nt, id, key, 'k', pre, &npre, &k1, &k2);
@@ -22004,8 +21985,7 @@ int desugar_attr_const_splat(Compiler *c) {
     if (!attr_family(nt_str(nt, it.id, "name"))) continue;
     int args = nt_ref(nt, it.id, "arguments"), an = 0;
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    for (int a = 0; a < an; a++)
-      if (nt_kind(nt, av[a]) == NK_SplatNode) { nt_node_set_int(nt, it.id, "attr_splat", 1); break; }
+    if (nt_argv_has_splat(nt, av, an)) nt_node_set_int(nt, it.id, "attr_splat", 1);
   }
   nt_kind_iter_close(&it);
   return changed;

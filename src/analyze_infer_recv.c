@@ -29,8 +29,8 @@ static const char *fold_seed_op_sym(Compiler *c, int id, int argc, const int *ar
   const NodeTable *nt = c->nt;
   if (argc >= 2 && argv) return sym_static_value(c, argv[argc - 1]);
   if (argc != 1) return NULL;
-  { int blk = nt_ref(nt, id, "block");
-    if (blk < 0 || !nt_type(nt, blk) || !sp_streq(nt_type(nt, blk), "BlockArgumentNode")) return NULL;
+  { int blk = nt_call_block_arg(nt, id);
+    if (blk < 0) return NULL;
     { int ex = nt_ref(nt, blk, "expression");
       if (ex >= 0 && nt_type(nt, ex) && sp_streq(nt_type(nt, ex), "SymbolNode"))
         return nt_str(nt, ex, "value"); } }
@@ -320,9 +320,7 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      is boxed (Float, or Int for an in-range Int receiver) -> poly. */
   if ((rt == TY_FLOAT || rt == TY_INT) && sp_streq(name, "clamp") && argc == 1 &&
       comp_ntype(c, argv[0]) == TY_FLOAT_RANGE) { *out = TY_POLY; return 1; }
-  if (rt == TY_INT && sp_streq(name, "round") && argc >= 1 &&
-      nt_type(nt, argv[argc - 1]) &&
-      sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) { *out = TY_INT; return 1; }
+  if (rt == TY_INT && sp_streq(name, "round") && nt_argv_kwh(nt, argv, argc) >= 0) { *out = TY_INT; return 1; }
   if (rt == TY_INT && sp_streq(name, "quo") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) { *out = TY_FLOAT; return 1; }
   /* by anything but an Integer (a Rational, a Bignum, a value known only at
      run time) quo is the boxed one, which may answer a Float or a big
@@ -377,8 +375,7 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
          Integer, and with no arm answering that shape the call fell through
          to a NoMethodError. */
       int rr_argc = argc;
-      if (rr_argc >= 1 && nt_type(nt, argv[rr_argc - 1]) &&
-          sp_streq(nt_type(nt, argv[rr_argc - 1]), "KeywordHashNode")) rr_argc--;
+      if (nt_argv_kwh(nt, argv, rr_argc) >= 0) rr_argc--;
       if (rr_argc == 1) {
         if (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "IntegerNode"))
           { *out = nt_int(nt, argv[0], "value", 0) > 0 ? TY_RATIONAL : TY_INT; return 1; }
@@ -864,9 +861,9 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       /* inject(&:&|:||:-) over a literal array of int arrays: set operation
          folding the inner arrays -> an int array. */
       if (rt == TY_POLY_ARRAY && comp_is_nested_int_array_literal(c, recv)) {
-        int blk = nt_ref(nt, id, "block");
+        int blk = nt_call_block_arg(nt, id);
         const char *sop = NULL;
-        if (blk >= 0 && nt_type(nt, blk) && sp_streq(nt_type(nt, blk), "BlockArgumentNode")) {
+        if (blk >= 0) {
           int ex = nt_ref(nt, blk, "expression");
           if (ex >= 0 && nt_type(nt, ex) && sp_streq(nt_type(nt, ex), "SymbolNode")) sop = nt_str(nt, ex, "value");
         }
@@ -1481,8 +1478,7 @@ static int block_yields_int_too(const NodeTable *nt, int blk) {
 }
 int poly_lines_args(Compiler *c, int argc, const int *argv) {
   const NodeTable *nt = c->nt;
-  int kw = argc >= 1 && nt_type(nt, argv[argc - 1]) &&
-           sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode");
+  int kw = nt_argv_kwh(nt, argv, argc) >= 0;
   if (argc == 1) return kw || lines_sep_ty(c, argv[0]);
   if (argc == 2) return kw && lines_sep_ty(c, argv[0]);
   return 0;
@@ -1609,7 +1605,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      leaves it to the user dispatch (#4319). */
   /* A block handed on to it (`to_a.pack(f, &blk)`) goes unused, as in CRuby. */
   if (recv >= 0 && rt == TY_POLY && argc == 1 &&
-      (nt_ref(nt, id, "block") < 0 || nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockArgumentNode) &&
+      (nt_ref(nt, id, "block") < 0 || nt_call_has_block_arg(nt, id)) &&
       sp_streq(name, "pack") && !an_user_defines_or_reads(c, name)) {
     TyKind fmt_t = infer_type(c, argv[0]);
     if (fmt_t == TY_STRING || fmt_t == TY_POLY || fmt_t == TY_UNKNOWN)
