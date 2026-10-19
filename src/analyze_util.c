@@ -4136,13 +4136,13 @@ int strh_method_open(const Scope *m) {
   return m->name && !method_name_implicitly_invoked(m->name) && !(m->class_id >= 0 && (sp_streq(m->name, "deconstruct") || sp_streq(m->name, "deconstruct_keys"))) && !m->is_ext_entry &&
          !m->is_proc_form && !m->is_lowered_yield && !m->ret_rbs_seeded;
 }
-/* What the old climb did not cross: a rescue clause, any parentheses (it
-   stopped at a statement list whose parent is one), and a begin that is a
-   method's whole body. */
+/* What the old climb did not cross: any parentheses (it stopped at a
+   statement list whose parent is one), and a begin that is a method's whole
+   body. */
 static int strh_climb_stops(const NodeTable *nt, const int *par, int n, const VpUp *up) {
   for (int q = n; q >= 0; q = par[q]) {
     NodeKind k = nt_kind(nt, q);
-    if (k == NK_RescueNode || k == NK_ParenthesesNode) return 1;
+    if (k == NK_ParenthesesNode) return 1;
     if (q == up->node) break;
   }
   return up->kind != VPU_JUMP && nt_kind(nt, up->node) == NK_BeginNode;
