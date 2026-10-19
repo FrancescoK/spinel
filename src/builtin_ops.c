@@ -2424,9 +2424,10 @@ static const BuiltinOp bop_rows[] = {
   /* Array, any kind: the forms of CRuby's Array methods no row above
      covers, so that each has a row with its counts, its block rule and
      whether it answers the receiver (BOPF_SELF, BOPF_SELF_OR_NIL,
-     bop_answers_self). Most type nothing: inference keeps the rules after
-     the lookup, which read the operands, the block or the call's place,
-     and codegen the legacy chain. Each fits only calls no row above fits.
+     bop_answers_self). Most type nothing, but the blockless Enumerable
+     calls (BOPF_NOT_CHAIN_RECV): inference keeps the rules after the
+     lookup, which read the operands, the block or the call's place, and
+     codegen the legacy chain. Each fits only calls no row above fits.
      An index or count whose kind says the answer (an Integer, a Range)
      states it in rows that guard it; the unguarded row of the name stays
      for every other kind of index, which the rules read. */
@@ -2461,7 +2462,9 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "collect!",              0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "map!",                  0,   0, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },  /* blockless: an Enumerator */
   { BOP_ANY_ARRAY, "collect!",              0,   0, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },
+  { BOP_ANY_ARRAY, "map",                   0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
   { BOP_ANY_ARRAY, "map",                   0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { BOP_ANY_ARRAY, "collect",               0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
   { BOP_ANY_ARRAY, "collect",               0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
   { BOP_ANY_ARRAY, "each",                  0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },  /* the walks answer the receiver */
   { BOP_ANY_ARRAY, "reverse_each",          0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
@@ -2471,11 +2474,11 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "each_with_object",      1,   1, BF_REQUIRED, TY_UNKNOWN,    BOPE_NONE },  /* the memo */
   { BOP_ANY_ARRAY, "keep_if",               0,   0, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },  /* blockless: an Enumerator */
   { BOP_ANY_ARRAY, "delete_if",             0,   0, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },
-  { BOP_ANY_ARRAY, "select",                0,   0, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },
-  { BOP_ANY_ARRAY, "filter",                0,   0, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },
-  { BOP_ANY_ARRAY, "reject",                0,   0, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },
-  { BOP_ANY_ARRAY, "find_all",              0,   0, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },
-  { BOP_ANY_ARRAY, "sort_by",               0,   0, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },
+  { BOP_ANY_ARRAY, "select",                0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
+  { BOP_ANY_ARRAY, "filter",                0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
+  { BOP_ANY_ARRAY, "reject",                0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
+  { BOP_ANY_ARRAY, "find_all",              0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
+  { BOP_ANY_ARRAY, "sort_by",               0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
   { BOP_ANY_ARRAY, "sort_by!",              0,   0, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },
   { BOP_ANY_ARRAY, "select!",               0,   0, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },
   { BOP_ANY_ARRAY, "filter!",               0,   0, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },
@@ -2483,24 +2486,39 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "bsearch",               0,   0, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },
   { BOP_ANY_ARRAY, "bsearch_index",         0,   0, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },
   { BOP_ANY_ARRAY, "chunk",                 0,   0, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },
-  { BOP_ANY_ARRAY, "find",                  0,   1, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },
-  { BOP_ANY_ARRAY, "detect",                0,   1, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },
+  { BOP_ANY_ARRAY, "find",                  0,   1, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
+  { BOP_ANY_ARRAY, "detect",                0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
+  { BOP_ANY_ARRAY, "detect",                1,   1, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },
   { BOP_ANY_ARRAY, "rfind",                 0,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { BOP_ANY_ARRAY, "index",                 0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
   { BOP_ANY_ARRAY, "index",                 0,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { BOP_ANY_ARRAY, "find_index",            0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
   { BOP_ANY_ARRAY, "find_index",            0,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { BOP_ANY_ARRAY, "rindex",                0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
   { BOP_ANY_ARRAY, "rindex",                0,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
   { BOP_ANY_ARRAY, "slice_before",          0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_NONE },
   { BOP_ANY_ARRAY, "slice_when",            0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { BOP_ANY_ARRAY, "chunk_while",           0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
   { BOP_ANY_ARRAY, "chunk_while",           0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { BOP_ANY_ARRAY, "flat_map",              0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
   { BOP_ANY_ARRAY, "flat_map",              0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { BOP_ANY_ARRAY, "collect_concat",        0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
   { BOP_ANY_ARRAY, "collect_concat",        0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { BOP_ANY_ARRAY, "filter_map",            0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
   { BOP_ANY_ARRAY, "filter_map",            0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { BOP_ANY_ARRAY, "group_by",              0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
   { BOP_ANY_ARRAY, "group_by",              0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { BOP_ANY_ARRAY, "partition",             0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
   { BOP_ANY_ARRAY, "partition",             0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { BOP_ANY_ARRAY, "minmax_by",             0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
   { BOP_ANY_ARRAY, "minmax_by",             0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { BOP_ANY_ARRAY, "take_while",            0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
   { BOP_ANY_ARRAY, "take_while",            0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { BOP_ANY_ARRAY, "drop_while",            0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
   { BOP_ANY_ARRAY, "drop_while",            0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { BOP_ANY_ARRAY, "min_by",                0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
   { BOP_ANY_ARRAY, "min_by",                0,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { BOP_ANY_ARRAY, "max_by",                0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE, NULL, 0, 0, BOPF_NOT_CHAIN_RECV },
   { BOP_ANY_ARRAY, "max_by",                0,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
   { BOP_ANY_ARRAY, "grep",                  1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
   { BOP_ANY_ARRAY, "grep_v",                1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
@@ -2515,11 +2533,12 @@ static const BuiltinOp bop_rows[] = {
 
   /* Array, any kind: emit_call_body's Array arms that run long before
      emit_array_call, each a row of its own stage looked up where its arm sat
-     (codegen_call_array.c). cycle with no count answers no kind: the rule
-     after the lookup reads whether the call is a chain's receiver. The
+     (codegen_call_array.c). cycle with no count answers an Enumerator, as
+     the blockless rows below do, unless the call is a chain's receiver
+     (BOPF_NOT_CHAIN_RECV). The
      guarded rows are not read by inference, which answers *(String) and the
      predicates with a Class from its own rules. */
-  { BOP_ANY_ARRAY, "cycle",                 0,   0, BF_NONE,     TY_UNKNOWN,    BOPE_ARRAY_CYCLE_ENDLESS, 0, 0, 0, 0, 3 },  /* stage 3: emit_blockless_enumerator */
+  { BOP_ANY_ARRAY, "cycle",                 0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_ARRAY_CYCLE_ENDLESS, 0, 0, 0, BOPF_NOT_CHAIN_RECV, 3 },  /* stage 3: emit_blockless_enumerator */
   { BOP_ANY_ARRAY, "*",                     1,   1, BF_ANY,      TY_STRING,     BOPE_ARRAY_JOIN_STR, 0, BOP_K(TY_STRING), 0, 0, 4 },  /* stage 4: a join */
   { BOP_ANY_ARRAY, "any?",                  1,   1, BF_NONE,     TY_BOOL,       BOPE_ARRAY_PRED_CLASS, 0, BOP_K(TY_CLASS), 0, 0, 5 },  /* stage 5: Class === element */
   { BOP_ANY_ARRAY, "all?",                  1,   1, BF_NONE,     TY_BOOL,       BOPE_ARRAY_PRED_CLASS, 0, BOP_K(TY_CLASS), 0, 0, 5 },

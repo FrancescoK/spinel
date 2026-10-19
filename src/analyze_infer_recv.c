@@ -58,6 +58,16 @@ static int call_is_chain_receiver_with_block(Compiler *c, int id) {
   return 0;
 }
 
+/* The Array row a call finds, but for a blockless row that is not the call's
+   to state: the receiver of a block chain (arr.select.with_index { }) is
+   answered by the rules after the lookup (BOPF_NOT_CHAIN_RECV). */
+static const BuiltinOp *array_call_row(Compiler *c, int id, const char *name, int argc,
+                                       const int *argv, int has_block) {
+  const BuiltinOp *op = bop_find(BOP_ANY_ARRAY, name, argc, has_block);
+  if (op && (op->flags & BOPF_NOT_CHAIN_RECV) && call_is_chain_receiver_with_block(c, id)) return NULL;
+  return an_bop_find_arg(c, id, BOP_ANY_ARRAY, name, argc, argv, has_block);
+}
+
 /* Object's face of a Float or String range (tap / then, instance_variables,
    `!`, object_id, display, ...): the universal rules type it about the range
    itself, as they do for an Integer range. `=~` is no longer Object's, and
@@ -706,29 +716,9 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        state their result by the operands' kinds, and so do the rows that
        guard an argument's kind (an index, a count, slice!'s Range) */
     {
-      const BuiltinOp *op = an_bop_find_arg(c, id, BOP_ANY_ARRAY, name, argc, argv, block >= 0);
+      const BuiltinOp *op = array_call_row(c, id, name, argc, argv, block >= 0);
       if (op && (*out = an_bop_result(c, op, rt, argc, argv)) != TY_UNKNOWN) return 1;
     }
-    /* a blockless map/collect is a usable Enumerator too (size/class/next);
-       chained block forms (map.with_index { }) are typed by their own arms
-       before this one. */
-    if (block < 0 && argc <= sp_streq(name, "find") && nt_ref(nt, id, "block") < 0 &&
-        (sp_streq(name, "map") || sp_streq(name, "collect") ||
-         sp_streq(name, "select") || sp_streq(name, "filter") ||
-         sp_streq(name, "find_all") || sp_streq(name, "reject") ||
-         /* the rest of the block-taking Enumerables answer one too (#3757) */
-         sp_streq(name, "sort_by") || sp_streq(name, "group_by") ||
-         sp_streq(name, "min_by") || sp_streq(name, "max_by") ||
-         sp_streq(name, "find") || sp_streq(name, "detect") ||
-         sp_streq(name, "flat_map") || sp_streq(name, "collect_concat") ||
-         sp_streq(name, "filter_map") || sp_streq(name, "partition") ||
-         sp_streq(name, "take_while") || sp_streq(name, "drop_while") ||
-         sp_streq(name, "find_index") || sp_streq(name, "chunk_while") ||
-         sp_streq(name, "minmax_by") ||
-         /* Array#index / #rindex with no argument either: find_index's
-            walk, from the front or the back */
-         is_string_index(name)) &&
-        !call_is_chain_receiver_with_block(c, id)) { *out = TY_ENUMERATOR; return 1; }
     if (block >= 0) {
       if (ty_iter_shape(name) == TY_ITER_MAP)
         { *out = infer_map_block_ty(c, id, block); return 1; }
@@ -1077,10 +1067,6 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       { *out = rt; return 1; }  /* n-arg form -> subarray */
     if (sp_streq(name, "sample") && argc == 2)
       { *out = rt; return 1; }  /* sample(n, random: g) -> subarray */
-    /* a countless blockless cycle is an Enumerator too (#3758) */
-    if (sp_streq(name, "cycle") && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-        !call_is_chain_receiver_with_block(c, id))
-      { *out = TY_ENUMERATOR; return 1; }
     if (sp_streq(name, "sample")) { *out = ty_array_elem(rt); return 1; }
     if ((is_map_bang_alias(name)) && block >= 0) {
       /* map! answers its receiver, rewritten in place: the receiver's own

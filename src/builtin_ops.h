@@ -181,7 +181,7 @@ typedef struct BuiltinOp {
   const char *arg;        /* BOPE_TEMPLATE's C text */
   BopKinds arg0, arg1;    /* the kinds the first and second argument may
                              have (BOP_K), or 0 for any */
-  unsigned char flags;    /* BOPF_* */
+  unsigned short flags;   /* BOPF_* */
   unsigned char stage;    /* the codegen lookup that emits the row: 0, the
                              default, is the one each family has always had;
                              a family whose arms sit at several distant
@@ -266,6 +266,15 @@ typedef struct BuiltinOp {
    infer_array_call/infer_numeric_call/infer_hash_call, or a plan-check
    expectation) before assuming a bare TY_UNKNOWN is a gap to close. */
 #define BOPF_INFERRED 128
+
+/* A blockless row that answers the call unless the call is the receiver of
+   a call with a block (`arr.select.with_index { }`; `.each { }` excepted,
+   which runs the method the Enumerator came from): the chain emitters own
+   that shape and the inner call is answered by the rules after the lookup,
+   so inference does not read the row for it. The row states what the call
+   answers anywhere else, an Enumerator. Only the rows that carry the flag
+   pay for the test, which walks the calls. */
+#define BOPF_NOT_CHAIN_RECV 256
 
 /* A row's recv may name a family of kinds rather than one; a caller looks
    the family up with the family's value. Not a TyKind any value has. */
