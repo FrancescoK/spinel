@@ -3401,6 +3401,56 @@ static int emit_cls_value_sg_accessor(Compiler *c, int id, int recv, const char 
 }
 
 
+/* The arms of a class value's call for the classes whose `class << self`
+   accessor of the name answers it, beside the classes the call reaches a
+   class method of (`klass.label`, one class with `attr_accessor :label` on
+   its singleton, another with `def self.label`): each reads or writes its
+   own slot into the dispatch's boxed result `_t<tr>`. 1 when any. */
+/* Does class k answer `name` by a `class << self` accessor? The lookup
+   walks k's singleton class and then its superclasses', and the first class
+   that declares the accessor or defines a class method of the name answers:
+   the accessor wins over a `def self.label` in a superclass, and a class
+   method defined below the accessor's class is ahead of it. A class's lists
+   hold the accessors its ancestors declare as well; those copies are the
+   ones sg_inh names, so a class declares the accessor when it holds it and
+   sg_inh does not. */
+static int cls_value_own_sg_answers(Compiler *c, int k, const char *name, int argc) {
+  char base[256];
+  int setter = setter_base_name(name, base, sizeof base);
+  if (setter ? argc != 1 : argc != 0) return 0;
+  ClassInfo *cls = &c->classes[k];
+  if (is_builtin_reopen(cls->name)) return 0;
+  const char *rn = setter ? base : comp_resolve_cm_alias_at(c, k, name, NULL);
+  if (!rn) rn = name;
+  if (setter ? !comp_is_sg_writer(cls, base) : !comp_is_sg_reader(cls, rn)) return 0;
+  for (int p = k, guard = 0; p >= 0 && guard < 256; p = c->classes[p].parent, guard++) {
+    ClassInfo *pc = &c->classes[p];
+    if (comp_cmethod_in_class(c, p, name) >= 0) return 0;
+    if ((setter ? comp_is_sg_writer(pc, base) : comp_is_sg_reader(pc, rn)) && !comp_is_sg_inh(pc, rn)) return 1;
+    if (p == pc->parent) break;
+  }
+  return comp_cmethod_in_chain(c, k, name, NULL) < 0;
+}
+static int emit_cls_value_sg_arms(Compiler *c, int id, const char *name, int argc, const int *argv,
+                                  int tr, Buf *b) {
+  char base[256];
+  int setter = setter_base_name(name, base, sizeof base), any = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!cls_value_own_sg_answers(c, k, name, argc)) continue;
+    ClassInfo *cls = &c->classes[k];
+    const char *rn = setter ? base : comp_resolve_cm_alias_at(c, k, name, NULL);
+    if (!rn) rn = name;
+    if (!b) return 1;
+    buf_printf(b, " case %d: ", k);
+    if (setter) { buf_puts(b, "(void)"); emit_sg_accessor(c, id, k, cls->name, name, argc, argv, b); buf_puts(b, "; "); }
+    buf_printf(b, "_t%d = ", tr);
+    sg_slot_boxed(c, k, setter ? base : rn, b);
+    buf_puts(b, "; break;");
+    any = 1;
+  }
+  return any;
+}
+
 /* The anonymous Struct / Data class a `new` receiver names statically: a
    `Struct.new(...)` call, or a local the analysis holds one in; -1 else */
 static int anon_struct_recv_ci(Compiler *c, int recv) {
@@ -4241,7 +4291,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       for (int a = 0; a < argc; a++)
         if (nt_kind(nt, argv[a]) == NK_SplatNode) splat9++;
       for (int k = 0; k < c->nclasses; k++) {
-        if (is_builtin_reopen(c->classes[k].name)) continue;
+        if (is_builtin_reopen(c->classes[k].name) || cls_value_own_sg_answers(c, k, name, argc)) continue;
         int kmi = comp_cmethod_in_chain(c, k, name, NULL);
         if (kmi < 0) continue;
         /* Only the candidates this call could actually reach set the return
@@ -4266,6 +4316,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         if (repr_of(c, id).kind == RK_BOXED && g_n_argov < MAX_ARG_OVERRIDE) {
           int any_pf9 = 0;
           for (int k = 0; k < c->nclasses && !any_pf9; k++) {
+            if (cls_value_own_sg_answers(c, k, name, argc)) continue;
             int kmi = comp_cmethod_in_chain(c, k, name, NULL);
             if (kmi < 0) continue;
             Scope *ks9 = &c->scopes[kmi];
@@ -4286,7 +4337,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           }
         }
         for (int k = 0; simple9 && k < c->nclasses; k++) {
-          if (is_builtin_reopen(c->classes[k].name)) continue;
+          if (is_builtin_reopen(c->classes[k].name) || cls_value_own_sg_answers(c, k, name, argc)) continue;
           int kmi = comp_cmethod_in_chain(c, k, name, NULL);
           if (kmi < 0) continue;
           /* A candidate that yields, takes a block, or has a rest param has no
@@ -4305,6 +4356,9 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         if (simple9) {
           TyKind slot9 = is_scalar_ret(uret9) && uret9 != TY_VOID && uret9 != TY_UNKNOWN
                          ? uret9 : (ty_is_object(uret9) ? uret9 : TY_POLY);
+          /* a class answering by its `class << self` accessor answers boxed */
+          int sg9 = emit_cls_value_sg_arms(c, id, name, argc, argv, 0, NULL);
+          if (sg9) slot9 = TY_POLY;
           int tk9 = ++g_tmp, tr9 = ++g_tmp, argsN9 = nt_ref(nt, id, "arguments");
           buf_puts(b, "({ ");
           /* The receiver, then each argument once, as the boxed class value's
@@ -4340,7 +4394,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           snprintf(rraise9, sizeof rraise9, "sp_raise_nomethod(sp_sprintf(\"undefined method '%s' for %%s\", sp_class_to_s(_t%d)))", name, tk9);
           int rdef9 = 0;
           for (int k = 0; k < c->nclasses; k++) {
-            if (is_builtin_reopen(c->classes[k].name)) continue;
+            if (is_builtin_reopen(c->classes[k].name) || cls_value_own_sg_answers(c, k, name, argc)) continue;
             int defcls9 = -1;
             int kmi = comp_cmethod_in_chain(c, k, name, &defcls9);
             if (kmi < 0) continue;
@@ -4396,6 +4450,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
              the method: CRuby raises NoMethodError, and falling out of the
              switch left the result slot at its default -- a junk value the
              caller could not tell from a real answer. */
+          if (sg9) emit_cls_value_sg_arms(c, id, name, argc, argv, tr9, b);
           if (!rdef9) buf_printf(b, " default: %s; break;", rraise9);
           buf_printf(b, " } _t%d; })", tr9);
           unhoist_dispatch_args(c, hn9, hsv9, hty9);

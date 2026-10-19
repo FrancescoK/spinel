@@ -5419,9 +5419,11 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
         else if (kr != uret) uret = TY_POLY;
       }
       if (nblk > 0) { *out = TY_POLY; return 1; }
-      /* a `class << self` accessor of some class, no class method of the
-         name: the per-class arms answer boxed (emit_cls_value_sg_accessor) */
-      if (recv_is_var && ncc == 0 && cls_value_sg_accessor_any(c, name, argc)) { *out = TY_POLY; return 1; }
+      /* a `class << self` accessor of some class: its arm answers boxed,
+         alone (emit_cls_value_sg_accessor) or, a reader, beside the classes
+         with a class method of the name (emit_cls_value_sg_arms); a writer
+         there answers the value it was given, as an assignment does */
+      if (recv_is_var && (ncc == 0 || (nc > 0 && argc == 0)) && cls_value_sg_accessor_any(c, name, argc)) { *out = TY_POLY; return 1; }
       /* a candidate that answers nothing (a raise-only body) keeps its
          void: the consumer then runs the call for its effect and reads nil,
          as it does for the same call on a constant receiver (#8645) */
