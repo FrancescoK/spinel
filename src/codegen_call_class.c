@@ -3393,18 +3393,30 @@ static int emit_cls_value_sg_accessor(Compiler *c, int id, int recv, const char 
    class method of (`klass.label`, one class with `attr_accessor :label` on
    its singleton, another with `def self.label`): each reads or writes its
    own slot into the dispatch's boxed result `_t<tr>`. 1 when any. */
-/* Does class k answer `name` by its own `class << self` accessor? Its
-   singleton class is the first place the lookup looks, so the accessor wins
-   over a class method k only inherits (`def self.label` in a superclass);
-   only a class method k defines itself is ahead of it. */
+/* Does class k answer `name` by a `class << self` accessor? The lookup
+   walks k's singleton class and then its superclasses', and the first class
+   that declares the accessor or defines a class method of the name answers:
+   the accessor wins over a `def self.label` in a superclass, and a class
+   method defined below the accessor's class is ahead of it. A class's lists
+   hold the accessors its ancestors declare as well; those copies are the
+   ones sg_inh names, so a class declares the accessor when it holds it and
+   sg_inh does not. */
 static int cls_value_own_sg_answers(Compiler *c, int k, const char *name, int argc) {
   char base[256];
   int setter = setter_base_name(name, base, sizeof base);
   if (setter ? argc != 1 : argc != 0) return 0;
   ClassInfo *cls = &c->classes[k];
-  if (is_builtin_reopen(cls->name) || comp_cmethod_in_class(c, k, name) >= 0) return 0;
+  if (is_builtin_reopen(cls->name)) return 0;
   const char *rn = setter ? base : comp_resolve_cm_alias_at(c, k, name, NULL);
-  return setter ? comp_is_sg_writer(cls, base) : comp_is_sg_reader(cls, rn ? rn : name);
+  if (!rn) rn = name;
+  if (setter ? !comp_is_sg_writer(cls, base) : !comp_is_sg_reader(cls, rn)) return 0;
+  for (int p = k, guard = 0; p >= 0 && guard < 256; p = c->classes[p].parent, guard++) {
+    ClassInfo *pc = &c->classes[p];
+    if (comp_cmethod_in_class(c, p, name) >= 0) return 0;
+    if ((setter ? comp_is_sg_writer(pc, base) : comp_is_sg_reader(pc, rn)) && !comp_is_sg_inh(pc, rn)) return 1;
+    if (p == pc->parent) break;
+  }
+  return comp_cmethod_in_chain(c, k, name, NULL) < 0;
 }
 static int emit_cls_value_sg_arms(Compiler *c, int id, const char *name, int argc, const int *argv,
                                   int tr, Buf *b) {

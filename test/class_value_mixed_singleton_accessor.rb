@@ -91,3 +91,28 @@ Square.new.retag("q")
 p Shape.new.tag, Circle.new.tag, Disc.new.tag, Square.new.tag
 Disc.new.retag("d")
 p Disc.new.tag, Circle.new.tag, Shape.sets
+
+# A class method defined below the accessor's class is ahead of it.
+class Badge
+  class << self
+    attr_accessor :tag
+  end
+
+  def tag
+    k = self.class
+    k.tag
+  end
+end
+
+class Medal < Badge
+  def self.tag = "medal"
+end
+
+class Ribbon < Medal
+end
+
+class Pin < Badge
+end
+
+Badge.tag = "badge"
+p Badge.new.tag, Medal.new.tag, Ribbon.new.tag, Pin.new.tag
