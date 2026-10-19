@@ -5071,11 +5071,16 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "), sp_str_to_r_strict("); emit_expr(c, argv[1], b); buf_puts(b, "))");
       return 1;
     }
-    /* nil has no rational reading (#3720) */
-    if (argc == 1 && comp_ntype(c, argv[0]) == TY_NIL) {
-      buf_puts(b, "((void)("); emit_expr(c, argv[0], b);
-      buf_puts(b, "), sp_raise_cls(\"TypeError\", \"can't convert nil into Rational\"),"
-                  " sp_rational_new(0, 1))");
+    /* Neither component has a rational reading when it is statically nil
+       (#3720). Evaluate both arguments before conversion raises. */
+    if (comp_ntype(c, argv[0]) == TY_NIL ||
+        (argc == 2 && comp_ntype(c, argv[1]) == TY_NIL)) {
+      buf_puts(b, "({ ");
+      for (int a = 0; a < argc; a++) {
+        buf_puts(b, "(void)("); emit_expr(c, argv[a], b); buf_puts(b, "); ");
+      }
+      buf_puts(b, "sp_raise_cls(\"TypeError\", \"can't convert nil into Rational\"); ");
+      buf_puts(b, comp_ntype(c, id) == TY_POLY ? "sp_box_nil(); })" : "sp_rational_new(0, 1); })");
       return 1;
     }
     /* Rational(Complex) is Complex#to_r: the real part, exactly, when the
