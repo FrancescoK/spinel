@@ -16988,8 +16988,10 @@ static void masgn_hoist_targets(Compiler *c, int id, MasgnTmps *mt) {
     /* a Struct's `[]=` (masgn_struct_store) takes the key as it is */
     if (index && nt_int(nt, flat[i], "struct_aset", 0)) { obj_ix = 1; okt = TY_UNKNOWN; }
     if (index && (k < 0 || !(poly_r || obj_ix || ty_is_array(rt) || (ty_is_hash(rt) && ty_hash_cname(rt))))) continue;
-    if (!index && !ty_is_object(rt)) continue;
-    mt->recv[i] = masgn_hoist_part(c, r, poly_r ? TY_POLY : rt, hb);
+    /* an attribute's receiver is an object or a boxed value, whose store
+       dispatches on its class */
+    if (!index && !ty_is_object(rt) && rt != TY_POLY) continue;
+    mt->recv[i] = masgn_hoist_part(c, r, poly_r || rt == TY_POLY ? TY_POLY : rt, hb);
     if (obj_ix) mt->key[i] = masgn_hoist_part(c, k, okt == TY_UNKNOWN ? repr_of(c, k).as_ty : okt, hb);
     else if (index) mt->key[i] = masgn_hoist_part(c, k, poly_r || ty_is_array(rt) ? TY_INT : ty_hash_key(rt), hb);
   }
