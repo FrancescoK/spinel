@@ -30,6 +30,7 @@
 #include "share.h"
 #include "repr.h"
 #include "codegen_internal.h"
+#include "value_pos.h"
 
 /* element-own flags (not merged by a union). SHE_COMPARED: the value is
    compared by identity, or handed to a consumer that keeps or mutates it
@@ -3929,31 +3930,31 @@ static int sh_if_narrows_off_string(Compiler *c, int n) {
    a node typed as a container or as a type that holds no String, a branch
    narrowed off String (sh_if_narrows_off_string), or a conditional all of
    whose arms are such? */
-static int sh_value_no_string(Compiler *c, int n, int depth) {
+static int sh_leaf_has_string(const VpLeaf *lf, void *ud) {
+  Compiler *c = ud;
   const NodeTable *nt = c->nt;
-  if (n < 0) return 1;
-  if (depth > 16) return 0;
+  if (lf->kind == VPK_NIL) return 0;
+  if (lf->kind == VPK_GAVE_UP) return 1;
+  int n = lf->node;
+  /* (the branch of an `if x.is_a?(Hash)` that answers x alone: the parent
+     is the `if` whose then-arm it is) */
+  if (lf->parent >= 0 && nt_kind(nt, lf->parent) == NK_IfNode) {
+    int st = nt_ref(nt, lf->parent, "statements"), sn = 0;
+    const int *sb = st >= 0 ? nt_arr(nt, st, "body", &sn) : NULL;
+    if (sn == 1 && sb[0] == n && sh_if_narrows_off_string(c, lf->parent)) return 0;
+  }
   switch (nt_kind(nt, n)) {
   case NK_NilNode: case NK_HashNode: case NK_ArrayNode: case NK_IntegerNode: case NK_FloatNode:
   case NK_SymbolNode: case NK_TrueNode: case NK_FalseNode:
-    return 1;
-  case NK_StatementsNode: {
-    int bn = 0; const int *bb = nt_arr(nt, n, "body", &bn);
-    return bn == 0 || sh_value_no_string(c, bb[bn - 1], depth + 1);
-  }
-  case NK_ParenthesesNode: return sh_value_no_string(c, nt_ref(nt, n, "body"), depth + 1);
-  case NK_ElseNode: return sh_value_no_string(c, nt_ref(nt, n, "statements"), depth + 1);
-  case NK_IfNode:
-    return (sh_if_narrows_off_string(c, n) || sh_value_no_string(c, nt_ref(nt, n, "statements"), depth + 1)) &&
-           sh_value_no_string(c, nt_ref(nt, n, "subsequent"), depth + 1);
-  case NK_UnlessNode:
-    return sh_value_no_string(c, nt_ref(nt, n, "statements"), depth + 1) &&
-           sh_value_no_string(c, nt_ref(nt, n, "else_clause"), depth + 1);
+    return 0;
   default: {
     TyKind t = n < c->nt->count ? c->ntype[n] : TY_UNKNOWN;
-    return t != TY_UNKNOWN && t != TY_POLY && (ty_is_hash(t) || ty_is_array(t) || !sh_may_hold(c, t));
+    return !(t != TY_UNKNOWN && t != TY_POLY && (ty_is_hash(t) || ty_is_array(t) || !sh_may_hold(c, t)));
   }
   }
+}
+static int sh_value_no_string(Compiler *c, int n) {
+  return !for_each_value_position(c->nt, n, VPS_IF | VPS_UNLESS, sh_leaf_has_string, c);
 }
 /* Does method mi answer no String (sh_value_no_string of its body), with no
    `return` anywhere in it that could answer something else? */
@@ -3975,7 +3976,7 @@ static int sh_method_answers_no_string(Compiler *c, int mi) {
       for (int j = 0; j < k; j++) { if (sp >= 255) { ok = 0; break; } if (ids[j] >= 0) stack[sp++] = ids[j]; }
     }
   }
-  return ok && sh_value_no_string(c, m->body, 0);
+  return ok && sh_value_no_string(c, m->body);
 }
 static int sh_val(ShareFacts *F, Compiler *c, int n) {
   if (n < 0 || n >= F->nnodes) return -1;
