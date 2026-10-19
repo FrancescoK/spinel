@@ -563,7 +563,12 @@ static const BuiltinOp bop_rows[] = {
      Float path (it builds the [self-eps, self+eps] interval) (#3057) */
   { TY_RATIONAL, "rationalize", 1,   1, BF_ANY, TY_RATIONAL,   BOPE_TEMPLATE,
     "sp_float_rationalize(sp_rational_to_f($r), sp_rational_to_f($e0))", BOP_K(TY_RATIONAL) },
-  { TY_RATIONAL, "rationalize", 1,   1, BF_ANY, TY_RATIONAL,   BOPE_TEMPLATE, "sp_float_rationalize(sp_rational_to_f($r), $f0)" },
+  /* a Complex epsilon: refused, as the Float conversion refuses it */
+  { TY_RATIONAL, "rationalize", 1,   1, BF_ANY, TY_RATIONAL,   BOPE_TEMPLATE,
+    "sp_float_rationalize(sp_rational_to_f($r), $f0)", BOP_K(TY_COMPLEX) },
+  /* any other epsilon: Float#rationalize's emitter, which raises the
+     NoMethodError for #abs CRuby raises for a value that is no number */
+  { TY_RATIONAL, "rationalize", 1,   1, BF_ANY, TY_RATIONAL,   BOPE_FLOAT_RATIONALIZE },
   { TY_RATIONAL, "rationalize", 0, 127, BF_ANY, TY_RATIONAL,   BOPE_NONE },
   { TY_RATIONAL, "to_i",        0, 127, BF_ANY, TY_INT,        BOPE_TEMPLATE, "(($r).num / ($R).den)" },
   { TY_RATIONAL, "to_int",      0, 127, BF_ANY, TY_INT,        BOPE_TEMPLATE, "(($r).num / ($R).den)" },
