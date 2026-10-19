@@ -262,15 +262,8 @@ static int emit_io_read_outbuf(Compiler *c, int id, const char *name, const char
                                int nint, int ob, int rest, Buf *b) {
   TyKind bt = comp_ntype(c, ob);
   int boxed = repr_of(c, ob).kind == RK_BOXED;
-  Buf ref; memset(&ref, 0, sizeof ref);
-  /* The default build already has handle slots, including unshared
-     accumulators. Fill that slot, and answer its handle under a demand.
-     Its rooted box keeps the old bytes alive across the read. */
-  int handle = !repr_share_rule(c) && strbuf_slot_text(c, ob, &ref);
-  if (!boxed && !handle && (bt == TY_STRING || bt == TY_STRBUF)) return 0;
-  emit_io_read_buffer(c, name, fn, r, argv, nint, ob, rest, boxed || handle,
-                      handle && repr_of(c, id).demand, handle ? ref.p : NULL, b);
-  free(ref.p);
+  if (!boxed && (bt == TY_STRING || bt == TY_STRBUF)) return 0;
+  emit_io_read_buffer(c, name, fn, r, argv, nint, ob, rest, boxed, 0, NULL, b);
   return 1;
 }
 

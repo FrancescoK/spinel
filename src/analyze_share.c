@@ -2430,13 +2430,7 @@ static int sh_new_call(ShareFacts *F, Compiler *c, int n, int recv, int blk) {
   if (cid < 0) return sh_builtin_new(F, c, n, recv, blk);
   ClassInfo *ci = &c->classes[cid];
   /* an exception keeps its message, which #message hands back */
-  if (class_is_exc_subclass(c, cid) && (!c->share_strings || cplan_initialize(c, n) < 0)) {
-    int vals[64];
-    int nv = sh_args_vals(F, c, n, vals, 64);
-    if (!c->share_strings)
-      for (int k = 0; k < nv; k++) sh_union(F, vals[k], F->unknown);
-    sh_exc_args(F, c, n);
-  }
+  if (class_is_exc_subclass(c, cid) && cplan_initialize(c, n) < 0) sh_exc_args(F, c, n);
   if (ci->is_struct) {
     int vals[64];
     int nv = sh_args_vals(F, c, n, vals, 64);
@@ -2990,8 +2984,8 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
      call can be one only if a write of the ivar stores one:
      sh_ivar_string) */
   /* Encoding and frozen-state changes are visible through every alias. */
-  const PolyLits recv_lits = { sh_blk_bound, F, c->share_strings ? sh_ivar_string : NULL };
-  if (maybe_str && bop_name_mutates(name, c->share_strings ? 0 : BOP_MUT_LOCAL) &&
+  const PolyLits recv_lits = { sh_blk_bound, F, sh_ivar_string };
+  if (maybe_str && bop_name_mutates(name, 0) &&
       (rt == TY_STRING || rt == TY_STRBUF ||
        (!sh_args_refuse_string(c, n, name) && an_recv_may_be_string(c, recv, &recv_lits)))) {
     int base = sh_self_chain_base(F, c, recv);
@@ -3009,7 +3003,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     const char *sym = sh_lit_name(nt, bx);
     if (sym && bx >= 0 && nt_kind(nt, bx) == NK_SymbolNode) {
       /* `&:upcase!` runs the name on each element */
-      if (bop_name_mutates(sym, c->share_strings ? 0 : BOP_MUT_LOCAL))
+      if (bop_name_mutates(sym, 0))
         sh_mark_at(F, sh_elem(F, rv), SHF_MUT | SHF_INDIRECT, n);
       sh_dyn_name(F, sym);
     }

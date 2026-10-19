@@ -1353,10 +1353,8 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         if (fzcall) view_unbind(mk);
       }
       buf_printf(b, " sp_String_freeze(%s); sp_str_freeze_val(", thr);
-      /* (the default build answers the String's own bytes, as the chain's
-         read was; a reader call typed as the handle reads as the handle) */
-      if (!repr_share_rule(c)) buf_printf(b, "sp_String_cstr(%s)", thr);
-      else if (repr_of(c, fzb).as_ty == TY_STRBUF) buf_printf(b, "sp_strbuf_read_pub(%s)", thr);
+      /* (a reader call typed as the handle reads as the handle) */
+      if (repr_of(c, fzb).as_ty == TY_STRBUF) buf_printf(b, "sp_strbuf_read_pub(%s)", thr);
       else emit_strbuf_node_read(c, fzb, thr, b);
       buf_puts(b, "); })");
       return 1;

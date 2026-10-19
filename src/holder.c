@@ -175,7 +175,7 @@ int holder_slot_buf(Compiler *c, const HolderRef *h, Buf *b) {
 
 int holder_static_handle_buf(Compiler *c, int node, Buf *b) {
   HolderRef h;
-  if ((!c->share_strings && !c->n_cext_extensions) || !holder_static_node(nt_kind(c->nt, node)) || !holder_of_node(c, node, &h) || (!h.r.share && !(c->n_cext_extensions && h.r.handle)))
+  if (!holder_static_node(nt_kind(c->nt, node)) || !holder_of_node(c, node, &h) || (!h.r.share && !(c->n_cext_extensions && h.r.handle)))
     return 0;
   return holder_slot_buf(c, &h, b);
 }

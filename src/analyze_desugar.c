@@ -5865,9 +5865,9 @@ static int desugar_dynamic_send_inner(Compiler *c) {
          routes ask for the absence of one, and an empty node made a reader
          arm no field read and `+@` no unary plus) */
       int na = -1;
-      if (nrest || !c->share_strings) {
+      if (nrest) {
         na = nt_new_node(nt, "ArgumentsNode"); if (na < 0) break;
-        if (nrest) nt_node_set_arr(nt, na, "arguments", rest, nrest);
+        nt_node_set_arr(nt, na, "arguments", rest, nrest);
       }
       int call = nt_new_node(nt, "CallNode"); if (call < 0) break;
       nt_node_set_ref(nt, call, "receiver", recv);
@@ -6526,7 +6526,7 @@ static int interp_empty_part(const NodeTable *nt, int p) {
    rewrite cannot be taken back, so it waits for settled types.
    --share-strings only: a build without it copies in every case. */
 int desugar_interp_elided_to_s(Compiler *c) {
-  if (g_infer_optimistic || !c->share_strings) return 0;
+  if (g_infer_optimistic) return 0;
   int sc = comp_class_index(c, "String");
   if (sc >= 0 && comp_method_in_chain(c, sc, "to_s", NULL) >= 0) return 0;
   NodeTable *nt = (NodeTable *)c->nt;

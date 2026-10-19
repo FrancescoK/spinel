@@ -2885,7 +2885,6 @@ int an_bi_generic_splat(Compiler *c, int id) {
      the default build hands a boxed String to it as a copy, which the
      written-out call loses the change of too, so only a build that shares
      Strings by reference takes the entry */
-  if (!repr_share_rule(c) && an_str_mutator_name(name)) return 0;
   /* a name every value answers (an Object row), or one the program defines
      in a subclass of Array, Hash or String, which the dispatch reads as its
      builtin: the entry would run the builtin's own method instead */

@@ -10944,8 +10944,8 @@ int ctor_arm_incompat(Compiler *c, Scope *is, const ArgLayout *L, const int *arg
   for (int j = 0; is && argv && j < is->nparams; j++) {
     if (L->from[j] != ARG_NODE) continue;
     LocalVar *cp = is->pnames && is->pnames[j] ? scope_local(is, is->pnames[j]) : NULL;
-    TyKind ptc = cp ? (c->share_strings ? repr_of_slot(c, cp).as_ty : cp->type) : TY_POLY;
-    TyKind atc = c->share_strings ? repr_of(c, argv[L->arg[j]]).as_ty : comp_ntype(c, argv[L->arg[j]]);
+    TyKind ptc = cp ? repr_of_slot(c, cp).as_ty : TY_POLY;
+    TyKind atc = repr_of(c, argv[L->arg[j]]).as_ty;
     /* A shared handle and a String read hold the same Ruby class. The
        arm's boxed argument is converted by emit_ctor_arm_param.
        Keep the default build's semantic-type filter: it has no need for
@@ -25004,9 +25004,6 @@ static int refuse_method_body(Compiler *c, const char *mname);
 static void refuse_string_copy(Compiler *c, int arg, const char *target,
                                const char *pname, const char *through,
                                const char *why) {
-  if (!c->share_strings && nt_kind(c->nt, arg) == NK_SelfNode)
-    unsupported_feature(c, arg, "String self is not yet shared by reference with a block that mutates it: "
-                        "the default build would hand on a copy. Build with --share-strings to support this call.");
   int is_method = target && target[0] == '`';
   /* --share-strings: a user method's parameter, by its method's name, is
      the rule's first (refuse_string_copy_routed) */

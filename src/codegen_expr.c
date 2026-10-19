@@ -268,13 +268,12 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
   int *flat = NULL, fcap = 0, *own = NULL;
   interp_flatten_own(nt, id, &flat, &own, &n, &fcap);
   const int *parts = flat;
-  /* (under --share-strings each adjacent literal is built on its own: a part
-     is held only until the end of its segment, sn[k] parts in; without it,
-     to the end of the string, as before) */
+  /* (each adjacent literal is built on its own: a part is held only until
+     the end of its segment, sn[k] parts in) */
   int *sn = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
   if (!sn) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int k = n - 1; k >= 0; k--)
-    sn[k] = !c->share_strings ? n : k + 1 < n && own[k + 1] == own[k] ? sn[k + 1] : k + 1;
+    sn[k] = k + 1 < n && own[k + 1] == own[k] ? sn[k + 1] : k + 1;
   WPart *wp = malloc(sizeof(WPart) * (size_t)(n > 0 ? n : 1));
   if (!wp) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   int nwp = 0, ndyn_or_scalar = 0;

@@ -10418,19 +10418,6 @@ static int infer_struct_aset_call(Compiler *c, int id, NilWrites *writes, Struct
   int handle = c->share_strings && an_arg_is_shared_handle(c, an_unparen(nt, v));
   if (handle) vt = TY_POLY;
   if (vt == TY_UNKNOWN) return 0;
-  /* Without --share-strings a boxed member holds a copy of the String
-     stored, and a String another name holds (anything but a fresh literal)
-     would then lose the changes either name makes: such a store types no
-     member, and a member it does not fit refuses it where it runs (a
-     TypeError, emit_struct_member_value). A fresh String has no other name. */
-  if (!c->share_strings && (vt == TY_STRING || vt == TY_STRBUF)) {
-    int u = an_unparen(nt, v);
-    NodeKind uk = nt_kind(nt, u);
-    int fresh = uk == NK_StringNode || uk == NK_InterpolatedStringNode || uk == NK_XStringNode ||
-                (uk == NK_CallNode && sp_streq(nt_str(nt, u, "name"), "+@") &&
-                 nt_kind(nt, nt_ref(nt, u, "receiver")) == NK_StringNode);
-    if (!fresh) return 0;
-  }
   const int *ks = &one;
   int nk = 1, unknown = 0;
   if (how == 2) {
@@ -10463,7 +10450,6 @@ static int infer_struct_aset_call(Compiler *c, int id, NilWrites *writes, Struct
          carries no identity a box loses, so it takes what the store may
          put there. */
       TyKind mt = ci->ivar_types[m];
-      if ((mt == TY_STRING || mt == TY_STRBUF) && !c->share_strings) continue;
       /* Through a box the analysis cannot bound, the store may be no
          Struct's at all (an Array's, a Hash's): it types only a member of
          an immediate kind, which a box holds as it is, or under the flag a

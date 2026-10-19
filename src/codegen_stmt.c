@@ -5043,8 +5043,6 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
   /* `s2 = +s1`: the same handle, or a fresh one when s1 is frozen */
   /* (--share-strings: through the route, which raises for a nil s) */
   else if (shared && vplus >= 0 && repr_share_rule(c) && emit_strbuf_route(c, v, b)) { }
-  else if (shared && vplus >= 0 && !repr_share_rule(c) && strbuf_slot_text(c, vplus, &srefV))
-    buf_printf(b, "sp_String_uplus(%s)", srefV.p);
   else if (shared && emit_strbuf_ivar_write_handle(c, v, b)) { }
   /* --share-strings: a held chain's value (strbuf_held_chain) is the handle
      it holds */

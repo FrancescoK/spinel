@@ -12243,17 +12243,6 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
     /* (an attribute assignment is its own route, which reaches here again) */
     if (repr_share_rule(c) && repr_of(c, id).handle && repr_call_returns_handle(c, id) && !strbuf_assign_leaf(c, id))
       return emit_strbuf_route(c, id, b);
-    /* Without sharing, the same handle demand wraps the method's byte
-       result as the container's mutable copy. Reader shortcuts have
-       already handed out their slots; other calls keep their byte ABI. */
-    if (!repr_share_rule(c) && mi >= 0 && repr_of(c, id).handle && strbuf_marked_yields_handle(c, id)) {
-      int sv = view_push_repr(c, id, VR_STRBUF_BOX, 0);
-      buf_puts(b, "sp_String_new_shared(");
-      emit_str_expr(c, id, b);
-      buf_puts(b, ")");
-      view_pop(c, sv);
-      return 1;
-    }
     if (mi >= 0) {
       /* a value-type receiver is passed by value; an ordinary object by
          pointer. For a value recv we hand emit_dispatch the value expression
@@ -16415,14 +16404,6 @@ void emit_ivar_set_by_name(Compiler *c, int k, const char *obj, const char *syv,
     TyKind t = ci->ivar_types[iv];
     buf_printf(b, "%sif (strcmp(_n, \"%s\") == 0) { ", any ? "else " : "", sym);
     any = 1;
-    if (t == TY_STRBUF && !repr_share_rule(c)) {
-      /* the default build copies Strings: the shared slot takes a literal
-         write only (its value is built for the slot), as the boxed literal
-         form is refused */
-      buf_puts(b, "sp_raise_cls(\"NotImplementedError\", \"instance_variable_set with a computed name into a String "
-                  "ivar is not supported until Strings are shared (#6765)\"); }");
-      continue;
-    }
     char objp[400]; snprintf(objp, sizeof objp, "%s->", obj);
     buf_printf(b, "%siv_%s = ", objp, iv_c(sym + 1));
     if (oint_kind(t) && ivar_has_nilbit(c, k, iv)) {
@@ -16451,7 +16432,6 @@ static void emit_toplevel_ivar_set_by_name(Compiler *c, int tv, const char *syv,
     const char *sym = ci->ivars[iv];
     if (!sym || sym[0] != '@') continue;
     TyKind mt = ci->ivar_types[iv];
-    if (mt == TY_STRBUF && !repr_share_rule(c)) continue;
     buf_printf(b, "%sif (strcmp(_n, \"%s\") == 0) civ_Toplevel_%s = ", any ? "else " : "", sym, iv_c(sym + 1));
     if (civ_is_oint(c, main_ci, iv)) buf_printf(b, "%s(%s)", oint_unbox(mt), val);
     else emit_ivar_slot_value(c, mt, val, b);
@@ -16667,11 +16647,6 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
         /* a Struct member is no ivar (#2849) */
         if (iv < 0 || (c->classes[k].is_struct && iv < c->classes[k].nmembers)) continue;
         TyKind t = c->classes[k].ivar_types[iv];
-        if (t == TY_STRBUF && !repr_share_rule(c)) {
-          if (nt_int(nt, id, "builtin_only", 0) && poly_ivar_set_reaches(c, id, k))
-            unsupported(c, id, "instance variable write to a shared String slot through a boxed receiver");
-          continue;
-        }
         char val[48]; snprintf(val, sizeof val, "_ivs%d", tv);
         buf_printf(b, " case %d: ", k);
         size_t obn = strlen(c->classes[k].c_name) + 32;

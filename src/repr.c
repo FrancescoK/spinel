@@ -255,7 +255,7 @@ int repr_call_returns_handle(Compiler *c, int v) {
     const CallPlan *p = cplan_user(c, v);
     return p->dispatch == CP_DIRECT && repr_self_handle(c, p->mi) && scope_ret_handle(c, p->mi);
   }
-  if ((!repr_share_rule(c) && !c->n_cext_extensions) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
   /* an attribute assignment answers its right-hand side, not what the
      writer returns: where the facts keep its value apart from the
      right-hand side's String (share_assign_unjoined), that value is the
@@ -1140,7 +1140,7 @@ int repr_static_read_kind(NodeKind k) {
    class variable: its slot's (only the rule makes one the handle) */
 int repr_static_share(const Compiler *c, int node) {
   HolderRef h;
-  if (node < 0 || (!c->share_strings && !c->n_cext_extensions) || !holder_static_node(nt_kind(c->nt, node))) return 0;
+  if (node < 0 || !holder_static_node(nt_kind(c->nt, node))) return 0;
   return holder_of_node(c, node, &h) && (h.r.share || (c->n_cext_extensions && h.r.handle));
 }
 

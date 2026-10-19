@@ -12541,7 +12541,7 @@ TyKind reader_override_ty(Compiler *c, int id, int cid, const char *name) {
   /* --share-strings: a shared String slot too, read as its copy or, where
      the call answers a box, as its handle's box; a read under the handle
      demand keeps the slot's route */
-  if (owner->ivar_types[iv] == TY_STRBUF && (!repr_share_rule(c) || repr_of(c, id).demand)) return TY_UNKNOWN;
+  if (owner->ivar_types[iv] == TY_STRBUF && repr_of(c, id).demand) return TY_UNKNOWN;
   return reader_override_arms(c, id, cid, name, owner->ivar_types[iv]) ? owner->ivar_types[iv] : TY_UNKNOWN;
 }
 

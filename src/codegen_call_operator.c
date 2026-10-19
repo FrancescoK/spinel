@@ -1303,11 +1303,10 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       }
       return 1;
     }
-    /* nil.inspect is a new String each call; the static text is enough
-       until --share-strings keeps it as the String a later `<<` changes */
+    /* nil.inspect is a new String each call, which a later `<<` changes */
     if (argc == 0 && sp_streq(name, "inspect")) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b);
-      buf_puts(b, c->share_strings ? "), sp_str_dup(SPL(\"nil\")))" : "), SPL(\"nil\"))");
+      buf_puts(b, "), sp_str_dup(SPL(\"nil\")))");
       return 1;
     }
     if (argc == 0 && sp_streq(name, "to_s"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_str_frozen_empty)"); return 1; }

@@ -314,7 +314,7 @@ static int poly_user_arm0_decide(Compiler *c, int id, const char *name, int argc
    the deep-return pickup, so an earlier publication cannot replace them.
    A fresh result a builtin only reads, or the caller drops, keeps no alias. */
 void emit_poly_user_box(Compiler *c, int id, Scope *m, const char *call, Buf *b) {
-  if ((!repr_share_rule(c) && !c->n_cext_extensions) || m->ret != TY_STRING ||
+  if (m->ret != TY_STRING ||
       (!m->ret_handle && !(m->ret_fresh && share_node_shares(c, id) && !share_node_transient(c, id)))) {
     emit_boxed_ret_call(c, m, call, b);   /* an oint return boxes with its nil */
     return;
