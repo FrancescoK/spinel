@@ -1023,10 +1023,11 @@ static int cf_unparen(CF *f, int v) {
 
 /* a block's or a lambda's parameter names, into out; -1 for a splat, a
    keyword or a rest among them (the positions past it are unknown) */
-static int cf_block_params(CF *f, int blk, const char **out, int max, int *plain) {
+static int cf_block_params(CF *f, int blk, const char **out, int max, int *plain, const char **rest) {
   const NodeTable *nt = f->nt;
   int n = 0;
   *plain = 1;
+  if (rest) *rest = NULL;
   int bp = nt_ref(nt, blk, "parameters");
   if (bp < 0) return 0;
   int pn = nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : bp;
@@ -1049,7 +1050,18 @@ static int cf_block_params(CF *f, int blk, const char **out, int max, int *plain
   for (int i = 0; i < on && n < max; i++) { out[n++] = nt_str(nt, op[i], "name"); }
   int pon = 0; nt_arr(nt, pn, "posts", &pon);
   int kn = 0; nt_arr(nt, pn, "keywords", &kn);
-  if (pon > 0 || kn > 0 || nt_ref(nt, pn, "rest") >= 0 || nt_ref(nt, pn, "keyword_rest") >= 0) *plain = 0;
+  if (pon > 0 || kn > 0 || nt_ref(nt, pn, "keyword_rest") >= 0) *plain = 0;
+  /* `|a, *more|`: the rest takes the yield arguments past the named ones,
+     as an Array (cf_bind_block); an anonymous `*` takes nothing anyone
+     reads. A rest among them made the block opaque, and one synthesized
+     `each { |*args| }` of the prelude's held every class in its args and
+     passed them on to 1,374 receivers of the blog (#8837). */
+  int rp = nt_ref(nt, pn, "rest");
+  if (rp >= 0) {
+    const char *rnm = nt_kind(nt, rp) == NK_RestParameterNode ? nt_str(nt, rp, "name") : NULL;
+    if (rnm && rest) *rest = rnm;
+    else if (nt_kind(nt, rp) != NK_RestParameterNode && !(nt_type(nt, rp) && sp_streq(nt_type(nt, rp), "ImplicitRestNode"))) *plain = 0;
+  }
   return n;
 }
 /* every name a block, a lambda or a def declares as a parameter, into out */
@@ -1351,9 +1363,22 @@ static void cf_bind_block(CF *f, int mi, int blk) {
   int body = nt_ref(nt, blk, "body");
   const char *names[CF_YARGS];
   int plain = 1;
-  int n = cf_block_params(f, blk, names, CF_YARGS, &plain);
-  int opaque = (m->blk_param && m->blk_param[0]) || f->has_super[mi] || m->is_proc_form || m->is_lowered_yield;
-  if (!plain || opaque) { cf_all_block_params(f, blk); return; }
+  const char *rest = NULL;
+  int n = cf_block_params(f, blk, names, CF_YARGS, &plain, &rest);
+  if (rest) {
+    /* the yield arguments past the named ones, in an Array of the block's own */
+    int re = cf_lv(f, body >= 0 ? body : blk, rest);
+    if (re >= 0) {
+      cf_add_set(f, re, cf_bv_set(f));
+      if (f->directed) { int o = cf_el_obj(f, re); for (int y = n; y < CF_YARGS; y++) cf_edge(f, f->yarg_el[mi][y], f->obj_cont[o]); }
+      else for (int y = n; y < CF_YARGS; y++) cf_store(f, re, f->yarg_el[mi][y]);
+    }
+  }
+  if (!plain) { cf_all_block_params(f, blk); return; }
+  if (m->blk_param && m->blk_param[0]) { cf_all_block_params(f, blk); return; }
+  if (f->has_super[mi]) { cf_all_block_params(f, blk); return; }
+  if (m->is_proc_form) { cf_all_block_params(f, blk); return; }
+  if (m->is_lowered_yield) { cf_all_block_params(f, blk); return; }
   for (int i = 0; i < n; i++) if (names[i]) cf_flow(f, f->yarg_el[mi][i], cf_lv(f, body >= 0 ? body : blk, names[i]));
   const char *dn[64]; int poss[64]; unsigned char splats[64];
   int nd = cf_destructured_params(f, blk, dn, poss, splats, 64);
