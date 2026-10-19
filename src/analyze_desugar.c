@@ -1897,46 +1897,58 @@ static int scm_mixin_stmt(const NodeTable *nt, int st) {
     if (nt_kind(nt, av[a]) != NK_ConstantReadNode && nt_kind(nt, av[a]) != NK_ConstantPathNode) return 0;
   return 1;
 }
-/* Does a module named `leaf` hook its mixing in (`self.included`,
-   `self.prepended`, `self.extended`, their `*_features` / `extend_object`),
-   or extend one that may? An `include M` in `class << self` calls
-   M.included with the singleton class, which an `extend` in its place
-   would not. */
-static int scm_module_hooks(const NodeTable *nt, const char *leaf) {
+/* Does subtree `n` name a mixin hook: a method of that name defined in any
+   way (`def self.included`, `private_class_method def self.extended`, in
+   `class << self`), a Symbol of it (`define_singleton_method(:included)`),
+   or an `extend` that may bring one? Read wide: an instance method of such
+   a name only keeps a mixin where it was. */
+static int scm_names_hook(const NodeTable *nt, int n, int depth) {
   static const char *const hooks[] = { "included", "prepended", "extended", "append_features",
                                        "prepend_features", "extend_object", NULL };
+  if (n < 0 || depth > 64) return 0;
+  NodeKind k = nt_kind(nt, n);
+  const char *nm = k == NK_DefNode ? nt_str(nt, n, "name") : k == NK_SymbolNode ? nt_str(nt, n, "value") : NULL;
+  for (int h = 0; nm && hooks[h]; h++) if (sp_streq(nm, hooks[h])) return 1;
+  if (k == NK_CallNode && nt_ref(nt, n, "receiver") < 0 && sp_streq(nt_str(nt, n, "name"), "extend")) return 1;
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) if (scm_names_hook(nt, nt_ref_at(nt, n, i), depth + 1)) return 1;
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, n, i, &cnt);
+    for (int j = 0; j < cnt; j++) if (scm_names_hook(nt, ids[j], depth + 1)) return 1;
+  }
+  return 0;
+}
+/* Does a module named `leaf` hook its mixing in (included, prepended,
+   extended, their *_features, extend_object)? An `include M` in `class <<
+   self` calls M.included with the singleton class, which an `extend` in its
+   place would not. */
+static int scm_module_hooks(const NodeTable *nt, const char *leaf) {
   NT_FOREACH_KIND(nt, NK_ModuleNode, m) {
     const char *mn = nt_str(nt, nt_ref(nt, m, "constant_path"), "name");
-    int body = nt_ref(nt, m, "body");
-    if (!mn || !sp_streq(mn, leaf) || body < 0) continue;
-    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
-    for (int i = 0; i < bn; i++) {
-      NodeKind k = nt_kind(nt, bb[i]);
-      int sb = k == NK_SingletonClassNode ? nt_ref(nt, bb[i], "body") : -1;
-      int dn = 1; const int *dv = &bb[i];
-      if (sb >= 0) dv = nt_arr(nt, sb, "body", &dn);
-      else if (k == NK_CallNode && nt_ref(nt, bb[i], "receiver") < 0 && sp_streq(nt_str(nt, bb[i], "name"), "extend"))
-        return 1;
-      else if (k != NK_DefNode || nt_ref(nt, bb[i], "receiver") < 0) continue;
-      for (int d = 0; d < dn; d++) {
-        const char *dname = nt_kind(nt, dv[d]) == NK_DefNode ? nt_str(nt, dv[d], "name") : NULL;
-        for (int h = 0; dname && hooks[h]; h++) if (sp_streq(dname, hooks[h])) return 1;
-      }
-    }
+    if (mn && sp_streq(mn, leaf) && scm_names_hook(nt, nt_ref(nt, m, "body"), 0)) return 1;
   }
   return 0;
 }
 /* A statement of a singleton-class body that only declares (a method, an
-   alias, an accessor, a visibility): nothing it runs can see whether a mixin
-   after it has happened yet. */
+   accessor, a bare visibility): nothing it runs can see whether a mixin
+   after it has happened yet. An alias or a visibility naming methods
+   resolves them as it runs, so it is no declaration here; `private def m`
+   names only its own. */
 static int scm_decl_stmt(const NodeTable *nt, int st) {
-  static const char *const decls[] = { "attr_reader", "attr_writer", "attr_accessor", "attr", "alias_method",
-                                       "private", "public", "protected", "module_function", NULL };
+  static const char *const attrs[] = { "attr_reader", "attr_writer", "attr_accessor", "attr", NULL };
+  static const char *const vis[] = { "private", "public", "protected", "module_function", NULL };
   NodeKind k = nt_kind(nt, st);
-  if (k == NK_DefNode || k == NK_AliasMethodNode) return 1;
+  if (k == NK_DefNode) return 1;
   if (k != NK_CallNode || nt_ref(nt, st, "receiver") >= 0 || nt_ref(nt, st, "block") >= 0) return 0;
   const char *nm = nt_str(nt, st, "name");
-  for (int i = 0; nm && decls[i]; i++) if (sp_streq(nm, decls[i])) return 1;
+  for (int i = 0; nm && attrs[i]; i++) if (sp_streq(nm, attrs[i])) return 1;
+  for (int i = 0; nm && vis[i]; i++) {
+    if (!sp_streq(nm, vis[i])) continue;
+    int args = nt_ref(nt, st, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    return an == 0 || (an == 1 && av && nt_kind(nt, av[0]) == NK_DefNode);
+  }
   return 0;
 }
 /* The mixins of singleton-class body `sb` that can leave it (mask[j] for its
