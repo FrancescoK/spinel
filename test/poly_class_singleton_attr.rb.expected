@@ -8,3 +8,5 @@ undefined method 'features=' for an instance of Integer
 undefined method 'features=' for class Other
 {b: 2}
 {b: 2}
+8
+nil

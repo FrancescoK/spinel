@@ -675,6 +675,10 @@ typedef struct {
      (resolve_parents copies them in): reflection lists them only with all */
   char **sg_inh;
   int nsg_inh, csg_inh;
+  /* the singleton accessors this class's own body declares, by method name
+     (`x`, `x=`): an inherited one of the same name is in the lists too */
+  char **sg_decl;
+  int nsg_decl, csg_decl;
   char **alias_new;    /* `alias new old`: alias_new[i] redirects to alias_old[i] */
   char **alias_old;
   int   *alias_cls;    /* class the lookup resumes from (an alias of an
@@ -1895,6 +1899,7 @@ void       comp_add_sg_civ(ClassInfo *ci, const char *name);
 int        comp_is_sg_civ(ClassInfo *ci, const char *name);
 int        comp_is_sg_inh(ClassInfo *ci, const char *name);
 void       comp_add_sg_inh(ClassInfo *ci, const char *name);
+void       comp_add_sg_decl(ClassInfo *ci, const char *base, int writer);
 /* Prepend-chain helpers. */
 void        comp_prep_chain_add(ClassInfo *ci, const char *from, const char *to);
 const char *comp_prep_chain_target(Compiler *c, int class_id, const char *name);
