@@ -24041,9 +24041,10 @@ static int an_tail_recv_answer(Compiler *c, int n) {
   int si = comp_class_index(c, "String");
   return si < 0 || comp_method_in_chain(c, si, nm, NULL) < 0;
 }
-/* Is tail n `x.tap { ... }` on a String, Kernel's tap, whose literal block
-   takes no parameter and leaves by no `break`? It answers x, and the block
-   has no name for it (`take(n) = @b.byteslice(@pos, n).tap { @pos += n }`). */
+/* Is tail n `x.tap { ... }` on a String no reopening gives a tap, Kernel's
+   tap, whose literal block takes no parameter and leaves by no `break`? It
+   answers x, and the block has no name for it
+   (`take(n) = @b.byteslice(@pos, n).tap { @pos += n }`). */
 static int an_tail_tap_blind(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, n, "receiver"), blk = nt_ref(nt, n, "block");
@@ -24051,7 +24052,9 @@ static int an_tail_tap_blind(Compiler *c, int n) {
       nt_kind(nt, blk) != NK_BlockNode || nt_ref(nt, blk, "parameters") >= 0 || nt_safe_nav(nt, n) ||
       call_breaks(c, n) || comp_method_index(c, "tap") >= 0) return 0;
   TyKind rt = comp_ntype(c, recv);
-  return rt == TY_STRING || rt == TY_STRBUF;
+  if (rt != TY_STRING && rt != TY_STRBUF) return 0;
+  int si = comp_class_index(c, "String");
+  return si < 0 || comp_method_in_chain(c, si, "tap", NULL) < 0;
 }
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   const NodeTable *nt = c->nt;
