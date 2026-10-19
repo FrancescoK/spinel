@@ -2958,6 +2958,8 @@ int emit_ptr_array_build(Compiler *c, int v, TyKind want, Buf *b);
 /* Is value v's String one no other name can see a copy of (codegen_stmt.c)?
    share_value_needs_handle asks it. */
 int strbuf_flow_unseen(Compiler *c, int v);
+/* ...is v a conditional whose every arm's String is one, or nil? */
+int strbuf_flow_unseen_arms(Compiler *c, int v);
 
 /* --share-check (share_check.c): mark the value of node v, about to be
    written into b, when it has to be the shared handle (face: 'x' as the
