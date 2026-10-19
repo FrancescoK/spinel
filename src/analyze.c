@@ -38078,6 +38078,9 @@ static int wnh_local_escapes_ex(Compiler *c, Scope *sc, const char *name, int *a
     const char *rn = nt_str(nt, b[n - 1], "name");
     if (!rn || !sp_streq(rn, name) || comp_scope_of(c, b[n - 1]) != sc) continue;
     if (answered && wnh_is_answer(c, sc, b[n - 1])) { *answered = 1; continue; }
+    /* a read whose value is dropped (the body of a begin with an `else`, which
+       the else's value replaces) hands nothing on */
+    if (an_value_dropped(nt, comp_parent_map(c), b[n - 1])) continue;
     return 1;
   }
   if (answered && sc->def_node >= 0 && sc->body >= 0 && ty_is_hash(sc->ret)) {
@@ -38325,8 +38328,12 @@ static void widen_nullable_keyed_hash_literals(Compiler *c) {
         if (!ty_is_hash(want)) want = TY_POLY_POLY_HASH;
         vn = 0;
       }
+      /* a method answering something other than this Hash (`seen || {}`, a
+         conditional beside a `{}` arm: the return is the box that joins
+         them) hands the box the local's Hash as it is, so the local widens
+         alone; one answering another Hash kind keeps both typed */
       int mi = (int)(sc - c->scopes);
-      if (sc->ret != ht || !wnh_widen_ret(c, mi, want)) continue;
+      if (ty_is_hash(sc->ret) ? (sc->ret != ht || !wnh_widen_ret(c, mi, want)) : sc->ret != TY_POLY) continue;
     }
     lv_set_type(lv, want);
     wnh_widen_block_params(c, sc, ln, kn, vn);
