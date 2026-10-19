@@ -48590,13 +48590,23 @@ static void an_phase_method_backstops(Compiler *c) {
         if (p && p->type == TY_UNKNOWN) { slot_rule(c, p, TY_POLY, -1, "never bound: no call site gives it a type"); widened = 1; }
       }
     }
-    if (widened)
-      for (int iter = 0; iter < 8; iter++) {
+    /* A widened value travels a call a round, as a type does in the main
+       fixpoint: through a callee's return into its caller's local, and on
+       into the next parameter. A chain of calls through other classes
+       takes about two rounds a link, so the rounds run under that loop's
+       cap (an_round_cap_step), which a chain extends and an oscillation
+       does not. */
+    if (widened) {
+      AnRoundCap rc = { 128, 0, 0, NULL, 0 };
+      for (int iter = 0; iter < rc.cap; iter++) {
         int ch = infer_param_types(c);
         ch |= infer_write_types(c);
         ch |= infer_return_types(c);
         if (!ch) break;
+        an_round_cap_step(c, &rc, iter);
       }
+      free(rc.seen);
+    }
   }
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
