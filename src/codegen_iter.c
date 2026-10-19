@@ -3825,7 +3825,7 @@ int poly_block_dispatch_cands(Compiler *c, int id, int *cand, int max) {
   /* candidate user classes: instantiated, define m, and m yields or forwards a
      block (a plain method wouldn't consume the block anyway) */
   int nc = 0;
-  for (int k = 0; k < c->nclasses && nc < max; k++) {
+  for (int k = 0; k < c->nclasses; k++) {
     if (!c->classes[k].instantiated || is_builtin_reopen(c->classes[k].name)) continue;
     int km = comp_method_in_chain(c, k, name, NULL);
     if (km < 0) continue;
@@ -3833,6 +3833,10 @@ int poly_block_dispatch_cands(Compiler *c, int id, int *cand, int max) {
     int consumes = ks->yields || (ks->blk_param && ks->blk_param[0]) ||
                    pure_forwarding_target(c, km, 0) >= 0;
     if (!consumes) return 0;  /* a non-block method in the mix: not our shape */
+    /* More classes than the switch takes: one left out would reach the
+       default arm, which raises NoMethodError for a method it has. The
+       ordinary poly dispatch serves every class. */
+    if (nc == max) return 0;
     cand[nc++] = k;
   }
   if (nc == 0) return 0;
