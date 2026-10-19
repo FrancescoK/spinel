@@ -24041,11 +24041,24 @@ static int an_tail_recv_answer(Compiler *c, int n) {
   int si = comp_class_index(c, "String");
   return si < 0 || comp_method_in_chain(c, si, nm, NULL) < 0;
 }
+/* Is tail n `x.tap { ... }` on a String, Kernel's tap, whose literal block
+   takes no parameter and leaves by no `break`? It answers x, and the block
+   has no name for it (`take(n) = @b.byteslice(@pos, n).tap { @pos += n }`). */
+static int an_tail_tap_blind(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, n, "receiver"), blk = nt_ref(nt, n, "block");
+  if (recv < 0 || !is_tap_name(nt_str(nt, n, "name")) || nt_ref(nt, n, "arguments") >= 0 || blk < 0 ||
+      nt_kind(nt, blk) != NK_BlockNode || nt_ref(nt, blk, "parameters") >= 0 || nt_safe_nav(nt, n) ||
+      call_breaks(c, n) || comp_method_index(c, "tap") >= 0) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  return rt == TY_STRING || rt == TY_STRBUF;
+}
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   const NodeTable *nt = c->nt;
   /* the fresh walk: a receiver-answering String method's tail is its
-     receiver's (a new String appended to is one still) */
-  if (R->fresh && n >= 0 && nt_kind(nt, n) == NK_CallNode && an_tail_recv_answer(c, n))
+     receiver's (a new String appended to is one still), and so is a tap's
+     whose block cannot name it */
+  if (R->fresh && n >= 0 && nt_kind(nt, n) == NK_CallNode && (an_tail_recv_answer(c, n) || an_tail_tap_blind(c, n)))
     return an_tail_handle(c, R, nt_ref(nt, n, "receiver"), tc);
   if (!R->fresh && c->n_cext_extensions && n >= 0 &&
       nt_kind(nt, n) == NK_InstanceVariableReadNode && comp_ntype(c, n) == TY_STRBUF) {
