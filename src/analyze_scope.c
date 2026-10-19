@@ -5479,6 +5479,18 @@ static int gvar_implicit_nil_writes(Compiler *c) {
   return changed;
 }
 
+/* A Hash literal written to a global or a constant that a store widened to
+   the general Hash (infer_write_types: `TABLE["k"] = v` into a Symbol-keyed
+   one, `TABLE.merge!(other)` of a Hash keyed by anything) is built as that
+   Hash: joined with the slot, its own variant made the slot the scalar box,
+   whose Symbol-keyed Hash took no key of another class. */
+static TyKind lit_takes_general_hash(Compiler *c, const LocalVar *lv, int vnode, TyKind vt, int *changed) {
+  if (!lv || lv->type != TY_POLY_POLY_HASH || !ty_is_hash(vt) || vt == TY_POLY_POLY_HASH) return vt;
+  if (!c->hash_want || vnode < 0 || vnode >= c->node_cap || nt_kind(c->nt, vnode) != NK_HashNode) return vt;
+  if (c->hash_want[vnode] != TY_POLY_POLY_HASH) { comp_set_hash_want(c, vnode, TY_POLY_POLY_HASH); *changed = 1; }
+  return TY_POLY_POLY_HASH;
+}
+
 int infer_global_const_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -5514,6 +5526,7 @@ int infer_global_const_types(Compiler *c) {
         }
       }
       if (lv) vt = empty_container_write(c, vnode, vt, lv->type);
+      vt = lit_takes_general_hash(c, lv, vnode, vt, &changed);
       if (vt == TY_NIL) {
         if (lv && nil_write_type(lv->type) != lv->type) { lv_set_type(lv, nil_write_type(lv->type)); changed = 1; }
         continue;
@@ -5539,6 +5552,7 @@ int infer_global_const_types(Compiler *c) {
       const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
       if (rn) lv = comp_gvar(c, rn);
       vt = infer_type(c, nt_ref(nt, id, "value"));
+      vt = lit_takes_general_hash(c, lv, nt_ref(nt, id, "value"), vt, &changed);
       if (vt == TY_NIL) {
         if (lv && nil_write_type(lv->type) != lv->type) { lv_set_type(lv, nil_write_type(lv->type)); changed = 1; }
         continue;
@@ -5556,6 +5570,7 @@ int infer_global_const_types(Compiler *c) {
         TyKind hv = slot_hash_variant_from_writes(c, NK_ConstantReadNode, nm, hash_new_default_arg(c, vnode));
         if (ty_is_hash(hv)) vt = hv;
       }
+      vt = lit_takes_general_hash(c, lv, vnode, vt, &changed);
     }
     else if (sp_streq(ty, "ConstantOrWriteNode") || sp_streq(ty, "ConstantAndWriteNode") ||
              sp_streq(ty, "ConstantOperatorWriteNode")) {
@@ -5568,6 +5583,7 @@ int infer_global_const_types(Compiler *c) {
         vt = TY_POLY;
       else
         vt = infer_type(c, nt_ref(nt, id, "value"));
+      vt = lit_takes_general_hash(c, lv, nt_ref(nt, id, "value"), vt, &changed);
     }
     else if (sp_streq(ty, "ConstantPathWriteNode") || sp_streq(ty, "ConstantPathOrWriteNode") ||
              sp_streq(ty, "ConstantPathAndWriteNode") || sp_streq(ty, "ConstantPathOperatorWriteNode")) {
@@ -5581,6 +5597,7 @@ int infer_global_const_types(Compiler *c) {
         vt = TY_POLY;
       else
         vt = infer_type(c, nt_ref(nt, id, "value"));
+      vt = lit_takes_general_hash(c, lv, nt_ref(nt, id, "value"), vt, &changed);
     }
     else if (sp_streq(ty, "MultiWriteNode")) {
       int ln = 0;
