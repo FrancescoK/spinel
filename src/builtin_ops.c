@@ -368,7 +368,10 @@ static const BuiltinOp bop_rows[] = {
      codegen emits one, so such a name has its codegen rows and a wider
      BOPE_NONE row after them. */
 #define CX_NUM  (BOP_K(TY_COMPLEX) | BOP_K(TY_INT) | BOP_K(TY_FLOAT) | BOP_K(TY_RATIONAL) | BOP_K(TY_POLY))
-#define CX_TYPEERROR "((void)($r), (void)($e0), (sp_raise_cls(\"TypeError\", \"can't be coerced into Complex\"), (sp_Complex){0,0,0}))"
+/* the TypeError names the operand as CRuby does (sp_cmperr_desc): a
+   special constant (nil, true, false, an Integer, a Float, a Symbol) by its
+   inspect, anything else by its class */
+#define CX_TYPEERROR "((void)($r), (sp_raise_cls(\"TypeError\", sp_sprintf(\"%s can't be coerced into Complex\", sp_cmperr_desc($b0))), (sp_Complex){0,0,0}))"
   { TY_COMPLEX, "real",        0, 127, BF_ANY, TY_POLY,       BOPE_TEMPLATE,
     "({ sp_Complex _t$t = $r; sp_complex_comp_v(_t$t.re, _t$t.fl & SP_CPLX_RE_F); })" },
   { TY_COMPLEX, "imaginary",   0, 127, BF_ANY, TY_POLY,       BOPE_TEMPLATE,

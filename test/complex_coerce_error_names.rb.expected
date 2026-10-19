@@ -1,0 +1,12 @@
++ nil: nil can't be coerced into Complex
+- true: true can't be coerced into Complex
+* false: false can't be coerced into Complex
+/ str: String can't be coerced into Complex
+** nil: nil can't be coerced into Complex
+quo sym: :sym can't be coerced into Complex
+fdiv arr: Array can't be coerced into Complex
++ hash: Hash can't be coerced into Complex
+- range: Range can't be coerced into Complex
++ Foo: Foo can't be coerced into Complex
+side effect: nil can't be coerced into Complex
+1
