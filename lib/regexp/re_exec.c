@@ -718,6 +718,36 @@ keep_apply(const mrb_regexp_pattern *pat, int *caps)
   caps[k] = attempt;
 }
 
+/* spinel: the cached VM state is taken at the pattern's first pike_vm search
+   rather than at its compile. A program compiles every Regexp literal it
+   holds when it starts, and most are never searched with, or only by the
+   backtracking engine, which never reads the cache; the thread lists grow
+   with the program, so a long pattern (an emoji table) held megabytes it
+   never used. The caller holds the claim, so no other search reads the
+   fields while they are set. A refusal leaves them NULL, and the search
+   takes its own state as one that finds the cache in use does. */
+static mrb_bool
+cache_alloc(mrb_state *mrb, mrb_regexp_pattern *mpat, int list_capa)
+{
+  size_t vsize = sizeof(uint32_t) * ((size_t)mpat->code_len + 1);
+  uint32_t *visited = (uint32_t*)mrb_malloc_simple(mrb, vsize);
+  void *t0 = mrb_malloc_simple(mrb, sizeof(re_thread) * list_capa);
+  void *t1 = mrb_malloc_simple(mrb, sizeof(re_thread) * list_capa);
+  if (!visited || !t0 || !t1) {
+    mrb_free(mrb, visited);
+    mrb_free(mrb, t0);
+    mrb_free(mrb, t1);
+    return FALSE;
+  }
+  memset(visited, 0, vsize);
+  mpat->cached_gen = 0;
+  mpat->cached_threads[0] = t0;
+  mpat->cached_threads[1] = t1;
+  mpat->cached_list_capa = list_capa;
+  mpat->cached_visited = visited;
+  return TRUE;
+}
+
 static int
 pike_vm(mrb_state *mrb, const mrb_regexp_pattern *pat,
         const char *str, mrb_int len, mrb_int start, mrb_int start_limit,
@@ -747,10 +777,9 @@ pike_vm(mrb_state *mrb, const mrb_regexp_pattern *pat,
   /* spinel: the claim has to be atomic where threads are real, since a
      pattern is shared by every thread matching against it (spinel #4082), so
      it is made here and given back below if the search cannot run */
-  mrb_bool use_cache = mpat->cached_visited != NULL &&
-                       !__atomic_exchange_n(&mpat->cache_in_use, (mrb_bool)TRUE, __ATOMIC_ACQUIRE);
+  mrb_bool use_cache = !__atomic_exchange_n(&mpat->cache_in_use, (mrb_bool)TRUE, __ATOMIC_ACQUIRE);
 #else
-  mrb_bool use_cache = !mpat->cache_in_use && mpat->cached_visited != NULL;
+  mrb_bool use_cache = !mpat->cache_in_use;
 #endif
 
   pike_state s;
@@ -800,6 +829,14 @@ pike_vm(mrb_state *mrb, const mrb_regexp_pattern *pat,
   }
   if (!s.cap_pool || (!match_only && !s.result_caps)) s.nomem = TRUE;
   else if (s.result_caps) memset(s.result_caps, -1, sizeof(int) * ncap);
+
+  /* the first search to hold the cache takes it; see cache_alloc() */
+  if (use_cache && !mpat->cached_visited && !cache_alloc(mrb, mpat, list_capa)) {
+#ifdef SP_THREADS
+    __atomic_store_n(&mpat->cache_in_use, (mrb_bool)FALSE, __ATOMIC_RELEASE);
+#endif
+    use_cache = FALSE;
+  }
 
   re_threadlist curr, next;
   s.visited = NULL;

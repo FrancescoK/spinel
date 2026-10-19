@@ -6221,14 +6221,20 @@ mrb_re_compile(mrb_state *mrb, mrb_regexp_pattern *pat,
 
   pat->loop_depth = mark_empty_loops(mrb, pat->code, code_len);
 
-  /* Pre-allocate VM state cache for pike_vm */
-  {
-    int list_capa = RE_LIST_CAPA(code_len, pat->loop_depth);
-    pat->cached_visited = (uint32_t*)mrb_calloc(mrb, code_len + 1, sizeof(uint32_t));
-    pat->cached_threads[0] = mrb_malloc(mrb, sizeof(re_thread_cache) * list_capa);
-    pat->cached_threads[1] = mrb_malloc(mrb, sizeof(re_thread_cache) * list_capa);
-    pat->cached_list_capa = list_capa;
-    pat->cache_in_use = FALSE;
+  /* spinel: pike_vm's cached state is taken by the first search that uses
+     it (cache_alloc() in re_exec.c), not here */
+
+  /* spinel: the program and the class table grew by doubling, so as much as
+     half of each is room no instruction fills; give it back now that both
+     are complete. A shrink the allocator refuses keeps the larger block. */
+  if (code_len) {
+    re_inst *code = (re_inst*)mrb_realloc_simple(mrb, pat->code, sizeof(re_inst) * code_len);
+    if (code) pat->code = code;
+  }
+  if (pat->num_classes) {
+    re_charclass *classes = (re_charclass*)mrb_realloc_simple(mrb, pat->classes,
+                                                              sizeof(re_charclass) * pat->num_classes);
+    if (classes) pat->classes = classes;
   }
 
   /* Nothing above allocates any more, so the pattern is complete: publish
