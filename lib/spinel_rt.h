@@ -5326,7 +5326,7 @@ static sp_RbVal sp_poly_floor(sp_RbVal v) { /* Time#floor answers a Time, as the
    live bytes: each tested the plain String box alone and raised NoMethodError
    for a String a method had appended to. */
 static sp_int sp_poly_bytesize(sp_RbVal v) { v = sp_poly_strbuf_deref(v); if (v.tag == SP_TAG_STR) return v.v.s ? sp_str_bytesize_m(v.v.s) : 0; sp_raise_poly_nomethod("bytesize", v); }
-static sp_int sp_poly_ord(sp_RbVal v) { v = sp_poly_strbuf_deref(v); if (v.tag == SP_TAG_STR) { if (!v.v.s) sp_raise_cls("ArgumentError", "empty string"); return sp_str_ord(v.v.s); } if (v.tag == SP_TAG_INT) return v.v.i; sp_raise_poly_nomethod("ord", v); }
+static sp_RbVal sp_poly_ord(sp_RbVal v) { v = sp_poly_strbuf_deref(v); if (v.tag == SP_TAG_STR) { if (!v.v.s) sp_raise_cls("ArgumentError", "empty string"); return sp_box_int(sp_str_ord(v.v.s)); } if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT) return v; sp_raise_poly_nomethod("ord", v); }
 /* The Integer surface on a boxed receiver that may hold a Bignum (#4665).
    Each name below used to narrow the box to sp_int and run the typed arm,
    which truncated a Bignum to int64 and answered on the wrong number

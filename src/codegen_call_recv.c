@@ -15275,6 +15275,19 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
         { *out = 1; return 1; }
       }
       if (!has_user) {
+        /* A program that reopens Integer with its own ord reaches it for a
+           small Integer only (the reopened arm takes an sp_int self), so
+           this builtin arm is what a Bignum lands on: it raises, as it did
+           before sp_poly_ord answered a Bignum, rather than answer the
+           builtin value the program overrode. */
+        int ici = sp_streq(name, "ord") ? comp_class_index(c, "Integer") : -1;
+        if (ici >= 0 && comp_method_in_class(c, ici, "ord") >= 0) {
+          int tg = ++g_tmp;
+          buf_printf(b, "({ sp_RbVal _t%d = ", tg); emit_expr(c, recv, b);
+          buf_printf(b, "; if (_t%d.tag == SP_TAG_BIGINT) sp_raise_poly_nomethod(\"ord\", _t%d);"
+                        " sp_poly_ord(_t%d); })", tg, tg, tg);
+          { *out = 1; return 1; }
+        }
         int boxf = nf && repr_of(c, id).kind == RK_BOXED;
         buf_printf(b, "%s%s(", boxf ? "sp_box_float(" : "", pfn); emit_expr(c, recv, b);
         buf_puts(b, boxf ? "))" : ")");
