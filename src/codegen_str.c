@@ -266,10 +266,25 @@ static int str_render_ident(Compiler *c, int v, int form, StrForm *sf) {
   }
   Repr r = repr_of(c, v);
   int bx, u = strbuf_srange_tail(c, v);
+  /* (a conversion that answers its String (`m.message.itself`,
+     `String(m.message)`) has the identity of the String it converts) */
+  int ev = v;
+  for (;;) {
+    int u2 = unwrap_parens(c, ev), x = repr_string_conversion_operand(c, ev);
+    if (x < 0 && u2 >= 0 && nt_kind(nt, u2) == NK_CallNode && nt_ref(nt, u2, "receiver") < 0 &&
+        nt_ref(nt, u2, "block") < 0 && is_string_class_name(nt_str(nt, u2, "name")) &&
+        call_plain_argc(c, u2) == 1 && comp_method_index(c, nt_str(nt, u2, "name")) < 0 &&
+        !bare_call_class_owned(c, u2)) {
+      int na = 0;
+      x = call_args(nt, u2, &na)[0];
+    }
+    if (x < 0) break;
+    ev = unwrap_parens(c, x);
+  }
   sf->cty = TY_POLY;
   if (form != SPF_HANDLE) { }
-  else if (exc_message_identity_operand(c, v) || exc_message_box_operand(c, v)) {
-    emit_exc_message_idbox(c, v, b);
+  else if (exc_message_identity_operand(c, ev) || exc_message_box_operand(c, ev)) {
+    emit_exc_message_idbox(c, ev, b);
     return SPF_HANDLE;
   }
   else if (r.kind == RK_BOXED || r.strbuf_src == RS_SLOT_POLY || face_str_bang_call(c, v) || u >= 0) {

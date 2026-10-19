@@ -1446,9 +1446,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
     if (tcn && is_exc_name(tcn)) {
       if (sp_streq(name, "exception")) {
         if (emit_syserr_family_new(c, id, tcn, argc, argv, b)) return 1;
-        buf_printf(b, "sp_exc_new(\"%s\", ", tcn);
-        emit_exc_msg_arg(c, argc >= 1 ? argv[0] : -1, b);
-        buf_puts(b, ")");
+        emit_exc_new_msg(c, tcn, argc >= 1 ? argv[0] : -1, b);
         return 1;
       }
       if (sp_streq(name, "to_tty?") && argc == 0) {

@@ -15003,6 +15003,9 @@ void emit_super(Compiler *c, int id, Buf *b) {
            must be coerced, not assigned raw. emit_str_expr also coerces the
            unresolved-call gate (TY_UNKNOWN sp_raise_nomethod) that comp_ntype
            can't see. */
+        /* a shared String message is held as its handle too (exc_msg_hold) */
+        Buf mh; memset(&mh, 0, sizeof mh);
+        int mk, hm = comp_ntype(c, argv2[0]) == TY_STRING && exc_msg_hold(c, argv2[0], b, &mh, &mk);
         buf_printf(b, "(%s->msg = ", g_self);
         /* nilable: Exception#initialize STRINGIFIES its message (super(nil)
            keeps the class-name default in CRuby), it never type-checks it.
@@ -15015,12 +15018,10 @@ void emit_super(Compiler *c, int id, Buf *b) {
            making can promote self: the store is recorded (sp_gc_wb), or a
            minor collection frees the young message self still names. */
         buf_printf(b, ", sp_gc_wb((void *)%s)", g_self);
-        /* a shared String message is held as its handle too (exc_msg_handle) */
-        Buf mh; memset(&mh, 0, sizeof mh);
-        if (comp_ntype(c, argv2[0]) == TY_STRING && exc_msg_handle(c, argv2[0], &mh))
-          buf_printf(b, ", (void)sp_exc_attach_msg((void *)%s, %s)", g_self, mh.p);
+        if (hm) buf_printf(b, ", (void)sp_exc_attach_msg((void *)%s, %s)", g_self, mh.p);
         free(mh.p);
         buf_printf(b, ", %s->msg)", g_self);
+        if (hm) exc_msg_release(b, mk);
       }
       else if (ty && sp_streq(ty, "ForwardingSuperNode") && s->nparams > 0) {
         LocalVar *p0 = scope_local(s, s->pnames[0]);
