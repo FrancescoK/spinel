@@ -998,6 +998,13 @@ int sp_yield_site_type(const Compiler *c, int id, TyKind *out) {
   if (sp_streq(ty, "CallNode") && yield_builtin_method_site_type(c, id, out)) return 1;
   if (!sp_streq(ty, "YieldNode") &&
       !(sp_streq(ty, "CallNode") && blk_param_call(c, id))) return 0;
+  /* a yield pinned to one face kind (emit_face_arm) is read as that kind:
+     answering the block's tail here, poly beside another site's block, kept
+     the re-entered call on a boxed receiver, and it re-entered the face
+     again until the compiler's stack ran out (`yield(v).reverse!` beside a
+     second site giving another kind of Array). */
+  { int fn; TyKind fk;
+    if (view_face_top(&fn, &fk) && fn == id) return 0; }
   int bbody = nt_ref(c->nt, g_block_id, "body");
   int bn = 0;
   const int *bb = bbody >= 0 ? nt_arr(c->nt, bbody, "body", &bn) : NULL;
