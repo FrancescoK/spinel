@@ -5164,11 +5164,17 @@ arity-spec-check:
 # refresh the expected file:
 #   spinel --dump-value-positions test/value-pos/shapes.rb > test/value-pos/shapes.expected
 # --check-value-pos walks tables built by hand for the limits no program
-# reaches: the visit budget and a stack past its 32 entries.
+# reaches: the visit budget and a stack past its 32 entries. A program that is
+# an explicit `require "builtins/..."` has the builtin's last definition as
+# its final statement, a node of a builtin that the dump numbers "#p<n>": the
+# check asks for that form without pinning the builtin's line.
 value-pos-test: $(SPINEL)
 	@tmp=$$(mktemp -d /tmp/spinel-value-pos.XXXXXX); \
+	printf '%s\n' 'require "builtins/enumerator"' > "$$tmp/builtin.rb"; \
+	$(SPINEL) --dump-value-positions "$$tmp/builtin.rb" > "$$tmp/builtin.out" 2>&1; \
 	$(SPINEL) --dump-value-positions test/value-pos/shapes.rb > "$$tmp/out" 2>&1; \
-	if diff -u test/value-pos/shapes.expected "$$tmp/out" && $(SPINEL) --check-value-pos test/value-pos/shapes.rb; \
+	if diff -u test/value-pos/shapes.expected "$$tmp/out" && $(SPINEL) --check-value-pos test/value-pos/shapes.rb && \
+	   grep -Eq '^  EXPR #p[0-9]+ DefNode ' "$$tmp/builtin.out"; \
 	then echo "value-pos-test: ok"; rm -rf "$$tmp"; \
 	else echo "value-pos-test: FAIL"; rm -rf "$$tmp"; exit 1; fi
 

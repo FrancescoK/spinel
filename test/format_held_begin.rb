@@ -2,7 +2,8 @@
 # constant or a read out of a slot. The choice was not read, so the format
 # was taken for a String made where it is written, and put in a temp of its
 # own and rooted. Every position is read now, and the format is held by what
-# holds it.
+# holds it. The rescue arm runs for one row and answers a format made there
+# (`G.dup`), which the choice has to keep alive while the arguments are built.
 # spinel: gc-stress
 F = "%d-%s"
 G = "[%d:%s]"
@@ -16,8 +17,9 @@ end
   row = Row.new(id)
   puts (begin
            row.id
+           raise ArgumentError if id == 2
            F
          rescue ArgumentError
-           G
+           G.dup
          end) % [id, "z"]
 end
