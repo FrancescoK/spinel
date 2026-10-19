@@ -1158,7 +1158,7 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
       int tl = ++g_tmp;
       /* chomp: true keyword arg uses the _chomp variant */
       int eline_chomp = 0, cv = -1;
-      int kwh = argc >= 1 && argv && nt_type(nt, argv[argc - 1]) && sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode") ? argv[argc - 1] : -1;
+      int kwh = nt_argv_kwh(nt, argv, argc);
       if (kwh >= 0) {
         cv = struct_kwarg_value(c, kwh, "chomp");
         eline_chomp = kw_flag_static(c, cv);
@@ -1507,11 +1507,7 @@ int emit_op_poly_case_options(Compiler *c, const BopCtx *x, Buf *b) {
      literal :ascii alone picks the ASCII mapping and needs no check. With no
      arm the call raised NoMethodError naming String. */
   if (!user_defines_or_reads(c, name)) {
-    int plain_args = 1;
-    for (int i = 0; i < argc; i++) {
-      NodeKind ak = nt_kind(nt, argv[i]);
-      if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) plain_args = 0;
-    }
+    int plain_args = !nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK);
     if (plain_args) {
       const char *sfx = argc == 1 ? case_map_suffix(c, argc, argv) : "";
       int tv = ++g_tmp;

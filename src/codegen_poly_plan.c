@@ -2787,11 +2787,7 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
      the arms below cannot address the keys at all -- and admitting the name
      into the dispatch is what makes those temps exist. Leave the splat form
      exactly as it was before this arm: whatever the general path emits. */
-  int has_splat_arg = 0;
-  for (int a = 0; a < argc; a++) {
-    const char *at2 = argv ? nt_type(nt, argv[a]) : NULL;
-    if (at2 && sp_streq(at2, "SplatNode")) { has_splat_arg = 1; break; }
-  }
+  int has_splat_arg = nt_argv_has_splat(nt, argv, argc);
   int is_pdelete = sp_streq(name, "delete") && argc == 1 && !has_splat_arg;
   int is_pdig = sp_streq(name, "dig") && argc >= 1 && !has_splat_arg;
   int is_pvalues_at = sp_streq(name, "values_at") && argc >= 1 && !has_splat_arg;
@@ -3557,7 +3553,7 @@ int emit_poly_prearms_n_blk(Compiler *c, int id, const char *name, const PolySpe
       }
     }
     else called = emit_poly_callable_prearm(c, name, argc, atmp, atmp_ty, NULL, tv, tr, ret,
-                                            argc == 0 ? 0 : nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? 2 : 1, b);
+                                            argc == 0 ? 0 : nt_argv_kwh(nt, argv, argc) >= 0 ? 2 : 1, b);
   }
   else if (kwh >= 0 && !has_splat_arg &&
            is_call_alias(name)) {
@@ -4737,9 +4733,7 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
        carried the whole array as ONE key and the call answered from the
        first (#4164). Flatten into a PolyArray and hand the callee its
        buffer instead. */
-    int splat_n = 0;
-    for (int a = 0; a < argc; a++)
-      if (nt_type(nt, argv[a]) && sp_streq(nt_type(nt, argv[a]), "SplatNode")) splat_n = 1;
+    int splat_n = nt_argv_has_splat(nt, argv, argc);
     int tkl = -1;
     if (splat_n && !is_pdelete) {
       tkl = ++g_tmp;

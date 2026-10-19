@@ -1217,9 +1217,7 @@ int emit_array_splat_mutator(Compiler *c, int id, Buf *b) {
   int args = nt_ref(nt, id, "arguments");
   int argc = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
-  int has_splat = 0;
-  for (int a = 0; a < argc; a++)
-    if (nt_kind(nt, argv[a]) == NK_SplatNode) has_splat = 1;
+  int has_splat = nt_argv_has_splat(nt, argv, argc);
   if (!has_splat) return 0;
   if (is_insert && nt_kind(nt, argv[0]) == NK_SplatNode) return 0;
   Repr rr = repr_of(c, recv), ir = repr_of(c, id);
@@ -4918,9 +4916,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         (sp_streq(nmZ, "zip") || sp_streq(nmZ, "product")) &&
         (ty_is_array(comp_ntype(c, recvZ)) || comp_ntype(c, recvZ) == TY_POLY)) {
       const int *avZ = nt_arr(ntZ, aZ, "arguments", &acZ);
-      int splZ = 0;
-      for (int ai = 0; ai < acZ; ai++)
-        if (nt_kind(ntZ, avZ[ai]) == NK_SplatNode) { splZ = 1; break; }
+      int splZ = nt_argv_has_splat(ntZ, avZ, acZ);
       /* ...and so does a zip past the 16 operands the typed arms below hold:
          they stopped at the 16th and dropped the rest without a word */
       if (splZ || (sp_streq(nmZ, "zip") && acZ > 16)) {
@@ -6429,7 +6425,7 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
        below to read, which stored nil for every conflict. The any-block
        emitter calls it (its result is the general boxed hash, as the call
        is typed). */
-    if (sp_streq(name, "merge") && argc == 1 && nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockArgumentNode &&
+    if (sp_streq(name, "merge") && argc == 1 && nt_call_has_block_arg(nt, id) &&
         repr_hash_is(repr_of(c, id), TY_POLY, TY_POLY) && emit_merge_any_block_boxed(c, id, recv, argv[0], b))
       return 1;
     if (sp_streq(name, "compare_by_identity")) return emit_hash_compare_by_identity(c, id, recv, rt, argc, b);
@@ -9101,8 +9097,7 @@ static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *n
   /* `round(half: mode)`, with or without a digit count. Only #round takes
      a tie-break mode; the other three reject the hash outright, and with
      a digit count as well it is the arity CRuby complains about first. */
-  if ((argc == 1 || argc == 2) && nt_type(nt, argv[argc - 1]) &&
-           sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode") &&
+  if ((argc == 1 || argc == 2) && nt_argv_kwh(nt, argv, argc) >= 0 &&
            is_round_family(name)) {
     RoundKw kw; round_kw_read(c, argv[argc - 1], &kw);
     int tr = ++g_tmp;
@@ -9676,8 +9671,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     int half_dyn = -1;
     int eff_argc = argc;
     RoundKw kw; memset(&kw, 0, sizeof kw); kw.half = -1;
-    int has_kwh = (argc == 1 || argc == 2) && nt_type(c->nt, argv[argc - 1]) &&
-                  sp_streq(nt_type(c->nt, argv[argc - 1]), "KeywordHashNode") &&
+    int has_kwh = (argc == 1 || argc == 2) && nt_argv_kwh(c->nt, argv, argc) >= 0 &&
                   is_round_family(name);
     if (has_kwh) round_kw_read(c, argv[argc - 1], &kw);
     /* Only #round takes a tie-break mode; the other three reject the hash
@@ -10719,11 +10713,7 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
     int wargc = 0; const int *wargv = wargs >= 0 ? nt_arr(nt, wargs, "arguments", &wargc) : NULL;
     /* no arguments: CRuby answers the receiver itself, not a copy */
     if (wargc == 0) { emit_expr(c, recv, b); { *out = 1; return 1; } }
-    int wkwh = -1;
-    if (wargv && wargc >= 1) {
-      const char *lty = nt_type(nt, wargv[wargc - 1]);
-      if (lty && sp_streq(lty, "KeywordHashNode")) wkwh = wargv[wargc - 1];
-    }
+    int wkwh = nt_argv_kwh(nt, wargv, wargc);
     /* a `**hash` double-splat in the keyword hash carries member overrides
        only known at run time; look each member up in it (#2972) */
     int wds = -1;
@@ -12014,14 +12004,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
            (a Struct member read with an argument answered the member). A
            splat / keyword-hash / forwarding argument can be empty at run
            time -- zero arguments to CRuby -- so those stay unguarded. */
-        int rdr_dynamic = 0;
-        for (int ra = 0; ra < argc; ra++) {
-          const char *rat = nt_type(nt, argv[ra]);
-          if (rat && (sp_streq(rat, "SplatNode") || sp_streq(rat, "KeywordHashNode") ||
-                      nt_kind(nt, argv[ra]) == NK_ForwardingArgumentsNode ||
-                      sp_streq(rat, "BlockArgumentNode")))
-            { rdr_dynamic = 1; break; }
-        }
+        int rdr_dynamic = nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_FORWARDING | NT_ARG_BLOCK);
         if (argc > 0 && !rdr_dynamic) {
           TyKind rrty2 = repr_of(c, id).as_ty;
           buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); ");
@@ -12465,7 +12448,7 @@ static void encode_arg_root(Compiler *c, int node, const char *temp, Buf *b) {
 static int encode_args_hold(Compiler *c, const int *argv, int argc, int *npos, Buf *b) {
   const NodeTable *nt = c->nt;
   int kwh = -1, pos = argc;
-  if (argc > 0 && nt_type(nt, argv[argc - 1]) && sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
+  if (nt_argv_kwh(nt, argv, argc) >= 0) {
     kwh = argv[argc - 1]; pos = argc - 1;
   }
   /* a splat's count is the run time's: the positionals are gathered into
@@ -16972,8 +16955,7 @@ static int emit_poly_numeric_call(Compiler *c, int id, Buf *b, const NodeTable *
   if (recv >= 0 && rt == TY_POLY && (argc == 1 || argc == 2) &&
       is_round_family(name) &&
       nt_ref(nt, id, "block") < 0 &&
-      nt_type(nt, argv[argc - 1]) &&
-      sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
+      nt_argv_kwh(nt, argv, argc) >= 0) {
     int has_user_kw = poly_name_user_claimed(c, name, argc);
     /* Which keywords were written is a compile-time fact for a literal key;
        a `**splat` is read at run time, and a key spelled some other way is
@@ -17489,9 +17471,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       nt_ref(nt, id, "block") < 0 && !user_defines_or_reads(c, "slice") &&
       g_n_argov + 3 < MAX_ARG_OVERRIDE) {
     int tsv = ++g_tmp;
-    int has_splat = 0;
-    for (int i = 0; i < argc; i++)
-      if (nt_type(nt, argv[i]) && sp_streq(nt_type(nt, argv[i]), "SplatNode")) has_splat = 1;
+    int has_splat = nt_argv_has_splat(nt, argv, argc);
     /* The key list below allocates -- a PolyArray per splat, plus the copies
        into it -- and the receiver is not read until after all of that. A
        receiver that is a temporary (`poly(1).slice(*keys)`) was collected in
@@ -17962,9 +17942,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     if (!has_user_dig) {
       if (argc == 1 && nt_kind(nt, argv[0]) == NK_SplatNode)
         return emit_dig_splat(c, recv, argc, argv, b);
-      int any_splat = 0;
-      for (int a = 0; a < argc; a++)
-        if (nt_kind(nt, argv[a]) == NK_SplatNode) any_splat = 1;
+      int any_splat = nt_argv_has_splat(nt, argv, argc);
       if (!any_splat) {
         Buf rb; int ch = hold_recv_open(c, recv, 1, "sp_RbVal", "SP_GC_ROOT_RBVAL", b, &rb);
         emit_rooted_key_call(c, "sp_poly_dig_n", rb.p, argv, argc, b); free(rb.p);

@@ -25,8 +25,7 @@ int emit_op_rational_round(Compiler *c, const BopCtx *x, Buf *b) {
      alongside the keyword had no arm at all (#3047). One reader, shared
      with the Float, Integer and boxed arms, settles what the call said;
      the mode reaches the runtime as the value it was written as. */
-  if ((argc == 1 || argc == 2) && nt_type(nt, argv[argc - 1]) &&
-      sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode") &&
+  if ((argc == 1 || argc == 2) && nt_argv_kwh(nt, argv, argc) >= 0 &&
       is_round_family(name)) {
     RoundKw kw; round_kw_read(c, argv[argc - 1], &kw);
     /* the class the call answers, chosen exactly as infer_type's Rational

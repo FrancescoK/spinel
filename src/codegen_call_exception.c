@@ -715,8 +715,7 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
     /* trailing `cause: exc` kwarg: strip it from the arg list and stage the
        explicit cause the raise machinery consumes for this one raise */
     int cause_node = -1;
-    if (ac >= 2 && nt_type(nt, av[ac - 1]) &&
-        sp_streq(nt_type(nt, av[ac - 1]), "KeywordHashNode")) {
+    if (ac >= 2 && nt_argv_kwh(nt, av, ac) >= 0) {
       int kn = 0;
       const int *kel = nt_arr(nt, av[ac - 1], "elements", &kn);
       if (kn == 1 && nt_type(nt, kel[0]) && sp_streq(nt_type(nt, kel[0]), "AssocNode")) {

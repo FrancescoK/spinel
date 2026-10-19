@@ -768,8 +768,7 @@ static int tail_output_has_value(const char *nm) {
    otherwise, with nothing written (#7868). */
 int emit_system_splat(Compiler *c, int id, const int *argv, int argc, Buf *b) {
   const NodeTable *nt = c->nt;
-  int has_splat = 0;
-  for (int k = 0; k < argc; k++) has_splat |= nt_kind(nt, argv[k]) == NK_SplatNode;
+  int has_splat = nt_argv_has_splat(nt, argv, argc);
   TyKind t0 = argc >= 1 && nt_kind(nt, argv[0]) != NK_SplatNode ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
   /* an empty `{}` literal infers no element types and stays TY_UNKNOWN */
   int env_first = argc >= 1 && nt_kind(nt, argv[0]) != NK_SplatNode
@@ -22829,8 +22828,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
        does not take is its ArgumentError (sp_poly_queue_push_n); an array
        appends each, and anything else has no push (sp_poly_shl would
        concatenate onto a String) */
-    int splat = 0;
-    for (int a = 0; a < argc; a++) if (nt_kind(nt, argv[a]) == NK_SplatNode) splat = 1;
+    int splat = nt_argv_has_splat(nt, argv, argc);
     if (!has_user && sp_streq(name, "push") && argc != 1 && !splat) {
       int tr = ++g_tmp, ta = ++g_tmp;
       emit_indent(b, indent);
@@ -23008,11 +23006,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
        runtime; materialize the receiver once so the per-element loop pushes into
        the same array (#3208). A literal splat is pre-expanded upstream, but a
        variable/expression splat arrives as a SplatNode. */
-    int has_splat = 0;
-    for (int a = 0; a < argc; a++) {
-      const char *aty = nt_type(nt, argv[a]);
-      if (aty && sp_streq(aty, "SplatNode")) { has_splat = 1; break; }
-    }
+    int has_splat = nt_argv_has_splat(nt, argv, argc);
     int tr = -1;
     if (has_splat) {
       tr = ++g_tmp;

@@ -224,7 +224,7 @@ static void emit_io_line_args_spread(Compiler *c, const int *argv, int argc, int
   const NodeTable *nt = c->nt;
   int tpa = ++g_tmp, kwh = -1;
   buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", tpa, tpa);
-  if (argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) kwh = argv[argc - 1];
+  if (nt_argv_kwh(nt, argv, argc) >= 0) kwh = argv[argc - 1];
   emit_push_arg_list(c, argv, kwh >= 0 ? argc - 1 : argc, tpa, b);
   /* every argument is evaluated before any of them is checked */
   int th = ++g_tmp, any = kwh >= 0 ? poly_kw_any_key(c, kwh) : 0;
@@ -538,8 +538,7 @@ static int boxed_socket_opt(const char *name, int argc) {
 static int emit_io_socket_opt_call(Compiler *c, const NodeTable *nt, const char *name, const char *r,
                                    int argc, const int *argv, Buf *b) {
   if (sp_streq(name, "connect_nonblock")) {
-    const char *lty9 = argc > 0 ? nt_type(nt, argv[argc - 1]) : NULL;
-    int kwh9 = (lty9 && sp_streq(lty9, "KeywordHashNode")) ? argv[argc - 1] : -1;
+    int kwh9 = nt_argv_kwh(nt, argv, argc);
     int exc9 = kwh9 >= 0 ? kwh_lookup(nt, kwh9, "exception") : -1;
     int no_exc = exc9 >= 0 && nt_type(nt, exc9) && sp_streq(nt_type(nt, exc9), "FalseNode");
     int pos9 = kwh9 >= 0 ? argc - 1 : argc;
@@ -823,9 +822,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        have run. The stream arms below dropped the arguments and ran the
        method (`o.close(1)` closed the file). A `*` or `**` splat's count
        is the run time's, and stays with those arms. */
-    int kwsplat = 0;
-    for (int k = 0; k < argc; k++)
-      if (nt_kind(nt, argv[k]) == NK_KeywordHashNode && nt_hash_has_splat(nt, argv[k])) kwsplat = 1;
+    int kwsplat = nt_argv_has_kwsplat(nt, argv, argc);
     if (!iocand && argc > 0 && !kwsplat && !nt_argv_has_splat(nt, argv, argc) &&
         builtin_arity_admits("File", name, 0) && !builtin_arity_admits("File", name, 1)) {
       static const struct { const char *cls, *id; } owners[] = {
@@ -1208,8 +1205,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
          (write) instead of raising, so those shapes are poly (#4236/#4237). */
       else if ((is_nonblock_io(name)) &&
                argc >= 1) {
-        const char *lty9 = nt_type(nt, argv[argc - 1]);
-        int kwh9 = (lty9 && sp_streq(lty9, "KeywordHashNode")) ? argv[argc - 1] : -1;
+        int kwh9 = nt_argv_kwh(nt, argv, argc);
         int exc9 = kwh9 >= 0 ? kwh_lookup(nt, kwh9, "exception") : -1;
         int no_exc9 = exc9 >= 0 && nt_type(nt, exc9) &&
                       sp_streq(nt_type(nt, exc9), "FalseNode");
@@ -1370,8 +1366,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
    as a boxed operand is (it was read as one String operand, and the C did
    not build). */
 static int emit_io_syswrite_count(Compiler *c, const char *r, const int *argv, int argc, Buf *b) {
-  int splat = 0;
-  for (int k = 0; k < argc; k++) if (nt_kind(c->nt, argv[k]) == NK_SplatNode) splat = 1;
+  int splat = nt_argv_has_splat(c->nt, argv, argc);
   if (splat) {
     int tf = ++g_tmp, tp = ++g_tmp, tv = ++g_tmp;
     /* the receiver is rooted before the gathered arguments allocate and run */
@@ -1579,8 +1574,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
     if (sp_feature_required("socket") &&
         (sp_streq(name, "accept_nonblock") || sp_streq(name, "connect_nonblock") ||
          sp_streq(name, "recv_nonblock"))) {
-      const char *lty9 = argc > 0 ? nt_type(nt, argv[argc - 1]) : NULL;
-      int kwh9 = (lty9 && sp_streq(lty9, "KeywordHashNode")) ? argv[argc - 1] : -1;
+      int kwh9 = nt_argv_kwh(nt, argv, argc);
       int exc9 = kwh9 >= 0 ? kwh_lookup(nt, kwh9, "exception") : -1;
       int no_exc = exc9 >= 0 && nt_type(nt, exc9) && sp_streq(nt_type(nt, exc9), "FalseNode");
       int pos9 = kwh9 >= 0 ? argc - 1 : argc;
@@ -1772,8 +1766,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
     /* read_nonblock / write_nonblock: a real non-blocking try. `exception:
        false` answers nil instead of raising IO::*Wait* / EOFError. */
     if ((is_nonblock_io(name)) && argc >= 1) {
-      const char *lty8 = nt_type(nt, argv[argc - 1]);
-      int kwh8 = (lty8 && sp_streq(lty8, "KeywordHashNode")) ? argv[argc - 1] : -1;
+      int kwh8 = nt_argv_kwh(nt, argv, argc);
       int exc8 = kwh8 >= 0 ? kwh_lookup(nt, kwh8, "exception") : -1;
       int no_exc8 = exc8 >= 0 && nt_type(nt, exc8) && sp_streq(nt_type(nt, exc8), "FalseNode");
       if (sp_streq(name, "read_nonblock")) {

@@ -172,7 +172,7 @@ int emit_op_queue_push(Compiler *c, const BopCtx *x, Buf *b) {
   int recv = x->recv;
   int argc;
   const int *argv = call_args(nt, x->id, &argc);
-  int kwh = argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+  int kwh = nt_argv_kwh(nt, argv, argc);
   int pos_argc = kwh >= 0 ? argc - 1 : argc;
   int timeout_arg = kwh >= 0 ? struct_kwarg_value(c, kwh, "timeout") : -1;
   if (pos_argc >= 1 && pos_argc <= 2) {
@@ -220,7 +220,7 @@ int emit_op_queue_pop(Compiler *c, const BopCtx *x, Buf *b) {
   int recv = x->recv;
   int argc;
   const int *argv = call_args(nt, x->id, &argc);
-  int kwh = argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+  int kwh = nt_argv_kwh(nt, argv, argc);
   int pos_argc = kwh >= 0 ? argc - 1 : argc;
   int timeout_arg = kwh >= 0 ? struct_kwarg_value(c, kwh, "timeout") : -1;
   if (pos_argc <= 1) {

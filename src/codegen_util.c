@@ -5089,10 +5089,7 @@ void emit_walk_arity_raise(Compiler *c, int id, int recv, const char *name, int 
     if (an < 1) return;
     av++; an--;
   }
-  for (int i = 0; i < an; i++) {
-    NodeKind k = nt_kind(nt, av[i]);
-    if (k == NK_SplatNode || k == NK_KeywordHashNode || k == NK_BlockArgumentNode) return;
-  }
+  if (nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK)) return;
   int has_blk = nt_ref(nt, site, "block") >= 0;
   const struct { const char *cls, *test; } kinds[] = {
     { "String", "_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)" },
@@ -7830,7 +7827,7 @@ static int node_is_oint_asked(Compiler *c, int node) {
     if (r < 0 && (sp_streq(nm, "Integer") || sp_streq(nm, "Float")) && an2 >= 2) {
       int a2v = nt_ref(nt, node, "arguments"), a2n = 0;
       const int *a2a = a2v >= 0 ? nt_arr(nt, a2v, "arguments", &a2n) : NULL;
-      if (a2a && a2n >= 2 && nt_kind(nt, a2a[a2n - 1]) == NK_KeywordHashNode) return 1;
+      if (a2n >= 2 && nt_argv_kwh(nt, a2a, a2n) >= 0) return 1;
     }
     /* a class-level attribute reader over an oint static (`Cfg.level`, or
        `level` in the class's own class method) answers the static */

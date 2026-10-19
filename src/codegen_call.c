@@ -232,7 +232,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
      (including @ivar = ...) would vanish. With g_block_id < 0 a `yield` is dead
      code and `block_given?` folds to false, matching a blockless `new`. */
   int fwd_block = 0;
-  if (block >= 0 && nt_type(nt, block) && sp_streq(nt_type(nt, block), "BlockArgumentNode")) {
+  if (nt_call_has_block_arg(nt, id)) {
     /* `&b` naming the inlined method's block parameter (or an anonymous `&`)
        is its caller's block, or none when the caller gave none: then this is
        the no-block construction, as `&nil` is. Any other proc is known only at
@@ -353,7 +353,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   int splice_tok = -1;
   { int aa = nt_ref(nt, id, "arguments"), ac = 0;
     const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &ac) : NULL;
-    int pac = ac > 0 && nt_kind(nt, av[ac - 1]) == NK_KeywordHashNode ? ac - 1 : ac;
+    int pac = nt_argv_kwh(nt, av, ac) >= 0 ? ac - 1 : ac;
     ArgLayout LA;
     arg_layout(c, m, av, pac, pac < ac ? av[pac] : -1, 1, &LA);
     alias_mask = inline_alias_params(c, mi, av, pac, &LA, block, tag, &splice_tok);
@@ -369,8 +369,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   /* A trailing keyword-hash arg (a Data class's `new(x: .., y: ..)` into a
      keyword-param initialize) binds each keyword param by name, not by
      position -- otherwise the whole hash lands in the first param's slot. */
-  const char *last_ty = argc2 > 0 ? nt_type(nt, argv2[argc2 - 1]) : NULL;
-  int kwh = (last_ty && sp_streq(last_ty, "KeywordHashNode")) ? argv2[argc2 - 1] : -1;
+  int kwh = nt_argv_kwh(nt, argv2, argc2);
   int pos_argc = kwh >= 0 ? argc2 - 1 : argc2;
   ArgLayout L;
   arg_layout(c, m, argv2, pos_argc, kwh, 1, &L);
@@ -2672,7 +2671,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
   /* a trailing argument that is not a keyword argument is positional even
      when it is a Hash; the callee's keyword parameters must not bind from it */
   int kwpos = nargs == 0 || nargs < argc ? 0
-            : nt_kind(c->nt, argv[argc - 1]) == NK_KeywordHashNode ? 2 : 1;
+            : nt_argv_kwh(c->nt, argv, argc) >= 0 ? 2 : 1;
   if (any_poly) {
     g_needs_proc_poly_argslot = 1;  /* channel array now lives in spinel_rt.h */
     /* Each argument is evaluated once into a natural-typed temp so it can be
@@ -4532,11 +4531,7 @@ static void emit_fiber_pass_value(Compiler *c, int argc, const int *argv, Buf *b
    are packed there: none is nil, one is itself, more are an array. */
 void emit_fiber_pass_call(Compiler *c, const char *fn, const char *recv,
                           int argc, const int *argv, Buf *b) {
-  int splat = 0;
-  for (int k = 0; k < argc; k++) {
-    const char *ty = nt_type(c->nt, argv[k]);
-    if (ty && sp_streq(ty, "SplatNode")) splat = 1;
-  }
+  int splat = nt_argv_has_splat(c->nt, argv, argc);
   if (!splat) {
     buf_printf(b, "%s(", fn);
     if (recv) buf_printf(b, "%s, ", recv);
@@ -4579,12 +4574,8 @@ int class_is_syserr(Compiler *c, int ci) {
    CRuby's initialize judges them. `lead` is empty or ends in ", ". */
 void emit_syserr_call(Compiler *c, int id, const char *fn, const char *lead,
                       int argc, const int *argv, Buf *b) {
-  for (int a = 0; a < argc; a++) {
-    const char *aty = nt_type(c->nt, argv[a]);
-    if (aty && (sp_streq(aty, "SplatNode") || sp_streq(aty, "KeywordHashNode") ||
-                sp_streq(aty, "BlockArgumentNode") || nt_kind(c->nt, argv[a]) == NK_ForwardingArgumentsNode))
-      unsupported(c, id, "a splat, keyword or block argument to a SystemCallError constructor");
-  }
+  if (nt_argv_has(c->nt, argv, argc, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK | NT_ARG_FORWARDING))
+    unsupported(c, id, "a splat, keyword or block argument to a SystemCallError constructor");
   if (argc == 0) { buf_printf(b, "%s(%s0, NULL)", fn, lead); return; }
   int t0 = g_tmp + 1;
   g_tmp += argc;
@@ -9293,7 +9284,7 @@ int emit_poly_default_blk_arm(Compiler *c, int id, const char *name, int argc, c
                                      const int *atmp, const TyKind *atmp_ty, int tv, int tr,
                                      int blk_tmp2, Buf *b) {
   const NodeTable *nt = c->nt;
-  for (int a = 0; a < argc; a++) if (nt_kind(nt, argv[a]) == NK_SplatNode) return 0;
+  if (nt_argv_has_splat(nt, argv, argc)) return 0;
   if (nt_ref(nt, id, "block") < 0) {
     if (!(is_sum_name(name) && argc == 1)) return 0;
     char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[0]);
@@ -10287,7 +10278,7 @@ int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf *b) {
   /* Time.new(y[, mo[, d[, h[, mi[, s]]]]], in: <off>): the `in:` keyword is
      the utc_offset, same as the 7th positional (#2718). */
   if (is_new && argc >= 2 && argc <= 7 &&
-      nt_type(nt, argv[argc - 1]) && sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
+      nt_argv_kwh(nt, argv, argc) >= 0) {
     int inv = struct_kwarg_value(c, argv[argc - 1], "in");
     if (inv >= 0) {
       int npos = argc - 1;
@@ -10361,10 +10352,7 @@ else buf_printf(b, "sp_time_new%s(", is_utc ? "_utc" : "");
 static int emit_new_arity_check(Compiler *c, int ci, int argc,
                                 const int *argv, Buf *pre) {
   const NodeTable *nt = c->nt;
-  for (int a = 0; a < argc; a++) {
-    const char *at = nt_type(nt, argv[a]);
-    if (at && (sp_streq(at, "SplatNode") || sp_streq(at, "KeywordHashNode"))) return 0;
-  }
+  if (nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_KEYWORDS)) return 0;
   int lo, hi;
   if (!class_new_pos_arity(c, ci, &lo, &hi)) return 0;
   if (argc >= lo && argc <= hi) return 0;
@@ -10726,7 +10714,7 @@ int emit_reopen_recv_in_order(Compiler *c, int id, int mi, int recv, int boxed, 
   int args = nt_ref(nt, id, "arguments"), argc = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   int n = nt_argv_has_splat(nt, argv, argc) ? 0
-        : argc - (argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode);
+        : argc - (nt_argv_kwh(nt, argv, argc) >= 0);
   int first = reopen_recv_runs_first(c, m, recv, argv, argc, n);
   if (!first && !reopen_recv_held_after(c, m, recv, boxed, n)) {
     emit_reopen_recv(c, mi, recv, boxed, box_fn, b);
@@ -10773,7 +10761,7 @@ int emit_reopen_recv_args(Compiler *c, int id, int mi, int recv, int boxed, cons
   /* a keyword hash may bind no positional: counted out, a default it might
      leave is held for (only a temp too many if it does bind one) */
   int n = nt_argv_has_splat(nt, argv, argc) ? 0
-        : argc - (argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode), hold = 0;
+        : argc - (nt_argv_kwh(nt, argv, argc) >= 0), hold = 0;
   int container = reopen_yields_container(c, m);
   for (int i = 0; i < m->nparams && !hold && !container; i++)
     hold = m->pdefault && m->pdefault[i] >= 0 &&
@@ -11892,7 +11880,7 @@ int emit_user_new_arm(Compiler *c, int id, int ci, int argc, const int *atmp,
   int cargc = 0; const int *cargv = call_args(c->nt, id, &cargc);
   int kw_temp = -1, pos_argc = argc;
   if (hoisted && argc > 0 && cargv && cargc == argc &&
-      nt_kind(c->nt, cargv[argc - 1]) == NK_KeywordHashNode) {
+      nt_argv_kwh(c->nt, cargv, cargc) >= 0) {
     for (int a = 0; a < ks->nparams; a++)
       if (ks->pnames && ks->pnames[a] && callee_param_is_declared_kwarg(c, ks, ks->pnames[a]))
         { kw_temp = atmp[argc - 1]; pos_argc = argc - 1; break; }
@@ -12286,7 +12274,7 @@ void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Buf *b) {
     /* A `**h` alone funding a positional the call is short of binds only
        where the layout can place the Hash (kwh_gathers): a parameter typed
        from this class's own callers as, say, an Integer cannot hold it. */
-    int lkw0 = argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+    int lkw0 = nt_argv_kwh(nt, argv, argc);
     int kw_funds = lkw0 >= 0 && kwh_only_spreads(nt, lkw0) && !init_takes_keywords(c, initm) &&
                    !nt_argv_has_splat(nt, argv, argc) &&
                    !kwh_gathers(c, &c->scopes[initm], lkw0, argv, argc - 1);
@@ -12303,12 +12291,9 @@ void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Buf *b) {
         /* Into an initialize taking no keywords, literal keywords are one
            positional Hash: its count is CRuby's message. */
         char am[512]; am[0] = 0;
-        int npos = 0, has_spread = nt_argv_has_splat(nt, argv, argc);
-        for (int a = 0; a < argc; a++) {
-          NodeKind ak = nt_kind(nt, argv[a]);
-          if (ak == NK_KeywordHashNode && nt_hash_has_splat(nt, argv[a])) has_spread = 1;
-          if (ak != NK_BlockArgumentNode) npos++;
-        }
+        int npos = 0, has_spread = nt_argv_has_splat(nt, argv, argc) || nt_argv_has_kwsplat(nt, argv, argc);
+        for (int a = 0; a < argc; a++)
+          if (nt_kind(nt, argv[a]) != NK_BlockArgumentNode) npos++;
         if (has_spread || init_takes_keywords(c, initm) ||
             !ctor_arity_error(c, ci, initm, npos, am, sizeof am))
           snprintf(am, sizeof am, "wrong arguments for %s#initialize", c->classes[ci].name);
@@ -12334,7 +12319,7 @@ void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Buf *b) {
        is one argument too many, CRuby's ArgumentError (#4849) -- unless the
        layout judges it itself (kwh_gathers): a positional parameter takes
        it, or the gather's count refuses it. */
-    int lkwh = argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+    int lkwh = nt_argv_kwh(nt, argv, argc);
     if (!init_takes_keywords(c, initm) &&
         !kwh_gathers(c, &c->scopes[initm], lkwh, argv, lkwh >= 0 ? argc - 1 : argc)) {
       int npos = 0, nreq = 0, nopt = 0;
@@ -12570,10 +12555,7 @@ static void emit_super_new_ctor(Compiler *c, int id, int ci, Buf *b) {
   int sp_unknown_argc = 0;
   if (argsn >= 0) {
     int sac = 0; const int *sav = nt_arr(nt, argsn, "arguments", &sac);
-    for (int a = 0; a < sac; a++) {
-      NodeKind ak = nt_kind(nt, sav[a]);
-      if (ak == NK_SplatNode || ak == NK_KeywordHashNode) { sp_unknown_argc = 1; break; }
-    }
+    if (nt_argv_has(nt, sav, sac, NT_ARG_SPLAT | NT_ARG_KEYWORDS)) sp_unknown_argc = 1;
   }
   if (initm < 0 && argc > 0 && !sp_unknown_argc) {
     char am[128];
@@ -13160,8 +13142,7 @@ int emit_struct_new_call(Compiler *c, int id, int ci, int argc, const int *argv,
   if (scust >= 0 && c->scopes[scust].reachable) return emit_struct_new_call_members(c, id, ci, argc, argv, b);
   int kwh = (argc == 1 && nt_kind(nt, argv[0]) == NK_KeywordHashNode && cls->kw_init != -1) ? argv[0] : -1;
   int ok_plain = 1;
-  for (int a = 0; a < argc; a++)
-    if (nt_kind(nt, argv[a]) == NK_SplatNode || nt_kind(nt, argv[a]) == NK_BlockArgumentNode) ok_plain = 0;
+  if (nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_BLOCK)) ok_plain = 0;
   int kn = 0; const int *ke = kwh >= 0 ? nt_arr(nt, kwh, "elements", &kn) : NULL;
   /* (a computed key names its member only at run time) */
   for (int e = 0; e < kn; e++)
@@ -13965,8 +13946,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       /* trailing `key:`/`receiver:` keywords (KeyError.new(msg, key:,
          receiver:), NameError.new(msg, receiver:)): carry them for the
          introspection accessors (#2753, #2754) */
-      if (argc >= 1 && nt_type(nt, argv[argc - 1]) &&
-          sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
+      if (nt_argv_kwh(nt, argv, argc) >= 0) {
         int kn2 = 0;
         const int *kel2 = nt_arr(nt, argv[argc - 1], "elements", &kn2);
         int key_v = -1, recv_v = -1, other = 0;
@@ -14091,10 +14071,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
          is an ASCII-8BIT buffer, whose appended Integers are bytes
          (#5538). It tags the copy the way force_encoding would. */
       int enc_kw = -1;
-      if (argc >= 1) {
-        const char *lty = nt_type(nt, argv[argc - 1]);
-        if (lty && sp_streq(lty, "KeywordHashNode")) enc_kw = kwh_lookup(nt, argv[argc - 1], "encoding");
-      }
+      if (nt_argv_kwh(nt, argv, argc) >= 0) enc_kw = kwh_lookup(nt, argv[argc - 1], "encoding");
       Buf nb; memset(&nb, 0, sizeof nb);
       /* String.new(*a): the content is the splat's one element, none is
          the empty String, and more raise ArgumentError. Taken as the one
@@ -14211,7 +14188,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       /* Fiber.new(blocking: x): evaluated first, as CRuby does, and kept
          rooted while the fiber is allocated */
       int fbl = -1;
-      if (argc >= 1 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) {
+      if (nt_argv_kwh(nt, argv, argc) >= 0) {
         int kwn = 0; const int *kwels = nt_arr(nt, argv[argc - 1], "elements", &kwn);
         int e = kwh_elem_named(c, kwn, kwels, "blocking");
         if (e >= 0) fbl = nt_ref(nt, kwels[e], "value");
@@ -14224,7 +14201,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       }
       /* Fiber.new(storage: x): the store it starts with */
       int fst = -1;
-      if (argc >= 1 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) {
+      if (nt_argv_kwh(nt, argv, argc) >= 0) {
         int kwn = 0; const int *kwels = nt_arr(nt, argv[argc - 1], "elements", &kwn);
         int e = kwh_elem_named(c, kwn, kwels, "storage");
         if (e >= 0) fst = nt_ref(nt, kwels[e], "value");
@@ -18779,8 +18756,7 @@ static int arity_call_block(const NodeTable *nt, int id, int *argc, int *kwh) {
   int blk = nt_ref(nt, id, "block");
   int with_block = 0;
   if (blk >= 0) {
-    const char *bt = nt_type(nt, blk);
-    if (bt && sp_streq(bt, "BlockArgumentNode")) return -1;
+    if (nt_call_has_block_arg(nt, id)) return -1;
     with_block = 1;
   }
   int anode = nt_ref(nt, id, "arguments");
@@ -19030,8 +19006,7 @@ int emit_native_splat_call(Compiler *c, int id, int cid, const char *name, int r
                            int argc, const int *argv, Buf *b) {
   const NodeTable *nt = c->nt;
   int kind = recv < 0;
-  int has_splat = 0;
-  for (int a = 0; a < argc; a++) if (nt_kind(nt, argv[a]) == NK_SplatNode) has_splat = 1;
+  int has_splat = nt_argv_has_splat(nt, argv, argc);
   if (!has_splat) return 0;
   char why[160];
   snprintf(why, sizeof why, "%s%s%s with a splat argument (no binding takes the gathered arguments)",
@@ -19159,12 +19134,7 @@ int emit_native_count_mismatch(Compiler *c, int id, int cid, const char *name, i
     if (m->nargs > mx) mx = m->nargs;
   }
   if (mn < 0) return 0;
-  for (int a = 0; a < argc; a++) {
-    const char *at = nt_type(nt, argv[a]);
-    if (at && (sp_streq(at, "SplatNode") || sp_streq(at, "KeywordHashNode") ||
-               nt_kind(nt, argv[a]) == NK_ForwardingArgumentsNode || sp_streq(at, "BlockArgumentNode")))
-      return 0;
-  }
+  if (nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_FORWARDING | NT_ARG_BLOCK)) return 0;
   int blk = nt_ref(nt, id, "block");
   char exp[32] = "";
   const char *cn = c->classes[cid].name;
@@ -19387,11 +19357,7 @@ static int emit_case_opts_guard(Compiler *c, int id, Buf *b) {
   const int *av = anode >= 0 ? nt_arr(nt, anode, "arguments", &argc) : NULL;
   /* a block is ignored, as CRuby ignores it, and checks the options all the same */
   if (argc == 0 || user_defines_or_reads(c, name)) return 0;
-  for (int i = 0; i < argc; i++) {
-    NodeKind ak = nt_kind(nt, av[i]);
-    if (ak == NK_KeywordHashNode && !nt_hash_has_splat(nt, av[i])) continue;
-    if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 0;
-  }
+  if (nt_argv_has(nt, av, argc, NT_ARG_SPLAT | NT_ARG_BLOCK) || nt_argv_has_kwsplat(nt, av, argc)) return 0;
   int down = sp_streq(base, "downcase");
   if (case_opts_valid_lits(c, av, argc, down)) return 0;
   NodeKind rk = nt_kind(nt, recv);
@@ -19631,7 +19597,7 @@ int emit_hash_new_arg_guard(Compiler *c, int id, Buf *b) {
   const int *argv = anode >= 0 ? nt_arr(nt, anode, "arguments", &argc) : NULL;
   int npos = argc;
   char msg[256]; msg[0] = 0;
-  if (argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) {
+  if (nt_argv_kwh(nt, argv, argc) >= 0) {
     npos = argc - 1;
     int en = 0; const int *el = nt_arr(nt, argv[argc - 1], "elements", &en);
     char keys[200]; keys[0] = 0;
@@ -21130,11 +21096,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
       nt_ref(nt, id, "block") < 0 && !an_user_defines_method(c, name) &&
       !builtin_object_method_known(name) &&
       (call_rescued_as_missing(nt, id) || nt_str(nt, id, "send_blind") || nt_str(nt, id, "vis_enforce"))) {
-    int plain = 1;
-    for (int k = 0; k < argc; k++) {
-      NodeKind ak = nt_kind(nt, argv[k]);
-      if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) plain = 0;
-    }
+    int plain = !nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK);
     if (plain) {
       const char *ucn = g_emitting_class_id >= 0 ? class_ruby_name(c, g_emitting_class_id) : NULL;
       TyKind uret = repr_of(c, id).as_ty;
@@ -21157,8 +21119,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
        CRuby's NoMethodError -- accurate in both gate modes. */
     /* merge!/update(other) { } on a boxed value: the block (a proc argument
        too) resolves the keys both have, at run time */
-    int msplat = 0;
-    for (int a = 0; a < argc; a++) if (nt_kind(nt, argv[a]) == NK_SplatNode) msplat = 1;
+    int msplat = nt_argv_has_splat(nt, argv, argc);
     if ((grt == TY_POLY || grt == TY_UNKNOWN) && argc >= 1 && !msplat && nt_ref(nt, id, "block") >= 0 &&
         nt_str(nt, id, "name") && (sp_streq(nt_str(nt, id, "name"), "merge!") ||
                                    sp_streq(nt_str(nt, id, "name"), "update"))) {
@@ -21227,10 +21188,9 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
        helper, ahead of the hash-face coercion below -- which would turn an
        Array receiver into a NoMethodError. */
     { const char *fpn = nt_str(nt, id, "name");
-      int fpb = nt_ref(nt, id, "block");
+      int fpb = nt_call_block_arg(nt, id);
       const char *fpop = fpn ? poly_enum_op_for(fpn) : NULL;
-      if (fpop && recv >= 0 && grt == TY_POLY && fpb >= 0 && nt_type(nt, fpb) &&
-          sp_streq(nt_type(nt, fpb), "BlockArgumentNode")) {
+      if (fpop && recv >= 0 && grt == TY_POLY && fpb >= 0) {
         Buf fpp; memset(&fpp, 0, sizeof fpp);
         /* a `&blk` forwarding the block of an inlined body is its caller's:
            a literal built into a proc, the caller's `&expr`, the real proc
@@ -21655,11 +21615,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
          one call, and an unrooted first is swept while the second builds. */
       if (nm && recv >= 0 && grt == TY_POLY && nt_ref(nt, id, "block") < 0) {
         int an5 = 0; const int *av5 = call_args(nt, id, &an5);
-        int splat5 = 0;
-        for (int a2 = 0; a2 < an5; a2++) {
-          const char *t5 = av5 ? nt_type(nt, av5[a2]) : NULL;
-          if (t5 && sp_streq(t5, "SplatNode")) splat5 = 1;
-        }
+        int splat5 = nt_argv_has_splat(nt, av5, an5);
         int op5 = sp_streq(nm, "count") ? 0 : sp_streq(nm, "delete") ? 1
                 : sp_streq(nm, "squeeze") ? 2 : -1;
         /* squeeze's 1-set form has no other unresolved arm; count's goes to
@@ -21776,12 +21732,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
           /* stage the call's positional args for NoMethodError#args (#2837);
              a splat/block/kwarg shape keeps the plain message */
           int gac = 0; const int *gav = call_args(nt, id, &gac);
-          int gstage = 1;
-          for (int gk = 0; gk < gac; gk++) {
-            const char *gty = nt_type(nt, gav[gk]);
-            if (gty && (sp_streq(gty, "SplatNode") || sp_streq(gty, "BlockArgumentNode") ||
-                        sp_streq(gty, "KeywordHashNode"))) gstage = 0;
-          }
+          int gstage = !nt_argv_has(nt, gav, gac, NT_ARG_SPLAT | NT_ARG_BLOCK | NT_ARG_KEYWORDS);
           #define EMIT_GATE_ARGS() do { \
             buf_printf(b, ", %d, (sp_RbVal[]){", gac); \
             for (int gk = 0; gk < gac; gk++) { if (gk) buf_puts(b, ", "); emit_boxed(c, gav[gk], b); } \
@@ -21806,12 +21757,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
         }
         {
           int gac = 0; const int *gav = call_args(nt, id, &gac);
-          int gstage = 1;
-          for (int gk = 0; gk < gac; gk++) {
-            const char *gty = nt_type(nt, gav[gk]);
-            if (gty && (sp_streq(gty, "SplatNode") || sp_streq(gty, "BlockArgumentNode") ||
-                        sp_streq(gty, "KeywordHashNode"))) gstage = 0;
-          }
+          int gstage = !nt_argv_has(nt, gav, gac, NT_ARG_SPLAT | NT_ARG_BLOCK | NT_ARG_KEYWORDS);
           /* stage the receiver too (NoMethodError#receiver, #3068), but only when
              it is side-effect-free to re-emit: a bare local/self/ivar/const or a
              literal. A side-effecting receiver would be double-evaluated. */
@@ -28603,8 +28549,7 @@ int emit_ie_poly(Compiler *c, int id, Buf *b) {
 static int g_hv_read_node = -1;
 
 int call_args_need_spread(const NodeTable *nt, const int *argv, int argc) {
-  for (int k = 0; k < argc; k++)
-    if (nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "SplatNode")) return 1;
+  if (nt_argv_has_splat(nt, argv, argc)) return 1;
   return argc > 0 && kwh_only_spreads(nt, argv[argc - 1]);
 }
 
@@ -28616,7 +28561,7 @@ int call_args_need_spread(const NodeTable *nt, const int *argv, int argc) {
    all the same), which turns a proc's auto-splat off as CRuby's does. */
 int emit_spread_args_kw(Compiler *c, const int *argv, int argc, char *kwpos, size_t kwsz) {
   const NodeTable *nt = c->nt;
-  int last_kwh = argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode;
+  int last_kwh = nt_argv_kwh(nt, argv, argc) >= 0;
   if (last_kwh && kwh_only_spreads(nt, argv[argc - 1])) {
     int tk = ++g_tmp;
     emit_indent(g_pre, g_indent);
@@ -28731,14 +28676,7 @@ void gets_sep_arg_texts(Compiler *c, const int *argv, int argc, int strict, Buf 
    it sees one array or hash node, and dropped the separator, the limit and
    `chomp:` alike. */
 int io_line_args_spread(const NodeTable *nt, const int *argv, int argc) {
-  for (int k = 0; k < argc; k++) {
-    if (nt_kind(nt, argv[k]) == NK_SplatNode) return 1;
-    if (nt_kind(nt, argv[k]) != NK_KeywordHashNode) continue;
-    int en = 0; const int *els = nt_arr(nt, argv[k], "elements", &en);
-    for (int e = 0; e < en; e++)
-      if (nt_kind(nt, els[e]) == NK_AssocSplatNode) return 1;
-  }
-  return 0;
+  return nt_argv_has_splat(nt, argv, argc) || nt_argv_has_kwsplat(nt, argv, argc);
 }
 
 void emit_gets_sep_args(Compiler *c, const int *argv, int argc, Buf *b) {
@@ -28939,9 +28877,7 @@ void emit_method_call_block(Compiler *c, int id, Scope *tm, int lead_comma, Buf 
    keywords or a `**`, or a block. */
 int bm_call_needs_layout(const NodeTable *nt, int id, const int *argv, int argc) {
   if (nt_ref(nt, id, "block") >= 0) return 1;
-  for (int k = 0; k < argc; k++)
-    if (nt_kind(nt, argv[k]) == NK_SplatNode || nt_kind(nt, argv[k]) == NK_KeywordHashNode) return 1;
-  return 0;
+  return nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_KEYWORDS);
 }
 
 /* `m.call(...)` on a Method whose target is known only at run time, with
@@ -30033,9 +29969,7 @@ int file_block_param_poly(Compiler *c, int id, const char *pname) {
 /* an argument of `raise` that is one value: not a splat, keywords, a block
    or a `...` forward, any of which may add nothing */
 int raise_plain_arg(const NodeTable *nt, int node) {
-  const char *t = nt_type(nt, node);
-  return !(t && (sp_streq(t, "SplatNode") || sp_streq(t, "KeywordHashNode") ||
-                 sp_streq(t, "BlockArgumentNode") || nt_kind(nt, node) == NK_ForwardingArgumentsNode));
+  return !nt_arg_shape(nt_kind(nt, node));
 }
 
 /* A Fiber storage key. The storage is keyed by Symbol, and CRuby takes a
@@ -30129,8 +30063,8 @@ static int hands_block_container(Compiler *c, const Scope *m, int id, int strict
   int recv = nt_kind(nt, id) == NK_CallNode ? nt_ref(nt, id, "receiver") : -1;
   const char *nm = recv >= 0 ? nt_str(nt, id, "name") : NULL;
   if (nt_kind(nt, id) == NK_CallNode && m->blk_param) {
-    int ba = nt_ref(nt, id, "block");
-    if (ba >= 0 && nt_kind(nt, ba) == NK_BlockArgumentNode) {
+    int ba = nt_call_block_arg(nt, id);
+    if (ba >= 0) {
       int e = nt_ref(nt, ba, "expression");
       if (e < 0 || (blk && nt_kind(nt, e) == NK_LocalVariableReadNode &&
                     sp_streq(nt_str(nt, e, "name"), blk))) return 1;
@@ -30549,7 +30483,7 @@ static int emit_reopen_call_first(Compiler *c, int id, int recv, TyKind rt, cons
                                    nt_kind(c->nt, unwrap_parens(c, recv)) == NK_GlobalVariableReadNode);
   if (rt == TY_STRING && !reread) {
     if (repr_self_handle(c, mi)) return 0;
-    int given = argc - (argc > 0 && nt_kind(c->nt, argv[argc - 1]) == NK_KeywordHashNode);
+    int given = argc - (nt_argv_kwh(c->nt, argv, argc) >= 0);
     for (int i = 0; i < argc; i++) if (!sn_arg_runs_nothing(c, argv[i])) return 0;
     for (int i = 0; m->pdefault && i < m->nparams; i++) {
       int d = m->pdefault[i];

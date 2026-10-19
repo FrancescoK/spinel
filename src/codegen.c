@@ -13947,7 +13947,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      arity, which cannot say that a caller left an argument out: an optional
      or rest parameter would bind a zero where its default or an empty Array
      belongs. */
-  if (argc == 1 && nt_kind(c->nt, argv[0]) == NK_ForwardingArgumentsNode) {
+  if (nt_argv_only_forwarding(c->nt, argv, argc)) {
     for (int i = 0; i < m->nparams; i++) {
       if (i == m->kwrest_idx || callee_param_is_declared_kwarg(c, m, m->pnames[i])) continue;
       if (i == m->rest_idx || i >= m->nrequired || (m->pdefault && m->pdefault[i] >= 0)) {
@@ -13960,7 +13960,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   InlDflt sv_dflt = inl_dflt_enter(m, g_nren, NULL, NULL, -1);
   if (!is_forwarding) {
     int pargc = argc;
-    if (argc > 0 && nt_kind(c->nt, argv[argc - 1]) == NK_KeywordHashNode) pargc = argc - 1;
+    if (nt_argv_kwh(c->nt, argv, argc) >= 0) pargc = argc - 1;
     ArgLayout L;
     arg_layout(c, m, argv, pargc, pargc < argc ? argv[pargc] : -1, 1, &L);
     emit_inline_bind_params(c, m, args, argv, argc, &L, 0, tag, saved_nren, din, b);
@@ -14123,7 +14123,7 @@ static void emit_zsuper_arg(Compiler *c, Scope *s, LocalVar *dst, TyKind dt, con
    a `**h` supplied no member at all. */
 static void emit_struct_super_spread(Compiler *c, ClassInfo *cls, const int *argv, int argc, Buf *b) {
   const NodeTable *nt = c->nt;
-  int kwh = argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+  int kwh = nt_argv_kwh(nt, argv, argc);
   int npos = kwh >= 0 ? argc - 1 : argc;
   int ta = ++g_tmp, tl = ++g_tmp, th = ++g_tmp, tk = ++g_tmp;
   buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);

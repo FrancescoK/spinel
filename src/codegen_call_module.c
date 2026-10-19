@@ -435,8 +435,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     if (is_open_constructor(name)) {
       int block = nt_ref(nt, id, "block");
       int kw_mode = -1;
-      if (argc >= 2 && nt_type(nt, argv[argc - 1]) &&
-          sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode"))
+      if (argc >= 2 && nt_argv_kwh(nt, argv, argc) >= 0)
         kw_mode = struct_kwarg_value(c, argv[argc - 1], "mode");
       /* the mode is the `mode:` keyword's value or the second positional;
          an Integer flag word, or an object answering #to_int (CRuby asks it
@@ -447,8 +446,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
                      (comp_ntype(c, mnode) == TY_INT ||
                       obj_conv_method(c, comp_ntype(c, mnode), "to_int", TY_INT, NULL) >= 0);
       int perm = -1;
-      if (argc >= 1 && nt_type(nt, argv[argc - 1]) &&
-          sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode"))
+      if (nt_argv_kwh(nt, argv, argc) >= 0)
         perm = struct_kwarg_value(c, argv[argc - 1], "perm");
       if (perm < 0 && kw_mode < 0 && argc >= 3 &&
           !(nt_type(nt, argv[2]) && sp_streq(nt_type(nt, argv[2]), "KeywordHashNode")))
@@ -764,8 +762,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     /* Time.at(x, *rest) and any other spread: every argument into one list,
        which the runtime reads as Time.at's arguments, as for a lone splat */
     if (sp_streq(name, "at") && argc >= 2) {
-      int any_splat = 0;
-      for (int k = 0; k < argc; k++) if (nt_kind(nt, argv[k]) == NK_SplatNode) any_splat = 1;
+      int any_splat = nt_argv_has_splat(nt, argv, argc);
       if (any_splat) {
         buf_puts(b, "({ ");
         int tf = emit_bm_flat_args(c, argv, argc, b);
@@ -833,7 +830,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
        then re-read it in the zone the keyword names -- a name, an Integer
        offset or an offset string, whatever their types (#3696, #3698). */
     if (sp_streq(name, "at") && argc >= 2 &&
-        nt_type(nt, argv[argc - 1]) && sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode") &&
+        nt_argv_kwh(nt, argv, argc) >= 0 &&
         struct_kwarg_value(c, argv[argc - 1], "in") >= 0) {
       int inv = struct_kwarg_value(c, argv[argc - 1], "in");
       int ts = ++g_tmp;
@@ -1066,10 +1063,8 @@ int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
        NotImplementedError, the count is checked, and the flags are checked
        noclose first */
     if (sp_streq(name, "daemon")) {
-      for (int k = 0; k < argc; k++)
-        if (nt_kind(nt, argv[k]) == NK_SplatNode || nt_kind(nt, argv[k]) == NK_KeywordHashNode ||
-            nt_kind(nt, argv[k]) == NK_BlockArgumentNode)
-          unsupported(c, id, "Process.daemon with a splat, keyword or block argument");
+      if (nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK))
+        unsupported(c, id, "Process.daemon with a splat, keyword or block argument");
       int t = ++g_tmp;
       buf_puts(b, "({ ");
       for (int k = 0; k < 2 || k < argc; k++) {
@@ -1569,8 +1564,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
          descriptor form -- it is how CRuby spells "wrap this fd", and the way
          to reach a File::Stat from one. */
       if ((sp_streq(name, "for_fd") || sp_streq(name, "new")) && argc >= 1) {
-        const char *lty = nt_type(nt, argv[argc - 1]);
-        int kwh = (lty && sp_streq(lty, "KeywordHashNode")) ? argv[argc - 1] : -1;
+        int kwh = nt_argv_kwh(nt, argv, argc);
         int ac = kwh >= 0 ? kwh_lookup(nt, kwh, "autoclose") : -1;
         buf_puts(b, "sp_io_for_fd(");
         emit_int_expr(c, argv[0], b);
@@ -1751,8 +1745,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
         return 1;
       }
       int n_args = extra - (last_is_opts ? 1 : 0);
-      int has_splat = 0;
-      for (int k = 0; k <= n_args; k++) has_splat |= nt_kind(nt, argv[k]) == NK_SplatNode;
+      int has_splat = nt_argv_has_splat(nt, argv, n_args + 1);
       if (has_splat) {
         /* `spawn(*args)`: the command and its arguments are spread at run
            time, then split, as the literal list is (#7192) */

@@ -820,7 +820,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
        answer different kinds, on a receiver not dispatched by class: the
        call is boxed (infer_call's instance_exec arm), so is this site's value */
     int ie_fwd_boxed = 0;
-    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode && call_forwards_own_block(c, id) &&
+    if (nt_call_has_block_arg(nt, id) && call_forwards_own_block(c, id) &&
         g_ie_poly_node != id && (recv < 0 || comp_ntype(c, recv) != TY_POLY)) {
       Scope *fsc = comp_scope_of(c, id);
       int fmi = fsc ? (int)(fsc - c->scopes) : -1;
@@ -829,7 +829,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     /* `instance_exec(args, &b)` forwarding the enclosing (now-inlined) method's
        block param: the real block is the literal active at the inline splice,
        so resolve the BlockArgumentNode to it (as `inner(&block)` does). */
-    if (blk >= 0 && nt_type(nt, blk) && sp_streq(nt_type(nt, blk), "BlockArgumentNode")) {
+    if (nt_call_has_block_arg(nt, id)) {
       if (emit_ie_proc(c, id, recv, ie_self_cls, blk, ie_direct ? 0 : ie_tramp, b)) return 1;
       if (ie_direct && recv >= 0 && nt_int(nt, id, "ie_usite", 0) && emit_ie_untraced(c, id, recv, blk, b)) return 1;
       int is_exec = sp_streq(name, "instance_exec");
