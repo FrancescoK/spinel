@@ -32,6 +32,7 @@
 #include <signal.h>
 #include <sys/un.h>   /* UNIXSocket / UNIXServer */
 #include <stddef.h>   /* offsetof (sockaddr_un packed length) */
+#include <time.h>     /* clock_gettime: recv_some_timeout's deadline */
 #include "sp_sched.h"  /* sp_native_enter / sp_native_leave */
 
 #define SP_NET_BUFSIZE 65536
@@ -824,6 +825,78 @@ const char *sp_net_recv_some(int fd, int maxlen) {
     sp_ffi_bin_len = (int)n;            /* exact byte count for the :binstr path */
     sp_net_recv_buf[n] = '\0';
     return sp_net_recv_buf;
+}
+
+/* A deadline for sp_net_recv_some_timeout, on a clock that does not jump. */
+static double sp_net_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+#ifdef SP_THREADS
+int sp_sched_wait_io_timeout(int fd, short events, double timeout_s);
+#endif
+
+/* sp_net_wait_io until `deadline` (an sp_net_now() value). Returns 1 to retry
+   the syscall, 0 when the deadline passed first, -1 to give up (term
+   requested or poll error). Rechecks the clock after every wake, so an early
+   return from the wait only waits again for what is left. */
+static int sp_net_wait_io_until(int fd, short events, double deadline) {
+    for (;;) {
+        if (sp_net_term_flag) return -1;
+        double left = deadline - sp_net_now();
+        if (left <= 0) return 0;
+#ifdef SP_THREADS
+        /* Park with the deadline, as sp_net_wait_io parks without one. */
+        if (sp_sched_wait_io_timeout(fd, events, left)) return 1;
+#else
+        /* 1s slices, so a shutdown still breaks the wait as in sp_net_wait_io. */
+        int ms = left >= 1.0 ? 1000 : (int)(left * 1000.0) + 1;
+        struct pollfd pf;
+        pf.fd = fd; pf.events = events; pf.revents = 0;
+        int pr = SP_SIG_BLOCKING(poll(&pf, 1, ms));
+        if (pr > 0) return 1;
+        if (pr < 0 && errno != EINTR) return -1;
+#endif
+    }
+}
+
+/* Per-worker, like the buffer it describes: a green thread is pinned to its
+ * worker, so it reads the flag its own call set. */
+static SP_TLS int sp_net_recv_timed_out;
+const char *sp_net_recv_some_timeout(int fd, int maxlen, double timeout_s) {
+    sp_net_recv_timed_out = 0;
+    if (timeout_s < 0) return sp_net_recv_some(fd, maxlen);
+    if (!sp_net_recv_buf && !(sp_net_recv_buf = (char *)malloc(SP_NET_BUFSIZE)))
+        return "";
+    if (maxlen <= 0 || maxlen >= SP_NET_BUFSIZE) maxlen = SP_NET_BUFSIZE - 1;
+    double deadline = sp_net_now() + timeout_s;
+    ssize_t n;
+    for (;;) {
+        if (sp_net_term_flag) { n = 0; break; }
+        /* MSG_DONTWAIT: the deadline holds on a blocking fd too, where a
+           plain recv would wait in the kernel with no way out. */
+        n = SP_SIG_BLOCKING(recv(fd, sp_net_recv_buf, (size_t)maxlen, MSG_DONTWAIT));
+        if (n >= 0) break;
+        if (errno == EINTR) continue;
+        n = 0;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            int w = sp_net_wait_io_until(fd, POLLIN, deadline);
+            if (w > 0) continue;
+            if (w == 0) sp_net_recv_timed_out = 1;
+        }
+        break;
+    }
+    sp_ffi_bin_len = (int)n;
+    sp_net_recv_buf[n] = '\0';
+    return sp_net_recv_buf;
+}
+
+int sp_net_take_recv_timeout(void) {
+    int t = sp_net_recv_timed_out;
+    sp_net_recv_timed_out = 0;
+    return t;
 }
 
 static SP_TLS char *sp_net_recv_all_buf;   /* per-worker, see sp_net_recv_buf */
