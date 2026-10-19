@@ -66,9 +66,9 @@ sp_RbVal sp_IOBuffer_get_value(sp_IOBuffer *b, sp_RbVal type, sp_int off);
 sp_int sp_IOBuffer_set_value(sp_IOBuffer *b, sp_RbVal type, sp_int off, sp_RbVal val);
 
 /* typed fast paths, called by the compiler's literal-symbol lowering */
-sp_int sp_IOBuffer_get_i(sp_IOBuffer *b, sp_int ty, sp_int off);
+SP_COLD sp_int sp_IOBuffer_get_i(sp_IOBuffer *b, sp_int ty, sp_int off);
 sp_RbVal sp_IOBuffer_get_x(sp_IOBuffer *b, sp_int ty, sp_int off);
-double sp_IOBuffer_get_f(sp_IOBuffer *b, sp_int ty, sp_int off);
+SP_COLD double sp_IOBuffer_get_f(sp_IOBuffer *b, sp_int ty, sp_int off);
 
 /* The same reads inline, for the generated program (which includes this
    header when it uses IO::Buffer). `ty` is a literal at every call site, so
@@ -104,21 +104,49 @@ static inline uint64_t sp_iob_load(const uint8_t *p, int width, int be) {
   else    for (int i = 0; i < width; i++) v |= (uint64_t)p[i] << (8 * i);
   return v;
 }
-static inline sp_int sp_IOBuffer_load_i(sp_IOBuffer *b, sp_int ty, sp_int off) {
+/* the value at p, its type a literal */
+static inline sp_int sp_iob_decode_i(const uint8_t *p, sp_int ty) {
   int w = sp_iob_width(ty);
-  const uint8_t *p = sp_iob_inline_ptr(b, off, w);
-  if (SP_UNLIKELY(!p)) return sp_IOBuffer_get_i(b, ty, off);
   uint64_t raw = sp_iob_load(p, w, sp_iob_big_endian(ty));
   if (ty & 1) { int shift = 64 - 8 * w; return (sp_int)((int64_t)(raw << shift) >> shift); }
   return (sp_int)raw;
 }
-static inline double sp_IOBuffer_load_f(sp_IOBuffer *b, sp_int ty, sp_int off) {
+static inline double sp_iob_decode_f(const uint8_t *p, sp_int ty) {
   int w = sp_iob_width(ty);
-  const uint8_t *p = sp_iob_inline_ptr(b, off, w);
-  if (SP_UNLIKELY(!p)) return sp_IOBuffer_get_f(b, ty, off);
   uint64_t raw = sp_iob_load(p, w, sp_iob_big_endian(ty));
   if (w == 4) { union { uint32_t u; float f; } u; u.u = (uint32_t)raw; return u.f; }
   union { uint64_t u; double f; } u; u.u = raw; return u.f;
+}
+static inline sp_int sp_IOBuffer_load_i(sp_IOBuffer *b, sp_int ty, sp_int off) {
+  const uint8_t *p = sp_iob_inline_ptr(b, off, sp_iob_width(ty));
+  if (SP_UNLIKELY(!p)) return sp_IOBuffer_get_i(b, ty, off);
+  return sp_iob_decode_i(p, ty);
+}
+static inline double sp_IOBuffer_load_f(sp_IOBuffer *b, sp_int ty, sp_int off) {
+  const uint8_t *p = sp_iob_inline_ptr(b, off, sp_iob_width(ty));
+  if (SP_UNLIKELY(!p)) return sp_IOBuffer_get_f(b, ty, off);
+  return sp_iob_decode_f(p, ty);
+}
+/* IO::Buffer#size, inline for the same program (a slice's is its own) */
+static inline sp_int sp_IOBuffer_size_inline(sp_IOBuffer *b) { return (sp_int)b->size; }
+/* A loop's cached view of a buffer (the header cache, src/codegen_stmt.c):
+   the bytes a read of b sees and how many -- an owned buffer's, or a valid
+   slice's within its source. NULL and 0 for nil, a freed or transferred
+   buffer and an invalidated slice (iob_slice_invalid), every read of which
+   takes sp_IOBuffer_get_i / _get_f and raises as it does uncached. */
+static inline const uint8_t *sp_iob_view(sp_IOBuffer *b, sp_int *len) {
+  *len = 0;
+  if (!b) return NULL;
+  if (b->data) { *len = b->size; return b->data; }
+  if (b->source && b->source->data && b->off <= b->source->size - b->size) {
+    *len = b->size;
+    return b->source->data + b->off;
+  }
+  return NULL;
+}
+/* Does a value of type ty at off lie within a view of len bytes? */
+static inline int sp_iob_fits(sp_int len, sp_int off, sp_int ty) {
+  return (uint64_t)off < (uint64_t)len && (uint64_t)len - (uint64_t)off >= (uint64_t)sp_iob_width(ty);
 }
 sp_int sp_IOBuffer_set_i(sp_IOBuffer *b, sp_int ty, sp_int off, sp_int v);
 sp_int sp_IOBuffer_set_f(sp_IOBuffer *b, sp_int ty, sp_int off, double v);

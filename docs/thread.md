@@ -124,11 +124,15 @@ These are deliberate consequences of real parallelism, listed in
     see one field from one write and another field from another: a `Range`
     ivar written concurrently reads back with `first` and `last` from
     different assignments.
-  - **Containers can crash the process.** `Array` and `Hash` have no such
-    guarantee. Concurrent `<<` on one Array reaches the growth path, where a
-    reallocation races with another thread's element store, and the observed
-    outcomes are silently dropped elements, a heap-corruption abort, and
-    SIGSEGV. A shared container needs a `Mutex`, or a `Queue`, which is
+  - **Containers can crash the process.** `Array`, `Hash` and `IO::Buffer`
+    have no such guarantee. Concurrent `<<` on one Array reaches the growth
+    path, where a reallocation races with another thread's element store, and
+    the observed outcomes are silently dropped elements, a heap-corruption
+    abort, and SIGSEGV. An `IO::Buffer` freed, resized or transferred while
+    another thread reads it is the same race: the reader can be left holding
+    memory already given back. A loop may keep an array's or a buffer's data
+    across its iterations and see another thread's change only at its next
+    safepoint. A shared container needs a `Mutex`, or a `Queue`, which is
     itself thread-safe.
 - **A green thread's C stack is fixed.** Every thread, Fiber and generator
   Enumerator body runs on its own C stack, 256 KB by default (half of
