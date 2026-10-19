@@ -6,6 +6,7 @@
 #include "holder.h"
 #include "share.h"
 #include "builtin_names.h"
+#include "value_pos.h"
 #include <stdint.h>
 #include <limits.h>
 
@@ -9086,30 +9087,21 @@ static int call_may_reach_user_method(Compiler *c, int w, const char *wn) {
   return 0;
 }
 
+/* The value arms value_arm_is follows and yu_collect lists: parentheses,
+   statement lists, `if`, `unless` and `else`, and both operands of `||` and
+   `&&`. */
+enum { YU_ARMS = VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_LOGIC };
+
 /* Whether `v` answers the value of `node` itself: `v` is `node`, or a
    parenthesized, conditional, `&&`/`||` or statement-list expression one of
    whose value arms is. */
+static int value_arm_node(const VpLeaf *lf, void *ud) {
+  return lf->kind == VPK_EXPR && lf->node == *(const int *)ud;
+}
 static int value_arm_is(const NodeTable *nt, int v, int node) {
   if (v < 0) return 0;
   if (v == node) return 1;
-  switch (nt_kind(nt, v)) {
-  case NK_StatementsNode: {
-    int n = 0; const int *s = nt_arr(nt, v, "body", &n);
-    return n > 0 && value_arm_is(nt, s[n - 1], node);
-  }
-  case NK_ParenthesesNode: return value_arm_is(nt, nt_ref(nt, v, "body"), node);
-  case NK_ElseNode: return value_arm_is(nt, nt_ref(nt, v, "statements"), node);
-  case NK_IfNode:
-    return value_arm_is(nt, nt_ref(nt, v, "statements"), node) ||
-           value_arm_is(nt, nt_ref(nt, v, "subsequent"), node);
-  case NK_UnlessNode:
-    return value_arm_is(nt, nt_ref(nt, v, "statements"), node) ||
-           value_arm_is(nt, nt_ref(nt, v, "else_clause"), node);
-  case NK_AndNode: case NK_OrNode:
-    return value_arm_is(nt, nt_ref(nt, v, "left"), node) ||
-           value_arm_is(nt, nt_ref(nt, v, "right"), node);
-  default: return 0;
-  }
+  return for_each_value_position(nt, v, YU_ARMS, value_arm_node, &node);
 }
 
 /* The places a yield's value can settle a type from the first call site
