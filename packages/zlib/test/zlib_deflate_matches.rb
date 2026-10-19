@@ -150,3 +150,46 @@ again = ""
   again += t + "!"
 end
 p tight?(s + between + again, unmatched + between + "!" * 12, (16 + 28) * 12)
+
+# Every code the writer has goes out at least once: the 256 bytes as
+# literals, each match length from 3 to 258, and each distance code from 17
+# up at both ends of its range (the overlapping copies above take 1 to 17).
+# Inflate builds its codes from their lengths alone, so a code written wrong
+# comes back as some other byte or length. A far copy is eight bytes from
+# 192 up, with the count above between its two copies; past 32,506 bytes
+# zlib has no match to give, so there only the round trip is common.
+all = ""
+256.times { |b| all += b.chr }
+p tight?(all, all, 0)
+
+p (3..258).all? { |len|
+  r = noise(len, 7)
+  tight?("." + r + "#" + r + "!", "." + r + "#!", LONGEST_PAIR)
+}
+
+def far_copy?(dist, seed)
+  t = ""
+  noise(8, seed).each_byte { |b| t += (b | 192).chr }
+  gap = counting(0, dist / 3)[0, dist - 8]
+  s = "." + t + gap + t + "!"
+  if dist > 32_506
+    [1, 6, 9].all? { |level| round_trip?(s, level) }
+  else
+    tight?(s, "." + t + gap + "!", LONGEST_PAIR)
+  end
+end
+
+bounds = [17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
+          2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577, 32769]
+ends = []
+(0...bounds.length - 1).each do |k|
+  ends << bounds[k]
+  ends << bounds[k + 1] - 1
+end
+p ends.all? { |dist| far_copy?(dist, dist % 251 + 1) }
+
+# A length of 258 has a code of its own, 8 bits; 227 with 31 in its five
+# extra bits would also decode, in 13. A run of one byte, a literal and
+# forty copies of 258 at distance 1, 13 bits each with the distance. Not at
+# level 1: there zlib does not chain the positions inside a match.
+p tight_at?([6, 9], "a" * 10_321, "a", 40 * 13)

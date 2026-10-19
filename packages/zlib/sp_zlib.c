@@ -800,52 +800,132 @@ const char *sp_zlib_inflate(const char *src, sp_int window_bits) {SP_GC_ROOT_STR
 /* --------------------------------------------------------------- deflate */
 
 /* Bit writer, low-order first, matching the reader above. */
-typedef struct { sp_zlib_out *o; uint32_t buf; int cnt; } sp_zlib_bw;
+typedef struct { sp_zlib_out *o; uint64_t buf; int cnt; } sp_zlib_bw;
 
-static void sp_zlib_bw_put(sp_zlib_bw *w, unsigned value, int nbits) {
-  w->buf |= (uint32_t)value << w->cnt;
+/* Appends value as nbits bits, 32 at most; value has no bit set above
+   them. Fewer than 32 bits wait in the buffer between calls, so a whole
+   match fits in one call, and whole bytes leave four at a time behind one
+   reserve. */
+static void sp_zlib_bw_put(sp_zlib_bw *w, uint64_t value, int nbits) {
+  w->buf |= value << w->cnt;
   w->cnt += nbits;
-  while (w->cnt >= 8) {
+  if (w->cnt >= 32) {
+    sp_zlib_out *o = w->o;
+    if (sp_zlib_out_reserve(o, 4)) {
+      o->p[o->len]     = (unsigned char)w->buf;
+      o->p[o->len + 1] = (unsigned char)(w->buf >> 8);
+      o->p[o->len + 2] = (unsigned char)(w->buf >> 16);
+      o->p[o->len + 3] = (unsigned char)(w->buf >> 24);
+      o->len += 4;
+    }
+    w->buf >>= 32;
+    w->cnt -= 32;
+  }
+}
+
+/* Writes out the bits still waiting, the last byte padded with zeros. */
+static void sp_zlib_bw_flush(sp_zlib_bw *w) {
+  while (w->cnt > 0) {
     sp_zlib_out_byte(w->o, (unsigned char)(w->buf & 0xff));
     w->buf >>= 8;
     w->cnt -= 8;
   }
+  w->buf = 0; w->cnt = 0;
 }
 
-/* Huffman codes go out most-significant bit first, which is the one place
-   DEFLATE reverses its own bit order. */
-static void sp_zlib_bw_code(sp_zlib_bw *w, unsigned code, int nbits) {
-  unsigned rev = 0;
-  for (int i = 0; i < nbits; i++) { rev = (rev << 1) | ((code >> i) & 1); }
-  sp_zlib_bw_put(w, rev, nbits);
-}
+/* The fixed literal/length code of RFC 1951 3.2.6, one entry per symbol:
+   the length of the code in the top four bits, and below them the code
+   with its bits in reverse order, because Huffman codes go out
+   most-significant bit first, the one place DEFLATE reverses its own bit
+   order.
+     symbols   0-143: 8 bits, codes 0x30-0xbf
+     symbols 144-255: 9 bits, codes 0x190-0x1ff
+     symbols 256-279: 7 bits, codes 0x00-0x17
+     symbols 280-287: 8 bits, codes 0xc0-0xc7
+   Constants, not filled in on first use, for the reason the CRC rows give. */
+static const unsigned short sp_zlib_fixed_lit_code[288] = {
+  0x800c, 0x808c, 0x804c, 0x80cc, 0x802c, 0x80ac, 0x806c, 0x80ec, 0x801c, 0x809c,
+  0x805c, 0x80dc, 0x803c, 0x80bc, 0x807c, 0x80fc, 0x8002, 0x8082, 0x8042, 0x80c2,
+  0x8022, 0x80a2, 0x8062, 0x80e2, 0x8012, 0x8092, 0x8052, 0x80d2, 0x8032, 0x80b2,
+  0x8072, 0x80f2, 0x800a, 0x808a, 0x804a, 0x80ca, 0x802a, 0x80aa, 0x806a, 0x80ea,
+  0x801a, 0x809a, 0x805a, 0x80da, 0x803a, 0x80ba, 0x807a, 0x80fa, 0x8006, 0x8086,
+  0x8046, 0x80c6, 0x8026, 0x80a6, 0x8066, 0x80e6, 0x8016, 0x8096, 0x8056, 0x80d6,
+  0x8036, 0x80b6, 0x8076, 0x80f6, 0x800e, 0x808e, 0x804e, 0x80ce, 0x802e, 0x80ae,
+  0x806e, 0x80ee, 0x801e, 0x809e, 0x805e, 0x80de, 0x803e, 0x80be, 0x807e, 0x80fe,
+  0x8001, 0x8081, 0x8041, 0x80c1, 0x8021, 0x80a1, 0x8061, 0x80e1, 0x8011, 0x8091,
+  0x8051, 0x80d1, 0x8031, 0x80b1, 0x8071, 0x80f1, 0x8009, 0x8089, 0x8049, 0x80c9,
+  0x8029, 0x80a9, 0x8069, 0x80e9, 0x8019, 0x8099, 0x8059, 0x80d9, 0x8039, 0x80b9,
+  0x8079, 0x80f9, 0x8005, 0x8085, 0x8045, 0x80c5, 0x8025, 0x80a5, 0x8065, 0x80e5,
+  0x8015, 0x8095, 0x8055, 0x80d5, 0x8035, 0x80b5, 0x8075, 0x80f5, 0x800d, 0x808d,
+  0x804d, 0x80cd, 0x802d, 0x80ad, 0x806d, 0x80ed, 0x801d, 0x809d, 0x805d, 0x80dd,
+  0x803d, 0x80bd, 0x807d, 0x80fd, 0x9013, 0x9113, 0x9093, 0x9193, 0x9053, 0x9153,
+  0x90d3, 0x91d3, 0x9033, 0x9133, 0x90b3, 0x91b3, 0x9073, 0x9173, 0x90f3, 0x91f3,
+  0x900b, 0x910b, 0x908b, 0x918b, 0x904b, 0x914b, 0x90cb, 0x91cb, 0x902b, 0x912b,
+  0x90ab, 0x91ab, 0x906b, 0x916b, 0x90eb, 0x91eb, 0x901b, 0x911b, 0x909b, 0x919b,
+  0x905b, 0x915b, 0x90db, 0x91db, 0x903b, 0x913b, 0x90bb, 0x91bb, 0x907b, 0x917b,
+  0x90fb, 0x91fb, 0x9007, 0x9107, 0x9087, 0x9187, 0x9047, 0x9147, 0x90c7, 0x91c7,
+  0x9027, 0x9127, 0x90a7, 0x91a7, 0x9067, 0x9167, 0x90e7, 0x91e7, 0x9017, 0x9117,
+  0x9097, 0x9197, 0x9057, 0x9157, 0x90d7, 0x91d7, 0x9037, 0x9137, 0x90b7, 0x91b7,
+  0x9077, 0x9177, 0x90f7, 0x91f7, 0x900f, 0x910f, 0x908f, 0x918f, 0x904f, 0x914f,
+  0x90cf, 0x91cf, 0x902f, 0x912f, 0x90af, 0x91af, 0x906f, 0x916f, 0x90ef, 0x91ef,
+  0x901f, 0x911f, 0x909f, 0x919f, 0x905f, 0x915f, 0x90df, 0x91df, 0x903f, 0x913f,
+  0x90bf, 0x91bf, 0x907f, 0x917f, 0x90ff, 0x91ff, 0x7000, 0x7040, 0x7020, 0x7060,
+  0x7010, 0x7050, 0x7030, 0x7070, 0x7008, 0x7048, 0x7028, 0x7068, 0x7018, 0x7058,
+  0x7038, 0x7078, 0x7004, 0x7044, 0x7024, 0x7064, 0x7014, 0x7054, 0x7034, 0x7074,
+  0x8003, 0x8083, 0x8043, 0x80c3, 0x8023, 0x80a3, 0x8063, 0x80e3
+};
 
-static void sp_zlib_bw_flush(sp_zlib_bw *w) {
-  if (w->cnt > 0) { sp_zlib_out_byte(w->o, (unsigned char)(w->buf & 0xff)); w->buf = 0; w->cnt = 0; }
-}
+/* The fixed distance code: each of the 30 symbols is its own number in
+   five bits, here with the bits reversed. */
+static const unsigned char sp_zlib_fixed_dist_code[30] = {
+   0, 16,  8, 24,  4, 20, 12, 28,  2, 18, 10, 26,  6, 22, 14,
+  30,  1, 17,  9, 25,  5, 21, 13, 29,  3, 19, 11, 27,  7, 23
+};
 
-/* The fixed literal/length alphabet of RFC 1951 3.2.6. */
-static void sp_zlib_fixed_lit(unsigned sym, unsigned *code, int *nbits) {
-  if (sym < 144)      { *code = 0x30 + sym;        *nbits = 8; }
-  else if (sym < 256) { *code = 0x190 + sym - 144; *nbits = 9; }
-  else if (sym < 280) { *code = sym - 256;         *nbits = 7; }
-  else                { *code = 0xC0 + sym - 280;  *nbits = 8; }
-}
-
+/* A literal byte, or the end of the block, in the fixed code. */
 static void sp_zlib_emit_lit(sp_zlib_bw *w, unsigned sym) {
-  unsigned code; int nbits;
-  sp_zlib_fixed_lit(sym, &code, &nbits);
-  sp_zlib_bw_code(w, code, nbits);
+  unsigned c = sp_zlib_fixed_lit_code[sym];
+  sp_zlib_bw_put(w, c & 0xfff, (int)(c >> 12));
 }
 
+/* The length symbol (0-28) of a match length of 3-258. Lengths 3-10 have
+   a symbol each; after them every four symbols cover twice the lengths of
+   the four before, so the top bit of len - 3 picks the group and the two
+   bits under it the symbol. 258 has a symbol of its own. */
 static int sp_zlib_len_sym(size_t len) {
-  for (int i = 28; i >= 0; i--) if (len >= SP_Z_LEN_BASE[i]) return i;
-  return 0;
+  uint64_t x = (uint64_t)len - 3;
+  if (x < 8) return (int)x;
+  if (len == 258) return 28;
+  int top = 63 - SP_CLZ64(x);
+  return 4 * (top - 1) + (int)((x >> (top - 2)) & 3);
 }
 
+/* The distance symbol (0-29) of a distance of 1-32768. Distances 1-4 have
+   a symbol each; after them every two symbols cover twice the distances of
+   the two before, so the top bit of d - 1 picks the pair and the bit under
+   it the symbol. */
 static int sp_zlib_dist_sym(size_t d) {
-  for (int i = 29; i >= 0; i--) if (d >= SP_Z_DIST_BASE[i]) return i;
-  return 0;
+  uint64_t x = (uint64_t)d - 1;
+  if (x < 4) return (int)x;
+  int top = 63 - SP_CLZ64(x);
+  return 2 * top + (int)((x >> (top - 1)) & 1);
+}
+
+/* One match as one call to the writer: the length code, its extra bits,
+   the distance code and its extra bits, 31 bits at most. A symbol without
+   extra bits has a base equal to the value, so its extra part is zero. */
+static void sp_zlib_emit_match(sp_zlib_bw *w, size_t len, size_t dist) {
+  int ls = sp_zlib_len_sym(len), ds = sp_zlib_dist_sym(dist);
+  unsigned c = sp_zlib_fixed_lit_code[257 + ls];
+  int nbits = (int)(c >> 12);
+  uint64_t bits = c & 0xfff;
+  bits |= (uint64_t)(len - SP_Z_LEN_BASE[ls]) << nbits;
+  nbits += SP_Z_LEN_EXTRA[ls];
+  bits |= (uint64_t)sp_zlib_fixed_dist_code[ds] << nbits;
+  nbits += 5;
+  bits |= (uint64_t)(dist - SP_Z_DIST_BASE[ds]) << nbits;
+  nbits += SP_Z_DIST_EXTRA[ds];
+  sp_zlib_bw_put(w, bits, nbits);
 }
 
 #define SP_Z_HASH_BITS 15
@@ -921,19 +1001,8 @@ static SP_INLINE void sp_zlib_deflate_body(sp_zlib_bw *w, const unsigned char *p
     }
 
     size_t advance = best_len ? best_len : 1;
-    if (best_len) {
-      int ls = sp_zlib_len_sym(best_len);
-      sp_zlib_emit_lit(w, (unsigned)(257 + ls));
-      if (SP_Z_LEN_EXTRA[ls])
-        sp_zlib_bw_put(w, (unsigned)(best_len - SP_Z_LEN_BASE[ls]), SP_Z_LEN_EXTRA[ls]);
-      int ds = sp_zlib_dist_sym(best_dist);
-      sp_zlib_bw_code(w, (unsigned)ds, 5);
-      if (SP_Z_DIST_EXTRA[ds])
-        sp_zlib_bw_put(w, (unsigned)(best_dist - SP_Z_DIST_BASE[ds]), SP_Z_DIST_EXTRA[ds]);
-    }
-    else {
-      sp_zlib_emit_lit(w, p[i]);
-    }
+    if (best_len) sp_zlib_emit_match(w, best_len, best_dist);
+    else          sp_zlib_emit_lit(w, p[i]);
     /* Every position the match covered still enters the chain: skipping them
        is what makes a later match miss the only copy it had. */
     if (head)
