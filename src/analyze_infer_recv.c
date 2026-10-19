@@ -142,7 +142,12 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
           if (side >= 0 && infer_type(c, side) == TY_INT) { *out = TY_INT; return 1; }
         }
       }
-      { *out = argc == 0 ? TY_FLOAT : TY_POLY; return 1; }   /* first(n)/last(n) raise anyway */
+      if (argc == 0) { *out = TY_FLOAT; return 1; }
+      /* min(n)/max(n) and first(n)/last(n) enumerate (and raise): their
+         rows state the boxed answer; any other name or count, and a block
+         form of min and max, has no row and answers boxed as well */
+      { const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+        *out = op ? bop_result(op, rt) : TY_POLY; return 1; }
     }
     {
       const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
