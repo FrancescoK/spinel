@@ -7900,6 +7900,11 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
     nt_node_set_ref((NodeTable *)nt, id, "block", fb1);
   }
   if (bt == TY_UNKNOWN) bt = an_builtin_answer(c, id);
+  /* --share-strings: a reflective read of a String ivar beside a user arm
+     answers the slot's box, a shared String's handle's, boxed as it is
+     (its bytes boxed anew are another String) */
+  if (ret == TY_POLY && bt == TY_STRING && repr_share_rule(c) && bop_share_named(BOP_ANY_RECV, name) == BSH_IVAR_GET)
+    bt = TY_POLY;
   /* a writer's arm run for its effect (tr < 0), whose value is its
      argument's temp: the synthesized writers take the argument as it is,
      whatever the analysis recorded for an answer nothing reads */

@@ -1802,6 +1802,17 @@ int        io_family_descends(Compiler *c, int k, int owner);
 /* Like comp_method_in_class but walks the superclass chain. On success,
    *def_class (if non-NULL) is set to the class that defines the method. */
 int        comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_class);
+/* does class_id's chain define the method call id names, and does the call reach it? A call
+   marked builtin_only (the super of a program's own reflection, rewritten to
+   self's builtin) does not. */
+static inline int comp_object_defines(Compiler *c, const char *name) {
+  int oc = comp_class_index(c, "Object");
+  return oc >= 0 && comp_method_in_chain(c, oc, name, NULL) >= 0;
+}
+static inline int comp_call_reaches_own(Compiler *c, int id, int class_id, const char *name) {
+  if (nt_int(c->nt, id, "builtin_only", 0)) return 0;
+  return comp_method_in_chain(c, class_id, name, NULL) >= 0 || comp_object_defines(c, name);
+}
 int        send_def_just_supers(Compiler *c, int mi);          /* analyze_desugar.c */
 int        send_family_program_owns(Compiler *c, const char *name);
 /* Array subclasses (#7449, ClassInfo.ary_root): the root of class cid's

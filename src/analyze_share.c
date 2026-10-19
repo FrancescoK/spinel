@@ -3677,6 +3677,11 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     if (argc == 2 && nt_kind(nt, argv[1]) == NK_KeywordHashNode &&
         bop_share_named(BOP_ANY_ARRAY, name) == BSH_PACK)
       r = sh_join(F, r, sh_builtin(F, c, n, BSH_PACK, rv, blk, 1));
+    /* ...and a boxed receiver of a class that does not define the
+       reflection (`instance_variable_get`, `_set`) reads or stores the
+       layout's slot, as the call with no user target does */
+    int refl = bop_share_named(BOP_ANY_RECV, name);
+    if (refl == BSH_IVAR_GET || refl == BSH_IVAR_SET) return sh_join(F, r, sh_builtin(F, c, n, refl, rv, blk, 0));
     int share = 0, family = 0, container = 1;
     const BuiltinOp *row = NULL;
     TyKind plan_ret = TY_UNKNOWN;

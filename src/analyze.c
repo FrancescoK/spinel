@@ -42934,6 +42934,57 @@ static void rewrite_prepended_builtin_supers(Compiler *c) {
   }
 }
 
+/* `super` from the program's own instance_variable_get, _set,
+   instance_variable_defined?, instance_variables or remove_instance_variable,
+   with no program method above it: Object's reflection of self, which reads
+   and writes the object's own fields as the builtin does. Spelled as that
+   call -- self as the receiver, the method's name, marked builtin_only so the
+   method does not take it again -- as a super into a prepended builtin is
+   (rewrite_prepended_builtin_supers). A bare `super` passes the parameters
+   on; one with keyword parameters is left alone. */
+static void rewrite_ivar_reflection_supers(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_SuperNode && k != NK_ForwardingSuperNode) continue;
+    int si = c->nscope[id];
+    if (si < 0 || si >= c->nscopes) continue;
+    Scope *s = &c->scopes[si];
+    if (s->is_cmethod || !s->name || s->class_id < 0 || !is_ivar_reflection_name(s->name) ||
+        c->classes[s->class_id].is_native_class || is_builtin_reopen_name(c->classes[s->class_id].name)) continue;
+    if (super_reach(c, s) >= 0) continue;
+    int args = k == NK_SuperNode ? nt_ref(nt, id, "arguments") : -1;
+    if (k == NK_ForwardingSuperNode) {
+      int kw = 0;
+      for (int j = 0; j < s->nparams && !kw; j++)
+        kw = s->pnames && s->pnames[j] && callee_param_is_declared_kwarg(c, s, s->pnames[j]);
+      if (kw) continue;
+      args = rpbs_param_args(c, s, id);
+      if (args < 0) continue;
+    }
+    char *mname = strdup(s->name);
+    int self = nt_new_node(nt, "SelfNode");
+    comp_grow_node_arrays(c);
+    c->nscope[self] = si;
+    if (args >= 0) {
+      int an = 0; const int *av = nt_arr(nt, args, "arguments", &an);
+      for (int q = 0; q < an; q++) {
+        c->nscope[av[q]] = si;
+        int ex = nt_kind(nt, av[q]) == NK_SplatNode ? nt_ref(nt, av[q], "expression") : -1;
+        if (ex >= 0) c->nscope[ex] = si;
+      }
+      c->nscope[args] = si;
+    }
+    nt_node_set_type(nt, id, "CallNode");
+    nt_node_set_ref(nt, id, "receiver", self);
+    nt_node_set_ref(nt, id, "arguments", args);
+    nt_node_set_str(nt, id, "name", mname);
+    nt_node_set_int(nt, id, "builtin_only", 1);
+    free(mname);
+  }
+}
+
 /* A receiverless call, in a reopened primitive or a program class, of an
    alias that captured the builtin method (`def plus_with(o) = plus_without(o)`
    after `alias_method :plus_without, :+`, `def od = original_dup` after
@@ -46894,6 +46945,7 @@ static void an_phase_class_structure(Compiler *c) {
      binding is a slot of the copy's own, which the first pass never saw */
   type_rescue_bindings(c);
   rewrite_prepended_builtin_supers(c);   /* super in a module prepended into Range -> Range's own */
+  rewrite_ivar_reflection_supers(c);     /* super in the program's own ivar reflection -> Object's */
   desugar_method_added_hook(c);   /* def in a class body -> def; method_added(:name): needs the parents and extends, and runs before class methods are specialized per class */
   desugar_reader_index_write(c);  /* all[k] = v through a reader of @all -> (all; @all[k] = v) */
   /* again, now that modules have put their methods in: an alias can take an
