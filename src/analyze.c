@@ -11926,7 +11926,8 @@ static int te_value_leaf(const NodeTable *nt, int n) {
   switch (nt_kind(nt, n)) {
     case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode:
     case NK_LocalVariableWriteNode: case NK_InstanceVariableWriteNode:
-    case NK_HashNode: case NK_StringNode: case NK_IntegerNode: case NK_FloatNode:
+    case NK_HashNode: case NK_ArrayNode: case NK_StringNode: case NK_InterpolatedStringNode:
+    case NK_IntegerNode: case NK_FloatNode:
     case NK_SymbolNode: case NK_TrueNode: case NK_FalseNode:
       return 1;
     /* a call answers its value -- `@a.select { |x| yield x }` an Array --
@@ -12139,6 +12140,37 @@ static int desugar_scan_enum_consumer(Compiler *c, int te) {
   return 1;
 }
 
+/* Is the `return` written in a lambda (`-> { return 1 }`, `lambda { return 1 }`)?
+   It leaves the lambda, not the method the lambda is written in. */
+static int te_return_in_lambda(Compiler *c, int rid) {
+  const NodeTable *nt = c->nt;
+  const int *par = comp_parent_map(c);
+  for (int n = par[rid]; n >= 0; n = par[n]) {
+    NodeKind k = nt_kind(nt, n);
+    if (k == NK_DefNode) return 0;
+    if (k == NK_LambdaNode) return 1;
+    if (k == NK_BlockNode && par[n] >= 0 && nt_kind(nt, par[n]) == NK_CallNode) {
+      const char *cn = nt_str(nt, par[n], "name");
+      if (cn && is_lambda_constructor(cn) && nt_ref(nt, par[n], "receiver") < 0) return 1;
+    }
+  }
+  return 0;
+}
+/* A `return v` written inside a block of the method (`@a.each { |x| return x
+   if yield(x) > 1 }`) leaves the method with a value, which neither the tail
+   nor the statements before it show (te_guard_value reads no block): the
+   block form answers it as much as a value tail does. */
+static int te_block_return_value(Compiler *c, int si) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_ReturnNode, rid) {
+    if (c->nscope[rid] != si || te_return_in_lambda(c, rid)) continue;
+    int a = nt_ref(nt, rid, "arguments");
+    int ac = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    if (ac > 0 && te_tail_is_value(nt, av[0])) return 1;
+  }
+  return 0;
+}
+
 /* Rewrite `recv.to_enum(:m, *a)` / `enum_for(:m, *a)` into a real Enumerator,
    dispatched on the receiver kind (needs the receiver type, so it runs in the
    fixpoint). A user-class receiver whose class defines a yielding `m` becomes
@@ -12213,7 +12245,8 @@ static int desugar_to_enum(Compiler *c) {
          through an Enumerator-typed C signature, a type error; widened, a
          blockless call site reads a boxed Enumerator its consumers dispatch
          on. */
-      int value_form = es && es->body >= 0 && te_tail_is_value(nt, es->body);
+      int value_form = es && es->body >= 0 &&
+                       (te_tail_is_value(nt, es->body) || te_block_return_value(c, (int)(es - c->scopes)));
       /* not in a reopened builtin, whose self tail is the boxed receiver:
          the blockless call already reads the Enumerator (ret_noblock) */
       if (self_recv && es && es->name && sp_streq(es->name, m) && !value_form && reopen_ci < 0 &&
@@ -12223,13 +12256,23 @@ static int desugar_to_enum(Compiler *c) {
         changed = 1;
         /* The pin is the blockless call's value. A call with a block runs
            the body, and a `self` tail answers the receiver there, as in
-           CRuby; pinned, it answered nil. Only when the guard's is the
-           method's one `return`. */
-        int si = (int)(es - c->scopes), nret = 0;
-        NT_FOREACH_KIND(nt, NK_ReturnNode, rid)
-          if (c->nscope[rid] == si) nret++;
+           CRuby; pinned, it answered nil. Only when the method's returns
+           are the guard's and `return self`s. */
+        int si = (int)(es - c->scopes), others_self = 1;
+        NT_FOREACH_KIND(nt, NK_ReturnNode, rid) {
+          if (c->nscope[rid] != si || te_return_in_lambda(c, rid)) continue;
+          int ra = nt_ref(nt, rid, "arguments");
+          int rc = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rc) : NULL;
+          if (rc == 1 && rv[0] == id) continue;   /* the guard's own */
+          if (rc != 1 || nt_kind(nt, rv[0]) != NK_SelfNode) others_self = 0;   /* `return self` answers the receiver too */
+        }
         int tail = scope_body_last(c, si);
-        if (nret == 1 && tail >= 0 && nt_kind(nt, tail) == NK_SelfNode && es->class_id >= 0 && !es->is_cmethod)
+        if (tail >= 0 && nt_kind(nt, tail) == NK_ReturnNode) {   /* a tail `return self`: its value */
+          int ta = nt_ref(nt, tail, "arguments"), tc = 0;
+          const int *tv = ta >= 0 ? nt_arr(nt, ta, "arguments", &tc) : NULL;
+          if (tc == 1) tail = tv[0];
+        }
+        if (others_self && tail >= 0 && nt_kind(nt, tail) == NK_SelfNode && es->class_id >= 0 && !es->is_cmethod)
           scope_set_ret_withblock(es, ty_object(es->class_id));
       }
       nt_node_set_str(nt, id, "name", hname);
