@@ -17592,12 +17592,12 @@ static void refl_value_methods(Compiler *c, const char *cls, int prot, ReflNames
 
 /* The builtin classes a value's #methods lists (an_value_methods_class),
    in the order sp_value_methods numbers them: class i's #methods is 2i+1,
-   its #public_methods 2i. TrueClass stands for false too. */
+   its #public_methods 2i. */
 static const char *const value_methods_classes[] = {
-  "NilClass", "TrueClass", "Integer", "Float", "Symbol", "String", "Array", "Hash", "Range",
-  "Regexp", "Rational", "Proc", "Time", "Object", NULL };
+  "NilClass", "TrueClass", "FalseClass", "Integer", "Float", "Symbol", "String", "Array", "Hash",
+  "Range", "Regexp", "Rational", "Proc", "Time", "Object", NULL };
 /* the ones a boxed receiver finds by its class's name, after the tags */
-static const int value_methods_by_name_from = 5;
+static const int value_methods_by_name_from = 6;
 
 static int value_methods_index(const char *cls, int prot) {
   for (int i = 0; value_methods_classes[i]; i++)
@@ -17606,9 +17606,16 @@ static int value_methods_index(const char *cls, int prot) {
 }
 
 /* A fresh Array of class `cls`'s names, from the one table per class the
-   program carries (emit_value_methods_helpers) */
-static void emit_value_methods_list(Compiler *c, const char *cls, int prot, Buf *b) {
+   program carries (emit_value_methods_helpers). A Boolean's class is the
+   value's: TrueClass's list for true, FalseClass's for false (`bv`, the
+   C text of the value, read once). */
+static void emit_value_methods_list(Compiler *c, const char *cls, int prot, const char *bv, Buf *b) {
   (void)c;
+  if (bv && sp_streq(cls, "TrueClass")) {
+    buf_printf(b, "(%s ? sp_value_methods(%d) : sp_value_methods(%d))", bv,
+               value_methods_index("TrueClass", prot), value_methods_index("FalseClass", prot));
+    return;
+  }
   buf_printf(b, "sp_value_methods(%d)", value_methods_index(cls, prot));
 }
 
@@ -17661,10 +17668,10 @@ void emit_value_methods_helpers(Compiler *c, const char *const *texts, int ntext
   if (!poly) return;
   buf_puts(b, "static sp_PolyArray *sp_value_methods_poly(sp_RbVal v, int prot) {\n  SP_GC_ROOT_RBVAL(v);\n"
               "  if (v.tag == SP_TAG_NIL) return sp_value_methods(prot);\n"
-              "  if (v.tag == SP_TAG_BOOL) return sp_value_methods(2 + prot);\n"
-              "  if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT) return sp_value_methods(4 + prot);\n"
-              "  if (v.tag == SP_TAG_FLT) return sp_value_methods(6 + prot);\n"
-              "  if (v.tag == SP_TAG_SYM) return sp_value_methods(8 + prot);\n"
+              "  if (v.tag == SP_TAG_BOOL) return sp_value_methods((v.v.b ? 2 : 4) + prot);\n"
+              "  if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT) return sp_value_methods(6 + prot);\n"
+              "  if (v.tag == SP_TAG_FLT) return sp_value_methods(8 + prot);\n"
+              "  if (v.tag == SP_TAG_SYM) return sp_value_methods(10 + prot);\n"
               "  if (sp_poly_is_user_obj(v)) {\n");
   for (int prot = 0; prot < 2; prot++) {
     const char *name = prot ? "methods" : "public_methods";
@@ -17689,8 +17696,9 @@ void emit_value_methods_helpers(Compiler *c, const char *const *texts, int ntext
 
 /* nil.methods / 1.public_methods / "s".methods(true) on a builtin value
    (an_value_methods_class): its class's list, as CRuby answers it. A
-   receiver that may hold nil picks NilClass's at run time; true and false
-   list the same names. The receiver is evaluated for its effects. */
+   receiver that may hold nil picks NilClass's at run time, and a Boolean
+   TrueClass's or FalseClass's by its value. The receiver is evaluated for
+   its effects. */
 int emit_value_methods_reflection(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver");
@@ -17713,20 +17721,31 @@ int emit_value_methods_reflection(Compiler *c, int id, Buf *b) {
                 (rr.kind == RK_BOXED || rr.kind == RK_OPT ||
                  ((ty_null_is_nil(rt) || rt == TY_SYMBOL) && node_may_be_null_nil(c, recv)));
   int t = ++g_tmp;
+  char bv[48];
   if (nilable) {
+    snprintf(bv, sizeof bv, "_v%d.v.b", t);
     buf_printf(b, "({ sp_RbVal _v%d = ", t);
     emit_boxed(c, recv, b);
     buf_printf(b, "; _v%d.tag == SP_TAG_NIL ? ", t);
-    emit_value_methods_list(c, "NilClass", prot, b);
+    emit_value_methods_list(c, "NilClass", prot, NULL, b);
     buf_puts(b, " : ");
-    emit_value_methods_list(c, cls, prot, b);
+    emit_value_methods_list(c, cls, prot, bv, b);
+    buf_puts(b, "; })");
+    return 1;
+  }
+  if (sp_streq(cls, "TrueClass")) {
+    snprintf(bv, sizeof bv, "_b%d", t);
+    buf_printf(b, "({ sp_bool _b%d = ", t);
+    emit_expr(c, recv, b);
+    buf_puts(b, "; ");
+    emit_value_methods_list(c, cls, prot, bv, b);
     buf_puts(b, "; })");
     return 1;
   }
   buf_puts(b, "({ (void)(");
   emit_expr(c, recv, b);
   buf_puts(b, "); ");
-  emit_value_methods_list(c, cls, prot, b);
+  emit_value_methods_list(c, cls, prot, NULL, b);
   buf_puts(b, "; })");
   return 1;
 }
