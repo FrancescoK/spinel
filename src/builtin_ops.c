@@ -574,10 +574,10 @@ static const BuiltinOp bop_rows[] = {
   { TY_RATIONAL, "round",       0,   0, BF_ANY, TY_INT,    BOPE_TEMPLATE, "sp_rational_round_i($r)" },
   { TY_RATIONAL, "floor",       0,   0, BF_ANY, TY_INT,    BOPE_TEMPLATE, "sp_rational_floor_i($r)" },
   { TY_RATIONAL, "ceil",        0,   0, BF_ANY, TY_INT,    BOPE_TEMPLATE, "sp_rational_ceil_i($r)" },
-  { TY_RATIONAL, "round",       1,   2, BF_ANY, TY_UNKNOWN,    BOPE_RATIONAL_ROUND },
-  { TY_RATIONAL, "truncate",    1,   2, BF_ANY, TY_UNKNOWN,    BOPE_RATIONAL_ROUND },
-  { TY_RATIONAL, "floor",       1,   2, BF_ANY, TY_UNKNOWN,    BOPE_RATIONAL_ROUND },
-  { TY_RATIONAL, "ceil",        1,   2, BF_ANY, TY_UNKNOWN,    BOPE_RATIONAL_ROUND },
+  { TY_RATIONAL, "round",       1,   2, BF_ANY, TY_UNKNOWN,    BOPE_RATIONAL_ROUND, NULL, 0, 0, BOPF_INFERRED },  /* a count literal's value picks Integer or Rational (infer_numeric_call) */
+  { TY_RATIONAL, "truncate",    1,   2, BF_ANY, TY_UNKNOWN,    BOPE_RATIONAL_ROUND, NULL, 0, 0, BOPF_INFERRED },  /* a count literal's value picks Integer or Rational (infer_numeric_call) */
+  { TY_RATIONAL, "floor",       1,   2, BF_ANY, TY_UNKNOWN,    BOPE_RATIONAL_ROUND, NULL, 0, 0, BOPF_INFERRED },  /* a count literal's value picks Integer or Rational (infer_numeric_call) */
+  { TY_RATIONAL, "ceil",        1,   2, BF_ANY, TY_UNKNOWN,    BOPE_RATIONAL_ROUND, NULL, 0, 0, BOPF_INFERRED },  /* a count literal's value picks Integer or Rational (infer_numeric_call) */
   { TY_RATIONAL, "zero?",       0,   0, BF_ANY, TY_BOOL,       BOPE_TEMPLATE, "(($r).num == 0)" },
   { TY_RATIONAL, "zero?",       0, 127, BF_ANY, TY_BOOL,       BOPE_NONE },
   { TY_RATIONAL, "positive?",   0,   0, BF_ANY, TY_BOOL,       BOPE_TEMPLATE, "(($r).num > 0)" },

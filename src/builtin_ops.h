@@ -252,7 +252,10 @@ typedef struct BuiltinOp {
    Method's bound receiver expression; a Float range's begin, first, min and
    last are the endpoint the Range literal wrote ((1..2.5).begin is the
    Integer 1); String#scan reads the pattern literal's source for capture
-   groups and String#unpack1 the format literal. A call whose answer is a
+   groups and String#unpack1 the format literal; Rational#round, truncate,
+   floor and ceil with a digit count answer an Integer or a Rational by the
+   value of the Integer literal that gives it (a positive count keeps the
+   Rational; a count that is no literal is boxed). A call whose answer is a
    function of the receiver's and the arguments' kinds does not belong
    here: it states its kind. --plan-check expects inference to have
    answered such a call without a row, as long as the call was typed; a
