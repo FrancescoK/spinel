@@ -2935,9 +2935,11 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
       ts[i] = ++g_tmp;
       TyKind t = ops[i] >= 0 ? repr_of(c, ops[i]).as_ty : TY_NIL;
       if (t == TY_STRING || t == TY_STRBUF) {
-        buf_printf(b, "sp_RbVal _t%d = sp_box_nullable_obj(", ts[i]);
+        buf_printf(b, "sp_RbVal _t%d = ", ts[i]);
+        str_box_open(b, 1);
         emit_strbuf_handle_of(c, ops[i], b);
-        buf_printf(b, ", SP_BUILTIN_STRBUF); SP_GC_ROOT_RBVAL(_t%d); ", ts[i]);
+        str_box_close(b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", ts[i]);
       }
       else if (ops[i] >= 0 && emit_clamp_lifted_bound(c, ops[i], ts[i], b)) {}
       else if (ops[i] >= 0) ts[i] = hold_operand(c, ops[i], TY_POLY, 1, ts[i], 1, " ", b);
@@ -2955,10 +2957,11 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
       buf_printf(b, "; SP_GC_ROOT_SRANGE(_t%d); if (_t%d.excl && (_t%d.last || _t%d.hl))"
                     " sp_raise_cls(\"ArgumentError\", \"cannot clamp with an exclusive range\"); ",
                  tr, tr, tr, tr);
-      buf_printf(b, "sp_poly_recv_ck(_t%d, \"clamp\"); sp_poly_as_strbuf(sp_obj_clamp(_t%d, "
-                    "_t%d.hf ? sp_box_nullable_obj(_t%d.hf, SP_BUILTIN_STRBUF) : _t%d.first ? sp_box_str(_t%d.first) : sp_box_nil(), "
-                    "_t%d.hl ? sp_box_nullable_obj(_t%d.hl, SP_BUILTIN_STRBUF) : _t%d.last ? sp_box_str(_t%d.last) : sp_box_nil())); })",
-                 ts[0], ts[0], tr, tr, tr, tr, tr, tr, tr, tr);
+      buf_printf(b, "sp_poly_recv_ck(_t%d, \"clamp\"); sp_poly_as_strbuf(sp_obj_clamp(_t%d, ", ts[0], ts[0]);
+      str_box_kept(b, tr, "hf", "first");
+      buf_puts(b, ", ");
+      str_box_kept(b, tr, "hl", "last");
+      buf_puts(b, ")); })");
       return 1;
     }
     buf_printf(b, "sp_poly_recv_ck(_t%d, \"clamp\"); sp_poly_as_strbuf(sp_obj_clamp(_t%d, _t%d, _t%d)); })",
@@ -3020,15 +3023,17 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     buf_printf(b, "({ sp_RbVal _b%d = ", t);
     emit_expr(c, recv, b);
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_b%d); (_b%d.tag == SP_TAG_OBJ && _b%d.v.p && (_b%d.cls_id == SP_BUILTIN_EXCEPTION || "
-                  "sp_is_exc_subclass_cls(_b%d.cls_id))) ? sp_exc_kept_message_handle((sp_Exception *)_b%d.v.p) : "
-                  "sp_String_new_shared(", t, t, t, t, t, t);
+                  "sp_is_exc_subclass_cls(_b%d.cls_id))) ? sp_exc_kept_message_handle((sp_Exception *)_b%d.v.p) : ",
+               t, t, t, t, t, t);
+    str_new_handle_open(b);
     int mark = view_bind(recv, "_b%d", t);
     int sv = view_push_repr(c, v, VR_STRBUF_BOX, 0), sd = view_push_repr(c, v, VR_HANDLE_DEMAND, 0);
     int st = view_push(c, v, TY_STRING);
     emit_expr(c, v, b);
     view_pop(c, st); view_pop(c, sd); view_pop(c, sv);
     view_unbind(mark);
-    buf_puts(b, "); })");
+    str_new_handle_close(b);
+    buf_puts(b, "; })");
     return 1;
   }
   int se = strbuf_route_srange_end(c, v);
@@ -3039,7 +3044,11 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     const char *h = se == 1 ? "hf" : "hl", *e = se == 1 ? "first" : "last";
     buf_printf(b, "({ sp_StrRange _t%d = ", t);
     emit_srange_end_recv(c, v, b);
-    buf_printf(b, "; _t%d.%s ? (sp_String *)_t%d.%s : sp_String_new_shared(_t%d.%s); })", t, h, t, h, t, e);
+    buf_printf(b, "; _t%d.%s ? (sp_String *)_t%d.%s : ", t, h, t, h);
+    str_new_handle_open(b);
+    buf_printf(b, "_t%d.%s", t, e);
+    str_new_handle_close(b);
+    buf_puts(b, "; })");
     return 1;
   }
   int sx = strbuf_route_srange_extreme(c, v);
@@ -3164,8 +3173,9 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
           free(value.p);
         }
         else emit_strbuf_handle_of(c, argv[1], b);
-        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_env_aset(sp_poly_arg_str_chk(%s), "
-                      "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)); _t%d; })", tv, key.p, tv, tv);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_env_aset(sp_poly_arg_str_chk(%s), ", tv, key.p);
+        str_box_handle_tmp(b, tv);
+        buf_printf(b, "); _t%d; })", tv);
         free(key.p);
         return 1;
       }
@@ -3239,7 +3249,7 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
                  t, t, t, t);
     if (g_repr_check && pickup) repr_channel_pickup(c, v, 1);
     if (pickup) buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", t);
-    else buf_puts(b, "sp_String_new_shared(");
+    else str_new_handle_open(b);
     int mark = view_bind(x, "_t%d", t);
     int sv = view_push_repr(c, v, VR_STRBUF_BOX, 0), sd = view_push_repr(c, v, VR_HANDLE_DEMAND, 0);
     if (sn) g_sn_skip = v;
@@ -3254,9 +3264,17 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     view_pop(c, sd); view_pop(c, sv);
     view_unbind(mark);
     /* As in the deep-return pickup, nil wins over an earlier publication. */
-    if (pickup) buf_printf(b, "; !_v%d ? NULL : _sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf"
-                            " : sp_String_new_shared(_v%d); }); })", t, t);
-    else buf_puts(b, "); })");
+    if (pickup) {
+      buf_printf(b, "; !_v%d ? NULL : _sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : ", t);
+      str_new_handle_open(b);
+      buf_printf(b, "_v%d", t);
+      str_new_handle_close(b);
+      buf_puts(b, "; }); })");
+    }
+    else {
+      str_new_handle_close(b);
+      buf_puts(b, "; })");
+    }
     return 1;
   }
   if (is_receiver_conversion(nt_str(nt, v, "name")) && !is_to_s_name(nt_str(nt, v, "name"))) {
@@ -4406,8 +4424,9 @@ static int emit_held_self_answer_shim(Compiler *c, int id, int r, TyKind ty, Buf
     if (nilok) buf_printf(b, " _res%d = 0; if (_t%d) {", tH, tH);
     else buf_printf(b, " _res%d; if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));",
                     tH, tH, nt_str(c->nt, id, "name"));
-    buf_printf(b, " SP_GC_ROOT(_t%d);%s const char *lv__sh%d = sp_strbuf_read(_t%d); SP_GC_ROOT(lv__sh%d);",
-               tH, pre.p ? pre.p : "", tH, tH, tH);
+    buf_printf(b, " SP_GC_ROOT(_t%d);%s const char *lv__sh%d = ", tH, pre.p ? pre.p : "", tH);
+    str_read_handle_tmp(b, tH, 0);
+    buf_printf(b, "; SP_GC_ROOT(lv__sh%d);", tH);
     /* a block that changes the String through another name while gsub! or
        sub! runs over it is CRuby's RuntimeError, where the shadow's write
        back would drop the change */
@@ -4897,7 +4916,9 @@ static int emit_bang_self_handle_1(Compiler *c, int v, int pub, Buf *b) {
     int th = ++g_tmp, mark = g_n_argov;
     emit_bang_held_open(c, v, th, sref, 1, 0, b);
     if (emit_self_mutator_stmt(c, v, b)) {
-      buf_printf(b, pub ? "sp_strbuf_read_pub(_t%d); })" : "_t%d; })", th);
+      if (pub) str_read_handle_tmp(b, th, 1);
+      else buf_printf(b, "_t%d", th);
+      buf_puts(b, "; })");
       break;
     }
     buf_printf(b, "const char *_t%d = ", tr);

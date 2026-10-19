@@ -1811,9 +1811,16 @@ static int emit_safe_nav_self_handle(Compiler *c, int id, int recv, Buf *b) {
   if (!emit_bang_self_handle(c, id, &hb)) { free(hb.p); return 0; }
   int t = ++g_tmp;
   if (hres) buf_puts(b, hb.p);
-  else if (repr_of(c, id).kind == RK_BOXED)
-    buf_printf(b, "({ sp_String *_t%d = %s; sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF); })", t, hb.p, t);
-  else buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? sp_strbuf_read_pub(_t%d) : (const char *)NULL; })", t, hb.p, t, t);
+  else if (repr_of(c, id).kind == RK_BOXED) {
+    buf_printf(b, "({ sp_String *_t%d = %s; ", t, hb.p);
+    str_box_handle_tmp(b, t);
+    buf_puts(b, "; })");
+  }
+  else {
+    buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? ", t, hb.p, t);
+    str_read_handle_tmp(b, t, 1);
+    buf_puts(b, " : (const char *)NULL; })");
+  }
   free(hb.p);
   return 1;
 }

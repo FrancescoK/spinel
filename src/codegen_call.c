@@ -24186,7 +24186,9 @@ static int emit_nil_target_route(Compiler *c, int r, int handle, Buf *b, const c
     if (op.p) buf_puts(b, op.p);
     buf_puts(b, lead);
     buf_printf(b, "sp_String * _t%d = %s; SP_GC_ROOT(_t%d);", th, hb.p, th);
-    buf_printf(b, " const char * _t%d = sp_strbuf_read_pub(_t%d); SP_GC_ROOT(_t%d);", t, th, t);
+    buf_printf(b, " const char * _t%d = ", t);
+    str_read_handle_tmp(b, th, 1);
+    buf_printf(b, "; SP_GC_ROOT(_t%d);", t);
     buf_puts(b, *lead ? "\n" : " ");
     ran_first_bind(r, t, th);
   }

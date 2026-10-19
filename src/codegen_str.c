@@ -360,6 +360,42 @@ void str_box_handle_tmp(Buf *b, int tmp) {
   str_box_close(b);
 }
 
+/* The bytes a String handle reads as (a copy of its String, NULL for nil,
+   frozen for a frozen handle): the one place its text is written, as it is
+   for the box. `pub` is the read that also publishes the handle to the
+   deep-return channel (sp_strbuf_read_pub), for a consumer whose value a
+   caller picks the handle up from. str_read_handle reads text already
+   written, str_read_handle_tmp a temp. */
+void str_read_handle(Buf *b, const char *h, int pub) {
+  buf_printf(b, "%s(%s)", pub ? "sp_strbuf_read_pub" : "sp_strbuf_read", h ? h : "NULL");
+}
+void str_read_handle_tmp(Buf *b, int tmp, int pub) {
+  buf_printf(b, "%s(_t%d)", pub ? "sp_strbuf_read_pub" : "sp_strbuf_read", tmp);
+}
+
+/* A new handle around bytes no handle holds: the one place the text of its
+   making is written, around the bytes the caller emits between the open
+   and the close. It is the shared handle of a String that nothing else
+   names (sp_String_new_shared), as a route hands on where the String it
+   converts has no handle. */
+void str_new_handle_open(Buf *b) {
+  buf_puts(b, "sp_String_new_shared(");
+}
+void str_new_handle_close(Buf *b) {
+  buf_puts(b, ")");
+}
+
+/* The box of a String Range's endpoint held in temp `t` (an sp_StrRange):
+   the handle the Range keeps for it (field `h`), else the String it holds
+   (field `e`) as bytes, else nil for an open end. */
+void str_box_kept(Buf *b, int t, const char *h, const char *e) {
+  char kept[48];
+  snprintf(kept, sizeof kept, "_t%d.%s", t, h);
+  buf_printf(b, "%s ? ", kept);
+  str_box_handle(b, kept);
+  buf_printf(b, " : _t%d.%s ? sp_box_str(_t%d.%s) : sp_box_nil()", t, e, t, e);
+}
+
 /* The box face's last arms, where the value is boxed by its representation
    (emit_boxed_impl's TY_STRING arm): a String the plan wraps (`wrap`) as
    the new handle it is (sp_box_str_new), so the box's copies name one
