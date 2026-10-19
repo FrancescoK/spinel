@@ -48629,7 +48629,12 @@ static void an_phase_method_backstops(Compiler *c) {
       }
     }
     if (widened)
-      for (int iter = 0; iter < 8; iter++) if (!infer_param_types(c)) break;
+      for (int iter = 0; iter < 8; iter++) {
+        int ch = infer_param_types(c);
+        ch |= infer_write_types(c);
+        ch |= infer_return_types(c);
+        if (!ch) break;
+      }
   }
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
