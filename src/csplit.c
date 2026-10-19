@@ -86,16 +86,50 @@ static size_t read_marker(const char *t, size_t i, size_t n, size_t *mfile, size
 
 /* Where each item's text goes, with the marker its last line left in
    effect, so a marker is written only where the next item would otherwise
-   be claimed by the wrong file or line. */
+   be claimed by the wrong file or line.
+   A system header's items go to a file of their own, included where they
+   stood (out_sync). Apple clang's -Wnullability-completeness is decided per
+   file, not per marker: once a file holds one pointer with a nullability
+   qualifier (the SDK's), every pointer of the file outside a system header
+   is warned about, the program's included, and the parts of a large program
+   wrote hundreds of MB of those warnings, most of the cc time (#8579). */
 typedef struct {
-  FILE *f;
+  FILE *f;              /* where the next item goes: main, or side */
+  FILE *main, *side;    /* side: the system-header file now open, or NULL */
+  const char *dir, *tag;
+  int nside, bad;
   size_t mfile, mflen;
   int msys;
   long line;            /* the line the next output line claims, or -1 */
 } Out;
 
+static void out_init(Out *o, FILE *f, const char *dir, const char *tag) {
+  memset(o, 0, sizeof *o);
+  o->f = o->main = f; o->dir = dir; o->tag = tag; o->line = -1;
+}
+
+/* Close the system-header file now open: the next item goes to main again */
+static void out_side_end(Out *o) {
+  if (!o->side) return;
+  if (ferror(o->side) | (fclose(o->side) != 0)) o->bad = 1;
+  o->side = NULL; o->f = o->main;
+  o->mfile = 0; o->line = -1;
+}
+
 static void out_sync(Out *o, const char *t, const Item *x) {
   if (!x->mfile) return;   /* a unit without markers: nothing to keep */
+  if (x->msys && !o->side && !o->bad) {
+    char nm[64], path[4200];
+    snprintf(nm, sizeof nm, "sp_sys_%s%d.h", o->tag, o->nside++);
+    snprintf(path, sizeof path, "%s/%s", o->dir, nm);
+    o->side = fopen(path, "wb");
+    if (!o->side) o->bad = 1;
+    else {
+      fprintf(o->main, "#include \"%s\"\n", nm);
+      o->f = o->side; o->mfile = 0; o->line = -1;
+    }
+  }
+  else if (!x->msys && o->side) out_side_end(o);
   if (o->mfile && o->mflen == x->mflen && memcmp(t + o->mfile, t + x->mfile, x->mflen) == 0 &&
       o->msys == x->msys && o->line == x->mline)
     return;
@@ -618,9 +652,14 @@ int c_split(const char *pre_path, const char *out_dir, int nparts,
   }
   size_t per = fn_bytes / (size_t)nparts + 1, acc = 0;
   int cur = 0;
-  Out oh = { h, 0, 0, 0, -1 };
+  Out oh;
+  out_init(&oh, h, out_dir, "h");
   Out *op = calloc((size_t)nparts, sizeof(Out));
-  for (int p = 0; p < nparts; p++) { op[p].f = pf[p]; op[p].line = -1; }
+  char (*ptag)[16] = calloc((size_t)nparts, sizeof *ptag);
+  for (int p = 0; p < nparts; p++) {
+    snprintf(ptag[p], sizeof ptag[p], "p%d_", p);
+    out_init(&op[p], pf[p], out_dir, ptag[p]);
+  }
   for (int k = 0; k < nit; k++) {
     Item *x = &it[k];
     switch (x->kind) {
@@ -628,42 +667,42 @@ int c_split(const char *pre_path, const char *out_dir, int nparts,
         break;   /* replayed where the items it covered go out */
       case IT_HDR:
         out_sync(&oh, t, x);
-        fwrite(t + x->st, 1, x->en - x->st, h); fputc('\n', h);
+        fwrite(t + x->st, 1, x->en - x->st, oh.f); fputc('\n', oh.f);
         out_advance(&oh, t, x->st, x->en, 1);
         break;
       case IT_PROTO: {
         const char *key = x->name;
         int keep = bsearch(&key, inl, (size_t)ninl, sizeof *inl, cmpstr) != NULL;
         out_sync(&oh, t, x);
-        if (keep) fwrite(t + x->st, 1, x->en - x->st, h);
-        else put_stripped(h, t, x->st, x->en, 1);
-        fputc('\n', h);
+        if (keep) fwrite(t + x->st, 1, x->en - x->st, oh.f);
+        else put_stripped(oh.f, t, x->st, x->en, 1);
+        fputc('\n', oh.f);
         out_advance(&oh, t, x->st, x->en, 1);
         break;
       }
       case IT_VAR:
         out_sync(&oh, t, x);
         out_sync(&op[0], t, x);
-        put_vars(h, pf[0], t, x->st, x->en);
+        put_vars(oh.f, op[0].f, t, x->st, x->en);
         oh.line = -1; op[0].line = -1;   /* rewritten: the line count is not the text's */
         break;
       case IT_FN:
         if (x->keep_inline) {
           out_sync(&oh, t, x);
-          fwrite(t + x->st, 1, x->en - x->st, h); fputc('\n', h);
+          fwrite(t + x->st, 1, x->en - x->st, oh.f); fputc('\n', oh.f);
           out_advance(&oh, t, x->st, x->en, 1);
         }
         else {
           out_sync(&oh, t, x);
-          put_stripped(h, t, x->st, x->body, 1);
-          fputs(";\n", h);
+          put_stripped(oh.f, t, x->st, x->body, 1);
+          fputs(";\n", oh.f);
           out_advance(&oh, t, x->st, x->body, 1);
           /* the storage words go from the declaration only: the body's own
              `static` locals stay static */
           out_sync(&op[cur], t, x);
-          put_stripped(pf[cur], t, x->st, x->body, 1);
-          fwrite(t + x->body, 1, x->en - x->body, pf[cur]);
-          fputc('\n', pf[cur]);
+          put_stripped(op[cur].f, t, x->st, x->body, 1);
+          fwrite(t + x->body, 1, x->en - x->body, op[cur].f);
+          fputc('\n', op[cur].f);
           out_advance(&op[cur], t, x->st, x->en, 1);
           acc += fn_weight(t, x->st, x->en);
           if (acc >= per * (size_t)(cur + 1) && cur < nparts - 1) cur++;
@@ -674,11 +713,14 @@ int c_split(const char *pre_path, const char *out_dir, int nparts,
   /* a write that failed (a full disk) leaves a truncated header or part,
      which would compile into errors that name no cause: the split is
      abandoned instead, saying why (#9267) */
-  int bad = ferror(h) | (fclose(h) != 0);
+  out_side_end(&oh);
+  int bad = oh.bad | ferror(h) | (fclose(h) != 0);
   const char *bad_path = bad ? hdr_path : NULL;
-  for (int p = 0; p < nparts; p++)
-    if ((ferror(pf[p]) | (fclose(pf[p]) != 0)) && !bad_path) bad_path = part_paths[p];
-  free(op); free(pf); free(t); free(it); free(inl);
+  for (int p = 0; p < nparts; p++) {
+    out_side_end(&op[p]);
+    if ((op[p].bad | ferror(pf[p]) | (fclose(pf[p]) != 0)) && !bad_path) bad_path = part_paths[p];
+  }
+  free(op); free(ptag); free(pf); free(t); free(it); free(inl);
   if (bad_path) {
     fprintf(stderr, "spinel: writing %s failed (%s); compiling the C as one unit instead\n", bad_path, strerror(errno));
     return -1;
