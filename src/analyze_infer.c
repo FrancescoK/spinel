@@ -11064,6 +11064,12 @@ TyKind infer_uncached(Compiler *c, int id) {
        (#3130). Answer the boxed union until the try resolves; if it never
        does (the NoMethodError gate's raise-all token), poly still holds the
        rescue arm's value correctly. */
+    /* a yield whose block answers nil is a value, nil beside the rescue's:
+       the join the arms of an `if` make (a slot that cannot hold a nil, a
+       Range or a bool, is boxed). Any other nil-typed expression is taken
+       as one that diverges (a raise the folder has turned into a call). */
+    if (et == TY_NIL && rt != TY_UNKNOWN && rt != TY_VOID && e >= 0 && nt_kind(nt, an_unparen(nt, e)) == NK_YieldNode)
+      return ty_unify(et, rt);
     if (et == TY_VOID || et == TY_NIL) return rt;
     if (et == TY_UNKNOWN) {
       /* an empty container carries a value; the union of the two arms is poly */

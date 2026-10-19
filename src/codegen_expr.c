@@ -4821,7 +4821,8 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
     /* An empty container's type reads UNKNOWN for want of an element type; it
        still produces a value, so it must be assigned rather than emitted for
        effect and discarded (#3495). */
-    int e_diverges = (er.untyped || et == TY_VOID) && !node_is_empty_container(nt, e);
+    int e_diverges = (er.untyped || et == TY_VOID || (et == TY_NIL && rt != TY_POLY && nt_kind(nt, an_unparen(nt, e)) == NK_YieldNode)) &&
+                     !node_is_empty_container(nt, e);
     /* --share-strings: under a handle demand (strbuf_route_begin) the
        result slot is the handle, and each value is taken as one */
     int hdem = rt == TY_STRBUF && repr_share_rule(c) && repr_of(c, id).demand;
