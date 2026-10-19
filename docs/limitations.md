@@ -1798,6 +1798,20 @@ Error: global aliasing of regexp special globals is not supported (alias $MATCH 
 Direct reads of the match globals work as usual; only aliasing them is
 unsupported, so `require "English"` does not compile.
 
+#### `autoload` loads its file when the program starts
+
+Spinel resolves `require` and `require_relative` when it compiles, and an
+`autoload` whose path it can read is compiled as a require of that file:
+`autoload :X, "path"`, `autoload :X, "#{__dir__}/path"` and
+`autoload :X, File.expand_path("path", __dir__)`. In a required file the
+autoloads become requires at the file's end, and the name may be a local (a
+loop over the names one file defines); in the entry file the require takes
+the call's place, and the name is a Symbol. Any other `autoload` is
+refused. The file is then loaded when the
+program starts, not on the constant's first use. A program that asks
+`autoload?`, `const_defined?` or `constants` before that use, or whose
+autoloaded file has a side effect of its own, sees the difference.
+
 #### Flip-flop operator
 
 CRuby supports the flip-flop operator (a `Range` used as a condition, toggled
