@@ -39,9 +39,9 @@ static int forwarding_call_arity(Compiler *c, const char *mname) {
     int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     if (an == 0) continue;
     /* a `foo(...)` forwarding call is not a concrete arg count */
-    if (an == 1 && nt_kind(nt, av[0]) == NK_ForwardingArgumentsNode) continue;
+    if (nt_argv_only_forwarding(nt, av, an)) continue;
     int pos = an;
-    if (an > 0 && nt_type(nt, av[an - 1]) && sp_streq(nt_type(nt, av[an - 1]), "KeywordHashNode")) pos = an - 1;
+    if (nt_argv_kwh(nt, av, an) >= 0) pos = an - 1;
     if (pos > maxarg) maxarg = pos;
   }
   return maxarg;
@@ -182,8 +182,7 @@ void collect_def_params(Compiler *c, int def_id, Scope *s) {
             !sp_streq(nt_str(nt, id, "name"), s->name)) continue;
         int a = nt_ref(nt, id, "arguments");
         int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-        if (an == 0 || !nt_type(nt, av[an - 1]) ||
-            !sp_streq(nt_type(nt, av[an - 1]), "KeywordHashNode")) continue;
+        if (nt_argv_kwh(nt, av, an) < 0) continue;
         add_kwhash_key_params(nt, s, av[an - 1]);
       }
     }
@@ -216,7 +215,7 @@ static int forwarding_target_scan(Compiler *c, Scope *s, int *sole) {
       if (!sp_streq(ty, "CallNode") && !sp_streq(ty, "SuperNode")) continue;
       int a = nt_ref(nt, id, "arguments");
       int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-      if (an != 1 || nt_kind(nt, av[0]) != NK_ForwardingArgumentsNode) continue;
+      if (!nt_argv_only_forwarding(nt, av, an)) continue;
       is_super = sp_streq(ty, "SuperNode");
     }
     int mi = -1;
@@ -282,9 +281,8 @@ static void initialize_forwarding_params(Compiler *c, int init) {
     if (!ty || !sp_streq(ty, "CallNode") || !new_site_reaches(c, id, init)) continue;
     int a = nt_ref(nt, id, "arguments");
     int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-    if (an == 1 && nt_kind(nt, av[0]) == NK_ForwardingArgumentsNode) continue;
-    int kwh = an > 0 && nt_type(nt, av[an - 1]) &&
-              sp_streq(nt_type(nt, av[an - 1]), "KeywordHashNode") ? av[an - 1] : -1;
+    if (nt_argv_only_forwarding(nt, av, an)) continue;
+    int kwh = nt_argv_kwh(nt, av, an);
     int pos = kwh >= 0 ? an - 1 : an;
     for (int k = 0; k < pos; k++)
       if (nt_kind(nt, av[k]) == NK_SplatNode)
@@ -5009,7 +5007,7 @@ void register_ffi_decls(Compiler *c) {
         /* a trailing `blocking: true` (the ffi gem's own keyword): the call
            leaves the world while it runs, see FfiFunc.blocking */
         int blocking = 0;
-        if (an >= 1 && nt_type(nt, args[an - 1]) && sp_streq(nt_type(nt, args[an - 1]), "KeywordHashNode")) {
+        if (nt_argv_kwh(nt, args, an) >= 0) {
           int kn = 0; const int *kel = nt_arr(nt, args[an - 1], "elements", &kn);
           for (int ki = 0; ki < kn; ki++) {
             int kk = nt_ref(nt, kel[ki], "key"), kv = nt_ref(nt, kel[ki], "value");
@@ -7171,10 +7169,7 @@ void rewrite_attr_supers(Compiler *c) {
       const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
       if (an != (is_write ? 1 : 0)) continue;
       if (is_write) {
-        NodeKind ak = nt_kind(nt, av[0]);
-        if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode ||
-            ak == NK_ForwardingArgumentsNode)
-          continue;
+        if (nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK | NT_ARG_FORWARDING)) continue;
         val = av[0];
       }
     }
@@ -9341,7 +9336,7 @@ static int pivs_proc_param(Compiler *c, int lit, const char *pn, char *set, int 
     if (!is_call_or_yield(nt_str(nt, u, "name")) || !proc_lit_carrier(c, nt_ref(nt, u, "receiver"), lit)) continue;
     int a = nt_ref(nt, u, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
-    for (int i = 0; i < ac; i++) if (nt_kind(nt, av[i]) == NK_SplatNode || nt_kind(nt, av[i]) == NK_KeywordHashNode) return 0;
+    if (nt_argv_has(nt, av, ac, NT_ARG_SPLAT | NT_ARG_KEYWORDS)) return 0;
     if (at >= ac) return 0;
     if (elems ? !pivs_elems(c, av[at], set, depth + 1) : !pivs_value(c, av[at], set, depth + 1)) return 0;
     calls++;
@@ -9460,7 +9455,7 @@ static int pivs_local_push_ok(Compiler *c, int u, char *set, int depth) {
     if (!pivs_value(c, av[1], set, depth + 1)) return 0;
   }
   else if (array_mutator_name(un) ||
-           (nt_ref(nt, u, "block") >= 0 && nt_kind(nt, nt_ref(nt, u, "block")) == NK_BlockArgumentNode))
+           nt_call_has_block_arg(nt, u))
     return 0;
   return 1;
 }

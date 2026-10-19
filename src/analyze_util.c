@@ -1076,10 +1076,7 @@ int str_self_call(const NodeTable *nt, int id) {
   int a = nt_ref(nt, id, "arguments");
   int ac = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
-  for (int i = 0; i < ac; i++) {
-    NodeKind k = nt_kind(nt, av[i]);
-    if (k == NK_SplatNode || k == NK_BlockArgumentNode || k == NK_KeywordHashNode) return 0;
-  }
+  if (nt_argv_has(nt, av, ac, NT_ARG_SPLAT | NT_ARG_BLOCK | NT_ARG_KEYWORDS)) return 0;
   if (ac == 0 && (sp_streq(nm, "to_s") || sp_streq(nm, "to_str") || sp_streq(nm, "itself") ||
                   sp_streq(nm, "freeze") || sp_streq(nm, "clear") || sp_streq(nm, "reverse!")))
     return 1;
@@ -1920,7 +1917,7 @@ static int *yvt_ids = NULL, *yvt_sup_ids = NULL;
 static int yvt_call_forwards_block(const NodeTable *nt, int cid) {
   int a = nt_ref(nt, cid, "arguments");
   int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-  return an == 1 && av && nt_kind(nt, av[0]) == NK_ForwardingArgumentsNode;
+  return nt_argv_only_forwarding(nt, av, an);
 }
 /* Could block-passing call site `cid` reach method `mi` at all? A callee is
    found by name: the call's own name, that name through an `alias`, or `new`
@@ -2270,8 +2267,7 @@ TyKind yield_value_type(Compiler *c, int mi) {
        method rather than passing a literal. The value `mi` yields is then
        whatever that forwarded block produces -- the enclosing method's
        own yield value. */
-    const char *blkty = blk >= 0 ? nt_type(nt, blk) : NULL;
-    if (fwd_args || (blkty && sp_streq(blkty, "BlockArgumentNode"))) {
+    if (fwd_args || nt_call_has_block_arg(nt, cid)) {
       Scope *encl = comp_scope_of(c, cid);
       int emi = encl ? (int)(encl - c->scopes) : -1;
       /* `mi(&some_proc)`: a first-class Proc / lambda / Method value, not the
@@ -2380,8 +2376,7 @@ int yield_block_tails(Compiler *c, int mi, int *out, int max) {
     int fwd_args = yvt_fwd ? yvt_fwd[ii] : yvt_call_forwards_block(nt, cid);
     if ((int)(comp_scope_of(c, cid) - c->scopes) == mi) continue;
     if (!yvt_reaches(c, cid, mi)) continue;
-    const char *blkty = blk >= 0 ? nt_type(nt, blk) : NULL;
-    if (fwd_args || (blkty && sp_streq(blkty, "BlockArgumentNode"))) {
+    if (fwd_args || nt_call_has_block_arg(nt, cid)) {
       /* a proc value of the call's own: a literal's tail, as a literal
          block's; any other arrives boxed, with no scalar nil to carry */
       if (!call_forwards_own_block(c, cid)) {
@@ -2792,12 +2787,11 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
      the block is spliced per call site, so use that site's block body type. */
   if (is_yield || is_blk_param_call(c, last, mi)) {
     int blk = nt_ref(c->nt, call_id, "block");
-    const char *bty = blk >= 0 ? nt_type(c->nt, blk) : NULL;
     /* `callee(&b)` / `callee(...)` forwards the block active in the enclosing
        method (a `...` forward carries it implicitly, with no block node), so
        the value `callee` yields is whatever that forwarded block produces --
        i.e. the enclosing method's own per-call-site yield value. */
-    int fwd = (bty && sp_streq(bty, "BlockArgumentNode"));
+    int fwd = nt_call_has_block_arg(c->nt, call_id);
     if (!fwd && blk < 0) fwd = yvt_call_forwards_block(c->nt, call_id);
     /* `callee(&lp)` with a proc of the call's own: the yield runs that
        proc, so the call answers its value, as the yield is typed. Read
@@ -3080,7 +3074,7 @@ TyKind proc_node_ret(Compiler *c, int create) {
        forwarded proc, whose return is unknowable here (a block param's
        actual block lives at the caller). TY_UNKNOWN maps to the boxed poly
        return at the .call site instead of a silent nil. */
-    if (blk >= 0 && nt_type(nt, blk) && sp_streq(nt_type(nt, blk), "BlockArgumentNode"))
+    if (nt_call_has_block_arg(nt, create))
       return TY_UNKNOWN;
     body = blk >= 0 ? nt_ref(nt, blk, "body") : -1;
   }
@@ -4023,8 +4017,7 @@ const char *time_strict_parser_call(Compiler *c, int id) {
   int an = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   if (an != 1) return NULL;
-  NodeKind ak = nt_kind(nt, av[0]);
-  if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return NULL;
+  if (nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK)) return NULL;
   int tci = comp_class_index(c, "Time");
   if (tci >= 0 && comp_cmethod_in_chain(c, tci, name, NULL) >= 0) return NULL;
   return fn;
@@ -4147,10 +4140,7 @@ int strh_call_op_in(Compiler *c, int call, TyKind rt, int unknown_ok) {
   const char *nm = nt_str(nt, call, "name");
   int ca = nt_ref(nt, call, "arguments"), argc = 0, blk = nt_ref(nt, call, "block");
   const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &argc) : NULL;
-  for (int k = 0; k < argc; k++) {
-    NodeKind ak = nt_kind(nt, av[k]);
-    if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return STRH_NONE;
-  }
+  if (nt_argv_has(nt, av, argc, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK)) return STRH_NONE;
   int op = strh_op(nm, argc, blk < 0 ? 0 : nt_kind(nt, blk) == NK_BlockNode ? 1 : 2);
   if (op == STRH_EACH && !strh_plain_block_params(c, blk)) return STRH_NONE;
   if ((op == STRH_ELEM && argc == 1) || op == STRH_STORE)

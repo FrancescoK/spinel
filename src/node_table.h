@@ -475,6 +475,104 @@ static inline const int *nt_arr(const NodeTable *nt, int id, const char *key, in
     }
   return NULL;
 }
+/* ---- an argument list's shape ----
+   Prism sets ArgumentsNodeFlags on an ArgumentsNode (CONTAINS_SPLAT,
+   CONTAINS_MULTIPLE_SPLATS, CONTAINS_KEYWORDS, CONTAINS_KEYWORD_SPLAT,
+   CONTAINS_FORWARDING). The table does not keep them: the desugars rewrite
+   argument lists (a `foo(*a)` turned into a literal list, arguments added by
+   a splice, a SplatNode retyped), so a bit exported at parse time would
+   describe the list as written, not as it is. These predicates ask the list
+   itself, each time, so they answer from its current children after any
+   rewrite and keep nothing to invalidate. A list is a few elements, and the
+   scan costs what reading a cached field would: a lookup of the node's
+   array, then one kind load per element. A cache on the ArgumentsNode
+   would also answer for the whole list, where callers ask about a prefix
+   or a tail of it, and would have to be dropped by every edit of the
+   array and every retyping of an argument node.
+
+   They take the list the caller already holds, an `arguments` array and its
+   length (a call's `arguments`, a yield's, a super's, an index write's; also
+   a slice of one), and answer 0 for a missing list. A call's `&blk` is not
+   in the list: it is the call's `block`, a BlockArgumentNode
+   (nt_call_has_block_arg), except `&:name` for a word-character name or a
+   unary operator, which the parser makes a literal block; `&:+`, `&:&` and
+   the other binary operators stay a BlockArgumentNode. */
+#define NT_ARG_SPLAT 1        /* SplatNode: `*a`, and the anonymous `*` */
+#define NT_ARG_KEYWORDS 2     /* KeywordHashNode: `k: v`, `**h` (a trailing hash without braces) */
+#define NT_ARG_BLOCK 4        /* BlockArgumentNode as a list element: defensive, Prism and the desugars put `&blk` on the call's block, and the loops that tested for one keep asking */
+#define NT_ARG_FORWARDING 8   /* ForwardingArgumentsNode: `...` */
+static inline unsigned nt_arg_shape(NodeKind k) {
+  switch (k) {
+  case NK_SplatNode: return NT_ARG_SPLAT;
+  case NK_KeywordHashNode: return NT_ARG_KEYWORDS;
+  case NK_BlockArgumentNode: return NT_ARG_BLOCK;
+  case NK_ForwardingArgumentsNode: return NT_ARG_FORWARDING;
+  default: return 0;
+  }
+}
+/* Is any of argv[0..argc) one of the shapes (a mask of NT_ARG_*)? The single
+   shapes below name the common questions; a caller that asks for several
+   at once ("no splat, keyword or block argument") passes the mask. */
+static inline int nt_argv_has(const NodeTable *nt, const int *argv, int argc, unsigned shapes) {
+  if (!argv) return 0;
+  for (int i = 0; i < argc; i++)
+    if (nt_arg_shape(nt_kind(nt, argv[i])) & shapes) return 1;
+  return 0;
+}
+/* PM_ARGUMENTS_NODE_FLAGS_CONTAINS_SPLAT: does the call spread an array into
+   its positionals (`*args`)? */
+static inline int nt_argv_has_splat(const NodeTable *nt, const int *argv, int argc) {
+  return nt_argv_has(nt, argv, argc, NT_ARG_SPLAT);
+}
+/* How many of the arguments are splats (CONTAINS_MULTIPLE_SPLATS is
+   `> 1`). */
+static inline int nt_argv_splat_count(const NodeTable *nt, const int *argv, int argc) {
+  int n = 0;
+  for (int i = 0; argv && i < argc; i++)
+    if (nt_kind(nt, argv[i]) == NK_SplatNode) n++;
+  return n;
+}
+/* CONTAINS_KEYWORDS: does the call pass keyword arguments -- a literal
+   `k: v` or a `**h`? A sole keyword hash counts too (the Struct/Data member
+   form, `d.class.new(x: 1)`, is built as the static `D.new(x: 1)` is). */
+static inline int nt_argv_has_keywords(const NodeTable *nt, const int *argv, int argc) {
+  return nt_argv_has(nt, argv, argc, NT_ARG_KEYWORDS);
+}
+/* CONTAINS_FORWARDING: does the call forward `...`? */
+static inline int nt_argv_has_forwarding(const NodeTable *nt, const int *argv, int argc) {
+  return nt_argv_has(nt, argv, argc, NT_ARG_FORWARDING);
+}
+/* The trailing keyword hash of the arguments (`f(a, k: 1)`), or -1. Prism
+   puts the keywords after the positionals, so it is the last element. */
+static inline int nt_argv_kwh(const NodeTable *nt, const int *argv, int argc) {
+  return argv && argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+}
+/* Is the argument list exactly `(...)`? */
+static inline int nt_argv_only_forwarding(const NodeTable *nt, const int *argv, int argc) {
+  return argv && argc == 1 && nt_kind(nt, argv[0]) == NK_ForwardingArgumentsNode;
+}
+/* Does a Hash or KeywordHash literal spread another hash (`**h`)? */
+static inline int nt_hash_has_splat(const NodeTable *nt, int hash) {
+  int n = 0; const int *el = hash >= 0 ? nt_arr(nt, hash, "elements", &n) : NULL;
+  for (int e = 0; e < n; e++)
+    if (nt_kind(nt, el[e]) == NK_AssocSplatNode) return 1;
+  return 0;
+}
+/* CONTAINS_KEYWORD_SPLAT: does an argument's keyword hash carry a `**h`? */
+static inline int nt_argv_has_kwsplat(const NodeTable *nt, const int *argv, int argc) {
+  for (int i = 0; argv && i < argc; i++)
+    if (nt_kind(nt, argv[i]) == NK_KeywordHashNode && nt_hash_has_splat(nt, argv[i])) return 1;
+  return 0;
+}
+/* The call's `&blk` or `&`: its block when that is a BlockArgumentNode, -1
+   for a literal block or none. */
+static inline int nt_call_block_arg(const NodeTable *nt, int call) {
+  int b = nt_ref(nt, call, "block");
+  return nt_kind(nt, b) == NK_BlockArgumentNode ? b : -1;
+}
+static inline int nt_call_has_block_arg(const NodeTable *nt, int call) {
+  return nt_call_block_arg(nt, call) >= 0;
+}
 const char *nt_content(const NodeTable *nt, int id);
 
 /* Generic child iteration (for structural walks that don't know field

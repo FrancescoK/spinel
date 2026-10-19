@@ -632,7 +632,7 @@ int emit_str_equal(Compiler *c, int id, Buf *b) {
       sn_guard_pending(c, id))
     return 0;
   const int *argv = call_args(nt, id, &argc);
-  if (argc != 1 || call_has_splat_arg(nt, argv, argc)) return 0;
+  if (argc != 1 || nt_argv_has_splat(nt, argv, argc)) return 0;
   TyKind rt = comp_recv_type(c, recv);
   int builtin = (rt == TY_STRING || rt == TY_STRBUF) && cplan_targets(c, id, tg, CPT_MAX) == 0;
   if (!builtin && !(share_plan_role(c, recv) == SPR_IDENTITY &&

@@ -707,7 +707,7 @@ int cplan_target_binds(Compiler *c, int id, int mi) {
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   /* a trailing keyword hash is judged as the arm judges it: taken as
      keywords, refused, or one more positional Hash (kw_plan) */
-  int kwh = argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+  int kwh = nt_argv_kwh(nt, argv, argc);
   int pos_argc = kwh >= 0 ? argc - 1 : argc;
   for (int a = 0; a < pos_argc; a++) {
     NodeKind k = nt_kind(nt, argv[a]);
@@ -1756,11 +1756,9 @@ static void cpoly_user_arms_n(Compiler *c, int id, const char *name, int argc, c
                               TyKind ret, PolyPlan *p, int full) {
   const NodeTable *nt = c->nt;
   int cap = 0;
-  int has_splat_arg = 0;
-  for (int a = 0; a < argc; a++)
-    if (nt_kind(nt, argv[a]) == NK_SplatNode) { has_splat_arg = 1; break; }
+  int has_splat_arg = nt_argv_has_splat(nt, argv, argc);
   int kwh = -1, pos_argc = argc, kw_ds = 0, kw_strkey = 0;
-  if (nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) {
+  if (nt_argv_kwh(nt, argv, argc) >= 0) {
     int en = 0; const int *els = nt_arr(nt, argv[argc - 1], "elements", &en);
     int plain = en > 0, nds = 0;
     for (int e = 0; e < en; e++) {

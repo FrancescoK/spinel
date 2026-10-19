@@ -572,10 +572,7 @@ static int hv_op_ok(const NodeTable *nt, int call) {
   if (!nm) return 0;
   int a = nt_ref(nt, call, "arguments");
   int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-  for (int i = 0; i < an; i++) {
-    NodeKind ak = nt_kind(nt, av[i]);
-    if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 0;
-  }
+  if (nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK)) return 0;
   int blk = nt_ref(nt, call, "block");
   int has_blk = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode;
   if (blk >= 0 && !has_blk) return 0;
@@ -1051,11 +1048,8 @@ int an_poly_str_upto(Compiler *c, int id) {
   int a = nt_ref(nt, id, "arguments"), an = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
   if (!name || !is_upto_name(name) || recv < 0 || an < 1 || an > 2) return 0;
-  for (int i = 0; i < an; i++) {
-    NodeKind k = nt_kind(nt, av[i]);
-    if (k == NK_SplatNode || k == NK_KeywordHashNode || k == NK_BlockArgumentNode) return 0;
-  }
-  if (nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockArgumentNode) return 0;
+  if (nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK)) return 0;
+  if (nt_call_has_block_arg(nt, id)) return 0;
   if (infer_type(c, recv) != TY_POLY || an_user_defines_or_reads(c, name)) return 0;
   TyKind lt = infer_type(c, av[0]);
   return an == 2 || lt == TY_STRING || lt == TY_STRBUF || lt == TY_POLY || lt == TY_BIGINT;
@@ -3540,8 +3534,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
          dropped -- `z.round(2, half: :even)` answered nil. */
       if ((argc == 1 || argc == 2) &&
           is_round_family(name) &&
-          nt_type(nt, argv[argc - 1]) &&
-          sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode"))
+          nt_argv_kwh(nt, argv, argc) >= 0)
         { *out = an_poly_concrete(c, name, TY_POLY); return 1; }
       if (argc == 1 && is_round_family(name))
         { *out = an_poly_concrete(c, name, TY_POLY); return 1; }
@@ -3559,7 +3552,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
       if ((argc == 1 || argc == 2) && nt_ref(nt, id, "block") < 0 &&
           (sp_streq(name, "sample") || (argc == 1 && (sp_streq(name, "shuffle") || sp_streq(name, "shuffle!"))))) {
         int nkv = 0; int ka = nt_ref(nt, id, "arguments"); const int *kv = ka >= 0 ? nt_arr(nt, ka, "arguments", &nkv) : NULL;
-        if (kv && nkv == argc && nt_kind(nt, kv[argc - 1]) == NK_KeywordHashNode)
+        if (nkv == argc && nt_argv_kwh(nt, kv, nkv) >= 0)
           { *out = an_poly_concrete(c, name, (argc == 2 || sp_streq(name, "shuffle")) ? TY_POLY_ARRAY : TY_POLY); return 1; }
       }
       /* String#getbyte on a boxed value: int byte or nil on out-of-range. */
@@ -4995,8 +4988,7 @@ static int infer_int_float_recv_call(Compiler *c, int id, const NodeTable *nt, c
          where `f.round` promotes. It is peeled off the positional count.
          floor / ceil / truncate reject a keyword outright and keep the arm
          that raises, so they stay where they were. */
-      int pv_kw = argc >= 1 && nt_type(nt, argv[argc - 1]) &&
-                  sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode");
+      int pv_kw = nt_argv_kwh(nt, argv, argc) >= 0;
       int pv_round_kw = pv_kw && sp_streq(name, "round");
       if (!pv_kw || pv_round_kw) {
         int pv_argc = argc - (pv_round_kw ? 1 : 0);
@@ -5043,8 +5035,7 @@ static int infer_int_float_recv_call(Compiler *c, int id, const NodeTable *nt, c
       /* a trailing `half:` keyword only picks the tie-break mode; peel it
          off the positional count for the class choice */
       int fr_argc = argc;
-      if (fr_argc >= 1 && nt_type(nt, argv[fr_argc - 1]) &&
-          sp_streq(nt_type(nt, argv[fr_argc - 1]), "KeywordHashNode"))
+      if (nt_argv_kwh(nt, argv, fr_argc) >= 0)
         fr_argc--;
       if (fr_argc == 1) {
         const char *aty = nt_type(nt, argv[0]);
@@ -5418,9 +5409,7 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
       int recv_is_var = class_recv_is_dynamic(c, recv);
       TyKind uret = TY_UNKNOWN; int nc = recv_is_var ? 0 : -1000, set = 0;
       int ncc = 0, nblk = 0;
-      int has_blk = nt_ref(nt, id, "block") >= 0, splat = 0;
-      for (int a = 0; a < argc; a++)
-        if (nt_kind(nt, argv[a]) == NK_SplatNode) splat++;
+      int has_blk = nt_ref(nt, id, "block") >= 0, splat = nt_argv_splat_count(nt, argv, argc);
       const PolyCand *ccs = recv_is_var ? comp_cmethod_candidates(c, name, &ncc) : NULL;
       for (int ki = 0; ki < ncc; ki++) {
         int k = ccs[ki].cls;
@@ -7242,8 +7231,7 @@ static int infer_block_kernel_call(Compiler *c, int id, const NodeTable *nt, con
   if (ie_kind) {
     int blk = nt_ref(nt, id, "block");
     if (blk >= 0) {
-      const char *bty = nt_type(nt, blk);
-      if (bty && sp_streq(bty, "BlockArgumentNode")) {
+      if (nt_call_has_block_arg(nt, id)) {
         /* `instance_exec(args, &b)` forwards the enclosing method's block; the
            value it produces is that method's own forwarded-block value across
            call sites (the method inlines per site, splicing the literal). A
@@ -7419,7 +7407,7 @@ static int infer_block_iter_call(Compiler *c, int id, const NodeTable *nt, const
      structural rule here: builtin rows cannot distinguish a block argument
      from a literal block. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && sp_streq(name, "each") &&
-      nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockArgumentNode)
+      nt_call_has_block_arg(nt, id))
     { *out = TY_POLY; return 1; }
   /* A block each-family call returns its receiver (each, each_value/each_key/
      each_pair, each_with_index, reverse_each), so the value form composes:
@@ -8817,7 +8805,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      its own emitter; this types the value form. */
   if (recv < 0 && !an_bare_call_class_owned(c, id) && (is_inspect_print(name)) && nt_ref(nt, id, "block") < 0 && argc >= 1) {
     /* a splat among them leaves their count to run time: nil, the one, or the array */
-    for (int a = 0; a < argc; a++) if (nt_kind(nt, argv[a]) == NK_SplatNode) return TY_POLY;
+    if (nt_argv_has_splat(nt, argv, argc)) return TY_POLY;
     return argc >= 2 ? TY_POLY_ARRAY : infer_type(c, argv[0]);   /* p(a, b, ...) returns the array of its arguments */
   }
   /* Object#instance_variables: a static symbol list for a typed object */

@@ -891,7 +891,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
      value is boxed once, printed through the poly inspect (which consults
      the user-object hook), and unboxed back to the static type. */
   if (recv < 0 && !bare_call_class_owned(c, id) && (is_inspect_print(name)) && nt_ref(nt, id, "block") < 0 &&
-      call_has_splat_arg(nt, argv, argc)) return emit_p_splat_value(c, argc, argv, b);
+      nt_argv_has_splat(nt, argv, argc)) return emit_p_splat_value(c, argc, argv, b);
   /* p(a, b, ...) as a value: prints each argument's inspect, returns the
      argument array. */
   if (recv < 0 && !bare_call_class_owned(c, id) && (is_inspect_print(name)) && argc >= 2 && nt_ref(nt, id, "block") < 0) {
@@ -1432,7 +1432,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         /* a block passed as a proc (`&pr`, `&proc { }`) is that proc; a
            literal one is built here. Built as a literal, `&pr` gave a proc
            with no body and every conflict read nil. */
-        int bt = nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockArgumentNode ? poly_call_blk_proc(c, id, -1) : -1;
+        int bt = nt_call_has_block_arg(nt, id) ? poly_call_blk_proc(c, id, -1) : -1;
         /* a hash of any other variant (a shared String value, nil, an
            Integer, `{}`), or something a hash may be, goes boxed, as the
            blockless arm below takes it; rooted, as building the proc after

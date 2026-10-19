@@ -3313,9 +3313,9 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
   /* `[[ints],...].inject(&:&|:||:-)`: fold the inner int arrays with a set op.
      Handled before the typed-array path since poly arrays have no array_kind. */
   if (rr.elem == TY_POLY && comp_is_nested_int_array_literal(c, recv)) {
-    int sblk = nt_ref(nt, id, "block");
+    int sblk = nt_call_block_arg(nt, id);
     const char *sop = NULL;
-    if (sblk >= 0 && nt_type(nt, sblk) && sp_streq(nt_type(nt, sblk), "BlockArgumentNode")) {
+    if (sblk >= 0) {
       int ex = nt_ref(nt, sblk, "expression");
       if (ex >= 0 && nt_type(nt, ex) && sp_streq(nt_type(nt, ex), "SymbolNode")) sop = nt_str(nt, ex, "value");
     }
@@ -3336,9 +3336,9 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
      fold via the tag-dispatching sp_poly_<op> over boxed elements. Covers
      Hash#values / #map results, whose elements are boxed. */
   if (rr.elem == TY_POLY) {
-    int pblk = nt_ref(nt, id, "block");
+    int pblk = nt_call_block_arg(nt, id);
     const char *pop = NULL;
-    if (pblk >= 0 && nt_type(nt, pblk) && sp_streq(nt_type(nt, pblk), "BlockArgumentNode")) {
+    if (pblk >= 0) {
       int ex = nt_ref(nt, pblk, "expression");
       if (ex >= 0 && nt_type(nt, ex) && sp_streq(nt_type(nt, ex), "SymbolNode")) pop = nt_str(nt, ex, "value");
     }
@@ -8127,9 +8127,7 @@ int rest_bind_argc(Compiler *c, Scope *m, int kwh, int pos_argc) {
 int kwh_gathers(Compiler *c, Scope *m, int kwh, const int *argv, int pos_argc) {
   if (!m || !kwh_only_spreads(c->nt, kwh) || m->cs_synth) return 0;
   if (kwh_positional_slot(c, m, kwh, pos_argc) < 0) {
-    int spl = 0;
-    for (int k = 0; argv && k < pos_argc; k++)
-      if (nt_kind(c->nt, argv[k]) == NK_SplatNode) spl = 1;
+    int spl = nt_argv_has_splat(c->nt, argv, pos_argc);
     if (kwh_consumed_by_kwparam(c, m, kwh) ||
         !(spl || (m->rest_idx < 0 && kwh_arg_param(c, m, pos_argc) < 0))) return 0;
   }
@@ -8882,14 +8880,6 @@ void emit_dropped_value(Compiler *c, int v, Buf *b) {
 }
 
 /* See codegen_internal.h. */
-int kwh_has_splat(const NodeTable *nt, int kwh) {
-  int en = 0; const int *el = kwh >= 0 ? nt_arr(nt, kwh, "elements", &en) : NULL;
-  for (int e = 0; e < en; e++)
-    if (nt_kind(nt, el[e]) == NK_AssocSplatNode) return 1;
-  return 0;
-}
-
-/* See codegen_internal.h. */
 int kwh_merged(Compiler *c, Scope *m, int kwh) {
   return callee_declares_kwargs(c, m) && kwh_sources_overlap(c->nt, kwh);
 }
@@ -9409,10 +9399,7 @@ static int default_rebound_by(Compiler *c, int d, int after) {
 static int arg_reads_copy(Compiler *c, Scope *m, const int *argv, int argc, int k) {
   const NodeTable *nt = c->nt;
   if (!m || m->rest_idx >= 0 || argc > m->nparams || !strbuf_read_copies(c, argv[k])) return 0;
-  for (int i = 0; i < argc; i++) {
-    NodeKind ak = nt_kind(nt, argv[i]);
-    if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 0;
-  }
+  if (nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK)) return 0;
   for (int i = 0; i < m->nrequired; i++) if (m->pdefault && m->pdefault[i] >= 0) return 0;
   if (callee_has_kwarg(c, m, m->pnames[k])) return 0;
   LocalVar *p = scope_local(m, m->pnames[k]);
@@ -9482,7 +9469,7 @@ static int emit_arg_handle_first(Compiler *c, int v, int rebound) {
    interpolation) is built ahead of it by its own emission. */
 int emit_args_before_binding(Compiler *c, Scope *m, const int *argv, int argc, Buf *b) {
   const NodeTable *nt = c->nt;
-  int kwh = argc > 0 && argv && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+  int kwh = nt_argv_kwh(nt, argv, argc);
   int nd = 0, *dfl = call_site_defaults(c, m, kwh, &nd);
   int nv = 0, ev = 0, ed = 0, run = 0; char *ds = NULL;
   int *vals = source_values(nt, argv, argc, &nv, &ds);
@@ -10522,7 +10509,7 @@ int kw_plan_error(const KwPlan *P, char *msg, size_t n) {
    first unknown Symbol alone is named here. Returns 1 when it raised. */
 int emit_unknown_kwarg_raise(Compiler *c, Scope *m, const int *argv, int argc) {
   const NodeTable *nt = c->nt;
-  int kwh = argc > 0 && argv && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+  int kwh = nt_argv_kwh(nt, argv, argc);
   KwPlan P;
   kw_plan(c, m, kwh, &P);
   P.nmissing = 0;
@@ -10724,13 +10711,11 @@ void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv) {
   const NodeTable *nt = c->nt;
   int kwh = -1;
   int pos_argc = argc;
-  if (argc > 0 && argv && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) {
+  if (nt_argv_kwh(nt, argv, argc) >= 0) {
     kwh = argv[argc - 1];
     pos_argc = argc - 1;
   }
-  int has_splat = 0;
-  for (int k = 0; k < pos_argc && !has_splat; k++)
-    if (argv && nt_kind(nt, argv[k]) == NK_SplatNode) has_splat = 1;
+  int has_splat = nt_argv_has_splat(nt, argv, pos_argc);
   KwPlan P;
   kw_plan(c, m, kwh, &P);
   /* A `**nil` method refuses a keyword before it counts anything: a literal
@@ -11018,7 +11003,7 @@ int arg_layout_plain_arg(Compiler *c, Scope *m, int pos_argc, int i) {
    is empty). `argv` holds all `argc` arguments, the keyword hash included. */
 int gather_lead_placed(Compiler *c, Scope *m, const int *argv, int argc, int i) {
   const NodeTable *nt = c->nt;
-  int kwh = argc > 0 && argv && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+  int kwh = nt_argv_kwh(nt, argv, argc);
   int pos_argc = kwh >= 0 ? argc - 1 : argc;
   if (!argv || i < 0 || i >= pos_argc || i >= m->nparams) return 0;
   int nopt = 0;
@@ -11059,7 +11044,7 @@ int gather_lead_placed(Compiler *c, Scope *m, const int *argv, int argc, int i) 
    arguments, the keyword hash included. */
 static int gather_lead_arg(Compiler *c, Scope *m, const int *argv, int argc, int i) {
   const NodeTable *nt = c->nt;
-  int kwh = argc > 0 && argv && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+  int kwh = nt_argv_kwh(nt, argv, argc);
   if (!gather_lead_placed(c, m, argv, argc, i)) return -1;
   int x = argv[i];
   NodeKind xk = nt_kind(nt, x);
@@ -11113,7 +11098,7 @@ static void arg_bind_begin(Compiler *c, Scope *m, const int *argv, int argc, Arg
   memset(B, 0, sizeof *B);
   B->argv = argv; B->argc = argc; B->pos_argc = argc; B->kwh = -1; B->splat = -1;
   if (!m) return;
-  if (argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) { B->kwh = argv[argc - 1]; B->pos_argc--; }
+  if (nt_argv_kwh(nt, argv, argc) >= 0) { B->kwh = argv[argc - 1]; B->pos_argc--; }
   for (int k = 0; k < B->pos_argc; k++) {
     NodeKind ak = nt_kind(nt, argv[k]);
     if (ak == NK_ForwardingArgumentsNode) return;
@@ -11739,7 +11724,7 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
      Forward the enclosing `def foo(...)` method's synthesized __fwd_* params
      directly to the callee, positionally (#1288). The compiler already knows
      foo's args; no rest array / splat is materialized. */
-  if (argc == 1 && argv && nt_kind(nt, argv[0]) == NK_ForwardingArgumentsNode) {
+  if (nt_argv_only_forwarding(nt, argv, argc)) {
     Scope *encl = comp_scope_of(c, argv[0]);
     /* A leading concrete param before `...` (`def f(a, ...)`) is NOT forwarded:
        the forward carries only the __fwd_ slots (and synthesized keyword
@@ -11778,8 +11763,7 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
   /* Separate trailing keyword-hash arg (if any) from positional args. */
   int kwh = -1;
   int pos_argc = argc;
-  if (argc > 0 && nt_type(nt, argv[argc - 1]) &&
-      sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
+  if (nt_argv_kwh(nt, argv, argc) >= 0) {
     kwh = argv[argc - 1];
     pos_argc = argc - 1;
   }
@@ -12924,7 +12908,7 @@ static void emit_dispatch_in(Compiler *c, int cid, const char *name,
      __fwd_* params positionally (#1288), same as the emit_args_filled path. */
   Scope *fwd_encl = NULL;
   int fwd_base_d = 0;
-  if (argc == 1 && argv && nt_kind(nt, argv[0]) == NK_ForwardingArgumentsNode) {
+  if (nt_argv_only_forwarding(nt, argv, argc)) {
     fwd_encl = comp_scope_of(c, argv[0]);
     /* skip the enclosing method's leading concrete params (`def f(a, ...)`) --
        only the __fwd_ slots are forwarded. */
@@ -12937,8 +12921,7 @@ static void emit_dispatch_in(Compiler *c, int cid, const char *name,
   }
   /* separate keyword-hash arg */
   int kwh_d = -1, pos_argc_d = argc;
-  if (argc > 0 && nt_type(nt, argv[argc - 1]) &&
-      sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
+  if (nt_argv_kwh(nt, argv, argc) >= 0) {
     kwh_d = argv[argc - 1]; pos_argc_d = argc - 1;
   }
   /* Which argument, splat element or gathered element each parameter takes

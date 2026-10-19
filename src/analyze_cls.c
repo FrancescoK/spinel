@@ -2222,8 +2222,7 @@ static void cf_call(CF *f, int v) {
         int body = nt_ref(nt, blk, "body");
         if (!plain) cf_all_block_params(f, blk);
         else if (sp_streq(key, "Thread")) {
-          int splat = 0;
-          for (int i = 0; i < argc; i++) if (nt_kind(nt, argv[i]) == NK_SplatNode || nt_kind(nt, argv[i]) == NK_BlockArgumentNode) splat = 1;
+          int splat = nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_BLOCK);
           if (splat) cf_all_block_params(f, blk);
           else for (int i = 0; i < n; i++) if (names[i]) { int pe = cf_lv(f, body >= 0 ? body : blk, names[i]); if (i < argc) cf_flow(f, argv[i], pe); }
         }
@@ -2629,8 +2628,7 @@ static void cf_node(CF *f, int v) {
     cf_flow(f, f->yval_el[mi], v);
     int a = nt_ref(nt, v, "arguments"), an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-    int spread = 0;
-    for (int i = 0; i < an; i++) if (nt_kind(nt, av[i]) == NK_SplatNode || nt_kind(nt, av[i]) == NK_KeywordHashNode) spread = 1;
+    int spread = nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_KEYWORDS);
     if (spread || an > CF_YARGS) {
       for (int i = 0; i < an; i++) for (int y = 0; y < CF_YARGS; y++)
         cf_flow(f, nt_kind(nt, av[i]) == NK_SplatNode ? nt_ref(nt, av[i], "expression") : av[i], f->yarg_el[mi][y]);

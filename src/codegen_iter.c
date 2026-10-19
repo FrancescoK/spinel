@@ -64,7 +64,7 @@ static int pure_forwarding_target(Compiler *c, int mi, int depth) {
   if (!cty || !sp_streq(cty, "CallNode") || nt_ref(c->nt, call, "receiver") >= 0) return -1;
   int args = nt_ref(c->nt, call, "arguments");
   int ac = 0; const int *av = args >= 0 ? nt_arr(c->nt, args, "arguments", &ac) : NULL;
-  if (ac != 1 || nt_kind(c->nt, av[0]) != NK_ForwardingArgumentsNode) return -1;
+  if (!nt_argv_only_forwarding(c->nt, av, ac)) return -1;
   const char *tn = nt_str(c->nt, call, "name");
   if (!tn) return -1;
   int t = comp_method_index(c, tn);
@@ -811,12 +811,11 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
      params from the enclosing forwarder's synth __fwd_* params, not from a
      literal ForwardingArgumentsNode (which has no value of its own). */
   Scope *fwd_encl = NULL;
-  if (argc == 1 && argv && nt_kind(nt, argv[0]) == NK_ForwardingArgumentsNode)
+  if (nt_argv_only_forwarding(nt, argv, argc))
     fwd_encl = comp_scope_of(c, argv[0]);
   /* A trailing keyword-hash arg binds by param name, not positionally. */
   int kwh = -1, pos_argc = argc;
-  if (argc > 0 && argv && nt_type(nt, argv[argc - 1]) &&
-      sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
+  if (nt_argv_kwh(nt, argv, argc) >= 0) {
     kwh = argv[argc - 1]; pos_argc = argc - 1;
   }
   /* The `**` operands, the positionals evaluated ahead of them and a splat
@@ -1504,8 +1503,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   int splice_tok = -1;
   {
     int pargc = argc;
-    if (argc > 0 && argv && nt_type(nt, argv[argc - 1]) &&
-        sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) pargc = argc - 1;
+    if (nt_argv_kwh(nt, argv, argc) >= 0) pargc = argc - 1;
     arg_layout(c, m, argv, pargc, pargc < argc ? argv[pargc] : -1, 1, &L);
     refuse_yield_handle_args(c, id);
     alias_mask = inline_alias_params(c, mi, argv, pargc, &L, nt_ref(nt, id, "block"), tag, &splice_tok);
@@ -2684,7 +2682,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
      binds `yield(k: 1)` into `|a, k:|` as a = nil. It stays positional only
      for a block that takes no keywords. */
   int ykw = -1, nokw = block_no_keywords(c, blk);
-  if (yc > 0 && yargs && nt_kind(nt, yargs[yc - 1]) == NK_KeywordHashNode &&
+  if (nt_argv_kwh(nt, yargs, yc) >= 0 &&
       (block_keyword_name(c, blk, 0) || block_kwrest_name(c, blk) || nokw)) {
     ykw = yargs[yc - 1];
     yc--;
@@ -2712,7 +2710,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
   int *dfl = malloc(sizeof(int) * (size_t)(O + nk + 1)), nd = 0;
   for (int oi = 0; oi < O; oi++) dfl[nd++] = block_opt_default(c, blk, oi);
   for (int ki = 0; ki < nk; ki++) dfl[nd++] = block_keyword_default(c, blk, ki);
-  if (ykw >= 0 && !kwh_has_splat(nt, ykw) && ykw_out_of_order(c, blk, ykw))
+  if (ykw >= 0 && !nt_hash_has_splat(nt, ykw) && ykw_out_of_order(c, blk, ykw))
     emit_args_before(c, yargs, yc + 1, dfl, nd, g_pre);
   else if (yargs && !call_args_need_spread(nt, yargs, yc)) {
     int ot = 0, ps = 0;
@@ -6903,8 +6901,7 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
        fell to the runtime dispatch, which has no zip arm at all. */
     int recv_poly = !ty_is_array(rt);
     const char *k = recv_poly ? "Poly" : array_iter_kind(rt);
-    int zsplat = 0;
-    for (int j = 0; j < zargc; j++) if (nt_kind(nt, zargv[j]) == NK_SplatNode) zsplat = 1;
+    int zsplat = nt_argv_has_splat(nt, zargv, zargc);
     if (k && (zargc != 1 || zsplat)) {
       emit_zip_many_block(c, recv, block, body, zargv, zargc, p0, b, indent);
       return 1;

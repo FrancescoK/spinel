@@ -2615,7 +2615,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
        uses. The arguments are evaluated inside the arm taken, once.
        A `*splat` goes the same way: the arms below boxed the whole array as
        one argument and bound it to the first parameter. */
-    if (call_has_keyword_args(nt, argv, argc) || call_has_splat_arg(nt, argv, argc) ||
+    if (nt_argv_has_keywords(nt, argv, argc) || nt_argv_has_splat(nt, argv, argc) ||
         ctor_block_splices(c, id)) {
       emit_class_value_new_kw(c, id, recv, 0, b);
       return 1;
@@ -2921,7 +2921,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
     /* keyword arguments: laid out per class by name, as in the Class-valued
        form above (#4845) -- positionally they bound `k: v` to a parameter;
        likewise a `*splat`, which bound the whole array */
-    if (call_has_keyword_args(nt, argv, argc) || call_has_splat_arg(nt, argv, argc) ||
+    if (nt_argv_has_keywords(nt, argv, argc) || nt_argv_has_splat(nt, argv, argc) ||
         (argc > 0 && ctor_block_splices(c, id))) {
       emit_class_value_new_kw(c, id, recv, 1, b);
       return 1;
@@ -3128,7 +3128,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
     /* a Struct's `self.class.new(*a)` or keywords: spread and bound as
        `S.new(*a)` is, where each was passed as one argument */
     if (c->classes[cid].is_struct && comp_method_in_chain(c, cid, "initialize", NULL) < 0 &&
-        (call_has_splat_arg(nt, argv, argc) || (argc >= 1 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode)) &&
+        (nt_argv_has_splat(nt, argv, argc) || nt_argv_kwh(nt, argv, argc) >= 0) &&
         emit_struct_new_call(c, id, cid, argc, argv, b))
       return 1;
     buf_printf(b, "sp_%s_new(", c->classes[cid].c_name);
@@ -4291,9 +4291,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
          names: the constructor below builds it, where this dispatch had arms
          only for the classes with a `self.new` of their own */
       if (sp_streq(name, "new") && anon_struct_recv_ci(c, recv) >= 0) goto skip_cls_cmethod9;
-      TyKind uret9 = TY_UNKNOWN; int uret_set9 = 0, splat9 = 0;
-      for (int a = 0; a < argc; a++)
-        if (nt_kind(nt, argv[a]) == NK_SplatNode) splat9++;
+      TyKind uret9 = TY_UNKNOWN; int uret_set9 = 0, splat9 = nt_argv_splat_count(nt, argv, argc);
       for (int k = 0; k < c->nclasses; k++) {
         if (is_builtin_reopen(c->classes[k].name) || cls_value_own_sg_answers(c, k, name, argc)) continue;
         int kmi = comp_cmethod_in_chain(c, k, name, NULL);

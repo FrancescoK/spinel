@@ -714,8 +714,8 @@ void compute_reachable(Compiler *c, int typed) {
           MARK_NAME(nt_str(c->nt, av[k], "value"));
       /* `reduce(seed, &:sym)` spells the same operator in the block, where the
          argument walk above cannot see it. */
-      { int blk = nt_ref(c->nt, id, "block");
-        if (blk >= 0 && nt_type(c->nt, blk) && sp_streq(nt_type(c->nt, blk), "BlockArgumentNode")) {
+      { int blk = nt_call_block_arg(c->nt, id);
+        if (blk >= 0) {
           int ex = nt_ref(c->nt, blk, "expression");
           if (ex >= 0 && nt_kind(c->nt, ex) == NK_SymbolNode && nt_str(c->nt, ex, "value"))
             MARK_NAME(nt_str(c->nt, ex, "value"));
@@ -1198,9 +1198,8 @@ int a_proc_body(Compiler *c, int create) {
   return block >= 0 ? nt_ref(c->nt, block, "body") : -1;
 }
 static int a_call_forwards_blk_param(const NodeTable *nt, int nid, const Scope *m) {
-  int blk = nt_ref(nt, nid, "block");
-  const char *bty = blk >= 0 ? nt_type(nt, blk) : NULL;
-  if (!bty || !sp_streq(bty, "BlockArgumentNode")) return 0;
+  int blk = nt_call_block_arg(nt, nid);
+  if (blk < 0) return 0;
   int fwd = nt_ref(nt, blk, "expression");
   if (fwd >= 0) {   /* named `&blk`: only THIS method's block param counts */
     const char *fty = nt_type(nt, fwd);
@@ -1282,9 +1281,7 @@ static int a_scope_forwards_block_to_lowered_1(Compiler *c, int mi) {
     if (c->nscope[nid] != mi) continue;
     const char *ty = nt_type(nt, nid);
     if (!ty || !sp_streq(ty, "CallNode")) continue;
-    int blk = nt_ref(nt, nid, "block");
-    const char *bty = blk >= 0 ? nt_type(nt, blk) : NULL;
-    if (!bty || !sp_streq(bty, "BlockArgumentNode")) continue;
+    if (!nt_call_has_block_arg(nt, nid)) continue;
     const char *tn = nt_str(nt, nid, "name");
     if (!tn || nt_ref(nt, nid, "receiver") >= 0) continue;
     int tmi = comp_self_call_mi(c, nid, tn);
@@ -2588,9 +2585,7 @@ int ie_call_kwhash(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int args = nt_ref(nt, id, "arguments");
   int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
-  if (ac <= 0) return -1;
-  const char *lty = nt_type(nt, av[ac - 1]);
-  return (lty && sp_streq(lty, "KeywordHashNode")) ? av[ac - 1] : -1;
+  return nt_argv_kwh(nt, av, ac);
 }
 
 /* For a call `recv.m(cargs) { ... }` to an instance_exec trampoline
@@ -2615,10 +2610,7 @@ static int ie_tramp_body_args(Compiler *c, int caller_id, const int **tav_out, S
   if (bn != 1 || !bb) return -1;
   int targs = nt_ref(nt, bb[0], "arguments");
   int tac = 0; const int *tav = targs >= 0 ? nt_arr(nt, targs, "arguments", &tac) : NULL;
-  for (int i = 0; i < tac; i++) {
-    const char *aty = nt_type(nt, tav[i]);
-    if (aty && sp_streq(aty, "SplatNode")) return -1;  /* forwarding path handles splat */
-  }
+  if (nt_argv_has_splat(nt, tav, tac)) return -1;  /* forwarding path handles splat */
   if (tav_out) *tav_out = tav;
   if (ms_out) *ms_out = ms;
   return tac;
@@ -2866,9 +2858,9 @@ static int ie_param_literals(Compiler *c, int blk, int cls) {
     if (!sp_streq(nt_str(nt, u, "name"), sc->name)) continue;
     int args = nt_ref(nt, u, "arguments"), an = 0;
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    int npos = an, kh = -1;
-    if (an > 0 && nt_kind(nt, av[an - 1]) == NK_KeywordHashNode) { kh = av[an - 1]; npos--; }
-    for (int i = 0; i < npos; i++) if (nt_kind(nt, av[i]) == NK_SplatNode) { traced = 0; npos = 0; }
+    int npos = an, kh = nt_argv_kwh(nt, av, an);
+    if (kh >= 0) npos--;
+    if (nt_argv_has_splat(nt, av, npos)) { traced = 0; npos = 0; }
     int v = -1;
     if (!kw) v = pos < npos ? av[pos] : -1;
     else if (kh >= 0) {
@@ -6957,13 +6949,7 @@ static void desugar_data_positional_new(Compiler *c) {
     int an = 0;
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     if (an == 0 || an > dcls->nmembers) continue;
-    int plain = 1;
-    for (int a = 0; a < an && plain; a++) {
-      NodeKind k = nt_kind(nt, av[a]);
-      plain = k != NK_SplatNode && k != NK_KeywordHashNode && k != NK_BlockArgumentNode &&
-              k != NK_ForwardingArgumentsNode;
-    }
-    if (!plain) continue;
+    if (nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK | NT_ARG_FORWARDING)) continue;
     int *els = malloc(sizeof(int) * (size_t)an);
     if (!els) continue;
     int first = nt->count;
@@ -7251,7 +7237,7 @@ static void synth_enum_to_a(Compiler *c) {
           int ya = nt_ref(nt, nid, "arguments");
           int yn2 = 0;
           const int *yav = ya >= 0 ? nt_arr(nt, ya, "arguments", &yn2) : NULL;
-          for (int q = 0; q < yn2; q++) if (nt_kind(nt, yav[q]) == NK_SplatNode) ysplat = 1;
+          if (nt_argv_has_splat(nt, yav, yn2)) ysplat = 1;
           if (yn2 >= 2) ymany = 1; else yone = 1;
           if (yn2 > yarity) yarity = yn2;
         }
@@ -7273,7 +7259,7 @@ static void synth_enum_to_a(Compiler *c) {
           int ca2 = nt_ref(nt, nid, "arguments");
           int cn2 = 0;
           const int *cav = ca2 >= 0 ? nt_arr(nt, ca2, "arguments", &cn2) : NULL;
-          for (int q = 0; q < cn2; q++) if (nt_kind(nt, cav[q]) == NK_SplatNode) ysplat = 1;
+          if (nt_argv_has_splat(nt, cav, cn2)) ysplat = 1;
           if (cn2 >= 2) ymany = 1; else yone = 1;
           if (cn2 > yarity) yarity = cn2;
         }
@@ -7702,9 +7688,8 @@ static void desugar_enum_chain_shapes(Compiler *c) {
        (the :sym.to_proc desugar below produces exactly this shape when the
        proc is passed inline as a block argument). */
     {
-      int blkref = nt_ref(nt, id, "block");
-      if (blkref >= 0 && nt_type(nt, blkref) &&
-          sp_streq(nt_type(nt, blkref), "BlockArgumentNode")) {
+      int blkref = nt_call_block_arg(nt, id);
+      if (blkref >= 0) {
         int bex = nt_ref(nt, blkref, "expression");
         if (bex >= 0 && nt_type(nt, bex) && sp_streq(nt_type(nt, bex), "CallNode")) {
           const char *lname = nt_str(nt, bex, "name");
@@ -8820,8 +8805,7 @@ static int desugar_sym_to_proc_call(Compiler *c) {
     int an = 0;
     const int *av = argn >= 0 ? nt_arr(nt, argn, "arguments", &an) : NULL;
     if (!av || an < 1) continue;                /* needs at least the receiver */
-    for (int j = 0; j < an; j++)                /* a splat keeps the proc path */
-      if (nt_type(nt, av[j]) && sp_streq(nt_type(nt, av[j]), "SplatNode")) { an = 0; break; }
+    if (nt_argv_has_splat(nt, av, an)) an = 0;  /* a splat keeps the proc path */
     if (an < 1) continue;
     int rest = nt_new_node(nt, "ArgumentsNode");
     if (rest < 0) continue;
@@ -9065,8 +9049,8 @@ static int desugar_kernel_method_block_arg(Compiler *c) {
   for (int id = 0; id < n0; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty || !sp_streq(ty, "CallNode")) continue;
-    int blk = nt_ref(nt, id, "block");
-    if (blk < 0 || !nt_type(nt, blk) || !sp_streq(nt_type(nt, blk), "BlockArgumentNode")) continue;
+    int blk = nt_call_block_arg(nt, id);
+    if (blk < 0) continue;
     int ex = nt_ref(nt, blk, "expression");
     if (ex < 0 || !nt_type(nt, ex) || !sp_streq(nt_type(nt, ex), "CallNode")) continue;
     const char *exn = nt_str(nt, ex, "name");
@@ -9170,8 +9154,8 @@ static int desugar_hash_block_arg(Compiler *c) {
   for (int id = 0; id < n0; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty || !sp_streq(ty, "CallNode")) continue;
-    int blk = nt_ref(nt, id, "block");
-    if (blk < 0 || !nt_type(nt, blk) || !sp_streq(nt_type(nt, blk), "BlockArgumentNode")) continue;
+    int blk = nt_call_block_arg(nt, id);
+    if (blk < 0) continue;
     int ex = nt_ref(nt, blk, "expression");
     if (ex < 0 || !nt_type(nt, ex)) continue;
     const char *exty = nt_type(nt, ex);
@@ -9229,8 +9213,8 @@ static int desugar_symbol_var_block_arg(Compiler *c) {
       if (nt_ref(nt, id, "block") >= 0 || nt_ref(nt, id, "arguments") >= 0) continue;
     }
     else {
-      int blk = nt_ref(nt, id, "block");
-      if (blk < 0 || !nt_type(nt, blk) || !sp_streq(nt_type(nt, blk), "BlockArgumentNode")) continue;
+      int blk = nt_call_block_arg(nt, id);
+      if (blk < 0) continue;
       ex = nt_ref(nt, blk, "expression");
     }
     if (ex < 0 || !nt_type(nt, ex) || !sp_streq(nt_type(nt, ex), "LocalVariableReadNode")) continue;
@@ -9341,7 +9325,7 @@ static int desugar_hash_new_capacity(Compiler *c) {
         !nt_str(nt, r, "name") || !sp_streq(nt_str(nt, r, "name"), "Hash")) continue;
     int argsn = nt_ref(nt, id, "arguments"), an = 0;
     const int *av = argsn >= 0 ? nt_arr(nt, argsn, "arguments", &an) : NULL;
-    if (an == 0 || nt_kind(nt, av[an - 1]) != NK_KeywordHashNode) continue;
+    if (nt_argv_kwh(nt, av, an) < 0) continue;
     if (cplan_const_user(c, id, nt_str(nt, r, "name"), 1)) continue;
     int en = 0; const int *el = nt_arr(nt, av[an - 1], "elements", &en);
     if (en != 1 || nt_kind(nt, el[0]) != NK_AssocNode) continue;
@@ -9548,17 +9532,11 @@ static int desugar_std_stream_bare_output(Compiler *c) {
     if ((is_print || is_printf) && argc == 0) continue;
     if ((is_puts || is_print) && std_stream_foreign_writer(c, nm)) continue;
     /* a splat or block argument to puts / print is left to the emitter */
-    int plain = 1;
-    for (int k = 0; k < argc && plain && (is_puts || is_print); k++)
-      plain = nt_kind(nt, argv[k]) != NK_SplatNode && nt_kind(nt, argv[k]) != NK_BlockArgumentNode;
-    if (!plain) continue;
+    if ((is_puts || is_print) && nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_BLOCK)) continue;
     /* p hands back its argument (several: an Array of them); a splat is
        left to the emitter, which refuses it */
     if (is_p) {
-      int plain = argc >= 1 && argc <= 16;
-      for (int k = 0; k < argc && plain; k++)
-        plain = nt_kind(nt, argv[k]) != NK_SplatNode && nt_kind(nt, argv[k]) != NK_BlockArgumentNode;
-      if (!plain) continue;
+      if (argc < 1 || argc > 16 || nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_BLOCK)) continue;
     }
     if (id >= c->node_cap) continue;
     if (std_stream_bare_call_own(c, id, nm)) continue;
@@ -9710,12 +9688,7 @@ static int desugar_std_stream_bare_warn(Compiler *c) {
     const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
     /* no message writes nothing, which the emitter already does */
     if (argc == 0) continue;
-    int plain = 1;
-    for (int k = 0; k < argc && plain; k++) {
-      NodeKind ak = nt_kind(nt, argv[k]);
-      plain = ak != NK_SplatNode && ak != NK_BlockArgumentNode && ak != NK_KeywordHashNode;
-    }
-    if (!plain || id >= c->node_cap) continue;
+    if (nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_BLOCK | NT_ARG_KEYWORDS) || id >= c->node_cap) continue;
     if (std_stream_bare_call_own(c, id, nm)) continue;
     int first = nt->count;
     long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0),
@@ -9796,9 +9769,7 @@ static int desugar_class_literal_ctors(Compiler *c) {
     if (!rn || !mn) continue;
     int ca = nt_ref(nt, id, "arguments");
     int argc = 0; const int *argv = ca >= 0 ? nt_arr(nt, ca, "arguments", &argc) : NULL;
-    for (int k = 0; k < argc; k++)
-      if (nt_kind(nt, argv[k]) == NK_SplatNode) { argc = -1; break; }
-    if (argc < 0) continue;
+    if (nt_argv_has_splat(nt, argv, argc)) continue;
     int ci = comp_class_index(c, rn);
     if (sp_streq(rn, "Array") && sp_streq(mn, "[]")) {
       if (ci >= 0 && comp_cmethod_in_chain(c, ci, "[]", NULL) >= 0) continue;
@@ -10726,8 +10697,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
     int sargs = nt_ref(nt, id, "arguments");
     int sac = 0;
     const int *sav = sargs >= 0 ? nt_arr(nt, sargs, "arguments", &sac) : NULL;
-    if (sac >= 1 && sac <= 2 && nt_type(nt, sav[sac - 1]) &&
-        sp_streq(nt_type(nt, sav[sac - 1]), "KeywordHashNode")) {
+    if (sac <= 2 && nt_argv_kwh(nt, sav, sac) >= 0) {
       int kwh = sav[sac - 1];
       int en = 0;
       const int *els = nt_arr(nt, kwh, "elements", &en);
@@ -11542,7 +11512,7 @@ static int desugar_system_options(Compiler *c) {
     int args = nt_ref(nt, id, "arguments");
     int an = 0;
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    if (an < 2 || nt_kind(nt, av[an - 1]) != NK_KeywordHashNode) continue;
+    if (an < 2 || nt_argv_kwh(nt, av, an) < 0) continue;
     nt_node_set_str(nt, id, "name", "__sp_system_spawn");
     changed = 1;
   }
@@ -17156,10 +17126,7 @@ static int an_yield_lends(Compiler *c, int y, const char *pn, int blk) {
 static int rest_elems_mutated_walk(Compiler *c, int node, const char *rn, int depth);
 static int block_rest_position(Compiler *c, int blk, const int *av, int n, int k) {
   const NodeTable *nt = c->nt;
-  for (int i = 0; i < n; i++) {
-    NodeKind ak = nt_kind(nt, av[i]);
-    if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 0;
-  }
+  if (nt_argv_has(nt, av, n, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK)) return 0;
   const char *rn = block_rest_name(c, blk);
   int bp = nt_ref(nt, blk, "parameters");
   int pn = bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
@@ -21995,7 +21962,7 @@ static int share_demand_rest_args(Compiler *c, int mi, const int *argv, int argc
   if (m->rest_idx < 0 || !m->pnames[m->rest_idx]) return 0;
   LocalVar *rv = scope_local(m, m->pnames[m->rest_idx]);
   if (!rv || !repr_str_elems_share(c, share_local_holder(c, mi, (int)(rv - m->locals)))) return 0;
-  int kwh = nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+  int kwh = nt_argv_kwh(nt, argv, argc);
   int pos_argc = kwh >= 0 ? argc - 1 : argc;
   int plain_argc = pos_argc;
   for (int k = 0; k < pos_argc; k++) {
@@ -26024,12 +25991,8 @@ static void strbuf_arg_index_args(Compiler *c, SbArgIndex *x, int u, int mi, int
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
   int np = c->scopes[mi].nparams, n = ac - shift;
   if (n < 0 || np <= 0) return;
-  int plain = n < SB_PLAIN_MAX;
-  for (int k = shift; k < ac && plain; k++) {
-    NodeKind ak = nt_kind(nt, av[k]);
-    plain = ak != NK_SplatNode && ak != NK_KeywordHashNode && ak != NK_BlockArgumentNode &&
-            ak != NK_ForwardingArgumentsNode;
-  }
+  int plain = n < SB_PLAIN_MAX &&
+              !nt_argv_has(nt, av + shift, n, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK | NT_ARG_FORWARDING);
   int *map = NULL, **memo = NULL;
   if (plain) {
     if (!x->plain) {
@@ -28631,8 +28594,7 @@ static int dyn_scope_appends_arg(Compiler *c, int mi, int call, int arg) {
   const NodeTable *nt = c->nt;
   int a = nt_ref(nt, call, "arguments"), ac = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
-  for (int i = 0; i < ac; i++) if (nt_kind(nt, av[i]) == NK_SplatNode) return any;
-  return 0;
+  return nt_argv_has_splat(nt, av, ac) ? any : 0;
 }
 /* Does a call in a proc's or method's body hand the argument `arg` on to a
    user method that appends to the parameter it binds? The callee is the one
@@ -31715,7 +31677,7 @@ int spread_string_reads(Compiler *c, Scope *m, int call, int pj, int *out, int *
   int a = nt_ref(nt, call, "arguments"), ac = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
   int pos = ac, fs = -1;
-  if (pos > 0 && nt_kind(nt, av[pos - 1]) == NK_KeywordHashNode) pos--;
+  if (nt_argv_kwh(nt, av, pos) >= 0) pos--;
   for (int k = 0; k < pos; k++) {
     if (nt_kind(nt, av[k]) == NK_ForwardingArgumentsNode) return 0;
     if (nt_kind(nt, av[k]) == NK_SplatNode && fs < 0) fs = k;
@@ -32100,9 +32062,9 @@ static int promote_spread_string_args(Compiler *c) {
     int a = nt_ref(nt, n, "arguments");
     if (!nm || a < 0) continue;
     /* without a splat, only a rest gathers the call's arguments */
-    int ac = 0, splat = 0;
+    int ac = 0;
     const int *av = nt_arr(nt, a, "arguments", &ac);
-    for (int k = 0; k < ac && !splat; k++) splat = nt_kind(nt, av[k]) == NK_SplatNode;
+    int splat = nt_argv_has_splat(nt, av, ac);
     /* `C.new(*s)` binds C's initialize */
     int ctor = -1, r = nt_ref(nt, n, "receiver");
     if (sp_streq(nm, "new") && r >= 0 && (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode)) {
@@ -32151,8 +32113,7 @@ static int promote_spread_string_args(Compiler *c) {
     if (nt_kind(nt, n) != NK_SuperNode) continue;
     int a = nt_ref(nt, n, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
-    int splat = 0;
-    for (int k = 0; k < ac && !splat; k++) splat = nt_kind(nt, av[k]) == NK_SplatNode;
+    int splat = nt_argv_has_splat(nt, av, ac);
     Scope *ss = splat ? comp_scope_of(c, n) : NULL;
     int mi = ss && ss->class_id >= 0 && ss->name ? a_super_target(c, ss) : -1;
     if (mi < 0) continue;
@@ -32641,8 +32602,7 @@ static int struct_new_member_arg(Compiler *c, int u, int ci, int a) {
   const ClassInfo *k = &c->classes[ci];
   int al = nt_ref(nt, u, "arguments"), argc = 0;
   const int *argv = al >= 0 ? nt_arr(nt, al, "arguments", &argc) : NULL;
-  for (int i = 0; i < argc; i++)
-    if (nt_kind(nt, argv[i]) == NK_SplatNode) return -1;
+  if (nt_argv_has_splat(nt, argv, argc)) return -1;
   if (argc == 1 && nt_kind(nt, argv[0]) == NK_KeywordHashNode) {
     if (k->kw_init == -1) return -1;
     int n = 0; const int *el = nt_arr(nt, argv[0], "elements", &n);
@@ -32720,7 +32680,7 @@ static int promote_forwarded_rest_args(Compiler *c) {
     int ac = 0; const int *av = nt_arr(nt, a, "arguments", &ac);
     int pos = ac;
     if (pos > 0 && (nt_kind(nt, av[pos - 1]) == NK_KeywordHashNode || nt_kind(nt, av[pos - 1]) == NK_BlockArgumentNode)) pos--;
-    if (pos > 0 && nt_kind(nt, av[pos - 1]) == NK_KeywordHashNode) pos--;
+    if (nt_argv_kwh(nt, av, pos) >= 0) pos--;
     for (int k = m->rest_idx; k < pos - m->npost_rest && k - m->rest_idx < 16; k++) {
       /* a splat of an Array literal, or of a local every write of which is
          one, lays its elements from here on (`w(*s)` with `s = [v]`) */
@@ -34589,7 +34549,7 @@ static const CArr *const_array(Compiler *c, const char *name) {
     NT_FOREACH_KIND(nt, NK_CallNode, cl) {
       int rc = nt_ref(nt, cl, "receiver");
       if (carr_is_read(nt, rc, name) && nt_str(nt, cl, "name") && carr_keeps(nt_str(nt, cl, "name")) &&
-          !(nt_ref(nt, cl, "block") >= 0 && nt_kind(nt, nt_ref(nt, cl, "block")) == NK_BlockArgumentNode)) ok[rc] = 1;
+          !nt_call_has_block_arg(nt, cl)) ok[rc] = 1;
     }
     NT_FOREACH_KIND(nt, NK_MultiWriteNode, mw) carr_mark_masgn_value(nt, nt_ref(nt, mw, "value"), name, ok);
     for (int id = 0; id < nt->count && !bad; id++)
@@ -34669,8 +34629,7 @@ static int elem_miss_call(Compiler *c, int v) {
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   int blk = nt_ref(nt, v, "block");
   if (recv < 0) {
-    if ((is_numeric_class_name(nm)) && argc >= 2 && argv &&
-        nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) return 1;
+    if ((is_numeric_class_name(nm)) && argc >= 2 && nt_argv_kwh(nt, argv, argc) >= 0) return 1;
     return 0;
   }
   /* the element a multiple assignment hands one of its targets, read back
@@ -34723,9 +34682,7 @@ int scalar_nil_only_call(Compiler *c, int id, TyKind rt) {
   if (rt != TY_INT && rt != TY_FLOAT) return 0;
   int args = nt_ref(nt, id, "arguments");
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
-  for (int k = 0; k < argc; k++)
-    if (nt_kind(nt, argv[k]) == NK_SplatNode || nt_kind(nt, argv[k]) == NK_KeywordHashNode ||
-        nt_kind(nt, argv[k]) == NK_BlockArgumentNode) return 0;
+  if (nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK)) return 0;
   int hit = argc == 0 ? (sp_streq(nm, "to_a") || sp_streq(nm, "to_h"))
           : argc == 1 ? (is_match_operator(nm) ||
                          (rt == TY_FLOAT && is_bit_op(nm)))
@@ -36100,9 +36057,7 @@ static int nn_fresh_nilfree(Compiler *c, int v) {
   int ca = nt_ref(nt, v, "arguments"); int an = 0;
   const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
   if (!nm || recv < 0) return 0;
-  for (int i = 0; i < an; i++)
-    if (nt_kind(nt, av[i]) == NK_SplatNode || nt_kind(nt, av[i]) == NK_KeywordHashNode ||
-        nt_kind(nt, av[i]) == NK_BlockArgumentNode) return 0;
+  if (nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK)) return 0;
   if (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode) return 0;
   int tail = -1;
   if (blk >= 0) {
@@ -36193,8 +36148,7 @@ static int nn_use_ok(Compiler *c, int r) {
   int ca = nt_ref(nt, p, "arguments"); int an = 0;
   const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
   int blk = nt_ref(nt, p, "block");
-  for (int i = 0; i < an; i++)
-    if (nt_kind(nt, av[i]) == NK_SplatNode || nt_kind(nt, av[i]) == NK_BlockArgumentNode) return 0;
+  if (nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_BLOCK)) return 0;
   if (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode) return 0;
   /* reads whose value is an element, a count, or a new array */
   static const char *const rd[] = {
@@ -37487,10 +37441,7 @@ static int ps_reached_plainly(Compiler *c, int mi) {
     int a = nt_ref(nt, id, "arguments"), an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     if (an != m->nparams || nt_ref(nt, id, "block") >= 0) return 0;
-    for (int j = 0; j < an; j++) {
-      NodeKind ak = nt_kind(nt, av[j]);
-      if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode || ak == NK_ForwardingArgumentsNode) return 0;
-    }
+    if (nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK | NT_ARG_FORWARDING)) return 0;
   }
   return 1;
 }
@@ -37585,7 +37536,7 @@ static int mark_nullable_params_of_call(Compiler *c, int id, int mi) {
     if (!p->box_nullable && box_nullable_arg(c, a)) { p->box_nullable = 1; changed = 1; }
   }
   /* a keyword parameter takes the value its key names (`k: nil`) */
-  int kwh = an > 0 && nt_kind(nt, av[an - 1]) == NK_KeywordHashNode ? av[an - 1] : -1;
+  int kwh = nt_argv_kwh(nt, av, an);
   for (int k = 0; kwh >= 0 && k < m->nparams; k++) {
     const char *pk = m->pnames[k];
     LocalVar *p = pk ? scope_local(m, pk) : NULL;
@@ -39168,9 +39119,7 @@ static void mark_nullable_int_locals(Compiler *c) {
       int ca = nt_ref(nt, id, "arguments");
       int an = 0; const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
       /* a splat or a `**` member is boxed (struct_new_types_members) */
-      int plain = 1;
-      for (int a = 0; a < an && plain; a++)
-        plain = nt_kind(nt, av[a]) != NK_SplatNode && nt_kind(nt, av[a]) != NK_BlockArgumentNode;
+      int plain = !nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_BLOCK);
       int kwh = an == 1 && nt_kind(nt, av[0]) == NK_KeywordHashNode && ci->kw_init != -1 ? av[0] : -1;
       int kn = 0; const int *ke = kwh >= 0 ? nt_arr(nt, kwh, "elements", &kn) : NULL;
       for (int e = 0; e < kn && plain; e++) plain = nt_kind(nt, ke[e]) == NK_AssocNode;
@@ -40046,7 +39995,7 @@ static int kwo_tree(NodeTable *nt, int call, int row, int i, int mask, const cha
 static void kwb_optional_split(NodeTable *nt, int call, int row, Scope *sc) {
   int an = nt_ref(nt, call, "arguments"), n = 0, en = 0;
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
-  if (n < 1 || n > 16 || nt_kind(nt, av[n - 1]) != NK_KeywordHashNode) return;
+  if (n < 1 || n > 16 || nt_argv_kwh(nt, av, n) < 0) return;
   const int *el = nt_arr(nt, av[n - 1], "elements", &en);
   int h = en == 1 && nt_kind(nt, el[0]) == NK_AssocSplatNode ? nt_ref(nt, el[0], "value") : -1;
   if (h < 0) return;
@@ -40095,7 +40044,7 @@ static void desugar_builtin_kwsplat(Compiler *c) {
     for (int i = 0; row >= 0 && i < ndn; i++) if (kwb_is(nt_str(nt, dn[i], "name"), kwb_rows[row][0])) row = -1;
     int an = row >= 0 ? nt_ref(nt, id, "arguments") : -1, n = 0, en = 0, args[16];
     const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
-    if (n < 1 || n > 16 || nt_kind(nt, av[n - 1]) != NK_KeywordHashNode) continue;
+    if (n < 1 || n > 16 || nt_argv_kwh(nt, av, n) < 0) continue;
     for (int i = 0; i < n; i++) args[i] = av[i];
     const int *el = nt_arr(nt, args[n - 1], "elements", &en);
     int lit = -1;
@@ -40411,7 +40360,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   }
   char knm[64];
   if (!ukw && (nuser > 0 || (ctor != 1 && !splat_builtin_keeps_kwsplat(cnm))) && argc > 1 &&
-      nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) {
+      nt_argv_kwh(nt, argv, argc) >= 0) {
     snprintf(knm, sizeof knm, "__splk%s", comp_node_tag(c, id));
     scope_local_intern(comp_scope_of(c, id), knm);
     int ar = splat_operand_read(c, nt, anm, adepth, aview);
@@ -45959,8 +45908,8 @@ static void an_phase_block_inline(Compiler *c) {
     for (int p = 0; p < c->nt->count; p++) blk_fwd_callee[p] = -1;
     for (int p = 0; p < c->nt->count; p++) {
       if (nt_kind(c->nt, p) != NK_CallNode) continue;
-      int fb = nt_ref(c->nt, p, "block");
-      if (fb < 0 || !nt_type(c->nt, fb) || !sp_streq(nt_type(c->nt, fb), "BlockArgumentNode")) continue;
+      int fb = nt_call_block_arg(c->nt, p);
+      if (fb < 0) continue;
       int fe = nt_ref(c->nt, fb, "expression");
       if (fe < 0 || fe >= c->nt->count) continue;
       const char *fn = nt_str(c->nt, p, "name");
@@ -48429,12 +48378,7 @@ static void an_phase_method_backstops(Compiler *c) {
         }
         if (!numeric && !an_poly_may_be_method(c, &mholders, r, 0)) continue;
       }
-      int splat = 0;
-      for (int k = 0; k < an; k++) {
-        const char *aty = nt_type(c->nt, av[k]);
-        if (aty && (sp_streq(aty, "SplatNode") || sp_streq(aty, "BlockArgumentNode") ||
-                    sp_streq(aty, "KeywordHashNode") || nt_kind(c->nt, av[k]) == NK_ForwardingArgumentsNode)) splat = 1;
-      }
+      int splat = nt_argv_has(c->nt, av, an, NT_ARG_SPLAT | NT_ARG_BLOCK | NT_ARG_KEYWORDS | NT_ARG_FORWARDING);
       if (splat) {
         for (int k = 0; k < 16; k++) { dyn_arg[k] = TY_POLY; dyn_seen[k] = 1; }
         continue;

@@ -1523,7 +1523,7 @@ int param_rest_misfits(Compiler *c, Scope *m, LocalVar *p, TyKind ct, const int 
   const NodeTable *nt = c->nt;
   if (!p || !argv || p->store_rest_src <= 0 || m->rest_idx < 0) return 0;
   if (!ty_is_array(ct) || ct == TY_POLY_ARRAY) return 0;
-  if (an > 0 && nt_kind(nt, argv[an - 1]) == NK_KeywordHashNode &&
+  if (nt_argv_kwh(nt, argv, an) >= 0 &&
       (callee_declares_kwargs(c, m) || m->kwrest_idx >= 0)) an--;
   int at = m->rest_idx + p->store_rest_src - 1;
   int from = at, to = an - m->npost_rest;
@@ -7187,7 +7187,7 @@ int gather_reaches(Compiler *c, Scope *m, const int *argv, int pos_argc, int gat
    optional, a splat, the posts or a hash taken as a positional put
    elsewhere. */
 void call_layout(Compiler *c, Scope *m, const int *argv, int argc, ArgLayout *L) {
-  int kwh = argv && argc > 0 && nt_kind(c->nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+  int kwh = nt_argv_kwh(c->nt, argv, argc);
   arg_layout_untyped(c, m, argv, kwh >= 0 ? argc - 1 : argc, kwh, L);
 }
 
@@ -7658,7 +7658,7 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
      callee's first param took `a`'s type -- a splat param the method name's
      in `method_missing(name, ...)`, typing it apart from the Array its
      callers pass. */
-  if (argc == 1 && argv && nt_kind(nt, argv[0]) == NK_ForwardingArgumentsNode) {
+  if (nt_argv_only_forwarding(nt, argv, argc)) {
     Scope *encl = comp_scope_of(c, argv[0]);
     if (!encl) return 0;
     int lead = 0;
@@ -7681,8 +7681,7 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
   /* Separate positional args from the trailing keyword-hash arg (if any). */
   int kwh = -1;
   int pos_argc = argc;
-  if (argc > 0 && nt_type(nt, argv[argc - 1]) &&
-      sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
+  if (nt_argv_kwh(nt, argv, argc) >= 0) {
     kwh = argv[argc - 1];
     pos_argc = argc - 1;
   }
@@ -8796,15 +8795,7 @@ int struct_super_spreads(Compiler *c, int args) {
   const NodeTable *nt = c->nt;
   int an = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-  for (int a = 0; a < an; a++) {
-    NodeKind k = nt_kind(nt, av[a]);
-    if (k == NK_SplatNode) return 1;
-    if (k != NK_KeywordHashNode) continue;
-    int kn = 0; const int *ke = nt_arr(nt, av[a], "elements", &kn);
-    for (int e = 0; e < kn; e++)
-      if (nt_kind(nt, ke[e]) == NK_AssocSplatNode) return 1;
-  }
-  return 0;
+  return nt_argv_has_splat(nt, av, an) || nt_argv_has_kwsplat(nt, av, an);
 }
 
 static int param_defaults_to_nil(Compiler *c, Scope *s, const char *name) {
@@ -9789,11 +9780,10 @@ static int infer_param_types_ex(Compiler *c, int settle) {
          pass it -- an optional typed from its default alone was handed an
          element of any class. */
       if (!static_cls && sp_streq(name, "new")) {
-        int nargs = 0, splat = 0;
+        int nargs = 0;
         int an = nt_ref(nt, id, "arguments");
         const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &nargs) : NULL;
-        for (int k = 0; k < nargs; k++)
-          if (nt_kind(nt, av[k]) == NK_SplatNode) splat = 1;
+        int splat = nt_argv_has_splat(nt, av, nargs);
         TyKind rt0 = splat ? infer_type(c, recv) : TY_UNKNOWN;
         if (rt0 == TY_CLASS || rt0 == TY_POLY) {
           int first_splat = 0;
@@ -10372,10 +10362,7 @@ const char *block_param_at(Compiler *c, int block, int idx, int n) {
 int call_plain_argc(Compiler *c, int call) {
   int a = nt_ref(c->nt, call, "arguments"), ac = 0;
   const int *av = a >= 0 ? nt_arr(c->nt, a, "arguments", &ac) : NULL;
-  for (int i = 0; i < ac; i++) {
-    NodeKind k = nt_kind(c->nt, av[i]);
-    if (k == NK_SplatNode || k == NK_KeywordHashNode || k == NK_BlockArgumentNode) return -1;
-  }
+  if (nt_argv_has(c->nt, av, ac, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK)) return -1;
   return ac;
 }
 
@@ -10767,7 +10754,7 @@ int block_site_args(Compiler *c, int si, int site, int call) {
      binds k = 0), and the site is read as it stands */
   int ca = nt_ref(nt, call, "arguments"), cc = 0;
   const int *cv = ca >= 0 ? nt_arr(nt, ca, "arguments", &cc) : NULL;
-  if (m->kwrest_idx < 0 && cc > 0 && nt_kind(nt, cv[cc - 1]) == NK_KeywordHashNode) return a;
+  if (m->kwrest_idx < 0 && nt_argv_kwh(nt, cv, cc) >= 0) return a;
   return ca;
 }
 
@@ -10920,7 +10907,7 @@ void block_site_types(Compiler *c, const BlockSig *s, const int *av, int ac,
   const NodeTable *nt = c->nt;
   int P = s->P, O = s->O, Q = s->Q, np = P + O + Q;
   int kwh = -1;
-  if (s->kw && ac > 0 && av[ac - 1] >= 0 && nt_kind(nt, av[ac - 1]) == NK_KeywordHashNode) kwh = av[--ac];
+  if (s->kw && nt_argv_kwh(nt, av, ac) >= 0) kwh = av[--ac];
   for (int k = 0; k < s->nk; k++) {
     int kp = block_sig_kw(c, s, k);
     int vn = kwh >= 0 ? ie_kwhash_value(c, kwh, nt_str(nt, kp, "name")) : -1;
@@ -11022,7 +11009,7 @@ static int forwarding_yield_target(Compiler *c, int mi, int depth) {
   if (nt_kind(c->nt, call) != NK_CallNode || nt_ref(c->nt, call, "receiver") >= 0) return -1;
   int args = nt_ref(c->nt, call, "arguments");
   int ac = 0; const int *av = args >= 0 ? nt_arr(c->nt, args, "arguments", &ac) : NULL;
-  if (ac != 1 || !av || nt_kind(c->nt, av[0]) != NK_ForwardingArgumentsNode) return -1;
+  if (!nt_argv_only_forwarding(c->nt, av, ac)) return -1;
   const char *tn = nt_str(c->nt, call, "name");
   if (!tn) return -1;
   int t = comp_method_index(c, tn);
@@ -11888,7 +11875,7 @@ int desugar_instance_eval_builtin(Compiler *c) {
          bound here; any other keyword shape, a `**rest` taking keywords, or
          parameters after a `*rest` take the codegen path, which checks and
          binds them at run time. */
-      int kwh = is_exec && ac2 > 0 && nt_kind(nt, av2[ac2 - 1]) == NK_KeywordHashNode ? av2[ac2 - 1] : -1;
+      int kwh = is_exec ? nt_argv_kwh(nt, av2, ac2) : -1;
       int pac = kwh >= 0 ? ac2 - 1 : ac2;
       int restp = params >= 0 ? nt_ref(nt, params, "rest") : -1;
       if (restp >= 0 && nt_kind(nt, restp) != NK_RestParameterNode) restp = -1;

@@ -2057,8 +2057,7 @@ int emit_call_append_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
      another kind's - or | is no set operation, and it has no such method */
   if (recv >= 0 && argc >= 1 && is_named_set_operator(name) &&
       repr_of(c, recv).kind == RK_BOXED && !user_defines_or_reads(c, name)) {
-    int splat = 0;
-    for (int a = 0; a < argc; a++) if (nt_kind(nt, argv[a]) == NK_SplatNode) splat = 1;
+    int splat = nt_argv_has_splat(nt, argv, argc);
     if (splat && setop_splat_args(c, argv, argc)) {
       int t = ++g_tmp, tr = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_boxed(c, recv, b);

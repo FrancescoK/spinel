@@ -844,7 +844,7 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         bop_min = 1; bop_max = 2;
       }
     }
-    int bop_flat = tm && bam_binop_wrapper(tm) && call_has_splat_arg(nt, argv, argc);
+    int bop_flat = tm && bam_binop_wrapper(tm) && nt_argv_has_splat(nt, argv, argc);
     if (tm && bam_binop_wrapper(tm) && argc > bop_ops && !bop_flat) {
       char exp[16];
       arity_expected(exp, sizeof exp, bop_min, bop_max);
@@ -2244,7 +2244,7 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         EMIT_POLY_CALL_SLOT(k);
       }
       if (argc == 0) buf_puts(b, "0");  /* C99: no empty initializer list */
-      buf_printf(b, "}, %d))", argc == 0 ? 0 : nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? 2 : 1);
+      buf_printf(b, "}, %d))", argc == 0 ? 0 : nt_argv_kwh(nt, argv, argc) >= 0 ? 2 : 1);
       if (pubs.p) buf_puts(b, ")");
       buf_puts(b, yield_else);
       free(pubs.p);
@@ -2279,9 +2279,8 @@ int emit_call_proc_literal_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
          Ruby returns that proc as-is (preserving its lambda? flag), so emit the
          forwarded expression directly rather than wrapping it in a fresh
          non-lambda proc. */
-      int _blk = nt_ref(nt, id, "block");
-      const char *_bty = nt_type(nt, _blk);
-      if (_bty && sp_streq(_bty, "BlockArgumentNode")) {
+      int _blk = nt_call_block_arg(nt, id);
+      if (_blk >= 0) {
         int _fwd = nt_ref(nt, _blk, "expression");
         /* forwarding the enclosing (inlined) method's block param
            (`Proc.new(&b)` inside `def make(&b)`): the real block is the

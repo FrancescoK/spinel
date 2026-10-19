@@ -224,7 +224,7 @@ static void emit_io_line_args_spread(Compiler *c, const int *argv, int argc, int
   const NodeTable *nt = c->nt;
   int tpa = ++g_tmp, kwh = -1;
   buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", tpa, tpa);
-  if (argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) kwh = argv[argc - 1];
+  if (nt_argv_kwh(nt, argv, argc) >= 0) kwh = argv[argc - 1];
   emit_push_arg_list(c, argv, kwh >= 0 ? argc - 1 : argc, tpa, b);
   /* every argument is evaluated before any of them is checked */
   int th = ++g_tmp, any = kwh >= 0 ? poly_kw_any_key(c, kwh) : 0;
@@ -283,7 +283,7 @@ static int io_read_nonblock_outbuf(Compiler *c, int id) {
     if (nk != 1 || kwh_lookup(nt, argv[2], "exception") < 0) return 0;
   }
   else if (argc != 2) return 0;
-  if (recv < 0 || nt_ref(nt, id, "block") >= 0 || call_has_splat_arg(nt, argv, argc)) return 0;
+  if (recv < 0 || nt_ref(nt, id, "block") >= 0 || nt_argv_has_splat(nt, argv, argc)) return 0;
   Repr rr = repr_of(c, recv);
   if (rr.as_ty != TY_IO && rr.kind != RK_BOXED) return 0;
   int targets[CPT_MAX];
@@ -467,7 +467,7 @@ int strbuf_io_outbuf(Compiler *c, int id) {
   int recv = nt_ref(nt, id, "receiver"), argc = 0;
   const int *argv = call_args(nt, id, &argc);
   int ob = sh == BSH_FILL2 ? 2 : 1;
-  if (recv < 0 || argc != ob + 1 || nt_ref(nt, id, "block") >= 0 || call_has_splat_arg(nt, argv, argc)) return -1;
+  if (recv < 0 || argc != ob + 1 || nt_ref(nt, id, "block") >= 0 || nt_argv_has_splat(nt, argv, argc)) return -1;
   Repr rr = repr_of(c, recv);
   if (rr.as_ty != TY_IO && rr.kind != RK_BOXED) return -1;
   int targets[CPT_MAX];
@@ -538,8 +538,7 @@ static int boxed_socket_opt(const char *name, int argc) {
 static int emit_io_socket_opt_call(Compiler *c, const NodeTable *nt, const char *name, const char *r,
                                    int argc, const int *argv, Buf *b) {
   if (sp_streq(name, "connect_nonblock")) {
-    const char *lty9 = argc > 0 ? nt_type(nt, argv[argc - 1]) : NULL;
-    int kwh9 = (lty9 && sp_streq(lty9, "KeywordHashNode")) ? argv[argc - 1] : -1;
+    int kwh9 = nt_argv_kwh(nt, argv, argc);
     int exc9 = kwh9 >= 0 ? kwh_lookup(nt, kwh9, "exception") : -1;
     int no_exc = exc9 >= 0 && nt_type(nt, exc9) && sp_streq(nt_type(nt, exc9), "FalseNode");
     int pos9 = kwh9 >= 0 ? argc - 1 : argc;
@@ -709,7 +708,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        (boxed_socket_opt(name, argc) && sp_feature_required("socket")) ||
        /* a socket's addresses: a connection passed into a Thread arrives
           boxed, and a server reads REMOTE_ADDR from it */
-       ((is_socket_address(name)) && argc <= 1 && !call_has_splat_arg(nt, argv, argc) &&
+       ((is_socket_address(name)) && argc <= 1 && !nt_argv_has_splat(nt, argv, argc) &&
         sp_feature_required("socket")) ||
        /* and its reverse-lookup flag, set on every connection WEBrick accepts */
        (sp_feature_required("socket") &&
@@ -723,7 +722,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        /* the descriptor controls, at CRuby's arities, unless a splat carries
           the arguments, the advice is not a Symbol, or a class method or an
           attribute writer of that name may be the receiver's */
-       (boxed_desc_control_arity(name, argc) && !call_has_splat_arg(nt, argv, argc) &&
+       (boxed_desc_control_arity(name, argc) && !nt_argv_has_splat(nt, argv, argc) &&
         !(sp_streq(name, "advise") && comp_ntype(c, argv[0]) != TY_SYMBOL) &&
         !class_method_named(c, name) && !attr_writer_named(c, -1, name)) ||
        /* the descriptor surface a boxed handle needs as much as a typed one:
@@ -751,17 +750,17 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        (sp_streq(name, "to_io") && argc == 0) ||
        /* and reopen, on $stdout once a StringIO was put there too: the
           IO's own arm, after its argument is boxed (sp_File_reopen_poly) */
-       (argc == 1 && sp_streq(name, "reopen") && !call_has_splat_arg(nt, argv, argc)) ||
+       (argc == 1 && sp_streq(name, "reopen") && !nt_argv_has_splat(nt, argv, argc)) ||
        (sp_feature_required("socket") &&
         ((sp_streq(name, "accept") && argc == 0) || boxed_accept_nb_ok(nt, name, argc, argv))) ||
        /* and its shutdown, which WEBrick calls on each listener it kept in
           an Array when a signal stops the server */
        (sp_feature_required("socket") && sp_streq(name, "shutdown") && argc <= 1 &&
-        !call_has_splat_arg(nt, argv, argc)) ||
+        !nt_argv_has_splat(nt, argv, argc)) ||
        /* and its reads: a socket a block or Thread.new takes as its parameter
           is a boxed handle, as an Array element is */
        (sp_feature_required("socket") && socket_recv_call(name, argc) &&
-        !call_has_splat_arg(nt, argv, argc)) ||
+        !nt_argv_has_splat(nt, argv, argc)) ||
        /* the readiness family: a lambda's parameter is boxed, so a handle
           passed through one reached `wait_readable` with no emitter, and in
           a condition it was refused as non-bool. IO#wait stays off the list,
@@ -823,10 +822,8 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        have run. The stream arms below dropped the arguments and ran the
        method (`o.close(1)` closed the file). A `*` or `**` splat's count
        is the run time's, and stays with those arms. */
-    int kwsplat = 0;
-    for (int k = 0; k < argc; k++)
-      if (nt_kind(nt, argv[k]) == NK_KeywordHashNode && kwh_has_splat(nt, argv[k])) kwsplat = 1;
-    if (!iocand && argc > 0 && !kwsplat && !call_has_splat_arg(nt, argv, argc) &&
+    int kwsplat = nt_argv_has_kwsplat(nt, argv, argc);
+    if (!iocand && argc > 0 && !kwsplat && !nt_argv_has_splat(nt, argv, argc) &&
         builtin_arity_admits("File", name, 0) && !builtin_arity_admits("File", name, 1)) {
       static const struct { const char *cls, *id; } owners[] = {
         { "Dir", "SP_BUILTIN_DIR" }, { "Queue", "SP_BUILTIN_QUEUE" },
@@ -1208,8 +1205,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
          (write) instead of raising, so those shapes are poly (#4236/#4237). */
       else if ((is_nonblock_io(name)) &&
                argc >= 1) {
-        const char *lty9 = nt_type(nt, argv[argc - 1]);
-        int kwh9 = (lty9 && sp_streq(lty9, "KeywordHashNode")) ? argv[argc - 1] : -1;
+        int kwh9 = nt_argv_kwh(nt, argv, argc);
         int exc9 = kwh9 >= 0 ? kwh_lookup(nt, kwh9, "exception") : -1;
         int no_exc9 = exc9 >= 0 && nt_type(nt, exc9) &&
                       sp_streq(nt_type(nt, exc9), "FalseNode");
@@ -1370,8 +1366,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
    as a boxed operand is (it was read as one String operand, and the C did
    not build). */
 static int emit_io_syswrite_count(Compiler *c, const char *r, const int *argv, int argc, Buf *b) {
-  int splat = 0;
-  for (int k = 0; k < argc; k++) if (nt_kind(c->nt, argv[k]) == NK_SplatNode) splat = 1;
+  int splat = nt_argv_has_splat(c->nt, argv, argc);
   if (splat) {
     int tf = ++g_tmp, tp = ++g_tmp, tv = ++g_tmp;
     /* the receiver is rooted before the gathered arguments allocate and run */
@@ -1443,7 +1438,7 @@ static int emit_boxed_positional_io(Compiler *c, int recv, const char *name, int
                                     const int *argv, int tio, Buf *b) {
   int is_w = name[1] == 'w';   /* pwrite, beside pread */
   if (!is_positional_io(name) || argc < 1 || argc > (is_w ? 2 : 3) ||
-      call_has_splat_arg(c->nt, argv, argc)) return 0;
+      nt_argv_has_splat(c->nt, argv, argc)) return 0;
   int trv = ++g_tmp, th[3] = {0, 0, 0}, toff = ++g_tmp, tfirst = ++g_tmp;
   buf_puts(b, "({ ");
   trv = hold_operand(c, recv, TY_POLY, 1, trv, 1, " ", b);
@@ -1550,7 +1545,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
     /* addr(flag) / peeraddr(flag): true or :hostname looks the host name
        up, false or :numeric does not, nil follows the socket's flag */
     if (sp_feature_required("socket") && argc == 1 && is_socket_address(name) &&
-        !call_has_splat_arg(nt, argv, argc)) {
+        !nt_argv_has_splat(nt, argv, argc)) {
       int tf = ++g_tmp;
       buf_printf(b, "({ sp_File *_t%d = %s; SP_GC_ROOT(_t%d); sp_sock_addr_rl(_t%d, %d, sp_sock_rl_flag(",
                  tf, r, tf, tf, sp_streq(name, "peeraddr") ? 1 : 0);
@@ -1579,8 +1574,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
     if (sp_feature_required("socket") &&
         (sp_streq(name, "accept_nonblock") || sp_streq(name, "connect_nonblock") ||
          sp_streq(name, "recv_nonblock"))) {
-      const char *lty9 = argc > 0 ? nt_type(nt, argv[argc - 1]) : NULL;
-      int kwh9 = (lty9 && sp_streq(lty9, "KeywordHashNode")) ? argv[argc - 1] : -1;
+      int kwh9 = nt_argv_kwh(nt, argv, argc);
       int exc9 = kwh9 >= 0 ? kwh_lookup(nt, kwh9, "exception") : -1;
       int no_exc = exc9 >= 0 && nt_type(nt, exc9) && sp_streq(nt_type(nt, exc9), "FalseNode");
       int pos9 = kwh9 >= 0 ? argc - 1 : argc;
@@ -1664,7 +1658,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         free(rb.p); return 1;
       }
     }
-    if (sp_streq(name, "read") && call_has_splat_arg(nt, argv, argc)) {
+    if (sp_streq(name, "read") && nt_argv_has_splat(nt, argv, argc)) {
       /* read(*args), a wrapper handing its own arguments on: counted and
          read at run time, where the arms below took the list as the length */
       int tf = ++g_tmp, tpa = ++g_tmp;
@@ -1772,8 +1766,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
     /* read_nonblock / write_nonblock: a real non-blocking try. `exception:
        false` answers nil instead of raising IO::*Wait* / EOFError. */
     if ((is_nonblock_io(name)) && argc >= 1) {
-      const char *lty8 = nt_type(nt, argv[argc - 1]);
-      int kwh8 = (lty8 && sp_streq(lty8, "KeywordHashNode")) ? argv[argc - 1] : -1;
+      int kwh8 = nt_argv_kwh(nt, argv, argc);
       int exc8 = kwh8 >= 0 ? kwh_lookup(nt, kwh8, "exception") : -1;
       int no_exc8 = exc8 >= 0 && nt_type(nt, exc8) && sp_streq(nt_type(nt, exc8), "FalseNode");
       if (sp_streq(name, "read_nonblock")) {

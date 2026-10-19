@@ -3499,7 +3499,7 @@ int strbuf_held_chain(const Compiler *c, int r) {
     return strbuf_held_chain(c, nt_ref(nt, r, "receiver"));
   /* (not freeze: its String no mutator changes any more) */
   if (!bop_share_self_answer(nm, nt_ref(nt, r, "block") >= 0))
-    return nt_ref(nt, r, "block") < 0 && !call_has_splat_arg(nt, argv, argc) &&
+    return nt_ref(nt, r, "block") < 0 && !nt_argv_has_splat(nt, argv, argc) &&
            bop_share_named(TY_STRING, nm) != BSH_FROZEN &&
            (bop_answers_self(TY_STRING, nm, argc, 0) == BOPF_SELF || (is_receiver_conversion(nm) && argc == 0)) &&
            strbuf_held_chain(c, nt_ref(nt, r, "receiver"));
@@ -5089,10 +5089,7 @@ void emit_walk_arity_raise(Compiler *c, int id, int recv, const char *name, int 
     if (an < 1) return;
     av++; an--;
   }
-  for (int i = 0; i < an; i++) {
-    NodeKind k = nt_kind(nt, av[i]);
-    if (k == NK_SplatNode || k == NK_KeywordHashNode || k == NK_BlockArgumentNode) return;
-  }
+  if (nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK)) return;
   int has_blk = nt_ref(nt, site, "block") >= 0;
   const struct { const char *cls, *test; } kinds[] = {
     { "String", "_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)" },
@@ -7830,7 +7827,7 @@ static int node_is_oint_asked(Compiler *c, int node) {
     if (r < 0 && (sp_streq(nm, "Integer") || sp_streq(nm, "Float")) && an2 >= 2) {
       int a2v = nt_ref(nt, node, "arguments"), a2n = 0;
       const int *a2a = a2v >= 0 ? nt_arr(nt, a2v, "arguments", &a2n) : NULL;
-      if (a2a && a2n >= 2 && nt_kind(nt, a2a[a2n - 1]) == NK_KeywordHashNode) return 1;
+      if (a2n >= 2 && nt_argv_kwh(nt, a2a, a2n) >= 0) return 1;
     }
     /* a class-level attribute reader over an oint static (`Cfg.level`, or
        `level` in the class's own class method) answers the static */

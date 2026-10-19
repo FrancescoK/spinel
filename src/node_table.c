@@ -647,11 +647,7 @@ int nt_call_args_plain(const NodeTable *nt, int id) {
   if (args < 0) return 1;
   int argc = 0;
   const int *argv = nt_arr(nt, args, "arguments", &argc);
-  for (int i = 0; i < argc; i++) {
-    const char *ty = nt_type(nt, argv[i]);
-    if (ty && (sp_streq(ty, "SplatNode") || sp_streq(ty, "BlockArgumentNode"))) return 0;
-  }
-  return 1;
+  return !nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_BLOCK);
 }
 
 /* Copy the subtree at `root` of `src` into `dst` (every field, children
