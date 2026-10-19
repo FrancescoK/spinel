@@ -1995,7 +1995,7 @@ static int strbuf_next_held(Compiler *c, int n) {
    yielding method with a literal block answer what their value, or the
    block's last statement, does. */
 enum { SLK_HELD, SLK_FRESH, SLK_UNHELD };
-static int strbuf_route_ivar_get(Compiler *c, int v);
+int strbuf_route_ivar_get(Compiler *c, int v);
 /* a call of a method of the program's own that answers a variable it keeps
    (`def s = @s`) */
 static int strbuf_user_getter_call(Compiler *c, int v) {
@@ -2283,7 +2283,7 @@ static int strbuf_route_proc_call(Compiler *c, int v) {
 }
 /* A reflective ivar read is a value route too. Its emitter knows the
    backing slot's representation and answers a handle under the demand. */
-static int strbuf_route_ivar_get(Compiler *c, int v) {
+int strbuf_route_ivar_get(Compiler *c, int v) {
   v = unwrap_parens(c, v);
   if (!repr_share_rule(c) || v < 0 || nt_kind(c->nt, v) != NK_CallNode ||
       nt_ref(c->nt, v, "block") >= 0 ||

@@ -222,6 +222,7 @@ int strbuf_self_reader_slot(Compiler *c, int id);
 int strbuf_self_reader_handle(Compiler *c, int id);
 int strbuf_call_reads_handle(Compiler *c, int recv);
 int strbuf_route_reader(Compiler *c, int v);
+int strbuf_route_ivar_get(Compiler *c, int v);
 /* The String plan's producer kind (SPK_*) of route v, and the operand
    whose supply it hands on (codegen_stmt.c). */
 int strbuf_route_kind(Compiler *c, int v, int *op);
