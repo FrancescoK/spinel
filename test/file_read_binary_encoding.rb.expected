@@ -1,0 +1,11 @@
+"caf\xC3\xA9"
+#<Encoding:BINARY (ASCII-8BIT)>
+5
+#<Encoding:BINARY (ASCII-8BIT)>
+true
+"caf"
+#<Encoding:BINARY (ASCII-8BIT)>
+#<Encoding:BINARY (ASCII-8BIT)>
+"café"
+#<Encoding:UTF-8>
+""

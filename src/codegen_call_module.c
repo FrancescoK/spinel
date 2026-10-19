@@ -46,35 +46,57 @@ static void emit_file_realdirpath2(Compiler *c, const int *argv, Buf *b) {
 }
 
 /* the class methods of File / FileTest, Dir and Time */
-/* A `File.read` options hash that only names UTF-8 as the encoding
-   (`encoding:`, `external_encoding:`, `internal_encoding:` with
-   Encoding::UTF_8 or "UTF-8"): Spinel's text is UTF-8 already, so it reads
-   as the call without it does. */
-static int kwh_utf8_only(const NodeTable *nt, int kwh) {
-  if (kwh < 0 || nt_kind(nt, kwh) != NK_KeywordHashNode) return 0;
+/* The encoding a `File.read` options hash names, when that is all it
+   names (`encoding:`, `external_encoding:`, `internal_encoding:`):
+   KWH_ENC_UTF8 for Encoding::UTF_8 or "UTF-8" -- Spinel's text is UTF-8
+   already, so it reads as the call without it does -- and KWH_ENC_BINARY
+   for an external Encoding::BINARY / ASCII_8BIT or "BINARY" / "ASCII-8BIT",
+   which reads as File.binread does. KWH_ENC_NONE for any other hash. */
+enum { KWH_ENC_NONE, KWH_ENC_UTF8, KWH_ENC_BINARY };
+
+static int kwh_enc_value(const NodeTable *nt, int v) {
+  if (v < 0) return KWH_ENC_NONE;
+  NodeKind vk = nt_kind(nt, v);
+  if (vk == NK_StringNode) {
+    const char *sv = nt_str(nt, v, "content");
+    if (!sv) return KWH_ENC_NONE;
+    if (strcasecmp(sv, "UTF-8") == 0) return KWH_ENC_UTF8;
+    if (strcasecmp(sv, "BINARY") == 0 || strcasecmp(sv, "ASCII-8BIT") == 0)
+      return KWH_ENC_BINARY;
+    return KWH_ENC_NONE;
+  }
+  if (vk == NK_ConstantPathNode) {
+    int par = nt_ref(nt, v, "parent");
+    const char *cn = nt_str(nt, v, "name");
+    if (!cn || par < 0 || nt_kind(nt, par) != NK_ConstantReadNode ||
+        !sp_streq(nt_str(nt, par, "name"), "Encoding")) return KWH_ENC_NONE;
+    if (sp_streq(cn, "UTF_8")) return KWH_ENC_UTF8;
+    if (sp_streq(cn, "BINARY") || sp_streq(cn, "ASCII_8BIT"))
+      return KWH_ENC_BINARY;
+  }
+  return KWH_ENC_NONE;
+}
+
+static int kwh_read_encoding(const NodeTable *nt, int kwh) {
+  if (kwh < 0 || nt_kind(nt, kwh) != NK_KeywordHashNode) return KWH_ENC_NONE;
   int en = 0; const int *els = nt_arr(nt, kwh, "elements", &en);
-  if (en == 0) return 0;
+  if (en == 0) return KWH_ENC_NONE;
+  int enc = KWH_ENC_NONE;
   for (int i = 0; i < en; i++) {
-    if (nt_kind(nt, els[i]) != NK_AssocNode) return 0;
+    if (nt_kind(nt, els[i]) != NK_AssocNode) return KWH_ENC_NONE;
     int k = nt_ref(nt, els[i], "key"), v = nt_ref(nt, els[i], "value");
     const char *kn = k >= 0 && nt_kind(nt, k) == NK_SymbolNode ? nt_str(nt, k, "value") : NULL;
     if (!kn || (!sp_streq(kn, "encoding") && !sp_streq(kn, "external_encoding") &&
-                !sp_streq(kn, "internal_encoding"))) return 0;
-    if (v < 0) return 0;
-    NodeKind vk = nt_kind(nt, v);
-    if (vk == NK_StringNode) {
-      const char *sv = nt_str(nt, v, "content");
-      if (!sv || strcasecmp(sv, "UTF-8") != 0) return 0;
-    }
-    else if (vk == NK_ConstantPathNode) {
-      int par = nt_ref(nt, v, "parent");
-      const char *cn = nt_str(nt, v, "name");
-      if (!cn || !sp_streq(cn, "UTF_8") || par < 0 || nt_kind(nt, par) != NK_ConstantReadNode ||
-          !sp_streq(nt_str(nt, par, "name"), "Encoding")) return 0;
-    }
-    else return 0;
+                !sp_streq(kn, "internal_encoding"))) return KWH_ENC_NONE;
+    int e = kwh_enc_value(nt, v);
+    /* an internal BINARY transcodes; only the external one retags */
+    if (e == KWH_ENC_BINARY && sp_streq(kn, "internal_encoding"))
+      return KWH_ENC_NONE;
+    if (e == KWH_ENC_NONE || (enc != KWH_ENC_NONE && e != enc))
+      return KWH_ENC_NONE;
+    enc = e;
   }
-  return 1;
+  return enc;
 }
 
 int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
@@ -96,10 +118,22 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_puts(b, "sp_file_basename2("); emit_path_expr(c, argv[0], b); buf_puts(b, ", ");
       emit_str_expr(c, argv[1], b); buf_puts(b, ")"); return 1;
     }
-    if (sp_streq(name, "read") && argc >= 2 && kwh_utf8_only(nt, argv[argc - 1])) argc--;
+    int read_bin = 0;
+    if (sp_streq(name, "read") && argc >= 2 &&
+        nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) {
+      int enc = kwh_read_encoding(nt, argv[argc - 1]);
+      if (enc == KWH_ENC_NONE) {
+        unsupported_feature(c, id, "File.read with options other than an "
+                            "encoding (UTF-8 or BINARY) is not supported");
+        buf_puts(b, "\"\"");
+        return 1;
+      }
+      read_bin = enc == KWH_ENC_BINARY;
+      argc--;
+    }
     if ((sp_streq(name, "read") || sp_streq(name, "binread")) && argc == 1) {
       /* binread answers BYTES (CRuby names them ASCII-8BIT); read answers text */
-      int bin_r = sp_streq(name, "binread");
+      int bin_r = sp_streq(name, "binread") || read_bin;
       if (bin_r) buf_puts(b, "sp_str_as_binary(");
       buf_puts(b, "sp_file_read("); emit_path_expr(c, argv[0], b); buf_puts(b, ")");
       if (bin_r) buf_puts(b, ")");
@@ -111,7 +145,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
        evaluated into temporaries in source order: C leaves the order of
        a call's arguments unspecified. */
     if ((sp_streq(name, "read") || sp_streq(name, "binread")) && (argc == 2 || argc == 3)) {
-      int bin_r = sp_streq(name, "binread");
+      int bin_r = sp_streq(name, "binread") || read_bin;
       int tp = ++g_tmp, tl = ++g_tmp, to = ++g_tmp;
       if (bin_r) buf_puts(b, "sp_str_as_binary(");
       buf_printf(b, "({ const char *_t%d = ", tp); emit_path_expr(c, argv[0], b);
