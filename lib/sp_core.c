@@ -630,8 +630,26 @@ int sp_snprintf_ruby_float(char *buf, size_t size, const char *fmt, double v) {
  * libc + sp_raise_cls only. */
 sp_int sp_gcd(sp_int a,sp_int b){if(a<0)a=-a;if(b<0)b=-b;while(b){sp_int t=b;b=a%b;a=t;}return a;}
 sp_int sp_lcm(sp_int a,sp_int b){if(a==0||b==0)return 0;sp_int g=sp_gcd(a,b);if(a<0)a=-a;if(b<0)b=-b;return (a/g)*b;}
+/* Both operands are normalized residues below a positive sp_int modulus.
+   Reduce their full product, rather than overflowing before the remainder. */
+static sp_int sp_powmod_mul(sp_int a, sp_int b, sp_int mod) {
+  /* below 3037000500 (the square root of 2^63) the product itself fits */
+  if (mod > 0 && mod < 3037000500) return a * b % mod;
+#if SP_HAVE_INT128
+  return (sp_int)(((sp_uint128)a * (sp_uint128)b) % (sp_uint128)mod);
+#else
+  uintptr_t r = 0, x = (uintptr_t)a, y = (uintptr_t)b, m = (uintptr_t)mod;
+  /* Each sum is below 2 * INTPTR_MAX, so it fits uintptr_t. */
+  while (y) {
+    if (y & 1) r = (r + x) % m;
+    y >>= 1;
+    x = (x + x) % m;
+  }
+  return (sp_int)r;
+#endif
+}
 sp_int sp_powmod(sp_int base,sp_int exp,sp_int mod){if(exp<0)sp_raise_cls("RangeError","Integer#pow() 1st argument cannot be negative when 2nd argument specified");if(mod==0)sp_raise_cls("ZeroDivisionError","divided by 0");sp_int r=1;sp_int m=mod<0?-mod:mod;if(m==1){r=0;}
-else{base=base%m;if(base<0)base+=m;while(exp>0){if(exp%2==1)r=r*base%m;exp=exp/2;base=base*base%m;}}if(mod<0&&r>0)r-=m;return r;}
+else{base=base%m;if(base<0)base+=m;while(exp>0){if(exp%2==1)r=sp_powmod_mul(r,base,m);exp=exp/2;base=sp_powmod_mul(base,base,m);}}if(mod<0&&r>0)r-=m;return r;}
 sp_int sp_ceildiv(sp_int a,sp_int b){if(b==0)sp_raise_cls("ZeroDivisionError","divided by 0");if(b==-1)return -a;sp_int q=a/b;if(a%b!=0&&((a^b)>=0))q++;return q;}
 sp_int sp_int_clamp(sp_int v,sp_int lo,sp_int hi){return v<lo?lo:v>hi?hi:v;}
 sp_float sp_float_clamp(sp_float v,sp_float lo,sp_float hi){return v<lo?lo:v>hi?hi:v;}
