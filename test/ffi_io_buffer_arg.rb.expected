@@ -22,7 +22,7 @@ IO::Buffer::AccessError: Buffer is not writable!
 1
 0
 IO::Buffer::InvalidatedError: Buffer has been invalidated!
-IO::Buffer::InvalidatedError: Buffer has been invalidated!
+IO::Buffer::InvalidatedError: Buffer is invalid!
 572662306
 5
 1

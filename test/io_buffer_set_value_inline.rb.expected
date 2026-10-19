@@ -1,26 +1,26 @@
-U8 owned 0: 254,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-U8 owned 1: 254,254,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-U8 owned 15: 254,254,0,0,0,0,0,0,0,0,0,0,0,0,0,254
+U8 owned 0: 254,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 1
+U8 owned 1: 254,254,0,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 2
+U8 owned 15: 254,254,0,0,0,0,0,0,0,0,0,0,0,0,0,254 -> 16
 U8 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
 U8 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
 U8 owned -1: ArgumentError: Offset can't be negative!
 U8 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
 U8 owned -1073741824: ArgumentError: Offset can't be negative!
-U8 small 0: 5,254,0,0,0,0,0,0,0,0,0,0,0,0,0,254
-U8 slice 0: 254,0,0,0,0,0,0,0,0
-U8 slice 8: 254,0,0,0,0,0,0,0,254
+U8 small 0: 5,254,0,0,0,0,0,0,0,0,0,0,0,0,0,254 -> 1
+U8 slice 0: 254,0,0,0,0,0,0,0,0 -> 1
+U8 slice 8: 254,0,0,0,0,0,0,0,254 -> 9
 U8 slice 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=9)
 U8 slice -1: ArgumentError: Offset can't be negative!
 U8 root after slice writes: 5,254,0,254,0,0,0,0,0,0,0,254,0,0,0,254
 U8 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
 U8 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
 U8 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-U8 slice-of-freed 0: IO::Buffer::InvalidatedError
+U8 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 U8 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-U8 transferred-to 15: 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,254
-U8 slice-of-shrunk 0: IO::Buffer::InvalidatedError
-U8 shrunk 0: 254,0,0,0
-U8 shrunk 3: 254,0,0,254
+U8 transferred-to 15: 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,254 -> 16
+U8 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer is invalid!
+U8 shrunk 0: 254,0,0,0 -> 1
+U8 shrunk 3: 254,0,0,254 -> 4
 U8 shrunk 4: ArgumentError: Type extends beyond end of buffer! (offset=4 > size=4)
 U8 readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 U8 readonly 16: IO::Buffer::AccessError: Buffer is not writable!
@@ -28,31 +28,31 @@ U8 readonly -1: IO::Buffer::AccessError: Buffer is not writable!
 U8 readonly-slice 0: IO::Buffer::AccessError: Buffer is not writable!
 U8 mapped-readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 U8 mapped-readonly 16: IO::Buffer::AccessError: Buffer is not writable!
-U8 mapped-private 0: 254,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+U8 mapped-private 0: 254,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 1
 U8 mapped-private 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
-S8 owned 0: 254,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-S8 owned 1: 254,254,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-S8 owned 15: 254,254,0,0,0,0,0,0,0,0,0,0,0,0,0,254
+S8 owned 0: 254,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 1
+S8 owned 1: 254,254,0,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 2
+S8 owned 15: 254,254,0,0,0,0,0,0,0,0,0,0,0,0,0,254 -> 16
 S8 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
 S8 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
 S8 owned -1: ArgumentError: Offset can't be negative!
 S8 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
 S8 owned -1073741824: ArgumentError: Offset can't be negative!
-S8 small 0: 5,254,0,0,0,0,0,0,0,0,0,0,0,0,0,254
-S8 slice 0: 254,0,0,0,0,0,0,0,0
-S8 slice 8: 254,0,0,0,0,0,0,0,254
+S8 small 0: 5,254,0,0,0,0,0,0,0,0,0,0,0,0,0,254 -> 1
+S8 slice 0: 254,0,0,0,0,0,0,0,0 -> 1
+S8 slice 8: 254,0,0,0,0,0,0,0,254 -> 9
 S8 slice 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=9)
 S8 slice -1: ArgumentError: Offset can't be negative!
 S8 root after slice writes: 5,254,0,254,0,0,0,0,0,0,0,254,0,0,0,254
 S8 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
 S8 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
 S8 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-S8 slice-of-freed 0: IO::Buffer::InvalidatedError
+S8 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 S8 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-S8 transferred-to 15: 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,254
-S8 slice-of-shrunk 0: IO::Buffer::InvalidatedError
-S8 shrunk 0: 254,0,0,0
-S8 shrunk 3: 254,0,0,254
+S8 transferred-to 15: 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,254 -> 16
+S8 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer is invalid!
+S8 shrunk 0: 254,0,0,0 -> 1
+S8 shrunk 3: 254,0,0,254 -> 4
 S8 shrunk 4: ArgumentError: Type extends beyond end of buffer! (offset=4 > size=4)
 S8 readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 S8 readonly 16: IO::Buffer::AccessError: Buffer is not writable!
@@ -60,31 +60,31 @@ S8 readonly -1: IO::Buffer::AccessError: Buffer is not writable!
 S8 readonly-slice 0: IO::Buffer::AccessError: Buffer is not writable!
 S8 mapped-readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 S8 mapped-readonly 16: IO::Buffer::AccessError: Buffer is not writable!
-S8 mapped-private 0: 254,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+S8 mapped-private 0: 254,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 1
 S8 mapped-private 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
-u16 owned 0: 254,255,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-u16 owned 1: 254,254,255,0,0,0,0,0,0,0,0,0,0,0,0,0
-u16 owned 14: 254,254,255,0,0,0,0,0,0,0,0,0,0,0,254,255
+u16 owned 0: 254,255,0,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 2
+u16 owned 1: 254,254,255,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 3
+u16 owned 14: 254,254,255,0,0,0,0,0,0,0,0,0,0,0,254,255 -> 16
 u16 owned 15: ArgumentError: Type extends beyond end of buffer! (offset=15 > size=16)
 u16 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
 u16 owned -1: ArgumentError: Offset can't be negative!
 u16 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
 u16 owned -1073741824: ArgumentError: Offset can't be negative!
-u16 small 0: 5,0,255,0,0,0,0,0,0,0,0,0,0,0,254,255
-u16 slice 0: 254,255,0,0,0,0,0,0,0
-u16 slice 7: 254,255,0,0,0,0,0,254,255
+u16 small 0: 5,0,255,0,0,0,0,0,0,0,0,0,0,0,254,255 -> 2
+u16 slice 0: 254,255,0,0,0,0,0,0,0 -> 2
+u16 slice 7: 254,255,0,0,0,0,0,254,255 -> 9
 u16 slice 8: ArgumentError: Type extends beyond end of buffer! (offset=8 > size=9)
 u16 slice -1: ArgumentError: Offset can't be negative!
 u16 root after slice writes: 5,0,255,254,255,0,0,0,0,0,254,255,0,0,254,255
 u16 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
 u16 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=1)
 u16 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-u16 slice-of-freed 0: IO::Buffer::InvalidatedError
+u16 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 u16 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-u16 transferred-to 14: 0,0,0,0,0,0,0,0,0,0,0,0,0,0,254,255
-u16 slice-of-shrunk 0: IO::Buffer::InvalidatedError
-u16 shrunk 0: 254,255,0,0
-u16 shrunk 2: 254,255,254,255
+u16 transferred-to 14: 0,0,0,0,0,0,0,0,0,0,0,0,0,0,254,255 -> 16
+u16 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer is invalid!
+u16 shrunk 0: 254,255,0,0 -> 2
+u16 shrunk 2: 254,255,254,255 -> 4
 u16 shrunk 3: ArgumentError: Type extends beyond end of buffer! (offset=3 > size=4)
 u16 readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 u16 readonly 16: IO::Buffer::AccessError: Buffer is not writable!
@@ -92,31 +92,31 @@ u16 readonly -1: IO::Buffer::AccessError: Buffer is not writable!
 u16 readonly-slice 0: IO::Buffer::AccessError: Buffer is not writable!
 u16 mapped-readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 u16 mapped-readonly 16: IO::Buffer::AccessError: Buffer is not writable!
-u16 mapped-private 0: 254,255,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+u16 mapped-private 0: 254,255,0,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 2
 u16 mapped-private 15: ArgumentError: Type extends beyond end of buffer! (offset=15 > size=16)
-s16 owned 0: 254,255,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-s16 owned 1: 254,254,255,0,0,0,0,0,0,0,0,0,0,0,0,0
-s16 owned 14: 254,254,255,0,0,0,0,0,0,0,0,0,0,0,254,255
+s16 owned 0: 254,255,0,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 2
+s16 owned 1: 254,254,255,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 3
+s16 owned 14: 254,254,255,0,0,0,0,0,0,0,0,0,0,0,254,255 -> 16
 s16 owned 15: ArgumentError: Type extends beyond end of buffer! (offset=15 > size=16)
 s16 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
 s16 owned -1: ArgumentError: Offset can't be negative!
 s16 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
 s16 owned -1073741824: ArgumentError: Offset can't be negative!
-s16 small 0: 5,0,255,0,0,0,0,0,0,0,0,0,0,0,254,255
-s16 slice 0: 254,255,0,0,0,0,0,0,0
-s16 slice 7: 254,255,0,0,0,0,0,254,255
+s16 small 0: 5,0,255,0,0,0,0,0,0,0,0,0,0,0,254,255 -> 2
+s16 slice 0: 254,255,0,0,0,0,0,0,0 -> 2
+s16 slice 7: 254,255,0,0,0,0,0,254,255 -> 9
 s16 slice 8: ArgumentError: Type extends beyond end of buffer! (offset=8 > size=9)
 s16 slice -1: ArgumentError: Offset can't be negative!
 s16 root after slice writes: 5,0,255,254,255,0,0,0,0,0,254,255,0,0,254,255
 s16 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
 s16 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=1)
 s16 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-s16 slice-of-freed 0: IO::Buffer::InvalidatedError
+s16 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 s16 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-s16 transferred-to 14: 0,0,0,0,0,0,0,0,0,0,0,0,0,0,254,255
-s16 slice-of-shrunk 0: IO::Buffer::InvalidatedError
-s16 shrunk 0: 254,255,0,0
-s16 shrunk 2: 254,255,254,255
+s16 transferred-to 14: 0,0,0,0,0,0,0,0,0,0,0,0,0,0,254,255 -> 16
+s16 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer is invalid!
+s16 shrunk 0: 254,255,0,0 -> 2
+s16 shrunk 2: 254,255,254,255 -> 4
 s16 shrunk 3: ArgumentError: Type extends beyond end of buffer! (offset=3 > size=4)
 s16 readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 s16 readonly 16: IO::Buffer::AccessError: Buffer is not writable!
@@ -124,31 +124,31 @@ s16 readonly -1: IO::Buffer::AccessError: Buffer is not writable!
 s16 readonly-slice 0: IO::Buffer::AccessError: Buffer is not writable!
 s16 mapped-readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 s16 mapped-readonly 16: IO::Buffer::AccessError: Buffer is not writable!
-s16 mapped-private 0: 254,255,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+s16 mapped-private 0: 254,255,0,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 2
 s16 mapped-private 15: ArgumentError: Type extends beyond end of buffer! (offset=15 > size=16)
-U16 owned 0: 255,254,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-U16 owned 1: 255,255,254,0,0,0,0,0,0,0,0,0,0,0,0,0
-U16 owned 14: 255,255,254,0,0,0,0,0,0,0,0,0,0,0,255,254
+U16 owned 0: 255,254,0,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 2
+U16 owned 1: 255,255,254,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 3
+U16 owned 14: 255,255,254,0,0,0,0,0,0,0,0,0,0,0,255,254 -> 16
 U16 owned 15: ArgumentError: Type extends beyond end of buffer! (offset=15 > size=16)
 U16 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
 U16 owned -1: ArgumentError: Offset can't be negative!
 U16 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
 U16 owned -1073741824: ArgumentError: Offset can't be negative!
-U16 small 0: 0,5,254,0,0,0,0,0,0,0,0,0,0,0,255,254
-U16 slice 0: 255,254,0,0,0,0,0,0,0
-U16 slice 7: 255,254,0,0,0,0,0,255,254
+U16 small 0: 0,5,254,0,0,0,0,0,0,0,0,0,0,0,255,254 -> 2
+U16 slice 0: 255,254,0,0,0,0,0,0,0 -> 2
+U16 slice 7: 255,254,0,0,0,0,0,255,254 -> 9
 U16 slice 8: ArgumentError: Type extends beyond end of buffer! (offset=8 > size=9)
 U16 slice -1: ArgumentError: Offset can't be negative!
 U16 root after slice writes: 0,5,254,255,254,0,0,0,0,0,255,254,0,0,255,254
 U16 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
 U16 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=1)
 U16 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-U16 slice-of-freed 0: IO::Buffer::InvalidatedError
+U16 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 U16 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-U16 transferred-to 14: 0,0,0,0,0,0,0,0,0,0,0,0,0,0,255,254
-U16 slice-of-shrunk 0: IO::Buffer::InvalidatedError
-U16 shrunk 0: 255,254,0,0
-U16 shrunk 2: 255,254,255,254
+U16 transferred-to 14: 0,0,0,0,0,0,0,0,0,0,0,0,0,0,255,254 -> 16
+U16 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer is invalid!
+U16 shrunk 0: 255,254,0,0 -> 2
+U16 shrunk 2: 255,254,255,254 -> 4
 U16 shrunk 3: ArgumentError: Type extends beyond end of buffer! (offset=3 > size=4)
 U16 readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 U16 readonly 16: IO::Buffer::AccessError: Buffer is not writable!
@@ -156,31 +156,31 @@ U16 readonly -1: IO::Buffer::AccessError: Buffer is not writable!
 U16 readonly-slice 0: IO::Buffer::AccessError: Buffer is not writable!
 U16 mapped-readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 U16 mapped-readonly 16: IO::Buffer::AccessError: Buffer is not writable!
-U16 mapped-private 0: 255,254,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+U16 mapped-private 0: 255,254,0,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 2
 U16 mapped-private 15: ArgumentError: Type extends beyond end of buffer! (offset=15 > size=16)
-S16 owned 0: 255,254,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-S16 owned 1: 255,255,254,0,0,0,0,0,0,0,0,0,0,0,0,0
-S16 owned 14: 255,255,254,0,0,0,0,0,0,0,0,0,0,0,255,254
+S16 owned 0: 255,254,0,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 2
+S16 owned 1: 255,255,254,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 3
+S16 owned 14: 255,255,254,0,0,0,0,0,0,0,0,0,0,0,255,254 -> 16
 S16 owned 15: ArgumentError: Type extends beyond end of buffer! (offset=15 > size=16)
 S16 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
 S16 owned -1: ArgumentError: Offset can't be negative!
 S16 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
 S16 owned -1073741824: ArgumentError: Offset can't be negative!
-S16 small 0: 0,5,254,0,0,0,0,0,0,0,0,0,0,0,255,254
-S16 slice 0: 255,254,0,0,0,0,0,0,0
-S16 slice 7: 255,254,0,0,0,0,0,255,254
+S16 small 0: 0,5,254,0,0,0,0,0,0,0,0,0,0,0,255,254 -> 2
+S16 slice 0: 255,254,0,0,0,0,0,0,0 -> 2
+S16 slice 7: 255,254,0,0,0,0,0,255,254 -> 9
 S16 slice 8: ArgumentError: Type extends beyond end of buffer! (offset=8 > size=9)
 S16 slice -1: ArgumentError: Offset can't be negative!
 S16 root after slice writes: 0,5,254,255,254,0,0,0,0,0,255,254,0,0,255,254
 S16 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
 S16 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=1)
 S16 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-S16 slice-of-freed 0: IO::Buffer::InvalidatedError
+S16 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 S16 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-S16 transferred-to 14: 0,0,0,0,0,0,0,0,0,0,0,0,0,0,255,254
-S16 slice-of-shrunk 0: IO::Buffer::InvalidatedError
-S16 shrunk 0: 255,254,0,0
-S16 shrunk 2: 255,254,255,254
+S16 transferred-to 14: 0,0,0,0,0,0,0,0,0,0,0,0,0,0,255,254 -> 16
+S16 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer is invalid!
+S16 shrunk 0: 255,254,0,0 -> 2
+S16 shrunk 2: 255,254,255,254 -> 4
 S16 shrunk 3: ArgumentError: Type extends beyond end of buffer! (offset=3 > size=4)
 S16 readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 S16 readonly 16: IO::Buffer::AccessError: Buffer is not writable!
@@ -188,31 +188,31 @@ S16 readonly -1: IO::Buffer::AccessError: Buffer is not writable!
 S16 readonly-slice 0: IO::Buffer::AccessError: Buffer is not writable!
 S16 mapped-readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 S16 mapped-readonly 16: IO::Buffer::AccessError: Buffer is not writable!
-S16 mapped-private 0: 255,254,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+S16 mapped-private 0: 255,254,0,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 2
 S16 mapped-private 15: ArgumentError: Type extends beyond end of buffer! (offset=15 > size=16)
-u32 owned 0: 254,255,255,255,0,0,0,0,0,0,0,0,0,0,0,0
-u32 owned 1: 254,254,255,255,255,0,0,0,0,0,0,0,0,0,0,0
-u32 owned 12: 254,254,255,255,255,0,0,0,0,0,0,0,254,255,255,255
+u32 owned 0: 254,255,255,255,0,0,0,0,0,0,0,0,0,0,0,0 -> 4
+u32 owned 1: 254,254,255,255,255,0,0,0,0,0,0,0,0,0,0,0 -> 5
+u32 owned 12: 254,254,255,255,255,0,0,0,0,0,0,0,254,255,255,255 -> 16
 u32 owned 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
 u32 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
 u32 owned -1: ArgumentError: Offset can't be negative!
 u32 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
 u32 owned -1073741824: ArgumentError: Offset can't be negative!
-u32 small 0: 5,0,0,0,255,0,0,0,0,0,0,0,254,255,255,255
-u32 slice 0: 254,255,255,255,0,0,0,0,0
-u32 slice 5: 254,255,255,255,0,254,255,255,255
+u32 small 0: 5,0,0,0,255,0,0,0,0,0,0,0,254,255,255,255 -> 4
+u32 slice 0: 254,255,255,255,0,0,0,0,0 -> 4
+u32 slice 5: 254,255,255,255,0,254,255,255,255 -> 9
 u32 slice 6: ArgumentError: Type extends beyond end of buffer! (offset=6 > size=9)
 u32 slice -1: ArgumentError: Offset can't be negative!
 u32 root after slice writes: 5,0,0,254,255,255,255,0,254,255,255,255,254,255,255,255
 u32 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
 u32 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=3)
 u32 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-u32 slice-of-freed 0: IO::Buffer::InvalidatedError
+u32 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 u32 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-u32 transferred-to 12: 0,0,0,0,0,0,0,0,0,0,0,0,254,255,255,255
-u32 slice-of-shrunk 0: IO::Buffer::InvalidatedError
-u32 shrunk 0: 254,255,255,255
-u32 shrunk 0: 254,255,255,255
+u32 transferred-to 12: 0,0,0,0,0,0,0,0,0,0,0,0,254,255,255,255 -> 16
+u32 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer is invalid!
+u32 shrunk 0: 254,255,255,255 -> 4
+u32 shrunk 0: 254,255,255,255 -> 4
 u32 shrunk 1: ArgumentError: Type extends beyond end of buffer! (offset=1 > size=4)
 u32 readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 u32 readonly 16: IO::Buffer::AccessError: Buffer is not writable!
@@ -220,31 +220,31 @@ u32 readonly -1: IO::Buffer::AccessError: Buffer is not writable!
 u32 readonly-slice 0: IO::Buffer::AccessError: Buffer is not writable!
 u32 mapped-readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 u32 mapped-readonly 16: IO::Buffer::AccessError: Buffer is not writable!
-u32 mapped-private 0: 254,255,255,255,0,0,0,0,0,0,0,0,0,0,0,0
+u32 mapped-private 0: 254,255,255,255,0,0,0,0,0,0,0,0,0,0,0,0 -> 4
 u32 mapped-private 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
-s32 owned 0: 254,255,255,255,0,0,0,0,0,0,0,0,0,0,0,0
-s32 owned 1: 254,254,255,255,255,0,0,0,0,0,0,0,0,0,0,0
-s32 owned 12: 254,254,255,255,255,0,0,0,0,0,0,0,254,255,255,255
+s32 owned 0: 254,255,255,255,0,0,0,0,0,0,0,0,0,0,0,0 -> 4
+s32 owned 1: 254,254,255,255,255,0,0,0,0,0,0,0,0,0,0,0 -> 5
+s32 owned 12: 254,254,255,255,255,0,0,0,0,0,0,0,254,255,255,255 -> 16
 s32 owned 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
 s32 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
 s32 owned -1: ArgumentError: Offset can't be negative!
 s32 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
 s32 owned -1073741824: ArgumentError: Offset can't be negative!
-s32 small 0: 5,0,0,0,255,0,0,0,0,0,0,0,254,255,255,255
-s32 slice 0: 254,255,255,255,0,0,0,0,0
-s32 slice 5: 254,255,255,255,0,254,255,255,255
+s32 small 0: 5,0,0,0,255,0,0,0,0,0,0,0,254,255,255,255 -> 4
+s32 slice 0: 254,255,255,255,0,0,0,0,0 -> 4
+s32 slice 5: 254,255,255,255,0,254,255,255,255 -> 9
 s32 slice 6: ArgumentError: Type extends beyond end of buffer! (offset=6 > size=9)
 s32 slice -1: ArgumentError: Offset can't be negative!
 s32 root after slice writes: 5,0,0,254,255,255,255,0,254,255,255,255,254,255,255,255
 s32 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
 s32 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=3)
 s32 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-s32 slice-of-freed 0: IO::Buffer::InvalidatedError
+s32 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 s32 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-s32 transferred-to 12: 0,0,0,0,0,0,0,0,0,0,0,0,254,255,255,255
-s32 slice-of-shrunk 0: IO::Buffer::InvalidatedError
-s32 shrunk 0: 254,255,255,255
-s32 shrunk 0: 254,255,255,255
+s32 transferred-to 12: 0,0,0,0,0,0,0,0,0,0,0,0,254,255,255,255 -> 16
+s32 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer is invalid!
+s32 shrunk 0: 254,255,255,255 -> 4
+s32 shrunk 0: 254,255,255,255 -> 4
 s32 shrunk 1: ArgumentError: Type extends beyond end of buffer! (offset=1 > size=4)
 s32 readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 s32 readonly 16: IO::Buffer::AccessError: Buffer is not writable!
@@ -252,31 +252,31 @@ s32 readonly -1: IO::Buffer::AccessError: Buffer is not writable!
 s32 readonly-slice 0: IO::Buffer::AccessError: Buffer is not writable!
 s32 mapped-readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 s32 mapped-readonly 16: IO::Buffer::AccessError: Buffer is not writable!
-s32 mapped-private 0: 254,255,255,255,0,0,0,0,0,0,0,0,0,0,0,0
+s32 mapped-private 0: 254,255,255,255,0,0,0,0,0,0,0,0,0,0,0,0 -> 4
 s32 mapped-private 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
-U32 owned 0: 255,255,255,254,0,0,0,0,0,0,0,0,0,0,0,0
-U32 owned 1: 255,255,255,255,254,0,0,0,0,0,0,0,0,0,0,0
-U32 owned 12: 255,255,255,255,254,0,0,0,0,0,0,0,255,255,255,254
+U32 owned 0: 255,255,255,254,0,0,0,0,0,0,0,0,0,0,0,0 -> 4
+U32 owned 1: 255,255,255,255,254,0,0,0,0,0,0,0,0,0,0,0 -> 5
+U32 owned 12: 255,255,255,255,254,0,0,0,0,0,0,0,255,255,255,254 -> 16
 U32 owned 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
 U32 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
 U32 owned -1: ArgumentError: Offset can't be negative!
 U32 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
 U32 owned -1073741824: ArgumentError: Offset can't be negative!
-U32 small 0: 0,0,0,5,254,0,0,0,0,0,0,0,255,255,255,254
-U32 slice 0: 255,255,255,254,0,0,0,0,0
-U32 slice 5: 255,255,255,254,0,255,255,255,254
+U32 small 0: 0,0,0,5,254,0,0,0,0,0,0,0,255,255,255,254 -> 4
+U32 slice 0: 255,255,255,254,0,0,0,0,0 -> 4
+U32 slice 5: 255,255,255,254,0,255,255,255,254 -> 9
 U32 slice 6: ArgumentError: Type extends beyond end of buffer! (offset=6 > size=9)
 U32 slice -1: ArgumentError: Offset can't be negative!
 U32 root after slice writes: 0,0,0,255,255,255,254,0,255,255,255,254,255,255,255,254
 U32 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
 U32 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=3)
 U32 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-U32 slice-of-freed 0: IO::Buffer::InvalidatedError
+U32 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 U32 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-U32 transferred-to 12: 0,0,0,0,0,0,0,0,0,0,0,0,255,255,255,254
-U32 slice-of-shrunk 0: IO::Buffer::InvalidatedError
-U32 shrunk 0: 255,255,255,254
-U32 shrunk 0: 255,255,255,254
+U32 transferred-to 12: 0,0,0,0,0,0,0,0,0,0,0,0,255,255,255,254 -> 16
+U32 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer is invalid!
+U32 shrunk 0: 255,255,255,254 -> 4
+U32 shrunk 0: 255,255,255,254 -> 4
 U32 shrunk 1: ArgumentError: Type extends beyond end of buffer! (offset=1 > size=4)
 U32 readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 U32 readonly 16: IO::Buffer::AccessError: Buffer is not writable!
@@ -284,31 +284,31 @@ U32 readonly -1: IO::Buffer::AccessError: Buffer is not writable!
 U32 readonly-slice 0: IO::Buffer::AccessError: Buffer is not writable!
 U32 mapped-readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 U32 mapped-readonly 16: IO::Buffer::AccessError: Buffer is not writable!
-U32 mapped-private 0: 255,255,255,254,0,0,0,0,0,0,0,0,0,0,0,0
+U32 mapped-private 0: 255,255,255,254,0,0,0,0,0,0,0,0,0,0,0,0 -> 4
 U32 mapped-private 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
-S32 owned 0: 255,255,255,254,0,0,0,0,0,0,0,0,0,0,0,0
-S32 owned 1: 255,255,255,255,254,0,0,0,0,0,0,0,0,0,0,0
-S32 owned 12: 255,255,255,255,254,0,0,0,0,0,0,0,255,255,255,254
+S32 owned 0: 255,255,255,254,0,0,0,0,0,0,0,0,0,0,0,0 -> 4
+S32 owned 1: 255,255,255,255,254,0,0,0,0,0,0,0,0,0,0,0 -> 5
+S32 owned 12: 255,255,255,255,254,0,0,0,0,0,0,0,255,255,255,254 -> 16
 S32 owned 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
 S32 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
 S32 owned -1: ArgumentError: Offset can't be negative!
 S32 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
 S32 owned -1073741824: ArgumentError: Offset can't be negative!
-S32 small 0: 0,0,0,5,254,0,0,0,0,0,0,0,255,255,255,254
-S32 slice 0: 255,255,255,254,0,0,0,0,0
-S32 slice 5: 255,255,255,254,0,255,255,255,254
+S32 small 0: 0,0,0,5,254,0,0,0,0,0,0,0,255,255,255,254 -> 4
+S32 slice 0: 255,255,255,254,0,0,0,0,0 -> 4
+S32 slice 5: 255,255,255,254,0,255,255,255,254 -> 9
 S32 slice 6: ArgumentError: Type extends beyond end of buffer! (offset=6 > size=9)
 S32 slice -1: ArgumentError: Offset can't be negative!
 S32 root after slice writes: 0,0,0,255,255,255,254,0,255,255,255,254,255,255,255,254
 S32 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
 S32 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=3)
 S32 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-S32 slice-of-freed 0: IO::Buffer::InvalidatedError
+S32 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 S32 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-S32 transferred-to 12: 0,0,0,0,0,0,0,0,0,0,0,0,255,255,255,254
-S32 slice-of-shrunk 0: IO::Buffer::InvalidatedError
-S32 shrunk 0: 255,255,255,254
-S32 shrunk 0: 255,255,255,254
+S32 transferred-to 12: 0,0,0,0,0,0,0,0,0,0,0,0,255,255,255,254 -> 16
+S32 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer is invalid!
+S32 shrunk 0: 255,255,255,254 -> 4
+S32 shrunk 0: 255,255,255,254 -> 4
 S32 shrunk 1: ArgumentError: Type extends beyond end of buffer! (offset=1 > size=4)
 S32 readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 S32 readonly 16: IO::Buffer::AccessError: Buffer is not writable!
@@ -316,29 +316,29 @@ S32 readonly -1: IO::Buffer::AccessError: Buffer is not writable!
 S32 readonly-slice 0: IO::Buffer::AccessError: Buffer is not writable!
 S32 mapped-readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 S32 mapped-readonly 16: IO::Buffer::AccessError: Buffer is not writable!
-S32 mapped-private 0: 255,255,255,254,0,0,0,0,0,0,0,0,0,0,0,0
+S32 mapped-private 0: 255,255,255,254,0,0,0,0,0,0,0,0,0,0,0,0 -> 4
 S32 mapped-private 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
-u64 owned 0: 254,255,255,255,255,255,255,255,0,0,0,0,0,0,0,0
-u64 owned 1: 254,254,255,255,255,255,255,255,255,0,0,0,0,0,0,0
-u64 owned 8: 254,254,255,255,255,255,255,255,254,255,255,255,255,255,255,255
+u64 owned 0: 254,255,255,255,255,255,255,255,0,0,0,0,0,0,0,0 -> 8
+u64 owned 1: 254,254,255,255,255,255,255,255,255,0,0,0,0,0,0,0 -> 9
+u64 owned 8: 254,254,255,255,255,255,255,255,254,255,255,255,255,255,255,255 -> 16
 u64 owned 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=16)
 u64 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
 u64 owned -1: ArgumentError: Offset can't be negative!
 u64 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
 u64 owned -1073741824: ArgumentError: Offset can't be negative!
-u64 small 0: 5,0,0,0,0,0,0,0,254,255,255,255,255,255,255,255
-u64 slice 0: 254,255,255,255,255,255,255,255,255
-u64 slice 1: 254,254,255,255,255,255,255,255,255
+u64 small 0: 5,0,0,0,0,0,0,0,254,255,255,255,255,255,255,255 -> 8
+u64 slice 0: 254,255,255,255,255,255,255,255,255 -> 8
+u64 slice 1: 254,254,255,255,255,255,255,255,255 -> 9
 u64 slice 2: ArgumentError: Type extends beyond end of buffer! (offset=2 > size=9)
 u64 slice -1: ArgumentError: Offset can't be negative!
 u64 root after slice writes: 5,0,0,254,254,255,255,255,255,255,255,255,255,255,255,255
 u64 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
 u64 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=7)
 u64 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-u64 slice-of-freed 0: IO::Buffer::InvalidatedError
+u64 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 u64 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-u64 transferred-to 8: 0,0,0,0,0,0,0,0,254,255,255,255,255,255,255,255
-u64 slice-of-shrunk 0: IO::Buffer::InvalidatedError
+u64 transferred-to 8: 0,0,0,0,0,0,0,0,254,255,255,255,255,255,255,255 -> 16
+u64 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 u64 shrunk 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=4)
 u64 shrunk -4: ArgumentError: Offset can't be negative!
 u64 shrunk -3: ArgumentError: Offset can't be negative!
@@ -348,29 +348,29 @@ u64 readonly -1: IO::Buffer::AccessError: Buffer is not writable!
 u64 readonly-slice 0: IO::Buffer::AccessError: Buffer is not writable!
 u64 mapped-readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 u64 mapped-readonly 16: IO::Buffer::AccessError: Buffer is not writable!
-u64 mapped-private 0: 254,255,255,255,255,255,255,255,0,0,0,0,0,0,0,0
+u64 mapped-private 0: 254,255,255,255,255,255,255,255,0,0,0,0,0,0,0,0 -> 8
 u64 mapped-private 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=16)
-s64 owned 0: 254,255,255,255,255,255,255,255,0,0,0,0,0,0,0,0
-s64 owned 1: 254,254,255,255,255,255,255,255,255,0,0,0,0,0,0,0
-s64 owned 8: 254,254,255,255,255,255,255,255,254,255,255,255,255,255,255,255
+s64 owned 0: 254,255,255,255,255,255,255,255,0,0,0,0,0,0,0,0 -> 8
+s64 owned 1: 254,254,255,255,255,255,255,255,255,0,0,0,0,0,0,0 -> 9
+s64 owned 8: 254,254,255,255,255,255,255,255,254,255,255,255,255,255,255,255 -> 16
 s64 owned 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=16)
 s64 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
 s64 owned -1: ArgumentError: Offset can't be negative!
 s64 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
 s64 owned -1073741824: ArgumentError: Offset can't be negative!
-s64 small 0: 5,0,0,0,0,0,0,0,254,255,255,255,255,255,255,255
-s64 slice 0: 254,255,255,255,255,255,255,255,255
-s64 slice 1: 254,254,255,255,255,255,255,255,255
+s64 small 0: 5,0,0,0,0,0,0,0,254,255,255,255,255,255,255,255 -> 8
+s64 slice 0: 254,255,255,255,255,255,255,255,255 -> 8
+s64 slice 1: 254,254,255,255,255,255,255,255,255 -> 9
 s64 slice 2: ArgumentError: Type extends beyond end of buffer! (offset=2 > size=9)
 s64 slice -1: ArgumentError: Offset can't be negative!
 s64 root after slice writes: 5,0,0,254,254,255,255,255,255,255,255,255,255,255,255,255
 s64 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
 s64 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=7)
 s64 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-s64 slice-of-freed 0: IO::Buffer::InvalidatedError
+s64 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 s64 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-s64 transferred-to 8: 0,0,0,0,0,0,0,0,254,255,255,255,255,255,255,255
-s64 slice-of-shrunk 0: IO::Buffer::InvalidatedError
+s64 transferred-to 8: 0,0,0,0,0,0,0,0,254,255,255,255,255,255,255,255 -> 16
+s64 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 s64 shrunk 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=4)
 s64 shrunk -4: ArgumentError: Offset can't be negative!
 s64 shrunk -3: ArgumentError: Offset can't be negative!
@@ -380,29 +380,29 @@ s64 readonly -1: IO::Buffer::AccessError: Buffer is not writable!
 s64 readonly-slice 0: IO::Buffer::AccessError: Buffer is not writable!
 s64 mapped-readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 s64 mapped-readonly 16: IO::Buffer::AccessError: Buffer is not writable!
-s64 mapped-private 0: 254,255,255,255,255,255,255,255,0,0,0,0,0,0,0,0
+s64 mapped-private 0: 254,255,255,255,255,255,255,255,0,0,0,0,0,0,0,0 -> 8
 s64 mapped-private 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=16)
-U64 owned 0: 255,255,255,255,255,255,255,254,0,0,0,0,0,0,0,0
-U64 owned 1: 255,255,255,255,255,255,255,255,254,0,0,0,0,0,0,0
-U64 owned 8: 255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,254
+U64 owned 0: 255,255,255,255,255,255,255,254,0,0,0,0,0,0,0,0 -> 8
+U64 owned 1: 255,255,255,255,255,255,255,255,254,0,0,0,0,0,0,0 -> 9
+U64 owned 8: 255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,254 -> 16
 U64 owned 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=16)
 U64 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
 U64 owned -1: ArgumentError: Offset can't be negative!
 U64 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
 U64 owned -1073741824: ArgumentError: Offset can't be negative!
-U64 small 0: 0,0,0,0,0,0,0,5,255,255,255,255,255,255,255,254
-U64 slice 0: 255,255,255,255,255,255,255,254,255
-U64 slice 1: 255,255,255,255,255,255,255,255,254
+U64 small 0: 0,0,0,0,0,0,0,5,255,255,255,255,255,255,255,254 -> 8
+U64 slice 0: 255,255,255,255,255,255,255,254,255 -> 8
+U64 slice 1: 255,255,255,255,255,255,255,255,254 -> 9
 U64 slice 2: ArgumentError: Type extends beyond end of buffer! (offset=2 > size=9)
 U64 slice -1: ArgumentError: Offset can't be negative!
 U64 root after slice writes: 0,0,0,255,255,255,255,255,255,255,255,254,255,255,255,254
 U64 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
 U64 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=7)
 U64 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-U64 slice-of-freed 0: IO::Buffer::InvalidatedError
+U64 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 U64 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-U64 transferred-to 8: 0,0,0,0,0,0,0,0,255,255,255,255,255,255,255,254
-U64 slice-of-shrunk 0: IO::Buffer::InvalidatedError
+U64 transferred-to 8: 0,0,0,0,0,0,0,0,255,255,255,255,255,255,255,254 -> 16
+U64 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 U64 shrunk 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=4)
 U64 shrunk -4: ArgumentError: Offset can't be negative!
 U64 shrunk -3: ArgumentError: Offset can't be negative!
@@ -412,29 +412,29 @@ U64 readonly -1: IO::Buffer::AccessError: Buffer is not writable!
 U64 readonly-slice 0: IO::Buffer::AccessError: Buffer is not writable!
 U64 mapped-readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 U64 mapped-readonly 16: IO::Buffer::AccessError: Buffer is not writable!
-U64 mapped-private 0: 255,255,255,255,255,255,255,254,0,0,0,0,0,0,0,0
+U64 mapped-private 0: 255,255,255,255,255,255,255,254,0,0,0,0,0,0,0,0 -> 8
 U64 mapped-private 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=16)
-S64 owned 0: 255,255,255,255,255,255,255,254,0,0,0,0,0,0,0,0
-S64 owned 1: 255,255,255,255,255,255,255,255,254,0,0,0,0,0,0,0
-S64 owned 8: 255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,254
+S64 owned 0: 255,255,255,255,255,255,255,254,0,0,0,0,0,0,0,0 -> 8
+S64 owned 1: 255,255,255,255,255,255,255,255,254,0,0,0,0,0,0,0 -> 9
+S64 owned 8: 255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,254 -> 16
 S64 owned 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=16)
 S64 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
 S64 owned -1: ArgumentError: Offset can't be negative!
 S64 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
 S64 owned -1073741824: ArgumentError: Offset can't be negative!
-S64 small 0: 0,0,0,0,0,0,0,5,255,255,255,255,255,255,255,254
-S64 slice 0: 255,255,255,255,255,255,255,254,255
-S64 slice 1: 255,255,255,255,255,255,255,255,254
+S64 small 0: 0,0,0,0,0,0,0,5,255,255,255,255,255,255,255,254 -> 8
+S64 slice 0: 255,255,255,255,255,255,255,254,255 -> 8
+S64 slice 1: 255,255,255,255,255,255,255,255,254 -> 9
 S64 slice 2: ArgumentError: Type extends beyond end of buffer! (offset=2 > size=9)
 S64 slice -1: ArgumentError: Offset can't be negative!
 S64 root after slice writes: 0,0,0,255,255,255,255,255,255,255,255,254,255,255,255,254
 S64 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
 S64 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=7)
 S64 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-S64 slice-of-freed 0: IO::Buffer::InvalidatedError
+S64 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 S64 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-S64 transferred-to 8: 0,0,0,0,0,0,0,0,255,255,255,255,255,255,255,254
-S64 slice-of-shrunk 0: IO::Buffer::InvalidatedError
+S64 transferred-to 8: 0,0,0,0,0,0,0,0,255,255,255,255,255,255,255,254 -> 16
+S64 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 S64 shrunk 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=4)
 S64 shrunk -4: ArgumentError: Offset can't be negative!
 S64 shrunk -3: ArgumentError: Offset can't be negative!
@@ -444,31 +444,31 @@ S64 readonly -1: IO::Buffer::AccessError: Buffer is not writable!
 S64 readonly-slice 0: IO::Buffer::AccessError: Buffer is not writable!
 S64 mapped-readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 S64 mapped-readonly 16: IO::Buffer::AccessError: Buffer is not writable!
-S64 mapped-private 0: 255,255,255,255,255,255,255,254,0,0,0,0,0,0,0,0
+S64 mapped-private 0: 255,255,255,255,255,255,255,254,0,0,0,0,0,0,0,0 -> 8
 S64 mapped-private 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=16)
-f32 owned 0: 0,0,32,192,0,0,0,0,0,0,0,0,0,0,0,0
-f32 owned 1: 0,0,0,32,192,0,0,0,0,0,0,0,0,0,0,0
-f32 owned 12: 0,0,0,32,192,0,0,0,0,0,0,0,0,0,32,192
+f32 owned 0: 0,0,32,192,0,0,0,0,0,0,0,0,0,0,0,0 -> 4
+f32 owned 1: 0,0,0,32,192,0,0,0,0,0,0,0,0,0,0,0 -> 5
+f32 owned 12: 0,0,0,32,192,0,0,0,0,0,0,0,0,0,32,192 -> 16
 f32 owned 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
 f32 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
 f32 owned -1: ArgumentError: Offset can't be negative!
 f32 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
 f32 owned -1073741824: ArgumentError: Offset can't be negative!
-f32 small 0: 0,0,168,64,192,0,0,0,0,0,0,0,0,0,32,192
-f32 slice 0: 0,0,32,192,0,0,0,0,0
-f32 slice 5: 0,0,32,192,0,0,0,32,192
+f32 small 0: 0,0,168,64,192,0,0,0,0,0,0,0,0,0,32,192 -> 4
+f32 slice 0: 0,0,32,192,0,0,0,0,0 -> 4
+f32 slice 5: 0,0,32,192,0,0,0,32,192 -> 9
 f32 slice 6: ArgumentError: Type extends beyond end of buffer! (offset=6 > size=9)
 f32 slice -1: ArgumentError: Offset can't be negative!
 f32 root after slice writes: 0,0,168,0,0,32,192,0,0,0,32,192,0,0,32,192
 f32 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
 f32 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=3)
 f32 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-f32 slice-of-freed 0: IO::Buffer::InvalidatedError
+f32 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 f32 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-f32 transferred-to 12: 0,0,0,0,0,0,0,0,0,0,0,0,0,0,32,192
-f32 slice-of-shrunk 0: IO::Buffer::InvalidatedError
-f32 shrunk 0: 0,0,32,192
-f32 shrunk 0: 0,0,32,192
+f32 transferred-to 12: 0,0,0,0,0,0,0,0,0,0,0,0,0,0,32,192 -> 16
+f32 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer is invalid!
+f32 shrunk 0: 0,0,32,192 -> 4
+f32 shrunk 0: 0,0,32,192 -> 4
 f32 shrunk 1: ArgumentError: Type extends beyond end of buffer! (offset=1 > size=4)
 f32 readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 f32 readonly 16: IO::Buffer::AccessError: Buffer is not writable!
@@ -476,29 +476,29 @@ f32 readonly -1: IO::Buffer::AccessError: Buffer is not writable!
 f32 readonly-slice 0: IO::Buffer::AccessError: Buffer is not writable!
 f32 mapped-readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 f32 mapped-readonly 16: IO::Buffer::AccessError: Buffer is not writable!
-f32 mapped-private 0: 0,0,32,192,0,0,0,0,0,0,0,0,0,0,0,0
+f32 mapped-private 0: 0,0,32,192,0,0,0,0,0,0,0,0,0,0,0,0 -> 4
 f32 mapped-private 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
-f64 owned 0: 0,0,0,0,0,0,4,192,0,0,0,0,0,0,0,0
-f64 owned 1: 0,0,0,0,0,0,0,4,192,0,0,0,0,0,0,0
-f64 owned 8: 0,0,0,0,0,0,0,4,0,0,0,0,0,0,4,192
+f64 owned 0: 0,0,0,0,0,0,4,192,0,0,0,0,0,0,0,0 -> 8
+f64 owned 1: 0,0,0,0,0,0,0,4,192,0,0,0,0,0,0,0 -> 9
+f64 owned 8: 0,0,0,0,0,0,0,4,0,0,0,0,0,0,4,192 -> 16
 f64 owned 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=16)
 f64 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
 f64 owned -1: ArgumentError: Offset can't be negative!
 f64 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
 f64 owned -1073741824: ArgumentError: Offset can't be negative!
-f64 small 0: 0,0,0,0,0,0,21,64,0,0,0,0,0,0,4,192
-f64 slice 0: 0,0,0,0,0,0,4,192,0
-f64 slice 1: 0,0,0,0,0,0,0,4,192
+f64 small 0: 0,0,0,0,0,0,21,64,0,0,0,0,0,0,4,192 -> 8
+f64 slice 0: 0,0,0,0,0,0,4,192,0 -> 8
+f64 slice 1: 0,0,0,0,0,0,0,4,192 -> 9
 f64 slice 2: ArgumentError: Type extends beyond end of buffer! (offset=2 > size=9)
 f64 slice -1: ArgumentError: Offset can't be negative!
 f64 root after slice writes: 0,0,0,0,0,0,0,0,0,0,4,192,0,0,4,192
 f64 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
 f64 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=7)
 f64 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-f64 slice-of-freed 0: IO::Buffer::InvalidatedError
+f64 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 f64 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-f64 transferred-to 8: 0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,192
-f64 slice-of-shrunk 0: IO::Buffer::InvalidatedError
+f64 transferred-to 8: 0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,192 -> 16
+f64 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 f64 shrunk 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=4)
 f64 shrunk -4: ArgumentError: Offset can't be negative!
 f64 shrunk -3: ArgumentError: Offset can't be negative!
@@ -508,31 +508,31 @@ f64 readonly -1: IO::Buffer::AccessError: Buffer is not writable!
 f64 readonly-slice 0: IO::Buffer::AccessError: Buffer is not writable!
 f64 mapped-readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 f64 mapped-readonly 16: IO::Buffer::AccessError: Buffer is not writable!
-f64 mapped-private 0: 0,0,0,0,0,0,4,192,0,0,0,0,0,0,0,0
+f64 mapped-private 0: 0,0,0,0,0,0,4,192,0,0,0,0,0,0,0,0 -> 8
 f64 mapped-private 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=16)
-F32 owned 0: 192,32,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-F32 owned 1: 192,192,32,0,0,0,0,0,0,0,0,0,0,0,0,0
-F32 owned 12: 192,192,32,0,0,0,0,0,0,0,0,0,192,32,0,0
+F32 owned 0: 192,32,0,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 4
+F32 owned 1: 192,192,32,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 5
+F32 owned 12: 192,192,32,0,0,0,0,0,0,0,0,0,192,32,0,0 -> 16
 F32 owned 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
 F32 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
 F32 owned -1: ArgumentError: Offset can't be negative!
 F32 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
 F32 owned -1073741824: ArgumentError: Offset can't be negative!
-F32 small 0: 64,168,0,0,0,0,0,0,0,0,0,0,192,32,0,0
-F32 slice 0: 192,32,0,0,0,0,0,0,0
-F32 slice 5: 192,32,0,0,0,192,32,0,0
+F32 small 0: 64,168,0,0,0,0,0,0,0,0,0,0,192,32,0,0 -> 4
+F32 slice 0: 192,32,0,0,0,0,0,0,0 -> 4
+F32 slice 5: 192,32,0,0,0,192,32,0,0 -> 9
 F32 slice 6: ArgumentError: Type extends beyond end of buffer! (offset=6 > size=9)
 F32 slice -1: ArgumentError: Offset can't be negative!
 F32 root after slice writes: 64,168,0,192,32,0,0,0,192,32,0,0,192,32,0,0
 F32 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
 F32 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=3)
 F32 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-F32 slice-of-freed 0: IO::Buffer::InvalidatedError
+F32 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 F32 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-F32 transferred-to 12: 0,0,0,0,0,0,0,0,0,0,0,0,192,32,0,0
-F32 slice-of-shrunk 0: IO::Buffer::InvalidatedError
-F32 shrunk 0: 192,32,0,0
-F32 shrunk 0: 192,32,0,0
+F32 transferred-to 12: 0,0,0,0,0,0,0,0,0,0,0,0,192,32,0,0 -> 16
+F32 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer is invalid!
+F32 shrunk 0: 192,32,0,0 -> 4
+F32 shrunk 0: 192,32,0,0 -> 4
 F32 shrunk 1: ArgumentError: Type extends beyond end of buffer! (offset=1 > size=4)
 F32 readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 F32 readonly 16: IO::Buffer::AccessError: Buffer is not writable!
@@ -540,29 +540,29 @@ F32 readonly -1: IO::Buffer::AccessError: Buffer is not writable!
 F32 readonly-slice 0: IO::Buffer::AccessError: Buffer is not writable!
 F32 mapped-readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 F32 mapped-readonly 16: IO::Buffer::AccessError: Buffer is not writable!
-F32 mapped-private 0: 192,32,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+F32 mapped-private 0: 192,32,0,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 4
 F32 mapped-private 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
-F64 owned 0: 192,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-F64 owned 1: 192,192,4,0,0,0,0,0,0,0,0,0,0,0,0,0
-F64 owned 8: 192,192,4,0,0,0,0,0,192,4,0,0,0,0,0,0
+F64 owned 0: 192,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 8
+F64 owned 1: 192,192,4,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 9
+F64 owned 8: 192,192,4,0,0,0,0,0,192,4,0,0,0,0,0,0 -> 16
 F64 owned 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=16)
 F64 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
 F64 owned -1: ArgumentError: Offset can't be negative!
 F64 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
 F64 owned -1073741824: ArgumentError: Offset can't be negative!
-F64 small 0: 64,21,0,0,0,0,0,0,192,4,0,0,0,0,0,0
-F64 slice 0: 192,4,0,0,0,0,0,0,0
-F64 slice 1: 192,192,4,0,0,0,0,0,0
+F64 small 0: 64,21,0,0,0,0,0,0,192,4,0,0,0,0,0,0 -> 8
+F64 slice 0: 192,4,0,0,0,0,0,0,0 -> 8
+F64 slice 1: 192,192,4,0,0,0,0,0,0 -> 9
 F64 slice 2: ArgumentError: Type extends beyond end of buffer! (offset=2 > size=9)
 F64 slice -1: ArgumentError: Offset can't be negative!
 F64 root after slice writes: 64,21,0,192,192,4,0,0,0,0,0,0,0,0,0,0
 F64 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
 F64 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=7)
 F64 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-F64 slice-of-freed 0: IO::Buffer::InvalidatedError
+F64 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 F64 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
-F64 transferred-to 8: 0,0,0,0,0,0,0,0,192,4,0,0,0,0,0,0
-F64 slice-of-shrunk 0: IO::Buffer::InvalidatedError
+F64 transferred-to 8: 0,0,0,0,0,0,0,0,192,4,0,0,0,0,0,0 -> 16
+F64 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer is invalid!
 F64 shrunk 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=4)
 F64 shrunk -4: ArgumentError: Offset can't be negative!
 F64 shrunk -3: ArgumentError: Offset can't be negative!
@@ -572,21 +572,22 @@ F64 readonly -1: IO::Buffer::AccessError: Buffer is not writable!
 F64 readonly-slice 0: IO::Buffer::AccessError: Buffer is not writable!
 F64 mapped-readonly 0: IO::Buffer::AccessError: Buffer is not writable!
 F64 mapped-readonly 16: IO::Buffer::AccessError: Buffer is not writable!
-F64 mapped-private 0: 192,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+F64 mapped-private 0: 192,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0 -> 8
 F64 mapped-private 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=16)
-U8 value 256 0: 0,0,0,0,0,0,0,0
-U8 value -1 0: 255,0,0,0,0,0,0,0
-S8 value 200 0: 200,0,0,0,0,0,0,0
-S8 value -129 0: 127,0,0,0,0,0,0,0
-u16 value 70000 0: 112,17,0,0,0,0,0,0
-S16 value -40000 0: 99,192,0,0,0,0,0,0
-U16 value 65535 0: 255,255,0,0,0,0,0,0
-u32 value 1000000000 0: 0,202,154,59,0,0,0,0
-S32 value -1000000000 0: 196,101,54,0,0,0,0,0
-U32 value 7 0: 0,0,0,7,0,0,0,0
-s32 value 0 0: 0,0,0,0,0,0,0,0
-f32 int 0 3: 0,0,64,64,0,0,0,0
-F64 int 0 -7: 192,28,0,0,0,0,0,0
-f64 inf 0: 0,0,0,0,0,0,240,127
-F32 -inf 0: 255,128,0,0,0,0,240,127
+U8 value 256 0: 0,0,0,0,0,0,0,0 -> 1
+U8 value -1 0: 255,0,0,0,0,0,0,0 -> 1
+S8 value 200 0: 200,0,0,0,0,0,0,0 -> 1
+S8 value -129 0: 127,0,0,0,0,0,0,0 -> 1
+u16 value 70000 0: 112,17,0,0,0,0,0,0 -> 2
+S16 value -40000 0: 99,192,0,0,0,0,0,0 -> 2
+U16 value 65535 0: 255,255,0,0,0,0,0,0 -> 2
+u32 value 1000000000 0: 0,202,154,59,0,0,0,0 -> 4
+S32 value -1000000000 0: 196,101,54,0,0,0,0,0 -> 4
+U32 value 7 0: 0,0,0,7,0,0,0,0 -> 4
+s32 value 0 0: 0,0,0,0,0,0,0,0 -> 4
+f32 int 0 3: 0,0,64,64,0,0,0,0 -> 4
+F64 int 0 -7: 192,28,0,0,0,0,0,0 -> 8
+f64 inf 0: 0,0,0,0,0,0,240,127 -> 8
+F32 -inf 0: 255,128,0,0,0,0,240,127 -> 4
+f64 nan answers: 8
 f64 nan: true

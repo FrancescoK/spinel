@@ -5,7 +5,8 @@
 # negative or edge offset -- falls back to the out-of-line write with its
 # CRuby errors. 8/16-bit stores wrap. Each `when` below is its own
 # literal-symbol call site, with an Integer (put, putfi) or a Float (putf)
-# value; the bytes are printed after every write.
+# value; the bytes are printed after every write, with what it answered
+# (the offset just past the value, as CRuby's set_value does).
 require "tmpdir"
 
 def put(b, t, o, v)
@@ -54,42 +55,42 @@ def bytes(b)
   out.join(",")
 end
 
-# A write to an invalidated slice prints its class only: Spinel's message
-# for it is the read's ("Buffer has been invalidated!"), where CRuby's
-# writes say "Buffer is invalid!".
-def report(label, b, e)
+# A write to an invalidated slice says "Buffer is invalid!" (a read says
+# "Buffer has been invalidated!").
+def report(label, b, e, r)
   if e
-    msg = e.is_a?(IO::Buffer::InvalidatedError) ? "" : ": #{e.message}"
-    puts "#{label}: #{e.class}#{msg}"
+    puts "#{label}: #{e.class}: #{e.message}"
   else
-    puts "#{label}: #{bytes(b)}"
+    puts "#{label}: #{bytes(b)} -> #{r}"
   end
 end
 
 def probe(t, label, b, offs, iv, fv)
   offs.each do |o|
     e = nil
+    r = 0
     begin
       if t.to_s.include?("f") || t.to_s.include?("F")
-        putf(b, t, o, fv)
+        r = putf(b, t, o, fv)
       else
-        put(b, t, o, iv)
+        r = put(b, t, o, iv)
       end
     rescue => x
       e = x
     end
-    report("#{t} #{label} #{o}", b, e)
+    report("#{t} #{label} #{o}", b, e, r)
   end
 end
 
 def probe_fi(t, label, b, o, iv)
   e = nil
+  r = 0
   begin
-    putfi(b, t, o, iv)
+    r = putfi(b, t, o, iv)
   rescue => x
     e = x
   end
-  report("#{t} #{label} #{o} #{iv}", b, e)
+  report("#{t} #{label} #{o} #{iv}", b, e, r)
 end
 
 path = File.join(Dir.tmpdir, "sp_iob_set_inline_#{Process.pid}.bin")
@@ -149,6 +150,6 @@ probe_fi(:F64, "int", b, 0, -7)
 probe(:f64, "inf", b, [0], 0, Float::INFINITY)
 probe(:F32, "-inf", b, [0], 0, -Float::INFINITY)
 nb = IO::Buffer.new(8)
-nb.set_value(:f64, 0, Float::NAN)
+puts "f64 nan answers: #{nb.set_value(:f64, 0, Float::NAN)}"
 puts "f64 nan: #{nb.get_value(:f64, 0).nan?}"
 File.delete(path)
