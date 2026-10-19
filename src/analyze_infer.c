@@ -5451,6 +5451,14 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
       /* a candidate that answers nothing (a raise-only body) keeps its
          void: the consumer then runs the call for its effect and reads nil,
          as it does for the same call on a constant receiver (#8645) */
+      /* `k.label = v` is v whatever the writer's body answers, as on a
+         constant receiver: the dispatch calls the writer for effect and
+         yields the argument */
+      if (nc > 0 && !has_blk && argc == 1 && call_is_setter_assign(nt, id)) {
+        TyKind at = infer_type(c, argv[0]);
+        if (at == TY_STRBUF && c->share_strings) at = TY_STRING;
+        if (at != TY_UNKNOWN) { *out = at; return 1; }
+      }
       if (nc > 0 && !has_blk)
         { *out = uret == TY_UNKNOWN ? TY_POLY : uret; return 1; }
     }
