@@ -3055,6 +3055,7 @@ static const BopShareRow bop_share_rows[] = {
   { TY_CLASS,       "children", BSH_PURE },
   { TY_CLASS,       "entries", BSH_PURE },
   { TY_CLASS,       "mkdir", BSH_PURE },
+  { TY_CLASS,       "rmdir", BSH_PURE },
   { TY_CLASS,       "exist?", BSH_PURE },
   { TY_CLASS,       "spawn", BSH_PURE },
   { TY_CLASS,       "waitpid2", BSH_PURE },
