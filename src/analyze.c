@@ -48612,6 +48612,15 @@ static void an_phase_method_backstops(Compiler *c) {
       for (int iter = 0; iter < rc.cap; iter++) {
         int ch = infer_param_types(c);
         ch |= infer_write_types(c);
+        /* and into the ivars it is stored in. The main fixpoint can have
+           typed such an ivar from another source: a recursive call handing
+           Hop#run back Secure#wrap's Sealed made its `conn` one,
+           `Sealed.new(conn)` made `@io` one, and `def write(b) =
+           @io.write(b)` then called only itself and had no value. Left to
+           the late passes, `@io` widened after the last one that gives a
+           method with no value its return, and `write`, with each method
+           answering through it, was emitted void and answered nil. */
+        ch |= infer_ivar_types(c);
         ch |= infer_return_types(c);
         if (!ch) break;
         an_round_cap_step(c, &rc, iter);
