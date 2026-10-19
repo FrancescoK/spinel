@@ -46,7 +46,6 @@ test/share/storage_round_late_widening.rb	test/share/storage_round_late_widening
 test/share/verify/buffer_p5_fillcmp.rb	test/share/verify/buffer_p5_fillcmp.rb:13	CallNode (read)	plan handle, C bytes (take, block tail)
 test/share/verify/buffer_p5_fillcmp.rb	test/share/verify/buffer_p5_fillcmp.rb:16	CallNode (read)	plan handle, C bytes (take, block tail)
 test/share/verify/route_c_gsub_blk_dollar.rb	test/share/verify/route_c_gsub_blk_dollar.rb:3	LocalVariableReadNode (s)	plan handle (live), C bytes (take, receiver)
-test/share/verify/route_c_hash_transform_bang.rb	test/share/verify/route_c_hash_transform_bang.rb:3	CallNode (upcase!)	plan handle, C bytes (take, block tail)
 test/share/verify/route_c_sub_bang_blk.rb	test/share/verify/route_c_sub_bang_blk.rb:3	LocalVariableReadNode (s)	plan handle (live), C bytes (take, receiver)
 test/share_strings_builtin_fallback_arguments.rb	test/share_strings_builtin_fallback_arguments.rb:55	LocalVariableReadNode (value__bp)	plan handle, C bytes (take, argument)
 test/share_strings_builtin_fallback_reads.rb	test/share_strings_builtin_fallback_reads.rb:39	LocalVariableReadNode (value)	plan handle, C bytes (take, argument)

@@ -241,6 +241,12 @@ const char *share_plan_kind_name(int kind) {
   return kind >= 0 && kind < SPK__COUNT ? names[kind] : "?";
 }
 
+int share_plan_producer_unlifted(Compiler *c, int v, int *operand) {
+  int rv, k = share_plan_producer_core(c, v, &rv, 1);
+  if (operand) *operand = rv;
+  return k;
+}
+
 int share_plan_producer(Compiler *c, int v, int *operand) {
   int rv, k = share_plan_producer_at(c, v, &rv);
   if (operand) *operand = rv;

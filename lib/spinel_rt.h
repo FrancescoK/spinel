@@ -3020,6 +3020,14 @@ static inline sp_RbVal sp_poly_to_s_box(sp_RbVal v) {
   if ((v.tag == SP_TAG_STR && v.v.s) || (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p)) return v;
   return sp_box_str_new(sp_poly_to_s(v));
 }
+/* ...for a value stored where no handle is wanted for what is not a String
+   (a Hash's value a block answers): a String answers its own box as
+   sp_poly_to_s_box does, anything else its to_s boxed as bytes, with no
+   handle made around it */
+static inline sp_RbVal sp_poly_to_s_box_plain(sp_RbVal v) {
+  if ((v.tag == SP_TAG_STR && v.v.s) || (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p)) return v;
+  return sp_box_str(sp_poly_to_s(v));
+}
 /* A boxed value unboxed into a String slot. A mutable String's box carries
    its sp_String handle in the union, so reading `.v.s` there hands the slot
    the handle, not the bytes; the bytes are the handle's data, the same live

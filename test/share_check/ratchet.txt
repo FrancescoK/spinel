@@ -80,8 +80,6 @@ test/share/verify/buffer_p5_fillcmp.rb	test/share/verify/buffer_p5_fillcmp.rb:13
 test/share/verify/buffer_p5_fillcmp.rb	test/share/verify/buffer_p5_fillcmp.rb:16	CallNode (read)	boxed as bytes by sp_box_str (sp_strbuf_read_pub)
 test/share/verify/route_c_freeze_dup.rb	test/share/verify/route_c_freeze_dup.rb:3	LocalVariableReadNode (s)	changed in place as bytes by sp_str_freeze_val (sp_strbuf_read_pub)
 test/share/verify/route_c_gsub_blk_dollar.rb	test/share/verify/route_c_gsub_blk_dollar.rb:3	LocalVariableReadNode (s)	changed in place as bytes by sp_str_substr (bytes face)
-test/share/verify/route_c_hash_transform_bang.rb	test/share/verify/route_c_hash_transform_bang.rb:3	CallNode (upcase!)	boxed as bytes by sp_box_str (bytes face)
-test/share/verify/route_c_hash_transform_bang.rb	test/share/verify/route_c_hash_transform_bang.rb:3	LocalVariableReadNode (_spx)	changed in place as bytes by sp_str_upcase (bytes face)
 test/share/verify/route_c_sub_bang_blk.rb	test/share/verify/route_c_sub_bang_blk.rb:3	LocalVariableReadNode (s)	changed in place as bytes by sp_String_append_bin (bytes face)
 test/share/verify/route_d_symbol_to_proc_freeze.rb	test/share/verify/route_d_symbol_to_proc_freeze.rb:1	LocalVariableReadNode (_spx)	changed in place as bytes by sp_str_freeze_val (sp_strbuf_read_pub)
 test/share/verify/route_i_send_sym_downcase.rb	?:0	CallNode (keep)	boxed as bytes by sp_box_str (bytes face)
