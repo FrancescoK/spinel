@@ -2196,6 +2196,38 @@ static void cf_call(CF *f, int v) {
          passes: the channel, which a resume with arguments makes anything
          (the enumerators the compiler makes resume with none). */
       if (key && sp_streq(key, "Fiber") && sp_streq(nm, "yield")) { cf_flow(f, f->fiber_ch, v); return; }
+      /* Thread.current is one object for the walk, whose [] and []= the
+         builtin rules read as a container's: what the program stores
+         under any key is what a read answers, not every class (#8837: the
+         blog's 58 reads of its thread-local state). */
+      if (key && sp_streq(key, "Thread") && sp_streq(nm, "current") && argc == 0) {
+        int tls = cf_entry(f, -1, "#thread_current");
+        cf_add_set(f, tls, cf_bv_set(f));
+        if (f->directed) cf_el_obj(f, tls);
+        cf_flow(f, tls, v);
+        return;
+      }
+      /* Thread.new(a, b) { |x, y| }: the block's parameters are the
+         arguments; Fiber.new { |x| }: the first resume's, the channel. The
+         thread or fiber itself is anything (its value, its storage). */
+      if (key && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode &&
+          ((sp_streq(key, "Thread") && (sp_streq(nm, "new") || sp_streq(nm, "start") || sp_streq(nm, "fork"))) ||
+           (sp_streq(key, "Fiber") && sp_streq(nm, "new")))) {
+        const char *names[CF_YARGS];
+        int plain = 1;
+        int n = cf_block_params(f, blk, names, CF_YARGS, &plain, NULL);
+        int body = nt_ref(nt, blk, "body");
+        if (!plain) cf_all_block_params(f, blk);
+        else if (sp_streq(key, "Thread")) {
+          int splat = 0;
+          for (int i = 0; i < argc; i++) if (nt_kind(nt, argv[i]) == NK_SplatNode || nt_kind(nt, argv[i]) == NK_BlockArgumentNode) splat = 1;
+          if (splat) cf_all_block_params(f, blk);
+          else for (int i = 0; i < n; i++) if (names[i]) { int pe = cf_lv(f, body >= 0 ? body : blk, names[i]); if (i < argc) cf_flow(f, argv[i], pe); }
+        }
+        else for (int i = 0; i < n; i++) if (names[i]) cf_flow(f, f->fiber_ch, cf_lv(f, body >= 0 ? body : blk, names[i]));
+        cf_all(f, v);
+        return;
+      }
       cf_all(f, v);
       if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) { cf_all_block_params(f, blk); cf_all(f, blk); }
       return;
