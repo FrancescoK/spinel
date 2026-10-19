@@ -7481,6 +7481,13 @@ int subtree_reads_match_globals(Compiler *c, int root) {
                  sp_streq(gn, "$'") || sp_streq(gn, "$+")))
         return 1;
     }
+    /* `Regexp.last_match` (and `Regexp.last_match(n)`) reads $~ too */
+    if (sp_streq(ty, "CallNode") && nt_str(nt, root, "name") && sp_streq(nt_str(nt, root, "name"), "last_match")) {
+      int rv = nt_ref(nt, root, "receiver");
+      const char *rn = rv >= 0 && (nt_kind(nt, rv) == NK_ConstantReadNode || nt_kind(nt, rv) == NK_ConstantPathNode)
+                       ? nt_str(nt, rv, "name") : NULL;
+      if (rn && sp_streq(rn, "Regexp")) return 1;
+    }
   }
   int nr = nt_num_refs(nt, root);
   for (int i = 0; i < nr; i++) if (subtree_reads_match_globals(c, nt_ref_at(nt, root, i))) return 1;
