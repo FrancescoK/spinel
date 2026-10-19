@@ -2774,6 +2774,32 @@ static TyKind method_yield_ret(Compiler *c, int mi, TyKind ret) {
   return ret;
 }
 
+/* The values of a method pinned to its guard's Enumerator (Scope.ret_pin_guard)
+   other than the guard's, joined: what a call with a block answers. 0 when
+   the walk of its values gives up or there are none (the pin stands);
+   otherwise 1, with *out the join, TY_UNKNOWN while a value is not typed yet. */
+static int pinned_block_form_ret(Compiler *c, int mi, TyKind *out) {
+  int lv[16];
+  int n = method_value_leaves_or_nil(c, mi, lv, 16);
+  TyKind acc = TY_UNKNOWN;
+  int any = 0, nil = 0;
+  for (int i = 0; i < n; i++) {
+    if (lv[i] == c->scopes[mi].ret_pin_guard) continue;
+    TyKind t = infer_type(c, lv[i]);
+    any = 1;
+    if (t == TY_UNKNOWN) { *out = TY_UNKNOWN; return 1; }
+    if (t == TY_VOID) t = TY_NIL;
+    nil |= t == TY_NIL;
+    acc = ty_unify(acc, t);
+  }
+  /* a path that answers nil (a bare `return`, an arm left out) adds no value to the walk, but it is one */
+  if (any && n >= 0 && method_value_leaves(c, mi, lv, 16) < 0) { nil = 1; acc = ty_unify(acc, TY_NIL); }
+  /* an Integer or a Float beside a nil is boxed: the nil flag of a call's slot is a mark that settles later */
+  if (nil && (acc == TY_INT || acc == TY_FLOAT)) acc = TY_POLY;
+  *out = acc;
+  return any;
+}
+
 TyKind method_call_ret(Compiler *c, int mi, int call_id) {
   int last = scope_body_last(c, mi);
   /* `if block_given? ... yield ... else ... end`: the call with a block
@@ -2857,11 +2883,13 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
     }
   }
   /* a pinned `return enum_for(:m) unless block_given?` method called with
-     a block of its own answers its `self` tail (Scope.ret_withblock) */
-  if (c->scopes[mi].ret_withblock != TY_UNKNOWN) {
+     a block of its own answers what the rest of its body does */
+  if (c->scopes[mi].ret_pin_guard >= 0) {
     int blk = nt_ref(c->nt, call_id, "block");
-    if (blk >= 0 && nt_kind(c->nt, blk) == NK_BlockNode && !nt_int(c->nt, blk, "fwd_yield", 0))
-      return c->scopes[mi].ret_withblock;
+    if (blk >= 0 && nt_kind(c->nt, blk) == NK_BlockNode && !nt_int(c->nt, blk, "fwd_yield", 0)) {
+      TyKind t;
+      if (pinned_block_form_ret(c, mi, &t)) return t;
+    }
   }
   /* `return x unless block_given?`: a blockless call site reads the value
      of that return, one with a block the value of the body proper */

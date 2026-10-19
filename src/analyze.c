@@ -12255,25 +12255,11 @@ static int desugar_to_enum(Compiler *c) {
         es->ret_specialized = 1;
         changed = 1;
         /* The pin is the blockless call's value. A call with a block runs
-           the body, and a `self` tail answers the receiver there, as in
-           CRuby; pinned, it answered nil. Only when the method's returns
-           are the guard's and `return self`s. */
-        int si = (int)(es - c->scopes), others_self = 1;
-        NT_FOREACH_KIND(nt, NK_ReturnNode, rid) {
-          if (c->nscope[rid] != si || te_return_in_lambda(c, rid)) continue;
-          int ra = nt_ref(nt, rid, "arguments");
-          int rc = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rc) : NULL;
-          if (rc == 1 && rv[0] == id) continue;   /* the guard's own */
-          if (rc != 1 || nt_kind(nt, rv[0]) != NK_SelfNode) others_self = 0;   /* `return self` answers the receiver too */
-        }
-        int tail = scope_body_last(c, si);
-        if (tail >= 0 && nt_kind(nt, tail) == NK_ReturnNode) {   /* a tail `return self`: its value */
-          int ta = nt_ref(nt, tail, "arguments"), tc = 0;
-          const int *tv = ta >= 0 ? nt_arr(nt, ta, "arguments", &tc) : NULL;
-          if (tc == 1) tail = tv[0];
-        }
-        if (others_self && tail >= 0 && nt_kind(nt, tail) == NK_SelfNode && es->class_id >= 0 && !es->is_cmethod)
-          scope_set_ret_withblock(es, ty_object(es->class_id));
+           the body and answers what it answers, as in CRuby (a `self` tail
+           the receiver, an iteration's tail its receiver, a `return self`
+           in a block the receiver): method_call_ret reads the values of the
+           body other than the guard's. */
+        scope_set_ret_pin_guard(es, id);
       }
       nt_node_set_str(nt, id, "name", hname);
       int empty = nt_new_node(nt, "ArgumentsNode");
@@ -48291,7 +48277,7 @@ static void an_phase_procs(Compiler *c) {
        method was inlined (Scope.ret_noblock); as one emitted function both
        arms are live at run time, so its value is the two joined */
     if (m->ret_noblock != TY_UNKNOWN) { scope_set_ret(m, ty_unify(m->ret, m->ret_noblock)); scope_set_ret_noblock(m, TY_UNKNOWN); }
-    scope_set_ret_withblock(m, TY_UNKNOWN);   /* one function answers both: its own ret */
+    scope_set_ret_pin_guard(m, -1);   /* one function answers both: its own ret */
     /* The return the fixpoint derived stands. This forced TY_INT, which was
        right only by coincidence: the body's own tail already types the method,
        and overwriting it made `walk` answer Integer where it answers nil, and
@@ -48347,7 +48333,7 @@ static void an_phase_procs(Compiler *c) {
       if (!bl || !bl->is_cell || scope_has_yield_node(c, m)) continue;
       m->yields = 0;
       if (m->ret_noblock != TY_UNKNOWN) { scope_set_ret(m, ty_unify(m->ret, m->ret_noblock)); scope_set_ret_noblock(m, TY_UNKNOWN); }
-      scope_set_ret_withblock(m, TY_UNKNOWN);
+      scope_set_ret_pin_guard(m, -1);
       again = 1;
     }
     if (again) mark_proc_captures(c);

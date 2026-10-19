@@ -449,11 +449,11 @@ typedef struct {
                           (which the inliner specializes, folding the guard
                           away) reads the value of the body proper. UNKNOWN
                           when the method has no such guard. */
-  SP_TY_FIELD TyKind ret_withblock; /* a method whose `ret` was pinned to the Enumerator
-                          its `return enum_for(:m) unless block_given?`
-                          answers, and whose body ends in `self`: the value
-                          of a call WITH a block, the receiver's class.
-                          UNKNOWN otherwise. */
+  int ret_pin_guard;   /* a method whose `ret` was pinned to the Enumerator its
+                          `return enum_for(:m) unless block_given?` answers: the
+                          node of that call, whose value a call WITH a block
+                          does not answer (method_call_ret reads the other
+                          values instead). -1 otherwise. */
   int is_ext_entry;    /* designated --ext-entry: emitted non-static, a DCE
                           root, declared in the emitted extension header (#M1
                           of docs/internals/ext-design.md) */
@@ -539,8 +539,8 @@ static inline TyKind scope_set_ret_noblock(Scope *s, TyKind t) {
   if (s->ret_noblock != t) { *(TyKind *)&s->ret_noblock = t; comp_ty_edits++; }
   return t;
 }
-static inline TyKind scope_set_ret_withblock(Scope *s, TyKind t) {
-  if (s->ret_withblock != t) { *(TyKind *)&s->ret_withblock = t; comp_ty_edits++; }
+static inline int scope_set_ret_pin_guard(Scope *s, int t) {
+  if (s->ret_pin_guard != t) { *(int *)&s->ret_pin_guard = t; comp_ty_edits++; }
   return t;
 }
 static inline int scope_set_ret_proc_ret(Scope *s, int t) {
