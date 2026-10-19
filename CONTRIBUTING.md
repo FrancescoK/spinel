@@ -8,17 +8,10 @@ runs every leg we merge on: the test corpus, the benchmarks, optcarrot, the
 ruby/spec retention gate, scale-test, spin-check and the other property
 tests. A pull request is merged only after the same gate passes here.
 
-`gate-test-shared` also runs the whole test corpus, including bundled packages,
-with `SPINEL_SHARE_STRINGS=1` and `OPT=-O1`. It reuses `GATE_CACHE` with the flag
-in the key. `test/share/known-failures.txt` lists the current failures, one
-program name per line (`#` comments allowed). An unlisted failure fails the
-gate; a listed program that passes prints a reminder to remove it. `infer-test`
-and `reject-test` run only with their default-build expectations.
-
 ```sh
 git fetch origin && git merge origin/master   # or rebase
 make gate 2>&1 | tee gate.log
-grep -E 'Tests:|scale-test|gate-test-shared:|gate:' gate.log
+grep -E 'Tests:|scale-test|gate:' gate.log
 ```
 
 **If `make gate` fails on our side, we fix it where the fix is mechanical** (a
@@ -77,7 +70,7 @@ container on this branch merged with `master`, and records the same stamp.
 it); the hooks run under `GATE_RUBY` or `ruby`. Without such a Ruby,
 `make gate` skips the stamp and passes or fails exactly as it would
 otherwise, and the `.expected` comparison is skipped with a warning. `make gate-tool-test`
-tests `tools/gate.rb` itself and the shared corpus's known-failure summary.
+tests `tools/gate.rb` itself.
 
 `make share-verify-test` compiles `test/share/*.rb`, `test/share_strings_*.rb`
 and `test/share/verify/**/*.rb` with `SPINEL_SHARE_STRINGS=1 --repr-check --plan-check`.
