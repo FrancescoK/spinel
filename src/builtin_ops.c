@@ -1891,10 +1891,10 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "rjust",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "*",               0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "to_sym",          0, 127, BF_ANY,      TY_SYMBOL,     BOPE_TEMPLATE, "({ const char *_t$t = $r; sp_sym_intern_n(_t$t, sp_str_byte_len(_t$t)); })", 0 },
-  { TY_STRING, "to_s",            0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; _t$t ? _t$t : sp_str_frozen_empty; })", 0, 0, BOPF_SELF_EXACT },
+  { TY_STRING, "to_s",            0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; _t$t ? _t$t : sp_str_frozen_empty; })", 0, 0, BOPF_SELF_EXACT | BOPF_BOXED },
   { TY_STRING, "to_str",          0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; if (!_t$t) sp_nil_recv(\"to_str\"); _t$t; })", 0, 0, BOPF_SELF_EXACT },
   { TY_STRING, "empty?",          0, 127, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "sp_str_empty_p($r)", 0 },
-  { TY_STRING, "include?",        1,   1, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "sp_str_include($r, $s0)", 0 },
+  { TY_STRING, "include?",        1,   1, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "sp_str_include($r, $s0)", 0, 0, BOPF_BOXED },
   { TY_STRING, "start_with?",     2, 127, BF_ANY,      TY_BOOL,       BOPE_STR_AFFIX_ANY, NULL, 0 },
   { TY_STRING, "start_with?",     0,   0, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "((void)($r), (sp_bool)0)", 0 },
   { TY_STRING, "end_with?",       2, 127, BF_ANY,      TY_BOOL,       BOPE_STR_AFFIX_ANY, NULL, 0 },
@@ -1920,7 +1920,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "gsub",            2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_gsub_str_str_hash($r, $e0, sp_StrPolyHash_to_s_values($e1))", 0, BOP_K(TY_STR_POLY_HASH) },
   { TY_STRING, "gsub",            2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_gsub_str_str_hash($r, $e0, sp_StrIntHash_to_s_values($e1))", 0, BOP_K(TY_STR_INT_HASH) },
   { TY_STRING, "gsub",            2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_gsub($r, $s0, $s1)", 0 },
-  { TY_STRING, "inspect",         0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; _t$t ? sp_str_inspect(_t$t) : SPL(\"nil\"); })", 0 },
+  { TY_STRING, "inspect",         0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; _t$t ? sp_str_inspect(_t$t) : SPL(\"nil\"); })", 0, 0, BOPF_BOXED },
   /* String: the methods no row above has, so that each has a row with its
      counts, its block rule and whether it answers the receiver. They type
      nothing: inference keeps the rules after the lookup and codegen the

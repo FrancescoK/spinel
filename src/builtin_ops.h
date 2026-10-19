@@ -190,7 +190,12 @@ typedef struct BuiltinOp {
 
 /* The row answers for a boxed (poly) receiver too, behind a run-time class
    check: emit_poly_builtin_method emits these names unboxed, so inference
-   types the call with the row's result (bop_find_boxed). */
+   types the call with the row's result (bop_find_boxed). A String row
+   carries it for a name that answers the same kind whatever the box holds
+   (inspect, include?): the String row stands for the boxed value, and
+   --plan-check accepts it for the row of the kind codegen emits the call
+   typed with (a yield read per call site, a face) when both state the same
+   result. */
 #define BOPF_BOXED 1
 /* The call answers its receiver: the same object, not a copy, and so an
    instance of a subclass answers that instance (<<, push, concat, replace,
