@@ -10612,6 +10612,28 @@ static size_t boxed_pointer_end(const char *s) {
    statement the call stands in. Answers 1 for that, and the caller closes
    with "; })" after its own ")"; otherwise the receiver is emitted in
    place, as it always was. */
+/* Must that receiver, left in place after the arguments, still be bound to
+   a rooted temp? Read in place it is a fresh pointer nothing roots (a shared
+   String's read face is a copy, a call's answer is held by nothing yet), and
+   an argument built in place allocates beside it: the rest Array, or a
+   default the call leaves out. C orders the two as it likes, and clang on
+   arm64 read the receiver first, so the rest's allocation collected the copy:
+   `held&.many({ key => 1 })` printed freed bytes under SPINEL_GC_STRESS on
+   macOS. Such a receiver is bound after the arguments' own hoists have run
+   (emit_reopen_recv_in_order), so it is still the String as the arguments
+   left it. */
+static int reopen_recv_held_after(Compiler *c, Scope *m, int recv, int boxed, int n) {
+  TyKind rt = boxed ? TY_POLY : comp_ntype(c, recv);
+  if (!(boxed || rt == TY_POLY || needs_root(rt) || comp_ty_value_obj(c, rt))) return 0;
+  if (!operand_may_allocate(c, recv)) return 0;
+  if (m->rest_idx >= 0) return 1;
+  for (int i = 0; m->pdefault && i < m->nparams; i++) {
+    int d = m->pdefault[i];
+    if (d < 0 || (!callee_param_is_declared_kwarg(c, m, m->pnames[i]) && arg_slot_for_param(c, m, i, n) >= 0)) continue;
+    if (subtree_allocates(c->nt, d)) return 1;
+  }
+  return 0;
+}
 int emit_reopen_recv_in_order(Compiler *c, int id, int mi, int recv, int boxed, const char *box_fn, size_t at, Buf *b) {
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
@@ -10619,16 +10641,19 @@ int emit_reopen_recv_in_order(Compiler *c, int id, int mi, int recv, int boxed, 
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   int n = call_has_splat_arg(nt, argv, argc) ? 0
         : argc - (argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode);
-  if (!reopen_recv_runs_first(c, m, recv, argv, argc, n)) {
+  int first = reopen_recv_runs_first(c, m, recv, argv, argc, n);
+  if (!first && !reopen_recv_held_after(c, m, recv, boxed, n)) {
     emit_reopen_recv(c, mi, recv, boxed, box_fn, b);
     emit_args_filled(c, mi, args, ", ", b);
     return 0;
   }
-  Buf pre, rx, ab, *sv_pre = g_pre;
-  memset(&pre, 0, sizeof pre); memset(&rx, 0, sizeof rx); memset(&ab, 0, sizeof ab);
+  Buf pre, rx, ab, rb, *sv_pre = g_pre;
+  memset(&pre, 0, sizeof pre); memset(&rx, 0, sizeof rx); memset(&ab, 0, sizeof ab); memset(&rb, 0, sizeof rb);
   g_pre = &pre;
   TyKind rt = boxed ? TY_POLY : comp_ntype(c, recv);
   int t = ++g_tmp;
+  /* (a receiver read after the arguments: what they hoist runs first) */
+  if (!first) emit_args_filled(c, mi, args, ", ", &ab);
   emit_reopen_recv(c, mi, recv, boxed, box_fn, &rx);
   /* The box of a pointer is held as the pointer, and boxed where the call
      takes it: a pointer's root is a push and a pop, a boxed value's a slot
@@ -10637,21 +10662,21 @@ int emit_reopen_recv_in_order(Compiler *c, int id, int mi, int recv, int boxed, 
   if (pe) {
     size_t e0 = strlen("sp_box_nullable_obj((void *)(");
     buf_printf(g_pre, "void *_t%d = %.*s; SP_GC_ROOT(_t%d); ", t, (int)(pe - e0), rx.p + e0, t);
-    buf_printf(&ab, "sp_box_nullable_obj(_t%d%s", t, rx.p + pe + 1);
+    buf_printf(&rb, "sp_box_nullable_obj(_t%d%s", t, rx.p + pe + 1);
   }
   else {
     buf_printf(g_pre, "%s _t%d = %s; ", boxed ? "sp_RbVal" : c_type_name(rt), t, rx.p ? rx.p : "");
     if (boxed || rt == TY_POLY) buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d); ", t);
     else if (comp_ty_value_obj(c, rt)) { emit_gc_root_tmp_refs(c, rt, t, g_pre); buf_puts(g_pre, " "); }
     else if (needs_root(rt)) buf_printf(g_pre, "SP_GC_ROOT(_t%d); ", t);
-    buf_printf(&ab, "_t%d", t);
+    buf_printf(&rb, "_t%d", t);
   }
-  emit_args_filled(c, mi, args, ", ", &ab);
+  if (first) emit_args_filled(c, mi, args, ", ", &ab);
   g_pre = sv_pre;
   char *callee = strdup(b->p + at);
   b->len = at; b->p[at] = '\0';
-  buf_printf(b, "({ %s%s%s", pre.p, callee, ab.p);
-  free(callee); free(pre.p); free(rx.p); free(ab.p);
+  buf_printf(b, "({ %s%s%s%s", pre.p, callee, rb.p, ab.p ? ab.p : "");
+  free(callee); free(pre.p); free(rx.p); free(ab.p); free(rb.p);
   return 1;
 }
 int emit_reopen_recv_args(Compiler *c, int id, int mi, int recv, int boxed, const char *box_fn, size_t at, Buf *b) {
