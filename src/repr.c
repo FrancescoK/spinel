@@ -1344,7 +1344,7 @@ static void repr_flow_refuse(Compiler *c, int u, int kind) {
   char rn[160];
   repr_flow_route_name(c, u, rn, sizeof rn);
   char msg[512];
-  snprintf(msg, sizeof msg, "under --share-strings, the String %s hands on as %s is shared with another "
+  snprintf(msg, sizeof msg, "the String %s hands on as %s is shared with another "
            "name and changed in place, and that route cannot carry the shared handle yet: it would hand "
            "on a copy (#6765)", rn, repr_flow_kind_name(kind));
   unsupported_feature_collect(c, u, msg);
@@ -1415,17 +1415,17 @@ static void repr_share_holder_refuse(Compiler *c, int h, int elems) {
                      ? "block parameter" : repr_share_kind_name(sh->kind);
   char msg[512];
   if (elems)
-    snprintf(msg, sizeof msg, "under --share-strings, the Strings %s %s holds are shared with another "
+    snprintf(msg, sizeof msg, "the Strings %s %s holds are shared with another "
              "name and changed in place, and a typed String container cannot hold the shared handle "
              "yet (#6765)", kind, nm);
   else
-    snprintf(msg, sizeof msg, "under --share-strings, the String %s %s holds is shared with another "
+    snprintf(msg, sizeof msg, "the String %s %s holds is shared with another "
              "name and changed in place, and a %s cannot hold the shared handle yet (#6765)",
              kind, nm, kind);
   unsupported_feature_collect(c, sh->node, msg);
 }
 static void repr_share_literal_refuse(Compiler *c, int n) {
-  unsupported_feature_collect(c, n, "under --share-strings, the Strings this literal holds are shared with "
+  unsupported_feature_collect(c, n, "the Strings this literal holds are shared with "
                               "another name and changed in place, and a typed String container cannot hold "
                               "the shared handle yet (#6765)");
 }

@@ -4794,10 +4794,10 @@ collect-errors-test: $(SPINEL)
 	[ $$rc -ne 0 ] || { echo "collect-errors-test: FAIL (a contradicted seed was emitted without the flag)"; ok=0; }; \
 	sr=test/share/refuse/seal_collect_route_and_flow.rb; \
 	SP_COLLECT_ERRORS=1 $(SPINEL) --share-strings "$$sr" -c -o "$$tmp/sr.c" >"$$tmp/sr.err" 2>&1; \
-	n=$$(grep -c '^spinel: .*under --share-strings' "$$tmp/sr.err"); \
+	n=$$(grep -cE '^spinel: .*(shared with another name|does not follow this route)' "$$tmp/sr.err"); \
 	[ "$$n" -eq 3 ] || { echo "collect-errors-test: FAIL (collect mode reported $$n of the seal's 3 refusals)"; ok=0; }; \
 	$(SPINEL) --share-strings "$$sr" -c -o "$$tmp/sr2.c" >"$$tmp/sr2.err" 2>&1; rc=$$?; \
-	n=$$(grep -c '^spinel: .*under --share-strings' "$$tmp/sr2.err"); \
+	n=$$(grep -cE '^spinel: .*(shared with another name|does not follow this route)' "$$tmp/sr2.err"); \
 	[ $$rc -ne 0 ] && [ "$$n" -eq 1 ] || { echo "collect-errors-test: FAIL (without the flag the seal reported $$n refusals, rc=$$rc: it stops at the first)"; ok=0; }; \
 	$(SPINEL) "$$src" -c --no-line-map -o "$$tmp/g2.c" >"$$tmp/g2.err" 2>&1; rc=$$?; \
 	[ $$rc -ne 0 ] || { echo "collect-errors-test: FAIL (a program with a gap compiled without the flag)"; ok=0; }; \

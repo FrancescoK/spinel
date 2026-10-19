@@ -710,7 +710,7 @@ module SpOracleDriver
     out = File.join(dir, "claims.tsv")
     env = { "SPINEL_NEW_CLAIMS" => out, "SP_COLLECT_ERRORS" => "1" }
     _o, e, st, expired = capture([spinel, "--share-strings", prog, "-S"], env: env)
-    refused = !st.success? || e.match?(/^spinel: .*(under --share-strings|refus)/)
+    refused = !st.success? || e.match?(/^spinel: .*(shared with another name|does not follow this route|refus)/)
     [File.exist?(out) ? out : nil, refused, expired ? "the compiler timed out" : e]
   end
 

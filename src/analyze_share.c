@@ -6296,9 +6296,9 @@ void share_routes_check(Compiler *c) {
     }
     /* the refusal says which half the rule could not answer */
     const char *lead = why == SH_ROUTE_UNSEEN
-      ? "under --share-strings, the share analysis does not follow this route, so it cannot prove "
+      ? "the share analysis does not follow this route, so it cannot prove "
         "that no other name sees the copy: "
-      : "under --share-strings, this String is shared with another name, and the route does not "
+      : "this String is shared with another name, and the route does not "
         "carry the shared handle yet: ";
     size_t n = strlen(lead) + strlen(r->msg) + 1;
     char *m = malloc(n);

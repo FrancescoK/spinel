@@ -725,7 +725,7 @@ static void interp_refuse_assign_order(Compiler *c, int id) {
   }
   free(flat);
   if (hit)
-    unsupported_feature(c, id, "under --share-strings, an interpolation that changes an attribute assignment's String "
+    unsupported_feature(c, id, "an interpolation that changes an attribute assignment's String "
                         "in one part and a String in another reads each part as it runs, where CRuby reads them all "
                         "after the last (a String is not yet shared by reference through an interpolation). Make the "
                         "changes statements of their own.");
