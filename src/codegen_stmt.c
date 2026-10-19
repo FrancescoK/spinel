@@ -15747,13 +15747,18 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
     if (crt == TY_POLY) {
       char base[256]; snprintf(base, sizeof base, "%.*s", (int)(snl - 1), nm);
       TyKind at = val && vt != TY_NIL && vt != TY_VOID && vt != TY_UNKNOWN ? vt : TY_POLY;
+      /* an element held with its nil beside it (masgn_elem_temp) is
+         dispatched boxed as that oint, so a writer sees the nil */
+      int oel = masgn_oint_temp(val) >= 0 && oint_kind(vt);
+      if (oel) at = TY_POLY;
       int tv = ++g_tmp, tval = ++g_tmp;
       emit_indent(b, indent);
       buf_printf(b, "{ sp_RbVal _t%d = ", tv);
       if (recv_tmp >= 0) buf_printf(b, "_t%d", recv_tmp); else emit_boxed(c, crecv, b);
       buf_puts(b, "; ");
       emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval);
-      if (at == TY_POLY && !(val && vt == TY_POLY)) buf_puts(b, val && vt == TY_UNKNOWN ? val : "sp_box_nil()");
+      if (oel) masgn_conv(c, id, TY_POLY, vt, val, b);
+      else if (at == TY_POLY && !(val && vt == TY_POLY)) buf_puts(b, val && vt == TY_UNKNOWN ? val : "sp_box_nil()");
       else buf_puts(b, val);
       buf_puts(b, "; switch ("); emit_obj_switch_key(c, tv, b); buf_puts(b, ") {");
       char src[32]; snprintf(src, sizeof src, "_t%d", tval);

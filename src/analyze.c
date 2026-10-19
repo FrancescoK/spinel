@@ -34652,7 +34652,15 @@ static int elem_miss_call(Compiler *c, int v) {
      except past the end of a constant Array of a known length, which
      leaves nil in the slot the target stores through */
   if (nt_int(nt, v, "masgn_elem", LLONG_MIN) != LLONG_MIN) {
-    if (argc != 1 || !carr_is_read(nt, recv, nt_str(nt, recv, "name"))) return 0;
+    if (argc != 1) return 0;
+    /* a receiver typed at run time dispatches to the writer of whichever
+       class it holds, and the element may be missing from any Array: the nil
+       is evidence for each such writer's parameter, which would otherwise
+       be a plain Integer that takes 0 */
+    if (!carr_is_read(nt, recv, nt_str(nt, recv, "name"))) {
+      long long tr = nt_int(nt, v, "masgn_recv", -1);
+      return tr >= 0 && infer_type(c, (int)tr) == TY_POLY;
+    }
     /* a target after the splat, counted from the end: the j-th of the rights
        takes the element at max(len - rights + j, lefts + j), nil when that is
        past the end, which is when lefts + j >= len */
