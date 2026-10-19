@@ -3007,30 +3007,20 @@ static void sh_assign_join_later(ShareFacts *F, int v, int s) {
 int share_assign_call(const Compiler *c, int n) { return sh_assign_call(c, n); }
 /* Is node n (through parentheses, a unary plus and the branches of a
    conditional) an attribute assignment, or a chain over one? */
-static int sh_freeze_recv_assign(const Compiler *c, int n, int depth) {
+static int sh_freeze_recv_assign(const Compiler *c, int n);
+static int sh_freeze_assign_leaf(const VpLeaf *lf, void *ud) {
+  const Compiler *c = ud;
   const NodeTable *nt = c->nt;
-  n = an_unparen(nt, n);
-  if (n < 0 || depth > 8) return 0;
-  switch (nt_kind(nt, n)) {
-  case NK_IfNode: case NK_UnlessNode:
-    return sh_freeze_recv_assign(c, nt_ref(nt, n, "statements"), depth + 1) ||
-           sh_freeze_recv_assign(c, nt_ref(nt, n, nt_kind(nt, n) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1);
-  case NK_ElseNode:
-    return sh_freeze_recv_assign(c, nt_ref(nt, n, "statements"), depth + 1);
-  case NK_StatementsNode: {
-    int k = 0; const int *bb = nt_arr(nt, n, "body", &k);
-    return k > 0 && sh_freeze_recv_assign(c, bb[k - 1], depth + 1);
-  }
-  case NK_OrNode: case NK_AndNode:
-    return sh_freeze_recv_assign(c, nt_ref(nt, n, "left"), depth + 1) || sh_freeze_recv_assign(c, nt_ref(nt, n, "right"), depth + 1);
-  case NK_CallNode: {
-    const char *nm = nt_str(nt, n, "name");
-    if (nm && is_unary_plus(nm) && nt_ref(nt, n, "arguments") < 0 && nt_ref(nt, n, "block") < 0)
-      return sh_freeze_recv_assign(c, nt_ref(nt, n, "receiver"), depth + 1);
-    return sh_assign_chain(c, n, 0);
-  }
-  default: return 0;
-  }
+  if (lf->kind == VPK_NIL || lf->kind == VPK_GAVE_UP || nt_kind(nt, lf->node) != NK_CallNode) return 0;
+  int n = lf->node;
+  const char *nm = nt_str(nt, n, "name");
+  if (nm && is_unary_plus(nm) && nt_ref(nt, n, "arguments") < 0 && nt_ref(nt, n, "block") < 0)
+    return sh_freeze_recv_assign(c, nt_ref(nt, n, "receiver"));
+  return sh_assign_chain(c, n, 0);
+}
+static int sh_freeze_recv_assign(const Compiler *c, int n) {
+  return for_each_value_position(c->nt, n, VP_AND_LEFT | VPS_IF | VPS_UNLESS | VPS_LOGIC,
+                                 sh_freeze_assign_leaf, (void *)c);
 }
 
 static int sh_uplus_copies(Compiler *c, int n);
@@ -3079,7 +3069,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     /* a freeze changes no bytes: the value of an attribute assignment it
        freezes is one pointer all its names read, frozen in place, so no
        slot needs the new pointer back */
-    int frz = is_freeze_name(name) && argc == 0 && sh_freeze_recv_assign(c, recv, 0);
+    int frz = is_freeze_name(name) && argc == 0 && sh_freeze_recv_assign(c, recv);
     sh_mark_at(F, rv, SHF_MUT | (sh_holder_read(nt, base) || frz ? 0 : SHF_INDIRECT) | (is_freeze_name(name) ? SHF_FRZ : 0), n);
     sh_flow(F, SHFL_MUTATE, n, base, -1);
   }
