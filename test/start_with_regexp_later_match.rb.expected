@@ -1,0 +1,23 @@
+false
+nil
+true
+#<MatchData "ab" 1:"b">
+"b"
+false
+nil
+false
+nil
+true
+nil
+true
+#<MatchData "b">
+false
+nil
+false
+nil
+false
+nil
+false
+nil
+true
+#<MatchData "ab">
