@@ -7874,6 +7874,8 @@ int an_push_widens_fresh(Compiler *c, int id) {
   if (nt_kind(nt, unwrap_parens(c, recv)) != NK_CallNode) return 0;
   TyKind rt = infer_type(c, recv);
   if (rt != TY_STR_ARRAY && rt != TY_INT_ARRAY && rt != TY_FLOAT_ARRAY) return 0;
+  /* a program's own Array#push (or <<) answers what it answers */
+  if (!nt_int(nt, id, "builtin_only", 0) && array_hash_reopen_owner(c, id, rt, nm) >= 0) return 0;
   if (!is_fresh_array(c, recv)) return 0;
   TyKind elem = ty_array_elem(rt);
   int a = nt_ref(nt, id, "arguments"), ac = 0;
