@@ -39759,17 +39759,16 @@ static int kwb_unknown_literal(NodeTable *nt, int row, int kh) {
   if (!kwb_is(m, "unpack") && !kwb_is(m, "unpack1") && !kwb_is(m, "lines") && !kwb_is(m, "clone")) return -1;
   int en = 0;
   const int *el = nt_arr(nt, kh, "elements", &en);
-  if (en < 1 || en > 16) return -1;
-  int els[16], unknown = 0;
+  if (en < 1) return -1;
+  int unknown = 0;
   for (int i = 0; i < en; i++) {
     int key = nt_kind(nt, el[i]) == NK_AssocNode ? nt_ref(nt, el[i], "key") : -1;
     if (key < 0 || nt_kind(nt, key) != NK_SymbolNode) return -1;
     if (!kwb_is(nt_str(nt, key, "value"), kwb_rows[row][1])) unknown = 1;
-    els[i] = el[i];
   }
   if (!unknown) return -1;
   int h = nt_new_node(nt, "HashNode");
-  nt_node_set_arr(nt, h, "elements", els, en);
+  nt_node_set_arr(nt, h, "elements", el, en);
   return h;
 }
 static void kwb_clone_split(Compiler *c, int call, Scope *sc) {
