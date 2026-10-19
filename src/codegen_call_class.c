@@ -3393,17 +3393,28 @@ static int emit_cls_value_sg_accessor(Compiler *c, int id, int recv, const char 
    class method of (`klass.label`, one class with `attr_accessor :label` on
    its singleton, another with `def self.label`): each reads or writes its
    own slot into the dispatch's boxed result `_t<tr>`. 1 when any. */
+/* Does class k answer `name` by its own `class << self` accessor? Its
+   singleton class is the first place the lookup looks, so the accessor wins
+   over a class method k only inherits (`def self.label` in a superclass);
+   only a class method k defines itself is ahead of it. */
+static int cls_value_own_sg_answers(Compiler *c, int k, const char *name, int argc) {
+  char base[256];
+  int setter = setter_base_name(name, base, sizeof base);
+  if (setter ? argc != 1 : argc != 0) return 0;
+  ClassInfo *cls = &c->classes[k];
+  if (is_builtin_reopen(cls->name) || comp_cmethod_in_class(c, k, name) >= 0) return 0;
+  const char *rn = setter ? base : comp_resolve_cm_alias_at(c, k, name, NULL);
+  return setter ? comp_is_sg_writer(cls, base) : comp_is_sg_reader(cls, rn ? rn : name);
+}
 static int emit_cls_value_sg_arms(Compiler *c, int id, const char *name, int argc, const int *argv,
                                   int tr, Buf *b) {
   char base[256];
   int setter = setter_base_name(name, base, sizeof base), any = 0;
-  if (setter ? argc != 1 : argc != 0) return 0;
   for (int k = 0; k < c->nclasses; k++) {
-    if (is_builtin_reopen(c->classes[k].name) || comp_cmethod_in_chain(c, k, name, NULL) >= 0) continue;
+    if (!cls_value_own_sg_answers(c, k, name, argc)) continue;
     ClassInfo *cls = &c->classes[k];
     const char *rn = setter ? base : comp_resolve_cm_alias_at(c, k, name, NULL);
     if (!rn) rn = name;
-    if (setter ? !comp_is_sg_writer(cls, base) : !comp_is_sg_reader(cls, rn)) continue;
     if (!b) return 1;
     buf_printf(b, " case %d: ", k);
     if (setter) { buf_puts(b, "(void)"); emit_sg_accessor(c, id, k, cls->name, name, argc, argv, b); buf_puts(b, "; "); }
@@ -4255,7 +4266,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       for (int a = 0; a < argc; a++)
         if (nt_kind(nt, argv[a]) == NK_SplatNode) splat9++;
       for (int k = 0; k < c->nclasses; k++) {
-        if (is_builtin_reopen(c->classes[k].name)) continue;
+        if (is_builtin_reopen(c->classes[k].name) || cls_value_own_sg_answers(c, k, name, argc)) continue;
         int kmi = comp_cmethod_in_chain(c, k, name, NULL);
         if (kmi < 0) continue;
         /* Only the candidates this call could actually reach set the return
@@ -4280,6 +4291,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         if (repr_of(c, id).kind == RK_BOXED && g_n_argov < MAX_ARG_OVERRIDE) {
           int any_pf9 = 0;
           for (int k = 0; k < c->nclasses && !any_pf9; k++) {
+            if (cls_value_own_sg_answers(c, k, name, argc)) continue;
             int kmi = comp_cmethod_in_chain(c, k, name, NULL);
             if (kmi < 0) continue;
             Scope *ks9 = &c->scopes[kmi];
@@ -4300,7 +4312,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           }
         }
         for (int k = 0; simple9 && k < c->nclasses; k++) {
-          if (is_builtin_reopen(c->classes[k].name)) continue;
+          if (is_builtin_reopen(c->classes[k].name) || cls_value_own_sg_answers(c, k, name, argc)) continue;
           int kmi = comp_cmethod_in_chain(c, k, name, NULL);
           if (kmi < 0) continue;
           /* A candidate that yields, takes a block, or has a rest param has no
@@ -4357,7 +4369,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           snprintf(rraise9, sizeof rraise9, "sp_raise_nomethod(sp_sprintf(\"undefined method '%s' for %%s\", sp_class_to_s(_t%d)))", name, tk9);
           int rdef9 = 0;
           for (int k = 0; k < c->nclasses; k++) {
-            if (is_builtin_reopen(c->classes[k].name)) continue;
+            if (is_builtin_reopen(c->classes[k].name) || cls_value_own_sg_answers(c, k, name, argc)) continue;
             int defcls9 = -1;
             int kmi = comp_cmethod_in_chain(c, k, name, &defcls9);
             if (kmi < 0) continue;

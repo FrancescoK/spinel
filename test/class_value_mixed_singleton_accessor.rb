@@ -48,3 +48,46 @@ def relabel(k, v)
 end
 p relabel(Sym, "Sym!"), relabel(Word, "Word!")
 p Sym.new.lab.size
+
+# A subclass's own accessor answers ahead of the class method it inherits,
+# and a class below it reads and writes its own slot through that accessor.
+class Shape
+  @@sets = []
+  def self.tag = "shape"
+
+  def self.tag=(v)
+    @@sets << v
+  end
+
+  def self.sets = @@sets
+
+  def tag
+    k = self.class
+    k.tag
+  end
+
+  def retag(v)
+    k = self.class
+    k.tag = v
+    nil
+  end
+end
+
+class Circle < Shape
+  class << self
+    attr_accessor :tag
+  end
+end
+
+class Disc < Circle
+end
+
+class Square < Shape
+end
+
+Shape.new.retag("s")
+Circle.new.retag("c")
+Square.new.retag("q")
+p Shape.new.tag, Circle.new.tag, Disc.new.tag, Square.new.tag
+Disc.new.retag("d")
+p Disc.new.tag, Circle.new.tag, Shape.sets
