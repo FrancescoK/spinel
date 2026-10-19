@@ -870,6 +870,25 @@ int emit_hash_reduce_scalar_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+
+/* The boxed operand a conversion of one hands on, `v.to_s` or `String(v)`
+   with no argument beside it, no block and no method of the program's own
+   in the way, else -1: the conversion answers a String operand itself. */
+static int fold_boxed_conversion_operand(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0 || nt_safe_nav(nt, v)) return -1;
+  const char *nm = nt_str(nt, v, "name");
+  int recv = nt_ref(nt, v, "receiver"), argc = 0;
+  const int *argv = call_args(nt, v, &argc);
+  int op = -1;
+  if (nm && is_to_s_name(nm) && recv >= 0 && argc == 0) op = recv;
+  else if (nm && is_string_class_name(nm) && recv < 0 && argc == 1 && !nt_argv_has_splat(nt, argv, argc) &&
+           comp_method_index(c, nm) < 0 && !bare_call_class_owned(c, v)) op = argv[0];
+  if (op < 0 || repr_of(c, op).kind != RK_BOXED || cplan_user(c, v)->dispatch != CP_NONE) return -1;
+  return op;
+}
+
 /* hash.transform_keys { |k| nk } / transform_values { |v| nv }: rebuild the
    hash applying the block to every key (or value), keeping the other half.
    Returns 1 if handled. */
@@ -1038,6 +1057,14 @@ int emit_transform_hash_expr(Compiler *c, int id, Buf *b) {
   /* the block's value carries its nil into a result whose values may be nil:
      an oint-formed value is emitted as its oint, a boxed one unboxed with it */
   int lastv = bb[bn - 1];
+  int box_eligible = !keys && dr.val == TY_POLY && (bret == TY_STRING || bret == TY_STRBUF) && repr_share_rule(c) &&
+                     !fold_body_has_next(c, body);
+  /* a conversion of a boxed value (`v.to_s`, `String(v)`) answers the
+     value's own box when it is a String, and bytes otherwise */
+  int conv_op = box_eligible ? fold_boxed_conversion_operand(c, lastv) : -1;
+  int box_last = box_eligible && conv_op < 0 && share_plan_producer_unlifted(c, lastv, NULL) != SPK_OPERAND &&
+                 share_plan_producer_unlifted(c, lastv, NULL) != SPK_NONE &&
+                 share_plan_of(c, lastv, SPR_BOX, NULL).form == SPF_HANDLE;
   int oset_v = !keys && dvn && dr.val == TY_INT && !fold_body_has_next(c, body) &&
                (bret == TY_POLY || bret == TY_UNKNOWN || node_has_oint_form(c, lastv));
   /* a `next <v>` answers for this pair: the body writes a slot and the
@@ -1055,6 +1082,19 @@ int emit_transform_hash_expr(Compiler *c, int id, Buf *b) {
     for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
     int save = g_indent; g_indent++;
     if (oset_v && bret == TY_INT) emit_oint_expr(c, lastv, TY_INT, &vb);
+    /* a String the block answers, into a poly value, that the plan boxes as
+       the handle (a bang on a boxed receiver answers the receiver's own
+       box, a conditional its arm's String): boxed as the box face renders
+       it, not as the bytes of the expression already emitted. A
+       conversion of the value (`v.to_s`, the plan's operand route) or a
+       new String, which a store would only lift into a handle of its own,
+       needs none, and one around each value would only allocate. */
+    else if (conv_op >= 0) {
+      buf_puts(&vb, "sp_poly_to_s_box_plain(");
+      emit_boxed(c, conv_op, &vb);
+      buf_puts(&vb, ")");
+    }
+    else if (box_last) emit_boxed(c, lastv, &vb);
     else emit_expr(c, bb[bn - 1], &vb);
     g_indent = save;
   }
@@ -1096,7 +1136,8 @@ int emit_transform_hash_expr(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "%s, ", bx.p ? bx.p : ""); free(bx.p);
     }
     else buf_printf(g_pre, "_t%d, ", tk);
-    if (dvt == TY_POLY && bret != TY_POLY) {
+    if (box_last || conv_op >= 0) buf_puts(g_pre, vb.p ? vb.p : "sp_box_nil()");
+    else if (dvt == TY_POLY && bret != TY_POLY) {
       Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bret, vb.p ? vb.p : "", &bx);
       buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p);
     }

@@ -444,6 +444,9 @@ const char *share_plan_form_name(int form);
    node whose supply an SPK_SELF, SPK_OPERAND or SPK_SEQUENCE value hands
    on, the receiver whose box an SPK_BANG_BOX call answers, else -1. */
 int share_plan_producer(Compiler *c, int v, int *operand);
+/* ...asked as if no store lifted v into a handle (poly_strbuf_lift): the
+   route v hands its String on by itself */
+int share_plan_producer_unlifted(Compiler *c, int v, int *operand);
 const char *share_plan_role_name(int role);
 /* Is node v, a tail of a method whose value is a String, a box whose String
    the plan gives a taker as its handle (a taker needs the handle where its
