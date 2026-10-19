@@ -12363,6 +12363,10 @@ static const void *sp_bivar_key(sp_RbVal o) {
       (sp_poly_is_array_kind(o.cls_id) || sp_poly_is_hash_kind(o.cls_id) || o.cls_id == SP_BUILTIN_RANDOM ||
        o.cls_id == SP_BUILTIN_PROC || o.cls_id == SP_BUILTIN_EXCEPTION))
     return o.v.p;
+  /* a String's shared handle (its box since 44119ab30): the one identity
+     the String has, which the share walk gives a String an instance
+     variable is kept on; a String boxed as bytes alone keeps none */
+  if (o.tag == SP_TAG_OBJ && o.v.p && o.cls_id == SP_BUILTIN_STRBUF) return o.v.p;
   /* a class: no address, so a key no object has (lib/sp_gc.c: an
      unaligned key is never freed) */
   if (o.tag == SP_TAG_CLASS && o.cls_id != SP_CLASS_BY_NAME)
@@ -12469,6 +12473,21 @@ SP_UNUSED static void sp_bivar_copy_obj(const void *from, const void *to) {
   sp_SymPolyHash *d = sp_SymPolyHash_new(); SP_GC_ROOT(d);
   for (sp_int i = 0; i < t->len; i++) sp_SymPolyHash_set(d, t->order[i], sp_SymPolyHash_get(t, t->order[i]));
   sp_ivtbl_put(to, d);
+}
+/* A String's dup (clone: 1 keeps the frozen state) as a new handle, which
+   takes a copy of the instance variables the program keeps on the String
+   (its table is keyed by the handle). Emitted where the program keeps any
+   (Compiler.bivar_table, emit_strbuf_value); a nil receiver answers NULL. */
+SP_UNUSED static sp_String *sp_String_dup_h(sp_String *src, int clone) {
+  if (!src) return NULL;
+  SP_GC_ROOT(src);
+  const char *bytes = sp_str_dup(sp_String_cstr(src));
+  SP_GC_ROOT_STR(bytes);
+  if (clone && sp_String_is_frozen(src)) bytes = sp_str_freeze_val(bytes);
+  sp_String *d = sp_String_new_fresh(bytes);
+  SP_GC_ROOT(d);
+  sp_bivar_copy_obj(src, d);
+  return d;
 }
 /* remove_instance_variable of a name in a program object's table (#8219):
    its value, or CRuby's NameError when the table holds no such name */

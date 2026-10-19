@@ -877,5 +877,5 @@ int ty_builtin_ivar_less(TyKind t) {
    it dispatches by the runtime class (emit_exc_ivar_call), and only a copy
    of it reads this predicate. */
 int ty_bivar_keyed(TyKind t) {
-  return t == TY_RANDOM || t == TY_EXCEPTION || ty_is_array(t) || ty_is_hash(t);
+  return t == TY_RANDOM || t == TY_EXCEPTION || t == TY_STRING || t == TY_STRBUF || ty_is_array(t) || ty_is_hash(t);
 }

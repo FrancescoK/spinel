@@ -1,0 +1,30 @@
+1
+nil
+:t
+"instance-variable"
+1
+2
+"L"
+"s!"
+1
+1
+[:@mark, :@tag, :@n, :@label]
+1
+[1]
+true
+false
+nil
+nil
+[]
+2
+1
+"L"
+false
+9
+1
+1
+false
+can't modify frozen String: "f"
+can't modify frozen String: "f"
+nil
+[0, 1]

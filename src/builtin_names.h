@@ -149,6 +149,7 @@ int is_byte_codepoint_each(const char *n); /* each_byte each_codepoint */
 int is_with_index_alias(const char *n); /* each_with_index with_index */
 int is_freeze_family(const char *n); /* freeze frozen? */
 int is_bivar_access(const char *n);  /* __bivar_get __bivar_set __bivar_defined */
+int is_ivar_reflection_name(const char *n); /* instance_variable_get/set/defined?, instance_variables, remove_instance_variable */
 int is_object_copy(const char *n);   /* dup clone */
 int is_ivar_set_name(const char *n); /* instance_variable_set */
 int is_marshal_dump(const char *recv, const char *meth); /* Marshal.dump */

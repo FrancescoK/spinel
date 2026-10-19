@@ -3039,10 +3039,6 @@ int emit_op_ivar_reflection(Compiler *c, const BopCtx *x, Buf *b) {
   int is_set = x->op->arg[0] == 's';
   int frozen_kind = rt == TY_INT || rt == TY_FLOAT || rt == TY_BOOL || rt == TY_NIL || rt == TY_SYMBOL ||
                     rt == TY_BIGINT || rt == TY_RANGE;
-  if (is_set && !frozen_kind && (rt == TY_STRING || rt == TY_STRBUF))
-    unsupported_feature(c, id, "an instance variable set on a String (`@x = v` in a String method, or "
-                               "instance_variable_set) is not supported yet: a String keeps no instance "
-                               "variables; see docs/limitations.md");
   if (is_set && !frozen_kind)
     unsupported_feature(c, id, "instance_variable_set on a String, an Array or a Hash: Spinel lays out no "
                                "instance variables for a builtin value, so the variable has no slot to live in");

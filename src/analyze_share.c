@@ -34,7 +34,10 @@
 /* element-own flags (not merged by a union). SHE_COMPARED: the value is
    compared by identity, or handed to a consumer that keeps or mutates it
    (sh_finalize reads it for a String reopening's receiver) */
-enum { SHE_WRITTEN = 1, SHE_IDENTITY = 2, SHE_COMPARED = 4 };
+enum { SHE_WRITTEN = 1, SHE_IDENTITY = 2, SHE_COMPARED = 4,
+       SHE_IVARS = 8 /* the value keeps instance variables: the runtime's
+                        table is keyed by its handle, so its class is the
+                        shared object whatever holds it (SHF_IDENTITY) */ };
 /* a class flag beside share.h's SHF_*: a value of the class leaves a call
    to be read after it (`p(lit.each { |x| x << y })`, `lit.map { }.first`),
    so a container of the class can be reached again (sh_finalize) */
@@ -2972,6 +2975,14 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
       if (other >= 0) F->own[other] |= SHE_IDENTITY | SHE_COMPARED;
     }
   }
+  /* an instance variable kept on a String (`@x` in a String method, the
+     reflection on one): the runtime's table is keyed by the String's
+     handle, so the receiver's identity is used, as a comparison by
+     identity uses it */
+  if (c->share_strings && (is_bivar_access(name) || is_ivar_reflection_name(name)) && (recv < 0 || maybe_str)) {
+    int identity = recv < 0 || nt_kind(nt, recv) == NK_SelfNode ? sh_self(F, c, sh_method_index(c, n)) : rv;
+    if (identity >= 0) F->own[identity] |= SHE_IDENTITY | SHE_COMPARED | SHE_IVARS;
+  }
 
   /* an in-place String mutation of the receiver: through a boxed or an
      untyped receiver, only one a String can make, on a receiver that can
@@ -4173,6 +4184,9 @@ static void sh_finalize(ShareFacts *F) {
   for (int e = 0; e < n; e++) {
     if (F->kind[e] == SHK_SELF && compared[sh_root(F, e)])
       F->flags[sh_root(F, e)] |= SHF_IDENTITY;
+    /* a String that keeps instance variables is the object its table is
+       keyed by, in every name that holds it */
+    if (F->own[e] & SHE_IVARS) F->flags[sh_root(F, e)] |= SHF_IDENTITY;
     if (F->parent[e] == e) F->hcount[e] = F->nhold[e] - F->nelem[e];
   }
   free(compared);

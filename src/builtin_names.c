@@ -679,7 +679,9 @@ int is_ivar_presence_read(const char *n) {
    (desugar_builtin_ivars), and one whose values are all frozen: an ivar
    of theirs reads nil and a write raises FrozenError */
 int is_bivar_keyed_class(const char *n) {
-  return sp_streq(n, "Array") || sp_streq(n, "Hash") || sp_streq(n, "Random");
+  /* (a String's table is keyed by its shared handle: the share walk gives
+     a String an instance variable is kept on that identity) */
+  return sp_streq(n, "Array") || sp_streq(n, "Hash") || sp_streq(n, "Random") || sp_streq(n, "String");
 }
 int is_string_class_name(const char *n) {
   return sp_streq(n, "String");
@@ -693,6 +695,12 @@ int is_frozen_value_class(const char *n) {
 /* desugar_builtin_ivars' access to an ivar of a builtin class's self */
 int is_bivar_access(const char *n) {
   return sp_streq(n, "__bivar_get") || sp_streq(n, "__bivar_set") || sp_streq(n, "__bivar_defined");
+}
+/* the reflection that reads or writes an object's instance variables by name */
+int is_ivar_reflection_name(const char *n) {
+  return sp_streq(n, "instance_variable_get") || sp_streq(n, "instance_variable_set") ||
+         sp_streq(n, "instance_variable_defined?") || sp_streq(n, "instance_variables") ||
+         sp_streq(n, "remove_instance_variable");
 }
 
 int is_attr_reader_family(const char *n) {

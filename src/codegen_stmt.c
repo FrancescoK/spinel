@@ -4991,6 +4991,20 @@ void emit_poly_arms_handle(Compiler *c, int base, Buf *b) {
   emit_boxed(c, base, b);
   buf_puts(b, ")");
 }
+/* `s.dup` (1) or `s.clone` (2) on a String, the builtin's: no argument, no
+   block, and no method of the program's reached; 0 for any other value. */
+static int strbuf_dup_call(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "arguments") >= 0 || nt_ref(nt, v, "block") >= 0)
+    return 0;
+  const char *nm = nt_str(nt, v, "name");
+  int recv = nt_ref(nt, v, "receiver");
+  if (!nm || recv < 0 || (!sp_streq(nm, "dup") && !sp_streq(nm, "clone"))) return 0;
+  TyKind rt = repr_of(c, recv).as_ty;
+  if (rt != TY_STRING && rt != TY_STRBUF) return 0;
+  if (cplan_user(c, v)->dispatch != CP_NONE) return 0;
+  return sp_streq(nm, "dup") ? 1 : 2;
+}
 void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
   if (g_share_check && repr_of_slot(c, lv).handle) share_check_mark(c, v, 'H', b);
   /* A shared-mutable alias (`s2 = s1`, both str_shared) copies the sp_String
@@ -5007,9 +5021,20 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
   int fresh = repr_share_rule(c) && rpv.strbuf_src == RS_FRESH &&
               nt_kind(c->nt, v) == NK_CallNode && cplan_user(c, v)->dispatch == CP_NONE &&
               share_value_fresh(c, v, 0);
+  /* a String's dup or clone where the program keeps instance variables on
+     Strings (Compiler.bivar_table): the new String is made as a handle so
+     that it takes a copy of the receiver's variables, as CRuby's does
+     (sp_String_dup_h); wrapped fresh below, the copy had no object to land
+     on */
+  int dupk = shared && repr_share_rule(c) && c->bivar_table ? strbuf_dup_call(c, v) : 0;
+  if (dupk) {
+    buf_puts(b, "sp_String_dup_h(");
+    emit_strbuf_handle_of(c, nt_ref(c->nt, v, "receiver"), b);
+    buf_printf(b, ", %d)", dupk == 2);
+  }
   /* (a bang on a boxed receiver is no reader of a slot, whatever demand marks
      it: its handle is its receiver's box's, below) */
-  if (shared && !fresh && !(repr_share_rule(c) && face_str_bang_call(c, v)) && strbuf_slot_text(c, v, &srefV))
+  else if (shared && !fresh && !(repr_share_rule(c) && face_str_bang_call(c, v)) && strbuf_slot_text(c, v, &srefV))
     buf_puts(b, srefV.p);
   /* --share-strings: an element a String Array of handles reads or
      removes is the String itself (#8328 step 5) */
