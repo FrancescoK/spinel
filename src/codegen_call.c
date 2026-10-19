@@ -385,7 +385,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   int kw_merged = kwh >= 0 && kwh_merged(c, m, kwh);
   TyKind ds_type = TY_UNKNOWN;
   int ds_tmp = -1;
-  if (kwh >= 0 && !L.gather && kwh_has_splat(nt, kwh) &&
+  if (kwh >= 0 && !L.gather && nt_hash_has_splat(nt, kwh) &&
       (m->kwrest_idx >= 0 || callee_declares_kwargs(c, m))) {
     RenPark park = ren_park(saved_nren);
     const char *svs = g_self, *svd = g_self_deref;
@@ -10725,7 +10725,7 @@ int emit_reopen_recv_in_order(Compiler *c, int id, int mi, int recv, int boxed, 
   Scope *m = &c->scopes[mi];
   int args = nt_ref(nt, id, "arguments"), argc = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
-  int n = call_has_splat_arg(nt, argv, argc) ? 0
+  int n = nt_argv_has_splat(nt, argv, argc) ? 0
         : argc - (argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode);
   int first = reopen_recv_runs_first(c, m, recv, argv, argc, n);
   if (!first && !reopen_recv_held_after(c, m, recv, boxed, n)) {
@@ -10772,7 +10772,7 @@ int emit_reopen_recv_args(Compiler *c, int id, int mi, int recv, int boxed, cons
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   /* a keyword hash may bind no positional: counted out, a default it might
      leave is held for (only a temp too many if it does bind one) */
-  int n = call_has_splat_arg(nt, argv, argc) ? 0
+  int n = nt_argv_has_splat(nt, argv, argc) ? 0
         : argc - (argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode), hold = 0;
   int container = reopen_yields_container(c, m);
   for (int i = 0; i < m->nparams && !hold && !container; i++)
@@ -11127,30 +11127,12 @@ static TyKind write_slot_ty(Compiler *c, int id) {
   return TY_UNKNOWN;
 }
 
-/* Does the call pass keyword arguments -- a literal `k: v` or a `**h`? */
-int call_has_keyword_args(const NodeTable *nt, const int *argv, int argc) {
-  /* A sole keyword hash too: the Struct/Data member form (`d.class.new(x:
-     1)`) is built as the static `D.new(x: 1)` builds it (emit_struct_new_call),
-     where a positional arm read the members out of one boxed hash and had
-     none for a `**h`. */
-  for (int a = 0; a < argc; a++)
-    if (argv && nt_kind(nt, argv[a]) == NK_KeywordHashNode) return 1;
-  return 0;
-}
-
-/* Does the call spread an array into its positionals (`*args`)? */
-int call_has_splat_arg(const NodeTable *nt, const int *argv, int argc) {
-  for (int a = 0; a < argc; a++)
-    if (argv && nt_kind(nt, argv[a]) == NK_SplatNode) return 1;
-  return 0;
-}
-
 /* ctor_needs_self_defaults for a construction over `argv`: a splat's count
    is the run time's, so any optional may be left to its default. A keyword
    hash does not supply a positional argument that would skip the default. */
 int ctor_needs_self_defaults_argv(Compiler *c, int initm, const int *argv, int argc) {
-  int pos_argc = argc - call_has_keyword_args(c->nt, argv, argc);
-  return ctor_needs_self_defaults(c, initm, call_has_splat_arg(c->nt, argv, argc) ? 0 : pos_argc);
+  int pos_argc = argc - nt_argv_has_keywords(c->nt, argv, argc);
+  return ctor_needs_self_defaults(c, initm, nt_argv_has_splat(c->nt, argv, argc) ? 0 : pos_argc);
 }
 
 /* Does any class define `name` as a class method? A boxed Class or Module
@@ -12306,7 +12288,7 @@ void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Buf *b) {
        from this class's own callers as, say, an Integer cannot hold it. */
     int lkw0 = argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
     int kw_funds = lkw0 >= 0 && kwh_only_spreads(nt, lkw0) && !init_takes_keywords(c, initm) &&
-                   !call_has_splat_arg(nt, argv, argc) &&
+                   !nt_argv_has_splat(nt, argv, argc) &&
                    !kwh_gathers(c, &c->scopes[initm], lkw0, argv, argc - 1);
     if (kw_funds) {
       int req = 0, post = 0;
@@ -12321,10 +12303,10 @@ void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Buf *b) {
         /* Into an initialize taking no keywords, literal keywords are one
            positional Hash: its count is CRuby's message. */
         char am[512]; am[0] = 0;
-        int npos = 0, has_spread = call_has_splat_arg(nt, argv, argc);
+        int npos = 0, has_spread = nt_argv_has_splat(nt, argv, argc);
         for (int a = 0; a < argc; a++) {
           NodeKind ak = nt_kind(nt, argv[a]);
-          if (ak == NK_KeywordHashNode && kwh_has_splat(nt, argv[a])) has_spread = 1;
+          if (ak == NK_KeywordHashNode && nt_hash_has_splat(nt, argv[a])) has_spread = 1;
           if (ak != NK_BlockArgumentNode) npos++;
         }
         if (has_spread || init_takes_keywords(c, initm) ||
@@ -12339,7 +12321,7 @@ void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Buf *b) {
        parameters to its own callers, so laying the arguments out for it
        could pass them in the wrong C type. A splat binds every class, and
        keeps every arm. */
-    if (!call_has_splat_arg(nt, argv, argc) && !dynamic_new_may_reach(c, id, ci)) continue;
+    if (!nt_argv_has_splat(nt, argv, argc) && !dynamic_new_may_reach(c, id, ci)) continue;
     if (emit_ctor_splice_arm(c, id, ci, initm, rt2, b)) continue;
     /* the layout's own statements (a keyword check, a hoisted argument)
        belong to this arm: ahead of the switch every arm's check ran for
@@ -12807,12 +12789,12 @@ int emit_struct_new_early(Compiler *c, int ci, int argc, const int *argv, int kw
                                  int *nunk_out, int *late_out, Buf *b) {
   const NodeTable *nt = c->nt;
   ClassInfo *cls = &c->classes[ci];
-  int kw_splat = kwh_has_splat(nt, kwh);
+  int kw_splat = nt_hash_has_splat(nt, kwh);
   /* a keyword_init Struct takes keywords and nothing else: CRuby answers
      "wrong number of arguments" for a positional call, where these were
      being bound to the members in order. A splat's count is the run time's
      (`K.new(*[])` is no argument): the spread below checks it. */
-  int spreads = call_has_splat_arg(nt, argv, argc);
+  int spreads = nt_argv_has_splat(nt, argv, argc);
   for (int a = 0; spreads && a < argc; a++)
     if (nt_kind(nt, argv[a]) == NK_SplatNode) {
       int op = nt_ref(nt, argv[a], "expression");
@@ -12989,7 +12971,7 @@ int emit_struct_new_early(Compiler *c, int ci, int argc, const int *argv, int kw
       emit_struct_splat_new(c, cls, psplat, kwi, b);
       return 1;
     }
-    if (kwh < 0 && argc > 1 && call_has_splat_arg(nt, argv, argc) &&
+    if (kwh < 0 && argc > 1 && nt_argv_has_splat(nt, argv, argc) &&
         emit_struct_mixed_splat_new(c, cls, argv, argc, kwi, b))
       return 1;
   }
@@ -13319,7 +13301,7 @@ static int emit_struct_new_call_members(Compiler *c, int id, int ci, int argc, c
        Hash, its first member: a key naming a member binds nothing and a
        key naming none is no error. Literal keywords alone are that Hash
        as a positional argument; with a `**` they merge into it below. */
-    int kw_splat = kwh_has_splat(nt, kwh);
+    int kw_splat = nt_hash_has_splat(nt, kwh);
     if (cls->kw_init == -1 && !kw_splat) kwh = -1;
     int nunk, late;
     if (emit_struct_new_early(c, ci, argc, argv, kwh, &nunk, &late, b)) return 1;
@@ -19407,7 +19389,7 @@ static int emit_case_opts_guard(Compiler *c, int id, Buf *b) {
   if (argc == 0 || user_defines_or_reads(c, name)) return 0;
   for (int i = 0; i < argc; i++) {
     NodeKind ak = nt_kind(nt, av[i]);
-    if (ak == NK_KeywordHashNode && !kwh_has_splat(nt, av[i])) continue;
+    if (ak == NK_KeywordHashNode && !nt_hash_has_splat(nt, av[i])) continue;
     if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 0;
   }
   int down = sp_streq(base, "downcase");
@@ -30907,7 +30889,7 @@ static void emit_call_body_ordinary(Compiler *c, int id, Buf *b) {
         nt_type(nt, precv) && sp_streq(nt_type(nt, precv), "ArrayNode") &&
         ({ int _n = 0; nt_arr(nt, precv, "elements", &_n); _n == 0; })) {
       int pargc = 0; const int *pargv = call_args(nt, id, &pargc);
-      if (pargc >= 1 && !(call_has_splat_arg(nt, pargv, pargc) && nt_ref(nt, id, "block") < 0)) {
+      if (pargc >= 1 && !(nt_argv_has_splat(nt, pargv, pargc) && nt_ref(nt, id, "block") < 0)) {
         int tr = ++g_tmp;
         buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", tr, tr);
         for (int a = 0; a < pargc; a++) {
@@ -30930,7 +30912,7 @@ static void emit_call_body_ordinary(Compiler *c, int id, Buf *b) {
         nt_type(nt, urecv) && sp_streq(nt_type(nt, urecv), "ArrayNode")) {
       Repr urr = repr_of(c, urecv);
       int uargc = 0; const int *uargv = call_args(nt, id, &uargc);
-      int has_nil = 0, spread = call_has_splat_arg(nt, uargv, uargc) && nt_ref(nt, id, "block") < 0;
+      int has_nil = 0, spread = nt_argv_has_splat(nt, uargv, uargc) && nt_ref(nt, id, "block") < 0;
       for (int a = 0; a < uargc; a++) {
         TyKind at = comp_ntype(c, uargv[a]);
         const char *anty = nt_type(nt, uargv[a]);

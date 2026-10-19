@@ -8871,14 +8871,6 @@ void emit_dropped_value(Compiler *c, int v, Buf *b) {
 }
 
 /* See codegen_internal.h. */
-int kwh_has_splat(const NodeTable *nt, int kwh) {
-  int en = 0; const int *el = kwh >= 0 ? nt_arr(nt, kwh, "elements", &en) : NULL;
-  for (int e = 0; e < en; e++)
-    if (nt_kind(nt, el[e]) == NK_AssocSplatNode) return 1;
-  return 0;
-}
-
-/* See codegen_internal.h. */
 int kwh_merged(Compiler *c, Scope *m, int kwh) {
   return callee_declares_kwargs(c, m) && kwh_sources_overlap(c->nt, kwh);
 }

@@ -5217,7 +5217,7 @@ static int call_takes_splat(const NodeTable *nt, int v) {
   if (v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
   int argc = 0;
   const int *argv = call_args(nt, v, &argc);
-  return call_has_splat_arg(nt, argv, argc);
+  return nt_argv_has_splat(nt, argv, argc);
 }
 /* --share-strings: is v a String call without a bang that answers its
    receiver (`s.concat(x, y)`, `s.insert(i, x)`), called on a variable that

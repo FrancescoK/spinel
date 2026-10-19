@@ -2642,7 +2642,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
        uses. The arguments are evaluated inside the arm taken, once.
        A `*splat` goes the same way: the arms below boxed the whole array as
        one argument and bound it to the first parameter. */
-    if (call_has_keyword_args(nt, argv, argc) || call_has_splat_arg(nt, argv, argc) ||
+    if (nt_argv_has_keywords(nt, argv, argc) || nt_argv_has_splat(nt, argv, argc) ||
         ctor_block_splices(c, id)) {
       emit_class_value_new_kw(c, id, recv, 0, b);
       return 1;
@@ -2948,7 +2948,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
     /* keyword arguments: laid out per class by name, as in the Class-valued
        form above (#4845) -- positionally they bound `k: v` to a parameter;
        likewise a `*splat`, which bound the whole array */
-    if (call_has_keyword_args(nt, argv, argc) || call_has_splat_arg(nt, argv, argc) ||
+    if (nt_argv_has_keywords(nt, argv, argc) || nt_argv_has_splat(nt, argv, argc) ||
         (argc > 0 && ctor_block_splices(c, id))) {
       emit_class_value_new_kw(c, id, recv, 1, b);
       return 1;
@@ -3155,7 +3155,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
     /* a Struct's `self.class.new(*a)` or keywords: spread and bound as
        `S.new(*a)` is, where each was passed as one argument */
     if (c->classes[cid].is_struct && comp_method_in_chain(c, cid, "initialize", NULL) < 0 &&
-        (call_has_splat_arg(nt, argv, argc) || (argc >= 1 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode)) &&
+        (nt_argv_has_splat(nt, argv, argc) || (argc >= 1 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode)) &&
         emit_struct_new_call(c, id, cid, argc, argv, b))
       return 1;
     buf_printf(b, "sp_%s_new(", c->classes[cid].c_name);

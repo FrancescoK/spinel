@@ -844,7 +844,7 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         bop_min = 1; bop_max = 2;
       }
     }
-    int bop_flat = tm && bam_binop_wrapper(tm) && call_has_splat_arg(nt, argv, argc);
+    int bop_flat = tm && bam_binop_wrapper(tm) && nt_argv_has_splat(nt, argv, argc);
     if (tm && bam_binop_wrapper(tm) && argc > bop_ops && !bop_flat) {
       char exp[16];
       arity_expected(exp, sizeof exp, bop_min, bop_max);

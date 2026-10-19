@@ -151,8 +151,6 @@ int emit_cls_value_sg_accessor_of(Compiler *c, int id, int recv, const char *kte
 void ffi_check_buffer_bounds(Compiler *c, int id, int arg, const char *kind, int off, const char *dir);
 extern int g_setter_value_inner;
 int emit_cmethod_setter_assign(Compiler *c, int id, Buf *b);
-int call_has_keyword_args(const NodeTable *nt, const int *argv, int argc);
-int call_has_splat_arg(const NodeTable *nt, const int *argv, int argc);
 int ctor_alloc_decl(Compiler *c, int cid, Buf *b);
 void ctor_arity_add(CtorArityArms *g, int ci, const char *msg);
 void ctor_arity_emit(CtorArityArms *g, Buf *b);

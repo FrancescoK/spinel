@@ -1941,8 +1941,6 @@ int kwh_sources_overlap(const NodeTable *nt, int kwh);
 int kwh_elem_dropped(const NodeTable *nt, int kwh, int e);
 /* The value `v` of such a pair, evaluated into `b` for its effect. */
 void emit_dropped_value(Compiler *c, int v, Buf *b);
-/* True when the keyword hash `kwh` has a `**` operand. */
-int kwh_has_splat(const NodeTable *nt, int kwh);
 /* kwh_sources_overlap, for a call into `m`, which declares keyword params. */
 int kwh_merged(Compiler *c, Scope *m, int kwh);
 /* The keywords of such a `kwh` merged into one fresh, rooted SymPolyHash in

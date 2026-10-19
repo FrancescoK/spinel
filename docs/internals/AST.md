@@ -112,6 +112,12 @@ A call written as an assignment (`recv.name = v`, `recv.name=(v)`,
 `recv[i] = v`) carries `I 2 attr_write 1`, Prism's attribute-write flag;
 `recv.send(:name=, v)` does not. A desugar that builds such an assignment
 sets it, and `nt_attr_write` answers 0 for a node without the field.
+An ArgumentsNode carries none of Prism's ArgumentsNodeFlags: the desugars
+rewrite argument lists, so a bit set when the list was parsed would go
+stale. What those flags say (a splat, keywords, a keyword splat, `...`) is
+asked of the list itself through the `nt_argv_*` predicates, which answer
+from its current elements; a call's `&blk` is its `block` field
+(`nt_call_block_arg`).
 
 Node ids are assigned in DFS pre-order during parse, so a child's id is
 greater than its parent's id, except for the StatementsNode made for an

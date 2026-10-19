@@ -3499,7 +3499,7 @@ int strbuf_held_chain(const Compiler *c, int r) {
     return strbuf_held_chain(c, nt_ref(nt, r, "receiver"));
   /* (not freeze: its String no mutator changes any more) */
   if (!bop_share_self_answer(nm, nt_ref(nt, r, "block") >= 0))
-    return nt_ref(nt, r, "block") < 0 && !call_has_splat_arg(nt, argv, argc) &&
+    return nt_ref(nt, r, "block") < 0 && !nt_argv_has_splat(nt, argv, argc) &&
            bop_share_named(TY_STRING, nm) != BSH_FROZEN &&
            (bop_answers_self(TY_STRING, nm, argc, 0) == BOPF_SELF || (is_receiver_conversion(nm) && argc == 0)) &&
            strbuf_held_chain(c, nt_ref(nt, r, "receiver"));

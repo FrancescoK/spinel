@@ -2712,7 +2712,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
   int *dfl = malloc(sizeof(int) * (size_t)(O + nk + 1)), nd = 0;
   for (int oi = 0; oi < O; oi++) dfl[nd++] = block_opt_default(c, blk, oi);
   for (int ki = 0; ki < nk; ki++) dfl[nd++] = block_keyword_default(c, blk, ki);
-  if (ykw >= 0 && !kwh_has_splat(nt, ykw) && ykw_out_of_order(c, blk, ykw))
+  if (ykw >= 0 && !nt_hash_has_splat(nt, ykw) && ykw_out_of_order(c, blk, ykw))
     emit_args_before(c, yargs, yc + 1, dfl, nd, g_pre);
   else if (yargs && !call_args_need_spread(nt, yargs, yc)) {
     int ot = 0, ps = 0;
