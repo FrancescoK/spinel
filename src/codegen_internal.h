@@ -200,12 +200,7 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b);
 /* --share-strings: does codegen hand the shared handle along flow kind
    `kind` (ShareFlowKind) at node site, from value node v?
    The routes codegen carries, which the seal requires of every flow into a
-   shared class (repr_share_flows_check). fm holds the answers asked once
-   per method, for one check. */
-typedef struct {
-  signed char *yield_ok;   /* per method scope: its yields carry the handle
-                              (1), do not (0), not asked yet (-1) */
-} StrbufFlowMemo;
+   shared class (repr_share_flows_check). */
 int strbuf_flow_carries(Compiler *c, int kind, int site, int v);
 /* --share-strings: is element el of plain multiple write mw rendered through the handle face into a held temp? */
 int masgn_face_elem(Compiler *c, int mw, int el);
