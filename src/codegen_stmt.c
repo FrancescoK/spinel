@@ -24058,10 +24058,25 @@ static int strbuf_next_boxes(Compiler *c, int n) {
    box its block's proc answers: is each value the block answers (its
    tail, a next's) one a box carries as the handle it is
    (strbuf_box_carries)? */
+static int strbuf_stmts_box(Compiler *c, int stmts) {
+  int n = 0;
+  const int *bb = stmts >= 0 && nt_kind(c->nt, stmts) == NK_StatementsNode ? nt_arr(c->nt, stmts, "body", &n) : NULL;
+  return n == 0 || strbuf_box_carries(c, bb[n - 1]);
+}
 static int strbuf_reopen_pf_tails_carry(Compiler *c, int v) {
-  int body = nt_ref(c->nt, nt_ref(c->nt, unwrap_parens(c, v), "block"), "body"), n = 0;
-  const int *bb = body >= 0 && nt_kind(c->nt, body) == NK_StatementsNode ? nt_arr(c->nt, body, "body", &n) : NULL;
-  return (n == 0 || strbuf_box_carries(c, bb[n - 1])) && strbuf_next_boxes(c, body);
+  const NodeTable *nt = c->nt;
+  int body = nt_ref(nt, nt_ref(nt, unwrap_parens(c, v), "block"), "body");
+  if (body >= 0 && nt_kind(nt, body) == NK_BeginNode) {
+    /* a block with a rescue or ensure clause of its own: the begin answers
+       its body's last statement, or its else clause's when one follows,
+       and a rescue clause's */
+    int el = nt_ref(nt, body, "else_clause");
+    int ok = strbuf_stmts_box(c, el >= 0 ? nt_ref(nt, el, "statements") : nt_ref(nt, body, "statements"));
+    for (int rc = nt_ref(nt, body, "rescue_clause"); rc >= 0 && ok; rc = nt_ref(nt, rc, "subsequent"))
+      ok = strbuf_stmts_box(c, nt_ref(nt, rc, "statements"));
+    return ok && strbuf_next_boxes(c, body);
+  }
+  return strbuf_stmts_box(c, body) && strbuf_next_boxes(c, body);
 }
 
 /* Does method mi answer only String literals, as its last value and
