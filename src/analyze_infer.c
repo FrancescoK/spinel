@@ -6313,7 +6313,7 @@ static int infer_method_proc_call(Compiler *c, int id, const NodeTable *nt, cons
       { *out = TY_PROC; return 1; }
   }
   if (recv >= 0 && rt == TY_PROC) {
-    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    const BuiltinOp *op = an_bop_find_arg(c, id, rt, name, argc, argv, nt_ref(nt, id, "block") >= 0);
     if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
   }
   /* Klass.instance_method(:m) -> an (unbound) method object; #bind re-binds (#2676) */
@@ -6380,12 +6380,6 @@ static int infer_method_proc_call(Compiler *c, int id, const NodeTable *nt, cons
       (is_shift_op(name)) &&
       infer_type(c, argv[0]) == TY_PROC)
     { *out = TY_PROC; return 1; }
-
-  /* Proc identity: equal?/eql?/== against another Proc -> bool */
-  if (recv >= 0 && rt == TY_PROC && argc == 1 &&
-      is_equality_name(name) &&
-      infer_type(c, argv[0]) == TY_PROC)
-    { *out = TY_BOOL; return 1; }
   return 0;
 }
 
@@ -6916,6 +6910,10 @@ static int infer_runtime_value_call(Compiler *c, int id, const NodeTable *nt, co
   if (recv >= 0 && nt_ref(c->nt, id, "block") < 0 &&
       ty_object_protocol_answers(rt, argc == 1 ? infer_type(c, argv[0]) : TY_UNKNOWN, name, argc) &&
       !(rt == TY_EXCEPTION && exc_subclass_defines(c, name))) {
+    /* record the kind's row of the name, so --plan-check does not report the
+       call as answered without one. The answer stays by name: the arm also
+       answers the kinds that have no row, and an operand no row's guard names. */
+    (void)an_bop_find_arg(c, id, rt, name, argc, argv, 0);
     if (sp_streq(name, "freeze")) { *out = rt; return 1; }
     if (sp_streq(name, "to_s")) { *out = TY_STRING; return 1; }
     if (sp_streq(name, "<=>")) { *out = TY_POLY; return 1; }   /* 0 or nil, boxed */
@@ -6998,7 +6996,7 @@ static int infer_runtime_value_call(Compiler *c, int id, const NodeTable *nt, co
   }
   /* Process::Status readers: builtin-op rows (builtin_ops.c) */
   if (recv >= 0 && rt == TY_PROCESS_STATUS) {
-    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    const BuiltinOp *op = an_bop_find_arg(c, id, rt, name, argc, argv, nt_ref(nt, id, "block") >= 0);
     if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
   }
   /* The same names on a BOXED status -- which is how one normally arrives,
@@ -7740,6 +7738,13 @@ static int infer_send_blind(Compiler *c, int id, int recv, const char *name, TyK
   }
 
   return 0;
+}
+
+/* Symbol#eql? and #equal? state a bool in their rows; the last row of each
+   name takes an operand of any other kind, so one is always found */
+static TyKind infer_symbol_identity(Compiler *c, int id, const NodeTable *nt, const char *name, const int *argv) {
+  const BuiltinOp *op = an_bop_find_arg(c, id, TY_SYMBOL, name, 1, argv, nt_ref(nt, id, "block") >= 0);
+  return op && op->result != TY_UNKNOWN ? op->result : TY_BOOL;
 }
 
 /* A Symbol receiver: the table's rows (casecmp and clamp by the operand's
@@ -8650,7 +8655,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_SYMBOL && argc == 0 && sp_streq(name, "encoding"))
     return TY_POLY;  /* a boxed Encoding value */
   if (recv >= 0 && (rt == TY_BOOL || rt == TY_SYMBOL || rt == TY_FLOAT) && argc == 1 &&
-      (is_eql_or_equal(name))) return TY_BOOL;
+      (is_eql_or_equal(name))) return rt == TY_SYMBOL ? infer_symbol_identity(c, id, nt, name, argv) : TY_BOOL;
   if (recv >= 0 && rt == TY_FLOAT && argc == 1 && sp_streq(name, "===")) return TY_BOOL;  /* (#2400) */
   { TyKind r; if (infer_nil_chain_call(c, id, nt, name, recv, rt, &r)) return r; }
 
