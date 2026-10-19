@@ -457,6 +457,56 @@ static void str_box_note(StrForm *sf, int rf, int rw) {
   sf->rw = rw;
 }
 
+/* --share-strings: Kernel#String of a boxed value (`String(v)`), boxed: a
+   String's own box, a plain String's or a shared handle's, which is the
+   String itself (String(s) answers s), else the String the value's #to_str
+   or #to_s answers, boxed as its bytes. Boxed as the bytes of a handle's
+   String it came out as a copy that a change through the result never
+   reached the original by. 1 with the box written; 0, nothing emitted, for
+   any other operand route (`+y`, `y.to_s`). */
+/* Does a class of the program define #to_str, and does each such method
+   publish the handle of the String it answers (Scope.ret_handle), which
+   String(o) then hands on as it is? */
+static int str_to_str_publishes(Compiler *c) {
+  int any = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    int mi = comp_method_in_chain(c, k, "to_str", NULL);
+    if (mi < 0) continue;
+    if (!scope_ret_handle(c, mi)) return 0;
+    any = 1;
+  }
+  return any;
+}
+static int str_box_kernel_string(Compiler *c, int v, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int x = strbuf_route_box_operand(c, v), u = unwrap_parens(c, v);
+  if (x < 0 || nt_kind(nt, u) != NK_CallNode || nt_ref(nt, u, "receiver") >= 0 ||
+      !is_string_class_name(nt_str(nt, u, "name"))) return 0;
+  size_t at = b->len;
+  int t = ++g_tmp;
+  buf_puts(b, "({ ");
+  t = hold_operand(c, x, TY_POLY, 1, t, 1, " ", b);
+  if (str_to_str_publishes(c)) {
+    /* an object's #to_str answers a String of the program's, whose handle the
+       method published: that String is String(o)'s answer */
+    buf_printf(b, "(_t%d.tag == SP_TAG_STR && _t%d.v.s) || sp_poly_is_strbuf(_t%d) ? _t%d : ({ "
+                  "_sp_ret_strbuf = NULL; const char *_s%d = sp_poly_check_str(_t%d); "
+                  "_s%d ? (_sp_ret_strbuf ? ",
+               t, t, t, t, t, t, t);
+    str_box_handle(b, "(sp_String *)_sp_ret_strbuf");
+    buf_printf(b, " : sp_box_str(_s%d)) : sp_box_str(sp_poly_to_s(_t%d)); }); })", t, t);
+  }
+  else
+    buf_printf(b, "(_t%d.tag == SP_TAG_STR && _t%d.v.s) || sp_poly_is_strbuf(_t%d) ? _t%d : sp_box_str(({ "
+                  "const char *_s%d = sp_poly_check_str(_t%d); _s%d ? _s%d : sp_poly_to_s(_t%d); })); })",
+               t, t, t, t, t, t, t, t, t);
+  if (g_share_check) {
+    share_check_declare_reads(b, at, v);
+    share_check_declare_reads(b, at, x);
+  }
+  return 1;
+}
+
 /* --share-strings: the box face of a String value (or one the rule
    holds as the handle), by its producer's kind (share.h's SPK_*), asked
    where it is boxed; 0 with nothing emitted for any other value:
@@ -562,7 +612,13 @@ static int str_box_by_kind(Compiler *c, int node, StrForm *sf) {
       str_box_note(sf, RF_PASS, RW_HANDLE_ROUTE);
     }
     return 1;
-  case SPK_ASSIGN: case SPK_OPERAND: case SPK_COND: case SPK_SEQUENCE:
+  case SPK_OPERAND:
+    if (!arg_ran_first(node, 0) && !emit_boxed_lift(c, node) && str_box_kernel_string(c, node, b)) {
+      str_box_note(sf, RF_PASS, RW_HANDLE_ROUTE);
+      return 1;
+    }
+    return 0;
+  case SPK_ASSIGN: case SPK_COND: case SPK_SEQUENCE:
   case SPK_LIFT:
     return 0;
   }
