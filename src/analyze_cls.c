@@ -108,6 +108,7 @@ typedef struct CF {
   int *elobj;                           /* per element: the object it stands for, -1 */
   int *summ;                            /* per element: the object that stands for all it holds past the cap, -1 */
   int *obj_cont, nobj, cobj;            /* per object: its contents element */
+  unsigned char *obj_str;               /* (directed) per object: a String, whose contents are bytes (cf_string_node) */
   int draining;
   int gsum;                             /* the one summary a summary's own contents join past the cap, -1 */
   long st_edges, st_pts, st_drain, st_rounds;
@@ -382,16 +383,49 @@ static int cf_new_obj(CF *f) {
   if (f->nobj == f->cobj) {
     f->cobj = f->cobj ? f->cobj * 2 : 1024;
     if (!(f->obj_cont = realloc(f->obj_cont, sizeof(int) * (size_t)f->cobj))) cf_oom();
+    if (!(f->obj_str = realloc(f->obj_str, (size_t)f->cobj))) cf_oom();
   }
   int o = f->nobj++;
   f->obj_cont[o] = k;
+  f->obj_str[o] = 0;
   return o;
+}
+/* Is node x a String: a literal, an interpolation, or a builtin's answer
+   that is a String on every receiver (to_s, join, upcase, a unary plus or
+   a dup of one)? Its object holds bytes, not values: a store into it
+   (`out << x`) keeps no class, and a read out of it (`s[i]`, `s[a, n]`)
+   is a String. The walk told no container from its elements, so a builder
+   String fed from a block's parameters held every class, and every slice
+   of it, and every value that slice reached, did too (#8837: the blog's
+   base64 decoder). */
+static int cf_string_node(CF *f, int x) {
+  const NodeTable *nt = f->nt;
+  for (int d = 0; x >= 0 && x < f->nnodes && d < 4; d++) {
+    NodeKind k = nt_kind(nt, x);
+    if (k == NK_StringNode || k == NK_InterpolatedStringNode || k == NK_XStringNode || k == NK_InterpolatedXStringNode) return 1;
+    if (k != NK_CallNode) return 0;
+    const char *nm = nt_str(nt, x, "name");
+    if (!nm) return 0;
+    static const char *const always[] = { "to_s", "to_str", "inspect", "join", "format", "sprintf", NULL };
+    for (int i = 0; always[i]; i++) if (sp_streq(nm, always[i])) return 1;
+    int r = nt_ref(nt, x, "receiver");
+    if (sp_streq(nm, "new") && r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode && nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), "String")) return 1;
+    static const char *const of_string[] = { "+@", "-@", "dup", "clone", "freeze", "itself", "upcase", "downcase", "capitalize", "swapcase",
+      "strip", "lstrip", "rstrip", "chomp", "chop", "squeeze", "tr", "tr_s", "gsub", "sub", "center", "ljust", "rjust", "succ", "next",
+      "encode", "force_encoding", "unicode_normalize", "b", "scrub", "delete_prefix", "delete_suffix", "*", "+", "%", NULL };
+    int of = 0;
+    for (int i = 0; of_string[i] && !of; i++) of = sp_streq(nm, of_string[i]);
+    if (!of || r < 0) return 0;
+    x = r;
+  }
+  return 0;
 }
 static int cf_el_obj(CF *f, int x) {
   if (x < 0) return -1;
   if (f->elobj[x] >= 0) return f->elobj[x];
   int o = cf_new_obj(f);
   f->elobj[x] = o;
+  if (cf_string_node(f, x)) f->obj_str[o] = 1;
   cf_pts_add(f, x, o);
   return o;
 }
@@ -526,7 +560,7 @@ static void cf_store_at(CF *f, int c, int e, int line) {
     if (!cf_mark(f, CF_KEY(c, e, 2))) return;
     cf_push_int(&f->st[c], &f->nst[c], &f->cst[c], e);
     f->changed = 1;
-    for (int i = 0; i < f->npts[c]; i++) cf_edge(f, e, f->obj_cont[f->pts[c][i]]);
+    for (int i = 0; i < f->npts[c]; i++) if (!f->obj_str[f->pts[c][i]]) cf_edge(f, e, f->obj_cont[f->pts[c][i]]);
     if (f->ptop[c]) cf_escape(f, e);
     if (!f->npts[c] && !f->ptop[c]) cf_el_obj(f, c);
     return;
@@ -541,8 +575,11 @@ static void cf_load_at(CF *f, int c, int v, int line) {
     if (!cf_mark(f, CF_KEY(c, v, 3))) return;
     cf_push_int(&f->ld[c], &f->nld[c], &f->cld[c], v);
     f->changed = 1;
-    for (int i = 0; i < f->npts[c]; i++) cf_edge(f, f->obj_cont[f->pts[c][i]], v);
-    if (f->ptop[c]) cf_add_set_at(f, v, CF_ALL, __LINE__);
+    for (int i = 0; i < f->npts[c]; i++) {
+      if (f->obj_str[f->pts[c][i]]) cf_add_set_at(f, v, cf_bv_set(f), line);   /* a String's slice is a String */
+      else cf_edge(f, f->obj_cont[f->pts[c][i]], v);
+    }
+    if (f->ptop[c]) cf_add_set_at(f, v, CF_ALL, f->orig && f->orig[c] > 0 ? f->orig[c] : __LINE__);
     return;
   }
   cf_unite_at(f, v, c, line);
@@ -555,6 +592,7 @@ static void cf_share_at(CF *f, int a, int b, int line) {
   if (f->directed) {
     (void)line; if (a < 0 || b < 0) return;
     int o = cf_el_obj(f, a);
+    if (f->obj_str[o]) { cf_add_set_at(f, f->obj_cont[o], cf_bv_set(f), line); return; }   /* (a String holds bytes) */
     cf_load_at(f, b, f->obj_cont[o], line);
     return;
   }
@@ -3308,7 +3346,7 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
     free(f.pdel); free(f.npdel); free(f.cpdel);
     free(f.psucc); free(f.npsucc); free(f.cpsucc); free(f.pts); free(f.npts); free(f.cpts);
     free(f.ld); free(f.nld); free(f.cld); free(f.st); free(f.nst); free(f.cst);
-    free(f.ptop); free(f.esc); free(f.elobj); free(f.summ); free(f.smc); free(f.obj_cont); free(f.fs);
+    free(f.ptop); free(f.esc); free(f.elobj); free(f.summ); free(f.smc); free(f.obj_cont); free(f.obj_str); free(f.fs);
   }
 }
 
