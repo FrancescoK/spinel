@@ -14927,17 +14927,6 @@ static int rows_method_taken(const NodeTable *nt, const char *dn) {
    begin; a begin with clauses passes its body and its else on by hand. */
 enum { ROWS_CLIMB = VPS_IF | VPS_UNLESS | VPS_BEGIN_PLAIN | VP_BEGIN_BOTH };
 
-/* Does the climb from `w` to `top` pass an `elsif` arm? The climb ended at
-   the first `if` that is itself the arm of another, and does, for now. */
-static int rows_through_elsif(const NodeTable *nt, const int *par, int w, int top) {
-  for (int n = w; n != top && n >= 0;) {
-    n = par[n];
-    int o = n >= 0 ? par[n] : -1;
-    if (n >= 0 && o >= 0 && nt_kind(nt, n) == NK_IfNode && nt_kind(nt, o) == NK_IfNode && nt_ref(nt, o, "subsequent") == n) return 1;
-  }
-  return 0;
-}
-
 /* Whether the value of `w` is thrown away: a statement whose value nothing
    reads, the last statement of a conditional, a parenthesized or a begin
    body whose own value is thrown away (vp_climb), or the last statement of
@@ -14953,7 +14942,6 @@ static int rows_value_dropped(Compiler *c, const int *par, int w, const char **s
   for (long guard = nt->count; guard >= 0; guard--) {
     VpUp up;
     VpUpKind ended = vp_climb(nt, par, w, ROWS_CLIMB, &up);
-    if (rows_through_elsif(nt, par, w, up.node)) return 0;
     if (ended == VPU_DROPPED) return 1;
     if (ended != VPU_ENDED) return 0;
     int g = up.parent;
