@@ -11423,8 +11423,8 @@ static int emit_native_binding_call(Compiler *c, int id, int cid, const char *na
         emit_expr(c, recv, b);
         buf_printf(b, ", %d, ", it);
       }
-      else {
-        buf_printf(b, "sp_IOBuffer_get_%s(", comp_iob_ty_is_float(it) ? "f" : "i");
+      else {   /* inline, falling back to sp_IOBuffer_get_i/_f (lib/sp_iobuffer.h) */
+        buf_printf(b, "sp_IOBuffer_load_%s(", comp_iob_ty_is_float(it) ? "f" : "i");
         emit_expr(c, recv, b);
         buf_printf(b, ", %d, ", it);
       }

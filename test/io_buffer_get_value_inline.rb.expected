@@ -1,0 +1,378 @@
+U8 owned 0: 129
+U8 owned 1: 202
+U8 owned 15: 200
+U8 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
+U8 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
+U8 owned -1: ArgumentError: Offset can't be negative!
+U8 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
+U8 owned -1073741824: ArgumentError: Offset can't be negative!
+U8 slice 0: 92
+U8 slice 8: 164
+U8 slice 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=9)
+U8 slice -1: ArgumentError: Offset can't be negative!
+U8 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+U8 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+U8 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+U8 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+U8 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+U8 transferred-to 15: 200
+U8 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+U8 shrunk 0: 129
+U8 shrunk 3: 92
+U8 shrunk 4: ArgumentError: Type extends beyond end of buffer! (offset=4 > size=4)
+U8 mapped 0: 129
+U8 mapped 15: 200
+U8 mapped 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
+U8 for 0: 65
+U8 for 9: 74
+S8 owned 0: -127
+S8 owned 1: -54
+S8 owned 15: -56
+S8 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
+S8 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
+S8 owned -1: ArgumentError: Offset can't be negative!
+S8 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
+S8 owned -1073741824: ArgumentError: Offset can't be negative!
+S8 slice 0: 92
+S8 slice 8: -92
+S8 slice 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=9)
+S8 slice -1: ArgumentError: Offset can't be negative!
+S8 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+S8 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+S8 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+S8 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+S8 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+S8 transferred-to 15: -56
+S8 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+S8 shrunk 0: -127
+S8 shrunk 3: 92
+S8 shrunk 4: ArgumentError: Type extends beyond end of buffer! (offset=4 > size=4)
+S8 mapped 0: -127
+S8 mapped 15: -56
+S8 mapped 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
+S8 for 0: 65
+S8 for 9: 74
+u16 owned 0: 51841
+u16 owned 1: 5066
+u16 owned 14: 51327
+u16 owned 15: ArgumentError: Type extends beyond end of buffer! (offset=15 > size=16)
+u16 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
+u16 owned -1: ArgumentError: Offset can't be negative!
+u16 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
+u16 owned -1073741824: ArgumentError: Offset can't be negative!
+u16 slice 0: 42332
+u16 slice 7: 42075
+u16 slice 8: ArgumentError: Type extends beyond end of buffer! (offset=8 > size=9)
+u16 slice -1: ArgumentError: Offset can't be negative!
+u16 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+u16 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=1)
+u16 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+u16 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+u16 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+u16 transferred-to 14: 51327
+u16 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+u16 shrunk 0: 51841
+u16 shrunk 2: 23571
+u16 shrunk 3: ArgumentError: Type extends beyond end of buffer! (offset=3 > size=4)
+u16 mapped 0: 51841
+u16 mapped 14: 51327
+u16 mapped 15: ArgumentError: Type extends beyond end of buffer! (offset=15 > size=16)
+u16 for 0: 16961
+u16 for 8: 19017
+s16 owned 0: -13695
+s16 owned 1: 5066
+s16 owned 14: -14209
+s16 owned 15: ArgumentError: Type extends beyond end of buffer! (offset=15 > size=16)
+s16 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
+s16 owned -1: ArgumentError: Offset can't be negative!
+s16 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
+s16 owned -1073741824: ArgumentError: Offset can't be negative!
+s16 slice 0: -23204
+s16 slice 7: -23461
+s16 slice 8: ArgumentError: Type extends beyond end of buffer! (offset=8 > size=9)
+s16 slice -1: ArgumentError: Offset can't be negative!
+s16 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+s16 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=1)
+s16 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+s16 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+s16 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+s16 transferred-to 14: -14209
+s16 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+s16 shrunk 0: -13695
+s16 shrunk 2: 23571
+s16 shrunk 3: ArgumentError: Type extends beyond end of buffer! (offset=3 > size=4)
+s16 mapped 0: -13695
+s16 mapped 14: -14209
+s16 mapped 15: ArgumentError: Type extends beyond end of buffer! (offset=15 > size=16)
+s16 for 0: 16961
+s16 for 8: 19017
+U16 owned 0: 33226
+U16 owned 1: 51731
+U16 owned 14: 32712
+U16 owned 15: ArgumentError: Type extends beyond end of buffer! (offset=15 > size=16)
+U16 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
+U16 owned -1: ArgumentError: Offset can't be negative!
+U16 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
+U16 owned -1073741824: ArgumentError: Offset can't be negative!
+U16 slice 0: 23717
+U16 slice 7: 23460
+U16 slice 8: ArgumentError: Type extends beyond end of buffer! (offset=8 > size=9)
+U16 slice -1: ArgumentError: Offset can't be negative!
+U16 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+U16 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=1)
+U16 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+U16 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+U16 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+U16 transferred-to 14: 32712
+U16 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+U16 shrunk 0: 33226
+U16 shrunk 2: 4956
+U16 shrunk 3: ArgumentError: Type extends beyond end of buffer! (offset=3 > size=4)
+U16 mapped 0: 33226
+U16 mapped 14: 32712
+U16 mapped 15: ArgumentError: Type extends beyond end of buffer! (offset=15 > size=16)
+U16 for 0: 16706
+U16 for 8: 18762
+S16 owned 0: -32310
+S16 owned 1: -13805
+S16 owned 14: 32712
+S16 owned 15: ArgumentError: Type extends beyond end of buffer! (offset=15 > size=16)
+S16 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
+S16 owned -1: ArgumentError: Offset can't be negative!
+S16 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
+S16 owned -1073741824: ArgumentError: Offset can't be negative!
+S16 slice 0: 23717
+S16 slice 7: 23460
+S16 slice 8: ArgumentError: Type extends beyond end of buffer! (offset=8 > size=9)
+S16 slice -1: ArgumentError: Offset can't be negative!
+S16 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+S16 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=1)
+S16 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+S16 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+S16 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+S16 transferred-to 14: 32712
+S16 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+S16 shrunk 0: -32310
+S16 shrunk 2: 4956
+S16 shrunk 3: ArgumentError: Type extends beyond end of buffer! (offset=3 > size=4)
+S16 mapped 0: -32310
+S16 mapped 14: 32712
+S16 mapped 15: ArgumentError: Type extends beyond end of buffer! (offset=15 > size=16)
+S16 for 0: 16706
+S16 for 8: 18762
+u32 owned 0: 1544800897
+u32 owned 1: 2774275018
+u32 owned 12: 3363780333
+u32 owned 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
+u32 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
+u32 owned -1: ArgumentError: Offset can't be negative!
+u32 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
+u32 owned -1073741824: ArgumentError: Offset can't be negative!
+u32 slice 0: 938386780
+u32 slice 5: 2757432009
+u32 slice 6: ArgumentError: Type extends beyond end of buffer! (offset=6 > size=9)
+u32 slice -1: ArgumentError: Offset can't be negative!
+u32 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+u32 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=3)
+u32 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+u32 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+u32 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+u32 transferred-to 12: 3363780333
+u32 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+u32 shrunk 0: 1544800897
+u32 shrunk 0: 1544800897
+u32 shrunk 1: ArgumentError: Type extends beyond end of buffer! (offset=1 > size=4)
+u32 mapped 0: 1544800897
+u32 mapped 12: 3363780333
+u32 mapped 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
+u32 for 0: 1145258561
+u32 for 6: 1246316615
+s32 owned 0: 1544800897
+s32 owned 1: -1520692278
+s32 owned 12: -931186963
+s32 owned 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
+s32 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
+s32 owned -1: ArgumentError: Offset can't be negative!
+s32 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
+s32 owned -1073741824: ArgumentError: Offset can't be negative!
+s32 slice 0: 938386780
+s32 slice 5: -1537535287
+s32 slice 6: ArgumentError: Type extends beyond end of buffer! (offset=6 > size=9)
+s32 slice -1: ArgumentError: Offset can't be negative!
+s32 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+s32 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=3)
+s32 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+s32 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+s32 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+s32 transferred-to 12: -931186963
+s32 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+s32 shrunk 0: 1544800897
+s32 shrunk 0: 1544800897
+s32 shrunk 1: ArgumentError: Type extends beyond end of buffer! (offset=1 > size=4)
+s32 mapped 0: 1544800897
+s32 mapped 12: -931186963
+s32 mapped 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
+s32 for 0: 1145258561
+s32 for 6: 1246316615
+U32 owned 0: 2177504092
+U32 owned 1: 3390266533
+U32 owned 12: 3979771848
+U32 owned 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
+U32 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
+U32 owned -1: ArgumentError: Offset can't be negative!
+U32 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
+U32 owned -1073741824: ArgumentError: Offset can't be negative!
+U32 slice 0: 1554378295
+U32 slice 5: 3373423524
+U32 slice 6: ArgumentError: Type extends beyond end of buffer! (offset=6 > size=9)
+U32 slice -1: ArgumentError: Offset can't be negative!
+U32 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+U32 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=3)
+U32 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+U32 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+U32 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+U32 transferred-to 12: 3979771848
+U32 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+U32 shrunk 0: 2177504092
+U32 shrunk 0: 2177504092
+U32 shrunk 1: ArgumentError: Type extends beyond end of buffer! (offset=1 > size=4)
+U32 mapped 0: 2177504092
+U32 mapped 12: 3979771848
+U32 mapped 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
+U32 for 0: 1094861636
+U32 for 6: 1195919690
+S32 owned 0: -2117463204
+S32 owned 1: -904700763
+S32 owned 12: -315195448
+S32 owned 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
+S32 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
+S32 owned -1: ArgumentError: Offset can't be negative!
+S32 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
+S32 owned -1073741824: ArgumentError: Offset can't be negative!
+S32 slice 0: 1554378295
+S32 slice 5: -921543772
+S32 slice 6: ArgumentError: Type extends beyond end of buffer! (offset=6 > size=9)
+S32 slice -1: ArgumentError: Offset can't be negative!
+S32 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+S32 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=3)
+S32 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+S32 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+S32 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+S32 transferred-to 12: -315195448
+S32 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+S32 shrunk 0: -2117463204
+S32 shrunk 0: -2117463204
+S32 shrunk 1: ArgumentError: Type extends beyond end of buffer! (offset=1 > size=4)
+S32 mapped 0: -2117463204
+S32 mapped 12: -315195448
+S32 mapped 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
+S32 for 0: 1094861636
+S32 for 6: 1195919690
+f32 owned 0: 1.6639790790423347e+17
+f32 owned 1: -1.9088663030917988e-16
+f32 owned 12: -261339.703125
+f32 owned 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
+f32 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
+f32 owned -1: ArgumentError: Offset can't be negative!
+f32 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
+f32 owned -1073741824: ArgumentError: Offset can't be negative!
+f32 slice 0: 2.844881237251684e-05
+f32 slice 5: -4.7503966801128164e-17
+f32 slice 6: ArgumentError: Type extends beyond end of buffer! (offset=6 > size=9)
+f32 slice -1: ArgumentError: Offset can't be negative!
+f32 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+f32 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=3)
+f32 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+f32 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+f32 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+f32 transferred-to 12: -261339.703125
+f32 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+f32 shrunk 0: 1.6639790790423347e+17
+f32 shrunk 0: 1.6639790790423347e+17
+f32 shrunk 1: ArgumentError: Type extends beyond end of buffer! (offset=1 > size=4)
+f32 mapped 0: 1.6639790790423347e+17
+f32 mapped 12: -261339.703125
+f32 mapped 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
+f32 for 0: 781.0352172851562
+f32 for 6: 3297809.75
+f64 owned 0: -1.3312734094778385e-307
+f64 owned 1: -1.157389778901683e+46
+f64 owned 8: -1.6994824950732323e+41
+f64 owned 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=16)
+f64 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
+f64 owned -1: ArgumentError: Offset can't be negative!
+f64 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
+f64 owned -1073741824: ArgumentError: Offset can't be negative!
+f64 slice 0: 5.209045804777597e+130
+f64 slice 1: -1.4899254128352149e-133
+f64 slice 2: ArgumentError: Type extends beyond end of buffer! (offset=2 > size=9)
+f64 slice -1: ArgumentError: Offset can't be negative!
+f64 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+f64 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=7)
+f64 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+f64 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+f64 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+f64 transferred-to 8: -1.6994824950732323e+41
+f64 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+f64 shrunk 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=4)
+f64 shrunk -4: ArgumentError: Offset can't be negative!
+f64 shrunk -3: ArgumentError: Offset can't be negative!
+f64 mapped 0: -1.3312734094778385e-307
+f64 mapped 8: -1.6994824950732323e+41
+f64 mapped 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=16)
+f64 for 0: 1.5839800103804824e+40
+f64 for 2: 7.390035548622244e+49
+F32 owned 0: -7.423086023641367e-38
+F32 owned 1: -2414377.25
+F32 owned 12: -3.530046864992027e+27
+F32 owned 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
+F32 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
+F32 owned -1: ArgumentError: Offset can't be negative!
+F32 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
+F32 owned -1073741824: ArgumentError: Offset can't be negative!
+F32 slice 0: 3.7364232918296166e+17
+F32 slice 5: -599482.25
+F32 slice 6: ArgumentError: Type extends beyond end of buffer! (offset=6 > size=9)
+F32 slice -1: ArgumentError: Offset can't be negative!
+F32 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+F32 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=3)
+F32 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+F32 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+F32 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+F32 transferred-to 12: -3.530046864992027e+27
+F32 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+F32 shrunk 0: -7.423086023641367e-38
+F32 shrunk 0: -7.423086023641367e-38
+F32 shrunk 1: ArgumentError: Type extends beyond end of buffer! (offset=1 > size=4)
+F32 mapped 0: -7.423086023641367e-38
+F32 mapped 12: -3.530046864992027e+27
+F32 mapped 13: ArgumentError: Type extends beyond end of buffer! (offset=13 > size=16)
+F32 for 0: 12.141422271728516
+F32 for 6: 51273.2890625
+F64 owned 0: -4.867087818789945e-300
+F64 owned 1: -7.074364658692868e+48
+F64 owned 8: -1.023491883028818e+44
+F64 owned 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=16)
+F64 owned 16: ArgumentError: Type extends beyond end of buffer! (offset=16 > size=16)
+F64 owned -1: ArgumentError: Offset can't be negative!
+F64 owned 1073741824: ArgumentError: Type extends beyond end of buffer! (offset=1073741824 > size=16)
+F64 owned -1073741824: ArgumentError: Offset can't be negative!
+F64 slice 0: 2.0403150916353077e+138
+F64 slice 1: -5.579823002006498e-126
+F64 slice 2: ArgumentError: Type extends beyond end of buffer! (offset=2 > size=9)
+F64 slice -1: ArgumentError: Offset can't be negative!
+F64 zero 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+F64 short 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=7)
+F64 freed 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+F64 slice-of-freed 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+F64 transferred-from 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=0)
+F64 transferred-to 8: -1.023491883028818e+44
+F64 slice-of-shrunk 0: IO::Buffer::InvalidatedError: Buffer has been invalidated!
+F64 shrunk 0: ArgumentError: Type extends beyond end of buffer! (offset=0 > size=4)
+F64 shrunk -4: ArgumentError: Offset can't be negative!
+F64 shrunk -3: ArgumentError: Offset can't be negative!
+F64 mapped 0: -4.867087818789945e-300
+F64 mapped 8: -1.023491883028818e+44
+F64 mapped 9: ArgumentError: Type extends beyond end of buffer! (offset=9 > size=16)
+F64 for 0: 2393736.541207228
+F64 for 2: 1.1411335360320148e+16
