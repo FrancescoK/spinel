@@ -1100,6 +1100,44 @@ int poly_exc_cand(Compiler *c, const char *name) {
 
 static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int prim_cand, int exc_cand,
                                         const char *pick_name, Buf *b);
+/* Does the program hold one of its classes as a value -- a constant naming
+   a class of the program that is not a call's receiver (`K.new`), a
+   namespace (`K::X`) or a class or module's name or superclass? Asked once
+   per program. */
+static int g_bcv_n = -1, g_bcv = 0;
+static int program_boxes_class_values(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  if (g_bcv_n == nt->count) return g_bcv;
+  g_bcv_n = nt->count; g_bcv = 0;
+  int *parent = an_parent_map((NodeTable *)nt);
+  if (!parent) { g_bcv = 1; return 1; }
+  for (int id = 0; id < nt->count && !g_bcv; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_ConstantReadNode && k != NK_ConstantPathNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int ci = nm ? comp_class_index(c, nm) : -1;
+    if (ci < 0 || is_builtin_reopen(c->classes[ci].name)) continue;
+    int par = parent[id];
+    if (par < 0) continue;
+    NodeKind pk = nt_kind(nt, par);
+    if (pk == NK_CallNode && nt_ref(nt, par, "receiver") == id) continue;
+    if (pk == NK_ConstantPathNode) continue;
+    if ((pk == NK_ClassNode || pk == NK_ModuleNode) &&
+        (nt_ref(nt, par, "constant_path") == id || nt_ref(nt, par, "superclass") == id)) continue;
+    /* the reads resolved where they stand: `rescue K`, `include K` and its
+       kin, `x.is_a?(K)` and its kin */
+    if (pk == NK_RescueNode) continue;
+    if (nt_type(nt, par) && sp_streq(nt_type(nt, par), "ArgumentsNode") && parent[par] >= 0 && nt_kind(nt, parent[par]) == NK_CallNode) {
+      const char *cn = nt_str(nt, parent[par], "name");
+      if (cn && (sp_streq(cn, "include") || sp_streq(cn, "extend") || sp_streq(cn, "prepend") ||
+                 sp_streq(cn, "is_a?") || sp_streq(cn, "kind_of?") || sp_streq(cn, "instance_of?") ||
+                 sp_streq(cn, "raise"))) continue;
+    }
+    g_bcv = 1;
+  }
+  free(parent);
+  return g_bcv;
+}
 static void emit_poly_dispatch_key_top(Compiler *c, int tv, int cls0_cand, int prim_cand, int exc_cand,
                                        const char *pick_name, Buf *b);
 /* `sp_io_pick_class(<handle>, names, idx)` over the reopened IO classes
@@ -1408,8 +1446,13 @@ static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int 
      cls_id carries nothing). Same mapping promote mode always uses; kept off
      the plain path otherwise, which the hot per-dispatch sites stay on
      (#4219). */
+  /* A boxed class value carries its class's index as cls_id too, so where
+     the program holds a class as a value it would enter that class's
+     instance arm (`klass.is_a?(Module)` taking a program is_a? meant for
+     its instances): the key is guarded there as well. */
   if (!g_promote_mode && !prim_cand) {
-    if (cls0_cand) buf_printf(b, "(_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff)", tv, tv);
+    if (cls0_cand || program_boxes_class_values(c))
+      buf_printf(b, "(_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff)", tv, tv);
     else buf_printf(b, "_t%d.cls_id", tv);
     return;
   }
@@ -5753,7 +5796,8 @@ int emit_poly_pred_value(Compiler *c, int id, const char *tvref,
       }
       /* a reopened builtin (`class Array` with a method added) is a class of
          the program too, but its values are the builtin's */
-      if (target >= 0 && is_builtin_reopen(c->classes[target].name)) target = -1;
+      if (target >= 0 && (is_builtin_reopen(c->classes[target].name) ||
+                          builtin_class_id(c->classes[target].name))) target = -1;
       if (target >= 0) {   /* user-class target: chain check on the object cls_id */
         buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id >= 0 && "
                       "sp_class_le((sp_Class){%s.cls_id}, (sp_Class){%d}))",
