@@ -865,6 +865,7 @@ static int sp_net_wait_io_until(int fd, short events, double deadline) {
 /* Per-worker, like the buffer it describes: a green thread is pinned to its
  * worker, so it reads the flag its own call set. */
 static SP_TLS int sp_net_recv_timed_out;
+/* sp_net_recv_some with a deadline of timeout_s seconds (see sp_net.h). */
 const char *sp_net_recv_some_timeout(int fd, int maxlen, double timeout_s) {
     sp_net_recv_timed_out = 0;
     if (timeout_s < 0) return sp_net_recv_some(fd, maxlen);
@@ -879,8 +880,15 @@ const char *sp_net_recv_some_timeout(int fd, int maxlen, double timeout_s) {
            plain recv would wait in the kernel with no way out. */
         n = SP_SIG_BLOCKING(recv(fd, sp_net_recv_buf, (size_t)maxlen, MSG_DONTWAIT));
         if (n >= 0) break;
-        if (errno == EINTR) continue;
         n = 0;
+        /* A signal storm must not outlast the deadline. */
+        if (errno == EINTR) {
+            if (sp_net_now() < deadline) continue;
+            sp_net_recv_timed_out = 1;
+            break;
+        }
+        /* A wait that answers ready (1) retries the recv even if the deadline
+           has since passed: the bytes arrived in time, so they are returned. */
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             int w = sp_net_wait_io_until(fd, POLLIN, deadline);
             if (w > 0) continue;
@@ -893,6 +901,7 @@ const char *sp_net_recv_some_timeout(int fd, int maxlen, double timeout_s) {
     return sp_net_recv_buf;
 }
 
+/* Whether this worker's last timed recv gave up on its deadline; clears it. */
 int sp_net_take_recv_timeout(void) {
     int t = sp_net_recv_timed_out;
     sp_net_recv_timed_out = 0;
