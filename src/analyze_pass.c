@@ -14919,7 +14919,7 @@ static int rows_method_taken(const NodeTable *nt, const char *dn) {
 }
 
 /* The edges rows_value_dropped climbs. */
-enum { ROWS_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN };
+enum { ROWS_CLIMB = VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_BEGIN | VPS_RESCUE_MOD };
 
 /* Whether the value of `w` is thrown away: a statement whose value nothing
    reads, the last statement of a conditional, a parenthesized or a begin
