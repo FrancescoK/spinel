@@ -1848,6 +1848,25 @@ int is_blk_param_call(Compiler *c, int node, int mi) {
   const char *bp = c->scopes[mi].blk_param;
   return rn && bp && bp[0] && sp_streq(rn, bp);
 }
+/* Is `node` an instance_eval / instance_exec that hands the method's own
+   block on (`instance_exec(*args, &block)`) as the value the method falls off
+   its end with? The inlined method answers the value that block has at each
+   call site, as a tail `yield` does. */
+int ie_forwards_block_tail(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || nt_kind(nt, node) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, node, "name");
+  if (!nm || !is_instance_eval_family(nm)) return 0;
+  int blk = nt_ref(nt, node, "block");
+  if (blk < 0 || nt_kind(nt, blk) != NK_BlockArgumentNode || !call_forwards_own_block(c, node)) return 0;
+  /* on self, or on a receiver of one known class, whose self the block takes
+     (a boxed receiver is dispatched by class at run time: the block's value
+     there is that of each class's body) */
+  int recv = nt_ref(nt, node, "receiver");
+  if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode && !ty_is_object(infer_type(c, recv))) return 0;
+  Scope *sc = comp_scope_of(c, node);
+  return sc && node_is_scope_tail(c, (int)(sc - c->scopes), node);
+}
 int g_yvt_mi[MAX_YVT_DEPTH];
 int g_yvt_depth = 0;
 /* set by yield_value_diverges to make yield_value_type unify all call sites
@@ -2790,7 +2809,7 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
     return c->scopes[mi].ret;
   /* A yield-tailed inlined method, or a tail that calls the &block param:
      the block is spliced per call site, so use that site's block body type. */
-  if (is_yield || is_blk_param_call(c, last, mi)) {
+  if (is_yield || is_blk_param_call(c, last, mi) || ie_forwards_block_tail(c, last)) {
     int blk = nt_ref(c->nt, call_id, "block");
     const char *bty = blk >= 0 ? nt_type(c->nt, blk) : NULL;
     /* `callee(&b)` / `callee(...)` forwards the block active in the enclosing
