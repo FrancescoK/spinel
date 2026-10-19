@@ -52,6 +52,7 @@ typedef struct {
   void *ud;
   long budget;        /* visits left: a tree cannot take more than one per node */
   unsigned reach;     /* the VPR_* bits of the item being visited: what vp_push gives its children */
+  unsigned char *seen; /* when set (the dump's check), a mark for each node the walk visits */
   VpItem *items;      /* the stack: `small` first, the heap past it */
   int n, cap;
   VpItem small[VP_SMALL];
@@ -266,6 +267,7 @@ static int vp_visit(VpWalk *w, VpItem cur) {
       w->n = 0;   /* one gave-up leaf, then the walk is over */
       return vp_emit(w, &cur, VPK_GAVE_UP);
     }
+    if (w->seen) w->seen[cur.node] = 1;
     if ((w->flags & VP_LOGIC_NODES) && (w->shapes & VPS_LOGIC) &&
         (nt_kind(w->nt, cur.node) == NK_OrNode || nt_kind(w->nt, cur.node) == NK_AndNode) &&
         vp_emit(w, &cur, VPK_EXPR))
@@ -287,9 +289,9 @@ static int vp_visit(VpWalk *w, VpItem cur) {
   }
 }
 
-int for_each_value_position(const NodeTable *nt, int root, unsigned flags, VpFn fn, void *ud) {
+static int vp_walk(const NodeTable *nt, int root, unsigned flags, VpFn fn, void *ud, unsigned char *seen) {
   VpWalk w;
-  w.nt = nt; w.flags = flags; w.fn = fn; w.ud = ud;
+  w.nt = nt; w.flags = flags; w.fn = fn; w.ud = ud; w.seen = seen;
   w.shapes = vp_shapes(flags);
   w.budget = nt->count;
   w.reach = 0;
@@ -302,6 +304,10 @@ int for_each_value_position(const NodeTable *nt, int root, unsigned flags, VpFn 
   }
   if (w.items != w.small) free(w.items);
   return stop;
+}
+
+int for_each_value_position(const NodeTable *nt, int root, unsigned flags, VpFn fn, void *ud) {
+  return vp_walk(nt, root, flags, fn, ud, NULL);
 }
 
 /* ---- the upward half ---- */
@@ -351,7 +357,7 @@ static int vp_up_hand(const NodeTable *nt, int p, int child, unsigned flags, uns
     break;
   }
   VpWriteKind wk = (flags & VP_WRITES) ? vp_write_kind(k) : VPW_NONE;
-  if (wk != VPW_NONE && child == nt_ref(nt, p, "value")) return wk == VPW_PLAIN ? VPE_WRAP : VPE_BRANCH;
+  if (wk != VPW_NONE && child == nt_ref(nt, p, "value")) return VPE_WRAP;
   /* a `when` clause has no kind of its own: its statements are its value */
   if (vp_is_kind_named(nt, p, "WhenNode") && child == nt_ref(nt, p, "statements")) return VPE_WRAP;
   return VPE_NONE;
@@ -422,6 +428,9 @@ typedef struct {
   const int *ord;   /* by node id: the program node's number, as vp_ord_table counts */
   const int *par;   /* the parent map, for the upward check */
   int root;         /* the root being walked */
+  unsigned flags;   /* the flags of the walk and of the climbs checked against it */
+  int print;        /* the leaves are printed (the flags of the expected file) */
+  unsigned char *seen;   /* the nodes the walk visited */
 } VpDump;
 
 /* The numbers a dump prints for nodes. Ids count from the first node the
@@ -446,22 +455,35 @@ static void vp_print_id(const VpDump *d, int id) {
   else fprintf(d->out, " #p%d", id - ((int)nt_int(d->nt, id, "node_bi", 0) - 1));
 }
 
-/* The upward half must agree with the walk: climbing from a leaf with the
-   same flags goes back to the root it was yielded from (through the jumps it
-   followed), and crosses the operands the leaf's reach says it did. A leaf it
-   does not reach is printed, so that value-pos-test fails on it. (An or-write
-   or and-write is a leaf standing for the target's old value, which no
-   operand carries: its reach is not asked.) */
-static int vp_dump_climbs_back(const VpDump *d, const VpLeaf *lf) {
+/* Climbs from `node` with the dump's flags, through the jumps it follows:
+   the top node reached, and the conditionals and truth values crossed. */
+static int vp_dump_top(const VpDump *d, int node, int *branches, unsigned *reach, int *hops) {
   VpUp up;
-  int leaf = lf->node, hops = 0;
-  for (; hops < d->nt->count; hops++) {
-    vp_climb(d->nt, d->par, leaf, VP_ALL_FLAGS, &up);
+  *branches = 0; *hops = 0;
+  for (; *hops < d->nt->count; (*hops)++) {
+    vp_climb(d->nt, d->par, node, d->flags, &up);
+    *branches += up.branches;
     if (up.kind != VPU_JUMP) break;
-    leaf = up.parent;
+    node = up.parent;
   }
-  if (up.node != d->root) return 0;
-  return hops > 0 || vp_write_kind(nt_kind(d->nt, lf->node)) == VPW_LOGICAL || up.reach == lf->reach;
+  *reach = up.reach;
+  return up.node;
+}
+
+/* The upward half must agree with the walk, in both directions.
+   From a leaf, the climb with the same flags goes back to the root the
+   leaf was yielded from (through the jumps it followed), crossing as many
+   conditionals as the leaf's depth says and the operands its reach says. And
+   from any node of the table, a climb that reaches the root starts at a node
+   the walk visited: a leaf, or a node it looked through or expanded (the
+   `when` clause, which the walk reads through its case, is the one node it
+   does not visit). A disagreement is printed, so that value-pos-test fails
+   on it. (An or-write or and-write is a leaf standing for the target's old
+   value, which no operand carries: its reach is not asked.) */
+static void vp_dump_report(const VpDump *d, int node, const char *what) {
+  fprintf(d->out, "  UP-MISMATCH");
+  vp_print_id(d, node);
+  fprintf(d->out, " (flags %#x) %s\n", d->flags, what);
 }
 
 static const char *vp_kind_name(VpKind k) {
@@ -477,30 +499,66 @@ static const char *vp_kind_name(VpKind k) {
 static int vp_dump_leaf(const VpLeaf *lf, void *ud) {
   VpDump *d = ud;
   const NodeTable *nt = d->nt;
-  fprintf(d->out, "  %s", vp_kind_name(lf->kind));
-  if (lf->node >= 0) { vp_print_id(d, lf->node); fprintf(d->out, " %s", nt_type(nt, lf->node)); }
-  int line = lf->node >= 0 ? (int)nt_int(nt, lf->node, "node_line", 0)
-           : lf->parent >= 0 ? (int)nt_int(nt, lf->parent, "node_line", 0) : d->line;
-  fprintf(d->out, " line %d arm %d", line, lf->arm);
-  if (lf->parent >= 0) {
-    fprintf(d->out, " parent");
-    vp_print_id(d, lf->parent);
-    fprintf(d->out, " %s", nt_type(nt, lf->parent));
+  if (d->print) {
+    fprintf(d->out, "  %s", vp_kind_name(lf->kind));
+    if (lf->node >= 0) { vp_print_id(d, lf->node); fprintf(d->out, " %s", nt_type(nt, lf->node)); }
+    int line = lf->node >= 0 ? (int)nt_int(nt, lf->node, "node_line", 0)
+             : lf->parent >= 0 ? (int)nt_int(nt, lf->parent, "node_line", 0) : d->line;
+    fprintf(d->out, " line %d arm %d", line, lf->arm);
+    if (lf->parent >= 0) {
+      fprintf(d->out, " parent");
+      vp_print_id(d, lf->parent);
+      fprintf(d->out, " %s", nt_type(nt, lf->parent));
+    }
+    else fprintf(d->out, " parent -");
+    fprintf(d->out, " depth %d", lf->cond_depth);
+    if (lf->reach) fprintf(d->out, " reach %s", lf->reach == VPR_TRUTHY ? "truthy" : lf->reach == VPR_FALSY ? "falsy" : "never");
+    fputc('\n', d->out);
   }
-  else fprintf(d->out, " parent -");
-  fprintf(d->out, " depth %d", lf->cond_depth);
-  if (lf->reach) fprintf(d->out, " reach %s", lf->reach == VPR_TRUTHY ? "truthy" : lf->reach == VPR_FALSY ? "falsy" : "never");
-  fputc('\n', d->out);
-  if (lf->node >= 0 && lf->kind != VPK_GAVE_UP && !vp_dump_climbs_back(d, lf))
-    { fprintf(d->out, "  UP-MISMATCH"); vp_print_id(d, lf->node); fprintf(d->out, " does not climb back to its root\n"); }
+  if (lf->node < 0 || lf->kind == VPK_GAVE_UP) return 0;
+  int branches, hops;
+  unsigned reach;
+  int top = vp_dump_top(d, lf->node, &branches, &reach, &hops);
+  if (top != d->root) vp_dump_report(d, lf->node, "does not climb back to its root");
+  else if (branches != lf->cond_depth) vp_dump_report(d, lf->node, "crosses another number of conditionals than its depth");
+  else if (hops == 0 && vp_write_kind(nt_kind(nt, lf->node)) != VPW_LOGICAL && reach != lf->reach)
+    vp_dump_report(d, lf->node, "crosses other operands than its reach");
   return 0;
+}
+
+static void vp_dump_converse(const VpDump *d) {
+  const NodeTable *nt = d->nt;
+  for (int n = 0; n < nt->count; n++) {
+    int branches, hops;
+    unsigned reach;
+    if (d->seen[n] || vp_is_kind_named(nt, n, "WhenNode")) continue;
+    if (vp_dump_top(d, n, &branches, &reach, &hops) == d->root) vp_dump_report(d, n, "climbs to the root, but the walk did not visit it");
+  }
 }
 
 static void vp_dump_scope(const NodeTable *nt, const int *par, FILE *out, const int *ord, const char *title, int line, int root) {
   VpDump d;
   d.nt = nt; d.out = out; d.line = line; d.ord = ord; d.par = par; d.root = root;
-  fprintf(out, "%s line %d\n", title, line);
-  for_each_value_position(nt, root, VP_ALL_FLAGS, vp_dump_leaf, &d);
+  /* the flag sets the check runs the climbs and the walk with: every shape
+     alone, none, and everything but one of the other flags */
+  const unsigned flag_sets[] = {
+    VPS_IF, VPS_UNLESS, VPS_CASE, VPS_CASE_IN, VPS_BEGIN_PLAIN, VPS_BEGIN_CLAUSES, VPS_RESCUE_MOD, VPS_LOGIC, VPS_NONE,
+    VP_ALL_FLAGS & ~VP_AND_LEFT, VP_ALL_FLAGS & ~VP_BEGIN_BOTH, VP_ALL_FLAGS & ~VP_WRITES,
+    VP_ALL_FLAGS & ~VP_FOLLOW_RETURN, VP_ALL_FLAGS & ~VP_FOLLOW_NEXT, VP_ALL_FLAGS & ~VP_FOLLOW_BREAK,
+    VP_ALL_FLAGS & ~(VP_FOLLOW_RETURN | VP_FOLLOW_NEXT | VP_FOLLOW_BREAK)
+  };
+  d.seen = calloc((size_t)(nt->count > 0 ? nt->count : 1), 1);
+  if (!d.seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  if (title) fprintf(out, "%s line %d\n", title, line);
+  else fprintf(out, "main\n");
+  for (size_t i = 0; i < sizeof flag_sets / sizeof flag_sets[0] + 1; i++) {
+    d.print = i == 0;
+    d.flags = i == 0 ? VP_ALL_FLAGS : flag_sets[i - 1];
+    memset(d.seen, 0, (size_t)(nt->count > 0 ? nt->count : 1));
+    vp_walk(nt, root, d.flags, vp_dump_leaf, &d, d.seen);
+    vp_dump_converse(&d);
+  }
+  free(d.seen);
 }
 
 /* The program, then every method, block and lambda body of the program's own
@@ -509,11 +567,8 @@ static void vp_dump_scope(const NodeTable *nt, const int *par, FILE *out, const 
 void value_pos_dump(const NodeTable *nt, FILE *out) {
   int *par = an_parent_map(nt);
   if (!par) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  fprintf(out, "main\n");
   int *ord = vp_ord_table(nt);
-  VpDump d;
-  d.nt = nt; d.out = out; d.line = 1; d.ord = ord; d.par = par; d.root = nt_ref(nt, nt->root_id, "statements");
-  for_each_value_position(nt, d.root, VP_ALL_FLAGS, vp_dump_leaf, &d);
+  vp_dump_scope(nt, par, out, ord, NULL, 1, nt_ref(nt, nt->root_id, "statements"));
   for (int id = 0; id < nt->count; id++) {
     NodeKind k = nt_kind(nt, id);
     if ((k != NK_DefNode && k != NK_BlockNode && k != NK_LambdaNode) || nt_int(nt, id, "node_file", 0) != 0) continue;
