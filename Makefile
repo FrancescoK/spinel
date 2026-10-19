@@ -1505,8 +1505,9 @@ test-corpus-summary: test-corpus-results
 # ext-test: the Layer-1 extension emission (docs/internals/ext-design.md):
 # --ext-init/--ext-entry compile a kernel into a host-callable library, and a
 # pure-C host drives it through the emitted header alone -- init, typed
-# entries, and a raise caught through the exported try helper.
-ext-test: $(SPINEL) $(SP_RT_LIB)
+# entries, and a raise caught through the exported try helper -- and a kernel
+# whose entries start and join threads after an init that started some.
+ext-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	@tmp=$$(mktemp -d /tmp/spinel-ext.XXXXXX); ok=1; \
 	$(SPINEL) test/ext/kernel.rb -c --no-line-map \
 	  --ext-init Init_ext_kernel \
@@ -1525,6 +1526,15 @@ ext-test: $(SPINEL) $(SP_RT_LIB)
 	    "$$tmp/host" > "$$tmp/out" 2>&1; \
 	    cmp -s "$$tmp/out" test/ext/expected || { echo "ext-test: FAIL (host output mismatch)"; diff -u test/ext/expected "$$tmp/out" || true; ok=0; }; \
 	  else echo "ext-test: FAIL (host C did not compile)"; sed -n 1,6p "$$tmp/cc.err"; ok=0; fi; \
+	fi; \
+	if [ $$ok -eq 1 ]; then \
+	  if ! $(SPINEL) test/ext/threads.rb -c --no-line-map --ext-init Init_ext_threads \
+	      --ext-entry ExtThreads.par,ExtThreads.bg -o "$$tmp/t.c" >/dev/null 2>&1; then \
+	    echo "ext-test: FAIL (threads emission)"; ok=0; \
+	  elif $(CC) -O1 -w $(MT_DEF) -Ilib -I"$$tmp" test/ext/threads_host.c "$$tmp/t.c" $(SP_RT_MT_LIB) $(LDFLAGS) -lm -lpthread -o "$$tmp/thost" 2>"$$tmp/cc.err"; then \
+	    $(TIMEOUT10) "$$tmp/thost" > "$$tmp/out" 2>&1; \
+	    printf '60\n150\n1\n' | cmp -s - "$$tmp/out" || { echo "ext-test: FAIL (threads host output mismatch, or it hung)"; cat "$$tmp/out"; ok=0; }; \
+	  else echo "ext-test: FAIL (threads host C did not compile)"; sed -n 1,6p "$$tmp/cc.err"; ok=0; fi; \
 	fi; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "ext-test: pass"; else exit 1; fi

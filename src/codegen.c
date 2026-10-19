@@ -20761,8 +20761,12 @@ char *codegen_program(const NodeTable *nt) {
   }
   free(main_dends);
   /* Run any fire-and-forget threads that never got a turn before the program
-     exits, so their side effects happen. */
-  if (g_uses_threads) buf_puts(body, "    sp_sched_drain();\n");
+     exits, so their side effects happen. Not at the end of an ext-init: the
+     drain shuts the scheduler down for good, and the library's life starts
+     there -- an entry that spawns a Thread then found no worker to run it,
+     and its join waited forever. Threads the init spawned run on the
+     helpers, or at the next entry that blocks, as after a require. */
+  if (g_uses_threads && !g_ext_init_name) buf_puts(body, "    sp_sched_drain();\n");
   /* main's exit status is the hooks' to change: a hook that calls `exit`, or
      that raises, decides what the program exits with (sp_at_exit_run). The
      ext-init form is a void function, so there it just runs them. */
