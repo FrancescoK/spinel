@@ -543,6 +543,10 @@ static int str_box_by_kind(Compiler *c, int node, StrForm *sf) {
       str_box_note(sf, RF_PASS, RW_HANDLE_ROUTE);
       return 1;
     }
+    if (!arg_ran_first(node, 0) && !emit_boxed_lift(c, node) && emit_strbuf_route_box(c, node, b)) {
+      str_box_note(sf, RF_PASS, RW_HANDLE_ROUTE);
+      return 1;
+    }
     return 0;
   /* a call with a literal block that the handle route splices (a yielding
      call, `then`) and whose block's value the handle face renders
