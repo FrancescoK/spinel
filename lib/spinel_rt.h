@@ -7209,7 +7209,9 @@ static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b) {
       /* A String operand writes its own byte count; only a stringified value
          needs strlen (sp_poly_to_s can answer an unmarked static name). Without
          the split, `io << binary` truncated or not depending on whether
-         inference typed the operand -- the same bug, but intermittent. */
+         inference typed the operand -- the same bug, but intermittent. A
+         shared String's box (SP_BUILTIN_STRBUF) is read as its bytes first. */
+      b = sp_poly_strbuf_deref(b);
       if (b.tag == SP_TAG_STR && b.v.s) sp_File_write_bin((sp_File *)a.v.p, b.v.s);
       else sp_File_write((sp_File *)a.v.p, sp_poly_to_s(b));
       return a;
