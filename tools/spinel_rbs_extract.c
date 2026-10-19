@@ -21,6 +21,10 @@
  *     other Symbol-keyed kind)
  *   - Optional T (T?) → <subset>?    (recursive)
  *   - Union T | nil → T?    (any other union → poly)
+ *   - A record `{ name: T, ... }` → sym_poly_hash (str_poly_hash for
+ *     String keys, poly for other keys)
+ *   - A type alias (`type patch_t = Array[untyped]`, generic ones
+ *     excepted) → what its type maps to, wherever the name is referenced
  *   - An `instance` return in a class, and a `self` return in its
  *     instance method → obj_<QualifiedName>; `self` in its singleton
  *     method → class
@@ -485,6 +489,74 @@ else {
     sbuf_free(&leaf);
 }
 
+/* Pre-pass: register every `type name = T` declaration, at the top level
+ * or inside a class or module, under its qualified name with the tag T
+ * maps to. T is mapped as a member of the declaring scope is (the scope
+ * is g_self_scope, its parent the enclosing scope), so a class name in
+ * it resolves as in a signature. An alias whose type is out of the
+ * subset, or that names an alias not registered yet (one declared later,
+ * or in a file read later), registers nothing on this round; the caller
+ * runs the pass again while a round registers something. A generic alias
+ * (`type listed[T] = Array[T]`) stays out of the subset. */
+static void collect_aliases(rbs_parser_t *p, rbs_node_t *node,
+                            const char *scope, const char *outer_scope) {
+    if (node->type == RBS_AST_DECLARATIONS_TYPE_ALIAS) {
+        rbs_ast_declarations_type_alias_t *a = (rbs_ast_declarations_type_alias_t *) node;
+        if (a->type_params != NULL && a->type_params->length > 0) return;
+        sbuf_t leaf, qualified, tag;
+        sbuf_init(&leaf);
+        sbuf_init(&qualified);
+        sbuf_init(&tag);
+        name_of_type_name(p, a->name, &leaf);
+        if (scope != NULL && scope[0] != '\0') {
+            sbuf_append_cstr(&qualified, scope);
+            sbuf_append_cstr(&qualified, "_");
+        }
+        sbuf_append(&qualified, leaf.buf, leaf.len);
+        if (alias_find(qualified.buf) == NULL) {
+            const char *sv_self_scope = g_self_scope;
+            g_self_scope = (scope != NULL && scope[0] != '\0') ? scope : NULL;
+            if (map_type(p, a->type, outer_scope, &tag)) alias_add(qualified.buf, tag.buf);
+            g_self_scope = sv_self_scope;
+        }
+        sbuf_free(&tag);
+        sbuf_free(&qualified);
+        sbuf_free(&leaf);
+        return;
+    }
+    sbuf_t leaf;
+    sbuf_init(&leaf);
+    rbs_node_list_t *members = NULL;
+    if (node->type == RBS_AST_DECLARATIONS_CLASS) {
+        rbs_ast_declarations_class_t *c = (rbs_ast_declarations_class_t *) node;
+        name_of_type_name(p, c->name, &leaf);
+        members = c->members;
+    }
+else if (node->type == RBS_AST_DECLARATIONS_MODULE) {
+        rbs_ast_declarations_module_t *m = (rbs_ast_declarations_module_t *) node;
+        name_of_type_name(p, m->name, &leaf);
+        members = m->members;
+    }
+else {
+        sbuf_free(&leaf);
+        return;
+    }
+    sbuf_t qualified;
+    sbuf_init(&qualified);
+    if (scope != NULL && scope[0] != '\0') {
+        sbuf_append_cstr(&qualified, scope);
+        sbuf_append_cstr(&qualified, "_");
+    }
+    sbuf_append(&qualified, leaf.buf, leaf.len);
+    if (members != NULL) {
+        for (rbs_node_list_node_t *cur = members->head; cur != NULL; cur = cur->next) {
+            collect_aliases(p, cur->node, qualified.buf, scope);
+        }
+    }
+    sbuf_free(&qualified);
+    sbuf_free(&leaf);
+}
+
 /* Recurse into a declaration. For Class/Module: extend the scope path
  * with the declaration's leaf name, emit members, then recurse into
  * any nested Class/Module members so e.g. `module Foo; class Bar; end;
@@ -561,13 +633,15 @@ static char *slurp(const char *path, size_t *len_out) {
 }
 
 /* Per-pass selector for process_file. Splitting the per-file work
- * into two phases (collect names; emit decls) lets walk() run twice
- * over the directory tree so cross-file module reopens have every
- * class registered before any unqualified-Const reference is
- * resolved. Issue #658. */
+ * into phases (collect names; collect aliases; emit decls) lets walk()
+ * run several times over the directory tree so cross-file module
+ * reopens have every class registered before any unqualified-Const
+ * reference is resolved (issue #658), and every alias before a
+ * signature names one. */
 typedef enum {
     PHASE_COLLECT_NAMES = 0,
-    PHASE_EMIT = 1
+    PHASE_COLLECT_ALIASES = 1,
+    PHASE_EMIT = 2
 } process_phase_t;
 
 static void process_file_phase(const char *path, FILE *out, process_phase_t phase) {
@@ -599,6 +673,13 @@ static void process_file_phase(const char *path, FILE *out, process_phase_t phas
         rbs_node_list_node_t *pre = sig->declarations->head;
         while (pre != NULL) {
             collect_decl_names(p, pre->node, "");
+            pre = pre->next;
+        }
+    }
+else if (phase == PHASE_COLLECT_ALIASES) {
+        rbs_node_list_node_t *pre = sig->declarations->head;
+        while (pre != NULL) {
+            collect_aliases(p, pre->node, "", "");
             pre = pre->next;
         }
     }
@@ -709,6 +790,16 @@ int main(int argc, char **argv) {
      * file readdir visited first. Issue #658 (followup to #656). */
     for (int i = 1; i < argc; i++) {
         walk_phase(argv[i], stdout, PHASE_COLLECT_NAMES);
+    }
+    /* The aliases, to a fixpoint: an alias whose type names another alias
+     * registers once that one has, whatever the order of the files, and a
+     * round that registers nothing ends it (a cycle registers nothing). */
+    for (int round = 0; round < 16; round++) {
+        size_t before = alias_count();
+        for (int i = 1; i < argc; i++) {
+            walk_phase(argv[i], stdout, PHASE_COLLECT_ALIASES);
+        }
+        if (alias_count() == before) break;
     }
     for (int i = 1; i < argc; i++) {
         walk_phase(argv[i], stdout, PHASE_EMIT);

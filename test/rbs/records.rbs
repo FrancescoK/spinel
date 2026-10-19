@@ -1,0 +1,16 @@
+# A record is the Hash its fields make: Symbol-keyed (`name:`, `:name =>`)
+# or String-keyed (`"name" =>`), with the values boxed whatever the field
+# types say, as Hash[Symbol, V] is. Keys of another class, or of both,
+# have no kind: poly. A record reached through an alias or inside an
+# Array maps the same way.
+type definition = { loader: untyped, on_resolve: untyped, min_delay: Integer? }
+
+class Records
+  def sym: ({ name: String, ?age: Integer }) -> { ok: bool }
+  def sym_arrow: ({ :name => String }) -> void
+  def str: ({ "name" => String, "age" => Integer }) -> void
+  def mixed: ({ name: String, "age" => Integer }) -> void
+  def other: ({ 1 => String }) -> void
+  def aliased: (definition) -> Hash[Symbol, definition]
+  def listed: (Array[{ k: Integer }]) -> void
+end

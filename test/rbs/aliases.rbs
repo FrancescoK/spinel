@@ -1,0 +1,32 @@
+# A type alias stands for its type: a reference maps as the aliased type
+# would, and the name resolves as a class name does (the declaration's
+# own namespace, the enclosing ones innermost outward, then the top
+# level). An alias of an alias follows, whatever the order of the
+# declarations; a generic alias (`type listed[T]`) is out of subset, as a
+# name no declaration gives is.
+type word_list = Array[String]
+type payload = Hash[Symbol, untyped]
+type scalar = Integer | String
+type listed[T] = Array[T]
+type patches_later = Array[patch_t]
+type patch_t = Array[untyped]
+
+module Outer
+  type patch_t = Array[String]
+  type patches = Array[patch_t]
+
+  class Box
+    def words: (word_list) -> word_list
+    def pay: (payload) -> Integer
+    def patch: (patch_t) -> patches
+    def top_patch: (::patch_t) -> patches_later
+    def mixed: (scalar) -> Array[scalar]
+    def generic: (listed[Integer]) -> void
+    def inner: (Inner::row) -> void
+    def unknown: (no_such) -> Integer
+  end
+
+  module Inner
+    type row = Hash[String, Integer]
+  end
+end

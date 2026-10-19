@@ -11,7 +11,7 @@ class DroppedTypes
   def d: (Integer & String) -> void
   def e: (:sym) -> void
   def f: (Integer, String) -> [Integer, String]
-  def g: ({ name: String }) -> void
+  def g: (top) -> void
   def h: (^(Integer) -> void) -> void
   def kept: (Integer) -> Integer
 end
