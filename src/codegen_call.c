@@ -23906,6 +23906,12 @@ static int nil_target_operands(Compiler *c, int id, int boxed, int *node, TyKind
     int blk = nt_ref(nt, id, "block");
     for (int i = 0; ln && i < an && !rebound; i++) rebound = subtree_writes_local(c, av[i], ln);
     if (ln && blk >= 0 && !rebound) rebound = subtree_writes_local(c, blk, ln);
+    /* (an argument that may run a closure assigning the local rebinds it
+       too, read_rebound_by: `v.to_s(la.call)` for `la = -> { v = 0; 5 }`.
+       The head bound the call alone, and the arm read the local after it,
+       as 0; a boxed local's call takes this path only under the share
+       rule, where poly_target_call keeps such a receiver) */
+    if (!rebound && repr_share_rule(c)) rebound = nil_target_read_rebound(c, r, a);
   }
   if ((rk != NK_LocalVariableReadNode || rebound) && rk != NK_GlobalVariableReadNode && !hc_recv_cached(c, r) &&
       !(boxed && (rk == NK_InstanceVariableReadNode || rk == NK_ClassVariableReadNode))) {
