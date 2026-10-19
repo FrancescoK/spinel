@@ -23007,6 +23007,13 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     int local_read = 0;
     for (int j = i + 1; k == NK_LocalVariableReadNode && j < nop && !local_read; j++)
       local_read = operand_local_rebound_by(c, operand[i], operand[j]);
+    /* ...and so is one an operand BEFORE it can rebind: `s.byteslice(bump.call,
+       pos)` for `bump = -> { pos += 2; 1 }` left the call the only operand
+       ordered, so there was nothing to order and C read pos beside it -- the
+       old value under gcc, which evaluates right to left. Bound after the
+       call, the read takes what the call left. */
+    for (int j = 0; k == NK_LocalVariableReadNode && j < i && !local_read; j++)
+      local_read = operand_local_rebound_by(c, operand[i], operand[j]);
     /* ...but not a shared String slot's: bound, its read is the value form, a
        COPY, and `@buf.setbyte(idx, 90)` wrote into the copy. The arms reach
        the handle through the node itself, so it stays where it is. */
