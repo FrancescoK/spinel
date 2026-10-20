@@ -267,6 +267,30 @@ int scope_always_raises(Compiler *c, int mi) {
     if (nt_kind(c->nt, r) == NK_ReturnNode && comp_scope_of(c, r) == s) return 0;
   return !for_each_value_position(c->nt, s->body, VPS_ALL, repr_leaf_not_raise, c);
 }
+
+/* Do the n targets mis of call v publish its handle -- each answers no
+   value (scope_always_raises), publishes it, or answers a String literal
+   where nothing between the pickup's reset and its return can publish
+   another handle (share_plan_literal_pickup_clean), and one publishes?
+   With n -1, the targets are every method the call can run past the
+   plan's list (share_name_targets, #9258). */
+static int repr_targets_return_handle(Compiler *c, int v, const int *mis, int n) {
+  int *own = NULL;
+  if (n < 0) {
+    own = malloc(sizeof(int) * (size_t)(c->nscopes + 1));
+    if (!own) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    n = share_name_targets(c, v, own, c->nscopes + 1);
+    mis = own;
+  }
+  int npub = 0, ok = n > 0;
+  for (int i = 0; ok && i < n; i++) {
+    if (scope_always_raises(c, mis[i])) continue;
+    if (scope_ret_handle(c, mis[i])) { npub++; continue; }
+    if (!share_plan_literal_pickup_clean(c, v, mis[i])) ok = 0;
+  }
+  free(own);
+  return ok && npub > 0;
+}
 int repr_call_returns_handle(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   v = unwrap_parens(c, v);
@@ -348,6 +372,8 @@ int repr_call_returns_handle(Compiler *c, int v) {
     }
   }
   else n = cplan_targets(c, v, mis, CPT_MAX);
+  /* past the plan's list: every method the call can run (#9258) */
+  if (n == CPT_UNKNOWN) return repr_targets_return_handle(c, v, NULL, -1);
   /* a boxed receiver's call that reaches no method but native bindings
      answering their objects' handles, which their arms publish */
   if (n == 0 && repr_boxed_native_handle(c, v)) return 1;
@@ -359,13 +385,7 @@ int repr_call_returns_handle(Compiler *c, int v) {
      where nothing between the pickup's reset and the target's return can
      publish another handle (share_plan_literal_pickup_clean); the others
      each publish their handle, and one has to */
-  int npub = 0;
-  for (int i = 0; i < n; i++) {
-    if (scope_always_raises(c, mis[i])) continue;
-    if (scope_ret_handle(c, mis[i])) { npub++; continue; }
-    if (!share_plan_literal_pickup_clean(c, v, mis[i])) return 0;
-  }
-  return npub > 0;
+  return repr_targets_return_handle(c, v, mis, n);
 }
 /* A boxed receiver's reader arms already box their shared fields as
    handles. A String demand can take that boxed result without a copy.
