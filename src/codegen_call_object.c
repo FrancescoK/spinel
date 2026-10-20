@@ -129,6 +129,7 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tb[i]);
         }
       }
+      if (!recv_never_nil(c, recv)) { nil_recv_check("between?", tv, b); buf_puts(b, " "); }
       buf_puts(b, "(");
       for (int i = 0; i < 2; i++) {
         const char *op = i == 0 ? ">=" : "<=";
@@ -159,7 +160,11 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       buf_puts(b, "; ");
       if (ahi) buf_printf(b, "SP_GC_ROOT_STR(_t%d); ", tlo);
       buf_printf(b, "const char *_t%d = ", thi); emit_expr(c, argv[1], b);
-      buf_puts(b, "; (");
+      buf_puts(b, "; ");
+      /* a receiver that can be nil is CRuby's NoMethodError once the bounds
+         have run: the byte compare took it for "" */
+      if (!recv_never_nil(c, recv)) { nil_recv_check("between?", tv, b); buf_puts(b, " "); }
+      buf_puts(b, "(");
       emit_str_between_cmp(tv, tlo, ">=", b);
       buf_puts(b, " && ");
       emit_str_between_cmp(tv, thi, "<=", b);

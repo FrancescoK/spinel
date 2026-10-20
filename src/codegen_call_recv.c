@@ -7835,6 +7835,15 @@ static int emit_scrub_bang(Compiler *c, int recv, TyKind rt, int argc, const int
   return done;
 }
 
+/* The receiver text r of a String call whose arm reads a nil receiver as ""
+   or whose function raises for it under another name: through
+   sp_nil_recv_named, which raises under `name` as written, when the receiver
+   can be nil (held in `keep`); r itself when it cannot. */
+static const char *str_recv_nil_named(Compiler *c, int recv, const char *r, const char *name, Buf *keep) {
+  if (recv < 0 || recv_never_nil(c, recv)) return r;
+  buf_printf(keep, "sp_nil_recv_named(%s, \"%s\")", r, name);
+  return keep->p;
+}
 /* A String receiver's conversions and comparisons: lines with keywords,
    bytes, codepoints, unpack / unpack1, chars, to_i, eql? and equal?
    (emit_scalar_recv_arms's String chain; answers 1 when a branch was taken) */
@@ -7870,12 +7879,16 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     int offv = struct_kwarg_value(c, argv[1], "offset");
     int one = sp_streq(name, "unpack1");
     TyKind u1t = one ? repr_of(c, id).as_ty : TY_POLY;
+    /* (unpack1's nil raises under its own name: sp_str_unpack_off's is unpack) */
+    Buf un; memset(&un, 0, sizeof un);
+    const char *ur = one ? str_recv_nil_named(c, recv, r, name, &un) : r;
     if (one && oint_kind(u1t)) { oint_open(c, id, u1t, b); buf_printf(b, "%s(sp_PolyArray_get(", oint_unbox(u1t)); }
     else if (one)                    buf_puts(b, "sp_PolyArray_get(");
-    buf_printf(b, "sp_str_unpack_off(%s, ", r); emit_str_expr(c, argv[0], b);
+    buf_printf(b, "sp_str_unpack_off(%s, ", ur); emit_str_expr(c, argv[0], b);
     buf_puts(b, ", "); emit_int_expr(c, offv, b); buf_puts(b, ")");
     if (one) buf_puts(b, oint_kind(u1t) ? ", 0))" : ", 0)");
     if (one && oint_kind(u1t)) oint_close(c, id, b);
+    free(un.p);
   }
   else if (sp_streq(name, "unpack1") && argc == 1) {
     /* A literal single-directive numeric format fixes the value's type
@@ -7883,11 +7896,14 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
        (int, or float? -- the _opt keeps a padded nil from short input
        as float-nil instead of 0.0). */
     TyKind u1t = repr_of(c, id).as_ty;
-    if (oint_kind(u1t)) { oint_open(c, id, u1t, b); buf_printf(b, "%s(sp_PolyArray_get(sp_str_unpack(%s, ", oint_unbox(u1t), r); }
-    else                buf_printf(b, "sp_PolyArray_get(sp_str_unpack(%s, ", r);
+    Buf un; memset(&un, 0, sizeof un);
+    const char *ur = str_recv_nil_named(c, recv, r, name, &un);   /* as above */
+    if (oint_kind(u1t)) { oint_open(c, id, u1t, b); buf_printf(b, "%s(sp_PolyArray_get(sp_str_unpack(%s, ", oint_unbox(u1t), ur); }
+    else                buf_printf(b, "sp_PolyArray_get(sp_str_unpack(%s, ", ur);
     emit_str_expr(c, argv[0], b);
     buf_puts(b, oint_kind(u1t) ? "), 0))" : "), 0)");
     if (oint_kind(u1t)) oint_close(c, id, b);
+    free(un.p);
   }
   else if (sp_streq(name, "chars") && argc == 0)   buf_printf(b, "sp_str_chars(%s)", r);
   /* promote mode types the call poly: a Bignum past sp_int */
@@ -8358,6 +8374,17 @@ static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, 
    rindex, byteindex / byterindex, partition / rpartition, scrub
    (emit_scalar_recv_arms's String chain; answers 1 when a branch was taken) */
 static int str_arms_case_search(Compiler *c, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, const char *r);
+/* s[...] and s.slice(...) on a receiver that can be nil: the slice arms
+   read a NULL receiver as "" (strstr, a match) or raise under `[]` (the
+   character and range reads), so they take it through str_recv_nil_named.
+   0 for one that cannot be nil, which the arms take as it is. */
+static int str_arms_slice_nil(Compiler *c, int id, Buf *b, const char *name, int recv, int argc, const int *argv, const char *r) {
+  if (!is_slice_alias(name) || recv < 0 || recv_never_nil(c, recv)) return 0;
+  Buf rn; memset(&rn, 0, sizeof rn);
+  int ok = str_arms_slice_encode(c, id, b, name, recv, argc, argv, str_recv_nil_named(c, recv, r, name, &rn));
+  free(rn.p);
+  return ok;
+}
 /* A partition's middle element is its String separator on a match. The
    byte splitter supplies fresh outer pieces; its empty middle on a miss
    must remain a new String, including for an empty receiver. */
@@ -9714,6 +9741,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_puts(b, "sp_oint_of("); str_arms_case_search(c, b, nt, name, recv, argc, argv, r); buf_puts(b, ")");
     }
     else if (str_arms_case_search(c, b, nt, name, recv, argc, argv, r)) ;
+    else if (str_arms_slice_nil(c, id, b, name, recv, argc, argv, r)) ;
     else if (str_arms_slice_encode(c, id, b, name, recv, argc, argv, r)) ;
     else if (sp_streq(name, "delete") && argc == 0) { buf_printf(b, "(%s)", r); { *out = 1; return 1; } }
     else if (sp_streq(name, "count") && argc == 0) { buf_printf(b, "(sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into String\"), 0LL)"); { *out = 1; return 1; } }
