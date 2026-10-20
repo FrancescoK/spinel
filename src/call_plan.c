@@ -2376,6 +2376,33 @@ const char *cplan_call_name(const NodeTable *nt, int id) {
   return wn ? wn : nt_str(nt, id, "name");
 }
 
+/* Does an argument of call id (a keyword's value too) hold an Integer or a
+   Float that can be nil, or a boxed value? A String method converts it as
+   it reads it, and nil, or a value of another class, raises TypeError
+   there. */
+static int cplan_nil_converted_arg(Compiler *c, int v) {
+  TyKind t = comp_ntype(c, v);
+  return t == TY_POLY || (oint_kind(t) && node_is_oint(c, v));
+}
+static int cplan_nil_arg_converts(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int a = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  for (int i = 0; i < an; i++) {
+    int v = av[i];
+    if (nt_kind(nt, v) == NK_KeywordHashNode) {
+      int en = 0;
+      const int *ev = nt_arr(nt, v, "elements", &en);
+      for (int j = 0; j < en; j++) {
+        int kv = nt_kind(nt, ev[j]) == NK_AssocNode ? nt_ref(nt, ev[j], "value") : -1;
+        if (kv >= 0 && cplan_nil_converted_arg(c, kv)) return 1;
+      }
+    }
+    else if (cplan_nil_converted_arg(c, v)) return 1;
+  }
+  return 0;
+}
+
 int cplan_nil(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (id < 0 || id >= nt->count || nt_kind(nt, id) != NK_CallNode) return CN_NONE;
@@ -2398,8 +2425,14 @@ int cplan_nil(Compiler *c, int id) {
      a hot path reads one that a reset or a setup fills, and a test in front
      of every call through it is not paid for; a class variable's arms write
      back into it */
+  /* ...but not on a String call with an argument it converts
+     (cplan_nil_arg_converts): the arm or the runtime tests the receiver
+     after it has converted the argument, and the argument's TypeError came
+     first where CRuby raises NoMethodError, having run the arguments. (A
+     mutator writes back into the slot the head would hold.) */
+  int conv = rt == TY_STRING && !an_str_mutator_name(nm) && cplan_nil_arg_converts(c, id);
   NodeKind rk = nt_kind(nt, r);
-  if (rk == NK_InstanceVariableReadNode || rk == NK_ClassVariableReadNode) return CN_NONE;
+  if ((rk == NK_InstanceVariableReadNode && !conv) || rk == NK_ClassVariableReadNode) return CN_NONE;
   /* a local or a global is tested in its slot, where a mutator writes
      back: a slot that holds the pointer, or a shared String's handle; one
      held another way (a box a read unboxes) is left as it is */
@@ -2419,9 +2452,10 @@ int cplan_nil(Compiler *c, int id) {
   /* a nil the program writes (an element of an Array it stores one into
      or leaves a gap in, too); not one the fact cannot bound (an element
      read, a global, an ivar, a caller not seen, a builtin's answer), which
-     a hot loop over a receiver that is never nil would pay for */
+     a hot loop over a receiver that is never nil would pay for, unless the
+     call converts an argument (conv, as above) */
   int why = nil_fact_why(c, r);
-  if (!cplan_nil_written(why)) return CN_NONE;
+  if (!cplan_nil_written(why) && !conv) return CN_NONE;
   /* the definite-assignment walk over a temp the compiler wrote itself (a
      desugared splat's receiver) is not the program's nil */
   if (why == NFW_UNSET && nt_int(nt, r, "node_line", 0) <= 0) return CN_NONE;

@@ -24665,8 +24665,10 @@ static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead
     /* not fresh: ty[i] declares the temp, and a fresh String (#7580) renders as the String
        where its stored type is the handle */
     /* a boxed index's key that can be nil is held with its nil
-       (poly_int_key_boxed) */
-    int ko = oint_kind(ty[i]) && poly_index_key_oint(c, id, node[i]);
+       (poly_int_key_boxed), and so is an argument that can be nil ahead of
+       the test: the method converts it, a TypeError for nil, where CRuby
+       has found nil has no such method first */
+    int ko = oint_kind(ty[i]) && (poly_index_key_oint(c, id, node[i]) || (test && node[i] != r && node_is_oint(c, node[i])));
     render_operand(c, node[i], 0, 0, ko, &ob, &op);
     if (op.p) buf_puts(b, op.p);
     buf_puts(b, lead);
