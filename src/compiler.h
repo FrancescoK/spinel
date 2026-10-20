@@ -437,6 +437,17 @@ typedef struct {
   int kwrest_idx;   /* index in pnames[] of **kwrest param, -1 if none */
   int fwd_target1;  /* a `def m(...)` the __fwd_N model binds (#1288): the
                        scope its `...` reaches, plus one; 0 if none */
+  /* What the def's parameter list says, read off its ParametersNode by
+     scope_param_shape (codegen_fold.c) and kept while the node table has
+     no edit: a call's layout asks it of every candidate the call may reach. */
+  const void *ps_nt;      /* the table it was read from; NULL until read */
+  unsigned long ps_edits; /* ... at its edit count */
+  int ps_def;             /* ... for this def_node */
+  int ps_pn;              /* the parameters node, or -1 */
+  int ps_nkw;             /* the declared keywords, ps_kws */
+  const int *ps_kws;
+  int ps_fwd;             /* a `...` keyword rest: every name binds by keyword */
+  int ps_obr;             /* an optional with posts beside it; -1: no list says */
 
   SP_TY_FIELD TyKind ret;     /* inferred return type */
   SlotWhy ret_why;  /* how `ret` came to be untyped, if it is */

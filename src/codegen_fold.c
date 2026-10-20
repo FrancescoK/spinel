@@ -6927,15 +6927,29 @@ void emit_obj_upcast_prefix(Compiler *c, TyKind slot, TyKind val, Buf *b) {
    KEYWORD counts there too, and `def f(a, b = 0, k:)` read as a leading
    optional. It is still the answer for a scope with no def's parameter list
    to read (a synthesized one, a block's). */
-int opt_before_required(Compiler *c, Scope *m) {
-  int pn = m->def_node >= 0 ? nt_ref(c->nt, m->def_node, "parameters") : -1;
-  if (pn >= 0 && nt_kind(c->nt, pn) == NK_ParametersNode) {
-    int on = 0, postn = 0;
-    nt_arr(c->nt, pn, "optionals", &on);
-    nt_arr(c->nt, pn, "posts", &postn);
-    return on > 0 && postn > 0;
+static void scope_param_shape(Compiler *c, Scope *m) {
+  const NodeTable *nt = c->nt;
+  if (m->ps_nt == (const void *)nt && m->ps_edits == nt->edits && m->ps_def == m->def_node) return;
+  m->ps_nt = nt; m->ps_edits = nt->edits; m->ps_def = m->def_node;
+  int pn = m->def_node >= 0 ? nt_ref(nt, m->def_node, "parameters") : -1;
+  m->ps_pn = pn; m->ps_nkw = 0; m->ps_kws = NULL; m->ps_fwd = 0; m->ps_obr = -1;
+  if (pn >= 0) {
+    m->ps_kws = nt_arr(nt, pn, "keywords", &m->ps_nkw);
+    int kwr = nt_ref(nt, pn, "keyword_rest");
+    const char *kwr_type = kwr >= 0 ? nt_type(nt, kwr) : NULL;
+    m->ps_fwd = kwr_type && sp_streq(kwr_type, "ForwardingParameterNode");
   }
-  if (pn < 0 && m->def_node >= 0 && nt_kind(c->nt, m->def_node) == NK_DefNode) return 0;
+  if (pn >= 0 && nt_kind(nt, pn) == NK_ParametersNode) {
+    int on = 0, postn = 0;
+    nt_arr(nt, pn, "optionals", &on);
+    nt_arr(nt, pn, "posts", &postn);
+    m->ps_obr = on > 0 && postn > 0;
+  }
+  else if (pn < 0 && m->def_node >= 0 && nt_kind(nt, m->def_node) == NK_DefNode) m->ps_obr = 0;
+}
+int opt_before_required(Compiler *c, Scope *m) {
+  scope_param_shape(c, m);
+  if (m->ps_obr >= 0) return m->ps_obr;
   for (int i = 0; i < m->nrequired && i < m->nparams; i++)
     if (m->pdefault && m->pdefault[i] >= 0) return 1;
   return 0;
@@ -8547,19 +8561,15 @@ static void emit_arg_rooted(Compiler *c, Scope *m, int idx, int provided, int he
    `keywords` array rather than pnames[], which mixes positional and keyword. */
 int callee_has_kwarg(Compiler *c, Scope *m, const char *name) {
   if (!m || !name || m->def_node < 0) return 0;
-  int pn = nt_ref(c->nt, m->def_node, "parameters");
-  if (pn < 0) return 0;
+  scope_param_shape(c, m);
+  if (m->ps_pn < 0) return 0;
   /* A `def m(...)` forwarding method synthesizes a key-NAMED param for every
      keyword its call sites pass (analyze_scope), so those params are
      keyword-matchable even though the AST declares no keywords. Positional
      synthesized params (__fwd_N) can never collide with a real key name. */
-  int kwr = nt_ref(c->nt, pn, "keyword_rest");
-  const char *kwr_type = kwr >= 0 ? nt_type(c->nt, kwr) : NULL;
-  if (kwr_type && sp_streq(kwr_type, "ForwardingParameterNode"))
-    return 1;
-  int kn = 0; const int *kws = nt_arr(c->nt, pn, "keywords", &kn);
-  for (int i = 0; i < kn; i++) {
-    const char *kpn = nt_str(c->nt, kws[i], "name");
+  if (m->ps_fwd) return 1;
+  for (int i = 0; i < m->ps_nkw; i++) {
+    const char *kpn = nt_str(c->nt, m->ps_kws[i], "name");
     if (kpn && sp_streq(kpn, name)) return 1;
   }
   return 0;
@@ -8571,11 +8581,9 @@ int callee_has_kwarg(Compiler *c, Scope *m, const char *name) {
    answers "can this param be bound by position?" (#3114). */
 int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name) {
   if (!m || !name || m->def_node < 0) return 0;
-  int pn = nt_ref(c->nt, m->def_node, "parameters");
-  if (pn < 0) return 0;
-  int kn = 0; const int *kws = nt_arr(c->nt, pn, "keywords", &kn);
-  for (int i = 0; i < kn; i++) {
-    const char *kpn = nt_str(c->nt, kws[i], "name");
+  scope_param_shape(c, m);
+  for (int i = 0; i < m->ps_nkw; i++) {
+    const char *kpn = nt_str(c->nt, m->ps_kws[i], "name");
     if (kpn && sp_streq(kpn, name)) return 1;
   }
   return 0;
@@ -8601,10 +8609,8 @@ int rest_packable_arm(Compiler *c, Scope *s) {
    keywords. */
 int callee_declares_kwargs(Compiler *c, Scope *m) {
   if (!m || m->def_node < 0) return 0;
-  int pn = nt_ref(c->nt, m->def_node, "parameters");
-  if (pn < 0) return 0;
-  int kn = 0; nt_arr(c->nt, pn, "keywords", &kn);
-  return kn > 0;
+  scope_param_shape(c, m);
+  return m->ps_nkw > 0;
 }
 
 /* Materialize the first `**hash` source inside `kwh` (a KeywordHashNode) into
@@ -10380,10 +10386,20 @@ static void emit_argument_error(const char *msg) {
    a String one as much as a Symbol: `def f(a, k: 0)` called `f(1, "s" => 1)`
    is `unknown keyword: "s"`. A key written twice is named once, where it
    first stands; a computed key is the run time's (`computed`). */
+/* An empty plan for keyword hash `kwh`. Its name lists are strings (and
+   unknown_el is read up to nunknown), so only their first byte is cleared:
+   a layout is asked for every call into every candidate, and clearing the
+   whole of both lists every time was most of what a plain call cost. */
+static void kw_plan_clear(KwPlan *P, int kwh) {
+  P->kwh = kwh; P->role = KWH_NONE; P->count = KWC_NONE;
+  P->literal = P->spread = P->computed = 0;
+  P->nmissing = P->nunknown = 0;
+  P->missing[0] = P->unknown[0] = P->first_sym[0] = '\0';
+  P->args_first = 0;
+}
 void kw_plan(Compiler *c, Scope *m, int kwh, KwPlan *P) {
   const NodeTable *nt = c->nt;
-  memset(P, 0, sizeof *P);
-  P->kwh = kwh;
+  kw_plan_clear(P, kwh);
   if (!m) return;
   int en = 0; const int *el = kwh >= 0 ? nt_arr(nt, kwh, "elements", &en) : NULL;
   for (int e = 0; e < en; e++) {
@@ -10401,7 +10417,8 @@ void kw_plan(Compiler *c, Scope *m, int kwh, KwPlan *P) {
     int key = nt_ref(nt, el[e], "key");
     if (key >= 0 && nt_kind(nt, key) != NK_SymbolNode && nt_kind(nt, key) != NK_StringNode) P->computed = 1;
   }
-  int pn = m->def_node >= 0 ? nt_ref(nt, m->def_node, "parameters") : -1;
+  scope_param_shape(c, m);
+  int pn = m->ps_pn;
   int declares = callee_declares_kwargs(c, m);
   /* CRuby runs every argument before it converts a `**` or judges a
      keyword: when the run time does either, the arguments run first, in
@@ -10835,7 +10852,8 @@ static int splat_spreads_in_place(Compiler *c, int splat) {
 void arg_layout(Compiler *c, Scope *m, const int *argv, int pos_argc, int kwh, int inlined,
                 ArgLayout *L) {
   const NodeTable *nt = c->nt;
-  memset(L, 0, sizeof *L);
+  memset(L, 0, offsetof(ArgLayout, kw));
+  kw_plan_clear(&L->kw, 0);   /* as zeroed: kw_plan sets it for a callee */
   L->kwh = kwh; L->pos_argc = pos_argc; L->splat = -1;
   L->n = m ? m->nparams : 0;
   L->from = L->n ? calloc((size_t)L->n, sizeof *L->from) : NULL;
