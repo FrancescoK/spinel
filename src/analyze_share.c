@@ -4647,6 +4647,10 @@ static int sh_const_read(ShareFacts *F, Compiler *c, int n) {
      of the leaf's name is (const_path_in_closed_builtin, as the emitter
      reads it): a frozen String of the builtin's, no holder of the program */
   if (const_path_in_closed_builtin(c, n) && share_frozen_string(c, n)) return -1;
+  /* ...and so is an engine String constant (RUBY_PLATFORM), one frozen
+     object as a frozen literal is, whose handle is its own literal slot's
+     (emit_engine_const_str) */
+  if (nt_kind(c->nt, n) == NK_ConstantReadNode && share_frozen_string(c, n)) return -1;
   if (c->share_strings && (t == TY_STRING || t == TY_STRBUF))
     return sh_holder(F, SHK_CONST, 0, -1, nm, n);
   for (int i = 0; i < F->nmconst; i++)
