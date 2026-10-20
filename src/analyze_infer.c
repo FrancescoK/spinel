@@ -261,6 +261,16 @@ static int ysa_find(int id, TyKind kind) {
     if (ysa_tab[i].node == id && ysa_tab[i].kind == kind) return i;
   return -1;
 }
+/* The builtins whose answer at a yield site is typed per site for every
+   receiver kind, not only numeric ones. <=> answers an Integer or nil, which
+   a String or Array site gives where an Integer site gives a number: with
+   the first site's kind alone the yield stored the nil in an Integer slot
+   and raised TypeError at run time (K-031). sort and reverse answer their
+   receiver's own kind for an Array, and a String's reverse is a String: a
+   Hash or String site beside an Array site failed to compile (K-030b). */
+static int yield_site_per_kind_name(const char *name) {
+  return name && (sp_streq(name, "<=>") || sp_streq(name, "sort") || sp_streq(name, "reverse"));
+}
 int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out) {
   const NodeTable *nt = c->nt;
   int at = ysa_find(id, kind);
@@ -281,16 +291,13 @@ int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out) 
      Only numeric kinds take this path: widening a yield over String or
      Hash sites as well (`yield.inspect`) reaches emitters that do not yet
      box a per-site answer into the poly slot, and fails to compile. */
-  /* `<=>` is answered per site for every kind too: its result is an
-     Integer or nil, and a String or Array site answers nil where an
-     Integer site answers a number. With only the numeric kinds above, the
-     yield kept the first site's Integer type and the String site's nil was
-     stored in that Integer slot, raising TypeError when the program ran
-     (K-031). Other names over non-numeric kinds still take the old path:
-     the emitter does not yet box every per-site answer into a poly slot. */
+  /* A name in yield_site_per_kind_name is answered per site for every kind
+     too (see that function). Other names over non-numeric kinds still take
+     the old path: the emitter does not yet box every per-site answer into a
+     poly slot, so widening them fails to compile. */
   if (nt_kind(nt, id) != NK_CallNode || nt_int(nt, id, "builtin_only", 0) ||
       !(comp_yield_chain_reopened(c, id) || ty_is_numeric(kind) ||
-        sp_streq(nt_str(nt, id, "name"), "<=>"))) return 0;
+        yield_site_per_kind_name(nt_str(nt, id, "name")))) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   busy = 1;
