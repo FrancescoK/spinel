@@ -43812,12 +43812,21 @@ static int sid_value_ok(Compiler *c, int v, int depth) {
   return any;
 }
 /* ...and is collection v one whose elements all are? A Set's members were
-   judged when they entered it. */
+   judged when they entered it. A value of a kind that is no collection (an
+   Integer, a String, nil, ...) brings no member: a Set raises ArgumentError
+   for it ("value must be enumerable" / "a set") before anything enters, and
+   the call may as well be that kind's own (`bits & 0xFF` on a boxed value
+   the class facts cannot tell from a Set). */
+static int sid_no_collection_kind(TyKind t) {
+  return t == TY_INT || t == TY_BIGINT || t == TY_FLOAT || t == TY_RATIONAL || t == TY_COMPLEX ||
+         t == TY_STRING || t == TY_STRBUF || t == TY_SYMBOL || t == TY_NIL || t == TY_BOOL;
+}
 static int sid_collection_ok(Compiler *c, int v, int set_cid) {
   const NodeTable *nt = c->nt;
   v = an_unparen(nt, v);
   if (v < 0) return 0;
   TyKind t = infer_type(c, v);
+  if (sid_no_collection_kind(t)) return 1;
   if (ty_is_object(t)) return ty_object_class(t) == set_cid || is_descendant(c, ty_object_class(t), set_cid);
   if (ty_is_array(t)) {
     TyKind et = ty_array_elem(t);
@@ -44111,6 +44120,19 @@ static int sid_sources(Compiler *c, SidSources *S, int set_cid, int spelled) {
   return before == S->nreaders;
 }
 
+/* Is v the answer of an operator no class of the program defines -- not
+   Set, whose operators are its own methods, nor any other (`bits >> 32` on a
+   boxed value)? Such an answer is a builtin's, an Integer's or a Float's, and
+   no Set: the builtins answer one only from a Set's own methods. */
+static int sid_operator_answer(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  v = an_unparen(nt, v);
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "receiver") < 0) return 0;
+  const char *nm = nt_str(nt, v, "name");
+  if (!nm || !nm[0] || (nm[0] >= 'a' && nm[0] <= 'z') || (nm[0] >= 'A' && nm[0] <= 'Z') || nm[0] == '_') return 0;
+  if (sp_streq(nm, "[]") || sp_streq(nm, "[]=")) return 0;   /* an element read answers any member */
+  return !an_user_defines_method(c, nm);
+}
 static void refuse_set_identity_members(Compiler *c) {
   const NodeTable *nt = c->nt;
   int set_cid = comp_class_index(c, "Set");
@@ -44193,7 +44215,7 @@ static void refuse_set_identity_members(Compiler *c) {
     else {
       TyKind rt = infer_type(c, recv);
       int maybe_set = (ty_is_object(rt) && (ty_object_class(rt) == set_cid || is_descendant(c, ty_object_class(rt), set_cid))) ||
-                      (rt == TY_POLY && !cls_fact_excludes(c, recv, set_cid));
+                      (rt == TY_POLY && !cls_fact_excludes(c, recv, set_cid) && !sid_operator_answer(c, recv));
       if (!maybe_set) continue;
       int is_elem = 0, is_coll = 0;
       for (int k = 0; elem_names[k] && !is_elem; k++) is_elem = sp_streq(nm, elem_names[k]);
