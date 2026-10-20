@@ -11,3 +11,7 @@ wrong argument type String (must be numeric, true, false or nil)
 5
 [4, 6, 5]
 [4, 6, 5]
+3
+3
+"comparison of Float with 0 failed"
+["comparison of Float with 0 failed", 1]

@@ -61,3 +61,23 @@ p r3, $seen
 $seen = []
 mx.each { |w| visit(w, [true, 1, -1][w % 3]) }
 p $seen
+
+# a Rational or a Bignum answer is a number as an Integer is, and a NaN
+# raises ArgumentError, its <=> 0 being nil
+er = [1, 2, 3, 4].bsearch
+p er.each { |x| Rational(3 - x, 2) }
+eb = [1, 2, 3, 4].bsearch
+p eb.each { |x| (x - 3) * 2**70 }
+en = [1, 2, 3].bsearch
+begin
+  en.each { |x| Float::NAN }
+rescue ArgumentError => ex
+  p ex.message
+end
+$k = 0
+en2 = [1, 2, 3].bsearch
+begin
+  en2.each { |x| $k += 1; Float::NAN }
+rescue ArgumentError => ex
+  p [ex.message, $k]
+end

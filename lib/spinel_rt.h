@@ -19286,13 +19286,23 @@ sp_int sp_proc_call(sp_Proc *p, sp_int argc, sp_int *args) { if (!p || !p->fn) r
    takes it: the block answered `r` for the element at `mid` of [lo, hi)
    (hi exclusive). A true answer is a candidate (*sat), and the search goes
    left, as it does for a negative number; false, nil or a positive number
-   send it right. A number that is zero ends it at mid: answers 1. */
+   send it right. A number that is zero ends it at mid: answers 1. A NaN
+   raises ArgumentError, as its <=> 0 is nil. */
 static SP_UNUSED int sp_enum_bsearch_narrow(sp_int *lo, sp_int *hi, sp_int mid, sp_RbVal r, sp_bool *sat) {
   int smaller;
   if (r.tag == SP_TAG_INT) { if (r.v.i == 0) return 1; smaller = r.v.i < 0; }
   else if (r.tag == SP_TAG_BOOL && r.v.b) { *sat = TRUE; smaller = 1; }
   else if (r.tag == SP_TAG_NIL || r.tag == SP_TAG_BOOL) smaller = 0;
-  else if (r.tag == SP_TAG_FLT) { if (r.v.f == 0.0) return 1; smaller = r.v.f < 0.0; }
+  else if (r.tag == SP_TAG_FLT) {
+    /* NaN <=> 0 is nil, which rb_cmpint refuses */
+    if (isnan(r.v.f)) { sp_raise_cls("ArgumentError", SPL("comparison of Float with 0 failed")); return 1; }
+    if (r.v.f == 0.0) return 1;
+    smaller = r.v.f < 0.0;
+  }
+  else if (r.tag == SP_TAG_BIGINT || sp_poly_is_rat_kind(r)) {
+    if (sp_poly_zero_p(r)) return 1;
+    smaller = sp_poly_negative_p(r);
+  }
   else {
     sp_raise_cls("TypeError", sp_sprintf(SPL("wrong argument type %s (must be numeric, true, false or nil)"),
                                           sp_poly_class_name(r)));
