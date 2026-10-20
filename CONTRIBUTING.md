@@ -43,34 +43,20 @@ a few lines: what was wrong, and the reproducer. Write more when the change is
 a design decision (what you chose and what you rejected); do not retell how
 the implementation got there or link every related issue.
 
-## The gate in the commit
+## The pre-commit checks
 
-Run `make hooks` once: it points git at the hooks in `tools/hooks`. When
-`make gate` passes, it records the tree it tested and the `master` it was
-merged with. `git commit --amend --no-edit` then adds a trailer such as
+Run `make hooks` once: it points git at the hooks in `tools/hooks`. The
+pre-commit hook (`ruby tools/gate.rb check`) refuses a commit that grows
+`emit_call_body` or any function over 1,000 lines, adds a test whose
+`.expected` differs from CRuby run with `--enable-frozen-string-literal`
+(unless the test is marked `# spinel: not-cruby`, below), or writes to a
+fixed `/tmp` path. CI runs the same checks on a pull request's commits.
+Where `make gate` can't pass natively, `ruby tools/gate.rb linux` runs it in
+a Linux container on this branch merged with `master`.
 
-```
-Gate: green tree c5355fd0df33 master c55f919a6452 (linux-aarch64 gcc-14.2.0) tests 5642/0
-```
-
-The trailer goes only on a commit that, merged with that `master`, gives
-exactly the tested tree; a commit that changed after the gate loses it.
-A rebase or any other rewrite keeps the trailer's text but not its truth.
-`ruby tools/gate.rb verify <commit>` checks it the same way and says OK,
-MISMATCH or NO GATE TRAILER. The pre-commit hook (`ruby tools/gate.rb
-check`) refuses a commit that grows `emit_call_body` or any function over
-1,000 lines, adds a test whose `.expected` differs from CRuby run with
-`--enable-frozen-string-literal` (unless the test is marked
-`# spinel: not-cruby`, below), or writes to a fixed `/tmp` path. Where the
-gate can't pass natively, `ruby tools/gate.rb linux` runs it in a Linux
-container on this branch merged with `master`, and records the same stamp.
-
-`make gate`'s stamp and the `.expected` comparison use `GATE_RUBY`, else
-`ruby` from `PATH` when it is Ruby 4.0 or later (`tools/gate-ruby` picks
-it); the hooks run under `GATE_RUBY` or `ruby`. Without such a Ruby,
-`make gate` skips the stamp and passes or fails exactly as it would
-otherwise, and the `.expected` comparison is skipped with a warning. `make gate-tool-test`
-tests `tools/gate.rb` itself.
+The `.expected` comparison uses `GATE_RUBY`, else `ruby` from `PATH` when it
+is Ruby 4.0 or later (`tools/gate-ruby` picks it); without such a Ruby it is
+skipped with a warning. `make gate-tool-test` tests `tools/gate.rb` itself.
 
 `make share-verify-test` compiles `test/share/*.rb`, `test/share_strings_*.rb`
 and `test/share/verify/**/*.rb` with `SPINEL_SHARE_STRINGS=1 --repr-check --plan-check`.
