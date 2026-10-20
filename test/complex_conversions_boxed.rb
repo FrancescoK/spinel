@@ -1,3 +1,4 @@
+# spinel: int64 -- 0.1.to_r is 3602879701896397/36028797018963968, past 2^31; not run on a 32-bit target
 # Complex#to_i, #to_r and #rationalize answer the same through an Array
 # element as on a typed Complex: the real part when the imaginary part is
 # an exact zero (#to_r takes 0.0 too), RangeError naming the value otherwise;
