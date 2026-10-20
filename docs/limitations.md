@@ -1722,7 +1722,9 @@ only Sets made there (`@seen = Set.new.compare_by_identity`, `@seen ||=
 ...`), read only as a Set's receiver, directly or through a method that
 answers it (`def seen = @seen ||= ...`, also as the last value of an `if`
 or a `begin` in it), or as the dropped value of a block of the `each`
-family (one whose methods of the program's own drop it too). Where an identity Set cannot be
+family (one whose methods of the program's own drop it too, of those its
+receiver can reach: an Array's or a Hash's `each` reaches no method of a
+class of the program's but a reopened builtin's). Where an identity Set cannot be
 followed so -- it is handed on, its variable is assigned another Set, it is
 a parameter, a call answering it is kept, or a reflective read names its
 variable -- every Set shares one class, and the check covers the program's

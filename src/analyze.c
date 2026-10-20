@@ -43944,14 +43944,29 @@ static int iter_disc_call(Compiler *c, int call, int depth) {
      method does with the block's values (`a.map.each { }`): one of a kind
      the analysis knows, or self. A boxed receiver may be one. */
   int r = nt_ref(nt, call, "receiver");
+  /* the methods of that name the call can reach: on a value of a builtin
+     kind (an Array, a Hash, a Range) no instance method of a class of the
+     program's; on an object of the program's, none of a class off its
+     class's line. A builtin class's (reopened), a module's and a class
+     method (whose receiver is a class) are reachable from either; on
+     self, any is */
+  int rcls = -2;
   if (r >= 0) {
     TyKind rt = infer_type(c, r);
+    rcls = ty_is_object(rt) ? ty_object_class(rt) : -1;
     if (rt == TY_ENUMERATOR || rt == TY_POLY || rt == TY_UNKNOWN) return 0;
   }
   static int busy[64], nbusy;
   for (int mi = 0; mi < c->nscopes; mi++) {
     Scope *m = &c->scopes[mi];
     if (!m->name || m->def_node < 0 || !sp_streq(m->name, nm)) continue;
+    if (rcls != -2 && m->class_id >= 0 && !m->is_cmethod) {
+      ClassInfo *mc = &c->classes[m->class_id];
+      int open = !mc->name || comp_class_is_module(c, mc) || is_builtin_class_name(mc->name) ||
+                 is_object_root(mc->name);
+      if (!open && (rcls < 0 || (m->class_id != rcls && !is_descendant(c, rcls, m->class_id) &&
+                                 !is_descendant(c, m->class_id, rcls)))) continue;
+    }
     int inb = 0;
     for (int q = 0; q < nbusy; q++) inb |= busy[q] == mi;
     if (inb) continue;
