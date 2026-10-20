@@ -10953,8 +10953,10 @@ int desugar_enum_method_recv(Compiler *c) {
         (sp_streq(nm, "each_slice") || sp_streq(nm, "each_cons") ||
          sp_streq(nm, "each_entry") || sp_streq(nm, "cycle") ||
          sp_streq(nm, "reverse_each"));
-    if (rt == TY_ENUMERATOR && !recv_is_index_enum && !enum_lazy_driven &&
-        !sp_streq(nm, "to_a") && !sp_streq(nm, "entries") &&
+    /* (a blockless window of a window, `a.each_slice(2).each_cons(2)`,
+       regroups the windows the receiver yields: no chain arm reads it) */
+    if (rt == TY_ENUMERATOR && (!recv_is_index_enum || (enum_regroup && recv_is_slice_enum)) &&
+        !enum_lazy_driven && !sp_streq(nm, "to_a") && !sp_streq(nm, "entries") &&
         (nt_ref(nt, id, "block") >= 0 || enum_terminal || enum_regroup)) {
       /* the block forms of these answer the RECEIVING Enumerator, but the
          redirect makes the call read the materialized array, whose own
