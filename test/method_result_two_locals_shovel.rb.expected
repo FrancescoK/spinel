@@ -1,0 +1,10 @@
+Jayang: 2729 41250 3000000000123
+Kondae: 212 98400 7516192768
+Achasan: 545 17800 4294967297
+78
+81
+NoMethodError
+4299262264298
+4307852198892
+[["Jayang", "Guui", "Children's Grand Park"], ["Guui", "Jayang"]]
+[["Achasan", "Seongsu"], ["Kondae", "Seongsu"]]
