@@ -1777,6 +1777,13 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
   }
   int has_blk = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode;
   for (int i = 0; i < nk && known; i++) cf_share_kind_rule(f, kinds[i], v, recv_el, pos, npos, blk, has_blk, &known);
+  /* (the kinds' walk) `pairs.to_h` holds the pairs' elements, one level
+     down from the receiver's, where the rows keep it flat */
+  if (f->kon && sp_streq(nm, "to_h") && blk < 0 && v >= 0 && v < f->nnodes && f->elobj[v] >= 0) {
+    int t = cf_entry(f, -(v + 2), "#kh");
+    cf_load(f, recv_el, t);
+    cf_load(f, t, f->obj_cont[f->elobj[v]]);
+  }
   if (!kfresh) {
     int bargs = blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode;
     for (int i = 0; i < argc && !bargs; i++) bargs = nt_kind(nt, argv[i]) == NK_BlockArgumentNode || nt_kind(nt, argv[i]) == NK_SymbolNode;
