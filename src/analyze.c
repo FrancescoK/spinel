@@ -38818,6 +38818,27 @@ static int wnh_call_target(Compiler *c, int call) {
    `p f(v)`), or dropped. One that lands in a slot (a variable, a return, a
    program method's argument, a literal's element) keeps the typed kind and
    its store refuses, as before. */
+/* The local a call of method `mi` is the whole value of (`h = first_seen(a)`),
+   when that local holds only calls of `mi` and hands nothing on whole: it is
+   retyped with the method's return. Its scope in *sc; NULL otherwise. */
+static const char *wnh_call_slot(Compiler *c, int mi, int call, Scope **sc) {
+  const NodeTable *nt = c->nt;
+  int w = comp_parent_map(c)[call];
+  if (w < 0 || nt_kind(nt, w) != NK_LocalVariableWriteNode || nt_ref(nt, w, "value") != call) return NULL;
+  const char *ln = nt_str(nt, w, "name");
+  Scope *s = comp_scope_of(c, w);
+  if (!ln || !s || wnh_local_escapes(c, s, ln)) return NULL;
+  NT_FOREACH_KIND(nt, NK_LocalVariableTargetNode, t)   /* a multiple assignment's or rescue's target */
+    if (comp_scope_of(c, t) == s && sp_streq(nt_str(nt, t, "name"), ln)) return NULL;
+  for (int o = an_local_writes_named_first(c, ln); o >= 0; o = an_local_writes_named_next(o)) {
+    const char *on = nt_str(nt, o, "name");
+    if (!on || !sp_streq(on, ln) || comp_scope_of(c, o) != s) continue;
+    int ov = nt_kind(nt, o) == NK_LocalVariableWriteNode ? nt_ref(nt, o, "value") : -1;
+    if (ov < 0 || nt_kind(nt, ov) != NK_CallNode || wnh_call_target(c, ov) != mi) return NULL;
+  }
+  *sc = s;
+  return ln;
+}
 static int wnh_ret_widenable(Compiler *c, int mi) {
   const NodeTable *nt = c->nt;
   const char *nm = c->scopes[mi].name;
@@ -38829,6 +38850,8 @@ static int wnh_ret_widenable(Compiler *c, int mi) {
     if (t == -2) return 0;
     if (t != mi) continue;
     if (comp_value_dropped(c, call)) continue;
+    Scope *slot_sc = NULL;
+    if (wnh_call_slot(c, mi, call, &slot_sc)) continue;
     int rp = comp_recv_parent(c, call);
     if (rp >= 0) { if (wnh_call_target(c, rp) >= 0) return 0; continue; }
     /* an argument of a builtin call */
@@ -38854,6 +38877,19 @@ static int wnh_widen_ret(Compiler *c, int mi, TyKind want) {
     if (wnh_call_target(c, call) != mi) continue;
     comp_set_ntype(c, call, want);
     Scope *cs = comp_scope_of(c, call); if (cs && cs->body >= 0) wnh_note(cs->body);
+    /* the local the call is written to is the Hash the caller holds */
+    Scope *slot_sc = NULL;
+    const char *ln = wnh_call_slot(c, mi, call, &slot_sc);
+    LocalVar *lv = ln ? scope_local(slot_sc, ln) : NULL;
+    if (!lv || lv->type == want) continue;
+    lv_set_type(lv, want);
+    wnh_widen_block_params(c, slot_sc, ln, ty_hash_key(want) == TY_POLY, ty_hash_val(want) == TY_POLY);
+    for (int o = an_local_writes_named_first(c, ln); o >= 0; o = an_local_writes_named_next(o))
+      if (comp_scope_of(c, o) == slot_sc && sp_streq(nt_str(nt, o, "name"), ln)) comp_set_ntype(c, o, want);
+    NT_FOREACH_KIND(nt, NK_LocalVariableReadNode, rr) {
+      const char *rn = nt_str(nt, rr, "name");
+      if (rn && sp_streq(rn, ln) && comp_scope_of(c, rr) == slot_sc) comp_set_ntype(c, rr, want);
+    }
   }
   return 1;
 }
