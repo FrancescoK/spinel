@@ -2835,6 +2835,16 @@ int strbuf_route_kind(Compiler *c, int v, int *op) {
    (box 1) the String it is, which an identity compares as it stands. */
 void emit_strbuf_pickup(Compiler *c, int v, int box, Buf *b) {
   v = nt_paren_single(c->nt, v);
+  /* an argument emit_args_filled_argv sequenced ahead into a temp of its
+     handle type ran there, its pickup included: the temp is the handle */
+  { Repr r = repr_of(c, v);
+    if (r.as_ty == TY_STRBUF && !repr_handle_apart(c, v, r))
+      for (int i = g_n_argov - 1; i >= 0; i--)
+        if (g_argov_node[i] == v) {
+          if (box) str_box_handle(b, g_argov_text[i]);
+          else buf_puts(b, g_argov_text[i]);
+          return;
+        } }
   int t = ++g_tmp;
   size_t at = b->len;
   buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", t);
