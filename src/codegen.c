@@ -12225,8 +12225,8 @@ static int obj_deconstruct_keys_method(Compiler *c, int ci, int *defc) {
 /* The class-side names a Class read out of a boxed slot answers, each a
    switch over the program's classes, since the typed constant's answer is
    compiled from the class table: `subclasses` lists the classes whose parent
-   the class is, `allocate` builds a bare instance of a class that is not an
-   exception (and the empty value of String, Array, Hash and Object, as the
+   the class is, `allocate` builds a bare instance with that class's storage
+   (and the empty value of String, Array, Hash and Object, as the
    typed constant does), and a Struct class answers `members` and
    `keyword_init?`. A user class value is boxed by id, or by name once it
    has passed through a name-carrying box; sp_cls_answers_id reads both,
@@ -12266,13 +12266,26 @@ static void emit_cls_answers_dispatch(Compiler *c, Buf *b) {
     buf_puts(b, " return a;\n");
   }
   buf_puts(b, "    default: break;\n  }\n"
+              "  if (v.tag == SP_TAG_CLASS) {\n"
+              "    const char *n = sp_class_val_name(v);\n"
+              "    if (!strcmp(n, \"Integer\")) {\n");
+  for (int i = 0; i < c->nclasses; i++) {
+    ClassInfo *ci = &c->classes[i];
+    if (ci->parent >= 0 || is_builtin_reopen(ci->name) || ci->is_singleton_of) continue;
+    int sn = nt_ref(c->nt, ci->def_node, "superclass");
+    const char *pn = sn >= 0 ? nt_str(c->nt, sn, "name") : NULL;
+    if (!pn || !sp_streq(pn, "Integer")) continue;
+    buf_printf(b, "      sp_PolyArray_push(a, sp_box_class(((sp_Class){%d, SPL(\"%s\")})));\n",
+               i, class_ruby_name(c, i));
+  }
+  buf_puts(b, "      return a;\n    }\n  }\n"
               "  sp_raise_nomethod(sp_nomethod_msg(\"subclasses\", v));\n  return a;\n}\n");
   buf_puts(b, "static sp_RbVal sp_cls_allocate(sp_RbVal v) {\n"
               "  switch (sp_cls_answers_id(v)) {\n");
   for (int i = 0; i < c->nclasses; i++) {
     ClassInfo *ci = &c->classes[i];
     if (is_builtin_reopen(ci->name) || ci->is_native_class || !ci->instantiated ||
-        comp_class_is_module(c, ci) || class_is_exc_subclass(c, i)) continue;
+        comp_class_is_module(c, ci)) continue;
     Buf ax; memset(&ax, 0, sizeof ax);
     emit_obj_alloc_expr(c, i, &ax);
     buf_printf(b, "    case %d: return ", i);
@@ -12287,6 +12300,7 @@ static void emit_cls_answers_dispatch(Compiler *c, Buf *b) {
               "    if (strcmp(n, \"Array\") == 0) return sp_box_poly_array(sp_PolyArray_new());\n"
               "    if (strcmp(n, \"Hash\") == 0) return sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH);\n"
               "    if (strcmp(n, \"Object\") == 0) return sp_box_obj(sp_Object_new(), SP_BUILTIN_OBJECT);\n"
+              "    if (!strcmp(n, \"Integer\")) sp_raise_cls(\"TypeError\", SPL(\"allocator undefined for Integer\"));\n"
               "  }\n"
               "  sp_raise_nomethod(sp_nomethod_msg(\"allocate\", v));\n  return sp_box_nil();\n}\n");
   buf_puts(b, "static sp_PolyArray *sp_cls_members(sp_RbVal v) {\n"
@@ -17628,7 +17642,8 @@ static void scan_prologue_features(Compiler *c) {
     const char *nnm = nt_str(c->nt, nid, "name");
     /* and #subclasses on a Class value no constant names */
     if (nrv >= 0 && comp_ntype(c, nrv) == TY_CLASS && nnm && sp_streq(nnm, "subclasses") &&
-        nt_kind(c->nt, nrv) != NK_ConstantReadNode) { g_gen_cls_answers = 1; break; }
+        (nt_kind(c->nt, nrv) != NK_ConstantReadNode ||
+         comp_class_index(c, nt_str(c->nt, nrv, "name")) < 0)) { g_gen_cls_answers = 1; break; }
     if (nrv < 0 || (repr_of(c, nrv).kind != RK_BOXED && comp_ntype(c, nrv) != TY_UNKNOWN)) continue;
     if (nnm && (sp_streq(nnm, "subclasses") || sp_streq(nnm, "allocate") ||
                 sp_streq(nnm, "members") || sp_streq(nnm, "keyword_init?")))

@@ -1,0 +1,7 @@
+[Err, "Err", nil, nil, nil, 0]
+[Err, "Err", nil, nil, nil, 0]
+[true, "Err", nil]
+[true, "Err", nil]
+Plain
+"Plain"
+[SysErr, "SysErr", nil]
