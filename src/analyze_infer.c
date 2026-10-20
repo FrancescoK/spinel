@@ -7128,6 +7128,18 @@ static int infer_runtime_value_call(Compiler *c, int id, const NodeTable *nt, co
   return 0;
 }
 
+/* `{}.default` (a Hash or keyword-hash literal) answers nil, boxed. An untyped
+   literal has no Hash kind to look the row up by, so the family's row
+   states the answer and records it. */
+static int infer_literal_hash_default(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, TyKind *out) {
+  if (recv < 0 || !sp_streq(name, "default") || argc > 1 || !nt_type(nt, recv) ||
+      !(sp_streq(nt_type(nt, recv), "HashNode") || sp_streq(nt_type(nt, recv), "KeywordHashNode")))
+    return 0;
+  const BuiltinOp *op = an_bop_find(c, id, BOP_ANY_HASH, name, argc, nt_ref(nt, id, "block") >= 0);
+  *out = op ? bop_result(op, TY_UNKNOWN) : TY_POLY;
+  return 1;
+}
+
 /* A nil receiver, and an array conversion at the end of a chain: cycle.first or take, chunk_while or slice_when .to_a, to_a over an enumerator (infer_call_inner's rules, in their order) */
 static int infer_nil_chain_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, TyKind rt, TyKind *out) {
   if (recv >= 0 && rt == TY_NIL) {
@@ -9080,11 +9092,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   { TyKind r; if (infer_range_lazy_call(c, id, nt, name, recv, argc, argv, rt, &r)) return r; }
 
   /* hash receiver methods */
-  if (recv >= 0 && sp_streq(name, "default") && argc <= 1 &&
-      nt_type(nt, recv) && (sp_streq(nt_type(nt, recv), "HashNode") ||
-                             sp_streq(nt_type(nt, recv), "KeywordHashNode"))) {
-    return TY_POLY; /* {}.default -> nil (poly nil) */
-  }
+  { TyKind r; if (infer_literal_hash_default(c, id, nt, name, recv, argc, &r)) return r; }
   /* a literal (or single-assignment variable) Hash.new(d) receiver that
      never narrowed: .default and [] both yield the default (no write can
      have reached it). The variable form widens to poly, hence both gates. */

@@ -503,7 +503,12 @@ int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind arg1,
        binary), so it is answered here rather than declined like a truly
        unresolvable pair. */
     if (!strcmp(name, "sum") && ty_recv_is_plain_array(recv)) {
-      *out = fold_sum_type(TY_INT, ty_array_elem(recv), promote); return 1;
+      *out = fold_sum_type(TY_INT, ty_array_elem(recv), promote);
+      /* the kind's row is the call's: it states every kind's answer but an
+         Integer Array's, which it leaves to the mode (bop_result) */
+      const BuiltinOp *op = bop_find(bop_family_of(recv), name, 0, 0);
+      if (row && op && op->result == BOPR_ARRAY_SUM) *row = op;
+      return 1;
     }
     /* No hand-written arm above matched this argc=0 name: fall through
        (instead of returning 0 here) to the generic bop_rows-backed check
