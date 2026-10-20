@@ -16817,8 +16817,9 @@ static int irt_scope(Compiler *c, int s, IrtCtx *x) {
      Emitting the StrPolyHash body through a StrStrHash* signature is a layout
      mismatch that corrupts every read, so let the body widen the return to
      its poly-valued sibling. A body whose Hash boxes its keys drops the
-     seed (ret_seed_holds), and the return derives as an unseeded one. Every
-     other rbs-seeded return stays pinned. */
+     seed (ret_seed_holds), and the return derives as an unseeded one; so
+     does a Hash or an Array one whose body answers a box (#9692, checked at
+     the return). Every other rbs-seeded return stays pinned. */
   TyKind hbr = TY_UNKNOWN;
   if (sc->ret_rbs_seeded && ty_is_hash(sc->ret)) {
     hbr = sc->body >= 0 ? infer_type(c, sc->body) : TY_UNKNOWN;
@@ -16828,6 +16829,13 @@ static int irt_scope(Compiler *c, int s, IrtCtx *x) {
     int boxed = 0;
     if (has_ret && has_ret[s]) hbr = ty_unify(hbr, irt_returns_hash(c, s, x, &boxed));
     if (boxed) hbr = TY_POLY_POLY_HASH;   /* an explicit return with boxed keys */
+  }
+  /* an Array seed whose body, or an explicit return, answers a box: the box
+     keeps its form, and ret_seed_holds drops the seed for a checked one */
+  else if (sc->ret_rbs_seeded && ty_is_array(sc->ret) && sc->ret != TY_POLY_ARRAY) {
+    hbr = sc->body >= 0 ? infer_type(c, sc->body) : TY_UNKNOWN;
+    if (hbr == TY_NIL) hbr = TY_UNKNOWN;
+    if (has_ret && has_ret[s] && ret_acc[s] == TY_POLY) hbr = TY_POLY;
   }
   if (ret_seed_holds(sc, hbr)) {
     if (sc->ret == TY_STR_STR_HASH || sc->ret == TY_STR_INT_HASH) {

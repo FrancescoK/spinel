@@ -355,6 +355,7 @@ static inline int lv_set_proc_ret(LocalVar *lv, int t) {
    container store lifts (any other mark is 1) */
 #define STRBUF_LIFT_FRESH_CALL 2
 
+enum { RBS_CONT_HASH = 1, RBS_CONT_ARRAY = 2 };   /* Scope.ret_rbs_cont: the class a container return seed checks */
 typedef struct {
   char *name;       /* method name; NULL for the top-level scope */
   char *c_name;     /* optional unique C symbol for a method without changing its Ruby name */
@@ -470,12 +471,14 @@ typedef struct {
                           String (share_node_fresh) beside the handle reads
                           the others publish: that tail clears the side
                           channel (emit_tail_value), so the caller wraps it */
-  unsigned char ret_rbs_hash; /* a Hash return seed gave way to the box the
-                          body answers (ret_seed_holds): the slot stays boxed,
-                          the return is checked to be a Hash of any form, once
-                          and always (emit_rbs_hash_ret_wrapper), and a call of
-                          the method answers no proc or Method */
-  unsigned char ret_rbs_hash_nil; /* that seed was `Hash[..]?`: nil passes */
+  unsigned char ret_rbs_cont; /* a container return seed (RBS_CONT_HASH, a
+                          Hash; RBS_CONT_ARRAY, an Array) gave way to the box
+                          the body answers (ret_seed_holds): the slot stays
+                          boxed, the return is checked to be a container of
+                          that class in any form, once and always
+                          (emit_rbs_cont_ret_wrapper), and a call of the
+                          method answers no proc or Method */
+  unsigned char ret_rbs_cont_nil; /* that seed was nilable (`Hash[..]?`): nil passes */
   int ret_rbs_nilable; /* that seed was RBS's nilable form (`Integer?`), and the
                           pinned kind is an unboxed scalar: the return can be
                           nil (an oint), so a caller boxing it has to answer

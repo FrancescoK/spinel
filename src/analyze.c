@@ -5650,13 +5650,17 @@ static int seed_form_gives_way(TyKind seed, TyKind val) {
   return ty_is_hash(seed) && seed != TY_POLY_POLY_HASH && val == TY_POLY_POLY_HASH;
 }
 
-/* A box written into an ivar, or answered by a return, the seed keys by one
-   class: the box may hold a Hash with boxed keys (a parameter whose seed
-   gave way to one, a method whose Hash did), and the store would unbox it
-   into a copy of the seed's form, its keys read as the seed's class
-   whatever they are. The slot takes the box instead. */
+/* A box written into an ivar, or answered by a return, the seed gives a
+   container of one form: the box may hold a Hash with boxed keys (a parameter
+   whose seed gave way to one, a method whose Hash did), or an Array of mixed
+   values that holds only the seed's kind (`[1, "s"].select { ... }` under
+   `Array[Integer]`), and the store would unbox it into a copy of the seed's
+   form: another object, which a change through one name does not reach. The
+   slot takes the box instead (#9692: a container seed keeps the object and
+   checks its class). */
 static int seed_box_gives_way(TyKind seed, TyKind val) {
-  return ty_is_hash(seed) && seed != TY_POLY_POLY_HASH && val == TY_POLY;
+  return val == TY_POLY && ((ty_is_hash(seed) && seed != TY_POLY_POLY_HASH) ||
+                            (ty_is_array(seed) && seed != TY_POLY_ARRAY));
 }
 
 /* A box reaching a parameter or a return the seed keys by Symbols: the box
@@ -5682,7 +5686,10 @@ int class_ivar_pin_holds(ClassInfo *ci, const char *name, TyKind vt) {
 /* The same for a parameter's seed against an argument of `at`. */
 int param_seed_holds(LocalVar *lv, TyKind at) {
   if (!lv->rbs_seeded) return 0;
-  if (!seed_form_gives_way(lv->rbs_type, at) && !seed_symkey_box_gives_way(lv->rbs_type, at)) return 1;
+  /* (a box handed to a container seed is the caller's object: unboxed into
+     the seed's form it would be a copy the method changes in vain) */
+  if (!seed_form_gives_way(lv->rbs_type, at) && !seed_symkey_box_gives_way(lv->rbs_type, at) &&
+      !seed_box_gives_way(lv->rbs_type, at)) return 1;
   lv->rbs_seeded = 0;
   lv->rbs_type = TY_UNKNOWN;
   lv_set_type(lv, TY_UNKNOWN);
@@ -5695,9 +5702,10 @@ int ret_seed_holds(Scope *s, TyKind r) {
   int boxed = seed_box_gives_way(s->ret, r) || seed_symkey_box_gives_way(s->ret, r);
   if (!seed_form_gives_way(s->ret, r) && !boxed) return 1;
   /* The box the body answers keeps its form, which only the run time knows,
-     but the seed still says what it is: a Hash. A yielding method can be
-     spliced into its caller, past the check that makes it so. */
-  if (boxed && !s->yields && !s->is_proc_form) s->ret_rbs_hash = 1;
+     but the seed still says what it is: a Hash, or an Array. A yielding
+     method can be spliced into its caller, past the check that makes it so. */
+  if (boxed && !s->yields && !s->is_proc_form)
+    s->ret_rbs_cont = ty_is_hash(s->ret) || s->ret == TY_SYM_POLY_HASH ? RBS_CONT_HASH : RBS_CONT_ARRAY;
   s->ret_rbs_seeded = 0;
   s->ret_rbs_nilable = 0;
   return 0;
@@ -5887,7 +5895,7 @@ static void seed_method(Compiler *c, Scope *s, const char *ret_tok, char *ptypes
        nil arm returns the empty string instead (#4250). */
     s->ret_rbs_nilable = g_seed_nilable &&
                          (rt == TY_INT || rt == TY_FLOAT || rt == TY_STRING);
-    s->ret_rbs_hash_nil = g_seed_nilable && ty_is_hash(rt);
+    s->ret_rbs_cont_nil = g_seed_nilable && (ty_is_hash(rt) || ty_is_array(rt));
     /* A memoized CONTAINER reader (`def self.table; @table ||= {}; end`) IS
        its ivar: pinning only the return left the slot poly, and the seeded
        narrowing then cast a PolyPolyHash payload to the declared hash -- a
@@ -29377,16 +29385,17 @@ static int dyn_scopes_named(Compiler *c, const char *nm) {
   return h >= 0 ? g_dyn.shead[h] : -1;
 }
 
-/* Is every method named nm one whose Hash return seed keeps the box and
-   checks it (Scope.ret_rbs_hash), with no builtin and no attribute reader of
-   the name? A call of it on any receiver then answers a Hash, or raises. */
-static int dyn_rbs_hash_name(Compiler *c, const char *nm) {
+/* Is every method named nm one whose container return seed keeps the box and
+   checks it (Scope.ret_rbs_cont), with no builtin and no attribute reader of
+   the name? A call of it on any receiver then answers a Hash or an Array,
+   or raises. */
+static int dyn_rbs_cont_name(Compiler *c, const char *nm) {
   if (!nm || builtin_method_known_any(nm) || builtin_object_method_known(nm)) return 0;
   for (int k = 0; k < c->nclasses; k++)
     if (comp_reader_in_chain(c, k, nm, NULL)) return 0;
   int any = 0;
   for (int mi = dyn_scopes_named(c, nm); mi >= 0; mi = g_dyn.snext[mi]) {
-    if (!c->scopes[mi].ret_rbs_hash) return 0;
+    if (!c->scopes[mi].ret_rbs_cont) return 0;
     any = 1;
   }
   return any;
@@ -29940,8 +29949,8 @@ static int dyn_returns_walk(Compiler *c, int mi, int depth) {
 }
 static int dyn_returns_may_callable(Compiler *c, int mi, int depth) {
   if (mi < 0 || mi >= g_dyn.nscope) return 1;
-  /* a Hash seed's return is checked to be a Hash when it returns */
-  if (mi < c->nscopes && c->scopes[mi].ret_rbs_hash) return 0;
+  /* a container seed's return is checked to be one when it returns */
+  if (mi < c->nscopes && c->scopes[mi].ret_rbs_cont) return 0;
   unsigned char *m = &g_dyn.rcall[mi];
   if (*m == 3) return 1;
   if (*m) return *m == 2;
@@ -30071,11 +30080,11 @@ static int dyn_may_callable_walk(Compiler *c, int v, int depth) {
       const char *nm = nt_str(nt, v, "name");
       if (!nm || nt_ref(nt, v, "block") >= 0) return 1;
       /* on a boxed or builtin receiver it may be the builtin's answer, unless
-         no builtin has the name and every method of it is a Hash return
-         seed's, checked at its return (Scope.ret_rbs_hash) */
+         no builtin has the name and every method of it is a container
+         return seed's, checked at its return (Scope.ret_rbs_cont) */
       int recv = nt_ref(nt, v, "receiver");
       if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode && !ty_is_object(comp_ntype(c, recv)))
-        return !dyn_rbs_hash_name(c, nm);
+        return !dyn_rbs_cont_name(c, nm);
       /* self in a class method is the class: its methods (a `class << self`
          accessor) are not walked */
       if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {

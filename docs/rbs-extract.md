@@ -332,15 +332,17 @@ reads), and the `self` of a `def self?.` method is both, so `-`. In a
 module `self` and `instance` are the including object, which the seed
 cannot name, so `-`.
 
-### A Hash return whose body answers a boxed value
+### A container return whose body answers a boxed value
 
-A Hash return seed (`-> Hash[String, String]`, `Hash[..]?` too) whose
-body answers a value only the run time types -- a read out of a Hash of
-mixed values, say -- keeps the box: the Hash it holds has a form
-(`Hash[String, String]` can be held with String values, or with boxed
-keys) the compiler cannot know, and unboxing it into the seed's form would
-be a copy, a different object from the one the method answers. What the
-seed still says is that the value is a Hash, and that is checked:
+A container return seed (`-> Hash[String, String]`, `-> Array[Integer]`,
+`Hash[..]?` and `Array[..]?` too) whose body answers a value only the run
+time types -- a read out of a Hash of mixed values, say -- keeps the box:
+the container it holds has a form (`Hash[String, String]` can be held with
+String values, or with boxed keys; `Array[Integer]` can be an Array built
+with mixed values that holds only Integers) the compiler cannot know, and
+unboxing it into the seed's form would be a copy, a different object from
+the one the method answers. What the seed still says is that the value is
+a Hash (an Array), and that is checked:
 
 ```ruby
 CONF = { "a" => { "x" => "1" }, "b" => 2 }
@@ -355,9 +357,11 @@ Cfg.new.for("b")        # TypeError: the return value of Cfg#for is declared a H
 ```
 
 The check runs on every return of the method, explicit or not, in every
-build: with or without `-DSP_RBS_CHECK`, a value that is no Hash (nil is
-one only for `Hash[..]?`) raises `TypeError`. A Hash of any form passes,
-and stays the object the body answered. The analysis then takes a call of
+build: with or without `-DSP_RBS_CHECK`, a value that is no Hash (no Array,
+for an Array seed; nil passes only for `Hash[..]?` and `Array[..]?`)
+raises `TypeError`. A container of any form passes, and stays the object
+the body answered. A parameter seeded a container that is handed a box
+keeps the box too, the caller's object, unchecked. The analysis then takes a call of
 the method to answer no proc or Method, so a String handed to `[]` on its
 result is not refused as one a proc might append to. A body whose Hashes
 the compiler does know keeps the seed's form, as before; a yielding

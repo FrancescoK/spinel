@@ -51,11 +51,12 @@ An applied annotation uses the existing RBS seed trust model:
    undergo tag checks. A mismatch aborts the program. See
    [Checking seeds](rbs-extract.md#checking-seeds).
 
-A Hash return annotation (`#: (String) -> Hash[String, String]`) on a
-method whose body answers a boxed value is the exception to 3: the return
-is always checked to be a Hash, in every build, and a value that is not
-raises `TypeError` (see [A Hash return whose body answers a boxed
-value](rbs-extract.md#a-hash-return-whose-body-answers-a-boxed-value)).
+A container return annotation (`#: (String) -> Hash[String, String]`,
+`-> Array[Integer]`) on a method whose body answers a boxed value is the
+exception to 3: the return is always checked to be a Hash (an Array), in
+every build, and a value that is not raises `TypeError` (see [A container
+return whose body answers a boxed
+value](rbs-extract.md#a-container-return-whose-body-answers-a-boxed-value)).
 
 Without these checks, a false annotation that the compiler cannot disprove
 can reinterpret a value incorrectly. Write annotations that describe the
