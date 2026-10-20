@@ -1314,6 +1314,11 @@ static int a_scope_forwards_block_to_lowered(Compiler *c, int mi) {
     else {
       TyKind rt = infer_type(c, recv);
       if (ty_is_object(rt)) tmi = comp_method_in_chain(c, ty_object_class(rt), tn, NULL);
+      /* a boxed receiver is dispatched on its class at run time, and the
+         dispatch hands the block on as a proc (`k.walk(&blk)` over a mixed
+         Array): it is a block that does not stop here whichever class owns
+         the method */
+      else if (rt == TY_POLY && an_user_defines_method(c, tn)) return 1;
     }
     if (tmi < 0 || tmi == mi) continue;
     if (c->scopes[tmi].is_lowered_yield) return 1;
