@@ -43858,6 +43858,112 @@ static int sid_block_ok(Compiler *c, int blk, int own) {
       if (sp_streq(block_param_name(c, blk, k), nt_str(nt, v, "name"))) return 1;
   return sid_value_ok(c, v, 0);
 }
+/* ---- does an iterator drop its block's value? ----
+   A call of the each family (each, each_with_index, times, ...) answers
+   its receiver or nil, whatever its block answers: a builtin's does, and
+   so does each method of the program of that name whose every yield sits
+   where its value is dropped and whose block parameter, if any, is only
+   handed on (`&blk`) to such an iterator. A method asked again while it is
+   being asked (a cycle) drops it unless something else keeps it. */
+static int iter_disc_call(Compiler *c, int call, int depth);
+/* Does every yield of the subtree at n sit where its value is dropped
+   (drop: whether n's own value is)? A loop's body is dropped. */
+static int iter_disc_yields(Compiler *c, int n, int drop, int depth) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 1;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode || k == NK_LambdaNode) return 1;
+  if (k == NK_YieldNode) return drop && iter_disc_yields(c, nt_ref(nt, n, "arguments"), 0, depth);
+  if (k == NK_StatementsNode) {
+    int bn = 0; const int *bb = nt_arr(nt, n, "body", &bn);
+    for (int i = 0; i < bn; i++) if (!iter_disc_yields(c, bb[i], i + 1 < bn ? 1 : drop, depth)) return 0;
+    return 1;
+  }
+  if (k == NK_WhileNode || k == NK_UntilNode)
+    return iter_disc_yields(c, nt_ref(nt, n, "predicate"), 0, depth) &&
+           iter_disc_yields(c, nt_ref(nt, n, "statements"), 1, depth);
+  if (k == NK_IfNode || k == NK_UnlessNode)
+    return iter_disc_yields(c, nt_ref(nt, n, "predicate"), 0, depth) &&
+           iter_disc_yields(c, nt_ref(nt, n, "statements"), drop, depth) &&
+           iter_disc_yields(c, nt_ref(nt, n, k == NK_IfNode ? "subsequent" : "else_clause"), drop, depth);
+  if (k == NK_ElseNode) return iter_disc_yields(c, nt_ref(nt, n, "statements"), drop, depth);
+  if (k == NK_ParenthesesNode) return iter_disc_yields(c, nt_ref(nt, n, "body"), drop, depth);
+  int bk = k == NK_CallNode ? nt_ref(nt, n, "block") : -1;
+  if (bk >= 0 && nt_kind(nt, bk) != NK_BlockNode) bk = -1;
+  for (int i = 0; i < nt_num_refs(nt, n); i++) {
+    int r = nt_ref_at(nt, n, i);
+    if (r != bk && !iter_disc_yields(c, r, 0, depth)) return 0;
+  }
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) if (!iter_disc_yields(c, av[j], 0, depth)) return 0;
+  }
+  return bk < 0 || iter_disc_yields(c, nt_ref(nt, bk, "body"), iter_disc_call(c, n, depth + 1), depth);
+}
+/* Is every use of block parameter bp in the subtree at n a `&bp` handed to
+   a call whose iterator drops its block's value? */
+static int iter_disc_blk_fwd(Compiler *c, int n, const char *bp, int depth) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 1;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode) return 1;
+  if (k == NK_LocalVariableReadNode && sp_streq(nt_str(nt, n, "name"), bp)) return 0;
+  int skip = -1;
+  if (k == NK_CallNode) {
+    int b = nt_ref(nt, n, "block");
+    int e = b >= 0 && nt_kind(nt, b) == NK_BlockArgumentNode ? nt_ref(nt, b, "expression") : -1;
+    if (e >= 0 && nt_kind(nt, e) == NK_LocalVariableReadNode && sp_streq(nt_str(nt, e, "name"), bp)) {
+      if (!iter_disc_call(c, n, depth + 1)) return 0;
+      skip = b;
+    }
+  }
+  for (int i = 0; i < nt_num_refs(nt, n); i++) {
+    int r = nt_ref_at(nt, n, i);
+    if (r != skip && !iter_disc_blk_fwd(c, r, bp, depth)) return 0;
+  }
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) if (!iter_disc_blk_fwd(c, av[j], bp, depth)) return 0;
+  }
+  return 1;
+}
+static int iter_disc_call(Compiler *c, int call, int depth) {
+  static const char *const names[] = {
+    "each", "each_with_index", "each_with_object", "each_char", "each_byte", "each_line", "each_key",
+    "each_value", "each_pair", "reverse_each", "each_slice", "each_cons", "each_entry", "times", "upto",
+    "downto", "step", NULL };
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, call, "name");
+  int k = 0;
+  while (nm && names[k] && !sp_streq(names[k], nm)) k++;
+  if (!nm || !names[k] || depth > 16) return 0;
+  static int busy[64], nbusy;
+  for (int mi = 0; mi < c->nscopes; mi++) {
+    Scope *m = &c->scopes[mi];
+    if (!m->name || m->def_node < 0 || !sp_streq(m->name, nm)) continue;
+    int inb = 0;
+    for (int q = 0; q < nbusy; q++) inb |= busy[q] == mi;
+    if (inb) continue;
+    if (nbusy >= 64 || nt_kind(nt, m->def_node) != NK_DefNode) return 0;
+    busy[nbusy++] = mi;
+    int ok = 1;
+    if (m->blk_param) {
+      int prm = nt_ref(nt, m->def_node, "parameters");
+      int bpn = prm >= 0 ? nt_ref(nt, prm, "block") : -1;
+      const char *bp = bpn >= 0 ? nt_str(nt, bpn, "name") : NULL;
+      ok = !bp || iter_disc_blk_fwd(c, nt_ref(nt, m->def_node, "body"), bp, depth);
+    }
+    ok = ok && iter_disc_yields(c, nt_ref(nt, m->def_node, "body"), 0, depth);
+    nbusy--;
+    if (!ok) return 0;
+  }
+  return 1;
+}
+/* analyze.h */
+int an_iter_discards_block(Compiler *c, int call) {
+  return call >= 0 && nt_kind(c->nt, call) == NK_CallNode && iter_disc_call(c, call, 0);
+}
+
 /* ---- where the identity Sets live ----
    A compare_by_identity is followed to the Set it makes an identity one
    when that Set lives in a place the program reads it from only as a
@@ -43899,17 +44005,38 @@ static int sid_fresh_set(const NodeTable *nt, int v) {
   return r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode && nt_str(nt, r, "name") &&
          sp_streq(nt_str(nt, r, "name"), "Set");
 }
-/* The method whose value node n is (the last statement of its body), or -1 */
-static int sid_tail_def(const NodeTable *nt, const int *parent, int n) {
-  for (int d = 0; n >= 0 && d < 16; d++) {
+/* The method or block whose value node n is, or -1: n is the last
+   statement of its body, or of an arm of a conditional, a case or a begin
+   (its body, a rescue, its else; not its ensure) that is in turn */
+static int sid_tail_owner(Compiler *c, const int *parent, int n) {
+  const NodeTable *nt = c->nt;
+  for (int d = 0; n >= 0 && d < 64; d++) {
     int p = parent[n];
-    if (p < 0) return -1;
+    if (p < 0) {
+      /* a body no node links (one a rewrite moved): its method's, by its
+         scope */
+      Scope *s = comp_scope_of(c, n);
+      return s && s->body == n && s->def_node >= 0 && nt_kind(nt, s->def_node) == NK_DefNode ? s->def_node : -1;
+    }
     NodeKind pk = nt_kind(nt, p);
-    if (pk == NK_DefNode) return nt_ref(nt, p, "body") == n ? p : -1;
-    if (pk == NK_ParenthesesNode) { n = p; continue; }
-    if (pk != NK_StatementsNode) return -1;
-    int bn = 0; const int *bb = nt_arr(nt, p, "body", &bn);
-    if (bn == 0 || bb[bn - 1] != n) return -1;
+    if (pk == NK_DefNode || pk == NK_BlockNode) return nt_ref(nt, p, "body") == n ? p : -1;
+    if (pk == NK_StatementsNode) {
+      int bn = 0; const int *bb = nt_arr(nt, p, "body", &bn);
+      if (bn == 0 || bb[bn - 1] != n) return -1;
+    }
+    else if (pk == NK_IfNode || pk == NK_UnlessNode) {
+      if (nt_ref(nt, p, "predicate") == n) return -1;
+    }
+    else if (pk == NK_BeginNode) {
+      if (nt_ref(nt, p, "ensure_clause") == n) return -1;
+    }
+    else if (pk == NK_CaseNode || pk == NK_CaseMatchNode) {
+      if (nt_ref(nt, p, "predicate") == n) return -1;
+    }
+    else if (pk == NK_InNode || pk == NK_RescueNode || (nt_type(nt, p) && sp_streq(nt_type(nt, p), "WhenNode"))) {
+      if (nt_ref(nt, p, "statements") != n && nt_ref(nt, p, "subsequent") != n) return -1;
+    }
+    else if (pk != NK_ParenthesesNode && pk != NK_ElseNode) return -1;
     n = p;
   }
   return -1;
@@ -43954,7 +44081,13 @@ static int sid_alias_use_ok(Compiler *c, SidSources *S, int a) {
       a = p;
       continue;
     }
-    int def = sid_tail_def(nt, S->parent, a);
+    int def = sid_tail_owner(c, S->parent, a);
+    /* a block's value, which an iterator of the each family drops */
+    if (def >= 0 && nt_kind(nt, def) == NK_BlockNode) {
+      int call = S->parent[def];
+      return (call >= 0 && nt_kind(nt, call) == NK_CallNode && nt_ref(nt, call, "block") == def &&
+              an_iter_discards_block(c, call)) || comp_value_dropped(c, a);
+    }
     if (def < 0) return comp_value_dropped(c, a);
     const char *dn = nt_str(nt, def, "name");
     if (!dn) return 0;
