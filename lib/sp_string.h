@@ -292,6 +292,9 @@ static inline sp_String*sp_String_force_encoding(sp_String*s,int mode){
   return s;
 }
 static inline const char*sp_String_cstr(sp_String*s){return s->data;}
+/* the bytes of a handle that can be nil, NULL for nil, as its copying read
+   (sp_strbuf_read) answers */
+static inline const char*sp_String_cstr_nil(sp_String*s){return s?s->data:NULL;}
 static inline int64_t sp_String_length(sp_String*s){return s->len;}
 
 /* A String no other name holds, boxed for something that keeps the box:
