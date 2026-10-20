@@ -5412,9 +5412,19 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
   if (recv >= 0 && rt == TY_CLASS && !sp_streq(name, "new")) {
     /* Module#name / to_s / inspect, unless the class answers with a class
        method of its own (`def self.name = Thread.current[:name]`), whose
-       dispatch below types the call */
-    if (argc == 0 && is_name_reader(name) && class_recv_user_cmethod(c, recv, name) < 0)
-      { *out = TY_STRING; return 1; }
+       dispatch below types the call. A class known only at run time may be
+       one with such a method or one without: boxed, either answer. */
+    if (argc == 0 && is_name_reader(name) && class_recv_user_cmethod(c, recv, name) < 0) {
+      int ncc = 0, other = 0;
+      const PolyCand *pc = NULL;
+      if (class_recv_static_ci(c, recv) < 0 && class_recv_is_dynamic(c, recv))
+        pc = comp_cmethod_candidates(c, name, &ncc);
+      for (int k = 0; k < ncc; k++) {
+        TyKind kr = (TyKind)c->scopes[pc[k].mi].ret;
+        if (kr != TY_STRING && kr != TY_UNKNOWN) other = 1;
+      }
+      *out = other ? TY_POLY : TY_STRING; return 1;
+    }
     /* Thread.current / Fiber.current through a class value: a boxed handle
        (activesupport's IsolatedExecutionState keeps its scope as the class
        itself); a user class method of that name keeps its dispatch below */

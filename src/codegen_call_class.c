@@ -3845,6 +3845,21 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       int sci = comp_class_index(c, nt_str(nt, recv, "name"));
       if (sci >= 0 && comp_cmethod_in_chain(c, sci, name, NULL) >= 0) cls_shadowed = 1;
     }
+    /* a local naming one class that has its own, or a class known only at
+       run time where some class has: the class method dispatch below, whose
+       default answers Module#name for the rest */
+    /* (not the Module#name a boxed value's dispatch asks for the classes
+       without one, emit_poly_cls_value_builtin, which faces it a Class) */
+    int fnode = -1; TyKind fkind = TY_UNKNOWN;
+    int cls_face = view_face_top(&fnode, &fkind) && fnode == recv && fkind == TY_CLASS;
+    if (!cls_shadowed && !cls_face && argc == 0 && is_name_reader(name)) {
+      int ncc = 0;
+      if (class_recv_user_cmethod(c, recv, name) >= 0) cls_shadowed = 1;
+      else if (class_recv_static_ci(c, recv) < 0 && class_recv_is_dynamic(c, recv)) {
+        comp_cmethod_candidates(c, name, &ncc);
+        if (ncc > 0) cls_shadowed = 1;
+      }
+    }
     if (!cls_shadowed &&
         is_name_reader(name)) {
       /* An anonymous Struct/Data class has no name: CRuby answers nil for
@@ -4512,7 +4527,15 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
              switch left the result slot at its default -- a junk value the
              caller could not tell from a real answer. */
           if (sg9) emit_cls_value_sg_arms(c, id, name, argc, argv, tr9, b);
-          if (!rdef9) buf_printf(b, " default: %s; break;", rraise9);
+          /* Module#name / to_s / inspect for a class without its own */
+          if (!rdef9 && argc == 0 && is_name_reader(name)) {
+            char nb[128];
+            if (is_class_name_name(name)) snprintf(nb, sizeof nb, "sp_str_frozen_name(sp_class_name_or_nil(_t%d))", tk9);
+            else snprintf(nb, sizeof nb, "%s(_t%d)", comp_class_display_fn(c), tk9);
+            if (slot9 == TY_POLY) buf_printf(b, " default: _t%d = sp_box_nullable_str(%s); break;", tr9, nb);
+            else buf_printf(b, " default: _t%d = %s; break;", tr9, nb);
+          }
+          else if (!rdef9) buf_printf(b, " default: %s; break;", rraise9);
           buf_printf(b, " } _t%d; })", tr9);
           unhoist_dispatch_args(c, hn9, hsv9, hty9);
           (void)defmi9;
