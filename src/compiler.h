@@ -694,6 +694,7 @@ typedef struct {
      (`x`, `x=`): an inherited one of the same name is in the lists too */
   char **sg_decl;
   int nsg_decl, csg_decl;
+  int *sg_decl_node;     /* by entry of sg_decl: the declaring call, the latest */
   char **alias_new;    /* `alias new old`: alias_new[i] redirects to alias_old[i] */
   char **alias_old;
   int   *alias_cls;    /* class the lookup resumes from (an alias of an
@@ -1915,7 +1916,7 @@ void       comp_add_alias_from(ClassInfo *ci, const char *new_name, const char *
 void       comp_add_sg_civ(ClassInfo *ci, const char *name);
 int        comp_is_sg_civ(ClassInfo *ci, const char *name);
 void       comp_add_sg_inh(ClassInfo *ci, const char *name);
-void       comp_add_sg_decl(ClassInfo *ci, const char *base, int writer);
+void       comp_add_sg_decl(ClassInfo *ci, const char *base, int writer, int node);
 /* Prepend-chain helpers. */
 void        comp_prep_chain_add(ClassInfo *ci, const char *from, const char *to);
 const char *comp_prep_chain_target(Compiler *c, int class_id, const char *name);
@@ -1946,6 +1947,8 @@ int comp_sg_writer_reached(Compiler *c, int k, const char *name, char *base, siz
 /* Does class d declare the `class << self` accessor `name` (`x`, or `x=`)
    itself, rather than inherit it? */
 int comp_sg_accessor_own(Compiler *c, int d, const char *name);
+/* The node of class d's own latest declaration of that accessor, or -1 */
+int comp_sg_accessor_decl_node(Compiler *c, int d, const char *name);
 void rewrite_builtin_cm_alias_call(Compiler *c, int id);   /* analyze.c */
 const char *comp_resolve_cm_alias_ex(Compiler *c, int class_id, const char *name, int *builtin);
 int comp_name_is_sg_alias_only(Compiler *c, int class_id, const char *name);

@@ -1935,10 +1935,19 @@ void comp_add_sg_reader(ClassInfo *ci, const char *name) {
 void comp_add_sg_writer(ClassInfo *ci, const char *name) {
   name_add(&ci->sg_writers, &ci->nsg_writers, &ci->csg_writers, name);
 }
-void comp_add_sg_decl(ClassInfo *ci, const char *base, int writer) {
+void comp_add_sg_decl(ClassInfo *ci, const char *base, int writer, int node) {
   char nm[260];
   if (snprintf(nm, sizeof nm, "%s%s", base, writer ? "=" : "") >= (int)sizeof nm) return;
+  int n0 = ci->nsg_decl, cap0 = ci->csg_decl;
   name_add(&ci->sg_decl, &ci->nsg_decl, &ci->csg_decl, nm);
+  if (ci->csg_decl != cap0 || !ci->sg_decl_node) {
+    ci->sg_decl_node = realloc(ci->sg_decl_node, sizeof(int) * (size_t)(ci->csg_decl > 0 ? ci->csg_decl : 1));
+    if (!ci->sg_decl_node) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  if (ci->nsg_decl > n0) { ci->sg_decl_node[ci->nsg_decl - 1] = node; return; }
+  /* declared again: the latest declaration is the one in force */
+  for (int i = 0; i < ci->nsg_decl; i++)
+    if (sp_streq(ci->sg_decl[i], nm) && node > ci->sg_decl_node[i]) ci->sg_decl_node[i] = node;
 }
 void comp_add_sg_civ(ClassInfo *ci, const char *name) {
   if (name) name_add(&ci->sg_civ, &ci->nsg_civ, &ci->csg_civ, name);
@@ -2054,6 +2063,12 @@ static int sg_accessor_own(Compiler *c, int d, const char *name) {
   return name_list_has(ci->sg_decl, ci->nsg_decl, name);
 }
 int comp_sg_accessor_own(Compiler *c, int d, const char *name) { return sg_accessor_own(c, d, name); }
+int comp_sg_accessor_decl_node(Compiler *c, int d, const char *name) {
+  ClassInfo *ci = &c->classes[d];
+  for (int i = 0; name && i < ci->nsg_decl; i++)
+    if (sp_streq(ci->sg_decl[i], name)) return ci->sg_decl_node ? ci->sg_decl_node[i] : -1;
+  return -1;
+}
 static const char *resolve_alias_side(Compiler *c, int class_id, const char *name, int *start_cls, int *builtin, int sg) {
   if (builtin) *builtin = 0;
   if (!name) return name;

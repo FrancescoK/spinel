@@ -36,3 +36,36 @@ xs.each do |x|
   p x.label if x.is_a?(Class)
 end
 p Base.log
+
+# within one class the later definition answers: the accessor declared
+# after `def self.tag`, or the method defined after the accessor
+class Early
+  def self.tag = "method"
+  class << self
+    attr_accessor :tag
+  end
+end
+class Late
+  class << self
+    attr_accessor :tag
+  end
+  def self.tag = "method"
+end
+Early.tag = "slot"
+[Early, Late, 1].each { |k| p k.tag if k.is_a?(Class) }
+
+# a writer reached through an alias writes, and reads, the slot it names
+class Aliased < Base
+  class << self
+    attr_accessor :mark
+    alias_method :other=, :mark=
+  end
+end
+class Plain
+  def self.other=(v)
+    v
+  end
+end
+k = [Aliased, Plain, 1][ARGV.size]
+p(k.other = "x")
+p Aliased.mark
