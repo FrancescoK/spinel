@@ -2991,6 +2991,13 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	if grep -Eq 'sp_RbVal[[:space:]]+iv_label' "$$tmp/out.c"; then echo "rbs-seed-test: FAIL (#1417: ivar stayed poly)"; ok=0; fi; \
 	$(CC) -fsyntax-only -Ilib "$$tmp/out.c" 2>/dev/null || { echo "rbs-seed-test: FAIL (nested_ivar C invalid)"; ok=0; }; \
 	;; \
+	seed_unknown_class_warns) \
+	$(SPINEL) test/rbs-seed/seed_unknown_class_warns.rb --rbs test/rbs-seed/sig -o "$$tmp/suc" 2>"$$tmp/suc.err" >/dev/null; \
+	grep -q 'warning: --rbs: Lane::Probe @bus: Bus names no class of the program; the seed is ignored' "$$tmp/suc.err" || { echo "rbs-seed-test: FAIL (an ivar seed naming no class was dropped without a warning)"; ok=0; }; \
+	grep -q 'warning: --rbs: Lane::Probe#poke: Bus names no class of the program; the seed is ignored' "$$tmp/suc.err" || { echo "rbs-seed-test: FAIL (a parameter seed naming no class was dropped without a warning)"; ok=0; }; \
+	[ "$$(grep -c 'names no class' "$$tmp/suc.err")" = 2 ] || { echo "rbs-seed-test: FAIL (a seed naming a builtin or a known class warned)"; sed -n 1,4p "$$tmp/suc.err"; ok=0; }; \
+	"$$tmp/suc" > "$$tmp/suc.out" 2>/dev/null && cmp -s "$$tmp/suc.out" test/rbs-seed/seed_unknown_class_warns.expected || { echo "rbs-seed-test: FAIL (seed_unknown_class_warns output mismatch)"; ok=0; }; \
+	;; \
 	nested_array_ivar) \
 	$(SPINEL) test/rbs-seed/nested_array_ivar.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/nai.c" 2>"$$tmp/nai.err"; \

@@ -6458,6 +6458,37 @@ static void apply_inline_rbs(Compiler *c) {
   free(sown);
 }
 
+/* A seed that names a class (`@memory: Bus`, `Array[Bus]`) the program has
+   none of is ignored like any untyped seed, so say which one: an unqualified
+   name the extractor could not resolve against the signatures' own
+   declarations otherwise drops without a word. */
+static void seed_warn_unknown_class(Compiler *c, int ci, const char *sep,
+                                    const char *slot, const char *tok) {
+  if (!tok || strncmp(tok, "obj_", 4) != 0) return;
+  char nm[256];
+  snprintf(nm, sizeof nm, "%s", tok + 4);
+  size_t n = strlen(nm);
+  if (n && nm[n - 1] == '?') nm[--n] = '\0';
+  if (n > 10 && sp_streq(nm + n - 10, "_ptr_array")) nm[n - 10] = '\0';
+  if (builtin_class_id(nm) || seed_class_index(c, nm) >= 0) return;
+  fprintf(stderr, "warning: --rbs: %s%s%s: %s names no class of the program; the seed is ignored\n",
+          ci >= 0 ? class_ruby_name(c, ci) : "", ci >= 0 ? sep : "", slot, nm);
+}
+
+static void seed_warn_unknown_classes(Compiler *c, int ci, const char *sep,
+                                      const char *meth, const char *ret, const char *ptypes) {
+  seed_warn_unknown_class(c, ci, sep, meth, ret);
+  for (const char *p = ptypes; p && *p; ) {
+    const char *e = strchr(p, ',');
+    size_t len = e ? (size_t)(e - p) : strlen(p);
+    char field[256];
+    snprintf(field, sizeof field, "%.*s", (int)len, p);
+    const char *colon = strchr(field, ':');
+    seed_warn_unknown_class(c, ci, sep, meth, colon ? colon + 1 : field);
+    p = e ? e + 1 : NULL;
+  }
+}
+
 static void apply_rbs_seeds(Compiler *c, const char *path) {
   FILE *f = fopen(path, "rb");
   if (!f) return;
@@ -6490,6 +6521,7 @@ static void apply_rbs_seeds(Compiler *c, const char *path) {
     }
     else if (sp_streq(kw, "ivar") && a1 && a2 && cur_ci >= 0) {
       if (!inline_pin_agrees(c, NULL, cur_ci, a1, a2, NULL, src, 1)) continue;
+      seed_warn_unknown_class(c, cur_ci, a1[0] == '@' ? " " : " @", a1, a2);
       seed_class_ivar(c, cur_ci, a1, a2);
     }
     else if (sp_streq(kw, "meth") && a1 && a2) {
@@ -6498,6 +6530,7 @@ static void apply_rbs_seeds(Compiler *c, const char *path) {
       if (cur_ci == -2 || cur_ci >= 0) {
         Scope *ms = find_method_scope(c, class_id, a1, 0);
         if (ms && !inline_pin_agrees(c, ms, -1, NULL, a2, a3, src, 1)) continue;
+        if (ms) seed_warn_unknown_classes(c, class_id, "#", a1, a2, a3);
         seed_method(c, ms, method_in_override_family(c, class_id, a1, 0) ? NULL : a2, a3, src, NULL, 1);
       }
     }
@@ -6505,6 +6538,7 @@ static void apply_rbs_seeds(Compiler *c, const char *path) {
       seed_decl_note(&decls, &ndecls, &capdecls, "cmeth", cur_cname, a1, a2, a3);
       Scope *ms = find_method_scope(c, cur_ci, a1, 1);
       if (ms && !inline_pin_agrees(c, ms, -1, NULL, a2, a3, src, 1)) continue;
+      if (ms) seed_warn_unknown_classes(c, cur_ci, ".", a1, a2, a3);
       seed_method(c, ms, method_in_override_family(c, cur_ci, a1, 1) ? NULL : a2, a3, src, NULL, 1);
     }
     else if (sp_streq(kw, "src") && a1) {
