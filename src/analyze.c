@@ -11432,17 +11432,17 @@ static int desugar_module_function_call(Compiler *c) {
     if (comp_cmethod_in_chain(c, sc->class_id, nm, NULL) >= 0) continue;
     /* a local of this name is a variable read, not a call */
     if (scope_local(sc, nm)) continue;
+    /* the module whose module_function it is, included by the class or a
+       superclass directly or through a module it includes (`module B;
+       include A; end`, then `include B`) */
     int mod = -1;
-    for (int k = sc->class_id; k >= 0 && mod < 0; k = c->classes[k].parent) {
-      ClassInfo *cl = &c->classes[k];
-      for (int j = 0; j < cl->nincluded_mods && mod < 0; j++) {
-        int mi2 = cl->included_mods[j];
-        if (mi2 < 0 || mi2 >= c->nclasses) continue;
-        for (int si = 1; si < c->nscopes; si++) {
-          Scope *ms = &c->scopes[si];
-          if (ms->class_id != mi2 || !ms->is_module_function) continue;
-          if (ms->name && sp_streq(ms->name, nm)) { mod = mi2; break; }
-        }
+    for (int si = 1; si < c->nscopes && mod < 0; si++) {
+      Scope *ms = &c->scopes[si];
+      if (!ms->is_module_function || !ms->name || !sp_streq(ms->name, nm)) continue;
+      for (int k = sc->class_id; k >= 0 && mod < 0; k = c->classes[k].parent) {
+        ClassInfo *cl = &c->classes[k];
+        for (int j = 0; j < cl->nincluded_mods && mod < 0; j++)
+          if (comp_module_includes(c, cl->included_mods[j], ms->class_id, 0)) mod = ms->class_id;
       }
     }
     if (mod < 0) continue;
