@@ -7625,6 +7625,14 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
                  tf, te, tf, tf, te);
       emit_indent(b, indent + 1);
       buf_printf(b, "sp_int _t%d = 0, _t%d = 0; sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", ti, ti2, tv, tv);
+      /* a bsearch Enumerator (Array#bsearch without a block) visits the
+         elements its block's answers lead to, as its proc walk does
+         (sp_enum_bsearch_each_proc): [lo, hi] and the element last given */
+      int tlo = ++g_tmp, thi = ++g_tmp, tmid = ++g_tmp, tbs = ++g_tmp;
+      emit_indent(b, indent + 1);
+      buf_printf(b, "sp_bool _t%d = _t%d && _t%d->is_bsearch && _t%d->items; "
+                    "sp_int _t%d = 0, _t%d = _t%d ? _t%d->items->len : 0, _t%d = -1;\n",
+                 tbs, te, te, te, tlo, thi, tbs, te, tmid);
       /* the block's value, which the generator's `y.yield` answers when the
          fiber resumes */
       emit_indent(b, indent + 1);
@@ -7644,6 +7652,10 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
         buf_printf(b, "else if (SP_UNLIKELY(_t%d)) { if (!sp_enum_str_byte_at(_t%d, _t%d, &_t%d)) break; _t%d++; }\n", tbw, te, ti, tv, ti);
         emit_indent(b, indent + 2);
       }
+      buf_printf(b, "else if (_t%d) { sp_bool _s%d = 0; if (_t%d >= 0 && sp_enum_bsearch_narrow(&_t%d, &_t%d, _t%d, _t%d, &_s%d)) break;"
+                    " if (_t%d >= _t%d) break; _t%d = _t%d + (_t%d - _t%d) / 2; _t%d = _t%d->items->data[_t%d]; }\n",
+                 tbs, tbs, tmid, tlo, thi, tmid, tbv, tbs, tlo, thi, tmid, tlo, thi, tlo, tv, te, tmid);
+      emit_indent(b, indent + 2);
       buf_printf(b, "else { if (_t%d && _t%d->endless && _t%d->items && _t%d->items->len > 0 && _t%d >= _t%d->items->len) _t%d = 0;"
                     " if (!_t%d || !_t%d->items || _t%d >= _t%d->items->len) break; _t%d = _t%d->items->data[_t%d++]; }\n",
                  te, te, te, te, ti, te, ti, te, te, ti, te, tv, te, ti);
