@@ -845,8 +845,10 @@ static void emit_zip_args(Compiler *c, const int *argv, int nargs, const int *tb
     /* a boxed (poly) argument -- e.g. an outer block param that holds an
        array at runtime -- must be unboxed to a poly array, not assigned
        raw into an sp_PolyArray* slot (#3190). */
+    /* (sp_zip_arg: a box holding no :each -- a Rational, a Complex, a
+       Time, nil, an Integer -- is CRuby's TypeError, not a column of nils) */
     if (at[j] == TY_POLY) {
-      buf_printf(b, " sp_PolyArray *_t%d = sp_poly_to_poly_array(", tb[j]);
+      buf_printf(b, " sp_PolyArray *_t%d = sp_zip_arg(", tb[j]);
       emit_expr(c, argv[j], b);
       buf_puts(b, ");");
       buf_printf(b, " SP_GC_ROOT(_t%d);", tb[j]);
@@ -2354,7 +2356,9 @@ else {
       for (int j = 0; j < argc; j++) {
         int tv = vbase + 2 * j, tn = tv + 1;
         buf_printf(b, " sp_RbVal _t%d = ", tv); emit_boxed(c, argv[j], b);
-        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tv);
+        /* (an Array, or what #to_ary answers: anything else is CRuby's
+           TypeError, where its length read as 0 appended nothing) */
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d = sp_poly_ary_arg_ck(_t%d);", tv, tv, tv);
         buf_printf(b, " sp_int _t%d = sp_poly_length(_t%d);", tn, tv);
       }
       for (int j = 0; j < argc; j++) {
@@ -6614,7 +6618,7 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), th); emit_recv_rooted(c, recv, th, "SP_GC_ROOT", b);
         buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr, tr);
         for (int a = 0; a < argc; a++) {
-          int tk = ++g_tmp;
+          int tk = ++g_tmp, tkb = -1;
           int is_splat = nt_type(nt, argv[a]) && sp_streq(nt_type(nt, argv[a]), "SplatNode");
           int ts = 0, ti = 0;
           if (is_splat) {
@@ -6647,6 +6651,15 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
             }
             else buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_nil());", tr);
             continue;
+          }
+          /* (a boxed key is kept as it was for fetch_values' KeyError,
+             which names it, not its conversion to the table's key kind) */
+          else if (is_fetch && repr_of(c, argv[a]).kind == RK_BOXED && (kt == TY_STRING || kt == TY_SYMBOL)) {
+            tkb = ++g_tmp;
+            buf_printf(b, " sp_RbVal _t%d = ", tkb); emit_boxed(c, argv[a], b);
+            buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); %s _t%d = ({ sp_RbVal _hk = _t%d; ", tkb, c_type_name(kt), tk, tkb);
+            if (kt == TY_STRING) buf_puts(b, "_hk = sp_poly_strbuf_deref(_hk); _hk.tag == SP_TAG_STR ? _hk.v.s : (const char *)0; });");
+            else buf_puts(b, "_hk.tag == SP_TAG_SYM ? (sp_sym)_hk.v.i : (sp_sym)-1; });");
           }
           else {
             buf_printf(b, " %s _t%d = ", c_type_name(kt), tk); emit_hash_key(c, argv[a], kt, b); buf_puts(b, ";");
@@ -6700,7 +6713,8 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
             buf_puts(b, " else { sp_exc_stage_recv(");
             emit_boxed_text(c, rt, htmp, b);
             buf_puts(b, "); sp_raise_key_not_found(");
-            emit_boxed_text(c, kt, keytmp, b);
+            if (tkb >= 0) buf_printf(b, "_t%d", tkb);
+            else emit_boxed_text(c, kt, keytmp, b);
             buf_puts(b, "); }");
           }
           else if (!use_default) buf_printf(b, " else sp_PolyArray_push(_t%d, sp_box_nil());", tr);
@@ -9964,6 +9978,13 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       }
     }
     else if (sp_streq(name, "to_i"))  buf_printf(b, repr_of(c, id).kind == RK_BOXED ? "sp_box_f_to_int(%s)" : "sp_float_to_i_checked(%s)", r);
+    /* a divisor known only at run time: the pair Numeric#divmod makes for
+       its kind, as an Integer receiver's boxed divisor takes it (a Float
+       slot holds no value of any class, and the call was refused) */
+    else if (sp_streq(name, "divmod") && argc == 1 && repr_of(c, argv[0]).kind == RK_BOXED) {
+      buf_printf(b, "sp_poly_to_poly_array(sp_poly_divmod(sp_box_float(%s), ", r);
+      emit_expr(c, argv[0], b); buf_puts(b, "))");
+    }
     else if (sp_streq(name, "divmod") && argc == 1) {
       /* Float#divmod(n) -> [Integer quotient, Float mod], CRuby's flodivmod */
       int tx = ++g_tmp, tn = ++g_tmp, tq = ++g_tmp, tm = ++g_tmp, o = ++g_tmp;
@@ -17115,8 +17136,17 @@ static int emit_poly_numeric_call(Compiler *c, int id, Buf *b, const NodeTable *
          rather than emitting it inside the arm that may raise. */
       int tv = ++g_tmp;
       buf_puts(b, "({ "); tv = hold_operand(c, recv, TY_POLY, 0, tv, 1, " ", b);
-      int tn = -1;
-      if (argc == 2) {
+      int tn = -1, tq = -1;
+      if (argc == 2 && comp_ntype(c, argv[0]) != TY_INT) {
+        /* a count that is no Integer is held boxed and read after the
+           keyword values run: a Rational receiver raises CRuby's "not an
+           integer" for it (sp_poly_round_digits) */
+        tq = ++g_tmp; tn = ++g_tmp;
+        buf_printf(b, "sp_RbVal _t%d = ", tq);
+        emit_boxed(c, argv[0], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_int _t%d = 0; ", tq, tn);
+      }
+      else if (argc == 2) {
         tn = ++g_tmp;
         buf_printf(b, "sp_int _t%d = ", tn);
         emit_int_expr(c, argv[0], b);
@@ -17146,6 +17176,7 @@ static int emit_poly_numeric_call(Compiler *c, int id, Buf *b, const NodeTable *
          other key -- a `**` source's keys included, which it reads at run
          time rather than leaving the mode silently defaulted. */
       int thalf = emit_round_kw_binds(c, &kw, b);
+      if (tq >= 0) buf_printf(b, "_t%d = sp_poly_round_digits(_t%d, _t%d); ", tn, tv, tq);
       /* the mode reaches the helper as the value it was written as: a
          Symbol, a String, nil for the default -- deciding which is the
          helper's job, since only it knows whether the receiver cares */
@@ -17162,12 +17193,24 @@ static int emit_poly_numeric_call(Compiler *c, int id, Buf *b, const NodeTable *
     if (!poly_name_user_claimed(c, name, argc)) {
       /* ceil / floor / truncate with a precision had no arm at all and
          raised NoMethodError on a Float (#4532) */
-      if (sp_streq(name, "round")) buf_puts(b, "sp_poly_round_n(");
-      else buf_puts(b, "sp_poly_prec_n(");
+      const char *mode = sp_streq(name, "round") ? NULL
+                         : name[0] == 'c' ? "SP_PREC_CEIL" : name[0] == 'f' ? "SP_PREC_FLOOR" : "SP_PREC_TRUNC";
+      if (comp_ntype(c, argv[0]) != TY_INT) {
+        /* a count that is no Integer: a Rational receiver raises CRuby's
+           "not an integer" for it (a Float one converts it), and which
+           receiver this is only the run time knows */
+        int tv = ++g_tmp, td = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", tv, td); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; %s(_t%d, sp_poly_round_digits(_t%d, _t%d)", mode ? "sp_poly_prec_n" : "sp_poly_round_n", tv, tv, td);
+        if (mode) buf_printf(b, ", %s", mode);
+        buf_puts(b, "); })");
+        { *out = 1; return 1; }
+      }
+      buf_puts(b, mode ? "sp_poly_prec_n(" : "sp_poly_round_n(");
       emit_expr(c, recv, b); buf_puts(b, ", ");
       emit_int_expr(c, argv[0], b);
-      if (!sp_streq(name, "round"))
-        buf_printf(b, ", %s", name[0] == 'c' ? "SP_PREC_CEIL" : name[0] == 'f' ? "SP_PREC_FLOOR" : "SP_PREC_TRUNC");
+      if (mode) buf_printf(b, ", %s", mode);
       buf_puts(b, ")");
       { *out = 1; return 1; }
     }

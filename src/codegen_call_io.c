@@ -503,6 +503,15 @@ int emit_strbuf_io_read(Compiler *c, int id, Buf *b) {
                  held[i], lv.p, lv.p, held[i]);
       free(lv.p);
     }
+    /* a boxed buffer may be no String at all: it is the handle when it is
+       one, else itself, whose check names its class (a Rational read as
+       no handle became a nil buffer, and the read went on) */
+    else if (i == ob && strbuf_value_carries(c, argv[i]) && comp_ntype(c, argv[i]) == TY_POLY) {
+      held[i] = ++g_tmp;
+      buf_printf(b, "sp_RbVal _t%d = sp_poly_outbuf_handle(", held[i]);
+      emit_boxed(c, argv[i], b);
+      buf_printf(b, "); SP_GC_ROOT_RBVAL(_t%d); ", held[i]);
+    }
     else if (i == ob && strbuf_value_carries(c, argv[i])) {
       held[i] = ++g_tmp;
       buf_printf(b, "sp_RbVal _t%d = sp_box_nullable_obj(", held[i]);

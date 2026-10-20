@@ -1,0 +1,15 @@
+[:reduce, (3/4)]
+[:sum, (3/4)]
+[:time_sec, (1/2)]
+[:time_flt, (1/2)]
+zip: TypeError: wrong argument type Rational (must respond to :each)
+concat: TypeError: no implicit conversion of Rational into Array
+concat_value: TypeError: no implicit conversion of Rational into Array
+fetch: KeyError: key not found: (1/2)
+fetch_sym: KeyError: key not found: :s
+fetch_values: KeyError: key not found: (1/2)
+[:between, false]
+[:lt, false]
+[:divmod, [15, 0.0]]
+rat_nil: NoMethodError: undefined method 'abs' for nil
+[:rat_complex, (1/3)]

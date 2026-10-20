@@ -10466,10 +10466,13 @@ int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf *b) {
      split into whole seconds and a nanosecond remainder (#2638). */
   if (!is_new && argc == 6) {
     TyKind sect = comp_ntype(c, argv[5]);
-    if (sect == TY_RATIONAL || sect == TY_FLOAT) {
+    if (sect == TY_RATIONAL || sect == TY_FLOAT || sect == TY_POLY) {
       int ts = ++g_tmp;
       buf_printf(b, "({ double _t%d = ", ts);
       if (sect == TY_RATIONAL) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, argv[5], b); buf_puts(b, ")"); }
+      /* a boxed field: a Rational's or a Float's fraction is kept, anything
+         else is read as the whole-second field it was */
+      else if (sect == TY_POLY) { buf_puts(b, "sp_poly_time_sec_f("); emit_boxed(c, argv[5], b); buf_puts(b, ")"); }
       else emit_expr(c, argv[5], b);
       buf_printf(b, "; sp_Time _t%da = sp_time_new%s(", ts, is_utc ? "_utc" : "");
       for (int i = 0; i < 5; i++) {
@@ -16943,6 +16946,15 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "({ sp_Time _t%d = ", tt); emit_expr(c, recv, b);
         buf_printf(b, "; sp_RbVal _t%d = ", tu); emit_boxed(c, argv[0], b);
         buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_poly_sub(sp_box_time(_t%d), _t%d); })", tu, tt, tu);
+      }
+      else if (at == TY_POLY) {
+        /* Time + poly: the boxed addition's Time arm, which takes any real
+           number of the tower (a Rational's fraction of a second included)
+           and raises TypeError for anything else. Read as an Integer, a
+           boxed Rational(3, 4) shifted the Time by 0 seconds. */
+        buf_printf(b, "({ sp_Time _t%d = ", tt); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_RbVal _t%d = ", tu); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_poly_as_time_chk(sp_poly_add(sp_box_time(_t%d), _t%d)); })", tu, tt, tu);
       }
       else if (at == TY_FLOAT) {
         buf_printf(b, "({ sp_Time _t%d = ", tt); emit_expr(c, recv, b);

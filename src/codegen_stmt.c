@@ -23239,7 +23239,9 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
         int tv = ++g_tmp;
         emit_indent(&hd, indent + 1);
         buf_printf(&hd, "{ sp_RbVal _t%d = ", tv); emit_boxed(c, argv[a], &hd);
-        buf_printf(&hd, "; SP_GC_ROOT_RBVAL(_t%d);\n", tv);
+        /* (an Array, or one #to_ary answers: anything else is CRuby's
+           TypeError, where its length read as 0 appended nothing) */
+        buf_printf(&hd, "; SP_GC_ROOT_RBVAL(_t%d); _t%d = sp_poly_ary_arg_ck(_t%d);\n", tv, tv, tv);
         emit_indent(&hd, indent + 1);
         buf_printf(&hd, "sp_int _t%d = sp_poly_length(_t%d);\n", tn, tv);
         emit_indent(&lp, indent + 1);

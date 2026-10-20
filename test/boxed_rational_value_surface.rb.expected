@@ -1,0 +1,18 @@
+[:frozen, [true, true]]
+[:is_a, [true, true, true]]
+[:complex_is_a, [true, true]]
+[:eql, [false, true, true]]
+[:time, [(3/4), 1]]
+time_str: TypeError: can't convert String into an exact number
+[:i, (0+1i)]
+round nil: TypeError: not an integer
+floor nil: TypeError: not an integer
+round true: TypeError: not an integer
+floor true: TypeError: not an integer
+round str: TypeError: not an integer
+floor str: TypeError: not an integer
+round flt: TypeError: not an integer
+floor flt: TypeError: not an integer
+["round one", (4/5)]
+["floor one", (7/10)]
+[:float_round, 2.3]

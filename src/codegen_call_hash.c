@@ -376,13 +376,28 @@ int emit_op_hash_fetch(Compiler *c, const BopCtx *x, Buf *b) {
     buf_printf(b, "); sp_raise_key_not_found(_t%d); %s; })", tk, miss_v);
     return 1;
   }
-  buf_printf(b, "; %s _t%d = ", c_type_name(ty_hash_key(rt)), tk); emit_hash_key(c, argv[0], ty_hash_key(rt), b);
+  /* a boxed key on a typed table: the KeyError names the key as it was,
+     not its conversion to the table's key kind (a Rational or a Symbol
+     looked up in a String-keyed table read as nil) */
+  TyKind kt = ty_hash_key(rt);
+  int tb = -1;
+  if (repr_of(c, argv[0]).kind == RK_BOXED && kt != TY_POLY && (kt == TY_STRING || kt == TY_SYMBOL)) {
+    tb = ++g_tmp;
+    buf_printf(b, "; sp_RbVal _t%d = ", tb); emit_boxed(c, argv[0], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); %s _t%d = ({ sp_RbVal _hk = _t%d; ", tb, c_type_name(kt), tk, tb);
+    if (kt == TY_STRING) buf_puts(b, "_hk = sp_poly_strbuf_deref(_hk); _hk.tag == SP_TAG_STR ? _hk.v.s : (const char *)0; })");
+    else buf_puts(b, "_hk.tag == SP_TAG_SYM ? (sp_sym)_hk.v.i : (sp_sym)-1; })");
+  }
+  else {
+    buf_printf(b, "; %s _t%d = ", c_type_name(kt), tk); emit_hash_key(c, argv[0], kt, b);
+  }
   buf_printf(b, "; sp_%sHash_has_key(_t%d, _t%d) ? sp_%sHash_%s(_t%d, _t%d) : (",
              hn, th, tk, hn, vo ? "vget" : "get", th, tk);
   buf_puts(b, "sp_exc_stage_recv(");
   emit_boxed_text(c, rt, htmp, b);
   buf_puts(b, "), sp_raise_key_not_found(");
-  emit_boxed_text(c, ty_hash_key(rt), keytmp, b);
+  if (tb >= 0) buf_printf(b, "_t%d", tb);
+  else emit_boxed_text(c, kt, keytmp, b);
   buf_printf(b, "), %s); })", miss_v);
   return 1;
 }

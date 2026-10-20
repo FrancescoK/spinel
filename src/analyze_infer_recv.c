@@ -997,7 +997,9 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
                 int boxed_num = 0;
                 for (int e = 0; rev && e < ren; e++) {
                   TyKind eet = infer_type(c, rev[e]);
-                  if (eet == TY_RATIONAL || eet == TY_COMPLEX) { boxed_num = 1; break; }
+                  /* (a boxed element is any number at all: a Rational read
+                     out of a mixed Array folded into 0 as an Integer) */
+                  if (eet == TY_RATIONAL || eet == TY_COMPLEX || eet == TY_POLY || eet == TY_BIGINT) { boxed_num = 1; break; }
                 }
                 if (boxed_num) it = TY_POLY;
               }

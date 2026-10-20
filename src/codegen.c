@@ -19211,6 +19211,9 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
       "    if(v.cls_id==SP_BUILTIN_RANGE||v.cls_id==SP_BUILTIN_STR_RANGE)return ((sp_Class){-106});\n"
       "    if(v.cls_id==SP_BUILTIN_TIME)return ((sp_Class){-107});\n"
       "    if(v.cls_id==SP_BUILTIN_PROC)return ((sp_Class){-118});\n"
+      /* a Rational (small or big) and a Complex are Numerics, not Objects */
+      "    if(v.cls_id==SP_BUILTIN_RATIONAL||v.cls_id==SP_BUILTIN_BIG_RATIONAL)return ((sp_Class){-142});\n"
+      "    if(v.cls_id==SP_BUILTIN_COMPLEX)return ((sp_Class){-131});\n"
       "    if(v.cls_id==SP_BUILTIN_ENUMERATOR)return ((sp_Class){-144});\n"
       "    if(v.cls_id>=-12)return ((sp_Class){-116});\n"
       "    if(v.cls_id>=-20||v.cls_id==-34)return ((sp_Class){-105});\n"  /* hashes */
