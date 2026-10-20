@@ -1,0 +1,27 @@
+true: can't convert true into Rational
+false: can't convert false into Rational
+symbol: can't convert Symbol into Rational
+array: can't convert Array into Rational
+hash: can't convert Hash into Rational
+range: can't convert Range into Rational
+object: can't convert Object into Rational
+class: can't convert Class into Rational
+proc: can't convert Proc into Rational
+regexp: can't convert Regexp into Rational
+bool param: can't convert true into Rational
+boxed true: can't convert true into Rational
+boxed false: can't convert false into Rational
+boxed symbol: can't convert Symbol into Rational
+boxed array: can't convert Array into Rational
+(1/1)
+(5/2)
+(1/3)
+(3/4)
+plain: can't convert Plain into Rational
+boxed plain: can't convert Plain into Rational
+(2/1)
+order: can't convert Symbol into Rational
+[:arg]
+(3/1)
+(1/2)
+(2/3)
