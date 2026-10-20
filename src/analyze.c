@@ -26455,7 +26455,9 @@ void propagate_borrowed_volatile(Compiler *c) {
       Scope *s = comp_scope_of(c, u);
       if (!s) continue;
       if (kind == NK_SuperNode || kind == NK_ForwardingSuperNode) {
-        int mi = a_super_target(c, s);
+        /* a super in no class, a top-level def's or one a rewrite left
+           outside the tree, has no target */
+        int mi = s->class_id >= 0 ? a_super_target(c, s) : -1;
         if (mi < 0) continue;
         Scope *m = &c->scopes[mi];
         for (int j = 0; j < m->nparams; j++) {
