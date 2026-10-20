@@ -1,0 +1,49 @@
+[NoMethodError, "undefined method 'abs' for nil"]
+[NoMethodError, "undefined method 'abs' for true"]
+(0/1)
+(0/1)
+(0/1)
+(0/1)
+(0/1)
+(0/1)
+(0/1)
+[NoMethodError, "undefined method 'abs' for nil"]
+[NoMethodError, "undefined method 'abs' for true"]
+[NoMethodError, "undefined method 'abs' for false"]
+[NoMethodError, "undefined method 'abs' for an instance of String"]
+[NoMethodError, "undefined method 'abs' for an instance of Symbol"]
+[NoMethodError, "undefined method 'abs' for an instance of Array"]
+[NoMethodError, "undefined method 'abs' for an instance of Hash"]
+(0/1)
+(0/1)
+(0/1)
+(0/1)
+(0/1)
+(4/3)
+(4/3)
+(5/4)
+(4/3)
+(4/3)
+(0/1)
+(0/1)
+(0/1)
+(0/1)
+(0/1)
+(0/1)
+(0/1)
+(0/1)
+[NoMethodError, "undefined method 'abs' for nil"]
+[NoMethodError, "undefined method 'abs' for true"]
+(4/3)
+(4/3)
+(4/3)
+(5/4)
+(4/3)
+[NoMethodError, "undefined method 'abs' for an instance of Object"]
+receiver
+epsilon
+[NoMethodError, "undefined method 'abs' for nil"]
+epsilon
+[NoMethodError, "undefined method 'abs' for nil"]
+epsilon
+(0/1)

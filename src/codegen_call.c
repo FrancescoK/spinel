@@ -4910,9 +4910,13 @@ void emit_concurrency_raise(Compiler *c, const char *rtext, int argc, const int 
   buf_puts(b, ")");
 }
 
-/* A Rational read as the Float an epsilon slot takes. */
-static void emit_rational_to_f_expr(Compiler *c, int node, Buf *b) {
-  buf_puts(b, "sp_rational_to_f("); emit_expr(c, node, b); buf_puts(b, ")");
+/* The epsilon a nullable Float's rationalize reads, as the Float it takes:
+   the typed route's conversion (emit_rationalize_eps_float), or its
+   NoMethodError for abs. */
+static void emit_float_rationalize_epsilon(Compiler *c, int node, Buf *b) {
+  TyKind et = repr_of(c, node).as_ty;
+  if (rationalize_eps_is_number(et)) emit_rationalize_eps_float(c, node, et, b);
+  else { buf_puts(b, "({ "); emit_rationalize_eps_raise(c, node, b); buf_puts(b, " 0.0; })"); }
 }
 void emit_voided_operands(Compiler *c, int recv, int arg, int v, Buf *b) {
   buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
@@ -5763,7 +5767,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         Buf fp; memset(&fp, 0, sizeof fp);
         Buf fv; memset(&fv, 0, sizeof fv);
         emit_split_pre(c, argv[0], emit_expr, &np, &nv);
-        emit_split_pre(c, argv[0], comp_ntype(c, argv[0]) == TY_RATIONAL ? emit_rational_to_f_expr : emit_float_expr, &fp, &fv);
+        emit_split_pre(c, argv[0], emit_float_rationalize_epsilon, &fp, &fv);
         int tr = ++g_tmp;
         buf_printf(b, "sp_Rational _t%d; if (_t%d.nil) { %s(void)(%s); _t%d = sp_rational_new(0, 1); }"
                       " else { %s_t%d = sp_float_rationalize(_t%d.v, %s); } _t%d; })",
