@@ -2160,7 +2160,7 @@ static void cf_call_any(CF *f, int v, const char *nm, const int *argv, int argc,
   if (blk >= 0 && nt_kind(f->nt, blk) == NK_BlockNode) { cf_all_block_params(f, blk); cf_flow(f, blk, v); }
   /* (the kinds: code the walk does not see may store into an argument's
      containers, but a query stores nothing) */
-  int kesc = f->kon && !cf_kquery(nm) && (v < 0 || v >= f->nnodes || cf_kfirst(f, v, 8));
+  int kesc = f->kon && !cf_kquery(nm);
   for (int a = 0; a < argc; a++) {
     NodeKind k = nt_kind(f->nt, argv[a]);
     if (k == NK_BlockArgumentNode || k == NK_SymbolNode) continue;
@@ -2170,7 +2170,9 @@ static void cf_call_any(CF *f, int v, const char *nm, const int *argv, int argc,
        holds */
     if (f->directed) cf_escape(f, an);
     else cf_all(f, an);
-    if (kesc) cf_push_int(&f->kesc, &f->nkesc, &f->ckesc, an);
+    /* (once per argument, whichever call hands it on; an anonymous `*`
+       names no container) */
+    if (kesc && an >= 0 && cf_kfirst(f, an, 64)) cf_push_int(&f->kesc, &f->nkesc, &f->ckesc, an);
   }
   (void)c;
 }
