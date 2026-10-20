@@ -876,7 +876,7 @@ int emit_hash_reduce_scalar_expr(Compiler *c, int id, Buf *b) {
    in the way, else -1: the conversion answers a String operand itself. */
 static int fold_boxed_conversion_operand(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
-  v = unwrap_parens(c, v);
+  v = nt_paren_single(nt, v);
   if (v < 0 || nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0 || nt_safe_nav(nt, v)) return -1;
   const char *nm = nt_str(nt, v, "name");
   int recv = nt_ref(nt, v, "receiver"), argc = 0;
