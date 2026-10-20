@@ -1,3 +1,4 @@
+# spinel: int64 -- (5 << 32) | 7 is past 2^31; not run on a 32-bit target
 # In a program with an identity Set, a boxed value the analysis cannot tell
 # from a Set may still be an Integer: `bits & 0xFF` there is no Set's `&`
 # (a Set raises ArgumentError for an operand that is no collection, before
