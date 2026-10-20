@@ -1,0 +1,17 @@
+nil: NoMethodError: undefined method 'abs' for nil
+true: NoMethodError: undefined method 'abs' for true
+string: NoMethodError: undefined method 'abs' for an instance of String
+symbol: NoMethodError: undefined method 'abs' for an instance of Symbol
+boxed nil: NoMethodError: undefined method 'abs' for nil
+(1/3)
+(1/3)
+(1/3)
+(1/3)
+(0/1)
+(1/3)
+(1/3)
+order: NoMethodError: undefined method 'abs' for nil
+[:r, :e]
+(1/3)
+(1/3)
+nilable rational nil: NoMethodError: undefined method 'abs' for nil

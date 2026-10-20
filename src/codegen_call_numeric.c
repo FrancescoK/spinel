@@ -708,7 +708,14 @@ int emit_op_float_rationalize(Compiler *c, const BopCtx *x, Buf *b) {
   int argc;
   const int *argv = call_args(c->nt, x->id, &argc);
   int arg = argv[0];
-  const char *r = x->rtext;
+  /* the receiver as a float: a Float, or a Rational's value (the Rational
+     row of the same name ends here too) */
+  Buf rf; memset(&rf, 0, sizeof rf);
+  if (x->rt == TY_RATIONAL) buf_puts(&rf, "sp_rational_to_f(");
+  if (x->rtext) buf_puts(&rf, x->rtext);
+  else emit_expr(c, x->recv, &rf);
+  if (x->rt == TY_RATIONAL) buf_puts(&rf, ")");
+  const char *r = rf.p ? rf.p : "";
   /* The epsilon must reach sp_float_rationalize as a float. emit_float_expr
      casts a Rational arg with (sp_float)(<struct>), which the C compiler
      rejects; convert it through sp_rational_to_f instead (#3224). */
@@ -733,6 +740,7 @@ int emit_op_float_rationalize(Compiler *c, const BopCtx *x, Buf *b) {
     else emit_float_expr(c, arg, b);
     buf_puts(b, ")");
   }
+  free(rf.p);
   return 1;
 }
 
