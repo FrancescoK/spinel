@@ -1,0 +1,35 @@
+recv_nonblock quiet: :wait_readable
+recv_nonblock loud: IO::EAGAINWaitReadable
+recv_nonblock nil: IO::EAGAINWaitReadable
+boxed recv_nonblock quiet: :wait_readable
+recv_nonblock quiet, data waiting: "Seongsu Bridge"
+boxed recv_nonblock quiet, data waiting: "Jayang-dong"
+recv_nonblock seongsu:: ArgumentError: unknown keyword: :seongsu (ran [1])
+boxed recv_nonblock exception: false, jayang:: ArgumentError: unknown keyword: :jayang (ran [false, 2])
+recv_nonblock, the data still waiting: "Achasan"
+recv_nonblock **opts: :wait_readable
+recv_nonblock **odd: ArgumentError: unknown keywords: :mangwon, :hapjeong (ran [])
+read_nonblock quiet: :wait_readable
+read_nonblock nil: ArgumentError: expected true or false as exception: nil (ran [])
+boxed read_nonblock quiet: :wait_readable
+boxed read_nonblock 1: ArgumentError: expected true or false as exception: 1 (ran [])
+write_nonblock gimpo:: ArgumentError: unknown keyword: :gimpo (ran [5])
+boxed write_nonblock incheon:, gimpo:: ArgumentError: unknown keywords: :incheon, :gimpo (ran [6, 7])
+read_nonblock, nothing written: :wait_readable
+read_nonblock jamsil:: ArgumentError: unknown keyword: :jamsil (ran [8])
+read_nonblock quiet, data waiting: "Kondae"
+write_nonblock quiet, pipe full: :wait_writable
+write_nonblock loud, pipe full: IO::EAGAINWaitWritable
+boxed write_nonblock quiet, pipe full: :wait_writable
+boxed write_nonblock nil: ArgumentError: expected true or false as exception: nil (ran [])
+read_nonblock quiet, at EOF: nil
+read_nonblock loud, at EOF: EOFError
+accept_nonblock quiet: :wait_readable
+accept_nonblock nil: IO::EAGAINWaitReadable
+boxed accept_nonblock quiet: :wait_readable
+boxed accept_nonblock children:: ArgumentError: unknown keyword: :children (ran [9])
+connect_nonblock quiet: :wait_writable
+connect_nonblock nil: IO::EINPROGRESSWaitWritable
+boxed connect_nonblock quiet: :wait_writable
+connect_nonblock hangang:: unknown keyword: :hangang
+boxed recv_nonblock quiet, at EOF: nil

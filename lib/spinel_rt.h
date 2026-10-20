@@ -2474,6 +2474,15 @@ static int sp_sock_rl_flag(sp_RbVal v) {
   sp_raise_cls("TypeError", sp_sprintf("wrong argument type %s (expected Symbol)", sp_poly_class_name(v)));
   return -1;
 }
+/* A *_nonblock call's `exception:` switch read at run time: IO's
+   read_nonblock and write_nonblock take true or false alone, and a socket
+   call raises for anything but false, as CRuby's do. */
+static sp_bool sp_nonblock_exc(sp_RbVal v, int io) SP_UNUSED;
+static sp_bool sp_nonblock_exc(sp_RbVal v, int io) {
+  if (io && v.tag != SP_TAG_BOOL)
+    sp_raise_cls("ArgumentError", sp_sprintf("expected true or false as exception: %s", sp_poly_inspect(v)));
+  return !(v.tag == SP_TAG_BOOL && !v.v.i);
+}
 /* Process.times -> Process::Tms: four cumulative CPU times in seconds.
    An unboxed value like sp_Range/sp_Class -- there is nothing to mutate. */
 static sp_Tms sp_process_times(void) {
