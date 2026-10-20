@@ -14229,7 +14229,7 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
     int tv = ++g_tmp;
     buf_printf(val, "({ sp_RbVal _t%d = ", tv);
     emit_boxed(c, argv[0], val);
-    buf_puts(val, "; sp_int _s = ");
+    buf_printf(val, "; SP_GC_ROOT_RBVAL(_t%d); sp_int _s = ", tv);
     if (argc >= 2) emit_expr(c, argv[1], val); else buf_puts(val, "0");
     buf_puts(val, "; sp_int _l = ");
     if (argc == 3) emit_expr(c, argv[2], val); else buf_puts(val, "0");
