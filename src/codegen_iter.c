@@ -5570,6 +5570,49 @@ static void emit_poly_auto_splat(Compiler *c, int block, int telem, Buf *b, int 
   emit_indent(b, indent + 1); buf_puts(b, "}\n");
 }
 
+/* `each { |k, v| }` (each_pair) over the boxed receiver _t<ta>, at index
+   _t<ti>: a builtin Hash binds its entry's key and value straight from the
+   table (sp_poly_hash_pair), the values sp_poly_each_elem would put in a
+   [k, v] Array for emit_poly_auto_splat to take apart again -- an Array per
+   entry, which a MessagePack packer paid on every map it wrote. Any other
+   receiver takes that path. _t<th> is whether the receiver is a builtin
+   Hash, read once before the loop so the other receivers' walk tests only
+   it. Parameters past the second bind nil, as a splat of the pair does. */
+static void emit_poly_hash_pair_or_splat(Compiler *c, int block, int ta, int ti, int th, Buf *b, int indent) {
+  Scope *bs = comp_scope_of(c, block);
+  int npp = 0; while (block_param_name(c, block, npp)) npp++;
+  int tk = ++g_tmp, tv = ++g_tmp;
+  emit_indent(b, indent + 1);
+  buf_printf(b, "if (_t%d) {\n", th);
+  emit_indent(b, indent + 2);
+  buf_printf(b, "sp_RbVal _t%d, _t%d;\n", tk, tv);
+  emit_indent(b, indent + 2);
+  buf_printf(b, "sp_poly_hash_pair(_t%d, _t%d, &_t%d, &_t%d);\n", ta, ti, tk, tv);
+  for (int pj = 0; pj < npp; pj++) {
+    const char *pnj = block_param_name(c, block, pj);
+    if (!pnj) break;
+    LocalVar *plv = bs ? scope_local(bs, pnj) : NULL;
+    TyKind pt = plv ? plv->type : TY_POLY;
+    emit_indent(b, indent + 2);
+    if (pj < 2) {
+      char src[32]; snprintf(src, sizeof src, "_t%d", pj == 0 ? tk : tv);
+      emit_block_param_from_boxed(c, rename_local(pnj), pt, src, b);
+    }
+    else {
+      buf_printf(b, "lv_%s = ", rename_local(pnj));
+      emit_block_param_nil(c, pt, b);
+      buf_puts(b, ";\n");
+    }
+  }
+  emit_indent(b, indent + 1); buf_puts(b, "}\n");
+  emit_indent(b, indent + 1); buf_puts(b, "else {\n");
+  int telem = ++g_tmp;
+  emit_indent(b, indent + 2);
+  buf_printf(b, "sp_RbVal _t%d = sp_poly_each_elem(_t%d, _t%d);\n", telem, ta, ti);
+  emit_poly_auto_splat(c, block, telem, b, indent + 1);
+  emit_indent(b, indent + 1); buf_puts(b, "}\n");
+}
+
 /* the outer slot's own C type: an Integer / Float slot holding its nil
    beside the value is saved as its sp_oint */
 static int emit_shadow_save(Compiler *c, const LocalVar *lv, const char *name, Buf *b, int indent) {
@@ -7094,6 +7137,13 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
     buf_printf(b, "_t%d = %s(_t%d);\n", ta,
                sp_streq(name, "reverse_each") ? "sp_poly_iter_subject" : "sp_poly_iter_walk", ta);
     emit_indent(b, indent); buf_printf(b, "sp_int _t%d = sp_poly_arr_len_ex(_t%d);\n", tn, ta);
+    int npp_poly = 0; while (block_param_name(c, block, npp_poly)) npp_poly++;
+    int thash = 0;
+    if (!is_ewi && npp_poly >= 2 && !gather && (sp_streq(name, "each") || sp_streq(name, "each_pair"))) {
+      thash = ++g_tmp;
+      emit_indent(b, indent);
+      buf_printf(b, "int _t%d = _t%d.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_t%d.cls_id);\n", thash, ta, ta);
+    }
     emit_indent(b, indent);
     if (sp_streq(name, "reverse_each"))
       buf_printf(b, "for (sp_int _t%d = _t%d - 1; _t%d >= 0; _t%d--) {\n", ti, tn, ti, ti);
@@ -7109,7 +7159,6 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
        when the element is itself an Array (sp_poly_each_elem already renders a
        hash pair as a 2-element array, so |k, v| over a hash still splats); a
        non-array element binds param 0 with the rest nil. */
-    int npp_poly = 0; while (block_param_name(c, block, npp_poly)) npp_poly++;
     if (is_ewi) {
       /* each_with_index { |v, i| }: bind param 0 to the WHOLE element (never
          splatting a nested array, unlike `each`) and param 1 to the loop index;
@@ -7147,6 +7196,8 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
         buf_puts(b, ";\n");
       }
     }
+    else if (thash)
+      emit_poly_hash_pair_or_splat(c, block, ta, ti, thash, b, indent);
     else if (npp_poly >= 2 && !gather) {
       int telem = ++g_tmp;
       emit_indent(b, indent + 1);
