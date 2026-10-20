@@ -38851,33 +38851,56 @@ static int wnh_call_target(Compiler *c, int call) {
   if (rt == TY_POLY || rt == TY_UNKNOWN) return -2;
   return ty_is_object(rt) ? comp_method_in_chain(c, ty_object_class(rt), cn, NULL) : -1;
 }
+/* A value of a local the widening retypes is a call of method `mi` or an empty
+   Hash literal (`h = first_seen(a) || {}`): the literal is built at the kind
+   the local takes. Answers nonzero for a leaf that is neither. */
+typedef struct { Compiler *c; int mi; TyKind want; } WnhSlotLeaf;
+static int wnh_slot_leaf_other(const VpLeaf *leaf, void *ud) {
+  WnhSlotLeaf *s = ud;
+  const NodeTable *nt = s->c->nt;
+  if (leaf->kind != VPK_EXPR) return 1;
+  if (nt_kind(nt, leaf->node) == NK_HashNode) { int en = 0; nt_arr(nt, leaf->node, "elements", &en); return en != 0; }
+  return nt_kind(nt, leaf->node) != NK_CallNode || wnh_call_target(s->c, leaf->node) != s->mi;
+}
+static int wnh_slot_retype_leaf(const VpLeaf *leaf, void *ud) {
+  WnhSlotLeaf *s = ud;
+  if (leaf->kind == VPK_EXPR && nt_kind(s->c->nt, leaf->node) == NK_HashNode) {
+    comp_set_ntype(s->c, leaf->node, s->want);
+    if (s->c->hash_want && leaf->node < s->c->node_cap) comp_set_hash_want(s->c, leaf->node, s->want);
+  }
+  return 0;
+}
+/* The local a call of method `mi` is a value of (`h = first_seen(a)`, or
+   `h = first_seen(a) || {}`), when that local holds only calls of `mi` and
+   empty literals and hands nothing on whole: it is retyped with the method's
+   return. Its scope in *sc; NULL otherwise. */
+static const char *wnh_call_slot(Compiler *c, int mi, int call, Scope **sc) {
+  const NodeTable *nt = c->nt;
+  VpUp up;
+  if (vp_climb(nt, comp_parent_map(c), call, VP_AND_LEFT | VPS_ALL, &up) != VPU_ENDED || up.parent < 0 ||
+      nt_kind(nt, up.parent) != NK_LocalVariableWriteNode) return NULL;
+  int w = up.parent;
+  const char *ln = nt_str(nt, w, "name");
+  Scope *s = comp_scope_of(c, w);
+  if (!ln || !s || wnh_local_escapes(c, s, ln)) return NULL;
+  NT_FOREACH_KIND(nt, NK_LocalVariableTargetNode, t)   /* a multiple assignment's or rescue's target */
+    if (comp_scope_of(c, t) == s && sp_streq(nt_str(nt, t, "name"), ln)) return NULL;
+  WnhSlotLeaf sl = { c, mi, TY_UNKNOWN };
+  for (int o = an_local_writes_named_first(c, ln); o >= 0; o = an_local_writes_named_next(o)) {
+    const char *on = nt_str(nt, o, "name");
+    if (!on || !sp_streq(on, ln) || comp_scope_of(c, o) != s) continue;
+    int ov = nt_kind(nt, o) == NK_LocalVariableWriteNode ? nt_ref(nt, o, "value") : -1;
+    if (ov < 0 || for_each_value_position(nt, ov, VP_AND_LEFT | VPS_ALL, wnh_slot_leaf_other, &sl)) return NULL;
+  }
+  *sc = s;
+  return ln;
+}
 /* Can method mi's return widen with the literal it answers? Every call of
    it must resolve to it, and its value be read only where the reader
    re-derives the kind: a builtin's receiver or argument (`f(v) == h`,
    `p f(v)`), or dropped. One that lands in a slot (a variable, a return, a
    program method's argument, a literal's element) keeps the typed kind and
    its store refuses, as before. */
-/* The local a call of method `mi` is the whole value of (`h = first_seen(a)`),
-   when that local holds only calls of `mi` and hands nothing on whole: it is
-   retyped with the method's return. Its scope in *sc; NULL otherwise. */
-static const char *wnh_call_slot(Compiler *c, int mi, int call, Scope **sc) {
-  const NodeTable *nt = c->nt;
-  int w = comp_parent_map(c)[call];
-  if (w < 0 || nt_kind(nt, w) != NK_LocalVariableWriteNode || nt_ref(nt, w, "value") != call) return NULL;
-  const char *ln = nt_str(nt, w, "name");
-  Scope *s = comp_scope_of(c, w);
-  if (!ln || !s || wnh_local_escapes(c, s, ln)) return NULL;
-  NT_FOREACH_KIND(nt, NK_LocalVariableTargetNode, t)   /* a multiple assignment's or rescue's target */
-    if (comp_scope_of(c, t) == s && sp_streq(nt_str(nt, t, "name"), ln)) return NULL;
-  for (int o = an_local_writes_named_first(c, ln); o >= 0; o = an_local_writes_named_next(o)) {
-    const char *on = nt_str(nt, o, "name");
-    if (!on || !sp_streq(on, ln) || comp_scope_of(c, o) != s) continue;
-    int ov = nt_kind(nt, o) == NK_LocalVariableWriteNode ? nt_ref(nt, o, "value") : -1;
-    if (ov < 0 || nt_kind(nt, ov) != NK_CallNode || wnh_call_target(c, ov) != mi) return NULL;
-  }
-  *sc = s;
-  return ln;
-}
 static int wnh_ret_widenable(Compiler *c, int mi) {
   const NodeTable *nt = c->nt;
   const char *nm = c->scopes[mi].name;
@@ -38923,8 +38946,13 @@ static int wnh_widen_ret(Compiler *c, int mi, TyKind want) {
     if (!lv || lv->type == want) continue;
     lv_set_type(lv, want);
     wnh_widen_block_params(c, slot_sc, ln, ty_hash_key(want) == TY_POLY, ty_hash_val(want) == TY_POLY);
-    for (int o = an_local_writes_named_first(c, ln); o >= 0; o = an_local_writes_named_next(o))
-      if (comp_scope_of(c, o) == slot_sc && sp_streq(nt_str(nt, o, "name"), ln)) comp_set_ntype(c, o, want);
+    WnhSlotLeaf sl = { c, mi, want };
+    for (int o = an_local_writes_named_first(c, ln); o >= 0; o = an_local_writes_named_next(o)) {
+      if (comp_scope_of(c, o) != slot_sc || !sp_streq(nt_str(nt, o, "name"), ln)) continue;
+      comp_set_ntype(c, o, want);
+      int ov = nt_ref(nt, o, "value");   /* the join and its empty literals are the Hash the local is */
+      if (ov >= 0) { comp_set_ntype(c, ov, want); for_each_value_position(nt, ov, VP_AND_LEFT | VPS_ALL, wnh_slot_retype_leaf, &sl); }
+    }
     NT_FOREACH_KIND(nt, NK_LocalVariableReadNode, rr) {
       const char *rn = nt_str(nt, rr, "name");
       if (rn && sp_streq(rn, ln) && comp_scope_of(c, rr) == slot_sc) comp_set_ntype(c, rr, want);
