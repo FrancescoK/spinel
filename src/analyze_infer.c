@@ -7937,6 +7937,11 @@ static int is_poly_exc_boxed_accessor(const char *name) {
   return sp_streq(name, "backtrace") || sp_streq(name, "result") || sp_streq(name, "errno") ||
          sp_streq(name, "error_code") || sp_streq(name, "key") || sp_streq(name, "receiver");
 }
+/* ...called with no argument, and #exception with or without a message:
+   the receiver or a copy of it, boxed (the emitter's poly arm) */
+static int is_poly_exc_boxed_call(const char *name, int argc) {
+  return (argc == 0 && is_poly_exc_boxed_accessor(name)) || (argc <= 1 && sp_streq(name, "exception"));
+}
 
 /* A push onto a typed Array a builtin call just built (`s.scan(/\d+/) << 99`,
    `str.split << x`), given an element of another kind the typed Array cannot
@@ -8239,7 +8244,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
        the exception has none -- `if msg.backtrace` in the logger gem's
        Formatter was refused as a non-bool condition because the call had
        no type at all */
-    if (argc == 0 && is_poly_exc_boxed_accessor(name)) return TY_POLY;
+    if (is_poly_exc_boxed_call(name, argc)) return TY_POLY;
   }
 
   TyKind send_ret;
