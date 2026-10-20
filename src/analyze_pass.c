@@ -2662,11 +2662,13 @@ static int masgn_local_take(Compiler *c, LocalVar *lv, TyKind t, int node) {
   return 0;
 }
 
-/* An attribute target `o.x` takes the element: the field an attr_accessor's
-   writer keeps in each class the receiver can be (the receiver's own, or
-   every class with the writer for a boxed one) is unified with it. A field
-   typed for another write alone would take the boxed element through an
-   unchecked cast. A user writer's parameter is the call's evidence. */
+/* An attribute target `o.x` nested in a `(a, b)` takes the element, boxed:
+   the field an attr_accessor's writer keeps in each class the receiver can
+   be (the receiver's own, or every class with the writer for a boxed one) is
+   unified with it, and the parameter of a `def x=(v)` the program writes is
+   taken the same way. A field or parameter typed for another write alone
+   would take the boxed element through an unchecked cast; the nested target
+   has no call evidence to say otherwise. */
 static int masgn_attr_take(Compiler *c, int tgt, TyKind elem) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, tgt, "name");
@@ -2680,7 +2682,14 @@ static int masgn_attr_take(Compiler *c, int tgt, TyKind elem) {
   for (int k = 0; k < c->nclasses; k++) {
     if (only >= 0 && k != only) continue;
     int wdc = -1, mdc = -1;
-    if (!comp_writer_in_chain(c, k, base, &wdc) || comp_method_in_chain(c, k, nm, &mdc) >= 0) continue;
+    int wmi = comp_method_in_chain(c, k, nm, &mdc);
+    if (wmi >= 0) {
+      Scope *ws = &c->scopes[wmi];
+      LocalVar *wp = ws->nparams >= 1 ? scope_local(ws, ws->pnames[0]) : NULL;
+      if (wp) changed |= slot_take(c, wp, elem, -1);
+      continue;
+    }
+    if (!comp_writer_in_chain(c, k, base, &wdc)) continue;
     int wcls = wdc >= 0 ? wdc : k, iv = comp_ivar_index(&c->classes[wcls], ivn);
     if (iv < 0 || class_ivar_pinned(&c->classes[wcls], ivn)) continue;
     TyKind mg = ty_unify(c->classes[wcls].ivar_types[iv], elem);
