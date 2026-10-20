@@ -1013,6 +1013,12 @@ TESTS := $(wildcard test/*.rb)
 ifneq (,$(findstring RE_NO_UNICODE_,$(RE_CASE_FLAGS)))
 TESTS := $(filter-out test/regexp_unicode_casefold.rb test/regexp_unicode_ctype.rb,$(TESTS))
 endif
+# Parser-incompatible: a program whose inline RBS annotations decide what
+# it prints (`# spinel: needs-rbs-parser` in its header) runs only where
+# the rbs C parser is fetched; without it the annotations are comments.
+ifeq ($(wildcard $(RBS_INC)/rbs/parser.h),)
+TESTS := $(filter-out $(shell grep -l '^\# spinel: needs-rbs-parser' test/*.rb),$(TESTS))
+endif
 # Mode-incompatible: int_overflow_raises pins raise-mode semantics; under
 # --int-overflow=promote the same code auto-promotes and output diverges.
 # float_to_int_out_of_range and float_to_int_boundary are the same case for

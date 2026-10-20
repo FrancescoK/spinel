@@ -1,3 +1,4 @@
+# spinel: needs-rbs-parser
 # spinel: not-cruby -- the annotations are false; Spinel checks a Hash
 # return whose body answers a boxed value when it returns, in every build,
 # and raises TypeError where the value is no Hash (or nil without `?`).

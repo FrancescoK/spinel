@@ -1,3 +1,4 @@
+# spinel: needs-rbs-parser
 # A method an RBS signature declares to return a Hash, whose body answers a
 # value only the run time types (a read out of a Hash of mixed values, one
 # of them a lambda that appends to its argument). The value stays boxed, a
@@ -29,6 +30,9 @@ class Cfg
 
     CONF[key]
   end
+
+  # a method named like the checked one's body takes a C name of its own
+  def for__rbs_body(key) = "plain #{key}"
 end
 
 cfg = Cfg.new
@@ -43,3 +47,4 @@ p cfg.early("boxed")["x"]
 p cfg.early("boxed").equal?(BOXED_KEYS)
 p cfg.early("a")["y"]
 p CONF["c"].call(+"z")
+p cfg.for__rbs_body("a"), cfg.for("a")["x"]

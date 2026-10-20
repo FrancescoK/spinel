@@ -7039,16 +7039,25 @@ static const char *method_self_root(Compiler *c, Scope *s) {
 }
 /* A method whose Hash return seed gave way to the box its body answers
    (Scope.ret_rbs_hash) is emitted as two functions: the body under
-   <cname>__rbs_body, and under its own name a wrapper that checks the box
+   sp_0rbs_body_<scope index> (rbs_hash_body_cname), and under its own name a
+   wrapper that checks the box
    holds a Hash (sp_rbs_hash_ret) on every return, explicit or not. sig is
    the method's signature text; the body's is the same with the name
    changed. */
+/* The body's C name: no method's C name is `sp_` and a digit (a Ruby name
+   starts with no digit, a class's C name with a capital), so no method the
+   program defines, `foo__rbs_body` included, can take it */
+static void rbs_hash_body_cname(Compiler *c, Scope *s, char *out, size_t cap) {
+  snprintf(out, cap, "sp_0rbs_body_%d", (int)(s - c->scopes));
+}
 static void emit_rbs_hash_ret_body_sig(Compiler *c, Scope *s, const char *sig, Buf *b) {
   Buf cn; memset(&cn, 0, sizeof cn);
   emit_method_cname(c, s, &cn);
   const char *at = cn.p ? strstr(sig, cn.p) : NULL;
   if (!at) { buf_puts(b, sig); free(cn.p); return; }
-  buf_printf(b, "%.*s%s__rbs_body%s", (int)(at - sig), sig, cn.p, at + cn.len);
+  char bn[48];
+  rbs_hash_body_cname(c, s, bn, sizeof bn);
+  buf_printf(b, "%.*s%s%s", (int)(at - sig), sig, bn, at + cn.len);
   free(cn.p);
 }
 static void emit_rbs_hash_ret_wrapper(Compiler *c, Scope *s, const char *sig, Buf *b) {
@@ -7075,7 +7084,9 @@ static void emit_rbs_hash_ret_wrapper(Compiler *c, Scope *s, const char *sig, Bu
   }
   const char *cls = s->class_id >= 0 ? class_ruby_name(c, s->class_id) : NULL;
   if (s->class_id >= 0 && !cls) cls = c->classes[s->class_id].name;
-  buf_printf(b, "%s {\n  return sp_rbs_hash_ret(%s__rbs_body(%s), %d, \"%s%s%s\");\n}\n", sig, cn.p,
+  char bn[48];
+  rbs_hash_body_cname(c, s, bn, sizeof bn);
+  buf_printf(b, "%s {\n  return sp_rbs_hash_ret(%s(%s), %d, \"%s%s%s\");\n}\n", sig, bn,
              args.p ? args.p : "", s->ret_rbs_hash_nil ? 1 : 0, cls ? cls : "", cls ? (s->is_cmethod ? "." : "#") : "",
              s->name ? s->name : "");
   free(args.p);
