@@ -933,6 +933,11 @@ int is_raise_alias(const char *n) {
 int is_exc_message_name(const char *n) {
   return sp_streq(n, "message") || sp_streq(n, "full_message") || sp_streq(n, "detailed_message");
 }
+/* Exception.exception(m) and e.exception(m): an exception that keeps m as its
+   message, as new does */
+int is_exception_factory(const char *n) {
+  return sp_streq(n, "exception");
+}
 /* +s alone: a route that answers its String operand unless frozen
    (--share-strings, emit_strbuf_route) */
 int is_unary_plus(const char *n) {

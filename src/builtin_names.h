@@ -176,6 +176,7 @@ int is_encoding_mutator(const char *n); /* encode! force_encoding */
 int encoding_mutator_max_argc(const char *n);
 int is_range_end_reader(const char *n); /* end last */
 int is_raise_alias(const char *n); /* fail raise */
+int is_exception_factory(const char *n); /* exception */
 int is_exc_message_name(const char *n); /* message full_message detailed_message */
 int is_unary_plus(const char *n); /* +@ */
 int is_loop_name(const char *n); /* loop */

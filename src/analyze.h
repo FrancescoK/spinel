@@ -22,6 +22,11 @@ const int *poly_recv_classes(Compiler *c, int call, int *n);
 /* Does an instantiated class of the program that the boxed receiver of `call`
    can be (any, when the walk does not bound it) define a method `name`? */
 int poly_recv_defines(Compiler *c, int call, const char *name);
+/* Does a method of the program answer the call `call` (the builtin reflection
+   it names, a program's method of that name in its receiver's class chain)? A
+   boxed receiver is asked by the classes it can be, a typed one by the call
+   plan's targets. */
+int call_reaches_program_method(Compiler *c, int call);
 /* The classes and modules the same receiver can be ITSELF, as a value (a
    constant naming one, `{b: Integer}`), marked in a set over the class
    table, or NULL when the walk cannot bound the receiver's values */

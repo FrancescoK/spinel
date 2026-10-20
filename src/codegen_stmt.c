@@ -2297,11 +2297,8 @@ int strbuf_route_ivar_get(Compiler *c, int v) {
   Repr r = repr_of(c, v);
   /* (the program's own method of the name answers for its class: a typed
      receiver of such a class binds to it, a boxed one is the reflection's
-     read only where no class it can be defines it, poly_recv_defines) */
-  int tg[CPT_MAX], recv = nt_ref(c->nt, v, "receiver");
-  int own = recv >= 0 && comp_ntype(c, recv) == TY_POLY ? poly_recv_defines(c, v, nt_str(c->nt, v, "name"))
-                                                         : cplan_targets(c, v, tg, CPT_MAX) != 0;
-  return (r.ty == TY_STRING || r.ty == TY_STRBUF) && !own;
+     read only where no class it can be defines it: call_reaches_program_method) */
+  return (r.ty == TY_STRING || r.ty == TY_STRBUF) && !call_reaches_program_method(c, v);
 }
 /* --share-strings: v is an exception's #message or #to_s, read off a receiver
    typed as an exception, answering a String */

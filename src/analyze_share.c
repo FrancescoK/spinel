@@ -3743,7 +3743,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     /* Formatted exception text is a new String, not the stored message.
        User targets above retain their own return facts. */
     if (c->share_strings && blk < 0 &&
-        (is_exception_full_message(name) || (argc == 0 && bop_share_named(TY_EXCEPTION, name) == BSH_PURE)) &&
+        is_exception_full_message(name) &&
         (rt == TY_EXCEPTION || (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt))))) return -1;
     /* (the renderings are no other value's method: off a boxed receiver
        too, each is a new String, with or without keywords) */
@@ -3757,7 +3757,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   }
   /* `Klass.exception(s)` and `e.exception(s)` make an exception that keeps s
      as its message, as `Klass.new(s)` does */
-  if (c->share_strings && recv >= 0 && argc == 1 && blk < 0 && sp_streq(name, "exception") &&
+  if (c->share_strings && recv >= 0 && argc == 1 && blk < 0 && is_exception_factory(name) &&
       !sh_has_targets(c, n) &&
       (rt == TY_EXCEPTION || (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt))) ||
        (rt == TY_CLASS && nt_kind(nt, recv) == NK_ConstantReadNode))) {
