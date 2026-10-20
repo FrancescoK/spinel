@@ -19,6 +19,11 @@
 # CIDENT_FLAGS=--int-overflow=promote); the reference cache is kept per
 # flag set.
 #
+# A reference of the same revision and flags built for another corpus is
+# reused: only the programs the change of corpus can reach are compiled
+# again. CIDENT_REF_ONLY=1 builds the reference and stops; CIDENT_KEEP (20)
+# is how many references are kept.
+#
 # Exit status: 0 identical, 1 some file differs, 2 infrastructure error.
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -171,6 +176,10 @@ if [ ! -f "$REFDIR/.done" ]; then
       system("rm", "-rf", $ARGV[1]); unlink $ARGV[0]' "$d.lock" "$d"
   done
 fi
+
+# CIDENT_REF_ONLY=1: only the reference, cached for the runs to come (built
+# right after a push, for the master the next change is compared with)
+[ -n "${CIDENT_REF_ONLY-}" ] && { echo "cident: reference of $(git rev-parse --short "$SHA") ready"; exit 0; }
 
 NEWDIR=$(mktemp -d "${TMPDIR:-/tmp}/spinel-cident-new.XXXXXX")
 emit "$NEW" "$ROOT" "$NEWDIR"
