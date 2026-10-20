@@ -565,6 +565,16 @@ static int str_box_by_kind(Compiler *c, int node, StrForm *sf) {
   TyKind t = comp_ntype(c, node);
   if (t != TY_STRING && t != TY_STRBUF) return 0;
   int kind = share_plan_producer(c, node, NULL);
+  /* a value that ran ahead of its call holding the handle its producer
+     hands on (emit_arg_temp: `kw(k: (u << "1"))`), where the plan boxes the
+     handle: that handle's box. Its bytes boxed were a copy taken where it
+     ran, which a change through the parameter never reached */
+  if (kind != SPK_NONE && kind != SPK_FROZEN && kind != SPK_BOX && ran_first_handle(node) >= 0 &&
+      !emit_boxed_lift(c, node) && share_plan_of(c, node, SPR_BOX, NULL).form == SPF_HANDLE) {
+    str_box_handle_tmp(b, ran_first_handle(node));
+    str_box_note(sf, RF_STRBUF_HANDLE, RW_RAN_FIRST);
+    return 1;
+  }
   _Static_assert(SPK__COUNT == 23, "a box render for each producer kind");
   switch (kind) {
   case SPK_NONE: case SPK_FROZEN: case SPK_BOX:
@@ -581,7 +591,12 @@ static int str_box_by_kind(Compiler *c, int node, StrForm *sf) {
       str_box_note(sf, RF_PASS, RW_HANDLE_ROUTE);
       return 1;
     }
-    if (!arg_ran_first(node, 0) && !emit_boxed_lift(c, node) && emit_strbuf_route_box(c, node, b)) {
+    /* (a reopened String method's call run through its proc-form clone,
+       or a catch, hands back a box too: emit_strbuf_route_box. Unboxed to
+       the call's String and boxed again, a handle's box became a box of
+       its bytes) */
+    if (!arg_ran_first(node, 0) && !emit_boxed_lift(c, node) &&
+        share_plan_of(c, node, SPR_BOX, NULL).form == SPF_HANDLE && emit_strbuf_route_box(c, node, b)) {
       str_box_note(sf, RF_PASS, RW_HANDLE_ROUTE);
       return 1;
     }
@@ -659,6 +674,25 @@ static int str_box_by_kind(Compiler *c, int node, StrForm *sf) {
     if (!arg_ran_first(node, 0) && !emit_boxed_lift(c, node) && str_box_kernel_string(c, node, b)) {
       str_box_note(sf, RF_PASS, RW_HANDLE_ROUTE);
       return 1;
+    }
+    /* ...or a route that answers the String it is handed (`v.capitalize` of an
+       empty v, `+s`), where the plan boxes the handle: the box of the handle
+       the route names (emit_strbuf_route), where the route's bytes boxed
+       were a copy of the operand's. Not a boxed receiver's to_s: its
+       dispatch answers a box's own String as the live bytes its handle owns,
+       which the box keeps as that handle, and the handle route would wrap
+       each arm's new String in a handle of its own */
+    if (!arg_ran_first(node, 0) && !emit_boxed_lift(c, node) &&
+        repr_boxed_to_s_operand(c, nt_paren_single(c->nt, node)) < 0 &&
+        share_plan_of(c, node, SPR_BOX, NULL).form == SPF_HANDLE) {
+      Buf hb; memset(&hb, 0, sizeof hb);
+      if (emit_strbuf_route(c, node, &hb)) {
+        str_box_handle(b, hb.p);
+        free(hb.p);
+        str_box_note(sf, RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
+        return 1;
+      }
+      free(hb.p);
     }
     return 0;
   case SPK_ASSIGN: case SPK_COND: case SPK_SEQUENCE:

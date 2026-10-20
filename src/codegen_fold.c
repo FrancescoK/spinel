@@ -8981,6 +8981,18 @@ static int arg_temp_conversion(Compiler *c, int v, TyKind at) {
   return strbuf_arg_bang_value(c, v);
 }
 
+/* --share-strings: does positional argument v, bound to a boxed parameter,
+   run ahead as the handle it hands on, which the box then holds
+   (ran_first_handle)? One the analysis lifted (poly_strbuf_lift), a bang
+   (`s.upcase!`, `s << x`) or a conditional with one on an arm
+   (strbuf_arg_bang_value), as emit_arg_temp takes a keyword argument's
+   (arg_temp_conversion); and a conditional with a handle on an arm that
+   runs ahead of a later argument (seq: `(n += 1; c ? u : w)`), whose arm's
+   bytes would be a copy the later argument's change misses. */
+static int arg_boxed_takes_handle(Compiler *c, int v, int seq) {
+  return c->poly_strbuf_lift[v] || strbuf_arg_bang_value(c, v) || (seq && strbuf_cond_has_handle_leaf(c, v));
+}
+
 /* The value `v` evaluated into a rooted temp in g_pre, pushed onto the
    g_argov overrides so its uses read the temp. */
 /* --share-strings: is v a bang (`s.upcase!`) on a handle, which answers that
@@ -12007,7 +12019,8 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
       /* --share-strings: a value that hands on a shared String's handle (a
          route, `s << x`) into a parameter that is the handle runs as that
          handle, which the binding takes (ran_first_handle) */
-      if ((repr_of_slot(c, hp).kind == RK_STRBUF || (repr_of_slot(c, hp).kind == RK_BOXED && c->poly_strbuf_lift[argv[k]])) &&
+      if ((repr_of_slot(c, hp).kind == RK_STRBUF ||
+           (repr_of_slot(c, hp).kind == RK_BOXED && arg_boxed_takes_handle(c, argv[k], seq))) &&
           at == TY_STRING && strbuf_arg_carries(c, argv[k])) {
         emit_strbuf_handle_of(c, argv[k], &hb);
         emit_indent(g_pre, g_indent);
