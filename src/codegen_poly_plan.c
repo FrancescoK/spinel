@@ -2128,7 +2128,7 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
         if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_INT_CHR, -1, TY_UNKNOWN, PC_SAME);
         buf_printf(b, "if (_t%d.tag == SP_TAG_INT) { _t%d = ", tv, tr);
         if (ret == TY_STRING) buf_printf(b, "sp_int_chr(_t%d.v.i)", tv);
-        else buf_printf(b, "sp_box_str(sp_int_chr(_t%d.v.i))", tv);
+        else buf_printf(b, "sp_box_str_fresh(sp_int_chr(_t%d.v.i))", tv);
         buf_puts(b, "; }\nelse ");
       }
       if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_STRT, -1, TY_UNKNOWN, PC_SAME);

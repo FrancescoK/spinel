@@ -317,6 +317,17 @@ static inline sp_RbVal sp_box_str_new(const char *v) {
   return sp_box_str(v);
 }
 
+/* A new String a call answers in bytes it may share with others (Integer#chr
+   answers a one-character table's), boxed for something that keeps the box:
+   with SP_SHARE_BOX_HANDLES a new handle over a copy of them, which an
+   append through any copy of the box changes; else the bytes (sp_box_str). */
+static inline sp_RbVal sp_box_str_fresh(const char *v) {
+#ifdef SP_SHARE_BOX_HANDLES
+  if (v) return sp_box_obj(sp_String_new_fresh(v), SP_BUILTIN_STRBUF);
+#endif
+  return sp_box_str(v);
+}
+
 /* encode! on a handle, given the String encode answered for it (lib/sp_cold.c) */
 void sp_String_encode_into(sp_String *h, const char *t);
 /* Cold in-place mutators (compiled once in lib/sp_string.c). */

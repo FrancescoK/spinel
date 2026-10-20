@@ -5039,6 +5039,14 @@ static int strbuf_dup_call(Compiler *c, int v) {
   return sp_streq(nm, "dup") ? 1 : 2;
 }
 void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
+  /* --share-strings: `x&.itself` is x, nil or not, and so is its handle */
+  { int w = unwrap_parens(c, v);
+    if (repr_share_rule(c) && repr_of_slot(c, lv).handle && w >= 0 && nt_kind(c->nt, w) == NK_CallNode &&
+        nt_safe_nav(c->nt, w) && is_itself_name(nt_str(c->nt, w, "name")) && call_plain_argc(c, w) == 0 &&
+        nt_ref(c->nt, w, "block") < 0 && nt_ref(c->nt, w, "receiver") >= 0 && !user_defines_or_reads(c, "itself")) {
+      emit_strbuf_value(c, lv, nt_ref(c->nt, w, "receiver"), b);
+      return;
+    } }
   if (g_share_check && repr_of_slot(c, lv).handle) share_check_mark(c, v, 'H', b);
   /* A shared-mutable alias (`s2 = s1`, both str_shared) copies the sp_String
      HANDLE, not the buffer, so the two names denote one object: a later

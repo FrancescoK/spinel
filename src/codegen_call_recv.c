@@ -15727,8 +15727,10 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
        other value have no chr (NoMethodError, args []), where read as a
        String nil answered "" and a Symbol or a Float its first character;
        a Bignum is past any character */
-    buf_printf(b, "; _t%d.tag == SP_TAG_INT ? sp_box_str(sp_int_chr(_t%d.v.i))"
-                  " : (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) ? sp_box_str(sp_str_chr(sp_poly_to_s(_t%d)))"
+    /* (a new String each call, which the program may change in place: its
+       bytes are a shared table's, boxed as a new handle, sp_box_str_fresh) */
+    buf_printf(b, "; _t%d.tag == SP_TAG_INT ? sp_box_str_fresh(sp_int_chr(_t%d.v.i))"
+                  " : (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) ? sp_box_str_fresh(sp_str_chr(sp_poly_to_s(_t%d)))"
                   " : (_t%d.tag == SP_TAG_BIGINT ? sp_raise_cls(\"RangeError\", \"bignum out of char range\")"
                   " : sp_raise_nomethod(sp_nomethod_msg_args(\"chr\", _t%d, 0, NULL)), sp_box_nil()); })",
                tvC, tvC, tvC, tvC, tvC, tvC, tvC);
