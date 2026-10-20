@@ -21569,6 +21569,10 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
             if (ks->blk_param && ks->blk_param[0] && !ks->yields) wants_blk = 1;
           }
           if (wants_blk) blk_tmp = hoist_call_block_proc(c, id);
+          /* `k.label = v` answers v, whatever the writer's body answers: the
+             chain runs for its effect and the hoisted argument is the value */
+          int setter_val = argc == 1 && call_is_setter_assign(nt, id);
+          if (setter_val) buf_puts(b, "({ (void)");
           buf_printf(b, "({ (_t%d.tag == SP_TAG_CLASS) ? (", tv);
           nd_stamp(id, ND_SWITCH);
           char rcls[48];
@@ -21653,6 +21657,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
           }
           buf_printf(b, "%s) : %s; })", raise,
                      (eb2.p && eb2.p[0]) ? eb2.p : raise);
+          if (setter_val) { buf_puts(b, "; "); emit_boxed(c, argv[0], b); buf_puts(b, "; })"); }
           if (g_plan_check) pa_end(c, pa_frame, cplan_poly_cmeth(c, id));
           free(eb2.p);
           unhoist_dispatch_args(c, hoisted_n, hoisted_sv, hoisted_ty);
