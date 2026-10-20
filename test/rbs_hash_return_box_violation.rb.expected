@@ -1,0 +1,4 @@
+"1"
+the return value of Cfg#for is declared a Hash but is Integer
+the return value of Cfg#for is declared a Hash but is Array
+the return value of Cfg#for is declared a Hash but is nil

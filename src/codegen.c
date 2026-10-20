@@ -7026,6 +7026,61 @@ static const char *method_self_root(Compiler *c, Scope *s) {
   int body = m ? nt_ref(c->nt, s->def_node, "body") : -1;
   return body >= 0 && subtree_may_allocate(c->nt, body) ? m : NULL;
 }
+/* A method whose Hash return seed gave way to the box its body answers
+   (Scope.ret_rbs_hash) is emitted as two functions: the body under
+   sp_0rbs_body_<scope index> (rbs_hash_body_cname), and under its own name a
+   wrapper that checks the box
+   holds a Hash (sp_rbs_hash_ret) on every return, explicit or not. sig is
+   the method's signature text; the body's is the same with the name
+   changed. */
+/* The body's C name: no method's C name is `sp_` and a digit (a Ruby name
+   starts with no digit, a class's C name with a capital), so no method the
+   program defines, `foo__rbs_body` included, can take it */
+static void rbs_hash_body_cname(Compiler *c, Scope *s, char *out, size_t cap) {
+  snprintf(out, cap, "sp_0rbs_body_%d", (int)(s - c->scopes));
+}
+static void emit_rbs_hash_ret_body_sig(Compiler *c, Scope *s, const char *sig, Buf *b) {
+  Buf cn; memset(&cn, 0, sizeof cn);
+  emit_method_cname(c, s, &cn);
+  const char *at = cn.p ? strstr(sig, cn.p) : NULL;
+  if (!at) { buf_puts(b, sig); free(cn.p); return; }
+  char bn[48];
+  rbs_hash_body_cname(c, s, bn, sizeof bn);
+  buf_printf(b, "%.*s%s%s", (int)(at - sig), sig, bn, at + cn.len);
+  free(cn.p);
+}
+static void emit_rbs_hash_ret_wrapper(Compiler *c, Scope *s, const char *sig, Buf *b) {
+  Buf cn; memset(&cn, 0, sizeof cn);
+  emit_method_cname(c, s, &cn);
+  const char *open = cn.p ? strstr(sig, cn.p) : NULL;
+  open = open ? strchr(open + cn.len, '(') : NULL;
+  const char *close = open ? strrchr(open, ')') : NULL;
+  if (!open || !close) { free(cn.p); return; }
+  /* the call passes each parameter by the name the signature gives it: the
+     last identifier of each comma-separated declaration */
+  Buf args; memset(&args, 0, sizeof args);
+  const char *p = open + 1;
+  while (p < close) {
+    const char *e = memchr(p, ',', (size_t)(close - p));
+    if (!e) e = close;
+    const char *q = e;
+    while (q > p && (q[-1] == ' ')) q--;
+    const char *n = q;
+    while (n > p && (isalnum((unsigned char)n[-1]) || n[-1] == '_')) n--;
+    if (q > n && !(q - n == 4 && strncmp(n, "void", 4) == 0))
+      buf_printf(&args, "%s%.*s", args.len ? ", " : "", (int)(q - n), n);
+    p = e + 1;
+  }
+  const char *cls = s->class_id >= 0 ? class_ruby_name(c, s->class_id) : NULL;
+  if (s->class_id >= 0 && !cls) cls = c->classes[s->class_id].name;
+  char bn[48];
+  rbs_hash_body_cname(c, s, bn, sizeof bn);
+  buf_printf(b, "%s {\n  return sp_rbs_hash_ret(%s(%s), %d, \"%s%s%s\");\n}\n", sig, bn,
+             args.p ? args.p : "", s->ret_rbs_hash_nil ? 1 : 0, cls ? cls : "", cls ? (s->is_cmethod ? "." : "#") : "",
+             s->name ? s->name : "");
+  free(args.p);
+  free(cn.p);
+}
 void emit_method(Compiler *c, Scope *s, Buf *b) {
   /* an IO handle has no slots for a program's instance variables */
   if (s->class_id >= 0 && !s->is_cmethod && io_family_class(c, s->class_id) &&
@@ -7082,7 +7137,15 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
      compile, so gdb couldn't find it. With this, --line-map / -g is enough to
      debug against the Ruby source; no need to keep the generated C (#1261). */
   emit_line_directive(c, s->def_node, b);
-  emit_method_signature(c, s, b);
+  /* a Hash seed's boxed return: the body is emitted under another name, and
+     the method's own name checks what it answers (emit_rbs_hash_ret_wrapper) */
+  Buf rh_sig; memset(&rh_sig, 0, sizeof rh_sig);
+  int rh_wrap = s->ret_rbs_hash && s->ret == TY_POLY;
+  if (rh_wrap) {
+    emit_method_signature(c, s, &rh_sig);
+    emit_rbs_hash_ret_body_sig(c, s, rh_sig.p ? rh_sig.p : "", b);
+  }
+  else emit_method_signature(c, s, b);
   buf_puts(b, " {\n");
   /* The singleton override does not exist until the statement that created it
      has run (#4084). The object carries its parent's cls_id until then, so a
@@ -7322,6 +7385,8 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   const char *site = decide_method_site(c, s);
   if (!g_no_root_frame) gc_frame_build(c, b, gc_save_off + gc_save_len, site);
   gc_save_take_back(b, gc_save_off, gc_save_len, site);
+  if (rh_wrap) emit_rbs_hash_ret_wrapper(c, s, rh_sig.p ? rh_sig.p : "", b);
+  free(rh_sig.p);
 }
 
 /* ---- first-class Proc ---- */

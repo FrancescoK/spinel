@@ -2487,6 +2487,18 @@ SP_NORETURN SP_COLD static void sp_raise_no_str_conversion(sp_RbVal v) {
   snprintf(buf, sizeof buf, "no implicit conversion of %s into String", sp_poly_class_name(v));
   sp_raise_cls("TypeError", buf);
 }
+/* The return of a method an RBS signature declares a Hash, whose body answers
+   a box: the box has to hold a Hash of any form (or nil, for `Hash[..]?`),
+   whatever -DSP_RBS_CHECK says, since the analysis counts on the call to
+   answer no proc or Method. Anything else is a TypeError. */
+static inline sp_RbVal sp_rbs_hash_ret(sp_RbVal v, int nil_ok, const char *where) {
+  if ((v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id)) || (nil_ok && v.tag == SP_TAG_NIL)) return v;
+  char buf[256];   /* sp_raise_cls copies it before anything allocates */
+  snprintf(buf, sizeof buf, "the return value of %s is declared a Hash but is %s", where,
+           v.tag == SP_TAG_NIL ? "nil" : sp_poly_class_name(v));
+  sp_raise_cls("TypeError", buf);
+  return v;
+}
 /* ENV[key] = value with a boxed RHS: a String sets, nil deletes, anything
    else raises CRuby's TypeError. Returns the assigned string (NULL = nil),
    matching the statically-string path's expression type. */

@@ -1,0 +1,5 @@
+class Cfg
+  def for: (String key) -> Hash[String, String]
+  def maybe: (String key) -> Hash[String, String]?
+  def early: (String key) -> Hash[String, String]
+end

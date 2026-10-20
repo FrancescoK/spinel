@@ -138,6 +138,9 @@ and coercions; not every handwritten argument or element store uses it.
     `.expected` also runs under `--share-strings` with its signatures in
     `share-strings-test`; `# spinel: rbs-seed-no-share` keeps one out (say why
     in its header).
+    `# spinel: needs-rbs-parser` keeps a `test/` program whose inline RBS
+    annotations decide what it prints out of a build without the rbs C
+    parser (`make deps` fetches it), where the annotations are comments.
     The other `reject-*` markers select the diagnostic assertion named in
     `reject-test`; `rbs-seed-contradicted-return` selects its grouped refusal
     check, and `infer-ivar-get` selects the boxed instance-variable read check.

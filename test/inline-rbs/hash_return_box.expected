@@ -1,0 +1,8 @@
+[true, false, nil]
+true
+[false, true, nil]
+nil
+"1"
+"boxed"
+true
+"2"

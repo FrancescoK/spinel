@@ -2103,6 +2103,12 @@ int builtin_method_known(const char *cls, const char *m) {
   int a;
   return builtin_method_arity(cls, m, &a);
 }
+/* Does any builtin class have a method `m`? */
+int builtin_method_known_any(const char *m) {
+  for (int i = 0; m && sp_builtin_arity_tbl[i].cls; i++)
+    if (sp_builtin_arity_tbl[i].m && sp_streq(sp_builtin_arity_tbl[i].m, m)) return 1;
+  return 0;
+}
 /* Arity of a user method target scope (same rule as the Method#arity emit for
    a statically-known TY_METHOD receiver). Returns 1 and writes *out on
    success; 0 if the target has no def node or an unrepresentable signature.
