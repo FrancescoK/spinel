@@ -17825,6 +17825,9 @@ int respond_to_user_defined(Compiler *c, int id, int recv) {
    any respond_to?, `priv` for one with include_all only. */
 void emit_responds_name(Compiler *c, int k, const char *nm, Buf *pub, Buf *priv) {
   if (name_is_synth_method(c, nm) || is_initialize_family(nm)) return;
+  /* a name class k or a class between it and the definer undefines
+     (`undef_method :x` in a subclass) is answered by none of k's objects */
+  if (k >= 0 && comp_is_undeffed_in_chain(c, k, nm)) return;
   Buf *b = comp_method_vis_in_chain(c, k, nm) == SP_VIS_PUBLIC ? pub : priv;
   buf_puts(b, "\"");
   emit_c_escaped(b, nm);
