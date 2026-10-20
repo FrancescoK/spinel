@@ -746,6 +746,12 @@ static int share_plan_box_kept(Compiler *c, int v);
 /* What a consumer in `role` needs of value v, whose own need (what its
    facts say a taker needs) is `need`. */
 static int share_plan_role_need(Compiler *c, int v, int role, int need) {
+  /* an arm of a dynamic send (dyn_send_arms) is boxed into the dispatch's
+     result, whatever the send's consumer takes: a new String there is
+     bytes unless that consumer keeps the box, as an element of a literal */
+  if (role == SPR_TAKE && nt_kind(c->nt, v) == NK_CallNode && nt_int(c->nt, v, "dyn_arm", 0) &&
+      share_value_fresh(c, v, 0) && !share_plan_box_kept(c, v))
+    return SPN_BYTES;
   if (role == SPR_READ || role == SPR_TEST) return SPN_BYTES;
   if (role == SPR_IDENTITY) return SPN_OBJECT;
   /* A box is copied by value, so a box of a String's bytes is a String of
@@ -1000,22 +1006,62 @@ const char *share_plan_role_name(int role) {
   return role >= SPR_TAKE && role <= SPR_BOX ? names[role] : "?";
 }
 
+/* The role of a node no consumer marked (share_plan_roles_build), which is a
+   taker's, but for the receiver of a boxed receiver's `to_s` with no
+   arguments or block: the dispatch reads it, and what its arms answer is
+   the call's own. It is asked when the role is, not when the roles are
+   built: the arms' answers, and so what the dispatch is, settle after the
+   plan is built. */
+static int share_plan_default_role(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  int p = comp_recv_parent(c, v);
+  const char *nm = p >= 0 && nt_kind(nt, p) == NK_CallNode ? nt_str(nt, p, "name") : NULL;
+  return nm && is_to_s_name(nm) && call_plain_argc(c, p) == 0 && nt_ref(nt, p, "block") < 0 &&
+         repr_of(c, v).kind == RK_BOXED ? SPR_READ : SPR_TAKE;
+}
 int share_plan_role(Compiler *c, int v) {
-  return c->share_plan && v >= 0 && v < c->share_plan_n ? c->share_plan[v] >> SPM_ROLE_SHIFT : SPR_TAKE;
+  if (!c->share_plan || v < 0 || v >= c->share_plan_n) return SPR_TAKE;
+  int role = c->share_plan[v] >> SPM_ROLE_SHIFT;
+  return role == SPR_TAKE ? share_plan_default_role(c, v) : role;
 }
 
 int share_plan_second_role(Compiler *c, int v) { return share_plan_self_recv(c, v) >= 0 ? SPR_TEST : -1; }
 
+static void share_plan_role_mark_d(Compiler *c, int n, int role, int dyn_arms);
+typedef struct { Compiler *c; int root, role, dyn_arms; } SharePlanArmRole;
+static int share_plan_arm_role(const VpLeaf *lf, void *ud) {
+  const SharePlanArmRole *a = ud;
+  if (lf->kind == VPK_EXPR && lf->node >= 0 && lf->node != a->root) share_plan_role_mark_d(a->c, lf->node, a->role, a->dyn_arms);
+  return 0;
+}
+/* The value of conditional n (an if, unless, case, `||`, `&&` or rescue
+   modifier) is the value of one of its arms: each arm has n's consumer. An
+   identity query's operand is not passed on: a conditional's identity is
+   the taken arm's, which its renderer does not take arm by arm. */
+static void share_plan_arm_roles(Compiler *c, int n, int role, int dyn_arms) {
+  switch (nt_kind(c->nt, n)) {
+  case NK_IfNode: case NK_UnlessNode: case NK_CaseNode: case NK_CaseMatchNode: case NK_AndNode: case NK_OrNode:
+  case NK_RescueModifierNode: break;
+  default: return;
+  }
+  if (role == SPR_IDENTITY) return;
+  SharePlanArmRole a = { c, n, role, dyn_arms };
+  for_each_value_position(c->nt, n, VPS_IF | VPS_UNLESS | VPS_CASE | VPS_CASE_IN | VPS_RESCUE_MOD | VPS_LOGIC,
+                          share_plan_arm_role, &a);
+}
+
 /* Give node n's consumer `role`, and through parentheses and a statement
-   list's last statement, the node whose value n is. */
-static void share_plan_role_mark(Compiler *c, int n, int role) {
+   list's last statement, the node whose value n is; a conditional's arms
+   take its consumer's role too (share_plan_arm_roles). The arms of a
+   dynamic send (dyn_send_arms) take it unless dyn_arms is 0. */
+static void share_plan_role_mark_d(Compiler *c, int n, int role, int dyn_arms) {
   const NodeTable *nt = c->nt;
   while (n >= 0 && n < c->share_plan_n) {
     c->share_plan[n] = (unsigned char)((c->share_plan[n] & SPM_NEED) | (role << SPM_ROLE_SHIFT));
     NodeKind k = nt_kind(nt, n);
     /* a dynamic send's value is the value of the arm the name selects: the
        arms have the send's consumer */
-    if (k == NK_CallNode) {
+    if (k == NK_CallNode && dyn_arms) {
       int na = 0;
       const int *arms = nt_arr(nt, n, "dyn_send_arms", &na);
       for (int i = 0; i < na; i++)
@@ -1028,9 +1074,13 @@ static void share_plan_role_mark(Compiler *c, int n, int role) {
       const int *bv = nt_arr(nt, n, "body", &bn);
       n = bn > 0 ? bv[bn - 1] : -1;
     }
-    else break;
+    else {
+      share_plan_arm_roles(c, n, role, dyn_arms);
+      break;
+    }
   }
 }
+static void share_plan_role_mark(Compiler *c, int n, int role) { share_plan_role_mark_d(c, n, role, 1); }
 
 /* The elements a multiple write's value v -- an Array literal, and the
    literals splatted in it (`a, b = *[s, t]`) -- stores into its targets. */
@@ -1113,11 +1163,36 @@ static void share_plan_reader_roles(Compiler *c, int n) {
     share_plan_role_mark(c, nt_ref(c->nt, n, "receiver"), SPR_READ);
 }
 
+/* Value n, which a builtin only reads and keeps none of (share_node_peeked:
+   an argument of `p` whose value is dropped, a literal handed to `puts`),
+   is read; so are the elements of a container literal, which holds them
+   for the builtin's walk alone. */
+static void share_plan_peek_read(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (n < 0 || n >= c->share_plan_n) return;
+  share_plan_role_mark_d(c, n, SPR_READ, 0);
+  int u = an_unparen(nt, n), cnt = 0;
+  if (u < 0) return;
+  if (nt_kind(nt, u) == NK_ArrayNode) {
+    const int *el = nt_arr(nt, u, "elements", &cnt);
+    for (int i = 0; i < cnt; i++) share_plan_peek_read(c, nt_kind(nt, el[i]) == NK_SplatNode ? -1 : el[i]);
+  }
+  else if (nt_kind(nt, u) == NK_HashNode || nt_kind(nt, u) == NK_KeywordHashNode) {
+    const int *el = nt_arr(nt, u, "elements", &cnt);
+    for (int i = 0; i < cnt; i++)
+      if (nt_kind(nt, el[i]) == NK_AssocNode) {
+        share_plan_peek_read(c, nt_ref(nt, el[i], "key"));
+        share_plan_peek_read(c, nt_ref(nt, el[i], "value"));
+      }
+  }
+}
+
 /* The roles other than a taker's, from the consumers that have them: an
    interpolation reads, a predicate tests, a multiple write stores each
    element of its value's literal (and of a literal splatted in it) into
-   its target, an identity query asks its operands' identity, and a
-   builtin that only reads its receiver reads it. One pass over each kind. */
+   its target, an identity query asks its operands' identity, a builtin
+   that only reads its receiver reads it, and one that only reads an
+   argument reads that (share_plan_peek_read). One pass over each kind. */
 static void share_plan_roles_build(Compiler *c) {
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_EmbeddedStatementsNode, e) share_plan_role_mark(c, nt_ref(nt, e, "statements"), SPR_READ);
@@ -1128,6 +1203,10 @@ static void share_plan_roles_build(Compiler *c) {
   NT_FOREACH_KIND(nt, NK_CallNode, n) {
     share_plan_identity_roles(c, n);
     share_plan_reader_roles(c, n);
+    int argc = 0;
+    const int *argv = call_args(nt, n, &argc);
+    for (int i = 0; i < argc; i++)
+      if (share_node_peeked(c, argv[i])) share_plan_peek_read(c, argv[i]);
   }
 }
 

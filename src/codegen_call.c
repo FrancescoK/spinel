@@ -9672,7 +9672,12 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       }
       int root_recv = (form & PPF_ROOT) != 0, reads_value = (form & PPF_DEREF) != 0;
       buf_printf(b, "({ sp_RbVal _t%d = %s", tv, reads_value ? "sp_poly_strbuf_deref(" : "");
+      size_t recv_at = b->len;
       emit_expr(c, recv, b);
+      /* (a receiver the plan reads, a boxed `to_s`'s, is loaded here and
+         read by the arms: what the arms wrap or box is their answer, not a
+         copy of it) */
+      if (g_share_check && share_plan_role(c, recv) == SPR_READ) share_check_declare_reads(b, recv_at, recv);
       buf_puts(b, reads_value ? "); " : "; ");
       if (root_recv) buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d); ", tv);
       emit_poly_vis_precheck(c, id, tv, b);
