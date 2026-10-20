@@ -2260,6 +2260,7 @@ static int ivar_has_array_write(Compiler *c, const LWIndex *ivw, int cls, const 
 }
 
 static int widen_arg_hash(Compiler *c, int arg);
+static int widen_returned_hashes(Compiler *c, int call);
 static int widen_arg_array(Compiler *c, int arg);
 static int widen_boxed_array_sources(Compiler *c, int v, TyKind elem, int depth);
 static int widen_proc_call_hash_args(Compiler *c, int lit, const char *pn, TyKind hk, TyKind hv);
@@ -2315,6 +2316,10 @@ static void widen_ivar_hash_literals(Compiler *c, const LWIndex *ivw, int cls, c
       comp_set_hash_want(c, wv, TY_POLY_POLY_HASH);
     else if (unassigned_param_read(c, ws, wv) >= 0)
       widen_arg_hash(c, wv);
+    /* the hash a user method answers (`@c = Store.str_hash`): built as the
+       same variant, as an argument's is */
+    else if (wv >= 0 && nt_kind(nt, wv) == NK_CallNode)
+      widen_returned_hashes(c, wv);
   }
 }
 
@@ -5494,9 +5499,9 @@ static int is_fresh_hash(Compiler *c, int v) {
   return r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode && sp_streq(nt_str(nt, r, "name"), "Hash");
 }
 
-/* Marks hash literal `v` the poly-keyed variant; 1 on a change. */
+/* Marks hash literal (or `Hash.new`) `v` the poly-keyed variant; 1 on a change. */
 static int want_poly_hash(Compiler *c, int v) {
-  if (!c->hash_want || v < 0 || v >= c->node_cap || nt_kind(c->nt, v) != NK_HashNode) return 0;
+  if (!c->hash_want || v < 0 || v >= c->node_cap || !is_fresh_hash(c, v)) return 0;
   if (c->hash_want[v] == TY_POLY_POLY_HASH) return 0;
   comp_set_hash_want(c, v, TY_POLY_POLY_HASH);
   return 1;
@@ -5531,7 +5536,7 @@ static int widen_returned_hashes(Compiler *c, int call) {
     int n = method_value_leaves(c, t, lv, 16);
     if (n <= 0 || nl + n > 64) return -1;
     for (int i = 0; i < n; i++) {
-      if (nt_kind(nt, lv[i]) != NK_HashNode) return -1;
+      if (!is_fresh_hash(c, lv[i])) return -1;
       lits[nl++] = lv[i];
     }
   }
