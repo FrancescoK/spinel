@@ -5807,6 +5807,19 @@ int share_param_kept(Compiler *c, int mi, int pj) {
    dyn_all: method_missing, a computed definer, a String evaluated */
 static const char **g_dyn_names;
 static int g_ndyn_names, g_cdyn_names, g_dyn_all;
+/* the old names of the program's aliases (a method that may also run under
+   another name), and whether it runs a method object on another receiver
+   or past an override (bind, bind_call, super_method) */
+static const char **g_alias_src;
+static int g_nalias_src, g_calias_src, g_rebind;
+static void sh_alias_src_add(const char *nm) {
+  if (g_nalias_src == g_calias_src) {
+    g_calias_src = g_calias_src ? g_calias_src * 2 : 16;
+    g_alias_src = realloc(g_alias_src, sizeof(*g_alias_src) * (size_t)g_calias_src);
+    if (!g_alias_src) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  g_alias_src[g_nalias_src++] = nm;
+}
 static const Compiler *g_dyn_c;
 static int g_dyn_count = -1;
 
@@ -5872,8 +5885,22 @@ static void sh_dyn_names_build(Compiler *c) {
   g_dyn_c = c;
   g_dyn_count = nt->count;
   g_ndyn_names = 0;
+  g_nalias_src = 0;
+  g_rebind = 0;
   g_dyn_all = an_user_defines_method(c, "method_missing") || an_user_defines_method(c, "respond_to_missing?");
-  NT_FOREACH_KIND(nt, NK_CallNode, id) sh_dyn_definer_call(nt, id);
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    sh_dyn_definer_call(nt, id);
+    const char *cn = nt_str(nt, id, "name");
+    if (!cn) continue;
+    if (sp_streq(cn, "super_method") || sp_streq(cn, "bind") || sp_streq(cn, "bind_call")) g_rebind = 1;
+    if (sp_streq(cn, "alias_method")) {
+      int args = nt_ref(nt, id, "arguments"), an = 0;
+      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      const char *on = an >= 2 ? sh_lit_method_name(nt, av[1]) : NULL;
+      if (on) sh_alias_src_add(on);
+      else g_rebind = 1;
+    }
+  }
   /* a bare module_function: the defs after it in the same body */
   NT_FOREACH_KIND(nt, NK_StatementsNode, st) {
     int bn = 0;
@@ -5891,10 +5918,13 @@ static void sh_dyn_names_build(Compiler *c) {
     if (r >= 0 && nt_kind(nt, r) != NK_SelfNode) sh_dyn_name_add(nt_str(nt, d, "name"));
   }
   NT_FOREACH_KIND(nt, NK_AliasMethodNode, a) {
-    int nn = nt_ref(nt, a, "new_name");
+    int nn = nt_ref(nt, a, "new_name"), on = nt_ref(nt, a, "old_name");
     const char *ln = nn >= 0 ? sh_lit_method_name(nt, nn) : NULL;
     if (ln) sh_dyn_name_add(ln);
     else g_dyn_all = 1;
+    const char *lo = on >= 0 ? sh_lit_method_name(nt, on) : NULL;
+    if (lo) sh_alias_src_add(lo);
+    else g_rebind = 1;
   }
 }
 /* Does the walk see every method a call of nm can run? (a writer may be
@@ -5907,6 +5937,22 @@ static int sh_name_methods_seen(Compiler *c, const char *nm) {
   for (int i = 0; i < g_ndyn_names; i++) if (sp_streq(g_dyn_names[i], nm)) return 0;
   return 1;
 }
+/* Does the def at n hold a super or a bare super of its own (not one in a
+   nested def)? Too deep to walk counts as one. */
+static int sh_subtree_has_super(const NodeTable *nt, int n, int depth) {
+  if (n < 0) return 0;
+  if (depth > 200) return 1;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_SuperNode || k == NK_ForwardingSuperNode) return 1;
+  if (depth > 0 && (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode)) return 0;
+  for (int i = 0; i < nt_num_refs(nt, n); i++) if (sh_subtree_has_super(nt, nt_ref_at(nt, n, i), depth + 1)) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int an = 0;
+    const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) if (sh_subtree_has_super(nt, av[j], depth + 1)) return 1;
+  }
+  return 0;
+}
 /* A receiverless call in an instance method can run, on each class made
    whose instances run that method (the class or one below it whose chain
    resolves the method's name to it), the method of the call's name that
@@ -5915,16 +5961,30 @@ static int sh_name_methods_seen(Compiler *c, const char *nm) {
    whose chain has none and nothing to answer raises NoMethodError, which
    answers no String. */
 static int sh_self_call_targets(Compiler *c, int call, const char *nm, int *out, int cap) {
+  const NodeTable *nt = c->nt;
   Scope *cur = comp_scope_of(c, call);
   int ci = cur ? (int)(cur - c->scopes) : -1;
   if (ci <= 0 || cur->is_cmethod || cur->class_id < 0 || !cur->name || cur->def_node < 0) return -1;
   if (core_method_name(nm) || object_public_method_name(nm) || bop_share_named(BOP_KERNEL, nm) ||
       bop_share_named(BOP_ANY_RECV, nm))
     return -1;
+  /* the enclosing method may also run on a class whose chain gives its
+     name another method: under an alias, or taken out of its class and
+     bound to another receiver (sh_dyn_names_build), or through a super
+     from that other method */
+  sh_dyn_names_build(c);
+  if (g_rebind) return -1;
+  for (int i = 0; i < g_nalias_src; i++) if (sp_streq(g_alias_src[i], cur->name)) return -1;
   int k = 0;
   for (int cid = 0; cid < c->nclasses; cid++) {
     if (!c->classes[cid].instantiated && !c->classes[cid].is_builtin_const) continue;
-    if (comp_method_in_chain(c, cid, cur->name, NULL) != ci) continue;
+    int emi = comp_method_in_chain(c, cid, cur->name, NULL);
+    if (emi != ci) {
+      /* (a class below the method's own, or any where it is a module's) */
+      int below = comp_class_is_module(c, &c->classes[cur->class_id]) || is_descendant(c, cid, cur->class_id);
+      if (below && emi > 0 && emi < c->nscopes && sh_subtree_has_super(nt, c->scopes[emi].def_node, 0)) return -1;
+      continue;
+    }
     int mi = comp_method_in_chain(c, cid, nm, NULL);
     if (mi < 0) {
       if (comp_method_in_chain(c, cid, "method_missing", NULL) >= 0) return -1;
