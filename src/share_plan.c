@@ -129,7 +129,11 @@ static int share_plan_self_recv(Compiler *c, int v) {
                         (is_tap_name(nm) && nt_ref(nt, v, "block") >= 0));
   if (!nm || r < 0 || (c->ntype[r] != TY_STRING && c->ntype[r] != TY_STRBUF && !(any_recv && c->ntype[r] == TY_POLY)))
     return -1;
-  if (!any_recv && !(bop_answers_self(TY_STRING, nm, call_plain_argc(c, v), nt_ref(nt, v, "block") >= 0) &
+  /* (a String's to_s or to_str answers the String itself where it is no
+     subclass's instance, BOPF_SELF_EXACT: a bang's on a boxed receiver,
+     the box's String or nil, whose handle emit_strbuf_value takes) */
+  int exact = (sp_streq(nm, "to_s") || sp_streq(nm, "to_str")) && face_str_bang_call(c, r);
+  if (!any_recv && !exact && !(bop_answers_self(TY_STRING, nm, call_plain_argc(c, v), nt_ref(nt, v, "block") >= 0) &
                      (BOPF_SELF | BOPF_SELF_OR_NIL)))
     return -1;
   return cplan_targets(c, v, tg, CPT_MAX) == 0 ? r : -1;
