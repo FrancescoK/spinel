@@ -243,7 +243,7 @@ sp_int sp_re_match(mrb_regexp_pattern *pat, const char *str) {SP_GC_ROOT_STR(str
   int64_t slen = (int64_t)sp_str_byte_len(str);
   int ncaps = 32, at;
   /* the start of the attempt, which is group 0's but for a \K: `=~`
-     answers it, and `start_with?` asks it to be 0; `index` reads group 0 */
+     answers it; `index` reads group 0 */
   int n = re_exec_attempt(pat, str, slen, 0, sp_re_caps, ncaps, sp_str_is_binary(str), &at);
   if (n > 0) { sp_re_last_pat = pat; sp_re_set_captures(str, sp_re_caps, n/2); return at; }
   /* Issue #848: clear backrefs on no-match so a subsequent `$1`
@@ -255,6 +255,17 @@ sp_int sp_re_match(mrb_regexp_pattern *pat, const char *str) {SP_GC_ROOT_STR(str
   sp_re_match_post = NULL;
   sp_re_pp_span[0] = sp_re_pp_span[1] = -1;
   return -1;
+}
+/* String#start_with?(re): whether the pattern matches at index 0. A match
+   that begins later is no answer, and leaves `$~` nil as a miss does: CRuby
+   tries the pattern at the start only. */
+sp_bool sp_re_start_with(mrb_regexp_pattern *pat, const char *str) {SP_GC_ROOT_STR(str);
+  if (!str) return FALSE;
+  int at;
+  int n = re_exec_attempt(pat, str, (int64_t)sp_str_byte_len(str), 0, sp_re_caps, 32, sp_str_is_binary(str), &at);
+  if (n > 0 && at == 0) { sp_re_last_pat = pat; sp_re_set_captures(str, sp_re_caps, n/2); return TRUE; }
+  sp_re_clear_last_match();
+  return FALSE;
 }
 /* Like sp_re_match, but search from byte offset `pos` in the FULL string so a
    zero-width anchor (`\b`, a lookbehind) sees the preceding context -- passing

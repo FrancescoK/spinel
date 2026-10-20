@@ -81,6 +81,7 @@ void sp_re_set_last_match(const mrb_regexp_pattern *pat, const char *str, const 
 void sp_re_set_lit_match(const char *str, sp_int beg, sp_int end);
 sp_int sp_re_match(mrb_regexp_pattern *pat, const char *str);
 sp_int sp_re_match_at(mrb_regexp_pattern *pat, const char *str, sp_int pos);
+sp_bool sp_re_start_with(mrb_regexp_pattern *pat, const char *str);
 sp_int sp_re_match_next(mrb_regexp_pattern *pat, const char *str, sp_int pos);
 sp_int sp_re_rindex(mrb_regexp_pattern *pat, const char *str);
 sp_StrArray *sp_re_rpartition(mrb_regexp_pattern *pat, const char *str);

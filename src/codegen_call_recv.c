@@ -7739,9 +7739,9 @@ int emit_op_str_set_n(Compiler *c, const BopCtx *x, Buf *b) {
 void emit_start_with_arg(Compiler *c, int arg, const char *subj, Buf *b) {
   TyKind at = comp_ntype(c, arg);
   if (re_lit_index(c, arg) >= 0)
-    buf_printf(b, "(sp_re_match(sp_re_pat_%d, %s) == 0)", re_lit_index(c, arg), subj);
+    buf_printf(b, "sp_re_start_with(sp_re_pat_%d, %s)", re_lit_index(c, arg), subj);
   else if (at == TY_REGEX) {
-    buf_puts(b, "(sp_re_match("); emit_expr(c, arg, b); buf_printf(b, ", %s) == 0)", subj);
+    buf_puts(b, "sp_re_start_with("); emit_expr(c, arg, b); buf_printf(b, ", %s)", subj);
   }
   else if (at == TY_POLY) {
     buf_printf(b, "sp_str_start_with_boxed(%s, ", subj); emit_boxed(c, arg, b); buf_puts(b, ")");
@@ -8416,13 +8416,13 @@ static int str_arms_case_search(Compiler *c, Buf *b, const NodeTable *nt, const 
   }
   else if (sp_streq(name, "start_with?") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
     /* s.start_with?(/re/): true when the pattern matches at index 0 */
-    buf_printf(b, "(sp_re_match(sp_re_pat_%d, %s) == 0)", re_lit_index(c, argv[0]), r);
+    buf_printf(b, "sp_re_start_with(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
   }
   else if (sp_streq(name, "start_with?") && argc == 1 && comp_ntype(c, argv[0]) == TY_REGEX) {
     /* the same with the Regexp in a value; the receiver is read first */
     int ts = ++g_tmp;
-    buf_printf(b, "({ const char *_t%d = %s; SP_GC_ROOT(_t%d); sp_re_match(", ts, r, ts);
-    emit_expr(c, argv[0], b); buf_printf(b, ", _t%d) == 0; })", ts);
+    buf_printf(b, "({ const char *_t%d = %s; SP_GC_ROOT(_t%d); sp_re_start_with(", ts, r, ts);
+    emit_expr(c, argv[0], b); buf_printf(b, ", _t%d); })", ts);
   }
   else if (sp_streq(name, "start_with?") && argc == 1) {
     buf_printf(b, "sp_str_start_with(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
