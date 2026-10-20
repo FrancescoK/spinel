@@ -39998,7 +39998,10 @@ static int sd_is_string(NodeTable *nt, int recv) {
 static const char *const kwb_rows[][3] = {
   { "lines", "chomp", "FalseNode" }, { "each_line", "chomp", "FalseNode" }, { "readlines", "chomp", "FalseNode" },
   { "readline", "chomp", "FalseNode" }, { "gets", "chomp", "FalseNode" }, { "unpack", "offset", "IntegerNode" },
-  { "unpack1", "offset", "IntegerNode" }, { "clone", "freeze", "NilNode" }, { NULL, NULL, NULL } };
+  { "unpack1", "offset", "IntegerNode" }, { "clone", "freeze", "NilNode" },
+  { "read_nonblock", "exception", "TrueNode" }, { "write_nonblock", "exception", "TrueNode" },
+  { "recv_nonblock", "exception", "TrueNode" }, { "accept_nonblock", "exception", "TrueNode" },
+  { "connect_nonblock", "exception", "TrueNode" }, { NULL, NULL, NULL } };
 static int kwb_is(const char *a, const char *b) { return a && sp_streq(a, b); }
 static int kwb_row(const char *name) {
   for (int i = 0; name && kwb_rows[i][0]; i++) if (sp_streq(name, kwb_rows[i][0])) return i;
@@ -40074,10 +40077,13 @@ static int kwb_explicit(NodeTable *nt, int row, int h, Scope *sc) {
    there. A hash of the key the method takes, or one with a `**` or a key
    that is no Symbol, stays as it is (-1). So do the line readers: IO's gets,
    each_line and readlines accept a keyword they do not take, and
-   File.readlines takes the open options (`encoding:`, `mode:`) too. */
+   File.readlines takes the open options (`encoding:`, `mode:`) too. The
+   *_nonblock calls take `exception:` alone. */
 static int kwb_unknown_literal(NodeTable *nt, int row, int kh) {
   const char *m = kwb_rows[row][0];
-  if (!kwb_is(m, "unpack") && !kwb_is(m, "unpack1") && !kwb_is(m, "lines") && !kwb_is(m, "clone")) return -1;
+  if (!kwb_is(m, "unpack") && !kwb_is(m, "unpack1") && !kwb_is(m, "lines") && !kwb_is(m, "clone") &&
+      !kwb_is(m, "read_nonblock") && !kwb_is(m, "write_nonblock") && !kwb_is(m, "recv_nonblock") &&
+      !kwb_is(m, "accept_nonblock") && !kwb_is(m, "connect_nonblock")) return -1;
   int en = 0;
   const int *el = nt_arr(nt, kh, "elements", &en);
   if (en < 1) return -1;

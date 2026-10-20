@@ -153,7 +153,8 @@ static struct { unsigned gen; long key; signed char val; } g_nmemo[SP_NMEMO_SZ];
    the codegen side. */
 /* `exception: false` on a *_nonblock call: the would-block answer is the
    :wait_readable / :wait_writable marker rather than a raise, so the result is
-   boxed (a symbol or the value). */
+   boxed (a symbol or the value). So is it for a switch read at run time, which
+   may be false (emit_nonblock_exc); only a literal true raises for certain. */
 static int an_nonblock_no_exception(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int args = nt_ref(nt, id, "arguments");
@@ -162,12 +163,7 @@ static int an_nonblock_no_exception(Compiler *c, int id) {
   const char *lty = nt_type(nt, av[an - 1]);
   if (!lty || !sp_streq(lty, "KeywordHashNode")) return 0;
   int e = kwh_lookup(nt, av[an - 1], "exception");
-  /* An output-buffer read with a runtime exception switch may also answer
-     nil or the wait symbol. Keep that narrow route boxed. */
-  if (e >= 0 && an == 3 && nt_kind(nt, av[1]) != NK_KeywordHashNode &&
-      bop_share_named(TY_IO, nt_str(nt, id, "name")) == BSH_FILL1 &&
-      nt_kind(nt, e) != NK_TrueNode && nt_kind(nt, e) != NK_FalseNode) return 1;
-  return e >= 0 && nt_type(nt, e) && sp_streq(nt_type(nt, e), "FalseNode");
+  return e >= 0 && nt_kind(nt, e) != NK_TrueNode;
 }
 
 /* Set while re-deriving a poly-receiver call's type as if no user class owned
