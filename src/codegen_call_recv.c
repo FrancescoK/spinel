@@ -3439,8 +3439,11 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
      strings, int-array tuples lexicographically). */
   if ((is_minmax_query(name)) && argc == 0 &&
       rt == TY_POLY_ARRAY && nt_ref(nt, id, "block") < 0) {
-    /* a literal's in CRuby's VM order (sp_PolyArray_minmax_lit) */
-    if (array_literal_plain(c, recv)) {
+    /* Enumerable's materialized members compare in the same order as a
+       literal, including the operands named when comparison fails. */
+    int enum_members = nt_kind(nt, recv) == NK_CallNode &&
+        sp_streq(nt_str(nt, recv, "name"), "__enum_to_a");
+    if (array_literal_plain(c, recv) || enum_members) {
       buf_puts(b, "sp_PolyArray_minmax_lit("); emit_expr(c, recv, b);
       buf_printf(b, ", %d)", sp_streq(name, "max"));
       { *out = 1; return 1; }
