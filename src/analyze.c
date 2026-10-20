@@ -24193,6 +24193,140 @@ static int an_tail_tap_blind(Compiler *c, int n) {
   int si = comp_class_index(c, "String");
   return si < 0 || comp_method_in_chain(c, si, "tap", NULL) < 0;
 }
+/* ---- a local a method builds its answer up in (#9258) ----
+   `out = +""; ...; out << x; ...; out`: every write of the local is a new
+   String and every read the receiver of an append or the method's answer,
+   so no other name ever holds the String it answers, whatever share class
+   the walk gave it. How a value is used, for the walk below: */
+enum { BL_OTHER, BL_DROP, BL_RET, BL_RECV };
+/* n with its single-expression parentheses taken off */
+static int bl_unparen(const NodeTable *nt, int n) {
+  while (n >= 0 && nt_kind(nt, n) == NK_ParenthesesNode) {
+    int b = nt_ref(nt, n, "body"), bn = 0;
+    const int *bb = b >= 0 && nt_kind(nt, b) == NK_StatementsNode ? nt_arr(nt, b, "body", &bn) : NULL;
+    if (bn != 1) return -1;
+    n = bb[0];
+  }
+  return n;
+}
+/* Is v a new String each time it runs: an interpolation, `+"lit"` or `+`
+   of one, `"lit" * n`, `"lit".dup`, String.new? */
+static int bl_new_string(const NodeTable *nt, int v) {
+  v = bl_unparen(nt, v);
+  if (v < 0) return 0;
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_InterpolatedStringNode) return 1;
+  if (k != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, v, "name");
+  int r = nt_ref(nt, v, "receiver");
+  NodeKind rk = r >= 0 ? nt_kind(nt, r) : NK_NONE;
+  if (sp_streq(nm, "+@")) return rk == NK_StringNode || bl_new_string(nt, r);
+  if (sp_streq(nm, "*") || sp_streq(nm, "dup")) return rk == NK_StringNode || rk == NK_InterpolatedStringNode;
+  if (sp_streq(nm, "new")) return rk == NK_ConstantReadNode && sp_streq(nt_str(nt, r, "name"), "String");
+  return 0;
+}
+static int bl_is_append(const NodeTable *nt, int n) {
+  if (n < 0 || nt_kind(nt, n) != NK_CallNode || nt_ref(nt, n, "block") >= 0) return 0;
+  const char *nm = nt_str(nt, n, "name");
+  return nm && (sp_streq(nm, "<<") || sp_streq(nm, "concat"));
+}
+/* Is n the local (name, at block depth depth) or an append chain on it? */
+static int bl_alias(const NodeTable *nt, int n, const char *name, int depth) {
+  n = bl_unparen(nt, n);
+  if (n < 0) return 0;
+  if (nt_kind(nt, n) == NK_LocalVariableReadNode)
+    return sp_streq(nt_str(nt, n, "name"), name) && nt_int(nt, n, "depth", 0) == depth;
+  return bl_is_append(nt, n) && bl_alias(nt, nt_ref(nt, n, "receiver"), name, depth);
+}
+static int bl_walk(Compiler *c, int n, const char *name, int depth, int use);
+/* each child of n but skip, used as BL_OTHER */
+static int bl_children(Compiler *c, int n, int skip, const char *name, int depth) {
+  const NodeTable *nt = c->nt;
+  for (int i = 0; i < nt_num_refs(nt, n); i++) {
+    int r = nt_ref_at(nt, n, i);
+    if (r != skip && !bl_walk(c, r, name, depth, BL_OTHER)) return 0;
+  }
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int an = 0;
+    const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) if (!bl_walk(c, av[j], name, depth, BL_OTHER)) return 0;
+  }
+  return 1;
+}
+/* statements: all but the last dropped, the last used as use */
+static int bl_stmts(Compiler *c, int st, const char *name, int depth, int use) {
+  const NodeTable *nt = c->nt;
+  if (st < 0) return 1;
+  if (nt_kind(nt, st) != NK_StatementsNode) return bl_walk(c, st, name, depth, use);
+  int bn = 0;
+  const int *bb = nt_arr(nt, st, "body", &bn);
+  for (int i = 0; i < bn; i++) if (!bl_walk(c, bb[i], name, depth, i + 1 < bn ? BL_DROP : use)) return 0;
+  return 1;
+}
+/* A call: an append to the local (its value, the same String, only
+   dropped, appended to again or answered), or a call whose literal block's
+   value its iterator drops (an_iter_discards_block) */
+static int bl_call(Compiler *c, int n, const char *name, int depth, int use) {
+  const NodeTable *nt = c->nt;
+  if (bl_is_append(nt, n) && bl_alias(nt, nt_ref(nt, n, "receiver"), name, depth)) {
+    if (use == BL_OTHER) return 0;
+    return bl_walk(c, nt_ref(nt, n, "receiver"), name, depth, BL_RECV) &&
+           bl_children(c, n, nt_ref(nt, n, "receiver"), name, depth);
+  }
+  int bk = nt_ref(nt, n, "block");
+  if (bk < 0 || nt_kind(nt, bk) != NK_BlockNode) return bl_children(c, n, -1, name, depth);
+  return bl_children(c, n, bk, name, depth) &&
+         bl_stmts(c, nt_ref(nt, bk, "body"), name, depth + 1, an_iter_discards_block(c, n) ? BL_DROP : BL_OTHER);
+}
+static int bl_walk(Compiler *c, int n, const char *name, int depth, int use) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 1;
+  NodeKind k = nt_kind(nt, n);
+  int mine = (k == NK_LocalVariableReadNode || k == NK_LocalVariableWriteNode || k == NK_LocalVariableOperatorWriteNode ||
+              k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode || k == NK_LocalVariableTargetNode) &&
+             sp_streq(nt_str(nt, n, "name"), name) && nt_int(nt, n, "depth", 0) == depth;
+  switch (k) {
+  case NK_DefNode: return 1;
+  case NK_LocalVariableReadNode: return !mine || use == BL_RECV || use == BL_RET;
+  case NK_LocalVariableWriteNode:
+    if (mine && (use != BL_DROP || !bl_new_string(nt, nt_ref(nt, n, "value")))) return 0;
+    return bl_walk(c, nt_ref(nt, n, "value"), name, depth, BL_OTHER);
+  case NK_LocalVariableOperatorWriteNode: case NK_LocalVariableOrWriteNode: case NK_LocalVariableAndWriteNode:
+  case NK_LocalVariableTargetNode:
+    if (mine) return 0;
+    break;
+  case NK_StatementsNode: return bl_stmts(c, n, name, depth, use);
+  case NK_ParenthesesNode: return bl_stmts(c, nt_ref(nt, n, "body"), name, depth, use);
+  case NK_IfNode: case NK_UnlessNode:
+    return bl_walk(c, nt_ref(nt, n, "predicate"), name, depth, BL_OTHER) &&
+           bl_stmts(c, nt_ref(nt, n, "statements"), name, depth, use) &&
+           bl_walk(c, nt_ref(nt, n, k == NK_IfNode ? "subsequent" : "else_clause"), name, depth, use);
+  case NK_ElseNode: return bl_stmts(c, nt_ref(nt, n, "statements"), name, depth, use);
+  case NK_ReturnNode: {
+    int a = nt_ref(nt, n, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    for (int i = 0; i < an; i++) if (!bl_walk(c, av[i], name, depth, an == 1 ? BL_RET : BL_OTHER)) return 0;
+    return 1;
+  }
+  case NK_BlockNode: case NK_LambdaNode:
+    /* (a block reached other than as its call's literal block) */
+    return bl_stmts(c, nt_ref(nt, n, "body"), name, depth + 1, BL_OTHER);
+  case NK_CallNode: return bl_call(c, n, name, depth, use);
+  default: break;
+  }
+  return bl_children(c, n, -1, name, depth);
+}
+/* Is tail n of method mi a read of a local the method builds its answer up
+   in (above)? */
+static int an_builder_local_fresh(Compiler *c, int mi, int n) {
+  const NodeTable *nt = c->nt;
+  if (mi <= 0 || n < 0 || nt_kind(nt, n) != NK_LocalVariableReadNode || nt_int(nt, n, "depth", 0) != 0) return 0;
+  Scope *m = &c->scopes[mi];
+  if (m->def_node < 0 || nt_kind(nt, m->def_node) != NK_DefNode || comp_scope_of(c, n) != m) return 0;
+  const char *name = nt_str(nt, n, "name");
+  for (int j = 0; j < m->nparams; j++) if (m->pnames[j] && sp_streq(m->pnames[j], name)) return 0;
+  return bl_stmts(c, nt_ref(nt, m->def_node, "body"), name, 0, BL_RET);
+}
 /* Does the subtree at n hold a return of its method (not one in a nested
    method or lambda)? */
 static int an_has_method_return(const NodeTable *nt, int n) {
@@ -24312,6 +24446,8 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
     if (g_repr_check && !R->fresh) repr_channel_predict(c, n, tc->mi, RCH_CLEAR);
     tc->fresh++; return 1;
   }
+  /* the fresh walk: a local the method builds its answer up in */
+  if (R->fresh && an_builder_local_fresh(c, tc->mi, n)) { tc->fresh++; return 1; }
   if (an_tail_is_shared_handle(c, n, 1, tc, R)) return 1;
   if (R->fresh && an_tail_param(c, n, tc)) return 1;
   NodeKind k = n >= 0 ? nt_kind(nt, n) : NK_NONE;

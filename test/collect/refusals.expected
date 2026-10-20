@@ -1266,6 +1266,10 @@ spinel: 1 refusal, nothing written
 == test/reject/setter_symbol_block_builtin.rb [promote] rc=1
 spinel: test/reject/setter_symbol_block_builtin.rb:6: a setter Symbol (`&:name=`) as the block of a builtin method is not supported
 spinel: 1 refusal, nothing written
+== test/reject/share_builder_local_kept_block_value.rb [default] rc=1
+spinel: test/reject/share_builder_local_kept_block_value.rb:648: the String the value of `lit` hands on as a variable's write is shared with another name and changed in place, and that route cannot carry the shared handle yet: it would hand on a copy (#9258)
+== test/reject/share_builder_local_kept_block_value.rb [promote] rc=1
+spinel: test/reject/share_builder_local_kept_block_value.rb:648: the String the value of `lit` hands on as a variable's write is shared with another name and changed in place, and that route cannot carry the shared handle yet: it would hand on a copy (#9258)
 == test/reject/share_call_past_plan_held_answer.rb [default] rc=1
 spinel: test/reject/share_call_past_plan_held_answer.rb:85: the String the value of `lit` hands on as a variable's write is shared with another name and changed in place, and that route cannot carry the shared handle yet: it would hand on a copy (#9258)
 == test/reject/share_call_past_plan_held_answer.rb [promote] rc=1
