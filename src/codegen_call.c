@@ -988,8 +988,15 @@ int poly_block_call_needs_dispatch(Compiler *c, int id) {
     Scope *es = comp_scope_of(c, id);
     if (bb >= 0 && proc_body_has_yield(c, bb) &&
         !(es && (es->is_proc_form || es->is_lowered_yield))) return 0; }
-  for (int k = 0; k < c->nclasses; k++) {
-    if (!c->classes[k].instantiated) continue;
+  /* Only a class the receiver can hold: an IO::Buffer the program makes
+     elsewhere (its `each` yields) sent every boxed Hash's `each` in the
+     program through a proc, where the walk bounds them to builtins. An
+     unbounded receiver still counts every class. */
+  int nk = 0;
+  const int *ks = poly_recv_classes(c, id, &nk);
+  for (int i = 0; i < (ks ? nk : c->nclasses); i++) {
+    int k = ks ? ks[i] : i;
+    if (k < 0 || k >= c->nclasses || !c->classes[k].instantiated) continue;
     int mi = comp_method_in_chain(c, k, name, NULL);
     if (mi < 0) continue;
     Scope *m = &c->scopes[mi];
