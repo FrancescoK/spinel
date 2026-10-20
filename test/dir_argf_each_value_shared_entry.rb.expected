@@ -1,0 +1,9 @@
+"Jayang Station"
+true
+[".", "..", "achasan", "kondae", "seongsu"]
+Dir
+["achasan Station", "kondae Station", "seongsu Station"]
+true
+[".", "..", "achasan!", "kondae!", "seongsu!"]
+"ARGF"
+["Guui Station", "Children's Grand Park Station"]
