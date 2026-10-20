@@ -11416,6 +11416,22 @@ static int desugar_method_block_arg(Compiler *c) {
    a real entry in the includer's chain -- and the comp_method_in_chain test
    at the top of the loop below then declines to rewrite its call. The
    rewrite still serves every body that genuinely does not care. */
+/* The first module, in the ancestor order module m and the modules it
+   includes take (m, then its includes from the last made), that has a
+   module_function named nm; -1 for none. */
+static int module_function_owner(Compiler *c, int m, const char *nm, int depth) {
+  if (m < 0 || m >= c->nclasses || depth > 16) return -1;
+  for (int si = 1; si < c->nscopes; si++) {
+    const Scope *ms = &c->scopes[si];
+    if (ms->class_id == m && ms->is_module_function && ms->name && sp_streq(ms->name, nm)) return m;
+  }
+  const ClassInfo *mi = &c->classes[m];
+  for (int j = mi->nincluded_mods - 1; j >= 0; j--) {
+    int r = module_function_owner(c, mi->included_mods[j], nm, depth + 1);
+    if (r >= 0) return r;
+  }
+  return -1;
+}
 static int desugar_module_function_call(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -11427,23 +11443,21 @@ static int desugar_module_function_call(Compiler *c) {
     if (!nm) continue;
     Scope *sc = comp_scope_of(c, id);
     if (!sc || sc->class_id < 0 || sc->class_id >= c->nclasses) continue;
-    /* the enclosing class's own (or inherited) method wins over the mixin */
-    if (comp_method_in_chain(c, sc->class_id, nm, NULL) >= 0) continue;
     if (comp_cmethod_in_chain(c, sc->class_id, nm, NULL) >= 0) continue;
     /* a local of this name is a variable read, not a call */
     if (scope_local(sc, nm)) continue;
     /* the module whose module_function it is, included by the class or a
        superclass directly or through a module it includes (`module B;
-       include A; end`, then `include B`) */
-    int mod = -1;
-    for (int si = 1; si < c->nscopes && mod < 0; si++) {
-      Scope *ms = &c->scopes[si];
-      if (!ms->is_module_function || !ms->name || !sp_streq(ms->name, nm)) continue;
-      for (int k = sc->class_id; k >= 0 && mod < 0; k = c->classes[k].parent) {
-        ClassInfo *cl = &c->classes[k];
-        for (int j = 0; j < cl->nincluded_mods && mod < 0; j++)
-          if (comp_module_includes(c, cl->included_mods[j], ms->class_id, 0)) mod = ms->class_id;
-      }
+       include A; end`, then `include B`), the first in the ancestor order
+       (a class, then its includes from the last made, then its superclass).
+       A class on the way that has the name itself -- its own method or
+       reader, or a copy an include put in its table -- answers the call. */
+    int mod = -1, own = 0;
+    for (int k = sc->class_id; k >= 0 && mod < 0 && !own; k = c->classes[k].parent) {
+      ClassInfo *cl = &c->classes[k];
+      if (comp_method_in_class(c, k, nm) >= 0 || comp_is_reader(cl, nm)) { own = 1; break; }
+      for (int j = cl->nincluded_mods - 1; j >= 0 && mod < 0; j--)
+        mod = module_function_owner(c, cl->included_mods[j], nm, 0);
     }
     if (mod < 0) continue;
     int mc = nt_new_node(nt, "ConstantReadNode");
