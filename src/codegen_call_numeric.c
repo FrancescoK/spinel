@@ -9,6 +9,14 @@
 #include "codegen_call_arms.h"
 #include "repr.h"
 
+/* A Rational rounding call's digit count is a plain Integer (or a Bignum,
+   which the Integer conversion takes): any other kind is boxed for
+   sp_rational_digits, which raises CRuby's "not an integer" for it. */
+static int rat_digits_plain(Compiler *c, int node) {
+  TyKind t = comp_ntype(c, node);
+  return (t == TY_INT && !node_is_oint(c, node)) || t == TY_BIGINT;
+}
+
 /* Rational#round / #floor / #ceil / #truncate with a digit count, a
    `half:` keyword, or both. The arm reads the shape of the arguments (a
    keyword hash, an Integer literal), not their kinds. */
@@ -43,9 +51,14 @@ int emit_op_rational_round(Compiler *c, const BopCtx *x, Buf *b) {
                                   : "(sp_int)0";
     int tr = ++g_tmp, tn = -1;
     buf_printf(b, "({ sp_Rational _t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, "; ");
+    int dplain = argc != 2 || rat_digits_plain(c, argv[0]);
     if (argc == 2) {
       tn = ++g_tmp;
-      buf_printf(b, "sp_int _t%d = ", tn); emit_int_expr(c, argv[0], b); buf_puts(b, "; ");
+      if (dplain) { buf_printf(b, "sp_int _t%d = ", tn); emit_int_expr(c, argv[0], b); buf_puts(b, "; "); }
+      else {
+        buf_printf(b, "sp_RbVal _t%d = ", tn); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tn);
+      }
     }
     /* only #round takes a tie-break mode. CRuby's words for a Rational
        are its own -- `not an integer`, not the Float and Integer paths'
@@ -65,7 +78,7 @@ int emit_op_rational_round(Compiler *c, const BopCtx *x, Buf *b) {
     }
     int tm = emit_round_kw_binds(c, &kw, b);
     buf_printf(b, "%s(_t%d, ", fn, tr);
-    if (tn >= 0) buf_printf(b, "_t%d", tn); else buf_puts(b, "0");
+    if (tn >= 0) buf_printf(b, dplain ? "_t%d" : "sp_rational_digits(_t%d)", tn); else buf_puts(b, "0");
     if (tm >= 0) buf_printf(b, ", _t%d); })", tm);
     else buf_puts(b, ", sp_box_nil()); })");
     return 1;
@@ -95,7 +108,9 @@ int emit_op_rational_round(Compiler *c, const BopCtx *x, Buf *b) {
        an integer at all -- the generated C stopped compiling the moment
        the argument widened to poly (the same cast Rational()'s own
        constructor had to give up, #3184). */
-    buf_printf(b, "; sp_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
+    buf_printf(b, "; sp_int _t%d = ", tn);
+    if (rat_digits_plain(c, argv[0])) emit_int_expr(c, argv[0], b);
+    else { buf_puts(b, "sp_rational_digits("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
     buf_printf(b, "; _t%d > 0 ? sp_box_rational(sp_rational_%s_prec(_t%d, _t%d))"
                   " : sp_box_int(sp_rational_%s_prec(_t%d, _t%d).num); })",
                tn, fn, tr, tn, fn, tr, tn);

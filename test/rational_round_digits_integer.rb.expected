@@ -1,0 +1,20 @@
+round nil: not an integer
+floor true: not an integer
+ceil string: not an integer
+truncate symbol: not an integer
+round float: not an integer
+round rational: not an integer
+round to_int: not an integer
+boxed nil: not an integer
+(12/5)
+boxed string: not an integer
+boxed float: not an integer
+nullable nil: not an integer
+(23/10)
+count
+mode
+half nil: not an integer
+half boxed: not an integer
+(23/10)
+(233/100)
+(23/10)
