@@ -1441,8 +1441,9 @@ static void repr_share_flows_check(Compiler *c, const char *stats) {
               rcv >= 0 ? ty_name(c->ntype[rcv]) : "-", sfp ? sfp : "?", site >= 0 ? (int)nt_int(c->nt, site, "node_line", 0) : -1,
               site >= 0 ? ty_name(c->ntype[site]) : "-");
     }
-    /* the first refused flow, or under SP_COLLECT_ERRORS each one */
-    if (!ok && collect_emit_anyway()) repr_flow_refuse(c, u, kind);
+    /* the first refused flow, or under SP_COLLECT_ERRORS and --emit-types
+       each one */
+    if (!ok && refusals_go_on()) repr_flow_refuse(c, u, kind);
     else if (!ok && bad < 0) { bad = u; bad_kind = kind; }
   }
   free(lent);
@@ -1556,9 +1557,9 @@ static void repr_share_seal(Compiler *c) {
   /* a route master refuses, left to the rule: refused as master does
      unless the final facts share its String */
   share_routes_check(c);
-  if (collect_emit_anyway()) {
-    /* SP_COLLECT_ERRORS: every refused holder and literal, as the routes
-       above were */
+  if (refusals_go_on()) {
+    /* SP_COLLECT_ERRORS and --emit-types: every refused holder and
+       literal, as the routes above were */
     for (int h = 0; h < nh; h++) {
       const ShareHolder *sh = share_holder(c, h);
       if (repr_share_elems_carried(c, sh) == 0 && repr_str_elems_share(c, h)) repr_share_holder_refuse(c, h, 1);

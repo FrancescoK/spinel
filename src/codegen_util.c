@@ -43,6 +43,19 @@ int collect_emit_anyway(void) {
   if (v < 0) v = getenv("SP_COLLECT_ERRORS") ? 1 : 0;
   return v;
 }
+/* 1 under --emit-types (main.c sets SPINEL_EMIT_TYPES to the JSON's path). */
+int emit_types_on(void) {
+  static int v = -1;
+  if (v < 0) { const char *e = getenv("SPINEL_EMIT_TYPES"); v = e && *e ? 1 : 0; }
+  return v;
+}
+/* 1 when a check that can go on past a refusal (the seal's) goes on to
+   the next one instead of leaving: under SP_COLLECT_ERRORS, and under
+   --emit-types, whose JSON carries every refusal of the run and is
+   written at the end of the compile (emit-types.md). The seal runs
+   before the output driver arms its per-unit recovery, so a refusal that
+   left there left the process, and the JSON was never written. */
+int refusals_go_on(void) { return collect_emit_anyway() || emit_types_on(); }
 /* What codegen decided at a node, for --emit-types (#4522): how a call was
    dispatched, whether a block was inlined. Kept only under --emit-types;
    a stamp anywhere else is a no-op, so the emitters say what they did
@@ -3876,12 +3889,13 @@ __attribute__((noreturn)) void unsupported_feature(Compiler *c, int id, const ch
   unsup_leave(file, ln, msg);
 }
 /* unsupported_feature for a check that can go on past a refusal (the
-   seal's): under SP_COLLECT_ERRORS (collect_emit_anyway) the refusal is
-   reported and counted and the caller goes on to the next one, so a run
-   lists every refusal of the check, not only the first; otherwise it
-   leaves as unsupported_feature does. */
+   seal's): under SP_COLLECT_ERRORS and under --emit-types (refusals_go_on)
+   the refusal is reported and counted and the caller goes on to the next
+   one, so a run lists every refusal of the check, not only the first, and
+   the run fails at its end (codegen_program) with the JSON written;
+   otherwise it leaves as unsupported_feature does. */
 void unsupported_feature_collect(Compiler *c, int id, const char *msg) {
-  if (!collect_emit_anyway() || g_unsup_probe) unsupported_feature(c, id, msg);
+  if (!refusals_go_on() || g_unsup_probe) unsupported_feature(c, id, msg);
   refuse_at(c, id);
   int ln; const char *file = unsup_pos(c, id, &ln);
   diag_record(file, ln, msg);

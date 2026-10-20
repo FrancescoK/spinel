@@ -4815,6 +4815,13 @@ collect-errors-test: $(SPINEL)
 	$(SPINEL) --share-strings "$$sr" -c -o "$$tmp/sr2.c" >"$$tmp/sr2.err" 2>&1; rc=$$?; \
 	n=$$(grep -cE '^spinel: .*(shared with another name|does not follow this route)' "$$tmp/sr2.err"); \
 	[ $$rc -ne 0 ] && [ "$$n" -eq 1 ] || { echo "collect-errors-test: FAIL (without the flag the seal reported $$n refusals, rc=$$rc: it stops at the first)"; ok=0; }; \
+	rm -f "$$tmp/sr.json"; \
+	$(SPINEL) --share-strings "$$sr" --emit-types -o "$$tmp/sr.json" >"$$tmp/sr3.err" 2>&1; rc=$$?; \
+	n=$$(grep -cE '^spinel: .*(shared with another name|does not follow this route)' "$$tmp/sr3.err"); \
+	[ $$rc -ne 0 ] && [ "$$n" -eq 3 ] || { echo "collect-errors-test: FAIL (under --emit-types the seal reported $$n of its 3 refusals, rc=$$rc: the run goes on past each and fails at the end)"; ok=0; }; \
+	[ -f "$$tmp/sr.json" ] || { echo "collect-errors-test: FAIL (a program the seal refuses left no --emit-types JSON)"; ok=0; }; \
+	n=$$(grep -c '"severity":"error"' "$$tmp/sr.json" 2>/dev/null); \
+	[ "$$n" -eq 3 ] || { echo "collect-errors-test: FAIL (the --emit-types JSON carries $$n of the seal's 3 refusals)"; ok=0; }; \
 	$(SPINEL) "$$src" -c --no-line-map -o "$$tmp/g2.c" >"$$tmp/g2.err" 2>&1; rc=$$?; \
 	[ $$rc -ne 0 ] || { echo "collect-errors-test: FAIL (a program with a gap compiled without the flag)"; ok=0; }; \
 	[ ! -f "$$tmp/g2.c" ] || { echo "collect-errors-test: FAIL (a refused program's C was written)"; ok=0; }; \

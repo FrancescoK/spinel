@@ -1559,6 +1559,8 @@ void sb_shim_drop(Compiler *c, int node);
    unreachable. */
 int collect_mode(void);            /* 1: refusals are collected per unit (always) */
 int collect_emit_anyway(void);     /* 1 under SP_COLLECT_ERRORS: emit the rest, exit 0 */
+int emit_types_on(void);           /* 1 under --emit-types */
+int refusals_go_on(void);          /* 1: a check that can go on past a refusal (the seal's) does */
 /* What codegen decided at a node (--emit-types only, #4522). A call is
    ND_DIRECT (one statically bound C call or an inline builtin), ND_SWITCH
    (a switch over the classes or tags the receiver can hold) or ND_BOXED
