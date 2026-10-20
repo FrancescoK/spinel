@@ -4,15 +4,18 @@
 
 **Run `make gate` on your branch, merged with the current `master`, and
 paste its summary into the pull request.** The gate builds the compiler and
-runs every leg we merge on: the test corpus, the benchmarks, optcarrot, the
-ruby/spec retention gate, scale-test, spin-check and the other property
-tests. A pull request is merged only after the same gate passes here.
+runs every leg we merge on: the test corpus, the benchmarks, optcarrot,
+rubyboy, the ruby/spec retention gate, scale-test, spin-check and the other
+property tests. A pull request is merged only after the same gate passes here.
 
 ```sh
 git fetch origin && git merge origin/master   # or rebase
 make gate 2>&1 | tee gate.log
 grep -E 'Tests:|scale-test|gate:' gate.log
 ```
+
+The gate does not compile and run again a program whose C has not changed
+since a passing run; `make gate-full` runs everything.
 
 **If `make gate` fails on our side, we fix it where the fix is mechanical** (a
 recorded list such as `test/collect/refusals.expected`, a test whose output
@@ -58,11 +61,21 @@ The `.expected` comparison uses `GATE_RUBY`, else `ruby` from `PATH` when it
 is Ruby 4.0 or later (`tools/gate-ruby` picks it); without such a Ruby it is
 skipped with a warning. `make gate-tool-test` tests `tools/gate.rb` itself.
 
+`make share-check-ratchet`, a leg of `make gate`, compiles the String-sharing
+programs (`test/share/*.rb`, `test/share/verify/*.rb`,
+`test/share/verify/conflicts/*.rb`, `test/share_strings_*.rb`) with
+`--share-check`. It lists each place where the emitted C copies a String the
+analysis shares, and each place where the String plan disagrees with the
+emitted C, and compares them with `test/share_check/ratchet.txt` and
+`test/share_check/plan_ratchet.txt`. A place a list lacks fails, and so does a
+listed line no place matches, so the lists only shrink: a change that removes
+one deletes its line. `tools/share_check_ratchet.sh` describes the line format.
+
 `make share-verify-test` compiles `test/share/*.rb`, `test/share_strings_*.rb`
-and `test/share/verify/**/*.rb` with `SPINEL_SHARE_STRINGS=1 --repr-check --plan-check`.
+and `test/share/verify/**/*.rb` with `--repr-check --plan-check`.
 It fails on a new conflict, a failed compilation, or generated C that differs
 with the checking flags, or an output mismatch. Each executable program runs
-once against its `.expected`, without GC stress. The 13 examples under
+once against its `.expected`, without GC stress. The two examples under
 `test/share/verify/conflicts/` remain compile-only; their expected files record
 CRuby answers that the compiler does not yet produce. Verifier fixtures have
 no `share` marker and do not join `share-strings-test`. A stale entry in `test/share/verify-conflicts.txt`
@@ -111,22 +124,28 @@ and coercions; not every handwritten argument or element store uses it.
     OS-specific paths.
   - Give every new test its `.expected` file.
   - A new test registers itself with these header lines; no Makefile edit:
-    `# spinel: share` runs it under `--share-strings`, `# spinel: gc-minor`
+    `# spinel: share` adds it to `share-strings-test`, which runs it again
+    under GC stress, `# spinel: gc-minor`
     runs it with the minor mark off, on, and under the generational verifier
     with GC stress, and `# spinel: gc-stress` runs stress level 2 with and
     without the full verifier. Use one line per marker.
-    `# spinel: reject-share` marks a `test/reject/` program that runs under
-    `--share-strings`, with its output in `test/share/reject/`.
     `# spinel: wasm` selects the WASI smoke tests; `# spinel: decisions`
-    selects the decision checks. In `test/rbs-seed/`, `# spinel: rbs-seed-run`
+    selects the decision checks. In `test/wasm_abort/`, `# spinel: wasm-abort`
+    selects a program built with `--exceptions=abort`,
+    `# spinel: wasm-abort-raises: MESSAGE` the message its raise traps with,
+    and `# spinel: wasm-abort-refuse: REASON` the words of its refusal.
+    In `test/rbs-seed/`, `# spinel: rbs-seed-run`
     selects an output check and `# spinel: rbs-seed-check` selects an existing
     named assertion in the RBS harness. Every `test/rbs-seed/` program with an
-    `.expected` also runs under `--share-strings` with its signatures in
-    `share-strings-test`; `# spinel: rbs-seed-no-share` keeps one out (say why
+    `.expected` also runs with its signatures in `share-strings-test`, plain
+    and under GC stress; `# spinel: rbs-seed-no-share` keeps one out (say why
     in its header).
     `# spinel: needs-rbs-parser` keeps a `test/` program whose inline RBS
     annotations decide what it prints out of a build without the rbs C
     parser (`make deps` fetches it), where the annotations are comments.
+    `# spinel: linux` keeps a test whose subject only Linux gives to Linux
+    hosts. `# spinel: no-cache` makes the gate always run a test, for an input
+    the gate's result cache cannot see.
     The other `reject-*` markers select the diagnostic assertion named in
     `reject-test`; `rbs-seed-contradicted-return` selects its grouped refusal
     check, and `infer-ivar-get` selects the boxed instance-variable read check.
@@ -143,11 +162,18 @@ and coercions; not every handwritten argument or element store uses it.
   - `emit_call_body` only shrinks (#7033).
 - **C style.** Helpers are functions, not Ruby-style macros. Generated C
   puts `else` on its own line, not `} else {`. GNU extensions go through
-  `sp_compat.h`. `lib/spinel_rt.h` changes are additive only.
-- **Mutable Strings (#6179, #6765).** While the share-by-default prototype
-  is in progress, a route that silently copies a String a callee appends to
-  should be refused at compile time. Please do not add new per-route
-  sharing rules.
+  `sp_compat.h`. `lib/spinel_rt.h` changes are additive; a change to
+  existing runtime code is accepted case by case, when the fix's natural
+  home is there and the pull request explains why the additive alternative
+  is worse (#8328).
+- **One place per decision (#7100, #8328).** The analysis and
+  representation layer decides once, and the emitters read that decision.
+- **Mutable Strings (#6765, #9258).** A String is shared by reference, as
+  in CRuby: it is the one mode, with no option for the copying behaviour,
+  and `--share-strings` is accepted and ignored. The direction (#8328): a
+  String reaches its consumer as the object, and bytes or a copy are used
+  only where the analysis proves the difference cannot be observed. What is
+  still wrong under the one mode is tracked in #9258.
 
 ## Stacked pull requests
 
