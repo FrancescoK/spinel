@@ -1910,8 +1910,9 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
   for (int i = 0; i < nk && known; i++) cf_share_kind_rule(f, kinds[i], v, recv_el, pos, npos, blk, has_blk, &known);
   /* (the kinds' walk) `pairs.to_h` holds the pairs' elements (or a Hash's
      own), `a.product(b)` pairs of a's and b's elements: one level of the
-     containers the rows keep flat */
-  if (f->kon && !kfresh && blk < 0 && v >= 0 && v < f->nnodes && f->elobj[v] >= 0 &&
+     containers the rows keep flat; a receiver the walk does not follow
+     (`ENV.to_h`) keeps the rows' answer */
+  if (f->kon && !kfresh && blk < 0 && recv_el >= 0 && v >= 0 && v < f->nnodes && f->elobj[v] >= 0 &&
       (sp_streq(nm, "to_h") || sp_streq(nm, "product"))) {
     int vc = f->obj_cont[f->elobj[v]];
     if (sp_streq(nm, "to_h")) {
@@ -2323,9 +2324,11 @@ static void cf_call_any(CF *f, int v, const char *nm, const int *argv, int argc,
 
 static void cf_send_writers(CF *f, int v, int r, const int *argv, int argc) {
   Compiler *c = f->c;
+  /* (a computed name of another kind leaves every name dynamic: every
+     writer) */
   int kn = -1;
-  const char **knames = f->kon && cf_kn_ready ? cf_kn_names(v, &kn) : NULL;
-  if (!f->kon || !cf_kn_ready) kn = -1;
+  const char **knames = f->kon && cf_kn_ready && !f->kdyn_other ? cf_kn_names(v, &kn) : NULL;
+  if (!f->kon || !cf_kn_ready || f->kdyn_other) kn = -1;
   else if (kn < 0) kn = 0;   /* (a send not listed names none yet) */
   Scope *sc = &c->scopes[cf_scope_of(f, v)];
   int ks = r >= 0 ? cf_set_of(f, r) : sc->def_node >= 0 && sc->class_id >= 0 ? f->desc[sc->class_id] : CF_EMPTY;
