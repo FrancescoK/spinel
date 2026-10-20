@@ -5590,6 +5590,17 @@ static SP_UNUSED sp_int sp_int_sqrt_arg(sp_RbVal v) {
     sp_raise_cls("NotImplementedError", "Integer.sqrt of this Bignum answers a Bignum, which this Integer-typed call cannot hold");
   return (sp_int)sp_bigint_to_int(r);
 }
+/* Integer.sqrt converts its argument through #to_int, and a non-finite
+   Float has no integer value: CRuby's Float#to_int raises FloatDomainError
+   for it, on a native or a boxed Float alike. */
+static inline sp_int sp_float_isqrt(sp_float f) {
+  sp_poly_flo_domain_ck(f);
+  return sp_int_sqrt(sp_float_arg_i(f));
+}
+static SP_UNUSED sp_int sp_poly_isqrt(sp_RbVal v) {
+  if (v.tag == SP_TAG_FLT) sp_poly_flo_domain_ck(v.v.f);
+  return sp_int_sqrt_arg(v);
+}
 static sp_RbVal sp_poly_int_gcd(sp_RbVal v, sp_RbVal o) {
   if (v.tag != SP_TAG_INT && v.tag != SP_TAG_BIGINT) sp_raise_poly_nomethod("gcd", v);
   if (v.tag == SP_TAG_INT && o.tag == SP_TAG_INT) return sp_box_int(sp_gcd(v.v.i, o.v.i));
