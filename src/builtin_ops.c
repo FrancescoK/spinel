@@ -522,7 +522,12 @@ static const BuiltinOp bop_rows[] = {
     " sp_PolyArray_push(_t$t, sp_box_complex($c0)); sp_PolyArray_push(_t$t, sp_box_complex($r)); _t$t; })",
     BOP_K(TY_INT) | BOP_K(TY_FLOAT) | BOP_K(TY_COMPLEX) | BOP_K(TY_RATIONAL) },
   { TY_COMPLEX, "coerce",      1,   1, BF_ANY, TY_POLY_ARRAY, BOPE_TEMPLATE,
-    "({ (void)($r); (void)($e0); sp_raise_cls(\"TypeError\", \"can't be coerced into Complex\"); sp_PolyArray_new(); })" },
+    "({ (void)($r); (void)($e0); sp_raise_cls(\"TypeError\", \"can't be coerced into Complex\"); sp_PolyArray_new(); })", BOP_K(TY_BIGINT) },
+  /* any other operand: the runtime's Complex#coerce (sp_poly_coerce), the
+     receiver boxed and both held while the other is made */
+  { TY_COMPLEX, "coerce",      1,   1, BF_ANY, TY_POLY_ARRAY, BOPE_TEMPLATE,
+    "({ sp_RbVal _t$t = sp_box_complex($r); SP_GC_ROOT_RBVAL(_t$t); sp_RbVal _t$u = $b0; SP_GC_ROOT_RBVAL(_t$u);"
+    " (sp_PolyArray *)sp_poly_coerce(_t$t, _t$u).v.p; })" },
   /* == against a non-numeric value is always false (!= true); the operand
      still evaluates for its side effects (#2557) */
   { TY_COMPLEX, "==",          1,   1, BF_ANY, TY_BOOL,       BOPE_TEMPLATE, "(sp_complex_eq($r, $c0))", CX_NUM },
