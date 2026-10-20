@@ -12,6 +12,7 @@ def t_remainder = yield.remainder(2)
 
 p t_pow { 7 }
 p t_pow { 2.5 }
+p t_pow { 2 ** 70 }
 p t_pow { 2.5 }
 p t_pow { 7 }
 p t_conj { 7 }
@@ -20,6 +21,7 @@ p t_modulo { 7 }
 p t_modulo { 2.5 }
 p t_ceil { 7 }
 p t_ceil { 2.5 }
+p t_abs2 { 2 ** 70 }
 p t_abs2 { 7 }
 p t_abs2 { 2.5 }
 p t_floor { 7 }
