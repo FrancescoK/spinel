@@ -19811,6 +19811,22 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
          needs no static class at all (#3838, #3917). */
       if (pred) {
         TyKind at3 = comp_ntype(c, rv2[0]);
+        /* cover? of a boxed value that is a Range at run time: containment,
+           as for a typed one, where the case-equality read the Range as a
+           member and answered false */
+        if (sp_streq(rn2, "cover?") && at3 == TY_POLY) {
+          int tR = ++g_tmp, tA = ++g_tmp;
+          buf_printf(b, "({ sp_Range _t%d = ", tR); emit_expr(c, rr2, b);
+          buf_printf(b, "; sp_RbVal _t%d = ", tA); emit_boxed(c, rv2[0], b);
+          buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); "
+                        "(_t%d.tag == SP_TAG_OBJ && _t%d.v.p && _t%d.cls_id == SP_BUILTIN_RANGE)"
+                        " ? sp_range_cover_rng(_t%d, *(sp_Range *)_t%d.v.p)"
+                        " : (_t%d.tag == SP_TAG_OBJ && _t%d.v.p && _t%d.cls_id == SP_BUILTIN_FLOAT_RANGE)"
+                        " ? sp_range_cover_frange(_t%d, *(sp_FloatRange *)_t%d.v.p)"
+                        " : sp_poly_case_eq(sp_box_range(_t%d), _t%d); })",
+                     tA, tA, tA, tA, tR, tA, tA, tA, tA, tR, tA, tR, tA);
+          return 1;
+        }
         if (at3 != TY_INT && at3 != TY_FLOAT && at3 != TY_BIGINT) {
           buf_puts(b, "sp_poly_case_eq(sp_box_range(");
           emit_expr(c, rr2, b); buf_puts(b, "), ");
