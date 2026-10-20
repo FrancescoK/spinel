@@ -7588,6 +7588,75 @@ static int poly_block_mutator_name(const char *name) {
   for (int i = 0; names[i]; i++) if (sp_streq(name, names[i])) return 1;
   return 0;
 }
+/* Does the builtin arm `text` raise NoMethodError for method `name` itself
+   (the re-entered emission found no such builtin)? A raise for another
+   name -- a call inside the block the arm runs, on a value with no such
+   method -- is the block's own, and the arm stands. */
+static int arm_raises_nomethod_for(const char *text, const char *name) {
+  static const char tok[] = "sp_raise_cls(\"NoMethodError\"";
+  char quoted[300];
+  snprintf(quoted, sizeof quoted, "'%s'", name);
+  for (const char *p = strstr(text, tok); p; p = strstr(p + 1, tok)) {
+    const char *q = strstr(p, quoted), *e = strchr(p + sizeof tok - 1, ')');
+    if (q && (!e || q < e)) return 1;
+    /* a message built at run time names no method here: keep the old reading */
+    if (!strstr(p, "method '") || (e && strstr(p, "method '") > e)) return 1;
+  }
+  return 0;
+}
+/* The builtin default's re-entered emission of call id with its receiver
+   bound to _t<tv> (emit_poly_builtin_default_at): the arm's text into nb,
+   what it hoists into *arm_pre. 0 when the probe declined. */
+static int bi_default_probe(Compiler *c, int id, int recv, const char *name, int argc, const int *argv,
+                            const int *atmp, const TyKind *atmp_ty, TyKind ret, TyKind bt, int slot_o,
+                            int nil_fwd, int tv, Buf *nb, char **arm_pre, int *box_o) {
+  const NodeTable *nt = c->nt;
+  int slot = view_bind(recv, "_t%d", tv);
+  for (int a = 0; a < argc; a++) {
+    /* (a held handle is the argument's value, which a writer arm takes:
+       ran_first_handle) */
+    if (repr_share_rule(c) && argc == 1 && call_is_setter_assign(nt, id) && atmp_ty[a] == TY_STRBUF &&
+        repr_of(c, argv[a]).as_ty == TY_STRING) {
+      ran_first_bind(argv[a], atmp[a], atmp[a]);
+      continue;
+    }
+    if (!subtree_has_side_effect(c, argv[a])) continue;
+    /* --share-strings: one the dispatch bound with its handle keeps that
+       binding (ran_first_handle), the same temp */
+    if (repr_share_rule(c) && ran_first_handle(argv[a]) >= 0) continue;
+    int as = view_bind(argv[a], "_t%d", atmp[a]);
+  }
+  int va = view_push_arm(id, g_prbd_skip, 1);
+  int vw = view_push(c, id, bt);
+  /* Under the silent probe the dynamic-send arms use: a builtin emitter
+     that refuses these arguments (Array#join given a user object, a
+     separator no String can be) drops the arm, not the build -- the call
+     never reaches that emitter in a run where the receiver is not the
+     builtin. What the emission hoists is captured, for the arm. */
+  BuiltinDefaultProbe pr = { name, argc, ret, bt, slot_o, 0 };
+  /* a forwarded `&b` the builtin leaves unused is left out of its arm, whose
+     emitters take the call without one (an_builtin_answer asks the same) */
+  int dblk = nt_ref(nt, id, "block");
+  int drop_blk = dblk >= 0 && nt_kind(nt, dblk) == NK_BlockArgumentNode && (builtin_read_ignores_block(name) || nil_fwd);
+  if (drop_blk) nt_node_set_ref((NodeTable *)nt, id, "block", -1);
+  /* Array#at, kept by name where a program class owns it (desugar_array_at),
+     is the index read that checks its receiver is an Array (an index, never
+     a Range, as the rewrite takes it) */
+  TyKind at_ty = argc == 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+  int as_at = sp_streq(name, "at") && argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode &&
+              nt_ref(nt, id, "block") < 0 && !nt_int(nt, id, "was_at", 0) &&
+              at_ty != TY_RANGE && at_ty != TY_FLOAT_RANGE && at_ty != TY_STR_RANGE;
+  char *sv_nm = NULL;
+  if (as_at) { sv_nm = nt_node_swap_str((NodeTable *)nt, id, "name", "[]"); nt_node_set_int((NodeTable *)nt, id, "was_at", 1); }
+  int ok = poly_arm_probe(c, id, builtin_default_probe_fn, &pr, nb, arm_pre);
+  if (drop_blk) nt_node_set_ref((NodeTable *)nt, id, "block", dblk);
+  if (as_at) { nt_node_restore_str((NodeTable *)nt, id, "name", sv_nm); nt_node_set_int((NodeTable *)nt, id, "was_at", 0); }
+  *box_o = pr.box_o;
+  view_pop(c, vw);
+  view_pop(c, va);
+  view_unbind(slot);
+  return ok;
+}
 static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const char *name,
                                      int argc, const int *argv, const int *atmp,
                                      const TyKind *atmp_ty, TyKind ret, int tv, int tr,
@@ -7680,53 +7749,10 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
   /* the result slot's form, as the dispatch seeded it: an Integer / Float
      answer that can be nil is held as the oint */
   int slot_o = oint_kind(ret) && node_is_oint(c, id);
-  int slot = view_bind(recv, "_t%d", tv);
-  for (int a = 0; a < argc; a++) {
-    /* (a held handle is the argument's value, which a writer arm takes:
-       ran_first_handle) */
-    if (repr_share_rule(c) && argc == 1 && call_is_setter_assign(nt, id) && atmp_ty[a] == TY_STRBUF &&
-        repr_of(c, argv[a]).as_ty == TY_STRING) {
-      ran_first_bind(argv[a], atmp[a], atmp[a]);
-      continue;
-    }
-    if (!subtree_has_side_effect(c, argv[a])) continue;
-    /* --share-strings: one the dispatch bound with its handle keeps that
-       binding (ran_first_handle), the same temp */
-    if (repr_share_rule(c) && ran_first_handle(argv[a]) >= 0) continue;
-    int as = view_bind(argv[a], "_t%d", atmp[a]);
-  }
-  int va = view_push_arm(id, g_prbd_skip, 1);
-  int vw = view_push(c, id, bt);
-  int box_o = 0;
-  /* Under the silent probe the dynamic-send arms use: a builtin emitter
-     that refuses these arguments (Array#join given a user object, a
-     separator no String can be) drops the arm, not the build -- the call
-     never reaches that emitter in a run where the receiver is not the
-     builtin. What the emission hoists is captured, for the arm. */
-  BuiltinDefaultProbe pr = { name, argc, ret, bt, slot_o, 0 };
   Buf *nb = calloc(1, sizeof *nb);
   char *arm_pre = NULL;
-  /* a forwarded `&b` the builtin leaves unused is left out of its arm, whose
-     emitters take the call without one (an_builtin_answer asks the same) */
-  int dblk = nt_ref(nt, id, "block");
-  int drop_blk = dblk >= 0 && nt_kind(nt, dblk) == NK_BlockArgumentNode && (builtin_read_ignores_block(name) || nil_fwd);
-  if (drop_blk) nt_node_set_ref((NodeTable *)nt, id, "block", -1);
-  /* Array#at, kept by name where a program class owns it (desugar_array_at),
-     is the index read that checks its receiver is an Array (an index, never
-     a Range, as the rewrite takes it) */
-  TyKind at_ty = argc == 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
-  int as_at = sp_streq(name, "at") && argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode &&
-              nt_ref(nt, id, "block") < 0 && !nt_int(nt, id, "was_at", 0) &&
-              at_ty != TY_RANGE && at_ty != TY_FLOAT_RANGE && at_ty != TY_STR_RANGE;
-  char *sv_nm = NULL;
-  if (as_at) { sv_nm = nt_node_swap_str((NodeTable *)nt, id, "name", "[]"); nt_node_set_int((NodeTable *)nt, id, "was_at", 1); }
-  int ok = poly_arm_probe(c, id, builtin_default_probe_fn, &pr, nb, &arm_pre);
-  if (drop_blk) nt_node_set_ref((NodeTable *)nt, id, "block", dblk);
-  if (as_at) { nt_node_restore_str((NodeTable *)nt, id, "name", sv_nm); nt_node_set_int((NodeTable *)nt, id, "was_at", 0); }
-  box_o = pr.box_o;
-  view_pop(c, vw);
-  view_pop(c, va);
-  view_unbind(slot);
+  int box_o = 0;
+  int ok = bi_default_probe(c, id, recv, name, argc, argv, atmp, atmp_ty, ret, bt, slot_o, nil_fwd, tv, nb, &arm_pre, &box_o);
   Buf ib; memset(&ib, 0, sizeof ib);
   if (ok && nb->p) {
     /* a raise token is no value to box: the test below reads it bare */
@@ -7763,9 +7789,26 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
     else buf_puts(&ib, nb->p);
   }
   free(nb->p); free(nb);
+  /* A NoMethodError naming the method may be a call of the same name in
+     the block the arm runs (`x.map!` inside a `map!` block): the arm is
+     emitted again with the block's body left out, and only a raise that
+     stays is the arm's own */
+  int own_raise = ib.p && arm_raises_nomethod_for(ib.p, name);
+  { int blk = nt_ref(nt, id, "block");
+    int body = own_raise && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode ? nt_ref(nt, blk, "body") : -1;
+    if (body >= 0) {
+      nt_node_set_ref((NodeTable *)nt, blk, "body", -1);
+      Buf *nb2 = calloc(1, sizeof *nb2);
+      char *pre2 = NULL;
+      int box2 = 0;
+      int ok2 = bi_default_probe(c, id, recv, name, argc, argv, atmp, atmp_ty, ret, bt, slot_o, nil_fwd, tv,
+                                 nb2, &pre2, &box2);
+      nt_node_set_ref((NodeTable *)nt, blk, "body", body);
+      if (ok2 && nb2->p && !arm_raises_nomethod_for(nb2->p, name)) own_raise = 0;
+      free(nb2->p); free(nb2); free(pre2);
+    } }
   if (!ib.p || strncmp(share_check_unmarked(ib.p), "sp_raise_nomethod(", 18) == 0 ||
-      strncmp(share_check_unmarked(ib.p), "sp_raise_poly_nomethod(", 23) == 0 ||
-      strstr(ib.p, "sp_raise_cls(\"NoMethodError\"") != NULL) {
+      strncmp(share_check_unmarked(ib.p), "sp_raise_poly_nomethod(", 23) == 0 || own_raise) {
     free(ib.p); free(arm_pre); return 0;
   }
   /* the re-entered emission can land on Object's own method, which may

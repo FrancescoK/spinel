@@ -4527,7 +4527,12 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
   if (polls_here && sig_polls() && (poll_uncounted || poll_nest == 1) && !poll_in_pure(c, body)) {
     emit_indent(b, indent); buf_printf(b, "%s%s;\n", sig_poll_stmt(), hc_mark());
   }
+  /* a dispatch's builtin arm reads its RECEIVER as no object of the
+     program's (g_poly_builtin_arm); the block's own calls are not that
+     receiver's, and a user class owns their names as it does anywhere */
+  int sv_arm = g_poly_builtin_arm ? view_push_arm(g_pd_skip, g_prbd_skip, 0) : -1;
   emit_stmts(c, body, b, indent);
+  if (sv_arm >= 0) view_pop(c, sv_arm);
   if (has_redo) g_redo_depth--;
   g_poll_loop_nest--;
   g_c_loop_depth--;
