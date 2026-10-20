@@ -7063,7 +7063,7 @@ void emit_bm_abi_args(Buf *b, const char *rb, int abi, const char *sig, int fixe
    emitted, 0 (nothing written) otherwise. */
 int emit_poly_callable_prearm(Compiler *c, const char *name, int argc,
                               const int *atmp, const TyKind *atmp_ty, const char *guard,
-                              int tv, int tr, TyKind ret, int kwpos, Buf *b) {
+                              int tv, int tr, TyKind ret, int kwpos, int tblk, Buf *b) {
   if (!name ||
       !is_call_alias(name))
     return 0;
@@ -7207,6 +7207,17 @@ int emit_poly_callable_prearm(Compiler *c, const char *name, int argc,
   for (int k = 0; k < argc; k++) { if (k) buf_puts(&eb, ", "); PA_SLOT(k); }
   if (argc == 0) buf_puts(&eb, "0");
   buf_printf(&eb, "}, %d))", kwpos);
+  /* A call with a block (tblk, its proc): the direct casts above hand a
+     Method none, so a Method enters its thunk with the block and a Proc
+     takes it on the block channel, through sp_poly_callable_call_blk. */
+  if (tblk >= 0) {
+    eb.len = 0; if (eb.p) eb.p[0] = 0;
+    if (pubs.p) { buf_puts(&eb, "("); buf_puts(&eb, pubs.p); }
+    buf_printf(&eb, "sp_poly_callable_call_blk(_t%d, %d, (sp_int[%d]){", tv, argc, argc > 16 ? argc : 16);
+    for (int k = 0; k < argc; k++) { if (k) buf_puts(&eb, ", "); PA_SLOT(k); }
+    if (argc == 0) buf_puts(&eb, "0");
+    buf_printf(&eb, "}, %d, _t%d)", kwpos, tblk);
+  }
   if (pubs.p) buf_puts(&eb, ")");
   #undef PA_SLOT
   #undef PA_MARG

@@ -1,0 +1,8 @@
+:none
+[:strict, {mine: "x", theirs: "y"}]
+:accepted
+[:caller, :strict, 0, {mine: "x", theirs: "y"}]
+[:counted, :given]
+[:k, 2, :kw_given]
+300
+:no_block
