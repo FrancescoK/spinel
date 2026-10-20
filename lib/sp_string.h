@@ -256,6 +256,11 @@ static inline sp_String*sp_string_handle_id(sp_String*h){return h;}
    the same length and marks, over a payload inside the object. */
 static inline sp_String*sp_String_new_fresh(const char*s){
   if(!s)return NULL;
+#ifdef SP_ONE_STRING
+  /* one representation: a heap byte string a builtin answered is a temporary
+     no other name holds; the handle adopts its bytes (sp_String_new_shared) */
+  if(((const unsigned char*)s)[-1]==0xfe)return sp_String_new_shared(s);
+#endif
   int bin=sp_str_is_binary(s);
   int frozen=sp_str_is_frozen_val(s);
   int mk=((const unsigned char*)s)[-1];

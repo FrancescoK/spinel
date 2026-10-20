@@ -762,6 +762,28 @@ RE_MT_OBJ = $(patsubst lib/regexp/%.c,build/mt/regexp/%.o,$(RE_SRC))
 $(SP_RT_MT_LIB): $(RE_MT_OBJ) $(addprefix build/mt/,$(addsuffix .o,$(RT_MEMBERS))) $(PLATFORM_MT_OBJ)
 	$(AR_DET) ar rcs $@ $^
 
+# ---- One-representation String runtime variant (-DSP_ONE_STRING) ----
+# Same sources, compiled with -DSP_ONE_STRING: every String slot is the
+# handle (docs/internals/string-one-repr-design.md). Linked when the program
+# was compiled with --string-repr=handle (the SPINEL_ONE_STRING marker, see
+# runtime_archive in src/main.c). Temporary: it goes when the mode is the
+# only one.
+SP_RT_ONE_LIB = lib/libspinel_rt_one.a
+ONE_DEF = -DSP_ONE_STRING
+
+build/one/regexp/%.o: lib/regexp/%.c $(RE_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c $(COPT) $(SEC_FLAGS) $(ONE_DEF) -Ilib/regexp -Ilib/regexp/shim $< -o $@
+
+build/one/%.o: lib/%.c $(RT_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(ONE_DEF) -Ilib -Ilib/regexp -Ilib/regexp/shim $< -o $@
+
+RE_ONE_OBJ = $(patsubst lib/regexp/%.c,build/one/regexp/%.o,$(RE_SRC))
+
+$(SP_RT_ONE_LIB): $(RE_ONE_OBJ) $(addprefix build/one/,$(addsuffix .o,$(RT_MEMBERS))) $(PLATFORM_OBJ)
+	$(AR_DET) ar rcs $@ $^
+
 # ---- ThreadSanitizer build of the threaded runtime (Phase 1 validation) ----
 # The gate links a threaded test against the mt archive, as the driver does,
 # but uninstrumented, so a race shows only when it corrupts the output. This
@@ -976,7 +998,7 @@ wasm-test: $(SPINEL) wasm-rt
 	done; \
 	rm -rf $$tmp; [ $$ok -eq 1 ]
 
-regexp: $(SP_RT_LIB) $(SP_RT_MT_LIB)
+regexp: $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SP_RT_ONE_LIB)
 
 # ---- In-tree developer tools ----
 

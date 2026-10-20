@@ -73,6 +73,7 @@ void strbuf_arg_index_free(Compiler *c);
    exactly what promote mode is asking us to avoid. Off (0) for raise/wrap, so
    the default gates and optcarrot (which pins wrap) see no behavior change. */
 extern int g_promote_mode;
+extern int g_one_string;   /* --string-repr=handle: every String slot is the handle (string-one-repr-design.md) */
 void an_rat_boxed_mark(int id);
 int an_rat_boxed(int id);
 int an_rat_value(Compiler *c, int n);

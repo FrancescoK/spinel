@@ -522,6 +522,12 @@ static const char *runtime_archive(const char *csrc, int threads, int wasi, int 
     fprintf(stderr, "spinel: C extensions currently require the native exception runtime\n");
     return NULL;
   }
+  int one = strstr(csrc, "/* SPINEL_ONE_STRING */") != NULL;
+  if (one && (*cext || threads || wasi)) {
+    fprintf(stderr, "spinel: --string-repr=handle does not link with threads, C extensions or wasm yet\n");
+    return NULL;
+  }
+  if (one) return "libspinel_rt_one.a";
   return *cext ? (threads ? "libspinel_cext_rt_mt.a" : "libspinel_cext_rt.a") : threads ? "libspinel_rt_mt.a" : "libspinel_rt.a";
 }
 
@@ -688,6 +694,10 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "-I"))            { if (++i < argc) sp_add_feature_root(argv[i]); i++; }
     else if (!strncmp(a, "-I", 2) && a[2]) { sp_add_feature_root(a + 2); i++; }
     else if (sp_streq(a, "-S"))            { stdout_mode = 1; i++; }
+    /* the one-representation String (in progress, string-one-repr-design.md):
+       every String slot is the handle, linked against the archive built for it */
+    else if (sp_streq(a, "--string-repr=handle")) { g_one_string = 1; i++; }
+    else if (sp_streq(a, "--string-repr=bytes"))  { g_one_string = 0; i++; }
     else if (sp_streq(a, "--print-build")) { print_build = 1; i++; }
     else if (sp_streq(a, "-E"))            { run_mode = 1; i++; }
     else if (sp_streq(a, "--emit-rbs"))    { emit_rbs = 1; i++; }

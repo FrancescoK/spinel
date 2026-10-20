@@ -3078,6 +3078,20 @@ SP_COLD static const char *sp_strbuf_read_frozen(sp_String *h) {
    face is frozen too (sp_strbuf_read_frozen). */
 /* A handle's read face without the publish: a copy of its bytes, NULL for
    nil, frozen for a frozen handle (sp_strbuf_read_frozen) */
+#ifdef SP_ONE_STRING
+/* One representation (string-one-repr-design.md): no slot holds bytes, so a
+   read face never outlives a change of the handle, and it is the bytes
+   themselves (the payload is laid out as a byte string, marker 0xfd). */
+static inline const char *sp_strbuf_read(sp_String *h) {
+  if (h && SP_UNLIKELY(sp_String_is_frozen(h))) return sp_strbuf_read_frozen(h);
+  return h ? sp_String_cstr(h) : NULL;
+}
+static inline const char *sp_strbuf_read_pub(sp_String *h) {
+  _sp_ret_strbuf = (void *)h;
+  if (h && SP_UNLIKELY(sp_String_is_frozen(h))) return sp_strbuf_read_frozen(h);
+  return h ? sp_String_cstr(h) : NULL;
+}
+#else
 static inline const char *sp_strbuf_read(sp_String *h) {
   if (h && SP_UNLIKELY(sp_String_is_frozen(h))) return sp_strbuf_read_frozen(h);
   return h ? sp_str_concat(sp_String_cstr(h), (&("\xff")[1])) : NULL;
@@ -3087,6 +3101,7 @@ static inline const char *sp_strbuf_read_pub(sp_String *h) {
   if (h && SP_UNLIKELY(sp_String_is_frozen(h))) return sp_strbuf_read_frozen(h);
   return h ? sp_str_concat(sp_String_cstr(h), (&("\xff")[1])) : NULL;
 }
+#endif
 /* --share-strings (#8321): a String Range made from shared handles keeps
    them (hf / hl), and a read of the Range takes each handle's bytes as they
    are now, so a change in place to the endpoint's String shows through it. */
