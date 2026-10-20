@@ -25482,15 +25482,16 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
       if (!var) continue;
     }
     /* A fresh String Array a call answers (`s.split(",").map! { |t| t.strip!
-       ... }`) that nothing else holds: a mutation of the String an iterator
-       yields is seen only through the block's own value when the
+       ... }`, also on a boxed `s`: sb_iter_fresh_source) that nothing else
+       holds: a mutation of the String an iterator yields is seen only
+       through the block's own value when the
        iterator's answer is dropped, or is the block's values (map, and
        map!/collect!, which store them over the elements). An iterator
        answering the Array or some of its elements (each, select, find) is
        read again where its answer is used, and stays refused here
        (desugar_fresh_array_each_writeback takes each's). The parameter then
        binds the element as a copy, as for any read. */
-    if ((bpv4->type == TY_STRING || bpv4->type == TY_STRBUF) && sb_fresh_string_array_call(c, recv4) &&
+    if ((bpv4->type == TY_STRING || bpv4->type == TY_STRBUF) && sb_iter_fresh_source(c, recv4) &&
         (is_map_bang_alias(ibn) || comp_value_dropped(c, w) ||
          bop_share_named(BOP_ANY_ARRAY, ibn) == BSH_ITER_MAP ||
          bop_share_named(BOP_ANY_ARRAY, ibn) == BSH_ITER_MAP_BANG))
