@@ -12973,9 +12973,9 @@ static int emit_paren_tail_pub(Compiler *c, int v, Buf *b) {
   Buf vb; memset(&vb, 0, sizeof vb);
   Buf *sv_pre = g_pre;
   g_pre = &cap;
-  buf_puts(&vb, "sp_strbuf_read_pub(");
+  str_read_handle_open(&vb, 1);
   emit_strbuf_handle_of(c, bd[n - 1], &vb);
-  buf_puts(&vb, ")");
+  str_read_handle_close(&vb);
   g_pre = sv_pre;
   if (cap.p && cap.p[0]) {
     for (int j = 0; j < n - 1; j++) emit_stmt(c, bd[j], g_pre, g_indent);
@@ -13037,7 +13037,7 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
   NodeKind k = nt_kind(c->nt, node);
   if(c->n_cext_extensions && slot==TY_STRING && comp_ntype(c,node)==TY_STRBUF &&
      (k==NK_LocalVariableReadNode || k==NK_InstanceVariableReadNode)) {
-    buf_puts(b,"sp_strbuf_read_pub(");emit_expr(c,node,b);buf_puts(b,")");
+    str_read_handle_open(b, 1);emit_expr(c,node,b);str_read_handle_close(b);
     if(g_repr_check) { repr_channel_note(c,node,RCH_PUBLISH);repr_channel_end(c,frame); }
     return;
   }
@@ -13049,9 +13049,9 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
     return;
   }
   if (ts && ts->ret_handle && strbuf_builtin_tail(c, node)) {
-    buf_puts(b, "sp_strbuf_read_pub(");
+    str_read_handle_open(b, 1);
     emit_strbuf_handle_of(c, node, b);
-    buf_puts(b, ")");
+    str_read_handle_close(b);
     if (g_repr_check) { repr_channel_note(c, node, RCH_PUBLISH); repr_channel_end(c, frame); }
     return;
   }
@@ -13059,9 +13059,9 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
      handed (`super(v)` in a StringIO subclass's string=): the handle form
      answers the handle it kept, which the tail publishes (#9258) */
   if (ts && ts->ret_handle && repr_super_native_keeps(c, node)) {
-    buf_puts(b, "sp_strbuf_read_pub(");
+    str_read_handle_open(b, 1);
     emit_native_super_keeps_handle(c, node, b);
-    buf_puts(b, ")");
+    str_read_handle_close(b);
     if (g_repr_check) { repr_channel_note(c, node, RCH_PUBLISH); repr_channel_end(c, frame); }
     return;
   }
@@ -13088,9 +13088,9 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
      value is the handle its writers are handed (repr_write_share): the
      dispatch answers that handle's bytes, which publish nothing */
   if (ts && ts->ret_handle && strbuf_assign_leaf(c, node) && strbuf_assign_boxed_recv(c, node)) {
-    buf_puts(b, "sp_strbuf_read_pub(");
+    str_read_handle_open(b, 1);
     emit_strbuf_write_handle(c, node, b);
-    buf_puts(b, ")");
+    str_read_handle_close(b);
     if (g_repr_check) repr_channel_end(c, frame);
     return;
   }
@@ -20795,7 +20795,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
         holder_slot_buf(c, &h9, &islot9);
         if (sb8) {
           Buf h8; memset(&h8, 0, sizeof h8);
-          buf_printf(&h8, "sp_strbuf_read_pub(%s)", islot9.p);
+          str_read_handle(&h8, islot9.p, 1);
           free(islot9.p);
           islot9 = h8;
           if (g_repr_check) repr_channel_note(c, id, RCH_PUBLISH);
@@ -20879,8 +20879,8 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     /* read out with the handle published, as the value form's is, where
        the --share-strings rule's pickup takes it */
     if (sb9 && h9.r.share)
-      buf_printf(&gref9, "sp_strbuf_read_pub(%s)", gslot9.p);
-    else if (sb9) buf_printf(&gref9, "sp_strbuf_read(%s)", gslot9.p);
+      str_read_handle(&gref9, gslot9.p, 1);
+    else if (sb9) str_read_handle(&gref9, gslot9.p, 0);
     else buf_puts(&gref9, gslot9.p);
     if (g_repr_check && sb9 && h9.r.share) repr_channel_note(c, id, RCH_PUBLISH);
     emit_indent(b, indent); emit_tail_lead(b);

@@ -507,10 +507,13 @@ void str_box_handle_tmp(Buf *b, int tmp);
 void str_box_open(Buf *b, int nullable);
 void str_box_close(Buf *b);
 /* The bytes a handle reads as, written in one place (codegen_str.c): of
-   text already written or of a temp; `pub` also publishes the handle
+   text already written, of a temp, or around text the caller emits between
+   the open and the close; `pub` also publishes the handle
    (sp_strbuf_read_pub) */
 void str_read_handle(Buf *b, const char *h, int pub);
 void str_read_handle_tmp(Buf *b, int tmp, int pub);
+void str_read_handle_open(Buf *b, int pub);
+void str_read_handle_close(Buf *b);
 /* A new handle around the bytes the caller emits between the open and the
    close, and the box of a String Range endpoint temp `t` keeps (handle
    field `h`, String field `e`), written in one place (codegen_str.c) */
