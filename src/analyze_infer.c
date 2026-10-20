@@ -278,8 +278,15 @@ int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out) 
      ask is about the pinned kind already, so it declines. */
   static int busy = 0;
   if (busy || face_active()) return 0;
+  /* A numeric site is answered per site here even without a reopen on the
+     chain: `yield.**(2)` over an Integer block and a Float block typed the
+     yield as its first site's kind, so the Float site's value was read as
+     an Integer (`2.5 ** 2` printed 4), and `7 ** 2` printed 49.0 (K-030).
+     Only numeric kinds take this path: widening a yield over String or
+     Hash sites as well (`yield.inspect`) reaches emitters that do not yet
+     box a per-site answer into the poly slot, and fails to compile. */
   if (nt_kind(nt, id) != NK_CallNode || nt_int(nt, id, "builtin_only", 0) ||
-      !comp_yield_chain_reopened(c, id)) return 0;
+      !(comp_yield_chain_reopened(c, id) || ty_is_numeric(kind))) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   busy = 1;
