@@ -2821,7 +2821,7 @@ static int pinned_block_form_ret(Compiler *c, int mi, TyKind *out) {
   TyKind acc = TY_UNKNOWN;
   int any = 0, nil = 0;
   for (int i = 0; i < n; i++) {
-    if (lv[i] == c->scopes[mi].ret_pin_guard) continue;
+    if (lv[i] == c->scopes[mi].ret_pin_guard || return_in_lambda(c, lv[i])) continue;   /* a lambda's return leaves the lambda */
     TyKind t = infer_type(c, lv[i]);
     any = 1;
     if (t == TY_UNKNOWN) { *out = TY_UNKNOWN; return 1; }
