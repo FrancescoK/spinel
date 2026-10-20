@@ -1970,6 +1970,11 @@ static int block_tail_needs_value_form(Compiler *c, int id) {
      `with_retries { system(cmd) }` did not build (#4802). The expression
      form is the same compound as a statement expression. */
   if (nt_ref(nt, id, "receiver") < 0 && sp_streq(nm, "system")) return 1;
+  /* `loop { break v }`: the statement form drops v and leaves the splice
+     void; the expression form holds it in a slot of its own (and nil where
+     no break has a value) */
+  if (nt_ref(nt, id, "receiver") < 0 && sp_streq(nm, "loop") && nt_ref(nt, id, "block") >= 0 &&
+      nt_ref(nt, id, "arguments") < 0 && comp_method_index(c, "loop") < 0) return 1;
   /* a String mutator that answers its receiver (concat, replace, insert,
      prepend): the statement form changes the String and has no value,
      and the block answers the String (#8400) */
