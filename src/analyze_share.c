@@ -3642,6 +3642,13 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
         r = sh_join(F, r, iv);
       }
     }
+    /* ... and so may it be of a class whose attr reader of the name answers
+       (an attr_accessor beside another class's def reader): the dispatch's
+       reader arm answers the String its field holds (#9814) */
+    else if (argc == 0 && (rt == TY_POLY || rt == TY_UNKNOWN)) {
+      int writer = 0, iv = sh_attr_ivars(F, c, name, n, &writer);
+      if (iv >= 0 && !writer) r = sh_join(F, r, iv);
+    }
     /* a poly receiver may be a builtin as well */
     if (c->share_strings && rt == TY_EXCEPTION && is_exception_message(name))
       return sh_join(F, r, is_message_name(name) ? sh_exc_text(F, c) : sh_exc(F));
