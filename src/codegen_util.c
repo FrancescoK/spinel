@@ -3686,7 +3686,7 @@ static const char *strh_elem_nil_raise(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   const int *par = codegen_parents(c, v, 0);
   int p = v < nt->count ? par[v] : -1;
-  if (p < 0 || nt_kind(nt, p) != NK_CallNode || an_unparen(nt, nt_ref(nt, p, "receiver")) != v) return NULL;
+  if (p < 0 || nt_kind(nt, p) != NK_CallNode || nt_paren_single(nt, nt_ref(nt, p, "receiver")) != v) return NULL;
   const char *nm = nt_str(nt, p, "name");
   return nm && !is_nil_method(nm) ? nm : NULL;
 }

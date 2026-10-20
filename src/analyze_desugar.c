@@ -9048,7 +9048,7 @@ int desugar_enumerable_via_to_a(Compiler *c) {
        turned a working search into a RangeError (#3863). The other names
        have no such walk and keep the (faithfully raising) hop. */
     if (rt == TY_RANGE && (is_find_alias(nm))) {
-      int rn7 = an_unparen(nt, recv);
+      int rn7 = nt_paren_single(nt, recv);
       if (rn7 >= 0 && nt_type(nt, rn7) && sp_streq(nt_type(nt, rn7), "RangeNode") &&
           nt_ref(nt, rn7, "right") < 0) continue;
     }

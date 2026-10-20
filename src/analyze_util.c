@@ -3745,7 +3745,7 @@ int local_sole_range_node(Compiler *c, int recv) {
       return -1;
     val = nt_ref(nt, w, "value");
   }
-  val = an_unparen(nt, val);
+  val = nt_paren_single(nt, val);
   if (val < 0 || nt_kind(nt, val) != NK_RangeNode) return -1;
   /* callers re-emit the endpoints at the use site (take/first prefix loops),
      so both must be pure: literals or constant reads only */
@@ -4162,7 +4162,7 @@ int strh_literal_held(Compiler *c, int n) {
   if (p < 0) return 0;
   NodeKind pk = nt_kind(c->nt, p);
   if ((pk == NK_InstanceVariableWriteNode || pk == NK_GlobalVariableWriteNode || pk == NK_ClassVariableWriteNode ||
-       pk == NK_ConstantWriteNode) && an_unparen(c->nt, nt_ref(c->nt, p, "value")) == n)
+       pk == NK_ConstantWriteNode) && nt_paren_single(c->nt, nt_ref(c->nt, p, "value")) == n)
     return 1;
   /* an argument of a call or a yield, the value of a method */
   if (is_arguments_node_type(nt_type(c->nt, p)) && par[p] >= 0 &&

@@ -6112,7 +6112,7 @@ static void sh_into_build(const Compiler *c) {
            one base */
         if (r < F->nnodes && (F->into[r] & SHI_MUTATED)) break;
         sh_into_mark(nt, F, r, SHI_MUTATED);
-        int u = an_unparen(nt, r);
+        int u = nt_paren_single(nt, r);
         if (u == v || u < 0 || nt_kind(nt, u) != NK_CallNode) break;
         r = nt_ref(nt, u, "receiver");
       }

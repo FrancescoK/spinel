@@ -1001,7 +1001,7 @@ static void share_plan_identity_roles(Compiler *c, int n) {
 static int share_plan_freeze_read(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, n, "name");
-  int recv = an_unparen(nt, nt_ref(nt, n, "receiver")), tg[CPT_MAX];
+  int recv = nt_paren_single(nt, nt_ref(nt, n, "receiver")), tg[CPT_MAX];
   if (!nm || recv < 0 || !is_freeze_name(nm) || nt_ref(nt, n, "arguments") >= 0 || nt_ref(nt, n, "block") >= 0)
     return 0;
   NodeKind k = nt_kind(nt, recv);

@@ -1612,7 +1612,7 @@ int str_fresh_value(Compiler *c, int n) {
   if (r < 0 || !nm || comp_ntype(c, r) != TY_STRING || comp_builtin_kind_reopen_mi(c, TY_STRING, nm) >= 0)
     return 0;
   int self = bop_answers_self(TY_STRING, nm, call_plain_argc(c, n), 0);
-  if (self & BOPF_SELF_CLASS) return nt_kind(nt, an_unparen(nt, r)) == NK_StringNode;
+  if (self & BOPF_SELF_CLASS) return nt_kind(nt, nt_paren_single(nt, r)) == NK_StringNode;
   return (self == 0 || self == BOPF_COPY_CLASS) && !str_self_call(nt, n) && bop_share(TY_STRING, nm) == BSH_PURE;
 }
 

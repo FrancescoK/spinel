@@ -931,7 +931,7 @@ static const char *const KEPT_READ0[] = {
 int an_int_step_range_chain(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int p = comp_recv_parent(c, id);
-  if (p < 0 || nt_kind(nt, p) != NK_CallNode || an_unparen(nt, nt_ref(nt, p, "receiver")) != id ||
+  if (p < 0 || nt_kind(nt, p) != NK_CallNode || nt_paren_single(nt, nt_ref(nt, p, "receiver")) != id ||
       nt_safe_nav(nt, p)) return 0;
   const char *pn = nt_str(nt, p, "name");
   /* the `to_a` hop a desugar puts under an Enumerator's walk (enum_recv)
@@ -953,7 +953,7 @@ int an_int_step_range_chain(Compiler *c, int id) {
                                sp_streq(pn, "reject") || sp_streq(pn, "flat_map") ||
                                sp_streq(pn, "filter_map"))) {
     int g = comp_recv_parent(c, p);
-    if (g < 0 || nt_kind(nt, g) != NK_CallNode || an_unparen(nt, nt_ref(nt, g, "receiver")) != p ||
+    if (g < 0 || nt_kind(nt, g) != NK_CallNode || nt_paren_single(nt, nt_ref(nt, g, "receiver")) != p ||
         nt_safe_nav(nt, g)) return 0;
     const char *gn = nt_str(nt, g, "name");
     int gblk = nt_ref(nt, g, "block");
@@ -1002,7 +1002,7 @@ int an_int_step_range_chain(Compiler *c, int id) {
 int an_blockless_tuples_kept(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int p = comp_recv_parent(c, id);
-  if (p < 0 || nt_kind(nt, p) != NK_CallNode || an_unparen(nt, nt_ref(nt, p, "receiver")) != id ||
+  if (p < 0 || nt_kind(nt, p) != NK_CallNode || nt_paren_single(nt, nt_ref(nt, p, "receiver")) != id ||
       nt_safe_nav(nt, p)) return 0;
   const char *pn = nt_str(nt, p, "name");
   /* nor is a `to_a` a desugar puts under a walk (made_to_a): the walk
@@ -1767,7 +1767,7 @@ int range_enum_redispatch(Compiler *c, int id) {
      silently miscompiling. (A non-literal receiver, e.g. `r = (1.0..5.0);
      r.find`, is the pre-existing int-only-sp_Range limitation, not detectable
      here.) */
-  int rn = an_unparen(nt, nt_ref(nt, id, "receiver"));
+  int rn = nt_paren_single(nt, nt_ref(nt, id, "receiver"));
   if (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode")) {
     int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
     if (lo < 0 || hi < 0) return 0;
@@ -4489,7 +4489,7 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
   if (recv >= 0 && rt == TY_RANGE) {
     /* a literal string range ("a".."z") yields strings, not ints */
     if (sp_streq(name, "to_a")) {
-      int rn = an_unparen(nt, recv);
+      int rn = nt_paren_single(nt, recv);
       if (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode")) {
         int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
         if (lo >= 0 && hi >= 0 && infer_type(c, lo) == TY_STRING && infer_type(c, hi) == TY_STRING)
@@ -4498,7 +4498,7 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
     }
     /* String-endpoint range accessors read/return strings, not ints (#2467) */
     {
-      int rn = an_unparen(nt, recv);
+      int rn = nt_paren_single(nt, recv);
       if (rn >= 0 && nt_type(nt, rn) && !sp_streq(nt_type(nt, rn), "RangeNode")) {
         int sl = local_sole_range_node(c, rn);
         if (sl >= 0) rn = sl;
@@ -4521,14 +4521,14 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
     /* `x..Float::INFINITY`: the int range records only "unbounded", but the
        literal says what the bound was, so #end answers the Float (#3670) */
     if (sp_streq(name, "end") && argc == 0) {
-      int _ri = an_unparen(nt, recv);
+      int _ri = nt_paren_single(nt, recv);
       if (_ri >= 0 && nt_kind(nt, _ri) == NK_RangeNode &&
           infer_endpoint_is_infinite(c, nt_ref(nt, _ri, "right")) &&
           nt_ref(nt, _ri, "right") >= 0)
         { *out = TY_FLOAT; return 1; }
     }
     /* an ENDLESS literal range: #end is nil (#2413) */
-    if (sp_streq(name, "end") && ({ int _rn = an_unparen(nt, recv);
+    if (sp_streq(name, "end") && ({ int _rn = nt_paren_single(nt, recv);
         _rn >= 0 && nt_type(nt, _rn) && sp_streq(nt_type(nt, _rn), "RangeNode") &&
         nt_ref(nt, _rn, "right") < 0; })) { *out = TY_POLY; return 1; }
     /* step { } in value position returns the receiver range (#2415) */
@@ -4544,7 +4544,7 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
       if (argc == 1 && range_lit_endless(c, recv)) { *out = TY_ENUMERATOR; return 1; }
       /* a float step, or a literal range with float bounds, yields floats */
       int sfloat = argc >= 1 && infer_type(c, argv[0]) == TY_FLOAT;
-      int rn = an_unparen(nt, recv);
+      int rn = nt_paren_single(nt, recv);
       int bfloat = 0;
       if (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode")) {
         int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
@@ -4567,7 +4567,7 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
     if (sp_streq(name, "bsearch")) {
       /* a float-bounded range yields a float member (or nil); an int range an
          int member. The bound types are on the receiver's RangeNode. */
-      int brn = an_unparen(nt, recv);
+      int brn = nt_paren_single(nt, recv);
       if (brn >= 0 && nt_type(nt, brn) && sp_streq(nt_type(nt, brn), "RangeNode")) {
         int bl = nt_ref(nt, brn, "left"), br = nt_ref(nt, brn, "right");
         /* both bounds must be real NUMERIC nodes (the float-bisection branch
@@ -4750,7 +4750,7 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
        materialize, so the pipeline over it is the only well-defined reading
        (#3840). */
     if (ok && lazy_src < 0 && saw_op) {
-      int rr = an_unparen(nt, cur);
+      int rr = nt_paren_single(nt, cur);
       if (rr >= 0 && nt_type(nt, rr) && sp_streq(nt_type(nt, rr), "RangeNode") &&
           nt_ref(nt, rr, "right") < 0 && nt_ref(nt, rr, "left") >= 0)
         lazy_src = rr;
@@ -7766,7 +7766,7 @@ static int promote_red_const(const NodeTable *nt, int n, long long *v) {
 static int prf_word(long long v) { return v <= (long long)INTPTR_MAX && v >= (long long)INTPTR_MIN; }
 static int promote_red_fits(Compiler *c, int recv, int is_mul, int seed, int has_seed) {
   const NodeTable *nt = c->nt;
-  int rn = an_unparen(nt, recv);
+  int rn = nt_paren_single(nt, recv);
   long long acc = has_seed ? 0 : (is_mul ? 1 : 0);
   if (has_seed) { long long sv; if (!promote_red_const(nt, seed, &sv)) return 0; acc = sv; }
   if (rn >= 0 && nt_kind(nt, rn) == NK_ArrayNode) {
@@ -7809,7 +7809,7 @@ static int infer_promote_reducer(Compiler *c, int id, TyKind rt, TyKind *out) {
   int is_mul = 0, seed = -1;
   /* a Range's count / size: 2**63 + 1 for (-2**63..0) */
   if (rt == TY_RANGE && argc == 0 && (sp_streq(name, "count") || sp_streq(name, "size"))) {
-    int rn = an_unparen(nt, recv);
+    int rn = nt_paren_single(nt, recv);
     long long lo, hi;
     if (rn >= 0 && nt_kind(nt, rn) == NK_RangeNode &&
         promote_red_const(nt, nt_ref(nt, rn, "left"), &lo) &&
