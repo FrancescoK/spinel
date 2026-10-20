@@ -11886,10 +11886,10 @@ static sp_RbVal sp_poly_dig_n(sp_RbVal recv, sp_int n, const sp_RbVal *keys);
 static sp_RbVal sp_poly_dig_list(sp_RbVal recv, sp_PolyArray *keys) {
   if (!keys) return sp_box_nil();
   SP_GC_ROOT(keys);
-  /* a receiver that cannot be dug (nil answered nil) is the call's
-     NoMethodError, with the keys as its args */
-  /* The same walk checks runtime arity and intermediate receivers, and
-     roots the values across each step. */
+  /* The shared walk raises the call's NoMethodError, with the keys as its
+     args, for a receiver that cannot be dug (nil answered nil). It also
+     checks runtime arity and intermediate receivers, and roots the values
+     across each step. */
   return sp_poly_dig_n(recv, keys->len, keys->data);
 }
 /* poly[poly_key]: dispatch on key tag at runtime. */
