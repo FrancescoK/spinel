@@ -12273,7 +12273,8 @@ static void emit_while_loop(Compiler *c, int id, Buf *b, int indent, int is_unti
   }
   /* Hoist a loop-invariant string length out of the loop: if the predicate
      tests `s.length`/`s.size` for a string local `s` that neither the body
-     nor the predicate itself mutates,
+     nor the predicate itself mutates, and hands to no call that may change
+     it through its parameter (an_subtree_may_lend_local),
      compute strlen once before the loop and reuse it (avoids O(n) strlen per
      iteration). Save/restore the outer hoist state for nested loops. */
   const char *sv_hvar = g_hoist_len_var, *sv_hrecv = g_hoist_len_recv;
@@ -12281,7 +12282,11 @@ static void emit_while_loop(Compiler *c, int id, Buf *b, int indent, int is_unti
   int hr = find_hoistable_strlen(c, pred);
   if (hr >= 0) {
     const char *hn = nt_str(nt, hr, "name");
-    if (hn && !subtree_changes_local(c, body, hn) && !subtree_changes_local(c, pred, hn)) {
+    /* a call that hands the local to a method's parameter that method
+       changes in place (a byref slot, whatever the method is: an instance,
+       class or module method) changes the String the bound measured */
+    if (hn && !subtree_changes_local(c, body, hn) && !subtree_changes_local(c, pred, hn) &&
+        !an_subtree_may_lend_local(c, body, hn) && !an_subtree_may_lend_local(c, pred, hn)) {
       int ht = ++g_tmp;
       emit_indent(b, indent);
       buf_printf(b, "sp_int _t%d = sp_str_length_m(", ht); emit_expr(c, hr, b); buf_puts(b, ");\n");

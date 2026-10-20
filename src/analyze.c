@@ -16970,40 +16970,79 @@ static int an_call_target_mi(Compiler *c, int id) {
    run2(x) = run(x) { |u| yield u }` lends x to run, whose block yields it on
    to run2's. */
 static int an_lend_nest;   /* the splice questions a walk asks, nested */
-static int an_subtree_lends_local(Compiler *c, int node, const char *vn, int depth) {
+/* What a walk of an_subtree_lends_local_x is asked, and what it reports back:
+   plan: the call plan's targets are asked too, which are the methods the
+   emitter passes the local's slot to (a class method on a constant, on
+   `self.class`, on a module); capped: the walk stopped at its depth limit. */
+typedef struct { int plan, capped; } AnLend;
+/* Is the local vn one of call's arguments, as written? */
+static int an_call_has_local_arg(Compiler *c, int call, const char *vn) {
   const NodeTable *nt = c->nt;
-  if (node < 0 || depth > 64) return 0;
+  int args = nt_ref(nt, call, "arguments"), n = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &n) : NULL;
+  for (int i = 0; i < n; i++)
+    if (nt_kind(nt, av[i]) == NK_LocalVariableReadNode && nt_str(nt, av[i], "name") &&
+        sp_streq(nt_str(nt, av[i], "name"), vn)) return 1;
+  return 0;
+}
+static int an_subtree_lends_local_x(Compiler *c, int node, const char *vn, int depth, AnLend *x) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return 0;
+  /* the walk stops at depth 64 and answers no there; x->capped says it did,
+     for a caller that must not take that no for an answer */
+  if (depth > 64) { if (x) x->capped = 1; return 0; }
   if (nt_kind(nt, node) == NK_CallNode) {
     int r = nt_ref(nt, node, "receiver");
     if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && an_str_mutator_name(nt_str(nt, node, "name")) &&
         nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), vn)) return 1;
-    int mi = an_call_target_mi(c, node);
-    Scope *m = mi >= 0 ? &c->scopes[mi] : NULL;
+    int cand[CPT_MAX + 1], nc = 0;
+    cand[nc++] = an_call_target_mi(c, node);
+    if (x && x->plan && an_call_has_local_arg(c, node, vn)) {
+      int pt[CPT_MAX], np = cplan_targets(c, node, pt, CPT_MAX);
+      /* targets the plan cannot list: the call may take the slot */
+      if (np < 0) return 1;
+      for (int i = 0; i < np; i++) cand[nc++] = pt[i];
+    }
     int blk = nt_ref(nt, node, "block");
     if (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode) blk = -1;
-    for (int j = 0; m && j < m->nparams; j++) {
-      int spliced = blk >= 0 && m->yields && !m->is_lowered_yield && j < 32 && an_lend_nest < 4;
-      if (!comp_byref_param(c, m, j) && !spliced) continue;
-      int an = arg_layout_param_node(c, m, node, j, NULL);
-      if (an < 0 || nt_kind(nt, an) != NK_LocalVariableReadNode || !nt_str(nt, an, "name") ||
-          !sp_streq(nt_str(nt, an, "name"), vn)) continue;
-      if (comp_byref_param(c, m, j)) return 1;
-      an_lend_nest++;
-      int lent = an_inline_param_lent(c, mi, j, blk);
-      an_lend_nest--;
-      if (lent) return 1;
+    for (int ci = 0; ci < nc; ci++) {
+      int mi = cand[ci];
+      Scope *m = mi >= 0 ? &c->scopes[mi] : NULL;
+      for (int j = 0; m && j < m->nparams; j++) {
+        int spliced = blk >= 0 && m->yields && !m->is_lowered_yield && j < 32 && an_lend_nest < 4;
+        if (!comp_byref_param(c, m, j) && !spliced) continue;
+        int an = arg_layout_param_node(c, m, node, j, NULL);
+        if (an < 0 || nt_kind(nt, an) != NK_LocalVariableReadNode || !nt_str(nt, an, "name") ||
+            !sp_streq(nt_str(nt, an, "name"), vn)) continue;
+        if (comp_byref_param(c, m, j)) return 1;
+        an_lend_nest++;
+        int lent = an_inline_param_lent(c, mi, j, blk);
+        an_lend_nest--;
+        if (lent) return 1;
+      }
     }
   }
   int nr = nt_num_refs(nt, node);
   for (int i = 0; i < nr; i++)
-    if (an_subtree_lends_local(c, nt_ref_at(nt, node, i), vn, depth + 1)) return 1;
+    if (an_subtree_lends_local_x(c, nt_ref_at(nt, node, i), vn, depth + 1, x)) return 1;
   int na = nt_num_arrs(nt, node);
   for (int i = 0; i < na; i++) {
     int n = 0; const int *a = nt_arr_at(nt, node, i, &n);
     for (int k = 0; k < n; k++)
-      if (an_subtree_lends_local(c, a[k], vn, depth + 1)) return 1;
+      if (an_subtree_lends_local_x(c, a[k], vn, depth + 1, x)) return 1;
   }
   return 0;
+}
+static int an_subtree_lends_local(Compiler *c, int node, const char *vn, int depth) {
+  return an_subtree_lends_local_x(c, node, vn, depth, NULL);
+}
+/* The same for code being emitted, where the call plans are settled: also
+   the methods the plan names, and 1 for a subtree the walk cannot see to the
+   bottom of or a call whose targets it cannot list. A caller that needs a
+   no it can rely on (the loop-bound hoist) asks this. */
+int an_subtree_may_lend_local(Compiler *c, int node, const char *vn) {
+  AnLend x = { 1, 0 };
+  return an_subtree_lends_local_x(c, node, vn, 0, &x) || x.capped;
 }
 /* Is `node` a yield of spliced method `m`'s block: a `yield`, or a
    `blk.call(...)` on its own &block, which the splice expands as one? */
